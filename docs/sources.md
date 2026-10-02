@@ -79,3 +79,11 @@ Codex／Claude Code／Pi 的目标范围、LLM 路由与设备调度的区分、
 - [PRD 规范](https://github.com/xiaoland/svc/blob/4fe4c66ac4deb35209069c00b1bbdc1b22aae3af/corpus/specs/prd/index.md)
 
 仅采用上述文档方法，不把 SVC CLI 纳入本仓库。PRD 放在 `docs/prd/index.md`，遵从该提交的 PRD 规范入口；不另建旧模板路径的副本。
+
+## S11
+
+- 来源：父会话 `01a0f01b-c0bb-719d-af64-671b0563103f` 的本次 Codex Cloud 委托及后续转达；不伪造原始消息 ID
+- 时间：2026-10-02；用户 06:27 同意先做无凭据最小原型
+- 授权：Rust＋SQLite 核心、本地确定性模拟、代码／文档／测试、官方开发工具链及正常 registry 依赖、本地 Git 提交
+- 仍禁止：读取秘密、登录、真实模型／付费请求、未授权 push／PR／部署、Factory26、SVC CLI
+- 后续要求：Codex Cloud 持续开发 → Mac mini 原生安装体验 → 用户反馈 → 修复复验；Mac mini 首个目标，移动端后续 LAN 连接，不改 VPN。后续父会话报告 Mac 构建条件可用并获准 Swift＋AppKit 薄壳；06:43 UTC 用户明确要求先完成核心验证再接 UI，批准设备构建使用；不自动批准远端 push

@@ -1,6 +1,6 @@
 # 多 Harness 路由与协作架构
 
-状态：**核心产品设计及 Rust／SQLite／原生 UI 方向已认可；细化方案待验证**。更新于 2026-10-01 11:28 UTC。首批 Codex、Claude Code、Pi 已由用户固定；本页负责收敛实现方案，不重新评选 Harness，也不表示产品已经实现。需求权威见 [PRD](../prd/index.md)，来源和版本见[研究证据](../../tasks/harness-routing-feasibility/evidence.md)。
+状态：**核心产品设计及 Rust／SQLite／原生 UI 方向已认可；细化方案待验证**。更新于 2026-10-02 UTC。首批 Codex、Claude Code、Pi 已由用户固定；本页负责收敛实现方案，不重新评选 Harness，也不表示产品已经实现。需求权威见 [PRD](../prd/index.md)，来源和版本见[研究证据](../../tasks/harness-routing-feasibility/evidence.md)。
 
 ## 1. 已认可方向与收敛方案
 
@@ -18,7 +18,7 @@
 4. **兼容性先于便宜和空闲**。接口形似 OpenAI／Anthropic 不代表工具、推理状态、图像、缓存、流和续接兼容。
 5. **任务持续，运行可替换**。进程消失不删除任务；逻辑会话身份可保持，底下原生绑定按 Segment 留下 lineage；跨 Harness／账户接续不伪装成原生会话无损恢复。
 6. **协作消息不能授予权限**。对方会话的建议、产物和指令是带出处的输入，不继承其身份、预算或工具权限。
-7. 当前只交付设计；真实登录、凭据配置、模型调用、安装、部署与产品编码均未在本轮执行。
+7. 当前只实现无凭据模拟核心；真实登录、凭据配置、模型调用、原生 Harness 与 UI 设备安装、部署未执行。
 
 ## 3. 组件与控制／数据路径
 
@@ -244,7 +244,7 @@ V1 是基础检查点，**V2＋V3 才构成首个可用版本**。不能只接�
 
 ### 待验证而不假定已解决
 
-具体输入、观察证据和通过标准见 [Task Packet](../../tasks/harness-routing-feasibility/packet.md#原型验证队列)。真实账户／费用测试须后续授权；当前没有运行结果。
+具体输入、观察证据和通过标准见 [Task Packet](../../tasks/harness-routing-feasibility/packet.md#原型验证队列)。真实账户／费用测试须后续授权；本地模拟结果见 [开发与复验](../development.md)，不作为原生接入证据。
 
 ### 分布式路线
 
@@ -261,4 +261,13 @@ V1 是基础检查点，**V2＋V3 才构成首个可用版本**。不能只接�
 3. Rust 主核心、SQLite、Apple Swift／UIKit 方向与 Android Kotlin／Jetpack Compose 原生 UI；替换 TypeScript 主核心和 Web UI，接受实验成本
 4. 先核心闭环，后分布式扩展；底层细节仍由设计方收敛，不让用户重做方案选择
 
-具体 Mac Catalyst／AppKit 落点、Apple 平台范围、UniFFI／IPC、官方 SDK 薄桥、服务安装与安全边界仍为推荐／原型项；已有方向认可不自动批准所有细节。官方集成资格、具体账户权益、ACPHub 来源、真实路由／恢复效果仍需验证。当前没有产品实现，也没有把设计复核当作登录、付费或部署授权。
+具体 Mac Catalyst／AppKit 落点、Apple 平台范围、UniFFI／IPC、官方 SDK 薄桥、服务安装与安全边界仍为推荐／原型项；已有方向认可不自动批准所有细节。官方集成资格、具体账户权益、ACPHub 来源、真实路由／恢复效果仍需验证。已有无凭据核心原型；不把模拟成功当作登录、付费或部署授权。
+
+## 11. 当前核心切片与原生体验接线
+
+实现入口：[src/lib.rs](../../src/lib.rs)、[schema.sql](../../src/schema.sql)、[adapter.rs](../../src/adapter.rs)、[routing.rs](../../src/routing.rs)。核心只覆盖固定深度委派、稳定 Session、单 Segment 绑定、每次重启的新 Run、独立 Attempt、事务 outbox 与合成结果验收；不是前述完整架构的实现。
+
+单宿主通过 SQLite exclusive connection 拒绝第二个 Host；不是跨设备 lease／native fencing。未知提交阻塞该 Segment 后续投递，无自动 handoff 或人工强制解锁接口。路由只允许明确获准的模拟资源，无 API／订阅 lane。MCP 工具服务、ACP transport、真实 gateways／SDK 桥、费用预留与完整安全隔离尚未实现。
+
+Mac mini 首个体验切片已获准使用 Swift＋AppKit 薄壳。已编写原生 UI 与独立 Rust Host 接线源码；UI 通过随包 `rpc` 子进程访问同用户 Unix socket v1，操作同一核心及 DB，显示模拟模式、任务、会话、attempt 与协作事件。UI 退出不终止 Host；显式停止取消待投递消息、保留不确定状态。无 TCP／LAN、系统常驻安装或 UI 自有任务模拟。Cloud 已验证核心与 IPC；Mac 编译／安装／用户体验待父会话设备验收。
+交付版本与反馈循环见 [开发说明](../development.md#mac-mini-原生体验交付契约)。

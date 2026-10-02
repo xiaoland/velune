@@ -13,7 +13,7 @@
 
 ## 当前工作
 
-- [Harness、LLM 路由与跨会话协作](../tasks/harness-routing-feasibility/packet.md)：核心设计已复核，细化与原型队列已更新；无实现
+- [Harness、LLM 路由与跨会话协作](../tasks/harness-routing-feasibility/packet.md)：无凭据核心已实现；真实 Harness 与设备体验待接线
 - [证据快照](../tasks/harness-routing-feasibility/evidence.md)：源版本、官方链接、事实与适用边界
 
 ## 协作入口
@@ -21,7 +21,9 @@
 - [仓库 README](../README.md)
 - [共享 Agent 指引](../AGENTS.md)
 
-技术方案已有实际内容，但尚未获准实施；不建立空的单元 TDD 或部署规范。
+已授权并实现无凭据核心；真实模型与原生设备体验分别验收。
+
+- [开发与复验](development.md)：运行命令、能力边界、Mac mini 接线、真实联调准备与反馈契约
 
 ## 文档方法
 

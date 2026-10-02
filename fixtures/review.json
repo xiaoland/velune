@@ -1,0 +1,1 @@
+{"simulation":true,"goal":"Check the synthetic arithmetic result","input":"2 + 3 = 5","expected":"SIMULATED: arithmetic verified"}
