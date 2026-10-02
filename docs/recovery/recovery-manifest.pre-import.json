@@ -1,0 +1,74 @@
+{
+  "snapshot_type": "reconstructed_document_snapshot",
+  "original_commit_reference": "54f2f1084bbbbe83e792d55371c5bee22a111756",
+  "original_commit_objects_recovered": false,
+  "original_commit_verified": false,
+  "git_history_included": false,
+  "source": "Document text and write/update commands retained in the conversation; no original filesystem or Git blob hashes available for comparison.",
+  "validation": {
+    "files": 8,
+    "relative_links_and_anchors": 42,
+    "link_check": "passed",
+    "utf8_lf_and_final_newline": "passed",
+    "trailing_whitespace_check": "passed",
+    "original_evidence_base_size_crosscheck": 13796
+  },
+  "files": [
+    {
+      "path": "AGENTS.md",
+      "bytes": 4077,
+      "lines": 47,
+      "sha256": "af4a58b7028004fb70d764c00e13b7928444cf2bdb572854a9a5deb30a33c8c1",
+      "original_byte_equality": "not_verified"
+    },
+    {
+      "path": "README.md",
+      "bytes": 1825,
+      "lines": 27,
+      "sha256": "e1ead8343e84fa5023ad33cd765375ef0314ea2005a371657d928d622301dfbe",
+      "original_byte_equality": "not_verified"
+    },
+    {
+      "path": "docs/design/architecture.md",
+      "bytes": 35885,
+      "lines": 264,
+      "sha256": "6d342a1eef7db52dfc3f61c8be180c261c9b4cddee229b8a707e9bef7b1b8b84",
+      "original_byte_equality": "not_verified"
+    },
+    {
+      "path": "docs/index.md",
+      "bytes": 1466,
+      "lines": 28,
+      "sha256": "f3e22f1bfbd68995ca5dd7e70db7e72c0e915b59944be0b4d9cabccf4351923d",
+      "original_byte_equality": "not_verified"
+    },
+    {
+      "path": "docs/prd/index.md",
+      "bytes": 6864,
+      "lines": 96,
+      "sha256": "545e57589d0001b4c59f5455d3ae1325452e56488205f5dabe8ddf896d9a0006",
+      "original_byte_equality": "not_verified"
+    },
+    {
+      "path": "docs/sources.md",
+      "bytes": 4308,
+      "lines": 81,
+      "sha256": "397e0e468f701ee6ca330638128d9b891c0801ac4e037376ab11c87d8694fd55",
+      "original_byte_equality": "not_verified"
+    },
+    {
+      "path": "tasks/harness-routing-feasibility/evidence.md",
+      "bytes": 16696,
+      "lines": 147,
+      "sha256": "7b9d248f3441a22a8653e36f1f4954c574d1d0a0d7e7cf3579d2f9cf9b139be0",
+      "original_byte_equality": "not_verified"
+    },
+    {
+      "path": "tasks/harness-routing-feasibility/packet.md",
+      "bytes": 9124,
+      "lines": 64,
+      "sha256": "9faf80f76bbbf87ed95944042dec6620c7dc2980dd9c7218e9adb5038102bc8a",
+      "original_byte_equality": "not_verified"
+    }
+  ]
+}
