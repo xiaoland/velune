@@ -1,0 +1,127 @@
+{
+  "review": {
+    "method": "Manual review of the four retained source chunks, tool identity/argument string, finish, reported usage, and clean-EOF framing record; not copied from mapper output",
+    "source_rules": [
+      "tool index 0, exact provider call ID and add_numbers identity retained",
+      "one actual argument fragment {\"a\":2,\"b\":3}; parsed output is an object with a=2,b=3",
+      "tool_calls maps to ToolCalls; tool execution count remains zero",
+      "usage 440 input/34 output; total 474 retained source-only",
+      "clean EOF with no pending frame/line; DONE counts zero",
+      "five ordered service events share immutable call/attempt/model/provider/revision"
+    ],
+    "limits": "Single tool and single argument fragment observed. Multi-fragment/interleaved tools unverified."
+  },
+  "mapped": {
+    "call": "synthetic-tool-call-1",
+    "revision": 1,
+    "usage": {
+      "input_tokens": {
+        "kind": "reported",
+        "value": 440
+      },
+      "output_tokens": {
+        "kind": "reported",
+        "value": 34
+      }
+    },
+    "outcome": {
+      "ok": true,
+      "finish": "ToolCalls",
+      "text": null,
+      "tools": [
+        {
+          "id": "call_01a1020e328f726fbcff9e1f",
+          "name": "add_numbers",
+          "arguments": {
+            "a": 2,
+            "b": 3
+          }
+        }
+      ]
+    }
+  },
+  "events": [
+    {
+      "context": {
+        "call": "synthetic-tool-call-1",
+        "attempt": "synthetic-tool-attempt-1",
+        "provider": "minimax-cn",
+        "model": "minimax-m3",
+        "revision": 1
+      },
+      "sequence": 1,
+      "event": {
+        "kind": "tool_identity",
+        "index": 0,
+        "id": "call_01a1020e328f726fbcff9e1f",
+        "name": "add_numbers"
+      }
+    },
+    {
+      "context": {
+        "call": "synthetic-tool-call-1",
+        "attempt": "synthetic-tool-attempt-1",
+        "provider": "minimax-cn",
+        "model": "minimax-m3",
+        "revision": 1
+      },
+      "sequence": 2,
+      "event": {
+        "kind": "tool_arguments",
+        "index": 0,
+        "fragment": "{\"a\":2,\"b\":3}"
+      }
+    },
+    {
+      "context": {
+        "call": "synthetic-tool-call-1",
+        "attempt": "synthetic-tool-attempt-1",
+        "provider": "minimax-cn",
+        "model": "minimax-m3",
+        "revision": 1
+      },
+      "sequence": 3,
+      "event": {
+        "kind": "finish",
+        "reason": "ToolCalls"
+      }
+    },
+    {
+      "context": {
+        "call": "synthetic-tool-call-1",
+        "attempt": "synthetic-tool-attempt-1",
+        "provider": "minimax-cn",
+        "model": "minimax-m3",
+        "revision": 1
+      },
+      "sequence": 4,
+      "event": {
+        "kind": "usage",
+        "usage": {
+          "input_tokens": {
+            "kind": "reported",
+            "value": 440
+          },
+          "output_tokens": {
+            "kind": "reported",
+            "value": 34
+          }
+        }
+      }
+    },
+    {
+      "context": {
+        "call": "synthetic-tool-call-1",
+        "attempt": "synthetic-tool-attempt-1",
+        "provider": "minimax-cn",
+        "model": "minimax-m3",
+        "revision": 1
+      },
+      "sequence": 5,
+      "event": {
+        "kind": "terminal",
+        "error": null
+      }
+    }
+  ]
+}

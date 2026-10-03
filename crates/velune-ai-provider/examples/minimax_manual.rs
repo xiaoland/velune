@@ -35,7 +35,7 @@ fn input(case: &str) -> Result<SamplingInput> {
             ))?],
             256,
         ),
-        _ => return Err("case must be text or tool"),
+        _ => return Err("case must be text, text-diagnostic or tool"),
     };
     checked(SamplingInput::new(
         None,
@@ -445,7 +445,9 @@ async fn main() {
         {
             replay(&args[2]).await
         }
-        _ => Err("usage: minimax_manual live text|tool SOURCE_COMMIT | replay text|tool"),
+        _ => Err(
+            "usage: minimax_manual live text|text-diagnostic|tool SOURCE_COMMIT | replay text|text-diagnostic|tool",
+        ),
     };
     if let Err(error) = result {
         eprintln!("{error}");

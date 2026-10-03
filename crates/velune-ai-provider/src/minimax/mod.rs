@@ -18,6 +18,7 @@ pub const ENDPOINT: &str = "https://api.minimax.cn/v1/chat/completions";
 pub const MODEL: &str = "MiniMax-M3";
 /// Only projected JSON crosses this optional explicit capture boundary. No default logging.
 /// Request content must be separately authorized for capture by the composition root.
+/// The sink must buffer in memory and apply fixture_is_safe before persisting/outputting content.
 #[derive(Clone)]
 pub enum ProtocolRecord {
     Request(Payload<Value>),
@@ -266,7 +267,8 @@ impl SamplingProvider for MiniMax {
                         );
                     }
                 };
-                // Do not capture any record that reflects the injected credential/placeholder.
+                // Fast raw reflection check only. The composition root also checks decoded and
+                // reassembled buffered content with fixture_is_safe before any persistent write.
                 if event.data.contains(credential.get()) {
                     return decoder.failure(
                         SamplingErrorKind::ProviderFailure,

@@ -1,6 +1,6 @@
 # AI service 的权威契约与 provider 边界
 
-状态：2026-10-03 有界 MiniMax 流式实现；已定位并修正文本终止兼容问题，工具真实验收待采集。service 是通用独立 lib，sampling 是其首个操作；不引入账户／渠道实体。授权与运行证据见 [任务](../../tasks/ai-service-contracts/packet.md)。旧 Host／UI／mock Router 未接线。
+状态：2026-10-03 有界 MiniMax 流式实现；文本终止问题已定位修复并由真实诊断记录离线复验，工具 live 与重复 replay 成功。service 是通用独立 lib，sampling 是其首个操作；不引入账户／渠道实体。授权与运行证据见 [任务](../../tasks/ai-service-contracts/packet.md)。旧 Host／UI／mock Router 未接线。
 
 ## 两套契约与依赖
 
@@ -48,4 +48,4 @@ Payload Debug 脱敏正文及工具参数；观测无正文／headers／原始�
 
 手动 replay 在分支入口不构造 HTTP client、不读凭据，只把已保存的 projected records 送入同一个 Decoder，再经 service 包装；source 标为 replay，网络 attempt=0。expected 是独立人工审阅文件，不能由 mapper 自动更新。诊断样本保留旧 source mapping 的失败结果，新 expected 明确记录修正后的映射；replay 采用记录的 clean EOF／typed error 分类，保留实际 Decoder error kind 与 HTTP 接收状态。精确内容只是这次真实样本的回放 oracle，不是未来随机生成的质量断言。
 
-未验收：并发热更新／凭据轮换、取消和 drop／panic 后终态、真实中断／429／重试故障注入、多工具并发、工具结果往返、厂商新增字段兼容、三 Harness／三 provider、全局预算协调／账单核对、正式配置中心和 Mac。静态通过或成功样本不替代这些运行证据。
+未验收：并发热更新／凭据轮换、取消和 drop／panic 后终态、真实中断／429／重试故障注入、工具参数多片段／多工具并发、工具结果往返、厂商新增字段兼容、三 Harness／三 provider、全局预算协调／账单核对、正式配置中心和 Mac。静态通过或成功样本不替代这些运行证据。
