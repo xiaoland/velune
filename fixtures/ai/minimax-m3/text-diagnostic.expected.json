@@ -1,0 +1,110 @@
+{
+  "review": {
+    "method": "Manual review of diagnostic protocol chunks AND content-free byte framing / clean EOF record; original live mapped failure remains unchanged",
+    "termination_rule": "Clean transport EOF; no pending line/frame and no DONE bytes; explicit stop plus reported usage and complete payload. Not arbitrary EOF acceptance.",
+    "root_cause": "adapter wrongly required a DONE sentinel as the only terminal, while reviewed SDK accepts natural stream exhaustion",
+    "source_mapping_revision": "corrected MiniMax EOF completion; old capture used strict sentinel-only mapping",
+    "limits": "replay uses retained projected chunks and recorded transport/framing facts; it does not recreate original network bytes"
+  },
+  "mapped": {
+    "call": "synthetic-text-diagnostic-call-1",
+    "revision": 1,
+    "usage": {
+      "input_tokens": {
+        "kind": "reported",
+        "value": 171
+      },
+      "output_tokens": {
+        "kind": "reported",
+        "value": 7
+      }
+    },
+    "outcome": {
+      "ok": true,
+      "finish": "Complete",
+      "text": "SYNTHETIC_OK",
+      "tools": []
+    }
+  },
+  "events": [
+    {
+      "context": {
+        "call": "synthetic-text-diagnostic-call-1",
+        "attempt": "synthetic-text-diagnostic-attempt-1",
+        "provider": "minimax-cn",
+        "model": "minimax-m3",
+        "revision": 1
+      },
+      "sequence": 1,
+      "event": {
+        "kind": "text",
+        "fragment": "S"
+      }
+    },
+    {
+      "context": {
+        "call": "synthetic-text-diagnostic-call-1",
+        "attempt": "synthetic-text-diagnostic-attempt-1",
+        "provider": "minimax-cn",
+        "model": "minimax-m3",
+        "revision": 1
+      },
+      "sequence": 2,
+      "event": {
+        "kind": "text",
+        "fragment": "YNTHETIC_OK"
+      }
+    },
+    {
+      "context": {
+        "call": "synthetic-text-diagnostic-call-1",
+        "attempt": "synthetic-text-diagnostic-attempt-1",
+        "provider": "minimax-cn",
+        "model": "minimax-m3",
+        "revision": 1
+      },
+      "sequence": 3,
+      "event": {
+        "kind": "finish",
+        "reason": "Complete"
+      }
+    },
+    {
+      "context": {
+        "call": "synthetic-text-diagnostic-call-1",
+        "attempt": "synthetic-text-diagnostic-attempt-1",
+        "provider": "minimax-cn",
+        "model": "minimax-m3",
+        "revision": 1
+      },
+      "sequence": 4,
+      "event": {
+        "kind": "usage",
+        "usage": {
+          "input_tokens": {
+            "kind": "reported",
+            "value": 171
+          },
+          "output_tokens": {
+            "kind": "reported",
+            "value": 7
+          }
+        }
+      }
+    },
+    {
+      "context": {
+        "call": "synthetic-text-diagnostic-call-1",
+        "attempt": "synthetic-text-diagnostic-attempt-1",
+        "provider": "minimax-cn",
+        "model": "minimax-m3",
+        "revision": 1
+      },
+      "sequence": 5,
+      "event": {
+        "kind": "terminal",
+        "error": null
+      }
+    }
+  ]
+}

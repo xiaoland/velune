@@ -1,4 +1,4 @@
-//! Explicit manual acceptance entry, not a test runner. Only two fixed synthetic live cases.
+//! Explicit manual acceptance entry, not a test runner. Two fixed synthetic cases plus one explicitly authorized text diagnostic.
 //! replay constructs no HTTP client and never reads credential/proxy environment variables.
 use serde_json::{Value, json};
 use std::{
@@ -135,37 +135,97 @@ impl SamplingProvider for Replay {
             let mut done = false;
             let mut request_seen = false;
             let mut status_seen = false;
+            let mut termination = None;
             for record in records {
-                let valid = match record["kind"].as_str() {
+                let execution = if status_seen {
+                    ExecutionKnowledge::Accepted
+                } else {
+                    ExecutionKnowledge::NotSent
+                };
+                if termination.is_some() {
+                    return decoder.failure(SamplingErrorKind::ProviderFailure, execution, false);
+                }
+                match record["kind"].as_str() {
                     Some("request") if !request_seen && !status_seen => {
                         request_seen = true;
-                        minimax::request_json(&request.input).is_ok_and(|v| v == record["body"])
+                        if !minimax::request_json(&request.input).is_ok_and(|v| v == record["body"])
+                        {
+                            return decoder.failure(
+                                SamplingErrorKind::InvalidInput,
+                                execution,
+                                false,
+                            );
+                        }
                     }
                     Some("status") if request_seen && !status_seen => {
+                        if record["status"] != 200 {
+                            let kind = match record["status"].as_u64() {
+                                Some(401) => SamplingErrorKind::Authentication,
+                                Some(403) => SamplingErrorKind::Permission,
+                                Some(429) => SamplingErrorKind::RateLimited,
+                                _ => SamplingErrorKind::ProviderFailure,
+                            };
+                            return decoder.failure(kind, ExecutionKnowledge::Unknown, false);
+                        }
                         status_seen = true;
-                        record["status"] == 200
                     }
                     Some("chunk") if status_seen && !done => {
-                        decoder.push(&record["body"], &mut events).is_ok()
+                        if let Err(kind) = decoder.push(&record["body"], &mut events) {
+                            return decoder.failure(kind, ExecutionKnowledge::Accepted, false);
+                        }
                     }
                     Some("done") if status_seen && !done => {
                         done = true;
-                        true
                     }
-                    _ => false,
-                };
-                if !valid {
-                    return decoder.failure(
-                        SamplingErrorKind::ProviderFailure,
-                        ExecutionKnowledge::NotSent,
-                        false,
-                    );
+                    Some("stream_end") if status_seen => {
+                        termination = Some(record);
+                    }
+                    _ => {
+                        return decoder.failure(
+                            SamplingErrorKind::ProviderFailure,
+                            execution,
+                            false,
+                        );
+                    }
                 }
             }
-            let mut result = if done {
-                decoder.complete()
-            } else {
-                decoder.failure(
+            let mut result = match termination.as_ref().map(|r| r["classification"].as_str()) {
+                Some(Some("CleanEofWithoutDone")) if !done => {
+                    let frame = &termination.as_ref().expect("present")["framing"];
+                    let framing = minimax::FramingEvidence {
+                        done_lines: frame["done_lines"]
+                            .as_u64()
+                            .and_then(|v| v.try_into().ok())
+                            .unwrap_or(u32::MAX),
+                        done_frames: frame["done_frames"]
+                            .as_u64()
+                            .and_then(|v| v.try_into().ok())
+                            .unwrap_or(u32::MAX),
+                        unfinished_data_frame: frame["unfinished_data_frame"]
+                            .as_bool()
+                            .unwrap_or(true),
+                        unfinished_line: frame["unfinished_line"].as_bool().unwrap_or(true),
+                        unfinished_line_is_done: frame["unfinished_line_is_done"]
+                            .as_bool()
+                            .unwrap_or(true),
+                    };
+                    decoder.clean_eof(framing)
+                }
+                Some(Some("DoneDecoded")) if done => decoder.complete(),
+                None if done => decoder.complete(),
+                Some(Some("Timeout")) => decoder.failure(
+                    SamplingErrorKind::Timeout,
+                    ExecutionKnowledge::Accepted,
+                    false,
+                ),
+                Some(Some(
+                    "Transport" | "Body" | "Decode" | "SizeLimit" | "SseParser" | "Utf8",
+                )) => decoder.failure(
+                    SamplingErrorKind::Transport,
+                    ExecutionKnowledge::Accepted,
+                    false,
+                ),
+                None => decoder.failure(
                     SamplingErrorKind::Transport,
                     if status_seen {
                         ExecutionKnowledge::Accepted
@@ -173,7 +233,16 @@ impl SamplingProvider for Replay {
                         ExecutionKnowledge::NotSent
                     },
                     false,
-                )
+                ),
+                _ => decoder.failure(
+                    SamplingErrorKind::ProviderFailure,
+                    if status_seen {
+                        ExecutionKnowledge::Accepted
+                    } else {
+                        ExecutionKnowledge::NotSent
+                    },
+                    false,
+                ),
             };
             result.submitted = false; // replay has no actual transport submission
             result
@@ -209,6 +278,11 @@ async fn live(case: &str, source: &str) -> Result<()> {
     if source.len() != 40 || !source.bytes().all(|b| b.is_ascii_hexdigit()) {
         return Err("source commit must be a full SHA");
     }
+    if case == "tool"
+        && !std::path::Path::new(&format!("{ROOT}/text-diagnostic.live.json")).exists()
+    {
+        return Err("reviewed diagnostic required before tool capture");
+    }
     let body = checked(minimax::request_json(&input(case)?))?;
     if body.to_string().len() > 4096 {
         return Err("request budget bound exceeded");
@@ -221,12 +295,35 @@ async fn live(case: &str, source: &str) -> Result<()> {
             let old: Value = checked(serde_json::from_slice(&checked(fs::read(prior_path))?))?;
             reserved_milli_cny += 500; // never release on estimated cost
             let approved_diagnostic_predecessor = prior == "text"
-                && case == "text-diagnostic"
+                && ["text-diagnostic", "tool"].contains(&case)
                 && old["source_commit"] == "abd05a2cea3f0a7545005778c030bc78b5b9890f"
                 && old["mapped"]["outcome"]["kind"] == "Transport"
                 && old["mapped"]["outcome"]["execution"] == "Accepted";
+            let reviewed_diagnostic = if prior == "text-diagnostic" && case == "tool" {
+                let expected: Value = checked(serde_json::from_slice(&checked(fs::read(
+                    format!("{ROOT}/text-diagnostic.expected.json"),
+                ))?))?;
+                let (completion, events) = run(
+                    "text-diagnostic",
+                    Arc::new(Replay {
+                        records: old["records"]
+                            .as_array()
+                            .ok_or("missing diagnostic records")?
+                            .clone(),
+                    }),
+                )
+                .await?;
+                old["source_commit"] == "d7439bdd67b6a2810d25e8f7e16c6632011eab99"
+                    && completion.outcome.result.is_ok()
+                    && result_json(&completion) == expected["mapped"]
+                    && json!(events) == expected["events"]
+            } else {
+                false
+            };
             if old["admission"] != "completed"
-                || (old["mapped"]["outcome"]["ok"] != true && !approved_diagnostic_predecessor)
+                || (old["mapped"]["outcome"]["ok"] != true
+                    && !approved_diagnostic_predecessor
+                    && !reviewed_diagnostic)
                 || old["mapped"]["usage"]["input_tokens"]["kind"] != "reported"
                 || old["mapped"]["usage"]["output_tokens"]["kind"] != "reported"
             {
@@ -238,7 +335,7 @@ async fn live(case: &str, source: &str) -> Result<()> {
         return Err("global reservation budget exhausted");
     }
 
-    // Two fixed admissions, create_new before credential resolution or dispatch. A pending/crashed
+    // Three fixed admissions, create_new before credential resolution or dispatch. A pending/crashed
     // admission remains charged at its entire reservation. No overwrite, reset, retry, or resume.
     let path = format!("{ROOT}/{case}.live.json");
     let mut file = checked(OpenOptions::new().write(true).create_new(true).open(&path))?;

@@ -271,6 +271,30 @@ impl Decoder {
             submitted,
         }
     }
+    /// MiniMax's SDK-compatible stream can close without a DONE sentinel. Accept only a clean
+    /// transport EOF with no unfinished SSE framing, explicit finish, and reported token usage.
+    /// An EOF/error alone is never completion. This does not manufacture a protocol event.
+    pub fn clean_eof(self, framing: super::FramingEvidence) -> ProviderSamplingOutcome {
+        if framing.done_lines != 0
+            || framing.done_frames != 0
+            || framing.unfinished_line_is_done
+            || framing.unfinished_data_frame
+            || framing.unfinished_line
+            || self.finish.is_none()
+            || !self.usage_seen
+            || !matches!(
+                (self.usage.input_tokens, self.usage.output_tokens),
+                (Quantity::Reported(_), Quantity::Reported(_))
+            )
+        {
+            return self.failure(
+                SamplingErrorKind::ProviderFailure,
+                ExecutionKnowledge::Accepted,
+                true,
+            );
+        }
+        self.complete()
+    }
     pub fn complete(self) -> ProviderSamplingOutcome {
         let output = self.output();
         match output {

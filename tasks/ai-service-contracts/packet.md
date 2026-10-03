@@ -58,3 +58,19 @@ create_new admission 在 dispatch 前保存；旧 admission pending／失败／�
 - 当前保守占用：历史 ¥0.80＋认证 ¥0.10＋文本 ¥0.50 = ¥1.40；总上限 ¥5。此为人工预留账本，不是已查询账单或精确剩余额度。
 
 本轮新增 attempt=1；跨已知历史共 3 次（401、认证成功、文本流）。工具 0，Ark 0，Bailian 0。没有查询余额／账单／模型列表，未购买额度。
+
+
+## 同轮诊断与修复（继续授权）
+
+用户要求在剩余授权预算内继续恢复问题，允许至多一次诊断 capture，再完成工具流；不新增测试／框架。本段取代上段“需要后续诊断”的阻塞状态，但保留旧样本事实。
+
+- 零模型请求检查 eventsource-stream 0.2.3 源码：EOF 不派发未闭合 data，原代码又将 parser／transport／clean EOF 统一为 Transport，因此旧 fixture 本身不足以区分原因。
+- 诊断源码 `d7439bdd67b6a2810d25e8f7e16c6632011eab99`，增加字节级无正文 framing observer、typed termination，以及写入前解码／重组内容的 credential reflection guard。
+- 唯一诊断新增 1 HTTP attempt，200，171 input＋7 output。真实记录 `CleanEofWithoutDone`，done_lines=0、done_frames=0、unfinished_line=false、unfinished_data_frame=false。不存在吞尾 DONE、未闭合帧或 transport/parser error 的证据。
+- root cause：本 adapter 擅自把 DONE 作为唯一完成信号。MiniMax 官方 [SDK 流式示例](https://platform.minimax.cn/docs/api-reference/text-openai-api) 使用自然迭代结束；[官方 OpenAI SDK 实现](https://github.com/openai/openai-python/blob/main/src/openai/_streaming.py) 允许 DONE 或正常底层迭代结束，没有“无 DONE 必定失败”契约。这个源码是检查日参考，非本仓库依赖。
+- 修正要求同时满足：clean transport EOF、没有未闭合 SSE 行／帧、没有未派发 DONE、显式合法 finish、input/output usage 已报告、完整合法文本／工具结果。不会在 EOF 错误／未知 usage／半截参数时伪造成功。
+- [diagnostic live](../../fixtures/ai/minimax-m3/text-diagnostic.live.json) 保留 capture 时失败 mapped，不改原数据；[diagnostic expected](../../fixtures/ai/minimax-m3/text-diagnostic.expected.json) 独立审阅后明确采用新终止规则。修正后 replay 连续两次成功映射 5 events；原 text 仍按缺少终止证据保留失败 replay。
+- 修正 replay 错误归因：Decoder 的 Unsupported／ProviderFailure 等不再统一变成 ProviderFailure；HTTP 200 后失败保留 Accepted，HTTP 非 200 保留 Unknown；replay 本身网络 submissions=0。
+- 手动 live 入口只增 text-diagnostic 一个固定 admission，旧文件不覆盖；tool 需诊断 expected 与实际 replay 一致才可派发。最多三个本步 admissions，预留最大 ¥2.40，仍少于授权 8 次／¥5。
+
+当前新增 attempts=2，已知本阶段 342 input＋14 output；加认证合计 507 input＋16 output，标准价估算 ¥0.0011991。历史 401 Unknown 不变，保守预留当前 ¥1.90。尚未发送工具请求。

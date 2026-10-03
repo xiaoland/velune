@@ -1,0 +1,317 @@
+{
+  "actual_http_attempts": 1,
+  "adapter_version": "0.1.0",
+  "admission": "completed",
+  "attempt": {
+    "context": {
+      "attempt": "synthetic-text-diagnostic-attempt-1",
+      "call": "synthetic-text-diagnostic-call-1",
+      "model": "minimax-m3",
+      "provider": "minimax-cn",
+      "revision": 1
+    },
+    "error": "Transport",
+    "execution": "Accepted",
+    "usage": {
+      "input_tokens": {
+        "kind": "reported",
+        "value": 171
+      },
+      "output_tokens": {
+        "kind": "reported",
+        "value": 7
+      }
+    }
+  },
+  "baseline_commit": "7c6f98267a56101d2117311adeaf10b50b01d8f2",
+  "budget": {
+    "authorized_new_attempt_limit": 8,
+    "currency": "CNY",
+    "entry_point_live_attempt_limit": 3,
+    "global_limit": 5.0,
+    "historical_401_reserve": 0.8,
+    "historical_401_usage": "unknown",
+    "input_token_allowance_estimated": 8192,
+    "maximum_reserved_by_this_entry": 2.4,
+    "output_token_bound": 1024,
+    "prior_auth_reserve": 0.1,
+    "prior_auth_tokens": {
+      "input": 165,
+      "output": 2
+    },
+    "reservation_rate_cny_per_million": {
+      "input": 8.4,
+      "output": 33.6
+    },
+    "reservation_total_after_admission_milli_cny": 1900,
+    "standard_price_cny_per_million": {
+      "input": 2.1,
+      "output": 8.4
+    },
+    "this_attempt_reserve": 0.5
+  },
+  "capture_unix_seconds": 1791035464,
+  "case": "text-diagnostic",
+  "events": [
+    {
+      "context": {
+        "attempt": "synthetic-text-diagnostic-attempt-1",
+        "call": "synthetic-text-diagnostic-call-1",
+        "model": "minimax-m3",
+        "provider": "minimax-cn",
+        "revision": 1
+      },
+      "event": {
+        "fragment": "S",
+        "kind": "text"
+      },
+      "sequence": 1
+    },
+    {
+      "context": {
+        "attempt": "synthetic-text-diagnostic-attempt-1",
+        "call": "synthetic-text-diagnostic-call-1",
+        "model": "minimax-m3",
+        "provider": "minimax-cn",
+        "revision": 1
+      },
+      "event": {
+        "fragment": "YNTHETIC_OK",
+        "kind": "text"
+      },
+      "sequence": 2
+    },
+    {
+      "context": {
+        "attempt": "synthetic-text-diagnostic-attempt-1",
+        "call": "synthetic-text-diagnostic-call-1",
+        "model": "minimax-m3",
+        "provider": "minimax-cn",
+        "revision": 1
+      },
+      "event": {
+        "kind": "finish",
+        "reason": "Complete"
+      },
+      "sequence": 3
+    },
+    {
+      "context": {
+        "attempt": "synthetic-text-diagnostic-attempt-1",
+        "call": "synthetic-text-diagnostic-call-1",
+        "model": "minimax-m3",
+        "provider": "minimax-cn",
+        "revision": 1
+      },
+      "event": {
+        "kind": "usage",
+        "usage": {
+          "input_tokens": {
+            "kind": "reported",
+            "value": 171
+          },
+          "output_tokens": {
+            "kind": "reported",
+            "value": 7
+          }
+        }
+      },
+      "sequence": 4
+    },
+    {
+      "context": {
+        "attempt": "synthetic-text-diagnostic-attempt-1",
+        "call": "synthetic-text-diagnostic-call-1",
+        "model": "minimax-m3",
+        "provider": "minimax-cn",
+        "revision": 1
+      },
+      "event": {
+        "error": "Transport",
+        "kind": "terminal"
+      },
+      "sequence": 5
+    }
+  ],
+  "mapped": {
+    "call": "synthetic-text-diagnostic-call-1",
+    "outcome": {
+      "execution": "Accepted",
+      "kind": "Transport",
+      "ok": false,
+      "partial": {
+        "text": "SYNTHETIC_OK",
+        "tools": []
+      }
+    },
+    "revision": 1,
+    "usage": {
+      "input_tokens": {
+        "kind": "reported",
+        "value": 171
+      },
+      "output_tokens": {
+        "kind": "reported",
+        "value": 7
+      }
+    }
+  },
+  "protocol": "minimax-chat-completions-sse",
+  "records": [
+    {
+      "body": {
+        "max_tokens": 64,
+        "messages": [
+          {
+            "content": "Reply exactly: SYNTHETIC_OK",
+            "role": "user"
+          }
+        ],
+        "model": "MiniMax-M3",
+        "service_tier": "standard",
+        "stream": true,
+        "stream_options": {
+          "include_usage": true
+        },
+        "thinking": {
+          "type": "disabled"
+        }
+      },
+      "kind": "request"
+    },
+    {
+      "kind": "status",
+      "status": 200
+    },
+    {
+      "body": {
+        "choices": [
+          {
+            "delta": {
+              "role": "assistant",
+              "unsupported_fields_present": false
+            },
+            "index": 0
+          }
+        ],
+        "model": "MiniMax-M3",
+        "provider_error_present": false,
+        "source_usage_present": false
+      },
+      "kind": "chunk"
+    },
+    {
+      "body": {
+        "choices": [
+          {
+            "delta": {
+              "content": "S",
+              "role": "assistant",
+              "unsupported_fields_present": false
+            },
+            "index": 0
+          }
+        ],
+        "model": "MiniMax-M3",
+        "provider_error_present": false,
+        "source_usage_present": false
+      },
+      "kind": "chunk"
+    },
+    {
+      "body": {
+        "choices": [
+          {
+            "delta": {
+              "content": "YNTHETIC_OK",
+              "role": "assistant",
+              "unsupported_fields_present": false
+            },
+            "index": 0
+          }
+        ],
+        "model": "MiniMax-M3",
+        "provider_error_present": false,
+        "source_usage_present": false
+      },
+      "kind": "chunk"
+    },
+    {
+      "body": {
+        "choices": [
+          {
+            "delta": {
+              "role": "assistant",
+              "unsupported_fields_present": false
+            },
+            "finish_reason": "stop",
+            "index": 0
+          }
+        ],
+        "model": "MiniMax-M3",
+        "provider_error_present": false,
+        "source_usage_present": false
+      },
+      "kind": "chunk"
+    },
+    {
+      "body": {
+        "choices": [],
+        "model": "MiniMax-M3",
+        "provider_error_present": false,
+        "source_usage_present": true,
+        "unsupported_usage_fields_present": true,
+        "usage": {
+          "completion_tokens": 7,
+          "prompt_tokens": 171,
+          "total_tokens": 178
+        }
+      },
+      "kind": "chunk"
+    },
+    {
+      "classification": "CleanEofWithoutDone",
+      "framing": {
+        "done_frames": 0,
+        "done_lines": 0,
+        "unfinished_data_frame": false,
+        "unfinished_line": false,
+        "unfinished_line_is_done": false
+      },
+      "kind": "stream_end"
+    }
+  ],
+  "redaction": {
+    "mode": "allowlist-before-write",
+    "removed": [
+      "headers",
+      "cookies",
+      "credentials",
+      "response_id",
+      "created",
+      "system_fingerprint",
+      "raw_errors",
+      "unrecognized_field_values"
+    ],
+    "retained": [
+      "synthetic_request",
+      "model",
+      "choices.index",
+      "delta.role",
+      "delta.content",
+      "delta.tool_calls",
+      "finish_reason",
+      "prompt_tokens",
+      "completion_tokens",
+      "total_tokens",
+      "usage_presence",
+      "unsupported_usage_presence",
+      "SSE_done"
+    ],
+    "usage_unmapped": "additional fields represented by presence only; no invented zeros"
+  },
+  "requested_model": "MiniMax-M3",
+  "schema": 1,
+  "source": "live",
+  "source_commit": "d7439bdd67b6a2810d25e8f7e16c6632011eab99"
+}

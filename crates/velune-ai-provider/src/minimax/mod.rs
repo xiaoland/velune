@@ -283,12 +283,8 @@ impl SamplingProvider for MiniMax {
                 }
             }
             record_end(StreamEnd::CleanEofWithoutDone);
-            // EOF without [DONE] is incomplete even if a finish marker was received.
-            decoder.failure(
-                SamplingErrorKind::Transport,
-                ExecutionKnowledge::Accepted,
-                true,
-            )
+            let framing = observer.lock().expect("framing").evidence();
+            decoder.clean_eof(framing)
         })
     }
 }
