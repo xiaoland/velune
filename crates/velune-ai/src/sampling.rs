@@ -156,7 +156,59 @@ pub enum ExecutionKnowledge {
 pub struct SamplingFailure {
     pub kind: SamplingErrorKind,
     pub execution: ExecutionKnowledge,
-    pub partial: Option<SamplingOutput>,
+    pub partial: Option<PartialSamplingOutput>,
+}
+
+/// Incomplete tool arguments must not masquerade as a valid ToolCall or a completed output.
+#[derive(Debug, Clone)]
+pub struct PartialToolCall {
+    pub index: u32,
+    pub id: Option<ToolCallId>,
+    pub name: Option<ToolName>,
+    pub arguments: Payload<String>,
+}
+#[derive(Debug, Clone)]
+pub struct PartialSamplingOutput {
+    pub text: Option<Payload<String>>,
+    pub tool_calls: Vec<PartialToolCall>,
+}
+
+/// Provider-independent streaming content. Index is local to this attempt; arguments are fragments,
+/// not parsed JSON until completion. Finish may precede a final usage update.
+#[derive(Debug, Clone)]
+pub enum SamplingDelta {
+    Text(Payload<String>),
+    ToolIdentity {
+        index: u32,
+        id: Option<ToolCallId>,
+        name: Option<ToolName>,
+    },
+    ToolArguments {
+        index: u32,
+        fragment: Payload<String>,
+    },
+    Finish(FinishReason),
+    Usage(Usage),
+}
+#[derive(Debug, Clone)]
+pub enum SamplingEventKind {
+    Delta(SamplingDelta),
+    Terminal { error: Option<SamplingErrorKind> },
+}
+#[derive(Debug, Clone)]
+pub struct SamplingEvent {
+    pub context: crate::observation::AttemptContext,
+    pub sequence: u64,
+    pub kind: SamplingEventKind,
+}
+pub type SamplingSink = Box<dyn FnMut(SamplingEvent) + Send>;
+
+#[derive(Debug, Clone)]
+pub struct SamplingCompletion {
+    pub outcome: SamplingOutcome,
+    pub call: crate::observation::CallObservation,
+    /// Absent when the provider rejected the request before transport submission.
+    pub attempt: Option<crate::observation::AttemptObservation>,
 }
 #[derive(Debug, Clone)]
 pub struct SamplingOutcome {

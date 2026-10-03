@@ -89,3 +89,22 @@ open target/macos/Velune.app
 反馈最小模板：manifest 版本、设备／OS、步骤、期望／实际、错误类别、相关事件 sequence／message ID，可自愿附脱敏截图。不默认上传 DB、用户代码、消息 body、transcript、秘密或本机绝对路径。诊断仅对当前合成原型承诺无私有数据；真实接入后需另审数据字段。
 
 闭环：Cloud 修复并做核心回归 → 新 commit／manifest → Mac 编译／签名／安装 → 重做原失败步骤和一次正常路径 → 用户确认。Task Packet 记录反馈 ID、修复 commit、设备验收结果；设备步骤未做则保持未验收，不能用接口测试替代。
+
+
+## 独立 AI service 的有界人工验收
+
+此切片不运行上文旧原型的测试／Host／UI。先阅读 [AI service 契约](design/ai-service.md) 与 [当前任务及预算](../tasks/ai-service-contracts/packet.md)。Rust 1.99.0，仓库根目录：
+
+```sh
+cargo fmt --all --check
+cargo check --locked --offline -p velune-ai -p velune-ai-provider --lib --example minimax_manual
+cargo clippy --locked --offline -p velune-ai -p velune-ai-provider --lib --example minimax_manual -- -D warnings
+cargo run --locked --offline -p velune-ai-provider --example minimax_manual -- replay text
+cargo run --locked --offline -p velune-ai-provider --example minimax_manual -- replay tool
+```
+
+依赖尚未缓存时先允许 cargo 获取 Cargo.lock 固定包；`--offline` 只限制 cargo，不是操作系统网络隔离。replay 分支本身不构造网络 client 或读取凭据，输出 network_attempts=0。它比较独立审阅 expected，不执行模型或工具。重复运行同一命令核对相同事件／关联／分片／finish／usage。
+
+live 入口 `minimax_manual live text|tool SOURCE_COMMIT` 仅供已授权的两次采集，必须在固定仓库根目录、干净且已提交源码上人工运行。Cloud 通过 Networksecret 提供 MINIMAX_API_KEY 占位；无需也不得把值写到文件、命令行或聊天。已存在的 admission／fixture 禁止覆盖；不能删除 admission 来重复计费采集。live 不作为日常构建或 CI 步骤，不自动重试。新的采集范围另行授权。
+
+普通输出只列 case／attempts／typed usage／fixture 路径；正文与工具片段仅存获准的合成白名单 fixture。手动入口的本地 admission 文件不是防并发跨进程／跨目录绕过的全局产品预算服务，调用范围由本次授权和人工流程限定。

@@ -49,3 +49,5 @@
 ## 当前有界 AI service 工作
 
 2026-10-03 用户明确限定：仅独立 AI lib／provider 配置边界的模块、契约、构造校验与文档。不新增测试、不运行既有集成测试；本步用 cargo fmt/check/clippy 静态检查取代上文通用测试步骤。不得推进网络、凭据、路由／fallback／重试、旧 Host／UI 改造。权威设计见 docs/design/ai-service.md，任务见 tasks/ai-service-contracts/packet.md。允许该任务新开发分支普通 push，不改 main、不 force push、不创建 PR。
+
+2026-10-03 后续授权补充：允许在指定契约基线的新 dev 分支实现最小直接流式派发与 MiniMax provider，按任务预算进行合成 live fixture 采集及人工离线 replay。只读取已配置 Networksecret 占位供指定 HTTPS 请求，不输出／保存值。仍不新增或运行测试，不改旧 Host／UI，不部署，不调用 Ark／Bailian，不实现自动 routing／fallback。静态检查为 fmt/check/clippy；普通 push 已获授权，禁止 main／force／PR。预算及精确边界以 tasks/ai-service-contracts/packet.md 为准。

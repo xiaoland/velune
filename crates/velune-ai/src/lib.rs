@@ -2,6 +2,7 @@
 //! No storage, global configuration, provider SDK, transport, or tool execution lives here.
 #![forbid(unsafe_code)]
 
+pub mod direct;
 pub mod ids;
 pub mod observation;
 pub mod provider;
@@ -11,13 +12,14 @@ use std::{fmt, future::Future, pin::Pin};
 
 pub type OperationFuture<T> = Pin<Box<dyn Future<Output = T> + Send + 'static>>;
 
-/// Caller-facing contract, owned by the service. No implementation/dispatch policy in this slice.
-/// Implementations must capture an immutable runtime binding before returning the future.
+/// Caller-facing contract. Capture the binding before returning the future.
 pub trait AiService: Send + Sync {
     fn sampling(
         &self,
         request: sampling::SamplingRequest,
-    ) -> OperationFuture<sampling::SamplingOutcome>;
+        attempt: ids::AttemptId,
+        events: sampling::SamplingSink,
+    ) -> Result<OperationFuture<sampling::SamplingCompletion>, InvalidContract>;
 }
 
 /// Contains a static field/reason only; never includes rejected input or provider response bodies.

@@ -14,6 +14,8 @@ pub struct ProviderSamplingRequest {
 pub struct ProviderSamplingOutcome {
     pub result: Result<SamplingOutput, SamplingFailure>,
     pub usage: Usage,
+    /// True exactly when the transport submission was invoked (not proof of upstream receipt).
+    pub submitted: bool,
 }
 /// One actual attempt. Implementations translate protocol/SDK types internally; no hidden retries.
 /// An instance must retain immutable runtime settings and must not reread global configuration.
@@ -21,8 +23,11 @@ pub trait SamplingProvider: Send + Sync {
     fn sampling(
         &self,
         request: ProviderSamplingRequest,
+        events: ProviderSamplingSink,
     ) -> OperationFuture<ProviderSamplingOutcome>;
 }
+
+pub type ProviderSamplingSink = Box<dyn FnMut(SamplingDelta) + Send>;
 
 /// The composition root creates a new binding for each config revision. No setters or global store.
 /// The adapter captures its own protocol/model mapping/credential reference, not SDK types here.
@@ -97,7 +102,7 @@ impl PreparedSampling {
         &self.request.context
     }
     /// Consume once; the returned Arc keeps the chosen runtime instance alive for the attempt.
-    /// The future service implementation owns dispatch and observations. This slice does neither.
+    /// The service implementation owns dispatch and observations.
     pub fn into_parts(self) -> (Arc<dyn SamplingProvider>, ProviderSamplingRequest) {
         (Arc::clone(&self.binding.adapter), self.request)
     }

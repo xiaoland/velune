@@ -111,9 +111,14 @@ pub struct MessagesConfig {
     pub endpoint: HttpEndpoint,
 }
 #[derive(Debug, Clone)]
+pub struct ChatCompletionsConfig {
+    pub endpoint: HttpEndpoint,
+}
+#[derive(Debug, Clone)]
 pub enum ProtocolConfig {
     Responses(ResponsesConfig),
     Messages(MessagesConfig),
+    ChatCompletions(ChatCompletionsConfig),
 }
 #[derive(Debug, Clone)]
 pub struct ModelMapping {

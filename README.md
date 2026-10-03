@@ -44,4 +44,4 @@ Mac mini 首个原生体验已有 [AppKit 源码](native/macos/main.swift) 与 [
 
 ## 独立 AI service 契约
 
-[AI service 设计与验收](docs/design/ai-service.md)是 2026-10-03 有界实现入口。`crates/velune-ai` 拥有两套服务契约，`crates/velune-ai-provider` 依赖它并定义 provider 配置；尚未提供执行 service 或网络 adapter，也未接入上述旧原型。本步只运行静态检查，不运行旧测试。
+[AI service 设计与验收](docs/design/ai-service.md)是 2026-10-03 有界实现入口。`crates/velune-ai` 拥有两套服务契约，`crates/velune-ai-provider` 依赖它并提供 MiniMax Chat Completions 流式 adapter。直接派发 service 与合成 live fixture／离线 replay 独立于上述旧原型；本步仅静态检查和获准手动验收，不运行旧测试。
