@@ -23,7 +23,7 @@ fn checked<T>(value: std::result::Result<T, impl std::fmt::Debug>) -> Result<T> 
 }
 fn input(case: &str) -> Result<SamplingInput> {
     let (prompt, tools, max) = match case {
-        "text" => ("Reply exactly: SYNTHETIC_OK", vec![], 64),
+        "text" | "text-diagnostic" => ("Reply exactly: SYNTHETIC_OK", vec![], 64),
         "tool" => (
             "Call the synthetic add_numbers function exactly once with a=2 and b=3. Do not calculate or explain; only return the function call.",
             vec![checked(ToolDefinition::new(
@@ -112,6 +112,12 @@ fn record_json(record: ProtocolRecord) -> Value {
         ProtocolRecord::Status(status) => json!({"kind":"status","status":status}),
         ProtocolRecord::Chunk(body) => json!({"kind":"chunk","body":body.get()}),
         ProtocolRecord::Done => json!({"kind":"done"}),
+        ProtocolRecord::StreamEnd {
+            classification,
+            framing,
+        } => {
+            json!({"kind":"stream_end","classification":format!("{classification:?}"),"framing":{"done_lines":framing.done_lines,"done_frames":framing.done_frames,"unfinished_data_frame":framing.unfinished_data_frame,"unfinished_line":framing.unfinished_line,"unfinished_line_is_done":framing.unfinished_line_is_done}})
+        }
     }
 }
 struct Replay {
@@ -209,13 +215,18 @@ async fn live(case: &str, source: &str) -> Result<()> {
     }
     checked(fs::create_dir_all(ROOT))?;
     let mut reserved_milli_cny = 900_u64; // historical 401: 800, prior auth: 100
-    for prior in ["text", "tool"] {
+    for prior in ["text", "text-diagnostic", "tool"] {
         let prior_path = format!("{ROOT}/{prior}.live.json");
         if std::path::Path::new(&prior_path).exists() {
             let old: Value = checked(serde_json::from_slice(&checked(fs::read(prior_path))?))?;
             reserved_milli_cny += 500; // never release on estimated cost
+            let approved_diagnostic_predecessor = prior == "text"
+                && case == "text-diagnostic"
+                && old["source_commit"] == "abd05a2cea3f0a7545005778c030bc78b5b9890f"
+                && old["mapped"]["outcome"]["kind"] == "Transport"
+                && old["mapped"]["outcome"]["execution"] == "Accepted";
             if old["admission"] != "completed"
-                || old["mapped"]["outcome"]["ok"] != true
+                || (old["mapped"]["outcome"]["ok"] != true && !approved_diagnostic_predecessor)
                 || old["mapped"]["usage"]["input_tokens"]["kind"] != "reported"
                 || old["mapped"]["usage"]["output_tokens"]["kind"] != "reported"
             {
@@ -232,7 +243,7 @@ async fn live(case: &str, source: &str) -> Result<()> {
     let path = format!("{ROOT}/{case}.live.json");
     let mut file = checked(OpenOptions::new().write(true).create_new(true).open(&path))?;
     let capture_time = checked(SystemTime::now().duration_since(UNIX_EPOCH))?.as_secs();
-    let mut fixture = json!({"schema":1,"source":"live","protocol":"minimax-chat-completions-sse","adapter_version":"0.1.0","requested_model":minimax::MODEL,"source_commit":source,"baseline_commit":"7c6f98267a56101d2117311adeaf10b50b01d8f2","capture_unix_seconds":capture_time,"case":case,"admission":"pending_unknown","budget":{"currency":"CNY","global_limit":5.0,"historical_401_usage":"unknown","historical_401_reserve":0.8,"prior_auth_tokens":{"input":165,"output":2},"prior_auth_reserve":0.1,"this_attempt_reserve":0.5,"reservation_total_after_admission_milli_cny":reserved_milli_cny+500,"standard_price_cny_per_million":{"input":2.1,"output":8.4},"reservation_rate_cny_per_million":{"input":8.4,"output":33.6},"input_token_allowance_estimated":8192,"output_token_bound":1024,"authorized_new_attempt_limit":8,"entry_point_live_attempt_limit":2,"maximum_reserved_by_this_entry":1.9},"redaction":{"mode":"allowlist-before-write","removed":["headers","cookies","credentials","response_id","created","system_fingerprint","raw_errors","unrecognized_field_values"],"retained":["synthetic_request","model","choices.index","delta.role","delta.content","delta.tool_calls","finish_reason","prompt_tokens","completion_tokens","total_tokens","usage_presence","unsupported_usage_presence","SSE_done"],"usage_unmapped":"additional fields represented by presence only; no invented zeros"}});
+    let mut fixture = json!({"schema":1,"source":"live","protocol":"minimax-chat-completions-sse","adapter_version":"0.1.0","requested_model":minimax::MODEL,"source_commit":source,"baseline_commit":"7c6f98267a56101d2117311adeaf10b50b01d8f2","capture_unix_seconds":capture_time,"case":case,"admission":"pending_unknown","budget":{"currency":"CNY","global_limit":5.0,"historical_401_usage":"unknown","historical_401_reserve":0.8,"prior_auth_tokens":{"input":165,"output":2},"prior_auth_reserve":0.1,"this_attempt_reserve":0.5,"reservation_total_after_admission_milli_cny":reserved_milli_cny+500,"standard_price_cny_per_million":{"input":2.1,"output":8.4},"reservation_rate_cny_per_million":{"input":8.4,"output":33.6},"input_token_allowance_estimated":8192,"output_token_bound":1024,"authorized_new_attempt_limit":8,"entry_point_live_attempt_limit":3,"maximum_reserved_by_this_entry":2.4},"redaction":{"mode":"allowlist-before-write","removed":["headers","cookies","credentials","response_id","created","system_fingerprint","raw_errors","unrecognized_field_values"],"retained":["synthetic_request","model","choices.index","delta.role","delta.content","delta.tool_calls","finish_reason","prompt_tokens","completion_tokens","total_tokens","usage_presence","unsupported_usage_presence","SSE_done"],"usage_unmapped":"additional fields represented by presence only; no invented zeros"}});
     checked(file.write_all(&checked(serde_json::to_vec_pretty(&fixture))?))?;
     checked(file.sync_all())?;
     drop(file);
@@ -267,7 +278,7 @@ async fn live(case: &str, source: &str) -> Result<()> {
     let provider = checked(MiniMax::new(
         config,
         client,
-        Payload::new(credential),
+        Payload::new(credential.clone()),
         Some(Arc::new(move |record| {
             sink.lock().expect("capture").push(record_json(record))
         })),
@@ -279,6 +290,9 @@ async fn live(case: &str, source: &str) -> Result<()> {
     fixture["mapped"] = result_json(&completion);
     fixture["events"] = json!(events);
     fixture["attempt"] = completion.attempt.as_ref().map(|a| json!({"context":context_json(&a.context),"execution":format!("{:?}",a.execution),"error":a.error.map(|e| format!("{e:?}")),"usage":usage_json(a.usage)})).unwrap_or(Value::Null);
+    if !minimax::fixture_is_safe(&fixture, &credential) {
+        return Err("capture rejected by credential reflection guard; reservation retained");
+    }
     write_json(&path, &fixture)?;
     println!(
         "{}",
@@ -328,7 +342,10 @@ async fn main() {
     let args: Vec<String> = std::env::args().collect();
     let result = match args.get(1).map(String::as_str) {
         Some("live") if args.len() == 4 => live(&args[2], &args[3]).await,
-        Some("replay") if args.len() == 3 && ["text", "tool"].contains(&args[2].as_str()) => {
+        Some("replay")
+            if args.len() == 3
+                && ["text", "text-diagnostic", "tool"].contains(&args[2].as_str()) =>
+        {
             replay(&args[2]).await
         }
         _ => Err("usage: minimax_manual live text|tool SOURCE_COMMIT | replay text|tool"),

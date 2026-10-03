@@ -1,13 +1,17 @@
 //! MiniMax Chat Completions adapter. All vendor JSON and SSE stay on this side of the contract.
 //! The app supplies the already-configured HTTP client and resolved in-memory credential.
+mod capture;
+mod framing;
+pub use capture::fixture_is_safe;
 mod mapping;
 use crate::config::{ProtocolConfig, ProviderConfig, Transport};
-use eventsource_stream::Eventsource;
+use eventsource_stream::{EventStreamError, Eventsource};
+pub use framing::FramingEvidence;
 use futures_util::StreamExt;
 pub use mapping::Decoder;
 use reqwest::{Client, header::HeaderValue};
 use serde_json::{Value, json};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use velune_ai::{InvalidContract, OperationFuture, Payload, provider::*, sampling::*};
 
 pub const ENDPOINT: &str = "https://api.minimax.cn/v1/chat/completions";
@@ -20,6 +24,22 @@ pub enum ProtocolRecord {
     Status(u16),
     Chunk(Payload<Value>),
     Done,
+    StreamEnd {
+        classification: StreamEnd,
+        framing: FramingEvidence,
+    },
+}
+#[derive(Debug, Clone, Copy)]
+pub enum StreamEnd {
+    DoneDecoded,
+    CleanEofWithoutDone,
+    Transport,
+    Timeout,
+    Body,
+    Decode,
+    SizeLimit,
+    SseParser,
+    Utf8,
 }
 pub type Capture = Arc<dyn Fn(ProtocolRecord) + Send + Sync>;
 
@@ -170,22 +190,53 @@ impl SamplingProvider for MiniMax {
                 );
             }
             // Bound the whole stream before SSE buffering, not just each completed event.
+            let observer = Arc::new(Mutex::new(framing::FramingObserver::default()));
+            let wire_observer = Arc::clone(&observer);
+            let record_end = |classification| {
+                if let Some(capture) = &capture {
+                    capture(ProtocolRecord::StreamEnd {
+                        classification,
+                        framing: observer.lock().expect("framing").evidence(),
+                    });
+                }
+            };
             let mut bytes = 0_usize;
             let body = response.bytes_stream().map(move |chunk| {
-                let chunk = chunk.map_err(|_| ())?;
+                let chunk = chunk.map_err(|e| {
+                    if e.is_timeout() {
+                        StreamEnd::Timeout
+                    } else if e.is_body() {
+                        StreamEnd::Body
+                    } else if e.is_decode() {
+                        StreamEnd::Decode
+                    } else {
+                        StreamEnd::Transport
+                    }
+                })?;
                 bytes = bytes.saturating_add(chunk.len());
                 if bytes > 262_144 {
-                    return Err(());
+                    return Err(StreamEnd::SizeLimit);
                 }
+                wire_observer.lock().expect("framing").push(&chunk);
                 Ok(chunk)
             });
             let mut stream = body.eventsource();
             while let Some(event) = stream.next().await {
                 let event = match event {
                     Ok(event) => event,
-                    Err(_) => {
+                    Err(error) => {
+                        let classification = match error {
+                            EventStreamError::Transport(kind) => kind,
+                            EventStreamError::Utf8(_) => StreamEnd::Utf8,
+                            EventStreamError::Parser(_) => StreamEnd::SseParser,
+                        };
+                        record_end(classification);
                         return decoder.failure(
-                            SamplingErrorKind::Transport,
+                            if matches!(classification, StreamEnd::Timeout) {
+                                SamplingErrorKind::Timeout
+                            } else {
+                                SamplingErrorKind::Transport
+                            },
                             ExecutionKnowledge::Accepted,
                             true,
                         );
@@ -202,6 +253,7 @@ impl SamplingProvider for MiniMax {
                     if let Some(capture) = &capture {
                         capture(ProtocolRecord::Done);
                     }
+                    record_end(StreamEnd::DoneDecoded);
                     return decoder.complete();
                 }
                 let raw: Value = match serde_json::from_str(&event.data) {
@@ -230,6 +282,7 @@ impl SamplingProvider for MiniMax {
                     return decoder.failure(kind, ExecutionKnowledge::Accepted, true);
                 }
             }
+            record_end(StreamEnd::CleanEofWithoutDone);
             // EOF without [DONE] is incomplete even if a finish marker was received.
             decoder.failure(
                 SamplingErrorKind::Transport,
