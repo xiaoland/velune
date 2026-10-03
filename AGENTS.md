@@ -45,3 +45,7 @@
 - 共享规则放本文件；机器绝对路径、工具安装和临时操作记录不进入共享知识
 - 文档编辑后检查相对链接和标题锚点，执行 `git diff --check`、`git diff --cached --check`，提交前核对 `git status`
 - 核心改动执行 cargo fmt --check、cargo check --locked、cargo test --locked；运行方式见 docs/development.md。不需要文档 CLI
+
+## 当前有界 AI service 工作
+
+2026-10-03 用户明确限定：仅独立 AI lib／provider 配置边界的模块、契约、构造校验与文档。不新增测试、不运行既有集成测试；本步用 cargo fmt/check/clippy 静态检查取代上文通用测试步骤。不得推进网络、凭据、路由／fallback／重试、旧 Host／UI 改造。权威设计见 docs/design/ai-service.md，任务见 tasks/ai-service-contracts/packet.md。允许该任务新开发分支普通 push，不改 main、不 force push、不创建 PR。

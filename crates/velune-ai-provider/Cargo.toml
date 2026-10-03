@@ -1,0 +1,8 @@
+[package]
+name = "velune-ai-provider"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+velune-ai = { path = "../velune-ai" }

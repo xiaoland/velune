@@ -100,3 +100,9 @@ Velune 是新的独立产品，已经停止继续推进 Factory26。Beluna 是�
 来源：[S11](../sources.md#s11)。先实现无 UI、无账号／费用的 Rust＋SQLite 核心，使用本地确定性模拟证明路由和跨 Harness 协作，模拟不得替代真实联调证据。
 
 开发需要持续形成 Codex Cloud 修改、Mac mini 编译安装、用户操作反馈、修复和复验的闭环。首个体验设备为 Mac mini，最小本机体验采用已获准 Swift＋AppKit 薄壳，长期 Apple UI 覆盖仍需另验；iPad／Android 后续先通过 LAN 连接 Mac Host，不提前推进这些 UI 或改动 WireGuard。源码版本、安装版本和操作步骤必须可关联；不默认上传用户代码、会话内容或秘密。本轮交付可复用核心、原生壳源码与本地构建脚本，不声称 Mac 编译安装已完成。
+
+## AI service 的有界实施方向
+
+2026-10-03 用户确认 AI service 为独立 lib、领域不限 LLM，sampling 是其中一项操作。service 拥有对调用方和 provider 的权威契约；provider 即 adapter，转换外部协议，协议库／SDK 只作为 provider 内部可替换依赖。provider 基本配置为协议配置、凭据引用、模型列表，不再新增账户／渠道实体。
+
+统一配置中心持久化，app main 装配；AI lib 不自行读全局配置／环境／文件或保存配置；一次已开始调用保持运行配置稳定。具体归属见 [AI service 设计](../design/ai-service.md)，决定来源见 [S13](../sources.md#s13)。本步只实现契约与校验，不改旧宿主；验收方案、真实接入与 fixture 准备独立记录，不把静态检查等同运行验收。

@@ -41,3 +41,7 @@ cargo run --locked -- inspect /tmp/velune-demo.sqlite
 完整构建、故障证据、Mac mini 原生体验接线及真实联调准备见 [开发说明](docs/development.md)。
 
 Mac mini 首个原生体验已有 [AppKit 源码](native/macos/main.swift) 与 [本机构建脚本](scripts/build-macos.sh)。独立 Rust Host 经私有 Unix socket 操作同一核心，界面退出不停止 Host；设备侧编译和用户验收仍待执行。
+
+## 独立 AI service 契约
+
+[AI service 设计与验收](docs/design/ai-service.md)是 2026-10-03 有界实现入口。`crates/velune-ai` 拥有两套服务契约，`crates/velune-ai-provider` 依赖它并定义 provider 配置；尚未提供执行 service 或网络 adapter，也未接入上述旧原型。本步只运行静态检查，不运行旧测试。

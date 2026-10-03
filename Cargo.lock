@@ -303,6 +303,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "accd4ea62f7bb7a82fe23066fb0957d48ef677f6eeb8215f372f52e48bb32426"
 
 [[package]]
+name = "velune-ai"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+]
+
+[[package]]
+name = "velune-ai-provider"
+version = "0.1.0"
+dependencies = [
+ "velune-ai",
+]
+
+[[package]]
 name = "velune-core"
 version = "0.1.0"
 dependencies = [

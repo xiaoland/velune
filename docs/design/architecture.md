@@ -2,6 +2,8 @@
 
 状态：**核心产品设计及 Rust／SQLite／原生 UI 方向已认可；细化方案待验证**。更新于 2026-10-02 UTC。首批 Codex、Claude Code、Pi 已由用户固定；本页负责收敛实现方案，不重新评选 Harness，也不表示产品已经实现。需求权威见 [PRD](../prd/index.md)，来源和版本见[研究证据](../../tasks/harness-routing-feasibility/evidence.md)。
 
+2026-10-03 范围修订：独立 AI service 的契约、provider 和配置归属以 [AI service 设计](ai-service.md) 为准。本页旧 Account／Slot 和 mock Router 方案不自动成为新 AI lib 的结构；旧 UI／Host 原型保留，本步不迁移。
+
 ## 1. 已认可方向与收敛方案
 
 做一个**本地优先的任务控制服务**，掌握任务树、会话身份、路由策略、权限、消息和恢复；下挂三个原生 Harness Adapter。LLM 路由采用“统一决策、分协议执行”：Codex 接 Responses 路径，Claude Code 接 Messages 路径，Pi 优先接原生逐请求路由钩子。订阅身份保持独立，使用各供应商允许的原生或正式集成路径；API 资源可由协议网关选择上游。

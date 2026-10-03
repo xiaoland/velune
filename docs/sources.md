@@ -87,3 +87,12 @@ Codex／Claude Code／Pi 的目标范围、LLM 路由与设备调度的区分、
 - 授权：Rust＋SQLite 核心、本地确定性模拟、代码／文档／测试、官方开发工具链及正常 registry 依赖、本地 Git 提交
 - 仍禁止：读取秘密、登录、真实模型／付费请求、未授权 push／PR／部署、Factory26、SVC CLI
 - 后续要求：Codex Cloud 持续开发 → Mac mini 原生安装体验 → 用户反馈 → 修复复验；Mac mini 首个目标，移动端后续 LAN 连接，不改 VPN。后续父会话报告 Mac 构建条件可用并获准 Swift＋AppKit 薄壳；06:43 UTC 用户明确要求先完成核心验证再接 UI，批准设备构建使用；不自动批准远端 push
+
+## S13
+
+- 来源：父会话 `01a0fb5e-ceba-778c-9e3d-6cbf22b340d8` 于 2026-10-03 转达的逐项讨论结果和有界实现委托；不伪造原始消息 ID
+- 已确认：AI service 是独立 lib，领域不限 LLM；sampling 是其操作；service 拥有调用方／provider 两套权威契约；provider 即 adapter，自行转换外部协议；service 不依赖具体 SDK
+- 配置：provider 为协议配置＋凭据引用＋模型列表，不增加账户／渠道实体；统一配置中心持久化，app main 装配；调用开始后配置稳定，新配置只影响后续调用
+- 范围：只模块／类型／构造校验／必要接口与文档；不做路由、fallback、重试、网络、真实凭据、Host/UI 改造或测试，只允许静态基础检查
+- 隔离：从已发布 `3bce5f9` 新 worktree／分支开始，保留暂停的 IPC／测试改动；允许新有界开发分支普通 push，不改 main、不强推、不创建 PR
+- 验收补充：用户指出仅实现不足以闭环，需要验收方案；随后提出真实 AI 接入并固定 fixture。provider／model、凭据位置和预算尚未答复，未授权猜测或提前访问秘密／调用。固定 fixture 不是无限新增测试框架授权

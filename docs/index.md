@@ -11,7 +11,11 @@
 
 - [多 Harness 路由与协作架构](design/architecture.md)：已认可产品方向及 Rust／SQLite／原生 UI 基线；具体协作机制、宿主／桥接推荐与验证边界
 
+- [AI service 契约与 provider 配置](design/ai-service.md)：2026-10-03 独立 lib 的权威归属、静态保护及验收边界
+
 ## 当前工作
+
+- [AI service 有界实现](../tasks/ai-service-contracts/packet.md)：隔离旧改动、契约审核、真实接入／fixture 待确认项
 
 - [Harness、LLM 路由与跨会话协作](../tasks/harness-routing-feasibility/packet.md)：无凭据核心已实现；真实 Harness 与设备体验待接线
 - [证据快照](../tasks/harness-routing-feasibility/evidence.md)：源版本、官方链接、事实与适用边界
