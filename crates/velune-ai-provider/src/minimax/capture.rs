@@ -3,7 +3,7 @@
 use serde_json::Value;
 use std::collections::BTreeMap;
 
-fn contains(value: &Value, credential: &str, depth: usize) -> bool {
+fn unsafe_or_undecodable(value: &Value, credential: &str, depth: usize) -> bool {
     if depth > 16 {
         return true;
     } // fail closed on pathological nested encodings
@@ -13,7 +13,8 @@ fn contains(value: &Value, credential: &str, depth: usize) -> bool {
                 return true;
             }
             // Tool argument strings contain embedded JSON, possibly incomplete on failure.
-            // Decode each quoted JSON string, including complete literals inside partial objects.
+            // Decode each quoted JSON string. Invalid escapes or an unfinished literal prevent
+            // a safe determination: reject the artifact instead of skipping or repairing it.
             let bytes = text.as_bytes();
             let mut start = None;
             let mut escaped = false;
@@ -24,9 +25,10 @@ fn contains(value: &Value, credential: &str, depth: usize) -> bool {
                     } else if *byte == b'\\' {
                         escaped = true;
                     } else if *byte == b'"' {
-                        if let Ok(decoded) = serde_json::from_str::<String>(&text[begin..=i])
-                            && contains(&Value::String(decoded), credential, depth + 1)
-                        {
+                        let Ok(decoded) = serde_json::from_str::<String>(&text[begin..=i]) else {
+                            return true;
+                        };
+                        if unsafe_or_undecodable(&Value::String(decoded), credential, depth + 1) {
                             return true;
                         }
                         start = None;
@@ -35,21 +37,17 @@ fn contains(value: &Value, credential: &str, depth: usize) -> bool {
                     start = Some(i);
                 }
             }
-            if let Some(begin) = start {
-                let mut literal = text[begin..].to_owned();
-                literal.push('"');
-                if let Ok(decoded) = serde_json::from_str::<String>(&literal)
-                    && contains(&Value::String(decoded), credential, depth + 1)
-                {
-                    return true;
-                }
+            if start.is_some() {
+                return true;
             }
             false
         }
-        Value::Array(values) => values.iter().any(|v| contains(v, credential, depth + 1)),
-        Value::Object(values) => values
+        Value::Array(values) => values
             .iter()
-            .any(|(k, v)| k.contains(credential) || contains(v, credential, depth + 1)),
+            .any(|v| unsafe_or_undecodable(v, credential, depth + 1)),
+        Value::Object(values) => values.iter().any(|(k, v)| {
+            k.contains(credential) || unsafe_or_undecodable(v, credential, depth + 1)
+        }),
         _ => false,
     }
 }
@@ -57,7 +55,7 @@ fn contains(value: &Value, credential: &str, depth: usize) -> bool {
 /// must stay in memory until this guard accepts the entire artifact. Service payload access is
 /// explicit; this is a capture guard, not a promise to redact all model content automatically.
 pub fn fixture_is_safe(fixture: &Value, credential: &str) -> bool {
-    if credential.is_empty() || contains(fixture, credential, 0) {
+    if credential.is_empty() || unsafe_or_undecodable(fixture, credential, 0) {
         return false;
     }
     let mut text = String::new();
@@ -84,8 +82,8 @@ pub fn fixture_is_safe(fixture: &Value, credential: &str) -> bool {
             }
         }
     }
-    !contains(&Value::String(text), credential, 0)
+    !unsafe_or_undecodable(&Value::String(text), credential, 0)
         && tools
             .into_values()
-            .all(|args| !contains(&Value::String(args), credential, 0))
+            .all(|args| !unsafe_or_undecodable(&Value::String(args), credential, 0))
 }

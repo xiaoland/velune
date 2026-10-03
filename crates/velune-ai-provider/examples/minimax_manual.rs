@@ -388,7 +388,20 @@ async fn live(case: &str, source: &str) -> Result<()> {
     fixture["events"] = json!(events);
     fixture["attempt"] = completion.attempt.as_ref().map(|a| json!({"context":context_json(&a.context),"execution":format!("{:?}",a.execution),"error":a.error.map(|e| format!("{e:?}")),"usage":usage_json(a.usage)})).unwrap_or(Value::Null);
     if !minimax::fixture_is_safe(&fixture, &credential) {
-        return Err("capture rejected by credential reflection guard; reservation retained");
+        // Persist fixed metadata and typed counts only. Never serialize the rejected fixture,
+        // its fragments, tool identities, decoded strings, or raw errors on this path.
+        write_json(
+            &path,
+            &json!({
+                "schema":1,"source":"live","case":case,"source_commit":source,
+                "capture_unix_seconds":capture_time,"admission":"capture_rejected",
+                "diagnostic":"content_unsafe_or_undecodable",
+                "actual_http_attempts":completion.call.attempts,
+                "provider_result":if completion.outcome.result.is_ok() { "completed" } else { "failed" },
+                "usage":usage_json(completion.outcome.usage),"budget":fixture["budget"]
+            }),
+        )?;
+        return Err("capture rejected: unsafe or undecodable content; reservation retained");
     }
     write_json(&path, &fixture)?;
     println!(

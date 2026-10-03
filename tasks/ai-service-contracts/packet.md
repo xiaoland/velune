@@ -42,7 +42,7 @@ source=live／replay 区分，capture 记录 protocol、model、source commit、
 
 只白名单捕获必要 JSON／SSE data，不保存 headers、cookies、响应个人标识、auth、raw errors 或完整网络包。callbacks 仅在内存缓冲；写文件前检查所有解码字符串、拼接文本、按 index 重组工具参数及其内嵌 JSON，拒绝凭据／占位回显，包括 JSON 转义与跨片段拼接。失败时不输出值／长度／hash，不格式化异常，也不写正文。已保存文件的禁用字段名检查无命中。
 
-此 guard 是已知注入值的内容检查，不声称识别代理端未知 raw secret、任意编码或恶意其他调用方。回显攻击变体未新增测试或真实请求；源码审核与正常 capture 经过 guard 不等于完整安全证明。Payload Debug 脱敏，观测无正文；显式访问和人工 fixture 仍属于授权内容面。
+此 guard 是已知注入值的内容检查，不声称识别代理端未知 raw secret、任意编码或恶意其他调用方。最终 review 指出 embedded JSON decode 失败曾被跳过；已改为失败或未闭合 literal 一律拒绝整个内容 capture。仅保存 capture_rejected、固定来源／预算元数据、typed usage／attempt 数，不保存事件、参数、身份或 raw error。临时手动合成标记核对见下；它不等于完整安全证明。Payload Debug 脱敏，观测无正文；显式访问和人工 fixture 仍属于授权内容面。
 
 没有隐藏 retry／redirect／fallback。partial／unknown usage 停止新派发并保留预留；本次已获明确继续诊断授权，只对两份特定历史源码的已知终止错误允许有界恢复，且工具 admission 先离线比对独立 diagnostic expected。不得删除 admission 重复计费采集。
 
@@ -79,3 +79,21 @@ cargo clippy --locked --offline -p velune-ai -p velune-ai-provider --lib --examp
 ## 剩余未验收
 
 并发热更新／凭据轮换；取消、drop／panic 后终态；真实断流／429／超时；多工具、参数多片段与交错；工具结果往返；usage 扩展字段无损映射；完整 replay 故障矩阵和秘密反射攻击矩阵；全局预算协调与账单；正式配置中心；三 Harness／其他 provider／Mac。到此停止扩展。
+
+
+## 最终 capture 边界复核
+
+只修 `capture.rs` 与 manual capture 拒绝分支，无新增真实请求；累计 attempts／费用账本不变。decode 失败不再静默 skip，未闭合 quoted literal 不再补引号后猜测可安全持久化。拒绝将 metadata-only admission 标为 capture_rejected，阻止后续派发并保留预留，不改变真实响应／旧 fixture。
+
+使用临时 Rust 程序直接调用现有 guard，只有合成标记 `abc`，不读环境或真实凭据、不联网、无断言 runner／测试框架、未加入仓库测试。人工观察输出：
+
+| 合成输入 | fixture_allowed |
+| --- | --- |
+| 完整无回显参数对象 | true |
+| Unicode 转义标记＋非法 escape | false |
+| Unicode 转义标记＋未完成 escape | false |
+| 跨参数片段的转义标记＋非法 escape | false |
+| 合法 JSON 中的 Unicode 转义标记 | false |
+| 无标记但未闭合的字符串 | false |
+
+最后一项是有意保守拒绝：无法安全判定的 partial 字符串不进入 fixture。静态 fmt/check/clippy 通过；已有 text、text-diagnostic、tool 均手动 replay 通过，source 数据／expected 未改写。更多编码、跨字段或攻击矩阵仍未验证。
