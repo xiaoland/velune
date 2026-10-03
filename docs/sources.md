@@ -96,3 +96,8 @@ Codex／Claude Code／Pi 的目标范围、LLM 路由与设备调度的区分、
 - 范围：只模块／类型／构造校验／必要接口与文档；不做路由、fallback、重试、网络、真实凭据、Host/UI 改造或测试，只允许静态基础检查
 - 隔离：从已发布 `3bce5f9` 新 worktree／分支开始，保留暂停的 IPC／测试改动；允许新有界开发分支普通 push，不改 main、不强推、不创建 PR
 - 验收补充：用户指出仅实现不足以闭环，需要验收方案；随后提出真实 AI 接入并固定 fixture。provider／model、凭据位置和预算尚未答复，未授权猜测或提前访问秘密／调用。固定 fixture 不是无限新增测试框架授权
+
+
+## S14
+
+2026-10-03，父会话 `01a0fb5e-ceba-778c-9e3d-6cbf22b340d8` 的有界委托：从 `7c6f98267a56101d2117311adeaf10b50b01d8f2` 实现 service 直接流式派发、MiniMax 普通 API adapter、合成 live fixture 与离线重复验收；预算总 ¥5，本步最多新增 8 attempts，先文本／工具各一次，工具只返回不执行。批准普通 push 新 dev 分支，禁止 tests／PR／main／force／部署／Host UI 改造／其他 provider。Networksecret 配置类型由用户配置页证据与平台占位契约确认，不输出／保存值。长期技术归属 [AI service](design/ai-service.md)，实际用量、失败和剩余验收项归属 [任务](../tasks/ai-service-contracts/packet.md)。

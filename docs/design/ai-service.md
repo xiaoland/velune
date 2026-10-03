@@ -1,6 +1,6 @@
 # AI service 的权威契约与 provider 边界
 
-状态：2026-10-03 有界 MiniMax 流式实现。service 是通用独立 lib，sampling 是其首个操作；不引入账户／渠道实体。授权与运行证据见 [任务](../../tasks/ai-service-contracts/packet.md)。旧 Host／UI／mock Router 未接线。
+状态：2026-10-03 有界 MiniMax 流式实现；文本终止契约存在未解决兼容缺口，工具真实验收未进行。service 是通用独立 lib，sampling 是其首个操作；不引入账户／渠道实体。授权与运行证据见 [任务](../../tasks/ai-service-contracts/packet.md)。旧 Host／UI／mock Router 未接线。
 
 ## 两套契约与依赖
 
@@ -28,7 +28,7 @@ ProviderBinding::prepare 捕获 Arc 与 revision；adapter 自身也持有 immut
 
 SamplingDelta 仅表达 Text、ToolIdentity、ToolArguments、Finish、Usage；service 统一包装 AttemptContext 与递增 sequence。工具 index 是 attempt 内流组装索引；ID／名称与参数片段分开传递。参数仅在完成时解析为 JSON object，工具调用只返回、不执行。sink 同步消费提供自然背压，不启后台任务或无界 channel；用户 sink 应短小且不 panic。
 
-Finish 是模型停止生成的原因，可能先于最后 usage；Terminal 表示整个操作结束。adapter 只有收到 `[DONE]` 且存在有效 finish／完整工具参数才成功。EOF、解析错误、unsupported delta、identity 冲突等返回 typed failure，保留已知 usage 与 PartialSamplingOutput；半截参数保持字符串，不伪造完成工具调用或 finish。output limit 且工具参数不完整仍失败并保留 partial。
+Finish 是模型停止生成的原因，可能先于最后 usage；Terminal 表示整个操作结束。当前 adapter 只有收到 `[DONE]` 且存在有效 finish／完整工具参数才成功。这是尚未验证的严格策略：真实文本样本有 finish／usage，但未解析到 DONE，因此失败；不能据此声称供应商必须发送 DONE，见任务的终止契约缺口。EOF、解析错误、unsupported delta、identity 冲突等返回 typed failure，保留已知 usage 与 PartialSamplingOutput；半截参数保持字符串，不伪造完成工具调用或 finish。output limit 且工具参数不完整仍失败并保留 partial。
 
 每个 usage 值独立 Unknown／Reported／Estimated，缺失不填零。当前 service 映射 prompt_tokens→input、completion_tokens→output；total_tokens 留 fixture，不当成另一个计费数量。其他 usage 扩展字段只记录存在性，未映射，不宣称无损覆盖缓存计量。
 

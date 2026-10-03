@@ -100,10 +100,9 @@ cargo fmt --all --check
 cargo check --locked --offline -p velune-ai -p velune-ai-provider --lib --example minimax_manual
 cargo clippy --locked --offline -p velune-ai -p velune-ai-provider --lib --example minimax_manual -- -D warnings
 cargo run --locked --offline -p velune-ai-provider --example minimax_manual -- replay text
-cargo run --locked --offline -p velune-ai-provider --example minimax_manual -- replay tool
 ```
 
-依赖尚未缓存时先允许 cargo 获取 Cargo.lock 固定包；`--offline` 只限制 cargo，不是操作系统网络隔离。replay 分支本身不构造网络 client 或读取凭据，输出 network_attempts=0。它比较独立审阅 expected，不执行模型或工具。重复运行同一命令核对相同事件／关联／分片／finish／usage。
+依赖尚未缓存时先允许 cargo 获取 Cargo.lock 固定包；`--offline` 只限制 cargo，不是操作系统网络隔离。replay 分支本身不构造网络 client 或读取凭据，输出 network_attempts=0。它比较独立审阅 expected，不执行模型或工具。重复运行同一命令核对相同事件／关联／分片／finish／usage。当前只有 text 失败样本可回放；tool fixture 尚未采集，不能运行 tool replay 作为验收。
 
 live 入口 `minimax_manual live text|tool SOURCE_COMMIT` 仅供已授权的两次采集，必须在固定仓库根目录、干净且已提交源码上人工运行。Cloud 通过 Networksecret 提供 MINIMAX_API_KEY 占位；无需也不得把值写到文件、命令行或聊天。已存在的 admission／fixture 禁止覆盖；不能删除 admission 来重复计费采集。live 不作为日常构建或 CI 步骤，不自动重试。新的采集范围另行授权。
 

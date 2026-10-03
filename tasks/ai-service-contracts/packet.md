@@ -4,7 +4,7 @@
 - 设计权威：[AI service](../../docs/design/ai-service.md)，用户追加授权优先于此前仅类型范围
 - 授权：最小直接派发 service、MiniMax adapter、合成文本／工具流真实 fixture、手动离线重复回放；普通 push 新 dev 分支
 - 排除：新测试／框架、cargo test、路由／fallback 算法、Ark／Bailian、Host／UI／Mac／部署、PR／main／force
-- 状态：实现及静态检查进行中；尚未采集本步 live fixture，不把预期当运行结果
+- 状态：实现已提交；静态检查通过。文本 live 返回 200／finish／usage，但未解析到 DONE，当前映射按 partial Transport 终止；失败样本离线重复验收通过。工具 live 未执行，完整目标未验收。
 
 ## 网络与预算
 
@@ -24,3 +24,37 @@ create_new admission 在 dispatch 前保存；旧 admission pending／失败／�
 - 不新增或运行自动化测试；静态 fmt/check/clippy 与人工 live/replay 分开记录。
 
 仓库及工作区未发现适用 SKILL.md，不引入其他工作流。共享机器绝对路径不进入规范。
+
+
+## 实际证据（2026-10-03 UTC）
+
+采集源码 commit：`abd05a2cea3f0a7545005778c030bc78b5b9890f`，基于指定基线；采集时工作树干净。此后仅修正 replay 对 source HTTP 200 的 execution knowledge 保留，未改写 live 文件。
+
+| 项目 | 实际结果 |
+| --- | --- |
+| 静态 | Rust 1.99.0；fmt/check/clippy（两个 lib＋manual example）通过；没有 cargo test／测试框架 |
+| 文本 live | 本轮新增 1 HTTP attempt，200；模型报告 MiniMax-M3；片段 `S`、`YNTHETIC_OK`；finish stop；usage 171 input／7 output／178 total |
+| 终态 | 未解析到 DONE；Transport、Accepted、partial text=SYNTHETIC_OK；不是成功 sampling 验收 |
+| 独立 expected | 人工从五个 retained chunks 审阅：2 text＋finish＋usage＋terminal，共 5 service events；未由 Decoder 自动生成 expected |
+| 离线 repeat | replay text 连续两次一致；每次 network_attempts=0、credential_reads=0；失败／partial 与 reported usage 原样重现 |
+| 工具 live／replay | 未执行；触发 partial 停止条件后没有继续计费采集，不以手写工具样例冒充真实 fixture |
+
+文件：[live](../../fixtures/ai/minimax-m3/text.live.json)、[expected](../../fixtures/ai/minimax-m3/text.expected.json)。capture_unix_seconds 记录真实采集时钟，协议／requested model／响应 model／source commit／revision／call／attempt／脱敏规则／source usage presence 均保留。额外 usage 字段存在但未映射，其值未捕获。
+
+### 明确阻塞与安全接续
+
+当前 adapter 假设必须有 SSE `[DONE]` 才完成；官方 MiniMax 文档确认 streaming／finish／usage 参数，但本轮没有找到必须发送该哨兵的明确承诺。现有白名单采集只记录完成的 SSE data events，未区分 `EventStream` 错误与 clean EOF，也不保存未派发尾帧。因此**不能据此认定供应商断流，也不能据内容完整就伪造成功**。
+
+后续需要先增加无敏感值的 EOF／typed parser/transport 分类观测，并核对 MiniMax 的实际终止契约；不得靠添加 DONE 到 fixture 或放宽成任意 EOF 成功来消除失败。工具分片／ID／参数组装有代码与静态证据，尚无真实工具 fixture 或运行验收。采集停止后未重试、未 fallback、未追加模型调用。
+
+### 费用账本
+
+按官方当前标准价、不扣缓存折扣的估算：
+
+- 先前认证 165 input＋2 output：¥0.0003633（usage 已报告，金额 Estimated）
+- 本次文本 171 input＋7 output：¥0.0004179（usage 已报告，金额 Estimated）
+- 已知两次合计 336 input＋9 output：¥0.0007812
+- 历史 literal-name 401：usage／实际扣费仍 Unknown，未归零
+- 当前保守占用：历史 ¥0.80＋认证 ¥0.10＋文本 ¥0.50 = ¥1.40；总上限 ¥5。此为人工预留账本，不是已查询账单或精确剩余额度。
+
+本轮新增 attempt=1；跨已知历史共 3 次（401、认证成功、文本流）。工具 0，Ark 0，Bailian 0。没有查询余额／账单／模型列表，未购买额度。

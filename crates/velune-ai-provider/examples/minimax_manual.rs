@@ -161,7 +161,11 @@ impl SamplingProvider for Replay {
             } else {
                 decoder.failure(
                     SamplingErrorKind::Transport,
-                    ExecutionKnowledge::NotSent,
+                    if status_seen {
+                        ExecutionKnowledge::Accepted
+                    } else {
+                        ExecutionKnowledge::NotSent
+                    },
                     false,
                 )
             };
