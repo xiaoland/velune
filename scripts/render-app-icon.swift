@@ -54,11 +54,22 @@ for points in [16, 32, 128, 256, 512] {
         NSGraphicsContext.saveGraphicsState(); NSGraphicsContext.current = context
         context.cgContext.setShouldAntialias(true)
         let dimension = CGFloat(size)
+        // Legacy ICNS artwork is optically sized inside the square canvas. The
+        // system's app icons leave roughly 100 px on each side of a 1024 px
+        // master (824 px artwork). Tiny raster slots need a little less
+        // padding to remain legible; this follows the same 16/32 px rule used
+        // by the existing Mac icon production path in shengling.
+        let insetRatio: CGFloat = size <= 32 ? 0.0625 : 0.09765625
+        let tileSize = dimension * (1 - insetRatio * 2)
+        let tileInset = dimension * insetRatio
         NSColor(srgbRed: 0.97, green: 0.97, blue: 0.985, alpha: 1).setFill()
-        NSBezierPath(roundedRect: NSRect(x: dimension * 0.035, y: dimension * 0.035, width: dimension * 0.93, height: dimension * 0.93), xRadius: dimension * 0.21, yRadius: dimension * 0.21).fill()
-        let margin = dimension * 0.10
-        context.cgContext.translateBy(x: margin, y: dimension - margin)
-        context.cgContext.scaleBy(x: (dimension - margin * 2) / 1024, y: -(dimension - margin * 2) / 1024)
+        NSBezierPath(roundedRect: NSRect(x: tileInset, y: tileInset, width: tileSize, height: tileSize), xRadius: tileSize * (0.21 / 0.93), yRadius: tileSize * (0.21 / 0.93)).fill()
+        // Keep the mark's size and offset proportional to the former 93% tile
+        // and 80% logo composition while shrinking the legacy ICNS tile.
+        let logoMargin = tileInset + tileSize * ((0.10 - 0.035) / 0.93)
+        let logoSide = tileSize * (0.80 / 0.93)
+        context.cgContext.translateBy(x: logoMargin, y: dimension - logoMargin)
+        context.cgContext.scaleBy(x: logoSide / 1024, y: -(logoSide / 1024))
         for (data, fill) in reader.paths {
             guard let hex = UInt32(fill.dropFirst(), radix: 16) else { fatalError("Invalid logo color") }
             NSColor(srgbRed: CGFloat((hex >> 16) & 255) / 255, green: CGFloat((hex >> 8) & 255) / 255, blue: CGFloat(hex & 255) / 255, alpha: 1).setFill()
