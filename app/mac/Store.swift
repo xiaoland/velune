@@ -2,26 +2,7 @@ import Combine
 import Foundation
 import AppKit
 import Security
-
-private struct ListData: Decodable, Sendable {
-    var conversations: [Conversation]
-    var connections: [Connection]
-    var gateways: [GatewayConfig]
-    var runtimeInstances: [RuntimeInstance]
-    var runtimeTypes: [RuntimeTypeDescriptor]
-    var protocols: [ProtocolDescriptor]?
-    var credentialSourceTypes: [CredentialSourceType]?
-    var providerImportTypes: [RuntimeTypeDescriptor]?
-    var runtimeInstanceID: String?
-    enum CodingKeys: String, CodingKey {
-        case conversations, connections, gateways, runtimeInstances, runtimeTypes, protocols, credentialSourceTypes, providerImportTypes
-        case runtimeInstanceID = "activeRuntimeInstanceID"
-    }
-}
-private struct SnapshotData: Decodable, Sendable { var snapshot: ConversationSnapshot? }
-private struct GatewayData: Decodable, Sendable { var gateways: [GatewayConfig]; var requiresReconnect: Bool? }
-private struct RuntimeData: Decodable, Sendable { var runtimeInstances: [RuntimeInstance]; var runtimeTypes: [RuntimeTypeDescriptor]; var requiresReconnect: Bool? }
-private struct ConnectData: Decodable, Sendable { var connections: [Connection]; var runtimeInstanceID: String? }
+import VeluneBindings
 
 @MainActor
 final class AppStore: ObservableObject {
@@ -108,8 +89,8 @@ final class AppStore: ObservableObject {
         }
     }
     func start() {
-        guard !isPreview, transport != nil else { return }
-        request("list", as: ListData.self) { [weak self] data in
+        guard !isPreview, let transport else { return }
+        enqueue({ try transport.list() }) { [weak self] data in
             guard let self else { return }
             applyList(data)
             schedulePolling()
@@ -120,7 +101,8 @@ final class AppStore: ObservableObject {
         guard !isLoading, !isGenerating, conversations.contains(where: { $0.id == id }) else { return }
         generation += 1; selectedConversationID = id; snapshot = nil; messages = []
         if isPreview { apply(previewSnapshots[id]); return }
-        request("open", payload: ["conversationID": id], as: SnapshotData.self) { [weak self] in self?.apply($0.snapshot) }
+        guard let transport, let runtimeID = selectedConnectionID else { error = "请先连接运行时"; return }
+        enqueue({ try transport.openConversation(runtimeID: runtimeID, conversationID: id) }) { [weak self] in self?.applySnapshotResult($0) }
     }
     func createConversation(cwd: String? = nil) {
         guard !isLoading, !isGenerating else { return }
@@ -143,17 +125,23 @@ final class AppStore: ObservableObject {
             return
         }
         guard let cwd, !cwd.isEmpty else { error = "新会话需要选择工作目录"; return }
-        request("create", payload: ["cwd": cwd], as: SnapshotData.self) { [weak self] in self?.apply($0.snapshot) }
+        guard let runtimeID = selectedConnectionID else { error = "请先连接运行时"; return }
+        guard let transport else { error = "本地核心未配置"; return }
+        enqueue({ try transport.createConversation(runtimeID: runtimeID, cwd: cwd) }) { [weak self] in self?.applySnapshotResult($0) }
     }
     func send(text: String, onAccepted: (() -> Void)? = nil) {
         guard canSend, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         if isPreview { snapshot?.messages.append(Message(id: UUID().uuidString, role: "user", blocks: [.text(text)])); apply(snapshot); onAccepted?(); return }
-        request("send", payload: ["text": text], as: SnapshotData.self, onAccepted: onAccepted) { [weak self] in self?.apply($0.snapshot) }
+        guard let runtimeID = selectedConnectionID else { error = "请先连接运行时"; return }
+        guard let transport else { error = "本地核心未配置"; return }
+        enqueue({ try transport.send(runtimeID: runtimeID, text: text) }, onAccepted: onAccepted) { [weak self] in self?.applySnapshotResult($0) }
     }
     func cancel() {
         guard canCancel, !isLoading else { return }
         if isPreview { snapshot?.runState = .idle; snapshot?.actions.canCancel = false; apply(snapshot); return }
-        request("cancel", as: SnapshotData.self) { [weak self] in self?.apply($0.snapshot) }
+        guard let runtimeID = selectedConnectionID else { error = "请先连接运行时"; return }
+        guard let transport else { error = "本地核心未配置"; return }
+        enqueue({ try transport.cancel(runtimeID: runtimeID) }) { [weak self] in self?.applySnapshotResult($0) }
     }
     func saveModel(_ model: AIModel, onSaved: (() -> Void)? = nil) {
         var config = gateway; config.models.removeAll { $0.id == model.id }; config.models.append(model)
@@ -186,53 +174,52 @@ final class AppStore: ObservableObject {
     }
     func inspectAuthentication(_ source: CredentialSource, apply: @escaping (AuthenticationMetadata) -> Void) {
         guard !isPreview else { error = "预览不会读取认证来源"; return }
-        do { request("authentication", payload: ["operation": "inspect", "source": try json(source)], as: AuthenticationInspection.self) { apply($0.metadata) } }
-        catch { self.error = error.localizedDescription }
+        guard let transport else { error = "本地核心未配置"; return }
+        enqueue({ try transport.authenticationInspect(source: BindingMapping.bindingSource(source)) }) { value in apply(BindingMapping.authenticationMetadata(value)) }
     }
     func previewProviderImport(_ source: ProviderImportSource, completion: @escaping (ProviderImportPreview) -> Void) {
         guard !isPreview, !isGenerating, !authenticationRunning else { error = "请先停止任务或完成登录，再读取提供商配置"; return }
-        do {
-            request("providerImport", payload: ["operation": "preview", "gatewayID": gateway.id, "source": try json(source)], as: ProviderImportPreviewData.self) { completion($0.preview) }
-        } catch { self.error = error.localizedDescription }
+        guard let transport else { error = "本地核心未配置"; return }
+        enqueue({ try transport.providerImportPreview(gatewayID: self.gateway.id, source: BindingMapping.bindingImportSource(source)) }) { completion(BindingMapping.importPreview($0).preview) }
     }
     func applyProviderImport(_ source: ProviderImportSource, preview: ProviderImportPreview, selections: [ProviderImportSelection], replaceExisting: Bool, completion: @escaping () -> Void) {
         guard !isPreview, !isGenerating, !authenticationRunning else { error = "请先停止任务或完成登录，再导入提供商配置"; return }
-        do {
-            request("providerImport", payload: ["operation": "apply", "gatewayID": gateway.id, "source": try json(source), "previewToken": preview.token, "selections": try json(selections), "replaceExisting": replaceExisting ? "true" : "false"], as: ProviderImportResult.self) { [weak self] data in
+        guard let transport else { error = "本地核心未配置"; return }
+        enqueue({ try transport.providerImportApply(gatewayID: self.gateway.id, source: BindingMapping.bindingImportSource(source), previewToken: preview.token, selections: selections.map(BindingMapping.bindingSelection), replaceExisting: replaceExisting) }) { [weak self] data in
                 guard let self else { return }
-                if let saved = data.gateways.first(where: { $0.id == self.gateway.id }) { self.gateway = saved; self.hasGateway = true }
+                if let saved = data.gateways.first(where: { $0.id == self.gateway.id }) { self.gateway = BindingMapping.gateway(saved); self.hasGateway = true }
                 if data.requiresReconnect { invalidateConnection() }
                 completion()
             }
-        } catch { self.error = error.localizedDescription }
     }
     func startAuthentication(_ source: CredentialSource) {
         guard !isGenerating else { error = "请先停止当前任务，再开始登录"; return }
         guard !isPreview else { error = "预览不会启动认证"; return }
-        do {
-            request("authentication", payload: ["operation": "start", "source": try json(source)], as: AuthenticationData.self) { [weak self] data in
+        guard let transport else { error = "本地核心未配置"; return }
+        enqueue({ try transport.authenticationStart(source: BindingMapping.bindingSource(source)) }) { [weak self] data in
                 guard let self else { return }
                 authenticationPrompt = nil; authenticationNotifications = []; authenticationResult = nil
-                showsAuthentication = true; applyAuthentication(data)
+                showsAuthentication = true; applyAuthentication(BindingMapping.authenticationProgress(data))
             }
-        } catch { self.error = error.localizedDescription }
     }
     func answerAuthentication(id: String, value: String) {
-        request("authentication", payload: ["operation": "reply", "id": id, "value": value], as: AuthenticationData.self) { [weak self] in self?.authenticationPrompt = nil; self?.applyAuthentication($0) }
+        guard let transport else { error = "本地核心未配置"; return }
+        enqueue({ try transport.authenticationReply(promptID: id, value: value) }) { [weak self] in self?.authenticationPrompt = nil; self?.applyAuthentication(BindingMapping.authenticationProgress($0)) }
     }
     func cancelAuthentication() {
-        request("authentication", payload: ["operation": "cancel"], as: AuthenticationData.self) { [weak self] in self?.applyAuthentication($0) }
+        guard let transport else { error = "本地核心未配置"; return }
+        enqueue({ try transport.authenticationCancel() }) { [weak self] in self?.applyAuthentication(BindingMapping.authenticationProgress($0)) }
     }
     private func pollAuthentication() {
         guard authenticationRunning, !authenticationPollPending, !isShuttingDown, let transport else { return }
         authenticationPollPending = true
         queue.async { [weak self] in
-            let result = Result { try transport.request("authentication", payload: ["operation": "poll"], as: AuthenticationData.self) }
+            let result = Result { try transport.authenticationPoll() }
             DispatchQueue.main.async {
                 guard let self else { return }
                 self.authenticationPollPending = false
                 switch result {
-                case .success(let data): self.applyAuthentication(data)
+                case .success(let data): self.applyAuthentication(BindingMapping.authenticationProgress(data))
                 case .failure(let failure): self.error = failure.localizedDescription
                 }
             }
@@ -266,31 +253,29 @@ final class AppStore: ObservableObject {
     func saveGateway(_ config: GatewayConfig, onSaved: (() -> Void)? = nil) {
         guard !isGenerating else { error = "请先停止当前任务，再修改 AI 服务配置"; return }
         if isPreview { gateway = config; hasGateway = true; onSaved?(); return }
-        do {
-            request("gateways", payload: ["operation": "upsert", "gateway": try json(config)], as: GatewayData.self) { [weak self] data in
-                guard let self else { return }
-                if let saved = data.gateways.first(where: { $0.id == config.id }) {
-                    gateway = saved; hasGateway = true
-                    if data.requiresReconnect == true { invalidateConnection() }
-                    onSaved?()
-                }
-                else { error = "核心未返回保存后的网关配置" }
+        guard let transport else { error = "本地核心未配置"; return }
+        enqueue({ try transport.upsertGateway(BindingMapping.bindingGateway(config)) }) { [weak self] data in
+            guard let self else { return }
+            if let saved = data.gateways.first(where: { $0.id == config.id }) {
+                gateway = BindingMapping.gateway(saved); hasGateway = true
+                if data.requiresReconnect { invalidateConnection() }
+                onSaved?()
             }
-        } catch { self.error = error.localizedDescription }
+            else { error = "核心未返回保存后的网关配置" }
+        }
     }
     func saveRuntimeInstance(_ instance: RuntimeInstance, onSaved: (() -> Void)? = nil) {
         guard !isGenerating else { error = "请先停止当前任务，再修改运行时实例"; return }
         if isPreview { runtimeInstances.removeAll { $0.id == instance.id }; runtimeInstances.append(instance); onSaved?(); return }
         if !hasGateway { saveGateway(gateway) { [weak self] in self?.saveRuntimeInstance(instance, onSaved: onSaved) }; return }
-        do {
-            request("runtimeInstances", payload: ["operation": "upsert", "runtimeInstance": try json(instance)], as: RuntimeData.self) { [weak self] data in
-                guard let self else { return }
-                runtimeInstances = data.runtimeInstances; runtimeTypes = data.runtimeTypes
-                if data.requiresReconnect == true { invalidateConnection() }
-                if data.runtimeInstances.contains(where: { $0.id == instance.id }) { onSaved?() }
-                else { error = "核心未返回保存后的运行时实例" }
-            }
-        } catch { self.error = error.localizedDescription }
+        guard let transport else { error = "本地核心未配置"; return }
+        enqueue({ try transport.upsertRuntime(BindingMapping.bindingRuntime(instance)) }) { [weak self] data in
+            guard let self else { return }
+            runtimeInstances = data.runtimeInstances.map(BindingMapping.runtime); runtimeTypes = data.runtimeTypes.map(BindingMapping.runtimeType)
+            if data.requiresReconnect { invalidateConnection() }
+            if data.runtimeInstances.contains(where: { $0.id == instance.id }) { onSaved?() }
+            else { error = "核心未返回保存后的运行时实例" }
+        }
     }
     func deleteRuntimeInstance(id: String) {
         if isPreview {
@@ -298,50 +283,57 @@ final class AppStore: ObservableObject {
             if selectedConnectionID == id { resetProjection(); selectedConnectionID = nil; connections.removeAll { $0.id == id } }
             return
         }
-        request("runtimeInstances", payload: ["operation": "delete", "runtimeInstanceID": id], as: RuntimeData.self) { [weak self] data in
-            self?.runtimeInstances = data.runtimeInstances; self?.runtimeTypes = data.runtimeTypes
-            if data.requiresReconnect == true { self?.invalidateConnection() }
+        guard let transport else { error = "本地核心未配置"; return }
+        enqueue({ try transport.deleteRuntime(id: id) }) { [weak self] data in
+            self?.runtimeInstances = data.runtimeInstances.map(BindingMapping.runtime); self?.runtimeTypes = data.runtimeTypes.map(BindingMapping.runtimeType)
+            if data.requiresReconnect { self?.invalidateConnection() }
         }
     }
     func selectModel(modelID: String) {
         guard !isLoading, !isGenerating, models.contains(where: { $0.id == modelID }) else { return }
         if isPreview { snapshot?.modelID = modelID; apply(snapshot); return }
         guard let runtimeID = selectedConnectionID else { error = "请先选择运行时实例"; return }
-        request("selectModel", payload: ["runtimeInstanceID": runtimeID, "modelID": modelID], as: SnapshotData.self) { [weak self] in self?.apply($0.snapshot) }
+        guard let transport else { error = "本地核心未配置"; return }
+        enqueue({ try transport.selectModel(runtimeID: runtimeID, modelID: modelID) }) { [weak self] in self?.applySnapshotResult($0) }
     }
     func selectConnection(id: String) {
         guard !isLoading, !isGenerating else { return }
         if isPreview { selectedConnectionID = id; return }
-        request("connect", payload: ["runtimeInstanceID": id], as: ConnectData.self) { [weak self] in
-            self?.resetProjection(); self?.selectedConnectionID = $0.runtimeInstanceID ?? id; self?.connections = $0.connections
+        guard let transport else { error = "本地核心未配置"; return }
+        enqueue({ try transport.connectRuntime(id: id) }) { [weak self] in
+            self?.resetProjection(); self?.selectedConnectionID = $0.runtimeInstanceId ?? id; self?.connections = $0.connections.map { Connection(id: $0.id, name: $0.name, state: $0.state, capabilities: $0.capabilities) }
             self?.loadConversations()
         }
     }
     func performRuntimeAction(instanceID: String, actionID: String) {
         guard !isLoading, !isGenerating else { return }
         if isPreview { selectedConnectionID = instanceID; return }
-        request("runtimeAction", payload: ["runtimeInstanceID": instanceID, "actionID": actionID], as: ConnectData.self) { [weak self] data in
-            self?.resetProjection(); self?.selectedConnectionID = data.runtimeInstanceID ?? instanceID
-            self?.connections = data.connections
+        guard actionID == "connect", let transport else { error = "此运行时动作暂不支持"; return }
+        enqueue({ try transport.connectRuntime(id: instanceID) }) { [weak self] data in
+            self?.resetProjection(); self?.selectedConnectionID = data.runtimeInstanceId ?? instanceID
+            self?.connections = data.connections.map { Connection(id: $0.id, name: $0.name, state: $0.state, capabilities: $0.capabilities) }
             if !data.connections.isEmpty { self?.loadConversations() }
         }
     }
     private func invalidateConnection() {
         resetProjection(); connections = []; selectedConnectionID = nil
-        request("list", as: ListData.self) { [weak self] in self?.applyList($0) }
+        guard let transport else { error = "本地核心未配置"; return }
+        enqueue({ try transport.list() }) { [weak self] in self?.applyList($0) }
     }
     private func resetProjection() { generation += 1; snapshot = nil; selectedConversationID = nil; messages = []; activity = nil }
-    private func applyList(_ data: ListData) {
-        conversations = data.conversations; connections = data.connections
-        if let saved = data.gateways.first(where: { $0.id == gateway.id }) ?? data.gateways.first { gateway = saved; hasGateway = true }
-        runtimeInstances = data.runtimeInstances; runtimeTypes = data.runtimeTypes
-        protocols = data.protocols ?? []
-        credentialSourceTypes = data.credentialSourceTypes ?? []
-        providerImportTypes = data.providerImportTypes ?? []
-        selectedConnectionID = data.runtimeInstanceID
+    private func applyList(_ data: BindingConfigurationSnapshot) {
+        let mapped = BindingMapping.configuration(data)
+        conversations = mapped.conversations; connections = mapped.connections
+        if let saved = mapped.gateways.first(where: { $0.id == gateway.id }) ?? mapped.gateways.first { gateway = saved; hasGateway = true }
+        runtimeInstances = mapped.runtimes; runtimeTypes = mapped.runtimeTypes
+        protocols = mapped.protocols
+        credentialSourceTypes = mapped.credentialTypes.map { CredentialSourceType(id: $0.id, name: $0.name, fields: $0.fields, actions: $0.actions) }
+        providerImportTypes = mapped.importTypes
+        selectedConnectionID = mapped.activeRuntimeID
     }
     private func loadConversations() {
-        request("list", as: ListData.self) { [weak self] data in
+        guard let transport else { error = "本地核心未配置"; return }
+        enqueue({ try transport.list() }) { [weak self] data in
             guard let self else { return }
             applyList(data)
             if let id = conversations.first?.id { selectConversation(id: id) }
@@ -356,35 +348,34 @@ final class AppStore: ObservableObject {
         activity = value.runState == .running ? "正在思考与执行" : value.runState == .stopping ? "正在停止" : nil
         if isPreview { previewSnapshots[value.conversation.id] = value }
     }
+    private func applySnapshotResult(_ value: BindingSnapshotResult) {
+        apply(value.snapshot.map(BindingMapping.snapshot))
+    }
     private func poll() {
         guard !isPreview, !isShuttingDown, snapshot != nil, !isLoading, !pollPending, let transport, let runtimeID = selectedConnectionID else { return }
         let revision = generation
         let selected = selectedConversationID
         pollPending = true
         queue.async { [weak self] in
-            let result = Result { try transport.request("getSnapshot", payload: ["runtimeInstanceID": runtimeID], as: SnapshotData.self) }
+            let result = Result { try transport.snapshot(runtimeID: runtimeID) }
             DispatchQueue.main.async {
                 guard let self else { return }
                 self.pollPending = false
                 guard self.generation == revision, self.selectedConversationID == selected else { return }
                 switch result {
-                case .success(let data): self.apply(data.snapshot)
+                case .success(let data): self.apply(data.snapshot.map(BindingMapping.snapshot))
                 case .failure(let failure): self.error = failure.localizedDescription
                 }
             }
         }
     }
-    private func request<T: Decodable & Sendable>(_ action: String, payload: [String: String] = [:], as type: T.Type, onAccepted: (() -> Void)? = nil, apply: @escaping (T) -> Void) {
+    private func enqueue<T: Sendable>(_ operation: @escaping () throws -> T, onAccepted: (() -> Void)? = nil, apply: @escaping (T) -> Void) {
         guard !isLoading, !isShuttingDown else { error = "请等待当前操作完成后重试"; return }
-        guard !authenticationRunning || ["authentication", "list", "getSnapshot"].contains(action) else { error = "请先完成或取消登录"; return }
-        guard let transport else { error = "本地核心未配置"; return }
+        guard transport != nil else { error = "本地核心未配置"; return }
         let revision = generation
-        var scopedPayload = payload
-        if scopedPayload["runtimeInstanceID"] == nil, let runtimeID = selectedConnectionID { scopedPayload["runtimeInstanceID"] = runtimeID }
-        let requestPayload = scopedPayload
         isLoading = true; error = nil
         queue.async { [weak self] in
-            let result = Result { try transport.request(action, payload: requestPayload, as: type) }
+            let result = Result { try operation() }
             DispatchQueue.main.async {
                 guard let self else { return }
                 self.isLoading = false
@@ -395,9 +386,6 @@ final class AppStore: ObservableObject {
                 }
             }
         }
-    }
-    private func json<T: Encodable>(_ value: T) throws -> String {
-        String(decoding: try JSONEncoder().encode(value), as: UTF8.self)
     }
     private func storeCredential(_ secret: String, reference: String) throws {
         let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: "local.velune.provider", kSecAttrAccount as String: reference]

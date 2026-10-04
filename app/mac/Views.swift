@@ -342,7 +342,7 @@ struct ProviderEditor: View {
     private func commit() {
         guard valid, let protocolID else { return }
         let source = draftSource
-        let value = AIProvider(id: provider?.id ?? draftID, name: name.trimmingCharacters(in: .whitespacesAndNewlines), protocolID: protocolID, endpoint: endpoint.trimmingCharacters(in: .whitespacesAndNewlines), credentialRef: source == nil && !credentialRef.isEmpty ? credentialRef : nil, models: bindings.keys.sorted().map { id in let external = bindings[id]!.trimmingCharacters(in: .whitespacesAndNewlines); let existing = provider?.models.first { $0.modelID == id && $0.externalModelID == external }; return ProviderModelBinding(modelID: id, externalModelID: external, metadata: existing?.metadata ?? [:]) }, credentialSource: source, credentialGeneration: provider?.credentialGeneration)
+        let value = AIProvider(id: provider?.id ?? draftID, name: name.trimmingCharacters(in: .whitespacesAndNewlines), protocolID: protocolID, endpoint: endpoint.trimmingCharacters(in: .whitespacesAndNewlines), credentialRef: source == nil && !credentialRef.isEmpty ? credentialRef : nil, models: bindings.keys.sorted().map { id in let external = bindings[id]!.trimmingCharacters(in: .whitespacesAndNewlines); let existing = provider?.models.first { $0.modelID == id && $0.externalModelID == external }; return ProviderModelBinding(modelID: id, externalModelID: external, adapterMetadataJSON: existing?.adapterMetadataJSON) }, credentialSource: source, credentialGeneration: provider?.credentialGeneration)
         save(value, source == nil ? secret : "") { secret = ""; dismiss() }
     }
 }

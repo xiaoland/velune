@@ -118,17 +118,15 @@ Harness 与 AI 服务保持独立；读取 Harness 提供商配置属于装配�
 
 此切片中，Pi 拥有会话历史和持久化，Velune 只投影其会话与运行状态，不新增自己的会话持久化。资源在应用中配置；本轮不把三家资源的例子固定为产品模型或预设可用性。真实操作与验收由用户完成，开发方负责实现、构建及隔离验证，不替用户登录或调用真实模型。此边界限定当前 Pi 切片，不将既有模拟数据库当作真实会话权威。来源见 [S15](../sources.md#s15)，执行状态见 [任务](../../tasks/pi-mac-first-loop/packet.md)。
 
-模块至少拆分为 `core` 与 `app`。`core` 拥有 AI 服务、Harness 适配器和共享契约；`app` 按 Mac 等平台组织界面、配置交互与平台装配。平台界面通过 core 接口使用 Harness，不在 UI 内实现其协议或模型调用。
+共享领域能力与平台 app 分离。Rust lib 提供跨平台一致行为；平台 app 在进程内消费语言绑定，管理库的生命周期。外部 Harness 子进程与本机 AI 网关具有独立职责，不构成 App 与共享库的常驻 Host 通信。
 
-共享能力由 Rust lib 提供跨平台一致行为，Mac、Windows 等平台应用通过语言绑定或桥接在进程内消费，不作为另一个常驻应用或 Host 进程。平台应用管理库的生命周期；外部 Harness 子进程与供 Harness 请求模型的本机网关不因此变成 App 与 core 的进程通信。当前独立 Host 接入已被该决定取代。
+2026-10-05 用户决定全面采用 UniFFI，并授权独立 package 拆分，避免把全部共享能力集中到巨大 core。共享领域、应用装配和语言绑定各自保持契约；各平台消费生成的类型接口，不保留手写 JSON／C ABI 产品入口。移动端可按需只选择远程接入，不被迫携带本地 Harness；直接 AI 能力是独立选择。remote 尚未实现，拆分不提升其交付状态。边界见 [架构](../design/architecture.md#独立-package-与平台装配)，来源见 [S17](../sources.md#s17)。
 
-2026-10-05 用户进一步要求避免把全部共享能力集中到巨大 core，方向是独立 package 与按平台需要消费能力。ai、agent-runtime、persist 等名称、职责，以及各包分别暴露 ABI 都是待讨论设想，尚未批准具体重构。移动端可只选择远程接入，不因此被迫携带本地 Harness 执行依赖；是否包含直接 AI 能力是独立选择。候选边界见 [架构讨论](../design/architecture.md#独立-package-与平台装配候选)，来源见 [S17](../sources.md#s17)。
-
-每个独立 package、每个平台 app 都是一个 unit，分别拥有明确的契约、依赖与知识维护归属。内部模块不因此必须成为独立 unit；unit 划分与 ABI 交付粒度仍分别讨论。用户进一步澄清，实际目标是 Swift、Kotlin、C# 等使用 Rust lib，手写 C ABI 不作为固定技术要求；接入方式、语言 SDK 与产物形式需分别选择。用户基本认可职责划分方向并同意不建立通用存储框架，但要求复核配置持久化是否值得独立 package；该职责存在不自动构成建包依据。
+每个独立 package、每个平台 app 都是一个 unit，分别拥有明确契约、依赖与知识维护归属。内部模块不必须成为独立 unit；unit、语言 SDK 与二进制产物不要求一一对应。配置持久化为共享 application unit 的内部模块，不建立通用存储框架或独立 persist package；出现真实独立消费者后再复核。目标覆盖 Swift、Kotlin、C# 消费 Rust，具体语言工具的兼容性须有生成与编译证据。
 
 Mac 开发交付安装到 `/Applications/Velune.app`，每次修改后重新构建、安装并关联源码版本。用户已授权开发方随时退出或强制退出正在运行的 Velune，以完成更新。当前产品显示版本为 `0.1 beta.1`，与 ABI、投影契约、配置 schema 和构建版本独立维护。来源见 [S15](../sources.md#s15)。
 
-用户随后要求完全重写 Mac app，并明确避免与任何提供商或 Agent Harness 耦合。Mac 界面消费 core 的通用会话、消息、运行状态和设置描述；具体 Harness 协议、消息映射和配置转换由适配器封装。运行时或资源名称可作为数据展示，不能成为 UI 的专用命令、字段分支或协议解析。视觉使用用户提供的 Velune 光学校准 SVG logo，默认选择 graphite 配色而非 theme，真实资源验收仍由用户执行。
+用户随后要求完全重写 Mac app，并明确避免与任何提供商或 Agent Harness 耦合。Mac 界面消费共享 application 的通用会话、消息、运行状态和设置描述；具体 Harness 协议、消息映射和配置转换由适配器封装。运行时或资源名称可作为数据展示，不能成为 UI 的专用命令、字段分支或协议解析。视觉使用用户提供的 Velune 光学校准 SVG logo，默认选择 graphite 配色而非 theme，真实资源验收仍由用户执行。
 
 应用数据与配置通过文件系统持久化，根目录由 `VELUNE_HOME` 指定，默认 `~/.velune`。AI provider 资源和 Harness 配置可采用 JSON／TOML 或 SQLite；当前切片采用 JSON。此要求归属应用配置，不改变 Harness 拥有会话历史的边界；秘密值留在本机秘密设施，文件仅保存引用。来源见 [S15](../sources.md#s15)。
 

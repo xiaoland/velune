@@ -1,0 +1,7 @@
+[bindings.swift]
+module_name = "VeluneBindings"
+ffi_module_name = "VeluneBindingsFFI"
+generate_codable_conformance = true
+
+[bindings.kotlin]
+package_name = "app.velune.bindings"

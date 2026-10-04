@@ -28,7 +28,7 @@ final class VeluneApplicationDelegate: NSObject, NSApplicationDelegate {
 
 @main
 @MainActor
-struct VeluneApplication: App {
+struct VeluneApp: App {
     @NSApplicationDelegateAdaptor(VeluneApplicationDelegate.self) private var appDelegate
     @StateObject private var store: AppStore
     private let previewEmpty: Bool

@@ -1,0 +1,14 @@
+[package]
+name = "velune-gateway"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+velune-ai = { path = "../ai" }
+velune-ai-provider = { path = "../ai-provider" }
+reqwest = { version = "0.13", default-features = false, features = ["native-tls", "json", "stream", "system-proxy"] }
+tokio = { version = "1", features = ["rt", "macros", "net", "io-util", "time"] }
+getrandom = "0.4"

@@ -4,7 +4,7 @@
 
 ## 当前 Mac 会话界面
 
-当前应用为 SwiftUI 原生 Mac control surface：系统侧栏和工具栏、Chatbot 阅读与输入区、独立 Settings 窗口。系统决定基础字体、语义颜色及明暗外观，Velune 品牌仅保留在图标与少量细节。应用通过 C ABI 1 嵌入 Rust lib，消费通用投影契约 3，不解析 Harness 原生事件，也不启动常驻 Host 或访问 Unix socket。下文 IPC v1 与模拟体验段落描述历史原型，不能作为当前产品接入说明。
+当前应用为 SwiftUI 原生 Mac control surface：系统侧栏和工具栏、Chatbot 阅读与输入区、独立 Settings 窗口。系统决定基础字体、语义颜色及明暗外观，Velune 品牌仅保留在图标与少量细节。应用通过 UniFFI 0.32.2 生成的类型接口嵌入 Rust lib，消费 application 的具名用例，不解析 Harness 原生事件，也不启动常驻 Host 或访问 Unix socket。下文 IPC v1 与模拟体验段落描述历史原型，不能作为当前产品接入说明。
 
 Mac 应用图标由 `scripts/render-app-icon.swift` 将 graphite 光学稿生成十档传统 ICNS 资源。Dock／应用库使用的图标应保留 macOS 的透明光学留白，不能将品牌稿直接铺满画布；具体绘制范围在生成器中维护，不能通过修改品牌 SVG 补偿平台外框尺寸。
 
@@ -16,13 +16,13 @@ bash scripts/build-macos.sh
 open /Applications/Velune.app
 ```
 
-应用根目录由启动进程的 `VELUNE_HOME` 环境变量指定，未设置或留空时为 `~/.velune`，非空值必须是绝对目录路径。平台将该路径显式传给 CoreRuntime，库不自行读取环境。根目录下的 `generic-config.json` 持久化 AI 网关与 Agent 运行时实例配置，手动配置的 API key 留在 Keychain；导入的 API key 与受委托的订阅认证留在用户指定的原 Harness 存储，配置只保存来源引用。Finder 启动通常不继承 shell 配置，隔离开发可直接带环境运行 bundle 可执行文件：
+应用根目录由启动进程的 `VELUNE_HOME` 环境变量指定，未设置或留空时为 `~/.velune`，非空值必须是绝对目录路径。平台将该路径显式传给 Application，库不自行读取环境。根目录下的 `generic-config.json` 持久化 AI 网关与 Agent 运行时实例配置，手动配置的 API key 留在 Keychain；导入的 API key 与受委托的订阅认证留在用户指定的原 Harness 存储，配置只保存来源引用。Finder 启动通常不继承 shell 配置，隔离开发可直接带环境运行 bundle 可执行文件：
 
 ```sh
 VELUNE_HOME=/absolute/path/to/isolated-home /Applications/Velune.app/Contents/MacOS/Velune
 ```
 
-构建脚本默认将验证签名后的 bundle 安装到 `/Applications/Velune.app`；仅构建可用 `bash scripts/build-macos.sh --build-only`。修改后退出应用再重建安装，安装器不会覆盖尚未退出的应用。用户已授权开发方随时直接退出 Velune；先正常退出，若应用拒绝退出，可终止已确认的 Velune 应用进程后安装，无需要求用户手动退出。产品显示版本来自仓库 `VERSION`，当前为 `0.1 beta.1`，原生“关于 Velune”面板读取同一版本。manifest 分别保存源码提交、ABI、投影契约和配置 schema。
+构建脚本默认将验证签名后的 bundle 安装到 `/Applications/Velune.app`；仅构建可用 `bash scripts/build-macos.sh --build-only`。修改后退出应用再重建安装，安装器不会覆盖尚未退出的应用。用户已授权开发方随时直接退出 Velune；先正常退出，若应用拒绝退出，可终止已确认的 Velune 应用进程后安装，无需要求用户手动退出。产品显示版本来自仓库 `VERSION`，当前为 `0.1 beta.1`，原生“关于 Velune”面板读取同一版本。manifest 保存源码提交、UniFFI 版本、类型接口和配置 schema。
 
 Settings 分为 AI 提供商、模型、模型路由和 Agent 运行时。先定义模型 ID、昵称、图标、上下文窗口、输出上限和支持的推理级别，再将模型关联到提供商的外部模型 ID，并显式选择路由。协议通过 Picker 选择，目前 OpenAI ChatCompletions v1 与 OpenAI Responses v1 可用；不进行协议翻译，未支持的协议不可保存。密钥由用户输入并存入本机 Keychain，文件只保存引用。fail-over 当前禁用，没有自动切换策略。
 
@@ -32,7 +32,7 @@ Harness 仅收到 Velune 本机网关配置；提供商凭据不传入 Harness�
 
 AI 提供商页的“从运行时导入…”是完整配置导入入口。选择来源目录与 Node 后先读取预览，选择提供商模型，再导入；模型也可以关联到已有全局模型。原提供商与认证文件保留，配置只记录来源引用。重复项默认跳过，明确替换才更新已导入提供商；已有路由和运行时默认模型不自动改变。来源或目标配置在预览后变化时，须重新读取。仅支持当前网关能够保留语义的配置；不支持项及原因在预览中显示，动态命令不执行。
 
-隔离视觉预览使用 `--preview`（合成多轮会话）或 `--preview-empty`；Apple app 不设置独立深色验收入口。预览 Store 无 Transport，不打开 CoreRuntime、不访问真实配置、Keychain 或会话、不调用模型。dyld 加载惰性的库文件不等于打开运行时，预览不能证明真实循环完成。
+隔离视觉预览使用 `--preview`（合成多轮会话）或 `--preview-empty`；Apple app 不设置独立深色验收入口。预览 Store 无 Transport，不打开 Application、不访问真实配置、Keychain 或会话、不调用模型。dyld 加载惰性的库文件不等于打开运行时，预览不能证明真实循环完成。
 
 ## 历史无凭据核心原型
 
@@ -44,11 +44,11 @@ AI 提供商页的“从运行时导入…”是完整配置导入入口。选�
 
 ```sh
 cargo fmt --check
-cargo check --locked --features simulation
-cargo clippy --locked --features simulation --all-targets -- -D warnings
-cargo build --locked --features simulation --release
-cargo run --locked --features simulation -- demo /tmp/velune-demo.sqlite
-cargo run --locked --features simulation -- inspect /tmp/velune-demo.sqlite
+cargo check --locked -p velune-host
+cargo clippy --locked -p velune-host --all-targets -- -D warnings
+cargo build --locked -p velune-host --release
+cargo run --locked -p velune-host -- demo /tmp/velune-demo.sqlite
+cargo run --locked -p velune-host -- inspect /tmp/velune-demo.sqlite
 ```
 
 demo 路径必须尚不存在，重复体验用新路径，不覆盖旧运行。inspect 要求已存在并取得独占连接；会增加 Run epoch、恢复未知投递，是启动／恢复命令，不是无副作用查询。
@@ -95,20 +95,20 @@ fixture 为 [review.json](../fixtures/review.json)，仅 `2 + 3 = 5`。Codex 会
 
 ## 历史 Mac mini 模拟壳
 
-2026-10-02 的模拟壳使用独立 Rust Host、Unix socket 和 SQLite。当前嵌入式应用已替代该接入，不再支持旧壳的运行与停止操作；`app/host/` 仅保留为 `simulation` feature 下的诊断程序。旧证据不能证明当前 ABI、真实 Harness 或模型调用已通过。
+2026-10-02 的模拟壳使用独立 Rust Host、Unix socket 和 SQLite。当前嵌入式应用已替代该接入，不再支持旧壳的运行与停止操作；`app/host/` 仅保留为独立的诊断程序。旧证据不能证明当前生成接口、真实 Harness 或模型调用已通过。
 
 
 ## Pi 运行时与本机网关
 
-Rust core 的 [Pi adapter](../core/src/pi.rs) 处理显式 Node／CLI 路径与 JSONL RPC，同进程 CoreRuntime 负责运行时实例装配。会话列表使用固定 Pi 1.0.2 的 SDK helper，身份包含运行时实例，避免不同实例的同名会话混淆。RPC 没有 `list_sessions`；prompt 响应只表示接收，稳定终态为 `agent_settled`。取消先清队列再 abort，仍等待稳定终态后才允许关闭核心。
+Rust agent-runtime 的 [Pi adapter](../packages/agent-runtime/src/client.rs) 处理显式 Node／CLI 路径与 JSONL RPC，同进程 application unit 负责运行时实例装配。会话列表使用固定 Pi 1.0.2 的 SDK helper，身份包含运行时实例，避免不同实例的同名会话混淆。RPC 没有 `list_sessions`；prompt 响应只表示接收，稳定终态为 `agent_settled`。取消先清队列再 abort，仍等待稳定终态后才允许关闭核心。
 
 运行时配置保留入口、配置／状态根目录和可选会话存储目录，不要求工作目录。连接只准备实例网关与会话列表；新建时使用原生目录选择器指定项目目录，恢复时读取 Pi 保存的 cwd。列表覆盖该实例的多个项目，空闲切换重新启动 Pi child 并保留网关；已失效的目录明确报错，不能回退到应用启动目录。旧配置中的 `workingDir` 允许读取，但不再用于选择执行位置。
 
 依据为 Pi `v1.0.2` 固定提交 `cd32f7725fdbddbaecdff5b1e68491563394e0ca` 的 [RPC](https://github.com/earendil-works/pi/blob/cd32f7725fdbddbaecdff5b1e68491563394e0ca/packages/coding-agent/docs/rpc.md)、[模型配置](https://github.com/earendil-works/pi/blob/cd32f7725fdbddbaecdff5b1e68491563394e0ca/packages/coding-agent/docs/models.md)与 [SDK 列表例子](https://github.com/earendil-works/pi/blob/cd32f7725fdbddbaecdff5b1e68491563394e0ca/packages/coding-agent/examples/sdk/11-sessions.ts)。用户所说的 Pi home 由适配器映射为本版本的 `PI_CODING_AGENT_DIR`，不假定存在 `PI_HOME` 上游变量。
 
-安装脚本固定 `@earendil-works/pi-coding-agent@1.0.2` 于忽略的 `target/pi-runtime`，不修改全局 npm 或 Pi。Mac bundle 将 SDK、CLI JavaScript 与 `core/pi_sessions.mjs` 放入 Resources。Node 本体不随包，用户需指定 Node 22.19+ 的绝对路径，避免 Finder 启动依赖 shell PATH。CLI 入口为 `Contents/Resources/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js`。
+安装脚本固定 `@earendil-works/pi-coding-agent@1.0.2` 于忽略的 `target/pi-runtime`，不修改全局 npm 或 Pi。Mac bundle 将 SDK、CLI JavaScript 与 `packages/agent-runtime/resources/pi_sessions.mjs` 放入 Resources。Node 本体不随包，用户需指定 Node 22.19+ 的绝对路径，避免 Finder 启动依赖 shell PATH。CLI 入口为 `Contents/Resources/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js`。
 
-CoreRuntime 在实例专属目录生成受管 Pi 配置，只列出 Velune 网关端点、可路由模型与本地访问凭据；不写上游端点或 Keychain 引用，也不覆盖未受管的 `models.json`。恢复历史会话后重新绑定 Velune 网关模型，历史 provider 不能绕过网关。平台秘密 helper 在网关实际请求时解析 Keychain 引用或显式认证来源；来源 adapter 使用原存储锁刷新，不复制 refresh credential。开发验证不读取真实 Keychain 或来源文件。平台凭据 shim 只调用 Core 的 sealed 来源入口，具体 Harness 适配由 Core 选择；认证 helper 的 AuthStorage 文件入口绑定固定 Pi 1.0.2；版本不符明确拒绝，是依赖升级时须复核的边界。
+Application 在实例专属目录生成受管 Pi 配置，只列出 Velune 网关端点、可路由模型与本地访问凭据；不写上游端点或 Keychain 引用，也不覆盖未受管的 `models.json`。恢复历史会话后重新绑定 Velune 网关模型，历史 provider 不能绕过网关。平台秘密 helper 在网关实际请求时解析 Keychain 引用或显式认证来源；来源 adapter 使用原存储锁刷新，不复制 refresh credential。开发验证不读取真实 Keychain 或来源文件。平台凭据 shim 只调用 Core 的 sealed 来源入口，具体 Harness 适配由 Core 选择；认证 helper 的 AuthStorage 文件入口绑定固定 Pi 1.0.2；版本不符明确拒绝，是依赖升级时须复核的边界。
 
 执行 Pi 默认选择 `velune/auto`。Core 为本轮决定具体逻辑模型，virtual model 返回相同模型的能力；Pi 的物理模型 ID 使用非秘密路由绑定的稳定身份，网关将该 ID 直接映射到同一次已配置路由，不再二次选择；逻辑模型 ID 保留在界面与选择状态中。Pi 的分支 state 保存实际选择，assistant 历史记录实际模型；新会话使用运行时默认模型，会话切换不改这个默认值。模型 `maxTokens` 用作 Harness 元数据；输出参数仅按提供商协议发送和校验，订阅来源不支持服务端输出硬上限，不为其注入 `max_output_tokens`。Pi 的标准推理等级通过 `thinkingLevelMap` 限制为模型声明的等级；本轮不替自定义服务等级猜测转换规则。ChatCompletions 网关接收文本和工具消息，未支持的图片内容明确报错。Responses 保留原生请求 JSON、工具与 encrypted reasoning、JSON／SSE 响应；只支持 foreground 创建，不增加查询、删除或 background API。客户端断开或网关停止会释放活跃上游请求，上游失败不会发出成功的 `[DONE]`，也不自动重试或切换提供商。
 
@@ -133,6 +133,21 @@ live 入口 `minimax_manual live text|text-diagnostic|tool SOURCE_COMMIT` 仅供
 
 普通输出只列 case／attempts／typed usage／fixture 路径；正文与工具片段仅存获准的合成白名单 fixture。手动入口的本地 admission 文件不是防并发跨进程／跨目录绕过的全局产品预算服务，调用范围由本次授权和人工流程限定。
 
-## 嵌入式 ABI 的临时端到端验收
+## UniFFI 的临时端到端验收
 
-先构建动态库，并为 `--resources` 提供包含 `pi_sessions.mjs`、`pi_virtual_model.mjs`、`pi_auth.mjs` 与固定 Pi `node_modules` 的资源目录。人工运行 [临时端到端脚本](../scripts/check-pi-abi-loop.py)，以绝对路径传入 `--library`、`--resources` 和 `--node`。脚本使用临时 HOME、配置、工作与会话目录，以及 loopback 合成上游和 fixture-only 凭据 helper；不读取用户配置或调用真实模型。它检查流式回复、跨模型路由和输出上限、Pi 会话身份与恢复、忙时退出保护、取消以及配置重新打开。Responses 检查使用 `--protocol responsesV1`，订阅能力检查另加 `--subscription-capability`。用户对真实提供商和产品体验的验收仍独立进行。
+先构建动态库，并为 `--resources` 提供包含 `pi_sessions.mjs`、`pi_virtual_model.mjs`、`pi_auth.mjs` 与固定 Pi `node_modules` 的资源目录。人工运行 [临时端到端脚本](../scripts/check-pi-uniffi-loop.py)，先按 [bindings unit](../packages/bindings/README.md) 生成 Python 绑定，再以绝对路径传入 `--bindings`、`--library`、`--resources` 和 `--node`。脚本使用临时 HOME、配置、工作与会话目录，以及 loopback 合成上游和 fixture-only 凭据 helper；不读取用户配置或调用真实模型。它检查流式回复、跨模型路由和输出上限、Pi 会话身份与恢复、忙时退出保护、取消以及配置重新打开。Responses 检查使用 `--protocol responsesV1`，订阅能力检查另加 `--subscription-capability`。用户对真实提供商和产品体验的验收仍独立进行。
+
+## 工作区 units 与绑定构建
+
+根 Cargo.toml 是虚拟工作区，不再输出 velune-core 产品库。共享单位的职责、接口和依赖在 [packages 各 README](../README.md) 与 [架构](design/architecture.md#独立-package-与平台装配) 中说明。Mac 构建会生成 Swift 源及 FFI modulemap，分别编译 Rust 绑定库与 Swift 语言模块，再链接原生 app；生成文件只放在 target 下。
+
+```sh
+cargo fmt --all --check
+cargo check --locked --workspace --all-targets --all-features
+cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
+cargo clippy --locked -p velune-bindings --no-default-features --all-targets -- -D warnings
+cargo tree --locked -p velune-bindings --no-default-features
+bash scripts/build-macos.sh
+```
+
+无默认 feature 的依赖树不含 agent-runtime、gateway、AI provider；本地会话操作明确返回 Unsupported。该构建只证明能力裁剪，不表示已支持远端操作。Kotlin 生成物依赖 JNA 及 kotlinx-coroutines；生成成功之外还需编译检查。C# 工具为第三方，UniFFI 版本兼容性仍需后续 C# app 接入时验证。

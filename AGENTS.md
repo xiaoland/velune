@@ -78,3 +78,7 @@ core 是跨平台 Rust lib，通过 ABI 嵌入平台 app；产品不得另启常
 ## 验证原则
 
 不保留或新增任何自动化测试。优先保证类型安全，执行类型检查、静态检查与构建。行为验收采用手动操作或临时脚本，尽可能走端到端路径，不新增单元测试或集成测试。临时脚本可放在 `scripts/` 下，不接入自动测试或 CI；真实提供商与产品体验由用户验收。既有自动化测试及仅供其使用的辅助代码、依赖和运行入口应删除。
+
+## 独立 units 与跨语言接入
+
+2026-10-05 用户决定全面采用 UniFFI，并授权拆分。共享 units 为 packages/ai、ai-provider、conversation、agent-runtime、gateway、application、bindings；平台 app 是独立 unit。configuration 为 application 内部模块，不建立 persist 或空 remote package。领域包不依赖 UniFFI，bindings 暴露具名类型 API；不恢复手写 C ABI／JSON dispatcher 产品接口。Mac 继续同进程嵌入 Rust，修改后重建安装。任务见 tasks/package-boundaries/packet.md，各 unit 入口见其 README。

@@ -22,26 +22,26 @@ Apple 外观由原生组件与系统语义样式适配，不建立自有明暗�
 
 Velune 的产品身份是 control surface：UI、AI 服务网关与协调层服务于外部 Agent 运行时，不生成代表 Velune 自身的 Agent 人格。通用会话投影保持 user／assistant／system／tool 语义；平台按左右与居中布局呈现，不给 assistant 注入 Velune 作者标签。
 
-## 独立 package 与平台装配（候选）
+## 独立 package 与平台装配
 
-2026-10-05 用户提出按平台能力选用独立顶级 package，避免巨大 core，并基本认可下述职责边界；示例名称、实际建包及逐包 ABI 仍待讨论。本节是基于当前源码和 advisor 判断的建议，未批准重构，未实现 remote 或移动端。
+2026-10-05 用户决定全面采用 UniFFI，并授权按独立 package 拆分。实施采用 ai、ai-provider、conversation、agent-runtime、gateway、application、bindings；配置持久化保留在 application 内部。remote 和移动端尚未实现，不建立空包。
 
 每个 package 和每个平台 app 都是一个 unit，具有明确的契约、依赖和知识维护归属。下表列职责，不要求每一行成为 package。内部模块可以形成清楚的边界而不成为独立 unit；代码目录、unit、ABI 产物不能默认一一对应。
 
-领域 package、语言绑定与交付产物分别决定职责、跨语言使用方式和链接／打包方式，不要求一一对应。用户真正要求 Swift、Kotlin、C# 等可靠消费 Rust lib；当前手写 C ABI 是已实现的接入方案，不是固定要求。ABI 是二进制调用约定，FFI 是跨语言调用机制；生成绑定通常也封装底层 ABI，但能替代手工编写类型转换与调用代码。
+领域 package、语言绑定与交付产物分别决定职责、跨语言使用方式和链接／打包方式，不要求一一对应。用户真正要求 Swift、Kotlin、C# 等可靠消费 Rust lib；此前手写 C ABI 已由生成的 UniFFI 接口取代。ABI 是二进制调用约定，FFI 是跨语言调用机制；生成绑定通常也封装底层 ABI，但能替代手工编写类型转换与调用代码。
 
 建议 Rust unit 先拥有明确的公共 API，平台绑定只暴露需要的完整操作，使用结构化类型、错误与生命周期契约。内部 Rust package 不必全部适应某个绑定工具的限制。remote-only 产物可以完全不链接本地 Harness 执行代码或携带 Pi／Node。跨模块校验和失败协调留在共享用例，平台 SDK 负责语言表达，不重写业务规则。多个库若互传 opaque handle，仍须明确各库的内存释放、版本、回调和关闭关系；不能让 UI 自行补偿。
 
-绑定生成因静态类型安全值得优先评估，但尚未选型。UniFFI 官方文档支持 Swift／Kotlin，生成 Swift API、C header 和 modulemap；C# 生态需另验第三方绑定或 .NET P/Invoke 接入。工具支持语言不等于已满足 Velune 的流、线程和取消要求；当前文档还提示 Swift 6／Sendable 支持存在边界。具体来源和检查日期留在讨论任务，不把工具介绍当项目运行证据。
+用户已选定 UniFFI，以生成类型接口取代手写产品 C ABI／JSON dispatcher。UniFFI 官方文档支持 Swift／Kotlin，生成 Swift API、C header 和 modulemap；C# 生态需另验 UniFFI 第三方绑定。工具支持语言不等于已满足 Velune 的流、线程和取消要求；当前文档还提示 Swift 6／Sendable 支持存在边界。具体来源和检查日期留在讨论任务，不把工具介绍当项目运行证据。
 
-建议用配置预览和会话发送两个隔离样例判别：前者覆盖嵌套结构、枚举、可选值与结构化失败，后者覆盖事件流、执行取消、观察取消、忙时关闭和资源释放。取消观察与取消 Agent 执行应有不同语义，不能由绑定工具隐式决定；回调线程和释放后行为也需要明确。先确认可表达这些契约，再确定接入工具，当前不迁移已安装版本。
+建议用配置预览和会话发送两个隔离样例判别：前者覆盖嵌套结构、枚举、可选值与结构化失败，后者覆盖事件流、执行取消、观察取消、忙时关闭和资源释放。取消观察与取消 Agent 执行应有不同语义，不能由绑定工具隐式决定；回调线程和释放后行为也需要明确。本次实施保留快照轮询与独立的执行取消，不引入新的观察订阅机制；完成静态检查和合成验证后更新安装版本。
 
-| 候选归属 | 应拥有的职责与边界 |
+| 职责归属 | 应拥有的职责与边界 |
 | --- | --- |
 | AI service 与 provider packages | 独立操作契约及具体协议执行。AI 领域不限 LLM，不依赖 Harness、全局配置或存储。 |
 | 本地 Agent 运行时 | Harness 子进程、原生事件解析和本地会话接入。接收装配后的网关接入信息，不选择 AI 提供商或拥有网关策略。 |
 | 会话契约 | 列表、消息块、快照和操作／能力。PiProjection 归 Pi adapter；契约不依赖 Pi envelope、具体 AI 协议或本地文件访问。 |
-| Remote client | 将远端控制协议映射为会话契约；状态权威在远端。远端 cwd 不默认是手机可访问的路径。 |
+| 未来 Remote client | 尚未实现。将来映射远端控制协议时，状态权威在远端；远端 cwd 不默认是手机可访问的路径。 |
 | 应用配置内部模块 | 文件锁、加载、原子提交和存储版本处理。暂留在共享应用用例所在 unit 内，不单独建立 package；领域拥有自己的配置类型，应用层负责聚合及跨领域引用校验。当前不建立通用 persist 框架或第二份 Harness 会话历史。 |
 | 应用用例与平台绑定装配 | 组合独立能力、协调完整操作及失败清理。UI 不按底层步骤自行启动网关、注入配置、启动 Harness 或补偿跨包事务。 |
 
@@ -49,7 +49,7 @@ Velune 的产品身份是 control surface：UI、AI 服务网关与协调层服�
 
 当前配置仓库只有聚合应用配置这一项直接消费者；多个平台共同消费应用 SDK，不等于它有多个独立消费者。内部模块已能隔离文件机制，单独建包反而需要额外公开契约和维护责任。只有出现独立应用用例需要直接消费它，或具体依赖／平台编译边界无法通过内部模块解决，再复核提取；增加平台、切换 SQLite 或代码变长都不是单独建包的充分依据。秘密存取保持平台归属。
 
-下一步先核对三个完整操作的责任：提供商导入及配置提交、本地会话启动／关闭、远端会话打开／取消。每步须明确状态权威、失败处理和依赖方向，再决定包名称、配置聚合方式、语言绑定与交付形式。具体源码证据与验证缺口见 [讨论任务](../../tasks/package-boundaries/packet.md)。
+当前本地装配由 application 的 `local-runtime` feature 选择；禁用后不链接 agent-runtime 或 gateway，保留普通配置用例，本地执行明确返回 Unsupported。此裁剪不代表已实现远端会话。源码证据与验证缺口见 [实施任务](../../tasks/package-boundaries/packet.md)。
 
 ## 1. 已认可方向与收敛方案
 
@@ -94,7 +94,7 @@ Velune 的产品身份是 control surface：UI、AI 服务网关与协调层服�
 
 首循环由 CoreRuntime 原子保存应用配置，不打开旧模拟 SQLite，也不保存另一套 Pi 会话历史。未来协作数据库如需 SQLite，仍由共享核心管理其事务；不能用文件同步制造跨设备共享主库。历史存储研究见[证据](../../tasks/harness-routing-feasibility/evidence.md#原生客户端与-rust-边界)。
 
-**当前 FFI 实现**：首版使用小型 C ABI 与 JSON DTO，输入借用到调用结束，返回字符串只能由 Rust free，open 失败不留 handle，close 忙时保持 handle。Rust 捕获 panic，不允许展开穿过 ABI。异步 UI 在后台串行队列调用同步接口，通过 snapshot 读取投影更新；线程和外部 Harness 生命周期由共享核心负责。该实现不锁定未来跨语言接入方式；生成绑定的类型安全、维护成本和生命周期表达按上面的候选方案复核，不预先引入 UniFFI 工程。进程内接入的决定保持，不另加本机 App↔core IPC。
+**当前跨语言接入**：bindings unit 以 UniFFI 0.32.2 生成 Swift／Kotlin 接口，Mac 通过具名方法、record／enum 和结构化错误操作 application。单个绑定对象拥有应用实例并串行执行同步操作；Mac 在后台队列调用，按快照轮询投影。关闭忙时拒绝并保留对象，执行取消为独立操作；释放平台包装并不等同于发出用户取消。输入与返回值的内存所有权由生成绑定管理，不再保留手写 `velune_core_*` 产品入口。配置 schema 仍为 2，生成接口由 UniFFI 校验契约。C# 第三方工具需独立验证兼容性，不宣称已有 Windows app。进程内接入保持，不另加本机 App↔core IPC。
 
 **Rust 主核心不要求重写上游 Harness SDK**。Codex 直接接 app-server；Pi 以 RPC 子进程接入，逐请求 virtual-model hook 由最薄的 Pi 扩展调用 Rust 路由服务；Claude 优先保留官方 SDK 的薄桥进程以正确处理其生命周期。桥只做编解码、关联 ID、流和原生权限回调，领域状态、路由、预算、协作与持久化留在 Rust。Node／TypeScript 若存在仅为原生 Harness／SDK 依赖与桥，不重新成为产品主核心；不得因改 Rust 而把 Claude 私有控制 envelope 当稳定公开协议重写。
 
@@ -316,7 +316,7 @@ Mac 当前落点与 C ABI 嵌入已按用户反馈确认，其他 Apple 平台�
 
 本节描述 2026-10-02 模拟原型，已被当前 Pi／ABI 产品接入取代，不是产品的进程、存储或生命周期规范。
 
-实现入口：[core/src/lib.rs](../../core/src/lib.rs)、[schema.sql](../../core/src/schema.sql)、[adapter.rs](../../core/src/adapter.rs)、[routing.rs](../../core/src/routing.rs)。核心只覆盖固定深度委派、稳定 Session、单 Segment 绑定、每次重启的新 Run、独立 Attempt、事务 outbox 与合成结果验收；不是前述完整架构的实现。
+实现入口：[simulation.rs](../../app/host/src/simulation.rs)、[schema.sql](../../app/host/src/schema.sql)、[adapter.rs](../../app/host/src/adapter.rs)、[routing.rs](../../app/host/src/routing.rs)。核心只覆盖固定深度委派、稳定 Session、单 Segment 绑定、每次重启的新 Run、独立 Attempt、事务 outbox 与合成结果验收；不是前述完整架构的实现。
 
 单宿主通过 SQLite exclusive connection 拒绝第二个 Host；不是跨设备 lease／native fencing。未知提交阻塞该 Segment 后续投递，无自动 handoff 或人工强制解锁接口。路由只允许明确获准的模拟资源，无 API／订阅 lane。MCP 工具服务、ACP transport、真实 gateways／SDK 桥、费用预留与完整安全隔离尚未实现。
 

@@ -1,36 +1,16 @@
-mod host;
-use velune_core::{
-    Core,
-    adapter::{Harness, SimHarness},
-    routing::Resource,
-};
+use velune_host::{adapter, routing, simulation};
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let args: Vec<String> = std::env::args().collect();
-    if args.get(1).is_some_and(|s| s == "host") && args.len() == 3 {
-        return host::serve(std::path::Path::new(&args[2]));
-    }
-    if args.get(1).is_some_and(|s| s == "rpc") && args.len() == 4 {
-        let request = serde_json::from_str(&args[3])
-            .unwrap_or_else(|_| serde_json::json!({"version":1,"command":args[3]}));
-        match host::request_value(std::path::Path::new(&args[2]), &request) {
-            Ok(response) => println!("{response}"),
-            Err(error)
-                if error.downcast_ref::<std::io::Error>().is_some_and(|error| {
-                    matches!(
-                        error.kind(),
-                        std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused
-                    )
-                }) =>
-            {
-                eprintln!("Host socket is unavailable: {error}");
-                std::process::exit(69);
-            }
-            Err(error) => return Err(error),
-        }
-        return Ok(());
-    }
+    simulation_main(std::env::args().collect())
+}
+
+fn simulation_main(args: Vec<String>) -> Result<(), Box<dyn std::error::Error>> {
+    use adapter::{Harness, SimHarness};
+    use routing::Resource;
+    use simulation::Core;
+
     if args.len() != 3 || !matches!(args[1].as_str(), "demo" | "inspect") {
-        return Err("usage: velune-core <demo|inspect> <database-path> (simulation only)".into());
+        return Err("usage: velune-host <demo|inspect> <database-path>".into());
     }
     if args[1] == "demo" && std::path::Path::new(&args[2]).exists() {
         return Err(
