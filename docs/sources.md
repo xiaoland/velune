@@ -137,3 +137,5 @@ S16 导入语义纠正：用户明确将 Harness 提供商配置导入 Velune �
 ## S17
 
 2026-10-05 用户提出：共享能力不应全部集中在巨大 core，可考虑 ai、agent-runtime、persist 等独立顶级 package，各平台通过 ABI 按需消费；Android／iOS 例如只需要 remote。用户明确这些名字、边界和逐包 ABI 均为待探讨设想，不是已批准的具体划分。产品意图归 PRD，候选方案归架构，源码观察与下一步归 package-boundaries Task Packet。用户计划次日验收现有 Mac 版本，本次讨论不授权提前重构或改变该安装产物。
+
+S17 后续修订：用户基本认可候选职责边界，同意不建立通用存储框架，但质疑配置仓库独立 package 的必要性，并明确每个 package、app 都是一个 unit。职责边界的认可不等于所有职责必须各建一个包，本轮仍是讨论而非源码重构。
