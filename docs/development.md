@@ -100,6 +100,8 @@ fixture 为 [review.json](../fixtures/review.json)，仅 `2 + 3 = 5`。Codex 会
 
 Rust core 的 [Pi adapter](../core/src/pi.rs) 处理显式 Node／CLI 路径与 JSONL RPC，同进程 CoreRuntime 负责运行时实例装配。会话列表使用固定 Pi 1.0.2 的 SDK helper，身份包含运行时实例，避免不同实例的同名会话混淆。RPC 没有 `list_sessions`；prompt 响应只表示接收，稳定终态为 `agent_settled`。取消先清队列再 abort，仍等待稳定终态后才允许关闭核心。
 
+运行时配置保留入口、配置／状态根目录和可选会话存储目录，不要求工作目录。连接只准备实例网关与会话列表；新建时使用原生目录选择器指定项目目录，恢复时读取 Pi 保存的 cwd。列表覆盖该实例的多个项目，空闲切换重新启动 Pi child 并保留网关；已失效的目录明确报错，不能回退到应用启动目录。旧配置中的 `workingDir` 允许读取，但不再用于选择执行位置。
+
 依据为 Pi `v1.0.2` 固定提交 `cd32f7725fdbddbaecdff5b1e68491563394e0ca` 的 [RPC](https://github.com/earendil-works/pi/blob/cd32f7725fdbddbaecdff5b1e68491563394e0ca/packages/coding-agent/docs/rpc.md)、[模型配置](https://github.com/earendil-works/pi/blob/cd32f7725fdbddbaecdff5b1e68491563394e0ca/packages/coding-agent/docs/models.md)与 [SDK 列表例子](https://github.com/earendil-works/pi/blob/cd32f7725fdbddbaecdff5b1e68491563394e0ca/packages/coding-agent/examples/sdk/11-sessions.ts)。用户所说的 Pi home 由适配器映射为本版本的 `PI_CODING_AGENT_DIR`，不假定存在 `PI_HOME` 上游变量。
 
 安装脚本固定 `@earendil-works/pi-coding-agent@1.0.2` 于忽略的 `target/pi-runtime`，不修改全局 npm 或 Pi。Mac bundle 将 SDK、CLI JavaScript 与 `core/pi_sessions.mjs` 放入 Resources。Node 本体不随包，用户需指定 Node 22.19+ 的绝对路径，避免 Finder 启动依赖 shell PATH。CLI 入口为 `Contents/Resources/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js`。

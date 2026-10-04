@@ -14,6 +14,8 @@ pub struct ConversationSummary {
     pub title: String,
     pub updated_at: Option<String>,
     pub runtime_id: String,
+    #[serde(default)]
+    pub cwd: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

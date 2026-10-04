@@ -1,5 +1,6 @@
 import Combine
 import Foundation
+import AppKit
 import Security
 
 private struct ListData: Decodable, Sendable {
@@ -72,6 +73,7 @@ final class AppStore: ObservableObject {
     var isBusy: Bool { isLoading || isGenerating || isShuttingDown || authenticationRunning }
     var canSend: Bool { !authenticationRunning && !isLoading && !isShuttingDown && (snapshot?.actions.canSend ?? false) }
     var canCancel: Bool { snapshot?.actions.canCancel ?? false }
+    var canSwitchModel: Bool { snapshot != nil && !isGenerating && !isLoading && !isShuttingDown }
     var needsModelSelection: Bool { snapshot != nil && snapshot?.modelID == nil }
     var selectedModelName: String? { models.first { $0.id == snapshot?.modelID }?.nickname }
     func shutdown(completion: @escaping (Bool) -> Void) {
@@ -118,15 +120,28 @@ final class AppStore: ObservableObject {
         if isPreview { apply(previewSnapshots[id]); return }
         request("open", payload: ["conversationID": id], as: SnapshotData.self) { [weak self] in self?.apply($0.snapshot) }
     }
-    func createConversation() {
+    func createConversation(cwd: String? = nil) {
         guard !isLoading, !isGenerating else { return }
+        if !isPreview, cwd == nil {
+            let panel = NSOpenPanel()
+            panel.title = "选择新会话的工作目录"
+            panel.message = "Agent 运行时将在此目录中执行项目工具。"
+            panel.canChooseDirectories = true
+            panel.canChooseFiles = false
+            panel.allowsMultipleSelection = false
+            if panel.runModal() == .OK, let url = panel.url {
+                createConversation(cwd: url.standardizedFileURL.path)
+            }
+            return
+        }
         generation += 1
         if isPreview {
-            let conversation = Conversation(id: UUID().uuidString, title: "新会话", updatedAt: "刚刚", runtimeID: selectedConnectionID ?? runtimeInstances.first?.id ?? "sample-instance")
+            let conversation = Conversation(id: UUID().uuidString, title: "新会话", updatedAt: "刚刚", runtimeID: selectedConnectionID ?? runtimeInstances.first?.id ?? "sample-instance", cwd: cwd)
             apply(ConversationSnapshot(revision: 1, conversation: conversation, modelID: models.first?.id, runState: .idle, messages: [], actions: ConversationActions(canSend: true, canCancel: false, canSwitch: true)))
             return
         }
-        request("create", as: SnapshotData.self) { [weak self] in self?.apply($0.snapshot) }
+        guard let cwd, !cwd.isEmpty else { error = "新会话需要选择工作目录"; return }
+        request("create", payload: ["cwd": cwd], as: SnapshotData.self) { [weak self] in self?.apply($0.snapshot) }
     }
     func send(text: String, onAccepted: (() -> Void)? = nil) {
         guard canSend, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
@@ -309,7 +324,7 @@ final class AppStore: ObservableObject {
         request("list", as: ListData.self) { [weak self] data in
             guard let self else { return }
             applyList(data)
-            if let id = conversations.first?.id { selectConversation(id: id) } else { createConversation() }
+            if let id = conversations.first?.id { selectConversation(id: id) }
         }
     }
     private func apply(_ value: ConversationSnapshot?) {
@@ -381,8 +396,8 @@ final class AppStore: ObservableObject {
         gateway = GatewayConfig(models: [AIModel(id: "sample-model", nickname: "通用模型", icon: "sparkles", contextWindow: 8192, maxOutputTokens: 4096, reasoningLevels: ["standard", "deep"])], providers: [AIProvider(id: "sample-provider", name: "示例 AI 服务", protocolID: .chatCompletionsV1, endpoint: "https://example.invalid/v1", credentialRef: "sample-reference", models: [ProviderModelBinding(modelID: "sample-model", externalModelID: "external-example")])], routes: [ModelRoute(modelID: "sample-model", providerID: "sample-provider")])
         hasGateway = true
         protocols = [ProtocolDescriptor(id: .chatCompletionsV1, name: "OpenAI Chat Completions v1", supported: true), ProtocolDescriptor(id: .responsesV1, name: "OpenAI Responses v1", supported: true), ProtocolDescriptor(id: .messagesV1, name: "Anthropic Messages v1", supported: false)]
-        runtimeTypes = [RuntimeTypeDescriptor(id: "sample-type", name: "示例运行时", fields: [SettingField(key: "workingDir", label: "工作目录", kind: .directoryPath, required: true, value: "", options: [], help: nil)], actions: [SettingAction(id: "connect", label: "连接")])]
-        runtimeInstances = [RuntimeInstance(id: "sample-instance", name: "设计项目", typeID: "sample-type", gatewayID: gateway.id, settings: ["workingDir": "/示例/设计项目"], modelID: "sample-model"), RuntimeInstance(id: "sample-review", name: "代码审查", typeID: "sample-type", gatewayID: gateway.id, settings: ["workingDir": "/示例/代码项目"], modelID: "sample-model")]
+        runtimeTypes = [RuntimeTypeDescriptor(id: "sample-type", name: "示例运行时", fields: [], actions: [SettingAction(id: "connect", label: "连接")])]
+        runtimeInstances = [RuntimeInstance(id: "sample-instance", name: "示例运行时", typeID: "sample-type", gatewayID: gateway.id, settings: [:], modelID: "sample-model"), RuntimeInstance(id: "sample-review", name: "另一个运行时", typeID: "sample-type", gatewayID: gateway.id, settings: [:], modelID: "sample-model")]
         connections = [Connection(id: runtimeInstances[0].id, name: runtimeInstances[0].name, state: "ready", capabilities: ["conversation", "streaming", "cancel"])]
         selectedConnectionID = runtimeInstances[0].id
         let topics = ["让设置页更安静", "整理一段代码", "下一步的项目计划"]
@@ -392,7 +407,7 @@ final class AppStore: ObservableObject {
             ["帮我把接下来的工作排一下。", "先完成可用的会话界面，再检查配置是否真正驱动运行时。最后用一个短任务验证发送、停止和会话切换。", "先从哪个环节开始？", "从会话开始：打开旧会话、发送消息、检查回复，再新建一个会话。这个路径会暴露最直接的体验问题。"]
         ]
         for index in topics.indices {
-            let conversation = Conversation(id: "sample-\(index)", title: topics[index], updatedAt: ["今天", "昨天", "周一"][index], runtimeID: runtimeInstances[0].id)
+            let conversation = Conversation(id: "sample-\(index)", title: topics[index], updatedAt: ["今天", "昨天", "周一"][index], runtimeID: runtimeInstances[0].id, cwd: nil)
             var history = pairs[index].enumerated().map { Message(id: "sample-\(index)-\($0.offset)", role: $0.offset.isMultiple(of: 2) ? "user" : "assistant", blocks: [.text($0.element)]) }
             history[1].blocks.append(MessageBlock(kind: "tool", text: index == 1 ? "已读取 3 个文件，未修改项目。" : "已梳理当前任务的上下文。", toolID: "sample-tool-\(index)", title: index == 1 ? "检查项目代码" : "读取工作上下文", state: "done"))
             if index == 2 { history[history.count - 1].blocks.append(MessageBlock(kind: "tool", text: "正在整理计划。", toolID: "sample-progress", title: "整理项目计划", state: "running")) }

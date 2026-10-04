@@ -32,6 +32,7 @@ def main():
         if not path.is_absolute() or not path.exists():
             parser.error('paths must be absolute and exist')
     requests = []
+    tool_result_requests = []
     waiting = threading.Event()
     release = threading.Event()
 
@@ -42,13 +43,28 @@ def main():
         def do_POST(self):
             body = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
             requests.append(body)
+            body_text = json.dumps(body)
             self.send_response(200)
             self.send_header('Content-Type', 'text/event-stream')
             self.end_headers()
-            if len(requests) == 3:
+            if 'Wait for cancellation.' in json.dumps(body):
                 waiting.set()
                 release.wait(15)
                 return
+            if args.protocol == 'chatCompletionsV1' and 'Verify tool cwd.' in body_text:
+                has_tool_result = '"role": "tool"' in body_text or 'tool_result' in body_text
+                if has_tool_result:
+                    tool_result_requests.append(body)
+                else:
+                    chunk = {'id': 'fixture-tool', 'object': 'chat.completion.chunk',
+                             'created': 1, 'model': body['model'],
+                             'choices': [{'index': 0, 'delta': {'tool_calls': [{
+                                 'index': 0, 'id': 'call_pwd', 'type': 'function',
+                                 'function': {'name': 'bash', 'arguments': json.dumps({'command': 'pwd'})}}]},
+                                          'finish_reason': 'tool_calls'}]}
+                    self.wfile.write(('data: ' + json.dumps(chunk) + '\n\ndata: [DONE]\n\n').encode())
+                    self.wfile.flush()
+                    return
             if args.protocol == 'responsesV1':
                 response = {'id': 'fixture', 'status': 'completed',
                             'output': [{'type': 'message', 'role': 'assistant',
@@ -93,7 +109,7 @@ def main():
     original_environment = dict(os.environ)
     with tempfile.TemporaryDirectory(prefix='velune-abi-loop-') as temporary:
         root = Path(temporary)
-        for name in ('home', 'resources', 'work', 'agent', 'sessions'):
+        for name in ('home', 'resources', 'work-a', 'work-b', 'agent', 'sessions'):
             (root / name).mkdir()
         for helper in ('pi_sessions.mjs', 'pi_virtual_model.mjs', 'pi_auth.mjs'):
             shutil.copy(args.resources / helper, root / 'resources' / helper)
@@ -128,14 +144,32 @@ def main():
             assert response['ok'], (action, response)
             return response['data']
 
+        def request_error(action, **payload):
+            payload.setdefault('runtimeInstanceID', 'fixture-pi')
+            response = take(library.velune_core_request(handle, json.dumps(
+                {'version': 3, 'action': action, 'payload': payload}).encode()))
+            assert not response['ok'], (action, response)
+            return response
+
         def snapshot_until_idle():
             deadline = time.monotonic() + 15
             while time.monotonic() < deadline:
                 snapshot = request('getSnapshot')['snapshot']
+                if snapshot['runState'] == 'failed':
+                    raise AssertionError(('Pi failed', snapshot))
                 if snapshot['runState'] == 'idle':
                     return snapshot
                 time.sleep(0.1)
             raise AssertionError('Pi did not settle')
+
+        def request_for_model(model):
+            return next(item for item in reversed(requests) if item.get('model') == model)
+
+        def wait_for_requests(count):
+            deadline = time.monotonic() + 15
+            while time.monotonic() < deadline and len(requests) < count:
+                time.sleep(0.05)
+            assert len(requests) >= count, (count, requests)
 
         options = json.dumps({'homeDirectory': str(root / 'home'),
                               'resourcesDirectory': str(root / 'resources'),
@@ -160,10 +194,13 @@ def main():
             runtime = {'id': 'fixture-pi', 'name': 'Isolated Pi', 'typeId': 'pi',
                        'gatewayId': 'fixture', 'modelId': 'first',
                        'settings': {'binary': str(root / 'resources/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js'),
-                                    'nodeBinary': str(args.node), 'workingDir': str(root / 'work'),
+                                    'nodeBinary': str(args.node),
                                     'agentDir': str(root / 'agent'), 'sessionDir': str(root / 'sessions')}}
             request('runtimeInstances', operation='upsert', runtimeInstance=json.dumps(runtime))
             request('runtimeAction', actionID='connect')
+            selection_before_session = (root / 'agent/velune-selection.json').read_bytes()
+            request_error('selectModel', modelID='second')
+            assert (root / 'agent/velune-selection.json').read_bytes() == selection_before_session
             catalog = json.loads((root / 'agent/models.json').read_text())
             catalog_models = catalog['providers']['velune-gateway']['models']
             assert [item['contextWindow'] for item in catalog_models] == [32768, 65536]
@@ -179,27 +216,30 @@ def main():
               if(!transformMessages([old], model)[0].content.some(x => x.thinkingSignature)) throw Error('identity lost');
             '''
             subprocess.run([str(args.node), '--input-type=module', '-e', check], check=True)
-            request('create')
+            request('create', cwd=str(root / 'work-a'))
+            time.sleep(0.2)
             if args.subscription_capability:
                 selection = root / 'agent/velune-selection.json'
                 value = json.loads(selection.read_text())
                 value['subscriptionCapability'] = True
                 selection.write_text(json.dumps(value))
+            expected_request_count = len(requests) + 1
             started = request('send', text='Return the fixture response.')
             assert started['snapshot']['runState'] == 'running', started
+            wait_for_requests(expected_request_count)
             first = snapshot_until_idle()
-            assert 'VELUNE_ABI_OK' in json.dumps(first), (first, requests)
+            assert 'VELUNE_ABI_OK' in json.dumps(first), (first, requests, 'session=' + session_id if 'session_id' in locals() else 'session=not-yet')
             session_entries = [json.loads(line) for line in Path(first['conversation']['id'].split(':', 1)[1]).read_text().splitlines()]
             assert any(entry.get('type') == 'model_change' and entry.get('provider') == 'velune' and entry.get('modelId') == 'auto'
                        for entry in session_entries)
             assert any(entry.get('type') == 'message' and entry.get('message', {}).get('role') == 'assistant'
                        and entry['message'].get('provider') == 'velune-gateway'
                        and entry['message'].get('model') == physical_ids['first'] for entry in session_entries)
-            assert requests[0]['model'] == 'external-first'
+            first_request = request_for_model('external-first')
             if args.protocol == 'chatCompletionsV1':
-                assert requests[0]['max_completion_tokens'] == 64
+                assert first_request['max_completion_tokens'] == 64
             elif args.subscription_capability:
-                assert all(key not in requests[0] for key in (
+                assert all(key not in first_request for key in (
                     'max_output_tokens', 'temperature', 'prompt_cache_retention',
                     'prompt_cache_options', 'prompt_cache_key'))
             else:
@@ -208,41 +248,82 @@ def main():
             assert session_id.startswith('fixture-pi:/')
             listed = request('list')['conversations']
             assert session_id in [item['id'] for item in listed], (session_id, listed, list((root / 'sessions').rglob('*')))
+            first_listing = next(item for item in listed if item['id'] == session_id)
+            assert first_listing['cwd'] == str((root / 'work-a').resolve()), first_listing
             request('selectModel', modelID='second')
             restored_before_send = request('open', conversationID=session_id)['snapshot']
             assert restored_before_send['modelId'] == 'second', restored_before_send
+            time.sleep(0.2)
             if args.subscription_capability:
                 selection = root / 'agent/velune-selection.json'
                 value = json.loads(selection.read_text())
                 value['subscriptionCapability'] = True
                 selection.write_text(json.dumps(value))
-            request('send', text='Return another fixture response.')
-            snapshot_until_idle()
+            expected_request_count = len(requests) + 1
+            second_snapshot = request('send', text='Return another fixture response.')['snapshot']
+            assert second_snapshot['runState'] == 'running', second_snapshot
+            wait_for_requests(expected_request_count)
+            second_snapshot = snapshot_until_idle()
+            assert 'VELUNE_ABI_OK' in json.dumps(second_snapshot), second_snapshot
             session_entries = [json.loads(line) for line in Path(session_id.split(':', 1)[1]).read_text().splitlines()]
             assert any(entry.get('type') == 'message' and entry.get('message', {}).get('role') == 'assistant'
                        and entry['message'].get('provider') == 'velune-gateway'
                        and entry['message'].get('model') == physical_ids['second'] for entry in session_entries)
-            assert requests[1]['model'] == 'external-second'
+            second_request = request_for_model('external-second')
             if args.protocol == 'chatCompletionsV1':
-                assert requests[1]['max_completion_tokens'] == 80
+                assert second_request['max_completion_tokens'] == 80
             elif args.subscription_capability:
-                assert all(key not in requests[1] for key in (
+                assert all(key not in second_request for key in (
                     'max_output_tokens', 'temperature', 'prompt_cache_retention',
                     'prompt_cache_options', 'prompt_cache_key'))
             else:
                 assert requests[1]['max_output_tokens'] == 80
-            new_session = request('create')['snapshot']
+            new_session = request('create', cwd=str(root / 'work-b'))['snapshot']
             assert new_session['modelId'] == 'first'
+            second_id = new_session['conversation']['id']
+            assert new_session['conversation']['cwd'] == str((root / 'work-b').resolve()), new_session
+            expected_request_count = len(requests) + 1
+            second_started = request('send', text='Create the second project session.')['snapshot']
+            assert second_started['runState'] == 'running', second_started
+            wait_for_requests(expected_request_count)
+            second_snapshot = snapshot_until_idle()
+            assert 'VELUNE_ABI_OK' in json.dumps(second_snapshot), second_snapshot
+            tool_snapshot = request('send', text='Verify tool cwd.')['snapshot']
+            assert tool_snapshot['runState'] == 'running', tool_snapshot
+            tool_snapshot = snapshot_until_idle()
+            assert 'VELUNE_ABI_OK' in json.dumps(tool_snapshot), tool_snapshot
+            assert tool_result_requests and str((root / 'work-b').resolve()) in json.dumps(tool_result_requests[-1]), tool_result_requests
+            listed = request('list')['conversations']
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline and not any(item['id'] == second_id for item in listed):
+                time.sleep(0.1)
+                listed = request('list')['conversations']
+            selected_cwds = {item['cwd'] for item in listed if item['id'] in (session_id, second_id)}
+            assert selected_cwds == {str((root / 'work-a').resolve()), str((root / 'work-b').resolve())}, (selected_cwds, listed, session_id, second_id)
             restored = request('open', conversationID=session_id)['snapshot']
             assert restored['modelId'] == 'second', restored
+            assert restored['conversation']['cwd'] == str((root / 'work-a').resolve()), restored
+            expected_request_count = len(requests) + 1
+            restored_tool = request('send', text='Verify tool cwd.')['snapshot']
+            assert restored_tool['runState'] == 'running', restored_tool
+            wait_for_requests(expected_request_count)
+            restored_tool = snapshot_until_idle()
+            assert 'VELUNE_ABI_OK' in json.dumps(restored_tool), restored_tool
+            assert tool_result_requests and str((root / 'work-a').resolve()) in json.dumps(tool_result_requests[-1]), tool_result_requests
+            shutil.rmtree(root / 'work-b')
+            request_error('open', conversationID=second_id)
+            still_a = request('getSnapshot')['snapshot']
+            assert still_a['conversation']['cwd'] == str((root / 'work-a').resolve()), still_a
             request('send', text='Wait for cancellation.')
             assert waiting.wait(10), 'third request did not reach local upstream'
+            request_error('create', cwd=str(root / 'work-b'))
+            request_error('open', conversationID=session_id)
             old_handle = handle.value
             assert not take(library.velune_core_close(ctypes.byref(handle)))['ok']
             assert handle.value == old_handle
             request('cancel')
-            snapshot_until_idle()
             release.set()
+            snapshot_until_idle()
             assert take(library.velune_core_close(ctypes.byref(handle)))['ok']
             assert not handle.value
             # Build synthetic signed history through Pi's own session API, then
@@ -283,17 +364,17 @@ def main():
                 selection.write_text(json.dumps(value))
             request('send', text='Return a response after changing the route binding.')
             snapshot_until_idle()
-            assert requests[3]['model'] == 'external-second-rebound'
-            wire = json.dumps(requests[3])
+            assert requests[-1]['model'] == 'external-second-rebound'
+            wire = json.dumps(requests[-1])
             assert 'SYNTHETIC_OLD_BINDING_SIGNATURE' not in wire
             assert 'SYNTHETIC_TOOL_RESULT' in wire
             if args.protocol == 'responsesV1':
-                items = requests[3]['input']
+                items = requests[-1]['input']
                 call = next(item for item in items if item.get('type') == 'function_call')
                 result = next(item for item in items if item.get('type') == 'function_call_output')
                 assert call['call_id'] == result['call_id']
             else:
-                items = requests[3]['messages']
+                items = requests[-1]['messages']
                 call = next(item['tool_calls'][0] for item in items if item.get('tool_calls'))
                 result = next(item for item in items if item.get('role') == 'tool')
                 assert call['id'] == result['tool_call_id']

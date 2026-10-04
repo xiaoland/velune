@@ -36,8 +36,7 @@ fn runtime_types(resources_directory: &Path) -> Value {
         "fields":[
             {"key":"binary","label":"运行时入口","kind":"filePath","required":true,"value":binary_value,"options":[],"help":"Pi CLI 的绝对路径；应用不会使用全局 PATH。"},
             {"key":"nodeBinary","label":"Node 可执行文件","kind":"filePath","required":false,"value":"","options":[],"help":"Node 22.19+ 的绝对路径；用于启动 JavaScript CLI。"},
-            {"key":"workingDir","label":"工作目录","kind":"directoryPath","required":true,"value":"","options":[],"help":"该运行时使用的工作目录。"},
-            {"key":"agentDir","label":"运行时目录","kind":"directoryPath","required":true,"value":"","options":[],"help":"该运行时专属的 Pi 配置目录。"},
+            {"key":"agentDir","label":"运行时目录","kind":"directoryPath","required":true,"value":"","options":[],"help":"配置与状态根目录，不是会话项目目录。"},
             {"key":"sessionDir","label":"会话目录","kind":"directoryPath","required":false,"value":"","options":[],"help":"可选的 Pi 会话目录。"}
         ],
         "actions":[{"id":"connect","label":"连接运行时"}]
@@ -131,6 +130,7 @@ pub struct CoreRuntime {
     physical_model_id: Option<String>,
     logical_model_id: Option<String>,
     subscription_capability: bool,
+    pi_turn_started: bool,
 }
 
 impl CoreRuntime {
@@ -200,6 +200,7 @@ impl CoreRuntime {
             physical_model_id: None,
             logical_model_id: None,
             subscription_capability: false,
+            pi_turn_started: false,
         })
     }
 
@@ -357,11 +358,11 @@ impl CoreRuntime {
         if self.pi_busy {
             return Err(RuntimeError::invalid("runtime is busy"));
         }
-        self.pi
-            .as_mut()
-            .ok_or_else(|| RuntimeError::invalid("runtime is not connected"))?
-            .request(json!({"type":"new_session"}))
-            .map_err(|_| RuntimeError::invalid("conversation create"))?;
+        let cwd = request["payload"]["cwd"]
+            .as_str()
+            .map(PathBuf::from)
+            .ok_or_else(|| RuntimeError::invalid("conversation working directory"))?;
+        validate_session_cwd(&cwd)?;
         let default_model = self
             .runtime_instances
             .iter()
@@ -386,14 +387,21 @@ impl CoreRuntime {
         let default_physical_model_id = gateway
             .pi_binding_id(&default_model)
             .map_err(RuntimeError::invalid)?;
-        self.pi_config.as_mut().expect("connected Pi config").model = Some("velune/auto".into());
-        self.write_selection(
-            &default_model,
-            &default_physical_model_id,
+        self.start_pi_for_session(
+            &cwd,
+            None,
+            Some(&default_model),
+            Some(&default_physical_model_id),
             self.subscription_capability,
         )?;
-        self.physical_model_id = Some(default_physical_model_id);
+        self.pi
+            .as_mut()
+            .expect("started Pi client")
+            .request(json!({"type":"new_session"}))
+            .map_err(|_| RuntimeError::invalid("conversation create"))?;
         self.bind_gateway_model()?;
+        self.drain_pi();
+        self.physical_model_id = Some(default_physical_model_id);
         self.sync_projection()?;
         Ok(json!({"snapshot":self.projection.as_ref().and_then(|item| item.snapshot.as_ref())}))
     }
@@ -417,17 +425,18 @@ impl CoreRuntime {
             .map(PathBuf::from)
             .filter(|path| path.is_absolute())
             .ok_or_else(|| RuntimeError::invalid("conversation id"))?;
-        // Read Pi's selected branch before switching: CLI launch overrides can
-        // otherwise append the runtime default to the restored transcript.
+        // Read session metadata before starting Pi. The saved cwd is the
+        // session's project context and must not fall back to the app cwd.
         let saved = pi_session_helper(
             self.pi_config.as_ref().expect("connected Pi config"),
             Some(&path),
         )?;
-        self.pi
-            .as_mut()
-            .ok_or_else(|| RuntimeError::invalid("runtime is not connected"))?
-            .switch_session(&path)
-            .map_err(|_| RuntimeError::invalid("conversation open"))?;
+        let cwd = saved["cwd"]
+            .as_str()
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from)
+            .ok_or_else(|| RuntimeError::invalid("session working directory is unavailable"))?;
+        validate_session_cwd(&cwd)?;
         let restored_model = saved["virtualState"]["state"]["logicalModelId"]
             .as_str()
             .or_else(|| saved["virtualState"]["state"]["modelId"].as_str())
@@ -451,19 +460,25 @@ impl CoreRuntime {
                     && runnable_pi_model(gateway, id).is_ok()
             })
             .map(str::to_owned);
-        self.physical_model_id = model_id.clone();
+        self.physical_model_id = None;
         self.logical_model_id = model_id.clone();
         self.subscription_capability = model_id
             .as_deref()
             .is_some_and(|id| subscription_capability(gateway, id));
-        self.pi_config.as_mut().expect("connected Pi config").model = Some("velune/auto".into());
         if let Some(model_id) = model_id {
             let physical_model_id = gateway
                 .pi_binding_id(&model_id)
                 .map_err(RuntimeError::invalid)?;
             self.physical_model_id = Some(physical_model_id.clone());
-            self.write_selection(&model_id, &physical_model_id, self.subscription_capability)?;
-            self.bind_gateway_model()?;
+            self.start_pi_for_session(
+                &cwd,
+                Some(&path),
+                Some(&model_id),
+                Some(&physical_model_id),
+                self.subscription_capability,
+            )?;
+        } else {
+            self.start_pi_for_session(&cwd, Some(&path), None, None, false)?;
         }
         if let Some(projection) = self.projection.as_mut() {
             projection.set_conversation(ConversationSummary {
@@ -475,6 +490,7 @@ impl CoreRuntime {
                     .into(),
                 updated_at: None,
                 runtime_id,
+                cwd: Some(cwd.to_string_lossy().into_owned()),
             });
         }
         self.sync_projection()?;
@@ -634,7 +650,7 @@ impl CoreRuntime {
                     .join("pi_virtual_model.mjs"),
             ),
             agent_dir: Some(setting_path(&runtime, "agentDir")?),
-            working_dir: Some(setting_path(&runtime, "workingDir")?),
+            working_dir: None,
             provider: Some("velune-gateway".into()),
             model: Some("velune/auto".into()),
             protocol: Some(
@@ -657,7 +673,9 @@ impl CoreRuntime {
             gateway_token: Some(runner.token().into()),
             session_dir: setting_path_optional(&runtime, "sessionDir"),
             session: None,
-            name: Some(runtime.name.clone()),
+            // A session's Pi name belongs to its persisted session_info entry.
+            // Runtime names must not overwrite it when reopening a session.
+            name: None,
         };
         if let Err(error) = materialize_models(&config, &gateway) {
             drop(runner);
@@ -670,30 +688,88 @@ impl CoreRuntime {
             &physical_model_id,
             subscription_capability,
         )?;
-        let client = match pi::Client::spawn(config.clone()) {
-            Ok(client) => client,
-            Err(_) => {
-                drop(runner);
-                return Err(RuntimeError::invalid("runtime startup"));
-            }
-        };
+        self.gateway_runner = Some(runner);
+        self.pi_config = Some(config);
+        self.active_runtime_id = Some(runtime_id.into());
+        self.physical_model_id = None;
+        self.logical_model_id = None;
+        self.subscription_capability = false;
+        Ok(())
+    }
+
+    fn start_pi_for_session(
+        &mut self,
+        cwd: &Path,
+        session: Option<&Path>,
+        logical_model_id: Option<&str>,
+        physical_model_id: Option<&str>,
+        subscription_capability: bool,
+    ) -> Result<(), RuntimeError> {
+        validate_session_cwd(cwd)?;
+        let cwd = fs::canonicalize(cwd)
+            .map_err(|_| RuntimeError::invalid("conversation working directory"))?;
+        let mut config = self
+            .pi_config
+            .clone()
+            .ok_or_else(|| RuntimeError::invalid("runtime is not connected"))?;
+        self.shutdown_pi()?;
+        config.working_dir = Some(cwd.clone());
+        config.session = session.map(Path::to_owned);
+        config.name = None;
+        if let (Some(logical), Some(physical)) = (logical_model_id, physical_model_id) {
+            write_selection_file(&config, logical, physical, subscription_capability)?;
+        }
+        let mut client = pi::Client::spawn(config.clone())
+            .map_err(|_| RuntimeError::invalid("runtime startup"))?;
+        // Establish readiness through RPC before exposing bootstrap events to
+        // the projection. Pi can emit initialization records before its first
+        // command response; those records must not settle a new turn.
+        client
+            .state()
+            .map_err(|_| RuntimeError::invalid("runtime startup"))?;
+        let runtime_id = self.active_runtime_id.as_deref().unwrap_or_default();
         let mut projection = PiProjection::new(ConversationSummary {
-            id: "active".into(),
-            title: "当前会话".into(),
+            id: session
+                .map(|path| format!("{runtime_id}:{}", path.display()))
+                .unwrap_or_else(|| "active".into()),
+            title: session
+                .and_then(|path| path.file_stem())
+                .and_then(|item| item.to_str())
+                .unwrap_or("当前会话")
+                .into(),
             updated_at: None,
             runtime_id: runtime_id.into(),
+            cwd: Some(cwd.to_string_lossy().into_owned()),
         });
         if let Some(snapshot) = projection.snapshot.as_mut() {
-            snapshot.model_id = Some(logical_model_id.into());
+            snapshot.model_id = logical_model_id.map(str::to_owned);
         }
-        self.gateway_runner = Some(runner);
         self.pi = Some(client);
         self.pi_config = Some(config);
         self.projection = Some(projection);
-        self.active_runtime_id = Some(runtime_id.into());
-        self.physical_model_id = Some(physical_model_id);
-        self.logical_model_id = Some(logical_model_id.into());
+        self.logical_model_id = logical_model_id.map(str::to_owned);
+        self.physical_model_id = physical_model_id.map(str::to_owned);
         self.subscription_capability = subscription_capability;
+        self.drain_pi();
+        Ok(())
+    }
+
+    fn shutdown_pi(&mut self) -> Result<(), RuntimeError> {
+        if let Some(mut client) = self.pi.take() {
+            client
+                .shutdown()
+                .map_err(|_| RuntimeError::invalid("runtime shutdown"))?;
+        }
+        self.pi_busy = false;
+        self.pi_turn_started = false;
+        self.projection = None;
+        self.physical_model_id = None;
+        self.logical_model_id = None;
+        self.subscription_capability = false;
+        if let Some(config) = self.pi_config.as_mut() {
+            config.working_dir = None;
+            config.session = None;
+        }
         Ok(())
     }
 
@@ -723,6 +799,7 @@ impl CoreRuntime {
             projection.append_user(text);
         }
         self.pi_busy = response["data"]["disposition"] != "handled";
+        self.pi_turn_started = false;
         if self.pi_busy
             && let Some(snapshot) = self
                 .projection
@@ -771,6 +848,9 @@ impl CoreRuntime {
         self.ensure_active(request)?;
         if self.pi_busy {
             return Err(RuntimeError::invalid("runtime is busy"));
+        }
+        if self.pi.is_none() {
+            return Err(RuntimeError::invalid("conversation is not active"));
         }
         let model_id = request["payload"]["modelID"]
             .as_str()
@@ -861,6 +941,11 @@ impl CoreRuntime {
                         .into(),
                     updated_at: None,
                     runtime_id: runtime_id.into(),
+                    cwd: self
+                        .pi_config
+                        .as_ref()
+                        .and_then(|config| config.working_dir.as_ref())
+                        .map(|path| path.to_string_lossy().into_owned()),
                 });
             }
             projection.replace_history(&messages);
@@ -881,10 +966,21 @@ impl CoreRuntime {
             .map(|client| client.poll())
             .unwrap_or_default();
         for event in events {
-            if event["type"] == "agent_settled" {
-                self.pi_busy = false;
+            let is_settled = event["type"] == "agent_settled";
+            let matched_settled = is_settled && self.pi_turn_started;
+            if matches!(
+                event["type"].as_str(),
+                Some("agent_start" | "turn_start" | "message_start")
+            ) {
+                self.pi_turn_started = true;
             }
-            if let Some(projection) = self.projection.as_mut() {
+            if matched_settled {
+                self.pi_busy = false;
+                self.pi_turn_started = false;
+            }
+            if (!is_settled || matched_settled)
+                && let Some(projection) = self.projection.as_mut()
+            {
                 projection.apply_event(&event);
             }
         }
@@ -924,6 +1020,7 @@ impl CoreRuntime {
                     title: title.into(),
                     updated_at: item["modified"].as_str().map(str::to_owned),
                     runtime_id: runtime_id.into(),
+                    cwd: item["cwd"].as_str().map(str::to_owned),
                 })
             })
             .collect::<Result<Vec<_>, RuntimeError>>()?;
@@ -938,6 +1035,7 @@ impl CoreRuntime {
         }
         self.pi_config = None;
         self.pi_busy = false;
+        self.pi_turn_started = false;
         self.projection = None;
         self.gateway_runner = None;
         self.active_runtime_id = None;
@@ -1167,6 +1265,13 @@ fn subscription_capability(gateway: &GatewayConfig, model_id: &str) -> bool {
         })
 }
 
+fn validate_session_cwd(cwd: &Path) -> Result<(), RuntimeError> {
+    if !cwd.is_absolute() || !cwd.is_dir() {
+        return Err(RuntimeError::invalid("conversation working directory"));
+    }
+    Ok(())
+}
+
 fn pi_session_helper(config: &PiConfig, session: Option<&Path>) -> Result<Value, RuntimeError> {
     let helper = config
         .sdk_helper
@@ -1181,6 +1286,8 @@ fn pi_session_helper(config: &PiConfig, session: Option<&Path>) -> Result<Value,
     command.arg(helper);
     if let Some(path) = session {
         command.arg("--inspect-session").arg(path);
+    } else {
+        command.arg("--all");
     }
     if let Some(cwd) = &config.working_dir {
         // Pi records the physical process cwd; use the same path for SDK filtering.

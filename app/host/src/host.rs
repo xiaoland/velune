@@ -180,6 +180,7 @@ pub fn serve(dir: &Path) -> Result<()> {
                                 title: "当前会话".into(),
                                 updated_at: None,
                                 runtime_id: "native-runtime".into(),
+                                cwd: None,
                             }));
                             Ok(())
                         }
@@ -671,6 +672,7 @@ fn handle_generic_action(
                         .into(),
                     updated_at: None,
                     runtime_id: runtime_id.into(),
+                    cwd: None,
                 });
             }
             sync_generic(pi, projection, active_runtime_id.as_deref())?;
@@ -876,6 +878,7 @@ fn start_generic_with_config(
         title: "当前会话".into(),
         updated_at: None,
         runtime_id: runtime_id.unwrap_or("native-runtime").into(),
+        cwd: None,
     });
     if let Some(snapshot) = value.snapshot.as_mut() {
         snapshot.model_id = pi_config.as_ref().and_then(|config| config.model.clone());
@@ -1016,6 +1019,7 @@ fn sync_generic(
                 title,
                 updated_at: None,
                 runtime_id: runtime_id.into(),
+                cwd: None,
             });
         }
         projection.replace_history(&messages);
@@ -1043,6 +1047,7 @@ fn generic_conversations(value: &Value, runtime_id: Option<&str>) -> Vec<Convers
                 updated_at: session["modified"].as_str().map(str::to_owned),
                 runtime_id: runtime_id.into(),
                 id: conversation_id(runtime_id, &path),
+                cwd: session["cwd"].as_str().map(str::to_owned),
             })
         })
         .collect()

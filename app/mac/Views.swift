@@ -59,7 +59,7 @@ struct VeluneRootView: View {
             } label: { Text(store.selectedModelName ?? "选择模型") }
             .accessibilityLabel("模型：\(store.selectedModelName ?? "未选择")")
             .help("选择模型（当前：\(store.selectedModelName ?? "未选择")）")
-            .disabled(store.isGenerating || store.isLoading)
+            .disabled(!store.canSwitchModel)
             Menu {
                 ForEach(store.connections) { connection in Button(connection.name) { store.selectConnection(id: connection.id) } }
                 Divider()
@@ -488,7 +488,10 @@ struct RuntimeEditor: View {
     }
     private func commit() {
         guard valid, let descriptor else { return }
-        let values = Dictionary(uniqueKeysWithValues: descriptor.fields.map { ($0.key, settings[$0.key] ?? $0.value) })
+        var values = instance?.settings ?? [:]
+        for field in descriptor.fields {
+            values[field.key] = settings[field.key] ?? field.value
+        }
         save(RuntimeInstance(id: instance?.id ?? draftID, name: name.trimmingCharacters(in: .whitespacesAndNewlines), typeID: typeID, gatewayID: instance?.gatewayID ?? gatewayID, settings: values, modelID: modelID)) { dismiss() }
     }
 }

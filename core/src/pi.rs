@@ -187,7 +187,8 @@ impl Client {
         // UI supplies Node explicitly, run Pi through that exact binary so a
         // shebang such as `#!/usr/bin/env node` cannot select another runtime
         // (or fail to resolve one). An omitted node_binary keeps support for
-        // native/synthetic Pi-compatible executables used by tests.
+        // Native or synthetic Pi-compatible executables used for manual
+        // isolated verification.
         let mut command = if let Some(node) = &config.node_binary {
             let mut command = Command::new(node);
             command.arg(&config.binary);

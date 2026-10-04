@@ -5,7 +5,8 @@ struct Conversation: Codable, Sendable, Identifiable, Equatable {
     var title: String
     var updatedAt: String?
     var runtimeID: String
-    enum CodingKeys: String, CodingKey { case id, title, updatedAt; case runtimeID = "runtimeId" }
+    var cwd: String?
+    enum CodingKeys: String, CodingKey { case id, title, updatedAt, cwd; case runtimeID = "runtimeId" }
 }
 
 enum RunState: String, Codable {

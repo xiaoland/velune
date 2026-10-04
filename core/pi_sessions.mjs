@@ -17,6 +17,7 @@ if (inspectPath) {
     .reverse()
     .find((entry) => entry.type === "custom" && entry.customType === "pi.virtual-model-state");
   process.stdout.write(JSON.stringify({
+    cwd: manager.getCwd(),
     model: context.model,
     thinkingLevel: context.thinkingLevel,
     virtualState: virtualEntry?.data ?? null,
