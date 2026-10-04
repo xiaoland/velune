@@ -20,7 +20,7 @@ open /Applications/Velune.app
 VELUNE_HOME=/absolute/path/to/isolated-home /Applications/Velune.app/Contents/MacOS/Velune
 ```
 
-构建脚本默认将验证签名后的 bundle 安装到 `/Applications/Velune.app`；仅构建可用 `bash scripts/build-macos.sh --build-only`。修改后正常退出应用再重建安装，安装器不会覆盖尚未退出的应用；应用在运行时忙碌时拒绝退出，不能为更新强制终止任务。产品显示版本来自仓库 `VERSION`，当前为 `0.1 beta.1`，原生“关于 Velune”面板读取同一版本。manifest 分别保存源码提交、ABI、投影契约和配置 schema。
+构建脚本默认将验证签名后的 bundle 安装到 `/Applications/Velune.app`；仅构建可用 `bash scripts/build-macos.sh --build-only`。修改后退出应用再重建安装，安装器不会覆盖尚未退出的应用。用户已授权开发方随时直接退出 Velune；先正常退出，若应用拒绝退出，可终止已确认的 Velune 应用进程后安装，无需要求用户手动退出。产品显示版本来自仓库 `VERSION`，当前为 `0.1 beta.1`，原生“关于 Velune”面板读取同一版本。manifest 分别保存源码提交、ABI、投影契约和配置 schema。
 
 Settings 分为 AI 提供商、模型、模型路由和 Agent 运行时。先定义模型 ID、昵称、图标、上下文窗口、输出上限和支持的推理级别，再将模型关联到提供商的外部模型 ID，并显式选择路由。协议通过 Picker 选择，目前 OpenAI ChatCompletions v1 与 OpenAI Responses v1 可用；不进行协议翻译，未支持的协议不可保存。密钥由用户输入并存入本机 Keychain，文件只保存引用。fail-over 当前禁用，没有自动切换策略。
 

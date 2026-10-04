@@ -63,7 +63,7 @@
 
 AI 提供商与模型分开建模，模型跨提供商存在且拥有自己的参数；提供商关联模型。协议为枚举选项，支持 OpenAI ChatCompletions v1 与原生 Responses v1，暂不翻译协议。提供商、路由和 fail-over 归属 Velune AI 服务网关；Harness 只接注入的网关配置。用户可显式选择原 Harness 认证来源，网关委托该来源解析与刷新，不删除原配置、不复制 refresh credential，也不让执行 Harness 绕过网关。模型参数以提供商协议为权威，聊天示例不提升为每个提供商必须支持的字段。Agent 运行时区分类型与配置实例，同类型可配置多个独立实例，不能在 UI 或 Host 假定只有一份配置。
 
-core 是跨平台 Rust lib，通过 ABI 嵌入平台 app；产品不得另启常驻 core／Host 进程或依赖 App↔Host socket。外部 Harness 子进程与本机模型网关保留各自的职责。Mac 修改后重新构建并安装至 `/Applications/Velune.app`，不强制中断活跃任务；当前产品显示版本为 `0.1 beta.1`。
+core 是跨平台 Rust lib，通过 ABI 嵌入平台 app；产品不得另启常驻 core／Host 进程或依赖 App↔Host socket。外部 Harness 子进程与本机模型网关保留各自的职责。Mac 修改后重新构建并安装至 `/Applications/Velune.app`。用户已授权开发方随时直接退出正在运行的 Velune：先正常退出，若应用拒绝退出，可终止已确认的 Velune 应用进程，无需再次要求用户手动退出；当前产品显示版本为 `0.1 beta.1`。
 
 ## 持续迭代协作
 
