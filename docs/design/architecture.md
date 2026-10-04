@@ -4,6 +4,22 @@
 
 2026-10-03 范围修订：独立 AI service 的契约、provider 和配置归属以 [AI service 设计](ai-service.md) 为准。本页旧 Account／Slot 和 mock Router 方案不自动成为新 AI lib 的结构；旧 UI／Host 原型保留，本步不迁移。
 
+2026-10-04 首循环边界：用户明确要求实际拆分 `core`（AI 服务、Harness 适配器）与 `app`（Mac 等平台）。当前 Pi 切片由 Pi 拥有会话历史和持久化，Velune 只投影会话列表、消息和运行状态，不另建真实会话数据库。Mac 提供 Chatbot 界面、会话列表与通用资源配置，不能硬编码资源示例；真实验收由用户执行。此切片不将模拟核心的逻辑 Session 契约强加给 Pi 历史，也不声称完整统一自动路由已完成。执行状态见 [首循环任务](../../tasks/pi-mac-first-loop/packet.md)。
+
+首循环的当前装配边界（2026-10-04 用户修订）：core 的 Harness adapter 拥有原生协议与 SDK 列表桥；Host 装配 Velune AI 服务网关，Mac 拥有配置交互与 Keychain。全局模型独立于 AI 提供商，提供商关联多个模型；网关配置还包含显式路由及策略归属。当前先实现 OpenAI ChatCompletions v1 和显式路由，未定义的自动 fail-over 不默认启用。
+
+Agent 运行时区分类型与实例，Pi Agent 为首个类型，同类型可保存多个配置实例。首轮保持一个活跃 runner，空闲时切换实例，运行中禁止切换；这不限制配置只能有一份。会话身份必须包含运行时实例，列表 SDK 使用对应配置目录。适配器注入 Velune 网关地址和模型目录，切换或恢复会话后仍重新绑定网关，不能沿用历史原生 provider 绕过网关。Pi 派生文件不得包含上游端点／凭据，不覆盖用户全局配置。旧 Pi 官方登录与直接注入上游 Keychain 引用的方案已被本次纠正替代。
+
+Mac 重写的已确认边界：app 只依赖通用会话投影、消息内容、运行状态、能力和配置描述，不解析 Pi 或其他 Harness 的原生事件，不发送 Harness 专用命令。适配器在 core 内执行原生协议与通用契约的转换；平台装配负责 IPC、配置保存和系统凭据入口。运行时设置使用适配器描述的有限字段与动作，具体名称仅作为数据展示。当前只接已有的 Pi，不为尚未实现的 Harness 增加空适配器或插件系统。
+
+应用配置的已确认归属：平台装配解析 `VELUNE_HOME`，未设置时使用 `~/.velune`，向 Host 显式传入根目录。Host 在该目录持久化 AI provider 资源与 Harness 设置；独立 AI lib 不读取全局环境。配置文件保存凭据引用，秘密值由平台秘密设施管理。Pi 会话目录由配置指定，Velune 不将会话复制为另一套权威历史。
+
+平台视觉的已确认原则：各平台优先遵循自己的原生视觉与交互习惯，品牌和软件特点只在微小细节中体现。Mac 使用系统侧栏、工具栏、窗口、设置、语义颜色与字体；不能仅因采用 SwiftUI／AppKit 就把自绘的统一皮肤称为原生体验。跨平台共享领域契约，不要求各平台共享同一视觉布局。依据见 [PRD](../prd/index.md#已确认的产品结构与质量方向)。
+
+Apple 外观由原生组件与系统语义样式适配，不建立自有明暗主题配置，不将深色模式单列为验收门槛。自定义绘制或内容出现具体显示问题时，在相应组件边界修复。
+
+Velune 的产品身份是 control surface：UI、AI 服务网关与协调层服务于外部 Agent 运行时，不生成代表 Velune 自身的 Agent 人格。通用会话投影保持 user／assistant／system／tool 语义；平台按左右与居中布局呈现，不给 assistant 注入 Velune 作者标签。
+
 ## 1. 已认可方向与收敛方案
 
 做一个**本地优先的任务控制服务**，掌握任务树、会话身份、路由策略、权限、消息和恢复；下挂三个原生 Harness Adapter。LLM 路由采用“统一决策、分协议执行”：Codex 接 Responses 路径，Claude Code 接 Messages 路径，Pi 优先接原生逐请求路由钩子。订阅身份保持独立，使用各供应商允许的原生或正式集成路径；API 资源可由协议网关选择上游。
@@ -267,9 +283,9 @@ V1 是基础检查点，**V2＋V3 才构成首个可用版本**。不能只接�
 
 ## 11. 当前核心切片与原生体验接线
 
-实现入口：[src/lib.rs](../../src/lib.rs)、[schema.sql](../../src/schema.sql)、[adapter.rs](../../src/adapter.rs)、[routing.rs](../../src/routing.rs)。核心只覆盖固定深度委派、稳定 Session、单 Segment 绑定、每次重启的新 Run、独立 Attempt、事务 outbox 与合成结果验收；不是前述完整架构的实现。
+实现入口：[core/src/lib.rs](../../core/src/lib.rs)、[schema.sql](../../core/src/schema.sql)、[adapter.rs](../../core/src/adapter.rs)、[routing.rs](../../core/src/routing.rs)。核心只覆盖固定深度委派、稳定 Session、单 Segment 绑定、每次重启的新 Run、独立 Attempt、事务 outbox 与合成结果验收；不是前述完整架构的实现。
 
 单宿主通过 SQLite exclusive connection 拒绝第二个 Host；不是跨设备 lease／native fencing。未知提交阻塞该 Segment 后续投递，无自动 handoff 或人工强制解锁接口。路由只允许明确获准的模拟资源，无 API／订阅 lane。MCP 工具服务、ACP transport、真实 gateways／SDK 桥、费用预留与完整安全隔离尚未实现。
 
 Mac mini 首个体验切片已获准使用 Swift＋AppKit 薄壳。已编写原生 UI 与独立 Rust Host 接线源码；UI 通过随包 `rpc` 子进程访问同用户 Unix socket v1，操作同一核心及 DB，显示模拟模式、任务、会话、attempt 与协作事件。UI 退出不终止 Host；显式停止取消待投递消息、保留不确定状态。无 TCP／LAN、系统常驻安装或 UI 自有任务模拟。Cloud 已验证核心与 IPC；Mac 编译／安装／用户体验待父会话设备验收。
-交付版本与反馈循环见 [开发说明](../development.md#mac-mini-原生体验交付契约)。
+历史模拟壳交付约定见 [开发说明](../development.md#历史-mac-mini-模拟壳交付契约)；当前 Pi 与 Mac 切片以本文开头的网关与运行时边界为准。

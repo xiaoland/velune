@@ -1,0 +1,15 @@
+[package]
+name = "velune-ai-provider"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+velune-ai = { path = "../ai" }
+serde_json = "1"
+reqwest = { version = "0.13", default-features = false, features = ["native-tls", "json", "stream", "system-proxy"] }
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+eventsource-stream = "0.2"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt", "time"] }

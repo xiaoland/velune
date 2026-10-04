@@ -1,12 +1,12 @@
 # Velune：共享协作指引
 
-本仓库承载用户自有 Velune coding agent 产品。Velune 是已确定的项目名；Beluna 是独立的、非 Coding 的通用 Agent / Digital Life 姐妹项目。
+本仓库承载用户自有 Velune coding agent control surface，提供控制界面与协调层，不充当执行 Agent。Velune 是已确定的项目名；Beluna 是独立的、非 Coding 的通用 Agent / Digital Life 姐妹项目。
 
 ## 先读什么
 
 1. `README.md`：入口与当前阶段
 2. `docs/prd/index.md`：已确认的产品意图
-3. `tasks/harness-routing-feasibility/packet.md`：当前任务、未知项和下一步
+3. `tasks/pi-mac-first-loop/packet.md`：当前任务、反馈修订和验收边界；Harness 研究证据留在 `tasks/harness-routing-feasibility/`
 4. `docs/design/architecture.md`：已认可方向与具体技术推荐，区分已确认和待验证；不等于已授权实现
 5. 需要核对决定出处时读 `docs/sources.md`
 
@@ -27,6 +27,9 @@
 - 已确认 Rust 主核心、SQLite、原生 Apple Swift／UIKit 与 Android Kotlin／Jetpack Compose 方向；不恢复 TypeScript 主核心或 Web 前端路线
 - MCP 暴露协作工具、ACP 可替换接入已获认可；持久化是协作支撑，不代替发现、注入、委派、结果与失败协调机制
 - Apple 具体平台覆盖、Mac Catalyst／AppKit、FFI 与运行宿主等尚有技术边界，不能把 native UI 当手机可以常驻运行桌面 Harness 的证明
+- 应用配置使用文件系统持久化，根目录为 `VELUNE_HOME`，默认 `~/.velune`；AI provider 与 Harness 配置由平台装配／Host 管理，独立 AI lib 不自行读取全局环境，文件不保存秘密值
+- 各平台尽可能采用所属平台的原生视觉与交互习惯；品牌及软件特点仅在图标、内容与少量细节中体现，不建立覆盖系统风格的统一皮肤。原生框架本身不等于原生体验；布局、控件、窗口、字体、材质、颜色和系统行为都应遵守该原则
+- Apple app 使用原生组件与系统语义样式，不设独立深色模式开发配置或验收项；系统负责常规明暗适配，自定义内容仅针对具体显示问题检查和修复
 - 不把聊天中的示例、助手提议或未核实的技术说法提升为已批准架构
 - HAPI、Lody 只作说明性参考；Claude Code 订阅认证可研究其方案，但不意味着已允许复用凭据或认可可行性
 - 不承诺订阅可以无限使用、免 token 计费、跨任意工具互通或规避供应商限制
@@ -51,3 +54,19 @@
 2026-10-03 用户明确限定：仅独立 AI lib／provider 配置边界的模块、契约、构造校验与文档。不新增测试、不运行既有集成测试；本步用 cargo fmt/check/clippy 静态检查取代上文通用测试步骤。不得推进网络、凭据、路由／fallback／重试、旧 Host／UI 改造。权威设计见 docs/design/ai-service.md，任务见 tasks/ai-service-contracts/packet.md。允许该任务新开发分支普通 push，不改 main、不 force push、不创建 PR。
 
 2026-10-03 后续授权补充：允许在指定契约基线的新 dev 分支实现最小直接流式派发与 MiniMax provider，按任务预算进行合成 live fixture 采集及人工离线 replay。只读取已配置 Networksecret 占位供指定 HTTPS 请求，不输出／保存值。仍不新增或运行测试，不改旧 Host／UI，不部署，不调用 Ark／Bailian，不实现自动 routing／fallback。静态检查为 fmt/check/clippy；普通 push 已获授权，禁止 main／force／PR。预算及精确边界以 tasks/ai-service-contracts/packet.md 为准。
+
+## Pi 与 Mac 首循环
+
+2026-10-04 用户要求将上述分支合并 main，随后实施 Pi＋Mac 首循环，并明确至少拆为 core（AI 服务、Harness 适配器）与 app（Mac 等平台）。此任务提供 Chatbot 会话界面、会话列表和应用内通用资源配置；Pi 拥有会话持久化，Velune 只做 projection，不新建真实会话数据库。用户执行真实登录、调用和验收；开发方完成构建与隔离验证，不读取既有 auth／真实会话。上一节 MiniMax 的禁止 Host／UI 改造与禁止测试限于其有界任务，不阻止当前获准切片。后续持续迭代规则已授权自主提交当前任务；远端发布仍不由实现要求自动授权。任务状态见 tasks/pi-mac-first-loop/packet.md。
+
+## AI 网关与运行时配置边界
+
+AI 提供商与模型分开建模，模型跨提供商存在且拥有自己的参数；提供商关联模型。协议为枚举选项，首个支持 OpenAI ChatCompletions v1。提供商、路由和 fail-over 归属 Velune AI 服务网关；Harness 只接注入的网关配置，不利用 Harness 既有上游认证。Agent 运行时区分类型与配置实例，同类型可配置多个独立实例，不能在 UI 或 Host 假定只有一份配置。
+
+## 持续迭代协作
+
+用户于 2026-10-04 明确采用持续迭代协作：开发方承担程序员责任，用户承担技术型产品经理责任。主动建立或恢复任务、持续维护 Task Packet 与权威长期文档，并在已授权范围内维护代码可理解性与可维护性，不等到最终交付才集中补文档。任务与范围随新反馈更新，不把已经纠正的实现当作后续固定前提。
+
+允许自主提交当前任务改动，无需每次等待提交指令；提交前核对改动归属与必要验证，不混入无关工作。此授权不自动包括远端发布或部署。产品方向、用户特定偏好和有实质影响的范围扩展由用户决定；已有授权内的实施与常规工程选择自主推进。
+
+消息界面不显示用户或 LLM 的头像／昵称，右侧为用户、左侧为 LLM、中间为系统／Harness 状态；不得用 Velune 品牌冒充 LLM 作者。

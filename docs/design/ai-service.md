@@ -2,6 +2,16 @@
 
 状态：2026-10-03 有界 MiniMax 流式实现；文本终止问题已定位修复并由真实诊断记录离线复验，工具 live 与重复 replay 成功。service 是通用独立 lib，sampling 是其首个操作；不引入账户／渠道实体。授权与运行证据见 [任务](../../tasks/ai-service-contracts/packet.md)。旧 Host／UI／mock Router 未接线。
 
+## 网关配置与首循环修订
+
+2026-10-04 用户纠正首循环：AI 提供商只是 Velune AI 服务网关配置的一部分。全局模型目录保存模型身份、昵称、图标、输出上限和支持的推理级别；提供商通过模型映射关联目录项。协议由有限枚举表达，首先支持 OpenAI ChatCompletions v1；不将自由文本当作协议契约。模型路由与 fail-over 策略属于网关，不塞入提供商配置。
+
+Harness 不直接使用其已有上游认证。Host 装配本机 Velune 网关，向选定的 Agent 运行时实例注入网关端点、模型目录与本地访问凭据；上游凭据仅留在 Velune 的提供商装配边界。适配器不向 Harness 传递上游端点或 Keychain 引用。此次实现先提供显式模型到提供商的路由；自动策略尚未定义，默认禁用 fail-over，不展示可启用的空策略。
+
+网关的参数编码依据 [OpenAI Chat Completions 官方参考](https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create)，运行时配置注入依据 [Pi 1.0.2 模型配置源码](https://github.com/earendil-works/pi/blob/cd32f7725fdbddbaecdff5b1e68491563394e0ca/packages/coding-agent/docs/models.md)，于 2026-10-04 复核。内部输出上限与推理级别由 provider 转换为所选协议的字段，不以 UI 参数名称代替 wire 验证。
+
+下文 MiniMax 的固定 host／模型、采集预算与历史验收仍只描述原有有界 adapter，不是通用 Chat Completions 网关的能力证据。新实现与隔离假上游验证状态归属 [首循环任务](../../tasks/pi-mac-first-loop/packet.md)，不能沿用 MiniMax fixture 宣称新网关已通过。
+
 ## 两套契约与依赖
 
 ```text
@@ -12,13 +22,13 @@ app main → AiService::sampling(request, attempt_id, event_sink)
                   ↓ reqwest / SSE / Chat Completions
 ```
 
-[velune-ai](../../crates/velune-ai/src/lib.rs) 拥有调用方与 provider 两套权威契约，不依赖 provider crate、HTTP、SSE、厂商 JSON 或 SDK。provider 单向依赖 service；[MiniMax](../../crates/velune-ai-provider/src/minimax/mod.rs) 映射外部协议，不再增加平级 sampling 执行服务。serde_json 在 service 中只表达调用方工具 schema／参数，不表示厂商 envelope。
+[velune-ai](../../core/ai/src/lib.rs) 拥有调用方与 provider 两套权威契约，不依赖 provider crate、HTTP、SSE、厂商 JSON 或 SDK。provider 单向依赖 service；[MiniMax](../../core/ai-provider/src/minimax/mod.rs) 映射外部协议，不再增加平级 sampling 执行服务。serde_json 在 service 中只表达调用方工具 schema／参数，不表示厂商 envelope。
 
 `AiService::sampling` 同步校验目标并捕获 ProviderBinding，返回 Future；Future 被 poll 才派发。调用方传入独立 CallId 和 AttemptId；此步无全局 ID 生成器／去重库，调用方保证唯一。DirectAiService 不选择 provider、不重试／fallback。一个 provider Future 完成后，service 发恰好一个 Terminal 并返回 SamplingCompletion、CallObservation 和可选 AttemptObservation。未 poll／drop／panic 路径没有终态保证，不标为已验收的取消／恢复协议。
 
 ## 配置与装配
 
-统一配置中心拥有持久配置，app main 创建新的 immutable provider／binding／service。两个 lib 不读 env、文件、全局配置，也不保存配置。[手动入口](../../crates/velune-ai-provider/examples/minimax_manual.rs) 是本步 composition root：读取获准 Networksecret 占位、创建带标准环境代理及系统 TLS 校验的客户端，禁 retry／redirect，注入内存凭据。不是正式配置中心或产品入口。
+统一配置中心拥有持久配置，app main 创建新的 immutable provider／binding／service。两个 lib 不读 env、文件、全局配置，也不保存配置。[手动入口](../../core/ai-provider/examples/minimax_manual.rs) 是本步 composition root：读取获准 Networksecret 占位、创建带标准环境代理及系统 TLS 校验的客户端，禁 retry／redirect，注入内存凭据。不是正式配置中心或产品入口。
 
 ProviderConfig 保留协议、CredentialRef、模型映射、ProviderId／ConfigRevision。新增独立 ChatCompletionsConfig；Responses／Messages 仍仅配置形状，没有实现。MiniMax adapter 限定 HTTPS `api.minimax.cn:443/v1`、`MiniMax-M3`，`thinking:disabled`、`service_tier:standard`，不启用内置收费工具。HTTP 客户端的安全装配属于 app；adapter 接受已装配 client，不能从类型上证明任意第三方传入的 client 均关闭重试。
 

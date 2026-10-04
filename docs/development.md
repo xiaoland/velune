@@ -1,4 +1,32 @@
-# 无凭据核心开发与复验
+# 开发与复验
+
+## 当前 Mac 会话界面
+
+当前应用为 SwiftUI 原生 Mac control surface：系统侧栏和工具栏、Chatbot 阅读与输入区、独立 Settings 窗口。系统决定基础字体、语义颜色及明暗外观，Velune 品牌仅保留在图标与少量细节。应用使用 core 的通用 IPC v3 投影和配置描述，不解析 Harness 原生事件。下文 IPC v1 与模拟体验段落描述历史原型，不能作为当前界面操作说明。
+
+安装固定 Pi runtime 后构建：
+
+```sh
+./scripts/install-pi-runtime.sh
+bash scripts/build-macos.sh
+open target/macos/Velune.app
+```
+
+应用根目录由启动进程的 `VELUNE_HOME` 环境变量指定，未设置或留空时为 `~/.velune`，非空值必须是绝对目录路径。根目录下的 `generic-config.json` 持久化 AI 网关与 Agent 运行时实例配置，凭据值仍留在 Keychain；本地 IPC 与运行文件使用同一根目录。Finder 启动通常不继承 shell 配置，隔离开发可直接带环境运行 bundle 可执行文件：
+
+```sh
+VELUNE_HOME=/absolute/path/to/isolated-home target/macos/Velune.app/Contents/MacOS/Velune
+```
+
+Settings 分为 AI 提供商、模型、模型路由和 Agent 运行时。先定义模型 ID、昵称、图标、输出上限和支持的推理级别，再将模型关联到提供商的外部模型 ID，并显式选择路由。协议通过 Picker 选择，目前仅 OpenAI ChatCompletions v1 可用；未支持的协议不可保存。密钥由用户输入并存入本机 Keychain，文件只保存引用。fail-over 当前禁用，没有自动切换策略。
+
+Agent 运行时可配置多个实例，每个实例选择类型、独立配置目录、工作目录和初始模型。首轮支持 Pi 类型，保持一个活跃 runner，空闲时切换实例。连接后可新建或选择该实例的会话、发送消息、观察工具结果与取消。用户消息在右、LLM 在左、系统与工具状态居中，不显示作者头像或昵称。Pi 持久化会话，Mac 只投影。
+
+Harness 仅收到 Velune 本机网关配置；提供商凭据不传入 Harness，不使用“工作环境已有认证”。正常调用由网关显式路由到配置的提供商。ChatGPT 订阅接入需要自己的正式认证／协议适配，不能通过 Pi 登录入口冒充已经接通。真实请求和验收由用户完成。
+
+隔离视觉预览使用 `--preview`（合成多轮会话）或 `--preview-empty`；Apple app 不设置独立深色验收入口。预览 Store 无 Transport，不启动 Host，不访问真实配置、Keychain 或会话，不调用模型。预览不能证明真实循环完成。
+
+## 历史无凭据核心原型
 
 当前核心 0.1.0、诊断契约 1、SQLite schema 1。2026-10-02 在 Linux Codex Cloud 编译／执行。Rust 1.99.0（b940084d7）、rusqlite 0.37.0，全部依赖锁定于 Cargo.lock。不是 Mac 编译结果，也不是原生 Harness 协议兼容测试。
 
@@ -28,7 +56,7 @@ fixture 为 [review.json](../fixtures/review.json)，仅 `2 + 3 = 5`。Codex 会
 - 故障：busy／确认未发送可在截止时间内由调用方重试；提交结果 unknown 不重放并阻塞同 Segment。重启保留队列、结果与任务；进程死亡不会凭空释放未知状态。无原生核对能力时保持 blocked，不能继续跑真实副作用。
 - mock provider 直接产生确定性文本，Protocol 枚举只是路由兼容标签，未编解码 Responses／Messages 流。三 Native 边界均 `native_verified:false`，NativeUnavailable 显式报 unsupported。
 
-未实现：真实 binary／SDK 控制、网络 gateway、MCP server、ACP、模型流和工具协议保真、完整账户权益／费用预留／用量、通用权限／审批、运行中真实工具取消、自动 handoff、原生会话恢复、任意任务调度、数据库迁移、FFI／分发安装器。已有 AppKit 薄壳源码与本地调试构建脚本，尚未在 Mac 编译。无真实登录、秘密读取、付费调用。模拟“费用为零”不推定真实未知用量为零。
+未实现：真实模型/provider 调用验证、网络 gateway、MCP server、ACP、完整账户权益／费用预留／用量、通用权限／审批、运行中真实工具取消、自动 handoff、任意任务调度、数据库迁移、FFI／分发安装器。Pi RPC 与 SDK 会话列表已有隔离实现，但仍只按合成子进程验收。当前 Mac bundle 的构建与隔离验证结果见 [首循环任务](../tasks/pi-mac-first-loop/packet.md)。无真实登录、秘密读取、付费调用。模拟“费用为零”不推定真实未知用量为零。
 
 ## 原生协议参考
 
@@ -42,7 +70,9 @@ fixture 为 [review.json](../fixtures/review.json)，仅 `2 + 3 = 5`。Codex 会
 
 下一步先安装并锁定官方 binary／SDK，用无秘密假上游验证 P1／P2／P12，再在获准账号与预算下联调。不能因为本轮模拟成功就勾选三 Harness 的全请求覆盖或真实跨会话消费。
 
-## 真实联调准备
+## 历史真实联调研究
+
+本节保留 2026-10-02 的研究背景。当前首循环遵循上文 Velune 网关路径，下面的 Harness 原生认证研究不构成当前应用的配置入口或已实现能力。
 
 用户只需先提供不含秘密的配置选择：账号类别／计划、组织或 workspace 别名、允许的模型和数据目的地、订阅／API lane、额度与停止条件。不要发密码、token、auth 文件或 key 到聊天／仓库。
 
@@ -56,11 +86,11 @@ fixture 为 [review.json](../fixtures/review.json)，仅 `2 + 3 = 5`。Codex 会
 
 真实运行前必须具名批准：每次实验总货币上限、币种、单请求输入／输出限制、最大请求数／重试次数／总时长、并发、允许的资源与数据、是否允许付费 fallback。没有批准则真实调用上限为 0。建议首轮单 worker、仅合成输入，不运行变更型工具；达到任一上限立即停止新派发。401／资格拒绝不换号绕过；429 尊重范围及等待；未知费用保留保守预留，unknown 副作用停止重试。精确金额由用户决定，不能自行推定预算。原型尚没有实现这些真实费用闸门，必须在联调前补齐。
 
-## Mac mini 原生体验交付契约
+## 历史 Mac mini 模拟壳交付契约
 
 用户指定 Mac mini 首个目标，后续明确同意先核心后 Swift＋AppKit 接线。父会话只读盘点报告：Apple Silicon arm64、macOS 15.4.1、Xcode 26.2、Swift 6.2.3、Rust/Cargo 1.93。当前固定工具链 1.99.0 需 Mac rustup 官方安装；尚未在本分支执行 Mac 编译，不能宣称已安装。
 
-源码：[AppKit 薄壳](../native/macos/main.swift)、[构建脚本](../scripts/build-macos.sh)、[本地 Host](../src/host.rs)。原生壳启动独立 Rust Host，使用同用户私有目录（0700）内 Unix socket（0600）；不监听 TCP／LAN，不配置 launchagent 或 VPN。以随包 Rust `rpc` 子进程调用 IPC，Swift 不操作 DB。关闭 UI／客户端退出不终止 Host；安全停止取消未投递消息并关闭 Host，unknown 不伪装为已取消。再次启动恢复既有 DB。演示没有真实长运行工具，运行中工具取消尚未实现。
+源码：[AppKit 薄壳](../app/mac/main.swift)、[构建脚本](../scripts/build-macos.sh)、[本地 Host](../app/host/src/host.rs)。原生壳启动独立 Rust Host，使用同用户私有目录（0700）内 Unix socket（0600）；不监听 TCP／LAN，不配置 launchagent 或 VPN。以随包 Rust `rpc` 子进程调用 IPC，Swift 不操作 DB。关闭 UI／客户端退出不终止 Host；安全停止取消未投递消息并关闭 Host，unknown 不伪装为已取消。再次启动恢复既有 DB。演示没有真实长运行工具，运行中工具取消尚未实现。
 
 IPC v1 的命令为 `run/status/cancel/stop`，只允许内建合成样例，无任意 prompt／路径／账户参数；响应为 `{ok, diagnostics, host_error}` 或 `{ok:false,error}`。diagnostics 的 `contract_version=1` 与 tasks／sessions／messages／attempts／events 对应同一 SQLite 状态，显式 `simulation:true`。一个 Host 串行执行一条投递、每 900ms 前进一次以便观察，重启恢复待投递工作；非协议流速率。文件权限只是同用户本机边界，不抵御该用户自己的恶意进程，不能直接扩展到 LAN。
 
@@ -90,6 +120,19 @@ open target/macos/Velune.app
 
 闭环：Cloud 修复并做核心回归 → 新 commit／manifest → Mac 编译／签名／安装 → 重做原失败步骤和一次正常路径 → 用户确认。Task Packet 记录反馈 ID、修复 commit、设备验收结果；设备步骤未做则保持未验收，不能用接口测试替代。
 
+## Pi 运行时与本机网关
+
+Rust core 的 [Pi adapter](../core/src/pi.rs) 处理显式 Node／CLI 路径与 JSONL RPC，Host 负责运行时实例装配。会话列表使用固定 Pi 1.0.2 的 SDK helper，身份包含运行时实例，避免不同实例的同名会话混淆。RPC 没有 `list_sessions`；prompt 响应只表示接收，稳定终态为 `agent_settled`。取消先清队列再 abort，并停止网关中的活跃请求。
+
+依据为 Pi `v1.0.2` 固定提交 `cd32f7725fdbddbaecdff5b1e68491563394e0ca` 的 [RPC](https://github.com/earendil-works/pi/blob/cd32f7725fdbddbaecdff5b1e68491563394e0ca/packages/coding-agent/docs/rpc.md)、[模型配置](https://github.com/earendil-works/pi/blob/cd32f7725fdbddbaecdff5b1e68491563394e0ca/packages/coding-agent/docs/models.md)与 [SDK 列表例子](https://github.com/earendil-works/pi/blob/cd32f7725fdbddbaecdff5b1e68491563394e0ca/packages/coding-agent/examples/sdk/11-sessions.ts)。用户所说的 Pi home 由适配器映射为本版本的 `PI_CODING_AGENT_DIR`，不假定存在 `PI_HOME` 上游变量。
+
+安装脚本固定 `@earendil-works/pi-coding-agent@1.0.2` 于忽略的 `target/pi-runtime`，不修改全局 npm 或 Pi。Mac bundle 将 SDK、CLI JavaScript 与 `core/pi_sessions.mjs` 放入 Resources。Node 本体不随包，用户需指定 Node 22.19+ 的绝对路径，避免 Finder 启动依赖 shell PATH。CLI 入口为 `Contents/Resources/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js`。
+
+Host 在实例专属目录生成受管 Pi 配置，只列出 Velune 网关端点、可路由模型与本地访问凭据；不写上游端点或 Keychain 引用，也不覆盖未受管的 `models.json`。恢复历史会话后重新绑定 Velune 网关模型，历史 provider 不能绕过网关。平台秘密 helper 仅在网关实际请求时解析 Velune 自己的凭据引用，开发验证不执行真实 Keychain 读取。
+
+选定模型的输出上限同时注入 Pi 的 `maxTokens` 与网关校验，避免 Pi 默认请求上限超过配置。Pi 的标准推理等级通过 `thinkingLevelMap` 限制为模型声明的等级；本轮不替自定义服务等级猜测转换规则。网关只接收文本内容与工具消息，未支持的图片内容明确报错。客户端断开或网关停止会释放活跃上游请求，上游失败不会发出成功的 `[DONE]`，也不自动重试或切换提供商。
+
+隔离验证使用临时目录、fake RPC／假上游与合成工具结果，不启动真实用户会话或调用模型。正式验收状态与具体证据见 [首循环任务](../tasks/pi-mac-first-loop/packet.md)。
 
 ## 独立 AI service 的有界人工验收
 

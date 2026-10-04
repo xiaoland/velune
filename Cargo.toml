@@ -4,15 +4,27 @@ version = "0.1.0"
 edition = "2024"
 publish = false
 
+[lib]
+path = "core/src/lib.rs"
+
+[[bin]]
+name = "velune-core"
+path = "app/host/src/main.rs"
+
 [dependencies]
 rusqlite = { version = "0.37", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
+velune-ai = { path = "core/ai" }
+velune-ai-provider = { path = "core/ai-provider" }
+reqwest = { version = "0.13", default-features = false, features = ["native-tls", "json", "stream", "system-proxy"] }
+tokio = { version = "1", features = ["rt", "macros", "net", "io-util", "time"] }
+getrandom = "0.4"
 
 [dev-dependencies]
 tempfile = "3"
 
 [workspace]
-members = ["crates/velune-ai", "crates/velune-ai-provider"]
+members = ["core/ai", "core/ai-provider"]
 resolver = "3"
