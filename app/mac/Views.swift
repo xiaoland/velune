@@ -230,6 +230,7 @@ struct ProviderSettingsView: View {
     @State private var selectedID: String?
     @State private var editor: AIProvider?
     @State private var creating = false
+    @State private var importing = false
     @State private var deleting: AIProvider?
     var body: some View {
         VStack(spacing: 0) {
@@ -242,11 +243,13 @@ struct ProviderSettingsView: View {
             HStack {
                 Button { creating = true } label: { Image(systemName: "plus") }.help("添加AI提供商")
                 Button { deleting = store.providers.first { $0.id == selectedID } } label: { Image(systemName: "minus") }.disabled(selectedID == nil).help("删除AI提供商")
+                Button("从运行时导入…") { importing = true }.disabled(store.providerImportTypes.isEmpty || store.isLoading || store.isGenerating || store.authenticationRunning)
                 Spacer()
                 Button("编辑…") { editor = store.providers.first { $0.id == selectedID } }.disabled(selectedID == nil)
             }.padding(.horizontal, 20).padding(.vertical, 12)
             SettingsError(message: store.error)
         }
+        .sheet(isPresented: $importing) { ProviderImportView(store: store) }
         .sheet(item: $editor) { provider in ProviderEditor(provider: provider, models: store.models, protocols: store.protocols, sourceTypes: store.credentialSourceTypes, authenticate: store.startAuthentication, inspect: store.inspectAuthentication, isSaving: store.isLoading, error: store.error) { value, secret, onSaved in store.saveProvider(value, secret: secret, onSaved: onSaved) }.sheet(isPresented: $store.showsAuthentication) { AuthenticationView(store: store) } }
         .sheet(isPresented: $creating) { ProviderEditor(provider: nil, models: store.models, protocols: store.protocols, sourceTypes: store.credentialSourceTypes, authenticate: store.startAuthentication, inspect: store.inspectAuthentication, isSaving: store.isLoading, error: store.error) { value, secret, onSaved in store.saveProvider(value, secret: secret, onSaved: onSaved) }.sheet(isPresented: $store.showsAuthentication) { AuthenticationView(store: store) } }
         .alert("删除AI提供商？", isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } }), presenting: deleting) { provider in
@@ -280,7 +283,10 @@ struct ProviderEditor: View {
     private var sourceValid: Bool { sourceTypeID.isEmpty || (sourceDescriptor?.fields.allSatisfy { !$0.required || !(sourceValues[$0.key] ?? $0.value).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty } ?? false) }
     private var draftSource: CredentialSource? {
         sourceDescriptor.map { descriptor in
-            CredentialSource(harnessTypeID: descriptor.id, sourceInstanceID: provider?.credentialSource?.sourceInstanceID, providerID: (sourceValues["providerId"] ?? descriptor.fields.first { $0.key == "providerId" }?.value ?? "").trimmingCharacters(in: .whitespacesAndNewlines), settings: Dictionary(uniqueKeysWithValues: descriptor.fields.filter { $0.key != "providerId" }.map { ($0.key, (sourceValues[$0.key] ?? $0.value).trimmingCharacters(in: .whitespacesAndNewlines)) }))
+            var settings = sourceValues
+            settings.removeValue(forKey: "providerId")
+            for field in descriptor.fields where field.key != "providerId" { settings[field.key] = (sourceValues[field.key] ?? field.value).trimmingCharacters(in: .whitespacesAndNewlines) }
+            return CredentialSource(harnessTypeID: descriptor.id, sourceInstanceID: provider?.credentialSource?.sourceInstanceID, providerID: (sourceValues["providerId"] ?? descriptor.fields.first { $0.key == "providerId" }?.value ?? "").trimmingCharacters(in: .whitespacesAndNewlines), settings: settings)
         }
     }
     private var protocolSupported: Bool { protocols.first { $0.id == protocolID }?.supported == true }
@@ -308,12 +314,12 @@ struct ProviderEditor: View {
                             SettingFieldView(field: field, value: Binding(get: { sourceValues[field.key] ?? field.value }, set: { sourceValues[field.key] = $0 }))
                         }
                         Text("使用指定来源的认证；原配置保留，凭据不会复制到 Velune 配置文件。").font(.caption).foregroundStyle(.secondary)
-                        Button("读取来源信息") { if let source = draftSource { inspect(source) { metadata in sourceMetadata = metadata; protocolID = metadata.capabilities.protocol; endpoint = metadata.capabilities.endpoint } } }.disabled(!sourceValid || isSaving)
+                        Button("读取来源信息") { if let source = draftSource { inspect(source) { metadata in guard source == draftSource else { return }; sourceMetadata = metadata; protocolID = metadata.capabilities.protocol; endpoint = metadata.capabilities.endpoint } } }.disabled(!sourceValid || isSaving)
                         if let metadata = sourceMetadata {
-                            Text(metadata.configured ? "来源已有订阅认证" : "来源尚未完成登录").font(.caption).foregroundStyle(.secondary)
+                            Text(metadata.configured ? "来源已配置认证" : "来源尚未配置可用认证").font(.caption).foregroundStyle(.secondary)
                             if !metadata.capabilities.explicitOutputCap { Text("此来源不支持服务端输出 token 上限。").font(.caption).foregroundStyle(.secondary) }
                         }
-                        ForEach(descriptor.actions.filter { $0.id == "login" }) { action in
+                        ForEach((sourceMetadata?.actions ?? descriptor.actions).filter { $0.id == "login" }) { action in
                             Button(action.label) { if let source = draftSource { authenticate(source) } }.disabled(!sourceValid || isSaving)
                         }
                     }
@@ -329,12 +335,14 @@ struct ProviderEditor: View {
             HStack { Spacer(); Button("取消") { dismiss() }.keyboardShortcut(.cancelAction); Button("保存") { commit() }.keyboardShortcut(.defaultAction).disabled(!valid || isSaving) }.padding(20)
             SettingsError(message: error)
         }.frame(width: 580, height: 520)
+        .onChange(of: sourceValues) { _, _ in sourceMetadata = nil }
+        .onChange(of: sourceTypeID) { _, _ in sourceMetadata = nil }
         .onAppear { name = provider?.name ?? ""; protocolID = provider?.protocolID ?? protocols.first { $0.supported }?.id; endpoint = provider?.endpoint ?? ""; credentialRef = provider?.credentialRef ?? ""; sourceTypeID = provider?.credentialSource?.harnessTypeID ?? ""; sourceValues = provider?.credentialSource?.settings ?? [:]; if let source = provider?.credentialSource { sourceValues["providerId"] = source.providerID }; bindings = Dictionary(uniqueKeysWithValues: (provider?.models ?? []).map { ($0.modelID, $0.externalModelID) }) }
     }
     private func commit() {
         guard valid, let protocolID else { return }
         let source = draftSource
-        let value = AIProvider(id: provider?.id ?? draftID, name: name.trimmingCharacters(in: .whitespacesAndNewlines), protocolID: protocolID, endpoint: endpoint.trimmingCharacters(in: .whitespacesAndNewlines), credentialRef: source == nil && !credentialRef.isEmpty ? credentialRef : nil, models: bindings.keys.sorted().map { ProviderModelBinding(modelID: $0, externalModelID: bindings[$0]!.trimmingCharacters(in: .whitespacesAndNewlines)) }, credentialSource: source, credentialGeneration: provider?.credentialGeneration)
+        let value = AIProvider(id: provider?.id ?? draftID, name: name.trimmingCharacters(in: .whitespacesAndNewlines), protocolID: protocolID, endpoint: endpoint.trimmingCharacters(in: .whitespacesAndNewlines), credentialRef: source == nil && !credentialRef.isEmpty ? credentialRef : nil, models: bindings.keys.sorted().map { id in let external = bindings[id]!.trimmingCharacters(in: .whitespacesAndNewlines); let existing = provider?.models.first { $0.modelID == id && $0.externalModelID == external }; return ProviderModelBinding(modelID: id, externalModelID: external, metadata: existing?.metadata ?? [:]) }, credentialSource: source, credentialGeneration: provider?.credentialGeneration)
         save(value, source == nil ? secret : "") { secret = ""; dismiss() }
     }
 }

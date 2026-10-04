@@ -1,6 +1,6 @@
 import SwiftUI
 
-// Exact geometry and two-color fills from the supplied graphite optical masters.
+// Exact geometry from the supplied neutral optical masters.
 // Small and medium retain their separate inner returns and inter-piece spacing.
 struct VeluneMark: Shape {
     let smallMaster: Bool
@@ -82,11 +82,12 @@ struct VeluneMark: Shape {
 }
 
 struct VeluneLogo: View {
+    @Environment(\.colorScheme) private var colorScheme
     let size: CGFloat
     var body: some View {
         ZStack {
-            VeluneMark(smallMaster: size < 32, rightPiece: false).fill(VeluneTheme.graphiteLeft)
-            VeluneMark(smallMaster: size < 32, rightPiece: true).fill(VeluneTheme.graphiteRight)
+            VeluneMark(smallMaster: size < 32, rightPiece: false).fill(colorScheme == .dark ? VeluneTheme.darkLeft : VeluneTheme.graphiteLeft)
+            VeluneMark(smallMaster: size < 32, rightPiece: true).fill(colorScheme == .dark ? VeluneTheme.darkRight : VeluneTheme.graphiteRight)
         }.frame(width: size, height: size).accessibilityLabel("Velune")
     }
 }

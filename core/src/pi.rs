@@ -18,6 +18,8 @@ use std::{
     time::Duration,
 };
 
+pub mod model_projection;
+
 const MAX_RECORD_BYTES: usize = 1024 * 1024;
 const RESPONSE_TIMEOUT: Duration = Duration::from_secs(3);
 

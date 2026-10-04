@@ -17,12 +17,12 @@ cp target/release/libvelune_core.dylib "$app/Contents/Frameworks/libvelune_core.
 install_name_tool -id '@rpath/libvelune_core.dylib' "$app/Contents/Frameworks/libvelune_core.dylib"
 xcrun swiftc -parse-as-library -swift-version 5 -target "$(uname -m)-apple-macosx14.0" -framework AppKit -framework SwiftUI \
   app/mac/main.swift app/mac/Views.swift app/mac/Theme.swift app/mac/Logo.swift \
-  app/mac/Models.swift app/mac/Store.swift app/mac/Transport.swift \
+  app/mac/Models.swift app/mac/Store.swift app/mac/Transport.swift app/mac/ProviderImport.swift \
   -import-objc-header core/include/velune.h -L "$app/Contents/Frameworks" -lvelune_core \
   -Xlinker -rpath -Xlinker '@executable_path/../Frameworks' -o "$app/Contents/MacOS/Velune"
 xcrun swiftc -swift-version 5 -framework Security app/mac/velune-credential.swift -o "$app/Contents/Helpers/velune-credential"
 # JavaScript is a sealed resource, not a nested macOS executable.
-cp core/pi_sessions.mjs core/pi_virtual_model.mjs core/pi_auth.mjs "$app/Contents/Resources/"
+cp core/credential_source.mjs core/pi_sessions.mjs core/pi_virtual_model.mjs core/pi_auth.mjs core/pi_provider_import.mjs "$app/Contents/Resources/"
 cp -R target/pi-runtime/node_modules "$app/Contents/Resources/node_modules"
 cp -R app/mac/Assets/Brand "$app/Contents/Resources/Brand"
 xcrun swift scripts/render-app-icon.swift app/mac/Assets/Brand target/macos/Velune.iconset

@@ -39,6 +39,9 @@ export async function createSourceRuntime(source, { resourcesDirectory = dirname
   // that file contract to retain Pi's original refresh/persistence lock.
   const { AuthStorage } = await import(pathToFileURL(join(packageDirectory, "dist/core/auth-storage.js")).href);
   const store = AuthStorage.create(source.settings.authPath);
+  const metadata = await store.list();
+  const existing = metadata.find((entry) => entry.providerId === source.providerId);
+  if (existing && existing.type !== "oauth") throw new Error("source_oauth_type_mismatch");
   // Missing, removed, or wrong-type credentials must fail before the SDK can
   // consult ambient auth. modify keeps the SDK's original cross-process lock.
   const requireOAuth = (value) => {
@@ -48,11 +51,16 @@ export async function createSourceRuntime(source, { resourcesDirectory = dirname
   const credentials = {
     read: async (id, options) => {
       if (id !== source.providerId) throw new Error("source_provider_mismatch");
-      return requireOAuth(await store.read(id, options));
+      return store.modify(id, async (current) => { requireOAuth(current); return undefined; }, options);
     },
     modify: (id, operation, options) => {
       if (id !== source.providerId) throw new Error("source_provider_mismatch");
-      return store.modify(id, async (current) => operation(login ? current : requireOAuth(current)), options);
+      return store.modify(id, async (current) => {
+        if (!login || current !== undefined) requireOAuth(current);
+        const next = await operation(current);
+        if (next !== undefined) requireOAuth(next);
+        return next;
+      }, options);
     },
     list: async (options) => (await store.list(options)).filter((item) => item.providerId === source.providerId),
     delete: async () => { throw new Error("source_logout_not_supported"); },

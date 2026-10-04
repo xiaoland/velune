@@ -11,9 +11,10 @@ private struct ListData: Decodable, Sendable {
     var runtimeTypes: [RuntimeTypeDescriptor]
     var protocols: [ProtocolDescriptor]?
     var credentialSourceTypes: [CredentialSourceType]?
+    var providerImportTypes: [RuntimeTypeDescriptor]?
     var runtimeInstanceID: String?
     enum CodingKeys: String, CodingKey {
-        case conversations, connections, gateways, runtimeInstances, runtimeTypes, protocols, credentialSourceTypes
+        case conversations, connections, gateways, runtimeInstances, runtimeTypes, protocols, credentialSourceTypes, providerImportTypes
         case runtimeInstanceID = "activeRuntimeInstanceID"
     }
 }
@@ -34,6 +35,7 @@ final class AppStore: ObservableObject {
     @Published private(set) var runtimeTypes: [RuntimeTypeDescriptor] = []
     @Published private(set) var protocols: [ProtocolDescriptor] = []
     @Published private(set) var credentialSourceTypes: [CredentialSourceType] = []
+    @Published private(set) var providerImportTypes: [RuntimeTypeDescriptor] = []
     @Published private(set) var authenticationRunning = false
     @Published private(set) var authenticationPrompt: AuthenticationPrompt?
     @Published private(set) var authenticationNotifications: [AuthenticationNotification] = []
@@ -187,6 +189,23 @@ final class AppStore: ObservableObject {
         do { request("authentication", payload: ["operation": "inspect", "source": try json(source)], as: AuthenticationInspection.self) { apply($0.metadata) } }
         catch { self.error = error.localizedDescription }
     }
+    func previewProviderImport(_ source: ProviderImportSource, completion: @escaping (ProviderImportPreview) -> Void) {
+        guard !isPreview, !isGenerating, !authenticationRunning else { error = "请先停止任务或完成登录，再读取提供商配置"; return }
+        do {
+            request("providerImport", payload: ["operation": "preview", "gatewayID": gateway.id, "source": try json(source)], as: ProviderImportPreviewData.self) { completion($0.preview) }
+        } catch { self.error = error.localizedDescription }
+    }
+    func applyProviderImport(_ source: ProviderImportSource, preview: ProviderImportPreview, selections: [ProviderImportSelection], replaceExisting: Bool, completion: @escaping () -> Void) {
+        guard !isPreview, !isGenerating, !authenticationRunning else { error = "请先停止任务或完成登录，再导入提供商配置"; return }
+        do {
+            request("providerImport", payload: ["operation": "apply", "gatewayID": gateway.id, "source": try json(source), "previewToken": preview.token, "selections": try json(selections), "replaceExisting": replaceExisting ? "true" : "false"], as: ProviderImportResult.self) { [weak self] data in
+                guard let self else { return }
+                if let saved = data.gateways.first(where: { $0.id == self.gateway.id }) { self.gateway = saved; self.hasGateway = true }
+                if data.requiresReconnect { invalidateConnection() }
+                completion()
+            }
+        } catch { self.error = error.localizedDescription }
+    }
     func startAuthentication(_ source: CredentialSource) {
         guard !isGenerating else { error = "请先停止当前任务，再开始登录"; return }
         guard !isPreview else { error = "预览不会启动认证"; return }
@@ -318,6 +337,7 @@ final class AppStore: ObservableObject {
         runtimeInstances = data.runtimeInstances; runtimeTypes = data.runtimeTypes
         protocols = data.protocols ?? []
         credentialSourceTypes = data.credentialSourceTypes ?? []
+        providerImportTypes = data.providerImportTypes ?? []
         selectedConnectionID = data.runtimeInstanceID
     }
     private func loadConversations() {

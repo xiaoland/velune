@@ -127,3 +127,9 @@ S15 后续配置与交付纠正：工作目录属于具体会话，运行时目�
 官方复核：[ChatGPT 开源客户端注册与登录](https://developers.openai.com/siwc/token-sharing-open-source/sign-in)要求明确应用身份、主机标识与授权 scope；[模型与推理](https://developers.openai.com/siwc/token-sharing-open-source/models-and-inference)描述使用 public Responses 端点。2026-10-04 检查；不能将旧 Codex backend 认证与该路径视为相同。Pi 固定版本的具体能力与验证缺口留在当前 Task Packet。
 
 用户在本轮进一步澄清：`max_output_tokens` 等具体字段用于举例能力参数，不是必须支持的需求；以提供商规定的协议为权威。原生 Responses、稳定入口和认证委托的实施已获授权，真实账户验收仍由用户进行。
+
+S16 导入语义纠正：用户明确将 Harness 提供商配置导入 Velune 视为一项完整功能，认证来源接入属于其中，不能作为完整导入已交付的证据。
+
+2026-10-04 用户进一步提醒两个独立边界：Agent Harness 不与 AI 服务耦合，AI 服务不与大语言模型领域耦合；导入配置属于适配／装配行为，LLM 相关字段不能成为整个 AI 服务的基础假设。需求归属 PRD“AI service 的有界实施方向”。
+
+2026-10-04 用户补充原生视觉原则：原生控件无需专门实现深色模式，但 Core Graphics、固定色 PNG、logo、自定义阴影、渐变和边框仍需要处理暗色背景下的显示。此补充已归位 PRD 的平台体验原则。

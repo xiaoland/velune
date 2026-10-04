@@ -61,6 +61,7 @@ struct RouteTarget {
     logical_model_id: String,
     model: crate::gateway::ModelDefinition,
     provider_id: String,
+    native_responses_reasoning_efforts: Option<Vec<String>>,
     service: RouteService,
 }
 
@@ -81,13 +82,20 @@ impl Runner {
     pub fn start(
         config: GatewayConfig,
         credential_resolver: Option<PathBuf>,
+        route_aliases: BTreeMap<String, String>,
+        native_responses_constraints: BTreeMap<String, Vec<String>>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         config.validate().map_err(GatewayError)?;
         let listener = TcpListener::bind("127.0.0.1:0")?;
         listener.set_nonblocking(true)?;
         let address = listener.local_addr()?;
         let token = ephemeral_token()?;
-        let routes = build_routes(&config, credential_resolver)?;
+        let routes = build_routes(
+            &config,
+            credential_resolver,
+            &route_aliases,
+            &native_responses_constraints,
+        )?;
         let stop = Arc::new(AtomicBool::new(false));
         let thread_stop = Arc::clone(&stop);
         let thread_token = token.clone();
@@ -160,6 +168,8 @@ fn ephemeral_token() -> Result<String, Box<dyn std::error::Error>> {
 fn build_routes(
     config: &GatewayConfig,
     credential_resolver: Option<PathBuf>,
+    route_aliases: &BTreeMap<String, String>,
+    native_responses_constraints: &BTreeMap<String, Vec<String>>,
 ) -> Result<BTreeMap<String, RouteTarget>, Box<dyn std::error::Error>> {
     let revision = ConfigRevision::new(1).map_err(|_| GatewayError("gateway revision"))?;
     let client = Client::builder()
@@ -306,6 +316,8 @@ fn build_routes(
             .model(&route.model_id)
             .ok_or(GatewayError("model route is missing"))?;
         let provider_id = route.provider_id.clone();
+        let native_responses_reasoning_efforts =
+            native_responses_constraints.get(&model.id).cloned();
         let service = services
             .get(&provider_id)
             .ok_or(GatewayError("route provider is missing"))?;
@@ -313,6 +325,7 @@ fn build_routes(
             logical_model_id: model.id.clone(),
             model: model.clone(),
             provider_id,
+            native_responses_reasoning_efforts,
             service: match service {
                 RouteService::Chat(value) => RouteService::Chat(Arc::clone(value)),
                 RouteService::Responses(value) => RouteService::Responses(Arc::clone(value)),
@@ -321,15 +334,14 @@ fn build_routes(
         if routes.insert(model.id.clone(), target).is_some() {
             return Err(Box::new(GatewayError("gateway binding identity collision")));
         }
-        let binding_id = config.pi_binding_id(&model.id).map_err(GatewayError)?;
-        if binding_id != model.id {
-            let target = routes
-                .get(&model.id)
-                .cloned()
-                .ok_or(GatewayError("gateway route target"))?;
-            if routes.insert(binding_id, target).is_some() {
-                return Err(Box::new(GatewayError("gateway binding identity collision")));
-            }
+    }
+    for (alias, logical_model_id) in route_aliases {
+        let target = routes
+            .get(logical_model_id)
+            .cloned()
+            .ok_or(GatewayError("gateway route target"))?;
+        if routes.insert(alias.clone(), target).is_some() {
+            return Err(Box::new(GatewayError("gateway binding identity collision")));
         }
     }
     Ok(routes)
@@ -366,6 +378,9 @@ fn handle_connection(
     runtime: &tokio::runtime::Runtime,
     stop: &AtomicBool,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    // Accepted sockets can inherit the listener's nonblocking mode on macOS.
+    // Request parsing uses bounded blocking reads, not a readiness loop.
+    stream.set_nonblocking(false)?;
     stream.set_read_timeout(Some(Duration::from_secs(3)))?;
     stream.set_write_timeout(Some(Duration::from_secs(3)))?;
     let request = match read_request(&mut stream) {
@@ -549,7 +564,10 @@ fn handle_responses_request(
     let stream_response = match validate_responses_body(
         body,
         target.model.max_output_tokens,
-        &target.model.reasoning_levels,
+        target
+            .native_responses_reasoning_efforts
+            .as_deref()
+            .unwrap_or(&target.model.reasoning_levels),
     ) {
         Ok(stream) => stream,
         Err(error) => {

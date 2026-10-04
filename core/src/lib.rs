@@ -8,6 +8,7 @@ pub mod gateway_runtime;
 #[path = "../harness/mod.rs"]
 pub mod harness;
 pub mod pi;
+mod provider_import;
 #[cfg(feature = "simulation")]
 pub mod routing;
 pub mod runtime;

@@ -28,12 +28,12 @@ if isSource {
     }
     guard let input = account.data(using: .utf8),
           let source = try? JSONDecoder().decode(Source.self, from: input),
-          source.kind == "harness", source.harnessTypeId == "pi",
+          source.kind == "harness",
           let node = source.settings["nodeBinary"], node.hasPrefix("/"), !node.contains("\u{0}"),
           let authPath = source.settings["authPath"], authPath.hasPrefix("/"), !authPath.contains("\u{0}") else { exit(64) }
     let executable = URL(fileURLWithPath: CommandLine.arguments[0]).standardizedFileURL
     let helper = executable.deletingLastPathComponent().deletingLastPathComponent()
-        .appendingPathComponent("Resources/pi_auth.mjs")
+        .appendingPathComponent("Resources/credential_source.mjs")
     let process = Process()
     process.executableURL = URL(fileURLWithPath: node)
     process.arguments = [helper.path, "--operation", "resolve", "--source-json", account]

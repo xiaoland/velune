@@ -169,6 +169,17 @@ def main():
                 time.sleep(0.1)
             raise AssertionError('Pi did not settle')
 
+        def snapshot_until_ready():
+            deadline = time.monotonic() + 15
+            while time.monotonic() < deadline:
+                snapshot = request('getSnapshot')['snapshot']
+                if snapshot['runState'] == 'failed':
+                    raise AssertionError(('Pi failed during startup', snapshot))
+                if snapshot['runState'] == 'idle' and snapshot['actions']['canSend']:
+                    return snapshot
+                time.sleep(0.1)
+            raise AssertionError('Pi did not become ready')
+
         def request_for_model(model):
             return next(item for item in reversed(requests) if item.get('model') == model)
 
@@ -177,6 +188,25 @@ def main():
             while time.monotonic() < deadline and len(requests) < count:
                 time.sleep(0.05)
             assert len(requests) >= count, (count, requests)
+
+        def wait_for_tool_result(cwd):
+            """Wait for the upstream body carrying the current tool result.
+
+            Inspect actual upstream request bodies rather than assuming the
+            auxiliary capture list has already observed the tool result.
+            """
+            deadline = time.monotonic() + 15
+            while time.monotonic() < deadline:
+                results = [
+                    item.get('content', '')
+                    for body in requests
+                    for item in body.get('messages', [])
+                    if item.get('role') == 'tool'
+                ]
+                if results and cwd in str(results[-1]):
+                    return results[-1]
+                time.sleep(0.05)
+            raise AssertionError(('tool result not observed', cwd, requests))
 
         options = json.dumps({'homeDirectory': str(root / 'home'),
                               'resourcesDirectory': str(root / 'resources'),
@@ -224,7 +254,7 @@ def main():
             '''
             subprocess.run([str(args.node), '--input-type=module', '-e', check], check=True)
             request('create', cwd=str(root / 'work-a'))
-            time.sleep(0.2)
+            snapshot_until_ready()
             if args.subscription_capability:
                 selection = root / 'agent/velune-selection.json'
                 value = json.loads(selection.read_text())
@@ -289,6 +319,7 @@ def main():
             assert new_session['modelId'] == 'first'
             second_id = new_session['conversation']['id']
             assert new_session['conversation']['cwd'] == str((root / 'work-b').resolve()), new_session
+            snapshot_until_ready()
             expected_request_count = len(requests) + 1
             second_started = request('send', text='Create the second project session.')['snapshot']
             assert second_started['runState'] == 'running', second_started
@@ -296,11 +327,12 @@ def main():
             second_snapshot = snapshot_until_idle()
             assert 'VELUNE_ABI_OK' in json.dumps(second_snapshot), second_snapshot
             if args.protocol == 'chatCompletionsV1':
+                snapshot_until_ready()
                 tool_snapshot = request('send', text='Verify tool cwd.')['snapshot']
                 assert tool_snapshot['runState'] == 'running', tool_snapshot
                 tool_snapshot = snapshot_until_idle()
                 assert 'VELUNE_ABI_OK' in json.dumps(tool_snapshot), tool_snapshot
-                assert tool_result_requests and str((root / 'work-b').resolve()) in json.dumps(tool_result_requests[-1]), tool_result_requests
+                wait_for_tool_result(str((root / 'work-b').resolve()))
             listed = request('list')['conversations']
             deadline = time.monotonic() + 5
             while time.monotonic() < deadline and not any(item['id'] == second_id for item in listed):

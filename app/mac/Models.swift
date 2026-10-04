@@ -84,10 +84,64 @@ struct AIModel: Codable, Sendable, Identifiable, Equatable {
     var reasoningLevels: [String]
 }
 
+// Adapter-owned binding metadata is round-tripped without being interpreted
+// by the platform UI. Core validates its concrete schema at the ABI boundary.
 struct ProviderModelBinding: Codable, Sendable, Equatable {
     var modelID: String
     var externalModelID: String
-    enum CodingKeys: String, CodingKey { case modelID = "modelId"; case externalModelID = "externalModelId" }
+    var metadata: [String: ConfigurationValue] = [:]
+    init(modelID: String, externalModelID: String, metadata: [String: ConfigurationValue] = [:]) {
+        self.modelID = modelID; self.externalModelID = externalModelID; self.metadata = metadata
+    }
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: ConfigurationKey.self)
+        modelID = try values.decode(String.self, forKey: ConfigurationKey("modelId"))
+        externalModelID = try values.decode(String.self, forKey: ConfigurationKey("externalModelId"))
+        for key in values.allKeys where key.stringValue != "modelId" && key.stringValue != "externalModelId" {
+            metadata[key.stringValue] = try values.decode(ConfigurationValue.self, forKey: key)
+        }
+    }
+    func encode(to encoder: Encoder) throws {
+        var values = encoder.container(keyedBy: ConfigurationKey.self)
+        try values.encode(modelID, forKey: ConfigurationKey("modelId"))
+        try values.encode(externalModelID, forKey: ConfigurationKey("externalModelId"))
+        for (key, value) in metadata { try values.encode(value, forKey: ConfigurationKey(key)) }
+    }
+}
+private struct ConfigurationKey: CodingKey {
+    var stringValue: String
+    var intValue: Int? { nil }
+    init(_ value: String) { stringValue = value }
+    init?(stringValue: String) { self.init(stringValue) }
+    init?(intValue: Int) { return nil }
+}
+indirect enum ConfigurationValue: Codable, Sendable, Equatable {
+    case null, boolean(Bool), string(String), integer(Int64), unsigned(UInt64), number(Double)
+    case array([ConfigurationValue]), object([String: ConfigurationValue])
+    init(from decoder: Decoder) throws {
+        let value = try decoder.singleValueContainer()
+        if value.decodeNil() { self = .null }
+        else if let result = try? value.decode(Bool.self) { self = .boolean(result) }
+        else if let result = try? value.decode(String.self) { self = .string(result) }
+        else if let result = try? value.decode(Int64.self) { self = .integer(result) }
+        else if let result = try? value.decode(UInt64.self) { self = .unsigned(result) }
+        else if let result = try? value.decode(Double.self) { self = .number(result) }
+        else if let result = try? value.decode([ConfigurationValue].self) { self = .array(result) }
+        else { self = .object(try value.decode([String: ConfigurationValue].self)) }
+    }
+    func encode(to encoder: Encoder) throws {
+        var value = encoder.singleValueContainer()
+        switch self {
+        case .null: try value.encodeNil()
+        case .boolean(let result): try value.encode(result)
+        case .string(let result): try value.encode(result)
+        case .integer(let result): try value.encode(result)
+        case .unsigned(let result): try value.encode(result)
+        case .number(let result): try value.encode(result)
+        case .array(let result): try value.encode(result)
+        case .object(let result): try value.encode(result)
+        }
+    }
 }
 
 enum ProviderProtocol: String, Codable, Sendable, CaseIterable, Identifiable {
@@ -238,6 +292,7 @@ struct AuthenticationData: Decodable, Sendable {
 struct AuthenticationMetadata: Decodable, Sendable {
     var configured: Bool
     var capabilities: AuthenticationCapabilities
+    var actions: [SettingAction]?
 }
 struct AuthenticationCapabilities: Decodable, Sendable {
     var `protocol`: ProviderProtocol

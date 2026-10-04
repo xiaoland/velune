@@ -965,9 +965,33 @@ fn connect_runtime_instance(
     *gateway_runner = None;
     *active_runtime_id = None;
     let (bundled_sdk_helper, bundled_credential_resolver) = bundled_helpers();
-    let runner =
-        velune_core::gateway_runtime::Runner::start(gateway.clone(), bundled_credential_resolver)
-            .map_err(|_| velune_core::Error::Invalid("gateway startup"))?;
+    let physical_model_id = gateway
+        .pi_binding_id(model_id)
+        .map_err(velune_core::Error::Invalid)?;
+    let mut route_aliases = BTreeMap::new();
+    route_aliases.insert(physical_model_id, model_id.to_owned());
+    let native_responses_constraints = gateway
+        .providers
+        .iter()
+        .flat_map(|provider| provider.models.iter())
+        .filter_map(|binding| {
+            let projection = binding.pi_projection.as_ref()?;
+            let model = gateway.model(&binding.model_id)?;
+            Some((
+                binding.model_id.clone(),
+                projection
+                    .native_responses_constraints(&model.reasoning_levels)
+                    .allowed_reasoning_efforts,
+            ))
+        })
+        .collect();
+    let runner = velune_core::gateway_runtime::Runner::start(
+        gateway.clone(),
+        bundled_credential_resolver,
+        route_aliases,
+        native_responses_constraints,
+    )
+    .map_err(|_| velune_core::Error::Invalid("gateway startup"))?;
     let config = match config_from_runtime(runtime, &runner, bundled_sdk_helper.as_deref()) {
         Ok(config) => config,
         Err(error) => {

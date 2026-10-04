@@ -85,3 +85,33 @@ Pi 新 `openai` 订阅路径是公共 Responses，legacy `openai-codex` backend 
 会话目录改造的初次临时端到端验收未通过：延迟启动后的首轮可能在初始化事件中提前显示 settled，恢复路径也出现未稳定终态。当前只能确认目录投影与跨目录列表，不能将完整收发判为通过；执行 owner 随后修复初始化 RPC readiness 与当前 turn 事件匹配：未匹配的 settled 同时从 busy 状态和投影中排除。此段保留初次失败事实，最终结果见下文。
 
 最终 ChatCompletions 临时端到端验收通过：运行时没有工作目录仍可连接，且不启动 Pi child；同实例 A／B 项目分别创建会话，工具实际执行 `pwd` 并返回对应目录，列表同时出现两者；恢复 A 后工具回到 A，模型选择保持；删除 B 目录后打开明确失败并保留 A；busy 时 create／open 被拒绝，无会话选模型返回受控错误且不修改 selection。正常发送必须有新增上游请求与成功正文，不将 failed 当作 idle 成功。临时脚本不接入 CI，不新增自动化测试。Rust 静态检查、Mac 实际 Swift 编译／bundle 构建和 Windows GNU 类型检查已通过；最终产物通过 clean manifest 关联源码提交，安装版本保持 0.1 beta.1 与 native_verified=false，真实用户验收仍未执行。
+
+## Harness 提供商配置导入（已实现，待用户验收）
+
+用户询问后复核：当前只接入显式 Pi OpenAI 认证来源、SDK 登录／刷新和认证元数据；“读取来源信息”填入的协议与 endpoint 来自适配器声明。`ModelRuntime` 使用 `modelsPath: null`，未读取 Harness 的提供商配置，也未发现／导入其提供商列表、自定义 endpoint、模型列表与能力参数。认证来源接入不能作为完整提供商配置读取已交付的证据，该部分需求仍未完成。
+
+用户进一步纠正：这是完整的“将 Agent Harness 提供商配置导入 Velune”功能，认证不是独立交付项。当前恢复该需求实施，先核对固定 Pi SDK 的提供商／模型定义、覆盖与凭据解析优先级，结合现有网关协议和配置边界制定可预览、可导入的契约。所有调查与实验使用代码或合成配置，不读取真实用户配置／凭据，不调用模型，也不新增自动化测试。
+
+导入采用完整功能契约：Core 提供非秘密预览与原子应用，Mac 使用描述驱动的原生表单与模型选择列表。固定 Pi SDK 合成有效模型配置，候选来自显式模型配置及原认证目录；端点／协议不同的模型分组。认证不复制，普通 key 在原来源解析，OAuth 只接支持的 OpenAI Responses 来源并复用原刷新锁。命令凭据和未满足的环境变量不执行、不回退；预览使用只读认证存储与内存模型目录，不写原配置。
+
+初版自定义 ChatCompletions 导入已在临时合成端到端脚本中通过真实 bundle ABI、Swift 凭据 shim、网关和 Pi：上游收到外部 demo 模型的一次请求，assistant 投影包含 IMPORT_E2E_OK 并进入 idle；重复导入跳过，旧预览 token 被拒绝，命令凭据未产生执行标记。该观察来自执行能力契约扩展前的 bundle，不能替代下面最终版本的验证。
+
+复核内置 OpenAI 模型后发现：其 Responses compat 与 off→none 等映射不能被作为任意配置丢弃，也不能一律标成不支持。初次 advisor 建议将来源模型编码信息关联到 ProviderModelBinding，而非认证 settings；最终归属在下段进一步纠正为 Pi adapter 的投影。模型通用参数仍归全局目录，不读取真实账户或调用模型服务。
+
+用户随后再次提醒 Harness↔AI 服务、AI 服务↔LLM 两条独立边界。经 advisor 复核，先前“通用 execution”命名会把 Pi 级别和 SDK 编码选项误归通用模型能力；调整为 Pi adapter 拥有的 piProjection，Core 装配关联，网关仅消费派生原生请求值域。AI lib 不引用 Pi 类型，Mac 不解释投影，仅保留适配元数据。旧 off→none probe 未导入来源投影，测到 manual identity map 的 off 不构成 SDK 转换能力失败证据；后续验证必须使用真实导入的合成配置。
+
+最终隔离验证使用最新 release Core、sealed bundle 资源与真实 Swift 凭据 shim。临时脚本分别执行 ChatCompletions 和 Responses：providerImport 预览／应用后 routes 与导入前保持一致，随后通过正常配置动作显式设定 route、连接 Pi、新建会话并发送。两条路径各有一个真实 loopback 上游请求与成功 assistant 投影，Responses 上游实际 effort 为 none；重复导入跳过，旧 token 被拒绝，command key 未执行。早期脚本依赖自动设 route 的行为已删除，不能作为最终导入行为的验收。模型映射保留现有参数；Pi 与全局推理级别交集为空时明确不能运行，不自动升级或降级。
+
+Mac 对未知 adapter 元数据的临时编译／往返实验确认 null、boolean 与嵌套映射保持；平台不解析 piProjection。固定 OpenAI SDK 目录的合成 OAuth 元数据预览得到 44 个可导入模型，GPT-5.6 保留 off→none 与 strict 工具参数，原目录只保留原合成 auth.json，无模型缓存或配置写入。上述均未读取真实账户、认证文件或会话，未进行真实登录／模型调用，未增加自动化测试。
+
+最终 Rust workspace 类型检查、fmt、clippy 与 Windows GNU 类型检查通过，Mac 实际 Swift 类型检查、bundle 构建与签名校验通过。产品重新安装仍需 clean manifest 对应最终提交，native_verified 保持 false；真实资源配置、订阅登录和产品验收归用户。
+
+用户补充：原生深色适配不涵盖自绘内容。Mac 当前固定颜色绘制仅出现在双片 logo；消息边框使用系统 separator，未发现自定义阴影、渐变或固定色界面位图。应用内 logo 按 SwiftUI colorScheme 使用素材中 graphite／dark 两套中性色，保持原光学几何；Dock 图标有固定浅色底板，保持原版本。临时 SwiftUI ImageRenderer 按系统浅／深背景渲染 20、32、64 点 logo，人工确认两片与间距可辨；实际 Mac bundle 编译通过。只检查这处自绘内容，不引入完整深色验收流程。
+
+收尾复核撤掉临时固定延时以及未有因果证据的额外 state RPC。Core 保留已有启动 RPC readiness、发送前 set_model matching response 与 turn 事件匹配；重复验收的空 system／user 快照曾被假设为 bootstrap 与 settled 误匹配；实际 RPC 捕获随后否定其作为根因的解释。Core 仍收紧运行边界：只用固定 SDK 的 agent_start 授权 settled，不再用 message_start／turn_start 作为 busy 生命周期起点。人工 ABI 脚本以状态轮询及实际上游请求中的工具结果为依据，ChatCompletions／Responses 原循环和双协议导入均通过，不以 idle 单独判定发送成功。
+
+上述单次成功不能证明启动可靠性。最终重复验收仍观察到普通 ChatCompletions 首个 prompt 在 10 秒后未到达 loopback 上游，快照只有空 system 与 user、idle、无 assistant 错误。正在捕获固定 Pi RPC preflight 之后的异常：该 SDK 在 preflight 已回复 started 后吞掉 prompt promise 的异常，只发 settled；必须定位实际异常并处理，不能用脚本延时或重复通过掩盖。
+
+根执行者接手后仅在临时 SDK／工作 bundle 加入非秘密 RPC 事件捕获，最终观察到 assistant error：网关返回 400、Resource temporarily unavailable (os error 35)，尚未转发上游。临时 std-only TCP 实验直接观察到 accepted socket 的首次读取为 WouldBlock／os error 35，显式 blocking 后正常收到延迟发送的字节，证实本机继承监听器的非阻塞模式，而 read_request 使用阻塞 read_exact；为每条请求显式 set_nonblocking(false)，保留读取／写入超时。临时 SDK 修改已撤回，不交付补丁、诊断日志或固定延时。最终无诊断版运行结果以修复后的 bundle 复核。
+
+修复 accepted socket 后，无诊断 SDK 的实际 Mac bundle 四项端到端全部通过：ChatCompletions／Responses 原 ABI 循环、两种协议的导入→显式路由→真实 loopback dispatch。原循环覆盖工具 cwd、模型切换／恢复、取消与配置重开；导入保持原 routes，Responses effort 实际为 none。源码以本切片提交关联 clean build manifest，安装保持 0.1 beta.1；仍由用户验收真实资源和原生界面。

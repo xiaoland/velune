@@ -32,6 +32,15 @@ impl Login {
             .get("nodeBinary")
             .filter(|value| Path::new(value).is_absolute())
             .ok_or("authentication requires an absolute Node executable")?;
+        let imported = source.settings.contains_key("bindingProtocol");
+        let imported_openai_oauth = imported
+            && source.provider_id == "openai"
+            && source.settings.get("bindingProtocol").map(String::as_str) == Some("responsesV1")
+            && source.settings.get("bindingEndpoint").map(String::as_str)
+                == Some("https://api.openai.com/v1");
+        if imported && !imported_openai_oauth {
+            return Err("导入的 provider 不支持交互式登录，请先在 Pi 中完成认证".into());
+        }
         let helper = resources.join("pi_auth.mjs");
         if source.kind != crate::gateway::CredentialSourceKind::Harness
             || source.harness_type_id != "pi"
@@ -218,10 +227,17 @@ pub(crate) fn handle(
             {
                 return Err("authentication source adapter is unavailable".into());
             }
+            let helper = if source.settings.contains_key("bindingProtocol") {
+                resources.join("pi_provider_import.mjs")
+            } else {
+                resources.join("pi_auth.mjs")
+            };
             let output = Command::new(node)
-                .arg(resources.join("pi_auth.mjs"))
+                .arg(helper)
                 .arg("--operation")
                 .arg("inspect")
+                .arg("--provider-id")
+                .arg(&source.provider_id)
                 .arg("--source-json")
                 .arg(serde_json::to_string(&source).map_err(|_| "invalid authentication source")?)
                 .env_clear()

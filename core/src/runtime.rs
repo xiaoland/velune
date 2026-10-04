@@ -10,10 +10,12 @@ use crate::{
     gateway::{GatewayConfig, GatewayProtocol, ModelDefinition, RuntimeInstance},
     gateway_runtime::Runner,
     pi::{self, Config as PiConfig},
+    provider_import,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
+    collections::BTreeMap,
     fs::{self, File, OpenOptions, TryLockError},
     io::Write,
     path::{Path, PathBuf},
@@ -100,7 +102,7 @@ pub enum RuntimeError {
 }
 
 impl RuntimeError {
-    fn invalid(message: &'static str) -> Self {
+    pub(crate) fn invalid(message: &'static str) -> Self {
         Self::Invalid(message.into())
     }
 
@@ -248,6 +250,7 @@ impl CoreRuntime {
         }
         match action {
             "list" => self.list(),
+            "providerImport" => self.provider_import_action(request),
             "gateways" => self.gateway_action(request),
             "runtimeInstances" => self.runtime_action(request),
             "runtimeAction" | "connect" => self.connect_action(request),
@@ -338,19 +341,88 @@ impl CoreRuntime {
                 "id":"pi",
                 "name":"Pi Agent 认证来源",
                 "fields":[
-                    {"key":"providerId","label":"认证提供商","kind":"choice","required":true,"value":"openai","options":[{"id":"openai","label":"ChatGPT"}],"help":"此适配器接入 Pi 的 OpenAI 订阅登录，不接入 legacy Codex backend。"},
+                    {"key":"providerId","label":"认证提供商","kind":"text","required":true,"value":"","options":[],"help":"Pi provider ID；认证动作会根据指定来源能力显示。"},
                     {"key":"authPath","label":"认证文件","kind":"filePath","required":true,"value":"","options":[],"help":"保留 Pi 原生认证来源文件路径；Velune 不复制凭据。"},
                     {"key":"nodeBinary","label":"Node 可执行文件","kind":"filePath","required":true,"value":"","options":[],"help":"Node 22.19+ 的绝对路径。"}
                 ],
                 "actions":[{"id":"login","label":"登录…"}],
                 "capability":"读取指定 Pi 认证来源；Velune 不复制认证资料。"
             }],
+            "providerImportTypes": [provider_import::descriptor()],
             "protocols": [
                 {"id":"chatCompletionsV1","name":"OpenAI Chat Completions v1","supported":true},
                 {"id":"responsesV1","name":"OpenAI Responses v1","supported":true}
             ],
             "activeRuntimeInstanceID": self.active_runtime_id,
         }))
+    }
+
+    fn provider_import_action(&mut self, request: &Value) -> Result<Value, RuntimeError> {
+        if self.pi_busy {
+            return Err(RuntimeError::invalid("runtime is busy"));
+        }
+        let operation = request["payload"]["operation"]
+            .as_str()
+            .unwrap_or("preview");
+        let gateway_id = request["payload"]["gatewayID"]
+            .as_str()
+            .ok_or_else(|| RuntimeError::invalid("gateway id"))?;
+        let empty_default = GatewayConfig {
+            id: "default".into(),
+            name: "默认网关".into(),
+            models: Vec::new(),
+            providers: Vec::new(),
+            routes: Vec::new(),
+            failover: crate::gateway::FailoverPolicy {
+                mode: crate::gateway::FailoverMode::Disabled,
+            },
+        };
+        let existing = self.gateways.iter().position(|item| item.id == gateway_id);
+        if existing.is_none() && gateway_id != "default" {
+            return Err(RuntimeError::invalid("gateway id"));
+        }
+        match operation {
+            "preview" => {
+                let gateway = existing
+                    .map(|index| &self.gateways[index])
+                    .unwrap_or(&empty_default);
+                provider_import::preview(&request["payload"], gateway, &self.options)
+                    .map(|preview| json!({"preview":preview,"gateway":gateway}))
+            }
+            "apply" => {
+                let mut imported_gateway = existing
+                    .map(|index| self.gateways[index].clone())
+                    .unwrap_or(empty_default);
+                let previous = imported_gateway.clone();
+                let result = provider_import::apply(
+                    &request["payload"],
+                    &mut imported_gateway,
+                    &self.options,
+                )?;
+                if imported_gateway.providers.is_empty() {
+                    return Err(RuntimeError::invalid(
+                        "provider import selected no providers",
+                    ));
+                }
+                if let Some(index) = existing {
+                    self.gateways[index] = imported_gateway;
+                } else {
+                    self.gateways.push(imported_gateway);
+                }
+                if let Err(error) = self.persist() {
+                    if let Some(index) = existing {
+                        self.gateways[index] = previous;
+                    } else {
+                        self.gateways.pop();
+                    }
+                    return Err(error);
+                }
+                Ok(
+                    json!({"importedProviderIds":result["importedProviderIds"],"skippedProviderIds":[],"gateways":self.gateways,"requiresReconnect":self.active_runtime_id.is_some()}),
+                )
+            }
+            _ => Err(RuntimeError::invalid("provider import operation")),
+        }
     }
 
     fn create_conversation(&mut self, request: &Value) -> Result<Value, RuntimeError> {
@@ -636,9 +708,43 @@ impl CoreRuntime {
         let physical_model_id = gateway
             .pi_binding_id(logical_model_id)
             .map_err(RuntimeError::invalid)?;
+        let route_aliases = gateway
+            .routes
+            .iter()
+            .map(|route| {
+                gateway
+                    .pi_binding_id(&route.model_id)
+                    .map(|alias| (alias, route.model_id.clone()))
+                    .map_err(RuntimeError::invalid)
+            })
+            .collect::<Result<BTreeMap<_, _>, _>>()?;
+        let native_responses_constraints = gateway
+            .routes
+            .iter()
+            .filter_map(|route| {
+                let provider = gateway.validate_dispatch(&route.model_id).ok()?;
+                let binding = provider
+                    .models
+                    .iter()
+                    .find(|binding| binding.model_id == route.model_id)?;
+                let projection = binding.pi_projection.as_ref()?;
+                let model = gateway.model(&route.model_id)?;
+                Some((
+                    route.model_id.clone(),
+                    projection
+                        .native_responses_constraints(&model.reasoning_levels)
+                        .allowed_reasoning_efforts,
+                ))
+            })
+            .collect();
         self.shutdown_active()?;
-        let runner = Runner::start(gateway.clone(), self.options.credential_resolver.clone())
-            .map_err(|_| RuntimeError::invalid("gateway startup"))?;
+        let runner = Runner::start(
+            gateway.clone(),
+            self.options.credential_resolver.clone(),
+            route_aliases,
+            native_responses_constraints,
+        )
+        .map_err(|_| RuntimeError::invalid("gateway startup"))?;
         let config = PiConfig {
             binary: setting_path(&runtime, "binary")?,
             node_binary: setting_path_optional(&runtime, "nodeBinary"),
@@ -968,10 +1074,9 @@ impl CoreRuntime {
         for event in events {
             let is_settled = event["type"] == "agent_settled";
             let matched_settled = is_settled && self.pi_turn_started;
-            if matches!(
-                event["type"].as_str(),
-                Some("agent_start" | "turn_start" | "message_start")
-            ) {
+            // History and bootstrap message events do not begin an agent run.
+            // Only the SDK's run boundary can authorize its settled event.
+            if event["type"] == "agent_start" {
                 self.pi_turn_started = true;
             }
             if matched_settled {
@@ -1092,7 +1197,7 @@ fn runnable_pi_model<'a>(
     gateway: &'a GatewayConfig,
     id: &str,
 ) -> Result<&'a ModelDefinition, RuntimeError> {
-    gateway
+    let provider = gateway
         .validate_dispatch(id)
         .map_err(RuntimeError::invalid)?;
     let model = gateway.model(id).expect("validated model");
@@ -1106,6 +1211,20 @@ fn runnable_pi_model<'a>(
     }) {
         return Err(RuntimeError::invalid(
             "当前 Pi 适配器不支持该模型的推理等级",
+        ));
+    }
+    if let Some(projection) = provider
+        .models
+        .iter()
+        .find(|binding| binding.model_id == id)
+        .and_then(|binding| binding.pi_projection.as_ref())
+        && projection.reasoning_enabled
+        && projection
+            .supported_levels(&model.reasoning_levels)
+            .is_empty()
+    {
+        return Err(RuntimeError::invalid(
+            "Pi 适配器与模型当前推理等级没有共同能力",
         ));
     }
     Ok(model)
@@ -1153,6 +1272,23 @@ fn materialize_models(config: &PiConfig, gateway: &GatewayConfig) -> Result<(), 
                         GatewayProtocol::ResponsesV1 => "openai-responses",
                         GatewayProtocol::MessagesV1 => "unsupported",
                     });
+            let binding_projection = gateway
+                .routes
+                .iter()
+                .find(|route| route.model_id == model.id)
+                .and_then(|route| {
+                    gateway
+                        .providers
+                        .iter()
+                        .find(|provider| provider.id == route.provider_id)
+                })
+                .and_then(|provider| {
+                    provider
+                        .models
+                        .iter()
+                        .find(|binding| binding.model_id == model.id)
+                })
+                .and_then(|binding| binding.pi_projection.as_ref());
             let mut entry = json!({
                 "id": physical_id,
                 "logicalModelId": model.id,
@@ -1164,21 +1300,33 @@ fn materialize_models(config: &PiConfig, gateway: &GatewayConfig) -> Result<(), 
             if let Some(api) = api {
                 entry["api"] = Value::String(api.into());
             }
-            if !model.reasoning_levels.is_empty() {
+            let supported_levels = binding_projection
+                .map(|projection| projection.supported_levels(&model.reasoning_levels))
+                .unwrap_or_else(|| model.reasoning_levels.clone());
+            if !supported_levels.is_empty() {
                 entry["reasoning"] = Value::Bool(true);
                 entry["compat"] = json!({"supportsReasoningEffort": true});
-                let levels = ["off", "minimal", "low", "medium", "high", "xhigh", "max"]
-                    .into_iter()
-                    .map(|level| {
-                        let value = if model.reasoning_levels.iter().any(|item| item == level) {
-                            Value::String(level.into())
-                        } else {
-                            Value::Null
-                        };
-                        (level.to_owned(), value)
+                let levels = binding_projection
+                    .map(|projection| {
+                        projection.catalog_thinking_level_map(&model.reasoning_levels)
                     })
+                    .unwrap_or_else(|| {
+                        model
+                            .reasoning_levels
+                            .iter()
+                            .map(|level| (level.clone(), Some(level.clone())))
+                            .collect()
+                    });
+                let levels = levels
+                    .into_iter()
+                    .map(|(level, value)| (level, value.map(Value::String).unwrap_or(Value::Null)))
                     .collect::<serde_json::Map<_, _>>();
                 entry["thinkingLevelMap"] = Value::Object(levels);
+            }
+            if let Some(responses_compat) =
+                binding_projection.and_then(|projection| projection.responses_compat.as_ref())
+            {
+                entry["compat"] = serde_json::to_value(responses_compat)?;
             }
             Ok(entry)
         })

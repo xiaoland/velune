@@ -12,6 +12,18 @@
 
 下文 MiniMax 的固定 host／模型、采集预算与历史验收仍只描述原有有界 adapter，不是通用 Chat Completions 网关的能力证据。新实现与隔离假上游验证状态归属 [首循环任务](../../tasks/pi-mac-first-loop/packet.md)，不能沿用 MiniMax fixture 宣称新网关已通过。
 
+## Harness 提供商配置导入
+
+提供商配置导入是一项完整功能，覆盖来源中的提供商、协议、端点、有效模型及能力参数，并包含认证来源。认证解析不是另一项可以代替导入的交付。Core 适配器提供非秘密预览与应用动作，平台 UI 依据通用描述展示来源和候选项，不解释 Pi 配置。
+
+首个适配器固定读取 Pi 1.0.2 的有效配置。用户明确选择运行时目录和 Node，预览不执行配置中的凭据命令、不刷新认证、不访问模型服务。提供商按实际端点与协议分组；无法由当前网关保持语义的配置须显示原因，不能默默剥离后声称支持。导入保留原文件；普通凭据引用原来源，OAuth 仍由来源适配器在原存储的锁内刷新，Velune 配置不保存秘密值。
+
+Core 装配配置中的提供商模型映射可以携带 `piProjection`，其类型和转换归 Pi adapter；它不是通用 AI 模型能力。全局目录保留本轮对话操作的身份、显示和预算，Pi adapter 将允许级别与来源 Pi 级别求交，并保留 off→none 等 SDK 映射及九项 Responses 编码选项。适配器同时派生原生 Responses 的允许 effort 值域；网关只校验 wire 值，不理解 Pi 七级、不执行级别转换。投影变化进入物理绑定身份，来源派发重新核对同一投影。未知 compat、自定义 headers、采样参数及显式 session affinity 请求头配置继续明确标记不支持，不声称完整请求头透传。
+
+`core/ai` 与 AI provider lib 不引用 Pi 类型或任何 Harness 配置，独立 Responses 是已实现的一项协议操作，sampling 是另一项操作；这些具体操作不成为整个 AI 服务领域的基础模型。Mac 只编辑通用绑定字段并往返保留 Core 验证的适配元数据，不解释 Pi 投影。
+
+来源配置在导入时形成快照，不做双向同步。重复项默认跳过，替换须明确选择；来源模型可以关联已有全局模型，但不覆盖该模型参数。导入不自动改变路由或运行时默认模型。应用前重新核对来源和目标配置，变化后要求重新预览；派发时核对保存的来源执行绑定，避免来源端点改变后将凭据发送到另一个目标。当前实现与人工验证记录见 [首循环任务](../../tasks/pi-mac-first-loop/packet.md)。
+
 ## 原生 Responses 操作
 
 2026-10-04 用户授权支持 OpenAI Responses v1，暂不翻译协议。Responses 使用 AI service 自有的独立操作契约，不能经 `SamplingInput`／`SamplingDelta` 往返转换：这些采样类型无法表达完整 output items、encrypted reasoning 与原生事件。协议传输由 ai-provider 实现，网关负责入口、模型路由与访问校验。

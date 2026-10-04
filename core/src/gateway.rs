@@ -3,6 +3,7 @@
 //! These types contain ordinary configuration only. Credential references are
 //! opaque handles; resolving them and constructing an HTTP client belongs to
 //! the platform composition root.
+use crate::pi::model_projection::PiModelProjection;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
@@ -27,6 +28,8 @@ pub struct ModelDefinition {
 pub struct ProviderModelBinding {
     pub model_id: String,
     pub external_model_id: String,
+    #[serde(default)]
+    pub pi_projection: Option<PiModelProjection>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -170,6 +173,34 @@ impl GatewayConfig {
                 {
                     return Err("provider model binding is invalid");
                 }
+                if let Some(projection) = &binding.pi_projection {
+                    if projection.thinking_level_map.keys().any(|level| {
+                        !["off", "minimal", "low", "medium", "high", "xhigh", "max"]
+                            .contains(&level.as_str())
+                    }) {
+                        return Err("provider model execution level is invalid");
+                    }
+                    if projection
+                        .thinking_level_map
+                        .values()
+                        .flatten()
+                        .any(|value| {
+                            value.len() > 32
+                                || ![
+                                    "none", "off", "minimal", "low", "medium", "high", "xhigh",
+                                    "max",
+                                ]
+                                .contains(&value.as_str())
+                        })
+                    {
+                        return Err("provider model execution wire level is invalid");
+                    }
+                    if projection.responses_compat.is_some()
+                        && !matches!(provider.protocol, GatewayProtocol::ResponsesV1)
+                    {
+                        return Err("responses execution requires Responses protocol");
+                    }
+                }
             }
         }
         let mut routes = BTreeMap::new();
@@ -214,8 +245,15 @@ impl GatewayConfig {
             .ok_or("provider model binding is missing")?;
         let credential_source = provider.credential_source.as_ref().map(|source| {
             let auth_path = source.settings.get("authPath").map(String::as_str);
+            let models_path = source.settings.get("modelsPath").map(String::as_str);
+            let credential_location = source
+                .settings
+                .get("credentialLocation")
+                .map(String::as_str);
             PiCredentialIdentity {
                 auth_path,
+                models_path,
+                credential_location,
                 harness: source.harness_type_id.as_str(),
                 provider: source.provider_id.as_str(),
                 source_instance: source.source_instance_id.as_deref(),
@@ -227,6 +265,7 @@ impl GatewayConfig {
             protocol: provider.protocol.identity_name(),
             endpoint: provider.endpoint.as_str(),
             external_model_id: binding.external_model_id.as_str(),
+            pi_projection: binding.pi_projection.as_ref(),
             credential_ref: provider.credential_ref.as_deref(),
             credential_source,
             credential_generation: provider.credential_generation,
@@ -279,6 +318,7 @@ struct PiBindingIdentity<'a> {
     protocol: &'static str,
     endpoint: &'a str,
     external_model_id: &'a str,
+    pi_projection: Option<&'a PiModelProjection>,
     credential_ref: Option<&'a str>,
     credential_source: Option<PiCredentialIdentity<'a>>,
     credential_generation: u64,
@@ -289,6 +329,10 @@ struct PiBindingIdentity<'a> {
 struct PiCredentialIdentity<'a> {
     #[serde(rename = "authPath")]
     auth_path: Option<&'a str>,
+    #[serde(rename = "modelsPath")]
+    models_path: Option<&'a str>,
+    #[serde(rename = "credentialLocation")]
+    credential_location: Option<&'a str>,
     harness: &'a str,
     provider: &'a str,
     #[serde(rename = "sourceInstance")]
@@ -307,7 +351,7 @@ impl GatewayProtocol {
 
 pub(crate) fn credential_ready(provider: &ProviderDefinition) -> bool {
     matches!((&provider.credential_ref, &provider.credential_source), (Some(reference), None) if !reference.is_empty())
-        || matches!((&provider.credential_ref, &provider.credential_source), (None, Some(source)) if valid_credential_source(provider) && source.provider_id == "openai")
+        || matches!((&provider.credential_ref, &provider.credential_source), (None, Some(_)) if valid_credential_source(provider))
 }
 
 fn valid_credential_source(provider: &ProviderDefinition) -> bool {
@@ -316,17 +360,33 @@ fn valid_credential_source(provider: &ProviderDefinition) -> bool {
         (None, Some(source)) => {
             matches!(source.kind, CredentialSourceKind::Harness)
                 && source.harness_type_id == "pi"
-                && source.provider_id == "openai"
-                && matches!(provider.protocol, GatewayProtocol::ResponsesV1)
-                && provider.endpoint == "https://api.openai.com/v1"
-                && source
-                    .settings
-                    .get("authPath")
-                    .is_some_and(|value| Path::new(value).is_absolute())
+                && !source.provider_id.is_empty()
+                && !matches!(provider.protocol, GatewayProtocol::MessagesV1)
                 && source
                     .settings
                     .get("nodeBinary")
                     .is_some_and(|value| Path::new(value).is_absolute())
+                && source.settings.get("bindingProjection").is_none_or(|raw| {
+                    let Ok(expected) =
+                        serde_json::from_str::<BTreeMap<String, PiModelProjection>>(raw)
+                    else {
+                        return false;
+                    };
+                    provider.models.iter().all(|binding| {
+                        expected.get(&binding.external_model_id) == binding.pi_projection.as_ref()
+                    })
+                })
+                && (source
+                    .settings
+                    .get("modelsPath")
+                    .is_some_and(|value| Path::new(value).is_absolute())
+                    || (source.provider_id == "openai"
+                        && matches!(provider.protocol, GatewayProtocol::ResponsesV1)
+                        && provider.endpoint == "https://api.openai.com/v1"
+                        && source
+                            .settings
+                            .get("authPath")
+                            .is_some_and(|value| Path::new(value).is_absolute())))
                 && source
                     .source_instance_id
                     .as_deref()
