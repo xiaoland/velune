@@ -15,6 +15,8 @@
 
 ## 当前工作
 
+- [独立 package 与平台能力装配](../tasks/package-boundaries/packet.md)：源码调查与候选边界讨论，未授权重构
+
 - [Pi 与 Mac 首循环](../tasks/pi-mac-first-loop/packet.md)：原生 control surface、AI 网关、提供商与模型配置、Agent 运行时实例；真实运行待用户验收
 
 - [AI service 有界实现](../tasks/ai-service-contracts/packet.md)：隔离旧改动、契约审核、真实接入／fixture 待确认项
