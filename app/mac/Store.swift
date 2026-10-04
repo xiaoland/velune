@@ -9,9 +9,10 @@ private struct ListData: Decodable, Sendable {
     var runtimeInstances: [RuntimeInstance]
     var runtimeTypes: [RuntimeTypeDescriptor]
     var protocols: [ProtocolDescriptor]?
+    var credentialSourceTypes: [CredentialSourceType]?
     var runtimeInstanceID: String?
     enum CodingKeys: String, CodingKey {
-        case conversations, connections, gateways, runtimeInstances, runtimeTypes, protocols
+        case conversations, connections, gateways, runtimeInstances, runtimeTypes, protocols, credentialSourceTypes
         case runtimeInstanceID = "activeRuntimeInstanceID"
     }
 }
@@ -31,6 +32,12 @@ final class AppStore: ObservableObject {
     @Published private(set) var runtimeInstances: [RuntimeInstance] = []
     @Published private(set) var runtimeTypes: [RuntimeTypeDescriptor] = []
     @Published private(set) var protocols: [ProtocolDescriptor] = []
+    @Published private(set) var credentialSourceTypes: [CredentialSourceType] = []
+    @Published private(set) var authenticationRunning = false
+    @Published private(set) var authenticationPrompt: AuthenticationPrompt?
+    @Published private(set) var authenticationNotifications: [AuthenticationNotification] = []
+    @Published private(set) var authenticationResult: String?
+    @Published var showsAuthentication = false
     @Published private(set) var isLoading = false
     @Published private(set) var isShuttingDown = false
     @Published private(set) var activity: String?
@@ -43,6 +50,7 @@ final class AppStore: ObservableObject {
     private var generation = 0
     private var timer: Timer?
     private var pollPending = false
+    private var authenticationPollPending = false
     private var hasGateway = false
     private var previewSnapshots: [String: ConversationSnapshot] = [:]
 
@@ -61,8 +69,8 @@ final class AppStore: ObservableObject {
     var routes: [ModelRoute] { gateway.routes }
     var selectedConversationTitle: String? { conversations.first { $0.id == selectedConversationID }?.title }
     var isGenerating: Bool { snapshot?.runState == .running || snapshot?.runState == .stopping }
-    var isBusy: Bool { isLoading || isGenerating || isShuttingDown }
-    var canSend: Bool { !isLoading && !isShuttingDown && (snapshot?.actions.canSend ?? false) }
+    var isBusy: Bool { isLoading || isGenerating || isShuttingDown || authenticationRunning }
+    var canSend: Bool { !authenticationRunning && !isLoading && !isShuttingDown && (snapshot?.actions.canSend ?? false) }
     var canCancel: Bool { snapshot?.actions.canCancel ?? false }
     var needsModelSelection: Bool { snapshot != nil && snapshot?.modelID == nil }
     var selectedModelName: String? { models.first { $0.id == snapshot?.modelID }?.nickname }
@@ -92,7 +100,7 @@ final class AppStore: ObservableObject {
     private func schedulePolling() {
         timer?.invalidate()
         timer = Timer.scheduledTimer(withTimeInterval: 0.6, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.poll() }
+            Task { @MainActor in self?.pollAuthentication(); self?.poll() }
         }
     }
     func start() {
@@ -140,19 +148,78 @@ final class AppStore: ObservableObject {
         saveGateway(config)
     }
     func saveProvider(_ provider: AIProvider, secret: String = "", onSaved: (() -> Void)? = nil) {
+        guard !authenticationRunning else { error = "请先完成或取消登录"; return }
         guard !isGenerating else { error = "请先停止当前任务，再修改 AI 服务配置"; return }
         guard !isLoading, !isShuttingDown else { error = "请等待当前操作完成后重试"; return }
         var value = provider
         do {
             if !secret.isEmpty {
+                guard value.credentialSource == nil else { throw NSError(domain: "Velune", code: 1, userInfo: [NSLocalizedDescriptionKey: "认证来源与 API key 不能同时配置"]) }
                 let reference = value.credentialRef?.trimmingCharacters(in: .whitespacesAndNewlines)
                 value.credentialRef = reference.flatMap { $0.isEmpty ? nil : $0 } ?? "provider-\(value.id)"
+                let generation = value.credentialGeneration ?? 0
+                guard generation < UInt64.max else { throw NSError(domain: "Velune", code: 1, userInfo: [NSLocalizedDescriptionKey: "认证配置版本已达到上限"]) }
                 if !isPreview { try storeCredential(secret, reference: value.credentialRef!) }
+                value.credentialGeneration = generation + 1
             }
             var config = gateway; config.providers.removeAll { $0.id == value.id }; config.providers.append(value)
             config.routes.removeAll { route in route.providerID == value.id && !value.models.contains { $0.modelID == route.modelID } }
             saveGateway(config, onSaved: onSaved)
         } catch { self.error = error.localizedDescription }
+    }
+    func inspectAuthentication(_ source: CredentialSource, apply: @escaping (AuthenticationMetadata) -> Void) {
+        guard !isPreview else { error = "预览不会读取认证来源"; return }
+        do { request("authentication", payload: ["operation": "inspect", "source": try json(source)], as: AuthenticationInspection.self) { apply($0.metadata) } }
+        catch { self.error = error.localizedDescription }
+    }
+    func startAuthentication(_ source: CredentialSource) {
+        guard !isGenerating else { error = "请先停止当前任务，再开始登录"; return }
+        guard !isPreview else { error = "预览不会启动认证"; return }
+        do {
+            request("authentication", payload: ["operation": "start", "source": try json(source)], as: AuthenticationData.self) { [weak self] data in
+                guard let self else { return }
+                authenticationPrompt = nil; authenticationNotifications = []; authenticationResult = nil
+                showsAuthentication = true; applyAuthentication(data)
+            }
+        } catch { self.error = error.localizedDescription }
+    }
+    func answerAuthentication(id: String, value: String) {
+        request("authentication", payload: ["operation": "reply", "id": id, "value": value], as: AuthenticationData.self) { [weak self] in self?.authenticationPrompt = nil; self?.applyAuthentication($0) }
+    }
+    func cancelAuthentication() {
+        request("authentication", payload: ["operation": "cancel"], as: AuthenticationData.self) { [weak self] in self?.applyAuthentication($0) }
+    }
+    private func pollAuthentication() {
+        guard authenticationRunning, !authenticationPollPending, !isShuttingDown, let transport else { return }
+        authenticationPollPending = true
+        queue.async { [weak self] in
+            let result = Result { try transport.request("authentication", payload: ["operation": "poll"], as: AuthenticationData.self) }
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.authenticationPollPending = false
+                switch result {
+                case .success(let data): self.applyAuthentication(data)
+                case .failure(let failure): self.error = failure.localizedDescription
+                }
+            }
+        }
+    }
+    private func applyAuthentication(_ data: AuthenticationData) {
+        authenticationRunning = data.running
+        if let saved = data.gateways?.first(where: { $0.id == gateway.id }) { gateway = saved }
+        if data.requiresReconnect == true { invalidateConnection() }
+        for event in data.events {
+            if event.type == "prompt", let id = event.id, let prompt = event.prompt {
+                authenticationPrompt = AuthenticationPrompt(id: id, kind: prompt.kind, text: prompt.text, options: prompt.options)
+            } else if event.type == "notify", let notification = event.notification {
+                if notification.kind == "prompt_cancelled" {
+                    if authenticationPrompt?.id == notification.id { authenticationPrompt = nil }
+                } else { authenticationNotifications.append(notification) }
+            } else if event.type == "result" {
+                authenticationPrompt = nil
+                authenticationResult = event.ok == true ? "登录完成，认证已保存在原来源。" : event.cancelled == true ? "登录已取消。" : event.error ?? "登录未完成。"
+            }
+        }
     }
     func deleteProvider(id: String) {
         var config = gateway; config.providers.removeAll { $0.id == id }; config.routes.removeAll { $0.providerID == id }
@@ -235,6 +302,7 @@ final class AppStore: ObservableObject {
         if let saved = data.gateways.first(where: { $0.id == gateway.id }) ?? data.gateways.first { gateway = saved; hasGateway = true }
         runtimeInstances = data.runtimeInstances; runtimeTypes = data.runtimeTypes
         protocols = data.protocols ?? []
+        credentialSourceTypes = data.credentialSourceTypes ?? []
         selectedConnectionID = data.runtimeInstanceID
     }
     private func loadConversations() {
@@ -273,6 +341,7 @@ final class AppStore: ObservableObject {
     }
     private func request<T: Decodable & Sendable>(_ action: String, payload: [String: String] = [:], as type: T.Type, onAccepted: (() -> Void)? = nil, apply: @escaping (T) -> Void) {
         guard !isLoading, !isShuttingDown else { error = "请等待当前操作完成后重试"; return }
+        guard !authenticationRunning || ["authentication", "list", "getSnapshot"].contains(action) else { error = "请先完成或取消登录"; return }
         guard let transport else { error = "本地核心未配置"; return }
         let revision = generation
         var scopedPayload = payload
@@ -311,7 +380,7 @@ final class AppStore: ObservableObject {
     private func seedPreview() {
         gateway = GatewayConfig(models: [AIModel(id: "sample-model", nickname: "通用模型", icon: "sparkles", contextWindow: 8192, maxOutputTokens: 4096, reasoningLevels: ["standard", "deep"])], providers: [AIProvider(id: "sample-provider", name: "示例 AI 服务", protocolID: .chatCompletionsV1, endpoint: "https://example.invalid/v1", credentialRef: "sample-reference", models: [ProviderModelBinding(modelID: "sample-model", externalModelID: "external-example")])], routes: [ModelRoute(modelID: "sample-model", providerID: "sample-provider")])
         hasGateway = true
-        protocols = [ProtocolDescriptor(id: .chatCompletionsV1, name: "OpenAI Chat Completions v1", supported: true), ProtocolDescriptor(id: .responsesV1, name: "OpenAI Responses v1", supported: false), ProtocolDescriptor(id: .messagesV1, name: "Anthropic Messages v1", supported: false)]
+        protocols = [ProtocolDescriptor(id: .chatCompletionsV1, name: "OpenAI Chat Completions v1", supported: true), ProtocolDescriptor(id: .responsesV1, name: "OpenAI Responses v1", supported: true), ProtocolDescriptor(id: .messagesV1, name: "Anthropic Messages v1", supported: false)]
         runtimeTypes = [RuntimeTypeDescriptor(id: "sample-type", name: "示例运行时", fields: [SettingField(key: "workingDir", label: "工作目录", kind: .directoryPath, required: true, value: "", options: [], help: nil)], actions: [SettingAction(id: "connect", label: "连接")])]
         runtimeInstances = [RuntimeInstance(id: "sample-instance", name: "设计项目", typeID: "sample-type", gatewayID: gateway.id, settings: ["workingDir": "/示例/设计项目"], modelID: "sample-model"), RuntimeInstance(id: "sample-review", name: "代码审查", typeID: "sample-type", gatewayID: gateway.id, settings: ["workingDir": "/示例/代码项目"], modelID: "sample-model")]
         connections = [Connection(id: runtimeInstances[0].id, name: runtimeInstances[0].name, state: "ready", capabilities: ["conversation", "streaming", "cancel"])]

@@ -6,11 +6,19 @@
 
 2026-10-04 用户纠正首循环：AI 提供商只是 Velune AI 服务网关配置的一部分。全局模型目录保存模型身份、昵称、图标、输出上限和支持的推理级别；提供商通过模型映射关联目录项。协议由有限枚举表达，首先支持 OpenAI ChatCompletions v1；不将自由文本当作协议契约。模型路由与 fail-over 策略属于网关，不塞入提供商配置。
 
-Harness 不直接使用其已有上游认证。Host 装配本机 Velune 网关，向选定的 Agent 运行时实例注入网关端点、模型目录与本地访问凭据；上游凭据仅留在 Velune 的提供商装配边界。适配器不向 Harness 传递上游端点或 Keychain 引用。此次实现先提供显式模型到提供商的路由；自动策略尚未定义，默认禁用 fail-over，不展示可启用的空策略。
+执行 Harness 不直接使用上游认证。嵌入式 CoreRuntime 装配本机 Velune 网关，向选定的 Agent 运行时实例注入网关端点、模型目录与本地访问凭据；上游授权只在提供商装配边界使用。用户可以明确委托 Harness 的认证来源；原存储保留，同一来源负责刷新，不复制为第二份认证权威。适配器不向 Harness 传递上游端点或 Keychain 引用。此次实现先提供显式模型到提供商的路由；自动策略尚未定义，默认禁用 fail-over，不展示可启用的空策略。
 
 网关的参数编码依据 [OpenAI Chat Completions 官方参考](https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create)，运行时配置注入依据 [Pi 1.0.2 模型配置源码](https://github.com/earendil-works/pi/blob/cd32f7725fdbddbaecdff5b1e68491563394e0ca/packages/coding-agent/docs/models.md)，于 2026-10-04 复核。内部输出上限与推理级别由 provider 转换为所选协议的字段，不以 UI 参数名称代替 wire 验证。
 
 下文 MiniMax 的固定 host／模型、采集预算与历史验收仍只描述原有有界 adapter，不是通用 Chat Completions 网关的能力证据。新实现与隔离假上游验证状态归属 [首循环任务](../../tasks/pi-mac-first-loop/packet.md)，不能沿用 MiniMax fixture 宣称新网关已通过。
+
+## 原生 Responses 操作
+
+2026-10-04 用户授权支持 OpenAI Responses v1，暂不翻译协议。Responses 使用 AI service 自有的独立操作契约，不能经 `SamplingInput`／`SamplingDelta` 往返转换：这些采样类型无法表达完整 output items、encrypted reasoning 与原生事件。协议传输由 ai-provider 实现，网关负责入口、模型路由与访问校验。
+
+首轮覆盖 foreground `POST /v1/responses` 的 JSON 与 SSE。每次调用捕获不可变目标，将 Velune 逻辑 ID 或 Pi 绑定 ID 解析为同一逻辑路由，再替换为外部模型 ID；其它请求字段按原生契约保留或明确拒绝。协议不匹配、未支持的状态型请求与无效能力不能隐式转为 ChatCompletions。原生 completed、incomplete、failed 与 cancelled 各自保留；HTTP 200、EOF 或 `[DONE]` 不独自证明 Responses 完整成功。断连和取消停止本次上游等待，不伪造成功终态。
+
+认证方式可能进一步限制协议能力。Pi 新 ChatGPT 订阅 adapter 明确省略普通 Responses 的部分参数；共享其认证来源不使这些参数获得支持。限制必须由来源能力投影给 Harness 或在边界拒绝，不能靠网关悄悄删字段。当前实现与隔离证据仍以首循环 Task Packet 为准。
 
 ## 两套契约与依赖
 
@@ -30,7 +38,7 @@ app main → AiService::sampling(request, attempt_id, event_sink)
 
 统一配置中心拥有持久配置，app main 创建新的 immutable provider／binding／service。两个 lib 不读 env、文件、全局配置，也不保存配置。[手动入口](../../core/ai-provider/examples/minimax_manual.rs) 是本步 composition root：读取获准 Networksecret 占位、创建带标准环境代理及系统 TLS 校验的客户端，禁 retry／redirect，注入内存凭据。不是正式配置中心或产品入口。
 
-ProviderConfig 保留协议、CredentialRef、模型映射、ProviderId／ConfigRevision。新增独立 ChatCompletionsConfig；Responses／Messages 仍仅配置形状，没有实现。MiniMax adapter 限定 HTTPS `api.minimax.cn:443/v1`、`MiniMax-M3`，`thinking:disabled`、`service_tier:standard`，不启用内置收费工具。HTTP 客户端的安全装配属于 app；adapter 接受已装配 client，不能从类型上证明任意第三方传入的 client 均关闭重试。
+ProviderConfig 保留协议、CredentialRef、模型映射、ProviderId／ConfigRevision。新增独立 ChatCompletionsConfig；Messages 仍仅配置形状；Responses 原生操作正在本轮实施。MiniMax adapter 限定 HTTPS `api.minimax.cn:443/v1`、`MiniMax-M3`，`thinking:disabled`、`service_tier:standard`，不启用内置收费工具。HTTP 客户端的安全装配属于 app；adapter 接受已装配 client，不能从类型上证明任意第三方传入的 client 均关闭重试。
 
 ProviderBinding::prepare 捕获 Arc 与 revision；adapter 自身也持有 immutable 配置和凭据，不重读配置。Arc 不证明其他 trait 实现无内部可变性；并发热切换、凭据轮换尚未实测。HttpEndpoint／ID 构造器仍是语法边界，不是完整网络安全策略。
 

@@ -11,8 +11,16 @@ const cwd = value("--cwd") ?? process.cwd();
 const sessionDir = value("--session-dir");
 const inspectPath = value("--inspect-session");
 if (inspectPath) {
-  const context = SessionManager.open(inspectPath).buildSessionContext();
-  process.stdout.write(JSON.stringify({model: context.model, thinkingLevel: context.thinkingLevel}));
+  const manager = SessionManager.open(inspectPath);
+  const context = manager.buildSessionContext();
+  const virtualEntry = [...manager.getBranch()]
+    .reverse()
+    .find((entry) => entry.type === "custom" && entry.customType === "pi.virtual-model-state");
+  process.stdout.write(JSON.stringify({
+    model: context.model,
+    thinkingLevel: context.thinkingLevel,
+    virtualState: virtualEntry?.data ?? null,
+  }));
 } else {
 const sessions = args.includes("--all")
   ? await SessionManager.listAll(sessionDir)

@@ -1,6 +1,7 @@
 pub mod abi;
 #[cfg(feature = "simulation")]
 pub mod adapter;
+mod authentication;
 pub mod conversation;
 pub mod gateway;
 pub mod gateway_runtime;

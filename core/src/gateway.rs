@@ -4,7 +4,11 @@
 //! opaque handles; resolving them and constructing an HTTP client belongs to
 //! the platform composition root.
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, BTreeSet};
+use sha2::{Digest, Sha256};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    path::Path,
+};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -35,12 +39,36 @@ pub enum GatewayProtocol {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+pub enum CredentialSourceKind {
+    #[serde(rename = "harness")]
+    Harness,
+}
+
+/// Platform-owned authentication lookup metadata. It contains no bearer or key material.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CredentialSource {
+    pub kind: CredentialSourceKind,
+    pub harness_type_id: String,
+    #[serde(default)]
+    pub source_instance_id: Option<String>,
+    pub provider_id: String,
+    pub settings: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct ProviderDefinition {
     pub id: String,
     pub name: String,
     pub protocol: GatewayProtocol,
     pub endpoint: String,
+    #[serde(default)]
     pub credential_ref: Option<String>,
+    #[serde(default)]
+    pub credential_source: Option<CredentialSource>,
+    #[serde(default)]
+    pub credential_generation: u64,
     pub models: Vec<ProviderModelBinding>,
 }
 
@@ -128,7 +156,8 @@ impl GatewayConfig {
             if provider.id.is_empty()
                 || provider.name.is_empty()
                 || provider.endpoint.is_empty()
-                || !matches!(provider.protocol, GatewayProtocol::ChatCompletionsV1)
+                || matches!(provider.protocol, GatewayProtocol::MessagesV1)
+                || !valid_credential_source(provider)
                 || providers.insert(&provider.id, provider).is_some()
             {
                 return Err("provider is unsupported or duplicated");
@@ -165,6 +194,48 @@ impl GatewayConfig {
         self.models.iter().find(|model| model.id == id)
     }
 
+    /// Return the stable physical model identity used by a Pi catalog.
+    ///
+    /// The logical model remains the gateway request key. This identity binds
+    /// the complete provider target without including bearer material or the
+    /// Node executable path, so changing a route or account generation cannot
+    /// reuse an incompatible Pi model entry.
+    pub fn pi_binding_id(&self, logical_model_id: &str) -> Result<String, &'static str> {
+        let provider = self.validate_dispatch(logical_model_id)?;
+        let route = self
+            .routes
+            .iter()
+            .find(|route| route.model_id == logical_model_id)
+            .ok_or("model needs exactly one route")?;
+        let binding = provider
+            .models
+            .iter()
+            .find(|binding| binding.model_id == logical_model_id)
+            .ok_or("provider model binding is missing")?;
+        let credential_source = provider.credential_source.as_ref().map(|source| {
+            let auth_path = source.settings.get("authPath").map(String::as_str);
+            PiCredentialIdentity {
+                auth_path,
+                harness: source.harness_type_id.as_str(),
+                provider: source.provider_id.as_str(),
+                source_instance: source.source_instance_id.as_deref(),
+            }
+        });
+        let identity = PiBindingIdentity {
+            logical_model_id,
+            provider_id: route.provider_id.as_str(),
+            protocol: provider.protocol.identity_name(),
+            endpoint: provider.endpoint.as_str(),
+            external_model_id: binding.external_model_id.as_str(),
+            credential_ref: provider.credential_ref.as_deref(),
+            credential_source,
+            credential_generation: provider.credential_generation,
+        };
+        let canonical = serde_json::to_vec(&identity).map_err(|_| "binding identity encoding")?;
+        let digest = Sha256::digest(canonical);
+        Ok(format!("vln_{digest:x}"))
+    }
+
     /// Validate the stricter boundary used immediately before a gateway call.
     /// Configuration editing may save incomplete models/providers/routes, but a
     /// dispatch must have exactly one explicit provider mapping.
@@ -186,7 +257,7 @@ impl GatewayConfig {
             .iter()
             .find(|provider| provider.id == routes[0].provider_id)
             .ok_or("route provider is missing")?;
-        if !matches!(provider.protocol, GatewayProtocol::ChatCompletionsV1) {
+        if matches!(provider.protocol, GatewayProtocol::MessagesV1) {
             return Err("provider protocol is unsupported");
         }
         if !provider
@@ -197,6 +268,72 @@ impl GatewayConfig {
             return Err("provider model binding is missing");
         }
         Ok(provider)
+    }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PiBindingIdentity<'a> {
+    logical_model_id: &'a str,
+    provider_id: &'a str,
+    protocol: &'static str,
+    endpoint: &'a str,
+    external_model_id: &'a str,
+    credential_ref: Option<&'a str>,
+    credential_source: Option<PiCredentialIdentity<'a>>,
+    credential_generation: u64,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PiCredentialIdentity<'a> {
+    #[serde(rename = "authPath")]
+    auth_path: Option<&'a str>,
+    harness: &'a str,
+    provider: &'a str,
+    #[serde(rename = "sourceInstance")]
+    source_instance: Option<&'a str>,
+}
+
+impl GatewayProtocol {
+    fn identity_name(&self) -> &'static str {
+        match self {
+            Self::ChatCompletionsV1 => "chatCompletionsV1",
+            Self::ResponsesV1 => "responsesV1",
+            Self::MessagesV1 => "messagesV1",
+        }
+    }
+}
+
+pub(crate) fn credential_ready(provider: &ProviderDefinition) -> bool {
+    matches!((&provider.credential_ref, &provider.credential_source), (Some(reference), None) if !reference.is_empty())
+        || matches!((&provider.credential_ref, &provider.credential_source), (None, Some(source)) if valid_credential_source(provider) && source.provider_id == "openai")
+}
+
+fn valid_credential_source(provider: &ProviderDefinition) -> bool {
+    match (&provider.credential_ref, &provider.credential_source) {
+        (Some(reference), None) => !reference.is_empty(),
+        (None, Some(source)) => {
+            matches!(source.kind, CredentialSourceKind::Harness)
+                && source.harness_type_id == "pi"
+                && source.provider_id == "openai"
+                && matches!(provider.protocol, GatewayProtocol::ResponsesV1)
+                && provider.endpoint == "https://api.openai.com/v1"
+                && source
+                    .settings
+                    .get("authPath")
+                    .is_some_and(|value| Path::new(value).is_absolute())
+                && source
+                    .settings
+                    .get("nodeBinary")
+                    .is_some_and(|value| Path::new(value).is_absolute())
+                && source
+                    .source_instance_id
+                    .as_deref()
+                    .is_none_or(|value| !value.is_empty())
+        }
+        (None, None) => true,
+        _ => false,
     }
 }
 
@@ -221,7 +358,9 @@ mod tests {
                 name: "Fixture provider".into(),
                 protocol: GatewayProtocol::ChatCompletionsV1,
                 endpoint: "http://127.0.0.1:1/v1".into(),
-                credential_ref: None,
+                credential_ref: Some("fixture".into()),
+                credential_source: None,
+                credential_generation: 0,
                 models: vec![ProviderModelBinding {
                     model_id: "model".into(),
                     external_model_id: "upstream-model".into(),
@@ -265,7 +404,7 @@ mod tests {
     #[test]
     fn unsupported_protocol_is_rejected() {
         let mut value = config();
-        value.providers[0].protocol = GatewayProtocol::ResponsesV1;
+        value.providers[0].protocol = GatewayProtocol::MessagesV1;
         assert_eq!(
             value.validate(),
             Err("provider is unsupported or duplicated")

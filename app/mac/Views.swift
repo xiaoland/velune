@@ -247,8 +247,8 @@ struct ProviderSettingsView: View {
             }.padding(.horizontal, 20).padding(.vertical, 12)
             SettingsError(message: store.error)
         }
-        .sheet(item: $editor) { provider in ProviderEditor(provider: provider, models: store.models, protocols: store.protocols, isSaving: store.isLoading, error: store.error) { value, secret, onSaved in store.saveProvider(value, secret: secret, onSaved: onSaved) } }
-        .sheet(isPresented: $creating) { ProviderEditor(provider: nil, models: store.models, protocols: store.protocols, isSaving: store.isLoading, error: store.error) { value, secret, onSaved in store.saveProvider(value, secret: secret, onSaved: onSaved) } }
+        .sheet(item: $editor) { provider in ProviderEditor(provider: provider, models: store.models, protocols: store.protocols, sourceTypes: store.credentialSourceTypes, authenticate: store.startAuthentication, inspect: store.inspectAuthentication, isSaving: store.isLoading, error: store.error) { value, secret, onSaved in store.saveProvider(value, secret: secret, onSaved: onSaved) }.sheet(isPresented: $store.showsAuthentication) { AuthenticationView(store: store) } }
+        .sheet(isPresented: $creating) { ProviderEditor(provider: nil, models: store.models, protocols: store.protocols, sourceTypes: store.credentialSourceTypes, authenticate: store.startAuthentication, inspect: store.inspectAuthentication, isSaving: store.isLoading, error: store.error) { value, secret, onSaved in store.saveProvider(value, secret: secret, onSaved: onSaved) }.sheet(isPresented: $store.showsAuthentication) { AuthenticationView(store: store) } }
         .alert("删除AI提供商？", isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } }), presenting: deleting) { provider in
             Button("删除", role: .destructive) { store.deleteProvider(id: provider.id); deleting = nil }; Button("取消", role: .cancel) { deleting = nil }
         } message: { provider in Text("删除「\(provider.name)」的配置。模型定义与会话不受影响。") }
@@ -259,6 +259,9 @@ struct ProviderEditor: View {
     let provider: AIProvider?
     let models: [AIModel]
     let protocols: [ProtocolDescriptor]
+    let sourceTypes: [CredentialSourceType]
+    let authenticate: (CredentialSource) -> Void
+    let inspect: (CredentialSource, @escaping (AuthenticationMetadata) -> Void) -> Void
     let isSaving: Bool
     let error: String?
     let save: (AIProvider, String, (() -> Void)?) -> Void
@@ -268,10 +271,20 @@ struct ProviderEditor: View {
     @State private var endpoint = ""
     @State private var credentialRef = ""
     @State private var secret = ""
+    @State private var sourceTypeID = ""
+    @State private var sourceValues: [String: String] = [:]
+    @State private var sourceMetadata: AuthenticationMetadata?
     @State private var bindings: [String: String] = [:]
     @State private var draftID = UUID().uuidString
+    private var sourceDescriptor: CredentialSourceType? { sourceTypes.first { $0.id == sourceTypeID } }
+    private var sourceValid: Bool { sourceTypeID.isEmpty || (sourceDescriptor?.fields.allSatisfy { !$0.required || !(sourceValues[$0.key] ?? $0.value).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty } ?? false) }
+    private var draftSource: CredentialSource? {
+        sourceDescriptor.map { descriptor in
+            CredentialSource(harnessTypeID: descriptor.id, sourceInstanceID: provider?.credentialSource?.sourceInstanceID, providerID: (sourceValues["providerId"] ?? descriptor.fields.first { $0.key == "providerId" }?.value ?? "").trimmingCharacters(in: .whitespacesAndNewlines), settings: Dictionary(uniqueKeysWithValues: descriptor.fields.filter { $0.key != "providerId" }.map { ($0.key, (sourceValues[$0.key] ?? $0.value).trimmingCharacters(in: .whitespacesAndNewlines)) }))
+        }
+    }
     private var protocolSupported: Bool { protocols.first { $0.id == protocolID }?.supported == true }
-    private var valid: Bool { !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !endpoint.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && protocolSupported && bindings.values.allSatisfy { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty } }
+    private var valid: Bool { !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !endpoint.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && protocolSupported && sourceValid && bindings.values.allSatisfy { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty } }
     var body: some View {
         VStack(spacing: 0) {
             Text(provider == nil ? "添加AI提供商" : "编辑AI提供商").font(.headline).frame(maxWidth: .infinity, alignment: .leading).padding(20)
@@ -283,8 +296,27 @@ struct ProviderEditor: View {
                         ForEach(protocols) { descriptor in Text(descriptor.name + (descriptor.supported ? "" : "（尚未支持）")).tag(Optional(descriptor.id)).disabled(!descriptor.supported) }
                     }
                     TextField("服务地址", text: $endpoint)
-                    TextField("凭据名称", text: $credentialRef, prompt: Text("Keychain中的引用"))
-                    SecureField("API key", text: $secret, prompt: Text("留空保留已有凭据"))
+                    Picker("认证方式", selection: $sourceTypeID) {
+                        Text("API key（Keychain）").tag("")
+                        ForEach(sourceTypes) { type in Text(type.name).tag(type.id) }
+                    }
+                    if sourceTypeID.isEmpty {
+                        TextField("凭据名称", text: $credentialRef, prompt: Text("Keychain中的引用"))
+                        SecureField("API key", text: $secret, prompt: Text("留空保留已有凭据"))
+                    } else if let descriptor = sourceDescriptor {
+                        ForEach(descriptor.fields) { field in
+                            SettingFieldView(field: field, value: Binding(get: { sourceValues[field.key] ?? field.value }, set: { sourceValues[field.key] = $0 }))
+                        }
+                        Text("使用指定来源的认证；原配置保留，凭据不会复制到 Velune 配置文件。").font(.caption).foregroundStyle(.secondary)
+                        Button("读取来源信息") { if let source = draftSource { inspect(source) { metadata in sourceMetadata = metadata; protocolID = metadata.capabilities.protocol; endpoint = metadata.capabilities.endpoint } } }.disabled(!sourceValid || isSaving)
+                        if let metadata = sourceMetadata {
+                            Text(metadata.configured ? "来源已有订阅认证" : "来源尚未完成登录").font(.caption).foregroundStyle(.secondary)
+                            if !metadata.capabilities.explicitOutputCap { Text("此来源不支持服务端输出 token 上限。").font(.caption).foregroundStyle(.secondary) }
+                        }
+                        ForEach(descriptor.actions.filter { $0.id == "login" }) { action in
+                            Button(action.label) { if let source = draftSource { authenticate(source) } }.disabled(!sourceValid || isSaving)
+                        }
+                    }
                 }
                 Section("关联模型") {
                     ForEach(models) { model in
@@ -297,12 +329,13 @@ struct ProviderEditor: View {
             HStack { Spacer(); Button("取消") { dismiss() }.keyboardShortcut(.cancelAction); Button("保存") { commit() }.keyboardShortcut(.defaultAction).disabled(!valid || isSaving) }.padding(20)
             SettingsError(message: error)
         }.frame(width: 580, height: 520)
-        .onAppear { name = provider?.name ?? ""; protocolID = provider?.protocolID ?? protocols.first { $0.supported }?.id; endpoint = provider?.endpoint ?? ""; credentialRef = provider?.credentialRef ?? ""; bindings = Dictionary(uniqueKeysWithValues: (provider?.models ?? []).map { ($0.modelID, $0.externalModelID) }) }
+        .onAppear { name = provider?.name ?? ""; protocolID = provider?.protocolID ?? protocols.first { $0.supported }?.id; endpoint = provider?.endpoint ?? ""; credentialRef = provider?.credentialRef ?? ""; sourceTypeID = provider?.credentialSource?.harnessTypeID ?? ""; sourceValues = provider?.credentialSource?.settings ?? [:]; if let source = provider?.credentialSource { sourceValues["providerId"] = source.providerID }; bindings = Dictionary(uniqueKeysWithValues: (provider?.models ?? []).map { ($0.modelID, $0.externalModelID) }) }
     }
     private func commit() {
         guard valid, let protocolID else { return }
-        let value = AIProvider(id: provider?.id ?? draftID, name: name.trimmingCharacters(in: .whitespacesAndNewlines), protocolID: protocolID, endpoint: endpoint.trimmingCharacters(in: .whitespacesAndNewlines), credentialRef: credentialRef.isEmpty ? nil : credentialRef, models: bindings.keys.sorted().map { ProviderModelBinding(modelID: $0, externalModelID: bindings[$0]!.trimmingCharacters(in: .whitespacesAndNewlines)) })
-        save(value, secret) { secret = ""; dismiss() }
+        let source = draftSource
+        let value = AIProvider(id: provider?.id ?? draftID, name: name.trimmingCharacters(in: .whitespacesAndNewlines), protocolID: protocolID, endpoint: endpoint.trimmingCharacters(in: .whitespacesAndNewlines), credentialRef: source == nil && !credentialRef.isEmpty ? credentialRef : nil, models: bindings.keys.sorted().map { ProviderModelBinding(modelID: $0, externalModelID: bindings[$0]!.trimmingCharacters(in: .whitespacesAndNewlines)) }, credentialSource: source, credentialGeneration: provider?.credentialGeneration)
+        save(value, source == nil ? secret : "") { secret = ""; dismiss() }
     }
 }
 
@@ -475,5 +508,46 @@ struct SettingFieldView: View {
     private func choosePath() {
         let panel = NSOpenPanel(); panel.canChooseDirectories = field.kind == .directoryPath; panel.canChooseFiles = field.kind == .filePath; panel.allowsMultipleSelection = false
         if panel.runModal() == .OK, let url = panel.url { value = url.path }
+    }
+}
+
+struct AuthenticationView: View {
+    @ObservedObject var store: AppStore
+    @Environment(\.dismiss) private var dismiss
+    @State private var answer = ""
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("认证来源登录").font(.headline)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 12) {
+                    ForEach(Array(store.authenticationNotifications.enumerated()), id: \.offset) { _, notice in
+                        if let text = notice.text { Text(text).textSelection(.enabled) }
+                        if let instructions = notice.instructions { Text(instructions) }
+                        if let code = notice.userCode { LabeledContent("验证码", value: code).textSelection(.enabled) }
+                        if let address = notice.url ?? notice.verificationUri, let url = URL(string: address), url.scheme == "https" {
+                            Link("在浏览器中继续", destination: url)
+                        }
+                    }
+                    if let prompt = store.authenticationPrompt {
+                        Text(prompt.text)
+                        if let options = prompt.options {
+                            Picker("选择", selection: $answer) { Text("请选择").tag(""); ForEach(options) { Text($0.label).tag($0.id) } }
+                        } else if prompt.kind == "secret" { SecureField("输入", text: $answer) }
+                        else { TextField("输入", text: $answer) }
+                        Button("继续") { store.answerAuthentication(id: prompt.id, value: answer); answer = "" }.disabled(answer.isEmpty || store.isLoading)
+                    }
+                    if let result = store.authenticationResult { Text(result) }
+                }.frame(maxWidth: .infinity, alignment: .leading)
+            }
+            SettingsError(message: store.error)
+            HStack {
+                if store.authenticationRunning { ProgressView().controlSize(.small) }
+                Spacer()
+                if store.authenticationRunning { Button("取消登录") { store.cancelAuthentication() }.disabled(store.isLoading) }
+                else { Button("完成") { dismiss() }.keyboardShortcut(.defaultAction) }
+            }
+        }.padding(24).frame(width: 560, height: 450)
+        .interactiveDismissDisabled(store.authenticationRunning)
+        .onChange(of: store.authenticationPrompt?.id) { _, _ in answer = "" }
     }
 }

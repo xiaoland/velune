@@ -1,0 +1,77 @@
+// Velune's single public Pi model. The application owns the physical route;
+// Pi only records this virtual selection and the routed model in its branch.
+import { readFileSync } from "node:fs";
+
+const selectionPath = process.env.VELUNE_PI_SELECTION_FILE;
+
+function selection() {
+  if (!selectionPath) throw new Error("Velune Pi selection file is missing");
+  const value = JSON.parse(readFileSync(selectionPath, "utf8"));
+  if (!value.modelId && !value.physicalModelId) throw new Error("Velune Pi selection model is missing");
+  return value;
+}
+
+export default function (pi) {
+  const appendSelection = () => {
+    const chosen = selection();
+    pi.appendEntry("pi.virtual-model-state", {
+      provider: "velune-gateway",
+      modelId: chosen.physicalModelId ?? chosen.modelId,
+      state: {
+        logicalModelId: chosen.logicalModelId ?? chosen.modelId,
+        physicalModelId: chosen.physicalModelId ?? chosen.modelId,
+        modelId: chosen.physicalModelId ?? chosen.modelId,
+        thinkingLevel: chosen.thinkingLevel ?? "off",
+      },
+    });
+  };
+  pi.registerCommand("velune-sync-selection", {
+    description: "Persist the Velune physical model selection on this branch",
+    handler: appendSelection,
+  });
+  pi.on("model_select", () => {
+    appendSelection();
+  });
+  // Velune's gateway decides subscription capabilities. Pi's generic
+  // Responses adapter otherwise adds API-key-oriented generation and cache
+  // fields based on local catalog metadata.
+  pi.on("before_provider_request", (event) => {
+    if (!event.payload || typeof event.payload !== "object") return event.payload;
+    const chosen = selection();
+    if (chosen.subscriptionCapability !== true) return event.payload;
+    const payload = { ...event.payload };
+    for (const key of [
+      "max_output_tokens",
+      "temperature",
+      "prompt_cache_retention",
+      "prompt_cache_options",
+      "prompt_cache_key",
+    ]) delete payload[key];
+    return payload;
+  });
+  pi.registerVirtualModel({
+    provider: "velune",
+    id: "auto",
+    name: "Velune Auto",
+    thinkingLevels: ["off", "minimal", "low", "medium", "high", "xhigh", "max"],
+    input: ["text"],
+    route(request, ctx) {
+      const chosen = selection();
+      const physicalModelId = chosen.physicalModelId ?? chosen.modelId;
+      const model = ctx.modelRegistry.find("velune-gateway", physicalModelId);
+      if (!model) throw new Error(`Velune gateway model is unavailable: ${physicalModelId}`);
+      const thinkingLevel = chosen.thinkingLevel ?? request.thinkingLevel ?? "off";
+      return {
+        model,
+        thinkingLevel,
+        state: {
+          provider: "velune-gateway",
+          logicalModelId: chosen.logicalModelId ?? chosen.modelId,
+          physicalModelId,
+          modelId: physicalModelId,
+          thinkingLevel,
+        },
+      };
+    },
+  });
+}

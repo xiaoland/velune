@@ -50,6 +50,8 @@ cargo run --locked --features simulation -- inspect /tmp/velune-demo.sqlite
 
 当前实现按 `core/` 与 `app/` 拆分：core 是跨平台 Rust lib，拥有 AI 服务、Harness 适配、配置与运行时行为；平台 app 通过 C ABI 嵌入它，负责原生界面和平台设施，不再另启常驻 Host。Pi 持有会话历史，Velune 只投影列表、消息和运行状态。AI 提供商与全局模型目录由用户在应用内配置，不硬编码供应商示例；真实登录、运行与验收由用户完成。
 
+网关支持原生 ChatCompletions v1 与 Responses v1，暂不翻译协议。Pi 会话选择稳定 `velune/auto`，实际路由使用绑定身份以保持历史兼容性。设置页可选择 Keychain 或当前支持的 Pi 订阅认证来源，保留原存储并委托 SDK 登录／刷新；具体入口和限制见 [开发说明](docs/development.md)，隔离证据见当前 Task Packet。
+
 Mac 构建默认安装到 `/Applications/Velune.app`，当前产品版本为 `0.1 beta.1`（归属 `VERSION`）；ABI、投影契约与配置 schema 分开维护。有活跃任务时不强制更新。协作采用敏捷开发，需求可在实现中调整，关键设计先收敛再实施，具体规则见 [共享指引](AGENTS.md)。
 
 本轮状态见 [首循环任务](tasks/pi-mac-first-loop/packet.md)，构建和操作入口见 [开发说明](docs/development.md)。不要将隔离协议检查或成功构建当成真实模型循环已通过。

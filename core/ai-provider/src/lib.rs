@@ -4,3 +4,4 @@
 pub mod config;
 pub mod minimax;
 pub mod openai;
+pub mod responses;

@@ -96,6 +96,27 @@ enum ProviderProtocol: String, Codable, Sendable, CaseIterable, Identifiable {
     var id: String { rawValue }
 }
 
+struct CredentialSource: Codable, Sendable, Equatable {
+    var kind: String = "harness"
+    var harnessTypeID: String
+    var sourceInstanceID: String?
+    var providerID: String
+    var settings: [String: String]
+    enum CodingKeys: String, CodingKey {
+        case kind, settings
+        case harnessTypeID = "harnessTypeId"
+        case sourceInstanceID = "sourceInstanceId"
+        case providerID = "providerId"
+    }
+}
+
+struct CredentialSourceType: Codable, Sendable, Identifiable, Equatable {
+    var id: String
+    var name: String
+    var fields: [SettingField]
+    var actions: [SettingAction]
+}
+
 struct AIProvider: Codable, Sendable, Identifiable, Equatable {
     var id: String
     var name: String
@@ -103,7 +124,9 @@ struct AIProvider: Codable, Sendable, Identifiable, Equatable {
     var endpoint: String
     var credentialRef: String?
     var models: [ProviderModelBinding]
-    enum CodingKeys: String, CodingKey { case id, name, endpoint, credentialRef, models; case protocolID = "protocol" }
+    var credentialSource: CredentialSource? = nil
+    var credentialGeneration: UInt64? = nil
+    enum CodingKeys: String, CodingKey { case id, name, endpoint, credentialRef, credentialSource, credentialGeneration, models; case protocolID = "protocol" }
 }
 
 struct ModelRoute: Codable, Sendable, Identifiable, Equatable {
@@ -174,3 +197,51 @@ struct SettingField: Codable, Sendable, Identifiable, Equatable {
     var options: [SettingOption]
     var help: String?
 }
+
+struct AuthenticationPrompt: Decodable, Sendable, Identifiable {
+    var id: String
+    var kind: String
+    var text: String
+    var options: [SettingOption]?
+}
+struct AuthenticationNotification: Decodable, Sendable {
+    var kind: String
+    var id: String?
+    var text: String?
+    var url: String?
+    var instructions: String?
+    var userCode: String?
+    var verificationUri: String?
+}
+struct AuthenticationEvent: Decodable, Sendable {
+    var type: String
+    var id: String?
+    var prompt: AuthenticationPromptBody?
+    var notification: AuthenticationNotification?
+    var ok: Bool?
+    var error: String?
+    var cancelled: Bool?
+}
+struct AuthenticationPromptBody: Decodable, Sendable {
+    var kind: String
+    var text: String
+    var options: [SettingOption]?
+}
+struct AuthenticationData: Decodable, Sendable {
+    var running: Bool
+    var events: [AuthenticationEvent]
+    var gateways: [GatewayConfig]?
+    var requiresReconnect: Bool?
+}
+
+struct AuthenticationMetadata: Decodable, Sendable {
+    var configured: Bool
+    var capabilities: AuthenticationCapabilities
+}
+struct AuthenticationCapabilities: Decodable, Sendable {
+    var `protocol`: ProviderProtocol
+    var endpoint: String
+    var explicitOutputCap: Bool
+    var temperature: Bool
+}
+struct AuthenticationInspection: Decodable, Sendable { var metadata: AuthenticationMetadata }

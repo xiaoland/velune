@@ -1,5 +1,7 @@
 # 开发与复验
 
+项目不新增自动化测试，以类型安全、静态检查和构建为先。行为验收使用手动操作或临时端到端脚本，不建立单元或集成测试套件，也不把临时脚本接入 CI。
+
 ## 当前 Mac 会话界面
 
 当前应用为 SwiftUI 原生 Mac control surface：系统侧栏和工具栏、Chatbot 阅读与输入区、独立 Settings 窗口。系统决定基础字体、语义颜色及明暗外观，Velune 品牌仅保留在图标与少量细节。应用通过 C ABI 1 嵌入 Rust lib，消费通用投影契约 3，不解析 Harness 原生事件，也不启动常驻 Host 或访问 Unix socket。下文 IPC v1 与模拟体验段落描述历史原型，不能作为当前产品接入说明。
@@ -12,7 +14,7 @@ bash scripts/build-macos.sh
 open /Applications/Velune.app
 ```
 
-应用根目录由启动进程的 `VELUNE_HOME` 环境变量指定，未设置或留空时为 `~/.velune`，非空值必须是绝对目录路径。平台将该路径显式传给 CoreRuntime，库不自行读取环境。根目录下的 `generic-config.json` 持久化 AI 网关与 Agent 运行时实例配置，凭据值仍留在 Keychain。Finder 启动通常不继承 shell 配置，隔离开发可直接带环境运行 bundle 可执行文件：
+应用根目录由启动进程的 `VELUNE_HOME` 环境变量指定，未设置或留空时为 `~/.velune`，非空值必须是绝对目录路径。平台将该路径显式传给 CoreRuntime，库不自行读取环境。根目录下的 `generic-config.json` 持久化 AI 网关与 Agent 运行时实例配置，API key 留在 Keychain；受委托的订阅认证留在用户指定的原 Harness 存储，配置只保存来源引用。Finder 启动通常不继承 shell 配置，隔离开发可直接带环境运行 bundle 可执行文件：
 
 ```sh
 VELUNE_HOME=/absolute/path/to/isolated-home /Applications/Velune.app/Contents/MacOS/Velune
@@ -20,11 +22,11 @@ VELUNE_HOME=/absolute/path/to/isolated-home /Applications/Velune.app/Contents/Ma
 
 构建脚本默认将验证签名后的 bundle 安装到 `/Applications/Velune.app`；仅构建可用 `bash scripts/build-macos.sh --build-only`。修改后正常退出应用再重建安装，安装器不会覆盖尚未退出的应用；应用在运行时忙碌时拒绝退出，不能为更新强制终止任务。产品显示版本来自仓库 `VERSION`，当前为 `0.1 beta.1`，原生“关于 Velune”面板读取同一版本。manifest 分别保存源码提交、ABI、投影契约和配置 schema。
 
-Settings 分为 AI 提供商、模型、模型路由和 Agent 运行时。先定义模型 ID、昵称、图标、上下文窗口、输出上限和支持的推理级别，再将模型关联到提供商的外部模型 ID，并显式选择路由。协议通过 Picker 选择，目前仅 OpenAI ChatCompletions v1 可用；未支持的协议不可保存。密钥由用户输入并存入本机 Keychain，文件只保存引用。fail-over 当前禁用，没有自动切换策略。
+Settings 分为 AI 提供商、模型、模型路由和 Agent 运行时。先定义模型 ID、昵称、图标、上下文窗口、输出上限和支持的推理级别，再将模型关联到提供商的外部模型 ID，并显式选择路由。协议通过 Picker 选择，目前 OpenAI ChatCompletions v1 与 OpenAI Responses v1 可用；不进行协议翻译，未支持的协议不可保存。密钥由用户输入并存入本机 Keychain，文件只保存引用。fail-over 当前禁用，没有自动切换策略。
 
 Agent 运行时可配置多个实例，每个实例选择类型、独立配置目录、工作目录和初始模型。首轮支持 Pi 类型，保持一个活跃 runner，空闲时切换实例。模型上下文窗口可留空保存草稿，但运行前必须填写正值，输出上限不能超过窗口。运行时默认模型用于新会话；会话中的模型切换由 Pi 保存，恢复时沿用该会话选择。连接后可新建或选择该实例的会话、发送消息、观察工具结果与取消。用户消息在右、LLM 在左、系统与工具状态居中，不显示作者头像或昵称。Pi 持久化会话，Mac 只投影。
 
-Harness 仅收到 Velune 本机网关配置；提供商凭据不传入 Harness，不使用“工作环境已有认证”。正常调用由网关显式路由到配置的提供商。ChatGPT 订阅接入需要自己的正式认证／协议适配，不能通过 Pi 登录入口冒充已经接通。真实请求和验收由用户完成。
+Harness 仅收到 Velune 本机网关配置；提供商凭据不传入 Harness，不使用“工作环境已有认证”。正常调用由网关显式路由到配置的提供商。订阅来源可在提供商编辑页选择 Core 描述的运行时认证来源，指定原认证文件、Node 和认证提供商；“读取来源信息”读取非秘密元数据并填写协议与端点，“登录…”通过该来源的 SDK 展示原生交互。当前仅接入固定 Pi 新 `openai` 订阅路径，保留其 Pi 登录身份，不将 legacy `openai-codex` 认证接到公共 Responses。应用内登录成功或更换 API key 会更新认证绑定 generation 并要求重连；同一引用背后的外部账户替换尚未自动辨识，应经应用重新登录或明确更换来源。开发方不执行真实登录。真实请求和验收由用户完成。
 
 隔离视觉预览使用 `--preview`（合成多轮会话）或 `--preview-empty`；Apple app 不设置独立深色验收入口。预览 Store 无 Transport，不打开 CoreRuntime、不访问真实配置、Keychain 或会话、不调用模型。dyld 加载惰性的库文件不等于打开运行时，预览不能证明真实循环完成。
 
@@ -101,9 +103,9 @@ Rust core 的 [Pi adapter](../core/src/pi.rs) 处理显式 Node／CLI 路径与 
 
 安装脚本固定 `@earendil-works/pi-coding-agent@1.0.2` 于忽略的 `target/pi-runtime`，不修改全局 npm 或 Pi。Mac bundle 将 SDK、CLI JavaScript 与 `core/pi_sessions.mjs` 放入 Resources。Node 本体不随包，用户需指定 Node 22.19+ 的绝对路径，避免 Finder 启动依赖 shell PATH。CLI 入口为 `Contents/Resources/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js`。
 
-CoreRuntime 在实例专属目录生成受管 Pi 配置，只列出 Velune 网关端点、可路由模型与本地访问凭据；不写上游端点或 Keychain 引用，也不覆盖未受管的 `models.json`。恢复历史会话后重新绑定 Velune 网关模型，历史 provider 不能绕过网关。平台秘密 helper 仅在网关实际请求时解析 Velune 自己的凭据引用，开发验证不执行真实 Keychain 读取。
+CoreRuntime 在实例专属目录生成受管 Pi 配置，只列出 Velune 网关端点、可路由模型与本地访问凭据；不写上游端点或 Keychain 引用，也不覆盖未受管的 `models.json`。恢复历史会话后重新绑定 Velune 网关模型，历史 provider 不能绕过网关。平台秘密 helper 在网关实际请求时解析 Keychain 引用或显式认证来源；来源 adapter 使用原存储锁刷新，不复制 refresh credential。开发验证不读取真实 Keychain 或来源文件。认证 helper 的 AuthStorage 文件入口绑定固定 Pi 1.0.2；版本不符明确拒绝，是依赖升级时须复核的边界。
 
-选定模型的输出上限同时注入 Pi 的 `maxTokens` 与网关校验，避免 Pi 默认请求上限超过配置。Pi 的标准推理等级通过 `thinkingLevelMap` 限制为模型声明的等级；本轮不替自定义服务等级猜测转换规则。网关只接收文本内容与工具消息，未支持的图片内容明确报错。客户端断开或网关停止会释放活跃上游请求，上游失败不会发出成功的 `[DONE]`，也不自动重试或切换提供商。
+执行 Pi 默认选择 `velune/auto`。Core 为本轮决定具体逻辑模型，virtual model 返回相同模型的能力；Pi 的物理模型 ID 使用非秘密路由绑定的稳定身份，网关将该 ID 直接映射到同一次已配置路由，不再二次选择；逻辑模型 ID 保留在界面与选择状态中。Pi 的分支 state 保存实际选择，assistant 历史记录实际模型；新会话使用运行时默认模型，会话切换不改这个默认值。模型 `maxTokens` 用作 Harness 元数据；输出参数仅按提供商协议发送和校验，订阅来源不支持服务端输出硬上限，不为其注入 `max_output_tokens`。Pi 的标准推理等级通过 `thinkingLevelMap` 限制为模型声明的等级；本轮不替自定义服务等级猜测转换规则。ChatCompletions 网关接收文本和工具消息，未支持的图片内容明确报错。Responses 保留原生请求 JSON、工具与 encrypted reasoning、JSON／SSE 响应；只支持 foreground 创建，不增加查询、删除或 background API。客户端断开或网关停止会释放活跃上游请求，上游失败不会发出成功的 `[DONE]`，也不自动重试或切换提供商。
 
 隔离验证使用临时目录、fake RPC／假上游与合成工具结果，不启动真实用户会话或调用模型。正式验收状态与具体证据见 [首循环任务](../tasks/pi-mac-first-loop/packet.md)。
 
@@ -126,6 +128,6 @@ live 入口 `minimax_manual live text|text-diagnostic|tool SOURCE_COMMIT` 仅供
 
 普通输出只列 case／attempts／typed usage／fixture 路径；正文与工具片段仅存获准的合成白名单 fixture。手动入口的本地 admission 文件不是防并发跨进程／跨目录绕过的全局产品预算服务，调用范围由本次授权和人工流程限定。
 
-## 嵌入式 ABI 的隔离回归
+## 嵌入式 ABI 的临时端到端验收
 
-先构建动态库，并为 `--resources` 提供包含 `pi_sessions.mjs` 与固定 Pi `node_modules` 的资源目录。使用 [隔离检查脚本](../scripts/check-pi-abi-loop.py)，以绝对路径传入 `--library`、`--resources` 和 `--node`。脚本使用临时 HOME、配置、工作与会话目录，以及 loopback 合成上游和 fixture-only 凭据 helper；不读取用户配置或调用真实模型。它检查流式回复、跨模型路由和输出上限、Pi 会话身份与恢复、忙时退出保护、取消以及配置重新打开。用户对真实提供商和产品体验的验收仍独立进行。
+先构建动态库，并为 `--resources` 提供包含 `pi_sessions.mjs`、`pi_virtual_model.mjs`、`pi_auth.mjs` 与固定 Pi `node_modules` 的资源目录。人工运行 [临时端到端脚本](../scripts/check-pi-abi-loop.py)，以绝对路径传入 `--library`、`--resources` 和 `--node`。脚本使用临时 HOME、配置、工作与会话目录，以及 loopback 合成上游和 fixture-only 凭据 helper；不读取用户配置或调用真实模型。它检查流式回复、跨模型路由和输出上限、Pi 会话身份与恢复、忙时退出保护、取消以及配置重新打开。Responses 检查使用 `--protocol responsesV1`，订阅能力检查另加 `--subscription-capability`。用户对真实提供商和产品体验的验收仍独立进行。

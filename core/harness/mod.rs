@@ -36,6 +36,7 @@ pub fn config_from_resource(
         binary: PathBuf::from(binary),
         node_binary: path("nodeBinary").or_else(|| path("node_binary")),
         sdk_helper: path("sdkHelper").or_else(|| path("sdk_helper")),
+        extension: None,
         agent_dir: path("agentDir").or_else(|| path("agent_dir")),
         working_dir: path("workingDir").or_else(|| path("working_dir")),
         provider: Some(service_id),

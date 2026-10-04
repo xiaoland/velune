@@ -61,6 +61,9 @@ pub struct Config {
     #[serde(alias = "sdkHelper")]
     #[serde(default)]
     pub sdk_helper: Option<PathBuf>,
+    #[serde(alias = "extension")]
+    #[serde(default)]
+    pub extension: Option<PathBuf>,
     #[serde(alias = "agentDir")]
     #[serde(default)]
     pub agent_dir: Option<PathBuf>,
@@ -105,6 +108,7 @@ impl Config {
         for path in [
             &self.node_binary,
             &self.sdk_helper,
+            &self.extension,
             &self.agent_dir,
             &self.working_dir,
             &self.credential_resolver,
@@ -207,11 +211,18 @@ impl Client {
         if let Some(value) = &config.name {
             command.arg("--name").arg(value);
         }
+        if let Some(extension) = &config.extension {
+            command.arg("--extension").arg(extension);
+        }
         if let Some(dir) = &config.working_dir {
             command.current_dir(dir);
         }
         if let Some(agent_dir) = &config.agent_dir {
             command.env("PI_CODING_AGENT_DIR", agent_dir);
+            command.env(
+                "VELUNE_PI_SELECTION_FILE",
+                agent_dir.join("velune-selection.json"),
+            );
         }
         if let Some(token) = &config.gateway_token {
             command.env("VELUNE_GATEWAY_TOKEN", token);
@@ -345,6 +356,10 @@ impl Client {
         self.request(json!({"type":"prompt","message":message}))
     }
 
+    pub fn sync_virtual_selection(&mut self) -> Result<Value> {
+        self.prompt("/velune-sync-selection")
+    }
+
     pub fn cancel(&mut self) -> Result<Vec<Value>> {
         // Pi documents clear_queue before abort for interactive cancellation.
         Ok(vec![
@@ -447,6 +462,7 @@ done
             binary: client,
             node_binary: None,
             sdk_helper: None,
+            extension: None,
             agent_dir: None,
             working_dir: None,
             provider: None,
@@ -477,6 +493,7 @@ done
             binary: client,
             node_binary: Some(node),
             sdk_helper: None,
+            extension: None,
             agent_dir: None,
             working_dir: None,
             provider: None,

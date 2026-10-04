@@ -27,6 +27,7 @@ velune-ai-provider = { path = "core/ai-provider" }
 reqwest = { version = "0.13", default-features = false, features = ["native-tls", "json", "stream", "system-proxy"] }
 tokio = { version = "1", features = ["rt", "macros", "net", "io-util", "time"] }
 getrandom = "0.4"
+sha2 = "=0.10.9"
 
 [dev-dependencies]
 tempfile = "3"

@@ -5,8 +5,9 @@
 //! platform credential access beyond explicit paths supplied at open.
 
 use crate::{
+    authentication,
     conversation::{ConversationSummary, PiProjection, RunState},
-    gateway::{GatewayConfig, ModelDefinition, RuntimeInstance},
+    gateway::{GatewayConfig, GatewayProtocol, ModelDefinition, RuntimeInstance},
     gateway_runtime::Runner,
     pi::{self, Config as PiConfig},
 };
@@ -126,6 +127,10 @@ pub struct CoreRuntime {
     projection: Option<PiProjection>,
     gateway_runner: Option<Runner>,
     active_runtime_id: Option<String>,
+    authentication: Option<authentication::Login>,
+    physical_model_id: Option<String>,
+    logical_model_id: Option<String>,
+    subscription_capability: bool,
 }
 
 impl CoreRuntime {
@@ -191,6 +196,10 @@ impl CoreRuntime {
             projection: None,
             gateway_runner: None,
             active_runtime_id: None,
+            authentication: None,
+            physical_model_id: None,
+            logical_model_id: None,
+            subscription_capability: false,
         })
     }
 
@@ -204,6 +213,13 @@ impl CoreRuntime {
 
     pub fn close_if_idle(&mut self) -> Result<(), RuntimeError> {
         self.drain_pi();
+        if self
+            .authentication
+            .as_ref()
+            .is_some_and(authentication::Login::is_running)
+        {
+            return Err(RuntimeError::invalid("runtime is busy"));
+        }
         if self.pi_busy {
             return Err(RuntimeError::invalid("runtime is busy"));
         }
@@ -220,7 +236,16 @@ impl CoreRuntime {
                 "projection contract version".into(),
             ));
         }
-        match request["action"].as_str().unwrap_or_default() {
+        let action = request["action"].as_str().unwrap_or_default();
+        if self
+            .authentication
+            .as_ref()
+            .is_some_and(authentication::Login::is_running)
+            && !matches!(action, "authentication" | "list" | "getSnapshot")
+        {
+            return Err(RuntimeError::invalid("authentication is running"));
+        }
+        match action {
             "list" => self.list(),
             "gateways" => self.gateway_action(request),
             "runtimeInstances" => self.runtime_action(request),
@@ -237,11 +262,67 @@ impl CoreRuntime {
             "send" => self.send_action(request),
             "cancel" => self.cancel_action(request),
             "selectModel" => self.select_model(request),
+            "authentication" => self.authentication_action(&request["payload"]),
             "resources" | "settings" | "beginAuthorization" => {
                 Err(RuntimeError::Unsupported("legacy action".into()))
             }
             action => Err(RuntimeError::Unsupported(action.into())),
         }
+    }
+
+    fn authentication_action(&mut self, payload: &Value) -> Result<Value, RuntimeError> {
+        if payload["operation"].as_str() == Some("start") && self.pi_busy {
+            return Err(RuntimeError::invalid("runtime is busy"));
+        }
+        let source_before = self
+            .authentication
+            .as_ref()
+            .map(|login| login.source().clone());
+        let mut data = authentication::handle(
+            &mut self.authentication,
+            &self.options.resources_directory,
+            &self.options.home_directory,
+            payload,
+        )
+        .map_err(RuntimeError::Invalid)?;
+        let succeeded = data["events"].as_array().is_some_and(|events| {
+            events
+                .iter()
+                .any(|event| event["type"] == "result" && event["ok"] == true)
+        });
+        let Some(source) = source_before.filter(|_| succeeded) else {
+            return Ok(data);
+        };
+        let mut changed = false;
+        for gateway in &mut self.gateways {
+            for provider in &mut gateway.providers {
+                let matches = provider
+                    .credential_source
+                    .as_ref()
+                    .is_some_and(|candidate| {
+                        candidate.kind == source.kind
+                            && candidate.harness_type_id == source.harness_type_id
+                            && candidate.provider_id == source.provider_id
+                            && candidate.settings.get("authPath") == source.settings.get("authPath")
+                    });
+                if matches {
+                    provider.credential_generation = provider
+                        .credential_generation
+                        .checked_add(1)
+                        .ok_or_else(|| RuntimeError::invalid("credential generation overflow"))?;
+                    changed = true;
+                }
+            }
+        }
+        if changed {
+            self.persist()?;
+            if !self.pi_busy {
+                self.shutdown_active()?;
+            }
+            data["gateways"] = serde_json::to_value(&self.gateways)?;
+            data["requiresReconnect"] = Value::Bool(true);
+        }
+        Ok(data)
     }
 
     fn list(&self) -> Result<Value, RuntimeError> {
@@ -252,7 +333,21 @@ impl CoreRuntime {
             "gateways": self.gateways,
             "runtimeInstances": self.runtime_instances,
             "runtimeTypes": runtime_types(&self.options.resources_directory),
-            "protocols": [{"id":"chatCompletionsV1","name":"OpenAI Chat Completions v1","supported":true}],
+            "credentialSourceTypes": [{
+                "id":"pi",
+                "name":"Pi Agent 认证来源",
+                "fields":[
+                    {"key":"providerId","label":"认证提供商","kind":"choice","required":true,"value":"openai","options":[{"id":"openai","label":"ChatGPT"}],"help":"此适配器接入 Pi 的 OpenAI 订阅登录，不接入 legacy Codex backend。"},
+                    {"key":"authPath","label":"认证文件","kind":"filePath","required":true,"value":"","options":[],"help":"保留 Pi 原生认证来源文件路径；Velune 不复制凭据。"},
+                    {"key":"nodeBinary","label":"Node 可执行文件","kind":"filePath","required":true,"value":"","options":[],"help":"Node 22.19+ 的绝对路径。"}
+                ],
+                "actions":[{"id":"login","label":"登录…"}],
+                "capability":"读取指定 Pi 认证来源；Velune 不复制认证资料。"
+            }],
+            "protocols": [
+                {"id":"chatCompletionsV1","name":"OpenAI Chat Completions v1","supported":true},
+                {"id":"responsesV1","name":"OpenAI Responses v1","supported":true}
+            ],
             "activeRuntimeInstanceID": self.active_runtime_id,
         }))
     }
@@ -273,8 +368,31 @@ impl CoreRuntime {
             .find(|item| Some(&item.id) == self.active_runtime_id.as_ref())
             .expect("active runtime instance is configured")
             .model_id
-            .clone();
-        self.pi_config.as_mut().expect("connected Pi config").model = default_model;
+            .as_deref()
+            .ok_or_else(|| RuntimeError::invalid("runtime model id"))?
+            .to_owned();
+        self.logical_model_id = Some(default_model.clone());
+        let gateway = self
+            .runtime_instances
+            .iter()
+            .find(|item| Some(&item.id) == self.active_runtime_id.as_ref())
+            .and_then(|runtime| {
+                self.gateways
+                    .iter()
+                    .find(|gateway| gateway.id == runtime.gateway_id)
+            })
+            .ok_or_else(|| RuntimeError::invalid("runtime gateway"))?;
+        self.subscription_capability = subscription_capability(gateway, &default_model);
+        let default_physical_model_id = gateway
+            .pi_binding_id(&default_model)
+            .map_err(RuntimeError::invalid)?;
+        self.pi_config.as_mut().expect("connected Pi config").model = Some("velune/auto".into());
+        self.write_selection(
+            &default_model,
+            &default_physical_model_id,
+            self.subscription_capability,
+        )?;
+        self.physical_model_id = Some(default_physical_model_id);
         self.bind_gateway_model()?;
         self.sync_projection()?;
         Ok(json!({"snapshot":self.projection.as_ref().and_then(|item| item.snapshot.as_ref())}))
@@ -310,7 +428,10 @@ impl CoreRuntime {
             .ok_or_else(|| RuntimeError::invalid("runtime is not connected"))?
             .switch_session(&path)
             .map_err(|_| RuntimeError::invalid("conversation open"))?;
-        let restored_model = saved["model"]["modelId"].as_str();
+        let restored_model = saved["virtualState"]["state"]["logicalModelId"]
+            .as_str()
+            .or_else(|| saved["virtualState"]["state"]["modelId"].as_str())
+            .or_else(|| saved["model"]["modelId"].as_str());
         let runtime = self
             .runtime_instances
             .iter()
@@ -323,17 +444,25 @@ impl CoreRuntime {
             .expect("runtime gateway is configured");
         let model_id = restored_model
             .filter(|id| {
-                saved["model"]["provider"] == "velune-gateway"
+                ((saved["virtualState"]["provider"] == "velune"
+                    && saved["virtualState"]["state"]["provider"] == "velune-gateway")
+                    || saved["virtualState"]["provider"] == "velune-gateway"
+                    || saved["model"]["provider"] == "velune-gateway")
                     && runnable_pi_model(gateway, id).is_ok()
             })
             .map(str::to_owned);
-        self.pi_config.as_mut().expect("connected Pi config").model = model_id;
-        if self
-            .pi_config
-            .as_ref()
-            .and_then(|config| config.model.as_ref())
-            .is_some()
-        {
+        self.physical_model_id = model_id.clone();
+        self.logical_model_id = model_id.clone();
+        self.subscription_capability = model_id
+            .as_deref()
+            .is_some_and(|id| subscription_capability(gateway, id));
+        self.pi_config.as_mut().expect("connected Pi config").model = Some("velune/auto".into());
+        if let Some(model_id) = model_id {
+            let physical_model_id = gateway
+                .pi_binding_id(&model_id)
+                .map_err(RuntimeError::invalid)?;
+            self.physical_model_id = Some(physical_model_id.clone());
+            self.write_selection(&model_id, &physical_model_id, self.subscription_capability)?;
             self.bind_gateway_model()?;
         }
         if let Some(projection) = self.projection.as_mut() {
@@ -483,11 +612,14 @@ impl CoreRuntime {
             .find(|item| item.id == runtime.gateway_id)
             .cloned()
             .ok_or_else(|| RuntimeError::invalid("gateway id"))?;
-        let model_id = runtime
+        let logical_model_id = runtime
             .model_id
             .as_deref()
             .ok_or_else(|| RuntimeError::invalid("runtime model id"))?;
-        runnable_pi_model(&gateway, model_id)?;
+        runnable_pi_model(&gateway, logical_model_id)?;
+        let physical_model_id = gateway
+            .pi_binding_id(logical_model_id)
+            .map_err(RuntimeError::invalid)?;
         self.shutdown_active()?;
         let runner = Runner::start(gateway.clone(), self.options.credential_resolver.clone())
             .map_err(|_| RuntimeError::invalid("gateway startup"))?;
@@ -496,11 +628,29 @@ impl CoreRuntime {
             node_binary: setting_path_optional(&runtime, "nodeBinary"),
             sdk_helper: setting_path_optional(&runtime, "sdkHelper")
                 .or_else(|| Some(self.options.resources_directory.join("pi_sessions.mjs"))),
+            extension: Some(
+                self.options
+                    .resources_directory
+                    .join("pi_virtual_model.mjs"),
+            ),
             agent_dir: Some(setting_path(&runtime, "agentDir")?),
             working_dir: Some(setting_path(&runtime, "workingDir")?),
             provider: Some("velune-gateway".into()),
-            model: Some(model_id.into()),
-            protocol: Some("openai-completions".into()),
+            model: Some("velune/auto".into()),
+            protocol: Some(
+                match gateway
+                    .validate_dispatch(logical_model_id)
+                    .map_err(RuntimeError::invalid)?
+                    .protocol
+                {
+                    GatewayProtocol::ChatCompletionsV1 => "openai-completions",
+                    GatewayProtocol::ResponsesV1 => "openai-responses",
+                    GatewayProtocol::MessagesV1 => {
+                        return Err(RuntimeError::invalid("provider protocol"));
+                    }
+                }
+                .into(),
+            ),
             endpoint: Some(runner.endpoint().into()),
             credential_ref: None,
             credential_resolver: None,
@@ -513,6 +663,13 @@ impl CoreRuntime {
             drop(runner);
             return Err(error);
         }
+        let subscription_capability = subscription_capability(&gateway, logical_model_id);
+        write_selection_file(
+            &config,
+            logical_model_id,
+            &physical_model_id,
+            subscription_capability,
+        )?;
         let client = match pi::Client::spawn(config.clone()) {
             Ok(client) => client,
             Err(_) => {
@@ -527,13 +684,16 @@ impl CoreRuntime {
             runtime_id: runtime_id.into(),
         });
         if let Some(snapshot) = projection.snapshot.as_mut() {
-            snapshot.model_id = Some(model_id.into());
+            snapshot.model_id = Some(logical_model_id.into());
         }
         self.gateway_runner = Some(runner);
         self.pi = Some(client);
         self.pi_config = Some(config);
         self.projection = Some(projection);
         self.active_runtime_id = Some(runtime_id.into());
+        self.physical_model_id = Some(physical_model_id);
+        self.logical_model_id = Some(logical_model_id.into());
+        self.subscription_capability = subscription_capability;
         Ok(())
     }
 
@@ -546,6 +706,9 @@ impl CoreRuntime {
             .as_str()
             .filter(|item| !item.trim().is_empty())
             .ok_or_else(|| RuntimeError::invalid("message text"))?;
+        if self.physical_model_id.is_none() {
+            return Err(RuntimeError::invalid("conversation model is unavailable"));
+        }
         // Native session state or commands may change the selected provider.
         // Every dispatch must return to the application-owned gateway.
         self.bind_gateway_model()?;
@@ -578,13 +741,18 @@ impl CoreRuntime {
         let model_id = self
             .pi_config
             .as_ref()
-            .and_then(|config| config.model.as_deref())
+            .and_then(|config| config.agent_dir.as_ref())
+            .map(|agent_dir| agent_dir.join("velune-selection.json"))
+            .and_then(|path| fs::read_to_string(path).ok())
+            .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
+            .and_then(|value| value["modelId"].as_str().map(str::to_owned))
             .ok_or_else(|| RuntimeError::invalid("runtime model id"))?;
         self.pi
             .as_mut()
             .ok_or_else(|| RuntimeError::invalid("runtime is not connected"))?
-            .request(json!({"type":"set_model","provider":"velune-gateway","modelId":model_id}))
+            .request(json!({"type":"set_model","provider":"velune","modelId":"auto"}))
             .map_err(|_| RuntimeError::invalid("gateway model binding"))?;
+        let _ = model_id;
         Ok(())
     }
 
@@ -618,14 +786,49 @@ impl CoreRuntime {
             .find(|item| item.id == runtime.gateway_id)
             .expect("runtime gateway is configured");
         runnable_pi_model(gateway, model_id)?;
+        let selected_subscription_capability = subscription_capability(gateway, model_id);
+        let selected_physical_model_id = gateway
+            .pi_binding_id(model_id)
+            .map_err(RuntimeError::invalid)?;
+        self.write_selection(
+            model_id,
+            &selected_physical_model_id,
+            selected_subscription_capability,
+        )?;
         self.pi
             .as_mut()
             .expect("connected Pi client")
-            .request(json!({"type":"set_model","provider":"velune-gateway","modelId":model_id}))
+            .request(json!({"type":"set_model","provider":"velune","modelId":"auto"}))
             .map_err(|_| RuntimeError::invalid("model selection"))?;
-        self.pi_config.as_mut().expect("connected Pi config").model = Some(model_id.into());
+        self.pi
+            .as_mut()
+            .expect("connected Pi client")
+            .sync_virtual_selection()
+            .map_err(|_| RuntimeError::invalid("model selection persistence"))?;
+        self.drain_pi();
+        self.subscription_capability = selected_subscription_capability;
+        self.physical_model_id = Some(selected_physical_model_id);
+        self.pi_config.as_mut().expect("connected Pi config").model = Some("velune/auto".into());
         self.sync_projection()?;
         Ok(json!({"snapshot":self.projection.as_ref().and_then(|item| item.snapshot.as_ref())}))
+    }
+
+    fn write_selection(
+        &self,
+        logical_model_id: &str,
+        physical_model_id: &str,
+        subscription_capability: bool,
+    ) -> Result<(), RuntimeError> {
+        let config = self
+            .pi_config
+            .as_ref()
+            .ok_or_else(|| RuntimeError::invalid("runtime is not connected"))?;
+        write_selection_file(
+            config,
+            logical_model_id,
+            physical_model_id,
+            subscription_capability,
+        )
     }
 
     fn ensure_active(&self, request: &Value) -> Result<(), RuntimeError> {
@@ -662,10 +865,7 @@ impl CoreRuntime {
             }
             projection.replace_history(&messages);
             if let Some(snapshot) = projection.snapshot.as_mut() {
-                snapshot.model_id = self
-                    .pi_config
-                    .as_ref()
-                    .and_then(|config| config.model.clone());
+                snapshot.model_id = self.logical_model_id.clone();
                 snapshot.actions.can_send = snapshot.model_id.is_some() && !self.pi_busy;
                 snapshot.actions.can_cancel = self.pi_busy;
             }
@@ -741,6 +941,9 @@ impl CoreRuntime {
         self.projection = None;
         self.gateway_runner = None;
         self.active_runtime_id = None;
+        self.physical_model_id = None;
+        self.logical_model_id = None;
+        self.subscription_capability = false;
         Ok(())
     }
 
@@ -839,14 +1042,30 @@ fn materialize_models(config: &PiConfig, gateway: &GatewayConfig) -> Result<(), 
         .models
         .iter()
         .filter(|model| runnable_pi_model(gateway, &model.id).is_ok())
-        .map(|model| {
+        .map(|model| -> Result<Value, RuntimeError> {
+            let physical_id = gateway
+                .pi_binding_id(&model.id)
+                .map_err(RuntimeError::invalid)?;
+            let api =
+                gateway
+                    .validate_dispatch(&model.id)
+                    .ok()
+                    .map(|provider| match provider.protocol {
+                        GatewayProtocol::ChatCompletionsV1 => "openai-completions",
+                        GatewayProtocol::ResponsesV1 => "openai-responses",
+                        GatewayProtocol::MessagesV1 => "unsupported",
+                    });
             let mut entry = json!({
-                "id": model.id,
+                "id": physical_id,
+                "logicalModelId": model.id,
                 "name": model.nickname,
                 "input": ["text"],
                 "maxTokens": model.max_output_tokens,
                 "contextWindow": model.context_window.expect("runnable model context window"),
             });
+            if let Some(api) = api {
+                entry["api"] = Value::String(api.into());
+            }
             if !model.reasoning_levels.is_empty() {
                 entry["reasoning"] = Value::Bool(true);
                 entry["compat"] = json!({"supportsReasoningEffort": true});
@@ -863,9 +1082,9 @@ fn materialize_models(config: &PiConfig, gateway: &GatewayConfig) -> Result<(), 
                     .collect::<serde_json::Map<_, _>>();
                 entry["thinkingLevelMap"] = Value::Object(levels);
             }
-            entry
+            Ok(entry)
         })
-        .collect::<Vec<_>>();
+        .collect::<Result<Vec<_>, RuntimeError>>()?;
     let mut value = json!({"providers":{}});
     value["providers"][provider] = json!({
         "baseUrl": endpoint,
@@ -895,6 +1114,57 @@ fn materialize_models(config: &PiConfig, gateway: &GatewayConfig) -> Result<(), 
     fs::rename(temporary, target)?;
     fs::write(marker, b"velune managed models config v1\n")?;
     Ok(())
+}
+
+fn write_selection_file(
+    config: &PiConfig,
+    logical_model_id: &str,
+    physical_model_id: &str,
+    subscription_capability: bool,
+) -> Result<(), RuntimeError> {
+    let agent_dir = config
+        .agent_dir
+        .as_ref()
+        .ok_or_else(|| RuntimeError::invalid("runtime directory"))?;
+    fs::create_dir_all(agent_dir)?;
+    let path = agent_dir.join("velune-selection.json");
+    let temporary = agent_dir.join("velune-selection.json.tmp");
+    let bytes = serde_json::to_vec(&json!({
+        "provider": "velune-gateway",
+        "logicalModelId": logical_model_id,
+        "physicalModelId": physical_model_id,
+        "modelId": physical_model_id,
+        "thinkingLevel": "off",
+        "subscriptionCapability": subscription_capability
+    }))?;
+    fs::write(&temporary, bytes)?;
+    fs::rename(temporary, path)?;
+    Ok(())
+}
+
+fn subscription_capability(gateway: &GatewayConfig, model_id: &str) -> bool {
+    let Some(route) = gateway
+        .routes
+        .iter()
+        .find(|route| route.model_id == model_id)
+    else {
+        return false;
+    };
+    gateway
+        .providers
+        .iter()
+        .find(|provider| provider.id == route.provider_id)
+        .and_then(|provider| {
+            provider
+                .credential_source
+                .as_ref()
+                .map(|source| (provider, source))
+        })
+        .is_some_and(|(provider, source)| {
+            matches!(provider.protocol, GatewayProtocol::ResponsesV1)
+                && source.harness_type_id == "pi"
+                && source.provider_id == "openai"
+        })
 }
 
 fn pi_session_helper(config: &PiConfig, session: Option<&Path>) -> Result<Value, RuntimeError> {
@@ -966,7 +1236,7 @@ mod tests {
             .as_array()
             .unwrap();
         assert_eq!(models.len(), 1);
-        assert_eq!(models[0]["id"], "ready");
+        assert_eq!(models[0]["id"], gateway.pi_binding_id("ready").unwrap());
         assert_eq!(models[0]["contextWindow"], 32768);
     }
 }

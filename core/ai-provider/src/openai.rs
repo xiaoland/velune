@@ -3,7 +3,7 @@
 //! This adapter accepts an already assembled client and credential. It does not
 //! read provider configuration, resolve credentials, retry, or choose a model.
 use crate::{
-    config::{ProtocolConfig, ProviderConfig, Transport},
+    config::{ProtocolConfig, ProviderConfig, Transport, parse_resolved_credential},
     minimax::Decoder,
     minimax::mapping,
 };
@@ -14,7 +14,7 @@ use serde_json::{Value, json};
 use std::sync::Arc;
 use velune_ai::{InvalidContract, OperationFuture, Payload, provider::*, sampling::*};
 
-type CredentialResolver = dyn Fn(&str) -> Option<String> + Send + Sync;
+type CredentialResolver = dyn Fn(&str, Option<&str>) -> Option<String> + Send + Sync;
 
 pub struct ChatCompletions {
     config: ProviderConfig,
@@ -61,10 +61,16 @@ impl ChatCompletions {
             return Err(InvalidContract("unsupported provider transport"));
         }
         let reference = config.credential().as_str().to_owned();
+        let source = config.credential_source().map(str::to_owned);
         Ok(Self {
             config,
             client,
-            credential: Arc::new(move || resolver(&reference)),
+            credential: Arc::new(move || {
+                resolver(&reference, source.as_deref()).and_then(|value| {
+                    parse_resolved_credential(&value, source.is_some(), "chatCompletionsV1")
+                        .map(|credential| credential.token)
+                })
+            }),
         })
     }
 

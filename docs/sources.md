@@ -117,3 +117,11 @@ S15 运行与交付补充：core 应为跨平台一致的 lib，由各平台 app
 S15 协作方式澄清：采用敏捷开发，需求在实现阶段可以变化；早期重视长期可迭代的技术架构与开发基础，不要求仓促产出。关键设计善用 advisor，发现需要用户取舍的问题时，带着证据与建议请求决定。
 
 S15 架构参考补充：用户提出 Mastra、HAPI、Lody 等实现可用于借鉴思路与架构，不以复制功能为目标。具体技术结论需按相关设计问题检查源码版本与前提，不因列入参考就认定兼容或采用。
+
+## S16：统一网关与 Harness 配置来源
+
+2026-10-04 用户提出保留 Harness 原提供商配置，读取、接管并共享其配置与认证来源；希望复用 Pi 订阅登录，Velune 管理会话默认使用 `velune/auto` 或按 Harness 区分的稳定入口。该意图不等同于复制令牌、复用任何客户端注册身份或已授权真实登录。
+
+官方复核：[ChatGPT 开源客户端注册与登录](https://developers.openai.com/siwc/token-sharing-open-source/sign-in)要求明确应用身份、主机标识与授权 scope；[模型与推理](https://developers.openai.com/siwc/token-sharing-open-source/models-and-inference)描述使用 public Responses 端点。2026-10-04 检查；不能将旧 Codex backend 认证与该路径视为相同。Pi 固定版本的具体能力与验证缺口留在当前 Task Packet。
+
+用户在本轮进一步澄清：`max_output_tokens` 等具体字段用于举例能力参数，不是必须支持的需求；以提供商规定的协议为权威。原生 Responses、稳定入口和认证委托的实施已获授权，真实账户验收仍由用户进行。
