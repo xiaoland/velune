@@ -47,7 +47,7 @@
 - 任务状态可以纳入 Git 以便跨环境恢复，但不是长期项目规范。任务关闭前确认持久结论已归位；获得正常删除授权后删除已关闭 packet，不另建任务档案库
 - 共享规则放本文件；机器绝对路径、工具安装和临时操作记录不进入共享知识
 - 文档编辑后检查相对链接和标题锚点，执行 `git diff --check`、`git diff --cached --check`，提交前核对 `git status`
-- 核心改动执行 cargo fmt --check、cargo check --locked、cargo test --locked；运行方式见 docs/development.md。不需要文档 CLI
+- 核心改动执行 cargo fmt --check、cargo check --locked、cargo clippy --locked --workspace --all-targets --all-features -- -D warnings；运行方式见 docs/development.md。不需要文档 CLI
 
 ## 当前有界 AI service 工作
 
@@ -77,4 +77,4 @@ core 是跨平台 Rust lib，通过 ABI 嵌入平台 app；产品不得另启常
 
 ## 验证原则
 
-不新增任何自动化测试。优先保证类型安全，执行类型检查、静态检查与构建。行为验收采用手动操作或临时脚本，尽可能走端到端路径，不新增单元测试或集成测试。临时脚本可放在 `scripts/` 下，不接入自动测试或 CI；真实提供商与产品体验由用户验收。既有测试代码仅在必要时维护类型兼容，不以本轮开发为由扩充测试套件。
+不保留或新增任何自动化测试。优先保证类型安全，执行类型检查、静态检查与构建。行为验收采用手动操作或临时脚本，尽可能走端到端路径，不新增单元测试或集成测试。临时脚本可放在 `scripts/` 下，不接入自动测试或 CI；真实提供商与产品体验由用户验收。既有自动化测试及仅供其使用的辅助代码、依赖和运行入口应删除。

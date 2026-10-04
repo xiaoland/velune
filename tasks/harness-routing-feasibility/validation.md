@@ -17,7 +17,7 @@
 
 实际 CLI 输出已回读核对：3 个会话、4 个完成 attempts、2 个 done 子任务。原始运行输出／数据库不进入源码包，可用复现命令重建。`simulation:true` 不可移除；协议标签只表示 mock Router 的选择，不能解释为真实网络请求。UI 不拥有第二套任务模拟逻辑。
 
-测试内容见 [vertical.rs](../../tests/vertical.rs) 与 [host.rs](../../tests/host.rs)：
+以下为当时 `vertical.rs` 与 `host.rs` 的验证范围。2026-10-04 用户要求删除全部自动化测试，这些文件已移除；本记录仅保存历史观察，不提供当前测试运行入口：
 
 - Codex→Claude Code／Pi 委派，真实执行确定性输入检查、结果回到 Codex 模拟会话后验收；重复投递不重复消费，复用 key 改 payload 拒绝。
 - busy／明确未发送保留队列；deadline 过期停止；跨 scope 和 adapter 绑定错误拒绝。

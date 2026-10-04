@@ -31,7 +31,6 @@
 使用官方 Rust 1.99.0 与本机 C 编译工具（SQLite bundled 需要）：
 
 ```sh
-cargo test --locked --features simulation
 cargo run --locked --features simulation -- demo /tmp/velune-demo.sqlite
 cargo run --locked --features simulation -- inspect /tmp/velune-demo.sqlite
 ```
@@ -44,7 +43,7 @@ cargo run --locked --features simulation -- inspect /tmp/velune-demo.sqlite
 
 ## 独立 AI service 契约
 
-[AI service 设计与验收](docs/design/ai-service.md)是 2026-10-03 有界实现入口。`core/ai` 拥有两套服务契约，`core/ai-provider` 依赖它并提供 MiniMax Chat Completions 流式 adapter。直接派发 service 与合成 live fixture／离线 replay 独立于上述旧原型；本步仅静态检查和获准手动验收，不运行旧测试。
+[AI service 设计与验收](docs/design/ai-service.md)是 2026-10-03 有界实现入口。`core/ai` 拥有两套服务契约，`core/ai-provider` 依赖它并提供 MiniMax Chat Completions 流式 adapter。直接派发 service 与合成 live fixture／离线 replay 独立于上述旧原型；本步仅静态检查和获准手动验收，不保留自动化测试。
 
 ## Pi 与 Mac 会话切片
 

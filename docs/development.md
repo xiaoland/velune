@@ -1,6 +1,6 @@
 # 开发与复验
 
-项目不新增自动化测试，以类型安全、静态检查和构建为先。行为验收使用手动操作或临时端到端脚本，不建立单元或集成测试套件，也不把临时脚本接入 CI。
+项目不保留或新增自动化测试，以类型安全、静态检查和构建为先。行为验收使用手动操作或临时端到端脚本，不建立单元或集成测试套件，也不把临时脚本接入 CI。
 
 ## 当前 Mac 会话界面
 
@@ -41,7 +41,6 @@ Harness 仅收到 Velune 本机网关配置；提供商凭据不传入 Harness�
 ```sh
 cargo fmt --check
 cargo check --locked --features simulation
-cargo test --locked --features simulation
 cargo clippy --locked --features simulation --all-targets -- -D warnings
 cargo build --locked --features simulation --release
 cargo run --locked --features simulation -- demo /tmp/velune-demo.sqlite
