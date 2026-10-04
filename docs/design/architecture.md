@@ -6,13 +6,13 @@
 
 2026-10-04 首循环边界：用户明确要求实际拆分 `core`（AI 服务、Harness 适配器）与 `app`（Mac 等平台）。当前 Pi 切片由 Pi 拥有会话历史和持久化，Velune 只投影会话列表、消息和运行状态，不另建真实会话数据库。Mac 提供 Chatbot 界面、会话列表与通用资源配置，不能硬编码资源示例；真实验收由用户执行。此切片不将模拟核心的逻辑 Session 契约强加给 Pi 历史，也不声称完整统一自动路由已完成。执行状态见 [首循环任务](../../tasks/pi-mac-first-loop/packet.md)。
 
-首循环的当前装配边界（2026-10-04 用户修订）：core 的 Harness adapter 拥有原生协议与 SDK 列表桥；Host 装配 Velune AI 服务网关，Mac 拥有配置交互与 Keychain。全局模型独立于 AI 提供商，提供商关联多个模型；网关配置还包含显式路由及策略归属。当前先实现 OpenAI ChatCompletions v1 和显式路由，未定义的自动 fail-over 不默认启用。
+首循环的当前装配边界（2026-10-04 用户修订）：core 是 Rust lib，由 Mac／Windows 等平台应用通过 C ABI 嵌入，不是独立 Host 应用。CoreRuntime 拥有通用动作、配置校验与原子持久化、Harness 适配与 AI 网关生命周期；平台应用显式注入配置根目录、资源目录和平台秘密服务，并管理应用级唯一 handle。独立 AI service lib 仍不读取全局配置或环境。全局模型独立于 AI 提供商，提供商关联多个模型；网关配置还包含显式路由及策略归属。当前先实现 OpenAI ChatCompletions v1 和显式路由，未定义的自动 fail-over 不默认启用。旧 App↔Host IPC 接入是待移除的实现偏差，不是认可的产品边界。
 
 Agent 运行时区分类型与实例，Pi Agent 为首个类型，同类型可保存多个配置实例。首轮保持一个活跃 runner，空闲时切换实例，运行中禁止切换；这不限制配置只能有一份。会话身份必须包含运行时实例，列表 SDK 使用对应配置目录。适配器注入 Velune 网关地址和模型目录，切换或恢复会话后仍重新绑定网关，不能沿用历史原生 provider 绕过网关。Pi 派生文件不得包含上游端点／凭据，不覆盖用户全局配置。旧 Pi 官方登录与直接注入上游 Keychain 引用的方案已被本次纠正替代。
 
-Mac 重写的已确认边界：app 只依赖通用会话投影、消息内容、运行状态、能力和配置描述，不解析 Pi 或其他 Harness 的原生事件，不发送 Harness 专用命令。适配器在 core 内执行原生协议与通用契约的转换；平台装配负责 IPC、配置保存和系统凭据入口。运行时设置使用适配器描述的有限字段与动作，具体名称仅作为数据展示。当前只接已有的 Pi，不为尚未实现的 Harness 增加空适配器或插件系统。
+Mac 重写的已确认边界：app 只依赖通用会话投影、消息内容、运行状态、能力和配置描述，不解析 Pi 或其他 Harness 的原生事件，不发送 Harness 专用命令。适配器在 core 内执行原生协议与通用契约的转换；平台装配负责 ABI 接入、配置根目录和系统凭据入口。运行时设置使用适配器描述的有限字段与动作，具体名称仅作为数据展示。当前只接已有的 Pi，不为尚未实现的 Harness 增加空适配器或插件系统。
 
-应用配置的已确认归属：平台装配解析 `VELUNE_HOME`，未设置时使用 `~/.velune`，向 Host 显式传入根目录。Host 在该目录持久化 AI provider 资源与 Harness 设置；独立 AI lib 不读取全局环境。配置文件保存凭据引用，秘密值由平台秘密设施管理。Pi 会话目录由配置指定，Velune 不将会话复制为另一套权威历史。
+应用配置的已确认归属：平台装配解析 `VELUNE_HOME`，未设置时使用 `~/.velune`，向 CoreRuntime 显式传入根目录。CoreRuntime 在该目录持久化 AI provider 资源与 Harness 设置；独立 AI lib 不读取全局环境。配置文件保存凭据引用，秘密值由平台秘密设施管理。Pi 会话目录由配置指定，Velune 不将会话复制为另一套权威历史。
 
 平台视觉的已确认原则：各平台优先遵循自己的原生视觉与交互习惯，品牌和软件特点只在微小细节中体现。Mac 使用系统侧栏、工具栏、窗口、设置、语义颜色与字体；不能仅因采用 SwiftUI／AppKit 就把自绘的统一皮肤称为原生体验。跨平台共享领域契约，不要求各平台共享同一视觉布局。依据见 [PRD](../prd/index.md#已确认的产品结构与质量方向)。
 
@@ -42,7 +42,7 @@ Velune 的产品身份是 control surface：UI、AI 服务网关与协调层服�
 
 ### 控制面
 
-原生 UI → Rust Client 接入层 → 本地 IPC → Rust Host Service → Session Supervisor → Harness Adapter → 原生进程。后续远程客户端使用同一命令／事件契约的认证网络传输。
+原生 UI → C ABI → 同进程 CoreRuntime → Harness Adapter → 外部 Harness 进程。AI 服务网关也由库管理，供 Harness 发起模型请求；该 loopback HTTP 数据路径不是 App 与 core 的 IPC。后续远程设备接入需要另验认证传输，不改变每个平台嵌入共享核心的边界。
 
 - **Task Service**：目标、父子关系、依赖、验收、状态、工作区和产物归属
 - **Session Supervisor**：启动、连接、恢复、单写控制租约、取消、权限转交、断线核对
@@ -54,27 +54,27 @@ Velune 的产品身份是 control surface：UI、AI 服务网关与协调层服�
 
 ### Rust 与原生客户端的具体边界
 
-以下是收敛推荐，不是已经实现的库／进程：
+以下职责以已确认的嵌入式核心边界为准；完整协作机制仍是方案，当前只实施 Pi 首循环：
 
 - **Rust Domain**：Task／Session／Segment、路由与权限策略、协作状态转换及契约，不依赖 UIKit／Compose／进程启动
-- **Rust Host Service**：桌面／服务器上的权威服务，组合 Domain、SQLite、Supervisor、Gateway、Coordinator、Broker 与进程适配；关闭 UI 不等于结束任务。首版本机一个服务，不先拆微服务
-- **Rust Client 层**：给原生 UI 提供版本化命令、快照／游标事件、取消、断线重连与本地只读投影／待发草稿；不复制第二个权威 Supervisor 或路由账本到每个 UI
-- **Swift／Kotlin UI**：导航、任务树、流式展示、系统交互与权限呈现；不直接改 Host 的 SQLite、不复制路由规则。审批响应携带原始 action／epoch，离线或过期审批不能重连后盲发
+- **CoreRuntime**：在平台应用进程内组合配置、Supervisor、Gateway、进程适配与投影；跨平台复用同一套校验、状态转换和持久化行为，不另启常驻核心服务
+- **C ABI 接入层**：提供 opaque handle、UTF-8 JSON 命令与结果、关闭和 Rust 字符串释放；平台调用串行，不复制路由或持久化事务到 UI
+- **Swift／Kotlin 等平台 UI**：导航、流式展示、原生交互、系统权限与秘密设施；显式装配路径和能力。关闭窗口与退出应用是不同事件，退出须在运行时空闲且库完成关闭后进行
 
-Host 是权威 SQLite 的单一服务写入者；每台客户端的缓存是独立数据库，不能用文件同步把它变成共享主库。WAL 不是跨机器同步协议，网络只传命令／事件／产物，见[平台与存储证据](../../tasks/harness-routing-feasibility/evidence.md#原生客户端与-rust-边界)。
+首循环由 CoreRuntime 原子保存应用配置，不打开旧模拟 SQLite，也不保存另一套 Pi 会话历史。未来协作数据库如需 SQLite，仍由共享核心管理其事务；不能用文件同步制造跨设备共享主库。历史存储研究见[证据](../../tasks/harness-routing-feasibility/evidence.md#原生客户端与-rust-边界)。
 
-**FFI 与 IPC 分开**：Swift／Kotlin 调用 Rust Client 库才需要 FFI；Client 与独立 Host 通信用 IPC，不把整个服务嵌在会被 UI 关闭或系统回收的进程里。建议以 UniFFI 做首个绑定原型，验证 Swift／Kotlin 的异步、取消、错误、句柄释放、主线程回调与事件背压；它是候选工具，用户尚未指定。失败可用窄 C ABI／平台桥替换，不改变产品契约，不借机改回 Web UI。
+**FFI 是产品接入，不再加本机 IPC**：首版使用小型 C ABI 与 JSON DTO，输入借用到调用结束，返回字符串只能由 Rust free，open 失败不留 handle，close 忙时保持 handle。Rust 捕获 panic，不允许展开穿过 ABI。异步 UI 在后台串行队列调用同步接口，通过 snapshot 读取投影更新；线程和外部 Harness 生命周期由共享核心负责。是否引入绑定生成工具只由实际接口复杂度决定，不预先引入 UniFFI 工程。
 
 **Rust 主核心不要求重写上游 Harness SDK**。Codex 直接接 app-server；Pi 以 RPC 子进程接入，逐请求 virtual-model hook 由最薄的 Pi 扩展调用 Rust 路由服务；Claude 优先保留官方 SDK 的薄桥进程以正确处理其生命周期。桥只做编解码、关联 ID、流和原生权限回调，领域状态、路由、预算、协作与持久化留在 Rust。Node／TypeScript 若存在仅为原生 Harness／SDK 依赖与桥，不重新成为产品主核心；不得因改 Rust 而把 Claude 私有控制 envelope 当稳定公开协议重写。
 
 ### Apple 与 Android 宿主
 
-- **Apple 推荐落点**：iOS／iPadOS 用 Swift＋UIKit；macOS 先评估显式 Mac Catalyst target，共享 UIKit UI，同时做 Mac 的菜单、窗口、键盘和文件交互适配。Mac Catalyst 不是把 UIKit 直接链接成 AppKit 应用；“Apple-universal”也不推定一个 UIKit binary 覆盖所有 Apple OS
-- **尚需收敛的 Apple 选择**：Mac Catalyst 为本轮推荐，未视作用户已批准。若本地服务启动、文件访问或桌面交互受其边界阻碍，用独立 macOS helper／服务接口解决；仍不满足时再提出 Swift＋AppKit 的 Mac 专用 UI，不能悄悄切框架。watchOS／tvOS／visionOS 不在本轮默认承诺内，确需覆盖时按具体平台设计
-- **Android**：Kotlin＋Jetpack Compose 原生 UI，通过同一 Rust Client 契约接入；系统权限、Keystore／通知和应用生命周期由平台层承担
-- **移动端角色**：首期作为连接既有 Host 的原生客户端，缓存、查看、输入和审批；不把 iOS／Android 后台能力当常驻任意 coding Harness 的保证。系统允许的长任务机制有条件和配额，不能自动等同于桌面守护进程。手机 UI 被挂起，远端任务继续；离线输入是待发送，收到 Host admission 才显示已启动
+- **Apple 当前落点**：Mac 使用 SwiftUI／AppKit 的原生窗口、菜单与设置，嵌入 Rust dylib；iOS／iPadOS 的 UIKit 方向不等于已实现或能运行桌面 Harness。watchOS／tvOS／visionOS 不在本轮承诺内
+- **Windows 等桌面平台**：通过同一核心 ABI 复用行为，各自采用平台原生 UI 与秘密设施；当前没有已实现的 Windows app
+- **Android**：Kotlin＋Jetpack Compose 原生 UI，后续经平台桥嵌入同一核心；系统权限、Keystore／通知和生命周期由平台层承担
+- **移动端能力**：远端 Harness 接入和后台能力仍需单独验证。嵌入核心不代表手机能常驻桌面 Harness，也不把离线输入显示为远端已启动的任务
 
-本地 Host 安装、启动／重启、IPC 认证、签名／公证／商店分发和 sandbox 权限仍需原型。移动端不因此提前变成首要目标：先完成桌面本地三 Harness 核心，再接移动客户端所需的认证远程传输。具体 UI 与 FFI 用独立小原型尽早验证，不用 Web 过渡实现替代用户选择。
+Mac 当前交付安装到 Applications，产品显示版本、ABI、配置 schema 与源码提交分开记录。签名／公证／商店分发和 sandbox 权限仍有后续边界，不因本地 ad-hoc 构建通过而声称已完成。先完成桌面首循环与共享核心基础，再实施远程客户端，不用 Web 过渡替代原生方向。
 
 ### 模型数据面
 
@@ -251,8 +251,8 @@ Codex 原生审批事件、Claude 的 hooks／permission 机制、Pi 的扩展 t
 
 ### 实施顺序建议
 
-- **V0 契约原型**：Rust Host／薄桥／Swift 与 Kotlin 接口及 Apple 桌面落点先做边界验证；三个 Harness 并行验证原生控制、请求入口、权限／流／恢复；先用假上游和合成状态做故障注入。任何失败都落在具体适配问题，不重开 Harness 选择
-- **V1 本地骨架**：Rust Host、SQLite、单控制租约、三个 adapter、账户隔离绑定、手动模型／资源选择；原生桌面任务树能管理三者，不建立 Web UI
+- **V0 契约原型**：Rust lib／C ABI／平台 UI 验证接口、生命周期与原生交互；当前先用固定 Pi 与假上游证明首循环，不把边界失败变成重新选择 Harness 的理由
+- **V1 本地骨架**：嵌入式 CoreRuntime、配置与运行时实例、显式模型路由；后续按已确认范围扩展三个 adapter 和协作存储，不建立 Web UI
 - **V2 核心闭环**：统一 Routing Policy＋各自数据路径、预算／使用记录、broker 协作工具、子任务／产物、允许范围内自动资源选择与明确的续作 handoff
 - **V3 产品验收**：断流、重启、重复投递、账户限流、审批过期、worktree 冲突、错误兼容、计费未知等故障不丢任务、不越权、不静默重放工具
 
@@ -279,13 +279,25 @@ V1 是基础检查点，**V2＋V3 才构成首个可用版本**。不能只接�
 3. Rust 主核心、SQLite、Apple Swift／UIKit 方向与 Android Kotlin／Jetpack Compose 原生 UI；替换 TypeScript 主核心和 Web UI，接受实验成本
 4. 先核心闭环，后分布式扩展；底层细节仍由设计方收敛，不让用户重做方案选择
 
-具体 Mac Catalyst／AppKit 落点、Apple 平台范围、UniFFI／IPC、官方 SDK 薄桥、服务安装与安全边界仍为推荐／原型项；已有方向认可不自动批准所有细节。官方集成资格、具体账户权益、ACPHub 来源、真实路由／恢复效果仍需验证。已有无凭据核心原型；不把模拟成功当作登录、付费或部署授权。
+Mac 当前落点与 C ABI 嵌入已按用户反馈确认，其他 Apple 平台、远程接入、官方 SDK 桥及分发安全边界仍需验证。官方集成资格、具体账户权益、ACPHub 来源、真实路由／恢复效果不由原型成功证明；登录、付费和部署仍需相应授权。
 
-## 11. 当前核心切片与原生体验接线
+## 11. 历史模拟核心与原生壳接线
+
+本节描述 2026-10-02 模拟原型，已被当前 Pi／ABI 产品接入取代，不是产品的进程、存储或生命周期规范。
 
 实现入口：[core/src/lib.rs](../../core/src/lib.rs)、[schema.sql](../../core/src/schema.sql)、[adapter.rs](../../core/src/adapter.rs)、[routing.rs](../../core/src/routing.rs)。核心只覆盖固定深度委派、稳定 Session、单 Segment 绑定、每次重启的新 Run、独立 Attempt、事务 outbox 与合成结果验收；不是前述完整架构的实现。
 
 单宿主通过 SQLite exclusive connection 拒绝第二个 Host；不是跨设备 lease／native fencing。未知提交阻塞该 Segment 后续投递，无自动 handoff 或人工强制解锁接口。路由只允许明确获准的模拟资源，无 API／订阅 lane。MCP 工具服务、ACP transport、真实 gateways／SDK 桥、费用预留与完整安全隔离尚未实现。
 
 Mac mini 首个体验切片已获准使用 Swift＋AppKit 薄壳。已编写原生 UI 与独立 Rust Host 接线源码；UI 通过随包 `rpc` 子进程访问同用户 Unix socket v1，操作同一核心及 DB，显示模拟模式、任务、会话、attempt 与协作事件。UI 退出不终止 Host；显式停止取消待投递消息、保留不确定状态。无 TCP／LAN、系统常驻安装或 UI 自有任务模拟。Cloud 已验证核心与 IPC；Mac 编译／安装／用户体验待父会话设备验收。
-历史模拟壳交付约定见 [开发说明](../development.md#历史-mac-mini-模拟壳交付契约)；当前 Pi 与 Mac 切片以本文开头的网关与运行时边界为准。
+历史模拟壳交付约定见 [开发说明](../development.md#历史-mac-mini-模拟壳)；当前 Pi 与 Mac 切片以本文开头的网关与运行时边界为准。
+
+## 架构参考的使用
+
+Mastra、HAPI、Lody 是用户提出的候选参考。研究围绕待决问题展开，例如运行时边界、事件投影、模型路由注入与生命周期；先核对具体版本的实现和产品前提，再说明对 Velune 的适用边界。列入参考不代表采用其功能、依赖或认证方案。关键取舍通过 advisor 推敲，涉及产品目标与范围时由用户决定。
+
+## Pi 模型身份与网关路由
+
+当前适配向 Pi 注入 Velune 逻辑模型 ID、明确的上下文窗口、输出上限与推理等级，通过 Pi 的模型切换更新会话身份；网关将逻辑 ID 路由到提供商及外部模型 ID。Pi 缓存目录只是该版本的适配约束，不是 Velune 网关必须采用的产品约束。固定入口背后换模型是候选方案，但不能丢失 Harness 的能力与历史转换语义，因此当前不采用。上游协议差异仍由 provider adapter 处理，不依赖 Pi 根据厂商名称猜测。
+
+上下文窗口可空以保存草稿；缺值模型不能连接或进入 Pi 目录，不猜测默认窗口，也不阻断其它完整模型。运行时默认模型只用于新会话。恢复会话前经 Pi SessionManager 获取所选分支的模型，再校验路由并绑定网关；失效或外部模型要求用户重新选择，不能偷偷套用默认模型。选择归属 Pi transcript，Velune 不增加会话数据库。具体版本证据与验证边界见当前 Task Packet。

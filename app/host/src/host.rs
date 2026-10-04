@@ -23,6 +23,7 @@ use velune_core::harness::{
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 const MAX_IPC_BYTES: u64 = 256 * 1024;
 const GENERIC_IPC_VERSION: u64 = 3;
+const HOST_APP_VERSION: &str = "0.1 beta.1";
 fn now() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -56,7 +57,7 @@ pub fn serve(dir: &Path) -> Result<()> {
     let persisted = load_generic_config(&dir.join("generic-config.json"))?;
     let mut gateways = persisted.gateways;
     let mut runtime_instances = persisted.runtime_instances;
-    let mut gateway_runner: Option<crate::gateway::Runner> = None;
+    let mut gateway_runner: Option<velune_core::gateway_runtime::Runner> = None;
     let mut active_runtime_id: Option<String> = None;
     let mut pi_records = Vec::new();
     let mut pi_record_seq = 1_u64;
@@ -94,6 +95,33 @@ pub fn serve(dir: &Path) -> Result<()> {
                 let previous_runtime_instances = generic.then(|| runtime_instances.clone());
                 let mut outcome: velune_core::Result<()> = (|| {
                     if generic {
+                        match value["action"].as_str().unwrap_or("") {
+                            "handshake" => {
+                                data = json!({
+                                    "ipcVersion": GENERIC_IPC_VERSION,
+                                    "hostPID": std::process::id(),
+                                    "appVersion": HOST_APP_VERSION,
+                                    "running": true,
+                                });
+                                return Ok(());
+                            }
+                            "retireIfIdle" => {
+                                ensure_generic_idle(pi_busy)?;
+                                if let Some(mut client) = pi.take() {
+                                    client.shutdown().map_err(|_| {
+                                        velune_core::Error::Invalid("runtime shutdown")
+                                    })?;
+                                }
+                                pi_config = None;
+                                pi_projection = None;
+                                gateway_runner = None;
+                                active_runtime_id = None;
+                                stop = true;
+                                data = json!({"retired": true});
+                                return Ok(());
+                            }
+                            _ => {}
+                        }
                         let mut state = GenericState {
                             pi: &mut pi,
                             pi_config: &mut pi_config,
@@ -336,7 +364,9 @@ pub fn serve(dir: &Path) -> Result<()> {
                 let response = match outcome {
                     Ok(()) => {
                         if generic {
-                            if let Some(object) = data.as_object_mut() {
+                            if value["action"] != "handshake"
+                                && let Some(object) = data.as_object_mut()
+                            {
                                 object
                                     .insert("requiresReconnect".into(), json!(requires_reconnect));
                             }
@@ -392,7 +422,7 @@ struct GenericState<'a> {
     projection: &'a mut Option<PiProjection>,
     gateways: &'a mut Vec<GatewayConfig>,
     runtime_instances: &'a mut Vec<RuntimeInstance>,
-    gateway_runner: &'a mut Option<crate::gateway::Runner>,
+    gateway_runner: &'a mut Option<velune_core::gateway_runtime::Runner>,
     active_runtime_id: &'a mut Option<String>,
 }
 
@@ -804,7 +834,7 @@ fn disconnect_for_config_change(
     pi_config: &mut Option<velune_core::pi::Config>,
     pi_busy: &mut bool,
     projection: &mut Option<PiProjection>,
-    gateway_runner: &mut Option<crate::gateway::Runner>,
+    gateway_runner: &mut Option<velune_core::gateway_runtime::Runner>,
     active_runtime_id: &mut Option<String>,
     requires_reconnect: &mut bool,
 ) -> velune_core::Result<()> {
@@ -857,7 +887,7 @@ fn start_generic_with_config(
 
 fn config_from_runtime(
     runtime: &RuntimeInstance,
-    gateway: &crate::gateway::Runner,
+    gateway: &velune_core::gateway_runtime::Runner,
     bundled_sdk_helper: Option<&Path>,
 ) -> velune_core::Result<velune_core::pi::Config> {
     let path = |key: &str| {
@@ -899,7 +929,7 @@ fn connect_runtime_instance(
     pi_config: &mut Option<velune_core::pi::Config>,
     pi_busy: &mut bool,
     projection: &mut Option<PiProjection>,
-    gateway_runner: &mut Option<crate::gateway::Runner>,
+    gateway_runner: &mut Option<velune_core::gateway_runtime::Runner>,
     active_runtime_id: &mut Option<String>,
     runtime_instances: &[RuntimeInstance],
     gateways: &[GatewayConfig],
@@ -931,8 +961,9 @@ fn connect_runtime_instance(
     *gateway_runner = None;
     *active_runtime_id = None;
     let (bundled_sdk_helper, bundled_credential_resolver) = bundled_helpers();
-    let runner = crate::gateway::Runner::start(gateway.clone(), bundled_credential_resolver)
-        .map_err(|_| velune_core::Error::Invalid("gateway startup"))?;
+    let runner =
+        velune_core::gateway_runtime::Runner::start(gateway.clone(), bundled_credential_resolver)
+            .map_err(|_| velune_core::Error::Invalid("gateway startup"))?;
     let config = match config_from_runtime(runtime, &runner, bundled_sdk_helper.as_deref()) {
         Ok(config) => config,
         Err(error) => {
@@ -1320,6 +1351,7 @@ mod tests {
             nickname: "Model".into(),
             icon: None,
             max_output_tokens: 4096,
+            context_window: Some(8192),
             reasoning_levels: vec!["high".into()],
         };
         materialize_models(&config, Some(&model)).expect("materialize Pi catalog");

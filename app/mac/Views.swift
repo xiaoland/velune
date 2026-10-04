@@ -53,7 +53,7 @@ struct VeluneRootView: View {
     @ToolbarContentBuilder private var conversationToolbar: some ToolbarContent {
         ToolbarItemGroup(placement: .primaryAction) {
             Menu {
-                ForEach(store.models) { model in Button(model.nickname.isEmpty ? model.id : model.nickname) { store.selectModel(modelID: model.id) } }
+                ForEach(store.models.filter { $0.contextWindow != nil }) { model in Button(model.nickname.isEmpty ? model.id : model.nickname) { store.selectModel(modelID: model.id) } }
                 Divider()
                 SettingsLink { Text("管理AI提供商与模型…") }
             } label: { Text(store.selectedModelName ?? "选择模型") }
@@ -96,6 +96,9 @@ struct VeluneRootView: View {
 
     private var composer: some View {
         VStack(alignment: .leading, spacing: 8) {
+            if store.needsModelSelection {
+                Text("此会话的模型当前不可用，请选择已配置的模型。").font(.callout).foregroundStyle(.secondary)
+            }
             if let error = store.error {
                 HStack(alignment: .top) { Label(error, systemImage: "exclamationmark.triangle").textSelection(.enabled); Spacer(); SettingsLink { Text("检查运行时设置") } }.font(.callout).foregroundStyle(.secondary)
             }
@@ -333,8 +336,9 @@ struct ModelEditor: View {
     @State private var nickname = ""
     @State private var icon = ""
     @State private var maxOutputTokens = ""
+    @State private var contextWindow = ""
     @State private var reasoningLevels = ""
-    private var valid: Bool { !id.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && (UInt32(maxOutputTokens).map { $0 > 0 } ?? false) }
+    private var valid: Bool { !id.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && (UInt32(maxOutputTokens).map { $0 > 0 } ?? false) && (contextWindow.isEmpty || (UInt32(contextWindow).map { $0 >= (UInt32(maxOutputTokens) ?? 0) } ?? false)) }
     var body: some View {
         VStack(spacing: 0) {
             Text(model == nil ? "添加模型" : "编辑模型").font(.headline).frame(maxWidth: .infinity, alignment: .leading).padding(20)
@@ -343,19 +347,22 @@ struct ModelEditor: View {
                 TextField("昵称", text: $nickname, prompt: Text("可选"))
                 TextField("图标", text: $icon, prompt: Text("可选，SF Symbols名称"))
                 TextField("最大输出 Token 数", text: $maxOutputTokens)
+                TextField("上下文窗口 Token 数", text: $contextWindow, prompt: Text("运行前必须填写"))
                 TextField("推理等级", text: $reasoningLevels, prompt: Text("以逗号分隔；留空表示不支持"))
             }.formStyle(.grouped)
             HStack { Spacer(); Button("取消") { dismiss() }.keyboardShortcut(.cancelAction); Button("保存") { commit() }.keyboardShortcut(.defaultAction).disabled(!valid || isSaving) }.padding(20)
             SettingsError(message: error)
-        }.frame(width: 540, height: 390)
-        .onAppear { id = model?.id ?? ""; nickname = model?.nickname ?? ""; icon = model?.icon ?? ""; maxOutputTokens = model.map { String($0.maxOutputTokens) } ?? ""; reasoningLevels = model?.reasoningLevels.joined(separator: ", ") ?? "" }
+        }.frame(width: 540, height: 430)
+        .onAppear { id = model?.id ?? ""; nickname = model?.nickname ?? ""; icon = model?.icon ?? ""; maxOutputTokens = model.map { String($0.maxOutputTokens) } ?? ""; contextWindow = model?.contextWindow.map(String.init) ?? ""; reasoningLevels = model?.reasoningLevels.joined(separator: ", ") ?? "" }
     }
     private func commit() {
         guard valid, let maximum = UInt32(maxOutputTokens) else { return }
+        let window = contextWindow.isEmpty ? nil : UInt32(contextWindow)
+        guard contextWindow.isEmpty || (window.map { $0 >= maximum } ?? false) else { return }
         let levels = reasoningLevels.split(separator: ",").map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
         let modelID = id.trimmingCharacters(in: .whitespacesAndNewlines)
         let displayName = nickname.trimmingCharacters(in: .whitespacesAndNewlines)
-        save(AIModel(id: modelID, nickname: displayName.isEmpty ? modelID : displayName, icon: icon.isEmpty ? nil : icon, maxOutputTokens: maximum, reasoningLevels: levels)) { dismiss() }
+        save(AIModel(id: modelID, nickname: displayName.isEmpty ? modelID : displayName, icon: icon.isEmpty ? nil : icon, contextWindow: window, maxOutputTokens: maximum, reasoningLevels: levels)) { dismiss() }
     }
 }
 

@@ -299,7 +299,7 @@ impl PiProjection {
                     state: Some("running".into()),
                 });
             }
-            "agent_end" | "agent_settled" => {
+            "agent_settled" => {
                 snapshot.run_state = RunState::Idle;
                 snapshot.actions.can_send = true;
                 snapshot.actions.can_cancel = false;

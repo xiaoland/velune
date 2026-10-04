@@ -1,4 +1,4 @@
-// Pi v1.0.2 SDK session-list projection. The Host owns process isolation;
+// Pi v1.0.2 SDK session-list projection. CoreRuntime owns process isolation;
 // Pi's SessionManager remains authoritative for session metadata.
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 
@@ -9,6 +9,11 @@ const value = (name) => {
 };
 const cwd = value("--cwd") ?? process.cwd();
 const sessionDir = value("--session-dir");
+const inspectPath = value("--inspect-session");
+if (inspectPath) {
+  const context = SessionManager.open(inspectPath).buildSessionContext();
+  process.stdout.write(JSON.stringify({model: context.model, thinkingLevel: context.thinkingLevel}));
+} else {
 const sessions = args.includes("--all")
   ? await SessionManager.listAll(sessionDir)
   : await SessionManager.list(cwd, sessionDir);
@@ -28,3 +33,5 @@ process.stdout.write(
     })),
   }),
 );
+
+}

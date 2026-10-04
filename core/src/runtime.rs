@@ -1,0 +1,972 @@
+//! Cross-platform application runtime.
+//!
+//! This module owns ordinary application configuration and the active
+//! Pi/gateway projection. It has no filesystem socket, SQLite, environment, or
+//! platform credential access beyond explicit paths supplied at open.
+
+use crate::{
+    conversation::{ConversationSummary, PiProjection, RunState},
+    gateway::{GatewayConfig, ModelDefinition, RuntimeInstance},
+    gateway_runtime::Runner,
+    pi::{self, Config as PiConfig},
+};
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
+use std::{
+    fs::{self, File, OpenOptions, TryLockError},
+    io::Write,
+    path::{Path, PathBuf},
+    process::Command,
+};
+
+const CONTRACT_VERSION: u64 = 3;
+
+fn runtime_types(resources_directory: &Path) -> Value {
+    let bundled_binary =
+        resources_directory.join("node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js");
+    let binary_value = if bundled_binary.is_file() {
+        bundled_binary.to_string_lossy().into_owned()
+    } else {
+        String::new()
+    };
+    json!([{
+        "id":"pi",
+        "name":"Pi Agent 运行时",
+        "fields":[
+            {"key":"binary","label":"运行时入口","kind":"filePath","required":true,"value":binary_value,"options":[],"help":"Pi CLI 的绝对路径；应用不会使用全局 PATH。"},
+            {"key":"nodeBinary","label":"Node 可执行文件","kind":"filePath","required":false,"value":"","options":[],"help":"Node 22.19+ 的绝对路径；用于启动 JavaScript CLI。"},
+            {"key":"workingDir","label":"工作目录","kind":"directoryPath","required":true,"value":"","options":[],"help":"该运行时使用的工作目录。"},
+            {"key":"agentDir","label":"运行时目录","kind":"directoryPath","required":true,"value":"","options":[],"help":"该运行时专属的 Pi 配置目录。"},
+            {"key":"sessionDir","label":"会话目录","kind":"directoryPath","required":false,"value":"","options":[],"help":"可选的 Pi 会话目录。"}
+        ],
+        "actions":[{"id":"connect","label":"连接运行时"}]
+    }])
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RuntimeOptions {
+    pub home_directory: PathBuf,
+    pub resources_directory: PathBuf,
+    #[serde(default)]
+    pub credential_resolver: Option<PathBuf>,
+}
+
+impl RuntimeOptions {
+    fn validate(&self) -> Result<(), RuntimeError> {
+        for path in [
+            Some(&self.home_directory),
+            Some(&self.resources_directory),
+            self.credential_resolver.as_ref(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            if !path.is_absolute() {
+                return Err(RuntimeError::invalid("runtime paths must be absolute"));
+            }
+        }
+        if !self.home_directory.exists() {
+            fs::create_dir_all(&self.home_directory)
+                .map_err(|_| RuntimeError::invalid("runtime home directory"))?;
+        }
+        if !self.resources_directory.is_dir() {
+            return Err(RuntimeError::invalid("runtime resources directory"));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct PersistedConfig {
+    schema_version: u32,
+    #[serde(default)]
+    gateways: Vec<GatewayConfig>,
+    #[serde(default)]
+    runtime_instances: Vec<RuntimeInstance>,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum RuntimeError {
+    #[error("invalid runtime: {0}")]
+    Invalid(String),
+    #[error("unsupported runtime action: {0}")]
+    Unsupported(String),
+    #[error("runtime I/O failed: {0}")]
+    Io(#[from] std::io::Error),
+    #[error("runtime JSON failed: {0}")]
+    Json(#[from] serde_json::Error),
+}
+
+impl RuntimeError {
+    fn invalid(message: &'static str) -> Self {
+        Self::Invalid(message.into())
+    }
+
+    pub(crate) fn envelope(&self) -> Value {
+        let code = match self {
+            Self::Invalid(_) => "invalid",
+            Self::Unsupported(_) => "unsupported",
+            Self::Io(_) => "io",
+            Self::Json(_) => "json",
+        };
+        json!({"ok":false,"error":{"code":code,"message":self.to_string()}})
+    }
+}
+
+pub struct CoreRuntime {
+    options: RuntimeOptions,
+    _home_lock: File,
+    gateways: Vec<GatewayConfig>,
+    runtime_instances: Vec<RuntimeInstance>,
+    pi: Option<pi::Client>,
+    pi_config: Option<PiConfig>,
+    pi_busy: bool,
+    projection: Option<PiProjection>,
+    gateway_runner: Option<Runner>,
+    active_runtime_id: Option<String>,
+}
+
+impl CoreRuntime {
+    pub fn open(options: RuntimeOptions) -> Result<Self, RuntimeError> {
+        options.validate()?;
+        let lock_path = options.home_directory.join("runtime.lock");
+        let home_lock = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(lock_path)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            home_lock.set_permissions(fs::Permissions::from_mode(0o600))?;
+        }
+        match home_lock.try_lock() {
+            Ok(()) => {}
+            Err(TryLockError::WouldBlock) => {
+                return Err(RuntimeError::invalid("runtime home is already open"));
+            }
+            Err(TryLockError::Error(error)) => return Err(error.into()),
+        }
+        let persisted_path = options.home_directory.join("generic-config.json");
+        let persisted = match fs::read(&persisted_path) {
+            Ok(bytes) => {
+                let value: PersistedConfig = serde_json::from_slice(&bytes)?;
+                if value.schema_version != 2 {
+                    return Err(RuntimeError::invalid("unsupported configuration schema"));
+                }
+                for gateway in &value.gateways {
+                    gateway.validate().map_err(RuntimeError::invalid)?;
+                }
+                for runtime in &value.runtime_instances {
+                    if runtime.id.is_empty()
+                        || runtime.name.is_empty()
+                        || runtime.type_id != "pi"
+                        || !value
+                            .gateways
+                            .iter()
+                            .any(|item| item.id == runtime.gateway_id)
+                    {
+                        return Err(RuntimeError::invalid("invalid persisted runtime instance"));
+                    }
+                }
+                value
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => PersistedConfig {
+                schema_version: 2,
+                ..PersistedConfig::default()
+            },
+            Err(error) => return Err(error.into()),
+        };
+        Ok(Self {
+            options,
+            _home_lock: home_lock,
+            gateways: persisted.gateways,
+            runtime_instances: persisted.runtime_instances,
+            pi: None,
+            pi_config: None,
+            pi_busy: false,
+            projection: None,
+            gateway_runner: None,
+            active_runtime_id: None,
+        })
+    }
+
+    pub fn request(&mut self, request: &Value) -> Value {
+        self.drain_pi();
+        match self.request_inner(request) {
+            Ok(data) => json!({"version":CONTRACT_VERSION,"ok":true,"data":data}),
+            Err(error) => error.envelope(),
+        }
+    }
+
+    pub fn close_if_idle(&mut self) -> Result<(), RuntimeError> {
+        self.drain_pi();
+        if self.pi_busy {
+            return Err(RuntimeError::invalid("runtime is busy"));
+        }
+        self.shutdown_active()?;
+        // Release the lock explicitly; a concurrent child spawn can briefly
+        // inherit the open file description before exec closes its descriptors.
+        self._home_lock.unlock()?;
+        Ok(())
+    }
+
+    fn request_inner(&mut self, request: &Value) -> Result<Value, RuntimeError> {
+        if request["version"] != CONTRACT_VERSION {
+            return Err(RuntimeError::Unsupported(
+                "projection contract version".into(),
+            ));
+        }
+        match request["action"].as_str().unwrap_or_default() {
+            "list" => self.list(),
+            "gateways" => self.gateway_action(request),
+            "runtimeInstances" => self.runtime_action(request),
+            "runtimeAction" | "connect" => self.connect_action(request),
+            "create" => self.create_conversation(request),
+            "open" => self.open_conversation(request),
+            "getSnapshot" => {
+                self.ensure_active(request)?;
+                self.sync_projection()?;
+                Ok(
+                    json!({"snapshot":self.projection.as_ref().and_then(|item| item.snapshot.as_ref())}),
+                )
+            }
+            "send" => self.send_action(request),
+            "cancel" => self.cancel_action(request),
+            "selectModel" => self.select_model(request),
+            "resources" | "settings" | "beginAuthorization" => {
+                Err(RuntimeError::Unsupported("legacy action".into()))
+            }
+            action => Err(RuntimeError::Unsupported(action.into())),
+        }
+    }
+
+    fn list(&self) -> Result<Value, RuntimeError> {
+        Ok(json!({
+            "conversations": self.session_summaries()?,
+            "connections": self.connections(),
+            "models": self.gateways.iter().flat_map(|item| item.models.iter()).collect::<Vec<_>>(),
+            "gateways": self.gateways,
+            "runtimeInstances": self.runtime_instances,
+            "runtimeTypes": runtime_types(&self.options.resources_directory),
+            "protocols": [{"id":"chatCompletionsV1","name":"OpenAI Chat Completions v1","supported":true}],
+            "activeRuntimeInstanceID": self.active_runtime_id,
+        }))
+    }
+
+    fn create_conversation(&mut self, request: &Value) -> Result<Value, RuntimeError> {
+        self.ensure_active(request)?;
+        if self.pi_busy {
+            return Err(RuntimeError::invalid("runtime is busy"));
+        }
+        self.pi
+            .as_mut()
+            .ok_or_else(|| RuntimeError::invalid("runtime is not connected"))?
+            .request(json!({"type":"new_session"}))
+            .map_err(|_| RuntimeError::invalid("conversation create"))?;
+        let default_model = self
+            .runtime_instances
+            .iter()
+            .find(|item| Some(&item.id) == self.active_runtime_id.as_ref())
+            .expect("active runtime instance is configured")
+            .model_id
+            .clone();
+        self.pi_config.as_mut().expect("connected Pi config").model = default_model;
+        self.bind_gateway_model()?;
+        self.sync_projection()?;
+        Ok(json!({"snapshot":self.projection.as_ref().and_then(|item| item.snapshot.as_ref())}))
+    }
+
+    fn open_conversation(&mut self, request: &Value) -> Result<Value, RuntimeError> {
+        self.ensure_active(request)?;
+        if self.pi_busy {
+            return Err(RuntimeError::invalid("runtime is busy"));
+        }
+        let id = request["payload"]["conversationID"]
+            .as_str()
+            .ok_or_else(|| RuntimeError::invalid("conversation id"))?;
+        let runtime_id = self
+            .active_runtime_id
+            .as_ref()
+            .expect("active runtime instance")
+            .clone();
+        let prefix = format!("{runtime_id}:");
+        let path = id
+            .strip_prefix(&prefix)
+            .map(PathBuf::from)
+            .filter(|path| path.is_absolute())
+            .ok_or_else(|| RuntimeError::invalid("conversation id"))?;
+        // Read Pi's selected branch before switching: CLI launch overrides can
+        // otherwise append the runtime default to the restored transcript.
+        let saved = pi_session_helper(
+            self.pi_config.as_ref().expect("connected Pi config"),
+            Some(&path),
+        )?;
+        self.pi
+            .as_mut()
+            .ok_or_else(|| RuntimeError::invalid("runtime is not connected"))?
+            .switch_session(&path)
+            .map_err(|_| RuntimeError::invalid("conversation open"))?;
+        let restored_model = saved["model"]["modelId"].as_str();
+        let runtime = self
+            .runtime_instances
+            .iter()
+            .find(|item| item.id == runtime_id)
+            .expect("active runtime instance is configured");
+        let gateway = self
+            .gateways
+            .iter()
+            .find(|item| item.id == runtime.gateway_id)
+            .expect("runtime gateway is configured");
+        let model_id = restored_model
+            .filter(|id| {
+                saved["model"]["provider"] == "velune-gateway"
+                    && runnable_pi_model(gateway, id).is_ok()
+            })
+            .map(str::to_owned);
+        self.pi_config.as_mut().expect("connected Pi config").model = model_id;
+        if self
+            .pi_config
+            .as_ref()
+            .and_then(|config| config.model.as_ref())
+            .is_some()
+        {
+            self.bind_gateway_model()?;
+        }
+        if let Some(projection) = self.projection.as_mut() {
+            projection.set_conversation(ConversationSummary {
+                id: id.into(),
+                title: path
+                    .file_stem()
+                    .and_then(|item| item.to_str())
+                    .unwrap_or("会话")
+                    .into(),
+                updated_at: None,
+                runtime_id,
+            });
+        }
+        self.sync_projection()?;
+        Ok(json!({"snapshot":self.projection.as_ref().and_then(|item| item.snapshot.as_ref())}))
+    }
+
+    fn gateway_action(&mut self, request: &Value) -> Result<Value, RuntimeError> {
+        if self.pi_busy {
+            return Err(RuntimeError::invalid("runtime is busy"));
+        }
+        let previous = self.gateways.clone();
+        let mut changed = false;
+        match request["payload"]["operation"].as_str().unwrap_or("list") {
+            "upsert" => {
+                let raw = request["payload"]["gateway"]
+                    .as_str()
+                    .ok_or_else(|| RuntimeError::invalid("gateway"))?;
+                let gateway: GatewayConfig = serde_json::from_str(raw)?;
+                gateway.validate().map_err(RuntimeError::invalid)?;
+                self.gateways.retain(|item| item.id != gateway.id);
+                self.gateways.push(gateway);
+                changed = true;
+                if let Err(error) = self.persist() {
+                    self.gateways = previous.clone();
+                    return Err(error);
+                }
+            }
+            "delete" => {
+                let id = request["payload"]["gatewayID"]
+                    .as_str()
+                    .ok_or_else(|| RuntimeError::invalid("gateway id"))?;
+                if self
+                    .runtime_instances
+                    .iter()
+                    .any(|item| item.gateway_id == id)
+                {
+                    return Err(RuntimeError::invalid("gateway is used by a runtime"));
+                }
+                self.gateways.retain(|item| item.id != id);
+                changed = true;
+                if let Err(error) = self.persist() {
+                    self.gateways = previous.clone();
+                    return Err(error);
+                }
+            }
+            "list" => {}
+            _ => return Err(RuntimeError::invalid("gateway operation")),
+        }
+        if changed && self.active_runtime_id.is_some() {
+            self.shutdown_active()?;
+        }
+        Ok(
+            json!({"gateways":self.gateways,"models":self.gateways.iter().flat_map(|item| item.models.iter()).collect::<Vec<_>>(),"requiresReconnect":changed}),
+        )
+    }
+
+    fn runtime_action(&mut self, request: &Value) -> Result<Value, RuntimeError> {
+        if self.pi_busy {
+            return Err(RuntimeError::invalid("runtime is busy"));
+        }
+        let previous = self.runtime_instances.clone();
+        let mut changed = false;
+        match request["payload"]["operation"].as_str().unwrap_or("list") {
+            "upsert" => {
+                let raw = request["payload"]["runtimeInstance"]
+                    .as_str()
+                    .ok_or_else(|| RuntimeError::invalid("runtime instance"))?;
+                let runtime: RuntimeInstance = serde_json::from_str(raw)?;
+                if runtime.id.is_empty()
+                    || runtime.name.is_empty()
+                    || runtime.type_id != "pi"
+                    || !self
+                        .gateways
+                        .iter()
+                        .any(|item| item.id == runtime.gateway_id)
+                {
+                    return Err(RuntimeError::invalid("runtime instance"));
+                }
+                self.runtime_instances.retain(|item| item.id != runtime.id);
+                self.runtime_instances.push(runtime);
+                changed = true;
+                if let Err(error) = self.persist() {
+                    self.runtime_instances = previous.clone();
+                    return Err(error);
+                }
+            }
+            "delete" => {
+                let id = request["payload"]["runtimeInstanceID"]
+                    .as_str()
+                    .ok_or_else(|| RuntimeError::invalid("runtime instance id"))?;
+                self.runtime_instances.retain(|item| item.id != id);
+                changed = true;
+                if let Err(error) = self.persist() {
+                    self.runtime_instances = previous.clone();
+                    return Err(error);
+                }
+            }
+            "list" => {}
+            _ => return Err(RuntimeError::invalid("runtime operation")),
+        }
+        if changed && self.active_runtime_id.is_some() {
+            self.shutdown_active()?;
+        }
+        Ok(
+            json!({"runtimeInstances":self.runtime_instances,"runtimeTypes":runtime_types(&self.options.resources_directory),"requiresReconnect":changed}),
+        )
+    }
+
+    fn connect_action(&mut self, request: &Value) -> Result<Value, RuntimeError> {
+        if request["action"] == "runtimeAction"
+            && request["payload"]["actionID"].as_str() != Some("connect")
+        {
+            return Err(RuntimeError::Unsupported("runtime action".into()));
+        }
+        if self.pi_busy {
+            return Err(RuntimeError::invalid("runtime is busy"));
+        }
+        let runtime_id = request["payload"]["runtimeInstanceID"]
+            .as_str()
+            .ok_or_else(|| RuntimeError::invalid("runtime instance id"))?;
+        self.connect(runtime_id)?;
+        Ok(json!({"runtimeInstanceID":self.active_runtime_id,"connections":self.connections()}))
+    }
+
+    fn connect(&mut self, runtime_id: &str) -> Result<(), RuntimeError> {
+        let runtime = self
+            .runtime_instances
+            .iter()
+            .find(|item| item.id == runtime_id)
+            .cloned()
+            .ok_or_else(|| RuntimeError::invalid("runtime instance id"))?;
+        let gateway = self
+            .gateways
+            .iter()
+            .find(|item| item.id == runtime.gateway_id)
+            .cloned()
+            .ok_or_else(|| RuntimeError::invalid("gateway id"))?;
+        let model_id = runtime
+            .model_id
+            .as_deref()
+            .ok_or_else(|| RuntimeError::invalid("runtime model id"))?;
+        runnable_pi_model(&gateway, model_id)?;
+        self.shutdown_active()?;
+        let runner = Runner::start(gateway.clone(), self.options.credential_resolver.clone())
+            .map_err(|_| RuntimeError::invalid("gateway startup"))?;
+        let config = PiConfig {
+            binary: setting_path(&runtime, "binary")?,
+            node_binary: setting_path_optional(&runtime, "nodeBinary"),
+            sdk_helper: setting_path_optional(&runtime, "sdkHelper")
+                .or_else(|| Some(self.options.resources_directory.join("pi_sessions.mjs"))),
+            agent_dir: Some(setting_path(&runtime, "agentDir")?),
+            working_dir: Some(setting_path(&runtime, "workingDir")?),
+            provider: Some("velune-gateway".into()),
+            model: Some(model_id.into()),
+            protocol: Some("openai-completions".into()),
+            endpoint: Some(runner.endpoint().into()),
+            credential_ref: None,
+            credential_resolver: None,
+            gateway_token: Some(runner.token().into()),
+            session_dir: setting_path_optional(&runtime, "sessionDir"),
+            session: None,
+            name: Some(runtime.name.clone()),
+        };
+        if let Err(error) = materialize_models(&config, &gateway) {
+            drop(runner);
+            return Err(error);
+        }
+        let client = match pi::Client::spawn(config.clone()) {
+            Ok(client) => client,
+            Err(_) => {
+                drop(runner);
+                return Err(RuntimeError::invalid("runtime startup"));
+            }
+        };
+        let mut projection = PiProjection::new(ConversationSummary {
+            id: "active".into(),
+            title: "当前会话".into(),
+            updated_at: None,
+            runtime_id: runtime_id.into(),
+        });
+        if let Some(snapshot) = projection.snapshot.as_mut() {
+            snapshot.model_id = Some(model_id.into());
+        }
+        self.gateway_runner = Some(runner);
+        self.pi = Some(client);
+        self.pi_config = Some(config);
+        self.projection = Some(projection);
+        self.active_runtime_id = Some(runtime_id.into());
+        Ok(())
+    }
+
+    fn send_action(&mut self, request: &Value) -> Result<Value, RuntimeError> {
+        self.ensure_active(request)?;
+        if self.pi_busy {
+            return Err(RuntimeError::invalid("runtime is busy"));
+        }
+        let text = request["payload"]["text"]
+            .as_str()
+            .filter(|item| !item.trim().is_empty())
+            .ok_or_else(|| RuntimeError::invalid("message text"))?;
+        // Native session state or commands may change the selected provider.
+        // Every dispatch must return to the application-owned gateway.
+        self.bind_gateway_model()?;
+        self.drain_pi();
+        let response = self
+            .pi
+            .as_mut()
+            .ok_or_else(|| RuntimeError::invalid("runtime is not connected"))?
+            .prompt(text)
+            .map_err(|_| RuntimeError::invalid("message send"))?;
+        if let Some(projection) = self.projection.as_mut() {
+            projection.append_user(text);
+        }
+        self.pi_busy = response["data"]["disposition"] != "handled";
+        if self.pi_busy
+            && let Some(snapshot) = self
+                .projection
+                .as_mut()
+                .and_then(|item| item.snapshot.as_mut())
+        {
+            snapshot.run_state = RunState::Running;
+            snapshot.actions.can_send = false;
+            snapshot.actions.can_cancel = true;
+        }
+        self.drain_pi();
+        Ok(json!({"snapshot":self.projection.as_ref().and_then(|item| item.snapshot.as_ref())}))
+    }
+
+    fn bind_gateway_model(&mut self) -> Result<(), RuntimeError> {
+        let model_id = self
+            .pi_config
+            .as_ref()
+            .and_then(|config| config.model.as_deref())
+            .ok_or_else(|| RuntimeError::invalid("runtime model id"))?;
+        self.pi
+            .as_mut()
+            .ok_or_else(|| RuntimeError::invalid("runtime is not connected"))?
+            .request(json!({"type":"set_model","provider":"velune-gateway","modelId":model_id}))
+            .map_err(|_| RuntimeError::invalid("gateway model binding"))?;
+        Ok(())
+    }
+
+    fn cancel_action(&mut self, request: &Value) -> Result<Value, RuntimeError> {
+        self.ensure_active(request)?;
+        self.pi
+            .as_mut()
+            .ok_or_else(|| RuntimeError::invalid("runtime is not connected"))?
+            .cancel()
+            .map_err(|_| RuntimeError::invalid("message cancel"))?;
+        self.drain_pi();
+        Ok(json!({"snapshot":self.projection.as_ref().and_then(|item| item.snapshot.as_ref())}))
+    }
+
+    fn select_model(&mut self, request: &Value) -> Result<Value, RuntimeError> {
+        self.ensure_active(request)?;
+        if self.pi_busy {
+            return Err(RuntimeError::invalid("runtime is busy"));
+        }
+        let model_id = request["payload"]["modelID"]
+            .as_str()
+            .ok_or_else(|| RuntimeError::invalid("model id"))?;
+        let runtime = self
+            .runtime_instances
+            .iter()
+            .find(|item| Some(&item.id) == self.active_runtime_id.as_ref())
+            .expect("active runtime instance is configured");
+        let gateway = self
+            .gateways
+            .iter()
+            .find(|item| item.id == runtime.gateway_id)
+            .expect("runtime gateway is configured");
+        runnable_pi_model(gateway, model_id)?;
+        self.pi
+            .as_mut()
+            .expect("connected Pi client")
+            .request(json!({"type":"set_model","provider":"velune-gateway","modelId":model_id}))
+            .map_err(|_| RuntimeError::invalid("model selection"))?;
+        self.pi_config.as_mut().expect("connected Pi config").model = Some(model_id.into());
+        self.sync_projection()?;
+        Ok(json!({"snapshot":self.projection.as_ref().and_then(|item| item.snapshot.as_ref())}))
+    }
+
+    fn ensure_active(&self, request: &Value) -> Result<(), RuntimeError> {
+        let requested = request["payload"]["runtimeInstanceID"]
+            .as_str()
+            .ok_or_else(|| RuntimeError::invalid("runtime instance id"))?;
+        if self.active_runtime_id.as_deref() != Some(requested) {
+            return Err(RuntimeError::invalid("runtime instance is not active"));
+        }
+        Ok(())
+    }
+
+    fn sync_projection(&mut self) -> Result<(), RuntimeError> {
+        self.drain_pi();
+        if let (Some(client), Some(projection)) = (self.pi.as_mut(), self.projection.as_mut()) {
+            let (state, messages) = client
+                .state()
+                .map_err(|_| RuntimeError::invalid("runtime state"))?;
+            if let Some(path) = state["data"]["sessionFile"].as_str() {
+                let runtime_id = self
+                    .active_runtime_id
+                    .as_deref()
+                    .expect("a Pi client has an active runtime instance");
+                projection.set_conversation(ConversationSummary {
+                    id: format!("{runtime_id}:{path}"),
+                    title: Path::new(path)
+                        .file_stem()
+                        .and_then(|item| item.to_str())
+                        .unwrap_or("会话")
+                        .into(),
+                    updated_at: None,
+                    runtime_id: runtime_id.into(),
+                });
+            }
+            projection.replace_history(&messages);
+            if let Some(snapshot) = projection.snapshot.as_mut() {
+                snapshot.model_id = self
+                    .pi_config
+                    .as_ref()
+                    .and_then(|config| config.model.clone());
+                snapshot.actions.can_send = snapshot.model_id.is_some() && !self.pi_busy;
+                snapshot.actions.can_cancel = self.pi_busy;
+            }
+        }
+        self.drain_pi();
+        Ok(())
+    }
+
+    fn drain_pi(&mut self) {
+        let events = self
+            .pi
+            .as_mut()
+            .map(|client| client.poll())
+            .unwrap_or_default();
+        for event in events {
+            if event["type"] == "agent_settled" {
+                self.pi_busy = false;
+            }
+            if let Some(projection) = self.projection.as_mut() {
+                projection.apply_event(&event);
+            }
+        }
+    }
+
+    fn connections(&self) -> Vec<Value> {
+        self.active_runtime_id.as_ref()
+            .map(|id| {
+                let name = self.runtime_instances.iter().find(|runtime| &runtime.id == id)
+                    .map(|runtime| runtime.name.as_str()).expect("active runtime instance is configured");
+                vec![json!({"id":id,"name":name,"state":"connected","capabilities":["chat","cancel"]})]
+            })
+            .unwrap_or_default()
+    }
+
+    fn session_summaries(&self) -> Result<Vec<ConversationSummary>, RuntimeError> {
+        let Some(config) = self.pi_config.as_ref() else {
+            return Ok(Vec::new());
+        };
+        let value = pi_session_helper(config, None)?;
+        let runtime_id = self.active_runtime_id.as_deref().unwrap_or_default();
+        let summaries = value["sessions"]
+            .as_array()
+            .ok_or_else(|| RuntimeError::invalid("Pi session helper response"))?
+            .iter()
+            .map(|item| {
+                let path = item["path"]
+                    .as_str()
+                    .ok_or_else(|| RuntimeError::invalid("Pi session entry"))?;
+                let title = item["name"]
+                    .as_str()
+                    .filter(|value| !value.is_empty())
+                    .or_else(|| path.rsplit('/').next())
+                    .unwrap_or("会话");
+                Ok(ConversationSummary {
+                    id: format!("{runtime_id}:{path}"),
+                    title: title.into(),
+                    updated_at: item["modified"].as_str().map(str::to_owned),
+                    runtime_id: runtime_id.into(),
+                })
+            })
+            .collect::<Result<Vec<_>, RuntimeError>>()?;
+        Ok(summaries)
+    }
+
+    fn shutdown_active(&mut self) -> Result<(), RuntimeError> {
+        if let Some(mut client) = self.pi.take() {
+            client
+                .shutdown()
+                .map_err(|_| RuntimeError::invalid("runtime shutdown"))?;
+        }
+        self.pi_config = None;
+        self.pi_busy = false;
+        self.projection = None;
+        self.gateway_runner = None;
+        self.active_runtime_id = None;
+        Ok(())
+    }
+
+    fn persist(&self) -> Result<(), RuntimeError> {
+        let path = self.options.home_directory.join("generic-config.json");
+        let bytes = serde_json::to_vec_pretty(&PersistedConfig {
+            schema_version: 2,
+            gateways: self.gateways.clone(),
+            runtime_instances: self.runtime_instances.clone(),
+        })?;
+        let temporary = path.with_extension("json.tmp");
+        let mut file = fs::OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .write(true)
+            .open(&temporary)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            file.set_permissions(fs::Permissions::from_mode(0o600))?;
+        }
+        file.write_all(&bytes)?;
+        file.sync_all()?;
+        drop(file);
+        fs::rename(temporary, &path)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o600))?;
+        }
+        Ok(())
+    }
+}
+
+fn setting_path(runtime: &RuntimeInstance, key: &str) -> Result<PathBuf, RuntimeError> {
+    setting_path_optional(runtime, key).ok_or_else(|| RuntimeError::invalid("runtime setting path"))
+}
+
+fn setting_path_optional(runtime: &RuntimeInstance, key: &str) -> Option<PathBuf> {
+    runtime
+        .settings
+        .get(key)
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+}
+
+fn runnable_pi_model<'a>(
+    gateway: &'a GatewayConfig,
+    id: &str,
+) -> Result<&'a ModelDefinition, RuntimeError> {
+    gateway
+        .validate_dispatch(id)
+        .map_err(RuntimeError::invalid)?;
+    let model = gateway.model(id).expect("validated model");
+    if model.context_window.is_none() {
+        return Err(RuntimeError::invalid(
+            "请先在模型设置中填写上下文窗口（tokens）",
+        ));
+    }
+    if model.reasoning_levels.iter().any(|level| {
+        !["off", "minimal", "low", "medium", "high", "xhigh", "max"].contains(&level.as_str())
+    }) {
+        return Err(RuntimeError::invalid(
+            "当前 Pi 适配器不支持该模型的推理等级",
+        ));
+    }
+    Ok(model)
+}
+
+fn materialize_models(config: &PiConfig, gateway: &GatewayConfig) -> Result<(), RuntimeError> {
+    let agent_dir = config
+        .agent_dir
+        .as_ref()
+        .ok_or_else(|| RuntimeError::invalid("runtime directory"))?;
+    let provider = config
+        .provider
+        .as_deref()
+        .ok_or_else(|| RuntimeError::invalid("gateway provider"))?;
+    let endpoint = config
+        .endpoint
+        .as_deref()
+        .ok_or_else(|| RuntimeError::invalid("gateway endpoint"))?;
+    let protocol = config
+        .protocol
+        .as_deref()
+        .ok_or_else(|| RuntimeError::invalid("gateway protocol"))?;
+    fs::create_dir_all(agent_dir)?;
+    let marker = agent_dir.join(".velune-managed");
+    let target = agent_dir.join("models.json");
+    if target.exists() && !marker.exists() {
+        return Err(RuntimeError::invalid("refusing unmanaged Pi models.json"));
+    }
+    // Pi caches its available model catalog at startup. Include every explicit
+    // route so subsequent set_model calls use the same immutable gateway revision.
+    let entries = gateway
+        .models
+        .iter()
+        .filter(|model| runnable_pi_model(gateway, &model.id).is_ok())
+        .map(|model| {
+            let mut entry = json!({
+                "id": model.id,
+                "name": model.nickname,
+                "input": ["text"],
+                "maxTokens": model.max_output_tokens,
+                "contextWindow": model.context_window.expect("runnable model context window"),
+            });
+            if !model.reasoning_levels.is_empty() {
+                entry["reasoning"] = Value::Bool(true);
+                entry["compat"] = json!({"supportsReasoningEffort": true});
+                let levels = ["off", "minimal", "low", "medium", "high", "xhigh", "max"]
+                    .into_iter()
+                    .map(|level| {
+                        let value = if model.reasoning_levels.iter().any(|item| item == level) {
+                            Value::String(level.into())
+                        } else {
+                            Value::Null
+                        };
+                        (level.to_owned(), value)
+                    })
+                    .collect::<serde_json::Map<_, _>>();
+                entry["thinkingLevelMap"] = Value::Object(levels);
+            }
+            entry
+        })
+        .collect::<Vec<_>>();
+    let mut value = json!({"providers":{}});
+    value["providers"][provider] = json!({
+        "baseUrl": endpoint,
+        "api": protocol,
+        "models": entries,
+        "apiKey": if config.gateway_token.is_some() {
+            Value::String("$VELUNE_GATEWAY_TOKEN".into())
+        } else {
+            Value::Null
+        },
+    });
+    let bytes = serde_json::to_vec_pretty(&value)?;
+    let temporary = agent_dir.join("models.json.velune.tmp");
+    let mut file = fs::OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .open(&temporary)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        file.set_permissions(fs::Permissions::from_mode(0o600))?;
+    }
+    file.write_all(&bytes)?;
+    file.sync_all()?;
+    drop(file);
+    fs::rename(temporary, target)?;
+    fs::write(marker, b"velune managed models config v1\n")?;
+    Ok(())
+}
+
+fn pi_session_helper(config: &PiConfig, session: Option<&Path>) -> Result<Value, RuntimeError> {
+    let helper = config
+        .sdk_helper
+        .as_ref()
+        .ok_or_else(|| RuntimeError::invalid("Pi session helper is not configured"))?;
+    let mut command = Command::new(
+        config
+            .node_binary
+            .as_deref()
+            .unwrap_or_else(|| std::path::Path::new("node")),
+    );
+    command.arg(helper);
+    if let Some(path) = session {
+        command.arg("--inspect-session").arg(path);
+    }
+    if let Some(cwd) = &config.working_dir {
+        // Pi records the physical process cwd; use the same path for SDK filtering.
+        command.arg("--cwd").arg(fs::canonicalize(cwd)?);
+    }
+    if let Some(session_dir) = &config.session_dir {
+        command.arg("--session-dir").arg(session_dir);
+    }
+    if let Some(agent_dir) = &config.agent_dir {
+        command.env("PI_CODING_AGENT_DIR", agent_dir);
+    }
+    let output = command.output().map_err(RuntimeError::Io)?;
+    if !output.status.success() {
+        return Err(RuntimeError::invalid("Pi session helper failed"));
+    }
+    serde_json::from_slice(&output.stdout).map_err(RuntimeError::Json)
+}
+
+pub fn runtime_options(value: &Value) -> Result<RuntimeOptions, RuntimeError> {
+    Ok(serde_json::from_value(value.clone())?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn incomplete_model_can_be_saved_without_entering_pi_catalog() {
+        let root = tempfile::tempdir().unwrap();
+        let gateway: GatewayConfig = serde_json::from_value(json!({
+            "id":"fixture", "name":"Fixture", "failover":{"mode":"disabled"},
+            "models":[
+                {"id":"ready", "nickname":"Ready", "maxOutputTokens":64, "contextWindow":32768, "reasoningLevels":[]},
+                {"id":"draft", "nickname":"Draft", "maxOutputTokens":64, "reasoningLevels":[]}
+            ],
+            "providers":[{"id":"local", "name":"Local", "protocol":"chatCompletionsV1", "endpoint":"http://127.0.0.1:1/v1", "models":[
+                {"modelId":"ready", "externalModelId":"ready"}, {"modelId":"draft", "externalModelId":"draft"}
+            ]}],
+            "routes":[{"modelId":"ready", "providerId":"local"}, {"modelId":"draft", "providerId":"local"}]
+        })).unwrap();
+        assert!(gateway.validate().is_ok());
+        assert!(runnable_pi_model(&gateway, "ready").is_ok());
+        assert!(runnable_pi_model(&gateway, "draft").is_err());
+        let config: PiConfig = serde_json::from_value(json!({
+            "binary":"/fixture/pi", "agentDir":root.path(), "provider":"velune-gateway",
+            "model":"ready", "endpoint":"http://127.0.0.1:1/v1", "protocol":"openai-completions"
+        }))
+        .unwrap();
+        materialize_models(&config, &gateway).unwrap();
+        let catalog: Value =
+            serde_json::from_slice(&fs::read(root.path().join("models.json")).unwrap()).unwrap();
+        let models = catalog["providers"]["velune-gateway"]["models"]
+            .as_array()
+            .unwrap();
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0]["id"], "ready");
+        assert_eq!(models[0]["contextWindow"], 32768);
+    }
+}

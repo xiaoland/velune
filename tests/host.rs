@@ -1,7 +1,9 @@
 use serde_json::{Value, json};
 use std::{
+    fs,
     io::{BufRead, BufReader, Write},
-    os::unix::net::UnixStream,
+    os::unix::fs::PermissionsExt,
+    os::unix::net::{UnixListener, UnixStream},
     process::{Child, Command, Stdio},
     time::{Duration, Instant},
 };
@@ -39,6 +41,133 @@ fn spawn(dir: &std::path::Path) -> Host {
         std::thread::sleep(Duration::from_millis(30));
     }
     h
+}
+
+fn working_pi(dir: &std::path::Path, settles: bool) -> std::path::PathBuf {
+    let path = dir.join(if settles {
+        "pi-settled.sh"
+    } else {
+        "pi-busy.sh"
+    });
+    let prompt = if settles {
+        r#"printf '{"id":"%s","type":"response","command":"%s","success":true,"data":{"disposition":"handled"}}\n' "$id" "$type"
+printf '{"type":"agent_settled"}\n'"#
+    } else {
+        r#"if [ "$type" = "prompt" ]; then
+  printf '{"id":"%s","type":"response","command":"%s","success":true,"data":{"disposition":"working"}}\n' "$id" "$type"
+else
+  printf '{"id":"%s","type":"response","command":"%s","success":true}\n' "$id" "$type"
+fi"#
+    };
+    let script = format!(
+        "#!/bin/sh\nwhile IFS= read -r line; do\n  id=$(printf '%s' \"$line\" | sed -n 's/.*\"id\":\"\\([^\"]*\\)\".*/\\1/p')\n  type=$(printf '%s' \"$line\" | sed -n 's/.*\"type\":\"\\([^\"]*\\)\".*/\\1/p')\n  {prompt}\ndone\n"
+    );
+    fs::write(&path, script).unwrap();
+    let mut permissions = fs::metadata(&path).unwrap().permissions();
+    permissions.set_mode(0o700);
+    fs::set_permissions(&path, permissions).unwrap();
+    path
+}
+
+fn pi_start_request(dir: &std::path::Path, binary: &std::path::Path) -> Value {
+    call_value(
+        dir,
+        &json!({
+            "version":1,
+            "command":"pi_start",
+            "config": {
+                "binary":binary,
+                "agentDir":dir.join("pi-agent"),
+                "workingDir":dir,
+                "provider":"fixture",
+                "model":"fixture-model",
+                "protocol":"openai-completions",
+                "endpoint":"http://127.0.0.1:1/v1"
+            }
+        }),
+    )
+}
+
+fn rpc_status(dir: &std::path::Path, request: &Value) -> std::process::ExitStatus {
+    Command::new(env!("CARGO_BIN_EXE_velune-core"))
+        .arg("rpc")
+        .arg(dir)
+        .arg(request.to_string())
+        .status()
+        .unwrap()
+}
+
+#[test]
+fn rpc_stale_socket_uses_restartable_exit_code_only() {
+    let missing = tempfile::tempdir().unwrap();
+    let request = json!({"version":3,"action":"handshake"});
+    let status = rpc_status(missing.path(), &request);
+    assert_eq!(status.code(), Some(69));
+
+    let stale = tempfile::tempdir().unwrap();
+    let listener = UnixListener::bind(stale.path().join("ipc.sock")).unwrap();
+    drop(listener);
+    let status = rpc_status(stale.path(), &request);
+    assert_eq!(status.code(), Some(69));
+
+    let active = tempfile::tempdir().unwrap();
+    let mut host = spawn(active.path());
+    let status = rpc_status(active.path(), &request);
+    assert_eq!(status.code(), Some(0));
+    assert_eq!(call(active.path(), "stop")["ok"], true);
+    assert!(host.0.wait().unwrap().success());
+}
+
+#[test]
+fn rpc_timeout_is_not_a_restartable_socket_failure() {
+    let directory = tempfile::tempdir().unwrap();
+    let listener = UnixListener::bind(directory.path().join("ipc.sock")).unwrap();
+    let server = std::thread::spawn(move || {
+        let (_stream, _) = listener.accept().unwrap();
+        std::thread::sleep(Duration::from_secs(4));
+    });
+    let status = rpc_status(directory.path(), &json!({"version":3,"action":"handshake"}));
+    assert_eq!(status.code(), Some(1));
+    server.join().unwrap();
+}
+
+#[test]
+fn ipc3_handshake_is_pure_and_idle_retire_exits_host() {
+    let d = tempfile::tempdir().unwrap();
+    let mut host = spawn(d.path());
+    let handshake = call_value(d.path(), &json!({"version":3,"action":"handshake"}));
+    assert_eq!(handshake["version"], 3);
+    assert_eq!(handshake["ok"], true);
+    assert_eq!(handshake["data"]["ipcVersion"], 3);
+    assert_eq!(handshake["data"]["appVersion"], "0.1 beta.1");
+    assert_eq!(handshake["data"]["running"], true);
+    assert!(handshake["data"].get("gateways").is_none());
+    let retired = call_value(d.path(), &json!({"version":3,"action":"retireIfIdle"}));
+    assert_eq!(retired["ok"], true);
+    assert_eq!(retired["data"]["retired"], true);
+    assert!(host.0.wait().unwrap().success());
+}
+
+#[test]
+fn busy_host_rejects_retire_and_remains_alive() {
+    let d = tempfile::tempdir().unwrap();
+    let mut host = spawn(d.path());
+    let binary = working_pi(d.path(), false);
+    assert_eq!(pi_start_request(d.path(), &binary)["ok"], true);
+    assert_eq!(
+        call_value(
+            d.path(),
+            &json!({"version":1,"command":"pi_prompt","message":"wait"})
+        )["ok"],
+        true
+    );
+    let retired = call_value(d.path(), &json!({"version":3,"action":"retireIfIdle"}));
+    assert_eq!(retired["ok"], false);
+    assert!(retired["error"].as_str().unwrap().contains("busy"));
+    let handshake = call_value(d.path(), &json!({"version":3,"action":"handshake"}));
+    assert_eq!(handshake["ok"], true);
+    assert_eq!(call(d.path(), "stop")["ok"], true);
+    assert!(host.0.wait().unwrap().success());
 }
 #[test]
 fn local_host_survives_client_exit_cancel_restart_and_explicit_stop() {

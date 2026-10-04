@@ -6,11 +6,19 @@
 
 长期决定归属 [PRD](../../docs/prd/index.md)、[架构](../../docs/design/architecture.md) 与 [AI service](../../docs/design/ai-service.md)，运行入口归属 [开发说明](../../docs/development.md)。用户已授权实施、自主提交当前任务，并要求持续维护任务、长期文档与代码可维护性；远端发布仍需独立授权。
 
+## 当前状态
+
+上一切片 `5032781` 的独立 Host／IPC 接入已被用户明确纠正为跨平台 Rust lib，经 C ABI 嵌入平台 app。CoreRuntime 拥有配置校验与原子持久化、通用动作、Pi／网关与投影生命周期；平台显式提供 home、资源目录和秘密设施。Mac 不启动 Host/socket，不打开模拟 SQLite；只有外部 Pi Harness 是子进程。产品显示版本为 `0.1 beta.1`，安装到 `/Applications/Velune.app`。
+
+advisor 已核对配置归属、ABI 所有权、单写锁与忙时退出契约。旧 Host 在确认已知 owner、无直接运行时子进程后一次性退休，未读取业务响应或真实会话；此迁移不构成通用自动终止策略。应用更新要求正常退出，忙时拒绝退出并保留 handle，不自动取消工作。
+
+协作采用敏捷开发，需求可在实现中变化；早期以明确关键契约和维护基础优先。Mastra、HAPI、Lody 作为架构候选参考，按具体问题核对版本与前提，不据此直接采用功能或认证方案。
+
 ## 已确认的边界
 
 - Velune 是 control surface。消息不显示头像或昵称，用户在右、LLM 在左、系统／Harness 在中间，不以 Velune 标记 LLM 作者。
 - 各平台遵循原生视觉与交互；品牌仅在少量细节体现，默认 graphite logo。Apple 不设独立深色模式开发或验收项。
-- core 拥有 AI 服务与 Harness 适配；app 拥有平台 UI、Host 与秘密设施装配。Mac 不解析 Pi 协议或按提供商分支。
+- core 拥有 AI 服务与 Harness 适配；app 拥有平台 UI、ABI 与秘密设施装配。Mac 不解析 Pi 协议或按提供商分支。
 - 模型跨提供商独立存在，有 ID、昵称、图标、输出上限与推理级别；提供商通过外部模型 ID 关联多个模型。协议是有限选项，首先支持 OpenAI ChatCompletions v1。
 - 提供商、模型路由和 fail-over 归属网关配置。首轮使用显式路由，fail-over 禁用，不擅自增加自动策略。Harness 只接 Velune 网关，不利用其既有上游认证。
 - Agent 运行时区分类型和实例。同为 Pi、不同配置目录或工作目录形成不同实例。首轮一个活跃 runner，空闲切换实例，会话身份按实例隔离。
@@ -24,17 +32,19 @@ Pi 固定 1.0.2、commit `cd32f7725fdbddbaecdff5b1e68491563394e0ca`，SDK／CLI 
 
 ## 当前实现与证据
 
-源码已实际拆为 core／app。Mac 已用 SwiftUI WindowGroup／Settings、NavigationSplitView／List、系统工具栏与 Form 重写，graphite 保持原光学几何。隔离 preview bundle 强制内存 Store，不创建 Transport 或访问真实配置；已观察消息左右布局、独立提供商／模型表单、协议选项、多实例列表、较小窗口及合成快捷键发送。此前深色截图仅为历史观察，不进入后续验收。
+Mac 使用 SwiftUI WindowGroup／Settings、NavigationSplitView／List、系统工具栏与 Form，默认 graphite logo。隔离 preview 强制内存 Store，不打开 CoreRuntime、真实配置、Keychain 或会话；此前消息布局、原生设置、多实例界面与快捷键检查保留为界面证据。Apple 不设独立深色验收。
 
-配置编辑成功才关闭表单，失败保持输入与稳定草稿 ID；pending 禁止重复保存。Swift fake Host 检查已证明拒绝保存不触发成功回调、需重新连接时清空旧投影、旧 Host 版本不匹配时明确提示，不自动杀用户工作。新配置与实例契约使用 IPC 3，配置 schema 2。
+C ABI 1 使用 opaque handle、UTF-8 JSON 和 Rust 返回字符串释放函数；动作采用投影契约 3，配置 schema 2。Swift 所有调用串行，open 失败不留 handle，busy close 保留 handle。生产构建仅含动态库与秘密 helper；旧模拟 Host／SQLite 通过非默认 `simulation` feature 隔离。Mac 原生“关于”面板已观察显示 `Version 0.1 beta.1 (1)`，安装路径已验证。
 
-2026-10-04 用固定 Pi 1.0.2、独立临时配置／工作／会话目录与 loopback fake ChatCompletions 服务捕获了一次真实 wire 请求：用户 content 为 text parts 数组，包含 tools、max_completion_tokens、store 与 stream_options.include_usage。合成 SSE 文本和 usage 被 Pi 正确解析；未访问外网、真实配置或凭据，未完成工具往返。网关必须规范化该真实输入形状，并明确处理不支持的内容，而不能只接受字符串或悄悄忽略参数。
+2026-10-04 使用固定 Pi 1.0.2、临时 HOME／配置／工作／会话目录、fixture-only helper 与 loopback 合成 ChatCompletions 上游，已通过 [ABI 回归](../../scripts/check-pi-abi-loop.py)：配置→连接→创建→流式回复、两模型外部 ID 与输出上限切换、SDK 列表与当前会话身份一致、恢复会话选择、新会话默认模型、busy close→取消→idle close、重新打开配置，以及不创建 Host socket／SQLite。检查使用 bundle 内动态库与资源，未读取真实用户资料或调用真实模型。合成带签名历史验证 Pi 跨模型剥离签名、同模型保留；目录明确携带不同上下文窗口。
 
-当前七文件 Swift 固定快照编译无警告，默认原生外观的隔离预览已检查消息布局、居中工具事件、graphite 空态与多实例设置。实际 IPC 3 检查使用临时 Host 配置与 fake runtime，证明第二实例选择、模型昵称投影、路由保存后断连、跨两次重启保留提供商映射／实例目录／路由。未执行 Keychain helper 或模型派发。
+模型方案经 advisor 再次推敲：Velune 决定对话逻辑模型和网关路由，Pi 感知模型身份及能力，避免固定 alias 隐藏实际模型变化。Pi `setModel` 影响 thinking level 与 transcript，`transformMessages` 按 provider/api/model 清理跨模型推理签名，压缩与输出预算使用 contextWindow；自定义目录缺省为 128000，不能当作真实能力。依据固定提交 `cd32f7725fdbddbaecdff5b1e68491563394e0ca` 的 `agent-session.js`、`provider-composer.js` 与 `pi-ai/dist/api/{transform-messages,simple-options}.js`。当前目录注入是 Pi 适配方式，不是永久产品约束；上游厂商特殊能力仍需要独立 provider adapter 验证。
 
-Rust 网关已通过合成上游的外部模型选择、输出／推理参数与工具结果请求检查，以及非法输入 HTTP 错误、未路由草稿不阻断已路由模型、客户端断开和 Runner drop 及时释放无响应上游、上游 500 不产生成功 `[DONE]`。Pi 目录注入输出上限与标准推理等级限制。`cargo fmt --check`、`cargo check --locked`、workspace clippy（warnings 视为错误）、全量 `cargo test --locked` 均通过。本轮整包构建与 ad-hoc deep／strict 签名通过；提交后重建，使最终 manifest 关联当前提交与干净工作区。
+上下文窗口可空保存草稿，运行时必须显式正值，输出上限不能超过窗口；缺值模型不进入 Pi 目录，不阻断完整模型。恢复前经 SessionManager 获取所选分支的模型，避免 Pi CLI 默认模型覆盖会话选择；不增加会话数据库。SDK 列表使用物理 cwd，解决 Mac 临时路径别名造成列表为空的已观察问题。
 
-固定真实 Pi 的完整隔离首轮已通过：临时 Host bundle、独立 Pi 配置／会话／工作目录、fixture-only 凭据 helper 与 loopback fake 上游。IPC 3 配置→连接→创建→发送成功；内部模型 m 被网关映射为 upstream-m，模型输出上限 64 进入实际上游请求，合成 SSE 返回后投影含 user／assistant 文本、modelId=m，状态回到 idle 且 canSend=true。首次实验使用旧 debug 产物失败；重新构建当前 Host 后通过。因此最终交付必须用 manifest 关联源码提交，不能复用旧二进制。
+Rust 检查涵盖 ABI 配置重开／重复 home／无效输入、模型草稿与能力边界、网关真实工具 JSON 参数、非法输入、客户端断开、Runner drop、上游 500 不产生成功 DONE。Windows GNU target 的 lib 类型检查通过，未实现 Windows app 或宣称 Windows 运行验证。Swift 编译、本机 bundle 构建与 deep／strict ad-hoc 签名通过。安装器检查运行实例与 bundle identity，失败恢复旧安装，拒绝覆盖运行中应用。
+
+历史 IPC 隔离循环与 `5032781` 的结果只证明当时 Host 接入，不作为当前 ABI 证据。任务仍开放，真实用户验收未完成；manifest 保留 native_verified=false。
 
 ## 完成条件与用户验收
 

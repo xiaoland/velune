@@ -118,6 +118,10 @@ Apple app 使用 UIKit／AppKit／SwiftUI 的原生组件与真实系统视觉�
 
 模块至少拆分为 `core` 与 `app`。`core` 拥有 AI 服务、Harness 适配器和共享契约；`app` 按 Mac 等平台组织界面、配置交互与平台装配。平台界面通过 core 接口使用 Harness，不在 UI 内实现其协议或模型调用。
 
+`core` 是提供跨平台一致能力与行为的 Rust lib，由 Mac、Windows 等平台应用通过 ABI 嵌入进程，不作为另一个常驻应用或 Host 进程。平台应用管理库的生命周期；外部 Harness 子进程与供 Harness 请求模型的本机网关不因此变成 App 与 core 的进程通信。当前独立 Host 接入已被该决定取代。
+
+Mac 开发交付安装到 `/Applications/Velune.app`，每次修改后重新构建、安装并关联源码版本。有任务运行时不能通过更新强制中断。当前产品显示版本为 `0.1 beta.1`，与 ABI、投影契约、配置 schema 和构建版本独立维护。来源见 [S15](../sources.md#s15)。
+
 用户随后要求完全重写 Mac app，并明确避免与任何提供商或 Agent Harness 耦合。Mac 界面消费 core 的通用会话、消息、运行状态和设置描述；具体 Harness 协议、消息映射和配置转换由适配器封装。运行时或资源名称可作为数据展示，不能成为 UI 的专用命令、字段分支或协议解析。视觉使用用户提供的 Velune 光学校准 SVG logo，默认选择 graphite 配色而非 theme，真实资源验收仍由用户执行。
 
 应用数据与配置通过文件系统持久化，根目录由 `VELUNE_HOME` 指定，默认 `~/.velune`。AI provider 资源和 Harness 配置可采用 JSON／TOML 或 SQLite；当前切片采用 JSON。此要求归属应用配置，不改变 Harness 拥有会话历史的边界；秘密值留在本机秘密设施，文件仅保存引用。来源见 [S15](../sources.md#s15)。
@@ -131,3 +135,5 @@ Apple app 使用 UIKit／AppKit／SwiftUI 的原生组件与真实系统视觉�
 界面使用“Agent 运行时”表示 Harness 类型及其配置实例。Pi Agent 是一种运行时类型；同类型下不同的配置目录、工作目录等设置形成独立实例，而非一份全局运行时表单。实例身份、配置和会话投影必须区分，具体外部环境变量由适配器转换。此决定不自动要求所有实例并发运行。来源见 [S15](../sources.md#s15)。
 
 会话通过布局区分消息类别：用户在右侧、LLM 在左侧、系统与 Harness 状态在中间。不显示用户或 LLM 的头像、昵称等身份标签，也不将 LLM 消息标记为 Velune 发出。Velune 品牌不作为 LLM 的身份。来源见 [S15](../sources.md#s15)。
+
+当前 Pi 切片的模型能力配置包含上下文窗口与输出上限；未完成配置可以保留，但不能用于运行。Velune 决定当前对话的逻辑模型及 LLM 路由，Harness 应获得执行该模型所需的身份与能力信息。运行时默认模型用于新会话，已有会话的模型选择由 Harness 保存，Velune 恢复并投影，不建立第二份会话存储。

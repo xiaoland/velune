@@ -3,6 +3,7 @@
 //! This is a deliberately narrow ingress: one explicit model route, no
 //! fallback, and no LAN listener. Credential references are resolved only by
 //! the host-provided platform helper at dispatch time.
+use crate::gateway::{GatewayConfig, GatewayProtocol};
 use reqwest::Client;
 use serde_json::{Value, json};
 use std::{
@@ -36,7 +37,6 @@ use velune_ai_provider::{
     },
     openai::ChatCompletions,
 };
-use velune_core::gateway::{GatewayConfig, GatewayProtocol};
 
 const MAX_REQUEST_BYTES: usize = 256 * 1024;
 const MAX_HEADERS_BYTES: usize = 64 * 1024;
@@ -52,7 +52,7 @@ impl std::fmt::Display for GatewayError {
 impl std::error::Error for GatewayError {}
 
 struct RouteTarget {
-    model: velune_core::gateway::ModelDefinition,
+    model: crate::gateway::ModelDefinition,
     provider_id: String,
     service: Arc<dyn AiService>,
 }
@@ -773,30 +773,31 @@ mod tests {
         GatewayConfig {
             id: "fixture-gateway".into(),
             name: "Fixture gateway".into(),
-            models: vec![velune_core::gateway::ModelDefinition {
+            models: vec![crate::gateway::ModelDefinition {
                 id: "model".into(),
                 nickname: "Fixture model".into(),
                 icon: None,
                 max_output_tokens: 128,
+                context_window: Some(8192),
                 reasoning_levels: vec!["standard".into()],
             }],
-            providers: vec![velune_core::gateway::ProviderDefinition {
+            providers: vec![crate::gateway::ProviderDefinition {
                 id: "provider".into(),
                 name: "Fixture provider".into(),
                 protocol: GatewayProtocol::ChatCompletionsV1,
                 endpoint,
                 credential_ref: Some("fixture".into()),
-                models: vec![velune_core::gateway::ProviderModelBinding {
+                models: vec![crate::gateway::ProviderModelBinding {
                     model_id: "model".into(),
                     external_model_id: "external-model".into(),
                 }],
             }],
-            routes: vec![velune_core::gateway::Route {
+            routes: vec![crate::gateway::Route {
                 model_id: "model".into(),
                 provider_id: "provider".into(),
             }],
-            failover: velune_core::gateway::FailoverPolicy {
-                mode: velune_core::gateway::FailoverMode::Disabled,
+            failover: crate::gateway::FailoverPolicy {
+                mode: crate::gateway::FailoverMode::Disabled,
             },
         }
     }
@@ -862,15 +863,14 @@ mod tests {
                 .expect("upstream stream");
         });
         let mut gateway_config = config(format!("http://{}/v1", address));
-        gateway_config
-            .models
-            .push(velune_core::gateway::ModelDefinition {
-                id: "draft-only".into(),
-                nickname: "Draft only".into(),
-                icon: None,
-                max_output_tokens: 64,
-                reasoning_levels: Vec::new(),
-            });
+        gateway_config.models.push(crate::gateway::ModelDefinition {
+            id: "draft-only".into(),
+            nickname: "Draft only".into(),
+            icon: None,
+            max_output_tokens: 64,
+            context_window: Some(8192),
+            reasoning_levels: Vec::new(),
+        });
         let runner = Runner::start(gateway_config, None).expect("gateway startup");
         let url = reqwest::Url::parse(runner.endpoint()).expect("gateway URL");
         let mut invalid = TcpStream::connect(("127.0.0.1", url.port().expect("gateway port")))

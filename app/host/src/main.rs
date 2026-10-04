@@ -1,4 +1,3 @@
-mod gateway;
 mod host;
 use velune_core::{
     Core,
@@ -13,10 +12,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if args.get(1).is_some_and(|s| s == "rpc") && args.len() == 4 {
         let request = serde_json::from_str(&args[3])
             .unwrap_or_else(|_| serde_json::json!({"version":1,"command":args[3]}));
-        println!(
-            "{}",
-            host::request_value(std::path::Path::new(&args[2]), &request)?
-        );
+        match host::request_value(std::path::Path::new(&args[2]), &request) {
+            Ok(response) => println!("{response}"),
+            Err(error)
+                if error.downcast_ref::<std::io::Error>().is_some_and(|error| {
+                    matches!(
+                        error.kind(),
+                        std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused
+                    )
+                }) =>
+            {
+                eprintln!("Host socket is unavailable: {error}");
+                std::process::exit(69);
+            }
+            Err(error) => return Err(error),
+        }
         return Ok(());
     }
     if args.len() != 3 || !matches!(args[1].as_str(), "demo" | "inspect") {

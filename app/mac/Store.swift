@@ -32,6 +32,7 @@ final class AppStore: ObservableObject {
     @Published private(set) var runtimeTypes: [RuntimeTypeDescriptor] = []
     @Published private(set) var protocols: [ProtocolDescriptor] = []
     @Published private(set) var isLoading = false
+    @Published private(set) var isShuttingDown = false
     @Published private(set) var activity: String?
     @Published private(set) var error: String?
     @Published private var snapshot: ConversationSnapshot?
@@ -60,18 +61,46 @@ final class AppStore: ObservableObject {
     var routes: [ModelRoute] { gateway.routes }
     var selectedConversationTitle: String? { conversations.first { $0.id == selectedConversationID }?.title }
     var isGenerating: Bool { snapshot?.runState == .running || snapshot?.runState == .stopping }
-    var canSend: Bool { !isLoading && (snapshot?.actions.canSend ?? false) }
+    var isBusy: Bool { isLoading || isGenerating || isShuttingDown }
+    var canSend: Bool { !isLoading && !isShuttingDown && (snapshot?.actions.canSend ?? false) }
     var canCancel: Bool { snapshot?.actions.canCancel ?? false }
+    var needsModelSelection: Bool { snapshot != nil && snapshot?.modelID == nil }
     var selectedModelName: String? { models.first { $0.id == snapshot?.modelID }?.nickname }
+    func shutdown(completion: @escaping (Bool) -> Void) {
+        guard !isShuttingDown else { completion(false); return }
+        guard !isPreview, let transport else { completion(true); return }
+        isShuttingDown = true
+        timer?.invalidate(); timer = nil
+        queue.async { [weak self] in
+            let result = Result { try transport.close() }
+            DispatchQueue.main.async {
+                guard let self else { completion(false); return }
+                self.isShuttingDown = false
+                switch result {
+                case .success:
+                    self.timer?.invalidate(); self.timer = nil
+                    self.generation += 1
+                    completion(true)
+                case .failure(let failure):
+                    self.error = failure.localizedDescription
+                    self.schedulePolling()
+                    completion(false)
+                }
+            }
+        }
+    }
+    private func schedulePolling() {
+        timer?.invalidate()
+        timer = Timer.scheduledTimer(withTimeInterval: 0.6, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.poll() }
+        }
+    }
     func start() {
         guard !isPreview, transport != nil else { return }
         request("list", as: ListData.self) { [weak self] data in
             guard let self else { return }
             applyList(data)
-            timer?.invalidate()
-            timer = Timer.scheduledTimer(withTimeInterval: 0.6, repeats: true) { [weak self] _ in
-                Task { @MainActor in self?.poll() }
-            }
+            schedulePolling()
             if let id = conversations.first?.id { selectConversation(id: id) }
         }
     }
@@ -112,7 +141,7 @@ final class AppStore: ObservableObject {
     }
     func saveProvider(_ provider: AIProvider, secret: String = "", onSaved: (() -> Void)? = nil) {
         guard !isGenerating else { error = "请先停止当前任务，再修改 AI 服务配置"; return }
-        guard !isLoading else { error = "请等待当前操作完成后重试"; return }
+        guard !isLoading, !isShuttingDown else { error = "请等待当前操作完成后重试"; return }
         var value = provider
         do {
             if !secret.isEmpty {
@@ -144,7 +173,7 @@ final class AppStore: ObservableObject {
                     if data.requiresReconnect == true { invalidateConnection() }
                     onSaved?()
                 }
-                else { error = "Host 未返回保存后的网关配置" }
+                else { error = "核心未返回保存后的网关配置" }
             }
         } catch { self.error = error.localizedDescription }
     }
@@ -158,7 +187,7 @@ final class AppStore: ObservableObject {
                 runtimeInstances = data.runtimeInstances; runtimeTypes = data.runtimeTypes
                 if data.requiresReconnect == true { invalidateConnection() }
                 if data.runtimeInstances.contains(where: { $0.id == instance.id }) { onSaved?() }
-                else { error = "Host 未返回保存后的运行时实例" }
+                else { error = "核心未返回保存后的运行时实例" }
             }
         } catch { self.error = error.localizedDescription }
     }
@@ -225,7 +254,7 @@ final class AppStore: ObservableObject {
         if isPreview { previewSnapshots[value.conversation.id] = value }
     }
     private func poll() {
-        guard !isPreview, snapshot != nil, !isLoading, !pollPending, let transport, let runtimeID = selectedConnectionID else { return }
+        guard !isPreview, !isShuttingDown, snapshot != nil, !isLoading, !pollPending, let transport, let runtimeID = selectedConnectionID else { return }
         let revision = generation
         let selected = selectedConversationID
         pollPending = true
@@ -243,8 +272,8 @@ final class AppStore: ObservableObject {
         }
     }
     private func request<T: Decodable & Sendable>(_ action: String, payload: [String: String] = [:], as type: T.Type, onAccepted: (() -> Void)? = nil, apply: @escaping (T) -> Void) {
-        guard !isLoading else { error = "请等待当前操作完成后重试"; return }
-        guard let transport else { error = "本地 Host 未配置"; return }
+        guard !isLoading, !isShuttingDown else { error = "请等待当前操作完成后重试"; return }
+        guard let transport else { error = "本地核心未配置"; return }
         let revision = generation
         var scopedPayload = payload
         if scopedPayload["runtimeInstanceID"] == nil, let runtimeID = selectedConnectionID { scopedPayload["runtimeInstanceID"] = runtimeID }
@@ -280,7 +309,7 @@ final class AppStore: ObservableObject {
         NSError(domain: "Velune.Keychain", code: Int(status), userInfo: [NSLocalizedDescriptionKey: "无法保存凭据到本机 Keychain（\(status)）"])
     }
     private func seedPreview() {
-        gateway = GatewayConfig(models: [AIModel(id: "sample-model", nickname: "通用模型", icon: "sparkles", maxOutputTokens: 4096, reasoningLevels: ["standard", "deep"])], providers: [AIProvider(id: "sample-provider", name: "示例 AI 服务", protocolID: .chatCompletionsV1, endpoint: "https://example.invalid/v1", credentialRef: "sample-reference", models: [ProviderModelBinding(modelID: "sample-model", externalModelID: "external-example")])], routes: [ModelRoute(modelID: "sample-model", providerID: "sample-provider")])
+        gateway = GatewayConfig(models: [AIModel(id: "sample-model", nickname: "通用模型", icon: "sparkles", contextWindow: 8192, maxOutputTokens: 4096, reasoningLevels: ["standard", "deep"])], providers: [AIProvider(id: "sample-provider", name: "示例 AI 服务", protocolID: .chatCompletionsV1, endpoint: "https://example.invalid/v1", credentialRef: "sample-reference", models: [ProviderModelBinding(modelID: "sample-model", externalModelID: "external-example")])], routes: [ModelRoute(modelID: "sample-model", providerID: "sample-provider")])
         hasGateway = true
         protocols = [ProtocolDescriptor(id: .chatCompletionsV1, name: "OpenAI Chat Completions v1", supported: true), ProtocolDescriptor(id: .responsesV1, name: "OpenAI Responses v1", supported: false), ProtocolDescriptor(id: .messagesV1, name: "Anthropic Messages v1", supported: false)]
         runtimeTypes = [RuntimeTypeDescriptor(id: "sample-type", name: "示例运行时", fields: [SettingField(key: "workingDir", label: "工作目录", kind: .directoryPath, required: true, value: "", options: [], help: nil)], actions: [SettingAction(id: "connect", label: "连接")])]

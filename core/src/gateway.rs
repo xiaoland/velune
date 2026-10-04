@@ -1,4 +1,4 @@
-//! Host-owned gateway configuration and routing invariants.
+//! Core-owned gateway configuration and routing invariants.
 //!
 //! These types contain ordinary configuration only. Credential references are
 //! opaque handles; resolving them and constructing an HTTP client belongs to
@@ -13,6 +13,8 @@ pub struct ModelDefinition {
     pub nickname: String,
     pub icon: Option<String>,
     pub max_output_tokens: u32,
+    #[serde(default)]
+    pub context_window: Option<u32>,
     pub reasoning_levels: Vec<String>,
 }
 
@@ -105,6 +107,9 @@ impl GatewayConfig {
             if model.id.is_empty()
                 || model.nickname.is_empty()
                 || model.max_output_tokens == 0
+                || model
+                    .context_window
+                    .is_some_and(|window| window == 0 || model.max_output_tokens > window)
                 || !models.insert(&model.id)
             {
                 return Err("invalid or duplicate model definition");
@@ -208,6 +213,7 @@ mod tests {
                 nickname: "Fixture".into(),
                 icon: None,
                 max_output_tokens: 128,
+                context_window: Some(8192),
                 reasoning_levels: vec!["standard".into()],
             }],
             providers: vec![ProviderDefinition {
@@ -229,6 +235,19 @@ mod tests {
                 mode: FailoverMode::Disabled,
             },
         }
+    }
+
+    #[test]
+    fn context_window_allows_drafts_but_rejects_invalid_limits() {
+        let mut value = config();
+        value.models[0].context_window = None;
+        assert!(value.validate().is_ok());
+        value.models[0].context_window = Some(0);
+        assert!(value.validate().is_err());
+        value.models[0].context_window = Some(64);
+        assert!(value.validate().is_err());
+        value.models[0].context_window = Some(128);
+        assert!(value.validate().is_ok());
     }
 
     #[test]

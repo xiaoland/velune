@@ -78,6 +78,7 @@ struct AIModel: Codable, Sendable, Identifiable, Equatable {
     var id: String
     var nickname: String
     var icon: String?
+    var contextWindow: UInt32? = nil
     var maxOutputTokens: UInt32
     var reasoningLevels: [String]
 }

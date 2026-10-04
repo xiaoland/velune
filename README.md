@@ -26,21 +26,21 @@
 
 用户要求以持久化仓库承载后续讨论，不交付压缩包。远端地址为 <https://github.com/xiaoland/velune>；最初导入为重建文档快照，后续源码与文档由本仓库持续维护。
 
-## 运行无凭据原型
+## 历史合成原型
 
 使用官方 Rust 1.99.0 与本机 C 编译工具（SQLite bundled 需要）：
 
 ```sh
-cargo test --locked
-cargo run --locked -- demo /tmp/velune-demo.sqlite
-cargo run --locked -- inspect /tmp/velune-demo.sqlite
+cargo test --locked --features simulation
+cargo run --locked --features simulation -- demo /tmp/velune-demo.sqlite
+cargo run --locked --features simulation -- inspect /tmp/velune-demo.sqlite
 ```
 
 `demo` 要求数据库不存在，输出 `simulation: true` 的 JSON：Codex 模拟会话向 Claude Code／Pi 模拟会话委派合成检查，结果返回 Codex 并验收。`inspect` 取得独占宿主后执行重启恢复并输出诊断，不是只读数据库工具。所有模型请求都在进程内确定性模拟；未启动真实 Harness、网络监听或模型 API。
 
 完整构建、故障证据、Mac mini 原生体验接线及真实联调准备见 [开发说明](docs/development.md)。
 
-Mac mini 首个原生体验已有 [Mac 原生源码](app/mac/main.swift) 与 [本机构建脚本](scripts/build-macos.sh)。独立 Rust Host 经私有 Unix socket 操作同一核心，界面退出不停止 Host；本机构建与隔离预览已执行，真实用户验收仍待完成。领域核心在 `core/`，平台 Host 装配在 `app/host/`。
+当前产品入口是下面的 Pi 与 Mac 会话切片；`app/host/` 只保留通过 `simulation` feature 启用的历史诊断程序，不随 Mac 应用交付。
 
 ## 独立 AI service 契约
 
@@ -48,7 +48,9 @@ Mac mini 首个原生体验已有 [Mac 原生源码](app/mac/main.swift) 与 [�
 
 ## Pi 与 Mac 会话切片
 
-当前实现按 `core/` 与 `app/` 拆分：AI 服务、provider 与 Harness 适配归 core；本机 Host 装配与 Mac 原生会话界面归 app。Pi 持有会话历史，Velune 只投影列表、消息和运行状态。AI 提供商与全局模型目录由用户在应用内配置，不硬编码供应商示例；真实登录、运行与验收由用户完成。
+当前实现按 `core/` 与 `app/` 拆分：core 是跨平台 Rust lib，拥有 AI 服务、Harness 适配、配置与运行时行为；平台 app 通过 C ABI 嵌入它，负责原生界面和平台设施，不再另启常驻 Host。Pi 持有会话历史，Velune 只投影列表、消息和运行状态。AI 提供商与全局模型目录由用户在应用内配置，不硬编码供应商示例；真实登录、运行与验收由用户完成。
+
+Mac 构建默认安装到 `/Applications/Velune.app`，当前产品版本为 `0.1 beta.1`（归属 `VERSION`）；ABI、投影契约与配置 schema 分开维护。有活跃任务时不强制更新。协作采用敏捷开发，需求可在实现中调整，关键设计先收敛再实施，具体规则见 [共享指引](AGENTS.md)。
 
 本轮状态见 [首循环任务](tasks/pi-mac-first-loop/packet.md)，构建和操作入口见 [开发说明](docs/development.md)。不要将隔离协议检查或成功构建当成真实模型循环已通过。
 

@@ -1,6 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 cd "$(dirname "$0")/.."
+[[ $# -eq 0 || ( $# -eq 1 && "$1" == "--build-only" ) ]] || { echo '用法：scripts/build-macos.sh [--build-only]' >&2; exit 1; }
 [[ "$(uname -s)" == Darwin ]] || { echo 'This script requires macOS + Xcode Command Line Tools.' >&2; exit 1; }
 command -v cargo >/dev/null
 xcrun --find swiftc >/dev/null
@@ -8,14 +9,17 @@ xcrun --find swiftc >/dev/null
   echo 'Pi runtime is missing; run ./scripts/install-pi-runtime.sh first.' >&2
   exit 1
 }
-cargo build --locked --release
+cargo build --locked --release --lib
 app="$PWD/target/macos/Velune.app"
 rm -rf "$app"
-mkdir -p "$app/Contents/MacOS" "$app/Contents/Helpers" "$app/Contents/Resources"
-cp target/release/velune-core "$app/Contents/Helpers/velune-core"
+mkdir -p "$app/Contents/MacOS" "$app/Contents/Helpers" "$app/Contents/Resources" "$app/Contents/Frameworks"
+cp target/release/libvelune_core.dylib "$app/Contents/Frameworks/libvelune_core.dylib"
+install_name_tool -id '@rpath/libvelune_core.dylib' "$app/Contents/Frameworks/libvelune_core.dylib"
 xcrun swiftc -parse-as-library -swift-version 5 -target "$(uname -m)-apple-macosx14.0" -framework AppKit -framework SwiftUI \
   app/mac/main.swift app/mac/Views.swift app/mac/Theme.swift app/mac/Logo.swift \
-  app/mac/Models.swift app/mac/Store.swift app/mac/Transport.swift -o "$app/Contents/MacOS/Velune"
+  app/mac/Models.swift app/mac/Store.swift app/mac/Transport.swift \
+  -import-objc-header core/include/velune.h -L "$app/Contents/Frameworks" -lvelune_core \
+  -Xlinker -rpath -Xlinker '@executable_path/../Frameworks' -o "$app/Contents/MacOS/Velune"
 xcrun swiftc -swift-version 5 -framework Security app/mac/velune-credential.swift -o "$app/Contents/Helpers/velune-credential"
 # JavaScript is a sealed resource, not a nested macOS executable.
 cp core/pi_sessions.mjs "$app/Contents/Resources/pi_sessions.mjs"
@@ -33,21 +37,30 @@ cat > "$app/Contents/Info.plist" <<'PLIST'
 <key>CFBundleIconFile</key><string>Velune</string>
 <key>LSMinimumSystemVersion</key><string>14.0</string>
 <key>CFBundleVersion</key><string>1</string>
-<key>CFBundleShortVersionString</key><string>0.4.0</string>
+<key>CFBundleShortVersionString</key><string>0.1</string>
 <key>NSHighResolutionCapable</key><true/>
 </dict></plist>
 PLIST
 python3 - "$app/Contents/Resources/build-manifest.json" <<'PY'
-import hashlib,json,platform,subprocess,sys
+import hashlib,json,platform,plistlib,subprocess,sys
 from pathlib import Path
 def cmd(*args): return subprocess.check_output(args,text=True).strip()
-manifest={'source_commit':cmd('git','rev-parse','HEAD'),'dirty':bool(cmd('git','status','--porcelain')),'lock_sha256':hashlib.sha256(Path('Cargo.lock').read_bytes()).hexdigest(),'core_version':'0.1.0','contract_version':1,'schema_version':1,'ui_version':'0.4.0','simulation':False,'legacy_simulation':True,'app_ipc_version':3,'config_schema_version':2,'supported_modes':['conversation_projection','ai_gateway','runtime_instances','legacy_simulation','synthetic_preview'],'native_verified':False,'rust':cmd('rustc','--version'),'swift':cmd('xcrun','swiftc','--version'),'xcode':cmd('xcodebuild','-version'),'architecture':platform.machine(),'macos':platform.mac_ver()[0],'build_command':'bash scripts/build-macos.sh'}
+version=Path('VERSION').read_text().strip()
+plist_path=Path(sys.argv[1]).parents[1]/'Info.plist'
+plist=plistlib.loads(plist_path.read_bytes())
+plist['VeluneDisplayVersion']=version
+plist['CFBundleGetInfoString']=version
+plist_path.write_bytes(plistlib.dumps(plist))
+manifest={'source_commit':cmd('git','rev-parse','HEAD'),'dirty':bool(cmd('git','status','--porcelain')),'lock_sha256':hashlib.sha256(Path('Cargo.lock').read_bytes()).hexdigest(),'core_version':'0.1.0','ui_version':version,'simulation':False,'control_transport':'embedded_c_abi','abi_version':1,'projection_contract_version':3,'config_schema_version':2,'supported_modes':['conversation_projection','ai_gateway','runtime_instances','synthetic_preview'],'native_verified':False,'rust':cmd('rustc','--version'),'swift':cmd('xcrun','swiftc','--version'),'xcode':cmd('xcodebuild','-version'),'architecture':platform.machine(),'macos':platform.mac_ver()[0],'build_command':'bash scripts/build-macos.sh'}
 Path(sys.argv[1]).write_text(json.dumps(manifest,ensure_ascii=False,indent=2))
 PY
 # Ad-hoc local debug signing only. No identity/keychain selection, certificate, or notarization.
-codesign --force --sign - "$app/Contents/Helpers/velune-core"
+codesign --force --sign - "$app/Contents/Frameworks/libvelune_core.dylib"
 codesign --force --sign - "$app/Contents/Helpers/velune-credential"
 codesign --force --sign - "$app"
 codesign --verify --deep --strict "$app"
-shasum -a 256 "$app/Contents/MacOS/Velune" "$app/Contents/Helpers/velune-core" > target/macos/binary-sha256.txt
-printf 'Built local debug app: %s\nRun: open "%s"\n' "$app" "$app"
+shasum -a 256 "$app/Contents/MacOS/Velune" "$app/Contents/Frameworks/libvelune_core.dylib" > target/macos/binary-sha256.txt
+printf '已构建：%s\n' "$app"
+if [[ "${1:-}" != "--build-only" ]]; then
+  python3 scripts/install-macos.py "$app"
+fi

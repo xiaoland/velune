@@ -4,15 +4,21 @@ version = "0.1.0"
 edition = "2024"
 publish = false
 
+[features]
+default = []
+simulation = ["dep:rusqlite"]
+
 [lib]
 path = "core/src/lib.rs"
+crate-type = ["rlib", "cdylib"]
 
 [[bin]]
 name = "velune-core"
 path = "app/host/src/main.rs"
+required-features = ["simulation"]
 
 [dependencies]
-rusqlite = { version = "0.37", features = ["bundled"] }
+rusqlite = { version = "0.37", features = ["bundled"], optional = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
@@ -24,6 +30,16 @@ getrandom = "0.4"
 
 [dev-dependencies]
 tempfile = "3"
+
+[[test]]
+name = "host"
+path = "tests/host.rs"
+required-features = ["simulation"]
+
+[[test]]
+name = "vertical"
+path = "tests/vertical.rs"
+required-features = ["simulation"]
 
 [workspace]
 members = ["core/ai", "core/ai-provider"]
