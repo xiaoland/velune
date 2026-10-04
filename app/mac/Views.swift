@@ -30,7 +30,7 @@ struct VeluneRootView: View {
             .navigationSplitViewColumnWidth(min: 190, ideal: 240, max: 340)
             .disabled(store.isGenerating)
             .toolbar {
-                ToolbarItem { Button(action: store.createConversation) { Label("新建会话", systemImage: "square.and.pencil") }.help("新建会话（⌘ N）").disabled(store.isGenerating || store.isLoading) }
+                ToolbarItem { Button(action: { store.createConversation() }) { Label("新建会话", systemImage: "square.and.pencil") }.help("新建会话（⌘ N）").disabled(store.isGenerating || store.isLoading) }
             }
         } detail: {
             VStack(spacing: 0) {

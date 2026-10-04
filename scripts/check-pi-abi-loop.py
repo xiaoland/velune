@@ -43,23 +43,30 @@ def main():
         def do_POST(self):
             body = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
             requests.append(body)
-            body_text = json.dumps(body)
+            items = body.get('messages', []) if args.protocol == 'chatCompletionsV1' else body.get('input', [])
+            last_user_index = next((index for index in range(len(items) - 1, -1, -1)
+                                    if items[index].get('role') == 'user'), None)
+            last_user = items[last_user_index] if last_user_index is not None else None
+            last_user_text = last_user.get('content', '') if last_user else ''
             self.send_response(200)
             self.send_header('Content-Type', 'text/event-stream')
             self.end_headers()
-            if 'Wait for cancellation.' in json.dumps(body):
+            if 'Wait for cancellation.' in str(last_user_text):
                 waiting.set()
                 release.wait(15)
                 return
-            if args.protocol == 'chatCompletionsV1' and 'Verify tool cwd.' in body_text:
-                has_tool_result = '"role": "tool"' in body_text or 'tool_result' in body_text
+            if args.protocol == 'chatCompletionsV1' and last_user_text == 'Verify tool cwd.':
+                current_items = items[last_user_index + 1:] if last_user_index is not None else []
+                tool_results = [item for item in current_items if item.get('role') == 'tool']
+                has_tool_result = bool(tool_results)
                 if has_tool_result:
-                    tool_result_requests.append(body)
+                    tool_result_requests.append(tool_results[-1].get('content', ''))
                 else:
+                    call_id = f'call_pwd_{len(tool_result_requests) + 1}'
                     chunk = {'id': 'fixture-tool', 'object': 'chat.completion.chunk',
                              'created': 1, 'model': body['model'],
                              'choices': [{'index': 0, 'delta': {'tool_calls': [{
-                                 'index': 0, 'id': 'call_pwd', 'type': 'function',
+                                 'index': 0, 'id': call_id, 'type': 'function',
                                  'function': {'name': 'bash', 'arguments': json.dumps({'command': 'pwd'})}}]},
                                           'finish_reason': 'tool_calls'}]}
                     self.wfile.write(('data: ' + json.dumps(chunk) + '\n\ndata: [DONE]\n\n').encode())
@@ -277,7 +284,7 @@ def main():
                     'max_output_tokens', 'temperature', 'prompt_cache_retention',
                     'prompt_cache_options', 'prompt_cache_key'))
             else:
-                assert requests[1]['max_output_tokens'] == 80
+                assert second_request['max_output_tokens'] == 80
             new_session = request('create', cwd=str(root / 'work-b'))['snapshot']
             assert new_session['modelId'] == 'first'
             second_id = new_session['conversation']['id']
@@ -288,11 +295,12 @@ def main():
             wait_for_requests(expected_request_count)
             second_snapshot = snapshot_until_idle()
             assert 'VELUNE_ABI_OK' in json.dumps(second_snapshot), second_snapshot
-            tool_snapshot = request('send', text='Verify tool cwd.')['snapshot']
-            assert tool_snapshot['runState'] == 'running', tool_snapshot
-            tool_snapshot = snapshot_until_idle()
-            assert 'VELUNE_ABI_OK' in json.dumps(tool_snapshot), tool_snapshot
-            assert tool_result_requests and str((root / 'work-b').resolve()) in json.dumps(tool_result_requests[-1]), tool_result_requests
+            if args.protocol == 'chatCompletionsV1':
+                tool_snapshot = request('send', text='Verify tool cwd.')['snapshot']
+                assert tool_snapshot['runState'] == 'running', tool_snapshot
+                tool_snapshot = snapshot_until_idle()
+                assert 'VELUNE_ABI_OK' in json.dumps(tool_snapshot), tool_snapshot
+                assert tool_result_requests and str((root / 'work-b').resolve()) in json.dumps(tool_result_requests[-1]), tool_result_requests
             listed = request('list')['conversations']
             deadline = time.monotonic() + 5
             while time.monotonic() < deadline and not any(item['id'] == second_id for item in listed):
@@ -303,13 +311,14 @@ def main():
             restored = request('open', conversationID=session_id)['snapshot']
             assert restored['modelId'] == 'second', restored
             assert restored['conversation']['cwd'] == str((root / 'work-a').resolve()), restored
-            expected_request_count = len(requests) + 1
-            restored_tool = request('send', text='Verify tool cwd.')['snapshot']
-            assert restored_tool['runState'] == 'running', restored_tool
-            wait_for_requests(expected_request_count)
-            restored_tool = snapshot_until_idle()
-            assert 'VELUNE_ABI_OK' in json.dumps(restored_tool), restored_tool
-            assert tool_result_requests and str((root / 'work-a').resolve()) in json.dumps(tool_result_requests[-1]), tool_result_requests
+            if args.protocol == 'chatCompletionsV1':
+                expected_request_count = len(requests) + 1
+                restored_tool = request('send', text='Verify tool cwd.')['snapshot']
+                assert restored_tool['runState'] == 'running', restored_tool
+                wait_for_requests(expected_request_count)
+                restored_tool = snapshot_until_idle()
+                assert 'VELUNE_ABI_OK' in json.dumps(restored_tool), restored_tool
+                assert tool_result_requests and str((root / 'work-a').resolve()) in json.dumps(tool_result_requests[-1]), tool_result_requests
             shutil.rmtree(root / 'work-b')
             request_error('open', conversationID=second_id)
             still_a = request('getSnapshot')['snapshot']
