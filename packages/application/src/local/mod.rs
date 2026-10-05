@@ -23,7 +23,7 @@ use velune_gateway::Runner;
 
 const CONTRACT_VERSION: u64 = 3;
 
-fn runtime_types(resources_directory: &Path) -> Value {
+fn runtime_types(resources_directory: &Path) -> Vec<crate::config::RuntimeTypeDescriptor> {
     let bundled_binary =
         resources_directory.join("node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js");
     let binary_value = if bundled_binary.is_file() {
@@ -31,17 +31,65 @@ fn runtime_types(resources_directory: &Path) -> Value {
     } else {
         String::new()
     };
-    json!([{
-        "id":"pi",
-        "name":"Pi Agent 运行时",
-        "fields":[
-            {"key":"binary","label":"运行时入口","kind":"filePath","required":true,"value":binary_value,"options":[],"help":"Pi CLI 的绝对路径；应用不会使用全局 PATH。"},
-            {"key":"nodeBinary","label":"Node 可执行文件","kind":"filePath","required":true,"value":"","options":[],"executableDiscovery":{"command":"node","minimumVersion":"22.19.0"},"help":"Node 22.19+ 的绝对路径；Pi SDK 接入必填。"},
-            {"key":"agentDir","label":"运行时目录","kind":"directoryPath","required":true,"value":"","options":[],"help":"配置与状态根目录，不是会话项目目录。"},
-            {"key":"sessionDir","label":"会话存储目录","kind":"directoryPath","required":false,"value":"","options":[],"help":"覆盖 Pi 默认的会话文件存储目录。留空时保存到运行时目录的 sessions 下，并按会话工作目录分组；此项不是工作目录。"}
+    let field = |key: &str, label: &str, kind: &str, required: bool, value: String, help: &str| {
+        crate::conversation::SettingField {
+            key: key.into(),
+            label: label.into(),
+            kind: kind.into(),
+            required,
+            value,
+            options: Vec::new(),
+            help: Some(help.into()),
+            executable_discovery: None,
+        }
+    };
+    let mut node = field(
+        "nodeBinary",
+        "Node 可执行文件",
+        "filePath",
+        true,
+        String::new(),
+        "Node 22.19+ 的绝对路径；Pi SDK 接入必填。",
+    );
+    node.executable_discovery = Some(crate::conversation::ExecutableDiscovery {
+        command: "node".into(),
+        minimum_version: "22.19.0".into(),
+    });
+    vec![crate::config::RuntimeTypeDescriptor {
+        id: "pi".into(),
+        name: "Pi Agent 运行时".into(),
+        fields: vec![
+            field(
+                "binary",
+                "运行时入口",
+                "filePath",
+                true,
+                binary_value,
+                "Pi CLI 的绝对路径；应用不会使用全局 PATH。",
+            ),
+            node,
+            field(
+                "agentDir",
+                "运行时目录",
+                "directoryPath",
+                true,
+                String::new(),
+                "配置与状态根目录，不是会话项目目录。",
+            ),
+            field(
+                "sessionDir",
+                "会话存储目录",
+                "directoryPath",
+                false,
+                String::new(),
+                "覆盖 Pi 默认的会话文件存储目录。留空时保存到运行时目录的 sessions 下，并按会话工作目录分组；此项不是工作目录。",
+            ),
         ],
-        "actions":[{"id":"connect","label":"连接运行时"}]
-    }])
+        actions: vec![crate::conversation::SettingAction {
+            id: "connect".into(),
+            label: "连接运行时".into(),
+        }],
+    }]
 }
 
 pub struct CoreRuntime {

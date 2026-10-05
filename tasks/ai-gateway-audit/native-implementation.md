@@ -31,7 +31,7 @@ python3 scripts/manual-pi-native-loop.py \
   --bindings "$PWD/target/bindings/native-python" --node /absolute/path/to/node
 ```
 
-Python 绑定由同版 release dylib 使用 velune-bindgen 生成。两个脚本只作显式人工验收，不接入 CI。旧 DeepSeek 诊断脚本（历史入口 `manual-pi-deepseek-import.py`，现已随 hard-cutoff 删除）针对 `7345ba8` 失败基线，不适用于当前 Runner API；保留它只为解释原审计证据。
+Python 绑定由同版 release dylib 使用 velune-bindgen 生成。两个脚本只作显式人工验收，不接入 CI。旧 DeepSeek 诊断脚本（历史入口 `manual-pi-deepseek-import.py`，现已随 hard-cutoff 删除）针对 `7345ba8` 失败基线，不适用于当前 Runner API；保留历史记录只为解释原审计证据，脚本本身已删除。
 
 ## 当前限制
 

@@ -24,8 +24,22 @@ struct Preview {
     warnings: Vec<String>,
 }
 
-pub(crate) fn descriptor() -> Value {
-    json!({"id":"pi","name":"Pi Agent 提供商目录","fields":[],"actions":[{"id":"preview","label":"预览提供商与模型"},{"id":"apply","label":"导入"}],"capability":"从已配置的 Pi Agent 运行时读取提供商目录；凭据值永不进入 Velune。"})
+pub(crate) fn descriptor() -> crate::config::RuntimeTypeDescriptor {
+    crate::config::RuntimeTypeDescriptor {
+        id: "pi".into(),
+        name: "Pi Agent 提供商目录".into(),
+        fields: Vec::new(),
+        actions: vec![
+            crate::conversation::SettingAction {
+                id: "preview".into(),
+                label: "预览提供商与模型".into(),
+            },
+            crate::conversation::SettingAction {
+                id: "apply".into(),
+                label: "导入".into(),
+            },
+        ],
+    }
 }
 
 fn source(payload: &Value) -> Result<Source, RuntimeError> {

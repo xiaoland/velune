@@ -84,6 +84,6 @@ Dynamic route 使用 `dynamic/<route-name>` 作为 `model`，响应通过 `cf-ai
 
 这是结合用户需求得出的 Velune 修正建议，不是上述官方资料共同规定的字段命名。官方资料只证明 provider model ID、实际响应模型和 provider-specific settings 的边界；具体数据结构仍由 Velune 契约决定。
 
-## 仍需后续确认
+## 后续实施归属
 
-本研究没有修改代码，也没有决定最终字段名。实现前需要在一次小范围契约修订中确认：内部 record key 是否继续保留、route alias 是否持久化、一个 Velune capability 是否允许挂多个 provider offerings，以及 provider model catalog 是否由手工导入、协议目录发现还是两者并存。无论这些选择如何，provider model ID 的上游语义不变。
+本研究保存重构前证据，不描述当前源码。后续已确认保留真实 Model 与 ProviderModelBinding 两层，内部 recordKey 自动生成且隐藏，route alias 自动派生，来源导入可显式关联跨提供商模型。没有将 Model 改成 capability 容器，也没有预建协议目录发现。当前权威契约归 [AI 服务设计](../../docs/design/ai-service.md)，实施与验收归 [模型重构记录](model-implementation.md)。
