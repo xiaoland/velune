@@ -3,7 +3,7 @@
 //! non-secret snapshot and projects supported models into gateway config.
 use crate::config::{
     CredentialSource, CredentialSourceKind, GatewayConfig, GatewayProtocol, ModelDefinition,
-    ProviderDefinition, ProviderModelBinding,
+    ProviderDefinition, ProviderModelBinding, RuntimeInstance,
 };
 use crate::{Error as RuntimeError, Options as RuntimeOptions};
 use serde::Serialize;
@@ -25,11 +25,7 @@ struct Preview {
 }
 
 pub(crate) fn descriptor() -> Value {
-    json!({"id":"pi","name":"Pi Agent 提供商目录","fields":[
-    {"key":"sourceDir","label":"Pi 运行时目录","kind":"directoryPath","required":true,"value":"","options":[],"help":"只读取选定目录中的 models.json/auth.json 元数据。"},
-    {"key":"modelsPath","label":"模型配置文件","kind":"filePath","required":false,"value":"","options":[],"help":"留空使用 agentDir/models.json。"},
-    {"key":"authPath","label":"认证文件","kind":"filePath","required":false,"value":"","options":[],"help":"只读取凭据类型元数据，不复制凭据值。"},
-    {"key":"nodeBinary","label":"Node 可执行文件","kind":"filePath","required":true,"value":"","options":[],"help":"Node 22.19+ 的绝对路径。"}],"actions":[{"id":"preview","label":"预览提供商与模型"},{"id":"apply","label":"导入"}],"capability":"Pi 1.0.2 models.json 合成目录；凭据值永不进入 Velune。"})
+    json!({"id":"pi","name":"Pi Agent 提供商目录","fields":[],"actions":[{"id":"preview","label":"预览提供商与模型"},{"id":"apply","label":"导入"}],"capability":"从已配置的 Pi Agent 运行时读取提供商目录；凭据值永不进入 Velune。"})
 }
 
 fn source(payload: &Value) -> Result<Source, RuntimeError> {
@@ -41,6 +37,73 @@ fn source(payload: &Value) -> Result<Source, RuntimeError> {
     };
     serde_json::from_value(value).map_err(|_| RuntimeError::invalid("provider import source"))
 }
+/// A selection references persisted application configuration; callers cannot supply source paths.
+fn configured_source(
+    payload: &Value,
+    runtimes: &[RuntimeInstance],
+) -> Result<(Source, String), RuntimeError> {
+    let selection = source(payload)?;
+    let id = selection
+        .source_instance_id
+        .as_deref()
+        .filter(|id| !id.is_empty())
+        .ok_or_else(|| RuntimeError::invalid("请选择已配置的 Agent 运行时"))?;
+    if selection.kind != "harness"
+        || !selection.settings.is_empty()
+        || selection.provider_id.is_some()
+    {
+        return Err(RuntimeError::invalid(
+            "提供商导入只接受已配置运行时的选择，不能覆盖其来源配置",
+        ));
+    }
+    let runtime = runtimes
+        .iter()
+        .find(|runtime| runtime.id == id)
+        .ok_or_else(|| RuntimeError::invalid("所选 Agent 运行时已不存在，请重新选择"))?;
+    if runtime.type_id != "pi" || selection.harness_type_id != runtime.type_id {
+        return Err(RuntimeError::invalid("所选 Agent 运行时不支持提供商导入"));
+    }
+    let directory = runtime
+        .settings
+        .get("agentDir")
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| RuntimeError::invalid("请先配置所选运行时的运行时目录"))?;
+    let node = runtime
+        .settings
+        .get("nodeBinary")
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| RuntimeError::invalid("请先配置所选运行时的 Node 可执行文件"))?;
+    let mut settings = BTreeMap::from([
+        ("sourceDir".into(), directory.clone()),
+        ("nodeBinary".into(), node.clone()),
+    ]);
+    for key in ["modelsPath", "authPath"] {
+        if let Some(value) = runtime.settings.get(key).filter(|value| !value.is_empty()) {
+            settings.insert(key.into(), value.clone());
+        }
+    }
+    let fingerprint = format!("runtime_{:x}", Sha256::digest(serde_json::to_vec(runtime)?));
+    Ok((
+        Source {
+            kind: "harness".into(),
+            harness_type_id: runtime.type_id.clone(),
+            source_instance_id: Some(runtime.id.clone()),
+            provider_id: None,
+            settings,
+        },
+        fingerprint,
+    ))
+}
+fn combined_source_fingerprint(snapshot: &Snapshot, runtime_fingerprint: &str) -> String {
+    format!(
+        "pi_source_{:x}",
+        Sha256::digest(format!(
+            "{}|{}",
+            snapshot.source_fingerprint, runtime_fingerprint
+        ))
+    )
+}
+
 fn run_helper(source: &Source, options: &RuntimeOptions) -> Result<Snapshot, RuntimeError> {
     velune_agent_runtime::provider_source::read(source, &options.resources_directory)
         .map_err(RuntimeError::Invalid)
@@ -100,11 +163,13 @@ pub(crate) fn preview(
     source_value: &Value,
     gateway: &GatewayConfig,
     options: &RuntimeOptions,
+    runtimes: &[RuntimeInstance],
 ) -> Result<Value, RuntimeError> {
-    let source = source(source_value)?;
+    let (source, runtime_fingerprint) = configured_source(source_value, runtimes)?;
     let snapshot = run_helper(&source, options)?;
+    let source_fingerprint = combined_source_fingerprint(&snapshot, &runtime_fingerprint);
     let target_fingerprint = fingerprint(gateway)?;
-    let mut warnings = Vec::new();
+    let mut warnings = snapshot.warnings.clone();
     let mut providers = Vec::new();
     for provider in &snapshot.providers {
         let supported: Vec<_> = provider
@@ -154,7 +219,7 @@ pub(crate) fn preview(
     }
     let preview = Preview {
         contract_version: 1,
-        source_fingerprint: snapshot.source_fingerprint,
+        source_fingerprint,
         target_fingerprint,
         sdk_version: snapshot.sdk_version,
         source: json!({"kind":source.kind,"harnessTypeId":source.harness_type_id,"sourceInstanceId":source.source_instance_id,"providerId":source.provider_id,"settings":source.settings}),
@@ -174,9 +239,11 @@ pub(crate) fn apply(
     source_value: &Value,
     gateway: &mut GatewayConfig,
     options: &RuntimeOptions,
+    runtimes: &[RuntimeInstance],
 ) -> Result<Value, RuntimeError> {
-    let source = source(source_value)?;
+    let (source, runtime_fingerprint) = configured_source(source_value, runtimes)?;
     let snapshot = run_helper(&source, options)?;
+    let source_fingerprint = combined_source_fingerprint(&snapshot, &runtime_fingerprint);
     let replace = source_value["replace"]
         .as_bool()
         .or_else(|| source_value["replaceExisting"].as_bool())
@@ -191,7 +258,7 @@ pub(crate) fn apply(
         .as_str()
         .or_else(|| source_value["preview"]["token"].as_str());
     let valid_token =
-        expected == Some(preview_token(&snapshot.source_fingerprint, &target_fingerprint).as_str());
+        expected == Some(preview_token(&source_fingerprint, &target_fingerprint).as_str());
     if !valid_token {
         return Err(RuntimeError::invalid(
             "provider import source or target changed",

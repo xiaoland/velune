@@ -32,7 +32,7 @@ xcrun swiftc -parse-as-library -swift-version 5 -target "$(uname -m)-apple-macos
   -Xlinker -rpath -Xlinker '@executable_path/../Frameworks' -o "$app/Contents/MacOS/Velune"
 xcrun swiftc -swift-version 5 -framework Security app/mac/velune-credential.swift -o "$app/Contents/Helpers/velune-credential"
 # JavaScript is a sealed resource, not a nested macOS executable.
-cp packages/agent-runtime/resources/credential_source.mjs packages/agent-runtime/resources/pi_sessions.mjs packages/agent-runtime/resources/pi_virtual_model.mjs packages/agent-runtime/resources/pi_auth.mjs packages/agent-runtime/resources/pi_provider_import.mjs "$app/Contents/Resources/"
+cp packages/agent-runtime/resources/credential_source.mjs packages/agent-runtime/resources/pi_sessions.mjs packages/agent-runtime/resources/pi_rpc.mjs packages/agent-runtime/resources/pi_virtual_model.mjs packages/agent-runtime/resources/pi_auth.mjs packages/agent-runtime/resources/pi_provider_import.mjs "$app/Contents/Resources/"
 cp -R target/pi-runtime/node_modules "$app/Contents/Resources/node_modules"
 cp -R app/mac/Assets/Brand "$app/Contents/Resources/Brand"
 xcrun swift scripts/render-app-icon.swift app/mac/Assets/Brand target/macos/Velune.iconset

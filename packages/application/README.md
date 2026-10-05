@@ -2,7 +2,7 @@
 
 `velune-application` 是平台 app 共用的应用用例 unit。公开入口是 `Application`，提供具名、类型化的配置、连接、会话、模型选择、提供商导入与认证操作。Swift、Kotlin 等语言绑定消费这些用例，不自行协调文件提交、子进程状态与投影失败清理。
 
-`config` 定义 schema 2 的应用配置与跨领域引用；`repository` 是内部文件设施，负责锁、加载和原子提交，不是独立 package。配置只保存普通元数据和凭据引用。根目录与资源目录由平台通过 `Options` 显式传入，unit 不读取全局环境。来源文件与 Harness 会话仍由原拥有者维护，应用不会新建会话数据库。
+`config` 定义 schema 2 的应用配置与跨领域引用；`repository` 是内部文件设施，负责锁、加载和原子提交，不是独立 package。配置只保存普通元数据和凭据引用。根目录与资源目录由平台通过 `Options` 显式传入，unit 不读取全局环境。来源文件与 Harness 会话仍由原拥有者维护，应用不会新建会话数据库。提供商导入选择已保存的 Agent 运行时实例，应用从其配置确定目录及 Node 路径；调用方不能另填或覆盖来源配置。预览与提交都会重新解析实例，并以运行时配置与源目录元数据共同判定预览是否过期。导入不要求已连接、默认模型或可运行的模型路由。
 
 默认的 `local-runtime` feature 组合本机 Agent 运行时和 AI 网关。`local` 按配置用例、连接生命周期、会话操作、认证协调与 Pi 装配分模块；认证进程与 Pi SDK 来源读取由 Agent 运行时 adapter 承担，应用只协调导入提交和认证后的配置更新。Pi 元数据在装配时显式剥离为 `velune_gateway::GatewayConfig`。网关不读取 Pi 字段，AI package 不依赖 Agent 运行时。
 

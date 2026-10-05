@@ -1,5 +1,6 @@
 //! Local application connection use cases.
 use super::*;
+use sha2::Digest;
 impl CoreRuntime {
     pub(super) fn connect_action(&mut self, request: &Value) -> Result<Value, RuntimeError> {
         if request["action"] == "runtimeAction"
@@ -75,6 +76,11 @@ impl CoreRuntime {
             native_responses_constraints,
         )
         .map_err(|_| RuntimeError::invalid("gateway startup"))?;
+        let projection_dir = self
+            .options
+            .home_directory
+            .join("runtime-projections")
+            .join(format!("{:x}", sha2::Sha256::digest(runtime.id.as_bytes())));
         let config = PiConfig {
             binary: setting_path(&runtime, "binary")?,
             node_binary: setting_path_optional(&runtime, "nodeBinary"),
@@ -89,6 +95,9 @@ impl CoreRuntime {
             working_dir: None,
             provider: Some("velune-gateway".into()),
             model: Some("velune/auto".into()),
+            rpc_entry: Some(self.options.resources_directory.join("pi_rpc.mjs")),
+            models_path: Some(projection_dir.join("models.json")),
+            selection_file: Some(projection_dir.join("velune-selection.json")),
             gateway_token: Some(runner.token().into()),
             session_dir: setting_path_optional(&runtime, "sessionDir"),
             session: None,
@@ -96,6 +105,9 @@ impl CoreRuntime {
             // Runtime names must not overwrite it when reopening a session.
             name: None,
         };
+        config
+            .validate_sdk()
+            .map_err(|error| RuntimeError::Invalid(error.to_string()))?;
         let protocol = match gateway
             .validate_dispatch(logical_model_id)
             .map_err(RuntimeError::invalid)?

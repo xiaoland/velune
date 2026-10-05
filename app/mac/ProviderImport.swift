@@ -3,6 +3,7 @@ import SwiftUI
 struct ProviderImportSource: Codable, Sendable, Equatable {
     var kind = "harness"
     var harnessTypeId: String
+    var sourceInstanceId: String?
     var settings: [String: String]
 }
 
@@ -10,6 +11,7 @@ struct ProviderImportPreviewData: Decodable, Sendable { var preview: ProviderImp
 struct ProviderImportPreview: Decodable, Sendable {
     var token: String
     var sourceLabel: String
+    var warnings: [String]
     var providers: [ProviderImportCandidate]
 }
 struct ProviderImportCandidate: Decodable, Sendable, Identifiable {
@@ -48,18 +50,16 @@ struct ProviderImportResult: Decodable, Sendable {
 struct ProviderImportView: View {
     @ObservedObject var store: AppStore
     @Environment(\.dismiss) private var dismiss
-    @State private var sourceTypeID = ""
-    @State private var values: [String: String] = [:]
+    @State private var sourceInstanceID: String?
     @State private var preview: ProviderImportPreview?
     @State private var selectedModels: Set<String> = []
     @State private var mappings: [String: String] = [:]
     @State private var replaceExisting = false
+    @State private var attemptedOperation = false
 
-    private var descriptor: RuntimeTypeDescriptor? { store.providerImportTypes.first { $0.id == sourceTypeID } }
-    private var source: ProviderImportSource { ProviderImportSource(harnessTypeId: sourceTypeID, settings: values.filter { !$0.value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }) }
-    private var sourceValid: Bool {
-        descriptor?.fields.allSatisfy { !$0.required || !(values[$0.key] ?? $0.value).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty } == true
-    }
+    private var supportedInstances: [RuntimeInstance] { store.runtimeInstances.filter { instance in store.providerImportTypes.contains { $0.id == instance.typeID } } }
+    private var selectedInstance: RuntimeInstance? { supportedInstances.first { $0.id == sourceInstanceID } }
+    private var source: ProviderImportSource? { guard let selectedInstance else { return nil }; return ProviderImportSource(harnessTypeId: selectedInstance.typeID, sourceInstanceId: selectedInstance.id, settings: [:]) }
     private var selections: [ProviderImportSelection] {
         (preview?.providers ?? []).filter { enabled($0) }.compactMap { provider in
             let models = provider.models.filter { $0.canImport && selectedModels.contains($0.id) }
@@ -71,52 +71,71 @@ struct ProviderImportView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            Text("从 Agent 运行时导入提供商").font(.headline).padding(20)
-            sourceForm
-            if let preview { previewList(preview) }
-            else { ContentUnavailableView("选择配置来源", systemImage: "square.and.arrow.down", description: Text("读取提供商、模型与认证来源。原配置保留。")) }
-            SettingsError(message: store.error)
+            Text("从 Agent 运行时导入提供商")
+                .font(.headline)
+                .padding(.horizontal, 20)
+                .padding(.vertical, 16)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    sourceForm
+                    if let preview { previewList(preview) }
+                    else if !supportedInstances.isEmpty {
+                        ContentUnavailableView("选择配置来源", systemImage: "square.and.arrow.down", description: Text("读取提供商、模型与认证来源。原配置保留。"))
+                            .frame(maxWidth: .infinity)
+                    }
+                    SettingsError(message: attemptedOperation ? store.error : nil)
+                }
+                .padding(.horizontal, 20)
+                .padding(.bottom, 12)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
             footer
         }
         .frame(width: 760, height: 640)
-        .onAppear { selectSourceType(store.providerImportTypes.first?.id ?? "") }
-        .onChange(of: sourceTypeID) { _, value in selectSourceType(value) }
-        .onChange(of: values) { _, _ in preview = nil; selectedModels = []; mappings = [:] }
+        .onAppear { selectSourceInstance(sourceInstanceID ?? supportedInstances.first?.id) }
+        .onChange(of: sourceInstanceID) { _, value in selectSourceInstance(value) }
         .onChange(of: replaceExisting) { _, _ in resetSelection() }
     }
 
     private var sourceForm: some View {
-        Form {
-            Picker("来源类型", selection: $sourceTypeID) {
-                ForEach(store.providerImportTypes) { type in Text(type.name).tag(type.id) }
-            }
-            if let descriptor {
-                ForEach(descriptor.fields) { field in
-                    SettingFieldView(field: field, value: Binding(get: { values[field.key] ?? field.value }, set: { values[field.key] = $0 }))
+        GroupBox {
+            VStack(alignment: .leading, spacing: 12) {
+                if supportedInstances.isEmpty {
+                    ContentUnavailableView("没有可导入的运行时", systemImage: "shippingbox", description: Text("请先在运行时设置中配置支持提供商导入的 Agent 运行时。"))
+                        .frame(maxWidth: .infinity)
+                } else {
+                    Picker("Agent 运行时", selection: Binding(get: { sourceInstanceID ?? "" }, set: { sourceInstanceID = $0 })) {
+                        ForEach(supportedInstances) { instance in
+                            Text(instance.name).tag(instance.id)
+                        }
+                    }
+                    Text("导入不会自动改变模型路由或运行时默认模型。").font(.caption).foregroundStyle(.secondary)
+                    HStack {
+                        Spacer()
+                        Button(preview == nil ? "读取配置" : "重新读取") { readSource() }.disabled(source == nil || store.isLoading)
+                    }
                 }
             }
-            HStack {
-                Text("导入不会自动改变模型路由或运行时默认模型。").font(.caption).foregroundStyle(.secondary)
-                Spacer()
-                Button(preview == nil ? "读取配置" : "重新读取") { readSource() }.disabled(!sourceValid || store.isLoading)
-            }
+        } label: {
+            Text("运行时来源")
         }
-        .formStyle(.grouped)
-        .frame(height: 260)
         .disabled(store.isLoading)
     }
 
     private func previewList(_ preview: ProviderImportPreview) -> some View {
-        List {
-            Section(preview.sourceLabel) {
+        LazyVStack(alignment: .leading, spacing: 12) {
+            GroupBox(preview.sourceLabel) {
                 Toggle("替换此次选中的已导入提供商", isOn: $replaceExisting)
                 Text("重复项默认跳过；替换保留已有路由和全局模型参数。").font(.caption).foregroundStyle(.secondary)
+                ForEach(Array(preview.warnings.enumerated()), id: \.offset) { _, warning in
+                    Text(warning).font(.caption).foregroundStyle(.secondary)
+                }
             }
             ForEach(preview.providers) { provider in
-                Section {
+                GroupBox {
                     ForEach(provider.models) { model in modelRow(model, provider: provider) }
                     ForEach(Array(provider.issues.enumerated()), id: \.offset) { _, issue in Text(issue).font(.caption).foregroundStyle(.secondary) }
-                } header: {
+                } label: {
                     VStack(alignment: .leading, spacing: 3) {
                         Text(provider.name)
                         Text(store.protocols.first { $0.id.rawValue == provider.protocol }?.name ?? provider.protocol).font(.caption)
@@ -125,7 +144,10 @@ struct ProviderImportView: View {
                     }
                 }
             }
-            if preview.providers.isEmpty { Text("该来源没有配置的提供商。").foregroundStyle(.secondary) }
+            if preview.providers.isEmpty {
+                Text("该来源没有配置的提供商。").foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
         }
         .disabled(store.isLoading)
     }
@@ -156,19 +178,25 @@ struct ProviderImportView: View {
             Button("取消") { dismiss() }.keyboardShortcut(.cancelAction)
             Button("导入所选") {
                 guard let preview else { return }
+                guard let source else { return }
+                attemptedOperation = true
                 store.applyProviderImport(source, preview: preview, selections: selections, replaceExisting: replaceExisting) { dismiss() }
             }
             .keyboardShortcut(.defaultAction)
-            .disabled(preview == nil || selections.isEmpty || store.isLoading)
+            .disabled(source == nil || preview == nil || selections.isEmpty || store.isLoading)
         }.padding(20)
     }
     private func enabled(_ provider: ProviderImportCandidate) -> Bool { provider.canImport && (!provider.alreadyImported || replaceExisting) }
-    private func selectSourceType(_ id: String) {
-        sourceTypeID = id
-        values = Dictionary(uniqueKeysWithValues: (descriptor?.fields ?? []).map { ($0.key, $0.value) })
+    private func selectSourceInstance(_ id: String?) {
+        sourceInstanceID = id
         preview = nil
+        selectedModels = []
+        mappings = [:]
+        attemptedOperation = false
     }
     private func readSource() {
+        guard let source else { return }
+        attemptedOperation = true
         store.previewProviderImport(source) { value in preview = value; resetSelection() }
     }
     private func resetSelection() {

@@ -61,8 +61,13 @@ impl CoreRuntime {
                 let gateway = existing
                     .map(|index| &self.gateways[index])
                     .unwrap_or(&empty_default);
-                provider_import::preview(&request["payload"], gateway, &self.options)
-                    .map(|preview| json!({"preview":preview,"gateway":gateway}))
+                provider_import::preview(
+                    &request["payload"],
+                    gateway,
+                    &self.options,
+                    &self.runtime_instances,
+                )
+                .map(|preview| json!({"preview":preview,"gateway":gateway}))
             }
             "apply" => {
                 let mut imported_gateway = existing
@@ -73,6 +78,7 @@ impl CoreRuntime {
                     &request["payload"],
                     &mut imported_gateway,
                     &self.options,
+                    &self.runtime_instances,
                 )?;
                 if imported_gateway.providers.is_empty() {
                     return Err(RuntimeError::invalid(

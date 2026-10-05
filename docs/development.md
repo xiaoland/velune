@@ -30,7 +30,7 @@ Agent 运行时可配置多个实例，每个实例选择类型、独立配置�
 
 Harness 仅收到 Velune 本机网关配置；提供商凭据不传入 Harness，不使用“工作环境已有认证”。正常调用由网关显式路由到配置的提供商。订阅来源可在提供商编辑页选择 Core 描述的运行时认证来源，指定原认证文件、Node 和认证提供商；“读取来源信息”读取非秘密元数据并填写协议与端点，“登录…”通过该来源的 SDK 展示原生交互。当前仅接入固定 Pi 新 `openai` 订阅路径，保留其 Pi 登录身份，不将 legacy `openai-codex` 认证接到公共 Responses。应用内登录成功或更换 API key 会更新认证绑定 generation 并要求重连；同一引用背后的外部账户替换尚未自动辨识，应经应用重新登录或明确更换来源。开发方不执行真实登录。真实请求和验收由用户完成。
 
-AI 提供商页的“从运行时导入…”是完整配置导入入口。选择来源目录与 Node 后先读取预览，选择提供商模型，再导入；模型也可以关联到已有全局模型。原提供商与认证文件保留，配置只记录来源引用。重复项默认跳过，明确替换才更新已导入提供商；已有路由和运行时默认模型不自动改变。来源或目标配置在预览后变化时，须重新读取。仅支持当前网关能够保留语义的配置；不支持项及原因在预览中显示，动态命令不执行。
+AI 提供商页的“从运行时导入…”是完整配置导入入口。选择已配置的 Agent 运行时实例后读取预览，复用该实例的目录与 Node 配置，再选择提供商模型导入；模型也可以关联到已有全局模型。原提供商与认证文件保留，配置只记录来源引用。重复项默认跳过，明确替换才更新已导入提供商；已有路由和运行时默认模型不自动改变。运行时实例、来源或目标配置在预览后变化时，须重新读取。读取配置不要求先连接运行时，也不要求已有默认模型或路由。仅支持当前网关能够保留语义的配置；不支持项及原因在预览中显示，动态命令不执行。
 
 隔离视觉预览使用 `--preview`（合成多轮会话）或 `--preview-empty`；Apple app 不设置独立深色验收入口。预览 Store 无 Transport，不打开 Application、不访问真实配置、Keychain 或会话、不调用模型。dyld 加载惰性的库文件不等于打开运行时，预览不能证明真实循环完成。
 
@@ -108,7 +108,7 @@ Rust agent-runtime 的 [Pi adapter](../packages/agent-runtime/src/client.rs) 处
 
 安装脚本固定 `@earendil-works/pi-coding-agent@1.0.2` 于忽略的 `target/pi-runtime`，不修改全局 npm 或 Pi。Mac bundle 将 SDK、CLI JavaScript 与 `packages/agent-runtime/resources/pi_sessions.mjs` 放入 Resources。Node 本体不随包，用户需指定 Node 22.19+ 的绝对路径，避免 Finder 启动依赖 shell PATH。CLI 入口为 `Contents/Resources/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js`。
 
-Application 在实例专属目录生成受管 Pi 配置，只列出 Velune 网关端点、可路由模型与本地访问凭据；不写上游端点或 Keychain 引用，也不覆盖未受管的 `models.json`。恢复历史会话后重新绑定 Velune 网关模型，历史 provider 不能绕过网关。平台秘密 helper 在网关实际请求时解析 Keychain 引用或显式认证来源；来源 adapter 使用原存储锁刷新，不复制 refresh credential。开发验证不读取真实 Keychain 或来源文件。平台凭据 shim 只调用 Core 的 sealed 来源入口，具体 Harness 适配由 Core 选择；认证 helper 的 AuthStorage 文件入口绑定固定 Pi 1.0.2；版本不符明确拒绝，是依赖升级时须复核的边界。
+Application 在 `VELUNE_HOME/runtime-projections/` 下按运行时实例生成网关模型目录与 selection 文件，只列出 Velune 网关端点、模型投影与临时本地访问凭据，不写上游端点或 Keychain 引用。原运行时目录仍是 Pi home，保留原 `models.json`、认证、设置与会话。固定 SDK RPC launcher 通过独立的 ModelRuntime 注入受管目录，不覆盖原配置。运行时指定的 Pi 入口必须对应固定 1.0.2 SDK，不能对应的 wrapper 或其他版本明确拒绝，不静默替换安装。恢复历史会话后重新绑定 Velune 网关模型，历史 provider 不能绕过网关。平台秘密 helper 在网关实际请求时解析 Keychain 引用或显式认证来源；来源 adapter 使用原存储锁刷新，不复制 refresh credential。开发验证不读取真实 Keychain 或来源文件。平台凭据 shim 只调用 Core 的 sealed 来源入口，具体 Harness 适配由 Core 选择；认证 helper 的 AuthStorage 文件入口绑定固定 Pi 1.0.2；版本不符明确拒绝，是依赖升级时须复核的边界。
 
 执行 Pi 默认选择 `velune/auto`。Core 为本轮决定具体逻辑模型，virtual model 返回相同模型的能力；Pi 的物理模型 ID 使用非秘密路由绑定的稳定身份，网关将该 ID 直接映射到同一次已配置路由，不再二次选择；逻辑模型 ID 保留在界面与选择状态中。Pi 的分支 state 保存实际选择，assistant 历史记录实际模型；新会话使用运行时默认模型，会话切换不改这个默认值。模型 `maxTokens` 用作 Harness 元数据；输出参数仅按提供商协议发送和校验，订阅来源不支持服务端输出硬上限，不为其注入 `max_output_tokens`。Pi 的标准推理等级通过 `thinkingLevelMap` 限制为模型声明的等级；本轮不替自定义服务等级猜测转换规则。ChatCompletions 网关接收文本和工具消息，未支持的图片内容明确报错。Responses 保留原生请求 JSON、工具与 encrypted reasoning、JSON／SSE 响应；只支持 foreground 创建，不增加查询、删除或 background API。客户端断开或网关停止会释放活跃上游请求，上游失败不会发出成功的 `[DONE]`，也不自动重试或切换提供商。
 
@@ -135,7 +135,7 @@ live 入口 `minimax_manual live text|text-diagnostic|tool SOURCE_COMMIT` 仅供
 
 ## UniFFI 的临时端到端验收
 
-先构建动态库，并为 `--resources` 提供包含 `pi_sessions.mjs`、`pi_virtual_model.mjs`、`pi_auth.mjs` 与固定 Pi `node_modules` 的资源目录。人工运行 [临时端到端脚本](../scripts/check-pi-uniffi-loop.py)，先按 [bindings unit](../packages/bindings/README.md) 生成 Python 绑定，再以绝对路径传入 `--bindings`、`--library`、`--resources` 和 `--node`。脚本使用临时 HOME、配置、工作与会话目录，以及 loopback 合成上游和 fixture-only 凭据 helper；不读取用户配置或调用真实模型。它检查流式回复、跨模型路由和输出上限、Pi 会话身份与恢复、忙时退出保护、取消以及配置重新打开。Responses 检查使用 `--protocol responsesV1`，订阅能力检查另加 `--subscription-capability`。用户对真实提供商和产品体验的验收仍独立进行。
+先构建动态库，并为 `--resources` 提供包含 `pi_sessions.mjs`、`pi_rpc.mjs`、`pi_virtual_model.mjs`、`pi_auth.mjs` 与固定 Pi `node_modules` 的资源目录。人工运行 [临时端到端脚本](../scripts/check-pi-uniffi-loop.py)，先按 [bindings unit](../packages/bindings/README.md) 生成 Python 绑定，再以绝对路径传入 `--bindings`、`--library`、`--resources` 和 `--node`。脚本使用临时 HOME、配置、工作与会话目录，以及 loopback 合成上游和 fixture-only 凭据 helper；不读取用户配置或调用真实模型。它检查流式回复、跨模型路由和输出上限、Pi 会话身份与恢复、忙时退出保护、取消以及配置重新打开。Responses 检查使用 `--protocol responsesV1`，订阅能力检查另加 `--subscription-capability`。用户对真实提供商和产品体验的验收仍独立进行。
 
 ## 工作区 units 与绑定构建
 

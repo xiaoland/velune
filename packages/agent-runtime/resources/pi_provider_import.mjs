@@ -147,8 +147,15 @@ async function main() {
   if (operation !== "preview") reject();
   const configuredIds = new Set([...config.getProviderIds(), ...stored.map((entry) => entry.providerId)]);
   const providers = [];
+  const warnings = [];
   for (const provider of runtime.getProviders()) {
     if (!configuredIds.has(provider.id)) continue;
+    // These provider IDs are owned by Velune's injected execution adapter,
+    // including catalogs left by older releases in PI_HOME.
+    if (["velune-gateway", "velune"].includes(provider.id)) {
+      warnings.push("已跳过 Velune 生成的网关目录；它不是上游 AI 提供商。");
+      continue;
+    }
     const raw = config.getProvider(provider.id);
     const groups = new Map();
     for (const model of runtime.getModels(provider.id)) {
@@ -168,7 +175,7 @@ async function main() {
       endpoint: group.endpoint, protocol: group.protocol,
       auth: authShape(raw, provider.id, group.endpoint, group.protocol), models: group.models });
   }
-  const snapshot = { contractVersion: 1, sdkVersion: manifest.version, sourceDir, modelsPath, authPath, providers };
+  const snapshot = { contractVersion: 1, sdkVersion: manifest.version, sourceDir, modelsPath, authPath, providers, warnings };
   const sourceFingerprint = `pi_${createHash("sha256").update(JSON.stringify(snapshot)).digest("hex")}`;
   emit({ ...snapshot, sourceFingerprint });
 }

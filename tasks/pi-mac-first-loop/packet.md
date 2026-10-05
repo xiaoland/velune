@@ -119,3 +119,21 @@ Mac 对未知 adapter 元数据的临时编译／往返实验确认 null、boole
 ## 2026-10-05 共享 units 与 UniFFI 迁移
 
 用户授权的拆分与全面 UniFFI 接入已实施，方案、依赖裁剪和隔离证据归 [package-boundaries](../package-boundaries/packet.md)。本地产品仍为同进程 Rust lib＋原生 Mac app；会话历史归 Pi，配置 schema 2 保持。版本继续为 0.1 beta.1，Mac 修改后重建并安装。该架构迁移不替代用户的真实提供商与体验验收。
+
+## 2026-10-05 提供商导入窗口布局修复
+
+用户截图显示导入 sheet 的来源表单有内部滚动条、与标题和操作区边距不一致，空状态占用过多空间。当前 ProviderImportView 给 grouped Form 固定 260 高度，再叠加另一个可滚动预览列表；本轮修正内容布局与滚动归属，保持原生控件和既有导入行为。Mac 修复后构建并安装，使用隔离原生窗口检查空状态和合成预览，不读取用户来源或真实会话。
+
+截图底部另有 runtime model id 配置错误。先核对源码来源，将配置失败与布局缺陷分开；本轮不凭截图推断用户实际配置内容。
+
+用户进一步纠正导入来源选择：仅选择已有运行时实例，复用其配置。UI 不解析 Harness 路径字段；application 在 preview/apply 时从保存的实例解析权威来源，实例或来源变化使旧预览失效。无默认模型／路由可读取配置；空默认网关先保存后配置运行时的既有流程保持，不放宽跨配置引用约束。
+
+调查另发现 Pi 原配置目录与受管网关 catalog 写入目录重叠：已有 models.json 无受管标记时 connect 拒绝覆盖。需要在不破坏原配置、认证来源和会话归属的前提下核对固定 Pi SDK 的 catalog 注入方式；advisor 负责判别路径，开发方不读取真实配置或认证。
+
+固定 Pi 1.0.2 SDK 的隔离 RPC 实验证实：ModelRuntime 可使用独立 catalog，同时保留原 agentDir 和 SessionManager。原合成 models/auth/settings 文件逐字节不变，get_state 仅暴露受管模型；不用整体隔离 PI_HOME 或复制认证。实现由 application 生成 runtime-projections 路径，agent-runtime 的固定 SDK launcher 校验所选安装、复用项目信任逻辑并注入空认证存储。旧受管源文件保留，导入排除能确认归属 Velune 的网关配置，防止递归导入。
+
+Mac 隔离原生窗口已人工截图检查空状态和八组提供商长预览：仅一个内容滚动区，操作区固定，运行时 Picker 使用已配置实例，无重复卡片背景。CUA 服务不可用时改用系统窗口截图，只捕获独立 fixture，不读取真实数据；临时进程已清理。
+
+最终 workspace fmt/check/clippy（all-targets、all-features）、bindings 无 local-runtime 的 Clippy、Windows GNU 类型检查，以及 Mac Swift 构建与签名校验均通过。人工 UniFFI 端到端三条流程覆盖 ChatCompletions、Responses 与订阅能力限制，实际使用新的 SDK 装配并检查原 models/auth/settings 字节未变。导入仍不自动设置路由；完整配置导入后的显式路由与实际发送由独立合成流程复核，不读取真实账户。真实提供商和最终产品体验仍归用户验收。
+
+最后的配置导入合成流程已使用新增 launcher 的提供商注册边界：已有实例预览／导入、显式路由、connect、实际流式回复与 shutdown 全部通过，原三份文件逐字节保留。开发方未调用真实模型。完成后以本切片提交构建 clean bundle 并重新安装，版本保持 0.1 beta.1。

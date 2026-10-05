@@ -39,6 +39,8 @@ pub enum Error {
     Timeout,
     #[error("Pi RPC response failed: {0}")]
     CommandFailed(String),
+    #[error("Pi SDK 接入失败: {0}")]
+    Sdk(String),
     #[error(transparent)]
     Io(#[from] std::io::Error),
     #[error(transparent)]
@@ -71,6 +73,13 @@ pub struct Config {
     pub provider: Option<String>,
     #[serde(default)]
     pub model: Option<String>,
+    /// SDK launcher and application-owned catalog/selection, distinct from PI_HOME.
+    #[serde(default)]
+    pub rpc_entry: Option<PathBuf>,
+    #[serde(default)]
+    pub models_path: Option<PathBuf>,
+    #[serde(default)]
+    pub selection_file: Option<PathBuf>,
     /// Ephemeral loopback gateway token. It is injected into the child
     /// environment and never serialized into app configuration or snapshots.
     #[serde(skip_serializing, default)]
@@ -94,6 +103,9 @@ impl Config {
         }
         for path in [
             &self.node_binary,
+            &self.rpc_entry,
+            &self.models_path,
+            &self.selection_file,
             &self.sdk_helper,
             &self.extension,
             &self.agent_dir,
@@ -158,23 +170,65 @@ pub struct Client {
     pub config: Config,
 }
 
+impl Config {
+    /// Verify that the selected CLI belongs to the supported SDK before starting services.
+    pub fn validate_sdk(&self) -> Result<()> {
+        self.validate()?;
+        let node = self
+            .node_binary
+            .as_ref()
+            .ok_or_else(|| Error::Sdk("请配置所选运行时的 Node 可执行文件".into()))?;
+        let entry = self
+            .rpc_entry
+            .as_ref()
+            .ok_or_else(|| Error::Sdk("SDK 入口不可用".into()))?;
+        let output = Command::new(node)
+            .arg(entry)
+            .arg("--cli")
+            .arg(&self.binary)
+            .arg("--validate")
+            .env_clear()
+            .output()?;
+        if !output.status.success() {
+            return Err(Error::Sdk(
+                "仅支持 Pi Agent 1.0.2 SDK 对应的 CLI 入口，请检查运行时配置".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
 impl Client {
     pub fn spawn(config: Config) -> Result<Self> {
         config.validate()?;
-        // Finder-launched apps do not inherit a user's shell PATH. When the
-        // UI supplies Node explicitly, run Pi through that exact binary so a
-        // shebang such as `#!/usr/bin/env node` cannot select another runtime
-        // (or fail to resolve one). An omitted node_binary keeps support for
-        // Native or synthetic Pi-compatible executables used for manual
-        // isolated verification.
-        let mut command = if let Some(node) = &config.node_binary {
-            let mut command = Command::new(node);
-            command.arg(&config.binary);
-            command
-        } else {
-            Command::new(&config.binary)
-        };
-        command.arg("--mode").arg("rpc");
+        let node = config
+            .node_binary
+            .as_ref()
+            .ok_or_else(|| Error::Sdk("请配置所选运行时的 Node 可执行文件".into()))?;
+        let entry = config
+            .rpc_entry
+            .as_ref()
+            .ok_or_else(|| Error::Sdk("SDK 入口不可用".into()))?;
+        let mut command = Command::new(node);
+        command.arg(entry).arg("--cli").arg(&config.binary);
+        for (name, path) in [
+            ("--models-path", &config.models_path),
+            ("--selection-file", &config.selection_file),
+            ("--agent-dir", &config.agent_dir),
+        ] {
+            command.arg(name).arg(
+                path.as_ref()
+                    .ok_or_else(|| Error::Sdk("SDK 装配路径不完整".into()))?,
+            );
+        }
+        command.env_clear();
+        for key in [
+            "PATH", "HOME", "TMPDIR", "LANG", "LC_ALL", "LC_CTYPE", "SHELL",
+        ] {
+            if let Some(value) = std::env::var_os(key) {
+                command.env(key, value);
+            }
+        }
         if let Some(value) = &config.provider {
             command.arg("--provider").arg(value);
         }
@@ -198,10 +252,6 @@ impl Client {
         }
         if let Some(agent_dir) = &config.agent_dir {
             command.env("PI_CODING_AGENT_DIR", agent_dir);
-            command.env(
-                "VELUNE_PI_SELECTION_FILE",
-                agent_dir.join("velune-selection.json"),
-            );
         }
         if let Some(token) = &config.gateway_token {
             command.env("VELUNE_GATEWAY_TOKEN", token);

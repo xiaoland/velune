@@ -120,9 +120,16 @@ def main():
         root = Path(temporary)
         for name in ('home', 'resources', 'work-a', 'work-b', 'agent', 'sessions'):
             (root / name).mkdir()
-        for helper in ('pi_sessions.mjs', 'pi_virtual_model.mjs', 'pi_auth.mjs'):
+        for helper in ('pi_sessions.mjs', 'pi_virtual_model.mjs', 'pi_auth.mjs', 'pi_rpc.mjs'):
             shutil.copy(args.resources / helper, root / 'resources' / helper)
         (root / 'resources/node_modules').symlink_to(args.resources / 'node_modules', target_is_directory=True)
+        original_source_files = {
+            'models.json': json.dumps({'providers': {}}).encode(),
+            'auth.json': json.dumps({'fixture-source': {'type': 'api_key', 'key': 'synthetic-unused-source'}}).encode(),
+            'settings.json': json.dumps({'defaultProvider': 'fixture-source', 'defaultModel': 'source-only'}).encode(),
+        }
+        for name, content in original_source_files.items():
+            (root / 'agent' / name).write_bytes(content)
         resolver = root / 'fixture-credential'
         resolver.write_text('#!/bin/sh\nprintf "fixture-only"\n')
         resolver.chmod(0o700)
@@ -267,10 +274,13 @@ def main():
                 id=runtime['id'], name=runtime['name'], type_id=runtime['typeId'],
                 gateway_id=runtime['gatewayId'], model_id=runtime['modelId'], settings=runtime['settings']))
             application.connect_runtime('fixture-pi')
-            selection_before_session = (root / 'agent/velune-selection.json').read_bytes()
+            projection_dir, = (root / 'home/runtime-projections').iterdir()
+            selection_path = projection_dir / 'velune-selection.json'
+            catalog_path = projection_dir / 'models.json'
+            selection_before_session = selection_path.read_bytes()
             expect_error(lambda: application.select_model('fixture-pi', 'second'))
-            assert (root / 'agent/velune-selection.json').read_bytes() == selection_before_session
-            catalog = json.loads((root / 'agent/models.json').read_text())
+            assert selection_path.read_bytes() == selection_before_session
+            catalog = json.loads(catalog_path.read_text())
             catalog_models = catalog['providers']['velune-gateway']['models']
             assert [item['contextWindow'] for item in catalog_models] == [32768, 65536]
             physical_ids = {item['logicalModelId']: item['id'] for item in catalog_models}
@@ -288,7 +298,7 @@ def main():
             view(application.create_conversation('fixture-pi', str(root / 'work-a')))
             snapshot_until_ready()
             if args.subscription_capability:
-                selection = root / 'agent/velune-selection.json'
+                selection = selection_path
                 value = json.loads(selection.read_text())
                 value['subscriptionCapability'] = True
                 selection.write_text(json.dumps(value))
@@ -324,7 +334,7 @@ def main():
             assert restored_before_send['modelId'] == 'second', restored_before_send
             time.sleep(0.2)
             if args.subscription_capability:
-                selection = root / 'agent/velune-selection.json'
+                selection = selection_path
                 value = json.loads(selection.read_text())
                 value['subscriptionCapability'] = True
                 selection.write_text(json.dumps(value))
@@ -425,13 +435,13 @@ def main():
             gateway['providers'][0]['models'][1]['externalModelId'] = 'external-second-rebound'
             application.upsert_gateway(gateway_record(gateway))
             application.connect_runtime('fixture-pi')
-            catalog = json.loads((root / 'agent/models.json').read_text())
+            catalog = json.loads(catalog_path.read_text())
             rebound = next(item['id'] for item in catalog['providers']['velune-gateway']['models']
                            if item['logicalModelId'] == 'second')
             assert rebound != physical_ids['second']
             assert view(application.open_conversation('fixture-pi', session_id))['snapshot']['modelId'] == 'second'
             if args.subscription_capability:
-                selection = root / 'agent/velune-selection.json'
+                selection = selection_path
                 value = json.loads(selection.read_text()); value['subscriptionCapability'] = True
                 selection.write_text(json.dumps(value))
             view(application.send('fixture-pi', 'Return a response after changing the route binding.'))
@@ -451,6 +461,8 @@ def main():
                 result = next(item for item in items if item.get('role') == 'tool')
                 assert call['id'] == result['tool_call_id']
 
+            for name, content in original_source_files.items():
+                assert (root / 'agent' / name).read_bytes() == content
             assert not (root / 'home/ipc.sock').exists()
             assert not (root / 'home/core.sqlite').exists()
             print('PASS: UniFFI streaming, auto selection/restore, binding change clears signatures and preserves tools, busy close, cancel, config reopen')

@@ -190,8 +190,7 @@ impl CoreRuntime {
         let model_id = self
             .pi_config
             .as_ref()
-            .and_then(|config| config.agent_dir.as_ref())
-            .map(|agent_dir| agent_dir.join("velune-selection.json"))
+            .and_then(|config| config.selection_file.as_ref())
             .and_then(|path| fs::read_to_string(path).ok())
             .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
             .and_then(|value| value["modelId"].as_str().map(str::to_owned))

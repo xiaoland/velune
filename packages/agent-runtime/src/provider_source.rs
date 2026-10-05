@@ -23,6 +23,8 @@ pub struct Snapshot {
     pub auth_path: Option<String>,
     pub providers: Vec<ImportedProvider>,
     pub source_fingerprint: String,
+    #[serde(default)]
+    pub warnings: Vec<String>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]

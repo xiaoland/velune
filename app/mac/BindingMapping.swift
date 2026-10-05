@@ -137,15 +137,15 @@ enum BindingMapping {
     }
 
     static func importSource(_ value: BindingProviderImportSource) -> ProviderImportSource {
-        ProviderImportSource(kind: value.kind, harnessTypeId: value.harnessTypeId, settings: value.settings)
+        ProviderImportSource(kind: value.kind, harnessTypeId: value.harnessTypeId, sourceInstanceId: value.sourceInstanceId, settings: value.settings)
     }
 
     static func bindingImportSource(_ value: ProviderImportSource) -> BindingProviderImportSource {
-        BindingProviderImportSource(kind: value.kind, harnessTypeId: value.harnessTypeId, sourceInstanceId: nil, providerId: nil, settings: value.settings)
+        BindingProviderImportSource(kind: value.kind, harnessTypeId: value.harnessTypeId, sourceInstanceId: value.sourceInstanceId, providerId: nil, settings: value.settings)
     }
 
     static func importPreview(_ value: BindingProviderImportPreview) -> ProviderImportPreviewData {
-        ProviderImportPreviewData(preview: ProviderImportPreview(token: value.token, sourceLabel: value.sourceLabel, providers: value.providers.map(importProvider)))
+        ProviderImportPreviewData(preview: ProviderImportPreview(token: value.token, sourceLabel: value.sourceLabel, warnings: value.warnings, providers: value.providers.map(importProvider)))
     }
 
     private static func importProvider(_ value: BindingImportProviderCandidate) -> ProviderImportCandidate {

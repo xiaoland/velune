@@ -56,19 +56,21 @@ pub(super) fn materialize_models(
     endpoint: &str,
     protocol: &str,
 ) -> Result<(), RuntimeError> {
-    let agent_dir = config
-        .agent_dir
+    let target = config
+        .models_path
         .as_ref()
-        .ok_or_else(|| RuntimeError::invalid("runtime directory"))?;
+        .ok_or_else(|| RuntimeError::invalid("runtime catalog path"))?;
+    let catalog_dir = target
+        .parent()
+        .ok_or_else(|| RuntimeError::invalid("runtime catalog directory"))?;
     let provider = config
         .provider
         .as_deref()
         .ok_or_else(|| RuntimeError::invalid("gateway provider"))?;
-    fs::create_dir_all(agent_dir)?;
-    let marker = agent_dir.join(".velune-managed");
-    let target = agent_dir.join("models.json");
+    fs::create_dir_all(catalog_dir)?;
+    let marker = catalog_dir.join(".velune-managed");
     if target.exists() && !marker.exists() {
-        return Err(RuntimeError::invalid("refusing unmanaged Pi models.json"));
+        return Err(RuntimeError::invalid("refusing unmanaged runtime catalog"));
     }
     // Pi caches its available model catalog at startup. Include every explicit
     // route so subsequent set_model calls use the same immutable gateway revision.
@@ -160,7 +162,7 @@ pub(super) fn materialize_models(
         },
     });
     let bytes = serde_json::to_vec_pretty(&value)?;
-    let temporary = agent_dir.join("models.json.velune.tmp");
+    let temporary = target.with_extension("json.velune.tmp");
     let mut file = fs::OpenOptions::new()
         .create(true)
         .truncate(true)
@@ -185,13 +187,15 @@ pub(super) fn write_selection_file(
     physical_model_id: &str,
     subscription_capability: bool,
 ) -> Result<(), RuntimeError> {
-    let agent_dir = config
-        .agent_dir
+    let path = config
+        .selection_file
         .as_ref()
-        .ok_or_else(|| RuntimeError::invalid("runtime directory"))?;
-    fs::create_dir_all(agent_dir)?;
-    let path = agent_dir.join("velune-selection.json");
-    let temporary = agent_dir.join("velune-selection.json.tmp");
+        .ok_or_else(|| RuntimeError::invalid("runtime selection file"))?;
+    fs::create_dir_all(
+        path.parent()
+            .ok_or_else(|| RuntimeError::invalid("runtime selection directory"))?,
+    )?;
+    let temporary = path.with_extension("json.tmp");
     let bytes = serde_json::to_vec(&json!({
         "provider": "velune-gateway",
         "logicalModelId": logical_model_id,
