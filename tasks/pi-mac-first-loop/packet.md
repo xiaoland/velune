@@ -181,3 +181,11 @@ advisor 指出 max_tokens 仍是 OpenAI ChatCompletions 的正式但已弃用字
 四处 disclosure 共用小型原生控件包装，仅通过 Binding.transaction 将即时切换事务传入展开状态写入。临时事务探针确认展开和收起均无 animation 且禁止补入动画，内容的独立状态操作保留其事务；Swift 编译和 diff 检查通过。Rust workspace fmt/check/clippy、无 local-runtime Clippy、Windows GNU 类型检查通过；未新增或运行自动化测试。
 
 最终 release UniFFI 合成端到端分别确认 max_tokens 与默认 max_completion_tokens 只发送所选字段，上限为 64；经过已配置实例预览、导入、显式路由、连接与实际 loopback 回复。受管 Pi catalog 保留来源字段选择，原 models/auth/settings 逐字节不变。重复导入发现返回 skippedProviderIds 为空的既有缺口，修复为仅报告本次选择中实际跳过的已导入提供商，并在同一流程确认结果。合成矩阵放行已知相容设置，拒绝未知字段、关闭 usage/effort 或未实现的厂商 thinking；原 DeepSeek URL 的空 compat 仍能识别隐含推理格式与历史 reasoning_content 要求。未知协议提示明确 API 名称，不再附加无关的 Chat 兼容提示。最终 fmt/check/clippy、Windows 与无 local-runtime 静态检查通过，随后对本切片提交构建 clean bundle 并安装，实际原生交互仍由用户验收。
+
+## 2026-10-05 导入功能开发方验收
+
+用户再次报告推理格式与 requiresReasoningContentOnAssistantMessages 被拒绝，要求开发方在合理非 UI 边界自行验收。上轮只证明与现有 wire 相容的合成配置能导入，且已知 DeepSeek 风格来源仍拒绝；不能将这一有界成功提升为用户预期的来源已可用。此次以固定 Pi SDK 及合成来源复现用户提示，按已配置运行时→预览→应用→显式路由→实际 loopback 请求检查，并覆盖多轮推理与工具历史的语义，不读取真实配置、认证或会话。先调查缺口和最小方案，再判定修复边界；UI 与真实供应商验收仍归用户。
+
+安装基线核对为 7345ba8 的 clean bundle、0.1 beta.1。源码与固定 SDK 显示：DeepSeek 风格来源通过 thinking.type 选择推理；工具和后续历史要求 reasoning_content 重放。当前 sampling 的 Message/Delta 不含对应协议槽，网关请求重建与流解码不能保真，因此仅移除导入 guard 会制造实际调用失败。经 advisor 推荐，候选修复是增加原生 ChatCompletions 操作并切换 Harness 网关路径，保持具名契约、Payload、路由认证与取消/终态边界；不把 Sampling 扩成厂商兼容容器。此为待确认实现切片，本轮仅验收与方案调查。官方行为依据：[DeepSeek thinking mode](https://api-docs.deepseek.com/guides/thinking_mode/)，检查日期 2026-10-05；具体 SDK 推断仍以固定 1.0.2 为准。
+
+验收结果为失败，完整案例和手动重现方式归 [导入验收记录](deepseek-import-acceptance.md)。已安装库的正常 preview 禁选、apply 拒绝；同配置非推理模型也禁选。固定 SDK 五次 loopback 对照完整保留推理 signature、工具续轮历史、关闭推理和合法空串；两次隔离 gateway 诊断证实 thinking 与历史 reasoning_content 丢失，推理 SSE 触发 terminal error，工具关联仍保留。SDK／网关诊断不算正常导入通过，三份合成来源文件逐字节不变。本轮未改产品源码，不重新安装。保留人工临时脚本，不接入 CI；退出成功仅表示已复现失败，后续修复需更新为正常成功验收或删除此脚本。Python 语法与文档链接、diff 检查通过。
