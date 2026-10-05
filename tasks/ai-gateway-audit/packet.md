@@ -2,7 +2,7 @@
 
 ## 当前状态与目标
 
-2026-10-05：原生协议、认证边界与模型 ID 重构已完成一轮安装验收。用户的新反馈要求先厘清提供商、模型参数和模板的归属，用户已认可参数归属并授权开工，提供商编辑器和配置结构已贯通，正在完成发行安装。此前未提交实验已撤回；新切片以已交付源码为基线，尚未重新安装。
+2026-10-05：提供商所属模型与私有认证、参数模板以及原生两栏编辑器已实施并重新安装。静态检查、发行构建和已安装动态库的隔离人工端到端验收通过；GUI 与真实提供商验收仍由用户执行。
 
 当前目标是让用户在提供商及其模型配置中完成接入，允许修改协议、服务地址、API model ID 和 API key，并通过模型模板减少重复填写。独立认证建档与全局模型关联流程不作为后续固定前提。
 
@@ -25,23 +25,21 @@
 
 ## 已验证事实与安装基线
 
-安装包源码为 `6efbcc6d248f0673494985ea420fada8acd64b41`，clean、schema 4、版本 0.1 beta.1，位于 `/Applications/Velune.app`。最新文档提交可能晚于安装源码，不表示应用已实现新方向。
+安装源码为 `81f0fec5fa153d7ed38fd728ec67225262374b8e`，clean、schema 5、版本 0.1 beta.1，位于 `/Applications/Velune.app`。本任务后续文档提交不改变已安装源码。发行包深度严格签名验证通过；安装前按已有授权退出确认的 Velune 进程，未启动应用或打开真实配置。
 
-上述安装基线有全局模型、中央认证与 Keychain 流程；工作树的新契约已删除它们，以提供商及其模型的两栏原生编辑器替代。能力／effort 摘要可见，次要字段展开编辑。
+`cargo fmt --all --check`、workspace all-targets all-features check／clippy（`-D warnings`）、bindings no-default-features check／严格 clippy，以及全部十个 Mac Swift 文件的 warnings-as-errors 类型检查均通过。发行 Rust／Swift 构建、Markdown 相对链接和 diff 检查通过。没有自动化测试、真实秘密读取或真实服务调用。
 
-已交付源码通过 workspace fmt/check/clippy、bindings 裁剪检查、严格 Swift typecheck、发行构建与签名验证。隔离人工验收覆盖 9 个原生 HTTP JSON／SSE／状态头边界、取消、schema 重置无备份、内部记录键与提供商 ID 分离，以及正常 Pi 导入 → 路由 → 工具续接 → 下一轮与 helper 清理。没有真实服务、秘密或 GUI 验收。
+[提供商配置手动脚本](../../scripts/manual-provider-configuration.py)在配置裁剪版和已安装完整库均通过：schema 5 hard-cutoff、0600、key 显式读／修改／重开、公开摘要和日志脱敏、协议／地址／ID 编辑、稳定内部引用、模板快照不传播、坏配置不覆盖及原来源文件保留。先保存运行时再导入可行，默认空网关在运行时保存内部初始化。
 
-第一次安装验收发现 descriptor 额外字段与严格 DTO 不一致，已改为具名类型构造后重建验证通过。完整证据归 [模型实施记录](model-implementation.md)。
+[Pi 首循环手动脚本](../../scripts/manual-pi-native-loop.py)在已安装库用固定 Pi SDK 和临时 HOME 完成五次 loopback HTTP 请求：导入→工具续接→下一轮，随后修改 key、API ID 与地址并确认实际派发。旧预览拒绝覆盖新认证，重复跳过保持连接，替换断开旧网关；原来源文件未变。合成原生 HTTP 脚本另通过九个 JSON／SSE／状态与安全头边界、裸内部键拒绝及断连取消。真实订阅登录／刷新和 GUI 尚未验收。
 
-## 当前责任与下一步
+## 当前责任与验收边界
 
-主执行者维护文档、人工脚本、独立端到端验收与安装；原 Mac owner 扩展为 packages 与 app/mac 的源码 owner，负责核心贯通与静态验证；唯一 portable.rs 已交给 root，调用其已建立的共享纯配置编辑逻辑，避免复制约束。advisor 负责关键契约判断，不作为代码 reviewer。旧 Rust owner 及新 worker 均受 agent thread limit 阻止，停止重试，转交稳定 owner；共享 guides/delegation.md 不存在，按现有责任原则执行。
+主执行者维护文档、人工脚本、独立端到端验收与安装。稳定源码 owner 完成 packages 与 app/mac；root 接管 portable.rs，共用配置编辑约束。advisor 用于关键契约判断，不作为 reviewer。多代理数量限制时已转交稳定 owner，没有重复创建任务。
 
-[编辑器功能设计](provider-editor-design.md)与具名 DTO 已贯通。新用户先保存运行时再导入的顺序已实现，首个 default 运行时在同一次保存内部创建空默认网关，不新增网关建档 API。主要字段直接可见，能力与 effort 摘要可发现，来源详情和模板维护按需展开；不以放大窗口代替信息层级。
+[编辑器设计](provider-editor-design.md)已落地：提供商内选择连接或单个模型，主要字段直接可见，能力／effort 摘要可发现，来源详情与模板维护渐进披露。窗口尺寸只辅助，不替代信息层级。OAuth 委托只消费原认证存储，不再依赖原 Pi 模型目录；未真实登录验证，不把合成 API key 路径当成订阅证明。
 
-独立配置手动脚本在 no-default-features 动态库上已通过 schema 5 hard-cutoff、0600、key 显式读／修改／重开、公开摘要和日志脱敏、协议／地址／ID 编辑、稳定内部引用、模板快照不传播、坏配置不覆盖及原来源文件保留。local debug 的合成 Pi 五请求已通过导入→工具续接→下一轮；修改后的 key、API ID 与地址在真实 HTTP 路径生效，旧预览拒绝覆盖新认证，跳过不断连而替换断开旧网关。原生 gateway 的 9 个 HTTP JSON／SSE／状态头边界与断连取消已通过。以上只使用临时目录、合成来源与 loopback 上游，不读取真实配置或调用真实提供商。
-
-workspace fmt/check、bindings 裁剪检查和完整 Swift warnings-as-errors 已通过；workspace 与裁剪版严格 clippy 也已通过，源码已冻结；接下来提交、构建 clean 发行包、安装并在已安装库上复核两条手动路径。GUI 与真实服务验收由用户执行。
+实现范围已完成，下一步是用户从 Applications 打开应用，验收原生布局、编辑与真实服务。新反馈继续更新本任务，不冻结需求。
 
 ## 证据导航
 
