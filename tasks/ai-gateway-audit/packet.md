@@ -65,3 +65,6 @@ AI/provider owner 清理领域残留，gateway owner 负责 application／bindin
 
 
 集中认证源码已完成：schema 3、shared registry mutation、typed UniFFI、独立认证设置页和异步 resolver 均已接入。全 workspace fmt/check/clippy、无 local-runtime 裁剪构建与完整 Swift typecheck 通过。手动隔离验收已确认 portable 迁移／资源生命周期／目标 guard 及 9 个原生 HTTP 边界；安装包的正常 Pi 导入、工具续接与 helper 取消仍待发行构建后验证。模型业务研究已完成并经 advisor 复核，权威设计记录修正建议；未改模型源码，也不宣称已解决现有 model ID 与参数表单误用。
+
+
+集中认证交付已完成：`31b394c` 的 clean schema 3 bundle 已安装，版本仍为 0.1 beta.1。portable 与已安装库的 registry／迁移验收、原生 HTTP 9 个边界、安装库 Pi 正常工具循环及实际 source adapter、旧预览拒绝、受管 helper 断开／30 秒期限／关闭整组清理均通过。具体边界和脚本修订见 [认证实施记录](authentication-implementation.md)。没有真实调用、秘密或 UI 验收；模型业务误建模只完成研究与设计修订，尚未实施。

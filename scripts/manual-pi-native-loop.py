@@ -185,6 +185,20 @@ def main():
             assert changed.requires_reconnect, 'changed active gateway did not report stale connection'
             assert application.list().active_runtime_instance_id is None, 'stale gateway remained active'
             assert all((root / 'source' / name).read_bytes() == content for name, content in source_files.items())
+            stale = application.preview_provider_import('fixture', source)
+            current_resource = next(item for item in application.list().authentication_bindings
+                                    if item.id == authentication_id)
+            application.configure_api_key_binding(authentication_id, 'Synthetic replacement', 'synthetic-ref',
+                bindings.BindingGatewayProtocol.CHAT_COMPLETIONS_V1, endpoint, False, current_resource.generation)
+            saved_after_replacement = (root / 'home/generic-config.json').read_bytes()
+            try:
+                application.apply_provider_import('fixture', source, stale.token,
+                    [bindings.BindingImportSelection(provider_id=selected.id,
+                        model_ids=[candidate.id], model_mappings={})], True)
+            except bindings.BindingError:
+                assert (root / 'home/generic-config.json').read_bytes() == saved_after_replacement
+            else:
+                raise AssertionError('old preview overwrote a newly managed authentication resource')
             # Exercise helper lifetime through the application-managed registry,
             # not a gateway-specific source protocol. Only this synthetic helper
             # and its synthetic Node descendant are started or terminated.
@@ -196,7 +210,24 @@ def main():
             gateway, = application.list().gateways
             gateway.providers[0].authentication_id = managed.binding.id
             application.upsert_gateway(gateway)
+            # The managed catalog contains an environment placeholder, never a
+            # stored gateway token. Capture only this fixture's ephemeral token
+            # from its own Node launcher; no real process or secret is inspected.
+            token_file = root / 'synthetic-gateway-token'
+            launcher = root / 'synthetic-node'
+            launcher.write_text(f'#!{sys.executable}\nimport os,sys\nfrom pathlib import Path\n'
+                f'if "VELUNE_GATEWAY_TOKEN" in os.environ:\n'
+                f' p=Path({str(token_file)!r});p.write_text(os.environ["VELUNE_GATEWAY_TOKEN"]);p.chmod(0o600)\n'
+                f'os.execv({str(args.node)!r}, [{str(args.node)!r}, *sys.argv[1:]])\n')
+            launcher.chmod(0o700)
+            runtime.settings['nodeBinary'] = str(launcher)
+            application.upsert_runtime(runtime)
             application.connect_runtime(runtime.id)
+            application.create_conversation(runtime.id, str(root / 'project'))
+            deadline = time.monotonic() + 3
+            while not token_file.exists() and time.monotonic() < deadline:
+                time.sleep(.02)
+            assert token_file.exists(), 'synthetic runtime did not receive local gateway credentials'
             projection, = (root / 'home/runtime-projections').iterdir()
             injected = json.loads((projection / 'models.json').read_text())['providers']['velune-gateway']
             port = int(injected['baseUrl'].split(':')[2].split('/')[0])
@@ -205,7 +236,7 @@ def main():
                 connection = http.client.HTTPConnection('127.0.0.1', port, timeout=35)
                 connection.request('POST', '/v1/chat/completions', json.dumps({'model': binding.model_id,
                     'messages': [{'role': 'user', 'content': 'synthetic'}]}),
-                    {'Authorization': 'Bearer ' + injected['apiKey'], 'Content-Type': 'application/json'})
+                    {'Authorization': 'Bearer ' + token_file.read_text(), 'Content-Type': 'application/json'})
                 deadline = time.monotonic() + 3
                 while not pid_file.exists() and time.monotonic() < deadline:
                     time.sleep(.02)
@@ -241,11 +272,13 @@ def main():
             connection.close()
             descendant_gone(pid)
             assert time.monotonic() - started < 3, 'managed helper blocked application shutdown'
+            assert all((root / 'source' / name).read_bytes() == content for name, content in source_files.items())
             print(json.dumps({'acceptance': 'PASSED', 'bundle': {'sourceCommit': manifest['source_commit'],
                 'dirty': manifest['dirty'], 'uiVersion': manifest['ui_version']},
                 'normalPath': 'configured runtime → import → route → connect → create → send → tool → continuation → next turn',
                 'upstreamRequests': len(captures), 'onlySelectedProviderSaved': True, 'centralAuthenticationResource': True,
                 'actualPiSourceCredentialAdapter': True,
+                'authenticationReplacementInvalidatesImportPreview': True,
                 'managedHelperDisconnectDeadlineShutdownCleanup': True,
                 'nativeReasoningHistoryPreserved': True, 'sourceFilesUnchanged': True,
                 'unchangedImportKeepsConnection': True, 'changedImportDisconnectsStaleGateway': True,
