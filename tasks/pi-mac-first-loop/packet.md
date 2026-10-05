@@ -193,3 +193,7 @@ advisor 指出 max_tokens 仍是 OpenAI ChatCompletions 的正式但已弃用字
 2026-10-05 用户明确网关当前只做原生透传、路由与 fail-over，不承担协议转换／翻译。已先更新 PRD 与 AI service 权威设计，并标出 ChatCompletions sampling 重建为当前实现偏差。原生 ChatCompletions 方向不再作为未确认的产品选择；具体迁移、流终态和验证切片仍待实施安排。本轮同步文档，不将 fail-over 职责确认冒充已有自动策略，也不扩展 Messages／旧 Codex 等协议。
 
 用户随后要求复核整个 AI 网关与必要的 AI 服务，不再局限于原生 ChatCompletions 局部修复。当前复核、责任与结果归 [AI 网关审计任务](../ai-gateway-audit/packet.md)；本任务保留首循环与导入失败证据，不复制审计结论。
+
+## 原生 LLM Gateway 的后续实施
+
+用户完成 AI 服务／LLM Gateway 职责复核后授权推进。2026-10-05 已安装源码 `22a15c0` 的 clean 0.1 beta.1：ChatCompletions／Responses 退出 sampling 重建，正常配置运行时导入→路由→会话→工具续接→下一轮通过已安装库与固定 Pi SDK 的合成验收。原来源文件保留，未选提供商不写入；旧绑定需重新预览并替换。完整证据及本轮未覆盖项归 [实施记录](../ai-gateway-audit/native-implementation.md)，不将先前失败基线当作当前能力，也不代替用户的真实资源与 UI 验收。
