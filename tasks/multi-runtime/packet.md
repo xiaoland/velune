@@ -28,6 +28,14 @@ root 负责任务文档、运行时 unit／资源装配与独立验收；稳定 
 
 交互脚本通过 UniFFI→application→stdio 验证显式批准、私密回答、非法／陈旧回复拒绝、取消、进程 EOF 保留已收到内容与再次连接。发现并修复终止错误使所有后续 application 操作反复失败，以及同一轮终止事件丢弃已收到增量的问题。没有新增自动测试、读取真实秘密／会话或调用真实模型服务。
 
-当前 fmt、workspace check／严格 clippy（全部 features／targets）与 bindings no-default-features 静态检查通过。Mac 严格 Swift 类型检查已由源码 owner 完成。恢复后的模型提示已移到原生历史装配之后，隔离复验确认存在。无会话模型切换被明确拒绝；可选路径留空不再被转换成当前目录。干净发行构建、安装与已安装库复核仍待完成，完成前不将 debug 结果视为发行包验收。
+当前 fmt、workspace check／严格 clippy（全部 features／targets）与 bindings no-default-features 静态检查通过。Mac 严格 Swift 类型检查已由源码 owner 完成。恢复后的模型提示已移到原生历史装配之后，隔离复验确认存在。无会话模型切换被明确拒绝；可选路径留空不再被转换成当前目录。干净发行构建与安装包复核已完成，结果见下文；GUI 与真实服务仍由用户验收。
 
 发行资源逐字检查发现忽略目录中的两份许可仍是调查早期副本。构建已改为直接从受 Git 管理的声明与完整许可打包，仅 npm 模块取自安装产物，避免源码修改后必须重新安装依赖才能更新法律声明。首次发行包未作为最终交付，修正后重新构建安装。另检查 no-default-features 依赖树发现 application 的配置校验仍依赖 gateway／AI-provider；已修正长期文档中此前“全部裁掉”的不实描述，保留为远端平台装配前需整理的边界，不把静态通过当作完整裁剪。
+
+## 最终交付记录
+
+2026-10-06 已安装 `0.1 beta.1` 至 Applications；manifest 源码为 `cd0550cdb270c99ae2571bdfd49d35a8a0b619b1`、dirty=false、schema=6。安装前按授权退出了经 bundle ID 确认的 Velune。发行 Rust、生成 Swift 模块与 Mac 可执行文件构建成功，最终安装包的深度严格签名验证通过。所有运行时 helper 与源文件逐字一致，huihua 固定包、完整传递许可、声明与 lock 均逐字核对成功。
+
+实际安装库完成上述多运行时四次请求、Pi 五次请求、配置和交互脚本验收。法律资源修正后的最终安装包与验收对象的 Rust／Swift bindings 动态库字节一致，运行时脚本也一致；Mac 主程序因 bundle 资源更新重新签名，UI 验收仍留给用户。没有调用真实服务、读取真实配置、凭据或会话，不新增自动化测试。workspace 全 features／targets 的 fmt、check、严格 clippy，以及 bindings 无默认 features 的 check／clippy 均通过；Swift 全部源文件 warnings-as-errors 类型检查通过。
+
+本地提交已完成，不推送、不创建 PR。当前实现范围完成，等待用户真实服务与 Mac 体验反馈；未验证旧 Pi 版本、未猜测 DSH reasoning 映射、未实现 Codex／DSH 历史模型选择持久化。

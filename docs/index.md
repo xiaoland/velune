@@ -15,6 +15,8 @@
 
 ## 当前工作
 
+- [版本化 Codex 与 DeepSeek 运行时](../tasks/multi-runtime/packet.md)：原生控制、huihua 包历史投影、许可与安装包隔离验收；GUI／真实服务由用户验收
+
 - [AI 网关与 AI 服务需求复核及审计](../tasks/ai-gateway-audit/packet.md)：原生协议保真、路由／fail-over、配置／认证和生命周期，包含源码证据与迁移建议
 
 - [独立 package 与平台能力装配](../tasks/package-boundaries/packet.md)：已授权并完成 UniFFI 拆分，保留其边界与验证证据

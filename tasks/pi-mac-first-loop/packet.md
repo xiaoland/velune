@@ -6,7 +6,11 @@
 
 长期决定归属 [PRD](../../docs/prd/index.md)、[架构](../../docs/design/architecture.md) 与 [AI service](../../docs/design/ai-service.md)，运行入口归属 [开发说明](../../docs/development.md)。用户已授权实施、自主提交当前任务，并要求持续维护任务、长期文档与代码可维护性；远端发布仍需独立授权。
 
-## 当前状态
+## 当前续接入口
+
+本文件保留首循环各次实现与用户反馈的证据，早期 C ABI、Keychain、全局模型目录等段落不代表当前契约。当前采用 UniFFI、提供商所属模型与私有文件认证；工作目录属于具体会话。Codex／DeepSeek 扩展、schema 6、版本分型与最新安装状态统一归 [多运行时任务](../multi-runtime/packet.md)，稳定边界归 PRD 与设计文档。
+
+## 早期首循环状态
 
 上一切片 `5032781` 的独立 Host／IPC 接入已被用户明确纠正为跨平台 Rust lib，经 C ABI 嵌入平台 app。CoreRuntime 拥有配置校验与原子持久化、通用动作、Pi／网关与投影生命周期；平台显式提供 home、资源目录和秘密设施。Mac 不启动 Host/socket，不打开模拟 SQLite；只有外部 Pi Harness 是子进程。产品显示版本为 `0.1 beta.1`，安装到 `/Applications/Velune.app`。
 
