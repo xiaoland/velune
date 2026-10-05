@@ -4,7 +4,7 @@
 
 ## 已确认需求
 
-AI 服务是独立 lib，其领域不限于 LLM；sampling 是一项操作，不是整个 AI 服务的基础模型。AI 服务与 Agent 运行时保持独立，提供商协议和 SDK 由具体 adapter 封装。读取运行时提供商配置属于 application 与运行时 adapter 的导入用例，不使 AI 服务依赖 Harness 的模型目录、认证文件或推理级别。
+AI 服务是独立 lib，其领域不限于 LLM；sampling 语义不作为整个 AI 服务的基础模型。AI 服务与 Agent 运行时保持独立，协议和 SDK 由具体 adapter 封装。读取运行时提供商配置属于 application 与运行时 adapter 的导入用例，不使 AI 服务依赖 Harness 的模型目录、认证文件或推理级别。
 
 AI 网关承担同协议原生透传、模型路由与 fail-over，当前不做协议转换或翻译。名称为 AI 网关；Harness 是它的一类调用方，不定义它的领域边界。当前产品协议范围为 OpenAI ChatCompletions v1 与 Responses v1，不以这些操作限制整个 AI 服务未来的领域，也不将尚未实现的 Messages 等协议视为已交付。
 
@@ -26,7 +26,7 @@ AI 提供商与模型分别建模：模型跨提供商存在，提供商关联�
 
 接口围绕独立协议操作及不可变绑定组织，provider 可组合多个操作能力；不要求每种提供商实现一个包含所有操作的巨型 trait。`SamplingOutput` 可以作为原生协议业务数据的消费投影，但不因此要求建立独立 sampling 执行操作，更不作为 AI 网关的中间协议。现有 sampling 执行合同属于历史实现，是否保留取决于实际调用需求。
 
-处理链为 HTTP → 原生 ChatCompletions 协议数据 → messages、outputs 与协议统计；需要统一业务结果的调用方可以从 outputs／stats 派生 `SamplingOutput`。这里表示数据处理方向，不表示协议领域类型需要依赖 HTTP crate。协议内的 usage、finish reason 等属于业务结果，不能因为它们可用于统计就归入可观测性。调用耗时、路由尝试、配置版本、提交阶段、取消和执行错误阶段等观察信息独立于业务数据，通过关联 ID 连接；观察侧可提取必要的 usage 指标，但不拥有或替代原始业务统计。不创建要求所有 AI 能力都有 model/token 的通用观察对象。
+处理链为 HTTP → 原生 ChatCompletions 协议数据 → messages、outputs 与协议统计；需要统一业务结果的调用方可以从 outputs／stats 派生 `SamplingOutput`。这里表示数据处理方向，不表示协议领域类型需要依赖 HTTP crate。usage、finish reason 等既是业务数据，也可以是可观测性的对象；职责分离不意味着禁止消费同一份信息。协议业务合同保留其原始含义，观察侧按需提取统计或终态信息，不拥有、替代或改写原始业务数据。调用耗时、路由尝试、配置版本、提交阶段、取消和执行错误阶段等运行观察独立记录，通过关联 ID 连接。不创建要求所有 AI 能力都有 model/token 的通用观察对象。
 
 协议实现按 ChatCompletions、Responses 等协议组织，不按 MiniMax 等服务商组织。服务商名称、端点和模型标识是配置数据，不能据此选择不同的通用执行路径。确有服务商特有的认证或协议差异时，只在对应边界显式处理并说明依据，不让其成为其它服务商的依赖。
 
@@ -40,8 +40,14 @@ flowchart LR
     G --> N[AI 原生操作 binding]
     N --> P[AI-provider：单次协议传输]
     P --> U[同协议上游]
-    N --> O[原生 messages、outputs 与 stats]
+    U --> R[原生响应或事件流]
+    R --> G
+    G --> C
+    R --> O[按需读取 messages、outputs 与 stats]
     O --> S[按消费需要投影 SamplingOutput]
+    G -. 调用与路由阶段 .-> T[可观测性]
+    P -. 单次执行阶段 .-> T
+    O -. usage、finish reason 等 .-> T
 ```
 
 ## 路由、fail-over 与生命周期
@@ -54,7 +60,7 @@ fail-over 由 AI 网关单独决策，provider 执行一次尝试，不隐藏再
 
 协议终态与传输结束分别观察。保留原生 completed、incomplete、failed、finish reason 等含义；HTTP 200、EOF 或客户端没有收到事件不能独自证明完整成功或未执行。断连应有可传播的取消与有界清理，凭据解析、连接、流和资源关闭不能依赖无限等待。使用量不足时保持未知，不补零，不要求所有操作都有 token 计量。
 
-日志与观察只记录关联 ID、目标身份、阶段、提交状态、耗时和安全错误码，默认不记录原生正文、历史或认证。具体日志装配归 [架构](architecture.md#本地可观测性装配) 与 [开发说明](../development.md#本地诊断)。
+日志与观察记录关联 ID、目标身份、阶段、提交状态、耗时、安全错误码及按需提取的 usage／finish reason 等业务指标，默认不记录原生正文、历史或认证。具体日志装配归 [架构](architecture.md#本地可观测性装配) 与 [开发说明](../development.md#本地诊断)。
 
 ## 当前实现与证据
 
