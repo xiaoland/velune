@@ -69,6 +69,35 @@ async function main() {
     supportsAdditionalTools: false, supportsToolSearch: false, supportsExplicitPromptCacheMode: false,
     supportsMaxOutputTokens: true };
   const compatibility = (raw, model) => model.compat ?? raw?.compat ?? {};
+  // Pi 1.0.2's private detectCompat also derives wire requirements from the
+  // original provider/URL. The managed catalog changes both, so retain the
+  // defaults relevant to this gateway boundary before checking explicit overrides.
+  const effectiveCompletionsCompatibility = (raw, model) => {
+    const provider = model.provider;
+    const url = model.baseUrl ?? raw?.baseUrl ?? "";
+    const zai = ["zai", "zai-coding-cn"].includes(provider) || url.includes("api.z.ai") || url.includes("open.bigmodel.cn");
+    const together = provider === "together" || url.includes("api.together.ai") || url.includes("api.together.xyz");
+    const moonshot = ["moonshotai", "moonshotai-cn"].includes(provider) || url.includes("api.moonshot.");
+    const cloudflare = provider === "cloudflare-ai-gateway" || url.includes("gateway.ai.cloudflare.com");
+    const nvidia = provider === "nvidia" || url.includes("integrate.api.nvidia.com");
+    const antLing = provider === "ant-ling" || url.includes("api.ant-ling.com");
+    const deepseek = provider === "deepseek" || url.toLowerCase().includes("deepseek.com");
+    const openrouter = provider === "openrouter" || url.includes("openrouter.ai");
+    const grok = provider === "xai" || url.includes("api.x.ai");
+    const detected = {
+      maxTokensField: url.includes("chutes.ai") || deepseek || moonshot || cloudflare || together || nvidia || antLing || zai ? "max_tokens" : "max_completion_tokens",
+      thinkingFormat: deepseek ? "deepseek" : zai ? "zai" : together ? "together" : antLing ? "ant-ling" : openrouter ? "openrouter" : "openai",
+      supportsReasoningEffort: !grok && !zai && !moonshot && !together && !cloudflare && !nvidia && !antLing,
+      requiresReasoningContentOnAssistantMessages: deepseek,
+      sendSessionAffinityHeaders: openrouter,
+      ...(provider === "openrouter" && model.id.startsWith("anthropic/") ? {cacheControlFormat:"anthropic"} : {}),
+    };
+    for (const [key, value] of Object.entries(compatibility(raw, model))) {
+      // SDK uses ?? for known options; null must not erase a detected requirement.
+      if (value != null || !Object.hasOwn(detected, key)) detected[key] = value;
+    }
+    return detected;
+  };
   const projection = (raw, model) => {
     const available = getSupportedThinkingLevels(model);
     const thinkingLevelMap = Object.fromEntries(levels.map((level) => [level,
@@ -78,21 +107,75 @@ async function main() {
       const compat = compatibility(raw, model);
       result.responsesCompat = Object.fromEntries(Object.entries(responsesDefaults).map(([key, fallback]) => [key, typeof compat[key] === "boolean" ? compat[key] : fallback]));
     }
+    if (protocol(model.api) === "chatCompletionsV1" && effectiveCompletionsCompatibility(raw, model).maxTokensField === "max_tokens") {
+      result.completionsMaxTokensField = "max_tokens";
+    }
     return result;
   };
   const canonical = (value) => JSON.stringify(value, (_, entry) => entry && !Array.isArray(entry) && typeof entry === "object"
     ? Object.fromEntries(Object.entries(entry).sort(([a], [b]) => a.localeCompare(b))) : entry);
   const populated = (value) => value != null && (typeof value !== "object" || Object.keys(value).length > 0);
+  // The gateway rebuilds Chat Completions requests. Accept only source
+  // capabilities that its current wire output satisfies; do not pretend Pi's
+  // vendor request transformations survive the SamplingInput boundary.
+  const completionsCompatibilityIssues = (compat) => {
+    const boolean = (value) => typeof value === "boolean";
+    const disabled = (value) => value === false;
+    const empty = (value) => value != null && typeof value === "object" && !Array.isArray(value) && Object.keys(value).length === 0;
+    const supported = {
+      supportsStore: boolean, // The gateway does not request storage.
+      supportsDeveloperRole: boolean, // Upstream instructions use the system role.
+      supportsReasoningEffort: (value) => value === true,
+      supportsUsageInStreaming: (value) => value === true,
+      supportsFinishReason: boolean, // The gateway always emits a finish reason to Pi.
+      maxTokensField: (value) => ["max_tokens", "max_completion_tokens"].includes(value),
+      thinkingFormat: (value) => value === "openai",
+      requiresToolResultName: disabled,
+      requiresAssistantAfterToolResult: disabled,
+      requiresThinkingAsText: disabled,
+      requiresReasoningContentOnAssistantMessages: disabled,
+      supportsStrictMode: boolean, // Ordinary function schemas do not require strict mode.
+      supportsOpenAIGrammarTools: disabled,
+      supportsMidConvoSystemMessages: disabled,
+      supportsMidConvoToolAdditions: disabled,
+      supportsLongCacheRetention: boolean, // No upstream cache-retention field is sent.
+      sendSessionAffinityHeaders: disabled,
+      sessionAffinityFormat: (value) => compat.sendSessionAffinityHeaders === false && ["openai", "openai-nosession", "openrouter"].includes(value),
+      zaiToolStream: disabled,
+      supportsThinkingTokenBudget: disabled,
+      openRouterRouting: empty,
+      vercelGatewayRouting: empty,
+      chatTemplateKwargs: empty,
+      chatTemplateArgs: empty,
+    };
+    const reasons = {
+      thinkingFormat: "网关目前使用 reasoning_effort，不能保留此模型的推理参数格式",
+      supportsUsageInStreaming: "网关目前发送 stream_options.include_usage，不能禁用此请求字段",
+      supportsReasoningEffort: "网关目前使用 reasoning_effort，不能保留来源禁用该字段的设置",
+    };
+    const result = [];
+    for (const [key, value] of Object.entries(compat)) {
+      if (!Object.hasOwn(supported, key)) {
+        result.push("来源包含尚未支持的 Chat Completions 兼容字段");
+      } else if (!supported[key](value)) {
+        result.push(reasons[key] ?? `网关尚不能保留 Chat Completions 兼容字段 ${key} 的设置`);
+      }
+    }
+    return [...new Set(result)];
+  };
   const issues = (raw, model) => {
     const result = [];
-    if (!protocol(model.api)) result.push("当前网关不支持此 Pi 协议");
+    if (!protocol(model.api)) {
+      const names = { "anthropic-messages": "Anthropic Messages", "openai-codex-responses": "旧版 Codex Responses / ChatGPT backend", "azure-openai-responses": "Azure OpenAI Responses", "google-generative-ai": "Google Generative AI", "google-vertex": "Google Vertex", "bedrock-converse-stream": "Amazon Bedrock", "mistral-conversations": "Mistral Conversations", "pi-messages": "Pi Messages" };
+      result.push(`当前网关尚未实现 Pi 协议 ${model.api}${names[model.api] ? `（${names[model.api]}）` : ""}；已支持 OpenAI Chat Completions v1 和 Responses v1`);
+    }
     if (!safeEndpoint(model.baseUrl ?? raw?.baseUrl)) result.push("服务地址无效或包含不能展示的认证信息");
     if (populated(raw?.headers) || populated(model.headers)) result.push("尚不支持来源中的自定义请求头");
     if (raw?.authHeader === false) result.push("尚不支持来源中的认证请求头规则");
     const compat = compatibility(raw, model);
     if (protocol(model.api) === "responsesV1") {
       if (Object.entries(compat).some(([key, value]) => !(key in responsesDefaults) || typeof value !== "boolean")) result.push("尚不支持来源中的 Responses 兼容选项");
-    } else if (populated(compat)) result.push("尚不支持来源中的 Chat Completions 兼容选项");
+    } else if (protocol(model.api) === "chatCompletionsV1") result.push(...completionsCompatibilityIssues(effectiveCompletionsCompatibility(raw, model)));
     if (populated(model.samplingParams) || populated(model.samplingParamsByThinkingLevel)) result.push("尚不支持来源中的自定义采样参数");
     if (Object.entries(model.thinkingLevelMap ?? {}).some(([level, mapped]) => !levels.includes(level) || (mapped != null &&
         (protocol(model.api) === "responsesV1" ? !["none", ...levels].includes(mapped) : mapped !== level)))) result.push("尚不支持来源中的推理级别转换");

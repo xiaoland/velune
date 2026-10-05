@@ -20,6 +20,14 @@ pub struct ResponsesCompat {
     pub supports_max_output_tokens: bool,
 }
 
+/// Pi's source model choice of the OpenAI output-limit field.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CompletionsMaxTokensField {
+    MaxTokens,
+    MaxCompletionTokens,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PiModelProjection {
@@ -28,6 +36,8 @@ pub struct PiModelProjection {
     pub thinking_level_map: BTreeMap<String, Option<String>>,
     #[serde(default)]
     pub responses_compat: Option<ResponsesCompat>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completions_max_tokens_field: Option<CompletionsMaxTokensField>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

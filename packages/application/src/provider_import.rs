@@ -248,6 +248,7 @@ pub(crate) fn apply(
         ));
     }
     let mut imported = Vec::new();
+    let mut skipped = Vec::new();
     let selections = if source_value["selections"].is_string() {
         serde_json::from_str::<Value>(source_value["selections"].as_str().unwrap_or("[]"))
             .unwrap_or_else(|_| json!([]))
@@ -391,6 +392,12 @@ pub(crate) fn apply(
             ),
         );
         if gateway.providers.iter().any(|p| p.id == provider_id) && !replace {
+            if selection_items.iter().any(|selection| {
+                selection["providerId"] == provider_id
+                    || selection["providerId"] == provider.source_provider_id
+            }) {
+                skipped.push(provider_id);
+            }
             continue;
         }
         let mut bindings = Vec::new();
@@ -513,6 +520,6 @@ pub(crate) fn apply(
     }
     gateway.validate().map_err(RuntimeError::invalid)?;
     Ok(
-        json!({"importedProviderIds":imported,"sourceFingerprint":snapshot.source_fingerprint,"targetFingerprint":fingerprint(gateway)?}),
+        json!({"importedProviderIds":imported,"skippedProviderIds":skipped,"sourceFingerprint":snapshot.source_fingerprint,"targetFingerprint":fingerprint(gateway)?}),
     )
 }

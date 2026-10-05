@@ -8,4 +8,4 @@
 
 依赖方向为 `velune-gateway → velune-ai-provider → velune-ai`，并直接使用 AI 服务契约。它不依赖会话投影、Agent 运行时、应用层或语言绑定。Rust public API 可由应用层组合为各平台 SDK；package 本身不要求独立动态库。
 
-原生 Responses 请求保留协议字段，不将其转换为 Harness 的能力模型。ChatCompletions 使用当前受支持的 sampling 操作范围。调用方决定是否链接此 unit；仅连接远端的客户端不需要本机 HTTP 网关。
+原生 Responses 请求保留协议字段，不将其转换为 Harness 的能力模型。ChatCompletions 使用当前受支持的 sampling 操作范围。提供商模型绑定可用类型化 `chatCompletionsOutputLimitField` 选择 `max_tokens` 或默认的 `max_completion_tokens`；网关将该 wire 配置传给 AI-provider，不把输出字段选择提升为全局模型参数。调用方决定是否链接此 unit；仅连接远端的客户端不需要本机 HTTP 网关。

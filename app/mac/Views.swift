@@ -191,13 +191,49 @@ struct CodeBlockView: View {
     }
 }
 
+// Limit the workaround to expansion writes; content controls keep their own transactions.
+struct ImmediateDisclosureGroup<Label: View, Content: View>: View {
+    @State private var expanded = false
+    private var externalExpansion: Binding<Bool>?
+    private let content: Content
+    private let label: Label
+
+    init(isExpanded: Binding<Bool>? = nil, @ViewBuilder content: () -> Content, @ViewBuilder label: () -> Label) {
+        externalExpansion = isExpanded
+        self.content = content()
+        self.label = label()
+    }
+
+    private var expansion: Binding<Bool> {
+        Binding(
+            get: { externalExpansion?.wrappedValue ?? expanded },
+            set: { value in
+                var transaction = Transaction(animation: nil)
+                transaction.disablesAnimations = true
+                let target = externalExpansion ?? $expanded
+                target.transaction(transaction).wrappedValue = value
+            }
+        )
+    }
+
+    var body: some View {
+        DisclosureGroup(isExpanded: expansion) { content } label: { label }
+    }
+}
+
+extension ImmediateDisclosureGroup where Label == Text {
+    init(_ title: String, @ViewBuilder content: () -> Content) {
+        self.init(content: content, label: { Text(title) })
+    }
+}
+
 struct ToolDisclosure: View {
     let title: String
     let detail: String
     let state: String
     @State private var expanded = false
     var body: some View {
-        DisclosureGroup(isExpanded: $expanded) {
+        ImmediateDisclosureGroup(isExpanded: $expanded) {
             Text(detail.isEmpty ? "没有附加输出" : detail).font(.system(.callout, design: .monospaced)).foregroundStyle(.secondary).textSelection(.enabled).padding(.top, 4)
         } label: {
             Label(title, systemImage: state == "running" ? "circle.dotted" : state == "error" ? "exclamationmark.circle" : "checkmark.circle").font(.callout).foregroundStyle(.secondary)

@@ -130,10 +130,28 @@ pub enum ProtocolConfig {
     Messages(MessagesConfig),
     ChatCompletions(ChatCompletionsConfig),
 }
+/// Output-limit field used by an OpenAI Chat Completions model binding.
+/// This is provider wire configuration, not a global model capability.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ChatCompletionsOutputLimitField {
+    MaxTokens,
+    #[default]
+    MaxCompletionTokens,
+}
+impl ChatCompletionsOutputLimitField {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::MaxTokens => "max_tokens",
+            Self::MaxCompletionTokens => "max_completion_tokens",
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ModelMapping {
     id: ModelId,
     external_name: String,
+    chat_completions_output_limit_field: ChatCompletionsOutputLimitField,
 }
 impl ModelMapping {
     pub fn new(id: ModelId, external_name: impl Into<String>) -> Result<Self, InvalidContract> {
@@ -144,7 +162,21 @@ impl ModelMapping {
         {
             return Err(InvalidContract("invalid external model name"));
         }
-        Ok(Self { id, external_name })
+        Ok(Self {
+            id,
+            external_name,
+            chat_completions_output_limit_field: ChatCompletionsOutputLimitField::default(),
+        })
+    }
+    pub fn with_chat_completions_output_limit_field(
+        mut self,
+        field: ChatCompletionsOutputLimitField,
+    ) -> Self {
+        self.chat_completions_output_limit_field = field;
+        self
+    }
+    pub fn chat_completions_output_limit_field(&self) -> ChatCompletionsOutputLimitField {
+        self.chat_completions_output_limit_field
     }
     pub fn id(&self) -> &ModelId {
         &self.id

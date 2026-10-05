@@ -18,11 +18,21 @@ pub struct ModelDefinition {
     pub reasoning_levels: Vec<String>,
 }
 
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ChatCompletionsOutputLimitField {
+    MaxTokens,
+    #[default]
+    MaxCompletionTokens,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderModelBinding {
     pub model_id: String,
     pub external_model_id: String,
+    #[serde(default)]
+    pub chat_completions_output_limit_field: ChatCompletionsOutputLimitField,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -121,6 +131,12 @@ impl GatewayConfig {
             }
             let mut bindings = BTreeSet::new();
             for binding in &provider.models {
+                if binding.chat_completions_output_limit_field
+                    == ChatCompletionsOutputLimitField::MaxTokens
+                    && !matches!(provider.protocol, GatewayProtocol::ChatCompletionsV1)
+                {
+                    return Err("max_tokens output field requires Chat Completions protocol");
+                }
                 if !models.contains(&binding.model_id)
                     || binding.external_model_id.is_empty()
                     || !bindings.insert(&binding.model_id)

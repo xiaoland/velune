@@ -142,6 +142,13 @@ pub(super) fn materialize_models(
                     .collect::<serde_json::Map<_, _>>();
                 entry["thinkingLevelMap"] = Value::Object(levels);
             }
+            if let Some(field) = binding_projection.and_then(|projection| projection.completions_max_tokens_field) {
+                let name = match field {
+                    velune_agent_runtime::model_projection::CompletionsMaxTokensField::MaxTokens => "max_tokens",
+                    velune_agent_runtime::model_projection::CompletionsMaxTokensField::MaxCompletionTokens => "max_completion_tokens",
+                };
+                entry["compat"]["maxTokensField"] = Value::String(name.into());
+            }
             if let Some(responses_compat) =
                 binding_projection.and_then(|projection| projection.responses_compat.as_ref())
             {

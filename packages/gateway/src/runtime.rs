@@ -240,7 +240,14 @@ fn build_routes(
                     velune_ai_provider::config::ModelMapping::new(
                         id.clone(),
                         binding.external_model_id.clone(),
-                    )
+                    ).map(|mapping| {
+                        use velune_ai_provider::config::ChatCompletionsOutputLimitField as WireField;
+                        let field = match binding.chat_completions_output_limit_field {
+                            crate::config::ChatCompletionsOutputLimitField::MaxTokens => WireField::MaxTokens,
+                            crate::config::ChatCompletionsOutputLimitField::MaxCompletionTokens => WireField::MaxCompletionTokens,
+                        };
+                        mapping.with_chat_completions_output_limit_field(field)
+                    })
                 })
                 .collect::<Result<Vec<_>, _>>()
                 .map_err(|_| GatewayError("provider model mapping"))?,

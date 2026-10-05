@@ -165,3 +165,19 @@ Mac 展开用户路径输入并在提交时保存绝对路径，旧配置可编�
 用户认为独立窗口的信息层级已有改善，但仍有割裂与不协调，要求进一步贴近 Apple 原生体验并保持简单。继续由原独立设计 owner 负责，不将第一版三栏细节视为冻结需求。本轮删除重复标题和常驻解释，将搜索与批量操作归模型表，将详情聚焦于当前模型，提供商连接信息与模型能力按需展开；重复替换策略保持整个导入操作的作用域，收进全局原生菜单，不伪装成单个提供商设置。使用系统 List、Table、Menu 与语义样式，不添加自定义皮肤。
 
 最终独立原生截图确认紧凑来源栏、完整模型表、模型详情与底部操作统一；已有提供商替换场景显示正确计数与全局模型关联，不支持原因仍可查看。开启筛选时原生菜单图标和搜索提示同步表达状态。实际 Swift 编译、选择逻辑隔离检查与 diff 检查通过，临时窗口进程已清理；CUA 不可用，未声称完成实际鼠标验收，程序化 Table 快速更新的重入警告仍保留为观察。随后对最终提交构建并安装，真实产品体验仍归用户验收。
+
+## 2026-10-05 Disclosure 展开行为
+
+用户观察提供商信息等 disclosure 内容仅展开时出现 slide/fade，收起没有，要求符合 Mac 原生体验。源码初查四处均使用 SwiftUI DisclosureGroup，未发现应用显式 animation、transition 或 transaction；ToolDisclosure 另有依展开状态变化的布局。由原界面 owner 对照最小原生控件与实际内容，区分框架默认行为和应用布局影响，再实施有证据的局部修复，不将用户的原因猜测直接记为事实。
+
+同轮用户补充：当前 Pi 模型被标为不支持，提示协议或 ChatCompletions 兼容选项不支持，与已实现两种网关协议的能力不一致。后端 owner 使用固定 Pi SDK 与合成配置核对协议映射及来源投影边界，不读取用户真实提供商文件；未知配置不能为快速导入而静默忽略。
+
+后端证据区分了两个边界：固定 Pi 1.0.2 的新 OpenAI 订阅目录使用 openai-responses，已有网关路径继续支持；旧 openai-codex-responses 使用独立 codex backend 与 account/JWT 语义，不得别名为普通 Responses。anthropic-messages 也不属于当前已实现协议。真正错误是把非空 ChatCompletions compat 整组拒绝：仅允许与已发送 wire 语义等价的已知选项，改变 wire 的选项和未知字段仍按具体字段拒绝，不静默丢弃。
+
+调查未发现应用自定义过渡，也不能从 Apple 文档推断框架默认动画必然对称。CUA 原生服务不可用，遵守其 UI 交互工具边界，不用其它技术模拟点击。经 advisor 复核，保留原生 DisclosureGroup，只在 isExpanded Binding 的状态写入中使用无动画事务并禁止该次事务补入动画；不对整个内容子树常驻禁动画，也不增加 AppKit 桥接。后续 Picker 等独立状态更新不继承这次作用域。此修改响应用户的可观察缺陷，不声称已证实 SwiftUI 系统缺陷，实际点击效果仍待用户验收。
+
+advisor 指出 max_tokens 仍是 OpenAI ChatCompletions 的正式但已弃用字段；入口支持、出口固定改写为 max_completion_tokens 属于现有协议缺口。本轮补齐具名字段选择，由 AI-provider 负责请求编码，Pi adapter 只映射来源选择，URL 默认推断不进入 AI lib。厂商 thinking/reasoning_content 等完整语义扩展仍需独立实现，不能仅保留 JSON 字段假称支持。
+
+四处 disclosure 共用小型原生控件包装，仅通过 Binding.transaction 将即时切换事务传入展开状态写入。临时事务探针确认展开和收起均无 animation 且禁止补入动画，内容的独立状态操作保留其事务；Swift 编译和 diff 检查通过。Rust workspace fmt/check/clippy、无 local-runtime Clippy、Windows GNU 类型检查通过；未新增或运行自动化测试。
+
+最终 release UniFFI 合成端到端分别确认 max_tokens 与默认 max_completion_tokens 只发送所选字段，上限为 64；经过已配置实例预览、导入、显式路由、连接与实际 loopback 回复。受管 Pi catalog 保留来源字段选择，原 models/auth/settings 逐字节不变。重复导入发现返回 skippedProviderIds 为空的既有缺口，修复为仅报告本次选择中实际跳过的已导入提供商，并在同一流程确认结果。合成矩阵放行已知相容设置，拒绝未知字段、关闭 usage/effort 或未实现的厂商 thinking；原 DeepSeek URL 的空 compat 仍能识别隐含推理格式与历史 reasoning_content 要求。未知协议提示明确 API 名称，不再附加无关的 Chat 兼容提示。最终 fmt/check/clippy、Windows 与无 local-runtime 静态检查通过，随后对本切片提交构建 clean bundle 并安装，实际原生交互仍由用户验收。

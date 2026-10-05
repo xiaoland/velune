@@ -18,7 +18,9 @@
 
 首个适配器固定读取 Pi 1.0.2 的有效配置。用户选择已配置的运行时实例；application 在预览和应用时重新解析该实例的目录与执行配置，不接受调用方覆盖路径。实例或来源变化使旧预览失效。读取不要求运行时先连接或已有默认模型。预览不执行配置中的凭据命令、不刷新认证、不访问模型服务。提供商按实际端点与协议分组；无法由当前网关保持语义的配置须显示原因，不能默默剥离后声称支持。导入保留原文件；普通凭据引用原来源，OAuth 仍由来源适配器在原存储的锁内刷新，Velune 配置不保存秘密值。
 
-Core 装配配置中的提供商模型映射可以携带 `piProjection`，其类型和转换归 Pi adapter；它不是通用 AI 模型能力。全局目录保留本轮对话操作的身份、显示和预算，Pi adapter 将允许级别与来源 Pi 级别求交，并保留 off→none 等 SDK 映射及九项 Responses 编码选项。适配器同时派生原生 Responses 的允许 effort 值域；网关只校验 wire 值，不理解 Pi 七级、不执行级别转换。投影变化进入物理绑定身份，来源派发重新核对同一投影。未知 compat、自定义 headers、采样参数及显式 session affinity 请求头配置继续明确标记不支持，不声称完整请求头透传。
+Core 装配配置中的提供商模型映射可以携带 `piProjection`，其类型和转换归 Pi adapter；它不是通用 AI 模型能力。全局目录保留本轮对话操作的身份、显示和预算，Pi adapter 将允许级别与来源 Pi 级别求交，并保留 off→none 等 SDK 映射及九项 Responses 编码选项。适配器同时派生原生 Responses 的允许 effort 值域；网关只校验 wire 值，不理解 Pi 七级、不执行级别转换。投影变化进入物理绑定身份，来源派发重新核对同一投影。未知 compat、自定义 headers、采样参数及启用 session affinity 请求头的配置继续明确标记不支持，不声称完整请求头透传。
+
+Chat Completions 导入接受与当前网关请求行为相容的已知兼容设置，例如 `supportsStore: false`、`maxTokensField: "max_completion_tokens"` 和 `thinkingFormat: "openai"`，不因兼容对象非空而整体拒绝。网关经 sampling 契约重新编码请求，提供商模型绑定以类型化 wire 选项选择 `max_tokens` 或默认的 `max_completion_tokens`；Pi 来源字段由 application 显式转换，不进入通用 AI 模型参数。禁用 `stream_options.include_usage`、禁用 `reasoning_effort` 或使用尚未实现的供应商推理参数格式的来源仍显示具体原因。适配器同时检查 Pi 1.0.2 从原提供商与 URL 推断的相关默认值；改成受管提供商和本地网关地址不能消除来源的请求要求。这一判定绑定固定 SDK 版本，升级时须重新核对其默认推断与网关编码，不能沿用假定。Pi 新 ChatGPT 订阅仍使用受支持的 `openai-responses`；旧 `openai-codex-responses` 使用另一后端与认证契约，不作为普通 Responses 的别名。未实现的 Pi 协议按实际 API 标识说明，不将其附加为 Chat Completions 兼容问题。
 
 `packages/ai` 与 AI provider lib 不引用 Pi 类型或任何 Harness 配置，独立 Responses 是已实现的一项协议操作，sampling 是另一项操作；这些具体操作不成为整个 AI 服务领域的基础模型。Mac 只编辑通用绑定字段并往返保留 Core 验证的适配元数据，不解释 Pi 投影。
 

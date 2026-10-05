@@ -3,7 +3,10 @@
 //! This adapter accepts an already assembled client and credential. It does not
 //! read provider configuration, resolve credentials, retry, or choose a model.
 use crate::{
-    config::{ProtocolConfig, ProviderConfig, Transport, parse_resolved_credential},
+    config::{
+        ChatCompletionsOutputLimitField, ProtocolConfig, ProviderConfig, Transport,
+        parse_resolved_credential,
+    },
     minimax::Decoder,
     minimax::mapping,
 };
@@ -74,7 +77,11 @@ impl ChatCompletions {
         })
     }
 
-    fn request_json(input: &SamplingInput, external_model: &str) -> Result<Value, InvalidContract> {
+    fn request_json(
+        input: &SamplingInput,
+        external_model: &str,
+        output_limit_field: ChatCompletionsOutputLimitField,
+    ) -> Result<Value, InvalidContract> {
         if input.max_output_tokens().get() > 1_048_576 {
             return Err(InvalidContract("provider output limit is too large"));
         }
@@ -122,10 +129,10 @@ impl ChatCompletions {
         let mut body = json!({
             "model": external_model,
             "messages": messages,
-            "max_completion_tokens": input.max_output_tokens().get(),
             "stream": true,
             "stream_options": {"include_usage": true}
         });
+        body[output_limit_field.as_str()] = json!(input.max_output_tokens().get());
         if let Some(level) = input.options().reasoning_level() {
             body["reasoning_effort"] = Value::String(level.to_owned());
         }
@@ -168,7 +175,11 @@ impl SamplingProvider for ChatCompletions {
                 )
             });
         };
-        let body = match Self::request_json(&request.input, mapping.external_name()) {
+        let body = match Self::request_json(
+            &request.input,
+            mapping.external_name(),
+            mapping.chat_completions_output_limit_field(),
+        ) {
             Ok(body) => body,
             Err(_) => {
                 return Box::pin(async {

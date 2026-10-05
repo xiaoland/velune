@@ -99,7 +99,7 @@ impl CoreRuntime {
                     return Err(error);
                 }
                 Ok(
-                    json!({"importedProviderIds":result["importedProviderIds"],"skippedProviderIds":[],"gateways":self.gateways,"requiresReconnect":self.active_runtime_id.is_some()}),
+                    json!({"importedProviderIds":result["importedProviderIds"],"skippedProviderIds":result["skippedProviderIds"],"gateways":self.gateways,"requiresReconnect":self.active_runtime_id.is_some()}),
                 )
             }
             _ => Err(RuntimeError::invalid("provider import operation")),

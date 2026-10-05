@@ -194,7 +194,7 @@ struct ProviderImportView: View {
                             Text("此提供商已导入，默认跳过。可在“导入选项”中允许替换。")
                                 .font(.caption).foregroundStyle(.secondary)
                         }
-                        DisclosureGroup("提供商信息") {
+                        ImmediateDisclosureGroup("提供商信息") {
                             providerDetails(provider).padding(.top, 8)
                         }
                     }
@@ -245,7 +245,7 @@ struct ProviderImportView: View {
             }
             issueList(model.issues)
             if model.contextWindow != nil || model.maxOutputTokens != nil || !model.reasoningLevels.isEmpty {
-                DisclosureGroup("模型能力") {
+                ImmediateDisclosureGroup("模型能力") {
                     VStack(alignment: .leading, spacing: 8) {
                         if let context = model.contextWindow { LabeledContent("上下文窗口", value: context.formatted()) }
                         if let output = model.maxOutputTokens { LabeledContent("最大输出", value: output.formatted()) }
@@ -265,7 +265,7 @@ struct ProviderImportView: View {
     private var footer: some View {
         VStack(alignment: .leading, spacing: 10) {
             if let preview, !preview.warnings.isEmpty {
-                DisclosureGroup("读取提示 · \(preview.warnings.count)") {
+                ImmediateDisclosureGroup("读取提示 · \(preview.warnings.count)") {
                     ScrollView { issueList(preview.warnings).frame(maxWidth: .infinity, alignment: .leading) }
                         .frame(maxHeight: 80)
                 }.font(.callout)
