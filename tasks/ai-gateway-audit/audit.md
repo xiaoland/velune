@@ -35,11 +35,13 @@ sampling 的实际非网关调用方是 [MiniMax 手动入口](../../packages/ai
 
 应替换 AI 网关中的 sampling 往返路径，增加独立原生 ChatCompletions 操作。sampling 保留自己的明确语义，不继续添加厂商字段来模拟透传。
 
-### P1：通用 OpenAI 响应受有界 MiniMax decoder 限制
+### P1：通用协议执行依赖 MiniMax 名下的采样映射器
 
 [openai.rs](../../packages/ai-provider/src/openai.rs) 行 10–11、171–183、322–324 依赖 minimax::Decoder 与 mapping；[MiniMax mapping](../../packages/ai-provider/src/minimax/mapping.rs) 只接受有界 choice、delta、finish 与 usage 形状。未支持的推理 delta 会失败，其它原生扩展无法进入 sampling 输出。
 
-同一代码复用不是天然错误，但此处复用了限制语义的 decoder，影响另一个 adapter 的协议合同。保留 MiniMax sampling decoder；原生 Chat decoder／观察器由对应协议操作负责，未知合法扩展不因采样类型缺槽而丢弃或拒绝。
+此处 `Decoder` 是现有类型名，并非字节转字符串组件：`openai.rs` 先解析 SSE data 为 JSON，再调用 mapping 的投影与 `Decoder::push`，后者映射并组装 sampling 结果。HTTP、SSE 分帧和 JSON 解析仍然存在，但它们不能成为有损投影的理由。
+
+通用协议实现应按 ChatCompletions、Responses 等协议组织，具体服务商只作为目标配置。当前通用执行直接依赖 MiniMax 名下且带限制语义的采样映射器，是实际代码耦合；单纯配置中出现服务商名称并不构成这一问题。历史采样代码不能直接改名后充当原生透传：需要退出该投影路径，协议解析与必要观察归对应协议操作。历史 MiniMax 手动入口是否保留独立限制，由其实际用途决定，不成为目标架构中的服务商专属执行层。
 
 ### P1：上游 HTTP 结果被网关提前替换
 
