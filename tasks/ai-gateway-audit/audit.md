@@ -95,7 +95,7 @@ API-key 来源也可能被套用订阅限制。这是实际请求改写条件，
 
 [ai/lib.rs](../../packages/ai/src/lib.rs) 行 17 的 AiService 只有 sampling；[observation.rs](../../packages/ai/src/observation.rs) 行 28–54 的 Operation、Usage、AttemptContext 和错误引用仅适用于采样与语言模型。Responses 的独立契约缺少相应 call／attempt 观测，不利于网关一致记录尝试与执行状态。
 
-以操作命名接口和 binding，共享必要的生命周期识别规则；操作定义自己的 usage／目标和错误语义，不把 model、token 或 SamplingErrorKind 变成 AI 服务所有能力的基础。无需万能操作注册器或新的巨大 AiService trait。
+以协议操作命名接口和 binding，共享必要的生命周期识别规则。协议内 usage 等统计属于业务数据；可观测性独立记录调用／尝试、耗时、配置版本及执行阶段，通过关联 ID 连接，必要时提取业务指标。`SamplingOutput` 可从原生 outputs／stats 投影，但不作为网关执行的中间协议，也不据此要求另建 sampling 执行操作。不把 model、token 或 SamplingErrorKind 变成 AI 服务所有能力的基础。无需万能操作注册器或新的巨大 AiService trait。
 
 ## 范围缺口与尚待验证
 

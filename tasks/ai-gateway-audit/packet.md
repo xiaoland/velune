@@ -31,3 +31,5 @@ AI 网关只承担同协议原生透传、模型路由与 fail-over，当前不�
 交付检查：9 份改动 Markdown 的 133 个本地链接及标题锚点全部可解析，`git diff --check` 与暂存区检查通过。文档改动不执行产品构建或自动化测试。
 
 后续术语修订：用户指出执行应耦合协议而非具体服务商。核对后明确原 `Decoder` 实际是已解析 JSON 到 sampling 的映射／组装器；修正权威设计与审计，区分 HTTP／SSE／JSON 解析和有损采样投影。服务商作为配置数据与通用协议代码依赖服务商模块是两件事。本次仍不修改产品源码。
+
+后续业务边界修订：用户允许 `SamplingOutput`，要求可观测性与业务数据分开，处理方向为 HTTP → 原生协议 → messages、outputs／stats → 可选业务投影。核对现有代码发现 Usage 位于 observation 模块，SamplingCompletion 又聚合 outcome 与观察对象；后续重构应将协议统计归业务合同，将耗时、尝试与执行阶段独立关联。不由可选投影推导必须保留独立 sampling 执行层。

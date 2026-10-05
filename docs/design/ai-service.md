@@ -24,7 +24,9 @@ AI 提供商与模型分别建模：模型跨提供商存在，提供商关联�
 | application | 配置仓库、秘密解析设施、跨域装配、导入与运行生命周期用例 | 再造协议 decoder 或要求 UI 补偿业务约束 |
 | agent-runtime adapter | Harness 原生配置、身份、模型能力和来源兼容设置的投影 | 接管 AI 网关路由权，或把 Pi 参数变成 AI 服务通用参数 |
 
-接口围绕独立操作及不可变绑定组织。原生 ChatCompletions、Responses 和 sampling 可并列，provider 可组合多个操作能力；不要求每种提供商实现一个包含所有操作的巨型 trait。调用和尝试使用一致的身份、提交阶段、取消与终态规则；具体使用量和目标参数仍归各操作，不创建要求所有 AI 能力都有 model/token 的通用观察对象。
+接口围绕独立协议操作及不可变绑定组织，provider 可组合多个操作能力；不要求每种提供商实现一个包含所有操作的巨型 trait。`SamplingOutput` 可以作为原生协议业务数据的消费投影，但不因此要求建立独立 sampling 执行操作，更不作为 AI 网关的中间协议。现有 sampling 执行合同属于历史实现，是否保留取决于实际调用需求。
+
+处理链为 HTTP → 原生 ChatCompletions 协议数据 → messages、outputs 与协议统计；需要统一业务结果的调用方可以从 outputs／stats 派生 `SamplingOutput`。这里表示数据处理方向，不表示协议领域类型需要依赖 HTTP crate。协议内的 usage、finish reason 等属于业务结果，不能因为它们可用于统计就归入可观测性。调用耗时、路由尝试、配置版本、提交阶段、取消和执行错误阶段等观察信息独立于业务数据，通过关联 ID 连接；观察侧可提取必要的 usage 指标，但不拥有或替代原始业务统计。不创建要求所有 AI 能力都有 model/token 的通用观察对象。
 
 协议实现按 ChatCompletions、Responses 等协议组织，不按 MiniMax 等服务商组织。服务商名称、端点和模型标识是配置数据，不能据此选择不同的通用执行路径。确有服务商特有的认证或协议差异时，只在对应边界显式处理并说明依据，不让其成为其它服务商的依赖。
 
@@ -38,7 +40,8 @@ flowchart LR
     G --> N[AI 原生操作 binding]
     N --> P[AI-provider：单次协议传输]
     P --> U[同协议上游]
-    S[独立 sampling 调用方] --> A[Sampling 操作与其 adapter]
+    N --> O[原生 messages、outputs 与 stats]
+    O --> S[按消费需要投影 SamplingOutput]
 ```
 
 ## 路由、fail-over 与生命周期

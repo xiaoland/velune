@@ -151,3 +151,4 @@ S17 实施授权：用户决定全面切换 UniFFI，并要求现在开始拆分
 2026-10-05 用户在导入验收失败后明确：当前网关无需协议转换／翻译，仅做原生透传、路由与 fail-over。此原则同时适用于 ChatCompletions 和 Responses，产品意图归 PRD，当前实现偏差与技术边界归 AI service 设计，失败证据归首循环任务。
 
 2026-10-05 用户要求从需求重新复核整个 AI 网关并审计实现，必要覆盖整个 AI 服务，明确名称不能限定为 Harness 网关。此授权为需求、设计与实现审计，不直接等同全部重构实施。已确认职责归 PRD 和 AI 服务设计，源码证据及方案取舍归 AI 网关审计任务。
+2026-10-05，用户允许 `SamplingOutput` 作为业务表示，但要求可观测性内容与业务数据分离；指定处理方向为 HTTP → OpenAI ChatCompletions → messages、outputs／stats → SamplingOutput。设计释义为原生协议先行，业务投影按需消费；协议统计属于业务数据，运行观察独立关联。权威归属为 [AI 服务设计](design/ai-service.md)。
