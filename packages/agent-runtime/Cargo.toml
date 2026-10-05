@@ -10,3 +10,4 @@ serde_json = "1"
 thiserror = "2"
 velune-conversation = { path = "../conversation" }
 getrandom = "0.4"
+tracing = { version = "0.1", default-features = false, features = ["std"] }

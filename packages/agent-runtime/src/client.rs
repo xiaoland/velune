@@ -264,13 +264,17 @@ impl Client {
         let stdin = child.stdin.take().ok_or(Error::ChildExited)?;
         let stdout = child.stdout.take().ok_or(Error::ChildExited)?;
         let (sender, incoming) = mpsc::channel();
+        let dispatcher = tracing::dispatcher::get_default(Clone::clone);
+        let reader_span = tracing::info_span!("agent_runtime.rpc_reader");
         thread::Builder::new()
             .name("velune-pi-rpc-reader".into())
-            .spawn(move || {
+            .spawn(move || tracing::dispatcher::with_default(&dispatcher, || {
+                let _entered=reader_span.enter();
                 let mut reader = BufReader::new(stdout);
                 loop {
                     match read_record(&mut reader) {
                         Ok(None) => {
+                            tracing::debug!(code="rpc_eof","Pi RPC reader closed");
                             let _ = sender.send(Incoming::Closed);
                             break;
                         }
@@ -287,20 +291,20 @@ impl Client {
                                         break;
                                     }
                                 }
-                                Err(error) => {
-                                    let _ = sender.send(Incoming::Error(format!(
-                                        "invalid Pi RPC JSON record: {error}"
-                                    )));
+                                Err(_) => {
+                                    tracing::warn!(code="rpc_invalid_json","Pi RPC reader rejected invalid JSON");
+                                    let _ = sender.send(Incoming::Error("invalid Pi RPC JSON record".into()));
                                 }
                             }
                         }
                         Err(error) => {
-                            let _ = sender.send(Incoming::Error(error.to_string()));
+                            tracing::warn!(code="rpc_read_failed",io_kind=?error.kind(),"Pi RPC reader I/O failed");
+                            let _ = sender.send(Incoming::Error(format!("Pi RPC read failed: {:?}",error.kind())));
                             break;
                         }
                     }
                 }
-            })?;
+            }))?;
         Ok(Self {
             child,
             stdin: Some(stdin),

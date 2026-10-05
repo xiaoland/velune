@@ -145,3 +145,17 @@ Mac 隔离原生窗口已人工截图检查空状态和八组提供商长预览�
 共享配置与通用 UniFFI 字段增加 executableDiscovery 提示，由平台消费 command/minimumVersion。Mac 隔离探针实际发现本机 mise 管理的 Node 24.15.0，并拒绝合成的 999.0.0 最低版本；探测在后台有时限，失败可手选、已有值和探测期间手动输入保留。固定 Pi SDK 探针确认默认与覆盖会话存储目录。workspace fmt/check/clippy、无 local-runtime Clippy、Windows 类型检查及 Mac typed bindings 构建通过。
 
 最终生成 Python UniFFI 绑定的合成端到端会话循环通过，覆盖新配置字段往返、流式发送、模型恢复、取消及配置重开。Mac 重新构建安装，版本仍为 0.1 beta.1；未添加自动化测试，未使用真实提供商。
+
+## 2026-10-05 导入失败诊断与可观测性
+
+用户报告 Pi 导入只有泛化 BindingError，要求诊断及成熟 Rust/Swift 可观测性，暂不接入 OTLP但保留扩展边界。源码确认 helper 和 Rust 两次丢弃细节，旧版未保留专门日志。只读普通配置的非秘密字段发现运行时目录原值 `~/.pi`，未展开并违反 helper 绝对路径；不读取原提供商、认证或会话内容。合成路径探针与空目录、无 HOME、错误 JSON 对照用于判别，不将未验证错误猜测写为根因。
+
+Mac 展开用户路径输入并在提交时保存绝对路径，旧配置可编辑修正，不擅自改选 Pi 默认目录。helper/adapter 返回白名单 code/stage 及固定解释，拒绝记录 rawstderr/error.message。Rust 单元使用 tracing，subscriber由 bindings装配；Mac使用原生OSLog，日志不记录配置、凭据、会话或prompt。具体装配、关联与保留方案经advisor复核后归长期设计。
+
+用户随后将目录改为实际 Pi 配置根目录并确认读取成功，否定需要重做认证的假设。新截图反馈模型列表的信息架构与组件选择仍不合格，明确要求独立 sub-agent 重新设计并实施。独立 owner 按提供商→模型表→模型详情建立原生三栏浏览；读取默认不选模型，显式筛选/批量选择，详情渐进披露参数及不支持原因，底部按真正有效 selection 计数。提供商级问题归各自 issues，不重复塞入全局 warnings；保留原配置、模型映射、重复处理与显式路由边界。
+
+可观测性验证：Python UniFFI→实际 helper 的 malformed-model 流程返回 invalid_models/models；诊断编号与JSONL一致。两临时home交错失败时日志不串目录，source秘密canary和路径都未写入日志，Unix目录权限0700。实际Swift Transport→Rust→helper同流程返回中文固定说明和相同诊断编号，canary未进入用户错误或日志。正常会话合成循环、静态检查和Windows目标检查通过；Mac新界面由独立fixture人工截图核对后一起构建安装。
+
+独立 UI owner 已完成真实原生窗口截图：读取前、4 提供商／48 模型、不支持项详情、2 提供商／12 模型选择与已有全局模型映射。临时 fixture 调用相同选择逻辑确认筛选批选9、跨提供商保留选择、重复跳过不计数、替换增加3及切回跳过清理选择。CUA服务不可用，因此实际鼠标交互未验证；程序化快速更新Table触发NSTableView重入警告，尝试identity隔离无效并撤回，不在产品添加无依据延时补丁。真实产品体验仍由用户验收。
+
+共享错误契约的实际 Kotlin 编译通过，Rust工作区静态检查、无local-runtime检查、Windows目标与Mac构建通过。最后以当前任务提交构建clean manifest并安装至Applications，版本保持0.1 beta.1。

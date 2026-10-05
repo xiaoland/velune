@@ -4,7 +4,9 @@
 
 `VeluneApplication` 公开配置维护、会话控制、提供商导入、认证交互与关闭操作。参数和结果具有具名类型，不提供 JSON 请求派发接口。凭据解析器路径由平台显式传入；配置只保存凭据来源描述或引用，不保存秘密值。`BindingProviderModelBinding.adapter_metadata_json` 是运行时适配器拥有的模型元数据，平台只负责保留它，不解释其结构。
 
-一个对象串行执行应用操作。`shutdown` 在应用忙碌时返回错误并保留对象，调用方可继续读取 snapshot 或明确取消 Agent 执行；关闭成功后除再次关闭外的操作返回 `Closed`。释放语言包装对象负责释放其 Rust 引用，不代表用户发出了取消 Agent 的命令。会话状态仍通过 `snapshot` 观察，本 unit 不新增事件订阅或后台宿主。
+一个对象串行执行应用操作。`shutdown` 在应用忙碌时返回错误并保留对象，调用方可继续读取 snapshot 或明确取消 Agent 执行；关闭成功后除再次关闭外的操作返回 `Closed` 类型的诊断。释放语言包装对象负责释放其 Rust 引用，不代表用户发出了取消 Agent 的命令。会话状态仍通过 `snapshot` 观察，本 unit 不新增事件订阅或后台宿主。
+
+本 unit 在 `home_directory/logs` 装配对象专属的 tracing subscriber，不占用进程全局 subscriber。操作失败的 `BindingError.Diagnostic` 保留分类、白名单 code/phase、说明和 operation ID，平台使用该 ID 关联日志；领域包不依赖这一日志输出或 UniFFI。日志安全字段、轮转和后续 layer 扩展见 [开发说明](../../docs/development.md#本地诊断)。
 
 默认启用 `local-runtime`。使用 `--no-default-features` 构建会排除本地 Agent runtime；这只表示不携带本地执行能力，不提供尚未实现的远程连接。
 

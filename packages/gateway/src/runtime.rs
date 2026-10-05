@@ -99,34 +99,40 @@ impl Runner {
         let stop = Arc::new(AtomicBool::new(false));
         let thread_stop = Arc::clone(&stop);
         let thread_token = token.clone();
+        let dispatcher = tracing::dispatcher::get_default(Clone::clone);
+        let parent = tracing::Span::current();
         let handle = thread::Builder::new()
             .name("velune-ai-gateway".into())
-            .spawn(move || {
+            .spawn(move || tracing::dispatcher::with_default(&dispatcher, || {
+                let _entered = parent.enter();
+                tracing::info!(event = "gateway_started");
                 let runtime = match tokio::runtime::Builder::new_current_thread()
                     .enable_all()
                     .build()
                 {
                     Ok(runtime) => runtime,
-                    Err(_) => return,
+                    Err(_) => { tracing::error!(event = "gateway_executor_failed"); return; },
                 };
                 while !thread_stop.load(Ordering::Acquire) {
                     match listener.accept() {
                         Ok((stream, _)) => {
-                            let _ = handle_connection(
+                            let result = handle_connection(
                                 stream,
                                 &thread_token,
                                 &routes,
                                 &runtime,
                                 &thread_stop,
                             );
+                            if result.is_err() { tracing::warn!(event = "gateway_connection_failed"); }
                         }
                         Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                             thread::sleep(Duration::from_millis(10));
                         }
-                        Err(_) => break,
+                        Err(error) => { tracing::warn!(event = "gateway_listener_failed", io_kind = ?error.kind()); break; },
                     }
                 }
-            })?;
+                tracing::info!(event = "gateway_stopped");
+            }))?;
         Ok(Self {
             endpoint: format!("http://127.0.0.1:{}/v1", address.port()),
             token,

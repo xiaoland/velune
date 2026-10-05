@@ -1,4 +1,5 @@
 import Foundation
+import OSLog
 import VeluneBindings
 
 enum TransportError: LocalizedError {
@@ -7,6 +8,7 @@ enum TransportError: LocalizedError {
     case incompatibleCore
     case closed
     case rejected(String)
+    case diagnostic(kind: String, detail: String, code: String, phase: String, operationID: String)
 
     var errorDescription: String? {
         switch self {
@@ -15,6 +17,7 @@ enum TransportError: LocalizedError {
         case .incompatibleCore: return "应用与内嵌核心版本不匹配，请重新安装完整应用。"
         case .closed: return "本地核心已关闭，请重新打开应用。"
         case .rejected(let message): return message
+        case .diagnostic(_, let detail, let code, let phase, let operationID): return "操作失败（诊断编号：\(operationID)，阶段：\(phase)，代码：\(code)）：\(detail)"
         }
     }
 }
@@ -26,6 +29,7 @@ final class Transport: @unchecked Sendable {
     private let resourcesDirectory: URL
     private let credentialResolver: URL?
     private let lock = NSLock()
+    private static let logger = Logger(subsystem: "local.velune", category: "transport")
     private var application: VeluneApplication?
     private var isClosed = false
 
@@ -51,25 +55,25 @@ final class Transport: @unchecked Sendable {
         return URL(fileURLWithPath: configured, isDirectory: true).standardizedFileURL
     }
 
-    func list() throws -> BindingConfigurationSnapshot { try withApplication { try $0.list() } }
-    func upsertGateway(_ gateway: BindingGatewayConfig) throws -> BindingGatewayUpdate { try withApplication { try $0.upsertGateway(gateway: gateway) } }
-    func deleteGateway(id: String) throws -> BindingGatewayUpdate { try withApplication { try $0.deleteGateway(id: id) } }
-    func upsertRuntime(_ runtime: BindingRuntimeInstance) throws -> BindingRuntimeUpdate { try withApplication { try $0.upsertRuntime(runtime: runtime) } }
-    func deleteRuntime(id: String) throws -> BindingRuntimeUpdate { try withApplication { try $0.deleteRuntime(id: id) } }
-    func connectRuntime(id: String) throws -> BindingConnectionResult { try withApplication { try $0.connectRuntime(id: id) } }
-    func createConversation(runtimeID: String, cwd: String) throws -> BindingSnapshotResult { try withApplication { try $0.createConversation(runtimeId: runtimeID, cwd: cwd) } }
-    func openConversation(runtimeID: String, conversationID: String) throws -> BindingSnapshotResult { try withApplication { try $0.openConversation(runtimeId: runtimeID, conversationId: conversationID) } }
-    func snapshot(runtimeID: String) throws -> BindingSnapshotResult { try withApplication { try $0.snapshot(runtimeId: runtimeID) } }
-    func send(runtimeID: String, text: String) throws -> BindingSnapshotResult { try withApplication { try $0.send(runtimeId: runtimeID, text: text) } }
-    func cancel(runtimeID: String) throws -> BindingSnapshotResult { try withApplication { try $0.cancel(runtimeId: runtimeID) } }
-    func selectModel(runtimeID: String, modelID: String) throws -> BindingSnapshotResult { try withApplication { try $0.selectModel(runtimeId: runtimeID, modelId: modelID) } }
-    func providerImportPreview(gatewayID: String, source: BindingProviderImportSource) throws -> BindingProviderImportPreview { try withApplication { try $0.previewProviderImport(gatewayId: gatewayID, source: source) } }
-    func providerImportApply(gatewayID: String, source: BindingProviderImportSource, previewToken: String, selections: [BindingImportSelection], replaceExisting: Bool) throws -> BindingImportResult { try withApplication { try $0.applyProviderImport(gatewayId: gatewayID, source: source, previewToken: previewToken, selections: selections, replaceExisting: replaceExisting) } }
-    func authenticationInspect(source: BindingCredentialSource) throws -> BindingAuthenticationMetadata { try withApplication { try $0.authenticationInspect(source: source) } }
-    func authenticationStart(source: BindingCredentialSource) throws -> BindingAuthenticationProgress { try withApplication { try $0.authenticationStart(source: source) } }
-    func authenticationPoll() throws -> BindingAuthenticationProgress { try withApplication { try $0.authenticationPoll() } }
-    func authenticationReply(promptID: String, value: String) throws -> BindingAuthenticationProgress { try withApplication { try $0.authenticationReply(promptId: promptID, value: value) } }
-    func authenticationCancel() throws -> BindingAuthenticationProgress { try withApplication { try $0.authenticationCancel() } }
+    func list() throws -> BindingConfigurationSnapshot { try withApplication("list") { try $0.list() } }
+    func upsertGateway(_ gateway: BindingGatewayConfig) throws -> BindingGatewayUpdate { try withApplication("upsertGateway") { try $0.upsertGateway(gateway: gateway) } }
+    func deleteGateway(id: String) throws -> BindingGatewayUpdate { try withApplication("deleteGateway") { try $0.deleteGateway(id: id) } }
+    func upsertRuntime(_ runtime: BindingRuntimeInstance) throws -> BindingRuntimeUpdate { try withApplication("upsertRuntime") { try $0.upsertRuntime(runtime: runtime) } }
+    func deleteRuntime(id: String) throws -> BindingRuntimeUpdate { try withApplication("deleteRuntime") { try $0.deleteRuntime(id: id) } }
+    func connectRuntime(id: String) throws -> BindingConnectionResult { try withApplication("connectRuntime") { try $0.connectRuntime(id: id) } }
+    func createConversation(runtimeID: String, cwd: String) throws -> BindingSnapshotResult { try withApplication("createConversation") { try $0.createConversation(runtimeId: runtimeID, cwd: cwd) } }
+    func openConversation(runtimeID: String, conversationID: String) throws -> BindingSnapshotResult { try withApplication("openConversation") { try $0.openConversation(runtimeId: runtimeID, conversationId: conversationID) } }
+    func snapshot(runtimeID: String) throws -> BindingSnapshotResult { try withApplication("snapshot") { try $0.snapshot(runtimeId: runtimeID) } }
+    func send(runtimeID: String, text: String) throws -> BindingSnapshotResult { try withApplication("send") { try $0.send(runtimeId: runtimeID, text: text) } }
+    func cancel(runtimeID: String) throws -> BindingSnapshotResult { try withApplication("cancel") { try $0.cancel(runtimeId: runtimeID) } }
+    func selectModel(runtimeID: String, modelID: String) throws -> BindingSnapshotResult { try withApplication("selectModel") { try $0.selectModel(runtimeId: runtimeID, modelId: modelID) } }
+    func providerImportPreview(gatewayID: String, source: BindingProviderImportSource) throws -> BindingProviderImportPreview { try withApplication("providerImportPreview") { try $0.previewProviderImport(gatewayId: gatewayID, source: source) } }
+    func providerImportApply(gatewayID: String, source: BindingProviderImportSource, previewToken: String, selections: [BindingImportSelection], replaceExisting: Bool) throws -> BindingImportResult { try withApplication("providerImportApply") { try $0.applyProviderImport(gatewayId: gatewayID, source: source, previewToken: previewToken, selections: selections, replaceExisting: replaceExisting) } }
+    func authenticationInspect(source: BindingCredentialSource) throws -> BindingAuthenticationMetadata { try withApplication("authenticationInspect") { try $0.authenticationInspect(source: source) } }
+    func authenticationStart(source: BindingCredentialSource) throws -> BindingAuthenticationProgress { try withApplication("authenticationStart") { try $0.authenticationStart(source: source) } }
+    func authenticationPoll() throws -> BindingAuthenticationProgress { try withApplication("authenticationPoll") { try $0.authenticationPoll() } }
+    func authenticationReply(promptID: String, value: String) throws -> BindingAuthenticationProgress { try withApplication("authenticationReply") { try $0.authenticationReply(promptId: promptID, value: value) } }
+    func authenticationCancel() throws -> BindingAuthenticationProgress { try withApplication("authenticationCancel") { try $0.authenticationCancel() } }
 
     func close() throws {
         lock.lock(); defer { lock.unlock() }
@@ -78,10 +82,12 @@ final class Transport: @unchecked Sendable {
             try application.shutdown()
             self.application = nil
             isClosed = true
-        } catch { throw map(error) }
+        } catch { logFailure(operation: "shutdown", localCorrelation: nil, error: error); throw map(error) }
     }
 
-    private func withApplication<T>(_ body: (VeluneApplication) throws -> T) throws -> T {
+    private func withApplication<T>(_ operation: String, _ body: (VeluneApplication) throws -> T) throws -> T {
+        let correlation = UUID().uuidString
+        Self.logger.debug("operation=\(operation, privacy: .public) localCorrelation=\(correlation, privacy: .public) started")
         lock.lock(); defer { lock.unlock() }
         guard !isClosed else { throw TransportError.closed }
         if application == nil {
@@ -89,16 +95,72 @@ final class Transport: @unchecked Sendable {
                                          resourcesDirectory: resourcesDirectory.path,
                                          credentialResolver: credentialResolver?.path)
             do { application = try VeluneApplication.open(options: options) }
-            catch { throw map(error) }
+            catch { logFailure(operation: operation, localCorrelation: correlation, error: error, categoryOverride: "open_failed"); throw map(error) }
         }
         do { return try body(application!) }
-        catch { throw map(error) }
+        catch { logFailure(operation: operation, localCorrelation: correlation, error: error); throw map(error) }
     }
 
     private func map(_ error: Error) -> TransportError {
+        if let error = error as? BindingError { return Self.transportError(for: error) }
         if let localized = error as? LocalizedError, let description = localized.errorDescription {
             return .rejected(description)
         }
         return .rejected(error.localizedDescription)
     }
+
+    private func category(for error: Error) -> String {
+        if let error = error as? BindingError {
+            switch error {
+            case .Diagnostic(let kind, _, _, _, _): return Self.kindName(kind)
+            case .Invalid: return "invalid"
+            case .Unsupported: return "unsupported"
+            case .Io: return "io"
+            case .Contract: return "contract"
+            case .Closed: return "closed"
+            case .Unavailable: return "unavailable"
+            }
+        }
+        return "unknown"
+    }
+
+    private static func transportError(for error: BindingError) -> TransportError {
+        switch error {
+        case .Diagnostic(let kind, let detail, let code, let phase, let operationID):
+            return .diagnostic(kind: kindName(kind), detail: detail, code: code, phase: phase, operationID: operationID)
+        case .Invalid(let detail): return .rejected("请求无效：\(detail)")
+        case .Unsupported(let detail): return .rejected("当前版本不支持此操作：\(detail)")
+        case .Io(let detail): return .rejected("本地读写失败：\(detail)")
+        case .Contract(let detail): return .rejected("应用与核心契约不匹配：\(detail)")
+        case .Closed: return .closed
+        case .Unavailable: return .unavailable
+        }
+    }
+
+    private static func kindName(_ kind: BindingFailureKind) -> String {
+        switch kind {
+        case .invalid: return "invalid"
+        case .unsupported: return "unsupported"
+        case .io: return "io"
+        case .contract: return "contract"
+        case .closed: return "closed"
+        case .unavailable: return "unavailable"
+        case .providerImport: return "provider_import"
+        }
+    }
+
+    private func logFailure(operation: String, localCorrelation: String?, error: Error, categoryOverride: String? = nil) {
+        let local = localCorrelation.map { " localCorrelation=\($0)" } ?? ""
+        if let diagnostic = error as? BindingError {
+            switch diagnostic {
+            case .Diagnostic(let kind, _, let code, let phase, let operationID):
+                Self.logger.error("operation=\(operation, privacy: .public)\(local, privacy: .public) kind=\(Self.kindName(kind), privacy: .public) code=\(code, privacy: .public) phase=\(phase, privacy: .public) operationId=\(operationID, privacy: .public)")
+            default:
+                Self.logger.error("operation=\(operation, privacy: .public)\(local, privacy: .public) category=\(categoryOverride ?? self.category(for: error), privacy: .public)")
+            }
+        } else {
+            Self.logger.error("operation=\(operation, privacy: .public)\(local, privacy: .public) category=\(categoryOverride ?? self.category(for: error), privacy: .public)")
+        }
+    }
+
 }

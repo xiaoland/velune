@@ -48,6 +48,9 @@ impl Options {
 }
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    #[cfg(feature = "local-runtime")]
+    #[error("{0}")]
+    ProviderImport(#[from] velune_agent_runtime::provider_source::SourceReadError),
     #[error("invalid application operation: {0}")]
     Invalid(String),
     #[error("unsupported application operation: {0}")]

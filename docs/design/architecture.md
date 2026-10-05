@@ -347,3 +347,9 @@ Mastra、HAPI、Lody 是用户提出的候选参考。研究围绕待决问题�
 Pi 的物理模型身份不能只使用全局逻辑模型 ID。相同逻辑模型改投另一提供商、端点、外部模型或认证来源后，Pi 会按完整 `provider/api/model` 判断历史兼容性；只重连 runner 无法清理旧签名。当前切片使用非秘密绑定配置的稳定 SHA-256 ID，网关将该 ID 映射到同一次不可变路由；昵称、预算和 Node 路径不参与身份。选择与界面仍保存逻辑模型，历史内容转换由 Pi 原生机制完成，不新增 Velune 清签名 hook。
 
 应用内更新 API key 或成功完成来源登录会增加认证绑定 generation，并要求重连。认证刷新不改变 generation，也不哈希 access token。外部直接在同一来源文件或 Keychain 引用背后更换账户，当前尚无可靠非秘密账户身份供 adapter 辨识，不能宣称已覆盖这类改写；应通过应用重新登录或明确更换认证来源后再继续会话。
+
+## 本地可观测性装配
+
+2026-10-05 已实施：Rust 使用 tracing，subscriber 和文件输出留在 bindings 内部装配，不建立独立可观测性 package，也不由各领域 unit 初始化进程全局 subscriber。每个 VeluneApplication 拥有独立 Dispatch；同步调用建立作用域，线程显式传播上下文，以免不同 VELUNE_HOME 的对象混写。Mac 使用原生 OSLog.Logger，并消费 typed 失败的诊断编号。日志位置、保留策略与安全字段契约归 [开发说明](../development.md#本地诊断)。
+
+OTLP 保留为 subscriber layer 的扩展方向，尚未接入；不预建 exporter 接口或上传配置。诊断必须由失败边界输出明确 code/phase，不能靠记录原始认证附近的错误文本恢复原因。

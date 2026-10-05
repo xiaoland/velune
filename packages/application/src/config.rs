@@ -135,6 +135,14 @@ impl RuntimeInstance {
     /// configuration remains readable so users can repair incomplete settings.
     pub(crate) fn validate_execution_paths(&self) -> Result<(), &'static str> {
         if self.type_id == "pi" {
+            let directory = self
+                .settings
+                .get("agentDir")
+                .filter(|value| !value.is_empty())
+                .ok_or("Pi Agent 运行时必须配置运行时目录")?;
+            if !std::path::Path::new(directory).is_absolute() || directory.contains('\0') {
+                return Err("Pi Agent 运行时目录必须是绝对路径");
+            }
             let node = self
                 .settings
                 .get("nodeBinary")

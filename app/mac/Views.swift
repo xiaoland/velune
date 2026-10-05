@@ -280,12 +280,15 @@ struct ProviderEditor: View {
     @State private var bindings: [String: String] = [:]
     @State private var draftID = UUID().uuidString
     private var sourceDescriptor: CredentialSourceType? { sourceTypes.first { $0.id == sourceTypeID } }
-    private var sourceValid: Bool { sourceTypeID.isEmpty || (sourceDescriptor?.fields.allSatisfy { !$0.required || !(sourceValues[$0.key] ?? $0.value).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty } ?? false) }
+    private var sourceValid: Bool { sourceTypeID.isEmpty || (sourceDescriptor?.fields.allSatisfy { field in
+        let value = sourceValues[field.key] ?? field.value
+        return (!field.required || !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) && MacPath.isValid(value, field: field)
+    } ?? false) }
     private var draftSource: CredentialSource? {
         sourceDescriptor.map { descriptor in
             var settings = sourceValues
             settings.removeValue(forKey: "providerId")
-            for field in descriptor.fields where field.key != "providerId" { settings[field.key] = (sourceValues[field.key] ?? field.value).trimmingCharacters(in: .whitespacesAndNewlines) }
+            for field in descriptor.fields where field.key != "providerId" { settings[field.key] = MacPath.normalized(sourceValues[field.key] ?? field.value, field: field) }
             return CredentialSource(harnessTypeID: descriptor.id, sourceInstanceID: provider?.credentialSource?.sourceInstanceID, providerID: (sourceValues["providerId"] ?? descriptor.fields.first { $0.key == "providerId" }?.value ?? "").trimmingCharacters(in: .whitespacesAndNewlines), settings: settings)
         }
     }
@@ -475,7 +478,14 @@ struct RuntimeEditor: View {
     @State private var executableDiscoveryRunning = false
     @State private var executableDiscoveryMessage: String?
     private var descriptor: RuntimeTypeDescriptor? { types.first { $0.id == typeID } }
-    private var valid: Bool { !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && descriptor != nil && (descriptor?.fields.allSatisfy { !$0.required || !(settings[$0.key] ?? $0.value).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty } ?? false) }
+    private var valid: Bool { !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && descriptor != nil && (descriptor?.fields.allSatisfy { field in
+        let value = settings[field.key] ?? field.value
+        return (!field.required || !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) && MacPath.isValid(value, field: field)
+    } ?? false) }
+    private var pathValidationMessage: String? {
+        guard let field = descriptor?.fields.first(where: { !MacPath.isValid(settings[$0.key] ?? $0.value, field: $0) }) else { return nil }
+        return "「\(field.label)」必须是绝对路径；可使用 ~/ 开头，保存时会展开。"
+    }
     var body: some View {
         VStack(spacing: 0) {
             Text(instance == nil ? "添加Agent 运行时" : "编辑Agent 运行时").font(.headline).frame(maxWidth: .infinity, alignment: .leading).padding(20)
@@ -502,12 +512,18 @@ struct RuntimeEditor: View {
                 }
             }.formStyle(.grouped)
             HStack { Spacer(); Button("取消") { dismiss() }.keyboardShortcut(.cancelAction); Button("保存") { commit() }.keyboardShortcut(.defaultAction).disabled(!valid || isSaving) }.padding(20)
+            if let pathValidationMessage { Text(pathValidationMessage).font(.caption).foregroundStyle(.red).padding(.horizontal, 20) }
             SettingsError(message: error)
         }.frame(width: 590, height: 540)
         .onAppear {
             name = instance?.name ?? ""
             typeID = instance?.typeID ?? types.first?.id ?? ""
             settings = instance?.settings ?? [:]
+            if let descriptor {
+                for field in descriptor.fields where field.kind == .filePath || field.kind == .directoryPath {
+                    if let value = settings[field.key] { settings[field.key] = MacPath.expanded(value) }
+                }
+            }
             modelID = instance?.modelID
             DispatchQueue.main.async { discoverExecutableIfNeeded() }
         }
@@ -545,9 +561,30 @@ struct RuntimeEditor: View {
         guard valid, let descriptor else { return }
         var values = instance?.settings ?? [:]
         for field in descriptor.fields {
-            values[field.key] = settings[field.key] ?? field.value
+            values[field.key] = MacPath.normalized(settings[field.key] ?? field.value, field: field)
         }
         save(RuntimeInstance(id: instance?.id ?? draftID, name: name.trimmingCharacters(in: .whitespacesAndNewlines), typeID: typeID, gatewayID: instance?.gatewayID ?? gatewayID, settings: values, modelID: modelID)) { dismiss() }
+    }
+}
+
+private enum MacPath {
+    static func expanded(_ value: String) -> String {
+        NSString(string: value.trimmingCharacters(in: .whitespacesAndNewlines)).expandingTildeInPath
+    }
+
+    static func normalized(_ value: String, field: SettingField) -> String {
+        guard field.kind == .filePath || field.kind == .directoryPath else {
+            return value.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        return URL(fileURLWithPath: expanded(value)).standardizedFileURL.path
+    }
+
+    static func isValid(_ value: String, field: SettingField) -> Bool {
+        guard field.kind == .filePath || field.kind == .directoryPath else { return true }
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return !field.required }
+        let path = expanded(trimmed)
+        return path.hasPrefix("/") && !path.contains("\0")
     }
 }
 

@@ -3,6 +3,7 @@
 //! Each object owns one application session. Explicit close refuses a busy
 //! runtime and leaves the object usable. Dropping a language wrapper is resource
 //! cleanup, not a user-facing request to cancel an Agent turn.
+mod diagnostics;
 mod types;
 pub use types::*;
 
@@ -12,8 +13,27 @@ use velune_application::{Application, Error, Options};
 
 uniffi::setup_scaffolding!();
 
+#[derive(Debug, Clone, uniffi::Enum)]
+pub enum BindingFailureKind {
+    Invalid,
+    Unsupported,
+    Io,
+    Contract,
+    Closed,
+    Unavailable,
+    ProviderImport,
+}
+
 #[derive(Debug, thiserror::Error, uniffi::Error)]
 pub enum BindingError {
+    #[error("{detail}（诊断编号：{operation_id}）")]
+    Diagnostic {
+        kind: BindingFailureKind,
+        detail: String,
+        code: String,
+        phase: String,
+        operation_id: String,
+    },
     #[error("{detail}")]
     Invalid { detail: String },
     #[error("{detail}")]
@@ -36,6 +56,14 @@ impl From<Error> for BindingError {
             Error::Unsupported(message) => Self::Unsupported { detail: message },
             Error::Io(error) => Self::Io {
                 detail: error.to_string(),
+            },
+            #[cfg(feature = "local-runtime")]
+            Error::ProviderImport(error) => Self::Diagnostic {
+                kind: BindingFailureKind::ProviderImport,
+                detail: error.message().into(),
+                code: error.code().into(),
+                phase: error.phase().into(),
+                operation_id: String::new(),
             },
             Error::Json(error) => Self::Contract {
                 detail: error.to_string(),
@@ -63,6 +91,7 @@ pub struct BindingOptions {
 #[derive(uniffi::Object)]
 pub struct VeluneApplication {
     application: Mutex<Option<Application>>,
+    diagnostics: diagnostics::Diagnostics,
 }
 
 impl VeluneApplication {
@@ -73,10 +102,13 @@ impl VeluneApplication {
     }
     fn with<T>(
         &self,
+        name: &'static str,
         operation: impl FnOnce(&mut Application) -> Result<T, Error>,
     ) -> Result<T, BindingError> {
-        let mut state = self.lock()?;
-        operation(state.as_mut().ok_or(BindingError::Closed)?).map_err(Into::into)
+        self.diagnostics.run(name, || {
+            let mut state = self.lock()?;
+            operation(state.as_mut().ok_or(BindingError::Closed)?).map_err(Into::into)
+        })
     }
 }
 
@@ -84,29 +116,42 @@ impl VeluneApplication {
 impl VeluneApplication {
     #[uniffi::constructor]
     pub fn open(options: BindingOptions) -> Result<Arc<Self>, BindingError> {
-        let application = Application::open(Options {
-            home_directory: options.home_directory.into(),
-            resources_directory: options.resources_directory.into(),
-            credential_resolver: options.credential_resolver.map(Into::into),
+        if !std::path::Path::new(&options.home_directory).is_absolute() {
+            return Err(BindingError::Invalid {
+                detail: "应用配置根目录必须是绝对路径".into(),
+            });
+        }
+        let diagnostics =
+            diagnostics::Diagnostics::open(std::path::Path::new(&options.home_directory))?;
+        let application = diagnostics.run("open", || {
+            Application::open(Options {
+                home_directory: options.home_directory.into(),
+                resources_directory: options.resources_directory.into(),
+                credential_resolver: options.credential_resolver.map(Into::into),
+            })
+            .map_err(Into::into)
         })?;
         Ok(Arc::new(Self {
             application: Mutex::new(Some(application)),
+            diagnostics,
         }))
     }
 
     /// Close only when the application allows it. A failed close retains all
     /// resources and remains available for polling or an explicit Agent cancel.
     pub fn shutdown(&self) -> Result<(), BindingError> {
-        let mut state = self.lock()?;
-        if let Some(application) = state.as_mut() {
-            application.close()?;
-            *state = None;
-        }
-        Ok(())
+        self.diagnostics.run("shutdown", || {
+            let mut state = self.lock()?;
+            if let Some(application) = state.as_mut() {
+                application.close()?;
+                *state = None;
+            }
+            Ok(())
+        })
     }
 
     pub fn list(&self) -> Result<BindingConfigurationSnapshot, BindingError> {
-        convert(self.with(|application| application.list())?)
+        convert(self.with("list", |application| application.list())?)
     }
 
     pub fn upsert_gateway(
@@ -114,11 +159,15 @@ impl VeluneApplication {
         gateway: BindingGatewayConfig,
     ) -> Result<BindingGatewayUpdate, BindingError> {
         let gateway = convert(gateway)?;
-        convert(self.with(|application| application.upsert_gateway(gateway))?)
+        convert(self.with("upsert_gateway", |application| {
+            application.upsert_gateway(gateway)
+        })?)
     }
 
     pub fn delete_gateway(&self, id: String) -> Result<BindingGatewayUpdate, BindingError> {
-        convert(self.with(|application| application.delete_gateway(id))?)
+        convert(self.with("delete_gateway", |application| {
+            application.delete_gateway(id)
+        })?)
     }
 
     pub fn upsert_runtime(
@@ -126,15 +175,21 @@ impl VeluneApplication {
         runtime: BindingRuntimeInstance,
     ) -> Result<BindingRuntimeUpdate, BindingError> {
         let runtime = convert(runtime)?;
-        convert(self.with(|application| application.upsert_runtime(runtime))?)
+        convert(self.with("upsert_runtime", |application| {
+            application.upsert_runtime(runtime)
+        })?)
     }
 
     pub fn delete_runtime(&self, id: String) -> Result<BindingRuntimeUpdate, BindingError> {
-        convert(self.with(|application| application.delete_runtime(id))?)
+        convert(self.with("delete_runtime", |application| {
+            application.delete_runtime(id)
+        })?)
     }
 
     pub fn connect_runtime(&self, id: String) -> Result<BindingConnectionResult, BindingError> {
-        convert(self.with(|application| application.connect_runtime(id))?)
+        convert(self.with("connect_runtime", |application| {
+            application.connect_runtime(id)
+        })?)
     }
 
     pub fn create_conversation(
@@ -142,7 +197,9 @@ impl VeluneApplication {
         runtime_id: String,
         cwd: String,
     ) -> Result<BindingSnapshotResult, BindingError> {
-        convert(self.with(|application| application.create_conversation(runtime_id, cwd))?)
+        convert(self.with("create_conversation", |application| {
+            application.create_conversation(runtime_id, cwd)
+        })?)
     }
 
     pub fn open_conversation(
@@ -150,13 +207,13 @@ impl VeluneApplication {
         runtime_id: String,
         conversation_id: String,
     ) -> Result<BindingSnapshotResult, BindingError> {
-        convert(
-            self.with(|application| application.open_conversation(runtime_id, conversation_id))?,
-        )
+        convert(self.with("open_conversation", |application| {
+            application.open_conversation(runtime_id, conversation_id)
+        })?)
     }
 
     pub fn snapshot(&self, runtime_id: String) -> Result<BindingSnapshotResult, BindingError> {
-        convert(self.with(|application| application.snapshot(runtime_id))?)
+        convert(self.with("snapshot", |application| application.snapshot(runtime_id))?)
     }
 
     pub fn send(
@@ -164,11 +221,11 @@ impl VeluneApplication {
         runtime_id: String,
         text: String,
     ) -> Result<BindingSnapshotResult, BindingError> {
-        convert(self.with(|application| application.send(runtime_id, text))?)
+        convert(self.with("send", |application| application.send(runtime_id, text))?)
     }
 
     pub fn cancel(&self, runtime_id: String) -> Result<BindingSnapshotResult, BindingError> {
-        convert(self.with(|application| application.cancel(runtime_id))?)
+        convert(self.with("cancel", |application| application.cancel(runtime_id))?)
     }
 
     pub fn select_model(
@@ -176,7 +233,9 @@ impl VeluneApplication {
         runtime_id: String,
         model_id: String,
     ) -> Result<BindingSnapshotResult, BindingError> {
-        convert(self.with(|application| application.select_model(runtime_id, model_id))?)
+        convert(self.with("select_model", |application| {
+            application.select_model(runtime_id, model_id)
+        })?)
     }
 
     pub fn preview_provider_import(
@@ -185,7 +244,9 @@ impl VeluneApplication {
         source: BindingProviderImportSource,
     ) -> Result<BindingProviderImportPreview, BindingError> {
         let source = convert(source)?;
-        convert(self.with(|application| application.preview_provider_import(gateway_id, source))?)
+        convert(self.with("preview_provider_import", |application| {
+            application.preview_provider_import(gateway_id, source)
+        })?)
     }
 
     pub fn apply_provider_import(
@@ -198,7 +259,7 @@ impl VeluneApplication {
     ) -> Result<BindingImportResult, BindingError> {
         let source = convert(source)?;
         let selections = convert(selections)?;
-        convert(self.with(|application| {
+        convert(self.with("apply_provider_import", |application| {
             application.apply_provider_import(
                 gateway_id,
                 source,
@@ -214,7 +275,9 @@ impl VeluneApplication {
         source: BindingCredentialSource,
     ) -> Result<BindingAuthenticationMetadata, BindingError> {
         let source = convert(source)?;
-        convert(self.with(|application| application.authentication_inspect(source))?)
+        convert(self.with("authentication_inspect", |application| {
+            application.authentication_inspect(source)
+        })?)
     }
 
     pub fn authentication_start(
@@ -222,11 +285,15 @@ impl VeluneApplication {
         source: BindingCredentialSource,
     ) -> Result<BindingAuthenticationProgress, BindingError> {
         let source = convert(source)?;
-        convert(self.with(|application| application.authentication_start(source))?)
+        convert(self.with("authentication_start", |application| {
+            application.authentication_start(source)
+        })?)
     }
 
     pub fn authentication_poll(&self) -> Result<BindingAuthenticationProgress, BindingError> {
-        convert(self.with(|application| application.authentication_poll())?)
+        convert(self.with("authentication_poll", |application| {
+            application.authentication_poll()
+        })?)
     }
 
     pub fn authentication_reply(
@@ -234,10 +301,60 @@ impl VeluneApplication {
         prompt_id: String,
         value: String,
     ) -> Result<BindingAuthenticationProgress, BindingError> {
-        convert(self.with(|application| application.authentication_reply(prompt_id, value))?)
+        convert(self.with("authentication_reply", |application| {
+            application.authentication_reply(prompt_id, value)
+        })?)
     }
 
     pub fn authentication_cancel(&self) -> Result<BindingAuthenticationProgress, BindingError> {
-        convert(self.with(|application| application.authentication_cancel())?)
+        convert(self.with("authentication_cancel", |application| {
+            application.authentication_cancel()
+        })?)
+    }
+}
+
+impl BindingError {
+    fn diagnostic_parts(self) -> (BindingFailureKind, String, String, String) {
+        let phase = "application".to_owned();
+        match self {
+            Self::Diagnostic {
+                kind,
+                code,
+                phase,
+                detail,
+                ..
+            } => (kind, code, phase, detail),
+            Self::Invalid { detail } => (
+                BindingFailureKind::Invalid,
+                "invalid_operation".into(),
+                phase,
+                detail,
+            ),
+            Self::Unsupported { detail } => (
+                BindingFailureKind::Unsupported,
+                "unsupported_operation".into(),
+                phase,
+                detail,
+            ),
+            Self::Io { detail } => (BindingFailureKind::Io, "io_failed".into(), phase, detail),
+            Self::Contract { detail } => (
+                BindingFailureKind::Contract,
+                "contract_failed".into(),
+                phase,
+                detail,
+            ),
+            Self::Closed => (
+                BindingFailureKind::Closed,
+                "application_closed".into(),
+                phase,
+                "本地核心已关闭".into(),
+            ),
+            Self::Unavailable => (
+                BindingFailureKind::Unavailable,
+                "application_unavailable".into(),
+                phase,
+                "本地核心不可用".into(),
+            ),
+        }
     }
 }

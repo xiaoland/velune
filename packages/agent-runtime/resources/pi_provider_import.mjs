@@ -5,37 +5,59 @@ import { readFile, stat } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 import { resolveSource } from "./pi_auth.mjs";
 
+// Failures contain only allowlisted codes and stages, never SDK messages or source values.
+class SourceDiagnostic extends Error {
+  constructor(code, stage) { super(code); this.code = code; this.stage = stage; }
+}
+let stage = "input";
+const fail = (code, failureStage = stage) => { throw new SourceDiagnostic(code, failureStage); };
+
 async function main() {
   const args = process.argv.slice(2);
   const arg = (name) => { const i = args.indexOf(name); return i < 0 ? undefined : args[i + 1]; };
-  const source = JSON.parse(arg("--source-json") ?? "{}");
-  const reject = () => { throw new Error("invalid_source"); };
+  let source;
+  try { source = JSON.parse(arg("--source-json") ?? "{}"); } catch { fail("invalid_source", "input"); }
+  const nodeVersion = process.versions.node.split(".").map(Number);
+  if (nodeVersion[0] < 22 || (nodeVersion[0] === 22 && nodeVersion[1] < 19)) fail("unsupported_node", "node");
+  const reject = () => fail("invalid_source");
   const emit = (value) => process.stdout.write(JSON.stringify(value) + "\n");
   if (source.kind !== "harness" || source.harnessTypeId !== "pi") reject();
   const settings = source.settings ?? {};
   const sourceDir = settings.sourceDir || settings.agentDir;
   const modelsPath = settings.modelsPath || join(sourceDir ?? "", "models.json");
   const authPath = settings.authPath || join(sourceDir ?? "", "auth.json");
-  for (const path of [sourceDir, modelsPath, authPath, settings.nodeBinary]) {
-    if (typeof path !== "string" || !isAbsolute(path) || path.includes("\0")) reject();
+  for (const [path, code] of [[sourceDir,"invalid_source_directory"],[modelsPath,"invalid_models_path"],[authPath,"invalid_auth_path"],[settings.nodeBinary,"invalid_node_path"]]) {
+    if (typeof path !== "string" || !isAbsolute(path) || path.includes("\0")) fail(code,"input");
   }
-  if (!(await stat(sourceDir)).isDirectory()) reject();
+  stage = "source_directory";
+  let directory;
+  try { directory = await stat(sourceDir); } catch (error) {
+    if (error.code === "ENOENT") fail("source_directory_missing");
+    if (["EACCES","EPERM"].includes(error.code)) fail("source_directory_permission");
+    fail("source_directory_unavailable");
+  }
+  if (!directory.isDirectory()) fail("source_directory_not_directory");
+  stage = "sdk";
   const packageDir = new URL("node_modules/@earendil-works/pi-coding-agent/", import.meta.url);
   const manifest = JSON.parse(await readFile(new URL("package.json", packageDir), "utf8"));
-  if (manifest.version !== "1.0.2") reject();
+  if (manifest.version !== "1.0.2") fail("unsupported_sdk");
   const { ModelRuntime } = await import(new URL(manifest.exports["."].import, packageDir).href);
   const { getSupportedThinkingLevels } = await import("@earendil-works/pi-ai");
   const { ModelConfig } = await import(new URL("dist/core/model-config.js", packageDir).href);
   const { InMemoryCodingAgentModelsStore } = await import(new URL("dist/core/models-store.js", packageDir).href);
   const { AuthStorage, ReadOnlyAuthStorage, readStoredCredential } = await import(new URL("dist/core/auth-storage.js", packageDir).href);
   const { isCommandConfigValue, getConfigValueEnvVarNames, resolveConfigValue } = await import(new URL("dist/core/resolve-config-value.js", packageDir).href);
+  stage = "models";
   const config = await ModelConfig.load(modelsPath);
-  if (config.getError()) reject();
+  if (config.getError()) fail("invalid_models");
+  stage = "auth";
   const credentials = new ReadOnlyAuthStorage(authPath);
   const stored = await credentials.list();
+  stage = "model_runtime";
   const runtime = await ModelRuntime.create({ modelsPath, credentials,
     modelsStore: new InMemoryCodingAgentModelsStore(), refreshOnCreate: false, allowModelNetwork: false });
-  if (runtime.getError()) reject();
+  if (runtime.getError()) fail("invalid_model_runtime");
+  stage = "projection";
   const protocol = (api) => ({ "openai-completions": "chatCompletionsV1", "openai-responses": "responsesV1" }[api] ?? null);
   const safeEndpoint = (value) => {
     try { const url = new URL(value); return ["http:", "https:"].includes(url.protocol) && !url.username && !url.password && !url.search && !url.hash ? url.origin + url.pathname.replace(/\/+$/, "") : null; }
@@ -103,6 +125,7 @@ async function main() {
   const providerId = source.providerId;
   const operation = arg("--operation") ?? "preview";
   if (operation === "resolve" || operation === "inspect") {
+    stage = "credential_binding";
     if (typeof providerId !== "string" || !providerId) reject();
     const raw = config.getProvider(providerId);
     const ids = JSON.parse(settings.bindingModelIds ?? "[]");
@@ -179,4 +202,8 @@ async function main() {
   const sourceFingerprint = `pi_${createHash("sha256").update(JSON.stringify(snapshot)).digest("hex")}`;
   emit({ ...snapshot, sourceFingerprint });
 }
-main().catch(() => { process.stderr.write("Pi 提供商配置操作失败，请检查来源配置。\n"); process.exitCode = 1; });
+main().catch((error) => {
+  const diagnostic = error instanceof SourceDiagnostic ? {code:error.code,phase:error.stage} : {code:"adapter_failed",phase:stage};
+  process.stderr.write(JSON.stringify({contractVersion:1,diagnostic}) + "\n");
+  process.exitCode = 1;
+});

@@ -106,7 +106,7 @@ fn combined_source_fingerprint(snapshot: &Snapshot, runtime_fingerprint: &str) -
 
 fn run_helper(source: &Source, options: &RuntimeOptions) -> Result<Snapshot, RuntimeError> {
     velune_agent_runtime::provider_source::read(source, &options.resources_directory)
-        .map_err(RuntimeError::Invalid)
+        .map_err(RuntimeError::ProviderImport)
 }
 fn fingerprint(gateway: &GatewayConfig) -> Result<String, RuntimeError> {
     let bytes = serde_json::to_vec(gateway)?;
@@ -169,7 +169,7 @@ pub(crate) fn preview(
     let snapshot = run_helper(&source, options)?;
     let source_fingerprint = combined_source_fingerprint(&snapshot, &runtime_fingerprint);
     let target_fingerprint = fingerprint(gateway)?;
-    let mut warnings = snapshot.warnings.clone();
+    let warnings = snapshot.warnings.clone();
     let mut providers = Vec::new();
     for provider in &snapshot.providers {
         let supported: Vec<_> = provider
@@ -179,23 +179,6 @@ pub(crate) fn preview(
                 model.supported && model.protocol.as_deref().and_then(protocol).is_some()
             })
             .collect();
-        if supported.is_empty() {
-            warnings.push(format!(
-                "provider {} has no supported models",
-                provider.source_provider_id
-            ));
-        }
-        if !provider.auth.ready {
-            warnings.push(format!(
-                "provider {} is draft: {}",
-                provider.source_provider_id,
-                provider
-                    .auth
-                    .reason
-                    .as_deref()
-                    .unwrap_or("authentication required")
-            ));
-        }
         let protocol_name = supported
             .first()
             .and_then(|m| m.protocol.clone())
@@ -215,7 +198,7 @@ pub(crate) fn preview(
                 )
             ),
         );
-        providers.push(json!({"id":provider_id,"sourceProviderId":provider.source_provider_id,"name":provider.name,"protocol":protocol_name,"endpoint":provider.endpoint,"canImport":!supported.is_empty(),"alreadyImported":gateway.providers.iter().any(|item| item.id == provider_id),"credentialStatus":provider.auth.status_label.clone().unwrap_or_else(|| provider.auth.kind.clone()),"issues":if provider.auth.ready { Vec::<String>::new() } else { vec![provider.auth.reason.clone().unwrap_or_else(|| "authentication required".into())] },"models":provider.models.iter().map(|m| json!({"id":stable_id("pi_model", &format!("{}|{}|{}|{}", provider.source_provider_id, m.id, protocol_name, source_identity(&source, &snapshot.models_path, snapshot.auth_path.as_deref()))),"externalModelId":m.id,"name":m.name,"contextWindow":m.context_window,"maxOutputTokens":m.max_tokens,"reasoningLevels":if m.reasoning_levels.is_empty() { vec!["off".to_string()] } else { m.reasoning_levels.clone() },"canImport":m.supported && m.context_window.unwrap_or(0) > 0 && m.max_tokens.unwrap_or(0) > 0,"issues":if m.unsupported_features.is_empty() { m.unsupported_reason.clone().into_iter().collect() } else { m.unsupported_features.clone() }})).collect::<Vec<_>>() }));
+        providers.push(json!({"id":provider_id,"sourceProviderId":provider.source_provider_id,"name":provider.name,"protocol":protocol_name,"endpoint":provider.endpoint,"canImport":!supported.is_empty(),"alreadyImported":gateway.providers.iter().any(|item| item.id == provider_id),"credentialStatus":provider.auth.status_label.clone().unwrap_or_else(|| provider.auth.kind.clone()),"issues":if provider.auth.ready { Vec::<String>::new() } else { vec![provider.auth.reason.clone().unwrap_or_else(|| "需要完成认证".into())] },"models":provider.models.iter().map(|m| json!({"id":stable_id("pi_model", &format!("{}|{}|{}|{}", provider.source_provider_id, m.id, protocol_name, source_identity(&source, &snapshot.models_path, snapshot.auth_path.as_deref()))),"externalModelId":m.id,"name":m.name,"contextWindow":m.context_window,"maxOutputTokens":m.max_tokens,"reasoningLevels":if m.reasoning_levels.is_empty() { vec!["off".to_string()] } else { m.reasoning_levels.clone() },"canImport":m.supported && m.context_window.unwrap_or(0) > 0 && m.max_tokens.unwrap_or(0) > 0,"issues":if m.unsupported_features.is_empty() { m.unsupported_reason.clone().into_iter().collect() } else { m.unsupported_features.clone() }})).collect::<Vec<_>>() }));
     }
     let preview = Preview {
         contract_version: 1,

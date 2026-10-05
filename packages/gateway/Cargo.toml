@@ -12,3 +12,5 @@ velune-ai-provider = { path = "../ai-provider" }
 reqwest = { version = "0.13", default-features = false, features = ["native-tls", "json", "stream", "system-proxy"] }
 tokio = { version = "1", features = ["rt", "macros", "net", "io-util", "time"] }
 getrandom = "0.4"
+
+tracing = { version = "0.1", default-features = false, features = ["std"] }

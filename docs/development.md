@@ -153,3 +153,11 @@ bash scripts/build-macos.sh
 ```
 
 无默认 feature 的依赖树不含 agent-runtime、gateway、AI provider；本地会话操作明确返回 Unsupported。该构建只证明能力裁剪，不表示已支持远端操作。Kotlin 生成物依赖 JNA 及 kotlinx-coroutines；生成成功之外还需编译检查。C# 工具为第三方，UniFFI 版本兼容性仍需后续 C# app 接入时验证。
+
+## 本地诊断
+
+Mac 使用 `OSLog.Logger`，subsystem 为 `local.velune`；系统 Console 可按该 subsystem 筛选。Rust 的 `tracing` subscriber 由 bindings 为每个应用对象独立装配，JSON Lines 日志位于 `VELUNE_HOME/logs/velune.<日期>.jsonl`，按 UTC 日期轮转并保留最近 7 个文件。该策略限制文件数量，不提供总字节硬上限。日志目录在 Unix 平台使用 0700 权限。
+
+失败信息包含诊断编号；以该编号查找日志中的 `operation_id`，可定位操作、白名单错误代码、阶段和耗时。Swift 失败日志使用同一编号；其本地操作编号另行命名，不代表 Rust trace ID。常规 snapshot 和认证轮询不产生成功日志。日志不记录提供商配置、路径、URL、请求参数、原始子进程输出、认证、消息或工具内容，第三方依赖的 tracing 事件也不进入文件输出。Pi helper 只返回版本化白名单诊断；缺少合法诊断时明确标为未知 helper 失败，不从异常文本猜测。
+
+领域包只发事件，不创建 subscriber。跨线程显式传播 dispatcher 和 span；将来增加 OTLP exporter 时在 bindings 的 layer 装配点扩展，当前没有远端导出、上传功能或 OTLP 配置。采用的库和契约见 [tracing dispatcher](https://docs.rs/tracing/latest/tracing/dispatcher/)、[tracing-appender 保留策略](https://docs.rs/tracing-appender/latest/tracing_appender/rolling/struct.Builder.html) 和 [Apple 日志指导](https://developer.apple.com/documentation/os/generating-log-messages-from-your-code)。
