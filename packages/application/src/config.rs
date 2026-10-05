@@ -130,6 +130,24 @@ pub struct RuntimeTypeDescriptor {
     pub actions: Vec<crate::conversation::SettingAction>,
 }
 
+impl RuntimeInstance {
+    /// Validate execution-path settings when saving an instance. Existing
+    /// configuration remains readable so users can repair incomplete settings.
+    pub(crate) fn validate_execution_paths(&self) -> Result<(), &'static str> {
+        if self.type_id == "pi" {
+            let node = self
+                .settings
+                .get("nodeBinary")
+                .filter(|value| !value.is_empty())
+                .ok_or("Pi Agent 运行时必须配置 Node 可执行文件")?;
+            if !std::path::Path::new(node).is_absolute() || node.contains('\0') {
+                return Err("Pi Agent 的 Node 可执行文件必须是绝对路径");
+            }
+        }
+        Ok(())
+    }
+}
+
 impl GatewayConfig {
     pub fn validate(&self) -> Result<(), &'static str> {
         #[cfg(feature = "local-runtime")]

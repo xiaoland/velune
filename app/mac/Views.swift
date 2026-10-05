@@ -472,6 +472,8 @@ struct RuntimeEditor: View {
     @State private var modelID: String?
     @State private var settings: [String: String] = [:]
     @State private var draftID = UUID().uuidString
+    @State private var executableDiscoveryRunning = false
+    @State private var executableDiscoveryMessage: String?
     private var descriptor: RuntimeTypeDescriptor? { types.first { $0.id == typeID } }
     private var valid: Bool { !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && descriptor != nil && (descriptor?.fields.allSatisfy { !$0.required || !(settings[$0.key] ?? $0.value).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty } ?? false) }
     var body: some View {
@@ -485,14 +487,59 @@ struct RuntimeEditor: View {
                 }
                 if let descriptor {
                     Section("实例配置") {
-                        ForEach(descriptor.fields) { field in SettingFieldView(field: field, value: Binding(get: { settings[field.key] ?? field.value }, set: { settings[field.key] = $0 })) }
+                        ForEach(descriptor.fields) { field in
+                            SettingFieldView(
+                                field: field,
+                                value: Binding(get: { settings[field.key] ?? field.value }, set: { settings[field.key] = $0 }),
+                                discoveryTitle: discoveryTitle(for: field),
+                                discoveryAction: discoveryAction(for: field)
+                            )
+                        }
+                        if let executableDiscoveryMessage {
+                            Text(executableDiscoveryMessage).font(.caption).foregroundStyle(.secondary)
+                        }
                     }
                 }
             }.formStyle(.grouped)
             HStack { Spacer(); Button("取消") { dismiss() }.keyboardShortcut(.cancelAction); Button("保存") { commit() }.keyboardShortcut(.defaultAction).disabled(!valid || isSaving) }.padding(20)
             SettingsError(message: error)
         }.frame(width: 590, height: 540)
-        .onAppear { name = instance?.name ?? ""; typeID = instance?.typeID ?? types.first?.id ?? ""; settings = instance?.settings ?? [:]; modelID = instance?.modelID }
+        .onAppear {
+            name = instance?.name ?? ""
+            typeID = instance?.typeID ?? types.first?.id ?? ""
+            settings = instance?.settings ?? [:]
+            modelID = instance?.modelID
+            DispatchQueue.main.async { discoverExecutableIfNeeded() }
+        }
+        .onChange(of: typeID) { _, _ in
+            executableDiscoveryMessage = nil
+            DispatchQueue.main.async { discoverExecutableIfNeeded() }
+        }
+    }
+    private func discoveryField() -> SettingField? { descriptor?.fields.first { $0.executableDiscovery != nil } }
+    private func discoveryValue(for field: SettingField) -> String { (settings[field.key] ?? field.value).trimmingCharacters(in: .whitespacesAndNewlines) }
+    private func discoveryTitle(for field: SettingField) -> String? {
+        guard field.executableDiscovery != nil, discoveryValue(for: field).isEmpty else { return nil }
+        return executableDiscoveryRunning ? "探测中…" : (executableDiscoveryMessage == nil ? "自动发现" : "重新发现")
+    }
+    private func discoveryAction(for field: SettingField) -> (() -> Void)? {
+        guard field.executableDiscovery != nil, discoveryValue(for: field).isEmpty, !executableDiscoveryRunning else { return nil }
+        return discoverExecutableIfNeeded
+    }
+    private func discoverExecutableIfNeeded() {
+        guard !executableDiscoveryRunning, let field = discoveryField(), let discovery = field.executableDiscovery,
+              discoveryValue(for: field).isEmpty else { return }
+        executableDiscoveryRunning = true
+        executableDiscoveryMessage = "正在查找可执行文件…"
+        MacExecutableDiscovery.discover(discovery) { result in
+            executableDiscoveryRunning = false
+            switch result {
+            case .success(let path):
+                // A manual edit wins if it happened while discovery was running.
+                if discoveryValue(for: field).isEmpty { settings[field.key] = path; executableDiscoveryMessage = "已发现：\(path)" }
+            case .failure(let error): executableDiscoveryMessage = error.localizedDescription
+            }
+        }
     }
     private func commit() {
         guard valid, let descriptor else { return }
@@ -507,12 +554,18 @@ struct RuntimeEditor: View {
 struct SettingFieldView: View {
     let field: SettingField
     @Binding var value: String
+    var discoveryTitle: String? = nil
+    var discoveryAction: (() -> Void)? = nil
     var body: some View {
         if field.kind == .choice {
             Picker(field.label, selection: $value) { ForEach(field.options) { option in Text(option.label).tag(option.id) } }.help(field.help ?? field.label)
         } else {
             LabeledContent(field.label) {
-                HStack { TextField(field.required ? "必填" : "可选", text: $value).textFieldStyle(.roundedBorder); if field.kind == .filePath || field.kind == .directoryPath { Button("选择…", action: choosePath) } }
+                HStack {
+                    TextField(field.required ? "必填" : "可选", text: $value).textFieldStyle(.roundedBorder)
+                    if field.kind == .filePath || field.kind == .directoryPath { Button("选择…", action: choosePath) }
+                    if let discoveryTitle, let discoveryAction { Button(discoveryTitle, action: discoveryAction).disabled(discoveryTitle == "探测中…") }
+                }
             }.help(field.help ?? field.label)
         }
     }

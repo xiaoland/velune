@@ -39,7 +39,8 @@ enum BindingMapping {
     static func settingField(_ value: BindingSettingField) -> SettingField {
         return SettingField(key: value.key, label: value.label, kind: settingKind(value.kind),
                      required: value.required, value: value.value,
-                     options: value.options.map { SettingOption(id: $0.id, label: $0.label) }, help: value.help)
+                     options: value.options.map { SettingOption(id: $0.id, label: $0.label) }, help: value.help,
+                     executableDiscovery: value.executableDiscovery.map { ExecutableDiscoverySpec(command: $0.command, minimumVersion: $0.minimumVersion) })
     }
 
     static func settingKind(_ value: BindingSettingKind) -> SettingKind {

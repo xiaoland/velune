@@ -191,6 +191,11 @@ struct SettingAction: Codable, Sendable, Identifiable, Equatable {
     var label: String
 }
 
+struct ExecutableDiscoverySpec: Codable, Sendable, Equatable {
+    var command: String
+    var minimumVersion: String
+}
+
 struct SettingField: Codable, Sendable, Identifiable, Equatable {
     var id: String { key }
     let key: String
@@ -200,6 +205,7 @@ struct SettingField: Codable, Sendable, Identifiable, Equatable {
     var value: String
     var options: [SettingOption]
     var help: String?
+    var executableDiscovery: ExecutableDiscoverySpec? = nil
 }
 
 struct AuthenticationPrompt: Decodable, Sendable, Identifiable {

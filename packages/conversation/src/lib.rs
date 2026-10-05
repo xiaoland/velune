@@ -83,6 +83,14 @@ pub struct SettingOption {
     pub label: String,
 }
 
+/// Platform executable discovery hint; the selected absolute path remains application configuration.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ExecutableDiscovery {
+    pub command: String,
+    pub minimum_version: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct SettingField {
@@ -93,6 +101,7 @@ pub struct SettingField {
     pub value: String,
     pub options: Vec<SettingOption>,
     pub help: Option<String>,
+    pub executable_discovery: Option<ExecutableDiscovery>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

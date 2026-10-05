@@ -15,7 +15,7 @@ impl CoreRuntime {
                 "fields":[
                     {"key":"providerId","label":"认证提供商","kind":"text","required":true,"value":"","options":[],"help":"Pi provider ID；认证动作会根据指定来源能力显示。"},
                     {"key":"authPath","label":"认证文件","kind":"filePath","required":true,"value":"","options":[],"help":"保留 Pi 原生认证来源文件路径；Velune 不复制凭据。"},
-                    {"key":"nodeBinary","label":"Node 可执行文件","kind":"filePath","required":true,"value":"","options":[],"help":"Node 22.19+ 的绝对路径。"}
+                    {"key":"nodeBinary","label":"Node 可执行文件","kind":"filePath","required":true,"value":"","options":[],"executableDiscovery":{"command":"node","minimumVersion":"22.19.0"},"help":"Node 22.19+ 的绝对路径。"}
                 ],
                 "actions":[{"id":"login","label":"登录…"}],
                 "capability":"读取指定 Pi 认证来源；Velune 不复制认证资料。"
@@ -178,6 +178,9 @@ impl CoreRuntime {
                 {
                     return Err(RuntimeError::invalid("runtime instance"));
                 }
+                runtime
+                    .validate_execution_paths()
+                    .map_err(RuntimeError::invalid)?;
                 self.runtime_instances.retain(|item| item.id != runtime.id);
                 self.runtime_instances.push(runtime);
                 changed = true;

@@ -137,3 +137,11 @@ Mac 隔离原生窗口已人工截图检查空状态和八组提供商长预览�
 最终 workspace fmt/check/clippy（all-targets、all-features）、bindings 无 local-runtime 的 Clippy、Windows GNU 类型检查，以及 Mac Swift 构建与签名校验均通过。人工 UniFFI 端到端三条流程覆盖 ChatCompletions、Responses 与订阅能力限制，实际使用新的 SDK 装配并检查原 models/auth/settings 字节未变。导入仍不自动设置路由；完整配置导入后的显式路由与实际发送由独立合成流程复核，不读取真实账户。真实提供商和最终产品体验仍归用户验收。
 
 最后的配置导入合成流程已使用新增 launcher 的提供商注册边界：已有实例预览／导入、显式路由、connect、实际流式回复与 shutdown 全部通过，原三份文件逐字节保留。开发方未调用真实模型。完成后以本切片提交构建 clean bundle 并重新安装，版本保持 0.1 beta.1。
+
+## 2026-10-05 Pi Node 配置与路径发现
+
+用户要求 Pi Node 必填并支持自动发现，询问会话目录语义。Node 由平台发现并验证后填入明确绝对路径，已有选择不覆盖；最低版本由运行时描述提供。共享配置保存边界同步必填。会话存储目录仍是 Pi 历史存储位置，不是任务工作目录；留空采用原 Pi home 下按 cwd 分组的 sessions，改善标签与帮助，不改变会话归属。仅做静态和隔离人工验证，不添加自动化测试。
+
+共享配置与通用 UniFFI 字段增加 executableDiscovery 提示，由平台消费 command/minimumVersion。Mac 隔离探针实际发现本机 mise 管理的 Node 24.15.0，并拒绝合成的 999.0.0 最低版本；探测在后台有时限，失败可手选、已有值和探测期间手动输入保留。固定 Pi SDK 探针确认默认与覆盖会话存储目录。workspace fmt/check/clippy、无 local-runtime Clippy、Windows 类型检查及 Mac typed bindings 构建通过。
+
+最终生成 Python UniFFI 绑定的合成端到端会话循环通过，覆盖新配置字段往返、流式发送、模型恢复、取消及配置重开。Mac 重新构建安装，版本仍为 0.1 beta.1；未添加自动化测试，未使用真实提供商。

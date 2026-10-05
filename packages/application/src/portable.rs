@@ -80,6 +80,9 @@ impl CoreRuntime {
                         {
                             return Err(Error::invalid("runtime instance"));
                         }
+                        instance
+                            .validate_execution_paths()
+                            .map_err(Error::invalid)?;
                         self.config
                             .runtime_instances
                             .retain(|r| r.id != instance.id);

@@ -84,6 +84,13 @@ pub struct BindingSettingOption {
 
 #[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 #[serde(rename_all = "camelCase")]
+pub struct BindingExecutableDiscovery {
+    pub command: String,
+    pub minimum_version: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+#[serde(rename_all = "camelCase")]
 pub struct BindingSettingField {
     pub key: String,
     pub label: String,
@@ -92,6 +99,7 @@ pub struct BindingSettingField {
     pub value: String,
     pub options: Vec<BindingSettingOption>,
     pub help: Option<String>,
+    pub executable_discovery: Option<BindingExecutableDiscovery>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]

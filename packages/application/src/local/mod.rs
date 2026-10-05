@@ -36,9 +36,9 @@ fn runtime_types(resources_directory: &Path) -> Value {
         "name":"Pi Agent 运行时",
         "fields":[
             {"key":"binary","label":"运行时入口","kind":"filePath","required":true,"value":binary_value,"options":[],"help":"Pi CLI 的绝对路径；应用不会使用全局 PATH。"},
-            {"key":"nodeBinary","label":"Node 可执行文件","kind":"filePath","required":false,"value":"","options":[],"help":"Node 22.19+ 的绝对路径；用于启动 JavaScript CLI。"},
+            {"key":"nodeBinary","label":"Node 可执行文件","kind":"filePath","required":true,"value":"","options":[],"executableDiscovery":{"command":"node","minimumVersion":"22.19.0"},"help":"Node 22.19+ 的绝对路径；Pi SDK 接入必填。"},
             {"key":"agentDir","label":"运行时目录","kind":"directoryPath","required":true,"value":"","options":[],"help":"配置与状态根目录，不是会话项目目录。"},
-            {"key":"sessionDir","label":"会话目录","kind":"directoryPath","required":false,"value":"","options":[],"help":"可选的 Pi 会话目录。"}
+            {"key":"sessionDir","label":"会话存储目录","kind":"directoryPath","required":false,"value":"","options":[],"help":"覆盖 Pi 默认的会话文件存储目录。留空时保存到运行时目录的 sessions 下，并按会话工作目录分组；此项不是工作目录。"}
         ],
         "actions":[{"id":"connect","label":"连接运行时"}]
     }])
