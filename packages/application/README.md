@@ -8,7 +8,7 @@
 
 默认 `local-runtime` feature 组合本机运行时和 LLM 网关。`local` 按配置、连接、会话、认证协调与 Pi／原生运行时装配分模块。应用捕获提供商私有认证快照，装配异步解析器；解析器校验捕获的协议与服务地址，未知引用不回退环境认证。Unix 来源 helper 的期限、输出上限与进程组取消由应用负责，网关不解释来源或调用 helper。Pi 元数据在装配时剥离为 `velune_gateway::GatewayConfig`，AI package 不依赖运行时。
 
-关闭 `local-runtime` 后，提供商、API key、模型模板和运行时配置的加载与修改仍可使用；本机连接、会话执行、来源导入以及需要 adapter 的认证操作明确返回不支持错误。本构建不链接 Agent runtime、网关或 AI provider，不提供尚未实现的远程连接。
+关闭 `local-runtime` 后，提供商、API key、模型模板和运行时配置的加载与修改仍可使用；本机连接、会话执行、来源导入以及需要 adapter 的认证操作明确返回不支持错误。本构建不链接 Agent runtime；当前配置校验仍依赖 gateway 的配置类型与 AI-provider，不能将其称为完全排除本机 AI 依赖的产物。它不启动网关，不提供尚未实现的远程连接。
 
 公开 API 和结果记录定义在 `api.rs`，没有平台 JSON dispatcher。内部用例仍有 JSON 投影转换，不构成跨语言契约。隐藏稳定 `recordKey` 用于模型选择引用；`providerModelId` 是可编辑的精确上游标识，修改它不改变内部身份。能力可以未知，只有具体运行时准备边界检查必需字段。模板不复制内部键、认证、服务地址或 Pi 执行元数据。
 

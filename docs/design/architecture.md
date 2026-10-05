@@ -59,7 +59,7 @@ conversation 定义审批、问题回答与取消的类型契约，bindings 生�
 
 当前配置仓库只有聚合应用配置这一项直接消费者；多个平台共同消费应用 SDK，不等于它有多个独立消费者。内部模块已能隔离文件机制，单独建包反而需要额外公开契约和维护责任。只有出现独立应用用例需要直接消费它，或具体依赖／平台编译边界无法通过内部模块解决，再复核提取；增加平台、切换 SQLite 或代码变长都不是单独建包的充分依据。秘密存取保持平台归属。
 
-当前本地装配由 application 的 `local-runtime` feature 选择；禁用后不链接 agent-runtime 或 gateway，保留普通配置用例，本地执行明确返回 Unsupported。此裁剪不代表已实现远端会话。源码证据与验证缺口见 [实施任务](../../tasks/package-boundaries/packet.md)。
+当前本地装配由 application 的 `local-runtime` feature 选择；禁用后不链接 agent-runtime，保留普通配置用例，本地执行明确返回 Unsupported。当前配置校验仍依赖 gateway 的配置类型，连带保留 AI-provider 依赖；完全裁掉 AI 执行依赖仍需在远端平台装配前整理这一边界。此裁剪不代表已实现远端会话。源码证据与验证缺口见 [实施任务](../../tasks/package-boundaries/packet.md)。
 
 ## 1. 已认可方向与收敛方案
 

@@ -185,7 +185,7 @@ cargo tree --locked -p velune-bindings --no-default-features
 bash scripts/build-macos.sh
 ```
 
-无默认 feature 的依赖树不含 agent-runtime、gateway、AI provider；本地会话操作明确返回 Unsupported。该构建只证明能力裁剪，不表示已支持远端操作。Kotlin 生成物依赖 JNA 及 kotlinx-coroutines；生成成功之外还需编译检查。C# 工具为第三方，UniFFI 版本兼容性仍需后续 C# app 接入时验证。
+无默认 feature 的依赖树不含 agent-runtime；当前 application 配置校验仍通过 gateway，因而依赖树保留 gateway／AI-provider，不启动其执行能力。本地会话操作明确返回 Unsupported。该构建只证明运行时裁剪，不表示已支持远端操作或已完成 AI 执行依赖裁剪。Kotlin 生成物依赖 JNA 及 kotlinx-coroutines；生成成功之外还需编译检查。C# 工具为第三方，UniFFI 版本兼容性仍需后续 C# app 接入时验证。
 
 ## 本地诊断
 
