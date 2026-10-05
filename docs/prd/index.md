@@ -110,6 +110,8 @@ Apple app 使用 UIKit／AppKit／SwiftUI 的原生组件与真实系统视觉�
 
 Harness 与 AI 服务保持独立；读取 Harness 提供商配置属于装配边界的导入适配，不让 AI 服务理解 Harness 的配置、运行或推理级别。AI 服务也不以大语言模型作为整个领域的基础假设；模型、token、对话和推理参数只归相应操作及协议契约。当前只实现 sampling 与原生 Responses 不代表 AI 服务仅限 LLM。
 
+2026-10-05 用户进一步明确：当前 gateway 仅为 LLM Gateway，是 AI 模块的一种应用模式，不代表整个 AI 服务。应用可以直接消费 AI 能力，不要求全部经过 gateway。此前本页“AI 网关”在当前实现范围内均指 LLM Gateway；非 LLM 能力及其接入模式按具体需求另行设计。
+
 统一配置中心持久化，app main 装配；AI lib 不自行读全局配置／环境／文件或保存配置；一次已开始调用保持运行配置稳定。具体归属见 [AI service 设计](../design/ai-service.md)，决定来源见 [S13](../sources.md#s13)。本步只实现契约与校验，不改旧宿主；验收方案、真实接入与 fixture 准备独立记录，不把静态检查等同运行验收。
 
 ## Pi 与 Mac 首循环

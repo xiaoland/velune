@@ -1,4 +1,4 @@
-# AI 服务与 AI 网关：职责、契约与实现复核
+# AI 服务与 LLM Gateway：职责、契约与实现复核
 
 状态：2026-10-05 重新整理需求并审计实现。产品边界以 [PRD](../prd/index.md#ai-网关与-agent-运行时配置) 为准；本页区分已确认要求、审计后的技术建议与当前代码，不能由设计描述推定能力已交付。具体证据和迁移切片归 [AI 网关审计任务](../../tasks/ai-gateway-audit/packet.md)。
 
@@ -6,7 +6,9 @@
 
 AI 服务是独立 lib，其领域不限于 LLM；sampling 语义不作为整个 AI 服务的基础模型。AI 服务与 Agent 运行时保持独立，协议和 SDK 由具体 adapter 封装。读取运行时提供商配置属于 application 与运行时 adapter 的导入用例，不使 AI 服务依赖 Harness 的模型目录、认证文件或推理级别。
 
-AI 网关承担同协议原生透传、模型路由与 fail-over，当前不做协议转换或翻译。名称为 AI 网关；Harness 是它的一类调用方，不定义它的领域边界。当前产品协议范围为 OpenAI ChatCompletions v1 与 Responses v1，不以这些操作限制整个 AI 服务未来的领域，也不将尚未实现的 Messages 等协议视为已交付。
+当前讨论和实现的 gateway 仅为 LLM Gateway，承担 LLM 协议的同协议原生透传、模型路由与 fail-over，当前不做协议转换或翻译。它是 AI 模块的一种应用模式，不代表 AI 服务整体，也不是 Harness 专属网关；Harness 是它的一类调用方。此前文档中的“AI 网关”在当前范围内均指此 LLM Gateway。当前产品协议范围为 OpenAI ChatCompletions v1 与 Responses v1，不以这些操作限制整个 AI 服务未来的领域，也不将尚未实现的 Messages 等协议视为已交付。
+
+AI 能力可以由应用直接调用，也可以由 LLM Gateway 组合后对外提供 HTTP 入口；直接消费不要求经过 gateway。应用模式是职责关系，不要求把 gateway 并入 `ai` package。现有独立 `gateway` unit 可以继续承担这一模式，依赖 AI 能力；AI 契约不反向依赖它。非 LLM 能力只按具体用例扩展，不预建其它网关或空领域框架。
 
 请求中的原生历史、参数、内容和响应事件必须保留。路由可改变逻辑模型标识对应的上游模型和认证目标；这些必要变更不能成为重写其它协议内容的理由。参数以提供商协议为权威，输出上限与推理级别只是相应模型参数的例子，不能要求每个提供商都具有同一组 token 或 reasoning 字段。无法保持请求含义时明确拒绝，不静默删除字段、补参数、降低推理级别或钳制输出上限。
 
@@ -20,7 +22,7 @@ AI 提供商与模型分别建模：模型跨提供商存在，提供商关联�
 | --- | --- | --- |
 | ai | 各操作的调用方／provider 契约，原生内容封装，错误与生命周期语义 | HTTP、配置存储、Harness 规则；以 LLM 消息或 token 定义所有操作 |
 | ai-provider | 对确定目标执行一次协议操作，认证应用、HTTP、原生响应与终态观察 | 路由选择、fail-over、隐藏重试；以某一厂商的采样 decoder 定义另一厂商的原生协议 |
-| gateway | 入口访问控制、模型解析、路由快照、请求约束、fail-over 和下游响应提交 | sampling 往返重建、会话或工具执行、Pi 配置解释 |
+| gateway（当前为 LLM Gateway） | LLM 入口访问控制、模型解析、路由快照、请求约束、fail-over 和下游响应提交 | 定义整个 AI 服务；sampling 往返重建、会话或工具执行、Pi 配置解释 |
 | application | 配置仓库、秘密解析设施、跨域装配、导入与运行生命周期用例 | 再造协议 decoder 或要求 UI 补偿业务约束 |
 | agent-runtime adapter | Harness 原生配置、身份、模型能力和来源兼容设置的投影 | 接管 AI 网关路由权，或把 Pi 参数变成 AI 服务通用参数 |
 
@@ -36,7 +38,8 @@ HTTP 传输、SSE 分帧、JSON 解析与采样结果映射是不同职责。原
 
 ```mermaid
 flowchart LR
-    C[调用方：平台能力或 Agent 运行时] --> G[AI 网关：访问、路由、fail-over]
+    C[LLM Gateway 调用方] --> G[LLM Gateway：访问、路由、fail-over]
+    D[直接消费 AI 能力的应用] --> N
     G --> N[AI 原生操作 binding]
     N --> P[AI-provider：单次协议传输]
     P --> U[同协议上游]

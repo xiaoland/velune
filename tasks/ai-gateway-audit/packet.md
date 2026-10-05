@@ -35,3 +35,5 @@ AI 网关只承担同协议原生透传、模型路由与 fail-over，当前不�
 后续业务边界修订：用户允许 `SamplingOutput`，要求可观测性与业务数据分开，处理方向为 HTTP → 原生协议 → messages、outputs／stats → 可选业务投影。核对现有代码发现 Usage 位于 observation 模块，SamplingCompletion 又聚合 outcome 与观察对象；后续重构应将协议统计归业务合同，将耗时、尝试与执行阶段独立关联。不由可选投影推导必须保留独立 sampling 执行层。
 
 进一步澄清：usage、finish reason 可以同时是业务数据和观察对象。分离的是业务与观察职责，而非排他划分字段；观察消费协议数据，不接管其定义或改变返回数据。已在权威设计补齐请求、原生返回、可选投影与观察分支，保持现有 units，不引入额外观察 package。
+
+范围修订：当前 gateway 仅为 LLM Gateway，是不限于 LLM 的 AI 模块的一种应用模式。更新 PRD 与权威设计，明确直接 AI 消费可绕过 gateway；独立 gateway unit 仍可保留，不把应用模式误解为必须合包。早先审计“AI 网关”名称按当前有界 LLM 范围理解，源码审计事实不变。

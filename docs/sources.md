@@ -152,3 +152,5 @@ S17 实施授权：用户决定全面切换 UniFFI，并要求现在开始拆分
 
 2026-10-05 用户要求从需求重新复核整个 AI 网关并审计实现，必要覆盖整个 AI 服务，明确名称不能限定为 Harness 网关。此授权为需求、设计与实现审计，不直接等同全部重构实施。已确认职责归 PRD 和 AI 服务设计，源码证据及方案取舍归 AI 网关审计任务。
 2026-10-05，用户允许 `SamplingOutput` 作为业务表示，但要求可观测性内容与业务数据分离；指定处理方向为 HTTP → OpenAI ChatCompletions → messages、outputs／stats → SamplingOutput。后续澄清 usage、finish reason 可以同时是业务数据和观察对象。设计释义为原生协议先行，业务投影按需消费，观察独立关联并可消费业务统计。权威归属为 [AI 服务设计](design/ai-service.md)。
+
+2026-10-05，用户明确 AI 服务不限于 LLM，当前 gateway 仅为 LLM Gateway，gateway 是 AI 模块的一种应用模式。职责关系不推出 package 合并，也不要求所有 AI 调用经过网关。权威产品归属为 [PRD](prd/index.md)，技术边界归 [AI 服务设计](design/ai-service.md)。
