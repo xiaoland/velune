@@ -83,3 +83,12 @@ portable 的合成 UniFFI 验收已通过配置重置、原文件边界、登记
 
 
 模型重构最终交付：`6efbcc6` clean schema 4 bundle 已安装，版本 0.1 beta.1。第一次安装验收发现 descriptor 额外 capability 字段与严格 DTO 不一致；已用具名类型构造修复生产端，重新构建安装后，安装库配置／认证与正常 Pi 工具循环均通过。9 个原生 HTTP 保真边界、裸内部键拒绝和未知规格仍可调用通过。验证、失败修正及边界归 [模型实施记录](model-implementation.md)。本轮模型业务和 Disclosure 源码修复完成，UI／真实服务体验由用户验收；没有保留旧配置、迁移或备份代码。
+
+
+## 提供商配置体验复核（最新反馈）
+
+用户在上一轮安装后要求 model ID 显示／编辑、API key 查阅／编辑和恢复 reasoning effort。初查确认模型编辑页只编辑全局记录，ID／协议推理等级在 ProviderModelFields，等级编辑又藏 Disclosure；会话没有当前 effort 选择用例。继续反馈要求先理清归属，指出独立模型／认证管理过度设计，协议与端点应可编辑。已暂停相关源修改并撤回本轮未提交实验补丁，工作区回到已交付源码，不构建或安装未完成方案。
+
+Advisor 复核推荐 Provider 拥有认证和模型条目，不让简单单目标配置要求全局模型、认证资源与显式 route 多处建档。模型条目保存精确 API model ID、名称／图标及该提供商实际能力；可用 efforts 与当前请求 effort 分开，协议负责编码。API key 原地可查看编辑，OAuth 保留必要来源刷新，neutral gateway resolver 不依赖 Harness。这里是候选实施结构，尚未作为已交付契约。
+
+官方资料再次核对（2026-10-05）：[AI SDK OpenAI-compatible provider](https://ai-sdk.dev/providers/openai-compatible-providers) 将 baseURL／apiKey 配置在 provider instance，使用 provider(model-id) 得到模型；[OpenAI reasoning](https://developers.openai.com/api/docs/guides/reasoning) 定义 effort 为每请求推理参数。资料支持归属分层，不规定 Velune 应建立独立 CRUD 页面。待与用户共同理清后再更新具体实施范围。

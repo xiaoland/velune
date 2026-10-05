@@ -90,3 +90,8 @@ core 是跨平台 Rust lib，通过 ABI 嵌入平台 app；产品不得另启常
 ## 独立 units 与跨语言接入
 
 2026-10-05 用户决定全面采用 UniFFI，并授权拆分。共享 units 为 packages/ai、ai-provider、conversation、agent-runtime、gateway、application、bindings；平台 app 是独立 unit。configuration 为 application 内部模块，不建立 persist 或空 remote package。领域包不依赖 UniFFI，bindings 暴露具名类型 API；不恢复手写 C ABI／JSON dispatcher 产品接口。Mac 继续同进程嵌入 Rust，修改后重建安装。任务见 tasks/package-boundaries/packet.md，各 unit 入口见其 README。
+
+
+## 最新提供商配置体验复核
+
+2026-10-05 后续用户要求先厘清模型／提供商参数归属，提供商协议和地址可修改，model ID 可显示并编辑，API key 可查看／编辑，取消强制 Keychain 与独立中央认证管理的产品要求。当前安装结构尚未据此改造；重构范围需先依最新讨论确定，不沿用旧认证资源／全局模型 CRUD 作为固定前提。真实凭据仍不得由开发工具读取、输出或提交。
