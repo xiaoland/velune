@@ -457,7 +457,12 @@ pub(crate) fn apply(
                 pi_projection: model.pi_projection.clone(),
             });
         }
+        // An explicit model selection must not create other source providers.
+        if bindings.is_empty() {
+            continue;
+        }
         let mut settings = source.settings.clone();
+        settings.insert("credentialKind".into(), provider.auth.kind.clone());
         settings.insert("modelsPath".into(), snapshot.models_path.clone());
         if let Some(auth_path) = snapshot.auth_path.clone() {
             settings.insert("authPath".into(), auth_path);

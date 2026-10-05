@@ -38,6 +38,15 @@ pub struct PiModelProjection {
     pub responses_compat: Option<ResponsesCompat>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub completions_max_tokens_field: Option<CompletionsMaxTokensField>,
+    /// Effective Pi 1.0.2 compatibility, materialized before replacing its URL/provider.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completions_compat: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sampling_params: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sampling_params_by_thinking_level: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -49,31 +49,11 @@ impl CoreRuntime {
                     .map_err(RuntimeError::invalid)
             })
             .collect::<Result<BTreeMap<_, _>, _>>()?;
-        let native_responses_constraints = gateway
-            .routes
-            .iter()
-            .filter_map(|route| {
-                let provider = gateway.validate_dispatch(&route.model_id).ok()?;
-                let binding = provider
-                    .models
-                    .iter()
-                    .find(|binding| binding.model_id == route.model_id)?;
-                let projection = binding.pi_projection.as_ref()?;
-                let model = gateway.model(&route.model_id)?;
-                Some((
-                    route.model_id.clone(),
-                    projection
-                        .native_responses_constraints(&model.reasoning_levels)
-                        .allowed_reasoning_efforts,
-                ))
-            })
-            .collect();
         self.shutdown_active()?;
         let runner = Runner::start(
             gateway.to_gateway_config()?,
             self.options.credential_resolver.clone(),
             route_aliases,
-            native_responses_constraints,
         )
         .map_err(|_| RuntimeError::invalid("gateway startup"))?;
         let projection_dir = self

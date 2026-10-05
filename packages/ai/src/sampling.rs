@@ -1,7 +1,28 @@
 //! Sampling input/output semantics, shared where appropriate by the two service contracts.
-use crate::{InvalidContract, Payload, ids::*, observation::Usage};
+use crate::{InvalidContract, Payload, ids::*};
 use serde_json::Value;
 use std::{collections::HashSet, num::NonZeroU32};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Quantity<T> {
+    Unknown,
+    Reported(T),
+    Estimated(T),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Usage {
+    pub input_tokens: Quantity<u64>,
+    pub output_tokens: Quantity<u64>,
+}
+impl Default for Usage {
+    fn default() -> Self {
+        Self {
+            input_tokens: Quantity::Unknown,
+            output_tokens: Quantity::Unknown,
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct ToolDefinition {

@@ -10,7 +10,13 @@ serde_json = "1"
 velune-ai = { path = "../ai" }
 velune-ai-provider = { path = "../ai-provider" }
 reqwest = { version = "0.13", default-features = false, features = ["native-tls", "json", "stream", "system-proxy"] }
-tokio = { version = "1", features = ["rt", "macros", "net", "io-util", "time"] }
+tokio = { version = "1", features = ["rt", "macros", "net", "io-util", "time", "process", "sync"] }
 getrandom = "0.4"
 
 tracing = { version = "0.1", default-features = false, features = ["std"] }
+
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio"] }
+futures-util = "0.3"
+
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "1", features = ["process"] }

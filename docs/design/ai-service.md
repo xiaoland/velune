@@ -67,11 +67,11 @@ fail-over 由 AI 网关单独决策，provider 执行一次尝试，不隐藏再
 
 ## 当前实现与证据
 
-ChatCompletions 当前仍经 SamplingInput／SamplingDelta 重建，请求参数、assistant 历史和推理流不能保真；通用 OpenAI adapter 复用有界 MiniMax decoder。该路径不符合已确认的 AI 网关边界。[导入验收](../../tasks/pi-mac-first-loop/deepseek-import-acceptance.md)使用已安装库复现正常入口被拒绝，并以 SDK 多轮及隔离网关请求定位实际缺口。
+ChatCompletions 与 Responses 已改为独立原生操作，LLM Gateway 不再经过 SamplingInput／SamplingDelta，也不使用 MiniMax 映射器。provider 仅替换路由模型标识，保留其它请求字段；原生 JSON／SSE、HTTP 状态及安全响应头经过同一保真边界。原生事件 sink 可等待，下游通过容量为 1 的通道施加背压；取消关闭派发 Future。业务 Usage／Quantity 归 sampling 数据，observation 可以消费它们；原有单操作 `AiService` 改名为 `SamplingService`，不代表整个 AI 模块。
 
-Responses 已有独立原生 body／SSE 路径，但不能据此认为整个响应、观测、取消与生命周期都已满足目标。HTTP 状态和响应头、终态观察、提交阶段及清理边界继续按 [审计任务](../../tasks/ai-gateway-audit/packet.md) 的证据复核。当前只做显式静态路由；自动策略与 fail-over 尚未实现。
+HTTP ingress 使用 Axum，平台凭据 helper 在每次请求前异步解析，provider 使用本次捕获的认证和共享 HTTP client 执行一次请求。Unix helper 的进程组在超时、取消和网关关闭时终止；Windows 对应 helper 尚未开放。资源上限、配置快照与平台限制见 [gateway unit](../../packages/gateway/README.md)。当前仍是显式静态路由，fail-over Disabled，未实现无中断热配置。
 
-MiniMax 的固定端点、模型、采集预算与 replay 只描述原有有界 sampling adapter，不构成通用 AI 网关的能力证据。sampling 的范围本身可以保留，其是否调整由实际调用方决定，不为复用既有代码而限制原生协议。
+[原审计](../../tasks/ai-gateway-audit/audit.md)和[失败验收](../../tasks/pi-mac-first-loop/deepseek-import-acceptance.md)保留重构前基线，不能作为当前源码状态。此次重构的静态、人工端到端与安装证据继续归 [当前任务](../../tasks/ai-gateway-audit/packet.md)。MiniMax 的固定端点、模型与 replay 仅是历史 sampling 用例，不定义通用协议执行。
 
 ## Harness 提供商配置导入
 
@@ -79,11 +79,11 @@ MiniMax 的固定端点、模型、采集预算与 replay 只描述原有有界 
 
 首个适配器固定读取 Pi 1.0.2 的有效配置。用户选择已配置的运行时实例；application 在预览和应用时重新解析该实例的目录与执行配置，不接受调用方覆盖路径。实例或来源变化使旧预览失效。读取不要求运行时先连接或已有默认模型。预览不执行配置中的凭据命令、不刷新认证、不访问模型服务。提供商按实际端点与协议分组；无法由当前网关保持语义的配置须显示原因，不能默默剥离后声称支持。导入保留原文件；普通凭据引用原来源，OAuth 仍由来源适配器在原存储的锁内刷新，Velune 配置不保存秘密值。
 
-Core 装配配置中的提供商模型映射可以携带 `piProjection`，其类型和转换归 Pi adapter；它不是通用 AI 模型能力。全局目录保留本轮对话操作的身份、显示和预算，Pi adapter 将允许级别与来源 Pi 级别求交，并保留 off→none 等 SDK 映射及九项 Responses 编码选项。适配器同时派生原生 Responses 的允许 effort 值域；网关只校验 wire 值，不理解 Pi 七级、不执行级别转换。投影变化进入物理绑定身份，来源派发重新核对同一投影。未知 compat、自定义 headers、采样参数及启用 session affinity 请求头的配置继续明确标记不支持，不声称完整请求头透传。
+装配配置中的提供商模型映射可以携带 `piProjection`，其类型和转换归 Pi adapter，不是通用 AI 模型能力。固定 Pi 1.0.2 根据原提供商与 URL 推断的 ChatCompletions 有效兼容设置在导入时形成投影；受管模型目录保留 input、兼容设置、采样参数及按推理级别的参数，使替换 provider／URL 不改变 SDK 编码。DeepSeek 等原生 ChatCompletions 推理格式与 assistant reasoning 历史不再因 sampling 类型缺少字段被拒绝。Responses 保留当前明确支持的编码选项，旧 `openai-codex-responses` 仍不是普通 Responses 的别名。
 
-当前 Chat Completions 导入接受与现有重建路径相容的已知兼容设置，例如 `supportsStore: false`、`maxTokensField: "max_completion_tokens"` 和 `thinkingFormat: "openai"`，不因兼容对象非空而整体拒绝。**现有实现偏差：** 网关经 sampling 契约重新编码请求，提供商模型绑定以类型化 wire 选项选择 `max_tokens` 或默认的 `max_completion_tokens`；Pi 来源字段由 application 显式转换，不进入通用 AI 模型参数。禁用 `stream_options.include_usage`、禁用 `reasoning_effort` 或使用尚未实现的供应商推理参数格式的来源仍显示具体原因。适配器同时检查 Pi 1.0.2 从原提供商与 URL 推断的相关默认值；改成受管提供商和本地网关地址不能消除来源的请求要求。这一判定绑定固定 SDK 版本，升级时须重新核对其默认推断与网关编码，不能沿用假定。Pi 新 ChatGPT 订阅仍使用受支持的 `openai-responses`；旧 `openai-codex-responses` 使用另一后端与认证契约，不作为普通 Responses 的别名。未实现的 Pi 协议按实际 API 标识说明，不将其附加为 Chat Completions 兼容问题。
+运行时 adapter 限定固定 SDK 的映射范围，并保留来源 Pi 推理级别与当前模型声明的交集；网关不解释 Pi 七级或执行转换。默认 thinking 保持 off，不因导入支持推理的模型而擅自提高。订阅投影须有明确 OAuth 来源，不仅凭提供商名称推断；真实订阅协议限制仍由认证 adapter 返回并校验。来源自定义认证头／请求头及尚未接入的 Responses 兼容设置继续给出具体限制，不声称支持所有 Pi 协议。
 
-`packages/ai` 与 AI provider lib 不引用 Pi 类型或任何 Harness 配置，独立 Responses 是已实现的一项协议操作，sampling 是另一项操作；这些具体操作不成为整个 AI 服务领域的基础模型。Mac 只编辑通用绑定字段并往返保留 Core 验证的适配元数据，不解释 Pi 投影。
+保存的来源投影在派发时重新核对。旧绑定缺少新导入的执行元数据时明确提示重新预览、导入并选择替换；不静默吸收变化，不删除原文件。`ai` 与 `ai-provider` 不引用 Pi 类型，Mac 往返保留 adapter 元数据，不解释它。旧 `chatCompletionsOutputLimitField` 仅保留配置往返，不影响原生参数发送。
 
 来源配置在导入时形成快照，不做双向同步。重复项默认跳过，替换须明确选择；来源模型可以关联已有全局模型，但不覆盖该模型参数。导入不自动改变路由或运行时默认模型。应用前重新核对来源和目标配置，变化后要求重新预览；派发时核对保存的来源执行绑定，避免来源端点改变后将凭据发送到另一个目标。当前实现与人工验证记录见 [首循环任务](../../tasks/pi-mac-first-loop/packet.md)。
 

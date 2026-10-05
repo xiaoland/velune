@@ -1,6 +1,6 @@
 //! Direct dispatch to one immutable binding, without routing, fallback or retries.
 use crate::{
-    AiService, InvalidContract, OperationFuture, ids::AttemptId, observation::*,
+    InvalidContract, OperationFuture, SamplingService, ids::AttemptId, observation::*,
     provider::ProviderBinding, sampling::*,
 };
 use std::{
@@ -8,15 +8,15 @@ use std::{
     time::Instant,
 };
 
-pub struct DirectAiService {
+pub struct DirectSamplingService {
     binding: Arc<ProviderBinding>,
 }
-impl DirectAiService {
+impl DirectSamplingService {
     pub fn new(binding: Arc<ProviderBinding>) -> Self {
         Self { binding }
     }
 }
-impl AiService for DirectAiService {
+impl SamplingService for DirectSamplingService {
     fn sampling(
         &self,
         request: SamplingRequest,

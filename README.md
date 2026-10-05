@@ -49,7 +49,7 @@ cargo run --locked -p velune-host -- inspect /tmp/velune-demo.sqlite
 
 共享能力在 `packages/` 中按 unit 拆分，平台 app 在 `app/`。AI、provider、会话契约、运行时和网关拥有各自 Rust 契约；application 装配完整用例并保存配置，bindings 生成 UniFFI 类型接口。平台 app 嵌入生成接口所对应的 Rust 库，负责原生界面和平台设施，不另启常驻 Host。Pi 持有会话历史，Velune 只投影列表、消息和运行状态。AI 提供商与全局模型目录由用户在应用内配置，不硬编码供应商示例；真实登录、运行与验收由用户完成。
 
-AI 网关的已确认目标是 ChatCompletions v1 与 Responses v1 同协议原生透传、路由与 fail-over，暂不翻译协议。当前 ChatCompletions 仍走有损采样重建，Responses 的 HTTP envelope 与生命周期也有待补齐；不能称为两条完整原生路径。需求复核、实现审计与迁移建议见 [AI 网关审计](tasks/ai-gateway-audit/packet.md)。Pi 会话选择稳定 `velune/auto`，实际路由使用绑定身份以保持历史兼容性。设置页支持手动配置，或从 Pi 预览并导入提供商、模型与认证来源；导入保留原存储，OAuth 登录／刷新委托来源 SDK；具体入口和限制见 [开发说明](docs/development.md)，隔离证据见当前 Task Packet。
+当前 LLM Gateway 是 AI 模块的一种应用模式，ChatCompletions v1 与 Responses v1 均采用原生协议执行，不经过采样重建，不翻译协议。它提供显式静态路由，fail-over 仍禁用；AI 能力也可由应用直接消费。需求、重构与隔离验收见 [LLM Gateway 任务](tasks/ai-gateway-audit/packet.md)。Pi 会话选择稳定 `velune/auto`，实际路由使用绑定身份以保持历史兼容性。设置页支持手动配置，或从 Pi 预览并导入提供商、模型与认证来源；导入保留原存储，OAuth 登录／刷新委托来源 SDK；具体入口和限制见 [开发说明](docs/development.md)，隔离证据见当前 Task Packet。
 
 Mac 构建默认安装到 `/Applications/Velune.app`，当前产品版本为 `0.1 beta.1`（归属 `VERSION`）；生成绑定契约与配置 schema 分开维护。安装器要求旧应用先退出；开发方按既有授权完成退出与重建安装。协作采用敏捷开发，需求可在实现中调整，关键设计先收敛再实施，具体规则见 [共享指引](AGENTS.md)。
 

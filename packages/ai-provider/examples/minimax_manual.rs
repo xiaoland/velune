@@ -8,8 +8,8 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use velune_ai::{
-    AiService, OperationFuture, Payload, direct::DirectAiService, ids::*, observation::*,
-    provider::*, sampling::*,
+    OperationFuture, Payload, SamplingService, direct::DirectSamplingService, ids::*,
+    observation::*, provider::*, sampling::*,
 };
 use velune_ai_provider::{
     config::*,
@@ -259,7 +259,7 @@ async fn run(
         vec![model_id()],
         provider,
     ))?;
-    let service = DirectAiService::new(Arc::new(binding));
+    let service = DirectSamplingService::new(Arc::new(binding));
     let events = Arc::new(Mutex::new(Vec::new()));
     let sink = Arc::clone(&events);
     let future = checked(service.sampling(

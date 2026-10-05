@@ -38,6 +38,11 @@ impl CoreRuntime {
                             && candidate.settings.get("authPath") == source.settings.get("authPath")
                     });
                 if matches {
+                    if let Some(source) = &mut provider.credential_source {
+                        source
+                            .settings
+                            .insert("credentialKind".into(), "oauth".into());
+                    }
                     provider.credential_generation = provider
                         .credential_generation
                         .checked_add(1)

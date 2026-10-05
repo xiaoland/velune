@@ -85,6 +85,16 @@ impl CoreRuntime {
                         "provider import selected no providers",
                     ));
                 }
+                let requires_reconnect = imported_gateway != previous
+                    && self
+                        .active_runtime_id
+                        .as_ref()
+                        .and_then(|id| {
+                            self.runtime_instances
+                                .iter()
+                                .find(|runtime| &runtime.id == id)
+                        })
+                        .is_some_and(|runtime| runtime.gateway_id == gateway_id);
                 if let Some(index) = existing {
                     self.gateways[index] = imported_gateway;
                 } else {
@@ -98,8 +108,11 @@ impl CoreRuntime {
                     }
                     return Err(error);
                 }
+                if requires_reconnect {
+                    self.shutdown_active()?;
+                }
                 Ok(
-                    json!({"importedProviderIds":result["importedProviderIds"],"skippedProviderIds":result["skippedProviderIds"],"gateways":self.gateways,"requiresReconnect":self.active_runtime_id.is_some()}),
+                    json!({"importedProviderIds":result["importedProviderIds"],"skippedProviderIds":result["skippedProviderIds"],"gateways":self.gateways,"requiresReconnect":requires_reconnect}),
                 )
             }
             _ => Err(RuntimeError::invalid("provider import operation")),

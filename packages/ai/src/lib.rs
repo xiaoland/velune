@@ -2,7 +2,9 @@
 //! No storage, global configuration, provider SDK, transport, or tool execution lives here.
 #![forbid(unsafe_code)]
 
+pub mod chat_completions;
 pub mod direct;
+pub mod http;
 pub mod ids;
 pub mod observation;
 pub mod provider;
@@ -13,8 +15,14 @@ use std::{fmt, future::Future, pin::Pin};
 
 pub type OperationFuture<T> = Pin<Box<dyn Future<Output = T> + Send + 'static>>;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeliveryError {
+    Closed,
+    Cancelled,
+}
+
 /// Caller-facing contract. Capture the binding before returning the future.
-pub trait AiService: Send + Sync {
+pub trait SamplingService: Send + Sync {
     fn sampling(
         &self,
         request: sampling::SamplingRequest,
@@ -35,7 +43,7 @@ impl std::error::Error for InvalidContract {}
 
 /// Explicit access to request/response content; Debug cannot accidentally dump bodies.
 /// This is not encryption or a secret store. Callers can still explicitly access the content.
-#[derive(Clone, PartialEq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct Payload<T>(T);
 impl<T> Payload<T> {
     pub fn new(value: T) -> Self {

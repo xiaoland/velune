@@ -93,6 +93,7 @@ pub enum SourcePhase {
 #[serde(rename_all = "snake_case")]
 pub enum SourceDiagnosticCode {
     InvalidSource,
+    StaleBinding,
     InvalidSourceDirectory,
     InvalidNodePath,
     InvalidModelsPath,
@@ -137,6 +138,7 @@ impl SourceReadError {
     pub fn code(&self) -> &'static str {
         match self.diagnostic.code {
             SourceDiagnosticCode::InvalidSource => "invalid_source",
+            SourceDiagnosticCode::StaleBinding => "stale_binding",
             SourceDiagnosticCode::InvalidSourceDirectory => "invalid_source_directory",
             SourceDiagnosticCode::InvalidNodePath => "invalid_node_path",
             SourceDiagnosticCode::InvalidModelsPath => "invalid_models_path",
@@ -177,6 +179,9 @@ impl SourceReadError {
     pub fn message(&self) -> &'static str {
         match self.diagnostic.code {
             SourceDiagnosticCode::InvalidSource => "所选运行时的提供商来源配置无效。",
+            SourceDiagnosticCode::StaleBinding => {
+                "已导入的模型执行配置已失效；请重新预览并导入该提供商。"
+            }
             SourceDiagnosticCode::InvalidSourceDirectory => {
                 "运行时目录必须是绝对路径；请在运行时配置中修正。"
             }

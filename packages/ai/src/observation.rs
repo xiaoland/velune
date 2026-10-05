@@ -5,25 +5,7 @@ use crate::{
 };
 use std::time::Duration;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Quantity<T> {
-    Unknown,
-    Reported(T),
-    Estimated(T),
-}
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Usage {
-    pub input_tokens: Quantity<u64>,
-    pub output_tokens: Quantity<u64>,
-}
-impl Default for Usage {
-    fn default() -> Self {
-        Self {
-            input_tokens: Quantity::Unknown,
-            output_tokens: Quantity::Unknown,
-        }
-    }
-}
+pub use crate::sampling::{Quantity, Usage};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Operation {
     Sampling,

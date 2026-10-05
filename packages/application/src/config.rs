@@ -550,10 +550,7 @@ impl GatewayConfig {
                             .map(|m| velune_gateway::ProviderModelBinding {
                                 model_id: m.model_id.clone(),
                                 external_model_id: m.external_model_id.clone(),
-                                chat_completions_output_limit_field: match m.pi_projection.as_ref().and_then(|projection| projection.completions_max_tokens_field) {
-                                    Some(velune_agent_runtime::model_projection::CompletionsMaxTokensField::MaxTokens) => velune_gateway::ChatCompletionsOutputLimitField::MaxTokens,
-                                    _ => velune_gateway::ChatCompletionsOutputLimitField::MaxCompletionTokens,
-                                },
+                                chat_completions_output_limit_field: Default::default(),
                             })
                             .collect(),
                     })

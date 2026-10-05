@@ -4,7 +4,8 @@
 //! the selected model and bounded fields, while the provider adapter preserves
 //! native `input`, `tools`, `reasoning`, and terminal event semantics.
 use crate::{
-    InvalidContract, OperationFuture, Payload,
+    DeliveryError, InvalidContract, OperationFuture, Payload,
+    http::{Header, ResponseBody, ResponseMeta},
     ids::{ModelId, ProviderId},
 };
 use serde_json::Value;
@@ -14,23 +15,21 @@ use std::{collections::HashSet, sync::Arc};
 pub struct ResponsesRequest {
     pub model: ModelId,
     pub body: Payload<Value>,
+    pub headers: Vec<Header>,
     pub stream: bool,
 }
 
 #[derive(Debug, Clone)]
 pub enum ResponsesEvent {
     /// A successful upstream response has begun. Body chunks follow for streams.
-    Headers {
-        status: u16,
-        content_type: Option<String>,
-    },
+    Headers(ResponseMeta),
     Body(Payload<Vec<u8>>),
 }
 
 #[derive(Debug, Clone)]
 pub enum ResponsesOutput {
-    Json(Payload<Vec<u8>>, ResponsesTerminal),
-    Stream(ResponsesTerminal),
+    Json(ResponseBody, ResponsesTerminal),
+    Stream(ResponseMeta, ResponsesTerminal),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -58,6 +57,7 @@ pub enum ResponsesErrorKind {
 pub struct ResponsesFailure {
     pub kind: ResponsesErrorKind,
     pub status: Option<u16>,
+    pub headers: Vec<Header>,
     pub body: Option<Payload<Vec<u8>>>,
     pub submitted: bool,
     pub terminal: Option<ResponsesTerminal>,
@@ -68,7 +68,8 @@ pub struct ResponsesCompletion {
     pub result: Result<ResponsesOutput, ResponsesFailure>,
 }
 
-pub type ResponsesSink = Box<dyn FnMut(ResponsesEvent) + Send>;
+pub type ResponsesSink =
+    Box<dyn FnMut(ResponsesEvent) -> OperationFuture<Result<(), DeliveryError>> + Send>;
 
 /// One immutable native Responses provider binding. No protocol conversion or retry.
 pub trait ResponsesProvider: Send + Sync {
@@ -133,6 +134,7 @@ impl ResponsesProvider for DirectResponsesService {
                     result: Err(ResponsesFailure {
                         kind: ResponsesErrorKind::InvalidInput,
                         status: None,
+                        headers: Vec::new(),
                         body: None,
                         submitted: false,
                         terminal: None,

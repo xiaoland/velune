@@ -2,22 +2,32 @@
 //!
 //! This adapter accepts an already assembled client and credential. It does not
 //! read provider configuration, resolve credentials, retry, or choose a model.
-use crate::{
-    config::{
-        ChatCompletionsOutputLimitField, ProtocolConfig, ProviderConfig, Transport,
-        parse_resolved_credential,
-    },
-    minimax::Decoder,
-    minimax::mapping,
-};
-use eventsource_stream::{EventStreamError, Eventsource};
-use futures_util::StreamExt;
-use reqwest::{Client, header::HeaderValue};
-use serde_json::{Value, json};
+use crate::config::{ProtocolConfig, ProviderConfig, Transport, parse_resolved_credential};
+use reqwest::{Client, Response, header::HeaderValue};
+use serde_json::Value;
 use std::sync::Arc;
-use velune_ai::{InvalidContract, OperationFuture, Payload, provider::*, sampling::*};
+use velune_ai::{InvalidContract, OperationFuture, Payload};
+use velune_ai::{
+    chat_completions::*,
+    http::{Header, ResponseBody, ResponseMeta},
+};
 
 type CredentialResolver = dyn Fn(&str, Option<&str>) -> Option<String> + Send + Sync;
+const MAX_RESPONSE_BODY_BYTES: usize = 16 * 1024 * 1024;
+
+async fn bounded_body(response: Response) -> Result<Vec<u8>, ()> {
+    let mut body = Vec::new();
+    let mut stream = response.bytes_stream();
+    use futures_util::StreamExt;
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|_| ())?;
+        if body.len().saturating_add(chunk.len()) > MAX_RESPONSE_BODY_BYTES {
+            return Err(());
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(body)
+}
 
 pub struct ChatCompletions {
     config: ProviderConfig,
@@ -49,6 +59,30 @@ impl ChatCompletions {
             credential: Arc::new(move || Some(value.clone())),
         })
     }
+    pub fn with_resolved_credential(
+        config: ProviderConfig,
+        client: Client,
+        credential: crate::config::ResolvedCredential,
+    ) -> Result<Self, InvalidContract> {
+        let ProtocolConfig::ChatCompletions(protocol) = config.protocol() else {
+            return Err(InvalidContract("provider requires Chat Completions v1"));
+        };
+        if !matches!(
+            protocol.endpoint.transport(),
+            Transport::Http | Transport::Https
+        ) {
+            return Err(InvalidContract("unsupported provider transport"));
+        }
+        if credential.token.is_empty() {
+            return Err(InvalidContract("provider credential is empty"));
+        }
+        let token = credential.token;
+        Ok(Self {
+            config,
+            client,
+            credential: Arc::new(move || Some(token.clone())),
+        })
+    }
 
     pub fn with_resolver(
         config: ProviderConfig,
@@ -77,117 +111,71 @@ impl ChatCompletions {
         })
     }
 
-    fn request_json(
-        input: &SamplingInput,
-        external_model: &str,
-        output_limit_field: ChatCompletionsOutputLimitField,
-    ) -> Result<Value, InvalidContract> {
-        if input.max_output_tokens().get() > 1_048_576 {
-            return Err(InvalidContract("provider output limit is too large"));
-        }
-        let mut messages = Vec::new();
-        if let Some(instructions) = input.instructions() {
-            messages.push(json!({"role":"system","content":instructions}));
-        }
-        for message in input.messages() {
-            messages.push(match message {
-                Message::User(text) => json!({"role":"user","content":text.get()}),
-                Message::Assistant { text, tool_calls } => {
-                    let mut value = json!({
-                        "role":"assistant",
-                        "content":text.as_ref().map(Payload::get)
-                    });
-                    if !tool_calls.is_empty() {
-                        value["tool_calls"] = tool_calls
-                            .iter()
-                            .map(|tool| {
-                                json!({
-                                    "id":tool.id.as_str(),
-                                    "type":"function",
-                                    "function":{
-                                        "name":tool.name.as_str(),
-                                    "arguments":tool.arguments.get().to_string()
-                                    }
-                                })
-                            })
-                            .collect();
-                    }
-                    value
-                }
-                Message::ToolResult {
-                    call,
-                    content,
-                    is_error,
-                } => {
-                    if *is_error {
-                        return Err(InvalidContract("error tool result is unsupported"));
-                    }
-                    json!({"role":"tool","tool_call_id":call.as_str(),"content":content.get()})
-                }
-            });
-        }
-        let mut body = json!({
-            "model": external_model,
-            "messages": messages,
-            "stream": true,
-            "stream_options": {"include_usage": true}
-        });
-        body[output_limit_field.as_str()] = json!(input.max_output_tokens().get());
-        if let Some(level) = input.options().reasoning_level() {
-            body["reasoning_effort"] = Value::String(level.to_owned());
-        }
-        if !input.tools().is_empty() {
-            body["tools"] = input
-                .tools()
-                .iter()
-                .map(|tool| {
-                    json!({
-                        "type":"function",
-                        "function":{
-                            "name":tool.name.as_str(),
-                            "description":tool.description.get(),
-                            "parameters":tool.schema()
-                        }
-                    })
-                })
-                .collect();
-            body["tool_choice"] = json!("auto");
-        }
-        if body.to_string().len() > 256 * 1024 {
+    fn native_request_json(body: &Value, external_model: &str) -> Result<Value, InvalidContract> {
+        let mut object = body
+            .as_object()
+            .cloned()
+            .ok_or(InvalidContract("Chat Completions body must be an object"))?;
+        object.insert("model".into(), Value::String(external_model.to_owned()));
+        let body = Value::Object(object);
+        if serde_json::to_vec(&body)
+            .map_err(|_| InvalidContract("Chat Completions body encoding"))?
+            .len()
+            > 256 * 1024
+        {
             return Err(InvalidContract("provider request is too large"));
         }
         Ok(body)
     }
 }
 
-impl SamplingProvider for ChatCompletions {
-    fn sampling(
+fn response_meta(response: &reqwest::Response) -> ResponseMeta {
+    let headers = response
+        .headers()
+        .iter()
+        .filter_map(|(name, value)| {
+            Some(Header {
+                name: name.as_str().to_owned(),
+                value: value.to_str().ok()?.to_owned(),
+            })
+        })
+        .collect();
+    ResponseMeta {
+        status: response.status().as_u16(),
+        headers,
+    }
+}
+
+impl ChatCompletionsProvider for ChatCompletions {
+    fn chat_completions(
         &self,
-        request: ProviderSamplingRequest,
-        mut events: ProviderSamplingSink,
-    ) -> OperationFuture<ProviderSamplingOutcome> {
-        let Some(mapping) = self.config.model(&request.context.model) else {
+        request: ChatCompletionsRequest,
+        mut events: ChatCompletionsSink,
+    ) -> OperationFuture<ChatCompletionsCompletion> {
+        let Some(mapping) = self.config.model(&request.model) else {
             return Box::pin(async {
-                Decoder::new().failure(
-                    SamplingErrorKind::InvalidInput,
-                    ExecutionKnowledge::NotSent,
-                    false,
-                )
+                ChatCompletionsCompletion {
+                    result: Err(ChatCompletionsFailure {
+                        kind: ChatCompletionsErrorKind::InvalidInput,
+                        response: None,
+                        body: None,
+                        submitted: false,
+                    }),
+                }
             });
         };
-        let body = match Self::request_json(
-            &request.input,
-            mapping.external_name(),
-            mapping.chat_completions_output_limit_field(),
-        ) {
+        let body = match Self::native_request_json(request.body.get(), mapping.external_name()) {
             Ok(body) => body,
             Err(_) => {
                 return Box::pin(async {
-                    Decoder::new().failure(
-                        SamplingErrorKind::InvalidInput,
-                        ExecutionKnowledge::NotSent,
-                        false,
-                    )
+                    ChatCompletionsCompletion {
+                        result: Err(ChatCompletionsFailure {
+                            kind: ChatCompletionsErrorKind::InvalidInput,
+                            response: None,
+                            body: None,
+                            submitted: false,
+                        }),
+                    }
                 });
             }
         };
@@ -196,139 +184,189 @@ impl SamplingProvider for ChatCompletions {
             _ => None,
         }) else {
             return Box::pin(async {
-                Decoder::new().failure(
-                    SamplingErrorKind::Unsupported,
-                    ExecutionKnowledge::NotSent,
-                    false,
-                )
+                ChatCompletionsCompletion {
+                    result: Err(ChatCompletionsFailure {
+                        kind: ChatCompletionsErrorKind::Unsupported,
+                        response: None,
+                        body: None,
+                        submitted: false,
+                    }),
+                }
             });
         };
         let endpoint = protocol.endpoint.url("/chat/completions");
         let client = self.client.clone();
         let credential = Arc::clone(&self.credential);
+        let headers = request.headers;
+        let stream_requested = request.stream;
         Box::pin(async move {
-            let mut decoder = Decoder::new();
             let Some(credential) = credential() else {
-                return decoder.failure(
-                    SamplingErrorKind::Authentication,
-                    ExecutionKnowledge::NotSent,
-                    false,
-                );
+                return ChatCompletionsCompletion {
+                    result: Err(ChatCompletionsFailure {
+                        kind: ChatCompletionsErrorKind::Authentication,
+                        response: None,
+                        body: None,
+                        submitted: false,
+                    }),
+                };
             };
             let mut auth = match HeaderValue::from_str(&format!("Bearer {credential}")) {
                 Ok(value) => value,
                 Err(_) => {
-                    return decoder.failure(
-                        SamplingErrorKind::InvalidInput,
-                        ExecutionKnowledge::NotSent,
-                        false,
-                    );
+                    return ChatCompletionsCompletion {
+                        result: Err(ChatCompletionsFailure {
+                            kind: ChatCompletionsErrorKind::InvalidInput,
+                            response: None,
+                            body: None,
+                            submitted: false,
+                        }),
+                    };
                 }
             };
             auth.set_sensitive(true);
-            let request = match client
+            let mut builder = client
                 .post(endpoint)
                 .header("authorization", auth)
-                .header("accept", "text/event-stream")
-                .header("connection", "close")
-                .json(&body)
-                .build()
-            {
+                .header(
+                    "accept",
+                    if stream_requested {
+                        "text/event-stream"
+                    } else {
+                        "application/json"
+                    },
+                )
+                .header("connection", "close");
+            for header in &headers {
+                let name = header.name.to_ascii_lowercase();
+                if matches!(
+                    name.as_str(),
+                    "authorization" | "host" | "content-length" | "connection"
+                ) {
+                    continue;
+                }
+                let Ok(value) = HeaderValue::from_str(&header.value) else {
+                    continue;
+                };
+                builder = builder.header(&header.name, value);
+            }
+            let request = match builder.json(&body).build() {
                 Ok(request) => request,
                 Err(_) => {
-                    return decoder.failure(
-                        SamplingErrorKind::InvalidInput,
-                        ExecutionKnowledge::NotSent,
-                        false,
-                    );
+                    return ChatCompletionsCompletion {
+                        result: Err(ChatCompletionsFailure {
+                            kind: ChatCompletionsErrorKind::InvalidInput,
+                            response: None,
+                            body: None,
+                            submitted: false,
+                        }),
+                    };
                 }
             };
             let response = match client.execute(request).await {
                 Ok(response) => response,
                 Err(error) => {
-                    return decoder.failure(
-                        if error.is_timeout() {
-                            SamplingErrorKind::Timeout
-                        } else {
-                            SamplingErrorKind::Transport
-                        },
-                        ExecutionKnowledge::Unknown,
-                        true,
-                    );
+                    return ChatCompletionsCompletion {
+                        result: Err(ChatCompletionsFailure {
+                            kind: if error.is_timeout() {
+                                ChatCompletionsErrorKind::Timeout
+                            } else {
+                                ChatCompletionsErrorKind::Transport
+                            },
+                            response: None,
+                            body: None,
+                            submitted: true,
+                        }),
+                    };
                 }
             };
-            let status = response.status().as_u16();
-            if status != 200 {
-                return decoder.failure(
-                    match status {
-                        401 => SamplingErrorKind::Authentication,
-                        403 => SamplingErrorKind::Permission,
-                        429 => SamplingErrorKind::RateLimited,
-                        _ => SamplingErrorKind::ProviderFailure,
-                    },
-                    ExecutionKnowledge::Accepted,
-                    true,
-                );
-            }
-            let is_sse = response
-                .headers()
-                .get("content-type")
-                .and_then(|value| value.to_str().ok())
-                .is_some_and(|value| value.split(';').next() == Some("text/event-stream"));
-            if !is_sse {
-                return decoder.failure(
-                    SamplingErrorKind::Unsupported,
-                    ExecutionKnowledge::Accepted,
-                    true,
-                );
-            }
-            let mut stream = response.bytes_stream().eventsource();
-            while let Some(event) = stream.next().await {
-                let event = match event {
-                    Ok(event) => event,
-                    Err(error) => {
-                        return decoder.failure(
-                            match error {
-                                EventStreamError::Transport(_) => SamplingErrorKind::Transport,
-                                EventStreamError::Utf8(_) | EventStreamError::Parser(_) => {
-                                    SamplingErrorKind::ProviderFailure
-                                }
-                            },
-                            ExecutionKnowledge::Accepted,
-                            true,
-                        );
-                    }
+            let meta = response_meta(&response);
+            let status = meta.status;
+            if !(200..300).contains(&status) {
+                let body = bounded_body(response).await.ok();
+                return ChatCompletionsCompletion {
+                    result: Err(ChatCompletionsFailure {
+                        kind: match status {
+                            401 => ChatCompletionsErrorKind::Authentication,
+                            403 => ChatCompletionsErrorKind::Permission,
+                            429 => ChatCompletionsErrorKind::RateLimited,
+                            _ => ChatCompletionsErrorKind::ProviderFailure,
+                        },
+                        response: Some(meta),
+                        body: body.map(Payload::new),
+                        submitted: true,
+                    }),
                 };
-                if event.event != "message" && !event.event.is_empty() {
-                    return decoder.failure(
-                        SamplingErrorKind::Unsupported,
-                        ExecutionKnowledge::Accepted,
-                        true,
-                    );
-                }
-                if event.data == "[DONE]" {
-                    return decoder.complete();
-                }
-                let raw: Value = match serde_json::from_str(&event.data) {
-                    Ok(value) => value,
-                    Err(_) => {
-                        return decoder.failure(
-                            SamplingErrorKind::ProviderFailure,
-                            ExecutionKnowledge::Accepted,
-                            true,
-                        );
-                    }
-                };
-                let projected = mapping::project(&raw);
-                if let Err(kind) = decoder.push(&projected, &mut events) {
-                    return decoder.failure(kind, ExecutionKnowledge::Accepted, true);
-                }
             }
-            decoder.failure(
-                SamplingErrorKind::ProviderFailure,
-                ExecutionKnowledge::Accepted,
-                true,
-            )
+            if stream_requested {
+                if (events)(ChatCompletionsEvent::Headers(meta.clone()))
+                    .await
+                    .is_err()
+                {
+                    return ChatCompletionsCompletion {
+                        result: Err(ChatCompletionsFailure {
+                            kind: ChatCompletionsErrorKind::Cancelled,
+                            response: Some(meta),
+                            body: None,
+                            submitted: true,
+                        }),
+                    };
+                }
+                let mut chunks = response.bytes_stream();
+                use futures_util::StreamExt;
+                while let Some(chunk) = chunks.next().await {
+                    match chunk {
+                        Ok(chunk) if !chunk.is_empty() => {
+                            if (events)(ChatCompletionsEvent::Body(Payload::new(chunk.to_vec())))
+                                .await
+                                .is_err()
+                            {
+                                return ChatCompletionsCompletion {
+                                    result: Err(ChatCompletionsFailure {
+                                        kind: ChatCompletionsErrorKind::Cancelled,
+                                        response: Some(meta),
+                                        body: None,
+                                        submitted: true,
+                                    }),
+                                };
+                            }
+                        }
+                        Ok(_) => {}
+                        Err(error) => {
+                            return ChatCompletionsCompletion {
+                                result: Err(ChatCompletionsFailure {
+                                    kind: if error.is_timeout() {
+                                        ChatCompletionsErrorKind::Timeout
+                                    } else {
+                                        ChatCompletionsErrorKind::Transport
+                                    },
+                                    response: Some(meta),
+                                    body: None,
+                                    submitted: true,
+                                }),
+                            };
+                        }
+                    }
+                }
+                return ChatCompletionsCompletion {
+                    result: Ok(ChatCompletionsOutput::Stream(meta)),
+                };
+            }
+            match bounded_body(response).await {
+                Ok(body) => ChatCompletionsCompletion {
+                    result: Ok(ChatCompletionsOutput::Json(ResponseBody {
+                        meta,
+                        body: Payload::new(body),
+                    })),
+                },
+                Err(_) => ChatCompletionsCompletion {
+                    result: Err(ChatCompletionsFailure {
+                        kind: ChatCompletionsErrorKind::ProviderFailure,
+                        response: None,
+                        body: None,
+                        submitted: true,
+                    }),
+                },
+            }
         })
     }
 }

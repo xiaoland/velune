@@ -142,6 +142,20 @@ pub(super) fn materialize_models(
                     .collect::<serde_json::Map<_, _>>();
                 entry["thinkingLevelMap"] = Value::Object(levels);
             }
+            if let Some(projection) = binding_projection {
+                if let Some(compat) = &projection.completions_compat {
+                    entry["compat"] = compat.clone();
+                }
+                if let Some(input) = &projection.input {
+                    entry["input"] = serde_json::to_value(input)?;
+                }
+                if let Some(params) = &projection.sampling_params {
+                    entry["samplingParams"] = params.clone();
+                }
+                if let Some(params) = &projection.sampling_params_by_thinking_level {
+                    entry["samplingParamsByThinkingLevel"] = params.clone();
+                }
+            }
             if let Some(field) = binding_projection.and_then(|projection| projection.completions_max_tokens_field) {
                 let name = match field {
                     velune_agent_runtime::model_projection::CompletionsMaxTokensField::MaxTokens => "max_tokens",
@@ -237,7 +251,7 @@ pub(super) fn subscription_capability(gateway: &GatewayConfig, model_id: &str) -
         .is_some_and(|(provider, source)| {
             matches!(provider.protocol, GatewayProtocol::ResponsesV1)
                 && source.harness_type_id == "pi"
-                && source.provider_id == "openai"
+                && source.settings.get("credentialKind").map(String::as_str) == Some("oauth")
         })
 }
 

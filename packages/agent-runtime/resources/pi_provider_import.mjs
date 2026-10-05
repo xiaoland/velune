@@ -84,12 +84,27 @@ async function main() {
     const deepseek = provider === "deepseek" || url.toLowerCase().includes("deepseek.com");
     const openrouter = provider === "openrouter" || url.includes("openrouter.ai");
     const grok = provider === "xai" || url.includes("api.x.ai");
+    const workers = provider === "cloudflare-workers-ai" || url.includes("api.cloudflare.com");
+    const cerebras = provider === "cerebras" || url.includes("cerebras.ai");
+    const nonstandard = nvidia || cerebras || grok || together || url.includes("chutes.ai") || deepseek || zai || moonshot || provider === "opencode" || url.includes("opencode.ai") || workers || cloudflare || antLing;
+    // Materialize detectCompat/getCompat from fixed Pi 1.0.2. The injected
+    // provider/URL must not change defaults used to construct native requests.
     const detected = {
+      supportsStore: !nonstandard,
+      supportsDeveloperRole: openrouter && (model.id.startsWith("anthropic/") || model.id.startsWith("openai/")) || (!nonstandard && !openrouter),
+      supportsReasoningEffort: !grok && !zai && !moonshot && !together && !cloudflare && !nvidia && !antLing,
+      supportsUsageInStreaming: true, supportsFinishReason: true,
       maxTokensField: url.includes("chutes.ai") || deepseek || moonshot || cloudflare || together || nvidia || antLing || zai ? "max_tokens" : "max_completion_tokens",
       thinkingFormat: deepseek ? "deepseek" : zai ? "zai" : together ? "together" : antLing ? "ant-ling" : openrouter ? "openrouter" : "openai",
-      supportsReasoningEffort: !grok && !zai && !moonshot && !together && !cloudflare && !nvidia && !antLing,
-      requiresReasoningContentOnAssistantMessages: deepseek,
+      requiresToolResultName: false, requiresAssistantAfterToolResult: false,
+      requiresThinkingAsText: false, requiresReasoningContentOnAssistantMessages: deepseek,
+      openRouterRouting: {}, vercelGatewayRouting: {}, chatTemplateKwargs: {}, chatTemplateArgs: {},
+      zaiToolStream: false, supportsThinkingTokenBudget: false,
+      supportsStrictMode: false, supportsOpenAIGrammarTools: false,
+      supportsMidConvoSystemMessages: false, supportsMidConvoToolAdditions: false,
       sendSessionAffinityHeaders: openrouter,
+      sessionAffinityFormat: openrouter ? "openrouter" : "openai",
+      supportsLongCacheRetention: !(together || workers || cloudflare || nvidia || antLing),
       ...(provider === "openrouter" && model.id.startsWith("anthropic/") ? {cacheControlFormat:"anthropic"} : {}),
     };
     for (const [key, value] of Object.entries(compatibility(raw, model))) {
@@ -102,67 +117,22 @@ async function main() {
     const available = getSupportedThinkingLevels(model);
     const thinkingLevelMap = Object.fromEntries(levels.map((level) => [level,
       available.includes(level) ? (["none", ...levels].includes(model.thinkingLevelMap?.[level] ?? level) ? (model.thinkingLevelMap?.[level] ?? level) : null) : null]));
-    const result = { reasoningEnabled: model.reasoning, thinkingLevelMap, responsesCompat: null };
+    const result = { reasoningEnabled: model.reasoning, thinkingLevelMap, responsesCompat: null, input: model.input };
+    if (model.samplingParams != null) result.samplingParams = model.samplingParams;
+    if (model.samplingParamsByThinkingLevel != null) result.samplingParamsByThinkingLevel = model.samplingParamsByThinkingLevel;
     if (protocol(model.api) === "responsesV1") {
       const compat = compatibility(raw, model);
       result.responsesCompat = Object.fromEntries(Object.entries(responsesDefaults).map(([key, fallback]) => [key, typeof compat[key] === "boolean" ? compat[key] : fallback]));
     }
-    if (protocol(model.api) === "chatCompletionsV1" && effectiveCompletionsCompatibility(raw, model).maxTokensField === "max_tokens") {
-      result.completionsMaxTokensField = "max_tokens";
+    if (protocol(model.api) === "chatCompletionsV1") {
+      result.completionsCompat = effectiveCompletionsCompatibility(raw, model);
+      if (result.completionsCompat.maxTokensField === "max_tokens") result.completionsMaxTokensField = "max_tokens";
     }
     return result;
   };
   const canonical = (value) => JSON.stringify(value, (_, entry) => entry && !Array.isArray(entry) && typeof entry === "object"
     ? Object.fromEntries(Object.entries(entry).sort(([a], [b]) => a.localeCompare(b))) : entry);
   const populated = (value) => value != null && (typeof value !== "object" || Object.keys(value).length > 0);
-  // The gateway rebuilds Chat Completions requests. Accept only source
-  // capabilities that its current wire output satisfies; do not pretend Pi's
-  // vendor request transformations survive the SamplingInput boundary.
-  const completionsCompatibilityIssues = (compat) => {
-    const boolean = (value) => typeof value === "boolean";
-    const disabled = (value) => value === false;
-    const empty = (value) => value != null && typeof value === "object" && !Array.isArray(value) && Object.keys(value).length === 0;
-    const supported = {
-      supportsStore: boolean, // The gateway does not request storage.
-      supportsDeveloperRole: boolean, // Upstream instructions use the system role.
-      supportsReasoningEffort: (value) => value === true,
-      supportsUsageInStreaming: (value) => value === true,
-      supportsFinishReason: boolean, // The gateway always emits a finish reason to Pi.
-      maxTokensField: (value) => ["max_tokens", "max_completion_tokens"].includes(value),
-      thinkingFormat: (value) => value === "openai",
-      requiresToolResultName: disabled,
-      requiresAssistantAfterToolResult: disabled,
-      requiresThinkingAsText: disabled,
-      requiresReasoningContentOnAssistantMessages: disabled,
-      supportsStrictMode: boolean, // Ordinary function schemas do not require strict mode.
-      supportsOpenAIGrammarTools: disabled,
-      supportsMidConvoSystemMessages: disabled,
-      supportsMidConvoToolAdditions: disabled,
-      supportsLongCacheRetention: boolean, // No upstream cache-retention field is sent.
-      sendSessionAffinityHeaders: disabled,
-      sessionAffinityFormat: (value) => compat.sendSessionAffinityHeaders === false && ["openai", "openai-nosession", "openrouter"].includes(value),
-      zaiToolStream: disabled,
-      supportsThinkingTokenBudget: disabled,
-      openRouterRouting: empty,
-      vercelGatewayRouting: empty,
-      chatTemplateKwargs: empty,
-      chatTemplateArgs: empty,
-    };
-    const reasons = {
-      thinkingFormat: "网关目前使用 reasoning_effort，不能保留此模型的推理参数格式",
-      supportsUsageInStreaming: "网关目前发送 stream_options.include_usage，不能禁用此请求字段",
-      supportsReasoningEffort: "网关目前使用 reasoning_effort，不能保留来源禁用该字段的设置",
-    };
-    const result = [];
-    for (const [key, value] of Object.entries(compat)) {
-      if (!Object.hasOwn(supported, key)) {
-        result.push("来源包含尚未支持的 Chat Completions 兼容字段");
-      } else if (!supported[key](value)) {
-        result.push(reasons[key] ?? `网关尚不能保留 Chat Completions 兼容字段 ${key} 的设置`);
-      }
-    }
-    return [...new Set(result)];
-  };
   const issues = (raw, model) => {
     const result = [];
     if (!protocol(model.api)) {
@@ -175,10 +145,9 @@ async function main() {
     const compat = compatibility(raw, model);
     if (protocol(model.api) === "responsesV1") {
       if (Object.entries(compat).some(([key, value]) => !(key in responsesDefaults) || typeof value !== "boolean")) result.push("尚不支持来源中的 Responses 兼容选项");
-    } else if (protocol(model.api) === "chatCompletionsV1") result.push(...completionsCompatibilityIssues(effectiveCompletionsCompatibility(raw, model)));
-    if (populated(model.samplingParams) || populated(model.samplingParamsByThinkingLevel)) result.push("尚不支持来源中的自定义采样参数");
+    }
     if (Object.entries(model.thinkingLevelMap ?? {}).some(([level, mapped]) => !levels.includes(level) || (mapped != null &&
-        (protocol(model.api) === "responsesV1" ? !["none", ...levels].includes(mapped) : mapped !== level)))) result.push("尚不支持来源中的推理级别转换");
+        !["none", ...levels].includes(mapped)))) result.push("尚不支持来源中的推理级别转换");
     return result;
   };
   // Parse-only SDK functions guard resolution. Every referenced variable must
@@ -221,7 +190,7 @@ async function main() {
     if (settings.bindingEndpoint !== endpoint || settings.bindingProtocol !== protocolID ||
         (arg("--endpoint") && arg("--endpoint") !== endpoint) || (arg("--protocol") && arg("--protocol") !== protocolID)) reject();
     const approvedProjection = JSON.parse(settings.bindingProjection ?? "{}");
-    if (selected.some((model) => canonical(approvedProjection[model.id]) !== canonical(projection(raw, model)))) reject();
+    if (selected.some((model) => canonical(approvedProjection[model.id]) !== canonical(projection(raw, model)))) fail("stale_binding");
     const auth = authShape(raw, providerId, endpoint, protocolID);
     const subscription = auth.kind === "oauth";
     const capabilities = { protocol: protocolID, endpoint, explicitOutputCap: !subscription, temperature: !subscription };
