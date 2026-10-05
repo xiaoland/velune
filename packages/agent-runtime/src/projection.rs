@@ -20,6 +20,7 @@ impl PiProjection {
                 model_record_key: None,
                 run_state: RunState::Idle,
                 messages: Vec::new(),
+                pending_interactions: Vec::new(),
                 actions: ConversationActions {
                     can_send: true,
                     can_cancel: false,

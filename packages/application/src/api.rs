@@ -377,6 +377,18 @@ impl Application {
             None,
         )
     }
+    pub fn reply_runtime_interaction(
+        &mut self,
+        runtime_id: String,
+        interaction_id: String,
+        reply: velune_conversation::RuntimeInteractionReply,
+    ) -> Result<SnapshotResult, Error> {
+        self.execute(
+            "replyRuntimeInteraction",
+            json!({"interactionID":interaction_id,"reply":reply}),
+            Some(&runtime_id),
+        )
+    }
     pub fn authentication_inspect(
         &mut self,
         gateway_id: String,

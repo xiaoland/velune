@@ -110,7 +110,7 @@ def main():
             application = bindings.VeluneApplication.open(bindings.BindingOptions(
                 home_directory=str(root / 'home'), resources_directory=str(resources)))
             runtime = bindings.BindingRuntimeInstance(
-                id='fixture-runtime', name='Synthetic Pi', type_id='pi', gateway_id='default', model_record_key=None,
+                id='fixture-runtime', name='Synthetic Pi', type_id='pi-1.0.2', gateway_id='default', model_record_key=None,
                 settings={'agentDir': str(root / 'source'), 'nodeBinary': str(args.node),
                           'binary': str(resources / 'node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js')})
             application.upsert_runtime(runtime)
@@ -131,7 +131,7 @@ def main():
             assert gateway.providers[0].authentication.method == bindings.BindingAuthenticationMethod.API_KEY
             assert application.read_provider_api_key('default', selected.id) == 'synthetic-only'
             saved = json.loads((root / 'home/generic-config.json').read_text())
-            assert saved['schemaVersion'] == 5 and 'authenticationBindings' not in saved
+            assert saved['schemaVersion'] == 6 and 'authenticationBindings' not in saved
             binding, = gateway.providers[0].models
             assert binding.provider_model_id == 'reasoning' and binding.record_key != 'reasoning'
             assert binding.context_window == candidate.context_window

@@ -62,6 +62,8 @@ pub struct BindingConversationSnapshot {
     pub model_record_key: Option<String>,
     pub run_state: BindingRunState,
     pub messages: Vec<BindingMessage>,
+    #[serde(default)]
+    pub pending_interactions: Vec<BindingRuntimeInteraction>,
     pub actions: BindingConversationActions,
 }
 
@@ -198,6 +200,8 @@ pub struct BindingRuntimeInstance {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct BindingRuntimeTypeDescriptor {
     pub id: String,
+    pub family_id: String,
+    pub version_regex: String,
     pub name: String,
     pub fields: Vec<BindingSettingField>,
     pub actions: Vec<BindingSettingAction>,
@@ -441,4 +445,55 @@ pub enum BindingAuthenticationEdit {
     Keep,
     SetApiKey { value: String },
     Clear,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+#[serde(rename_all = "camelCase")]
+pub struct BindingRuntimeInteraction {
+    pub id: String,
+    pub kind: BindingInteractionKind,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Enum)]
+#[serde(tag = "type", rename_all = "camelCase")]
+pub enum BindingInteractionKind {
+    Approval {
+        title: String,
+        detail: String,
+        options: Vec<BindingInteractionOption>,
+    },
+    UserInput {
+        questions: Vec<BindingInteractionQuestion>,
+    },
+}
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+#[serde(rename_all = "camelCase")]
+pub struct BindingInteractionOption {
+    pub id: String,
+    pub label: String,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+#[serde(rename_all = "camelCase")]
+pub struct BindingInteractionQuestion {
+    pub id: String,
+    pub text: String,
+    pub options: Vec<BindingInteractionOption>,
+    pub secret: bool,
+}
+#[derive(Clone, Serialize, Deserialize, uniffi::Enum)]
+#[serde(tag = "type", rename_all = "camelCase")]
+pub enum BindingRuntimeInteractionReply {
+    Decision {
+        #[serde(rename = "optionId")]
+        option_id: String,
+    },
+    Answers {
+        answers: Vec<BindingInteractionAnswer>,
+    },
+    Cancel,
+}
+#[derive(Clone, Serialize, Deserialize, uniffi::Record)]
+#[serde(rename_all = "camelCase")]
+pub struct BindingInteractionAnswer {
+    pub question_id: String,
+    pub values: Vec<String>,
 }

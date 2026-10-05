@@ -266,6 +266,17 @@ impl VeluneApplication {
         })?)
     }
 
+    pub fn reply_runtime_interaction(
+        &self,
+        runtime_id: String,
+        interaction_id: String,
+        reply: BindingRuntimeInteractionReply,
+    ) -> Result<BindingSnapshotResult, BindingError> {
+        let reply = convert(reply)?;
+        convert(self.with("reply_runtime_interaction", |app| {
+            app.reply_runtime_interaction(runtime_id, interaction_id, reply)
+        })?)
+    }
     pub fn preview_provider_import(
         &self,
         gateway_id: String,

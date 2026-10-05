@@ -47,7 +47,7 @@ final class AppStore: ObservableObject {
         }
         if preview { seedPreview() }
     }
-    var models: [ModelChoice] { gateway.providers.flatMap { provider in provider.models.map { ModelChoice(recordKey: $0.recordKey, displayName: "\($0.displayName) · \(provider.name)") } } }
+    var models: [ModelChoice] { gateway.providers.flatMap { provider in provider.models.map { ModelChoice(recordKey: $0.recordKey, displayName: "\($0.displayName) · \(provider.name)", protocolID: provider.protocolID) } } }
     var providers: [AIProvider] { gateway.providers }
     var selectedConversationTitle: String? { conversations.first { $0.id == selectedConversationID }?.title }
     var isGenerating: Bool { snapshot?.runState == .running || snapshot?.runState == .stopping }
@@ -57,6 +57,21 @@ final class AppStore: ObservableObject {
     var canSwitchModel: Bool { snapshot != nil && !isGenerating && !isLoading && !isShuttingDown }
     var needsModelSelection: Bool { snapshot != nil && snapshot?.modelRecordKey == nil }
     var selectedModelName: String? { models.first { $0.recordKey == snapshot?.modelRecordKey }?.displayName }
+    var runtimeCompatibleModels: [ModelChoice] {
+        let typeID = runtimeInstances.first { $0.id == selectedConnectionID }?.typeID
+        let family = runtimeTypes.first { $0.id == typeID }?.familyID
+        return models.filter { model in
+            switch family { case "codex": return model.protocolID == .responsesV1; case "deepseek-harness": return model.protocolID == .chatCompletionsV1 || model.protocolID == .responsesV1; default: return true }
+        }
+    }
+    var pendingInteractions: [RuntimeInteraction] { snapshot?.pendingInteractions ?? [] }
+    func replyInteraction(_ interaction: RuntimeInteraction, reply: RuntimeInteractionReply) {
+        guard pendingInteractions.contains(where: { $0.id == interaction.id }), let runtimeID = selectedConnectionID, let transport else { return }
+        let currentGeneration = generation
+        enqueue({ try transport.replyRuntimeInteraction(runtimeID: runtimeID, interactionID: interaction.id, reply: reply) }) { [weak self] value in
+            guard let self, generation == currentGeneration else { return }; applySnapshotResult(value)
+        }
+    }
     func shutdown(completion: @escaping (Bool) -> Void) {
         guard !isShuttingDown else { completion(false); return }
         guard !isPreview, let transport else { completion(true); return }
@@ -365,7 +380,7 @@ final class AppStore: ObservableObject {
         gateway = GatewayConfig(providers: [AIProvider(id: "sample-provider", name: "示例 AI 服务", protocolID: .chatCompletionsV1, endpoint: "https://example.invalid/v1", models: [ProviderModel(recordKey: "sample-model", providerModelID: "external-example", nickname: "通用模型", contextWindow: 8192, maxOutputTokens: 4096)])])
         hasGateway = true
         protocols = [ProtocolDescriptor(id: .chatCompletionsV1, name: "OpenAI Chat Completions v1", supported: true), ProtocolDescriptor(id: .responsesV1, name: "OpenAI Responses v1", supported: true), ProtocolDescriptor(id: .messagesV1, name: "Anthropic Messages v1", supported: false)]
-        runtimeTypes = [RuntimeTypeDescriptor(id: "sample-type", name: "示例运行时", fields: [], actions: [SettingAction(id: "connect", label: "连接")])]
+        runtimeTypes = [RuntimeTypeDescriptor(id: "sample-type", familyID: "sample", versionRegex: ".*", name: "示例运行时", fields: [], actions: [SettingAction(id: "connect", label: "连接")])]
         runtimeInstances = [RuntimeInstance(id: "sample-instance", name: "示例运行时", typeID: "sample-type", gatewayID: gateway.id, settings: [:], modelRecordKey: "sample-model"), RuntimeInstance(id: "sample-review", name: "另一个运行时", typeID: "sample-type", gatewayID: gateway.id, settings: [:], modelRecordKey: "sample-model")]
         connections = [Connection(id: runtimeInstances[0].id, name: runtimeInstances[0].name, state: "ready", capabilities: ["conversation", "streaming", "cancel"])]
         selectedConnectionID = runtimeInstances[0].id

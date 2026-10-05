@@ -58,6 +58,9 @@ struct VeluneApp: App {
                     }
                     NSApplication.shared.orderFrontStandardAboutPanel(options: options)
                 }
+                Button("开源许可…") {
+                    if let url = Bundle.main.url(forResource: "THIRD_PARTY_NOTICES", withExtension: "md", subdirectory: "ThirdParty") { NSWorkspace.shared.open(url) }
+                }
             }
             CommandGroup(replacing: .newItem) {
                 Button("新建会话") { store.createConversation() }

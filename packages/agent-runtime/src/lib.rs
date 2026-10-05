@@ -11,3 +11,7 @@ pub use projection::PiProjection;
 
 pub mod authentication;
 pub mod provider_source;
+
+pub mod history;
+pub mod native;
+pub mod version;

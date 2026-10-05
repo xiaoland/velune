@@ -14,7 +14,7 @@ use serde_json::{Value, json};
 use std::{
     collections::BTreeMap,
     net::TcpListener,
-    sync::Arc,
+    sync::{Arc, RwLock},
     thread::{self, JoinHandle},
     time::Duration,
 };
@@ -80,7 +80,7 @@ struct RouteTarget {
     reference: String,
 }
 struct Ingress {
-    routes: BTreeMap<String, RouteTarget>,
+    routes: Arc<RwLock<BTreeMap<String, RouteTarget>>>,
     token: String,
     resolver: Arc<dyn CredentialResolver>,
     client: Client,
@@ -88,19 +88,34 @@ struct Ingress {
 }
 
 pub struct Runner {
+    config: GatewayConfig,
+    routes: Arc<RwLock<BTreeMap<String, RouteTarget>>>,
     endpoint: String,
     token: String,
     stop: Option<oneshot::Sender<()>>,
     handle: Option<JoinHandle<()>>,
 }
 impl Runner {
+    /// Replace only runtime aliases. In-flight calls retain their captured target.
+    /// Target configurations, credentials and the ingress token stay unchanged.
+    pub fn replace_aliases(
+        &self,
+        aliases: BTreeMap<String, String>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let next = build_routes(&self.config, &aliases)?;
+        *self
+            .routes
+            .write()
+            .map_err(|_| GatewayError("gateway alias lock"))? = next;
+        Ok(())
+    }
     pub fn start(
         config: GatewayConfig,
         credential_resolver: Arc<dyn CredentialResolver>,
         aliases: BTreeMap<String, String>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         config.validate().map_err(GatewayError)?;
-        let routes = build_routes(&config, &aliases)?;
+        let routes = Arc::new(RwLock::new(build_routes(&config, &aliases)?));
         let listener = TcpListener::bind("127.0.0.1:0")?;
         listener.set_nonblocking(true)?;
         let address = listener.local_addr()?;
@@ -117,7 +132,7 @@ impl Runner {
             .read_timeout(Duration::from_secs(60))
             .build()?;
         let state = Arc::new(Ingress {
-            routes,
+            routes: routes.clone(),
             token: token.clone(),
             resolver: credential_resolver,
             client,
@@ -144,6 +159,8 @@ impl Runner {
             });
         })?;
         Ok(Self {
+            config,
+            routes,
             endpoint: format!("http://127.0.0.1:{}/v1", address.port()),
             token,
             stop: Some(stop),
@@ -340,7 +357,16 @@ async fn ingress(
     let Some(model) = body["model"].as_str() else {
         return error_response(StatusCode::BAD_REQUEST, "gateway model is required");
     };
-    let Some(target) = state.routes.get(model).cloned() else {
+    let target = match state.routes.read() {
+        Ok(routes) => routes.get(model).cloned(),
+        Err(_) => {
+            return error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "gateway alias state unavailable",
+            );
+        }
+    };
+    let Some(target) = target else {
         return error_response(StatusCode::BAD_REQUEST, "gateway model route is missing");
     };
     if target.protocol != protocol {

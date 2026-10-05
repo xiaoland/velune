@@ -3,7 +3,7 @@ use super::*;
 impl CoreRuntime {
     pub(super) fn create_conversation(&mut self, request: &Value) -> Result<Value, RuntimeError> {
         self.ensure_active(request)?;
-        if self.pi_busy {
+        if self.busy() {
             return Err(RuntimeError::invalid("runtime is busy"));
         }
         let cwd = request["payload"]["cwd"]
@@ -11,6 +11,10 @@ impl CoreRuntime {
             .map(PathBuf::from)
             .ok_or_else(|| RuntimeError::invalid("conversation working directory"))?;
         validate_session_cwd(&cwd)?;
+        if matches!(self.active_state, ActiveState::Native(_)) {
+            self.native_create(&cwd)?;
+            return Ok(json!({"snapshot":self.current_snapshot()}));
+        }
         let default_model = self
             .runtime_instances
             .iter()
@@ -31,7 +35,7 @@ impl CoreRuntime {
                     .find(|gateway| gateway.id == runtime.gateway_id)
             })
             .ok_or_else(|| RuntimeError::invalid("runtime gateway"))?;
-        self.subscription_capability = gateway.subscription(&default_model);
+        self.pi.subscription_capability = gateway.subscription(&default_model);
         let default_physical_model_id = gateway
             .pi_binding_id(
                 &default_model,
@@ -43,28 +47,33 @@ impl CoreRuntime {
             None,
             Some(&default_model),
             Some(&default_physical_model_id),
-            self.subscription_capability,
+            self.pi.subscription_capability,
         )?;
         self.pi
+            .client
             .as_mut()
             .expect("started Pi client")
             .request(json!({"type":"new_session"}))
             .map_err(|_| RuntimeError::invalid("conversation create"))?;
         self.bind_gateway_model()?;
-        self.drain_pi();
-        self.physical_model_id = Some(default_physical_model_id);
+        self.drain_runtime()?;
+        self.pi.physical_model_id = Some(default_physical_model_id);
         self.sync_projection()?;
-        Ok(json!({"snapshot":self.projection.as_ref().and_then(|item| item.snapshot.as_ref())}))
+        Ok(json!({"snapshot":self.current_snapshot()}))
     }
 
     pub(super) fn open_conversation(&mut self, request: &Value) -> Result<Value, RuntimeError> {
         self.ensure_active(request)?;
-        if self.pi_busy {
+        if self.busy() {
             return Err(RuntimeError::invalid("runtime is busy"));
         }
         let id = request["payload"]["conversationID"]
             .as_str()
             .ok_or_else(|| RuntimeError::invalid("conversation id"))?;
+        if matches!(self.active_state, ActiveState::Native(_)) {
+            self.native_open(id)?;
+            return Ok(json!({"snapshot":self.current_snapshot()}));
+        }
         let runtime_id = self
             .active_runtime_id
             .as_ref()
@@ -79,7 +88,7 @@ impl CoreRuntime {
         // Read session metadata before starting Pi. The saved cwd is the
         // session's project context and must not fall back to the app cwd.
         let saved = pi_session_helper(
-            self.pi_config.as_ref().expect("connected Pi config"),
+            self.pi.config.as_ref().expect("connected Pi config"),
             Some(&path),
         )?;
         let cwd = saved["cwd"]
@@ -108,9 +117,9 @@ impl CoreRuntime {
                     && runnable_pi_model(gateway, id).is_ok()
             })
             .map(str::to_owned);
-        self.physical_model_id = None;
+        self.pi.physical_model_id = None;
         self.model_record_key = model_record_key.clone();
-        self.subscription_capability = model_record_key
+        self.pi.subscription_capability = model_record_key
             .as_deref()
             .is_some_and(|id| gateway.subscription(id));
         if let Some(model_record_key) = model_record_key {
@@ -120,18 +129,18 @@ impl CoreRuntime {
                     gateway.authentication_revision(&model_record_key),
                 )
                 .map_err(RuntimeError::invalid)?;
-            self.physical_model_id = Some(physical_model_id.clone());
+            self.pi.physical_model_id = Some(physical_model_id.clone());
             self.start_pi_for_session(
                 &cwd,
                 Some(&path),
                 Some(&model_record_key),
                 Some(&physical_model_id),
-                self.subscription_capability,
+                self.pi.subscription_capability,
             )?;
         } else {
             self.start_pi_for_session(&cwd, Some(&path), None, None, false)?;
         }
-        if let Some(projection) = self.projection.as_mut() {
+        if let Some(projection) = self.pi.projection.as_mut() {
             projection.set_conversation(ConversationSummary {
                 id: id.into(),
                 title: path
@@ -145,38 +154,47 @@ impl CoreRuntime {
             });
         }
         self.sync_projection()?;
-        Ok(json!({"snapshot":self.projection.as_ref().and_then(|item| item.snapshot.as_ref())}))
+        Ok(json!({"snapshot":self.current_snapshot()}))
     }
 
     pub(super) fn send_action(&mut self, request: &Value) -> Result<Value, RuntimeError> {
         self.ensure_active(request)?;
-        if self.pi_busy {
+        if self.busy() {
             return Err(RuntimeError::invalid("runtime is busy"));
         }
         let text = request["payload"]["text"]
             .as_str()
             .filter(|item| !item.trim().is_empty())
             .ok_or_else(|| RuntimeError::invalid("message text"))?;
-        if self.physical_model_id.is_none() {
+        if let ActiveState::Native(session) = &mut self.active_state {
+            session
+                .send(text)
+                .map_err(|_| RuntimeError::invalid("message send"))?;
+            self.drain_runtime()?;
+            return Ok(json!({"snapshot":self.current_snapshot()}));
+        }
+        if self.pi.physical_model_id.is_none() {
             return Err(RuntimeError::invalid("conversation model is unavailable"));
         }
         // Native session state or commands may change the selected provider.
         // Every dispatch must return to the application-owned gateway.
         self.bind_gateway_model()?;
-        self.drain_pi();
+        self.drain_runtime()?;
         let response = self
             .pi
+            .client
             .as_mut()
             .ok_or_else(|| RuntimeError::invalid("runtime is not connected"))?
             .prompt(text)
             .map_err(|_| RuntimeError::invalid("message send"))?;
-        if let Some(projection) = self.projection.as_mut() {
+        if let Some(projection) = self.pi.projection.as_mut() {
             projection.append_user(text);
         }
-        self.pi_busy = response["data"]["disposition"] != "handled";
-        self.pi_turn_started = false;
-        if self.pi_busy
+        self.pi.busy = response["data"]["disposition"] != "handled";
+        self.pi.turn_started = false;
+        if self.busy()
             && let Some(snapshot) = self
+                .pi
                 .projection
                 .as_mut()
                 .and_then(|item| item.snapshot.as_mut())
@@ -185,13 +203,14 @@ impl CoreRuntime {
             snapshot.actions.can_send = false;
             snapshot.actions.can_cancel = true;
         }
-        self.drain_pi();
-        Ok(json!({"snapshot":self.projection.as_ref().and_then(|item| item.snapshot.as_ref())}))
+        self.drain_runtime()?;
+        Ok(json!({"snapshot":self.current_snapshot()}))
     }
 
     pub(super) fn bind_gateway_model(&mut self) -> Result<(), RuntimeError> {
         let model_record_key = self
-            .pi_config
+            .pi
+            .config
             .as_ref()
             .and_then(|config| config.selection_file.as_ref())
             .and_then(|path| fs::read_to_string(path).ok())
@@ -199,6 +218,7 @@ impl CoreRuntime {
             .and_then(|value| value["modelRecordKey"].as_str().map(str::to_owned))
             .ok_or_else(|| RuntimeError::invalid("runtime model id"))?;
         self.pi
+            .client
             .as_mut()
             .ok_or_else(|| RuntimeError::invalid("runtime is not connected"))?
             .request(json!({"type":"set_model","provider":"velune","modelId":"auto"}))
@@ -209,21 +229,42 @@ impl CoreRuntime {
 
     pub(super) fn cancel_action(&mut self, request: &Value) -> Result<Value, RuntimeError> {
         self.ensure_active(request)?;
+        if let ActiveState::Native(session) = &mut self.active_state {
+            session
+                .cancel()
+                .map_err(|_| RuntimeError::invalid("message cancel"))?;
+            self.drain_runtime()?;
+            return Ok(json!({"snapshot":self.current_snapshot()}));
+        }
         self.pi
+            .client
             .as_mut()
             .ok_or_else(|| RuntimeError::invalid("runtime is not connected"))?
             .cancel()
             .map_err(|_| RuntimeError::invalid("message cancel"))?;
-        self.drain_pi();
-        Ok(json!({"snapshot":self.projection.as_ref().and_then(|item| item.snapshot.as_ref())}))
+        self.drain_runtime()?;
+        Ok(json!({"snapshot":self.current_snapshot()}))
     }
 
     pub(super) fn select_model(&mut self, request: &Value) -> Result<Value, RuntimeError> {
         self.ensure_active(request)?;
-        if self.pi_busy {
+        if self.busy() {
             return Err(RuntimeError::invalid("runtime is busy"));
         }
-        if self.pi.is_none() {
+        if let ActiveState::Native(session) = &self.active_state {
+            if session.snapshot().is_none() {
+                return Err(RuntimeError::invalid("conversation is not active"));
+            }
+            let key = request["payload"]["modelRecordKey"]
+                .as_str()
+                .ok_or_else(|| RuntimeError::invalid("model id"))?;
+            let runtime = self.active_instance()?.clone();
+            self.select_native_model(&runtime, key)?;
+            self.model_record_key = Some(key.into());
+            self.drain_runtime()?;
+            return Ok(json!({"snapshot":self.current_snapshot()}));
+        }
+        if self.pi.client.is_none() {
             return Err(RuntimeError::invalid("conversation is not active"));
         }
         let model_record_key = request["payload"]["modelRecordKey"]
@@ -253,21 +294,23 @@ impl CoreRuntime {
             selected_subscription_capability,
         )?;
         self.pi
+            .client
             .as_mut()
             .expect("connected Pi client")
             .request(json!({"type":"set_model","provider":"velune","modelId":"auto"}))
             .map_err(|_| RuntimeError::invalid("model selection"))?;
         self.pi
+            .client
             .as_mut()
             .expect("connected Pi client")
             .sync_virtual_selection()
             .map_err(|_| RuntimeError::invalid("model selection persistence"))?;
-        self.drain_pi();
-        self.subscription_capability = selected_subscription_capability;
-        self.physical_model_id = Some(selected_physical_model_id);
-        self.pi_config.as_mut().expect("connected Pi config").model = Some("velune/auto".into());
+        self.drain_runtime()?;
+        self.pi.subscription_capability = selected_subscription_capability;
+        self.pi.physical_model_id = Some(selected_physical_model_id);
+        self.pi.config.as_mut().expect("connected Pi config").model = Some("velune/auto".into());
         self.sync_projection()?;
-        Ok(json!({"snapshot":self.projection.as_ref().and_then(|item| item.snapshot.as_ref())}))
+        Ok(json!({"snapshot":self.current_snapshot()}))
     }
 
     pub(super) fn write_selection(
@@ -277,7 +320,8 @@ impl CoreRuntime {
         subscription_capability: bool,
     ) -> Result<(), RuntimeError> {
         let config = self
-            .pi_config
+            .pi
+            .config
             .as_ref()
             .ok_or_else(|| RuntimeError::invalid("runtime is not connected"))?;
         write_selection_file(
@@ -299,8 +343,13 @@ impl CoreRuntime {
     }
 
     pub(super) fn sync_projection(&mut self) -> Result<(), RuntimeError> {
-        self.drain_pi();
-        if let (Some(client), Some(projection)) = (self.pi.as_mut(), self.projection.as_mut()) {
+        self.drain_runtime()?;
+        if matches!(self.active_state, ActiveState::Native(_)) {
+            return Ok(());
+        }
+        if let (Some(client), Some(projection)) =
+            (self.pi.client.as_mut(), self.pi.projection.as_mut())
+        {
             let (state, messages) = client
                 .state()
                 .map_err(|_| RuntimeError::invalid("runtime state"))?;
@@ -319,7 +368,8 @@ impl CoreRuntime {
                     updated_at: None,
                     runtime_id: runtime_id.into(),
                     cwd: self
-                        .pi_config
+                        .pi
+                        .config
                         .as_ref()
                         .and_then(|config| config.working_dir.as_ref())
                         .map(|path| path.to_string_lossy().into_owned()),
@@ -328,34 +378,35 @@ impl CoreRuntime {
             projection.replace_history(&messages);
             if let Some(snapshot) = projection.snapshot.as_mut() {
                 snapshot.model_record_key = self.model_record_key.clone();
-                snapshot.actions.can_send = snapshot.model_record_key.is_some() && !self.pi_busy;
-                snapshot.actions.can_cancel = self.pi_busy;
+                snapshot.actions.can_send = snapshot.model_record_key.is_some() && !self.pi.busy;
+                snapshot.actions.can_cancel = self.pi.busy;
             }
         }
-        self.drain_pi();
+        self.drain_runtime()?;
         Ok(())
     }
 
     pub(super) fn drain_pi(&mut self) {
         let events = self
             .pi
+            .client
             .as_mut()
             .map(|client| client.poll())
             .unwrap_or_default();
         for event in events {
             let is_settled = event["type"] == "agent_settled";
-            let matched_settled = is_settled && self.pi_turn_started;
+            let matched_settled = is_settled && self.pi.turn_started;
             // History and bootstrap message events do not begin an agent run.
             // Only the SDK's run boundary can authorize its settled event.
             if event["type"] == "agent_start" {
-                self.pi_turn_started = true;
+                self.pi.turn_started = true;
             }
             if matched_settled {
-                self.pi_busy = false;
-                self.pi_turn_started = false;
+                self.pi.busy = false;
+                self.pi.turn_started = false;
             }
             if (!is_settled || matched_settled)
-                && let Some(projection) = self.projection.as_mut()
+                && let Some(projection) = self.pi.projection.as_mut()
             {
                 projection.apply_event(&event);
             }
@@ -363,7 +414,14 @@ impl CoreRuntime {
     }
 
     pub(super) fn session_summaries(&self) -> Result<Vec<ConversationSummary>, RuntimeError> {
-        let Some(config) = self.pi_config.as_ref() else {
+        if matches!(self.active_state, ActiveState::Native(_)) {
+            return history::list(
+                &self.history_config()?,
+                self.active_runtime_id.as_deref().unwrap_or_default(),
+            )
+            .map_err(|_| RuntimeError::invalid("运行时会话列表读取失败"));
+        }
+        let Some(config) = self.pi.config.as_ref() else {
             return Ok(Vec::new());
         };
         let value = pi_session_helper(config, None)?;

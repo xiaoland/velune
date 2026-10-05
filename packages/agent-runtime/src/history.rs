@@ -1,0 +1,89 @@
+//! Read-only historical projection through the installed huihua package.
+use crate::{
+    conversation::*,
+    native::{Error, Result, rpc::bounded_process},
+};
+use serde::Deserialize;
+use serde_json::json;
+use std::{path::PathBuf, process::Command};
+pub struct HistoryConfig {
+    pub provider: String,
+    pub node_binary: PathBuf,
+    pub resources_directory: PathBuf,
+    pub root: PathBuf,
+    pub home: PathBuf,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct History {
+    pub native_id: String,
+    pub title: String,
+    pub cwd: Option<String>,
+    pub messages: Vec<Message>,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Summary {
+    native_id: String,
+    title: String,
+    cwd: Option<String>,
+    updated_at: Option<String>,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct List {
+    contract_version: u32,
+    sessions: Vec<Summary>,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Read {
+    contract_version: u32,
+    history: History,
+}
+fn execute(config: &HistoryConfig, operation: &str, native_id: Option<&str>) -> Result<Vec<u8>> {
+    if !matches!(config.provider.as_str(), "codex" | "deepseek") {
+        return Err(Error::new("会话历史来源不受支持"));
+    }
+    for path in [
+        &config.node_binary,
+        &config.resources_directory,
+        &config.root,
+        &config.home,
+    ] {
+        if !path.is_absolute() {
+            return Err(Error::new("会话历史读取路径必须为绝对路径"));
+        }
+    }
+    let request = json!({"operation":operation,"provider":config.provider,"home":config.home,"roots":[config.root],"nativeId":native_id});
+    let input = serde_json::to_vec(&request).map_err(|_| Error::new("历史读取请求编码失败"))?;
+    let mut command = Command::new(&config.node_binary);
+    command.arg(config.resources_directory.join("huihua_sessions.mjs"));
+    bounded_process(command, Some(input), 16 * 1024 * 1024)
+}
+pub fn list(config: &HistoryConfig, runtime_id: &str) -> Result<Vec<ConversationSummary>> {
+    let result: List = serde_json::from_slice(&execute(config, "list", None)?)
+        .map_err(|_| Error::new("会话历史列表契约不匹配"))?;
+    if result.contract_version != 1 {
+        return Err(Error::new("会话历史桥版本不匹配"));
+    }
+    Ok(result
+        .sessions
+        .into_iter()
+        .map(|s| ConversationSummary {
+            id: format!("{runtime_id}:{}", s.native_id),
+            title: s.title,
+            updated_at: s.updated_at,
+            runtime_id: runtime_id.into(),
+            cwd: s.cwd,
+        })
+        .collect())
+}
+pub fn read(config: &HistoryConfig, native_id: &str) -> Result<History> {
+    let result: Read = serde_json::from_slice(&execute(config, "read", Some(native_id))?)
+        .map_err(|_| Error::new("会话历史详情契约不匹配"))?;
+    if result.contract_version != 1 || result.history.native_id != native_id {
+        return Err(Error::new("会话历史桥身份或版本不匹配"));
+    }
+    Ok(result.history)
+}

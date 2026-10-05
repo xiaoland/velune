@@ -22,7 +22,7 @@ impl CoreRuntime {
         &mut self,
         request: &Value,
     ) -> Result<Value, RuntimeError> {
-        if self.pi_busy {
+        if self.busy() {
             return Err(RuntimeError::invalid("runtime is busy"));
         }
         let operation = request["payload"]["operation"]
@@ -113,12 +113,11 @@ impl CoreRuntime {
     }
 
     pub(super) fn runtime_action(&mut self, request: &Value) -> Result<Value, RuntimeError> {
-        if self.pi_busy {
+        if self.busy() {
             return Err(RuntimeError::invalid("runtime is busy"));
         }
         let previous = self.runtime_instances.clone();
         let previous_gateways = self.gateways.clone();
-        let mut changed = false;
         match request["payload"]["operation"].as_str().unwrap_or("list") {
             "upsert" => {
                 let raw = request["payload"]["runtimeInstance"]
@@ -127,7 +126,10 @@ impl CoreRuntime {
                 let runtime: RuntimeInstance = serde_json::from_str(raw)?;
                 if runtime.id.is_empty()
                     || runtime.name.is_empty()
-                    || runtime.type_id != "pi"
+                    || !matches!(
+                        runtime.type_id.as_str(),
+                        "pi-1.0.2" | "codex-0.159.3" | "dsh-acp-0.2.0-rc.2"
+                    )
                     || (runtime.gateway_id != "default"
                         && !self
                             .gateways
@@ -153,7 +155,6 @@ impl CoreRuntime {
                 }
                 self.runtime_instances.retain(|item| item.id != runtime.id);
                 self.runtime_instances.push(runtime);
-                changed = true;
                 if let Err(error) = self.persist() {
                     self.runtime_instances = previous.clone();
                     self.gateways = previous_gateways.clone();
@@ -165,7 +166,6 @@ impl CoreRuntime {
                     .as_str()
                     .ok_or_else(|| RuntimeError::invalid("runtime instance id"))?;
                 self.runtime_instances.retain(|item| item.id != id);
-                changed = true;
                 if let Err(error) = self.persist() {
                     self.runtime_instances = previous.clone();
                     self.gateways = previous_gateways.clone();
@@ -175,17 +175,24 @@ impl CoreRuntime {
             "list" => {}
             _ => return Err(RuntimeError::invalid("runtime operation")),
         }
-        if changed && self.active_runtime_id.is_some() {
+        let requires_reconnect = self.active_runtime_id.as_ref().is_some_and(|id| {
+            previous.iter().find(|runtime| &runtime.id == id)
+                != self
+                    .runtime_instances
+                    .iter()
+                    .find(|runtime| &runtime.id == id)
+        });
+        if requires_reconnect {
             self.shutdown_active()?;
         }
         Ok(
-            json!({"runtimeInstances":self.runtime_instances,"runtimeTypes":runtime_types(&self.options.resources_directory),"requiresReconnect":changed}),
+            json!({"runtimeInstances":self.runtime_instances,"runtimeTypes":runtime_types(&self.options.resources_directory),"requiresReconnect":requires_reconnect}),
         )
     }
 
     pub(super) fn persist(&self) -> Result<(), RuntimeError> {
         self.repository.store(&crate::repository::PersistedConfig {
-            schema_version: 5,
+            schema_version: 6,
             model_templates: self.model_templates.clone(),
             gateways: self.gateways.clone(),
             runtime_instances: self.runtime_instances.clone(),

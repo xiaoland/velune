@@ -64,6 +64,8 @@ pub struct ConversationSnapshot {
     pub model_record_key: Option<String>,
     pub run_state: RunState,
     pub messages: Vec<Message>,
+    #[serde(default)]
+    pub pending_interactions: Vec<RuntimeInteraction>,
     pub actions: ConversationActions,
 }
 
@@ -109,4 +111,56 @@ pub struct SettingField {
 pub struct SettingAction {
     pub id: String,
     pub label: String,
+}
+
+/// A runtime request awaiting an explicit user response. IDs belong to the active session.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RuntimeInteraction {
+    pub id: String,
+    pub kind: InteractionKind,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "type", rename_all = "camelCase")]
+pub enum InteractionKind {
+    Approval {
+        title: String,
+        detail: String,
+        options: Vec<InteractionOption>,
+    },
+    UserInput {
+        questions: Vec<InteractionQuestion>,
+    },
+}
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct InteractionOption {
+    pub id: String,
+    pub label: String,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct InteractionQuestion {
+    pub id: String,
+    pub text: String,
+    pub options: Vec<InteractionOption>,
+    pub secret: bool,
+}
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "type", rename_all = "camelCase")]
+pub enum RuntimeInteractionReply {
+    Decision {
+        #[serde(rename = "optionId")]
+        option_id: String,
+    },
+    Answers {
+        answers: Vec<InteractionAnswer>,
+    },
+    Cancel,
+}
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct InteractionAnswer {
+    pub question_id: String,
+    pub values: Vec<String>,
 }

@@ -9,6 +9,10 @@ xcrun --find swiftc >/dev/null
   echo 'Pi runtime is missing; run ./scripts/install-pi-runtime.sh first.' >&2
   exit 1
 }
+[[ -d target/runtime-support/node_modules/huihua && -f target/runtime-support/THIRD_PARTY_NOTICES.md ]] || {
+  echo 'Runtime support is missing; run ./scripts/install-runtime-support.sh first.' >&2
+  exit 1
+}
 cargo build --locked --release -p velune-bindings --lib
 bindings="$PWD/target/bindings/swift"
 mkdir -p "$bindings"
@@ -33,6 +37,12 @@ xcrun swiftc -parse-as-library -swift-version 5 -target "$(uname -m)-apple-macos
 # JavaScript is a sealed resource, not a nested macOS executable.
 cp packages/agent-runtime/resources/pi_sessions.mjs packages/agent-runtime/resources/pi_rpc.mjs packages/agent-runtime/resources/pi_virtual_model.mjs packages/agent-runtime/resources/pi_auth.mjs packages/agent-runtime/resources/pi_provider_import.mjs "$app/Contents/Resources/"
 cp -R target/pi-runtime/node_modules "$app/Contents/Resources/node_modules"
+cp packages/agent-runtime/resources/huihua_sessions.mjs "$app/Contents/Resources/"
+cp -R target/runtime-support/node_modules/. "$app/Contents/Resources/node_modules/"
+mkdir -p "$app/Contents/Resources/ThirdParty"
+cp target/runtime-support/THIRD_PARTY_NOTICES.md "$app/Contents/Resources/ThirdParty/"
+cp -R target/runtime-support/licenses "$app/Contents/Resources/ThirdParty/"
+cp packages/agent-runtime/runtime-support/package-lock.json "$app/Contents/Resources/ThirdParty/runtime-support-package-lock.json"
 cp -R app/mac/Assets/Brand "$app/Contents/Resources/Brand"
 xcrun swift scripts/render-app-icon.swift app/mac/Assets/Brand target/macos/Velune.iconset
 iconutil -c icns target/macos/Velune.iconset -o "$app/Contents/Resources/Velune.icns"
@@ -60,7 +70,7 @@ plist=plistlib.loads(plist_path.read_bytes())
 plist['VeluneDisplayVersion']=version
 plist['CFBundleGetInfoString']=version
 plist_path.write_bytes(plistlib.dumps(plist))
-manifest={'source_commit':cmd('git','rev-parse','HEAD'),'dirty':bool(cmd('git','status','--porcelain')),'lock_sha256':hashlib.sha256(Path('Cargo.lock').read_bytes()).hexdigest(),'bindings_version':'0.1.0','uniffi_version':'0.32.2','ui_version':version,'simulation':False,'control_transport':'uniffi','language_contract':'typed','config_schema_version':5,'supported_modes':['conversation_projection','llm_gateway','runtime_instances','synthetic_preview'],'native_verified':False,'rust':cmd('rustc','--version'),'swift':cmd('xcrun','swiftc','--version'),'xcode':cmd('xcodebuild','-version'),'architecture':platform.machine(),'macos':platform.mac_ver()[0],'build_command':'bash scripts/build-macos.sh'}
+manifest={'source_commit':cmd('git','rev-parse','HEAD'),'dirty':bool(cmd('git','status','--porcelain')),'lock_sha256':hashlib.sha256(Path('Cargo.lock').read_bytes()).hexdigest(),'bindings_version':'0.1.0','uniffi_version':'0.32.2','ui_version':version,'simulation':False,'control_transport':'uniffi','language_contract':'typed','config_schema_version':6,'supported_modes':['conversation_projection','llm_gateway','runtime_instances','synthetic_preview'],'native_verified':False,'rust':cmd('rustc','--version'),'swift':cmd('xcrun','swiftc','--version'),'xcode':cmd('xcodebuild','-version'),'architecture':platform.machine(),'macos':platform.mac_ver()[0],'build_command':'bash scripts/build-macos.sh'}
 Path(sys.argv[1]).write_text(json.dumps(manifest,ensure_ascii=False,indent=2))
 PY
 # Ad-hoc local debug signing only. No identity/keychain selection, certificate, or notarization.

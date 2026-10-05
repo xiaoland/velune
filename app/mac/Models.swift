@@ -64,8 +64,9 @@ struct ConversationSnapshot: Codable, Sendable, Equatable {
     var modelRecordKey: String?
     var runState: RunState
     var messages: [Message]
+    var pendingInteractions: [RuntimeInteraction] = []
     var actions: ConversationActions
-    enum CodingKeys: String, CodingKey { case revision, conversation, runState, messages, actions; case modelRecordKey = "modelRecordKey" }
+    enum CodingKeys: String, CodingKey { case revision, conversation, runState, messages, pendingInteractions, actions; case modelRecordKey = "modelRecordKey" }
 }
 
 struct Connection: Codable, Sendable, Identifiable, Equatable {
@@ -91,6 +92,7 @@ struct ModelChoice: Identifiable, Sendable {
     var id: String { recordKey }
     var recordKey: String
     var displayName: String
+    var protocolID: ProviderProtocol
 }
 struct ModelTemplate: Codable, Sendable, Identifiable, Equatable {
     var id: String = ""
@@ -154,6 +156,8 @@ struct RuntimeInstance: Codable, Sendable, Identifiable, Equatable {
 
 struct RuntimeTypeDescriptor: Codable, Sendable, Identifiable, Equatable {
     var id: String
+    var familyID: String
+    var versionRegex: String
     var name: String
     var fields: [SettingField]
     var actions: [SettingAction]
@@ -247,3 +251,13 @@ struct AuthenticationCapabilities: Decodable, Sendable {
     var temperature: Bool
 }
 struct AuthenticationInspection: Decodable, Sendable { var metadata: AuthenticationMetadata }
+
+struct RuntimeInteraction: Codable, Sendable, Identifiable, Equatable {var id:String;var kind:InteractionKind}
+enum InteractionKind: Codable, Sendable, Equatable {
+    case approval(title:String,detail:String,options:[InteractionOption])
+    case userInput(questions:[InteractionQuestion])
+}
+struct InteractionOption: Codable, Sendable, Identifiable, Equatable {var id:String;var label:String}
+struct InteractionQuestion: Codable, Sendable, Identifiable, Equatable {var id:String;var text:String;var options:[InteractionOption];var secret:Bool}
+enum RuntimeInteractionReply: Sendable {case decision(String), answers([InteractionAnswer]), cancel}
+struct InteractionAnswer: Sendable {var questionID:String;var values:[String]}

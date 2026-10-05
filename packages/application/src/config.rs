@@ -89,6 +89,8 @@ pub struct RuntimeInstance {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RuntimeTypeDescriptor {
     pub id: String,
+    pub family_id: String,
+    pub version_regex: String,
     pub name: String,
     pub fields: Vec<crate::conversation::SettingField>,
     pub actions: Vec<crate::conversation::SettingAction>,
@@ -98,24 +100,30 @@ impl RuntimeInstance {
     /// Validate execution-path settings when saving an instance. Existing
     /// configuration remains readable so users can repair incomplete settings.
     pub(crate) fn validate_execution_paths(&self) -> Result<(), &'static str> {
-        if self.type_id == "pi" {
-            let directory = self
+        if !matches!(
+            self.type_id.as_str(),
+            "pi-1.0.2" | "codex-0.159.3" | "dsh-acp-0.2.0-rc.2"
+        ) {
+            return Err("不支持的运行时版本类型");
+        }
+        for key in ["binary", "agentDir", "nodeBinary"] {
+            let value = self
                 .settings
-                .get("agentDir")
-                .filter(|value| !value.is_empty())
-                .ok_or("Pi Agent 运行时必须配置运行时目录")?;
-            if !std::path::Path::new(directory).is_absolute() || directory.contains('\0') {
-                return Err("Pi Agent 运行时目录必须是绝对路径");
-            }
-            let node = self
-                .settings
-                .get("nodeBinary")
-                .filter(|value| !value.is_empty())
-                .ok_or("Pi Agent 运行时必须配置 Node 可执行文件")?;
-            if !std::path::Path::new(node).is_absolute() || node.contains('\0') {
-                return Err("Pi Agent 的 Node 可执行文件必须是绝对路径");
+                .get(key)
+                .filter(|v| !v.is_empty())
+                .ok_or("运行时入口、运行时目录与 Node 可执行文件必须配置")?;
+            if !std::path::Path::new(value).is_absolute() || value.contains('\0') {
+                return Err("运行时路径必须是绝对路径");
             }
         }
+        if let Some(value) = self.settings.get("sessionDir").filter(|v| !v.is_empty())
+            && (self.type_id != "pi-1.0.2"
+                || !std::path::Path::new(value).is_absolute()
+                || value.contains('\0'))
+        {
+            return Err("会话存储覆盖只适用于 Pi，且必须是绝对路径");
+        }
+
         Ok(())
     }
 }

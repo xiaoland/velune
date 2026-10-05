@@ -43,6 +43,7 @@ struct VeluneRootView: View {
             .toolbar { conversationToolbar }
         }
         .navigationSplitViewStyle(.balanced)
+        .sheet(item: Binding(get: { store.pendingInteractions.first }, set: { _ in })) { RuntimeInteractionView(store: store, interaction: $0) }
         .onReceive(NotificationCenter.default.publisher(for: .veluneSend)) { _ in send() }
         .task {
             store.start()
@@ -53,7 +54,7 @@ struct VeluneRootView: View {
     @ToolbarContentBuilder private var conversationToolbar: some ToolbarContent {
         ToolbarItemGroup(placement: .primaryAction) {
             Menu {
-                ForEach(store.models) { model in Button(model.displayName) { store.selectModel(modelRecordKey: model.recordKey) } }
+                ForEach(store.runtimeCompatibleModels) { model in Button(model.displayName) { store.selectModel(modelRecordKey: model.recordKey) } }
                 Divider()
                 SettingsLink { Text("管理AI提供商与模型…") }
             } label: { Text(store.selectedModelName ?? "选择模型") }
@@ -541,9 +542,13 @@ struct RuntimeEditor: View {
     @State private var modelRecordKey: String?
     @State private var settings: [String: String] = [:]
     @State private var draftID = UUID().uuidString
+    @State private var typeDrafts: [String: [String: String]] = [:]
     @State private var executableDiscoveryRunning = false
     @State private var executableDiscoveryMessage: String?
     private var descriptor: RuntimeTypeDescriptor? { types.first { $0.id == typeID } }
+    private var compatibleModels: [ModelChoice] { models.filter { model in
+        switch descriptor?.familyID { case "codex": return model.protocolID == .responsesV1; case "deepseek-harness": return model.protocolID == .chatCompletionsV1 || model.protocolID == .responsesV1; default: return true }
+    } }
     private var valid: Bool { !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && descriptor != nil && (descriptor?.fields.allSatisfy { field in
         let value = settings[field.key] ?? field.value
         return (!field.required || !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) && MacPath.isValid(value, field: field)
@@ -559,10 +564,11 @@ struct RuntimeEditor: View {
                 Section {
                     TextField("实例名称", text: $name)
                     Picker("类型", selection: $typeID) { ForEach(types) { type in Text(type.name).tag(type.id) } }.disabled(instance != nil)
-                    Picker("初始模型", selection: $modelRecordKey) { Text("稍后选择").tag(Optional<String>.none); ForEach(models) { model in Text(model.displayName).tag(Optional(model.id)) } }
+                    Picker("初始模型", selection: $modelRecordKey) { Text("稍后选择").tag(Optional<String>.none); ForEach(compatibleModels) { model in Text(model.displayName).tag(Optional(model.id)) } }
                 }
                 if let descriptor {
                     Section("实例配置") {
+                        LabeledContent("兼容版本", value: descriptor.versionRegex).font(.caption).foregroundStyle(.secondary)
                         ForEach(descriptor.fields) { field in
                             SettingFieldView(
                                 field: field,
@@ -593,12 +599,14 @@ struct RuntimeEditor: View {
             modelRecordKey = instance?.modelRecordKey
             DispatchQueue.main.async { discoverExecutableIfNeeded() }
         }
-        .onChange(of: typeID) { _, _ in
+        .onChange(of: typeID) { old, new in
+            if instance == nil { typeDrafts[old] = settings; settings = typeDrafts[new] ?? [:] }
+            if let selected = modelRecordKey, !compatibleModels.contains(where: { $0.recordKey == selected }) { modelRecordKey = nil }
             executableDiscoveryMessage = nil
             DispatchQueue.main.async { discoverExecutableIfNeeded() }
         }
     }
-    private func discoveryField() -> SettingField? { descriptor?.fields.first { $0.executableDiscovery != nil } }
+
     private func discoveryValue(for field: SettingField) -> String { (settings[field.key] ?? field.value).trimmingCharacters(in: .whitespacesAndNewlines) }
     private func discoveryTitle(for field: SettingField) -> String? {
         guard field.executableDiscovery != nil, discoveryValue(for: field).isEmpty else { return nil }
@@ -606,26 +614,29 @@ struct RuntimeEditor: View {
     }
     private func discoveryAction(for field: SettingField) -> (() -> Void)? {
         guard field.executableDiscovery != nil, discoveryValue(for: field).isEmpty, !executableDiscoveryRunning else { return nil }
-        return discoverExecutableIfNeeded
+        return { discoverExecutables([field], type: typeID) }
     }
     private func discoverExecutableIfNeeded() {
-        guard !executableDiscoveryRunning, let field = discoveryField(), let discovery = field.executableDiscovery,
-              discoveryValue(for: field).isEmpty else { return }
+        discoverExecutables(descriptor?.fields.filter { $0.executableDiscovery != nil && discoveryValue(for: $0).isEmpty } ?? [], type: typeID)
+    }
+    private func discoverExecutables(_ fields: [SettingField], type: String) {
+        guard !executableDiscoveryRunning, type == typeID, let field = fields.first, let discovery = field.executableDiscovery else { return }
         executableDiscoveryRunning = true
-        executableDiscoveryMessage = "正在查找可执行文件…"
+        executableDiscoveryMessage = "正在查找\(field.label)…"
         MacExecutableDiscovery.discover(discovery) { result in
             executableDiscoveryRunning = false
+            guard type == typeID else { discoverExecutableIfNeeded(); return }
             switch result {
             case .success(let path):
-                // A manual edit wins if it happened while discovery was running.
                 if discoveryValue(for: field).isEmpty { settings[field.key] = path; executableDiscoveryMessage = "已发现：\(path)" }
             case .failure(let error): executableDiscoveryMessage = error.localizedDescription
             }
+            discoverExecutables(Array(fields.dropFirst()), type: type)
         }
     }
     private func commit() {
         guard valid, let descriptor else { return }
-        var values = instance?.settings ?? [:]
+        var values: [String: String] = [:]
         for field in descriptor.fields {
             values[field.key] = MacPath.normalized(settings[field.key] ?? field.value, field: field)
         }
@@ -642,7 +653,9 @@ private enum MacPath {
         guard field.kind == .filePath || field.kind == .directoryPath else {
             return value.trimmingCharacters(in: .whitespacesAndNewlines)
         }
-        return URL(fileURLWithPath: expanded(value)).standardizedFileURL.path
+        let path = expanded(value)
+        guard !path.isEmpty else { return "" }
+        return URL(fileURLWithPath: path).standardizedFileURL.path
     }
 
     static func isValid(_ value: String, field: SettingField) -> Bool {
@@ -717,4 +730,38 @@ struct AuthenticationView: View {
         .interactiveDismissDisabled(store.authenticationRunning)
         .onChange(of: store.authenticationPrompt?.id) { _, _ in answer = "" }
     }
+}
+
+struct RuntimeInteractionView: View {
+    @ObservedObject var store: AppStore
+    let interaction: RuntimeInteraction
+    @State private var values: [String:String] = [:]
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            switch interaction.kind {
+            case .approval(let title, let detail, let options):
+                Text(title).font(.headline)
+                ScrollView { Text(detail).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading) }.frame(maxHeight: 220)
+                HStack { Button("取消请求", role: .cancel) { reply(.cancel) }; Spacer(); ForEach(options) { option in Button(option.label) { reply(.decision(option.id)) } } }.disabled(store.isLoading)
+            case .userInput(let questions):
+                Text("运行时需要输入").font(.headline)
+                Form {
+                    ForEach(questions) { question in
+                        Section {
+                            Text(question.text).textSelection(.enabled)
+                            if !question.options.isEmpty { Picker("选择", selection: value(question.id)) { Text("请选择").tag(""); ForEach(question.options) { Text($0.label).tag($0.id) } } }
+                            else if question.secret { SecureField("回答", text: value(question.id)).privacySensitive() }
+                            else { TextField("回答", text: value(question.id)) }
+                        }
+                    }
+                }.formStyle(.grouped)
+                HStack { Button("取消请求", role: .cancel) { reply(.cancel) }; Spacer(); Button("提交") { reply(.answers(questions.map { InteractionAnswer(questionID: $0.id, values: [values[$0.id] ?? ""]) })) }.disabled(questions.contains { (values[$0.id] ?? "").isEmpty }) }.disabled(store.isLoading)
+            }
+            SettingsError(message: store.error)
+        }.padding(20).frame(width: 500).frame(minHeight: 180, maxHeight: 480)
+        .interactiveDismissDisabled()
+        .onChange(of: interaction.id) { _, _ in values = [:] }
+    }
+    private func value(_ id: String) -> Binding<String> { Binding(get: { values[id] ?? "" }, set: { values[id] = $0 }) }
+    private func reply(_ value: RuntimeInteractionReply) { store.replyInteraction(interaction, reply: value) }
 }

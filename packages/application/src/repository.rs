@@ -57,16 +57,16 @@ impl Repository {
                 let version = raw["schemaVersion"].as_u64().ok_or_else(|| {
                     RuntimeError::invalid("configuration schema version is required")
                 })?;
-                if version < 5 {
+                if version < 6 {
                     reset = true;
                     PersistedConfig {
-                        schema_version: 5,
+                        schema_version: 6,
                         ..PersistedConfig::default()
                     }
                 } else {
-                    if version > 5 {
+                    if version > 6 {
                         return Err(RuntimeError::invalid(
-                            "配置版本高于本应用支持的 schema 5；请使用支持该版本的应用。",
+                            "配置版本高于本应用支持的 schema 6；请使用支持该版本的应用。",
                         ));
                     }
                     let value: PersistedConfig = serde_json::from_value(raw)?;
@@ -101,7 +101,7 @@ impl Repository {
                 }
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => PersistedConfig {
-                schema_version: 5,
+                schema_version: 6,
                 ..PersistedConfig::default()
             },
             Err(error) => return Err(error.into()),

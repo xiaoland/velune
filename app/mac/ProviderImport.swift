@@ -62,7 +62,7 @@ struct ProviderImportView: View {
 
     private var supportedInstances: [RuntimeInstance] { store.runtimeInstances.filter { instance in store.providerImportTypes.contains { $0.id == instance.typeID } } }
     private var selectedInstance: RuntimeInstance? { supportedInstances.first { $0.id == sourceInstanceID } }
-    private var source: ProviderImportSource? { guard let selectedInstance else { return nil }; return ProviderImportSource(harnessTypeId: selectedInstance.typeID, sourceInstanceId: selectedInstance.id, settings: [:]) }
+    private var source: ProviderImportSource? { guard let selectedInstance else { return nil }; return ProviderImportSource(harnessTypeId: store.providerImportTypes.first { $0.id == selectedInstance.typeID }?.familyID ?? "", sourceInstanceId: selectedInstance.id, settings: [:]) }
     private var provider: ProviderImportCandidate? { preview?.providers.first { $0.id == providerID } }
     private var model: ProviderImportModel? { provider?.models.first { $0.id == selectedCandidateKey } }
     private var visibleModels: [ProviderImportModel] {

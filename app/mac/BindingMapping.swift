@@ -13,7 +13,7 @@ enum BindingMapping {
     static func snapshot(_ value: BindingConversationSnapshot) -> ConversationSnapshot {
         ConversationSnapshot(revision: value.revision, conversation: conversation(value.conversation),
                              modelRecordKey: value.modelRecordKey, runState: runState(value.runState),
-                             messages: value.messages.map(message), actions: actions(value.actions))
+                             messages: value.messages.map(message), pendingInteractions: value.pendingInteractions.map(interaction), actions: actions(value.actions))
     }
 
     static func runState(_ value: BindingRunState) -> RunState {
@@ -103,11 +103,27 @@ enum BindingMapping {
     }
 
     static func runtimeType(_ value: BindingRuntimeTypeDescriptor) -> RuntimeTypeDescriptor {
-        RuntimeTypeDescriptor(id: value.id, name: value.name, fields: value.fields.map(settingField), actions: value.actions.map(settingAction))
+        RuntimeTypeDescriptor(id: value.id, familyID: value.familyId, versionRegex: value.versionRegex, name: value.name, fields: value.fields.map(settingField), actions: value.actions.map(settingAction))
     }
 
     static func configuration(_ value: BindingConfigurationSnapshot) -> (conversations: [Conversation], connections: [Connection], gateways: [GatewayConfig], runtimes: [RuntimeInstance], runtimeTypes: [RuntimeTypeDescriptor], modelTemplates: [ModelTemplate], importTypes: [RuntimeTypeDescriptor], protocols: [ProtocolDescriptor], activeRuntimeID: String?) {
         (value.conversations.map(conversation), value.connections.map { Connection(id: $0.id, name: $0.name, state: $0.state, capabilities: $0.capabilities) }, value.gateways.map(gateway), value.runtimeInstances.map(runtime), value.runtimeTypes.map(runtimeType), value.modelTemplates.map(template), value.providerImportTypes.map(runtimeType), value.protocols.map { ProtocolDescriptor(id: protocolID($0.id), name: $0.name, supported: $0.supported) }, value.activeRuntimeInstanceId)
+    }
+
+    static func interaction(_ value: BindingRuntimeInteraction) -> RuntimeInteraction {
+        let kind: InteractionKind
+        switch value.kind {
+        case .approval(let title, let detail, let options): kind = .approval(title: title, detail: detail, options: options.map { InteractionOption(id: $0.id, label: $0.label) })
+        case .userInput(let questions): kind = .userInput(questions: questions.map { InteractionQuestion(id: $0.id, text: $0.text, options: $0.options.map { InteractionOption(id: $0.id, label: $0.label) }, secret: $0.secret) })
+        }
+        return RuntimeInteraction(id: value.id, kind: kind)
+    }
+    static func bindingInteractionReply(_ value: RuntimeInteractionReply) -> BindingRuntimeInteractionReply {
+        switch value {
+        case .decision(let option): return .decision(optionId: option)
+        case .answers(let answers): return .answers(answers: answers.map { BindingInteractionAnswer(questionId: $0.questionID, values: $0.values) })
+        case .cancel: return .cancel
+        }
     }
 
     static func snapshotResult(_ value: BindingSnapshotResult) -> ConversationSnapshot? {

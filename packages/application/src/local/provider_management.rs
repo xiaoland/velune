@@ -16,7 +16,7 @@ impl CoreRuntime {
             return crate::authentication_resolver::read_api_key(provider, &self.options)
                 .map(Value::String);
         }
-        if self.pi_busy
+        if self.busy()
             || self
                 .authentication
                 .as_ref()
@@ -28,7 +28,6 @@ impl CoreRuntime {
         let previous_runtimes = self.runtime_instances.clone();
         let mut pending = previous.clone();
         crate::provider_configuration::edit_provider(&mut pending, payload)?;
-        let changed = pending != previous;
         self.gateways = pending;
         crate::provider_configuration::clear_removed_selections(
             &self.gateways,
@@ -39,7 +38,23 @@ impl CoreRuntime {
             self.runtime_instances = previous_runtimes;
             return Err(error);
         }
-        let reconnect = changed && self.active_runtime_id.is_some();
+        let reconnect = self.active_runtime_id.as_ref().is_some_and(|id| {
+            let before = previous_runtimes.iter().find(|runtime| &runtime.id == id);
+            let after = self
+                .runtime_instances
+                .iter()
+                .find(|runtime| &runtime.id == id);
+            before != after
+                || before.is_some_and(|runtime| {
+                    previous
+                        .iter()
+                        .find(|gateway| gateway.id == runtime.gateway_id)
+                        != self
+                            .gateways
+                            .iter()
+                            .find(|gateway| gateway.id == runtime.gateway_id)
+                })
+        });
         if reconnect {
             self.shutdown_active()?;
         }

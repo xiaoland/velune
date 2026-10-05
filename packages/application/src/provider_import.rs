@@ -25,7 +25,9 @@ struct Preview {
 
 pub(crate) fn descriptor() -> crate::config::RuntimeTypeDescriptor {
     crate::config::RuntimeTypeDescriptor {
-        id: "pi".into(),
+        id: "pi-1.0.2".into(),
+        family_id: "pi".into(),
+        version_regex: r"^1\.0\.2$".into(),
         name: "Pi Agent 提供商目录".into(),
         fields: Vec::new(),
         actions: vec![
@@ -73,7 +75,7 @@ fn configured_source(
         .iter()
         .find(|runtime| runtime.id == id)
         .ok_or_else(|| RuntimeError::invalid("所选 Agent 运行时已不存在，请重新选择"))?;
-    if runtime.type_id != "pi" || selection.harness_type_id != runtime.type_id {
+    if runtime.type_id != "pi-1.0.2" || selection.harness_type_id != "pi" {
         return Err(RuntimeError::invalid("所选 Agent 运行时不支持提供商导入"));
     }
     let directory = runtime
@@ -99,7 +101,7 @@ fn configured_source(
     Ok((
         Source {
             kind: "harness".into(),
-            harness_type_id: runtime.type_id.clone(),
+            harness_type_id: "pi".into(),
             source_instance_id: Some(runtime.id.clone()),
             provider_id: None,
             settings,

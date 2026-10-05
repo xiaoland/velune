@@ -18,6 +18,8 @@ use std::{
     path::{Path, PathBuf},
     process::Command,
 };
+use velune_agent_runtime::history::{self, HistoryConfig};
+use velune_agent_runtime::native::{GatewayInjection, NativeConfig, NativeKind, NativeSession};
 use velune_agent_runtime::{self as pi, Config as PiConfig, PiProjection};
 use velune_gateway::Runner;
 
@@ -49,47 +51,36 @@ fn runtime_types(resources_directory: &Path) -> Vec<crate::config::RuntimeTypeDe
         "filePath",
         true,
         String::new(),
-        "Node 22.19+ 的绝对路径；Pi SDK 接入必填。",
+        "Node 22.19+ 的绝对路径；用于运行时接入与会话历史读取。",
     );
     node.executable_discovery = Some(crate::conversation::ExecutableDiscovery {
         command: "node".into(),
         minimum_version: "22.19.0".into(),
     });
-    vec![crate::config::RuntimeTypeDescriptor {
-        id: "pi".into(),
-        name: "Pi Agent 运行时".into(),
-        fields: vec![
-            field(
-                "binary",
-                "运行时入口",
-                "filePath",
-                true,
-                binary_value,
-                "Pi CLI 的绝对路径；应用不会使用全局 PATH。",
-            ),
-            node,
-            field(
-                "agentDir",
-                "运行时目录",
-                "directoryPath",
-                true,
-                String::new(),
-                "配置与状态根目录，不是会话项目目录。",
-            ),
-            field(
-                "sessionDir",
-                "会话存储目录",
-                "directoryPath",
-                false,
-                String::new(),
-                "覆盖 Pi 默认的会话文件存储目录。留空时保存到运行时目录的 sessions 下，并按会话工作目录分组；此项不是工作目录。",
-            ),
-        ],
-        actions: vec![crate::conversation::SettingAction {
-            id: "connect".into(),
-            label: "连接运行时".into(),
-        }],
-    }]
+    velune_agent_runtime::version::variants().iter().map(|variant| {
+        let mut binary=field("binary","运行时入口","filePath",true,if variant.id=="pi-1.0.2" {binary_value.clone()}else{String::new()},"当前运行时版本的绝对可执行路径。连接前会核对实际版本。");
+        if variant.family_id=="codex" {binary.executable_discovery=Some(crate::conversation::ExecutableDiscovery{command:"codex".into(),minimum_version:"0.159.3".into()});}
+        if variant.family_id=="deepseek-harness" {binary.executable_discovery=Some(crate::conversation::ExecutableDiscovery{command:"dsh".into(),minimum_version:"0.2.0".into()});}
+        let mut fields=vec![binary,node.clone(),field("agentDir","运行时目录","directoryPath",true,String::new(),match variant.family_id {"codex"=>"该实例的 CODEX_HOME；配置与会话根目录，不是任务工作目录。","deepseek-harness"=>"该实例的 DeepSeek Harness 配置与会话根目录，不是任务工作目录。",_=>"该实例的 Pi 配置与状态根目录，不是任务工作目录。"})];
+        if variant.id=="pi-1.0.2" {fields.push(field("sessionDir","会话存储目录","directoryPath",false,String::new(),"覆盖 Pi 默认的会话存储位置；留空采用运行时目录的 sessions，此项不是任务工作目录。"));}
+        crate::config::RuntimeTypeDescriptor{id:variant.id.into(),family_id:variant.family_id.into(),version_regex:variant.version_regex.into(),name:variant.name.into(),fields,actions:vec![crate::conversation::SettingAction{id:"connect".into(),label:"连接运行时".into()}]}
+    }).collect()
+}
+
+#[derive(Default)]
+struct PiState {
+    client: Option<pi::Client>,
+    config: Option<PiConfig>,
+    projection: Option<PiProjection>,
+    busy: bool,
+    turn_started: bool,
+    physical_model_id: Option<String>,
+    subscription_capability: bool,
+}
+enum ActiveState {
+    Disconnected,
+    Pi,
+    Native(Box<NativeSession>),
 }
 
 pub struct CoreRuntime {
@@ -99,23 +90,19 @@ pub struct CoreRuntime {
     model_templates: Vec<crate::config::ModelTemplate>,
     authentication_provider: Option<(String, String)>,
     runtime_instances: Vec<RuntimeInstance>,
-    pi: Option<pi::Client>,
-    pi_config: Option<PiConfig>,
-    pi_busy: bool,
-    projection: Option<PiProjection>,
+    pi: PiState,
+    active_state: ActiveState,
     gateway_runner: Option<Runner>,
     active_runtime_id: Option<String>,
     authentication: Option<authentication::Login>,
-    physical_model_id: Option<String>,
     model_record_key: Option<String>,
-    subscription_capability: bool,
-    pi_turn_started: bool,
 }
 
 mod authentication_coordination;
 mod configuration;
 mod connection;
 mod conversations;
+mod native_composition;
 mod pi_composition;
 mod provider_management;
 use pi_composition::*;
@@ -131,25 +118,54 @@ impl CoreRuntime {
             model_templates: persisted.model_templates,
             authentication_provider: None,
             runtime_instances: persisted.runtime_instances,
-            pi: None,
-            pi_config: None,
-            pi_busy: false,
-            projection: None,
+            pi: PiState::default(),
+            active_state: ActiveState::Disconnected,
             gateway_runner: None,
             active_runtime_id: None,
             authentication: None,
-            physical_model_id: None,
             model_record_key: None,
-            subscription_capability: false,
-            pi_turn_started: false,
         })
     }
 
+    fn busy(&self) -> bool {
+        match &self.active_state {
+            ActiveState::Native(session) => session.busy(),
+            ActiveState::Pi => self.pi.busy,
+            ActiveState::Disconnected => false,
+        }
+    }
+    fn current_snapshot(&self) -> Option<crate::conversation::ConversationSnapshot> {
+        let snapshot = match &self.active_state {
+            ActiveState::Native(session) => session.snapshot(),
+            ActiveState::Pi => self
+                .pi
+                .projection
+                .as_ref()
+                .and_then(|p| p.snapshot.as_ref()),
+            ActiveState::Disconnected => None,
+        };
+        snapshot.cloned().map(|mut snapshot| {
+            snapshot.model_record_key = self.model_record_key.clone();
+            snapshot
+        })
+    }
+    fn drain_runtime(&mut self) -> Result<(), RuntimeError> {
+        match &mut self.active_state {
+            ActiveState::Native(session) => session
+                .poll()
+                .map_err(|_| RuntimeError::invalid("运行时事件读取失败")),
+            ActiveState::Pi => {
+                self.drain_pi();
+                Ok(())
+            }
+            ActiveState::Disconnected => Ok(()),
+        }
+    }
     fn public_gateways(&self) -> Vec<crate::GatewaySummary> {
         crate::provider_configuration::summaries(&self.gateways)
     }
     pub fn close_if_idle(&mut self) -> Result<(), RuntimeError> {
-        self.drain_pi();
+        self.drain_runtime()?;
         if self
             .authentication
             .as_ref()
@@ -157,7 +173,7 @@ impl CoreRuntime {
         {
             return Err(RuntimeError::invalid("runtime is busy"));
         }
-        if self.pi_busy {
+        if self.busy() {
             return Err(RuntimeError::invalid("runtime is busy"));
         }
         self.shutdown_active()?;
@@ -168,7 +184,7 @@ impl CoreRuntime {
     }
 
     pub(crate) fn request_inner(&mut self, request: &Value) -> Result<Value, RuntimeError> {
-        self.drain_pi();
+        self.drain_runtime()?;
         if request["version"] != CONTRACT_VERSION {
             return Err(RuntimeError::Unsupported(
                 "projection contract version".into(),
@@ -195,13 +211,12 @@ impl CoreRuntime {
             "getSnapshot" => {
                 self.ensure_active(request)?;
                 self.sync_projection()?;
-                Ok(
-                    json!({"snapshot":self.projection.as_ref().and_then(|item| item.snapshot.as_ref())}),
-                )
+                Ok(json!({"snapshot":self.current_snapshot()}))
             }
             "send" => self.send_action(request),
             "cancel" => self.cancel_action(request),
             "selectModel" => self.select_model(request),
+            "replyRuntimeInteraction" => self.reply_runtime_interaction(request),
             "authentication" => self.authentication_action(&request["payload"]),
             action => Err(RuntimeError::Unsupported(action.into())),
         }

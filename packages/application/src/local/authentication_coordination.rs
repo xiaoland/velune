@@ -4,7 +4,7 @@ use crate::provider_authentication::*;
 impl CoreRuntime {
     pub(super) fn authentication_action(&mut self, payload: &Value) -> Result<Value, RuntimeError> {
         let operation = payload["operation"].as_str().unwrap_or("poll");
-        if operation == "start" && self.pi_busy {
+        if operation == "start" && self.busy() {
             return Err(RuntimeError::invalid("runtime is busy"));
         }
         let mut request = payload.clone();

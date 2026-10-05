@@ -10,9 +10,9 @@
 
 Agent 运行时区分类型与实例，Pi Agent 为首个类型，同类型可保存多个配置实例。首轮保持一个活跃 runner，空闲时切换实例，运行中禁止切换；这不限制配置只能有一份。会话身份必须包含运行时实例，列表 SDK 使用对应配置目录。适配器注入 Velune 网关地址和模型目录，切换或恢复会话后仍重新绑定网关，不能沿用历史原生 provider 绕过网关。Pi 派生文件不得包含上游端点／凭据，写入应用根目录下的实例专属投影目录。原运行时目录继续作为 Pi home，SDK 将受管模型目录单独注入，不覆盖原模型、认证或设置文件。直接向执行 Harness 注入上游凭据的方案已被网关接入替代。Harness 提供商配置导入包含提供商、有效模型及能力参数与认证来源，由网关后端使用；执行 Harness 仍只访问网关。导入以非秘密预览、原文件保留和来源执行绑定为边界，具体契约见 [AI service 设计](ai-service.md#harness-提供商配置导入)。
 
-Mac 重写的已确认边界：app 只依赖通用会话投影、消息内容、运行状态、能力和配置描述，不解析 Pi 或其他 Harness 的原生事件，不发送 Harness 专用命令。适配器在 core 内执行原生协议与通用契约的转换；平台装配负责 ABI 接入、配置根目录和系统凭据入口。运行时设置使用适配器描述的有限字段与动作，具体名称仅作为数据展示。当前只接已有的 Pi，不为尚未实现的 Harness 增加空适配器或插件系统。
+Mac 重写的已确认边界：app 只依赖通用会话投影、消息内容、运行状态、能力和配置描述，不解析 Pi 或其他 Harness 的原生事件，不发送 Harness 专用命令。适配器在 core 内执行原生协议与通用契约的转换；平台装配负责 ABI 接入、配置根目录和系统凭据入口。运行时设置使用适配器描述的有限字段与动作，具体名称仅作为数据展示。当前本地执行接入 Pi、Codex app-server 与 DeepSeek Harness ACP，不为尚未实现的 Harness 增加空适配器或插件系统。
 
-应用配置的已确认归属：平台装配解析 `VELUNE_HOME`，未设置时使用 `~/.velune`，向 CoreRuntime 显式传入根目录。CoreRuntime 在该目录持久化 AI provider 资源与 Harness 设置；独立 AI lib 不读取全局环境。配置文件保存凭据引用，秘密值由平台秘密设施管理。Pi 会话目录由配置指定，Velune 不将会话复制为另一套权威历史。
+应用配置的已确认归属：平台装配解析 `VELUNE_HOME`，未设置时使用 `~/.velune`，向 CoreRuntime 显式传入根目录。CoreRuntime 在该目录持久化 AI provider 资源与 Harness 设置；独立 AI lib 不读取全局环境。API key 由 application 私有配置原子保存，OAuth 保留原来源刷新；公开描述不含秘密。Harness 会话目录由实例配置决定，Velune 不将会话复制为另一套权威历史。
 
 会话工作目录与运行时实例配置目录分属不同生命周期。本轮调整采用：连接实例时只准备配置、网关和实例范围会话列表，不启动 Pi child；新建时使用用户选择的工作目录，恢复时读取 Pi 保存的 cwd。空闲切换统一按目标 cwd 启动 Pi child，网关继续属于运行时实例，避免会话切换重建路由与认证来源。虽然固定 SDK 的 `switch_session` 能按保存目录重建项目服务，重新启动 child 还保证操作系统 cwd 一致；新建 RPC 本身不能指定 cwd。目录失效时明确失败，不回退到 app 启动目录，旧配置的 `workingDir` 不再决定执行位置。
 
@@ -22,7 +22,15 @@ Apple 外观由原生组件与系统语义样式适配，不建立自有明暗�
 
 Velune 的产品身份是 control surface：UI、AI 服务网关与协调层服务于外部 Agent 运行时，不生成代表 Velune 自身的 Agent 人格。通用会话投影保持 user／assistant／system／tool 语义；平台按左右与居中布局呈现，不给 assistant 注入 Velune 作者标签。
 
-提供商配置的新实施方向为 Provider 拥有实际模型条目和私有认证；模型共性以模板快填复用，不建立独立全局模型调用实体。隐藏稳定记录键仅供选择引用，providerModelId 是可编辑的 API 标识，网关发送精确原生值。能力以实际提供商模型为准，Pi 必需字段在 Pi 准备边界检查。提供商字段与 API key 单文件原子保存，公开描述不含 key；OAuth 保留内部来源刷新，中立解析接口不依赖 Harness。schema 5 hard-cutoff 与两栏原生编辑器的具体契约见 [AI 服务设计](ai-service.md)，当前安装基线见任务 packet。
+提供商配置的新实施方向为 Provider 拥有实际模型条目和私有认证；模型共性以模板快填复用，不建立独立全局模型调用实体。隐藏稳定记录键仅供选择引用，providerModelId 是可编辑的 API 标识，网关发送精确原生值。能力以实际提供商模型为准，Pi 必需字段在 Pi 准备边界检查。提供商字段与 API key 单文件原子保存，公开描述不含 key；OAuth 保留内部来源刷新，中立解析接口不依赖 Harness。schema 6 hard-cutoff 与两栏原生编辑器的具体契约见 [AI 服务设计](ai-service.md)，当前安装基线见任务 packet。
+
+## 当前版本化运行时接入
+
+schema 6 的实例引用精确 variant ID；family 是展示分组，不是 dispatch key。当前 `pi-1.0.2`／`pi`、`codex-0.159.3`／`codex`、`dsh-acp-0.2.0-rc.2`／`deepseek-harness` 分别使用 `^1\.0\.2$`、`^0\.159\.3$`、`^0\.2\.0-rc\.2$` 版本规则。breaking-change 版本应增设独立 adapter 与 variant，允许并存，不靠放宽 regex 声称兼容。配置版本重置不触及原 Harness 文件。
+
+agent-runtime 拥有 Codex app-server 与 DSH ACP 控制和原生事件转换；huihua `0.2.0` package 提供两者只读历史 snapshot，不替代 resume。Pi 保留固定 SDK 的分支历史语义。application 显式传入 home、roots、资源与 Node 路径；Node 是外部依赖，huihua 依赖及许可证由 Mac 打包，Codex／DSH CLI 由用户安装。没有第二份会话 DB，也不引入 Obelisk 索引服务。
+
+conversation 定义审批、问题回答与取消的类型契约，bindings 生成语言接口，平台展示并提交用户选择。原生恢复使用配置初始模型，不承诺 Codex／DSH 的 Velune 历史模型选择已保存；原生控制与只读历史是两种职责。DSH reasoning wire 映射未实现，不将能力列表猜测为编码字典。具体运行步骤、许可与限制见 [开发说明](../development.md#原生运行时与历史读取)，最终构建／安装／验收证据见 [当前任务](../../tasks/multi-runtime/packet.md)。
 
 ## 独立 package 与平台装配
 
@@ -75,7 +83,7 @@ Velune 的产品身份是 control surface：UI、AI 服务网关与协调层服�
 
 ### 控制面
 
-原生 UI → C ABI → 同进程 CoreRuntime → Harness Adapter → 外部 Harness 进程。AI 服务网关也由库管理，供 Harness 发起模型请求；该 loopback HTTP 数据路径不是 App 与 core 的 IPC。后续远程设备接入需要另验认证传输，不改变每个平台嵌入共享核心的边界。
+原生 UI → 生成的 UniFFI 类型接口 → 同进程 CoreRuntime → Harness Adapter → 外部 Harness 进程。AI 服务网关也由库管理，供 Harness 发起模型请求；该 loopback HTTP 数据路径不是 App 与 core 的 IPC。后续远程设备接入需要另验认证传输，不改变每个平台嵌入共享核心的边界。
 
 - **Task Service**：目标、父子关系、依赖、验收、状态、工作区和产物归属
 - **Session Supervisor**：启动、连接、恢复、单写控制租约、取消、权限转交、断线核对
@@ -87,7 +95,7 @@ Velune 的产品身份是 control surface：UI、AI 服务网关与协调层服�
 
 ### Rust 与原生客户端的具体边界
 
-以下职责以已确认的嵌入式核心边界为准；完整协作机制仍是方案，当前只实施 Pi 首循环：
+以下职责以已确认的嵌入式核心边界为准；完整协作机制仍是方案，当前已从 Pi 首循环扩展到版本化本地 adapter：
 
 - **Rust Domain**：Task／Session／Segment、路由与权限策略、协作状态转换及契约，不依赖 UIKit／Compose／进程启动
 - **CoreRuntime**：在平台应用进程内组合配置、Supervisor、Gateway、进程适配与投影；跨平台复用同一套校验、状态转换和持久化行为，不另启常驻核心服务
@@ -117,7 +125,7 @@ Mac 当前交付安装到 Applications，产品显示版本、ABI、配置 schem
 
 Gateway 负责协议保持、流传递、资源预留和尝试记录，不执行 shell／文件工具，不创建任务，也不决定切换 Harness。工具仍在 Harness 及其受限 Runner 中执行。
 
-认证委托采用原来源与平台秘密设施，普通配置只存引用，不复制 refresh credential。执行侧 Harness 只持有 AI 网关的本地访问凭据，上游授权由 AI-provider 的装配边界应用。独立订阅与其它 Harness 的资格仍按各自认证规则验证，不把 Pi 的实现提升为通用账号互通。
+认证委托采用原 OAuth 来源，API key 由 application 私有配置保存，不复制 refresh credential。执行侧 Harness 只持有 AI 网关的本地访问凭据，上游授权由 AI-provider 的装配边界应用。独立订阅与其它 Harness 的资格仍按各自认证规则验证，不把 Pi 的实现提升为通用账号互通。
 
 **“接管”不等于拦截进程全部网络**：只承诺覆盖经验证的模型请求通道，启动探测、遥测、搜索、安全检查、插件网络另列清单。上线前用无真实内容的流量测试验证主请求、子 agent、压缩、标题等是否全部归属正确；未知出站不会被计成已受控。
 
@@ -284,7 +292,7 @@ Codex 原生审批事件、Claude 的 hooks／permission 机制、Pi 的扩展 t
 
 ### 实施顺序建议
 
-- **V0 契约原型**：Rust lib／C ABI／平台 UI 验证接口、生命周期与原生交互；当前先用固定 Pi 与假上游证明首循环，不把边界失败变成重新选择 Harness 的理由
+- **V0 契约原型**：Rust lib／UniFFI／平台 UI 验证接口、生命周期与原生交互；当前先用固定 Pi 与假上游证明首循环，不把边界失败变成重新选择 Harness 的理由
 - **V1 本地骨架**：嵌入式 CoreRuntime、配置与运行时实例、显式模型路由；后续按已确认范围扩展三个 adapter 和协作存储，不建立 Web UI
 - **V2 核心闭环**：统一 Routing Policy＋各自数据路径、预算／使用记录、broker 协作工具、子任务／产物、允许范围内自动资源选择与明确的续作 handoff
 - **V3 产品验收**：断流、重启、重复投递、账户限流、审批过期、worktree 冲突、错误兼容、计费未知等故障不丢任务、不越权、不静默重放工具

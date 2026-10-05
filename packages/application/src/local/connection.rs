@@ -8,7 +8,7 @@ impl CoreRuntime {
         {
             return Err(RuntimeError::Unsupported("runtime action".into()));
         }
-        if self.pi_busy {
+        if self.busy() {
             return Err(RuntimeError::invalid("runtime is busy"));
         }
         let runtime_id = request["payload"]["runtimeInstanceID"]
@@ -35,6 +35,56 @@ impl CoreRuntime {
             .model_record_key
             .as_deref()
             .ok_or_else(|| RuntimeError::invalid("runtime model id"))?;
+        velune_agent_runtime::version::check_version(
+            &runtime.type_id,
+            &setting_path(&runtime, "binary")?,
+            setting_path_optional(&runtime, "nodeBinary").as_deref(),
+        )
+        .map_err(|error| RuntimeError::Invalid(error.to_string()))?;
+        if runtime.type_id != "pi-1.0.2" {
+            self.shutdown_active()?;
+            let runner = Runner::start(
+                gateway.to_gateway_config()?,
+                crate::authentication_resolver::ProviderResolver::capture(&gateway, &self.options),
+                self.native_aliases(&runtime, model_record_key)?,
+            )
+            .map_err(|_| RuntimeError::invalid("gateway startup"))?;
+            self.gateway_runner = Some(runner);
+            let result = (|| {
+                let injection = self.native_injection(&runtime, model_record_key)?;
+                let kind = match runtime.type_id.as_str() {
+                    "codex-0.159.3" => NativeKind::Codex,
+                    "dsh-acp-0.2.0-rc.2" => NativeKind::DeepSeek,
+                    _ => return Err(RuntimeError::invalid("runtime type")),
+                };
+                NativeSession::connect(NativeConfig {
+                    kind,
+                    binary: setting_path(&runtime, "binary")?,
+                    node_binary: setting_path_optional(&runtime, "nodeBinary"),
+                    agent_dir: setting_path(&runtime, "agentDir")?,
+                    resources_directory: self.options.resources_directory.clone(),
+                    projection_directory: self
+                        .options
+                        .home_directory
+                        .join("runtime-projections")
+                        .join(format!("{:x}", sha2::Sha256::digest(runtime.id.as_bytes()))),
+                    gateway: injection,
+                })
+                .map_err(|_| RuntimeError::invalid("运行时连接失败"))
+            })();
+            match result {
+                Ok(session) => {
+                    self.active_state = ActiveState::Native(Box::new(session));
+                    self.active_runtime_id = Some(runtime.id);
+                    self.model_record_key = None;
+                    return Ok(());
+                }
+                Err(error) => {
+                    self.gateway_runner = None;
+                    return Err(error);
+                }
+            }
+        }
         runnable_pi_model(&gateway, model_record_key)?;
         let physical_model_id = gateway
             .pi_binding_id(
@@ -116,11 +166,12 @@ impl CoreRuntime {
             subscription_capability,
         )?;
         self.gateway_runner = Some(runner);
-        self.pi_config = Some(config);
+        self.pi.config = Some(config);
+        self.active_state = ActiveState::Pi;
         self.active_runtime_id = Some(runtime_id.into());
-        self.physical_model_id = None;
+        self.pi.physical_model_id = None;
         self.model_record_key = None;
-        self.subscription_capability = false;
+        self.pi.subscription_capability = false;
         Ok(())
     }
 
@@ -136,7 +187,8 @@ impl CoreRuntime {
         let cwd = fs::canonicalize(cwd)
             .map_err(|_| RuntimeError::invalid("conversation working directory"))?;
         let mut config = self
-            .pi_config
+            .pi
+            .config
             .clone()
             .ok_or_else(|| RuntimeError::invalid("runtime is not connected"))?;
         self.shutdown_pi()?;
@@ -171,29 +223,29 @@ impl CoreRuntime {
         if let Some(snapshot) = projection.snapshot.as_mut() {
             snapshot.model_record_key = model_record_key.map(str::to_owned);
         }
-        self.pi = Some(client);
-        self.pi_config = Some(config);
-        self.projection = Some(projection);
+        self.pi.client = Some(client);
+        self.pi.config = Some(config);
+        self.pi.projection = Some(projection);
         self.model_record_key = model_record_key.map(str::to_owned);
-        self.physical_model_id = physical_model_id.map(str::to_owned);
-        self.subscription_capability = subscription_capability;
-        self.drain_pi();
+        self.pi.physical_model_id = physical_model_id.map(str::to_owned);
+        self.pi.subscription_capability = subscription_capability;
+        self.drain_runtime()?;
         Ok(())
     }
 
     pub(super) fn shutdown_pi(&mut self) -> Result<(), RuntimeError> {
-        if let Some(mut client) = self.pi.take() {
+        if let Some(mut client) = self.pi.client.take() {
             client
                 .shutdown()
                 .map_err(|_| RuntimeError::invalid("runtime shutdown"))?;
         }
-        self.pi_busy = false;
-        self.pi_turn_started = false;
-        self.projection = None;
-        self.physical_model_id = None;
+        self.pi.busy = false;
+        self.pi.turn_started = false;
+        self.pi.projection = None;
+        self.pi.physical_model_id = None;
         self.model_record_key = None;
-        self.subscription_capability = false;
-        if let Some(config) = self.pi_config.as_mut() {
+        self.pi.subscription_capability = false;
+        if let Some(config) = self.pi.config.as_mut() {
             config.working_dir = None;
             config.session = None;
         }
@@ -211,20 +263,27 @@ impl CoreRuntime {
     }
 
     pub(super) fn shutdown_active(&mut self) -> Result<(), RuntimeError> {
-        if let Some(mut client) = self.pi.take() {
-            client
+        let state = std::mem::replace(&mut self.active_state, ActiveState::Disconnected);
+        let result = match state {
+            ActiveState::Native(mut session) => session
                 .shutdown()
-                .map_err(|_| RuntimeError::invalid("runtime shutdown"))?;
-        }
-        self.pi_config = None;
-        self.pi_busy = false;
-        self.pi_turn_started = false;
-        self.projection = None;
+                .map_err(|_| RuntimeError::invalid("runtime shutdown")),
+            ActiveState::Pi => self
+                .pi
+                .client
+                .take()
+                .map(|mut client| {
+                    client
+                        .shutdown()
+                        .map_err(|_| RuntimeError::invalid("runtime shutdown"))
+                })
+                .unwrap_or(Ok(())),
+            ActiveState::Disconnected => Ok(()),
+        };
+        self.pi = PiState::default();
         self.gateway_runner = None;
         self.active_runtime_id = None;
-        self.physical_model_id = None;
         self.model_record_key = None;
-        self.subscription_capability = false;
-        Ok(())
+        result
     }
 }
