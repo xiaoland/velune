@@ -128,12 +128,11 @@ def main():
         def start(reference='synthetic'):
             pairs = [('chat', 'chatCompletionsV1'), ('responses', 'responsesV1')]
             config = {'id': 'fixture', 'name': 'fixture',
-                'models': [{'recordKey': model, 'nickname': model} for model, _ in pairs],
                 'providers': [{'id': protocol, 'name': protocol, 'protocol': protocol,
                     'endpoint': f'http://127.0.0.1:{server.server_port}/v1', 'credentialRef': reference,
-                    'models': [{'modelRecordKey': model, 'providerModelId': 'external-' + model}]}
+                    'models': [{'recordKey': model, 'providerModelId': 'external-' + model,
+                                'nickname': model}]}
                     for model, protocol in pairs],
-                'routes': [{'modelRecordKey': model, 'providerId': protocol} for model, protocol in pairs],
                 'failover': {'mode': 'disabled'}}
             path = root / f'config-{len(processes)}.json'
             path.write_text(json.dumps(config))

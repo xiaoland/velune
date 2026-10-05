@@ -2,8 +2,7 @@
 //! The JavaScript adapter owns SDK 1.0.2 parsing; Rust only validates the
 //! non-secret snapshot and projects supported models into gateway config.
 use crate::config::{
-    GatewayConfig, GatewayProtocol, ModelDefinition, ProviderDefinition, ProviderModelBinding,
-    RuntimeInstance,
+    GatewayConfig, GatewayProtocol, ProviderDefinition, ProviderModel, RuntimeInstance,
 };
 use crate::{Error as RuntimeError, Options as RuntimeOptions};
 use serde::Serialize;
@@ -178,13 +177,11 @@ pub(crate) fn preview(
     gateway: &GatewayConfig,
     options: &RuntimeOptions,
     runtimes: &[RuntimeInstance],
-    authentication: &crate::authentication_resources::AuthenticationManager,
 ) -> Result<Value, RuntimeError> {
     let (source, runtime_fingerprint) = configured_source(source_value, runtimes)?;
     let snapshot = run_helper(&source, options)?;
     let source_fingerprint = combined_source_fingerprint(&snapshot, &runtime_fingerprint);
-    let target_fingerprint =
-        fingerprint(&json!({"gateway":gateway,"authenticationBindings":authentication.resources}))?;
+    let target_fingerprint = fingerprint(gateway)?;
     let warnings = snapshot.warnings.clone();
     let mut providers = Vec::new();
     for provider in &snapshot.providers {
@@ -239,7 +236,6 @@ pub(crate) fn apply(
     gateway: &mut GatewayConfig,
     options: &RuntimeOptions,
     runtimes: &[RuntimeInstance],
-    authentication: &mut crate::authentication_resources::AuthenticationManager,
 ) -> Result<Value, RuntimeError> {
     let (source, runtime_fingerprint) = configured_source(source_value, runtimes)?;
     let snapshot = run_helper(&source, options)?;
@@ -253,8 +249,7 @@ pub(crate) fn apply(
                 .and_then(|value| value.parse().ok())
         })
         .unwrap_or(false);
-    let target_fingerprint =
-        fingerprint(&json!({"gateway":gateway,"authenticationBindings":authentication.resources}))?;
+    let target_fingerprint = fingerprint(gateway)?;
     let expected = source_value["previewToken"]
         .as_str()
         .or_else(|| source_value["preview"]["token"].as_str());
@@ -358,19 +353,6 @@ pub(crate) fn apply(
                 return Err(RuntimeError::invalid("provider import selection model"));
             }
         }
-        if let Some(mappings) = selection["modelRecordMappings"].as_object() {
-            for (model_record_key, target_id) in mappings {
-                if !selected
-                    .iter()
-                    .any(|selected_id| *selected_id == model_record_key)
-                    || !target_id
-                        .as_str()
-                        .is_some_and(|target| gateway.model(target).is_some())
-                {
-                    return Err(RuntimeError::invalid("provider import model mapping"));
-                }
-            }
-        }
     }
     for provider in snapshot.providers {
         let Some(endpoint) = provider.endpoint.clone() else {
@@ -442,59 +424,36 @@ pub(crate) fn apply(
             {
                 continue;
             }
-            let model_record_key = selection
-                .and_then(|item| item["modelRecordMappings"][&candidate_id].as_str())
-                .filter(|id| !id.is_empty())
-                .map(str::to_owned)
-                .or_else(|| {
-                    gateway
-                        .providers
-                        .iter()
-                        .find(|provider| provider.id == provider_id)
-                        .and_then(|provider| {
-                            provider
-                                .models
-                                .iter()
-                                .find(|binding| binding.provider_model_id == model.id)
-                        })
-                        .map(|binding| binding.model_record_key.clone())
-                })
+            let model_record_key = gateway
+                .providers
+                .iter()
+                .find(|p| p.id == provider_id)
+                .and_then(|p| p.models.iter().find(|m| m.provider_model_id == model.id))
+                .map(|m| m.record_key.clone())
                 .unwrap_or_else(crate::new_record_key);
-            if gateway.model(&model_record_key).is_none() {
-                gateway.models.push(ModelDefinition {
-                    record_key: model_record_key.clone(),
-                    nickname: model.name.clone(),
-                    icon: None,
-                    max_output_tokens: model.max_tokens,
-                    context_window: model.context_window,
-                });
-            }
-            bindings.push(ProviderModelBinding {
-                model_record_key: model_record_key.clone(),
+            bindings.push(ProviderModel {
+                record_key: model_record_key,
+                nickname: model.name,
+                icon: None,
                 provider_model_id: model.id,
                 context_window: model.context_window,
                 max_output_tokens: model.max_tokens,
-                reasoning: if model.reasoning_levels.is_empty() {
-                    None
-                } else {
-                    Some(crate::config::ProtocolReasoning {
-                        protocol: protocol_kind.clone(),
-                        levels: model
-                            .pi_projection
-                            .as_ref()
-                            .map(|projection| {
-                                projection
-                                    .thinking_level_map
-                                    .values()
-                                    .flatten()
-                                    .cloned()
-                                    .collect::<std::collections::BTreeSet<_>>()
-                                    .into_iter()
-                                    .collect()
-                            })
-                            .unwrap_or_else(|| model.reasoning_levels.clone()),
-                    })
-                },
+                reasoning_levels: Some(
+                    model
+                        .pi_projection
+                        .as_ref()
+                        .map(|projection| {
+                            projection
+                                .thinking_level_map
+                                .values()
+                                .flatten()
+                                .cloned()
+                                .collect::<std::collections::BTreeSet<_>>()
+                                .into_iter()
+                                .collect()
+                        })
+                        .unwrap_or(model.reasoning_levels),
+                ),
                 pi_projection: model.pi_projection.clone(),
             });
         }
@@ -543,66 +502,70 @@ pub(crate) fn apply(
             "bindingProjection".into(),
             serde_json::to_string(&projection_snapshot)?,
         );
-        let credential_source = crate::authentication_resources::AuthenticationSource {
+        use crate::provider_authentication::{
+            AuthenticationMaterial, AuthenticationMethod, AuthenticationSource,
+            ProviderAuthentication,
+        };
+        let credential_source = AuthenticationSource {
             kind: "harness".into(),
             harness_type_id: "pi".into(),
             source_instance_id: source.source_instance_id.clone(),
             provider_id: provider.source_provider_id,
             settings,
         };
-        use crate::authentication_resources::{
-            AuthenticationLocator, AuthenticationMethod, AuthenticationResource,
-        };
-        let authentication_id = stable_id("auth", &format!("{}|{}", gateway.id, provider_id));
-        let existing_authentication = authentication
-            .resources
-            .iter()
-            .find(|item| item.id == authentication_id);
-        let locator = AuthenticationLocator::RuntimeProvider {
-            source: credential_source,
-        };
         let method = match provider.auth.kind.as_str() {
             "oauth" => AuthenticationMethod::OAuth,
             "literal_api_key" | "stored_environment" => AuthenticationMethod::ApiKey,
             _ => AuthenticationMethod::Unconfigured,
         };
-        let resource = AuthenticationResource {
-            id: authentication_id.clone(),
-            name: existing_authentication
-                .map(|item| item.name.clone())
-                .unwrap_or_else(|| provider.name.clone()),
-            method,
-            configured: provider.auth.ready,
-            protocol: protocol_kind.clone(),
-            endpoint: endpoint.clone(),
-            generation: match existing_authentication {
-                Some(item) if item.locator != locator => item
-                    .generation
-                    .checked_add(1)
-                    .ok_or_else(|| RuntimeError::invalid("authentication revision overflow"))?,
-                Some(item) => item.generation,
-                None => 0,
+        let authentication = ProviderAuthentication {
+            generation: gateway
+                .providers
+                .iter()
+                .find(|p| p.id == provider_id)
+                .map_or(0, |p| p.authentication.generation + 1),
+            material: AuthenticationMaterial::RuntimeProvider {
+                source: credential_source,
+                method,
+                configured: provider.auth.ready,
+                protocol: protocol_kind.clone(),
+                endpoint: endpoint.clone(),
             },
-            locator,
         };
-        authentication
-            .resources
-            .retain(|item| item.id != authentication_id);
-        authentication.resources.push(resource);
-        let provider_def = ProviderDefinition {
+        let mut provider_def = ProviderDefinition {
             id: provider_id.clone(),
             name: provider.name,
             protocol: protocol_kind,
             endpoint,
-            authentication_id: Some(authentication_id),
+            authentication,
             models: bindings,
         };
+        if matches!(
+            &provider_def.authentication.material,
+            AuthenticationMaterial::RuntimeProvider {
+                method: AuthenticationMethod::ApiKey,
+                configured: true,
+                ..
+            }
+        ) {
+            let value = crate::authentication_resolver::read_api_key(&provider_def, options)?;
+            provider_def.authentication.material = AuthenticationMaterial::ApiKey { value };
+        }
+        if let AuthenticationMaterial::RuntimeProvider { source, method, .. } =
+            &mut provider_def.authentication.material
+            && method != &AuthenticationMethod::ApiKey
+        {
+            // OAuth consumes only its original auth store, not its source model catalog.
+            source.settings.retain(|key, _| {
+                !key.starts_with("binding") && key != "modelsPath" && key != "credentialLocation"
+            });
+        }
         gateway.providers.retain(|p| p.id != provider_id);
         gateway.providers.push(provider_def);
         imported.push(provider_id);
     }
     gateway.validate().map_err(RuntimeError::invalid)?;
     Ok(
-        json!({"importedProviderIds":imported,"skippedProviderIds":skipped,"sourceFingerprint":snapshot.source_fingerprint,"targetFingerprint":fingerprint(&json!({"gateway":gateway,"authenticationBindings":authentication.resources}))?}),
+        json!({"importedProviderIds":imported,"skippedProviderIds":skipped,"sourceFingerprint":snapshot.source_fingerprint,"targetFingerprint":fingerprint(gateway)?}),
     )
 }

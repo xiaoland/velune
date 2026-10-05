@@ -30,6 +30,8 @@ def main():
     resources = args.bundle / 'Contents/Resources'
     manifest = json.loads((resources / 'build-manifest.json').read_text())
     captures = []
+    auth_headers = []
+    request_paths = []
     upstream_errors = []
     environment = dict(os.environ)
     with tempfile.TemporaryDirectory(prefix='velune-native-loop-') as directory:
@@ -47,6 +49,8 @@ def main():
                 try:
                     body = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
                     captures.append(body)
+                    auth_headers.append(self.headers.get("Authorization"))
+                    request_paths.append(self.path)
                     first = len(captures) == 1
                     delta = {'reasoning_content': 'SYNTHETIC_PLAN' if first else 'SYNTHETIC_REVIEW'}
                     if first:
@@ -91,9 +95,6 @@ def main():
             'auth.json': b'{}', 'settings.json': b'{"synthetic":true}'}
         for name, content in source_files.items():
             (root / 'source' / name).write_bytes(content)
-        helper = root / 'synthetic-credential'
-        helper.write_text(f'#!{sys.executable}\nraise SystemExit(1)\n')
-        helper.chmod(0o700)
         library = args.bundle / 'Contents/Frameworks/libvelune_bindings.dylib'
         shutil.copy(args.bindings / 'velune_bindings.py', root / 'bindings')
         (root / 'bindings' / library.name).symlink_to(library)
@@ -107,56 +108,35 @@ def main():
             sys.modules[spec.name] = bindings
             spec.loader.exec_module(bindings)
             application = bindings.VeluneApplication.open(bindings.BindingOptions(
-                home_directory=str(root / 'home'), resources_directory=str(resources),
-                credential_resolver=str(helper)))
-            application.upsert_gateway(bindings.BindingGatewayConfig(
-                id='fixture', name='Synthetic gateway', models=[], providers=[], routes=[],
-                failover=bindings.BindingFailoverPolicy(mode=bindings.BindingFailoverMode.DISABLED)))
+                home_directory=str(root / 'home'), resources_directory=str(resources)))
             runtime = bindings.BindingRuntimeInstance(
-                id='fixture-runtime', name='Synthetic Pi', type_id='pi', gateway_id='fixture', model_record_key=None,
+                id='fixture-runtime', name='Synthetic Pi', type_id='pi', gateway_id='default', model_record_key=None,
                 settings={'agentDir': str(root / 'source'), 'nodeBinary': str(args.node),
                           'binary': str(resources / 'node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js')})
             application.upsert_runtime(runtime)
             source = bindings.BindingProviderImportSource(kind='harness', harness_type_id='pi',
                 source_instance_id=runtime.id, provider_id=None, settings={})
-            preview = application.preview_provider_import('fixture', source)
+            preview = application.preview_provider_import('default', source)
             selected = next(item for item in preview.providers if item.source_provider_id == 'fixture-selected')
             candidate = next(item for item in selected.models if item.provider_model_id == 'reasoning')
             plain = next(item for item in selected.models if item.provider_model_id == 'plain')
             if not selected.can_import or not candidate.can_import:
                 raise RuntimeError(f'synthetic import still blocked: {selected.issues}, {candidate.issues}')
             assert plain.can_import, 'plain model with native compatibility was blocked'
-            imported = application.apply_provider_import('fixture', source, preview.token,
-                [bindings.BindingImportSelection(provider_id=selected.id, candidate_keys=[candidate.candidate_key], model_record_mappings={})], False)
+            imported = application.apply_provider_import('default', source, preview.token,
+                [bindings.BindingImportSelection(provider_id=selected.id, candidate_keys=[candidate.candidate_key])], False)
             assert imported.imported_provider_ids == [selected.id], 'unselected provider was imported'
             gateway, = imported.gateways
             assert len(gateway.providers) == 1, 'unselected provider was saved'
-            authentication_id = gateway.providers[0].authentication_id
-            resource = next(item for item in application.list().authentication_bindings if item.id == authentication_id)
-            assert resource.method == bindings.BindingAuthenticationMethod.API_KEY
-            assert resource.provenance.runtime_type_id == 'pi'
+            assert gateway.providers[0].authentication.method == bindings.BindingAuthenticationMethod.API_KEY
+            assert application.read_provider_api_key('default', selected.id) == 'synthetic-only'
             saved = json.loads((root / 'home/generic-config.json').read_text())
-            assert saved['schemaVersion'] == 4 and len(saved['authenticationBindings']) == 1
-            assert not any(key.startswith('credential') for key in saved['gateways'][0]['providers'][0])
+            assert saved['schemaVersion'] == 5 and 'authenticationBindings' not in saved
             binding, = gateway.providers[0].models
-            assert binding.provider_model_id == 'reasoning' and binding.model_record_key != 'reasoning'
+            assert binding.provider_model_id == 'reasoning' and binding.record_key != 'reasoning'
             assert binding.context_window == candidate.context_window
             assert binding.max_output_tokens == candidate.max_output_tokens
-            saved_before_invalid = (root / 'home/generic-config.json').read_bytes()
-            invalid_preview = application.preview_provider_import('fixture', source)
-            try:
-                application.apply_provider_import('fixture', source, invalid_preview.token,
-                    [bindings.BindingImportSelection(provider_id=selected.id,
-                        candidate_keys=[candidate.candidate_key],
-                        model_record_mappings={candidate.candidate_key: 'unknown-record'})], True)
-            except bindings.BindingError:
-                assert (root / 'home/generic-config.json').read_bytes() == saved_before_invalid
-            else:
-                raise AssertionError('unknown explicit model mapping accepted')
-
-            gateway.routes = [bindings.BindingRoute(model_record_key=binding.model_record_key, provider_id=selected.id)]
-            application.upsert_gateway(gateway)
-            runtime.model_record_key = binding.model_record_key
+            runtime.model_record_key = binding.record_key
             application.upsert_runtime(runtime)
             application.connect_runtime(runtime.id)
             application.create_conversation(runtime.id, str(root / 'project'))
@@ -188,113 +168,74 @@ def main():
             assistant_text = [block.text for message in snapshot.messages if message.role == 'assistant'
                               for block in message.blocks if isinstance(block, bindings.BindingMessageBlock.TEXT)]
             assert any('SYNTHETIC_ANSWER' in text for text in assistant_text), 'final projection missing'
-            preview = application.preview_provider_import('fixture', source)
-            skipped = application.apply_provider_import('fixture', source, preview.token,
-                [bindings.BindingImportSelection(provider_id=selected.id, candidate_keys=[candidate.candidate_key], model_record_mappings={})], False)
+            preview = application.preview_provider_import('default', source)
+            skipped = application.apply_provider_import('default', source, preview.token,
+                [bindings.BindingImportSelection(provider_id=selected.id, candidate_keys=[candidate.candidate_key])], False)
             assert not skipped.requires_reconnect, 'unchanged skipped import disconnected runtime'
             assert application.list().active_runtime_instance_id == runtime.id
-            preview = application.preview_provider_import('fixture', source)
-            changed = application.apply_provider_import('fixture', source, preview.token,
+            preview = application.preview_provider_import('default', source)
+            changed = application.apply_provider_import('default', source, preview.token,
                 [bindings.BindingImportSelection(provider_id=selected.id,
-                    candidate_keys=[candidate.candidate_key, plain.candidate_key], model_record_mappings={})], True)
+                    candidate_keys=[candidate.candidate_key, plain.candidate_key])], True)
             assert changed.requires_reconnect, 'changed active gateway did not report stale connection'
             assert application.list().active_runtime_instance_id is None, 'stale gateway remained active'
             assert all((root / 'source' / name).read_bytes() == content for name, content in source_files.items())
-            stale = application.preview_provider_import('fixture', source)
-            current_resource = next(item for item in application.list().authentication_bindings
-                                    if item.id == authentication_id)
-            application.configure_api_key_binding(authentication_id, 'Synthetic replacement', 'synthetic-ref',
-                bindings.BindingGatewayProtocol.CHAT_COMPLETIONS_V1, endpoint, False, current_resource.generation)
+            stale = application.preview_provider_import('default', source)
+            current = application.list().gateways[0].providers[0]
+            draft = bindings.BindingProviderDraft(id=current.id, name=current.name, protocol=current.protocol,
+                endpoint=current.endpoint, models=current.models)
+            application.save_provider('default', draft,
+                bindings.BindingAuthenticationEdit.SET_API_KEY(value='synthetic-replacement'))
             saved_after_replacement = (root / 'home/generic-config.json').read_bytes()
             try:
-                application.apply_provider_import('fixture', source, stale.token,
+                application.apply_provider_import('default', source, stale.token,
                     [bindings.BindingImportSelection(provider_id=selected.id,
-                        candidate_keys=[candidate.candidate_key], model_record_mappings={})], True)
+                        candidate_keys=[candidate.candidate_key])], True)
             except bindings.BindingError:
                 assert (root / 'home/generic-config.json').read_bytes() == saved_after_replacement
             else:
-                raise AssertionError('old preview overwrote a newly managed authentication resource')
-            # Exercise helper lifetime through the application-managed registry,
-            # not a gateway-specific source protocol. Only this synthetic helper
-            # and its synthetic Node descendant are started or terminated.
-            pid_file = root / 'helper-node.pid'
-            node_code = 'require("fs").writeFileSync(' + json.dumps(str(pid_file)) + ',String(process.pid));setInterval(()=>{},1000)'
-            helper.write_text(f'#!{sys.executable}\nimport subprocess\nsubprocess.run([{str(args.node)!r}, "-e", {node_code!r}])\n')
-            managed = application.configure_api_key_binding('hanging-fixture', 'Synthetic helper', 'synthetic-ref',
-                bindings.BindingGatewayProtocol.CHAT_COMPLETIONS_V1, endpoint, False, None)
-            gateway, = application.list().gateways
-            gateway.providers[0].authentication_id = managed.binding.id
-            application.upsert_gateway(gateway)
-            # The managed catalog contains an environment placeholder, never a
-            # stored gateway token. Capture only this fixture's ephemeral token
-            # from its own Node launcher; no real process or secret is inspected.
-            token_file = root / 'synthetic-gateway-token'
-            launcher = root / 'synthetic-node'
-            launcher.write_text(f'#!{sys.executable}\nimport os,sys\nfrom pathlib import Path\n'
-                f'if "VELUNE_GATEWAY_TOKEN" in os.environ:\n'
-                f' p=Path({str(token_file)!r});p.write_text(os.environ["VELUNE_GATEWAY_TOKEN"]);p.chmod(0o600)\n'
-                f'os.execv({str(args.node)!r}, [{str(args.node)!r}, *sys.argv[1:]])\n')
-            launcher.chmod(0o700)
-            runtime.settings['nodeBinary'] = str(launcher)
-            application.upsert_runtime(runtime)
-            application.connect_runtime(runtime.id)
-            application.create_conversation(runtime.id, str(root / 'project'))
-            deadline = time.monotonic() + 3
-            while not token_file.exists() and time.monotonic() < deadline:
-                time.sleep(.02)
-            assert token_file.exists(), 'synthetic runtime did not receive local gateway credentials'
-            projection, = (root / 'home/runtime-projections').iterdir()
-            injected = json.loads((projection / 'models.json').read_text())['providers']['velune-gateway']
-            port = int(injected['baseUrl'].split(':')[2].split('/')[0])
-
-            def pending_request():
-                connection = http.client.HTTPConnection('127.0.0.1', port, timeout=35)
-                connection.request('POST', '/v1/chat/completions', json.dumps({'model': 'velune/model/' + binding.model_record_key,
-                    'messages': [{'role': 'user', 'content': 'synthetic'}]}),
-                    {'Authorization': 'Bearer ' + token_file.read_text(), 'Content-Type': 'application/json'})
-                deadline = time.monotonic() + 3
-                while not pid_file.exists() and time.monotonic() < deadline:
-                    time.sleep(.02)
-                assert pid_file.exists(), 'managed helper did not start'
-                return connection, int(pid_file.read_text())
-
-            def descendant_gone(pid):
-                deadline = time.monotonic() + 3
+                raise AssertionError('old preview overwrote edited provider authentication')
+            assert application.read_provider_api_key('default', selected.id) == 'synthetic-replacement'
+            def send_after_edit():
+                application.connect_runtime(runtime.id)
+                application.create_conversation(runtime.id, str(root / 'project'))
+                before = len(captures)
+                application.send(runtime.id, 'Confirm the synthetic edited configuration.')
+                deadline = time.monotonic() + 30
                 while time.monotonic() < deadline:
-                    try:
-                        os.kill(pid, 0)
-                    except ProcessLookupError:
-                        pid_file.unlink()
+                    current_snapshot = application.snapshot(runtime.id).snapshot
+                    if current_snapshot and current_snapshot.run_state == bindings.BindingRunState.FAILED:
+                        raise RuntimeError('edited synthetic provider run failed')
+                    if current_snapshot and current_snapshot.actions.can_send and len(captures) > before:
                         return
-                    time.sleep(.02)
-                raise AssertionError('managed helper descendant survived cancellation')
+                    time.sleep(.05)
+                raise RuntimeError('edited configuration did not settle')
+            send_after_edit()
+            assert auth_headers[-1] == 'Bearer synthetic-replacement'
+            current = application.list().gateways[0].providers[0]
+            edited_model = next(item for item in current.models if item.record_key == binding.record_key)
+            edited_model.provider_model_id = 'edited-api-model-id'
+            edited_model.adapter_metadata_json = None
+            edited_model.reasoning_levels = []
+            changed_endpoint = endpoint.replace('/v1', '/changed/v1')
+            draft = bindings.BindingProviderDraft(id=current.id, name=current.name,
+                protocol=current.protocol, endpoint=changed_endpoint, models=current.models)
+            application.save_provider('default', draft, bindings.BindingAuthenticationEdit.KEEP())
+            send_after_edit()
+            assert captures[-1]['model'] == 'edited-api-model-id'
+            assert request_paths[-1] == '/changed/v1/chat/completions'
+            assert auth_headers[-1] == 'Bearer synthetic-replacement'
+            assert application.list().runtime_instances[0].model_record_key == binding.record_key
 
-            connection, pid = pending_request()
-            connection.close()
-            descendant_gone(pid)
-            connection, pid = pending_request()
-            started = time.monotonic()
-            response = connection.getresponse()
-            assert response.status == 503
-            response.read()
-            assert 25 < time.monotonic() - started < 33
-            connection.close()
-            descendant_gone(pid)
-            connection, pid = pending_request()
-            started = time.monotonic()
             application.shutdown()
             application = None
-            connection.close()
-            descendant_gone(pid)
-            assert time.monotonic() - started < 3, 'managed helper blocked application shutdown'
             assert all((root / 'source' / name).read_bytes() == content for name, content in source_files.items())
             print(json.dumps({'acceptance': 'PASSED', 'bundle': {'sourceCommit': manifest['source_commit'],
                 'dirty': manifest['dirty'], 'uiVersion': manifest['ui_version']},
-                'normalPath': 'configured runtime → import → route → connect → create → send → tool → continuation → next turn',
-                'upstreamRequests': len(captures), 'onlySelectedProviderSaved': True, 'centralAuthenticationResource': True,
-                'actualPiSourceCredentialAdapter': True,
+                'normalPath': 'configured runtime → import → select model → connect → create → send → tool → continuation → next turn',
+                'upstreamRequests': len(captures), 'onlySelectedProviderSaved': True, 'providerOwnedAuthentication': True,
+                'editedKeyIdEndpointUsedUpstream': True,
                 'authenticationReplacementInvalidatesImportPreview': True,
-                'managedHelperDisconnectDeadlineShutdownCleanup': True,
                 'nativeReasoningHistoryPreserved': True, 'sourceFilesUnchanged': True,
                 'unchangedImportKeepsConnection': True, 'changedImportDisconnectsStaleGateway': True,
                 'realServicesCalled': False}, ensure_ascii=False, indent=2))

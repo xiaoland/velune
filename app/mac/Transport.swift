@@ -8,7 +8,6 @@ enum TransportError: LocalizedError {
     case incompatibleCore
     case closed
     case rejected(String)
-    case authenticationNotCommitted(String)
     case diagnostic(kind: String, detail: String, code: String, phase: String, operationID: String)
 
     var errorDescription: String? {
@@ -17,7 +16,7 @@ enum TransportError: LocalizedError {
         case .invalidHome: return "VELUNE_HOME 必须使用绝对目录路径；留空可使用默认目录。"
         case .incompatibleCore: return "应用与内嵌核心版本不匹配，请重新安装完整应用。"
         case .closed: return "本地核心已关闭，请重新打开应用。"
-        case .rejected(let message), .authenticationNotCommitted(let message): return message
+        case .rejected(let message): return message
         case .diagnostic(_, let detail, let code, let phase, let operationID): return "操作失败（诊断编号：\(operationID)，阶段：\(phase)，代码：\(code)）：\(detail)"
         }
     }
@@ -28,24 +27,21 @@ enum TransportError: LocalizedError {
 final class Transport: @unchecked Sendable {
     let stateDirectory: URL
     private let resourcesDirectory: URL
-    private let credentialResolver: URL?
     private let lock = NSLock()
     private static let logger = Logger(subsystem: "local.velune", category: "transport")
     private var application: VeluneApplication?
     private var isClosed = false
 
-    init(stateDirectory: URL, resourcesDirectory: URL, credentialResolver: URL? = nil) {
+    init(stateDirectory: URL, resourcesDirectory: URL) {
         self.stateDirectory = stateDirectory
         self.resourcesDirectory = resourcesDirectory
-        self.credentialResolver = credentialResolver
     }
 
     static func applicationDefault() throws -> Transport {
         let configuredHome = getenv("VELUNE_HOME").map { String(cString: $0) }
         let home = try applicationHome(configuredHome, userHome: FileManager.default.homeDirectoryForCurrentUser)
         guard let resources = Bundle.main.resourceURL else { throw TransportError.unavailable }
-        return Transport(stateDirectory: home, resourcesDirectory: resources,
-                         credentialResolver: Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/velune-credential"))
+        return Transport(stateDirectory: home, resourcesDirectory: resources)
     }
 
     static func applicationHome(_ configured: String?, userHome: URL) throws -> URL {
@@ -57,8 +53,13 @@ final class Transport: @unchecked Sendable {
     }
 
     func list() throws -> BindingConfigurationSnapshot { try withApplication("list") { try $0.list() } }
-    func upsertGateway(_ gateway: BindingGatewayConfig) throws -> BindingGatewayUpdate { try withApplication("upsertGateway") { try $0.upsertGateway(gateway: gateway) } }
-    func deleteGateway(id: String) throws -> BindingGatewayUpdate { try withApplication("deleteGateway") { try $0.deleteGateway(id: id) } }
+    func saveProvider(gatewayID: String, provider: AIProvider, authenticationEdit: AuthenticationEdit) throws -> BindingGatewayUpdate {
+        try withApplication("saveProvider") { try $0.saveProvider(gatewayId: gatewayID, provider: BindingMapping.bindingProvider(provider), authenticationEdit: BindingMapping.bindingAuthenticationEdit(authenticationEdit)) }
+    }
+    func deleteProvider(gatewayID: String, providerID: String) throws -> BindingGatewayUpdate { try withApplication("deleteProvider") { try $0.deleteProvider(gatewayId: gatewayID, providerId: providerID) } }
+    func readProviderAPIKey(gatewayID: String, providerID: String) throws -> String { try withApplication("readProviderAPIKey") { try $0.readProviderApiKey(gatewayId: gatewayID, providerId: providerID) } }
+    func saveTemplate(_ value: ModelTemplate) throws -> [BindingModelTemplate] { try withApplication("saveModelTemplate") { try $0.saveModelTemplate(template: BindingMapping.bindingTemplate(value)) } }
+    func deleteTemplate(id: String) throws -> [BindingModelTemplate] { try withApplication("deleteModelTemplate") { try $0.deleteModelTemplate(id: id) } }
     func upsertRuntime(_ runtime: BindingRuntimeInstance) throws -> BindingRuntimeUpdate { try withApplication("upsertRuntime") { try $0.upsertRuntime(runtime: runtime) } }
     func deleteRuntime(id: String) throws -> BindingRuntimeUpdate { try withApplication("deleteRuntime") { try $0.deleteRuntime(id: id) } }
     func connectRuntime(id: String) throws -> BindingConnectionResult { try withApplication("connectRuntime") { try $0.connectRuntime(id: id) } }
@@ -70,27 +71,8 @@ final class Transport: @unchecked Sendable {
     func selectModel(runtimeID: String, modelRecordKey: String) throws -> BindingSnapshotResult { try withApplication("selectModel") { try $0.selectModel(runtimeId: runtimeID, modelRecordKey: modelRecordKey) } }
     func providerImportPreview(gatewayID: String, source: BindingProviderImportSource) throws -> BindingProviderImportPreview { try withApplication("providerImportPreview") { try $0.previewProviderImport(gatewayId: gatewayID, source: source) } }
     func providerImportApply(gatewayID: String, source: BindingProviderImportSource, previewToken: String, selections: [BindingImportSelection], replaceExisting: Bool) throws -> BindingImportResult { try withApplication("providerImportApply") { try $0.applyProviderImport(gatewayId: gatewayID, source: source, previewToken: previewToken, selections: selections, replaceExisting: replaceExisting) } }
-    func authenticationInspect(bindingID: String) throws -> BindingAuthenticationMetadata { try withApplication("authenticationInspect") { try $0.authenticationInspect(bindingId: bindingID) } }
-    func authenticationStart(bindingID: String) throws -> BindingAuthenticationProgress { try withApplication("authenticationStart") { try $0.authenticationStart(bindingId: bindingID) } }
-    func configureAPIKeyBinding(id: String, name: String, keychainRef: String, protocolID: ProviderProtocol, endpoint: String, expectedGeneration: UInt64?) throws -> BindingAuthenticationMutation {
-        try withApplication("configureApiKeyBinding") {
-            do {
-                return try $0.configureApiKeyBinding(id: id, name: name, keychainRef: keychainRef,
-                                                    protocol: BindingMapping.bindingProtocol(protocolID), endpoint: endpoint,
-                                                    ownsSecret: true, expectedGeneration: expectedGeneration)
-            } catch let failure as BindingError {
-                logFailure(operation: "configureApiKeyBinding", localCorrelation: nil, error: failure)
-                // The application mutation contract guarantees that typed failures precede commit.
-                throw TransportError.authenticationNotCommitted(Self.transportError(for: failure).localizedDescription)
-            }
-        }
-    }
-    func renameAuthenticationBinding(_ id: String, name: String) throws -> BindingAuthenticationMutation {
-        try withApplication("renameAuthenticationBinding") { try $0.renameAuthenticationBinding(id: id, name: name) }
-    }
-    func deleteAuthenticationBinding(_ id: String) throws -> BindingAuthenticationMutation {
-        try withApplication("deleteAuthenticationBinding") { try $0.deleteAuthenticationBinding(id: id) }
-    }
+    func authenticationInspect(gatewayID: String, providerID: String) throws -> BindingAuthenticationMetadata { try withApplication("authenticationInspect") { try $0.authenticationInspect(gatewayId: gatewayID, providerId: providerID) } }
+    func authenticationStart(gatewayID: String, providerID: String) throws -> BindingAuthenticationProgress { try withApplication("authenticationStart") { try $0.authenticationStart(gatewayId: gatewayID, providerId: providerID) } }
     func authenticationPoll() throws -> BindingAuthenticationProgress { try withApplication("authenticationPoll") { try $0.authenticationPoll() } }
     func authenticationReply(promptID: String, value: String) throws -> BindingAuthenticationProgress { try withApplication("authenticationReply") { try $0.authenticationReply(promptId: promptID, value: value) } }
     func authenticationCancel() throws -> BindingAuthenticationProgress { try withApplication("authenticationCancel") { try $0.authenticationCancel() } }
@@ -112,8 +94,7 @@ final class Transport: @unchecked Sendable {
         guard !isClosed else { throw TransportError.closed }
         if application == nil {
             let options = BindingOptions(homeDirectory: stateDirectory.path,
-                                         resourcesDirectory: resourcesDirectory.path,
-                                         credentialResolver: credentialResolver?.path)
+                                         resourcesDirectory: resourcesDirectory.path)
             do { application = try VeluneApplication.open(options: options) }
             catch { logFailure(operation: operation, localCorrelation: correlation, error: error, categoryOverride: "open_failed"); throw map(error) }
         }

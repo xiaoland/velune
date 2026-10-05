@@ -16,7 +16,7 @@ pub(super) fn setting_path_optional(runtime: &RuntimeInstance, key: &str) -> Opt
 pub(super) fn runnable_pi_model<'a>(
     gateway: &'a GatewayConfig,
     id: &str,
-) -> Result<&'a ModelDefinition, RuntimeError> {
+) -> Result<&'a ProviderModel, RuntimeError> {
     let provider = gateway
         .validate_dispatch(id)
         .map_err(RuntimeError::invalid)?;
@@ -24,7 +24,7 @@ pub(super) fn runnable_pi_model<'a>(
     let binding = provider
         .models
         .iter()
-        .find(|binding| binding.model_record_key == id)
+        .find(|binding| binding.record_key == id)
         .expect("validated binding");
     if binding.context_window.is_none() || binding.max_output_tokens.is_none() {
         return Err(RuntimeError::invalid(
@@ -65,7 +65,6 @@ pub(super) fn materialize_models(
     gateway: &GatewayConfig,
     endpoint: &str,
     protocol: &str,
-    authentication: &crate::authentication_resources::AuthenticationManager,
 ) -> Result<(), RuntimeError> {
     let target = config
         .models_path
@@ -83,15 +82,14 @@ pub(super) fn materialize_models(
     if target.exists() && !marker.exists() {
         return Err(RuntimeError::invalid("refusing unmanaged runtime catalog"));
     }
-    // Pi caches its available model catalog at startup. Include every explicit
-    // route so subsequent set_model calls use the same immutable gateway revision.
+    // Materialize each runnable provider model so Pi can switch using the same gateway revision.
     let entries = gateway
-        .models
-        .iter()
+        .providers
+        .iter().flat_map(|p| &p.models)
         .filter(|model| runnable_pi_model(gateway, &model.record_key).is_ok())
         .map(|model| -> Result<Value, RuntimeError> {
             let physical_id = gateway
-                .pi_binding_id(&model.record_key, authentication.revision(gateway,&model.record_key))
+                .pi_binding_id(&model.record_key, gateway.authentication_revision(&model.record_key))
                 .map_err(RuntimeError::invalid)?;
             let api =
                 gateway
@@ -103,7 +101,7 @@ pub(super) fn materialize_models(
                         GatewayProtocol::MessagesV1 => "unsupported",
                     });
             let routed_provider = gateway.validate_dispatch(&model.record_key).map_err(RuntimeError::invalid)?;
-            let binding = routed_provider.models.iter().find(|binding| binding.model_record_key == model.record_key).expect("validated binding");
+            let binding = routed_provider.models.iter().find(|binding| binding.record_key == model.record_key).expect("validated binding");
             let binding_projection = binding.pi_projection.as_ref();
             let declared_levels = pi_declared_levels(binding);
             let mut entry = json!({
@@ -271,8 +269,8 @@ pub(super) fn pi_session_helper(
 }
 
 /// Translate the protocol declaration at the Pi adapter boundary, not in the AI model domain.
-fn pi_declared_levels(binding: &crate::config::ProviderModelBinding) -> Vec<String> {
-    let Some(reasoning) = &binding.reasoning else {
+fn pi_declared_levels(binding: &crate::config::ProviderModel) -> Vec<String> {
+    let Some(reasoning) = &binding.reasoning_levels else {
         return Vec::new();
     };
     if let Some(projection) = &binding.pi_projection {
@@ -281,13 +279,12 @@ fn pi_declared_levels(binding: &crate::config::ProviderModelBinding) -> Vec<Stri
             .iter()
             .filter_map(|(level, wire)| {
                 wire.as_ref()
-                    .filter(|wire| reasoning.levels.contains(wire))
+                    .filter(|wire| reasoning.contains(wire))
                     .map(|_| level.clone())
             })
             .collect()
     } else {
         reasoning
-            .levels
             .iter()
             .map(|level| {
                 if level == "none" {

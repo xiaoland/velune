@@ -85,7 +85,6 @@ fn convert<I: Serialize, O: DeserializeOwned>(input: I) -> Result<O, BindingErro
 pub struct BindingOptions {
     pub home_directory: String,
     pub resources_directory: String,
-    pub credential_resolver: Option<String>,
 }
 
 #[derive(uniffi::Object)]
@@ -127,7 +126,6 @@ impl VeluneApplication {
             Application::open(Options {
                 home_directory: options.home_directory.into(),
                 resources_directory: options.resources_directory.into(),
-                credential_resolver: options.credential_resolver.map(Into::into),
             })
             .map_err(Into::into)
         })?;
@@ -154,20 +152,50 @@ impl VeluneApplication {
         convert(self.with("list", |application| application.list())?)
     }
 
-    pub fn upsert_gateway(
+    pub fn save_provider(
         &self,
-        gateway: BindingGatewayConfig,
+        gateway_id: String,
+        provider: BindingProviderDraft,
+        authentication_edit: BindingAuthenticationEdit,
     ) -> Result<BindingGatewayUpdate, BindingError> {
-        let gateway = convert(gateway)?;
-        convert(self.with("upsert_gateway", |application| {
-            application.upsert_gateway(gateway)
+        let provider = convert(provider)?;
+        let authentication_edit = convert(authentication_edit)?;
+        convert(self.with("save_provider", |app| {
+            app.save_provider(gateway_id, provider, authentication_edit)
         })?)
     }
-
-    pub fn delete_gateway(&self, id: String) -> Result<BindingGatewayUpdate, BindingError> {
-        convert(self.with("delete_gateway", |application| {
-            application.delete_gateway(id)
+    pub fn delete_provider(
+        &self,
+        gateway_id: String,
+        provider_id: String,
+    ) -> Result<BindingGatewayUpdate, BindingError> {
+        convert(self.with("delete_provider", |app| {
+            app.delete_provider(gateway_id, provider_id)
         })?)
+    }
+    pub fn read_provider_api_key(
+        &self,
+        gateway_id: String,
+        provider_id: String,
+    ) -> Result<String, BindingError> {
+        self.with("read_provider_api_key", |app| {
+            app.read_provider_api_key(gateway_id, provider_id)
+        })
+    }
+    pub fn save_model_template(
+        &self,
+        template: BindingModelTemplate,
+    ) -> Result<Vec<BindingModelTemplate>, BindingError> {
+        let template = convert(template)?;
+        convert(self.with("save_model_template", |app| {
+            app.save_model_template(template)
+        })?)
+    }
+    pub fn delete_model_template(
+        &self,
+        id: String,
+    ) -> Result<Vec<BindingModelTemplate>, BindingError> {
+        convert(self.with("delete_model_template", |app| app.delete_model_template(id))?)
     }
 
     pub fn upsert_runtime(
@@ -270,62 +298,22 @@ impl VeluneApplication {
         })?)
     }
 
-    #[allow(clippy::too_many_arguments)]
-    pub fn configure_api_key_binding(
-        &self,
-        id: String,
-        name: String,
-        keychain_ref: String,
-        protocol: BindingGatewayProtocol,
-        endpoint: String,
-        owns_secret: bool,
-        expected_generation: Option<u64>,
-    ) -> Result<BindingAuthenticationMutation, BindingError> {
-        let protocol = convert(protocol)?;
-        convert(self.with("configure_api_key_binding", |application| {
-            application.configure_api_key_binding(
-                id,
-                name,
-                keychain_ref,
-                protocol,
-                endpoint,
-                owns_secret,
-                expected_generation,
-            )
-        })?)
-    }
-    pub fn rename_authentication_binding(
-        &self,
-        id: String,
-        name: String,
-    ) -> Result<BindingAuthenticationMutation, BindingError> {
-        convert(self.with("rename_authentication_binding", |application| {
-            application.rename_authentication_binding(id, name)
-        })?)
-    }
-    pub fn delete_authentication_binding(
-        &self,
-        id: String,
-    ) -> Result<BindingAuthenticationMutation, BindingError> {
-        convert(self.with("delete_authentication_binding", |application| {
-            application.delete_authentication_binding(id)
-        })?)
-    }
     pub fn authentication_inspect(
         &self,
-        binding_id: String,
+        gateway_id: String,
+        provider_id: String,
     ) -> Result<BindingAuthenticationMetadata, BindingError> {
-        convert(self.with("authentication_inspect", |application| {
-            application.authentication_inspect(binding_id)
+        convert(self.with("authentication_inspect", |app| {
+            app.authentication_inspect(gateway_id, provider_id)
         })?)
     }
-
     pub fn authentication_start(
         &self,
-        binding_id: String,
+        gateway_id: String,
+        provider_id: String,
     ) -> Result<BindingAuthenticationProgress, BindingError> {
-        convert(self.with("authentication_start", |application| {
-            application.authentication_start(binding_id)
+        convert(self.with("authentication_start", |app| {
+            app.authentication_start(gateway_id, provider_id)
         })?)
     }
 

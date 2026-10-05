@@ -39,31 +39,27 @@ impl CoreRuntime {
         let physical_model_id = gateway
             .pi_binding_id(
                 model_record_key,
-                self.authentication_resources
-                    .revision(&gateway, model_record_key),
+                gateway.authentication_revision(model_record_key),
             )
             .map_err(RuntimeError::invalid)?;
         let route_aliases = gateway
-            .routes
+            .providers
             .iter()
+            .flat_map(|p| &p.models)
             .map(|route| {
                 gateway
                     .pi_binding_id(
-                        &route.model_record_key,
-                        self.authentication_resources
-                            .revision(&gateway, &route.model_record_key),
+                        &route.record_key,
+                        gateway.authentication_revision(&route.record_key),
                     )
-                    .map(|alias| (alias, route.model_record_key.clone()))
+                    .map(|alias| (alias, route.record_key.clone()))
                     .map_err(RuntimeError::invalid)
             })
             .collect::<Result<BTreeMap<_, _>, _>>()?;
         self.shutdown_active()?;
         let runner = Runner::start(
             gateway.to_gateway_config()?,
-            crate::authentication_resolver::RegistryResolver::capture(
-                &self.authentication_resources,
-                &self.options,
-            ),
+            crate::authentication_resolver::ProviderResolver::capture(&gateway, &self.options),
             route_aliases,
         )
         .map_err(|_| RuntimeError::invalid("gateway startup"))?;
@@ -108,19 +104,11 @@ impl CoreRuntime {
             GatewayProtocol::ResponsesV1 => "openai-responses",
             GatewayProtocol::MessagesV1 => return Err(RuntimeError::invalid("provider protocol")),
         };
-        if let Err(error) = materialize_models(
-            &config,
-            &gateway,
-            runner.endpoint(),
-            protocol,
-            &self.authentication_resources,
-        ) {
+        if let Err(error) = materialize_models(&config, &gateway, runner.endpoint(), protocol) {
             drop(runner);
             return Err(error);
         }
-        let subscription_capability = self
-            .authentication_resources
-            .subscription(&gateway, model_record_key);
+        let subscription_capability = gateway.subscription(model_record_key);
         write_selection_file(
             &config,
             model_record_key,

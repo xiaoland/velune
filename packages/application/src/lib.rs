@@ -2,17 +2,19 @@
 mod api;
 #[cfg(feature = "local-runtime")]
 mod authentication_resolver;
-mod authentication_resources;
 #[cfg(feature = "local-runtime")]
 mod credential_helper;
-pub use authentication_resources::{
-    AuthenticationBinding, AuthenticationMethod, AuthenticationMutation, AuthenticationProvenance,
+mod provider_authentication;
+pub use provider_authentication::{
+    AuthenticationEdit, AuthenticationMethod, AuthenticationProvenance,
+    ProviderAuthenticationDescription,
 };
 pub mod config;
 #[cfg(feature = "local-runtime")]
 mod local;
 #[cfg(not(feature = "local-runtime"))]
 mod portable;
+mod provider_configuration;
 #[cfg(feature = "local-runtime")]
 mod provider_import;
 mod repository;
@@ -29,17 +31,12 @@ pub use velune_conversation as conversation;
 pub struct Options {
     pub home_directory: PathBuf,
     pub resources_directory: PathBuf,
-    pub credential_resolver: Option<PathBuf>,
 }
 impl Options {
     fn validate(&self) -> Result<(), Error> {
-        for path in [
-            Some(&self.home_directory),
-            Some(&self.resources_directory),
-            self.credential_resolver.as_ref(),
-        ]
-        .into_iter()
-        .flatten()
+        for path in [Some(&self.home_directory), Some(&self.resources_directory)]
+            .into_iter()
+            .flatten()
         {
             if !path.is_absolute() {
                 return Err(Error::invalid("application paths must be absolute"));

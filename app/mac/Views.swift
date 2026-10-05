@@ -53,7 +53,7 @@ struct VeluneRootView: View {
     @ToolbarContentBuilder private var conversationToolbar: some ToolbarContent {
         ToolbarItemGroup(placement: .primaryAction) {
             Menu {
-                ForEach(store.models.filter { model in store.routes.contains { $0.modelRecordKey == model.recordKey } }) { model in Button(model.displayName) { store.selectModel(modelRecordKey: model.recordKey) } }
+                ForEach(store.models) { model in Button(model.displayName) { store.selectModel(modelRecordKey: model.recordKey) } }
                 Divider()
                 SettingsLink { Text("管理AI提供商与模型…") }
             } label: { Text(store.selectedModelName ?? "选择模型") }
@@ -247,9 +247,6 @@ struct SettingsView: View {
     var body: some View {
         TabView {
             ProviderSettingsView(store: store).tabItem { Label("AI提供商", systemImage: "network") }
-            AuthenticationSettingsView(store: store).tabItem { Label("认证", systemImage: "key") }
-            ModelSettingsView(store: store).tabItem { Label("模型", systemImage: "cube") }
-            RoutingSettingsView(store: store).tabItem { Label("模型路由", systemImage: "arrow.triangle.branch") }
             RuntimeSettingsView(store: store).tabItem { Label("Agent 运行时", systemImage: "terminal") }
         }.frame(width: 690, height: 560)
     }
@@ -262,323 +259,240 @@ struct SettingsError: View {
     }
 }
 
-struct AuthenticationSettingsView: View {
-    @ObservedObject var store: AppStore
-    @State private var selectedID: String?
-    @State private var editor: AuthenticationBinding?
-    @State private var creating = false
-    @State private var deleting: AuthenticationBinding?
-    var body: some View {
-        VStack(spacing: 0) {
-            List(selection: $selectedID) {
-                ForEach(store.authenticationBindings) { binding in
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(binding.name)
-                        Text("\(binding.method.label) · \(binding.configured ? "已配置" : "尚未配置")").font(.caption).foregroundStyle(.secondary)
-                    }.tag(binding.id)
-                }
-            }.listStyle(.bordered).padding(.horizontal, 20).padding(.top, 16)
-            HStack {
-                Button { creating = true } label: { Image(systemName: "plus") }.help("添加 API key")
-                Button { deleting = store.authenticationBindings.first { $0.id == selectedID } } label: { Image(systemName: "minus") }.disabled(selectedID == nil)
-                Spacer()
-                Button("详情…") { editor = store.authenticationBindings.first { $0.id == selectedID } }.disabled(selectedID == nil)
-            }.padding(.horizontal, 20).padding(.vertical, 12)
-            SettingsError(message: store.error)
-        }
-        .sheet(item: $editor) { binding in AuthenticationBindingEditor(store: store, binding: binding) }
-        .sheet(isPresented: $creating) { AuthenticationBindingEditor(store: store, binding: nil) }
-        .alert("删除认证资源？", isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } }), presenting: deleting) { binding in
-            Button("删除", role: .destructive) { store.deleteAuthenticationBinding(binding.id); deleting = nil }
-            Button("取消", role: .cancel) { deleting = nil }
-        } message: { binding in Text("删除「\(binding.name)」的登记。正在被提供商使用的资源不能删除；原认证来源保留。") }
-    }
-}
-
-struct AuthenticationBindingEditor: View {
-    @ObservedObject var store: AppStore
-    let binding: AuthenticationBinding?
-    @Environment(\.dismiss) private var dismiss
-    @State private var name = ""
-    @State private var secret = ""
-    @State private var endpoint = ""
-    @State private var protocolID: ProviderProtocol?
-    @State private var metadata: AuthenticationMetadata?
-    private var currentBinding: AuthenticationBinding? { store.authenticationBindings.first { $0.id == binding?.id } ?? binding }
-    private var isAPIKey: Bool { binding == nil || binding?.method == .apiKey }
-    private var valid: Bool {
-        guard !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
-        if let binding, secret.isEmpty { return name != binding.name }
-        return isAPIKey && !secret.isEmpty && !endpoint.isEmpty && protocolID != nil
-    }
-    var body: some View {
-        VStack(spacing: 0) {
-            Text(binding == nil ? "添加 API key" : "认证资源").font(.headline).frame(maxWidth: .infinity, alignment: .leading).padding(20)
-            Form {
-                TextField("名称", text: $name)
-                LabeledContent("获取方式", value: binding?.method.label ?? "API key")
-                if let provenance = binding?.provenance { LabeledContent("来源", value: provenance) }
-                Picker("授权协议", selection: $protocolID) {
-                    Text("请选择").tag(Optional<ProviderProtocol>.none)
-                    ForEach(store.protocols.filter { $0.supported }) { descriptor in Text(descriptor.name).tag(Optional(descriptor.id)) }
-                }.disabled(binding != nil)
-                TextField("授权服务地址", text: $endpoint).disabled(binding != nil)
-                if isAPIKey {
-                    SecureField(binding == nil ? "API key" : "替换 API key", text: $secret)
-                    Text("秘密保存在 Keychain，配置文件仅保存认证资源 ID。").font(.caption).foregroundStyle(.secondary)
-                }
-                if let binding {
-                    LabeledContent("状态", value: (metadata?.configured ?? currentBinding?.configured ?? binding.configured) ? "已配置" : "尚未配置")
-                    HStack {
-                        Button("刷新状态") { inspect() }
-                        ForEach((metadata?.actions ?? binding.actions).filter { $0.id == "login" }) { action in
-                            Button(action.label) { store.startAuthentication(binding.id) }
-                        }
-                    }.disabled(store.isLoading || store.authenticationRunning)
-                }
-            }.formStyle(.grouped)
-            HStack {
-                Spacer()
-                Button("取消") { dismiss() }.keyboardShortcut(.cancelAction)
-                Button("保存") {
-                    if let binding, secret.isEmpty {
-                        store.renameAuthenticationBinding(binding.id, name: name) { dismiss() }
-                    } else if let protocolID {
-                        store.saveAPIKeyBinding(bindingID: binding?.id, expectedGeneration: binding?.generation, name: name, protocolID: protocolID, endpoint: endpoint, secret: secret) { secret = ""; dismiss() }
-                    }
-                }.keyboardShortcut(.defaultAction).disabled(!valid || store.isLoading)
-            }.padding(20)
-            SettingsError(message: store.error)
-        }.frame(width: 500, height: 390)
-        .sheet(isPresented: $store.showsAuthentication) { AuthenticationView(store: store) }
-        .onAppear { name = binding?.name ?? ""; protocolID = binding?.protocolID ?? store.protocols.first { $0.supported }?.id; endpoint = binding?.endpoint ?? ""; if binding != nil { inspect() } }
-        .onChange(of: store.authenticationRunning) { wasRunning, running in if wasRunning && !running { metadata = nil } }
-    }
-    private func inspect() {
-        guard let binding else { return }
-        store.inspectAuthentication(binding.id) { value in metadata = value; protocolID = value.capabilities.protocol; endpoint = value.capabilities.endpoint }
-    }
-}
-
 struct ProviderSettingsView: View {
     @ObservedObject var store: AppStore
     @State private var selectedID: String?
     @State private var editor: AIProvider?
     @State private var creating = false
     @State private var importing = false
+    @State private var templates = false
     @State private var deleting: AIProvider?
     var body: some View {
         VStack(spacing: 0) {
             List(selection: $selectedID) {
                 ForEach(store.providers) { provider in
-                    VStack(alignment: .leading, spacing: 3) { Text(provider.name); Text(provider.endpoint).font(.caption).foregroundStyle(.secondary).lineLimit(1) }.tag(provider.id)
-                        .contextMenu { Button("编辑…") { editor = provider }; Button("删除…") { deleting = provider } }
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(provider.name)
+                        Text("\(provider.models.count) 个模型 · \(provider.endpoint)").font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                    }.tag(provider.id).contextMenu { Button("编辑…") { editor = provider }; Button("删除…") { deleting = provider } }
                 }
             }.listStyle(.bordered).padding(.horizontal, 20).padding(.top, 16)
             HStack {
-                Button { creating = true } label: { Image(systemName: "plus") }.help("添加AI提供商")
-                Button { deleting = store.providers.first { $0.id == selectedID } } label: { Image(systemName: "minus") }.disabled(selectedID == nil).help("删除AI提供商")
-                Button("从运行时导入…") { importing = true }.disabled(store.providerImportTypes.isEmpty || store.isLoading || store.isGenerating || store.authenticationRunning)
+                Button { creating = true } label: { Image(systemName: "plus") }.help("添加 AI 提供商")
+                Button { deleting = store.providers.first { $0.id == selectedID } } label: { Image(systemName: "minus") }.disabled(selectedID == nil)
+                Button("从运行时导入…") { importing = true }.disabled(store.providerImportTypes.isEmpty || store.isBusy)
+                Menu { Button("模型模板…") { templates = true } } label: { Image(systemName: "ellipsis") }.menuStyle(.borderlessButton).frame(width: 24)
                 Spacer()
                 Button("编辑…") { editor = store.providers.first { $0.id == selectedID } }.disabled(selectedID == nil)
             }.padding(.horizontal, 20).padding(.vertical, 12)
             SettingsError(message: store.error)
         }
         .sheet(isPresented: $importing) { ProviderImportView(store: store) }
-        .sheet(item: $editor) { provider in ProviderEditor(provider: provider, models: store.models, protocols: store.protocols, authenticationBindings: store.authenticationBindings, isSaving: store.isLoading, error: store.error) { value, onSaved in store.saveProvider(value, onSaved: onSaved) } }
-        .sheet(isPresented: $creating) { ProviderEditor(provider: nil, models: store.models, protocols: store.protocols, authenticationBindings: store.authenticationBindings, isSaving: store.isLoading, error: store.error) { value, onSaved in store.saveProvider(value, onSaved: onSaved) } }
-        .alert("删除AI提供商？", isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } }), presenting: deleting) { provider in
+        .sheet(item: $editor) { ProviderEditor(store: store, provider: $0) }
+        .sheet(isPresented: $creating) { ProviderEditor(store: store, provider: nil) }
+        .sheet(isPresented: $templates) { ModelTemplatesView(store: store) }
+        .alert("删除 AI 提供商？", isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } }), presenting: deleting) { provider in
             Button("删除", role: .destructive) { store.deleteProvider(id: provider.id); deleting = nil }; Button("取消", role: .cancel) { deleting = nil }
-        } message: { provider in Text("删除「\(provider.name)」的配置。模型定义与会话不受影响。") }
+        } message: { provider in Text("删除「\(provider.name)」及其模型配置。使用这些模型的运行时需要重新选择模型；原运行时文件与会话保留。") }
     }
 }
 
-struct ProviderEditor: View {
-    let provider: AIProvider?
-    let models: [AIModel]
-    let protocols: [ProtocolDescriptor]
-    let authenticationBindings: [AuthenticationBinding]
-    let isSaving: Bool
-    let error: String?
-    let save: (AIProvider, (() -> Void)?) -> Void
-    @Environment(\.dismiss) private var dismiss
-    @State private var name = ""
-    @State private var protocolID: ProviderProtocol?
-    @State private var endpoint = ""
-    @State private var authenticationID = ""
-    @State private var bindings: [String: ProviderModelDraft] = [:]
-    @State private var draftID = UUID().uuidString
-    private var selectedBinding: AuthenticationBinding? { authenticationBindings.first { $0.id == authenticationID } }
-    private var protocolSupported: Bool { protocols.first { $0.id == protocolID }?.supported == true }
-    private var valid: Bool { !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !endpoint.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && protocolSupported && bindings.values.allSatisfy(\.valid) }
-    var body: some View {
-        VStack(spacing: 0) {
-            Text(provider == nil ? "添加AI提供商" : "编辑AI提供商").font(.headline).frame(maxWidth: .infinity, alignment: .leading).padding(20)
-            Form {
-                Section {
-                    TextField("名称", text: $name)
-                    Picker("协议", selection: $protocolID) {
-                        Text("请选择").tag(Optional<ProviderProtocol>.none)
-                        ForEach(protocols) { descriptor in Text(descriptor.name + (descriptor.supported ? "" : "（尚未支持）")).tag(Optional(descriptor.id)).disabled(!descriptor.supported) }
-                    }.disabled(selectedBinding != nil)
-                    TextField("服务地址", text: $endpoint).disabled(selectedBinding != nil)
-                }
-                Section("认证") {
-                    LabeledContent("协议认证", value: "Bearer")
-                    Picker("凭据", selection: $authenticationID) {
-                        Text("未选择").tag("")
-                        ForEach(authenticationBindings) { binding in Text(binding.name).tag(binding.id) }
-                    }
-                    if let binding = selectedBinding {
-                        LabeledContent("获取方式", value: binding.method.label)
-                        LabeledContent("状态", value: binding.configured ? "已配置" : "尚未配置")
-                    }
-                    Text("在设置的「认证」页统一管理凭据。").font(.caption).foregroundStyle(.secondary)
-
-                }
-                Section("关联模型") {
-                    ForEach(models) { model in
-                        Toggle(model.displayName, isOn: Binding(get: { bindings[model.recordKey] != nil }, set: { enabled in
-                            if enabled { bindings[model.recordKey] = ProviderModelDraft() } else { bindings.removeValue(forKey: model.recordKey) }
-                        }))
-                        if bindings[model.recordKey] != nil {
-                            ProviderModelFields(draft: Binding(get: { bindings[model.recordKey] ?? ProviderModelDraft() }, set: { bindings[model.recordKey] = $0 }))
-                        }
-                    }
-                    if models.isEmpty { Text("先在模型页定义模型，再关联到提供商。").foregroundStyle(.secondary) }
-                }
-            }.formStyle(.grouped)
-            HStack { Spacer(); Button("取消") { dismiss() }.keyboardShortcut(.cancelAction); Button("保存") { commit() }.keyboardShortcut(.defaultAction).disabled(!valid || isSaving) }.padding(20)
-            SettingsError(message: error)
-        }.frame(width: 580, height: 520)
-        .onChange(of: authenticationID) { _, id in
-            if let binding = authenticationBindings.first(where: { $0.id == id }) {
-                protocolID = binding.protocolID; endpoint = binding.endpoint
-            }
-        }
-        .onAppear {
-            name = provider?.name ?? ""; protocolID = provider?.protocolID ?? protocols.first { $0.supported }?.id
-            endpoint = provider?.endpoint ?? ""; authenticationID = provider?.authenticationID ?? ""
-            bindings = Dictionary(uniqueKeysWithValues: (provider?.models ?? []).map { ($0.modelRecordKey, ProviderModelDraft($0)) })
-        }
-    }
-    private func commit() {
-        guard valid, let protocolID else { return }
-        let value = AIProvider(id: provider?.id ?? draftID, name: name.trimmingCharacters(in: .whitespacesAndNewlines), protocolID: protocolID, endpoint: endpoint.trimmingCharacters(in: .whitespacesAndNewlines), authenticationID: authenticationID.isEmpty ? nil : authenticationID, models: bindings.keys.sorted().compactMap { key in bindings[key]?.definition(recordKey: key, protocolID: protocolID) })
-        save(value) { dismiss() }
-    }
-}
-
-struct ModelSettingsView: View {
-    @ObservedObject var store: AppStore
-    @State private var selectedID: String?
-    @State private var editor: AIModel?
-    @State private var creating = false
-    @State private var deleting: AIModel?
-    var body: some View {
-        VStack(spacing: 0) {
-            List(selection: $selectedID) {
-                ForEach(store.models) { model in Label { VStack(alignment: .leading, spacing: 3) { Text(model.displayName) } } icon: { Image(systemName: model.icon ?? "cube") }.tag(model.id).contextMenu { Button("编辑…") { editor = model }; Button("删除…") { deleting = model } } }
-            }.listStyle(.bordered).padding(.horizontal, 20).padding(.top, 16)
-            HStack { Button { creating = true } label: { Image(systemName: "plus") }.help("添加模型"); Button { deleting = store.models.first { $0.id == selectedID } } label: { Image(systemName: "minus") }.disabled(selectedID == nil).help("删除模型"); Spacer(); Button("编辑…") { editor = store.models.first { $0.id == selectedID } }.disabled(selectedID == nil) }.padding(.horizontal, 20).padding(.vertical, 12)
-            SettingsError(message: store.error)
-        }
-        .sheet(item: $editor) { model in ModelEditor(model: model, isSaving: store.isLoading, error: store.error, save: store.saveModel) }
-        .sheet(isPresented: $creating) { ModelEditor(model: nil, isSaving: store.isLoading, error: store.error, save: store.saveModel) }
-        .alert("删除模型？", isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } }), presenting: deleting) { model in Button("删除", role: .destructive) { store.deleteModel(id: model.id); deleting = nil }; Button("取消", role: .cancel) { deleting = nil } } message: { model in Text("删除「\(model.displayName)」的模型配置，会话不受影响。") }
-    }
-}
-
-struct ModelEditor: View {
-    let model: AIModel?
-    let isSaving: Bool
-    let error: String?
-    let save: (AIModel, (() -> Void)?) -> Void
-    @Environment(\.dismiss) private var dismiss
-    @State private var nickname = ""
-    @State private var icon = ""
-    @State private var maxOutputTokens = ""
-    @State private var contextWindow = ""
-    private var valid: Bool { !nickname.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && validOptionalTokenCount(maxOutputTokens) && validOptionalTokenCount(contextWindow) }
-    var body: some View {
-        VStack(spacing: 0) {
-            Text(model == nil ? "添加模型" : "编辑模型").font(.headline).frame(maxWidth: .infinity, alignment: .leading).padding(20)
-            Form {
-                TextField("名称", text: $nickname)
-                TextField("图标", text: $icon, prompt: Text("可选，SF Symbols 名称"))
-                Section("模型规格") {
-                    TextField("上下文窗口", text: $contextWindow, prompt: Text("未知可留空"))
-                    TextField("最大输出 Token", text: $maxOutputTokens, prompt: Text("未知可留空"))
-                    Text("提供商绑定独立保存其实际能力与限制。").font(.caption).foregroundStyle(.secondary)
-                }
-            }.formStyle(.grouped)
-            HStack { Spacer(); Button("取消") { dismiss() }.keyboardShortcut(.cancelAction); Button("保存") { commit() }.keyboardShortcut(.defaultAction).disabled(!valid || isSaving) }.padding(20)
-            SettingsError(message: error)
-        }.frame(width: 540, height: 350)
-        .onAppear { nickname = model?.nickname ?? ""; icon = model?.icon ?? ""; maxOutputTokens = model?.maxOutputTokens.map(String.init) ?? ""; contextWindow = model?.contextWindow.map(String.init) ?? "" }
-    }
-    private func commit() {
-        guard valid else { return }
-        save(AIModel(recordKey: model?.recordKey ?? "", nickname: nickname.trimmingCharacters(in: .whitespacesAndNewlines), icon: icon.isEmpty ? nil : icon,
-                     contextWindow: UInt32(contextWindow), maxOutputTokens: UInt32(maxOutputTokens))) { dismiss() }
-    }
-}
-
-private func validOptionalTokenCount(_ value: String) -> Bool { value.isEmpty || (UInt32(value).map { $0 > 0 } ?? false) }
-
-private struct ProviderModelDraft {
+private struct ProviderModelDraft: Identifiable {
+    let id = UUID()
+    var recordKey = ""
     var providerModelID = ""
+    var nickname = ""
+    var icon = ""
     var contextWindow = ""
     var maxOutputTokens = ""
+    var declaresReasoning = false
     var reasoningLevels = ""
     var adapterMetadataJSON: String?
-    private var preservesEmptyReasoningDeclaration = false
     init() {}
-    init(_ binding: ProviderModelBinding) {
-        providerModelID = binding.providerModelID
-        contextWindow = binding.contextWindow.map(String.init) ?? ""
-        maxOutputTokens = binding.maxOutputTokens.map(String.init) ?? ""
-        reasoningLevels = binding.reasoning?.levels.joined(separator: ", ") ?? ""
-        preservesEmptyReasoningDeclaration = binding.reasoning?.levels.isEmpty == true
-        adapterMetadataJSON = binding.adapterMetadataJSON
+    init(_ model: ProviderModel) {
+        recordKey = model.recordKey; providerModelID = model.providerModelID; nickname = model.nickname; icon = model.icon ?? ""
+        contextWindow = model.contextWindow.map(String.init) ?? ""; maxOutputTokens = model.maxOutputTokens.map(String.init) ?? ""
+        declaresReasoning = model.reasoningLevels != nil; reasoningLevels = model.reasoningLevels?.joined(separator: ", ") ?? ""
+        adapterMetadataJSON = model.adapterMetadataJSON
     }
-    var valid: Bool { !providerModelID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && validOptionalTokenCount(contextWindow) && validOptionalTokenCount(maxOutputTokens) }
-    func definition(recordKey: String, protocolID: ProviderProtocol) -> ProviderModelBinding {
-        let levels = reasoningLevels.split(separator: ",").map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
-        return ProviderModelBinding(modelRecordKey: recordKey, providerModelID: providerModelID, contextWindow: UInt32(contextWindow), maxOutputTokens: UInt32(maxOutputTokens),
-                                    reasoning: levels.isEmpty && !preservesEmptyReasoningDeclaration ? nil : ProtocolReasoning(protocolID: protocolID, levels: levels), adapterMetadataJSON: adapterMetadataJSON)
+    var displayName: String { nickname.isEmpty ? (providerModelID.isEmpty ? "新模型" : providerModelID) : nickname }
+    var valid: Bool { !providerModelID.isEmpty && validOptionalTokenCount(contextWindow) && validOptionalTokenCount(maxOutputTokens) && !(UInt32(maxOutputTokens).map { output in UInt32(contextWindow).map { output > $0 } ?? false } ?? false) }
+    var efforts: [String]? { declaresReasoning ? reasoningLevels.split(separator: ",").map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty } : nil }
+    var capabilitySummary: String {
+        let effortsSummary = efforts.map { $0.isEmpty ? "不支持推理 effort" : "支持 effort：" + $0.joined(separator: "、") } ?? "推理 effort 未知"
+        return effortsSummary + (contextWindow.isEmpty ? "" : " · 上下文 \(contextWindow)") + (maxOutputTokens.isEmpty ? "" : " · 输出 \(maxOutputTokens)")
     }
+    var definition: ProviderModel { ProviderModel(recordKey: recordKey, providerModelID: providerModelID, nickname: nickname, icon: icon.isEmpty ? nil : icon, contextWindow: UInt32(contextWindow), maxOutputTokens: UInt32(maxOutputTokens), reasoningLevels: efforts, adapterMetadataJSON: adapterMetadataJSON) }
 }
+private func validOptionalTokenCount(_ value: String) -> Bool { value.isEmpty || (UInt32(value).map { $0 > 0 } ?? false) }
 
 private struct ProviderModelFields: View {
     @Binding var draft: ProviderModelDraft
     var body: some View {
-        TextField("提供商模型 ID", text: $draft.providerModelID)
-        ImmediateDisclosureGroup("能力与限制") {
-            TextField("上下文窗口", text: $draft.contextWindow, prompt: Text("未知可留空"))
-            TextField("最大输出 Token", text: $draft.maxOutputTokens, prompt: Text("未知可留空"))
-            TextField("协议推理级别", text: $draft.reasoningLevels, prompt: Text("逗号分隔，未知可留空"))
+        Section("模型") {
+            TextField("模型 ID", text: $draft.providerModelID, prompt: Text("提供商 API 规定的标识"))
+            TextField("显示名称", text: $draft.nickname, prompt: Text("可选"))
+        }
+        Section {
+            ImmediateDisclosureGroup {
+                VStack(alignment: .leading, spacing: 12) {
+                    TextField("上下文窗口", text: $draft.contextWindow, prompt: Text("未知"))
+                    TextField("最大输出 Token", text: $draft.maxOutputTokens, prompt: Text("未知"))
+                    Toggle("声明支持的 reasoning effort", isOn: $draft.declaresReasoning)
+                    if draft.declaresReasoning {
+                        TextField("支持的 effort", text: $draft.reasoningLevels, prompt: Text("逗号分隔，空白表示不支持"))
+                    }
+                    Text("以提供商协议为准；此处声明可用能力，不改变会话当前选择的 effort。").font(.caption).foregroundStyle(.secondary)
+                    TextField("图标", text: $draft.icon, prompt: Text("可选的 SF Symbol 名称"))
+                }.frame(maxWidth: .infinity, alignment: .leading).padding(.top, 8)
+            } label: {
+                VStack(alignment: .leading, spacing: 3) { Text("能力与 reasoning effort"); Text(draft.capabilitySummary).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true) }
+            }
         }
     }
 }
 
-struct RoutingSettingsView: View {
+private enum ProviderEditorSelection: Hashable { case connection, model(UUID) }
+
+struct ProviderEditor: View {
     @ObservedObject var store: AppStore
+    let provider: AIProvider?
+    @Environment(\.dismiss) private var dismiss
+    @State private var name = ""
+    @State private var protocolID: ProviderProtocol = .chatCompletionsV1
+    @State private var endpoint = ""
+    @State private var models: [ProviderModelDraft] = []
+    @State private var selection: ProviderEditorSelection? = .connection
+    @State private var apiKey = ""
+    @State private var originalAPIKey: String?
+    @State private var attemptedKeyRead = false
+    @State private var showKey = false
+    @State private var editingAPIKey = false
+    @State private var clearAuthentication = false
+    @State private var templateDraft: ModelTemplate?
+    @State private var confirmsProjectionRemoval = false
+    @State private var oldProtocol: ProviderProtocol = .chatCompletionsV1
+    private var authentication: ProviderAuthentication { store.providers.first { $0.id == provider?.id }?.authentication ?? provider?.authentication ?? ProviderAuthentication() }
+    private var modelIndex: Int? { guard case .model(let id) = selection else { return nil }; return models.firstIndex { $0.id == id } }
+    private var valid: Bool { !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && URL(string: endpoint)?.host != nil && models.allSatisfy(\.valid) && (!editingAPIKey || (!apiKey.isEmpty && (originalAPIKey != nil || authentication.method != .apiKey || clearAuthentication))) }
     var body: some View {
-        Form {
-            Section {
-                ForEach(store.models) { model in
-                    Picker(model.displayName, selection: Binding(get: { store.routes.first { $0.modelRecordKey == model.id }?.providerID ?? "" }, set: { store.saveRoute(modelRecordKey: model.id, providerID: $0) })) {
-                        Text("请选择提供商").tag("").disabled(true)
-                        ForEach(store.providers.filter { $0.models.contains { $0.modelRecordKey == model.id } }) { provider in Text(provider.name).tag(provider.id).disabled(store.protocols.first { $0.id == provider.protocolID }?.supported != true) }
-                    }.disabled(store.isLoading || store.isGenerating)
-                }
-                if store.models.isEmpty { Text("先定义模型并关联AI提供商，再选择模型路由。").foregroundStyle(.secondary) }
-            } footer: {
-                Text("请求使用所选提供商；失败时不会自动切换。")
+        VStack(spacing: 0) {
+            HStack { Text(provider == nil ? "添加 AI 提供商" : "编辑 AI 提供商").font(.headline); Spacer() }.padding(20)
+            Divider()
+            HSplitView {
+                VStack(spacing: 0) {
+                    List(selection: $selection) {
+                        Label("连接与认证", systemImage: "network").tag(ProviderEditorSelection.connection)
+                        Section("模型") {
+                            ForEach(models) { model in VStack(alignment: .leading, spacing: 3) { Text(model.displayName).lineLimit(1); if !model.providerModelID.isEmpty { Text(model.providerModelID).font(.caption).foregroundStyle(.secondary).lineLimit(1) } }.tag(ProviderEditorSelection.model(model.id)) }
+                        }
+                    }.listStyle(.sidebar)
+                    HStack {
+                        Menu {
+                            Button("添加模型") { addModel(ProviderModelDraft()) }
+                            if !store.modelTemplates.isEmpty { Divider(); ForEach(store.modelTemplates) { template in Button("从「\(template.name)」填写") { addModel(ProviderModelDraft(template.model)) } } }
+                        } label: { Image(systemName: "plus") }.menuStyle(.borderlessButton)
+                        Button { if let index = modelIndex { models.remove(at: index); selection = .connection } } label: { Image(systemName: "minus") }.disabled(modelIndex == nil)
+                        Spacer()
+                    }.padding(12)
+                }.frame(minWidth: 170, idealWidth: 190, maxWidth: 230)
+                Group {
+                    if let index = modelIndex {
+                        Form {
+                            ProviderModelFields(draft: $models[index])
+                            Section { Button("保存为模型模板…") { let model = models[index].definition; templateDraft = ModelTemplate(name: model.displayName, suggestedProviderModelID: model.providerModelID, nickname: model.nickname, icon: model.icon, contextWindow: model.contextWindow, maxOutputTokens: model.maxOutputTokens, reasoningLevels: model.reasoningLevels) } }
+                        }
+                    } else { connectionForm }
+                }.formStyle(.grouped).frame(minWidth: 360, maxWidth: .infinity, maxHeight: .infinity)
             }
-            if let error = store.error { Label(error, systemImage: "exclamationmark.triangle").foregroundStyle(.secondary).textSelection(.enabled) }
-        }.formStyle(.grouped)
+            Divider()
+            SettingsError(message: store.error).padding(.top, 8)
+            HStack { Spacer(); Button("取消") { dismiss() }.keyboardShortcut(.cancelAction); Button("保存") { commit() }.keyboardShortcut(.defaultAction).disabled(!valid || store.isBusy) }.padding(16)
+        }.frame(width: 650, height: 510)
+        .onAppear { name = provider?.name ?? ""; protocolID = provider?.protocolID ?? .chatCompletionsV1; oldProtocol = protocolID; endpoint = provider?.endpoint ?? ""; models = (provider?.models ?? []).map(ProviderModelDraft.init); editingAPIKey = authentication.method == .unconfigured; readAPIKeyIfNeeded() }
+        .onChange(of: selection) { _, value in if value == .connection { readAPIKeyIfNeeded() } }
+        .onChange(of: protocolID) { old, _ in if protocolID != provider?.protocolID && models.contains(where: { $0.adapterMetadataJSON != nil }) { oldProtocol = old; confirmsProjectionRemoval = true } }
+        .alert("移除来源适配参数？", isPresented: $confirmsProjectionRemoval) {
+            Button("移除并继续") { for index in models.indices { models[index].adapterMetadataJSON = nil } }
+            Button("取消", role: .cancel) { protocolID = oldProtocol }
+        } message: { Text("新协议不能直接沿用原运行时的协议适配参数。模型 ID 与已填写的能力仍保留。") }
+        .sheet(item: $templateDraft) { value in ModelTemplateEditor(store: store, template: value) }
+        .sheet(isPresented: $store.showsAuthentication) { AuthenticationView(store: store) }
+    }
+    private var connectionForm: some View {
+        Form {
+            Section("连接") {
+                TextField("名称", text: $name)
+                Picker("协议", selection: $protocolID) { ForEach(store.protocols.filter(\.supported)) { Text($0.name).tag($0.id) } }
+                TextField("服务地址", text: $endpoint, prompt: Text("https://…/v1"))
+            }
+            Section("认证") {
+                LabeledContent("方式", value: editingAPIKey ? "API key · Bearer" : clearAuthentication ? "尚未配置" : authentication.method == .oauth ? "OAuth · Bearer" : authentication.method.label)
+                if editingAPIKey {
+                    HStack {
+                        if showKey { TextField("API key", text: $apiKey) } else { SecureField("API key", text: $apiKey) }
+                        Button { showKey.toggle() } label: { Image(systemName: showKey ? "eye.slash" : "eye") }.buttonStyle(.borderless).help(showKey ? "隐藏 API key" : "显示 API key")
+                    }.privacySensitive()
+                    if authentication.method == .apiKey && originalAPIKey == nil && !clearAuthentication {
+                        Button("读取 API key") { attemptedKeyRead = false; readAPIKeyIfNeeded() }.disabled(store.isLoading)
+                    }
+                } else {
+                    if authentication.method == .oauth { Text(authentication.configured ? "已登录" : "需要登录").foregroundStyle(.secondary) }
+                    if let provider, !clearAuthentication, !authentication.actions.isEmpty { Button("登录…") { store.startAuthentication(provider.id) }.disabled(store.isBusy) }
+                    Button("使用 API key…") { editingAPIKey = true; clearAuthentication = true; apiKey = "" }
+                }
+                if authentication.configured || editingAPIKey {
+                    Button("清除认证", role: .destructive) { clearAuthentication = true; editingAPIKey = false; apiKey = ""; originalAPIKey = nil }
+                }
+                if let provenance = authentication.provenance {
+                    ImmediateDisclosureGroup("来源详情") { Text(provenance).font(.callout).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading).padding(.top, 8) }
+                }
+            }
+        }
+    }
+    private func addModel(_ draft: ProviderModelDraft) { models.append(draft); selection = .model(draft.id) }
+    private func readAPIKeyIfNeeded() {
+        guard let provider, authentication.method == .apiKey, !attemptedKeyRead, !clearAuthentication else { return }
+        attemptedKeyRead = true
+        store.readProviderAPIKey(provider.id) { value in originalAPIKey = value; apiKey = value; editingAPIKey = true }
+    }
+    private func commit() {
+        let edit: AuthenticationEdit = editingAPIKey && apiKey != originalAPIKey ? .setAPIKey(apiKey) : clearAuthentication ? .clear : .keep
+        store.saveProvider(AIProvider(id: provider?.id ?? "", name: name.trimmingCharacters(in: .whitespacesAndNewlines), protocolID: protocolID, endpoint: endpoint.trimmingCharacters(in: .whitespacesAndNewlines), authentication: authentication, models: models.map(\.definition)), authenticationEdit: edit) { apiKey = ""; originalAPIKey = nil; dismiss() }
+    }
+}
+
+struct ModelTemplatesView: View {
+    @ObservedObject var store: AppStore
+    @Environment(\.dismiss) private var dismiss
+    @State private var selectedID: String?
+    @State private var editor: ModelTemplate?
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack { Text("模型模板").font(.headline); Spacer() }.padding(20)
+            Text("模板用于快速填写模型，修改模板不会改变已配置的模型。").font(.callout).foregroundStyle(.secondary).padding(.horizontal, 20).padding(.bottom, 12)
+            List(selection: $selectedID) { ForEach(store.modelTemplates) { template in VStack(alignment: .leading, spacing: 3) { Text(template.name); Text(template.suggestedProviderModelID).font(.caption).foregroundStyle(.secondary) }.tag(template.id) } }.listStyle(.bordered).padding(.horizontal, 20)
+            HStack {
+                Button { editor = ModelTemplate(name: "", suggestedProviderModelID: "") } label: { Image(systemName: "plus") }
+                Button { if let selectedID { store.deleteTemplate(selectedID) } } label: { Image(systemName: "minus") }.disabled(selectedID == nil || store.isLoading)
+                Spacer(); Button("编辑…") { editor = store.modelTemplates.first { $0.id == selectedID } }.disabled(selectedID == nil); Button("完成") { dismiss() }.keyboardShortcut(.cancelAction)
+            }.padding(16)
+            SettingsError(message: store.error)
+        }.frame(width: 480, height: 380).sheet(item: $editor) { ModelTemplateEditor(store: store, template: $0) }
+    }
+}
+struct ModelTemplateEditor: View {
+    @ObservedObject var store: AppStore
+    let template: ModelTemplate
+    @Environment(\.dismiss) private var dismiss
+    @State private var name = ""
+    @State private var draft = ProviderModelDraft()
+    var body: some View {
+        VStack(spacing: 0) {
+            Form { Section { TextField("模板名称", text: $name) }; ProviderModelFields(draft: $draft) }.formStyle(.grouped)
+            SettingsError(message: store.error)
+            HStack { Spacer(); Button("取消") { dismiss() }.keyboardShortcut(.cancelAction); Button("保存") { let model = draft.definition; store.saveTemplate(ModelTemplate(id: template.id, name: name, suggestedProviderModelID: model.providerModelID, nickname: model.nickname, icon: model.icon, contextWindow: model.contextWindow, maxOutputTokens: model.maxOutputTokens, reasoningLevels: model.reasoningLevels)) { dismiss() } }.keyboardShortcut(.defaultAction).disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !draft.valid || store.isLoading) }.padding(16)
+        }.frame(width: 440, height: 400).onAppear { name = template.name; draft = ProviderModelDraft(template.model) }
     }
 }
 
@@ -616,7 +530,7 @@ struct RuntimeSettingsView: View {
 struct RuntimeEditor: View {
     let instance: RuntimeInstance?
     let types: [RuntimeTypeDescriptor]
-    let models: [AIModel]
+    let models: [ModelChoice]
     let gatewayID: String
     let isSaving: Bool
     let error: String?

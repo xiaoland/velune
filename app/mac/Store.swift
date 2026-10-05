@@ -1,7 +1,6 @@
 import Combine
 import Foundation
 import AppKit
-import Security
 import VeluneBindings
 
 @MainActor
@@ -15,7 +14,7 @@ final class AppStore: ObservableObject {
     @Published private(set) var runtimeInstances: [RuntimeInstance] = []
     @Published private(set) var runtimeTypes: [RuntimeTypeDescriptor] = []
     @Published private(set) var protocols: [ProtocolDescriptor] = []
-    @Published private(set) var authenticationBindings: [AuthenticationBinding] = []
+    @Published private(set) var modelTemplates: [ModelTemplate] = []
     @Published private(set) var providerImportTypes: [RuntimeTypeDescriptor] = []
     @Published private(set) var authenticationRunning = false
     @Published private(set) var authenticationPrompt: AuthenticationPrompt?
@@ -48,9 +47,8 @@ final class AppStore: ObservableObject {
         }
         if preview { seedPreview() }
     }
-    var models: [AIModel] { gateway.models }
+    var models: [ModelChoice] { gateway.providers.flatMap { provider in provider.models.map { ModelChoice(recordKey: $0.recordKey, displayName: "\($0.displayName) · \(provider.name)") } } }
     var providers: [AIProvider] { gateway.providers }
-    var routes: [ModelRoute] { gateway.routes }
     var selectedConversationTitle: String? { conversations.first { $0.id == selectedConversationID }?.title }
     var isGenerating: Bool { snapshot?.runState == .running || snapshot?.runState == .stopping }
     var isBusy: Bool { isLoading || isGenerating || isShuttingDown || authenticationRunning }
@@ -143,78 +141,27 @@ final class AppStore: ObservableObject {
         guard let transport else { error = "本地核心未配置"; return }
         enqueue({ try transport.cancel(runtimeID: runtimeID) }) { [weak self] in self?.applySnapshotResult($0) }
     }
-    func saveModel(_ model: AIModel, onSaved: (() -> Void)? = nil) {
-        var value = model
-        if isPreview && value.recordKey.isEmpty { value.recordKey = UUID().uuidString }
-        var config = gateway
-        if !value.recordKey.isEmpty { config.models.removeAll { $0.recordKey == value.recordKey } }
-        config.models.append(value)
-        saveGateway(config, onSaved: onSaved)
-    }
-    func deleteModel(id: String) {
-        var config = gateway; config.models.removeAll { $0.id == id }; config.routes.removeAll { $0.modelRecordKey == id }
-        for index in config.providers.indices { config.providers[index].models.removeAll { $0.modelRecordKey == id } }
-        saveGateway(config)
-    }
-    func saveProvider(_ value: AIProvider, onSaved: (() -> Void)? = nil) {
-        guard !authenticationRunning else { error = "请先完成或取消登录"; return }
-        var config = gateway; config.providers.removeAll { $0.id == value.id }; config.providers.append(value)
-        config.routes.removeAll { route in route.providerID == value.id && !value.models.contains { $0.modelRecordKey == route.modelRecordKey } }
-        saveGateway(config, onSaved: onSaved)
-    }
-    func saveAPIKeyBinding(bindingID: String?, expectedGeneration: UInt64?, name: String, protocolID: ProviderProtocol, endpoint: String, secret: String, onSaved: @escaping () -> Void) {
-        guard !authenticationRunning, !isGenerating, !isLoading, !isShuttingDown else { error = "请等待当前任务完成后再修改认证"; return }
-        guard isPreview || transport != nil else { error = "本地核心未配置"; return }
-        let id = bindingID ?? UUID().uuidString
-        let reference = "credential-\(UUID().uuidString)"
-        do { if !isPreview { try storeCredential(secret, reference: reference) } }
-        catch { self.error = error.localizedDescription; return }
-        if isPreview {
-            authenticationBindings.removeAll { $0.id == id }
-            authenticationBindings.append(AuthenticationBinding(id: id, name: name, method: .apiKey, configured: true, protocolID: protocolID, endpoint: endpoint, generation: 1, provenance: nil, actions: []))
-            onSaved(); return
-        }
+    func saveProvider(_ value: AIProvider, authenticationEdit: AuthenticationEdit, onSaved: (() -> Void)? = nil) {
+        guard !authenticationRunning, !isGenerating else { error = "请先停止当前任务或完成登录"; return }
+        if isPreview { var saved = value; if saved.id.isEmpty { saved.id = UUID().uuidString }; for index in saved.models.indices where saved.models[index].recordKey.isEmpty { saved.models[index].recordKey = UUID().uuidString }; gateway.providers.removeAll { $0.id == saved.id }; gateway.providers.append(saved); hasGateway = true; onSaved?(); return }
         guard let transport else { error = "本地核心未配置"; return }
-        enqueue({ try transport.configureAPIKeyBinding(id: id, name: name.trimmingCharacters(in: .whitespacesAndNewlines), keychainRef: reference, protocolID: protocolID, endpoint: endpoint.trimmingCharacters(in: .whitespacesAndNewlines), expectedGeneration: expectedGeneration) }, onFailure: { [weak self] failure in
-            if let transportFailure = failure as? TransportError, case .authenticationNotCommitted = transportFailure {
-                if let cleanupError = self?.deleteCredential(reference: reference) { self?.error = failure.localizedDescription + "；" + cleanupError }
-            } else {
-                self?.error = failure.localizedDescription + "；未能确认认证保存结果，新 Keychain 项已保留。"
-            }
-        }) { [weak self] mutation in
-            self?.applyAuthenticationMutation(mutation)
-            onSaved()
+        enqueue({ try transport.saveProvider(gatewayID: self.gateway.id, provider: value, authenticationEdit: authenticationEdit) }) { [weak self] data in
+            self?.applyGatewayUpdate(data); onSaved?()
         }
     }
-    func renameAuthenticationBinding(_ id: String, name: String, onSaved: @escaping () -> Void) {
-        if isPreview { if let index = authenticationBindings.firstIndex(where: { $0.id == id }) { authenticationBindings[index].name = name }; onSaved(); return }
+    func readProviderAPIKey(_ providerID: String, completion: @escaping (String) -> Void) {
+        guard !isPreview, let transport else { error = "预览不会读取 API key"; return }
+        enqueue({ try transport.readProviderAPIKey(gatewayID: self.gateway.id, providerID: providerID) }, apply: completion)
+    }
+    func saveTemplate(_ value: ModelTemplate, onSaved: (() -> Void)? = nil) {
+        if isPreview { var saved = value; if saved.id.isEmpty { saved.id = UUID().uuidString }; modelTemplates.removeAll { $0.id == saved.id }; modelTemplates.append(saved); onSaved?(); return }
         guard let transport else { error = "本地核心未配置"; return }
-        enqueue({ try transport.renameAuthenticationBinding(id, name: name.trimmingCharacters(in: .whitespacesAndNewlines)) }) { [weak self] mutation in
-            self?.applyAuthenticationMutation(mutation); onSaved()
-        }
+        enqueue({ try transport.saveTemplate(value) }) { [weak self] result in self?.modelTemplates = result.map(BindingMapping.template); onSaved?() }
     }
-    func deleteAuthenticationBinding(_ id: String) {
-        if isPreview { authenticationBindings.removeAll { $0.id == id }; return }
+    func deleteTemplate(_ id: String) {
+        if isPreview { modelTemplates.removeAll { $0.id == id }; return }
         guard let transport else { error = "本地核心未配置"; return }
-        enqueue({ try transport.deleteAuthenticationBinding(id) }) { [weak self] mutation in self?.applyAuthenticationMutation(mutation, deleted: true) }
-    }
-    private func applyAuthenticationMutation(_ value: BindingAuthenticationMutation, deleted: Bool = false) {
-        authenticationBindings.removeAll { $0.id == value.binding.id }
-        if !deleted { authenticationBindings.append(BindingMapping.authenticationBinding(value.binding)) }
-        var warnings = value.warnings
-        for reference in value.obsoleteOwnedKeychainRefs {
-            if let warning = deleteCredential(reference: reference) { warnings.append(warning) }
-        }
-        if value.requiresReconnect { invalidateConnection() }
-        if !warnings.isEmpty { error = (deleted ? "认证资源已删除；" : "认证配置已保存；") + warnings.joined(separator: "；") }
-    }
-    func inspectAuthentication(_ bindingID: String, apply: @escaping (AuthenticationMetadata) -> Void) {
-        guard !isPreview else { error = "预览不会读取凭据状态"; return }
-        guard let transport else { error = "本地核心未配置"; return }
-        enqueue({ try transport.authenticationInspect(bindingID: bindingID) }) { [weak self] value in
-            if let index = self?.authenticationBindings.firstIndex(where: { $0.id == bindingID }) { self?.authenticationBindings[index].configured = value.configured }
-            apply(BindingMapping.authenticationMetadata(value))
-        }
+        enqueue({ try transport.deleteTemplate(id: id) }) { [weak self] result in self?.modelTemplates = result.map(BindingMapping.template) }
     }
     func previewProviderImport(_ source: ProviderImportSource, completion: @escaping (ProviderImportPreview) -> Void) {
         guard !isPreview, !isGenerating, !authenticationRunning else { error = "请先停止任务或完成登录，再读取提供商配置"; return }
@@ -232,11 +179,11 @@ final class AppStore: ObservableObject {
                 completion()
             }
     }
-    func startAuthentication(_ bindingID: String) {
+    func startAuthentication(_ providerID: String) {
         guard !isGenerating else { error = "请先停止当前任务，再开始登录"; return }
         guard !isPreview else { error = "预览不会启动认证"; return }
         guard let transport else { error = "本地核心未配置"; return }
-        enqueue({ try transport.authenticationStart(bindingID: bindingID) }) { [weak self] data in
+        enqueue({ try transport.authenticationStart(gatewayID: self.gateway.id, providerID: providerID) }) { [weak self] data in
                 guard let self else { return }
                 authenticationPrompt = nil; authenticationNotifications = []; authenticationResult = nil
                 showsAuthentication = true; applyAuthentication(BindingMapping.authenticationProgress(data))
@@ -283,31 +230,18 @@ final class AppStore: ObservableObject {
         }
     }
     func deleteProvider(id: String) {
-        var config = gateway; config.providers.removeAll { $0.id == id }; config.routes.removeAll { $0.providerID == id }
-        saveGateway(config)
-    }
-    func saveRoute(modelRecordKey: String, providerID: String) {
-        var config = gateway; config.routes.removeAll { $0.modelRecordKey == modelRecordKey }; config.routes.append(ModelRoute(modelRecordKey: modelRecordKey, providerID: providerID))
-        saveGateway(config)
-    }
-    func saveGateway(_ config: GatewayConfig, onSaved: (() -> Void)? = nil) {
-        guard !isGenerating else { error = "请先停止当前任务，再修改 AI 服务配置"; return }
-        if isPreview { gateway = config; hasGateway = true; onSaved?(); return }
+        if isPreview { gateway.providers.removeAll { $0.id == id }; return }
         guard let transport else { error = "本地核心未配置"; return }
-        enqueue({ try transport.upsertGateway(BindingMapping.bindingGateway(config)) }) { [weak self] data in
-            guard let self else { return }
-            if let saved = data.gateways.first(where: { $0.id == config.id }) {
-                gateway = BindingMapping.gateway(saved); hasGateway = true
-                if data.requiresReconnect { invalidateConnection() }
-                onSaved?()
-            }
-            else { error = "核心未返回保存后的网关配置" }
-        }
+        enqueue({ try transport.deleteProvider(gatewayID: self.gateway.id, providerID: id) }) { [weak self] in self?.applyGatewayUpdate($0) }
+    }
+    private func applyGatewayUpdate(_ data: BindingGatewayUpdate) {
+        if let saved = data.gateways.first(where: { $0.id == gateway.id }) { gateway = BindingMapping.gateway(saved); hasGateway = true }
+        if data.requiresReconnect { invalidateConnection() }
+        for index in runtimeInstances.indices where runtimeInstances[index].modelRecordKey.map({ key in !models.contains { $0.recordKey == key } }) == true { runtimeInstances[index].modelRecordKey = nil }
     }
     func saveRuntimeInstance(_ instance: RuntimeInstance, onSaved: (() -> Void)? = nil) {
         guard !isGenerating else { error = "请先停止当前任务，再修改运行时实例"; return }
         if isPreview { runtimeInstances.removeAll { $0.id == instance.id }; runtimeInstances.append(instance); onSaved?(); return }
-        if !hasGateway { saveGateway(gateway) { [weak self] in self?.saveRuntimeInstance(instance, onSaved: onSaved) }; return }
         guard let transport else { error = "本地核心未配置"; return }
         enqueue({ try transport.upsertRuntime(BindingMapping.bindingRuntime(instance)) }) { [weak self] data in
             guard let self else { return }
@@ -367,7 +301,7 @@ final class AppStore: ObservableObject {
         if let saved = mapped.gateways.first(where: { $0.id == gateway.id }) ?? mapped.gateways.first { gateway = saved; hasGateway = true }
         runtimeInstances = mapped.runtimes; runtimeTypes = mapped.runtimeTypes
         protocols = mapped.protocols
-        authenticationBindings = mapped.authenticationBindings
+        modelTemplates = mapped.modelTemplates
         providerImportTypes = mapped.importTypes
         selectedConnectionID = mapped.activeRuntimeID
     }
@@ -427,31 +361,8 @@ final class AppStore: ObservableObject {
             }
         }
     }
-    private func deleteCredential(reference: String) -> String? {
-        guard reference.hasPrefix("credential-"),
-              let id = UUID(uuidString: String(reference.dropFirst("credential-".count))),
-              reference.lowercased() == "credential-\(id.uuidString.lowercased())" else {
-            return "拒绝清理不属于本应用管理范围的 Keychain 项"
-        }
-        let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: "local.velune.provider", kSecAttrAccount as String: reference]
-        let status = SecItemDelete(query as CFDictionary)
-        if status != errSecSuccess && status != errSecItemNotFound {
-            return "Keychain 清理失败（\(status)）"
-        }
-        return nil
-    }
-    private func storeCredential(_ secret: String, reference: String) throws {
-        let item: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
-                                   kSecAttrService as String: "local.velune.provider", kSecAttrAccount as String: reference,
-                                   kSecValueData as String: Data(secret.utf8)]
-        let status = SecItemAdd(item as CFDictionary, nil)
-        guard status == errSecSuccess else {
-            throw NSError(domain: NSOSStatusErrorDomain, code: Int(status), userInfo: [NSLocalizedDescriptionKey: "无法将凭据保存到 Keychain（\(status)）。"])
-        }
-    }
-
     private func seedPreview() {
-        gateway = GatewayConfig(models: [AIModel(recordKey: "sample-model", nickname: "通用模型", icon: "sparkles", contextWindow: 8192, maxOutputTokens: 4096)], providers: [AIProvider(id: "sample-provider", name: "示例 AI 服务", protocolID: .chatCompletionsV1, endpoint: "https://example.invalid/v1", authenticationID: "sample-reference", models: [ProviderModelBinding(modelRecordKey: "sample-model", providerModelID: "external-example", contextWindow: 8192, maxOutputTokens: 4096)])], routes: [ModelRoute(modelRecordKey: "sample-model", providerID: "sample-provider")])
+        gateway = GatewayConfig(providers: [AIProvider(id: "sample-provider", name: "示例 AI 服务", protocolID: .chatCompletionsV1, endpoint: "https://example.invalid/v1", models: [ProviderModel(recordKey: "sample-model", providerModelID: "external-example", nickname: "通用模型", contextWindow: 8192, maxOutputTokens: 4096)])])
         hasGateway = true
         protocols = [ProtocolDescriptor(id: .chatCompletionsV1, name: "OpenAI Chat Completions v1", supported: true), ProtocolDescriptor(id: .responsesV1, name: "OpenAI Responses v1", supported: true), ProtocolDescriptor(id: .messagesV1, name: "Anthropic Messages v1", supported: false)]
         runtimeTypes = [RuntimeTypeDescriptor(id: "sample-type", name: "示例运行时", fields: [], actions: [SettingAction(id: "connect", label: "连接")])]

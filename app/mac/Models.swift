@@ -75,33 +75,34 @@ struct Connection: Codable, Sendable, Identifiable, Equatable {
     var capabilities: [String]
 }
 
-struct AIModel: Codable, Sendable, Identifiable, Equatable {
+struct ProviderModel: Codable, Sendable, Identifiable, Equatable {
     var id: String { recordKey }
     var recordKey: String
-    var nickname: String
-    var icon: String?
-    var contextWindow: UInt32? = nil
-    var maxOutputTokens: UInt32? = nil
-    var displayName: String { nickname.isEmpty ? "未命名模型" : nickname }
-}
-
-struct ProtocolReasoning: Codable, Sendable, Equatable {
-    var protocolID: ProviderProtocol
-    var levels: [String]
-    enum CodingKeys: String, CodingKey { case protocolID = "protocol", levels }
-}
-
-// Adapter-owned metadata stays opaque to the platform UI.
-struct ProviderModelBinding: Codable, Sendable, Equatable {
-    var modelRecordKey: String
     var providerModelID: String
+    var nickname: String = ""
+    var icon: String? = nil
     var contextWindow: UInt32? = nil
     var maxOutputTokens: UInt32? = nil
-    var reasoning: ProtocolReasoning? = nil
+    var reasoningLevels: [String]? = nil
     var adapterMetadataJSON: String? = nil
-    enum CodingKeys: String, CodingKey { case modelRecordKey, contextWindow, maxOutputTokens, reasoning; case providerModelID = "providerModelId", adapterMetadataJSON = "adapterMetadataJson" }
+    var displayName: String { nickname.isEmpty ? providerModelID : nickname }
 }
-
+struct ModelChoice: Identifiable, Sendable {
+    var id: String { recordKey }
+    var recordKey: String
+    var displayName: String
+}
+struct ModelTemplate: Codable, Sendable, Identifiable, Equatable {
+    var id: String = ""
+    var name: String
+    var suggestedProviderModelID: String
+    var nickname: String = ""
+    var icon: String? = nil
+    var contextWindow: UInt32? = nil
+    var maxOutputTokens: UInt32? = nil
+    var reasoningLevels: [String]? = nil
+    var model: ProviderModel { ProviderModel(recordKey: "", providerModelID: suggestedProviderModelID, nickname: nickname, icon: icon, contextWindow: contextWindow, maxOutputTokens: maxOutputTokens, reasoningLevels: reasoningLevels) }
+}
 enum ProviderProtocol: String, Codable, Sendable, CaseIterable, Identifiable {
     case chatCompletionsV1
     case responsesV1
@@ -116,33 +117,20 @@ enum AuthenticationMethod: String, Codable, Sendable {
     }
 }
 
-struct AuthenticationBinding: Codable, Sendable, Identifiable, Equatable {
-    var id: String
-    var name: String
-    var method: AuthenticationMethod
-    var configured: Bool
-    var protocolID: ProviderProtocol
-    var endpoint: String
-    var generation: UInt64
-    var provenance: String?
-    var actions: [SettingAction]
+struct ProviderAuthentication: Codable, Sendable, Equatable {
+    var method: AuthenticationMethod = .unconfigured
+    var configured: Bool = false
+    var provenance: String? = nil
+    var actions: [SettingAction] = []
 }
-
+enum AuthenticationEdit: Sendable { case keep, setAPIKey(String), clear }
 struct AIProvider: Codable, Sendable, Identifiable, Equatable {
     var id: String
     var name: String
     var protocolID: ProviderProtocol
     var endpoint: String
-    var authenticationID: String?
-    var models: [ProviderModelBinding]
-    enum CodingKeys: String, CodingKey { case id, name, endpoint, models; case authenticationID = "authenticationId"; case protocolID = "protocol" }
-}
-
-struct ModelRoute: Codable, Sendable, Identifiable, Equatable {
-    var id: String { modelRecordKey }
-    var modelRecordKey: String
-    var providerID: String
-    enum CodingKeys: String, CodingKey { case modelRecordKey = "modelRecordKey"; case providerID = "providerId" }
+    var authentication: ProviderAuthentication = ProviderAuthentication()
+    var models: [ProviderModel]
 }
 
 enum FailoverMode: String, Codable, Sendable { case disabled }
@@ -150,9 +138,7 @@ struct FailoverPolicy: Codable, Sendable, Equatable { var mode: FailoverMode = .
 struct GatewayConfig: Codable, Sendable, Equatable {
     var id: String = "default"
     var name: String = "默认网关"
-    var models: [AIModel] = []
     var providers: [AIProvider] = []
-    var routes: [ModelRoute] = []
     var failover: FailoverPolicy = FailoverPolicy()
 }
 

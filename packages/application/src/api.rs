@@ -9,14 +9,62 @@ use velune_conversation::{
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ProviderSummary {
+    pub id: String,
+    pub name: String,
+    pub protocol: GatewayProtocol,
+    pub endpoint: String,
+    pub authentication: crate::ProviderAuthenticationDescription,
+    pub models: Vec<ProviderModel>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GatewaySummary {
+    pub id: String,
+    pub name: String,
+    pub providers: Vec<ProviderSummary>,
+    pub failover: FailoverPolicy,
+}
+impl From<&GatewayConfig> for GatewaySummary {
+    fn from(g: &GatewayConfig) -> Self {
+        Self {
+            id: g.id.clone(),
+            name: g.name.clone(),
+            providers: g
+                .providers
+                .iter()
+                .map(|p| ProviderSummary {
+                    id: p.id.clone(),
+                    name: p.name.clone(),
+                    protocol: p.protocol.clone(),
+                    endpoint: p.endpoint.clone(),
+                    authentication: p.authentication.description(),
+                    models: p.models.clone(),
+                })
+                .collect(),
+            failover: g.failover.clone(),
+        }
+    }
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProviderDraft {
+    pub id: String,
+    pub name: String,
+    pub protocol: GatewayProtocol,
+    pub endpoint: String,
+    pub models: Vec<ProviderModel>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ConfigurationSnapshot {
     pub conversations: Vec<ConversationSummary>,
     pub connections: Vec<Connection>,
-    pub models: Vec<ModelDefinition>,
-    pub gateways: Vec<GatewayConfig>,
+    pub gateways: Vec<GatewaySummary>,
     pub runtime_instances: Vec<RuntimeInstance>,
     pub runtime_types: Vec<RuntimeTypeDescriptor>,
-    pub authentication_bindings: Vec<crate::AuthenticationBinding>,
+    pub model_templates: Vec<ModelTemplate>,
     pub provider_import_types: Vec<RuntimeTypeDescriptor>,
     pub protocols: Vec<ProtocolDescriptor>,
     #[serde(rename = "activeRuntimeInstanceID")]
@@ -34,8 +82,7 @@ pub struct ProtocolDescriptor {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GatewayUpdate {
-    pub gateways: Vec<GatewayConfig>,
-    pub models: Vec<ModelDefinition>,
+    pub gateways: Vec<GatewaySummary>,
     pub requires_reconnect: bool,
 }
 
@@ -76,7 +123,6 @@ pub struct ProviderImportSource {
 pub struct ImportSelection {
     pub provider_id: String,
     pub candidate_keys: Vec<String>,
-    pub model_record_mappings: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -126,7 +172,7 @@ pub struct ImportModelCandidate {
 pub struct ImportResult {
     pub imported_provider_ids: Vec<String>,
     pub skipped_provider_ids: Vec<String>,
-    pub gateways: Vec<GatewayConfig>,
+    pub gateways: Vec<GatewaySummary>,
     pub requires_reconnect: bool,
 }
 
@@ -152,7 +198,7 @@ pub struct AuthenticationCapabilities {
 pub struct AuthenticationProgress {
     pub running: bool,
     pub events: Vec<AuthenticationEvent>,
-    pub gateways: Option<Vec<GatewayConfig>>,
+    pub gateways: Option<Vec<GatewaySummary>>,
     pub requires_reconnect: Option<bool>,
 }
 
@@ -206,20 +252,6 @@ impl Application {
     }
     pub fn list(&mut self) -> Result<ConfigurationSnapshot, Error> {
         self.execute("list", json!({}), None)
-    }
-    pub fn upsert_gateway(&mut self, gateway: GatewayConfig) -> Result<GatewayUpdate, Error> {
-        self.execute(
-            "gateways",
-            json!({"operation":"upsert","gateway":serde_json::to_string(&gateway)?}),
-            None,
-        )
-    }
-    pub fn delete_gateway(&mut self, id: String) -> Result<GatewayUpdate, Error> {
-        self.execute(
-            "gateways",
-            json!({"operation":"delete","gatewayID":id}),
-            None,
-        )
     }
     pub fn upsert_runtime(&mut self, runtime: RuntimeInstance) -> Result<RuntimeUpdate, Error> {
         self.execute(
@@ -298,44 +330,57 @@ impl Application {
     ) -> Result<ImportResult, Error> {
         self.execute("providerImport", json!({"operation":"apply","gatewayID":gateway_id,"source":serde_json::to_string(&source)?,"previewToken":preview_token,"selections":serde_json::to_string(&selections)?,"replaceExisting":replace_existing}), None)
     }
-    // Explicit named parameters are retained for the cross-language management API.
-    #[allow(clippy::too_many_arguments)]
-    pub fn configure_api_key_binding(
+    pub fn save_provider(
         &mut self,
-        id: String,
-        name: String,
-        keychain_ref: String,
-        protocol: GatewayProtocol,
-        endpoint: String,
-        owns_secret: bool,
-        expected_generation: Option<u64>,
-    ) -> Result<crate::AuthenticationMutation, Error> {
-        self.execute("authenticationResources",json!({"operation":"configureApiKey","id":id,"name":name,"keychainRef":keychain_ref,"protocol":protocol,"endpoint":endpoint,"ownsSecret":owns_secret,"expectedGeneration":expected_generation}),None)
+        gateway_id: String,
+        provider: ProviderDraft,
+        authentication_edit: crate::AuthenticationEdit,
+    ) -> Result<GatewayUpdate, Error> {
+        self.execute("providers",json!({"operation":"save","gatewayID":gateway_id,"provider":provider,"authenticationEdit":authentication_edit}),None)
     }
-    pub fn rename_authentication_binding(
+    pub fn delete_provider(
         &mut self,
-        id: String,
-        name: String,
-    ) -> Result<crate::AuthenticationMutation, Error> {
+        gateway_id: String,
+        provider_id: String,
+    ) -> Result<GatewayUpdate, Error> {
         self.execute(
-            "authenticationResources",
-            json!({"operation":"rename","id":id,"name":name}),
+            "providers",
+            json!({"operation":"delete","gatewayID":gateway_id,"providerID":provider_id}),
             None,
         )
     }
-    pub fn delete_authentication_binding(
+    pub fn read_provider_api_key(
         &mut self,
-        id: String,
-    ) -> Result<crate::AuthenticationMutation, Error> {
+        gateway_id: String,
+        provider_id: String,
+    ) -> Result<String, Error> {
         self.execute(
-            "authenticationResources",
-            json!({"operation":"delete","id":id}),
+            "providers",
+            json!({"operation":"readApiKey","gatewayID":gateway_id,"providerID":provider_id}),
+            None,
+        )
+    }
+    pub fn save_model_template(
+        &mut self,
+        template: ModelTemplate,
+    ) -> Result<Vec<ModelTemplate>, Error> {
+        self.execute(
+            "modelTemplates",
+            json!({"operation":"save","template":template}),
+            None,
+        )
+    }
+    pub fn delete_model_template(&mut self, id: String) -> Result<Vec<ModelTemplate>, Error> {
+        self.execute(
+            "modelTemplates",
+            json!({"operation":"delete","templateID":id}),
             None,
         )
     }
     pub fn authentication_inspect(
         &mut self,
-        binding_id: String,
+        gateway_id: String,
+        provider_id: String,
     ) -> Result<AuthenticationMetadata, Error> {
         #[derive(Deserialize)]
         struct Inspection {
@@ -343,18 +388,19 @@ impl Application {
         }
         let result: Inspection = self.execute(
             "authentication",
-            json!({"operation":"inspect","bindingID":binding_id}),
+            json!({"operation":"inspect","gatewayID":gateway_id,"providerID":provider_id}),
             None,
         )?;
         Ok(result.metadata)
     }
     pub fn authentication_start(
         &mut self,
-        binding_id: String,
+        gateway_id: String,
+        provider_id: String,
     ) -> Result<AuthenticationProgress, Error> {
         self.execute(
             "authentication",
-            json!({"operation":"start","bindingID":binding_id}),
+            json!({"operation":"start","gatewayID":gateway_id,"providerID":provider_id}),
             None,
         )
     }

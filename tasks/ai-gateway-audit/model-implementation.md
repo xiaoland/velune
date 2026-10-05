@@ -10,7 +10,7 @@ Model 表示可跨提供商关联的真实型号；application 自动生成隐�
 
 全 workspace `cargo fmt --all --check`、`cargo check --locked --workspace --all-targets --all-features` 和严格 clippy 通过；bindings 无 local-runtime 检查与严格 clippy 通过。全量 Swift app 与 credential helper 的 warnings-as-errors typecheck 通过，release 构建和 codesign deep strict 验证通过，已安装到 `/Applications/Velune.app`。
 
-手动运行 [配置与认证脚本](../../scripts/manual-authentication-management.py)，portable 已通过 schema 重置／无备份、原 Harness 文件不变、自动记录键、同一模型两提供商不同 API 标识与独立能力，以及认证目标 guard、generation 冲突、精确清理和重开持久配置。它不调用凭据解析。未来 schema／损坏文件／旧字段的拒绝均确认文件不变。
+手动运行 配置与认证脚本（历史入口 `manual-authentication-management.py`，已随提供商配置重构删除），portable 已通过 schema 重置／无备份、原 Harness 文件不变、自动记录键、同一模型两提供商不同 API 标识与独立能力，以及认证目标 guard、generation 冲突、精确清理和重开持久配置。它不调用凭据解析。未来 schema／损坏文件／旧字段的拒绝均确认文件不变。
 
 手动运行 [原生 HTTP 脚本](../../scripts/manual-gateway-native.py)，9 个合成 ChatCompletions／Responses JSON、SSE、状态码、安全头、历史和扩展字段边界通过；缺少规格仍可调用，裸记录键拒绝且不派发上游。流前／流中断连传播和空闲 Runner 关闭通过。
 

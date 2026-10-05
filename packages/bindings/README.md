@@ -2,7 +2,7 @@
 
 `velune-bindings` 是共享 application unit 的 UniFFI 接入层。Swift、Kotlin 和 Python 使用同一份 Rust 元数据生成接口。领域 package 不依赖 UniFFI；此处的 `Binding*` records 与 enums 将领域契约转换为语言绑定能够表达的类型。Mac 在应用进程内加载此 unit 的动态库，不通过 Host 或 socket 调用 Rust。
 
-`VeluneApplication` 公开配置维护、会话控制、提供商导入、认证交互与关闭操作。参数和结果具有具名类型，不提供 JSON 请求派发接口。平台秘密库 helper 路径由平台显式传给 application；提供商只选择中央认证资源 ID。来源定位仅留在 application 内部，snapshot 只暴露获取方式、目标、provenance 与修订。认证检查和登录按资源 ID 调用；登记／替换／改名／删除通过具名 API 及 `BindingAuthenticationMutation` 返回提交结果与旧拥有项的清理引用，秘密值不进入绑定 API。`BindingProviderModelBinding.adapter_metadata_json` 是运行时适配器拥有的模型元数据，平台只负责保留它，不解释其结构。
+`VeluneApplication` 公开配置维护、会话控制、提供商导入、认证交互与关闭操作，参数和结果具有具名类型。提供商拥有模型条目；`BindingProviderDraft` 与 `BindingAuthenticationEdit` 共同保存普通字段和认证编辑，后者明确区分保留、更新 API key 和清除。列表与 snapshot 只返回非秘密认证描述，`read_provider_api_key` 显式读取一个提供商的已保存 key。认证检查和登录以网关／提供商 ID 定位，不存在独立认证资源 CRUD。`BindingProviderModel.adapter_metadata_json` 由运行时 adapter 拥有，平台只保留它，不解释其结构。
 
 一个对象串行执行应用操作。`shutdown` 在应用忙碌时返回错误并保留对象，调用方可继续读取 snapshot 或明确取消 Agent 执行；关闭成功后除再次关闭外的操作返回 `Closed` 类型的诊断。释放语言包装对象负责释放其 Rust 引用，不代表用户发出了取消 Agent 的命令。会话状态仍通过 `snapshot` 观察，本 unit 不新增事件订阅或后台宿主。
 
@@ -26,4 +26,4 @@ Swift 生成模块名为 `VeluneBindings`，FFI 模块名为 `VeluneBindingsFFI`
 
 当前使用 UniFFI `0.32.2` 官方 Swift、Kotlin、Python 生成器。C# 生成器属于第三方工具，尚未完成兼容性验证；不能据此宣称已有 Windows 应用接入。
 
-模型契约使用自动生成、界面隐藏的 `recordKey`，绑定使用精确 `providerModelId`。运行时选择、路由和 snapshot 引用 `modelRecordKey`；导入选择使用 `candidateKeys` 和显式 `modelRecordMappings`。提供商能力为可选字段；协议推理声明的 `None` 表示未知，空 levels 表示明确无支持。新契约不保留旧模型字段或 serde alias。
+模型条目的 `recordKey` 自动生成并隐藏；`providerModelId` 是提供商规定的可编辑 API 标识。运行时选择与 snapshot 引用稳定 `modelRecordKey`，导入选择只包含 `candidateKeys`。能力中的 `None` 表示未知，空推理等级列表表示明确不支持。`BindingModelTemplate` 复制填写参数，不形成调用依赖。旧全局模型、关联映射和中央认证接口已删除，不保留兼容入口。

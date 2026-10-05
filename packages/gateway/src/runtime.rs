@@ -173,9 +173,13 @@ fn build_routes(
     aliases: &BTreeMap<String, String>,
 ) -> Result<BTreeMap<String, RouteTarget>, Box<dyn std::error::Error>> {
     let mut routes = BTreeMap::new();
-    for route in &config.routes {
+    for entry in config
+        .providers
+        .iter()
+        .flat_map(|provider| &provider.models)
+    {
         let provider = config
-            .validate_dispatch(&route.model_record_key)
+            .validate_dispatch(&entry.record_key)
             .map_err(GatewayError)?;
         if !crate::config::credential_ready(provider) {
             return Err(Box::new(GatewayError("provider credential is required")));
@@ -193,7 +197,7 @@ fn build_routes(
         let binding = provider
             .models
             .iter()
-            .find(|binding| binding.model_record_key == route.model_record_key)
+            .find(|binding| binding.record_key == entry.record_key)
             .ok_or(GatewayError("provider binding missing"))?;
         let model = ProviderModelId::new(binding.provider_model_id.clone())?;
         let provider_config = ProviderConfig::new(
@@ -208,7 +212,7 @@ fn build_routes(
             )?,
         )?;
         routes.insert(
-            route.model_record_key.clone(),
+            entry.record_key.clone(),
             RouteTarget {
                 model,
                 protocol: provider.protocol.clone(),
@@ -223,12 +227,16 @@ fn build_routes(
     }
     let targets = routes;
     let mut routes = BTreeMap::new();
-    for route in &config.routes {
-        let alias = format!("velune/model/{}", route.model_record_key);
+    for entry in config
+        .providers
+        .iter()
+        .flat_map(|provider| &provider.models)
+    {
+        let alias = format!("velune/model/{}", entry.record_key);
         routes.insert(
             alias,
             targets
-                .get(&route.model_record_key)
+                .get(&entry.record_key)
                 .expect("built target")
                 .clone(),
         );

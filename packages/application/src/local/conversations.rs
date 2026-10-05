@@ -31,14 +31,11 @@ impl CoreRuntime {
                     .find(|gateway| gateway.id == runtime.gateway_id)
             })
             .ok_or_else(|| RuntimeError::invalid("runtime gateway"))?;
-        self.subscription_capability = self
-            .authentication_resources
-            .subscription(gateway, &default_model);
+        self.subscription_capability = gateway.subscription(&default_model);
         let default_physical_model_id = gateway
             .pi_binding_id(
                 &default_model,
-                self.authentication_resources
-                    .revision(gateway, &default_model),
+                gateway.authentication_revision(&default_model),
             )
             .map_err(RuntimeError::invalid)?;
         self.start_pi_for_session(
@@ -115,13 +112,12 @@ impl CoreRuntime {
         self.model_record_key = model_record_key.clone();
         self.subscription_capability = model_record_key
             .as_deref()
-            .is_some_and(|id| self.authentication_resources.subscription(gateway, id));
+            .is_some_and(|id| gateway.subscription(id));
         if let Some(model_record_key) = model_record_key {
             let physical_model_id = gateway
                 .pi_binding_id(
                     &model_record_key,
-                    self.authentication_resources
-                        .revision(gateway, &model_record_key),
+                    gateway.authentication_revision(&model_record_key),
                 )
                 .map_err(RuntimeError::invalid)?;
             self.physical_model_id = Some(physical_model_id.clone());
@@ -244,14 +240,11 @@ impl CoreRuntime {
             .find(|item| item.id == runtime.gateway_id)
             .expect("runtime gateway is configured");
         runnable_pi_model(gateway, model_record_key)?;
-        let selected_subscription_capability = self
-            .authentication_resources
-            .subscription(gateway, model_record_key);
+        let selected_subscription_capability = gateway.subscription(model_record_key);
         let selected_physical_model_id = gateway
             .pi_binding_id(
                 model_record_key,
-                self.authentication_resources
-                    .revision(gateway, model_record_key),
+                gateway.authentication_revision(model_record_key),
             )
             .map_err(RuntimeError::invalid)?;
         self.write_selection(

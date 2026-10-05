@@ -1,35 +1,39 @@
 //! Resolver captures a registry snapshot; unknown IDs never fall back to a secret backend.
-use crate::{Options, authentication_resources::*};
+use crate::{Options, provider_authentication::*};
 use std::{future::Future, pin::Pin, sync::Arc};
 use velune_gateway::{
     CredentialResolutionError, CredentialResolver, CredentialTarget, ResolvedCredential,
 };
-pub(crate) struct RegistryResolver {
-    manager: AuthenticationManager,
+pub(crate) struct ProviderResolver {
+    providers: std::collections::BTreeMap<String, crate::config::ProviderDefinition>,
     options: Options,
 }
-impl RegistryResolver {
+impl ProviderResolver {
     pub(crate) fn capture(
-        manager: &AuthenticationManager,
+        gateway: &crate::config::GatewayConfig,
         options: &Options,
     ) -> Arc<dyn CredentialResolver> {
         Arc::new(Self {
-            manager: manager.clone(),
+            providers: gateway
+                .providers
+                .iter()
+                .map(|p| (p.id.clone(), p.clone()))
+                .collect(),
             options: options.clone(),
         })
     }
 }
-impl CredentialResolver for RegistryResolver {
+impl CredentialResolver for ProviderResolver {
     fn resolve(
         &self,
         id: String,
         target: CredentialTarget,
     ) -> Pin<Box<dyn Future<Output = Result<ResolvedCredential, CredentialResolutionError>> + Send>>
     {
-        let resource = self.manager.get(&id).cloned();
+        let resource = self.providers.get(&id).cloned();
         let options = self.options.clone();
         Box::pin(async move {
-            let resource = resource.map_err(|_| CredentialResolutionError::Unavailable)?;
+            let resource = resource.ok_or(CredentialResolutionError::Unavailable)?;
             let protocol = match target.protocol {
                 velune_gateway::GatewayProtocol::ChatCompletionsV1 => {
                     crate::config::GatewayProtocol::ChatCompletionsV1
@@ -44,17 +48,16 @@ impl CredentialResolver for RegistryResolver {
             if resource.protocol != protocol || resource.endpoint != target.endpoint {
                 return Err(CredentialResolutionError::UnauthorizedTarget);
             }
-            let (command, delegated) = match &resource.locator {
-                AuthenticationLocator::Keychain { reference, .. } => {
-                    let mut command = tokio::process::Command::new(
-                        options
-                            .credential_resolver
-                            .ok_or(CredentialResolutionError::Unavailable)?,
-                    );
-                    command.arg(reference);
-                    (command, false)
+            let command = match &resource.authentication.material {
+                AuthenticationMaterial::None => return Err(CredentialResolutionError::Unavailable),
+                AuthenticationMaterial::ApiKey { value } => {
+                    return Ok(ResolvedCredential {
+                        token: value.clone(),
+                        explicit_output_cap: None,
+                        subscription: false,
+                    });
                 }
-                AuthenticationLocator::RuntimeProvider { source } => {
+                AuthenticationMaterial::RuntimeProvider { source, .. } => {
                     let node = source
                         .settings
                         .get("nodeBinary")
@@ -77,7 +80,7 @@ impl CredentialResolver for RegistryResolver {
                             serde_json::to_string(source)
                                 .map_err(|_| CredentialResolutionError::InvalidContract)?,
                         );
-                    (command, true)
+                    command
                 }
             };
             let output = crate::credential_helper::execute(command)
@@ -95,16 +98,6 @@ impl CredentialResolver for RegistryResolver {
                         CredentialResolutionError::InvalidContract
                     }
                 })?;
-            if !delegated {
-                if output.trim().is_empty() {
-                    return Err(CredentialResolutionError::InvalidContract);
-                }
-                return Ok(ResolvedCredential {
-                    token: output.trim().to_owned(),
-                    explicit_output_cap: None,
-                    subscription: false,
-                });
-            }
             let value: serde_json::Value = serde_json::from_str(&output)
                 .map_err(|_| CredentialResolutionError::InvalidContract)?;
             let expected = match protocol {
@@ -131,5 +124,55 @@ impl CredentialResolver for RegistryResolver {
                 subscription: value["capabilities"]["authentication"] == "subscription",
             })
         })
+    }
+}
+
+pub(crate) fn read_api_key(
+    provider: &crate::config::ProviderDefinition,
+    options: &Options,
+) -> Result<String, crate::Error> {
+    use crate::provider_authentication::{AuthenticationMaterial, AuthenticationMethod};
+    match &provider.authentication.material {
+        AuthenticationMaterial::ApiKey { value } => Ok(value.clone()),
+        AuthenticationMaterial::RuntimeProvider {
+            method: AuthenticationMethod::ApiKey,
+            ..
+        } => {
+            let gateway = crate::config::GatewayConfig {
+                id: "lookup".into(),
+                name: "lookup".into(),
+                providers: vec![provider.clone()],
+                failover: crate::config::FailoverPolicy {
+                    mode: crate::config::FailoverMode::Disabled,
+                },
+            };
+            let protocol = match provider.protocol {
+                crate::config::GatewayProtocol::ChatCompletionsV1 => {
+                    velune_gateway::GatewayProtocol::ChatCompletionsV1
+                }
+                crate::config::GatewayProtocol::ResponsesV1 => {
+                    velune_gateway::GatewayProtocol::ResponsesV1
+                }
+                crate::config::GatewayProtocol::MessagesV1 => {
+                    return Err(crate::Error::invalid("provider protocol"));
+                }
+            };
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()?;
+            let result = runtime
+                .block_on(ProviderResolver::capture(&gateway, options).resolve(
+                    provider.id.clone(),
+                    CredentialTarget {
+                        protocol,
+                        endpoint: provider.endpoint.clone(),
+                    },
+                ))
+                .map_err(|_| {
+                    crate::Error::invalid("无法读取此提供商的 API key；请检查来源配置。")
+                })?;
+            Ok(result.token)
+        }
+        _ => Err(crate::Error::invalid("此提供商没有可编辑的 API key")),
     }
 }

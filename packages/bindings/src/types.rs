@@ -110,26 +110,29 @@ pub struct BindingSettingAction {
 
 #[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct BindingModelDefinition {
+pub struct BindingProviderModel {
     pub record_key: String,
+    pub provider_model_id: String,
     pub nickname: String,
     pub icon: Option<String>,
     pub context_window: Option<u32>,
     pub max_output_tokens: Option<u32>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct BindingProviderModelBinding {
-    pub model_record_key: String,
-    pub provider_model_id: String,
-    pub context_window: Option<u32>,
-    pub max_output_tokens: Option<u32>,
-    pub reasoning: Option<BindingProtocolReasoning>,
+    pub reasoning_levels: Option<Vec<String>>,
     #[serde(rename = "piProjection", with = "adapter_metadata")]
     pub adapter_metadata_json: Option<String>,
 }
-
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BindingModelTemplate {
+    pub id: String,
+    pub name: String,
+    pub suggested_provider_model_id: String,
+    pub nickname: String,
+    pub icon: Option<String>,
+    pub context_window: Option<u32>,
+    pub max_output_tokens: Option<u32>,
+    pub reasoning_levels: Option<Vec<String>>,
+}
 #[derive(Debug, Clone, Serialize, Deserialize, uniffi::Enum)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub enum BindingGatewayProtocol {
@@ -145,15 +148,18 @@ pub struct BindingProviderDefinition {
     pub name: String,
     pub protocol: BindingGatewayProtocol,
     pub endpoint: String,
-    pub authentication_id: Option<String>,
-    pub models: Vec<BindingProviderModelBinding>,
+    pub authentication: BindingProviderAuthentication,
+    pub models: Vec<BindingProviderModel>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct BindingRoute {
-    pub model_record_key: String,
-    pub provider_id: String,
+pub struct BindingProviderDraft {
+    pub id: String,
+    pub name: String,
+    pub protocol: BindingGatewayProtocol,
+    pub endpoint: String,
+    pub models: Vec<BindingProviderModel>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, uniffi::Enum)]
@@ -173,9 +179,7 @@ pub struct BindingFailoverPolicy {
 pub struct BindingGatewayConfig {
     pub id: String,
     pub name: String,
-    pub models: Vec<BindingModelDefinition>,
     pub providers: Vec<BindingProviderDefinition>,
-    pub routes: Vec<BindingRoute>,
     pub failover: BindingFailoverPolicy,
 }
 
@@ -204,11 +208,10 @@ pub struct BindingRuntimeTypeDescriptor {
 pub struct BindingConfigurationSnapshot {
     pub conversations: Vec<BindingConversationSummary>,
     pub connections: Vec<BindingConnection>,
-    pub models: Vec<BindingModelDefinition>,
     pub gateways: Vec<BindingGatewayConfig>,
     pub runtime_instances: Vec<BindingRuntimeInstance>,
     pub runtime_types: Vec<BindingRuntimeTypeDescriptor>,
-    pub authentication_bindings: Vec<BindingAuthenticationBinding>,
+    pub model_templates: Vec<BindingModelTemplate>,
     pub provider_import_types: Vec<BindingRuntimeTypeDescriptor>,
     pub protocols: Vec<BindingProtocolDescriptor>,
     #[serde(rename = "activeRuntimeInstanceID")]
@@ -227,7 +230,6 @@ pub struct BindingProtocolDescriptor {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct BindingGatewayUpdate {
     pub gateways: Vec<BindingGatewayConfig>,
-    pub models: Vec<BindingModelDefinition>,
     pub requires_reconnect: bool,
 }
 
@@ -268,7 +270,6 @@ pub struct BindingProviderImportSource {
 pub struct BindingImportSelection {
     pub provider_id: String,
     pub candidate_keys: Vec<String>,
-    pub model_record_mappings: HashMap<String, String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
@@ -425,36 +426,19 @@ pub enum BindingAuthenticationMethod {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct BindingAuthenticationProvenance {
     pub display_name: String,
-    pub runtime_instance_id: Option<String>,
-    pub runtime_type_id: String,
-    pub source_provider_id: String,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct BindingAuthenticationBinding {
-    pub id: String,
-    pub name: String,
+pub struct BindingProviderAuthentication {
     pub method: BindingAuthenticationMethod,
     pub configured: bool,
-    pub protocol: BindingGatewayProtocol,
-    pub endpoint: String,
     pub provenance: Option<BindingAuthenticationProvenance>,
     pub actions: Vec<BindingSettingAction>,
-    pub owns_secret: bool,
-    pub generation: u64,
 }
-#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct BindingAuthenticationMutation {
-    pub binding: BindingAuthenticationBinding,
-    pub obsolete_owned_keychain_refs: Vec<String>,
-    pub requires_reconnect: bool,
-    pub warnings: Vec<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct BindingProtocolReasoning {
-    pub protocol: BindingGatewayProtocol,
-    pub levels: Vec<String>,
+#[derive(Clone, Serialize, Deserialize, uniffi::Enum)]
+#[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
+pub enum BindingAuthenticationEdit {
+    Keep,
+    SetApiKey { value: String },
+    Clear,
 }

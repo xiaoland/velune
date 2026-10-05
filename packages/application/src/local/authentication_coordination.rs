@@ -1,6 +1,6 @@
-//! Authentication uses a registry ID; only the source adapter receives private coordinates.
+//! Interactive authentication stays in its provider context; private source coordinates never reach the UI.
 use super::*;
-use crate::authentication_resources::*;
+use crate::provider_authentication::*;
 impl CoreRuntime {
     pub(super) fn authentication_action(&mut self, payload: &Value) -> Result<Value, RuntimeError> {
         let operation = payload["operation"].as_str().unwrap_or("poll");
@@ -9,27 +9,33 @@ impl CoreRuntime {
         }
         let mut request = payload.clone();
         if matches!(operation, "start" | "inspect") {
-            let id = payload["bindingID"]
+            let gateway_id = payload["gatewayID"]
                 .as_str()
-                .ok_or_else(|| RuntimeError::invalid("authentication resource id"))?;
-            let resource = self.authentication_resources.get(id)?;
-            match &resource.locator {
-                AuthenticationLocator::Keychain { .. } => {
+                .ok_or_else(|| RuntimeError::invalid("gateway id"))?;
+            let provider_id = payload["providerID"]
+                .as_str()
+                .ok_or_else(|| RuntimeError::invalid("provider id"))?;
+            let provider = self
+                .gateways
+                .iter()
+                .find(|g| g.id == gateway_id)
+                .and_then(|g| g.providers.iter().find(|p| p.id == provider_id))
+                .ok_or_else(|| RuntimeError::invalid("provider id"))?;
+            match &provider.authentication.material {
+                AuthenticationMaterial::None | AuthenticationMaterial::ApiKey { .. } => {
                     if operation == "start" {
-                        return Err(RuntimeError::invalid(
-                            "API key 认证请在认证设置中替换；此资源没有登录流程。",
-                        ));
+                        return Err(RuntimeError::invalid("此提供商没有交互式登录流程"));
                     }
                     return Ok(
-                        json!({"metadata":{"configured":resource.configured,"capabilities":{"protocol":resource.protocol,"endpoint":resource.endpoint,"explicitOutputCap":true,"temperature":true},"actions":[]}}),
+                        json!({"metadata":{"configured":provider.authentication.description().configured,"capabilities":{"protocol":provider.protocol,"endpoint":provider.endpoint,"explicitOutputCap":true,"temperature":true},"actions":[]}}),
                     );
                 }
-                AuthenticationLocator::RuntimeProvider { source } => {
-                    request["source"] = Value::String(serde_json::to_string(source)?)
+                AuthenticationMaterial::RuntimeProvider { source, .. } => {
+                    request["source"] = Value::String(serde_json::to_string(source)?);
                 }
             }
             if operation == "start" {
-                self.authentication_binding_id = Some(id.into());
+                self.authentication_provider = Some((gateway_id.into(), provider_id.into()));
             }
         }
         let mut data = authentication::handle(
@@ -39,41 +45,48 @@ impl CoreRuntime {
             &request,
         )
         .map_err(RuntimeError::Invalid)?;
-        let succeeded = data["events"].as_array().is_some_and(|events| {
+        if data["events"].as_array().is_some_and(|events| {
             events
                 .iter()
-                .any(|event| event["type"] == "result" && event["ok"] == true)
-        });
-        if succeeded {
-            let previous = self.authentication_resources.clone();
-            let id = self.authentication_binding_id.take().ok_or_else(|| {
-                RuntimeError::invalid("authentication session resource is missing")
-            })?;
-            let resource = self
-                .authentication_resources
-                .resources
+                .any(|e| e["type"] == "result" && e["ok"] == true)
+        }) {
+            let previous = self.gateways.clone();
+            let (gateway_id, provider_id) = self
+                .authentication_provider
+                .take()
+                .ok_or_else(|| RuntimeError::invalid("login provider missing"))?;
+            let provider = self
+                .gateways
                 .iter_mut()
-                .find(|item| item.id == id)
-                .ok_or_else(|| RuntimeError::invalid("authentication resource not found"))?;
-            resource.method = AuthenticationMethod::OAuth;
-            resource.configured = true;
-            resource.generation = resource
-                .generation
-                .checked_add(1)
-                .ok_or_else(|| RuntimeError::invalid("authentication revision overflow"))?;
-            if let AuthenticationLocator::RuntimeProvider { source } = &mut resource.locator {
+                .find(|g| g.id == gateway_id)
+                .and_then(|g| g.providers.iter_mut().find(|p| p.id == provider_id))
+                .ok_or_else(|| RuntimeError::invalid("login provider missing"))?;
+            if let AuthenticationMaterial::RuntimeProvider {
+                source,
+                method,
+                configured,
+                ..
+            } = &mut provider.authentication.material
+            {
+                *method = AuthenticationMethod::OAuth;
+                *configured = true;
                 source
                     .settings
                     .insert("credentialKind".into(), "oauth".into());
             }
+            provider.authentication.generation = provider
+                .authentication
+                .generation
+                .checked_add(1)
+                .ok_or_else(|| RuntimeError::invalid("authentication revision overflow"))?;
             if self.persist().is_err() {
-                self.authentication_resources = previous;
+                self.gateways = previous;
                 return Err(RuntimeError::invalid(
-                    "来源登录已完成，但认证资源保存失败；原来源保持登录，请检查配置目录后重试登记。",
+                    "来源已完成登录，但提供商配置保存失败；请检查配置目录后重试。",
                 ));
             }
             self.shutdown_active()?;
-            data["gateways"] = serde_json::to_value(&self.gateways)?;
+            data["gateways"] = serde_json::to_value(self.public_gateways())?;
             data["requiresReconnect"] = Value::Bool(true);
         }
         Ok(data)

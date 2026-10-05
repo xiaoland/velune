@@ -6,7 +6,7 @@
 
 2026-10-04 首循环边界：用户明确要求实际拆分 `core`（AI 服务、Harness 适配器）与 `app`（Mac 等平台）。当前 Pi 切片由 Pi 拥有会话历史和持久化，Velune 只投影会话列表、消息和运行状态，不另建真实会话数据库。Mac 提供 Chatbot 界面、会话列表与通用资源配置，不能硬编码资源示例；真实验收由用户执行。此切片不将模拟核心的逻辑 Session 契约强加给 Pi 历史，也不声称完整统一自动路由已完成。执行状态见 [首循环任务](../../tasks/pi-mac-first-loop/packet.md)。
 
-首循环的当前装配边界（2026-10-04 用户修订，2026-10-05 全面采用 UniFFI）：共享能力是 Rust libs，由 Mac／Windows 等平台应用通过生成的类型接口嵌入，不是独立 Host 应用。CoreRuntime 拥有通用动作、配置校验与原子持久化、Harness 适配与 AI 网关生命周期；平台应用显式注入配置根目录、资源目录和平台秘密服务，并管理应用级唯一 handle。独立 AI service lib 仍不读取全局配置或环境。全局模型独立于 AI 提供商，提供商关联多个模型；网关配置还包含显式路由及策略归属。当前先实现 OpenAI ChatCompletions v1 和显式路由，未定义的自动 fail-over 不默认启用。旧 App↔Host IPC 接入是待移除的实现偏差，不是认可的产品边界。
+首循环的当前装配边界（2026-10-04 用户修订，2026-10-05 全面采用 UniFFI）：共享能力是 Rust libs，由 Mac／Windows 等平台应用通过生成的类型接口嵌入，不是独立 Host 应用。CoreRuntime 拥有通用动作、配置校验与原子持久化、Harness 适配与 AI 网关生命周期；平台应用显式注入配置根目录和资源目录，并管理应用级唯一 handle。独立 AI service lib 仍不读取全局配置或环境。提供商拥有其模型条目与私有认证；模板复用填写参数。当前实现原生 OpenAI ChatCompletions v1 与 Responses v1 的静态目标解析，未定义的自动 fail-over 不默认启用。旧 App↔Host IPC 已删除。
 
 Agent 运行时区分类型与实例，Pi Agent 为首个类型，同类型可保存多个配置实例。首轮保持一个活跃 runner，空闲时切换实例，运行中禁止切换；这不限制配置只能有一份。会话身份必须包含运行时实例，列表 SDK 使用对应配置目录。适配器注入 Velune 网关地址和模型目录，切换或恢复会话后仍重新绑定网关，不能沿用历史原生 provider 绕过网关。Pi 派生文件不得包含上游端点／凭据，写入应用根目录下的实例专属投影目录。原运行时目录继续作为 Pi home，SDK 将受管模型目录单独注入，不覆盖原模型、认证或设置文件。直接向执行 Harness 注入上游凭据的方案已被网关接入替代。Harness 提供商配置导入包含提供商、有效模型及能力参数与认证来源，由网关后端使用；执行 Harness 仍只访问网关。导入以非秘密预览、原文件保留和来源执行绑定为边界，具体契约见 [AI service 设计](ai-service.md#harness-提供商配置导入)。
 
@@ -22,7 +22,7 @@ Apple 外观由原生组件与系统语义样式适配，不建立自有明暗�
 
 Velune 的产品身份是 control surface：UI、AI 服务网关与协调层服务于外部 Agent 运行时，不生成代表 Velune 自身的 Agent 人格。通用会话投影保持 user／assistant／system／tool 语义；平台按左右与居中布局呈现，不给 assistant 注入 Velune 作者标签。
 
-当前模型装配采用 Model 与 ProviderModelBinding 两层：隐藏 recordKey 由 application 生成，providerModelId 是提供商规定的原生 API 标识，路由按 modelRecordKey／providerId 选择绑定。网关入口自动派生 `velune/model/<recordKey>`，协议执行只接收已解析 ProviderModelId。实际能力归绑定，未知规格不借用其它提供商数据；Pi 所需字段在 Pi 准备执行时检查。普通配置 schema 4 hard-cutoff，旧 schema 原子重置且无备份，原 Harness 与平台秘密保留。详细契约见 [AI 服务设计](ai-service.md)。
+提供商配置的新实施方向为 Provider 拥有实际模型条目和私有认证；模型共性以模板快填复用，不建立独立全局模型调用实体。隐藏稳定记录键仅供选择引用，providerModelId 是可编辑的 API 标识，网关发送精确原生值。能力以实际提供商模型为准，Pi 必需字段在 Pi 准备边界检查。提供商字段与 API key 单文件原子保存，公开描述不含 key；OAuth 保留内部来源刷新，中立解析接口不依赖 Harness。schema 5 hard-cutoff 与两栏原生编辑器的具体契约见 [AI 服务设计](ai-service.md)，当前安装基线见任务 packet。
 
 ## 独立 package 与平台装配
 
@@ -339,7 +339,7 @@ Mastra、HAPI、Lody 是用户提出的候选参考。研究围绕待决问题�
 
 用户希望保留 Harness 原提供商配置，复用它的登录能力，并将相应提供商纳入 Unified AI Gateway。执行侧仍为 `Harness → Velune Gateway → provider adapter`；原配置是可明确接入的来源，不因为接管而删除。只为 Velune 管理的运行实例派生网关配置，独立启动原 Harness 的行为保持可用。普通配置的导入快照和受委托认证引用需分别处理，记录来源并明确后续更新方式，避免形成两个不明的配置权威。
 
-用户已授权推进原生 Responses 与认证来源委托。application 集中登记认证资源并装配来源 adapter，复用 SDK 的登录和刷新；provider adapter 仅消费本次短生命周期认证并执行原生协议请求。提供商与网关不接触来源 locator，认证保留同一个权威来源，而非复制 OAuth 后各自刷新。统一网关与 app 的契约仍不依赖 Pi；Pi SDK 只属于具体后端实现，不能要求一个活跃 Pi Agent 会话才能发起上游请求。复用 SDK 的实现与复用 Pi 的客户端注册身份是不同决定，现有公开登录参数是否支持 Velune 身份及授权来源仍有缺口。Pi 的受控 Node resolver helper 仅负责认证解析和刷新，不承担推理、不需要活跃 Pi Agent 会话、不恢复常驻 core Host。
+用户已授权推进原生 Responses 与认证来源委托。application 私有保存提供商认证并装配来源 adapter，复用 SDK 的登录和刷新；provider adapter 仅消费本次短生命周期认证并执行原生协议请求。提供商与网关不接触来源 locator，认证保留同一个权威来源，而非复制 OAuth 后各自刷新。统一网关与 app 的契约仍不依赖 Pi；Pi SDK 只属于具体后端实现，不能要求一个活跃 Pi Agent 会话才能发起上游请求。复用 SDK 的实现与复用 Pi 的客户端注册身份是不同决定，现有公开登录参数是否支持 Velune 身份及授权来源仍有缺口。Pi 的受控 Node resolver helper 仅负责认证解析和刷新，不承担推理、不需要活跃 Pi Agent 会话、不恢复常驻 core Host。
 
 `velune/auto` 表达稳定的路由策略选择，不是固定的物理模型能力。Pi 适配器可用 virtual model 向 Core 获取本次决定，返回端点仍为网关的具体模型及能力；网关必须执行同一次决定，不能在请求到达时再次按可变全局选择改投。其他 Harness 的实现需分别调查，不能把 Pi virtual model 作为通用协议。配置入口、实际模型和会话历史各有归属；固定入口不能隐藏上下文、推理级别和历史兼容性的变化。
 

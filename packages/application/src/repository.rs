@@ -15,8 +15,7 @@ pub(crate) struct PersistedConfig {
     pub(crate) schema_version: u32,
     pub(crate) gateways: Vec<GatewayConfig>,
     pub(crate) runtime_instances: Vec<RuntimeInstance>,
-    pub(crate) authentication_bindings:
-        Vec<crate::authentication_resources::AuthenticationResource>,
+    pub(crate) model_templates: Vec<crate::config::ModelTemplate>,
 }
 
 pub(crate) struct Repository {
@@ -49,27 +48,28 @@ impl Repository {
         let mut reset = false;
         let persisted = match fs::read(&persisted_path) {
             Ok(bytes) => {
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    fs::set_permissions(&persisted_path, fs::Permissions::from_mode(0o600))?;
+                }
                 let raw: serde_json::Value = serde_json::from_slice(&bytes)?;
                 let version = raw["schemaVersion"].as_u64().ok_or_else(|| {
                     RuntimeError::invalid("configuration schema version is required")
                 })?;
-                if version < 4 {
+                if version < 5 {
                     reset = true;
                     PersistedConfig {
-                        schema_version: 4,
+                        schema_version: 5,
                         ..PersistedConfig::default()
                     }
                 } else {
-                    if version > 4 {
+                    if version > 5 {
                         return Err(RuntimeError::invalid(
-                            "配置版本高于本应用支持的 schema 4；请使用支持该版本的应用。",
+                            "配置版本高于本应用支持的 schema 5；请使用支持该版本的应用。",
                         ));
                     }
                     let value: PersistedConfig = serde_json::from_value(raw)?;
-                    crate::authentication_resources::AuthenticationManager {
-                        resources: value.authentication_bindings.clone(),
-                    }
-                    .validate(&value.gateways)?;
                     for gateway in &value.gateways {
                         gateway.validate().map_err(RuntimeError::invalid)?;
                     }
@@ -87,11 +87,21 @@ impl Repository {
                             ));
                         }
                     }
+                    let mut template_ids = std::collections::BTreeSet::new();
+                    for template in &value.model_templates {
+                        if template.id.is_empty()
+                            || template.name.trim().is_empty()
+                            || !template_ids.insert(&template.id)
+                        {
+                            return Err(RuntimeError::invalid("invalid model template identity"));
+                        }
+                        crate::provider_configuration::validate_template(template)?;
+                    }
                     value
                 }
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => PersistedConfig {
-                schema_version: 4,
+                schema_version: 5,
                 ..PersistedConfig::default()
             },
             Err(error) => return Err(error.into()),
@@ -110,18 +120,17 @@ impl Repository {
         Ok(())
     }
     pub(crate) fn store(&self, config: &PersistedConfig) -> Result<(), RuntimeError> {
-        crate::authentication_resources::AuthenticationManager {
-            resources: config.authentication_bindings.clone(),
-        }
-        .validate(&config.gateways)?;
         let path = self.home.join("generic-config.json");
         let bytes = serde_json::to_vec_pretty(config)?;
         let temporary = path.with_extension("json.tmp");
-        let mut file = OpenOptions::new()
-            .create(true)
-            .truncate(true)
-            .write(true)
-            .open(&temporary)?;
+        let mut options = OpenOptions::new();
+        options.create(true).truncate(true).write(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = options.open(&temporary)?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;

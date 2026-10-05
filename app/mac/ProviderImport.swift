@@ -39,7 +39,6 @@ struct ProviderImportModel: Decodable, Sendable, Identifiable {
 struct ProviderImportSelection: Encodable, Sendable {
     var providerId: String
     var candidateKeys: [String]
-    var modelRecordMappings: [String: String]
 }
 struct ProviderImportResult: Decodable, Sendable {
     var gateways: [GatewayConfig]
@@ -58,7 +57,6 @@ struct ProviderImportView: View {
     @State private var query = ""
     @State private var onlyImportable = false
     @State private var selectedModels: Set<String> = []
-    @State private var mappings: [String: String] = [:]
     @State private var replaceExisting = false
     @State private var attemptedOperation = false
 
@@ -78,7 +76,7 @@ struct ProviderImportView: View {
         (preview?.providers ?? []).filter { enabled($0) }.compactMap { provider in
             let ids = provider.models.filter { $0.canImport && selectedModels.contains($0.id) }.map(\.id)
             guard !ids.isEmpty else { return nil }
-            return ProviderImportSelection(providerId: provider.id, candidateKeys: ids, modelRecordMappings: mappings.filter { ids.contains($0.key) && !$0.value.isEmpty })
+            return ProviderImportSelection(providerId: provider.id, candidateKeys: ids)
         }
     }
     private var selectedCount: Int { selections.reduce(0) { $0 + $1.candidateKeys.count } }
@@ -230,21 +228,7 @@ struct ProviderImportView: View {
             Text(model.name.isEmpty ? model.providerModelID : model.name).font(.headline)
             Text(model.providerModelID).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
                 .fixedSize(horizontal: false, vertical: true)
-            if enabled(provider) && model.canImport {
-                if selectedModels.contains(model.id) {
-                    Picker("关联模型", selection: Binding(get: { mappings[model.id] ?? "" }, set: { mappings[model.id] = $0 })) {
-                        Text("新建模型").tag("")
-                        ForEach(store.models) { existing in Text(existing.displayName).tag(existing.id) }
-                    }
-                    .pickerStyle(.menu)
-                    if !(mappings[model.id] ?? "").isEmpty {
-                        Text("明确关联同一个模型；提供商的能力与限制独立保留。")
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
-                } else {
-                    Text("勾选模型以导入或关联关联模型。").font(.callout).foregroundStyle(.secondary)
-                }
-            } else {
+            if !enabled(provider) || !model.canImport {
                 Label(modelStatus(model, provider: provider), systemImage: "info.circle").foregroundStyle(.secondary)
             }
             issueList(model.issues)
@@ -323,7 +307,6 @@ struct ProviderImportView: View {
         providerID = nil
         selectedCandidateKey = nil
         selectedModels = []
-        mappings = [:]
         query = ""
         attemptedOperation = false
     }
@@ -335,7 +318,6 @@ struct ProviderImportView: View {
             providerID = value.providers.first?.id
             selectedCandidateKey = nil
             selectedModels = []
-            mappings = [:]
-        }
+            }
     }
 }

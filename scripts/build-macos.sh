@@ -15,7 +15,7 @@ mkdir -p "$bindings"
 cargo run --locked -p velune-bindings --features cli --bin velune-bindgen -- generate --library target/release/libvelune_bindings.dylib --language swift --out-dir "$bindings" --no-format
 app="$PWD/target/macos/Velune.app"
 rm -rf "$app"
-mkdir -p "$app/Contents/MacOS" "$app/Contents/Helpers" "$app/Contents/Resources" "$app/Contents/Frameworks"
+mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources" "$app/Contents/Frameworks"
 cp target/release/libvelune_bindings.dylib "$app/Contents/Frameworks/libvelune_bindings.dylib"
 install_name_tool -id '@rpath/libvelune_bindings.dylib' "$app/Contents/Frameworks/libvelune_bindings.dylib"
 xcrun swiftc -parse-as-library -swift-version 5 -emit-library -emit-module -module-name VeluneBindings \
@@ -30,9 +30,8 @@ xcrun swiftc -parse-as-library -swift-version 5 -target "$(uname -m)-apple-macos
   app/mac/Models.swift app/mac/BindingMapping.swift app/mac/Store.swift app/mac/Transport.swift app/mac/ProviderImport.swift app/mac/ExecutableDiscovery.swift \
   -I "$bindings" -Xcc -fmodule-map-file="$bindings/VeluneBindingsFFI.modulemap" -L "$app/Contents/Frameworks" -lVeluneBindings \
   -Xlinker -rpath -Xlinker '@executable_path/../Frameworks' -o "$app/Contents/MacOS/Velune"
-xcrun swiftc -swift-version 5 -framework Security app/mac/velune-credential.swift -o "$app/Contents/Helpers/velune-credential"
 # JavaScript is a sealed resource, not a nested macOS executable.
-cp packages/agent-runtime/resources/credential_source.mjs packages/agent-runtime/resources/pi_sessions.mjs packages/agent-runtime/resources/pi_rpc.mjs packages/agent-runtime/resources/pi_virtual_model.mjs packages/agent-runtime/resources/pi_auth.mjs packages/agent-runtime/resources/pi_provider_import.mjs "$app/Contents/Resources/"
+cp packages/agent-runtime/resources/pi_sessions.mjs packages/agent-runtime/resources/pi_rpc.mjs packages/agent-runtime/resources/pi_virtual_model.mjs packages/agent-runtime/resources/pi_auth.mjs packages/agent-runtime/resources/pi_provider_import.mjs "$app/Contents/Resources/"
 cp -R target/pi-runtime/node_modules "$app/Contents/Resources/node_modules"
 cp -R app/mac/Assets/Brand "$app/Contents/Resources/Brand"
 xcrun swift scripts/render-app-icon.swift app/mac/Assets/Brand target/macos/Velune.iconset
@@ -61,13 +60,12 @@ plist=plistlib.loads(plist_path.read_bytes())
 plist['VeluneDisplayVersion']=version
 plist['CFBundleGetInfoString']=version
 plist_path.write_bytes(plistlib.dumps(plist))
-manifest={'source_commit':cmd('git','rev-parse','HEAD'),'dirty':bool(cmd('git','status','--porcelain')),'lock_sha256':hashlib.sha256(Path('Cargo.lock').read_bytes()).hexdigest(),'bindings_version':'0.1.0','uniffi_version':'0.32.2','ui_version':version,'simulation':False,'control_transport':'uniffi','language_contract':'typed','config_schema_version':4,'supported_modes':['conversation_projection','llm_gateway','runtime_instances','synthetic_preview'],'native_verified':False,'rust':cmd('rustc','--version'),'swift':cmd('xcrun','swiftc','--version'),'xcode':cmd('xcodebuild','-version'),'architecture':platform.machine(),'macos':platform.mac_ver()[0],'build_command':'bash scripts/build-macos.sh'}
+manifest={'source_commit':cmd('git','rev-parse','HEAD'),'dirty':bool(cmd('git','status','--porcelain')),'lock_sha256':hashlib.sha256(Path('Cargo.lock').read_bytes()).hexdigest(),'bindings_version':'0.1.0','uniffi_version':'0.32.2','ui_version':version,'simulation':False,'control_transport':'uniffi','language_contract':'typed','config_schema_version':5,'supported_modes':['conversation_projection','llm_gateway','runtime_instances','synthetic_preview'],'native_verified':False,'rust':cmd('rustc','--version'),'swift':cmd('xcrun','swiftc','--version'),'xcode':cmd('xcodebuild','-version'),'architecture':platform.machine(),'macos':platform.mac_ver()[0],'build_command':'bash scripts/build-macos.sh'}
 Path(sys.argv[1]).write_text(json.dumps(manifest,ensure_ascii=False,indent=2))
 PY
 # Ad-hoc local debug signing only. No identity/keychain selection, certificate, or notarization.
 codesign --force --sign - "$app/Contents/Frameworks/libvelune_bindings.dylib"
 codesign --force --sign - "$app/Contents/Frameworks/libVeluneBindings.dylib"
-codesign --force --sign - "$app/Contents/Helpers/velune-credential"
 codesign --force --sign - "$app"
 codesign --verify --deep --strict "$app"
 shasum -a 256 "$app/Contents/MacOS/Velune" "$app/Contents/Frameworks/libvelune_bindings.dylib" "$app/Contents/Frameworks/libVeluneBindings.dylib" > target/macos/binary-sha256.txt
