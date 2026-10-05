@@ -138,24 +138,6 @@ pub enum BindingGatewayProtocol {
     MessagesV1,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Enum)]
-#[serde(rename_all = "camelCase")]
-pub enum BindingCredentialSourceKind {
-    #[serde(rename = "harness")]
-    Harness,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
-#[serde(rename_all = "camelCase")]
-pub struct BindingCredentialSource {
-    pub kind: BindingCredentialSourceKind,
-    pub harness_type_id: String,
-    #[serde(default)]
-    pub source_instance_id: Option<String>,
-    pub provider_id: String,
-    pub settings: HashMap<String, String>,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 #[serde(rename_all = "camelCase")]
 pub struct BindingProviderDefinition {
@@ -164,11 +146,7 @@ pub struct BindingProviderDefinition {
     pub protocol: BindingGatewayProtocol,
     pub endpoint: String,
     #[serde(default)]
-    pub credential_ref: Option<String>,
-    #[serde(default)]
-    pub credential_source: Option<BindingCredentialSource>,
-    #[serde(default)]
-    pub credential_generation: u64,
+    pub authentication_id: Option<String>,
     pub models: Vec<BindingProviderModelBinding>,
 }
 
@@ -231,7 +209,7 @@ pub struct BindingConfigurationSnapshot {
     pub gateways: Vec<BindingGatewayConfig>,
     pub runtime_instances: Vec<BindingRuntimeInstance>,
     pub runtime_types: Vec<BindingRuntimeTypeDescriptor>,
-    pub credential_source_types: Vec<BindingRuntimeTypeDescriptor>,
+    pub authentication_bindings: Vec<BindingAuthenticationBinding>,
     pub provider_import_types: Vec<BindingRuntimeTypeDescriptor>,
     pub protocols: Vec<BindingProtocolDescriptor>,
     #[serde(rename = "activeRuntimeInstanceID")]
@@ -434,4 +412,43 @@ pub enum BindingSettingKind {
     FilePath,
     DirectoryPath,
     Choice,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Enum)]
+#[serde(rename_all = "camelCase")]
+pub enum BindingAuthenticationMethod {
+    ApiKey,
+    #[serde(rename = "oauth")]
+    OAuth,
+    Unconfigured,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+#[serde(rename_all = "camelCase")]
+pub struct BindingAuthenticationProvenance {
+    pub display_name: String,
+    pub runtime_instance_id: Option<String>,
+    pub runtime_type_id: String,
+    pub source_provider_id: String,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+#[serde(rename_all = "camelCase")]
+pub struct BindingAuthenticationBinding {
+    pub id: String,
+    pub name: String,
+    pub method: BindingAuthenticationMethod,
+    pub configured: bool,
+    pub protocol: BindingGatewayProtocol,
+    pub endpoint: String,
+    pub provenance: Option<BindingAuthenticationProvenance>,
+    pub actions: Vec<BindingSettingAction>,
+    pub owns_secret: bool,
+    pub generation: u64,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+#[serde(rename_all = "camelCase")]
+pub struct BindingAuthenticationMutation {
+    pub binding: BindingAuthenticationBinding,
+    pub obsolete_owned_keychain_refs: Vec<String>,
+    pub requires_reconnect: bool,
+    pub warnings: Vec<String>,
 }

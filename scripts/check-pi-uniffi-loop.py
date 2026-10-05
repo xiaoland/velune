@@ -187,8 +187,7 @@ def main():
                     reasoning_levels=item['reasoningLevels']) for item in value['models']],
                 providers=[bindings.BindingProviderDefinition(
                     id=item['id'], name=item['name'], protocol=protocols[item['protocol']],
-                    endpoint=item['endpoint'], credential_ref=item['credentialRef'],
-                    credential_source=None, credential_generation=0,
+                    endpoint=item['endpoint'], authentication_id=item['authenticationId'],
                     models=[bindings.BindingProviderModelBinding(
                         model_id=model['modelId'], external_model_id=model['externalModelId'],
                         adapter_metadata_json=None) for model in item['models']]) for item in value['providers']],
@@ -264,6 +263,11 @@ def main():
                                                  for item in models]}],
                        'routes': [{'modelId': item['id'], 'providerId': 'local'} for item in models],
                        'failover': {'mode': 'disabled'}}
+            registered = application.configure_api_key_binding('fixture-auth', 'Synthetic API key', 'fixture',
+                bindings.BindingGatewayProtocol.CHAT_COMPLETIONS_V1 if args.protocol == 'chatCompletionsV1'
+                else bindings.BindingGatewayProtocol.RESPONSES_V1, gateway['providers'][0]['endpoint'], False, None)
+            gateway['providers'][0].pop('credentialRef')
+            gateway['providers'][0]['authenticationId'] = registered.binding.id
             application.upsert_gateway(gateway_record(gateway))
             runtime = {'id': 'fixture-pi', 'name': 'Isolated Pi', 'typeId': 'pi',
                        'gatewayId': 'fixture', 'modelId': 'first',

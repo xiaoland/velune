@@ -2,8 +2,8 @@
 //! The JavaScript adapter owns SDK 1.0.2 parsing; Rust only validates the
 //! non-secret snapshot and projects supported models into gateway config.
 use crate::config::{
-    CredentialSource, CredentialSourceKind, GatewayConfig, GatewayProtocol, ModelDefinition,
-    ProviderDefinition, ProviderModelBinding, RuntimeInstance,
+    GatewayConfig, GatewayProtocol, ModelDefinition, ProviderDefinition, ProviderModelBinding,
+    RuntimeInstance,
 };
 use crate::{Error as RuntimeError, Options as RuntimeOptions};
 use serde::Serialize;
@@ -108,7 +108,7 @@ fn run_helper(source: &Source, options: &RuntimeOptions) -> Result<Snapshot, Run
     velune_agent_runtime::provider_source::read(source, &options.resources_directory)
         .map_err(RuntimeError::ProviderImport)
 }
-fn fingerprint(gateway: &GatewayConfig) -> Result<String, RuntimeError> {
+fn fingerprint(gateway: &impl Serialize) -> Result<String, RuntimeError> {
     let bytes = serde_json::to_vec(gateway)?;
     let digest = Sha256::digest(bytes);
     Ok(format!("gateway_{digest:x}"))
@@ -164,11 +164,13 @@ pub(crate) fn preview(
     gateway: &GatewayConfig,
     options: &RuntimeOptions,
     runtimes: &[RuntimeInstance],
+    authentication: &crate::authentication_resources::AuthenticationManager,
 ) -> Result<Value, RuntimeError> {
     let (source, runtime_fingerprint) = configured_source(source_value, runtimes)?;
     let snapshot = run_helper(&source, options)?;
     let source_fingerprint = combined_source_fingerprint(&snapshot, &runtime_fingerprint);
-    let target_fingerprint = fingerprint(gateway)?;
+    let target_fingerprint =
+        fingerprint(&json!({"gateway":gateway,"authenticationBindings":authentication.resources}))?;
     let warnings = snapshot.warnings.clone();
     let mut providers = Vec::new();
     for provider in &snapshot.providers {
@@ -223,6 +225,7 @@ pub(crate) fn apply(
     gateway: &mut GatewayConfig,
     options: &RuntimeOptions,
     runtimes: &[RuntimeInstance],
+    authentication: &mut crate::authentication_resources::AuthenticationManager,
 ) -> Result<Value, RuntimeError> {
     let (source, runtime_fingerprint) = configured_source(source_value, runtimes)?;
     let snapshot = run_helper(&source, options)?;
@@ -236,7 +239,8 @@ pub(crate) fn apply(
                 .and_then(|value| value.parse().ok())
         })
         .unwrap_or(false);
-    let target_fingerprint = fingerprint(gateway)?;
+    let target_fingerprint =
+        fingerprint(&json!({"gateway":gateway,"authenticationBindings":authentication.resources}))?;
     let expected = source_value["previewToken"]
         .as_str()
         .or_else(|| source_value["preview"]["token"].as_str());
@@ -502,21 +506,58 @@ pub(crate) fn apply(
             "bindingProjection".into(),
             serde_json::to_string(&projection_snapshot)?,
         );
-        let credential_source = CredentialSource {
-            kind: CredentialSourceKind::Harness,
+        let credential_source = crate::authentication_resources::AuthenticationSource {
+            kind: "harness".into(),
             harness_type_id: "pi".into(),
             source_instance_id: source.source_instance_id.clone(),
             provider_id: provider.source_provider_id,
             settings,
         };
+        use crate::authentication_resources::{
+            AuthenticationLocator, AuthenticationMethod, AuthenticationResource,
+        };
+        let authentication_id = stable_id("auth", &format!("{}|{}", gateway.id, provider_id));
+        let existing_authentication = authentication
+            .resources
+            .iter()
+            .find(|item| item.id == authentication_id);
+        let locator = AuthenticationLocator::RuntimeProvider {
+            source: credential_source,
+        };
+        let method = match provider.auth.kind.as_str() {
+            "oauth" => AuthenticationMethod::OAuth,
+            "literal_api_key" | "stored_environment" => AuthenticationMethod::ApiKey,
+            _ => AuthenticationMethod::Unconfigured,
+        };
+        let resource = AuthenticationResource {
+            id: authentication_id.clone(),
+            name: existing_authentication
+                .map(|item| item.name.clone())
+                .unwrap_or_else(|| provider.name.clone()),
+            method,
+            configured: provider.auth.ready,
+            protocol: protocol_kind.clone(),
+            endpoint: endpoint.clone(),
+            generation: match existing_authentication {
+                Some(item) if item.locator != locator => item
+                    .generation
+                    .checked_add(1)
+                    .ok_or_else(|| RuntimeError::invalid("authentication revision overflow"))?,
+                Some(item) => item.generation,
+                None => 0,
+            },
+            locator,
+        };
+        authentication
+            .resources
+            .retain(|item| item.id != authentication_id);
+        authentication.resources.push(resource);
         let provider_def = ProviderDefinition {
             id: provider_id.clone(),
             name: provider.name,
             protocol: protocol_kind,
             endpoint,
-            credential_ref: None,
-            credential_source: Some(credential_source),
-            credential_generation: 0,
+            authentication_id: Some(authentication_id),
             models: bindings,
         };
         gateway.providers.retain(|p| p.id != provider_id);
@@ -525,6 +566,6 @@ pub(crate) fn apply(
     }
     gateway.validate().map_err(RuntimeError::invalid)?;
     Ok(
-        json!({"importedProviderIds":imported,"skippedProviderIds":skipped,"sourceFingerprint":snapshot.source_fingerprint,"targetFingerprint":fingerprint(gateway)?}),
+        json!({"importedProviderIds":imported,"skippedProviderIds":skipped,"sourceFingerprint":snapshot.source_fingerprint,"targetFingerprint":fingerprint(&json!({"gateway":gateway,"authenticationBindings":authentication.resources}))?}),
     )
 }

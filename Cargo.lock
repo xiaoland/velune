@@ -1878,10 +1878,13 @@ dependencies = [
 name = "velune-application"
 version = "0.1.0"
 dependencies = [
+ "rustix",
  "serde",
  "serde_json",
  "sha2",
  "thiserror",
+ "tokio",
+ "url",
  "velune-agent-runtime",
  "velune-conversation",
  "velune-gateway",
@@ -1916,7 +1919,6 @@ dependencies = [
  "futures-util",
  "getrandom",
  "reqwest",
- "rustix",
  "serde",
  "serde_json",
  "tokio",

@@ -24,13 +24,15 @@ VELUNE_HOME=/absolute/path/to/isolated-home /Applications/Velune.app/Contents/Ma
 
 构建脚本默认将验证签名后的 bundle 安装到 `/Applications/Velune.app`；仅构建可用 `bash scripts/build-macos.sh --build-only`。修改后退出应用再重建安装，安装器不会覆盖尚未退出的应用。用户已授权开发方随时直接退出 Velune；先正常退出，若应用拒绝退出，可终止已确认的 Velune 应用进程后安装，无需要求用户手动退出。产品显示版本来自仓库 `VERSION`，当前为 `0.1 beta.1`，原生“关于 Velune”面板读取同一版本。manifest 保存源码提交、UniFFI 版本、类型接口和配置 schema。
 
-Settings 分为 AI 提供商、模型、模型路由和 Agent 运行时。先定义模型 ID、昵称、图标、上下文窗口、输出上限和支持的推理级别，再将模型关联到提供商的外部模型 ID，并显式选择路由。协议通过 Picker 选择，目前 OpenAI ChatCompletions v1 与 OpenAI Responses v1 可用；不进行协议翻译，未支持的协议不可保存。密钥由用户输入并存入本机 Keychain，文件只保存引用。fail-over 当前禁用，没有自动切换策略。
+Settings 分为 AI 提供商、模型、模型路由、认证和 Agent 运行时。先定义模型 ID、昵称、图标、上下文窗口、输出上限和支持的推理级别，再将模型关联到提供商的外部模型 ID，并显式选择路由。协议通过 Picker 选择，目前 OpenAI ChatCompletions v1 与 OpenAI Responses v1 可用；不进行协议翻译，未支持的协议不可保存。在“认证”中登记 API key，秘密存入本机 Keychain；提供商只选择匹配协议及端点的已登记认证资源，不填写 Keychain 名称或运行时来源路径。fail-over 当前禁用，没有自动切换策略。
 
 Agent 运行时可配置多个实例，每个实例选择类型、独立配置目录和初始模型；工作目录属于具体会话。首轮支持 Pi 类型，保持一个活跃 runner，空闲时切换实例。模型上下文窗口可留空保存草稿，但运行前必须填写正值，输出上限不能超过窗口。运行时默认模型用于新会话；会话中的模型切换由 Pi 保存，恢复时沿用该会话选择。连接后可新建或选择该实例的会话、发送消息、观察工具结果与取消。用户消息在右、LLM 在左、系统与工具状态居中，不显示作者头像或昵称。Pi 持久化会话，Mac 只投影。
 
-Harness 仅收到 Velune 本机网关配置；提供商凭据不传入 Harness，不使用“工作环境已有认证”。正常调用由网关显式路由到配置的提供商。订阅来源可在提供商编辑页选择 Core 描述的运行时认证来源，指定原认证文件、Node 和认证提供商；“读取来源信息”读取非秘密元数据并填写协议与端点，“登录…”通过该来源的 SDK 展示原生交互。当前仅接入固定 Pi 新 `openai` 订阅路径，保留其 Pi 登录身份，不将 legacy `openai-codex` 认证接到公共 Responses。应用内登录成功或更换 API key 会更新认证绑定 generation 并要求重连；同一引用背后的外部账户替换尚未自动辨识，应经应用重新登录或明确更换来源。开发方不执行真实登录。真实请求和验收由用户完成。
+Harness 仅收到 Velune 本机网关配置；提供商凭据不传入执行 Harness，不使用“工作环境已有认证”。application 集中管理认证资源与目标授权，网关只接收异步解析接口，AI provider 使用本次解析出的短生命周期认证。认证设置显示 API key／OAuth、状态及独立的来源详情；Pi 是来源，不是认证方式。订阅登录和状态操作按登记的资源 ID 发起，内部 adapter 保留来源 SDK 的登录与刷新，不复制 refresh credential。当前仅接入固定 Pi 新 `openai` 订阅路径，不将 legacy `openai-codex` 认证接到公共 Responses。应用内登录成功或更换 API key 会更新该资源 generation 并要求受影响连接重连；外部账户替换尚未自动辨识，应经应用重新登录或明确更换来源。开发方不执行真实登录。真实请求和产品体验由用户验收。
 
-AI 提供商页的“从运行时导入…”是完整配置导入入口。选择已配置的 Agent 运行时实例后读取预览，复用该实例的目录与 Node 配置，再选择提供商模型导入；模型也可以关联到已有全局模型。原提供商与认证文件保留，配置只记录来源引用。重复项默认跳过，明确替换才更新已导入提供商；已有路由和运行时默认模型不自动改变。运行时实例、来源或目标配置在预览后变化时，须重新读取。读取配置不要求先连接运行时，也不要求已有默认模型或路由。仅支持当前网关能够保留语义的配置；不支持项及原因在预览中显示，动态命令不执行。
+API key 替换先写新 Keychain 项，再原子更新认证资源。只有确认配置未提交才删除本次新项；提交后旧项清理失败不回滚配置。只清理应用拥有且已无引用的精确 Keychain 项，不删除迁移前的外部项或来源文件。使用中的认证资源不能删除。schema 2 配置在打开时迁移到 schema 3：提供商来源或旧引用各自成为独立登记资源，迁移不读取秘密、不按相同文件路径合并身份。
+
+AI 提供商页的“从运行时导入…”是完整配置导入入口。选择已配置的 Agent 运行时实例后读取预览，复用该实例的目录与 Node 配置，再选择提供商模型导入；模型也可以关联到已有全局模型。原提供商与认证文件保留；导入在集中认证仓库登记资源，提供商只保存其 ID。重复项默认跳过，明确替换才更新已导入提供商；已有路由和运行时默认模型不自动改变。运行时实例、来源或目标配置在预览后变化时，须重新读取。读取配置不要求先连接运行时，也不要求已有默认模型或路由。仅支持当前网关能够保留语义的配置；不支持项及原因在预览中显示，动态命令不执行。
 
 原生 LLM Gateway 重构后，旧导入绑定若缺少新的 Pi 执行元数据，会提示重新预览并导入：选择原运行时，重新读取，勾选所需模型并明确替换已有提供商。原来源文件不删除。活动网关发生导入变更后旧连接停止，须重新连接；重复跳过保持连接。开发方已用安装包完成合成配置导入、工具续接与下一轮消息验收，证据和当前限制见 [原生实施记录](../tasks/ai-gateway-audit/native-implementation.md)。
 
@@ -112,7 +114,7 @@ Rust agent-runtime 的 [Pi adapter](../packages/agent-runtime/src/client.rs) 处
 
 “会话存储目录”覆盖 Pi 历史文件的默认存储位置，不是会话工作目录。通常留空，Pi 使用运行时目录下 `sessions/` 并按工作目录编码分组；恢复已有会话时保留其文件所在目录。Velune 只投影这份历史，不另建会话数据库。
 
-Application 在 `VELUNE_HOME/runtime-projections/` 下按运行时实例生成网关模型目录与 selection 文件，只列出 Velune 网关端点、模型投影与临时本地访问凭据，不写上游端点或 Keychain 引用。原运行时目录仍是 Pi home，保留原 `models.json`、认证、设置与会话。固定 SDK RPC launcher 通过独立的 ModelRuntime 注入受管目录，不覆盖原配置。运行时指定的 Pi 入口必须对应固定 1.0.2 SDK，不能对应的 wrapper 或其他版本明确拒绝，不静默替换安装。恢复历史会话后重新绑定 Velune 网关模型，历史 provider 不能绕过网关。平台秘密 helper 在网关实际请求时解析 Keychain 引用或显式认证来源；来源 adapter 使用原存储锁刷新，不复制 refresh credential。开发验证不读取真实 Keychain 或来源文件。平台凭据 shim 只调用 Core 的 sealed 来源入口，具体 Harness 适配由 Core 选择；认证 helper 的 AuthStorage 文件入口绑定固定 Pi 1.0.2；版本不符明确拒绝，是依赖升级时须复核的边界。
+Application 在 `VELUNE_HOME/runtime-projections/` 下按运行时实例生成网关模型目录与 selection 文件，只列出 Velune 网关端点、模型投影与临时本地访问凭据，不写上游端点或 Keychain 引用。原运行时目录仍是 Pi home，保留原 `models.json`、认证、设置与会话。固定 SDK RPC launcher 通过独立的 ModelRuntime 注入受管目录，不覆盖原配置。运行时指定的 Pi 入口必须对应固定 1.0.2 SDK，不能对应的 wrapper 或其他版本明确拒绝，不静默替换安装。恢复历史会话后重新绑定 Velune 网关模型，历史 provider 不能绕过网关。每次实际请求由 application 的认证解析器校验登记资源与目标，然后调用平台 Keychain helper 或内部来源 adapter。来源 adapter 使用原存储锁刷新，不复制 refresh credential；平台 shim 只处理 Keychain，不解释 Harness 来源。Unix helper 的超时、取消和关闭终止整个进程组；Windows helper 暂不开放。开发验证不读取真实 Keychain 或来源文件。认证 helper 的 AuthStorage 文件入口绑定固定 Pi 1.0.2；版本不符明确拒绝，是依赖升级时须复核的边界。
 
 执行 Pi 默认选择 `velune/auto`。Core 为本轮决定具体逻辑模型，virtual model 返回相同模型的能力；Pi 的物理模型 ID 使用非秘密路由绑定的稳定身份，网关将该 ID 直接映射到同一次已配置路由，不再二次选择；逻辑模型 ID 保留在界面与选择状态中。Pi 的分支 state 保存实际选择，assistant 历史记录实际模型；新会话使用运行时默认模型，会话切换不改这个默认值。模型 `maxTokens` 用作 Harness 元数据；输出参数仅按提供商协议发送和校验，订阅来源不支持服务端输出硬上限，不为其注入 `max_output_tokens`。Pi 的标准推理等级通过 `thinkingLevelMap` 限制为模型声明的等级；本轮不替自定义服务等级猜测转换规则。ChatCompletions 网关保留原生消息、推理历史、多模态内容与未知扩展；实际输入能力仍由所选模型和 Pi SDK 决定。ChatCompletions 与 Responses 保留原生请求 JSON、协议响应状态、安全请求／响应头及 JSON／SSE 内容；Responses 包括工具与 encrypted reasoning，只支持 foreground 创建，不增加查询、删除或 background API。客户端断开或网关停止取消活跃派发；网关不合成 `[DONE]` 或业务终态，也不自动重试或切换提供商。合法的 Responses incomplete／failed 等业务终态原样返回，不将其误判为传输断流。
 
@@ -139,7 +141,9 @@ live 入口 `minimax_manual live text|text-diagnostic|tool SOURCE_COMMIT` 仅供
 
 ## UniFFI 的临时端到端验收
 
-先构建动态库，并为 `--resources` 提供包含 `pi_sessions.mjs`、`pi_rpc.mjs`、`pi_virtual_model.mjs`、`pi_auth.mjs` 与固定 Pi `node_modules` 的资源目录。人工运行 [临时端到端脚本](../scripts/check-pi-uniffi-loop.py)，先按 [bindings unit](../packages/bindings/README.md) 生成 Python 绑定，再以绝对路径传入 `--bindings`、`--library`、`--resources` 和 `--node`。脚本使用临时 HOME、配置、工作与会话目录，以及 loopback 合成上游和 fixture-only 凭据 helper；不读取用户配置或调用真实模型。它检查流式回复、跨模型路由和输出上限、Pi 会话身份与恢复、忙时退出保护、取消以及配置重新打开。Responses 检查使用 `--protocol responsesV1`，订阅能力检查另加 `--subscription-capability`。用户对真实提供商和产品体验的验收仍独立进行。
+先构建动态库，并按 [bindings unit](../packages/bindings/README.md) 生成与其匹配的 Python 绑定。当前导入与认证验收使用 [安装包首循环脚本](../scripts/manual-pi-native-loop.py) 和 [集中认证管理脚本](../scripts/manual-authentication-management.py)，以绝对路径传入 `--bundle`、`--bindings`，首循环还需要 `--node`。两者使用临时 HOME、配置与来源，不访问真实 Keychain、会话或模型服务。首循环从配置运行时和导入开始，通过真实固定 Pi SDK 完成工具调用、续写和下一轮；还验证 application 管理的凭据 helper 在客户端断开、超时及关闭时终止子进程组。认证脚本验证 schema 2→3 迁移、目标授权、登记资源生命周期、generation 冲突与精确清理结果，配置操作不启动秘密解析。
+
+[原生 HTTP 脚本](../scripts/manual-gateway-native.py) 单独验证 ChatCompletions／Responses 的 JSON、SSE、错误状态及安全头，使用合成异步认证解析器，不涉及来源协议。[较广的 UniFFI 临时脚本](../scripts/check-pi-uniffi-loop.py) 保留跨模型、恢复及忙时退出检查，显式传入 `--bindings`、`--library`、`--resources` 和 `--node`。这些入口均由开发者手动运行，不接入 CI；真实提供商与产品体验由用户验收。
 
 ## 工作区 units 与绑定构建
 

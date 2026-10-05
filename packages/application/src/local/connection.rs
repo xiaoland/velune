@@ -37,14 +37,22 @@ impl CoreRuntime {
             .ok_or_else(|| RuntimeError::invalid("runtime model id"))?;
         runnable_pi_model(&gateway, logical_model_id)?;
         let physical_model_id = gateway
-            .pi_binding_id(logical_model_id)
+            .pi_binding_id(
+                logical_model_id,
+                self.authentication_resources
+                    .revision(&gateway, logical_model_id),
+            )
             .map_err(RuntimeError::invalid)?;
         let route_aliases = gateway
             .routes
             .iter()
             .map(|route| {
                 gateway
-                    .pi_binding_id(&route.model_id)
+                    .pi_binding_id(
+                        &route.model_id,
+                        self.authentication_resources
+                            .revision(&gateway, &route.model_id),
+                    )
                     .map(|alias| (alias, route.model_id.clone()))
                     .map_err(RuntimeError::invalid)
             })
@@ -52,7 +60,10 @@ impl CoreRuntime {
         self.shutdown_active()?;
         let runner = Runner::start(
             gateway.to_gateway_config()?,
-            self.options.credential_resolver.clone(),
+            crate::authentication_resolver::RegistryResolver::capture(
+                &self.authentication_resources,
+                &self.options,
+            ),
             route_aliases,
         )
         .map_err(|_| RuntimeError::invalid("gateway startup"))?;
@@ -97,11 +108,19 @@ impl CoreRuntime {
             GatewayProtocol::ResponsesV1 => "openai-responses",
             GatewayProtocol::MessagesV1 => return Err(RuntimeError::invalid("provider protocol")),
         };
-        if let Err(error) = materialize_models(&config, &gateway, runner.endpoint(), protocol) {
+        if let Err(error) = materialize_models(
+            &config,
+            &gateway,
+            runner.endpoint(),
+            protocol,
+            &self.authentication_resources,
+        ) {
             drop(runner);
             return Err(error);
         }
-        let subscription_capability = subscription_capability(&gateway, logical_model_id);
+        let subscription_capability = self
+            .authentication_resources
+            .subscription(&gateway, logical_model_id);
         write_selection_file(
             &config,
             logical_model_id,

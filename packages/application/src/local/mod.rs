@@ -48,6 +48,8 @@ pub struct CoreRuntime {
     options: RuntimeOptions,
     repository: crate::repository::Repository,
     gateways: Vec<GatewayConfig>,
+    authentication_resources: crate::authentication_resources::AuthenticationManager,
+    authentication_binding_id: Option<String>,
     runtime_instances: Vec<RuntimeInstance>,
     pi: Option<pi::Client>,
     pi_config: Option<PiConfig>,
@@ -63,6 +65,7 @@ pub struct CoreRuntime {
 }
 
 mod authentication_coordination;
+mod authentication_management;
 mod configuration;
 mod connection;
 mod conversations;
@@ -77,6 +80,10 @@ impl CoreRuntime {
             options,
             repository,
             gateways: persisted.gateways,
+            authentication_resources: crate::authentication_resources::AuthenticationManager {
+                resources: persisted.authentication_bindings,
+            },
+            authentication_binding_id: None,
             runtime_instances: persisted.runtime_instances,
             pi: None,
             pi_config: None,
@@ -145,6 +152,7 @@ impl CoreRuntime {
             "send" => self.send_action(request),
             "cancel" => self.cancel_action(request),
             "selectModel" => self.select_model(request),
+            "authenticationResources" => self.authentication_resource_action(&request["payload"]),
             "authentication" => self.authentication_action(&request["payload"]),
             "resources" | "settings" | "beginAuthorization" => {
                 Err(RuntimeError::Unsupported("legacy action".into()))

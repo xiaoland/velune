@@ -1,5 +1,4 @@
 //! Bounded platform-helper execution. Source contents and helper output never enter logs.
-use std::path::Path;
 #[cfg(unix)]
 use std::{process::Stdio, time::Duration};
 #[cfg(unix)]
@@ -17,26 +16,12 @@ pub(super) enum CredentialError {
     Timeout,
     #[cfg(unix)]
     InvalidOutput,
-    #[cfg(unix)]
-    StaleBinding,
 }
 
 #[cfg(unix)]
-pub(super) async fn resolve(
-    path: &Path,
-    reference: Option<&str>,
-    source: Option<&str>,
-    protocol: &str,
-    endpoint: &str,
-) -> Result<String, CredentialError> {
+pub(super) async fn execute(mut command: Command) -> Result<String, CredentialError> {
     use std::os::unix::process::CommandExt;
-    let mut command = Command::new(path);
     command.as_std_mut().process_group(0);
-    if let Some(source) = source {
-        command.arg("--source-json").arg(source);
-    } else {
-        command.arg(reference.ok_or(CredentialError::Unavailable)?);
-    }
     let mut child = command
         .env_clear()
         .stdin(Stdio::null())
@@ -84,25 +69,7 @@ pub(super) async fn resolve(
         let _ = child.start_kill();
         let _ = tokio::time::timeout(Duration::from_secs(2), child.wait()).await;
     }
-    let result = result?;
-    if source.is_none() {
-        return (!result.trim().is_empty())
-            .then(|| result.trim().to_owned())
-            .ok_or(CredentialError::InvalidOutput);
-    }
-    let envelope: serde_json::Value =
-        serde_json::from_str(&result).map_err(|_| CredentialError::InvalidOutput)?;
-    if envelope["contractVersion"] != 1
-        || envelope["capabilities"]["protocol"] != protocol
-        || envelope["capabilities"]["endpoint"] != endpoint
-    {
-        return Err(CredentialError::StaleBinding);
-    }
-    envelope["bearer"]
-        .as_str()
-        .filter(|value| !value.trim().is_empty())
-        .ok_or(CredentialError::InvalidOutput)?;
-    Ok(result)
+    result
 }
 
 #[cfg(unix)]
@@ -125,12 +92,6 @@ impl Drop for HelperGroup {
 // A Windows helper needs a Job-backed tree lifetime before it can be enabled.
 // Reject instead of advertising cancellation that kills only the parent process.
 #[cfg(not(unix))]
-pub(super) async fn resolve(
-    _path: &Path,
-    _reference: Option<&str>,
-    _source: Option<&str>,
-    _protocol: &str,
-    _endpoint: &str,
-) -> Result<String, CredentialError> {
+pub(super) async fn execute(_command: tokio::process::Command) -> Result<String, CredentialError> {
     Err(CredentialError::Unavailable)
 }

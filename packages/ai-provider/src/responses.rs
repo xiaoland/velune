@@ -2,16 +2,13 @@
 //!
 //! The adapter only replaces the logical model with its provider mapping. All
 //! other request JSON and upstream response bytes remain native Responses data.
-use crate::config::{
-    ProtocolConfig, ProviderConfig, ResolvedCredential, Transport, parse_resolved_credential,
-};
+use crate::config::{ProtocolConfig, ProviderConfig, ResolvedCredential, Transport};
 use reqwest::{Client, Response, header::HeaderValue};
 use serde_json::Value;
 use std::sync::Arc;
 use velune_ai::http::{Header, ResponseBody, ResponseMeta};
 use velune_ai::{InvalidContract, OperationFuture, Payload, responses::*};
 
-type CredentialResolver = dyn Fn(&str, Option<&str>) -> Option<String> + Send + Sync;
 const MAX_RESPONSE_BODY_BYTES: usize = 16 * 1024 * 1024;
 
 async fn bounded_body(response: Response) -> Result<Vec<u8>, ()> {
@@ -60,34 +57,6 @@ impl OpenAiResponses {
                     token: credential.token.clone(),
                     explicit_output_cap: credential.explicit_output_cap,
                     subscription: credential.subscription,
-                })
-            }),
-        })
-    }
-
-    pub fn with_resolver(
-        config: ProviderConfig,
-        client: Client,
-        resolver: Arc<CredentialResolver>,
-    ) -> Result<Self, InvalidContract> {
-        let ProtocolConfig::Responses(protocol) = config.protocol() else {
-            return Err(InvalidContract("provider requires OpenAI Responses v1"));
-        };
-        if !matches!(
-            protocol.endpoint.transport(),
-            Transport::Http | Transport::Https
-        ) {
-            return Err(InvalidContract("unsupported provider transport"));
-        }
-        let reference = config.credential().as_str().to_owned();
-        let source = config.credential_source().map(str::to_owned);
-        let source_present = source.is_some();
-        Ok(Self {
-            config,
-            client,
-            credential: Arc::new(move || {
-                resolver(&reference, source.as_deref()).and_then(|value| {
-                    parse_resolved_credential(&value, source_present, "responsesV1")
                 })
             }),
         })

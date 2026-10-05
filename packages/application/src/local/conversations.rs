@@ -31,9 +31,15 @@ impl CoreRuntime {
                     .find(|gateway| gateway.id == runtime.gateway_id)
             })
             .ok_or_else(|| RuntimeError::invalid("runtime gateway"))?;
-        self.subscription_capability = subscription_capability(gateway, &default_model);
+        self.subscription_capability = self
+            .authentication_resources
+            .subscription(gateway, &default_model);
         let default_physical_model_id = gateway
-            .pi_binding_id(&default_model)
+            .pi_binding_id(
+                &default_model,
+                self.authentication_resources
+                    .revision(gateway, &default_model),
+            )
             .map_err(RuntimeError::invalid)?;
         self.start_pi_for_session(
             &cwd,
@@ -112,10 +118,13 @@ impl CoreRuntime {
         self.logical_model_id = model_id.clone();
         self.subscription_capability = model_id
             .as_deref()
-            .is_some_and(|id| subscription_capability(gateway, id));
+            .is_some_and(|id| self.authentication_resources.subscription(gateway, id));
         if let Some(model_id) = model_id {
             let physical_model_id = gateway
-                .pi_binding_id(&model_id)
+                .pi_binding_id(
+                    &model_id,
+                    self.authentication_resources.revision(gateway, &model_id),
+                )
                 .map_err(RuntimeError::invalid)?;
             self.physical_model_id = Some(physical_model_id.clone());
             self.start_pi_for_session(
@@ -237,9 +246,14 @@ impl CoreRuntime {
             .find(|item| item.id == runtime.gateway_id)
             .expect("runtime gateway is configured");
         runnable_pi_model(gateway, model_id)?;
-        let selected_subscription_capability = subscription_capability(gateway, model_id);
+        let selected_subscription_capability = self
+            .authentication_resources
+            .subscription(gateway, model_id);
         let selected_physical_model_id = gateway
-            .pi_binding_id(model_id)
+            .pi_binding_id(
+                model_id,
+                self.authentication_resources.revision(gateway, model_id),
+            )
             .map_err(RuntimeError::invalid)?;
         self.write_selection(
             model_id,

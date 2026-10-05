@@ -6,6 +6,7 @@ credentials, conversations, tools and upstream responses live in a temporary hom
 """
 import argparse
 import importlib.util
+import http.client
 import json
 import os
 from pathlib import Path
@@ -91,7 +92,7 @@ def main():
         for name, content in source_files.items():
             (root / 'source' / name).write_bytes(content)
         helper = root / 'synthetic-credential'
-        helper.write_text(f'#!{sys.executable}\nimport json\nprint(json.dumps({{"contractVersion":1,"bearer":"synthetic-only","capabilities":{{"protocol":"chatCompletionsV1","endpoint":{endpoint!r}}}}}))\n')
+        helper.write_text(f'#!{sys.executable}\nraise SystemExit(1)\n')
         helper.chmod(0o700)
         library = args.bundle / 'Contents/Frameworks/libvelune_bindings.dylib'
         shutil.copy(args.bindings / 'velune_bindings.py', root / 'bindings')
@@ -130,6 +131,13 @@ def main():
             assert imported.imported_provider_ids == [selected.id], 'unselected provider was imported'
             gateway, = imported.gateways
             assert len(gateway.providers) == 1, 'unselected provider was saved'
+            authentication_id = gateway.providers[0].authentication_id
+            resource = next(item for item in application.list().authentication_bindings if item.id == authentication_id)
+            assert resource.method == bindings.BindingAuthenticationMethod.API_KEY
+            assert resource.provenance.runtime_type_id == 'pi'
+            saved = json.loads((root / 'home/generic-config.json').read_text())
+            assert saved['schemaVersion'] == 3 and len(saved['authenticationBindings']) == 1
+            assert not any(key.startswith('credential') for key in saved['gateways'][0]['providers'][0])
             binding, = gateway.providers[0].models
             gateway.routes = [bindings.BindingRoute(model_id=binding.model_id, provider_id=selected.id)]
             application.upsert_gateway(gateway)
@@ -177,10 +185,68 @@ def main():
             assert changed.requires_reconnect, 'changed active gateway did not report stale connection'
             assert application.list().active_runtime_instance_id is None, 'stale gateway remained active'
             assert all((root / 'source' / name).read_bytes() == content for name, content in source_files.items())
+            # Exercise helper lifetime through the application-managed registry,
+            # not a gateway-specific source protocol. Only this synthetic helper
+            # and its synthetic Node descendant are started or terminated.
+            pid_file = root / 'helper-node.pid'
+            node_code = 'require("fs").writeFileSync(' + json.dumps(str(pid_file)) + ',String(process.pid));setInterval(()=>{},1000)'
+            helper.write_text(f'#!{sys.executable}\nimport subprocess\nsubprocess.run([{str(args.node)!r}, "-e", {node_code!r}])\n')
+            managed = application.configure_api_key_binding('hanging-fixture', 'Synthetic helper', 'synthetic-ref',
+                bindings.BindingGatewayProtocol.CHAT_COMPLETIONS_V1, endpoint, False, None)
+            gateway, = application.list().gateways
+            gateway.providers[0].authentication_id = managed.binding.id
+            application.upsert_gateway(gateway)
+            application.connect_runtime(runtime.id)
+            projection, = (root / 'home/runtime-projections').iterdir()
+            injected = json.loads((projection / 'models.json').read_text())['providers']['velune-gateway']
+            port = int(injected['baseUrl'].split(':')[2].split('/')[0])
+
+            def pending_request():
+                connection = http.client.HTTPConnection('127.0.0.1', port, timeout=35)
+                connection.request('POST', '/v1/chat/completions', json.dumps({'model': binding.model_id,
+                    'messages': [{'role': 'user', 'content': 'synthetic'}]}),
+                    {'Authorization': 'Bearer ' + injected['apiKey'], 'Content-Type': 'application/json'})
+                deadline = time.monotonic() + 3
+                while not pid_file.exists() and time.monotonic() < deadline:
+                    time.sleep(.02)
+                assert pid_file.exists(), 'managed helper did not start'
+                return connection, int(pid_file.read_text())
+
+            def descendant_gone(pid):
+                deadline = time.monotonic() + 3
+                while time.monotonic() < deadline:
+                    try:
+                        os.kill(pid, 0)
+                    except ProcessLookupError:
+                        pid_file.unlink()
+                        return
+                    time.sleep(.02)
+                raise AssertionError('managed helper descendant survived cancellation')
+
+            connection, pid = pending_request()
+            connection.close()
+            descendant_gone(pid)
+            connection, pid = pending_request()
+            started = time.monotonic()
+            response = connection.getresponse()
+            assert response.status == 503
+            response.read()
+            assert 25 < time.monotonic() - started < 33
+            connection.close()
+            descendant_gone(pid)
+            connection, pid = pending_request()
+            started = time.monotonic()
+            application.shutdown()
+            application = None
+            connection.close()
+            descendant_gone(pid)
+            assert time.monotonic() - started < 3, 'managed helper blocked application shutdown'
             print(json.dumps({'acceptance': 'PASSED', 'bundle': {'sourceCommit': manifest['source_commit'],
                 'dirty': manifest['dirty'], 'uiVersion': manifest['ui_version']},
                 'normalPath': 'configured runtime → import → route → connect → create → send → tool → continuation → next turn',
-                'upstreamRequests': len(captures), 'onlySelectedProviderSaved': True,
+                'upstreamRequests': len(captures), 'onlySelectedProviderSaved': True, 'centralAuthenticationResource': True,
+                'actualPiSourceCredentialAdapter': True,
+                'managedHelperDisconnectDeadlineShutdownCleanup': True,
                 'nativeReasoningHistoryPreserved': True, 'sourceFilesUnchanged': True,
                 'unchangedImportKeepsConnection': True, 'changedImportDisconnectsStaleGateway': True,
                 'realServicesCalled': False}, ensure_ascii=False, indent=2))

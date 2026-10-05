@@ -1,19 +1,42 @@
-//! Local application authentication use cases.
+//! Authentication uses a registry ID; only the source adapter receives private coordinates.
 use super::*;
+use crate::authentication_resources::*;
 impl CoreRuntime {
     pub(super) fn authentication_action(&mut self, payload: &Value) -> Result<Value, RuntimeError> {
-        if payload["operation"].as_str() == Some("start") && self.pi_busy {
+        let operation = payload["operation"].as_str().unwrap_or("poll");
+        if operation == "start" && self.pi_busy {
             return Err(RuntimeError::invalid("runtime is busy"));
         }
-        let source_before = self
-            .authentication
-            .as_ref()
-            .map(|login| login.source().clone());
+        let mut request = payload.clone();
+        if matches!(operation, "start" | "inspect") {
+            let id = payload["bindingID"]
+                .as_str()
+                .ok_or_else(|| RuntimeError::invalid("authentication resource id"))?;
+            let resource = self.authentication_resources.get(id)?;
+            match &resource.locator {
+                AuthenticationLocator::Keychain { .. } => {
+                    if operation == "start" {
+                        return Err(RuntimeError::invalid(
+                            "API key 认证请在认证设置中替换；此资源没有登录流程。",
+                        ));
+                    }
+                    return Ok(
+                        json!({"metadata":{"configured":resource.configured,"capabilities":{"protocol":resource.protocol,"endpoint":resource.endpoint,"explicitOutputCap":true,"temperature":true},"actions":[]}}),
+                    );
+                }
+                AuthenticationLocator::RuntimeProvider { source } => {
+                    request["source"] = Value::String(serde_json::to_string(source)?)
+                }
+            }
+            if operation == "start" {
+                self.authentication_binding_id = Some(id.into());
+            }
+        }
         let mut data = authentication::handle(
             &mut self.authentication,
             &self.options.resources_directory,
             &self.options.home_directory,
-            payload,
+            &request,
         )
         .map_err(RuntimeError::Invalid)?;
         let succeeded = data["events"].as_array().is_some_and(|events| {
@@ -21,41 +44,35 @@ impl CoreRuntime {
                 .iter()
                 .any(|event| event["type"] == "result" && event["ok"] == true)
         });
-        let Some(source) = source_before.filter(|_| succeeded) else {
-            return Ok(data);
-        };
-        let mut changed = false;
-        for gateway in &mut self.gateways {
-            for provider in &mut gateway.providers {
-                let matches = provider
-                    .credential_source
-                    .as_ref()
-                    .is_some_and(|candidate| {
-                        candidate.kind == crate::config::CredentialSourceKind::Harness
-                            && source.kind == "harness"
-                            && candidate.harness_type_id == source.harness_type_id
-                            && candidate.provider_id == source.provider_id
-                            && candidate.settings.get("authPath") == source.settings.get("authPath")
-                    });
-                if matches {
-                    if let Some(source) = &mut provider.credential_source {
-                        source
-                            .settings
-                            .insert("credentialKind".into(), "oauth".into());
-                    }
-                    provider.credential_generation = provider
-                        .credential_generation
-                        .checked_add(1)
-                        .ok_or_else(|| RuntimeError::invalid("credential generation overflow"))?;
-                    changed = true;
-                }
+        if succeeded {
+            let previous = self.authentication_resources.clone();
+            let id = self.authentication_binding_id.take().ok_or_else(|| {
+                RuntimeError::invalid("authentication session resource is missing")
+            })?;
+            let resource = self
+                .authentication_resources
+                .resources
+                .iter_mut()
+                .find(|item| item.id == id)
+                .ok_or_else(|| RuntimeError::invalid("authentication resource not found"))?;
+            resource.method = AuthenticationMethod::OAuth;
+            resource.configured = true;
+            resource.generation = resource
+                .generation
+                .checked_add(1)
+                .ok_or_else(|| RuntimeError::invalid("authentication revision overflow"))?;
+            if let AuthenticationLocator::RuntimeProvider { source } = &mut resource.locator {
+                source
+                    .settings
+                    .insert("credentialKind".into(), "oauth".into());
             }
-        }
-        if changed {
-            self.persist()?;
-            if !self.pi_busy {
-                self.shutdown_active()?;
+            if self.persist().is_err() {
+                self.authentication_resources = previous;
+                return Err(RuntimeError::invalid(
+                    "来源登录已完成，但认证资源保存失败；原来源保持登录，请检查配置目录后重试登记。",
+                ));
             }
+            self.shutdown_active()?;
             data["gateways"] = serde_json::to_value(&self.gateways)?;
             data["requiresReconnect"] = Value::Bool(true);
         }

@@ -100,24 +100,22 @@ enum ProviderProtocol: String, Codable, Sendable, CaseIterable, Identifiable {
     var id: String { rawValue }
 }
 
-struct CredentialSource: Codable, Sendable, Equatable {
-    var kind: String = "harness"
-    var harnessTypeID: String
-    var sourceInstanceID: String?
-    var providerID: String
-    var settings: [String: String]
-    enum CodingKeys: String, CodingKey {
-        case kind, settings
-        case harnessTypeID = "harnessTypeId"
-        case sourceInstanceID = "sourceInstanceId"
-        case providerID = "providerId"
+enum AuthenticationMethod: String, Codable, Sendable {
+    case apiKey, oauth, unconfigured
+    var label: String {
+        switch self { case .apiKey: return "API key"; case .oauth: return "OAuth"; case .unconfigured: return "尚未配置" }
     }
 }
 
-struct CredentialSourceType: Codable, Sendable, Identifiable, Equatable {
+struct AuthenticationBinding: Codable, Sendable, Identifiable, Equatable {
     var id: String
     var name: String
-    var fields: [SettingField]
+    var method: AuthenticationMethod
+    var configured: Bool
+    var protocolID: ProviderProtocol
+    var endpoint: String
+    var generation: UInt64
+    var provenance: String?
     var actions: [SettingAction]
 }
 
@@ -126,11 +124,9 @@ struct AIProvider: Codable, Sendable, Identifiable, Equatable {
     var name: String
     var protocolID: ProviderProtocol
     var endpoint: String
-    var credentialRef: String?
+    var authenticationID: String?
     var models: [ProviderModelBinding]
-    var credentialSource: CredentialSource? = nil
-    var credentialGeneration: UInt64? = nil
-    enum CodingKeys: String, CodingKey { case id, name, endpoint, credentialRef, credentialSource, credentialGeneration, models; case protocolID = "protocol" }
+    enum CodingKeys: String, CodingKey { case id, name, endpoint, models; case authenticationID = "authenticationId"; case protocolID = "protocol" }
 }
 
 struct ModelRoute: Codable, Sendable, Identifiable, Equatable {

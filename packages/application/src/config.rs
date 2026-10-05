@@ -1,4 +1,4 @@
-//! Application-owned schema 2 configuration and adapter integration metadata.
+//! Application-owned schema 3 configuration and adapter integration metadata.
 //!
 //! These types contain ordinary configuration only. Credential references are
 //! opaque handles; resolving them and constructing an HTTP client belongs to
@@ -13,8 +13,6 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 #[cfg(not(feature = "local-runtime"))]
 use std::collections::BTreeSet;
-#[cfg(feature = "local-runtime")]
-use std::path::Path;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -47,36 +45,13 @@ pub enum GatewayProtocol {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-pub enum CredentialSourceKind {
-    #[serde(rename = "harness")]
-    Harness,
-}
-
-/// Platform-owned authentication lookup metadata. It contains no bearer or key material.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct CredentialSource {
-    pub kind: CredentialSourceKind,
-    pub harness_type_id: String,
-    #[serde(default)]
-    pub source_instance_id: Option<String>,
-    pub provider_id: String,
-    pub settings: BTreeMap<String, String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
 pub struct ProviderDefinition {
     pub id: String,
     pub name: String,
     pub protocol: GatewayProtocol,
     pub endpoint: String,
     #[serde(default)]
-    pub credential_ref: Option<String>,
-    #[serde(default)]
-    pub credential_source: Option<CredentialSource>,
-    #[serde(default)]
-    pub credential_generation: u64,
+    pub authentication_id: Option<String>,
     pub models: Vec<ProviderModelBinding>,
 }
 
@@ -164,9 +139,6 @@ impl GatewayConfig {
                 .map_err(|_| "gateway configuration encoding")?
                 .validate()?;
             for provider in &self.providers {
-                if !valid_credential_source(provider) {
-                    return Err("provider authentication source is invalid");
-                }
                 for binding in &provider.models {
                     if let Some(projection) = &binding.pi_projection {
                         if projection.thinking_level_map.keys().any(|level| {
@@ -242,7 +214,6 @@ impl GatewayConfig {
                     || provider.name.is_empty()
                     || provider.endpoint.is_empty()
                     || matches!(provider.protocol, GatewayProtocol::MessagesV1)
-                    || !valid_credential_source(provider)
                     || providers.insert(&provider.id, provider).is_some()
                 {
                     return Err("provider is unsupported or duplicated");
@@ -323,7 +294,11 @@ impl GatewayConfig {
     /// Node executable path, so changing a route or account generation cannot
     /// reuse an incompatible Pi model entry.
     #[cfg(feature = "local-runtime")]
-    pub fn pi_binding_id(&self, logical_model_id: &str) -> Result<String, &'static str> {
+    pub fn pi_binding_id(
+        &self,
+        logical_model_id: &str,
+        authentication_revision: u64,
+    ) -> Result<String, &'static str> {
         let provider = self.validate_dispatch(logical_model_id)?;
         let route = self
             .routes
@@ -335,22 +310,6 @@ impl GatewayConfig {
             .iter()
             .find(|binding| binding.model_id == logical_model_id)
             .ok_or("provider model binding is missing")?;
-        let credential_source = provider.credential_source.as_ref().map(|source| {
-            let auth_path = source.settings.get("authPath").map(String::as_str);
-            let models_path = source.settings.get("modelsPath").map(String::as_str);
-            let credential_location = source
-                .settings
-                .get("credentialLocation")
-                .map(String::as_str);
-            PiCredentialIdentity {
-                auth_path,
-                models_path,
-                credential_location,
-                harness: source.harness_type_id.as_str(),
-                provider: source.provider_id.as_str(),
-                source_instance: source.source_instance_id.as_deref(),
-            }
-        });
         let identity = PiBindingIdentity {
             logical_model_id,
             provider_id: route.provider_id.as_str(),
@@ -358,9 +317,8 @@ impl GatewayConfig {
             endpoint: provider.endpoint.as_str(),
             external_model_id: binding.external_model_id.as_str(),
             pi_projection: binding.pi_projection.as_ref(),
-            credential_ref: provider.credential_ref.as_deref(),
-            credential_source,
-            credential_generation: provider.credential_generation,
+            authentication_id: provider.authentication_id.as_deref(),
+            authentication_revision,
         };
         let canonical = serde_json::to_vec(&identity).map_err(|_| "binding identity encoding")?;
         let digest = Sha256::digest(canonical);
@@ -412,25 +370,8 @@ struct PiBindingIdentity<'a> {
     endpoint: &'a str,
     external_model_id: &'a str,
     pi_projection: Option<&'a PiModelProjection>,
-    credential_ref: Option<&'a str>,
-    credential_source: Option<PiCredentialIdentity<'a>>,
-    credential_generation: u64,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-#[cfg(feature = "local-runtime")]
-struct PiCredentialIdentity<'a> {
-    #[serde(rename = "authPath")]
-    auth_path: Option<&'a str>,
-    #[serde(rename = "modelsPath")]
-    models_path: Option<&'a str>,
-    #[serde(rename = "credentialLocation")]
-    credential_location: Option<&'a str>,
-    harness: &'a str,
-    provider: &'a str,
-    #[serde(rename = "sourceInstance")]
-    source_instance: Option<&'a str>,
+    authentication_id: Option<&'a str>,
+    authentication_revision: u64,
 }
 
 impl GatewayProtocol {
@@ -444,61 +385,6 @@ impl GatewayProtocol {
     }
 }
 
-#[cfg(feature = "local-runtime")]
-fn valid_credential_source(provider: &ProviderDefinition) -> bool {
-    match (&provider.credential_ref, &provider.credential_source) {
-        (Some(reference), None) => !reference.is_empty(),
-        (None, Some(source)) => {
-            matches!(source.kind, CredentialSourceKind::Harness)
-                && source.harness_type_id == "pi"
-                && !source.provider_id.is_empty()
-                && !matches!(provider.protocol, GatewayProtocol::MessagesV1)
-                && source
-                    .settings
-                    .get("nodeBinary")
-                    .is_some_and(|value| Path::new(value).is_absolute())
-                && source.settings.get("bindingProjection").is_none_or(|raw| {
-                    let Ok(expected) =
-                        serde_json::from_str::<BTreeMap<String, PiModelProjection>>(raw)
-                    else {
-                        return false;
-                    };
-                    provider.models.iter().all(|binding| {
-                        expected.get(&binding.external_model_id) == binding.pi_projection.as_ref()
-                    })
-                })
-                && (source
-                    .settings
-                    .get("modelsPath")
-                    .is_some_and(|value| Path::new(value).is_absolute())
-                    || (source.provider_id == "openai"
-                        && matches!(provider.protocol, GatewayProtocol::ResponsesV1)
-                        && provider.endpoint == "https://api.openai.com/v1"
-                        && source
-                            .settings
-                            .get("authPath")
-                            .is_some_and(|value| Path::new(value).is_absolute())))
-                && source
-                    .source_instance_id
-                    .as_deref()
-                    .is_none_or(|value| !value.is_empty())
-        }
-        (None, None) => true,
-        _ => false,
-    }
-}
-
-#[cfg(not(feature = "local-runtime"))]
-fn valid_credential_source(provider: &ProviderDefinition) -> bool {
-    match (&provider.credential_ref, &provider.credential_source) {
-        (Some(reference), None) => !reference.is_empty(),
-        (None, Some(source)) => {
-            !source.harness_type_id.is_empty() && !source.provider_id.is_empty()
-        }
-        (None, None) => true,
-        _ => false,
-    }
-}
 #[cfg(feature = "local-runtime")]
 impl GatewayConfig {
     /// Strip adapter metadata at the application-to-gateway boundary.
@@ -537,13 +423,7 @@ impl GatewayConfig {
                             }
                         },
                         endpoint: p.endpoint.clone(),
-                        credential_ref: p.credential_ref.clone(),
-                        credential_source: p
-                            .credential_source
-                            .as_ref()
-                            .map(serde_json::to_value)
-                            .transpose()?,
-                        credential_generation: p.credential_generation,
+                        credential_ref: p.authentication_id.clone(),
                         models: p
                             .models
                             .iter()

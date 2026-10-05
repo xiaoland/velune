@@ -55,6 +55,7 @@ pub(super) fn materialize_models(
     gateway: &GatewayConfig,
     endpoint: &str,
     protocol: &str,
+    authentication: &crate::authentication_resources::AuthenticationManager,
 ) -> Result<(), RuntimeError> {
     let target = config
         .models_path
@@ -80,7 +81,7 @@ pub(super) fn materialize_models(
         .filter(|model| runnable_pi_model(gateway, &model.id).is_ok())
         .map(|model| -> Result<Value, RuntimeError> {
             let physical_id = gateway
-                .pi_binding_id(&model.id)
+                .pi_binding_id(&model.id, authentication.revision(gateway,&model.id))
                 .map_err(RuntimeError::invalid)?;
             let api =
                 gateway
@@ -228,31 +229,6 @@ pub(super) fn write_selection_file(
     fs::write(&temporary, bytes)?;
     fs::rename(temporary, path)?;
     Ok(())
-}
-
-pub(super) fn subscription_capability(gateway: &GatewayConfig, model_id: &str) -> bool {
-    let Some(route) = gateway
-        .routes
-        .iter()
-        .find(|route| route.model_id == model_id)
-    else {
-        return false;
-    };
-    gateway
-        .providers
-        .iter()
-        .find(|provider| provider.id == route.provider_id)
-        .and_then(|provider| {
-            provider
-                .credential_source
-                .as_ref()
-                .map(|source| (provider, source))
-        })
-        .is_some_and(|(provider, source)| {
-            matches!(provider.protocol, GatewayProtocol::ResponsesV1)
-                && source.harness_type_id == "pi"
-                && source.settings.get("credentialKind").map(String::as_str) == Some("oauth")
-        })
 }
 
 pub(super) fn validate_session_cwd(cwd: &Path) -> Result<(), RuntimeError> {

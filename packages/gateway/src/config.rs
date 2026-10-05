@@ -53,10 +53,6 @@ pub struct ProviderDefinition {
     pub endpoint: String,
     #[serde(default)]
     pub credential_ref: Option<String>,
-    #[serde(default)]
-    pub credential_source: Option<serde_json::Value>,
-    #[serde(default)]
-    pub credential_generation: u64,
     pub models: Vec<ProviderModelBinding>,
 }
 
@@ -125,7 +121,10 @@ impl GatewayConfig {
                 || provider.name.is_empty()
                 || provider.endpoint.is_empty()
                 || matches!(provider.protocol, GatewayProtocol::MessagesV1)
-                || !valid_credential_source(provider)
+                || provider
+                    .credential_ref
+                    .as_deref()
+                    .is_some_and(str::is_empty)
                 || providers.insert(&provider.id, provider).is_some()
             {
                 return Err("provider is unsupported or duplicated");
@@ -198,15 +197,8 @@ impl GatewayConfig {
 }
 
 pub(crate) fn credential_ready(provider: &ProviderDefinition) -> bool {
-    matches!((&provider.credential_ref, &provider.credential_source), (Some(reference), None) if !reference.is_empty())
-        || matches!((&provider.credential_ref, &provider.credential_source), (None, Some(_)) if valid_credential_source(provider))
-}
-
-fn valid_credential_source(provider: &ProviderDefinition) -> bool {
-    match (&provider.credential_ref, &provider.credential_source) {
-        (Some(reference), None) => !reference.is_empty(),
-        (None, Some(source)) => !source.is_null(),
-        (None, None) => true,
-        _ => false,
-    }
+    provider
+        .credential_ref
+        .as_deref()
+        .is_some_and(|reference| !reference.is_empty())
 }

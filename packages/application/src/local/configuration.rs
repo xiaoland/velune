@@ -9,17 +9,7 @@ impl CoreRuntime {
             "gateways": self.gateways,
             "runtimeInstances": self.runtime_instances,
             "runtimeTypes": runtime_types(&self.options.resources_directory),
-            "credentialSourceTypes": [{
-                "id":"pi",
-                "name":"Pi Agent 认证来源",
-                "fields":[
-                    {"key":"providerId","label":"认证提供商","kind":"text","required":true,"value":"","options":[],"help":"Pi provider ID；认证动作会根据指定来源能力显示。"},
-                    {"key":"authPath","label":"认证文件","kind":"filePath","required":true,"value":"","options":[],"help":"保留 Pi 原生认证来源文件路径；Velune 不复制凭据。"},
-                    {"key":"nodeBinary","label":"Node 可执行文件","kind":"filePath","required":true,"value":"","options":[],"executableDiscovery":{"command":"node","minimumVersion":"22.19.0"},"help":"Node 22.19+ 的绝对路径。"}
-                ],
-                "actions":[{"id":"login","label":"登录…"}],
-                "capability":"读取指定 Pi 认证来源；Velune 不复制认证资料。"
-            }],
+            "authenticationBindings":self.authentication_resources.descriptors(),
             "providerImportTypes": [provider_import::descriptor()],
             "protocols": [
                 {"id":"chatCompletionsV1","name":"OpenAI Chat Completions v1","supported":true},
@@ -66,6 +56,7 @@ impl CoreRuntime {
                     gateway,
                     &self.options,
                     &self.runtime_instances,
+                    &self.authentication_resources,
                 )
                 .map(|preview| json!({"preview":preview,"gateway":gateway}))
             }
@@ -74,18 +65,22 @@ impl CoreRuntime {
                     .map(|index| self.gateways[index].clone())
                     .unwrap_or(empty_default);
                 let previous = imported_gateway.clone();
+                let previous_authentication = self.authentication_resources.clone();
+                let mut imported_authentication = self.authentication_resources.clone();
                 let result = provider_import::apply(
                     &request["payload"],
                     &mut imported_gateway,
                     &self.options,
                     &self.runtime_instances,
+                    &mut imported_authentication,
                 )?;
                 if imported_gateway.providers.is_empty() {
                     return Err(RuntimeError::invalid(
                         "provider import selected no providers",
                     ));
                 }
-                let requires_reconnect = imported_gateway != previous
+                let requires_reconnect = (imported_gateway != previous
+                    || imported_authentication.resources != previous_authentication.resources)
                     && self
                         .active_runtime_id
                         .as_ref()
@@ -100,7 +95,9 @@ impl CoreRuntime {
                 } else {
                     self.gateways.push(imported_gateway);
                 }
+                self.authentication_resources = imported_authentication;
                 if let Err(error) = self.persist() {
+                    self.authentication_resources = previous_authentication;
                     if let Some(index) = existing {
                         self.gateways[index] = previous;
                     } else {
@@ -225,8 +222,10 @@ impl CoreRuntime {
     }
 
     pub(super) fn persist(&self) -> Result<(), RuntimeError> {
+        self.authentication_resources.validate(&self.gateways)?;
         self.repository.store(&crate::repository::PersistedConfig {
-            schema_version: 2,
+            schema_version: 3,
+            authentication_bindings: self.authentication_resources.resources.clone(),
             gateways: self.gateways.clone(),
             runtime_instances: self.runtime_instances.clone(),
         })

@@ -154,3 +154,8 @@ S17 实施授权：用户决定全面切换 UniFFI，并要求现在开始拆分
 2026-10-05，用户允许 `SamplingOutput` 作为业务表示，但要求可观测性内容与业务数据分离；指定处理方向为 HTTP → OpenAI ChatCompletions → messages、outputs／stats → SamplingOutput。后续澄清 usage、finish reason 可以同时是业务数据和观察对象。设计释义为原生协议先行，业务投影按需消费，观察独立关联并可消费业务统计。权威归属为 [AI 服务设计](design/ai-service.md)。
 
 2026-10-05，用户明确 AI 服务不限于 LLM，当前 gateway 仅为 LLM Gateway，gateway 是 AI 模块的一种应用模式。职责关系不推出 package 合并，也不要求所有 AI 调用经过网关。权威产品归属为 [PRD](prd/index.md)，技术边界归 [AI 服务设计](design/ai-service.md)。
+
+2026-10-05，用户指出导入后“Pi Agent 认证来源”被列为认证方式，违反 AI 服务与 Harness 解耦；进一步明确仅保留外部凭据引用仍危险，要求统一集中管理。认证资源、目标授权与来源适配归 application，提供商选择已登记资源，Harness 来源不成为 AI 认证类型。既有平台秘密与原订阅认证保留约束继续适用。权威归属为 [PRD](prd/index.md)及 [AI 服务设计](design/ai-service.md)。
+
+
+2026-10-05，用户进一步纠正 model-id：这是提供商规定的模型标识，不是内部记录键；要求核对 Vercel AI SDK、Mastra、Cloudflare AI Gateway 与 OpenAI Developer Docs 的基本概念和业务模型。产品定义归 PRD，官方资料及当前代码对照归 AI 网关审计任务；这次研究不自行授权新的模型迁移实现。

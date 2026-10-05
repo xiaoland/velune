@@ -71,18 +71,17 @@ enum BindingMapping {
                              adapterMetadataJSON: value.adapterMetadataJson)
     }
 
-    static func credentialSource(_ value: BindingCredentialSource) -> CredentialSource {
-        CredentialSource(kind: "harness", harnessTypeID: value.harnessTypeId,
-                         sourceInstanceID: value.sourceInstanceId, providerID: value.providerId,
-                         settings: value.settings)
+    static func authenticationBinding(_ value: BindingAuthenticationBinding) -> AuthenticationBinding {
+        let method: AuthenticationMethod
+        switch value.method { case .apiKey: method = .apiKey; case .oAuth: method = .oauth; case .unconfigured: method = .unconfigured }
+        return AuthenticationBinding(id: value.id, name: value.name, method: method, configured: value.configured, protocolID: protocolID(value.`protocol`),
+                                     endpoint: value.endpoint, generation: value.generation, provenance: value.provenance?.displayName, actions: value.actions.map(settingAction))
     }
 
     static func provider(_ value: BindingProviderDefinition) -> AIProvider {
         AIProvider(id: value.id, name: value.name, protocolID: protocolID(value.`protocol`),
-                   endpoint: value.endpoint, credentialRef: value.credentialRef,
-                   models: value.models.map(providerBinding),
-                   credentialSource: value.credentialSource.map(credentialSource),
-                   credentialGeneration: value.credentialGeneration)
+                   endpoint: value.endpoint, authenticationID: value.authenticationId,
+                   models: value.models.map(providerBinding))
     }
 
     static func gateway(_ value: BindingGatewayConfig) -> GatewayConfig {
@@ -93,19 +92,15 @@ enum BindingMapping {
     }
 
     static func bindingGateway(_ value: GatewayConfig) -> BindingGatewayConfig {
-        BindingGatewayConfig(id: value.id, name: value.name, models: value.models.map { BindingModelDefinition(id: $0.id, nickname: $0.nickname, icon: $0.icon, maxOutputTokens: $0.maxOutputTokens, contextWindow: $0.contextWindow, reasoningLevels: $0.reasoningLevels) }, providers: value.providers.map { BindingProviderDefinition(id: $0.id, name: $0.name, protocol: bindingProtocol($0.protocolID), endpoint: $0.endpoint, credentialRef: $0.credentialRef, credentialSource: $0.credentialSource.map(bindingCredentialSource), credentialGeneration: $0.credentialGeneration ?? 0, models: $0.models.map(bindingProviderModel) ) }, routes: value.routes.map { BindingRoute(modelId: $0.modelID, providerId: $0.providerID) }, failover: BindingFailoverPolicy(mode: .disabled))
+        BindingGatewayConfig(id: value.id, name: value.name, models: value.models.map { BindingModelDefinition(id: $0.id, nickname: $0.nickname, icon: $0.icon, maxOutputTokens: $0.maxOutputTokens, contextWindow: $0.contextWindow, reasoningLevels: $0.reasoningLevels) }, providers: value.providers.map { BindingProviderDefinition(id: $0.id, name: $0.name, protocol: bindingProtocol($0.protocolID), endpoint: $0.endpoint, authenticationId: $0.authenticationID, models: $0.models.map(bindingProviderModel) ) }, routes: value.routes.map { BindingRoute(modelId: $0.modelID, providerId: $0.providerID) }, failover: BindingFailoverPolicy(mode: .disabled))
     }
 
-    private static func bindingProtocol(_ value: ProviderProtocol) -> BindingGatewayProtocol {
+    static func bindingProtocol(_ value: ProviderProtocol) -> BindingGatewayProtocol {
         switch value { case .chatCompletionsV1: return .chatCompletionsV1; case .responsesV1: return .responsesV1; case .messagesV1: return .messagesV1 }
     }
 
     private static func bindingProviderModel(_ value: ProviderModelBinding) -> BindingProviderModelBinding {
         BindingProviderModelBinding(modelId: value.modelID, externalModelId: value.externalModelID, adapterMetadataJson: value.adapterMetadataJSON)
-    }
-
-    private static func bindingCredentialSource(_ value: CredentialSource) -> BindingCredentialSource {
-        BindingCredentialSource(kind: .harness, harnessTypeId: value.harnessTypeID, sourceInstanceId: value.sourceInstanceID, providerId: value.providerID, settings: value.settings)
     }
 
     static func bindingRuntime(_ value: RuntimeInstance) -> BindingRuntimeInstance {
@@ -114,10 +109,6 @@ enum BindingMapping {
 
     static func bindingSelection(_ value: ProviderImportSelection) -> BindingImportSelection {
         BindingImportSelection(providerId: value.providerId, modelIds: value.modelIds, modelMappings: value.modelMappings)
-    }
-
-    static func bindingSource(_ value: CredentialSource) -> BindingCredentialSource {
-        bindingCredentialSource(value)
     }
 
     static func runtime(_ value: BindingRuntimeInstance) -> RuntimeInstance {
@@ -129,8 +120,8 @@ enum BindingMapping {
         RuntimeTypeDescriptor(id: value.id, name: value.name, fields: value.fields.map(settingField), actions: value.actions.map(settingAction))
     }
 
-    static func configuration(_ value: BindingConfigurationSnapshot) -> (conversations: [Conversation], connections: [Connection], models: [AIModel], gateways: [GatewayConfig], runtimes: [RuntimeInstance], runtimeTypes: [RuntimeTypeDescriptor], credentialTypes: [RuntimeTypeDescriptor], importTypes: [RuntimeTypeDescriptor], protocols: [ProtocolDescriptor], activeRuntimeID: String?) {
-        (value.conversations.map(conversation), value.connections.map { Connection(id: $0.id, name: $0.name, state: $0.state, capabilities: $0.capabilities) }, value.models.map(model), value.gateways.map(gateway), value.runtimeInstances.map(runtime), value.runtimeTypes.map(runtimeType), value.credentialSourceTypes.map(runtimeType), value.providerImportTypes.map(runtimeType), value.protocols.map { ProtocolDescriptor(id: protocolID($0.id), name: $0.name, supported: $0.supported) }, value.activeRuntimeInstanceId)
+    static func configuration(_ value: BindingConfigurationSnapshot) -> (conversations: [Conversation], connections: [Connection], models: [AIModel], gateways: [GatewayConfig], runtimes: [RuntimeInstance], runtimeTypes: [RuntimeTypeDescriptor], authenticationBindings: [AuthenticationBinding], importTypes: [RuntimeTypeDescriptor], protocols: [ProtocolDescriptor], activeRuntimeID: String?) {
+        (value.conversations.map(conversation), value.connections.map { Connection(id: $0.id, name: $0.name, state: $0.state, capabilities: $0.capabilities) }, value.models.map(model), value.gateways.map(gateway), value.runtimeInstances.map(runtime), value.runtimeTypes.map(runtimeType), value.authenticationBindings.map(authenticationBinding), value.providerImportTypes.map(runtimeType), value.protocols.map { ProtocolDescriptor(id: protocolID($0.id), name: $0.name, supported: $0.supported) }, value.activeRuntimeInstanceId)
     }
 
     static func snapshotResult(_ value: BindingSnapshotResult) -> ConversationSnapshot? {

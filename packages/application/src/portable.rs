@@ -21,8 +21,23 @@ impl CoreRuntime {
     pub(crate) fn request_inner(&mut self, request: &Value) -> Result<Value, Error> {
         match request["action"].as_str() {
             Some("list") => Ok(
-                json!({"conversations":[],"connections":[],"models":self.config.gateways.iter().flat_map(|g|&g.models).collect::<Vec<_>>(),"gateways":self.config.gateways,"runtimeInstances":self.config.runtime_instances,"runtimeTypes":[],"credentialSourceTypes":[],"providerImportTypes":[],"protocols":[{"id":"chatCompletionsV1","name":"OpenAI Chat Completions v1","supported":true},{"id":"responsesV1","name":"OpenAI Responses v1","supported":true}],"activeRuntimeInstanceID":null}),
+                json!({"conversations":[],"connections":[],"models":self.config.gateways.iter().flat_map(|g|&g.models).collect::<Vec<_>>(),"gateways":self.config.gateways,"runtimeInstances":self.config.runtime_instances,"runtimeTypes":[],"authenticationBindings":crate::authentication_resources::AuthenticationManager {resources:self.config.authentication_bindings.clone()}.descriptors(),"providerImportTypes":[],"protocols":[{"id":"chatCompletionsV1","name":"OpenAI Chat Completions v1","supported":true},{"id":"responsesV1","name":"OpenAI Responses v1","supported":true}],"activeRuntimeInstanceID":null}),
             ),
+            Some("authenticationResources") => {
+                let manager = crate::authentication_resources::AuthenticationManager {
+                    resources: self.config.authentication_bindings.clone(),
+                };
+                let pending =
+                    manager.prepare_mutation(&request["payload"], &self.config.gateways)?;
+                let result = serde_json::to_value(pending.result)?;
+                let previous = self.config.clone();
+                self.config.authentication_bindings = pending.manager.resources;
+                if let Err(error) = self.repository.store(&self.config) {
+                    self.config = previous;
+                    return Err(error);
+                }
+                Ok(result)
+            }
             Some("gateways") => {
                 let previous = self.config.clone();
                 match request["payload"]["operation"].as_str() {

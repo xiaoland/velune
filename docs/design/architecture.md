@@ -337,7 +337,7 @@ Mastra、HAPI、Lody 是用户提出的候选参考。研究围绕待决问题�
 
 用户希望保留 Harness 原提供商配置，复用它的登录能力，并将相应提供商纳入 Unified AI Gateway。执行侧仍为 `Harness → Velune Gateway → provider adapter`；原配置是可明确接入的来源，不因为接管而删除。只为 Velune 管理的运行实例派生网关配置，独立启动原 Harness 的行为保持可用。普通配置的导入快照和受委托认证引用需分别处理，记录来源并明确后续更新方式，避免形成两个不明的配置权威。
 
-用户已授权推进原生 Responses 与认证来源委托。推荐 provider adapter 复用 SDK 的登录和刷新，Rust 执行原生协议请求，认证保留同一个权威来源，而非复制 OAuth 后各自刷新。统一网关与 app 的契约仍不依赖 Pi；Pi SDK 只属于具体后端实现，不能要求一个活跃 Pi Agent 会话才能发起上游请求。复用 SDK 的实现与复用 Pi 的客户端注册身份是不同决定，现有公开登录参数是否支持 Velune 身份及授权来源仍有缺口。Pi 的受控 Node resolver helper 仅负责认证解析和刷新，不承担推理、不需要活跃 Pi Agent 会话、不恢复常驻 core Host。
+用户已授权推进原生 Responses 与认证来源委托。application 集中登记认证资源并装配来源 adapter，复用 SDK 的登录和刷新；provider adapter 仅消费本次短生命周期认证并执行原生协议请求。提供商与网关不接触来源 locator，认证保留同一个权威来源，而非复制 OAuth 后各自刷新。统一网关与 app 的契约仍不依赖 Pi；Pi SDK 只属于具体后端实现，不能要求一个活跃 Pi Agent 会话才能发起上游请求。复用 SDK 的实现与复用 Pi 的客户端注册身份是不同决定，现有公开登录参数是否支持 Velune 身份及授权来源仍有缺口。Pi 的受控 Node resolver helper 仅负责认证解析和刷新，不承担推理、不需要活跃 Pi Agent 会话、不恢复常驻 core Host。
 
 `velune/auto` 表达稳定的路由策略选择，不是固定的物理模型能力。Pi 适配器可用 virtual model 向 Core 获取本次决定，返回端点仍为网关的具体模型及能力；网关必须执行同一次决定，不能在请求到达时再次按可变全局选择改投。其他 Harness 的实现需分别调查，不能把 Pi virtual model 作为通用协议。配置入口、实际模型和会话历史各有归属；固定入口不能隐藏上下文、推理级别和历史兼容性的变化。
 

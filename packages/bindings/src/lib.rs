@@ -270,23 +270,62 @@ impl VeluneApplication {
         })?)
     }
 
+    #[allow(clippy::too_many_arguments)]
+    pub fn configure_api_key_binding(
+        &self,
+        id: String,
+        name: String,
+        keychain_ref: String,
+        protocol: BindingGatewayProtocol,
+        endpoint: String,
+        owns_secret: bool,
+        expected_generation: Option<u64>,
+    ) -> Result<BindingAuthenticationMutation, BindingError> {
+        let protocol = convert(protocol)?;
+        convert(self.with("configure_api_key_binding", |application| {
+            application.configure_api_key_binding(
+                id,
+                name,
+                keychain_ref,
+                protocol,
+                endpoint,
+                owns_secret,
+                expected_generation,
+            )
+        })?)
+    }
+    pub fn rename_authentication_binding(
+        &self,
+        id: String,
+        name: String,
+    ) -> Result<BindingAuthenticationMutation, BindingError> {
+        convert(self.with("rename_authentication_binding", |application| {
+            application.rename_authentication_binding(id, name)
+        })?)
+    }
+    pub fn delete_authentication_binding(
+        &self,
+        id: String,
+    ) -> Result<BindingAuthenticationMutation, BindingError> {
+        convert(self.with("delete_authentication_binding", |application| {
+            application.delete_authentication_binding(id)
+        })?)
+    }
     pub fn authentication_inspect(
         &self,
-        source: BindingCredentialSource,
+        binding_id: String,
     ) -> Result<BindingAuthenticationMetadata, BindingError> {
-        let source = convert(source)?;
         convert(self.with("authentication_inspect", |application| {
-            application.authentication_inspect(source)
+            application.authentication_inspect(binding_id)
         })?)
     }
 
     pub fn authentication_start(
         &self,
-        source: BindingCredentialSource,
+        binding_id: String,
     ) -> Result<BindingAuthenticationProgress, BindingError> {
-        let source = convert(source)?;
         convert(self.with("authentication_start", |application| {
-            application.authentication_start(source)
+            application.authentication_start(binding_id)
         })?)
     }
 

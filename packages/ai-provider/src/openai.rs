@@ -2,7 +2,7 @@
 //!
 //! This adapter accepts an already assembled client and credential. It does not
 //! read provider configuration, resolve credentials, retry, or choose a model.
-use crate::config::{ProtocolConfig, ProviderConfig, Transport, parse_resolved_credential};
+use crate::config::{ProtocolConfig, ProviderConfig, ResolvedCredential, Transport};
 use reqwest::{Client, Response, header::HeaderValue};
 use serde_json::Value;
 use std::sync::Arc;
@@ -12,7 +12,6 @@ use velune_ai::{
     http::{Header, ResponseBody, ResponseMeta},
 };
 
-type CredentialResolver = dyn Fn(&str, Option<&str>) -> Option<String> + Send + Sync;
 const MAX_RESPONSE_BODY_BYTES: usize = 16 * 1024 * 1024;
 
 async fn bounded_body(response: Response) -> Result<Vec<u8>, ()> {
@@ -62,7 +61,7 @@ impl ChatCompletions {
     pub fn with_resolved_credential(
         config: ProviderConfig,
         client: Client,
-        credential: crate::config::ResolvedCredential,
+        credential: ResolvedCredential,
     ) -> Result<Self, InvalidContract> {
         let ProtocolConfig::ChatCompletions(protocol) = config.protocol() else {
             return Err(InvalidContract("provider requires Chat Completions v1"));
@@ -81,33 +80,6 @@ impl ChatCompletions {
             config,
             client,
             credential: Arc::new(move || Some(token.clone())),
-        })
-    }
-
-    pub fn with_resolver(
-        config: ProviderConfig,
-        client: Client,
-        resolver: Arc<CredentialResolver>,
-    ) -> Result<Self, InvalidContract> {
-        let ProtocolConfig::ChatCompletions(protocol) = config.protocol() else {
-            return Err(InvalidContract("provider requires Chat Completions v1"));
-        };
-        if protocol.endpoint.transport() != Transport::Http
-            && protocol.endpoint.transport() != Transport::Https
-        {
-            return Err(InvalidContract("unsupported provider transport"));
-        }
-        let reference = config.credential().as_str().to_owned();
-        let source = config.credential_source().map(str::to_owned);
-        Ok(Self {
-            config,
-            client,
-            credential: Arc::new(move || {
-                resolver(&reference, source.as_deref()).and_then(|value| {
-                    parse_resolved_credential(&value, source.is_some(), "chatCompletionsV1")
-                        .map(|credential| credential.token)
-                })
-            }),
         })
     }
 

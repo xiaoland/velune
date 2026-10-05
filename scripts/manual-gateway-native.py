@@ -1,16 +1,15 @@
 #!/usr/bin/env python3
 """Manual synthetic native-HTTP acceptance; never uses real providers or credentials.
 
-Run after cargo build -p velune-gateway, with --deps absolute target/debug/deps
-and --rustc the absolute toolchain rustc. This script is not a CI/test entry point.
+Supply --deps absolute target/debug/deps and --rustc the absolute toolchain rustc.
+Cargo selects matching artifacts before the temporary probe is compiled.
+This script is not a CI/test entry point.
 """
 import argparse
 import http.client
 import json
-import os
 from pathlib import Path
 import socket
-import signal
 import subprocess
 import tempfile
 import threading
@@ -18,11 +17,18 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 PROBE = r'''
-use std::{collections::BTreeMap,io::{BufRead,Write},path::PathBuf,time::Instant};
+use std::{collections::BTreeMap,io::{BufRead,Write},sync::Arc,time::Instant};
+struct Resolver;
+impl velune_gateway::CredentialResolver for Resolver {
+ fn resolve(&self,_reference:String,_target:velune_gateway::CredentialTarget)
+ ->velune_ai::OperationFuture<Result<velune_gateway::ResolvedCredential,velune_gateway::CredentialResolutionError>> {
+  Box::pin(async {Ok(velune_gateway::ResolvedCredential {token:"synthetic-only".into(),explicit_output_cap:None,subscription:false})})
+ }
+}
 fn main()->Result<(),Box<dyn std::error::Error>> {
  let args:Vec<_>=std::env::args().collect();
  let config=serde_json::from_slice(&std::fs::read(&args[1])?)?;
- let runner=velune_gateway::Runner::start(config,Some(PathBuf::from(&args[2])),BTreeMap::new())?;
+ let runner=velune_gateway::Runner::start(config,Arc::new(Resolver),BTreeMap::new())?;
  println!("{}",serde_json::json!({"endpoint":runner.endpoint(),"token":runner.token()}));std::io::stdout().flush()?;
  let _=std::io::stdin().lock().lines().next();let start=Instant::now();drop(runner);
  println!("{}",serde_json::json!({"dropMs":start.elapsed().as_millis()}));
@@ -31,13 +37,13 @@ fn main()->Result<(),Box<dyn std::error::Error>> {
 '''
 
 
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--deps', required=True, type=Path)
     parser.add_argument('--rustc', required=True, type=Path)
-    parser.add_argument('--node', required=True, type=Path)
     args = parser.parse_args()
-    for path in (args.deps, args.rustc, args.node):
+    for path in (args.deps, args.rustc):
         if not path.is_absolute() or not path.exists():
             parser.error('paths must be absolute and exist')
     captures = []
@@ -103,18 +109,27 @@ def main():
         root = Path(temporary)
         source = root / 'probe.rs'
         source.write_text(PROBE)
+        # Directory timestamps can mix incompatible Cargo feature builds. Read
+        # the artifacts from this dependency graph instead of choosing newest.
+        build = subprocess.run(['cargo', 'build', '--locked', '-p', 'velune-gateway',
+            '--manifest-path', str(Path(__file__).resolve().parents[1] / 'Cargo.toml'),
+            '--target-dir', str(args.deps.parents[1]), '--message-format=json'],
+            check=True, capture_output=True, text=True)
+        artifacts = {}
+        for line in build.stdout.splitlines():
+            item = json.loads(line)
+            if item.get('reason') == 'compiler-artifact':
+                for filename in item['filenames']:
+                    if filename.endswith('.rlib'):
+                        artifacts[item['target']['name']] = filename
         def artifact(name):
-            return max(args.deps.glob(f'lib{name}-*.rlib'), key=lambda path: path.stat().st_mtime)
-        subprocess.run([str(args.rustc), '--edition=2024', str(source), '-L', f'dependency={args.deps}', '--extern', f'velune_gateway={artifact("velune_gateway")}', '--extern', f'serde_json={artifact("serde_json")}', '-o', str(root / 'probe')], check=True)
-        pid_file = root / 'node.pid'
-        helper = root / 'credential'
-        helper.write_text('#!/bin/sh\nif [ "$1" = hang ]; then\n' + str(args.node) + ' -e ' + "'require(\"fs\").writeFileSync(" + json.dumps(str(pid_file)) + ',String(process.pid));setInterval(()=>{},1000)' + "' &\nwait\nelse\nprintf synthetic-only\nfi\n")
-        helper.chmod(0o700)
+            return artifacts[name]
+        subprocess.run([str(args.rustc), '--edition=2024', str(source), '-L', f'dependency={args.deps}', '--extern', f'velune_gateway={artifact("velune_gateway")}', '--extern', f'velune_ai={artifact("velune_ai")}', '--extern', f'serde_json={artifact("serde_json")}', '-o', str(root / 'probe')], check=True)
         def start(reference='synthetic'):
-            config = {'id': 'fixture', 'name': 'fixture', 'models': [{'id': 'chat', 'nickname': 'chat', 'maxOutputTokens': 64, 'reasoningLevels': []}, {'id': 'responses', 'nickname': 'responses', 'maxOutputTokens': 64, 'reasoningLevels': []}], 'providers': [{'id': protocol, 'name': protocol, 'protocol': protocol, 'endpoint': f'http://127.0.0.1:{server.server_port}/v1', 'credentialRef': reference, 'credentialSource': None, 'credentialGeneration': 0, 'models': [{'modelId': model, 'externalModelId': 'external-' + model}]} for model, protocol in [('chat', 'chatCompletionsV1'), ('responses', 'responsesV1')]], 'routes': [{'modelId': model, 'providerId': protocol} for model, protocol in [('chat', 'chatCompletionsV1'), ('responses', 'responsesV1')]], 'failover': {'mode': 'disabled'}}
+            config = {'id': 'fixture', 'name': 'fixture', 'models': [{'id': 'chat', 'nickname': 'chat', 'maxOutputTokens': 64, 'reasoningLevels': []}, {'id': 'responses', 'nickname': 'responses', 'maxOutputTokens': 64, 'reasoningLevels': []}], 'providers': [{'id': protocol, 'name': protocol, 'protocol': protocol, 'endpoint': f'http://127.0.0.1:{server.server_port}/v1', 'credentialRef': reference, 'models': [{'modelId': model, 'externalModelId': 'external-' + model}]} for model, protocol in [('chat', 'chatCompletionsV1'), ('responses', 'responsesV1')]], 'routes': [{'modelId': model, 'providerId': protocol} for model, protocol in [('chat', 'chatCompletionsV1'), ('responses', 'responsesV1')]], 'failover': {'mode': 'disabled'}}
             path = root / f'config-{len(processes)}.json'
             path.write_text(json.dumps(config))
-            process = subprocess.Popen([str(root / 'probe'), str(path), str(helper)], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            process = subprocess.Popen([str(root / 'probe'), str(path)], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
             processes.append(process)
             info = json.loads(process.stdout.readline())
             info['process'] = process
@@ -176,58 +191,12 @@ def main():
                 connection.close()
                 assert peer_closed.wait(3), mode + ' upstream did not cancel after disconnect'
             print(json.dumps({'cancelBeforeHeaders': True, 'cancelDuringStream': True, 'dropIdleMs': stop(info)}))
-            def wait_for_node():
-                deadline = time.monotonic() + 3
-                while not pid_file.exists() and time.monotonic() < deadline:
-                    time.sleep(.02)
-                assert pid_file.exists()
-                return int(pid_file.read_text())
-            def assert_node_gone(pid):
-                deadline = time.monotonic() + 3
-                while time.monotonic() < deadline:
-                    try:
-                        os.kill(pid, 0)
-                    except ProcessLookupError:
-                        return
-                    time.sleep(.02)
-                raise AssertionError('helper descendant remained after cancellation')
-            info = start('hang')
-            connection, _ = open_request(info, 'json')
-            node_pid = wait_for_node()
-            connection.close()
-            assert_node_gone(node_pid)
-            pid_file.unlink()
-            connection, _ = open_request(info, 'json')
-            node_pid = wait_for_node()
-            connection.timeout = 35
-            connection.sock.settimeout(35)
-            started = time.monotonic()
-            response = connection.getresponse()
-            assert response.status == 503
-            response.read()
-            assert 25 < time.monotonic() - started < 33
-            assert_node_gone(node_pid)
-            connection.close()
-            pid_file.unlink()
-            connection, _ = open_request(info, 'json')
-            node_pid = wait_for_node()
-            drop_ms = stop(info)
-            connection.close()
-            assert_node_gone(node_pid)
-            print(json.dumps({'hangingHelperDisconnectTreeTerminated': True, 'hangingHelperDeadlineTreeTerminated': True, 'hangingHelperDropTreeTerminated': True, 'dropHangingHelperMs': drop_ms}))
         finally:
             for process in processes:
                 if process.poll() is None:
                     try:
                         process.communicate(input='stop\n', timeout=3)
                     except subprocess.TimeoutExpired:
-                        # Only this fixture writes this PID; clean its group even
-                        # if a failing diagnostic aborts the Rust parent abruptly.
-                        if pid_file.exists():
-                            try:
-                                os.killpg(os.getpgid(int(pid_file.read_text())), signal.SIGKILL)
-                            except ProcessLookupError:
-                                pass
                         process.kill()
                         process.wait()
     server.shutdown()

@@ -1,5 +1,13 @@
 //! Shared application use cases, ordinary configuration and lifecycle.
 mod api;
+#[cfg(feature = "local-runtime")]
+mod authentication_resolver;
+mod authentication_resources;
+#[cfg(feature = "local-runtime")]
+mod credential_helper;
+pub use authentication_resources::{
+    AuthenticationBinding, AuthenticationMethod, AuthenticationMutation, AuthenticationProvenance,
+};
 pub mod config;
 #[cfg(feature = "local-runtime")]
 mod local;

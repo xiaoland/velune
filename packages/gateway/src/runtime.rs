@@ -1,9 +1,6 @@
 //! Local, same-protocol LLM ingress. Routing replaces only the requested model;
 //! provider requests/responses remain native protocol data. Fail-over is disabled.
-use crate::{
-    config::{GatewayConfig, GatewayProtocol},
-    credential,
-};
+use crate::config::{GatewayConfig, GatewayProtocol};
 use axum::{
     Router,
     body::{Body, Bytes, to_bytes},
@@ -17,7 +14,6 @@ use serde_json::{Value, json};
 use std::{
     collections::BTreeMap,
     net::TcpListener,
-    path::PathBuf,
     sync::Arc,
     thread::{self, JoinHandle},
     time::Duration,
@@ -30,10 +26,33 @@ use velune_ai::{
     ids::{ConfigRevision, ModelId, ProviderId},
     responses::*,
 };
+pub use velune_ai_provider::config::ResolvedCredential;
+
+#[derive(Debug, Clone)]
+pub struct CredentialTarget {
+    pub protocol: GatewayProtocol,
+    pub endpoint: String,
+}
+#[derive(Debug, Clone, Copy)]
+pub enum CredentialResolutionError {
+    Unavailable,
+    UnauthorizedTarget,
+    Timeout,
+    InvalidContract,
+    StaleBinding,
+}
+pub trait CredentialResolver: Send + Sync {
+    fn resolve(
+        &self,
+        reference: String,
+        target: CredentialTarget,
+    ) -> velune_ai::OperationFuture<Result<ResolvedCredential, CredentialResolutionError>>;
+}
+
 use velune_ai_provider::{
     config::{
         ChatCompletionsConfig, CredentialRef, HttpEndpoint, ModelMapping, ProtocolConfig,
-        ProviderConfig, ResponsesConfig, Transport, parse_resolved_credential,
+        ProviderConfig, ResponsesConfig, Transport,
     },
     openai::ChatCompletions,
     responses::OpenAiResponses,
@@ -58,13 +77,12 @@ struct RouteTarget {
     protocol: GatewayProtocol,
     endpoint: String,
     config: ProviderConfig,
-    source: Option<String>,
-    reference: Option<String>,
+    reference: String,
 }
 struct Ingress {
     routes: BTreeMap<String, RouteTarget>,
     token: String,
-    resolver: Option<PathBuf>,
+    resolver: Arc<dyn CredentialResolver>,
     client: Client,
     permits: Arc<Semaphore>,
 }
@@ -78,7 +96,7 @@ pub struct Runner {
 impl Runner {
     pub fn start(
         config: GatewayConfig,
-        credential_resolver: Option<PathBuf>,
+        credential_resolver: Arc<dyn CredentialResolver>,
         aliases: BTreeMap<String, String>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         config.validate().map_err(GatewayError)?;
@@ -183,11 +201,6 @@ fn build_routes(
                 )
             })
             .collect::<Result<Vec<_>, _>>()?;
-        let source = provider
-            .credential_source
-            .as_ref()
-            .map(serde_json::to_string)
-            .transpose()?;
         let provider_config = ProviderConfig::new(
             ProviderId::new(provider.id.clone())?,
             ConfigRevision::new(1)?,
@@ -207,8 +220,10 @@ fn build_routes(
                 protocol: provider.protocol.clone(),
                 endpoint: provider.endpoint.clone(),
                 config: provider_config,
-                source,
-                reference: provider.credential_ref.clone(),
+                reference: provider
+                    .credential_ref
+                    .clone()
+                    .ok_or(GatewayError("authentication resource is required"))?,
             },
         );
     }
@@ -475,32 +490,18 @@ async fn dispatch(
     stream: bool,
     sender: mpsc::Sender<WireEvent>,
 ) {
-    let Some(resolver) = &state.resolver else {
-        send_failure(
-            &sender,
-            None,
-            None,
-            503,
-            "credential resolver is unavailable",
+    let credential = match state
+        .resolver
+        .resolve(
+            target.reference.clone(),
+            CredentialTarget {
+                protocol: target.protocol.clone(),
+                endpoint: target.endpoint.clone(),
+            },
         )
-        .await;
-        return;
-    };
-    let protocol = match target.protocol {
-        GatewayProtocol::ChatCompletionsV1 => "chatCompletionsV1",
-        GatewayProtocol::ResponsesV1 => "responsesV1",
-        GatewayProtocol::MessagesV1 => return,
-    };
-    let credential = match credential::resolve(
-        resolver,
-        target.reference.as_deref(),
-        target.source.as_deref(),
-        protocol,
-        &target.endpoint,
-    )
-    .await
+        .await
     {
-        Ok(value) => value,
+        Ok(credential) => credential,
         Err(error) => {
             tracing::warn!(event="gateway_credential_failed",kind=?error);
             send_failure(
@@ -508,24 +509,11 @@ async fn dispatch(
                 None,
                 None,
                 503,
-                "认证来源不可用或导入绑定已失效；请检查认证，必要时重新预览并导入提供商。",
+                "认证资源不可用；请在认证设置中检查认证或重新导入来源。",
             )
             .await;
             return;
         }
-    };
-    let Some(credential) =
-        parse_resolved_credential(&credential, target.source.is_some(), protocol)
-    else {
-        send_failure(
-            &sender,
-            None,
-            None,
-            503,
-            "credential helper returned an invalid contract",
-        )
-        .await;
-        return;
     };
     match target.protocol {
         GatewayProtocol::ChatCompletionsV1 => {

@@ -16,7 +16,7 @@ pub struct ConfigurationSnapshot {
     pub gateways: Vec<GatewayConfig>,
     pub runtime_instances: Vec<RuntimeInstance>,
     pub runtime_types: Vec<RuntimeTypeDescriptor>,
-    pub credential_source_types: Vec<RuntimeTypeDescriptor>,
+    pub authentication_bindings: Vec<crate::AuthenticationBinding>,
     pub provider_import_types: Vec<RuntimeTypeDescriptor>,
     pub protocols: Vec<ProtocolDescriptor>,
     #[serde(rename = "activeRuntimeInstanceID")]
@@ -298,9 +298,44 @@ impl Application {
     ) -> Result<ImportResult, Error> {
         self.execute("providerImport", json!({"operation":"apply","gatewayID":gateway_id,"source":serde_json::to_string(&source)?,"previewToken":preview_token,"selections":serde_json::to_string(&selections)?,"replaceExisting":replace_existing}), None)
     }
+    // Explicit named parameters are retained for the cross-language management API.
+    #[allow(clippy::too_many_arguments)]
+    pub fn configure_api_key_binding(
+        &mut self,
+        id: String,
+        name: String,
+        keychain_ref: String,
+        protocol: GatewayProtocol,
+        endpoint: String,
+        owns_secret: bool,
+        expected_generation: Option<u64>,
+    ) -> Result<crate::AuthenticationMutation, Error> {
+        self.execute("authenticationResources",json!({"operation":"configureApiKey","id":id,"name":name,"keychainRef":keychain_ref,"protocol":protocol,"endpoint":endpoint,"ownsSecret":owns_secret,"expectedGeneration":expected_generation}),None)
+    }
+    pub fn rename_authentication_binding(
+        &mut self,
+        id: String,
+        name: String,
+    ) -> Result<crate::AuthenticationMutation, Error> {
+        self.execute(
+            "authenticationResources",
+            json!({"operation":"rename","id":id,"name":name}),
+            None,
+        )
+    }
+    pub fn delete_authentication_binding(
+        &mut self,
+        id: String,
+    ) -> Result<crate::AuthenticationMutation, Error> {
+        self.execute(
+            "authenticationResources",
+            json!({"operation":"delete","id":id}),
+            None,
+        )
+    }
     pub fn authentication_inspect(
         &mut self,
-        source: CredentialSource,
+        binding_id: String,
     ) -> Result<AuthenticationMetadata, Error> {
         #[derive(Deserialize)]
         struct Inspection {
@@ -308,18 +343,18 @@ impl Application {
         }
         let result: Inspection = self.execute(
             "authentication",
-            json!({"operation":"inspect","source":serde_json::to_string(&source)?}),
+            json!({"operation":"inspect","bindingID":binding_id}),
             None,
         )?;
         Ok(result.metadata)
     }
     pub fn authentication_start(
         &mut self,
-        source: CredentialSource,
+        binding_id: String,
     ) -> Result<AuthenticationProgress, Error> {
         self.execute(
             "authentication",
-            json!({"operation":"start","source":serde_json::to_string(&source)?}),
+            json!({"operation":"start","bindingID":binding_id}),
             None,
         )
     }

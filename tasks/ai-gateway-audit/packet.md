@@ -49,3 +49,19 @@ AI 网关只承担同协议原生透传、模型路由与 fail-over，当前不�
 源码 `22a15c0` 已完成原生协议切片，类型、全 workspace 静态检查、裁剪检查和 Mac 构建通过；已安装同版 clean bundle，版本为 0.1 beta.1。9 个合成原生 HTTP 边界、断连／helper 进程树清理，以及使用安装库的正常配置导入到 Pi 工具续接、下一轮消息均通过。具体命令、证据与未覆盖边界归 [实施记录](native-implementation.md)。无真实调用、凭据或用户会话读取。
 
 该切片退出了有损 sampling 桥并补齐当前本机原生协议入口；不是整个审计清单已经关闭。后续继续处理配置生效／资源所有权、明确的 fail-over 策略和平台能力，依据真实反馈迭代，不按固定瀑布计划冻结需求。
+
+## 认证边界修复与集中管理
+
+用户实际导入后指出认证方式显示 Pi Agent，进一步要求统一集中管理。检查确认不止文案：application 的 provider 嵌入 Harness CredentialSource、UniFFI／Mac 公开路径和设置，gateway 接收来源 JSON，AI-provider 留有同步来源解析设施。上一轮原生执行重构未守住这条认证边界。
+
+本轮按反馈实施集中认证资源：application 认证表管理来源、允许目标与生命周期，provider 仅选择已登记 ID；gateway 注入异步 resolver，AI-provider 只用短生命周期已解析认证。Settings 提供独立原生认证管理页，提供商只选资源，不填写原路径或任意 Keychain 名称。API key 创建／替换和委托登录、未被引用资源删除经过同一管理用例。Schema 2 非秘密迁移将旧来源及手工 Keychain 引用包装成独立管理资源，不按路径合并、不读取原 auth、不触碰秘密，不建立新 package 或框架。
+
+AI/provider owner 清理领域残留，gateway owner 负责 application／bindings 与 resolver 接入、迁移，独立 Mac owner 负责原生 UI 与平台秘密写入流程；主执行者负责迁移及正常应用端到端验收、文档与重建安装。使用隔离合成配置与 loopback，不新增自动化测试。原存储与 refresh credential 保留，未知资源及目标不匹配不得 fallback。此修复替代当前 provider 内嵌来源的实现说明，完成后同步持久文档。
+
+
+## 模型业务概念复核
+
+认证实现期间，用户纠正 model-id 为提供商规定的 API 标识，要求先充分核对 Vercel AI SDK、Mastra、Cloudflare AI Gateway 与 OpenAI 官方资料。已修正 PRD 定义；独立研究 owner 对照一手文档和当前 modelId／externalModelId／route alias 用法，证据归 [模型业务研究](model-business-research.md)。本步为研究与审计，模型源码不改；认证集中管理继续完成必要验证和安装。
+
+
+集中认证源码已完成：schema 3、shared registry mutation、typed UniFFI、独立认证设置页和异步 resolver 均已接入。全 workspace fmt/check/clippy、无 local-runtime 裁剪构建与完整 Swift typecheck 通过。手动隔离验收已确认 portable 迁移／资源生命周期／目标 guard 及 9 个原生 HTTP 边界；安装包的正常 Pi 导入、工具续接与 helper 取消仍待发行构建后验证。模型业务研究已完成并经 advisor 复核，权威设计记录修正建议；未改模型源码，也不宣称已解决现有 model ID 与参数表单误用。

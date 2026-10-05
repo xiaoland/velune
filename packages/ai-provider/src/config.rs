@@ -193,46 +193,18 @@ pub struct ProviderConfig {
     revision: ConfigRevision,
     protocol: ProtocolConfig,
     credential: CredentialRef,
-    credential_source: Option<String>,
     models: Vec<ModelMapping>,
 }
 
-/// The platform helper returns this transient material per dispatch. It is not
+/// The composition root supplies this transient material per dispatch. It is not
 /// persisted in provider configuration and its token has no Debug impl.
 pub struct ResolvedCredential {
     pub token: String,
     pub explicit_output_cap: Option<bool>,
-    /// The platform helper's authentication contract, when it is a managed
-    /// subscription rather than an ordinary API credential.
+    /// Protocol restrictions associated with a subscription credential.
     pub subscription: bool,
 }
 
-pub fn parse_resolved_credential(
-    value: &str,
-    source: bool,
-    expected_protocol: &str,
-) -> Option<ResolvedCredential> {
-    if !source {
-        return (!value.is_empty()).then(|| ResolvedCredential {
-            token: value.to_owned(),
-            explicit_output_cap: None,
-            subscription: false,
-        });
-    }
-    let value: serde_json::Value = serde_json::from_str(value).ok()?;
-    if value["contractVersion"] != 1 || value["capabilities"]["protocol"] != expected_protocol {
-        return None;
-    }
-    let token = value["bearer"].as_str()?.trim();
-    if token.is_empty() {
-        return None;
-    }
-    Some(ResolvedCredential {
-        token: token.to_owned(),
-        explicit_output_cap: value["capabilities"]["explicitOutputCap"].as_bool(),
-        subscription: value["capabilities"]["authentication"] == "subscription",
-    })
-}
 impl ProviderConfig {
     pub fn new(
         id: ProviderId,
@@ -255,7 +227,6 @@ impl ProviderConfig {
             revision,
             protocol,
             credential,
-            credential_source: None,
             models,
         })
     }
@@ -270,13 +241,6 @@ impl ProviderConfig {
     }
     pub fn credential(&self) -> &CredentialRef {
         &self.credential
-    }
-    pub fn with_credential_source(mut self, source_json: Option<String>) -> Self {
-        self.credential_source = source_json;
-        self
-    }
-    pub fn credential_source(&self) -> Option<&str> {
-        self.credential_source.as_deref()
     }
     pub fn models(&self) -> &[ModelMapping] {
         &self.models

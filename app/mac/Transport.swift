@@ -8,6 +8,7 @@ enum TransportError: LocalizedError {
     case incompatibleCore
     case closed
     case rejected(String)
+    case authenticationNotCommitted(String)
     case diagnostic(kind: String, detail: String, code: String, phase: String, operationID: String)
 
     var errorDescription: String? {
@@ -16,7 +17,7 @@ enum TransportError: LocalizedError {
         case .invalidHome: return "VELUNE_HOME 必须使用绝对目录路径；留空可使用默认目录。"
         case .incompatibleCore: return "应用与内嵌核心版本不匹配，请重新安装完整应用。"
         case .closed: return "本地核心已关闭，请重新打开应用。"
-        case .rejected(let message): return message
+        case .rejected(let message), .authenticationNotCommitted(let message): return message
         case .diagnostic(_, let detail, let code, let phase, let operationID): return "操作失败（诊断编号：\(operationID)，阶段：\(phase)，代码：\(code)）：\(detail)"
         }
     }
@@ -69,8 +70,27 @@ final class Transport: @unchecked Sendable {
     func selectModel(runtimeID: String, modelID: String) throws -> BindingSnapshotResult { try withApplication("selectModel") { try $0.selectModel(runtimeId: runtimeID, modelId: modelID) } }
     func providerImportPreview(gatewayID: String, source: BindingProviderImportSource) throws -> BindingProviderImportPreview { try withApplication("providerImportPreview") { try $0.previewProviderImport(gatewayId: gatewayID, source: source) } }
     func providerImportApply(gatewayID: String, source: BindingProviderImportSource, previewToken: String, selections: [BindingImportSelection], replaceExisting: Bool) throws -> BindingImportResult { try withApplication("providerImportApply") { try $0.applyProviderImport(gatewayId: gatewayID, source: source, previewToken: previewToken, selections: selections, replaceExisting: replaceExisting) } }
-    func authenticationInspect(source: BindingCredentialSource) throws -> BindingAuthenticationMetadata { try withApplication("authenticationInspect") { try $0.authenticationInspect(source: source) } }
-    func authenticationStart(source: BindingCredentialSource) throws -> BindingAuthenticationProgress { try withApplication("authenticationStart") { try $0.authenticationStart(source: source) } }
+    func authenticationInspect(bindingID: String) throws -> BindingAuthenticationMetadata { try withApplication("authenticationInspect") { try $0.authenticationInspect(bindingId: bindingID) } }
+    func authenticationStart(bindingID: String) throws -> BindingAuthenticationProgress { try withApplication("authenticationStart") { try $0.authenticationStart(bindingId: bindingID) } }
+    func configureAPIKeyBinding(id: String, name: String, keychainRef: String, protocolID: ProviderProtocol, endpoint: String, expectedGeneration: UInt64?) throws -> BindingAuthenticationMutation {
+        try withApplication("configureApiKeyBinding") {
+            do {
+                return try $0.configureApiKeyBinding(id: id, name: name, keychainRef: keychainRef,
+                                                    protocol: BindingMapping.bindingProtocol(protocolID), endpoint: endpoint,
+                                                    ownsSecret: true, expectedGeneration: expectedGeneration)
+            } catch let failure as BindingError {
+                logFailure(operation: "configureApiKeyBinding", localCorrelation: nil, error: failure)
+                // The application mutation contract guarantees that typed failures precede commit.
+                throw TransportError.authenticationNotCommitted(Self.transportError(for: failure).localizedDescription)
+            }
+        }
+    }
+    func renameAuthenticationBinding(_ id: String, name: String) throws -> BindingAuthenticationMutation {
+        try withApplication("renameAuthenticationBinding") { try $0.renameAuthenticationBinding(id: id, name: name) }
+    }
+    func deleteAuthenticationBinding(_ id: String) throws -> BindingAuthenticationMutation {
+        try withApplication("deleteAuthenticationBinding") { try $0.deleteAuthenticationBinding(id: id) }
+    }
     func authenticationPoll() throws -> BindingAuthenticationProgress { try withApplication("authenticationPoll") { try $0.authenticationPoll() } }
     func authenticationReply(promptID: String, value: String) throws -> BindingAuthenticationProgress { try withApplication("authenticationReply") { try $0.authenticationReply(promptId: promptID, value: value) } }
     func authenticationCancel() throws -> BindingAuthenticationProgress { try withApplication("authenticationCancel") { try $0.authenticationCancel() } }
@@ -102,6 +122,7 @@ final class Transport: @unchecked Sendable {
     }
 
     private func map(_ error: Error) -> TransportError {
+        if let error = error as? TransportError { return error }
         if let error = error as? BindingError { return Self.transportError(for: error) }
         if let localized = error as? LocalizedError, let description = localized.errorDescription {
             return .rejected(description)
