@@ -14,4 +14,8 @@ Model 表示可跨提供商关联的真实型号；application 自动生成隐�
 
 手动运行 [原生 HTTP 脚本](../../scripts/manual-gateway-native.py)，9 个合成 ChatCompletions／Responses JSON、SSE、状态码、安全头、历史和扩展字段边界通过；缺少规格仍可调用，裸记录键拒绝且不派发上游。流前／流中断连传播和空闲 Runner 关闭通过。
 
-初次安装库的配置脚本及 [正常 Pi 循环脚本](../../scripts/manual-pi-native-loop.py) 均在 list 边界拒绝 descriptor 多余 capability 字段。portable 没有运行时来源，未命中这条路径；静态检查无法核对内部 JSON 构造与严格类型之间的所有字段。这次失败保留为证据，修复生产端合同后再重新构建并验收。所有人工脚本使用临时 HOME、合成来源、回环上游与 fixture-only 认证，未接入 CI 或自动测试。
+初次安装库的配置脚本及 [正常 Pi 循环脚本](../../scripts/manual-pi-native-loop.py) 均在 list 边界拒绝 descriptor 多余 capability 字段。portable 没有运行时来源，未命中这条路径；静态检查无法核对内部 JSON 构造与严格类型之间的所有字段。修复将运行时与导入描述符改为具名类型构造，删除未消费字段，保留严格合同，避免恢复“忽略未知字段”来掩盖问题。
+
+最终安装源码为 `6efbcc6d248f0673494985ea420fada8acd64b41`，manifest 为 clean／schema 4／0.1 beta.1。用该安装库重新运行配置与认证脚本通过全部边界；正常 Pi 循环通过配置运行时 → 导入 → 路由 → 连接 → 创建会话 → 消息 → 工具 → 续写 → 下一轮。共 3 次合成上游请求，真实固定 Pi SDK 与来源 credential adapter 参与执行；精确上游 model-id、原生推理历史与工具关联保留。未知显式模型映射拒绝且配置不变，跳过导入保留连接，替换导入清理旧连接，认证 generation 更新使旧预览失效。helper 在断开、约 30 秒期限及关闭时终止完整合成进程组，来源文件保持不变。
+
+所有人工脚本使用临时 HOME、合成来源、回环上游与 fixture-only 认证，未接入 CI 或自动测试。没有读取真实配置／秘密／会话、调用真实模型服务或执行 GUI 验收；安装后没有自动启动应用。用户启动旧 schema 配置时将按已确认 hard-cutoff 行为重置普通配置。

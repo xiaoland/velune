@@ -80,3 +80,6 @@ Rust owner 延续共享 packages，Mac owner 延续 UI／绑定接入并修复 D
 模型重构源码已贯通：内部 recordKey 自动生成且 UI 隐藏，精确 providerModelId 归绑定，route 自动产生入口 alias；native provider 只校验原生 body.model 与 ProviderModelId 一致，不二次映射。规格与协议推理声明可未知，Pi 准备时独立检查。Schema 4 reset 删除旧配置内容且无备份，未来 schema／损坏 JSON／新 schema 旧字段仍拒绝。导入显式映射必须指向已有记录，无同名跨提供商自动合并。Mac 完整严格 typecheck 通过，Disclosure 内容改原生 Grid 与 leading 对齐。
 
 portable 的合成 UniFFI 验收已通过配置重置、原文件边界、登记认证资源生命周期、自动记录键及跨提供商独立能力；原生 HTTP 9 个保真边界与取消通过，继续核对裸记录键入口拒绝。旧契约重复临时脚本随 hard-cutoff 删除，历史验收记录保留原日期与源码依据。发行安装与安装包正常 Pi 循环待最终确认。
+
+
+模型重构最终交付：`6efbcc6` clean schema 4 bundle 已安装，版本 0.1 beta.1。第一次安装验收发现 descriptor 额外 capability 字段与严格 DTO 不一致；已用具名类型构造修复生产端，重新构建安装后，安装库配置／认证与正常 Pi 工具循环均通过。9 个原生 HTTP 保真边界、裸内部键拒绝和未知规格仍可调用通过。验证、失败修正及边界归 [模型实施记录](model-implementation.md)。本轮模型业务和 Disclosure 源码修复完成，UI／真实服务体验由用户验收；没有保留旧配置、迁移或备份代码。
