@@ -17,7 +17,7 @@ macro_rules! id {
         }
     )+};
 }
-id!(ProviderId, ModelId, CallId, AttemptId, ToolCallId, ToolName);
+id!(ProviderId, CallId, AttemptId, ToolCallId, ToolName);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ConfigRevision(std::num::NonZeroU64);
@@ -29,5 +29,23 @@ impl ConfigRevision {
     }
     pub fn get(self) -> u64 {
         self.0.get()
+    }
+}
+
+/// Exact identifier supplied by the provider, never a gateway alias or application record key.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ProviderModelId(String);
+impl ProviderModelId {
+    pub fn new(value: impl Into<String>) -> Result<Self, InvalidContract> {
+        let value = value.into();
+        if value.is_empty() || value.chars().any(char::is_control) {
+            return Err(InvalidContract(
+                "provider model identifier is empty or contains control characters",
+            ));
+        }
+        Ok(Self(value))
+    }
+    pub fn as_str(&self) -> &str {
+        &self.0
     }
 }

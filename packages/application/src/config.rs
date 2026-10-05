@@ -1,4 +1,4 @@
-//! Application-owned schema 3 configuration and adapter integration metadata.
+//! Application-owned schema 4 configuration and adapter integration metadata.
 //!
 //! These types contain ordinary configuration only. Credential references are
 //! opaque handles; resolving them and constructing an HTTP client belongs to
@@ -11,32 +11,30 @@ use serde::{Deserialize, Serialize};
 #[cfg(feature = "local-runtime")]
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
-#[cfg(not(feature = "local-runtime"))]
-use std::collections::BTreeSet;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ModelDefinition {
-    pub id: String,
+    pub record_key: String,
     pub nickname: String,
     pub icon: Option<String>,
-    pub max_output_tokens: u32,
-    #[serde(default)]
     pub context_window: Option<u32>,
-    pub reasoning_levels: Vec<String>,
+    pub max_output_tokens: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ProviderModelBinding {
-    pub model_id: String,
-    pub external_model_id: String,
-    #[serde(default)]
+    pub model_record_key: String,
+    pub provider_model_id: String,
+    pub context_window: Option<u32>,
+    pub max_output_tokens: Option<u32>,
+    pub reasoning: Option<ProtocolReasoning>,
     pub pi_projection: Option<PiModelProjection>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub enum GatewayProtocol {
     ChatCompletionsV1,
     ResponsesV1,
@@ -44,38 +42,37 @@ pub enum GatewayProtocol {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ProviderDefinition {
     pub id: String,
     pub name: String,
     pub protocol: GatewayProtocol,
     pub endpoint: String,
-    #[serde(default)]
     pub authentication_id: Option<String>,
     pub models: Vec<ProviderModelBinding>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Route {
-    pub model_id: String,
+    pub model_record_key: String,
     pub provider_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub enum FailoverMode {
     Disabled,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct FailoverPolicy {
     pub mode: FailoverMode,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct GatewayConfig {
     pub id: String,
     pub name: String,
@@ -86,18 +83,18 @@ pub struct GatewayConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RuntimeInstance {
     pub id: String,
     pub name: String,
     pub type_id: String,
     pub gateway_id: String,
     pub settings: BTreeMap<String, String>,
-    pub model_id: Option<String>,
+    pub model_record_key: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RuntimeTypeDescriptor {
     pub id: String,
     pub name: String,
@@ -133,158 +130,22 @@ impl RuntimeInstance {
 
 impl GatewayConfig {
     pub fn validate(&self) -> Result<(), &'static str> {
-        #[cfg(feature = "local-runtime")]
-        {
-            self.to_gateway_config()
-                .map_err(|_| "gateway configuration encoding")?
-                .validate()?;
-            for provider in &self.providers {
-                for binding in &provider.models {
-                    if let Some(projection) = &binding.pi_projection {
-                        if projection.thinking_level_map.keys().any(|level| {
-                            !["off", "minimal", "low", "medium", "high", "xhigh", "max"]
-                                .contains(&level.as_str())
-                        }) {
-                            return Err("provider model execution level is invalid");
-                        }
-                        if projection
-                            .thinking_level_map
-                            .values()
-                            .flatten()
-                            .any(|value| {
-                                value.len() > 32
-                                    || ![
-                                        "none", "off", "minimal", "low", "medium", "high", "xhigh",
-                                        "max",
-                                    ]
-                                    .contains(&value.as_str())
-                            })
-                        {
-                            return Err("provider model execution wire level is invalid");
-                        }
-                        if projection.completions_max_tokens_field.is_some()
-                            && !matches!(provider.protocol, GatewayProtocol::ChatCompletionsV1)
-                        {
-                            return Err(
-                                "completions output field requires Chat Completions protocol",
-                            );
-                        }
-                        if projection.responses_compat.is_some()
-                            && !matches!(provider.protocol, GatewayProtocol::ResponsesV1)
-                        {
-                            return Err("responses execution requires Responses protocol");
-                        }
-                    }
-                }
+        self.to_gateway_config()
+            .map_err(|_| "gateway configuration encoding")?
+            .validate()
+    }
+
+    /// Generate private record keys only for newly-created records. Native provider IDs remain unchanged.
+    pub(crate) fn assign_record_keys(&mut self) {
+        for model in &mut self.models {
+            if model.record_key.is_empty() {
+                model.record_key = crate::new_record_key();
             }
-            Ok(())
-        }
-        #[cfg(not(feature = "local-runtime"))]
-        {
-            if self.id.is_empty() || self.name.is_empty() {
-                return Err("gateway identity is required");
-            }
-            if !matches!(self.failover.mode, FailoverMode::Disabled) {
-                return Err("gateway failover mode is unsupported");
-            }
-            let mut models = BTreeSet::new();
-            for model in &self.models {
-                if model.id.is_empty()
-                    || model.nickname.is_empty()
-                    || model.max_output_tokens == 0
-                    || model
-                        .context_window
-                        .is_some_and(|window| window == 0 || model.max_output_tokens > window)
-                    || !models.insert(&model.id)
-                {
-                    return Err("invalid or duplicate model definition");
-                }
-                let mut levels = BTreeSet::new();
-                if model
-                    .reasoning_levels
-                    .iter()
-                    .any(|level| level.is_empty() || !levels.insert(level))
-                {
-                    return Err("invalid or duplicate reasoning level");
-                }
-            }
-            let mut providers = BTreeMap::new();
-            for provider in &self.providers {
-                if provider.id.is_empty()
-                    || provider.name.is_empty()
-                    || provider.endpoint.is_empty()
-                    || matches!(provider.protocol, GatewayProtocol::MessagesV1)
-                    || providers.insert(&provider.id, provider).is_some()
-                {
-                    return Err("provider is unsupported or duplicated");
-                }
-                let mut bindings = BTreeSet::new();
-                for binding in &provider.models {
-                    if !models.contains(&binding.model_id)
-                        || binding.external_model_id.is_empty()
-                        || !bindings.insert(&binding.model_id)
-                    {
-                        return Err("provider model binding is invalid");
-                    }
-                    #[cfg(feature = "local-runtime")]
-                    if let Some(projection) = &binding.pi_projection {
-                        if projection.thinking_level_map.keys().any(|level| {
-                            !["off", "minimal", "low", "medium", "high", "xhigh", "max"]
-                                .contains(&level.as_str())
-                        }) {
-                            return Err("provider model execution level is invalid");
-                        }
-                        if projection
-                            .thinking_level_map
-                            .values()
-                            .flatten()
-                            .any(|value| {
-                                value.len() > 32
-                                    || ![
-                                        "none", "off", "minimal", "low", "medium", "high", "xhigh",
-                                        "max",
-                                    ]
-                                    .contains(&value.as_str())
-                            })
-                        {
-                            return Err("provider model execution wire level is invalid");
-                        }
-                        if projection.completions_max_tokens_field.is_some()
-                            && !matches!(provider.protocol, GatewayProtocol::ChatCompletionsV1)
-                        {
-                            return Err(
-                                "completions output field requires Chat Completions protocol",
-                            );
-                        }
-                        if projection.responses_compat.is_some()
-                            && !matches!(provider.protocol, GatewayProtocol::ResponsesV1)
-                        {
-                            return Err("responses execution requires Responses protocol");
-                        }
-                    }
-                }
-            }
-            let mut routes = BTreeMap::new();
-            for route in &self.routes {
-                let provider = providers
-                    .get(&route.provider_id)
-                    .ok_or("route provider is missing")?;
-                if !models.contains(&route.model_id)
-                    || routes.insert(&route.model_id, &route.provider_id).is_some()
-                    || !provider
-                        .models
-                        .iter()
-                        .any(|binding| binding.model_id == route.model_id)
-                {
-                    return Err("route must select one configured provider model");
-                }
-            }
-            Ok(())
         }
     }
 
     pub fn model(&self, id: &str) -> Option<&ModelDefinition> {
-        self.models.iter().find(|model| model.id == id)
+        self.models.iter().find(|model| model.record_key == id)
     }
 
     /// Return the stable physical model identity used by a Pi catalog.
@@ -296,29 +157,32 @@ impl GatewayConfig {
     #[cfg(feature = "local-runtime")]
     pub fn pi_binding_id(
         &self,
-        logical_model_id: &str,
+        model_record_key: &str,
         authentication_revision: u64,
     ) -> Result<String, &'static str> {
-        let provider = self.validate_dispatch(logical_model_id)?;
+        let provider = self.validate_dispatch(model_record_key)?;
         let route = self
             .routes
             .iter()
-            .find(|route| route.model_id == logical_model_id)
+            .find(|route| route.model_record_key == model_record_key)
             .ok_or("model needs exactly one route")?;
         let binding = provider
             .models
             .iter()
-            .find(|binding| binding.model_id == logical_model_id)
+            .find(|binding| binding.model_record_key == model_record_key)
             .ok_or("provider model binding is missing")?;
         let identity = PiBindingIdentity {
-            logical_model_id,
+            model_record_key,
             provider_id: route.provider_id.as_str(),
             protocol: provider.protocol.identity_name(),
             endpoint: provider.endpoint.as_str(),
-            external_model_id: binding.external_model_id.as_str(),
+            provider_model_id: binding.provider_model_id.as_str(),
             pi_projection: binding.pi_projection.as_ref(),
             authentication_id: provider.authentication_id.as_deref(),
             authentication_revision,
+            context_window: binding.context_window,
+            max_output_tokens: binding.max_output_tokens,
+            reasoning: binding.reasoning.as_ref(),
         };
         let canonical = serde_json::to_vec(&identity).map_err(|_| "binding identity encoding")?;
         let digest = Sha256::digest(canonical);
@@ -328,15 +192,18 @@ impl GatewayConfig {
     /// Validate the stricter boundary used immediately before a gateway call.
     /// Configuration editing may save incomplete models/providers/routes, but a
     /// dispatch must have exactly one explicit provider mapping.
-    pub fn validate_dispatch(&self, model_id: &str) -> Result<&ProviderDefinition, &'static str> {
+    pub fn validate_dispatch(
+        &self,
+        model_record_key: &str,
+    ) -> Result<&ProviderDefinition, &'static str> {
         self.validate()?;
-        if self.model(model_id).is_none() {
+        if self.model(model_record_key).is_none() {
             return Err("model is not configured");
         }
         let routes: Vec<_> = self
             .routes
             .iter()
-            .filter(|route| route.model_id == model_id)
+            .filter(|route| route.model_record_key == model_record_key)
             .collect();
         if routes.len() != 1 {
             return Err("model needs exactly one route");
@@ -352,7 +219,7 @@ impl GatewayConfig {
         if !provider
             .models
             .iter()
-            .any(|binding| binding.model_id == model_id)
+            .any(|binding| binding.model_record_key == model_record_key)
         {
             return Err("provider model binding is missing");
         }
@@ -361,17 +228,20 @@ impl GatewayConfig {
 }
 
 #[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[cfg(feature = "local-runtime")]
 struct PiBindingIdentity<'a> {
-    logical_model_id: &'a str,
+    model_record_key: &'a str,
     provider_id: &'a str,
     protocol: &'static str,
     endpoint: &'a str,
-    external_model_id: &'a str,
+    provider_model_id: &'a str,
     pi_projection: Option<&'a PiModelProjection>,
     authentication_id: Option<&'a str>,
     authentication_revision: u64,
+    context_window: Option<u32>,
+    max_output_tokens: Option<u32>,
+    reasoning: Option<&'a ProtocolReasoning>,
 }
 
 impl GatewayProtocol {
@@ -385,7 +255,6 @@ impl GatewayProtocol {
     }
 }
 
-#[cfg(feature = "local-runtime")]
 impl GatewayConfig {
     /// Strip adapter metadata at the application-to-gateway boundary.
     pub fn to_gateway_config(&self) -> Result<velune_gateway::GatewayConfig, crate::Error> {
@@ -396,12 +265,11 @@ impl GatewayConfig {
                 .models
                 .iter()
                 .map(|m| velune_gateway::ModelDefinition {
-                    id: m.id.clone(),
+                    record_key: m.record_key.clone(),
                     nickname: m.nickname.clone(),
                     icon: m.icon.clone(),
                     max_output_tokens: m.max_output_tokens,
                     context_window: m.context_window,
-                    reasoning_levels: m.reasoning_levels.clone(),
                 })
                 .collect(),
             providers: self
@@ -428,9 +296,26 @@ impl GatewayConfig {
                             .models
                             .iter()
                             .map(|m| velune_gateway::ProviderModelBinding {
-                                model_id: m.model_id.clone(),
-                                external_model_id: m.external_model_id.clone(),
-                                chat_completions_output_limit_field: Default::default(),
+                                model_record_key: m.model_record_key.clone(),
+                                provider_model_id: m.provider_model_id.clone(),
+                                context_window: m.context_window,
+                                max_output_tokens: m.max_output_tokens,
+                                reasoning: m.reasoning.as_ref().map(|r| {
+                                    velune_gateway::ProtocolReasoning {
+                                        protocol: match r.protocol {
+                                            GatewayProtocol::ChatCompletionsV1 => {
+                                                velune_gateway::GatewayProtocol::ChatCompletionsV1
+                                            }
+                                            GatewayProtocol::ResponsesV1 => {
+                                                velune_gateway::GatewayProtocol::ResponsesV1
+                                            }
+                                            GatewayProtocol::MessagesV1 => {
+                                                velune_gateway::GatewayProtocol::MessagesV1
+                                            }
+                                        },
+                                        levels: r.levels.clone(),
+                                    }
+                                }),
                             })
                             .collect(),
                     })
@@ -440,7 +325,7 @@ impl GatewayConfig {
                 .routes
                 .iter()
                 .map(|r| velune_gateway::Route {
-                    model_id: r.model_id.clone(),
+                    model_record_key: r.model_record_key.clone(),
                     provider_id: r.provider_id.clone(),
                 })
                 .collect(),
@@ -449,4 +334,11 @@ impl GatewayConfig {
             },
         })
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProtocolReasoning {
+    pub protocol: GatewayProtocol,
+    pub levels: Vec<String>,
 }

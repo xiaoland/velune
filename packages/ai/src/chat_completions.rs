@@ -6,14 +6,14 @@
 use crate::{
     DeliveryError, InvalidContract, OperationFuture, Payload,
     http::{Header, ResponseMeta},
-    ids::{ModelId, ProviderId},
+    ids::{ProviderId, ProviderModelId},
 };
 use serde_json::Value;
 use std::{collections::HashSet, sync::Arc};
 
 #[derive(Debug, Clone)]
 pub struct ChatCompletionsRequest {
-    pub model: ModelId,
+    pub model: ProviderModelId,
     pub body: Payload<Value>,
     pub headers: Vec<Header>,
     pub stream: bool,
@@ -70,14 +70,14 @@ pub trait ChatCompletionsProvider: Send + Sync {
 
 pub struct ChatCompletionsBinding {
     provider: ProviderId,
-    models: HashSet<ModelId>,
+    models: HashSet<ProviderModelId>,
     adapter: Arc<dyn ChatCompletionsProvider>,
 }
 
 impl ChatCompletionsBinding {
     pub fn new(
         provider: ProviderId,
-        models: Vec<ModelId>,
+        models: Vec<ProviderModelId>,
         adapter: Arc<dyn ChatCompletionsProvider>,
     ) -> Result<Self, InvalidContract> {
         if models.is_empty() {

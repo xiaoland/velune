@@ -113,7 +113,7 @@ def main():
                 id='fixture', name='Synthetic gateway', models=[], providers=[], routes=[],
                 failover=bindings.BindingFailoverPolicy(mode=bindings.BindingFailoverMode.DISABLED)))
             runtime = bindings.BindingRuntimeInstance(
-                id='fixture-runtime', name='Synthetic Pi', type_id='pi', gateway_id='fixture', model_id=None,
+                id='fixture-runtime', name='Synthetic Pi', type_id='pi', gateway_id='fixture', model_record_key=None,
                 settings={'agentDir': str(root / 'source'), 'nodeBinary': str(args.node),
                           'binary': str(resources / 'node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js')})
             application.upsert_runtime(runtime)
@@ -121,13 +121,13 @@ def main():
                 source_instance_id=runtime.id, provider_id=None, settings={})
             preview = application.preview_provider_import('fixture', source)
             selected = next(item for item in preview.providers if item.source_provider_id == 'fixture-selected')
-            candidate = next(item for item in selected.models if item.external_model_id == 'reasoning')
-            plain = next(item for item in selected.models if item.external_model_id == 'plain')
+            candidate = next(item for item in selected.models if item.provider_model_id == 'reasoning')
+            plain = next(item for item in selected.models if item.provider_model_id == 'plain')
             if not selected.can_import or not candidate.can_import:
                 raise RuntimeError(f'synthetic import still blocked: {selected.issues}, {candidate.issues}')
             assert plain.can_import, 'plain model with native compatibility was blocked'
             imported = application.apply_provider_import('fixture', source, preview.token,
-                [bindings.BindingImportSelection(provider_id=selected.id, model_ids=[candidate.id], model_mappings={})], False)
+                [bindings.BindingImportSelection(provider_id=selected.id, candidate_keys=[candidate.candidate_key], model_record_mappings={})], False)
             assert imported.imported_provider_ids == [selected.id], 'unselected provider was imported'
             gateway, = imported.gateways
             assert len(gateway.providers) == 1, 'unselected provider was saved'
@@ -136,12 +136,27 @@ def main():
             assert resource.method == bindings.BindingAuthenticationMethod.API_KEY
             assert resource.provenance.runtime_type_id == 'pi'
             saved = json.loads((root / 'home/generic-config.json').read_text())
-            assert saved['schemaVersion'] == 3 and len(saved['authenticationBindings']) == 1
+            assert saved['schemaVersion'] == 4 and len(saved['authenticationBindings']) == 1
             assert not any(key.startswith('credential') for key in saved['gateways'][0]['providers'][0])
             binding, = gateway.providers[0].models
-            gateway.routes = [bindings.BindingRoute(model_id=binding.model_id, provider_id=selected.id)]
+            assert binding.provider_model_id == 'reasoning' and binding.model_record_key != 'reasoning'
+            assert binding.context_window == candidate.context_window
+            assert binding.max_output_tokens == candidate.max_output_tokens
+            saved_before_invalid = (root / 'home/generic-config.json').read_bytes()
+            invalid_preview = application.preview_provider_import('fixture', source)
+            try:
+                application.apply_provider_import('fixture', source, invalid_preview.token,
+                    [bindings.BindingImportSelection(provider_id=selected.id,
+                        candidate_keys=[candidate.candidate_key],
+                        model_record_mappings={candidate.candidate_key: 'unknown-record'})], True)
+            except bindings.BindingError:
+                assert (root / 'home/generic-config.json').read_bytes() == saved_before_invalid
+            else:
+                raise AssertionError('unknown explicit model mapping accepted')
+
+            gateway.routes = [bindings.BindingRoute(model_record_key=binding.model_record_key, provider_id=selected.id)]
             application.upsert_gateway(gateway)
-            runtime.model_id = binding.model_id
+            runtime.model_record_key = binding.model_record_key
             application.upsert_runtime(runtime)
             application.connect_runtime(runtime.id)
             application.create_conversation(runtime.id, str(root / 'project'))
@@ -175,13 +190,13 @@ def main():
             assert any('SYNTHETIC_ANSWER' in text for text in assistant_text), 'final projection missing'
             preview = application.preview_provider_import('fixture', source)
             skipped = application.apply_provider_import('fixture', source, preview.token,
-                [bindings.BindingImportSelection(provider_id=selected.id, model_ids=[candidate.id], model_mappings={})], False)
+                [bindings.BindingImportSelection(provider_id=selected.id, candidate_keys=[candidate.candidate_key], model_record_mappings={})], False)
             assert not skipped.requires_reconnect, 'unchanged skipped import disconnected runtime'
             assert application.list().active_runtime_instance_id == runtime.id
             preview = application.preview_provider_import('fixture', source)
             changed = application.apply_provider_import('fixture', source, preview.token,
                 [bindings.BindingImportSelection(provider_id=selected.id,
-                    model_ids=[candidate.id, plain.id], model_mappings={})], True)
+                    candidate_keys=[candidate.candidate_key, plain.candidate_key], model_record_mappings={})], True)
             assert changed.requires_reconnect, 'changed active gateway did not report stale connection'
             assert application.list().active_runtime_instance_id is None, 'stale gateway remained active'
             assert all((root / 'source' / name).read_bytes() == content for name, content in source_files.items())
@@ -194,7 +209,7 @@ def main():
             try:
                 application.apply_provider_import('fixture', source, stale.token,
                     [bindings.BindingImportSelection(provider_id=selected.id,
-                        model_ids=[candidate.id], model_mappings={})], True)
+                        candidate_keys=[candidate.candidate_key], model_record_mappings={})], True)
             except bindings.BindingError:
                 assert (root / 'home/generic-config.json').read_bytes() == saved_after_replacement
             else:
@@ -234,7 +249,7 @@ def main():
 
             def pending_request():
                 connection = http.client.HTTPConnection('127.0.0.1', port, timeout=35)
-                connection.request('POST', '/v1/chat/completions', json.dumps({'model': binding.model_id,
+                connection.request('POST', '/v1/chat/completions', json.dumps({'model': 'velune/model/' + binding.model_record_key,
                     'messages': [{'role': 'user', 'content': 'synthetic'}]}),
                     {'Authorization': 'Bearer ' + token_file.read_text(), 'Content-Type': 'application/json'})
                 deadline = time.monotonic() + 3

@@ -2,7 +2,7 @@
 """Explicit synthetic UniFFI acceptance of the central authentication repository.
 
 All files live in a temporary home. The credential helper fails if invoked:
-migration and configuration operations must not read any secret or source file.
+configuration reset and registry operations must not read any secret or source file.
 This is a manual aid, never a CI or automated test entry point.
 """
 import argparse
@@ -45,30 +45,25 @@ def main():
             home = root / 'home'
             home.mkdir()
             endpoint = 'https://synthetic.invalid/v1'
-            source = {'kind': 'harness', 'harnessTypeId': 'pi', 'providerId': 'synthetic',
-                      'settings': {'authPath': str(root / 'nonexistent-source/auth.json'),
-                                   'credentialKind': 'literal_api_key'}}
-            def provider(identity, credential_source=None, reference=None):
-                return {'id': identity, 'name': identity, 'protocol': 'chatCompletionsV1',
-                        'endpoint': endpoint, 'models': [], 'credentialSource': credential_source,
-                        'credentialRef': reference, 'credentialGeneration': 4}
-            legacy = {'schemaVersion': 2, 'runtimeInstances': [], 'gateways': [
-                {'id': 'synthetic', 'name': 'Synthetic', 'models': [], 'routes': [],
-                 'failover': {'mode': 'disabled'}, 'providers': [
-                     provider('a', source), provider('b', source), provider('c', reference='external-key')]}]}
             config_path = home / 'generic-config.json'
+            legacy = {'schemaVersion': 3, 'obsolete': 'must disappear', 'gateways': [{'id': 'old'}]}
             config_path.write_text(json.dumps(legacy))
+            source_file = root / 'original-harness.json'
+            source_file.write_text('synthetic source stays unchanged')
             options = bindings.BindingOptions(home_directory=str(home),
                 resources_directory=str(args.bundle / 'Contents/Resources'), credential_resolver=str(helper))
             application = bindings.VeluneApplication.open(options)
-            migrated = json.loads(config_path.read_text())
-            assert migrated['schemaVersion'] == 3
-            assert len(migrated['authenticationBindings']) == 3
-            ids = [item['authenticationId'] for item in migrated['gateways'][0]['providers']]
-            assert len(set(ids)) == 3, 'same source path merged independent identities'
-            assert all(not any(key.startswith('credential') for key in item)
-                       for item in migrated['gateways'][0]['providers'])
-            assert not marker.exists() and not (root / 'nonexistent-source').exists()
+            reset = json.loads(config_path.read_text())
+            assert reset == {'schemaVersion': 4, 'gateways': [], 'runtimeInstances': [], 'authenticationBindings': []}
+            assert sorted(item.name for item in home.iterdir() if item.is_file()) == ['generic-config.json', 'runtime.lock']
+            assert source_file.read_text() == 'synthetic source stays unchanged'
+            protocol = bindings.BindingGatewayProtocol.CHAT_COMPLETIONS_V1
+            application.configure_api_key_binding('external', 'External', 'external-key',
+                protocol, endpoint, False, None)
+            application.upsert_gateway(bindings.BindingGatewayConfig(id='synthetic', name='Synthetic',
+                models=[], routes=[], providers=[bindings.BindingProviderDefinition(id='a', name='A',
+                    protocol=protocol, endpoint=endpoint, authentication_id='external', models=[])],
+                failover=bindings.BindingFailoverPolicy(mode=bindings.BindingFailoverMode.DISABLED)))
 
             def rejected(operation):
                 before = config_path.read_bytes()
@@ -114,37 +109,62 @@ def main():
             shared_deleted = application.delete_authentication_binding('shared-b')
             assert shared_deleted.obsolete_owned_keychain_refs == [old_ref]
             application.delete_authentication_binding('shared-a')
-            legacy_replaced = application.configure_api_key_binding(ids[2], 'Legacy replacement', new_ref,
-                protocol, endpoint, True, 4)
+            external = next(item for item in application.list().authentication_bindings if item.id == 'external')
+            legacy_replaced = application.configure_api_key_binding('external', 'External replacement', new_ref,
+                protocol, endpoint, True, external.generation)
             assert not legacy_replaced.obsolete_owned_keychain_refs, 'external legacy key scheduled for deletion'
+            gateway, = application.list().gateways
+            gateway.models = [bindings.BindingModelDefinition(record_key='', nickname='Shared real model',
+                icon=None, context_window=None, max_output_tokens=None)]
+            application.upsert_gateway(gateway)
+            gateway, = application.list().gateways
+            record_key = gateway.models[0].record_key
+            assert record_key and record_key != 'Shared real model'
+            gateway.providers[0].models = [bindings.BindingProviderModelBinding(
+                model_record_key=record_key, provider_model_id='org/model:版本-1',
+                context_window=None, max_output_tokens=None, reasoning=None, adapter_metadata_json=None)]
+            gateway.providers.append(bindings.BindingProviderDefinition(id='b', name='B',
+                protocol=protocol, endpoint=endpoint, authentication_id='external',
+                models=[bindings.BindingProviderModelBinding(model_record_key=record_key,
+                    provider_model_id='different-api-name', context_window=32768, max_output_tokens=4096,
+                    reasoning=None, adapter_metadata_json=None)]))
+            gateway.routes = [bindings.BindingRoute(model_record_key=record_key, provider_id='a')]
+            application.upsert_gateway(gateway)
+            gateway, = application.list().gateways
+            assert gateway.models[0].context_window is None
+            assert gateway.providers[0].models[0].provider_model_id == 'org/model:版本-1'
+            assert gateway.providers[0].models[0].context_window is None
+            assert gateway.providers[1].models[0].context_window == 32768
             application.shutdown()
             application = bindings.VeluneApplication.open(options)
-            assert len(application.list().authentication_bindings) == 3
+            assert len(application.list().authentication_bindings) == 1
             application.shutdown()
             application = None
-            invalid_home = root / 'invalid'
-            invalid_home.mkdir()
-            invalid = json.loads(json.dumps(legacy))
-            invalid['gateways'][0]['providers'][0]['credentialRef'] = 'conflicting-source'
-            invalid_path = invalid_home / 'generic-config.json'
-            invalid_path.write_text(json.dumps(invalid))
-            before = invalid_path.read_bytes()
-            try:
-                application = bindings.VeluneApplication.open(bindings.BindingOptions(
-                    home_directory=str(invalid_home), resources_directory=str(args.bundle / 'Contents/Resources'),
-                    credential_resolver=str(helper)))
-            except bindings.BindingError:
-                assert invalid_path.read_bytes() == before
-            else:
-                raise AssertionError('conflicting legacy authentication migrated')
+            for label, contents in [('future', json.dumps({'schemaVersion': 5})),
+                                    ('malformed', '{broken'),
+                                    ('old-fields', json.dumps({**reset, 'obsolete': True}))]:
+                invalid_home = root / label
+                invalid_home.mkdir()
+                invalid_path = invalid_home / 'generic-config.json'
+                invalid_path.write_text(contents)
+                before = invalid_path.read_bytes()
+                try:
+                    application = bindings.VeluneApplication.open(bindings.BindingOptions(
+                        home_directory=str(invalid_home), resources_directory=str(args.bundle / 'Contents/Resources'),
+                        credential_resolver=str(helper)))
+                except bindings.BindingError:
+                    assert invalid_path.read_bytes() == before
+                else:
+                    raise AssertionError(label + ' configuration accepted')
             assert not marker.exists()
-            print(json.dumps({'acceptance': 'PASSED', 'schemaTwoMigration': True,
-                'independentIdentitiesPreserved': True, 'providersContainOnlyRegisteredId': True,
-                'unknownResourceAndTargetRejected': True, 'usedResourceDeletionRejected': True,
-                'replacementCleanupAndGeneration': True, 'staleReplacementRejected': True,
-                'sharedOwnedItemNotDeletedWhileReferenced': True,
-                'externalLegacySecretNotDeleted': True, 'persistenceReopened': True,
-                'invalidMigrationLeavesFileUnchanged': True, 'secretAndSourceReads': 0}))
+            print(json.dumps({'acceptance': 'PASSED', 'schemaFourHardCutoffReset': True,
+                'noOldFileOrBackup': True, 'originalHarnessPreserved': True,
+                'providersContainOnlyRegisteredId': True, 'unknownResourceAndTargetRejected': True,
+                'usedResourceDeletionRejected': True, 'replacementCleanupAndGeneration': True,
+                'staleReplacementRejected': True, 'sharedOwnedItemNotDeletedWhileReferenced': True,
+                'externalSecretNotDeleted': True, 'persistenceReopened': True, 'generatedHiddenRecordKey': True,
+                'crossProviderIdsAndCapabilitiesIndependent': True,
+                'futureMalformedAndOldFieldsRejectedWithoutMutation': True, 'secretAndSourceReads': 0}))
         finally:
             if application:
                 application.shutdown()

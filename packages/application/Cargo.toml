@@ -6,7 +6,7 @@ publish = false
 
 [features]
 default = ["local-runtime"]
-local-runtime = ["dep:velune-agent-runtime", "dep:velune-gateway", "dep:sha2", "dep:tokio", "dep:rustix"]
+local-runtime = ["dep:velune-agent-runtime", "dep:sha2", "dep:tokio", "dep:rustix"]
 
 [dependencies]
 url = "2"
@@ -16,7 +16,7 @@ thiserror = "2"
 sha2 = { version = "=0.10.9", optional = true }
 velune-conversation = { path = "../conversation" }
 velune-agent-runtime = { path = "../agent-runtime", optional = true }
-velune-gateway = { path = "../gateway", optional = true }
+velune-gateway = { path = "../gateway" }
 
 tokio = { version = "1", optional = true, features = ["process", "io-util", "time"] }
 

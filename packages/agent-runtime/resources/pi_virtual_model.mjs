@@ -7,7 +7,7 @@ const selectionPath = process.env.VELUNE_PI_SELECTION_FILE;
 function selection() {
   if (!selectionPath) throw new Error("Velune Pi selection file is missing");
   const value = JSON.parse(readFileSync(selectionPath, "utf8"));
-  if (!value.modelId && !value.physicalModelId) throw new Error("Velune Pi selection model is missing");
+  if (!value.modelRecordKey || !value.physicalModelId) throw new Error("Velune Pi selection model is missing");
   return value;
 }
 
@@ -16,11 +16,11 @@ export default function (pi) {
     const chosen = selection();
     pi.appendEntry("pi.virtual-model-state", {
       provider: "velune-gateway",
-      modelId: chosen.physicalModelId ?? chosen.modelId,
+      modelId: chosen.physicalModelId,
       state: {
-        logicalModelId: chosen.logicalModelId ?? chosen.modelId,
-        physicalModelId: chosen.physicalModelId ?? chosen.modelId,
-        modelId: chosen.physicalModelId ?? chosen.modelId,
+        modelRecordKey: chosen.modelRecordKey,
+        physicalModelId: chosen.physicalModelId,
+        modelId: chosen.physicalModelId,
         thinkingLevel: chosen.thinkingLevel ?? "off",
       },
     });
@@ -57,7 +57,7 @@ export default function (pi) {
     input: ["text"],
     route(request, ctx) {
       const chosen = selection();
-      const physicalModelId = chosen.physicalModelId ?? chosen.modelId;
+      const physicalModelId = chosen.physicalModelId;
       const model = ctx.modelRegistry.find("velune-gateway", physicalModelId);
       if (!model) throw new Error(`Velune gateway model is unavailable: ${physicalModelId}`);
       const thinkingLevel = chosen.thinkingLevel ?? request.thinkingLevel ?? "off";
@@ -66,7 +66,7 @@ export default function (pi) {
         thinkingLevel,
         state: {
           provider: "velune-gateway",
-          logicalModelId: chosen.logicalModelId ?? chosen.modelId,
+          modelRecordKey: chosen.modelRecordKey,
           physicalModelId,
           modelId: physicalModelId,
           thinkingLevel,

@@ -127,7 +127,8 @@ impl CoreRuntime {
                 let raw = request["payload"]["gateway"]
                     .as_str()
                     .ok_or_else(|| RuntimeError::invalid("gateway"))?;
-                let gateway: GatewayConfig = serde_json::from_str(raw)?;
+                let mut gateway: GatewayConfig = serde_json::from_str(raw)?;
+                gateway.assign_record_keys();
                 gateway.validate().map_err(RuntimeError::invalid)?;
                 self.gateways.retain(|item| item.id != gateway.id);
                 self.gateways.push(gateway);
@@ -224,7 +225,7 @@ impl CoreRuntime {
     pub(super) fn persist(&self) -> Result<(), RuntimeError> {
         self.authentication_resources.validate(&self.gateways)?;
         self.repository.store(&crate::repository::PersistedConfig {
-            schema_version: 3,
+            schema_version: 4,
             authentication_bindings: self.authentication_resources.resources.clone(),
             gateways: self.gateways.clone(),
             runtime_instances: self.runtime_instances.clone(),

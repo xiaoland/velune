@@ -83,13 +83,16 @@ impl ChatCompletions {
         })
     }
 
-    fn native_request_json(body: &Value, external_model: &str) -> Result<Value, InvalidContract> {
-        let mut object = body
-            .as_object()
-            .cloned()
-            .ok_or(InvalidContract("Chat Completions body must be an object"))?;
-        object.insert("model".into(), Value::String(external_model.to_owned()));
-        let body = Value::Object(object);
+    fn native_request_json(
+        body: &Value,
+        provider_model_id: &str,
+    ) -> Result<Value, InvalidContract> {
+        if !body.is_object() || body["model"].as_str() != Some(provider_model_id) {
+            return Err(InvalidContract(
+                "Chat Completions provider model does not match request body",
+            ));
+        }
+        let body = body.clone();
         if serde_json::to_vec(&body)
             .map_err(|_| InvalidContract("Chat Completions body encoding"))?
             .len()
@@ -124,19 +127,7 @@ impl ChatCompletionsProvider for ChatCompletions {
         request: ChatCompletionsRequest,
         mut events: ChatCompletionsSink,
     ) -> OperationFuture<ChatCompletionsCompletion> {
-        let Some(mapping) = self.config.model(&request.model) else {
-            return Box::pin(async {
-                ChatCompletionsCompletion {
-                    result: Err(ChatCompletionsFailure {
-                        kind: ChatCompletionsErrorKind::InvalidInput,
-                        response: None,
-                        body: None,
-                        submitted: false,
-                    }),
-                }
-            });
-        };
-        let body = match Self::native_request_json(request.body.get(), mapping.external_name()) {
+        let body = match Self::native_request_json(request.body.get(), request.model.as_str()) {
             Ok(body) => body,
             Err(_) => {
                 return Box::pin(async {

@@ -67,7 +67,7 @@ final class Transport: @unchecked Sendable {
     func snapshot(runtimeID: String) throws -> BindingSnapshotResult { try withApplication("snapshot") { try $0.snapshot(runtimeId: runtimeID) } }
     func send(runtimeID: String, text: String) throws -> BindingSnapshotResult { try withApplication("send") { try $0.send(runtimeId: runtimeID, text: text) } }
     func cancel(runtimeID: String) throws -> BindingSnapshotResult { try withApplication("cancel") { try $0.cancel(runtimeId: runtimeID) } }
-    func selectModel(runtimeID: String, modelID: String) throws -> BindingSnapshotResult { try withApplication("selectModel") { try $0.selectModel(runtimeId: runtimeID, modelId: modelID) } }
+    func selectModel(runtimeID: String, modelRecordKey: String) throws -> BindingSnapshotResult { try withApplication("selectModel") { try $0.selectModel(runtimeId: runtimeID, modelRecordKey: modelRecordKey) } }
     func providerImportPreview(gatewayID: String, source: BindingProviderImportSource) throws -> BindingProviderImportPreview { try withApplication("providerImportPreview") { try $0.previewProviderImport(gatewayId: gatewayID, source: source) } }
     func providerImportApply(gatewayID: String, source: BindingProviderImportSource, previewToken: String, selections: [BindingImportSelection], replaceExisting: Bool) throws -> BindingImportResult { try withApplication("providerImportApply") { try $0.applyProviderImport(gatewayId: gatewayID, source: source, previewToken: previewToken, selections: selections, replaceExisting: replaceExisting) } }
     func authenticationInspect(bindingID: String) throws -> BindingAuthenticationMetadata { try withApplication("authenticationInspect") { try $0.authenticationInspect(bindingId: bindingID) } }

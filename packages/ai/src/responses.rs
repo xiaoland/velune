@@ -6,14 +6,14 @@
 use crate::{
     DeliveryError, InvalidContract, OperationFuture, Payload,
     http::{Header, ResponseBody, ResponseMeta},
-    ids::{ModelId, ProviderId},
+    ids::{ProviderId, ProviderModelId},
 };
 use serde_json::Value;
 use std::{collections::HashSet, sync::Arc};
 
 #[derive(Debug, Clone)]
 pub struct ResponsesRequest {
-    pub model: ModelId,
+    pub model: ProviderModelId,
     pub body: Payload<Value>,
     pub headers: Vec<Header>,
     pub stream: bool,
@@ -84,14 +84,14 @@ pub trait ResponsesProvider: Send + Sync {
 /// The gateway cannot retarget an in-flight operation by replacing app config.
 pub struct ResponsesBinding {
     provider: ProviderId,
-    models: HashSet<ModelId>,
+    models: HashSet<ProviderModelId>,
     adapter: Arc<dyn ResponsesProvider>,
 }
 
 impl ResponsesBinding {
     pub fn new(
         provider: ProviderId,
-        models: Vec<ModelId>,
+        models: Vec<ProviderModelId>,
         adapter: Arc<dyn ResponsesProvider>,
     ) -> Result<Self, InvalidContract> {
         if models.is_empty() {

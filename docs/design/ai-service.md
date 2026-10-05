@@ -12,7 +12,7 @@ AI 能力可以由应用直接调用，也可以由 LLM Gateway 组合后对外�
 
 请求中的原生历史、参数、内容和响应事件必须保留。路由可改变逻辑模型标识对应的上游模型和认证目标；这些必要变更不能成为重写其它协议内容的理由。参数以提供商协议为权威，输出上限与推理级别只是相应模型参数的例子，不能要求每个提供商都具有同一组 token 或 reasoning 字段。无法保持请求含义时明确拒绝，不静默删除字段、补参数、降低推理级别或钳制输出上限。
 
-AI 提供商与模型分别建模：模型跨提供商存在，提供商关联多个模型；具体外部标识、协议、端点和执行能力归提供商绑定。认证来源可以显式委托原运行时的设施，原配置保留；秘密不复制到普通配置。配置持久化与平台设施由 application 装配，领域包不自行读取全局环境、配置或认证文件。平台 app 同进程消费 UniFFI 类型接口，领域包不依赖 UniFFI。用户于 2026-10-05 明确 model ID 为提供商规定的 API 模型标识；内部记录键和网关别名不得冒充 model ID。现有配置及表单中的 modelId／externalModelId／逻辑模型用法正在对照官方实现复核，不能将它们视为已确认的业务定义。
+AI 提供商与模型分别建模：模型跨提供商存在，提供商关联多个模型；具体外部标识、协议、端点和执行能力归提供商绑定。认证来源可以显式委托原运行时的设施，原配置保留；秘密不复制到普通配置。配置持久化与平台设施由 application 装配，领域包不自行读取全局环境、配置或认证文件。平台 app 同进程消费 UniFFI 类型接口，领域包不依赖 UniFFI。用户于 2026-10-05 明确 model ID 为提供商规定的 API 模型标识；内部记录键和网关别名不得冒充 model ID。当前契约使用隐藏的 recordKey、绑定的 providerModelId 和自动网关入口 alias，删除旧 modelId／externalModelId 字段。
 
 认证集中管理是上述边界的具体要求，而非提供商保存任意来源引用。application 管理已登记认证资源、允许目标与内部来源 adapter，提供商只选择资源 ID。gateway 接收异步解析接口及捕获的目标，不接收 Harness 类型、路径、来源 JSON 或 helper CLI。AI-provider 仅使用本次解析的短生命周期认证；当前协议固有的 Bearer 不需要单选配置。界面分别显示实际认证、资源获取方式及来源详情，不能把 Pi 当作认证方式。未登记资源或未授权目标明确拒绝，不回退任意 Keychain 引用或环境凭据。
 
@@ -28,7 +28,9 @@ AI 提供商与模型分别建模：模型跨提供商存在，提供商关联�
 | application | 配置仓库、秘密解析设施、跨域装配、导入与运行生命周期用例 | 再造协议 decoder 或要求 UI 补偿业务约束 |
 | agent-runtime adapter | Harness 原生配置、身份、模型能力和来源兼容设置的投影 | 接管 AI 网关路由权，或把 Pi 参数变成 AI 服务通用参数 |
 
-模型业务契约的修正建议保留现有两层：Model 表示真实可识别的模型／型号，可跨提供商关联；其内部 record key 只作存储引用，不由用户编辑，也不命名为 model ID。ProviderModelBinding 表示该提供商如何提供此模型，保存提供商规定的精确 model ID 及实际协议能力。网关 alias 表示目标或策略入口，不能把它当成模型身份。跨提供商关联依据来源事实或用户显式操作；同名、相似字符串或内部 hash 均不足以证明是同一模型。无需增加独立 Capability 或 Offering 实体。官方资料、源码对应及当前误用见 [模型业务研究](../../tasks/ai-gateway-audit/model-business-research.md)；模型代码尚未按此修正。
+模型业务契约保留两层：Model 表示真实可识别的模型／型号，可跨提供商关联；其内部 record key 只作存储引用，不由用户编辑，也不命名为 model ID。ProviderModelBinding 表示该提供商如何提供此模型，保存提供商规定的精确 model ID 及实际协议能力。网关 alias 表示目标或策略入口，不能把它当成模型身份。跨提供商关联依据来源事实或用户显式操作；同名、相似字符串或内部 hash 均不足以证明是同一模型。无需增加独立 Capability 或 Offering 实体。官方资料、源码对应及当前误用见 [模型业务研究](../../tasks/ai-gateway-audit/model-business-research.md)。
+
+当前配置只接受 schema 4。模型创建时 application 自动生成空 recordKey；它只供配置、运行时选择与投影引用。ProviderModelBinding 独立保存 providerModelId、可选 contextWindow／maxOutputTokens 以及按协议声明的 reasoning；未知与明确不支持分别保留。Route 只保存 modelRecordKey／providerId，gateway 自动派生 `velune/model/<recordKey>`，不接受裸记录键作为请求 model。导入生成新记录，跨提供商只按明确关联复用记录，不按名称自动合并。旧 schema 普通配置原子重置为空 schema 4，不转换字段、不保留旧文件或备份；未来 schema 和损坏配置明确拒绝。原 Harness 文件、会话和平台秘密不属于这次重置。
 
 Model 可以保留有依据的默认规格、昵称和图标；提供商绑定拥有它实际声明的能力和限制，不能从另一提供商外推。未知规格保持未知，不全局强制填写输出上限或统一 reasoning 等级。模型的输出能力上限与用户希望每次发送的请求参数是两件事；原生透传不因目录元数据而静默补参数。缺少描述性规格不应阻止原生调用，某个 Harness 必需的字段只在相应 adapter 的执行准备边界检查。滚动别名与固定版本也须区分；跨提供商关联本身不承诺参数、价格或原生历史能够互换。
 
@@ -73,7 +75,7 @@ fail-over 由 AI 网关单独决策，provider 执行一次尝试，不隐藏再
 
 ## 当前实现与证据
 
-ChatCompletions 与 Responses 已改为独立原生操作，LLM Gateway 不再经过 SamplingInput／SamplingDelta，也不使用 MiniMax 映射器。provider 仅替换路由模型标识，保留其它请求字段；原生 JSON／SSE、HTTP 状态及安全响应头经过同一保真边界。原生事件 sink 可等待，下游通过容量为 1 的通道施加背压；取消关闭派发 Future。业务 Usage／Quantity 归 sampling 数据，observation 可以消费它们；原有单操作 `AiService` 改名为 `SamplingService`，不代表整个 AI 模块。
+ChatCompletions 与 Responses 已改为独立原生操作，LLM Gateway 不再经过 SamplingInput／SamplingDelta，也不使用 MiniMax 映射器。gateway 根据路由绑定写入精确 providerModelId，再构造原生协议输入；provider 不再维护逻辑模型映射，保留其它请求字段；原生 JSON／SSE、HTTP 状态及安全响应头经过同一保真边界。原生事件 sink 可等待，下游通过容量为 1 的通道施加背压；取消关闭派发 Future。业务 Usage／Quantity 归 sampling 数据，observation 可以消费它们；原有单操作 `AiService` 改名为 `SamplingService`，不代表整个 AI 模块。
 
 HTTP ingress 使用 Axum，application 的集中认证解析器在每次请求前校验资源与目标并异步解析，provider 使用本次捕获的认证和共享 HTTP client 执行一次请求。平台与来源 helper 由 application 装配；Unix helper 的进程组在超时、取消和网关关闭时终止，Windows 对应 helper 尚未开放。资源上限、配置快照与平台限制见 [gateway unit](../../packages/gateway/README.md)。当前仍是显式静态路由，fail-over Disabled，未实现无中断热配置。
 
@@ -89,7 +91,7 @@ HTTP ingress 使用 Axum，application 的集中认证解析器在每次请求�
 
 运行时 adapter 限定固定 SDK 的映射范围，并保留来源 Pi 推理级别与当前模型声明的交集；网关不解释 Pi 七级或执行转换。默认 thinking 保持 off，不因导入支持推理的模型而擅自提高。订阅投影须有明确 OAuth 来源，不仅凭提供商名称推断；真实订阅协议限制仍由认证 adapter 返回并校验。来源自定义认证头／请求头及尚未接入的 Responses 兼容设置继续给出具体限制，不声称支持所有 Pi 协议。
 
-保存的来源投影在派发时重新核对。旧绑定缺少新导入的执行元数据时明确提示重新预览、导入并选择替换；不静默吸收变化，不删除原文件。`ai` 与 `ai-provider` 不引用 Pi 类型，Mac 往返保留 adapter 元数据，不解释它。旧 `chatCompletionsOutputLimitField` 仅保留配置往返，不影响原生参数发送。
+保存的来源投影在派发时重新核对。绑定缺少 Pi 必需执行元数据时，在运行时准备边界明确拒绝；不借用全局模型或另一提供商的规格，不静默吸收来源变化。`ai` 与 `ai-provider` 不引用 Pi 类型，Mac 往返保留 adapter 元数据，不解释它。旧 `chatCompletionsOutputLimitField` 已删除；来源 Pi 协议 compat 保留其真实编码语义。
 
 来源配置在导入时形成快照，不做双向同步。重复项默认跳过，替换须明确选择；来源模型可以关联已有全局模型，但不覆盖该模型参数。导入不自动改变路由或运行时默认模型。应用前重新核对来源和目标配置，变化后要求重新预览；派发时核对保存的来源执行绑定，避免来源端点改变后将凭据发送到另一个目标。当前实现与人工验证记录见 [首循环任务](../../tasks/pi-mac-first-loop/packet.md)。
 

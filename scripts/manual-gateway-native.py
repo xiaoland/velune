@@ -126,7 +126,15 @@ def main():
             return artifacts[name]
         subprocess.run([str(args.rustc), '--edition=2024', str(source), '-L', f'dependency={args.deps}', '--extern', f'velune_gateway={artifact("velune_gateway")}', '--extern', f'velune_ai={artifact("velune_ai")}', '--extern', f'serde_json={artifact("serde_json")}', '-o', str(root / 'probe')], check=True)
         def start(reference='synthetic'):
-            config = {'id': 'fixture', 'name': 'fixture', 'models': [{'id': 'chat', 'nickname': 'chat', 'maxOutputTokens': 64, 'reasoningLevels': []}, {'id': 'responses', 'nickname': 'responses', 'maxOutputTokens': 64, 'reasoningLevels': []}], 'providers': [{'id': protocol, 'name': protocol, 'protocol': protocol, 'endpoint': f'http://127.0.0.1:{server.server_port}/v1', 'credentialRef': reference, 'models': [{'modelId': model, 'externalModelId': 'external-' + model}]} for model, protocol in [('chat', 'chatCompletionsV1'), ('responses', 'responsesV1')]], 'routes': [{'modelId': model, 'providerId': protocol} for model, protocol in [('chat', 'chatCompletionsV1'), ('responses', 'responsesV1')]], 'failover': {'mode': 'disabled'}}
+            pairs = [('chat', 'chatCompletionsV1'), ('responses', 'responsesV1')]
+            config = {'id': 'fixture', 'name': 'fixture',
+                'models': [{'recordKey': model, 'nickname': model} for model, _ in pairs],
+                'providers': [{'id': protocol, 'name': protocol, 'protocol': protocol,
+                    'endpoint': f'http://127.0.0.1:{server.server_port}/v1', 'credentialRef': reference,
+                    'models': [{'modelRecordKey': model, 'providerModelId': 'external-' + model}]}
+                    for model, protocol in pairs],
+                'routes': [{'modelRecordKey': model, 'providerId': protocol} for model, protocol in pairs],
+                'failover': {'mode': 'disabled'}}
             path = root / f'config-{len(processes)}.json'
             path.write_text(json.dumps(config))
             process = subprocess.Popen([str(root / 'probe'), str(path)], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
@@ -146,9 +154,9 @@ def main():
             if result['dropMs'] > 2000:
                 raise AssertionError('Runner drop exceeded two seconds')
             return result['dropMs']
-        def open_request(info, mode, model='chat', streaming=False, chunked=False):
+        def open_request(info, mode, model='chat', streaming=False, chunked=False, wire_model=None):
             connection = http.client.HTTPConnection('127.0.0.1', info['port'], timeout=8)
-            body = {'model': model, 'fixture_case': mode, 'stream': streaming, 'vendor_option': {'unchanged': True}, 'messages': [{'role': 'system', 'content': 'first'}, {'role': 'developer', 'content': 'second'}, {'role': 'assistant', 'content': 'history', 'reasoning_content': 'SYNTHETIC_HISTORY'}], 'input': 'synthetic'}
+            body = {'model': wire_model or 'velune/model/' + model, 'fixture_case': mode, 'stream': streaming, 'vendor_option': {'unchanged': True}, 'messages': [{'role': 'system', 'content': 'first'}, {'role': 'developer', 'content': 'second'}, {'role': 'assistant', 'content': 'history', 'reasoning_content': 'SYNTHETIC_HISTORY'}], 'input': 'synthetic'}
             encoded = json.dumps(body).encode()
             encoded = [encoded[:12], encoded[12:]] if chunked else encoded
             connection.request('POST', '/v1/responses' if model == 'responses' else '/v1/chat/completions', encoded, {'Authorization': 'Bearer ' + info['token'], 'Content-Type': 'application/json', 'X-Session-Affinity': 'synthetic-session'}, encode_chunked=chunked)
@@ -181,6 +189,13 @@ def main():
                 assert response.read() == expected
                 connection.close()
             print(json.dumps({'nativeCases': 9, 'chunkedRequestAccepted': True, 'responsesBusinessTerminalsPreserved': True, 'jsonAndSseBytesPreserved': True, 'unknownFieldsAndHistoryPreserved': True, 'httpStatusAndHeadersPreserved': True, 'outputLimitOptional': True}))
+            before = len(captures)
+            connection, _ = open_request(info, 'json', wire_model='chat')
+            response = connection.getresponse()
+            assert response.status == 400 and 'route' in response.read().decode()
+            assert len(captures) == before, 'internal key leaked upstream'
+            connection.close()
+            print(json.dumps({'internalRecordKeyIsNotWireModel': True, 'unknownCapabilitiesDoNotBlockNativeCall': True}))
             for mode in ['slow_headers', 'slow_stream']:
                 peer_closed.clear(); requested.clear()
                 connection, _ = open_request(info, mode, streaming=True)

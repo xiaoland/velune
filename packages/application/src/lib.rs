@@ -29,7 +29,6 @@ pub use velune_conversation as conversation;
 pub struct Options {
     pub home_directory: PathBuf,
     pub resources_directory: PathBuf,
-    #[serde(default)]
     pub credential_resolver: Option<PathBuf>,
 }
 impl Options {
@@ -85,4 +84,17 @@ impl Application {
     pub fn close(&mut self) -> Result<(), Error> {
         self.runtime.close_if_idle()
     }
+}
+
+fn new_record_key() -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static SEQUENCE: AtomicU64 = AtomicU64::new(0);
+    let time = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("system time")
+        .as_nanos();
+    format!(
+        "model_record_{time:x}_{:x}",
+        SEQUENCE.fetch_add(1, Ordering::Relaxed)
+    )
 }

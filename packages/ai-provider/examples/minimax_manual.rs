@@ -47,8 +47,8 @@ fn input(case: &str) -> Result<SamplingInput> {
 fn provider_id() -> ProviderId {
     ProviderId::new("minimax-cn").expect("constant")
 }
-fn model_id() -> ModelId {
-    ModelId::new("minimax-m3").expect("constant")
+fn model_id() -> ProviderModelId {
+    ProviderModelId::new(minimax::MODEL).expect("constant")
 }
 fn revision() -> ConfigRevision {
     ConfigRevision::new(1).expect("constant")
@@ -368,7 +368,6 @@ async fn live(case: &str, source: &str) -> Result<()> {
             ))?,
         }),
         checked(CredentialRef::new("MINIMAX_API_KEY"))?,
-        vec![checked(ModelMapping::new(model_id(), minimax::MODEL))?],
     ))?;
     let records = Arc::new(Mutex::new(Vec::new()));
     let sink = Arc::clone(&records);

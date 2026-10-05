@@ -73,11 +73,6 @@ impl MiniMax {
                 "MiniMax endpoint is outside this bounded adapter",
             ));
         }
-        if config.models().len() != 1 || config.models()[0].external_name() != MODEL {
-            return Err(InvalidContract(
-                "MiniMax adapter supports only the reviewed model",
-            ));
-        }
         if credential.get().is_empty()
             || HeaderValue::from_str(&format!("Bearer {}", credential.get())).is_err()
         {
@@ -99,7 +94,7 @@ impl SamplingProvider for MiniMax {
     ) -> OperationFuture<ProviderSamplingOutcome> {
         let valid_target = request.context.provider == *self.config.id()
             && request.context.revision == self.config.revision()
-            && request.context.model == *self.config.models()[0].id();
+            && request.context.model.as_str() == MODEL;
         let body = if valid_target {
             request_json(&request.input)
         } else {

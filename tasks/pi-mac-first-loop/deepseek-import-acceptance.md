@@ -33,7 +33,7 @@ Pi 1.0.2 的 `pi-ai/dist/api/openai-completions.js` 在 DeepSeek 推理模型分
 
 ## 人工重现
 
-临时脚本为 [manual-pi-deepseek-import.py](../../scripts/manual-pi-deepseek-import.py)，不接入测试或 CI。生成的 Python 绑定须匹配 bundle 的 UniFFI API；路径参数必须为绝对路径。
+临时脚本为 manual-pi-deepseek-import.py（历史入口 `manual-pi-deepseek-import.py`，现已随 hard-cutoff 删除），不接入测试或 CI。生成的 Python 绑定须匹配 bundle 的 UniFFI API；路径参数必须为绝对路径。
 
 ```sh
 python3 scripts/manual-pi-deepseek-import.py \

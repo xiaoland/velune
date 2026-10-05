@@ -61,11 +61,11 @@ struct MessageBlock: Codable, Sendable, Equatable {
 struct ConversationSnapshot: Codable, Sendable, Equatable {
     var revision: UInt64
     var conversation: Conversation
-    var modelID: String?
+    var modelRecordKey: String?
     var runState: RunState
     var messages: [Message]
     var actions: ConversationActions
-    enum CodingKeys: String, CodingKey { case revision, conversation, runState, messages, actions; case modelID = "modelId" }
+    enum CodingKeys: String, CodingKey { case revision, conversation, runState, messages, actions; case modelRecordKey = "modelRecordKey" }
 }
 
 struct Connection: Codable, Sendable, Identifiable, Equatable {
@@ -76,21 +76,30 @@ struct Connection: Codable, Sendable, Identifiable, Equatable {
 }
 
 struct AIModel: Codable, Sendable, Identifiable, Equatable {
-    var id: String
+    var id: String { recordKey }
+    var recordKey: String
     var nickname: String
     var icon: String?
     var contextWindow: UInt32? = nil
-    var maxOutputTokens: UInt32
-    var reasoningLevels: [String]
+    var maxOutputTokens: UInt32? = nil
+    var displayName: String { nickname.isEmpty ? "未命名模型" : nickname }
 }
 
-// Adapter-owned metadata stays opaque to the platform UI and is validated by
-// the adapter at the ABI boundary.
+struct ProtocolReasoning: Codable, Sendable, Equatable {
+    var protocolID: ProviderProtocol
+    var levels: [String]
+    enum CodingKeys: String, CodingKey { case protocolID = "protocol", levels }
+}
+
+// Adapter-owned metadata stays opaque to the platform UI.
 struct ProviderModelBinding: Codable, Sendable, Equatable {
-    var modelID: String
-    var externalModelID: String
-    var adapterMetadataJSON: String?
-    enum CodingKeys: String, CodingKey { case modelID = "modelId", externalModelID = "externalModelId", adapterMetadataJSON = "adapterMetadataJson" }
+    var modelRecordKey: String
+    var providerModelID: String
+    var contextWindow: UInt32? = nil
+    var maxOutputTokens: UInt32? = nil
+    var reasoning: ProtocolReasoning? = nil
+    var adapterMetadataJSON: String? = nil
+    enum CodingKeys: String, CodingKey { case modelRecordKey, contextWindow, maxOutputTokens, reasoning; case providerModelID = "providerModelId", adapterMetadataJSON = "adapterMetadataJson" }
 }
 
 enum ProviderProtocol: String, Codable, Sendable, CaseIterable, Identifiable {
@@ -130,10 +139,10 @@ struct AIProvider: Codable, Sendable, Identifiable, Equatable {
 }
 
 struct ModelRoute: Codable, Sendable, Identifiable, Equatable {
-    var id: String { modelID }
-    var modelID: String
+    var id: String { modelRecordKey }
+    var modelRecordKey: String
     var providerID: String
-    enum CodingKeys: String, CodingKey { case modelID = "modelId"; case providerID = "providerId" }
+    enum CodingKeys: String, CodingKey { case modelRecordKey = "modelRecordKey"; case providerID = "providerId" }
 }
 
 enum FailoverMode: String, Codable, Sendable { case disabled }
@@ -153,8 +162,8 @@ struct RuntimeInstance: Codable, Sendable, Identifiable, Equatable {
     var typeID: String
     var gatewayID: String
     var settings: [String: String]
-    var modelID: String?
-    enum CodingKeys: String, CodingKey { case id, name, settings; case typeID = "typeId"; case gatewayID = "gatewayId"; case modelID = "modelId" }
+    var modelRecordKey: String?
+    enum CodingKeys: String, CodingKey { case id, name, settings; case typeID = "typeId"; case gatewayID = "gatewayId"; case modelRecordKey = "modelRecordKey" }
 }
 
 struct RuntimeTypeDescriptor: Codable, Sendable, Identifiable, Equatable {

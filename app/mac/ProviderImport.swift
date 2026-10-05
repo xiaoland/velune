@@ -26,8 +26,9 @@ struct ProviderImportCandidate: Decodable, Sendable, Identifiable {
     var models: [ProviderImportModel]
 }
 struct ProviderImportModel: Decodable, Sendable, Identifiable {
-    var id: String
-    var externalModelId: String
+    var id: String { candidateKey }
+    var candidateKey: String
+    var providerModelID: String
     var name: String
     var contextWindow: UInt32?
     var maxOutputTokens: UInt32?
@@ -37,8 +38,8 @@ struct ProviderImportModel: Decodable, Sendable, Identifiable {
 }
 struct ProviderImportSelection: Encodable, Sendable {
     var providerId: String
-    var modelIds: [String]
-    var modelMappings: [String: String]
+    var candidateKeys: [String]
+    var modelRecordMappings: [String: String]
 }
 struct ProviderImportResult: Decodable, Sendable {
     var gateways: [GatewayConfig]
@@ -53,7 +54,7 @@ struct ProviderImportView: View {
     @State private var sourceInstanceID: String?
     @State private var preview: ProviderImportPreview?
     @State private var providerID: String?
-    @State private var modelID: String?
+    @State private var selectedCandidateKey: String?
     @State private var query = ""
     @State private var onlyImportable = false
     @State private var selectedModels: Set<String> = []
@@ -65,22 +66,22 @@ struct ProviderImportView: View {
     private var selectedInstance: RuntimeInstance? { supportedInstances.first { $0.id == sourceInstanceID } }
     private var source: ProviderImportSource? { guard let selectedInstance else { return nil }; return ProviderImportSource(harnessTypeId: selectedInstance.typeID, sourceInstanceId: selectedInstance.id, settings: [:]) }
     private var provider: ProviderImportCandidate? { preview?.providers.first { $0.id == providerID } }
-    private var model: ProviderImportModel? { provider?.models.first { $0.id == modelID } }
+    private var model: ProviderImportModel? { provider?.models.first { $0.id == selectedCandidateKey } }
     private var visibleModels: [ProviderImportModel] {
         guard let provider else { return [] }
         return provider.models.filter { model in
             (!onlyImportable || (enabled(provider) && model.canImport)) &&
-            (query.isEmpty || model.name.localizedCaseInsensitiveContains(query) || model.externalModelId.localizedCaseInsensitiveContains(query))
+            (query.isEmpty || model.name.localizedCaseInsensitiveContains(query) || model.providerModelID.localizedCaseInsensitiveContains(query))
         }
     }
     private var selections: [ProviderImportSelection] {
         (preview?.providers ?? []).filter { enabled($0) }.compactMap { provider in
             let ids = provider.models.filter { $0.canImport && selectedModels.contains($0.id) }.map(\.id)
             guard !ids.isEmpty else { return nil }
-            return ProviderImportSelection(providerId: provider.id, modelIds: ids, modelMappings: mappings.filter { ids.contains($0.key) && !$0.value.isEmpty })
+            return ProviderImportSelection(providerId: provider.id, candidateKeys: ids, modelRecordMappings: mappings.filter { ids.contains($0.key) && !$0.value.isEmpty })
         }
     }
-    private var selectedCount: Int { selections.reduce(0) { $0 + $1.modelIds.count } }
+    private var selectedCount: Int { selections.reduce(0) { $0 + $1.candidateKeys.count } }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -114,9 +115,9 @@ struct ProviderImportView: View {
         .frame(width: 1020, height: 680)
         .onAppear { selectSourceInstance(sourceInstanceID ?? supportedInstances.first?.id) }
         .onChange(of: sourceInstanceID) { _, value in selectSourceInstance(value) }
-        .onChange(of: providerID) { _, _ in modelID = nil; query = "" }
+        .onChange(of: providerID) { _, _ in selectedCandidateKey = nil; query = "" }
         .onChange(of: replaceExisting) { _, _ in
-            selectedModels = Set(selections.flatMap(\.modelIds))
+            selectedModels = Set(selections.flatMap(\.candidateKeys))
         }
     }
 
@@ -155,7 +156,7 @@ struct ProviderImportView: View {
                         .help(onlyImportable ? "仅显示可导入模型；打开以更改筛选及选择。" : "筛选及批量选择模型")
                     }
                     .padding(10)
-                    Table(visibleModels, selection: $modelID) {
+                    Table(visibleModels, selection: $selectedCandidateKey) {
                         TableColumn("导入") { model in
                             Toggle("导入 \(model.name)", isOn: selectionBinding(model))
                                 .labelsHidden().toggleStyle(.checkbox)
@@ -163,8 +164,8 @@ struct ProviderImportView: View {
                         }.width(36)
                         TableColumn("模型") { model in
                             VStack(alignment: .leading, spacing: 3) {
-                                Text(model.name.isEmpty ? model.externalModelId : model.name).lineLimit(1)
-                                Text(model.externalModelId).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                                Text(model.name.isEmpty ? model.providerModelID : model.name).lineLimit(1)
+                                Text(model.providerModelID).font(.caption).foregroundStyle(.secondary).lineLimit(1)
                             }.padding(.vertical, 3)
                         }.width(min: 160, ideal: 210)
                         TableColumn("状态") { model in
@@ -209,8 +210,10 @@ struct ProviderImportView: View {
 
     private func providerDetails(_ provider: ProviderImportCandidate) -> some View {
         VStack(alignment: .leading, spacing: 10) {
-            LabeledContent("名称", value: provider.name)
-            LabeledContent("协议", value: store.protocols.first { $0.id.rawValue == provider.protocol }?.name ?? provider.protocol)
+            Grid(alignment: .leading, horizontalSpacing: 8, verticalSpacing: 8) {
+                GridRow { Text("名称").foregroundStyle(.secondary); Text(provider.name) }
+                GridRow { Text("协议").foregroundStyle(.secondary); Text(store.protocols.first { $0.id.rawValue == provider.protocol }?.name ?? provider.protocol) }
+            }
             VStack(alignment: .leading, spacing: 4) {
                 Text("服务地址").foregroundStyle(.secondary)
                 Text(provider.endpoint).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
@@ -219,39 +222,38 @@ struct ProviderImportView: View {
             issueList(provider.issues)
         }
         .font(.callout)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private func modelDetails(_ model: ProviderImportModel, provider: ProviderImportCandidate) -> some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text(model.name.isEmpty ? model.externalModelId : model.name).font(.headline)
-            Text(model.externalModelId).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+            Text(model.name.isEmpty ? model.providerModelID : model.name).font(.headline)
+            Text(model.providerModelID).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
                 .fixedSize(horizontal: false, vertical: true)
             if enabled(provider) && model.canImport {
                 if selectedModels.contains(model.id) {
-                    Picker("全局模型", selection: Binding(get: { mappings[model.id] ?? "" }, set: { mappings[model.id] = $0 })) {
+                    Picker("关联模型", selection: Binding(get: { mappings[model.id] ?? "" }, set: { mappings[model.id] = $0 })) {
                         Text("新建模型").tag("")
-                        ForEach(store.models) { existing in Text(existing.nickname.isEmpty ? existing.id : existing.nickname).tag(existing.id) }
+                        ForEach(store.models) { existing in Text(existing.displayName).tag(existing.id) }
                     }
                     .pickerStyle(.menu)
                     if !(mappings[model.id] ?? "").isEmpty {
-                        Text("沿用已有模型参数，推理级别取共同支持范围。")
+                        Text("明确关联同一个模型；提供商的能力与限制独立保留。")
                             .font(.caption).foregroundStyle(.secondary)
                     }
                 } else {
-                    Text("勾选模型以导入或关联全局模型。").font(.callout).foregroundStyle(.secondary)
+                    Text("勾选模型以导入或关联关联模型。").font(.callout).foregroundStyle(.secondary)
                 }
             } else {
                 Label(modelStatus(model, provider: provider), systemImage: "info.circle").foregroundStyle(.secondary)
             }
             issueList(model.issues)
-            if model.contextWindow != nil || model.maxOutputTokens != nil || !model.reasoningLevels.isEmpty {
-                ImmediateDisclosureGroup("模型能力") {
-                    VStack(alignment: .leading, spacing: 8) {
-                        if let context = model.contextWindow { LabeledContent("上下文窗口", value: context.formatted()) }
-                        if let output = model.maxOutputTokens { LabeledContent("最大输出", value: output.formatted()) }
-                        if !model.reasoningLevels.isEmpty { Text("推理级别：" + model.reasoningLevels.joined(separator: "、")) }
-                    }.font(.caption).padding(.top, 8)
-                }
+            ImmediateDisclosureGroup("来源能力") {
+                Grid(alignment: .leading, horizontalSpacing: 8, verticalSpacing: 8) {
+                    GridRow { Text("上下文窗口").foregroundStyle(.secondary); Text(model.contextWindow?.formatted() ?? "未知") }
+                    GridRow { Text("最大输出").foregroundStyle(.secondary); Text(model.maxOutputTokens?.formatted() ?? "未知") }
+                    GridRow { Text("运行时推理级别").foregroundStyle(.secondary); Text(model.reasoningLevels.isEmpty ? "未声明" : model.reasoningLevels.joined(separator: "、")) }
+                }.font(.caption).frame(maxWidth: .infinity, alignment: .leading).padding(.top, 8)
             }
         }
     }
@@ -282,7 +284,7 @@ struct ProviderImportView: View {
                         Toggle("允许替换此次选中的已导入提供商", isOn: $replaceExisting)
                     }
                     .fixedSize()
-                    .help("替换保留已有路由和全局模型参数。")
+                    .help("替换保留已有路由和关联模型参数。")
                     .disabled(store.isLoading)
                 }
                 Button("取消") { dismiss() }.keyboardShortcut(.cancelAction)
@@ -319,7 +321,7 @@ struct ProviderImportView: View {
         sourceInstanceID = id
         preview = nil
         providerID = nil
-        modelID = nil
+        selectedCandidateKey = nil
         selectedModels = []
         mappings = [:]
         query = ""
@@ -331,7 +333,7 @@ struct ProviderImportView: View {
         store.previewProviderImport(source) { value in
             preview = value
             providerID = value.providers.first?.id
-            modelID = nil
+            selectedCandidateKey = nil
             selectedModels = []
             mappings = [:]
         }

@@ -1,7 +1,7 @@
-use std::{collections::HashSet, fmt, net::IpAddr, num::NonZeroU16};
+use std::{fmt, net::IpAddr, num::NonZeroU16};
 use velune_ai::{
     InvalidContract,
-    ids::{ConfigRevision, ModelId, ProviderId},
+    ids::{ConfigRevision, ProviderId},
 };
 
 /// Reference only, not a token/key or a resolver. Never fetched from the environment by this crate.
@@ -130,61 +130,6 @@ pub enum ProtocolConfig {
     Messages(MessagesConfig),
     ChatCompletions(ChatCompletionsConfig),
 }
-/// Output-limit field used by an OpenAI Chat Completions model binding.
-/// This is provider wire configuration, not a global model capability.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub enum ChatCompletionsOutputLimitField {
-    MaxTokens,
-    #[default]
-    MaxCompletionTokens,
-}
-impl ChatCompletionsOutputLimitField {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::MaxTokens => "max_tokens",
-            Self::MaxCompletionTokens => "max_completion_tokens",
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct ModelMapping {
-    id: ModelId,
-    external_name: String,
-    chat_completions_output_limit_field: ChatCompletionsOutputLimitField,
-}
-impl ModelMapping {
-    pub fn new(id: ModelId, external_name: impl Into<String>) -> Result<Self, InvalidContract> {
-        let external_name = external_name.into();
-        if external_name.trim().is_empty()
-            || external_name.len() > 256
-            || external_name.chars().any(char::is_control)
-        {
-            return Err(InvalidContract("invalid external model name"));
-        }
-        Ok(Self {
-            id,
-            external_name,
-            chat_completions_output_limit_field: ChatCompletionsOutputLimitField::default(),
-        })
-    }
-    pub fn with_chat_completions_output_limit_field(
-        mut self,
-        field: ChatCompletionsOutputLimitField,
-    ) -> Self {
-        self.chat_completions_output_limit_field = field;
-        self
-    }
-    pub fn chat_completions_output_limit_field(&self) -> ChatCompletionsOutputLimitField {
-        self.chat_completions_output_limit_field
-    }
-    pub fn id(&self) -> &ModelId {
-        &self.id
-    }
-    pub fn external_name(&self) -> &str {
-        &self.external_name
-    }
-}
 /// Unified config center owns persistence and deserialization; app main validates and assembles.
 /// Private fields prevent mutating an existing running configuration in place.
 #[derive(Debug, Clone)]
@@ -193,7 +138,6 @@ pub struct ProviderConfig {
     revision: ConfigRevision,
     protocol: ProtocolConfig,
     credential: CredentialRef,
-    models: Vec<ModelMapping>,
 }
 
 /// The composition root supplies this transient material per dispatch. It is not
@@ -211,23 +155,12 @@ impl ProviderConfig {
         revision: ConfigRevision,
         protocol: ProtocolConfig,
         credential: CredentialRef,
-        models: Vec<ModelMapping>,
     ) -> Result<Self, InvalidContract> {
-        if models.is_empty() {
-            return Err(InvalidContract("provider model list must not be empty"));
-        }
-        let mut seen = HashSet::new();
-        if models.iter().any(|model| !seen.insert(model.id())) {
-            return Err(InvalidContract(
-                "duplicate model ID in provider configuration",
-            ));
-        }
         Ok(Self {
             id,
             revision,
             protocol,
             credential,
-            models,
         })
     }
     pub fn id(&self) -> &ProviderId {
@@ -241,11 +174,5 @@ impl ProviderConfig {
     }
     pub fn credential(&self) -> &CredentialRef {
         &self.credential
-    }
-    pub fn models(&self) -> &[ModelMapping] {
-        &self.models
-    }
-    pub fn model(&self, id: &ModelId) -> Option<&ModelMapping> {
-        self.models.iter().find(|model| model.id() == id)
     }
 }

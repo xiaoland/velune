@@ -57,8 +57,8 @@ final class AppStore: ObservableObject {
     var canSend: Bool { !authenticationRunning && !isLoading && !isShuttingDown && (snapshot?.actions.canSend ?? false) }
     var canCancel: Bool { snapshot?.actions.canCancel ?? false }
     var canSwitchModel: Bool { snapshot != nil && !isGenerating && !isLoading && !isShuttingDown }
-    var needsModelSelection: Bool { snapshot != nil && snapshot?.modelID == nil }
-    var selectedModelName: String? { models.first { $0.id == snapshot?.modelID }?.nickname }
+    var needsModelSelection: Bool { snapshot != nil && snapshot?.modelRecordKey == nil }
+    var selectedModelName: String? { models.first { $0.recordKey == snapshot?.modelRecordKey }?.displayName }
     func shutdown(completion: @escaping (Bool) -> Void) {
         guard !isShuttingDown else { completion(false); return }
         guard !isPreview, let transport else { completion(true); return }
@@ -121,7 +121,7 @@ final class AppStore: ObservableObject {
         generation += 1
         if isPreview {
             let conversation = Conversation(id: UUID().uuidString, title: "新会话", updatedAt: "刚刚", runtimeID: selectedConnectionID ?? runtimeInstances.first?.id ?? "sample-instance", cwd: cwd)
-            apply(ConversationSnapshot(revision: 1, conversation: conversation, modelID: models.first?.id, runState: .idle, messages: [], actions: ConversationActions(canSend: true, canCancel: false, canSwitch: true)))
+            apply(ConversationSnapshot(revision: 1, conversation: conversation, modelRecordKey: models.first?.id, runState: .idle, messages: [], actions: ConversationActions(canSend: true, canCancel: false, canSwitch: true)))
             return
         }
         guard let cwd, !cwd.isEmpty else { error = "新会话需要选择工作目录"; return }
@@ -144,18 +144,22 @@ final class AppStore: ObservableObject {
         enqueue({ try transport.cancel(runtimeID: runtimeID) }) { [weak self] in self?.applySnapshotResult($0) }
     }
     func saveModel(_ model: AIModel, onSaved: (() -> Void)? = nil) {
-        var config = gateway; config.models.removeAll { $0.id == model.id }; config.models.append(model)
+        var value = model
+        if isPreview && value.recordKey.isEmpty { value.recordKey = UUID().uuidString }
+        var config = gateway
+        if !value.recordKey.isEmpty { config.models.removeAll { $0.recordKey == value.recordKey } }
+        config.models.append(value)
         saveGateway(config, onSaved: onSaved)
     }
     func deleteModel(id: String) {
-        var config = gateway; config.models.removeAll { $0.id == id }; config.routes.removeAll { $0.modelID == id }
-        for index in config.providers.indices { config.providers[index].models.removeAll { $0.modelID == id } }
+        var config = gateway; config.models.removeAll { $0.id == id }; config.routes.removeAll { $0.modelRecordKey == id }
+        for index in config.providers.indices { config.providers[index].models.removeAll { $0.modelRecordKey == id } }
         saveGateway(config)
     }
     func saveProvider(_ value: AIProvider, onSaved: (() -> Void)? = nil) {
         guard !authenticationRunning else { error = "请先完成或取消登录"; return }
         var config = gateway; config.providers.removeAll { $0.id == value.id }; config.providers.append(value)
-        config.routes.removeAll { route in route.providerID == value.id && !value.models.contains { $0.modelID == route.modelID } }
+        config.routes.removeAll { route in route.providerID == value.id && !value.models.contains { $0.modelRecordKey == route.modelRecordKey } }
         saveGateway(config, onSaved: onSaved)
     }
     func saveAPIKeyBinding(bindingID: String?, expectedGeneration: UInt64?, name: String, protocolID: ProviderProtocol, endpoint: String, secret: String, onSaved: @escaping () -> Void) {
@@ -282,8 +286,8 @@ final class AppStore: ObservableObject {
         var config = gateway; config.providers.removeAll { $0.id == id }; config.routes.removeAll { $0.providerID == id }
         saveGateway(config)
     }
-    func saveRoute(modelID: String, providerID: String) {
-        var config = gateway; config.routes.removeAll { $0.modelID == modelID }; config.routes.append(ModelRoute(modelID: modelID, providerID: providerID))
+    func saveRoute(modelRecordKey: String, providerID: String) {
+        var config = gateway; config.routes.removeAll { $0.modelRecordKey == modelRecordKey }; config.routes.append(ModelRoute(modelRecordKey: modelRecordKey, providerID: providerID))
         saveGateway(config)
     }
     func saveGateway(_ config: GatewayConfig, onSaved: (() -> Void)? = nil) {
@@ -325,12 +329,12 @@ final class AppStore: ObservableObject {
             if data.requiresReconnect { self?.invalidateConnection() }
         }
     }
-    func selectModel(modelID: String) {
-        guard !isLoading, !isGenerating, models.contains(where: { $0.id == modelID }) else { return }
-        if isPreview { snapshot?.modelID = modelID; apply(snapshot); return }
+    func selectModel(modelRecordKey: String) {
+        guard !isLoading, !isGenerating, models.contains(where: { $0.id == modelRecordKey }) else { return }
+        if isPreview { snapshot?.modelRecordKey = modelRecordKey; apply(snapshot); return }
         guard let runtimeID = selectedConnectionID else { error = "请先选择运行时实例"; return }
         guard let transport else { error = "本地核心未配置"; return }
-        enqueue({ try transport.selectModel(runtimeID: runtimeID, modelID: modelID) }) { [weak self] in self?.applySnapshotResult($0) }
+        enqueue({ try transport.selectModel(runtimeID: runtimeID, modelRecordKey: modelRecordKey) }) { [weak self] in self?.applySnapshotResult($0) }
     }
     func selectConnection(id: String) {
         guard !isLoading, !isGenerating else { return }
@@ -447,11 +451,11 @@ final class AppStore: ObservableObject {
     }
 
     private func seedPreview() {
-        gateway = GatewayConfig(models: [AIModel(id: "sample-model", nickname: "通用模型", icon: "sparkles", contextWindow: 8192, maxOutputTokens: 4096, reasoningLevels: ["standard", "deep"])], providers: [AIProvider(id: "sample-provider", name: "示例 AI 服务", protocolID: .chatCompletionsV1, endpoint: "https://example.invalid/v1", authenticationID: "sample-reference", models: [ProviderModelBinding(modelID: "sample-model", externalModelID: "external-example")])], routes: [ModelRoute(modelID: "sample-model", providerID: "sample-provider")])
+        gateway = GatewayConfig(models: [AIModel(recordKey: "sample-model", nickname: "通用模型", icon: "sparkles", contextWindow: 8192, maxOutputTokens: 4096)], providers: [AIProvider(id: "sample-provider", name: "示例 AI 服务", protocolID: .chatCompletionsV1, endpoint: "https://example.invalid/v1", authenticationID: "sample-reference", models: [ProviderModelBinding(modelRecordKey: "sample-model", providerModelID: "external-example", contextWindow: 8192, maxOutputTokens: 4096)])], routes: [ModelRoute(modelRecordKey: "sample-model", providerID: "sample-provider")])
         hasGateway = true
         protocols = [ProtocolDescriptor(id: .chatCompletionsV1, name: "OpenAI Chat Completions v1", supported: true), ProtocolDescriptor(id: .responsesV1, name: "OpenAI Responses v1", supported: true), ProtocolDescriptor(id: .messagesV1, name: "Anthropic Messages v1", supported: false)]
         runtimeTypes = [RuntimeTypeDescriptor(id: "sample-type", name: "示例运行时", fields: [], actions: [SettingAction(id: "connect", label: "连接")])]
-        runtimeInstances = [RuntimeInstance(id: "sample-instance", name: "示例运行时", typeID: "sample-type", gatewayID: gateway.id, settings: [:], modelID: "sample-model"), RuntimeInstance(id: "sample-review", name: "另一个运行时", typeID: "sample-type", gatewayID: gateway.id, settings: [:], modelID: "sample-model")]
+        runtimeInstances = [RuntimeInstance(id: "sample-instance", name: "示例运行时", typeID: "sample-type", gatewayID: gateway.id, settings: [:], modelRecordKey: "sample-model"), RuntimeInstance(id: "sample-review", name: "另一个运行时", typeID: "sample-type", gatewayID: gateway.id, settings: [:], modelRecordKey: "sample-model")]
         connections = [Connection(id: runtimeInstances[0].id, name: runtimeInstances[0].name, state: "ready", capabilities: ["conversation", "streaming", "cancel"])]
         selectedConnectionID = runtimeInstances[0].id
         let topics = ["让设置页更安静", "整理一段代码", "下一步的项目计划"]
@@ -465,7 +469,7 @@ final class AppStore: ObservableObject {
             var history = pairs[index].enumerated().map { Message(id: "sample-\(index)-\($0.offset)", role: $0.offset.isMultiple(of: 2) ? "user" : "assistant", blocks: [.text($0.element)]) }
             history[1].blocks.append(MessageBlock(kind: "tool", text: index == 1 ? "已读取 3 个文件，未修改项目。" : "已梳理当前任务的上下文。", toolID: "sample-tool-\(index)", title: index == 1 ? "检查项目代码" : "读取工作上下文", state: "done"))
             if index == 2 { history[history.count - 1].blocks.append(MessageBlock(kind: "tool", text: "正在整理计划。", toolID: "sample-progress", title: "整理项目计划", state: "running")) }
-            previewSnapshots[conversation.id] = ConversationSnapshot(revision: 1, conversation: conversation, modelID: models[0].id, runState: .idle, messages: history, actions: ConversationActions(canSend: true, canCancel: false, canSwitch: true))
+            previewSnapshots[conversation.id] = ConversationSnapshot(revision: 1, conversation: conversation, modelRecordKey: models[0].id, runState: .idle, messages: history, actions: ConversationActions(canSend: true, canCancel: false, canSwitch: true))
             conversations.append(conversation)
         }
         apply(previewSnapshots["sample-0"])

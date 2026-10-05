@@ -68,3 +68,15 @@ AI/provider owner 清理领域残留，gateway owner 负责 application／bindin
 
 
 集中认证交付已完成：`31b394c` 的 clean schema 3 bundle 已安装，版本仍为 0.1 beta.1。portable 与已安装库的 registry／迁移验收、原生 HTTP 9 个边界、安装库 Pi 正常工具循环及实际 source adapter、旧预览拒绝、受管 helper 断开／30 秒期限／关闭整组清理均通过。具体边界和脚本修订见 [认证实施记录](authentication-implementation.md)。没有真实调用、秘密或 UI 验收；模型业务误建模只完成研究与设计修订，尚未实施。
+
+
+## 模型重构实施授权与 hard-cutoff
+
+用户要求立即修正严重的模型业务缺陷，并明确当前阶段所有重构 hard-cutoff。本轮更新领域／原生协议调用、网关目标解析、application 配置、导入、Pi 投影与 UniFFI／Mac 表单，内部记录键隐藏自动生成，提供商模型标识和路由入口分开，参数归实际提供商绑定。schema 4 只支持新契约，删除旧字段及迁移分支；旧普通配置直接原子重置到 schema 4，不保存备份，不转换旧字段；原 Harness 文件、会话与 Keychain 秘密不删除。上游 Pi 协议 compat 的来源语义仍保留，不把它当 Velune 旧版兼容代码删除。
+
+Rust owner 延续共享 packages，Mac owner 延续 UI／绑定接入并修复 Disclosure 内容额外缩进；root 负责文档、合成人工脚本、全静态检查、发行构建安装。此前 advisor 已裁决模型真实业务概念、record key 与 alias 分开、binding 实际能力权威，不新增 Capability／Offering 实体。本轮额外 advisor 调用受 agent thread limit 阻止，沿用已裁决基线处理具体接口，不阻塞已授权工作。行为验收使用隔离临时目录和合成上游，不自动化测试、不读取真实配置／秘密／会话，不调用真实模型。
+
+
+模型重构源码已贯通：内部 recordKey 自动生成且 UI 隐藏，精确 providerModelId 归绑定，route 自动产生入口 alias；native provider 只校验原生 body.model 与 ProviderModelId 一致，不二次映射。规格与协议推理声明可未知，Pi 准备时独立检查。Schema 4 reset 删除旧配置内容且无备份，未来 schema／损坏 JSON／新 schema 旧字段仍拒绝。导入显式映射必须指向已有记录，无同名跨提供商自动合并。Mac 完整严格 typecheck 通过，Disclosure 内容改原生 Grid 与 leading 对齐。
+
+portable 的合成 UniFFI 验收已通过配置重置、原文件边界、登记认证资源生命周期、自动记录键及跨提供商独立能力；原生 HTTP 9 个保真边界与取消通过，继续核对裸记录键入口拒绝。旧契约重复临时脚本随 hard-cutoff 删除，历史验收记录保留原日期与源码依据。发行安装与安装包正常 Pi 循环待最终确认。

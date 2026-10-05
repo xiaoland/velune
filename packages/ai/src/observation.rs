@@ -5,7 +5,7 @@ use crate::{
 };
 use std::time::Duration;
 
-pub use crate::sampling::{Quantity, Usage};
+use crate::sampling::Usage;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Operation {
     Sampling,
@@ -24,7 +24,7 @@ pub struct AttemptContext {
     pub call: CallId,
     pub attempt: AttemptId,
     pub provider: ProviderId,
-    pub model: ModelId,
+    pub model: ProviderModelId,
     pub revision: ConfigRevision,
 }
 #[derive(Debug, Clone)]

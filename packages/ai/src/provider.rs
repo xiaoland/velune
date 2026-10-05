@@ -1,8 +1,6 @@
 //! Service-owned inward contract. Provider implementations depend on this module, not vice versa.
 use crate::{
-    InvalidContract, OperationFuture,
-    ids::*,
-    observation::{AttemptContext, Usage},
+    InvalidContract, OperationFuture, ids::*, observation::AttemptContext, sampling::Usage,
     sampling::*,
 };
 use std::{collections::HashSet, sync::Arc};
@@ -34,14 +32,14 @@ pub type ProviderSamplingSink = Box<dyn FnMut(SamplingDelta) + Send>;
 pub struct ProviderBinding {
     id: ProviderId,
     revision: ConfigRevision,
-    models: Vec<ModelId>,
+    models: Vec<ProviderModelId>,
     adapter: Arc<dyn SamplingProvider>,
 }
 impl ProviderBinding {
     pub fn new(
         id: ProviderId,
         revision: ConfigRevision,
-        models: Vec<ModelId>,
+        models: Vec<ProviderModelId>,
         adapter: Arc<dyn SamplingProvider>,
     ) -> Result<Self, InvalidContract> {
         if models.is_empty() {

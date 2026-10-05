@@ -41,7 +41,6 @@ pub struct AuthenticationBinding {
 pub(crate) struct AuthenticationSource {
     pub kind: String,
     pub harness_type_id: String,
-    #[serde(default)]
     pub source_instance_id: Option<String>,
     pub provider_id: String,
     pub settings: BTreeMap<String, String>,

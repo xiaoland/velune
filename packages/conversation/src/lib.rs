@@ -61,7 +61,7 @@ pub struct ConversationSnapshot {
     pub revision: u64,
     pub conversation: ConversationSummary,
     pub resource_id: Option<String>,
-    pub model_id: Option<String>,
+    pub model_record_key: Option<String>,
     pub run_state: RunState,
     pub messages: Vec<Message>,
     pub actions: ConversationActions,

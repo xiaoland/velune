@@ -42,11 +42,12 @@ impl CoreRuntime {
                 let previous = self.config.clone();
                 match request["payload"]["operation"].as_str() {
                     Some("upsert") => {
-                        let gateway: GatewayConfig = serde_json::from_str(
+                        let mut gateway: GatewayConfig = serde_json::from_str(
                             request["payload"]["gateway"]
                                 .as_str()
                                 .ok_or_else(|| Error::invalid("gateway"))?,
                         )?;
+                        gateway.assign_record_keys();
                         gateway.validate().map_err(Error::invalid)?;
                         self.config.gateways.retain(|g| g.id != gateway.id);
                         self.config.gateways.push(gateway);

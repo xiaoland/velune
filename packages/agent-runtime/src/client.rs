@@ -52,44 +52,26 @@ pub type Result<T> = std::result::Result<T, Error>;
 /// Application-owned Pi subprocess paths and session selection.
 /// Upstream authentication is not part of the execution configuration.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct Config {
     pub binary: PathBuf,
-    #[serde(alias = "nodeBinary")]
-    #[serde(default)]
     pub node_binary: Option<PathBuf>,
-    #[serde(alias = "sdkHelper")]
-    #[serde(default)]
     pub sdk_helper: Option<PathBuf>,
-    #[serde(alias = "extension")]
-    #[serde(default)]
     pub extension: Option<PathBuf>,
-    #[serde(alias = "agentDir")]
-    #[serde(default)]
     pub agent_dir: Option<PathBuf>,
-    #[serde(alias = "workingDir")]
-    #[serde(default)]
     pub working_dir: Option<PathBuf>,
-    #[serde(default)]
     pub provider: Option<String>,
-    #[serde(default)]
     pub model: Option<String>,
     /// SDK launcher and application-owned catalog/selection, distinct from PI_HOME.
-    #[serde(default)]
     pub rpc_entry: Option<PathBuf>,
-    #[serde(default)]
     pub models_path: Option<PathBuf>,
-    #[serde(default)]
     pub selection_file: Option<PathBuf>,
     /// Ephemeral loopback gateway token. It is injected into the child
     /// environment and never serialized into app configuration or snapshots.
-    #[serde(skip_serializing, default)]
+    #[serde(skip_serializing)]
     pub gateway_token: Option<String>,
-    #[serde(alias = "sessionDir")]
-    #[serde(default)]
     pub session_dir: Option<PathBuf>,
-    #[serde(default)]
     pub session: Option<PathBuf>,
-    #[serde(default)]
     pub name: Option<String>,
 }
 

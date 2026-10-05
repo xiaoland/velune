@@ -30,7 +30,7 @@ Agent 运行时可配置多个实例，每个实例选择类型、独立配置�
 
 Harness 仅收到 Velune 本机网关配置；提供商凭据不传入执行 Harness，不使用“工作环境已有认证”。application 集中管理认证资源与目标授权，网关只接收异步解析接口，AI provider 使用本次解析出的短生命周期认证。认证设置显示 API key／OAuth、状态及独立的来源详情；Pi 是来源，不是认证方式。订阅登录和状态操作按登记的资源 ID 发起，内部 adapter 保留来源 SDK 的登录与刷新，不复制 refresh credential。当前仅接入固定 Pi 新 `openai` 订阅路径，不将 legacy `openai-codex` 认证接到公共 Responses。应用内登录成功或更换 API key 会更新该资源 generation 并要求受影响连接重连；外部账户替换尚未自动辨识，应经应用重新登录或明确更换来源。开发方不执行真实登录。真实请求和产品体验由用户验收。
 
-API key 替换先写新 Keychain 项，再原子更新认证资源。只有确认配置未提交才删除本次新项；提交后旧项清理失败不回滚配置。只清理应用拥有且已无引用的精确 Keychain 项，不删除迁移前的外部项或来源文件。使用中的认证资源不能删除。schema 2 配置在打开时迁移到 schema 3：提供商来源或旧引用各自成为独立登记资源，迁移不读取秘密、不按相同文件路径合并身份。
+API key 替换先写新 Keychain 项，再原子更新认证资源。只有确认配置未提交才删除本次新项；提交后旧项清理失败不回滚配置。只清理应用拥有且已无引用的精确 Keychain 项，不删除外部项或来源文件。使用中的认证资源不能删除。当前只接受 schema 4。旧 schema 普通配置打开时原子重置为空 schema 4，不迁移、不保留旧文件或备份；原 Harness、会话和 Keychain 秘密不删除。未来 schema 或损坏 JSON 明确报错。
 
 AI 提供商页的“从运行时导入…”是完整配置导入入口。选择已配置的 Agent 运行时实例后读取预览，复用该实例的目录与 Node 配置，再选择提供商模型导入；模型也可以关联到已有全局模型。原提供商与认证文件保留；导入在集中认证仓库登记资源，提供商只保存其 ID。重复项默认跳过，明确替换才更新已导入提供商；已有路由和运行时默认模型不自动改变。运行时实例、来源或目标配置在预览后变化时，须重新读取。读取配置不要求先连接运行时，也不要求已有默认模型或路由。仅支持当前网关能够保留语义的配置；不支持项及原因在预览中显示，动态命令不执行。
 
@@ -141,9 +141,9 @@ live 入口 `minimax_manual live text|text-diagnostic|tool SOURCE_COMMIT` 仅供
 
 ## UniFFI 的临时端到端验收
 
-先构建动态库，并按 [bindings unit](../packages/bindings/README.md) 生成与其匹配的 Python 绑定。当前导入与认证验收使用 [安装包首循环脚本](../scripts/manual-pi-native-loop.py) 和 [集中认证管理脚本](../scripts/manual-authentication-management.py)，以绝对路径传入 `--bundle`、`--bindings`，首循环还需要 `--node`。两者使用临时 HOME、配置与来源，不访问真实 Keychain、会话或模型服务。首循环从配置运行时和导入开始，通过真实固定 Pi SDK 完成工具调用、续写和下一轮；还验证 application 管理的凭据 helper 在客户端断开、超时及关闭时终止子进程组。认证脚本验证 schema 2→3 迁移、目标授权、登记资源生命周期、generation 冲突与精确清理结果，配置操作不启动秘密解析。
+先构建动态库，并按 [bindings unit](../packages/bindings/README.md) 生成与其匹配的 Python 绑定。当前导入与认证验收使用 [安装包首循环脚本](../scripts/manual-pi-native-loop.py) 和 [集中认证管理脚本](../scripts/manual-authentication-management.py)，以绝对路径传入 `--bundle`、`--bindings`，首循环还需要 `--node`。两者使用临时 HOME、配置与来源，不访问真实 Keychain、会话或模型服务。首循环从配置运行时和导入开始，通过真实固定 Pi SDK 完成工具调用、续写和下一轮；还验证 application 管理的凭据 helper 在客户端断开、超时及关闭时终止子进程组。配置与认证脚本验证 schema 4 重置、内部记录键和跨提供商绑定、目标授权、登记资源生命周期、generation 冲突与精确清理结果，配置操作不启动秘密解析。
 
-[原生 HTTP 脚本](../scripts/manual-gateway-native.py) 单独验证 ChatCompletions／Responses 的 JSON、SSE、错误状态及安全头，使用合成异步认证解析器，不涉及来源协议。[较广的 UniFFI 临时脚本](../scripts/check-pi-uniffi-loop.py) 保留跨模型、恢复及忙时退出检查，显式传入 `--bindings`、`--library`、`--resources` 和 `--node`。这些入口均由开发者手动运行，不接入 CI；真实提供商与产品体验由用户验收。
+[原生 HTTP 脚本](../scripts/manual-gateway-native.py) 单独验证 ChatCompletions／Responses 的 JSON、SSE、错误状态及安全头，使用合成异步认证解析器，不涉及来源协议。旧契约的重复验收入口随 hard-cutoff 删除。这些入口均由开发者手动运行，不接入 CI；真实提供商与产品体验由用户验收。
 
 ## 工作区 units 与绑定构建
 

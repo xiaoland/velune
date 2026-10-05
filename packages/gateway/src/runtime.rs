@@ -23,7 +23,7 @@ use velune_ai::{
     DeliveryError, Payload,
     chat_completions::*,
     http::{Header, ResponseBody, ResponseMeta},
-    ids::{ConfigRevision, ModelId, ProviderId},
+    ids::{ConfigRevision, ProviderId, ProviderModelId},
     responses::*,
 };
 pub use velune_ai_provider::config::ResolvedCredential;
@@ -51,8 +51,8 @@ pub trait CredentialResolver: Send + Sync {
 
 use velune_ai_provider::{
     config::{
-        ChatCompletionsConfig, CredentialRef, HttpEndpoint, ModelMapping, ProtocolConfig,
-        ProviderConfig, ResponsesConfig, Transport,
+        ChatCompletionsConfig, CredentialRef, HttpEndpoint, ProtocolConfig, ProviderConfig,
+        ResponsesConfig, Transport,
     },
     openai::ChatCompletions,
     responses::OpenAiResponses,
@@ -73,7 +73,7 @@ impl std::error::Error for GatewayError {}
 
 #[derive(Clone)]
 struct RouteTarget {
-    model: ModelId,
+    model: ProviderModelId,
     protocol: GatewayProtocol,
     endpoint: String,
     config: ProviderConfig,
@@ -175,7 +175,7 @@ fn build_routes(
     let mut routes = BTreeMap::new();
     for route in &config.routes {
         let provider = config
-            .validate_dispatch(&route.model_id)
+            .validate_dispatch(&route.model_record_key)
             .map_err(GatewayError)?;
         if !crate::config::credential_ready(provider) {
             return Err(Box::new(GatewayError("provider credential is required")));
@@ -190,17 +190,12 @@ fn build_routes(
                 return Err(Box::new(GatewayError("provider protocol is unsupported")));
             }
         };
-        let model = ModelId::new(route.model_id.clone())?;
-        let bindings = provider
+        let binding = provider
             .models
             .iter()
-            .map(|binding| {
-                ModelMapping::new(
-                    ModelId::new(binding.model_id.clone())?,
-                    binding.external_model_id.clone(),
-                )
-            })
-            .collect::<Result<Vec<_>, _>>()?;
+            .find(|binding| binding.model_record_key == route.model_record_key)
+            .ok_or(GatewayError("provider binding missing"))?;
+        let model = ProviderModelId::new(binding.provider_model_id.clone())?;
         let provider_config = ProviderConfig::new(
             ProviderId::new(provider.id.clone())?,
             ConfigRevision::new(1)?,
@@ -211,10 +206,9 @@ fn build_routes(
                     .clone()
                     .unwrap_or_else(|| provider.id.clone()),
             )?,
-            bindings,
         )?;
         routes.insert(
-            route.model_id.clone(),
+            route.model_record_key.clone(),
             RouteTarget {
                 model,
                 protocol: provider.protocol.clone(),
@@ -227,8 +221,20 @@ fn build_routes(
             },
         );
     }
+    let targets = routes;
+    let mut routes = BTreeMap::new();
+    for route in &config.routes {
+        let alias = format!("velune/model/{}", route.model_record_key);
+        routes.insert(
+            alias,
+            targets
+                .get(&route.model_record_key)
+                .expect("built target")
+                .clone(),
+        );
+    }
     for (alias, logical) in aliases {
-        let target = routes
+        let target = targets
             .get(logical)
             .cloned()
             .ok_or(GatewayError("gateway route target"))?;
@@ -485,11 +491,13 @@ async fn send_failure(
 async fn dispatch(
     state: Arc<Ingress>,
     target: RouteTarget,
-    body: Value,
+    mut body: Value,
     headers: Vec<Header>,
     stream: bool,
     sender: mpsc::Sender<WireEvent>,
 ) {
+    // The gateway alone resolves ingress aliases to the exact provider identifier.
+    body["model"] = Value::String(target.model.as_str().to_owned());
     let credential = match state
         .resolver
         .resolve(

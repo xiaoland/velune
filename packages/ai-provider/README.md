@@ -4,4 +4,4 @@
 
 它依赖 [ai](../ai/README.md)，不拥有应用路由、自动重试或 fail-over 策略。网关组合协议执行而不把 Harness 适配放入此包。协议限制及手动 fixture 说明见 [AI service](../../docs/design/ai-service.md) 和 [开发说明](../../docs/development.md)。
 
-旧配置中的 `ChatCompletionsOutputLimitField` 仍由 application 往返保存，但 native Chat Completions operation 不读取它，也不替请求添加任何输出限制或推理字段。它不再是 provider native path 的协议决策点。
+原生操作收到已经解析的精确 `ProviderModelId`；本包不维护 Velune 记录到提供商型号的映射，不接受旧 `ModelMapping` 或 `ChatCompletionsOutputLimitField`。请求输出限制与推理字段由原生协议 body 决定。

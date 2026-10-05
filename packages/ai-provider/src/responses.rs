@@ -62,13 +62,13 @@ impl OpenAiResponses {
         })
     }
 
-    fn request_json(body: &Value, external_model: &str) -> Result<Value, InvalidContract> {
-        let mut body = body
-            .as_object()
-            .cloned()
-            .ok_or(InvalidContract("Responses body must be an object"))?;
-        body.insert("model".into(), Value::String(external_model.to_owned()));
-        let body = Value::Object(body);
+    fn request_json(body: &Value, provider_model_id: &str) -> Result<Value, InvalidContract> {
+        if !body.is_object() || body["model"].as_str() != Some(provider_model_id) {
+            return Err(InvalidContract(
+                "Responses provider model does not match request body",
+            ));
+        }
+        let body = body.clone();
         if serde_json::to_vec(&body)
             .map_err(|_| InvalidContract("Responses body encoding"))?
             .len()
@@ -225,12 +225,7 @@ impl ResponsesProvider for OpenAiResponses {
         request: ResponsesRequest,
         mut events: ResponsesSink,
     ) -> OperationFuture<ResponsesCompletion> {
-        let Some(mapping) = self.config.model(&request.model) else {
-            return Box::pin(async {
-                Self::failure(ResponsesErrorKind::InvalidInput, None, None, false)
-            });
-        };
-        let body = match Self::request_json(request.body.get(), mapping.external_name()) {
+        let body = match Self::request_json(request.body.get(), request.model.as_str()) {
             Ok(body) => body,
             Err(_) => {
                 return Box::pin(async {

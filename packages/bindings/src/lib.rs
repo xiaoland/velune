@@ -231,10 +231,10 @@ impl VeluneApplication {
     pub fn select_model(
         &self,
         runtime_id: String,
-        model_id: String,
+        model_record_key: String,
     ) -> Result<BindingSnapshotResult, BindingError> {
         convert(self.with("select_model", |application| {
-            application.select_model(runtime_id, model_id)
+            application.select_model(runtime_id, model_record_key)
         })?)
     }
 

@@ -167,7 +167,7 @@ impl SamplingInput {
 pub struct SamplingRequest {
     pub call_id: CallId,
     pub provider: ProviderId,
-    pub model: ModelId,
+    pub model: ProviderModelId,
     pub input: SamplingInput,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

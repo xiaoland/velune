@@ -17,7 +17,7 @@ impl PiProjection {
                 revision: 0,
                 conversation,
                 resource_id: None,
-                model_id: None,
+                model_record_key: None,
                 run_state: RunState::Idle,
                 messages: Vec::new(),
                 actions: ConversationActions {

@@ -75,8 +75,8 @@ pub struct ProviderImportSource {
 #[serde(rename_all = "camelCase")]
 pub struct ImportSelection {
     pub provider_id: String,
-    pub model_ids: Vec<String>,
-    pub model_mappings: BTreeMap<String, String>,
+    pub candidate_keys: Vec<String>,
+    pub model_record_mappings: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -111,8 +111,8 @@ pub struct ImportProviderCandidate {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ImportModelCandidate {
-    pub id: String,
-    pub external_model_id: String,
+    pub candidate_key: String,
+    pub provider_model_id: String,
     pub name: String,
     pub context_window: Option<u32>,
     pub max_output_tokens: Option<u32>,
@@ -268,11 +268,11 @@ impl Application {
     pub fn select_model(
         &mut self,
         runtime_id: String,
-        model_id: String,
+        model_record_key: String,
     ) -> Result<SnapshotResult, Error> {
         self.execute(
             "selectModel",
-            json!({"modelID":model_id}),
+            json!({"modelRecordKey":model_record_key}),
             Some(&runtime_id),
         )
     }

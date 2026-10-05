@@ -7,37 +7,27 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ModelDefinition {
-    pub id: String,
+    pub record_key: String,
     pub nickname: String,
     pub icon: Option<String>,
-    pub max_output_tokens: u32,
-    #[serde(default)]
     pub context_window: Option<u32>,
-    pub reasoning_levels: Vec<String>,
-}
-
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum ChatCompletionsOutputLimitField {
-    MaxTokens,
-    #[default]
-    MaxCompletionTokens,
+    pub max_output_tokens: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ProviderModelBinding {
-    pub model_id: String,
-    pub external_model_id: String,
-    /// Legacy configuration metadata; native dispatch preserves the request field.
-    #[serde(default)]
-    pub chat_completions_output_limit_field: ChatCompletionsOutputLimitField,
+    pub model_record_key: String,
+    pub provider_model_id: String,
+    pub context_window: Option<u32>,
+    pub max_output_tokens: Option<u32>,
+    pub reasoning: Option<ProtocolReasoning>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub enum GatewayProtocol {
     ChatCompletionsV1,
     ResponsesV1,
@@ -45,38 +35,37 @@ pub enum GatewayProtocol {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ProviderDefinition {
     pub id: String,
     pub name: String,
     pub protocol: GatewayProtocol,
     pub endpoint: String,
-    #[serde(default)]
     pub credential_ref: Option<String>,
     pub models: Vec<ProviderModelBinding>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Route {
-    pub model_id: String,
+    pub model_record_key: String,
     pub provider_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub enum FailoverMode {
     Disabled,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct FailoverPolicy {
     pub mode: FailoverMode,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct GatewayConfig {
     pub id: String,
     pub name: String,
@@ -96,23 +85,18 @@ impl GatewayConfig {
         }
         let mut models = BTreeSet::new();
         for model in &self.models {
-            if model.id.is_empty()
+            if model.record_key.is_empty()
                 || model.nickname.is_empty()
-                || model.max_output_tokens == 0
-                || model
-                    .context_window
-                    .is_some_and(|window| window == 0 || model.max_output_tokens > window)
-                || !models.insert(&model.id)
+                || model.max_output_tokens == Some(0)
+                || model.context_window.is_some_and(|window| {
+                    window == 0
+                        || model
+                            .max_output_tokens
+                            .is_some_and(|maximum| maximum > window)
+                })
+                || !models.insert(&model.record_key)
             {
                 return Err("invalid or duplicate model definition");
-            }
-            let mut levels = BTreeSet::new();
-            if model
-                .reasoning_levels
-                .iter()
-                .any(|level| level.is_empty() || !levels.insert(level))
-            {
-                return Err("invalid or duplicate reasoning level");
             }
         }
         let mut providers = BTreeMap::new();
@@ -131,11 +115,26 @@ impl GatewayConfig {
             }
             let mut bindings = BTreeSet::new();
             for binding in &provider.models {
-                if !models.contains(&binding.model_id)
-                    || binding.external_model_id.is_empty()
-                    || !bindings.insert(&binding.model_id)
+                if !models.contains(&binding.model_record_key)
+                    || binding.provider_model_id.is_empty()
+                    || binding.provider_model_id.chars().any(char::is_control)
+                    || !bindings.insert(&binding.model_record_key)
                 {
                     return Err("provider model binding is invalid");
+                }
+                validate_limits(binding.context_window, binding.max_output_tokens)?;
+                if let Some(reasoning) = &binding.reasoning {
+                    if reasoning.protocol != provider.protocol {
+                        return Err("reasoning declaration must match provider protocol");
+                    }
+                    let mut levels = BTreeSet::new();
+                    if reasoning
+                        .levels
+                        .iter()
+                        .any(|level| level.is_empty() || !levels.insert(level))
+                    {
+                        return Err("invalid reasoning declaration");
+                    }
                 }
             }
         }
@@ -144,12 +143,14 @@ impl GatewayConfig {
             let provider = providers
                 .get(&route.provider_id)
                 .ok_or("route provider is missing")?;
-            if !models.contains(&route.model_id)
-                || routes.insert(&route.model_id, &route.provider_id).is_some()
+            if !models.contains(&route.model_record_key)
+                || routes
+                    .insert(&route.model_record_key, &route.provider_id)
+                    .is_some()
                 || !provider
                     .models
                     .iter()
-                    .any(|binding| binding.model_id == route.model_id)
+                    .any(|binding| binding.model_record_key == route.model_record_key)
             {
                 return Err("route must select one configured provider model");
             }
@@ -158,21 +159,24 @@ impl GatewayConfig {
     }
 
     pub fn model(&self, id: &str) -> Option<&ModelDefinition> {
-        self.models.iter().find(|model| model.id == id)
+        self.models.iter().find(|model| model.record_key == id)
     }
 
     /// Validate the stricter boundary used immediately before a gateway call.
     /// Configuration editing may save incomplete models/providers/routes, but a
     /// dispatch must have exactly one explicit provider mapping.
-    pub fn validate_dispatch(&self, model_id: &str) -> Result<&ProviderDefinition, &'static str> {
+    pub fn validate_dispatch(
+        &self,
+        model_record_key: &str,
+    ) -> Result<&ProviderDefinition, &'static str> {
         self.validate()?;
-        if self.model(model_id).is_none() {
+        if self.model(model_record_key).is_none() {
             return Err("model is not configured");
         }
         let routes: Vec<_> = self
             .routes
             .iter()
-            .filter(|route| route.model_id == model_id)
+            .filter(|route| route.model_record_key == model_record_key)
             .collect();
         if routes.len() != 1 {
             return Err("model needs exactly one route");
@@ -188,7 +192,7 @@ impl GatewayConfig {
         if !provider
             .models
             .iter()
-            .any(|binding| binding.model_id == model_id)
+            .any(|binding| binding.model_record_key == model_record_key)
         {
             return Err("provider model binding is missing");
         }
@@ -201,4 +205,23 @@ pub(crate) fn credential_ready(provider: &ProviderDefinition) -> bool {
         .credential_ref
         .as_deref()
         .is_some_and(|reference| !reference.is_empty())
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProtocolReasoning {
+    pub protocol: GatewayProtocol,
+    pub levels: Vec<String>,
+}
+
+fn validate_limits(context: Option<u32>, output: Option<u32>) -> Result<(), &'static str> {
+    if context == Some(0)
+        || output == Some(0)
+        || context
+            .zip(output)
+            .is_some_and(|(context, output)| output > context)
+    {
+        return Err("invalid provider model limits");
+    }
+    Ok(())
 }

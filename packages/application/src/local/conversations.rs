@@ -16,11 +16,11 @@ impl CoreRuntime {
             .iter()
             .find(|item| Some(&item.id) == self.active_runtime_id.as_ref())
             .expect("active runtime instance is configured")
-            .model_id
+            .model_record_key
             .as_deref()
             .ok_or_else(|| RuntimeError::invalid("runtime model id"))?
             .to_owned();
-        self.logical_model_id = Some(default_model.clone());
+        self.model_record_key = Some(default_model.clone());
         let gateway = self
             .runtime_instances
             .iter()
@@ -91,10 +91,7 @@ impl CoreRuntime {
             .map(PathBuf::from)
             .ok_or_else(|| RuntimeError::invalid("session working directory is unavailable"))?;
         validate_session_cwd(&cwd)?;
-        let restored_model = saved["virtualState"]["state"]["logicalModelId"]
-            .as_str()
-            .or_else(|| saved["virtualState"]["state"]["modelId"].as_str())
-            .or_else(|| saved["model"]["modelId"].as_str());
+        let restored_model = saved["virtualState"]["state"]["modelRecordKey"].as_str();
         let runtime = self
             .runtime_instances
             .iter()
@@ -105,7 +102,7 @@ impl CoreRuntime {
             .iter()
             .find(|item| item.id == runtime.gateway_id)
             .expect("runtime gateway is configured");
-        let model_id = restored_model
+        let model_record_key = restored_model
             .filter(|id| {
                 ((saved["virtualState"]["provider"] == "velune"
                     && saved["virtualState"]["state"]["provider"] == "velune-gateway")
@@ -115,22 +112,23 @@ impl CoreRuntime {
             })
             .map(str::to_owned);
         self.physical_model_id = None;
-        self.logical_model_id = model_id.clone();
-        self.subscription_capability = model_id
+        self.model_record_key = model_record_key.clone();
+        self.subscription_capability = model_record_key
             .as_deref()
             .is_some_and(|id| self.authentication_resources.subscription(gateway, id));
-        if let Some(model_id) = model_id {
+        if let Some(model_record_key) = model_record_key {
             let physical_model_id = gateway
                 .pi_binding_id(
-                    &model_id,
-                    self.authentication_resources.revision(gateway, &model_id),
+                    &model_record_key,
+                    self.authentication_resources
+                        .revision(gateway, &model_record_key),
                 )
                 .map_err(RuntimeError::invalid)?;
             self.physical_model_id = Some(physical_model_id.clone());
             self.start_pi_for_session(
                 &cwd,
                 Some(&path),
-                Some(&model_id),
+                Some(&model_record_key),
                 Some(&physical_model_id),
                 self.subscription_capability,
             )?;
@@ -196,20 +194,20 @@ impl CoreRuntime {
     }
 
     pub(super) fn bind_gateway_model(&mut self) -> Result<(), RuntimeError> {
-        let model_id = self
+        let model_record_key = self
             .pi_config
             .as_ref()
             .and_then(|config| config.selection_file.as_ref())
             .and_then(|path| fs::read_to_string(path).ok())
             .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
-            .and_then(|value| value["modelId"].as_str().map(str::to_owned))
+            .and_then(|value| value["modelRecordKey"].as_str().map(str::to_owned))
             .ok_or_else(|| RuntimeError::invalid("runtime model id"))?;
         self.pi
             .as_mut()
             .ok_or_else(|| RuntimeError::invalid("runtime is not connected"))?
             .request(json!({"type":"set_model","provider":"velune","modelId":"auto"}))
             .map_err(|_| RuntimeError::invalid("gateway model binding"))?;
-        let _ = model_id;
+        let _ = model_record_key;
         Ok(())
     }
 
@@ -232,7 +230,7 @@ impl CoreRuntime {
         if self.pi.is_none() {
             return Err(RuntimeError::invalid("conversation is not active"));
         }
-        let model_id = request["payload"]["modelID"]
+        let model_record_key = request["payload"]["modelRecordKey"]
             .as_str()
             .ok_or_else(|| RuntimeError::invalid("model id"))?;
         let runtime = self
@@ -245,18 +243,19 @@ impl CoreRuntime {
             .iter()
             .find(|item| item.id == runtime.gateway_id)
             .expect("runtime gateway is configured");
-        runnable_pi_model(gateway, model_id)?;
+        runnable_pi_model(gateway, model_record_key)?;
         let selected_subscription_capability = self
             .authentication_resources
-            .subscription(gateway, model_id);
+            .subscription(gateway, model_record_key);
         let selected_physical_model_id = gateway
             .pi_binding_id(
-                model_id,
-                self.authentication_resources.revision(gateway, model_id),
+                model_record_key,
+                self.authentication_resources
+                    .revision(gateway, model_record_key),
             )
             .map_err(RuntimeError::invalid)?;
         self.write_selection(
-            model_id,
+            model_record_key,
             &selected_physical_model_id,
             selected_subscription_capability,
         )?;
@@ -280,7 +279,7 @@ impl CoreRuntime {
 
     pub(super) fn write_selection(
         &self,
-        logical_model_id: &str,
+        model_record_key: &str,
         physical_model_id: &str,
         subscription_capability: bool,
     ) -> Result<(), RuntimeError> {
@@ -290,7 +289,7 @@ impl CoreRuntime {
             .ok_or_else(|| RuntimeError::invalid("runtime is not connected"))?;
         write_selection_file(
             config,
-            logical_model_id,
+            model_record_key,
             physical_model_id,
             subscription_capability,
         )
@@ -335,8 +334,8 @@ impl CoreRuntime {
             }
             projection.replace_history(&messages);
             if let Some(snapshot) = projection.snapshot.as_mut() {
-                snapshot.model_id = self.logical_model_id.clone();
-                snapshot.actions.can_send = snapshot.model_id.is_some() && !self.pi_busy;
+                snapshot.model_record_key = self.model_record_key.clone();
+                snapshot.actions.can_send = snapshot.model_record_key.is_some() && !self.pi_busy;
                 snapshot.actions.can_cancel = self.pi_busy;
             }
         }

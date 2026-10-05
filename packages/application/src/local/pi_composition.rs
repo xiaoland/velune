@@ -21,31 +21,41 @@ pub(super) fn runnable_pi_model<'a>(
         .validate_dispatch(id)
         .map_err(RuntimeError::invalid)?;
     let model = gateway.model(id).expect("validated model");
-    if model.context_window.is_none() {
+    let binding = provider
+        .models
+        .iter()
+        .find(|binding| binding.model_record_key == id)
+        .expect("validated binding");
+    if binding.context_window.is_none() || binding.max_output_tokens.is_none() {
         return Err(RuntimeError::invalid(
-            "请先在模型设置中填写上下文窗口（tokens）",
+            "Pi 运行时需要提供商模型绑定的上下文窗口与输出上限；未知能力请先向该提供商核实并填写。",
         ));
     }
-    if model.reasoning_levels.iter().any(|level| {
+    let levels = pi_declared_levels(binding);
+    if levels.iter().any(|level| {
         !["off", "minimal", "low", "medium", "high", "xhigh", "max"].contains(&level.as_str())
     }) {
         return Err(RuntimeError::invalid(
-            "当前 Pi 适配器不支持该模型的推理等级",
+            "当前 Pi 适配器不支持该提供商模型的推理等级",
         ));
     }
-    if let Some(projection) = provider
-        .models
-        .iter()
-        .find(|binding| binding.model_id == id)
-        .and_then(|binding| binding.pi_projection.as_ref())
-        && projection.reasoning_enabled
-        && projection
-            .supported_levels(&model.reasoning_levels)
-            .is_empty()
-    {
-        return Err(RuntimeError::invalid(
-            "Pi 适配器与模型当前推理等级没有共同能力",
-        ));
+    if let Some(projection) = &binding.pi_projection {
+        // Pi-specific source mappings are checked only when preparing this adapter.
+        if projection.thinking_level_map.keys().any(|level| {
+            !["off", "minimal", "low", "medium", "high", "xhigh", "max"].contains(&level.as_str())
+        }) {
+            return Err(RuntimeError::invalid(
+                "Pi 来源推理映射无效，请重新预览并导入。",
+            ));
+        }
+        if !levels.is_empty()
+            && projection.reasoning_enabled
+            && projection.supported_levels(&levels).is_empty()
+        {
+            return Err(RuntimeError::invalid(
+                "Pi 适配器与提供商模型推理声明没有共同能力",
+            ));
+        }
     }
     Ok(model)
 }
@@ -78,62 +88,47 @@ pub(super) fn materialize_models(
     let entries = gateway
         .models
         .iter()
-        .filter(|model| runnable_pi_model(gateway, &model.id).is_ok())
+        .filter(|model| runnable_pi_model(gateway, &model.record_key).is_ok())
         .map(|model| -> Result<Value, RuntimeError> {
             let physical_id = gateway
-                .pi_binding_id(&model.id, authentication.revision(gateway,&model.id))
+                .pi_binding_id(&model.record_key, authentication.revision(gateway,&model.record_key))
                 .map_err(RuntimeError::invalid)?;
             let api =
                 gateway
-                    .validate_dispatch(&model.id)
+                    .validate_dispatch(&model.record_key)
                     .ok()
                     .map(|provider| match provider.protocol {
                         GatewayProtocol::ChatCompletionsV1 => "openai-completions",
                         GatewayProtocol::ResponsesV1 => "openai-responses",
                         GatewayProtocol::MessagesV1 => "unsupported",
                     });
-            let binding_projection = gateway
-                .routes
-                .iter()
-                .find(|route| route.model_id == model.id)
-                .and_then(|route| {
-                    gateway
-                        .providers
-                        .iter()
-                        .find(|provider| provider.id == route.provider_id)
-                })
-                .and_then(|provider| {
-                    provider
-                        .models
-                        .iter()
-                        .find(|binding| binding.model_id == model.id)
-                })
-                .and_then(|binding| binding.pi_projection.as_ref());
+            let routed_provider = gateway.validate_dispatch(&model.record_key).map_err(RuntimeError::invalid)?;
+            let binding = routed_provider.models.iter().find(|binding| binding.model_record_key == model.record_key).expect("validated binding");
+            let binding_projection = binding.pi_projection.as_ref();
+            let declared_levels = pi_declared_levels(binding);
             let mut entry = json!({
                 "id": physical_id,
-                "logicalModelId": model.id,
+                "modelRecordKey": model.record_key,
                 "name": model.nickname,
                 "input": ["text"],
-                "maxTokens": model.max_output_tokens,
-                "contextWindow": model.context_window.expect("runnable model context window"),
+                "maxTokens": binding.max_output_tokens.expect("runnable binding output limit"),
+                "contextWindow": binding.context_window.expect("runnable binding context window"),
             });
             if let Some(api) = api {
                 entry["api"] = Value::String(api.into());
             }
             let supported_levels = binding_projection
-                .map(|projection| projection.supported_levels(&model.reasoning_levels))
-                .unwrap_or_else(|| model.reasoning_levels.clone());
+                .map(|projection| projection.supported_levels(&declared_levels))
+                .unwrap_or_else(|| declared_levels.to_vec());
             if !supported_levels.is_empty() {
                 entry["reasoning"] = Value::Bool(true);
                 entry["compat"] = json!({"supportsReasoningEffort": true});
                 let levels = binding_projection
                     .map(|projection| {
-                        projection.catalog_thinking_level_map(&model.reasoning_levels)
+                        projection.catalog_thinking_level_map(&declared_levels)
                     })
                     .unwrap_or_else(|| {
-                        model
-                            .reasoning_levels
-                            .iter()
+                        declared_levels.iter()
                             .map(|level| (level.clone(), Some(level.clone())))
                             .collect()
                     });
@@ -143,6 +138,7 @@ pub(super) fn materialize_models(
                     .collect::<serde_json::Map<_, _>>();
                 entry["thinkingLevelMap"] = Value::Object(levels);
             }
+            entry["reasoning"] = Value::Bool(!supported_levels.is_empty());
             if let Some(projection) = binding_projection {
                 if let Some(compat) = &projection.completions_compat {
                     entry["compat"] = compat.clone();
@@ -205,7 +201,7 @@ pub(super) fn materialize_models(
 
 pub(super) fn write_selection_file(
     config: &PiConfig,
-    logical_model_id: &str,
+    model_record_key: &str,
     physical_model_id: &str,
     subscription_capability: bool,
 ) -> Result<(), RuntimeError> {
@@ -220,9 +216,8 @@ pub(super) fn write_selection_file(
     let temporary = path.with_extension("json.tmp");
     let bytes = serde_json::to_vec(&json!({
         "provider": "velune-gateway",
-        "logicalModelId": logical_model_id,
+        "modelRecordKey": model_record_key,
         "physicalModelId": physical_model_id,
-        "modelId": physical_model_id,
         "thinkingLevel": "off",
         "subscriptionCapability": subscription_capability
     }))?;
@@ -273,4 +268,34 @@ pub(super) fn pi_session_helper(
         return Err(RuntimeError::invalid("Pi session helper failed"));
     }
     serde_json::from_slice(&output.stdout).map_err(RuntimeError::Json)
+}
+
+/// Translate the protocol declaration at the Pi adapter boundary, not in the AI model domain.
+fn pi_declared_levels(binding: &crate::config::ProviderModelBinding) -> Vec<String> {
+    let Some(reasoning) = &binding.reasoning else {
+        return Vec::new();
+    };
+    if let Some(projection) = &binding.pi_projection {
+        projection
+            .thinking_level_map
+            .iter()
+            .filter_map(|(level, wire)| {
+                wire.as_ref()
+                    .filter(|wire| reasoning.levels.contains(wire))
+                    .map(|_| level.clone())
+            })
+            .collect()
+    } else {
+        reasoning
+            .levels
+            .iter()
+            .map(|level| {
+                if level == "none" {
+                    "off".into()
+                } else {
+                    level.clone()
+                }
+            })
+            .collect()
+    }
 }

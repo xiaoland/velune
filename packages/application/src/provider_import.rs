@@ -200,7 +200,7 @@ pub(crate) fn preview(
                 )
             ),
         );
-        providers.push(json!({"id":provider_id,"sourceProviderId":provider.source_provider_id,"name":provider.name,"protocol":protocol_name,"endpoint":provider.endpoint,"canImport":!supported.is_empty(),"alreadyImported":gateway.providers.iter().any(|item| item.id == provider_id),"credentialStatus":provider.auth.status_label.clone().unwrap_or_else(|| provider.auth.kind.clone()),"issues":if provider.auth.ready { Vec::<String>::new() } else { vec![provider.auth.reason.clone().unwrap_or_else(|| "需要完成认证".into())] },"models":provider.models.iter().map(|m| json!({"id":stable_id("pi_model", &format!("{}|{}|{}|{}", provider.source_provider_id, m.id, protocol_name, source_identity(&source, &snapshot.models_path, snapshot.auth_path.as_deref()))),"externalModelId":m.id,"name":m.name,"contextWindow":m.context_window,"maxOutputTokens":m.max_tokens,"reasoningLevels":if m.reasoning_levels.is_empty() { vec!["off".to_string()] } else { m.reasoning_levels.clone() },"canImport":m.supported && m.context_window.unwrap_or(0) > 0 && m.max_tokens.unwrap_or(0) > 0,"issues":if m.unsupported_features.is_empty() { m.unsupported_reason.clone().into_iter().collect() } else { m.unsupported_features.clone() }})).collect::<Vec<_>>() }));
+        providers.push(json!({"id":provider_id,"sourceProviderId":provider.source_provider_id,"name":provider.name,"protocol":protocol_name,"endpoint":provider.endpoint,"canImport":!supported.is_empty(),"alreadyImported":gateway.providers.iter().any(|item| item.id == provider_id),"credentialStatus":provider.auth.status_label.clone().unwrap_or_else(|| provider.auth.kind.clone()),"issues":if provider.auth.ready { Vec::<String>::new() } else { vec![provider.auth.reason.clone().unwrap_or_else(|| "需要完成认证".into())] },"models":provider.models.iter().map(|m| json!({"candidateKey":stable_id("pi_candidate", &format!("{}|{}|{}|{}", provider.source_provider_id, m.id, protocol_name, source_identity(&source, &snapshot.models_path, snapshot.auth_path.as_deref()))),"providerModelId":m.id,"name":m.name,"contextWindow":m.context_window,"maxOutputTokens":m.max_tokens,"reasoningLevels":if m.reasoning_levels.is_empty() { vec!["off".to_string()] } else { m.reasoning_levels.clone() },"canImport":m.supported,"issues":if m.unsupported_features.is_empty() { m.unsupported_reason.clone().into_iter().collect() } else { m.unsupported_features.clone() }})).collect::<Vec<_>>() }));
     }
     let preview = Preview {
         contract_version: 1,
@@ -273,11 +273,7 @@ pub(crate) fn apply(
         let Some(protocol_kind) = provider
             .models
             .iter()
-            .find(|model| {
-                model.supported
-                    && model.context_window.unwrap_or(0) > 0
-                    && model.max_tokens.unwrap_or(0) > 0
-            })
+            .find(|model| model.supported)
             .and_then(|model| model.protocol.as_deref().and_then(protocol))
         else {
             continue;
@@ -300,14 +296,11 @@ pub(crate) fn apply(
             .models
             .iter()
             .filter(|model| {
-                model.supported
-                    && model.protocol.as_deref().and_then(protocol).is_some()
-                    && model.context_window.unwrap_or(0) > 0
-                    && model.max_tokens.unwrap_or(0) > 0
+                model.supported && model.protocol.as_deref().and_then(protocol).is_some()
             })
             .map(|model| {
                 stable_id(
-                    "pi_model",
+                    "pi_candidate",
                     &format!(
                         "{}|{}|{}|{}",
                         provider.source_provider_id,
@@ -329,29 +322,33 @@ pub(crate) fn apply(
         let provider_id = selection["providerId"]
             .as_str()
             .ok_or_else(|| RuntimeError::invalid("provider import selection provider"))?;
-        let model_ids = selection["modelIds"]
+        let candidate_keys = selection["candidateKeys"]
             .as_array()
             .ok_or_else(|| RuntimeError::invalid("provider import selection models"))?;
-        if model_ids.is_empty() {
+        if candidate_keys.is_empty() {
             return Err(RuntimeError::invalid("provider import selection models"));
         }
         let candidates = candidate_models
             .get(provider_id)
             .ok_or_else(|| RuntimeError::invalid("provider import selection provider"))?;
         let mut selected = std::collections::BTreeSet::new();
-        for model_id in model_ids {
-            let model_id = model_id
+        for model_record_key in candidate_keys {
+            let model_record_key = model_record_key
                 .as_str()
                 .ok_or_else(|| RuntimeError::invalid("provider import selection model"))?;
-            if !selected.insert(model_id)
-                || !candidates.iter().any(|candidate| candidate == model_id)
+            if !selected.insert(model_record_key)
+                || !candidates
+                    .iter()
+                    .any(|candidate| candidate == model_record_key)
             {
                 return Err(RuntimeError::invalid("provider import selection model"));
             }
         }
-        if let Some(mappings) = selection["modelMappings"].as_object() {
-            for (model_id, target_id) in mappings {
-                if !selected.iter().any(|selected_id| *selected_id == model_id)
+        if let Some(mappings) = selection["modelRecordMappings"].as_object() {
+            for (model_record_key, target_id) in mappings {
+                if !selected
+                    .iter()
+                    .any(|selected_id| *selected_id == model_record_key)
                     || !target_id
                         .as_str()
                         .is_some_and(|target| gateway.model(target).is_some())
@@ -368,12 +365,7 @@ pub(crate) fn apply(
         let models: Vec<_> = provider
             .models
             .into_iter()
-            .filter(|m| {
-                m.supported
-                    && m.protocol.as_deref().and_then(protocol).is_some()
-                    && m.context_window.unwrap_or(0) > 0
-                    && m.max_tokens.unwrap_or(0) > 0
-            })
+            .filter(|m| m.supported && m.protocol.as_deref().and_then(protocol).is_some())
             .collect();
         if models.is_empty() {
             continue;
@@ -407,7 +399,7 @@ pub(crate) fn apply(
         let mut bindings = Vec::new();
         for model in models {
             let candidate_id = stable_id(
-                "pi_model",
+                "pi_candidate",
                 &format!(
                     "{}|{}|{}|{}",
                     provider.source_provider_id,
@@ -424,7 +416,7 @@ pub(crate) fn apply(
                 items.iter().find(|item| {
                     (item["providerId"] == provider.source_provider_id
                         || item["providerId"] == provider_id)
-                        && item["modelIds"].as_array().is_some_and(|ids| {
+                        && item["candidateKeys"].as_array().is_some_and(|ids| {
                             ids.iter()
                                 .any(|id| id.as_str() == Some(candidate_id.as_str()))
                         })
@@ -436,28 +428,59 @@ pub(crate) fn apply(
             {
                 continue;
             }
-            let model_id = selection
-                .and_then(|item| item["modelMappings"][&candidate_id].as_str())
+            let model_record_key = selection
+                .and_then(|item| item["modelRecordMappings"][&candidate_id].as_str())
                 .filter(|id| !id.is_empty())
-                .unwrap_or(&candidate_id)
-                .to_owned();
-            if gateway.model(&model_id).is_none() {
+                .map(str::to_owned)
+                .or_else(|| {
+                    gateway
+                        .providers
+                        .iter()
+                        .find(|provider| provider.id == provider_id)
+                        .and_then(|provider| {
+                            provider
+                                .models
+                                .iter()
+                                .find(|binding| binding.provider_model_id == model.id)
+                        })
+                        .map(|binding| binding.model_record_key.clone())
+                })
+                .unwrap_or_else(crate::new_record_key);
+            if gateway.model(&model_record_key).is_none() {
                 gateway.models.push(ModelDefinition {
-                    id: model_id.clone(),
+                    record_key: model_record_key.clone(),
                     nickname: model.name.clone(),
                     icon: None,
-                    max_output_tokens: model.max_tokens.unwrap(),
+                    max_output_tokens: model.max_tokens,
                     context_window: model.context_window,
-                    reasoning_levels: if model.reasoning_levels.is_empty() {
-                        vec!["off".into()]
-                    } else {
-                        model.reasoning_levels.clone()
-                    },
                 });
             }
             bindings.push(ProviderModelBinding {
-                model_id: model_id.clone(),
-                external_model_id: model.id,
+                model_record_key: model_record_key.clone(),
+                provider_model_id: model.id,
+                context_window: model.context_window,
+                max_output_tokens: model.max_tokens,
+                reasoning: if model.reasoning_levels.is_empty() {
+                    None
+                } else {
+                    Some(crate::config::ProtocolReasoning {
+                        protocol: protocol_kind.clone(),
+                        levels: model
+                            .pi_projection
+                            .as_ref()
+                            .map(|projection| {
+                                projection
+                                    .thinking_level_map
+                                    .values()
+                                    .flatten()
+                                    .cloned()
+                                    .collect::<std::collections::BTreeSet<_>>()
+                                    .into_iter()
+                                    .collect()
+                            })
+                            .unwrap_or_else(|| model.reasoning_levels.clone()),
+                    })
+                },
                 pi_projection: model.pi_projection.clone(),
             });
         }
@@ -489,7 +512,7 @@ pub(crate) fn apply(
             serde_json::to_string(
                 &bindings
                     .iter()
-                    .map(|binding| binding.external_model_id.clone())
+                    .map(|binding| binding.provider_model_id.clone())
                     .collect::<Vec<_>>(),
             )?,
         );
@@ -499,7 +522,7 @@ pub(crate) fn apply(
                 binding
                     .pi_projection
                     .as_ref()
-                    .map(|execution| (binding.external_model_id.clone(), execution))
+                    .map(|execution| (binding.provider_model_id.clone(), execution))
             })
             .collect::<BTreeMap<_, _>>();
         settings.insert(

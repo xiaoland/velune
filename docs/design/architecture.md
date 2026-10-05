@@ -22,6 +22,8 @@ Apple 外观由原生组件与系统语义样式适配，不建立自有明暗�
 
 Velune 的产品身份是 control surface：UI、AI 服务网关与协调层服务于外部 Agent 运行时，不生成代表 Velune 自身的 Agent 人格。通用会话投影保持 user／assistant／system／tool 语义；平台按左右与居中布局呈现，不给 assistant 注入 Velune 作者标签。
 
+当前模型装配采用 Model 与 ProviderModelBinding 两层：隐藏 recordKey 由 application 生成，providerModelId 是提供商规定的原生 API 标识，路由按 modelRecordKey／providerId 选择绑定。网关入口自动派生 `velune/model/<recordKey>`，协议执行只接收已解析 ProviderModelId。实际能力归绑定，未知规格不借用其它提供商数据；Pi 所需字段在 Pi 准备执行时检查。普通配置 schema 4 hard-cutoff，旧 schema 原子重置且无备份，原 Harness 与平台秘密保留。详细契约见 [AI 服务设计](ai-service.md)。
+
 ## 独立 package 与平台装配
 
 2026-10-05 用户决定全面采用 UniFFI，并授权按独立 package 拆分。实施采用 ai、ai-provider、conversation、agent-runtime、gateway、application、bindings；配置持久化保留在 application 内部。remote 和移动端尚未实现，不建立空包。

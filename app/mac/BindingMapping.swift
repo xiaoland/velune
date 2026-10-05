@@ -12,7 +12,7 @@ enum BindingMapping {
 
     static func snapshot(_ value: BindingConversationSnapshot) -> ConversationSnapshot {
         ConversationSnapshot(revision: value.revision, conversation: conversation(value.conversation),
-                             modelID: value.modelId, runState: runState(value.runState),
+                             modelRecordKey: value.modelRecordKey, runState: runState(value.runState),
                              messages: value.messages.map(message), actions: actions(value.actions))
     }
 
@@ -57,9 +57,8 @@ enum BindingMapping {
     }
 
     static func model(_ value: BindingModelDefinition) -> AIModel {
-        AIModel(id: value.id, nickname: value.nickname, icon: value.icon,
-                contextWindow: value.contextWindow, maxOutputTokens: value.maxOutputTokens,
-                reasoningLevels: value.reasoningLevels)
+        AIModel(recordKey: value.recordKey, nickname: value.nickname, icon: value.icon,
+                contextWindow: value.contextWindow, maxOutputTokens: value.maxOutputTokens)
     }
 
     static func protocolID(_ value: BindingGatewayProtocol) -> ProviderProtocol {
@@ -67,8 +66,9 @@ enum BindingMapping {
     }
 
     static func providerBinding(_ value: BindingProviderModelBinding) -> ProviderModelBinding {
-        ProviderModelBinding(modelID: value.modelId, externalModelID: value.externalModelId,
-                             adapterMetadataJSON: value.adapterMetadataJson)
+        ProviderModelBinding(modelRecordKey: value.modelRecordKey, providerModelID: value.providerModelId,
+                             contextWindow: value.contextWindow, maxOutputTokens: value.maxOutputTokens,
+                             reasoning: value.reasoning.map { ProtocolReasoning(protocolID: protocolID($0.`protocol`), levels: $0.levels) }, adapterMetadataJSON: value.adapterMetadataJson)
     }
 
     static func authenticationBinding(_ value: BindingAuthenticationBinding) -> AuthenticationBinding {
@@ -87,12 +87,12 @@ enum BindingMapping {
     static func gateway(_ value: BindingGatewayConfig) -> GatewayConfig {
         GatewayConfig(id: value.id, name: value.name, models: value.models.map(model),
                       providers: value.providers.map(provider),
-                      routes: value.routes.map { ModelRoute(modelID: $0.modelId, providerID: $0.providerId) },
+                      routes: value.routes.map { ModelRoute(modelRecordKey: $0.modelRecordKey, providerID: $0.providerId) },
                       failover: FailoverPolicy(mode: .disabled))
     }
 
     static func bindingGateway(_ value: GatewayConfig) -> BindingGatewayConfig {
-        BindingGatewayConfig(id: value.id, name: value.name, models: value.models.map { BindingModelDefinition(id: $0.id, nickname: $0.nickname, icon: $0.icon, maxOutputTokens: $0.maxOutputTokens, contextWindow: $0.contextWindow, reasoningLevels: $0.reasoningLevels) }, providers: value.providers.map { BindingProviderDefinition(id: $0.id, name: $0.name, protocol: bindingProtocol($0.protocolID), endpoint: $0.endpoint, authenticationId: $0.authenticationID, models: $0.models.map(bindingProviderModel) ) }, routes: value.routes.map { BindingRoute(modelId: $0.modelID, providerId: $0.providerID) }, failover: BindingFailoverPolicy(mode: .disabled))
+        BindingGatewayConfig(id: value.id, name: value.name, models: value.models.map { BindingModelDefinition(recordKey: $0.recordKey, nickname: $0.nickname, icon: $0.icon, contextWindow: $0.contextWindow, maxOutputTokens: $0.maxOutputTokens) }, providers: value.providers.map { BindingProviderDefinition(id: $0.id, name: $0.name, protocol: bindingProtocol($0.protocolID), endpoint: $0.endpoint, authenticationId: $0.authenticationID, models: $0.models.map(bindingProviderModel) ) }, routes: value.routes.map { BindingRoute(modelRecordKey: $0.modelRecordKey, providerId: $0.providerID) }, failover: BindingFailoverPolicy(mode: .disabled))
     }
 
     static func bindingProtocol(_ value: ProviderProtocol) -> BindingGatewayProtocol {
@@ -100,20 +100,20 @@ enum BindingMapping {
     }
 
     private static func bindingProviderModel(_ value: ProviderModelBinding) -> BindingProviderModelBinding {
-        BindingProviderModelBinding(modelId: value.modelID, externalModelId: value.externalModelID, adapterMetadataJson: value.adapterMetadataJSON)
+        BindingProviderModelBinding(modelRecordKey: value.modelRecordKey, providerModelId: value.providerModelID, contextWindow: value.contextWindow, maxOutputTokens: value.maxOutputTokens, reasoning: value.reasoning.map { BindingProtocolReasoning(protocol: bindingProtocol($0.protocolID), levels: $0.levels) }, adapterMetadataJson: value.adapterMetadataJSON)
     }
 
     static func bindingRuntime(_ value: RuntimeInstance) -> BindingRuntimeInstance {
-        BindingRuntimeInstance(id: value.id, name: value.name, typeId: value.typeID, gatewayId: value.gatewayID, settings: value.settings, modelId: value.modelID)
+        BindingRuntimeInstance(id: value.id, name: value.name, typeId: value.typeID, gatewayId: value.gatewayID, settings: value.settings, modelRecordKey: value.modelRecordKey)
     }
 
     static func bindingSelection(_ value: ProviderImportSelection) -> BindingImportSelection {
-        BindingImportSelection(providerId: value.providerId, modelIds: value.modelIds, modelMappings: value.modelMappings)
+        BindingImportSelection(providerId: value.providerId, candidateKeys: value.candidateKeys, modelRecordMappings: value.modelRecordMappings)
     }
 
     static func runtime(_ value: BindingRuntimeInstance) -> RuntimeInstance {
         RuntimeInstance(id: value.id, name: value.name, typeID: value.typeId,
-                        gatewayID: value.gatewayId, settings: value.settings, modelID: value.modelId)
+                        gatewayID: value.gatewayId, settings: value.settings, modelRecordKey: value.modelRecordKey)
     }
 
     static func runtimeType(_ value: BindingRuntimeTypeDescriptor) -> RuntimeTypeDescriptor {
@@ -141,7 +141,7 @@ enum BindingMapping {
     }
 
     private static func importProvider(_ value: BindingImportProviderCandidate) -> ProviderImportCandidate {
-        ProviderImportCandidate(id: value.id, name: value.name, protocol: value.`protocol`, endpoint: value.endpoint ?? "", canImport: value.canImport, alreadyImported: value.alreadyImported, credentialStatus: value.credentialStatus, issues: value.issues, models: value.models.map { ProviderImportModel(id: $0.id, externalModelId: $0.externalModelId, name: $0.name, contextWindow: $0.contextWindow, maxOutputTokens: $0.maxOutputTokens, reasoningLevels: $0.reasoningLevels, canImport: $0.canImport, issues: $0.issues) })
+        ProviderImportCandidate(id: value.id, name: value.name, protocol: value.`protocol`, endpoint: value.endpoint ?? "", canImport: value.canImport, alreadyImported: value.alreadyImported, credentialStatus: value.credentialStatus, issues: value.issues, models: value.models.map { ProviderImportModel(candidateKey: $0.candidateKey, providerModelID: $0.providerModelId, name: $0.name, contextWindow: $0.contextWindow, maxOutputTokens: $0.maxOutputTokens, reasoningLevels: $0.reasoningLevels, canImport: $0.canImport, issues: $0.issues) })
     }
 
     static func authenticationMetadata(_ value: BindingAuthenticationMetadata) -> AuthenticationMetadata {

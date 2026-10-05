@@ -1,12 +1,6 @@
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, HashSet};
-use velune_ai::{
-    Payload,
-    ids::*,
-    observation::{Quantity, Usage},
-    provider::*,
-    sampling::*,
-};
+use velune_ai::{Payload, ids::*, provider::*, sampling::*};
 
 fn selected(value: &Value, fields: &[&str]) -> Value {
     let mut result = serde_json::Map::new();

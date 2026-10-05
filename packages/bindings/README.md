@@ -25,3 +25,5 @@ cargo run --locked -p velune-bindings --features cli --bin velune-bindgen -- \
 Swift 生成模块名为 `VeluneBindings`，FFI 模块名为 `VeluneBindingsFFI`；Kotlin 包名为 `app.velune.bindings`。绑定与其动态库必须来自同一次契约构建，UniFFI 在加载时检查接口校验信息。生成目录属于构建产物，不提交生成代码。
 
 当前使用 UniFFI `0.32.2` 官方 Swift、Kotlin、Python 生成器。C# 生成器属于第三方工具，尚未完成兼容性验证；不能据此宣称已有 Windows 应用接入。
+
+模型契约使用自动生成、界面隐藏的 `recordKey`，绑定使用精确 `providerModelId`。运行时选择、路由和 snapshot 引用 `modelRecordKey`；导入选择使用 `candidateKeys` 和显式 `modelRecordMappings`。提供商能力为可选字段；协议推理声明的 `None` 表示未知，空 levels 表示明确无支持。新契约不保留旧模型字段或 serde alias。

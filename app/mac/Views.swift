@@ -53,7 +53,7 @@ struct VeluneRootView: View {
     @ToolbarContentBuilder private var conversationToolbar: some ToolbarContent {
         ToolbarItemGroup(placement: .primaryAction) {
             Menu {
-                ForEach(store.models.filter { $0.contextWindow != nil }) { model in Button(model.nickname.isEmpty ? model.id : model.nickname) { store.selectModel(modelID: model.id) } }
+                ForEach(store.models.filter { model in store.routes.contains { $0.modelRecordKey == model.recordKey } }) { model in Button(model.displayName) { store.selectModel(modelRecordKey: model.recordKey) } }
                 Divider()
                 SettingsLink { Text("管理AI提供商与模型…") }
             } label: { Text(store.selectedModelName ?? "选择模型") }
@@ -406,11 +406,11 @@ struct ProviderEditor: View {
     @State private var protocolID: ProviderProtocol?
     @State private var endpoint = ""
     @State private var authenticationID = ""
-    @State private var bindings: [String: String] = [:]
+    @State private var bindings: [String: ProviderModelDraft] = [:]
     @State private var draftID = UUID().uuidString
     private var selectedBinding: AuthenticationBinding? { authenticationBindings.first { $0.id == authenticationID } }
     private var protocolSupported: Bool { protocols.first { $0.id == protocolID }?.supported == true }
-    private var valid: Bool { !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !endpoint.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && protocolSupported && bindings.values.allSatisfy { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty } }
+    private var valid: Bool { !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !endpoint.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && protocolSupported && bindings.values.allSatisfy(\.valid) }
     var body: some View {
         VStack(spacing: 0) {
             Text(provider == nil ? "添加AI提供商" : "编辑AI提供商").font(.headline).frame(maxWidth: .infinity, alignment: .leading).padding(20)
@@ -438,8 +438,12 @@ struct ProviderEditor: View {
                 }
                 Section("关联模型") {
                     ForEach(models) { model in
-                        Toggle(model.nickname.isEmpty ? model.id : model.nickname, isOn: Binding(get: { bindings[model.id] != nil }, set: { if $0 { bindings[model.id] = model.id } else { bindings.removeValue(forKey: model.id) } }))
-                        if bindings[model.id] != nil { TextField("提供商模型ID", text: Binding(get: { bindings[model.id] ?? "" }, set: { bindings[model.id] = $0 })) }
+                        Toggle(model.displayName, isOn: Binding(get: { bindings[model.recordKey] != nil }, set: { enabled in
+                            if enabled { bindings[model.recordKey] = ProviderModelDraft() } else { bindings.removeValue(forKey: model.recordKey) }
+                        }))
+                        if bindings[model.recordKey] != nil {
+                            ProviderModelFields(draft: Binding(get: { bindings[model.recordKey] ?? ProviderModelDraft() }, set: { bindings[model.recordKey] = $0 }))
+                        }
                     }
                     if models.isEmpty { Text("先在模型页定义模型，再关联到提供商。").foregroundStyle(.secondary) }
                 }
@@ -455,12 +459,12 @@ struct ProviderEditor: View {
         .onAppear {
             name = provider?.name ?? ""; protocolID = provider?.protocolID ?? protocols.first { $0.supported }?.id
             endpoint = provider?.endpoint ?? ""; authenticationID = provider?.authenticationID ?? ""
-            bindings = Dictionary(uniqueKeysWithValues: (provider?.models ?? []).map { ($0.modelID, $0.externalModelID) })
+            bindings = Dictionary(uniqueKeysWithValues: (provider?.models ?? []).map { ($0.modelRecordKey, ProviderModelDraft($0)) })
         }
     }
     private func commit() {
         guard valid, let protocolID else { return }
-        let value = AIProvider(id: provider?.id ?? draftID, name: name.trimmingCharacters(in: .whitespacesAndNewlines), protocolID: protocolID, endpoint: endpoint.trimmingCharacters(in: .whitespacesAndNewlines), authenticationID: authenticationID.isEmpty ? nil : authenticationID, models: bindings.keys.sorted().map { id in let external = bindings[id]!.trimmingCharacters(in: .whitespacesAndNewlines); let existing = provider?.models.first { $0.modelID == id && $0.externalModelID == external }; return ProviderModelBinding(modelID: id, externalModelID: external, adapterMetadataJSON: existing?.adapterMetadataJSON) })
+        let value = AIProvider(id: provider?.id ?? draftID, name: name.trimmingCharacters(in: .whitespacesAndNewlines), protocolID: protocolID, endpoint: endpoint.trimmingCharacters(in: .whitespacesAndNewlines), authenticationID: authenticationID.isEmpty ? nil : authenticationID, models: bindings.keys.sorted().compactMap { key in bindings[key]?.definition(recordKey: key, protocolID: protocolID) })
         save(value) { dismiss() }
     }
 }
@@ -474,14 +478,14 @@ struct ModelSettingsView: View {
     var body: some View {
         VStack(spacing: 0) {
             List(selection: $selectedID) {
-                ForEach(store.models) { model in Label { VStack(alignment: .leading, spacing: 3) { Text(model.nickname.isEmpty ? model.id : model.nickname); Text(model.id).font(.caption).foregroundStyle(.secondary) } } icon: { Image(systemName: model.icon ?? "cube") }.tag(model.id).contextMenu { Button("编辑…") { editor = model }; Button("删除…") { deleting = model } } }
+                ForEach(store.models) { model in Label { VStack(alignment: .leading, spacing: 3) { Text(model.displayName) } } icon: { Image(systemName: model.icon ?? "cube") }.tag(model.id).contextMenu { Button("编辑…") { editor = model }; Button("删除…") { deleting = model } } }
             }.listStyle(.bordered).padding(.horizontal, 20).padding(.top, 16)
             HStack { Button { creating = true } label: { Image(systemName: "plus") }.help("添加模型"); Button { deleting = store.models.first { $0.id == selectedID } } label: { Image(systemName: "minus") }.disabled(selectedID == nil).help("删除模型"); Spacer(); Button("编辑…") { editor = store.models.first { $0.id == selectedID } }.disabled(selectedID == nil) }.padding(.horizontal, 20).padding(.vertical, 12)
             SettingsError(message: store.error)
         }
         .sheet(item: $editor) { model in ModelEditor(model: model, isSaving: store.isLoading, error: store.error, save: store.saveModel) }
         .sheet(isPresented: $creating) { ModelEditor(model: nil, isSaving: store.isLoading, error: store.error, save: store.saveModel) }
-        .alert("删除模型？", isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } }), presenting: deleting) { model in Button("删除", role: .destructive) { store.deleteModel(id: model.id); deleting = nil }; Button("取消", role: .cancel) { deleting = nil } } message: { model in Text("删除「\(model.nickname.isEmpty ? model.id : model.nickname)」的模型配置，会话不受影响。") }
+        .alert("删除模型？", isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } }), presenting: deleting) { model in Button("删除", role: .destructive) { store.deleteModel(id: model.id); deleting = nil }; Button("取消", role: .cancel) { deleting = nil } } message: { model in Text("删除「\(model.displayName)」的模型配置，会话不受影响。") }
     }
 }
 
@@ -491,37 +495,70 @@ struct ModelEditor: View {
     let error: String?
     let save: (AIModel, (() -> Void)?) -> Void
     @Environment(\.dismiss) private var dismiss
-    @State private var id = ""
     @State private var nickname = ""
     @State private var icon = ""
     @State private var maxOutputTokens = ""
     @State private var contextWindow = ""
-    @State private var reasoningLevels = ""
-    private var valid: Bool { !id.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && (UInt32(maxOutputTokens).map { $0 > 0 } ?? false) && (contextWindow.isEmpty || (UInt32(contextWindow).map { $0 >= (UInt32(maxOutputTokens) ?? 0) } ?? false)) }
+    private var valid: Bool { !nickname.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && validOptionalTokenCount(maxOutputTokens) && validOptionalTokenCount(contextWindow) }
     var body: some View {
         VStack(spacing: 0) {
             Text(model == nil ? "添加模型" : "编辑模型").font(.headline).frame(maxWidth: .infinity, alignment: .leading).padding(20)
             Form {
-                TextField("模型ID", text: $id).disabled(model != nil)
-                TextField("昵称", text: $nickname, prompt: Text("可选"))
-                TextField("图标", text: $icon, prompt: Text("可选，SF Symbols名称"))
-                TextField("最大输出 Token 数", text: $maxOutputTokens)
-                TextField("上下文窗口 Token 数", text: $contextWindow, prompt: Text("运行前必须填写"))
-                TextField("推理等级", text: $reasoningLevels, prompt: Text("以逗号分隔；留空表示不支持"))
+                TextField("名称", text: $nickname)
+                TextField("图标", text: $icon, prompt: Text("可选，SF Symbols 名称"))
+                Section("模型规格") {
+                    TextField("上下文窗口", text: $contextWindow, prompt: Text("未知可留空"))
+                    TextField("最大输出 Token", text: $maxOutputTokens, prompt: Text("未知可留空"))
+                    Text("提供商绑定独立保存其实际能力与限制。").font(.caption).foregroundStyle(.secondary)
+                }
             }.formStyle(.grouped)
             HStack { Spacer(); Button("取消") { dismiss() }.keyboardShortcut(.cancelAction); Button("保存") { commit() }.keyboardShortcut(.defaultAction).disabled(!valid || isSaving) }.padding(20)
             SettingsError(message: error)
-        }.frame(width: 540, height: 430)
-        .onAppear { id = model?.id ?? ""; nickname = model?.nickname ?? ""; icon = model?.icon ?? ""; maxOutputTokens = model.map { String($0.maxOutputTokens) } ?? ""; contextWindow = model?.contextWindow.map(String.init) ?? ""; reasoningLevels = model?.reasoningLevels.joined(separator: ", ") ?? "" }
+        }.frame(width: 540, height: 350)
+        .onAppear { nickname = model?.nickname ?? ""; icon = model?.icon ?? ""; maxOutputTokens = model?.maxOutputTokens.map(String.init) ?? ""; contextWindow = model?.contextWindow.map(String.init) ?? "" }
     }
     private func commit() {
-        guard valid, let maximum = UInt32(maxOutputTokens) else { return }
-        let window = contextWindow.isEmpty ? nil : UInt32(contextWindow)
-        guard contextWindow.isEmpty || (window.map { $0 >= maximum } ?? false) else { return }
+        guard valid else { return }
+        save(AIModel(recordKey: model?.recordKey ?? "", nickname: nickname.trimmingCharacters(in: .whitespacesAndNewlines), icon: icon.isEmpty ? nil : icon,
+                     contextWindow: UInt32(contextWindow), maxOutputTokens: UInt32(maxOutputTokens))) { dismiss() }
+    }
+}
+
+private func validOptionalTokenCount(_ value: String) -> Bool { value.isEmpty || (UInt32(value).map { $0 > 0 } ?? false) }
+
+private struct ProviderModelDraft {
+    var providerModelID = ""
+    var contextWindow = ""
+    var maxOutputTokens = ""
+    var reasoningLevels = ""
+    var adapterMetadataJSON: String?
+    private var preservesEmptyReasoningDeclaration = false
+    init() {}
+    init(_ binding: ProviderModelBinding) {
+        providerModelID = binding.providerModelID
+        contextWindow = binding.contextWindow.map(String.init) ?? ""
+        maxOutputTokens = binding.maxOutputTokens.map(String.init) ?? ""
+        reasoningLevels = binding.reasoning?.levels.joined(separator: ", ") ?? ""
+        preservesEmptyReasoningDeclaration = binding.reasoning?.levels.isEmpty == true
+        adapterMetadataJSON = binding.adapterMetadataJSON
+    }
+    var valid: Bool { !providerModelID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && validOptionalTokenCount(contextWindow) && validOptionalTokenCount(maxOutputTokens) }
+    func definition(recordKey: String, protocolID: ProviderProtocol) -> ProviderModelBinding {
         let levels = reasoningLevels.split(separator: ",").map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
-        let modelID = id.trimmingCharacters(in: .whitespacesAndNewlines)
-        let displayName = nickname.trimmingCharacters(in: .whitespacesAndNewlines)
-        save(AIModel(id: modelID, nickname: displayName.isEmpty ? modelID : displayName, icon: icon.isEmpty ? nil : icon, contextWindow: window, maxOutputTokens: maximum, reasoningLevels: levels)) { dismiss() }
+        return ProviderModelBinding(modelRecordKey: recordKey, providerModelID: providerModelID, contextWindow: UInt32(contextWindow), maxOutputTokens: UInt32(maxOutputTokens),
+                                    reasoning: levels.isEmpty && !preservesEmptyReasoningDeclaration ? nil : ProtocolReasoning(protocolID: protocolID, levels: levels), adapterMetadataJSON: adapterMetadataJSON)
+    }
+}
+
+private struct ProviderModelFields: View {
+    @Binding var draft: ProviderModelDraft
+    var body: some View {
+        TextField("提供商模型 ID", text: $draft.providerModelID)
+        ImmediateDisclosureGroup("能力与限制") {
+            TextField("上下文窗口", text: $draft.contextWindow, prompt: Text("未知可留空"))
+            TextField("最大输出 Token", text: $draft.maxOutputTokens, prompt: Text("未知可留空"))
+            TextField("协议推理级别", text: $draft.reasoningLevels, prompt: Text("逗号分隔，未知可留空"))
+        }
     }
 }
 
@@ -531,9 +568,9 @@ struct RoutingSettingsView: View {
         Form {
             Section {
                 ForEach(store.models) { model in
-                    Picker(model.nickname.isEmpty ? model.id : model.nickname, selection: Binding(get: { store.routes.first { $0.modelID == model.id }?.providerID ?? "" }, set: { store.saveRoute(modelID: model.id, providerID: $0) })) {
+                    Picker(model.displayName, selection: Binding(get: { store.routes.first { $0.modelRecordKey == model.id }?.providerID ?? "" }, set: { store.saveRoute(modelRecordKey: model.id, providerID: $0) })) {
                         Text("请选择提供商").tag("").disabled(true)
-                        ForEach(store.providers.filter { $0.models.contains { $0.modelID == model.id } }) { provider in Text(provider.name).tag(provider.id).disabled(store.protocols.first { $0.id == provider.protocolID }?.supported != true) }
+                        ForEach(store.providers.filter { $0.models.contains { $0.modelRecordKey == model.id } }) { provider in Text(provider.name).tag(provider.id).disabled(store.protocols.first { $0.id == provider.protocolID }?.supported != true) }
                     }.disabled(store.isLoading || store.isGenerating)
                 }
                 if store.models.isEmpty { Text("先定义模型并关联AI提供商，再选择模型路由。").foregroundStyle(.secondary) }
@@ -587,7 +624,7 @@ struct RuntimeEditor: View {
     @Environment(\.dismiss) private var dismiss
     @State private var name = ""
     @State private var typeID = ""
-    @State private var modelID: String?
+    @State private var modelRecordKey: String?
     @State private var settings: [String: String] = [:]
     @State private var draftID = UUID().uuidString
     @State private var executableDiscoveryRunning = false
@@ -608,7 +645,7 @@ struct RuntimeEditor: View {
                 Section {
                     TextField("实例名称", text: $name)
                     Picker("类型", selection: $typeID) { ForEach(types) { type in Text(type.name).tag(type.id) } }.disabled(instance != nil)
-                    Picker("初始模型", selection: $modelID) { Text("稍后选择").tag(Optional<String>.none); ForEach(models) { model in Text(model.nickname.isEmpty ? model.id : model.nickname).tag(Optional(model.id)) } }
+                    Picker("初始模型", selection: $modelRecordKey) { Text("稍后选择").tag(Optional<String>.none); ForEach(models) { model in Text(model.displayName).tag(Optional(model.id)) } }
                 }
                 if let descriptor {
                     Section("实例配置") {
@@ -639,7 +676,7 @@ struct RuntimeEditor: View {
                     if let value = settings[field.key] { settings[field.key] = MacPath.expanded(value) }
                 }
             }
-            modelID = instance?.modelID
+            modelRecordKey = instance?.modelRecordKey
             DispatchQueue.main.async { discoverExecutableIfNeeded() }
         }
         .onChange(of: typeID) { _, _ in
@@ -678,7 +715,7 @@ struct RuntimeEditor: View {
         for field in descriptor.fields {
             values[field.key] = MacPath.normalized(settings[field.key] ?? field.value, field: field)
         }
-        save(RuntimeInstance(id: instance?.id ?? draftID, name: name.trimmingCharacters(in: .whitespacesAndNewlines), typeID: typeID, gatewayID: instance?.gatewayID ?? gatewayID, settings: values, modelID: modelID)) { dismiss() }
+        save(RuntimeInstance(id: instance?.id ?? draftID, name: name.trimmingCharacters(in: .whitespacesAndNewlines), typeID: typeID, gatewayID: instance?.gatewayID ?? gatewayID, settings: values, modelRecordKey: modelRecordKey)) { dismiss() }
     }
 }
 

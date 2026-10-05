@@ -31,16 +31,16 @@ impl CoreRuntime {
             .find(|item| item.id == runtime.gateway_id)
             .cloned()
             .ok_or_else(|| RuntimeError::invalid("gateway id"))?;
-        let logical_model_id = runtime
-            .model_id
+        let model_record_key = runtime
+            .model_record_key
             .as_deref()
             .ok_or_else(|| RuntimeError::invalid("runtime model id"))?;
-        runnable_pi_model(&gateway, logical_model_id)?;
+        runnable_pi_model(&gateway, model_record_key)?;
         let physical_model_id = gateway
             .pi_binding_id(
-                logical_model_id,
+                model_record_key,
                 self.authentication_resources
-                    .revision(&gateway, logical_model_id),
+                    .revision(&gateway, model_record_key),
             )
             .map_err(RuntimeError::invalid)?;
         let route_aliases = gateway
@@ -49,11 +49,11 @@ impl CoreRuntime {
             .map(|route| {
                 gateway
                     .pi_binding_id(
-                        &route.model_id,
+                        &route.model_record_key,
                         self.authentication_resources
-                            .revision(&gateway, &route.model_id),
+                            .revision(&gateway, &route.model_record_key),
                     )
-                    .map(|alias| (alias, route.model_id.clone()))
+                    .map(|alias| (alias, route.model_record_key.clone()))
                     .map_err(RuntimeError::invalid)
             })
             .collect::<Result<BTreeMap<_, _>, _>>()?;
@@ -100,7 +100,7 @@ impl CoreRuntime {
             .validate_sdk()
             .map_err(|error| RuntimeError::Invalid(error.to_string()))?;
         let protocol = match gateway
-            .validate_dispatch(logical_model_id)
+            .validate_dispatch(model_record_key)
             .map_err(RuntimeError::invalid)?
             .protocol
         {
@@ -120,10 +120,10 @@ impl CoreRuntime {
         }
         let subscription_capability = self
             .authentication_resources
-            .subscription(&gateway, logical_model_id);
+            .subscription(&gateway, model_record_key);
         write_selection_file(
             &config,
-            logical_model_id,
+            model_record_key,
             &physical_model_id,
             subscription_capability,
         )?;
@@ -131,7 +131,7 @@ impl CoreRuntime {
         self.pi_config = Some(config);
         self.active_runtime_id = Some(runtime_id.into());
         self.physical_model_id = None;
-        self.logical_model_id = None;
+        self.model_record_key = None;
         self.subscription_capability = false;
         Ok(())
     }
@@ -140,7 +140,7 @@ impl CoreRuntime {
         &mut self,
         cwd: &Path,
         session: Option<&Path>,
-        logical_model_id: Option<&str>,
+        model_record_key: Option<&str>,
         physical_model_id: Option<&str>,
         subscription_capability: bool,
     ) -> Result<(), RuntimeError> {
@@ -155,7 +155,7 @@ impl CoreRuntime {
         config.working_dir = Some(cwd.clone());
         config.session = session.map(Path::to_owned);
         config.name = None;
-        if let (Some(logical), Some(physical)) = (logical_model_id, physical_model_id) {
+        if let (Some(logical), Some(physical)) = (model_record_key, physical_model_id) {
             write_selection_file(&config, logical, physical, subscription_capability)?;
         }
         let mut client = pi::Client::spawn(config.clone())
@@ -181,12 +181,12 @@ impl CoreRuntime {
             cwd: Some(cwd.to_string_lossy().into_owned()),
         });
         if let Some(snapshot) = projection.snapshot.as_mut() {
-            snapshot.model_id = logical_model_id.map(str::to_owned);
+            snapshot.model_record_key = model_record_key.map(str::to_owned);
         }
         self.pi = Some(client);
         self.pi_config = Some(config);
         self.projection = Some(projection);
-        self.logical_model_id = logical_model_id.map(str::to_owned);
+        self.model_record_key = model_record_key.map(str::to_owned);
         self.physical_model_id = physical_model_id.map(str::to_owned);
         self.subscription_capability = subscription_capability;
         self.drain_pi();
@@ -203,7 +203,7 @@ impl CoreRuntime {
         self.pi_turn_started = false;
         self.projection = None;
         self.physical_model_id = None;
-        self.logical_model_id = None;
+        self.model_record_key = None;
         self.subscription_capability = false;
         if let Some(config) = self.pi_config.as_mut() {
             config.working_dir = None;
@@ -235,7 +235,7 @@ impl CoreRuntime {
         self.gateway_runner = None;
         self.active_runtime_id = None;
         self.physical_model_id = None;
-        self.logical_model_id = None;
+        self.model_record_key = None;
         self.subscription_capability = false;
         Ok(())
     }

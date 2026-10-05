@@ -59,7 +59,7 @@ pub struct CoreRuntime {
     active_runtime_id: Option<String>,
     authentication: Option<authentication::Login>,
     physical_model_id: Option<String>,
-    logical_model_id: Option<String>,
+    model_record_key: Option<String>,
     subscription_capability: bool,
     pi_turn_started: bool,
 }
@@ -93,7 +93,7 @@ impl CoreRuntime {
             active_runtime_id: None,
             authentication: None,
             physical_model_id: None,
-            logical_model_id: None,
+            model_record_key: None,
             subscription_capability: false,
             pi_turn_started: false,
         })
