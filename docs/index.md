@@ -11,11 +11,13 @@
 
 - [多 Harness 路由与协作架构](design/architecture.md)：已认可产品方向及 Rust／SQLite／原生 UI 基线；具体协作机制、宿主／桥接推荐与验证边界
 
-- [AI service 契约与 provider 配置](design/ai-service.md)：2026-10-03 独立 lib 的权威归属、静态保护及验收边界
+- [AI 服务与 AI 网关](design/ai-service.md)：已确认需求、操作／provider／网关职责、当前实现偏差及历史有界采样契约
 
 ## 当前工作
 
-- [独立 package 与平台能力装配](../tasks/package-boundaries/packet.md)：源码调查与候选边界讨论，未授权重构
+- [AI 网关与 AI 服务需求复核及审计](../tasks/ai-gateway-audit/packet.md)：原生协议保真、路由／fail-over、配置／认证和生命周期，包含源码证据与迁移建议
+
+- [独立 package 与平台能力装配](../tasks/package-boundaries/packet.md)：已授权并完成 UniFFI 拆分，保留其边界与验证证据
 
 - [Pi 与 Mac 首循环](../tasks/pi-mac-first-loop/packet.md)：原生 control surface、AI 网关、提供商与模型配置、Agent 运行时实例；真实运行待用户验收
 

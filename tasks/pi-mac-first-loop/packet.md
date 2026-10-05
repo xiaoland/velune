@@ -189,3 +189,7 @@ advisor 指出 max_tokens 仍是 OpenAI ChatCompletions 的正式但已弃用字
 安装基线核对为 7345ba8 的 clean bundle、0.1 beta.1。源码与固定 SDK 显示：DeepSeek 风格来源通过 thinking.type 选择推理；工具和后续历史要求 reasoning_content 重放。当前 sampling 的 Message/Delta 不含对应协议槽，网关请求重建与流解码不能保真，因此仅移除导入 guard 会制造实际调用失败。经 advisor 推荐，候选修复是增加原生 ChatCompletions 操作并切换 Harness 网关路径，保持具名契约、Payload、路由认证与取消/终态边界；不把 Sampling 扩成厂商兼容容器。此为待确认实现切片，本轮仅验收与方案调查。官方行为依据：[DeepSeek thinking mode](https://api-docs.deepseek.com/guides/thinking_mode/)，检查日期 2026-10-05；具体 SDK 推断仍以固定 1.0.2 为准。
 
 验收结果为失败，完整案例和手动重现方式归 [导入验收记录](deepseek-import-acceptance.md)。已安装库的正常 preview 禁选、apply 拒绝；同配置非推理模型也禁选。固定 SDK 五次 loopback 对照完整保留推理 signature、工具续轮历史、关闭推理和合法空串；两次隔离 gateway 诊断证实 thinking 与历史 reasoning_content 丢失，推理 SSE 触发 terminal error，工具关联仍保留。SDK／网关诊断不算正常导入通过，三份合成来源文件逐字节不变。本轮未改产品源码，不重新安装。保留人工临时脚本，不接入 CI；退出成功仅表示已复现失败，后续修复需更新为正常成功验收或删除此脚本。Python 语法与文档链接、diff 检查通过。
+
+2026-10-05 用户明确网关当前只做原生透传、路由与 fail-over，不承担协议转换／翻译。已先更新 PRD 与 AI service 权威设计，并标出 ChatCompletions sampling 重建为当前实现偏差。原生 ChatCompletions 方向不再作为未确认的产品选择；具体迁移、流终态和验证切片仍待实施安排。本轮同步文档，不将 fail-over 职责确认冒充已有自动策略，也不扩展 Messages／旧 Codex 等协议。
+
+用户随后要求复核整个 AI 网关与必要的 AI 服务，不再局限于原生 ChatCompletions 局部修复。当前复核、责任与结果归 [AI 网关审计任务](../ai-gateway-audit/packet.md)；本任务保留首循环与导入失败证据，不复制审计结论。

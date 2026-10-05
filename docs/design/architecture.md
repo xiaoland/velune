@@ -6,7 +6,7 @@
 
 2026-10-04 首循环边界：用户明确要求实际拆分 `core`（AI 服务、Harness 适配器）与 `app`（Mac 等平台）。当前 Pi 切片由 Pi 拥有会话历史和持久化，Velune 只投影会话列表、消息和运行状态，不另建真实会话数据库。Mac 提供 Chatbot 界面、会话列表与通用资源配置，不能硬编码资源示例；真实验收由用户执行。此切片不将模拟核心的逻辑 Session 契约强加给 Pi 历史，也不声称完整统一自动路由已完成。执行状态见 [首循环任务](../../tasks/pi-mac-first-loop/packet.md)。
 
-首循环的当前装配边界（2026-10-04 用户修订）：core 是 Rust lib，由 Mac／Windows 等平台应用通过 C ABI 嵌入，不是独立 Host 应用。CoreRuntime 拥有通用动作、配置校验与原子持久化、Harness 适配与 AI 网关生命周期；平台应用显式注入配置根目录、资源目录和平台秘密服务，并管理应用级唯一 handle。独立 AI service lib 仍不读取全局配置或环境。全局模型独立于 AI 提供商，提供商关联多个模型；网关配置还包含显式路由及策略归属。当前先实现 OpenAI ChatCompletions v1 和显式路由，未定义的自动 fail-over 不默认启用。旧 App↔Host IPC 接入是待移除的实现偏差，不是认可的产品边界。
+首循环的当前装配边界（2026-10-04 用户修订，2026-10-05 全面采用 UniFFI）：共享能力是 Rust libs，由 Mac／Windows 等平台应用通过生成的类型接口嵌入，不是独立 Host 应用。CoreRuntime 拥有通用动作、配置校验与原子持久化、Harness 适配与 AI 网关生命周期；平台应用显式注入配置根目录、资源目录和平台秘密服务，并管理应用级唯一 handle。独立 AI service lib 仍不读取全局配置或环境。全局模型独立于 AI 提供商，提供商关联多个模型；网关配置还包含显式路由及策略归属。当前先实现 OpenAI ChatCompletions v1 和显式路由，未定义的自动 fail-over 不默认启用。旧 App↔Host IPC 接入是待移除的实现偏差，不是认可的产品边界。
 
 Agent 运行时区分类型与实例，Pi Agent 为首个类型，同类型可保存多个配置实例。首轮保持一个活跃 runner，空闲时切换实例，运行中禁止切换；这不限制配置只能有一份。会话身份必须包含运行时实例，列表 SDK 使用对应配置目录。适配器注入 Velune 网关地址和模型目录，切换或恢复会话后仍重新绑定网关，不能沿用历史原生 provider 绕过网关。Pi 派生文件不得包含上游端点／凭据，写入应用根目录下的实例专属投影目录。原运行时目录继续作为 Pi home，SDK 将受管模型目录单独注入，不覆盖原模型、认证或设置文件。直接向执行 Harness 注入上游凭据的方案已被网关接入替代。Harness 提供商配置导入包含提供商、有效模型及能力参数与认证来源，由网关后端使用；执行 Harness 仍只访问网关。导入以非秘密预览、原文件保留和来源执行绑定为边界，具体契约见 [AI service 设计](ai-service.md#harness-提供商配置导入)。
 
@@ -89,14 +89,14 @@ Velune 的产品身份是 control surface：UI、AI 服务网关与协调层服�
 
 - **Rust Domain**：Task／Session／Segment、路由与权限策略、协作状态转换及契约，不依赖 UIKit／Compose／进程启动
 - **CoreRuntime**：在平台应用进程内组合配置、Supervisor、Gateway、进程适配与投影；跨平台复用同一套校验、状态转换和持久化行为，不另启常驻核心服务
-- **C ABI 接入层**：提供 opaque handle、UTF-8 JSON 命令与结果、关闭和 Rust 字符串释放；平台调用串行，不复制路由或持久化事务到 UI
+- **UniFFI bindings**：提供具名动作、record／enum、结构化错误与关闭契约，生成接口管理跨语言内存；不恢复手写 JSON dispatcher，不复制路由或持久化事务到 UI
 - **Swift／Kotlin 等平台 UI**：导航、流式展示、原生交互、系统权限与秘密设施；显式装配路径和能力。关闭窗口与退出应用是不同事件，退出须在运行时空闲且库完成关闭后进行
 
 首循环由 CoreRuntime 原子保存应用配置，不打开旧模拟 SQLite，也不保存另一套 Pi 会话历史。未来协作数据库如需 SQLite，仍由共享核心管理其事务；不能用文件同步制造跨设备共享主库。历史存储研究见[证据](../../tasks/harness-routing-feasibility/evidence.md#原生客户端与-rust-边界)。
 
 **当前跨语言接入**：bindings unit 以 UniFFI 0.32.2 生成 Swift／Kotlin 接口，Mac 通过具名方法、record／enum 和结构化错误操作 application。单个绑定对象拥有应用实例并串行执行同步操作；Mac 在后台队列调用，按快照轮询投影。关闭忙时拒绝并保留对象，执行取消为独立操作；释放平台包装并不等同于发出用户取消。输入与返回值的内存所有权由生成绑定管理，不再保留手写 `velune_core_*` 产品入口。配置 schema 仍为 2，生成接口由 UniFFI 校验契约。C# 第三方工具需独立验证兼容性，不宣称已有 Windows app。进程内接入保持，不另加本机 App↔core IPC。
 
-**Rust 主核心不要求重写上游 Harness SDK**。Codex 直接接 app-server；Pi 以 RPC 子进程接入，逐请求 virtual-model hook 由最薄的 Pi 扩展调用 Rust 路由服务；Claude 优先保留官方 SDK 的薄桥进程以正确处理其生命周期。桥只做编解码、关联 ID、流和原生权限回调，领域状态、路由、预算、协作与持久化留在 Rust。Node／TypeScript 若存在仅为原生 Harness／SDK 依赖与桥，不重新成为产品主核心；不得因改 Rust 而把 Claude 私有控制 envelope 当稳定公开协议重写。
+**Rust 主核心不要求重写上游 Harness SDK**。Codex 直接接 app-server；Pi 以固定 SDK 与 RPC 子进程管理会话，adapter 注入 AI 网关和私有模型投影；模型请求由 AI 网关路由并经 AI-provider 执行；Claude 优先保留官方 SDK 的薄桥进程以正确处理其生命周期。桥只做编解码、关联 ID、流和原生权限回调，领域状态、路由、预算、协作与持久化留在 Rust。Node／TypeScript 若存在仅为原生 Harness／SDK 依赖与桥，不重新成为产品主核心；不得因改 Rust 而把 Claude 私有控制 envelope 当稳定公开协议重写。
 
 ### Apple 与 Android 宿主
 
@@ -111,11 +111,11 @@ Mac 当前交付安装到 Applications，产品显示版本、ABI、配置 schem
 
 - Codex → Responses Gateway → 获准的 Responses 兼容上游；原生订阅或正式 ChatGPT 计划接入由对应认证路径持有身份
 - Claude Code → Messages Gateway → 获准的 Claude／兼容实验上游；原生订阅默认由原版 Claude Code 直接持有登录
-- Pi → virtual-model 路由回调 → Routing Policy → Pi provider；只有上游协议或统一计量需要时经过 Gateway
+- Pi → 执行侧受管模型／原生 SDK 编码 → AI 网关 → AI-provider → 同协议上游；Pi 原认证来源只用于显式委托解析与刷新，不使执行侧绕过 AI 网关
 
 Gateway 负责协议保持、流传递、资源预留和尝试记录，不执行 shell／文件工具，不创建任务，也不决定切换 Harness。工具仍在 Harness 及其受限 Runner 中执行。
 
-默认原生订阅模式下，控制面不接收订阅令牌。API key 由用户后续授权配置到对应 Runner 的密钥设施，数据库只存 opaque credential reference。正式 OAuth 集成若要求本产品持有令牌，必须有独立的注册、授权、隔离和生命周期设计；本轮不配置。
+认证委托采用原来源与平台秘密设施，普通配置只存引用，不复制 refresh credential。执行侧 Harness 只持有 AI 网关的本地访问凭据，上游授权由 AI-provider 的装配边界应用。独立订阅与其它 Harness 的资格仍按各自认证规则验证，不把 Pi 的实现提升为通用账号互通。
 
 **“接管”不等于拦截进程全部网络**：只承诺覆盖经验证的模型请求通道，启动探测、遥测、搜索、安全检查、插件网络另列清单。上线前用无真实内容的流量测试验证主请求、子 agent、压缩、标题等是否全部归属正确；未知出站不会被计成已受控。
 
@@ -125,7 +125,7 @@ Gateway 负责协议保持、流传递、资源预留和尝试记录，不执行
 | --- | --- | --- | --- |
 | Codex | `app-server` 管线程、轮次、事件、审批；自定义 provider／Responses gateway 接数据面 | ChatGPT 原生登录与 API key 分开；当前官方 SIWC 面向符合条件的开源／本地应用；付费／远程托管走合作申请。原生 app-server 旧认证不能作为商业／托管授权；不能直接拿 CLI 缓存 token 当任意 API key | 先用官方 app-server，逐轮选模型；API lane 用 Responses gateway。本地／开源订阅 lane 用原生隔离绑定；正式 SIWC 用公开 Responses endpoint，按其限制实现逐请求路由，托管 eligibility 独立验证 |
 | Claude Code | 原版 CLI／Agent SDK 管会话；`ANTHROPIC_BASE_URL` 接 Messages gateway | 当前文档允许平台运行原版 binary，用户走官方登录；禁止第三方代收或中转用户 Claude 凭据。仅 BASE_URL 的 OAuth pass-through 有技术文档，但不等于允许本产品聚合／改派订阅身份。非 Claude 模型不受 Anthropic 官方支持 | API lane 做网关，先覆盖 Claude 多供应商；订阅 lane 保留原生身份。非 Claude 协议桥作为明确标记的工程实验，不修改 binary、伪造身份或默默剥离功能 |
-| Pi | RPC／SDK 管会话，当前 virtual models 提供逐请求 `route`，可见 continuation／retry 及分支状态 | provider／OAuth 的代码支持不代表供应商授权；当前有原生 MCP。没有内建沙箱或逐工具审批，须补执行隔离和工具策略 | 把路由策略接入 virtual model，而非多套互相覆盖的代理；provider 适配由 Pi 处理，产品控制资源 eligibility、预算、粘性和审计 |
+| Pi | RPC／SDK 管会话，当前 virtual models 提供逐请求 `route`，可见 continuation／retry 及分支状态 | provider／OAuth 的代码支持不代表供应商授权；当前有原生 MCP。没有内建沙箱或逐工具审批，须补执行隔离和工具策略 | 固定 SDK 管会话和执行侧协议编码；AI 网关负责目标选择与同协议转发，AI-provider 负责上游单次执行。Pi adapter 保留来源能力和历史身份，认证可显式委托原来源 |
 
 正式 SIWC 不是通用 Responses 全功能别名：当前要求公开 `/v1/responses`、流式、`store:false`、完整所需历史，不使用 `previous_response_id`；可用模型按当前账户查询，不能把 app-server 缓存列表当 entitlement。注册／workspace／host ID 分开，refresh 串行；正式 app-server 路径需 token 更新后重启并恢复，不能假定环境变量热更新。见下列证据。
 
@@ -347,6 +347,10 @@ Mastra、HAPI、Lody 是用户提出的候选参考。研究围绕待决问题�
 Pi 的物理模型身份不能只使用全局逻辑模型 ID。相同逻辑模型改投另一提供商、端点、外部模型或认证来源后，Pi 会按完整 `provider/api/model` 判断历史兼容性；只重连 runner 无法清理旧签名。当前切片使用非秘密绑定配置的稳定 SHA-256 ID，网关将该 ID 映射到同一次不可变路由；昵称、预算和 Node 路径不参与身份。选择与界面仍保存逻辑模型，历史内容转换由 Pi 原生机制完成，不新增 Velune 清签名 hook。
 
 应用内更新 API key 或成功完成来源登录会增加认证绑定 generation，并要求重连。认证刷新不改变 generation，也不哈希 access token。外部直接在同一来源文件或 Keychain 引用背后更换账户，当前尚无可靠非秘密账户身份供 adapter 辨识，不能宣称已覆盖这类改写；应通过应用重新登录或明确更换认证来源后再继续会话。
+
+## AI 网关职责复核
+
+2026-10-05 用户明确 AI 网关只做同协议原生透传、路由与 fail-over，不进行协议转换／翻译。它不限于 Harness 调用方；AI 服务也不限于 LLM，sampling 是独立操作。跨单元职责、原生操作与当前偏差以 [AI 服务设计](ai-service.md) 为准；此前 Pi 原生 provider 直接承担上游派发的候选路径不再是 Velune 管理会话的目标。当前 fail-over 未实现，配置仍 Disabled。源码和独立审计证据归 [AI 网关审计](../../tasks/ai-gateway-audit/packet.md)。
 
 ## 本地可观测性装配
 

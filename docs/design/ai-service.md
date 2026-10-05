@@ -1,16 +1,61 @@
-# AI service 的权威契约与 provider 边界
+# AI 服务与 AI 网关：职责、契约与实现复核
 
-状态：2026-10-03 有界 MiniMax 流式实现；文本终止问题已定位修复并由真实诊断记录离线复验，工具 live 与重复 replay 成功。service 是通用独立 lib，sampling 是其首个操作；不引入账户／渠道实体。授权与运行证据见 [任务](../../tasks/ai-service-contracts/packet.md)。旧 Host／UI／mock Router 未接线。
+状态：2026-10-05 重新整理需求并审计实现。产品边界以 [PRD](../prd/index.md#ai-网关与-agent-运行时配置) 为准；本页区分已确认要求、审计后的技术建议与当前代码，不能由设计描述推定能力已交付。具体证据和迁移切片归 [AI 网关审计任务](../../tasks/ai-gateway-audit/packet.md)。
 
-## 网关配置与首循环修订
+## 已确认需求
 
-2026-10-04 用户纠正首循环：AI 提供商只是 Velune AI 服务网关配置的一部分。全局模型目录保存模型身份、昵称、图标、输出上限和支持的推理级别；提供商通过模型映射关联目录项。协议由有限枚举表达，首先支持 OpenAI ChatCompletions v1；不将自由文本当作协议契约。模型路由与 fail-over 策略属于网关，不塞入提供商配置。
+AI 服务是独立 lib，其领域不限于 LLM；sampling 是一项操作，不是整个 AI 服务的基础模型。AI 服务与 Agent 运行时保持独立，提供商协议和 SDK 由具体 adapter 封装。读取运行时提供商配置属于 application 与运行时 adapter 的导入用例，不使 AI 服务依赖 Harness 的模型目录、认证文件或推理级别。
 
-执行 Harness 不直接使用上游认证。嵌入式 CoreRuntime 装配本机 Velune 网关，向选定的 Agent 运行时实例注入网关端点、模型目录与本地访问凭据；上游授权只在提供商装配边界使用。用户可以明确委托 Harness 的认证来源；原存储保留，同一来源负责刷新，不复制为第二份认证权威。适配器不向 Harness 传递上游端点或 Keychain 引用。此次实现先提供显式模型到提供商的路由；自动策略尚未定义，默认禁用 fail-over，不展示可启用的空策略。
+AI 网关承担同协议原生透传、模型路由与 fail-over，当前不做协议转换或翻译。名称为 AI 网关；Harness 是它的一类调用方，不定义它的领域边界。当前产品协议范围为 OpenAI ChatCompletions v1 与 Responses v1，不以这些操作限制整个 AI 服务未来的领域，也不将尚未实现的 Messages 等协议视为已交付。
 
-网关的参数编码依据 [OpenAI Chat Completions 官方参考](https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create)，运行时配置注入依据 [Pi 1.0.2 模型配置源码](https://github.com/earendil-works/pi/blob/cd32f7725fdbddbaecdff5b1e68491563394e0ca/packages/coding-agent/docs/models.md)，于 2026-10-04 复核。内部输出上限与推理级别由 provider 转换为所选协议的字段，不以 UI 参数名称代替 wire 验证。
+请求中的原生历史、参数、内容和响应事件必须保留。路由可改变逻辑模型标识对应的上游模型和认证目标；这些必要变更不能成为重写其它协议内容的理由。参数以提供商协议为权威，输出上限与推理级别只是相应模型参数的例子，不能要求每个提供商都具有同一组 token 或 reasoning 字段。无法保持请求含义时明确拒绝，不静默删除字段、补参数、降低推理级别或钳制输出上限。
 
-下文 MiniMax 的固定 host／模型、采集预算与历史验收仍只描述原有有界 adapter，不是通用 Chat Completions 网关的能力证据。新实现与隔离假上游验证状态归属 [首循环任务](../../tasks/pi-mac-first-loop/packet.md)，不能沿用 MiniMax fixture 宣称新网关已通过。
+AI 提供商与模型分别建模：模型跨提供商存在，提供商关联多个模型；具体外部标识、协议、端点和执行能力归提供商绑定。认证来源可以显式委托原运行时的设施，原配置保留；秘密不复制到普通配置。配置持久化与平台设施由 application 装配，领域包不自行读取全局环境、配置或认证文件。平台 app 同进程消费 UniFFI 类型接口，领域包不依赖 UniFFI。
+
+## 目标职责与技术建议
+
+下表为基于已确认需求的技术建议；公共类型和具体迁移仍需实施复核，不表示已改源码。
+
+| Unit／边界 | 应负责 | 不应承担 |
+| --- | --- | --- |
+| ai | 各操作的调用方／provider 契约，原生内容封装，错误与生命周期语义 | HTTP、配置存储、Harness 规则；以 LLM 消息或 token 定义所有操作 |
+| ai-provider | 对确定目标执行一次协议操作，认证应用、HTTP、原生响应与终态观察 | 路由选择、fail-over、隐藏重试；以某一厂商的采样 decoder 定义另一厂商的原生协议 |
+| gateway | 入口访问控制、模型解析、路由快照、请求约束、fail-over 和下游响应提交 | sampling 往返重建、会话或工具执行、Pi 配置解释 |
+| application | 配置仓库、秘密解析设施、跨域装配、导入与运行生命周期用例 | 再造协议 decoder 或要求 UI 补偿业务约束 |
+| agent-runtime adapter | Harness 原生配置、身份、模型能力和来源兼容设置的投影 | 接管 AI 网关路由权，或把 Pi 参数变成 AI 服务通用参数 |
+
+接口围绕独立操作及不可变绑定组织。原生 ChatCompletions、Responses 和 sampling 可并列，provider 可组合多个操作能力；不要求每种提供商实现一个包含所有操作的巨型 trait。调用和尝试使用一致的身份、提交阶段、取消与终态规则；具体使用量和目标参数仍归各操作，不创建要求所有 AI 能力都有 model/token 的通用观察对象。
+
+原生内容以受保护的 Payload 封装，具名类型表达操作身份、必需字段、调用结果和生命周期。协议模块负责协议校验及观察，AI 网关组合访问、路由与配置约束，避免重复维护两套协议 schema。保真以非路由字段和响应事件的内容、顺序及含义为准，不要求 JSON 空白与成员顺序不变。未知扩展不因不进入采样模型而丢弃；非法输入、必要资源限制与认证协议限制仍需明确处理。透传不是任意 HTTP 代理，端点及操作范围仍来自配置和具名入口。
+
+```mermaid
+flowchart LR
+    C[调用方：平台能力或 Agent 运行时] --> G[AI 网关：访问、路由、fail-over]
+    G --> N[AI 原生操作 binding]
+    N --> P[AI-provider：单次协议传输]
+    P --> U[同协议上游]
+    S[独立 sampling 调用方] --> A[Sampling 操作与其 adapter]
+```
+
+## 路由、fail-over 与生命周期
+
+路由捕获一次请求的配置版本、提供商／模型目标和认证引用；热编辑不能改变正在执行的尝试。持久配置、已装配运行配置与正在执行的快照必须有明确的版本和生效规则。Harness 的历史兼容身份由运行时 adapter 管理，不把 Pi 物理绑定 ID 作为通用路由模型；请求中的来源身份约束仍应参与目标资格判断。
+
+fail-over 由 AI 网关单独决策，provider 执行一次尝试，不隐藏再次请求。相同协议只是一项资格条件，不足以证明历史、文件、缓存、加密推理或服务端状态引用可交给另一提供商／账户／模型。目标必须能接受相同请求及其已有状态，不能为了切换而改变请求含义。
+
+建议按失败阶段、是否可能已提交、是否已向调用者提交响应以及候选资格决定下一次尝试。向下游提交一个上游响应后，不切换目标或拼接两个流；取消结束本次调用，不触发 fail-over，也不声称撤销已发生的上游执行。不得通过缓存完整流扩大切换窗口。自动候选范围、切换条件和不确定提交下是否允许重复执行属于需要明确的产品策略；当前 fail-over 仍禁用，不将职责确认冒充实现。
+
+协议终态与传输结束分别观察。保留原生 completed、incomplete、failed、finish reason 等含义；HTTP 200、EOF 或客户端没有收到事件不能独自证明完整成功或未执行。断连应有可传播的取消与有界清理，凭据解析、连接、流和资源关闭不能依赖无限等待。使用量不足时保持未知，不补零，不要求所有操作都有 token 计量。
+
+日志与观察只记录关联 ID、目标身份、阶段、提交状态、耗时和安全错误码，默认不记录原生正文、历史或认证。具体日志装配归 [架构](architecture.md#本地可观测性装配) 与 [开发说明](../development.md#本地诊断)。
+
+## 当前实现与证据
+
+ChatCompletions 当前仍经 SamplingInput／SamplingDelta 重建，请求参数、assistant 历史和推理流不能保真；通用 OpenAI adapter 复用有界 MiniMax decoder。该路径不符合已确认的 AI 网关边界。[导入验收](../../tasks/pi-mac-first-loop/deepseek-import-acceptance.md)使用已安装库复现正常入口被拒绝，并以 SDK 多轮及隔离网关请求定位实际缺口。
+
+Responses 已有独立原生 body／SSE 路径，但不能据此认为整个响应、观测、取消与生命周期都已满足目标。HTTP 状态和响应头、终态观察、提交阶段及清理边界继续按 [审计任务](../../tasks/ai-gateway-audit/packet.md) 的证据复核。当前只做显式静态路由；自动策略与 fail-over 尚未实现。
+
+MiniMax 的固定端点、模型、采集预算与 replay 只描述原有有界 sampling adapter，不构成通用 AI 网关的能力证据。sampling 的范围本身可以保留，其是否调整由实际调用方决定，不为复用既有代码而限制原生协议。
 
 ## Harness 提供商配置导入
 
@@ -20,19 +65,16 @@
 
 Core 装配配置中的提供商模型映射可以携带 `piProjection`，其类型和转换归 Pi adapter；它不是通用 AI 模型能力。全局目录保留本轮对话操作的身份、显示和预算，Pi adapter 将允许级别与来源 Pi 级别求交，并保留 off→none 等 SDK 映射及九项 Responses 编码选项。适配器同时派生原生 Responses 的允许 effort 值域；网关只校验 wire 值，不理解 Pi 七级、不执行级别转换。投影变化进入物理绑定身份，来源派发重新核对同一投影。未知 compat、自定义 headers、采样参数及启用 session affinity 请求头的配置继续明确标记不支持，不声称完整请求头透传。
 
-Chat Completions 导入接受与当前网关请求行为相容的已知兼容设置，例如 `supportsStore: false`、`maxTokensField: "max_completion_tokens"` 和 `thinkingFormat: "openai"`，不因兼容对象非空而整体拒绝。网关经 sampling 契约重新编码请求，提供商模型绑定以类型化 wire 选项选择 `max_tokens` 或默认的 `max_completion_tokens`；Pi 来源字段由 application 显式转换，不进入通用 AI 模型参数。禁用 `stream_options.include_usage`、禁用 `reasoning_effort` 或使用尚未实现的供应商推理参数格式的来源仍显示具体原因。适配器同时检查 Pi 1.0.2 从原提供商与 URL 推断的相关默认值；改成受管提供商和本地网关地址不能消除来源的请求要求。这一判定绑定固定 SDK 版本，升级时须重新核对其默认推断与网关编码，不能沿用假定。Pi 新 ChatGPT 订阅仍使用受支持的 `openai-responses`；旧 `openai-codex-responses` 使用另一后端与认证契约，不作为普通 Responses 的别名。未实现的 Pi 协议按实际 API 标识说明，不将其附加为 Chat Completions 兼容问题。
+当前 Chat Completions 导入接受与现有重建路径相容的已知兼容设置，例如 `supportsStore: false`、`maxTokensField: "max_completion_tokens"` 和 `thinkingFormat: "openai"`，不因兼容对象非空而整体拒绝。**现有实现偏差：** 网关经 sampling 契约重新编码请求，提供商模型绑定以类型化 wire 选项选择 `max_tokens` 或默认的 `max_completion_tokens`；Pi 来源字段由 application 显式转换，不进入通用 AI 模型参数。禁用 `stream_options.include_usage`、禁用 `reasoning_effort` 或使用尚未实现的供应商推理参数格式的来源仍显示具体原因。适配器同时检查 Pi 1.0.2 从原提供商与 URL 推断的相关默认值；改成受管提供商和本地网关地址不能消除来源的请求要求。这一判定绑定固定 SDK 版本，升级时须重新核对其默认推断与网关编码，不能沿用假定。Pi 新 ChatGPT 订阅仍使用受支持的 `openai-responses`；旧 `openai-codex-responses` 使用另一后端与认证契约，不作为普通 Responses 的别名。未实现的 Pi 协议按实际 API 标识说明，不将其附加为 Chat Completions 兼容问题。
 
 `packages/ai` 与 AI provider lib 不引用 Pi 类型或任何 Harness 配置，独立 Responses 是已实现的一项协议操作，sampling 是另一项操作；这些具体操作不成为整个 AI 服务领域的基础模型。Mac 只编辑通用绑定字段并往返保留 Core 验证的适配元数据，不解释 Pi 投影。
 
 来源配置在导入时形成快照，不做双向同步。重复项默认跳过，替换须明确选择；来源模型可以关联已有全局模型，但不覆盖该模型参数。导入不自动改变路由或运行时默认模型。应用前重新核对来源和目标配置，变化后要求重新预览；派发时核对保存的来源执行绑定，避免来源端点改变后将凭据发送到另一个目标。当前实现与人工验证记录见 [首循环任务](../../tasks/pi-mac-first-loop/packet.md)。
 
-## 原生 Responses 操作
 
-2026-10-04 用户授权支持 OpenAI Responses v1，暂不翻译协议。Responses 使用 AI service 自有的独立操作契约，不能经 `SamplingInput`／`SamplingDelta` 往返转换：这些采样类型无法表达完整 output items、encrypted reasoning 与原生事件。协议传输由 ai-provider 实现，网关负责入口、模型路由与访问校验。
+## 历史有界 sampling 与 MiniMax 实现
 
-首轮覆盖 foreground `POST /v1/responses` 的 JSON 与 SSE。每次调用捕获不可变目标，将 Velune 逻辑 ID 或 Pi 绑定 ID 解析为同一逻辑路由，再替换为外部模型 ID；其它请求字段按原生契约保留或明确拒绝。协议不匹配、未支持的状态型请求与无效能力不能隐式转为 ChatCompletions。原生 completed、incomplete、failed 与 cancelled 各自保留；HTTP 200、EOF 或 `[DONE]` 不独自证明 Responses 完整成功。断连和取消停止本次上游等待，不伪造成功终态。
-
-认证方式可能进一步限制协议能力。Pi 新 ChatGPT 订阅 adapter 明确省略普通 Responses 的部分参数；共享其认证来源不使这些参数获得支持。限制必须由来源能力投影给 Harness 或在边界拒绝，不能靠网关悄悄删字段。当前实现与隔离证据仍以首循环 Task Packet 为准。
+以下保留 2026-10-03 有界实现的契约和验收说明，仅适用于该操作与 adapter，不提升为原生 AI 网关或整个 AI 服务的统一约束。
 
 ## 两套契约与依赖
 
@@ -52,7 +94,7 @@ app main → AiService::sampling(request, attempt_id, event_sink)
 
 统一配置中心拥有持久配置，app main 创建新的 immutable provider／binding／service。两个 lib 不读 env、文件、全局配置，也不保存配置。[手动入口](../../packages/ai-provider/examples/minimax_manual.rs) 是本步 composition root：读取获准 Networksecret 占位、创建带标准环境代理及系统 TLS 校验的客户端，禁 retry／redirect，注入内存凭据。不是正式配置中心或产品入口。
 
-ProviderConfig 保留协议、CredentialRef、模型映射、ProviderId／ConfigRevision。新增独立 ChatCompletionsConfig；Messages 仍仅配置形状；Responses 原生操作正在本轮实施。MiniMax adapter 限定 HTTPS `api.minimax.cn:443/v1`、`MiniMax-M3`，`thinking:disabled`、`service_tier:standard`，不启用内置收费工具。HTTP 客户端的安全装配属于 app；adapter 接受已装配 client，不能从类型上证明任意第三方传入的 client 均关闭重试。
+ProviderConfig 保留协议、CredentialRef、模型映射、ProviderId／ConfigRevision。新增独立 ChatCompletionsConfig；Messages 仍仅配置形状；Responses 原生操作已实现，但其调用／尝试与流生命周期仍需本轮审计复核。MiniMax adapter 限定 HTTPS `api.minimax.cn:443/v1`、`MiniMax-M3`，`thinking:disabled`、`service_tier:standard`，不启用内置收费工具。HTTP 客户端的安全装配属于 app；adapter 接受已装配 client，不能从类型上证明任意第三方传入的 client 均关闭重试。
 
 ProviderBinding::prepare 捕获 Arc 与 revision；adapter 自身也持有 immutable 配置和凭据，不重读配置。Arc 不证明其他 trait 实现无内部可变性；并发热切换、凭据轮换尚未实测。HttpEndpoint／ID 构造器仍是语法边界，不是完整网络安全策略。
 
