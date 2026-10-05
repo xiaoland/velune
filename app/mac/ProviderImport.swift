@@ -84,24 +84,19 @@ struct ProviderImportView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            VStack(alignment: .leading, spacing: 12) {
-                Text("从 Agent 运行时导入提供商").font(.headline)
-                HStack {
-                    Picker("运行时", selection: Binding(get: { sourceInstanceID ?? "" }, set: { sourceInstanceID = $0 })) {
-                        ForEach(supportedInstances) { Text($0.name).tag($0.id) }
-                    }
-                    .frame(maxWidth: 440)
-                    .disabled(store.isLoading || supportedInstances.isEmpty)
-                    Button(preview == nil ? "读取配置" : "重新读取") { readSource() }
-                        .disabled(source == nil || store.isLoading)
-                    if store.isLoading { ProgressView().controlSize(.small) }
-                    Spacer()
+            HStack(spacing: 12) {
+                Text("导入提供商").font(.headline)
+                Spacer()
+                Picker("来源", selection: Binding(get: { sourceInstanceID ?? "" }, set: { sourceInstanceID = $0 })) {
+                    ForEach(supportedInstances) { Text($0.name).tag($0.id) }
                 }
-                Text("选择提供商及模型导入。原配置保留，模型路由不会自动改变。")
-                    .font(.callout).foregroundStyle(.secondary)
+                .frame(maxWidth: 330)
+                .disabled(store.isLoading || supportedInstances.isEmpty)
+                Button(preview == nil ? "读取配置" : "重新读取") { readSource() }
+                    .disabled(source == nil || store.isLoading)
+                if store.isLoading { ProgressView().controlSize(.small) }
             }
-            .padding(20)
-            Divider()
+            .padding(16)
             if let preview {
                 if preview.providers.isEmpty {
                     ContentUnavailableView("没有发现提供商", systemImage: "shippingbox", description: Text("此运行时没有可读取的提供商配置。"))
@@ -127,45 +122,39 @@ struct ProviderImportView: View {
 
     private func browser(_ preview: ProviderImportPreview) -> some View {
         HSplitView {
-            VStack(alignment: .leading, spacing: 0) {
-                Text("提供商 · \(preview.providers.count)").font(.headline).padding(12)
-                List(selection: $providerID) {
+            List(selection: $providerID) {
+                Section("提供商") {
                     ForEach(preview.providers) { candidate in
-                        VStack(alignment: .leading, spacing: 4) {
+                        VStack(alignment: .leading, spacing: 3) {
                             Text(candidate.name).lineLimit(1)
                             Text(providerStatus(candidate)).font(.caption).foregroundStyle(.secondary)
                         }
-                        .padding(.vertical, 3)
+                        .padding(.vertical, 2)
                         .tag(candidate.id)
                     }
                 }
-                .listStyle(.sidebar)
             }
+            .listStyle(.sidebar)
             .frame(minWidth: 170, idealWidth: 190, maxWidth: 230)
-            VStack(alignment: .leading, spacing: 10) {
+            VStack(alignment: .leading, spacing: 0) {
                 if let provider {
-                    HStack {
-                        Text(provider.name).font(.headline).lineLimit(1)
-                        Spacer()
-                        Text("\(provider.models.count) 个模型").foregroundStyle(.secondary)
+                    HStack(spacing: 10) {
+                        TextField(onlyImportable ? "搜索可导入模型" : "搜索模型", text: $query).textFieldStyle(.roundedBorder)
+                        Menu {
+                            Toggle("仅显示可导入模型", isOn: $onlyImportable)
+                            Divider()
+                            Button("选择筛选结果中可导入的模型") { selectVisibleModels() }
+                                .disabled(!visibleModels.contains { enabled(provider) && $0.canImport })
+                            Button("清除该提供商的全部选择") {
+                                selectedModels.subtract(provider.models.map(\.id))
+                            }
+                            .disabled(!provider.models.contains { selectedModels.contains($0.id) })
+                        } label: { Image(systemName: onlyImportable ? "line.3.horizontal.decrease.circle.fill" : "ellipsis.circle") }
+                        .menuStyle(.borderlessButton)
+                        .fixedSize()
+                        .help(onlyImportable ? "仅显示可导入模型；打开以更改筛选及选择。" : "筛选及批量选择模型")
                     }
-                    HStack {
-                        TextField("搜索模型名称或 ID", text: $query).textFieldStyle(.roundedBorder)
-                        Toggle("仅可导入", isOn: $onlyImportable).toggleStyle(.checkbox)
-                    }
-                    HStack {
-                        Button("选择可导入") { selectVisibleModels() }
-                        .disabled(!visibleModels.contains { enabled(provider) && $0.canImport })
-                        .help("选择当前筛选结果中所有可导入的模型。")
-                        Button("清除选择") {
-                            selectedModels.subtract(provider.models.map(\.id))
-                        }
-                        .disabled(!provider.models.contains { selectedModels.contains($0.id) })
-                        .help("清除当前提供商的全部选择，包括被搜索或筛选隐藏的模型。")
-                        Spacer()
-                        Text("已选 \(provider.models.filter { selectedModels.contains($0.id) && enabled(provider) && $0.canImport }.count)")
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
+                    .padding(10)
                     Table(visibleModels, selection: $modelID) {
                         TableColumn("导入") { model in
                             Toggle("导入 \(model.name)", isOn: selectionBinding(model))
@@ -191,14 +180,23 @@ struct ProviderImportView: View {
                     ContentUnavailableView("选择提供商", systemImage: "shippingbox")
                 }
             }
-            .padding(12)
             .frame(minWidth: 410, maxWidth: .infinity, maxHeight: .infinity)
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
                     if let provider {
-                        providerDetails(provider)
                         if let model { modelDetails(model, provider: provider) }
-                        else { Text("选择一个模型，查看能力、导入限制及全局模型关联。").font(.callout).foregroundStyle(.secondary) }
+                        else {
+                            Text(provider.name).font(.headline)
+                            Text("\(provider.models.count) 个模型").foregroundStyle(.secondary)
+                            Text("选择模型以查看详情与关联。").font(.callout).foregroundStyle(.secondary)
+                        }
+                        if provider.alreadyImported && !replaceExisting {
+                            Text("此提供商已导入，默认跳过。可在“导入选项”中允许替换。")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                        DisclosureGroup("提供商信息") {
+                            providerDetails(provider).padding(.top, 8)
+                        }
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -211,7 +209,6 @@ struct ProviderImportView: View {
 
     private func providerDetails(_ provider: ProviderImportCandidate) -> some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("提供商详情").font(.headline)
             LabeledContent("名称", value: provider.name)
             LabeledContent("协议", value: store.protocols.first { $0.id.rawValue == provider.protocol }?.name ?? provider.protocol)
             VStack(alignment: .leading, spacing: 4) {
@@ -219,7 +216,6 @@ struct ProviderImportView: View {
                 Text(provider.endpoint).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
             }
             Text(provider.credentialStatus).foregroundStyle(.secondary)
-            if provider.alreadyImported { Label("已导入", systemImage: "checkmark.circle").foregroundStyle(.secondary) }
             issueList(provider.issues)
         }
         .font(.callout)
@@ -227,20 +223,22 @@ struct ProviderImportView: View {
 
     private func modelDetails(_ model: ProviderImportModel, provider: ProviderImportCandidate) -> some View {
         VStack(alignment: .leading, spacing: 12) {
-            Divider()
             Text(model.name.isEmpty ? model.externalModelId : model.name).font(.headline)
             Text(model.externalModelId).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
                 .fixedSize(horizontal: false, vertical: true)
             if enabled(provider) && model.canImport {
-                Toggle("导入此模型", isOn: selectionBinding(model)).toggleStyle(.checkbox)
                 if selectedModels.contains(model.id) {
                     Picker("全局模型", selection: Binding(get: { mappings[model.id] ?? "" }, set: { mappings[model.id] = $0 })) {
                         Text("新建模型").tag("")
                         ForEach(store.models) { existing in Text(existing.nickname.isEmpty ? existing.id : existing.nickname).tag(existing.id) }
                     }
                     .pickerStyle(.menu)
-                    Text((mappings[model.id] ?? "").isEmpty ? "将新建全局模型；也可以关联到已有模型。" : "沿用已有模型参数，推理级别取共同支持范围。")
-                        .font(.caption).foregroundStyle(.secondary)
+                    if !(mappings[model.id] ?? "").isEmpty {
+                        Text("沿用已有模型参数，推理级别取共同支持范围。")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                } else {
+                    Text("勾选模型以导入或关联全局模型。").font(.callout).foregroundStyle(.secondary)
                 }
             } else {
                 Label(modelStatus(model, provider: provider), systemImage: "info.circle").foregroundStyle(.secondary)
@@ -276,12 +274,17 @@ struct ProviderImportView: View {
             HStack {
                 if preview != nil {
                     Text("已选 \(selections.count) 个提供商、\(selectedCount) 个模型").foregroundStyle(.secondary)
+                        .help("原运行时配置保留，模型路由不会自动改变。")
                     Spacer()
-                    Picker("重复提供商", selection: $replaceExisting) {
-                        Text("跳过已导入").tag(false)
-                        Text("替换所选的已导入提供商").tag(true)
-                    }.frame(maxWidth: 285).disabled(store.isLoading)
                 } else { Spacer() }
+                if preview?.providers.contains(where: \.alreadyImported) == true {
+                    Menu("导入选项") {
+                        Toggle("允许替换此次选中的已导入提供商", isOn: $replaceExisting)
+                    }
+                    .fixedSize()
+                    .help("替换保留已有路由和全局模型参数。")
+                    .disabled(store.isLoading)
+                }
                 Button("取消") { dismiss() }.keyboardShortcut(.cancelAction)
                 Button("导入所选") {
                     guard let preview, let source else { return }
@@ -291,7 +294,6 @@ struct ProviderImportView: View {
                 .keyboardShortcut(.defaultAction)
                 .disabled(source == nil || preview == nil || selections.isEmpty || store.isLoading)
             }
-            if replaceExisting { Text("替换保留已有路由和全局模型参数。").font(.caption).foregroundStyle(.secondary) }
         }.padding(16)
     }
 
