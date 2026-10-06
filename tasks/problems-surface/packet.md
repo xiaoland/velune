@@ -19,3 +19,13 @@ session_management 继续拥有全部 Mac 源码，贯通 Store、Transport、�
 源码 owner 已冻结。最终 Swift warnings-as-errors debug 构建通过；manual-problems.py 8项复验通过；manual-session-loading.py 19项通过，包括实际列表／详情选择、原生管理与3次合成上游请求。旧 AppStore.error／SettingsError／“历史读取”分组已删除，不为旧脚本保留兼容接口。投影切换、reset及登录结束消解失效的活动问题，操作失败记录仍保留。隔离预览进程和临时 bundle 已清理；最终 clean release 构建安装待 root 完成。
 
 最终交付：源码提交0e67940062f531088d10e7fbc9e8994714d4c590，干净工作区 release Rust／UniFFI／Swift warnings-as-errors 构建及代码签名通过，manifest dirty=false。0.1 beta.1 已重新安装 /Applications/Velune.app，使用该安装库和 release Swift 对象重跑 manual-problems.py，8项全部通过。没有远端发布、真实配置读取或真实模型调用。后续文档收尾提交不改变安装源码；原生观察服务不可用，因此没有宣称视觉验收完成。
+
+## 2026-10-07 设置导航修复
+
+用户反馈设置 Tabs 损坏，并指出问题入口放在 Tabs 位置不合适。重新打开此任务，限定修复原生设置导航与入口布局，不改变问题记录或会话逻辑。代码观察：SettingsView 的 TabView 外附加 problemsToolbar，共享 modifier 使用未指定位置的 ToolbarItem；须区分源码冲突解释和实际原生窗口验证。
+
+session_management 继续负责 Mac 源码及隔离验证，root 维护文档并执行最终构建安装。期望三个设置页均可选择，问题入口不占用系统 tab 导航且仍可打开独立问题窗口；不读取真实配置或会话，不新增测试。编译通过不等于导航体验已验收。
+
+源码 owner 确认设置 scene 直接承载根 TabView，而附加 Problems toolbar 在系统标签导航区域插入非标签项。采用移除设置上的 problemsToolbar，保留根 TabView 与三个 tab 的既有结构；设置通过既有菜单“问题…”／⌘⇧M访问问题窗口，主界面数量入口及 sheet 入口不变，不增加底部容器。此选择恢复系统管理导航，尚未通过实际窗口确认 SwiftUI 内部冲突机制。原生观察服务本轮仍启动失败，不能宣称完成点击或视觉验收。
+
+验证：Mac 源码 owner 已冻结，Swift debug product warnings-as-errors 构建通过，git diff --check 通过。改动仅移除 SettingsView 的工具栏附加，三个 tabItem、主界面入口、菜单快捷键和独立问题窗口均保留。待 clean release 构建与安装；本轮没有新增或运行自动化测试。

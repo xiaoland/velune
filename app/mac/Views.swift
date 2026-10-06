@@ -347,7 +347,7 @@ struct SettingsView: View {
             ProviderSettingsView(store: store).tabItem { Label("AI提供商", systemImage: "network") }
             ConversationSettingsView(store: store).tabItem { Label("会话", systemImage: "bubble.left.and.bubble.right") }
             RuntimeSettingsView(store: store).tabItem { Label("Agent 运行时", systemImage: "terminal") }
-        }.frame(width: 690, height: 560).problemsToolbar(store)
+        }.frame(width: 690, height: 560)
     }
 }
 
