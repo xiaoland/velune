@@ -1,6 +1,6 @@
 # Mac 统一问题展示
 
-状态：2026-10-06 实现中。用户授权移除会话列表“历史读取”错误分组及 composer／设置底部操作错误，采用集中问题面板，入口由开发方设计。稳定需求已更新 PRD，不把之前的内联错误布局当成前提。
+状态：2026-10-06 开发完成并安装，UI体验待用户验收。用户授权移除会话列表“历史读取”错误分组及 composer／设置底部操作错误，采用集中问题面板，入口由开发方设计。稳定需求已更新 PRD，不把之前的内联错误布局当成前提。
 
 session_management 继续拥有全部 Mac 源码，贯通 Store、Transport、设置／编辑／导入／发现及窗口场景；root 拥有任务文档、长期设计和最终构建安装。两者不覆盖彼此改动。共享 delegation guide 缺失，仍按 AGENTS 的稳定 owner 分工执行。Ponytail lite 只用于避免新建日志框架等无效复杂度，不替代边界判断。
 
@@ -17,3 +17,5 @@ session_management 继续拥有全部 Mac 源码，贯通 Store、Transport、�
 原生观察服务启动失败，无法直接检查 sheet toolbar，未将构建冒充可见性验证。sheet 入口改为其已有标题行中的原生小按钮，主窗口／设置继续工具栏，菜单“问题…”绑定⌘⇧M。UI最终体验仍由用户验收，不扩大到修复外部观察服务。隔离 preview 由启动 owner 负责退出与清理。
 
 源码 owner 已冻结。最终 Swift warnings-as-errors debug 构建通过；manual-problems.py 8项复验通过；manual-session-loading.py 19项通过，包括实际列表／详情选择、原生管理与3次合成上游请求。旧 AppStore.error／SettingsError／“历史读取”分组已删除，不为旧脚本保留兼容接口。投影切换、reset及登录结束消解失效的活动问题，操作失败记录仍保留。隔离预览进程和临时 bundle 已清理；最终 clean release 构建安装待 root 完成。
+
+最终交付：源码提交0e67940062f531088d10e7fbc9e8994714d4c590，干净工作区 release Rust／UniFFI／Swift warnings-as-errors 构建及代码签名通过，manifest dirty=false。0.1 beta.1 已重新安装 /Applications/Velune.app，使用该安装库和 release Swift 对象重跑 manual-problems.py，8项全部通过。没有远端发布、真实配置读取或真实模型调用。后续文档收尾提交不改变安装源码；原生观察服务不可用，因此没有宣称视觉验收完成。
