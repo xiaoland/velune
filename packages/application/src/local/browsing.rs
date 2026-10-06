@@ -28,6 +28,7 @@ impl CoreRuntime {
         runtime: &RuntimeInstance,
     ) -> Result<PiConfig, RuntimeError> {
         Ok(PiConfig {
+            runtime_type_id: runtime.type_id.clone(),
             binary: setting_path(runtime, "binary")?,
             node_binary: Some(setting_path(runtime, "nodeBinary")?),
             sdk_helper: Some(self.options.resources_directory.join("pi_sessions.mjs")),

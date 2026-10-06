@@ -51,6 +51,10 @@ struct VeluneRootView: View {
                   } header: { Text(section.title).lineLimit(1).truncationMode(.middle).help(section.title) }
                 }
             }
+            .contextMenu(forSelectionType: String.self) { ids in conversationManagementMenu(ids) } primaryAction: { ids in
+                guard ids.count == 1, let id = ids.first, let target = store.conversations.first(where: { $0.id == id }), store.canManageConversations, store.canRenameConversation(target) else { return }
+                renameTarget = target
+            }
             .listStyle(.sidebar)
             .searchable(text: $browser.search, placement: .sidebar, prompt: "搜索会话")
             .navigationTitle("会话")
@@ -447,9 +451,11 @@ private func validOptionalTokenCount(_ value: String) -> Bool { value.isEmpty ||
 
 private struct ProviderModelFields: View {
     @Binding var draft: ProviderModelDraft
+    var modelIDFocused: FocusState<Bool>.Binding
     var body: some View {
         Section("模型") {
             TextField("模型 ID", text: $draft.providerModelID, prompt: Text("提供商 API 规定的标识"))
+                .focused(modelIDFocused)
             TextField("显示名称", text: $draft.nickname, prompt: Text("可选"))
         }
         Section {
@@ -492,6 +498,8 @@ struct ProviderEditor: View {
     @State private var choosingTemplates = false
     @State private var confirmsProjectionRemoval = false
     @State private var oldProtocol: ProviderProtocol = .chatCompletionsV1
+    @FocusState private var providerNameFocused: Bool
+    @FocusState private var modelIDFocused: Bool
     private var authentication: ProviderAuthentication { store.providers.first { $0.id == provider?.id }?.authentication ?? provider?.authentication ?? ProviderAuthentication() }
     private var modelIndex: Int? { guard case .model(let id) = selection else { return nil }; return models.firstIndex { $0.id == id } }
     private var valid: Bool { !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && URL(string: endpoint)?.host != nil && models.allSatisfy(\.valid) && (!editingAPIKey || (!apiKey.isEmpty && (originalAPIKey != nil || authentication.method != .apiKey || clearAuthentication))) }
@@ -506,7 +514,10 @@ struct ProviderEditor: View {
                         Section("模型") {
                             ForEach(models) { model in VStack(alignment: .leading, spacing: 3) { Text(model.displayName).lineLimit(1); if !model.providerModelID.isEmpty { Text(model.providerModelID).font(.caption).foregroundStyle(.secondary).lineLimit(1) } }.tag(ProviderEditorSelection.model(model.id)) }
                         }
-                    }.listStyle(.sidebar)
+                    }.contextMenu(forSelectionType: ProviderEditorSelection.self) { ids in
+                        if ids.count == 1, let target = ids.first { Button("编辑") { editSelection(target) } }
+                    } primaryAction: { ids in if ids.count == 1, let target = ids.first { editSelection(target) } }
+                    .listStyle(.sidebar)
                     HStack {
                         Menu {
                             Button("添加新模型") { addModel(ProviderModelDraft()) }
@@ -519,7 +530,7 @@ struct ProviderEditor: View {
                 Group {
                     if let index = modelIndex {
                         Form {
-                            ProviderModelFields(draft: $models[index])
+                            ProviderModelFields(draft: $models[index], modelIDFocused: $modelIDFocused)
                             Section { Button("保存为模型模板…") { let model = models[index].definition; templateDraft = ModelTemplate(name: model.displayName, suggestedProviderModelID: model.providerModelID, nickname: model.nickname, icon: model.icon, contextWindow: model.contextWindow, maxOutputTokens: model.maxOutputTokens, reasoningLevels: model.reasoningLevels) } }
                         }
                     } else { connectionForm }
@@ -544,6 +555,7 @@ struct ProviderEditor: View {
         Form {
             Section("连接") {
                 TextField("名称", text: $name)
+                    .focused($providerNameFocused)
                 Picker("协议", selection: $protocolID) { ForEach(store.protocols.filter(\.supported)) { Text($0.name).tag($0.id) } }
                 TextField("服务地址", text: $endpoint, prompt: Text(protocolID == .messagesV1 ? "https://…" : "https://…/v1"))
                     .help(protocolID == .messagesV1 ? "Anthropic Messages 协议基础 URL；请求路径为 /v1/messages。" : "提供商的协议服务基础 URL。")
@@ -569,6 +581,15 @@ struct ProviderEditor: View {
                 if let provenance = authentication.provenance {
                     ImmediateDisclosureGroup("来源详情") { Text(provenance).font(.callout).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading).padding(.top, 8) }
                 }
+            }
+        }
+    }
+    private func editSelection(_ target: ProviderEditorSelection) {
+        selection = target
+        DispatchQueue.main.async {
+            switch target {
+            case .connection: modelIDFocused = false; providerNameFocused = true
+            case .model: providerNameFocused = false; modelIDFocused = true
             }
         }
     }
@@ -618,7 +639,11 @@ struct ModelTemplatesView: View {
         VStack(spacing: 0) {
             HStack { Text("模型模板").font(.headline); Spacer() }.padding(20)
             Text("模板用于快速填写模型，修改模板不会改变已配置的模型。").font(.callout).foregroundStyle(.secondary).padding(.horizontal, 20).padding(.bottom, 12)
-            List(selection: $selectedID) { ForEach(store.modelTemplates) { template in VStack(alignment: .leading, spacing: 3) { Text(template.name); Text(template.suggestedProviderModelID).font(.caption).foregroundStyle(.secondary) }.tag(template.id) } }.listStyle(.bordered).padding(.horizontal, 20)
+            List(selection: $selectedID) { ForEach(store.modelTemplates) { template in VStack(alignment: .leading, spacing: 3) { Text(template.name); Text(template.suggestedProviderModelID).font(.caption).foregroundStyle(.secondary) }.tag(template.id) } }
+            .contextMenu(forSelectionType: String.self) { ids in
+                if ids.count == 1, let id = ids.first, let template = store.modelTemplates.first(where: { $0.id == id }) { Button("编辑…") { editor = template } }
+            } primaryAction: { ids in if ids.count == 1, let id = ids.first { editor = store.modelTemplates.first { $0.id == id } } }
+            .listStyle(.bordered).padding(.horizontal, 20)
             HStack {
                 Button { editor = ModelTemplate(name: "", suggestedProviderModelID: "") } label: { Image(systemName: "plus") }
                 Button { if let selectedID { store.deleteTemplate(selectedID) } } label: { Image(systemName: "minus") }.disabled(selectedID == nil || store.isLoading)
@@ -636,9 +661,10 @@ struct ModelTemplateEditor: View {
     @Environment(\.dismiss) private var dismiss
     @State private var name = ""
     @State private var draft = ProviderModelDraft()
+    @FocusState private var modelIDFocused: Bool
     var body: some View {
         VStack(spacing: 0) {
-            Form { Section { TextField("模板名称", text: $name) }; ProviderModelFields(draft: $draft) }.formStyle(.grouped)
+            Form { Section { TextField("模板名称", text: $name) }; ProviderModelFields(draft: $draft, modelIDFocused: $modelIDFocused) }.formStyle(.grouped)
             SettingsError(message: store.error)
             HStack { Spacer(); Button("取消") { dismiss() }.keyboardShortcut(.cancelAction); Button("保存") { let model = draft.definition; store.saveTemplate(ModelTemplate(id: template.id, name: name, suggestedProviderModelID: model.providerModelID, nickname: model.nickname, icon: model.icon, contextWindow: model.contextWindow, maxOutputTokens: model.maxOutputTokens, reasoningLevels: model.reasoningLevels)) { dismiss() } }.keyboardShortcut(.defaultAction).disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !draft.valid || store.isLoading) }.padding(16)
         }.frame(width: 440, height: 400).onAppear { name = template.name; draft = ProviderModelDraft(template.model) }

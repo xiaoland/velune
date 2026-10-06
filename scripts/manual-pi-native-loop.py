@@ -24,8 +24,9 @@ def main():
     parser.add_argument('--bundle', required=True, type=Path)
     parser.add_argument('--bindings', required=True, type=Path)
     parser.add_argument('--node', required=True, type=Path)
+    parser.add_argument('--pi', required=True, type=Path, help='external Pi CLI from the selected installation')
     args = parser.parse_args()
-    for path in (args.bundle, args.bindings, args.node):
+    for path in (args.bundle, args.bindings, args.node, args.pi):
         if not path.is_absolute() or not path.exists():
             parser.error('all paths must be absolute and exist')
     resources = args.bundle / 'Contents/Resources'
@@ -113,7 +114,7 @@ def main():
             runtime = bindings.BindingRuntimeInstance(enabled=True,
                 id='fixture-runtime', name='Synthetic Pi', type_id='pi-1.0.2', gateway_id='default',
                 settings={'agentDir': str(root / 'source'), 'nodeBinary': str(args.node),
-                          'binary': str(resources / 'node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js')})
+                          'binary': str(args.pi)})
             application.upsert_runtime(runtime)
             source = bindings.BindingProviderImportSource(kind='harness', harness_type_id='pi',
                 source_instance_id=runtime.id, provider_id=None, settings={})
@@ -228,7 +229,8 @@ def main():
             assert snapshot.conversation.id == renamed_draft.conversation.id
             assert snapshot.conversation.title == 'SYNTHETIC_PERSISTED_DRAFT_TITLE' and renamed_path.exists()
             native_saved = json.loads(subprocess.check_output([str(args.node),str(resources / 'pi_sessions.mjs'),
-                '--agent-dir',str(root / 'source'),'--inspect-session',str(renamed_path)],text=True))
+                '--agent-dir',str(root / 'source'),'--inspect-session',str(renamed_path),
+                '--cli',str(args.pi),'--runtime-type','pi-1.0.2'],text=True))
             assert native_saved['name'] == 'SYNTHETIC_PERSISTED_DRAFT_TITLE'
             reopened_draft = application.open_conversation(runtime.id, renamed_draft.conversation.id).snapshot
             assert reopened_draft.conversation.title == 'SYNTHETIC_PERSISTED_DRAFT_TITLE'

@@ -3,6 +3,7 @@
 import { createHash } from "node:crypto";
 import { readFile, stat } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
+import { resolvePiSdk } from "./pi_sdk.mjs";
 import { resolveSource } from "./pi_auth.mjs";
 
 // Failures contain only allowlisted codes and stages, never SDK messages or source values.
@@ -38,15 +39,13 @@ async function main() {
   }
   if (!directory.isDirectory()) fail("source_directory_not_directory");
   stage = "sdk";
-  const packageDir = new URL("node_modules/@earendil-works/pi-coding-agent/", import.meta.url);
-  const manifest = JSON.parse(await readFile(new URL("package.json", packageDir), "utf8"));
-  if (manifest.version !== "1.0.2") fail("unsupported_sdk");
-  const { ModelRuntime } = await import(new URL(manifest.exports["."].import, packageDir).href);
-  const { getSupportedThinkingLevels } = await import("@earendil-works/pi-ai");
-  const { ModelConfig } = await import(new URL("dist/core/model-config.js", packageDir).href);
-  const { InMemoryCodingAgentModelsStore } = await import(new URL("dist/core/models-store.js", packageDir).href);
-  const { AuthStorage, ReadOnlyAuthStorage, readStoredCredential } = await import(new URL("dist/core/auth-storage.js", packageDir).href);
-  const { isCommandConfigValue, getConfigValueEnvVarNames, resolveConfigValue } = await import(new URL("dist/core/resolve-config-value.js", packageDir).href);
+  const installation = resolvePiSdk({binary:settings.binary,runtimeTypeId:settings.runtimeTypeId,sdkVersion:settings.sdkVersion});
+  const { ModelRuntime } = await installation.importSdk();
+  const { getSupportedThinkingLevels } = await installation.importAi();
+  const { ModelConfig } = await installation.importModule("dist/core/model-config.js");
+  const { InMemoryCodingAgentModelsStore } = await installation.importModule("dist/core/models-store.js");
+  const { AuthStorage, ReadOnlyAuthStorage, readStoredCredential } = await installation.importModule("dist/core/auth-storage.js");
+  const { isCommandConfigValue, getConfigValueEnvVarNames, resolveConfigValue } = await installation.importModule("dist/core/resolve-config-value.js");
   stage = "models";
   const config = await ModelConfig.load(modelsPath);
   if (config.getError()) fail("invalid_models");
@@ -258,7 +257,7 @@ async function main() {
       endpoint: group.endpoint, protocol: group.protocol,
       auth: authShape(raw, provider.id, group.endpoint, group.protocol), models: group.models });
   }
-  const snapshot = { contractVersion: 1, sdkVersion: manifest.version, sourceDir, modelsPath, authPath, providers, warnings };
+  const snapshot = { contractVersion: 1, sdkVersion: installation.version, sourceDir, modelsPath, authPath, providers, warnings };
   const sourceFingerprint = `pi_${createHash("sha256").update(JSON.stringify(snapshot)).digest("hex")}`;
   emit({ ...snapshot, sourceFingerprint });
 }

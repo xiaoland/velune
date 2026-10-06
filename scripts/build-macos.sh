@@ -5,10 +5,6 @@ cd "$(dirname "$0")/.."
 [[ "$(uname -s)" == Darwin ]] || { echo 'This script requires macOS + Xcode Command Line Tools.' >&2; exit 1; }
 command -v cargo >/dev/null
 xcrun --find swiftc >/dev/null
-[[ -d target/pi-runtime/node_modules/@earendil-works/pi-coding-agent ]] || {
-  echo 'Pi runtime is missing; run ./scripts/install-pi-runtime.sh first.' >&2
-  exit 1
-}
 [[ -d target/runtime-support/node_modules/huihua && -f target/runtime-support/THIRD_PARTY_NOTICES.md ]] || {
   echo 'Runtime support is missing; run ./scripts/install-runtime-support.sh first.' >&2
   exit 1
@@ -32,9 +28,9 @@ swift build --configuration release --product VeluneMac --force-resolved-version
 swift_binary_directory=$(swift build --configuration release --show-bin-path)
 cp "$swift_binary_directory/VeluneMac" "$app/Contents/MacOS/Velune"
 # JavaScript is a sealed resource, not a nested macOS executable.
-cp packages/agent-runtime/resources/pi_sessions.mjs packages/agent-runtime/resources/pi_rpc.mjs packages/agent-runtime/resources/pi_virtual_model.mjs packages/agent-runtime/resources/pi_auth.mjs packages/agent-runtime/resources/pi_provider_import.mjs "$app/Contents/Resources/"
-cp -R target/pi-runtime/node_modules "$app/Contents/Resources/node_modules"
+cp packages/agent-runtime/resources/pi_sdk.mjs packages/agent-runtime/resources/pi_sessions.mjs packages/agent-runtime/resources/pi_rpc.mjs packages/agent-runtime/resources/pi_virtual_model.mjs packages/agent-runtime/resources/pi_auth.mjs packages/agent-runtime/resources/pi_provider_import.mjs "$app/Contents/Resources/"
 cp packages/agent-runtime/resources/huihua_sessions.mjs "$app/Contents/Resources/"
+mkdir -p "$app/Contents/Resources/node_modules"
 cp -R target/runtime-support/node_modules/. "$app/Contents/Resources/node_modules/"
 mkdir -p "$app/Contents/Resources/ThirdParty"
 cp packages/agent-runtime/runtime-support/THIRD_PARTY_NOTICES.md "$app/Contents/Resources/ThirdParty/"

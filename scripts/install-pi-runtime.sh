@@ -1,5 +1,6 @@
 #!/bin/bash
 set -euo pipefail
+# Development-only external installation; not an app build prerequisite or bundled resource.
 cd "$(dirname "$0")/.."
 command -v node >/dev/null
 command -v npm >/dev/null

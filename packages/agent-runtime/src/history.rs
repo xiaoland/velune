@@ -270,7 +270,14 @@ fn execute_pi(
         .as_ref()
         .filter(|p| p.is_absolute())
         .ok_or_else(|| Error::new("Pi 历史来源目录无效"))?;
-    command.arg(helper).arg("--agent-dir").arg(agent_dir);
+    command
+        .arg(helper)
+        .arg("--agent-dir")
+        .arg(agent_dir)
+        .arg("--cli")
+        .arg(&config.binary)
+        .arg("--runtime-type")
+        .arg(&config.runtime_type_id);
     if let Some(session) = session {
         command
             .arg(match mutation {

@@ -56,7 +56,7 @@ impl CoreRuntime {
             "historyFailures": history_failures,
             "gateways": self.public_gateways(),
             "runtimeInstances": self.runtime_instances,
-            "runtimeTypes": runtime_types(&self.options.resources_directory),
+            "runtimeTypes": runtime_types(),
             "modelTemplates":self.model_templates,
             "conversationBrowserGroupLimit":self.conversation_browser_group_limit,
             "providerImportTypes": [provider_import::descriptor()],
@@ -282,7 +282,7 @@ impl CoreRuntime {
             self.next_turn_runtime_id = None;
         }
         Ok(
-            json!({"runtimeInstances":self.runtime_instances,"runtimeTypes":runtime_types(&self.options.resources_directory),"executionInvalidated":execution_invalidated}),
+            json!({"runtimeInstances":self.runtime_instances,"runtimeTypes":runtime_types(),"executionInvalidated":execution_invalidated}),
         )
     }
 

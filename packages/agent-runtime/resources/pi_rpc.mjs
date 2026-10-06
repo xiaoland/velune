@@ -1,38 +1,26 @@
 // Fixed Pi SDK assembly: source PI_HOME owns settings and sessions; Velune owns
 // the injected catalog and ephemeral gateway credentials in a separate directory.
-import { readFileSync, realpathSync } from "node:fs";
-import { dirname, join, resolve, isAbsolute } from "node:path";
-import { pathToFileURL } from "node:url";
+import { isAbsolute } from "node:path";
+import { resolvePiSdk } from "./pi_sdk.mjs";
 const args = process.argv.slice(2);
 const value = (key) => { const index = args.indexOf(key); return index < 0 ? undefined : args[index + 1]; };
 const fail = (message) => { throw new Error(message); };
 async function main() {
   const cli = value("--cli");
   if (!cli || !isAbsolute(cli)) fail("Pi CLI 必须是绝对路径");
-  const selected = realpathSync(cli);
-  let directory = dirname(selected), manifest, packageDirectory;
-  for (;;) {
-    try {
-      const candidate = JSON.parse(readFileSync(join(directory, "package.json"), "utf8"));
-      if (candidate.name === "@earendil-works/pi-coding-agent") { manifest = candidate; packageDirectory = directory; break; }
-    } catch {}
-    const parent = dirname(directory); if (parent === directory) break; directory = parent;
-  }
-  if (!manifest || manifest.version !== "1.0.2" || typeof manifest.bin?.pi !== "string" ||
-      realpathSync(resolve(packageDirectory, manifest.bin.pi)) !== selected ||
-      typeof manifest.exports?.["."]?.import !== "string") fail("仅支持 Pi Agent 1.0.2 SDK 对应的 CLI 入口，请检查运行时配置");
+  const installation = resolvePiSdk({binary:cli,runtimeTypeId:value("--runtime-type")});
   if (args.includes("--validate")) return;
   const required = (key) => { const path = value(key); if (!path || !isAbsolute(path)) fail("Pi SDK 装配路径无效"); return path; };
   const agentDir = required("--agent-dir"), modelsPath = required("--models-path"), selectionFile = required("--selection-file"), extension = required("--extension");
   process.env.PI_CODING_AGENT_DIR = agentDir;
   process.env.VELUNE_PI_SELECTION_FILE = selectionFile;
-  const sdk = await import(pathToFileURL(resolve(packageDirectory, manifest.exports["."].import)).href);
-  const { resolveProjectTrusted } = await import(pathToFileURL(join(packageDirectory, "dist/core/project-trust.js")).href);
-  const { createProjectTrustContext } = await import(pathToFileURL(join(packageDirectory, "dist/cli/project-trust.js")).href);
+  const sdk = await installation.importSdk();
+  const { resolveProjectTrusted } = await installation.importModule("dist/core/project-trust.js");
+  const { createProjectTrustContext } = await installation.importModule("dist/cli/project-trust.js");
   // Execution has no access to the source credential storage. The configured
   // catalog resolves only the application's ephemeral loopback token.
   const credentials = { read:async()=>undefined, list:async()=>[], modify:async()=>fail("执行运行时不能修改原认证来源"), delete:async()=>fail("执行运行时不能修改原认证来源") };
-  const { InMemoryCodingAgentModelsStore } = await import(pathToFileURL(join(packageDirectory, "dist/core/models-store.js")).href);
+  const { InMemoryCodingAgentModelsStore } = await installation.importModule("dist/core/models-store.js");
   const modelRuntime = await sdk.ModelRuntime.create({modelsPath,credentials,modelsStore:new InMemoryCodingAgentModelsStore(),refreshOnCreate:false,allowModelNetwork:false});
   if (modelRuntime.getError()) fail("Velune 执行模型目录无效");
   const sessionPath = value("--session"), sessionDir = value("--session-dir");

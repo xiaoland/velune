@@ -82,11 +82,7 @@ struct RuntimeDiscoveryView: View {
         }
         MacExecutableDiscovery.candidates(command: hint.command) { installed in
             guard active else { return }
-            var paths = installed
-            for type in store.runtimeTypes where type.familyID == hint.familyId {
-                if let value = type.fields.first(where: { $0.key == "binary" })?.value, !value.isEmpty { paths.append(value) }
-            }
-            let next = paths.map { BindingRuntimeDiscoveryProbe(familyId: hint.familyId, binary: $0, nodeBinary: node, agentDirectory: hint.agentDirectory) }
+            let next = installed.map { BindingRuntimeDiscoveryProbe(familyId: hint.familyId, binary: $0, nodeBinary: node, agentDirectory: hint.agentDirectory) }
             gather(hints.dropFirst(), node: node, probes: probes + next)
         }
     }

@@ -20,7 +20,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    for name in ("bundle", "bindings", "node", "codex", "dsh"):
+    for name in ("bundle", "bindings", "node", "pi", "codex", "dsh"):
         parser.add_argument("--" + name, required=True, type=Path)
     args = parser.parse_args()
     for path in vars(args).values():
@@ -148,7 +148,7 @@ def main():
                 "dsh": provider("synthetic-dsh", protocol_chat, "dsh-model"),
             }
             types = {descriptor.id: descriptor for descriptor in application.list().runtime_types}
-            binaries = {"pi": resources / "node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js",
+            binaries = {"pi": args.pi,
                         "codex": args.codex, "dsh": args.dsh}
             runtime_types = {"pi": "pi-1.0.2", "codex": "codex-0.159.3",
                              "dsh": "dsh-acp-0.2.0-rc.2"}

@@ -6,7 +6,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
-    for name in ['bundle','bindings','node','dsh']: parser.add_argument('--'+name,required=True,type=Path)
+    for name in ['bundle','bindings','node','pi','dsh']: parser.add_argument('--'+name,required=True,type=Path)
     args=parser.parse_args()
     captures=[]; failures=[]; environment=dict(os.environ)
     class Upstream(BaseHTTPRequestHandler):
@@ -33,10 +33,23 @@ def main():
             resources=root/'resources'
             source_resources=args.bundle/'Contents/Resources'
             for item in source_resources.iterdir():
+                if item.name == 'node_modules':
+                    continue
                 if item.is_dir():(resources/item.name).symlink_to(item)
                 else:shutil.copy(item,resources/item.name)
+            # DSH's read-only huihua adapter still needs its public JS
+            # dependencies. Link those from the app fixture, while keeping
+            # every Pi package external through --pi.
+            source_modules = source_resources / 'node_modules'
+            if source_modules.is_dir():
+                (resources / 'node_modules').mkdir()
+                for item in source_modules.iterdir():
+                    if item.name == '@earendil-works':
+                        continue
+                    (resources / 'node_modules' / item.name).symlink_to(item,
+                        target_is_directory=item.is_dir())
             # Use current authored source helpers, without changing an installed app or its resources.
-            for name in ['pi_provider_import.mjs','pi_sessions.mjs','pi_virtual_model.mjs','pi_rpc.mjs','huihua_sessions.mjs']:
+            for name in ['pi_sdk.mjs','pi_auth.mjs','pi_provider_import.mjs','pi_sessions.mjs','pi_virtual_model.mjs','pi_rpc.mjs','huihua_sessions.mjs']:
                 shutil.copy(Path(__file__).resolve().parents[1]/'packages/agent-runtime/resources'/name,resources/name)
             shutil.copy(args.bindings/'velune_bindings.py',root/'bindings')
             (root/'bindings/libvelune_bindings.dylib').symlink_to(args.bundle/'Contents/Frameworks/libvelune_bindings.dylib')
@@ -44,7 +57,7 @@ def main():
             spec=importlib.util.spec_from_file_location('velune_bindings',root/'bindings/velune_bindings.py');b=importlib.util.module_from_spec(spec);sys.modules[spec.name]=b;spec.loader.exec_module(b)
             app=b.VeluneApplication.open(b.BindingOptions(home_directory=str(root/'home'),resources_directory=str(resources)))
             endpoint=f'http://127.0.0.1:{server.server_port}'
-            runtimes=[b.BindingRuntimeInstance(enabled=True,id='pi',name='Synthetic Pi',type_id='pi-1.0.2',gateway_id='default',settings={'agentDir':str(root/'pi'),'nodeBinary':str(args.node),'binary':str(resources/'node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js')}), b.BindingRuntimeInstance(enabled=True,id='dsh',name='Synthetic DSH',type_id='dsh-acp-0.2.0-rc.2',gateway_id='default',settings={'agentDir':str(root/'dsh'),'nodeBinary':str(args.node),'binary':str(args.dsh)})]
+            runtimes=[b.BindingRuntimeInstance(enabled=True,id='pi',name='Synthetic Pi',type_id='pi-1.0.2',gateway_id='default',settings={'agentDir':str(root/'pi'),'nodeBinary':str(args.node),'binary':str(args.pi)}), b.BindingRuntimeInstance(enabled=True,id='dsh',name='Synthetic DSH',type_id='dsh-acp-0.2.0-rc.2',gateway_id='default',settings={'agentDir':str(root/'dsh'),'nodeBinary':str(args.node),'binary':str(args.dsh)})]
             for runtime in runtimes:app.upsert_runtime(runtime)
             model={'id':'synthetic-native-model','name':'Synthetic native','reasoning':False,'input':['text'],'contextWindow':32768,'maxTokens':1024,'compat':{'supportsStrictTools':False,'sendSessionAffinityHeaders':True}}
             original=json.dumps({'providers':{'synthetic-source':{'api':'anthropic-messages','baseUrl':endpoint,'apiKey':'synthetic-only','models':[model]}}}).encode()

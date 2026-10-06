@@ -54,6 +54,7 @@ pub type Result<T> = std::result::Result<T, Error>;
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
+    pub runtime_type_id: String,
     pub binary: PathBuf,
     pub node_binary: Option<PathBuf>,
     pub sdk_helper: Option<PathBuf>,
@@ -77,6 +78,11 @@ pub struct Config {
 
 impl Config {
     pub fn validate(&self) -> Result<()> {
+        if crate::version::variant(&self.runtime_type_id)
+            .is_none_or(|variant| variant.family_id != "pi")
+        {
+            return Err(Error::Sdk("Pi 运行时版本类型不受支持".into()));
+        }
         if self.binary.as_os_str().is_empty() {
             return Err(Error::MissingBinary);
         }
@@ -168,12 +174,14 @@ impl Config {
             .arg(entry)
             .arg("--cli")
             .arg(&self.binary)
+            .arg("--runtime-type")
+            .arg(&self.runtime_type_id)
             .arg("--validate")
             .env_clear()
             .output()?;
         if !output.status.success() {
             return Err(Error::Sdk(
-                "仅支持 Pi Agent 1.0.2 SDK 对应的 CLI 入口，请检查运行时配置".into(),
+                "所选 Pi 安装与运行时版本类型不匹配，或 SDK 入口不可用".into(),
             ));
         }
         Ok(())
@@ -192,7 +200,12 @@ impl Client {
             .as_ref()
             .ok_or_else(|| Error::Sdk("SDK 入口不可用".into()))?;
         let mut command = Command::new(node);
-        command.arg(entry).arg("--cli").arg(&config.binary);
+        command
+            .arg(entry)
+            .arg("--cli")
+            .arg(&config.binary)
+            .arg("--runtime-type")
+            .arg(&config.runtime_type_id);
         for (name, path) in [
             ("--models-path", &config.models_path),
             ("--selection-file", &config.selection_file),

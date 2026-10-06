@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Explicit synthetic discovery/config acceptance; no user config or credentials."""
-import argparse, importlib.util, os, sys, tempfile
+import argparse, importlib.util, json, os, sys, tempfile
 from pathlib import Path
 
 def main():
@@ -9,6 +9,7 @@ def main():
     parser.add_argument('--library', type=Path, required=True)
     parser.add_argument('--resources', type=Path, required=True)
     parser.add_argument('--node', type=Path, required=True)
+    parser.add_argument('--pi', type=Path, required=True, help='external Pi CLI from the selected installation')
     args = parser.parse_args()
     with tempfile.TemporaryDirectory(prefix='velune-discovery-') as directory:
         root = Path(directory); home = root/'home'; home.mkdir()
@@ -30,12 +31,25 @@ def main():
         agent = home/'.pi/agent'; agent.mkdir(parents=True)
         # An executable that supports only --version cannot accidentally start a session.
         def cli(name, version):
-            path = root/name; path.write_text("if(process.argv[2] !== '--version') process.exit(91); console.log('"+version+"');\n"); return str(path)
+            package = root / name
+            path = package / 'dist/bundle/cli.js'
+            path.parent.mkdir(parents=True)
+            (package / 'package.json').write_text(json.dumps({
+                'name': '@earendil-works/pi-coding-agent', 'version': version,
+                'bin': {'pi': 'dist/bundle/cli.js'},
+                'exports': {'.': {'import': './dist/index.js'}},
+            }))
+            path.write_text("if(process.argv[2] !== '--version') process.exit(91); console.log('"+version+"');\n")
+            path.chmod(0o700)
+            return str(path)
         valid = cli('supported.mjs','1.0.2'); invalid = cli('unsupported.mjs','2.0.0')
         probe = lambda path: b.BindingRuntimeDiscoveryProbe(family_id='pi',binary=path,node_binary=str(args.node.resolve()),agent_directory=str(agent))
         candidates = app.discover_runtimes([probe(valid),probe(invalid)])
         assert candidates[0].supported and candidates[0].version == '1.0.2' and not candidates[0].already_configured
         assert not candidates[1].supported and candidates[1].version == '2.0.0'
+        external = app.discover_runtimes([probe(str(args.pi))])[0]
+        assert external.supported and external.version == '1.0.2', (external.supported, external.version)
+        assert external.runtime.settings['binary'] == str(args.pi)
         assert not app.list().runtime_instances, 'detection saved configuration'
         runtime = candidates[0].runtime
         app.upsert_runtime(runtime)

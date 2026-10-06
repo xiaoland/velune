@@ -5,7 +5,7 @@ No provider requests are permitted; a local server counts unexpected attempts.
 import argparse, importlib.util, json, os, pathlib, shutil, subprocess, sys, tempfile, threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 parser=argparse.ArgumentParser(description=__doc__)
-for name in ['bundle','bindings','node']: parser.add_argument('--'+name,required=True,type=pathlib.Path)
+for name in ['bundle','bindings','node','pi']: parser.add_argument('--'+name,required=True,type=pathlib.Path)
 args=parser.parse_args()
 requests=[]
 class Upstream(BaseHTTPRequestHandler):
@@ -19,7 +19,13 @@ with tempfile.TemporaryDirectory(prefix='velune-pi-resync-') as directory:
     for name in ['home','runtime','project','other-project','resources','bindings']: (root/name).mkdir()
     resources=root/'resources'
     for source in (args.bundle/'Contents/Resources').glob('*.mjs'): shutil.copy2(source,resources/source.name)
-    (resources/'node_modules').symlink_to(args.bundle/'Contents/Resources/node_modules',target_is_directory=True)
+    package=args.pi.resolve()
+    while package.name != 'node_modules' and not (package/'package.json').is_file():
+        if package.parent == package: parser.error('--pi is not inside a Pi package')
+        package=package.parent
+    if json.loads((package/'package.json').read_text()).get('name') != '@earendil-works/pi-coding-agent': parser.error('--pi does not belong to the supported Pi package')
+    (resources/'node_modules/@earendil-works').mkdir(parents=True)
+    (resources/'node_modules/@earendil-works/pi-coding-agent').symlink_to(package)
     sdk=resources/'seed.mjs'
     sdk.write_text('''import {SessionManager} from '@earendil-works/pi-coding-agent';
 const root=process.argv[2];
@@ -53,7 +59,7 @@ pi.registerCommand('manual-switch',{handler:async (_args,ctx)=>{await ctx.switch
         model=b.BindingProviderModel(record_key='',provider_model_id='synthetic',nickname='Synthetic',icon=None,context_window=8192,max_output_tokens=4096,reasoning_levels=None,adapter_metadata_json=None)
         draft=b.BindingProviderDraft(id='synthetic',name='Synthetic',protocol=b.BindingGatewayProtocol.CHAT_COMPLETIONS_V1,endpoint=f'http://127.0.0.1:{server.server_port}/v1',models=[model])
         saved=app.save_provider('default',draft,b.BindingAuthenticationEdit.SET_API_KEY(value='synthetic-only')).gateways[0].providers[0]
-        runtime=b.BindingRuntimeInstance(enabled=True, id='pi',name='Synthetic Pi',type_id='pi-1.0.2',gateway_id='default',settings={'binary':str(resources/'node_modules/@earendil-works/pi-coding-agent'/json.loads((resources/'node_modules/@earendil-works/pi-coding-agent/package.json').read_text())['bin']['pi']),'nodeBinary':str(args.node),'agentDir':str(root/'runtime')})
+        runtime=b.BindingRuntimeInstance(enabled=True, id='pi',name='Synthetic Pi',type_id='pi-1.0.2',gateway_id='default',settings={'binary':str(args.pi),'nodeBinary':str(args.node),'agentDir':str(root/'runtime')})
         app.upsert_runtime(runtime)
         session=next(item for item in app.list().conversations if item.id=='pi:'+paths['path'])
         before=app.open_conversation('pi',session.id).snapshot

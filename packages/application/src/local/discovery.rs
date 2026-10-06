@@ -8,12 +8,26 @@ impl CoreRuntime {
             return Err(RuntimeError::Invalid("运行时发现候选过多".into()));
         }
         let mut results = Vec::new();
-        for probe in probes {
-            let version = velune_agent_runtime::version::probe_version(
-                &probe.family_id,
-                Path::new(&probe.binary),
-                Some(Path::new(&probe.node_binary)),
-            );
+        for mut probe in probes {
+            let resolved = if probe.family_id == "pi" {
+                velune_agent_runtime::version::resolve_pi_binary(
+                    Path::new(&probe.binary),
+                    Path::new(&probe.node_binary),
+                )
+                .map(|binary| {
+                    probe.binary = binary.to_string_lossy().into_owned();
+                })
+            } else {
+                Ok(())
+            };
+
+            let version = resolved.and_then(|()| {
+                velune_agent_runtime::version::probe_version(
+                    &probe.family_id,
+                    Path::new(&probe.binary),
+                    Some(Path::new(&probe.node_binary)),
+                )
+            });
             let (version, adapter, detail) = match version {
                 Ok(version) => {
                     let adapter =
@@ -25,11 +39,7 @@ impl CoreRuntime {
                     };
                     (Some(version), adapter, detail.to_owned())
                 }
-                Err(_) => (
-                    None,
-                    None,
-                    "无法读取公开版本，请检查可执行文件与 Node 配置".into(),
-                ),
+                Err(error) => (None, None, format!("无法读取公开版本：{error}")),
             };
             let directory_valid = Path::new(&probe.agent_directory).is_absolute()
                 && !probe.agent_directory.contains('\0')
@@ -62,7 +72,7 @@ impl CoreRuntime {
                 version,
                 supported: adapter.is_some() && directory_valid,
                 already_configured,
-                detail: if directory_valid {
+                detail: if directory_valid || adapter.is_none() {
                     detail
                 } else {
                     "运行时目录不存在，请在手动添加中配置".into()

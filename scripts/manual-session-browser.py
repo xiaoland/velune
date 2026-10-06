@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Manual isolated history/lazy-preparation acceptance, never a CI entry point.
 
-Creates history through the bundled Pi SDK in a temporary HOME. No credentials,
+Creates history through the selected external Pi SDK in a temporary HOME. No credentials,
 real histories or model requests are used. Supply matching generated bindings.
 """
 import argparse
@@ -32,7 +32,7 @@ console.log(session.getSessionFile());
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    for name in ('bundle', 'bindings', 'node'):
+    for name in ('bundle', 'bindings', 'node', 'pi'):
         parser.add_argument('--' + name, type=Path, required=True)
     args = parser.parse_args()
     for path in vars(args).values():
@@ -45,7 +45,14 @@ def main():
         resources = args.bundle / 'Contents/Resources'
         for name in ('bindings', 'runtime', 'foreign', 'project', 'seed'):
             (root / name).mkdir()
-        (root / 'seed/node_modules').symlink_to(resources / 'node_modules')
+        package = args.pi.resolve()
+        while package.name != 'node_modules' and not (package / 'package.json').is_file():
+            if package.parent == package: parser.error('--pi is not inside a Pi package')
+            package = package.parent
+        if json.loads((package / 'package.json').read_text()).get('name') != '@earendil-works/pi-coding-agent':
+            parser.error('--pi does not belong to the supported Pi package')
+        (root / 'seed/node_modules/@earendil-works').mkdir(parents=True)
+        (root / 'seed/node_modules/@earendil-works/pi-coding-agent').symlink_to(package)
         seed = root / 'seed/create.mjs'
         seed.write_text(SEED)
         fixture_env = {'HOME': str(root), 'PATH': '/usr/bin:/bin'}
@@ -81,7 +88,7 @@ def main():
                 home_directory=str(root / 'home'), resources_directory=str(resources)))
             runtime = b.BindingRuntimeInstance(enabled=True, id='fixture', name='Synthetic Pi',
                 type_id='pi-1.0.2', gateway_id='default', settings={
-                    'binary': str(binary), 'nodeBinary': str(args.node),
+                'binary': str(args.pi), 'nodeBinary': str(args.node),
                     'agentDir': str(root / 'runtime')})
             application.upsert_runtime(runtime)
             listed = application.list()
@@ -147,10 +154,11 @@ def main():
             (root / 'project').mkdir()
             application.save_provider('default', provider,
                 b.BindingAuthenticationEdit.SET_API_KEY(value='SYNTHETIC_ONLY'))
-            # Existing internal identity remains stable after provider edits.
-            rejected(lambda: application.send_turn('fixture', key, 'DO_NOT_ACCEPT_THIS_MESSAGE'))
+            # A valid history can now submit a future turn with an explicit
+            # model key; selecting the model does not mutate the loaded history.
             current = application.snapshot('fixture').snapshot
             assert current.conversation.id == item.id and current.model_record_key is None
+            assert current.actions.can_send
             assert current.messages == chosen.messages
             bad = b.BindingRuntimeInstance(enabled=True, id='unreadable', name='Synthetic broken source',
                 type_id='pi-1.0.2', gateway_id='default', settings={

@@ -82,9 +82,27 @@ fn configured_source(
         .get("nodeBinary")
         .filter(|value| !value.is_empty())
         .ok_or_else(|| RuntimeError::invalid("请先配置所选运行时的 Node 可执行文件"))?;
+    let binary = runtime
+        .settings
+        .get("binary")
+        .ok_or_else(|| RuntimeError::invalid("请先配置所选运行时的入口"))?;
+    let binary = velune_agent_runtime::version::resolve_pi_binary(
+        std::path::Path::new(binary),
+        std::path::Path::new(node),
+    )
+    .map_err(|error| RuntimeError::Invalid(error.to_string()))?;
+    let sdk_version = velune_agent_runtime::version::check_version(
+        &runtime.type_id,
+        &binary,
+        Some(std::path::Path::new(node)),
+    )
+    .map_err(|_| RuntimeError::invalid("所选 Pi 安装版本与适配器不匹配"))?;
     let mut settings = BTreeMap::from([
         ("sourceDir".into(), directory.clone()),
         ("nodeBinary".into(), node.clone()),
+        ("binary".into(), binary.to_string_lossy().into_owned()),
+        ("runtimeTypeId".into(), runtime.type_id.clone()),
+        ("sdkVersion".into(), sdk_version),
     ]);
     for key in ["modelsPath", "authPath"] {
         if let Some(value) = runtime.settings.get(key).filter(|value| !value.is_empty()) {

@@ -4,6 +4,7 @@ Compiles the production Store plus a same-file visibility shim for one poll;
 uses actual UniFFI/core/helper execution, not mocked Store or response models.
 No window, real credentials or external upstream is used. Three controlled loopback
 turns exercise Pi execution and cross-instance continuation; this is not an automated-test entry point.
+Requires an external Pi 1.0.2 CLI; the seed imports that installation's public SDK export.
 """
 import argparse
 import json
@@ -24,10 +25,10 @@ import VeluneBindings
     @MainActor static func main() throws {
         let args = CommandLine.arguments
         let root = URL(fileURLWithPath: args[1]), resources = URL(fileURLWithPath: args[2])
-        let ids = Array(args[3...6]), node = args[7], endpoint = args[8]
+        let ids = Array(args[3...6]), node = args[7], endpoint = args[8], pi = args[9]
         let application = try VeluneApplication.open(options: BindingOptions(homeDirectory: root.appendingPathComponent("application").path, resourcesDirectory: resources.path))
-        _ = try application.upsertRuntime(runtime: BindingRuntimeInstance(enabled: true, id: "fixture", name: "Synthetic", typeId: "pi-1.0.2", gatewayId: "default", settings: ["binary":resources.appendingPathComponent("node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js").path,"nodeBinary":node,"agentDir":root.appendingPathComponent("runtime").path]))
-        _ = try application.upsertRuntime(runtime: BindingRuntimeInstance(enabled: true, id: "other", name: "Other", typeId: "pi-1.0.2", gatewayId: "default", settings: ["binary":resources.appendingPathComponent("node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js").path,"nodeBinary":node,"agentDir":root.appendingPathComponent("runtime-other").path]))
+        _ = try application.upsertRuntime(runtime: BindingRuntimeInstance(enabled: true, id: "fixture", name: "Synthetic", typeId: "pi-1.0.2", gatewayId: "default", settings: ["binary":pi,"nodeBinary":node,"agentDir":root.appendingPathComponent("runtime").path]))
+        _ = try application.upsertRuntime(runtime: BindingRuntimeInstance(enabled: true, id: "other", name: "Other", typeId: "pi-1.0.2", gatewayId: "default", settings: ["binary":pi,"nodeBinary":node,"agentDir":root.appendingPathComponent("runtime-other").path]))
         _ = try application.saveProvider(gatewayId: "default", provider: BindingProviderDraft(id: "synthetic-provider", name: "Synthetic", protocol: .chatCompletionsV1, endpoint: endpoint, models: [BindingProviderModel(recordKey: "", providerModelId: "synthetic", nickname: "Synthetic", icon: nil, contextWindow: 8192, maxOutputTokens: 128, reasoningLevels: nil, adapterMetadataJson: nil)]), authenticationEdit: .setApiKey(value: "SYNTHETIC_ONLY"))
         _ = try application.selectRuntime(id: "fixture")
         try application.shutdown()
@@ -205,10 +206,10 @@ import VeluneBindings
         precondition(piHint.directoryExists && piHint.agentDirectory == root.appendingPathComponent("discovery-home/.pi/agent").path)
         var discovered: [BindingRuntimeDiscoveryCandidate] = []
         var discoveredVersions = false
-        let cli = resources.appendingPathComponent("node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js").path
+        let cli = pi
         store.discoverRuntimes([
             BindingRuntimeDiscoveryProbe(familyId: "pi", binary: cli, nodeBinary: node, agentDirectory: piHint.agentDirectory),
-            BindingRuntimeDiscoveryProbe(familyId: "pi", binary: root.appendingPathComponent("unsupported.mjs").path, nodeBinary: node, agentDirectory: piHint.agentDirectory)
+            BindingRuntimeDiscoveryProbe(familyId: "pi", binary: root.appendingPathComponent("unsupported/dist/bundle/cli.js").path, nodeBinary: node, agentDirectory: piHint.agentDirectory)
         ]) { values in discovered = values; discoveredVersions = true }
         wait { !store.isLoading && discoveredVersions }
         precondition(discovered.count == 2 && discovered.filter(\.supported).count == 1)
@@ -360,10 +361,22 @@ import VeluneBindings
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    for name in ('bundle', 'node'):
+    for name in ('bundle', 'node', 'pi'):
         parser.add_argument('--' + name, type=Path, required=True)
     parser.add_argument('--swift-build', type=Path)
     args = parser.parse_args()
+    if not args.pi.is_absolute() or not args.pi.is_file(): parser.error('--pi must be an absolute external CLI path')
+    if args.pi.resolve().is_relative_to(args.bundle.resolve()): parser.error('--pi must not come from the app bundle')
+    sdk = None
+    for directory in args.pi.resolve().parents:
+        package = directory / 'package.json'
+        if not package.is_file(): continue
+        metadata = json.loads(package.read_text())
+        if metadata.get('name') != '@earendil-works/pi-coding-agent': continue
+        if metadata.get('version') != '1.0.2': parser.error('this manual fixture requires external Pi 1.0.2')
+        sdk = directory / metadata['exports']['.']['import']
+        break
+    if sdk is None or not sdk.is_file(): parser.error('--pi must belong to the Pi 1.0.2 package with its public SDK export')
     root = Path(__file__).resolve().parent.parent
     build = args.swift_build or Path(subprocess.check_output(['swift','build','--show-bin-path'],cwd=root,text=True).strip())
     with tempfile.TemporaryDirectory(prefix='velune-session-loading-') as directory:
@@ -373,7 +386,12 @@ def main():
         for resource in (args.bundle / 'Contents/Resources').glob('*.mjs'): shutil.copy(resource, resources)
         (temporary / 'home').mkdir(); (temporary / 'project').mkdir()
         (temporary / 'discovery-home/.pi/agent').mkdir(parents=True)
-        (temporary / 'unsupported.mjs').write_text('console.log("pi 9.9.9");\n')
+        unsupported = temporary / 'unsupported'
+        (unsupported / 'dist/bundle').mkdir(parents=True)
+        (unsupported / 'package.json').write_text(json.dumps({'name':'@earendil-works/pi-coding-agent','version':'9.9.9','type':'module','bin':{'pi':'dist/bundle/cli.js'}}))
+        unsupported_cli = unsupported / 'dist/bundle/cli.js'
+        unsupported_cli.write_text('#!/usr/bin/env node\nif (process.argv.slice(2).join(" ") === "--version") console.log("pi 9.9.9"); else process.exit(2);\n')
+        unsupported_cli.chmod(0o755)
         env = {'HOME':str(temporary / 'home'),'PATH':str(args.node.parent) + ':/usr/bin:/bin'}
         requests = []
         class Upstream(BaseHTTPRequestHandler):
@@ -401,7 +419,7 @@ def main():
         endpoint = f'http://127.0.0.1:{server.server_port}/v1'
 
         seed = resources / 'seed.mjs'
-        seed.write_text("""import {SessionManager} from '@earendil-works/pi-coding-agent';
+        seed.write_text('import {SessionManager} from ' + json.dumps(sdk.resolve().as_uri()) + ';\n' + """
 const [cwd,dir,title]=process.argv.slice(2); const manager=SessionManager.create(cwd,dir);
 manager.appendMessage({role:'user',content:[{type:'text',text:title}],timestamp:Date.now()});
 manager.appendMessage({role:'assistant',content:[{type:'text',text:'SYNTHETIC '+title}],api:'openai-completions',provider:'synthetic',model:'synthetic',stopReason:'stop',timestamp:Date.now()});
@@ -434,7 +452,7 @@ manager.appendSessionInfo(title); console.log(manager.getSessionFile());
         command += [str(import_models),str(store),str(main),*objects,'-L',str(args.bundle / 'Contents/Frameworks'),'-lvelune_bindings','-Xlinker','-rpath','-Xlinker',str(args.bundle / 'Contents/Frameworks'),'-o',str(temporary / 'manual')]
         subprocess.run(command,check=True,cwd=root)
         identities = ['fixture:' + paths[name] for name in ['A','B','C','D']]
-        subprocess.run([str(temporary / 'manual'),str(temporary),str(resources),*identities,str(args.node),endpoint],check=True,cwd=temporary,env=env)
+        subprocess.run([str(temporary / 'manual'),str(temporary),str(resources),*identities,str(args.node),endpoint,str(args.pi)],check=True,cwd=temporary,env=env)
         server.shutdown(); server.server_close()
         assert [request['model'] for request in requests] == ['synthetic'] * 3, 'unexpected loopback dispatch'
         def strings(value):

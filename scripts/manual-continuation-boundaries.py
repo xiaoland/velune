@@ -15,7 +15,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    for key in ("bundle", "bindings", "node"):
+    for key in ("bundle", "bindings", "node", "pi"):
         parser.add_argument("--" + key, required=True, type=Path)
     args = parser.parse_args()
     captures = []
@@ -62,7 +62,7 @@ def main():
                                           endpoint=f"http://127.0.0.1:{server.server_port}/v1", models=[model])
             application.save_provider("default", draft, b.BindingAuthenticationEdit.SET_API_KEY(value="synthetic-only"))
             key = application.list().gateways[0].providers[0].models[0].record_key
-            binary = resources / "node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js"
+            binary = args.pi
             for identity in ("alpha", "beta"):
                 application.upsert_runtime(b.BindingRuntimeInstance(enabled=True, id=identity, name=identity,
                     type_id="pi-1.0.2", gateway_id="default", settings={"binary": str(binary), "nodeBinary": str(args.node), "agentDir": str(root / identity)}))

@@ -25,14 +25,7 @@ use velune_gateway::Runner;
 const CONTRACT_VERSION: u64 = 3;
 mod discovery;
 
-fn runtime_types(resources_directory: &Path) -> Vec<crate::config::RuntimeTypeDescriptor> {
-    let bundled_binary =
-        resources_directory.join("node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js");
-    let binary_value = if bundled_binary.is_file() {
-        bundled_binary.to_string_lossy().into_owned()
-    } else {
-        String::new()
-    };
+fn runtime_types() -> Vec<crate::config::RuntimeTypeDescriptor> {
     let field = |key: &str, label: &str, kind: &str, required: bool, value: String, help: &str| {
         crate::conversation::SettingField {
             key: key.into(),
@@ -58,7 +51,8 @@ fn runtime_types(resources_directory: &Path) -> Vec<crate::config::RuntimeTypeDe
         minimum_version: "22.19.0".into(),
     });
     velune_agent_runtime::version::variants().iter().map(|variant| {
-        let mut binary=field("binary","运行时入口","filePath",true,if variant.id=="pi-1.0.2" {binary_value.clone()}else{String::new()},"当前运行时版本的绝对可执行路径。执行准备时会核对实际版本。");
+        let mut binary=field("binary","运行时入口","filePath",true,String::new(),"当前运行时版本的绝对可执行路径。执行准备时会核对实际版本。");
+        if variant.family_id=="pi" {binary.executable_discovery=Some(crate::conversation::ExecutableDiscovery{command:"pi".into(),minimum_version:"1.0.2".into()});}
         if variant.id=="codex-0.159.3" {binary.executable_discovery=Some(crate::conversation::ExecutableDiscovery{command:"codex".into(),minimum_version:"0.159.3".into()});}
         if variant.id=="dsh-acp-0.2.0-rc.2" {binary.executable_discovery=Some(crate::conversation::ExecutableDiscovery{command:"dsh".into(),minimum_version:"0.2.0".into()});}
         let mut fields=vec![binary,node.clone(),field("agentDir","运行时目录","directoryPath",true,String::new(),match variant.id {"codex-0.159.3"=>"该实例的 CODEX_HOME；配置与会话根目录，不是任务工作目录。","dsh-acp-0.2.0-rc.2"=>"该实例的 DeepSeek Harness 配置与会话根目录，不是任务工作目录。",_=>"该实例的 Pi 配置与状态根目录，不是任务工作目录。"})];

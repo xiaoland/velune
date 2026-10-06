@@ -8,10 +8,9 @@
 
 Mac 应用图标由 `scripts/render-app-icon.swift` 将 graphite 光学稿生成十档传统 ICNS 资源。Dock／应用库使用的图标应保留 macOS 的透明光学留白，不能将品牌稿直接铺满画布；具体绘制范围在生成器中维护，不能通过修改品牌 SVG 补偿平台外框尺寸。
 
-Mac 使用根目录 SwiftPM manifest 与 Package.resolved 锁定 MarkdownUI 及传递依赖；构建脚本先生成 UniFFI 模块，再构建原生 SwiftPM 产品，固定 macOS 14 部署底线并随包保留 Swift 许可证。不会构建或执行依赖的测试 targets。安装固定 Pi SDK 和历史读取依赖后构建：
+Mac 使用根目录 SwiftPM manifest 与 Package.resolved 锁定 MarkdownUI 及传递依赖；构建脚本先生成 UniFFI 模块，再构建原生 SwiftPM 产品，固定 macOS 14 部署底线并随包保留 Swift 许可证。不会构建或执行依赖的测试 targets。安装历史读取依赖后构建：
 
 ```sh
-./scripts/install-pi-runtime.sh
 ./scripts/install-runtime-support.sh
 bash scripts/build-macos.sh
 open /Applications/Velune.app
@@ -27,6 +26,8 @@ VELUNE_HOME=/absolute/path/to/isolated-home /Applications/Velune.app/Contents/Ma
 
 Settings 以 AI 提供商和 Agent 运行时为主。提供商编辑器左侧选择“连接与认证”或某个模型，右侧显示当前内容；可以修改枚举协议、服务地址及 API key，模型 ID、名称／图标和可选能力在该模型内容中直接编辑。模型可手动添加或由模板快填，模板管理是提供商页上下文入口，没有先建全局模型／认证资源／模型路由的步骤。单目标调用直接选择提供商下的模型。协议首先支持原生 ChatCompletions v1 与 Responses v1，不翻译协议；fail-over 仍禁用。
 
+双击进入编辑是全局交互范式，适用于设置中的可编辑列表和会话标题；使用系统 List 主操作，单击选择与平台多选保留。双击会话仍写入运行时的原生标题，不建立本地覆盖。
+
 Agent 运行时可配置多个实例，每个实例选择精确版本类型及独立配置目录；工作目录属于具体会话。当前提供 Pi 1.0.2、Codex 0.159.3 和 DeepSeek Harness 0.2.0-rc.2，保持一个活跃执行 runner，空闲时切换会话；读取历史不进入执行。Pi 在准备边界要求正值上下文窗口；描述性能力未知不构成所有运行时的全局拒绝条件。添加实例后即可读取会话列表和详情，不需要连接或模型。新建表单选择实例、目录与模型后自动准备；历史模型选择与发送按会话进行。Pi 恢复可验证的原生选择记录，Codex／DSH 继续前明确选择，不按同名推断提供商。发送时自动准备／恢复，可观察工具结果、回答原生交互与取消。用户消息为右侧气泡，LLM 与工具左侧左对齐，只有系统／Harness 通知居中，不显示作者头像或昵称。历史由各 Harness 持有，Mac 只投影。
 
 Harness 仅收到 Velune 本机网关配置，提供商 key 不传入执行 Harness。application 管理提供商私有认证，gateway 只接收中立异步解析接口，AI provider 使用当前解析出的短生命周期认证。API key 可查看编辑，OAuth 状态与登录放在原提供商上下文，运行时名称仅作为来源说明。OAuth adapter 保留原 SDK 的登录与刷新，不复制 refresh credential。修改来源绑定的目标时明确更换认证或清除，不能继续沿用旧目标授权。更换认证或模型执行配置后，受影响执行准备失效，历史视图保留，下一次发送重新准备；真实登录与调用由用户验收。
@@ -41,7 +42,7 @@ schema 7 采用 hard-cutoff，旧普通配置打开时直接重置，之后重�
 
 ## 会话内容的隔离复验
 
-内部角色、类型内容和 Unix 毫秒通过生成绑定消费；Mac 的稳定展示行不是持久化记录。标题在列表、只读打开和准备执行间保持同一含义，来源文件名不作为显示标题。`scripts/manual-session-browser.py` 使用固定 Pi SDK 在临时 HOME 创建带标题、无标题、正文、推理和工具调用／结果的合成历史，验证可读标题、类型角色和时间，以及已完成工具输出；同时保留无模型浏览与准备失败保留视图的验收。必须传入匹配的 bundle、Python bindings 与 Node 绝对路径，不读取既有会话。
+内部角色、类型内容和 Unix 毫秒通过生成绑定消费；Mac 的稳定展示行不是持久化记录。标题在列表、只读打开和准备执行间保持同一含义，来源文件名不作为显示标题。`scripts/manual-session-browser.py` 使用固定 Pi SDK 在临时 HOME 创建带标题、无标题、正文、推理和工具调用／结果的合成历史，验证可读标题、类型角色和时间，以及已完成工具输出；同时保留无模型浏览与准备失败保留视图的验收。必须传入匹配的 bundle、Python bindings、Node 与外部 Pi CLI 绝对路径，不读取既有会话。
 
 Markdown 渲染和长列表的具体手动操作／临时脚本、固定依赖、性能观察及构建安装版本归 [展示任务](../tasks/conversation-presentation/packet.md)。GUI 复核需要检查标题／时间、首次打开到底部、上翻时不抢滚动、返回底部、用户气泡、工具与正文左对齐、完整 Markdown 与长历史滚动。编译或模型层脚本成功不构成这些视觉体验的验收。
 
@@ -121,7 +122,7 @@ fixture 为 [review.json](../fixtures/review.json)，仅 `2 + 3 = 5`。Codex 会
 
 Node 本体不随 Mac bundle，当前各实例配置 Node 22.19+ 的绝对路径；Codex 历史直接调用 app-server 原生 thread API。Codex／DSH 可执行文件由用户安装，实例保存绝对路径，不依赖 Finder 的 PATH。Codex 启动 app-server；DSH 当前版本通过配置的 Node 执行其 CLI JavaScript 入口并传 `--profile acp --patch <实例投影文件>`。CLI 版本不是 ACP 握手中的插件版本。
 
-[`install-runtime-support.sh`](../scripts/install-runtime-support.sh) 按 [`package-lock.json`](../packages/agent-runtime/runtime-support/package-lock.json) 安装 huihua `0.2.0` 及其依赖（共五个 npm 包）到忽略的 `target/runtime-support`，禁用 npm lifecycle scripts，不修改全局安装。Mac 构建合并其 node_modules 与 Pi SDK 资源，随包包含完整许可声明、licenses 和依赖锁；清单见 [第三方声明](../packages/agent-runtime/runtime-support/THIRD_PARTY_NOTICES.md)。不打包整个 DSH runtime 或 Codex CLI，也不复制 huihua parser 源码。
+[`install-runtime-support.sh`](../scripts/install-runtime-support.sh) 按 [`package-lock.json`](../packages/agent-runtime/runtime-support/package-lock.json) 安装 huihua `0.2.0` 及其依赖（共五个 npm 包）到忽略的 `target/runtime-support`，禁用 npm lifecycle scripts，不修改全局安装。Mac 构建只分发其 parser 依赖和薄 adapter helpers，随包包含完整许可声明、licenses 和依赖锁；清单见 [第三方声明](../packages/agent-runtime/runtime-support/THIRD_PARTY_NOTICES.md)。不打包整个 DSH runtime 或 Codex CLI，也不复制 huihua parser 源码。
 
 Codex 历史使用短生命周期 app-server 的 thread/list、thread/read 与 thread/items/list，不准备模型或网关。列表显式包含该版本全部来源与全部提供商，分页详情采用升序原生 items，Codex 负责 legacy／paginated 和 revert 历史继承。thread ID 不等于 rollout 文件 ID；不能扫描文件后要求 thread ID 唯一，也不按路径或时间挑选。huihua 桥仅供 DSH，通过公开 package exports 读取显式 home／roots，返回原生 ID、cwd、列表摘要与消息投影，不输出未知 payload。历史浏览不能代替 Codex thread/resume 或 DSH session/resume。 安全日志的 history_native_resolution 记录固定运行时家族、legacy／paginated 分类与读取／投影条数；history_native_failed 记录固定阶段和错误分类，不记录会话 ID、路径或正文。
 
@@ -141,7 +142,7 @@ Rust agent-runtime 的 [Pi adapter](../packages/agent-runtime/src/client.rs) 处
 
 依据为 Pi `v1.0.2` 固定提交 `cd32f7725fdbddbaecdff5b1e68491563394e0ca` 的 [RPC](https://github.com/earendil-works/pi/blob/cd32f7725fdbddbaecdff5b1e68491563394e0ca/packages/coding-agent/docs/rpc.md)、[模型配置](https://github.com/earendil-works/pi/blob/cd32f7725fdbddbaecdff5b1e68491563394e0ca/packages/coding-agent/docs/models.md)与 [SDK 列表例子](https://github.com/earendil-works/pi/blob/cd32f7725fdbddbaecdff5b1e68491563394e0ca/packages/coding-agent/examples/sdk/11-sessions.ts)。用户所说的 Pi home 由适配器映射为本版本的 `PI_CODING_AGENT_DIR`，不假定存在 `PI_HOME` 上游变量。
 
-安装脚本固定 `@earendil-works/pi-coding-agent@1.0.2` 于忽略的 `target/pi-runtime`，不修改全局 npm 或 Pi。Mac bundle 将 SDK、CLI JavaScript 与 `packages/agent-runtime/resources/pi_sessions.mjs` 放入 Resources。Node 本体不随包，Pi 实例必须保存 Node 22.19+ 的绝对路径。Mac 在空字段尝试发现并校验版本，已有路径不覆盖；也可手动选择。发现只是配置辅助，实际启动不重新猜测 PATH。CLI 入口为 `Contents/Resources/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js`。
+Velune 不分发任何 Agent runtime、Pi SDK 或 CLI。Pi 实例必须配置外部安装的 CLI 与 Node 22.19+ 绝对路径；Mac 在空字段尝试发现，已有路径不覆盖。薄 `pi_sdk.mjs` 从所选 CLI 的真实路径核对对应包名、版本、公开入口和 bin 关联；执行、历史、导入与 OAuth 使用同一安装，不从应用资源或其它实例回退。OAuth 来源保存导入时的安装路径、版本类型与精确 SDK 版本，来源安装缺失或变化须明确重新绑定。`install-pi-runtime.sh` 仅供开发者在忽略的 `target/pi-runtime` 安装隔离外部 Pi 1.0.2，既不是构建前置条件，也不进入应用包。
 
 “会话存储目录”覆盖 Pi 历史文件的默认存储位置，不是会话工作目录。通常留空，Pi 使用运行时目录下 `sessions/` 并按工作目录编码分组；恢复已有会话时保留其文件所在目录。Velune 只投影这份历史，不另建会话数据库。
 
@@ -174,7 +175,7 @@ live 入口 `minimax_manual live text|text-diagnostic|tool SOURCE_COMMIT` 仅供
 
 先构建动态库，并按 [bindings unit](../packages/bindings/README.md) 生成与其匹配的 Python 绑定。提供商配置验收使用 [提供商与模板脚本](../scripts/manual-provider-configuration.py)，传入绝对路径 `--bundle` 和 `--bindings`，验证本机文件 API key 显式读取／编辑／重开、公开描述与日志不含 key、模型 ID／协议／地址编辑、模板快照和 schema 7 hard-cutoff。使用临时 HOME 与合成 key，不读取真实资料。
 
-[安装包首循环脚本](../scripts/manual-pi-native-loop.py) 另传 `--node`，从配置运行时和导入开始，通过实际固定 Pi SDK 完成工具续写、下一轮消息、提供商 key／model ID／地址编辑后实际派发检查。上游为回环合成服务，不涉及真实 Keychain、模型服务或会话。原生 [HTTP 脚本](../scripts/manual-gateway-native.py) 检查 ChatCompletions／Responses JSON、SSE、状态及安全头的保真与取消。所有入口均为显式人工验收，不接入 CI 或自动化测试；实际 GUI／真实提供商由用户验收。
+[安装包首循环脚本](../scripts/manual-pi-native-loop.py) 另传 `--node` 和外部 `--pi`，从配置运行时和导入开始，通过实际固定 Pi SDK 完成工具续写、下一轮消息、提供商 key／model ID／地址编辑后实际派发检查。上游为回环合成服务，不涉及真实 Keychain、模型服务或会话。原生 [HTTP 脚本](../scripts/manual-gateway-native.py) 检查 ChatCompletions／Responses JSON、SSE、状态及安全头的保真与取消。所有入口均为显式人工验收，不接入 CI 或自动化测试；实际 GUI／真实提供商由用户验收。
 
 [多运行时脚本](../scripts/manual-multi-runtime.py) 使用实际 Codex app-server／DeepSeek ACP 与回环合成上游，检查创建、发送、原生历史投影、恢复、同 API ID 跨提供商选择及版本拒绝保留活动连接。除 `--bundle`／`--bindings` 外，传入绝对路径 `--node`、`--codex`、`--dsh`（DSH 包的 `lib/bin.js`）。所有 HOME、运行时目录与工作目录均为临时目录。
 
@@ -197,7 +198,7 @@ bash scripts/build-macos.sh
 
 ## 会话驱动准备的人工复验
 
-[历史浏览脚本](../scripts/manual-session-browser.py) 使用安装包固定 Pi SDK 生成临时历史，传入绝对 `--bundle`、`--bindings`、`--node`。它核对没有提供商或工作目录已消失时仍能列出和阅读、选择模型不启动执行、准备失败保留内容与选择、外部路径拒绝和单实例读取失败隔离。脚本不读取真实会话，不请求真实模型，不加入 CI。
+[历史浏览脚本](../scripts/manual-session-browser.py) 使用外部固定 Pi SDK 生成临时历史，传入绝对 `--bundle`、`--bindings`、`--node`、`--pi`。它核对没有提供商或工作目录已消失时仍能列出和阅读、选择模型不启动执行、准备失败保留内容与选择、外部路径拒绝和单实例读取失败隔离。脚本不读取真实会话，不请求真实模型，不加入 CI。
 
 模型选择属于当前会话：新建必须选择模型，历史只有 Pi 保存的明确内部引用可恢复；Codex／DSH 无法证明提供商时要求选择。只读历史视图中尚未执行的选择暂存在内存，视图关闭前不写回 Harness；发送准备后由原生适配器处理模型与持久化。修改配置只使执行装配失效，不清空历史或要求手动连接。
 
@@ -205,7 +206,7 @@ bash scripts/build-macos.sh
 
 关联保存在 `VELUNE_HOME/conversation-links.json`（schema 1、Unix权限0600），独立于提供商配置；仅有有序原生引用、截止数量及内容摘要、交接定位，不存正文。逻辑会话沿用首段身份和原生标题，重启从各原生历史恢复。列表来源用于分组及打开，快照 `context_runtime_id` 用于当前查询／取消／回复；摘要管理能力由 application 结合所有关联原生段计算。旧段截止后外部追加不会进入逻辑历史，截止前改写明确报错。当前尾段不可读取时已校验来源仍可看，但不能继续发送或伪造恢复。
 
-[跨 Harness 手工脚本](../scripts/manual-cross-harness.py) 接收绝对 `--bundle`、`--bindings`、`--node`、`--codex`、`--dsh`，使用实际Pi→Codex→DSH→Pi、临时HOME和loopback验证多次接续、单逻辑行、重开消息身份、无重复交接包及截止校验。[失败边界脚本](../scripts/manual-continuation-boundaries.py) 接收绝对 `--bundle`、`--bindings`、`--node`，核对超长／不兼容拒绝、关联原子提交失败保来源、尾段不可读禁止发送、普通配置重置不删关联以及重启不自动重发。生成绑定必须对应该bundle的库；这些入口只用于显式人工验收，不接入CI、不读真实账户或会话、不调用真实服务。
+[跨 Harness 手工脚本](../scripts/manual-cross-harness.py) 接收绝对 `--bundle`、`--bindings`、`--node`、`--pi`、`--codex`、`--dsh`，使用实际Pi→Codex→DSH→Pi、临时HOME和loopback验证多次接续、单逻辑行、重开消息身份、无重复交接包及截止校验。[失败边界脚本](../scripts/manual-continuation-boundaries.py) 接收绝对 `--bundle`、`--bindings`、`--node`、`--pi`，核对超长／不兼容拒绝、关联原子提交失败保来源、尾段不可读禁止发送、普通配置重置不删关联以及重启不自动重发。生成绑定必须对应该bundle的库；这些入口只用于显式人工验收，不接入CI、不读真实账户或会话、不调用真实服务。
 
 ## 公开模型模板目录
 
@@ -233,7 +234,7 @@ Mac 使用 `OSLog.Logger`，subsystem 为 `local.velune`；系统 Console 可按
 
 会话加载时立即选中目标、详情显示进度；加载期间仅暂停其它行选择，菜单和重命名／删除提交可用。管理请求等待当前读取完成后按顺序执行并反馈状态，失败恢复明确的会话与内容关系。已加载与待加载身份独立，旧轮询按 generation 丢弃。实施与验收入口见 [任务](../tasks/session-management/packet.md)。
 
-隔离手工入口为 `scripts/manual-session-management.py`（传入匹配的 `--bundle`、`--bindings`、`--node`、`--codex`）与 `scripts/manual-session-loading.py`（`--bundle`、`--node`，需要同源码 SwiftPM 构建产物，可用 `--swift-build` 指定）。前者在临时 HOME 修改 Pi／Codex 的合成原生历史；后者编译实际 AppStore／Transport，以延迟 helper 驱动真实 UniFFI 读取，验证旧轮询、加载成功和失败恢复。两者不进入 CI，不读取既有会话或调用真实模型。
+隔离手工入口为 `scripts/manual-session-loading.py`（`--bundle`、`--node`、`--pi`，需要同源码 SwiftPM 构建产物，可用 `--swift-build` 指定），以及 `manual-session-browser.py`、`manual-pi-native-loop.py` 和 Codex 原生历史脚本。AppStore 脚本以延迟 helper 驱动真实 UniFFI 读取，验证旧轮询、加载成功／失败恢复、多选与原生标题操作。入口均不进入 CI，不读取既有会话或调用真实模型。旧 session-management 重复入口已删除。
 
 ## 跨运行时会话浏览
 
@@ -245,6 +246,8 @@ Mac 使用 `OSLog.Logger`，subsystem 为 `local.velune`；系统 Console 可按
 
 会话浏览偏好 `conversationBrowserGroupLimit` 在应用配置中保存，默认 20、必须大于零。每个显示分组独立“加载更多”；当前来源仍汇总会话元数据后排序和分组，这不是上游 cursor 分页。macOS 使用原生 ⌘／Shift 列表多选，批量删除逐项修改原运行时会话并报告局部失败。提供商和运行时支持双击编辑；模型添加分别提供新建和独立模板选择 sheet，模板可批量选取并继续添加。
 
-本轮隔离人工检查可运行 `scripts/manual-runtime-discovery.py`（指定临时 bindings、库、资源和 Node），覆盖公开版本发现、未支持版本、显式保存、重复候选以及分组数量持久化；`scripts/manual-messages-native.py` 覆盖原生 Messages 直接消费及网关 HTTP／SSE；`scripts/manual-runtime-messages.py` 覆盖合成来源导入及实际 Pi／DSH 接入。脚本不加入自动测试或 CI，真实服务、会话和视觉体验仍由用户验收。
+本轮隔离人工检查可运行 `scripts/manual-runtime-discovery.py`（指定临时 bindings、库、资源、Node 和外部 Pi CLI），覆盖公开版本发现、未支持版本、显式保存、重复候选以及分组数量持久化；`scripts/manual-messages-native.py` 覆盖原生 Messages 直接消费及网关 HTTP／SSE；`scripts/manual-runtime-messages.py` 覆盖合成来源导入及实际 Pi／DSH 接入。脚本不加入自动测试或 CI，真实服务、会话和视觉体验仍由用户验收。
 
 顶部运行时／模型是纯粹的下一轮 draft；当前快照来源和 core execution owner 独立。公开发送统一为 `send_turn(runtime_id, model_record_key, text)`，旧 `send`／`select_model` 接口已删除。选择本身不准备运行时，历史无模型 marker 也可在发送时指定模型并准备；跨来源发送采用目标原生会话与文本交接，关联文件只保存引用和切换位置；不同 Harness ID 不直接 resume。历史失败日志的 source／execution／next-turn 配置序号分别命名，0表示当前没有实例。
+
+外部 Pi 的安装发现与当前验证范围见 [外部运行时任务](../tasks/external-runtime-and-editing/packet.md)。已知 npm/pnpm literal launcher 只解析字面 CLI，不执行 shell 或继承其环境；无法解析的 wrapper 应手动选择安装包 CLI。公开版本执行失败与已识别但无 adapter 的版本分别显示，不能将坏安装误作不支持版本。

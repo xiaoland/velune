@@ -1,11 +1,11 @@
 // Pi 1.0.2 owns this source's credential store and refresh lock. Only request
 // auth crosses the helper boundary; refresh credentials never leave the SDK.
-import { readFile, stat, realpath } from "node:fs/promises";
-import { dirname, isAbsolute, join } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { stat, realpath } from "node:fs/promises";
+import { isAbsolute } from "node:path";
+import { pathToFileURL } from "node:url";
 import { createInterface } from "node:readline";
 
-const SDK = "@earendil-works/pi-coding-agent";
+import { resolvePiSdk } from "./pi_sdk.mjs";
 const CAPABILITIES = Object.freeze({
   protocol: "responsesV1", endpoint: "https://api.openai.com/v1",
   explicitOutputCap: false, temperature: false, authentication: "subscription",
@@ -16,28 +16,23 @@ function validate(source) {
       typeof source.providerId !== "string" || source.providerId !== "openai") {
     throw new Error("unsupported_source");
   }
-  for (const key of ["authPath", "nodeBinary"]) {
+  for (const key of ["authPath", "nodeBinary", "binary"]) {
     const value = source.settings?.[key];
     if (typeof value !== "string" || !isAbsolute(value) || value.includes("\0")) {
       throw new Error("invalid_source_path");
     }
   }
+  if (typeof source.settings.runtimeTypeId !== "string" || typeof source.settings.sdkVersion !== "string" || !source.settings.sdkVersion) throw new Error("invalid_sdk_source");
 }
 
-export async function createSourceRuntime(source, { resourcesDirectory = dirname(fileURLToPath(import.meta.url)), login = false } = {}) {
+export async function createSourceRuntime(source, { login = false } = {}) {
   validate(source);
+  const installation = resolvePiSdk({binary:source.settings.binary,runtimeTypeId:source.settings.runtimeTypeId,sdkVersion:source.settings.sdkVersion});
   try {
     if (!(await stat(source.settings.authPath)).isFile()) throw new Error("invalid_auth_file");
   } catch (error) { if (!login || error.code !== "ENOENT") throw error; }
-  const packageDirectory = join(resourcesDirectory, "node_modules", SDK);
-  const manifest = JSON.parse(await readFile(join(packageDirectory, "package.json"), "utf8"));
-  const entry = join(packageDirectory, manifest.exports["."].import);
-  if (manifest.version !== "1.0.2") throw new Error("unsupported_sdk_version");
-    const { ModelRuntime } = await import(pathToFileURL(entry).href);
-  // AuthStorage is a public class in the pinned SDK's dist declaration, but is
-  // not re-exported by the package root. This adapter intentionally binds to
-  // that file contract to retain Pi's original refresh/persistence lock.
-  const { AuthStorage } = await import(pathToFileURL(join(packageDirectory, "dist/core/auth-storage.js")).href);
+  const { ModelRuntime } = await installation.importSdk();
+  const { AuthStorage } = await installation.importModule("dist/core/auth-storage.js");
   const store = AuthStorage.create(source.settings.authPath);
   const metadata = await store.list();
   const existing = metadata.find((entry) => entry.providerId === source.providerId);

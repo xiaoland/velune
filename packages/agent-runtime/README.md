@@ -4,7 +4,7 @@
 
 它只依赖 [会话契约](../conversation/README.md)，不依赖 AI 服务、网关、application 或 UniFFI。执行配置与网关注入的临时 token 由 application 显式传入；它不选择上游模型路由、保存应用配置，也不拥有原生界面。
 
-`authentication` 与 `provider_source` 通过本包资源中的固定 Pi SDK helper 执行来源操作，返回非秘密的类型化状态和发现结果。application 负责将结果导入网关及原子提交；application 的提供商私有认证解析器通过固定 `pi_auth.mjs` 委托 OAuth 来源解析与刷新，不读取环境里的默认认证。
+`authentication` 与 `provider_source` 通过本包资源中的薄 Pi helper 执行来源操作，返回非秘密的类型化状态和发现结果。application 负责将结果导入网关及原子提交；application 的提供商私有认证解析器通过固定 `pi_auth.mjs` 委托 OAuth 来源解析与刷新，不读取环境里的默认认证。
 
 执行侧通过 `pi_rpc.mjs` 装配固定 SDK。所选 CLI 必须对应 Pi 1.0.2 安装；原运行时目录继续拥有设置和会话，模型目录与 selection 文件由 application 在独立位置注入。执行侧 ModelRuntime 使用空认证存储及临时网关 token，不读取原 auth 或继承上游 provider 环境密钥。提供商导入仍只读原来源，并排除 Velune 自己生成的网关提供商。来源读取失败通过 `SourceReadError` 保留白名单错误类别、阶段、退出状态和固定中文说明；SDK stderr、错误消息及配置内容不进入日志或界面。unit 只发出 tracing 事件，由消费方装配日志订阅器，RPC 读取线程显式继承其 dispatcher 与 span。
 
@@ -24,7 +24,7 @@ Codex 0.159.3 的 thread/revert 保留稳定 thread ID，同时创建新的 roll
 
 DSH 执行 overlay 禁用 settings、llm-deepseek 与 llm-deepseek-account，并为 llm-pi-ai／ACP 配置网关目录，防止原来源设置覆盖执行路由；不删除原来源配置。CLI 会按上游行为准备其 ACP profile。实例的 CODEX_HOME／DSH_HOME 与会话 cwd 分开；网关注入文件属于 application 的运行时投影目录。
 
-Node 与用户配置的 Codex／DSH 可执行文件是外部依赖。huihua 固定依赖、完整许可证和安装入口见 [runtime-support 声明](runtime-support/THIRD_PARTY_NOTICES.md) 与 [开发说明](../../docs/development.md#原生运行时与历史读取)。仅 Pi SDK 与 huihua 依赖随 Mac 打包，不分发整个 DSH runtime 或 Codex CLI。
+Node 与用户配置的 Pi／Codex／DSH 安装均为外部依赖。huihua 固定依赖、完整许可证和安装入口见 [runtime-support 声明](runtime-support/THIRD_PARTY_NOTICES.md) 与 [开发说明](../../docs/development.md#原生运行时与历史读取)。只随 Mac 分发薄 adapter helpers 与 huihua parser 依赖，不分发任何 Agent runtime 或 Pi SDK。所有 Pi 操作从显式 CLI 解析对应外部安装；OAuth 来源固定安装与版本，缺失或变化不隐式回退。
 
 版本注册表同时声明中立 `RuntimeProtocol` 支持集合。application 将其转换成网关协议描述供界面使用，执行准备也检查同一集合；family 不参与协议资格判断。
 

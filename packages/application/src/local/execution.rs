@@ -100,6 +100,7 @@ impl CoreRuntime {
             .join("runtime-projections")
             .join(format!("{:x}", sha2::Sha256::digest(runtime.id.as_bytes())));
         let config = PiConfig {
+            runtime_type_id: runtime.type_id.clone(),
             binary: setting_path(&runtime, "binary")?,
             node_binary: setting_path_optional(&runtime, "nodeBinary"),
             sdk_helper: setting_path_optional(&runtime, "sdkHelper")
