@@ -31,3 +31,11 @@ DSH 0.2.0-rc.2 launcher --help 和当前 ACP 公共契约均无会话删除／�
 草稿补充后 workspace fmt／check／all targets 与 features strict clippy、no-default bindings strict clippy 全部通过。SwiftPM warnings-as-errors、JS／Python 静态与 diff 检查通过，源码 owner 冻结。空草稿 RPC 改名和删除零请求／无文件，伪造草稿 ID 拒绝；首次 user 自然落盘、SDK.open 与 Velune reopen 同 ID／同原生名称通过。`manual-pi-native-loop.py` 因增加草稿落盘验收为六次 loopback 请求；原来源文件保持，真实服务未调用。
 
 `manual-runtime-interactions.py` 补证执行中／审批中原生管理拒绝且审批不受影响。管理脚本补证删除失败保留当前视图、Codex 原生名称最新条目和空名称清除语义。开发方将对 clean 源码构建并安装，再从安装库复验；当前未宣称新版已交付。
+
+## 最终安装与独立验收
+
+clean 源码 `73dddf0e44924b5b4940c5de243564ea3510cc48` 已 release 构建并安装 `/Applications/Velune.app`，版本仍为 0.1 beta.1、配置 schema 7。已核对来源 commit、clean manifest、全部 helper 资源字节和 strict deep 签名。原应用正常退出，新版未用真实配置启动。
+
+root 从安装实际 Rust dylib 重新生成 Python 绑定，安装包复验 `manual-session-management.py`、`manual-session-loading.py`、`manual-pi-native-loop.py`、`manual-session-browser.py`、`manual-runtime-interactions.py` 全部通过。管理为真实固定 Pi SDK／Codex app-server，零模型请求；Pi 工具续轮及草稿落盘为六次本机 loopback 请求。加载脚本使用 release SwiftPM 对象、实际 AppStore／Transport 与安装库，证明慢装载期间目标选择稳定、旧 poll 不回跳、失败只恢复一次、原消息行身份保留。审批和执行期间修改拒绝、来源外路径与符号链接拒绝、删除失败保留视图均通过。未读取真实凭据、配置或会话，不调用真实模型。
+
+开发方实施、静态检查、构建、安装和隔离验收完成。DSH 当前 ACP adapter 会话管理明确不可用，公开标题服务需要额外装配，删除无已核实公开接口；未以本地隐藏或覆盖冒充完成。原生菜单、加载进度及交互手感由用户进行 GUI 验收。
