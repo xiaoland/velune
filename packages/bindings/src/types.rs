@@ -220,6 +220,8 @@ pub struct BindingRuntimeTypeDescriptor {
     pub id: String,
     pub family_id: String,
     pub version_regex: String,
+    pub can_rename_conversations: bool,
+    pub can_delete_conversations: bool,
     pub supported_protocols: Vec<BindingGatewayProtocol>,
     pub name: String,
     pub fields: Vec<BindingSettingField>,

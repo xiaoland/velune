@@ -94,6 +94,25 @@ pub fn read_pi(
     config: &crate::Config,
     session: Option<&std::path::Path>,
 ) -> Result<serde_json::Value> {
+    execute_pi(config, session, None)
+}
+/// Modify Pi's native source with the fixed SDK; no Velune metadata overlay.
+pub fn manage_pi(
+    config: &crate::Config,
+    session: &std::path::Path,
+    title: Option<&str>,
+) -> Result<()> {
+    let result = execute_pi(config, Some(session), Some(title))?;
+    if result["ok"] != true {
+        return Err(Error::new("Pi 会话修改未确认"));
+    }
+    Ok(())
+}
+fn execute_pi(
+    config: &crate::Config,
+    session: Option<&std::path::Path>,
+    mutation: Option<Option<&str>>,
+) -> Result<serde_json::Value> {
     let node = config
         .node_binary
         .as_ref()
@@ -112,13 +131,24 @@ pub fn read_pi(
         .ok_or_else(|| Error::new("Pi 历史来源目录无效"))?;
     command.arg(helper).arg("--agent-dir").arg(agent_dir);
     if let Some(session) = session {
-        command.arg("--inspect-session").arg(session);
+        command
+            .arg(match mutation {
+                Some(Some(_)) => "--rename-session",
+                Some(None) => "--delete-session",
+                None => "--inspect-session",
+            })
+            .arg(session);
     } else {
         command.arg("--all");
     }
     if let Some(root) = &config.session_dir {
         command.arg("--session-dir").arg(root);
     }
-    let output = bounded_process(command, None, 16 * 1024 * 1024)?;
+    let input = mutation
+        .flatten()
+        .map(|title| serde_json::to_vec(&json!({"title":title})))
+        .transpose()
+        .map_err(|_| Error::new("Pi 会话修改请求无效"))?;
+    let output = bounded_process(command, input, 16 * 1024 * 1024)?;
     serde_json::from_slice(&output).map_err(|_| Error::new("Pi 历史 SDK 格式不匹配"))
 }

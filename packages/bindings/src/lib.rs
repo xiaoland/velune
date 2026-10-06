@@ -247,6 +247,25 @@ impl VeluneApplication {
         })?)
     }
 
+    pub fn rename_conversation(
+        &self,
+        runtime_id: String,
+        conversation_id: String,
+        title: String,
+    ) -> Result<BindingConfigurationSnapshot, BindingError> {
+        convert(self.with("rename_conversation", |application| {
+            application.rename_conversation(runtime_id, conversation_id, title)
+        })?)
+    }
+    pub fn delete_conversation(
+        &self,
+        runtime_id: String,
+        conversation_id: String,
+    ) -> Result<BindingConfigurationSnapshot, BindingError> {
+        convert(self.with("delete_conversation", |application| {
+            application.delete_conversation(runtime_id, conversation_id)
+        })?)
+    }
     pub fn snapshot(&self, runtime_id: String) -> Result<BindingSnapshotResult, BindingError> {
         convert(self.with("snapshot", |application| application.snapshot(runtime_id))?)
     }

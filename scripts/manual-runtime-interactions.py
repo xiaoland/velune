@@ -83,6 +83,10 @@ def main():
                 except b.BindingError: return
                 raise AssertionError('invalid reply succeeded')
             application.send('fixture','approve');approval=pending()
+            active_id = application.snapshot('fixture').snapshot.conversation.id
+            rejected(lambda: application.rename_conversation('fixture', active_id, 'DO_NOT_CHANGE_BUSY'))
+            rejected(lambda: application.delete_conversation('fixture', active_id))
+            assert application.snapshot('fixture').snapshot.pending_interactions[0].id == approval.id
             assert isinstance(approval.kind,b.BindingInteractionKind.APPROVAL)
             assert [o.id for o in approval.kind.options]==['accept','decline']
             rejected(lambda: application.reply_runtime_interaction('fixture',approval.id,b.BindingRuntimeInteractionReply.DECISION(option_id='not-offered')))
@@ -105,7 +109,7 @@ def main():
             application.select_runtime('fixture');application.create_conversation('fixture',str(root/'project'),record);assert application.list().selected_runtime_instance_id=='fixture'
             for path in (root/'home').rglob('*.jsonl'):
                 assert 'SYNTHETIC_PRIVATE_ANSWER' not in path.read_text() and 'SYNTHETIC_KEY' not in path.read_text()
-            print(json.dumps({'acceptance':'PASSED','explicitApprovalAndPrivateAnswer':True,'invalidAndStaleRepliesRejected':True,'cancelUsesAdvertisedDecline':True,'turnCancellation':True,'terminalFailurePreservesPartialAndAllowsNewConversation':True,'realServicesCalled':False},indent=2))
+            print(json.dumps({'acceptance':'PASSED','explicitApprovalAndPrivateAnswer':True,'busySessionMutationsRejected':True,'invalidAndStaleRepliesRejected':True,'cancelUsesAdvertisedDecline':True,'turnCancellation':True,'terminalFailurePreservesPartialAndAllowsNewConversation':True,'realServicesCalled':False},indent=2))
         finally:
             if application is not None: application.shutdown()
             os.environ.clear();os.environ.update(environment)

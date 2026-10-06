@@ -62,7 +62,7 @@ fn runtime_types(resources_directory: &Path) -> Vec<crate::config::RuntimeTypeDe
         if variant.id=="dsh-acp-0.2.0-rc.2" {binary.executable_discovery=Some(crate::conversation::ExecutableDiscovery{command:"dsh".into(),minimum_version:"0.2.0".into()});}
         let mut fields=vec![binary,node.clone(),field("agentDir","运行时目录","directoryPath",true,String::new(),match variant.id {"codex-0.159.3"=>"该实例的 CODEX_HOME；配置与会话根目录，不是任务工作目录。","dsh-acp-0.2.0-rc.2"=>"该实例的 DeepSeek Harness 配置与会话根目录，不是任务工作目录。",_=>"该实例的 Pi 配置与状态根目录，不是任务工作目录。"})];
         if variant.id=="pi-1.0.2" {fields.push(field("sessionDir","会话存储目录","directoryPath",false,String::new(),"覆盖 Pi 默认的会话存储位置；留空采用运行时目录的 sessions，此项不是任务工作目录。"));}
-        crate::config::RuntimeTypeDescriptor{id:variant.id.into(),family_id:variant.family_id.into(),version_regex:variant.version_regex.into(),supported_protocols:GatewayProtocol::runtime_protocols(variant.id).expect("registered runtime adapter"),name:variant.name.into(),fields}
+        crate::config::RuntimeTypeDescriptor{id:variant.id.into(),family_id:variant.family_id.into(),version_regex:variant.version_regex.into(),can_rename_conversations:variant.can_rename_conversations,can_delete_conversations:variant.can_delete_conversations,supported_protocols:GatewayProtocol::runtime_protocols(variant.id).expect("registered runtime adapter"),name:variant.name.into(),fields}
     }).collect()
 }
 
@@ -210,6 +210,8 @@ impl CoreRuntime {
             "selectRuntime" => self.select_runtime_action(request),
             "create" => self.create_conversation(request),
             "open" => self.open_conversation(request),
+            "renameConversation" => self.manage_conversation(request, false),
+            "deleteConversation" => self.manage_conversation(request, true),
             "getSnapshot" => {
                 self.ensure_active(request)?;
                 self.sync_projection()?;

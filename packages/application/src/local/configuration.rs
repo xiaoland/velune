@@ -18,6 +18,16 @@ impl CoreRuntime {
                 }
             }
         }
+        // Active native drafts are legitimate current sessions even before their
+        // runtime writes history. They disappear when that native session closes.
+        if matches!(self.active_state, ActiveState::Pi | ActiveState::Native(_))
+            && let Some(snapshot) = self.current_snapshot()
+            && !conversations
+                .iter()
+                .any(|item| item.id == snapshot.conversation.id)
+        {
+            conversations.push(snapshot.conversation);
+        }
         conversations
             .sort_by_key(|conversation| std::cmp::Reverse(conversation.updated_at_unix_ms));
         Ok(json!({

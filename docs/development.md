@@ -216,3 +216,11 @@ Mac 使用 `OSLog.Logger`，subsystem 为 `local.velune`；系统 Console 可按
 [原生 HTTP 人工脚本](../scripts/manual-gateway-native.py) 使用临时 Rust probe 和合成回环服务，核对 JSON／SSE、HTTP 429、failed／incomplete 保真，以及头前取消、流中取消、在途关闭的关联与日志归因。它复用现有 tracing 依赖，不新增产品依赖或自动测试入口；[多运行时脚本](../scripts/manual-multi-runtime.py) 同时核对实际 bindings 日志的关联与秘密／配置排除。
 
 领域包只发事件，不创建 subscriber。跨线程显式传播 dispatcher 和 span；将来增加 OTLP exporter 时在 bindings 的 layer 装配点扩展，当前没有远端导出、上传功能或 OTLP 配置。采用的库和契约见 [tracing dispatcher](https://docs.rs/tracing/latest/tracing/dispatcher/)、[tracing-appender 保留策略](https://docs.rs/tracing-appender/latest/tracing_appender/rolling/struct.Builder.html) 和 [Apple 日志指导](https://developer.apple.com/documentation/os/generating-log-messages-from-your-code)。
+
+## 会话管理
+
+会话侧栏的上下文菜单提供原生重命名与删除；删除有永久删除确认。能力由所选版本化运行时描述，Pi 1.0.2 和 Codex 0.159.3 已接入，DSH 当前 ACP adapter 尚未接入。管理不要求模型、AI 认证或网关准备，但执行中不可操作。名称与删除结果写运行时来源并重新读取，不维护 Velune 本地覆盖。
+
+会话加载时立即选中目标、详情显示进度；加载期间暂停其它选择，失败恢复原会话与内容。已加载与待加载身份独立，旧轮询按 generation 丢弃。实施与验收入口见 [任务](../tasks/session-management/packet.md)。
+
+隔离手工入口为 `scripts/manual-session-management.py`（传入匹配的 `--bundle`、`--bindings`、`--node`、`--codex`）与 `scripts/manual-session-loading.py`（`--bundle`、`--node`，需要同源码 SwiftPM 构建产物，可用 `--swift-build` 指定）。前者在临时 HOME 修改 Pi／Codex 的合成原生历史；后者编译实际 AppStore／Transport，以延迟 helper 驱动真实 UniFFI 读取，验证旧轮询、加载成功和失败恢复。两者不进入 CI，不读取既有会话或调用真实模型。

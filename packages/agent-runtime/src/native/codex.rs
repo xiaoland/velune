@@ -446,3 +446,22 @@ impl NativeSession {
         self.rpc.respond(&pending.id, &result)
     }
 }
+
+/// Native thread metadata management without model selection or gateway startup.
+pub fn manage_thread(binary: &Path, home: &Path, id: &str, title: Option<&str>) -> Result<()> {
+    crate::version::check_version("codex-0.159.3", binary, None)?;
+    let mut command = Command::new(binary);
+    command.arg("app-server");
+    let mut rpc = rpc::RpcClient::spawn(
+        command,
+        &[("CODEX_HOME".into(), home.to_string_lossy().into_owned())],
+    )?;
+    rpc.request("initialize", &json!({"clientInfo":{"name":"velune","version":"0.1.0-beta.1"},"capabilities":{"experimentalApi":true}}))?;
+    rpc.notify("initialized", &json!({}))?;
+    let result = match title {
+        Some(name) => rpc.request("thread/name/set", &json!({"threadId":id,"name":name})),
+        None => rpc.request("thread/delete", &json!({"threadId":id})),
+    };
+    rpc.shutdown();
+    result.map(|_| ())
+}

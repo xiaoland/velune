@@ -24,7 +24,10 @@ impl CoreRuntime {
         }
         self.list()
     }
-    fn pi_history_config(&self, runtime: &RuntimeInstance) -> Result<PiConfig, RuntimeError> {
+    pub(super) fn pi_history_config(
+        &self,
+        runtime: &RuntimeInstance,
+    ) -> Result<PiConfig, RuntimeError> {
         Ok(PiConfig {
             binary: setting_path(runtime, "binary")?,
             node_binary: Some(setting_path(runtime, "nodeBinary")?),

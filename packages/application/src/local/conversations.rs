@@ -53,6 +53,158 @@ impl CoreRuntime {
         Ok(json!({"snapshot":self.current_snapshot()}))
     }
 
+    pub(super) fn manage_conversation(
+        &mut self,
+        request: &Value,
+        deleting: bool,
+    ) -> Result<Value, RuntimeError> {
+        if self.busy() {
+            return Err(RuntimeError::invalid("请先停止正在执行的任务，再修改会话"));
+        }
+        let runtime_id = request["payload"]["runtimeInstanceID"]
+            .as_str()
+            .ok_or_else(|| RuntimeError::invalid("runtime instance id"))?;
+        let id = request["payload"]["conversationID"]
+            .as_str()
+            .ok_or_else(|| RuntimeError::invalid("conversation id"))?;
+        let runtime = self.runtime_instance(runtime_id)?.clone();
+        let variant = velune_agent_runtime::version::variant(&runtime.type_id)
+            .ok_or_else(|| RuntimeError::invalid("runtime type"))?;
+        if (deleting && !variant.can_delete_conversations)
+            || (!deleting && !variant.can_rename_conversations)
+        {
+            return Err(RuntimeError::invalid(
+                "此运行时适配器尚未接入原生会话重命名与删除接口",
+            ));
+        }
+        let title = if deleting {
+            None
+        } else {
+            Some(
+                request["payload"]["title"]
+                    .as_str()
+                    .map(str::trim)
+                    .filter(|name| !name.is_empty())
+                    .ok_or_else(|| RuntimeError::invalid("会话名称不能为空"))?,
+            )
+        };
+        let native_id = id
+            .strip_prefix(&format!("{runtime_id}:"))
+            .filter(|id| !id.is_empty())
+            .ok_or_else(|| RuntimeError::invalid("conversation id"))?;
+        // Re-resolve within the configured instance before invoking a native mutation.
+        let listed = self
+            .summaries_for(&runtime)?
+            .iter()
+            .any(|summary| summary.id == id);
+        if !listed
+            && runtime.type_id == "pi-1.0.2"
+            && matches!(self.active_state, ActiveState::Pi)
+            && self.selected_runtime_id.as_deref() == Some(runtime_id)
+            && self
+                .current_snapshot()
+                .is_some_and(|snapshot| snapshot.conversation.id == id)
+        {
+            // A newly created Pi SessionManager reserves its native file path but
+            // persists only after the first user/assistant record. Verify fresh
+            // native metadata before granting this exact active draft exception.
+            self.pi
+                .projection
+                .as_mut()
+                .expect("active Pi projection")
+                .invalidate_history();
+            self.sync_projection()?;
+            if self
+                .current_snapshot()
+                .is_some_and(|snapshot| snapshot.conversation.id == id)
+                && std::fs::symlink_metadata(native_id)
+                    .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound)
+            {
+                if deleting {
+                    self.invalidate_execution()?;
+                    self.active_state = ActiveState::Empty;
+                    self.model_record_key = None;
+                } else {
+                    self.pi
+                        .client
+                        .as_mut()
+                        .expect("active Pi client")
+                        .request(
+                            json!({"type":"set_session_name","name":title.expect("rename title")}),
+                        )
+                        .map_err(|_| RuntimeError::invalid("Pi 原生草稿重命名失败，请重试"))?;
+                    self.pi
+                        .projection
+                        .as_mut()
+                        .expect("active Pi projection")
+                        .invalidate_history();
+                    self.sync_projection()?;
+                    if !self.current_snapshot().is_some_and(|snapshot| {
+                        snapshot.conversation.id == id
+                            && snapshot.conversation.title.display_text()
+                                == title.expect("rename title")
+                    }) {
+                        return Err(RuntimeError::invalid("Pi 未确认原生草稿名称，请重试"));
+                    }
+                }
+                return self.list();
+            }
+        }
+        if !listed {
+            return Err(RuntimeError::invalid("此会话不属于所选运行时历史目录"));
+        }
+        let current = self
+            .current_snapshot()
+            .is_some_and(|snapshot| snapshot.conversation.id == id);
+        if current {
+            self.invalidate_execution()?;
+        }
+        if runtime.type_id == "pi-1.0.2" {
+            history::manage_pi(
+                &self.pi_history_config(&runtime)?,
+                Path::new(native_id),
+                title,
+            )
+            .map_err(|_| {
+                RuntimeError::invalid("Pi 原生会话修改失败；请检查来源目录与文件权限后重试")
+            })?;
+        } else {
+            velune_agent_runtime::native::manage_thread(
+                &setting_path(&runtime, "binary")?,
+                &setting_path(&runtime, "agentDir")?,
+                native_id,
+                title,
+            )
+            .map_err(|_| {
+                RuntimeError::invalid("Codex 原生会话修改失败；请检查运行时版本与目录后重试")
+            })?;
+        }
+        let summaries = self.summaries_for(&runtime)?;
+        if deleting {
+            if summaries.iter().any(|summary| summary.id == id) {
+                return Err(RuntimeError::invalid(
+                    "运行时尚未确认会话删除，请刷新后重试",
+                ));
+            }
+            if current {
+                self.active_state = ActiveState::Empty;
+                self.model_record_key = None;
+            }
+        } else {
+            let summary = summaries
+                .into_iter()
+                .find(|summary| {
+                    summary.id == id && summary.title.display_text() == title.expect("rename title")
+                })
+                .ok_or_else(|| RuntimeError::invalid("运行时尚未确认会话重命名，请刷新后重试"))?;
+            if current && let ActiveState::History(snapshot) = &mut self.active_state {
+                snapshot.conversation = summary;
+                snapshot.revision = snapshot.revision.saturating_add(1);
+            }
+        }
+        self.list()
+    }
+
     pub(super) fn send_action(&mut self, request: &Value) -> Result<Value, RuntimeError> {
         self.ensure_active(request)?;
         if self.busy() {

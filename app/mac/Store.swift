@@ -7,6 +7,7 @@ import VeluneBindings
 final class AppStore: ObservableObject {
     @Published private(set) var conversations: [Conversation] = []
     @Published private(set) var selectedConversationID: String?
+    @Published private(set) var pendingConversationID: String?
     @Published private(set) var selectedRuntimeID: String?
     let transcript = TranscriptModel()
     @Published private(set) var historyFailures: [HistoryFailure] = []
@@ -50,6 +51,7 @@ final class AppStore: ObservableObject {
     }
     var models: [ModelChoice] { gateway.providers.flatMap { provider in provider.models.map { ModelChoice(recordKey: $0.recordKey, displayName: "\($0.displayName) · \(provider.name)", protocolID: provider.protocolID) } } }
     var providers: [AIProvider] { gateway.providers }
+    var loadedConversationID: String? { snapshot?.conversation.id }
     var selectedConversationTitle: String? { conversations.first { $0.id == selectedConversationID }?.title }
     var isGenerating: Bool { snapshot?.runState == .running || snapshot?.runState == .stopping }
     var isBusy: Bool { isLoading || isGenerating || isShuttingDown || authenticationRunning }
@@ -113,8 +115,58 @@ final class AppStore: ObservableObject {
         guard !isLoading, !isGenerating, let conversation = conversations.first(where: { $0.id == id }) else { return }
         if isPreview { selectedRuntimeID = conversation.runtimeID; apply(previewSnapshots[id]); return }
         guard let transport else { error = "本地核心未配置"; return }
-        enqueue({ try transport.openConversation(runtimeID: conversation.runtimeID, conversationID: id) }) { [weak self] in
-            self?.resetProjection(); self?.selectedRuntimeID = conversation.runtimeID; self?.applySnapshotResult($0)
+        // The sidebar reflects user intent immediately. The old loaded transcript
+        // is retained until success, but hidden while this destination is loading.
+        let previousSelection = snapshot?.conversation.id
+        generation += 1 // Invalidate any poll already queued for the old conversation.
+        selectedConversationID = id
+        pendingConversationID = id
+        enqueue({ try transport.openConversation(runtimeID: conversation.runtimeID, conversationID: id) }, onFailure: { [weak self] _ in
+            self?.pendingConversationID = nil
+            self?.selectedConversationID = previousSelection
+        }) { [weak self] in
+            self?.applySnapshotResult($0)
+            self?.pendingConversationID = nil
+        }
+    }
+    func canRenameConversation(_ conversation: Conversation) -> Bool {
+        runtimeTypes.first { $0.id == runtimeInstances.first(where: { $0.id == conversation.runtimeID })?.typeID }?.canRenameConversations == true
+    }
+    func canDeleteConversation(_ conversation: Conversation) -> Bool {
+        runtimeTypes.first { $0.id == runtimeInstances.first(where: { $0.id == conversation.runtimeID })?.typeID }?.canDeleteConversations == true
+    }
+    func renameConversation(_ conversation: Conversation, title: String, onRenamed: @escaping () -> Void) {
+        guard !isBusy, canRenameConversation(conversation) else { return }
+        let name = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { error = "会话名称不能为空"; return }
+        if isPreview {
+            if let index = conversations.firstIndex(where: { $0.id == conversation.id }) { conversations[index].title = name }
+            previewSnapshots[conversation.id]?.conversation.title = name
+            if snapshot?.conversation.id == conversation.id { snapshot?.conversation.title = name }
+            onRenamed(); return
+        }
+        guard let transport else { error = "本地核心未配置"; return }
+        generation += 1
+        enqueue({ try transport.renameConversation(runtimeID: conversation.runtimeID, conversationID: conversation.id, title: name) }) { [weak self] data in
+            guard let self else { return }
+            applyList(data)
+            if snapshot?.conversation.id == conversation.id, let renamed = conversations.first(where: { $0.id == conversation.id }) { snapshot?.conversation = renamed }
+            onRenamed()
+        }
+    }
+    func deleteConversation(_ conversation: Conversation) {
+        guard !isBusy, canDeleteConversation(conversation) else { return }
+        if isPreview {
+            conversations.removeAll { $0.id == conversation.id }; previewSnapshots.removeValue(forKey: conversation.id)
+            if loadedConversationID == conversation.id { resetProjection() }
+            return
+        }
+        guard let transport else { error = "本地核心未配置"; return }
+        generation += 1
+        enqueue({ try transport.deleteConversation(runtimeID: conversation.runtimeID, conversationID: conversation.id) }) { [weak self] data in
+            guard let self else { return }
+            applyList(data)
+            if loadedConversationID == conversation.id { resetProjection() }
         }
     }
     func createConversation() { showsNewConversation = true }
@@ -297,7 +349,7 @@ final class AppStore: ObservableObject {
             } else if selectedRuntimeID == nil { resetProjection() }
         }
     }
-    private func resetProjection() { generation += 1; snapshot = nil; selectedConversationID = nil; transcript.reset(); activity = nil }
+    private func resetProjection() { generation += 1; snapshot = nil; selectedConversationID = nil; pendingConversationID = nil; transcript.reset(); activity = nil }
     private func applyList(_ data: BindingConfigurationSnapshot) {
         let mapped = BindingMapping.configuration(data)
         conversations = mapped.conversations; historyFailures = mapped.historyFailures
@@ -372,7 +424,7 @@ final class AppStore: ObservableObject {
         gateway = GatewayConfig(providers: [AIProvider(id: "sample-provider", name: "示例 AI 服务", protocolID: .chatCompletionsV1, endpoint: "https://example.invalid/v1", models: [ProviderModel(recordKey: "sample-model", providerModelID: "external-example", nickname: "通用模型", contextWindow: 8192, maxOutputTokens: 4096)])])
         hasGateway = true
         protocols = [ProtocolDescriptor(id: .chatCompletionsV1, name: "OpenAI Chat Completions v1", supported: true), ProtocolDescriptor(id: .responsesV1, name: "OpenAI Responses v1", supported: true), ProtocolDescriptor(id: .messagesV1, name: "Anthropic Messages v1", supported: false)]
-        runtimeTypes = [RuntimeTypeDescriptor(id: "sample-type", familyID: "sample", versionRegex: ".*", supportedProtocols: [.chatCompletionsV1, .responsesV1], name: "示例运行时", fields: [])]
+        runtimeTypes = [RuntimeTypeDescriptor(id: "sample-type", familyID: "sample", versionRegex: ".*", canRenameConversations: true, canDeleteConversations: true, supportedProtocols: [.chatCompletionsV1, .responsesV1], name: "示例运行时", fields: [])]
         runtimeInstances = [RuntimeInstance(id: "sample-instance", name: "示例运行时", typeID: "sample-type", gatewayID: gateway.id, settings: [:]), RuntimeInstance(id: "sample-review", name: "另一个运行时", typeID: "sample-type", gatewayID: gateway.id, settings: [:])]
         selectedRuntimeID = runtimeInstances[0].id
         let topics = ["让设置页更安静", "整理一段代码", "下一步的项目计划"]

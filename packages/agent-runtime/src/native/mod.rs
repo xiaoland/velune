@@ -7,6 +7,7 @@ use std::{
     process::Command,
 };
 mod codex;
+pub use codex::manage_thread;
 mod deepseek;
 pub(crate) mod rpc;
 #[derive(thiserror::Error, Debug)]

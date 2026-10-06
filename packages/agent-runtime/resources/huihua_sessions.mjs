@@ -3,7 +3,9 @@
 // native IDs are resolved by scanning those roots, never by opening caller paths.
 import { codexProvider } from "huihua/providers/codex";
 import { deepseekProvider } from "huihua/providers/deepseek";
-import { isAbsolute } from "node:path";
+import { isAbsolute, join } from "node:path";
+import { createReadStream } from "node:fs";
+import { createInterface } from "node:readline";
 
 class RequestError extends Error {}
 
@@ -72,6 +74,28 @@ function presentationEvents(events, providerId) {
     && !(assistantItems && event.type === "assistant_message" && event.providerMetadata.type === "event_msg"));
 }
 
+/** Codex 0.159.3 persists explicit names outside rollout JSONL. The most
+ * recent native index entry wins; an empty name clears the explicit title.
+ * @param {string} home @returns {Promise<Map<string,string>>} */
+async function codexNames(home) {
+  const names = new Map();
+  const input = createReadStream(join(home, "session_index.jsonl"));
+  const lines = createInterface({input,crlfDelay:Infinity});
+  try {
+    for await (const line of lines) {
+      if (!line.trim()) continue;
+      if (line.length > 1024 * 1024) throw new RequestError("Native title index record is too large");
+      let entry;
+      // The native append-only index reader skips malformed records as well.
+      try { entry = JSON.parse(line); } catch (error) { if (error instanceof SyntaxError) continue; throw error; }
+      if (typeof entry.id === "string" && typeof entry.thread_name === "string") names.set(entry.id,entry.thread_name.trim());
+    }
+  } catch (error) {
+    if (!error || typeof error !== "object" || !("code" in error) || error.code !== "ENOENT") throw error;
+  } finally { lines.close(); input.destroy(); }
+  return names;
+}
+
 async function main() {
   let input = "";
   for await (const chunk of process.stdin) input += chunk;
@@ -86,15 +110,18 @@ async function main() {
   if (roots.some(root => !isAbsolute(root))) throw new RequestError("History roots must be absolute");
   const refs = (await provider.scan({homeDir:home,roots:{[provider.id]:roots}}))
     .filter(ref => ref.metadata.id_origin === "native");
+  const nativeNames = providerId === "codex" ? await codexNames(home) : null;
+  const explicitName = (/** @type {import('huihua').SessionRef} */ ref) => nativeNames ? nativeNames.get(ref.id) : ref.title;
   const summary = (/** @type {import('huihua').SessionRef} */ ref, /** @type {readonly Event[]} */ events = []) => {
+    const name = explicitName(ref)?.trim();
     const first = events.find(event => event.type === "user_message");
     const firstText = first?.type === "user_message" ? first.data.content.filter(block=>block.type === "text").map(block=>block.data).join(" ") : "";
-    return {nativeId:ref.id,title:ref.title?.trim() ? {source:"native",text:ref.title.trim()} : firstText.trim() ? {source:"firstMessage",text:[...firstText.trim().replace(/\s+/g," ")].slice(0,80).join("")} : {source:"untitled"},updatedAtUnixMs:timestamp(ref.updatedAt),cwd:ref.workspace?.path ?? null};
+    return {nativeId:ref.id,title:name ? {source:"native",text:name} : firstText.trim() ? {source:"firstMessage",text:[...firstText.trim().replace(/\s+/g," ")].slice(0,80).join("")} : {source:"untitled"},updatedAtUnixMs:timestamp(ref.updatedAt),cwd:ref.workspace?.path ?? null};
   };
   if (request.operation === "list") {
     const sessions = [];
     for (const ref of refs) {
-      if (ref.title?.trim()) sessions.push(summary(ref));
+      if (explicitName(ref)?.trim()) sessions.push(summary(ref));
       else { const session = await provider.read(ref); sessions.push(summary(session,presentationEvents(session.events,providerId))); }
     }
     return {contractVersion:1,sessions};

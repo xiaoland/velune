@@ -10,6 +10,8 @@ struct VeluneRootView: View {
     @State private var search = ""
     @State private var draft = ""
     @State private var scrollRequest: UInt64 = 0
+    @State private var renameTarget: Conversation?
+    @State private var deleteTarget: Conversation?
     private var conversations: [Conversation] { store.conversations.filter { (store.selectedRuntimeID == nil || $0.runtimeID == store.selectedRuntimeID) && (search.isEmpty || $0.title.localizedCaseInsensitiveContains(search)) } }
     private var selectedRuntime: RuntimeInstance? { store.runtimeInstances.first { $0.id == store.selectedRuntimeID } }
 
@@ -29,6 +31,15 @@ struct VeluneRootView: View {
                             Text(conversation.title).lineLimit(1)
                             if let date = conversation.updatedAtUnixMs { Text(shortDate(date)).font(.caption).foregroundStyle(.secondary) }
                         }.padding(.vertical, 3).tag(conversation.id)
+                        .contextMenu {
+                            Button("重命名…") { renameTarget = conversation }
+                                .disabled(store.isBusy || !store.canRenameConversation(conversation))
+                            Button("删除…", role: .destructive) { deleteTarget = conversation }
+                                .disabled(store.isBusy || !store.canDeleteConversation(conversation))
+                            if !store.canRenameConversation(conversation) || !store.canDeleteConversation(conversation) {
+                                Text("此运行时适配器尚未接入原生会话管理")
+                            }
+                        }
                     }
                 }
             }
@@ -36,13 +47,14 @@ struct VeluneRootView: View {
             .searchable(text: $search, placement: .sidebar, prompt: "搜索会话")
             .navigationTitle("会话")
             .navigationSplitViewColumnWidth(min: 190, ideal: 240, max: 340)
-            .disabled(store.isGenerating)
+            .disabled(store.isGenerating || store.isLoading)
             .toolbar {
                 ToolbarItem { Button(action: { store.createConversation() }) { Label("新建会话", systemImage: "square.and.pencil") }.help("新建会话（⌘ N）").disabled(store.isGenerating || store.isLoading) }
             }
         } detail: {
             VStack(spacing: 0) {
-                if previewEmpty || store.transcript.rows.isEmpty { emptyState.frame(maxWidth: .infinity, maxHeight: .infinity) }
+                if store.pendingConversationID != nil { ProgressView("正在加载会话…").frame(maxWidth: .infinity, maxHeight: .infinity) }
+                else if previewEmpty || store.transcript.rows.isEmpty { emptyState.frame(maxWidth: .infinity, maxHeight: .infinity) }
                 else { transcript }
                 Divider()
                 composer
@@ -51,6 +63,13 @@ struct VeluneRootView: View {
             .toolbar { conversationToolbar }
         }
         .navigationSplitViewStyle(.balanced)
+        .sheet(item: $renameTarget) { ConversationRenameView(store: store, conversation: $0) }
+        .alert("删除会话？", isPresented: Binding(get: { deleteTarget != nil }, set: { if !$0 { deleteTarget = nil } })) {
+            Button("取消", role: .cancel) { deleteTarget = nil }
+            Button("删除", role: .destructive) { if let target = deleteTarget { store.deleteConversation(target) }; deleteTarget = nil }
+        } message: {
+            Text("将从 Agent 运行时永久删除“\(deleteTarget?.title ?? "")”及其会话数据。此操作无法撤销。")
+        }
         .sheet(isPresented: $store.showsNewConversation) { NewConversationView(store: store) }
         .sheet(item: Binding(get: { store.pendingInteractions.first }, set: { _ in })) { RuntimeInteractionView(store: store, interaction: $0) }
         .onReceive(NotificationCenter.default.publisher(for: .veluneSend)) { _ in send() }
@@ -92,7 +111,7 @@ struct VeluneRootView: View {
     }
 
     private var transcript: some View {
-        TranscriptView(model: store.transcript, conversationID: store.selectedConversationID,
+        TranscriptView(model: store.transcript, conversationID: store.loadedConversationID,
                        scrollRequest: scrollRequest, activity: store.activity)
     }
 
@@ -117,6 +136,34 @@ struct VeluneRootView: View {
     private func shortDate(_ unixMs: Int64) -> String {
         Date(timeIntervalSince1970: Double(unixMs) / 1000).formatted(.dateTime.month(.abbreviated).day())
     }
+}
+
+struct ConversationRenameView: View {
+    @ObservedObject var store: AppStore
+    let conversation: Conversation
+    @Environment(\.dismiss) private var dismiss
+    @State private var title: String
+    @FocusState private var titleFocused: Bool
+    init(store: AppStore, conversation: Conversation) {
+        self.store = store; self.conversation = conversation
+        _title = State(initialValue: conversation.title)
+    }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("重命名会话").font(.headline)
+            TextField("会话名称", text: $title).focused($titleFocused).onSubmit(rename)
+                .disabled(store.isLoading)
+            if let error = store.error { Label(error, systemImage: "exclamationmark.triangle").font(.callout).foregroundStyle(.secondary) }
+            HStack {
+                if store.isLoading { ProgressView().controlSize(.small) }
+                Spacer()
+                Button("取消") { dismiss() }.keyboardShortcut(.cancelAction).disabled(store.isLoading)
+                Button("重命名", action: rename).keyboardShortcut(.defaultAction)
+                    .disabled(store.isBusy || title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+        }.padding(20).frame(width: 360).onAppear { titleFocused = true }
+    }
+    private func rename() { store.renameConversation(conversation, title: title) { dismiss() } }
 }
 
 struct ComposerView: View {

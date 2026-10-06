@@ -28,6 +28,8 @@ pub(crate) fn descriptor() -> crate::config::RuntimeTypeDescriptor {
         id: "pi-1.0.2".into(),
         family_id: "pi".into(),
         version_regex: r"^1\.0\.2$".into(),
+        can_rename_conversations: true,
+        can_delete_conversations: true,
         supported_protocols: GatewayProtocol::runtime_protocols("pi-1.0.2")
             .expect("registered Pi adapter"),
         name: "Pi Agent 提供商目录".into(),

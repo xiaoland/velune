@@ -285,6 +285,29 @@ impl Application {
             Some(&runtime_id),
         )
     }
+    pub fn rename_conversation(
+        &mut self,
+        runtime_id: String,
+        conversation_id: String,
+        title: String,
+    ) -> Result<ConfigurationSnapshot, Error> {
+        self.execute(
+            "renameConversation",
+            json!({"conversationID":conversation_id,"title":title}),
+            Some(&runtime_id),
+        )
+    }
+    pub fn delete_conversation(
+        &mut self,
+        runtime_id: String,
+        conversation_id: String,
+    ) -> Result<ConfigurationSnapshot, Error> {
+        self.execute(
+            "deleteConversation",
+            json!({"conversationID":conversation_id}),
+            Some(&runtime_id),
+        )
+    }
     pub fn snapshot(&mut self, runtime_id: String) -> Result<SnapshotResult, Error> {
         self.execute("getSnapshot", json!({}), Some(&runtime_id))
     }

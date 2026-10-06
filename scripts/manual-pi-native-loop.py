@@ -11,6 +11,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import subprocess
 import sys
 import tempfile
 import threading
@@ -163,6 +164,17 @@ def main():
             assert binding.max_output_tokens == candidate.max_output_tokens
             application.upsert_runtime(runtime)
             application.select_runtime(runtime.id)
+            draft = application.create_conversation(runtime.id, str(root / 'project'), binding.record_key).snapshot
+            draft_path = Path(draft.conversation.id.split(':', 1)[1])
+            assert not draft_path.exists() and not captures
+            application.rename_conversation(runtime.id, draft.conversation.id, 'SYNTHETIC_DISCARDED_DRAFT')
+            assert application.snapshot(runtime.id).snapshot.conversation.title == 'SYNTHETIC_DISCARDED_DRAFT'
+            assert not draft_path.exists() and not captures, 'empty rename forced persistence or sampling'
+            try: application.delete_conversation(runtime.id, draft.conversation.id + '.not-native')
+            except bindings.BindingError: pass
+            else: raise AssertionError('unlisted arbitrary draft path accepted')
+            application.delete_conversation(runtime.id, draft.conversation.id)
+            assert application.snapshot(runtime.id).snapshot is None and not draft_path.exists() and not captures
             application.create_conversation(runtime.id, str(root / 'project'), binding.record_key)
             for turn in ('Read the synthetic local file.', 'Continue the synthetic conversation.'):
                 before = len(captures)
@@ -199,6 +211,27 @@ def main():
             assistant_text = [block.text for message in snapshot.messages if message.role == bindings.BindingMessageRole.ASSISTANT
                               for block in message.blocks if isinstance(block, bindings.BindingMessageBlock.TEXT)]
             assert any('SYNTHETIC_ANSWER' in text for text in assistant_text), 'final projection missing'
+            renamed_draft = application.create_conversation(runtime.id, str(root / 'project'), binding.record_key).snapshot
+            renamed_path = Path(renamed_draft.conversation.id.split(':', 1)[1])
+            assert not renamed_path.exists()
+            before_rename = len(captures)
+            application.rename_conversation(runtime.id, renamed_draft.conversation.id, 'SYNTHETIC_PERSISTED_DRAFT_TITLE')
+            assert not renamed_path.exists() and len(captures) == before_rename
+            application.send(runtime.id, 'Persist the renamed synthetic native draft.')
+            deadline = time.monotonic() + 30
+            while time.monotonic() < deadline:
+                snapshot = application.snapshot(runtime.id).snapshot
+                if snapshot and snapshot.run_state == bindings.BindingRunState.FAILED: raise RuntimeError('renamed draft failed')
+                if snapshot and snapshot.actions.can_send and len(captures) > before_rename: break
+                time.sleep(.05)
+            else: raise RuntimeError('renamed draft did not settle')
+            assert snapshot.conversation.id == renamed_draft.conversation.id
+            assert snapshot.conversation.title == 'SYNTHETIC_PERSISTED_DRAFT_TITLE' and renamed_path.exists()
+            native_saved = json.loads(subprocess.check_output([str(args.node),str(resources / 'pi_sessions.mjs'),
+                '--agent-dir',str(root / 'source'),'--inspect-session',str(renamed_path)],text=True))
+            assert native_saved['name'] == 'SYNTHETIC_PERSISTED_DRAFT_TITLE'
+            reopened_draft = application.open_conversation(runtime.id, renamed_draft.conversation.id).snapshot
+            assert reopened_draft.conversation.title == 'SYNTHETIC_PERSISTED_DRAFT_TITLE'
             preview = application.preview_provider_import('default', source)
             skipped = application.apply_provider_import('default', source, preview.token,
                 [bindings.BindingImportSelection(provider_id=selected.id, candidate_keys=[candidate.candidate_key])], False)
@@ -265,6 +298,8 @@ def main():
                 'dirty': manifest['dirty'], 'uiVersion': manifest['ui_version']},
                 'normalPath': 'configured runtime → import → choose conversation model → automatic prepare → create → send → tool → continuation → next turn',
                 'upstreamRequests': len(captures), 'onlySelectedProviderSaved': True, 'providerOwnedAuthentication': True,
+                'emptyDraftRenameAndDeleteUseNativeSession': True,
+                'renamedDraftPersistsOnFirstMessage': True,
                 'editedKeyIdEndpointUsedUpstream': True,
                 'authenticationReplacementInvalidatesImportPreview': True,
                 'changedSourceInvalidatesImportPreview': True,

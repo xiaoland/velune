@@ -13,6 +13,8 @@ pub struct RuntimeVariant {
     pub family_id: &'static str,
     pub name: &'static str,
     pub version_regex: &'static str,
+    pub can_rename_conversations: bool,
+    pub can_delete_conversations: bool,
     pub supported_protocols: &'static [RuntimeProtocol],
 }
 const VARIANTS: &[RuntimeVariant] = &[
@@ -21,6 +23,8 @@ const VARIANTS: &[RuntimeVariant] = &[
         family_id: "pi",
         name: "Pi Agent 1.0.2",
         version_regex: r"^1\.0\.2$",
+        can_rename_conversations: true,
+        can_delete_conversations: true,
         supported_protocols: &[
             RuntimeProtocol::ChatCompletionsV1,
             RuntimeProtocol::ResponsesV1,
@@ -31,6 +35,8 @@ const VARIANTS: &[RuntimeVariant] = &[
         family_id: "codex",
         name: "Codex 0.159.3",
         version_regex: r"^0\.159\.3$",
+        can_rename_conversations: true,
+        can_delete_conversations: true,
         supported_protocols: &[RuntimeProtocol::ResponsesV1],
     },
     RuntimeVariant {
@@ -38,6 +44,8 @@ const VARIANTS: &[RuntimeVariant] = &[
         family_id: "deepseek-harness",
         name: "DeepSeek Harness 0.2.0-rc.2",
         version_regex: r"^0\.2\.0-rc\.2$",
+        can_rename_conversations: false,
+        can_delete_conversations: false,
         supported_protocols: &[
             RuntimeProtocol::ChatCompletionsV1,
             RuntimeProtocol::ResponsesV1,
