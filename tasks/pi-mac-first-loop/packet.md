@@ -209,3 +209,5 @@ advisor 指出 max_tokens 仍是 OpenAI ChatCompletions 的正式但已弃用字
 2026-10-06 后续验收改进安装到 clean 源码 `5f54a9d`：公开目录模型模板与更多菜单修复已交付，0.1 beta.1／schema 6 不变。初始模型和连接的生命周期复核、当前验证及待选流程归 [体验任务](../runtime-session-experience/packet.md)。
 
 2026-10-06 用户确认会话模型与自动准备后，当前安装基线更新为 clean 源码 `f6b8a3f`，0.1 beta.1／schema 7。运行时初始模型和手动连接已删除，已有历史独立读取，新建／发送按需准备；旧普通应用配置按 hard-cutoff 重置，原 Harness 配置和会话保留。当前实施和安装包隔离验收归 [体验任务](../runtime-session-experience/packet.md)，不继续沿用上一轮待选流程或 schema 6 为当前基线。
+
+2026-10-06 会话展示改造已安装到 clean 源码 `653e11a`，0.1 beta.1／schema 7 不变。内部 conversation 权威类型与 Mac 展示行分离，标题、时间、工具语义、Markdown、底部跟随及长列表缓存已实施；安装包隔离验收与未完成的视觉验收边界归 [展示任务](../conversation-presentation/packet.md)。

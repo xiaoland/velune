@@ -39,3 +39,13 @@ Codex actual loopback发现 huihua 将 response_item 初始化模型上下文映
 `manual-pi-session-resync.py` 以固定 SDK 验证 same-ID／same-count 分支、显式名称恰好为占位文字、新 session 与 cwd、handled slash 不伪造用户消息、idle 不重载，零 upstream。metadata 已改由公开 ctx.ui.setStatus 的专属键传输，直接 stdout 会被 SDK 捕获；adapter 消费该状态，不将它暴露为业务通知或持久化记录。`manual-pi-native-loop.py` 五合成请求与 `manual-multi-runtime.py` Codex／DSH 五合成请求通过新建、打开、准备、继续的标题一致性及工具／推理；审批／取消／终态失败恢复仍通过。
 
 长列表手工脚本为 `scripts/manual-transcript-presentation.py`，需先构建 SwiftPM 产品，或显式给 `--swift-build`；它测量稳定展示对象与解析缓存，未测屏幕帧率。既有 --preview 合成样例覆盖标题、列表、任务列表、引用、表格、代码、推理与已完成工具，用于无 Transport 的原生预览。当前正在 clean 构建和安装，尚不将 debug 证据当作安装交付。
+
+## 最终安装与验收状态
+
+clean 源码 `653e11ada7f2835c5ba3636356c7e8b7725b8eeb` 已构建并安装 `/Applications/Velune.app`，保持 0.1 beta.1／schema 7，不再次重置本轮有效配置。已核对 manifest 来源与 clean 标记、严格签名、全部当前 helper 字节、Swift 许可证和 Package.resolved 打包字节。只安装 clean 构建，未安装前一次未提交产物。
+
+由安装后的 dylib 生成 Python 绑定，独立浏览与标题来源／Unix 毫秒／Reasoning／Completed 工具输出、原生分支与新会话目录同步、Pi 五请求工具续轮、Codex／DSH 五请求续接与协议切换、审批／取消／终态恢复、提供商配置均通过。合成请求只访问本机 loopback，原来源文件保持，未读取真实配置、凭据或会话。
+
+root 长列表复验 5000 行首次 2500 次解析约 0.172 秒，100 次同内容 apply 约 0.799 秒，末条变化约 0.0069 秒且只一次新增解析；全部行身份保留。这是并行隔离验收期间的缓存测量，不是帧率或性能保证。静态检查和实际 Mac release 构建通过，不新增或运行自动化测试。
+
+仅启动过无 Transport 的 --preview 合成界面；电脑界面检查服务启动失败，没有取得视觉证据，预览已正常退出。开发方必要实施、静态与隔离验收完成；实际原生滚动、气泡、Markdown和布局体验继续由用户验收。
