@@ -116,12 +116,13 @@ import VeluneBindings
         precondition(store.loadedConversationID == ids[1] && store.selectedConversationID == ids[1])
         precondition(selections.allSatisfy { $0 == ids[1] }, "selection bounced during successful load")
         let loadedRows = store.transcript.rows.map(ObjectIdentifier.init)
+        store.clearProblems()
         selections.removeAll()
         store.selectConversation(id: ids[2])
         precondition(store.selectedConversationID == ids[2] && store.pendingConversationID == ids[2])
         wait { !store.isLoading && store.pendingConversationID == nil }
         precondition(store.loadedConversationID == ids[1] && store.selectedConversationID == ids[1])
-        precondition(store.transcript.rows.map(ObjectIdentifier.init) == loadedRows && store.error != nil)
+        precondition(store.transcript.rows.map(ObjectIdentifier.init) == loadedRows && !store.problems.isEmpty)
         precondition(selections == [ids[2],ids[1]], "failed load had unexpected selection transitions")
         func nativePath(_ id: String) -> URL { URL(fileURLWithPath: String(id.split(separator: ":", maxSplits: 1)[1])) }
         func beginHeldLoad(_ id: String) throws {
@@ -160,20 +161,22 @@ import VeluneBindings
         precondition(store.loadedConversationID == ids[0] && !FileManager.default.fileExists(atPath: nativePath(ids[1]).path))
         // Failed loading can still rename the requested source, preserving the
         // explicit loading error and the previously loaded conversation.
+        store.clearProblems()
         try beginHeldLoad(ids[2])
         var renamedAfterFailure = false
         store.renameConversation(conversation(ids[2]), title: "C_RENAMED") { renamedAfterFailure = true }
         try releaseHeldLoad()
-        precondition(renamedAfterFailure && store.loadedConversationID == ids[0] && store.error != nil)
+        precondition(renamedAfterFailure && store.loadedConversationID == ids[0] && !store.problems.isEmpty)
         precondition(conversation(ids[2]).title == "C_RENAMED")
         // A failed native deletion of the pending destination keeps its loaded
         // source and gives an explicit failure, rather than an optimistic removal.
+        store.clearProblems()
         let hardlink = root.appendingPathComponent("deletion-hardlink")
         try FileManager.default.linkItem(at: nativePath(ids[0]), to: hardlink)
         try beginHeldLoad(ids[0])
         store.deleteConversation(conversation(ids[0]))
         try releaseHeldLoad()
-        precondition(store.loadedConversationID == ids[0] && store.selectedConversationID == ids[0] && store.error != nil)
+        precondition(store.loadedConversationID == ids[0] && store.selectedConversationID == ids[0] && !store.problems.isEmpty)
         precondition(FileManager.default.fileExists(atPath: nativePath(ids[0]).path))
         try FileManager.default.removeItem(at: hardlink)
         // A successful deletion of the pending destination completes after its
@@ -190,11 +193,12 @@ import VeluneBindings
         // If opening the destination fails, deleting the old loaded source still
         // clears that exact source without pretending the destination was loaded.
         store.selectConversation(id: ids[0]); wait { !store.isLoading && store.loadedConversationID == ids[0] }
+        store.clearProblems()
         try beginHeldLoad(ids[2])
         store.deleteConversation(conversation(ids[0]))
         try releaseHeldLoad()
         precondition(store.loadedConversationID == nil && !FileManager.default.fileExists(atPath: nativePath(ids[0]).path))
-        precondition(store.error != nil && conversation(ids[2]).title == "C_RENAMED")
+        precondition(!store.problems.isEmpty && conversation(ids[2]).title == "C_RENAMED")
         // A native Set selection can span runtimes without opening its members.
         let otherB = "other:" + ids[1].dropFirst("fixture:".count).replacingOccurrences(of: "/runtime/", with: "/runtime-other/")
         store.selectConversation(id: otherID); wait { !store.isLoading && store.loadedConversationID == otherID }
@@ -225,11 +229,12 @@ import VeluneBindings
         precondition(store.selectedConversationIDs == [otherID, otherB])
         let otherPath = nativePath(otherB), failedLink = root.appendingPathComponent("bulk-failed-link")
         try FileManager.default.linkItem(at: otherPath, to: failedLink)
+        store.clearProblems()
         store.deleteConversations([conversation(otherID), conversation(otherB)])
         wait { !store.isLoading && store.conversationManagementStatus == nil }
         precondition(store.loadedConversationID == nil && !store.conversations.contains { $0.id == otherID })
         precondition(store.conversations.contains { $0.id == otherB } && store.selectedConversationIDs == [otherB])
-        precondition(store.error?.contains("1 个已删除，1 个未删除") == true)
+        precondition(store.problems.contains { $0.source.hasPrefix("删除会话") })
         precondition(FileManager.default.fileExists(atPath: otherPath.path))
         try FileManager.default.removeItem(at: failedLink)
         store.deleteConversations([conversation(otherB), conversation(ids[2])])
@@ -339,11 +344,12 @@ import VeluneBindings
         let protectedTargetLink = root.appendingPathComponent("linked-target-hardlink")
         try FileManager.default.linkItem(at: protectedTarget, to: protectedTargetLink)
         let nextBeforeFailedDelete = reopened.nextTurnRuntimeID
+        reopened.clearProblems()
         reopened.deleteConversation(renamedLinkedConversation)
         wait { !reopened.isLoading && reopened.conversationManagementStatus == nil }
         precondition(!FileManager.default.fileExists(atPath: originalNativeFile.path) && FileManager.default.fileExists(atPath: protectedTarget.path), "partial native delete did not preserve the failed target")
         precondition(reopened.loadedConversationID == nil && !reopened.canSend && reopened.nextTurnRuntimeID == nextBeforeFailedDelete, "partial delete left the obsolete projection sendable")
-        precondition(reopened.error != nil)
+        precondition(!reopened.problems.isEmpty)
         try FileManager.default.removeItem(at: protectedTargetLink)
         precondition(reopened.conversations.contains { $0.id == actualTurnID && $0.canDelete }, "incomplete logical conversation disappeared or cannot be retried")
         reopened.deleteConversation(reopened.conversations.first { $0.id == actualTurnID }!)
@@ -448,7 +454,7 @@ manager.appendSessionInfo(title); console.log(manager.getSessionFile());
         command = ['xcrun','swiftc','-parse-as-library','-swift-version','5','-warnings-as-errors','-I',str(build / 'Modules'),'-I',str(root / 'target/swift-ffi')]
         for path in [root/'.build/checkouts/swift-cmark/src/include/module.modulemap',root/'.build/checkouts/swift-cmark/extensions/include/module.modulemap']:
             command += ['-Xcc','-fmodule-map-file=' + str(path)]
-        command += [str(root / 'app/mac' / name) for name in ['Models.swift','TranscriptModel.swift','Transport.swift','BindingMapping.swift','ConversationBrowser.swift']]
+        command += [str(root / 'app/mac' / name) for name in ['Models.swift','TranscriptModel.swift','Transport.swift','BindingMapping.swift','ConversationBrowser.swift','Problems.swift']]
         command += [str(import_models),str(store),str(main),*objects,'-L',str(args.bundle / 'Contents/Frameworks'),'-lvelune_bindings','-Xlinker','-rpath','-Xlinker',str(args.bundle / 'Contents/Frameworks'),'-o',str(temporary / 'manual')]
         subprocess.run(command,check=True,cwd=root)
         identities = ['fixture:' + paths[name] for name in ['A','B','C','D']]

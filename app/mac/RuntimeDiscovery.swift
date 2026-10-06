@@ -18,7 +18,7 @@ struct RuntimeDiscoveryView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack { Text("快速导入 Agent 运行时").font(.headline); Spacer() }.padding(20)
+            ProblemsSheetHeading(title: "快速导入 Agent 运行时", store: store).padding(20)
             Text("选择已安装的运行时，预览版本与目录后添加配置。提供商与模型可在下一步单独导入。")
                 .font(.callout).foregroundStyle(.secondary).padding(.horizontal, 20).padding(.bottom, 12)
             List(selection: $selectedIDs) {
@@ -32,7 +32,7 @@ struct RuntimeDiscoveryView: View {
                 }
             }.listStyle(.bordered).padding(.horizontal, 20).disabled(discovering || store.isBusy)
             HStack { if discovering { ProgressView().controlSize(.small) }; Text(status).font(.caption).foregroundStyle(.secondary); Spacer() }.padding(.horizontal, 20).padding(.top, 10)
-            SettingsError(message: store.error)
+
             HStack {
                 Button("重新发现") { discover() }.disabled(discovering || store.isBusy)
                 if importedCount > 0 { Button("导入提供商与模型…") { importingProviders = true }.disabled(store.isBusy) }
@@ -54,14 +54,14 @@ struct RuntimeDiscoveryView: View {
         discovering = true; selectedIDs.removeAll(); candidates = []; status = "正在发现运行时…"
         var overrides: [String: String] = [:]
         for key in ["PI_CODING_AGENT_DIR", "CODEX_HOME", "DSH_HOME"] { if let pointer = getenv(key) { overrides[key] = String(cString: pointer) } }
-        store.runtimeDiscoveryHints(userHome: FileManager.default.homeDirectoryForCurrentUser.path, overrides: overrides, onFailure: { discovering = false }) { hints in
+        store.runtimeDiscoveryHints(userHome: FileManager.default.homeDirectoryForCurrentUser.path, overrides: overrides, onFailure: { discovering = false; status = "" }) { hints in
             guard active else { return }
-            guard let node = store.runtimeTypes.flatMap(\.fields).first(where: { $0.key == "nodeBinary" })?.executableDiscovery else { discovering = false; status = "没有可用的 Node 发现配置。"; return }
+            guard let node = store.runtimeTypes.flatMap(\.fields).first(where: { $0.key == "nodeBinary" })?.executableDiscovery else { discovering = false; status = ""; store.recordProblem("没有可用的 Node 发现配置。", source: "发现 Agent 运行时"); return }
             MacExecutableDiscovery.discover(node) { result in
                 guard active else { return }
                 switch result {
                 case .success(let path): gather(hints[...], node: path, probes: [])
-                case .failure(let error): discovering = false; status = error.localizedDescription
+                case .failure(let error): discovering = false; status = ""; store.recordProblem(error, source: "发现 Agent 运行时")
                 }
             }
         }
@@ -73,7 +73,7 @@ struct RuntimeDiscoveryView: View {
             let unique = Dictionary(grouping: probes) { probe in
                 URL(fileURLWithPath: probe.binary).resolvingSymlinksInPath().path + "\0" + URL(fileURLWithPath: probe.agentDirectory).resolvingSymlinksInPath().path
             }.values.compactMap(\.first).sorted { $0.binary < $1.binary }
-            store.discoverRuntimes(unique, onFailure: { discovering = false }) { values in
+            store.discoverRuntimes(unique, onFailure: { discovering = false; status = "" }) { values in
                 guard active else { return }
                 candidates = values; discovering = false
                 status = values.isEmpty ? "未发现运行时，可在设置中手动添加。" : "按住 ⌘ 或 Shift 选择多个运行时"

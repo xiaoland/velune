@@ -67,6 +67,9 @@ struct VeluneApp: App {
                     .keyboardShortcut("n")
                     .disabled(store.isGenerating || store.isLoading)
             }
+            CommandGroup(after: .sidebar) {
+                ProblemsMenuItem(store: store)
+            }
             CommandMenu("会话") {
                 Button("发送消息") { NotificationCenter.default.post(name: .veluneSend, object: nil) }
                     .keyboardShortcut(.return, modifiers: .command)
@@ -76,6 +79,9 @@ struct VeluneApp: App {
                     .disabled(!store.canCancel)
             }
         }
+        Window("问题", id: "problems") {
+            ProblemsView(store: store).frame(minWidth: 600, minHeight: 320)
+        }.defaultSize(width: 760, height: 480)
         Settings {
             SettingsView(store: store)
         }

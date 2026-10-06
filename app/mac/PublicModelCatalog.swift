@@ -17,6 +17,7 @@ struct PublicModelCatalogView: View {
             HStack {
                 Text("公开模型目录").font(.headline)
                 Spacer()
+                ProblemsButton(store: store).buttonStyle(.borderless)
                 Link("models.dev", destination: URL(string: "https://models.dev")!)
             }.padding(20)
             Text("选择来源提供商的模型，复制为可编辑模板。目录信息仅供参考；协议、服务地址与能力参数仍需核对提供商文档。")
@@ -47,7 +48,7 @@ struct PublicModelCatalogView: View {
                 Text("来源声明的推理等级：\(levels.joined(separator: "、"))").font(.caption).foregroundStyle(.secondary).padding(.horizontal, 20).padding(.top, 4)
             }
             if addedCount > 0 { Text("已添加 \(addedCount) 个模板").font(.caption).foregroundStyle(.secondary).padding(.top, 8) }
-            SettingsError(message: store.error)
+
             HStack {
                 Button(models.isEmpty ? "拉取目录" : "重新拉取") { fetch() }.disabled(store.isLoading)
                 if store.isLoading { ProgressView().controlSize(.small) }

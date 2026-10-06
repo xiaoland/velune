@@ -228,6 +228,10 @@ Mac 使用 `OSLog.Logger`，subsystem 为 `local.velune`；系统 Console 可按
 
 领域包只发事件，不创建 subscriber。跨线程显式传播 dispatcher 和 span；将来增加 OTLP exporter 时在 bindings 的 layer 装配点扩展，当前没有远端导出、上传功能或 OTLP 配置。采用的库和契约见 [tracing dispatcher](https://docs.rs/tracing/latest/tracing/dispatcher/)、[tracing-appender 保留策略](https://docs.rs/tracing-appender/latest/tracing_appender/rolling/struct.Builder.html) 和 [Apple 日志指导](https://developer.apple.com/documentation/os/generating-log-messages-from-your-code)。
 
+Mac 的“问题”窗口集中显示操作失败与当前读取问题，主界面与设置工具栏提供入口，编辑／导入 sheet 在标题行提供入口；菜单“问题…”与 ⌘⇧M 也可打开。新错误更新数量，不弹窗抢焦点；选择一项可查看并复制已有诊断字段。手动操作记录在当前进程内保留，成功操作不清空，用户可清除；持续会话列表或轮询问题按来源合并，恢复后移除，清除后若仍失败会再次出现。问题记录不是持久日志，不包含原始日志正文。界面不再在会话列表、composer 或设置底部重复展示这些错误，字段校验和业务进度仍在相应位置。
+
+人工复验入口为 [`manual-problems.py`](../scripts/manual-problems.py)，传入绝对路径 `--bundle`、`--swift-build`、`--node`、`--pi`。它编译实际 Mac Store／Transport，使用临时 HOME 和真实 UniFFI，检查结构化失败的保留与消解；读取失败通过隔离 helper 控制，不读取用户原生会话。脚本不接入 CI，UI体验仍由用户验收。
+
 ## 会话管理
 
 会话侧栏的上下文菜单提供原生重命名与删除；删除有永久删除确认。能力由所选版本化运行时描述，Pi 1.0.2 和 Codex 0.159.3 已接入，DSH 当前 ACP adapter 尚未接入。管理不要求模型、AI 认证或网关准备，但执行中不可操作。名称与删除结果写运行时来源并重新读取，不维护 Velune 本地覆盖。

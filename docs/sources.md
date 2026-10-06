@@ -208,3 +208,5 @@ S17 实施授权：用户决定全面切换 UniFFI，并要求现在开始拆分
 2026-10-06 用户将双击进入编辑明确为项目级 UI/UX 范式，要求所有可编辑列表遵循；并禁止应用捆绑任何 Agent runtime，要求排查系统 Pi 的版本发现。产品意图归 PRD，外部安装解析、版本证据和隔离验收归 [本轮 packet](../tasks/external-runtime-and-editing/packet.md)。
 
 2026-10-06 用户授权为跨Harness对话实施ChatCompletions、Responses、Anthropic Messages的全部双向转换，建议参考Magpie／LiteLLM；随后明确全部协议转换采用best-effort而不是fail-closed。用户认可Anthropic必需输出上限缺省使用所选模型配置。当前权威要求归PRD与AI服务设计，证据和实现归 [转换任务](../tasks/llm-protocol-translation/packet.md)。
+
+2026-10-06 用户指出会话列表“历史读取”及 composer／设置底部错误不合理，授权移除并提供类似 VSCode Problems 的集中问题面板，入口由开发方设计。权威产品行为归 PRD，实施和隔离验收归 [问题展示任务](../tasks/problems-surface/packet.md)。

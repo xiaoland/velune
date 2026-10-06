@@ -58,7 +58,6 @@ struct ProviderImportView: View {
     @State private var onlyImportable = false
     @State private var selectedModels: Set<String> = []
     @State private var replaceExisting = false
-    @State private var attemptedOperation = false
 
     private var supportedInstances: [RuntimeInstance] { store.runtimeInstances.filter { instance in store.providerImportTypes.contains { $0.id == instance.typeID } } }
     private var selectedInstance: RuntimeInstance? { supportedInstances.first { $0.id == sourceInstanceID } }
@@ -93,6 +92,7 @@ struct ProviderImportView: View {
                 .disabled(store.isLoading || supportedInstances.isEmpty)
                 Button(preview == nil ? "读取配置" : "重新读取") { readSource() }
                     .disabled(source == nil || store.isLoading)
+                ProblemsButton(store: store).buttonStyle(.borderless)
                 if store.isLoading { ProgressView().controlSize(.small) }
             }
             .padding(16)
@@ -260,7 +260,7 @@ struct ProviderImportView: View {
                         .frame(maxHeight: 80)
                 }.font(.callout)
             }
-            SettingsError(message: attemptedOperation ? store.error : nil)
+
             HStack {
                 if preview != nil {
                     Text("已选 \(selections.count) 个提供商、\(selectedCount) 个模型").foregroundStyle(.secondary)
@@ -278,7 +278,6 @@ struct ProviderImportView: View {
                 Button("取消") { dismiss() }.keyboardShortcut(.cancelAction)
                 Button("导入所选") {
                     guard let preview, let source else { return }
-                    attemptedOperation = true
                     store.applyProviderImport(source, preview: preview, selections: selections, replaceExisting: replaceExisting) { dismiss() }
                 }
                 .keyboardShortcut(.defaultAction)
@@ -312,11 +311,9 @@ struct ProviderImportView: View {
         selectedCandidateKey = nil
         selectedModels = []
         query = ""
-        attemptedOperation = false
     }
     private func readSource() {
         guard let source else { return }
-        attemptedOperation = true
         store.previewProviderImport(source) { value in
             preview = value
             providerID = value.providers.first?.id

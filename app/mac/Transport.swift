@@ -3,6 +3,7 @@ import OSLog
 import VeluneBindings
 
 enum TransportError: LocalizedError {
+    indirect case operation(String, TransportError)
     case unavailable
     case invalidHome
     case incompatibleCore
@@ -12,6 +13,7 @@ enum TransportError: LocalizedError {
 
     var errorDescription: String? {
         switch self {
+        case .operation(_, let cause): return cause.errorDescription
         case .unavailable: return "本地核心无法打开，请检查应用安装和配置目录后重试。"
         case .invalidHome: return "VELUNE_HOME 必须使用绝对目录路径；留空可使用默认目录。"
         case .incompatibleCore: return "应用与内嵌核心版本不匹配，请重新安装完整应用。"
@@ -90,22 +92,22 @@ final class Transport: @unchecked Sendable {
             try application.shutdown()
             self.application = nil
             isClosed = true
-        } catch { logFailure(operation: "shutdown", localCorrelation: nil, error: error); throw map(error) }
+        } catch { logFailure(operation: "shutdown", localCorrelation: nil, error: error); throw TransportError.operation("shutdown", map(error)) }
     }
 
     private func withApplication<T>(_ operation: String, _ body: (VeluneApplication) throws -> T) throws -> T {
         let correlation = UUID().uuidString
         Self.logger.debug("operation=\(operation, privacy: .public) localCorrelation=\(correlation, privacy: .public) started")
         lock.lock(); defer { lock.unlock() }
-        guard !isClosed else { throw TransportError.closed }
+        guard !isClosed else { throw TransportError.operation(operation, .closed) }
         if application == nil {
             let options = BindingOptions(homeDirectory: stateDirectory.path,
                                          resourcesDirectory: resourcesDirectory.path)
             do { application = try VeluneApplication.open(options: options) }
-            catch { logFailure(operation: operation, localCorrelation: correlation, error: error, categoryOverride: "open_failed"); throw map(error) }
+            catch { logFailure(operation: operation, localCorrelation: correlation, error: error, categoryOverride: "open_failed"); throw TransportError.operation(operation, map(error)) }
         }
         do { return try body(application!) }
-        catch { logFailure(operation: operation, localCorrelation: correlation, error: error); throw map(error) }
+        catch { logFailure(operation: operation, localCorrelation: correlation, error: error); throw TransportError.operation(operation, map(error)) }
     }
 
     private func map(_ error: Error) -> TransportError {

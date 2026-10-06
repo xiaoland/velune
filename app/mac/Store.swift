@@ -15,7 +15,6 @@ final class AppStore: ObservableObject {
     @Published private(set) var nextTurnRuntimeID: String?
     @Published private(set) var nextTurnModelRecordKey: String?
     let transcript = TranscriptModel()
-    @Published private(set) var historyFailures: [HistoryFailure] = []
     @Published var showsNewConversation = false
     @Published private(set) var gateway = GatewayConfig()
     @Published private(set) var runtimeInstances: [RuntimeInstance] = []
@@ -31,7 +30,7 @@ final class AppStore: ObservableObject {
     @Published private(set) var isLoading = false
     @Published private(set) var isShuttingDown = false
     @Published private(set) var activity: String?
-    @Published private(set) var error: String?
+    @Published private(set) var problems: [AppProblem] = []
     @Published private var snapshot: ConversationSnapshot?
 
     private let transport: Transport?
@@ -52,7 +51,7 @@ final class AppStore: ObservableObject {
         else if let transport { self.transport = transport }
         else {
             do { self.transport = try Transport.applicationDefault() }
-            catch { self.transport = nil; self.error = error.localizedDescription }
+            catch { self.transport = nil; self.recordProblem(error, source: "初始化") }
         }
         if preview { seedPreview() }
     }
@@ -104,7 +103,7 @@ final class AppStore: ObservableObject {
                     self.generation += 1
                     completion(true)
                 case .failure(let failure):
-                    self.error = failure.localizedDescription
+                    self.recordProblem(failure)
                     self.schedulePolling()
                     completion(false)
                 }
@@ -126,10 +125,14 @@ final class AppStore: ObservableObject {
             if let id = conversations.first?.id { selectConversation(id: id) }
         }
     }
+    func refreshConversations() {
+        guard !isPreview, !isBusy, let transport else { return }
+        enqueue({ try transport.list() }) { [weak self] in self?.applyList($0) }
+    }
     func setConversationBrowserGroupLimit(_ limit: Int) {
-        guard let value = UInt32(exactly: limit), value > 0 else { error = "每组展示数量须为正整数"; return }
+        guard let value = UInt32(exactly: limit), value > 0 else { recordProblem("每组展示数量须为正整数"); return }
         if isPreview { conversationBrowserGroupLimit = limit; return }
-        guard let transport else { error = "本地核心未配置"; return }
+        guard let transport else { recordProblem("本地核心未配置"); return }
         enqueue({ try transport.setConversationBrowserGroupLimit(value) }) { [weak self] result in self?.conversationBrowserGroupLimit = Int(result) }
     }
     func selectConversations(ids: Set<String>) {
@@ -141,7 +144,7 @@ final class AppStore: ObservableObject {
         guard !isLoading, !isGenerating, let conversation = conversations.first(where: { $0.id == id }) else { return }
         selectedConversationIDs = [id]
         if isPreview { projectionRuntimeID = conversation.runtimeID; apply(previewSnapshots[id]); return }
-        guard let transport else { error = "本地核心未配置"; return }
+        guard let transport else { recordProblem("本地核心未配置"); return }
         // The sidebar reflects user intent immediately. The old loaded transcript
         // is retained until success, but hidden while this destination is loading.
         let previousSelection = snapshot?.conversation.id
@@ -184,22 +187,22 @@ final class AppStore: ObservableObject {
         conversation.canDelete
     }
     func renameConversation(_ conversation: Conversation, title: String, onRenamed: @escaping () -> Void) {
-        guard canManageConversations else { error = "请等待正在进行的操作结束，再修改会话"; return }
-        guard canRenameConversation(conversation) else { error = "此会话的原生标题当前无法修改"; return }
+        guard canManageConversations else { recordProblem("请等待正在进行的操作结束，再修改会话"); return }
+        guard canRenameConversation(conversation) else { recordProblem("此会话的原生标题当前无法修改"); return }
         let name = title.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !name.isEmpty else { error = "会话名称不能为空"; return }
+        guard !name.isEmpty else { recordProblem("会话名称不能为空"); return }
         if isPreview {
             if let index = conversations.firstIndex(where: { $0.id == conversation.id }) { conversations[index].title = name }
             previewSnapshots[conversation.id]?.conversation.title = name
             if snapshot?.conversation.id == conversation.id { snapshot?.conversation.title = name }
             onRenamed(); return
         }
-        guard let transport else { error = "本地核心未配置"; return }
+        guard let transport else { recordProblem("本地核心未配置"); return }
         scheduleConversationManagement("重命名“\(conversation.title)”") { [weak self] in
             guard let self else { return }
             generation += 1
             conversationManagementStatus = "正在重命名“\(conversation.title)”…"
-            enqueue({ try transport.renameConversation(runtimeID: conversation.runtimeID, conversationID: conversation.id, title: name) }, onFailure: { [weak self] _ in self?.finishConversationManagement() }, preserveError: pendingConversationID != nil) { [weak self] data in
+            enqueue({ try transport.renameConversation(runtimeID: conversation.runtimeID, conversationID: conversation.id, title: name) }, onFailure: { [weak self] _ in self?.finishConversationManagement() }) { [weak self] data in
                 guard let self else { return }
                 applyList(data)
                 if snapshot?.conversation.id == conversation.id, let renamed = conversations.first(where: { $0.id == conversation.id }) { snapshot?.conversation = renamed }
@@ -210,8 +213,8 @@ final class AppStore: ObservableObject {
     }
     func deleteConversation(_ conversation: Conversation) { deleteConversations([conversation]) }
     func deleteConversations(_ targets: [Conversation]) {
-        guard canManageConversations else { error = "请等待正在进行的操作结束，再修改会话"; return }
-        guard !targets.isEmpty, targets.allSatisfy(canDeleteConversation) else { error = "所选会话中有原生会话当前无法删除"; return }
+        guard canManageConversations else { recordProblem("请等待正在进行的操作结束，再修改会话"); return }
+        guard !targets.isEmpty, targets.allSatisfy(canDeleteConversation) else { recordProblem("所选会话中有原生会话当前无法删除"); return }
         if isPreview {
             let ids = Set(targets.map(\.id))
             conversations.removeAll { ids.contains($0.id) }; selectedConversationIDs.subtract(ids)
@@ -219,7 +222,7 @@ final class AppStore: ObservableObject {
             if let loadedConversationID, ids.contains(loadedConversationID) { resetProjection() }
             return
         }
-        guard let transport else { error = "本地核心未配置"; return }
+        guard let transport else { recordProblem("本地核心未配置"); return }
         scheduleConversationManagement("删除 \(targets.count) 个会话") { [weak self] in
             guard let self else { return }
             generation += 1
@@ -231,23 +234,23 @@ final class AppStore: ObservableObject {
             enqueue({
                 var latest: BindingConfigurationSnapshot?
                 var deleted: Set<String> = []
-                var failures: [String] = []
+                var failures: [AppProblem] = []
                 var refreshed: BindingSnapshotResult?
                 var lostContext = false
                 for target in targets {
                     do { latest = try transport.deleteConversation(runtimeID: target.runtimeID, conversationID: target.id); deleted.insert(target.id) }
-                    catch { failures.append("\(target.title)：\(error.localizedDescription)") }
+                    catch { failures.append(AppProblem.failure(error, source: "删除会话 · \(target.title)")) }
                 }
                 if !failures.isEmpty {
                     do { latest = try transport.list() }
-                    catch { failures.append("刷新会话列表失败：\(error.localizedDescription)") }
+                    catch { failures.append(AppProblem.failure(error, source: "刷新会话列表")) }
                     if let contextID, !deleted.contains(loadedID ?? "") {
                         do { refreshed = try transport.snapshot(runtimeID: contextID) }
-                        catch { lostContext = true; failures.append("当前会话详情已不可用：\(error.localizedDescription)") }
+                        catch { lostContext = true; failures.append(AppProblem.failure(error, source: "读取当前会话")) }
                     }
                 }
                 return (latest, deleted, failures, refreshed, lostContext)
-            }, preserveError: pendingConversationID != nil) { [weak self] result in
+            }) { [weak self] result in
                 guard let self else { return }
                 if let data = result.0 { applyList(data) }
                 selectedConversationIDs.subtract(result.1)
@@ -255,7 +258,7 @@ final class AppStore: ObservableObject {
                 else if result.4 { resetProjection() }
                 else if let refreshed = result.3 { applySnapshotResult(refreshed) }
                 finishConversationManagement()
-                if !result.2.isEmpty { error = "\(result.1.count) 个已删除，\(result.2.count) 个未删除：\n" + result.2.joined(separator: "\n") }
+                appendProblems(result.2)
             }
         }
     }
@@ -270,7 +273,7 @@ final class AppStore: ObservableObject {
             apply(ConversationSnapshot(revision: 1, conversation: conversation, contextRuntimeID: runtimeID, modelRecordKey: modelRecordKey, runState: .idle, messages: [], actions: ConversationActions(canSend: true, canCancel: false, canSwitch: true)))
             onCreated(); return
         }
-        guard let transport else { error = "本地核心未配置"; return }
+        guard let transport else { recordProblem("本地核心未配置"); return }
         enqueue({ try transport.createConversation(runtimeID: runtimeID, cwd: cwd, modelRecordKey: modelRecordKey) }) { [weak self] in
             self?.generation += 1; self?.projectionRuntimeID = runtimeID; self?.applySnapshotResult($0); onCreated()
         }
@@ -279,71 +282,71 @@ final class AppStore: ObservableObject {
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         guard canSend, let target = nextTurnRuntimeID, let model = nextTurnModelRecordKey else { return }
         if isPreview { snapshot?.modelRecordKey = model; snapshot?.messages.append(Message(id: UUID().uuidString, role: .user, blocks: [.text(text)])); apply(snapshot); onAccepted?(); return }
-        guard let transport else { error = "本地核心未配置"; return }
+        guard let transport else { recordProblem("本地核心未配置"); return }
         enqueue({ try transport.sendTurn(runtimeID: target, modelRecordKey: model, text: text) }, onAccepted: onAccepted) { [weak self] in self?.applySnapshotResult($0) }
     }
     func cancel() {
         guard canCancel, !isLoading else { return }
         if isPreview { snapshot?.runState = .idle; snapshot?.actions.canCancel = false; apply(snapshot); return }
-        guard let runtimeID = projectionRuntimeID else { error = "请选择运行时实例"; return }
-        guard let transport else { error = "本地核心未配置"; return }
+        guard let runtimeID = projectionRuntimeID else { recordProblem("请选择运行时实例"); return }
+        guard let transport else { recordProblem("本地核心未配置"); return }
         enqueue({ try transport.cancel(runtimeID: runtimeID) }) { [weak self] in self?.applySnapshotResult($0) }
     }
     func saveProvider(_ value: AIProvider, authenticationEdit: AuthenticationEdit, onSaved: (() -> Void)? = nil) {
-        guard !authenticationRunning, !isGenerating else { error = "请先停止当前任务或完成登录"; return }
+        guard !authenticationRunning, !isGenerating else { recordProblem("请先停止当前任务或完成登录"); return }
         if isPreview { var saved = value; if saved.id.isEmpty { saved.id = UUID().uuidString }; for index in saved.models.indices where saved.models[index].recordKey.isEmpty { saved.models[index].recordKey = UUID().uuidString }; gateway.providers.removeAll { $0.id == saved.id }; gateway.providers.append(saved); hasGateway = true; onSaved?(); return }
-        guard let transport else { error = "本地核心未配置"; return }
+        guard let transport else { recordProblem("本地核心未配置"); return }
         enqueue({ try transport.saveProvider(gatewayID: self.gateway.id, provider: value, authenticationEdit: authenticationEdit) }) { [weak self] data in
             self?.applyGatewayUpdate(data); onSaved?()
         }
     }
     func readProviderAPIKey(_ providerID: String, completion: @escaping (String) -> Void) {
-        guard !isPreview, let transport else { error = "预览不会读取 API key"; return }
+        guard !isPreview, let transport else { recordProblem("预览不会读取 API key"); return }
         enqueue({ try transport.readProviderAPIKey(gatewayID: self.gateway.id, providerID: providerID) }, apply: completion)
     }
     func saveTemplate(_ value: ModelTemplate, onSaved: (() -> Void)? = nil) {
         if isPreview { var saved = value; if saved.id.isEmpty { saved.id = UUID().uuidString }; modelTemplates.removeAll { $0.id == saved.id }; modelTemplates.append(saved); onSaved?(); return }
-        guard let transport else { error = "本地核心未配置"; return }
+        guard let transport else { recordProblem("本地核心未配置"); return }
         enqueue({ try transport.saveTemplate(value) }) { [weak self] result in self?.modelTemplates = result.map(BindingMapping.template); onSaved?() }
     }
     func saveTemplates(_ values: [ModelTemplate], onSaved: @escaping (Int) -> Void) {
         guard !values.isEmpty else { return }
         if isPreview { for value in values { saveTemplate(value) }; onSaved(values.count); return }
-        guard let transport else { error = "本地核心未配置"; return }
+        guard let transport else { recordProblem("本地核心未配置"); return }
         enqueue({
             var templates: [BindingModelTemplate]?
             var count = 0
-            var failures: [String] = []
+            var failures: [AppProblem] = []
             for value in values {
                 do { templates = try transport.saveTemplate(value); count += 1 }
-                catch { failures.append("\(value.name)：\(error.localizedDescription)") }
+                catch { failures.append(AppProblem.failure(error, source: "添加模型模板 · \(value.name)")) }
             }
             return (templates, count, failures)
         }) { [weak self] result in
             if let templates = result.0 { self?.modelTemplates = templates.map(BindingMapping.template) }
-            if !result.2.isEmpty { self?.error = "\(result.1) 个已添加，\(result.2.count) 个未添加：\n" + result.2.joined(separator: "\n") }
+            self?.appendProblems(result.2)
             onSaved(result.1)
         }
     }
     func fetchPublicModelCatalog(completion: @escaping ([CatalogModel]) -> Void) {
-        guard !isPreview, let transport else { error = "预览不会访问公开目录"; return }
+        guard !isPreview, let transport else { recordProblem("预览不会访问公开目录"); return }
         enqueue({ try transport.publicModelCatalog() }) { values in
             completion(values.map { CatalogModel(sourceProviderID: $0.sourceProviderId, sourceProviderName: $0.sourceProviderName, modelID: $0.modelId, name: $0.name, contextWindow: $0.contextWindow, maxOutputTokens: $0.maxOutputTokens, reasoningLevels: $0.reasoningLevels) })
         }
     }
     func deleteTemplate(_ id: String) {
         if isPreview { modelTemplates.removeAll { $0.id == id }; return }
-        guard let transport else { error = "本地核心未配置"; return }
+        guard let transport else { recordProblem("本地核心未配置"); return }
         enqueue({ try transport.deleteTemplate(id: id) }) { [weak self] result in self?.modelTemplates = result.map(BindingMapping.template) }
     }
     func previewProviderImport(_ source: ProviderImportSource, completion: @escaping (ProviderImportPreview) -> Void) {
-        guard !isPreview, !isGenerating, !authenticationRunning else { error = "请先停止任务或完成登录，再读取提供商配置"; return }
-        guard let transport else { error = "本地核心未配置"; return }
+        guard !isPreview, !isGenerating, !authenticationRunning else { recordProblem("请先停止任务或完成登录，再读取提供商配置"); return }
+        guard let transport else { recordProblem("本地核心未配置"); return }
         enqueue({ try transport.providerImportPreview(gatewayID: self.gateway.id, source: BindingMapping.bindingImportSource(source)) }) { completion(BindingMapping.importPreview($0).preview) }
     }
     func applyProviderImport(_ source: ProviderImportSource, preview: ProviderImportPreview, selections: [ProviderImportSelection], replaceExisting: Bool, completion: @escaping () -> Void) {
-        guard !isPreview, !isGenerating, !authenticationRunning else { error = "请先停止任务或完成登录，再导入提供商配置"; return }
-        guard let transport else { error = "本地核心未配置"; return }
+        guard !isPreview, !isGenerating, !authenticationRunning else { recordProblem("请先停止任务或完成登录，再导入提供商配置"); return }
+        guard let transport else { recordProblem("本地核心未配置"); return }
         enqueue({ try transport.providerImportApply(gatewayID: self.gateway.id, source: BindingMapping.bindingImportSource(source), previewToken: preview.token, selections: selections.map(BindingMapping.bindingSelection), replaceExisting: replaceExisting) }) { [weak self] data in
                 guard let self else { return }
                 if let saved = data.gateways.first(where: { $0.id == self.gateway.id }) { self.gateway = BindingMapping.gateway(saved); self.hasGateway = true }
@@ -353,9 +356,9 @@ final class AppStore: ObservableObject {
             }
     }
     func startAuthentication(_ providerID: String) {
-        guard !isGenerating else { error = "请先停止当前任务，再开始登录"; return }
-        guard !isPreview else { error = "预览不会启动认证"; return }
-        guard let transport else { error = "本地核心未配置"; return }
+        guard !isGenerating else { recordProblem("请先停止当前任务，再开始登录"); return }
+        guard !isPreview else { recordProblem("预览不会启动认证"); return }
+        guard let transport else { recordProblem("本地核心未配置"); return }
         enqueue({ try transport.authenticationStart(gatewayID: self.gateway.id, providerID: providerID) }) { [weak self] data in
                 guard let self else { return }
                 authenticationPrompt = nil; authenticationNotifications = []; authenticationResult = nil
@@ -363,11 +366,11 @@ final class AppStore: ObservableObject {
             }
     }
     func answerAuthentication(id: String, value: String) {
-        guard let transport else { error = "本地核心未配置"; return }
+        guard let transport else { recordProblem("本地核心未配置"); return }
         enqueue({ try transport.authenticationReply(promptID: id, value: value) }) { [weak self] in self?.authenticationPrompt = nil; self?.applyAuthentication(BindingMapping.authenticationProgress($0)) }
     }
     func cancelAuthentication() {
-        guard let transport else { error = "本地核心未配置"; return }
+        guard let transport else { recordProblem("本地核心未配置"); return }
         enqueue({ try transport.authenticationCancel() }) { [weak self] in self?.applyAuthentication(BindingMapping.authenticationProgress($0)) }
     }
     private func pollAuthentication() {
@@ -379,13 +382,14 @@ final class AppStore: ObservableObject {
                 guard let self else { return }
                 self.authenticationPollPending = false
                 switch result {
-                case .success(let data): self.applyAuthentication(BindingMapping.authenticationProgress(data))
-                case .failure(let failure): self.error = failure.localizedDescription
+                case .success(let data): self.clearActivityProblem("authentication"); self.applyAuthentication(BindingMapping.authenticationProgress(data))
+                case .failure(let failure): self.recordProblem(failure, source: "读取登录进度", activityKey: "authentication")
                 }
             }
         }
     }
     private func applyAuthentication(_ data: AuthenticationData) {
+        if !data.running { clearActivityProblem("authentication") }
         authenticationRunning = data.running
         if let saved = data.gateways?.first(where: { $0.id == gateway.id }) { gateway = saved }
         if data.executionInvalidated == true { refreshAfterExecutionInvalidation() }
@@ -398,13 +402,14 @@ final class AppStore: ObservableObject {
                 } else { authenticationNotifications.append(notification) }
             } else if event.type == "result" {
                 authenticationPrompt = nil
-                authenticationResult = event.ok == true ? "登录完成，认证已保存在原来源。" : event.cancelled == true ? "登录已取消。" : event.error ?? "登录未完成。"
+                authenticationResult = event.ok == true ? "登录完成，认证已保存在原来源。" : event.cancelled == true ? "登录已取消。" : nil
+                if event.ok != true && event.cancelled != true { recordProblem(event.error ?? "登录未完成。", source: "登录") }
             }
         }
     }
     func deleteProvider(id: String) {
         if isPreview { gateway.providers.removeAll { $0.id == id }; return }
-        guard let transport else { error = "本地核心未配置"; return }
+        guard let transport else { recordProblem("本地核心未配置"); return }
         enqueue({ try transport.deleteProvider(gatewayID: self.gateway.id, providerID: id) }) { [weak self] in self?.applyGatewayUpdate($0) }
     }
     private func applyGatewayUpdate(_ data: BindingGatewayUpdate) {
@@ -413,43 +418,43 @@ final class AppStore: ObservableObject {
         if data.executionInvalidated { refreshAfterExecutionInvalidation() }
     }
     func runtimeDiscoveryHints(userHome: String, overrides: [String: String], onFailure: (() -> Void)? = nil, completion: @escaping ([BindingRuntimeDiscoveryHint]) -> Void) {
-        guard let transport else { error = "本地核心未配置"; return }
+        guard let transport else { recordProblem("本地核心未配置"); return }
         enqueue({ try transport.runtimeDiscoveryHints(userHome: userHome, overrides: overrides) }, onFailure: { _ in onFailure?() }, apply: completion)
     }
     func discoverRuntimes(_ probes: [BindingRuntimeDiscoveryProbe], onFailure: (() -> Void)? = nil, completion: @escaping ([BindingRuntimeDiscoveryCandidate]) -> Void) {
-        guard let transport else { error = "本地核心未配置"; return }
+        guard let transport else { recordProblem("本地核心未配置"); return }
         enqueue({ try transport.discoverRuntimes(probes) }, onFailure: { _ in onFailure?() }, apply: completion)
     }
     func importRuntimes(_ candidates: [BindingRuntimeDiscoveryCandidate], completion: @escaping (Set<String>) -> Void) {
-        guard !isBusy, !candidates.isEmpty, candidates.allSatisfy({ $0.supported && !$0.alreadyConfigured }) else { error = "请仅选择可导入且尚未配置的运行时"; return }
-        guard let transport else { error = "本地核心未配置"; return }
+        guard !isBusy, !candidates.isEmpty, candidates.allSatisfy({ $0.supported && !$0.alreadyConfigured }) else { recordProblem("请仅选择可导入且尚未配置的运行时"); return }
+        guard let transport else { recordProblem("本地核心未配置"); return }
         let gatewayID = gateway.id
         enqueue({
             var imported: Set<String> = []
-            var failures: [String] = []
+            var failures: [AppProblem] = []
             for candidate in candidates {
                 var runtime = BindingMapping.runtime(candidate.runtime); runtime.gatewayID = gatewayID
                 do { _ = try transport.upsertRuntime(BindingMapping.bindingRuntime(runtime)); imported.insert(runtime.id) }
-                catch { failures.append("\(runtime.name)：\(error.localizedDescription)") }
+                catch { failures.append(AppProblem.failure(error, source: "导入运行时 · \(runtime.name)")) }
             }
             return (try transport.list(), imported, failures)
         }) { [weak self] result in
             self?.applyList(result.0)
-            if !result.2.isEmpty { self?.error = "\(result.1.count) 个已导入，\(result.2.count) 个未导入：\n" + result.2.joined(separator: "\n") }
+            self?.appendProblems(result.2)
             completion(result.1)
         }
     }
     func saveRuntimeInstance(_ instance: RuntimeInstance, onSaved: (() -> Void)? = nil) {
-        guard !isGenerating else { error = "请先停止当前任务，再修改运行时实例"; return }
+        guard !isGenerating else { recordProblem("请先停止当前任务，再修改运行时实例"); return }
         if isPreview { runtimeInstances.removeAll { $0.id == instance.id }; runtimeInstances.append(instance); if !instance.enabled && projectionRuntimeID == instance.id { resetProjection(); projectionRuntimeID = nil }; onSaved?(); return }
-        guard let transport else { error = "本地核心未配置"; return }
+        guard let transport else { recordProblem("本地核心未配置"); return }
         enqueue({ try transport.upsertRuntime(BindingMapping.bindingRuntime(instance)) }) { [weak self] data in
             guard let self else { return }
             runtimeInstances = data.runtimeInstances.map(BindingMapping.runtime); runtimeTypes = data.runtimeTypes.map(BindingMapping.runtimeType)
             if data.executionInvalidated { refreshAfterExecutionInvalidation() }
             else { enqueue({ try transport.list() }) { [weak self] in self?.applyList($0) } }
             if data.runtimeInstances.contains(where: { $0.id == instance.id }) { onSaved?() }
-            else { error = "核心未返回保存后的运行时实例" }
+            else { recordProblem("核心未返回保存后的运行时实例") }
         }
     }
     func deleteRuntimeInstance(id: String) {
@@ -458,7 +463,7 @@ final class AppStore: ObservableObject {
             if projectionRuntimeID == id { resetProjection(); projectionRuntimeID = nil }
             return
         }
-        guard let transport else { error = "本地核心未配置"; return }
+        guard let transport else { recordProblem("本地核心未配置"); return }
         enqueue({ try transport.deleteRuntime(id: id) }) { [weak self] data in
             self?.runtimeInstances = data.runtimeInstances.map(BindingMapping.runtime); self?.runtimeTypes = data.runtimeTypes.map(BindingMapping.runtimeType)
             if data.executionInvalidated { self?.refreshAfterExecutionInvalidation() }
@@ -469,7 +474,7 @@ final class AppStore: ObservableObject {
         nextTurnModelRecordKey = modelRecordKey
     }
     private func refreshAfterExecutionInvalidation() {
-        guard let transport else { error = "本地核心未配置"; return }
+        guard let transport else { recordProblem("本地核心未配置"); return }
         enqueue({ try transport.list() }) { [weak self] data in
             guard let self else { return }; applyList(data)
             if let runtimeID = snapshot?.contextRuntimeID {
@@ -477,18 +482,42 @@ final class AppStore: ObservableObject {
             } else { resetProjection() }
         }
     }
-    private func resetProjection() { generation += 1; snapshot = nil; projectionRuntimeID = nil; selectedConversationID = nil; pendingConversationID = nil; transcript.reset(); activity = nil }
+    private func resetProjection() { problems.removeAll { $0.activityKey?.hasPrefix("poll:") == true }; generation += 1; snapshot = nil; projectionRuntimeID = nil; selectedConversationID = nil; pendingConversationID = nil; transcript.reset(); activity = nil }
     private func applyList(_ data: BindingConfigurationSnapshot) {
         let mapped = BindingMapping.configuration(data)
         conversationBrowserGroupLimit = Int(data.conversationBrowserGroupLimit)
-        conversations = mapped.conversations; selectedConversationIDs.formIntersection(conversations.map(\.id)); historyFailures = mapped.historyFailures
+        conversations = mapped.conversations; selectedConversationIDs.formIntersection(conversations.map(\.id))
         if let saved = mapped.gateways.first(where: { $0.id == gateway.id }) ?? mapped.gateways.first { gateway = saved; hasGateway = true }
-        runtimeInstances = mapped.runtimes; runtimeTypes = mapped.runtimeTypes
+        runtimeInstances = mapped.runtimes; runtimeTypes = mapped.runtimeTypes; reconcileHistoryProblems(mapped.historyFailures)
         protocols = mapped.protocols
         modelTemplates = mapped.modelTemplates
         providerImportTypes = mapped.importTypes
         if !hasInitializedNextTurnIntent { nextTurnRuntimeID = mapped.selectedRuntimeID }
         reconcileNextTurnIntent()
+    }
+    func recordProblem(_ error: Error, source: String = "操作", activityKey: String? = nil) {
+        let value = AppProblem.failure(error, source: source, activityKey: activityKey)
+        if let activityKey, problems.contains(where: { $0.activityKey == activityKey && $0.detail == value.detail && $0.code == value.code && $0.phase == value.phase }) { return }
+        if let activityKey { problems.removeAll { $0.activityKey == activityKey } }
+        appendProblems([value])
+    }
+    func recordProblem(_ message: String, source: String = "操作") { recordProblem(TransportError.rejected(message), source: source) }
+    private func appendProblems(_ values: [AppProblem]) {
+        problems.append(contentsOf: values)
+        if problems.count > 100 { problems.removeFirst(problems.count - 100) }
+    }
+    private func clearActivityProblem(_ key: String) { problems.removeAll { $0.activityKey == key } }
+    func clearProblem(_ id: UUID) { problems.removeAll { $0.id == id } }
+    func clearProblems() { problems.removeAll() }
+    private func reconcileHistoryProblems(_ failures: [HistoryFailure]) {
+        let keys = Set(failures.map { "history:" + $0.runtimeID })
+        problems.removeAll { $0.activityKey?.hasPrefix("history:") == true && !keys.contains($0.activityKey ?? "") }
+        for failure in failures {
+            let key = "history:" + failure.runtimeID
+            if problems.contains(where: { $0.activityKey == key && $0.detail == failure.detail }) { continue }
+            problems.removeAll { $0.activityKey == key }
+            appendProblems([AppProblem(id: UUID(), occurredAt: Date(), source: "会话列表 · " + (runtimeInstances.first { $0.id == failure.runtimeID }?.name ?? failure.runtimeID), detail: failure.detail, kind: "history", code: nil, phase: nil, operationID: nil, activityKey: key)])
+        }
     }
     private func reconcileNextTurnIntent() {
         if !hasInitializedNextTurnIntent {
@@ -501,6 +530,7 @@ final class AppStore: ObservableObject {
     }
     private func apply(_ value: ConversationSnapshot?, preserveSelection: Bool = false) {
         guard let value else { return }
+        problems.removeAll { $0.activityKey?.hasPrefix("poll:") == true && $0.activityKey != "poll:" + value.contextRuntimeID }
         snapshot = value; projectionRuntimeID = value.contextRuntimeID; selectedConversationID = value.conversation.id; if !preserveSelection && selectedConversationIDs.count <= 1 { selectedConversationIDs = [value.conversation.id] }; transcript.apply(value.messages)
         if let index = conversations.firstIndex(where: { $0.id == value.conversation.id }) { if conversations[index] != value.conversation { conversations[index] = value.conversation } }
         else { conversations.insert(value.conversation, at: 0) }
@@ -527,18 +557,17 @@ final class AppStore: ObservableObject {
                 self.pollPending = false
                 guard self.generation == revision, self.selectedConversationID == selected else { return }
                 switch result {
-                case .success(let data): self.applySnapshotResult(data, unchangedPoll: true)
-                case .failure(let failure): self.error = failure.localizedDescription
+                case .success(let data): self.clearActivityProblem("poll:" + runtimeID); self.applySnapshotResult(data, unchangedPoll: true)
+                case .failure(let failure): self.recordProblem(failure, source: "读取会话", activityKey: "poll:" + runtimeID)
                 }
             }
         }
     }
-    private func enqueue<T: Sendable>(_ operation: @escaping () throws -> T, onAccepted: (() -> Void)? = nil, onFailure: ((Error) -> Void)? = nil, preserveError: Bool = false, apply: @escaping (T) -> Void) {
-        guard !isLoading, !isShuttingDown else { error = "请等待当前操作完成后重试"; return }
-        guard transport != nil else { error = "本地核心未配置"; return }
+    private func enqueue<T: Sendable>(_ operation: @escaping () throws -> T, onAccepted: (() -> Void)? = nil, onFailure: ((Error) -> Void)? = nil, apply: @escaping (T) -> Void) {
+        guard !isLoading, !isShuttingDown else { recordProblem("请等待当前操作完成后重试"); return }
+        guard transport != nil else { recordProblem("本地核心未配置"); return }
         let revision = generation
         isLoading = true
-        if !preserveError { error = nil }
         queue.async { [weak self] in
             let result = Result { try operation() }
             DispatchQueue.main.async {
@@ -547,7 +576,7 @@ final class AppStore: ObservableObject {
                 guard revision == self.generation else { return }
                 switch result {
                 case .success(let value): onAccepted?(); apply(value)
-                case .failure(let failure): self.error = failure.localizedDescription; onFailure?(failure)
+                case .failure(let failure): self.recordProblem(failure); onFailure?(failure)
                 }
             }
         }

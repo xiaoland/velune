@@ -19,13 +19,6 @@ struct VeluneRootView: View {
     var body: some View {
         NavigationSplitView {
             List(selection: Binding(get: { store.selectedConversationIDs }, set: { store.selectConversations(ids: $0) })) {
-                if !store.historyFailures.isEmpty {
-                    Section("历史读取") {
-                        ForEach(store.historyFailures, id: \.runtimeID) { failure in
-                            Label { Text("\(store.runtimeInstances.first { $0.id == failure.runtimeID }?.name ?? "运行时")：\(failure.detail)").font(.caption) } icon: { Image(systemName: "exclamationmark.triangle") }
-                        }
-                    }
-                }
                 if conversationSections.isEmpty && !store.isLoading && !store.conversations.isEmpty {
                     Text("没有匹配的会话").foregroundStyle(.secondary)
                     Button("清除筛选") { browser.runtimeID = nil; browser.project = .all; browser.search = "" }
@@ -79,6 +72,8 @@ struct VeluneRootView: View {
         .navigationSplitViewStyle(.balanced)
         .onReceive(store.$conversationBrowserGroupLimit) { browser.initialLimit = $0 }
         .onChange(of: browser.query) { _, _ in browser.resetPagination() }
+
+        .problemsToolbar(store)
         .sheet(item: $renameTarget) { ConversationRenameView(store: store, conversation: $0) }
         .alert(deleteTargets.count == 1 ? "删除会话？" : "删除 \(deleteTargets.count) 个会话？", isPresented: Binding(get: { !deleteTargets.isEmpty }, set: { if !$0 { deleteTargets = [] } })) {
             Button("取消", role: .cancel) { deleteTargets = [] }
@@ -180,9 +175,6 @@ struct VeluneRootView: View {
             if store.needsModelSelection {
                 Text("此会话的模型当前不可用，请选择已配置的模型。").font(.callout).foregroundStyle(.secondary)
             }
-            if let error = store.error {
-                HStack(alignment: .top) { Label(error, systemImage: "exclamationmark.triangle").textSelection(.enabled); Spacer(); SettingsLink { Text("检查运行时设置") } }.font(.callout).foregroundStyle(.secondary)
-            }
             ComposerView(text: $draft, enabled: store.canSend, generating: store.isGenerating, canCancel: store.canCancel, send: send, cancel: store.cancel)
         }.frame(maxWidth: 760).padding(16).frame(maxWidth: .infinity)
     }
@@ -210,11 +202,10 @@ struct ConversationRenameView: View {
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("重命名会话").font(.headline)
+            ProblemsSheetHeading(title: "重命名会话", store: store)
             TextField("会话名称", text: $title).focused($titleFocused).onSubmit(rename)
                 .disabled(store.conversationManagementStatus != nil)
             if let status = store.conversationManagementStatus { Text(status).font(.callout).foregroundStyle(.secondary) }
-            if let error = store.error { Label(error, systemImage: "exclamationmark.triangle").font(.callout).foregroundStyle(.secondary) }
             HStack {
                 if store.conversationManagementStatus != nil { ProgressView().controlSize(.small) }
                 Spacer()
@@ -353,7 +344,7 @@ struct SettingsView: View {
             ProviderSettingsView(store: store).tabItem { Label("AI提供商", systemImage: "network") }
             ConversationSettingsView(store: store).tabItem { Label("会话", systemImage: "bubble.left.and.bubble.right") }
             RuntimeSettingsView(store: store).tabItem { Label("Agent 运行时", systemImage: "terminal") }
-        }.frame(width: 690, height: 560)
+        }.frame(width: 690, height: 560).problemsToolbar(store)
     }
 }
 
@@ -367,15 +358,8 @@ private struct ConversationSettingsView: View {
                 Text("每组按当前排序显示前若干会话，可在列表中加载更多。").font(.caption).foregroundStyle(.secondary)
                 Button("保存") { store.setConversationBrowserGroupLimit(limit) }.disabled(limit < 1 || limit == store.conversationBrowserGroupLimit || store.isBusy)
             }
-            SettingsError(message: store.error)
-        }.formStyle(.grouped).onAppear { limit = store.conversationBrowserGroupLimit }
-    }
-}
 
-struct SettingsError: View {
-    let message: String?
-    var body: some View {
-        if let message { Label(message, systemImage: "exclamationmark.triangle").font(.callout).foregroundStyle(.secondary).textSelection(.enabled).padding(.horizontal, 20).padding(.bottom, 12) }
+        }.formStyle(.grouped).onAppear { limit = store.conversationBrowserGroupLimit }
     }
 }
 
@@ -408,7 +392,7 @@ struct ProviderSettingsView: View {
                 Spacer()
                 Button("编辑…") { editor = store.providers.first { $0.id == selectedID } }.disabled(selectedID == nil)
             }.padding(.horizontal, 20).padding(.vertical, 12)
-            SettingsError(message: store.error)
+
         }
         .sheet(isPresented: $importing) { ProviderImportView(store: store) }
         .sheet(item: $editor) { ProviderEditor(store: store, provider: $0) }
@@ -505,7 +489,7 @@ struct ProviderEditor: View {
     private var valid: Bool { !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && URL(string: endpoint)?.host != nil && models.allSatisfy(\.valid) && (!editingAPIKey || (!apiKey.isEmpty && (originalAPIKey != nil || authentication.method != .apiKey || clearAuthentication))) }
     var body: some View {
         VStack(spacing: 0) {
-            HStack { Text(provider == nil ? "添加 AI 提供商" : "编辑 AI 提供商").font(.headline); Spacer() }.padding(20)
+            ProblemsSheetHeading(title: provider == nil ? "添加 AI 提供商" : "编辑 AI 提供商", store: store).padding(20)
             Divider()
             HSplitView {
                 VStack(spacing: 0) {
@@ -537,7 +521,7 @@ struct ProviderEditor: View {
                 }.formStyle(.grouped).frame(minWidth: 360, maxWidth: .infinity, maxHeight: .infinity)
             }
             Divider()
-            SettingsError(message: store.error).padding(.top, 8)
+
             HStack { Spacer(); Button("取消") { dismiss() }.keyboardShortcut(.cancelAction); Button("保存") { commit() }.keyboardShortcut(.defaultAction).disabled(!valid || store.isBusy) }.padding(16)
         }.frame(width: 650, height: 510)
         .onAppear { name = provider?.name ?? ""; protocolID = provider?.protocolID ?? .chatCompletionsV1; oldProtocol = protocolID; endpoint = provider?.endpoint ?? ""; models = (provider?.models ?? []).map(ProviderModelDraft.init); editingAPIKey = authentication.method == .unconfigured; readAPIKeyIfNeeded() }
@@ -637,7 +621,7 @@ struct ModelTemplatesView: View {
     @State private var catalog = false
     var body: some View {
         VStack(spacing: 0) {
-            HStack { Text("模型模板").font(.headline); Spacer() }.padding(20)
+            ProblemsSheetHeading(title: "模型模板", store: store).padding(20)
             Text("模板用于快速填写模型，修改模板不会改变已配置的模型。").font(.callout).foregroundStyle(.secondary).padding(.horizontal, 20).padding(.bottom, 12)
             List(selection: $selectedID) { ForEach(store.modelTemplates) { template in VStack(alignment: .leading, spacing: 3) { Text(template.name); Text(template.suggestedProviderModelID).font(.caption).foregroundStyle(.secondary) }.tag(template.id) } }
             .contextMenu(forSelectionType: String.self) { ids in
@@ -650,7 +634,7 @@ struct ModelTemplatesView: View {
                 Button("从公开目录添加…") { catalog = true }
                 Spacer(); Button("编辑…") { editor = store.modelTemplates.first { $0.id == selectedID } }.disabled(selectedID == nil); Button("完成") { dismiss() }.keyboardShortcut(.cancelAction)
             }.padding(16)
-            SettingsError(message: store.error)
+
         }.frame(width: 480, height: 380).sheet(item: $editor) { ModelTemplateEditor(store: store, template: $0) }
         .sheet(isPresented: $catalog) { PublicModelCatalogView(store: store) }
     }
@@ -664,8 +648,9 @@ struct ModelTemplateEditor: View {
     @FocusState private var modelIDFocused: Bool
     var body: some View {
         VStack(spacing: 0) {
+            ProblemsSheetHeading(title: "编辑模型模板", store: store).padding(16)
             Form { Section { TextField("模板名称", text: $name) }; ProviderModelFields(draft: $draft, modelIDFocused: $modelIDFocused) }.formStyle(.grouped)
-            SettingsError(message: store.error)
+
             HStack { Spacer(); Button("取消") { dismiss() }.keyboardShortcut(.cancelAction); Button("保存") { let model = draft.definition; store.saveTemplate(ModelTemplate(id: template.id, name: name, suggestedProviderModelID: model.providerModelID, nickname: model.nickname, icon: model.icon, contextWindow: model.contextWindow, maxOutputTokens: model.maxOutputTokens, reasoningLevels: model.reasoningLevels)) { dismiss() } }.keyboardShortcut(.defaultAction).disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !draft.valid || store.isLoading) }.padding(16)
         }.frame(width: 440, height: 400).onAppear { name = template.name; draft = ProviderModelDraft(template.model) }
     }
@@ -696,22 +681,21 @@ struct RuntimeSettingsView: View {
                 Spacer()
                 Button("编辑…") { editor = selected }.disabled(selected == nil)
             }.padding(.horizontal, 20).padding(.vertical, 12)
-            SettingsError(message: store.error)
+
         }
         .sheet(isPresented: $discovering) { RuntimeDiscoveryView(store: store) }
-        .sheet(item: $editor) { instance in RuntimeEditor(instance: instance, types: store.runtimeTypes, gatewayID: store.gateway.id, isSaving: store.isLoading, error: store.error, save: store.saveRuntimeInstance) }
-        .sheet(isPresented: $creating) { RuntimeEditor(instance: nil, types: store.runtimeTypes, gatewayID: store.gateway.id, isSaving: store.isLoading, error: store.error, save: store.saveRuntimeInstance) }
+        .sheet(item: $editor) { instance in RuntimeEditor(store: store, instance: instance) }
+        .sheet(isPresented: $creating) { RuntimeEditor(store: store, instance: nil) }
         .alert("删除运行时实例？", isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } }), presenting: deleting) { instance in Button("删除", role: .destructive) { store.deleteRuntimeInstance(id: instance.id); deleting = nil }; Button("取消", role: .cancel) { deleting = nil } } message: { instance in Text("删除「\(instance.name)」的配置，不删除运行时保存的会话。") }
     }
 }
 
 struct RuntimeEditor: View {
+    @ObservedObject var store: AppStore
     let instance: RuntimeInstance?
-    let types: [RuntimeTypeDescriptor]
-    let gatewayID: String
-    let isSaving: Bool
-    let error: String?
-    let save: (RuntimeInstance, (() -> Void)?) -> Void
+    private var types: [RuntimeTypeDescriptor] { store.runtimeTypes }
+    private var gatewayID: String { store.gateway.id }
+    private var isSaving: Bool { store.isLoading }
     @Environment(\.dismiss) private var dismiss
     @State private var name = ""
     @State private var enabled = true
@@ -732,7 +716,7 @@ struct RuntimeEditor: View {
     }
     var body: some View {
         VStack(spacing: 0) {
-            Text(instance == nil ? "添加Agent 运行时" : "编辑Agent 运行时").font(.headline).frame(maxWidth: .infinity, alignment: .leading).padding(20)
+            ProblemsSheetHeading(title: instance == nil ? "添加Agent 运行时" : "编辑Agent 运行时", store: store).padding(20)
             Form {
                 Section {
                     TextField("实例名称", text: $name)
@@ -750,6 +734,7 @@ struct RuntimeEditor: View {
                                 discoveryAction: discoveryAction(for: field)
                             )
                         }
+                        if let pathValidationMessage { Text(pathValidationMessage).font(.caption).foregroundStyle(.red) }
                         if let executableDiscoveryMessage {
                             Text(executableDiscoveryMessage).font(.caption).foregroundStyle(.secondary)
                         }
@@ -757,8 +742,7 @@ struct RuntimeEditor: View {
                 }
             }.formStyle(.grouped)
             HStack { Spacer(); Button("取消") { dismiss() }.keyboardShortcut(.cancelAction); Button("保存") { commit() }.keyboardShortcut(.defaultAction).disabled(!valid || isSaving) }.padding(20)
-            if let pathValidationMessage { Text(pathValidationMessage).font(.caption).foregroundStyle(.red).padding(.horizontal, 20) }
-            SettingsError(message: error)
+
         }.frame(width: 590, height: 540)
         .onAppear {
             name = instance?.name ?? ""
@@ -801,7 +785,7 @@ struct RuntimeEditor: View {
             switch result {
             case .success(let path):
                 if discoveryValue(for: field).isEmpty { settings[field.key] = path; executableDiscoveryMessage = "已发现：\(path)" }
-            case .failure(let error): executableDiscoveryMessage = error.localizedDescription
+            case .failure(let error): executableDiscoveryMessage = nil; store.recordProblem(error, source: "自动发现可执行文件")
             }
             discoverExecutables(Array(fields.dropFirst()), type: type)
         }
@@ -812,7 +796,7 @@ struct RuntimeEditor: View {
         for field in descriptor.fields {
             values[field.key] = MacPath.normalized(settings[field.key] ?? field.value, field: field)
         }
-        save(RuntimeInstance(enabled: enabled, id: instance?.id ?? draftID, name: name.trimmingCharacters(in: .whitespacesAndNewlines), typeID: typeID, gatewayID: instance?.gatewayID ?? gatewayID, settings: values)) { dismiss() }
+        store.saveRuntimeInstance(RuntimeInstance(enabled: enabled, id: instance?.id ?? draftID, name: name.trimmingCharacters(in: .whitespacesAndNewlines), typeID: typeID, gatewayID: instance?.gatewayID ?? gatewayID, settings: values)) { dismiss() }
     }
 }
 
@@ -869,7 +853,7 @@ struct AuthenticationView: View {
     @State private var answer = ""
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("认证来源登录").font(.headline)
+            ProblemsSheetHeading(title: "认证来源登录", store: store)
             ScrollView {
                 VStack(alignment: .leading, spacing: 12) {
                     ForEach(Array(store.authenticationNotifications.enumerated()), id: \.offset) { _, notice in
@@ -891,7 +875,7 @@ struct AuthenticationView: View {
                     if let result = store.authenticationResult { Text(result) }
                 }.frame(maxWidth: .infinity, alignment: .leading)
             }
-            SettingsError(message: store.error)
+
             HStack {
                 if store.authenticationRunning { ProgressView().controlSize(.small) }
                 Spacer()
@@ -912,11 +896,11 @@ struct RuntimeInteractionView: View {
         VStack(alignment: .leading, spacing: 16) {
             switch interaction.kind {
             case .approval(let title, let detail, let options):
-                Text(title).font(.headline)
+                ProblemsSheetHeading(title: title, store: store)
                 ScrollView { Text(detail).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading) }.frame(maxHeight: 220)
                 HStack { Button("取消请求", role: .cancel) { reply(.cancel) }; Spacer(); ForEach(options) { option in Button(option.label) { reply(.decision(option.id)) } } }.disabled(store.isLoading)
             case .userInput(let questions):
-                Text("运行时需要输入").font(.headline)
+                ProblemsSheetHeading(title: "运行时需要输入", store: store)
                 Form {
                     ForEach(questions) { question in
                         Section {
@@ -929,7 +913,7 @@ struct RuntimeInteractionView: View {
                 }.formStyle(.grouped)
                 HStack { Button("取消请求", role: .cancel) { reply(.cancel) }; Spacer(); Button("提交") { reply(.answers(questions.map { InteractionAnswer(questionID: $0.id, values: [values[$0.id] ?? ""]) })) }.disabled(questions.contains { (values[$0.id] ?? "").isEmpty }) }.disabled(store.isLoading)
             }
-            SettingsError(message: store.error)
+
         }.padding(20).frame(width: 500).frame(minHeight: 180, maxHeight: 480)
         .interactiveDismissDisabled()
         .onChange(of: interaction.id) { _, _ in values = [:] }
@@ -950,7 +934,7 @@ struct NewConversationView: View {
     }
     var body: some View {
         VStack(spacing: 0) {
-            Text("新建会话").font(.headline).frame(maxWidth: .infinity, alignment: .leading).padding(20)
+            ProblemsSheetHeading(title: "新建会话", store: store).padding(20)
             Form {
                 Picker("Agent 运行时", selection: $runtimeID) { ForEach(store.enabledRuntimeInstances) { Text($0.name).tag($0.id) } }
                 Picker("模型", selection: $modelRecordKey) {
@@ -969,7 +953,7 @@ struct NewConversationView: View {
                 }
                 Text("模型与工作目录属于此会话。创建时会自动准备运行时；浏览已有会话不需要执行准备。").font(.caption).foregroundStyle(.secondary)
             }.formStyle(.grouped)
-            SettingsError(message: store.error)
+
             HStack {
                 Spacer(); Button("取消") { dismiss() }.keyboardShortcut(.cancelAction)
                 Button("创建") {
