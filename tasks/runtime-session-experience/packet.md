@@ -49,3 +49,9 @@ advisor 正在收敛单活跃 runner 下的浏览／执行状态与模型恢复�
 源码已完成会话驱动契约：一个 Empty／History／Pi／Native 状态；新建显式模型、已有会话只读打开，首次发送准备，配置修改保留历史并使执行失效。Codex／DSH 原生记录不证明提供商身份，因此历史模型留空；Pi 只恢复有效自定义 recordKey。会话投影 revision 仅在本次投影生命周期内递增，Mac 不用它比较重新准备前后的顺序，而以串行操作、generation 与当前会话阻止过期应用。
 
 隔离实际 SDK 验收通过 Pi 工具及次轮续接、Codex／DSH 同 ID 不同提供商选择、DSH Chat 到 Responses 选模型零请求且下一次发送自动续接、错误版本准备保留旧详情、审批／秘密回答／取消／终态失败后的新建恢复。公开目录拉取和模板重开通过。全 workspace fmt／check／全 targets 与 features strict clippy、no-default bindings strict clippy、全 Mac Swift warnings-as-errors 通过。正在从冻结源码构建并核对最终安装包。
+
+## 会话驱动改造的最终安装证据
+
+2026-10-06 clean 源码 `f6b8a3f080fb427973bf1c11dcec53dc6c9bad3d` 已构建并安装 `/Applications/Velune.app`，0.1 beta.1／schema 7。manifest source 与 clean 标记、严格签名、运行时 helper 和第三方许可资源逐字节核对通过；按安装包动态库重新生成 Python 绑定后，独立浏览、提供商配置 hard-cutoff、Pi 五请求工具／续轮、Codex／DSH 五请求原生历史／续接及 DSH 跨协议自动准备、审批／取消／终态失败恢复全部通过。公开 GET 返回 8389 个来源内模型，模板编辑快照重开与关闭对象拒绝通过。
+
+没有运行自动化测试或真实模型服务，也没有读取真实应用配置、凭据或历史。现有 Velune 已退出并完成安装，没有正常启动新版本去重置用户配置；用户下次启动会按 schema 7 hard-cutoff 初始化普通应用配置。原 Harness 配置与会话不在重置范围。产品 GUI 体验及真实服务商由用户验收，未把类型检查当作视觉验收。必要实施、文档和开发方隔离验收已完成，启用／禁用不属于本轮交付。
