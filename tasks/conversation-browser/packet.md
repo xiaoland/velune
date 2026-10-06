@@ -37,3 +37,11 @@ Codex 0.159.3／DSH 0.2.0-rc.2 实际运行时原生created／updated非空隔�
 实际新建／打开容差验收揭示 huihua0.2 将 Codex session_meta 外层event.timestamp优先作为metadata.creation，它可能是延迟写入时间，payload.timestamp才是原生创建。固定adapter需通过公开system event的payload采用真正session creation，不扩大容差或量化掩盖。验收加入首次turn前延迟作为判别，证明创建值不随写入漂移。DSH new后原生header已flush，现来源adapter读取可取得真实创建值；不引入新的持久格式解析器。
 
 新建时间补修最终冻结：Codex API秒级创建转换／公开session_meta.payload毫秒值使用、DSH已flushheader补齐通过。首turn前1.2秒延迟、new→send→open→continue证明同创建事件不漂移，DSH精确值保持；五次loopback。相关原生管理回归及strict静态全部通过。未量化历史或引入clockfallback，第一次产物不安装，后续clean完整构建作为交付。
+
+## 最终安装与独立验收
+
+完整 clean 源码 `97c8b5b09366501d2fbb75063d0af1547ba9eae3` 已 release 构建并安装 `/Applications/Velune.app`，仍为0.1 beta.1／schema7。第一轮中间构建未安装。已核对来源commit、clean manifest、全部helper当前字节、strict deep签名；原应用正常退出，新版未以真实配置运行。
+
+root从安装Rust dylib重新生成Python绑定，安装包以下手工入口均通过：session-browser（全部启用实例、created/updated、disabled不读来源、schema7默认不重置）；session-loading（实际AppStore/Transport跨实例、完整cwd分组、时间排序、慢读取+迟到poll、加载中原生rename/delete接受、删除目标不返回、失败loaded保留）；session-management（Pi/Codex真改名删除／持久性／source scope）；multi-runtime（实际Codex/DSH新建、延迟首轮、open/continue创建时间、五次loopback）；pi-native-loop（草稿与工具／后续轮，六次loopback）；provider-configuration及runtime-interactions（配置与审批／busy保护）。全部临时HOME、合成原生会话、本机loopback，无真实凭据、会话、配置读取和真实模型请求。不运行或新增自动化测试。
+
+开发方实现、静态、构建、安装与隔离验收完成。图形菜单呈现、分组及筛选的原生体验留给用户GUI验收。自定义label/section只是已厘清的未来组织记录方向，本轮没有标签CRUD；DSH当前ACP原生管理能力仍明确不可用。

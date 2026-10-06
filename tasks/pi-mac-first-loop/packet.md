@@ -215,3 +215,5 @@ advisor 指出 max_tokens 仍是 OpenAI ChatCompletions 的正式但已弃用字
 2026-10-06 新反馈实施中：原生会话重命名／删除与切换加载状态，见 [会话管理任务](../session-management/packet.md)。
 
 会话管理切片已以 clean `73dddf0` 安装（0.1 beta.1／schema 7），安装包原生 Pi／Codex 管理、空草稿、实际 AppStore 慢加载与迟到轮询、浏览及交互隔离验收通过。DSH 当前管理能力明确不可用；GUI 仍由用户复核。详情见 [管理任务](../session-management/packet.md)。
+
+2026-10-06 clean `97c8b5b` 已安装0.1 beta.1／schema7：跨启用实例统一浏览、runtime/project分组筛选、原生created/updated排序、enabled配置与加载中原生菜单管理完成。安装包隔离验收全部通过，GUI由用户复核；见 [统一浏览任务](../conversation-browser/packet.md)。

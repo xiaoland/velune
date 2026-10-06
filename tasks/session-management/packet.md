@@ -49,3 +49,5 @@ root 从安装实际 Rust dylib 重新生成 Python 绑定，安装包复验 `ma
 同轮用户追加跨运行时统一列表、分组筛选和时间排序；由相同源码owner继续，独立需求与证据见 [统一浏览任务](../conversation-browser/packet.md)。加载中管理修复仍属当前必要实施。
 
 加载中菜单局部隔离验收已通过：移除 List 的 loading disabled，row 使用 macOS14 原生 selectionDisabled 保留菜单；重命名可输入／提交，删除可确认。专用待处理管理动作接在 open 主线程完成后，显示等待／执行状态，不建立通用调度器。实际 AppStore／Transport／Pi 合成脚本覆盖 pending 目标改名、原 loaded 改名／删除、加载失败后管理、pending 目标删除不被旧结果插回、native 删除失败保留 loaded。SwiftPM debug warnings-as-errors 通过，零模型请求。本轮继续统一浏览器，不安装这个局部中间版本。
+
+加载中管理继续切片已包含在clean `97c8b5b` 安装包；安装后实际AppStore／Transport慢gate复验通过原生rename/delete排队、加载失败后操作、删除目标不被旧结果插回和管理失败原详情保留。统一列表相关最终证据见 [统一浏览任务](../conversation-browser/packet.md)。
