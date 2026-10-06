@@ -29,7 +29,7 @@ SwiftPM `--force-resolved-versions -Xswiftc -warnings-as-errors` 构建通过。
 
 后续用户线索与产品更正：用户观察当前运行时与目标历史来源不同容易失败，尚非证实根因。真实调用审计与合成 Pi→Codex 历史验证表明 open 传的是会话来源；但现有 selectedRuntimeID／selected_runtime_id 混用了历史来源、活动执行和顶部选择，并在 open／snapshot 时覆盖顶部意图。advisor 明确应拆分 ConversationSource、NextTurnSelection 与固定 execution owner。Mac／application owner 已恢复贯通修复，历史原生管理仍按来源，轮询／取消／审批仍按实际执行。跨 Harness 不可直接 resume 其它来源 ID，也不能把展示投影视为无损完整上下文。
 
-待用户范围决定：建议保留原会话，在目标运行时创建原生会话，由 adapter 交接可携带上下文，原生工具／审批状态不重放；application 只保存来源—目标引用与切换位置，不保存消息副本，使重启后逻辑会话可恢复。用户答复前不实施上下文交接与关联持久化；三状态拆分与既有八项交付继续执行。安装与隔离验收状态见末尾记录。
+后续范围已确认：2026-10-06 用户接受保留原会话、目标原生会话与可携带上下文交接、只持久化原生引用和切换位置。三状态拆分与既有八项交付的安装证据仍归本文；新的跨 Harness 实施归 [接续任务](../cross-harness-continuation/packet.md)。
 
 后续执行意图澄清（2026-10-06，已实现并隔离验收）：顶部运行时／模型表示下一轮目标，不是历史来源。Mac 旧 selectedRuntimeID 改名 projectionRuntimeID，表示当前快照来源，用于当前 context 的快照查询、取消和审批；真实 execution owner 保留在 core，不由 Swift 的浏览状态推定；历史浏览和管理继续从 Conversation.runtimeID 取得来源。独立 nextTurnRuntimeID／nextTurnModelRecordKey 为可在生成／加载时修改的纯 draft，打开、刷新历史及当前 turn 完成不覆盖它，模型菜单按下一轮目标过滤。选择模型本身不改历史 model、不启动 child／gateway；发送捕获当次目标和模型。已选目标被停用／删除时清除意图，避免自动替换为另一执行者。
 

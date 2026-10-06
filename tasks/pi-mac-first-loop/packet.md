@@ -219,3 +219,5 @@ advisor 指出 max_tokens 仍是 OpenAI ChatCompletions 的正式但已弃用字
 2026-10-06 clean `97c8b5b` 已安装0.1 beta.1／schema7：跨启用实例统一浏览、runtime/project分组筛选、原生created/updated排序、enabled配置与加载中原生菜单管理完成。安装包隔离验收全部通过，GUI由用户复核；见 [统一浏览任务](../conversation-browser/packet.md)。
 
 2026-10-06 最新验收继续实施历史失败诊断、配置列表／模板原生交互、运行时快速发现、Messages原生协议和按组分页／多选，见 [本轮任务](../settings-protocol-refinement/packet.md)。
+
+2026-10-06 用户已接受跨 Harness 接续与仅关联元数据持久化，后续实施见 [接续任务](../cross-harness-continuation/packet.md)。

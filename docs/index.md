@@ -15,6 +15,8 @@
 
 ## 当前工作
 
+- [跨 Harness 会话接续](../tasks/cross-harness-continuation/packet.md)：目标原生会话、上下文交接、仅关联元数据与重启投影
+
 - [配置体验与原生 Messages](../tasks/settings-protocol-refinement/packet.md)：历史诊断、原生多选与模板、运行时检测、按组分页及协议扩展
 
 - [跨运行时统一会话浏览](../tasks/conversation-browser/packet.md)：全启用实例、项目与标签分组筛选、创建／更新时间排序
