@@ -201,3 +201,7 @@ advisor 指出 max_tokens 仍是 OpenAI ChatCompletions 的正式但已弃用字
 ## 原生 LLM Gateway 的后续实施
 
 用户完成 AI 服务／LLM Gateway 职责复核后授权推进。2026-10-05 已安装源码 `22a15c0` 的 clean 0.1 beta.1：ChatCompletions／Responses 退出 sampling 重建，正常配置运行时导入→路由→会话→工具续接→下一轮通过已安装库与固定 Pi SDK 的合成验收。原来源文件保留，未选提供商不写入；旧绑定需重新预览并替换。完整证据及本轮未覆盖项归 [实施记录](../ai-gateway-audit/native-implementation.md)，不将先前失败基线当作当前能力，也不代替用户的真实资源与 UI 验收。
+
+## 2026-10-06 Magpie 机制吸纳
+
+当前安装基线为源码 `a985bfd` 的 clean 0.1 beta.1、schema 6。版本化协议能力声明、导入选择／替换边界与网关无正文生命周期观测已完成；隔离安装包的 Pi 工具续轮和 Codex／DSH 原生联调通过。范围、固定参考源码与证据归 [Magpie packet](../magpie-reference/packet.md)，不重复维护实施结论；真实 UI 和服务商验收继续由用户完成。
