@@ -8,6 +8,8 @@ use std::{
 };
 mod codex;
 pub use codex::manage_thread;
+mod codex_history;
+pub use codex_history::{list_codex_history, read_codex_history};
 mod deepseek;
 pub(crate) mod rpc;
 #[derive(thiserror::Error, Debug)]

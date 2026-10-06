@@ -116,14 +116,16 @@ fixture 为 [review.json](../fixtures/review.json)，仅 `2 + 3 = 5`。Codex 会
 | variant ID | family | 版本 regex | 控制与历史 |
 | --- | --- | --- | --- |
 | `pi-1.0.2` | `pi` | `^1\.0\.2$` | Pi RPC、SessionManager SDK 分支历史 |
-| `codex-0.159.3` | `codex` | `^0\.159\.3$` | Codex app-server thread／turn、huihua Codex provider |
+| `codex-0.159.3` | `codex` | `^0\.159\.3$` | Codex app-server thread／turn 与原生分页历史 |
 | `dsh-acp-0.2.0-rc.2` | `deepseek-harness` | `^0\.2\.0-rc\.2$` | DSH ACP v1 session 控制、huihua DeepSeek provider |
 
-Node 本体不随 Mac bundle，当前各实例配置 Node 22.19+ 的绝对路径；Codex 也需要它运行 huihua 历史桥。Codex／DSH 可执行文件由用户安装，实例保存绝对路径，不依赖 Finder 的 PATH。Codex 启动 app-server；DSH 当前版本通过配置的 Node 执行其 CLI JavaScript 入口并传 `--profile acp --patch <实例投影文件>`。CLI 版本不是 ACP 握手中的插件版本。
+Node 本体不随 Mac bundle，当前各实例配置 Node 22.19+ 的绝对路径；Codex 历史直接调用 app-server 原生 thread API。Codex／DSH 可执行文件由用户安装，实例保存绝对路径，不依赖 Finder 的 PATH。Codex 启动 app-server；DSH 当前版本通过配置的 Node 执行其 CLI JavaScript 入口并传 `--profile acp --patch <实例投影文件>`。CLI 版本不是 ACP 握手中的插件版本。
 
 [`install-runtime-support.sh`](../scripts/install-runtime-support.sh) 按 [`package-lock.json`](../packages/agent-runtime/runtime-support/package-lock.json) 安装 huihua `0.2.0` 及其依赖（共五个 npm 包）到忽略的 `target/runtime-support`，禁用 npm lifecycle scripts，不修改全局安装。Mac 构建合并其 node_modules 与 Pi SDK 资源，随包包含完整许可声明、licenses 和依赖锁；清单见 [第三方声明](../packages/agent-runtime/runtime-support/THIRD_PARTY_NOTICES.md)。不打包整个 DSH runtime 或 Codex CLI，也不复制 huihua parser 源码。
 
-huihua 桥只通过公开 package exports 读取显式 home／roots，返回原生 ID、cwd、列表摘要与消息投影，不输出来源 JSON 或未知 payload。read 内部重新 scan 后定位 ID，重复 ID 明确拒绝。huihua 不恢复 Agent；Codex 的 thread/resume 和 DSH 的 session/resume 才恢复执行状态。Codex resume 返回原生 turns 时优先投影它们，DSH 不重放历史，使用 huihua snapshot。派生文件 ID 不作为原生恢复身份。
+Codex 历史使用短生命周期 app-server 的 thread/list、thread/read 与 thread/items/list，不准备模型或网关。列表显式包含该版本全部来源与全部提供商，分页详情采用升序原生 items，Codex 负责 legacy／paginated 和 revert 历史继承。thread ID 不等于 rollout 文件 ID；不能扫描文件后要求 thread ID 唯一，也不按路径或时间挑选。huihua 桥仅供 DSH，通过公开 package exports 读取显式 home／roots，返回原生 ID、cwd、列表摘要与消息投影，不输出未知 payload。历史浏览不能代替 Codex thread/resume 或 DSH session/resume。 安全日志的 history_native_resolution 记录固定运行时家族、legacy／paginated 分类与读取／投影条数；history_native_failed 记录固定阶段和错误分类，不记录会话 ID、路径或正文。
+
+Codex 历史人工验收入口为 [`manual-codex-history-identity.py`](../scripts/manual-codex-history-identity.py)。传入绝对路径 `--codex`、`--node`、`--bindings`、`--library` 与 `--resources`，加 `--exercise-revert --probe-items --probe-many-items`。脚本在临时 HOME／CODEX_HOME 中通过实际原生 fork、revert、exec 与 loopback Responses 验证列表身份、保留前缀、重启和多页顺序；不读取用户真实历史。可选 `--old-helper` 只用于显式旧版诊断对照，不能传当前 DSH-only helper。
 
 原生历史只读浏览不建立网关或执行进程；Codex／DSH 缺少提供商身份的模型记录不自动匹配，继续前明确选择。DSH 切换模型先关闭会话，重启注入目录，再恢复同一原生 ID 并选择 upstream 公布的模型选项；不构造替代 opaque option。reasoningEfforts 需要实际 wire 映射，当前能力等级列表不足以证明映射，保持 SDK 默认，不推测支持。
 
@@ -174,7 +176,7 @@ live 入口 `minimax_manual live text|text-diagnostic|tool SOURCE_COMMIT` 仅供
 
 [安装包首循环脚本](../scripts/manual-pi-native-loop.py) 另传 `--node`，从配置运行时和导入开始，通过实际固定 Pi SDK 完成工具续写、下一轮消息、提供商 key／model ID／地址编辑后实际派发检查。上游为回环合成服务，不涉及真实 Keychain、模型服务或会话。原生 [HTTP 脚本](../scripts/manual-gateway-native.py) 检查 ChatCompletions／Responses JSON、SSE、状态及安全头的保真与取消。所有入口均为显式人工验收，不接入 CI 或自动化测试；实际 GUI／真实提供商由用户验收。
 
-[多运行时脚本](../scripts/manual-multi-runtime.py) 使用实际 Codex app-server／DeepSeek ACP 与回环合成上游，检查创建、发送、huihua 历史、恢复、同 API ID 跨提供商选择及版本拒绝保留活动连接。除 `--bundle`／`--bindings` 外，传入绝对路径 `--node`、`--codex`、`--dsh`（DSH 包的 `lib/bin.js`）。所有 HOME、运行时目录与工作目录均为临时目录。
+[多运行时脚本](../scripts/manual-multi-runtime.py) 使用实际 Codex app-server／DeepSeek ACP 与回环合成上游，检查创建、发送、原生历史投影、恢复、同 API ID 跨提供商选择及版本拒绝保留活动连接。除 `--bundle`／`--bindings` 外，传入绝对路径 `--node`、`--codex`、`--dsh`（DSH 包的 `lib/bin.js`）。所有 HOME、运行时目录与工作目录均为临时目录。
 
 [交互脚本](../scripts/manual-runtime-interactions.py) 另传 `--node`，以合成 app-server 验证 UniFFI 到控制协议的审批、私密回答、拒绝非法／陈旧回复、取消与意外 EOF。它不替代 Mac GUI 验收，也不连接真实上游。
 

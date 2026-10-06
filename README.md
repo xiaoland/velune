@@ -53,7 +53,7 @@ cargo run --locked -p velune-host -- inspect /tmp/velune-demo.sqlite
 
 Mac 构建默认安装到 `/Applications/Velune.app`，当前产品版本为 `0.1 beta.1`（归属 `VERSION`）；生成绑定契约与配置 schema 分开维护。安装器要求旧应用先退出；开发方按既有授权完成退出与重建安装。协作采用敏捷开发，需求可在实现中调整，关键设计先收敛再实施，具体规则见 [共享指引](AGENTS.md)。
 
-当前版本化运行时为 Pi 1.0.2、Codex 0.159.3、DeepSeek Harness 0.2.0-rc.2；不同 breaking-change 版本使用独立适配器。Codex／DeepSeek 通过 huihua 发行包只读历史，原生 app-server／ACP 控制执行，不复制解析器源码或新建会话数据库。实施与安装状态见 [多运行时任务](tasks/multi-runtime/packet.md)，构建和操作入口见 [开发说明](docs/development.md)。不要将隔离协议检查或成功构建当成真实模型循环已通过。
+当前版本化运行时为 Pi 1.0.2、Codex 0.159.3、DeepSeek Harness 0.2.0-rc.2；不同 breaking-change 版本使用独立适配器。Codex 通过原生 thread API 读取逻辑历史，DeepSeek 通过 huihua 发行包只读历史；原生 app-server／ACP 控制执行，不复制解析器源码或新建会话数据库。实施与安装状态见 [多运行时任务](tasks/multi-runtime/packet.md)，构建和操作入口见 [开发说明](docs/development.md)。不要将隔离协议检查或成功构建当成真实模型循环已通过。
 
 跨 Harness 接续创建目标原生会话并交接可携带的文本上下文，Velune 只持久化原生引用和切换位置，消息仍由各 Harness 保存；统一逻辑会话可在重启后重新投影。不会重放工具执行或审批状态。当前能力与安装证据见 [接续任务](tasks/cross-harness-continuation/packet.md)。
 

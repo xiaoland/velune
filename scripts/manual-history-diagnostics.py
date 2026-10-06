@@ -32,22 +32,25 @@ def main() -> None:
         sessions = root / "sessions"
         home.mkdir()
         sessions.mkdir()
-        good = sessions / "good.jsonl"
+        good = sessions / "good" / "session.v4.jsonl"
+        good.parent.mkdir()
         good.write_text(
-            '{"timestamp":"2026-10-06T00:00:00.000Z","type":"session_meta",'
-            '"payload":{"id":"synthetic-good","cwd":"/tmp/synthetic"}}\n'
-            '{"timestamp":"2026-10-06T00:00:01.000Z","type":"event_msg",'
-            '"payload":{"type":"user_message","message":"hello"}}\n',
+            '{"type":"session","version":4,"id":"synthetic-good",'
+            '"createdAt":"2026-10-06T00:00:00.000Z","cwd":"/tmp/synthetic"}\n'
+            '{"type":"user/message","time":"2026-10-06T00:00:01.000Z",'
+            '"data":{"content":[{"type":"text","text":"hello"}]}}\n',
             encoding="utf-8",
         )
-        # huihua keeps malformed JSONL as a diagnostic, so this is still a
-        # readable source and proves the projection does not expose raw errors.
-        (sessions / "corrupt.jsonl").write_bytes(
-            b'{"timestamp":"2026-10-06T00:00:00.000Z","type":"session_meta",'
-            b'"payload":{"id":"synthetic-corrupt","cwd":"/tmp/synthetic"}}\n'
+        # huihua keeps malformed JSONL as a diagnostic, so this remains a
+        # readable source without exposing raw errors or unknown payloads.
+        corrupt = sessions / "corrupt" / "session.v4.jsonl"
+        corrupt.parent.mkdir()
+        corrupt.write_bytes(
+            b'{"type":"session","version":4,"id":"synthetic-corrupt",'
+            b'"createdAt":"2026-10-06T00:00:00.000Z","cwd":"/tmp/synthetic"}\n'
             b'{not-json}\n'
         )
-        request = {"operation": "list", "provider": "codex", "home": str(home), "roots": [str(sessions)]}
+        request = {"operation": "list", "provider": "deepseek", "home": str(home), "roots": [str(sessions)]}
         listed = invoke(args.node, args.helper, request)
         assert listed["contractVersion"] == 1
         assert {item["nativeId"] for item in listed["sessions"]} == {"synthetic-good", "synthetic-corrupt"}
@@ -81,7 +84,7 @@ def main() -> None:
             application = binding.VeluneApplication.open(binding.BindingOptions(
                 home_directory=str(root / "app-home"), resources_directory=str(root)))
             runtime = binding.BindingRuntimeInstance(
-                enabled=True, id="synthetic", name="Synthetic", type_id="codex-0.159.3",
+                enabled=True, id="synthetic", name="Synthetic", type_id="dsh-acp-0.2.0-rc.2",
                 gateway_id="default", settings={"binary": str(args.node), "nodeBinary": str(args.node), "agentDir": str(root / "runtime")})
             (root / "runtime" / "sessions").mkdir(parents=True)
             application.upsert_runtime(runtime)

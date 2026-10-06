@@ -120,105 +120,9 @@ impl NativeSession {
         Ok(())
     }
     fn codex_item(&mut self, item: &Value) {
-        let Some(id) = item["id"].as_str() else {
-            return;
-        };
-        let (kind, blocks) = match item["type"].as_str().unwrap_or_default() {
-            "userMessage" => {
-                let blocks = item["content"]
-                    .as_array()
-                    .into_iter()
-                    .flatten()
-                    .filter_map(|part| match part["type"].as_str() {
-                        Some("text") => part["text"]
-                            .as_str()
-                            .map(|t| MessageBlock::Text { text: t.into() }),
-                        Some("image" | "localImage") => Some(MessageBlock::Notice {
-                            text: "图片输入".into(),
-                        }),
-                        _ => None,
-                    })
-                    .collect();
-                (MessageRole::User, blocks)
-            }
-            "agentMessage" => (
-                MessageRole::Assistant,
-                vec![MessageBlock::Text {
-                    text: item["text"].as_str().unwrap_or_default().into(),
-                }],
-            ),
-            "reasoning" => {
-                let text = item["summary"]
-                    .as_array()
-                    .into_iter()
-                    .flatten()
-                    .filter_map(Value::as_str)
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                if text.is_empty() {
-                    return;
-                }
-                (
-                    MessageRole::Assistant,
-                    vec![MessageBlock::Reasoning { text }],
-                )
-            }
-            "commandExecution" => (
-                MessageRole::Tool,
-                vec![MessageBlock::Tool {
-                    tool_id: Some(id.into()),
-                    title: item["command"].as_str().unwrap_or("命令执行").into(),
-                    state: match item["status"].as_str() {
-                        Some("completed") => ToolState::Completed,
-                        Some("failed" | "declined") => ToolState::Failed,
-                        Some("inProgress") => ToolState::Running,
-                        _ => ToolState::Pending,
-                    },
-                    output: item["aggregatedOutput"].as_str().map(str::to_owned),
-                }],
-            ),
-            "fileChange" => (
-                MessageRole::Tool,
-                vec![MessageBlock::Tool {
-                    tool_id: Some(id.into()),
-                    title: "文件修改".into(),
-                    state: match item["status"].as_str() {
-                        Some("completed") => ToolState::Completed,
-                        Some("failed" | "declined") => ToolState::Failed,
-                        Some("inProgress") => ToolState::Running,
-                        _ => ToolState::Pending,
-                    },
-                    output: item["aggregatedOutput"].as_str().map(str::to_owned),
-                }],
-            ),
-            "mcpToolCall" | "dynamicToolCall" | "collabAgentToolCall" => (
-                MessageRole::Tool,
-                vec![MessageBlock::Tool {
-                    tool_id: Some(id.into()),
-                    title: item["tool"].as_str().unwrap_or("工具调用").into(),
-                    state: match item["status"].as_str() {
-                        Some("completed") => ToolState::Completed,
-                        Some("failed" | "declined") => ToolState::Failed,
-                        Some("inProgress") => ToolState::Running,
-                        _ => ToolState::Pending,
-                    },
-                    output: item["aggregatedOutput"].as_str().map(str::to_owned),
-                }],
-            ),
-            "plan" => (
-                MessageRole::System,
-                vec![MessageBlock::Notice {
-                    text: item["text"].as_str().unwrap_or_default().into(),
-                }],
-            ),
-            _ => return,
-        };
-        self.message(Message {
-            id: id.into(),
-            role: kind,
-            timestamp_unix_ms: None,
-            blocks,
-        });
+        if let Some(message) = project_item(item) {
+            self.message(message);
+        }
     }
     pub(super) fn codex_handle_record(&mut self, record: Value) -> Result<()> {
         let method = record["method"].as_str().unwrap_or_default();
@@ -459,6 +363,18 @@ impl NativeSession {
 
 /// Native thread metadata management without model selection or gateway startup.
 pub fn manage_thread(binary: &Path, home: &Path, id: &str, title: Option<&str>) -> Result<()> {
+    let mut rpc = history_client(binary, home)?;
+    let result = match title {
+        Some(name) => rpc.request("thread/name/set", &json!({"threadId":id,"name":name})),
+        None => rpc.request("thread/delete", &json!({"threadId":id})),
+    };
+    rpc.shutdown();
+    result.map(|_| ())
+}
+pub(super) fn history_client(binary: &Path, home: &Path) -> Result<rpc::RpcClient> {
+    if !binary.is_absolute() || !home.is_absolute() {
+        return Err(Error::new("Codex 历史配置必须使用绝对路径"));
+    }
     crate::version::check_version("codex-0.159.3", binary, None)?;
     let mut command = Command::new(binary);
     command.arg("app-server");
@@ -468,10 +384,105 @@ pub fn manage_thread(binary: &Path, home: &Path, id: &str, title: Option<&str>) 
     )?;
     rpc.request("initialize", &json!({"clientInfo":{"name":"velune","version":"0.1.0-beta.1"},"capabilities":{"experimentalApi":true}}))?;
     rpc.notify("initialized", &json!({}))?;
-    let result = match title {
-        Some(name) => rpc.request("thread/name/set", &json!({"threadId":id,"name":name})),
-        None => rpc.request("thread/delete", &json!({"threadId":id})),
+    Ok(rpc)
+}
+
+pub(super) fn project_item(item: &Value) -> Option<Message> {
+    let id = item["id"].as_str()?;
+    let (kind, blocks) = match item["type"].as_str().unwrap_or_default() {
+        "userMessage" => {
+            let blocks = item["content"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|part| match part["type"].as_str() {
+                    Some("text") => part["text"]
+                        .as_str()
+                        .map(|t| MessageBlock::Text { text: t.into() }),
+                    Some("image" | "localImage") => Some(MessageBlock::Notice {
+                        text: "图片输入".into(),
+                    }),
+                    _ => None,
+                })
+                .collect();
+            (MessageRole::User, blocks)
+        }
+        "agentMessage" => (
+            MessageRole::Assistant,
+            vec![MessageBlock::Text {
+                text: item["text"].as_str().unwrap_or_default().into(),
+            }],
+        ),
+        "reasoning" => {
+            let text = item["summary"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .collect::<Vec<_>>()
+                .join("\n");
+            if text.is_empty() {
+                return None;
+            }
+            (
+                MessageRole::Assistant,
+                vec![MessageBlock::Reasoning { text }],
+            )
+        }
+        "commandExecution" => (
+            MessageRole::Tool,
+            vec![MessageBlock::Tool {
+                tool_id: Some(id.into()),
+                title: item["command"].as_str().unwrap_or("命令执行").into(),
+                state: match item["status"].as_str() {
+                    Some("completed") => ToolState::Completed,
+                    Some("failed" | "declined") => ToolState::Failed,
+                    Some("inProgress") => ToolState::Running,
+                    _ => ToolState::Pending,
+                },
+                output: item["aggregatedOutput"].as_str().map(str::to_owned),
+            }],
+        ),
+        "fileChange" => (
+            MessageRole::Tool,
+            vec![MessageBlock::Tool {
+                tool_id: Some(id.into()),
+                title: "文件修改".into(),
+                state: match item["status"].as_str() {
+                    Some("completed") => ToolState::Completed,
+                    Some("failed" | "declined") => ToolState::Failed,
+                    Some("inProgress") => ToolState::Running,
+                    _ => ToolState::Pending,
+                },
+                output: item["aggregatedOutput"].as_str().map(str::to_owned),
+            }],
+        ),
+        "mcpToolCall" | "dynamicToolCall" | "collabAgentToolCall" => (
+            MessageRole::Tool,
+            vec![MessageBlock::Tool {
+                tool_id: Some(id.into()),
+                title: item["tool"].as_str().unwrap_or("工具调用").into(),
+                state: match item["status"].as_str() {
+                    Some("completed") => ToolState::Completed,
+                    Some("failed" | "declined") => ToolState::Failed,
+                    Some("inProgress") => ToolState::Running,
+                    _ => ToolState::Pending,
+                },
+                output: item["aggregatedOutput"].as_str().map(str::to_owned),
+            }],
+        ),
+        "plan" => (
+            MessageRole::System,
+            vec![MessageBlock::Notice {
+                text: item["text"].as_str().unwrap_or_default().into(),
+            }],
+        ),
+        _ => return None,
     };
-    rpc.shutdown();
-    result.map(|_| ())
+    Some(Message {
+        id: id.into(),
+        role: kind,
+        timestamp_unix_ms: None,
+        blocks,
+    })
 }

@@ -131,6 +131,7 @@ impl CoreRuntime {
         let home = setting_path(runtime, "agentDir")?;
         Ok(HistoryConfig {
             provider: provider.into(),
+            binary: setting_path(runtime, "binary")?,
             node_binary: setting_path(runtime, "nodeBinary")?,
             resources_directory: self.options.resources_directory.clone(),
             root: home.join("sessions"),

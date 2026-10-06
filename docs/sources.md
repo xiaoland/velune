@@ -202,3 +202,5 @@ S17 实施授权：用户决定全面切换 UniFFI，并要求现在开始拆分
 2026-10-06 会话浏览后续：用户指出顶部运行时／模型应决定下个 turn 的执行目标，并将其关联到跨 Harness 会话；打开原生历史应由会话来源决定。来源与执行意图区分已进入 PRD；观察到的读取故障相关性仍需诊断证据，不能提升为已确认根因。
 
 2026-10-06 用户接受“目标原生会话＋上下文交接＋只持久化关联元数据”。这授权 application 保存原生会话引用与切换位置，以恢复同一逻辑会话，消息仍归各 Harness；不重放原生工具或审批状态。范围归 PRD，实施与验证归 [跨 Harness 接续任务](../tasks/cross-harness-continuation/packet.md)。
+
+2026-10-06 用户报告新的 read/ambiguous_session 诊断，授权继续修复。官方 Codex [0.159.3 recorder](https://github.com/openai/codex/blob/rust-v0.159.3/codex-rs/rollout/src/recorder.rs) 与 [revert 实现](https://github.com/openai/codex/blob/rust-v0.159.3/codex-rs/thread-store/src/local/revert_thread.rs) 明确保留 thread ID、创建新 rollout 并保留旧文件；多个文件使用同一 thread ID 是合法行为。[版本化原生协议](https://github.com/openai/codex/blob/rust-v0.159.3/codex-rs/app-server-protocol/src/protocol/v2/thread.rs) 提供逻辑历史分页；不能用物理文件扫描唯一性代替原生历史。检查日期为本日，适用该 variant；真实隔离复现与安装证据归 [历史身份修复任务](../tasks/codex-history-identity/packet.md)，不宣称读取过用户真实会话。

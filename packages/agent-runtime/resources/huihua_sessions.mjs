@@ -1,11 +1,8 @@
 // @ts-check
-// Read-only projection through public huihua APIs. Explicit roots are mandatory;
+// DSH read-only projection through public huihua APIs. Explicit roots are mandatory;
 // native IDs are resolved by scanning those roots, never by opening caller paths.
-import { codexProvider } from "huihua/providers/codex";
 import { deepseekProvider } from "huihua/providers/deepseek";
-import { isAbsolute, join } from "node:path";
-import { createReadStream } from "node:fs";
-import { createInterface } from "node:readline";
+import { isAbsolute } from "node:path";
 
 class RequestError extends Error {
   constructor(code) { super(code); this.code = code; }
@@ -61,50 +58,13 @@ function resultText(result) {
   return result == null ? null : JSON.stringify(result);
 }
 
-/** Codex 0.159.3 records initialization context before its first turn_context
- * boundary, separately from actual user input. This variant adapter also handles
- * duplicated runtime events and model wire context. Prefer the native
- * user event (which excludes injected context) and complete assistant item.
- * @param {readonly Event[]} events @param {string} providerId */
-function presentationEvents(events, providerId) {
-  if (providerId !== "codex") return events;
-  const firstTurn = events.find(event => event.type === "system" && event.data.sourceType === "turn_context");
-  const nativeUsers = events.some(event => event.type === "user_message" && event.providerMetadata.type === "event_msg");
-  const assistantItems = events.some(event => event.type === "assistant_message" && event.providerMetadata.type === "response_item");
-  return events.filter(event => !(firstTurn && event.type === "user_message" && event.record < firstTurn.record)
-    && !(nativeUsers && event.type === "user_message" && event.providerMetadata.type !== "event_msg")
-    && !(assistantItems && event.type === "assistant_message" && event.providerMetadata.type === "event_msg"));
-}
-
-/** Codex 0.159.3 persists explicit names outside rollout JSONL. The most
- * recent native index entry wins; an empty name clears the explicit title.
- * @param {string} home @returns {Promise<Map<string,string>>} */
-async function codexNames(home) {
-  const names = new Map();
-  const input = createReadStream(join(home, "session_index.jsonl"));
-  const lines = createInterface({input,crlfDelay:Infinity});
-  try {
-    for await (const line of lines) {
-      if (!line.trim()) continue;
-      if (line.length > 1024 * 1024) throw new RequestError("index_record_too_large");
-      let entry;
-      // The native append-only index reader skips malformed records as well.
-      try { entry = JSON.parse(line); } catch (error) { if (error instanceof SyntaxError) continue; throw error; }
-      if (typeof entry.id === "string" && typeof entry.thread_name === "string") names.set(entry.id,entry.thread_name.trim());
-    }
-  } catch (error) {
-    if (!error || typeof error !== "object" || !("code" in error) || error.code !== "ENOENT") throw error;
-  } finally { lines.close(); input.destroy(); }
-  return names;
-}
-
 async function main() {
   let input = "";
   for await (const chunk of process.stdin) input += chunk;
   /** @type {Record<string, unknown>} */
   const request = JSON.parse(input);
   const providerId = requiredString(request.provider);
-  const provider = providerId === "codex" ? codexProvider : providerId === "deepseek" ? deepseekProvider : null;
+  const provider = providerId === "deepseek" ? deepseekProvider : null;
   if (!provider) throw new RequestError("unsupported_provider");
   const home = requiredString(request.home);
   if (!isAbsolute(home) || !Array.isArray(request.roots) || request.roots.length === 0) throw new RequestError("invalid_history_roots");
@@ -112,19 +72,11 @@ async function main() {
   if (roots.some(root => !isAbsolute(root))) throw new RequestError("invalid_history_roots");
   const refs = (await provider.scan({homeDir:home,roots:{[provider.id]:roots}}))
     .filter(ref => ref.metadata.id_origin === "native");
-  const nativeNames = providerId === "codex" ? await codexNames(home) : null;
-  const explicitName = (/** @type {import('huihua').SessionRef} */ ref) => nativeNames ? nativeNames.get(ref.id) : ref.title;
   const summary = (/** @type {import('huihua').SessionRef} */ ref, /** @type {readonly Event[]} */ events = []) => {
-    const name = explicitName(ref)?.trim();
+    const name = ref.title?.trim();
     const first = events.find(event => event.type === "user_message");
     const firstText = first?.type === "user_message" ? first.data.content.filter(block=>block.type === "text").map(block=>block.data).join(" ") : "";
-    // huihua 0.2 prefers the session_meta envelope timestamp, which can be
-    // emitted later than creation. Its public system event retains the native
-    // session timestamp; use that creation fact when supplied by this variant.
-    const metadata = providerId === "codex" ? events.find(event => event.type === "system" && event.data.sourceType === "session_meta") : null;
-    const payload = metadata?.type === "system" ? metadata.data.payload : null;
-    const creation = payload && typeof payload === "object" && "timestamp" in payload && typeof payload.timestamp === "string" ? Date.parse(payload.timestamp) : NaN;
-    const createdAtUnixMs = Number.isFinite(creation) ? creation : timestamp(ref.createdAt);
+    const createdAtUnixMs = timestamp(ref.createdAt);
     return {nativeId:ref.id,title:name ? {source:"native",text:name} : firstText.trim() ? {source:"firstMessage",text:[...firstText.trim().replace(/\s+/g," ")].slice(0,80).join("")} : {source:"untitled"},updatedAtUnixMs:timestamp(ref.updatedAt),createdAtUnixMs,cwd:ref.workspace?.path ?? null};
   };
   if (request.operation === "list") {
@@ -134,7 +86,7 @@ async function main() {
       // scan only knows header facts; read obtains the native last activity time.
       try {
         const session = await provider.read(ref);
-        sessions.push(summary(session,presentationEvents(session.events,providerId)));
+        sessions.push(summary(session,session.events));
       } catch {
         // One damaged or concurrently deleted native file must not hide every
         // other session. Native IDs are returned only as existing opaque IDs.
@@ -152,7 +104,7 @@ async function main() {
   const messages = [];
   /** @type {Map<string, Extract<Block,{kind:'tool'}>>} */
   const tools = new Map();
-  for (const event of presentationEvents(session.events,providerId)) {
+  for (const event of session.events) {
     const projected = message(event);
     if (!projected) continue;
     const tool = projected.blocks.find(block=>block.kind === "tool");
@@ -168,7 +120,7 @@ async function main() {
   }
   const codes = [...new Set(session.diagnostics.map(diagnostic => diagnostic.code))];
   if (codes.length) messages.push({id:"history:diagnostics",timestamp_unix_ms:null,role:"system",blocks:[{kind:"notice",text:`部分运行时记录未投影：${codes.join("、")}`}]});
-  return {contractVersion:1,history:{...summary(session,presentationEvents(session.events,providerId)),messages}};
+  return {contractVersion:1,history:{...summary(session,session.events),messages}};
 }
 try { process.stdout.write(JSON.stringify(await main())); }
 catch (error) {

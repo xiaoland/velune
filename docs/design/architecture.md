@@ -28,7 +28,7 @@ Velune 的产品身份是 control surface：UI、AI 服务网关与协调层服�
 
 schema 7 的实例引用精确 variant ID；family 是展示分组，不是 dispatch key。当前 `pi-1.0.2`／`pi`、`codex-0.159.3`／`codex`、`dsh-acp-0.2.0-rc.2`／`deepseek-harness` 分别使用 `^1\.0\.2$`、`^0\.159\.3$`、`^0\.2\.0-rc\.2$` 版本规则。breaking-change 版本应增设独立 adapter 与 variant，允许并存，不靠放宽 regex 声称兼容。配置版本重置不触及原 Harness 文件。
 
-agent-runtime 拥有 Codex app-server 与 DSH ACP 控制和原生事件转换；huihua `0.2.0` package 提供两者只读历史 snapshot，不替代 resume。Pi 保留固定 SDK 的分支历史语义。application 显式传入 home、roots、资源与 Node 路径；Node 是外部依赖，huihua 依赖及许可证由 Mac 打包，Codex／DSH CLI 由用户安装。没有第二份会话 DB，也不引入 Obelisk 索引服务。
+agent-runtime 拥有 Codex app-server 与 DSH ACP 控制和原生事件转换；Codex 原生 thread API 提供逻辑历史的列表与分页详情，处理 revert 的多个 rollout 与继承前缀；huihua `0.2.0` package 提供 DSH 只读历史 snapshot，不替代 resume。Pi 保留固定 SDK 的分支历史语义。application 显式传入 home、roots、资源与 Node 路径；Node 是外部依赖，huihua 依赖及许可证由 Mac 打包，Codex／DSH CLI 由用户安装。没有第二份会话 DB，也不引入 Obelisk 索引服务。
 
 conversation 定义审批、问题回答与取消的类型契约，bindings 生成语言接口，平台展示并提交用户选择。历史列表与详情独立于执行准备。Pi 可恢复原生 custom entry 中有效的模型引用；Codex／DSH 仅有裸 API 模型标识，不能证明对应 Velune 提供商，继续执行前明确选择。原生控制与只读历史是两种职责。DSH reasoning wire 映射未实现，不将能力列表猜测为编码字典。具体运行步骤、许可与限制见 [开发说明](../development.md#原生运行时与历史读取)，最终构建／安装／验收证据见 [当前任务](../../tasks/multi-runtime/packet.md)。
 
@@ -366,7 +366,7 @@ Pi 的物理模型身份不能只使用全局逻辑模型 ID。相同逻辑模�
 
 ## 会话浏览与执行准备
 
-2026-10-06 用户确认的改造契约：运行时配置删除初始模型与手动连接，schema 7 hard-cutoff；添加实例后直接纳入会话来源。application 显式按实例读取历史并返回通用投影，不要求模型、认证或工作目录仍可执行。历史读取 helper 是只读适配步骤，不是 Agent 执行进程；Pi 复用固定 SDK SessionManager 的 context，Codex／DSH 复用 huihua 包。详情 ID 必须属于所选实例，不能因只读入口而接受任意路径。
+2026-10-06 用户确认的改造契约：运行时配置删除初始模型与手动连接，schema 7 hard-cutoff；添加实例后直接纳入会话来源。application 显式按实例读取历史并返回通用投影，不要求模型、认证或工作目录仍可执行。历史读取 helper 是只读适配步骤，不是 Agent 执行进程；Pi 复用固定 SDK SessionManager 的 context，Codex 复用原生 thread 元数据与分页历史接口，DSH 复用 huihua 包。详情 ID 必须属于所选实例，不能因只读入口而接受任意路径。
 
 新建会话显式给出运行时、工作目录与模型，自动准备并由 Harness 建立会话。历史视图中的模型选择先改变当前投影，发送时按需准备／恢复；已准备的同一会话继续使用原生模型切换。未保存的只读选择随视图结束丢弃，不为了保存它新增会话数据库或 sidecar。Pi 的原生选择 metadata 可证明目标时恢复；Codex／DSH 当前历史只保存 API model ID，不能猜测提供商。
 

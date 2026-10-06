@@ -1,4 +1,4 @@
-//! Read-only historical projection through the installed huihua package.
+//! Historical projection through native Codex APIs and the installed DSH reader.
 use crate::{
     conversation::*,
     native::{Error, Result as NativeResult, rpc::bounded_process},
@@ -65,6 +65,7 @@ impl HistoryError {
 
 pub struct HistoryConfig {
     pub provider: String,
+    pub binary: PathBuf,
     pub node_binary: PathBuf,
     pub resources_directory: PathBuf,
     pub root: PathBuf,
@@ -120,7 +121,7 @@ fn execute(
     operation: &str,
     native_id: Option<&str>,
 ) -> Result<Vec<u8>, HistoryError> {
-    if !matches!(config.provider.as_str(), "codex" | "deepseek") {
+    if config.provider != "deepseek" {
         return Err(HistoryError::new(
             HistoryFailureKind::UnsupportedProvider,
             "validate",
@@ -159,6 +160,10 @@ pub fn list(
     config: &HistoryConfig,
     runtime_id: &str,
 ) -> Result<Vec<ConversationSummary>, HistoryError> {
+    if config.provider == "codex" {
+        return crate::native::list_codex_history(&config.binary, &config.home, runtime_id)
+            .map_err(|error| native_history_error(error, "native_list"));
+    }
     let bytes = execute(config, "list", None)?;
     let result: List = serde_json::from_slice(&bytes)
         .map_err(|_| HistoryError::new(HistoryFailureKind::BridgeContract, "list"))?;
@@ -187,6 +192,10 @@ pub fn list(
         .collect())
 }
 pub fn read(config: &HistoryConfig, native_id: &str) -> Result<History, HistoryError> {
+    if config.provider == "codex" {
+        return crate::native::read_codex_history(&config.binary, &config.home, native_id)
+            .map_err(|error| native_history_error(error, "native_read"));
+    }
     let bytes = execute(config, "read", Some(native_id))?;
     let value: serde_json::Value = serde_json::from_slice(&bytes)
         .map_err(|_| HistoryError::new(HistoryFailureKind::BridgeContract, "read"))?;
@@ -206,6 +215,18 @@ pub fn read(config: &HistoryConfig, native_id: &str) -> Result<History, HistoryE
         ));
     }
     Ok(result.history)
+}
+
+fn native_history_error(error: Error, phase: &'static str) -> HistoryError {
+    tracing::warn!(target:"velune_agent_runtime",event="history_native_failed",phase,runtime_family="codex",native_code=error.code());
+    HistoryError::new(
+        if error.code() == "output_limit" {
+            HistoryFailureKind::OutputLimit
+        } else {
+            HistoryFailureKind::ProviderRead
+        },
+        phase,
+    )
 }
 
 /// Execute the fixed Pi SDK history helper without starting the Agent. Output

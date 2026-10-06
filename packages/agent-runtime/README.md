@@ -16,7 +16,9 @@ Pi 固定版本及协议边界见 [开发说明](../../docs/development.md)。SD
 
 运行时类型是 versioned variant，family 仅用于展示分组，不作为派发键。当前三个 variant 为 `pi-1.0.2`（family `pi`）、`codex-0.159.3`（family `codex`）、`dsh-acp-0.2.0-rc.2`（family `deepseek-harness`）。各自版本 regex 是 `^1\.0\.2$`、`^0\.159\.3$`、`^0\.2\.0-rc\.2$`。启动前探测配置的 CLI 版本；协议握手继续检查所需能力。不同 breaking-change 版本应增加独立 variant 与 adapter，不能放宽 regex 假定兼容；多个 variant 与同 variant 的多个实例可并存。
 
-Codex 使用 app-server 的 thread／turn 控制；DSH 使用 ACP v1 的 session/new、resume、prompt、cancel、set_config_option。DSH 的 agentInfo.version 是 ACP 插件版本，不用于判断 CLI 版本。huihua `0.2.0` 的公开 provider API 读取 Codex／DSH 历史，明确接收配置的 home 与 roots，内部按原生 ID 定位，未知记录不原样输出。它只提供历史 snapshot，不能替代原生 resume；Pi 保留 SDK SessionManager 的分支与模型选择语义。
+Codex 使用 app-server 的 thread／turn 控制；DSH 使用 ACP v1 的 session/new、resume、prompt、cancel、set_config_option。DSH 的 agentInfo.version 是 ACP 插件版本，不用于判断 CLI 版本。Codex 历史由 app-server 的 thread/list、thread/read 与 thread/items/list 分页读取，原生服务负责逻辑身份和历史继承；DSH 历史通过 huihua `0.2.0` 公开 provider API 读取显式 home／roots，未知记录不原样输出。历史浏览不启动 turn 或模型网关，不替代原生 resume；Pi 保留 SDK SessionManager 的分支与模型选择语义。
+
+Codex 0.159.3 的 thread/revert 保留稳定 thread ID，同时创建新的 rollout 文件并更新当前历史；paginated 历史还可以引用旧文件的前缀。因此不能把 thread ID 当成物理文件唯一键，也不能按时间任选重复文件。列表使用原生 thread/list 的完整来源枚举与空提供商过滤；详情用 thread/read 核对身份，再按升序分页读取 thread/items/list。legacy 与 paginated 共用原生入口及实时消息的 item 投影，保留原生 item 时间，不自行解析 history_base 或扫描所有文件。短生命周期 app-server 与既有原生管理共用有界 RPC；原生读取失败明确诊断，不回退为文件选择。
 
 原生权限或回答请求映射为 conversation 的类型化交互，用户显式选择、回答或取消；adapter 不自动批准。执行模型由当前会话选择后注入，运行时配置不含默认模型；Codex／DSH 历史没有 Velune 提供商身份时须明确选择，不能凭 API model ID 猜测。DSH 的模型切换关闭会话、更新网关注入后重启并 resume 同一原生 ID。DSH reasoningEfforts 需要实际 wire 映射，当前仅有能力等级列表，不猜测映射，保留 SDK 默认行为。
 
@@ -28,4 +30,4 @@ Node 与用户配置的 Codex／DSH 可执行文件是外部依赖。huihua 固�
 
 历史与实时事件归一为同一 conversation 契约，区分正文、推理、工具和系统通知；工具调用／结果按原生关联 ID 聚合，不能在调用出现时标成已完成。来源标题与时间在适配边界保留含义，文件名不充当显示标题。Codex 注入上下文与真实用户记录通过原生来源 metadata 区分，不使用正文字符串启发式。Pi 常规轮询只消费事件，在加载、已处理扩展命令、settled、取消和压缩边界重新同步权威上下文，处理原生分支整体替换；这些行为不新增会话存储。
 
-版本描述声明原生会话重命名／删除能力。Pi 管理通过固定 SDK 和来源范围内的原会话文件完成；Codex 使用独立 app-server 的 thread/name/set 与 thread/delete，不准备 AI 网关。Codex 原生名称索引由固定版本 helper 读取，huihua 继续提供消息历史。DSH 当前 ACP adapter 不开放会话管理，不把归档、本地隐藏或改标题投影代替持久操作。
+版本描述声明原生会话重命名／删除能力。Pi 管理通过固定 SDK 和来源范围内的原会话文件完成；Codex 使用独立 app-server 的 thread/name/set 与 thread/delete，不准备 AI 网关。Codex 名称与消息历史都由原生 thread API 提供。DSH 当前 ACP adapter 不开放会话管理，不把归档、本地隐藏或改标题投影代替持久操作。
