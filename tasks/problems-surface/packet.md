@@ -29,3 +29,5 @@ session_management 继续负责 Mac 源码及隔离验证，root 维护文档并
 源码 owner 确认设置 scene 直接承载根 TabView，而附加 Problems toolbar 在系统标签导航区域插入非标签项。采用移除设置上的 problemsToolbar，保留根 TabView 与三个 tab 的既有结构；设置通过既有菜单“问题…”／⌘⇧M访问问题窗口，主界面数量入口及 sheet 入口不变，不增加底部容器。此选择恢复系统管理导航，尚未通过实际窗口确认 SwiftUI 内部冲突机制。原生观察服务本轮仍启动失败，不能宣称完成点击或视觉验收。
 
 验证：Mac 源码 owner 已冻结，Swift debug product warnings-as-errors 构建通过，git diff --check 通过。改动仅移除 SettingsView 的工具栏附加，三个 tabItem、主界面入口、菜单快捷键和独立问题窗口均保留。待 clean release 构建与安装；本轮没有新增或运行自动化测试。
+
+本轮交付：源码提交1ac9f334a87c68a8fff2792395bf43e54cfcf7eb，clean release Rust／UniFFI／Swift warnings-as-errors 构建与签名验证通过；0.1 beta.1 已重新安装 /Applications/Velune.app，安装 manifest 与构建一致，dirty=false。未访问真实配置或会话，未新增测试、未发布远端。实际标签切换及视觉仍待用户验收；后续文档提交不改变安装源码。
