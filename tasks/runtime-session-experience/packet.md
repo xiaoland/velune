@@ -27,3 +27,11 @@ advisor 已完成只读追踪：模型选择属于会话，“连接”宜成为
 当前 debug 动态库公开 GET 返回 8389 条 provider-scoped 条目，拉取没有写配置；模板编辑后重开恢复、未自动建立提供商。合成 parser 覆盖 map key 不替代模型 ID、跨来源同 ID、0／null 规格、reasoning bool／toggle 不猜等级、effort null、无效 JSON 与超大输入。application／bindings 严格 clippy（含 no-default）、全 Mac Swift warnings-as-errors 类型检查通过。primary 正在进行 workspace 静态检查与 clean 安装包收口。仅访问公开目录，没有真实上游推理或用户配置访问；没有自动化测试。
 
 收口时将公开 GET 置于既有 bindings 操作边界，保留对象关闭检查与诊断编号；关闭后调用返回 `application_closed` 诊断而不继续访问网络。未额外建立日志层或目录服务进程。
+
+## 安装与当前交付状态
+
+源码 `5f54a9d798b4b3afea3631da855c4af2297c22c0` 已 clean 构建并安装 `/Applications/Velune.app`，保持 0.1 beta.1、schema 6；manifest、签名与第三方许可资源核对通过。最终 workspace fmt/check/全 targets／features 严格 clippy 和 no-default bindings 严格 clippy 通过。按安装包动态库生成 Python 绑定后，公开 GET 与隔离模板保存／编辑／重开、拉取不写配置、关闭对象拒绝均通过，当前公开源返回 8389 条模型。没有调用模型服务、读取真实配置或运行自动化测试。
+
+只启动过无 Transport 的合成 --preview-settings 预览以尝试检查菜单；电脑 UI 服务启动失败，未取得视觉证据，已退出预览。菜单的原生控件接线与 Swift 类型检查已通过，实际视觉仍由用户复核。
+
+明确的两项改进已交付；初始模型与连接流程保持既有行为，产品偏好问题仍待用户回答。后续生命周期重构必须同时移除历史浏览与模型／准备的前置依赖，不以隐藏按钮代替契约修改。
