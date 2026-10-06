@@ -71,6 +71,13 @@ pub enum Error {
     Json(#[from] serde_json::Error),
 }
 impl Error {
+    /// Retain the actual boundary failure in local diagnostics rather than replacing
+    /// it with the operation's summary.
+    #[cfg(feature = "local-runtime")]
+    pub(crate) fn context(message: &str, cause: impl std::fmt::Display) -> Self {
+        Self::Invalid(format!("{message}：{cause}"))
+    }
+
     pub(crate) fn invalid(message: &'static str) -> Self {
         Self::Invalid(message.into())
     }

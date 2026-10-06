@@ -5,7 +5,10 @@ use std::{
     collections::VecDeque,
     io::{BufRead, BufReader, Read, Write},
     process::{Child, ChildStdin, Command, Stdio},
-    sync::mpsc::{self, Receiver, TryRecvError},
+    sync::{
+        Arc, Mutex,
+        mpsc::{self, Receiver, TryRecvError},
+    },
     thread,
     time::{Duration, Instant},
 };
@@ -18,6 +21,7 @@ pub(super) struct RpcClient {
     queued: VecDeque<Value>,
     next: u64,
     failed: Option<Error>,
+    stderr: Arc<Mutex<Vec<u8>>>,
 }
 fn prepare(command: &mut Command) {
     command.env_clear();
@@ -61,9 +65,9 @@ pub(crate) fn bounded_process(
             Stdio::null()
         })
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        .stderr(Stdio::piped())
         .spawn()
-        .map_err(|_| Error::with_code("运行时辅助进程无法启动", "spawn"))?;
+        .map_err(|error| Error::with_code(format!("运行时辅助进程无法启动：{error}"), "spawn"))?;
     if let Some(bytes) = input {
         let mut stdin = child
             .stdin
@@ -77,7 +81,12 @@ pub(crate) fn bounded_process(
         .stdout
         .take()
         .ok_or_else(|| Error::with_code("运行时输出不可用", "transport"))?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| Error::with_code("运行时错误输出不可用", "transport"))?;
     let (tx, rx) = mpsc::sync_channel(1);
+    let (stderr_tx, stderr_rx) = mpsc::sync_channel(1);
     thread::spawn(move || {
         let mut bytes = Vec::new();
         let outcome = stdout
@@ -86,35 +95,108 @@ pub(crate) fn bounded_process(
             .map(|_| bytes);
         let _ = tx.send(outcome);
     });
+    thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let mut reader = stderr;
+        let mut chunk = [0_u8; 8192];
+        let outcome = loop {
+            match reader.read(&mut chunk) {
+                Ok(0) => break Ok(bytes),
+                Ok(size) => {
+                    bytes.extend_from_slice(&chunk[..size]);
+                    if bytes.len() > limit + 1 {
+                        bytes.truncate(limit + 1);
+                    }
+                }
+                Err(error) => break Err(error),
+            }
+        };
+        let _ = stderr_tx.send(outcome);
+    });
     let deadline = Instant::now() + TIMEOUT;
     let status = loop {
         match child.try_wait() {
             Ok(Some(status)) => break status,
             Ok(None) => {}
-            Err(_) => {
+            Err(error) => {
                 stop(&mut child);
-                return Err(Error::with_code("运行时辅助进程状态不可用", "transport"));
+                return Err(Error::with_code(
+                    format!("运行时辅助进程状态不可用：{error}"),
+                    "transport",
+                ));
             }
         }
         if Instant::now() >= deadline {
             stop(&mut child);
-            return Err(Error::with_code("运行时辅助进程超时", "timeout"));
+            let detail = stderr_rx
+                .try_recv()
+                .ok()
+                .and_then(|result| result.ok())
+                .map(|bytes| {
+                    let mut text = String::from_utf8_lossy(&bytes[..bytes.len().min(MAX_RECORD)])
+                        .trim()
+                        .to_owned();
+                    if bytes.len() > MAX_RECORD {
+                        text.push_str("\n[stderr 已截断：本地缓存上限 1 MiB]");
+                    }
+                    text
+                })
+                .unwrap_or_default();
+            return Err(Error::with_code(
+                if detail.is_empty() {
+                    "运行时辅助进程超时".into()
+                } else {
+                    format!("运行时辅助进程超时：{detail}")
+                },
+                "timeout",
+            ));
         }
         thread::sleep(Duration::from_millis(20));
     };
     stop(&mut child);
     let bytes = rx
         .recv_timeout(Duration::from_secs(1))
-        .map_err(|_| Error::with_code("运行时辅助进程输出未关闭", "transport"))?
-        .map_err(|_| Error::with_code("运行时辅助进程读取失败", "transport"))?;
+        .map_err(|error| {
+            Error::with_code(format!("运行时辅助进程输出未关闭：{error}"), "transport")
+        })?
+        .map_err(|error| {
+            Error::with_code(format!("运行时辅助进程读取失败：{error}"), "transport")
+        })?;
+    let stderr = stderr_rx
+        .recv_timeout(Duration::from_secs(1))
+        .map_err(|error| {
+            Error::with_code(
+                format!("运行时辅助进程错误输出未关闭：{error}"),
+                "transport",
+            )
+        })?
+        .map_err(|error| {
+            Error::with_code(
+                format!("运行时辅助进程错误输出读取失败：{error}"),
+                "transport",
+            )
+        })?;
     if bytes.len() > limit {
         return Err(Error::with_code(
             "运行时辅助进程输出超出限制",
             "output_limit",
         ));
     }
+    if stderr.len() > limit {
+        return Err(Error::with_code(
+            format!(
+                "运行时辅助进程错误输出超出限制（已截断）：{}",
+                String::from_utf8_lossy(&stderr)
+            ),
+            "output_limit",
+        ));
+    }
     if !status.success() {
-        return Err(Error::with_code("运行时辅助进程失败", "process_exit"));
+        let detail = String::from_utf8_lossy(&stderr).trim().to_owned();
+        return Err(Error::with_code(
+            format!("运行时辅助进程失败（{status}）：{detail}"),
+            "process_exit",
+        ));
     }
     Ok(bytes)
 }
@@ -128,9 +210,9 @@ impl RpcClient {
         let mut child = command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
+            .stderr(Stdio::piped())
             .spawn()
-            .map_err(|_| Error::new("运行时进程无法启动"))?;
+            .map_err(|error| Error::new(format!("运行时进程无法启动：{error}")))?;
         let input = child
             .stdin
             .take()
@@ -139,6 +221,29 @@ impl RpcClient {
             .stdout
             .take()
             .ok_or_else(|| Error::new("运行时输出不可用"))?;
+        let stderr_output = child
+            .stderr
+            .take()
+            .ok_or_else(|| Error::new("运行时错误输出不可用"))?;
+        let stderr = Arc::new(Mutex::new(Vec::new()));
+        let stderr_copy = Arc::clone(&stderr);
+        thread::spawn(move || {
+            let mut output = stderr_output;
+            let mut chunk = [0_u8; 8192];
+            loop {
+                match output.read(&mut chunk) {
+                    Ok(0) | Err(_) => break,
+                    Ok(size) => {
+                        if let Ok(mut target) = stderr_copy.lock()
+                            && target.len() <= MAX_RECORD
+                        {
+                            let remaining = MAX_RECORD + 1 - target.len();
+                            target.extend_from_slice(&chunk[..size.min(remaining)]);
+                        }
+                    }
+                }
+            }
+        });
         let (tx, records) = mpsc::sync_channel(64);
         let dispatcher = tracing::dispatcher::get_default(Clone::clone);
         thread::spawn(move || {
@@ -153,9 +258,10 @@ impl RpcClient {
                     let result = match read {
                         Ok(0) => Err(Error::new("运行时进程已退出")),
                         Ok(_) if bytes.len() > MAX_RECORD => Err(Error::new("运行时协议记录过大")),
-                        Ok(_) => serde_json::from_slice(&bytes)
-                            .map_err(|_| Error::new("运行时返回无效协议记录")),
-                        Err(_) => Err(Error::new("运行时协议读取失败")),
+                        Ok(_) => serde_json::from_slice(&bytes).map_err(|error| {
+                            Error::new(format!("运行时返回无效协议记录：{error}"))
+                        }),
+                        Err(error) => Err(Error::new(format!("运行时协议读取失败：{error}"))),
                     };
                     let failed = result.is_err();
                     if tx.send(result).is_err() || failed {
@@ -171,15 +277,37 @@ impl RpcClient {
             queued: VecDeque::new(),
             next: 1,
             failed: None,
+            stderr,
         })
+    }
+    fn with_stderr(&self, error: Error) -> Error {
+        let detail = self
+            .stderr
+            .lock()
+            .ok()
+            .map(|bytes| {
+                let mut text = String::from_utf8_lossy(&bytes[..bytes.len().min(MAX_RECORD)])
+                    .trim()
+                    .to_owned();
+                if bytes.len() > MAX_RECORD {
+                    text.push_str("\n[stderr 已截断：本地缓存上限 1 MiB]");
+                }
+                text
+            })
+            .unwrap_or_default();
+        if detail.is_empty() {
+            return error;
+        }
+        let code = error.code();
+        Error::with_code(format!("{}；原始错误：{}", error, detail), code)
     }
     fn write(&mut self, value: &Value) -> Result<()> {
         serde_json::to_writer(&mut self.input, value)
-            .map_err(|_| Error::new("运行时请求编码失败"))?;
+            .map_err(|error| Error::new(format!("运行时请求编码失败：{error}")))?;
         self.input
             .write_all(b"\n")
             .and_then(|_| self.input.flush())
-            .map_err(|_| Error::new("运行时请求发送失败"))
+            .map_err(|error| Error::new(format!("运行时请求发送失败：{error}")))
     }
     pub(super) fn begin(&mut self, method: &str, params: &Value) -> Result<u64> {
         let id = self.next;
@@ -197,10 +325,16 @@ impl RpcClient {
             let record = self
                 .records
                 .recv_timeout(deadline.saturating_duration_since(Instant::now()))
-                .map_err(|_| Error::new("运行时控制请求超时"))??;
+                .map_err(|error| {
+                    self.with_stderr(Error::new(format!("运行时控制请求等待失败：{error}")))
+                })?
+                .map_err(|error| self.with_stderr(error))?;
             if record["id"].as_u64() == Some(id) && record.get("method").is_none() {
                 if record.get("error").is_some() {
-                    return Err(Error::new("运行时拒绝控制请求，请检查适配器版本与配置"));
+                    return Err(self.with_stderr(Error::new(format!(
+                        "运行时拒绝控制请求，请检查适配器版本与配置：{}",
+                        record["error"]
+                    ))));
                 }
                 return record
                     .get("result")
@@ -238,6 +372,7 @@ impl RpcClient {
                 Err(TryRecvError::Disconnected) => Some(Error::new("运行时协议连接已关闭")),
             };
             if let Some(error) = error {
+                let error = self.with_stderr(error);
                 if values.is_empty() {
                     return Err(error);
                 }

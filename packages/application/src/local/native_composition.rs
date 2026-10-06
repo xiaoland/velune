@@ -80,7 +80,7 @@ impl CoreRuntime {
             .as_ref()
             .ok_or_else(|| RuntimeError::invalid("runtime gateway"))?
             .replace_aliases(aliases)
-            .map_err(|_| RuntimeError::invalid("模型路由更新失败"))?;
+            .map_err(|error| RuntimeError::context("模型路由更新失败", error))?;
         let result = match &mut self.active_state {
             ActiveState::Native(session) => session.select_model(injection),
             _ => return Err(RuntimeError::invalid("native runtime")),
@@ -140,7 +140,7 @@ impl CoreRuntime {
         if let ActiveState::Native(session) = &mut self.active_state {
             session
                 .create(cwd, &runtime.id)
-                .map_err(|_| RuntimeError::invalid("会话创建失败"))?;
+                .map_err(|error| RuntimeError::context("会话创建失败", error))?;
         }
         if runtime.type_id == "dsh-acp-0.2.0-rc.2" {
             // ACP new flushes its native header before replying, but does not
@@ -184,7 +184,7 @@ impl CoreRuntime {
         if let ActiveState::Native(session) = &mut self.active_state {
             session
                 .open(native_id, &cwd, &runtime.id, snapshot.messages.clone())
-                .map_err(|_| RuntimeError::invalid("会话恢复失败"))?;
+                .map_err(|error| RuntimeError::context("会话恢复失败", error))?;
             session.set_conversation(snapshot.conversation.clone());
         }
         self.model_record_key = Some(key.into());
@@ -200,8 +200,8 @@ impl CoreRuntime {
             .ok_or_else(|| RuntimeError::invalid("interaction id"))?;
         let reply = serde_json::from_value(request["payload"]["reply"].clone())?;
         match &mut self.active_state {
-            ActiveState::Native(session) => session.reply(id, reply).map_err(|_| {
-                RuntimeError::invalid("运行时请求回复失败；请求可能已取消或所属会话已改变")
+            ActiveState::Native(session) => session.reply(id, reply).map_err(|error| {
+                RuntimeError::context("运行时请求回复失败；请求可能已取消或所属会话已改变", error)
             })?,
             _ => return Err(RuntimeError::invalid("此运行时没有待回复的请求")),
         };

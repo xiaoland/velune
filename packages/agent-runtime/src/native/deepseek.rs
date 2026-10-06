@@ -11,7 +11,7 @@ impl NativeSession {
             _ => return Err(Error::new("DeepSeek 运行时不支持此网关协议")),
         };
         fs::create_dir_all(&config.projection_directory)
-            .map_err(|_| Error::new("无法建立运行时网关注入目录"))?;
+            .map_err(|error| Error::new(format!("无法建立运行时网关注入目录：{error}")))?;
         let mut model = json!({"id":config.gateway.model_alias,"name":config.gateway.model_alias});
         if let Some(value) = config.gateway.context_window {
             model["contextWindow"] = json!(value);
@@ -36,9 +36,10 @@ impl NativeSession {
             .join("deepseek-gateway.patch.yml");
         fs::write(
             &path,
-            serde_json::to_vec(&patch).map_err(|_| Error::new("网关配置编码失败"))?,
+            serde_json::to_vec(&patch)
+                .map_err(|error| Error::new(format!("网关配置编码失败：{error}")))?,
         )
-        .map_err(|_| Error::new("网关配置写入失败"))?;
+        .map_err(|error| Error::new(format!("网关配置写入失败：{error}")))?;
         let mut command = if let Some(node) = &config.node_binary {
             if !node.is_absolute() {
                 return Err(Error::new("Node 可执行文件必须为绝对路径"));

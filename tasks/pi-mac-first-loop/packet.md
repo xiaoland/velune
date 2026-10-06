@@ -221,3 +221,5 @@ advisor 指出 max_tokens 仍是 OpenAI ChatCompletions 的正式但已弃用字
 2026-10-06 最新验收继续实施历史失败诊断、配置列表／模板原生交互、运行时快速发现、Messages原生协议和按组分页／多选，见 [本轮任务](../settings-protocol-refinement/packet.md)。
 
 2026-10-06 用户已接受跨 Harness 接续与仅关联元数据持久化，后续实施见 [接续任务](../cross-harness-continuation/packet.md)。
+
+2026-10-06 最新迭代：完整本地错误原因、turn 工作过程折叠与两种用户消息 outline，见 [消息工作过程任务](../transcript-turns-outline/packet.md)。

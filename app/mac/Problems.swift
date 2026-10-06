@@ -29,6 +29,7 @@ struct AppProblem: Identifiable, Sendable, Equatable {
         switch value {
         case "shutdown": return "关闭应用"
         case "list": return "读取会话与配置"
+        case "setTranscriptPresentation": return "保存消息列表设置"
         case "setConversationBrowserGroupLimit": return "保存会话列表设置"
         case "runtimeDiscoveryHints", "discoverRuntimes": return "发现 Agent 运行时"
         case "saveProvider": return "保存 AI 提供商"

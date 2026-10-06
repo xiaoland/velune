@@ -61,7 +61,21 @@ impl From<Error> for BindingError {
             #[cfg(feature = "local-runtime")]
             Error::ProviderImport(error) => Self::Diagnostic {
                 kind: BindingFailureKind::ProviderImport,
-                detail: error.message().into(),
+                detail: format!(
+                    "{}（阶段：{}，类别：{}{}{}）",
+                    error.message(),
+                    error.phase(),
+                    error.code(),
+                    error
+                        .exit_status()
+                        .map(|status| format!("，退出状态：{status}"))
+                        .unwrap_or_default(),
+                    if error.detail().is_empty() {
+                        String::new()
+                    } else {
+                        format!("，原因：{}", error.detail())
+                    }
+                ),
                 code: error.code().into(),
                 phase: error.phase().into(),
                 operation_id: String::new(),
@@ -69,7 +83,7 @@ impl From<Error> for BindingError {
             #[cfg(feature = "local-runtime")]
             Error::History(error) => Self::Diagnostic {
                 kind: BindingFailureKind::History,
-                detail: error.safe_message(),
+                detail: error.full_message(),
                 code: error.code().into(),
                 phase: error.phase().into(),
                 operation_id: String::new(),
@@ -175,6 +189,15 @@ impl VeluneApplication {
     ) -> Result<Vec<BindingRuntimeDiscoveryCandidate>, BindingError> {
         let probes = convert(probes)?;
         convert(self.with("discover_runtimes", |app| app.discover_runtimes(probes))?)
+    }
+    pub fn set_transcript_presentation(
+        &self,
+        presentation: BindingTranscriptPresentation,
+    ) -> Result<BindingTranscriptPresentation, BindingError> {
+        let presentation = convert(presentation)?;
+        convert(self.with("set_transcript_presentation", |app| {
+            app.set_transcript_presentation(presentation)
+        })?)
     }
     pub fn set_conversation_browser_group_limit(&self, limit: u32) -> Result<u32, BindingError> {
         self.with("set_conversation_browser_group_limit", |app| {

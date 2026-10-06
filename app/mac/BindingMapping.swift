@@ -13,7 +13,7 @@ enum BindingMapping {
     static func snapshot(_ value: BindingConversationSnapshot) -> ConversationSnapshot {
         ConversationSnapshot(revision: value.revision, conversation: conversation(value.conversation), contextRuntimeID: value.contextRuntimeId,
                              modelRecordKey: value.modelRecordKey, runState: runState(value.runState),
-                             messages: value.messages.map(message), pendingInteractions: value.pendingInteractions.map(interaction), actions: actions(value.actions))
+                             messages: value.messages.map(message), transcriptTurns: value.transcriptTurns.map { TranscriptTurn(id: $0.id, userMessageID: $0.userMessageId, workMessageIDs: $0.workMessageIds, lastMessageID: $0.lastMessageId, durationMs: $0.durationMs, isRunning: $0.isRunning) }, messageIdentityConfirmations: value.messageIdentityConfirmations.map { MessageIdentityConfirmation(previousID: $0.previousId, currentID: $0.currentId) }, pendingInteractions: value.pendingInteractions.map(interaction), actions: actions(value.actions))
     }
 
     static func runState(_ value: BindingRunState) -> RunState {

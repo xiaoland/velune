@@ -1,6 +1,7 @@
 import SwiftUI
 import AppKit
 import MarkdownUI
+import VeluneBindings
 
 struct VeluneRootView: View {
     @ObservedObject var store: AppStore
@@ -10,6 +11,7 @@ struct VeluneRootView: View {
     @State private var browser = ConversationBrowser()
     @State private var draft = ""
     @State private var scrollRequest: UInt64 = 0
+    @State private var sentAfterUserID: String?
     @State private var renameTarget: Conversation?
     @State private var deleteTargets: [Conversation] = []
     private var conversationSections: [ConversationBrowser.Section] { browser.sections(conversations: store.conversations, runtimes: store.runtimeInstances) }
@@ -164,7 +166,7 @@ struct VeluneRootView: View {
 
     private var transcript: some View {
         TranscriptView(model: store.transcript, conversationID: store.loadedConversationID,
-                       scrollRequest: scrollRequest, activity: store.activity)
+                       scrollRequest: scrollRequest, sentAfterUserID: sentAfterUserID, activity: store.activity, presentation: store.transcriptPresentation)
     }
 
     private var composer: some View {
@@ -183,7 +185,8 @@ struct VeluneRootView: View {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard store.canSend, !text.isEmpty else { return }
         let submittedDraft = draft
-        store.send(text: text) { if draft == submittedDraft { draft = "" }; scrollRequest &+= 1 }
+        let previousUserID = store.transcript.userRows.last?.id
+        store.send(text: text) { if draft == submittedDraft { draft = "" }; sentAfterUserID = previousUserID; scrollRequest &+= 1 }
     }
     private func shortDate(_ unixMs: Int64) -> String {
         Date(timeIntervalSince1970: Double(unixMs) / 1000).formatted(.dateTime.month(.abbreviated).day())
@@ -353,6 +356,13 @@ private struct ConversationSettingsView: View {
     @State private var limit = 20
     var body: some View {
         Form {
+            Section("消息列表") {
+                Picker("默认显示", selection: Binding(get: { store.transcriptPresentation }, set: { store.setTranscriptPresentation($0) })) {
+                    Text("完整会话").tag(BindingTranscriptPresentation.conversation)
+                    Text("用户消息大纲").tag(BindingTranscriptPresentation.userOutline)
+                }.disabled(store.isLoading || store.isShuttingDown)
+                Text("大纲模式仅显示用户消息，点击消息可展开从此处开始的后续内容。").font(.caption).foregroundStyle(.secondary)
+            }
             Section("会话列表") {
                 LabeledContent("每组首次展示") { TextField("数量", value: $limit, format: .number).frame(width: 70); Text("个会话") }
                 Text("每组按当前排序显示前若干会话，可在列表中加载更多。").font(.caption).foregroundStyle(.secondary)

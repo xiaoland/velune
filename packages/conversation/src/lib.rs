@@ -122,6 +122,11 @@ pub struct ConversationSnapshot {
     pub run_state: RunState,
     pub messages: Vec<Message>,
     #[serde(default)]
+    pub transcript_turns: Vec<TranscriptTurn>,
+    /// Idempotent live-to-native confirmations within this projection lifecycle.
+    #[serde(default)]
+    pub message_identity_confirmations: Vec<MessageIdentityConfirmation>,
+    #[serde(default)]
     pub pending_interactions: Vec<RuntimeInteraction>,
     pub actions: ConversationActions,
 }
@@ -241,4 +246,25 @@ pub fn first_user_text(messages: &[Message]) -> Option<&str> {
             MessageBlock::Text { text } if !text.trim().is_empty() => Some(text.as_str()),
             _ => None,
         })
+}
+
+/// Disposable presentation range; references canonical messages without copying content.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct TranscriptTurn {
+    pub id: String,
+    pub user_message_id: String,
+    pub work_message_ids: Vec<String>,
+    pub last_message_id: Option<String>,
+    /// Observed execution elapsed time. None for history without lifecycle evidence.
+    pub duration_ms: Option<u64>,
+    pub is_running: bool,
+}
+
+/// A transient identity confirmation; native messages remain the durable authority.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct MessageIdentityConfirmation {
+    pub previous_id: String,
+    pub current_id: String,
 }

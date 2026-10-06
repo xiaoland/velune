@@ -11,3 +11,7 @@ Pi 的事件解析和 projection 属 [agent-runtime](../agent-runtime/README.md)
 会话摘要保留所属实例、原生 CWD 和可选创建／更新时间（Unix 毫秒），缺失不编造。Mac 的全实例分组、筛选、排序是该摘要的展示投影，不改变会话执行身份。
 
 跨运行时逻辑会话的摘要身份与所属实例表示首段来源；快照的 `context_runtime_id` 明确表示当前原生上下文，用于查询、取消与交互回复，不能由摘要来源推断。摘要的 `can_rename`／`can_delete` 由 application 结合原生段能力装配，本 package 不访问关联文件或替运行时执行管理。逻辑投影消息使用段命名空间，展示的交接边界不构成持久消息日志。
+
+`TranscriptTurn` 是消息列表展示范围的轻量契约，仅引用用户、过程及最后一条消息的 ID。顺序投影实现位于 agent-runtime，平台不另建分组规则；此记录不替代 canonical 消息，也不成为持久化 turn 数据库。
+
+`MessageIdentityConfirmation` 仅表示当前投影生命周期内的 live 身份确认，重复消费必须幂等；它不是持久身份表。原生会话条目是最终身份来源。

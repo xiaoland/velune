@@ -29,7 +29,7 @@ impl CoreRuntime {
                 crate::authentication_resolver::ProviderResolver::capture(&gateway, &self.options),
                 self.native_aliases(&runtime, model_record_key)?,
             )
-            .map_err(|_| RuntimeError::invalid("gateway startup"))?;
+            .map_err(|error| RuntimeError::context("gateway startup", error))?;
             self.gateway_runner = Some(runner);
             let result = (|| {
                 let injection = self.native_injection(&runtime, model_record_key)?;
@@ -51,7 +51,7 @@ impl CoreRuntime {
                         .join(format!("{:x}", sha2::Sha256::digest(runtime.id.as_bytes()))),
                     gateway: injection,
                 })
-                .map_err(|_| RuntimeError::invalid("运行时连接失败"))
+                .map_err(|error| RuntimeError::context("运行时连接失败", error))
             })();
             match result {
                 Ok(session) => {
@@ -93,7 +93,7 @@ impl CoreRuntime {
             crate::authentication_resolver::ProviderResolver::capture(&gateway, &self.options),
             route_aliases,
         )
-        .map_err(|_| RuntimeError::invalid("gateway startup"))?;
+        .map_err(|error| RuntimeError::context("gateway startup", error))?;
         let projection_dir = self
             .options
             .home_directory
@@ -167,7 +167,7 @@ impl CoreRuntime {
     ) -> Result<(), RuntimeError> {
         validate_session_cwd(cwd)?;
         let cwd = fs::canonicalize(cwd)
-            .map_err(|_| RuntimeError::invalid("conversation working directory"))?;
+            .map_err(|error| RuntimeError::context("conversation working directory", error))?;
         let mut config = self
             .pi
             .config
@@ -181,13 +181,13 @@ impl CoreRuntime {
             write_selection_file(&config, logical, physical, subscription_capability)?;
         }
         let mut client = pi::Client::spawn(config.clone())
-            .map_err(|_| RuntimeError::invalid("runtime startup"))?;
+            .map_err(|error| RuntimeError::context("runtime startup", error))?;
         // Establish readiness through RPC before exposing bootstrap events to
         // the projection. Pi can emit initialization records before its first
         // command response; those records must not settle a new turn.
         client
             .state()
-            .map_err(|_| RuntimeError::invalid("runtime startup"))?;
+            .map_err(|error| RuntimeError::context("runtime startup", error))?;
         let runtime_id = self.execution_runtime_id.as_deref().unwrap_or_default();
         let mut projection = PiProjection::new(ConversationSummary {
             can_rename: false,
@@ -218,7 +218,7 @@ impl CoreRuntime {
         if let Some(mut client) = self.pi.client.take() {
             client
                 .shutdown()
-                .map_err(|_| RuntimeError::invalid("runtime shutdown"))?;
+                .map_err(|error| RuntimeError::context("runtime shutdown", error))?;
         }
         self.pi.busy = false;
         self.pi.turn_started = false;
@@ -238,7 +238,7 @@ impl CoreRuntime {
         let result = match state {
             ActiveState::Native(mut session) => session
                 .shutdown()
-                .map_err(|_| RuntimeError::invalid("runtime shutdown")),
+                .map_err(|error| RuntimeError::context("runtime shutdown", error)),
             ActiveState::Pi => self
                 .pi
                 .client
@@ -246,7 +246,7 @@ impl CoreRuntime {
                 .map(|mut client| {
                     client
                         .shutdown()
-                        .map_err(|_| RuntimeError::invalid("runtime shutdown"))
+                        .map_err(|error| RuntimeError::context("runtime shutdown", error))
                 })
                 .unwrap_or(Ok(())),
             ActiveState::Empty | ActiveState::History(_) => Ok(()),

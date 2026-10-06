@@ -390,3 +390,12 @@ impl GatewayConfig {
         })
     }
 }
+
+/// Message-list presentation preference; independent of native conversation storage.
+#[derive(Debug, Default, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum TranscriptPresentation {
+    #[default]
+    Conversation,
+    UserOutline,
+}

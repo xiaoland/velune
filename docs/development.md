@@ -218,9 +218,9 @@ bash scripts/build-macos.sh
 
 Mac 使用 `OSLog.Logger`，subsystem 为 `local.velune`；系统 Console 可按该 subsystem 筛选。Rust 的 `tracing` subscriber 由 bindings 为每个应用对象独立装配，JSON Lines 日志位于 `VELUNE_HOME/logs/velune.<日期>.jsonl`，按 UTC 日期轮转并保留最近 7 个文件。该策略限制文件数量，不提供总字节硬上限。日志目录在 Unix 平台使用 0700 权限。
 
-失败信息包含诊断编号；以该编号查找日志中的 `operation_id`，可定位操作、白名单错误代码、阶段和耗时。Swift 失败日志使用同一编号；其本地操作编号另行命名，不代表 Rust trace ID。常规 snapshot 和认证轮询不产生成功日志。日志不记录提供商配置、路径、URL、请求参数、原始子进程输出、认证、消息或工具内容，第三方依赖的 tracing 事件也不进入文件输出。Pi helper 只返回版本化白名单诊断；缺少合法诊断时明确标为未知 helper 失败，不从异常文本猜测。
+失败信息包含诊断编号；以该编号查找日志中的 `operation_id`，可定位操作、错误代码、阶段、耗时与底层原因。Swift 失败日志使用同一编号，其本地操作编号另行命名，不代表 Rust trace ID。常规 snapshot 和认证轮询不产生成功日志。诊断保存实际错误链、helper stderr 与失败上下文，不以隐私为由替换为固定说明；默认不采集所有请求、配置或会话正文，也没有远端导出。开发方仍只使用合成数据验证，不读取用户真实配置和秘密。
 
-历史读取失败还记录静态注册的运行时 family／版本类型和安全类别。helper 的启动、超时、退出、输出上限与来源读取、会话不存在、重复原生身份分别保留，不输出 stderr 或原始异常。单条来源读取失败只跳过该条并记录数量；其余会话继续列出。旧日志缺少这些字段时不能事后推断真实根因，新的错误需要以相同诊断编号关联应用操作和历史阶段。
+历史读取失败记录运行时类型、阶段和原始原因。helper 启动、超时、退出、输出上限、来源读取、会话不存在与重复原生身份分别保留；子进程返回的实际错误文本应继续传到本地问题详情。旧错误若已在源头丢失原因，不能事后还原；新错误通过诊断编号关联操作和阶段。
 
 网关请求另有 `gateway_request` span 的 `request_id`，不沿用建立执行准备时的 application `operation_id`。`gateway_request_received`、`gateway_route_selected`、`gateway_response_ready` 和 `gateway_request_finished` 描述入口与转发；子 span `gateway_attempt` 的 started／upstream_headers／finished 描述单次派发。目标序号只定位当前运行配置快照，不是跨准备的身份。结束字段区分传输完成、上游失败、调用方断开和网关关闭；完整转发失败 HTTP 响应仍可以是 request 的传输完成。准备响应不证明 TCP 客户端已收到，传输完成也不证明 LLM 业务成功。
 
@@ -228,7 +228,7 @@ Mac 使用 `OSLog.Logger`，subsystem 为 `local.velune`；系统 Console 可按
 
 领域包只发事件，不创建 subscriber。跨线程显式传播 dispatcher 和 span；将来增加 OTLP exporter 时在 bindings 的 layer 装配点扩展，当前没有远端导出、上传功能或 OTLP 配置。采用的库和契约见 [tracing dispatcher](https://docs.rs/tracing/latest/tracing/dispatcher/)、[tracing-appender 保留策略](https://docs.rs/tracing-appender/latest/tracing_appender/rolling/struct.Builder.html) 和 [Apple 日志指导](https://developer.apple.com/documentation/os/generating-log-messages-from-your-code)。
 
-Mac 的“问题”窗口集中显示操作失败与当前读取问题，主界面与设置工具栏提供入口，编辑／导入 sheet 在标题行提供入口；菜单“问题…”与 ⌘⇧M 也可打开。新错误更新数量，不弹窗抢焦点；选择一项可查看并复制已有诊断字段。手动操作记录在当前进程内保留，成功操作不清空，用户可清除；持续会话列表或轮询问题按来源合并，恢复后移除，清除后若仍失败会再次出现。问题记录不是持久日志，不包含原始日志正文。界面不再在会话列表、composer 或设置底部重复展示这些错误，字段校验和业务进度仍在相应位置。
+Mac 的“问题”窗口集中显示操作失败与当前读取问题，主界面与设置工具栏提供入口，编辑／导入 sheet 在标题行提供入口；菜单“问题…”与 ⌘⇧M 也可打开。新错误更新数量，不弹窗抢焦点；选择一项可查看并复制已有诊断字段。手动操作记录在当前进程内保留，成功操作不清空，用户可清除；持续会话列表或轮询问题按来源合并，恢复后移除，清除后若仍失败会再次出现。问题记录不是持久日志，不主动读取日志文件；收到的错误详情完整保留。界面不再在会话列表、composer 或设置底部重复展示这些错误，字段校验和业务进度仍在相应位置。
 
 人工复验入口为 [`manual-problems.py`](../scripts/manual-problems.py)，传入绝对路径 `--bundle`、`--swift-build`、`--node`、`--pi`。它编译实际 Mac Store／Transport，使用临时 HOME 和真实 UniFFI，检查结构化失败的保留与消解；读取失败通过隔离 helper 控制，不读取用户原生会话。脚本不接入 CI，UI体验仍由用户验收。
 
@@ -261,3 +261,10 @@ Mac 的“问题”窗口集中显示操作失败与当前读取问题，主界�
 异协议采用 best-effort 请求／JSON／增量 SSE 转换，同协议继续原生透传。运行时 descriptor 中 `supportedProtocols` 表示它发给网关的协议，`supportedProviderProtocols` 表示通过网关可到达的提供商协议；两者不是同一能力。协议可到达不等于具体模型支持所有工具、输入模态或推理参数。
 
 人工脚本 `scripts/manual-protocol-translation.py` 用临时 HOME、合成凭据与 loopback 上游驱动实际网关，不读取真实配置或调用真实提供商。它不是自动测试或 CI 入口。具体命令、已完成范围与外部 Pi／Codex 客户端证据归 [当前转换任务](../tasks/llm-protocol-translation/packet.md)。Messages 转换缺少请求输出上限时使用模型配置上限，不使用硬编码 token 数；无法映射的字段记录无正文静态诊断，真实流中断仍报告失败。
+
+
+消息列表通过 Rust 的 typed turn 引用显示用户问题、工作过程与最新结果。中间消息默认折叠，展开状态按稳定 turn ID 保存；原生历史替换后清理已失效 ID。底部操作区提供用户消息 outline sheet 和向下箭头；选择 outline 条目后定位相应用户消息。设置 → 会话 → 消息列表可选择“用户消息大纲”：开始只显示用户消息，选中后保留此前用户索引，并从该位置展开后续完整内容；点击已选项返回大纲，切换会话或锚点被删除也返回大纲。显示偏好持久化到现有 `VELUNE_HOME` 配置，展开位置是当前视图状态，不写入 Harness。
+
+运行时 stderr 使用有界本地缓存，并持续排空进程管道；达到容量后在诊断中明确标记截断，不能把容量限制伪装成隐私过滤或停止读取管道。工作时长是本机观察的执行区间，精度受轮询间隔影响；它不是提供商统计，也不回填到原生历史。
+
+本次消息列表与诊断的隔离验收入口是 `scripts/manual-transcript-outline.py`、`scripts/manual-problems.py`、`scripts/manual-error-diagnostics.py`。这些按需手动脚本使用临时配置与合成内容，不接入自动测试或 CI；消息流脚本使用外部已安装 Pi 与本地服务，不依赖真实模型账户。

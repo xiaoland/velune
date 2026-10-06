@@ -6,8 +6,11 @@ use std::collections::BTreeMap;
 use std::{
     io::{BufRead, BufReader, Read, Write},
     path::Path,
-    process::{Child, ChildStdin, Command, Stdio},
-    sync::mpsc::{self, Receiver},
+    process::{Child, ChildStderr, ChildStdin, Command, Stdio},
+    sync::{
+        Arc, Mutex,
+        mpsc::{self, Receiver},
+    },
 };
 
 /// Non-secret Pi authentication-source coordinates provided by application composition.
@@ -24,7 +27,8 @@ pub struct Source {
 pub struct Login {
     child: Child,
     input: ChildStdin,
-    events: Receiver<Result<Value, ()>>,
+    events: Receiver<Result<Value, String>>,
+    stderr: Arc<Mutex<Vec<u8>>>,
     finished: bool,
     prompt: Option<String>,
     source: Source,
@@ -39,7 +43,7 @@ impl Login {
     }
     pub fn start(resources: &Path, home: &Path, source: &Value) -> Result<Self, String> {
         let source: Source = serde_json::from_value(source.clone())
-            .map_err(|_| "invalid authentication source".to_string())?;
+            .map_err(|error| format!("invalid authentication source: {error}"))?;
         let node = source
             .settings
             .get("nodeBinary")
@@ -64,15 +68,18 @@ impl Login {
             .arg("--operation")
             .arg("login")
             .arg("--source-json")
-            .arg(serde_json::to_string(&source).map_err(|_| "invalid authentication source")?)
+            .arg(
+                serde_json::to_string(&source)
+                    .map_err(|error| format!("invalid authentication source: {error}"))?,
+            )
             .arg("--device-id")
             .arg(device_id)
             .env_clear()
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
+            .stderr(Stdio::piped())
             .spawn()
-            .map_err(|_| "authentication adapter could not start")?;
+            .map_err(|error| format!("authentication adapter could not start: {error}"))?;
         let input = child
             .stdin
             .take()
@@ -81,6 +88,25 @@ impl Login {
             .stdout
             .take()
             .ok_or("authentication events unavailable")?;
+        let stderr = child
+            .stderr
+            .take()
+            .ok_or("authentication error output unavailable")?;
+        let stderr_state = Arc::new(Mutex::new(Vec::new()));
+        let stderr_copy = Arc::clone(&stderr_state);
+        std::thread::spawn(move || {
+            let mut stderr: ChildStderr = stderr;
+            let mut buffer = [0_u8; 4096];
+            while let Ok(size) = stderr.read(&mut buffer) {
+                if size == 0 {
+                    break;
+                }
+                if let Ok(mut value) = stderr_copy.lock() {
+                    let remaining = 65537usize.saturating_sub(value.len());
+                    value.extend_from_slice(&buffer[..size.min(remaining)]);
+                }
+            }
+        });
         let (sender, events) = mpsc::sync_channel(32);
         std::thread::spawn(move || {
             let mut reader = BufReader::new(output);
@@ -93,13 +119,22 @@ impl Login {
                 match read {
                     Ok(0) => break,
                     Ok(_) if bytes.len() <= 65536 && bytes.last() == Some(&b'\n') => {
-                        let event = serde_json::from_slice::<Value>(&bytes).map_err(|_| ());
+                        let event = serde_json::from_slice::<Value>(&bytes)
+                            .map_err(|error| error.to_string());
                         if sender.send(event).is_err() {
                             break;
                         }
                     }
-                    _ => {
-                        let _ = sender.send(Err(()));
+                    Err(error) => {
+                        let _ = sender.send(Err(format!(
+                            "authentication adapter event read failed: {error}"
+                        )));
+                        break;
+                    }
+                    Ok(_) => {
+                        let _ = sender.send(Err(
+                            "authentication adapter event exceeded the 64 KiB record limit".into(),
+                        ));
                         break;
                     }
                 }
@@ -109,6 +144,7 @@ impl Login {
             child,
             input,
             events,
+            stderr: stderr_state,
             finished: false,
             prompt: None,
             source,
@@ -117,7 +153,8 @@ impl Login {
     fn poll(&mut self) -> Result<Value, String> {
         let mut events = Vec::new();
         while let Ok(event) = self.events.try_recv() {
-            let event = event.map_err(|_| "invalid authentication adapter event")?;
+            let event = event
+                .map_err(|detail| format!("invalid authentication adapter event: {detail}"))?;
             match event["type"].as_str() {
                 Some("prompt") => self.prompt = event["id"].as_str().map(str::to_owned),
                 Some("result") => {
@@ -135,13 +172,14 @@ impl Login {
             }
             events.push(event);
         }
-        if !self.finished
-            && self
-                .child
+        let exit_status = if !self.finished {
+            self.child
                 .try_wait()
-                .map_err(|_| "authentication adapter state unavailable")?
-                .is_some()
-        {
+                .map_err(|error| format!("authentication adapter state unavailable: {error}"))?
+        } else {
+            None
+        };
+        if let Some(exit_status) = exit_status {
             // Drain after exit: the reader may still be delivering its final line.
             match self
                 .events
@@ -153,14 +191,34 @@ impl Login {
                     events.push(event);
                 }
                 Ok(Ok(event)) => events.push(event),
-                _ => {
+                Ok(Err(detail)) => {
                     self.finished = true;
                     self.prompt = None;
-                    events.push(json!({"type":"result","ok":false,"error":"认证适配器未正常完成"}));
+                    let stderr = self.failure_stderr();
+                    events.push(json!({"type":"result","ok":false,"error":format!("认证适配器事件失败（{exit_status}）：{detail}；stderr：{stderr}")}));
+                }
+                Err(error) => {
+                    self.finished = true;
+                    self.prompt = None;
+                    let stderr = self.failure_stderr();
+                    events.push(json!({"type":"result","ok":false,"error":format!("认证适配器退出（{exit_status}）：{error}；stderr：{stderr}")}));
                 }
             }
         }
         Ok(json!({"running":!self.finished,"events":events}))
+    }
+    fn failure_stderr(&self) -> String {
+        match self.stderr.lock() {
+            Ok(value) => {
+                let detail = String::from_utf8_lossy(&value).trim().to_owned();
+                if value.len() >= 65537 {
+                    format!("{detail}；stderr 已截断（64 KiB）")
+                } else {
+                    detail
+                }
+            }
+            Err(error) => format!("stderr 缓存无法读取：{error}"),
+        }
     }
     fn reply(&mut self, payload: &Value) -> Result<Value, String> {
         let id = payload["id"]
@@ -179,11 +237,11 @@ impl Login {
             &mut self.input,
             &json!({"type":"answer","id":id,"value":value}),
         )
-        .map_err(|_| "authentication input failed")?;
+        .map_err(|error| format!("authentication input failed: {error}"))?;
         self.input
             .write_all(b"\n")
             .and_then(|_| self.input.flush())
-            .map_err(|_| "authentication input failed")?;
+            .map_err(|error| format!("authentication input failed: {error}"))?;
         self.prompt = None;
         Ok(json!({"running":true,"events":[]}))
     }
@@ -216,7 +274,7 @@ pub fn handle(
                     .as_str()
                     .ok_or("authentication source is required")?,
             )
-            .map_err(|_| "invalid authentication source")?;
+            .map_err(|error| format!("invalid authentication source: {error}"))?;
             *session = Some(Login::start(resources, home, &source)?);
             Ok(json!({"running":true,"events":[]}))
         }
@@ -226,7 +284,7 @@ pub fn handle(
                     .as_str()
                     .ok_or("authentication source is required")?,
             )
-            .map_err(|_| "invalid authentication source")?;
+            .map_err(|error| format!("invalid authentication source: {error}"))?;
             let node = source
                 .settings
                 .get("nodeBinary")
@@ -247,17 +305,34 @@ pub fn handle(
                 .arg("--provider-id")
                 .arg(&source.provider_id)
                 .arg("--source-json")
-                .arg(serde_json::to_string(&source).map_err(|_| "invalid authentication source")?)
+                .arg(
+                    serde_json::to_string(&source)
+                        .map_err(|error| format!("invalid authentication source: {error}"))?,
+                )
                 .env_clear()
                 .stdin(Stdio::null())
-                .stderr(Stdio::null())
+                .stderr(Stdio::piped())
                 .output()
-                .map_err(|_| "authentication source inspection failed")?;
-            if !output.status.success() || output.stdout.len() > 65536 {
-                return Err("authentication source inspection failed".into());
+                .map_err(|error| format!("authentication source inspection failed: {error}"))?;
+            if output.stdout.len() > 65536 {
+                return Err("authentication source inspection output exceeded 64 KiB".into());
+            }
+            if !output.status.success() {
+                let detail = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+                return Err(if detail.is_empty() {
+                    format!(
+                        "authentication source inspection failed (exit status: {})",
+                        output.status
+                    )
+                } else {
+                    format!(
+                        "authentication source inspection failed (exit status: {}): {detail}",
+                        output.status
+                    )
+                });
             }
             let metadata: Value = serde_json::from_slice(&output.stdout)
-                .map_err(|_| "invalid authentication source metadata")?;
+                .map_err(|error| format!("invalid authentication source metadata: {error}"))?;
             Ok(json!({"metadata":metadata}))
         }
         "poll" => session
@@ -289,7 +364,8 @@ fn device_id(home: &Path) -> Result<String, String> {
         Err(_) => return Err("authentication host identity unavailable".into()),
     }
     let mut bytes = [0u8; 16];
-    getrandom::fill(&mut bytes).map_err(|_| "authentication host identity generation failed")?;
+    getrandom::fill(&mut bytes)
+        .map_err(|error| format!("authentication host identity generation failed: {error}"))?;
     bytes[6] = (bytes[6] & 0x0f) | 0x40;
     bytes[8] = (bytes[8] & 0x3f) | 0x80;
     let hex: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
@@ -310,9 +386,9 @@ fn device_id(home: &Path) -> Result<String, String> {
     }
     let mut file = options
         .open(path)
-        .map_err(|_| "authentication host identity could not be saved")?;
+        .map_err(|error| format!("authentication host identity could not be saved: {error}"))?;
     file.write_all(id.as_bytes())
         .and_then(|_| file.sync_all())
-        .map_err(|_| "authentication host identity could not be saved")?;
+        .map_err(|error| format!("authentication host identity could not be saved: {error}"))?;
     Ok(id)
 }

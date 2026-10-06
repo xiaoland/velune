@@ -68,7 +68,7 @@ pub fn check_version(type_id: &str, binary: &Path, node_binary: Option<&Path>) -
     let adapter = variant(type_id).ok_or_else(|| Error::new("运行时版本类型不受支持"))?;
     let version = probe_version(adapter.family_id, binary, node_binary)?;
     if !Regex::new(adapter.version_regex)
-        .map_err(|_| Error::new("适配器版本规则无效"))?
+        .map_err(|error| Error::new(format!("适配器版本规则无效：{error}")))?
         .is_match(&version)
     {
         return Err(Error::new(format!(
@@ -102,8 +102,8 @@ try {
         .args(["--input-type=module", "--eval", script])
         .arg(binary);
     let output = bounded_output(command)?;
-    let value: serde_json::Value =
-        serde_json::from_slice(&output).map_err(|_| Error::new("Pi 安装解析未返回有效结果"))?;
+    let value: serde_json::Value = serde_json::from_slice(&output)
+        .map_err(|error| Error::new(format!("Pi 安装解析未返回有效结果：{error}")))?;
     if let Some(binary) = value["binary"]
         .as_str()
         .filter(|path| Path::new(path).is_absolute())
@@ -185,9 +185,10 @@ pub fn probe_version(family_id: &str, binary: &Path, node_binary: Option<&Path>)
             error
         }
     })?;
-    let text = std::str::from_utf8(&bytes).map_err(|_| Error::new("运行时版本不是有效文本"))?;
+    let text = std::str::from_utf8(&bytes)
+        .map_err(|error| Error::new(format!("运行时版本不是有效文本：{error}")))?;
     let extractor = Regex::new(r"\b[0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9.-]+)?\b")
-        .map_err(|_| Error::new("运行时版本规则无效"))?;
+        .map_err(|error| Error::new(format!("运行时版本规则无效：{error}")))?;
     let versions = extractor
         .find_iter(text)
         .map(|m| m.as_str())

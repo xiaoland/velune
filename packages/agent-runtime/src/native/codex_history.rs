@@ -48,7 +48,7 @@ fn pages(rpc: &mut RpcClient, method: &str, mut params: Value) -> Result<Vec<Val
         let page = rpc.request(method, &params)?;
         bytes = bytes.saturating_add(
             serde_json::to_vec(&page)
-                .map_err(|_| Error::new("Codex 历史分页无效"))?
+                .map_err(|error| Error::new(format!("Codex 历史分页无效：{error}")))?
                 .len(),
         );
         if bytes > 16 * 1024 * 1024 {

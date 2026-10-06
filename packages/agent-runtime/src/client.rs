@@ -426,7 +426,49 @@ impl Client {
             return Err(Error::Sdk("原生会话元数据查询未被扩展处理".into()));
         }
         let state = self.request(json!({"type":"get_state"}))?;
-        let messages = self.request(json!({"type":"get_messages"}))?;
+        let mut messages = self.request(json!({"type":"get_messages"}))?;
+        let metadata_event = self
+            .pending
+            .iter()
+            .rev()
+            .find(|event| {
+                event["type"] == "extension_ui_request"
+                    && event["method"] == "setStatus"
+                    && event["statusKey"] == "velune.session-metadata"
+            })
+            .ok_or_else(|| Error::Sdk("原生会话投影缺少来源身份".into()))?;
+        let metadata_text = metadata_event["statusText"]
+            .as_str()
+            .ok_or_else(|| Error::Sdk("原生会话来源身份 statusText 必须为字符串".into()))?;
+        let provenance: Value = serde_json::from_str(metadata_text)
+            .map_err(|error| Error::Sdk(format!("原生会话来源身份 JSON 无效: {error}")))?;
+        let _: Vec<crate::conversation::MessageIdentityConfirmation> =
+            serde_json::from_value(provenance["identityConfirmations"].clone())
+                .map_err(|error| Error::Sdk(format!("原生会话身份确认格式无效: {error}")))?;
+        let identities = provenance["messageIds"]
+            .as_array()
+            .ok_or_else(|| Error::Sdk("原生会话消息身份格式无效".into()))?;
+        let native_messages = messages["data"]["messages"]
+            .as_array_mut()
+            .ok_or_else(|| Error::Sdk("原生会话消息格式无效".into()))?;
+        if identities.len() != native_messages.len() {
+            return Err(Error::Sdk(format!(
+                "原生会话快照与来源身份不一致: messages={}, identities={}",
+                native_messages.len(),
+                identities.len()
+            )));
+        }
+        for (message, identity) in native_messages.iter_mut().zip(identities) {
+            let id = identity
+                .as_str()
+                .filter(|id| !id.is_empty())
+                .ok_or_else(|| Error::Sdk("原生会话消息身份为空".into()))?;
+            let object = message
+                .as_object_mut()
+                .ok_or_else(|| Error::Sdk("原生会话消息格式无效".into()))?;
+            object.insert("id".into(), Value::String(id.into()));
+        }
+        messages["identityConfirmations"] = provenance["identityConfirmations"].clone();
         Ok((state, messages))
     }
 

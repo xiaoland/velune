@@ -1,6 +1,20 @@
 //! Local application configuration use cases.
 use super::*;
 impl CoreRuntime {
+    pub(super) fn set_transcript_presentation(
+        &mut self,
+        request: &Value,
+    ) -> Result<Value, RuntimeError> {
+        let presentation = serde_json::from_value(request["payload"]["presentation"].clone())?;
+        let previous = self.transcript_presentation;
+        self.transcript_presentation = presentation;
+        if let Err(error) = self.persist() {
+            self.transcript_presentation = previous;
+            return Err(error);
+        }
+        Ok(json!(presentation))
+    }
+
     pub(super) fn set_conversation_browser_group_limit(
         &mut self,
         request: &Value,
@@ -27,13 +41,11 @@ impl CoreRuntime {
             }
             match self.summaries_for(runtime) {
                 Ok(mut summaries) => conversations.append(&mut summaries),
-                Err(_) => {
-                    tracing::warn!(target:"velune_application",event="runtime_history_read_failed",phase="history_list",failure_kind="history_unavailable",runtime_slot=slot+1);
+                Err(error) => {
+                    tracing::warn!(target:"velune_application",event="runtime_history_read_failed",phase="history_list",failure_kind="history_unavailable",runtime_slot=slot+1,detail=%error);
                     history_failures.push(crate::api::HistoryFailure {
                         runtime_id: runtime.id.clone(),
-                        detail:
-                            "此实例的会话历史无法读取，请检查运行时目录、Node 与 SDK 配置后重试。"
-                                .into(),
+                        detail: format!("此实例的会话历史无法读取：{error}"),
                     });
                 }
             }
@@ -59,6 +71,7 @@ impl CoreRuntime {
             "runtimeTypes": runtime_types(),
             "modelTemplates":self.model_templates,
             "conversationBrowserGroupLimit":self.conversation_browser_group_limit,
+            "transcriptPresentation":self.transcript_presentation,
             "providerImportTypes": [provider_import::descriptor()],
             "protocols": [
                 {"id":"chatCompletionsV1","name":"OpenAI Chat Completions v1","supported":true},
@@ -293,6 +306,7 @@ impl CoreRuntime {
             gateways: self.gateways.clone(),
             runtime_instances: self.runtime_instances.clone(),
             conversation_browser_group_limit: self.conversation_browser_group_limit,
+            transcript_presentation: self.transcript_presentation,
         })
     }
 }

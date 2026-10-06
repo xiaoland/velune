@@ -122,18 +122,26 @@ struct Diagnostic {
 struct DiagnosticEnvelope {
     contract_version: u64,
     diagnostic: Diagnostic,
+    #[serde(rename = "detail", default)]
+    _detail: String,
 }
 #[derive(Debug, Clone)]
 pub struct SourceReadError {
     diagnostic: Diagnostic,
     exit_status: Option<i32>,
+    detail: String,
 }
 impl SourceReadError {
     fn new(code: SourceDiagnosticCode, phase: SourcePhase) -> Self {
         Self {
             diagnostic: Diagnostic { code, phase },
             exit_status: None,
+            detail: String::new(),
         }
+    }
+    fn with_detail(mut self, detail: impl Into<String>) -> Self {
+        self.detail = detail.into();
+        self
     }
     pub fn code(&self) -> &'static str {
         match self.diagnostic.code {
@@ -175,6 +183,9 @@ impl SourceReadError {
     }
     pub fn exit_status(&self) -> Option<i32> {
         self.exit_status
+    }
+    pub fn detail(&self) -> &str {
+        &self.detail
     }
     pub fn message(&self) -> &'static str {
         match self.diagnostic.code {
@@ -227,7 +238,11 @@ impl SourceReadError {
 }
 impl std::fmt::Display for SourceReadError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.message())
+        f.write_str(self.message())?;
+        if !self.detail.is_empty() {
+            write!(f, " 原始错误：{}", self.detail)?;
+        }
+        Ok(())
     }
 }
 impl std::error::Error for SourceReadError {}
@@ -294,19 +309,26 @@ fn read_inner(source: &Source, resources_directory: &Path) -> Result<Snapshot, S
         return Err(SourceReadError::new(
             SourceDiagnosticCode::HelperUnavailable,
             SourcePhase::Sdk,
-        ));
+        )
+        .with_detail(format!("helper 路径：{}", helper.display())));
     }
     let output = Command::new(node)
         .arg(&helper)
         .arg("--source-json")
-        .arg(serde_json::to_string(source).map_err(|_| {
+        .arg(serde_json::to_string(source).map_err(|error| {
             SourceReadError::new(SourceDiagnosticCode::InvalidSource, SourcePhase::Input)
+                .with_detail(error.to_string())
         })?)
         .env_clear()
         .output()
-        .map_err(|_| SourceReadError::new(SourceDiagnosticCode::SpawnFailed, SourcePhase::Spawn))?;
+        .map_err(|error| {
+            SourceReadError::new(SourceDiagnosticCode::SpawnFailed, SourcePhase::Spawn).with_detail(
+                format!("{}；Node：{}；helper：{}", error, node, helper.display()),
+            )
+        })?;
     if !output.status.success() {
-        // Parse only the bounded, allowlisted envelope. Never surface child stderr.
+        // The envelope supplies stable classification; the complete stderr is
+        // retained as the local user's actionable underlying cause.
         let diagnostic = (output.stderr.len() <= 8192)
             .then(|| serde_json::from_slice::<DiagnosticEnvelope>(&output.stderr).ok())
             .flatten()
@@ -319,16 +341,22 @@ fn read_inner(source: &Source, resources_directory: &Path) -> Result<Snapshot, S
         return Err(SourceReadError {
             diagnostic,
             exit_status: output.status.code(),
+            detail: String::from_utf8_lossy(&output.stderr).trim().to_owned(),
         });
     }
-    let snapshot: Snapshot = serde_json::from_slice(&output.stdout).map_err(|_| {
+    let snapshot: Snapshot = serde_json::from_slice(&output.stdout).map_err(|error| {
         SourceReadError::new(SourceDiagnosticCode::InvalidOutput, SourcePhase::Protocol)
+            .with_detail(error.to_string())
     })?;
     if snapshot.contract_version != 1 || snapshot.sdk_version != "1.0.2" {
         return Err(SourceReadError::new(
             SourceDiagnosticCode::InvalidOutput,
             SourcePhase::Protocol,
-        ));
+        )
+        .with_detail(format!(
+            "contractVersion={}，sdkVersion={}",
+            snapshot.contract_version, snapshot.sdk_version
+        )));
     }
     Ok(snapshot)
 }

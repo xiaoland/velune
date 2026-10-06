@@ -54,6 +54,7 @@ final class Transport: @unchecked Sendable {
         return URL(fileURLWithPath: configured, isDirectory: true).standardizedFileURL
     }
 
+    func setTranscriptPresentation(_ presentation: BindingTranscriptPresentation) throws -> BindingTranscriptPresentation { try withApplication("setTranscriptPresentation") { try $0.setTranscriptPresentation(presentation: presentation) } }
     func setConversationBrowserGroupLimit(_ limit: UInt32) throws -> UInt32 { try withApplication("setConversationBrowserGroupLimit") { try $0.setConversationBrowserGroupLimit(limit: limit) } }
     func runtimeDiscoveryHints(userHome: String, overrides: [String: String]) throws -> [BindingRuntimeDiscoveryHint] { try withApplication("runtimeDiscoveryHints") { try $0.runtimeDiscoveryHints(userHome: userHome, overrides: overrides) } }
     func discoverRuntimes(_ probes: [BindingRuntimeDiscoveryProbe]) throws -> [BindingRuntimeDiscoveryCandidate] { try withApplication("discoverRuntimes") { try $0.discoverRuntimes(probes: probes) } }
@@ -113,10 +114,7 @@ final class Transport: @unchecked Sendable {
     private func map(_ error: Error) -> TransportError {
         if let error = error as? TransportError { return error }
         if let error = error as? BindingError { return Self.transportError(for: error) }
-        if let localized = error as? LocalizedError, let description = localized.errorDescription {
-            return .rejected(description)
-        }
-        return .rejected(error.localizedDescription)
+        return .rejected(Self.fullFailureDetail(error))
     }
 
     private func category(for error: Error) -> String {
@@ -160,17 +158,49 @@ final class Transport: @unchecked Sendable {
         }
     }
 
+    private static func fullFailureDetail(_ error: Error) -> String {
+        if let error = error as? BindingError {
+            switch error {
+            case .Diagnostic(_, let detail, _, _, _), .Invalid(let detail), .Unsupported(let detail), .Io(let detail), .Contract(let detail): return detail
+            case .Closed: return "本地核心已关闭"
+            case .Unavailable: return "本地核心不可用"
+            }
+        }
+        var details: [String] = []
+        var visited: Set<ObjectIdentifier> = []
+        var retainedCauses: [NSError] = []
+        var current: Error? = error
+        var depth = 0
+        while let cause = current {
+            guard depth < 16 else { details.append("原因链超过 16 层，已停止展开。"); break }
+            let native = cause as NSError
+            guard visited.insert(ObjectIdentifier(native)).inserted else { details.append("原因链出现循环，已停止展开。"); break }
+            retainedCauses.append(native)
+            details.append("\(String(reflecting: type(of: cause))) · \(native.domain)（\(native.code)）")
+            if Mirror(reflecting: cause).displayStyle != .class { details.append(String(reflecting: cause)) }
+            let localized = cause as? LocalizedError
+            let description = localized?.errorDescription ?? native.localizedDescription
+            details.append(description)
+            if let reason = localized?.failureReason ?? native.localizedFailureReason { details.append("原因：" + reason) }
+            if let recovery = localized?.recoverySuggestion ?? native.localizedRecoverySuggestion { details.append("建议：" + recovery) }
+            current = native.userInfo[NSUnderlyingErrorKey] as? Error
+            depth += 1
+        }
+        return withExtendedLifetime(retainedCauses) { details.joined(separator: "\n") }
+    }
+
     private func logFailure(operation: String, localCorrelation: String?, error: Error, categoryOverride: String? = nil) {
+        let detail = Self.fullFailureDetail(error)
         let local = localCorrelation.map { " localCorrelation=\($0)" } ?? ""
         if let diagnostic = error as? BindingError {
             switch diagnostic {
             case .Diagnostic(let kind, _, let code, let phase, let operationID):
-                Self.logger.error("operation=\(operation, privacy: .public)\(local, privacy: .public) kind=\(Self.kindName(kind), privacy: .public) code=\(code, privacy: .public) phase=\(phase, privacy: .public) operationId=\(operationID, privacy: .public)")
+                Self.logger.error("operation=\(operation, privacy: .public)\(local, privacy: .public) kind=\(Self.kindName(kind), privacy: .public) code=\(code, privacy: .public) phase=\(phase, privacy: .public) operationId=\(operationID, privacy: .public) detail=\(detail, privacy: .public)")
             default:
-                Self.logger.error("operation=\(operation, privacy: .public)\(local, privacy: .public) category=\(categoryOverride ?? self.category(for: error), privacy: .public)")
+                Self.logger.error("operation=\(operation, privacy: .public)\(local, privacy: .public) category=\(categoryOverride ?? self.category(for: error), privacy: .public) detail=\(detail, privacy: .public)")
             }
         } else {
-            Self.logger.error("operation=\(operation, privacy: .public)\(local, privacy: .public) category=\(categoryOverride ?? self.category(for: error), privacy: .public)")
+            Self.logger.error("operation=\(operation, privacy: .public)\(local, privacy: .public) category=\(categoryOverride ?? self.category(for: error), privacy: .public) detail=\(detail, privacy: .public)")
         }
     }
 

@@ -34,6 +34,9 @@ impl Error {
     pub(crate) fn code(&self) -> &'static str {
         self.code
     }
+    pub(crate) fn detail(&self) -> &str {
+        &self.detail
+    }
 }
 pub type Result<T> = std::result::Result<T, Error>;
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -109,7 +112,8 @@ impl NativeSession {
         )?;
         let rpc = Self::spawn_rpc(&config)?;
         let mut bytes = [0; 8];
-        getrandom::fill(&mut bytes).map_err(|_| Error::new("运行时会话身份生成失败"))?;
+        getrandom::fill(&mut bytes)
+            .map_err(|error| Error::new(format!("运行时会话身份生成失败：{error}")))?;
         let mut session = Self {
             config,
             rpc,
@@ -336,6 +340,8 @@ impl NativeSession {
             model_record_key: None,
             run_state: RunState::Idle,
             messages: history,
+            transcript_turns: Vec::new(),
+            message_identity_confirmations: Vec::new(),
             pending_interactions: Vec::new(),
             actions: ConversationActions {
                 can_send: true,

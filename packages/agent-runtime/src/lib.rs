@@ -15,3 +15,5 @@ pub mod provider_source;
 pub mod history;
 pub mod native;
 pub mod version;
+
+pub mod transcript;

@@ -6,18 +6,19 @@ import { isAbsolute, join } from "node:path";
 import { resolvePiSdk } from "./pi_sdk.mjs";
 import { resolveSource } from "./pi_auth.mjs";
 
-// Failures contain only allowlisted codes and stages, never SDK messages or source values.
+// The protocol keeps stable classification and the original local cause so the
+// application can diagnose a user-owned installation without reading it here.
 class SourceDiagnostic extends Error {
-  constructor(code, stage) { super(code); this.code = code; this.stage = stage; }
+  constructor(code, stage, detail = code) { super(detail); this.code = code; this.stage = stage; }
 }
 let stage = "input";
-const fail = (code, failureStage = stage) => { throw new SourceDiagnostic(code, failureStage); };
+const fail = (code, failureStage = stage, detail = code) => { throw new SourceDiagnostic(code, failureStage, detail); };
 
 async function main() {
   const args = process.argv.slice(2);
   const arg = (name) => { const i = args.indexOf(name); return i < 0 ? undefined : args[i + 1]; };
   let source;
-  try { source = JSON.parse(arg("--source-json") ?? "{}"); } catch { fail("invalid_source", "input"); }
+  try { source = JSON.parse(arg("--source-json") ?? "{}"); } catch (error) { fail("invalid_source", "input", error instanceof Error ? error.message : String(error)); }
   const nodeVersion = process.versions.node.split(".").map(Number);
   if (nodeVersion[0] < 22 || (nodeVersion[0] === 22 && nodeVersion[1] < 19)) fail("unsupported_node", "node");
   const reject = () => fail("invalid_source");
@@ -33,9 +34,10 @@ async function main() {
   stage = "source_directory";
   let directory;
   try { directory = await stat(sourceDir); } catch (error) {
-    if (error.code === "ENOENT") fail("source_directory_missing");
-    if (["EACCES","EPERM"].includes(error.code)) fail("source_directory_permission");
-    fail("source_directory_unavailable");
+    const detail = error instanceof Error ? `${error.code ?? "io"}: ${error.message}` : String(error);
+    if (error.code === "ENOENT") fail("source_directory_missing", stage, detail);
+    if (["EACCES","EPERM"].includes(error.code)) fail("source_directory_permission", stage, detail);
+    fail("source_directory_unavailable", stage, detail);
   }
   if (!directory.isDirectory()) fail("source_directory_not_directory");
   stage = "sdk";
@@ -263,6 +265,7 @@ async function main() {
 }
 main().catch((error) => {
   const diagnostic = error instanceof SourceDiagnostic ? {code:error.code,phase:error.stage} : {code:"adapter_failed",phase:stage};
-  process.stderr.write(JSON.stringify({contractVersion:1,diagnostic}) + "\n");
+  const detail = error instanceof Error ? `${error.name}: ${error.message}\n${error.stack ?? ""}` : String(error);
+  process.stderr.write(JSON.stringify({contractVersion:1,diagnostic,detail}) + "\n");
   process.exitCode = 1;
 });

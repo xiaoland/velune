@@ -43,6 +43,20 @@ enum MessageBlock: Codable, Sendable, Equatable {
     case notice(String)
 }
 
+struct MessageIdentityConfirmation: Codable, Sendable, Equatable {
+    var previousID: String
+    var currentID: String
+}
+
+struct TranscriptTurn: Codable, Sendable, Equatable, Identifiable {
+    var id: String
+    var userMessageID: String
+    var workMessageIDs: [String]
+    var lastMessageID: String?
+    var durationMs: UInt64?
+    var isRunning: Bool
+}
+
 struct ConversationSnapshot: Codable, Sendable, Equatable {
     var revision: UInt64
     var conversation: Conversation
@@ -50,9 +64,11 @@ struct ConversationSnapshot: Codable, Sendable, Equatable {
     var modelRecordKey: String?
     var runState: RunState
     var messages: [Message]
+    var transcriptTurns: [TranscriptTurn] = []
+    var messageIdentityConfirmations: [MessageIdentityConfirmation] = []
     var pendingInteractions: [RuntimeInteraction] = []
     var actions: ConversationActions
-    enum CodingKeys: String, CodingKey { case revision, conversation, runState, messages, pendingInteractions, actions; case modelRecordKey = "modelRecordKey", contextRuntimeID = "contextRuntimeId" }
+    enum CodingKeys: String, CodingKey { case revision, conversation, runState, messages, transcriptTurns, messageIdentityConfirmations, pendingInteractions, actions; case modelRecordKey = "modelRecordKey", contextRuntimeID = "contextRuntimeId" }
 }
 
 

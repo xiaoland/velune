@@ -15,15 +15,15 @@ pub(crate) struct Diagnostics {
 impl Diagnostics {
     pub(crate) fn open(home: &Path) -> Result<Self, BindingError> {
         let directory = home.join("logs");
-        std::fs::create_dir_all(&directory).map_err(|_| BindingError::Io {
-            detail: "无法创建本地诊断日志目录".into(),
+        std::fs::create_dir_all(&directory).map_err(|error| BindingError::Io {
+            detail: format!("无法创建本地诊断日志目录 {}：{error}", directory.display()),
         })?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700)).map_err(
-                |_| BindingError::Io {
-                    detail: "无法设置诊断日志目录权限".into(),
+                |error| BindingError::Io {
+                    detail: format!("无法设置诊断日志目录权限：{error}"),
                 },
             )?;
         }
@@ -33,11 +33,11 @@ impl Diagnostics {
             .filename_suffix("jsonl")
             .max_log_files(7)
             .build(directory)
-            .map_err(|_| BindingError::Io {
-                detail: "无法打开本地诊断日志".into(),
+            .map_err(|error| BindingError::Io {
+                detail: format!("无法打开本地诊断日志：{error}"),
             })?;
-        // Only Velune's explicitly selected fields enter this sink. Dependency
-        // traces can contain URLs or headers and are never enabled here.
+        // Only Velune's explicitly selected fields enter this sink; dependency
+        // spans are not subscribed by this application-owned layer.
         let layer = tracing_subscriber::fmt::layer()
             .json()
             .with_ansi(false)
@@ -90,6 +90,7 @@ impl Diagnostics {
                         event = "operation_failed",
                         code,
                         phase,
+                        detail = detail.as_str(),
                         failure_kind = kind.as_str(),
                         elapsed_ms = started.elapsed().as_millis() as u64
                     );

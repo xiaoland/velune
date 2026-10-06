@@ -9,6 +9,8 @@ pub struct PiProjection {
     pub snapshot: Option<ConversationSnapshot>,
     next_message_id: u64,
     active_message_id: Option<String>,
+    active_native_message: Option<Value>,
+    next_native_identity: Option<String>,
     history_synchronized: bool,
 }
 
@@ -23,6 +25,8 @@ impl PiProjection {
                 model_record_key: None,
                 run_state: RunState::Idle,
                 messages: Vec::new(),
+                transcript_turns: Vec::new(),
+                message_identity_confirmations: Vec::new(),
                 pending_interactions: Vec::new(),
                 actions: ConversationActions {
                     can_send: true,
@@ -32,6 +36,8 @@ impl PiProjection {
             }),
             next_message_id: 0,
             active_message_id: None,
+            active_native_message: None,
+            next_native_identity: None,
             history_synchronized: false,
         }
     }
@@ -58,30 +64,36 @@ impl PiProjection {
         let mut projected = Vec::new();
         for (index, message) in messages.iter().enumerate() {
             if message["role"] == "toolResult" {
-                apply_tool_result(&mut projected, message);
+                apply_tool_result(&mut projected, message, message["id"].as_str());
             } else if let Some(message) = message_from_pi(message, format!("message-{index}")) {
                 projected.push(message);
             }
         }
         self.history_synchronized = true;
-        self.next_message_id = messages.len() as u64;
+        let mut confirmed: std::collections::BTreeSet<_> = snapshot
+            .message_identity_confirmations
+            .iter()
+            .map(|confirmation| confirmation.previous_id.clone())
+            .collect();
+        if let Some(confirmations) = response["identityConfirmations"].as_array() {
+            for confirmation in confirmations {
+                let confirmation = serde_json::from_value::<
+                    crate::conversation::MessageIdentityConfirmation,
+                >(confirmation.clone())
+                .expect("Pi client validates identity confirmations at the RPC boundary");
+                if confirmed.insert(confirmation.previous_id.clone()) {
+                    snapshot.message_identity_confirmations.push(confirmation);
+                }
+            }
+        }
+        let native_ids: std::collections::BTreeSet<_> = projected
+            .iter()
+            .map(|message| message.id.as_str())
+            .collect();
+        snapshot
+            .message_identity_confirmations
+            .retain(|confirmation| native_ids.contains(confirmation.current_id.as_str()));
         snapshot.messages = projected;
-        refresh_title(&mut snapshot);
-        snapshot.revision = snapshot.revision.saturating_add(1);
-        self.snapshot = Some(snapshot);
-    }
-
-    pub fn append_user(&mut self, text: &str) {
-        let Some(mut snapshot) = self.snapshot.take() else {
-            return;
-        };
-        snapshot.messages.push(Message {
-            id: format!("message-{}", self.next_message_id),
-            role: crate::conversation::MessageRole::User,
-            timestamp_unix_ms: None,
-            blocks: vec![MessageBlock::Text { text: text.into() }],
-        });
-        self.next_message_id += 1;
         refresh_title(&mut snapshot);
         snapshot.revision = snapshot.revision.saturating_add(1);
         self.snapshot = Some(snapshot);
@@ -104,30 +116,50 @@ impl PiProjection {
                 snapshot.actions.can_send = false;
                 snapshot.actions.can_cancel = true;
             }
-            "message_start" | "message_update" | "message_end" => {
+            "message_update" => {
+                // Pi 1.0.2 JSON/RPC deliberately omits cumulative `message` and
+                // `partial`. Reconstruct its native content from ordered deltas.
+                if let (Some(id), Some(native)) =
+                    (&self.active_message_id, &mut self.active_native_message)
+                {
+                    apply_assistant_delta(native, &event["assistantMessageEvent"]);
+                    if let Some(message) = message_from_pi(native, id.clone()) {
+                        if let Some(existing) = snapshot.messages.iter_mut().find(|m| m.id == *id) {
+                            *existing = message;
+                        } else {
+                            snapshot.messages.push(message);
+                        }
+                    }
+                }
+            }
+            "message_start" | "message_end" => {
                 let native = &event["message"];
                 if native["role"] == "toolResult" {
                     if event["type"] == "message_start" {
-                        self.next_message_id += 1;
+                        self.active_message_id = self.next_native_identity.take();
                     }
-                    apply_tool_result(&mut snapshot.messages, native);
+                    apply_tool_result(
+                        &mut snapshot.messages,
+                        native,
+                        self.active_message_id.as_deref(),
+                    );
+                    if event["type"] == "message_end" {
+                        self.active_message_id = None;
+                    }
                 } else {
                     let id = if event["type"] == "message_start" {
-                        let id = native["id"].as_str().map(str::to_owned).unwrap_or_else(|| {
-                            // User submission is already projected after RPC acceptance.
-                            if native["role"] == "user"
-                                && snapshot
-                                    .messages
-                                    .last()
-                                    .is_some_and(|m| m.role == MessageRole::User)
-                            {
-                                return snapshot.messages.last().expect("checked").id.clone();
-                            }
-                            let id = format!("message-{}", self.next_message_id);
-                            self.next_message_id += 1;
-                            id
-                        });
+                        let id = self
+                            .next_native_identity
+                            .take()
+                            .or_else(|| native["id"].as_str().map(str::to_owned))
+                            .unwrap_or_else(|| {
+                                let id = format!("pi-unconfirmed-{}", self.next_message_id);
+                                self.next_message_id += 1;
+                                id
+                            });
                         self.active_message_id = Some(id.clone());
+                        self.active_native_message =
+                            (native["role"] == "assistant").then(|| native.clone());
                         id
                     } else {
                         self.active_message_id
@@ -143,6 +175,7 @@ impl PiProjection {
                     }
                     if event["type"] == "message_end" {
                         self.active_message_id = None;
+                        self.active_native_message = None;
                     }
                 }
             }
@@ -172,6 +205,14 @@ impl PiProjection {
                         }],
                     });
                 }
+            }
+            "extension_ui_request"
+                if event["method"] == "setStatus"
+                    && event["statusKey"] == "velune.message-identity" =>
+            {
+                self.next_native_identity = event["statusText"].as_str().map(str::to_owned);
+                self.snapshot = Some(snapshot);
+                return;
             }
             "extension_ui_request"
                 if event["method"] == "setStatus"
@@ -222,6 +263,8 @@ impl PiProjection {
                 snapshot.actions.can_send = true;
                 snapshot.actions.can_cancel = false;
                 self.active_message_id = None;
+                self.active_native_message = None;
+                self.next_native_identity = None;
             }
             "error" | "extension_error" | "velune_error" | "velune_closed" => {
                 snapshot.run_state = RunState::Failed;
@@ -248,6 +291,68 @@ impl PiProjection {
     }
 }
 
+fn apply_assistant_delta(message: &mut Value, event: &Value) {
+    if event["type"] == "done" {
+        *message = event["message"].clone();
+        return;
+    }
+    if event["type"] == "error" {
+        *message = event["error"].clone();
+        return;
+    }
+    let Some(index) = event["contentIndex"]
+        .as_u64()
+        .and_then(|index| usize::try_from(index).ok())
+    else {
+        return;
+    };
+    let Some(content) = message["content"].as_array_mut() else {
+        return;
+    };
+    // The fixed protocol indexes blocks consecutively; an invalid index cannot
+    // allocate an unbounded sparse message or silently attach to another block.
+    if index > content.len() {
+        tracing::error!(target: "velune_agent_runtime", event="pi_stream_block_index_invalid", index, expected_max=content.len(), detail="Pi 流式块索引跳过已有内容范围");
+        return;
+    }
+    if index == content.len() {
+        content.push(Value::Null);
+    }
+    let block = &mut content[index];
+    match event["type"].as_str() {
+        Some("text_start") => *block = serde_json::json!({"type":"text","text":""}),
+        Some("thinking_start") => *block = serde_json::json!({"type":"thinking","thinking":""}),
+        Some("text_delta" | "thinking_delta") => {
+            let key = if event["type"] == "text_delta" {
+                "text"
+            } else {
+                "thinking"
+            };
+            if let Some(delta) = event["delta"].as_str()
+                && let Some(text) = block[key].as_str()
+            {
+                block[key] = Value::String(format!("{text}{delta}"));
+            }
+        }
+        Some("text_end" | "thinking_end") => {
+            let key = if event["type"] == "text_end" {
+                "text"
+            } else {
+                "thinking"
+            };
+            if let Some(text) = event["content"].as_str() {
+                block[key] = Value::String(text.into());
+            }
+        }
+        Some("toolcall_start") => {
+            *block =
+                serde_json::json!({"type":"toolCall","id":event["id"],"name":event["toolName"]})
+        }
+        Some("toolcall_end") => *block = event["toolCall"].clone(),
+        _ => {} // Tool argument fragments are not a separate presentation block.
+    }
+}
+
 fn refresh_title(snapshot: &mut ConversationSnapshot) {
     snapshot
         .conversation
@@ -265,6 +370,9 @@ fn text_content(value: &Value) -> Option<String> {
         return Some(text.into());
     }
     let content = value.get("content").unwrap_or(value);
+    if let Some(text) = content.as_str() {
+        return Some(text.into());
+    }
     content.as_array().map(|blocks| {
         blocks
             .iter()
@@ -302,7 +410,7 @@ fn update_tool(
     }
     false
 }
-fn apply_tool_result(messages: &mut Vec<Message>, native: &Value) {
+fn apply_tool_result(messages: &mut Vec<Message>, native: &Value, identity: Option<&str>) {
     let id = native["toolCallId"].as_str();
     let state = if native["isError"] == true {
         ToolState::Failed
@@ -312,7 +420,9 @@ fn apply_tool_result(messages: &mut Vec<Message>, native: &Value) {
     let output = text_content(&native["content"]);
     if !update_tool(messages, id, state.clone(), output.clone()) {
         messages.push(Message {
-            id: format!("tool-result-{}", messages.len()),
+            id: identity
+                .map(str::to_owned)
+                .unwrap_or_else(|| format!("tool-result-{}", messages.len())),
             role: MessageRole::Tool,
             timestamp_unix_ms: native["timestamp"].as_i64(),
             blocks: vec![MessageBlock::Tool {
@@ -339,12 +449,24 @@ fn message_from_pi(message: &Value, fallback_id: String) -> Option<Message> {
     if let Some(content) = message["content"].as_array() {
         for block in content {
             match block["type"].as_str().unwrap_or_default() {
-                "text" => blocks.push(MessageBlock::Text {
-                    text: block["text"].as_str().unwrap_or_default().into(),
-                }),
-                "thinking" => blocks.push(MessageBlock::Reasoning {
-                    text: block["thinking"].as_str().unwrap_or_default().into(),
-                }),
+                "text"
+                    if block["text"]
+                        .as_str()
+                        .is_some_and(|text| !text.trim().is_empty()) =>
+                {
+                    blocks.push(MessageBlock::Text {
+                        text: block["text"].as_str().unwrap_or_default().into(),
+                    })
+                }
+                "thinking"
+                    if block["thinking"]
+                        .as_str()
+                        .is_some_and(|text| !text.trim().is_empty()) =>
+                {
+                    blocks.push(MessageBlock::Reasoning {
+                        text: block["thinking"].as_str().unwrap_or_default().into(),
+                    })
+                }
                 "toolCall" => blocks.push(MessageBlock::Tool {
                     tool_id: block["id"].as_str().map(str::to_owned),
                     title: block["name"].as_str().unwrap_or("工具").into(),
@@ -357,8 +479,17 @@ fn message_from_pi(message: &Value, fallback_id: String) -> Option<Message> {
                 _ => {}
             }
         }
-    } else if let Some(text) = message["content"].as_str() {
+    } else if let Some(text) = message["content"]
+        .as_str()
+        .filter(|text| !text.trim().is_empty())
+    {
         blocks.push(MessageBlock::Text { text: text.into() });
+    }
+    if let Some(error) = message["errorMessage"]
+        .as_str()
+        .filter(|error| !error.is_empty())
+    {
+        blocks.push(MessageBlock::Notice { text: error.into() });
     }
     (!blocks.is_empty()).then(|| Message {
         id,

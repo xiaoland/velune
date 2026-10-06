@@ -5,6 +5,7 @@ import VeluneBindings
 
 @MainActor
 final class AppStore: ObservableObject {
+    @Published private(set) var transcriptPresentation: BindingTranscriptPresentation = .conversation
     @Published private(set) var conversationBrowserGroupLimit = 20
     @Published private(set) var conversations: [Conversation] = []
     @Published private(set) var selectedConversationIDs: Set<String> = []
@@ -128,6 +129,11 @@ final class AppStore: ObservableObject {
     func refreshConversations() {
         guard !isPreview, !isBusy, let transport else { return }
         enqueue({ try transport.list() }) { [weak self] in self?.applyList($0) }
+    }
+    func setTranscriptPresentation(_ presentation: BindingTranscriptPresentation) {
+        if isPreview { transcriptPresentation = presentation; return }
+        guard let transport else { recordProblem("本地核心未配置"); return }
+        enqueue({ try transport.setTranscriptPresentation(presentation) }) { [weak self] in self?.transcriptPresentation = $0 }
     }
     func setConversationBrowserGroupLimit(_ limit: Int) {
         guard let value = UInt32(exactly: limit), value > 0 else { recordProblem("每组展示数量须为正整数"); return }
@@ -485,6 +491,7 @@ final class AppStore: ObservableObject {
     private func resetProjection() { problems.removeAll { $0.activityKey?.hasPrefix("poll:") == true }; generation += 1; snapshot = nil; projectionRuntimeID = nil; selectedConversationID = nil; pendingConversationID = nil; transcript.reset(); activity = nil }
     private func applyList(_ data: BindingConfigurationSnapshot) {
         let mapped = BindingMapping.configuration(data)
+        transcriptPresentation = data.transcriptPresentation
         conversationBrowserGroupLimit = Int(data.conversationBrowserGroupLimit)
         conversations = mapped.conversations; selectedConversationIDs.formIntersection(conversations.map(\.id))
         if let saved = mapped.gateways.first(where: { $0.id == gateway.id }) ?? mapped.gateways.first { gateway = saved; hasGateway = true }
@@ -531,7 +538,7 @@ final class AppStore: ObservableObject {
     private func apply(_ value: ConversationSnapshot?, preserveSelection: Bool = false) {
         guard let value else { return }
         problems.removeAll { $0.activityKey?.hasPrefix("poll:") == true && $0.activityKey != "poll:" + value.contextRuntimeID }
-        snapshot = value; projectionRuntimeID = value.contextRuntimeID; selectedConversationID = value.conversation.id; if !preserveSelection && selectedConversationIDs.count <= 1 { selectedConversationIDs = [value.conversation.id] }; transcript.apply(value.messages)
+        snapshot = value; projectionRuntimeID = value.contextRuntimeID; selectedConversationID = value.conversation.id; if !preserveSelection && selectedConversationIDs.count <= 1 { selectedConversationIDs = [value.conversation.id] }; transcript.apply(value.messages, turns: value.transcriptTurns, confirmations: value.messageIdentityConfirmations)
         if let index = conversations.firstIndex(where: { $0.id == value.conversation.id }) { if conversations[index] != value.conversation { conversations[index] = value.conversation } }
         else { conversations.insert(value.conversation, at: 0) }
         activity = value.runState == .running ? "正在思考与执行" : value.runState == .stopping ? "正在停止" : nil

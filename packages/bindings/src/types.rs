@@ -94,6 +94,8 @@ pub struct BindingConversationSnapshot {
     pub model_record_key: Option<String>,
     pub run_state: BindingRunState,
     pub messages: Vec<BindingMessage>,
+    pub transcript_turns: Vec<BindingTranscriptTurn>,
+    pub message_identity_confirmations: Vec<BindingMessageIdentityConfirmation>,
     #[serde(default)]
     pub pending_interactions: Vec<BindingRuntimeInteraction>,
     pub actions: BindingConversationActions,
@@ -269,6 +271,7 @@ pub struct BindingConfigurationSnapshot {
     pub runtime_types: Vec<BindingRuntimeTypeDescriptor>,
     pub model_templates: Vec<BindingModelTemplate>,
     pub conversation_browser_group_limit: u32,
+    pub transcript_presentation: BindingTranscriptPresentation,
     pub provider_import_types: Vec<BindingRuntimeTypeDescriptor>,
     pub protocols: Vec<BindingProtocolDescriptor>,
     #[serde(rename = "selectedRuntimeInstanceID")]
@@ -568,4 +571,29 @@ fn display_conversation_title<'de, D: serde::Deserializer<'de>>(
 ) -> Result<String, D::Error> {
     let title = velune_application::conversation::ConversationTitle::deserialize(deserializer)?;
     Ok(title.display_text().into())
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, uniffi::Enum)]
+#[serde(rename_all = "camelCase")]
+pub enum BindingTranscriptPresentation {
+    Conversation,
+    UserOutline,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BindingTranscriptTurn {
+    pub id: String,
+    pub user_message_id: String,
+    pub work_message_ids: Vec<String>,
+    pub last_message_id: Option<String>,
+    pub duration_ms: Option<u64>,
+    pub is_running: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BindingMessageIdentityConfirmation {
+    pub previous_id: String,
+    pub current_id: String,
 }

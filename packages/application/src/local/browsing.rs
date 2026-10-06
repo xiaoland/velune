@@ -133,6 +133,8 @@ impl CoreRuntime {
             model_record_key: None,
             run_state: RunState::Idle,
             messages: Vec::new(),
+            transcript_turns: Vec::new(),
+            message_identity_confirmations: Vec::new(),
             pending_interactions: Vec::new(),
             actions: ConversationActions {
                 can_send: false,
@@ -294,7 +296,7 @@ impl CoreRuntime {
                     .as_mut()
                     .expect("started Pi")
                     .request(json!({"type":"new_session"}))
-                    .map_err(|_| RuntimeError::invalid("conversation create"))?;
+                    .map_err(|error| RuntimeError::context("conversation create", error))?;
             }
             if !is_new {
                 self.pi

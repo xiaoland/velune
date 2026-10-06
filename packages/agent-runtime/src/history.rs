@@ -44,10 +44,19 @@ impl HistoryFailureKind {
 pub struct HistoryError {
     kind: HistoryFailureKind,
     phase: &'static str,
+    detail: String,
 }
 impl HistoryError {
     fn new(kind: HistoryFailureKind, phase: &'static str) -> Self {
-        Self { kind, phase }
+        Self {
+            kind,
+            phase,
+            detail: String::new(),
+        }
+    }
+    fn with_detail(mut self, detail: impl Into<String>) -> Self {
+        self.detail = detail.into();
+        self
     }
     pub fn kind(&self) -> HistoryFailureKind {
         self.kind
@@ -58,8 +67,17 @@ impl HistoryError {
     pub fn phase(&self) -> &'static str {
         self.phase
     }
-    pub fn safe_message(&self) -> String {
-        format!("会话历史读取失败（{}）", self.code())
+    pub fn full_message(&self) -> String {
+        let base = format!(
+            "会话历史读取失败（阶段：{}，类别：{}）",
+            self.phase(),
+            self.code()
+        );
+        if self.detail.is_empty() {
+            base
+        } else {
+            format!("{base} 原始错误：{}", self.detail)
+        }
     }
 }
 
@@ -105,16 +123,18 @@ struct Read {
 #[derive(Deserialize)]
 struct BridgeFailure {
     #[serde(rename = "code")]
-    _code: String,
+    code: String,
+    #[serde(default)]
+    detail: String,
 }
-fn bridge_error(code: &str, phase: &'static str) -> HistoryError {
+fn bridge_error(code: &str, detail: &str, phase: &'static str) -> HistoryError {
     let kind = match code {
         "session_not_found" => HistoryFailureKind::SessionNotFound,
         "ambiguous_session" => HistoryFailureKind::AmbiguousSession,
         "provider_read" => HistoryFailureKind::ProviderRead,
         _ => HistoryFailureKind::BridgeContract,
     };
-    HistoryError::new(kind, phase)
+    HistoryError::new(kind, phase).with_detail(detail)
 }
 fn execute(
     config: &HistoryConfig,
@@ -141,8 +161,10 @@ fn execute(
         }
     }
     let request = json!({"operation":operation,"provider":config.provider,"home":config.home,"roots":[config.root],"nativeId":native_id});
-    let input = serde_json::to_vec(&request)
-        .map_err(|_| HistoryError::new(HistoryFailureKind::BridgeContract, "request"))?;
+    let input = serde_json::to_vec(&request).map_err(|error| {
+        HistoryError::new(HistoryFailureKind::BridgeContract, "request")
+            .with_detail(error.to_string())
+    })?;
     let mut command = Command::new(&config.node_binary);
     command.arg(config.resources_directory.join("huihua_sessions.mjs"));
     bounded_process(command, Some(input), 16 * 1024 * 1024).map_err(|error| {
@@ -153,7 +175,7 @@ fn execute(
             "output_limit" => HistoryFailureKind::OutputLimit,
             _ => HistoryFailureKind::Transport,
         };
-        HistoryError::new(kind, "helper")
+        HistoryError::new(kind, "helper").with_detail(error.detail())
     })
 }
 pub fn list(
@@ -165,8 +187,9 @@ pub fn list(
             .map_err(|error| native_history_error(error, "native_list"));
     }
     let bytes = execute(config, "list", None)?;
-    let result: List = serde_json::from_slice(&bytes)
-        .map_err(|_| HistoryError::new(HistoryFailureKind::BridgeContract, "list"))?;
+    let result: List = serde_json::from_slice(&bytes).map_err(|error| {
+        HistoryError::new(HistoryFailureKind::BridgeContract, "list").with_detail(error.to_string())
+    })?;
     if result.contract_version != 1 {
         return Err(HistoryError::new(
             HistoryFailureKind::BridgeContract,
@@ -174,7 +197,7 @@ pub fn list(
         ));
     }
     if !result.failures.is_empty() {
-        tracing::warn!(target: "velune_agent_runtime", event = "history_entries_skipped", phase = "list", skipped = result.failures.len());
+        tracing::warn!(target: "velune_agent_runtime", event = "history_entries_skipped", phase = "list", skipped = result.failures.len(), causes = ?result.failures.iter().map(|failure| (&failure.code, &failure.detail)).collect::<Vec<_>>());
     }
     Ok(result
         .sessions
@@ -197,17 +220,24 @@ pub fn read(config: &HistoryConfig, native_id: &str) -> Result<History, HistoryE
             .map_err(|error| native_history_error(error, "native_read"));
     }
     let bytes = execute(config, "read", Some(native_id))?;
-    let value: serde_json::Value = serde_json::from_slice(&bytes)
-        .map_err(|_| HistoryError::new(HistoryFailureKind::BridgeContract, "read"))?;
+    let value: serde_json::Value = serde_json::from_slice(&bytes).map_err(|error| {
+        HistoryError::new(HistoryFailureKind::BridgeContract, "read").with_detail(error.to_string())
+    })?;
     if let Some(code) = value
         .get("error")
         .and_then(|error| error.get("code"))
         .and_then(|code| code.as_str())
     {
-        return Err(bridge_error(code, "read"));
+        let detail = value
+            .get("error")
+            .and_then(|error| error.get("detail"))
+            .and_then(|detail| detail.as_str())
+            .unwrap_or("");
+        return Err(bridge_error(code, detail, "read"));
     }
-    let result: Read = serde_json::from_value(value)
-        .map_err(|_| HistoryError::new(HistoryFailureKind::BridgeContract, "read"))?;
+    let result: Read = serde_json::from_value(value).map_err(|error| {
+        HistoryError::new(HistoryFailureKind::BridgeContract, "read").with_detail(error.to_string())
+    })?;
     if result.contract_version != 1 || result.history.native_id != native_id {
         return Err(HistoryError::new(
             HistoryFailureKind::BridgeContract,
@@ -227,6 +257,7 @@ fn native_history_error(error: Error, phase: &'static str) -> HistoryError {
         },
         phase,
     )
+    .with_detail(error.detail())
 }
 
 /// Execute the fixed Pi SDK history helper without starting the Agent. Output
@@ -296,7 +327,8 @@ fn execute_pi(
         .flatten()
         .map(|title| serde_json::to_vec(&json!({"title":title})))
         .transpose()
-        .map_err(|_| Error::new("Pi 会话修改请求无效"))?;
+        .map_err(|error| Error::new(format!("Pi 会话修改请求无效：{error}")))?;
     let output = bounded_process(command, input, 16 * 1024 * 1024)?;
-    serde_json::from_slice(&output).map_err(|_| Error::new("Pi 历史 SDK 格式不匹配"))
+    serde_json::from_slice(&output)
+        .map_err(|error| Error::new(format!("Pi 历史 SDK 格式不匹配：{error}")))
 }

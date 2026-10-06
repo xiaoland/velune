@@ -31,7 +31,7 @@ fn display_segment(
     let mut result = messages.to_vec();
     if let Some(handoff) = &segment.handoff {
         let ordinal = usize::try_from(handoff.user_message_ordinal)
-            .map_err(|_| RuntimeError::invalid("交接用户记录位置无效"))?;
+            .map_err(|error| RuntimeError::context("交接用户记录位置无效", error))?;
         if let Some(message) = result
             .iter_mut()
             .filter(|m| m.role == MessageRole::User)
@@ -69,8 +69,8 @@ fn display_segment(
         }
         // A newly prepared target has no user record until native send is accepted.
     }
-    for (ordinal, message) in result.iter_mut().enumerate() {
-        message.id = format!("segment-{index}:message-{ordinal}");
+    for message in &mut result {
+        message.id = format!("segment-{index}:{}", message.id);
     }
     Ok(result)
 }
@@ -199,7 +199,7 @@ impl CoreRuntime {
         for (index, segment) in link.segments.iter().enumerate() {
             let mut snapshot = match self.read_segment(segment) {
                 Ok(snapshot) => snapshot,
-                Err(_)
+                Err(error)
                     if index + 1 == link.segments.len()
                         && !segment.deleted
                         && segment.cutoff.is_none() =>
@@ -207,12 +207,12 @@ impl CoreRuntime {
                     // An accepted target can be temporarily unreadable, including
                     // a reserved Pi file not yet persisted after an ambiguous send.
                     // Keep checked source history visible, but never fabricate a resume.
-                    tracing::warn!(target:"velune_application", event="conversation_context_unavailable", phase="history_tail");
+                    tracing::warn!(target:"velune_application", event="conversation_context_unavailable", phase="history_tail", detail=%error);
                     tail = Some(ConversationSnapshot {
                         revision:1, context_runtime_id:segment.runtime_instance_id.clone(),
                         conversation:ConversationSummary {id:segment.native_conversation_id.clone(),runtime_id:segment.runtime_instance_id.clone(),
                             title:velune_conversation::ConversationTitle::Untitled,cwd:None,created_at_unix_ms:None,updated_at_unix_ms:None,can_rename:false,can_delete:false},
-                        resource_id:None, model_record_key:None,run_state:RunState::Failed,pending_interactions:Vec::new(),
+                        resource_id:None, model_record_key:None,run_state:RunState::Failed,pending_interactions:Vec::new(),transcript_turns:Vec::new(),message_identity_confirmations:Vec::new(),
                         messages:vec![Message {id:"context-unavailable".into(),role:MessageRole::System,timestamp_unix_ms:None,
                             blocks:vec![MessageBlock::Notice {text:"当前运行时的原生会话尚不可读取；来源历史已保留，未自动重发。请修复来源后重新打开。".into()}]}],
                         actions:crate::conversation::ConversationActions {can_send:false,can_cancel:false,can_switch:true},
@@ -226,7 +226,7 @@ impl CoreRuntime {
             }
             if let Some(cutoff) = &segment.cutoff {
                 let count = usize::try_from(cutoff.message_count)
-                    .map_err(|_| RuntimeError::invalid("关联会话截止位置无效"))?;
+                    .map_err(|error| RuntimeError::context("关联会话截止位置无效", error))?;
                 if count > snapshot.messages.len()
                     || prefix_digest(&snapshot.messages[..count])? != cutoff.prefix_digest
                 {
@@ -280,6 +280,10 @@ impl CoreRuntime {
             return snapshot;
         };
         let index = projection.link.segments.len() - 1;
+        for confirmation in &mut snapshot.message_identity_confirmations {
+            confirmation.previous_id = format!("segment-{index}:{}", confirmation.previous_id);
+            confirmation.current_id = format!("segment-{index}:{}", confirmation.current_id);
+        }
         let messages = display_segment(segment, &snapshot.messages, index);
         let activity = snapshot.conversation.updated_at_unix_ms;
         snapshot.conversation = projection.origin.clone();
@@ -292,7 +296,8 @@ impl CoreRuntime {
             .push(self.boundary_message(segment, index));
         match messages {
             Ok(messages) => snapshot.messages.extend(messages),
-            Err(_) => {
+            Err(error) => {
+                tracing::error!(target: "velune_application", event="conversation_handoff_projection_failed", detail=%error);
                 snapshot.run_state = RunState::Failed;
                 snapshot.actions.can_send = false;
                 snapshot.messages.push(Message {

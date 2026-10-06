@@ -1,6 +1,7 @@
 // Velune's single public Pi model. The application owns the physical route;
 // Pi only records this virtual selection and the routed model in its branch.
 import { readFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 
 const selectionPath = process.env.VELUNE_PI_SELECTION_FILE;
 
@@ -12,12 +13,36 @@ function selection() {
 }
 
 export default function (pi) {
+  // RPC emits message_end before SessionManager appends its entry. Keep only
+  // object-reference associations until the native entry supplies its identity.
+  const liveMessages = new WeakMap();
+  let activeMessageIdentity;
+  pi.on("message_start", (_event, ctx) => {
+    activeMessageIdentity = `pi-live:${randomUUID()}`;
+    ctx.ui.setStatus("velune.message-identity", activeMessageIdentity);
+  });
+  pi.on("message_end", (event) => {
+    if (activeMessageIdentity) liveMessages.set(event.message, activeMessageIdentity);
+    activeMessageIdentity = undefined;
+  });
   // get_state omits cwd. Query the current public extension context at every
   // authoritative resync, including in-place branch/session changes.
   pi.registerCommand("velune-projection-sync", {
     description: "Project current native session metadata",
     handler: (_args, ctx) => {
-      ctx.ui.setStatus("velune.session-metadata", JSON.stringify({sessionFile:ctx.sessionManager.getSessionFile() ?? null,cwd:ctx.sessionManager.getCwd(),name:ctx.sessionManager.getSessionName() ?? null,createdUnixMs:Date.parse(ctx.sessionManager.getHeader()?.timestamp ?? "")}));
+      const manager = ctx.sessionManager;
+      const messageIds = [];
+      const identityConfirmations = [];
+      for (const entry of manager.buildSessionProjection().entries) {
+        for (const [ordinal] of entry.messages.entries()) {
+          const currentId = `pi:${manager.getSessionId()}:${entry.sourceEntry.id}:${ordinal}`;
+          messageIds.push(currentId);
+          const previousId = entry.sourceEntry.type === "message"
+            ? liveMessages.get(entry.sourceEntry.message) : undefined;
+          if (previousId && ordinal === 0) identityConfirmations.push({previousId, currentId});
+        }
+      }
+      ctx.ui.setStatus("velune.session-metadata", JSON.stringify({sessionFile:manager.getSessionFile() ?? null,cwd:manager.getCwd(),name:manager.getSessionName() ?? null,createdUnixMs:Date.parse(manager.getHeader()?.timestamp ?? ""),messageIds,identityConfirmations}));
     },
   });
   const appendSelection = () => {

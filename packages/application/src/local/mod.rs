@@ -86,6 +86,9 @@ pub struct CoreRuntime {
     conversation_links: Vec<crate::config::ConversationLink>,
     logical_projection: Option<continuation::LogicalProjection>,
     conversation_browser_group_limit: u32,
+    transcript_presentation: crate::config::TranscriptPresentation,
+    transcript_projection: velune_agent_runtime::transcript::TranscriptProjection,
+    transcript_conversation_id: Option<String>,
     authentication_provider: Option<(String, String)>,
     runtime_instances: Vec<RuntimeInstance>,
     pi: PiState,
@@ -121,6 +124,9 @@ impl CoreRuntime {
             conversation_links,
             logical_projection: None,
             conversation_browser_group_limit: persisted.conversation_browser_group_limit,
+            transcript_presentation: persisted.transcript_presentation,
+            transcript_projection: Default::default(),
+            transcript_conversation_id: None,
             authentication_provider: None,
             runtime_instances: persisted.runtime_instances,
             pi: PiState::default(),
@@ -156,15 +162,34 @@ impl CoreRuntime {
             snapshot
         })
     }
-    fn current_snapshot(&self) -> Option<crate::conversation::ConversationSnapshot> {
-        self.native_snapshot()
-            .map(|snapshot| self.decorate_snapshot(snapshot))
+    fn current_snapshot(&mut self) -> Option<crate::conversation::ConversationSnapshot> {
+        use velune_agent_runtime::transcript::{TranscriptEvent, TranscriptProjection};
+        let Some(native) = self.native_snapshot() else {
+            self.transcript_projection = TranscriptProjection::default();
+            self.transcript_conversation_id = None;
+            return None;
+        };
+        let mut snapshot = self.decorate_snapshot(native);
+        if self.transcript_conversation_id.as_deref() != Some(&snapshot.conversation.id) {
+            self.transcript_projection = TranscriptProjection::default();
+            self.transcript_conversation_id = Some(snapshot.conversation.id.clone());
+        }
+        self.transcript_projection
+            .apply(TranscriptEvent::ConfirmIdentities(
+                &snapshot.message_identity_confirmations,
+            ));
+        self.transcript_projection
+            .apply(TranscriptEvent::ReplaceMessages(&snapshot.messages));
+        self.transcript_projection
+            .apply(TranscriptEvent::ExecutionState(snapshot.run_state.clone()));
+        snapshot.transcript_turns = self.transcript_projection.turns();
+        Some(snapshot)
     }
     fn drain_runtime(&mut self) -> Result<(), RuntimeError> {
         match &mut self.active_state {
             ActiveState::Native(session) => session
                 .poll()
-                .map_err(|_| RuntimeError::invalid("运行时事件读取失败")),
+                .map_err(|error| RuntimeError::Invalid(format!("运行时事件读取失败：{error}"))),
             ActiveState::Pi => {
                 self.drain_pi();
                 Ok(())
@@ -212,6 +237,7 @@ impl CoreRuntime {
         }
         match action {
             "list" => self.list(),
+            "transcriptPresentation" => self.set_transcript_presentation(request),
             "conversationBrowserSettings" => self.set_conversation_browser_group_limit(request),
             "discoverRuntimes" => self.discover_runtimes(request),
             "providerImport" => self.provider_import_action(request),

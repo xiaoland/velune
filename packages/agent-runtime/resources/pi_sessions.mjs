@@ -52,7 +52,8 @@ if (inspectPath) {
   process.stdout.write(JSON.stringify({
     name: manager.getSessionName() ?? null,
     cwd: manager.getCwd(),
-    messages: context.messages,
+    messages: manager.buildSessionProjection().entries.flatMap(entry =>
+      entry.messages.map((message, ordinal) => ({...message, id:`pi:${manager.getSessionId()}:${entry.sourceEntry.id}:${ordinal}`}))),
     model: context.model,
     thinkingLevel: context.thinkingLevel,
     virtualState: virtualEntry?.data ?? null,

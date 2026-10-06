@@ -87,10 +87,10 @@ async function main() {
       try {
         const session = await provider.read(ref);
         sessions.push(summary(session,session.events));
-      } catch {
+      } catch (error) {
         // One damaged or concurrently deleted native file must not hide every
         // other session. Native IDs are returned only as existing opaque IDs.
-        failures.push({code:"provider_read"});
+        failures.push({code:"provider_read",detail:error instanceof Error ? `${error.name}: ${error.message}\n${error.stack ?? ""}` : String(error)});
       }
     }
     return {contractVersion:1,sessions,failures};
@@ -124,8 +124,9 @@ async function main() {
 }
 try { process.stdout.write(JSON.stringify(await main())); }
 catch (error) {
-  // Keep failures in the bounded protocol envelope. Never expose provider
-  // paths, parser details, session content, or exception text.
+  // The application owns this local diagnostic data; preserve the underlying
+  // parser/provider cause while keeping it inside the structured response.
   const code = error instanceof RequestError ? error.code : "provider_read";
-  process.stdout.write(JSON.stringify({contractVersion:1,error:{code}}));
+  const detail = error instanceof Error ? `${error.name}: ${error.message}\n${error.stack ?? ""}` : String(error);
+  process.stdout.write(JSON.stringify({contractVersion:1,error:{code,detail}}));
 }

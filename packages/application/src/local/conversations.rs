@@ -214,7 +214,9 @@ impl CoreRuntime {
                         .request(
                             json!({"type":"set_session_name","name":title.expect("rename title")}),
                         )
-                        .map_err(|_| RuntimeError::invalid("Pi 原生草稿重命名失败，请重试"))?;
+                        .map_err(|error| {
+                            RuntimeError::context("Pi 原生草稿重命名失败，请重试", error)
+                        })?;
                     self.pi
                         .projection
                         .as_mut()
@@ -247,8 +249,8 @@ impl CoreRuntime {
                 Path::new(native_id),
                 title,
             )
-            .map_err(|_| {
-                RuntimeError::invalid("Pi 原生会话修改失败；请检查来源目录与文件权限后重试")
+            .map_err(|error| {
+                RuntimeError::context("Pi 原生会话修改失败；请检查来源目录与文件权限后重试", error)
             })?;
         } else {
             velune_agent_runtime::native::manage_thread(
@@ -257,8 +259,11 @@ impl CoreRuntime {
                 native_id,
                 title,
             )
-            .map_err(|_| {
-                RuntimeError::invalid("Codex 原生会话修改失败；请检查运行时版本与目录后重试")
+            .map_err(|error| {
+                RuntimeError::context(
+                    "Codex 原生会话修改失败；请检查运行时版本与目录后重试",
+                    error,
+                )
             })?;
         }
         let summaries = self.summaries_for(&runtime)?;
@@ -307,7 +312,7 @@ impl CoreRuntime {
         if let ActiveState::Native(session) = &mut self.active_state {
             session
                 .send(text)
-                .map_err(|_| RuntimeError::invalid("message send"))?;
+                .map_err(|error| RuntimeError::context("message send", error))?;
             self.drain_runtime()?;
             return Ok(json!({"snapshot":self.current_snapshot()}));
         }
@@ -324,12 +329,7 @@ impl CoreRuntime {
             .as_mut()
             .ok_or_else(|| RuntimeError::invalid("会话执行尚未准备"))?
             .prompt(text)
-            .map_err(|_| RuntimeError::invalid("message send"))?;
-        if response["data"]["disposition"] != "handled"
-            && let Some(projection) = self.pi.projection.as_mut()
-        {
-            projection.append_user(text);
-        }
+            .map_err(|error| RuntimeError::context("message send", error))?;
         self.pi.busy = response["data"]["disposition"] != "handled";
         if !self.pi.busy {
             self.pi
@@ -369,7 +369,7 @@ impl CoreRuntime {
             .as_mut()
             .ok_or_else(|| RuntimeError::invalid("会话执行尚未准备"))?
             .request(json!({"type":"set_model","provider":"velune","modelId":"auto"}))
-            .map_err(|_| RuntimeError::invalid("gateway model binding"))?;
+            .map_err(|error| RuntimeError::context("gateway model binding", error))?;
         let _ = model_record_key;
         Ok(())
     }
@@ -379,7 +379,7 @@ impl CoreRuntime {
         if let ActiveState::Native(session) = &mut self.active_state {
             session
                 .cancel()
-                .map_err(|_| RuntimeError::invalid("message cancel"))?;
+                .map_err(|error| RuntimeError::context("message cancel", error))?;
             self.drain_runtime()?;
             return Ok(json!({"snapshot":self.current_snapshot()}));
         }
@@ -388,7 +388,7 @@ impl CoreRuntime {
             .as_mut()
             .ok_or_else(|| RuntimeError::invalid("会话执行尚未准备"))?
             .cancel()
-            .map_err(|_| RuntimeError::invalid("message cancel"))?;
+            .map_err(|error| RuntimeError::context("message cancel", error))?;
         self.sync_projection()?;
         Ok(json!({"snapshot":self.current_snapshot()}))
     }
@@ -481,13 +481,13 @@ impl CoreRuntime {
             .as_mut()
             .expect("prepared Pi client")
             .request(json!({"type":"set_model","provider":"velune","modelId":"auto"}))
-            .map_err(|_| RuntimeError::invalid("model selection"))?;
+            .map_err(|error| RuntimeError::context("model selection", error))?;
         self.pi
             .client
             .as_mut()
             .expect("prepared Pi client")
             .sync_virtual_selection()
-            .map_err(|_| RuntimeError::invalid("model selection persistence"))?;
+            .map_err(|error| RuntimeError::context("model selection persistence", error))?;
         self.drain_runtime()?;
         self.model_record_key = Some(model_record_key.into());
         self.pi.subscription_capability = selected_subscription_capability;
@@ -547,7 +547,7 @@ impl CoreRuntime {
         {
             let (state, messages) = client
                 .state()
-                .map_err(|_| RuntimeError::invalid("runtime state"))?;
+                .map_err(|error| RuntimeError::context("runtime state", error))?;
             // Events received before get_messages' response are covered by that
             // authoritative context. Do not replay them after replacing history.
             for event in client.take_buffered_events() {

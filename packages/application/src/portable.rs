@@ -30,11 +30,20 @@ impl CoreRuntime {
                 "runtimeInstances":self.config.runtime_instances, "runtimeTypes":[],
                 "modelTemplates":self.config.model_templates, "providerImportTypes":[],
                 "conversationBrowserGroupLimit":self.config.conversation_browser_group_limit,
+                "transcriptPresentation":self.config.transcript_presentation,
                 "protocols":[{"id":"chatCompletionsV1","name":"OpenAI Chat Completions v1","supported":true},
                     {"id":"responsesV1","name":"OpenAI Responses v1","supported":true},
                     {"id":"messagesV1","name":"Anthropic Messages","supported":true}],
                 "selectedRuntimeInstanceID":null
             })),
+            Some("transcriptPresentation") => {
+                let mut next = self.config.clone();
+                next.transcript_presentation =
+                    serde_json::from_value(payload["presentation"].clone())?;
+                self.repository.store(&next)?;
+                self.config = next;
+                Ok(json!(self.config.transcript_presentation))
+            }
             Some("conversationBrowserSettings") => {
                 let limit = payload["limit"]
                     .as_u64()
