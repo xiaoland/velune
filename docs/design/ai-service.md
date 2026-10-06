@@ -1,6 +1,6 @@
 # AI 服务与 LLM Gateway：职责、契约与实现复核
 
-状态：2026-10-05 重新整理需求并审计实现。产品边界以 [PRD](../prd/index.md#ai-网关与-agent-运行时配置) 为准；本页区分已确认要求、审计后的技术建议与当前代码，不能由设计描述推定能力已交付。具体证据和迁移切片归 [AI 网关审计任务](../../tasks/ai-gateway-audit/packet.md)。
+状态：2026-10-06 三协议 best-effort 转换实施中；此前已于 2026-10-05 重新整理需求并审计实现。产品边界以 [PRD](../prd/index.md#ai-网关与-agent-运行时配置) 为准；本页区分已确认要求、审计后的技术建议与当前代码，不能由设计描述推定能力已交付。具体证据和迁移切片归 [AI 网关审计任务](../../tasks/ai-gateway-audit/packet.md)。
 
 ## 当前配置契约
 
@@ -12,11 +12,11 @@
 
 AI 服务是独立 lib，其领域不限于 LLM；sampling 语义不作为整个 AI 服务的基础模型。AI 服务与 Agent 运行时保持独立，协议和 SDK 由具体 adapter 封装。读取运行时提供商配置属于 application 与运行时 adapter 的导入用例，不使 AI 服务依赖 Harness 的模型目录、认证文件或推理级别。
 
-当前讨论和实现的 gateway 仅为 LLM Gateway，承担 LLM 协议的同协议原生透传、模型路由与 fail-over，当前不做协议转换或翻译。它是 AI 模块的一种应用模式，不代表 AI 服务整体，也不是 Harness 专属网关；Harness 是它的一类调用方。此前文档中的“AI 网关”在当前范围内均指此 LLM Gateway。当前产品协议范围为 OpenAI ChatCompletions v1、Responses v1 与 Anthropic Messages。它们保持各自原生 HTTP／JSON／SSE 契约，不以这些操作限制整个 AI 服务未来的领域。Messages baseURL 追加 `/v1/messages`，请求版本由调用方的 `anthropic-version` 决定；网关不补默认版本，也不重组业务正文。API key 使用原生 `x-api-key`，当前未核实的 subscription 认证在派发前拒绝。Pi／DSH 的 Messages 注入采用网关 origin，OpenAI 采用 `/v1`；Codex 适配器仍只支持 Responses。隔离证据见 [本轮任务](../../tasks/settings-protocol-refinement/packet.md)。
+当前讨论和实现的 gateway 仅为 LLM Gateway，承担 LLM 协议的同协议原生透传、异协议 best-effort 转换、模型路由与 fail-over。2026-10-06 用户已授权三个现有协议全部双向转换；实现与验收状态见 [转换任务](../../tasks/llm-protocol-translation/packet.md)。它是 AI 模块的一种应用模式，不代表 AI 服务整体，也不是 Harness 专属网关；Harness 是它的一类调用方。此前文档中的“AI 网关”在当前范围内均指此 LLM Gateway。当前产品协议范围为 OpenAI ChatCompletions v1、Responses v1 与 Anthropic Messages。它们保持各自原生 HTTP／JSON／SSE 契约，不以这些操作限制整个 AI 服务未来的领域。Messages baseURL 追加 `/v1/messages`，同协议请求版本由调用方的 `anthropic-version` 决定，不重组业务正文；异协议转换为 Messages 时合成版本 `2023-06-01`。API key 使用原生 `x-api-key`，当前未核实的 subscription 认证在派发前拒绝。Pi／DSH 的 Messages 注入采用网关 origin，OpenAI 采用 `/v1`；Codex 适配器发给网关的协议仍是 Responses，上游可通过转换使用其它两个协议。隔离证据见 [本轮任务](../../tasks/settings-protocol-refinement/packet.md)。
 
 AI 能力可以由应用直接调用，也可以由 LLM Gateway 组合后对外提供 HTTP 入口；直接消费不要求经过 gateway。应用模式是职责关系，不要求把 gateway 并入 `ai` package。现有独立 `gateway` unit 可以继续承担这一模式，依赖 AI 能力；AI 契约不反向依赖它。非 LLM 能力只按具体用例扩展，不预建其它网关或空领域框架。
 
-请求中的原生历史、参数、内容和响应事件必须保留。路由可改变逻辑模型标识对应的上游模型和认证目标；这些必要变更不能成为重写其它协议内容的理由。参数以提供商协议为权威，输出上限与推理级别只是相应模型参数的例子，不能要求每个提供商都具有同一组 token 或 reasoning 字段。无法保持请求含义时明确拒绝，不静默删除字段、补参数、降低推理级别或钳制输出上限。
+请求中的原生历史、参数、内容和响应事件必须保留。路由可改变逻辑模型标识对应的上游模型和认证目标；这些必要变更不能成为重写其它协议内容的理由。同协议参数以提供商协议为权威；跨协议按 best-effort 映射并记录不含正文的转换诊断。输出上限与推理级别只是相应模型参数的例子，不能要求每个提供商都具有同一组 token 或 reasoning 字段。异协议转换不因无法完整表达某个字段而 fail-closed，尽量保留可用内容、映射参数并对降级或省略作静态诊断；不伪造历史、工具执行或上游成功。Anthropic 所需输出上限缺省来自目标模型配置，不使用固定常数；同协议路径不因此改写字段。
 
 每个 AI 提供商拥有多个实际可调用的模型条目；跨提供商参数共性通过模板复用，不建立全局调用实体。协议、服务地址和认证归提供商，实际模型 ID、显示元数据及能力归其模型条目。隐藏内部记录键用于选择引用，网关别名是调用入口，两者不得冒充提供商规定的 model ID。领域包不自行读取全局环境、配置或认证文件；平台 app 同进程消费 UniFFI，领域包不依赖 UniFFI。
 
@@ -37,8 +37,8 @@ application 私有保存 API key 或 OAuth 来源定位，并向 gateway 注入�
 | Unit／边界 | 应负责 | 不应承担 |
 | --- | --- | --- |
 | ai | 各操作的调用方／provider 契约，原生内容封装，错误与生命周期语义 | HTTP、配置存储、Harness 规则；以 LLM 消息或 token 定义所有操作 |
-| ai-provider | 对确定目标执行一次协议操作，认证应用、HTTP、原生响应与终态观察 | 路由选择、fail-over、隐藏重试；以某一厂商的采样 decoder 定义另一厂商的原生协议 |
-| gateway（当前为 LLM Gateway） | LLM 入口访问控制、模型解析、路由快照、请求约束、fail-over 和下游响应提交 | 定义整个 AI 服务；sampling 往返重建、会话或工具执行、Pi 配置解释 |
+| ai-provider | 对确定目标执行一次协议操作，认证应用、HTTP、原生响应与终态观察；提供独立请求范围的 LLM 协议转换 | 路由选择、fail-over、隐藏重试；以某一厂商的采样 decoder 定义另一厂商的原生协议 |
+| gateway（当前为 LLM Gateway） | LLM 入口访问控制、模型解析、路由快照、请求约束、转换装配、fail-over 和下游响应提交 | 定义整个 AI 服务；sampling 往返重建、会话或工具执行、Pi 配置解释 |
 | application | 配置仓库、秘密解析设施、跨域装配、导入与运行生命周期用例 | 再造协议 decoder 或要求 UI 补偿业务约束 |
 | agent-runtime adapter | Harness 原生配置、身份、模型能力和来源兼容设置的投影 | 接管 AI 网关路由权，或把 Pi 参数变成 AI 服务通用参数 |
 
@@ -56,16 +56,20 @@ application 私有保存 API key 或 OAuth 来源定位，并向 gateway 注入�
 
 HTTP 传输、SSE 分帧、JSON 解析与采样结果映射是不同职责。原代码名为 `Decoder` 的对象实际将已解析的 JSON chunk 映射并组装成 sampling 结果，不是字节转字符串组件。原生透传仍需要处理 HTTP／SSE 边界，并为路由、校验与观察读取必要字段；不应因此把整个原生响应投影为 sampling 子集或重建它。
 
-原生内容以受保护的 Payload 封装，具名类型表达操作身份、必需字段、调用结果和生命周期。协议模块负责协议校验及观察，AI 网关组合访问、路由与配置约束，避免重复维护两套协议 schema。保真以非路由字段和响应事件的内容、顺序及含义为准，不要求 JSON 空白与成员顺序不变。未知扩展不因不进入采样模型而丢弃；非法输入、必要资源限制与认证协议限制仍需明确处理。透传不是任意 HTTP 代理，端点及操作范围仍来自配置和具名入口。
+原生内容以受保护的 Payload 封装，具名类型表达操作身份、必需字段、调用结果和生命周期。协议模块负责协议校验及观察，AI 网关组合访问、路由与配置约束，避免重复维护两套协议 schema。保真以非路由字段和响应事件的内容、顺序及含义为准，不要求 JSON 空白与成员顺序不变。同协议未知扩展不因不进入采样模型而丢弃；异协议未知扩展按best-effort处理并诊断；非法输入、必要资源限制与认证协议限制仍需明确处理。透传不是任意 HTTP 代理，端点及操作范围仍来自配置和具名入口。
 
 ```mermaid
 flowchart LR
     C[LLM Gateway 调用方] --> G[LLM Gateway：访问、路由、fail-over]
     D[直接消费 AI 能力的应用] --> N
-    G --> N[AI 原生操作 binding]
+    G --> X[异协议：best-effort 请求转换]
+    X --> N[AI 原生操作 binding]
+    G --> N
     N --> P[AI-provider：单次协议传输]
     P --> U[同协议上游]
     U --> R[原生响应或事件流]
+    R --> Y[异协议：JSON 或增量 SSE 转换]
+    Y --> G
     R --> G
     G --> C
     R --> O[按需读取 messages、outputs 与 stats]
@@ -95,7 +99,7 @@ fail-over 由 AI 网关单独决策，provider 执行一次尝试，不隐藏再
 
 ## 原生运行时装配边界
 
-schema 7 的运行时配置引用版本化 adapter。family 与版本 regex 归 agent-runtime，AI 服务不据 Harness 名称选择协议。当前 Codex app-server adapter 使用原生 Responses，DSH ACP adapter使用原生 ChatCompletions；application 将所选提供商模型与中立网关注入信息交给 adapter，执行侧只获得 loopback 入口及临时 token。额外 wire 模型字符串以显式 alias 映射到稳定模型记录，不能按同名推断目标。
+schema 7 的运行时配置引用版本化 adapter。family 与版本 regex 归 agent-runtime，AI 服务不据 Harness 名称选择协议。当前 Codex app-server adapter 使用原生 Responses，DSH ACP adapter使用原生 ChatCompletions；application 优先选择运行时支持的同协议入口，否则选择该版本运行时的原生入口由网关转换；将所选提供商模型与中立网关注入信息交给 adapter，执行侧只获得 loopback 入口及临时 token。额外 wire 模型字符串以显式 alias 映射到稳定模型记录，不能按同名推断目标。
 
 huihua package 的只读会话 projection、ACP／app-server 的 resume、用户审批／回答与取消都不进入 AI gateway。模型在会话层选择，执行前由 application 注入。Pi 只恢复可验证的原生选择记录；Codex／DSH 缺少提供商身份的历史不按裸 ID 自动匹配，继续前明确选择。DSH 的 reasoningEfforts 需要实际协议 wire 映射，当前不根据能力列表猜测；未知能力维持 SDK 默认，不让运行时缺口反向改变提供商协议权威。版本与执行限制见 [运行时 unit](../../packages/agent-runtime/README.md#版本与原生控制)。提供商导入／订阅来源接管仍为 Pi 来源用例，不因增加执行 adapter 自动扩张。
 
@@ -173,3 +177,9 @@ Payload Debug 脱敏正文及工具参数；观测无正文／headers／原始�
 手动 replay 在分支入口不构造 HTTP client、不读凭据，只把已保存的 projected records 送入同一个 Decoder，再经 service 包装；source 标为 replay，网络 attempt=0。expected 是独立人工审阅文件，不能由 mapper 自动更新。诊断样本保留旧 source mapping 的失败结果，新 expected 明确记录修正后的映射；replay 采用记录的 clean EOF／typed error 分类，保留实际 Decoder error kind 与 HTTP 接收状态。精确内容只是这次真实样本的回放 oracle，不是未来随机生成的质量断言。
 
 未验收：并发热更新／凭据轮换、取消和 drop／panic 后终态、真实中断／429／重试故障注入、工具参数多片段／多工具并发、工具结果往返、厂商新增字段兼容、三 Harness／三 provider、全局预算协调／账单核对、正式配置中心和 Mac。静态通过或成功样本不替代这些运行证据。
+
+跨协议文本增量立即交付。转换到 Messages 的工具参数须形成合法 JSON object，因此在单个工具完成时交付其有界累积参数；Responses custom 工具也在其参数完成后解除 `{input:string}` 包装。无法解析的参数保留为原始字符串并记录降级，不能补造可执行命令或整次拒绝。OpenAI 两协议间普通 function 参数继续增量交付。
+
+转换器保留上游未知计量：OpenAI 响应的未知 token 字段不补零，只有已知输入和输出才计算 total。Messages 必需的数值字段在无法获知时使用协议结构占位，并记录 `usage / required_numeric_placeholder`；占位不表示实际观测到零用量，不进入网关计量事实。缺少上游 response ID 时生成请求范围的转换 ID，它不是可用于上游查询或历史状态恢复的原生 ID。
+
+本轮参考 LiteLLM 的协议转换组织方式和 Magpie 的同协议旁路边界；固定提交及具体文件见 [转换任务研究证据](../../tasks/llm-protocol-translation/packet.md)。只借鉴职责与流式状态处理，不引入其运行时、厂商策略、隐藏重试或全局配置。

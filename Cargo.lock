@@ -1958,6 +1958,7 @@ name = "velune-gateway"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "eventsource-stream",
  "futures-util",
  "getrandom",
  "reqwest",

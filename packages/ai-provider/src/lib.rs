@@ -6,3 +6,4 @@ pub mod messages;
 pub mod minimax;
 pub mod openai;
 pub mod responses;
+pub mod translation;

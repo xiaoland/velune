@@ -254,6 +254,7 @@ pub struct BindingRuntimeTypeDescriptor {
     pub can_rename_conversations: bool,
     pub can_delete_conversations: bool,
     pub supported_protocols: Vec<BindingGatewayProtocol>,
+    pub supported_provider_protocols: Vec<BindingGatewayProtocol>,
     pub name: String,
     pub fields: Vec<BindingSettingField>,
 }

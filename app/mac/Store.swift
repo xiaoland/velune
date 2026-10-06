@@ -72,7 +72,7 @@ final class AppStore: ObservableObject {
     var runtimeCompatibleModels: [ModelChoice] {
         let typeID = runtimeInstances.first { $0.id == nextTurnRuntimeID }?.typeID
         guard let descriptor = runtimeTypes.first(where: { $0.id == typeID }) else { return [] }
-        return models.filter { descriptor.supportedProtocols.contains($0.protocolID) }
+        return models.filter { descriptor.supportedProviderProtocols.contains($0.protocolID) }
     }
     func selectNextTurnRuntime(_ id: String) {
         guard !isShuttingDown, enabledRuntimeInstances.contains(where: { $0.id == id }) else { return }
@@ -556,7 +556,7 @@ final class AppStore: ObservableObject {
         gateway = GatewayConfig(providers: [AIProvider(id: "sample-provider", name: "示例 AI 服务", protocolID: .chatCompletionsV1, endpoint: "https://example.invalid/v1", models: [ProviderModel(recordKey: "sample-model", providerModelID: "external-example", nickname: "通用模型", contextWindow: 8192, maxOutputTokens: 4096)])])
         hasGateway = true
         protocols = [ProtocolDescriptor(id: .chatCompletionsV1, name: "OpenAI Chat Completions v1", supported: true), ProtocolDescriptor(id: .responsesV1, name: "OpenAI Responses v1", supported: true), ProtocolDescriptor(id: .messagesV1, name: "Anthropic Messages v1", supported: true)]
-        runtimeTypes = [RuntimeTypeDescriptor(id: "sample-type", familyID: "sample", versionRegex: ".*", canRenameConversations: true, canDeleteConversations: true, supportedProtocols: [.chatCompletionsV1, .responsesV1, .messagesV1], name: "示例运行时", fields: [])]
+        runtimeTypes = [RuntimeTypeDescriptor(id: "sample-type", familyID: "sample", versionRegex: ".*", canRenameConversations: true, canDeleteConversations: true, supportedProtocols: [.chatCompletionsV1, .responsesV1, .messagesV1], supportedProviderProtocols: [.chatCompletionsV1, .responsesV1, .messagesV1], name: "示例运行时", fields: [])]
         runtimeInstances = [RuntimeInstance(id: "sample-instance", name: "示例运行时", typeID: "sample-type", gatewayID: gateway.id, settings: [:]), RuntimeInstance(id: "sample-review", name: "另一个运行时", typeID: "sample-type", gatewayID: gateway.id, settings: [:])]
         projectionRuntimeID = runtimeInstances[0].id; hasInitializedNextTurnIntent = true; nextTurnRuntimeID = projectionRuntimeID; nextTurnModelRecordKey = "sample-model"
         let topics = ["让设置页更安静", "整理一段代码", "下一步的项目计划"]

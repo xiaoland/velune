@@ -1,5 +1,5 @@
-//! Local, same-protocol LLM ingress. Routing replaces only the requested model;
-//! provider requests/responses remain native protocol data. Fail-over is disabled.
+//! Local LLM ingress. Same-protocol traffic remains native; cross-protocol
+//! routing uses request-scoped best-effort translation. Fail-over is disabled.
 use crate::{
     config::{GatewayConfig, GatewayProtocol},
     observation::Observation,
@@ -82,6 +82,7 @@ impl std::error::Error for GatewayError {}
 
 #[derive(Clone)]
 struct RouteTarget {
+    max_output_tokens: Option<u32>,
     provider_slot: usize,
     model_slot: usize,
     model: ProviderModelId,
@@ -253,6 +254,7 @@ fn build_routes(
             routes.insert(
                 entry.record_key.clone(),
                 RouteTarget {
+                    max_output_tokens: binding.max_output_tokens,
                     provider_slot: provider_slot + 1,
                     model_slot: model_slot + 1,
                     model,
@@ -328,7 +330,7 @@ async fn responses(State(state): State<Arc<Ingress>>, request: Request<Body>) ->
     ingress(state, request, GatewayProtocol::ResponsesV1).await
 }
 
-enum WireEvent {
+pub(super) enum WireEvent {
     Headers(ResponseMeta),
     Body(Vec<u8>),
     Failed,
@@ -461,13 +463,6 @@ async fn ingress_observed(
             "gateway model route is missing",
         );
     };
-    if target.protocol != protocol {
-        return rejected(
-            observation,
-            StatusCode::BAD_REQUEST,
-            "gateway protocol does not match this route",
-        );
-    }
     let stream = match body.get("stream") {
         None => false,
         Some(Value::Bool(value)) => *value,
@@ -478,6 +473,40 @@ async fn ingress_observed(
                 "stream must be a boolean",
             );
         }
+    };
+    let translation = if target.protocol == protocol {
+        None
+    } else {
+        match velune_ai_provider::translation::prepare(
+            crate::translation::protocol(&protocol),
+            crate::translation::protocol(&target.protocol),
+            &body,
+            target.max_output_tokens,
+        ) {
+            Ok(plan) => {
+                tracing::info!(
+                    event = "gateway_translation_prepared",
+                    source_protocol = ?protocol,
+                    target_protocol = ?target.protocol,
+                );
+                Some(plan)
+            }
+            Err(error) => {
+                return rejected(
+                    observation,
+                    StatusCode::BAD_REQUEST,
+                    &format!("protocol conversion: {error}"),
+                );
+            }
+        }
+    };
+    let body = translation
+        .as_ref()
+        .map_or(body.clone(), |plan| plan.request().clone());
+    let headers = if translation.is_some() {
+        crate::translation::upstream_headers(headers, &target.protocol)
+    } else {
+        headers
     };
     tracing::Span::current().record("stream", stream);
     tracing::info!(
@@ -490,7 +519,7 @@ async fn ingress_observed(
     let dispatcher = tracing::dispatcher::get_default(Clone::clone);
     let task = tokio::spawn(async move {
         // Future polls retain the application's scoped diagnostic dispatcher.
-        dispatch(state, target, body, headers, stream, sender)
+        dispatch(state, target, body, headers, stream, translation, sender)
             .instrument(request_span)
             .with_subscriber(dispatcher)
             .await;
@@ -610,7 +639,7 @@ fn error_response(status: StatusCode, message: &str) -> Response<Body> {
         Body::from(json!({"error":{"message":message}}).to_string()),
     )
 }
-async fn send_json(sender: &mpsc::Sender<WireEvent>, value: ResponseBody) {
+pub(super) async fn send_json(sender: &mpsc::Sender<WireEvent>, value: ResponseBody) {
     if sender.send(WireEvent::Headers(value.meta)).await.is_ok() {
         let _ = sender.send(WireEvent::Body(value.body.into_inner())).await;
     }
@@ -650,6 +679,7 @@ async fn dispatch(
     body: Value,
     headers: Vec<Header>,
     stream: bool,
+    translation: Option<velune_ai_provider::translation::PreparedTranslation>,
     sender: mpsc::Sender<WireEvent>,
 ) {
     let attempt_span = tracing::info_span!("gateway_attempt", attempt = 1);
@@ -658,17 +688,36 @@ async fn dispatch(
         attempt_span.clone(),
         state.stopping.clone(),
     );
-    dispatch_observed(
-        state,
-        target,
-        body,
-        headers,
-        stream,
-        sender,
-        &mut observation,
-    )
-    .instrument(attempt_span)
-    .await;
+    if let Some(plan) = translation {
+        let model = target.model.as_str().to_owned();
+        let (upstream, receiver) = mpsc::channel(1);
+        // Both futures belong to the ingress task. Downstream drop aborts both;
+        // bounded channels retain native backpressure and cancellation.
+        let native = dispatch_observed(
+            state,
+            target,
+            body,
+            headers,
+            stream,
+            upstream,
+            &mut observation,
+        )
+        .instrument(attempt_span);
+        let conversion = crate::translation::deliver(plan, model, stream, receiver, sender);
+        tokio::join!(native, conversion);
+    } else {
+        dispatch_observed(
+            state,
+            target,
+            body,
+            headers,
+            stream,
+            sender,
+            &mut observation,
+        )
+        .instrument(attempt_span)
+        .await;
+    }
 }
 
 async fn dispatch_observed(

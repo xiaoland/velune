@@ -32,6 +32,8 @@ pub(crate) fn descriptor() -> crate::config::RuntimeTypeDescriptor {
         can_delete_conversations: true,
         supported_protocols: GatewayProtocol::runtime_protocols("pi-1.0.2")
             .expect("registered Pi adapter"),
+        supported_provider_protocols: GatewayProtocol::runtime_provider_protocols("pi-1.0.2")
+            .expect("registered Pi adapter"),
         name: "Pi Agent 提供商目录".into(),
         fields: Vec::new(),
     }

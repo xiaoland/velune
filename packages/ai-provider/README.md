@@ -7,3 +7,5 @@
 原生操作收到已经解析的精确 `ProviderModelId`；本包不维护 Velune 记录到提供商型号的映射，不接受旧 `ModelMapping` 或 `ChatCompletionsOutputLimitField`。请求输出限制与推理字段由原生协议 body 决定。
 
 Messages 保留调用方的 `anthropic-version`／beta 请求头与原生 JSON／SSE，缺少版本在派发前拒绝；API key 使用 `x-api-key`，未确认的 subscription 认证不适用于此协议。提供商 baseURL 追加 `/v1/messages`，运行时 SDK 的网关注入使用 origin。
+
+`translation` 提供 ChatCompletions、Responses、Messages 六向 best-effort 转换。调用方只在异协议时构造请求转换计划，并用同一计划转换 JSON 或增量 SSE，保留工具别名的请求内映射。它不依赖 Harness、路由、应用配置或网络。无法对应的字段、状态引用和不透明推理信息尽量降级并给出不含业务值的 `ConversionNote`；真实错误和缺失终态不会被改造成成功。Messages 请求必须有输出上限，调用方可提供模型配置上限作为缺省值；同协议操作不经过此转换器。

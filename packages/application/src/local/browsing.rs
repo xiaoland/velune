@@ -99,7 +99,7 @@ impl CoreRuntime {
             .iter()
             .find(|p| p.models.iter().any(|m| m.record_key == key))
             .ok_or_else(|| RuntimeError::invalid("所选会话模型已不存在，请重新选择"))?;
-        let protocols = GatewayProtocol::runtime_protocols(&runtime.type_id)
+        let protocols = GatewayProtocol::runtime_provider_protocols(&runtime.type_id)
             .ok_or_else(|| RuntimeError::invalid("runtime type"))?;
         if !protocols.contains(&provider.protocol) {
             return Err(RuntimeError::invalid("所选模型协议不适用于此运行时版本"));

@@ -17,3 +17,4 @@ tracing = { version = "0.1", default-features = false, features = ["std"] }
 
 axum = { version = "0.8", default-features = false, features = ["http1", "tokio"] }
 futures-util = "0.3"
+eventsource-stream = "0.2"

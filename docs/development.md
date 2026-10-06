@@ -251,3 +251,9 @@ Mac 使用 `OSLog.Logger`，subsystem 为 `local.velune`；系统 Console 可按
 顶部运行时／模型是纯粹的下一轮 draft；当前快照来源和 core execution owner 独立。公开发送统一为 `send_turn(runtime_id, model_record_key, text)`，旧 `send`／`select_model` 接口已删除。选择本身不准备运行时，历史无模型 marker 也可在发送时指定模型并准备；跨来源发送采用目标原生会话与文本交接，关联文件只保存引用和切换位置；不同 Harness ID 不直接 resume。历史失败日志的 source／execution／next-turn 配置序号分别命名，0表示当前没有实例。
 
 外部 Pi 的安装发现与当前验证范围见 [外部运行时任务](../tasks/external-runtime-and-editing/packet.md)。已知 npm/pnpm literal launcher 只解析字面 CLI，不执行 shell 或继承其环境；无法解析的 wrapper 应手动选择安装包 CLI。公开版本执行失败与已识别但无 adapter 的版本分别显示，不能将坏安装误作不支持版本。
+
+## LLM 协议转换的隔离验收
+
+异协议采用 best-effort 请求／JSON／增量 SSE 转换，同协议继续原生透传。运行时 descriptor 中 `supportedProtocols` 表示它发给网关的协议，`supportedProviderProtocols` 表示通过网关可到达的提供商协议；两者不是同一能力。协议可到达不等于具体模型支持所有工具、输入模态或推理参数。
+
+人工脚本 `scripts/manual-protocol-translation.py` 用临时 HOME、合成凭据与 loopback 上游驱动实际网关，不读取真实配置或调用真实提供商。它不是自动测试或 CI 入口。具体命令、已完成范围与外部 Pi／Codex 客户端证据归 [当前转换任务](../tasks/llm-protocol-translation/packet.md)。Messages 转换缺少请求输出上限时使用模型配置上限，不使用硬编码 token 数；无法映射的字段记录无正文静态诊断，真实流中断仍报告失败。

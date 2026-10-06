@@ -110,7 +110,7 @@ enum BindingMapping {
     }
 
     static func runtimeType(_ value: BindingRuntimeTypeDescriptor) -> RuntimeTypeDescriptor {
-        RuntimeTypeDescriptor(id: value.id, familyID: value.familyId, versionRegex: value.versionRegex, canRenameConversations: value.canRenameConversations, canDeleteConversations: value.canDeleteConversations, supportedProtocols: value.supportedProtocols.map(protocolID), name: value.name, fields: value.fields.map(settingField))
+        RuntimeTypeDescriptor(id: value.id, familyID: value.familyId, versionRegex: value.versionRegex, canRenameConversations: value.canRenameConversations, canDeleteConversations: value.canDeleteConversations, supportedProtocols: value.supportedProtocols.map(protocolID), supportedProviderProtocols: value.supportedProviderProtocols.map(protocolID), name: value.name, fields: value.fields.map(settingField))
     }
 
     static func configuration(_ value: BindingConfigurationSnapshot) -> (conversations: [Conversation], historyFailures: [HistoryFailure], gateways: [GatewayConfig], runtimes: [RuntimeInstance], runtimeTypes: [RuntimeTypeDescriptor], modelTemplates: [ModelTemplate], importTypes: [RuntimeTypeDescriptor], protocols: [ProtocolDescriptor], selectedRuntimeID: String?) {

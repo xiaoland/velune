@@ -130,6 +130,8 @@ pub struct RuntimeTypeDescriptor {
     pub can_rename_conversations: bool,
     pub can_delete_conversations: bool,
     pub supported_protocols: Vec<GatewayProtocol>,
+    /// Provider protocols reachable through native dispatch or gateway conversion.
+    pub supported_provider_protocols: Vec<GatewayProtocol>,
     pub name: String,
     pub fields: Vec<crate::conversation::SettingField>,
 }
@@ -305,6 +307,31 @@ impl GatewayProtocol {
                 .collect(),
         )
     }
+    /// Select the wire protocol the runtime speaks, preferring native passthrough.
+    #[cfg(feature = "local-runtime")]
+    pub(crate) fn runtime_ingress(type_id: &str, upstream: &Self) -> Option<Self> {
+        let protocols = Self::runtime_protocols(type_id)?;
+        protocols
+            .iter()
+            .find(|protocol| *protocol == upstream)
+            .or_else(|| protocols.first())
+            .cloned()
+    }
+
+    /// All three provider protocols are reachable through the LLM gateway.
+    #[cfg(feature = "local-runtime")]
+    pub(crate) fn runtime_provider_protocols(type_id: &str) -> Option<Vec<Self>> {
+        let native = Self::runtime_protocols(type_id)?;
+        if native.is_empty() {
+            return Some(Vec::new());
+        }
+        Some(vec![
+            Self::ChatCompletionsV1,
+            Self::ResponsesV1,
+            Self::MessagesV1,
+        ])
+    }
+
     #[cfg(feature = "local-runtime")]
     fn identity_name(&self) -> &'static str {
         match self {

@@ -17,12 +17,9 @@ impl CoreRuntime {
         let model = gateway
             .model(key)
             .ok_or_else(|| RuntimeError::invalid("runtime model"))?;
-        let supported = GatewayProtocol::runtime_protocols(&runtime.type_id)
+        let ingress = GatewayProtocol::runtime_ingress(&runtime.type_id, &provider.protocol)
             .ok_or_else(|| RuntimeError::invalid("不支持的运行时版本类型"))?;
-        if !supported.contains(&provider.protocol) {
-            return Err(RuntimeError::invalid("所选模型协议不适用于此运行时版本"));
-        }
-        let protocol = match &provider.protocol {
+        let protocol = match &ingress {
             GatewayProtocol::ChatCompletionsV1 => "openai-completions",
             GatewayProtocol::ResponsesV1 => "openai-responses",
             GatewayProtocol::MessagesV1 => "anthropic-messages",
@@ -32,7 +29,7 @@ impl CoreRuntime {
             .as_ref()
             .ok_or_else(|| RuntimeError::invalid("runtime gateway"))?;
         Ok(GatewayInjection {
-            endpoint: if provider.protocol == GatewayProtocol::MessagesV1 {
+            endpoint: if ingress == GatewayProtocol::MessagesV1 {
                 runner
                     .endpoint()
                     .strip_suffix("/v1")

@@ -143,12 +143,12 @@ Gateway 负责协议保持、流传递、资源预留和尝试记录，不执行
 
 ### 不把最难部分藏在“兼容”二字里
 
-每个 `CompatibilityProfile` 绑定 Harness 版本、客户端协议、上游 API／模型版本、工具 schema／并行调用、图像、推理／签名块、上下文大小、压缩、结构化输出、缓存、流事件与错误格式。状态为 `untested / verified / degraded / blocked`，附测试日期。未知字段在同协议直通时保持，跨协议桥接遇到未知语义拒绝或显式降级，不能猜着删。
+每个 `CompatibilityProfile` 绑定 Harness 版本、客户端协议、上游 API／模型版本、工具 schema／并行调用、图像、推理／签名块、上下文大小、压缩、结构化输出、缓存、流事件与错误格式。状态为 `untested / verified / degraded / blocked`，附测试日期。未知字段在同协议直通时保持，跨协议转换遇到无法映射语义时采用 best-effort 降级并记录静态诊断，不因字段无法对应而拒绝整次请求；不伪造历史、工具执行或成功终态。
 
 - Codex Responses 与 Chat Completions 不作为可任意互换的同一协议；服务器侧 response/session ID 不跨账户或供应商复用
 - Claude 网关保留完整流序列、必要 headers／body 和原始错误语义；不能仅把文本 delta 拼起来。未知 model alias 的能力假设需校准，不能把所有上游伪装成同一种 Claude
 - Pi 路由回调可逐请求选模，不代表带签名的推理、工具结果与缓存可随意跨模型搬移；同样执行 CompatibilityProfile
-- 初版“保真直通”优先，跨协议转换逐项开通；失败关闭的是具体资源组合，不删除对应 Harness
+- 2026-10-06 用户授权三个协议全部双向转换，并明确 best-effort；同协议保持原生直通，不承诺异协议无损
 
 ## 5. 多订阅、多供应商与自动路由
 
@@ -360,7 +360,7 @@ Pi 的物理模型身份不能只使用全局逻辑模型 ID。相同逻辑模�
 
 ## AI 网关职责复核
 
-2026-10-05 用户明确当前 gateway 仅为 LLM Gateway，是 AI 模块的一种应用模式；AI 服务不限于 LLM，直接调用 AI 能力无需经过 gateway。LLM Gateway 只做同协议原生透传、路由与 fail-over，不进行协议转换／翻译，也不限于 Harness 调用方。独立 gateway package 保留应用模式的职责，AI 契约不反向依赖它；不为非 LLM 能力预建通用网关。跨单元职责、原生操作与当前偏差以 [AI 服务设计](ai-service.md) 为准；此前 Pi 原生 provider 直接承担上游派发的候选路径不再是 Velune 管理会话的目标。当前 fail-over 未实现，配置仍 Disabled。源码和独立审计证据归 [AI 网关审计](../../tasks/ai-gateway-audit/packet.md)。
+2026-10-05 用户明确当前 gateway 仅为 LLM Gateway，是 AI 模块的一种应用模式；AI 服务不限于 LLM，直接调用 AI 能力无需经过 gateway。该阶段 LLM Gateway 采用同协议原生透传，2026-10-06 已进一步授权三协议 best-effort 双向转换；网关也不限于 Harness 调用方。独立 gateway package 保留应用模式的职责，AI 契约不反向依赖它；不为非 LLM 能力预建通用网关。跨单元职责、原生操作与当前偏差以 [AI 服务设计](ai-service.md) 为准；此前 Pi 原生 provider 直接承担上游派发的候选路径不再是 Velune 管理会话的目标。当前 fail-over 未实现，配置仍 Disabled。源码和独立审计证据归 [AI 网关审计](../../tasks/ai-gateway-audit/packet.md)。
 
 版本化运行时 descriptor 同时公开 `supportedProtocols`，由 agent-runtime 的 variant 注册表声明，经 application／UniFFI 传给平台。Mac 模型过滤与执行准备消费同一声明，不按 family 猜测能力。当前 Pi 与 DSH variant 声明 ChatCompletions／Responses，Codex variant 声明 Responses；这是 adapter 的配置能力，不扩大上游协议支持，也不使 AI unit 依赖运行时类型。未知 descriptor 不显示所有模型。
 

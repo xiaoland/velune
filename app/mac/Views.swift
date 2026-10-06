@@ -946,7 +946,7 @@ struct NewConversationView: View {
     @State private var cwd = ""
     private var compatibleModels: [ModelChoice] {
         guard let runtime = store.enabledRuntimeInstances.first(where: { $0.id == runtimeID }), let type = store.runtimeTypes.first(where: { $0.id == runtime.typeID }) else { return [] }
-        return store.models.filter { type.supportedProtocols.contains($0.protocolID) }
+        return store.models.filter { type.supportedProviderProtocols.contains($0.protocolID) }
     }
     var body: some View {
         VStack(spacing: 0) {
