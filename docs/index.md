@@ -15,6 +15,8 @@
 
 ## 当前工作
 
+- [Magpie 架构参考复核](../tasks/magpie-reference/packet.md)：配置 adapter、模型目录、原生／兼容协议与可观测性；研究建议不等于实施决定
+
 - [版本化 Codex 与 DeepSeek 运行时](../tasks/multi-runtime/packet.md)：原生控制、huihua 包历史投影、许可与安装包隔离验收；GUI／真实服务由用户验收
 
 - [AI 网关与 AI 服务需求复核及审计](../tasks/ai-gateway-audit/packet.md)：原生协议保真、路由／fail-over、配置／认证和生命周期，包含源码证据与迁移建议
