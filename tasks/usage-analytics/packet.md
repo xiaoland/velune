@@ -20,4 +20,14 @@ Mac 使用独立原生分析窗口，入口在主工具栏与显示菜单，未�
 
 Mac `manual-analytics-ui.py` 使用上述实际采集 SQLite，贯通真实 Store／Transport／UniFFI，验证筛选、覆盖率、未知与零、部分输入、迟到请求隔离、Problems、会话状态独立和23小时夏令时日。原生 GUI 视觉和真实提供商由用户验收，不以这些检查冒充。
 
-剩余：owner 最终冻结后干净 release 构建并安装 /Applications/Velune.app，记录源码提交与安装证据。当前版本保持0.1 beta.1，不远端发布。
+实施状态：已完成并安装，真实提供商与原生 GUI 待用户验收。源码提交 `f5f25440cf1b4c1ef344962c41aef66bc268f176` 的干净 release 构建通过，Swift warnings-as-errors、bundle 签名与完整性检查通过；安装至 /Applications/Velune.app，manifest 的 source_commit 与源码提交相同、dirty=false，版本0.1 beta.1。再次以安装后的 dylib／resources 运行实际 UniFFI 存储验收及 release Swift Store 验收，全部通过。未远端发布。
+
+复验命令（从仓库根目录执行，路径为本机产物）：
+
+```sh
+python3 scripts/manual-gateway-analytics.py --fixture-out target/manual-analytics/observed.sqlite
+python3 scripts/manual-analytics-storage.py --bindings target/bindings/analytics-python-final --library /Applications/Velune.app/Contents/Frameworks/libvelune_bindings.dylib --resources /Applications/Velune.app/Contents/Resources
+python3 scripts/manual-analytics-ui.py --database "$PWD/target/manual-analytics/observed.sqlite" --library /Applications/Velune.app/Contents/Frameworks/libvelune_bindings.dylib --swift-build "$PWD/.build/arm64-apple-macosx/release"
+```
+
+Python bindings 应通过 velune-bindgen 从同版 dylib 重新生成；复验只创建合成数据与临时 HOME。证据说明不将源码级人工脚本等同于真实提供商、原生窗口点击或视觉验收。
