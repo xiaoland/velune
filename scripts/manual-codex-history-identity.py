@@ -238,8 +238,8 @@ def main():
                 listing = json.loads(listed.stdout)
             ids = [session["nativeId"] for session in listing.get("sessions", [])]
             histories = {}
-            helper_error = listing.get("error")
-            if not helper_error:
+            helper_error = listing.get("error") if args.helper else {"code": "helper_omitted"}
+            if args.helper and not helper_error:
                 if args.exercise_revert:
                     assert ids.count(parent["id"]) >= 2 and child["id"] in ids, listing
                 else:
