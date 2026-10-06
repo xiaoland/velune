@@ -116,7 +116,14 @@ async function main() {
     const name = explicitName(ref)?.trim();
     const first = events.find(event => event.type === "user_message");
     const firstText = first?.type === "user_message" ? first.data.content.filter(block=>block.type === "text").map(block=>block.data).join(" ") : "";
-    return {nativeId:ref.id,title:name ? {source:"native",text:name} : firstText.trim() ? {source:"firstMessage",text:[...firstText.trim().replace(/\s+/g," ")].slice(0,80).join("")} : {source:"untitled"},updatedAtUnixMs:timestamp(ref.updatedAt),createdAtUnixMs:timestamp(ref.createdAt),cwd:ref.workspace?.path ?? null};
+    // huihua 0.2 prefers the session_meta envelope timestamp, which can be
+    // emitted later than creation. Its public system event retains the native
+    // session timestamp; use that creation fact when supplied by this variant.
+    const metadata = providerId === "codex" ? events.find(event => event.type === "system" && event.data.sourceType === "session_meta") : null;
+    const payload = metadata?.type === "system" ? metadata.data.payload : null;
+    const creation = payload && typeof payload === "object" && "timestamp" in payload && typeof payload.timestamp === "string" ? Date.parse(payload.timestamp) : NaN;
+    const createdAtUnixMs = Number.isFinite(creation) ? creation : timestamp(ref.createdAt);
+    return {nativeId:ref.id,title:name ? {source:"native",text:name} : firstText.trim() ? {source:"firstMessage",text:[...firstText.trim().replace(/\s+/g," ")].slice(0,80).join("")} : {source:"untitled"},updatedAtUnixMs:timestamp(ref.updatedAt),createdAtUnixMs,cwd:ref.workspace?.path ?? null};
   };
   if (request.operation === "list") {
     const sessions = [];

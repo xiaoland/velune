@@ -40,6 +40,16 @@ impl NativeSession {
             .as_str()
             .ok_or_else(|| Error::new("Codex 未返回会话身份"))?;
         self.replace_snapshot(id, cwd, runtime_id, Vec::new());
+        if let Some(snapshot) = self.snapshot.as_mut() {
+            // app-server Thread dates are Unix seconds, including before the
+            // first rollout is persisted. Preserve that native creation date.
+            snapshot.conversation.created_at_unix_ms = result["thread"]["createdAt"]
+                .as_i64()
+                .and_then(|seconds| seconds.checked_mul(1000));
+            snapshot.conversation.updated_at_unix_ms = result["thread"]["updatedAt"]
+                .as_i64()
+                .and_then(|seconds| seconds.checked_mul(1000));
+        }
         Ok(())
     }
     pub(super) fn codex_open(

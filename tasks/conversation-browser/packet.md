@@ -29,3 +29,11 @@ huihua0.2 scan 无可靠updatedAt，公开read遍历events后才得出更新时�
 加载管理扩展验收通过pending目标改名／删除、原loaded改名／删除、加载失败后管理、原生删除失败保留loaded，旧结果不插回。workspace fmt/check／strict clippy和bindings no-default strict clippy、Swift warnings-as-errors及脚本语法通过；源码功能冻结，最后Codex／DSH metadata脚本断言收尾中，尚未新版安装。
 
 Codex 0.159.3／DSH 0.2.0-rc.2 实际运行时原生created／updated非空隔离断言及五次loopback续接通过；全部源码、脚本冻结。最终静态检查包含无默认features产物和所有手工Python／JS入口，无自动化测试。接下来clean构建、安装和root安装包复验。
+
+## 新建到历史的时间连续性补验
+
+第一次 clean 构建已通过但未安装。收口检查确认 Codex thread/start 提供秒级 createdAt／updatedAt，旧NativeSession.new投影丢弃它们，且此时尚无可浏览rollout，单靠historyread不够。本轮继续补齐原生API秒→毫秒；历史header可能有更细精度，应保留真实值，不为测试相等而量化历史。连续性要求为同一创建事件、不丢回None、不以续轮时钟覆盖，公开来源精度不同允许精化。DSH ACP new无创建字段，若原生header已flush可通过source read补齐；无值不得以当前时钟或mtime猜测。
+
+实际新建／打开容差验收揭示 huihua0.2 将 Codex session_meta 外层event.timestamp优先作为metadata.creation，它可能是延迟写入时间，payload.timestamp才是原生创建。固定adapter需通过公开system event的payload采用真正session creation，不扩大容差或量化掩盖。验收加入首次turn前延迟作为判别，证明创建值不随写入漂移。DSH new后原生header已flush，现来源adapter读取可取得真实创建值；不引入新的持久格式解析器。
+
+新建时间补修最终冻结：Codex API秒级创建转换／公开session_meta.payload毫秒值使用、DSH已flushheader补齐通过。首turn前1.2秒延迟、new→send→open→continue证明同创建事件不漂移，DSH精确值保持；五次loopback。相关原生管理回归及strict静态全部通过。未量化历史或引入clockfallback，第一次产物不安装，后续clean完整构建作为交付。

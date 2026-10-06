@@ -78,6 +78,9 @@ def main():
                 application.upsert_runtime(runtime);application.select_runtime(family)
                 created=application.create_conversation(family,str(root/'project'),saved.models[0].record_key).snapshot
                 assert created and created.conversation.cwd==str(root/'project')
+                assert created.conversation.created_at_unix_ms is not None and created.conversation.created_at_unix_ms > 0, family+' new native creation date missing'
+                native_created_at = created.conversation.created_at_unix_ms
+                time.sleep(1.2) # Separate native creation from first event persistence.
                 before=len(captures);application.send(family,'Reply with the synthetic answer; no tools are needed.')
                 deadline=time.monotonic()+45
                 while time.monotonic()<deadline:
@@ -88,6 +91,7 @@ def main():
                     time.sleep(.05)
                 else: raise AssertionError(family+' run did not settle')
                 assert any('SYNTHETIC_NATIVE_ANSWER' in block.text for message in snapshot.messages for block in message.blocks if isinstance(block,b.BindingMessageBlock.TEXT)),family+' answer missing'
+                assert snapshot.conversation.created_at_unix_ms == native_created_at, family+' first turn lost native creation date'
                 assert snapshot.conversation.title == 'Reply with the synthetic answer; no tools are needed.', family+' first user title missing'
                 assert captures[-1]['body']['model']==api_id and captures[-1]['authorization']=='Bearer synthetic-only'
                 sessions=application.list().conversations
@@ -96,6 +100,12 @@ def main():
                 assert native_summary.created_at_unix_ms is not None and native_summary.created_at_unix_ms > 0, family+' native creation time missing'
                 assert native_summary.updated_at_unix_ms is not None and native_summary.updated_at_unix_ms > 0, family+' native activity time missing'
                 reopened=application.open_conversation(family,snapshot.conversation.id).snapshot
+                assert reopened and reopened.conversation.created_at_unix_ms is not None
+                if family == 'codex':
+                    assert 0 <= reopened.conversation.created_at_unix_ms - native_created_at < 1000, f'Codex native creation mismatch: API={native_created_at} header={reopened.conversation.created_at_unix_ms}'
+                else:
+                    assert reopened.conversation.created_at_unix_ms == native_created_at, family+' reopen changed native creation date'
+                history_created_at = reopened.conversation.created_at_unix_ms
                 assert reopened and any('SYNTHETIC_NATIVE_ANSWER' in block.text for message in reopened.messages for block in message.blocks if isinstance(block,b.BindingMessageBlock.TEXT)),family+' historical answer missing'
                 assert reopened.conversation.title == snapshot.conversation.title, family+' reopened title changed: '+repr(reopened.conversation.title)+' vs '+repr(snapshot.conversation.title)
                 assert reopened.model_record_key is None and not reopened.actions.can_send,family+' inferred provider from bare history model ID'
@@ -110,6 +120,7 @@ def main():
                 else: raise AssertionError(family+' selected provider did not settle')
                 assert captures[-1]['authorization']=='Bearer synthetic-alternate' and captures[-1]['path'].startswith('/alternate/v1/'),family+' selected provider route did not change'
                 assert captures[-1]['body']['model']==api_id
+                assert selected_snapshot.conversation.created_at_unix_ms == history_created_at, family+' continuation changed native creation date'
                 assert selected_snapshot.conversation.title == reopened.conversation.title, family+' preparation lost title'
                 assert selected_snapshot.model_record_key==alternate_saved.models[0].record_key
                 cross_protocol = False

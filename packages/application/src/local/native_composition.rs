@@ -130,6 +130,24 @@ impl CoreRuntime {
                 .create(cwd, &runtime.id)
                 .map_err(|_| RuntimeError::invalid("会话创建失败"))?;
         }
+        if runtime.type_id == "dsh-acp-0.2.0-rc.2" {
+            // ACP new flushes its native header before replying, but does not
+            // return its date. Read the existing source adapter rather than
+            // inventing a timestamp or reimplementing the persistence format.
+            let id = self
+                .current_snapshot()
+                .expect("created native session")
+                .conversation
+                .id;
+            let conversation = self
+                .summaries_for(&runtime)?
+                .into_iter()
+                .find(|conversation| conversation.id == id)
+                .ok_or_else(|| RuntimeError::invalid("新建会话的原生元数据不可用"))?;
+            if let ActiveState::Native(session) = &mut self.active_state {
+                session.set_conversation(conversation);
+            }
+        }
         self.model_record_key = Some(key.into());
         Ok(())
     }
