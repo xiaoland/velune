@@ -1,6 +1,9 @@
 //! Local, same-protocol LLM ingress. Routing replaces only the requested model;
 //! provider requests/responses remain native protocol data. Fail-over is disabled.
-use crate::config::{GatewayConfig, GatewayProtocol};
+use crate::{
+    config::{GatewayConfig, GatewayProtocol},
+    observation::Observation,
+};
 use axum::{
     Router,
     body::{Body, Bytes, to_bytes},
@@ -14,11 +17,15 @@ use serde_json::{Value, json};
 use std::{
     collections::BTreeMap,
     net::TcpListener,
-    sync::{Arc, RwLock},
+    sync::{
+        Arc, RwLock,
+        atomic::{AtomicBool, AtomicU64, Ordering},
+    },
     thread::{self, JoinHandle},
     time::Duration,
 };
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc, oneshot};
+use tracing::{Instrument, instrument::WithSubscriber};
 use velune_ai::{
     DeliveryError, Payload,
     chat_completions::*,
@@ -73,6 +80,8 @@ impl std::error::Error for GatewayError {}
 
 #[derive(Clone)]
 struct RouteTarget {
+    provider_slot: usize,
+    model_slot: usize,
     model: ProviderModelId,
     protocol: GatewayProtocol,
     endpoint: String,
@@ -85,6 +94,9 @@ struct Ingress {
     resolver: Arc<dyn CredentialResolver>,
     client: Client,
     permits: Arc<Semaphore>,
+    request_epoch: u64,
+    next_request: AtomicU64,
+    stopping: Arc<AtomicBool>,
 }
 
 pub struct Runner {
@@ -92,6 +104,7 @@ pub struct Runner {
     routes: Arc<RwLock<BTreeMap<String, RouteTarget>>>,
     endpoint: String,
     token: String,
+    stopping: Arc<AtomicBool>,
     stop: Option<oneshot::Sender<()>>,
     handle: Option<JoinHandle<()>>,
 }
@@ -131,12 +144,18 @@ impl Runner {
             .connect_timeout(Duration::from_secs(15))
             .read_timeout(Duration::from_secs(60))
             .build()?;
+        let mut epoch = [0u8; 8];
+        getrandom::fill(&mut epoch).map_err(|_| GatewayError("gateway request identity"))?;
+        let stopping = Arc::new(AtomicBool::new(false));
         let state = Arc::new(Ingress {
             routes: routes.clone(),
             token: token.clone(),
             resolver: credential_resolver,
             client,
             permits: Arc::new(Semaphore::new(MAX_IN_FLIGHT)),
+            request_epoch: u64::from_le_bytes(epoch),
+            next_request: AtomicU64::new(1),
+            stopping: stopping.clone(),
         });
         let (stop, stopped) = oneshot::channel();
         let dispatcher = tracing::dispatcher::get_default(Clone::clone);
@@ -163,6 +182,7 @@ impl Runner {
             routes,
             endpoint: format!("http://127.0.0.1:{}/v1", address.port()),
             token,
+            stopping,
             stop: Some(stop),
             handle: Some(handle),
         })
@@ -176,6 +196,7 @@ impl Runner {
 }
 impl Drop for Runner {
     fn drop(&mut self) {
+        self.stopping.store(true, Ordering::Release);
         if let Some(stop) = self.stop.take() {
             let _ = stop.send(());
         }
@@ -190,57 +211,59 @@ fn build_routes(
     aliases: &BTreeMap<String, String>,
 ) -> Result<BTreeMap<String, RouteTarget>, Box<dyn std::error::Error>> {
     let mut routes = BTreeMap::new();
-    for entry in config
-        .providers
-        .iter()
-        .flat_map(|provider| &provider.models)
-    {
-        let provider = config
-            .validate_dispatch(&entry.record_key)
-            .map_err(GatewayError)?;
-        if !crate::config::credential_ready(provider) {
-            return Err(Box::new(GatewayError("provider credential is required")));
+    for (provider_slot, configured_provider) in config.providers.iter().enumerate() {
+        for (model_slot, entry) in configured_provider.models.iter().enumerate() {
+            let provider = config
+                .validate_dispatch(&entry.record_key)
+                .map_err(GatewayError)?;
+            if !crate::config::credential_ready(provider) {
+                return Err(Box::new(GatewayError("provider credential is required")));
+            }
+            let endpoint = parse_endpoint(&provider.endpoint)?;
+            let protocol = match provider.protocol {
+                GatewayProtocol::ChatCompletionsV1 => {
+                    ProtocolConfig::ChatCompletions(ChatCompletionsConfig { endpoint })
+                }
+                GatewayProtocol::ResponsesV1 => {
+                    ProtocolConfig::Responses(ResponsesConfig { endpoint })
+                }
+                GatewayProtocol::MessagesV1 => {
+                    return Err(Box::new(GatewayError("provider protocol is unsupported")));
+                }
+            };
+            let binding = provider
+                .models
+                .iter()
+                .find(|binding| binding.record_key == entry.record_key)
+                .ok_or(GatewayError("provider binding missing"))?;
+            let model = ProviderModelId::new(binding.provider_model_id.clone())?;
+            let provider_config = ProviderConfig::new(
+                ProviderId::new(provider.id.clone())?,
+                ConfigRevision::new(1)?,
+                protocol,
+                CredentialRef::new(
+                    provider
+                        .credential_ref
+                        .clone()
+                        .unwrap_or_else(|| provider.id.clone()),
+                )?,
+            )?;
+            routes.insert(
+                entry.record_key.clone(),
+                RouteTarget {
+                    provider_slot: provider_slot + 1,
+                    model_slot: model_slot + 1,
+                    model,
+                    protocol: provider.protocol.clone(),
+                    endpoint: provider.endpoint.clone(),
+                    config: provider_config,
+                    reference: provider
+                        .credential_ref
+                        .clone()
+                        .ok_or(GatewayError("authentication resource is required"))?,
+                },
+            );
         }
-        let endpoint = parse_endpoint(&provider.endpoint)?;
-        let protocol = match provider.protocol {
-            GatewayProtocol::ChatCompletionsV1 => {
-                ProtocolConfig::ChatCompletions(ChatCompletionsConfig { endpoint })
-            }
-            GatewayProtocol::ResponsesV1 => ProtocolConfig::Responses(ResponsesConfig { endpoint }),
-            GatewayProtocol::MessagesV1 => {
-                return Err(Box::new(GatewayError("provider protocol is unsupported")));
-            }
-        };
-        let binding = provider
-            .models
-            .iter()
-            .find(|binding| binding.record_key == entry.record_key)
-            .ok_or(GatewayError("provider binding missing"))?;
-        let model = ProviderModelId::new(binding.provider_model_id.clone())?;
-        let provider_config = ProviderConfig::new(
-            ProviderId::new(provider.id.clone())?,
-            ConfigRevision::new(1)?,
-            protocol,
-            CredentialRef::new(
-                provider
-                    .credential_ref
-                    .clone()
-                    .unwrap_or_else(|| provider.id.clone()),
-            )?,
-        )?;
-        routes.insert(
-            entry.record_key.clone(),
-            RouteTarget {
-                model,
-                protocol: provider.protocol.clone(),
-                endpoint: provider.endpoint.clone(),
-                config: provider_config,
-                reference: provider
-                    .credential_ref
-                    .clone()
-                    .ok_or(GatewayError("authentication resource is required"))?,
-            },
-        );
     }
     let targets = routes;
     let mut routes = BTreeMap::new();
@@ -308,6 +331,7 @@ enum WireEvent {
 struct DispatchGuard {
     task: tokio::task::JoinHandle<()>,
     _permit: OwnedSemaphorePermit,
+    observation: Observation,
 }
 impl Drop for DispatchGuard {
     fn drop(&mut self) {
@@ -320,18 +344,53 @@ async fn ingress(
     request: Request<Body>,
     protocol: GatewayProtocol,
 ) -> Response<Body> {
+    let request_id = format!(
+        "{:x}-{:x}",
+        state.request_epoch,
+        state.next_request.fetch_add(1, Ordering::Relaxed)
+    );
+    let protocol_name = match protocol {
+        GatewayProtocol::ChatCompletionsV1 => "chat_completions_v1",
+        GatewayProtocol::ResponsesV1 => "responses_v1",
+        GatewayProtocol::MessagesV1 => "messages_v1",
+    };
+    let span = tracing::info_span!(parent: None, "gateway_request", request_id, protocol = protocol_name, stream = tracing::field::Empty);
+    let dispatcher = tracing::dispatcher::get_default(Clone::clone);
+    let observation = Observation::new(
+        "gateway_request_finished",
+        span.clone(),
+        state.stopping.clone(),
+    );
+    ingress_observed(state, request, protocol, observation)
+        .instrument(span)
+        .with_subscriber(dispatcher)
+        .await
+}
+
+async fn ingress_observed(
+    state: Arc<Ingress>,
+    request: Request<Body>,
+    protocol: GatewayProtocol,
+    observation: Observation,
+) -> Response<Body> {
+    tracing::info!(event = "gateway_request_received");
     if request
         .headers()
         .get("authorization")
         .and_then(|value| value.to_str().ok())
         != Some(format!("Bearer {}", state.token).as_str())
     {
-        return error_response(StatusCode::UNAUTHORIZED, "gateway authentication failed");
+        return rejected(
+            observation,
+            StatusCode::UNAUTHORIZED,
+            "gateway authentication failed",
+        );
     }
     let permit = match state.permits.clone().try_acquire_owned() {
         Ok(permit) => permit,
         Err(_) => {
-            return error_response(
+            return rejected(
+                observation,
                 StatusCode::SERVICE_UNAVAILABLE,
                 "gateway concurrency limit reached",
             );
@@ -339,38 +398,61 @@ async fn ingress(
     };
     let (parts, body) = request.into_parts();
     let headers = forward_headers(&parts.headers);
-    let bytes = match tokio::time::timeout(REQUEST_READ_TIMEOUT, to_bytes(body, MAX_REQUEST_BYTES))
-        .await
-    {
-        Ok(Ok(bytes)) => bytes,
-        Ok(Err(_)) => {
-            return error_response(StatusCode::PAYLOAD_TOO_LARGE, "gateway request body limit");
-        }
-        Err(_) => {
-            return error_response(StatusCode::REQUEST_TIMEOUT, "gateway request body deadline");
-        }
-    };
+    let bytes =
+        match tokio::time::timeout(REQUEST_READ_TIMEOUT, to_bytes(body, MAX_REQUEST_BYTES)).await {
+            Ok(Ok(bytes)) => bytes,
+            Ok(Err(_)) => {
+                return rejected(
+                    observation,
+                    StatusCode::PAYLOAD_TOO_LARGE,
+                    "gateway request body limit",
+                );
+            }
+            Err(_) => {
+                return rejected(
+                    observation,
+                    StatusCode::REQUEST_TIMEOUT,
+                    "gateway request body deadline",
+                );
+            }
+        };
     let body: Value = match serde_json::from_slice(&bytes) {
         Ok(Value::Object(value)) => Value::Object(value),
-        _ => return error_response(StatusCode::BAD_REQUEST, "gateway requires a JSON object"),
+        _ => {
+            return rejected(
+                observation,
+                StatusCode::BAD_REQUEST,
+                "gateway requires a JSON object",
+            );
+        }
     };
     let Some(model) = body["model"].as_str() else {
-        return error_response(StatusCode::BAD_REQUEST, "gateway model is required");
+        return rejected(
+            observation,
+            StatusCode::BAD_REQUEST,
+            "gateway model is required",
+        );
     };
     let target = match state.routes.read() {
         Ok(routes) => routes.get(model).cloned(),
         Err(_) => {
-            return error_response(
+            return rejected(
+                observation,
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "gateway alias state unavailable",
             );
         }
     };
     let Some(target) = target else {
-        return error_response(StatusCode::BAD_REQUEST, "gateway model route is missing");
+        return rejected(
+            observation,
+            StatusCode::BAD_REQUEST,
+            "gateway model route is missing",
+        );
     };
     if target.protocol != protocol {
-        return error_response(
+        return rejected(
+            observation,
             StatusCode::BAD_REQUEST,
             "gateway protocol does not match this route",
         );
@@ -378,32 +460,52 @@ async fn ingress(
     let stream = match body.get("stream") {
         None => false,
         Some(Value::Bool(value)) => *value,
-        Some(_) => return error_response(StatusCode::BAD_REQUEST, "stream must be a boolean"),
+        Some(_) => {
+            return rejected(
+                observation,
+                StatusCode::BAD_REQUEST,
+                "stream must be a boolean",
+            );
+        }
     };
+    tracing::Span::current().record("stream", stream);
+    tracing::info!(
+        event = "gateway_route_selected",
+        provider_slot = target.provider_slot,
+        model_slot = target.model_slot
+    );
     let (sender, mut receiver) = mpsc::channel(1);
+    let request_span = tracing::Span::current();
     let dispatcher = tracing::dispatcher::get_default(Clone::clone);
     let task = tokio::spawn(async move {
         // Future polls retain the application's scoped diagnostic dispatcher.
-        use tracing::instrument::WithSubscriber;
         dispatch(state, target, body, headers, stream, sender)
+            .instrument(request_span)
             .with_subscriber(dispatcher)
             .await;
     });
-    let guard = DispatchGuard {
+    let mut guard = DispatchGuard {
         task,
         _permit: permit,
+        observation,
     };
     let Some(WireEvent::Headers(meta)) = receiver.recv().await else {
+        guard.observation.finish("upstream_unavailable");
         return error_response(
             StatusCode::BAD_GATEWAY,
             "upstream ended before response headers",
         );
     };
-    let body_stream = stream::unfold((receiver, guard), |(mut receiver, guard)| async move {
-        let next = receiver.recv().await?;
+    tracing::info!(event = "gateway_response_ready", http_status = meta.status);
+    let body_stream = stream::unfold((receiver, guard), |(mut receiver, mut guard)| async move {
+        let Some(next) = receiver.recv().await else {
+            guard.observation.finish("transport_completed");
+            return None;
+        };
         let item = match next {
             WireEvent::Body(bytes) => Ok(Bytes::from(bytes)),
             WireEvent::Failed | WireEvent::Headers(_) => {
+                guard.observation.finish("upstream_failed");
                 Err(std::io::Error::other("upstream response interrupted"))
             }
         };
@@ -476,6 +578,14 @@ fn response(meta: ResponseMeta, body: Body) -> Response<Body> {
     }
     response
 }
+fn rejected(mut observation: Observation, status: StatusCode, message: &str) -> Response<Body> {
+    observation.finish("rejected");
+    tracing::warn!(
+        event = "gateway_request_rejected",
+        http_status = status.as_u16()
+    );
+    error_response(status, message)
+}
 fn error_response(status: StatusCode, message: &str) -> Response<Body> {
     response(
         ResponseMeta {
@@ -525,11 +635,40 @@ async fn send_failure(
 async fn dispatch(
     state: Arc<Ingress>,
     target: RouteTarget,
-    mut body: Value,
+    body: Value,
     headers: Vec<Header>,
     stream: bool,
     sender: mpsc::Sender<WireEvent>,
 ) {
+    let attempt_span = tracing::info_span!("gateway_attempt", attempt = 1);
+    let mut observation = Observation::new(
+        "gateway_attempt_finished",
+        attempt_span.clone(),
+        state.stopping.clone(),
+    );
+    dispatch_observed(
+        state,
+        target,
+        body,
+        headers,
+        stream,
+        sender,
+        &mut observation,
+    )
+    .instrument(attempt_span)
+    .await;
+}
+
+async fn dispatch_observed(
+    state: Arc<Ingress>,
+    target: RouteTarget,
+    mut body: Value,
+    headers: Vec<Header>,
+    stream: bool,
+    sender: mpsc::Sender<WireEvent>,
+    observation: &mut Observation,
+) {
+    tracing::info!(event = "gateway_attempt_started");
     // The gateway alone resolves ingress aliases to the exact provider identifier.
     body["model"] = Value::String(target.model.as_str().to_owned());
     let credential = match state
@@ -545,6 +684,7 @@ async fn dispatch(
     {
         Ok(credential) => credential,
         Err(error) => {
+            observation.finish("credential_failed");
             tracing::warn!(event="gateway_credential_failed",kind=?error);
             send_failure(
                 &sender,
@@ -566,6 +706,7 @@ async fn dispatch(
             ) {
                 Ok(value) => value,
                 Err(_) => {
+                    observation.finish("configuration_failed");
                     send_failure(
                         &sender,
                         None,
@@ -594,6 +735,10 @@ async fn dispatch(
                         Box::pin(async move {
                             let event = match event {
                                 ChatCompletionsEvent::Headers(meta) => {
+                                    tracing::info!(
+                                        event = "gateway_upstream_headers",
+                                        http_status = meta.status
+                                    );
                                     sent.store(true, std::sync::atomic::Ordering::Release);
                                     WireEvent::Headers(meta)
                                 }
@@ -607,11 +752,34 @@ async fn dispatch(
                 )
                 .await;
             let headers_sent = sent.load(std::sync::atomic::Ordering::Acquire);
+            observation.finish(match &completion.result {
+                Ok(_) => "transport_completed",
+                Err(error) if matches!(error.kind, ChatCompletionsErrorKind::Cancelled) => {
+                    "downstream_closed"
+                }
+                Err(_) => "upstream_failed",
+            });
             match completion.result {
-                Ok(ChatCompletionsOutput::Json(body)) => send_json(&sender, body).await,
+                Ok(ChatCompletionsOutput::Json(body)) => {
+                    tracing::info!(
+                        event = "gateway_upstream_headers",
+                        http_status = body.meta.status
+                    );
+                    send_json(&sender, body).await;
+                }
                 Ok(ChatCompletionsOutput::Stream(_)) => {}
                 Err(error) => {
-                    tracing::warn!(event="gateway_dispatch_failed",protocol="chat_completions",kind=?error.kind);
+                    if matches!(error.kind, ChatCompletionsErrorKind::Cancelled) {
+                        tracing::info!(event = "gateway_dispatch_canceled");
+                    } else {
+                        tracing::warn!(event="gateway_dispatch_failed",protocol="chat_completions",kind=?error.kind);
+                    }
+                    if let Some(meta) = &error.response {
+                        tracing::info!(
+                            event = "gateway_upstream_headers",
+                            http_status = meta.status
+                        );
+                    }
                     if headers_sent {
                         let _ = sender.send(WireEvent::Failed).await;
                     } else {
@@ -642,6 +810,7 @@ async fn dispatch(
             ) {
                 Ok(value) => value,
                 Err(_) => {
+                    observation.finish("configuration_failed");
                     send_failure(
                         &sender,
                         None,
@@ -670,6 +839,10 @@ async fn dispatch(
                         Box::pin(async move {
                             let event = match event {
                                 ResponsesEvent::Headers(meta) => {
+                                    tracing::info!(
+                                        event = "gateway_upstream_headers",
+                                        http_status = meta.status
+                                    );
                                     sent.store(true, std::sync::atomic::Ordering::Release);
                                     WireEvent::Headers(meta)
                                 }
@@ -680,11 +853,31 @@ async fn dispatch(
                     }),
                 )
                 .await;
+            observation.finish(match &completion.result {
+                Ok(_) => "transport_completed",
+                Err(error) if matches!(error.kind, ResponsesErrorKind::Cancelled) => {
+                    "downstream_closed"
+                }
+                Err(_) => "upstream_failed",
+            });
             match completion.result {
-                Ok(ResponsesOutput::Json(body, _)) => send_json(&sender, body).await,
+                Ok(ResponsesOutput::Json(body, _)) => {
+                    tracing::info!(
+                        event = "gateway_upstream_headers",
+                        http_status = body.meta.status
+                    );
+                    send_json(&sender, body).await;
+                }
                 Ok(ResponsesOutput::Stream(..)) => {}
                 Err(error) => {
-                    tracing::warn!(event="gateway_dispatch_failed",protocol="responses",kind=?error.kind);
+                    if matches!(error.kind, ResponsesErrorKind::Cancelled) {
+                        tracing::info!(event = "gateway_dispatch_canceled");
+                    } else {
+                        tracing::warn!(event="gateway_dispatch_failed",protocol="responses",kind=?error.kind);
+                    }
+                    if let Some(status) = error.status {
+                        tracing::info!(event = "gateway_upstream_headers", http_status = status);
+                    }
                     if sent.load(std::sync::atomic::Ordering::Acquire) {
                         let _ = sender.send(WireEvent::Failed).await;
                     } else {

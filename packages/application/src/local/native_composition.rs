@@ -17,11 +17,17 @@ impl CoreRuntime {
         let model = gateway
             .model(key)
             .ok_or_else(|| RuntimeError::invalid("runtime model"))?;
-        let protocol = match (runtime.type_id.as_str(), &provider.protocol) {
-            ("codex-0.159.3", GatewayProtocol::ResponsesV1) => "openai-responses",
-            ("dsh-acp-0.2.0-rc.2", GatewayProtocol::ChatCompletionsV1) => "openai-completions",
-            ("dsh-acp-0.2.0-rc.2", GatewayProtocol::ResponsesV1) => "openai-responses",
-            _ => return Err(RuntimeError::invalid("所选模型协议不适用于此运行时版本")),
+        let supported = GatewayProtocol::runtime_protocols(&runtime.type_id)
+            .ok_or_else(|| RuntimeError::invalid("不支持的运行时版本类型"))?;
+        if !supported.contains(&provider.protocol) {
+            return Err(RuntimeError::invalid("所选模型协议不适用于此运行时版本"));
+        }
+        let protocol = match &provider.protocol {
+            GatewayProtocol::ChatCompletionsV1 => "openai-completions",
+            GatewayProtocol::ResponsesV1 => "openai-responses",
+            GatewayProtocol::MessagesV1 => {
+                return Err(RuntimeError::invalid("原生运行时协议适配器未实现"));
+            }
         };
         let runner = self
             .gateway_runner

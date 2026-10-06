@@ -1,6 +1,6 @@
 # Magpie 架构参考复核
 
-用户于 2026-10-06 建议重点学习 Magpie。本轮只调查与比较，不授权复制实现、依赖接入或产品范围扩张；提供源码证据，区分可借鉴机制和与 Velune 已确认边界冲突的部分。
+用户于 2026-10-06 建议重点学习 Magpie。初轮只调查与比较；后续用户明确授权开始吸纳，当前实施边界见末节。未授权复制实现、依赖接入或产品范围扩张；提供源码证据，区分可借鉴机制和与 Velune 已确认边界冲突的部分。
 
 目前定位为 [yetone/magpie](https://github.com/yetone/magpie)，产品是多个 Agent 的模型配置控制界面和本机网关，与当前问题吻合。调查时固定实际 checkout 提交，重点核对原生协议／转换边界、提供商及模型／能力归属、配置导入与写入所有权、执行版本适配、失败与流式生命周期。上游 README 的能力声明不作为行为验收。
 
@@ -18,7 +18,7 @@ primary 负责网关与整体比较，既有 huihua/import owner 负责配置 ad
 
 `docs/subsystems/gui-shell.md` 与 `internal/gui` 表明其桌面界面采用 Wails/WebView、JSON HTTP API。可参考任务层级和信息组织，不采用其 UI 技术／控件皮肤；Velune 继续平台原生 app 和同进程 UniFFI。
 
-## 比较中发现的 Velune 缺口（本轮未实施）
+## 比较中发现的 Velune 缺口（研究时基线）
 
 当前 Mac 的 `RuntimeEditor.compatibleModels`（app/mac/Views.swift:549）按 familyID 筛选协议；application 的 native_injection 则按精确 typeId 检查协议。后端仍拒绝不兼容执行，因此目前没有由此放宽协议，但未来同家族的不同 adapter 能力可能不一致，UI 会错误放行或隐藏。建议让版本化 runtime descriptor 暴露 supportedProtocols，界面直接消费；family 继续只承担分组。这是基于现有多版本决定的候选修正，不借 Magpie 参考扩张产品能力。
 
@@ -45,6 +45,14 @@ primary 负责网关与整体比较，既有 huihua/import owner 负责配置 ad
 - [原生与转换派发](https://github.com/yetone/magpie/blob/db55bc8b7a70126fd3a7bede95a56b31c6f20c5f/internal/gateway/gateway.go#L2197)、[passthrough 的改写](https://github.com/yetone/magpie/blob/db55bc8b7a70126fd3a7bede95a56b31c6f20c5f/internal/gateway/gateway.go#L2573)
 - [流式响应提交边界](https://github.com/yetone/magpie/blob/db55bc8b7a70126fd3a7bede95a56b31c6f20c5f/internal/gateway/fallback.go#L871)、[决策现场 trace](https://github.com/yetone/magpie/blob/db55bc8b7a70126fd3a7bede95a56b31c6f20c5f/internal/gateway/trace.go#L3)
 
-## 当前建议与状态
+## 研究结论（实施前）
 
 研究已完成，未修改产品源码、引入包、改变协议、启动自动路由或重新安装 app。Magpie 可作为 LLM 网关与配置接入的重点参考，huihua 继续是原生历史读取依赖，Obelisk 是索引／来源参考，各自用途不同。下一候选小切片是版本化 descriptor 的协议能力声明与 UI 消费；下一候选网关改进是无正文的 request／attempt 决策观测。二者均需结合实际使用决定，不把本研究建议自动提升为产品需求。相对链接与 diff 检查通过，没有运行任何自动化测试。
+
+## 已授权吸纳与当前执行
+
+用户已授权实施。primary 负责网关观测、文档和安装验收；运行时 owner 贯通 variant 注册表、application、UniFFI 与 Mac；导入 owner 负责选择边界、替换说明及 Pi 人工脚本。owners 已完成源码与静态检查，未提交或安装，由 primary 统一收口。advisor 调用受到会话 agent thread limit 拒绝，本切片依现有日志装配与可判别的回环实验推进，没有扩大产品范围。
+
+当前变化为版本化 `supportedProtocols` 单一声明、Mac 消费及执行准备检查；导入重复选择拒绝、替换说明纠正与非秘密来源指纹的过期验收；网关 request／attempt 关联、目标快照序号、状态与耗时及取消／关闭归因。导入原有状态和原子提交继续复用，不为参考建立通用计划或目录框架。来源指纹是非秘密规范化快照，不承诺原文件任意字节或秘密刷新都会使预览过期。
+
+schema 6 不变，没有引入新的配置模型或依赖，没有翻译、重试、fail-over 或业务正文日志。已通过 debug bindings 的 Codex／DSH 实际运行时四次合成请求及日志安全关联；原生 HTTP 人工脚本已通过 9 个保真用例、1 个未匹配路由、2 个调用方取消和 1 个在途关闭；13 个请求与单次派发的元数据均正确关联，取消／关闭没有成为提供商失败，idle／active Drop 均为 0ms（本次本机测量，不是时延保证）。fmt、workspace check、workspace 全 targets／features 严格 clippy 和 no-default bindings 严格 clippy 均通过；owner 的全 Mac Swift warnings-as-errors 类型检查通过。没有新增或运行自动化测试，没有真实服务调用。干净提交与安装状态待收口。

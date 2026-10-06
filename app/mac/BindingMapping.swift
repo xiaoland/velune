@@ -103,7 +103,7 @@ enum BindingMapping {
     }
 
     static func runtimeType(_ value: BindingRuntimeTypeDescriptor) -> RuntimeTypeDescriptor {
-        RuntimeTypeDescriptor(id: value.id, familyID: value.familyId, versionRegex: value.versionRegex, name: value.name, fields: value.fields.map(settingField), actions: value.actions.map(settingAction))
+        RuntimeTypeDescriptor(id: value.id, familyID: value.familyId, versionRegex: value.versionRegex, supportedProtocols: value.supportedProtocols.map(protocolID), name: value.name, fields: value.fields.map(settingField), actions: value.actions.map(settingAction))
     }
 
     static func configuration(_ value: BindingConfigurationSnapshot) -> (conversations: [Conversation], connections: [Connection], gateways: [GatewayConfig], runtimes: [RuntimeInstance], runtimeTypes: [RuntimeTypeDescriptor], modelTemplates: [ModelTemplate], importTypes: [RuntimeTypeDescriptor], protocols: [ProtocolDescriptor], activeRuntimeID: String?) {

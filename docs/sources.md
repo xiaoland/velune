@@ -180,3 +180,5 @@ S17 实施授权：用户决定全面切换 UniFFI，并要求现在开始拆分
 2026-10-06 用户进一步明确版本分型：不同 breaking-change 版本视为不同运行时，允许多个 Pi adapter 版本并存，不只是不匹配报错；并建议参考 obelisk。后者暂以最吻合的 tommy0103/obelisk 核对，不由参考建议推定需要会话索引数据库。
 
 2026-10-06 用户建议重点学习 Magpie。已定位 [yetone/magpie](https://github.com/yetone/magpie)，只进行架构与实现参考复核；这不构成引入 Go／Wails、协议翻译、账号切换或自动 fail-over 的产品决定。固定源码与比较证据归 [研究 packet](../tasks/magpie-reference/packet.md)。
+
+2026-10-06 用户明确“开始应用对 magpie 的吸纳”，授权将已核对机制落到当前产品。当前切片采用版本化协议能力、导入选择／替换边界和无正文的网关生命周期观测；不接入 Magpie 包或复制源码，不引入协议翻译、重试／fail-over 或 Wails。设计归架构和 AI 服务设计，实施证据归 [Magpie packet](../tasks/magpie-reference/packet.md)。

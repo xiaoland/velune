@@ -10,3 +10,5 @@ pub use runtime::{
     CredentialResolutionError, CredentialResolver, CredentialTarget, GatewayError,
     ResolvedCredential, Runner,
 };
+
+mod observation;

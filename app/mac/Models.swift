@@ -158,6 +158,7 @@ struct RuntimeTypeDescriptor: Codable, Sendable, Identifiable, Equatable {
     var id: String
     var familyID: String
     var versionRegex: String
+    var supportedProtocols: [ProviderProtocol]
     var name: String
     var fields: [SettingField]
     var actions: [SettingAction]

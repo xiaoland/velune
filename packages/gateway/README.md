@@ -13,3 +13,5 @@ Axum 负责 HTTP framing，当前只监听随机 loopback 端口并提供两条 
 提供商模型条目使用稳定 `recordKey` 和精确 `providerModelId`。入口自动派生为 `velune/model/<recordKey>`，运行时注入的别名另外传入；内部记录键本身不是 wire model 入口。网关完成目标解析后才传递 `ProviderModelId`，协议执行不再次映射。上下文／输出能力与协议推理声明均可未知，网关不要求或补充请求 token 限制，也不以默认规格覆盖提供商实际能力。
 
 Codex／DSH 原生运行时的装配方可额外注册其执行模型字符串为 alias，并映射到已选的提供商模型记录；gateway 不据模型名推断提供商，不解析 app-server／ACP，也不读取 huihua 历史。执行模式由 application 与 adapter 保证原生 Harness 只获得网关入口与临时本地 token。审批、回答、取消 turn 与原生会话恢复不属于本 unit。
+
+网关只发出元数据 tracing 事件，subscriber 由消费方装配。request／attempt 关联贯穿响应 body 与取消 future 的丢弃；目标使用当前快照中的序号，日志不包含模型 ID、alias、endpoint、请求正文或凭据。传输完成与模型业务成功分开，调用方断开与 Runner 关闭也有独立归因。具体字段与人工验收见 [本地诊断](../../docs/development.md#本地诊断)。

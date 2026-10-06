@@ -123,6 +123,31 @@ def main():
             if not selected.can_import or not candidate.can_import:
                 raise RuntimeError(f'synthetic import still blocked: {selected.issues}, {candidate.issues}')
             assert plain.can_import, 'plain model with native compatibility was blocked'
+            saved_before_import = (root / 'home/generic-config.json').read_bytes()
+            try:
+                application.apply_provider_import('default', source, preview.token,
+                    [bindings.BindingImportSelection(provider_id=selected.id,
+                        candidate_keys=[candidate.candidate_key]),
+                     bindings.BindingImportSelection(provider_id=selected.source_provider_id,
+                        candidate_keys=[plain.candidate_key])], False)
+            except bindings.BindingError:
+                assert (root / 'home/generic-config.json').read_bytes() == saved_before_import
+            else:
+                raise AssertionError('duplicate provider selections were silently accepted')
+            models_path = root / 'source/models.json'
+            changed_source = json.loads(source_files['models.json'])
+            changed_source['providers']['fixture-selected']['models'][0]['contextWindow'] = 32768
+            models_path.write_text(json.dumps(changed_source))
+            try:
+                application.apply_provider_import('default', source, preview.token,
+                    [bindings.BindingImportSelection(provider_id=selected.id,
+                        candidate_keys=[candidate.candidate_key])], False)
+            except bindings.BindingError:
+                assert (root / 'home/generic-config.json').read_bytes() == saved_before_import
+            else:
+                raise AssertionError('changed source accepted an old preview')
+            finally:
+                models_path.write_bytes(source_files['models.json'])
             imported = application.apply_provider_import('default', source, preview.token,
                 [bindings.BindingImportSelection(provider_id=selected.id, candidate_keys=[candidate.candidate_key])], False)
             assert imported.imported_provider_ids == [selected.id], 'unselected provider was imported'
@@ -236,6 +261,8 @@ def main():
                 'upstreamRequests': len(captures), 'onlySelectedProviderSaved': True, 'providerOwnedAuthentication': True,
                 'editedKeyIdEndpointUsedUpstream': True,
                 'authenticationReplacementInvalidatesImportPreview': True,
+                'changedSourceInvalidatesImportPreview': True,
+                'duplicateProviderSelectionsRejectedBeforeMutation': True,
                 'nativeReasoningHistoryPreserved': True, 'sourceFilesUnchanged': True,
                 'unchangedImportKeepsConnection': True, 'changedImportDisconnectsStaleGateway': True,
                 'realServicesCalled': False}, ensure_ascii=False, indent=2))

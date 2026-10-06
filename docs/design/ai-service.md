@@ -87,6 +87,10 @@ fail-over 由 AI 网关单独决策，provider 执行一次尝试，不隐藏再
 
 日志与观察记录关联 ID、目标身份、阶段、提交状态、耗时、安全错误码及按需提取的 usage／finish reason 等业务指标，默认不记录原生正文、历史或认证。具体日志装配归 [架构](architecture.md#本地可观测性装配) 与 [开发说明](../development.md#本地诊断)。
 
+2026-10-06 已实施无正文的网关 request／attempt 观测。每个请求使用独立关联编号，记录协议、是否流式、已捕获目标在当前配置快照中的提供商／模型序号、HTTP 状态、阶段、耗时和结束归因。序号不是跨配置身份，也不记录实际模型 ID、alias、地址或认证引用。每次请求仍只有一次 attempt，没有新增重试或 fail-over。
+
+`gateway_response_ready` 表示响应元数据已准备，不证明客户端已接收字节，也不是允许重放的提交闸门。request 的 `transport_completed` 表示转发通道结束，不代表模型业务成功；HTTP 429 可以完整转发而 attempt 记录上游失败，HTTP 200 的原生 failed／incomplete 仍作为业务输出保留。调用方断开与 Runner 关闭分别记为 `downstream_closed`／`gateway_stopped`，在 future 或响应 body 丢弃时仍保留 dispatcher 和请求关联。日志不解析 SSE／JSON 业务终态，也不由传输结果补造 usage 或 finish reason。
+
 ## 原生运行时装配边界
 
 schema 6 的运行时配置引用版本化 adapter。family 与版本 regex 归 agent-runtime，AI 服务不据 Harness 名称选择协议。当前 Codex app-server adapter 使用原生 Responses，DSH ACP adapter使用原生 ChatCompletions；application 将所选提供商模型与中立网关注入信息交给 adapter，执行侧只获得 loopback 入口及临时 token。额外 wire 模型字符串以显式 alias 映射到稳定模型记录，不能按同名推断目标。
@@ -105,7 +109,7 @@ HTTP ingress 使用 Axum，application 的提供商认证解析器在每次请�
 
 提供商配置导入是一项完整功能，覆盖来源中的提供商、协议、端点、有效模型及能力参数，并包含认证来源。认证解析不是另一项可以代替导入的交付。Core 适配器提供非秘密预览与应用动作，平台 UI 依据通用描述展示来源和候选项，不解释 Pi 配置。
 
-首个适配器固定读取 Pi 1.0.2 的有效配置。用户选择已配置的运行时实例；application 在预览和应用时重新解析该实例的目录与执行配置，不接受调用方覆盖路径。实例或来源变化使旧预览失效。读取不要求运行时先连接或已有默认模型。预览不执行配置中的凭据命令、不刷新认证、不访问模型服务。提供商按实际端点与协议分组；无法由当前网关保持语义的配置须显示原因，不能默默剥离后声称支持。导入保留原文件；应用动作将静态 API key 保存到提供商私有配置，OAuth 保留来源引用，由 adapter 在原存储锁内刷新。预览不返回秘密，公开摘要不含 key。
+首个适配器固定读取 Pi 1.0.2 的有效配置。用户选择已配置的运行时实例；application 在预览和应用时重新解析该实例的目录与执行配置，不接受调用方覆盖路径。实例或来源的非秘密规范化快照变化使旧预览失效；指纹不代表原文件字节或秘密值。API key 值与 OAuth refresh 变化不作为来源指纹差异，应用时仍重新读取来源。读取不要求运行时先连接或已有默认模型。预览不执行配置中的凭据命令、不刷新认证、不访问模型服务。提供商按实际端点与协议分组；无法由当前网关保持语义的配置须显示原因，不能默默剥离后声称支持。导入保留原文件；应用动作将静态 API key 保存到提供商私有配置，OAuth 保留来源引用，由 adapter 在原存储锁内刷新。预览不返回秘密，公开摘要不含 key。
 
 装配配置中的提供商模型映射可以携带 `piProjection`，其类型和转换归 Pi adapter，不是通用 AI 模型能力。固定 Pi 1.0.2 根据原提供商与 URL 推断的 ChatCompletions 有效兼容设置在导入时形成投影；受管模型目录保留 input、兼容设置、采样参数及按推理级别的参数，使替换 provider／URL 不改变 SDK 编码。DeepSeek 等原生 ChatCompletions 推理格式与 assistant reasoning 历史不再因 sampling 类型缺少字段被拒绝。Responses 保留当前明确支持的编码选项，旧 `openai-codex-responses` 仍不是普通 Responses 的别名。
 
@@ -113,7 +117,7 @@ HTTP ingress 使用 Axum，application 的提供商认证解析器在每次请�
 
 保存的来源投影在派发时重新核对。绑定缺少 Pi 必需执行元数据时，在运行时准备边界明确拒绝；不借用全局模型或另一提供商的规格，不静默吸收来源变化。`ai` 与 `ai-provider` 不引用 Pi 类型，Mac 往返保留 adapter 元数据，不解释它。旧 `chatCompletionsOutputLimitField` 已删除；来源 Pi 协议 compat 保留其真实编码语义。
 
-来源配置在导入时形成快照，不做双向同步。重复项默认跳过，替换须明确选择；模型归导入的提供商，模板仅提供快填。导入不自动改变运行时默认模型。应用前重新核对来源和目标配置，变化后要求重新预览；派发时核对保存的来源执行绑定，避免来源端点改变后将凭据发送到另一个目标。当前实现与人工验证记录见 [首循环任务](../../tasks/pi-mac-first-loop/packet.md)。
+来源配置在导入时形成快照，不做双向同步。重复项默认跳过，替换须明确选择；替换更新参数与认证、移除未选模型，保留仍被选中模型的内部记录键。一次选择不得重复引用同一来源提供商，即便分别使用来源 ID 和预览 ID。模型归导入的提供商，模板仅提供快填。导入不自动改变运行时默认模型。应用前重新核对来源和目标配置，变化后要求重新预览；派发时核对保存的来源执行绑定，避免来源端点改变后将凭据发送到另一个目标。当前实现与人工验证记录见 [首循环任务](../../tasks/pi-mac-first-loop/packet.md)。
 
 
 ## 历史有界 sampling 与 MiniMax 实现

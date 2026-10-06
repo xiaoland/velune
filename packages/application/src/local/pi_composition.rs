@@ -20,6 +20,12 @@ pub(super) fn runnable_pi_model<'a>(
     let provider = gateway
         .validate_dispatch(id)
         .map_err(RuntimeError::invalid)?;
+    let protocols = GatewayProtocol::runtime_protocols("pi-1.0.2").expect("registered Pi adapter");
+    if !protocols.contains(&provider.protocol) {
+        return Err(RuntimeError::invalid(
+            "所选模型协议不适用于此 Pi 运行时版本",
+        ));
+    }
     let model = gateway.model(id).expect("validated model");
     let binding = provider
         .models

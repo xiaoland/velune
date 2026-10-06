@@ -23,3 +23,5 @@ Codex 使用 app-server 的 thread／turn 控制；DSH 使用 ACP v1 的 session
 DSH 执行 overlay 禁用 settings、llm-deepseek 与 llm-deepseek-account，并为 llm-pi-ai／ACP 配置网关目录，防止原来源设置覆盖执行路由；不删除原来源配置。CLI 会按上游行为准备其 ACP profile。实例的 CODEX_HOME／DSH_HOME 与会话 cwd 分开；网关注入文件属于 application 的运行时投影目录。
 
 Node 与用户配置的 Codex／DSH 可执行文件是外部依赖。huihua 固定依赖、完整许可证和安装入口见 [runtime-support 声明](runtime-support/THIRD_PARTY_NOTICES.md) 与 [开发说明](../../docs/development.md#原生运行时与历史读取)。仅 Pi SDK 与 huihua 依赖随 Mac 打包，不分发整个 DSH runtime 或 Codex CLI。
+
+版本注册表同时声明中立 `RuntimeProtocol` 支持集合。application 将其转换成网关协议描述供界面使用，执行准备也检查同一集合；family 不参与协议资格判断。

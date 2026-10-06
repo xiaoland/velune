@@ -202,6 +202,7 @@ pub struct BindingRuntimeTypeDescriptor {
     pub id: String,
     pub family_id: String,
     pub version_regex: String,
+    pub supported_protocols: Vec<BindingGatewayProtocol>,
     pub name: String,
     pub fields: Vec<BindingSettingField>,
     pub actions: Vec<BindingSettingAction>,

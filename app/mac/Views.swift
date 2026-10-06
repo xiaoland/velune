@@ -546,9 +546,10 @@ struct RuntimeEditor: View {
     @State private var executableDiscoveryRunning = false
     @State private var executableDiscoveryMessage: String?
     private var descriptor: RuntimeTypeDescriptor? { types.first { $0.id == typeID } }
-    private var compatibleModels: [ModelChoice] { models.filter { model in
-        switch descriptor?.familyID { case "codex": return model.protocolID == .responsesV1; case "deepseek-harness": return model.protocolID == .chatCompletionsV1 || model.protocolID == .responsesV1; default: return true }
-    } }
+    private var compatibleModels: [ModelChoice] {
+        guard let descriptor else { return [] }
+        return models.filter { descriptor.supportedProtocols.contains($0.protocolID) }
+    }
     private var valid: Bool { !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && descriptor != nil && (descriptor?.fields.allSatisfy { field in
         let value = settings[field.key] ?? field.value
         return (!field.required || !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) && MacPath.isValid(value, field: field)

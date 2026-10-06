@@ -28,6 +28,8 @@ pub(crate) fn descriptor() -> crate::config::RuntimeTypeDescriptor {
         id: "pi-1.0.2".into(),
         family_id: "pi".into(),
         version_regex: r"^1\.0\.2$".into(),
+        supported_protocols: GatewayProtocol::runtime_protocols("pi-1.0.2")
+            .expect("registered Pi adapter"),
         name: "Pi Agent 提供商目录".into(),
         fields: Vec::new(),
         actions: vec![
@@ -276,7 +278,7 @@ pub(crate) fn apply(
     let selection_items = selections
         .as_array()
         .ok_or_else(|| RuntimeError::invalid("provider import selections"))?;
-    let mut candidate_models = BTreeMap::<String, Vec<String>>::new();
+    let mut candidate_models = BTreeMap::<String, (String, Vec<String>)>::new();
     for provider in &snapshot.providers {
         let Some(endpoint) = provider.endpoint.as_deref() else {
             continue;
@@ -326,9 +328,13 @@ pub(crate) fn apply(
                 )
             })
             .collect::<Vec<_>>();
-        candidate_models.insert(provider.source_provider_id.clone(), ids.clone());
-        candidate_models.insert(provider_id, ids);
+        candidate_models.insert(
+            provider.source_provider_id.clone(),
+            (provider_id.clone(), ids.clone()),
+        );
+        candidate_models.insert(provider_id.clone(), (provider_id, ids));
     }
+    let mut selected_providers = std::collections::BTreeSet::new();
     for selection in selection_items {
         let provider_id = selection["providerId"]
             .as_str()
@@ -339,9 +345,16 @@ pub(crate) fn apply(
         if candidate_keys.is_empty() {
             return Err(RuntimeError::invalid("provider import selection models"));
         }
-        let candidates = candidate_models
+        let (canonical_id, candidates) = candidate_models
             .get(provider_id)
             .ok_or_else(|| RuntimeError::invalid("provider import selection provider"))?;
+        // A source ID and its preview ID name the same provider. Reject repeated
+        // selections before mutation rather than silently using only the first.
+        if !selected_providers.insert(canonical_id) {
+            return Err(RuntimeError::invalid(
+                "provider import duplicate provider selection",
+            ));
+        }
         let mut selected = std::collections::BTreeSet::new();
         for model_record_key in candidate_keys {
             let model_record_key = model_record_key

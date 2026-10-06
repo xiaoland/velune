@@ -27,6 +27,13 @@ impl velune_gateway::CredentialResolver for Resolver {
 }
 fn main()->Result<(),Box<dyn std::error::Error>> {
  let args:Vec<_>=std::env::args().collect();
+ let log=std::fs::File::create(&args[2])?;
+ use tracing_subscriber::{Layer,layer::SubscriberExt};
+ let layer=tracing_subscriber::fmt::layer().json().with_ansi(false)
+  .with_writer(std::sync::Mutex::new(log))
+  .with_filter(tracing_subscriber::filter::filter_fn(|m|m.target().starts_with("velune_")&&*m.level()<=tracing::Level::INFO));
+ let subscriber=tracing_subscriber::registry().with(layer);
+ let _scope=tracing::subscriber::set_default(subscriber);
  let config=serde_json::from_slice(&std::fs::read(&args[1])?)?;
  let runner=velune_gateway::Runner::start(config,Arc::new(Resolver),BTreeMap::new())?;
  println!("{}",serde_json::json!({"endpoint":runner.endpoint(),"token":runner.token()}));std::io::stdout().flush()?;
@@ -111,7 +118,7 @@ def main():
         source.write_text(PROBE)
         # Directory timestamps can mix incompatible Cargo feature builds. Read
         # the artifacts from this dependency graph instead of choosing newest.
-        build = subprocess.run(['cargo', 'build', '--locked', '-p', 'velune-gateway',
+        build = subprocess.run(['cargo', 'build', '--locked', '-p', 'velune-bindings', '--lib',
             '--manifest-path', str(Path(__file__).resolve().parents[1] / 'Cargo.toml'),
             '--target-dir', str(args.deps.parents[1]), '--message-format=json'],
             check=True, capture_output=True, text=True)
@@ -124,7 +131,7 @@ def main():
                         artifacts[item['target']['name']] = filename
         def artifact(name):
             return artifacts[name]
-        subprocess.run([str(args.rustc), '--edition=2024', str(source), '-L', f'dependency={args.deps}', '--extern', f'velune_gateway={artifact("velune_gateway")}', '--extern', f'velune_ai={artifact("velune_ai")}', '--extern', f'serde_json={artifact("serde_json")}', '-o', str(root / 'probe')], check=True)
+        subprocess.run([str(args.rustc), '--edition=2024', str(source), '-L', f'dependency={args.deps}', '--extern', f'velune_gateway={artifact("velune_gateway")}', '--extern', f'velune_ai={artifact("velune_ai")}', '--extern', f'serde_json={artifact("serde_json")}', '--extern', f'tracing={artifact("tracing")}', '--extern', f'tracing_subscriber={artifact("tracing_subscriber")}', '-o', str(root / 'probe')], check=True)
         def start(reference='synthetic'):
             pairs = [('chat', 'chatCompletionsV1'), ('responses', 'responsesV1')]
             config = {'id': 'fixture', 'name': 'fixture',
@@ -136,10 +143,12 @@ def main():
                 'failover': {'mode': 'disabled'}}
             path = root / f'config-{len(processes)}.json'
             path.write_text(json.dumps(config))
-            process = subprocess.Popen([str(root / 'probe'), str(path)], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            log_path = root / f'log-{len(processes)}.jsonl'
+            process = subprocess.Popen([str(root / 'probe'), str(path), str(log_path)], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
             processes.append(process)
             info = json.loads(process.stdout.readline())
             info['process'] = process
+            info['log_path'] = log_path
             info['port'] = int(info['endpoint'].split(':')[2].split('/')[0])
             return info
         def stop(info):
@@ -204,7 +213,54 @@ def main():
                     response.read(1)
                 connection.close()
                 assert peer_closed.wait(3), mode + ' upstream did not cancel after disconnect'
-            print(json.dumps({'cancelBeforeHeaders': True, 'cancelDuringStream': True, 'dropIdleMs': stop(info)}))
+            idle_ms = stop(info)
+            active = start()
+            peer_closed.clear(); requested.clear()
+            connection, _ = open_request(active, 'slow_headers', streaming=True)
+            assert requested.wait(2)
+            active_ms = stop(active)
+            assert peer_closed.wait(3), 'shutdown did not close active upstream'
+            connection.close()
+            records = []
+            for log_path in (info['log_path'], active['log_path']):
+                raw = log_path.read_text()
+                for forbidden in ('synthetic-only', 'SYNTHETIC_HISTORY', 'vendor_option',
+                                  str(root), f'http://127.0.0.1:{server.server_port}', 'external-chat'):
+                    assert forbidden not in raw, 'payload/configuration leaked into gateway log'
+                records.extend(json.loads(line) for line in raw.splitlines())
+            def request_id(record):
+                for span in record.get('spans', []) + [record.get('span', {})]:
+                    if span.get('name') == 'gateway_request':
+                        return span.get('request_id')
+                return None
+            requests = [record for record in records if record.get('fields', {}).get('event') == 'gateway_request_received']
+            assert len(requests) == 13
+            outcomes = []
+            for request in requests:
+                identifier = request_id(request)
+                assert identifier is not None
+                group = [record['fields'] for record in records if request_id(record) == identifier]
+                finished = [event for event in group if event.get('event') == 'gateway_request_finished']
+                assert len(finished) == 1
+                outcome = finished[0]['outcome']
+                outcomes.append(outcome)
+                attempts = [event for event in group if event.get('event') == 'gateway_attempt_finished']
+                if outcome == 'rejected':
+                    assert not attempts
+                else:
+                    assert len(attempts) == 1
+                    expected_attempt = 'upstream_failed' if any(event.get('event') == 'gateway_upstream_headers' and event.get('http_status') == 429 for event in group) else outcome
+                    assert attempts[0]['outcome'] == expected_attempt, (expected_attempt, group)
+            assert outcomes.count('transport_completed') == 9
+            assert outcomes.count('rejected') == 1
+            assert outcomes.count('downstream_closed') == 2
+            assert outcomes.count('gateway_stopped') == 1
+            assert any(record.get('fields', {}).get('event') == 'gateway_upstream_headers'
+                       and record['fields']['http_status'] == 429 for record in records)
+            print(json.dumps({'cancelBeforeHeaders': True, 'cancelDuringStream': True,
+                'dropIdleMs': idle_ms, 'dropActiveMs': active_ms,
+                'metadataOnlyCorrelatedGatewayObservations': True,
+                'cancellationAndShutdownAreNotProviderFailures': True}))
         finally:
             for process in processes:
                 if process.poll() is None:

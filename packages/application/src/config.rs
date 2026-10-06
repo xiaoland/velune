@@ -91,6 +91,7 @@ pub struct RuntimeTypeDescriptor {
     pub id: String,
     pub family_id: String,
     pub version_regex: String,
+    pub supported_protocols: Vec<GatewayProtocol>,
     pub name: String,
     pub fields: Vec<crate::conversation::SettingField>,
     pub actions: Vec<crate::conversation::SettingAction>,
@@ -247,6 +248,21 @@ struct PiBindingIdentity<'a> {
 }
 
 impl GatewayProtocol {
+    /// The versioned runtime registry owns support; family IDs never grant capabilities.
+    #[cfg(feature = "local-runtime")]
+    pub(crate) fn runtime_protocols(type_id: &str) -> Option<Vec<Self>> {
+        use velune_agent_runtime::version::{RuntimeProtocol, variant};
+        Some(
+            variant(type_id)?
+                .supported_protocols
+                .iter()
+                .map(|protocol| match protocol {
+                    RuntimeProtocol::ChatCompletionsV1 => Self::ChatCompletionsV1,
+                    RuntimeProtocol::ResponsesV1 => Self::ResponsesV1,
+                })
+                .collect(),
+        )
+    }
     #[cfg(feature = "local-runtime")]
     fn identity_name(&self) -> &'static str {
         match self {

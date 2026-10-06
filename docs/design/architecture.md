@@ -362,6 +362,8 @@ Pi 的物理模型身份不能只使用全局逻辑模型 ID。相同逻辑模�
 
 2026-10-05 用户明确当前 gateway 仅为 LLM Gateway，是 AI 模块的一种应用模式；AI 服务不限于 LLM，直接调用 AI 能力无需经过 gateway。LLM Gateway 只做同协议原生透传、路由与 fail-over，不进行协议转换／翻译，也不限于 Harness 调用方。独立 gateway package 保留应用模式的职责，AI 契约不反向依赖它；不为非 LLM 能力预建通用网关。跨单元职责、原生操作与当前偏差以 [AI 服务设计](ai-service.md) 为准；此前 Pi 原生 provider 直接承担上游派发的候选路径不再是 Velune 管理会话的目标。当前 fail-over 未实现，配置仍 Disabled。源码和独立审计证据归 [AI 网关审计](../../tasks/ai-gateway-audit/packet.md)。
 
+版本化运行时 descriptor 同时公开 `supportedProtocols`，由 agent-runtime 的 variant 注册表声明，经 application／UniFFI 传给平台。Mac 模型过滤与执行准备消费同一声明，不按 family 猜测能力。当前 Pi 与 DSH variant 声明 ChatCompletions／Responses，Codex variant 声明 Responses；这是 adapter 的配置能力，不扩大上游协议支持，也不使 AI unit 依赖运行时类型。未知 descriptor 不显示所有模型。
+
 ## 本地可观测性装配
 
 2026-10-05 已实施：Rust 使用 tracing，subscriber 和文件输出留在 bindings 内部装配，不建立独立可观测性 package，也不由各领域 unit 初始化进程全局 subscriber。每个 VeluneApplication 拥有独立 Dispatch；同步调用建立作用域，线程显式传播上下文，以免不同 VELUNE_HOME 的对象混写。Mac 使用原生 OSLog.Logger，并消费 typed 失败的诊断编号。日志位置、保留策略与安全字段契约归 [开发说明](../development.md#本地诊断)。

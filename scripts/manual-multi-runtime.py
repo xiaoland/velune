@@ -52,6 +52,11 @@ def main():
             expected={'pi-1.0.2':('pi',r'^1\.0\.2$'),'codex-0.159.3':('codex',r'^0\.159\.3$'),'dsh-acp-0.2.0-rc.2':('deepseek-harness',r'^0\.2\.0-rc\.2$')}
             for identity,(family,pattern) in expected.items():
                 assert descriptor[identity].family_id==family and descriptor[identity].version_regex==pattern
+            chat=b.BindingGatewayProtocol.CHAT_COMPLETIONS_V1;responses=b.BindingGatewayProtocol.RESPONSES_V1
+            assert set(descriptor['pi-1.0.2'].supported_protocols)=={chat,responses}
+            assert set(descriptor['codex-0.159.3'].supported_protocols)=={responses}
+            assert set(descriptor['dsh-acp-0.2.0-rc.2'].supported_protocols)=={chat,responses}
+            assert all(b.BindingGatewayProtocol.MESSAGES_V1 not in d.supported_protocols for d in descriptor.values())
             endpoint=f'http://127.0.0.1:{server.server_port}/v1'
             results={}
             for family,type_id,binary,protocol,api_id in [
@@ -111,7 +116,26 @@ def main():
             assert not failures,failures
             application.shutdown();application=None
             assert json.loads((root/'home/generic-config.json').read_text())['schemaVersion']==6
-            print(json.dumps({'acceptance':'PASSED','runtimeVariants':list(expected),'actualRuntimes':results,'upstreamRequests':len(captures),'versionMismatchPreservesActiveRuntime':True,'realServicesCalled':False},indent=2))
+            logs=''.join(path.read_text() for path in (root/'home/logs').glob('*.jsonl'))
+            for forbidden in ['synthetic-only','synthetic-alternate','SYNTHETIC_NATIVE_ANSWER','synthetic-responses','synthetic-chat',endpoint,str(root)]:
+                assert forbidden not in logs,'business/configuration data entered diagnostic log'
+            events=[json.loads(line) for line in logs.splitlines()]
+            def request_id(event):
+                spans=event.get('spans',[])+[event.get('span',{})]
+                return next((span.get('request_id') for span in spans if span.get('name')=='gateway_request'),None)
+            requests={request_id(event) for event in events if event.get('fields',{}).get('event')=='gateway_request_received'}
+            assert None not in requests and len(requests)==len(captures)
+            for identity in requests:
+                selected=[event for event in events if request_id(event)==identity]
+                def named(name): return [event for event in selected if event.get('fields',{}).get('event')==name]
+                assert len(named('gateway_route_selected'))==1
+                assert len(named('gateway_attempt_started'))==len(named('gateway_attempt_finished'))==1
+                assert len(named('gateway_request_finished'))==1
+                assert named('gateway_attempt_finished')[0]['fields']['outcome']=='transport_completed'
+                assert named('gateway_request_finished')[0]['fields']['outcome']=='transport_completed'
+                assert named('gateway_response_ready')[0]['fields']['http_status']==200
+
+            print(json.dumps({'acceptance':'PASSED','runtimeVariants':list(expected),'actualRuntimes':results,'upstreamRequests':len(captures),'versionMismatchPreservesActiveRuntime':True,'metadataOnlyCorrelatedGatewayObservations':True,'realServicesCalled':False},indent=2))
         finally:
             if application:
                 try: application.shutdown()

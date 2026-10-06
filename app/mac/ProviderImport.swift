@@ -190,7 +190,11 @@ struct ProviderImportView: View {
                             Text("选择模型以查看详情与关联。").font(.callout).foregroundStyle(.secondary)
                         }
                         if provider.alreadyImported && !replaceExisting {
-                            Text("此提供商已导入，默认跳过。可在“导入选项”中允许替换。")
+                            Text("此提供商已存在，默认跳过。可在“导入选项”中允许替换。")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                        if provider.alreadyImported && replaceExisting {
+                            Text("替换会更新名称、认证与所选模型的参数；未选模型会移除，对它们的选择会清除。")
                                 .font(.caption).foregroundStyle(.secondary)
                         }
                         ImmediateDisclosureGroup("提供商信息") {
@@ -260,7 +264,7 @@ struct ProviderImportView: View {
             HStack {
                 if preview != nil {
                     Text("已选 \(selections.count) 个提供商、\(selectedCount) 个模型").foregroundStyle(.secondary)
-                        .help("原运行时配置保留，模型路由不会自动改变。")
+                        .help("原运行时文件保留；导入不会自动选定初始模型。")
                     Spacer()
                 } else { Spacer() }
                 if preview?.providers.contains(where: \.alreadyImported) == true {
@@ -268,7 +272,7 @@ struct ProviderImportView: View {
                         Toggle("允许替换此次选中的已导入提供商", isOn: $replaceExisting)
                     }
                     .fixedSize()
-                    .help("替换保留已有路由和关联模型参数。")
+                    .help("替换会以本次选择重建提供商；未选模型会移除，已有模型引用仅在所选模型仍存在时保留。")
                     .disabled(store.isLoading)
                 }
                 Button("取消") { dismiss() }.keyboardShortcut(.cancelAction)
@@ -293,11 +297,11 @@ struct ProviderImportView: View {
     private func providerStatus(_ provider: ProviderImportCandidate) -> String {
         let count = provider.models.filter(\.canImport).count
         if !provider.canImport || count == 0 { return "不可导入 · \(provider.models.count) 个模型" }
-        return provider.alreadyImported ? "已导入 · \(count) 个可用模型" : "\(count) 个可导入模型"
+        return provider.alreadyImported ? "已存在 · \(count) 个可用模型" : "\(count) 个可导入模型"
     }
     private func modelStatus(_ model: ProviderImportModel, provider: ProviderImportCandidate) -> String {
         if !provider.canImport || !model.canImport { return "不支持" }
-        if provider.alreadyImported && !replaceExisting { return "已导入" }
+        if provider.alreadyImported && !replaceExisting { return "跳过" }
         return "可导入"
     }
     private func enabled(_ provider: ProviderImportCandidate) -> Bool { provider.canImport && (!provider.alreadyImported || replaceExisting) }

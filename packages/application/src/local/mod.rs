@@ -59,11 +59,11 @@ fn runtime_types(resources_directory: &Path) -> Vec<crate::config::RuntimeTypeDe
     });
     velune_agent_runtime::version::variants().iter().map(|variant| {
         let mut binary=field("binary","运行时入口","filePath",true,if variant.id=="pi-1.0.2" {binary_value.clone()}else{String::new()},"当前运行时版本的绝对可执行路径。连接前会核对实际版本。");
-        if variant.family_id=="codex" {binary.executable_discovery=Some(crate::conversation::ExecutableDiscovery{command:"codex".into(),minimum_version:"0.159.3".into()});}
-        if variant.family_id=="deepseek-harness" {binary.executable_discovery=Some(crate::conversation::ExecutableDiscovery{command:"dsh".into(),minimum_version:"0.2.0".into()});}
-        let mut fields=vec![binary,node.clone(),field("agentDir","运行时目录","directoryPath",true,String::new(),match variant.family_id {"codex"=>"该实例的 CODEX_HOME；配置与会话根目录，不是任务工作目录。","deepseek-harness"=>"该实例的 DeepSeek Harness 配置与会话根目录，不是任务工作目录。",_=>"该实例的 Pi 配置与状态根目录，不是任务工作目录。"})];
+        if variant.id=="codex-0.159.3" {binary.executable_discovery=Some(crate::conversation::ExecutableDiscovery{command:"codex".into(),minimum_version:"0.159.3".into()});}
+        if variant.id=="dsh-acp-0.2.0-rc.2" {binary.executable_discovery=Some(crate::conversation::ExecutableDiscovery{command:"dsh".into(),minimum_version:"0.2.0".into()});}
+        let mut fields=vec![binary,node.clone(),field("agentDir","运行时目录","directoryPath",true,String::new(),match variant.id {"codex-0.159.3"=>"该实例的 CODEX_HOME；配置与会话根目录，不是任务工作目录。","dsh-acp-0.2.0-rc.2"=>"该实例的 DeepSeek Harness 配置与会话根目录，不是任务工作目录。",_=>"该实例的 Pi 配置与状态根目录，不是任务工作目录。"})];
         if variant.id=="pi-1.0.2" {fields.push(field("sessionDir","会话存储目录","directoryPath",false,String::new(),"覆盖 Pi 默认的会话存储位置；留空采用运行时目录的 sessions，此项不是任务工作目录。"));}
-        crate::config::RuntimeTypeDescriptor{id:variant.id.into(),family_id:variant.family_id.into(),version_regex:variant.version_regex.into(),name:variant.name.into(),fields,actions:vec![crate::conversation::SettingAction{id:"connect".into(),label:"连接运行时".into()}]}
+        crate::config::RuntimeTypeDescriptor{id:variant.id.into(),family_id:variant.family_id.into(),version_regex:variant.version_regex.into(),supported_protocols:GatewayProtocol::runtime_protocols(variant.id).expect("registered runtime adapter"),name:variant.name.into(),fields,actions:vec![crate::conversation::SettingAction{id:"connect".into(),label:"连接运行时".into()}]}
     }).collect()
 }
 
