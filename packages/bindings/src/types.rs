@@ -6,8 +6,10 @@ use std::collections::HashMap;
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct BindingConversationSummary {
     pub id: String,
+    #[serde(deserialize_with = "display_conversation_title")]
     pub title: String,
-    pub updated_at: Option<String>,
+    /// Unix epoch milliseconds; None means the source did not provide a timestamp.
+    pub updated_at_unix_ms: Option<i64>,
     pub runtime_id: String,
     pub cwd: Option<String>,
 }
@@ -32,8 +34,28 @@ pub struct BindingConversationActions {
 #[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 pub struct BindingMessage {
     pub id: String,
-    pub role: String,
+    pub role: BindingMessageRole,
+    /// Native message time in Unix epoch milliseconds, when available.
+    pub timestamp_unix_ms: Option<i64>,
     pub blocks: Vec<BindingMessageBlock>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, uniffi::Enum)]
+#[serde(rename_all = "lowercase")]
+pub enum BindingMessageRole {
+    User,
+    Assistant,
+    Tool,
+    System,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, uniffi::Enum)]
+#[serde(rename_all = "lowercase")]
+pub enum BindingToolState {
+    Pending,
+    Running,
+    Completed,
+    Failed,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, uniffi::Enum)]
@@ -42,11 +64,15 @@ pub enum BindingMessageBlock {
     Text {
         text: String,
     },
+    Reasoning {
+        text: String,
+    },
     Tool {
         #[serde(rename = "toolID")]
         tool_id: Option<String>,
         title: String,
-        state: Option<String>,
+        state: BindingToolState,
+        output: Option<String>,
     },
     Notice {
         text: String,
@@ -500,4 +526,11 @@ pub struct BindingCatalogModel {
 pub struct BindingHistoryFailure {
     pub runtime_id: String,
     pub detail: String,
+}
+
+fn display_conversation_title<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<String, D::Error> {
+    let title = velune_application::conversation::ConversationTitle::deserialize(deserializer)?;
+    Ok(title.display_text().into())
 }

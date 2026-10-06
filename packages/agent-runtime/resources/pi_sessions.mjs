@@ -21,6 +21,7 @@ if (inspectPath) {
     .reverse()
     .find((entry) => entry.type === "custom" && entry.customType === "pi.virtual-model-state");
   process.stdout.write(JSON.stringify({
+    name: manager.getSessionName() ?? null,
     cwd: manager.getCwd(),
     messages: context.messages,
     model: context.model,
@@ -41,7 +42,7 @@ process.stdout.write(
       cwd: session.cwd,
       name: session.name ?? null,
       created: session.created.toISOString(),
-      modified: session.modified.toISOString(),
+      modifiedUnixMs: session.modified.getTime(),
       messageCount: session.messageCount,
       firstMessage: session.firstMessage,
     })),

@@ -6,7 +6,7 @@ import VeluneBindings
 /// models remain platform-friendly; no JSON action envelope crosses this file.
 enum BindingMapping {
     static func conversation(_ value: BindingConversationSummary) -> Conversation {
-        Conversation(id: value.id, title: value.title, updatedAt: value.updatedAt,
+        Conversation(id: value.id, title: value.title, updatedAtUnixMs: value.updatedAtUnixMs,
                      runtimeID: value.runtimeId, cwd: value.cwd)
     }
 
@@ -25,14 +25,21 @@ enum BindingMapping {
     }
 
     static func message(_ value: BindingMessage) -> Message {
-        Message(id: value.id, role: value.role, blocks: value.blocks.map(block))
+        Message(id: value.id, role: messageRole(value.role), timestampUnixMs: value.timestampUnixMs, blocks: value.blocks.map(block))
     }
 
+    static func messageRole(_ value: BindingMessageRole) -> MessageRole {
+        switch value { case .user: return .user; case .assistant: return .assistant; case .tool: return .tool; case .system: return .system }
+    }
+    static func toolState(_ value: BindingToolState) -> ToolState {
+        switch value { case .pending: return .pending; case .running: return .running; case .completed: return .completed; case .failed: return .failed }
+    }
     static func block(_ value: BindingMessageBlock) -> MessageBlock {
         switch value {
-        case .text(let text): return MessageBlock(kind: "text", text: text)
-        case .tool(let toolID, let title, let state): return MessageBlock(kind: "tool", toolID: toolID, title: title, state: state)
-        case .notice(let text): return MessageBlock(kind: "notice", text: text)
+        case .text(let text): return .text(text)
+        case .reasoning(let text): return .reasoning(text)
+        case .tool(let id, let title, let state, let output): return .tool(id: id, title: title, state: toolState(state), output: output)
+        case .notice(let text): return .notice(text)
         }
     }
 

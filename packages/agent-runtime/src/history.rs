@@ -17,7 +17,7 @@ pub struct HistoryConfig {
 #[serde(rename_all = "camelCase")]
 pub struct History {
     pub native_id: String,
-    pub title: String,
+    pub title: ConversationTitle,
     pub cwd: Option<String>,
     pub messages: Vec<Message>,
 }
@@ -25,9 +25,9 @@ pub struct History {
 #[serde(rename_all = "camelCase")]
 struct Summary {
     native_id: String,
-    title: String,
+    title: ConversationTitle,
     cwd: Option<String>,
-    updated_at: Option<String>,
+    updated_at_unix_ms: Option<i64>,
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -73,7 +73,7 @@ pub fn list(config: &HistoryConfig, runtime_id: &str) -> Result<Vec<Conversation
         .map(|s| ConversationSummary {
             id: format!("{runtime_id}:{}", s.native_id),
             title: s.title,
-            updated_at: s.updated_at,
+            updated_at_unix_ms: s.updated_at_unix_ms,
             runtime_id: runtime_id.into(),
             cwd: s.cwd,
         })

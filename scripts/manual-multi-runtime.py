@@ -88,11 +88,13 @@ def main():
                     time.sleep(.05)
                 else: raise AssertionError(family+' run did not settle')
                 assert any('SYNTHETIC_NATIVE_ANSWER' in block.text for message in snapshot.messages for block in message.blocks if isinstance(block,b.BindingMessageBlock.TEXT)),family+' answer missing'
+                assert snapshot.conversation.title == 'Reply with the synthetic answer; no tools are needed.', family+' first user title missing'
                 assert captures[-1]['body']['model']==api_id and captures[-1]['authorization']=='Bearer synthetic-only'
                 sessions=application.list().conversations
                 assert any(s.id==snapshot.conversation.id for s in sessions),family+' native history missing from huihua list'
                 reopened=application.open_conversation(family,snapshot.conversation.id).snapshot
                 assert reopened and any('SYNTHETIC_NATIVE_ANSWER' in block.text for message in reopened.messages for block in message.blocks if isinstance(block,b.BindingMessageBlock.TEXT)),family+' historical answer missing'
+                assert reopened.conversation.title == snapshot.conversation.title, family+' reopened title changed: '+repr(reopened.conversation.title)+' vs '+repr(snapshot.conversation.title)
                 assert reopened.model_record_key is None and not reopened.actions.can_send,family+' inferred provider from bare history model ID'
                 application.select_model(family,alternate_saved.models[0].record_key)
                 before=len(captures);application.send(family,'Continue after the explicitly selected provider change.')
@@ -105,6 +107,7 @@ def main():
                 else: raise AssertionError(family+' selected provider did not settle')
                 assert captures[-1]['authorization']=='Bearer synthetic-alternate' and captures[-1]['path'].startswith('/alternate/v1/'),family+' selected provider route did not change'
                 assert captures[-1]['body']['model']==api_id
+                assert selected_snapshot.conversation.title == reopened.conversation.title, family+' preparation lost title'
                 assert selected_snapshot.model_record_key==alternate_saved.models[0].record_key
                 cross_protocol = False
                 if family == 'deepseek':

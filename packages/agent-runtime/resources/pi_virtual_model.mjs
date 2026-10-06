@@ -12,6 +12,14 @@ function selection() {
 }
 
 export default function (pi) {
+  // get_state omits cwd. Query the current public extension context at every
+  // authoritative resync, including in-place branch/session changes.
+  pi.registerCommand("velune-projection-sync", {
+    description: "Project current native session metadata",
+    handler: (_args, ctx) => {
+      ctx.ui.setStatus("velune.session-metadata", JSON.stringify({sessionFile:ctx.sessionManager.getSessionFile() ?? null,cwd:ctx.sessionManager.getCwd(),name:ctx.sessionManager.getSessionName() ?? null}));
+    },
+  });
   const appendSelection = () => {
     const chosen = selection();
     pi.appendEntry("pi.virtual-model-state", {

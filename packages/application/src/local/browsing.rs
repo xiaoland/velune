@@ -63,13 +63,11 @@ impl CoreRuntime {
                     .ok_or_else(|| RuntimeError::invalid("Pi 历史条目标识无效"))?;
                 Ok(ConversationSummary {
                     id: format!("{}:{path}", runtime.id),
-                    title: item["name"]
-                        .as_str()
-                        .filter(|v| !v.is_empty())
-                        .or_else(|| path.rsplit('/').next())
-                        .unwrap_or("会话")
-                        .into(),
-                    updated_at: item["modified"].as_str().map(str::to_owned),
+                    title: velune_conversation::conversation_title(
+                        item["name"].as_str(),
+                        item["firstMessage"].as_str(),
+                    ),
+                    updated_at_unix_ms: item["modifiedUnixMs"].as_i64(),
                     runtime_id: runtime.id.clone(),
                     cwd: item["cwd"].as_str().map(str::to_owned),
                 })
@@ -273,6 +271,13 @@ impl CoreRuntime {
                     .request(json!({"type":"new_session"}))
                     .map_err(|_| RuntimeError::invalid("conversation create"))?;
             }
+            if !is_new {
+                self.pi
+                    .projection
+                    .as_mut()
+                    .expect("started Pi")
+                    .set_conversation(snapshot.conversation.clone());
+            }
             self.model_record_key = Some(key.into());
             self.bind_gateway_model()?;
             self.sync_projection()?;
@@ -287,7 +292,8 @@ impl CoreRuntime {
             if let Some(mut view) = previous {
                 view.messages.push(Message {
                     id: format!("prepare-failed:{}", view.revision),
-                    role: "system".into(),
+                    role: velune_conversation::MessageRole::System,
+                    timestamp_unix_ms: None,
                     blocks: vec![MessageBlock::Notice {
                         text: "运行时准备失败；会话内容已保留，可修正配置后重试。".into(),
                     }],

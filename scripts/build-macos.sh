@@ -22,18 +22,15 @@ rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources" "$app/Contents/Frameworks"
 cp target/release/libvelune_bindings.dylib "$app/Contents/Frameworks/libvelune_bindings.dylib"
 install_name_tool -id '@rpath/libvelune_bindings.dylib' "$app/Contents/Frameworks/libvelune_bindings.dylib"
-xcrun swiftc -parse-as-library -swift-version 5 -emit-library -emit-module -module-name VeluneBindings \
-  -target "$(uname -m)-apple-macosx14.0" "$bindings/VeluneBindings.swift" \
-  -I "$bindings" -Xcc -fmodule-map-file="$bindings/VeluneBindingsFFI.modulemap" \
-  -L "$app/Contents/Frameworks" -lvelune_bindings \
-  -Xlinker -rpath -Xlinker '@loader_path' \
-  -emit-module-path "$bindings/VeluneBindings.swiftmodule" -o "$app/Contents/Frameworks/libVeluneBindings.dylib"
-install_name_tool -id '@rpath/libVeluneBindings.dylib' "$app/Contents/Frameworks/libVeluneBindings.dylib"
-xcrun swiftc -parse-as-library -swift-version 5 -target "$(uname -m)-apple-macosx14.0" -framework AppKit -framework SwiftUI \
-  app/mac/main.swift app/mac/Views.swift app/mac/Theme.swift app/mac/Logo.swift \
-  app/mac/Models.swift app/mac/BindingMapping.swift app/mac/Store.swift app/mac/Transport.swift app/mac/ProviderImport.swift app/mac/ExecutableDiscovery.swift app/mac/PublicModelCatalog.swift \
-  -I "$bindings" -Xcc -fmodule-map-file="$bindings/VeluneBindingsFFI.modulemap" -L "$app/Contents/Frameworks" -lVeluneBindings \
-  -Xlinker -rpath -Xlinker '@executable_path/../Frameworks' -o "$app/Contents/MacOS/Velune"
+mkdir -p target/swift-ffi target/swift-bindings
+cp "$bindings/VeluneBindings.swift" target/swift-bindings/
+cp "$bindings/VeluneBindingsFFI.h" target/swift-ffi/
+cp "$bindings/VeluneBindingsFFI.modulemap" target/swift-ffi/module.modulemap
+swift build --configuration release --product VeluneMac --force-resolved-versions \
+  -Xswiftc -warnings-as-errors -Xlinker -L -Xlinker "$app/Contents/Frameworks" \
+  -Xlinker -lvelune_bindings -Xlinker -rpath -Xlinker '@executable_path/../Frameworks'
+swift_binary_directory=$(swift build --configuration release --show-bin-path)
+cp "$swift_binary_directory/VeluneMac" "$app/Contents/MacOS/Velune"
 # JavaScript is a sealed resource, not a nested macOS executable.
 cp packages/agent-runtime/resources/pi_sessions.mjs packages/agent-runtime/resources/pi_rpc.mjs packages/agent-runtime/resources/pi_virtual_model.mjs packages/agent-runtime/resources/pi_auth.mjs packages/agent-runtime/resources/pi_provider_import.mjs "$app/Contents/Resources/"
 cp -R target/pi-runtime/node_modules "$app/Contents/Resources/node_modules"
@@ -43,6 +40,8 @@ mkdir -p "$app/Contents/Resources/ThirdParty"
 cp packages/agent-runtime/runtime-support/THIRD_PARTY_NOTICES.md "$app/Contents/Resources/ThirdParty/"
 cp -R packages/agent-runtime/runtime-support/licenses "$app/Contents/Resources/ThirdParty/"
 cp packages/agent-runtime/runtime-support/package-lock.json "$app/Contents/Resources/ThirdParty/runtime-support-package-lock.json"
+cp -R app/mac/Licenses "$app/Contents/Resources/ThirdParty/Swift"
+cp Package.resolved "$app/Contents/Resources/ThirdParty/swift-package-resolved.json"
 cp -R app/mac/Assets/Brand "$app/Contents/Resources/Brand"
 xcrun swift scripts/render-app-icon.swift app/mac/Assets/Brand target/macos/Velune.iconset
 iconutil -c icns target/macos/Velune.iconset -o "$app/Contents/Resources/Velune.icns"
@@ -75,10 +74,9 @@ Path(sys.argv[1]).write_text(json.dumps(manifest,ensure_ascii=False,indent=2))
 PY
 # Ad-hoc local debug signing only. No identity/keychain selection, certificate, or notarization.
 codesign --force --sign - "$app/Contents/Frameworks/libvelune_bindings.dylib"
-codesign --force --sign - "$app/Contents/Frameworks/libVeluneBindings.dylib"
 codesign --force --sign - "$app"
 codesign --verify --deep --strict "$app"
-shasum -a 256 "$app/Contents/MacOS/Velune" "$app/Contents/Frameworks/libvelune_bindings.dylib" "$app/Contents/Frameworks/libVeluneBindings.dylib" > target/macos/binary-sha256.txt
+shasum -a 256 "$app/Contents/MacOS/Velune" "$app/Contents/Frameworks/libvelune_bindings.dylib" > target/macos/binary-sha256.txt
 printf '已构建：%s\n' "$app"
 if [[ "${1:-}" != "--build-only" ]]; then
   python3 scripts/install-macos.py "$app"

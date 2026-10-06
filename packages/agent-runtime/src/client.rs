@@ -400,7 +400,18 @@ impl Client {
         records
     }
 
+    /// Events encountered before the last RPC response. Unlike poll, this does
+    /// not consume newer reader records after the authoritative message barrier.
+    pub fn take_buffered_events(&mut self) -> Vec<Value> {
+        self.pending.drain(..).collect()
+    }
+
     pub fn state(&mut self) -> Result<(Value, Value)> {
+        let metadata =
+            self.request(json!({"type":"prompt","message":"/velune-projection-sync"}))?;
+        if metadata["data"]["disposition"] != "handled" {
+            return Err(Error::Sdk("原生会话元数据查询未被扩展处理".into()));
+        }
         let state = self.request(json!({"type":"get_state"}))?;
         let messages = self.request(json!({"type":"get_messages"}))?;
         Ok((state, messages))

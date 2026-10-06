@@ -44,3 +44,5 @@
 ## 文档方法
 
 采用 xiaoland/svc 的[知识归属](https://github.com/xiaoland/svc/blob/4fe4c66ac4deb35209069c00b1bbdc1b22aae3af/corpus/specs/index.md)与 [Task Packet](https://github.com/xiaoland/svc/blob/4fe4c66ac4deb35209069c00b1bbdc1b22aae3af/corpus/task-packet/index.md)方法。项目文档可以直接阅读和编辑，无需 SVC CLI、配置文件或运行环境。
+
+- [会话模型与消息展示](../tasks/conversation-presentation/packet.md)：标题与时间归一、权威投影、原生消息呈现和长列表

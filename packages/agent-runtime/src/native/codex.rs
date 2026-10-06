@@ -129,10 +129,10 @@ impl NativeSession {
                         _ => None,
                     })
                     .collect();
-                ("user", blocks)
+                (MessageRole::User, blocks)
             }
             "agentMessage" => (
-                "assistant",
+                MessageRole::Assistant,
                 vec![MessageBlock::Text {
                     text: item["text"].as_str().unwrap_or_default().into(),
                 }],
@@ -148,39 +148,55 @@ impl NativeSession {
                 if text.is_empty() {
                     return;
                 }
-                ("system", vec![MessageBlock::Notice { text }])
+                (
+                    MessageRole::Assistant,
+                    vec![MessageBlock::Reasoning { text }],
+                )
             }
             "commandExecution" => (
-                "tool",
-                vec![
-                    MessageBlock::Tool {
-                        tool_id: Some(id.into()),
-                        title: item["command"].as_str().unwrap_or("命令执行").into(),
-                        state: item["status"].as_str().map(str::to_owned),
+                MessageRole::Tool,
+                vec![MessageBlock::Tool {
+                    tool_id: Some(id.into()),
+                    title: item["command"].as_str().unwrap_or("命令执行").into(),
+                    state: match item["status"].as_str() {
+                        Some("completed") => ToolState::Completed,
+                        Some("failed" | "declined") => ToolState::Failed,
+                        Some("inProgress") => ToolState::Running,
+                        _ => ToolState::Pending,
                     },
-                    MessageBlock::Text {
-                        text: item["aggregatedOutput"].as_str().unwrap_or_default().into(),
-                    },
-                ],
+                    output: item["aggregatedOutput"].as_str().map(str::to_owned),
+                }],
             ),
             "fileChange" => (
-                "tool",
+                MessageRole::Tool,
                 vec![MessageBlock::Tool {
                     tool_id: Some(id.into()),
                     title: "文件修改".into(),
-                    state: item["status"].as_str().map(str::to_owned),
+                    state: match item["status"].as_str() {
+                        Some("completed") => ToolState::Completed,
+                        Some("failed" | "declined") => ToolState::Failed,
+                        Some("inProgress") => ToolState::Running,
+                        _ => ToolState::Pending,
+                    },
+                    output: item["aggregatedOutput"].as_str().map(str::to_owned),
                 }],
             ),
             "mcpToolCall" | "dynamicToolCall" | "collabAgentToolCall" => (
-                "tool",
+                MessageRole::Tool,
                 vec![MessageBlock::Tool {
                     tool_id: Some(id.into()),
                     title: item["tool"].as_str().unwrap_or("工具调用").into(),
-                    state: item["status"].as_str().map(str::to_owned),
+                    state: match item["status"].as_str() {
+                        Some("completed") => ToolState::Completed,
+                        Some("failed" | "declined") => ToolState::Failed,
+                        Some("inProgress") => ToolState::Running,
+                        _ => ToolState::Pending,
+                    },
+                    output: item["aggregatedOutput"].as_str().map(str::to_owned),
                 }],
             ),
             "plan" => (
-                "system",
+                MessageRole::System,
                 vec![MessageBlock::Notice {
                     text: item["text"].as_str().unwrap_or_default().into(),
                 }],
@@ -189,7 +205,8 @@ impl NativeSession {
         };
         self.message(Message {
             id: id.into(),
-            role: kind.into(),
+            role: kind,
+            timestamp_unix_ms: None,
             blocks,
         });
     }
@@ -228,7 +245,8 @@ impl NativeSession {
                         .unwrap_or_default();
                     self.message(Message {
                         id: id.into(),
-                        role: "assistant".into(),
+                        role: crate::conversation::MessageRole::Assistant,
+                        timestamp_unix_ms: None,
                         blocks: vec![MessageBlock::Text { text: old + delta }],
                     });
                 }

@@ -177,6 +177,13 @@ def main():
                     time.sleep(0.05)
                 else:
                     raise RuntimeError('synthetic Pi did not settle within 30 seconds')
+            assert snapshot.conversation.title == 'Read the synthetic local file.', 'first user title was not retained'
+            tool_blocks = [block for message in snapshot.messages for block in message.blocks if isinstance(block, bindings.BindingMessageBlock.TOOL) and block.tool_id == 'call_fixture']
+            assert len(tool_blocks) == 1 and tool_blocks[0].state == bindings.BindingToolState.COMPLETED
+            assert 'SYNTHETIC_TOOL_RESULT' in (tool_blocks[0].output or '')
+            assert any(isinstance(block, bindings.BindingMessageBlock.REASONING) for message in snapshot.messages for block in message.blocks)
+            revision = snapshot.revision
+            for _ in range(3): assert application.snapshot(runtime.id).snapshot.revision == revision, 'idle poll rebuilt unchanged Pi history'
             assert len(captures) == 3, f'expected tool continuation plus next turn, got {len(captures)}'
             assert not upstream_errors, upstream_errors
             for request in captures:
@@ -189,7 +196,7 @@ def main():
             assert any(item.get('role') == 'tool' and item.get('tool_call_id') == 'call_fixture'
                        and 'SYNTHETIC_TOOL_RESULT' in str(item.get('content')) for item in continuation['messages'])
             assert all('reasoning_content' in item for item in captures[2]['messages'] if item.get('role') == 'assistant')
-            assistant_text = [block.text for message in snapshot.messages if message.role == 'assistant'
+            assistant_text = [block.text for message in snapshot.messages if message.role == bindings.BindingMessageRole.ASSISTANT
                               for block in message.blocks if isinstance(block, bindings.BindingMessageBlock.TEXT)]
             assert any('SYNTHETIC_ANSWER' in text for text in assistant_text), 'final projection missing'
             preview = application.preview_provider_import('default', source)

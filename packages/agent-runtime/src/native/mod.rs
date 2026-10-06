@@ -306,8 +306,11 @@ impl NativeSession {
             revision: 1,
             conversation: ConversationSummary {
                 id: format!("{runtime_id}:{id}"),
-                title: "当前会话".into(),
-                updated_at: None,
+                title: crate::conversation::conversation_title(
+                    None,
+                    crate::conversation::first_user_text(&history),
+                ),
+                updated_at_unix_ms: None,
                 runtime_id: runtime_id.into(),
                 cwd: Some(cwd.to_string_lossy().into_owned()),
             },
@@ -322,6 +325,12 @@ impl NativeSession {
                 can_switch: true,
             },
         });
+    }
+    /// Preserve the read-only source metadata when preparing the same native session.
+    pub fn set_conversation(&mut self, conversation: ConversationSummary) {
+        if let Some(snapshot) = self.snapshot.as_mut() {
+            snapshot.conversation = conversation;
+        }
     }
     fn running(&mut self) {
         if let Some(snapshot) = &mut self.snapshot {
@@ -355,6 +364,10 @@ impl NativeSession {
             } else {
                 snapshot.messages.push(message);
             }
+            snapshot
+                .conversation
+                .title
+                .refresh(first_user_text(&snapshot.messages));
             snapshot.revision += 1;
         }
     }
@@ -364,7 +377,8 @@ impl NativeSession {
             let id = format!("notice-{}", snapshot.revision);
             self.message(Message {
                 id,
-                role: "system".into(),
+                role: crate::conversation::MessageRole::System,
+                timestamp_unix_ms: None,
                 blocks: vec![MessageBlock::Notice { text: text.into() }],
             });
         }

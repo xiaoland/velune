@@ -8,8 +8,8 @@ import { isAbsolute } from "node:path";
 class RequestError extends Error {}
 
 /** @typedef {import('huihua').SessionEvent} Event */
-/** @typedef {{kind:'text',text:string}|{kind:'notice',text:string}|{kind:'tool',toolID:string|null,title:string,state:string|null}} Block */
-/** @typedef {{id:string,role:string,blocks:Block[]}} Message */
+/** @typedef {{kind:'text'|'reasoning'|'notice',text:string}|{kind:'tool',toolID:string|null,title:string,state:'pending'|'running'|'completed'|'failed',output:string|null}} Block */
+/** @typedef {{id:string,role:string,timestamp_unix_ms:number|null,blocks:Block[]}} Message */
 /** @param {unknown} value @returns {string} */
 function requiredString(value) {
   if (typeof value !== "string" || !value.trim()) throw new RequestError("Expected nonempty string");
@@ -18,7 +18,8 @@ function requiredString(value) {
 /** @param {import('huihua').Timestamp|undefined} value */
 function timestamp(value) {
   if (!value) return null;
-  return value.format === "rfc3339" ? value.value : new Date(value.value).toISOString();
+  const ms = value.format === "rfc3339" ? Date.parse(value.value) : value.value;
+  return Number.isFinite(ms) ? ms : null;
 }
 /** @param {readonly import('huihua').ContentBlock[]} content @returns {Block[]} */
 function contentBlocks(content) {
@@ -30,22 +31,45 @@ function contentBlocks(content) {
 function message(event) {
   const id = `history:${event.sequence}:${event.type}`;
   switch (event.type) {
-    case "user_message": return {id,role:"user",blocks:contentBlocks(event.data.content)};
-    case "assistant_message": return {id,role:"assistant",blocks:contentBlocks(event.data.content)};
+    case "user_message": return {id,timestamp_unix_ms:timestamp(event.timestamp),role:"user",blocks:contentBlocks(event.data.content)};
+    case "assistant_message": return {id,timestamp_unix_ms:timestamp(event.timestamp),role:"assistant",blocks:contentBlocks(event.data.content)};
     case "reasoning": {
       const text = event.data.text ?? event.data.summary;
-      return text ? {id,role:"assistant",blocks:[{kind:"notice",text}]} : null;
+      return text ? {id,timestamp_unix_ms:timestamp(event.timestamp),role:"assistant",blocks:[{kind:"reasoning",text}]} : null;
     }
-    case "tool_call": return {id,role:"system",blocks:[{kind:"tool",toolID:event.data.callId ?? null,title:event.data.toolName,state:"running"}]};
-    case "tool_result": return {id,role:"system",blocks:[{kind:"tool",toolID:event.data.callId ?? null,title:event.data.toolName ?? "工具结果",state:event.data.isError ? "failed" : "completed"}]};
-    case "error": return {id,role:"system",blocks:[{kind:"notice",text:event.data.message ?? "运行时记录了错误"}]};
-    case "file_change": return {id,role:"system",blocks:[{kind:"notice",text:`${event.data.operation}: ${event.data.path}`}]};
-    case "command": return {id,role:"system",blocks:[{kind:"notice",text:"运行时执行了命令"}]};
-    case "permission_request": return {id,role:"system",blocks:[{kind:"notice",text:"历史权限请求"}]};
-    case "subagent": return {id,role:"system",blocks:[{kind:"notice",text:`${event.data.name ?? event.data.agentId}: ${event.data.kind}`}]};
+    case "tool_call": return {id,timestamp_unix_ms:timestamp(event.timestamp),role:"tool",blocks:[{kind:"tool",toolID:event.data.callId ?? null,title:event.data.toolName,state:"pending",output:null}]};
+    case "tool_result": return {id,timestamp_unix_ms:timestamp(event.timestamp),role:"tool",blocks:[{kind:"tool",toolID:event.data.callId ?? null,title:event.data.toolName ?? "工具结果",state:event.data.isError ? "failed" : "completed",output:resultText(event.data.result)}]};
+    case "error": return {id,timestamp_unix_ms:timestamp(event.timestamp),role:"system",blocks:[{kind:"notice",text:event.data.message ?? "运行时记录了错误"}]};
+    case "file_change": return {id,timestamp_unix_ms:timestamp(event.timestamp),role:"tool",blocks:[{kind:"notice",text:`${event.data.operation}: ${event.data.path}`}]};
+    case "command": return {id,timestamp_unix_ms:timestamp(event.timestamp),role:"tool",blocks:[{kind:"notice",text:"运行时执行了命令"}]};
+    case "permission_request": return {id,timestamp_unix_ms:timestamp(event.timestamp),role:"system",blocks:[{kind:"notice",text:"历史权限请求"}]};
+    case "subagent": return {id,timestamp_unix_ms:timestamp(event.timestamp),role:"system",blocks:[{kind:"notice",text:`${event.data.name ?? event.data.agentId}: ${event.data.kind}`}]};
     case "unknown": return null;
     case "system": case "usage": return null;
   }
+}
+
+/** @param {unknown} result @returns {string|null} */
+function resultText(result) {
+  if (typeof result === "string") return result;
+  if (Array.isArray(result)) return result.map(part => typeof part === "string" ? part : part?.text ?? (part?.type === "text" ? part.data : "")).filter(Boolean).join("\n");
+  if (result && typeof result === "object" && "content" in result) return resultText(result.content);
+  return result == null ? null : JSON.stringify(result);
+}
+
+/** Codex 0.159.3 records initialization context before its first turn_context
+ * boundary, separately from actual user input. This variant adapter also handles
+ * duplicated runtime events and model wire context. Prefer the native
+ * user event (which excludes injected context) and complete assistant item.
+ * @param {readonly Event[]} events @param {string} providerId */
+function presentationEvents(events, providerId) {
+  if (providerId !== "codex") return events;
+  const firstTurn = events.find(event => event.type === "system" && event.data.sourceType === "turn_context");
+  const nativeUsers = events.some(event => event.type === "user_message" && event.providerMetadata.type === "event_msg");
+  const assistantItems = events.some(event => event.type === "assistant_message" && event.providerMetadata.type === "response_item");
+  return events.filter(event => !(firstTurn && event.type === "user_message" && event.record < firstTurn.record)
+    && !(nativeUsers && event.type === "user_message" && event.providerMetadata.type !== "event_msg")
+    && !(assistantItems && event.type === "assistant_message" && event.providerMetadata.type === "event_msg"));
 }
 
 async function main() {
@@ -62,17 +86,45 @@ async function main() {
   if (roots.some(root => !isAbsolute(root))) throw new RequestError("History roots must be absolute");
   const refs = (await provider.scan({homeDir:home,roots:{[provider.id]:roots}}))
     .filter(ref => ref.metadata.id_origin === "native");
-  const summary = (/** @type {import('huihua').SessionRef} */ ref) => ({nativeId:ref.id,title:ref.title ?? ref.id,updatedAt:timestamp(ref.updatedAt),cwd:ref.workspace?.path ?? null});
-  if (request.operation === "list") return {contractVersion:1,sessions:refs.map(summary)};
+  const summary = (/** @type {import('huihua').SessionRef} */ ref, /** @type {readonly Event[]} */ events = []) => {
+    const first = events.find(event => event.type === "user_message");
+    const firstText = first?.type === "user_message" ? first.data.content.filter(block=>block.type === "text").map(block=>block.data).join(" ") : "";
+    return {nativeId:ref.id,title:ref.title?.trim() ? {source:"native",text:ref.title.trim()} : firstText.trim() ? {source:"firstMessage",text:[...firstText.trim().replace(/\s+/g," ")].slice(0,80).join("")} : {source:"untitled"},updatedAtUnixMs:timestamp(ref.updatedAt),cwd:ref.workspace?.path ?? null};
+  };
+  if (request.operation === "list") {
+    const sessions = [];
+    for (const ref of refs) {
+      if (ref.title?.trim()) sessions.push(summary(ref));
+      else { const session = await provider.read(ref); sessions.push(summary(session,presentationEvents(session.events,providerId))); }
+    }
+    return {contractVersion:1,sessions};
+  }
   if (request.operation !== "read") throw new RequestError("Unsupported history operation");
   const nativeId = requiredString(request.nativeId);
   const matches = refs.filter(ref => ref.id === nativeId);
   if (matches.length !== 1) throw new RequestError(matches.length ? "Ambiguous native session ID within configured roots" : "Native session not found in configured roots");
   const session = await provider.read(matches[0]);
-  const messages = session.events.map(message).filter(item => item !== null);
+  /** @type {Message[]} */
+  const messages = [];
+  /** @type {Map<string, Extract<Block,{kind:'tool'}>>} */
+  const tools = new Map();
+  for (const event of presentationEvents(session.events,providerId)) {
+    const projected = message(event);
+    if (!projected) continue;
+    const tool = projected.blocks.find(block=>block.kind === "tool");
+    if (tool?.kind === "tool" && tool.toolID) {
+      const call = tools.get(tool.toolID);
+      if (call) {
+        if (event.type === "tool_result") { call.state = tool.state; call.output = tool.output; }
+        continue;
+      }
+      tools.set(tool.toolID,tool);
+    }
+    messages.push(projected);
+  }
   const codes = [...new Set(session.diagnostics.map(diagnostic => diagnostic.code))];
-  if (codes.length) messages.push({id:"history:diagnostics",role:"system",blocks:[{kind:"notice",text:`部分运行时记录未投影：${codes.join("、")}`}]});
-  return {contractVersion:1,history:{...summary(session),messages}};
+  if (codes.length) messages.push({id:"history:diagnostics",timestamp_unix_ms:null,role:"system",blocks:[{kind:"notice",text:`部分运行时记录未投影：${codes.join("、")}`}]});
+  return {contractVersion:1,history:{...summary(session,presentationEvents(session.events,providerId)),messages}};
 }
 try { process.stdout.write(JSON.stringify(await main())); }
 catch (error) {

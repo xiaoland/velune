@@ -3,10 +3,10 @@ import Foundation
 struct Conversation: Codable, Sendable, Identifiable, Equatable {
     let id: String
     var title: String
-    var updatedAt: String?
+    var updatedAtUnixMs: Int64?
     var runtimeID: String
     var cwd: String?
-    enum CodingKeys: String, CodingKey { case id, title, updatedAt, cwd; case runtimeID = "runtimeId" }
+    enum CodingKeys: String, CodingKey { case id, title, updatedAtUnixMs, cwd; case runtimeID = "runtimeId" }
 }
 
 enum RunState: String, Codable {
@@ -22,40 +22,22 @@ struct ConversationActions: Codable, Sendable, Equatable {
     var canSwitch: Bool
 }
 
+enum MessageRole: String, Codable, Sendable { case user, assistant, tool, system }
+enum ToolState: String, Codable, Sendable { case pending, running, completed, failed }
+
 struct Message: Codable, Sendable, Identifiable, Equatable {
     let id: String
-    var role: String
+    var role: MessageRole
+    var timestampUnixMs: Int64? = nil
     var blocks: [MessageBlock]
-
-    var text: String {
-        blocks.compactMap { block in
-            block.kind == "text" || block.kind == "notice" ? block.text : nil
-        }.joined()
-    }
+    var text: String { blocks.compactMap { block in switch block { case .text(let text), .notice(let text), .reasoning(let text): return text; case .tool: return nil } }.joined() }
 }
 
-struct MessageBlock: Codable, Sendable, Equatable {
-    var kind: String
-    var text: String?
-    var toolID: String?
-    var title: String?
-    var state: String?
-
-    init(kind: String, text: String? = nil, toolID: String? = nil, title: String? = nil, state: String? = nil) {
-        self.kind = kind
-        self.text = text
-        self.toolID = toolID
-        self.title = title
-        self.state = state
-    }
-
-    static func text(_ value: String) -> MessageBlock {
-        MessageBlock(kind: "text", text: value)
-    }
-
-    static func notice(_ value: String) -> MessageBlock {
-        MessageBlock(kind: "notice", text: value)
-    }
+enum MessageBlock: Codable, Sendable, Equatable {
+    case text(String)
+    case reasoning(String)
+    case tool(id: String?, title: String, state: ToolState, output: String?)
+    case notice(String)
 }
 
 struct ConversationSnapshot: Codable, Sendable, Equatable {

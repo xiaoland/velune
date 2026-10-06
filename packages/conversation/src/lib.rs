@@ -3,12 +3,35 @@
 
 use serde::{Deserialize, Serialize};
 
+/// Native names are authoritative. Derived titles may be refreshed from the first user message.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "source", content = "text", rename_all = "camelCase")]
+pub enum ConversationTitle {
+    Native(String),
+    FirstMessage(String),
+    Untitled,
+}
+impl ConversationTitle {
+    pub fn display_text(&self) -> &str {
+        match self {
+            Self::Native(text) | Self::FirstMessage(text) => text,
+            Self::Untitled => "未命名会话",
+        }
+    }
+    pub fn refresh(&mut self, first_user_text: Option<&str>) {
+        if !matches!(self, Self::Native(_)) {
+            *self = conversation_title(None, first_user_text);
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct ConversationSummary {
     pub id: String,
-    pub title: String,
-    pub updated_at: Option<String>,
+    pub title: ConversationTitle,
+    /// Unix epoch milliseconds; None means the source did not provide a timestamp.
+    pub updated_at_unix_ms: Option<i64>,
     pub runtime_id: String,
     #[serde(default)]
     pub cwd: Option<String>,
@@ -34,8 +57,28 @@ pub struct ConversationActions {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Message {
     pub id: String,
-    pub role: String,
+    pub role: MessageRole,
+    /// Native message time in Unix epoch milliseconds, when available.
+    pub timestamp_unix_ms: Option<i64>,
     pub blocks: Vec<MessageBlock>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum MessageRole {
+    User,
+    Assistant,
+    Tool,
+    System,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ToolState {
+    Pending,
+    Running,
+    Completed,
+    Failed,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -44,11 +87,15 @@ pub enum MessageBlock {
     Text {
         text: String,
     },
+    Reasoning {
+        text: String,
+    },
     Tool {
         #[serde(rename = "toolID")]
         tool_id: Option<String>,
         title: String,
-        state: Option<String>,
+        state: ToolState,
+        output: Option<String>,
     },
     Notice {
         text: String,
@@ -156,4 +203,34 @@ pub enum RuntimeInteractionReply {
 pub struct InteractionAnswer {
     pub question_id: String,
     pub values: Vec<String>,
+}
+
+/// A readable projection title. Native names have priority; fallback text is a
+/// bounded single line from the first user message, without an additional model call.
+pub fn conversation_title(
+    native_name: Option<&str>,
+    first_user_text: Option<&str>,
+) -> ConversationTitle {
+    fn readable(text: &str) -> Option<String> {
+        let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
+        (!text.is_empty()).then(|| text.chars().take(80).collect())
+    }
+    if let Some(text) = native_name.filter(|text| !text.trim().is_empty()) {
+        ConversationTitle::Native(text.trim().into())
+    } else if let Some(text) = first_user_text.and_then(readable) {
+        ConversationTitle::FirstMessage(text)
+    } else {
+        ConversationTitle::Untitled
+    }
+}
+
+pub fn first_user_text(messages: &[Message]) -> Option<&str> {
+    messages
+        .iter()
+        .filter(|m| m.role == MessageRole::User)
+        .flat_map(|m| &m.blocks)
+        .find_map(|block| match block {
+            MessageBlock::Text { text } if !text.trim().is_empty() => Some(text.as_str()),
+            _ => None,
+        })
 }

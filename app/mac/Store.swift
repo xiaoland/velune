@@ -8,7 +8,7 @@ final class AppStore: ObservableObject {
     @Published private(set) var conversations: [Conversation] = []
     @Published private(set) var selectedConversationID: String?
     @Published private(set) var selectedRuntimeID: String?
-    @Published private(set) var messages: [Message] = []
+    let transcript = TranscriptModel()
     @Published private(set) var historyFailures: [HistoryFailure] = []
     @Published var showsNewConversation = false
     @Published private(set) var gateway = GatewayConfig()
@@ -121,7 +121,7 @@ final class AppStore: ObservableObject {
     func createConversation(runtimeID: String, cwd: String, modelRecordKey: String, onCreated: @escaping () -> Void) {
         guard !isLoading, !isGenerating else { return }
         if isPreview {
-            let conversation = Conversation(id: UUID().uuidString, title: "新会话", updatedAt: "刚刚", runtimeID: runtimeID, cwd: cwd)
+            let conversation = Conversation(id: UUID().uuidString, title: "新会话", updatedAtUnixMs: Int64(Date().timeIntervalSince1970 * 1000), runtimeID: runtimeID, cwd: cwd)
             selectedRuntimeID = runtimeID
             apply(ConversationSnapshot(revision: 1, conversation: conversation, modelRecordKey: modelRecordKey, runState: .idle, messages: [], actions: ConversationActions(canSend: true, canCancel: false, canSwitch: true)))
             onCreated(); return
@@ -133,7 +133,7 @@ final class AppStore: ObservableObject {
     }
     func send(text: String, onAccepted: (() -> Void)? = nil) {
         guard canSend, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-        if isPreview { snapshot?.messages.append(Message(id: UUID().uuidString, role: "user", blocks: [.text(text)])); apply(snapshot); onAccepted?(); return }
+        if isPreview { snapshot?.messages.append(Message(id: UUID().uuidString, role: .user, blocks: [.text(text)])); apply(snapshot); onAccepted?(); return }
         guard let runtimeID = selectedRuntimeID else { error = "请选择运行时实例"; return }
         guard let transport else { error = "本地核心未配置"; return }
         enqueue({ try transport.send(runtimeID: runtimeID, text: text) }, onAccepted: onAccepted) { [weak self] in self?.applySnapshotResult($0) }
@@ -297,7 +297,7 @@ final class AppStore: ObservableObject {
             } else if selectedRuntimeID == nil { resetProjection() }
         }
     }
-    private func resetProjection() { generation += 1; snapshot = nil; selectedConversationID = nil; messages = []; activity = nil }
+    private func resetProjection() { generation += 1; snapshot = nil; selectedConversationID = nil; transcript.reset(); activity = nil }
     private func applyList(_ data: BindingConfigurationSnapshot) {
         let mapped = BindingMapping.configuration(data)
         conversations = mapped.conversations; historyFailures = mapped.historyFailures
@@ -318,14 +318,19 @@ final class AppStore: ObservableObject {
     }
     private func apply(_ value: ConversationSnapshot?) {
         guard let value else { return }
-        snapshot = value; selectedRuntimeID = value.conversation.runtimeID; selectedConversationID = value.conversation.id; messages = value.messages
-        if let index = conversations.firstIndex(where: { $0.id == value.conversation.id }) { conversations[index] = value.conversation }
+        snapshot = value; selectedRuntimeID = value.conversation.runtimeID; selectedConversationID = value.conversation.id; transcript.apply(value.messages)
+        if let index = conversations.firstIndex(where: { $0.id == value.conversation.id }) { if conversations[index] != value.conversation { conversations[index] = value.conversation } }
         else { conversations.insert(value.conversation, at: 0) }
         activity = value.runState == .running ? "正在思考与执行" : value.runState == .stopping ? "正在停止" : nil
         if isPreview { previewSnapshots[value.conversation.id] = value }
     }
-    private func applySnapshotResult(_ value: BindingSnapshotResult) {
-        apply(value.snapshot.map(BindingMapping.snapshot))
+    private func applySnapshotResult(_ value: BindingSnapshotResult, unchangedPoll: Bool = false) {
+        guard let incoming = value.snapshot else { return }
+        // A revision is only compared inside the currently selected projection.
+        // Preparation/open reset that projection; repeated idle polling does no UI work.
+        if unchangedPoll, let current = snapshot, incoming.conversation.id == current.conversation.id,
+           incoming.revision == current.revision { return }
+        apply(BindingMapping.snapshot(incoming))
     }
     private func poll() {
         guard !isPreview, !isShuttingDown, snapshot != nil, !isLoading, !pollPending, let transport, let runtimeID = selectedRuntimeID else { return }
@@ -339,7 +344,7 @@ final class AppStore: ObservableObject {
                 self.pollPending = false
                 guard self.generation == revision, self.selectedConversationID == selected else { return }
                 switch result {
-                case .success(let data): self.apply(data.snapshot.map(BindingMapping.snapshot))
+                case .success(let data): self.applySnapshotResult(data, unchangedPoll: true)
                 case .failure(let failure): self.error = failure.localizedDescription
                 }
             }
@@ -372,15 +377,16 @@ final class AppStore: ObservableObject {
         selectedRuntimeID = runtimeInstances[0].id
         let topics = ["让设置页更安静", "整理一段代码", "下一步的项目计划"]
         let pairs = [
-            ["我想让设置页面更简单，先帮我梳理一下。", "可以。我们保留**AI 提供商、模型模板与 Agent 运行时**配置。模型与工作目录在会话中选择，打开历史不需要先启动运行时。", "运行时实例应该放哪里？", "工具栏显示当前运行时实例，详细配置放进系统设置窗口里。会话页面保留对话与模型选择，让注意力留在正在做的工作上。"],
+            ["我想让设置页面更简单，先帮我梳理一下。", "# 一次清晰的工作循环\n\n先整理任务，再执行。\n\n- [x] 读取上下文\n- [ ] 完成修改\n\n> 每一步都保留可以复核的结果。\n\n| 内容 | 状态 |\n| --- | --- |\n| 会话 | 可继续 |\n| 工具 | 已完成 |\n\n正文支持**强调**、[链接](https://example.invalid)和 `inline code`。", "运行时实例应该放哪里？", "工具栏显示当前运行时实例，详细配置放进系统设置窗口里。会话页面保留对话与模型选择，让注意力留在正在做的工作上。"],
             ["这个读取配置的函数可以再清晰一点吗？", "先把输入校验放在函数边界，主体就能直接表达意图。\n\n```rust\nfn load(path: &Path) -> Result<Config> {\n    let source = fs::read_to_string(path)?;\n    let config: Config = toml::from_str(&source)?;\n    config.validate()?;\n    Ok(config)\n}\n```", "还需要抽一个新的层吗？", "目前不需要。等第二个调用方出现不同的读取需求，再决定是否有值得共享的边界。"],
             ["帮我把接下来的工作排一下。", "先完成可用的会话界面，再检查配置是否真正驱动运行时。最后用一个短任务验证发送、停止和会话切换。", "先从哪个环节开始？", "从会话开始：打开旧会话、发送消息、检查回复，再新建一个会话。这个路径会暴露最直接的体验问题。"]
         ]
         for index in topics.indices {
-            let conversation = Conversation(id: "sample-\(index)", title: topics[index], updatedAt: ["今天", "昨天", "周一"][index], runtimeID: runtimeInstances[0].id, cwd: nil)
-            var history = pairs[index].enumerated().map { Message(id: "sample-\(index)-\($0.offset)", role: $0.offset.isMultiple(of: 2) ? "user" : "assistant", blocks: [.text($0.element)]) }
-            history[1].blocks.append(MessageBlock(kind: "tool", text: index == 1 ? "已读取 3 个文件，未修改项目。" : "已梳理当前任务的上下文。", toolID: "sample-tool-\(index)", title: index == 1 ? "检查项目代码" : "读取工作上下文", state: "done"))
-            if index == 2 { history[history.count - 1].blocks.append(MessageBlock(kind: "tool", text: "正在整理计划。", toolID: "sample-progress", title: "整理项目计划", state: "running")) }
+            let conversation = Conversation(id: "sample-\(index)", title: topics[index], updatedAtUnixMs: Int64(Date().timeIntervalSince1970 * 1000) - Int64(index * 86_400_000), runtimeID: runtimeInstances[0].id, cwd: nil)
+            var history = pairs[index].enumerated().map { Message(id: "sample-\(index)-\($0.offset)", role: $0.offset.isMultiple(of: 2) ? .user : .assistant, blocks: [.text($0.element)]) }
+            history[1].blocks.insert(.reasoning("先确认上下文，再选择最小的修改范围。"), at: 0)
+            history[1].blocks.append(.tool(id: "sample-tool-\(index)", title: index == 1 ? "检查项目代码" : "读取工作上下文", state: .completed, output: index == 1 ? "已读取 3 个文件，未修改项目。" : "已梳理当前任务的上下文。"))
+            if index == 2 { history[history.count - 1].blocks.append(.tool(id: "sample-progress", title: "整理项目计划", state: .running, output: "正在整理计划。")) }
             previewSnapshots[conversation.id] = ConversationSnapshot(revision: 1, conversation: conversation, modelRecordKey: models[0].id, runState: .idle, messages: history, actions: ConversationActions(canSend: true, canCancel: false, canSwitch: true))
             conversations.append(conversation)
         }

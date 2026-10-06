@@ -155,6 +155,7 @@ impl CoreRuntime {
             session
                 .open(native_id, &cwd, &runtime.id, snapshot.messages.clone())
                 .map_err(|_| RuntimeError::invalid("会话恢复失败"))?;
+            session.set_conversation(snapshot.conversation.clone());
         }
         self.model_record_key = Some(key.into());
         Ok(())

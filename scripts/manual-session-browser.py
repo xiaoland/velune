@@ -16,9 +16,16 @@ import tempfile
 
 SEED = r'''
 import {SessionManager} from '@earendil-works/pi-coding-agent';
-const [cwd, sessionDir] = process.argv.slice(2);
+const [cwd, sessionDir, title] = process.argv.slice(2);
 const session = SessionManager.create(cwd, sessionDir);
 session.appendMessage({role:'user', content:[{type:'text',text:'SYNTHETIC_READ_ONLY_HISTORY'}], timestamp:Date.now()});
+session.appendMessage({role:'assistant', content:[
+  {type:'thinking',thinking:'SYNTHETIC_REASONING'},
+  {type:'text',text:'## Synthetic reply\n\n- Markdown content'},
+  {type:'toolCall',id:'synthetic-read',name:'read',arguments:{path:'synthetic.txt'}}
+], api:'openai-completions',provider:'synthetic',model:'synthetic',stopReason:'toolUse',timestamp:Date.now()});
+session.appendMessage({role:'toolResult',toolCallId:'synthetic-read',toolName:'read',content:[{type:'text',text:'SYNTHETIC_TOOL_OUTPUT'}],isError:false,timestamp:Date.now()});
+if (title) session.appendSessionInfo(title);
 console.log(session.getSessionFile());
 '''
 
@@ -42,14 +49,18 @@ def main():
         seed = root / 'seed/create.mjs'
         seed.write_text(SEED)
         fixture_env = {'HOME': str(root), 'PATH': '/usr/bin:/bin'}
-        def seed_session(home):
+        def seed_session(home, title=''):
             sessions = home / 'sessions/project'
-            sessions.mkdir(parents=True)
+            sessions.mkdir(parents=True, exist_ok=True)
             return Path(subprocess.check_output([str(args.node), str(seed),
-                str(root / 'project'), str(sessions)], env=fixture_env, text=True).strip())
+                str(root / 'project'), str(sessions), title], env=fixture_env, text=True).strip())
         history = seed_session(root / 'runtime')
+        named_history = seed_session(root / 'runtime', 'SYNTHETIC_EXPLICIT_TITLE')
+        placeholder_named_history = seed_session(root / 'runtime', '未命名会话')
         foreign = seed_session(root / 'foreign')
         original = history.read_bytes()
+        named_original = named_history.read_bytes()
+        placeholder_named_original = placeholder_named_history.read_bytes()
         shutil.rmtree(root / 'project')
         marker = root / 'execution-probes.jsonl'
         binary = root / 'synthetic-pi.mjs'
@@ -75,14 +86,34 @@ def main():
             application.upsert_runtime(runtime)
             listed = application.list()
             assert not any(g.providers for g in listed.gateways)
-            item = next(s for s in listed.conversations if s.runtime_id == 'fixture')
+            item = next(s for s in listed.conversations if s.id == 'fixture:' + str(history))
+            named_item = next(s for s in listed.conversations if s.id == 'fixture:' + str(named_history))
+            assert item.title == 'SYNTHETIC_READ_ONLY_HISTORY'
+            assert named_item.title == 'SYNTHETIC_EXPLICIT_TITLE'
+            placeholder_item = next(s for s in listed.conversations
+                                    if s.id == 'fixture:' + str(placeholder_named_history))
+            assert placeholder_item.title == '未命名会话'
+            assert item.updated_at_unix_ms is not None and item.updated_at_unix_ms > 0
             selected = application.select_runtime('fixture')
             assert selected.selected_runtime_instance_id == 'fixture'
+            named_opened = application.open_conversation('fixture', placeholder_item.id).snapshot
+            assert named_opened.conversation.title == '未命名会话', 'native title treated as a placeholder'
             opened = application.open_conversation('fixture', item.id).snapshot
             assert opened.model_record_key is None
+            assert opened.conversation.title == item.title
+            assert opened.messages[0].role == b.BindingMessageRole.USER
+            assert opened.messages[0].timestamp_unix_ms is not None
             texts = [block.text for message in opened.messages for block in message.blocks
                      if isinstance(block, b.BindingMessageBlock.TEXT)]
             assert 'SYNTHETIC_READ_ONLY_HISTORY' in texts
+            blocks = [block for message in opened.messages for block in message.blocks]
+            assert any(isinstance(block, b.BindingMessageBlock.REASONING)
+                       and block.text == 'SYNTHETIC_REASONING' for block in blocks)
+            tools = [block for block in blocks if isinstance(block, b.BindingMessageBlock.TOOL)
+                     and block.tool_id == 'synthetic-read']
+            assert len(tools) == 1, 'one native tool call/result became duplicate executions'
+            assert tools[0].state == b.BindingToolState.COMPLETED
+            assert tools[0].output == 'SYNTHETIC_TOOL_OUTPUT'
             assert not marker.exists(), 'browsing ran the configured execution CLI'
             def rejected(call):
                 try:
@@ -127,11 +158,16 @@ def main():
             assert any(s.id == item.id for s in listed.conversations)
             assert any(error.runtime_id == 'unreadable' for error in listed.history_failures)
             assert history.read_bytes() == original
+            assert named_history.read_bytes() == named_original
+            assert placeholder_named_history.read_bytes() == placeholder_named_original
             config = json.loads((root / 'home/generic-config.json').read_text())
             assert config['schemaVersion'] == 7
             assert all('modelRecordKey' not in runtime for runtime in config['runtimeInstances'])
             print(json.dumps({'acceptance': 'PASSED', 'schema': 7,
                 'historyWithoutProvidersOrExistingCwd': True,
+                'nativeTitleAndFirstMessageFallback': True,
+                'typedRoleAndUnixMillis': True,
+                'reasoningAndCompletedToolOutput': True,
                 'modelSelectionDoesNotPrepareExecution': True,
                 'foreignHistoryRejected': True,
                 'preparationFailurePreservesHistoryAndChoice': True,

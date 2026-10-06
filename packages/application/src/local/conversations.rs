@@ -20,8 +20,8 @@ impl CoreRuntime {
         self.validate_session_model(&runtime, key)?;
         let snapshot = PiProjection::new(ConversationSummary {
             id: "new".into(),
-            title: "新会话".into(),
-            updated_at: None,
+            title: velune_conversation::ConversationTitle::Untitled,
+            updated_at_unix_ms: None,
             runtime_id: runtime_id.into(),
             cwd: Some(cwd.to_string_lossy().into_owned()),
         })
@@ -91,10 +91,19 @@ impl CoreRuntime {
             .ok_or_else(|| RuntimeError::invalid("会话执行尚未准备"))?
             .prompt(text)
             .map_err(|_| RuntimeError::invalid("message send"))?;
-        if let Some(projection) = self.pi.projection.as_mut() {
+        if response["data"]["disposition"] != "handled"
+            && let Some(projection) = self.pi.projection.as_mut()
+        {
             projection.append_user(text);
         }
         self.pi.busy = response["data"]["disposition"] != "handled";
+        if !self.pi.busy {
+            self.pi
+                .projection
+                .as_mut()
+                .expect("accepted Pi prompt")
+                .invalidate_history();
+        }
         self.pi.turn_started = false;
         if self.busy()
             && let Some(snapshot) = self
@@ -107,7 +116,7 @@ impl CoreRuntime {
             snapshot.actions.can_send = false;
             snapshot.actions.can_cancel = true;
         }
-        self.drain_runtime()?;
+        self.sync_projection()?;
         Ok(json!({"snapshot":self.current_snapshot()}))
     }
 
@@ -146,7 +155,7 @@ impl CoreRuntime {
             .ok_or_else(|| RuntimeError::invalid("会话执行尚未准备"))?
             .cancel()
             .map_err(|_| RuntimeError::invalid("message cancel"))?;
-        self.drain_runtime()?;
+        self.sync_projection()?;
         Ok(json!({"snapshot":self.current_snapshot()}))
     }
 
@@ -285,7 +294,14 @@ impl CoreRuntime {
 
     pub(super) fn sync_projection(&mut self) -> Result<(), RuntimeError> {
         self.drain_runtime()?;
-        if matches!(self.active_state, ActiveState::Native(_)) {
+        if matches!(self.active_state, ActiveState::Native(_))
+            || self.pi.busy
+            || self
+                .pi
+                .projection
+                .as_ref()
+                .is_some_and(PiProjection::history_synchronized)
+        {
             return Ok(());
         }
         if let (Some(client), Some(projection)) =
@@ -294,6 +310,11 @@ impl CoreRuntime {
             let (state, messages) = client
                 .state()
                 .map_err(|_| RuntimeError::invalid("runtime state"))?;
+            // Events received before get_messages' response are covered by that
+            // authoritative context. Do not replay them after replacing history.
+            for event in client.take_buffered_events() {
+                projection.apply_event(&event);
+            }
             if let Some(path) = state["data"]["sessionFile"].as_str() {
                 let runtime_id = self
                     .selected_runtime_id
@@ -301,19 +322,19 @@ impl CoreRuntime {
                     .expect("a Pi client has an active runtime instance");
                 projection.set_conversation(ConversationSummary {
                     id: format!("{runtime_id}:{path}"),
-                    title: Path::new(path)
-                        .file_stem()
-                        .and_then(|item| item.to_str())
-                        .unwrap_or("会话")
-                        .into(),
-                    updated_at: None,
-                    runtime_id: runtime_id.into(),
-                    cwd: self
-                        .pi
-                        .config
+                    title: velune_conversation::conversation_title(
+                        state["data"]["sessionName"].as_str(),
+                        None,
+                    ),
+                    updated_at_unix_ms: projection
+                        .snapshot
                         .as_ref()
-                        .and_then(|config| config.working_dir.as_ref())
-                        .map(|path| path.to_string_lossy().into_owned()),
+                        .and_then(|s| s.conversation.updated_at_unix_ms),
+                    runtime_id: runtime_id.into(),
+                    cwd: projection
+                        .snapshot
+                        .as_ref()
+                        .and_then(|s| s.conversation.cwd.clone()),
                 });
             }
             projection.replace_history(&messages);

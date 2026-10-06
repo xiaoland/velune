@@ -113,7 +113,7 @@ pub(super) fn materialize_models(
             let mut entry = json!({
                 "id": physical_id,
                 "modelRecordKey": model.record_key,
-                "name": model.nickname,
+                "name": if model.nickname.trim().is_empty() { &model.provider_model_id } else { &model.nickname },
                 "input": ["text"],
                 "maxTokens": binding.max_output_tokens.expect("runnable binding output limit"),
                 "contextWindow": binding.context_window.expect("runnable binding context window"),

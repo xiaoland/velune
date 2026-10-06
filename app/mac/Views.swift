@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import MarkdownUI
 
 struct VeluneRootView: View {
     @ObservedObject var store: AppStore
@@ -8,7 +9,7 @@ struct VeluneRootView: View {
     @Environment(\.openSettings) private var openSettings
     @State private var search = ""
     @State private var draft = ""
-    private var messages: [Message] { previewEmpty ? [] : store.messages }
+    @State private var scrollRequest: UInt64 = 0
     private var conversations: [Conversation] { store.conversations.filter { (store.selectedRuntimeID == nil || $0.runtimeID == store.selectedRuntimeID) && (search.isEmpty || $0.title.localizedCaseInsensitiveContains(search)) } }
     private var selectedRuntime: RuntimeInstance? { store.runtimeInstances.first { $0.id == store.selectedRuntimeID } }
 
@@ -26,7 +27,7 @@ struct VeluneRootView: View {
                     ForEach(conversations) { conversation in
                         VStack(alignment: .leading, spacing: 3) {
                             Text(conversation.title).lineLimit(1)
-                            if let date = conversation.updatedAt { Text(shortDate(date)).font(.caption).foregroundStyle(.secondary) }
+                            if let date = conversation.updatedAtUnixMs { Text(shortDate(date)).font(.caption).foregroundStyle(.secondary) }
                         }.padding(.vertical, 3).tag(conversation.id)
                     }
                 }
@@ -41,7 +42,7 @@ struct VeluneRootView: View {
             }
         } detail: {
             VStack(spacing: 0) {
-                if messages.isEmpty { emptyState.frame(maxWidth: .infinity, maxHeight: .infinity) }
+                if previewEmpty || store.transcript.rows.isEmpty { emptyState.frame(maxWidth: .infinity, maxHeight: .infinity) }
                 else { transcript }
                 Divider()
                 composer
@@ -91,16 +92,8 @@ struct VeluneRootView: View {
     }
 
     private var transcript: some View {
-        ScrollViewReader { proxy in
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 24) {
-                    ForEach(messages) { message in ConversationMessageView(message: message).id(message.id) }
-                    if let activity = store.activity { HStack { ProgressView().controlSize(.small); Text(activity).foregroundStyle(.secondary) }.font(.callout).frame(maxWidth: .infinity) }
-                    Color.clear.frame(height: 1).id("bottom")
-                }.frame(maxWidth: 760).padding(24).frame(maxWidth: .infinity)
-            }
-            .onChange(of: store.messages) { _, _ in if store.isGenerating { proxy.scrollTo("bottom", anchor: .bottom) } }
-        }
+        TranscriptView(model: store.transcript, conversationID: store.selectedConversationID,
+                       scrollRequest: scrollRequest, activity: store.activity)
     }
 
     private var composer: some View {
@@ -119,11 +112,10 @@ struct VeluneRootView: View {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard store.canSend, !text.isEmpty else { return }
         let submittedDraft = draft
-        store.send(text: text) { if draft == submittedDraft { draft = "" } }
+        store.send(text: text) { if draft == submittedDraft { draft = "" }; scrollRequest &+= 1 }
     }
-    private func shortDate(_ text: String) -> String {
-        guard let date = ISO8601DateFormatter().date(from: text) else { return text }
-        return date.formatted(.dateTime.month(.abbreviated).day())
+    private func shortDate(_ unixMs: Int64) -> String {
+        Date(timeIntervalSince1970: Double(unixMs) / 1000).formatted(.dateTime.month(.abbreviated).day())
     }
 }
 
@@ -151,40 +143,35 @@ struct ComposerView: View {
 }
 
 struct ConversationMessageView: View {
-    let message: Message
+    @ObservedObject var row: TranscriptRow
     var body: some View {
-        VStack(alignment: .leading, spacing: 9) {
-            ForEach(Array(message.blocks.enumerated()), id: \.offset) { _, block in
-                if block.kind == "tool" {
-                    ToolDisclosure(title: block.title ?? "工具执行", detail: block.text ?? "", state: block.state ?? "done")
-                } else if let text = block.text, !text.isEmpty {
-                    if block.kind == "notice" || (message.role != "assistant" && message.role != "user") {
-                        Text(text).font(.callout).foregroundStyle(.secondary).textSelection(.enabled).multilineTextAlignment(.center).frame(maxWidth: .infinity)
-                    } else if message.role == "user" {
-                        HStack { Spacer(minLength: 60); MessageText(text: text, alignment: .trailing).frame(maxWidth: 600) }
-                    } else {
-                        MessageText(text: text)
+        HStack(alignment: .top, spacing: 0) {
+            if row.message.role == .user { Spacer(minLength: 60) }
+            VStack(alignment: .leading, spacing: 9) {
+                ForEach(Array(row.message.blocks.enumerated()), id: \.offset) { index, block in
+                    switch block {
+                    case .tool(_, let title, let state, let output):
+                        ToolDisclosure(title: title, detail: output ?? "", state: state)
+                    case .reasoning(let text):
+                        ImmediateDisclosureGroup { Text(text).textSelection(.enabled).font(.callout).foregroundStyle(.secondary) } label: { Text("思考过程").font(.callout).foregroundStyle(.secondary) }
+                    case .notice(let text):
+                        Text(text).font(.callout).foregroundStyle(.secondary).textSelection(.enabled)
+                    case .text(let text):
+                        if row.message.role == .assistant, let content = row.markdown[index] {
+                            Markdown(content)
+                                .markdownTheme(.basic.codeBlock { configuration in CodeBlockView(language: configuration.language ?? "", code: configuration.content) })
+                                .textSelection(.enabled)
+                        } else { Text(text).textSelection(.enabled).multilineTextAlignment(.leading) }
                     }
                 }
             }
+            .frame(maxWidth: row.message.role == .user ? 600 : .infinity, alignment: row.message.role == .system ? .center : .leading)
+            .padding(row.message.role == .user ? 12 : 0)
+            .background { if row.message.role == .user { RoundedRectangle(cornerRadius: 12).fill(.quaternary) } }
+            if row.message.role == .user { EmptyView() }
         }
-    }
-}
-
-struct MessageText: View {
-    let text: String
-    var alignment: HorizontalAlignment = .leading
-    var body: some View {
-        VStack(alignment: alignment, spacing: 12) {
-            ForEach(Array(text.components(separatedBy: "```").enumerated()), id: \.offset) { index, segment in
-                if index % 2 == 1 {
-                    let lines = segment.split(separator: "\n", omittingEmptySubsequences: false)
-                    CodeBlockView(language: String(lines.first ?? "").trimmingCharacters(in: .whitespaces), code: lines.dropFirst().joined(separator: "\n").trimmingCharacters(in: .newlines))
-                } else if !segment.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    Text((try? AttributedString(markdown: segment.trimmingCharacters(in: .newlines), options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))) ?? AttributedString(segment)).font(.body).lineSpacing(4).textSelection(.enabled).multilineTextAlignment(alignment == .trailing ? .trailing : .leading).frame(maxWidth: .infinity, alignment: alignment == .trailing ? .trailing : .leading)
-                }
-            }
-        }
+        .frame(maxWidth: .infinity, alignment: row.message.role == .system ? .center : .leading)
+        .multilineTextAlignment(row.message.role == .system ? .center : .leading)
     }
 }
 
@@ -239,14 +226,14 @@ extension ImmediateDisclosureGroup where Label == Text {
 struct ToolDisclosure: View {
     let title: String
     let detail: String
-    let state: String
+    let state: ToolState
     @State private var expanded = false
     var body: some View {
         ImmediateDisclosureGroup(isExpanded: $expanded) {
             Text(detail.isEmpty ? "没有附加输出" : detail).font(.system(.callout, design: .monospaced)).foregroundStyle(.secondary).textSelection(.enabled).padding(.top, 4)
         } label: {
-            Label(title, systemImage: state == "running" ? "circle.dotted" : state == "error" ? "exclamationmark.circle" : "checkmark.circle").font(.callout).foregroundStyle(.secondary)
-        }.frame(maxWidth: expanded ? 560 : nil).fixedSize(horizontal: !expanded, vertical: false).frame(maxWidth: .infinity)
+            Label(title, systemImage: state == .running ? "circle.dotted" : state == .failed ? "exclamationmark.circle" : state == .pending ? "circle" : "checkmark.circle").font(.callout).foregroundStyle(.secondary)
+        }.frame(maxWidth: expanded ? 560 : nil).fixedSize(horizontal: !expanded, vertical: false).frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 

@@ -166,7 +166,8 @@ impl NativeSession {
         self.turn_id = Some(id.to_string());
         self.message(Message {
             id: format!("{}:user:{id}", self.epoch),
-            role: "user".into(),
+            role: crate::conversation::MessageRole::User,
+            timestamp_unix_ms: None,
             blocks: vec![MessageBlock::Text { text: text.into() }],
         });
         self.running();
@@ -310,13 +311,14 @@ impl NativeSession {
                     .cloned()
                     .unwrap_or(Message {
                         id,
-                        role: "assistant".into(),
+                        role: crate::conversation::MessageRole::Assistant,
+                        timestamp_unix_ms: None,
                         blocks: Vec::new(),
                     });
                 if thought {
                     message
                         .blocks
-                        .push(MessageBlock::Notice { text: text.into() });
+                        .push(MessageBlock::Reasoning { text: text.into() });
                 } else {
                     message
                         .blocks
@@ -350,11 +352,45 @@ impl NativeSession {
                     .unwrap_or_else(|| "工具操作".into());
                 self.message(Message {
                     id,
-                    role: "system".into(),
+                    role: crate::conversation::MessageRole::Tool,
+                    timestamp_unix_ms: None,
                     blocks: vec![MessageBlock::Tool {
                         tool_id: Some(native.into()),
                         title,
-                        state: update["status"].as_str().map(str::to_owned),
+                        state: match update["status"].as_str() {
+                            Some("completed") => ToolState::Completed,
+                            Some("failed") => ToolState::Failed,
+                            Some("in_progress") => ToolState::Running,
+                            Some("pending") => ToolState::Pending,
+                            _ => old
+                                .and_then(|m| m.blocks.first())
+                                .and_then(|b| {
+                                    if let MessageBlock::Tool { state, .. } = b {
+                                        Some(state.clone())
+                                    } else {
+                                        None
+                                    }
+                                })
+                                .unwrap_or(ToolState::Pending),
+                        },
+                        output: update["content"]
+                            .as_array()
+                            .map(|parts| {
+                                parts
+                                    .iter()
+                                    .filter_map(|part| part["content"]["text"].as_str())
+                                    .collect::<Vec<_>>()
+                                    .join("\n")
+                            })
+                            .or_else(|| {
+                                old.and_then(|m| m.blocks.first()).and_then(|b| {
+                                    if let MessageBlock::Tool { output, .. } = b {
+                                        output.clone()
+                                    } else {
+                                        None
+                                    }
+                                })
+                            }),
                     }],
                 });
             }

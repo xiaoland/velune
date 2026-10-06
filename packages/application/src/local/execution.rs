@@ -189,12 +189,8 @@ impl CoreRuntime {
             id: session
                 .map(|path| format!("{runtime_id}:{}", path.display()))
                 .unwrap_or_else(|| "active".into()),
-            title: session
-                .and_then(|path| path.file_stem())
-                .and_then(|item| item.to_str())
-                .unwrap_or("当前会话")
-                .into(),
-            updated_at: None,
+            title: velune_conversation::ConversationTitle::Untitled,
+            updated_at_unix_ms: None,
             runtime_id: runtime_id.into(),
             cwd: Some(cwd.to_string_lossy().into_owned()),
         });

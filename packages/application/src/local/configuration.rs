@@ -18,7 +18,8 @@ impl CoreRuntime {
                 }
             }
         }
-        conversations.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+        conversations
+            .sort_by_key(|conversation| std::cmp::Reverse(conversation.updated_at_unix_ms));
         Ok(json!({
             "conversations": conversations,
             "historyFailures": history_failures,
