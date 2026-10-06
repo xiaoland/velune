@@ -6,7 +6,7 @@
 
 root 拥有 packages 与构建／安装、权威文档和静态检查；session_management 拥有 Mac 全部可编辑列表交互；ai_service_audit 负责公开安装与版本差异证据、随后必要人工验收脚本；advisor 用于外部 SDK 解析与版本 adapter 的关键判断。owners 不回滚他人改动。guides/delegation.md 仍缺失，按既有共享协作规则协调。
 
-不新增自动化测试、不读取真实配置／凭据／会话。验证采用临时 HOME、实际外部运行时与合成 loopback、类型检查和构建，最后重新安装0.1 beta.1。当前处于调查与实现阶段，尚未安装。
+不新增自动化测试、不读取真实配置／凭据／会话。验证采用临时 HOME、实际外部运行时与合成 loopback、类型检查和构建，最后重新安装0.1 beta.1。开发实现与隔离验收已完成，最终安装状态见末尾；GUI体验待用户验收。
 
 用户后续确认：双击进入编辑是项目级 UI/UX 范式；已进入 PRD 与共享规则，未来可编辑列表同样遵循，不限于本轮枚举项。
 
@@ -25,3 +25,9 @@ Mac 使用系统原生 List primaryAction，覆盖全部可编辑列表；提供
 官方源复核于2026-10-06：[npm发布元数据](https://registry.npmjs.org/@earendil-works/pi-coding-agent)、[官方CHANGELOG](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/CHANGELOG.md)、[SDK README](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/README.md)。研究 owner 比对四份官方 tarball 的 model-runtime.js、auth-storage.js、agent-session-runtime.js、virtual-models.js，SHA-1一致；相应声明与session-manager.d.ts无差异。launcher模板依据 [pnpm生成逻辑](https://github.com/pnpm/pnpm/blob/main/pnpm11/bins/cmd-shim/src/index.ts)，当前只处理已验证的nativeNode字面目标形式，不声称通用shell解析。
 
 最终源码范围的所有人工脚本已完成外部 --pi 迁移。首循环6请求、原生Messages的Pi导入与Pi/DSH4请求、跨Harness4请求、会话浏览、Pi session resync零请求、continuation失败边界2请求均通过；AppStore新版规范入口fixture复验通过。旧session-management重复入口已删除，现有原生验收承接。DSH临时fixture漏parser依赖曾导致process_exit，已修复为仅链接huihua公开解析依赖并复验。root另以临时文件确认含空格多分支launcher、失效目标、命令替换和歧义目标拒绝，以及冻结SDK版本不匹配／入口失效在凭据文件访问前拒绝。无真实账户、会话或模型服务。
+
+## 最终安装
+
+源码提交2c080bc02bdf6d2a5de7922e1bd7a29b446dd019，干净树构建并安装到标准Applications位置，显示版本0.1 beta.1，签名校验通过。安装包仅包含huihua及其四个parser依赖，不含Pi SDK、CLI或任何Agent runtime。已从安装实际dylib重新生成Python绑定并复验首循环（6个loopback请求）和运行时发现／版本拒绝／去重／配置持久化，两者通过。GUI双击体验由用户验收；若旧实例入口指向应用包内Pi，需显式改为外部安装，不做隐式替代或读取用户配置。
+
+PRD、共享UI/UX原则、架构、各unit说明、开发运行入口及来源索引均已同步；没有远端发布或真实模型调用。
