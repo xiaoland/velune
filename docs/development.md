@@ -268,3 +268,11 @@ Mac 的“问题”窗口集中显示操作失败与当前读取问题，主界�
 运行时 stderr 使用有界本地缓存，并持续排空进程管道；达到容量后在诊断中明确标记截断，不能把容量限制伪装成隐私过滤或停止读取管道。工作时长是本机观察的执行区间，精度受轮询间隔影响；它不是提供商统计，也不回填到原生历史。
 
 本次消息列表与诊断的隔离验收入口是 `scripts/manual-transcript-outline.py`、`scripts/manual-problems.py`、`scripts/manual-error-diagnostics.py`。这些按需手动脚本使用临时配置与合成内容，不接入自动测试或 CI；消息流脚本使用外部已安装 Pi 与本地服务，不依赖真实模型账户。
+
+## 用量分析
+
+“分析”使用独立原生窗口，从主窗口工具栏或显示菜单打开。记录来自启用后经过 Velune 的 LLM 网关请求，保存在应用配置根目录的 analytics.sqlite；不从诊断日志重建用量，不代表其它客户端或既往运行时调用。分析目录随 VELUNE_HOME 或平台传入的配置根目录确定，gateway 本身不读环境变量。窗口提供时间范围、已报告用量及覆盖率、每日趋势、提供商／模型拆分与请求详情；时间按平台本地日边界查询。
+
+缓存输入已包含在输入总量中，推理输出已包含在输出总量中，详情中的子项不能再相加。有效输出速率包含上游等待，以相同有效请求的已报告输出 token 总量除以请求耗时总量；首输出延迟仅在流式语义输出可观察时存在。没有报告与报告零分开显示。具体测量与单位边界见 [AI 服务分析契约](design/ai-service.md#用量与性能分析契约)。实现与隔离人工验证结果见 [分析任务](../tasks/usage-analytics/packet.md)，此说明不代表真实提供商或 GUI 已验收。
+
+人工验收入口为 `scripts/manual-gateway-analytics.py`（可用 `--fixture-out` 保存实际采集的合成 SQLite）、`scripts/manual-analytics-storage.py`（指定 `--bindings`、`--library`、`--resources`）和 `scripts/manual-analytics-ui.py`（指定实际合成 `--database`、`--library`、`--swift-build`）。它们分别贯通 HTTP→采集→持久化、实际 UniFFI 全量聚合与分页、实际 Mac Store 查询和展示状态，不接入 CI。请求明细最多展示500条，概览与趋势仍遍历该范围的全部记录。存储不可用或队列丢弃会明确显示告警，不用零计量掩盖缺失记录。

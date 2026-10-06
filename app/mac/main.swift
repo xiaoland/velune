@@ -68,6 +68,7 @@ struct VeluneApp: App {
                     .disabled(store.isGenerating || store.isLoading)
             }
             CommandGroup(after: .sidebar) {
+                AnalyticsMenuItem()
                 ProblemsMenuItem(store: store)
             }
             CommandMenu("会话") {
@@ -82,6 +83,9 @@ struct VeluneApp: App {
         Window("问题", id: "problems") {
             ProblemsView(store: store).frame(minWidth: 600, minHeight: 320)
         }.defaultSize(width: 760, height: 480)
+        Window("分析", id: "analytics") {
+            AnalyticsView(store: store).frame(minWidth: 680, minHeight: 460)
+        }.defaultSize(width: 860, height: 640)
         Settings {
             SettingsView(store: store)
         }

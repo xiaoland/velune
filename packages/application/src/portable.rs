@@ -13,7 +13,10 @@ pub(crate) struct CoreRuntime {
     config: PersistedConfig,
 }
 impl CoreRuntime {
-    pub(crate) fn open(options: Options) -> Result<Self, Error> {
+    pub(crate) fn open(
+        options: Options,
+        _analytics: std::sync::Arc<crate::analytics::AnalyticsStore>,
+    ) -> Result<Self, Error> {
         options.validate()?;
         let (repository, config) = Repository::open(&options.home_directory)?;
         Ok(Self { repository, config })

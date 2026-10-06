@@ -308,6 +308,111 @@ pub struct BindingSnapshotResult {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+#[serde(rename_all = "camelCase")]
+pub struct BindingAnalyticsQuery {
+    pub from_ms: i64,
+    pub to_ms: i64,
+    pub bucket_boundaries_ms: Vec<i64>,
+    pub provider_id: Option<String>,
+    pub model_record_key: Option<String>,
+    pub request_limit: u32,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Enum)]
+#[serde(rename_all = "camelCase")]
+pub enum BindingAnalyticsProtocol {
+    ChatCompletions,
+    Responses,
+    Messages,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Enum)]
+#[serde(rename_all = "camelCase")]
+pub enum BindingAnalyticsOutcome {
+    Completed,
+    Incomplete,
+    Failed,
+    Cancelled,
+    Rejected,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+#[serde(rename_all = "camelCase")]
+pub struct BindingAnalyticsTotals {
+    pub request_count: u64,
+    pub completed_count: u64,
+    pub failed_count: u64,
+    pub incomplete_count: u64,
+    pub rejected_count: u64,
+    pub cancelled_count: u64,
+    pub input_tokens: Option<u64>,
+    pub output_tokens: Option<u64>,
+    pub reasoning_output_tokens: Option<u64>,
+    pub usage_reported_count: u64,
+    pub usage_complete_count: u64,
+    pub eligible_speed_count: u64,
+    pub output_tokens_per_second: Option<f64>,
+    pub total_tokens: Option<u64>,
+    pub total_reported_count: u64,
+    pub input_reported_count: u64,
+    pub output_reported_count: u64,
+    pub reasoning_reported_count: u64,
+    pub cache_reported_count: u64,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+#[serde(rename_all = "camelCase")]
+pub struct BindingAnalyticsBucket {
+    pub from_ms: i64,
+    pub to_ms: i64,
+    pub totals: BindingAnalyticsTotals,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+#[serde(rename_all = "camelCase")]
+pub struct BindingAnalyticsBreakdown {
+    pub key: String,
+    pub name: String,
+    pub provider_id: Option<String>,
+    pub model_record_key: Option<String>,
+    pub totals: BindingAnalyticsTotals,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+#[serde(rename_all = "camelCase")]
+pub struct BindingAnalyticsRequest {
+    pub request_id: String,
+    pub provider_id: String,
+    pub provider_name: String,
+    pub model_record_key: String,
+    pub provider_model_id: String,
+    pub protocol: BindingAnalyticsProtocol,
+    pub started_at_ms: i64,
+    pub terminal_at_ms: i64,
+    pub elapsed_ms: u64,
+    pub first_output_ms: Option<u64>,
+    pub terminal_elapsed_ms: Option<u64>,
+    pub output_tokens_per_second: Option<f64>,
+    pub status: Option<u16>,
+    pub outcome: BindingAnalyticsOutcome,
+    pub input_tokens: Option<u64>,
+    pub uncached_input_tokens: Option<u64>,
+    pub output_tokens: Option<u64>,
+    pub reasoning_output_tokens: Option<u64>,
+    pub cached_input_tokens: Option<u64>,
+    pub cache_read_input_tokens: Option<u64>,
+    pub cache_creation_input_tokens: Option<u64>,
+    pub usage_reported: bool,
+    pub usage_complete: bool,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+#[serde(rename_all = "camelCase")]
+pub struct BindingAnalyticsReport {
+    pub overview: BindingAnalyticsTotals,
+    pub trend: Vec<BindingAnalyticsBucket>,
+    pub providers: Vec<BindingAnalyticsBreakdown>,
+    pub models: Vec<BindingAnalyticsBreakdown>,
+    pub requests: Vec<BindingAnalyticsRequest>,
+    pub coverage: String,
+    pub storage_warning: Option<String>,
+    pub dropped_count: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct BindingProviderImportSource {
     pub kind: String,

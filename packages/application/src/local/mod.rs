@@ -16,6 +16,7 @@ use std::{
     fs,
     io::Write,
     path::{Path, PathBuf},
+    sync::Arc,
 };
 use velune_agent_runtime::history::{self, HistoryConfig};
 use velune_agent_runtime::native::{GatewayInjection, NativeConfig, NativeKind, NativeSession};
@@ -98,6 +99,7 @@ pub struct CoreRuntime {
     execution_runtime_id: Option<String>,
     authentication: Option<authentication::Login>,
     model_record_key: Option<String>,
+    analytics: Arc<crate::analytics::AnalyticsStore>,
 }
 
 mod authentication_coordination;
@@ -112,7 +114,10 @@ mod provider_management;
 use pi_composition::*;
 
 impl CoreRuntime {
-    pub fn open(options: RuntimeOptions) -> Result<Self, RuntimeError> {
+    pub fn open(
+        options: RuntimeOptions,
+        analytics: Arc<crate::analytics::AnalyticsStore>,
+    ) -> Result<Self, RuntimeError> {
         options.validate()?;
         let (repository, persisted) = crate::repository::Repository::open(&options.home_directory)?;
         let conversation_links = repository.load_conversation_links()?;
@@ -136,6 +141,7 @@ impl CoreRuntime {
             execution_runtime_id: None,
             authentication: None,
             model_record_key: None,
+            analytics,
         })
     }
 

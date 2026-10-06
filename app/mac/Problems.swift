@@ -28,6 +28,7 @@ struct AppProblem: Identifiable, Sendable, Equatable {
     private static func operationName(_ value: String) -> String {
         switch value {
         case "shutdown": return "关闭应用"
+        case "analyticsQuery": return "读取分析记录"
         case "list": return "读取会话与配置"
         case "setTranscriptPresentation": return "保存消息列表设置"
         case "setConversationBrowserGroupLimit": return "保存会话列表设置"

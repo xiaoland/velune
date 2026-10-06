@@ -1,6 +1,10 @@
 //! Local LLM ingress. Same-protocol traffic remains native; cross-protocol
 //! routing uses request-scoped best-effort translation. Fail-over is disabled.
 use crate::{
+    analytics::{
+        AnalyticsOutcome, AnalyticsProtocol, AnalyticsRecord, RequestAnalytics,
+        SharedAnalyticsSink, SharedTracker, TokenUsage, now_ms,
+    },
     config::{GatewayConfig, GatewayProtocol},
     observation::Observation,
 };
@@ -90,6 +94,9 @@ struct RouteTarget {
     endpoint: String,
     config: ProviderConfig,
     reference: String,
+    provider_id: String,
+    provider_name: String,
+    model_record_key: String,
 }
 struct Ingress {
     routes: Arc<RwLock<BTreeMap<String, RouteTarget>>>,
@@ -100,6 +107,7 @@ struct Ingress {
     request_epoch: u64,
     next_request: AtomicU64,
     stopping: Arc<AtomicBool>,
+    analytics: Option<SharedAnalyticsSink>,
 }
 
 pub struct Runner {
@@ -130,6 +138,14 @@ impl Runner {
         credential_resolver: Arc<dyn CredentialResolver>,
         aliases: BTreeMap<String, String>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
+        Self::start_with_analytics(config, credential_resolver, aliases, None)
+    }
+    pub fn start_with_analytics(
+        config: GatewayConfig,
+        credential_resolver: Arc<dyn CredentialResolver>,
+        aliases: BTreeMap<String, String>,
+        analytics: Option<SharedAnalyticsSink>,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
         config.validate().map_err(GatewayError)?;
         let routes = Arc::new(RwLock::new(build_routes(&config, &aliases)?));
         let listener = TcpListener::bind("127.0.0.1:0")?;
@@ -159,6 +175,7 @@ impl Runner {
             request_epoch: u64::from_le_bytes(epoch),
             next_request: AtomicU64::new(1),
             stopping: stopping.clone(),
+            analytics,
         });
         let (stop, stopped) = oneshot::channel();
         let dispatcher = tracing::dispatcher::get_default(Clone::clone);
@@ -265,6 +282,9 @@ fn build_routes(
                         .credential_ref
                         .clone()
                         .ok_or(GatewayError("authentication resource is required"))?,
+                    provider_id: provider.id.clone(),
+                    provider_name: provider.name.clone(),
+                    model_record_key: entry.record_key.clone(),
                 },
             );
         }
@@ -368,14 +388,24 @@ async fn ingress(
         span.clone(),
         state.stopping.clone(),
     );
-    ingress_observed(state, request, protocol, observation)
-        .instrument(span)
-        .with_subscriber(dispatcher)
-        .await
+    let started_at_ms = now_ms();
+    ingress_observed(
+        state,
+        request_id,
+        started_at_ms,
+        request,
+        protocol,
+        observation,
+    )
+    .instrument(span)
+    .with_subscriber(dispatcher)
+    .await
 }
 
 async fn ingress_observed(
     state: Arc<Ingress>,
+    request_id: String,
+    started_at_ms: i64,
     request: Request<Body>,
     protocol: GatewayProtocol,
     observation: Observation,
@@ -517,12 +547,49 @@ async fn ingress_observed(
     let (sender, mut receiver) = mpsc::channel(1);
     let request_span = tracing::Span::current();
     let dispatcher = tracing::dispatcher::get_default(Clone::clone);
+    let analytics = state.analytics.clone().map(|sink| {
+        RequestAnalytics::new(
+            sink,
+            AnalyticsRecord {
+                request_id,
+                provider_id: target.provider_id.clone(),
+                provider_name: target.provider_name.clone(),
+                model_record_key: target.model_record_key.clone(),
+                provider_model_id: target.model.as_str().to_owned(),
+                protocol: match target.protocol {
+                    GatewayProtocol::ChatCompletionsV1 => AnalyticsProtocol::ChatCompletions,
+                    GatewayProtocol::ResponsesV1 => AnalyticsProtocol::Responses,
+                    GatewayProtocol::MessagesV1 => AnalyticsProtocol::Messages,
+                },
+                started_at_ms,
+                terminal_at_ms: started_at_ms,
+                elapsed_ms: 0,
+                first_output_ms: None,
+                terminal_elapsed_ms: None,
+                status: None,
+                outcome: AnalyticsOutcome::Cancelled,
+                usage: TokenUsage::default(),
+                usage_reported: false,
+                usage_complete: false,
+            },
+            state.stopping.clone(),
+        )
+    });
     let task = tokio::spawn(async move {
         // Future polls retain the application's scoped diagnostic dispatcher.
-        dispatch(state, target, body, headers, stream, translation, sender)
-            .instrument(request_span)
-            .with_subscriber(dispatcher)
-            .await;
+        dispatch(
+            state,
+            analytics,
+            target,
+            body,
+            headers,
+            stream,
+            translation,
+            sender,
+        )
+        .instrument(request_span)
+        .with_subscriber(dispatcher)
+        .await;
     });
     let mut guard = DispatchGuard {
         task,
@@ -673,8 +740,10 @@ async fn send_failure(
     .await;
 }
 
+#[allow(clippy::too_many_arguments)] // Captured request, delivery and analytics have distinct lifetimes.
 async fn dispatch(
     state: Arc<Ingress>,
+    analytics: Option<RequestAnalytics>,
     target: RouteTarget,
     body: Value,
     headers: Vec<Header>,
@@ -682,6 +751,7 @@ async fn dispatch(
     translation: Option<velune_ai_provider::translation::PreparedTranslation>,
     sender: mpsc::Sender<WireEvent>,
 ) {
+    let tracker = analytics.as_ref().map(|guard| guard.tracker.clone());
     let attempt_span = tracing::info_span!("gateway_attempt", attempt = 1);
     let mut observation = Observation::new(
         "gateway_attempt_finished",
@@ -695,6 +765,7 @@ async fn dispatch(
         // bounded channels retain native backpressure and cancellation.
         let native = dispatch_observed(
             state,
+            tracker,
             target,
             body,
             headers,
@@ -708,6 +779,7 @@ async fn dispatch(
     } else {
         dispatch_observed(
             state,
+            tracker,
             target,
             body,
             headers,
@@ -718,10 +790,13 @@ async fn dispatch(
         .instrument(attempt_span)
         .await;
     }
+    drop(analytics);
 }
 
+#[allow(clippy::too_many_arguments)] // Same native dispatch for both delivery modes.
 async fn dispatch_observed(
     state: Arc<Ingress>,
+    tracker: Option<SharedTracker>,
     target: RouteTarget,
     mut body: Value,
     headers: Vec<Header>,
@@ -745,6 +820,12 @@ async fn dispatch_observed(
     {
         Ok(credential) => credential,
         Err(error) => {
+            if let Some(tracker) = &tracker {
+                tracker
+                    .lock()
+                    .expect("owned analytics tracker")
+                    .finish(AnalyticsOutcome::Failed);
+            }
             observation.finish("credential_failed");
             tracing::warn!(event="gateway_credential_failed",kind=?error);
             send_failure(
@@ -758,6 +839,9 @@ async fn dispatch_observed(
             return;
         }
     };
+    if let Some(tracker) = &tracker {
+        tracker.lock().expect("owned analytics tracker").begin();
+    }
     match target.protocol {
         GatewayProtocol::ChatCompletionsV1 => {
             let adapter = match ChatCompletions::with_resolved_credential(
@@ -767,6 +851,12 @@ async fn dispatch_observed(
             ) {
                 Ok(value) => value,
                 Err(_) => {
+                    if let Some(tracker) = &tracker {
+                        tracker
+                            .lock()
+                            .expect("owned analytics tracker")
+                            .finish(AnalyticsOutcome::Failed);
+                    }
                     observation.finish("configuration_failed");
                     send_failure(
                         &sender,
@@ -782,6 +872,7 @@ async fn dispatch_observed(
             let sink_sender = sender.clone();
             let sent = Arc::new(std::sync::atomic::AtomicBool::new(false));
             let sink_sent = sent.clone();
+            let sink_tracker = tracker.clone();
             let completion = adapter
                 .chat_completions(
                     ChatCompletionsRequest {
@@ -793,9 +884,16 @@ async fn dispatch_observed(
                     Box::new(move |event| {
                         let sender = sink_sender.clone();
                         let sent = sink_sent.clone();
+                        let tracker = sink_tracker.clone();
                         Box::pin(async move {
                             let event = match event {
                                 ChatCompletionsEvent::Headers(meta) => {
+                                    if let Some(tracker) = &tracker {
+                                        tracker
+                                            .lock()
+                                            .expect("owned analytics tracker")
+                                            .headers(meta.status);
+                                    }
                                     tracing::info!(
                                         event = "gateway_upstream_headers",
                                         http_status = meta.status
@@ -804,6 +902,12 @@ async fn dispatch_observed(
                                     WireEvent::Headers(meta)
                                 }
                                 ChatCompletionsEvent::Body(bytes) => {
+                                    if let Some(tracker) = &tracker {
+                                        tracker
+                                            .lock()
+                                            .expect("owned analytics tracker")
+                                            .chunk(bytes.get());
+                                    }
                                     WireEvent::Body(bytes.into_inner())
                                 }
                             };
@@ -813,6 +917,18 @@ async fn dispatch_observed(
                 )
                 .await;
             let headers_sent = sent.load(std::sync::atomic::Ordering::Acquire);
+            if let Some(tracker) = &tracker {
+                tracker
+                    .lock()
+                    .expect("owned analytics tracker")
+                    .finish(match &completion.result {
+                        Ok(_) => AnalyticsOutcome::Completed,
+                        Err(error) if matches!(error.kind, ChatCompletionsErrorKind::Cancelled) => {
+                            AnalyticsOutcome::Cancelled
+                        }
+                        Err(_) => AnalyticsOutcome::Failed,
+                    });
+            }
             observation.finish(match &completion.result {
                 Ok(_) => "transport_completed",
                 Err(error) if matches!(error.kind, ChatCompletionsErrorKind::Cancelled) => {
@@ -826,6 +942,12 @@ async fn dispatch_observed(
                         event = "gateway_upstream_headers",
                         http_status = body.meta.status
                     );
+                    if let Some(tracker) = &tracker {
+                        tracker
+                            .lock()
+                            .expect("owned analytics tracker")
+                            .json(body.meta.status, body.body.get());
+                    }
                     send_json(&sender, body).await;
                 }
                 Ok(ChatCompletionsOutput::Stream(_)) => {}
@@ -834,6 +956,19 @@ async fn dispatch_observed(
                         tracing::info!(event = "gateway_dispatch_canceled");
                     } else {
                         tracing::warn!(event="gateway_dispatch_failed",protocol="chat_completions",kind=?error.kind);
+                    }
+                    if let Some(tracker) = &tracker {
+                        if let Some(body) = &error.body {
+                            tracker.lock().expect("owned analytics tracker").json(
+                                error.response.as_ref().map_or(502, |m| m.status),
+                                body.get(),
+                            );
+                        } else if let Some(meta) = &error.response {
+                            tracker
+                                .lock()
+                                .expect("owned analytics tracker")
+                                .headers(meta.status);
+                        }
                     }
                     if let Some(meta) = &error.response {
                         tracing::info!(
@@ -871,6 +1006,12 @@ async fn dispatch_observed(
             ) {
                 Ok(value) => value,
                 Err(_) => {
+                    if let Some(tracker) = &tracker {
+                        tracker
+                            .lock()
+                            .expect("owned analytics tracker")
+                            .finish(AnalyticsOutcome::Failed);
+                    }
                     observation.finish("configuration_failed");
                     send_failure(
                         &sender,
@@ -886,6 +1027,7 @@ async fn dispatch_observed(
             let sink_sender = sender.clone();
             let sent = Arc::new(std::sync::atomic::AtomicBool::new(false));
             let sink_sent = sent.clone();
+            let sink_tracker = tracker.clone();
             let completion = adapter
                 .responses(
                     ResponsesRequest {
@@ -897,9 +1039,16 @@ async fn dispatch_observed(
                     Box::new(move |event| {
                         let sender = sink_sender.clone();
                         let sent = sink_sent.clone();
+                        let tracker = sink_tracker.clone();
                         Box::pin(async move {
                             let event = match event {
                                 ResponsesEvent::Headers(meta) => {
+                                    if let Some(tracker) = &tracker {
+                                        tracker
+                                            .lock()
+                                            .expect("owned analytics tracker")
+                                            .headers(meta.status);
+                                    }
                                     tracing::info!(
                                         event = "gateway_upstream_headers",
                                         http_status = meta.status
@@ -907,13 +1056,33 @@ async fn dispatch_observed(
                                     sent.store(true, std::sync::atomic::Ordering::Release);
                                     WireEvent::Headers(meta)
                                 }
-                                ResponsesEvent::Body(bytes) => WireEvent::Body(bytes.into_inner()),
+                                ResponsesEvent::Body(bytes) => {
+                                    if let Some(tracker) = &tracker {
+                                        tracker
+                                            .lock()
+                                            .expect("owned analytics tracker")
+                                            .chunk(bytes.get());
+                                    }
+                                    WireEvent::Body(bytes.into_inner())
+                                }
                             };
                             sender.send(event).await.map_err(|_| DeliveryError::Closed)
                         })
                     }),
                 )
                 .await;
+            if let Some(tracker) = &tracker {
+                tracker
+                    .lock()
+                    .expect("owned analytics tracker")
+                    .finish(match &completion.result {
+                        Ok(_) => AnalyticsOutcome::Completed,
+                        Err(error) if matches!(error.kind, ResponsesErrorKind::Cancelled) => {
+                            AnalyticsOutcome::Cancelled
+                        }
+                        Err(_) => AnalyticsOutcome::Failed,
+                    });
+            }
             observation.finish(match &completion.result {
                 Ok(_) => "transport_completed",
                 Err(error) if matches!(error.kind, ResponsesErrorKind::Cancelled) => {
@@ -927,6 +1096,12 @@ async fn dispatch_observed(
                         event = "gateway_upstream_headers",
                         http_status = body.meta.status
                     );
+                    if let Some(tracker) = &tracker {
+                        tracker
+                            .lock()
+                            .expect("owned analytics tracker")
+                            .json(body.meta.status, body.body.get());
+                    }
                     send_json(&sender, body).await;
                 }
                 Ok(ResponsesOutput::Stream(..)) => {}
@@ -935,6 +1110,19 @@ async fn dispatch_observed(
                         tracing::info!(event = "gateway_dispatch_canceled");
                     } else {
                         tracing::warn!(event="gateway_dispatch_failed",protocol="responses",kind=?error.kind);
+                    }
+                    if let Some(tracker) = &tracker {
+                        if let Some(body) = &error.body {
+                            tracker
+                                .lock()
+                                .expect("owned analytics tracker")
+                                .json(error.status.unwrap_or(502), body.get());
+                        } else if let Some(status) = error.status {
+                            tracker
+                                .lock()
+                                .expect("owned analytics tracker")
+                                .headers(status);
+                        }
                     }
                     if let Some(status) = error.status {
                         tracing::info!(event = "gateway_upstream_headers", http_status = status);
@@ -967,6 +1155,12 @@ async fn dispatch_observed(
             ) {
                 Ok(value) => value,
                 Err(_) => {
+                    if let Some(tracker) = &tracker {
+                        tracker
+                            .lock()
+                            .expect("owned analytics tracker")
+                            .finish(AnalyticsOutcome::Failed);
+                    }
                     observation.finish("configuration_failed");
                     send_failure(
                         &sender,
@@ -982,6 +1176,7 @@ async fn dispatch_observed(
             let sink_sender = sender.clone();
             let sent = Arc::new(std::sync::atomic::AtomicBool::new(false));
             let sink_sent = sent.clone();
+            let sink_tracker = tracker.clone();
             let completion = adapter
                 .messages(
                     MessagesRequest {
@@ -993,9 +1188,16 @@ async fn dispatch_observed(
                     Box::new(move |event| {
                         let sender = sink_sender.clone();
                         let sent = sink_sent.clone();
+                        let tracker = sink_tracker.clone();
                         Box::pin(async move {
                             let event = match event {
                                 MessagesEvent::Headers(meta) => {
+                                    if let Some(tracker) = &tracker {
+                                        tracker
+                                            .lock()
+                                            .expect("owned analytics tracker")
+                                            .headers(meta.status);
+                                    }
                                     tracing::info!(
                                         event = "gateway_upstream_headers",
                                         http_status = meta.status
@@ -1003,7 +1205,15 @@ async fn dispatch_observed(
                                     sent.store(true, std::sync::atomic::Ordering::Release);
                                     WireEvent::Headers(meta)
                                 }
-                                MessagesEvent::Body(bytes) => WireEvent::Body(bytes.into_inner()),
+                                MessagesEvent::Body(bytes) => {
+                                    if let Some(tracker) = &tracker {
+                                        tracker
+                                            .lock()
+                                            .expect("owned analytics tracker")
+                                            .chunk(bytes.get());
+                                    }
+                                    WireEvent::Body(bytes.into_inner())
+                                }
                             };
                             sender.send(event).await.map_err(|_| DeliveryError::Closed)
                         })
@@ -1011,6 +1221,18 @@ async fn dispatch_observed(
                 )
                 .await;
             let headers_sent = sent.load(std::sync::atomic::Ordering::Acquire);
+            if let Some(tracker) = &tracker {
+                tracker
+                    .lock()
+                    .expect("owned analytics tracker")
+                    .finish(match &completion.result {
+                        Ok(_) => AnalyticsOutcome::Completed,
+                        Err(error) if matches!(error.kind, MessagesErrorKind::Cancelled) => {
+                            AnalyticsOutcome::Cancelled
+                        }
+                        Err(_) => AnalyticsOutcome::Failed,
+                    });
+            }
             observation.finish(match &completion.result {
                 Ok(_) => "transport_completed",
                 Err(error) if matches!(error.kind, MessagesErrorKind::Cancelled) => {
@@ -1024,6 +1246,12 @@ async fn dispatch_observed(
                         event = "gateway_upstream_headers",
                         http_status = body.meta.status
                     );
+                    if let Some(tracker) = &tracker {
+                        tracker
+                            .lock()
+                            .expect("owned analytics tracker")
+                            .json(body.meta.status, body.body.get());
+                    }
                     send_json(&sender, body).await;
                 }
                 Ok(MessagesOutput::Stream(_)) => {}
@@ -1032,6 +1260,19 @@ async fn dispatch_observed(
                         tracing::info!(event = "gateway_dispatch_canceled");
                     } else {
                         tracing::warn!(event="gateway_dispatch_failed",protocol="messages",kind=?error.kind);
+                    }
+                    if let Some(tracker) = &tracker {
+                        if let Some(body) = &error.body {
+                            tracker.lock().expect("owned analytics tracker").json(
+                                error.response.as_ref().map_or(502, |m| m.status),
+                                body.get(),
+                            );
+                        } else if let Some(meta) = &error.response {
+                            tracker
+                                .lock()
+                                .expect("owned analytics tracker")
+                                .headers(meta.status);
+                        }
                     }
                     if let Some(meta) = &error.response {
                         tracing::info!(

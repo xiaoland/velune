@@ -1,4 +1,5 @@
 //! Shared application use cases, ordinary configuration and lifecycle.
+mod analytics;
 mod api;
 #[cfg(feature = "local-runtime")]
 mod authentication_resolver;
@@ -84,15 +85,25 @@ impl Error {
 }
 pub struct Application {
     runtime: implementation::CoreRuntime,
+    analytics: std::sync::Arc<analytics::AnalyticsStore>,
 }
 impl Application {
     pub fn open(options: Options) -> Result<Self, Error> {
+        options.validate()?;
+        let analytics = std::sync::Arc::new(
+            analytics::AnalyticsStore::open(&options.home_directory).unwrap_or_else(|error| {
+                analytics::AnalyticsStore::unavailable(&options.home_directory, error)
+            }),
+        );
         Ok(Self {
-            runtime: implementation::CoreRuntime::open(options)?,
+            runtime: implementation::CoreRuntime::open(options, analytics.clone())?,
+            analytics,
         })
     }
     pub fn close(&mut self) -> Result<(), Error> {
-        self.runtime.close_if_idle()
+        self.runtime.close_if_idle()?;
+        let _ = self.analytics.barrier();
+        Ok(())
     }
 }
 

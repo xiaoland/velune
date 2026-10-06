@@ -24,10 +24,11 @@ impl CoreRuntime {
             .ok_or_else(|| RuntimeError::invalid("gateway id"))?;
         if runtime.type_id != "pi-1.0.2" {
             self.shutdown_active()?;
-            let runner = Runner::start(
+            let runner = Runner::start_with_analytics(
                 gateway.to_gateway_config()?,
                 crate::authentication_resolver::ProviderResolver::capture(&gateway, &self.options),
                 self.native_aliases(&runtime, model_record_key)?,
+                Some(self.analytics.clone()),
             )
             .map_err(|error| RuntimeError::context("gateway startup", error))?;
             self.gateway_runner = Some(runner);
@@ -88,10 +89,11 @@ impl CoreRuntime {
             })
             .collect::<Result<BTreeMap<_, _>, _>>()?;
         self.shutdown_active()?;
-        let runner = Runner::start(
+        let runner = Runner::start_with_analytics(
             gateway.to_gateway_config()?,
             crate::authentication_resolver::ProviderResolver::capture(&gateway, &self.options),
             route_aliases,
+            Some(self.analytics.clone()),
         )
         .map_err(|error| RuntimeError::context("gateway startup", error))?;
         let projection_dir = self

@@ -21,3 +21,5 @@ Messages 保留调用方的 `anthropic-version`／beta 请求头与原生 JSON�
 异协议转换复用 `eventsource-stream` 解析 SSE 分帧，支持任意网络分块。转换后的响应去除过期的长度、编码与完整性 headers；Messages 合成请求使用 API 版本 `2023-06-01`，同协议仍保留调用方的版本。转换正文累计上限为 16 MiB，输出沿用容量为 1 的通道与取消合同。转换无法保留的字段只记录静态 field/code，不记录正文；真实上游 HTTP 错误保留状态和正文，未出现有效业务终态的断流不会补造完成。人工端到端验证入口见 [开发说明](../../docs/development.md)。
 
 跨协议文本增量立即交付。转换到 Messages 的工具参数须形成合法 JSON object，因此在单个工具完成时交付其有界累积参数；Responses custom 工具也在其参数完成后解除 `{input:string}` 包装。无法解析的参数保留为原始字符串并记录降级，不能补造可执行命令或整次拒绝。OpenAI 两协议间普通 function 参数继续增量交付。
+
+调用方可通过 `Runner::start_with_analytics` 注入非阻塞 `AnalyticsSink`，在上游原生响应、协议转换之前接收实际提供商／模型与用量、时间、结果记录。接收器负责持久化；gateway 不读取存储路径，也不从 tracing 重建用量。已有 `Runner::start` 可不采集统计。

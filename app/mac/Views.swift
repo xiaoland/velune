@@ -75,6 +75,7 @@ struct VeluneRootView: View {
         .onReceive(store.$conversationBrowserGroupLimit) { browser.initialLimit = $0 }
         .onChange(of: browser.query) { _, _ in browser.resetPagination() }
 
+        .toolbar { ToolbarItem { AnalyticsButton() } }
         .problemsToolbar(store)
         .sheet(item: $renameTarget) { ConversationRenameView(store: store, conversation: $0) }
         .alert(deleteTargets.count == 1 ? "删除会话？" : "删除 \(deleteTargets.count) 个会话？", isPresented: Binding(get: { !deleteTargets.isEmpty }, set: { if !$0 { deleteTargets = [] } })) {

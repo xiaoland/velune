@@ -33,6 +33,8 @@
 
 - [独立 package 与平台能力装配](../tasks/package-boundaries/packet.md)：已授权并完成 UniFFI 拆分，保留其边界与验证证据
 
+- [用量与性能分析](../tasks/usage-analytics/packet.md)：网关用量事实、统计口径、原生分析界面与隔离验收
+
 - [Pi 与 Mac 首循环](../tasks/pi-mac-first-loop/packet.md)：原生 control surface、AI 网关、提供商与模型配置、Agent 运行时实例；真实运行待用户验收
 
 - [AI service 有界实现](../tasks/ai-service-contracts/packet.md)：隔离旧改动、契约审核、真实接入／fixture 待确认项

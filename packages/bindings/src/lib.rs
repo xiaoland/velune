@@ -174,6 +174,15 @@ impl VeluneApplication {
     pub fn list(&self) -> Result<BindingConfigurationSnapshot, BindingError> {
         convert(self.with("list", |application| application.list())?)
     }
+    pub fn analytics_query(
+        &self,
+        query: BindingAnalyticsQuery,
+    ) -> Result<BindingAnalyticsReport, BindingError> {
+        let query = convert(query)?;
+        convert(self.with("analytics_query", |application| {
+            application.analytics_query(query)
+        })?)
+    }
     pub fn runtime_discovery_hints(
         &self,
         user_home: String,

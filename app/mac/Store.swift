@@ -36,6 +36,11 @@ final class AppStore: ObservableObject {
 
     private let transport: Transport?
     let isPreview: Bool
+    @Published private(set) var analyticsReport: BindingAnalyticsReport?
+    @Published private(set) var analyticsIsLoading = false
+    @Published private(set) var analyticsReadFailed = false
+    @Published private(set) var analyticsUpdatedAt: Date?
+    private var analyticsGeneration: UInt64 = 0
     private let queue = DispatchQueue(label: "local.velune.requests", qos: .userInitiated)
     private var generation = 0
     private var timer: Timer?
@@ -130,6 +135,29 @@ final class AppStore: ObservableObject {
         guard !isPreview, !isBusy, let transport else { return }
         enqueue({ try transport.list() }) { [weak self] in self?.applyList($0) }
     }
+    func loadAnalytics(_ query: BindingAnalyticsQuery) {
+        analyticsGeneration &+= 1
+        let requestGeneration = analyticsGeneration
+        analyticsReport = nil; analyticsUpdatedAt = nil; analyticsReadFailed = false
+        guard !isPreview else { analyticsIsLoading = false; return }
+        guard !isShuttingDown, let transport else { analyticsIsLoading = false; analyticsReadFailed = true; recordProblem("本地核心不可用", source: "读取分析记录"); return }
+        analyticsIsLoading = true
+        queue.async { [weak self] in
+            let result = Result { try transport.analyticsQuery(query) }
+            DispatchQueue.main.async {
+                guard let self, self.analyticsGeneration == requestGeneration else { return }
+                self.analyticsIsLoading = false
+                switch result {
+                case .success(let report):
+                    self.analyticsReport = report; self.analyticsUpdatedAt = Date()
+                    if let warning = report.storageWarning { self.recordProblem(TransportError.rejected(warning), source: "保存分析记录", activityKey: "analytics:storage") }
+                    else { self.clearActivityProblem("analytics:storage") }
+                case .failure(let failure): self.analyticsReadFailed = true; self.recordProblem(failure)
+                }
+            }
+        }
+    }
+    func cancelAnalyticsRead() { analyticsGeneration &+= 1; analyticsIsLoading = false }
     func setTranscriptPresentation(_ presentation: BindingTranscriptPresentation) {
         if isPreview { transcriptPresentation = presentation; return }
         guard let transport else { recordProblem("本地核心未配置"); return }

@@ -183,3 +183,13 @@ Payload Debug 脱敏正文及工具参数；观测无正文／headers／原始�
 转换器保留上游未知计量：OpenAI 响应的未知 token 字段不补零，只有已知输入和输出才计算 total。Messages 必需的数值字段在无法获知时使用协议结构占位，并记录 `usage / required_numeric_placeholder`；占位不表示实际观测到零用量，不进入网关计量事实。缺少上游 response ID 时生成请求范围的转换 ID，它不是可用于上游查询或历史状态恢复的原生 ID。
 
 本轮参考 LiteLLM 的协议转换组织方式和 Magpie 的同协议旁路边界；固定提交及具体文件见 [转换任务研究证据](../../tasks/llm-protocol-translation/packet.md)。只借鉴职责与流式状态处理，不引入其运行时、厂商策略、隐藏重试或全局配置。
+
+## 用量与性能分析契约
+
+2026-10-07 首版分析实施采用真实上游请求作为计量来源。ai-provider 根据 OpenAI ChatCompletions、Responses 和 Anthropic Messages 的原生 JSON／SSE 提取计量事实；gateway 在协议转换之前观察这些事实，关联请求与已解析的实际提供商／模型身份，再交给调用方注入的统计接收器。统计与 tracing 独立，转换为满足目标协议而补造的占位数值不能进入统计。采集不改写同协议原始响应，不重新构建 sampling，不让 gateway 读取应用目录或依赖 Agent 运行时。
+
+application 持有分析存储、查询和记录生命周期，文件位于其显式配置根目录下的 analytics.sqlite。记录保留发生时的提供商身份、名称和实际 provider model ID，因此后续删除或改名不改变历史含义；它不是会话正文数据库。采集与存储失败不替代模型业务结果，但必须能在本地诊断与分析读取状态中辨认。当前只统计启用后经过 Velune 的请求，不扫描运行时历史，也不把两种来源未经去重就相加。
+
+每项 token 数量独立保留已报告或未知状态。OpenAI 缓存读取属于输入子集，推理属于输出子集；Messages 的输入总量包含普通输入、缓存读取和缓存创建；普通输入单独保留，缓存字段缺失时总量未知，不丢弃已经报告的普通输入。流式累计 usage 覆盖已知值，不逐事件累加。聚合同时返回报告覆盖数量，未知不当作零；总量只合计输入、输出均已报告的请求，输入与输出列则各自合计已报告部分，不能在覆盖率不同时将两列直接相加当作完整总量。缓存和推理细项不再次计入总量。协议依据为 [OpenAI usage 字段](https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create) 与 [Anthropic 缓存计量](https://platform.claude.com/docs/en/build-with-claude/prompt-caching)。
+
+有效输出速率表示已报告输出 token 除以上游派发至业务终态的耗时，包含等待，不能称为纯生成速度。跨请求聚合使用同一组有效请求的输出总量与耗时总量相除，不平均每条速率。首输出延迟单列，仅流式的实际文本、推理或工具参数等语义输出可触发，HTTP headers、心跳及仅 role 的事件不算输出；非流式不推测该时间。失败或取消的已知用量仍保留，HTTP 200 或正常 EOF 不能替代业务成功判定。日期查询使用平台明确给出的本地日边界，存储时间采用UTC瞬时，不用固定24小时替代跨夏令时的自然日。费用估算、订阅余额、输出质量以及历史来源整合不由这些指标推断。
