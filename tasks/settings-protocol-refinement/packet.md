@@ -29,7 +29,7 @@ SwiftPM `--force-resolved-versions -Xswiftc -warnings-as-errors` 构建通过。
 
 后续用户线索与产品更正：用户观察当前运行时与目标历史来源不同容易失败，尚非证实根因。真实调用审计与合成 Pi→Codex 历史验证表明 open 传的是会话来源；但现有 selectedRuntimeID／selected_runtime_id 混用了历史来源、活动执行和顶部选择，并在 open／snapshot 时覆盖顶部意图。advisor 明确应拆分 ConversationSource、NextTurnSelection 与固定 execution owner。Mac／application owner 已恢复贯通修复，历史原生管理仍按来源，轮询／取消／审批仍按实际执行。跨 Harness 不可直接 resume 其它来源 ID，也不能把展示投影视为无损完整上下文。
 
-待用户范围决定：建议保留原会话，在目标运行时创建原生会话，由 adapter 交接可携带上下文，原生工具／审批状态不重放；application 只保存来源—目标引用与切换位置，不保存消息副本，使重启后逻辑会话可恢复。用户答复前不实施上下文交接与关联持久化；三状态拆分与既有八项交付继续执行。本轮安装暂未进行，不能将前面完成源码冻结的状态当作已安装。
+待用户范围决定：建议保留原会话，在目标运行时创建原生会话，由 adapter 交接可携带上下文，原生工具／审批状态不重放；application 只保存来源—目标引用与切换位置，不保存消息副本，使重启后逻辑会话可恢复。用户答复前不实施上下文交接与关联持久化；三状态拆分与既有八项交付继续执行。安装与隔离验收状态见末尾记录。
 
 后续执行意图澄清（2026-10-06，已实现并隔离验收）：顶部运行时／模型表示下一轮目标，不是历史来源。Mac 旧 selectedRuntimeID 改名 projectionRuntimeID，表示当前快照来源，用于当前 context 的快照查询、取消和审批；真实 execution owner 保留在 core，不由 Swift 的浏览状态推定；历史浏览和管理继续从 Conversation.runtimeID 取得来源。独立 nextTurnRuntimeID／nextTurnModelRecordKey 为可在生成／加载时修改的纯 draft，打开、刷新历史及当前 turn 完成不覆盖它，模型菜单按下一轮目标过滤。选择模型本身不改历史 model、不启动 child／gateway；发送捕获当次目标和模型。已选目标被停用／删除时清除意图，避免自动替换为另一执行者。
 
@@ -41,3 +41,5 @@ SwiftPM `--force-resolved-versions -Xswiftc -warnings-as-errors` 构建通过。
 集成收口补充：关闭实际执行后按原生来源恢复只读历史，不伪造 execution owner；修改来源的版本／路径／启用状态后必须重新打开历史，下一轮目标停用或删除后清空该意图。history失败日志记录 source／execution／next-turn 各自配置序号（0表示无实例），以及固定类型与安全类别，无原生ID／路径／内容。原始诊断根因仍不可从旧日志还原。
 
 安装包首轮复验：c009d05 clean release 构建并安装0.1 beta.1、schema7；实际安装库已通过 AppStore 全链（2次loopback）、Pi／DSH Messages（4次loopback）、历史 helper／bindings 分类及跨来源只读、discovery／groupLimit、source browser。discovery脚本最初将协议枚举与字符串比较，已改为具名BindingGatewayProtocol，不涉及产品修改。补充原生管理复验发现删除当前来源后getSnapshot将空状态误报未激活，现明确已知启用实例的空投影返回None，其它实例不能读取已加载内容。Codex实际API秒级时间1791272610000与原生头1791272609954跨秒边界；原生头读取正确，原脚本错误假设差值必非负，现只要求精度差小于一秒，模型marker未知与可提交显式turn的断言也按新契约分开。修正后重新构建／安装／复验，未把脚本错误当产品时间逻辑缺陷。
+
+最终安装与复验（2026-10-06）：`/Applications/Velune.app` 的 build-manifest 确认源码为 clean `6d18c2707224b8f9ca68e0519684dac9e1f20721`，版本0.1 beta.1、schema7、具名UniFFI；签名校验通过。使用安装库重新生成Python bindings后，AppStore全链验收通过（2次loopback），Pi／Codex原生重命名、删除、重开和空投影查询通过（无模型请求）；Codex／DSH原生发送、历史读取及续接、同ID跨provider精确路由、DSH跨协议续接通过（5次loopback）。最后一条旧脚本断言仍假定发送前切换已经修改执行模型，现明确发送前保留上一轮模型、sendTurn后才确认目标模型，没有因此改动产品源码。Rust静态检查及Swift严格构建通过；全部脚本采用合成会话、临时HOME、本地HTTP，不读取用户真实秘密或历史，不调用真实服务。GUI体验和真实提供商调用仍由用户验收；跨Harness实际上下文交接仍待上述范围决定。

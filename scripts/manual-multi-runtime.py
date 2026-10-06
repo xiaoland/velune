@@ -126,7 +126,7 @@ def main():
                 if family == 'deepseek':
                     before=len(captures)
                     selected=application.snapshot(family).snapshot
-                    assert len(captures)==before and selected.model_record_key==switched_saved.models[0].record_key
+                    assert len(captures)==before and selected.model_record_key==alternate_saved.models[0].record_key
                     assert selected.conversation.id==selected_snapshot.conversation.id and selected.messages
                     application.send_turn(family,switched_saved.models[0].record_key,'Continue this native session using the explicitly chosen Responses model.')
                     deadline=time.monotonic()+45
@@ -137,6 +137,7 @@ def main():
                         time.sleep(.05)
                     else: raise AssertionError('cross-protocol native resume did not settle')
                     assert captures[-1]['path'].endswith('/responses') and captures[-1]['authorization']=='Bearer synthetic-alternate'
+                    assert switched_snapshot.model_record_key==switched_saved.models[0].record_key
                     assert switched_snapshot.conversation.id==selected.conversation.id
                     cross_protocol=True
                 results[family]={'crossProtocolSelectionDefersPreparationAndResumes':cross_protocol,'actualControlAndGateway':True,'huihuaHistoryAndResume':True,'nativeIdAndCwd':True,'sameModelIdAcrossProvidersRoutesPrecisely':True}
