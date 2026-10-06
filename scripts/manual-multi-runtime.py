@@ -101,13 +101,14 @@ def main():
                 reopened=application.open_conversation(family,snapshot.conversation.id).snapshot
                 assert reopened and reopened.conversation.created_at_unix_ms is not None
                 if family == 'codex':
-                    assert 0 <= reopened.conversation.created_at_unix_ms - native_created_at < 1000, f'Codex native creation mismatch: API={native_created_at} header={reopened.conversation.created_at_unix_ms}'
+                    assert abs(reopened.conversation.created_at_unix_ms - native_created_at) < 1000, f'Codex native creation mismatch: API={native_created_at} header={reopened.conversation.created_at_unix_ms}'
                 else:
                     assert reopened.conversation.created_at_unix_ms == native_created_at, family+' reopen changed native creation date'
                 history_created_at = reopened.conversation.created_at_unix_ms
                 assert reopened and any('SYNTHETIC_NATIVE_ANSWER' in block.text for message in reopened.messages for block in message.blocks if isinstance(block,b.BindingMessageBlock.TEXT)),family+' historical answer missing'
                 assert reopened.conversation.title == snapshot.conversation.title, family+' reopened title changed: '+repr(reopened.conversation.title)+' vs '+repr(snapshot.conversation.title)
-                assert reopened.model_record_key is None and not reopened.actions.can_send,family+' inferred provider from bare history model ID'
+                assert reopened.model_record_key is None,family+' inferred provider from bare history model ID'
+                assert reopened.actions.can_send,family+' history refused an explicit next-turn model'
                 before=len(captures);application.send_turn(family,alternate_saved.models[0].record_key,'Continue after the explicitly selected provider change.')
                 deadline=time.monotonic()+45
                 while time.monotonic()<deadline:

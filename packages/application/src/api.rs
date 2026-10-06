@@ -359,6 +359,9 @@ impl Application {
             Some(&runtime_id),
         )
     }
+    /// Query the current projection in its runtime context. An enabled known
+    /// instance returns no snapshot when no conversation is loaded; a different
+    /// instance cannot query another instance's loaded conversation.
     pub fn snapshot(&mut self, runtime_id: String) -> Result<SnapshotResult, Error> {
         self.execute("getSnapshot", json!({}), Some(&runtime_id))
     }

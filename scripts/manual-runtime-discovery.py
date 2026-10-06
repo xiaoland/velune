@@ -19,7 +19,7 @@ def main():
         b = importlib.util.module_from_spec(spec); sys.modules[spec.name] = b; spec.loader.exec_module(b)
         app = b.VeluneApplication.open(b.BindingOptions(home_directory=str(home), resources_directory=str(args.resources.resolve())))
         assert app.list().conversation_browser_group_limit == 20
-        assert any(p.id == 'messagesV1' and p.supported for p in app.list().protocols)
+        assert any(p.id == b.BindingGatewayProtocol.MESSAGES_V1 and p.supported for p in app.list().protocols)
         assert app.set_conversation_browser_group_limit(7) == 7
         try: app.set_conversation_browser_group_limit(0)
         except b.BindingError: pass

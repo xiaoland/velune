@@ -220,6 +220,15 @@ impl CoreRuntime {
             "renameConversation" => self.manage_conversation(request, false),
             "deleteConversation" => self.manage_conversation(request, true),
             "getSnapshot" => {
+                if matches!(self.active_state, ActiveState::Empty) {
+                    let id = request["payload"]["runtimeInstanceID"]
+                        .as_str()
+                        .ok_or_else(|| RuntimeError::invalid("runtime instance id"))?;
+                    if !self.runtime_instance(id)?.enabled {
+                        return Err(RuntimeError::invalid("此运行时已停用"));
+                    }
+                    return Ok(json!({"snapshot":null}));
+                }
                 self.ensure_active(request)?;
                 self.sync_projection()?;
                 Ok(json!({"snapshot":self.current_snapshot()}))
