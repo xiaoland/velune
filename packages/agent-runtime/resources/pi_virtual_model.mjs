@@ -17,7 +17,7 @@ export default function (pi) {
   pi.registerCommand("velune-projection-sync", {
     description: "Project current native session metadata",
     handler: (_args, ctx) => {
-      ctx.ui.setStatus("velune.session-metadata", JSON.stringify({sessionFile:ctx.sessionManager.getSessionFile() ?? null,cwd:ctx.sessionManager.getCwd(),name:ctx.sessionManager.getSessionName() ?? null}));
+      ctx.ui.setStatus("velune.session-metadata", JSON.stringify({sessionFile:ctx.sessionManager.getSessionFile() ?? null,cwd:ctx.sessionManager.getCwd(),name:ctx.sessionManager.getSessionName() ?? null,createdUnixMs:Date.parse(ctx.sessionManager.getHeader()?.timestamp ?? "")}));
     },
   });
   const appendSelection = () => {

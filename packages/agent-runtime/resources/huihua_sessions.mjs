@@ -116,13 +116,14 @@ async function main() {
     const name = explicitName(ref)?.trim();
     const first = events.find(event => event.type === "user_message");
     const firstText = first?.type === "user_message" ? first.data.content.filter(block=>block.type === "text").map(block=>block.data).join(" ") : "";
-    return {nativeId:ref.id,title:name ? {source:"native",text:name} : firstText.trim() ? {source:"firstMessage",text:[...firstText.trim().replace(/\s+/g," ")].slice(0,80).join("")} : {source:"untitled"},updatedAtUnixMs:timestamp(ref.updatedAt),cwd:ref.workspace?.path ?? null};
+    return {nativeId:ref.id,title:name ? {source:"native",text:name} : firstText.trim() ? {source:"firstMessage",text:[...firstText.trim().replace(/\s+/g," ")].slice(0,80).join("")} : {source:"untitled"},updatedAtUnixMs:timestamp(ref.updatedAt),createdAtUnixMs:timestamp(ref.createdAt),cwd:ref.workspace?.path ?? null};
   };
   if (request.operation === "list") {
     const sessions = [];
     for (const ref of refs) {
-      if (explicitName(ref)?.trim()) sessions.push(summary(ref));
-      else { const session = await provider.read(ref); sessions.push(summary(session,presentationEvents(session.events,providerId))); }
+      // scan only knows header facts; read obtains the native last activity time.
+      const session = await provider.read(ref);
+      sessions.push(summary(session,presentationEvents(session.events,providerId)));
     }
     return {contractVersion:1,sessions};
   }

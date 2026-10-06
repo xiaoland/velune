@@ -67,7 +67,7 @@ process.stdout.write(
       id: session.id,
       cwd: session.cwd,
       name: session.name ?? null,
-      created: session.created.toISOString(),
+      createdUnixMs: session.created.getTime(),
       modifiedUnixMs: session.modified.getTime(),
       messageCount: session.messageCount,
       firstMessage: session.firstMessage,

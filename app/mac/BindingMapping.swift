@@ -6,7 +6,7 @@ import VeluneBindings
 /// models remain platform-friendly; no JSON action envelope crosses this file.
 enum BindingMapping {
     static func conversation(_ value: BindingConversationSummary) -> Conversation {
-        Conversation(id: value.id, title: value.title, updatedAtUnixMs: value.updatedAtUnixMs,
+        Conversation(id: value.id, title: value.title, updatedAtUnixMs: value.updatedAtUnixMs, createdAtUnixMs: value.createdAtUnixMs,
                      runtimeID: value.runtimeId, cwd: value.cwd)
     }
 
@@ -97,7 +97,7 @@ enum BindingMapping {
     }
 
     static func bindingRuntime(_ value: RuntimeInstance) -> BindingRuntimeInstance {
-        BindingRuntimeInstance(id: value.id, name: value.name, typeId: value.typeID, gatewayId: value.gatewayID, settings: value.settings)
+        BindingRuntimeInstance(enabled: value.enabled, id: value.id, name: value.name, typeId: value.typeID, gatewayId: value.gatewayID, settings: value.settings)
     }
 
     static func bindingSelection(_ value: ProviderImportSelection) -> BindingImportSelection {
@@ -105,7 +105,7 @@ enum BindingMapping {
     }
 
     static func runtime(_ value: BindingRuntimeInstance) -> RuntimeInstance {
-        RuntimeInstance(id: value.id, name: value.name, typeID: value.typeId,
+        RuntimeInstance(enabled: value.enabled, id: value.id, name: value.name, typeID: value.typeId,
                         gatewayID: value.gatewayId, settings: value.settings)
     }
 

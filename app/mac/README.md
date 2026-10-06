@@ -15,3 +15,5 @@ app 通过生成的 UniFFI 接口消费 application 的完整用例，不解析 
 Mac 由根目录 [Package.swift](../../Package.swift) 定义独立 SwiftPM 产品，依赖固定 MarkdownUI 2.4.1；[Package.resolved](../../Package.resolved) 锁传递依赖。build-macos 先生成 UniFFI 模块，再以 SwiftPM release／warnings-as-errors 构建原生 app，并打包 `app/mac/Licenses` 与解析锁文件。Swift 包不依赖领域 Rust 包源码，只链接对应生成绑定与库。
 
 会话上下文菜单按运行时能力提供重命名和永久删除确认。选中目标、待加载身份与已加载详情分别管理；加载时显示进度，暂停其它选择并隔离旧轮询，失败恢复原会话。操作交给生成绑定和运行时执行，不建立 Mac 标题覆盖存储。隔离验收见 [会话管理任务](../../tasks/session-management/packet.md)。
+
+侧栏浏览全部启用运行时的会话；“显示”菜单提供运行时／项目分组与显式筛选，创建／更新时间排序和方向。分组依据完整原生 CWD，不将同名目录合并；未知时间放最后。浏览选项不选择执行实例。加载只限制普通行选择，原生菜单及管理提交保持可用，并显示等待或执行状态。当前切片不提供自定义标签记录；范围见 [统一浏览任务](../../tasks/conversation-browser/packet.md)。

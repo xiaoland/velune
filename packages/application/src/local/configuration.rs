@@ -5,6 +5,9 @@ impl CoreRuntime {
         let mut conversations = Vec::new();
         let mut history_failures = Vec::new();
         for (slot, runtime) in self.runtime_instances.iter().enumerate() {
+            if !runtime.enabled {
+                continue;
+            }
             match self.summaries_for(runtime) {
                 Ok(mut summaries) => conversations.append(&mut summaries),
                 Err(_) => {
@@ -162,9 +165,11 @@ impl CoreRuntime {
                 {
                     return Err(RuntimeError::invalid("runtime instance"));
                 }
-                runtime
-                    .validate_execution_paths()
-                    .map_err(RuntimeError::invalid)?;
+                if runtime.enabled {
+                    runtime
+                        .validate_execution_paths()
+                        .map_err(RuntimeError::invalid)?;
+                }
                 if runtime.gateway_id == "default"
                     && !self.gateways.iter().any(|g| g.id == "default")
                 {
@@ -208,6 +213,15 @@ impl CoreRuntime {
         });
         if execution_invalidated {
             self.invalidate_execution()?;
+            if self.selected_runtime_id.as_ref().is_some_and(|id| {
+                self.runtime_instances
+                    .iter()
+                    .any(|runtime| &runtime.id == id && !runtime.enabled)
+            }) {
+                self.active_state = ActiveState::Empty;
+                self.selected_runtime_id = None;
+                self.model_record_key = None;
+            }
         }
         Ok(
             json!({"runtimeInstances":self.runtime_instances,"runtimeTypes":runtime_types(&self.options.resources_directory),"executionInvalidated":execution_invalidated}),

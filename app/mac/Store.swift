@@ -8,6 +8,7 @@ final class AppStore: ObservableObject {
     @Published private(set) var conversations: [Conversation] = []
     @Published private(set) var selectedConversationID: String?
     @Published private(set) var pendingConversationID: String?
+    @Published private(set) var conversationManagementStatus: String?
     @Published private(set) var selectedRuntimeID: String?
     let transcript = TranscriptModel()
     @Published private(set) var historyFailures: [HistoryFailure] = []
@@ -37,6 +38,7 @@ final class AppStore: ObservableObject {
     private var pollPending = false
     private var authenticationPollPending = false
     private var hasGateway = false
+    private var queuedConversationManagement: (() -> Void)?
     private var previewSnapshots: [String: ConversationSnapshot] = [:]
 
     init(transport: Transport? = nil, preview: Bool = false) {
@@ -50,11 +52,13 @@ final class AppStore: ObservableObject {
         if preview { seedPreview() }
     }
     var models: [ModelChoice] { gateway.providers.flatMap { provider in provider.models.map { ModelChoice(recordKey: $0.recordKey, displayName: "\($0.displayName) · \(provider.name)", protocolID: provider.protocolID) } } }
+    var enabledRuntimeInstances: [RuntimeInstance] { runtimeInstances.filter(\.enabled) }
     var providers: [AIProvider] { gateway.providers }
     var loadedConversationID: String? { snapshot?.conversation.id }
     var selectedConversationTitle: String? { conversations.first { $0.id == selectedConversationID }?.title }
     var isGenerating: Bool { snapshot?.runState == .running || snapshot?.runState == .stopping }
     var isBusy: Bool { isLoading || isGenerating || isShuttingDown || authenticationRunning }
+    var canManageConversations: Bool { !isGenerating && !authenticationRunning && !isShuttingDown && conversationManagementStatus == nil && (!isLoading || pendingConversationID != nil) }
     var canSend: Bool { !authenticationRunning && !isLoading && !isShuttingDown && (snapshot?.actions.canSend ?? false) }
     var canCancel: Bool { snapshot?.actions.canCancel ?? false }
     var canSwitchModel: Bool { snapshot != nil && !isGenerating && !isLoading && !isShuttingDown }
@@ -122,12 +126,32 @@ final class AppStore: ObservableObject {
         selectedConversationID = id
         pendingConversationID = id
         enqueue({ try transport.openConversation(runtimeID: conversation.runtimeID, conversationID: id) }, onFailure: { [weak self] _ in
-            self?.pendingConversationID = nil
             self?.selectedConversationID = previousSelection
+            self?.finishConversationLoading()
         }) { [weak self] in
             self?.applySnapshotResult($0)
-            self?.pendingConversationID = nil
+            self?.finishConversationLoading()
         }
+    }
+    private func finishConversationLoading() {
+        guard !isShuttingDown else {
+            queuedConversationManagement = nil; conversationManagementStatus = nil; pendingConversationID = nil
+            return
+        }
+        if let operation = queuedConversationManagement {
+            queuedConversationManagement = nil
+            operation()
+        } else { pendingConversationID = nil }
+    }
+    private func scheduleConversationManagement(_ action: String, operation: @escaping () -> Void) {
+        if isLoading && pendingConversationID != nil {
+            conversationManagementStatus = "会话加载完成后将\(action)"
+            queuedConversationManagement = operation
+        } else { operation() }
+    }
+    private func finishConversationManagement() {
+        conversationManagementStatus = nil
+        pendingConversationID = nil
     }
     func canRenameConversation(_ conversation: Conversation) -> Bool {
         runtimeTypes.first { $0.id == runtimeInstances.first(where: { $0.id == conversation.runtimeID })?.typeID }?.canRenameConversations == true
@@ -136,7 +160,8 @@ final class AppStore: ObservableObject {
         runtimeTypes.first { $0.id == runtimeInstances.first(where: { $0.id == conversation.runtimeID })?.typeID }?.canDeleteConversations == true
     }
     func renameConversation(_ conversation: Conversation, title: String, onRenamed: @escaping () -> Void) {
-        guard !isBusy, canRenameConversation(conversation) else { return }
+        guard canManageConversations else { error = "请等待正在进行的操作结束，再修改会话"; return }
+        guard canRenameConversation(conversation) else { error = "此运行时适配器尚未接入原生会话重命名"; return }
         let name = title.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty else { error = "会话名称不能为空"; return }
         if isPreview {
@@ -146,27 +171,38 @@ final class AppStore: ObservableObject {
             onRenamed(); return
         }
         guard let transport else { error = "本地核心未配置"; return }
-        generation += 1
-        enqueue({ try transport.renameConversation(runtimeID: conversation.runtimeID, conversationID: conversation.id, title: name) }) { [weak self] data in
+        scheduleConversationManagement("重命名“\(conversation.title)”") { [weak self] in
             guard let self else { return }
-            applyList(data)
-            if snapshot?.conversation.id == conversation.id, let renamed = conversations.first(where: { $0.id == conversation.id }) { snapshot?.conversation = renamed }
-            onRenamed()
+            generation += 1
+            conversationManagementStatus = "正在重命名“\(conversation.title)”…"
+            enqueue({ try transport.renameConversation(runtimeID: conversation.runtimeID, conversationID: conversation.id, title: name) }, onFailure: { [weak self] _ in self?.finishConversationManagement() }, preserveError: pendingConversationID != nil) { [weak self] data in
+                guard let self else { return }
+                applyList(data)
+                if snapshot?.conversation.id == conversation.id, let renamed = conversations.first(where: { $0.id == conversation.id }) { snapshot?.conversation = renamed }
+                finishConversationManagement()
+                onRenamed()
+            }
         }
     }
     func deleteConversation(_ conversation: Conversation) {
-        guard !isBusy, canDeleteConversation(conversation) else { return }
+        guard canManageConversations else { error = "请等待正在进行的操作结束，再修改会话"; return }
+        guard canDeleteConversation(conversation) else { error = "此运行时适配器尚未接入原生会话删除"; return }
         if isPreview {
             conversations.removeAll { $0.id == conversation.id }; previewSnapshots.removeValue(forKey: conversation.id)
             if loadedConversationID == conversation.id { resetProjection() }
             return
         }
         guard let transport else { error = "本地核心未配置"; return }
-        generation += 1
-        enqueue({ try transport.deleteConversation(runtimeID: conversation.runtimeID, conversationID: conversation.id) }) { [weak self] data in
+        scheduleConversationManagement("删除“\(conversation.title)”") { [weak self] in
             guard let self else { return }
-            applyList(data)
-            if loadedConversationID == conversation.id { resetProjection() }
+            generation += 1
+            conversationManagementStatus = "正在删除“\(conversation.title)”…"
+            enqueue({ try transport.deleteConversation(runtimeID: conversation.runtimeID, conversationID: conversation.id) }, onFailure: { [weak self] _ in self?.finishConversationManagement() }, preserveError: pendingConversationID != nil) { [weak self] data in
+                guard let self else { return }
+                applyList(data)
+                if loadedConversationID == conversation.id { resetProjection() }
+                finishConversationManagement()
+            }
         }
     }
     func createConversation() { showsNewConversation = true }
@@ -302,7 +338,7 @@ final class AppStore: ObservableObject {
     }
     func saveRuntimeInstance(_ instance: RuntimeInstance, onSaved: (() -> Void)? = nil) {
         guard !isGenerating else { error = "请先停止当前任务，再修改运行时实例"; return }
-        if isPreview { runtimeInstances.removeAll { $0.id == instance.id }; runtimeInstances.append(instance); onSaved?(); return }
+        if isPreview { runtimeInstances.removeAll { $0.id == instance.id }; runtimeInstances.append(instance); if !instance.enabled && selectedRuntimeID == instance.id { resetProjection(); selectedRuntimeID = nil }; onSaved?(); return }
         guard let transport else { error = "本地核心未配置"; return }
         enqueue({ try transport.upsertRuntime(BindingMapping.bindingRuntime(instance)) }) { [weak self] data in
             guard let self else { return }
@@ -332,14 +368,6 @@ final class AppStore: ObservableObject {
         guard let transport else { error = "本地核心未配置"; return }
         enqueue({ try transport.selectModel(runtimeID: runtimeID, modelRecordKey: modelRecordKey) }) { [weak self] in self?.applySnapshotResult($0) }
     }
-    func selectRuntime(id: String) {
-        guard !isLoading, !isGenerating else { return }
-        if isPreview { resetProjection(); selectedRuntimeID = id; return }
-        guard let transport else { error = "本地核心未配置"; return }
-        enqueue({ try transport.selectRuntime(id: id) }) { [weak self] data in
-            self?.resetProjection(); self?.applyList(data)
-        }
-    }
     private func refreshAfterExecutionInvalidation() {
         guard let transport else { error = "本地核心未配置"; return }
         enqueue({ try transport.list() }) { [weak self] data in
@@ -359,14 +387,6 @@ final class AppStore: ObservableObject {
         modelTemplates = mapped.modelTemplates
         providerImportTypes = mapped.importTypes
         selectedRuntimeID = mapped.selectedRuntimeID
-    }
-    private func loadConversations() {
-        guard let transport else { error = "本地核心未配置"; return }
-        enqueue({ try transport.list() }) { [weak self] data in
-            guard let self else { return }
-            applyList(data)
-            if let id = conversations.first?.id { selectConversation(id: id) }
-        }
     }
     private func apply(_ value: ConversationSnapshot?) {
         guard let value else { return }
@@ -402,11 +422,12 @@ final class AppStore: ObservableObject {
             }
         }
     }
-    private func enqueue<T: Sendable>(_ operation: @escaping () throws -> T, onAccepted: (() -> Void)? = nil, onFailure: ((Error) -> Void)? = nil, apply: @escaping (T) -> Void) {
+    private func enqueue<T: Sendable>(_ operation: @escaping () throws -> T, onAccepted: (() -> Void)? = nil, onFailure: ((Error) -> Void)? = nil, preserveError: Bool = false, apply: @escaping (T) -> Void) {
         guard !isLoading, !isShuttingDown else { error = "请等待当前操作完成后重试"; return }
         guard transport != nil else { error = "本地核心未配置"; return }
         let revision = generation
-        isLoading = true; error = nil
+        isLoading = true
+        if !preserveError { error = nil }
         queue.async { [weak self] in
             let result = Result { try operation() }
             DispatchQueue.main.async {
@@ -434,7 +455,7 @@ final class AppStore: ObservableObject {
             ["帮我把接下来的工作排一下。", "先完成可用的会话界面，再检查配置是否真正驱动运行时。最后用一个短任务验证发送、停止和会话切换。", "先从哪个环节开始？", "从会话开始：打开旧会话、发送消息、检查回复，再新建一个会话。这个路径会暴露最直接的体验问题。"]
         ]
         for index in topics.indices {
-            let conversation = Conversation(id: "sample-\(index)", title: topics[index], updatedAtUnixMs: Int64(Date().timeIntervalSince1970 * 1000) - Int64(index * 86_400_000), runtimeID: runtimeInstances[0].id, cwd: nil)
+            let conversation = Conversation(id: "sample-\(index)", title: topics[index], updatedAtUnixMs: Int64(Date().timeIntervalSince1970 * 1000) - Int64(index * 86_400_000), createdAtUnixMs: Int64(Date().timeIntervalSince1970 * 1000) - Int64((index + 3) * 86_400_000), runtimeID: runtimeInstances[index == 2 ? 1 : 0].id, cwd: index == 0 ? "/Users/example/Projects/Velune" : index == 1 ? "/Users/example/Projects/Sample" : nil)
             var history = pairs[index].enumerated().map { Message(id: "sample-\(index)-\($0.offset)", role: $0.offset.isMultiple(of: 2) ? .user : .assistant, blocks: [.text($0.element)]) }
             history[1].blocks.insert(.reasoning("先确认上下文，再选择最小的修改范围。"), at: 0)
             history[1].blocks.append(.tool(id: "sample-tool-\(index)", title: index == 1 ? "检查项目代码" : "读取工作上下文", state: .completed, output: index == 1 ? "已读取 3 个文件，未修改项目。" : "已梳理当前任务的上下文。"))

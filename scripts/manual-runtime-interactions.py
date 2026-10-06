@@ -61,7 +61,7 @@ def main():
             provider=b.BindingProviderDraft(id='synthetic',name='Synthetic',protocol=b.BindingGatewayProtocol.RESPONSES_V1,endpoint='http://127.0.0.1:9/v1',models=[model])
             application.save_provider('default',provider,b.BindingAuthenticationEdit.SET_API_KEY(value='SYNTHETIC_KEY'))
             record=application.list().gateways[0].providers[0].models[0].record_key
-            runtime=b.BindingRuntimeInstance(id='fixture',name='Synthetic',type_id='codex-0.159.3',gateway_id='default',settings={'binary':str(binary),'nodeBinary':str(args.node),'agentDir':str(root/'runtime')})
+            runtime=b.BindingRuntimeInstance(enabled=True, id='fixture',name='Synthetic',type_id='codex-0.159.3',gateway_id='default',settings={'binary':str(binary),'nodeBinary':str(args.node),'agentDir':str(root/'runtime')})
             application.upsert_runtime(runtime);application.select_runtime('fixture')
             try: application.select_model('fixture',record)
             except b.BindingError: pass

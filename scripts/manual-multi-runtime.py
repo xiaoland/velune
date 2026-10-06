@@ -74,7 +74,7 @@ def main():
                     switched_model=b.BindingProviderModel(record_key='',provider_model_id=api_id,nickname='Synthetic responses',icon=None,context_window=None,max_output_tokens=None,reasoning_levels=None,adapter_metadata_json=None)
                     switched=b.BindingProviderDraft(id='protocol-switch',name='Synthetic protocol switch',protocol=responses,endpoint=endpoint+'/alternate/v1',models=[switched_model])
                     switched_saved=next(p for g in application.save_provider('default',switched,b.BindingAuthenticationEdit.SET_API_KEY(value='synthetic-alternate')).gateways for p in g.providers if p.id=='protocol-switch')
-                runtime=b.BindingRuntimeInstance(id=family,name=family,type_id=type_id,gateway_id='default',settings={'binary':str(binary),'nodeBinary':str(args.node),'agentDir':str(agent_home)})
+                runtime=b.BindingRuntimeInstance(enabled=True, id=family,name=family,type_id=type_id,gateway_id='default',settings={'binary':str(binary),'nodeBinary':str(args.node),'agentDir':str(agent_home)})
                 application.upsert_runtime(runtime);application.select_runtime(family)
                 created=application.create_conversation(family,str(root/'project'),saved.models[0].record_key).snapshot
                 assert created and created.conversation.cwd==str(root/'project')
@@ -92,6 +92,9 @@ def main():
                 assert captures[-1]['body']['model']==api_id and captures[-1]['authorization']=='Bearer synthetic-only'
                 sessions=application.list().conversations
                 assert any(s.id==snapshot.conversation.id for s in sessions),family+' native history missing from huihua list'
+                native_summary = next(s for s in sessions if s.id == snapshot.conversation.id)
+                assert native_summary.created_at_unix_ms is not None and native_summary.created_at_unix_ms > 0, family+' native creation time missing'
+                assert native_summary.updated_at_unix_ms is not None and native_summary.updated_at_unix_ms > 0, family+' native activity time missing'
                 reopened=application.open_conversation(family,snapshot.conversation.id).snapshot
                 assert reopened and any('SYNTHETIC_NATIVE_ANSWER' in block.text for message in reopened.messages for block in message.blocks if isinstance(block,b.BindingMessageBlock.TEXT)),family+' historical answer missing'
                 assert reopened.conversation.title == snapshot.conversation.title, family+' reopened title changed: '+repr(reopened.conversation.title)+' vs '+repr(snapshot.conversation.title)
@@ -130,7 +133,7 @@ def main():
             bad_binary=root/'unsupported-runtime'
             bad_binary.write_text('#!/bin/sh\nprintf "99.0.0\\n"\n');bad_binary.chmod(0o700)
             bad_home=root/'unsupported-home';bad_home.mkdir()
-            bad=b.BindingRuntimeInstance(id='unsupported',name='Unsupported synthetic',type_id='codex-0.159.3',gateway_id='default',settings={'binary':str(bad_binary),'nodeBinary':str(args.node),'agentDir':str(bad_home)})
+            bad=b.BindingRuntimeInstance(enabled=True, id='unsupported',name='Unsupported synthetic',type_id='codex-0.159.3',gateway_id='default',settings={'binary':str(bad_binary),'nodeBinary':str(args.node),'agentDir':str(bad_home)})
             application.upsert_runtime(bad)
             try:application.create_conversation(bad.id,str(root/'project'),application.list().gateways[0].providers[0].models[0].record_key)
             except b.BindingError as error:

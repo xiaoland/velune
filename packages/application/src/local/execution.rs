@@ -13,6 +13,9 @@ impl CoreRuntime {
             .find(|item| item.id == runtime_id)
             .cloned()
             .ok_or_else(|| RuntimeError::invalid("runtime instance id"))?;
+        if !runtime.enabled {
+            return Err(RuntimeError::invalid("此运行时已停用，请先启用"));
+        }
         let gateway = self
             .gateways
             .iter()
@@ -191,6 +194,7 @@ impl CoreRuntime {
                 .unwrap_or_else(|| "active".into()),
             title: velune_conversation::ConversationTitle::Untitled,
             updated_at_unix_ms: None,
+            created_at_unix_ms: None,
             runtime_id: runtime_id.into(),
             cwd: Some(cwd.to_string_lossy().into_owned()),
         });

@@ -98,9 +98,11 @@ impl CoreRuntime {
                         {
                             return Err(Error::invalid("runtime instance"));
                         }
-                        instance
-                            .validate_execution_paths()
-                            .map_err(Error::invalid)?;
+                        if instance.enabled {
+                            instance
+                                .validate_execution_paths()
+                                .map_err(Error::invalid)?;
+                        }
                         next.runtime_instances
                             .retain(|runtime| runtime.id != instance.id);
                         next.runtime_instances.push(instance);

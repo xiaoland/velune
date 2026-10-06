@@ -312,6 +312,7 @@ impl NativeSession {
                     crate::conversation::first_user_text(&history),
                 ),
                 updated_at_unix_ms: None,
+                created_at_unix_ms: None,
                 runtime_id: runtime_id.into(),
                 cwd: Some(cwd.to_string_lossy().into_owned()),
             },

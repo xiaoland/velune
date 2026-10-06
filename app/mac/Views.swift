@@ -7,12 +7,13 @@ struct VeluneRootView: View {
     let previewEmpty: Bool
     let previewSettings: Bool
     @Environment(\.openSettings) private var openSettings
-    @State private var search = ""
+    @State private var browser = ConversationBrowser()
     @State private var draft = ""
     @State private var scrollRequest: UInt64 = 0
     @State private var renameTarget: Conversation?
     @State private var deleteTarget: Conversation?
-    private var conversations: [Conversation] { store.conversations.filter { (store.selectedRuntimeID == nil || $0.runtimeID == store.selectedRuntimeID) && (search.isEmpty || $0.title.localizedCaseInsensitiveContains(search)) } }
+    private var conversationSections: [ConversationBrowser.Section] { browser.sections(conversations: store.conversations, runtimes: store.runtimeInstances) }
+    private var projects: [String] { Array(Set(store.conversations.filter { conversation in store.enabledRuntimeInstances.contains { $0.id == conversation.runtimeID } }.compactMap(\.cwd))).sorted { $0.localizedStandardCompare($1) == .orderedAscending } }
     private var selectedRuntime: RuntimeInstance? { store.runtimeInstances.first { $0.id == store.selectedRuntimeID } }
 
     var body: some View {
@@ -25,35 +26,47 @@ struct VeluneRootView: View {
                         }
                     }
                 }
-                Section("会话") {
-                    ForEach(conversations) { conversation in
+                if conversationSections.isEmpty && !store.isLoading && !store.conversations.isEmpty {
+                    Text("没有匹配的会话").foregroundStyle(.secondary)
+                    Button("清除筛选") { browser.runtimeID = nil; browser.project = .all; browser.search = "" }
+                }
+                ForEach(conversationSections) { section in
+                  Section {
+                    ForEach(section.conversations) { conversation in
                         VStack(alignment: .leading, spacing: 3) {
                             Text(conversation.title).lineLimit(1)
-                            if let date = conversation.updatedAtUnixMs { Text(shortDate(date)).font(.caption).foregroundStyle(.secondary) }
+                            HStack(spacing: 8) {
+                                Text(rowContext(conversation)).lineLimit(1).truncationMode(.middle).help(conversation.cwd ?? "未指定项目")
+                                Spacer(minLength: 0)
+                                if let date = browser.sort.timestamp(conversation) { Text(shortDate(date)).help("\(browser.sort.title)：\(Date(timeIntervalSince1970: Double(date) / 1000).formatted())").accessibilityLabel("\(browser.sort.title)：\(shortDate(date))") }
+                            }.font(.caption).foregroundStyle(.secondary)
                         }.padding(.vertical, 3).tag(conversation.id)
+                        .selectionDisabled(store.isLoading)
                         .contextMenu {
                             Button("重命名…") { renameTarget = conversation }
-                                .disabled(store.isBusy || !store.canRenameConversation(conversation))
+                                .disabled(!store.canManageConversations || !store.canRenameConversation(conversation))
                             Button("删除…", role: .destructive) { deleteTarget = conversation }
-                                .disabled(store.isBusy || !store.canDeleteConversation(conversation))
+                                .disabled(!store.canManageConversations || !store.canDeleteConversation(conversation))
                             if !store.canRenameConversation(conversation) || !store.canDeleteConversation(conversation) {
                                 Text("此运行时适配器尚未接入原生会话管理")
                             }
                         }
                     }
+                  } header: { Text(section.title).lineLimit(1).truncationMode(.middle).help(section.title) }
                 }
             }
             .listStyle(.sidebar)
-            .searchable(text: $search, placement: .sidebar, prompt: "搜索会话")
+            .searchable(text: $browser.search, placement: .sidebar, prompt: "搜索会话")
             .navigationTitle("会话")
             .navigationSplitViewColumnWidth(min: 190, ideal: 240, max: 340)
-            .disabled(store.isGenerating || store.isLoading)
+            .disabled(store.isGenerating || store.authenticationRunning || store.isShuttingDown)
             .toolbar {
+                ToolbarItem { browserMenu }
                 ToolbarItem { Button(action: { store.createConversation() }) { Label("新建会话", systemImage: "square.and.pencil") }.help("新建会话（⌘ N）").disabled(store.isGenerating || store.isLoading) }
             }
         } detail: {
             VStack(spacing: 0) {
-                if store.pendingConversationID != nil { ProgressView("正在加载会话…").frame(maxWidth: .infinity, maxHeight: .infinity) }
+                if store.pendingConversationID != nil { ProgressView(store.conversationManagementStatus ?? "正在加载会话…").frame(maxWidth: .infinity, maxHeight: .infinity) }
                 else if previewEmpty || store.transcript.rows.isEmpty { emptyState.frame(maxWidth: .infinity, maxHeight: .infinity) }
                 else { transcript }
                 Divider()
@@ -79,6 +92,33 @@ struct VeluneRootView: View {
         }
     }
 
+    private func rowContext(_ conversation: Conversation) -> String {
+        var parts: [String] = []
+        if browser.grouping != .runtime { parts.append(store.runtimeInstances.first { $0.id == conversation.runtimeID }?.name ?? "Agent 运行时") }
+        if browser.grouping != .project, let path = conversation.cwd { parts.append(URL(fileURLWithPath: path).lastPathComponent) }
+        return parts.joined(separator: " · ")
+    }
+
+    private var browserMenu: some View {
+        Menu {
+            Picker("分组", selection: $browser.grouping) { ForEach(ConversationBrowser.Grouping.allCases) { Text($0.title).tag($0) } }
+            Picker("排序", selection: $browser.sort) { ForEach(ConversationBrowser.Sort.allCases) { Text($0.title).tag($0) } }
+            Toggle("从旧到新", isOn: $browser.oldestFirst)
+            Divider()
+            Picker("Agent 运行时", selection: $browser.runtimeID) {
+                Text("所有运行时").tag(Optional<String>.none)
+                ForEach(store.enabledRuntimeInstances) { Text($0.name).tag(Optional($0.id)) }
+            }
+            Picker("项目", selection: $browser.project) {
+                Text("所有项目").tag(ConversationBrowser.ProjectFilter.all)
+                Text("未指定项目").tag(ConversationBrowser.ProjectFilter.unspecified)
+                ForEach(projects, id: \.self) { path in Text(path).tag(ConversationBrowser.ProjectFilter.path(path)) }
+            }
+            if browser.hasFilters { Divider(); Button("清除筛选") { browser.runtimeID = nil; browser.project = .all } }
+        } label: { Label("显示", systemImage: browser.hasFilters ? "line.3.horizontal.decrease.circle.fill" : "line.3.horizontal.decrease") }
+        .help("会话分组、筛选与排序")
+    }
+
     @ToolbarContentBuilder private var conversationToolbar: some ToolbarContent {
         ToolbarItemGroup(placement: .primaryAction) {
             Menu {
@@ -90,8 +130,7 @@ struct VeluneRootView: View {
             .help("选择模型（当前：\(store.selectedModelName ?? "未选择")）")
             .disabled(!store.canSwitchModel)
             Menu {
-                ForEach(store.runtimeInstances) { runtime in Button(runtime.name) { store.selectRuntime(id: runtime.id) } }
-                Divider()
+                if let selectedRuntime, let type = store.runtimeTypes.first(where: { $0.id == selectedRuntime.typeID }) { Text(type.name) }
                 SettingsLink { Text("Agent 运行时设置…") }
             } label: { Label(selectedRuntime?.name ?? "Agent 运行时", systemImage: "desktopcomputer").labelStyle(.titleAndIcon) }
             .accessibilityLabel("Agent 运行时：\(selectedRuntime?.name ?? "未选择")")
@@ -117,6 +156,9 @@ struct VeluneRootView: View {
 
     private var composer: some View {
         VStack(alignment: .leading, spacing: 8) {
+            if store.pendingConversationID == nil, let status = store.conversationManagementStatus {
+                HStack { ProgressView().controlSize(.small); Text(status) }.font(.callout).foregroundStyle(.secondary)
+            }
             if store.needsModelSelection {
                 Text("此会话的模型当前不可用，请选择已配置的模型。").font(.callout).foregroundStyle(.secondary)
             }
@@ -152,14 +194,15 @@ struct ConversationRenameView: View {
         VStack(alignment: .leading, spacing: 16) {
             Text("重命名会话").font(.headline)
             TextField("会话名称", text: $title).focused($titleFocused).onSubmit(rename)
-                .disabled(store.isLoading)
+                .disabled(store.conversationManagementStatus != nil)
+            if let status = store.conversationManagementStatus { Text(status).font(.callout).foregroundStyle(.secondary) }
             if let error = store.error { Label(error, systemImage: "exclamationmark.triangle").font(.callout).foregroundStyle(.secondary) }
             HStack {
-                if store.isLoading { ProgressView().controlSize(.small) }
+                if store.conversationManagementStatus != nil { ProgressView().controlSize(.small) }
                 Spacer()
-                Button("取消") { dismiss() }.keyboardShortcut(.cancelAction).disabled(store.isLoading)
+                Button("取消") { dismiss() }.keyboardShortcut(.cancelAction).disabled(store.conversationManagementStatus != nil)
                 Button("重命名", action: rename).keyboardShortcut(.defaultAction)
-                    .disabled(store.isBusy || title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .disabled(!store.canManageConversations || title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
         }.padding(20).frame(width: 360).onAppear { titleFocused = true }
     }
@@ -553,7 +596,7 @@ struct RuntimeSettingsView: View {
         VStack(spacing: 0) {
             List(selection: $selectedID) {
                 ForEach(store.runtimeInstances) { instance in
-                    VStack(alignment: .leading, spacing: 3) { Text(instance.name); Text(store.runtimeTypes.first { $0.id == instance.typeID }?.name ?? instance.typeID).font(.caption).foregroundStyle(.secondary) }.tag(instance.id).contextMenu { Button("编辑…") { editor = instance }; Button("删除…") { deleting = instance } }
+                    VStack(alignment: .leading, spacing: 3) { HStack { Text(instance.name); if !instance.enabled { Text("已停用").foregroundStyle(.secondary) } }; Text(store.runtimeTypes.first { $0.id == instance.typeID }?.name ?? instance.typeID).font(.caption).foregroundStyle(.secondary) }.tag(instance.id).contextMenu { Button("编辑…") { editor = instance }; Button(instance.enabled ? "停用" : "启用") { var updated = instance; updated.enabled.toggle(); store.saveRuntimeInstance(updated) }.disabled(store.isBusy); Button("删除…") { deleting = instance } }
                 }
             }.listStyle(.bordered).padding(.horizontal, 20).padding(.top, 16)
             HStack {
@@ -579,6 +622,7 @@ struct RuntimeEditor: View {
     let save: (RuntimeInstance, (() -> Void)?) -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var name = ""
+    @State private var enabled = true
     @State private var typeID = ""
     @State private var settings: [String: String] = [:]
     @State private var draftID = UUID().uuidString
@@ -586,12 +630,12 @@ struct RuntimeEditor: View {
     @State private var executableDiscoveryRunning = false
     @State private var executableDiscoveryMessage: String?
     private var descriptor: RuntimeTypeDescriptor? { types.first { $0.id == typeID } }
-    private var valid: Bool { !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && descriptor != nil && (descriptor?.fields.allSatisfy { field in
+    private var valid: Bool { !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && descriptor != nil && (!enabled || (descriptor?.fields.allSatisfy { field in
         let value = settings[field.key] ?? field.value
         return (!field.required || !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) && MacPath.isValid(value, field: field)
-    } ?? false) }
+    } ?? false)) }
     private var pathValidationMessage: String? {
-        guard let field = descriptor?.fields.first(where: { !MacPath.isValid(settings[$0.key] ?? $0.value, field: $0) }) else { return nil }
+        guard enabled, let field = descriptor?.fields.first(where: { !MacPath.isValid(settings[$0.key] ?? $0.value, field: $0) }) else { return nil }
         return "「\(field.label)」必须是绝对路径；可使用 ~/ 开头，保存时会展开。"
     }
     var body: some View {
@@ -600,6 +644,7 @@ struct RuntimeEditor: View {
             Form {
                 Section {
                     TextField("实例名称", text: $name)
+                    Toggle("启用此运行时", isOn: $enabled).help("停用后不读取其历史，也不创建或执行新任务；原生会话数据保留。")
                     Picker("类型", selection: $typeID) { ForEach(types) { type in Text(type.name).tag(type.id) } }.disabled(instance != nil)
                 }
                 if let descriptor {
@@ -625,6 +670,7 @@ struct RuntimeEditor: View {
         }.frame(width: 590, height: 540)
         .onAppear {
             name = instance?.name ?? ""
+            enabled = instance?.enabled ?? true
             typeID = instance?.typeID ?? types.first?.id ?? ""
             settings = instance?.settings ?? [:]
             if let descriptor {
@@ -674,7 +720,7 @@ struct RuntimeEditor: View {
         for field in descriptor.fields {
             values[field.key] = MacPath.normalized(settings[field.key] ?? field.value, field: field)
         }
-        save(RuntimeInstance(id: instance?.id ?? draftID, name: name.trimmingCharacters(in: .whitespacesAndNewlines), typeID: typeID, gatewayID: instance?.gatewayID ?? gatewayID, settings: values)) { dismiss() }
+        save(RuntimeInstance(enabled: enabled, id: instance?.id ?? draftID, name: name.trimmingCharacters(in: .whitespacesAndNewlines), typeID: typeID, gatewayID: instance?.gatewayID ?? gatewayID, settings: values)) { dismiss() }
     }
 }
 
@@ -807,14 +853,14 @@ struct NewConversationView: View {
     @State private var modelRecordKey: String?
     @State private var cwd = ""
     private var compatibleModels: [ModelChoice] {
-        guard let runtime = store.runtimeInstances.first(where: { $0.id == runtimeID }), let type = store.runtimeTypes.first(where: { $0.id == runtime.typeID }) else { return [] }
+        guard let runtime = store.enabledRuntimeInstances.first(where: { $0.id == runtimeID }), let type = store.runtimeTypes.first(where: { $0.id == runtime.typeID }) else { return [] }
         return store.models.filter { type.supportedProtocols.contains($0.protocolID) }
     }
     var body: some View {
         VStack(spacing: 0) {
             Text("新建会话").font(.headline).frame(maxWidth: .infinity, alignment: .leading).padding(20)
             Form {
-                Picker("Agent 运行时", selection: $runtimeID) { ForEach(store.runtimeInstances) { Text($0.name).tag($0.id) } }
+                Picker("Agent 运行时", selection: $runtimeID) { ForEach(store.enabledRuntimeInstances) { Text($0.name).tag($0.id) } }
                 Picker("模型", selection: $modelRecordKey) {
                     Text("选择会话模型").tag(Optional<String>.none)
                     ForEach(compatibleModels) { Text($0.displayName).tag(Optional($0.recordKey)) }
@@ -822,7 +868,7 @@ struct NewConversationView: View {
                 LabeledContent("工作目录") {
                     HStack { TextField("项目目录", text: $cwd); Button("选择…") { chooseDirectory() } }
                 }
-                if store.runtimeInstances.isEmpty {
+                if store.enabledRuntimeInstances.isEmpty {
                     Text("请先添加 Agent 运行时实例。").foregroundStyle(.secondary)
                     SettingsLink { Text("打开运行时设置") }
                 } else if compatibleModels.isEmpty {
@@ -839,7 +885,7 @@ struct NewConversationView: View {
                 }.keyboardShortcut(.defaultAction).disabled(runtimeID.isEmpty || modelRecordKey == nil || cwd.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || store.isBusy)
             }.padding(16)
         }.frame(width: 480, height: 310)
-        .onAppear { runtimeID = store.selectedRuntimeID ?? store.runtimeInstances.first?.id ?? "" }
+        .onAppear { runtimeID = store.enabledRuntimeInstances.first(where: { $0.id == store.selectedRuntimeID })?.id ?? store.enabledRuntimeInstances.first?.id ?? "" }
         .onChange(of: runtimeID) { _, _ in modelRecordKey = nil }
     }
     private func chooseDirectory() {

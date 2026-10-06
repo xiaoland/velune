@@ -221,6 +221,12 @@ Mac 使用 `OSLog.Logger`，subsystem 为 `local.velune`；系统 Console 可按
 
 会话侧栏的上下文菜单提供原生重命名与删除；删除有永久删除确认。能力由所选版本化运行时描述，Pi 1.0.2 和 Codex 0.159.3 已接入，DSH 当前 ACP adapter 尚未接入。管理不要求模型、AI 认证或网关准备，但执行中不可操作。名称与删除结果写运行时来源并重新读取，不维护 Velune 本地覆盖。
 
-会话加载时立即选中目标、详情显示进度；加载期间暂停其它选择，失败恢复原会话与内容。已加载与待加载身份独立，旧轮询按 generation 丢弃。实施与验收入口见 [任务](../tasks/session-management/packet.md)。
+会话加载时立即选中目标、详情显示进度；加载期间仅暂停其它行选择，菜单和重命名／删除提交可用。管理请求等待当前读取完成后按顺序执行并反馈状态，失败恢复明确的会话与内容关系。已加载与待加载身份独立，旧轮询按 generation 丢弃。实施与验收入口见 [任务](../tasks/session-management/packet.md)。
 
 隔离手工入口为 `scripts/manual-session-management.py`（传入匹配的 `--bundle`、`--bindings`、`--node`、`--codex`）与 `scripts/manual-session-loading.py`（`--bundle`、`--node`，需要同源码 SwiftPM 构建产物，可用 `--swift-build` 指定）。前者在临时 HOME 修改 Pi／Codex 的合成原生历史；后者编译实际 AppStore／Transport，以延迟 helper 驱动真实 UniFFI 读取，验证旧轮询、加载成功和失败恢复。两者不进入 CI，不读取既有会话或调用真实模型。
+
+## 跨运行时会话浏览
+
+列表统一汇总全部启用实例；运行时设置提供启用开关，禁用保留配置与原生数据，重新启用恢复历史。侧栏“显示”菜单负责分组、筛选和创建／更新时间排序，详情工具栏只表示当前会话的执行归属。筛选或分组不切换会话。未知时间不推测，项目以完整 CWD 分组。label／section 是用户提供的组织方式例子，本轮不接入自定义分类；未来应独立保存 Velune 组织记录。
+
+加载中可打开菜单、输入重命名并提交或确认删除，管理请求等待当前读取完成，再执行原生操作。显示等待／执行状态，加载失败不会丢弃已接受的管理请求，删除加载目标后不被旧快照重新插入。实施与验收见 [统一浏览任务](../tasks/conversation-browser/packet.md)。

@@ -28,6 +28,7 @@ struct Summary {
     title: ConversationTitle,
     cwd: Option<String>,
     updated_at_unix_ms: Option<i64>,
+    created_at_unix_ms: Option<i64>,
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -74,6 +75,7 @@ pub fn list(config: &HistoryConfig, runtime_id: &str) -> Result<Vec<Conversation
             id: format!("{runtime_id}:{}", s.native_id),
             title: s.title,
             updated_at_unix_ms: s.updated_at_unix_ms,
+            created_at_unix_ms: s.created_at_unix_ms,
             runtime_id: runtime_id.into(),
             cwd: s.cwd,
         })

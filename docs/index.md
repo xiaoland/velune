@@ -15,6 +15,8 @@
 
 ## 当前工作
 
+- [跨运行时统一会话浏览](../tasks/conversation-browser/packet.md)：全启用实例、项目与标签分组筛选、创建／更新时间排序
+
 - [原生会话管理与切换加载](../tasks/session-management/packet.md)：真实重命名／删除、加载目标与已加载内容隔离
 
 - [运行时与会话配置体验复核](../tasks/runtime-session-experience/packet.md)：会话模型与自动执行准备、独立历史浏览、公开目录模板和原生菜单修复

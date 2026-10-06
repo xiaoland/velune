@@ -10,6 +10,7 @@ pub struct BindingConversationSummary {
     pub title: String,
     /// Unix epoch milliseconds; None means the source did not provide a timestamp.
     pub updated_at_unix_ms: Option<i64>,
+    pub created_at_unix_ms: Option<i64>,
     pub runtime_id: String,
     pub cwd: Option<String>,
 }
@@ -207,6 +208,7 @@ pub struct BindingGatewayConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct BindingRuntimeInstance {
+    pub enabled: bool,
     pub id: String,
     pub name: String,
     pub type_id: String,

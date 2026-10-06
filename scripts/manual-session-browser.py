@@ -79,7 +79,7 @@ def main():
             spec.loader.exec_module(b)
             application = b.VeluneApplication.open(b.BindingOptions(
                 home_directory=str(root / 'home'), resources_directory=str(resources)))
-            runtime = b.BindingRuntimeInstance(id='fixture', name='Synthetic Pi',
+            runtime = b.BindingRuntimeInstance(enabled=True, id='fixture', name='Synthetic Pi',
                 type_id='pi-1.0.2', gateway_id='default', settings={
                     'binary': str(binary), 'nodeBinary': str(args.node),
                     'agentDir': str(root / 'runtime')})
@@ -94,6 +94,11 @@ def main():
                                     if s.id == 'fixture:' + str(placeholder_named_history))
             assert placeholder_item.title == '未命名会话'
             assert item.updated_at_unix_ms is not None and item.updated_at_unix_ms > 0
+            assert item.created_at_unix_ms is not None and item.created_at_unix_ms > 0
+            other = b.BindingRuntimeInstance(enabled=True, id='other', name='Other Pi',
+                type_id='pi-1.0.2', gateway_id='default', settings=dict(runtime.settings, agentDir=str(root / 'foreign')))
+            application.upsert_runtime(other)
+            assert any(s.runtime_id == 'other' for s in application.list().conversations)
             selected = application.select_runtime('fixture')
             assert selected.selected_runtime_instance_id == 'fixture'
             named_opened = application.open_conversation('fixture', placeholder_item.id).snapshot
@@ -149,7 +154,7 @@ def main():
             current = application.snapshot('fixture').snapshot
             assert current.conversation.id == item.id and current.model_record_key == key
             assert current.messages == chosen.messages
-            bad = b.BindingRuntimeInstance(id='unreadable', name='Synthetic broken source',
+            bad = b.BindingRuntimeInstance(enabled=True, id='unreadable', name='Synthetic broken source',
                 type_id='pi-1.0.2', gateway_id='default', settings={
                     'binary': str(binary), 'nodeBinary': str(root / 'missing-node'),
                     'agentDir': str(root / 'foreign')})
@@ -157,6 +162,30 @@ def main():
             listed = application.list()
             assert any(s.id == item.id for s in listed.conversations)
             assert any(error.runtime_id == 'unreadable' for error in listed.history_failures)
+            # Disable an invalid source without probing its missing Node; retain its configuration.
+            bad.enabled = False
+            application.upsert_runtime(bad)
+            assert not any(e.runtime_id == 'unreadable' for e in application.list().history_failures)
+            runtime.enabled = False
+            application.upsert_runtime(runtime)
+            disabled = application.list()
+            assert not any(s.runtime_id == 'fixture' for s in disabled.conversations)
+            assert any(s.runtime_id == 'other' for s in disabled.conversations)
+            assert disabled.selected_runtime_instance_id is None
+            rejected(lambda: application.open_conversation('fixture', item.id))
+            rejected(lambda: application.create_conversation('fixture', str(root / 'project'), key))
+            runtime.enabled = True
+            application.upsert_runtime(runtime)
+            assert any(s.id == item.id for s in application.list().conversations)
+            application.shutdown()
+            application = None
+            config_path = root / 'home/generic-config.json'
+            legacy = json.loads(config_path.read_text())
+            for stored in legacy['runtimeInstances']: stored.pop('enabled', None)
+            config_path.write_text(json.dumps(legacy))
+            application = b.VeluneApplication.open(b.BindingOptions(home_directory=str(root / 'home'), resources_directory=str(resources)))
+            assert all(r.enabled for r in application.list().runtime_instances)
+            assert any(s.id == item.id for s in application.list().conversations)
             assert history.read_bytes() == original
             assert named_history.read_bytes() == named_original
             assert placeholder_named_history.read_bytes() == placeholder_named_original
@@ -171,7 +200,8 @@ def main():
                 'modelSelectionDoesNotPrepareExecution': True,
                 'foreignHistoryRejected': True,
                 'preparationFailurePreservesHistoryAndChoice': True,
-                'isolatedHistoryFailures': True, 'originalHistoryUnchanged': True,
+                'enabledSourcesAndDefaultPreserveSchema7': True,
+                'nativeCreatedAndUpdatedDates': True, 'isolatedHistoryFailures': True, 'originalHistoryUnchanged': True,
                 'realServicesCalled': False}))
         finally:
             if application is not None:

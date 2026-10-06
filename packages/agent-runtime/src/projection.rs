@@ -201,6 +201,7 @@ impl PiProjection {
                         format!("{}:{path}", snapshot.conversation.runtime_id);
                 }
                 snapshot.conversation.cwd = metadata["cwd"].as_str().map(str::to_owned);
+                snapshot.conversation.created_at_unix_ms = metadata["createdUnixMs"].as_i64();
                 snapshot.conversation.title =
                     crate::conversation::conversation_title(metadata["name"].as_str(), None);
                 self.history_synchronized = false;

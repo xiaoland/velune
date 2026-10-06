@@ -4,9 +4,10 @@ struct Conversation: Codable, Sendable, Identifiable, Equatable {
     let id: String
     var title: String
     var updatedAtUnixMs: Int64?
+    var createdAtUnixMs: Int64? = nil
     var runtimeID: String
     var cwd: String?
-    enum CodingKeys: String, CodingKey { case id, title, updatedAtUnixMs, cwd; case runtimeID = "runtimeId" }
+    enum CodingKeys: String, CodingKey { case id, title, updatedAtUnixMs, createdAtUnixMs, cwd; case runtimeID = "runtimeId" }
 }
 
 enum RunState: String, Codable {
@@ -122,12 +123,13 @@ struct GatewayConfig: Codable, Sendable, Equatable {
 }
 
 struct RuntimeInstance: Codable, Sendable, Identifiable, Equatable {
+    var enabled: Bool = true
     var id: String
     var name: String
     var typeID: String
     var gatewayID: String
     var settings: [String: String]
-    enum CodingKeys: String, CodingKey { case id, name, settings; case typeID = "typeId"; case gatewayID = "gatewayId" }
+    enum CodingKeys: String, CodingKey { case enabled, id, name, settings; case typeID = "typeId"; case gatewayID = "gatewayId" }
 }
 
 struct RuntimeTypeDescriptor: Codable, Sendable, Identifiable, Equatable {

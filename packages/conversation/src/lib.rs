@@ -32,6 +32,8 @@ pub struct ConversationSummary {
     pub title: ConversationTitle,
     /// Unix epoch milliseconds; None means the source did not provide a timestamp.
     pub updated_at_unix_ms: Option<i64>,
+    /// Native creation time, when available; never inferred from modification time.
+    pub created_at_unix_ms: Option<i64>,
     pub runtime_id: String,
     #[serde(default)]
     pub cwd: Option<String>,

@@ -110,7 +110,7 @@ def main():
             spec.loader.exec_module(bindings)
             application = bindings.VeluneApplication.open(bindings.BindingOptions(
                 home_directory=str(root / 'home'), resources_directory=str(resources)))
-            runtime = bindings.BindingRuntimeInstance(
+            runtime = bindings.BindingRuntimeInstance(enabled=True,
                 id='fixture-runtime', name='Synthetic Pi', type_id='pi-1.0.2', gateway_id='default',
                 settings={'agentDir': str(root / 'source'), 'nodeBinary': str(args.node),
                           'binary': str(resources / 'node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js')})

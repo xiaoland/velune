@@ -51,7 +51,7 @@ def main():
             assert not any('backup' in p.name or p.suffix == '.bak' for p in home.iterdir())
             runtime_home = root / 'synthetic-pi'
             runtime_home.mkdir()
-            application.upsert_runtime(b.BindingRuntimeInstance(id='inactive', name='Synthetic inactive runtime',
+            application.upsert_runtime(b.BindingRuntimeInstance(enabled=True, id='inactive', name='Synthetic inactive runtime',
                 type_id='pi-1.0.2', gateway_id='default',
                 settings={'agentDir': str(runtime_home), 'nodeBinary': '/usr/bin/false', 'binary': '/usr/bin/false'}))
             assert application.list().gateways[0].id == 'default'

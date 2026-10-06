@@ -39,3 +39,13 @@ clean 源码 `73dddf0e44924b5b4940c5de243564ea3510cc48` 已 release 构建并安
 root 从安装实际 Rust dylib 重新生成 Python 绑定，安装包复验 `manual-session-management.py`、`manual-session-loading.py`、`manual-pi-native-loop.py`、`manual-session-browser.py`、`manual-runtime-interactions.py` 全部通过。管理为真实固定 Pi SDK／Codex app-server，零模型请求；Pi 工具续轮及草稿落盘为六次本机 loopback 请求。加载脚本使用 release SwiftPM 对象、实际 AppStore／Transport 与安装库，证明慢装载期间目标选择稳定、旧 poll 不回跳、失败只恢复一次、原消息行身份保留。审批和执行期间修改拒绝、来源外路径与符号链接拒绝、删除失败保留视图均通过。未读取真实凭据、配置或会话，不调用真实模型。
 
 开发方实施、静态检查、构建、安装和隔离验收完成。DSH 当前 ACP adapter 会话管理明确不可用，公开标题服务需要额外装配，删除无已核实公开接口；未以本地隐藏或覆盖冒充完成。原生菜单、加载进度及交互手感由用户进行 GUI 验收。
+
+## 加载中管理操作可用（继续实施）
+
+用户进一步明确加载会话时 context menu 与相关操作不应禁用。现实现整 List.disabled(isLoading) 和菜单／Store.isBusy 均阻挡；单去掉视图 disabled 不足，enqueue 仍拒绝且可能与 open 结果互相覆盖。稳定源码 owner 继续负责 Mac 与隔离脚本，root 维护文档、独立验收、安装。
+
+目标为加载中菜单与原生管理可提交，显式表达排队／执行状态并安排请求顺序，保持当前和待加载身份一致。删除加载目标不能被迟到 open 再插入，改名不能被旧 snapshot 覆盖；失败保留可解释的会话状态。真实执行／关闭／认证安全边界不放宽，不建立通用调度框架或本地标题覆盖。验证扩展实际 AppStore 慢 helper 路径，静态及clean安装按既有原则。
+
+同轮用户追加跨运行时统一列表、分组筛选和时间排序；由相同源码owner继续，独立需求与证据见 [统一浏览任务](../conversation-browser/packet.md)。加载中管理修复仍属当前必要实施。
+
+加载中菜单局部隔离验收已通过：移除 List 的 loading disabled，row 使用 macOS14 原生 selectionDisabled 保留菜单；重命名可输入／提交，删除可确认。专用待处理管理动作接在 open 主线程完成后，显示等待／执行状态，不建立通用调度器。实际 AppStore／Transport／Pi 合成脚本覆盖 pending 目标改名、原 loaded 改名／删除、加载失败后管理、pending 目标删除不被旧结果插回、native 删除失败保留 loaded。SwiftPM debug warnings-as-errors 通过，零模型请求。本轮继续统一浏览器，不安装这个局部中间版本。

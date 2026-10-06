@@ -190,3 +190,9 @@ S17 实施授权：用户决定全面切换 UniFFI，并要求现在开始拆分
 2026-10-06 用户反馈标题被 JSONL 文件名替代、时间未格式化、消息未到底部，以及气泡／对齐／Markdown／长列表性能问题；同时确认内部应有权威会话模型，UI 条目可拆分。产品展示意图归 PRD，具体模型和实现证据归 [展示任务](../tasks/conversation-presentation/packet.md)。
 
 2026-10-06 用户要求删除、重命名真实运行时会话，明确不在 Velune 内覆盖；反馈切换时目标选中→原会话选中→目标选中的回跳，要求考虑加载时延。产品意图归 PRD，执行见 [会话管理任务](../tasks/session-management/packet.md)。
+
+2026-10-06 用户要求会话列表 context menu 及相关操作在会话加载中保持可用；这修订此前加载时整侧栏禁用的交互选择，原生持久数据与迟到结果隔离要求继续适用。实施归 [会话管理任务](../tasks/session-management/packet.md)。
+
+2026-10-06 用户追加统一会话浏览需求：单列表包含所有启用 Agent Runtime，支持 Runtime、CWD project、label／section 分组筛选及创建／更新时间排序，不按执行运行时分别显示列表。懒加载／分页允许，标签来源正澄清。归 [统一浏览任务](../tasks/conversation-browser/packet.md)。
+
+同轮用户澄清 label／section 只是例子，非所有运行时均支持，Codex section 聚合 project；未来自定义 tag／label／section 应由 Velune 独立持久化组织记录。本轮先实现 runtime／project 分组筛选与时间排序，不引入标签 CRUD。

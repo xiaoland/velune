@@ -77,6 +77,8 @@ pub struct GatewayConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RuntimeInstance {
+    #[serde(default = "runtime_enabled_by_default")]
+    pub enabled: bool,
     pub id: String,
     pub name: String,
     pub type_id: String,
@@ -95,6 +97,10 @@ pub struct RuntimeTypeDescriptor {
     pub supported_protocols: Vec<GatewayProtocol>,
     pub name: String,
     pub fields: Vec<crate::conversation::SettingField>,
+}
+
+fn runtime_enabled_by_default() -> bool {
+    true
 }
 
 impl RuntimeInstance {

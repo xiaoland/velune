@@ -9,6 +9,9 @@ impl CoreRuntime {
             .as_str()
             .ok_or_else(|| RuntimeError::invalid("runtime instance id"))?;
         let runtime = self.runtime_instance(runtime_id)?.clone();
+        if !runtime.enabled {
+            return Err(RuntimeError::invalid("此运行时已停用，请先启用"));
+        }
         let cwd = request["payload"]["cwd"]
             .as_str()
             .map(PathBuf::from)
@@ -22,6 +25,7 @@ impl CoreRuntime {
             id: "new".into(),
             title: velune_conversation::ConversationTitle::Untitled,
             updated_at_unix_ms: None,
+            created_at_unix_ms: None,
             runtime_id: runtime_id.into(),
             cwd: Some(cwd.to_string_lossy().into_owned()),
         })
@@ -68,6 +72,9 @@ impl CoreRuntime {
             .as_str()
             .ok_or_else(|| RuntimeError::invalid("conversation id"))?;
         let runtime = self.runtime_instance(runtime_id)?.clone();
+        if !runtime.enabled {
+            return Err(RuntimeError::invalid("此运行时已停用，请先启用"));
+        }
         let variant = velune_agent_runtime::version::variant(&runtime.type_id)
             .ok_or_else(|| RuntimeError::invalid("runtime type"))?;
         if (deleting && !variant.can_delete_conversations)
@@ -478,6 +485,10 @@ impl CoreRuntime {
                         state["data"]["sessionName"].as_str(),
                         None,
                     ),
+                    created_at_unix_ms: projection
+                        .snapshot
+                        .as_ref()
+                        .and_then(|s| s.conversation.created_at_unix_ms),
                     updated_at_unix_ms: projection
                         .snapshot
                         .as_ref()

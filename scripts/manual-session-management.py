@@ -74,7 +74,7 @@ console.log(manager.getSessionFile());
                 ('pi', 'pi-1.0.2', resources / 'node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js', [(str(path), path) for path in pi_paths]),
                 ('codex', 'codex-0.159.3', args.codex, codex_items)
             ]:
-                application.upsert_runtime(b.BindingRuntimeInstance(id=family, name=family, type_id=type_id, gateway_id='default', settings={'binary':str(binary),'nodeBinary':str(args.node),'agentDir':str(root / family)}))
+                application.upsert_runtime(b.BindingRuntimeInstance(enabled=True, id=family, name=family, type_id=type_id, gateway_id='default', settings={'binary':str(binary),'nodeBinary':str(args.node),'agentDir':str(root / family)}))
                 application.select_runtime(family)
                 descriptor = next(item for item in application.list().runtime_types if item.id == type_id)
                 assert descriptor.can_rename_conversations and descriptor.can_delete_conversations
@@ -132,7 +132,7 @@ console.log(manager.getSessionFile());
                 reports.append(family)
             dsh = next(item for item in application.list().runtime_types if item.id == 'dsh-acp-0.2.0-rc.2')
             assert not dsh.can_rename_conversations and not dsh.can_delete_conversations
-            application.upsert_runtime(b.BindingRuntimeInstance(id='deepseek',name='deepseek',type_id=dsh.id,gateway_id='default',settings={'binary':str(root / 'unstarted-dsh'),'nodeBinary':str(args.node),'agentDir':str(root / 'dsh')}))
+            application.upsert_runtime(b.BindingRuntimeInstance(enabled=True, id='deepseek',name='deepseek',type_id=dsh.id,gateway_id='default',settings={'binary':str(root / 'unstarted-dsh'),'nodeBinary':str(args.node),'agentDir':str(root / 'dsh')}))
             rejected(lambda: application.rename_conversation('deepseek','deepseek:synthetic','DO_NOT_WRITE'))
             rejected(lambda: application.delete_conversation('deepseek','deepseek:synthetic'))
             print(json.dumps({'nativeMutationVerified':reports,'dshNativeMutationExposed':False,'foreignAndSymlinkRejected':True,'nativeIDsPreservedOnRename':True,'reopenedNamesPersist':True,'upstreamRequests':0},ensure_ascii=False))

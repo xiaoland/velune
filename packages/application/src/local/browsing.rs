@@ -15,7 +15,9 @@ impl CoreRuntime {
         let id = request["payload"]["runtimeInstanceID"]
             .as_str()
             .ok_or_else(|| RuntimeError::invalid("runtime instance id"))?;
-        self.runtime_instance(id)?;
+        if !self.runtime_instance(id)?.enabled {
+            return Err(RuntimeError::invalid("此运行时已停用，请先启用"));
+        }
         if self.selected_runtime_id.as_deref() != Some(id) {
             self.invalidate_execution()?;
             self.active_state = ActiveState::Empty;
@@ -71,6 +73,7 @@ impl CoreRuntime {
                         item["firstMessage"].as_str(),
                     ),
                     updated_at_unix_ms: item["modifiedUnixMs"].as_i64(),
+                    created_at_unix_ms: item["createdUnixMs"].as_i64(),
                     runtime_id: runtime.id.clone(),
                     cwd: item["cwd"].as_str().map(str::to_owned),
                 })
@@ -105,6 +108,9 @@ impl CoreRuntime {
         id: &str,
     ) -> Result<ConversationSnapshot, RuntimeError> {
         let runtime = self.runtime_instance(runtime_id)?;
+        if !runtime.enabled {
+            return Err(RuntimeError::invalid("此运行时已停用，请先启用"));
+        }
         let native_id = id
             .strip_prefix(&format!("{runtime_id}:"))
             .filter(|s| !s.is_empty())
