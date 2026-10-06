@@ -19,6 +19,7 @@ pub enum BindingFailureKind {
     Unsupported,
     Io,
     Contract,
+    History,
     Closed,
     Unavailable,
     ProviderImport,
@@ -61,6 +62,14 @@ impl From<Error> for BindingError {
             Error::ProviderImport(error) => Self::Diagnostic {
                 kind: BindingFailureKind::ProviderImport,
                 detail: error.message().into(),
+                code: error.code().into(),
+                phase: error.phase().into(),
+                operation_id: String::new(),
+            },
+            #[cfg(feature = "local-runtime")]
+            Error::History(error) => Self::Diagnostic {
+                kind: BindingFailureKind::History,
+                detail: error.safe_message(),
                 code: error.code().into(),
                 phase: error.phase().into(),
                 operation_id: String::new(),
@@ -150,6 +159,27 @@ impl VeluneApplication {
 
     pub fn list(&self) -> Result<BindingConfigurationSnapshot, BindingError> {
         convert(self.with("list", |application| application.list())?)
+    }
+    pub fn runtime_discovery_hints(
+        &self,
+        user_home: String,
+        overrides: std::collections::HashMap<String, String>,
+    ) -> Result<Vec<BindingRuntimeDiscoveryHint>, BindingError> {
+        convert(self.with("runtime_discovery_hints", |app| {
+            app.runtime_discovery_hints(user_home, overrides.into_iter().collect())
+        })?)
+    }
+    pub fn discover_runtimes(
+        &self,
+        probes: Vec<BindingRuntimeDiscoveryProbe>,
+    ) -> Result<Vec<BindingRuntimeDiscoveryCandidate>, BindingError> {
+        let probes = convert(probes)?;
+        convert(self.with("discover_runtimes", |app| app.discover_runtimes(probes))?)
+    }
+    pub fn set_conversation_browser_group_limit(&self, limit: u32) -> Result<u32, BindingError> {
+        self.with("set_conversation_browser_group_limit", |app| {
+            app.set_conversation_browser_group_limit(limit)
+        })
     }
 
     pub fn save_provider(
@@ -270,26 +300,19 @@ impl VeluneApplication {
         convert(self.with("snapshot", |application| application.snapshot(runtime_id))?)
     }
 
-    pub fn send(
+    pub fn send_turn(
         &self,
         runtime_id: String,
+        model_record_key: String,
         text: String,
     ) -> Result<BindingSnapshotResult, BindingError> {
-        convert(self.with("send", |application| application.send(runtime_id, text))?)
+        convert(self.with("send_turn", |application| {
+            application.send_turn(runtime_id, model_record_key, text)
+        })?)
     }
 
     pub fn cancel(&self, runtime_id: String) -> Result<BindingSnapshotResult, BindingError> {
         convert(self.with("cancel", |application| application.cancel(runtime_id))?)
-    }
-
-    pub fn select_model(
-        &self,
-        runtime_id: String,
-        model_record_key: String,
-    ) -> Result<BindingSnapshotResult, BindingError> {
-        convert(self.with("select_model", |application| {
-            application.select_model(runtime_id, model_record_key)
-        })?)
     }
 
     pub fn reply_runtime_interaction(

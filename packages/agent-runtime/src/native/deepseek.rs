@@ -7,6 +7,7 @@ impl NativeSession {
         let api = match config.gateway.protocol.as_str() {
             "openai-completions" => "openai-completions",
             "openai-responses" => "openai-responses",
+            "anthropic-messages" => "anthropic-messages",
             _ => return Err(Error::new("DeepSeek 运行时不支持此网关协议")),
         };
         fs::create_dir_all(&config.projection_directory)

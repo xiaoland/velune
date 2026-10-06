@@ -102,7 +102,10 @@ impl HttpEndpoint {
         };
         format!(
             "{scheme}://{}:{}{}{}",
-            self.host, self.port, self.base_path, suffix
+            self.host,
+            self.port,
+            self.base_path.trim_end_matches('/'),
+            suffix
         )
     }
 }
@@ -117,6 +120,8 @@ pub struct ResponsesConfig {
     pub endpoint: HttpEndpoint,
 }
 #[derive(Debug, Clone)]
+/// Native Messages SDK base URL: the adapter appends /v1/messages.
+/// This differs from an OpenAI base URL which commonly already ends in /v1.
 pub struct MessagesConfig {
     pub endpoint: HttpEndpoint,
 }

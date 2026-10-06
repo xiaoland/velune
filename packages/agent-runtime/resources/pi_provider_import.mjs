@@ -58,7 +58,7 @@ async function main() {
     modelsStore: new InMemoryCodingAgentModelsStore(), refreshOnCreate: false, allowModelNetwork: false });
   if (runtime.getError()) fail("invalid_model_runtime");
   stage = "projection";
-  const protocol = (api) => ({ "openai-completions": "chatCompletionsV1", "openai-responses": "responsesV1" }[api] ?? null);
+  const protocol = (api) => ({ "openai-completions": "chatCompletionsV1", "openai-responses": "responsesV1", "anthropic-messages": "messagesV1" }[api] ?? null);
   const safeEndpoint = (value) => {
     try { const url = new URL(value); return ["http:", "https:"].includes(url.protocol) && !url.username && !url.password && !url.search && !url.hash ? url.origin + url.pathname.replace(/\/+$/, "") : null; }
     catch { return null; }
@@ -124,6 +124,14 @@ async function main() {
       const compat = compatibility(raw, model);
       result.responsesCompat = Object.fromEntries(Object.entries(responsesDefaults).map(([key, fallback]) => [key, typeof compat[key] === "boolean" ? compat[key] : fallback]));
     }
+    if (protocol(model.api) === "messagesV1") {
+      const compat = compatibility(raw, model);
+      const isOpenRouter = model.provider === "openrouter" || (model.baseUrl ?? raw?.baseUrl ?? "").includes("openrouter.ai");
+      // Preserve SDK 1.0.2 source URL/provider defaults before replacing both with a local gateway.
+      result.messagesCompat = { ...compat,
+        sendSessionAffinityHeaders: compat.sendSessionAffinityHeaders ?? isOpenRouter,
+        ...(compat.sessionAffinityFormat != null ? {sessionAffinityFormat:compat.sessionAffinityFormat} : isOpenRouter ? {sessionAffinityFormat:"openrouter"} : {}) };
+    }
     if (protocol(model.api) === "chatCompletionsV1") {
       result.completionsCompat = effectiveCompletionsCompatibility(raw, model);
       if (result.completionsCompat.maxTokensField === "max_tokens") result.completionsMaxTokensField = "max_tokens";
@@ -137,7 +145,7 @@ async function main() {
     const result = [];
     if (!protocol(model.api)) {
       const names = { "anthropic-messages": "Anthropic Messages", "openai-codex-responses": "旧版 Codex Responses / ChatGPT backend", "azure-openai-responses": "Azure OpenAI Responses", "google-generative-ai": "Google Generative AI", "google-vertex": "Google Vertex", "bedrock-converse-stream": "Amazon Bedrock", "mistral-conversations": "Mistral Conversations", "pi-messages": "Pi Messages" };
-      result.push(`当前网关尚未实现 Pi 协议 ${model.api}${names[model.api] ? `（${names[model.api]}）` : ""}；已支持 OpenAI Chat Completions v1 和 Responses v1`);
+      result.push(`当前网关尚未实现 Pi 协议 ${model.api}${names[model.api] ? `（${names[model.api]}）` : ""}；已支持 OpenAI Chat Completions v1、Responses v1 和 Anthropic Messages v1`);
     }
     if (!safeEndpoint(model.baseUrl ?? raw?.baseUrl)) result.push("服务地址无效或包含不能展示的认证信息");
     if (populated(raw?.headers) || populated(model.headers)) result.push("尚不支持来源中的自定义请求头");

@@ -1,6 +1,6 @@
 # AI 网关
 
-`velune-gateway` 是本机 LLM 网关 unit，也是 AI 能力的一种应用模式。它接收 OpenAI ChatCompletions v1 或 Responses v1 请求，通过显式模型路由派发给提供商。两条路径均使用原生协议 operation，不经过 sampling，不翻译消息历史、生成参数或响应事件。网关仅改写路由模型和上游认证；安全的协议请求头、响应状态、响应头与 body/SSE 由原生传输保留。HTTP 的 hop-by-hop 字段、本地认证和 cookie 不转发。
+`velune-gateway` 是本机 LLM 网关 unit，也是 AI 能力的一种应用模式。它接收 OpenAI ChatCompletions v1、Responses v1 或 Anthropic Messages 请求，通过显式模型路由派发给提供商。各路径均使用原生协议 operation，不经过 sampling，不翻译消息历史、生成参数或响应事件。网关仅改写路由模型和上游认证；安全的协议请求头、响应状态、响应头与 body/SSE 由原生传输保留。HTTP 的 hop-by-hop 字段、本地认证和 cookie 不转发。
 
 调用方通过 `GatewayConfig` 提供具有模型条目的提供商及策略，通过 `Runner::start` 提供入口模型别名。提供商配置在启动时形成不可变快照，当前 fail-over 明确禁用；直接调用方修改配置后须重建 Runner；application 会使执行失效并在下次发送时自动准备，用户不需要手动连接。运行时模型选择可显式替换入口 alias 到稳定模型记录的绑定，不修改在途派发已捕获的目标。此 unit 不理解 Harness 的模型目录、思考级别转换、配置实例或认证文件。模型元数据不成为原生请求参数的默认值；网关不强制请求包含输出上限，也不按该元数据补删生成参数。旧 `chatCompletionsOutputLimitField` 已从新契约删除，不提供兼容入口。
 
@@ -15,3 +15,5 @@ Axum 负责 HTTP framing，当前只监听随机 loopback 端口并提供两条 
 Codex／DSH 原生运行时的装配方可额外注册其执行模型字符串为 alias，并映射到已选的提供商模型记录；gateway 不据模型名推断提供商，不解析 app-server／ACP，也不读取 huihua 历史。执行模式由 application 与 adapter 保证原生 Harness 只获得网关入口与临时本地 token。审批、回答、取消 turn 与原生会话恢复不属于本 unit。
 
 网关只发出元数据 tracing 事件，subscriber 由消费方装配。request／attempt 关联贯穿响应 body 与取消 future 的丢弃；目标使用当前快照中的序号，日志不包含模型 ID、alias、endpoint、请求正文或凭据。传输完成与模型业务成功分开，调用方断开与 Runner 关闭也有独立归因。具体字段与人工验收见 [本地诊断](../../docs/development.md#本地诊断)。
+
+Messages 保留调用方的 `anthropic-version`／beta 请求头与原生 JSON／SSE，缺少版本在派发前拒绝；API key 使用 `x-api-key`，未确认的 subscription 认证不适用于此协议。提供商 baseURL 追加 `/v1/messages`，运行时 SDK 的网关注入使用 origin。

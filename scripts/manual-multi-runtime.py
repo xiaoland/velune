@@ -52,11 +52,10 @@ def main():
             expected={'pi-1.0.2':('pi',r'^1\.0\.2$'),'codex-0.159.3':('codex',r'^0\.159\.3$'),'dsh-acp-0.2.0-rc.2':('deepseek-harness',r'^0\.2\.0-rc\.2$')}
             for identity,(family,pattern) in expected.items():
                 assert descriptor[identity].family_id==family and descriptor[identity].version_regex==pattern
-            chat=b.BindingGatewayProtocol.CHAT_COMPLETIONS_V1;responses=b.BindingGatewayProtocol.RESPONSES_V1
-            assert set(descriptor['pi-1.0.2'].supported_protocols)=={chat,responses}
+            chat=b.BindingGatewayProtocol.CHAT_COMPLETIONS_V1;responses=b.BindingGatewayProtocol.RESPONSES_V1;messages=b.BindingGatewayProtocol.MESSAGES_V1
+            assert set(descriptor['pi-1.0.2'].supported_protocols)=={chat,responses,messages}
             assert set(descriptor['codex-0.159.3'].supported_protocols)=={responses}
-            assert set(descriptor['dsh-acp-0.2.0-rc.2'].supported_protocols)=={chat,responses}
-            assert all(b.BindingGatewayProtocol.MESSAGES_V1 not in d.supported_protocols for d in descriptor.values())
+            assert set(descriptor['dsh-acp-0.2.0-rc.2'].supported_protocols)=={chat,responses,messages}
             endpoint=f'http://127.0.0.1:{server.server_port}/v1'
             results={}
             for family,type_id,binary,protocol,api_id in [
@@ -81,7 +80,7 @@ def main():
                 assert created.conversation.created_at_unix_ms is not None and created.conversation.created_at_unix_ms > 0, family+' new native creation date missing'
                 native_created_at = created.conversation.created_at_unix_ms
                 time.sleep(1.2) # Separate native creation from first event persistence.
-                before=len(captures);application.send(family,'Reply with the synthetic answer; no tools are needed.')
+                before=len(captures);application.send_turn(family,saved.models[0].record_key,'Reply with the synthetic answer; no tools are needed.')
                 deadline=time.monotonic()+45
                 while time.monotonic()<deadline:
                     snapshot=application.snapshot(family).snapshot
@@ -109,8 +108,7 @@ def main():
                 assert reopened and any('SYNTHETIC_NATIVE_ANSWER' in block.text for message in reopened.messages for block in message.blocks if isinstance(block,b.BindingMessageBlock.TEXT)),family+' historical answer missing'
                 assert reopened.conversation.title == snapshot.conversation.title, family+' reopened title changed: '+repr(reopened.conversation.title)+' vs '+repr(snapshot.conversation.title)
                 assert reopened.model_record_key is None and not reopened.actions.can_send,family+' inferred provider from bare history model ID'
-                application.select_model(family,alternate_saved.models[0].record_key)
-                before=len(captures);application.send(family,'Continue after the explicitly selected provider change.')
+                before=len(captures);application.send_turn(family,alternate_saved.models[0].record_key,'Continue after the explicitly selected provider change.')
                 deadline=time.monotonic()+45
                 while time.monotonic()<deadline:
                     selected_snapshot=application.snapshot(family).snapshot
@@ -126,10 +124,10 @@ def main():
                 cross_protocol = False
                 if family == 'deepseek':
                     before=len(captures)
-                    selected=application.select_model(family,switched_saved.models[0].record_key).snapshot
+                    selected=application.snapshot(family).snapshot
                     assert len(captures)==before and selected.model_record_key==switched_saved.models[0].record_key
                     assert selected.conversation.id==selected_snapshot.conversation.id and selected.messages
-                    application.send(family,'Continue this native session using the explicitly chosen Responses model.')
+                    application.send_turn(family,switched_saved.models[0].record_key,'Continue this native session using the explicitly chosen Responses model.')
                     deadline=time.monotonic()+45
                     while time.monotonic()<deadline:
                         switched_snapshot=application.snapshot(family).snapshot

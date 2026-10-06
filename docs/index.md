@@ -15,6 +15,8 @@
 
 ## 当前工作
 
+- [配置体验与原生 Messages](../tasks/settings-protocol-refinement/packet.md)：历史诊断、原生多选与模板、运行时检测、按组分页及协议扩展
+
 - [跨运行时统一会话浏览](../tasks/conversation-browser/packet.md)：全启用实例、项目与标签分组筛选、创建／更新时间排序
 
 - [原生会话管理与切换加载](../tasks/session-management/packet.md)：真实重命名／删除、加载目标与已加载内容隔离

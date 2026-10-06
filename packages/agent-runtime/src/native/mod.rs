@@ -14,12 +14,23 @@ pub(crate) mod rpc;
 #[error("{detail}")]
 pub struct Error {
     detail: String,
+    code: &'static str,
 }
 impl Error {
     pub(crate) fn new(detail: impl Into<String>) -> Self {
         Self {
             detail: detail.into(),
+            code: "internal",
         }
+    }
+    pub(crate) fn with_code(detail: impl Into<String>, code: &'static str) -> Self {
+        Self {
+            detail: detail.into(),
+            code,
+        }
+    }
+    pub(crate) fn code(&self) -> &'static str {
+        self.code
     }
 }
 pub type Result<T> = std::result::Result<T, Error>;

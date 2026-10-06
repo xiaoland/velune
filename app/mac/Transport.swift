@@ -52,6 +52,9 @@ final class Transport: @unchecked Sendable {
         return URL(fileURLWithPath: configured, isDirectory: true).standardizedFileURL
     }
 
+    func setConversationBrowserGroupLimit(_ limit: UInt32) throws -> UInt32 { try withApplication("setConversationBrowserGroupLimit") { try $0.setConversationBrowserGroupLimit(limit: limit) } }
+    func runtimeDiscoveryHints(userHome: String, overrides: [String: String]) throws -> [BindingRuntimeDiscoveryHint] { try withApplication("runtimeDiscoveryHints") { try $0.runtimeDiscoveryHints(userHome: userHome, overrides: overrides) } }
+    func discoverRuntimes(_ probes: [BindingRuntimeDiscoveryProbe]) throws -> [BindingRuntimeDiscoveryCandidate] { try withApplication("discoverRuntimes") { try $0.discoverRuntimes(probes: probes) } }
     func list() throws -> BindingConfigurationSnapshot { try withApplication("list") { try $0.list() } }
     func saveProvider(gatewayID: String, provider: AIProvider, authenticationEdit: AuthenticationEdit) throws -> BindingGatewayUpdate {
         try withApplication("saveProvider") { try $0.saveProvider(gatewayId: gatewayID, provider: BindingMapping.bindingProvider(provider), authenticationEdit: BindingMapping.bindingAuthenticationEdit(authenticationEdit)) }
@@ -69,9 +72,8 @@ final class Transport: @unchecked Sendable {
     func renameConversation(runtimeID: String, conversationID: String, title: String) throws -> BindingConfigurationSnapshot { try withApplication("renameConversation") { try $0.renameConversation(runtimeId: runtimeID, conversationId: conversationID, title: title) } }
     func deleteConversation(runtimeID: String, conversationID: String) throws -> BindingConfigurationSnapshot { try withApplication("deleteConversation") { try $0.deleteConversation(runtimeId: runtimeID, conversationId: conversationID) } }
     func snapshot(runtimeID: String) throws -> BindingSnapshotResult { try withApplication("snapshot") { try $0.snapshot(runtimeId: runtimeID) } }
-    func send(runtimeID: String, text: String) throws -> BindingSnapshotResult { try withApplication("send") { try $0.send(runtimeId: runtimeID, text: text) } }
+    func sendTurn(runtimeID: String, modelRecordKey: String, text: String) throws -> BindingSnapshotResult { try withApplication("sendTurn") { try $0.sendTurn(runtimeId: runtimeID, modelRecordKey: modelRecordKey, text: text) } }
     func cancel(runtimeID: String) throws -> BindingSnapshotResult { try withApplication("cancel") { try $0.cancel(runtimeId: runtimeID) } }
-    func selectModel(runtimeID: String, modelRecordKey: String) throws -> BindingSnapshotResult { try withApplication("selectModel") { try $0.selectModel(runtimeId: runtimeID, modelRecordKey: modelRecordKey) } }
     func replyRuntimeInteraction(runtimeID: String, interactionID: String, reply: RuntimeInteractionReply) throws -> BindingSnapshotResult { try withApplication("replyRuntimeInteraction") { try $0.replyRuntimeInteraction(runtimeId: runtimeID, interactionId: interactionID, reply: BindingMapping.bindingInteractionReply(reply)) } }
     func providerImportPreview(gatewayID: String, source: BindingProviderImportSource) throws -> BindingProviderImportPreview { try withApplication("providerImportPreview") { try $0.previewProviderImport(gatewayId: gatewayID, source: source) } }
     func providerImportApply(gatewayID: String, source: BindingProviderImportSource, previewToken: String, selections: [BindingImportSelection], replaceExisting: Bool) throws -> BindingImportResult { try withApplication("providerImportApply") { try $0.applyProviderImport(gatewayId: gatewayID, source: source, previewToken: previewToken, selections: selections, replaceExisting: replaceExisting) } }
@@ -146,6 +148,7 @@ final class Transport: @unchecked Sendable {
     private static func kindName(_ kind: BindingFailureKind) -> String {
         switch kind {
         case .invalid: return "invalid"
+        case .history: return "history"
         case .unsupported: return "unsupported"
         case .io: return "io"
         case .contract: return "contract"

@@ -104,7 +104,7 @@ pub(super) fn materialize_models(
                     .map(|provider| match provider.protocol {
                         GatewayProtocol::ChatCompletionsV1 => "openai-completions",
                         GatewayProtocol::ResponsesV1 => "openai-responses",
-                        GatewayProtocol::MessagesV1 => "unsupported",
+                        GatewayProtocol::MessagesV1 => "anthropic-messages",
                     });
             let routed_provider = gateway.validate_dispatch(&model.record_key).map_err(RuntimeError::invalid)?;
             let binding = routed_provider.models.iter().find(|binding| binding.record_key == model.record_key).expect("validated binding");
@@ -120,6 +120,10 @@ pub(super) fn materialize_models(
             });
             if let Some(api) = api {
                 entry["api"] = Value::String(api.into());
+                if api == "anthropic-messages" {
+                    // The Anthropic SDK appends /v1/messages to its base URL.
+                    entry["baseUrl"] = json!(endpoint.strip_suffix("/v1").expect("gateway base path"));
+                }
             }
             let supported_levels = binding_projection
                 .map(|projection| projection.supported_levels(&declared_levels))
@@ -145,6 +149,9 @@ pub(super) fn materialize_models(
             entry["reasoning"] = Value::Bool(!supported_levels.is_empty());
             if let Some(projection) = binding_projection {
                 if let Some(compat) = &projection.completions_compat {
+                    entry["compat"] = compat.clone();
+                }
+                if let Some(compat) = &projection.messages_compat {
                     entry["compat"] = compat.clone();
                 }
                 if let Some(input) = &projection.input {

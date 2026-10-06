@@ -72,7 +72,6 @@ impl GatewayConfig {
             if provider.id.is_empty()
                 || provider.name.is_empty()
                 || provider.endpoint.is_empty()
-                || matches!(provider.protocol, GatewayProtocol::MessagesV1)
                 || provider
                     .credential_ref
                     .as_deref()

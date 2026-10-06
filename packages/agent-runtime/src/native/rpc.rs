@@ -63,12 +63,12 @@ pub(crate) fn bounded_process(
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
-        .map_err(|_| Error::new("运行时辅助进程无法启动"))?;
+        .map_err(|_| Error::with_code("运行时辅助进程无法启动", "spawn"))?;
     if let Some(bytes) = input {
         let mut stdin = child
             .stdin
             .take()
-            .ok_or_else(|| Error::new("辅助进程输入不可用"))?;
+            .ok_or_else(|| Error::with_code("辅助进程输入不可用", "transport"))?;
         thread::spawn(move || {
             let _ = stdin.write_all(&bytes);
         });
@@ -76,7 +76,7 @@ pub(crate) fn bounded_process(
     let stdout = child
         .stdout
         .take()
-        .ok_or_else(|| Error::new("运行时输出不可用"))?;
+        .ok_or_else(|| Error::with_code("运行时输出不可用", "transport"))?;
     let (tx, rx) = mpsc::sync_channel(1);
     thread::spawn(move || {
         let mut bytes = Vec::new();
@@ -93,22 +93,28 @@ pub(crate) fn bounded_process(
             Ok(None) => {}
             Err(_) => {
                 stop(&mut child);
-                return Err(Error::new("运行时辅助进程状态不可用"));
+                return Err(Error::with_code("运行时辅助进程状态不可用", "transport"));
             }
         }
         if Instant::now() >= deadline {
             stop(&mut child);
-            return Err(Error::new("运行时辅助进程超时"));
+            return Err(Error::with_code("运行时辅助进程超时", "timeout"));
         }
         thread::sleep(Duration::from_millis(20));
     };
     stop(&mut child);
     let bytes = rx
         .recv_timeout(Duration::from_secs(1))
-        .map_err(|_| Error::new("运行时辅助进程输出未关闭"))?
-        .map_err(|_| Error::new("运行时辅助进程读取失败"))?;
-    if !status.success() || bytes.len() > limit {
-        return Err(Error::new("运行时辅助进程失败或输出超出限制"));
+        .map_err(|_| Error::with_code("运行时辅助进程输出未关闭", "transport"))?
+        .map_err(|_| Error::with_code("运行时辅助进程读取失败", "transport"))?;
+    if bytes.len() > limit {
+        return Err(Error::with_code(
+            "运行时辅助进程输出超出限制",
+            "output_limit",
+        ));
+    }
+    if !status.success() {
+        return Err(Error::with_code("运行时辅助进程失败", "process_exit"));
     }
     Ok(bytes)
 }

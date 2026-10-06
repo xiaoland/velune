@@ -56,7 +56,7 @@ impl CoreRuntime {
             match result {
                 Ok(session) => {
                     self.active_state = ActiveState::Native(Box::new(session));
-                    self.selected_runtime_id = Some(runtime.id);
+                    self.execution_runtime_id = Some(runtime.id);
                     self.model_record_key = None;
                     return Ok(());
                 }
@@ -133,7 +133,7 @@ impl CoreRuntime {
         {
             GatewayProtocol::ChatCompletionsV1 => "openai-completions",
             GatewayProtocol::ResponsesV1 => "openai-responses",
-            GatewayProtocol::MessagesV1 => return Err(RuntimeError::invalid("provider protocol")),
+            GatewayProtocol::MessagesV1 => "anthropic-messages",
         };
         if let Err(error) = materialize_models(&config, &gateway, runner.endpoint(), protocol) {
             drop(runner);
@@ -149,7 +149,7 @@ impl CoreRuntime {
         self.gateway_runner = Some(runner);
         self.pi.config = Some(config);
         self.active_state = ActiveState::Pi;
-        self.selected_runtime_id = Some(runtime_id.into());
+        self.execution_runtime_id = Some(runtime_id.into());
         self.pi.physical_model_id = None;
         self.model_record_key = None;
         self.pi.subscription_capability = false;
@@ -187,7 +187,7 @@ impl CoreRuntime {
         client
             .state()
             .map_err(|_| RuntimeError::invalid("runtime startup"))?;
-        let runtime_id = self.selected_runtime_id.as_deref().unwrap_or_default();
+        let runtime_id = self.execution_runtime_id.as_deref().unwrap_or_default();
         let mut projection = PiProjection::new(ConversationSummary {
             id: session
                 .map(|path| format!("{runtime_id}:{}", path.display()))
@@ -250,7 +250,7 @@ impl CoreRuntime {
         };
         self.pi = PiState::default();
         self.gateway_runner = None;
-        self.selected_runtime_id = None;
+        self.execution_runtime_id = None;
         self.model_record_key = None;
         result
     }

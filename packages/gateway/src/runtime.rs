@@ -31,6 +31,7 @@ use velune_ai::{
     chat_completions::*,
     http::{Header, ResponseBody, ResponseMeta},
     ids::{ConfigRevision, ProviderId, ProviderModelId},
+    messages::*,
     responses::*,
 };
 pub use velune_ai_provider::config::ResolvedCredential;
@@ -58,9 +59,10 @@ pub trait CredentialResolver: Send + Sync {
 
 use velune_ai_provider::{
     config::{
-        ChatCompletionsConfig, CredentialRef, HttpEndpoint, ProtocolConfig, ProviderConfig,
-        ResponsesConfig, Transport,
+        ChatCompletionsConfig, CredentialRef, HttpEndpoint, MessagesConfig, ProtocolConfig,
+        ProviderConfig, ResponsesConfig, Transport,
     },
+    messages::Messages,
     openai::ChatCompletions,
     responses::OpenAiResponses,
 };
@@ -168,7 +170,7 @@ impl Runner {
                 };
                 runtime.block_on(async move {
                     let listener = match tokio::net::TcpListener::from_std(listener) { Ok(value)=>value,Err(_)=>return };
-                    let router = Router::new().route("/v1/chat/completions",post(chat)).route("/v1/responses",post(responses)).with_state(state);
+                    let router = Router::new().route("/v1/chat/completions",post(chat)).route("/v1/responses",post(responses)).route("/v1/messages",post(messages)).with_state(state);
                     tracing::info!(event="gateway_started");
                     // Dropping the server stops admission; dropping this executor aborts
                     // connection/dispatch tasks, including their kill-on-drop helpers.
@@ -228,7 +230,7 @@ fn build_routes(
                     ProtocolConfig::Responses(ResponsesConfig { endpoint })
                 }
                 GatewayProtocol::MessagesV1 => {
-                    return Err(Box::new(GatewayError("provider protocol is unsupported")));
+                    ProtocolConfig::Messages(MessagesConfig { endpoint })
                 }
             };
             let binding = provider
@@ -319,6 +321,9 @@ fn parse_endpoint(value: &str) -> Result<HttpEndpoint, Box<dyn std::error::Error
 async fn chat(State(state): State<Arc<Ingress>>, request: Request<Body>) -> Response<Body> {
     ingress(state, request, GatewayProtocol::ChatCompletionsV1).await
 }
+async fn messages(State(state): State<Arc<Ingress>>, request: Request<Body>) -> Response<Body> {
+    ingress(state, request, GatewayProtocol::MessagesV1).await
+}
 async fn responses(State(state): State<Arc<Ingress>>, request: Request<Body>) -> Response<Body> {
     ingress(state, request, GatewayProtocol::ResponsesV1).await
 }
@@ -374,12 +379,18 @@ async fn ingress_observed(
     observation: Observation,
 ) -> Response<Body> {
     tracing::info!(event = "gateway_request_received");
-    if request
+    let bearer_valid = request
         .headers()
         .get("authorization")
-        .and_then(|value| value.to_str().ok())
-        != Some(format!("Bearer {}", state.token).as_str())
-    {
+        .and_then(|v| v.to_str().ok())
+        == Some(format!("Bearer {}", state.token).as_str());
+    let key_valid = protocol == GatewayProtocol::MessagesV1
+        && request
+            .headers()
+            .get("x-api-key")
+            .and_then(|v| v.to_str().ok())
+            == Some(state.token.as_str());
+    if !bearer_valid && !key_valid {
         return rejected(
             observation,
             StatusCode::UNAUTHORIZED,
@@ -541,6 +552,7 @@ fn forward_headers(headers: &HeaderMap) -> Vec<Header> {
                 "host",
                 "content-length",
                 "authorization",
+                "x-api-key",
                 "cookie",
                 "set-cookie",
             ]
@@ -898,6 +910,108 @@ async fn dispatch_observed(
                 }
             }
         }
-        GatewayProtocol::MessagesV1 => {}
+        GatewayProtocol::MessagesV1 => {
+            let adapter = match Messages::with_resolved_credential(
+                target.config,
+                state.client.clone(),
+                credential,
+            ) {
+                Ok(value) => value,
+                Err(_) => {
+                    observation.finish("configuration_failed");
+                    send_failure(
+                        &sender,
+                        None,
+                        None,
+                        502,
+                        "provider configuration is invalid",
+                    )
+                    .await;
+                    return;
+                }
+            };
+            let sink_sender = sender.clone();
+            let sent = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let sink_sent = sent.clone();
+            let completion = adapter
+                .messages(
+                    MessagesRequest {
+                        model: target.model,
+                        body: Payload::new(body),
+                        stream,
+                        headers,
+                    },
+                    Box::new(move |event| {
+                        let sender = sink_sender.clone();
+                        let sent = sink_sent.clone();
+                        Box::pin(async move {
+                            let event = match event {
+                                MessagesEvent::Headers(meta) => {
+                                    tracing::info!(
+                                        event = "gateway_upstream_headers",
+                                        http_status = meta.status
+                                    );
+                                    sent.store(true, std::sync::atomic::Ordering::Release);
+                                    WireEvent::Headers(meta)
+                                }
+                                MessagesEvent::Body(bytes) => WireEvent::Body(bytes.into_inner()),
+                            };
+                            sender.send(event).await.map_err(|_| DeliveryError::Closed)
+                        })
+                    }),
+                )
+                .await;
+            let headers_sent = sent.load(std::sync::atomic::Ordering::Acquire);
+            observation.finish(match &completion.result {
+                Ok(_) => "transport_completed",
+                Err(error) if matches!(error.kind, MessagesErrorKind::Cancelled) => {
+                    "downstream_closed"
+                }
+                Err(_) => "upstream_failed",
+            });
+            match completion.result {
+                Ok(MessagesOutput::Json(body)) => {
+                    tracing::info!(
+                        event = "gateway_upstream_headers",
+                        http_status = body.meta.status
+                    );
+                    send_json(&sender, body).await;
+                }
+                Ok(MessagesOutput::Stream(_)) => {}
+                Err(error) => {
+                    if matches!(error.kind, MessagesErrorKind::Cancelled) {
+                        tracing::info!(event = "gateway_dispatch_canceled");
+                    } else {
+                        tracing::warn!(event="gateway_dispatch_failed",protocol="messages",kind=?error.kind);
+                    }
+                    if let Some(meta) = &error.response {
+                        tracing::info!(
+                            event = "gateway_upstream_headers",
+                            http_status = meta.status
+                        );
+                    }
+                    if headers_sent {
+                        let _ = sender.send(WireEvent::Failed).await;
+                    } else {
+                        let status = match error.kind {
+                            MessagesErrorKind::InvalidInput => 400,
+                            MessagesErrorKind::Authentication => 401,
+                            MessagesErrorKind::Permission => 403,
+                            MessagesErrorKind::RateLimited => 429,
+                            MessagesErrorKind::Timeout => 504,
+                            _ => 502,
+                        };
+                        send_failure(
+                            &sender,
+                            error.response,
+                            error.body,
+                            status,
+                            "upstream request failed",
+                        )
+                        .await;
+                    }
+                }
+            }
+        }
     }
 }

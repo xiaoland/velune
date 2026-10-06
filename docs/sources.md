@@ -196,3 +196,7 @@ S17 实施授权：用户决定全面切换 UniFFI，并要求现在开始拆分
 2026-10-06 用户追加统一会话浏览需求：单列表包含所有启用 Agent Runtime，支持 Runtime、CWD project、label／section 分组筛选及创建／更新时间排序，不按执行运行时分别显示列表。懒加载／分页允许，标签来源正澄清。归 [统一浏览任务](../tasks/conversation-browser/packet.md)。
 
 同轮用户澄清 label／section 只是例子，非所有运行时均支持，Codex section 聚合 project；未来自定义 tag／label／section 应由 Velune 独立持久化组织记录。本轮先实现 runtime／project 分组筛选与时间排序，不引入标签 CRUD。
+
+2026-10-06 用户反馈诊断18dbddc3184363d8-a9ce-3的历史详情失败，并要求提供商／运行时双击编辑、模板原生多选与独立选取sheet、运行时快速检测导入、Anthropic Messages原生支持、每组默认20可配置及会话多选。执行与诊断证据归 [本轮体验与协议任务](../tasks/settings-protocol-refinement/packet.md)，正式产品意图归PRD。
+
+2026-10-06 会话浏览后续：用户指出顶部运行时／模型应决定下个 turn 的执行目标，并将其关联到跨 Harness 会话；打开原生历史应由会话来源决定。来源与执行意图区分已进入 PRD；观察到的读取故障相关性仍需诊断证据，不能提升为已确认根因。

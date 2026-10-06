@@ -178,7 +178,7 @@ def main():
             application.create_conversation(runtime.id, str(root / 'project'), binding.record_key)
             for turn in ('Read the synthetic local file.', 'Continue the synthetic conversation.'):
                 before = len(captures)
-                application.send(runtime.id, turn)
+                application.send_turn(runtime.id, binding.record_key, turn)
                 deadline = time.monotonic() + 30
                 while time.monotonic() < deadline:
                     snapshot = application.snapshot(runtime.id).snapshot
@@ -217,7 +217,7 @@ def main():
             before_rename = len(captures)
             application.rename_conversation(runtime.id, renamed_draft.conversation.id, 'SYNTHETIC_PERSISTED_DRAFT_TITLE')
             assert not renamed_path.exists() and len(captures) == before_rename
-            application.send(runtime.id, 'Persist the renamed synthetic native draft.')
+            application.send_turn(runtime.id, binding.record_key, 'Persist the renamed synthetic native draft.')
             deadline = time.monotonic() + 30
             while time.monotonic() < deadline:
                 snapshot = application.snapshot(runtime.id).snapshot
@@ -264,7 +264,7 @@ def main():
                 application.select_runtime(runtime.id)
                 application.create_conversation(runtime.id, str(root / 'project'), binding.record_key)
                 before = len(captures)
-                application.send(runtime.id, 'Confirm the synthetic edited configuration.')
+                application.send_turn(runtime.id, binding.record_key, 'Confirm the synthetic edited configuration.')
                 deadline = time.monotonic() + 30
                 while time.monotonic() < deadline:
                     current_snapshot = application.snapshot(runtime.id).snapshot

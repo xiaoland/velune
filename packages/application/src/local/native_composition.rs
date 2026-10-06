@@ -25,16 +25,22 @@ impl CoreRuntime {
         let protocol = match &provider.protocol {
             GatewayProtocol::ChatCompletionsV1 => "openai-completions",
             GatewayProtocol::ResponsesV1 => "openai-responses",
-            GatewayProtocol::MessagesV1 => {
-                return Err(RuntimeError::invalid("原生运行时协议适配器未实现"));
-            }
+            GatewayProtocol::MessagesV1 => "anthropic-messages",
         };
         let runner = self
             .gateway_runner
             .as_ref()
             .ok_or_else(|| RuntimeError::invalid("runtime gateway"))?;
         Ok(GatewayInjection {
-            endpoint: runner.endpoint().into(),
+            endpoint: if provider.protocol == GatewayProtocol::MessagesV1 {
+                runner
+                    .endpoint()
+                    .strip_suffix("/v1")
+                    .expect("gateway base path")
+                    .into()
+            } else {
+                runner.endpoint().into()
+            },
             token: runner.token().into(),
             model_alias: model.provider_model_id.clone(),
             protocol: protocol.into(),
@@ -100,9 +106,17 @@ impl CoreRuntime {
         Ok(())
     }
     pub(super) fn active_instance(&self) -> Result<&RuntimeInstance, RuntimeError> {
+        let id = match &self.active_state {
+            ActiveState::History(snapshot) => &snapshot.conversation.runtime_id,
+            ActiveState::Native(_) | ActiveState::Pi => self
+                .execution_runtime_id
+                .as_ref()
+                .ok_or_else(|| RuntimeError::invalid("active runtime"))?,
+            ActiveState::Empty => return Err(RuntimeError::invalid("active runtime")),
+        };
         self.runtime_instances
             .iter()
-            .find(|r| Some(&r.id) == self.selected_runtime_id.as_ref())
+            .find(|r| &r.id == id)
             .ok_or_else(|| RuntimeError::invalid("active runtime"))
     }
     pub(super) fn history_config(

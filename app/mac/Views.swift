@@ -11,14 +11,14 @@ struct VeluneRootView: View {
     @State private var draft = ""
     @State private var scrollRequest: UInt64 = 0
     @State private var renameTarget: Conversation?
-    @State private var deleteTarget: Conversation?
+    @State private var deleteTargets: [Conversation] = []
     private var conversationSections: [ConversationBrowser.Section] { browser.sections(conversations: store.conversations, runtimes: store.runtimeInstances) }
     private var projects: [String] { Array(Set(store.conversations.filter { conversation in store.enabledRuntimeInstances.contains { $0.id == conversation.runtimeID } }.compactMap(\.cwd))).sorted { $0.localizedStandardCompare($1) == .orderedAscending } }
-    private var selectedRuntime: RuntimeInstance? { store.runtimeInstances.first { $0.id == store.selectedRuntimeID } }
+    private var nextTurnRuntime: RuntimeInstance? { store.runtimeInstances.first { $0.id == store.nextTurnRuntimeID } }
 
     var body: some View {
         NavigationSplitView {
-            List(selection: Binding(get: { store.selectedConversationID }, set: { if let id = $0 { store.selectConversation(id: id) } })) {
+            List(selection: Binding(get: { store.selectedConversationIDs }, set: { store.selectConversations(ids: $0) })) {
                 if !store.historyFailures.isEmpty {
                     Section("历史读取") {
                         ForEach(store.historyFailures, id: \.runtimeID) { failure in
@@ -42,15 +42,11 @@ struct VeluneRootView: View {
                             }.font(.caption).foregroundStyle(.secondary)
                         }.padding(.vertical, 3).tag(conversation.id)
                         .selectionDisabled(store.isLoading)
-                        .contextMenu {
-                            Button("重命名…") { renameTarget = conversation }
-                                .disabled(!store.canManageConversations || !store.canRenameConversation(conversation))
-                            Button("删除…", role: .destructive) { deleteTarget = conversation }
-                                .disabled(!store.canManageConversations || !store.canDeleteConversation(conversation))
-                            if !store.canRenameConversation(conversation) || !store.canDeleteConversation(conversation) {
-                                Text("此运行时适配器尚未接入原生会话管理")
-                            }
-                        }
+                        .contextMenu { conversationManagementMenu(store.selectedConversationIDs.contains(conversation.id) ? store.selectedConversationIDs : [conversation.id]) }
+                    }
+                    if section.hasMore {
+                        Button("加载更多（\(section.conversations.count) / \(section.totalCount)）") { browser.loadMore(section.id) }
+                            .buttonStyle(.plain).foregroundStyle(.secondary).selectionDisabled(true)
                     }
                   } header: { Text(section.title).lineLimit(1).truncationMode(.middle).help(section.title) }
                 }
@@ -62,6 +58,7 @@ struct VeluneRootView: View {
             .disabled(store.isGenerating || store.authenticationRunning || store.isShuttingDown)
             .toolbar {
                 ToolbarItem { browserMenu }
+                ToolbarItem { Menu { conversationManagementMenu(store.selectedConversationIDs) } label: { Label("会话操作", systemImage: "ellipsis") }.menuIndicator(.hidden).disabled(store.selectedConversationIDs.isEmpty) }
                 ToolbarItem { Button(action: { store.createConversation() }) { Label("新建会话", systemImage: "square.and.pencil") }.help("新建会话（⌘ N）").disabled(store.isGenerating || store.isLoading) }
             }
         } detail: {
@@ -70,18 +67,21 @@ struct VeluneRootView: View {
                 else if previewEmpty || store.transcript.rows.isEmpty { emptyState.frame(maxWidth: .infinity, maxHeight: .infinity) }
                 else { transcript }
                 Divider()
+                if let boundary = store.executionBoundaryMessage { Text(boundary).font(.caption).foregroundStyle(.secondary).padding(.horizontal, 16).padding(.top, 8) }
                 composer
             }
             .navigationTitle(previewEmpty ? "新会话" : store.selectedConversationTitle ?? "Velune")
             .toolbar { conversationToolbar }
         }
         .navigationSplitViewStyle(.balanced)
+        .onReceive(store.$conversationBrowserGroupLimit) { browser.initialLimit = $0 }
+        .onChange(of: browser.query) { _, _ in browser.resetPagination() }
         .sheet(item: $renameTarget) { ConversationRenameView(store: store, conversation: $0) }
-        .alert("删除会话？", isPresented: Binding(get: { deleteTarget != nil }, set: { if !$0 { deleteTarget = nil } })) {
-            Button("取消", role: .cancel) { deleteTarget = nil }
-            Button("删除", role: .destructive) { if let target = deleteTarget { store.deleteConversation(target) }; deleteTarget = nil }
+        .alert(deleteTargets.count == 1 ? "删除会话？" : "删除 \(deleteTargets.count) 个会话？", isPresented: Binding(get: { !deleteTargets.isEmpty }, set: { if !$0 { deleteTargets = [] } })) {
+            Button("取消", role: .cancel) { deleteTargets = [] }
+            Button("删除", role: .destructive) { store.deleteConversations(deleteTargets); deleteTargets = [] }
         } message: {
-            Text("将从 Agent 运行时永久删除“\(deleteTarget?.title ?? "")”及其会话数据。此操作无法撤销。")
+            Text("将从各自 Agent 运行时永久删除所选 \(deleteTargets.count) 个会话及其数据。此操作无法撤销。")
         }
         .sheet(isPresented: $store.showsNewConversation) { NewConversationView(store: store) }
         .sheet(item: Binding(get: { store.pendingInteractions.first }, set: { _ in })) { RuntimeInteractionView(store: store, interaction: $0) }
@@ -90,6 +90,16 @@ struct VeluneRootView: View {
             store.start()
             if previewSettings { openSettings() }
         }
+    }
+
+    @ViewBuilder private func conversationManagementMenu(_ ids: Set<String>) -> some View {
+        let targets = store.conversations.filter { ids.contains($0.id) }
+        if targets.count == 1, let target = targets.first {
+            Button("重命名…") { renameTarget = target }.disabled(!store.canManageConversations || !store.canRenameConversation(target))
+        }
+        Button(targets.count > 1 ? "删除所选会话…" : "删除…", role: .destructive) { deleteTargets = targets }
+            .disabled(targets.isEmpty || !store.canManageConversations || !targets.allSatisfy(store.canDeleteConversation))
+        if targets.contains(where: { !store.canDeleteConversation($0) }) { Text("部分运行时适配器尚未接入原生会话删除") }
     }
 
     private func rowContext(_ conversation: Conversation) -> String {
@@ -122,20 +132,24 @@ struct VeluneRootView: View {
     @ToolbarContentBuilder private var conversationToolbar: some ToolbarContent {
         ToolbarItemGroup(placement: .primaryAction) {
             Menu {
-                ForEach(store.runtimeCompatibleModels) { model in Button(model.displayName) { store.selectModel(modelRecordKey: model.recordKey) } }
+                Picker("下一轮模型", selection: Binding(get: { store.nextTurnModelRecordKey }, set: { if let key = $0 { store.selectModel(modelRecordKey: key) } })) {
+                    ForEach(store.runtimeCompatibleModels) { model in Text(model.displayName).tag(Optional(model.recordKey)) }
+                }
                 Divider()
                 SettingsLink { Text("管理AI提供商与模型…") }
             } label: { Text(store.selectedModelName ?? "选择模型") }
-            .accessibilityLabel("模型：\(store.selectedModelName ?? "未选择")")
-            .help("选择模型（当前：\(store.selectedModelName ?? "未选择")）")
+            .accessibilityLabel("下一轮模型：\(store.selectedModelName ?? "未选择")")
+            .help("选择下一轮模型（当前：\(store.selectedModelName ?? "未选择")）")
             .disabled(!store.canSwitchModel)
             Menu {
-                if let selectedRuntime, let type = store.runtimeTypes.first(where: { $0.id == selectedRuntime.typeID }) { Text(type.name) }
+                Picker("下一轮 Agent 运行时", selection: Binding(get: { store.nextTurnRuntimeID }, set: { if let id = $0 { store.selectNextTurnRuntime(id) } })) {
+                    ForEach(store.enabledRuntimeInstances) { runtime in Text(runtime.name).tag(Optional(runtime.id)) }
+                }
                 SettingsLink { Text("Agent 运行时设置…") }
-            } label: { Label(selectedRuntime?.name ?? "Agent 运行时", systemImage: "desktopcomputer").labelStyle(.titleAndIcon) }
-            .accessibilityLabel("Agent 运行时：\(selectedRuntime?.name ?? "未选择")")
-            .help("选择Agent 运行时（当前：\(selectedRuntime?.name ?? "未选择")）")
-            .disabled(store.isGenerating || store.isLoading)
+            } label: { Label(nextTurnRuntime?.name ?? "Agent 运行时", systemImage: "desktopcomputer").labelStyle(.titleAndIcon) }
+            .accessibilityLabel("下一轮 Agent 运行时：\(nextTurnRuntime?.name ?? "未选择")")
+            .help("选择下一轮 Agent 运行时（当前：\(nextTurnRuntime?.name ?? "未选择")）")
+            .disabled(store.isShuttingDown)
         }
     }
 
@@ -333,8 +347,24 @@ struct SettingsView: View {
     var body: some View {
         TabView {
             ProviderSettingsView(store: store).tabItem { Label("AI提供商", systemImage: "network") }
+            ConversationSettingsView(store: store).tabItem { Label("会话", systemImage: "bubble.left.and.bubble.right") }
             RuntimeSettingsView(store: store).tabItem { Label("Agent 运行时", systemImage: "terminal") }
         }.frame(width: 690, height: 560)
+    }
+}
+
+private struct ConversationSettingsView: View {
+    @ObservedObject var store: AppStore
+    @State private var limit = 20
+    var body: some View {
+        Form {
+            Section("会话列表") {
+                LabeledContent("每组首次展示") { TextField("数量", value: $limit, format: .number).frame(width: 70); Text("个会话") }
+                Text("每组按当前排序显示前若干会话，可在列表中加载更多。").font(.caption).foregroundStyle(.secondary)
+                Button("保存") { store.setConversationBrowserGroupLimit(limit) }.disabled(limit < 1 || limit == store.conversationBrowserGroupLimit || store.isBusy)
+            }
+            SettingsError(message: store.error)
+        }.formStyle(.grouped).onAppear { limit = store.conversationBrowserGroupLimit }
     }
 }
 
@@ -360,9 +390,12 @@ struct ProviderSettingsView: View {
                     VStack(alignment: .leading, spacing: 3) {
                         Text(provider.name)
                         Text("\(provider.models.count) 个模型 · \(provider.endpoint)").font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                    }.tag(provider.id).contextMenu { Button("编辑…") { editor = provider }; Button("删除…") { deleting = provider } }
+                    }.tag(provider.id)
                 }
-            }.listStyle(.bordered).padding(.horizontal, 20).padding(.top, 16)
+            }.contextMenu(forSelectionType: String.self) { ids in
+                if let id = ids.first, let provider = store.providers.first(where: { $0.id == id }) { Button("编辑…") { editor = provider }; Button("删除…") { deleting = provider } }
+            } primaryAction: { ids in if let id = ids.first { editor = store.providers.first { $0.id == id } } }
+            .listStyle(.bordered).padding(.horizontal, 20).padding(.top, 16)
             HStack {
                 Button { creating = true } label: { Image(systemName: "plus") }.help("添加 AI 提供商")
                 Button { deleting = store.providers.first { $0.id == selectedID } } label: { Image(systemName: "minus") }.disabled(selectedID == nil)
@@ -456,6 +489,7 @@ struct ProviderEditor: View {
     @State private var editingAPIKey = false
     @State private var clearAuthentication = false
     @State private var templateDraft: ModelTemplate?
+    @State private var choosingTemplates = false
     @State private var confirmsProjectionRemoval = false
     @State private var oldProtocol: ProviderProtocol = .chatCompletionsV1
     private var authentication: ProviderAuthentication { store.providers.first { $0.id == provider?.id }?.authentication ?? provider?.authentication ?? ProviderAuthentication() }
@@ -475,8 +509,8 @@ struct ProviderEditor: View {
                     }.listStyle(.sidebar)
                     HStack {
                         Menu {
-                            Button("添加模型") { addModel(ProviderModelDraft()) }
-                            if !store.modelTemplates.isEmpty { Divider(); ForEach(store.modelTemplates) { template in Button("从「\(template.name)」填写") { addModel(ProviderModelDraft(template.model)) } } }
+                            Button("添加新模型") { addModel(ProviderModelDraft()) }
+                            Button("从模板中选取…") { choosingTemplates = true }
                         } label: { Image(systemName: "plus") }.menuStyle(.borderlessButton)
                         Button { if let index = modelIndex { models.remove(at: index); selection = .connection } } label: { Image(systemName: "minus") }.disabled(modelIndex == nil)
                         Spacer()
@@ -502,6 +536,7 @@ struct ProviderEditor: View {
             Button("移除并继续") { for index in models.indices { models[index].adapterMetadataJSON = nil } }
             Button("取消", role: .cancel) { protocolID = oldProtocol }
         } message: { Text("新协议不能直接沿用原运行时的协议适配参数。模型 ID 与已填写的能力仍保留。") }
+        .sheet(isPresented: $choosingTemplates) { ModelTemplatePicker(templates: store.modelTemplates) { values in for template in values { addModel(ProviderModelDraft(template.model)) } } }
         .sheet(item: $templateDraft) { value in ModelTemplateEditor(store: store, template: value) }
         .sheet(isPresented: $store.showsAuthentication) { AuthenticationView(store: store) }
     }
@@ -510,10 +545,11 @@ struct ProviderEditor: View {
             Section("连接") {
                 TextField("名称", text: $name)
                 Picker("协议", selection: $protocolID) { ForEach(store.protocols.filter(\.supported)) { Text($0.name).tag($0.id) } }
-                TextField("服务地址", text: $endpoint, prompt: Text("https://…/v1"))
+                TextField("服务地址", text: $endpoint, prompt: Text(protocolID == .messagesV1 ? "https://…" : "https://…/v1"))
+                    .help(protocolID == .messagesV1 ? "Anthropic Messages 协议基础 URL；请求路径为 /v1/messages。" : "提供商的协议服务基础 URL。")
             }
             Section("认证") {
-                LabeledContent("方式", value: editingAPIKey ? "API key · Bearer" : clearAuthentication ? "尚未配置" : authentication.method == .oauth ? "OAuth · Bearer" : authentication.method.label)
+                LabeledContent("方式", value: editingAPIKey ? "API key" : clearAuthentication ? "尚未配置" : authentication.method.label)
                 if editingAPIKey {
                     HStack {
                         if showKey { TextField("API key", text: $apiKey) } else { SecureField("API key", text: $apiKey) }
@@ -545,6 +581,30 @@ struct ProviderEditor: View {
     private func commit() {
         let edit: AuthenticationEdit = editingAPIKey && apiKey != originalAPIKey ? .setAPIKey(apiKey) : clearAuthentication ? .clear : .keep
         store.saveProvider(AIProvider(id: provider?.id ?? "", name: name.trimmingCharacters(in: .whitespacesAndNewlines), protocolID: protocolID, endpoint: endpoint.trimmingCharacters(in: .whitespacesAndNewlines), authentication: authentication, models: models.map(\.definition)), authenticationEdit: edit) { apiKey = ""; originalAPIKey = nil; dismiss() }
+    }
+}
+
+private struct ModelTemplatePicker: View {
+    let templates: [ModelTemplate]
+    let add: ([ModelTemplate]) -> Void
+    @Environment(\.dismiss) private var dismiss
+    @State private var selection: Set<String> = []
+    @State private var search = ""
+    @State private var addedCount = 0
+    private var candidates: [ModelTemplate] { templates.filter { search.isEmpty || "\($0.name) \($0.suggestedProviderModelID)".localizedCaseInsensitiveContains(search) } }
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack { Text("从模板中选取").font(.headline); Spacer() }.padding(20)
+            TextField("搜索模板", text: $search).textFieldStyle(.roundedBorder).padding(.horizontal, 20).padding(.bottom, 8)
+            List(selection: $selection) { ForEach(candidates) { value in VStack(alignment: .leading, spacing: 3) { Text(value.name); Text(value.suggestedProviderModelID).font(.caption).foregroundStyle(.secondary) }.tag(value.id) } }.listStyle(.bordered).padding(.horizontal, 20)
+            .overlay { if candidates.isEmpty { Text(templates.isEmpty ? "尚无模型模板，可在设置中添加。" : "没有匹配的模板").foregroundStyle(.secondary) } }
+            HStack {
+                Text(addedCount > 0 ? "已添加 \(addedCount) 个模型" : "按住 ⌘ 或 Shift 选择多个模板").font(.caption).foregroundStyle(.secondary)
+                Spacer(); Button("完成") { dismiss() }.keyboardShortcut(.cancelAction)
+                Button("添加所选") { let values = templates.filter { selection.contains($0.id) }; add(values); addedCount += values.count; selection.removeAll() }.disabled(selection.isEmpty).keyboardShortcut(.defaultAction)
+            }.padding(16)
+        }.frame(width: 480, height: 380)
+        .onChange(of: search) { _, _ in selection.formIntersection(candidates.map(\.id)) }
     }
 }
 
@@ -590,23 +650,29 @@ struct RuntimeSettingsView: View {
     @State private var selectedID: String?
     @State private var editor: RuntimeInstance?
     @State private var creating = false
+    @State private var discovering = false
     @State private var deleting: RuntimeInstance?
     private var selected: RuntimeInstance? { store.runtimeInstances.first { $0.id == selectedID } }
     var body: some View {
         VStack(spacing: 0) {
             List(selection: $selectedID) {
                 ForEach(store.runtimeInstances) { instance in
-                    VStack(alignment: .leading, spacing: 3) { HStack { Text(instance.name); if !instance.enabled { Text("已停用").foregroundStyle(.secondary) } }; Text(store.runtimeTypes.first { $0.id == instance.typeID }?.name ?? instance.typeID).font(.caption).foregroundStyle(.secondary) }.tag(instance.id).contextMenu { Button("编辑…") { editor = instance }; Button(instance.enabled ? "停用" : "启用") { var updated = instance; updated.enabled.toggle(); store.saveRuntimeInstance(updated) }.disabled(store.isBusy); Button("删除…") { deleting = instance } }
+                    VStack(alignment: .leading, spacing: 3) { HStack { Text(instance.name); if !instance.enabled { Text("已停用").foregroundStyle(.secondary) } }; Text(store.runtimeTypes.first { $0.id == instance.typeID }?.name ?? instance.typeID).font(.caption).foregroundStyle(.secondary) }.tag(instance.id)
                 }
-            }.listStyle(.bordered).padding(.horizontal, 20).padding(.top, 16)
+            }.contextMenu(forSelectionType: String.self) { ids in
+                if let id = ids.first, let runtime = store.runtimeInstances.first(where: { $0.id == id }) { Button("编辑…") { editor = runtime }; Button(runtime.enabled ? "停用" : "启用") { var updated = runtime; updated.enabled.toggle(); store.saveRuntimeInstance(updated) }.disabled(store.isBusy); Button("删除…") { deleting = runtime } }
+            } primaryAction: { ids in if let id = ids.first { editor = store.runtimeInstances.first { $0.id == id } } }
+            .listStyle(.bordered).padding(.horizontal, 20).padding(.top, 16)
             HStack {
                 Button { creating = true } label: { Image(systemName: "plus") }.help("添加Agent 运行时实例")
+                Button("快速导入…") { discovering = true }.disabled(store.isBusy)
                 Button { deleting = selected } label: { Image(systemName: "minus") }.disabled(selected == nil).help("删除运行时实例")
                 Spacer()
                 Button("编辑…") { editor = selected }.disabled(selected == nil)
             }.padding(.horizontal, 20).padding(.vertical, 12)
             SettingsError(message: store.error)
         }
+        .sheet(isPresented: $discovering) { RuntimeDiscoveryView(store: store) }
         .sheet(item: $editor) { instance in RuntimeEditor(instance: instance, types: store.runtimeTypes, gatewayID: store.gateway.id, isSaving: store.isLoading, error: store.error, save: store.saveRuntimeInstance) }
         .sheet(isPresented: $creating) { RuntimeEditor(instance: nil, types: store.runtimeTypes, gatewayID: store.gateway.id, isSaving: store.isLoading, error: store.error, save: store.saveRuntimeInstance) }
         .alert("删除运行时实例？", isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } }), presenting: deleting) { instance in Button("删除", role: .destructive) { store.deleteRuntimeInstance(id: instance.id); deleting = nil }; Button("取消", role: .cancel) { deleting = nil } } message: { instance in Text("删除「\(instance.name)」的配置，不删除运行时保存的会话。") }
@@ -885,7 +951,7 @@ struct NewConversationView: View {
                 }.keyboardShortcut(.defaultAction).disabled(runtimeID.isEmpty || modelRecordKey == nil || cwd.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || store.isBusy)
             }.padding(16)
         }.frame(width: 480, height: 310)
-        .onAppear { runtimeID = store.enabledRuntimeInstances.first(where: { $0.id == store.selectedRuntimeID })?.id ?? store.enabledRuntimeInstances.first?.id ?? "" }
+        .onAppear { runtimeID = store.enabledRuntimeInstances.first(where: { $0.id == store.nextTurnRuntimeID })?.id ?? store.enabledRuntimeInstances.first?.id ?? "" }
         .onChange(of: runtimeID) { _, _ in modelRecordKey = nil }
     }
     private func chooseDirectory() {

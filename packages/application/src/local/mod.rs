@@ -23,6 +23,7 @@ use velune_agent_runtime::{self as pi, Config as PiConfig, PiProjection};
 use velune_gateway::Runner;
 
 const CONTRACT_VERSION: u64 = 3;
+mod discovery;
 
 fn runtime_types(resources_directory: &Path) -> Vec<crate::config::RuntimeTypeDescriptor> {
     let bundled_binary =
@@ -88,12 +89,14 @@ pub struct CoreRuntime {
     repository: crate::repository::Repository,
     gateways: Vec<GatewayConfig>,
     model_templates: Vec<crate::config::ModelTemplate>,
+    conversation_browser_group_limit: u32,
     authentication_provider: Option<(String, String)>,
     runtime_instances: Vec<RuntimeInstance>,
     pi: PiState,
     active_state: ActiveState,
     gateway_runner: Option<Runner>,
-    selected_runtime_id: Option<String>,
+    next_turn_runtime_id: Option<String>,
+    execution_runtime_id: Option<String>,
     authentication: Option<authentication::Login>,
     model_record_key: Option<String>,
 }
@@ -117,12 +120,14 @@ impl CoreRuntime {
             repository,
             gateways: persisted.gateways,
             model_templates: persisted.model_templates,
+            conversation_browser_group_limit: persisted.conversation_browser_group_limit,
             authentication_provider: None,
             runtime_instances: persisted.runtime_instances,
             pi: PiState::default(),
             active_state: ActiveState::Empty,
             gateway_runner: None,
-            selected_runtime_id: None,
+            next_turn_runtime_id: None,
+            execution_runtime_id: None,
             authentication: None,
             model_record_key: None,
         })
@@ -203,6 +208,8 @@ impl CoreRuntime {
         }
         match action {
             "list" => self.list(),
+            "conversationBrowserSettings" => self.set_conversation_browser_group_limit(request),
+            "discoverRuntimes" => self.discover_runtimes(request),
             "providerImport" => self.provider_import_action(request),
             "providers" => self.provider_action(&request["payload"]),
             "modelTemplates" => self.template_action(&request["payload"]),
@@ -217,9 +224,8 @@ impl CoreRuntime {
                 self.sync_projection()?;
                 Ok(json!({"snapshot":self.current_snapshot()}))
             }
-            "send" => self.send_action(request),
+            "sendTurn" => self.send_turn_action(request),
             "cancel" => self.cancel_action(request),
-            "selectModel" => self.select_model(request),
             "replyRuntimeInteraction" => self.reply_runtime_interaction(request),
             "authentication" => self.authentication_action(&request["payload"]),
             action => Err(RuntimeError::Unsupported(action.into())),

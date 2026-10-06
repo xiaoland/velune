@@ -34,7 +34,7 @@ impl CoreRuntime {
             self.runtime_instances = previous_runtimes;
             return Err(error);
         }
-        let reconnect = self.selected_runtime_id.as_ref().is_some_and(|id| {
+        let reconnect = self.next_turn_runtime_id.as_ref().is_some_and(|id| {
             let before = previous_runtimes.iter().find(|runtime| &runtime.id == id);
             let after = self
                 .runtime_instances

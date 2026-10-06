@@ -41,6 +41,15 @@ enum MacExecutableDiscovery {
         }
     }
 
+    /// Returns installed executable paths without accepting a runtime version.
+    /// The application adapter checks its exact supported variant afterwards.
+    static func candidates(command: String, completion: @escaping ([String]) -> Void) {
+        DispatchQueue.global(qos: .userInitiated).async {
+            let paths = candidatePaths(command: command).filter(isExecutable)
+            DispatchQueue.main.async { completion(paths) }
+        }
+    }
+
     private static func candidatePaths(command: String) -> [String] {
         guard command.range(of: #"^[A-Za-z0-9._-]+$"#, options: .regularExpression) != nil else { return [] }
         var paths = ["/usr/local/bin/\(command)", "/opt/homebrew/bin/\(command)", "/usr/bin/\(command)"]

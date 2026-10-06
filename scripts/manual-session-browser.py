@@ -137,22 +137,20 @@ def main():
             application.save_provider('default', provider, b.BindingAuthenticationEdit.KEEP())
             key = application.list().gateways[0].providers[0].models[0].record_key
             model.record_key = key
-            chosen = application.select_model('fixture', key).snapshot
-            assert chosen.model_record_key == key and chosen.conversation.id == item.id
-            assert not marker.exists(), 'choosing a model started execution'
-            rejected(lambda: application.send('fixture', 'DO_NOT_ACCEPT_THIS_MESSAGE'))
+            chosen = application.snapshot('fixture').snapshot
+            assert chosen.model_record_key is None and chosen.conversation.id == item.id
+            rejected(lambda: application.send_turn('fixture', key, 'DO_NOT_ACCEPT_THIS_MESSAGE'))
             current = application.snapshot('fixture').snapshot
-            assert current.conversation.id == item.id and current.model_record_key == key
+            assert current.conversation.id == item.id and current.model_record_key is None
             assert current.messages == chosen.messages
             assert not marker.exists(), 'missing cwd was checked after running the CLI'
             (root / 'project').mkdir()
             application.save_provider('default', provider,
                 b.BindingAuthenticationEdit.SET_API_KEY(value='SYNTHETIC_ONLY'))
             # Existing internal identity remains stable after provider edits.
-            application.select_model('fixture', key)
-            rejected(lambda: application.send('fixture', 'DO_NOT_ACCEPT_THIS_MESSAGE'))
+            rejected(lambda: application.send_turn('fixture', key, 'DO_NOT_ACCEPT_THIS_MESSAGE'))
             current = application.snapshot('fixture').snapshot
-            assert current.conversation.id == item.id and current.model_record_key == key
+            assert current.conversation.id == item.id and current.model_record_key is None
             assert current.messages == chosen.messages
             bad = b.BindingRuntimeInstance(enabled=True, id='unreadable', name='Synthetic broken source',
                 type_id='pi-1.0.2', gateway_id='default', settings={

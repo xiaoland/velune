@@ -7,6 +7,7 @@ use std::{path::Path, process::Command};
 pub enum RuntimeProtocol {
     ChatCompletionsV1,
     ResponsesV1,
+    MessagesV1,
 }
 pub struct RuntimeVariant {
     pub id: &'static str,
@@ -28,6 +29,7 @@ const VARIANTS: &[RuntimeVariant] = &[
         supported_protocols: &[
             RuntimeProtocol::ChatCompletionsV1,
             RuntimeProtocol::ResponsesV1,
+            RuntimeProtocol::MessagesV1,
         ],
     },
     RuntimeVariant {
@@ -49,6 +51,7 @@ const VARIANTS: &[RuntimeVariant] = &[
         supported_protocols: &[
             RuntimeProtocol::ChatCompletionsV1,
             RuntimeProtocol::ResponsesV1,
+            RuntimeProtocol::MessagesV1,
         ],
     },
 ];
@@ -60,10 +63,28 @@ pub fn variant(id: &str) -> Option<&'static RuntimeVariant> {
 }
 pub fn check_version(type_id: &str, binary: &Path, node_binary: Option<&Path>) -> Result<String> {
     let adapter = variant(type_id).ok_or_else(|| Error::new("运行时版本类型不受支持"))?;
+    let version = probe_version(adapter.family_id, binary, node_binary)?;
+    if !Regex::new(adapter.version_regex)
+        .map_err(|_| Error::new("适配器版本规则无效"))?
+        .is_match(&version)
+    {
+        return Err(Error::new(format!(
+            "运行时版本 {version} 不属于所选类型 {}（{}）；请选择对应版本的运行时类型。",
+            adapter.name, adapter.version_regex
+        )));
+    }
+    Ok(version)
+}
+
+/// Read only the public CLI version; never start an Agent session.
+pub fn probe_version(family_id: &str, binary: &Path, node_binary: Option<&Path>) -> Result<String> {
+    if !VARIANTS.iter().any(|v| v.family_id == family_id) {
+        return Err(Error::new("未知运行时系列"));
+    }
     if !binary.is_absolute() || node_binary.is_some_and(|p| !p.is_absolute()) {
         return Err(Error::new("运行时可执行文件必须为绝对路径"));
     }
-    let mut command = if adapter.id == "codex-0.159.3" {
+    let mut command = if family_id == "codex" {
         Command::new(binary)
     } else if let Some(node) = node_binary {
         let mut command = Command::new(node);
@@ -85,14 +106,11 @@ pub fn check_version(type_id: &str, binary: &Path, node_binary: Option<&Path>) -
         return Err(Error::new("无法唯一识别运行时版本"));
     }
     let version = versions[0];
-    if !Regex::new(adapter.version_regex)
-        .map_err(|_| Error::new("适配器版本规则无效"))?
-        .is_match(version)
-    {
-        return Err(Error::new(format!(
-            "运行时版本 {version} 不属于所选类型 {}（{}）；请选择对应版本的运行时类型。",
-            adapter.name, adapter.version_regex
-        )));
-    }
     Ok(version.into())
+}
+
+pub fn matching_variant(family_id: &str, version: &str) -> Option<&'static RuntimeVariant> {
+    VARIANTS.iter().find(|v| {
+        v.family_id == family_id && Regex::new(v.version_regex).is_ok_and(|r| r.is_match(version))
+    })
 }

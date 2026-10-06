@@ -24,13 +24,29 @@ struct ConversationBrowser {
         let id: SectionID
         let title: String
         let conversations: [Conversation]
+        let totalCount: Int
+        var hasMore: Bool { conversations.count < totalCount }
     }
+    var initialLimit = 20
+    private var additionalPages: [SectionID: Int] = [:]
+    mutating func loadMore(_ sectionID: SectionID) { additionalPages[sectionID, default: 0] += 1 }
+    mutating func resetPagination() { additionalPages.removeAll() }
     var grouping = Grouping.none
     var sort = Sort.updated
     var oldestFirst = false
     var runtimeID: String?
     var project = ProjectFilter.all
     var search = ""
+    struct Query: Equatable {
+        let grouping: Grouping
+        let sort: Sort
+        let oldestFirst: Bool
+        let runtimeID: String?
+        let project: ProjectFilter
+        let search: String
+        let initialLimit: Int
+    }
+    var query: Query { Query(grouping: grouping, sort: sort, oldestFirst: oldestFirst, runtimeID: runtimeID, project: project, search: search, initialLimit: initialLimit) }
     var hasFilters: Bool { runtimeID != nil || project != .all }
 
     func sections(conversations: [Conversation], runtimes: [RuntimeInstance]) -> [Section] {
@@ -70,7 +86,7 @@ struct ConversationBrowser {
             case .runtime(let id): title = enabled[id] ?? "Agent 运行时"
             case .project(let path): title = path ?? "未指定项目"
             }
-            return Section(id: key, title: title, conversations: rows)
+            return Section(id: key, title: title, conversations: Array(rows.prefix(max(1, initialLimit) * (1 + additionalPages[key, default: 0]))), totalCount: rows.count)
         }.sorted { lhs, rhs in
             if lhs.id == .project(nil) { return false }
             if rhs.id == .project(nil) { return true }

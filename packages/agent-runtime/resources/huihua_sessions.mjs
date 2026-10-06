@@ -7,14 +7,16 @@ import { isAbsolute, join } from "node:path";
 import { createReadStream } from "node:fs";
 import { createInterface } from "node:readline";
 
-class RequestError extends Error {}
+class RequestError extends Error {
+  constructor(code) { super(code); this.code = code; }
+}
 
 /** @typedef {import('huihua').SessionEvent} Event */
 /** @typedef {{kind:'text'|'reasoning'|'notice',text:string}|{kind:'tool',toolID:string|null,title:string,state:'pending'|'running'|'completed'|'failed',output:string|null}} Block */
 /** @typedef {{id:string,role:string,timestamp_unix_ms:number|null,blocks:Block[]}} Message */
 /** @param {unknown} value @returns {string} */
 function requiredString(value) {
-  if (typeof value !== "string" || !value.trim()) throw new RequestError("Expected nonempty string");
+  if (typeof value !== "string" || !value.trim()) throw new RequestError("invalid_request");
   return value;
 }
 /** @param {import('huihua').Timestamp|undefined} value */
@@ -84,7 +86,7 @@ async function codexNames(home) {
   try {
     for await (const line of lines) {
       if (!line.trim()) continue;
-      if (line.length > 1024 * 1024) throw new RequestError("Native title index record is too large");
+      if (line.length > 1024 * 1024) throw new RequestError("index_record_too_large");
       let entry;
       // The native append-only index reader skips malformed records as well.
       try { entry = JSON.parse(line); } catch (error) { if (error instanceof SyntaxError) continue; throw error; }
@@ -103,11 +105,11 @@ async function main() {
   const request = JSON.parse(input);
   const providerId = requiredString(request.provider);
   const provider = providerId === "codex" ? codexProvider : providerId === "deepseek" ? deepseekProvider : null;
-  if (!provider) throw new RequestError("Unsupported history provider");
+  if (!provider) throw new RequestError("unsupported_provider");
   const home = requiredString(request.home);
-  if (!isAbsolute(home) || !Array.isArray(request.roots) || request.roots.length === 0) throw new RequestError("Explicit absolute home and roots are required");
+  if (!isAbsolute(home) || !Array.isArray(request.roots) || request.roots.length === 0) throw new RequestError("invalid_history_roots");
   const roots = request.roots.map(requiredString);
-  if (roots.some(root => !isAbsolute(root))) throw new RequestError("History roots must be absolute");
+  if (roots.some(root => !isAbsolute(root))) throw new RequestError("invalid_history_roots");
   const refs = (await provider.scan({homeDir:home,roots:{[provider.id]:roots}}))
     .filter(ref => ref.metadata.id_origin === "native");
   const nativeNames = providerId === "codex" ? await codexNames(home) : null;
@@ -127,17 +129,24 @@ async function main() {
   };
   if (request.operation === "list") {
     const sessions = [];
+    const failures = [];
     for (const ref of refs) {
       // scan only knows header facts; read obtains the native last activity time.
-      const session = await provider.read(ref);
-      sessions.push(summary(session,presentationEvents(session.events,providerId)));
+      try {
+        const session = await provider.read(ref);
+        sessions.push(summary(session,presentationEvents(session.events,providerId)));
+      } catch {
+        // One damaged or concurrently deleted native file must not hide every
+        // other session. Native IDs are returned only as existing opaque IDs.
+        failures.push({code:"provider_read"});
+      }
     }
-    return {contractVersion:1,sessions};
+    return {contractVersion:1,sessions,failures};
   }
-  if (request.operation !== "read") throw new RequestError("Unsupported history operation");
+  if (request.operation !== "read") throw new RequestError("unsupported_operation");
   const nativeId = requiredString(request.nativeId);
   const matches = refs.filter(ref => ref.id === nativeId);
-  if (matches.length !== 1) throw new RequestError(matches.length ? "Ambiguous native session ID within configured roots" : "Native session not found in configured roots");
+  if (matches.length !== 1) throw new RequestError(matches.length ? "ambiguous_session" : "session_not_found");
   const session = await provider.read(matches[0]);
   /** @type {Message[]} */
   const messages = [];
@@ -163,8 +172,8 @@ async function main() {
 }
 try { process.stdout.write(JSON.stringify(await main())); }
 catch (error) {
-  // No parser/raw payload is written to stderr: callers receive a bounded error.
-  const detail = error instanceof RequestError ? error.message : "History provider could not read configured sessions";
-  process.stderr.write(JSON.stringify({error:"history_read_failed",detail}) + "\n");
-  process.exitCode = 1;
+  // Keep failures in the bounded protocol envelope. Never expose provider
+  // paths, parser details, session content, or exception text.
+  const code = error instanceof RequestError ? error.code : "provider_read";
+  process.stdout.write(JSON.stringify({contractVersion:1,error:{code}}));
 }

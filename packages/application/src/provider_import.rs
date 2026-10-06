@@ -157,6 +157,7 @@ fn protocol(value: &str) -> Option<GatewayProtocol> {
     match value {
         "chatCompletionsV1" => Some(GatewayProtocol::ChatCompletionsV1),
         "responsesV1" => Some(GatewayProtocol::ResponsesV1),
+        "messagesV1" => Some(GatewayProtocol::MessagesV1),
         _ => None,
     }
 }

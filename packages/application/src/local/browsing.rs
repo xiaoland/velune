@@ -18,11 +18,8 @@ impl CoreRuntime {
         if !self.runtime_instance(id)?.enabled {
             return Err(RuntimeError::invalid("此运行时已停用，请先启用"));
         }
-        if self.selected_runtime_id.as_deref() != Some(id) {
-            self.invalidate_execution()?;
-            self.active_state = ActiveState::Empty;
-            self.model_record_key = None;
-            self.selected_runtime_id = Some(id.into());
+        if self.next_turn_runtime_id.as_deref() != Some(id) {
+            self.next_turn_runtime_id = Some(id.into());
         }
         self.list()
     }
@@ -53,8 +50,12 @@ impl CoreRuntime {
         runtime: &RuntimeInstance,
     ) -> Result<Vec<ConversationSummary>, RuntimeError> {
         if runtime.type_id != "pi-1.0.2" {
-            return history::list(&self.history_config(runtime)?, &runtime.id).map_err(|_| {
-                RuntimeError::invalid("运行时历史目录无法读取；请检查实例配置后重试")
+            return history::list(&self.history_config(runtime)?, &runtime.id).map_err(|error| {
+                let variant = velune_agent_runtime::version::variant(&runtime.type_id);
+                let family = variant.map(|value| value.family_id).unwrap_or("unknown");
+                let runtime_type = variant.map(|value| value.id).unwrap_or("unknown");
+                tracing::warn!(target: "velune_application", event = "runtime_history_read_failed", phase = error.phase(), failure_kind = error.code(), runtime_family = family, runtime_type);
+                RuntimeError::History(error)
             });
         }
         let value = pi_session_helper(&self.pi_history_config(runtime)?, None)?;
@@ -152,20 +153,31 @@ impl CoreRuntime {
                     .map(str::to_owned);
             }
         } else {
-            let read = history::read(&self.history_config(runtime)?, native_id)
-                .map_err(|_| RuntimeError::invalid("会话历史详情无法读取，请检查实例配置后重试"))?;
+            let read = history::read(&self.history_config(runtime)?, native_id).map_err(|error| {
+                let variant = velune_agent_runtime::version::variant(&runtime.type_id);
+                let family = variant.map(|value| value.family_id).unwrap_or("unknown");
+                let runtime_type = variant.map(|value| value.id).unwrap_or("unknown");
+                tracing::warn!(target: "velune_application", event = "runtime_history_read_failed", phase = error.phase(), failure_kind = error.code(), runtime_family = family, runtime_type);
+                RuntimeError::History(error)
+            })?;
             snapshot.conversation.cwd = read.cwd;
             snapshot.messages = read.messages;
         }
-        snapshot.actions.can_send = snapshot.model_record_key.is_some();
+        // A history projection is send-capable once the UI supplies the next
+        // turn's model. The source record may intentionally have no model
+        // marker, so this flag must not encode the old model-selection state.
+        snapshot.actions.can_send = true;
         Ok(snapshot)
     }
     pub(super) fn invalidate_execution(&mut self) -> Result<(), RuntimeError> {
         let mut snapshot = self.current_snapshot();
-        let selected = self.selected_runtime_id.clone();
+        // Closing execution leaves its native history view usable. A read-only
+        // view has no execution owner, so restoration must follow its source.
+        let source = snapshot
+            .as_ref()
+            .map(|view| view.conversation.runtime_id.clone());
         let shutdown_result = self.shutdown_active();
-        if let Some(id) = selected.filter(|id| self.runtime_instance(id).is_ok()) {
-            self.selected_runtime_id = Some(id.clone());
+        if let Some(id) = source.filter(|id| self.runtime_instance(id).is_ok_and(|r| r.enabled)) {
             if let Some(view) = snapshot.as_mut() {
                 if view.model_record_key.as_deref().is_some_and(|key| {
                     self.validate_session_model(
@@ -179,7 +191,7 @@ impl CoreRuntime {
                 view.run_state = RunState::Idle;
                 view.pending_interactions.clear();
                 view.actions = ConversationActions {
-                    can_send: view.model_record_key.is_some(),
+                    can_send: true,
                     can_cancel: false,
                     can_switch: true,
                 };
@@ -199,7 +211,7 @@ impl CoreRuntime {
         is_new: bool,
     ) -> Result<(), RuntimeError> {
         let previous = self.current_snapshot();
-        let previous_runtime = self.selected_runtime_id.clone();
+        let previous_runtime = self.next_turn_runtime_id.clone();
         let runtime_id = snapshot.conversation.runtime_id.clone();
         let runtime = self.runtime_instance(&runtime_id)?.clone();
         self.validate_session_model(&runtime, key)?;
@@ -296,7 +308,7 @@ impl CoreRuntime {
             // Preparation never submits a prompt. Failed setup is retryable;
             // an accepted send is never automatically dispatched a second time.
             let _ = self.shutdown_active();
-            self.selected_runtime_id = previous_runtime;
+            self.next_turn_runtime_id = previous_runtime;
             self.model_record_key = previous.as_ref().and_then(|s| s.model_record_key.clone());
             if let Some(mut view) = previous {
                 view.messages.push(Message {

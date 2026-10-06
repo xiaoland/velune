@@ -9,6 +9,32 @@ use velune_conversation::{
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct RuntimeDiscoveryHint {
+    pub family_id: String,
+    pub command: String,
+    pub agent_directory: String,
+    pub directory_exists: bool,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RuntimeDiscoveryProbe {
+    pub family_id: String,
+    pub binary: String,
+    pub node_binary: String,
+    pub agent_directory: String,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RuntimeDiscoveryCandidate {
+    pub runtime: RuntimeInstance,
+    pub version: Option<String>,
+    pub supported: bool,
+    pub already_configured: bool,
+    pub detail: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ProviderSummary {
     pub id: String,
     pub name: String,
@@ -65,6 +91,7 @@ pub struct ConfigurationSnapshot {
     pub runtime_instances: Vec<RuntimeInstance>,
     pub runtime_types: Vec<RuntimeTypeDescriptor>,
     pub model_templates: Vec<ModelTemplate>,
+    pub conversation_browser_group_limit: u32,
     pub provider_import_types: Vec<RuntimeTypeDescriptor>,
     pub protocols: Vec<ProtocolDescriptor>,
     #[serde(rename = "selectedRuntimeInstanceID")]
@@ -228,6 +255,27 @@ pub struct AuthenticationNotification {
 }
 
 impl Application {
+    pub fn runtime_discovery_hints(
+        &self,
+        user_home: String,
+        overrides: BTreeMap<String, String>,
+    ) -> Result<Vec<RuntimeDiscoveryHint>, Error> {
+        #[cfg(feature = "local-runtime")]
+        {
+            crate::runtime_discovery::hints(&user_home, overrides)
+        }
+        #[cfg(not(feature = "local-runtime"))]
+        {
+            let _ = (user_home, overrides);
+            Err(Error::Unsupported("此平台不提供本地运行时发现".into()))
+        }
+    }
+    pub fn discover_runtimes(
+        &mut self,
+        probes: Vec<RuntimeDiscoveryProbe>,
+    ) -> Result<Vec<RuntimeDiscoveryCandidate>, Error> {
+        self.execute("discoverRuntimes", json!({"probes":probes}), None)
+    }
     fn execute<T: DeserializeOwned>(
         &mut self,
         action: &str,
@@ -244,6 +292,9 @@ impl Application {
     }
     pub fn list(&mut self) -> Result<ConfigurationSnapshot, Error> {
         self.execute("list", json!({}), None)
+    }
+    pub fn set_conversation_browser_group_limit(&mut self, limit: u32) -> Result<u32, Error> {
+        self.execute("conversationBrowserSettings", json!({"limit": limit}), None)
     }
     pub fn upsert_runtime(&mut self, runtime: RuntimeInstance) -> Result<RuntimeUpdate, Error> {
         self.execute(
@@ -311,22 +362,20 @@ impl Application {
     pub fn snapshot(&mut self, runtime_id: String) -> Result<SnapshotResult, Error> {
         self.execute("getSnapshot", json!({}), Some(&runtime_id))
     }
-    pub fn send(&mut self, runtime_id: String, text: String) -> Result<SnapshotResult, Error> {
-        self.execute("send", json!({"text":text}), Some(&runtime_id))
-    }
-    pub fn cancel(&mut self, runtime_id: String) -> Result<SnapshotResult, Error> {
-        self.execute("cancel", json!({}), Some(&runtime_id))
-    }
-    pub fn select_model(
+    pub fn send_turn(
         &mut self,
         runtime_id: String,
         model_record_key: String,
+        text: String,
     ) -> Result<SnapshotResult, Error> {
         self.execute(
-            "selectModel",
-            json!({"modelRecordKey":model_record_key}),
+            "sendTurn",
+            json!({"modelRecordKey":model_record_key,"text":text}),
             Some(&runtime_id),
         )
+    }
+    pub fn cancel(&mut self, runtime_id: String) -> Result<SnapshotResult, Error> {
+        self.execute("cancel", json!({}), Some(&runtime_id))
     }
     pub fn preview_provider_import(
         &mut self,

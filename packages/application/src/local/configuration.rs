@@ -1,6 +1,23 @@
 //! Local application configuration use cases.
 use super::*;
 impl CoreRuntime {
+    pub(super) fn set_conversation_browser_group_limit(
+        &mut self,
+        request: &Value,
+    ) -> Result<Value, RuntimeError> {
+        let limit = request["payload"]["limit"]
+            .as_u64()
+            .and_then(|value| u32::try_from(value).ok())
+            .filter(|value| *value > 0)
+            .ok_or_else(|| RuntimeError::invalid("每组会话加载数量必须大于零"))?;
+        let previous = self.conversation_browser_group_limit;
+        self.conversation_browser_group_limit = limit;
+        if let Err(error) = self.persist() {
+            self.conversation_browser_group_limit = previous;
+            return Err(error);
+        }
+        Ok(json!(limit))
+    }
     pub(super) fn list(&self) -> Result<Value, RuntimeError> {
         let mut conversations = Vec::new();
         let mut history_failures = Vec::new();
@@ -40,12 +57,14 @@ impl CoreRuntime {
             "runtimeInstances": self.runtime_instances,
             "runtimeTypes": runtime_types(&self.options.resources_directory),
             "modelTemplates":self.model_templates,
+            "conversationBrowserGroupLimit":self.conversation_browser_group_limit,
             "providerImportTypes": [provider_import::descriptor()],
             "protocols": [
                 {"id":"chatCompletionsV1","name":"OpenAI Chat Completions v1","supported":true},
-                {"id":"responsesV1","name":"OpenAI Responses v1","supported":true}
+                {"id":"responsesV1","name":"OpenAI Responses v1","supported":true},
+                {"id":"messagesV1","name":"Anthropic Messages","supported":true}
             ],
-            "selectedRuntimeInstanceID": self.selected_runtime_id,
+            "selectedRuntimeInstanceID": self.next_turn_runtime_id,
         }))
     }
 
@@ -105,7 +124,7 @@ impl CoreRuntime {
                 }
                 let execution_invalidated = (imported_gateway != previous)
                     && self
-                        .selected_runtime_id
+                        .next_turn_runtime_id
                         .as_ref()
                         .and_then(|id| {
                             self.runtime_instances
@@ -204,24 +223,52 @@ impl CoreRuntime {
             "list" => {}
             _ => return Err(RuntimeError::invalid("runtime operation")),
         }
-        let execution_invalidated = self.selected_runtime_id.as_ref().is_some_and(|id| {
+        let source_id = self
+            .current_snapshot()
+            .map(|view| view.conversation.runtime_id);
+        let changed = |id: &String| {
             previous.iter().find(|runtime| &runtime.id == id)
                 != self
                     .runtime_instances
                     .iter()
                     .find(|runtime| &runtime.id == id)
+        };
+        let source_changed = source_id.as_ref().is_some_and(|id| {
+            let origin = |runtime: &RuntimeInstance| {
+                (
+                    runtime.type_id.clone(),
+                    runtime.enabled,
+                    runtime.settings.clone(),
+                )
+            };
+            previous
+                .iter()
+                .find(|runtime| &runtime.id == id)
+                .map(origin)
+                != self
+                    .runtime_instances
+                    .iter()
+                    .find(|runtime| &runtime.id == id)
+                    .map(origin)
         });
+        let execution_invalidated =
+            source_changed || self.execution_runtime_id.as_ref().is_some_and(changed);
         if execution_invalidated {
             self.invalidate_execution()?;
-            if self.selected_runtime_id.as_ref().is_some_and(|id| {
-                self.runtime_instances
-                    .iter()
-                    .any(|runtime| &runtime.id == id && !runtime.enabled)
-            }) {
+            if source_changed {
+                // A native ID is scoped to the source configuration used to
+                // load it. Editing that source requires an explicit reopen.
                 self.active_state = ActiveState::Empty;
-                self.selected_runtime_id = None;
                 self.model_record_key = None;
             }
+        }
+        if self.next_turn_runtime_id.as_ref().is_some_and(|id| {
+            !self
+                .runtime_instances
+                .iter()
+                .any(|runtime| &runtime.id == id && runtime.enabled)
+        }) {
+            self.next_turn_runtime_id = None;
         }
         Ok(
             json!({"runtimeInstances":self.runtime_instances,"runtimeTypes":runtime_types(&self.options.resources_directory),"executionInvalidated":execution_invalidated}),
@@ -234,6 +281,7 @@ impl CoreRuntime {
             model_templates: self.model_templates.clone(),
             gateways: self.gateways.clone(),
             runtime_instances: self.runtime_instances.clone(),
+            conversation_browser_group_limit: self.conversation_browser_group_limit,
         })
     }
 }

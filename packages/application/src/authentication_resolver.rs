@@ -103,9 +103,7 @@ impl CredentialResolver for ProviderResolver {
             let expected = match protocol {
                 crate::config::GatewayProtocol::ChatCompletionsV1 => "chatCompletionsV1",
                 crate::config::GatewayProtocol::ResponsesV1 => "responsesV1",
-                crate::config::GatewayProtocol::MessagesV1 => {
-                    return Err(CredentialResolutionError::InvalidContract);
-                }
+                crate::config::GatewayProtocol::MessagesV1 => "messagesV1",
             };
             if value["contractVersion"] != 1
                 || value["capabilities"]["protocol"] != expected
@@ -154,7 +152,7 @@ pub(crate) fn read_api_key(
                     velune_gateway::GatewayProtocol::ResponsesV1
                 }
                 crate::config::GatewayProtocol::MessagesV1 => {
-                    return Err(crate::Error::invalid("provider protocol"));
+                    velune_gateway::GatewayProtocol::MessagesV1
                 }
             };
             let runtime = tokio::runtime::Builder::new_current_thread()

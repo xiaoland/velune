@@ -9,13 +9,31 @@ use std::{
     io::Write,
     path::{Path, PathBuf},
 };
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct PersistedConfig {
     pub(crate) schema_version: u32,
     pub(crate) gateways: Vec<GatewayConfig>,
     pub(crate) runtime_instances: Vec<RuntimeInstance>,
     pub(crate) model_templates: Vec<crate::config::ModelTemplate>,
+    #[serde(default = "default_conversation_browser_group_limit")]
+    pub(crate) conversation_browser_group_limit: u32,
+}
+
+pub(crate) fn default_conversation_browser_group_limit() -> u32 {
+    20
+}
+
+impl Default for PersistedConfig {
+    fn default() -> Self {
+        Self {
+            schema_version: 0,
+            gateways: Vec::new(),
+            runtime_instances: Vec::new(),
+            model_templates: Vec::new(),
+            conversation_browser_group_limit: default_conversation_browser_group_limit(),
+        }
+    }
 }
 
 pub(crate) struct Repository {
@@ -70,6 +88,9 @@ impl Repository {
                         ));
                     }
                     let value: PersistedConfig = serde_json::from_value(raw)?;
+                    if value.conversation_browser_group_limit == 0 {
+                        return Err(RuntimeError::invalid("每组会话加载数量必须大于零"));
+                    }
                     for gateway in &value.gateways {
                         gateway.validate().map_err(RuntimeError::invalid)?;
                     }

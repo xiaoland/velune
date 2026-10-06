@@ -12,7 +12,7 @@
 
 AI 服务是独立 lib，其领域不限于 LLM；sampling 语义不作为整个 AI 服务的基础模型。AI 服务与 Agent 运行时保持独立，协议和 SDK 由具体 adapter 封装。读取运行时提供商配置属于 application 与运行时 adapter 的导入用例，不使 AI 服务依赖 Harness 的模型目录、认证文件或推理级别。
 
-当前讨论和实现的 gateway 仅为 LLM Gateway，承担 LLM 协议的同协议原生透传、模型路由与 fail-over，当前不做协议转换或翻译。它是 AI 模块的一种应用模式，不代表 AI 服务整体，也不是 Harness 专属网关；Harness 是它的一类调用方。此前文档中的“AI 网关”在当前范围内均指此 LLM Gateway。当前产品协议范围为 OpenAI ChatCompletions v1 与 Responses v1，不以这些操作限制整个 AI 服务未来的领域，也不将尚未实现的 Messages 等协议视为已交付。
+当前讨论和实现的 gateway 仅为 LLM Gateway，承担 LLM 协议的同协议原生透传、模型路由与 fail-over，当前不做协议转换或翻译。它是 AI 模块的一种应用模式，不代表 AI 服务整体，也不是 Harness 专属网关；Harness 是它的一类调用方。此前文档中的“AI 网关”在当前范围内均指此 LLM Gateway。当前产品协议范围为 OpenAI ChatCompletions v1、Responses v1 与 Anthropic Messages。它们保持各自原生 HTTP／JSON／SSE 契约，不以这些操作限制整个 AI 服务未来的领域。Messages baseURL 追加 `/v1/messages`，请求版本由调用方的 `anthropic-version` 决定；网关不补默认版本，也不重组业务正文。API key 使用原生 `x-api-key`，当前未核实的 subscription 认证在派发前拒绝。Pi／DSH 的 Messages 注入采用网关 origin，OpenAI 采用 `/v1`；Codex 适配器仍只支持 Responses。隔离证据见 [本轮任务](../../tasks/settings-protocol-refinement/packet.md)。
 
 AI 能力可以由应用直接调用，也可以由 LLM Gateway 组合后对外提供 HTTP 入口；直接消费不要求经过 gateway。应用模式是职责关系，不要求把 gateway 并入 `ai` package。现有独立 `gateway` unit 可以继续承担这一模式，依赖 AI 能力；AI 契约不反向依赖它。非 LLM 能力只按具体用例扩展，不预建其它网关或空领域框架。
 
@@ -101,7 +101,7 @@ huihua package 的只读会话 projection、ACP／app-server 的 resume、用户
 
 ## 当前实现与证据
 
-ChatCompletions 与 Responses 已改为独立原生操作，LLM Gateway 不再经过 SamplingInput／SamplingDelta，也不使用 MiniMax 映射器。gateway 根据路由绑定写入精确 providerModelId，再构造原生协议输入；provider 不再维护逻辑模型映射，保留其它请求字段；原生 JSON／SSE、HTTP 状态及安全响应头经过同一保真边界。原生事件 sink 可等待，下游通过容量为 1 的通道施加背压；取消关闭派发 Future。业务 Usage／Quantity 归 sampling 数据，observation 可以消费它们；原有单操作 `AiService` 改名为 `SamplingService`，不代表整个 AI 模块。
+ChatCompletions、Responses 与 Messages 已改为独立原生操作，LLM Gateway 不再经过 SamplingInput／SamplingDelta，也不使用 MiniMax 映射器。gateway 根据路由绑定写入精确 providerModelId，再构造原生协议输入；provider 不再维护逻辑模型映射，保留其它请求字段；原生 JSON／SSE、HTTP 状态及安全响应头经过同一保真边界。原生事件 sink 可等待，下游通过容量为 1 的通道施加背压；取消关闭派发 Future。业务 Usage／Quantity 归 sampling 数据，observation 可以消费它们；原有单操作 `AiService` 改名为 `SamplingService`，不代表整个 AI 模块。
 
 HTTP ingress 使用 Axum，application 的提供商认证解析器在每次请求前校验捕获的目标并异步解析，provider 使用本次捕获的认证和共享 HTTP client 执行一次请求。平台与来源 helper 由 application 装配；Unix helper 的进程组在超时、取消和网关关闭时终止，Windows 对应 helper 尚未开放。资源上限、配置快照与平台限制见 [gateway unit](../../packages/gateway/README.md)。当前按提供商模型条目作静态目标解析，fail-over Disabled，未实现无中断热配置。
 
@@ -144,7 +144,7 @@ app main → AiService::sampling(request, attempt_id, event_sink)
 
 统一配置中心拥有持久配置，app main 创建新的 immutable provider／binding／service。两个 lib 不读 env、文件、全局配置，也不保存配置。[手动入口](../../packages/ai-provider/examples/minimax_manual.rs) 是本步 composition root：读取获准 Networksecret 占位、创建带标准环境代理及系统 TLS 校验的客户端，禁 retry／redirect，注入内存凭据。不是正式配置中心或产品入口。
 
-ProviderConfig 保留协议、CredentialRef、模型映射、ProviderId／ConfigRevision。新增独立 ChatCompletionsConfig；Messages 仍仅配置形状；Responses 原生操作已实现，但其调用／尝试与流生命周期仍需本轮审计复核。MiniMax adapter 限定 HTTPS `api.minimax.cn:443/v1`、`MiniMax-M3`，`thinking:disabled`、`service_tier:standard`，不启用内置收费工具。HTTP 客户端的安全装配属于 app；adapter 接受已装配 client，不能从类型上证明任意第三方传入的 client 均关闭重试。
+ProviderConfig 保留协议、CredentialRef、模型映射、ProviderId／ConfigRevision。新增独立 ChatCompletionsConfig；Messages 和 Responses 原生操作已实现；Messages 保真与固定 Pi／DSH 注入路径已通过隔离验收。MiniMax adapter 限定 HTTPS `api.minimax.cn:443/v1`、`MiniMax-M3`，`thinking:disabled`、`service_tier:standard`，不启用内置收费工具。HTTP 客户端的安全装配属于 app；adapter 接受已装配 client，不能从类型上证明任意第三方传入的 client 均关闭重试。
 
 ProviderBinding::prepare 捕获 Arc 与 revision；adapter 自身也持有 immutable 配置和凭据，不重读配置。Arc 不证明其他 trait 实现无内部可变性；并发热切换、凭据轮换尚未实测。HttpEndpoint／ID 构造器仍是语法边界，不是完整网络安全策略。
 

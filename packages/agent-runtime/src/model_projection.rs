@@ -41,6 +41,9 @@ pub struct PiModelProjection {
     /// Effective Pi 1.0.2 compatibility, materialized before replacing its URL/provider.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub completions_compat: Option<serde_json::Value>,
+    /// Native Anthropic Messages adapter capabilities retained from the source.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub messages_compat: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sampling_params: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

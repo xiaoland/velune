@@ -19,6 +19,8 @@ mod provider_configuration;
 #[cfg(feature = "local-runtime")]
 mod provider_import;
 mod repository;
+#[cfg(feature = "local-runtime")]
+mod runtime_discovery;
 pub use api::*;
 #[cfg(feature = "local-runtime")]
 use local as implementation;
@@ -56,6 +58,9 @@ pub enum Error {
     #[cfg(feature = "local-runtime")]
     #[error("{0}")]
     ProviderImport(#[from] velune_agent_runtime::provider_source::SourceReadError),
+    #[cfg(feature = "local-runtime")]
+    #[error("{0}")]
+    History(#[from] velune_agent_runtime::history::HistoryError),
     #[error("invalid application operation: {0}")]
     Invalid(String),
     #[error("unsupported application operation: {0}")]

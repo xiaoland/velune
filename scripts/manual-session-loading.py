@@ -2,7 +2,8 @@
 """Explicit Mac AppStore/Transport loading acceptance with isolated Pi history.
 Compiles the production Store plus a same-file visibility shim for one poll;
 uses actual UniFFI/core/helper execution, not mocked Store or response models.
-No window, credentials, upstream request or automated-test entry point is used.
+No window, real credentials or external upstream is used. Two controlled loopback
+turns exercise actual Pi execution; this is not an automated-test entry point.
 """
 import argparse
 import json
@@ -10,6 +11,9 @@ from pathlib import Path
 import shutil
 import subprocess
 import tempfile
+import threading
+import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 SWIFT = r'''
 import AppKit
@@ -20,10 +24,11 @@ import VeluneBindings
     @MainActor static func main() throws {
         let args = CommandLine.arguments
         let root = URL(fileURLWithPath: args[1]), resources = URL(fileURLWithPath: args[2])
-        let ids = Array(args[3...6]), node = args[7]
+        let ids = Array(args[3...6]), node = args[7], endpoint = args[8]
         let application = try VeluneApplication.open(options: BindingOptions(homeDirectory: root.appendingPathComponent("application").path, resourcesDirectory: resources.path))
         _ = try application.upsertRuntime(runtime: BindingRuntimeInstance(enabled: true, id: "fixture", name: "Synthetic", typeId: "pi-1.0.2", gatewayId: "default", settings: ["binary":resources.appendingPathComponent("node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js").path,"nodeBinary":node,"agentDir":root.appendingPathComponent("runtime").path]))
         _ = try application.upsertRuntime(runtime: BindingRuntimeInstance(enabled: true, id: "other", name: "Other", typeId: "pi-1.0.2", gatewayId: "default", settings: ["binary":resources.appendingPathComponent("node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js").path,"nodeBinary":node,"agentDir":root.appendingPathComponent("runtime-other").path]))
+        _ = try application.saveProvider(gatewayId: "default", provider: BindingProviderDraft(id: "synthetic-provider", name: "Synthetic", protocol: .chatCompletionsV1, endpoint: endpoint, models: [BindingProviderModel(recordKey: "", providerModelId: "synthetic", nickname: "Synthetic", icon: nil, contextWindow: 8192, maxOutputTokens: 128, reasoningLevels: nil, adapterMetadataJson: nil)]), authenticationEdit: .setApiKey(value: "SYNTHETIC_ONLY"))
         _ = try application.selectRuntime(id: "fixture")
         try application.shutdown()
         let store = AppStore(transport: Transport(stateDirectory: root.appendingPathComponent("application"), resourcesDirectory: resources))
@@ -34,14 +39,30 @@ import VeluneBindings
         }
         store.start()
         wait { store.loadedConversationID == ids[0] && !store.isLoading }
+        let historyModelBeforeSelection = store.manualSnapshotModelKey()
+        let nextModel = store.models.first!.recordKey
+        store.selectNextTurnRuntime("fixture"); store.selectModel(modelRecordKey: nextModel)
+        precondition(store.nextTurnRuntimeID == "fixture" && store.nextTurnModelRecordKey == nextModel)
+        precondition(store.manualSnapshotModelKey() == historyModelBeforeSelection)
         let otherID = "other:" + ids[0].dropFirst("fixture:".count).replacingOccurrences(of: "/runtime/", with: "/runtime-other/")
         precondition(store.conversations.contains { $0.id == otherID })
         store.selectConversation(id: otherID)
         wait { !store.isLoading && store.loadedConversationID == otherID }
-        precondition(store.selectedRuntimeID == "other")
+        precondition(store.projectionRuntimeID == "other")
+        precondition(store.nextTurnRuntimeID == "fixture" && store.nextTurnModelRecordKey == nextModel)
+        precondition(store.executionBoundaryMessage != nil && !store.canSend)
+        store.send(text: "DO_NOT_FAKE_FOREIGN_RESUME")
+        precondition(store.error?.contains("跨运行时") == true)
+        store.selectNextTurnRuntime("other")
+        precondition(store.nextTurnModelRecordKey == nextModel && store.canSend)
+
         store.selectConversation(id: ids[0])
+        store.selectNextTurnRuntime("other"); store.selectModel(modelRecordKey: nextModel)
         wait { !store.isLoading && store.loadedConversationID == ids[0] }
-        precondition(store.selectedRuntimeID == "fixture")
+        precondition(store.projectionRuntimeID == "fixture")
+        precondition(store.nextTurnRuntimeID == "other" && store.nextTurnModelRecordKey == nextModel)
+        store.selectNextTurnRuntime("fixture")
+
         let loadedBeforeBrowsing = store.loadedConversationID
         var browser = ConversationBrowser()
         let runtimeB = RuntimeInstance(id: "other", name: "Other", typeID: "pi-1.0.2", gatewayID: "default", settings: [:])
@@ -65,6 +86,17 @@ import VeluneBindings
         var disabledB = runtimeB; disabledB.enabled = false
         precondition(browser.sections(conversations: rows, runtimes: store.runtimeInstances.filter { $0.id != "other" } + [disabledB]).flatMap(\.conversations).count == 1)
         precondition(store.loadedConversationID == loadedBeforeBrowsing)
+        browser = ConversationBrowser(); browser.grouping = .runtime
+        let many = (0..<45).flatMap { index in [Conversation(id: "fixture:page\(index)", title: "Page", updatedAtUnixMs: Int64(index), runtimeID: "fixture", cwd: "/one/project"), Conversation(id: "other:page\(index)", title: "Page", updatedAtUnixMs: Int64(index), runtimeID: "other", cwd: "/two/project")] }
+        var pages = browser.sections(conversations: many, runtimes: runtimes)
+        precondition(pages.count == 2 && pages.allSatisfy { $0.conversations.count == 20 && $0.totalCount == 45 && $0.hasMore })
+        browser.loadMore(.runtime("fixture")); pages = browser.sections(conversations: many, runtimes: runtimes)
+        precondition(pages.first { $0.id == .runtime("fixture") }?.conversations.count == 40)
+        precondition(pages.first { $0.id == .runtime("other") }?.conversations.count == 20)
+        browser.resetPagination(); browser.initialLimit = 7
+        precondition(browser.sections(conversations: many, runtimes: runtimes).allSatisfy { $0.conversations.count == 7 })
+        store.setConversationBrowserGroupLimit(7); wait { !store.isLoading && store.conversationBrowserGroupLimit == 7 }
+
         let firstRows = store.transcript.rows.map(ObjectIdentifier.init)
         var selections: [String?] = []
         let observer = store.$selectedConversationID.sink { selections.append($0) }
@@ -92,7 +124,7 @@ import VeluneBindings
         precondition(store.loadedConversationID == ids[1] && store.selectedConversationID == ids[1])
         precondition(store.transcript.rows.map(ObjectIdentifier.init) == loadedRows && store.error != nil)
         precondition(selections == [ids[2],ids[1]], "failed load had unexpected selection transitions")
-        func nativePath(_ id: String) -> URL { URL(fileURLWithPath: String(id.dropFirst("fixture:".count))) }
+        func nativePath(_ id: String) -> URL { URL(fileURLWithPath: String(id.split(separator: ":", maxSplits: 1)[1])) }
         func beginHeldLoad(_ id: String) throws {
             let ready = root.appendingPathComponent("ready")
             if FileManager.default.fileExists(atPath: ready.path) { try FileManager.default.removeItem(at: ready) }
@@ -164,10 +196,101 @@ import VeluneBindings
         try releaseHeldLoad()
         precondition(store.loadedConversationID == nil && !FileManager.default.fileExists(atPath: nativePath(ids[0]).path))
         precondition(store.error != nil && conversation(ids[2]).title == "C_RENAMED")
+        // A native Set selection can span runtimes without opening its members.
+        let otherB = "other:" + ids[1].dropFirst("fixture:".count).replacingOccurrences(of: "/runtime/", with: "/runtime-other/")
+        store.selectConversation(id: otherID); wait { !store.isLoading && store.loadedConversationID == otherID }
+        var hints: [BindingRuntimeDiscoveryHint] = []
+        var discoveredHints = false
+        store.runtimeDiscoveryHints(userHome: root.appendingPathComponent("discovery-home").path, overrides: [:]) { values in hints = values; discoveredHints = true }
+        wait { !store.isLoading && discoveredHints }
+        let piHint = hints.first { $0.familyId == "pi" }!
+        precondition(piHint.directoryExists && piHint.agentDirectory == root.appendingPathComponent("discovery-home/.pi/agent").path)
+        var discovered: [BindingRuntimeDiscoveryCandidate] = []
+        var discoveredVersions = false
+        let cli = resources.appendingPathComponent("node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js").path
+        store.discoverRuntimes([
+            BindingRuntimeDiscoveryProbe(familyId: "pi", binary: cli, nodeBinary: node, agentDirectory: piHint.agentDirectory),
+            BindingRuntimeDiscoveryProbe(familyId: "pi", binary: root.appendingPathComponent("unsupported.mjs").path, nodeBinary: node, agentDirectory: piHint.agentDirectory)
+        ]) { values in discovered = values; discoveredVersions = true }
+        wait { !store.isLoading && discoveredVersions }
+        precondition(discovered.count == 2 && discovered.filter(\.supported).count == 1)
+        precondition(discovered.first { !$0.supported }?.version == "9.9.9")
+        var importedRuntime = false
+        store.importRuntimes(discovered.filter(\.supported)) { ids in precondition(ids.count == 1); importedRuntime = true }
+        wait { !store.isLoading && importedRuntime }
+        precondition(store.loadedConversationID == otherID && store.projectionRuntimeID == "other")
+        precondition(store.runtimeInstances.contains { $0.settings["agentDir"] == piHint.agentDirectory && $0.gatewayID == store.gateway.id })
+        store.selectConversations(ids: [otherID, otherB])
+        precondition(store.loadedConversationID == otherID && store.projectionRuntimeID == "other")
+        store.manualPoll(); RunLoop.main.run(until: Date().addingTimeInterval(0.3))
+        precondition(store.selectedConversationIDs == [otherID, otherB])
+        let otherPath = nativePath(otherB), failedLink = root.appendingPathComponent("bulk-failed-link")
+        try FileManager.default.linkItem(at: otherPath, to: failedLink)
+        store.deleteConversations([conversation(otherID), conversation(otherB)])
+        wait { !store.isLoading && store.conversationManagementStatus == nil }
+        precondition(store.loadedConversationID == nil && !store.conversations.contains { $0.id == otherID })
+        precondition(store.conversations.contains { $0.id == otherB } && store.selectedConversationIDs == [otherB])
+        precondition(store.error?.contains("1 个已删除，1 个未删除") == true)
+        precondition(FileManager.default.fileExists(atPath: otherPath.path))
+        try FileManager.default.removeItem(at: failedLink)
+        store.deleteConversations([conversation(otherB), conversation(ids[2])])
+        wait { !store.isLoading && store.conversationManagementStatus == nil }
+        precondition(!store.conversations.contains { $0.id == otherB || $0.id == ids[2] })
+        var templatesAdded = false
+        store.saveTemplates([ModelTemplate(name: "Synthetic One", suggestedProviderModelID: "one"), ModelTemplate(name: "Synthetic Two", suggestedProviderModelID: "two")]) { count in precondition(count == 2); templatesAdded = true }
+        wait { !store.isLoading && templatesAdded }
+        precondition(store.modelTemplates.filter { $0.name.hasPrefix("Synthetic ") }.count == 2)
+        // The next-turn draft is mutable while an actual source turn runs.
+        // It must never redirect polling or cancellation to that draft target.
+        store.selectNextTurnRuntime("fixture"); store.selectModel(modelRecordKey: nextModel)
+        var createdTurn = false
+        store.createConversation(runtimeID: "fixture", cwd: root.appendingPathComponent("project").path, modelRecordKey: nextModel) { createdTurn = true }
+        wait { !store.isLoading && createdTurn }
+        let actualTurnID = store.loadedConversationID!
+        func holdTurn(_ number: Int) throws { try "hold".write(to: root.appendingPathComponent("turn-gate-\(number)"), atomically: true, encoding: .utf8) }
+        try holdTurn(1)
+        store.send(text: "Reply directly without tools.")
+        wait { store.isGenerating && FileManager.default.fileExists(atPath: root.appendingPathComponent("turn-ready-1").path) }
+        store.selectNextTurnRuntime("other"); store.selectModel(modelRecordKey: nextModel)
+        precondition(store.projectionRuntimeID == "fixture" && store.loadedConversationID == actualTurnID && store.nextTurnRuntimeID == "other" && store.canCancel)
+        store.manualRefreshResources()
+        wait { !store.isLoading }
+        store.manualPoll()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.2))
+        precondition(store.isGenerating && store.projectionRuntimeID == "fixture" && store.nextTurnRuntimeID == "other", "configuration refresh redirected the running projection")
+        try FileManager.default.removeItem(at: root.appendingPathComponent("turn-gate-1"))
+        wait { !store.isGenerating && !store.isLoading }
+        precondition(store.projectionRuntimeID == "fixture" && store.loadedConversationID == actualTurnID && store.nextTurnRuntimeID == "other")
+        precondition(store.manualSnapshotModelKey() == nextModel)
+        precondition(store.manualSnapshot()?.messages.contains { message in message.blocks.contains { block in if case .text(let text) = block { return text.contains("SYNTHETIC_RUNNING_REPLY") }; return false } } == true)
+
+        store.selectNextTurnRuntime("fixture")
+        try holdTurn(2)
+        store.send(text: "Reply directly without tools again.")
+        wait { store.isGenerating && FileManager.default.fileExists(atPath: root.appendingPathComponent("turn-ready-2").path) }
+        store.selectNextTurnRuntime("other"); store.selectModel(modelRecordKey: nextModel)
+        store.cancel()
+        wait { !store.isGenerating && !store.isLoading }
+        try FileManager.default.removeItem(at: root.appendingPathComponent("turn-gate-2"))
+        precondition(store.projectionRuntimeID == "fixture" && store.loadedConversationID == actualTurnID && store.nextTurnRuntimeID == "other")
+        var editedProvider = store.gateway.providers.first!
+        editedProvider.endpoint = endpoint + "/changed"
+        var providerSaved = false
+        store.saveProvider(editedProvider, authenticationEdit: .keep) { providerSaved = true }
+        wait { providerSaved && !store.isLoading }
+        precondition(store.loadedConversationID == actualTurnID && store.projectionRuntimeID == "fixture" && store.nextTurnRuntimeID == "other" && store.nextTurnModelRecordKey == nextModel, "provider invalidation discarded history or changed the next-turn intent")
+        store.manualPoll()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.2))
+        precondition(store.loadedConversationID == actualTurnID && store.manualSnapshot()?.messages.contains { $0.role == .assistant } == true)
         observer.cancel()
         var closed = false
         store.shutdown { closed = $0 }; wait { closed }
-        print("{\"actualAppStoreAndTransport\":true,\"crossRuntimeUnifiedBrowsing\":true,\"fullPathGroupsAndNativeDateSorting\":true,\"slowLoadSelectionStable\":true,\"latePollIgnored\":true,\"concurrentSelectionSerialized\":true,\"failedLoadRestoredOnce\":true,\"loadedRowsPreservedDuringLoadAndFailure\":true,\"queuedNativeRenameAndDelete\":true,\"deletedDestinationCannotReturn\":true,\"failedMutationPreservesLoadedSource\":true,\"upstreamRequests\":0}")
+        let verifier = try VeluneApplication.open(options: BindingOptions(homeDirectory: root.appendingPathComponent("application").path, resourcesDirectory: resources.path))
+        let persisted = try verifier.list()
+        precondition(persisted.conversationBrowserGroupLimit == 7)
+        try verifier.shutdown()
+
+        print("{\"actualAppStoreAndTransport\":true,\"crossRuntimeUnifiedBrowsing\":true,\"fullPathGroupsAndNativeDateSorting\":true,\"slowLoadSelectionStable\":true,\"latePollIgnored\":true,\"concurrentSelectionSerialized\":true,\"failedLoadRestoredOnce\":true,\"loadedRowsPreservedDuringLoadAndFailure\":true,\"queuedNativeRenameAndDelete\":true,\"deletedDestinationCannotReturn\":true,\"failedMutationPreservesLoadedSource\":true,\"nativeMultiSelectionAndPartialBulkDelete\":true,\"perGroupPaginationAndPersistedLimit\":true,\"batchTemplateSave\":true,\"typedQuickImportPreservesLoadedSource\":true,\"nextTurnIntentIndependentOfHistoryAndPendingOpen\":true,\"runningTurnFinishAndCancelKeepActualOwner\":true,\"upstreamRequests\":2}")
     }
 }
 '''
@@ -185,8 +308,36 @@ def main():
         temporary = Path(directory)
         resources = temporary / 'resources'; resources.mkdir()
         (resources / 'node_modules').symlink_to(args.bundle / 'Contents/Resources/node_modules')
+        for resource in (args.bundle / 'Contents/Resources').glob('*.mjs'): shutil.copy(resource, resources)
         (temporary / 'home').mkdir(); (temporary / 'project').mkdir()
+        (temporary / 'discovery-home/.pi/agent').mkdir(parents=True)
+        (temporary / 'unsupported.mjs').write_text('console.log("pi 9.9.9");\n')
         env = {'HOME':str(temporary / 'home'),'PATH':str(args.node.parent) + ':/usr/bin:/bin'}
+        requests = []
+        class Upstream(BaseHTTPRequestHandler):
+            def log_message(self, *_): pass
+            def do_POST(self):
+                body = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
+                requests.append(body['model'])
+                number = len(requests)
+                self.send_response(200); self.send_header('Content-Type', 'text/event-stream'); self.end_headers()
+                initial = {'id':'synthetic','object':'chat.completion.chunk','created':1,'model':body['model'],'choices':[{'index':0,'delta':{'role':'assistant'},'finish_reason':None}]}
+                try:
+                    self.wfile.write(('data: '+json.dumps(initial)+'\n\n').encode()); self.wfile.flush()
+                    (temporary / f'turn-ready-{number}').write_text('ready')
+                    deadline = time.monotonic() + 20
+                    while (temporary / f'turn-gate-{number}').exists() and time.monotonic() < deadline: time.sleep(.02)
+                    chunks = [
+                        {'id':'synthetic','object':'chat.completion.chunk','created':1,'model':body['model'],'choices':[{'index':0,'delta':{'content':'SYNTHETIC_RUNNING_REPLY'},'finish_reason':None}]},
+                        {'id':'synthetic','object':'chat.completion.chunk','created':1,'model':body['model'],'choices':[{'index':0,'delta':{},'finish_reason':'stop'}],'usage':{'prompt_tokens':1,'completion_tokens':2,'total_tokens':3}}
+                    ]
+                    for chunk in chunks: self.wfile.write(('data: '+json.dumps(chunk)+'\n\n').encode())
+                    self.wfile.write(b'data: [DONE]\n\n'); self.wfile.flush()
+                except (BrokenPipeError, ConnectionResetError): pass # Native cancellation closes the stream.
+        server = ThreadingHTTPServer(('127.0.0.1',0),Upstream)
+        threading.Thread(target=server.serve_forever,daemon=True).start()
+        endpoint = f'http://127.0.0.1:{server.server_port}/v1'
+
         seed = resources / 'seed.mjs'
         seed.write_text("""import {SessionManager} from '@earendil-works/pi-coding-agent';
 const [cwd,dir,title]=process.argv.slice(2); const manager=SessionManager.create(cwd,dir);
@@ -208,7 +359,7 @@ manager.appendSessionInfo(title); console.log(manager.getSessionFile());
             + 'await import(' + json.dumps(original_helper.as_uri()) + ');\n')
         main = temporary / 'Manual.swift'; main.write_text(SWIFT)
         store = temporary / 'Store.swift'
-        store.write_text((root / 'app/mac/Store.swift').read_text() + '\nextension AppStore { func manualPoll() { poll() } }\n')
+        store.write_text((root / 'app/mac/Store.swift').read_text() + '\nextension AppStore { func manualPoll() { poll() }; func manualSnapshotModelKey() -> String? { snapshot?.modelRecordKey }; func manualSnapshot() -> ConversationSnapshot? { snapshot }; func manualRefreshResources() { guard let transport else { return }; enqueue({ try transport.list() }) { [weak self] in self?.applyList($0) } } }\n')
         import_models = temporary / 'ImportModels.swift'
         import_models.write_text((root / 'app/mac/ProviderImport.swift').read_text().split('struct ProviderImportView: View {')[0])
         objects = []
@@ -221,6 +372,8 @@ manager.appendSessionInfo(title); console.log(manager.getSessionFile());
         command += [str(import_models),str(store),str(main),*objects,'-L',str(args.bundle / 'Contents/Frameworks'),'-lvelune_bindings','-Xlinker','-rpath','-Xlinker',str(args.bundle / 'Contents/Frameworks'),'-o',str(temporary / 'manual')]
         subprocess.run(command,check=True,cwd=root)
         identities = ['fixture:' + paths[name] for name in ['A','B','C','D']]
-        subprocess.run([str(temporary / 'manual'),str(temporary),str(resources),*identities,str(args.node)],check=True,cwd=temporary,env=env)
+        subprocess.run([str(temporary / 'manual'),str(temporary),str(resources),*identities,str(args.node),endpoint],check=True,cwd=temporary,env=env)
+        server.shutdown(); server.server_close()
+        assert requests == ['synthetic', 'synthetic'], 'unexpected loopback dispatch'
 
 if __name__ == '__main__': main()

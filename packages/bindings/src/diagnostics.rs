@@ -116,6 +116,7 @@ impl BindingFailureKind {
             Self::Closed => "closed",
             Self::Unavailable => "unavailable",
             Self::ProviderImport => "provider_import",
+            Self::History => "history",
         }
     }
 }

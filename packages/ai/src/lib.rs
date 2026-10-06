@@ -6,6 +6,7 @@ pub mod chat_completions;
 pub mod direct;
 pub mod http;
 pub mod ids;
+pub mod messages;
 pub mod observation;
 pub mod provider;
 pub mod responses;

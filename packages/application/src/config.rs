@@ -265,6 +265,7 @@ impl GatewayProtocol {
                 .map(|protocol| match protocol {
                     RuntimeProtocol::ChatCompletionsV1 => Self::ChatCompletionsV1,
                     RuntimeProtocol::ResponsesV1 => Self::ResponsesV1,
+                    RuntimeProtocol::MessagesV1 => Self::MessagesV1,
                 })
                 .collect(),
         )

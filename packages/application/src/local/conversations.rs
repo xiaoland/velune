@@ -1,6 +1,41 @@
 //! Local application conversations use cases.
 use super::*;
 impl CoreRuntime {
+    pub(super) fn send_turn_action(&mut self, request: &Value) -> Result<Value, RuntimeError> {
+        if self.busy() {
+            return Err(RuntimeError::invalid("runtime is busy"));
+        }
+        let runtime_id = request["payload"]["runtimeInstanceID"]
+            .as_str()
+            .ok_or_else(|| RuntimeError::invalid("runtime instance id"))?;
+        let model_record_key = request["payload"]["modelRecordKey"]
+            .as_str()
+            .ok_or_else(|| RuntimeError::invalid("model id"))?;
+        let text = request["payload"]["text"]
+            .as_str()
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| RuntimeError::invalid("message text"))?;
+        let snapshot = self
+            .current_snapshot()
+            .ok_or_else(|| RuntimeError::invalid("conversation is not active"))?;
+        if snapshot.conversation.runtime_id != runtime_id {
+            return Err(RuntimeError::Unsupported(
+                "跨运行时继续此会话尚未接入；请先选择会话来源运行时".into(),
+            ));
+        }
+        self.validate_session_model(self.runtime_instance(runtime_id)?, model_record_key)?;
+        if matches!(self.active_state, ActiveState::History(_)) {
+            self.prepare_snapshot(snapshot, model_record_key, false)?;
+        } else if self.model_record_key.as_deref() != Some(model_record_key) {
+            self.select_model(&json!({
+                "payload": {"runtimeInstanceID": runtime_id, "modelRecordKey": model_record_key}
+            }))?;
+        }
+        self.send_action(&json!({
+            "payload": {"runtimeInstanceID": runtime_id, "text": text}
+        }))
+    }
+
     pub(super) fn create_conversation(&mut self, request: &Value) -> Result<Value, RuntimeError> {
         if self.busy() {
             return Err(RuntimeError::invalid("runtime is busy"));
@@ -47,11 +82,11 @@ impl CoreRuntime {
         // Resolve and project the destination before releasing the old view.
         let snapshot = self.read_history(runtime_id, id).inspect_err(|_| {
             if let Some(slot)=self.runtime_instances.iter().position(|r|r.id==runtime_id) {
-                tracing::warn!(target:"velune_application",event="runtime_history_read_failed",phase="history_open",failure_kind="history_access_failed",runtime_slot=slot+1);
+                let slot_for = |id: Option<&str>| id.and_then(|id| self.runtime_instances.iter().position(|r| r.id == id)).map_or(0, |slot| slot + 1);
+                tracing::warn!(target:"velune_application",event="runtime_history_read_failed",phase="history_open",failure_kind="history_access_failed",source_runtime_slot=slot+1,execution_runtime_slot=slot_for(self.execution_runtime_id.as_deref()),next_turn_runtime_slot=slot_for(self.next_turn_runtime_id.as_deref()));
             }
         })?;
         self.invalidate_execution()?;
-        self.selected_runtime_id = Some(runtime_id.into());
         self.model_record_key = snapshot.model_record_key.clone();
         self.active_state = ActiveState::History(Box::new(snapshot));
         Ok(json!({"snapshot":self.current_snapshot()}))
@@ -107,7 +142,7 @@ impl CoreRuntime {
         if !listed
             && runtime.type_id == "pi-1.0.2"
             && matches!(self.active_state, ActiveState::Pi)
-            && self.selected_runtime_id.as_deref() == Some(runtime_id)
+            && self.execution_runtime_id.as_deref() == Some(runtime_id)
             && self
                 .current_snapshot()
                 .is_some_and(|snapshot| snapshot.conversation.id == id)
@@ -381,7 +416,7 @@ impl CoreRuntime {
         let runtime = self
             .runtime_instances
             .iter()
-            .find(|item| Some(&item.id) == self.selected_runtime_id.as_ref())
+            .find(|item| Some(&item.id) == self.execution_runtime_id.as_ref())
             .expect("active runtime instance is configured");
         let gateway = self
             .gateways
@@ -445,7 +480,11 @@ impl CoreRuntime {
         let requested = request["payload"]["runtimeInstanceID"]
             .as_str()
             .ok_or_else(|| RuntimeError::invalid("runtime instance id"))?;
-        if self.selected_runtime_id.as_deref() != Some(requested) {
+        let active_runtime = self
+            .current_snapshot()
+            .map(|snapshot| snapshot.conversation.runtime_id)
+            .or_else(|| self.execution_runtime_id.clone());
+        if active_runtime.as_deref() != Some(requested) {
             return Err(RuntimeError::invalid("runtime instance is not active"));
         }
         Ok(())
@@ -476,7 +515,7 @@ impl CoreRuntime {
             }
             if let Some(path) = state["data"]["sessionFile"].as_str() {
                 let runtime_id = self
-                    .selected_runtime_id
+                    .execution_runtime_id
                     .as_deref()
                     .expect("a Pi client has an active runtime instance");
                 projection.set_conversation(ConversationSummary {

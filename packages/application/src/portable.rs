@@ -29,10 +29,24 @@ impl CoreRuntime {
                 "gateways":provider_configuration::summaries(&self.config.gateways),
                 "runtimeInstances":self.config.runtime_instances, "runtimeTypes":[],
                 "modelTemplates":self.config.model_templates, "providerImportTypes":[],
+                "conversationBrowserGroupLimit":self.config.conversation_browser_group_limit,
                 "protocols":[{"id":"chatCompletionsV1","name":"OpenAI Chat Completions v1","supported":true},
-                    {"id":"responsesV1","name":"OpenAI Responses v1","supported":true}],
+                    {"id":"responsesV1","name":"OpenAI Responses v1","supported":true},
+                    {"id":"messagesV1","name":"Anthropic Messages","supported":true}],
                 "selectedRuntimeInstanceID":null
             })),
+            Some("conversationBrowserSettings") => {
+                let limit = payload["limit"]
+                    .as_u64()
+                    .and_then(|value| u32::try_from(value).ok())
+                    .filter(|value| *value > 0)
+                    .ok_or_else(|| Error::invalid("每组会话加载数量必须大于零"))?;
+                let mut next = self.config.clone();
+                next.conversation_browser_group_limit = limit;
+                self.repository.store(&next)?;
+                self.config = next;
+                Ok(json!(limit))
+            }
             Some("providers") => {
                 if payload["operation"] == "readApiKey" {
                     let provider = self

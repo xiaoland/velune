@@ -217,6 +217,32 @@ pub struct BindingRuntimeInstance {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+#[serde(rename_all = "camelCase")]
+pub struct BindingRuntimeDiscoveryHint {
+    pub family_id: String,
+    pub command: String,
+    pub agent_directory: String,
+    pub directory_exists: bool,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+#[serde(rename_all = "camelCase")]
+pub struct BindingRuntimeDiscoveryProbe {
+    pub family_id: String,
+    pub binary: String,
+    pub node_binary: String,
+    pub agent_directory: String,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+#[serde(rename_all = "camelCase")]
+pub struct BindingRuntimeDiscoveryCandidate {
+    pub runtime: BindingRuntimeInstance,
+    pub version: Option<String>,
+    pub supported: bool,
+    pub already_configured: bool,
+    pub detail: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct BindingRuntimeTypeDescriptor {
     pub id: String,
@@ -238,6 +264,7 @@ pub struct BindingConfigurationSnapshot {
     pub runtime_instances: Vec<BindingRuntimeInstance>,
     pub runtime_types: Vec<BindingRuntimeTypeDescriptor>,
     pub model_templates: Vec<BindingModelTemplate>,
+    pub conversation_browser_group_limit: u32,
     pub provider_import_types: Vec<BindingRuntimeTypeDescriptor>,
     pub protocols: Vec<BindingProtocolDescriptor>,
     #[serde(rename = "selectedRuntimeInstanceID")]
