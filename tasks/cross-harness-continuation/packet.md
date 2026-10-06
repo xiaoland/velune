@@ -8,7 +8,7 @@
 
 公开接口的待核对事实：Pi 1.0.2 可初始化原生消息；Codex 0.159.3 的 history 导入公开标记不稳定，不用作产品依赖；DSH 0.2.0-rc.2 ACP 未暴露 history seed。候选共同路径是在目标原生会话的首次用户请求中交接明确标记的文本上下文，而不将历史作为 developer 指令或执行工具消息。上下文内容、重复展示过滤、切换失败的提交边界与关联文件结构由 advisor 和源码 owner 核对；不将候选直接提升为已实现事实。
 
-验收要求覆盖至少两种实际运行时的双向接续、多次切换、重启投影、失败保持原会话与下一轮意图、原生管理影响、取消和交互归属，以及元数据文件不包含正文。不新增自动化测试；静态检查、构建和临时 HOME／合成 loopback 脚本，不读取用户真实配置、凭据或会话，不调用真实模型。完成后重新安装 `/Applications/Velune.app`，版本保持0.1 beta.1；真实服务与 GUI 由用户验收。当前仅完成授权与文档归位，源码实施中。
+验收要求覆盖至少两种实际运行时的双向接续、多次切换、重启投影、失败保持原会话与下一轮意图、原生管理影响、取消和交互归属，以及元数据文件不包含正文。不新增自动化测试；静态检查、构建和临时 HOME／合成 loopback 脚本，不读取用户真实配置、凭据或会话，不调用真实模型。当前源码与隔离验收已完成，已安装 `/Applications/Velune.app`，版本保持0.1 beta.1；真实服务与 GUI 由用户验收，安装证据见末尾。
 
 Advisor 决策已采纳：逻辑会话包含有序原生 segment，A→B→A 创建 A₁、B₁、A₂，不向旧 A₁ 补差量。现有 Message.id 在 Pi 有索引 fallback，DSH live 与 history ID 不一致，snapshot.revision 仅生命周期内有效，因此都不能持久化为 cutoff。首版从同一权威历史读取结果保存消息数量与规范化前缀摘要，重开先校验再取截止前缀；截止后的外部追加不进入旧段，截止前改写或删除明确报关联片段不可恢复。投影消息 ID 加 segment 命名空间。
 
@@ -24,4 +24,6 @@ Advisor 决策已采纳：逻辑会话包含有序原生 segment，A→B→A 创
 
 截至debug probe的实际验收：`manual-cross-harness.py` 用实际Pi1.0.2→Codex0.159.3→DSH0.2rc2→Pi，共4次loopback，验证每轮仅一次上游、单逻辑行、origin/runtime/context分离、重开全部文本及稳定ID、metadata无正文、可见user无marker/重复包、首段可改名／含DSH时不能伪删除，以及封闭Pi源追加被排除、prefix合法改写明确拒绝。`manual-session-loading.py` 使用当前AppStore／Transport／UniFFI与两Pi实例，共3次loopback，新增完整逻辑重开、原生首段改名、全段删除、尾段硬链接保护导致部分删除后保留关联与nextdraft、清旧详情禁止发送，去掉保护后同row重试完成。严格Swift warnings-as-errors构建和Python语法通过，Mac源码已冻结。
 
-root的 `manual-continuation-boundaries.py` 用真实Pi和2次loopback，验证256KiB超长及协议不兼容在准备前拒绝、原子关联提交失败不发请求且保来源bytes、显式重试只有一个关联target、元数据无正文/credential且0600、尾段原生历史不可读取时保已校验来源并禁止resume、修复后重开、schema6普通配置hard-cutoff不删除独立关联文件，以及重启不主动发送。Rust fmt/check/workspace strict clippy及bindings no-default strict clippy通过。所有数据均为临时HOME的合成内容，无真实秘密或模型API；release安装与安装库复验尚待收口。
+root的 `manual-continuation-boundaries.py` 用真实Pi和2次loopback，验证256KiB超长及协议不兼容在准备前拒绝、原子关联提交失败不发请求且保来源bytes、显式重试只有一个关联target、元数据无正文/credential且0600、尾段原生历史不可读取时保已校验来源并禁止resume、修复后重开、schema6普通配置hard-cutoff不删除独立关联文件，以及重启不主动发送。Rust fmt/check/workspace strict clippy及bindings no-default strict clippy通过。所有数据均为临时HOME的合成内容，无真实秘密或模型API。
+
+最终安装证据（2026-10-06）：clean源码提交 `e734727a5e6077a7b2d9de493ceab63dd380e96c` 通过release Rust构建、生成Swift UniFFI和Swift warnings-as-errors构建，已重新安装 `/Applications/Velune.app`；manifest确认dirty=false、0.1 beta.1、schema7和具名UniFFI，签名校验通过。无需退出进程，安装前确认没有已运行的Velune。按实际安装库重新生成Python绑定后，三个人工脚本全部通过：跨family接续4次loopback、实际AppStore重启／原生管理含部分删除重试3次loopback、失败／持久化边界2次loopback。原生工具和审批未作为可执行消息注入；应用没有自动重发。这些证据不替代用户真实服务与GUI验收。本轮无push／PR。
