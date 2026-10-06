@@ -2,158 +2,54 @@
 use super::*;
 impl CoreRuntime {
     pub(super) fn create_conversation(&mut self, request: &Value) -> Result<Value, RuntimeError> {
-        self.ensure_active(request)?;
         if self.busy() {
             return Err(RuntimeError::invalid("runtime is busy"));
         }
+        let runtime_id = request["payload"]["runtimeInstanceID"]
+            .as_str()
+            .ok_or_else(|| RuntimeError::invalid("runtime instance id"))?;
+        let runtime = self.runtime_instance(runtime_id)?.clone();
         let cwd = request["payload"]["cwd"]
             .as_str()
             .map(PathBuf::from)
             .ok_or_else(|| RuntimeError::invalid("conversation working directory"))?;
+        let key = request["payload"]["modelRecordKey"]
+            .as_str()
+            .ok_or_else(|| RuntimeError::invalid("请选择会话模型"))?;
         validate_session_cwd(&cwd)?;
-        if matches!(self.active_state, ActiveState::Native(_)) {
-            self.native_create(&cwd)?;
-            return Ok(json!({"snapshot":self.current_snapshot()}));
-        }
-        let default_model = self
-            .runtime_instances
-            .iter()
-            .find(|item| Some(&item.id) == self.active_runtime_id.as_ref())
-            .expect("active runtime instance is configured")
-            .model_record_key
-            .as_deref()
-            .ok_or_else(|| RuntimeError::invalid("runtime model id"))?
-            .to_owned();
-        self.model_record_key = Some(default_model.clone());
-        let gateway = self
-            .runtime_instances
-            .iter()
-            .find(|item| Some(&item.id) == self.active_runtime_id.as_ref())
-            .and_then(|runtime| {
-                self.gateways
-                    .iter()
-                    .find(|gateway| gateway.id == runtime.gateway_id)
-            })
-            .ok_or_else(|| RuntimeError::invalid("runtime gateway"))?;
-        self.pi.subscription_capability = gateway.subscription(&default_model);
-        let default_physical_model_id = gateway
-            .pi_binding_id(
-                &default_model,
-                gateway.authentication_revision(&default_model),
-            )
-            .map_err(RuntimeError::invalid)?;
-        self.start_pi_for_session(
-            &cwd,
-            None,
-            Some(&default_model),
-            Some(&default_physical_model_id),
-            self.pi.subscription_capability,
-        )?;
-        self.pi
-            .client
-            .as_mut()
-            .expect("started Pi client")
-            .request(json!({"type":"new_session"}))
-            .map_err(|_| RuntimeError::invalid("conversation create"))?;
-        self.bind_gateway_model()?;
-        self.drain_runtime()?;
-        self.pi.physical_model_id = Some(default_physical_model_id);
-        self.sync_projection()?;
+        self.validate_session_model(&runtime, key)?;
+        let snapshot = PiProjection::new(ConversationSummary {
+            id: "new".into(),
+            title: "新会话".into(),
+            updated_at: None,
+            runtime_id: runtime_id.into(),
+            cwd: Some(cwd.to_string_lossy().into_owned()),
+        })
+        .snapshot
+        .expect("new projection");
+        self.prepare_snapshot(snapshot, key, true)?;
         Ok(json!({"snapshot":self.current_snapshot()}))
     }
-
     pub(super) fn open_conversation(&mut self, request: &Value) -> Result<Value, RuntimeError> {
-        self.ensure_active(request)?;
         if self.busy() {
             return Err(RuntimeError::invalid("runtime is busy"));
         }
+        let runtime_id = request["payload"]["runtimeInstanceID"]
+            .as_str()
+            .ok_or_else(|| RuntimeError::invalid("runtime instance id"))?;
         let id = request["payload"]["conversationID"]
             .as_str()
             .ok_or_else(|| RuntimeError::invalid("conversation id"))?;
-        if matches!(self.active_state, ActiveState::Native(_)) {
-            self.native_open(id)?;
-            return Ok(json!({"snapshot":self.current_snapshot()}));
-        }
-        let runtime_id = self
-            .active_runtime_id
-            .as_ref()
-            .expect("active runtime instance")
-            .clone();
-        let prefix = format!("{runtime_id}:");
-        let path = id
-            .strip_prefix(&prefix)
-            .map(PathBuf::from)
-            .filter(|path| path.is_absolute())
-            .ok_or_else(|| RuntimeError::invalid("conversation id"))?;
-        // Read session metadata before starting Pi. The saved cwd is the
-        // session's project context and must not fall back to the app cwd.
-        let saved = pi_session_helper(
-            self.pi.config.as_ref().expect("connected Pi config"),
-            Some(&path),
-        )?;
-        let cwd = saved["cwd"]
-            .as_str()
-            .filter(|value| !value.is_empty())
-            .map(PathBuf::from)
-            .ok_or_else(|| RuntimeError::invalid("session working directory is unavailable"))?;
-        validate_session_cwd(&cwd)?;
-        let restored_model = saved["virtualState"]["state"]["modelRecordKey"].as_str();
-        let runtime = self
-            .runtime_instances
-            .iter()
-            .find(|item| item.id == runtime_id)
-            .expect("active runtime instance is configured");
-        let gateway = self
-            .gateways
-            .iter()
-            .find(|item| item.id == runtime.gateway_id)
-            .expect("runtime gateway is configured");
-        let model_record_key = restored_model
-            .filter(|id| {
-                ((saved["virtualState"]["provider"] == "velune"
-                    && saved["virtualState"]["state"]["provider"] == "velune-gateway")
-                    || saved["virtualState"]["provider"] == "velune-gateway"
-                    || saved["model"]["provider"] == "velune-gateway")
-                    && runnable_pi_model(gateway, id).is_ok()
-            })
-            .map(str::to_owned);
-        self.pi.physical_model_id = None;
-        self.model_record_key = model_record_key.clone();
-        self.pi.subscription_capability = model_record_key
-            .as_deref()
-            .is_some_and(|id| gateway.subscription(id));
-        if let Some(model_record_key) = model_record_key {
-            let physical_model_id = gateway
-                .pi_binding_id(
-                    &model_record_key,
-                    gateway.authentication_revision(&model_record_key),
-                )
-                .map_err(RuntimeError::invalid)?;
-            self.pi.physical_model_id = Some(physical_model_id.clone());
-            self.start_pi_for_session(
-                &cwd,
-                Some(&path),
-                Some(&model_record_key),
-                Some(&physical_model_id),
-                self.pi.subscription_capability,
-            )?;
-        } else {
-            self.start_pi_for_session(&cwd, Some(&path), None, None, false)?;
-        }
-        if let Some(projection) = self.pi.projection.as_mut() {
-            projection.set_conversation(ConversationSummary {
-                id: id.into(),
-                title: path
-                    .file_stem()
-                    .and_then(|item| item.to_str())
-                    .unwrap_or("会话")
-                    .into(),
-                updated_at: None,
-                runtime_id,
-                cwd: Some(cwd.to_string_lossy().into_owned()),
-            });
-        }
-        self.sync_projection()?;
+        // Resolve and project the destination before releasing the old view.
+        let snapshot = self.read_history(runtime_id, id).inspect_err(|_| {
+            if let Some(slot)=self.runtime_instances.iter().position(|r|r.id==runtime_id) {
+                tracing::warn!(target:"velune_application",event="runtime_history_read_failed",phase="history_open",failure_kind="history_access_failed",runtime_slot=slot+1);
+            }
+        })?;
+        self.invalidate_execution()?;
+        self.selected_runtime_id = Some(runtime_id.into());
+        self.model_record_key = snapshot.model_record_key.clone();
+        self.active_state = ActiveState::History(Box::new(snapshot));
         Ok(json!({"snapshot":self.current_snapshot()}))
     }
 
@@ -166,6 +62,14 @@ impl CoreRuntime {
             .as_str()
             .filter(|item| !item.trim().is_empty())
             .ok_or_else(|| RuntimeError::invalid("message text"))?;
+        if matches!(self.active_state, ActiveState::History(_)) {
+            let snapshot = self.current_snapshot().expect("history snapshot");
+            let key = snapshot
+                .model_record_key
+                .clone()
+                .ok_or_else(|| RuntimeError::invalid("请选择此会话的模型"))?;
+            self.prepare_snapshot(snapshot, &key, false)?;
+        }
         if let ActiveState::Native(session) = &mut self.active_state {
             session
                 .send(text)
@@ -184,7 +88,7 @@ impl CoreRuntime {
             .pi
             .client
             .as_mut()
-            .ok_or_else(|| RuntimeError::invalid("runtime is not connected"))?
+            .ok_or_else(|| RuntimeError::invalid("会话执行尚未准备"))?
             .prompt(text)
             .map_err(|_| RuntimeError::invalid("message send"))?;
         if let Some(projection) = self.pi.projection.as_mut() {
@@ -220,7 +124,7 @@ impl CoreRuntime {
         self.pi
             .client
             .as_mut()
-            .ok_or_else(|| RuntimeError::invalid("runtime is not connected"))?
+            .ok_or_else(|| RuntimeError::invalid("会话执行尚未准备"))?
             .request(json!({"type":"set_model","provider":"velune","modelId":"auto"}))
             .map_err(|_| RuntimeError::invalid("gateway model binding"))?;
         let _ = model_record_key;
@@ -239,7 +143,7 @@ impl CoreRuntime {
         self.pi
             .client
             .as_mut()
-            .ok_or_else(|| RuntimeError::invalid("runtime is not connected"))?
+            .ok_or_else(|| RuntimeError::invalid("会话执行尚未准备"))?
             .cancel()
             .map_err(|_| RuntimeError::invalid("message cancel"))?;
         self.drain_runtime()?;
@@ -250,6 +154,42 @@ impl CoreRuntime {
         self.ensure_active(request)?;
         if self.busy() {
             return Err(RuntimeError::invalid("runtime is busy"));
+        }
+        if matches!(self.active_state, ActiveState::History(_)) {
+            let key = request["payload"]["modelRecordKey"]
+                .as_str()
+                .ok_or_else(|| RuntimeError::invalid("model id"))?;
+            self.validate_session_model(self.active_instance()?, key)?;
+            self.model_record_key = Some(key.into());
+            if let ActiveState::History(snapshot) = &mut self.active_state {
+                snapshot.model_record_key = Some(key.into());
+                snapshot.actions.can_send = true;
+                snapshot.revision = snapshot.revision.saturating_add(1);
+            }
+            return Ok(json!({"snapshot":self.current_snapshot()}));
+        }
+        if matches!(self.active_state, ActiveState::Native(_)) {
+            let key = request["payload"]["modelRecordKey"]
+                .as_str()
+                .ok_or_else(|| RuntimeError::invalid("model id"))?;
+            let runtime = self.active_instance()?;
+            self.validate_session_model(runtime, key)?;
+            let gateway = self
+                .gateways
+                .iter()
+                .find(|g| g.id == runtime.gateway_id)
+                .expect("configured gateway");
+            let protocol = |key: &str| {
+                gateway
+                    .providers
+                    .iter()
+                    .find(|p| p.models.iter().any(|m| m.record_key == key))
+                    .map(|p| p.protocol.clone())
+            };
+            if self.model_record_key.as_deref().and_then(protocol) != protocol(key) {
+                self.invalidate_execution()?;
+                return self.select_model(request);
+            }
         }
         if let ActiveState::Native(session) = &self.active_state {
             if session.snapshot().is_none() {
@@ -273,7 +213,7 @@ impl CoreRuntime {
         let runtime = self
             .runtime_instances
             .iter()
-            .find(|item| Some(&item.id) == self.active_runtime_id.as_ref())
+            .find(|item| Some(&item.id) == self.selected_runtime_id.as_ref())
             .expect("active runtime instance is configured");
         let gateway = self
             .gateways
@@ -296,19 +236,20 @@ impl CoreRuntime {
         self.pi
             .client
             .as_mut()
-            .expect("connected Pi client")
+            .expect("prepared Pi client")
             .request(json!({"type":"set_model","provider":"velune","modelId":"auto"}))
             .map_err(|_| RuntimeError::invalid("model selection"))?;
         self.pi
             .client
             .as_mut()
-            .expect("connected Pi client")
+            .expect("prepared Pi client")
             .sync_virtual_selection()
             .map_err(|_| RuntimeError::invalid("model selection persistence"))?;
         self.drain_runtime()?;
+        self.model_record_key = Some(model_record_key.into());
         self.pi.subscription_capability = selected_subscription_capability;
         self.pi.physical_model_id = Some(selected_physical_model_id);
-        self.pi.config.as_mut().expect("connected Pi config").model = Some("velune/auto".into());
+        self.pi.config.as_mut().expect("prepared Pi config").model = Some("velune/auto".into());
         self.sync_projection()?;
         Ok(json!({"snapshot":self.current_snapshot()}))
     }
@@ -323,7 +264,7 @@ impl CoreRuntime {
             .pi
             .config
             .as_ref()
-            .ok_or_else(|| RuntimeError::invalid("runtime is not connected"))?;
+            .ok_or_else(|| RuntimeError::invalid("会话执行尚未准备"))?;
         write_selection_file(
             config,
             model_record_key,
@@ -336,7 +277,7 @@ impl CoreRuntime {
         let requested = request["payload"]["runtimeInstanceID"]
             .as_str()
             .ok_or_else(|| RuntimeError::invalid("runtime instance id"))?;
-        if self.active_runtime_id.as_deref() != Some(requested) {
+        if self.selected_runtime_id.as_deref() != Some(requested) {
             return Err(RuntimeError::invalid("runtime instance is not active"));
         }
         Ok(())
@@ -355,7 +296,7 @@ impl CoreRuntime {
                 .map_err(|_| RuntimeError::invalid("runtime state"))?;
             if let Some(path) = state["data"]["sessionFile"].as_str() {
                 let runtime_id = self
-                    .active_runtime_id
+                    .selected_runtime_id
                     .as_deref()
                     .expect("a Pi client has an active runtime instance");
                 projection.set_conversation(ConversationSummary {
@@ -411,43 +352,5 @@ impl CoreRuntime {
                 projection.apply_event(&event);
             }
         }
-    }
-
-    pub(super) fn session_summaries(&self) -> Result<Vec<ConversationSummary>, RuntimeError> {
-        if matches!(self.active_state, ActiveState::Native(_)) {
-            return history::list(
-                &self.history_config()?,
-                self.active_runtime_id.as_deref().unwrap_or_default(),
-            )
-            .map_err(|_| RuntimeError::invalid("运行时会话列表读取失败"));
-        }
-        let Some(config) = self.pi.config.as_ref() else {
-            return Ok(Vec::new());
-        };
-        let value = pi_session_helper(config, None)?;
-        let runtime_id = self.active_runtime_id.as_deref().unwrap_or_default();
-        let summaries = value["sessions"]
-            .as_array()
-            .ok_or_else(|| RuntimeError::invalid("Pi session helper response"))?
-            .iter()
-            .map(|item| {
-                let path = item["path"]
-                    .as_str()
-                    .ok_or_else(|| RuntimeError::invalid("Pi session entry"))?;
-                let title = item["name"]
-                    .as_str()
-                    .filter(|value| !value.is_empty())
-                    .or_else(|| path.rsplit('/').next())
-                    .unwrap_or("会话");
-                Ok(ConversationSummary {
-                    id: format!("{runtime_id}:{path}"),
-                    title: title.into(),
-                    updated_at: item["modified"].as_str().map(str::to_owned),
-                    runtime_id: runtime_id.into(),
-                    cwd: item["cwd"].as_str().map(str::to_owned),
-                })
-            })
-            .collect::<Result<Vec<_>, RuntimeError>>()?;
-        Ok(summaries)
     }
 }

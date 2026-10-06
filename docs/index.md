@@ -15,7 +15,7 @@
 
 ## 当前工作
 
-- [运行时与会话配置体验复核](../tasks/runtime-session-experience/packet.md)：初始模型与准备生命周期的产品复核、公开目录模板和原生菜单修复
+- [运行时与会话配置体验复核](../tasks/runtime-session-experience/packet.md)：会话模型与自动执行准备、独立历史浏览、公开目录模板和原生菜单修复
 
 - [Magpie 架构参考复核](../tasks/magpie-reference/packet.md)：配置 adapter、模型目录、原生／兼容协议与可观测性；已吸纳版本能力、导入边界及无正文网关观测
 

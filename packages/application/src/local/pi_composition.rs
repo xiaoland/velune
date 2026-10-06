@@ -241,37 +241,8 @@ pub(super) fn pi_session_helper(
     config: &PiConfig,
     session: Option<&Path>,
 ) -> Result<Value, RuntimeError> {
-    let helper = config
-        .sdk_helper
-        .as_ref()
-        .ok_or_else(|| RuntimeError::invalid("Pi session helper is not configured"))?;
-    let mut command = Command::new(
-        config
-            .node_binary
-            .as_deref()
-            .unwrap_or_else(|| std::path::Path::new("node")),
-    );
-    command.arg(helper);
-    if let Some(path) = session {
-        command.arg("--inspect-session").arg(path);
-    } else {
-        command.arg("--all");
-    }
-    if let Some(cwd) = &config.working_dir {
-        // Pi records the physical process cwd; use the same path for SDK filtering.
-        command.arg("--cwd").arg(fs::canonicalize(cwd)?);
-    }
-    if let Some(session_dir) = &config.session_dir {
-        command.arg("--session-dir").arg(session_dir);
-    }
-    if let Some(agent_dir) = &config.agent_dir {
-        command.env("PI_CODING_AGENT_DIR", agent_dir);
-    }
-    let output = command.output().map_err(RuntimeError::Io)?;
-    if !output.status.success() {
-        return Err(RuntimeError::invalid("Pi session helper failed"));
-    }
-    serde_json::from_slice(&output.stdout).map_err(RuntimeError::Json)
+    history::read_pi(config, session)
+        .map_err(|_| RuntimeError::invalid("Pi 历史无法读取；请检查实例路径与 SDK 配置后重试"))
 }
 
 /// Translate the protocol declaration at the Pi adapter boundary, not in the AI model domain.

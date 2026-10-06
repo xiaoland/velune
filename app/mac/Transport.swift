@@ -63,8 +63,8 @@ final class Transport: @unchecked Sendable {
     func deleteTemplate(id: String) throws -> [BindingModelTemplate] { try withApplication("deleteModelTemplate") { try $0.deleteModelTemplate(id: id) } }
     func upsertRuntime(_ runtime: BindingRuntimeInstance) throws -> BindingRuntimeUpdate { try withApplication("upsertRuntime") { try $0.upsertRuntime(runtime: runtime) } }
     func deleteRuntime(id: String) throws -> BindingRuntimeUpdate { try withApplication("deleteRuntime") { try $0.deleteRuntime(id: id) } }
-    func connectRuntime(id: String) throws -> BindingConnectionResult { try withApplication("connectRuntime") { try $0.connectRuntime(id: id) } }
-    func createConversation(runtimeID: String, cwd: String) throws -> BindingSnapshotResult { try withApplication("createConversation") { try $0.createConversation(runtimeId: runtimeID, cwd: cwd) } }
+    func selectRuntime(id: String) throws -> BindingConfigurationSnapshot { try withApplication("selectRuntime") { try $0.selectRuntime(id: id) } }
+    func createConversation(runtimeID: String, cwd: String, modelRecordKey: String) throws -> BindingSnapshotResult { try withApplication("createConversation") { try $0.createConversation(runtimeId: runtimeID, cwd: cwd, modelRecordKey: modelRecordKey) } }
     func openConversation(runtimeID: String, conversationID: String) throws -> BindingSnapshotResult { try withApplication("openConversation") { try $0.openConversation(runtimeId: runtimeID, conversationId: conversationID) } }
     func snapshot(runtimeID: String) throws -> BindingSnapshotResult { try withApplication("snapshot") { try $0.snapshot(runtimeId: runtimeID) } }
     func send(runtimeID: String, text: String) throws -> BindingSnapshotResult { try withApplication("send") { try $0.send(runtimeId: runtimeID, text: text) } }

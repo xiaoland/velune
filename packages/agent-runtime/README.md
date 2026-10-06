@@ -18,7 +18,7 @@ Pi 固定版本及协议边界见 [开发说明](../../docs/development.md)。SD
 
 Codex 使用 app-server 的 thread／turn 控制；DSH 使用 ACP v1 的 session/new、resume、prompt、cancel、set_config_option。DSH 的 agentInfo.version 是 ACP 插件版本，不用于判断 CLI 版本。huihua `0.2.0` 的公开 provider API 读取 Codex／DSH 历史，明确接收配置的 home 与 roots，内部按原生 ID 定位，未知记录不原样输出。它只提供历史 snapshot，不能替代原生 resume；Pi 保留 SDK SessionManager 的分支与模型选择语义。
 
-原生权限或回答请求映射为 conversation 的类型化交互，用户显式选择、回答或取消；adapter 不自动批准。Codex／DSH 恢复执行后使用运行时配置的初始模型，当前会话切换模型不代表 Velune 持久化了它。DSH 的模型切换关闭会话、更新网关注入后重启并 resume 同一原生 ID。DSH reasoningEfforts 需要实际 wire 映射，当前仅有能力等级列表，不猜测映射，保留 SDK 默认行为。
+原生权限或回答请求映射为 conversation 的类型化交互，用户显式选择、回答或取消；adapter 不自动批准。执行模型由当前会话选择后注入，运行时配置不含默认模型；Codex／DSH 历史没有 Velune 提供商身份时须明确选择，不能凭 API model ID 猜测。DSH 的模型切换关闭会话、更新网关注入后重启并 resume 同一原生 ID。DSH reasoningEfforts 需要实际 wire 映射，当前仅有能力等级列表，不猜测映射，保留 SDK 默认行为。
 
 DSH 执行 overlay 禁用 settings、llm-deepseek 与 llm-deepseek-account，并为 llm-pi-ai／ACP 配置网关目录，防止原来源设置覆盖执行路由；不删除原来源配置。CLI 会按上游行为准备其 ACP profile。实例的 CODEX_HOME／DSH_HOME 与会话 cwd 分开；网关注入文件属于 application 的运行时投影目录。
 

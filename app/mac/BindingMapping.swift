@@ -90,7 +90,7 @@ enum BindingMapping {
     }
 
     static func bindingRuntime(_ value: RuntimeInstance) -> BindingRuntimeInstance {
-        BindingRuntimeInstance(id: value.id, name: value.name, typeId: value.typeID, gatewayId: value.gatewayID, settings: value.settings, modelRecordKey: value.modelRecordKey)
+        BindingRuntimeInstance(id: value.id, name: value.name, typeId: value.typeID, gatewayId: value.gatewayID, settings: value.settings)
     }
 
     static func bindingSelection(_ value: ProviderImportSelection) -> BindingImportSelection {
@@ -99,15 +99,15 @@ enum BindingMapping {
 
     static func runtime(_ value: BindingRuntimeInstance) -> RuntimeInstance {
         RuntimeInstance(id: value.id, name: value.name, typeID: value.typeId,
-                        gatewayID: value.gatewayId, settings: value.settings, modelRecordKey: value.modelRecordKey)
+                        gatewayID: value.gatewayId, settings: value.settings)
     }
 
     static func runtimeType(_ value: BindingRuntimeTypeDescriptor) -> RuntimeTypeDescriptor {
-        RuntimeTypeDescriptor(id: value.id, familyID: value.familyId, versionRegex: value.versionRegex, supportedProtocols: value.supportedProtocols.map(protocolID), name: value.name, fields: value.fields.map(settingField), actions: value.actions.map(settingAction))
+        RuntimeTypeDescriptor(id: value.id, familyID: value.familyId, versionRegex: value.versionRegex, supportedProtocols: value.supportedProtocols.map(protocolID), name: value.name, fields: value.fields.map(settingField))
     }
 
-    static func configuration(_ value: BindingConfigurationSnapshot) -> (conversations: [Conversation], connections: [Connection], gateways: [GatewayConfig], runtimes: [RuntimeInstance], runtimeTypes: [RuntimeTypeDescriptor], modelTemplates: [ModelTemplate], importTypes: [RuntimeTypeDescriptor], protocols: [ProtocolDescriptor], activeRuntimeID: String?) {
-        (value.conversations.map(conversation), value.connections.map { Connection(id: $0.id, name: $0.name, state: $0.state, capabilities: $0.capabilities) }, value.gateways.map(gateway), value.runtimeInstances.map(runtime), value.runtimeTypes.map(runtimeType), value.modelTemplates.map(template), value.providerImportTypes.map(runtimeType), value.protocols.map { ProtocolDescriptor(id: protocolID($0.id), name: $0.name, supported: $0.supported) }, value.activeRuntimeInstanceId)
+    static func configuration(_ value: BindingConfigurationSnapshot) -> (conversations: [Conversation], historyFailures: [HistoryFailure], gateways: [GatewayConfig], runtimes: [RuntimeInstance], runtimeTypes: [RuntimeTypeDescriptor], modelTemplates: [ModelTemplate], importTypes: [RuntimeTypeDescriptor], protocols: [ProtocolDescriptor], selectedRuntimeID: String?) {
+        (value.conversations.map(conversation), value.historyFailures.map { HistoryFailure(runtimeID: $0.runtimeId, detail: $0.detail) }, value.gateways.map(gateway), value.runtimeInstances.map(runtime), value.runtimeTypes.map(runtimeType), value.modelTemplates.map(template), value.providerImportTypes.map(runtimeType), value.protocols.map { ProtocolDescriptor(id: protocolID($0.id), name: $0.name, supported: $0.supported) }, value.selectedRuntimeInstanceId)
     }
 
     static func interaction(_ value: BindingRuntimeInteraction) -> RuntimeInteraction {
@@ -151,6 +151,6 @@ enum BindingMapping {
     }
 
     static func authenticationProgress(_ value: BindingAuthenticationProgress) -> AuthenticationData {
-        AuthenticationData(running: value.running, events: value.events.map { AuthenticationEvent(type: $0.typeId, id: $0.id, prompt: $0.prompt.map { AuthenticationPromptBody(kind: $0.kind, text: $0.text, options: $0.options?.map { SettingOption(id: $0.id, label: $0.label) }) }, notification: $0.notification.map { AuthenticationNotification(kind: $0.kind, id: $0.id, text: $0.text, url: $0.url, instructions: $0.instructions, userCode: $0.userCode, verificationUri: $0.verificationUri) }, ok: $0.ok, error: $0.error, cancelled: $0.cancelled) }, gateways: value.gateways?.map(gateway), requiresReconnect: value.requiresReconnect)
+        AuthenticationData(running: value.running, events: value.events.map { AuthenticationEvent(type: $0.typeId, id: $0.id, prompt: $0.prompt.map { AuthenticationPromptBody(kind: $0.kind, text: $0.text, options: $0.options?.map { SettingOption(id: $0.id, label: $0.label) }) }, notification: $0.notification.map { AuthenticationNotification(kind: $0.kind, id: $0.id, text: $0.text, url: $0.url, instructions: $0.instructions, userCode: $0.userCode, verificationUri: $0.verificationUri) }, ok: $0.ok, error: $0.error, cancelled: $0.cancelled) }, gateways: value.gateways?.map(gateway), executionInvalidated: value.executionInvalidated)
     }
 }

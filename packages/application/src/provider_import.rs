@@ -32,16 +32,6 @@ pub(crate) fn descriptor() -> crate::config::RuntimeTypeDescriptor {
             .expect("registered Pi adapter"),
         name: "Pi Agent 提供商目录".into(),
         fields: Vec::new(),
-        actions: vec![
-            crate::conversation::SettingAction {
-                id: "preview".into(),
-                label: "预览提供商与模型".into(),
-            },
-            crate::conversation::SettingAction {
-                id: "apply".into(),
-                label: "导入".into(),
-            },
-        ],
     }
 }
 

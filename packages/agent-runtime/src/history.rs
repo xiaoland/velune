@@ -87,3 +87,38 @@ pub fn read(config: &HistoryConfig, native_id: &str) -> Result<History> {
     }
     Ok(result.history)
 }
+
+/// Execute the fixed Pi SDK history helper without starting the Agent. Output
+/// and wall time share the bounded native helper transport; stderr is discarded.
+pub fn read_pi(
+    config: &crate::Config,
+    session: Option<&std::path::Path>,
+) -> Result<serde_json::Value> {
+    let node = config
+        .node_binary
+        .as_ref()
+        .filter(|p| p.is_absolute())
+        .ok_or_else(|| Error::new("Pi 历史 Node 路径无效"))?;
+    let helper = config
+        .sdk_helper
+        .as_ref()
+        .filter(|p| p.is_absolute())
+        .ok_or_else(|| Error::new("Pi 历史 SDK helper 路径无效"))?;
+    let mut command = Command::new(node);
+    let agent_dir = config
+        .agent_dir
+        .as_ref()
+        .filter(|p| p.is_absolute())
+        .ok_or_else(|| Error::new("Pi 历史来源目录无效"))?;
+    command.arg(helper).arg("--agent-dir").arg(agent_dir);
+    if let Some(session) = session {
+        command.arg("--inspect-session").arg(session);
+    } else {
+        command.arg("--all");
+    }
+    if let Some(root) = &config.session_dir {
+        command.arg("--session-dir").arg(root);
+    }
+    let output = bounded_process(command, None, 16 * 1024 * 1024)?;
+    serde_json::from_slice(&output).map_err(|_| Error::new("Pi 历史 SDK 格式不匹配"))
+}

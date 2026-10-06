@@ -56,6 +56,8 @@ pub enum BindingMessageBlock {
 #[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct BindingConversationSnapshot {
+    /// Local projection revision; may reset between history and execution preparation.
+    /// Do not use it to order snapshots across those lifecycle boundaries.
     pub revision: u64,
     pub conversation: BindingConversationSummary,
     pub resource_id: Option<String>,
@@ -65,15 +67,6 @@ pub struct BindingConversationSnapshot {
     #[serde(default)]
     pub pending_interactions: Vec<BindingRuntimeInteraction>,
     pub actions: BindingConversationActions,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct BindingConnection {
-    pub id: String,
-    pub name: String,
-    pub state: String,
-    pub capabilities: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
@@ -193,7 +186,6 @@ pub struct BindingRuntimeInstance {
     pub type_id: String,
     pub gateway_id: String,
     pub settings: HashMap<String, String>,
-    pub model_record_key: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
@@ -205,22 +197,21 @@ pub struct BindingRuntimeTypeDescriptor {
     pub supported_protocols: Vec<BindingGatewayProtocol>,
     pub name: String,
     pub fields: Vec<BindingSettingField>,
-    pub actions: Vec<BindingSettingAction>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct BindingConfigurationSnapshot {
     pub conversations: Vec<BindingConversationSummary>,
-    pub connections: Vec<BindingConnection>,
+    pub history_failures: Vec<BindingHistoryFailure>,
     pub gateways: Vec<BindingGatewayConfig>,
     pub runtime_instances: Vec<BindingRuntimeInstance>,
     pub runtime_types: Vec<BindingRuntimeTypeDescriptor>,
     pub model_templates: Vec<BindingModelTemplate>,
     pub provider_import_types: Vec<BindingRuntimeTypeDescriptor>,
     pub protocols: Vec<BindingProtocolDescriptor>,
-    #[serde(rename = "activeRuntimeInstanceID")]
-    pub active_runtime_instance_id: Option<String>,
+    #[serde(rename = "selectedRuntimeInstanceID")]
+    pub selected_runtime_instance_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
@@ -235,7 +226,7 @@ pub struct BindingProtocolDescriptor {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct BindingGatewayUpdate {
     pub gateways: Vec<BindingGatewayConfig>,
-    pub requires_reconnect: bool,
+    pub execution_invalidated: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
@@ -243,15 +234,7 @@ pub struct BindingGatewayUpdate {
 pub struct BindingRuntimeUpdate {
     pub runtime_instances: Vec<BindingRuntimeInstance>,
     pub runtime_types: Vec<BindingRuntimeTypeDescriptor>,
-    pub requires_reconnect: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct BindingConnectionResult {
-    #[serde(rename = "runtimeInstanceID")]
-    pub runtime_instance_id: Option<String>,
-    pub connections: Vec<BindingConnection>,
+    pub execution_invalidated: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
@@ -325,7 +308,7 @@ pub struct BindingImportResult {
     pub imported_provider_ids: Vec<String>,
     pub skipped_provider_ids: Vec<String>,
     pub gateways: Vec<BindingGatewayConfig>,
-    pub requires_reconnect: bool,
+    pub execution_invalidated: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
@@ -351,7 +334,7 @@ pub struct BindingAuthenticationProgress {
     pub running: bool,
     pub events: Vec<BindingAuthenticationEvent>,
     pub gateways: Option<Vec<BindingGatewayConfig>>,
-    pub requires_reconnect: Option<bool>,
+    pub execution_invalidated: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
@@ -510,4 +493,11 @@ pub struct BindingCatalogModel {
     pub context_window: Option<u32>,
     pub max_output_tokens: Option<u32>,
     pub reasoning_levels: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+#[serde(rename_all = "camelCase")]
+pub struct BindingHistoryFailure {
+    pub runtime_id: String,
+    pub detail: String,
 }

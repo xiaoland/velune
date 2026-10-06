@@ -69,12 +69,7 @@ struct ConversationSnapshot: Codable, Sendable, Equatable {
     enum CodingKeys: String, CodingKey { case revision, conversation, runState, messages, pendingInteractions, actions; case modelRecordKey = "modelRecordKey" }
 }
 
-struct Connection: Codable, Sendable, Identifiable, Equatable {
-    let id: String
-    var name: String
-    var state: String
-    var capabilities: [String]
-}
+
 
 struct ProviderModel: Codable, Sendable, Identifiable, Equatable {
     var id: String { recordKey }
@@ -150,8 +145,7 @@ struct RuntimeInstance: Codable, Sendable, Identifiable, Equatable {
     var typeID: String
     var gatewayID: String
     var settings: [String: String]
-    var modelRecordKey: String?
-    enum CodingKeys: String, CodingKey { case id, name, settings; case typeID = "typeId"; case gatewayID = "gatewayId"; case modelRecordKey = "modelRecordKey" }
+    enum CodingKeys: String, CodingKey { case id, name, settings; case typeID = "typeId"; case gatewayID = "gatewayId" }
 }
 
 struct RuntimeTypeDescriptor: Codable, Sendable, Identifiable, Equatable {
@@ -161,7 +155,7 @@ struct RuntimeTypeDescriptor: Codable, Sendable, Identifiable, Equatable {
     var supportedProtocols: [ProviderProtocol]
     var name: String
     var fields: [SettingField]
-    var actions: [SettingAction]
+
 }
 
 struct ProtocolDescriptor: Codable, Sendable, Identifiable, Equatable {
@@ -237,7 +231,7 @@ struct AuthenticationData: Decodable, Sendable {
     var running: Bool
     var events: [AuthenticationEvent]
     var gateways: [GatewayConfig]?
-    var requiresReconnect: Bool?
+    var executionInvalidated: Bool?
 }
 
 struct AuthenticationMetadata: Decodable, Sendable {
@@ -276,3 +270,5 @@ struct CatalogModel: Identifiable, Sendable {
         ModelTemplate(name: "\(name) · \(sourceProviderName) (models.dev)", suggestedProviderModelID: modelID, nickname: name, contextWindow: contextWindow, maxOutputTokens: maxOutputTokens, reasoningLevels: reasoningLevels)
     }
 }
+
+struct HistoryFailure: Sendable { var runtimeID: String; var detail: String }

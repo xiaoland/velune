@@ -42,7 +42,7 @@ struct ProviderImportSelection: Encodable, Sendable {
 }
 struct ProviderImportResult: Decodable, Sendable {
     var gateways: [GatewayConfig]
-    var requiresReconnect: Bool
+    var executionInvalidated: Bool
     var importedProviderIds: [String]
     var skippedProviderIds: [String]
 }
@@ -264,7 +264,7 @@ struct ProviderImportView: View {
             HStack {
                 if preview != nil {
                     Text("已选 \(selections.count) 个提供商、\(selectedCount) 个模型").foregroundStyle(.secondary)
-                        .help("原运行时文件保留；导入不会自动选定初始模型。")
+                        .help("原运行时文件保留；导入不会自动改变会话的模型选择。")
                     Spacer()
                 } else { Spacer() }
                 if preview?.providers.contains(where: \.alreadyImported) == true {

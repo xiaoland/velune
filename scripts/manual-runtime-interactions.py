@@ -61,12 +61,12 @@ def main():
             provider=b.BindingProviderDraft(id='synthetic',name='Synthetic',protocol=b.BindingGatewayProtocol.RESPONSES_V1,endpoint='http://127.0.0.1:9/v1',models=[model])
             application.save_provider('default',provider,b.BindingAuthenticationEdit.SET_API_KEY(value='SYNTHETIC_KEY'))
             record=application.list().gateways[0].providers[0].models[0].record_key
-            runtime=b.BindingRuntimeInstance(id='fixture',name='Synthetic',type_id='codex-0.159.3',gateway_id='default',model_record_key=record,settings={'binary':str(binary),'nodeBinary':str(args.node),'agentDir':str(root/'runtime')})
-            application.upsert_runtime(runtime);application.connect_runtime('fixture')
+            runtime=b.BindingRuntimeInstance(id='fixture',name='Synthetic',type_id='codex-0.159.3',gateway_id='default',settings={'binary':str(binary),'nodeBinary':str(args.node),'agentDir':str(root/'runtime')})
+            application.upsert_runtime(runtime);application.select_runtime('fixture')
             try: application.select_model('fixture',record)
             except b.BindingError: pass
             else: raise AssertionError('model selection without an active conversation succeeded')
-            application.create_conversation('fixture',str(root/'project'))
+            application.create_conversation('fixture',str(root/'project'),record)
             def wait(predicate, allow_error=False):
                 deadline=time.monotonic()+8
                 while time.monotonic()<deadline:
@@ -102,10 +102,10 @@ def main():
             assert not failed.pending_interactions and not failed.actions.can_send
             assert application.list().runtime_instances
             rejected(lambda: application.send('fixture','cannot send on failed transport'))
-            application.connect_runtime('fixture');assert application.list().active_runtime_instance_id=='fixture'
+            application.select_runtime('fixture');application.create_conversation('fixture',str(root/'project'),record);assert application.list().selected_runtime_instance_id=='fixture'
             for path in (root/'home').rglob('*.jsonl'):
                 assert 'SYNTHETIC_PRIVATE_ANSWER' not in path.read_text() and 'SYNTHETIC_KEY' not in path.read_text()
-            print(json.dumps({'acceptance':'PASSED','explicitApprovalAndPrivateAnswer':True,'invalidAndStaleRepliesRejected':True,'cancelUsesAdvertisedDecline':True,'turnCancellation':True,'terminalFailurePreservesPartialAndAllowsReconnect':True,'realServicesCalled':False},indent=2))
+            print(json.dumps({'acceptance':'PASSED','explicitApprovalAndPrivateAnswer':True,'invalidAndStaleRepliesRejected':True,'cancelUsesAdvertisedDecline':True,'turnCancellation':True,'terminalFailurePreservesPartialAndAllowsNewConversation':True,'realServicesCalled':False},indent=2))
         finally:
             if application is not None: application.shutdown()
             os.environ.clear();os.environ.update(environment)

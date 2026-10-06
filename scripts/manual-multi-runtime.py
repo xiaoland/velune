@@ -70,9 +70,13 @@ def main():
                 application.save_provider('default',alternate,b.BindingAuthenticationEdit.SET_API_KEY(value='synthetic-alternate'))
                 alternate_saved=next(p for p in application.list().gateways[0].providers if p.id==alternate.id)
                 agent_home=root/family;agent_home.mkdir()
-                runtime=b.BindingRuntimeInstance(id=family,name=family,type_id=type_id,gateway_id='default',model_record_key=saved.models[0].record_key,settings={'binary':str(binary),'nodeBinary':str(args.node),'agentDir':str(agent_home)})
-                application.upsert_runtime(runtime);application.connect_runtime(family)
-                created=application.create_conversation(family,str(root/'project')).snapshot
+                if family == 'deepseek':
+                    switched_model=b.BindingProviderModel(record_key='',provider_model_id=api_id,nickname='Synthetic responses',icon=None,context_window=None,max_output_tokens=None,reasoning_levels=None,adapter_metadata_json=None)
+                    switched=b.BindingProviderDraft(id='protocol-switch',name='Synthetic protocol switch',protocol=responses,endpoint=endpoint+'/alternate/v1',models=[switched_model])
+                    switched_saved=next(p for g in application.save_provider('default',switched,b.BindingAuthenticationEdit.SET_API_KEY(value='synthetic-alternate')).gateways for p in g.providers if p.id=='protocol-switch')
+                runtime=b.BindingRuntimeInstance(id=family,name=family,type_id=type_id,gateway_id='default',settings={'binary':str(binary),'nodeBinary':str(args.node),'agentDir':str(agent_home)})
+                application.upsert_runtime(runtime);application.select_runtime(family)
+                created=application.create_conversation(family,str(root/'project'),saved.models[0].record_key).snapshot
                 assert created and created.conversation.cwd==str(root/'project')
                 before=len(captures);application.send(family,'Reply with the synthetic answer; no tools are needed.')
                 deadline=time.monotonic()+45
@@ -89,7 +93,7 @@ def main():
                 assert any(s.id==snapshot.conversation.id for s in sessions),family+' native history missing from huihua list'
                 reopened=application.open_conversation(family,snapshot.conversation.id).snapshot
                 assert reopened and any('SYNTHETIC_NATIVE_ANSWER' in block.text for message in reopened.messages for block in message.blocks if isinstance(block,b.BindingMessageBlock.TEXT)),family+' historical answer missing'
-                assert any('初始模型' in block.text for message in reopened.messages for block in message.blocks if isinstance(block,b.BindingMessageBlock.NOTICE)),family+' restored model notice missing'
+                assert reopened.model_record_key is None and not reopened.actions.can_send,family+' inferred provider from bare history model ID'
                 application.select_model(family,alternate_saved.models[0].record_key)
                 before=len(captures);application.send(family,'Continue after the explicitly selected provider change.')
                 deadline=time.monotonic()+45
@@ -102,20 +106,38 @@ def main():
                 assert captures[-1]['authorization']=='Bearer synthetic-alternate' and captures[-1]['path'].startswith('/alternate/v1/'),family+' selected provider route did not change'
                 assert captures[-1]['body']['model']==api_id
                 assert selected_snapshot.model_record_key==alternate_saved.models[0].record_key
-                results[family]={'actualControlAndGateway':True,'huihuaHistoryAndResume':True,'nativeIdAndCwd':True,'sameModelIdAcrossProvidersRoutesPrecisely':True}
+                cross_protocol = False
+                if family == 'deepseek':
+                    before=len(captures)
+                    selected=application.select_model(family,switched_saved.models[0].record_key).snapshot
+                    assert len(captures)==before and selected.model_record_key==switched_saved.models[0].record_key
+                    assert selected.conversation.id==selected_snapshot.conversation.id and selected.messages
+                    application.send(family,'Continue this native session using the explicitly chosen Responses model.')
+                    deadline=time.monotonic()+45
+                    while time.monotonic()<deadline:
+                        switched_snapshot=application.snapshot(family).snapshot
+                        if switched_snapshot and switched_snapshot.run_state==b.BindingRunState.FAILED: raise AssertionError('cross-protocol native resume failed')
+                        if switched_snapshot and switched_snapshot.actions.can_send and len(captures)>before: break
+                        time.sleep(.05)
+                    else: raise AssertionError('cross-protocol native resume did not settle')
+                    assert captures[-1]['path'].endswith('/responses') and captures[-1]['authorization']=='Bearer synthetic-alternate'
+                    assert switched_snapshot.conversation.id==selected.conversation.id
+                    cross_protocol=True
+                results[family]={'crossProtocolSelectionDefersPreparationAndResumes':cross_protocol,'actualControlAndGateway':True,'huihuaHistoryAndResume':True,'nativeIdAndCwd':True,'sameModelIdAcrossProvidersRoutesPrecisely':True}
             bad_binary=root/'unsupported-runtime'
             bad_binary.write_text('#!/bin/sh\nprintf "99.0.0\\n"\n');bad_binary.chmod(0o700)
             bad_home=root/'unsupported-home';bad_home.mkdir()
-            bad=b.BindingRuntimeInstance(id='unsupported',name='Unsupported synthetic',type_id='codex-0.159.3',gateway_id='default',model_record_key=saved.models[0].record_key,settings={'binary':str(bad_binary),'nodeBinary':str(args.node),'agentDir':str(bad_home)})
+            bad=b.BindingRuntimeInstance(id='unsupported',name='Unsupported synthetic',type_id='codex-0.159.3',gateway_id='default',settings={'binary':str(bad_binary),'nodeBinary':str(args.node),'agentDir':str(bad_home)})
             application.upsert_runtime(bad)
-            try:application.connect_runtime(bad.id)
-            except b.BindingError:pass
-            else:raise AssertionError('runtime with incompatible actual version connected')
-            assert application.list().active_runtime_instance_id=='deepseek','version rejection lost active runtime'
+            try:application.create_conversation(bad.id,str(root/'project'),application.list().gateways[0].providers[0].models[0].record_key)
+            except b.BindingError as error:
+                assert 'version' in str(error).lower() or '版本' in str(error),str(error)
+            else:raise AssertionError('runtime with incompatible actual version prepared')
+            assert application.list().selected_runtime_instance_id=='deepseek','version rejection lost active runtime'
 
             assert not failures,failures
             application.shutdown();application=None
-            assert json.loads((root/'home/generic-config.json').read_text())['schemaVersion']==6
+            assert json.loads((root/'home/generic-config.json').read_text())['schemaVersion']==7
             logs=''.join(path.read_text() for path in (root/'home/logs').glob('*.jsonl'))
             for forbidden in ['synthetic-only','synthetic-alternate','SYNTHETIC_NATIVE_ANSWER','synthetic-responses','synthetic-chat',endpoint,str(root)]:
                 assert forbidden not in logs,'business/configuration data entered diagnostic log'

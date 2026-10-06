@@ -1,24 +1,12 @@
-//! Local application connection use cases.
+//! On-demand execution preparation and process/gateway lifecycle.
 use super::*;
 use sha2::Digest;
 impl CoreRuntime {
-    pub(super) fn connect_action(&mut self, request: &Value) -> Result<Value, RuntimeError> {
-        if request["action"] == "runtimeAction"
-            && request["payload"]["actionID"].as_str() != Some("connect")
-        {
-            return Err(RuntimeError::Unsupported("runtime action".into()));
-        }
-        if self.busy() {
-            return Err(RuntimeError::invalid("runtime is busy"));
-        }
-        let runtime_id = request["payload"]["runtimeInstanceID"]
-            .as_str()
-            .ok_or_else(|| RuntimeError::invalid("runtime instance id"))?;
-        self.connect(runtime_id)?;
-        Ok(json!({"runtimeInstanceID":self.active_runtime_id,"connections":self.connections()}))
-    }
-
-    pub(super) fn connect(&mut self, runtime_id: &str) -> Result<(), RuntimeError> {
+    pub(super) fn prepare_runtime(
+        &mut self,
+        runtime_id: &str,
+        model_record_key: &str,
+    ) -> Result<(), RuntimeError> {
         let runtime = self
             .runtime_instances
             .iter()
@@ -31,16 +19,6 @@ impl CoreRuntime {
             .find(|item| item.id == runtime.gateway_id)
             .cloned()
             .ok_or_else(|| RuntimeError::invalid("gateway id"))?;
-        let model_record_key = runtime
-            .model_record_key
-            .as_deref()
-            .ok_or_else(|| RuntimeError::invalid("runtime model id"))?;
-        velune_agent_runtime::version::check_version(
-            &runtime.type_id,
-            &setting_path(&runtime, "binary")?,
-            setting_path_optional(&runtime, "nodeBinary").as_deref(),
-        )
-        .map_err(|error| RuntimeError::Invalid(error.to_string()))?;
         if runtime.type_id != "pi-1.0.2" {
             self.shutdown_active()?;
             let runner = Runner::start(
@@ -75,7 +53,7 @@ impl CoreRuntime {
             match result {
                 Ok(session) => {
                     self.active_state = ActiveState::Native(Box::new(session));
-                    self.active_runtime_id = Some(runtime.id);
+                    self.selected_runtime_id = Some(runtime.id);
                     self.model_record_key = None;
                     return Ok(());
                 }
@@ -168,7 +146,7 @@ impl CoreRuntime {
         self.gateway_runner = Some(runner);
         self.pi.config = Some(config);
         self.active_state = ActiveState::Pi;
-        self.active_runtime_id = Some(runtime_id.into());
+        self.selected_runtime_id = Some(runtime_id.into());
         self.pi.physical_model_id = None;
         self.model_record_key = None;
         self.pi.subscription_capability = false;
@@ -190,7 +168,7 @@ impl CoreRuntime {
             .pi
             .config
             .clone()
-            .ok_or_else(|| RuntimeError::invalid("runtime is not connected"))?;
+            .ok_or_else(|| RuntimeError::invalid("会话执行尚未准备"))?;
         self.shutdown_pi()?;
         config.working_dir = Some(cwd.clone());
         config.session = session.map(Path::to_owned);
@@ -206,7 +184,7 @@ impl CoreRuntime {
         client
             .state()
             .map_err(|_| RuntimeError::invalid("runtime startup"))?;
-        let runtime_id = self.active_runtime_id.as_deref().unwrap_or_default();
+        let runtime_id = self.selected_runtime_id.as_deref().unwrap_or_default();
         let mut projection = PiProjection::new(ConversationSummary {
             id: session
                 .map(|path| format!("{runtime_id}:{}", path.display()))
@@ -252,18 +230,8 @@ impl CoreRuntime {
         Ok(())
     }
 
-    pub(super) fn connections(&self) -> Vec<Value> {
-        self.active_runtime_id.as_ref()
-            .map(|id| {
-                let name = self.runtime_instances.iter().find(|runtime| &runtime.id == id)
-                    .map(|runtime| runtime.name.as_str()).expect("active runtime instance is configured");
-                vec![json!({"id":id,"name":name,"state":"connected","capabilities":["chat","cancel"]})]
-            })
-            .unwrap_or_default()
-    }
-
     pub(super) fn shutdown_active(&mut self) -> Result<(), RuntimeError> {
-        let state = std::mem::replace(&mut self.active_state, ActiveState::Disconnected);
+        let state = std::mem::replace(&mut self.active_state, ActiveState::Empty);
         let result = match state {
             ActiveState::Native(mut session) => session
                 .shutdown()
@@ -278,11 +246,11 @@ impl CoreRuntime {
                         .map_err(|_| RuntimeError::invalid("runtime shutdown"))
                 })
                 .unwrap_or(Ok(())),
-            ActiveState::Disconnected => Ok(()),
+            ActiveState::Empty | ActiveState::History(_) => Ok(()),
         };
         self.pi = PiState::default();
         self.gateway_runner = None;
-        self.active_runtime_id = None;
+        self.selected_runtime_id = None;
         self.model_record_key = None;
         result
     }

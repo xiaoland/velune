@@ -110,7 +110,7 @@ def main():
             application = bindings.VeluneApplication.open(bindings.BindingOptions(
                 home_directory=str(root / 'home'), resources_directory=str(resources)))
             runtime = bindings.BindingRuntimeInstance(
-                id='fixture-runtime', name='Synthetic Pi', type_id='pi-1.0.2', gateway_id='default', model_record_key=None,
+                id='fixture-runtime', name='Synthetic Pi', type_id='pi-1.0.2', gateway_id='default',
                 settings={'agentDir': str(root / 'source'), 'nodeBinary': str(args.node),
                           'binary': str(resources / 'node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js')})
             application.upsert_runtime(runtime)
@@ -156,15 +156,14 @@ def main():
             assert gateway.providers[0].authentication.method == bindings.BindingAuthenticationMethod.API_KEY
             assert application.read_provider_api_key('default', selected.id) == 'synthetic-only'
             saved = json.loads((root / 'home/generic-config.json').read_text())
-            assert saved['schemaVersion'] == 6 and 'authenticationBindings' not in saved
+            assert saved['schemaVersion'] == 7 and 'authenticationBindings' not in saved
             binding, = gateway.providers[0].models
             assert binding.provider_model_id == 'reasoning' and binding.record_key != 'reasoning'
             assert binding.context_window == candidate.context_window
             assert binding.max_output_tokens == candidate.max_output_tokens
-            runtime.model_record_key = binding.record_key
             application.upsert_runtime(runtime)
-            application.connect_runtime(runtime.id)
-            application.create_conversation(runtime.id, str(root / 'project'))
+            application.select_runtime(runtime.id)
+            application.create_conversation(runtime.id, str(root / 'project'), binding.record_key)
             for turn in ('Read the synthetic local file.', 'Continue the synthetic conversation.'):
                 before = len(captures)
                 application.send(runtime.id, turn)
@@ -196,14 +195,14 @@ def main():
             preview = application.preview_provider_import('default', source)
             skipped = application.apply_provider_import('default', source, preview.token,
                 [bindings.BindingImportSelection(provider_id=selected.id, candidate_keys=[candidate.candidate_key])], False)
-            assert not skipped.requires_reconnect, 'unchanged skipped import disconnected runtime'
-            assert application.list().active_runtime_instance_id == runtime.id
+            assert not skipped.execution_invalidated, 'unchanged skipped import invalidated execution'
+            assert application.list().selected_runtime_instance_id == runtime.id
             preview = application.preview_provider_import('default', source)
             changed = application.apply_provider_import('default', source, preview.token,
                 [bindings.BindingImportSelection(provider_id=selected.id,
                     candidate_keys=[candidate.candidate_key, plain.candidate_key])], True)
-            assert changed.requires_reconnect, 'changed active gateway did not report stale connection'
-            assert application.list().active_runtime_instance_id is None, 'stale gateway remained active'
+            assert changed.execution_invalidated, 'changed active gateway did not report stale execution'
+            assert application.list().selected_runtime_instance_id == runtime.id, 'gateway edit lost browse selection'
             assert all((root / 'source' / name).read_bytes() == content for name, content in source_files.items())
             stale = application.preview_provider_import('default', source)
             current = application.list().gateways[0].providers[0]
@@ -222,8 +221,8 @@ def main():
                 raise AssertionError('old preview overwrote edited provider authentication')
             assert application.read_provider_api_key('default', selected.id) == 'synthetic-replacement'
             def send_after_edit():
-                application.connect_runtime(runtime.id)
-                application.create_conversation(runtime.id, str(root / 'project'))
+                application.select_runtime(runtime.id)
+                application.create_conversation(runtime.id, str(root / 'project'), binding.record_key)
                 before = len(captures)
                 application.send(runtime.id, 'Confirm the synthetic edited configuration.')
                 deadline = time.monotonic() + 30
@@ -250,21 +249,21 @@ def main():
             assert captures[-1]['model'] == 'edited-api-model-id'
             assert request_paths[-1] == '/changed/v1/chat/completions'
             assert auth_headers[-1] == 'Bearer synthetic-replacement'
-            assert application.list().runtime_instances[0].model_record_key == binding.record_key
+            assert not hasattr(application.list().runtime_instances[0], 'model_record_key')
 
             application.shutdown()
             application = None
             assert all((root / 'source' / name).read_bytes() == content for name, content in source_files.items())
             print(json.dumps({'acceptance': 'PASSED', 'bundle': {'sourceCommit': manifest['source_commit'],
                 'dirty': manifest['dirty'], 'uiVersion': manifest['ui_version']},
-                'normalPath': 'configured runtime → import → select model → connect → create → send → tool → continuation → next turn',
+                'normalPath': 'configured runtime → import → choose conversation model → automatic prepare → create → send → tool → continuation → next turn',
                 'upstreamRequests': len(captures), 'onlySelectedProviderSaved': True, 'providerOwnedAuthentication': True,
                 'editedKeyIdEndpointUsedUpstream': True,
                 'authenticationReplacementInvalidatesImportPreview': True,
                 'changedSourceInvalidatesImportPreview': True,
                 'duplicateProviderSelectionsRejectedBeforeMutation': True,
                 'nativeReasoningHistoryPreserved': True, 'sourceFilesUnchanged': True,
-                'unchangedImportKeepsConnection': True, 'changedImportDisconnectsStaleGateway': True,
+                'unchangedImportKeepsExecution': True, 'changedImportInvalidatesExecutionAndKeepsHistory': True,
                 'realServicesCalled': False}, ensure_ascii=False, indent=2))
         finally:
             try:

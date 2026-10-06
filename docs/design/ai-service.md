@@ -44,7 +44,7 @@ application 私有保存 API key 或 OAuth 来源定位，并向 gateway 注入�
 
 提供商模型条目保存稳定 `recordKey`、精确 `providerModelId`、显示字段及可选能力。application 为新条目生成内部记录键；用户可以编辑 API ID，运行时选择仍引用原记录。网关自动派生 `velune/model/<recordKey>`，不接受裸记录键作为 wire model，不再要求单目标另建 Route。导入按来源提供商建立条目，不按名称合并跨提供商记录。官方业务资料见 [模型业务研究](../../tasks/ai-gateway-audit/model-business-research.md)；其中早期两层实体建议已被参数模板方向替代。
 
-配置只接受 schema 6。旧普通配置原子重置为空配置，不转换字段、不保留旧文件或备份；未来 schema、损坏 JSON 与当前版本的未知字段明确拒绝。原 Harness 文件、会话和既有平台秘密不属于重置对象。
+配置只接受 schema 7。旧普通配置原子重置为空配置，不转换字段、不保留旧文件或备份；未来 schema、损坏 JSON 与当前版本的未知字段明确拒绝。原 Harness 文件、会话和既有平台秘密不属于重置对象。
 
 未知能力保持未知，空推理等级列表明确表示不支持，不全局强制输出上限或统一 effort。目录能力与每次请求参数分开，原生透传不静默补参数。缺少描述性规格不阻止原生调用，某个 Harness 必需的字段只在对应 adapter 准备边界检查。模板可以复制规格、昵称、图标和建议 API ID，但不能由另一提供商的规格证明实际支持，也不能承诺原生历史可互换。
 
@@ -95,9 +95,9 @@ fail-over 由 AI 网关单独决策，provider 执行一次尝试，不隐藏再
 
 ## 原生运行时装配边界
 
-schema 6 的运行时配置引用版本化 adapter。family 与版本 regex 归 agent-runtime，AI 服务不据 Harness 名称选择协议。当前 Codex app-server adapter 使用原生 Responses，DSH ACP adapter使用原生 ChatCompletions；application 将所选提供商模型与中立网关注入信息交给 adapter，执行侧只获得 loopback 入口及临时 token。额外 wire 模型字符串以显式 alias 映射到稳定模型记录，不能按同名推断目标。
+schema 7 的运行时配置引用版本化 adapter。family 与版本 regex 归 agent-runtime，AI 服务不据 Harness 名称选择协议。当前 Codex app-server adapter 使用原生 Responses，DSH ACP adapter使用原生 ChatCompletions；application 将所选提供商模型与中立网关注入信息交给 adapter，执行侧只获得 loopback 入口及临时 token。额外 wire 模型字符串以显式 alias 映射到稳定模型记录，不能按同名推断目标。
 
-huihua package 的只读会话 projection、ACP／app-server 的 resume、用户审批／回答与取消都不进入 AI gateway。Codex／DSH 恢复执行绑定实例初始模型，不将历史模型选择提升为路由持久化合同。DSH 的 reasoningEfforts 需要实际协议 wire 映射，当前不根据能力列表猜测；未知能力维持 SDK 默认，不让运行时缺口反向改变提供商协议权威。版本与执行限制见 [运行时 unit](../../packages/agent-runtime/README.md#版本与原生控制)。提供商导入／订阅来源接管仍为 Pi 来源用例，不因增加执行 adapter 自动扩张。
+huihua package 的只读会话 projection、ACP／app-server 的 resume、用户审批／回答与取消都不进入 AI gateway。模型在会话层选择，执行前由 application 注入。Pi 只恢复可验证的原生选择记录；Codex／DSH 缺少提供商身份的历史不按裸 ID 自动匹配，继续前明确选择。DSH 的 reasoningEfforts 需要实际协议 wire 映射，当前不根据能力列表猜测；未知能力维持 SDK 默认，不让运行时缺口反向改变提供商协议权威。版本与执行限制见 [运行时 unit](../../packages/agent-runtime/README.md#版本与原生控制)。提供商导入／订阅来源接管仍为 Pi 来源用例，不因增加执行 adapter 自动扩张。
 
 ## 当前实现与证据
 
@@ -111,7 +111,7 @@ HTTP ingress 使用 Axum，application 的提供商认证解析器在每次请�
 
 提供商配置导入是一项完整功能，覆盖来源中的提供商、协议、端点、有效模型及能力参数，并包含认证来源。认证解析不是另一项可以代替导入的交付。Core 适配器提供非秘密预览与应用动作，平台 UI 依据通用描述展示来源和候选项，不解释 Pi 配置。
 
-首个适配器固定读取 Pi 1.0.2 的有效配置。用户选择已配置的运行时实例；application 在预览和应用时重新解析该实例的目录与执行配置，不接受调用方覆盖路径。实例或来源的非秘密规范化快照变化使旧预览失效；指纹不代表原文件字节或秘密值。API key 值与 OAuth refresh 变化不作为来源指纹差异，应用时仍重新读取来源。读取不要求运行时先连接或已有默认模型。预览不执行配置中的凭据命令、不刷新认证、不访问模型服务。提供商按实际端点与协议分组；无法由当前网关保持语义的配置须显示原因，不能默默剥离后声称支持。导入保留原文件；应用动作将静态 API key 保存到提供商私有配置，OAuth 保留来源引用，由 adapter 在原存储锁内刷新。预览不返回秘密，公开摘要不含 key。
+首个适配器固定读取 Pi 1.0.2 的有效配置。用户选择已配置的运行时实例；application 在预览和应用时重新解析该实例的目录与执行配置，不接受调用方覆盖路径。实例或来源的非秘密规范化快照变化使旧预览失效；指纹不代表原文件字节或秘密值。API key 值与 OAuth refresh 变化不作为来源指纹差异，应用时仍重新读取来源。读取不要求执行准备或当前会话已有模型选择。预览不执行配置中的凭据命令、不刷新认证、不访问模型服务。提供商按实际端点与协议分组；无法由当前网关保持语义的配置须显示原因，不能默默剥离后声称支持。导入保留原文件；应用动作将静态 API key 保存到提供商私有配置，OAuth 保留来源引用，由 adapter 在原存储锁内刷新。预览不返回秘密，公开摘要不含 key。
 
 装配配置中的提供商模型映射可以携带 `piProjection`，其类型和转换归 Pi adapter，不是通用 AI 模型能力。固定 Pi 1.0.2 根据原提供商与 URL 推断的 ChatCompletions 有效兼容设置在导入时形成投影；受管模型目录保留 input、兼容设置、采样参数及按推理级别的参数，使替换 provider／URL 不改变 SDK 编码。DeepSeek 等原生 ChatCompletions 推理格式与 assistant reasoning 历史不再因 sampling 类型缺少字段被拒绝。Responses 保留当前明确支持的编码选项，旧 `openai-codex-responses` 仍不是普通 Responses 的别名。
 
@@ -119,7 +119,7 @@ HTTP ingress 使用 Axum，application 的提供商认证解析器在每次请�
 
 保存的来源投影在派发时重新核对。绑定缺少 Pi 必需执行元数据时，在运行时准备边界明确拒绝；不借用全局模型或另一提供商的规格，不静默吸收来源变化。`ai` 与 `ai-provider` 不引用 Pi 类型，Mac 往返保留 adapter 元数据，不解释它。旧 `chatCompletionsOutputLimitField` 已删除；来源 Pi 协议 compat 保留其真实编码语义。
 
-来源配置在导入时形成快照，不做双向同步。重复项默认跳过，替换须明确选择；替换更新参数与认证、移除未选模型，保留仍被选中模型的内部记录键。一次选择不得重复引用同一来源提供商，即便分别使用来源 ID 和预览 ID。模型归导入的提供商，模板仅提供快填。导入不自动改变运行时默认模型。应用前重新核对来源和目标配置，变化后要求重新预览；派发时核对保存的来源执行绑定，避免来源端点改变后将凭据发送到另一个目标。当前实现与人工验证记录见 [首循环任务](../../tasks/pi-mac-first-loop/packet.md)。
+来源配置在导入时形成快照，不做双向同步。重复项默认跳过，替换须明确选择；替换更新参数与认证、移除未选模型，保留仍被选中模型的内部记录键。一次选择不得重复引用同一来源提供商，即便分别使用来源 ID 和预览 ID。模型归导入的提供商，模板仅提供快填。导入不自动选择当前会话模型。应用前重新核对来源和目标配置，变化后要求重新预览；派发时核对保存的来源执行绑定，避免来源端点改变后将凭据发送到另一个目标。当前实现与人工验证记录见 [首循环任务](../../tasks/pi-mac-first-loop/packet.md)。
 
 
 ## 历史有界 sampling 与 MiniMax 实现

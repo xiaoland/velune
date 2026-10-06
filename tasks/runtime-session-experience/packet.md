@@ -35,3 +35,17 @@ advisor 已完成只读追踪：模型选择属于会话，“连接”宜成为
 只启动过无 Transport 的合成 --preview-settings 预览以尝试检查菜单；电脑 UI 服务启动失败，未取得视觉证据，已退出预览。菜单的原生控件接线与 Swift 类型检查已通过，实际视觉仍由用户复核。
 
 明确的两项改进已交付；初始模型与连接流程保持既有行为，产品偏好问题仍待用户回答。后续生命周期重构必须同时移除历史浏览与模型／准备的前置依赖，不以隐藏按钮代替契约修改。
+
+## 已确认的会话驱动重构
+
+用户已确认会话模型、按需准备与独立历史浏览，允许推进真实契约重构。添加实例即纳入浏览／选择范围；模型与凭据缺失不阻止列表或详情。初始模型字段和手动连接产品流程删除，执行准备失败仍明确显示且不得派发真实上游请求。启用／禁用不是本切片的必要门槛，不据此扩张管理框架。沿用一个活跃 runner、Harness 权威历史与 hard-cutoff；公开接口、配置 schema、Mac、人工脚本需同步，不能仅隐藏控件。
+
+advisor 正在收敛单活跃 runner 下的浏览／执行状态与模型恢复边界。primary 维护文档、最终静态与安装；唯一源码 owner 将贯通 agent-runtime／application／bindings／Mac 和必要人工脚本，不读取真实配置、凭据或会话。
+
+源码 owner 已确认具体接口：`select_runtime` 只切换浏览来源；configuration snapshot 使用 selectedRuntimeInstanceID 与 historyFailures，删除 connections；新建显式携带 modelRecordKey，删除 connect_runtime 和运行时默认模型。requiresReconnect 改为 executionInvalidated，闲置失效保留历史而在发送时重新准备。primary 独立维护新增人工浏览脚本，源码 owner 同步其它已存在的手工流程。只读模型选择先留在内存，实际执行后才由 Harness 保存，不引入另一份会话持久化。
+
+新增默认目录浏览验收最初失败，定位为把 Pi 默认分层 sessions 根错误当作自定义直接目录，以及有界 helper 的环境清理使 agentDir 环境未生效。已改由 Rust 显式传 agentDir，JS 在 dynamic import 固定 SDK 前设置实例目录；默认 sessionDir 保持空，让 SDK 执行原生分层扫描，自定义目录保持 SDK 直接目录语义。复验通过：无提供商／消失 cwd 正常读取，选模型不启动执行，任意来源路径拒绝，准备失败保留历史和选择，单实例历史失败隔离，源历史逐字节保留，schema 7 没有 runtime.modelRecordKey。均为临时 HOME／固定 SDK，无真实模型调用。
+
+源码已完成会话驱动契约：一个 Empty／History／Pi／Native 状态；新建显式模型、已有会话只读打开，首次发送准备，配置修改保留历史并使执行失效。Codex／DSH 原生记录不证明提供商身份，因此历史模型留空；Pi 只恢复有效自定义 recordKey。会话投影 revision 仅在本次投影生命周期内递增，Mac 不用它比较重新准备前后的顺序，而以串行操作、generation 与当前会话阻止过期应用。
+
+隔离实际 SDK 验收通过 Pi 工具及次轮续接、Codex／DSH 同 ID 不同提供商选择、DSH Chat 到 Responses 选模型零请求且下一次发送自动续接、错误版本准备保留旧详情、审批／秘密回答／取消／终态失败后的新建恢复。公开目录拉取和模板重开通过。全 workspace fmt／check／全 targets 与 features strict clippy、no-default bindings strict clippy、全 Mac Swift warnings-as-errors 通过。正在从冻结源码构建并核对最终安装包。

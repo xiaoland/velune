@@ -70,7 +70,6 @@ impl CoreRuntime {
         let previous = self
             .model_record_key
             .as_deref()
-            .or(runtime.model_record_key.as_deref())
             .ok_or_else(|| RuntimeError::invalid("runtime model"))?;
         let previous_aliases = self.native_aliases(runtime, previous)?;
         let aliases = self.native_aliases(runtime, key)?;
@@ -95,7 +94,7 @@ impl CoreRuntime {
                 return Err(RuntimeError::invalid("模型路由恢复失败，运行时已断开"));
             }
             return Err(RuntimeError::invalid(
-                "模型选择失败；更改协议需要重新连接运行时",
+                "模型选择失败；已保留当前会话与原模型选择",
             ));
         }
         Ok(())
@@ -103,11 +102,13 @@ impl CoreRuntime {
     pub(super) fn active_instance(&self) -> Result<&RuntimeInstance, RuntimeError> {
         self.runtime_instances
             .iter()
-            .find(|r| Some(&r.id) == self.active_runtime_id.as_ref())
+            .find(|r| Some(&r.id) == self.selected_runtime_id.as_ref())
             .ok_or_else(|| RuntimeError::invalid("active runtime"))
     }
-    pub(super) fn history_config(&self) -> Result<HistoryConfig, RuntimeError> {
-        let runtime = self.active_instance()?;
+    pub(super) fn history_config(
+        &self,
+        runtime: &RuntimeInstance,
+    ) -> Result<HistoryConfig, RuntimeError> {
         let provider = match runtime.type_id.as_str() {
             "codex-0.159.3" => "codex",
             "dsh-acp-0.2.0-rc.2" => "deepseek",
@@ -122,48 +123,40 @@ impl CoreRuntime {
             home,
         })
     }
-    pub(super) fn native_create(&mut self, cwd: &Path) -> Result<(), RuntimeError> {
-        validate_session_cwd(cwd)?;
+    pub(super) fn native_create(&mut self, cwd: &Path, key: &str) -> Result<(), RuntimeError> {
         let runtime = self.active_instance()?.clone();
-        let key = runtime
-            .model_record_key
-            .clone()
-            .ok_or_else(|| RuntimeError::invalid("请选择初始模型"))?;
-        self.select_native_model(&runtime, &key)?;
         if let ActiveState::Native(session) = &mut self.active_state {
             session
                 .create(cwd, &runtime.id)
                 .map_err(|_| RuntimeError::invalid("会话创建失败"))?;
         }
-        self.model_record_key = Some(key);
+        self.model_record_key = Some(key.into());
         Ok(())
     }
-    pub(super) fn native_open(&mut self, id: &str) -> Result<(), RuntimeError> {
+    pub(super) fn native_resume(
+        &mut self,
+        snapshot: &crate::conversation::ConversationSnapshot,
+        key: &str,
+    ) -> Result<(), RuntimeError> {
         let runtime = self.active_instance()?.clone();
-        let native_id = id
+        let native_id = snapshot
+            .conversation
+            .id
             .strip_prefix(&format!("{}:", runtime.id))
             .filter(|id| !id.is_empty())
             .ok_or_else(|| RuntimeError::invalid("conversation id"))?;
-        let history = history::read(&self.history_config()?, native_id)
-            .map_err(|_| RuntimeError::invalid("会话历史读取失败"))?;
-        let cwd = history
+        let cwd = snapshot
+            .conversation
             .cwd
             .as_deref()
             .map(PathBuf::from)
             .ok_or_else(|| RuntimeError::invalid("会话工作目录不可用"))?;
-        validate_session_cwd(&cwd)?;
-        let key = runtime
-            .model_record_key
-            .clone()
-            .ok_or_else(|| RuntimeError::invalid("请选择初始模型"))?;
-        self.select_native_model(&runtime, &key)?;
         if let ActiveState::Native(session) = &mut self.active_state {
             session
-                .open(&history.native_id, &cwd, &runtime.id, history.messages)
+                .open(native_id, &cwd, &runtime.id, snapshot.messages.clone())
                 .map_err(|_| RuntimeError::invalid("会话恢复失败"))?;
-            session.notice("已恢复历史会话；继续使用此运行时配置的初始模型，可在工具栏重新选择。");
         }
-        self.model_record_key = Some(key);
+        self.model_record_key = Some(key.into());
         Ok(())
     }
     pub(super) fn reply_runtime_interaction(

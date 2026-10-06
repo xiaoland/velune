@@ -1925,6 +1925,7 @@ dependencies = [
  "sha2",
  "thiserror",
  "tokio",
+ "tracing",
  "url",
  "velune-agent-runtime",
  "velune-conversation",

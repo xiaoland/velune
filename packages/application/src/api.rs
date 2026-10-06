@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use velune_conversation::{
-    Connection, ConversationSnapshot, ConversationSummary, SettingAction, SettingOption,
+    ConversationSnapshot, ConversationSummary, SettingAction, SettingOption,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -60,15 +60,15 @@ pub struct ProviderDraft {
 #[serde(rename_all = "camelCase")]
 pub struct ConfigurationSnapshot {
     pub conversations: Vec<ConversationSummary>,
-    pub connections: Vec<Connection>,
+    pub history_failures: Vec<HistoryFailure>,
     pub gateways: Vec<GatewaySummary>,
     pub runtime_instances: Vec<RuntimeInstance>,
     pub runtime_types: Vec<RuntimeTypeDescriptor>,
     pub model_templates: Vec<ModelTemplate>,
     pub provider_import_types: Vec<RuntimeTypeDescriptor>,
     pub protocols: Vec<ProtocolDescriptor>,
-    #[serde(rename = "activeRuntimeInstanceID")]
-    pub active_runtime_instance_id: Option<String>,
+    #[serde(rename = "selectedRuntimeInstanceID")]
+    pub selected_runtime_instance_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -83,7 +83,7 @@ pub struct ProtocolDescriptor {
 #[serde(rename_all = "camelCase")]
 pub struct GatewayUpdate {
     pub gateways: Vec<GatewaySummary>,
-    pub requires_reconnect: bool,
+    pub execution_invalidated: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -91,15 +91,7 @@ pub struct GatewayUpdate {
 pub struct RuntimeUpdate {
     pub runtime_instances: Vec<RuntimeInstance>,
     pub runtime_types: Vec<RuntimeTypeDescriptor>,
-    pub requires_reconnect: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ConnectionResult {
-    #[serde(rename = "runtimeInstanceID")]
-    pub runtime_instance_id: Option<String>,
-    pub connections: Vec<Connection>,
+    pub execution_invalidated: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -173,7 +165,7 @@ pub struct ImportResult {
     pub imported_provider_ids: Vec<String>,
     pub skipped_provider_ids: Vec<String>,
     pub gateways: Vec<GatewaySummary>,
-    pub requires_reconnect: bool,
+    pub execution_invalidated: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -199,7 +191,7 @@ pub struct AuthenticationProgress {
     pub running: bool,
     pub events: Vec<AuthenticationEvent>,
     pub gateways: Option<Vec<GatewaySummary>>,
-    pub requires_reconnect: Option<bool>,
+    pub execution_invalidated: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -267,15 +259,20 @@ impl Application {
             None,
         )
     }
-    pub fn connect_runtime(&mut self, id: String) -> Result<ConnectionResult, Error> {
-        self.execute("connect", json!({"runtimeInstanceID":id}), None)
+    pub fn select_runtime(&mut self, id: String) -> Result<ConfigurationSnapshot, Error> {
+        self.execute("selectRuntime", json!({"runtimeInstanceID":id}), None)
     }
     pub fn create_conversation(
         &mut self,
         runtime_id: String,
         cwd: String,
+        model_record_key: String,
     ) -> Result<SnapshotResult, Error> {
-        self.execute("create", json!({"cwd":cwd}), Some(&runtime_id))
+        self.execute(
+            "create",
+            json!({"cwd":cwd,"modelRecordKey":model_record_key}),
+            Some(&runtime_id),
+        )
     }
     pub fn open_conversation(
         &mut self,
@@ -433,4 +430,11 @@ impl Application {
     pub fn authentication_cancel(&mut self) -> Result<AuthenticationProgress, Error> {
         self.execute("authentication", json!({"operation":"cancel"}), None)
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryFailure {
+    pub runtime_id: String,
+    pub detail: String,
 }

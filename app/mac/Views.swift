@@ -9,12 +9,19 @@ struct VeluneRootView: View {
     @State private var search = ""
     @State private var draft = ""
     private var messages: [Message] { previewEmpty ? [] : store.messages }
-    private var conversations: [Conversation] { store.conversations.filter { search.isEmpty || $0.title.localizedCaseInsensitiveContains(search) } }
-    private var selectedConnection: Connection? { store.connections.first { $0.id == store.selectedConnectionID } }
+    private var conversations: [Conversation] { store.conversations.filter { (store.selectedRuntimeID == nil || $0.runtimeID == store.selectedRuntimeID) && (search.isEmpty || $0.title.localizedCaseInsensitiveContains(search)) } }
+    private var selectedRuntime: RuntimeInstance? { store.runtimeInstances.first { $0.id == store.selectedRuntimeID } }
 
     var body: some View {
         NavigationSplitView {
             List(selection: Binding(get: { store.selectedConversationID }, set: { if let id = $0 { store.selectConversation(id: id) } })) {
+                if !store.historyFailures.isEmpty {
+                    Section("历史读取") {
+                        ForEach(store.historyFailures, id: \.runtimeID) { failure in
+                            Label { Text("\(store.runtimeInstances.first { $0.id == failure.runtimeID }?.name ?? "运行时")：\(failure.detail)").font(.caption) } icon: { Image(systemName: "exclamationmark.triangle") }
+                        }
+                    }
+                }
                 Section("会话") {
                     ForEach(conversations) { conversation in
                         VStack(alignment: .leading, spacing: 3) {
@@ -43,6 +50,7 @@ struct VeluneRootView: View {
             .toolbar { conversationToolbar }
         }
         .navigationSplitViewStyle(.balanced)
+        .sheet(isPresented: $store.showsNewConversation) { NewConversationView(store: store) }
         .sheet(item: Binding(get: { store.pendingInteractions.first }, set: { _ in })) { RuntimeInteractionView(store: store, interaction: $0) }
         .onReceive(NotificationCenter.default.publisher(for: .veluneSend)) { _ in send() }
         .task {
@@ -62,12 +70,12 @@ struct VeluneRootView: View {
             .help("选择模型（当前：\(store.selectedModelName ?? "未选择")）")
             .disabled(!store.canSwitchModel)
             Menu {
-                ForEach(store.connections) { connection in Button(connection.name) { store.selectConnection(id: connection.id) } }
+                ForEach(store.runtimeInstances) { runtime in Button(runtime.name) { store.selectRuntime(id: runtime.id) } }
                 Divider()
                 SettingsLink { Text("Agent 运行时设置…") }
-            } label: { Label(selectedConnection?.name ?? "Agent 运行时", systemImage: "desktopcomputer").labelStyle(.titleAndIcon) }
-            .accessibilityLabel("Agent 运行时：\(selectedConnection?.name ?? "未连接")")
-            .help("选择Agent 运行时（当前：\(selectedConnection?.name ?? "未连接")）")
+            } label: { Label(selectedRuntime?.name ?? "Agent 运行时", systemImage: "desktopcomputer").labelStyle(.titleAndIcon) }
+            .accessibilityLabel("Agent 运行时：\(selectedRuntime?.name ?? "未选择")")
+            .help("选择Agent 运行时（当前：\(selectedRuntime?.name ?? "未选择")）")
             .disabled(store.isGenerating || store.isLoading)
         }
     }
@@ -518,15 +526,12 @@ struct RuntimeSettingsView: View {
                 Button { creating = true } label: { Image(systemName: "plus") }.help("添加Agent 运行时实例")
                 Button { deleting = selected } label: { Image(systemName: "minus") }.disabled(selected == nil).help("删除运行时实例")
                 Spacer()
-                if let instance = selected, let descriptor = store.runtimeTypes.first(where: { $0.id == instance.typeID }) {
-                    ForEach(descriptor.actions) { action in Button(action.label) { store.performRuntimeAction(instanceID: instance.id, actionID: action.id) }.disabled(store.isLoading || store.isGenerating) }
-                }
                 Button("编辑…") { editor = selected }.disabled(selected == nil)
             }.padding(.horizontal, 20).padding(.vertical, 12)
             SettingsError(message: store.error)
         }
-        .sheet(item: $editor) { instance in RuntimeEditor(instance: instance, types: store.runtimeTypes, models: store.models, gatewayID: store.gateway.id, isSaving: store.isLoading, error: store.error, save: store.saveRuntimeInstance) }
-        .sheet(isPresented: $creating) { RuntimeEditor(instance: nil, types: store.runtimeTypes, models: store.models, gatewayID: store.gateway.id, isSaving: store.isLoading, error: store.error, save: store.saveRuntimeInstance) }
+        .sheet(item: $editor) { instance in RuntimeEditor(instance: instance, types: store.runtimeTypes, gatewayID: store.gateway.id, isSaving: store.isLoading, error: store.error, save: store.saveRuntimeInstance) }
+        .sheet(isPresented: $creating) { RuntimeEditor(instance: nil, types: store.runtimeTypes, gatewayID: store.gateway.id, isSaving: store.isLoading, error: store.error, save: store.saveRuntimeInstance) }
         .alert("删除运行时实例？", isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } }), presenting: deleting) { instance in Button("删除", role: .destructive) { store.deleteRuntimeInstance(id: instance.id); deleting = nil }; Button("取消", role: .cancel) { deleting = nil } } message: { instance in Text("删除「\(instance.name)」的配置，不删除运行时保存的会话。") }
     }
 }
@@ -534,7 +539,6 @@ struct RuntimeSettingsView: View {
 struct RuntimeEditor: View {
     let instance: RuntimeInstance?
     let types: [RuntimeTypeDescriptor]
-    let models: [ModelChoice]
     let gatewayID: String
     let isSaving: Bool
     let error: String?
@@ -542,17 +546,12 @@ struct RuntimeEditor: View {
     @Environment(\.dismiss) private var dismiss
     @State private var name = ""
     @State private var typeID = ""
-    @State private var modelRecordKey: String?
     @State private var settings: [String: String] = [:]
     @State private var draftID = UUID().uuidString
     @State private var typeDrafts: [String: [String: String]] = [:]
     @State private var executableDiscoveryRunning = false
     @State private var executableDiscoveryMessage: String?
     private var descriptor: RuntimeTypeDescriptor? { types.first { $0.id == typeID } }
-    private var compatibleModels: [ModelChoice] {
-        guard let descriptor else { return [] }
-        return models.filter { descriptor.supportedProtocols.contains($0.protocolID) }
-    }
     private var valid: Bool { !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && descriptor != nil && (descriptor?.fields.allSatisfy { field in
         let value = settings[field.key] ?? field.value
         return (!field.required || !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) && MacPath.isValid(value, field: field)
@@ -568,7 +567,6 @@ struct RuntimeEditor: View {
                 Section {
                     TextField("实例名称", text: $name)
                     Picker("类型", selection: $typeID) { ForEach(types) { type in Text(type.name).tag(type.id) } }.disabled(instance != nil)
-                    Picker("初始模型", selection: $modelRecordKey) { Text("稍后选择").tag(Optional<String>.none); ForEach(compatibleModels) { model in Text(model.displayName).tag(Optional(model.id)) } }
                 }
                 if let descriptor {
                     Section("实例配置") {
@@ -600,12 +598,10 @@ struct RuntimeEditor: View {
                     if let value = settings[field.key] { settings[field.key] = MacPath.expanded(value) }
                 }
             }
-            modelRecordKey = instance?.modelRecordKey
             DispatchQueue.main.async { discoverExecutableIfNeeded() }
         }
         .onChange(of: typeID) { old, new in
             if instance == nil { typeDrafts[old] = settings; settings = typeDrafts[new] ?? [:] }
-            if let selected = modelRecordKey, !compatibleModels.contains(where: { $0.recordKey == selected }) { modelRecordKey = nil }
             executableDiscoveryMessage = nil
             DispatchQueue.main.async { discoverExecutableIfNeeded() }
         }
@@ -644,7 +640,7 @@ struct RuntimeEditor: View {
         for field in descriptor.fields {
             values[field.key] = MacPath.normalized(settings[field.key] ?? field.value, field: field)
         }
-        save(RuntimeInstance(id: instance?.id ?? draftID, name: name.trimmingCharacters(in: .whitespacesAndNewlines), typeID: typeID, gatewayID: instance?.gatewayID ?? gatewayID, settings: values, modelRecordKey: modelRecordKey)) { dismiss() }
+        save(RuntimeInstance(id: instance?.id ?? draftID, name: name.trimmingCharacters(in: .whitespacesAndNewlines), typeID: typeID, gatewayID: instance?.gatewayID ?? gatewayID, settings: values)) { dismiss() }
     }
 }
 
@@ -768,4 +764,52 @@ struct RuntimeInteractionView: View {
     }
     private func value(_ id: String) -> Binding<String> { Binding(get: { values[id] ?? "" }, set: { values[id] = $0 }) }
     private func reply(_ value: RuntimeInteractionReply) { store.replyInteraction(interaction, reply: value) }
+}
+
+struct NewConversationView: View {
+    @ObservedObject var store: AppStore
+    @Environment(\.dismiss) private var dismiss
+    @State private var runtimeID = ""
+    @State private var modelRecordKey: String?
+    @State private var cwd = ""
+    private var compatibleModels: [ModelChoice] {
+        guard let runtime = store.runtimeInstances.first(where: { $0.id == runtimeID }), let type = store.runtimeTypes.first(where: { $0.id == runtime.typeID }) else { return [] }
+        return store.models.filter { type.supportedProtocols.contains($0.protocolID) }
+    }
+    var body: some View {
+        VStack(spacing: 0) {
+            Text("新建会话").font(.headline).frame(maxWidth: .infinity, alignment: .leading).padding(20)
+            Form {
+                Picker("Agent 运行时", selection: $runtimeID) { ForEach(store.runtimeInstances) { Text($0.name).tag($0.id) } }
+                Picker("模型", selection: $modelRecordKey) {
+                    Text("选择会话模型").tag(Optional<String>.none)
+                    ForEach(compatibleModels) { Text($0.displayName).tag(Optional($0.recordKey)) }
+                }
+                LabeledContent("工作目录") {
+                    HStack { TextField("项目目录", text: $cwd); Button("选择…") { chooseDirectory() } }
+                }
+                if store.runtimeInstances.isEmpty {
+                    Text("请先添加 Agent 运行时实例。").foregroundStyle(.secondary)
+                    SettingsLink { Text("打开运行时设置") }
+                } else if compatibleModels.isEmpty {
+                    Text("此运行时尚无兼容模型，请在 AI 提供商设置中添加。").foregroundStyle(.secondary)
+                    SettingsLink { Text("打开 AI 提供商设置") }
+                }
+                Text("模型与工作目录属于此会话。创建时会自动准备运行时；浏览已有会话不需要执行准备。").font(.caption).foregroundStyle(.secondary)
+            }.formStyle(.grouped)
+            SettingsError(message: store.error)
+            HStack {
+                Spacer(); Button("取消") { dismiss() }.keyboardShortcut(.cancelAction)
+                Button("创建") {
+                    if let modelRecordKey { store.createConversation(runtimeID: runtimeID, cwd: MacPath.expanded(cwd), modelRecordKey: modelRecordKey) { dismiss() } }
+                }.keyboardShortcut(.defaultAction).disabled(runtimeID.isEmpty || modelRecordKey == nil || cwd.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || store.isBusy)
+            }.padding(16)
+        }.frame(width: 480, height: 310)
+        .onAppear { runtimeID = store.selectedRuntimeID ?? store.runtimeInstances.first?.id ?? "" }
+        .onChange(of: runtimeID) { _, _ in modelRecordKey = nil }
+    }
+    private func chooseDirectory() {
+        let panel = NSOpenPanel(); panel.title = "选择新会话的工作目录"; panel.canChooseDirectories = true; panel.canChooseFiles = false; panel.allowsMultipleSelection = false
+        if panel.runModal() == .OK, let url = panel.url { cwd = url.standardizedFileURL.path }
+    }
 }

@@ -220,9 +220,9 @@ impl VeluneApplication {
         })?)
     }
 
-    pub fn connect_runtime(&self, id: String) -> Result<BindingConnectionResult, BindingError> {
-        convert(self.with("connect_runtime", |application| {
-            application.connect_runtime(id)
+    pub fn select_runtime(&self, id: String) -> Result<BindingConfigurationSnapshot, BindingError> {
+        convert(self.with("select_runtime", |application| {
+            application.select_runtime(id)
         })?)
     }
 
@@ -230,9 +230,10 @@ impl VeluneApplication {
         &self,
         runtime_id: String,
         cwd: String,
+        model_record_key: String,
     ) -> Result<BindingSnapshotResult, BindingError> {
         convert(self.with("create_conversation", |application| {
-            application.create_conversation(runtime_id, cwd)
+            application.create_conversation(runtime_id, cwd, model_record_key)
         })?)
     }
 

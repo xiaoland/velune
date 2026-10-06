@@ -58,6 +58,8 @@ pub enum MessageBlock {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct ConversationSnapshot {
+    /// Revision within the current projection lifecycle. History and execution
+    /// projections may restart it; it is not a global ordering key across preparation.
     pub revision: u64,
     pub conversation: ConversationSummary,
     pub resource_id: Option<String>,
@@ -67,15 +69,6 @@ pub struct ConversationSnapshot {
     #[serde(default)]
     pub pending_interactions: Vec<RuntimeInteraction>,
     pub actions: ConversationActions,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct Connection {
-    pub id: String,
-    pub name: String,
-    pub state: String,
-    pub capabilities: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

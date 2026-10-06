@@ -29,16 +29,12 @@ impl CoreRuntime {
         let mut pending = previous.clone();
         crate::provider_configuration::edit_provider(&mut pending, payload)?;
         self.gateways = pending;
-        crate::provider_configuration::clear_removed_selections(
-            &self.gateways,
-            &mut self.runtime_instances,
-        );
         if let Err(error) = self.persist() {
             self.gateways = previous;
             self.runtime_instances = previous_runtimes;
             return Err(error);
         }
-        let reconnect = self.active_runtime_id.as_ref().is_some_and(|id| {
+        let reconnect = self.selected_runtime_id.as_ref().is_some_and(|id| {
             let before = previous_runtimes.iter().find(|runtime| &runtime.id == id);
             let after = self
                 .runtime_instances
@@ -56,9 +52,9 @@ impl CoreRuntime {
                 })
         });
         if reconnect {
-            self.shutdown_active()?;
+            self.invalidate_execution()?;
         }
-        Ok(json!({"gateways":self.public_gateways(),"requiresReconnect":reconnect}))
+        Ok(json!({"gateways":self.public_gateways(),"executionInvalidated":reconnect}))
     }
     pub(super) fn template_action(&mut self, payload: &Value) -> Result<Value, RuntimeError> {
         let previous = self.model_templates.clone();

@@ -82,7 +82,6 @@ pub struct RuntimeInstance {
     pub type_id: String,
     pub gateway_id: String,
     pub settings: BTreeMap<String, String>,
-    pub model_record_key: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -94,7 +93,6 @@ pub struct RuntimeTypeDescriptor {
     pub supported_protocols: Vec<GatewayProtocol>,
     pub name: String,
     pub fields: Vec<crate::conversation::SettingField>,
-    pub actions: Vec<crate::conversation::SettingAction>,
 }
 
 impl RuntimeInstance {

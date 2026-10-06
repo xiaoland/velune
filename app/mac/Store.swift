@@ -7,9 +7,10 @@ import VeluneBindings
 final class AppStore: ObservableObject {
     @Published private(set) var conversations: [Conversation] = []
     @Published private(set) var selectedConversationID: String?
-    @Published private(set) var selectedConnectionID: String?
+    @Published private(set) var selectedRuntimeID: String?
     @Published private(set) var messages: [Message] = []
-    @Published private(set) var connections: [Connection] = []
+    @Published private(set) var historyFailures: [HistoryFailure] = []
+    @Published var showsNewConversation = false
     @Published private(set) var gateway = GatewayConfig()
     @Published private(set) var runtimeInstances: [RuntimeInstance] = []
     @Published private(set) var runtimeTypes: [RuntimeTypeDescriptor] = []
@@ -58,13 +59,13 @@ final class AppStore: ObservableObject {
     var needsModelSelection: Bool { snapshot != nil && snapshot?.modelRecordKey == nil }
     var selectedModelName: String? { models.first { $0.recordKey == snapshot?.modelRecordKey }?.displayName }
     var runtimeCompatibleModels: [ModelChoice] {
-        let typeID = runtimeInstances.first { $0.id == selectedConnectionID }?.typeID
+        let typeID = runtimeInstances.first { $0.id == selectedRuntimeID }?.typeID
         guard let descriptor = runtimeTypes.first(where: { $0.id == typeID }) else { return [] }
         return models.filter { descriptor.supportedProtocols.contains($0.protocolID) }
     }
     var pendingInteractions: [RuntimeInteraction] { snapshot?.pendingInteractions ?? [] }
     func replyInteraction(_ interaction: RuntimeInteraction, reply: RuntimeInteractionReply) {
-        guard pendingInteractions.contains(where: { $0.id == interaction.id }), let runtimeID = selectedConnectionID, let transport else { return }
+        guard pendingInteractions.contains(where: { $0.id == interaction.id }), let runtimeID = selectedRuntimeID, let transport else { return }
         let currentGeneration = generation
         enqueue({ try transport.replyRuntimeInteraction(runtimeID: runtimeID, interactionID: interaction.id, reply: reply) }) { [weak self] value in
             guard let self, generation == currentGeneration else { return }; applySnapshotResult(value)
@@ -109,48 +110,38 @@ final class AppStore: ObservableObject {
         }
     }
     func selectConversation(id: String) {
-        guard !isLoading, !isGenerating, conversations.contains(where: { $0.id == id }) else { return }
-        generation += 1; selectedConversationID = id; snapshot = nil; messages = []
-        if isPreview { apply(previewSnapshots[id]); return }
-        guard let transport, let runtimeID = selectedConnectionID else { error = "请先连接运行时"; return }
-        enqueue({ try transport.openConversation(runtimeID: runtimeID, conversationID: id) }) { [weak self] in self?.applySnapshotResult($0) }
-    }
-    func createConversation(cwd: String? = nil) {
-        guard !isLoading, !isGenerating else { return }
-        if !isPreview, cwd == nil {
-            let panel = NSOpenPanel()
-            panel.title = "选择新会话的工作目录"
-            panel.message = "Agent 运行时将在此目录中执行项目工具。"
-            panel.canChooseDirectories = true
-            panel.canChooseFiles = false
-            panel.allowsMultipleSelection = false
-            if panel.runModal() == .OK, let url = panel.url {
-                createConversation(cwd: url.standardizedFileURL.path)
-            }
-            return
-        }
-        generation += 1
-        if isPreview {
-            let conversation = Conversation(id: UUID().uuidString, title: "新会话", updatedAt: "刚刚", runtimeID: selectedConnectionID ?? runtimeInstances.first?.id ?? "sample-instance", cwd: cwd)
-            apply(ConversationSnapshot(revision: 1, conversation: conversation, modelRecordKey: models.first?.id, runState: .idle, messages: [], actions: ConversationActions(canSend: true, canCancel: false, canSwitch: true)))
-            return
-        }
-        guard let cwd, !cwd.isEmpty else { error = "新会话需要选择工作目录"; return }
-        guard let runtimeID = selectedConnectionID else { error = "请先连接运行时"; return }
+        guard !isLoading, !isGenerating, let conversation = conversations.first(where: { $0.id == id }) else { return }
+        if isPreview { selectedRuntimeID = conversation.runtimeID; apply(previewSnapshots[id]); return }
         guard let transport else { error = "本地核心未配置"; return }
-        enqueue({ try transport.createConversation(runtimeID: runtimeID, cwd: cwd) }) { [weak self] in self?.applySnapshotResult($0) }
+        enqueue({ try transport.openConversation(runtimeID: conversation.runtimeID, conversationID: id) }) { [weak self] in
+            self?.resetProjection(); self?.selectedRuntimeID = conversation.runtimeID; self?.applySnapshotResult($0)
+        }
+    }
+    func createConversation() { showsNewConversation = true }
+    func createConversation(runtimeID: String, cwd: String, modelRecordKey: String, onCreated: @escaping () -> Void) {
+        guard !isLoading, !isGenerating else { return }
+        if isPreview {
+            let conversation = Conversation(id: UUID().uuidString, title: "新会话", updatedAt: "刚刚", runtimeID: runtimeID, cwd: cwd)
+            selectedRuntimeID = runtimeID
+            apply(ConversationSnapshot(revision: 1, conversation: conversation, modelRecordKey: modelRecordKey, runState: .idle, messages: [], actions: ConversationActions(canSend: true, canCancel: false, canSwitch: true)))
+            onCreated(); return
+        }
+        guard let transport else { error = "本地核心未配置"; return }
+        enqueue({ try transport.createConversation(runtimeID: runtimeID, cwd: cwd, modelRecordKey: modelRecordKey) }) { [weak self] in
+            self?.generation += 1; self?.selectedRuntimeID = runtimeID; self?.applySnapshotResult($0); onCreated()
+        }
     }
     func send(text: String, onAccepted: (() -> Void)? = nil) {
         guard canSend, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         if isPreview { snapshot?.messages.append(Message(id: UUID().uuidString, role: "user", blocks: [.text(text)])); apply(snapshot); onAccepted?(); return }
-        guard let runtimeID = selectedConnectionID else { error = "请先连接运行时"; return }
+        guard let runtimeID = selectedRuntimeID else { error = "请选择运行时实例"; return }
         guard let transport else { error = "本地核心未配置"; return }
         enqueue({ try transport.send(runtimeID: runtimeID, text: text) }, onAccepted: onAccepted) { [weak self] in self?.applySnapshotResult($0) }
     }
     func cancel() {
         guard canCancel, !isLoading else { return }
         if isPreview { snapshot?.runState = .idle; snapshot?.actions.canCancel = false; apply(snapshot); return }
-        guard let runtimeID = selectedConnectionID else { error = "请先连接运行时"; return }
+        guard let runtimeID = selectedRuntimeID else { error = "请选择运行时实例"; return }
         guard let transport else { error = "本地核心未配置"; return }
         enqueue({ try transport.cancel(runtimeID: runtimeID) }) { [weak self] in self?.applySnapshotResult($0) }
     }
@@ -193,8 +184,8 @@ final class AppStore: ObservableObject {
         enqueue({ try transport.providerImportApply(gatewayID: self.gateway.id, source: BindingMapping.bindingImportSource(source), previewToken: preview.token, selections: selections.map(BindingMapping.bindingSelection), replaceExisting: replaceExisting) }) { [weak self] data in
                 guard let self else { return }
                 if let saved = data.gateways.first(where: { $0.id == self.gateway.id }) { self.gateway = BindingMapping.gateway(saved); self.hasGateway = true }
-                if data.requiresReconnect { invalidateConnection() }
-                if !data.requiresReconnect { enqueue({ try transport.list() }) { [weak self] in self?.applyList($0) } }
+                if data.executionInvalidated { refreshAfterExecutionInvalidation() }
+                if !data.executionInvalidated { enqueue({ try transport.list() }) { [weak self] in self?.applyList($0) } }
                 completion()
             }
     }
@@ -234,7 +225,7 @@ final class AppStore: ObservableObject {
     private func applyAuthentication(_ data: AuthenticationData) {
         authenticationRunning = data.running
         if let saved = data.gateways?.first(where: { $0.id == gateway.id }) { gateway = saved }
-        if data.requiresReconnect == true { invalidateConnection() }
+        if data.executionInvalidated == true { refreshAfterExecutionInvalidation() }
         for event in data.events {
             if event.type == "prompt", let id = event.id, let prompt = event.prompt {
                 authenticationPrompt = AuthenticationPrompt(id: id, kind: prompt.kind, text: prompt.text, options: prompt.options)
@@ -255,8 +246,7 @@ final class AppStore: ObservableObject {
     }
     private func applyGatewayUpdate(_ data: BindingGatewayUpdate) {
         if let saved = data.gateways.first(where: { $0.id == gateway.id }) { gateway = BindingMapping.gateway(saved); hasGateway = true }
-        if data.requiresReconnect { invalidateConnection() }
-        for index in runtimeInstances.indices where runtimeInstances[index].modelRecordKey.map({ key in !models.contains { $0.recordKey == key } }) == true { runtimeInstances[index].modelRecordKey = nil }
+        if data.executionInvalidated { refreshAfterExecutionInvalidation() }
     }
     func saveRuntimeInstance(_ instance: RuntimeInstance, onSaved: (() -> Void)? = nil) {
         guard !isGenerating else { error = "请先停止当前任务，再修改运行时实例"; return }
@@ -265,7 +255,8 @@ final class AppStore: ObservableObject {
         enqueue({ try transport.upsertRuntime(BindingMapping.bindingRuntime(instance)) }) { [weak self] data in
             guard let self else { return }
             runtimeInstances = data.runtimeInstances.map(BindingMapping.runtime); runtimeTypes = data.runtimeTypes.map(BindingMapping.runtimeType)
-            if data.requiresReconnect { invalidateConnection() }
+            if data.executionInvalidated { refreshAfterExecutionInvalidation() }
+            else { enqueue({ try transport.list() }) { [weak self] in self?.applyList($0) } }
             if data.runtimeInstances.contains(where: { $0.id == instance.id }) { onSaved?() }
             else { error = "核心未返回保存后的运行时实例" }
         }
@@ -273,56 +264,49 @@ final class AppStore: ObservableObject {
     func deleteRuntimeInstance(id: String) {
         if isPreview {
             runtimeInstances.removeAll { $0.id == id }
-            if selectedConnectionID == id { resetProjection(); selectedConnectionID = nil; connections.removeAll { $0.id == id } }
+            if selectedRuntimeID == id { resetProjection(); selectedRuntimeID = nil }
             return
         }
         guard let transport else { error = "本地核心未配置"; return }
         enqueue({ try transport.deleteRuntime(id: id) }) { [weak self] data in
             self?.runtimeInstances = data.runtimeInstances.map(BindingMapping.runtime); self?.runtimeTypes = data.runtimeTypes.map(BindingMapping.runtimeType)
-            if data.requiresReconnect { self?.invalidateConnection() }
+            if data.executionInvalidated { self?.refreshAfterExecutionInvalidation() }
         }
     }
     func selectModel(modelRecordKey: String) {
         guard !isLoading, !isGenerating, models.contains(where: { $0.id == modelRecordKey }) else { return }
         if isPreview { snapshot?.modelRecordKey = modelRecordKey; apply(snapshot); return }
-        guard let runtimeID = selectedConnectionID else { error = "请先选择运行时实例"; return }
+        guard let runtimeID = selectedRuntimeID else { error = "请先选择运行时实例"; return }
         guard let transport else { error = "本地核心未配置"; return }
         enqueue({ try transport.selectModel(runtimeID: runtimeID, modelRecordKey: modelRecordKey) }) { [weak self] in self?.applySnapshotResult($0) }
     }
-    func selectConnection(id: String) {
+    func selectRuntime(id: String) {
         guard !isLoading, !isGenerating else { return }
-        if isPreview { selectedConnectionID = id; return }
+        if isPreview { resetProjection(); selectedRuntimeID = id; return }
         guard let transport else { error = "本地核心未配置"; return }
-        enqueue({ try transport.connectRuntime(id: id) }) { [weak self] in
-            self?.resetProjection(); self?.selectedConnectionID = $0.runtimeInstanceId ?? id; self?.connections = $0.connections.map { Connection(id: $0.id, name: $0.name, state: $0.state, capabilities: $0.capabilities) }
-            self?.loadConversations()
+        enqueue({ try transport.selectRuntime(id: id) }) { [weak self] data in
+            self?.resetProjection(); self?.applyList(data)
         }
     }
-    func performRuntimeAction(instanceID: String, actionID: String) {
-        guard !isLoading, !isGenerating else { return }
-        if isPreview { selectedConnectionID = instanceID; return }
-        guard actionID == "connect", let transport else { error = "此运行时动作暂不支持"; return }
-        enqueue({ try transport.connectRuntime(id: instanceID) }) { [weak self] data in
-            self?.resetProjection(); self?.selectedConnectionID = data.runtimeInstanceId ?? instanceID
-            self?.connections = data.connections.map { Connection(id: $0.id, name: $0.name, state: $0.state, capabilities: $0.capabilities) }
-            if !data.connections.isEmpty { self?.loadConversations() }
-        }
-    }
-    private func invalidateConnection() {
-        resetProjection(); connections = []; selectedConnectionID = nil
+    private func refreshAfterExecutionInvalidation() {
         guard let transport else { error = "本地核心未配置"; return }
-        enqueue({ try transport.list() }) { [weak self] in self?.applyList($0) }
+        enqueue({ try transport.list() }) { [weak self] data in
+            guard let self else { return }; applyList(data)
+            if let runtimeID = selectedRuntimeID, snapshot != nil {
+                enqueue({ try transport.snapshot(runtimeID: runtimeID) }) { [weak self] in self?.applySnapshotResult($0) }
+            } else if selectedRuntimeID == nil { resetProjection() }
+        }
     }
     private func resetProjection() { generation += 1; snapshot = nil; selectedConversationID = nil; messages = []; activity = nil }
     private func applyList(_ data: BindingConfigurationSnapshot) {
         let mapped = BindingMapping.configuration(data)
-        conversations = mapped.conversations; connections = mapped.connections
+        conversations = mapped.conversations; historyFailures = mapped.historyFailures
         if let saved = mapped.gateways.first(where: { $0.id == gateway.id }) ?? mapped.gateways.first { gateway = saved; hasGateway = true }
         runtimeInstances = mapped.runtimes; runtimeTypes = mapped.runtimeTypes
         protocols = mapped.protocols
         modelTemplates = mapped.modelTemplates
         providerImportTypes = mapped.importTypes
-        selectedConnectionID = mapped.activeRuntimeID
+        selectedRuntimeID = mapped.selectedRuntimeID
     }
     private func loadConversations() {
         guard let transport else { error = "本地核心未配置"; return }
@@ -334,8 +318,7 @@ final class AppStore: ObservableObject {
     }
     private func apply(_ value: ConversationSnapshot?) {
         guard let value else { return }
-        if snapshot?.conversation.id == value.conversation.id, (snapshot?.revision ?? 0) > value.revision { return }
-        snapshot = value; selectedConversationID = value.conversation.id; messages = value.messages
+        snapshot = value; selectedRuntimeID = value.conversation.runtimeID; selectedConversationID = value.conversation.id; messages = value.messages
         if let index = conversations.firstIndex(where: { $0.id == value.conversation.id }) { conversations[index] = value.conversation }
         else { conversations.insert(value.conversation, at: 0) }
         activity = value.runState == .running ? "正在思考与执行" : value.runState == .stopping ? "正在停止" : nil
@@ -345,7 +328,7 @@ final class AppStore: ObservableObject {
         apply(value.snapshot.map(BindingMapping.snapshot))
     }
     private func poll() {
-        guard !isPreview, !isShuttingDown, snapshot != nil, !isLoading, !pollPending, let transport, let runtimeID = selectedConnectionID else { return }
+        guard !isPreview, !isShuttingDown, snapshot != nil, !isLoading, !pollPending, let transport, let runtimeID = selectedRuntimeID else { return }
         let revision = generation
         let selected = selectedConversationID
         pollPending = true
@@ -384,13 +367,12 @@ final class AppStore: ObservableObject {
         gateway = GatewayConfig(providers: [AIProvider(id: "sample-provider", name: "示例 AI 服务", protocolID: .chatCompletionsV1, endpoint: "https://example.invalid/v1", models: [ProviderModel(recordKey: "sample-model", providerModelID: "external-example", nickname: "通用模型", contextWindow: 8192, maxOutputTokens: 4096)])])
         hasGateway = true
         protocols = [ProtocolDescriptor(id: .chatCompletionsV1, name: "OpenAI Chat Completions v1", supported: true), ProtocolDescriptor(id: .responsesV1, name: "OpenAI Responses v1", supported: true), ProtocolDescriptor(id: .messagesV1, name: "Anthropic Messages v1", supported: false)]
-        runtimeTypes = [RuntimeTypeDescriptor(id: "sample-type", familyID: "sample", versionRegex: ".*", supportedProtocols: [.chatCompletionsV1, .responsesV1], name: "示例运行时", fields: [], actions: [SettingAction(id: "connect", label: "连接")])]
-        runtimeInstances = [RuntimeInstance(id: "sample-instance", name: "示例运行时", typeID: "sample-type", gatewayID: gateway.id, settings: [:], modelRecordKey: "sample-model"), RuntimeInstance(id: "sample-review", name: "另一个运行时", typeID: "sample-type", gatewayID: gateway.id, settings: [:], modelRecordKey: "sample-model")]
-        connections = [Connection(id: runtimeInstances[0].id, name: runtimeInstances[0].name, state: "ready", capabilities: ["conversation", "streaming", "cancel"])]
-        selectedConnectionID = runtimeInstances[0].id
+        runtimeTypes = [RuntimeTypeDescriptor(id: "sample-type", familyID: "sample", versionRegex: ".*", supportedProtocols: [.chatCompletionsV1, .responsesV1], name: "示例运行时", fields: [])]
+        runtimeInstances = [RuntimeInstance(id: "sample-instance", name: "示例运行时", typeID: "sample-type", gatewayID: gateway.id, settings: [:]), RuntimeInstance(id: "sample-review", name: "另一个运行时", typeID: "sample-type", gatewayID: gateway.id, settings: [:])]
+        selectedRuntimeID = runtimeInstances[0].id
         let topics = ["让设置页更安静", "整理一段代码", "下一步的项目计划"]
         let pairs = [
-            ["我想让设置页面更简单，先帮我梳理一下。", "可以。我们先保留四个明确的入口：**AI 提供商、全局模型、模型路由与运行时实例**。每个页面只回答一件事，常用操作直接放在可见位置。", "运行时实例应该放哪里？", "工具栏显示当前运行时实例，详细配置放进系统设置窗口里。会话页面保留对话与模型选择，让注意力留在正在做的工作上。"],
+            ["我想让设置页面更简单，先帮我梳理一下。", "可以。我们保留**AI 提供商、模型模板与 Agent 运行时**配置。模型与工作目录在会话中选择，打开历史不需要先启动运行时。", "运行时实例应该放哪里？", "工具栏显示当前运行时实例，详细配置放进系统设置窗口里。会话页面保留对话与模型选择，让注意力留在正在做的工作上。"],
             ["这个读取配置的函数可以再清晰一点吗？", "先把输入校验放在函数边界，主体就能直接表达意图。\n\n```rust\nfn load(path: &Path) -> Result<Config> {\n    let source = fs::read_to_string(path)?;\n    let config: Config = toml::from_str(&source)?;\n    config.validate()?;\n    Ok(config)\n}\n```", "还需要抽一个新的层吗？", "目前不需要。等第二个调用方出现不同的读取需求，再决定是否有值得共享的边界。"],
             ["帮我把接下来的工作排一下。", "先完成可用的会话界面，再检查配置是否真正驱动运行时。最后用一个短任务验证发送、停止和会话切换。", "先从哪个环节开始？", "从会话开始：打开旧会话、发送消息、检查回复，再新建一个会话。这个路径会暴露最直接的体验问题。"]
         ]

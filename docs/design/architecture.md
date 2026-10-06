@@ -22,15 +22,15 @@ Apple 外观由原生组件与系统语义样式适配，不建立自有明暗�
 
 Velune 的产品身份是 control surface：UI、AI 服务网关与协调层服务于外部 Agent 运行时，不生成代表 Velune 自身的 Agent 人格。通用会话投影保持 user／assistant／system／tool 语义；平台按左右与居中布局呈现，不给 assistant 注入 Velune 作者标签。
 
-提供商配置的新实施方向为 Provider 拥有实际模型条目和私有认证；模型共性以模板快填复用，不建立独立全局模型调用实体。隐藏稳定记录键仅供选择引用，providerModelId 是可编辑的 API 标识，网关发送精确原生值。能力以实际提供商模型为准，Pi 必需字段在 Pi 准备边界检查。提供商字段与 API key 单文件原子保存，公开描述不含 key；OAuth 保留内部来源刷新，中立解析接口不依赖 Harness。schema 6 hard-cutoff 与两栏原生编辑器的具体契约见 [AI 服务设计](ai-service.md)，当前安装基线见任务 packet。
+提供商配置的新实施方向为 Provider 拥有实际模型条目和私有认证；模型共性以模板快填复用，不建立独立全局模型调用实体。隐藏稳定记录键仅供选择引用，providerModelId 是可编辑的 API 标识，网关发送精确原生值。能力以实际提供商模型为准，Pi 必需字段在 Pi 准备边界检查。提供商字段与 API key 单文件原子保存，公开描述不含 key；OAuth 保留内部来源刷新，中立解析接口不依赖 Harness。schema 7 hard-cutoff 与两栏原生编辑器的具体契约见 [AI 服务设计](ai-service.md)，当前安装基线见任务 packet。
 
 ## 当前版本化运行时接入
 
-schema 6 的实例引用精确 variant ID；family 是展示分组，不是 dispatch key。当前 `pi-1.0.2`／`pi`、`codex-0.159.3`／`codex`、`dsh-acp-0.2.0-rc.2`／`deepseek-harness` 分别使用 `^1\.0\.2$`、`^0\.159\.3$`、`^0\.2\.0-rc\.2$` 版本规则。breaking-change 版本应增设独立 adapter 与 variant，允许并存，不靠放宽 regex 声称兼容。配置版本重置不触及原 Harness 文件。
+schema 7 的实例引用精确 variant ID；family 是展示分组，不是 dispatch key。当前 `pi-1.0.2`／`pi`、`codex-0.159.3`／`codex`、`dsh-acp-0.2.0-rc.2`／`deepseek-harness` 分别使用 `^1\.0\.2$`、`^0\.159\.3$`、`^0\.2\.0-rc\.2$` 版本规则。breaking-change 版本应增设独立 adapter 与 variant，允许并存，不靠放宽 regex 声称兼容。配置版本重置不触及原 Harness 文件。
 
 agent-runtime 拥有 Codex app-server 与 DSH ACP 控制和原生事件转换；huihua `0.2.0` package 提供两者只读历史 snapshot，不替代 resume。Pi 保留固定 SDK 的分支历史语义。application 显式传入 home、roots、资源与 Node 路径；Node 是外部依赖，huihua 依赖及许可证由 Mac 打包，Codex／DSH CLI 由用户安装。没有第二份会话 DB，也不引入 Obelisk 索引服务。
 
-conversation 定义审批、问题回答与取消的类型契约，bindings 生成语言接口，平台展示并提交用户选择。原生恢复使用配置初始模型，不承诺 Codex／DSH 的 Velune 历史模型选择已保存；原生控制与只读历史是两种职责。DSH reasoning wire 映射未实现，不将能力列表猜测为编码字典。具体运行步骤、许可与限制见 [开发说明](../development.md#原生运行时与历史读取)，最终构建／安装／验收证据见 [当前任务](../../tasks/multi-runtime/packet.md)。
+conversation 定义审批、问题回答与取消的类型契约，bindings 生成语言接口，平台展示并提交用户选择。历史列表与详情独立于执行准备。Pi 可恢复原生 custom entry 中有效的模型引用；Codex／DSH 仅有裸 API 模型标识，不能证明对应 Velune 提供商，继续执行前明确选择。原生控制与只读历史是两种职责。DSH reasoning wire 映射未实现，不将能力列表猜测为编码字典。具体运行步骤、许可与限制见 [开发说明](../development.md#原生运行时与历史读取)，最终构建／安装／验收证据见 [当前任务](../../tasks/multi-runtime/packet.md)。
 
 ## 独立 package 与平台装配
 
@@ -341,7 +341,7 @@ Mastra、HAPI、Lody 是用户提出的候选参考。研究围绕待决问题�
 
 当前适配向 Pi 注入 Velune 逻辑模型 ID、明确的上下文窗口、输出上限与推理等级，通过 Pi 的模型切换更新会话身份；网关将逻辑 ID 路由到提供商及外部模型 ID。Pi 缓存目录只是该版本的适配约束，不是 Velune 网关必须采用的产品约束。当前切片按用户要求采用稳定 `velune/auto`：Pi virtual model 保留虚拟选择，Core 决定物理路由，适配器同步实际能力与会话分支状态。上游协议差异仍由 provider adapter 处理，不依赖 Pi 根据厂商名称猜测。
 
-上下文窗口可空以保存草稿；缺值模型不能连接或进入 Pi 目录，不猜测默认窗口，也不阻断其它完整模型。运行时默认模型只用于新会话。恢复会话前经 Pi SessionManager 获取所选分支的模型，再校验路由并绑定网关；失效或外部模型要求用户重新选择，不能偷偷套用默认模型。选择归属 Pi transcript，Velune 不增加会话数据库。具体版本证据与验证边界见当前 Task Packet。
+上下文窗口可空以保存草稿；缺值模型不能用于 Pi 执行或进入受管目录，不猜测默认窗口，也不阻断其它完整模型。新会话在会话表单选择模型；运行时配置不保存默认模型。恢复会话前经 Pi SessionManager 获取所选分支的模型，再校验路由并绑定网关；失效或外部模型要求用户重新选择，不能偷偷套用默认模型。选择归属 Pi transcript，Velune 不增加会话数据库。具体版本证据与验证边界见当前 Task Packet。
 
 ## Harness 配置来源与稳定网关入口（候选）
 
@@ -356,13 +356,21 @@ Mastra、HAPI、Lody 是用户提出的候选参考。研究围绕待决问题�
 
 Pi 的物理模型身份不能只使用全局逻辑模型 ID。相同逻辑模型改投另一提供商、端点、外部模型或认证来源后，Pi 会按完整 `provider/api/model` 判断历史兼容性；只重连 runner 无法清理旧签名。当前切片使用非秘密绑定配置的稳定 SHA-256 ID，网关将该 ID 映射到同一次不可变路由；昵称、预算和 Node 路径不参与身份。选择与界面仍保存逻辑模型，历史内容转换由 Pi 原生机制完成，不新增 Velune 清签名 hook。
 
-应用内更新 API key 或成功完成来源登录会增加认证绑定 generation，并要求重连。认证刷新不改变 generation，也不哈希 access token。外部直接在同一来源文件或 Keychain 引用背后更换账户，当前尚无可靠非秘密账户身份供 adapter 辨识，不能宣称已覆盖这类改写；应通过应用重新登录或明确更换认证来源后再继续会话。
+应用内更新 API key 或成功完成来源登录会增加认证绑定 generation，并使执行准备失效，下一次发送按需重新准备。认证刷新不改变 generation，也不哈希 access token。外部直接在同一来源文件或 Keychain 引用背后更换账户，当前尚无可靠非秘密账户身份供 adapter 辨识，不能宣称已覆盖这类改写；应通过应用重新登录或明确更换认证来源后再继续会话。
 
 ## AI 网关职责复核
 
 2026-10-05 用户明确当前 gateway 仅为 LLM Gateway，是 AI 模块的一种应用模式；AI 服务不限于 LLM，直接调用 AI 能力无需经过 gateway。LLM Gateway 只做同协议原生透传、路由与 fail-over，不进行协议转换／翻译，也不限于 Harness 调用方。独立 gateway package 保留应用模式的职责，AI 契约不反向依赖它；不为非 LLM 能力预建通用网关。跨单元职责、原生操作与当前偏差以 [AI 服务设计](ai-service.md) 为准；此前 Pi 原生 provider 直接承担上游派发的候选路径不再是 Velune 管理会话的目标。当前 fail-over 未实现，配置仍 Disabled。源码和独立审计证据归 [AI 网关审计](../../tasks/ai-gateway-audit/packet.md)。
 
 版本化运行时 descriptor 同时公开 `supportedProtocols`，由 agent-runtime 的 variant 注册表声明，经 application／UniFFI 传给平台。Mac 模型过滤与执行准备消费同一声明，不按 family 猜测能力。当前 Pi 与 DSH variant 声明 ChatCompletions／Responses，Codex variant 声明 Responses；这是 adapter 的配置能力，不扩大上游协议支持，也不使 AI unit 依赖运行时类型。未知 descriptor 不显示所有模型。
+
+## 会话浏览与执行准备
+
+2026-10-06 用户确认的改造契约：运行时配置删除初始模型与手动连接，schema 7 hard-cutoff；添加实例后直接纳入会话来源。application 显式按实例读取历史并返回通用投影，不要求模型、认证或工作目录仍可执行。历史读取 helper 是只读适配步骤，不是 Agent 执行进程；Pi 复用固定 SDK SessionManager 的 context，Codex／DSH 复用 huihua 包。详情 ID 必须属于所选实例，不能因只读入口而接受任意路径。
+
+新建会话显式给出运行时、工作目录与模型，自动准备并由 Harness 建立会话。历史视图中的模型选择先改变当前投影，发送时按需准备／恢复；已准备的同一会话继续使用原生模型切换。未保存的只读选择随视图结束丢弃，不为了保存它新增会话数据库或 sidecar。Pi 的原生选择 metadata 可证明目标时恢复；Codex／DSH 当前历史只保存 API model ID，不能猜测提供商。
+
+保持单活跃执行：忙时禁止切换实例、会话与模型。历史读取目标失败时保留原视图；准备失败保留内容和选择，修正配置后可以重试，但不得自动重发已被 Harness 接受的用户消息。闲置配置变化使执行装配失效，退回历史视图而非要求手动重连。各实例的历史读取失败独立呈现，不阻塞其它实例或设置。 snapshot 的 revision 属于当前投影生命周期，历史与新执行投影之间可以重新起算，不作为跨准备排序键；Mac 用串行请求队列及视图 generation 拒绝过期回调。当前实施与安装证据见 [体验任务](../../tasks/runtime-session-experience/packet.md)。
 
 ## 本地可观测性装配
 

@@ -2,9 +2,26 @@
 use super::*;
 impl CoreRuntime {
     pub(super) fn list(&self) -> Result<Value, RuntimeError> {
+        let mut conversations = Vec::new();
+        let mut history_failures = Vec::new();
+        for (slot, runtime) in self.runtime_instances.iter().enumerate() {
+            match self.summaries_for(runtime) {
+                Ok(mut summaries) => conversations.append(&mut summaries),
+                Err(_) => {
+                    tracing::warn!(target:"velune_application",event="runtime_history_read_failed",phase="history_list",failure_kind="history_unavailable",runtime_slot=slot+1);
+                    history_failures.push(crate::api::HistoryFailure {
+                        runtime_id: runtime.id.clone(),
+                        detail:
+                            "此实例的会话历史无法读取，请检查运行时目录、Node 与 SDK 配置后重试。"
+                                .into(),
+                    });
+                }
+            }
+        }
+        conversations.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
         Ok(json!({
-            "conversations": self.session_summaries()?,
-            "connections": self.connections(),
+            "conversations": conversations,
+            "historyFailures": history_failures,
             "gateways": self.public_gateways(),
             "runtimeInstances": self.runtime_instances,
             "runtimeTypes": runtime_types(&self.options.resources_directory),
@@ -14,7 +31,7 @@ impl CoreRuntime {
                 {"id":"chatCompletionsV1","name":"OpenAI Chat Completions v1","supported":true},
                 {"id":"responsesV1","name":"OpenAI Responses v1","supported":true}
             ],
-            "activeRuntimeInstanceID": self.active_runtime_id,
+            "selectedRuntimeInstanceID": self.selected_runtime_id,
         }))
     }
 
@@ -72,9 +89,9 @@ impl CoreRuntime {
                         "provider import selected no providers",
                     ));
                 }
-                let requires_reconnect = (imported_gateway != previous)
+                let execution_invalidated = (imported_gateway != previous)
                     && self
-                        .active_runtime_id
+                        .selected_runtime_id
                         .as_ref()
                         .and_then(|id| {
                             self.runtime_instances
@@ -88,10 +105,6 @@ impl CoreRuntime {
                 } else {
                     self.gateways.push(imported_gateway);
                 }
-                crate::provider_configuration::clear_removed_selections(
-                    &self.gateways,
-                    &mut self.runtime_instances,
-                );
                 if let Err(error) = self.persist() {
                     self.runtime_instances = previous_runtimes;
                     if let Some(index) = existing {
@@ -101,11 +114,11 @@ impl CoreRuntime {
                     }
                     return Err(error);
                 }
-                if requires_reconnect {
-                    self.shutdown_active()?;
+                if execution_invalidated {
+                    self.invalidate_execution()?;
                 }
                 Ok(
-                    json!({"importedProviderIds":result["importedProviderIds"],"skippedProviderIds":result["skippedProviderIds"],"gateways":self.public_gateways(),"requiresReconnect":requires_reconnect}),
+                    json!({"importedProviderIds":result["importedProviderIds"],"skippedProviderIds":result["skippedProviderIds"],"gateways":self.public_gateways(),"executionInvalidated":execution_invalidated}),
                 )
             }
             _ => Err(RuntimeError::invalid("provider import operation")),
@@ -175,24 +188,24 @@ impl CoreRuntime {
             "list" => {}
             _ => return Err(RuntimeError::invalid("runtime operation")),
         }
-        let requires_reconnect = self.active_runtime_id.as_ref().is_some_and(|id| {
+        let execution_invalidated = self.selected_runtime_id.as_ref().is_some_and(|id| {
             previous.iter().find(|runtime| &runtime.id == id)
                 != self
                     .runtime_instances
                     .iter()
                     .find(|runtime| &runtime.id == id)
         });
-        if requires_reconnect {
-            self.shutdown_active()?;
+        if execution_invalidated {
+            self.invalidate_execution()?;
         }
         Ok(
-            json!({"runtimeInstances":self.runtime_instances,"runtimeTypes":runtime_types(&self.options.resources_directory),"requiresReconnect":requires_reconnect}),
+            json!({"runtimeInstances":self.runtime_instances,"runtimeTypes":runtime_types(&self.options.resources_directory),"executionInvalidated":execution_invalidated}),
         )
     }
 
     pub(super) fn persist(&self) -> Result<(), RuntimeError> {
         self.repository.store(&crate::repository::PersistedConfig {
-            schema_version: 6,
+            schema_version: 7,
             model_templates: self.model_templates.clone(),
             gateways: self.gateways.clone(),
             runtime_instances: self.runtime_instances.clone(),

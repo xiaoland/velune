@@ -141,18 +141,3 @@ pub(crate) fn summaries(gateways: &[GatewayConfig]) -> Vec<crate::api::GatewaySu
         .map(crate::api::GatewaySummary::from)
         .collect()
 }
-pub(crate) fn clear_removed_selections(
-    gateways: &[GatewayConfig],
-    runtimes: &mut [RuntimeInstance],
-) {
-    for runtime in runtimes {
-        if runtime.model_record_key.as_ref().is_some_and(|key| {
-            !gateways
-                .iter()
-                .find(|g| g.id == runtime.gateway_id)
-                .is_some_and(|g| g.model(key).is_some())
-        }) {
-            runtime.model_record_key = None;
-        }
-    }
-}

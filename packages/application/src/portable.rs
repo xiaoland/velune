@@ -25,13 +25,13 @@ impl CoreRuntime {
         let payload = &request["payload"];
         match request["action"].as_str() {
             Some("list") => Ok(json!({
-                "conversations":[], "connections":[],
+                "conversations":[], "historyFailures":[],
                 "gateways":provider_configuration::summaries(&self.config.gateways),
                 "runtimeInstances":self.config.runtime_instances, "runtimeTypes":[],
                 "modelTemplates":self.config.model_templates, "providerImportTypes":[],
                 "protocols":[{"id":"chatCompletionsV1","name":"OpenAI Chat Completions v1","supported":true},
                     {"id":"responsesV1","name":"OpenAI Responses v1","supported":true}],
-                "activeRuntimeInstanceID":null
+                "selectedRuntimeInstanceID":null
             })),
             Some("providers") => {
                 if payload["operation"] == "readApiKey" {
@@ -53,15 +53,11 @@ impl CoreRuntime {
                 }
                 let mut next = self.config.clone();
                 provider_configuration::edit_provider(&mut next.gateways, payload)?;
-                provider_configuration::clear_removed_selections(
-                    &next.gateways,
-                    &mut next.runtime_instances,
-                );
                 self.repository.store(&next)?;
                 self.config = next;
                 Ok(
                     json!({"gateways":provider_configuration::summaries(&self.config.gateways),
-                    "requiresReconnect":false}),
+                    "executionInvalidated":false}),
                 )
             }
             Some("modelTemplates") => {
@@ -105,15 +101,6 @@ impl CoreRuntime {
                         instance
                             .validate_execution_paths()
                             .map_err(Error::invalid)?;
-                        if instance.model_record_key.as_ref().is_some_and(|key| {
-                            !next
-                                .gateways
-                                .iter()
-                                .find(|gateway| gateway.id == instance.gateway_id)
-                                .is_some_and(|gateway| gateway.model(key).is_some())
-                        }) {
-                            return Err(Error::invalid("runtime model selection"));
-                        }
                         next.runtime_instances
                             .retain(|runtime| runtime.id != instance.id);
                         next.runtime_instances.push(instance);
@@ -130,7 +117,7 @@ impl CoreRuntime {
                 self.config = next;
                 Ok(
                     json!({"runtimeInstances":self.config.runtime_instances, "runtimeTypes":[],
-                    "requiresReconnect":false}),
+                    "executionInvalidated":false}),
                 )
             }
             _ => Err(Error::Unsupported(

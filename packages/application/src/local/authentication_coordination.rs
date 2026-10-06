@@ -85,9 +85,9 @@ impl CoreRuntime {
                     "来源已完成登录，但提供商配置保存失败；请检查配置目录后重试。",
                 ));
             }
-            self.shutdown_active()?;
+            self.invalidate_execution()?;
             data["gateways"] = serde_json::to_value(self.public_gateways())?;
-            data["requiresReconnect"] = Value::Bool(true);
+            data["executionInvalidated"] = Value::Bool(true);
         }
         Ok(data)
     }

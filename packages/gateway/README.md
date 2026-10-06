@@ -2,7 +2,7 @@
 
 `velune-gateway` 是本机 LLM 网关 unit，也是 AI 能力的一种应用模式。它接收 OpenAI ChatCompletions v1 或 Responses v1 请求，通过显式模型路由派发给提供商。两条路径均使用原生协议 operation，不经过 sampling，不翻译消息历史、生成参数或响应事件。网关仅改写路由模型和上游认证；安全的协议请求头、响应状态、响应头与 body/SSE 由原生传输保留。HTTP 的 hop-by-hop 字段、本地认证和 cookie 不转发。
 
-调用方通过 `GatewayConfig` 提供具有模型条目的提供商及策略，通过 `Runner::start` 提供入口模型别名。提供商配置在启动时形成不可变快照，当前 fail-over 明确禁用；修改应用配置后需要重新连接。运行时模型选择可显式替换入口 alias 到稳定模型记录的绑定，不修改在途派发已捕获的目标。此 unit 不理解 Harness 的模型目录、思考级别转换、配置实例或认证文件。模型元数据不成为原生请求参数的默认值；网关不强制请求包含输出上限，也不按该元数据补删生成参数。旧 `chatCompletionsOutputLimitField` 已从新契约删除，不提供兼容入口。
+调用方通过 `GatewayConfig` 提供具有模型条目的提供商及策略，通过 `Runner::start` 提供入口模型别名。提供商配置在启动时形成不可变快照，当前 fail-over 明确禁用；直接调用方修改配置后须重建 Runner；application 会使执行失效并在下次发送时自动准备，用户不需要手动连接。运行时模型选择可显式替换入口 alias 到稳定模型记录的绑定，不修改在途派发已捕获的目标。此 unit 不理解 Harness 的模型目录、思考级别转换、配置实例或认证文件。模型元数据不成为原生请求参数的默认值；网关不强制请求包含输出上限，也不按该元数据补删生成参数。旧 `chatCompletionsOutputLimitField` 已从新契约删除，不提供兼容入口。
 
 提供商认证配置只有不透明 `credential_ref`。应用通过 `Runner::start(config, resolver, aliases)` 注入真正的异步 `CredentialResolver`；每次解析将资源引用与已捕获的协议／endpoint 一同传入，只返回瞬时 `ResolvedCredential`。解析器的私有认证配置、目标校验、来源 adapter、helper 与进程生命周期均归调用方。网关不接收来源 JSON、目录、CLI 路径或认证文件，不解释引用，不读取全局配置，不持久化秘密。取消派发会丢弃正在等待的解析 future；调用方必须提供符合取消合同的实现。
 

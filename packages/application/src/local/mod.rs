@@ -16,7 +16,6 @@ use std::{
     fs,
     io::Write,
     path::{Path, PathBuf},
-    process::Command,
 };
 use velune_agent_runtime::history::{self, HistoryConfig};
 use velune_agent_runtime::native::{GatewayInjection, NativeConfig, NativeKind, NativeSession};
@@ -58,12 +57,12 @@ fn runtime_types(resources_directory: &Path) -> Vec<crate::config::RuntimeTypeDe
         minimum_version: "22.19.0".into(),
     });
     velune_agent_runtime::version::variants().iter().map(|variant| {
-        let mut binary=field("binary","运行时入口","filePath",true,if variant.id=="pi-1.0.2" {binary_value.clone()}else{String::new()},"当前运行时版本的绝对可执行路径。连接前会核对实际版本。");
+        let mut binary=field("binary","运行时入口","filePath",true,if variant.id=="pi-1.0.2" {binary_value.clone()}else{String::new()},"当前运行时版本的绝对可执行路径。执行准备时会核对实际版本。");
         if variant.id=="codex-0.159.3" {binary.executable_discovery=Some(crate::conversation::ExecutableDiscovery{command:"codex".into(),minimum_version:"0.159.3".into()});}
         if variant.id=="dsh-acp-0.2.0-rc.2" {binary.executable_discovery=Some(crate::conversation::ExecutableDiscovery{command:"dsh".into(),minimum_version:"0.2.0".into()});}
         let mut fields=vec![binary,node.clone(),field("agentDir","运行时目录","directoryPath",true,String::new(),match variant.id {"codex-0.159.3"=>"该实例的 CODEX_HOME；配置与会话根目录，不是任务工作目录。","dsh-acp-0.2.0-rc.2"=>"该实例的 DeepSeek Harness 配置与会话根目录，不是任务工作目录。",_=>"该实例的 Pi 配置与状态根目录，不是任务工作目录。"})];
         if variant.id=="pi-1.0.2" {fields.push(field("sessionDir","会话存储目录","directoryPath",false,String::new(),"覆盖 Pi 默认的会话存储位置；留空采用运行时目录的 sessions，此项不是任务工作目录。"));}
-        crate::config::RuntimeTypeDescriptor{id:variant.id.into(),family_id:variant.family_id.into(),version_regex:variant.version_regex.into(),supported_protocols:GatewayProtocol::runtime_protocols(variant.id).expect("registered runtime adapter"),name:variant.name.into(),fields,actions:vec![crate::conversation::SettingAction{id:"connect".into(),label:"连接运行时".into()}]}
+        crate::config::RuntimeTypeDescriptor{id:variant.id.into(),family_id:variant.family_id.into(),version_regex:variant.version_regex.into(),supported_protocols:GatewayProtocol::runtime_protocols(variant.id).expect("registered runtime adapter"),name:variant.name.into(),fields}
     }).collect()
 }
 
@@ -78,7 +77,8 @@ struct PiState {
     subscription_capability: bool,
 }
 enum ActiveState {
-    Disconnected,
+    Empty,
+    History(Box<crate::conversation::ConversationSnapshot>),
     Pi,
     Native(Box<NativeSession>),
 }
@@ -93,15 +93,16 @@ pub struct CoreRuntime {
     pi: PiState,
     active_state: ActiveState,
     gateway_runner: Option<Runner>,
-    active_runtime_id: Option<String>,
+    selected_runtime_id: Option<String>,
     authentication: Option<authentication::Login>,
     model_record_key: Option<String>,
 }
 
 mod authentication_coordination;
+mod browsing;
 mod configuration;
-mod connection;
 mod conversations;
+mod execution;
 mod native_composition;
 mod pi_composition;
 mod provider_management;
@@ -119,9 +120,9 @@ impl CoreRuntime {
             authentication_provider: None,
             runtime_instances: persisted.runtime_instances,
             pi: PiState::default(),
-            active_state: ActiveState::Disconnected,
+            active_state: ActiveState::Empty,
             gateway_runner: None,
-            active_runtime_id: None,
+            selected_runtime_id: None,
             authentication: None,
             model_record_key: None,
         })
@@ -131,7 +132,7 @@ impl CoreRuntime {
         match &self.active_state {
             ActiveState::Native(session) => session.busy(),
             ActiveState::Pi => self.pi.busy,
-            ActiveState::Disconnected => false,
+            ActiveState::Empty | ActiveState::History(_) => false,
         }
     }
     fn current_snapshot(&self) -> Option<crate::conversation::ConversationSnapshot> {
@@ -142,7 +143,8 @@ impl CoreRuntime {
                 .projection
                 .as_ref()
                 .and_then(|p| p.snapshot.as_ref()),
-            ActiveState::Disconnected => None,
+            ActiveState::History(snapshot) => Some(snapshot.as_ref()),
+            ActiveState::Empty => None,
         };
         snapshot.cloned().map(|mut snapshot| {
             snapshot.model_record_key = self.model_record_key.clone();
@@ -158,7 +160,7 @@ impl CoreRuntime {
                 self.drain_pi();
                 Ok(())
             }
-            ActiveState::Disconnected => Ok(()),
+            ActiveState::Empty | ActiveState::History(_) => Ok(()),
         }
     }
     fn public_gateways(&self) -> Vec<crate::GatewaySummary> {
@@ -205,7 +207,7 @@ impl CoreRuntime {
             "providers" => self.provider_action(&request["payload"]),
             "modelTemplates" => self.template_action(&request["payload"]),
             "runtimeInstances" => self.runtime_action(request),
-            "runtimeAction" | "connect" => self.connect_action(request),
+            "selectRuntime" => self.select_runtime_action(request),
             "create" => self.create_conversation(request),
             "open" => self.open_conversation(request),
             "getSnapshot" => {
