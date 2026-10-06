@@ -88,12 +88,12 @@ pub fn resolve_pi_binary(binary: &Path, node: &Path) -> Result<PathBuf> {
     let script = concat!(
         include_str!("../resources/pi_sdk.mjs"),
         r#"
+import {inspect} from "node:util";
 try {
   const installation = resolvePiInstallation(process.argv[1]);
   console.log(JSON.stringify({binary:installation.cli}));
 } catch (error) {
-  const codes = new Set(["sdk_entrypoint_missing","sdk_source_not_found","sdk_launcher_unsupported","invalid_sdk_manifest","invalid_sdk_source"]);
-  console.log(JSON.stringify({error:codes.has(error.message) ? error.message : "sdk_resolution_failed"}));
+  console.log(JSON.stringify({error:error?.code ?? "sdk_resolution_failed", detail:error?.stack ?? error?.message ?? String(error), configuredBinary:process.argv[1], path:error?.path ?? null}));
 }
 "#
     );
@@ -127,18 +127,29 @@ try {
             "Pi 安装包描述或 CLI 关联无效，请检查外部安装",
             "invalid_package",
         ),
-        _ => (
+        Some(error) => (error, "installation_resolution_failed"),
+        None => (
             "无法解析 Pi 安装，请检查入口与 Node 配置",
             "installation_resolution_failed",
         ),
     };
+    let detail = value["detail"].as_str().unwrap_or("");
+    let configured = value["configuredBinary"]
+        .as_str()
+        .map(str::to_owned)
+        .unwrap_or_else(|| binary.to_string_lossy().into_owned());
     tracing::warn!(
         runtime_family = "pi",
         code,
         phase = "installation",
+        configured_binary = %configured,
+        detail = %detail,
         "runtime discovery failed"
     );
-    Err(Error::with_code(message, code))
+    Err(Error::with_code(
+        format!("{message}；configuredBinary={configured}；cause={detail}"),
+        code,
+    ))
 }
 
 /// Read only the public CLI version; never start an Agent session.

@@ -86,6 +86,77 @@ else{process.stdout.write(JSON.stringify({sessions:[{path:SESSION,cwd:CWD,name:'
             assert snapshot.messages[3].id not in turn.work_message_ids
             assert turn.duration_ms is None and not turn.is_running
             print("PASS typed history turn keeps answer and trailing system status visible")
+            # Real SDK entrypoint failures, not fabricated cause markers.
+            app.upsert_runtime(module.BindingRuntimeInstance(
+                enabled=False, id="pi", name="Synthetic Pi", type_id="pi-1.0.2",
+                gateway_id="default", settings={"agentDir": str(agent), "nodeBinary": str(args.node), "binary": str(args.pi)}
+            ))
+            repository = Path(__file__).resolve().parents[1]
+            for helper_name in ("pi_sdk.mjs", "pi_sessions.mjs"):
+                shutil.copy(repository / "packages/agent-runtime/resources" / helper_name, resources / helper_name)
+            missing = root / "missing-cli.js"
+            target = root / "dangling-package/dist/cli.js"
+            launcher = root / "pnpm-pi"
+            launcher.write_text('#!/bin/sh\nexec node "' + str(target) + '" "$@"\n')
+            for runtime_id, binary in (("missing-pi", missing), ("dangling-pi", launcher)):
+                runtime_agent = root / (runtime_id + "-agent")
+                runtime_agent.mkdir()
+                app.upsert_runtime(module.BindingRuntimeInstance(
+                    enabled=True, id=runtime_id, name="Instance " + runtime_id,
+                    type_id="pi-1.0.2", gateway_id="default",
+                    settings={"agentDir": str(runtime_agent), "nodeBinary": str(args.node), "binary": str(binary)}
+                ))
+            failures = {failure.runtime_id: failure.detail for failure in app.list().history_failures}
+            assert set(failures) == {"missing-pi", "dangling-pi"}, failures
+            for runtime_id, binary in (("missing-pi", missing), ("dangling-pi", launcher)):
+                detail = failures[runtime_id]
+                for expected in (runtime_id, "Instance " + runtime_id, "pi-1.0.2", str(binary), str(args.node), "ENOENT", "realpath"):
+                    assert expected in detail, (expected, detail)
+                if runtime_id == "dangling-pi":
+                    assert str(target) in detail and "parsedTarget=" in detail, detail
+                try:
+                    app.open_conversation(runtime_id, runtime_id + ":" + str(root / "unused-session.jsonl"))
+                except Exception as error:
+                    detail = str(error)
+                    assert runtime_id in detail and str(binary) in detail and "ENOENT" in detail, detail
+                else:
+                    raise AssertionError("missing SDK entry unexpectedly opened a session")
+            logs = []
+            for log in (home / "logs").glob("*.jsonl"):
+                logs.extend(json.loads(line) for line in log.read_text().splitlines())
+            for runtime_id, binary in (("missing-pi", missing), ("dangling-pi", launcher)):
+                records = [record for record in logs if record.get("fields", {}).get("runtime_id") == runtime_id]
+                for phase in ("history_list", "history_lookup"):
+                    matching = [record for record in records if record["fields"].get("phase") == phase]
+                    assert matching, (runtime_id, phase, records)
+                    for record in matching:
+                        fields = record["fields"]
+                        assert str(binary) in fields["binary"] and "ENOENT" in fields["detail"], fields
+                        assert record.get("span", {}).get("operation_id"), record
+            # Version discovery must retain its classification as well as its cause.
+            for binary in (missing, launcher):
+                probe = module.BindingRuntimeDiscoveryProbe(family_id="pi", binary=str(binary), node_binary=str(args.node), agent_directory=str(agent))
+                discovered = app.discover_runtimes([probe])
+                assert len(discovered) == 1
+                for expected in ("Pi 安装入口缺失", str(binary), "ENOENT"):
+                    assert expected in str(discovered[0]), (expected, discovered)
+            good_agent = root / "good-agent"
+            good_agent.mkdir()
+            app.upsert_runtime(module.BindingRuntimeInstance(
+                enabled=True, id="valid-pi", name="Valid Pi", type_id="pi-1.0.2",
+                gateway_id="default", settings={"agentDir": str(good_agent), "nodeBinary": str(args.node), "binary": str(args.pi)}
+            ))
+            assert "valid-pi" not in {failure.runtime_id for failure in app.list().history_failures}
+            good_probe = module.BindingRuntimeDiscoveryProbe(family_id="pi", binary=str(args.pi), node_binary=str(args.node), agent_directory=str(good_agent))
+            assert app.discover_runtimes([good_probe])[0].supported
+            discovery_logs = []
+            for log in (home / "logs").glob("*.jsonl"):
+                discovery_logs.extend(json.loads(line) for line in log.read_text().splitlines())
+            records = [record for record in discovery_logs if record.get("fields", {}).get("phase") == "installation"]
+            assert len(records) == 2, records
+            for record in records:
+                assert record["fields"]["code"] == "entrypoint_missing" and "ENOENT" in record["fields"]["detail"], record
+            print("PASS real SDK two-instance list/read attribution, filesystem cause, operation correlation and discovery")
             app.shutdown()
         finally:
             if old_home is None:

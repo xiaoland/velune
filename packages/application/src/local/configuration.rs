@@ -42,10 +42,13 @@ impl CoreRuntime {
             match self.summaries_for(runtime) {
                 Ok(mut summaries) => conversations.append(&mut summaries),
                 Err(error) => {
-                    tracing::warn!(target:"velune_application",event="runtime_history_read_failed",phase="history_list",failure_kind="history_unavailable",runtime_slot=slot+1,detail=%error);
+                    tracing::warn!(target:"velune_application",event="runtime_history_read_failed",phase="history_list",failure_kind="history_unavailable",runtime_slot=slot+1,runtime_id=%runtime.id,runtime_name=%runtime.name,runtime_type_id=%runtime.type_id,binary=?runtime.settings.get("binary"),node_binary=?runtime.settings.get("nodeBinary"),agent_dir=?runtime.settings.get("agentDir"),detail=%error);
                     history_failures.push(crate::api::HistoryFailure {
                         runtime_id: runtime.id.clone(),
-                        detail: format!("此实例的会话历史无法读取：{error}"),
+                        detail: format!(
+                            "{}；会话历史无法读取：{error}",
+                            super::browsing::runtime_history_context(runtime)
+                        ),
                     });
                 }
             }

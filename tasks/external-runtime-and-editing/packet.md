@@ -31,3 +31,23 @@ Mac 使用系统原生 List primaryAction，覆盖全部可编辑列表；提供
 源码提交2c080bc02bdf6d2a5de7922e1bd7a29b446dd019，干净树构建并安装到标准Applications位置，显示版本0.1 beta.1，签名校验通过。安装包仅包含huihua及其四个parser依赖，不含Pi SDK、CLI或任何Agent runtime。已从安装实际dylib重新生成Python绑定并复验首循环（6个loopback请求）和运行时发现／版本拒绝／去重／配置持久化，两者通过。GUI双击体验由用户验收；若旧实例入口指向应用包内Pi，需显式改为外部安装，不做隐式替代或读取用户配置。
 
 PRD、共享UI/UX原则、架构、各unit说明、开发运行入口及来源索引均已同步；没有远端发布或真实模型调用。
+
+## 2026-10-07 Pi 列表缺失诊断
+
+用户授权只读诊断现有 Pi 会话读取失败，可查看与此失败有关的本地 observability。没有授权本轮修改运行时安装／用户配置或修复源码；不读取真实认证及会话正文。复用本 packet，不另开竞争任务。
+
+最近本地错误 operation_id `18dbfbf87b683440-13b7d-2`（2026-10-06 15:58:41 UTC）为 list/history_list，runtime_slot 1。真实 helper stderr 为 pi_sdk 的 `resolvePiInstallation` 首次 `realpathSync(binary)` 失败，code `sdk_entrypoint_missing`、子进程退出 1；发生于 SDK 装载之前，不涉及模型或会话内容。安装 manifest 源码为 `86b4778`、dirty=false。调用链直接把配置 binary 传入 --cli，未发现用模型选择覆盖入口。
+
+公开系统 pi launcher 独立复核：其 pnpm 链接指向 0.85.1，链接目标不存在；该入口的独立解析在 launcher target 的 realpath 失败，区别于 Velune 日志的首次 realpath 失败。不能把两次失败混同，也不能在未取得应用配置的入口字段前断言用户实例使用它。此前移除 bundled Pi 的旧实例路径残留也是候选原因，未证实。
+
+可观测性残余：pi_sdk.mjs 两处 realpath catch 仍抹掉原始 filesystem cause 和实际路径；本轮未修改源码。已向用户请求唯一非秘密字段“Pi 可执行文件”的配置路径，以区分残留内置路径、损坏外部入口及访问失败。终点是核对该入口的公开文件系统存在性／SDK manifest，不打开原生会话或凭据。
+
+用户后续指出“不能确认配置入口”本身就是可观测性缺陷。本轮继续既有完整原因链修复，落实这一上下文要求，不再依赖此前请求用户手工提供路径。PRD 已补齐运行时失败应定位实例和实际非秘密入口的行为；ai_service_audit 继续作为 runtime SDK／application 错误边界与人工脚本的源码 owner，root 负责文档、整合与安装。实现与隔离验证不访问用户真实配置或会话；不修复用户全局 Pi、不替换实例路径、不引入 fallback。
+
+完成依据：两个合成 Pi 实例（入口缺失与 launcher 目标失效）的实际 UniFFI list/read 失败能明确区分实例和入口，错误含原始 filesystem code／cause；日志操作编号可关联，公开解析器保留版本/安装分类与详情；正常外部入口仍工作。类型／静态检查及构建通过，Mac 重建安装。真实现存故障的旧日志无法事后补回已抹掉的路径，新构建的重试应无需用户抄配置。
+
+归因增强的首轮返回未满足验收：JS resolver 源码未改；版本桥虽输出 detail 却未在 Rust 消费；问题详情缺入口，人工脚本未扩展。已将这些源码与终端观察的具体反证回送同 owner 修复，不能据静态检查将其采用为完成。新版安装后重试将只读取相关 Pi 失败日志的运行时定位字段，确认实际配置入口，不要求用户抄路径。
+
+最终归因修复由 root 接管，原 owner 已中断并冻结；此前返回不足不作为完成证据。人工验收首次失败证明 open_conversation 先经 summaries_for 查询来源，入口失效发生于 history_lookup，不能仅在 Pi 内容读取分支加上下文。已补该实际边界，同时保留非 Pi 既有 typed history code。原 SDK 分类与原始 filesystem cause 分开保留，未知错误不泛化；discovery 使用 Node 标准 inspect 展开 Error.cause。
+
+2026-10-07 合成人工验收通过：实际 UniFFI 的两个实例分别触发缺失 CLI 与 dangling launcher 目标，列表和打开会话失败可关联到各自 id/name/type、binary/nodeBinary/agentDir；日志带原始 ENOENT、操作编号和实际失败阶段。版本发现保留 entrypoint_missing 分类与原 cause；正常外部 Pi 1.0.2 的空临时来源与版本发现正常。没有用假 helper 的固定错误字符串代替这段 SDK 验证。既有合成 provider／history parser cause 验证也仍通过。

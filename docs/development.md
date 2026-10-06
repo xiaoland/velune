@@ -220,7 +220,7 @@ Mac 使用 `OSLog.Logger`，subsystem 为 `local.velune`；系统 Console 可按
 
 失败信息包含诊断编号；以该编号查找日志中的 `operation_id`，可定位操作、错误代码、阶段、耗时与底层原因。Swift 失败日志使用同一编号，其本地操作编号另行命名，不代表 Rust trace ID。常规 snapshot 和认证轮询不产生成功日志。诊断保存实际错误链、helper stderr 与失败上下文，不以隐私为由替换为固定说明；默认不采集所有请求、配置或会话正文，也没有远端导出。开发方仍只使用合成数据验证，不读取用户真实配置和秘密。
 
-历史读取失败记录运行时类型、阶段和原始原因。helper 启动、超时、退出、输出上限、来源读取、会话不存在与重复原生身份分别保留；子进程返回的实际错误文本应继续传到本地问题详情。旧错误若已在源头丢失原因，不能事后还原；新错误通过诊断编号关联操作和阶段。
+历史读取失败记录具体运行时实例的标识、名称、类型、实际配置的非秘密执行入口（binary／nodeBinary）与来源目录，以及阶段和原始原因。安装解析失败同时说明配置入口、已解析的 launcher 目标及 filesystem cause；实例槽位不能代替稳定标识。helper 启动、超时、退出、输出上限、来源读取、会话不存在与重复原生身份分别保留；子进程返回的实际错误文本应继续传到本地问题详情。旧错误若已在源头丢失原因，不能事后还原；新错误通过诊断编号关联操作和阶段。
 
 网关请求另有 `gateway_request` span 的 `request_id`，不沿用建立执行准备时的 application `operation_id`。`gateway_request_received`、`gateway_route_selected`、`gateway_response_ready` 和 `gateway_request_finished` 描述入口与转发；子 span `gateway_attempt` 的 started／upstream_headers／finished 描述单次派发。目标序号只定位当前运行配置快照，不是跨准备的身份。结束字段区分传输完成、上游失败、调用方断开和网关关闭；完整转发失败 HTTP 响应仍可以是 request 的传输完成。准备响应不证明 TCP 客户端已收到，传输完成也不证明 LLM 业务成功。
 

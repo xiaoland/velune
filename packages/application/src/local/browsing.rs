@@ -1,6 +1,34 @@
 //! Read-only browsing and deferred execution preparation share one active view.
 use super::*;
 use crate::conversation::{ConversationActions, ConversationSnapshot, Message, MessageBlock};
+pub(super) fn runtime_history_context(runtime: &RuntimeInstance) -> String {
+    format!(
+        "运行时 {}（id={}，type={}）；binary={}；nodeBinary={}；agentDir={}；sessionDir={}",
+        runtime.name,
+        runtime.id,
+        runtime.type_id,
+        runtime
+            .settings
+            .get("binary")
+            .map(String::as_str)
+            .unwrap_or("未配置"),
+        runtime
+            .settings
+            .get("nodeBinary")
+            .map(String::as_str)
+            .unwrap_or("未配置"),
+        runtime
+            .settings
+            .get("agentDir")
+            .map(String::as_str)
+            .unwrap_or("未配置"),
+        runtime
+            .settings
+            .get("sessionDir")
+            .map(String::as_str)
+            .unwrap_or("默认"),
+    )
+}
 impl CoreRuntime {
     pub(super) fn runtime_instance(&self, id: &str) -> Result<&RuntimeInstance, RuntimeError> {
         self.runtime_instances
@@ -55,7 +83,7 @@ impl CoreRuntime {
                 let variant = velune_agent_runtime::version::variant(&runtime.type_id);
                 let family = variant.map(|value| value.family_id).unwrap_or("unknown");
                 let runtime_type = variant.map(|value| value.id).unwrap_or("unknown");
-                tracing::warn!(target: "velune_application", event = "runtime_history_read_failed", phase = error.phase(), failure_kind = error.code(), runtime_family = family, runtime_type);
+                tracing::warn!(target: "velune_application", event = "runtime_history_read_failed", phase = error.phase(), failure_kind = error.code(), runtime_family = family, runtime_type, runtime_id=%runtime.id, runtime_name=%runtime.name, runtime_type_id=%runtime.type_id, binary=?runtime.settings.get("binary"), node_binary=?runtime.settings.get("nodeBinary"), agent_dir=?runtime.settings.get("agentDir"), detail=%error);
                 RuntimeError::History(error)
             });
         }
@@ -121,7 +149,15 @@ impl CoreRuntime {
             .ok_or_else(|| RuntimeError::invalid("conversation id"))?;
         // Source-scoped lookup prevents arbitrary caller paths from being opened.
         let summary = self
-            .summaries_for(runtime)?
+            .summaries_for(runtime)
+            .map_err(|error| {
+                tracing::warn!(target: "velune_application", event="runtime_history_read_failed", phase="history_lookup", runtime_id=%runtime.id, runtime_name=%runtime.name, runtime_type_id=%runtime.type_id, binary=?runtime.settings.get("binary"), node_binary=?runtime.settings.get("nodeBinary"), agent_dir=?runtime.settings.get("agentDir"), detail=%error);
+                if runtime.type_id == "pi-1.0.2" {
+                    RuntimeError::context(&runtime_history_context(runtime), error)
+                } else {
+                    error
+                }
+            })?
             .into_iter()
             .find(|s| s.id == id)
             .ok_or_else(|| RuntimeError::invalid("此会话不属于所选运行时历史目录"))?;
@@ -146,7 +182,10 @@ impl CoreRuntime {
             let saved = pi_session_helper(
                 &self.pi_history_config(runtime)?,
                 Some(Path::new(native_id)),
-            )?;
+            ).map_err(|error| {
+                tracing::warn!(target: "velune_application", event="runtime_history_read_failed", phase="history_read", runtime_id=%runtime.id, runtime_name=%runtime.name, runtime_type_id=%runtime.type_id, binary=?runtime.settings.get("binary"), node_binary=?runtime.settings.get("nodeBinary"), agent_dir=?runtime.settings.get("agentDir"), detail=%error);
+                RuntimeError::context(&runtime_history_context(runtime), error)
+            })?;
             let mut projection = PiProjection::new(snapshot.conversation.clone());
             projection.replace_history(&saved);
             snapshot.messages = projection.snapshot.expect("history projection").messages;
@@ -163,7 +202,7 @@ impl CoreRuntime {
                 let variant = velune_agent_runtime::version::variant(&runtime.type_id);
                 let family = variant.map(|value| value.family_id).unwrap_or("unknown");
                 let runtime_type = variant.map(|value| value.id).unwrap_or("unknown");
-                tracing::warn!(target: "velune_application", event = "runtime_history_read_failed", phase = error.phase(), failure_kind = error.code(), runtime_family = family, runtime_type);
+                tracing::warn!(target: "velune_application", event = "runtime_history_read_failed", phase = error.phase(), failure_kind = error.code(), runtime_family = family, runtime_type, runtime_id=%runtime.id, runtime_name=%runtime.name, runtime_type_id=%runtime.type_id, binary=?runtime.settings.get("binary"), node_binary=?runtime.settings.get("nodeBinary"), agent_dir=?runtime.settings.get("agentDir"), detail=%error);
                 RuntimeError::History(error)
             })?;
             snapshot.conversation.cwd = read.cwd;
