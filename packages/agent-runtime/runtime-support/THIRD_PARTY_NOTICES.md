@@ -13,3 +13,10 @@ Velune 使用 huihua 的公开 API 读取 Agent 原生会话文件。依赖通�
 cuint 的 npm 包未提供独立 LICENSE 文件；其 package.json 声明 MIT，源码头部注明 Pierre Curto 的版权。本目录保留该版权与 MIT 完整条款。protobuf 的 npm 包声明组合许可；Apache 条款来自 protobuf-es v2.16.0 仓库 LICENSE，Google BSD 条款来自该发行包 wire/varint.js 的原始许可头部。
 
 DeepSeek Harness 与 Codex 可执行文件由用户另行安装，本依赖包不分发它们。
+
+## models.dev public catalog
+
+User-requested model template suggestions come from https://models.dev/api.json.
+The models.dev catalog is MIT licensed, copyright (c) 2025 models.dev. Its license
+is included in `licenses/models.dev-LICENSE`. Source provider and model IDs are
+retained; suggestions are copied to independent, user-editable templates.

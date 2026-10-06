@@ -6,7 +6,7 @@ publish = false
 
 [features]
 default = ["local-runtime"]
-local-runtime = ["dep:velune-agent-runtime", "dep:sha2", "dep:tokio", "dep:rustix"]
+local-runtime = ["dep:velune-agent-runtime", "dep:sha2", "dep:rustix", "tokio/process", "tokio/io-util"]
 
 [dependencies]
 url = "2"
@@ -18,7 +18,8 @@ velune-conversation = { path = "../conversation" }
 velune-agent-runtime = { path = "../agent-runtime", optional = true }
 velune-gateway = { path = "../gateway" }
 
-tokio = { version = "1", optional = true, features = ["process", "io-util", "time"] }
+tokio = { version = "1", features = ["rt", "time"] }
+reqwest = { version = "0.13", default-features = false, features = ["native-tls", "system-proxy", "stream"] }
 
 [target.'cfg(unix)'.dependencies]
 rustix = { version = "1", optional = true, features = ["process"] }

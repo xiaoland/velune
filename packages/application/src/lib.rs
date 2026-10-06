@@ -12,6 +12,7 @@ pub use provider_authentication::{
 pub mod config;
 #[cfg(feature = "local-runtime")]
 mod local;
+pub mod model_catalog;
 #[cfg(not(feature = "local-runtime"))]
 mod portable;
 mod provider_configuration;

@@ -59,6 +59,7 @@ final class Transport: @unchecked Sendable {
     func deleteProvider(gatewayID: String, providerID: String) throws -> BindingGatewayUpdate { try withApplication("deleteProvider") { try $0.deleteProvider(gatewayId: gatewayID, providerId: providerID) } }
     func readProviderAPIKey(gatewayID: String, providerID: String) throws -> String { try withApplication("readProviderAPIKey") { try $0.readProviderApiKey(gatewayId: gatewayID, providerId: providerID) } }
     func saveTemplate(_ value: ModelTemplate) throws -> [BindingModelTemplate] { try withApplication("saveModelTemplate") { try $0.saveModelTemplate(template: BindingMapping.bindingTemplate(value)) } }
+    func publicModelCatalog() throws -> [BindingCatalogModel] { try withApplication("fetchPublicModelCatalog") { try $0.fetchPublicModelCatalog() } }
     func deleteTemplate(id: String) throws -> [BindingModelTemplate] { try withApplication("deleteModelTemplate") { try $0.deleteModelTemplate(id: id) } }
     func upsertRuntime(_ runtime: BindingRuntimeInstance) throws -> BindingRuntimeUpdate { try withApplication("upsertRuntime") { try $0.upsertRuntime(runtime: runtime) } }
     func deleteRuntime(id: String) throws -> BindingRuntimeUpdate { try withApplication("deleteRuntime") { try $0.deleteRuntime(id: id) } }

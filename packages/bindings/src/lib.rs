@@ -191,6 +191,12 @@ impl VeluneApplication {
             app.save_model_template(template)
         })?)
     }
+    /// Explicit, credential-free retrieval; does not change application configuration.
+    pub fn fetch_public_model_catalog(&self) -> Result<Vec<BindingCatalogModel>, BindingError> {
+        convert(self.with("fetch_public_model_catalog", |_app| {
+            velune_application::model_catalog::fetch_models_dev()
+        })?)
+    }
     pub fn delete_model_template(
         &self,
         id: String,

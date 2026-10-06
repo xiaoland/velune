@@ -282,7 +282,7 @@ struct ProviderSettingsView: View {
                 Button { creating = true } label: { Image(systemName: "plus") }.help("添加 AI 提供商")
                 Button { deleting = store.providers.first { $0.id == selectedID } } label: { Image(systemName: "minus") }.disabled(selectedID == nil)
                 Button("从运行时导入…") { importing = true }.disabled(store.providerImportTypes.isEmpty || store.isBusy)
-                Menu { Button("模型模板…") { templates = true } } label: { Image(systemName: "ellipsis") }.menuStyle(.borderlessButton).frame(width: 24)
+                Menu { Button("模型模板…") { templates = true } } label: { Image(systemName: "ellipsis") }.menuStyle(.borderlessButton).menuIndicator(.hidden).frame(width: 28).accessibilityLabel("更多操作")
                 Spacer()
                 Button("编辑…") { editor = store.providers.first { $0.id == selectedID } }.disabled(selectedID == nil)
             }.padding(.horizontal, 20).padding(.vertical, 12)
@@ -468,6 +468,7 @@ struct ModelTemplatesView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var selectedID: String?
     @State private var editor: ModelTemplate?
+    @State private var catalog = false
     var body: some View {
         VStack(spacing: 0) {
             HStack { Text("模型模板").font(.headline); Spacer() }.padding(20)
@@ -476,10 +477,12 @@ struct ModelTemplatesView: View {
             HStack {
                 Button { editor = ModelTemplate(name: "", suggestedProviderModelID: "") } label: { Image(systemName: "plus") }
                 Button { if let selectedID { store.deleteTemplate(selectedID) } } label: { Image(systemName: "minus") }.disabled(selectedID == nil || store.isLoading)
+                Button("从公开目录添加…") { catalog = true }
                 Spacer(); Button("编辑…") { editor = store.modelTemplates.first { $0.id == selectedID } }.disabled(selectedID == nil); Button("完成") { dismiss() }.keyboardShortcut(.cancelAction)
             }.padding(16)
             SettingsError(message: store.error)
         }.frame(width: 480, height: 380).sheet(item: $editor) { ModelTemplateEditor(store: store, template: $0) }
+        .sheet(isPresented: $catalog) { PublicModelCatalogView(store: store) }
     }
 }
 struct ModelTemplateEditor: View {

@@ -187,6 +187,12 @@ bash scripts/build-macos.sh
 
 无默认 feature 的依赖树不含 agent-runtime；当前 application 配置校验仍通过 gateway，因而依赖树保留 gateway／AI-provider，不启动其执行能力。本地会话操作明确返回 Unsupported。该构建只证明运行时裁剪，不表示已支持远端操作或已完成 AI 执行依赖裁剪。Kotlin 生成物依赖 JNA 及 kotlinx-coroutines；生成成功之外还需编译检查。C# 工具为第三方，UniFFI 版本兼容性仍需后续 C# app 接入时验证。
 
+## 公开模型模板目录
+
+在 AI 提供商的更多菜单打开“模型模板”，选择“从公开目录添加…”后显式读取 models.dev。候选保留来源提供商与实际模型 ID，选择后进入模板表单，保存为独立可编辑快照；拉取不会创建提供商、选择协议／端点或更新现有模型。仅来源明确声明的 effort values 可填写推理等级，不把 reasoning boolean 变成等级列表。
+
+目录获取归 application，由 Mac 工作队列调用具名 UniFFI API；只请求固定公开 HTTPS 地址，禁用重试与重定向，最长 30 秒、最大 16 MiB。失败说明不包含响应正文或网络配置。拉取入口不使用提供商认证，领域 AI unit 与网关不依赖目录。缺失／零上下文和输出规格保持未知，用户应按实际提供商要求核对后编辑。目录来源声明和 MIT 许可随应用包保留，详情不伪称提供商官方能力保证。 人工复验使用 [公开目录脚本](../scripts/manual-public-model-catalog.py)，传入绝对 `--bundle`、`--bindings`；只有显式 `--public-get` 才访问公开地址。脚本使用临时 HOME 验证拉取不写配置、模板保存／编辑／重开和提供商数量不变，并以合成解析数据核对来源 ID、未知规格、effort null 和输入边界，不接入 CI。
+
 ## 本地诊断
 
 Mac 使用 `OSLog.Logger`，subsystem 为 `local.velune`；系统 Console 可按该 subsystem 筛选。Rust 的 `tracing` subscriber 由 bindings 为每个应用对象独立装配，JSON Lines 日志位于 `VELUNE_HOME/logs/velune.<日期>.jsonl`，按 UTC 日期轮转并保留最近 7 个文件。该策略限制文件数量，不提供总字节硬上限。日志目录在 Unix 平台使用 0700 权限。

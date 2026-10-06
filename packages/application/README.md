@@ -17,3 +17,5 @@
 运行时描述包含 familyId、versioned variant ID 与 versionRegex，配置实例引用精确 variant。当前支持 `pi-1.0.2`、`codex-0.159.3` 与 `dsh-acp-0.2.0-rc.2`；family 不参与控制协议派发。应用协调 Codex app-server／DSH ACP 与 huihua 历史读取，原生 ID 与 runtimeId 共同形成公开会话身份；读取成功不等于原生恢复成功。新建和恢复原生会话都绑定配置初始模型，会话切换模型不改初始配置，也不另存历史模型状态。
 
 原生审批、问题回答及取消通过 RuntimeInteraction／RuntimeInteractionReply 完成，配置变更、执行和失败清理由应用协调。提供商导入和订阅来源认证仍只支持 Pi 适配器，增加 Codex／DSH 执行不自动增加其提供商导入。DSH 模型能力注入只使用已知字段，reasoning wire 映射未实现，不将能力列表解释为请求参数。
+
+公开模型目录的获取和来源解析归本 unit。当前支持用户显式读取 models.dev 的 provider-scoped API，以具名候选记录返回来源提供商、实际模型 ID 和已声明能力，供模板快填；候选不进入配置，用户保存时仍走现有模板用例。同步获取由平台工作队列调用，单次请求的 executor 随调用结束释放，不建立常驻 Host 或全局 subscriber。目录获取不使用提供商凭据，不读取本机运行时配置、不自动刷新或改变协议／地址；未知规格保持未知。

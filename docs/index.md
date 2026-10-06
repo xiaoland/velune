@@ -15,7 +15,9 @@
 
 ## 当前工作
 
-- [Magpie 架构参考复核](../tasks/magpie-reference/packet.md)：配置 adapter、模型目录、原生／兼容协议与可观测性；研究建议不等于实施决定
+- [运行时与会话配置体验复核](../tasks/runtime-session-experience/packet.md)：初始模型与准备生命周期的产品复核、公开目录模板和原生菜单修复
+
+- [Magpie 架构参考复核](../tasks/magpie-reference/packet.md)：配置 adapter、模型目录、原生／兼容协议与可观测性；已吸纳版本能力、导入边界及无正文网关观测
 
 - [版本化 Codex 与 DeepSeek 运行时](../tasks/multi-runtime/packet.md)：原生控制、huihua 包历史投影、许可与安装包隔离验收；GUI／真实服务由用户验收
 

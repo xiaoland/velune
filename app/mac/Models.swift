@@ -262,3 +262,17 @@ struct InteractionOption: Codable, Sendable, Identifiable, Equatable {var id:Str
 struct InteractionQuestion: Codable, Sendable, Identifiable, Equatable {var id:String;var text:String;var options:[InteractionOption];var secret:Bool}
 enum RuntimeInteractionReply: Sendable {case decision(String), answers([InteractionAnswer]), cancel}
 struct InteractionAnswer: Sendable {var questionID:String;var values:[String]}
+
+struct CatalogModel: Identifiable, Sendable {
+    var sourceProviderID: String
+    var sourceProviderName: String
+    var modelID: String
+    var name: String
+    var contextWindow: UInt32?
+    var maxOutputTokens: UInt32?
+    var reasoningLevels: [String]?
+    var id: String { "\(sourceProviderID.count):\(sourceProviderID)\(modelID)" }
+    var template: ModelTemplate {
+        ModelTemplate(name: "\(name) · \(sourceProviderName) (models.dev)", suggestedProviderModelID: modelID, nickname: name, contextWindow: contextWindow, maxOutputTokens: maxOutputTokens, reasoningLevels: reasoningLevels)
+    }
+}

@@ -31,7 +31,7 @@ xcrun swiftc -parse-as-library -swift-version 5 -emit-library -emit-module -modu
 install_name_tool -id '@rpath/libVeluneBindings.dylib' "$app/Contents/Frameworks/libVeluneBindings.dylib"
 xcrun swiftc -parse-as-library -swift-version 5 -target "$(uname -m)-apple-macosx14.0" -framework AppKit -framework SwiftUI \
   app/mac/main.swift app/mac/Views.swift app/mac/Theme.swift app/mac/Logo.swift \
-  app/mac/Models.swift app/mac/BindingMapping.swift app/mac/Store.swift app/mac/Transport.swift app/mac/ProviderImport.swift app/mac/ExecutableDiscovery.swift \
+  app/mac/Models.swift app/mac/BindingMapping.swift app/mac/Store.swift app/mac/Transport.swift app/mac/ProviderImport.swift app/mac/ExecutableDiscovery.swift app/mac/PublicModelCatalog.swift \
   -I "$bindings" -Xcc -fmodule-map-file="$bindings/VeluneBindingsFFI.modulemap" -L "$app/Contents/Frameworks" -lVeluneBindings \
   -Xlinker -rpath -Xlinker '@executable_path/../Frameworks' -o "$app/Contents/MacOS/Velune"
 # JavaScript is a sealed resource, not a nested macOS executable.

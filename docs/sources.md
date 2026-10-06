@@ -182,3 +182,5 @@ S17 实施授权：用户决定全面切换 UniFFI，并要求现在开始拆分
 2026-10-06 用户建议重点学习 Magpie。已定位 [yetone/magpie](https://github.com/yetone/magpie)，只进行架构与实现参考复核；这不构成引入 Go／Wails、协议翻译、账号切换或自动 fail-over 的产品决定。固定源码与比较证据归 [研究 packet](../tasks/magpie-reference/packet.md)。
 
 2026-10-06 用户明确“开始应用对 magpie 的吸纳”，授权将已核对机制落到当前产品。当前切片采用版本化协议能力、导入选择／替换边界和无正文的网关生命周期观测；不接入 Magpie 包或复制源码，不引入协议翻译、重试／fail-over 或 Wails。设计归架构和 AI 服务设计，实施证据归 [Magpie packet](../tasks/magpie-reference/packet.md)。
+
+2026-10-06 用户验收后质疑运行时“初始模型”和“连接运行时”，并要求修复更多菜单图标、从公开目录取得模型模板。生命周期方向仍在复核，不把提问自动提升为移除现有契约的决定；模板与图标改进已实施授权。公开源核对为 [models.dev 官方 README](https://github.com/anomalyco/models.dev#api)，provider-scoped API 与模板用途归 AI 服务设计，当前方案和验收归 [体验任务](../tasks/runtime-session-experience/packet.md)。

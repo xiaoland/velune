@@ -171,6 +171,12 @@ final class AppStore: ObservableObject {
         guard let transport else { error = "本地核心未配置"; return }
         enqueue({ try transport.saveTemplate(value) }) { [weak self] result in self?.modelTemplates = result.map(BindingMapping.template); onSaved?() }
     }
+    func fetchPublicModelCatalog(completion: @escaping ([CatalogModel]) -> Void) {
+        guard !isPreview, let transport else { error = "预览不会访问公开目录"; return }
+        enqueue({ try transport.publicModelCatalog() }) { values in
+            completion(values.map { CatalogModel(sourceProviderID: $0.sourceProviderId, sourceProviderName: $0.sourceProviderName, modelID: $0.modelId, name: $0.name, contextWindow: $0.contextWindow, maxOutputTokens: $0.maxOutputTokens, reasoningLevels: $0.reasoningLevels) })
+        }
+    }
     func deleteTemplate(_ id: String) {
         if isPreview { modelTemplates.removeAll { $0.id == id }; return }
         guard let transport else { error = "本地核心未配置"; return }

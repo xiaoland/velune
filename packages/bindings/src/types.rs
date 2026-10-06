@@ -498,3 +498,16 @@ pub struct BindingInteractionAnswer {
     pub question_id: String,
     pub values: Vec<String>,
 }
+
+/// A provider-scoped public catalog entry, used only for editable template copies.
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+#[serde(rename_all = "camelCase")]
+pub struct BindingCatalogModel {
+    pub source_provider_id: String,
+    pub source_provider_name: String,
+    pub model_id: String,
+    pub name: String,
+    pub context_window: Option<u32>,
+    pub max_output_tokens: Option<u32>,
+    pub reasoning_levels: Option<Vec<String>>,
+}
