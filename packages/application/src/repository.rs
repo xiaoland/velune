@@ -163,4 +163,89 @@ impl Repository {
         fs::rename(temporary, &path)?;
         Ok(())
     }
+
+    #[cfg(feature = "local-runtime")]
+    pub(crate) fn load_conversation_links(
+        &self,
+    ) -> Result<Vec<crate::config::ConversationLink>, RuntimeError> {
+        let path = self.home.join("conversation-links.json");
+        let bytes = match fs::read(path) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(error) => return Err(error.into()),
+        };
+        let value: serde_json::Value = serde_json::from_slice(&bytes)?;
+        if value["schemaVersion"].as_u64() != Some(1) {
+            return Err(RuntimeError::invalid("conversation links schema version"));
+        }
+        let links: Vec<crate::config::ConversationLink> =
+            serde_json::from_value(value["links"].clone())?;
+        let mut ids = std::collections::BTreeSet::new();
+        let mut native_ids = std::collections::BTreeSet::new();
+        let valid_digest =
+            |digest: &str| digest.len() == 64 && digest.bytes().all(|b| b.is_ascii_hexdigit());
+        for link in &links {
+            if link.id.is_empty()
+                || !ids.insert(&link.id)
+                || link.segments.len() < 2
+                || link
+                    .segments
+                    .first()
+                    .is_none_or(|s| s.native_conversation_id != link.id)
+            {
+                return Err(RuntimeError::invalid("关联会话身份或段顺序无效"));
+            }
+            for (index, segment) in link.segments.iter().enumerate() {
+                if segment.runtime_instance_id.is_empty()
+                    || segment.runtime_type_id.is_empty()
+                    || !segment
+                        .native_conversation_id
+                        .starts_with(&format!("{}:", segment.runtime_instance_id))
+                    || !native_ids.insert(&segment.native_conversation_id)
+                    || (index + 1 == link.segments.len()) != segment.cutoff.is_none()
+                    || segment
+                        .cutoff
+                        .as_ref()
+                        .is_some_and(|c| !valid_digest(&c.prefix_digest))
+                    || segment.handoff.as_ref().is_some_and(|h| {
+                        !valid_digest(&h.marker) || !valid_digest(&h.payload_digest)
+                    })
+                {
+                    return Err(RuntimeError::invalid(
+                        "关联会话原生引用、截止位置或交接定位无效",
+                    ));
+                }
+            }
+        }
+        Ok(links)
+    }
+
+    #[cfg(feature = "local-runtime")]
+    pub(crate) fn store_conversation_links(
+        &self,
+        links: &[crate::config::ConversationLink],
+    ) -> Result<(), RuntimeError> {
+        let path = self.home.join("conversation-links.json");
+        let temporary = path.with_extension("json.tmp");
+        let value = serde_json::json!({"schemaVersion":1,"links":links});
+        let bytes = serde_json::to_vec_pretty(&value)?;
+        let mut options = OpenOptions::new();
+        options.create(true).truncate(true).write(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = options.open(&temporary)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            file.set_permissions(fs::Permissions::from_mode(0o600))?;
+        }
+        file.write_all(&bytes)?;
+        file.sync_all()?;
+        drop(file);
+        fs::rename(temporary, path)?;
+        Ok(())
+    }
 }

@@ -7,11 +7,11 @@ import VeluneBindings
 enum BindingMapping {
     static func conversation(_ value: BindingConversationSummary) -> Conversation {
         Conversation(id: value.id, title: value.title, updatedAtUnixMs: value.updatedAtUnixMs, createdAtUnixMs: value.createdAtUnixMs,
-                     runtimeID: value.runtimeId, cwd: value.cwd)
+                     runtimeID: value.runtimeId, cwd: value.cwd, canRename: value.canRename, canDelete: value.canDelete)
     }
 
     static func snapshot(_ value: BindingConversationSnapshot) -> ConversationSnapshot {
-        ConversationSnapshot(revision: value.revision, conversation: conversation(value.conversation),
+        ConversationSnapshot(revision: value.revision, conversation: conversation(value.conversation), contextRuntimeID: value.contextRuntimeId,
                              modelRecordKey: value.modelRecordKey, runState: runState(value.runState),
                              messages: value.messages.map(message), pendingInteractions: value.pendingInteractions.map(interaction), actions: actions(value.actions))
     }

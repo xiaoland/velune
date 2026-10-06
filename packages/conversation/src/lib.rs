@@ -37,6 +37,10 @@ pub struct ConversationSummary {
     pub runtime_id: String,
     #[serde(default)]
     pub cwd: Option<String>,
+    #[serde(default)]
+    pub can_rename: bool,
+    #[serde(default)]
+    pub can_delete: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -111,6 +115,8 @@ pub struct ConversationSnapshot {
     /// projections may restart it; it is not a global ordering key across preparation.
     pub revision: u64,
     pub conversation: ConversationSummary,
+    /// The current native context; independent of the logical origin used in lists.
+    pub context_runtime_id: String,
     pub resource_id: Option<String>,
     pub model_record_key: Option<String>,
     pub run_state: RunState,

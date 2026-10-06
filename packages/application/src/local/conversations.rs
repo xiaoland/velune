@@ -8,32 +8,36 @@ impl CoreRuntime {
         let runtime_id = request["payload"]["runtimeInstanceID"]
             .as_str()
             .ok_or_else(|| RuntimeError::invalid("runtime instance id"))?;
-        let model_record_key = request["payload"]["modelRecordKey"]
+        let model = request["payload"]["modelRecordKey"]
             .as_str()
             .ok_or_else(|| RuntimeError::invalid("model id"))?;
         let text = request["payload"]["text"]
             .as_str()
-            .filter(|value| !value.trim().is_empty())
+            .filter(|t| !t.trim().is_empty())
             .ok_or_else(|| RuntimeError::invalid("message text"))?;
         let snapshot = self
-            .current_snapshot()
+            .native_snapshot()
             .ok_or_else(|| RuntimeError::invalid("conversation is not active"))?;
-        if snapshot.conversation.runtime_id != runtime_id {
-            return Err(RuntimeError::Unsupported(
-                "跨运行时继续此会话尚未接入；请先选择会话来源运行时".into(),
+        if matches!(self.active_state, ActiveState::History(_)) && !snapshot.actions.can_send {
+            return Err(RuntimeError::invalid(
+                "当前原生上下文不可用，请修复来源后重新打开；未自动重发",
             ));
         }
-        self.validate_session_model(self.runtime_instance(runtime_id)?, model_record_key)?;
-        if matches!(self.active_state, ActiveState::History(_)) {
-            self.prepare_snapshot(snapshot, model_record_key, false)?;
-        } else if self.model_record_key.as_deref() != Some(model_record_key) {
-            self.select_model(&json!({
-                "payload": {"runtimeInstanceID": runtime_id, "modelRecordKey": model_record_key}
-            }))?;
+        if !snapshot.pending_interactions.is_empty() {
+            return Err(RuntimeError::invalid("请先处理当前运行时请求"));
         }
-        self.send_action(&json!({
-            "payload": {"runtimeInstanceID": runtime_id, "text": text}
-        }))
+        self.validate_session_model(self.runtime_instance(runtime_id)?, model)?;
+        if snapshot.conversation.runtime_id != runtime_id {
+            return self.continue_in_runtime(runtime_id, model, text);
+        }
+        if matches!(self.active_state, ActiveState::History(_)) {
+            self.prepare_snapshot(snapshot, model, false)?;
+        } else if self.model_record_key.as_deref() != Some(model) {
+            self.select_model(
+                &json!({"payload":{"runtimeInstanceID":runtime_id,"modelRecordKey":model}}),
+            )?;
+        }
+        self.send_action(&json!({"payload":{"runtimeInstanceID":runtime_id,"text":text}}))
     }
 
     pub(super) fn create_conversation(&mut self, request: &Value) -> Result<Value, RuntimeError> {
@@ -57,6 +61,8 @@ impl CoreRuntime {
         validate_session_cwd(&cwd)?;
         self.validate_session_model(&runtime, key)?;
         let snapshot = PiProjection::new(ConversationSummary {
+            can_rename: false,
+            can_delete: false,
             id: "new".into(),
             title: velune_conversation::ConversationTitle::Untitled,
             updated_at_unix_ms: None,
@@ -67,6 +73,7 @@ impl CoreRuntime {
         .snapshot
         .expect("new projection");
         self.prepare_snapshot(snapshot, key, true)?;
+        self.logical_projection = None;
         Ok(json!({"snapshot":self.current_snapshot()}))
     }
     pub(super) fn open_conversation(&mut self, request: &Value) -> Result<Value, RuntimeError> {
@@ -79,20 +86,53 @@ impl CoreRuntime {
         let id = request["payload"]["conversationID"]
             .as_str()
             .ok_or_else(|| RuntimeError::invalid("conversation id"))?;
-        // Resolve and project the destination before releasing the old view.
-        let snapshot = self.read_history(runtime_id, id).inspect_err(|_| {
-            if let Some(slot)=self.runtime_instances.iter().position(|r|r.id==runtime_id) {
-                let slot_for = |id: Option<&str>| id.and_then(|id| self.runtime_instances.iter().position(|r| r.id == id)).map_or(0, |slot| slot + 1);
-                tracing::warn!(target:"velune_application",event="runtime_history_read_failed",phase="history_open",failure_kind="history_access_failed",source_runtime_slot=slot+1,execution_runtime_slot=slot_for(self.execution_runtime_id.as_deref()),next_turn_runtime_slot=slot_for(self.next_turn_runtime_id.as_deref()));
-            }
-        })?;
+        let (snapshot, projection) =
+            if let Some(link) = self.conversation_links.iter().find(|link| link.id == id) {
+                if link
+                    .segments
+                    .first()
+                    .is_none_or(|s| s.runtime_instance_id != runtime_id)
+                {
+                    return Err(RuntimeError::invalid("会话来源运行时不匹配"));
+                }
+                let (snapshot, projection) = self.read_link(link)?;
+                (snapshot, Some(projection))
+            } else {
+                (self.read_history(runtime_id, id)?, None)
+            };
         self.invalidate_execution()?;
+        self.logical_projection = projection;
         self.model_record_key = snapshot.model_record_key.clone();
         self.active_state = ActiveState::History(Box::new(snapshot));
         Ok(json!({"snapshot":self.current_snapshot()}))
     }
 
     pub(super) fn manage_conversation(
+        &mut self,
+        request: &Value,
+        deleting: bool,
+    ) -> Result<Value, RuntimeError> {
+        if self.busy() {
+            return Err(RuntimeError::invalid("请先停止正在执行的任务，再修改会话"));
+        }
+        if let Some(link) = self
+            .conversation_links
+            .iter()
+            .find(|link| Some(link.id.as_str()) == request["payload"]["conversationID"].as_str())
+            .cloned()
+        {
+            if link.segments.first().is_none_or(|s| {
+                Some(s.runtime_instance_id.as_str())
+                    != request["payload"]["runtimeInstanceID"].as_str()
+            }) {
+                return Err(RuntimeError::invalid("会话来源运行时不匹配"));
+            }
+            return self.manage_link(link, request, deleting);
+        }
+        self.manage_native_conversation(request, deleting)
+    }
+
+    pub(super) fn manage_native_conversation(
         &mut self,
         request: &Value,
         deleting: bool,
@@ -144,7 +184,7 @@ impl CoreRuntime {
             && matches!(self.active_state, ActiveState::Pi)
             && self.execution_runtime_id.as_deref() == Some(runtime_id)
             && self
-                .current_snapshot()
+                .native_snapshot()
                 .is_some_and(|snapshot| snapshot.conversation.id == id)
         {
             // A newly created Pi SessionManager reserves its native file path but
@@ -157,7 +197,7 @@ impl CoreRuntime {
                 .invalidate_history();
             self.sync_projection()?;
             if self
-                .current_snapshot()
+                .native_snapshot()
                 .is_some_and(|snapshot| snapshot.conversation.id == id)
                 && std::fs::symlink_metadata(native_id)
                     .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound)
@@ -181,7 +221,7 @@ impl CoreRuntime {
                         .expect("active Pi projection")
                         .invalidate_history();
                     self.sync_projection()?;
-                    if !self.current_snapshot().is_some_and(|snapshot| {
+                    if !self.native_snapshot().is_some_and(|snapshot| {
                         snapshot.conversation.id == id
                             && snapshot.conversation.title.display_text()
                                 == title.expect("rename title")
@@ -196,7 +236,7 @@ impl CoreRuntime {
             return Err(RuntimeError::invalid("此会话不属于所选运行时历史目录"));
         }
         let current = self
-            .current_snapshot()
+            .native_snapshot()
             .is_some_and(|snapshot| snapshot.conversation.id == id);
         if current {
             self.invalidate_execution()?;
@@ -257,7 +297,7 @@ impl CoreRuntime {
             .filter(|item| !item.trim().is_empty())
             .ok_or_else(|| RuntimeError::invalid("message text"))?;
         if matches!(self.active_state, ActiveState::History(_)) {
-            let snapshot = self.current_snapshot().expect("history snapshot");
+            let snapshot = self.native_snapshot().expect("history snapshot");
             let key = snapshot
                 .model_record_key
                 .clone()
@@ -481,7 +521,7 @@ impl CoreRuntime {
             .as_str()
             .ok_or_else(|| RuntimeError::invalid("runtime instance id"))?;
         let active_runtime = self
-            .current_snapshot()
+            .native_snapshot()
             .map(|snapshot| snapshot.conversation.runtime_id)
             .or_else(|| self.execution_runtime_id.clone());
         if active_runtime.as_deref() != Some(requested) {
@@ -519,6 +559,8 @@ impl CoreRuntime {
                     .as_deref()
                     .expect("a Pi client has an active runtime instance");
                 projection.set_conversation(ConversationSummary {
+                    can_rename: false,
+                    can_delete: false,
                     id: format!("{runtime_id}:{path}"),
                     title: velune_conversation::conversation_title(
                         state["data"]["sessionName"].as_str(),

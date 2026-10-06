@@ -2,8 +2,8 @@
 """Explicit Mac AppStore/Transport loading acceptance with isolated Pi history.
 Compiles the production Store plus a same-file visibility shim for one poll;
 uses actual UniFFI/core/helper execution, not mocked Store or response models.
-No window, real credentials or external upstream is used. Two controlled loopback
-turns exercise actual Pi execution; this is not an automated-test entry point.
+No window, real credentials or external upstream is used. Three controlled loopback
+turns exercise Pi execution and cross-instance continuation; this is not an automated-test entry point.
 """
 import argparse
 import json
@@ -50,9 +50,7 @@ import VeluneBindings
         wait { !store.isLoading && store.loadedConversationID == otherID }
         precondition(store.projectionRuntimeID == "other")
         precondition(store.nextTurnRuntimeID == "fixture" && store.nextTurnModelRecordKey == nextModel)
-        precondition(store.executionBoundaryMessage != nil && !store.canSend)
-        store.send(text: "DO_NOT_FAKE_FOREIGN_RESUME")
-        precondition(store.error?.contains("跨运行时") == true)
+        precondition(store.canSend, "valid next-turn intent must not be bound to the history source")
         store.selectNextTurnRuntime("other")
         precondition(store.nextTurnModelRecordKey == nextModel && store.canSend)
 
@@ -282,6 +280,39 @@ import VeluneBindings
         store.manualPoll()
         RunLoop.main.run(until: Date().addingTimeInterval(0.2))
         precondition(store.loadedConversationID == actualTurnID && store.manualSnapshot()?.messages.contains { $0.role == .assistant } == true)
+        func nativeSessions(_ directory: URL) -> Set<URL> {
+            let enumerator = FileManager.default.enumerator(at: directory.appendingPathComponent("sessions"), includingPropertiesForKeys: nil)
+            return Set((enumerator?.allObjects as? [URL] ?? []).filter { $0.pathExtension == "jsonl" })
+        }
+        let originalNativeFile = nativePath(actualTurnID)
+        let originalNativeBytes = try Data(contentsOf: originalNativeFile)
+        let otherNativeBefore = nativeSessions(root.appendingPathComponent("runtime-other"))
+        let sourceMessages = store.manualSnapshot()!.messages
+        try holdTurn(3)
+        store.send(text: "Continue this same conversation in the selected runtime without tools.")
+        wait { store.isGenerating && FileManager.default.fileExists(atPath: root.appendingPathComponent("turn-ready-3").path) }
+        store.selectNextTurnRuntime("fixture"); store.selectModel(modelRecordKey: nextModel)
+        store.manualPoll()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.2))
+        precondition(store.isGenerating && store.loadedConversationID == actualTurnID && store.projectionRuntimeID == "other")
+        precondition(store.manualSnapshot()?.conversation.runtimeID == "fixture", "continuation changed the origin grouping")
+        try FileManager.default.removeItem(at: root.appendingPathComponent("turn-gate-3"))
+        wait { !store.isGenerating && !store.isLoading }
+        let continuedMessages = store.manualSnapshot()!.messages
+        precondition(store.loadedConversationID == actualTurnID && store.nextTurnRuntimeID == "fixture")
+        precondition(continuedMessages.filter { $0.role == .assistant }.count == sourceMessages.filter { $0.role == .assistant }.count + 1, "handoff duplicated history or lost the new reply")
+        precondition(continuedMessages.last { $0.role == .user }?.text == "Continue this same conversation in the selected runtime without tools.", "handoff implementation text leaked into the user bubble")
+        precondition(continuedMessages.contains { $0.role == .system }, "runtime switch has no readable boundary")
+        let originalAfterHandoff = try Data(contentsOf: originalNativeFile)
+        precondition(originalAfterHandoff == originalNativeBytes, "handoff rewrote the origin native history")
+        let targetNativeFiles = nativeSessions(root.appendingPathComponent("runtime-other")).subtracting(otherNativeBefore)
+        precondition(targetNativeFiles.count == 1, "continuation did not create one target native session")
+        store.manualRefreshResources(); wait { !store.isLoading }
+        precondition(store.conversations.filter { $0.id == actualTurnID }.count == 1)
+        precondition(!store.conversations.contains { targetNativeFiles.contains(URL(fileURLWithPath: String($0.id.dropFirst("other:".count)))) }, "target segment appeared as another independent row")
+        var savedAfterContinuation = false
+        store.saveTemplates([ModelTemplate(name: "After Continuation", suggestedProviderModelID: "synthetic")]) { count in precondition(count == 1); savedAfterContinuation = true }
+        wait { savedAfterContinuation && !store.isLoading }
         observer.cancel()
         var closed = false
         store.shutdown { closed = $0 }; wait { closed }
@@ -289,8 +320,39 @@ import VeluneBindings
         let persisted = try verifier.list()
         precondition(persisted.conversationBrowserGroupLimit == 7)
         try verifier.shutdown()
+        let reopened = AppStore(transport: Transport(stateDirectory: root.appendingPathComponent("application"), resourcesDirectory: resources))
+        reopened.start(); wait { !reopened.isLoading && !reopened.conversations.isEmpty }
+        if reopened.loadedConversationID != actualTurnID { reopened.selectConversation(id: actualTurnID) }
+        wait { !reopened.isLoading && reopened.loadedConversationID == actualTurnID }
+        precondition(reopened.projectionRuntimeID == "other" && reopened.manualSnapshot()?.conversation.runtimeID == "fixture")
+        precondition(reopened.manualSnapshot()!.messages.map(\.id) == continuedMessages.map(\.id), "restart changed logical message identity")
+        precondition(reopened.manualSnapshot()!.messages == continuedMessages, "restart failed to rebuild native segment projection")
+        let linked = reopened.conversations.first { $0.id == actualTurnID }!
+        var renamedLinked = false
+        reopened.renameConversation(linked, title: "LINKED_NATIVE_TITLE") { renamedLinked = true }
+        wait { renamedLinked && !reopened.isLoading }
+        let nativeEntries = try String(contentsOf: originalNativeFile, encoding: .utf8).split(separator: "\n").map { try JSONSerialization.jsonObject(with: Data($0.utf8)) as! [String: Any] }
+        precondition(nativeEntries.last { $0["type"] as? String == "session_info" }?["name"] as? String == "LINKED_NATIVE_TITLE", "rename did not change the first native segment")
+        let renamedLinkedConversation = reopened.conversations.first { $0.id == actualTurnID }!
+        let protectedTarget = targetNativeFiles.first!
+        let protectedTargetLink = root.appendingPathComponent("linked-target-hardlink")
+        try FileManager.default.linkItem(at: protectedTarget, to: protectedTargetLink)
+        let nextBeforeFailedDelete = reopened.nextTurnRuntimeID
+        reopened.deleteConversation(renamedLinkedConversation)
+        wait { !reopened.isLoading && reopened.conversationManagementStatus == nil }
+        precondition(!FileManager.default.fileExists(atPath: originalNativeFile.path) && FileManager.default.fileExists(atPath: protectedTarget.path), "partial native delete did not preserve the failed target")
+        precondition(reopened.loadedConversationID == nil && !reopened.canSend && reopened.nextTurnRuntimeID == nextBeforeFailedDelete, "partial delete left the obsolete projection sendable")
+        precondition(reopened.error != nil)
+        try FileManager.default.removeItem(at: protectedTargetLink)
+        precondition(reopened.conversations.contains { $0.id == actualTurnID && $0.canDelete }, "incomplete logical conversation disappeared or cannot be retried")
+        reopened.deleteConversation(reopened.conversations.first { $0.id == actualTurnID }!)
+        wait { !reopened.isLoading && reopened.conversationManagementStatus == nil }
+        precondition(reopened.loadedConversationID == nil && !reopened.conversations.contains { $0.id == actualTurnID })
+        precondition(!FileManager.default.fileExists(atPath: originalNativeFile.path) && targetNativeFiles.allSatisfy { !FileManager.default.fileExists(atPath: $0.path) }, "logical delete left native segment files")
+        var closedReopened = false
+        reopened.shutdown { closedReopened = $0 }; wait { closedReopened }
 
-        print("{\"actualAppStoreAndTransport\":true,\"crossRuntimeUnifiedBrowsing\":true,\"fullPathGroupsAndNativeDateSorting\":true,\"slowLoadSelectionStable\":true,\"latePollIgnored\":true,\"concurrentSelectionSerialized\":true,\"failedLoadRestoredOnce\":true,\"loadedRowsPreservedDuringLoadAndFailure\":true,\"queuedNativeRenameAndDelete\":true,\"deletedDestinationCannotReturn\":true,\"failedMutationPreservesLoadedSource\":true,\"nativeMultiSelectionAndPartialBulkDelete\":true,\"perGroupPaginationAndPersistedLimit\":true,\"batchTemplateSave\":true,\"typedQuickImportPreservesLoadedSource\":true,\"nextTurnIntentIndependentOfHistoryAndPendingOpen\":true,\"runningTurnFinishAndCancelKeepActualOwner\":true,\"upstreamRequests\":2}")
+        print("{\"actualAppStoreAndTransport\":true,\"crossRuntimeUnifiedBrowsing\":true,\"fullPathGroupsAndNativeDateSorting\":true,\"slowLoadSelectionStable\":true,\"latePollIgnored\":true,\"concurrentSelectionSerialized\":true,\"failedLoadRestoredOnce\":true,\"loadedRowsPreservedDuringLoadAndFailure\":true,\"queuedNativeRenameAndDelete\":true,\"deletedDestinationCannotReturn\":true,\"failedMutationPreservesLoadedSource\":true,\"nativeMultiSelectionAndPartialBulkDelete\":true,\"perGroupPaginationAndPersistedLimit\":true,\"batchTemplateSave\":true,\"typedQuickImportPreservesLoadedSource\":true,\"nextTurnIntentIndependentOfHistoryAndPendingOpen\":true,\"runningTurnFinishAndCancelKeepActualOwner\":true,\"crossInstanceNativeContinuationAndRestart\":true,\"linkedNativeRenameAndDelete\":true,\"upstreamRequests\":3}")
     }
 }
 '''
@@ -318,7 +380,7 @@ def main():
             def log_message(self, *_): pass
             def do_POST(self):
                 body = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
-                requests.append(body['model'])
+                requests.append(body)
                 number = len(requests)
                 self.send_response(200); self.send_header('Content-Type', 'text/event-stream'); self.end_headers()
                 initial = {'id':'synthetic','object':'chat.completion.chunk','created':1,'model':body['model'],'choices':[{'index':0,'delta':{'role':'assistant'},'finish_reason':None}]}
@@ -374,6 +436,23 @@ manager.appendSessionInfo(title); console.log(manager.getSessionFile());
         identities = ['fixture:' + paths[name] for name in ['A','B','C','D']]
         subprocess.run([str(temporary / 'manual'),str(temporary),str(resources),*identities,str(args.node),endpoint],check=True,cwd=temporary,env=env)
         server.shutdown(); server.server_close()
-        assert requests == ['synthetic', 'synthetic'], 'unexpected loopback dispatch'
+        assert [request['model'] for request in requests] == ['synthetic'] * 3, 'unexpected loopback dispatch'
+        def strings(value):
+            if isinstance(value, str): yield value
+            elif isinstance(value, list):
+                for item in value: yield from strings(item)
+            elif isinstance(value, dict):
+                for item in value.values(): yield from strings(item)
+        envelopes = [value for value in strings(requests[2]) if value.startswith('<velune-context:')]
+        assert len(envelopes) == 1, 'target received no unique context envelope'
+        opening, body = envelopes[0].split('\n', 1)
+        assert opening.endswith('>')
+        marker = opening[len('<velune-context:'):-1]
+        closing = '\n</velune-context:' + marker + '>'
+        assert marker and body.endswith(closing), 'context envelope boundary mismatch'
+        handoff = json.loads(body[:-len(closing)])
+        assert handoff['request'] == 'Continue this same conversation in the selected runtime without tools.'
+        assert 'SYNTHETIC_RUNNING_REPLY' in json.dumps(handoff['history']), 'target did not receive the source conversation context'
+        assert 'data' in handoff['contextMeaning'], 'context was not explicitly quoted as data'
 
 if __name__ == '__main__': main()

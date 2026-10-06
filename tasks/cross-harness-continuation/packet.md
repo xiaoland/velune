@@ -17,3 +17,11 @@ Advisor 决策已采纳：逻辑会话包含有序原生 segment，A→B→A 创
 提交边界：先验证目标、读取完整交接内容并确认无执行或待回复交互，再准备目标；取得原生引用后原子保存关联，再发送本轮请求。准备失败保持来源可读；关联保存失败不能宣称切换成功，也不擅自删除已创建目标；发送结果不明确仍保留关联与目标状态，不自动重发。关联文件独立于普通配置 schema 重置，不复制消息正文。管理采用首段原生标题为逻辑标题权威，重命名调用首段原生接口；删除逐段作用于原生数据，全部确认后删除关联，部分失败保留关系并报告，不能用本地隐藏代替。
 
 验收划分：Mac owner 的实际 AppStore 脚本使用两个独立 Pi 实例证明界面状态、逻辑身份和生命周期；Rust owner 的独立脚本使用不同 family 证明跨协议的 adapter 接续。检查目标仅一次请求且无历史工具执行；重启与再次切换没有递归包；关闭、取消、部分删除与各提交边界失败不造成自动重发。源码 owners 自主完成必要局部决策，具名接口直接协调。
+
+执行责任调整：Rust owner 的初次交付只包含发送与关联骨架，未完成整体投影；root 接任 packages 源码并完成线性逻辑投影、具名上下文与管理能力、独立关联仓库和提交边界。ai_service_audit 冻结 packages，转为仅 `scripts/manual-cross-harness.py` owner并独立跑真实跨 family 验收；session_management 持续负责 Mac，不交叉回滚。新 owner 创建受会话线程数量限制，未创建额外任务；此调整不改变已确认范围。
+
+已实现的具名契约：逻辑会话沿用首段完整公开ID，summary.runtime_id 用于来源分组、打开和管理，snapshot.context_runtime_id 用于尾段查询／取消／回复；summary.can_rename/can_delete 由 application 结合原生能力和启用状态装配。关联 schema 1 保存 link.id 与有序 segments，每段仅有 runtime instance/type、完整native公开引用、可选cutoff（数量＋规范化内容digest）、可选handoff（marker＋完整payload digest＋用户记录序号）及已确认删除标志。每次回切追加新原生段，不改旧原生文件。交接为精确marker包围的JSON历史引用与本轮request，目标只收到原生用户输入；投影验hash后还原request，旧段UI消息加命名空间，不递归展示引用包。
+
+截至debug probe的实际验收：`manual-cross-harness.py` 用实际Pi1.0.2→Codex0.159.3→DSH0.2rc2→Pi，共4次loopback，验证每轮仅一次上游、单逻辑行、origin/runtime/context分离、重开全部文本及稳定ID、metadata无正文、可见user无marker/重复包、首段可改名／含DSH时不能伪删除，以及封闭Pi源追加被排除、prefix合法改写明确拒绝。`manual-session-loading.py` 使用当前AppStore／Transport／UniFFI与两Pi实例，共3次loopback，新增完整逻辑重开、原生首段改名、全段删除、尾段硬链接保护导致部分删除后保留关联与nextdraft、清旧详情禁止发送，去掉保护后同row重试完成。严格Swift warnings-as-errors构建和Python语法通过，Mac源码已冻结。
+
+root的 `manual-continuation-boundaries.py` 用真实Pi和2次loopback，验证256KiB超长及协议不兼容在准备前拒绝、原子关联提交失败不发请求且保来源bytes、显式重试只有一个关联target、元数据无正文/credential且0600、尾段原生历史不可读取时保已校验来源并禁止resume、修复后重开、schema6普通配置hard-cutoff不删除独立关联文件，以及重启不主动发送。Rust fmt/check/workspace strict clippy及bindings no-default strict clippy通过。所有数据均为临时HOME的合成内容，无真实秘密或模型API；release安装与安装库复验尚待收口。

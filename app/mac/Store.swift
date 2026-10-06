@@ -64,7 +64,7 @@ final class AppStore: ObservableObject {
     var isGenerating: Bool { snapshot?.runState == .running || snapshot?.runState == .stopping }
     var isBusy: Bool { isLoading || isGenerating || isShuttingDown || authenticationRunning }
     var canManageConversations: Bool { !isGenerating && !authenticationRunning && !isShuttingDown && conversationManagementStatus == nil && (!isLoading || pendingConversationID != nil) }
-    var canSend: Bool { !authenticationRunning && !isLoading && !isGenerating && !isShuttingDown && (snapshot?.actions.canSend ?? false) && executionBoundaryMessage == nil && nextTurnModelRecordKey != nil && runtimeCompatibleModels.contains { $0.recordKey == nextTurnModelRecordKey } }
+    var canSend: Bool { !authenticationRunning && !isLoading && !isGenerating && !isShuttingDown && (snapshot?.actions.canSend ?? false) && nextTurnModelRecordKey != nil && runtimeCompatibleModels.contains { $0.recordKey == nextTurnModelRecordKey } }
     var canCancel: Bool { snapshot?.actions.canCancel ?? false }
     var canSwitchModel: Bool { nextTurnRuntimeID != nil && !isShuttingDown }
     var needsModelSelection: Bool { snapshot != nil && nextTurnModelRecordKey == nil }
@@ -73,10 +73,6 @@ final class AppStore: ObservableObject {
         let typeID = runtimeInstances.first { $0.id == nextTurnRuntimeID }?.typeID
         guard let descriptor = runtimeTypes.first(where: { $0.id == typeID }) else { return [] }
         return models.filter { descriptor.supportedProtocols.contains($0.protocolID) }
-    }
-    var executionBoundaryMessage: String? {
-        guard let source = snapshot?.conversation.runtimeID, let target = nextTurnRuntimeID, source != target else { return nil }
-        return "历史来自另一运行时；跨运行时继续尚未接入，请选择来源运行时以继续此会话。"
     }
     func selectNextTurnRuntime(_ id: String) {
         guard !isShuttingDown, enabledRuntimeInstances.contains(where: { $0.id == id }) else { return }
@@ -182,14 +178,14 @@ final class AppStore: ObservableObject {
         pendingConversationID = nil
     }
     func canRenameConversation(_ conversation: Conversation) -> Bool {
-        runtimeTypes.first { $0.id == runtimeInstances.first(where: { $0.id == conversation.runtimeID })?.typeID }?.canRenameConversations == true
+        conversation.canRename
     }
     func canDeleteConversation(_ conversation: Conversation) -> Bool {
-        runtimeTypes.first { $0.id == runtimeInstances.first(where: { $0.id == conversation.runtimeID })?.typeID }?.canDeleteConversations == true
+        conversation.canDelete
     }
     func renameConversation(_ conversation: Conversation, title: String, onRenamed: @escaping () -> Void) {
         guard canManageConversations else { error = "请等待正在进行的操作结束，再修改会话"; return }
-        guard canRenameConversation(conversation) else { error = "此运行时适配器尚未接入原生会话重命名"; return }
+        guard canRenameConversation(conversation) else { error = "此会话的原生标题当前无法修改"; return }
         let name = title.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty else { error = "会话名称不能为空"; return }
         if isPreview {
@@ -215,7 +211,7 @@ final class AppStore: ObservableObject {
     func deleteConversation(_ conversation: Conversation) { deleteConversations([conversation]) }
     func deleteConversations(_ targets: [Conversation]) {
         guard canManageConversations else { error = "请等待正在进行的操作结束，再修改会话"; return }
-        guard !targets.isEmpty, targets.allSatisfy(canDeleteConversation) else { error = "所选会话中有运行时适配器尚未接入原生删除"; return }
+        guard !targets.isEmpty, targets.allSatisfy(canDeleteConversation) else { error = "所选会话中有原生会话当前无法删除"; return }
         if isPreview {
             let ids = Set(targets.map(\.id))
             conversations.removeAll { ids.contains($0.id) }; selectedConversationIDs.subtract(ids)
@@ -228,22 +224,36 @@ final class AppStore: ObservableObject {
             guard let self else { return }
             generation += 1
             conversationManagementStatus = "正在删除 \(targets.count) 个会话…"
+            let loadedID = loadedConversationID
+            let contextID = snapshot?.contextRuntimeID
             // Runtime-owned deletions are independent operations. Preserve each
             // success and report failures rather than promising a transaction.
             enqueue({
                 var latest: BindingConfigurationSnapshot?
                 var deleted: Set<String> = []
                 var failures: [String] = []
+                var refreshed: BindingSnapshotResult?
+                var lostContext = false
                 for target in targets {
                     do { latest = try transport.deleteConversation(runtimeID: target.runtimeID, conversationID: target.id); deleted.insert(target.id) }
                     catch { failures.append("\(target.title)：\(error.localizedDescription)") }
                 }
-                return (latest, deleted, failures)
+                if !failures.isEmpty {
+                    do { latest = try transport.list() }
+                    catch { failures.append("刷新会话列表失败：\(error.localizedDescription)") }
+                    if let contextID, !deleted.contains(loadedID ?? "") {
+                        do { refreshed = try transport.snapshot(runtimeID: contextID) }
+                        catch { lostContext = true; failures.append("当前会话详情已不可用：\(error.localizedDescription)") }
+                    }
+                }
+                return (latest, deleted, failures, refreshed, lostContext)
             }, preserveError: pendingConversationID != nil) { [weak self] result in
                 guard let self else { return }
                 if let data = result.0 { applyList(data) }
                 selectedConversationIDs.subtract(result.1)
                 if let loadedConversationID, result.1.contains(loadedConversationID) { resetProjection() }
+                else if result.4 { resetProjection() }
+                else if let refreshed = result.3 { applySnapshotResult(refreshed) }
                 finishConversationManagement()
                 if !result.2.isEmpty { error = "\(result.1.count) 个已删除，\(result.2.count) 个未删除：\n" + result.2.joined(separator: "\n") }
             }
@@ -257,7 +267,7 @@ final class AppStore: ObservableObject {
         if isPreview {
             let conversation = Conversation(id: UUID().uuidString, title: "新会话", updatedAtUnixMs: Int64(Date().timeIntervalSince1970 * 1000), runtimeID: runtimeID, cwd: cwd)
             projectionRuntimeID = runtimeID
-            apply(ConversationSnapshot(revision: 1, conversation: conversation, modelRecordKey: modelRecordKey, runState: .idle, messages: [], actions: ConversationActions(canSend: true, canCancel: false, canSwitch: true)))
+            apply(ConversationSnapshot(revision: 1, conversation: conversation, contextRuntimeID: runtimeID, modelRecordKey: modelRecordKey, runState: .idle, messages: [], actions: ConversationActions(canSend: true, canCancel: false, canSwitch: true)))
             onCreated(); return
         }
         guard let transport else { error = "本地核心未配置"; return }
@@ -267,7 +277,6 @@ final class AppStore: ObservableObject {
     }
     func send(text: String, onAccepted: (() -> Void)? = nil) {
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-        if let boundary = executionBoundaryMessage { error = boundary; return }
         guard canSend, let target = nextTurnRuntimeID, let model = nextTurnModelRecordKey else { return }
         if isPreview { snapshot?.modelRecordKey = model; snapshot?.messages.append(Message(id: UUID().uuidString, role: .user, blocks: [.text(text)])); apply(snapshot); onAccepted?(); return }
         guard let transport else { error = "本地核心未配置"; return }
@@ -463,7 +472,7 @@ final class AppStore: ObservableObject {
         guard let transport else { error = "本地核心未配置"; return }
         enqueue({ try transport.list() }) { [weak self] data in
             guard let self else { return }; applyList(data)
-            if let runtimeID = snapshot?.conversation.runtimeID {
+            if let runtimeID = snapshot?.contextRuntimeID {
                 enqueue({ try transport.snapshot(runtimeID: runtimeID) }) { [weak self] in self?.applySnapshotResult($0) }
             } else { resetProjection() }
         }
@@ -492,14 +501,14 @@ final class AppStore: ObservableObject {
     }
     private func apply(_ value: ConversationSnapshot?, preserveSelection: Bool = false) {
         guard let value else { return }
-        snapshot = value; projectionRuntimeID = value.conversation.runtimeID; selectedConversationID = value.conversation.id; if !preserveSelection && selectedConversationIDs.count <= 1 { selectedConversationIDs = [value.conversation.id] }; transcript.apply(value.messages)
+        snapshot = value; projectionRuntimeID = value.contextRuntimeID; selectedConversationID = value.conversation.id; if !preserveSelection && selectedConversationIDs.count <= 1 { selectedConversationIDs = [value.conversation.id] }; transcript.apply(value.messages)
         if let index = conversations.firstIndex(where: { $0.id == value.conversation.id }) { if conversations[index] != value.conversation { conversations[index] = value.conversation } }
         else { conversations.insert(value.conversation, at: 0) }
         activity = value.runState == .running ? "正在思考与执行" : value.runState == .stopping ? "正在停止" : nil
         if isPreview { previewSnapshots[value.conversation.id] = value }
     }
     private func applySnapshotResult(_ value: BindingSnapshotResult, unchangedPoll: Bool = false) {
-        guard let incoming = value.snapshot else { return }
+        guard let incoming = value.snapshot else { resetProjection(); return }
         // A revision is only compared inside the currently selected projection.
         // Preparation/open reset that projection; repeated idle polling does no UI work.
         if unchangedPoll, let current = snapshot, incoming.conversation.id == current.conversation.id,
@@ -562,7 +571,7 @@ final class AppStore: ObservableObject {
             history[1].blocks.insert(.reasoning("先确认上下文，再选择最小的修改范围。"), at: 0)
             history[1].blocks.append(.tool(id: "sample-tool-\(index)", title: index == 1 ? "检查项目代码" : "读取工作上下文", state: .completed, output: index == 1 ? "已读取 3 个文件，未修改项目。" : "已梳理当前任务的上下文。"))
             if index == 2 { history[history.count - 1].blocks.append(.tool(id: "sample-progress", title: "整理项目计划", state: .running, output: "正在整理计划。")) }
-            previewSnapshots[conversation.id] = ConversationSnapshot(revision: 1, conversation: conversation, modelRecordKey: models[0].id, runState: .idle, messages: history, actions: ConversationActions(canSend: true, canCancel: false, canSwitch: true))
+            previewSnapshots[conversation.id] = ConversationSnapshot(revision: 1, conversation: conversation, contextRuntimeID: conversation.runtimeID, modelRecordKey: models[0].id, runState: .idle, messages: history, actions: ConversationActions(canSend: true, canCancel: false, canSwitch: true))
             conversations.append(conversation)
         }
         apply(previewSnapshots["sample-0"])

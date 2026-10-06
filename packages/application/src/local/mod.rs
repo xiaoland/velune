@@ -89,6 +89,8 @@ pub struct CoreRuntime {
     repository: crate::repository::Repository,
     gateways: Vec<GatewayConfig>,
     model_templates: Vec<crate::config::ModelTemplate>,
+    conversation_links: Vec<crate::config::ConversationLink>,
+    logical_projection: Option<continuation::LogicalProjection>,
     conversation_browser_group_limit: u32,
     authentication_provider: Option<(String, String)>,
     runtime_instances: Vec<RuntimeInstance>,
@@ -104,6 +106,7 @@ pub struct CoreRuntime {
 mod authentication_coordination;
 mod browsing;
 mod configuration;
+mod continuation;
 mod conversations;
 mod execution;
 mod native_composition;
@@ -115,11 +118,14 @@ impl CoreRuntime {
     pub fn open(options: RuntimeOptions) -> Result<Self, RuntimeError> {
         options.validate()?;
         let (repository, persisted) = crate::repository::Repository::open(&options.home_directory)?;
+        let conversation_links = repository.load_conversation_links()?;
         Ok(Self {
             options,
             repository,
             gateways: persisted.gateways,
             model_templates: persisted.model_templates,
+            conversation_links,
+            logical_projection: None,
             conversation_browser_group_limit: persisted.conversation_browser_group_limit,
             authentication_provider: None,
             runtime_instances: persisted.runtime_instances,
@@ -140,7 +146,7 @@ impl CoreRuntime {
             ActiveState::Empty | ActiveState::History(_) => false,
         }
     }
-    fn current_snapshot(&self) -> Option<crate::conversation::ConversationSnapshot> {
+    fn native_snapshot(&self) -> Option<crate::conversation::ConversationSnapshot> {
         let snapshot = match &self.active_state {
             ActiveState::Native(session) => session.snapshot(),
             ActiveState::Pi => self
@@ -155,6 +161,10 @@ impl CoreRuntime {
             snapshot.model_record_key = self.model_record_key.clone();
             snapshot
         })
+    }
+    fn current_snapshot(&self) -> Option<crate::conversation::ConversationSnapshot> {
+        self.native_snapshot()
+            .map(|snapshot| self.decorate_snapshot(snapshot))
     }
     fn drain_runtime(&mut self) -> Result<(), RuntimeError> {
         match &mut self.active_state {

@@ -17,6 +17,7 @@ impl PiProjection {
         Self {
             snapshot: Some(ConversationSnapshot {
                 revision: 0,
+                context_runtime_id: conversation.runtime_id.clone(),
                 conversation,
                 resource_id: None,
                 model_record_key: None,

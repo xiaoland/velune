@@ -13,6 +13,8 @@ pub struct BindingConversationSummary {
     pub created_at_unix_ms: Option<i64>,
     pub runtime_id: String,
     pub cwd: Option<String>,
+    pub can_rename: bool,
+    pub can_delete: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, uniffi::Enum)]
@@ -87,6 +89,7 @@ pub struct BindingConversationSnapshot {
     /// Do not use it to order snapshots across those lifecycle boundaries.
     pub revision: u64,
     pub conversation: BindingConversationSummary,
+    pub context_runtime_id: String,
     pub resource_id: Option<String>,
     pub model_record_key: Option<String>,
     pub run_state: BindingRunState,

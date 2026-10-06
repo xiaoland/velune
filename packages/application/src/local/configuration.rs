@@ -41,13 +41,14 @@ impl CoreRuntime {
         // Active native drafts are legitimate current sessions even before their
         // runtime writes history. They disappear when that native session closes.
         if matches!(self.active_state, ActiveState::Pi | ActiveState::Native(_))
-            && let Some(snapshot) = self.current_snapshot()
+            && let Some(snapshot) = self.native_snapshot()
             && !conversations
                 .iter()
                 .any(|item| item.id == snapshot.conversation.id)
         {
             conversations.push(snapshot.conversation);
         }
+        let mut conversations = self.linked_summaries(conversations);
         conversations
             .sort_by_key(|conversation| std::cmp::Reverse(conversation.updated_at_unix_ms));
         Ok(json!({
@@ -223,9 +224,18 @@ impl CoreRuntime {
             "list" => {}
             _ => return Err(RuntimeError::invalid("runtime operation")),
         }
-        let source_id = self
-            .current_snapshot()
-            .map(|view| view.conversation.runtime_id);
+        let source_ids: Vec<String> = if let Some(projection) = &self.logical_projection {
+            projection
+                .link
+                .segments
+                .iter()
+                .map(|s| s.runtime_instance_id.clone())
+                .collect()
+        } else {
+            self.native_snapshot()
+                .map(|view| vec![view.conversation.runtime_id])
+                .unwrap_or_default()
+        };
         let changed = |id: &String| {
             previous.iter().find(|runtime| &runtime.id == id)
                 != self
@@ -233,7 +243,7 @@ impl CoreRuntime {
                     .iter()
                     .find(|runtime| &runtime.id == id)
         };
-        let source_changed = source_id.as_ref().is_some_and(|id| {
+        let source_changed = source_ids.iter().any(|id| {
             let origin = |runtime: &RuntimeInstance| {
                 (
                     runtime.type_id.clone(),
@@ -259,6 +269,7 @@ impl CoreRuntime {
                 // A native ID is scoped to the source configuration used to
                 // load it. Editing that source requires an explicit reopen.
                 self.active_state = ActiveState::Empty;
+                self.logical_projection = None;
                 self.model_record_key = None;
             }
         }

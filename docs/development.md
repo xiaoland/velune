@@ -199,6 +199,12 @@ bash scripts/build-macos.sh
 
 模型选择属于当前会话：新建必须选择模型，历史只有 Pi 保存的明确内部引用可恢复；Codex／DSH 无法证明提供商时要求选择。只读历史视图中尚未执行的选择暂存在内存，视图关闭前不写回 Harness；发送准备后由原生适配器处理模型与持久化。修改配置只使执行装配失效，不清空历史或要求手动连接。
 
+顶部运行时／模型选择属于下一轮意图，浏览来源和当前执行上下文不覆盖它。`send_turn(runtime_id, model_record_key, text)` 在同来源恢复原生会话；目标不同则创建新原生会话并交接明确引用的历史文本。回切也创建新原生段，工具执行、审批、签名推理状态不重放。首版最多携带256 KiB交接文本，不静默截断，也不把字节上限当成模型的 token 限额。
+
+关联保存在 `VELUNE_HOME/conversation-links.json`（schema 1、Unix权限0600），独立于提供商配置；仅有有序原生引用、截止数量及内容摘要、交接定位，不存正文。逻辑会话沿用首段身份和原生标题，重启从各原生历史恢复。列表来源用于分组及打开，快照 `context_runtime_id` 用于当前查询／取消／回复；摘要管理能力由 application 结合所有关联原生段计算。旧段截止后外部追加不会进入逻辑历史，截止前改写明确报错。当前尾段不可读取时已校验来源仍可看，但不能继续发送或伪造恢复。
+
+[跨 Harness 手工脚本](../scripts/manual-cross-harness.py) 接收绝对 `--bundle`、`--bindings`、`--node`、`--codex`、`--dsh`，使用实际Pi→Codex→DSH→Pi、临时HOME和loopback验证多次接续、单逻辑行、重开消息身份、无重复交接包及截止校验。[失败边界脚本](../scripts/manual-continuation-boundaries.py) 接收绝对 `--bundle`、`--bindings`、`--node`，核对超长／不兼容拒绝、关联原子提交失败保来源、尾段不可读禁止发送、普通配置重置不删关联以及重启不自动重发。生成绑定必须对应该bundle的库；这些入口只用于显式人工验收，不接入CI、不读真实账户或会话、不调用真实服务。
+
 ## 公开模型模板目录
 
 在 AI 提供商的更多菜单打开“模型模板”，选择“从公开目录添加…”后显式读取 models.dev。候选保留来源提供商与实际模型 ID，选择后进入模板表单，保存为独立可编辑快照；拉取不会创建提供商、选择协议／端点或更新现有模型。仅来源明确声明的 effort values 可填写推理等级，不把 reasoning boolean 变成等级列表。
@@ -229,7 +235,7 @@ Mac 使用 `OSLog.Logger`，subsystem 为 `local.velune`；系统 Console 可按
 
 ## 跨运行时会话浏览
 
-列表统一汇总全部启用实例；运行时设置提供启用开关，禁用保留配置与原生数据，重新启用恢复历史。侧栏“显示”菜单负责分组、筛选和创建／更新时间排序，详情工具栏只表示当前会话的执行归属。筛选或分组不切换会话。未知时间不推测，项目以完整 CWD 分组。label／section 是用户提供的组织方式例子，本轮不接入自定义分类；未来应独立保存 Velune 组织记录。
+列表统一汇总全部启用实例；运行时设置提供启用开关，禁用保留配置与原生数据，重新启用恢复历史。侧栏“显示”菜单负责分组、筛选和创建／更新时间排序，详情工具栏表示下一轮的运行时和模型意图。筛选或分组不切换会话。未知时间不推测，项目以完整 CWD 分组。label／section 是用户提供的组织方式例子，本轮不接入自定义分类；未来应独立保存 Velune 组织记录。
 
 加载中可打开菜单、输入重命名并提交或确认删除，管理请求等待当前读取完成，再执行原生操作。显示等待／执行状态，加载失败不会丢弃已接受的管理请求，删除加载目标后不被旧快照重新插入。实施与验收见 [统一浏览任务](../tasks/conversation-browser/packet.md)。
 
@@ -239,4 +245,4 @@ Mac 使用 `OSLog.Logger`，subsystem 为 `local.velune`；系统 Console 可按
 
 本轮隔离人工检查可运行 `scripts/manual-runtime-discovery.py`（指定临时 bindings、库、资源和 Node），覆盖公开版本发现、未支持版本、显式保存、重复候选以及分组数量持久化；`scripts/manual-messages-native.py` 覆盖原生 Messages 直接消费及网关 HTTP／SSE；`scripts/manual-runtime-messages.py` 覆盖合成来源导入及实际 Pi／DSH 接入。脚本不加入自动测试或 CI，真实服务、会话和视觉体验仍由用户验收。
 
-顶部运行时／模型是纯粹的下一轮 draft；当前快照来源和 core execution owner 独立。公开发送统一为 `send_turn(runtime_id, model_record_key, text)`，旧 `send`／`select_model` 接口已删除。选择本身不准备运行时，历史无模型 marker 也可在发送时指定模型并准备；跨来源的真实上下文接续仍待范围决定，当前会明确拒绝错误的跨 Harness resume。历史失败日志的 source／execution／next-turn 配置序号分别命名，0表示当前没有实例。
+顶部运行时／模型是纯粹的下一轮 draft；当前快照来源和 core execution owner 独立。公开发送统一为 `send_turn(runtime_id, model_record_key, text)`，旧 `send`／`select_model` 接口已删除。选择本身不准备运行时，历史无模型 marker 也可在发送时指定模型并准备；跨来源发送采用目标原生会话与文本交接，关联文件只保存引用和切换位置；不同 Harness ID 不直接 resume。历史失败日志的 source／execution／next-turn 配置序号分别命名，0表示当前没有实例。

@@ -7,7 +7,9 @@ struct Conversation: Codable, Sendable, Identifiable, Equatable {
     var createdAtUnixMs: Int64? = nil
     var runtimeID: String
     var cwd: String?
-    enum CodingKeys: String, CodingKey { case id, title, updatedAtUnixMs, createdAtUnixMs, cwd; case runtimeID = "runtimeId" }
+    var canRename = true
+    var canDelete = true
+    enum CodingKeys: String, CodingKey { case id, title, updatedAtUnixMs, createdAtUnixMs, cwd, canRename, canDelete; case runtimeID = "runtimeId" }
 }
 
 enum RunState: String, Codable {
@@ -44,12 +46,13 @@ enum MessageBlock: Codable, Sendable, Equatable {
 struct ConversationSnapshot: Codable, Sendable, Equatable {
     var revision: UInt64
     var conversation: Conversation
+    var contextRuntimeID: String
     var modelRecordKey: String?
     var runState: RunState
     var messages: [Message]
     var pendingInteractions: [RuntimeInteraction] = []
     var actions: ConversationActions
-    enum CodingKeys: String, CodingKey { case revision, conversation, runState, messages, pendingInteractions, actions; case modelRecordKey = "modelRecordKey" }
+    enum CodingKeys: String, CodingKey { case revision, conversation, runState, messages, pendingInteractions, actions; case modelRecordKey = "modelRecordKey", contextRuntimeID = "contextRuntimeId" }
 }
 
 

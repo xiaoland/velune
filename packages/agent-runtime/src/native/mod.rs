@@ -315,8 +315,11 @@ impl NativeSession {
         self.interactions.clear();
         self.pending_rpc.clear();
         self.snapshot = Some(ConversationSnapshot {
+            context_runtime_id: runtime_id.into(),
             revision: 1,
             conversation: ConversationSummary {
+                can_rename: false,
+                can_delete: false,
                 id: format!("{runtime_id}:{id}"),
                 title: crate::conversation::conversation_title(
                     None,

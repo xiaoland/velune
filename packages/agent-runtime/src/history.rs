@@ -175,6 +175,8 @@ pub fn list(
         .sessions
         .into_iter()
         .map(|s| ConversationSummary {
+            can_rename: false,
+            can_delete: false,
             id: format!("{runtime_id}:{}", s.native_id),
             title: s.title,
             updated_at_unix_ms: s.updated_at_unix_ms,

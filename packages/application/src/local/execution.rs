@@ -189,6 +189,8 @@ impl CoreRuntime {
             .map_err(|_| RuntimeError::invalid("runtime startup"))?;
         let runtime_id = self.execution_runtime_id.as_deref().unwrap_or_default();
         let mut projection = PiProjection::new(ConversationSummary {
+            can_rename: false,
+            can_delete: false,
             id: session
                 .map(|path| format!("{runtime_id}:{}", path.display()))
                 .unwrap_or_else(|| "active".into()),

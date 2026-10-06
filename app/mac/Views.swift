@@ -67,7 +67,6 @@ struct VeluneRootView: View {
                 else if previewEmpty || store.transcript.rows.isEmpty { emptyState.frame(maxWidth: .infinity, maxHeight: .infinity) }
                 else { transcript }
                 Divider()
-                if let boundary = store.executionBoundaryMessage { Text(boundary).font(.caption).foregroundStyle(.secondary).padding(.horizontal, 16).padding(.top, 8) }
                 composer
             }
             .navigationTitle(previewEmpty ? "新会话" : store.selectedConversationTitle ?? "Velune")
@@ -81,7 +80,7 @@ struct VeluneRootView: View {
             Button("取消", role: .cancel) { deleteTargets = [] }
             Button("删除", role: .destructive) { store.deleteConversations(deleteTargets); deleteTargets = [] }
         } message: {
-            Text("将从各自 Agent 运行时永久删除所选 \(deleteTargets.count) 个会话及其数据。此操作无法撤销。")
+            Text("将永久删除所选 \(deleteTargets.count) 个会话，以及它们在各 Agent 运行时中的关联会话数据。此操作无法撤销。")
         }
         .sheet(isPresented: $store.showsNewConversation) { NewConversationView(store: store) }
         .sheet(item: Binding(get: { store.pendingInteractions.first }, set: { _ in })) { RuntimeInteractionView(store: store, interaction: $0) }
@@ -99,7 +98,8 @@ struct VeluneRootView: View {
         }
         Button(targets.count > 1 ? "删除所选会话…" : "删除…", role: .destructive) { deleteTargets = targets }
             .disabled(targets.isEmpty || !store.canManageConversations || !targets.allSatisfy(store.canDeleteConversation))
-        if targets.contains(where: { !store.canDeleteConversation($0) }) { Text("部分运行时适配器尚未接入原生会话删除") }
+        if targets.contains(where: { !store.canDeleteConversation($0) }) { Text("部分关联原生会话当前无法删除") }
+        if targets.count == 1, let target = targets.first, !store.canRenameConversation(target) { Text("原生会话标题当前无法修改") }
     }
 
     private func rowContext(_ conversation: Conversation) -> String {

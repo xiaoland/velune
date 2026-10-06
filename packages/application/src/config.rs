@@ -86,6 +86,41 @@ pub struct RuntimeInstance {
     pub settings: BTreeMap<String, String>,
 }
 
+/// Association metadata only. Native sessions remain the authority for content.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[cfg(feature = "local-runtime")]
+pub(crate) struct ConversationLink {
+    pub id: String,
+    pub segments: Vec<ConversationSegmentReference>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[cfg(feature = "local-runtime")]
+pub(crate) struct ConversationSegmentReference {
+    pub runtime_instance_id: String,
+    pub runtime_type_id: String,
+    pub native_conversation_id: String,
+    pub cutoff: Option<ConversationCutoff>,
+    pub handoff: Option<ConversationHandoff>,
+    pub deleted: bool,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[cfg(feature = "local-runtime")]
+pub(crate) struct ConversationCutoff {
+    pub message_count: u64,
+    pub prefix_digest: String,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[cfg(feature = "local-runtime")]
+pub(crate) struct ConversationHandoff {
+    pub marker: String,
+    pub payload_digest: String,
+    pub user_message_ordinal: u64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RuntimeTypeDescriptor {

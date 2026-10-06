@@ -361,10 +361,15 @@ impl Application {
     }
     /// Query the current projection in its runtime context. An enabled known
     /// instance returns no snapshot when no conversation is loaded; a different
-    /// instance cannot query another instance's loaded conversation.
+    /// instance cannot query another instance's loaded conversation. Use the
+    /// snapshot's context_runtime_id, not its logical conversation's origin.
     pub fn snapshot(&mut self, runtime_id: String) -> Result<SnapshotResult, Error> {
         self.execute("getSnapshot", json!({}), Some(&runtime_id))
     }
+    /// Accept this turn's runtime and model. A different instance creates a new
+    /// native segment and carries quoted text context; it does not replay tools
+    /// or resume a foreign native session. Association commits precede dispatch,
+    /// and an ambiguous dispatch is never automatically retried.
     pub fn send_turn(
         &mut self,
         runtime_id: String,

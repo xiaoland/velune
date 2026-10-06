@@ -68,6 +68,8 @@ impl CoreRuntime {
                     .as_str()
                     .ok_or_else(|| RuntimeError::invalid("Pi 历史条目标识无效"))?;
                 Ok(ConversationSummary {
+                    can_rename: false,
+                    can_delete: false,
                     id: format!("{}:{path}", runtime.id),
                     title: velune_conversation::conversation_title(
                         item["name"].as_str(),
@@ -124,6 +126,7 @@ impl CoreRuntime {
             .ok_or_else(|| RuntimeError::invalid("此会话不属于所选运行时历史目录"))?;
         let mut snapshot = ConversationSnapshot {
             revision: 1,
+            context_runtime_id: runtime_id.into(),
             conversation: summary,
             resource_id: None,
             model_record_key: None,
@@ -170,7 +173,7 @@ impl CoreRuntime {
         Ok(snapshot)
     }
     pub(super) fn invalidate_execution(&mut self) -> Result<(), RuntimeError> {
-        let mut snapshot = self.current_snapshot();
+        let mut snapshot = self.native_snapshot();
         // Closing execution leaves its native history view usable. A read-only
         // view has no execution owner, so restoration must follow its source.
         let source = snapshot
@@ -210,7 +213,7 @@ impl CoreRuntime {
         key: &str,
         is_new: bool,
     ) -> Result<(), RuntimeError> {
-        let previous = self.current_snapshot();
+        let previous = self.native_snapshot();
         let previous_runtime = self.next_turn_runtime_id.clone();
         let runtime_id = snapshot.conversation.runtime_id.clone();
         let runtime = self.runtime_instance(&runtime_id)?.clone();
