@@ -51,3 +51,9 @@ PRD、共享UI/UX原则、架构、各unit说明、开发运行入口及来源�
 最终归因修复由 root 接管，原 owner 已中断并冻结；此前返回不足不作为完成证据。人工验收首次失败证明 open_conversation 先经 summaries_for 查询来源，入口失效发生于 history_lookup，不能仅在 Pi 内容读取分支加上下文。已补该实际边界，同时保留非 Pi 既有 typed history code。原 SDK 分类与原始 filesystem cause 分开保留，未知错误不泛化；discovery 使用 Node 标准 inspect 展开 Error.cause。
 
 2026-10-07 合成人工验收通过：实际 UniFFI 的两个实例分别触发缺失 CLI 与 dangling launcher 目标，列表和打开会话失败可关联到各自 id/name/type、binary/nodeBinary/agentDir；日志带原始 ENOENT、操作编号和实际失败阶段。版本发现保留 entrypoint_missing 分类与原 cause；正常外部 Pi 1.0.2 的空临时来源与版本发现正常。没有用假 helper 的固定错误字符串代替这段 SDK 验证。既有合成 provider／history parser cause 验证也仍通过。
+
+交付与生产定位：源码 `11042ab53abcb90f281d5f6b12a1770d814f88df` 干净 release 构建安装完成，显示 `0.1 beta.1`，严格签名及 Swift warnings-as-errors 构建通过。正常重启应用后，新本地 Pi list 失败日志 operation_id `18dbfdcdfc3ca520-18277-2` 已直接记录实际实例及非秘密路径；确认原“Pi”实例仍配置已移除的 bundle `Contents/Resources/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js`，原始错误为该包目录的 ENOENT。该入口不是 shell 当前系统 launcher，两者此前的关联假设现已排除。仅查看相关失败日志定位字段，没有读取原生会话内容或真实秘密，也未改用户运行时配置／全局安装。
+
+要恢复此实例的会话列表，需要用户配置有效外部 Pi 安装入口；系统公开 launcher 的 0.85.1 包链接另有损坏。修复或升级用户全局安装尚未授权，不自动使用开发目录下的验证 runtime 替代。诊断改进已完成，原会话列表缺失尚待外部安装／实例配置恢复。
+
+安装实际 release 核心库再次运行 `manual-error-diagnostics.py` 通过，包含真实 SDK 两实例列表／打开失败、日志关联、discovery 分类和正常入口。Rust fmt/check/workspace clippy（all-targets/all-features、-D warnings）、bindings 无默认 features 检查、Node 语法与人工脚本 py_compile 均通过。
