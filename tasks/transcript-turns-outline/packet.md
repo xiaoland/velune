@@ -1,6 +1,6 @@
 # 消息工作过程与 Outline
 
-状态：实施中，2026-10-06。
+状态：开发与隔离验收完成，已安装；等待用户 UI 体验验收，2026-10-06。
 
 用户授权改进消息列表：投影 turn，折叠过程消息并显示“工作了 <duration>”；提供用户消息 outline sheet；底部与 outline 入口同区，底部仅箭头；设置提供仅用户消息的 outline 模式，点击从其位置展开后续列表。用户建议 canonical 会话／消息与 forward-only 投影归 agent-runtime，包边界正在核对。
 
@@ -25,3 +25,5 @@
 真实公开 Pi 1.0.2 的隔离 loopback 验收通过：实际 Store → Transport → UniFFI → Pi → 原生 ChatCompletions → 工具 read → 后续回复与第二轮，共三次本地请求。人工脚本用明确流式门等待消息前缀，超时失败，不自动放行；确认同一 row 对象与 Markdown 缓存复用、工作时长保留、outline／Disclosure 原生身份确认后不丢失、晚到 user 只响应显式发送意图、偏好持久及关闭重开原生 ID 一致。所有配置、会话、文件、服务均为合成隔离内容，未读取真实凭据或调用真实模型 API。安装尚待最终干净构建；UI 产品体验留给用户。
 
 认证公共失败边界的补齐也属于本次原因链修复：保留 JSON／I/O／进程状态原因，helper stderr 有界缓存并持续排空，仅在失败时附带。最终统一检查必须在各源码 owner 冻结后重跑，不能采用编辑中的中间构建结果。
+
+交付：源码提交 `86b477830eeb32eb458483b51ab98c38abcd6c09` 的干净 release 构建已安装，显示版本 `0.1 beta.1`、配置 schema 7，manifest dirty=false；bundle 与嵌入 dylib 的严格签名验证通过。安装后使用实际已安装 release 核心库复跑 `manual-problems.py`（十项）及 `manual-transcript-outline.py`（实际 Pi 三次 loopback 请求）均通过；Swift 验收 harness 使用同源码严格 debug 对象，最终产品另外通过 release warnings-as-errors 编译。未启动真实账户流程或代替用户进行 GUI 产品验收。
