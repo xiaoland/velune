@@ -8,7 +8,7 @@
 
 ## 当前续接入口
 
-本文件保留首循环各次实现与用户反馈的证据，早期 C ABI、Keychain、全局模型目录等段落不代表当前契约。当前采用 UniFFI、提供商所属模型与私有文件认证；工作目录属于具体会话。Codex／DeepSeek 扩展、schema 6、版本分型与最新安装状态统一归 [多运行时任务](../multi-runtime/packet.md)，稳定边界归 PRD 与设计文档。
+本文件保留首循环各次实现与用户反馈的证据，早期 C ABI、Keychain、全局模型目录等段落不代表当前契约。当前采用 UniFFI、提供商所属模型与私有文件认证；工作目录属于具体会话。Codex／DeepSeek 扩展与版本分型归 [多运行时任务](../multi-runtime/packet.md)；当前配置 schema 为7，三协议 best-effort 转换、运行时入口／上游能力区分及最新安装证据归 [LLM 协议转换任务](../llm-protocol-translation/packet.md)。稳定边界归 PRD 与设计文档。
 
 ## 早期首循环状态
 

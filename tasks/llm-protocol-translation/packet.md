@@ -1,6 +1,6 @@
 # LLM 三协议 best-effort 转换
 
-状态：2026-10-06 实现与隔离验收已完成第一轮，最终干净构建、安装及该产物的客户端复核待完成。
+状态：2026-10-06 已完成并安装。产品源码提交 6a692a00e5b03605c3f9175563ed70fe706a4aa1；从干净工作区构建的 0.1 beta.1 已安装至 /Applications/Velune.app，最终客户端复核通过。
 
 用户授权为跨 Harness 对话实施 ChatCompletions v1、Responses v1 与 Anthropic Messages 全部双向转换，明确采用 best-effort 而不是 fail-closed。同协议继续原生透传；异协议尽量保留消息、工具与参数，无法对应的字段可降级或省略并提供不含业务值的静态诊断，不伪造历史、工具执行或成功终态。Messages 输出上限优先取请求，缺省使用目标模型配置；两者都没有时提示必要配置缺失。长期意图归 [PRD](../../docs/prd/index.md)，职责和取舍归 [AI 服务设计](../../docs/design/ai-service.md)。
 
@@ -14,10 +14,12 @@ application 区分运行时入口和提供商上游：Codex 继续发 Responses�
 
 原生回归已通过：manual-gateway-native.py 的九个 JSON／SSE 原生路径及取消／关闭；manual-pi-native-loop.py 的六次合成请求覆盖导入→创建→工具→续轮；manual-cross-harness.py 的四次 Pi→Codex→DSH→Pi 原生 turn、重启投影与关联正文隔离。这些仅证明原生回归。
 
-实际外部客户端第一轮已通过：Codex 0.159.3 通过 application 发 Responses，分别路由到 ChatCompletions／Messages 合成上游，执行真实文件读取工具与续轮；namespace 工具的不存在目标错误结果也能返回并续轮。外部 Pi 1.0.2 公共 SDK 强制 Responses 入口、ChatCompletions 上游，解析工具调用、读取合成文件并续轮。合计五条闭环十次上游请求，没有隐藏重试。该隔离 Codex 声明没有 custom 工具，因此 custom codec 只具转换器合成证据，不冒充真实客户端验收。最终构建后仍须重跑该脚本。
+实际外部客户端第一轮已通过：Codex 0.159.3 通过 application 发 Responses，分别路由到 ChatCompletions／Messages 合成上游，执行真实文件读取工具与续轮；namespace 工具的不存在目标错误结果也能返回并续轮。外部 Pi 1.0.2 公共 SDK 强制 Responses 入口、ChatCompletions 上游，解析工具调用、读取合成文件并续轮。合计五条闭环十次上游请求，没有隐藏重试。该隔离 Codex 声明没有 custom 工具，因此 custom codec 只具转换器合成证据，不冒充真实客户端验收。已使用最终安装 bundle 重跑该脚本，五条闭环十次请求再次通过。
 
 人工入口：manual-protocol-translation.py 接受 --deps 与 --rustc；manual-protocol-runtime-loop.py 接受 --bundle、--bindings、--node、--pi、--codex，均显式要求已有绝对路径。使用临时 HOME 与 loopback，不加入 CI。最终产品保持 0.1 beta.1、不捆绑 Agent、不发布远端；真实提供商与 UI 体验由用户验收。
 
 六向真实 Runner 验收最终通过：manual-protocol-translation.py 共29次合成上游请求，覆盖六向流式及六向 JSON、两轮并行工具、CRLF 和 UTF-8 字节中间分片、usage／finish、未知字段／状态引用、合法 incomplete、终态前截断、终态后未知尾事件、上游 HTTP 错误和取消。正常流不得吞 IncompleteRead，截断 fixture 明确检查连接中断，不以“收到若干 bytes”冒充成功。Messages 输出上限模型缺省与缺少必要配置两种路径均有断言。
 
 源码研究日期为本日。LiteLLM 固定 d4619c499a6052913c8fa548192966dd76c3fec9：[Anthropic Chat](https://github.com/BerriAI/litellm/blob/d4619c499a6052913c8fa548192966dd76c3fec9/litellm/llms/anthropic/chat/transformation.py)、[OpenAI Chat](https://github.com/BerriAI/litellm/blob/d4619c499a6052913c8fa548192966dd76c3fec9/litellm/llms/openai/chat/gpt_transformation.py)、[Responses](https://github.com/BerriAI/litellm/blob/d4619c499a6052913c8fa548192966dd76c3fec9/litellm/llms/openai/responses/transformation.py)、[Anthropic Responses adapter](https://github.com/BerriAI/litellm/blob/d4619c499a6052913c8fa548192966dd76c3fec9/litellm/llms/anthropic/pass_through/responses_adapters/transformation.py)。借鉴按协议拆分 request／response／stream 转换与请求范围状态，不复用 Python 运行时、全局 provider 状态或隐藏重试。Magpie 沿用此前固定 db55bc8b7a70126fd3a7bede95a56b31c6f20c5f 的 [研究证据](../magpie-reference/packet.md)，不引入其厂商专用改写和400重试。协议依据仍为 [OpenAI Chat](https://developers.openai.com/api/reference/resources/chat)、[Responses streaming](https://platform.openai.com/docs/api-reference/responses-streaming)、[Anthropic Messages](https://docs.anthropic.com/en/api/messages)；跨协议不同能力只能作 best-effort，具体提供商行为仍由用户实测。
+
+最终产物：release Rust、UniFFI Swift 和 Swift warnings-as-errors 构建及代码签名校验通过，build manifest 标识源码 6a692a0、dirty=false、schema 7；安装保留不捆绑 Agent 的边界。最终 installed-bundle 复核使用 manual-protocol-runtime-loop.py，同版本外部 Codex 与 Pi SDK 十次合成请求全部通过。没有打开真实用户配置或调用真实服务，真实模型行为与 UI 体验继续由用户验收。后续文档收尾提交不改变安装的产品源码。
