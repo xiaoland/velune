@@ -1,7 +1,7 @@
 //! Read-only browsing and deferred execution preparation share one active view.
 use super::*;
 use crate::conversation::{ConversationActions, ConversationSnapshot, Message, MessageBlock};
-pub(super) fn runtime_history_context(runtime: &RuntimeInstance) -> String {
+pub(super) fn runtime_context(runtime: &RuntimeInstance) -> String {
     format!(
         "运行时 {}（id={}，type={}）；binary={}；nodeBinary={}；agentDir={}；sessionDir={}",
         runtime.name,
@@ -153,7 +153,7 @@ impl CoreRuntime {
             .map_err(|error| {
                 tracing::warn!(target: "velune_application", event="runtime_history_read_failed", phase="history_lookup", runtime_id=%runtime.id, runtime_name=%runtime.name, runtime_type_id=%runtime.type_id, binary=?runtime.settings.get("binary"), node_binary=?runtime.settings.get("nodeBinary"), agent_dir=?runtime.settings.get("agentDir"), detail=%error);
                 if runtime.type_id == "pi-1.0.2" {
-                    RuntimeError::context(&runtime_history_context(runtime), error)
+                    RuntimeError::context(&runtime_context(runtime), error)
                 } else {
                     error
                 }
@@ -184,7 +184,7 @@ impl CoreRuntime {
                 Some(Path::new(native_id)),
             ).map_err(|error| {
                 tracing::warn!(target: "velune_application", event="runtime_history_read_failed", phase="history_read", runtime_id=%runtime.id, runtime_name=%runtime.name, runtime_type_id=%runtime.type_id, binary=?runtime.settings.get("binary"), node_binary=?runtime.settings.get("nodeBinary"), agent_dir=?runtime.settings.get("agentDir"), detail=%error);
-                RuntimeError::context(&runtime_history_context(runtime), error)
+                RuntimeError::context(&runtime_context(runtime), error)
             })?;
             let mut projection = PiProjection::new(snapshot.conversation.clone());
             projection.replace_history(&saved);

@@ -29,8 +29,8 @@ def main():
     for path in (args.bundle, args.bindings, args.node, args.pi):
         if not path.is_absolute() or not path.exists():
             parser.error('all paths must be absolute and exist')
-    resources = args.bundle / 'Contents/Resources'
-    manifest = json.loads((resources / 'build-manifest.json').read_text())
+    bundle_resources = args.bundle / 'Contents/Resources'
+    manifest = json.loads((bundle_resources / 'build-manifest.json').read_text())
     captures = []
     auth_headers = []
     request_paths = []
@@ -38,8 +38,12 @@ def main():
     environment = dict(os.environ)
     with tempfile.TemporaryDirectory(prefix='velune-native-loop-') as directory:
         root = Path(directory)
-        for name in ('home', 'source', 'bindings', 'project'):
+        for name in ('home', 'source', 'bindings', 'project', 'resources'):
             (root / name).mkdir()
+        resources = root / 'resources'
+        for helper in ('pi_sdk.mjs', 'pi_sessions.mjs', 'pi_rpc.mjs', 'pi_virtual_model.mjs',
+                       'pi_auth.mjs', 'pi_provider_import.mjs'):
+            shutil.copy(bundle_resources / helper, resources / helper)
         tool_file = root / 'project' / 'synthetic.txt'
         tool_file.write_text('SYNTHETIC_TOOL_RESULT\n')
 
@@ -165,6 +169,27 @@ def main():
             assert binding.max_output_tokens == candidate.max_output_tokens
             application.upsert_runtime(runtime)
             application.select_runtime(runtime.id)
+            # Fail only the isolated RPC launcher, then restore the actual bundle
+            # helper so the same app must recover and complete the native loop.
+            rpc_helper = resources / 'pi_rpc.mjs'
+            rpc_source = rpc_helper.read_bytes()
+            cause = 'SYNTHETIC_PI_RPC_START_FAILURE'
+            rpc_helper.write_text(
+                "if (!process.argv.includes('--validate')) {"
+                "process.stderr.write('SYNTHETIC_PI_RPC_START_FAILURE'); process.exitCode=17;}\n"
+            )
+            try:
+                try:
+                    application.create_conversation(runtime.id, str(root / 'project'), binding.record_key)
+                except bindings.BindingError as error:
+                    for expected in (cause, 'exit status: 17', runtime.id, runtime.name,
+                                     runtime.type_id, str(args.pi), str(args.node), str(root / 'source')):
+                        assert expected in str(error), (expected, str(error))
+                else:
+                    raise AssertionError('failed RPC startup unexpectedly created a conversation')
+            finally:
+                rpc_helper.write_bytes(rpc_source)
+            assert not captures, 'failed readiness sent a model request'
             draft = application.create_conversation(runtime.id, str(root / 'project'), binding.record_key).snapshot
             draft_path = Path(draft.conversation.id.split(':', 1)[1])
             assert not draft_path.exists() and not captures
@@ -295,11 +320,21 @@ def main():
 
             application.shutdown()
             application = None
+            records = [json.loads(line) for log in (root / 'home/logs').glob('*.jsonl')
+                       for line in log.read_text().splitlines()]
+            startup = [record for record in records
+                       if record.get('fields', {}).get('event') == 'runtime_start_failed']
+            assert len(startup) == 1, startup
+            fields = startup[0]['fields']
+            assert fields['runtime_id'] == runtime.id and fields['phase'] == 'startup'
+            assert cause in fields['detail'] and 'exit status: 17' in fields['detail']
+            assert startup[0].get('span', {}).get('operation_id'), startup[0]
             assert all((root / 'source' / name).read_bytes() == content for name, content in source_files.items())
             print(json.dumps({'acceptance': 'PASSED', 'bundle': {'sourceCommit': manifest['source_commit'],
                 'dirty': manifest['dirty'], 'uiVersion': manifest['ui_version']},
                 'normalPath': 'configured runtime → import → choose conversation model → automatic prepare → create → send → tool → continuation → next turn',
                 'upstreamRequests': len(captures), 'onlySelectedProviderSaved': True, 'providerOwnedAuthentication': True,
+                'startupFailureHasCauseInstanceAndTrace': True, 'recoversAfterFailedStartup': True,
                 'emptyDraftRenameAndDeleteUseNativeSession': True,
                 'renamedDraftPersistsOnFirstMessage': True,
                 'editedKeyIdEndpointUsedUpstream': True,

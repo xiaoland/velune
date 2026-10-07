@@ -13,7 +13,10 @@ use std::{
     io::{BufRead, BufReader, Write},
     path::{Path, PathBuf},
     process::{Child, ChildStdin, Command, Stdio},
-    sync::mpsc::{self, Receiver, RecvTimeoutError},
+    sync::{
+        Arc, Condvar, Mutex,
+        mpsc::{self, Receiver, RecvTimeoutError},
+    },
     thread,
     time::Duration,
 };
@@ -119,6 +122,14 @@ enum Incoming {
     Closed,
 }
 
+struct StderrCapture {
+    bytes: Vec<u8>,
+    truncated: bool,
+    done: bool,
+}
+
+type SharedStderr = Arc<(Mutex<StderrCapture>, Condvar)>;
+
 fn read_record(reader: &mut impl BufRead) -> std::io::Result<Option<Vec<u8>>> {
     let mut record = Vec::new();
     loop {
@@ -155,6 +166,7 @@ pub struct Client {
     incoming: Receiver<Incoming>,
     pending: VecDeque<Value>,
     next_id: u64,
+    stderr: SharedStderr,
     pub config: Config,
 }
 
@@ -170,21 +182,19 @@ impl Config {
             .rpc_entry
             .as_ref()
             .ok_or_else(|| Error::Sdk("SDK 入口不可用".into()))?;
-        let output = Command::new(node)
+        let mut output = Command::new(node);
+        output
             .arg(entry)
             .arg("--cli")
             .arg(&self.binary)
             .arg("--runtime-type")
             .arg(&self.runtime_type_id)
-            .arg("--validate")
-            .env_clear()
-            .output()?;
-        if !output.status.success() {
-            return Err(Error::Sdk(
-                "所选 Pi 安装与运行时版本类型不匹配，或 SDK 入口不可用".into(),
-            ));
+            .arg("--validate");
+        let output = crate::native::rpc::bounded_process(output, None, MAX_RECORD_BYTES);
+        match output {
+            Ok(_) => Ok(()),
+            Err(error) => Err(Error::Sdk(format!("Pi SDK 入口验证失败：{error}"))),
         }
-        Ok(())
     }
 }
 
@@ -254,13 +264,55 @@ impl Client {
         let mut child = command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
+            .stderr(Stdio::piped())
             .spawn()?;
         let stdin = child.stdin.take().ok_or(Error::ChildExited)?;
         let stdout = child.stdout.take().ok_or(Error::ChildExited)?;
+        let stderr_output = child.stderr.take().ok_or(Error::ChildExited)?;
+        let stderr: SharedStderr = Arc::new((
+            Mutex::new(StderrCapture {
+                bytes: Vec::new(),
+                truncated: false,
+                done: false,
+            }),
+            Condvar::new(),
+        ));
+        let stderr_state = Arc::clone(&stderr);
+        thread::Builder::new()
+            .name("velune-pi-rpc-stderr".into())
+            .spawn(move || {
+                let mut output = stderr_output;
+                let mut chunk = [0_u8; 8192];
+                loop {
+                    match std::io::Read::read(&mut output, &mut chunk) {
+                        Ok(0) | Err(_) => break,
+                        Ok(size) => {
+                            let (state, _) = &*stderr_state;
+                            if let Ok(mut state) = state.lock() {
+                                let remaining = MAX_RECORD_BYTES.saturating_sub(state.bytes.len());
+                                if remaining != 0 {
+                                    let retained = size.min(remaining);
+                                    state.bytes.extend_from_slice(&chunk[..retained]);
+                                    if retained != size {
+                                        state.truncated = true;
+                                    }
+                                } else {
+                                    state.truncated = true;
+                                }
+                            }
+                        }
+                    }
+                }
+                let (state, ready) = &*stderr_state;
+                if let Ok(mut state) = state.lock() {
+                    state.done = true;
+                    ready.notify_all();
+                }
+            })?;
         let (sender, incoming) = mpsc::channel();
         let dispatcher = tracing::dispatcher::get_default(Clone::clone);
         let reader_span = tracing::info_span!("agent_runtime.rpc_reader");
+        let stderr_for_reader = Arc::clone(&stderr);
         thread::Builder::new()
             .name("velune-pi-rpc-reader".into())
             .spawn(move || tracing::dispatcher::with_default(&dispatcher, || {
@@ -269,6 +321,14 @@ impl Client {
                 loop {
                     match read_record(&mut reader) {
                         Ok(None) => {
+                            let (state, ready) = &*stderr_for_reader;
+                            if let Ok(mut state) = state.lock() {
+                                while !state.done {
+                                    state = ready
+                                        .wait(state)
+                                        .unwrap_or_else(|error| error.into_inner());
+                                }
+                            }
                             tracing::debug!(code="rpc_eof","Pi RPC reader closed");
                             let _ = sender.send(Incoming::Closed);
                             break;
@@ -306,8 +366,57 @@ impl Client {
             incoming,
             pending: VecDeque::new(),
             next_id: 1,
+            stderr,
             config,
         })
+    }
+
+    fn stderr_detail(&self, wait_for_eof: bool) -> String {
+        let (state, ready) = &*self.stderr;
+        let mut state = match state.lock() {
+            Ok(state) => state,
+            Err(_) => return String::new(),
+        };
+        if wait_for_eof && !state.done {
+            let (updated, _) = ready
+                .wait_timeout_while(state, Duration::from_millis(100), |state| !state.done)
+                .unwrap_or_else(|error| error.into_inner());
+            state = updated;
+        }
+        let mut detail = String::from_utf8_lossy(&state.bytes).trim().to_owned();
+        if state.truncated {
+            detail.push_str("\n[Pi RPC stderr 已截断：本地缓存上限 1 MiB]");
+        }
+        detail
+    }
+
+    fn child_exit_error(&mut self) -> Error {
+        let detail = self.stderr_detail(true);
+        let status = self
+            .child
+            .try_wait()
+            .ok()
+            .flatten()
+            .map(|status| format!("；进程状态：{status}"))
+            .unwrap_or_default();
+        if detail.is_empty() && status.is_empty() {
+            Error::ChildExited
+        } else if detail.is_empty() {
+            Error::CommandFailed(format!("Pi RPC child exited before responding{status}"))
+        } else {
+            Error::CommandFailed(format!(
+                "Pi RPC child exited before responding{status}；原始错误：{detail}"
+            ))
+        }
+    }
+
+    fn io_error_with_stderr(&self, context: &str, error: std::io::Error) -> Error {
+        let detail = self.stderr_detail(true);
+        if detail.is_empty() {
+            Error::Io(error)
+        } else {
+            Error::CommandFailed(format!("{context}：{error}；原始错误：{detail}"))
+        }
     }
 
     fn write_command(&mut self, mut command: Value) -> Result<String> {
@@ -332,11 +441,14 @@ impl Client {
             return Err(Error::RecordTooLarge);
         }
         bytes.push(b'\n');
-        self.stdin
-            .as_mut()
-            .ok_or(Error::ChildExited)?
-            .write_all(&bytes)?;
-        self.stdin.as_mut().ok_or(Error::ChildExited)?.flush()?;
+        if self.stdin.is_none() {
+            return Err(self.child_exit_error());
+        }
+        let result = {
+            let stdin = self.stdin.as_mut().expect("checked Pi RPC stdin");
+            stdin.write_all(&bytes).and_then(|_| stdin.flush())
+        };
+        result.map_err(|error| self.io_error_with_stderr("Pi RPC command send failed", error))?;
         Ok(format!("{command_type}\0{id}"))
     }
 
@@ -346,9 +458,27 @@ impl Client {
         }
         match self.incoming.recv_timeout(timeout) {
             Ok(Incoming::Record(value)) => Ok(value),
-            Ok(Incoming::Error(error)) => Err(Error::CommandFailed(error)),
-            Ok(Incoming::Closed) | Err(RecvTimeoutError::Disconnected) => Err(Error::ChildExited),
-            Err(RecvTimeoutError::Timeout) => Err(Error::Timeout),
+            Ok(Incoming::Error(error)) => {
+                let stderr = self.stderr_detail(false);
+                if stderr.is_empty() {
+                    Err(Error::CommandFailed(error))
+                } else {
+                    Err(Error::CommandFailed(format!("{error}；原始错误：{stderr}")))
+                }
+            }
+            Ok(Incoming::Closed) | Err(RecvTimeoutError::Disconnected) => {
+                Err(self.child_exit_error())
+            }
+            Err(RecvTimeoutError::Timeout) => {
+                let stderr = self.stderr_detail(false);
+                if stderr.is_empty() {
+                    Err(Error::Timeout)
+                } else {
+                    Err(Error::CommandFailed(format!(
+                        "Pi RPC response timed out；原始错误：{stderr}"
+                    )))
+                }
+            }
         }
     }
 

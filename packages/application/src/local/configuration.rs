@@ -47,7 +47,7 @@ impl CoreRuntime {
                         runtime_id: runtime.id.clone(),
                         detail: format!(
                             "{}；会话历史无法读取：{error}",
-                            super::browsing::runtime_history_context(runtime)
+                            super::browsing::runtime_context(runtime)
                         ),
                     });
                 }

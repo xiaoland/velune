@@ -7,11 +7,11 @@ struct TranscriptView: View {
     let conversationID: String?
     let scrollRequest: UInt64
     let sentAfterUserID: String?
+    @Binding var showsOutline: Bool
     let activity: String?
     let presentation: BindingTranscriptPresentation
     @State private var following = true
     @State private var userScrolling = false
-    @State private var showsOutline = false
     @State private var outline = TranscriptOutlineState()
     @State private var expandedWork: Set<String> = []
     private var visibleRows: [TranscriptRow] { presentation == .userOutline ? outline.visibleRows(model.rows) : model.rows }
@@ -48,10 +48,6 @@ struct TranscriptView: View {
                             proxy.scrollTo("transcript-bottom", anchor: .bottom)
                         } label: { Image(systemName: "arrow.down") }
                             .help("回到底部").accessibilityLabel("回到底部")
-                    }
-                    if !model.userRows.isEmpty {
-                        Button { showsOutline = true } label: { Image(systemName: "list.bullet") }
-                            .help("会话大纲").accessibilityLabel("会话大纲")
                     }
                 }.buttonStyle(.bordered).padding(16)
             }

@@ -168,6 +168,30 @@ impl CoreRuntime {
         subscription_capability: bool,
     ) -> Result<(), RuntimeError> {
         validate_session_cwd(cwd)?;
+        let runtime = self
+            .execution_runtime_id
+            .as_deref()
+            .ok_or_else(|| RuntimeError::invalid("Pi 执行运行时不可用"))
+            .and_then(|id| self.runtime_instance(id).cloned())?;
+        let runtime_context = format!(
+            "runtime startup；{}",
+            super::browsing::runtime_context(&runtime)
+        );
+        let runtime_start_error = |phase: &'static str, error| {
+            tracing::warn!(
+                target: "velune_application",
+                event = "runtime_start_failed",
+                phase,
+                runtime_id = %runtime.id,
+                runtime_name = %runtime.name,
+                runtime_type_id = %runtime.type_id,
+                binary = ?runtime.settings.get("binary"),
+                node_binary = ?runtime.settings.get("nodeBinary"),
+                agent_dir = ?runtime.settings.get("agentDir"),
+                detail = %error,
+            );
+            RuntimeError::context(&runtime_context, error)
+        };
         let cwd = fs::canonicalize(cwd)
             .map_err(|error| RuntimeError::context("conversation working directory", error))?;
         let mut config = self
@@ -183,13 +207,13 @@ impl CoreRuntime {
             write_selection_file(&config, logical, physical, subscription_capability)?;
         }
         let mut client = pi::Client::spawn(config.clone())
-            .map_err(|error| RuntimeError::context("runtime startup", error))?;
+            .map_err(|error| runtime_start_error("startup", error))?;
         // Establish readiness through RPC before exposing bootstrap events to
         // the projection. Pi can emit initialization records before its first
         // command response; those records must not settle a new turn.
         client
             .state()
-            .map_err(|error| RuntimeError::context("runtime startup", error))?;
+            .map_err(|error| runtime_start_error("startup", error))?;
         let runtime_id = self.execution_runtime_id.as_deref().unwrap_or_default();
         let mut projection = PiProjection::new(ConversationSummary {
             can_rename: false,

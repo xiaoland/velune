@@ -12,6 +12,7 @@ struct VeluneRootView: View {
     @State private var draft = ""
     @State private var scrollRequest: UInt64 = 0
     @State private var sentAfterUserID: String?
+    @State private var showsOutline = false
     @State private var renameTarget: Conversation?
     @State private var deleteTargets: [Conversation] = []
     private var conversationSections: [ConversationBrowser.Section] { browser.sections(conversations: store.conversations, runtimes: store.runtimeInstances) }
@@ -56,8 +57,7 @@ struct VeluneRootView: View {
             .navigationSplitViewColumnWidth(min: 190, ideal: 240, max: 340)
             .disabled(store.isGenerating || store.authenticationRunning || store.isShuttingDown)
             .toolbar {
-                ToolbarItem(placement: .navigation) { browserMenu }
-                ToolbarItem(placement: .navigation) { Button(action: { store.createConversation() }) { Label("新建会话", systemImage: "square.and.pencil") }.help("新建会话（⌘ N）").disabled(store.isGenerating || store.isLoading) }
+                ToolbarItem(placement: .automatic) { browserMenu }
             }
         } detail: {
             VStack(spacing: 0) {
@@ -68,10 +68,21 @@ struct VeluneRootView: View {
                 composer
             }
             .navigationTitle(previewEmpty ? "新会话" : store.selectedConversationTitle ?? "Velune")
+            .toolbar {
+                ToolbarItemGroup(placement: .primaryAction) {
+                    Button { showsOutline = true } label: { Label("会话大纲", systemImage: "list.bullet") }
+                        .help("会话大纲")
+                        .disabled(store.pendingConversationID != nil || store.transcript.userRows.isEmpty)
+                    Button { store.createConversation() } label: { Label("新建会话", systemImage: "square.and.pencil") }
+                        .help("新建会话（⌘ N）").disabled(store.isGenerating || store.isLoading)
+                }
+            }
         }
         .navigationSplitViewStyle(.balanced)
         .onReceive(store.$conversationBrowserGroupLimit) { browser.initialLimit = $0 }
         .onChange(of: browser.query) { _, _ in browser.resetPagination() }
+        .onChange(of: store.pendingConversationID) { _, value in if value != nil { showsOutline = false } }
+        .onChange(of: store.loadedConversationID) { _, _ in showsOutline = false }
         .toolbar { if !store.problems.isEmpty { ToolbarItem(placement: .primaryAction) { ProblemsButton(store: store) } } }
         .sheet(item: $renameTarget) { ConversationRenameView(store: store, conversation: $0) }
         .alert(deleteTargets.count == 1 ? "删除会话？" : "删除 \(deleteTargets.count) 个会话？", isPresented: Binding(get: { !deleteTargets.isEmpty }, set: { if !$0 { deleteTargets = [] } })) {
@@ -128,30 +139,34 @@ struct VeluneRootView: View {
     }
 
     private var nextTurnControls: some View {
-        HStack(spacing: 12) {
-            Text("下一轮").foregroundStyle(.secondary).fixedSize()
+        HStack(spacing: 8) {
             Menu {
-                Picker("下一轮 Agent 运行时", selection: Binding(get: { store.nextTurnRuntimeID }, set: { if let id = $0 { store.selectNextTurnRuntime(id) } })) {
+                Picker("Agent 运行时", selection: Binding(get: { store.nextTurnRuntimeID }, set: { if let id = $0 { store.selectNextTurnRuntime(id) } })) {
                     ForEach(store.enabledRuntimeInstances) { runtime in Text(runtime.name).tag(Optional(runtime.id)) }
-                }
-                SettingsLink { Text("Agent 运行时设置…") }
-            } label: { Label { Text(nextTurnRuntime?.name ?? "Agent 运行时").lineLimit(1).truncationMode(.middle) } icon: { Image(systemName: "desktopcomputer") }.frame(maxWidth: .infinity, alignment: .leading) }
-            .frame(maxWidth: .infinity)
+                }.pickerStyle(.inline)
+                Divider()
+                SettingsLink { Text("设置…") }
+            } label: {
+                Text(nextTurnRuntime?.name ?? "选择运行时").lineLimit(1).truncationMode(.middle).frame(maxWidth: 120, alignment: .leading)
+            }
+            .frame(maxWidth: 120, alignment: .leading)
             .accessibilityLabel("下一轮 Agent 运行时：\(nextTurnRuntime?.name ?? "未选择")")
-            .help("选择下一轮 Agent 运行时（当前：\(nextTurnRuntime?.name ?? "未选择")）")
+            .help("下一轮运行时：\(nextTurnRuntime?.name ?? "未选择")")
             .disabled(store.isShuttingDown)
             Menu {
-                Picker("下一轮模型", selection: Binding(get: { store.nextTurnModelRecordKey }, set: { if let key = $0 { store.selectModel(modelRecordKey: key) } })) {
+                Picker("模型", selection: Binding(get: { store.nextTurnModelRecordKey }, set: { if let key = $0 { store.selectModel(modelRecordKey: key) } })) {
                     ForEach(store.runtimeCompatibleModels) { model in Text(model.displayName).tag(Optional(model.recordKey)) }
-                }
+                }.pickerStyle(.inline).disabled(!store.canSwitchModel)
                 Divider()
-                SettingsLink { Text("管理AI提供商与模型…") }
-            } label: { Text(store.selectedModelName ?? "选择模型").lineLimit(1).truncationMode(.middle).frame(maxWidth: .infinity, alignment: .leading) }
-            .frame(maxWidth: .infinity)
+                SettingsLink { Text("设置…") }
+            } label: {
+                Text(store.selectedModelName ?? "选择模型").lineLimit(1).truncationMode(.middle).frame(maxWidth: 160, alignment: .leading)
+            }
+            .frame(maxWidth: 160, alignment: .leading)
             .accessibilityLabel("下一轮模型：\(store.selectedModelName ?? "未选择")")
-            .help("选择下一轮模型（当前：\(store.selectedModelName ?? "未选择")）")
-            .disabled(!store.canSwitchModel)
-        }.controlSize(.small).font(.callout)
+            .help("下一轮模型：\(store.selectedModelName ?? "未选择")")
+            .disabled(store.isShuttingDown)
+        }.menuStyle(.borderlessButton).controlSize(.small).font(.callout)
     }
 
     private var emptyState: some View {
@@ -166,20 +181,34 @@ struct VeluneRootView: View {
 
     private var transcript: some View {
         TranscriptView(model: store.transcript, conversationID: store.loadedConversationID,
-                       scrollRequest: scrollRequest, sentAfterUserID: sentAfterUserID, activity: store.activity, presentation: store.transcriptPresentation)
+                       scrollRequest: scrollRequest, sentAfterUserID: sentAfterUserID, showsOutline: $showsOutline, activity: store.activity, presentation: store.transcriptPresentation)
     }
 
     private var composer: some View {
         VStack(alignment: .leading, spacing: 8) {
-            nextTurnControls
             if store.pendingConversationID == nil, let status = store.conversationManagementStatus {
                 HStack { ProgressView().controlSize(.small); Text(status) }.font(.callout).foregroundStyle(.secondary)
             }
             if store.needsModelSelection {
                 Text("此会话的模型当前不可用，请选择已配置的模型。").font(.callout).foregroundStyle(.secondary)
             }
-            ComposerView(text: $draft, enabled: store.canSend, generating: store.isGenerating, canCancel: store.canCancel, send: send, cancel: store.cancel)
-        }.frame(maxWidth: 760).padding(16).frame(maxWidth: .infinity)
+            Text("输入消息").font(.caption).foregroundStyle(.secondary)
+            TextEditor(text: $draft).font(.body).frame(height: 88)
+                .accessibilityLabel("消息内容").help("Return 换行，⌘ Return 发送")
+            HStack(spacing: 8) {
+                nextTurnControls
+                Spacer(minLength: 8)
+                if store.isGenerating {
+                    Button("停止生成", systemImage: "stop.fill", action: store.cancel)
+                        .fixedSize().disabled(!store.canCancel).help("停止当前生成")
+                } else {
+                    Button("发送", systemImage: "arrow.up", action: send)
+                        .buttonStyle(.borderedProminent).fixedSize()
+                        .disabled(!store.canSend || draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        .help("发送消息（⌘ Return）")
+                }
+            }.controlSize(.small)
+        }.frame(maxWidth: 760).padding(12).frame(maxWidth: .infinity)
     }
 
     private func send() {
@@ -220,29 +249,6 @@ struct ConversationRenameView: View {
         }.padding(20).frame(width: 360).onAppear { titleFocused = true }
     }
     private func rename() { store.renameConversation(conversation, title: title) { dismiss() } }
-}
-
-struct ComposerView: View {
-    @Binding var text: String
-    let enabled: Bool
-    let generating: Bool
-    let canCancel: Bool
-    let send: () -> Void
-    let cancel: () -> Void
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            ZStack(alignment: .topLeading) {
-                if text.isEmpty { Text("输入消息…").foregroundStyle(.tertiary).padding(.horizontal, 5).padding(.top, 8).allowsHitTesting(false) }
-                TextEditor(text: $text).font(.body).scrollContentBackground(.hidden).scrollIndicators(.hidden).frame(height: min(140, max(60, CGFloat(text.split(separator: "\n", omittingEmptySubsequences: false).count) * 20 + 20))).accessibilityLabel("消息内容")
-            }.padding(5).background(.background, in: RoundedRectangle(cornerRadius: 6)).overlay(RoundedRectangle(cornerRadius: 6).stroke(.separator, lineWidth: 1))
-            HStack {
-                Text("⌘ Return 发送，Return 换行").font(.caption).foregroundStyle(.secondary)
-                Spacer()
-                if generating { Button("停止生成", systemImage: "stop.fill", action: cancel).disabled(!canCancel) }
-                else { Button("发送", systemImage: "arrow.up", action: send).buttonStyle(.borderedProminent).disabled(!enabled || text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) }
-            }
-        }
-    }
 }
 
 struct ConversationMessageView: View {
