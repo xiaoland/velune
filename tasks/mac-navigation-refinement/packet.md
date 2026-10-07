@@ -20,4 +20,6 @@ root负责整合、文档、决定与最终安装。session_management继续Mac�
 
 最终采用有界框架边界处理：请求Table的identity仅来自已成功接受的provider/model scope，来源切换重建原生coordinator，同scope刷新不重建。清除筛选保留仍有效的request ID。此前仅清选中／primaryAction延期均未消除warning，猜测性延期已撤回。实际CUA最终复验：5条筛选→14条全部，原request仍selected且无warning；向同一临时SQLite追加1条合成记录，刷新15条，AX仅新增row、outline实例不变、原选择保留且无warning；正常退出stderr也为空。advisor要求的两项判别检查已满足，未扩展到其他Table或引入通用coordinator。
 
-Mac严格warnings-as-errors构建和实际Store／Transport／UniFFI人工脚本通过，覆盖刷新保留report／loadedQuery／更新时间、失败保旧范围与数据、latest-wins、scope成功原子更新、自然日DST与plotEnd仅影响绘图。真实凭据、会话和模型未访问。当前等待源码冻结后的干净release构建安装；680窗口拖拽仍是工具能力残余，不宣称该尺寸GUI已验收。
+Mac严格warnings-as-errors构建和实际Store／Transport／UniFFI人工脚本通过，覆盖刷新保留report／loadedQuery／更新时间、失败保旧范围与数据、latest-wins、scope成功原子更新、自然日DST与plotEnd仅影响绘图。真实凭据、会话和模型未访问。680窗口拖拽是工具能力残余，不宣称该尺寸GUI已验收。
+
+交付状态：已完成。源码提交d2bfb0beae3dce8c6d88afb2a361ce7f60c2c1dd的干净release构建、Swift warnings-as-errors和签名检查通过，安装至标准Applications位置，manifest dirty=false且source_commit一致，产品版本保持0.1 beta.1。安装后的实际dylib与同版release Swift产物再次运行manual-analytics-ui.py，通过14例查询与刷新快照检查。观察副本全部正常退出并清理；本轮未远端发布。真实提供商与用户运行时实例未读取／修改，系统公开Pi修复已完成，旧实例引用内置路径的配置残余已明确说明。
