@@ -58,7 +58,11 @@ import VeluneBindings
         let unknown = all.requests.first { $0.providerModelId == "chat-missing" }!
         try require(unknown.inputTokens == nil && unknown.outputTokens == nil && unknown.outputTokensPerSecond == nil)
         try require(unknown.protocol == .chatCompletions && unknown.outcome == .completed)
-        let filtered = try await read(query(provider: unknown.providerId, model: unknown.modelRecordKey))
+        store.loadAnalytics(query(provider: unknown.providerId, model: unknown.modelRecordKey))
+        try require(store.analyticsReport?.overview.requestCount == count && store.analyticsLoadedQuery?.providerId == nil, "pending scope relabelled previous report")
+        try await wait { !store.analyticsIsLoading }
+        try require(store.analyticsLoadedQuery?.providerId == unknown.providerId && store.analyticsLoadedQuery?.modelRecordKey == unknown.modelRecordKey, "success did not atomically accept query/report")
+        let filtered = store.analyticsReport!
         try require(filtered.overview.requestCount == 1 && filtered.overview.totalTokens == nil && filtered.overview.eligibleSpeedCount == 0)
         try require(filtered.requests.first?.requestId == unknown.requestId && filtered.trend.first?.totals.totalTokens == nil)
         try require(manualAnalyticsTokenText(nil) == "—" && manualAnalyticsTokenText(0) == "0")
@@ -82,9 +86,14 @@ import VeluneBindings
         try require(allAgain.overview.incompleteCount == 1 && allAgain.overview.failedCount == 1 && allAgain.overview.cancelledCount == 1)
         print("PHASE latest-query-and-diagnostics")
         let invalid = BindingAnalyticsQuery(fromMs: to, toMs: from, bucketBoundariesMs: [to, from], providerId: nil, modelRecordKey: nil, requestLimit: 100)
-        store.loadAnalytics(query()); store.loadAnalytics(invalid)
+        let successfulTime = store.analyticsUpdatedAt
+        let successfulFirstRequest = store.analyticsReport?.requests.first?.requestId
+        store.loadAnalytics(invalid)
+        try require(store.analyticsIsLoading && store.analyticsReport?.requests.first?.requestId == successfulFirstRequest && store.analyticsUpdatedAt == successfulTime, "refresh removed last successful report/time")
+        try require(store.analyticsLoadedQuery?.fromMs == from && store.analyticsLoadedQuery?.toMs == to && store.analyticsLoadedQuery?.providerId == nil, "pending invalid range relabelled previous report")
         try await wait { !store.analyticsIsLoading }
-        try require(store.analyticsReadFailed && store.analyticsReport == nil && store.problems.count == 1)
+        try require(store.analyticsReadFailed && store.analyticsReport?.requests.first?.requestId == successfulFirstRequest && store.analyticsUpdatedAt == successfulTime && store.problems.count == 1)
+        try require(store.analyticsLoadedQuery?.fromMs == from && store.analyticsLoadedQuery?.toMs == to, "failure replaced accepted range")
         try require(store.problems[0].source == "读取分析记录" && store.problems[0].code != nil && store.problems[0].operationID != nil)
         store.clearProblems()
         store.loadAnalytics(invalid); store.loadAnalytics(query(limit: 2))
@@ -94,11 +103,13 @@ import VeluneBindings
         calendar.timeZone = TimeZone(identifier: "America/Los_Angeles")!
         let now = calendar.date(from: DateComponents(year: 2026, month: 3, day: 10, hour: 12))!
         let boundaries = manualAnalyticsDayBoundaries(now: now, calendar: calendar)
+        try require(boundaries.last == Int64(now.timeIntervalSince1970 * 1_000), "plot padding changed actual query end")
+        try require(manualAnalyticsPlotEnd(now: now, calendar: calendar) == calendar.date(from: DateComponents(year: 2026, month: 3, day: 11))!, "partial day bar domain does not include full local day")
         try require(boundaries.count == 8 && zip(boundaries, boundaries.dropFirst()).contains { $1 - $0 == 23 * 60 * 60 * 1_000 }, "local day buckets ignored DST")
         try require(store.loadedConversationID == nil && !store.isLoading && store.nextTurnRuntimeID == nil)
         var stopped: Bool?
         store.shutdown { stopped = $0 }; try await wait { stopped != nil }; try require(stopped == true)
-        print("{\"acceptance\":\"PASSED\",\"actualStoreTransportUniFFI\":true,\"gatewayObservedSyntheticDatabase\":true,\"fullPopulationDespitePageLimit\":true,\"typedSourceFiltering\":true,\"unknownAndZeroDistinct\":true,\"typedFailedTruncatedCancelledDetails\":true,\"latestQueryWins\":true,\"diagnosticProblem\":true,\"localDSTBuckets\":true,\"conversationStateIndependent\":true}")
+        print("{\"acceptance\":\"PASSED\",\"actualStoreTransportUniFFI\":true,\"gatewayObservedSyntheticDatabase\":true,\"fullPopulationDespitePageLimit\":true,\"typedSourceFiltering\":true,\"unknownAndZeroDistinct\":true,\"typedFailedTruncatedCancelledDetails\":true,\"latestQueryWins\":true,\"diagnosticProblem\":true,\"localDSTBuckets\":true,\"conversationStateIndependent\":true,\"refreshKeepsSuccessfulDataAndScope\":true}")
     }
 }
 '''
@@ -127,7 +138,7 @@ def main():
         shutil.copy(args.database, root / 'home/analytics.sqlite')
         (root / 'frameworks/libvelune_bindings.dylib').symlink_to(args.library)
         analytics = root / 'Analytics.swift'
-        analytics.write_text('import Foundation\nimport VeluneBindings\n' + 'private enum AnalyticsFormatting {' + (repository / 'app/mac/Analytics.swift').read_text().split('private enum AnalyticsFormatting {', 1)[1] + '\nfunc manualAnalyticsTokenText(_ value: UInt64?) -> String { AnalyticsFormatting.tokens(value) }\nfunc manualAnalyticsDayBoundaries(now: Date, calendar: Calendar) -> [Int64] { AnalyticsPeriod.sevenDays.timeRange(now: now, calendar: calendar).boundaries }\n')
+        analytics.write_text('import Foundation\nimport VeluneBindings\n' + 'private enum AnalyticsFormatting {' + (repository / 'app/mac/Analytics.swift').read_text().split('private enum AnalyticsFormatting {', 1)[1] + '\nfunc manualAnalyticsTokenText(_ value: UInt64?) -> String { AnalyticsFormatting.tokens(value) }\nfunc manualAnalyticsDayBoundaries(now: Date, calendar: Calendar) -> [Int64] { AnalyticsPeriod.sevenDays.timeRange(now: now, calendar: calendar).boundaries }\nfunc manualAnalyticsPlotEnd(now: Date, calendar: Calendar) -> Date { AnalyticsPeriod.sevenDays.timeRange(now: now, calendar: calendar).plotEnd }\n')
         source = root / 'Manual.swift'; source.write_text(SWIFT)
         build = args.swift_build
         objects = [str(path) for name in ('VeluneBindings', 'MarkdownUI', 'NetworkImage', 'cmark_gfm', 'cmark_gfm_extensions') for path in (build / (name + '.build')).rglob('*.o')]

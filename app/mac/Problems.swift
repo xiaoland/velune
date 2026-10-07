@@ -92,12 +92,6 @@ struct ProblemsMenuItem: View {
     }
 }
 
-extension View {
-    func problemsToolbar(_ store: AppStore) -> some View {
-        toolbar { ToolbarItem { ProblemsButton(store: store) } }
-    }
-}
-
 struct ProblemsView: View {
     @ObservedObject var store: AppStore
     @State private var selection: UUID?

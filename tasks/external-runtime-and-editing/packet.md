@@ -57,3 +57,9 @@ PRD、共享UI/UX原则、架构、各unit说明、开发运行入口及来源�
 要恢复此实例的会话列表，需要用户配置有效外部 Pi 安装入口；系统公开 launcher 的 0.85.1 包链接另有损坏。修复或升级用户全局安装尚未授权，不自动使用开发目录下的验证 runtime 替代。诊断改进已完成，原会话列表缺失尚待外部安装／实例配置恢复。
 
 安装实际 release 核心库再次运行 `manual-error-diagnostics.py` 通过，包含真实 SDK 两实例列表／打开失败、日志关联、discovery 分类和正常入口。Rust fmt/check/workspace clippy（all-targets/all-features、-D warnings）、bindings 无默认 features 检查、Node 语法与人工脚本 py_compile 均通过。
+
+## 系统 Pi 修复授权
+
+2026-10-07 用户明确要求修复系统 Pi 安装。pi_install_repair 拥有系统公开入口的安装修复与隔离验证，优先现有 package manager，固定当前 Velune 支持的1.0.2，不任意安装latest；root负责采用结果。此授权替代此前“未授权修改系统安装”的任务限制，不触碰原生auth／会话、其它全局包或自动替换应用实例。并行的Mac界面工作归[体验整顿任务](../mac-navigation-refinement/packet.md)。
+
+系统安装owner返回已采用：原公开pnpm入口指向0.85.1缺失store目录；通过原pnpm渠道安装固定@earendil-works/pi-coding-agent@1.0.2。隔离HOME公开pi --version返回1.0.2，以当前release dylib和fresh Python绑定执行manual-runtime-discovery，版本识别／拒绝、外部入口解析、去重与临时配置持久化通过。未读取或修改~/.pi，未修改真实Velune运行时配置。原Velune实例仍指向已移除bundle CLI属于已确认的独立配置残余；系统公开入口修复不自动替换实例，不把安装成功等同于真实会话已恢复。

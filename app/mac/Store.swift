@@ -37,6 +37,7 @@ final class AppStore: ObservableObject {
     private let transport: Transport?
     let isPreview: Bool
     @Published private(set) var analyticsReport: BindingAnalyticsReport?
+    @Published private(set) var analyticsLoadedQuery: BindingAnalyticsQuery?
     @Published private(set) var analyticsIsLoading = false
     @Published private(set) var analyticsReadFailed = false
     @Published private(set) var analyticsUpdatedAt: Date?
@@ -138,7 +139,7 @@ final class AppStore: ObservableObject {
     func loadAnalytics(_ query: BindingAnalyticsQuery) {
         analyticsGeneration &+= 1
         let requestGeneration = analyticsGeneration
-        analyticsReport = nil; analyticsUpdatedAt = nil; analyticsReadFailed = false
+        analyticsReadFailed = false
         guard !isPreview else { analyticsIsLoading = false; return }
         guard !isShuttingDown, let transport else { analyticsIsLoading = false; analyticsReadFailed = true; recordProblem("本地核心不可用", source: "读取分析记录"); return }
         analyticsIsLoading = true
@@ -149,7 +150,7 @@ final class AppStore: ObservableObject {
                 self.analyticsIsLoading = false
                 switch result {
                 case .success(let report):
-                    self.analyticsReport = report; self.analyticsUpdatedAt = Date()
+                    self.analyticsReport = report; self.analyticsLoadedQuery = query; self.analyticsUpdatedAt = Date()
                     if let warning = report.storageWarning { self.recordProblem(TransportError.rejected(warning), source: "保存分析记录", activityKey: "analytics:storage") }
                     else { self.clearActivityProblem("analytics:storage") }
                 case .failure(let failure): self.analyticsReadFailed = true; self.recordProblem(failure)

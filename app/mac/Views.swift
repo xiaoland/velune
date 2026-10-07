@@ -56,9 +56,8 @@ struct VeluneRootView: View {
             .navigationSplitViewColumnWidth(min: 190, ideal: 240, max: 340)
             .disabled(store.isGenerating || store.authenticationRunning || store.isShuttingDown)
             .toolbar {
-                ToolbarItem { browserMenu }
-                ToolbarItem { Menu { conversationManagementMenu(store.selectedConversationIDs) } label: { Label("会话操作", systemImage: "ellipsis") }.menuIndicator(.hidden).disabled(store.selectedConversationIDs.isEmpty) }
-                ToolbarItem { Button(action: { store.createConversation() }) { Label("新建会话", systemImage: "square.and.pencil") }.help("新建会话（⌘ N）").disabled(store.isGenerating || store.isLoading) }
+                ToolbarItem(placement: .navigation) { browserMenu }
+                ToolbarItem(placement: .navigation) { Button(action: { store.createConversation() }) { Label("新建会话", systemImage: "square.and.pencil") }.help("新建会话（⌘ N）").disabled(store.isGenerating || store.isLoading) }
             }
         } detail: {
             VStack(spacing: 0) {
@@ -69,14 +68,11 @@ struct VeluneRootView: View {
                 composer
             }
             .navigationTitle(previewEmpty ? "新会话" : store.selectedConversationTitle ?? "Velune")
-            .toolbar { conversationToolbar }
         }
         .navigationSplitViewStyle(.balanced)
         .onReceive(store.$conversationBrowserGroupLimit) { browser.initialLimit = $0 }
         .onChange(of: browser.query) { _, _ in browser.resetPagination() }
-
-        .toolbar { ToolbarItem { AnalyticsButton() } }
-        .problemsToolbar(store)
+        .toolbar { if !store.problems.isEmpty { ToolbarItem(placement: .primaryAction) { ProblemsButton(store: store) } } }
         .sheet(item: $renameTarget) { ConversationRenameView(store: store, conversation: $0) }
         .alert(deleteTargets.count == 1 ? "删除会话？" : "删除 \(deleteTargets.count) 个会话？", isPresented: Binding(get: { !deleteTargets.isEmpty }, set: { if !$0 { deleteTargets = [] } })) {
             Button("取消", role: .cancel) { deleteTargets = [] }
@@ -131,28 +127,31 @@ struct VeluneRootView: View {
         .help("会话分组、筛选与排序")
     }
 
-    @ToolbarContentBuilder private var conversationToolbar: some ToolbarContent {
-        ToolbarItemGroup(placement: .primaryAction) {
+    private var nextTurnControls: some View {
+        HStack(spacing: 12) {
+            Text("下一轮").foregroundStyle(.secondary).fixedSize()
+            Menu {
+                Picker("下一轮 Agent 运行时", selection: Binding(get: { store.nextTurnRuntimeID }, set: { if let id = $0 { store.selectNextTurnRuntime(id) } })) {
+                    ForEach(store.enabledRuntimeInstances) { runtime in Text(runtime.name).tag(Optional(runtime.id)) }
+                }
+                SettingsLink { Text("Agent 运行时设置…") }
+            } label: { Label { Text(nextTurnRuntime?.name ?? "Agent 运行时").lineLimit(1).truncationMode(.middle) } icon: { Image(systemName: "desktopcomputer") }.frame(maxWidth: .infinity, alignment: .leading) }
+            .frame(maxWidth: .infinity)
+            .accessibilityLabel("下一轮 Agent 运行时：\(nextTurnRuntime?.name ?? "未选择")")
+            .help("选择下一轮 Agent 运行时（当前：\(nextTurnRuntime?.name ?? "未选择")）")
+            .disabled(store.isShuttingDown)
             Menu {
                 Picker("下一轮模型", selection: Binding(get: { store.nextTurnModelRecordKey }, set: { if let key = $0 { store.selectModel(modelRecordKey: key) } })) {
                     ForEach(store.runtimeCompatibleModels) { model in Text(model.displayName).tag(Optional(model.recordKey)) }
                 }
                 Divider()
                 SettingsLink { Text("管理AI提供商与模型…") }
-            } label: { Text(store.selectedModelName ?? "选择模型") }
+            } label: { Text(store.selectedModelName ?? "选择模型").lineLimit(1).truncationMode(.middle).frame(maxWidth: .infinity, alignment: .leading) }
+            .frame(maxWidth: .infinity)
             .accessibilityLabel("下一轮模型：\(store.selectedModelName ?? "未选择")")
             .help("选择下一轮模型（当前：\(store.selectedModelName ?? "未选择")）")
             .disabled(!store.canSwitchModel)
-            Menu {
-                Picker("下一轮 Agent 运行时", selection: Binding(get: { store.nextTurnRuntimeID }, set: { if let id = $0 { store.selectNextTurnRuntime(id) } })) {
-                    ForEach(store.enabledRuntimeInstances) { runtime in Text(runtime.name).tag(Optional(runtime.id)) }
-                }
-                SettingsLink { Text("Agent 运行时设置…") }
-            } label: { Label(nextTurnRuntime?.name ?? "Agent 运行时", systemImage: "desktopcomputer").labelStyle(.titleAndIcon) }
-            .accessibilityLabel("下一轮 Agent 运行时：\(nextTurnRuntime?.name ?? "未选择")")
-            .help("选择下一轮 Agent 运行时（当前：\(nextTurnRuntime?.name ?? "未选择")）")
-            .disabled(store.isShuttingDown)
-        }
+        }.controlSize(.small).font(.callout)
     }
 
     private var emptyState: some View {
@@ -172,6 +171,7 @@ struct VeluneRootView: View {
 
     private var composer: some View {
         VStack(alignment: .leading, spacing: 8) {
+            nextTurnControls
             if store.pendingConversationID == nil, let status = store.conversationManagementStatus {
                 HStack { ProgressView().controlSize(.small); Text(status) }.font(.callout).foregroundStyle(.secondary)
             }
