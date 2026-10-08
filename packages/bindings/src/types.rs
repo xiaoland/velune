@@ -272,6 +272,7 @@ pub struct BindingConfigurationSnapshot {
     pub model_templates: Vec<BindingModelTemplate>,
     pub conversation_browser_group_limit: u32,
     pub transcript_presentation: BindingTranscriptPresentation,
+    pub conversation_browser_preferences: BindingConversationBrowserPreferences,
     pub provider_import_types: Vec<BindingRuntimeTypeDescriptor>,
     pub protocols: Vec<BindingProtocolDescriptor>,
     #[serde(rename = "selectedRuntimeInstanceID")]
@@ -701,4 +702,40 @@ pub struct BindingTranscriptTurn {
 pub struct BindingMessageIdentityConfirmation {
     pub previous_id: String,
     pub current_id: String,
+}
+
+/// Application-owned sidebar choices; these never select an execution runtime.
+#[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq, uniffi::Record)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BindingConversationBrowserPreferences {
+    pub grouping: BindingConversationBrowserGrouping,
+    pub sort: BindingConversationBrowserSort,
+    pub oldest_first: bool,
+    pub runtime_id: Option<String>,
+    pub project: BindingConversationBrowserProject,
+}
+#[derive(Debug, Default, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, uniffi::Enum)]
+#[serde(rename_all = "camelCase")]
+pub enum BindingConversationBrowserGrouping {
+    #[default]
+    None,
+    Runtime,
+    Project,
+}
+#[derive(Debug, Default, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, uniffi::Enum)]
+#[serde(rename_all = "camelCase")]
+pub enum BindingConversationBrowserSort {
+    #[default]
+    Updated,
+    Created,
+}
+#[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq, uniffi::Enum)]
+#[serde(rename_all = "camelCase")]
+pub enum BindingConversationBrowserProject {
+    #[default]
+    All,
+    Unspecified,
+    Path {
+        path: String,
+    },
 }

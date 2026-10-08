@@ -1,5 +1,7 @@
 # 输入区与 Pi 发送修复
 
+当前进展（2026-10-08）：上轮已提交508c7c4并安装，工作转为新版Pi发送失败诊断及列表浏览偏好持久化。新失败定位为首次RPC响应3秒超时，已区分启动15秒与普通命令3秒窗口。列表分组／排序／筛选已持久化并隔离验证；新版已安装重新打开，root完成本地提交收尾。真实会话重试仍由用户验收。下文早期“未提交／等待重试”记录仅为当时状态。
+
 2026-10-07 用户报告 composer 占位文字与实际输入位置不一致，输入区过度复杂，并授权诊断修复连续两次 Pi 发送失败。目标是简洁的原生输入体验和可靠的发送链路，不扩展会话功能。真实凭据、配置与会话正文不得读取；仅查看对应失败诊断，行为验证使用临时 HOME 与合成本机服务，不调用真实模型。
 
 root 负责诊断证据、整合、文档和重建安装；session_management 继续拥有 Mac composer 源码与界面隔离验证；pi_install_repair 拥有 Pi adapter／application 执行边界和必要人工脚本。各 owner 不交叉撤销改动。先静态检查和人工端到端检查，不新增自动化测试。
@@ -37,3 +39,13 @@ Mac最终返回已采用并冻结：Views.swift／Transcript.swift，严格Swift
 本次UI调整已交付：标准release整包构建通过（Swift warnings-as-errors，27.04s），正常退出旧应用后重新安装并打开0.1 beta.1。安装二进制、Rust动态库及manifest与本次构建一致，严格签名通过；未提交，dirty=true忠实反映当前工作树。PRD／Mac README／开发说明中的输入面板、大纲与工具栏归属已同步，局部文档链接及工作树／暂存diff检查通过。UI修改已完成；原Pi真实启动退出原因仍待用户新版重试，不以本轮界面交付替代诊断结论。
 
 用户随后提醒自主提交授权。本任务此前未提交是收尾遗漏，不是新的审批要求；按用户已明确的持续迭代授权补齐本地提交，只包含本packet对应的Mac输入面板／工具栏、Pi错误原因传播和人工验收、相关权威说明。复用已完成的静态检查、构建与隔离验收，不因提交重复行为检查；不push或创建PR。UI代码与当前安装包一致，安装manifest保留本次提交前的真实构建状态，下次应用改动重建时更新关联。
+
+2026-10-08 用户在新版继续Pi既有会话发送仍失败，授权查日志并修复；同时要求列表筛选／分组重启记忆。恢复此packet，不把前轮隔离通过当成真实原因已解决。pi_install_repair继续拥有新失败日志诊断、Rust执行修复和隔离验证；session_management继续拥有Mac浏览偏好与必要application配置契约，root维护长期文档、整合检查、构建安装及当前任务提交。真实凭据／正文不读取，真实提供商不调用。完成依据是新日志cause得到解释并在隔离路径修复、浏览偏好新实例／重启恢复、必要静态检查及整包安装；真实服务体验留给用户。
+
+本轮新失败日志确认startup readiness RPC超时（总操作约4秒，响应窗口3秒），没有留存进一步stderr原因；这不同于前轮child exit，但旧timeout没有查询状态，不能据此断言当时子进程仍运行或排除其它真实原因。隔离4秒启动延迟能够检验短等待窗口。修复将首次state握手的单次响应等待扩大至15秒，普通发送／取消控制仍3秒，并补超时进程状态。真实调用不由开发方复现。
+
+浏览偏好owner返回已采用：application/UniFFI具名preferences，schema7新增默认字段；grouping/sort/oldestFirst/runtimeID/project保存，初始未加载禁用菜单，旧list和旧保存回调不覆盖新选择，写失败恢复最后durable并记Problems。临时Swift人工脚本贯通AppStore→Transport→UniFFI，临时HOME下defaults、全枚举roundtrip、连续3次latest、旧list、重开恢复全部字段与groupLimit37、search不保存、atomic失败回滚通过。workspace fmt/check/clippy及application no-default检查、Swift warnings-as-errors通过。root复核字段与状态传播、脚本隔离边界后采用，不重复owner人工检查。
+
+Pi最终证据已采用：state()三个readiness RPC用15秒静默响应窗口，ordinary RPC仍3秒。timeout查询区分alive／exit／状态查询失败；持续非匹配事件会重新等待，不承诺绝对总15秒。实际外部Pi1.0.2+合成配置延迟4秒完整6请求通过，延迟16秒在约15秒失败且带alive和实例入口上下文。新记录足以修复短等待边界，但不证明真实会话仅此问题；若重试仍失败从新诊断继续调查。
+
+整合完成：release Rust＋当前UniFFI＋Swift warnings-as-errors整包构建通过（Swift29.91秒），签名通过。正常退出真实应用，重新安装／打开Applications中的0.1 beta.1；可执行文件、Rust库、manifest逐一SHA256与构建包一致。PRD、Mac README、开发说明同步，局部文档链接及diff检查通过。本次安装manifest忠实保留提交前508c7c4/dirty=true的构建状态；源码无后续变化。准备自主本地提交本轮19文件，不push/PR。浏览持久化与启动窗口修复已交付；真实调用最终反馈留用户。

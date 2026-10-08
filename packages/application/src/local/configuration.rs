@@ -1,6 +1,19 @@
 //! Local application configuration use cases.
 use super::*;
 impl CoreRuntime {
+    pub(super) fn set_conversation_browser_preferences(
+        &mut self,
+        request: &Value,
+    ) -> Result<Value, RuntimeError> {
+        let preferences = serde_json::from_value(request["payload"]["preferences"].clone())?;
+        let previous = std::mem::replace(&mut self.conversation_browser_preferences, preferences);
+        if let Err(error) = self.persist() {
+            self.conversation_browser_preferences = previous;
+            return Err(error);
+        }
+        Ok(json!(self.conversation_browser_preferences))
+    }
+
     pub(super) fn set_transcript_presentation(
         &mut self,
         request: &Value,
@@ -75,6 +88,7 @@ impl CoreRuntime {
             "modelTemplates":self.model_templates,
             "conversationBrowserGroupLimit":self.conversation_browser_group_limit,
             "transcriptPresentation":self.transcript_presentation,
+            "conversationBrowserPreferences":self.conversation_browser_preferences,
             "providerImportTypes": [provider_import::descriptor()],
             "protocols": [
                 {"id":"chatCompletionsV1","name":"OpenAI Chat Completions v1","supported":true},
@@ -310,6 +324,7 @@ impl CoreRuntime {
             runtime_instances: self.runtime_instances.clone(),
             conversation_browser_group_limit: self.conversation_browser_group_limit,
             transcript_presentation: self.transcript_presentation,
+            conversation_browser_preferences: self.conversation_browser_preferences.clone(),
         })
     }
 }

@@ -54,6 +54,7 @@ final class Transport: @unchecked Sendable {
         return URL(fileURLWithPath: configured, isDirectory: true).standardizedFileURL
     }
 
+    func setConversationBrowserPreferences(_ preferences: BindingConversationBrowserPreferences) throws -> BindingConversationBrowserPreferences { try withApplication("setConversationBrowserPreferences") { try $0.setConversationBrowserPreferences(preferences: preferences) } }
     func setTranscriptPresentation(_ presentation: BindingTranscriptPresentation) throws -> BindingTranscriptPresentation { try withApplication("setTranscriptPresentation") { try $0.setTranscriptPresentation(presentation: presentation) } }
     func setConversationBrowserGroupLimit(_ limit: UInt32) throws -> UInt32 { try withApplication("setConversationBrowserGroupLimit") { try $0.setConversationBrowserGroupLimit(limit: limit) } }
     func runtimeDiscoveryHints(userHome: String, overrides: [String: String]) throws -> [BindingRuntimeDiscoveryHint] { try withApplication("runtimeDiscoveryHints") { try $0.runtimeDiscoveryHints(userHome: userHome, overrides: overrides) } }

@@ -220,7 +220,7 @@ Mac 使用 `OSLog.Logger`，subsystem 为 `local.velune`；系统 Console 可按
 
 失败信息包含诊断编号；以该编号查找日志中的 `operation_id`，可定位操作、错误代码、阶段、耗时与底层原因。Swift 失败日志使用同一编号，其本地操作编号另行命名，不代表 Rust trace ID。常规 snapshot 和认证轮询不产生成功日志。诊断保存实际错误链、helper stderr 与失败上下文，不以隐私为由替换为固定说明；默认不采集所有请求、配置或会话正文，也没有远端导出。开发方仍只使用合成数据验证，不读取用户真实配置和秘密。
 
-Pi RPC 子进程持续排空 stderr，最多保留1 MiB用于失败诊断，超出时显式说明截断；正常运行不输出该缓存。启动、控制管道写入、退出和超时失败保留已取得的原始错误，退出时同时提供进程状态。旧版丢弃的 stderr 无法事后还原；仅有“child exited before responding”的旧记录不能用于判断真实退出原因，需要新版本中的重试记录。
+Pi RPC 子进程持续排空 stderr，最多保留1 MiB用于失败诊断，超出时显式说明截断；正常运行不输出该缓存。启动、控制管道写入、退出和超时失败保留已取得的原始错误，退出时同时提供进程状态。旧版丢弃的 stderr 无法事后还原；仅有“child exited before responding”的旧记录不能用于判断真实退出原因，需要新版本中的重试记录。 Pi 首次状态握手的单次响应等待窗口为15秒，允许原生会话、扩展及项目资源加载；普通控制命令仍为3秒。超时诊断同时记录当时进程状态，不能将超时等同于进程退出。
 
 历史读取失败记录具体运行时实例的标识、名称、类型、实际配置的非秘密执行入口（binary／nodeBinary）与来源目录，以及阶段和原始原因。安装解析失败同时说明配置入口、已解析的 launcher 目标及 filesystem cause；实例槽位不能代替稳定标识。helper 启动、超时、退出、输出上限、来源读取、会话不存在与重复原生身份分别保留；子进程返回的实际错误文本应继续传到本地问题详情。旧错误若已在源头丢失原因，不能事后还原；新错误通过诊断编号关联操作和阶段。
 
@@ -250,9 +250,9 @@ Mac 的“问题”窗口集中显示操作失败与当前读取问题，主界�
 
 运行时设置的“快速导入…”只发现可执行文件、公开版本和目录存在性，预览后才保存实例；未支持版本保留在候选列表中但不能导入。Node 仍是运行时配置的必填项。发现采用平台显式传入的用户目录和允许的非秘密目录覆盖，不读取原来源认证；提供商与模型导入通过后续显式预览操作执行。
 
-会话浏览偏好 `conversationBrowserGroupLimit` 在应用配置中保存，默认 20、必须大于零。每个显示分组独立“加载更多”；当前来源仍汇总会话元数据后排序和分组，这不是上游 cursor 分页。macOS 使用原生 ⌘／Shift 列表多选，批量删除逐项修改原运行时会话并报告局部失败。提供商和运行时支持双击编辑；模型添加分别提供新建和独立模板选择 sheet，模板可批量选取并继续添加。
+会话浏览偏好 `conversationBrowserGroupLimit` 在应用配置中保存，默认 20、必须大于零。每个显示分组独立“加载更多”；当前来源仍汇总会话元数据后排序和分组，这不是上游 cursor 分页。macOS 使用原生 ⌘／Shift 列表多选，批量删除逐项修改原运行时会话并报告局部失败。提供商和运行时支持双击编辑；模型添加分别提供新建和独立模板选择 sheet，模板可批量选取并继续添加。 分组、运行时／项目筛选及排序方向也保存在应用配置中；它们只影响列表投影，不改变下一轮执行实例或原生会话。搜索文字和每组额外加载数量不持久化。
 
-本轮隔离人工检查可运行 `scripts/manual-runtime-discovery.py`（指定临时 bindings、库、资源、Node 和外部 Pi CLI），覆盖公开版本发现、未支持版本、显式保存、重复候选以及分组数量持久化；`scripts/manual-messages-native.py` 覆盖原生 Messages 直接消费及网关 HTTP／SSE；`scripts/manual-runtime-messages.py` 覆盖合成来源导入及实际 Pi／DSH 接入。脚本不加入自动测试或 CI，真实服务、会话和视觉体验仍由用户验收。
+本轮隔离人工检查可运行 `scripts/manual-runtime-discovery.py`（指定临时 bindings、库、资源、Node 和外部 Pi CLI），覆盖公开版本发现、未支持版本、显式保存、重复候选以及分组数量持久化；`scripts/manual-messages-native.py` 覆盖原生 Messages 直接消费及网关 HTTP／SSE；`scripts/manual-runtime-messages.py` 覆盖合成来源导入及实际 Pi／DSH 接入。脚本不加入自动测试或 CI，真实服务、会话和视觉体验仍由用户验收。 `scripts/manual-browser-preferences.py` 使用临时应用目录，贯通 Mac AppStore、Transport 与 UniFFI，检查快速连续修改、重开恢复和保存失败回滚；要求指定当前debug动态库与Swift构建目录。
 
 顶部运行时／模型是纯粹的下一轮 draft；当前快照来源和 core execution owner 独立。公开发送统一为 `send_turn(runtime_id, model_record_key, text)`，旧 `send`／`select_model` 接口已删除。选择本身不准备运行时，历史无模型 marker 也可在发送时指定模型并准备；跨来源发送采用目标原生会话与文本交接，关联文件只保存引用和切换位置；不同 Harness ID 不直接 resume。历史失败日志的 source／execution／next-turn 配置序号分别命名，0表示当前没有实例。
 

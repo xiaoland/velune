@@ -208,6 +208,15 @@ impl VeluneApplication {
             app.set_transcript_presentation(presentation)
         })?)
     }
+    pub fn set_conversation_browser_preferences(
+        &self,
+        preferences: BindingConversationBrowserPreferences,
+    ) -> Result<BindingConversationBrowserPreferences, BindingError> {
+        let preferences = convert(preferences)?;
+        convert(self.with("set_conversation_browser_preferences", |app| {
+            app.set_conversation_browser_preferences(preferences)
+        })?)
+    }
     pub fn set_conversation_browser_group_limit(&self, limit: u32) -> Result<u32, BindingError> {
         self.with("set_conversation_browser_group_limit", |app| {
             app.set_conversation_browser_group_limit(limit)

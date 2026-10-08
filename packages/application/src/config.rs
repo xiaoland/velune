@@ -399,3 +399,39 @@ pub enum TranscriptPresentation {
     Conversation,
     UserOutline,
 }
+
+/// Application-owned sidebar choices; these never select an execution runtime.
+#[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ConversationBrowserPreferences {
+    pub grouping: ConversationBrowserGrouping,
+    pub sort: ConversationBrowserSort,
+    pub oldest_first: bool,
+    pub runtime_id: Option<String>,
+    pub project: ConversationBrowserProject,
+}
+#[derive(Debug, Default, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum ConversationBrowserGrouping {
+    #[default]
+    None,
+    Runtime,
+    Project,
+}
+#[derive(Debug, Default, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum ConversationBrowserSort {
+    #[default]
+    Updated,
+    Created,
+}
+#[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum ConversationBrowserProject {
+    #[default]
+    All,
+    Unspecified,
+    Path {
+        path: String,
+    },
+}

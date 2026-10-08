@@ -80,6 +80,12 @@ struct VeluneRootView: View {
         }
         .navigationSplitViewStyle(.balanced)
         .onReceive(store.$conversationBrowserGroupLimit) { browser.initialLimit = $0 }
+        .onReceive(store.$conversationBrowserPreferences) { value in
+            if let value, value != browser.preferences { browser.restore(value) }
+        }
+        .onChange(of: browser.preferences) { _, value in
+            if store.conversationBrowserPreferences != nil { store.setConversationBrowserPreferences(value) }
+        }
         .onChange(of: browser.query) { _, _ in browser.resetPagination() }
         .onChange(of: store.pendingConversationID) { _, value in if value != nil { showsOutline = false } }
         .onChange(of: store.loadedConversationID) { _, _ in showsOutline = false }
@@ -127,15 +133,20 @@ struct VeluneRootView: View {
             Picker("Agent 运行时", selection: $browser.runtimeID) {
                 Text("所有运行时").tag(Optional<String>.none)
                 ForEach(store.enabledRuntimeInstances) { Text($0.name).tag(Optional($0.id)) }
+                if let id = browser.runtimeID, !store.enabledRuntimeInstances.contains(where: { $0.id == id }) {
+                    Text("当前筛选的运行时不可用").tag(Optional(id))
+                }
             }
             Picker("项目", selection: $browser.project) {
                 Text("所有项目").tag(ConversationBrowser.ProjectFilter.all)
                 Text("未指定项目").tag(ConversationBrowser.ProjectFilter.unspecified)
                 ForEach(projects, id: \.self) { path in Text(path).tag(ConversationBrowser.ProjectFilter.path(path)) }
+                if case .path(let path) = browser.project, !projects.contains(path) { Text(path).tag(ConversationBrowser.ProjectFilter.path(path)) }
             }
             if browser.hasFilters { Divider(); Button("清除筛选") { browser.runtimeID = nil; browser.project = .all } }
         } label: { Label("显示", systemImage: browser.hasFilters ? "line.3.horizontal.decrease.circle.fill" : "line.3.horizontal.decrease") }
         .help("会话分组、筛选与排序")
+        .disabled(store.conversationBrowserPreferences == nil)
     }
 
     private var nextTurnControls: some View {

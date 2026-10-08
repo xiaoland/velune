@@ -93,6 +93,7 @@ pub struct ConfigurationSnapshot {
     pub model_templates: Vec<ModelTemplate>,
     pub conversation_browser_group_limit: u32,
     pub transcript_presentation: TranscriptPresentation,
+    pub conversation_browser_preferences: ConversationBrowserPreferences,
     pub provider_import_types: Vec<RuntimeTypeDescriptor>,
     pub protocols: Vec<ProtocolDescriptor>,
     #[serde(rename = "selectedRuntimeInstanceID")]
@@ -478,6 +479,16 @@ impl Application {
         self.execute(
             "transcriptPresentation",
             json!({"presentation": presentation}),
+            None,
+        )
+    }
+    pub fn set_conversation_browser_preferences(
+        &mut self,
+        preferences: ConversationBrowserPreferences,
+    ) -> Result<ConversationBrowserPreferences, Error> {
+        self.execute(
+            "conversationBrowserPreferences",
+            json!({"preferences":preferences}),
             None,
         )
     }

@@ -88,6 +88,7 @@ pub struct CoreRuntime {
     logical_projection: Option<continuation::LogicalProjection>,
     conversation_browser_group_limit: u32,
     transcript_presentation: crate::config::TranscriptPresentation,
+    conversation_browser_preferences: crate::config::ConversationBrowserPreferences,
     transcript_projection: velune_agent_runtime::transcript::TranscriptProjection,
     transcript_conversation_id: Option<String>,
     authentication_provider: Option<(String, String)>,
@@ -130,6 +131,7 @@ impl CoreRuntime {
             logical_projection: None,
             conversation_browser_group_limit: persisted.conversation_browser_group_limit,
             transcript_presentation: persisted.transcript_presentation,
+            conversation_browser_preferences: persisted.conversation_browser_preferences,
             transcript_projection: Default::default(),
             transcript_conversation_id: None,
             authentication_provider: None,
@@ -244,6 +246,7 @@ impl CoreRuntime {
         match action {
             "list" => self.list(),
             "transcriptPresentation" => self.set_transcript_presentation(request),
+            "conversationBrowserPreferences" => self.set_conversation_browser_preferences(request),
             "conversationBrowserSettings" => self.set_conversation_browser_group_limit(request),
             "discoverRuntimes" => self.discover_runtimes(request),
             "providerImport" => self.provider_import_action(request),

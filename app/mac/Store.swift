@@ -5,6 +5,9 @@ import VeluneBindings
 
 @MainActor
 final class AppStore: ObservableObject {
+    @Published private(set) var conversationBrowserPreferences: BindingConversationBrowserPreferences?
+    private var savedBrowserPreferences: BindingConversationBrowserPreferences?
+    private var browserPreferencesGeneration: UInt64 = 0
     @Published private(set) var transcriptPresentation: BindingTranscriptPresentation = .conversation
     @Published private(set) var conversationBrowserGroupLimit = 20
     @Published private(set) var conversations: [Conversation] = []
@@ -159,6 +162,30 @@ final class AppStore: ObservableObject {
         }
     }
     func cancelAnalyticsRead() { analyticsGeneration &+= 1; analyticsIsLoading = false }
+    func setConversationBrowserPreferences(_ preferences: BindingConversationBrowserPreferences) {
+        guard preferences != conversationBrowserPreferences, !isShuttingDown else { return }
+        if isPreview { conversationBrowserPreferences = preferences; return }
+        guard let transport else { recordProblem("本地核心未配置"); return }
+        browserPreferencesGeneration &+= 1
+        let revision = browserPreferencesGeneration
+        conversationBrowserPreferences = preferences
+        // Sidebar choices are independent of loading/execution. Serialize their
+        // commits with core operations without locking ordinary browsing.
+        queue.async { [weak self] in
+            let result = Result { try transport.setConversationBrowserPreferences(preferences) }
+            DispatchQueue.main.async {
+                guard let self else { return }
+                switch result {
+                case .success(let saved):
+                    self.savedBrowserPreferences = saved
+                    if revision == self.browserPreferencesGeneration { self.conversationBrowserPreferences = saved }
+                case .failure(let failure):
+                    self.recordProblem(failure)
+                    if revision == self.browserPreferencesGeneration { self.conversationBrowserPreferences = self.savedBrowserPreferences }
+                }
+            }
+        }
+    }
     func setTranscriptPresentation(_ presentation: BindingTranscriptPresentation) {
         if isPreview { transcriptPresentation = presentation; return }
         guard let transport else { recordProblem("本地核心未配置"); return }
@@ -520,6 +547,10 @@ final class AppStore: ObservableObject {
     private func resetProjection() { problems.removeAll { $0.activityKey?.hasPrefix("poll:") == true }; generation += 1; snapshot = nil; projectionRuntimeID = nil; selectedConversationID = nil; pendingConversationID = nil; transcript.reset(); activity = nil }
     private func applyList(_ data: BindingConfigurationSnapshot) {
         let mapped = BindingMapping.configuration(data)
+        if conversationBrowserPreferences == nil {
+            conversationBrowserPreferences = data.conversationBrowserPreferences
+            savedBrowserPreferences = data.conversationBrowserPreferences
+        }
         transcriptPresentation = data.transcriptPresentation
         conversationBrowserGroupLimit = Int(data.conversationBrowserGroupLimit)
         conversations = mapped.conversations; selectedConversationIDs.formIntersection(conversations.map(\.id))
@@ -618,6 +649,7 @@ final class AppStore: ObservableObject {
         }
     }
     private func seedPreview() {
+        conversationBrowserPreferences = ConversationBrowser().preferences
         gateway = GatewayConfig(providers: [AIProvider(id: "sample-provider", name: "示例 AI 服务", protocolID: .chatCompletionsV1, endpoint: "https://example.invalid/v1", models: [ProviderModel(recordKey: "sample-model", providerModelID: "external-example", nickname: "通用模型", contextWindow: 8192, maxOutputTokens: 4096)])])
         hasGateway = true
         protocols = [ProtocolDescriptor(id: .chatCompletionsV1, name: "OpenAI Chat Completions v1", supported: true), ProtocolDescriptor(id: .responsesV1, name: "OpenAI Responses v1", supported: true), ProtocolDescriptor(id: .messagesV1, name: "Anthropic Messages v1", supported: true)]

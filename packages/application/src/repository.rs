@@ -20,6 +20,8 @@ pub(crate) struct PersistedConfig {
     pub(crate) conversation_browser_group_limit: u32,
     #[serde(default)]
     pub(crate) transcript_presentation: crate::config::TranscriptPresentation,
+    #[serde(default)]
+    pub(crate) conversation_browser_preferences: crate::config::ConversationBrowserPreferences,
 }
 
 pub(crate) fn default_conversation_browser_group_limit() -> u32 {
@@ -35,6 +37,7 @@ impl Default for PersistedConfig {
             model_templates: Vec::new(),
             conversation_browser_group_limit: default_conversation_browser_group_limit(),
             transcript_presentation: Default::default(),
+            conversation_browser_preferences: Default::default(),
         }
     }
 }

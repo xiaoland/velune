@@ -1,4 +1,5 @@
 import Foundation
+import VeluneBindings
 
 /// Browsing choices only derive sidebar rows. They never select an execution
 /// runtime or rewrite the authoritative conversation snapshot.
@@ -47,6 +48,18 @@ struct ConversationBrowser {
         let initialLimit: Int
     }
     var query: Query { Query(grouping: grouping, sort: sort, oldestFirst: oldestFirst, runtimeID: runtimeID, project: project, search: search, initialLimit: initialLimit) }
+    var preferences: BindingConversationBrowserPreferences {
+        let value: BindingConversationBrowserProject
+        switch project { case .all: value = .all; case .unspecified: value = .unspecified; case .path(let path): value = .path(path: path) }
+        return BindingConversationBrowserPreferences(grouping: grouping == .none ? .none : grouping == .runtime ? .runtime : .project, sort: sort == .updated ? .updated : .created, oldestFirst: oldestFirst, runtimeId: runtimeID, project: value)
+    }
+    mutating func restore(_ value: BindingConversationBrowserPreferences) {
+        grouping = value.grouping == .none ? .none : value.grouping == .runtime ? .runtime : .project
+        sort = value.sort == .updated ? .updated : .created
+        oldestFirst = value.oldestFirst; runtimeID = value.runtimeId
+        switch value.project { case .all: project = .all; case .unspecified: project = .unspecified; case .path(let path): project = .path(path) }
+        resetPagination()
+    }
     var hasFilters: Bool { runtimeID != nil || project != .all }
 
     func sections(conversations: [Conversation], runtimes: [RuntimeInstance]) -> [Section] {

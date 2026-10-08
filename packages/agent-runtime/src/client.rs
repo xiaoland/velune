@@ -23,6 +23,10 @@ use std::{
 
 const MAX_RECORD_BYTES: usize = 1024 * 1024;
 const RESPONSE_TIMEOUT: Duration = Duration::from_secs(3);
+// Pi may load an existing session, extensions, and project resources before
+// answering the readiness RPC. Keep startup more patient without extending
+// ordinary prompt, selection, and cancellation commands.
+const STARTUP_TIMEOUT: Duration = Duration::from_secs(15);
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -419,6 +423,22 @@ impl Client {
         }
     }
 
+    fn timeout_error(&mut self) -> Error {
+        let status = match self.child.try_wait() {
+            Ok(Some(status)) => format!("进程状态：{status}"),
+            Ok(None) => "Pi RPC 子进程仍在运行".into(),
+            Err(error) => format!("进程状态不可用：{error}"),
+        };
+        let detail = self.stderr_detail(false);
+        if detail.is_empty() {
+            Error::CommandFailed(format!("Pi RPC response timed out；{status}"))
+        } else {
+            Error::CommandFailed(format!(
+                "Pi RPC response timed out；{status}；原始错误：{detail}"
+            ))
+        }
+    }
+
     fn write_command(&mut self, mut command: Value) -> Result<String> {
         let object = command.as_object_mut().ok_or(Error::InvalidCommand)?;
         let command_type = object
@@ -469,27 +489,18 @@ impl Client {
             Ok(Incoming::Closed) | Err(RecvTimeoutError::Disconnected) => {
                 Err(self.child_exit_error())
             }
-            Err(RecvTimeoutError::Timeout) => {
-                let stderr = self.stderr_detail(false);
-                if stderr.is_empty() {
-                    Err(Error::Timeout)
-                } else {
-                    Err(Error::CommandFailed(format!(
-                        "Pi RPC response timed out；原始错误：{stderr}"
-                    )))
-                }
-            }
+            Err(RecvTimeoutError::Timeout) => Err(self.timeout_error()),
         }
     }
 
     /// Send a command and wait for its matching response. Other records stay
     /// buffered for `poll`, preserving event order across requests.
-    pub fn request(&mut self, command: Value) -> Result<Value> {
+    fn request_with_timeout(&mut self, command: Value, timeout: Duration) -> Result<Value> {
         let key = self.write_command(command)?;
         let (_, id) = key.split_once('\0').expect("internal command key");
         let mut deferred = VecDeque::new();
         loop {
-            let value = self.receive(RESPONSE_TIMEOUT)?;
+            let value = self.receive(timeout)?;
             let matches = value.get("type").and_then(Value::as_str) == Some("response")
                 && value.get("id").and_then(Value::as_str) == Some(id);
             if matches {
@@ -508,6 +519,10 @@ impl Client {
             }
             deferred.push_back(value);
         }
+    }
+
+    pub fn request(&mut self, command: Value) -> Result<Value> {
+        self.request_with_timeout(command, RESPONSE_TIMEOUT)
     }
 
     pub fn prompt(&mut self, message: &str) -> Result<Value> {
@@ -550,13 +565,16 @@ impl Client {
     }
 
     pub fn state(&mut self) -> Result<(Value, Value)> {
-        let metadata =
-            self.request(json!({"type":"prompt","message":"/velune-projection-sync"}))?;
+        let metadata = self.request_with_timeout(
+            json!({"type":"prompt","message":"/velune-projection-sync"}),
+            STARTUP_TIMEOUT,
+        )?;
         if metadata["data"]["disposition"] != "handled" {
             return Err(Error::Sdk("原生会话元数据查询未被扩展处理".into()));
         }
-        let state = self.request(json!({"type":"get_state"}))?;
-        let mut messages = self.request(json!({"type":"get_messages"}))?;
+        let state = self.request_with_timeout(json!({"type":"get_state"}), STARTUP_TIMEOUT)?;
+        let mut messages =
+            self.request_with_timeout(json!({"type":"get_messages"}), STARTUP_TIMEOUT)?;
         let metadata_event = self
             .pending
             .iter()

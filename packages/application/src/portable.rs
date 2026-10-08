@@ -34,6 +34,7 @@ impl CoreRuntime {
                 "modelTemplates":self.config.model_templates, "providerImportTypes":[],
                 "conversationBrowserGroupLimit":self.config.conversation_browser_group_limit,
                 "transcriptPresentation":self.config.transcript_presentation,
+                "conversationBrowserPreferences":self.config.conversation_browser_preferences,
                 "protocols":[{"id":"chatCompletionsV1","name":"OpenAI Chat Completions v1","supported":true},
                     {"id":"responsesV1","name":"OpenAI Responses v1","supported":true},
                     {"id":"messagesV1","name":"Anthropic Messages","supported":true}],
@@ -46,6 +47,14 @@ impl CoreRuntime {
                 self.repository.store(&next)?;
                 self.config = next;
                 Ok(json!(self.config.transcript_presentation))
+            }
+            Some("conversationBrowserPreferences") => {
+                let mut next = self.config.clone();
+                next.conversation_browser_preferences =
+                    serde_json::from_value(payload["preferences"].clone())?;
+                self.repository.store(&next)?;
+                self.config = next;
+                Ok(json!(self.config.conversation_browser_preferences))
             }
             Some("conversationBrowserSettings") => {
                 let limit = payload["limit"]
