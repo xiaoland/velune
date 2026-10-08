@@ -35,7 +35,6 @@ fn main() {
     assert_eq!(models[0].reasoning_levels, None);
     assert_eq!(models[1].reasoning_levels.as_ref().unwrap(), &["low", "high"]);
     assert!(parse_models_dev(b"not-json").is_err());
-    assert!(parse_models_dev(&vec![b' '; 16 * 1024 * 1024 + 1]).is_err());
 }
 '''
 

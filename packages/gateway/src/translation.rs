@@ -13,8 +13,6 @@ use velune_ai::{
 };
 use velune_ai_provider::translation::{LlmProtocol, PreparedTranslation};
 
-const MAX_TRANSLATED_BODY: usize = 16 * 1024 * 1024;
-
 pub(super) fn protocol(value: &GatewayProtocol) -> LlmProtocol {
     match value {
         GatewayProtocol::ChatCompletionsV1 => LlmProtocol::ChatCompletions,
@@ -111,11 +109,7 @@ pub(super) async fn deliver(
         let mut bytes = Vec::new();
         while let Some(event) = receiver.recv().await {
             match event {
-                WireEvent::Body(chunk)
-                    if bytes.len().saturating_add(chunk.len()) <= MAX_TRANSLATED_BODY =>
-                {
-                    bytes.extend(chunk)
-                }
+                WireEvent::Body(chunk) => bytes.extend(chunk),
                 _ => {
                     interrupted(&sender, false, "upstream_body_interrupted").await;
                     return;
@@ -162,16 +156,13 @@ pub(super) async fn deliver(
         return;
     }
 
-    let bytes = stream::unfold((receiver, 0usize), |(mut receiver, total)| async move {
+    let bytes = stream::unfold(receiver, |mut receiver| async move {
         let event = receiver.recv().await?;
         let result = match event {
-            WireEvent::Body(bytes) if total.saturating_add(bytes.len()) <= MAX_TRANSLATED_BODY => {
-                Ok(bytes)
-            }
+            WireEvent::Body(bytes) => Ok(bytes),
             _ => Err(std::io::Error::other("upstream stream interrupted")),
         };
-        let total = total.saturating_add(result.as_ref().map_or(0, Vec::len));
-        Some((result, (receiver, total)))
+        Some((result, receiver))
     });
     let events = bytes.eventsource();
     futures_util::pin_mut!(events);

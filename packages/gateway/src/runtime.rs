@@ -28,7 +28,7 @@ use std::{
     thread::{self, JoinHandle},
     time::Duration,
 };
-use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot};
 use tracing::{Instrument, instrument::WithSubscriber};
 use velune_ai::{
     DeliveryError, Payload,
@@ -71,8 +71,6 @@ use velune_ai_provider::{
     responses::OpenAiResponses,
 };
 
-const MAX_REQUEST_BYTES: usize = 256 * 1024;
-const MAX_IN_FLIGHT: usize = 16;
 const REQUEST_READ_TIMEOUT: Duration = Duration::from_secs(15);
 
 #[derive(Debug)]
@@ -103,7 +101,6 @@ struct Ingress {
     token: String,
     resolver: Arc<dyn CredentialResolver>,
     client: Client,
-    permits: Arc<Semaphore>,
     request_epoch: u64,
     next_request: AtomicU64,
     stopping: Arc<AtomicBool>,
@@ -161,7 +158,6 @@ impl Runner {
             .redirect(reqwest::redirect::Policy::none())
             .retry(reqwest::retry::never())
             .connect_timeout(Duration::from_secs(15))
-            .read_timeout(Duration::from_secs(60))
             .build()?;
         let mut epoch = [0u8; 8];
         getrandom::fill(&mut epoch).map_err(|_| GatewayError("gateway request identity"))?;
@@ -171,7 +167,6 @@ impl Runner {
             token: token.clone(),
             resolver: credential_resolver,
             client,
-            permits: Arc::new(Semaphore::new(MAX_IN_FLIGHT)),
             request_epoch: u64::from_le_bytes(epoch),
             next_request: AtomicU64::new(1),
             stopping: stopping.clone(),
@@ -233,12 +228,7 @@ fn build_routes(
     let mut routes = BTreeMap::new();
     for (provider_slot, configured_provider) in config.providers.iter().enumerate() {
         for (model_slot, entry) in configured_provider.models.iter().enumerate() {
-            let provider = config
-                .validate_dispatch(&entry.record_key)
-                .map_err(GatewayError)?;
-            if !crate::config::credential_ready(provider) {
-                return Err(Box::new(GatewayError("provider credential is required")));
-            }
+            let provider = configured_provider;
             let endpoint = parse_endpoint(&provider.endpoint)?;
             let protocol = match provider.protocol {
                 GatewayProtocol::ChatCompletionsV1 => {
@@ -251,12 +241,7 @@ fn build_routes(
                     ProtocolConfig::Messages(MessagesConfig { endpoint })
                 }
             };
-            let binding = provider
-                .models
-                .iter()
-                .find(|binding| binding.record_key == entry.record_key)
-                .ok_or(GatewayError("provider binding missing"))?;
-            let model = ProviderModelId::new(binding.provider_model_id.clone())?;
+            let model = ProviderModelId::new(entry.provider_model_id.clone())?;
             let provider_config = ProviderConfig::new(
                 ProviderId::new(provider.id.clone())?,
                 ConfigRevision::new(1)?,
@@ -271,7 +256,7 @@ fn build_routes(
             routes.insert(
                 entry.record_key.clone(),
                 RouteTarget {
-                    max_output_tokens: binding.max_output_tokens,
+                    max_output_tokens: entry.max_output_tokens,
                     provider_slot: provider_slot + 1,
                     model_slot: model_slot + 1,
                     model,
@@ -281,7 +266,7 @@ fn build_routes(
                     reference: provider
                         .credential_ref
                         .clone()
-                        .ok_or(GatewayError("authentication resource is required"))?,
+                        .unwrap_or_else(|| provider.id.clone()),
                     provider_id: provider.id.clone(),
                     provider_name: provider.name.clone(),
                     model_record_key: entry.record_key.clone(),
@@ -357,7 +342,6 @@ pub(super) enum WireEvent {
 }
 struct DispatchGuard {
     task: tokio::task::JoinHandle<()>,
-    _permit: OwnedSemaphorePermit,
     observation: Observation,
 }
 impl Drop for DispatchGuard {
@@ -429,36 +413,25 @@ async fn ingress_observed(
             "gateway authentication failed",
         );
     }
-    let permit = match state.permits.clone().try_acquire_owned() {
-        Ok(permit) => permit,
+    let (parts, body) = request.into_parts();
+    let headers = forward_headers(&parts.headers);
+    let bytes = match tokio::time::timeout(REQUEST_READ_TIMEOUT, to_bytes(body, usize::MAX)).await {
+        Ok(Ok(bytes)) => bytes,
+        Ok(Err(_)) => {
+            return rejected(
+                observation,
+                StatusCode::BAD_REQUEST,
+                "gateway request body read failed",
+            );
+        }
         Err(_) => {
             return rejected(
                 observation,
-                StatusCode::SERVICE_UNAVAILABLE,
-                "gateway concurrency limit reached",
+                StatusCode::REQUEST_TIMEOUT,
+                "gateway request body deadline",
             );
         }
     };
-    let (parts, body) = request.into_parts();
-    let headers = forward_headers(&parts.headers);
-    let bytes =
-        match tokio::time::timeout(REQUEST_READ_TIMEOUT, to_bytes(body, MAX_REQUEST_BYTES)).await {
-            Ok(Ok(bytes)) => bytes,
-            Ok(Err(_)) => {
-                return rejected(
-                    observation,
-                    StatusCode::PAYLOAD_TOO_LARGE,
-                    "gateway request body limit",
-                );
-            }
-            Err(_) => {
-                return rejected(
-                    observation,
-                    StatusCode::REQUEST_TIMEOUT,
-                    "gateway request body deadline",
-                );
-            }
-        };
     let body: Value = match serde_json::from_slice(&bytes) {
         Ok(Value::Object(value)) => Value::Object(value),
         _ => {
@@ -591,11 +564,7 @@ async fn ingress_observed(
         .with_subscriber(dispatcher)
         .await;
     });
-    let mut guard = DispatchGuard {
-        task,
-        _permit: permit,
-        observation,
-    };
+    let mut guard = DispatchGuard { task, observation };
     let Some(WireEvent::Headers(meta)) = receiver.recv().await else {
         guard.observation.finish("upstream_unavailable");
         return error_response(

@@ -4,8 +4,6 @@ use crate::Error;
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, time::Duration};
 
-const MAX_BYTES: usize = 16 * 1024 * 1024;
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CatalogModel {
@@ -46,9 +44,6 @@ pub fn parse_models_dev(bytes: &[u8]) -> Result<Vec<CatalogModel>, Error> {
     struct Limits {
         context: Option<u32>,
         output: Option<u32>,
-    }
-    if bytes.len() > MAX_BYTES {
-        return Err(Error::invalid("公开模型目录超过大小限制"));
     }
     let providers: BTreeMap<String, Provider> = serde_json::from_slice(bytes)
         .map_err(|_| Error::invalid("models.dev 目录格式无效，请稍后重新拉取"))?;
@@ -122,9 +117,6 @@ pub fn fetch_models_dev() -> Result<Vec<CatalogModel>, Error> {
                 .await
                 .map_err(|_| Error::invalid("models.dev 下载中断，请重新拉取"))?
             {
-                if bytes.len().saturating_add(chunk.len()) > MAX_BYTES {
-                    return Err(Error::invalid("公开模型目录超过大小限制"));
-                }
                 bytes.extend_from_slice(&chunk);
             }
             parse_models_dev(&bytes)

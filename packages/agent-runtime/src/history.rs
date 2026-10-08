@@ -7,6 +7,8 @@ use serde::Deserialize;
 use serde_json::json;
 use std::{path::PathBuf, process::Command};
 
+const STDERR_DIAGNOSTIC_LIMIT: usize = 1024 * 1024;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HistoryFailureKind {
     InvalidConfiguration,
@@ -15,7 +17,6 @@ pub enum HistoryFailureKind {
     Spawn,
     Timeout,
     ProcessExit,
-    OutputLimit,
     BridgeContract,
     SessionNotFound,
     AmbiguousSession,
@@ -30,7 +31,6 @@ impl HistoryFailureKind {
             Self::Spawn => "spawn",
             Self::Timeout => "timeout",
             Self::ProcessExit => "process_exit",
-            Self::OutputLimit => "output_limit",
             Self::BridgeContract => "bridge_contract",
             Self::SessionNotFound => "session_not_found",
             Self::AmbiguousSession => "ambiguous_session",
@@ -167,12 +167,13 @@ fn execute(
     })?;
     let mut command = Command::new(&config.node_binary);
     command.arg(config.resources_directory.join("huihua_sessions.mjs"));
-    bounded_process(command, Some(input), 16 * 1024 * 1024).map_err(|error| {
+    // The helper stdout is the history payload and is read completely. The
+    // limit applies only to retained stderr diagnostics.
+    bounded_process(command, Some(input), STDERR_DIAGNOSTIC_LIMIT).map_err(|error| {
         let kind = match error.code() {
             "spawn" => HistoryFailureKind::Spawn,
             "timeout" => HistoryFailureKind::Timeout,
             "process_exit" => HistoryFailureKind::ProcessExit,
-            "output_limit" => HistoryFailureKind::OutputLimit,
             _ => HistoryFailureKind::Transport,
         };
         HistoryError::new(kind, "helper").with_detail(error.detail())
@@ -249,15 +250,7 @@ pub fn read(config: &HistoryConfig, native_id: &str) -> Result<History, HistoryE
 
 fn native_history_error(error: Error, phase: &'static str) -> HistoryError {
     tracing::warn!(target:"velune_agent_runtime",event="history_native_failed",phase,runtime_family="codex",native_code=error.code());
-    HistoryError::new(
-        if error.code() == "output_limit" {
-            HistoryFailureKind::OutputLimit
-        } else {
-            HistoryFailureKind::ProviderRead
-        },
-        phase,
-    )
-    .with_detail(error.detail())
+    HistoryError::new(HistoryFailureKind::ProviderRead, phase).with_detail(error.detail())
 }
 
 /// Execute the fixed Pi SDK history helper without starting the Agent. Output
@@ -328,7 +321,7 @@ fn execute_pi(
         .map(|title| serde_json::to_vec(&json!({"title":title})))
         .transpose()
         .map_err(|error| Error::new(format!("Pi 会话修改请求无效：{error}")))?;
-    let output = bounded_process(command, input, 16 * 1024 * 1024)?;
+    let output = bounded_process(command, input, STDERR_DIAGNOSTIC_LIMIT)?;
     serde_json::from_slice(&output)
         .map_err(|error| Error::new(format!("Pi 历史 SDK 格式不匹配：{error}")))
 }

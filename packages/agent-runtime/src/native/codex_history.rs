@@ -38,22 +38,14 @@ fn summary(thread: &Value, runtime_id: &str) -> Result<ConversationSummary> {
     })
 }
 
-// All pages share the existing history output ceiling. Native cursors are
-// opaque; repeating one is a contract failure, not a reason to loop forever.
+// Native cursors are opaque; repeating one is a contract failure, not a reason
+// to loop forever. The SDK owns page sizes and the adapter does not impose a
+// second aggregate history-size ceiling.
 fn pages(rpc: &mut RpcClient, method: &str, mut params: Value) -> Result<Vec<Value>> {
     let mut entries = Vec::new();
     let mut cursors = HashSet::new();
-    let mut bytes = 0usize;
     loop {
         let page = rpc.request(method, &params)?;
-        bytes = bytes.saturating_add(
-            serde_json::to_vec(&page)
-                .map_err(|error| Error::new(format!("Codex 历史分页无效：{error}")))?
-                .len(),
-        );
-        if bytes > 16 * 1024 * 1024 {
-            return Err(Error::with_code("Codex 历史超出读取上限", "output_limit"));
-        }
         let data = page["data"]
             .as_array()
             .ok_or_else(|| Error::new("Codex 历史分页缺少内容"))?;

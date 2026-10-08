@@ -1,6 +1,6 @@
 # 输入区与 Pi 发送修复
 
-当前进展（2026-10-08）：最新重试为extension provider注册被一刀切拒绝导致exit1。已允许普通注册并将执行约束放在Pi公开streamSimple入口，合成6请求／续接、直连模型拒绝和保留名称冲突检查通过。新版已安装重新打开；root完成本地提交收尾。真实会话重试仍由用户验收。下文早期记录仅代表当时状态。
+当前进展（2026-10-08）：网关作为新增提供商入口的需求已归 PRD。已删除 Pi 强制注册／派发检查及排他装配、DSH 原生提供商禁用、任意业务容量／并发门禁与重复校验；原生 SDK 保留来源配置并追加网关。清单见 [门禁复核](gate-audit.md)。Rust 静态、合成网关与提供商编辑验收通过，Mac 整包构建并安装重新打开 0.1 beta.1；已完成本地提交收尾。下文此前记录仅代表当时状态。
 
 2026-10-07 用户报告 composer 占位文字与实际输入位置不一致，输入区过度复杂，并授权诊断修复连续两次 Pi 发送失败。目标是简洁的原生输入体验和可靠的发送链路，不扩展会话功能。真实凭据、配置与会话正文不得读取；仅查看对应失败诊断，行为验证使用临时 HOME 与合成本机服务，不调用真实模型。
 
@@ -59,3 +59,17 @@ advisor判别已采用：Pi公开1.0.2 SDK允许运行中registerProvider/regist
 最终Pi实现已采用并冻结：普通provider注册允许；拦截保留provider/virtual名称覆盖，explicit冲突变量；streamSimple同步守卫放行ownedauto虚拟模型和snapshot catalog匹配的gateway物理模型（expected必须存在，核对api/baseUrl）。自有virtual注册带内部标记适应SDKreload，不将该标记当恶意扩展隔离证明。实际SDK派发继续委托原方法。现有manual-pi-native-loop.py临时PI_HOME添加普通fixture-direct扩展，6请求完整gateway loop通过；临时真实SDK脚本在set_model直连后prompt产生明确guard错误；reserved provider/auto冲突check通过。Node syntax、Python compile及diff检查通过。Root复核实际source和directguard脚本后采用证据，Rust/Swift源码未变不重跑无关静态检查。真实扩展／凭据／正文未读取，真实上游未调用。开始标准构建安装。
 
 本轮整合交付：标准release构建完成，Swift warnings-as-errors 12.47秒；正常退出旧App、安装并重新打开Applications中的0.1 beta.1。安装二进制、Rust库、manifest和两个Pi helper与构建一致，两helper另外与源码逐字节一致，严格签名通过。Runtime README／开发说明同步，局部文档链接与diff检查通过。manifest忠实记录构建时510d9e0/dirty=true，不伪改构建来源。自主提交本轮6文件，不push/PR；当前故障原因已修正并隔离验证，不代替真实会话最终验收。
+
+
+用户此次明确授权删除额外门禁。默认注入网关是装配行为，不授权将 Pi 扩展当作需要管制的代码；advisor 已纠正此前判断，建议删除注册 wrappers、owned marker、派发快照 guard 与 model.api 断言。模型实际不存在、输入不可解析、目标无法解析仍是具体失败，不以删除门禁伪装成功。审查清单归本 packet 的 gate-audit.md，长期现行行为归 runtime README／开发说明。
+
+
+用户进一步澄清：Velune gateway 是追加的共享提供商入口，从未要求唯一入口。PRD 已替换旧排他表述；据此扩展清理到原生装配：Pi SDK 使用来源模型/认证后追加网关，子进程正常继承环境，DSH不禁原生provider。advisor核实Pi公开SDK，DSH需要临时来源实际ACP验证。保留SDK自身权限/信任流程，不新造安全边界。
+
+
+本次整合证据：Pi owner 的临时 loopback 来源 provider 与 gateway 派发均成功，未知模型规格交给 SDK，网关注入补齐 SDK cost 数据结构以免 response accounting 读取 tiers 崩溃。gateway 手工入口覆盖三协议原生 JSON／SSE保真、300 KiB请求完整到达合成上游、17请求上游同步等待后全部201、取消及关闭；provider编辑手工入口先保留有效来源projection再切协议，确认自动清除而身份／能力保留。容量删除不意味着伪造未知规格或补造上游成功。DSH三插件禁用项已删除，本轮不以Pi或网关成功冒称DSH实际会话验收。
+
+最终workspace fmt/check、clippy all-targets/all-features -D warnings通过，release整包Swift warnings-as-errors构建通过（29.07秒）；正常退出旧应用后安装并打开Applications中的0.1 beta.1。安装二进制、Rust库、manifest与两个Pi helper匹配构建，helpers另外逐字节匹配源码，严格签名通过。局部文档链接及diff检查通过；manifest忠实记录本次提交前0ba2c14/dirty=true，不伪改来源。自主提交当前任务，不push/PR；真实服务和UI由用户验收。
+
+
+Pi owner 最终补证据已采用：最新完整手工E2E acceptance PASSED、upstreamRequests=6，覆盖来源扩展注册、网关注入、工具、续接和下一轮；另原生provider和gateway回环请求均stopReason=stop并返回ok。缺省contextWindow/maxTokens模型实际发送成功，未由Velune填常数。DSH本轮未实际派发验收，保留该明确边界。源码已冻结，root静态/整包构建对应当前源码，无后续改动。

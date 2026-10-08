@@ -63,9 +63,6 @@ impl GatewayConfig {
         if self.id.is_empty() || self.name.is_empty() {
             return Err("gateway identity is required");
         }
-        if !matches!(self.failover.mode, FailoverMode::Disabled) {
-            return Err("gateway failover mode is unsupported");
-        }
         let mut models = BTreeSet::new();
         let mut providers = BTreeMap::new();
         for provider in &self.providers {
@@ -80,13 +77,11 @@ impl GatewayConfig {
             {
                 return Err("provider is unsupported or duplicated");
             }
-            let mut bindings = BTreeSet::new();
             for binding in &provider.models {
                 if binding.record_key.is_empty()
                     || !models.insert(&binding.record_key)
                     || binding.provider_model_id.is_empty()
                     || binding.provider_model_id.chars().any(char::is_control)
-                    || !bindings.insert(&binding.record_key)
                 {
                     return Err("provider model binding is invalid");
                 }
@@ -110,29 +105,10 @@ impl GatewayConfig {
             .flat_map(|p| &p.models)
             .find(|m| m.record_key == key)
     }
-    pub fn validate_dispatch(&self, key: &str) -> Result<&ProviderDefinition, &'static str> {
-        self.validate()?;
-        self.providers
-            .iter()
-            .find(|p| p.models.iter().any(|m| m.record_key == key))
-            .ok_or("provider model is not configured")
-    }
-}
-
-pub(crate) fn credential_ready(provider: &ProviderDefinition) -> bool {
-    provider
-        .credential_ref
-        .as_deref()
-        .is_some_and(|reference| !reference.is_empty())
 }
 
 fn validate_limits(context: Option<u32>, output: Option<u32>) -> Result<(), &'static str> {
-    if context == Some(0)
-        || output == Some(0)
-        || context
-            .zip(output)
-            .is_some_and(|(context, output)| output > context)
-    {
+    if context == Some(0) || output == Some(0) {
         return Err("invalid provider model limits");
     }
     Ok(())

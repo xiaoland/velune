@@ -12,7 +12,7 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
-const MAX_RECORD: usize = 1024 * 1024;
+const MAX_STDERR_BYTES: usize = 1024 * 1024;
 const TIMEOUT: Duration = Duration::from_secs(15);
 pub(super) struct RpcClient {
     child: Child,
@@ -24,14 +24,6 @@ pub(super) struct RpcClient {
     stderr: Arc<Mutex<Vec<u8>>>,
 }
 fn prepare(command: &mut Command) {
-    command.env_clear();
-    for key in [
-        "PATH", "HOME", "TMPDIR", "LANG", "LC_ALL", "LC_CTYPE", "SHELL",
-    ] {
-        if let Some(value) = std::env::var_os(key) {
-            command.env(key, value);
-        }
-    }
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
@@ -52,10 +44,12 @@ pub(super) fn stop(child: &mut Child) {
 pub(crate) fn bounded_output(command: Command) -> Result<Vec<u8>> {
     bounded_process(command, None, 32768)
 }
+/// Run a short-lived helper. `stderr_limit` only bounds retained diagnostics;
+/// stdout is a business payload and is read to EOF without an adapter limit.
 pub(crate) fn bounded_process(
     mut command: Command,
     input: Option<Vec<u8>>,
-    limit: usize,
+    stderr_limit: usize,
 ) -> Result<Vec<u8>> {
     prepare(&mut command);
     let mut child = command
@@ -77,7 +71,7 @@ pub(crate) fn bounded_process(
             let _ = stdin.write_all(&bytes);
         });
     }
-    let stdout = child
+    let mut stdout = child
         .stdout
         .take()
         .ok_or_else(|| Error::with_code("运行时输出不可用", "transport"))?;
@@ -89,10 +83,7 @@ pub(crate) fn bounded_process(
     let (stderr_tx, stderr_rx) = mpsc::sync_channel(1);
     thread::spawn(move || {
         let mut bytes = Vec::new();
-        let outcome = stdout
-            .take((limit + 1) as u64)
-            .read_to_end(&mut bytes)
-            .map(|_| bytes);
+        let outcome = stdout.read_to_end(&mut bytes).map(|_| bytes);
         let _ = tx.send(outcome);
     });
     thread::spawn(move || {
@@ -104,8 +95,8 @@ pub(crate) fn bounded_process(
                 Ok(0) => break Ok(bytes),
                 Ok(size) => {
                     bytes.extend_from_slice(&chunk[..size]);
-                    if bytes.len() > limit + 1 {
-                        bytes.truncate(limit + 1);
+                    if bytes.len() > stderr_limit.saturating_add(1) {
+                        bytes.truncate(stderr_limit.saturating_add(1));
                     }
                 }
                 Err(error) => break Err(error),
@@ -133,11 +124,11 @@ pub(crate) fn bounded_process(
                 .ok()
                 .and_then(|result| result.ok())
                 .map(|bytes| {
-                    let mut text = String::from_utf8_lossy(&bytes[..bytes.len().min(MAX_RECORD)])
+                    let mut text = String::from_utf8_lossy(&bytes[..bytes.len().min(stderr_limit)])
                         .trim()
                         .to_owned();
-                    if bytes.len() > MAX_RECORD {
-                        text.push_str("\n[stderr 已截断：本地缓存上限 1 MiB]");
+                    if bytes.len() > stderr_limit {
+                        text.push_str("\n[stderr 已截断：诊断缓存达到上限]");
                     }
                     text
                 })
@@ -176,23 +167,13 @@ pub(crate) fn bounded_process(
                 "transport",
             )
         })?;
-    if bytes.len() > limit {
-        return Err(Error::with_code(
-            "运行时辅助进程输出超出限制",
-            "output_limit",
-        ));
-    }
-    if stderr.len() > limit {
-        return Err(Error::with_code(
-            format!(
-                "运行时辅助进程错误输出超出限制（已截断）：{}",
-                String::from_utf8_lossy(&stderr)
-            ),
-            "output_limit",
-        ));
-    }
     if !status.success() {
-        let detail = String::from_utf8_lossy(&stderr).trim().to_owned();
+        let mut detail = String::from_utf8_lossy(&stderr[..stderr.len().min(stderr_limit)])
+            .trim()
+            .to_owned();
+        if stderr.len() > stderr_limit {
+            detail.push_str("\n[stderr 已截断：诊断缓存达到上限]");
+        }
         return Err(Error::with_code(
             format!("运行时辅助进程失败（{status}）：{detail}"),
             "process_exit",
@@ -235,9 +216,9 @@ impl RpcClient {
                     Ok(0) | Err(_) => break,
                     Ok(size) => {
                         if let Ok(mut target) = stderr_copy.lock()
-                            && target.len() <= MAX_RECORD
+                            && target.len() <= MAX_STDERR_BYTES
                         {
-                            let remaining = MAX_RECORD + 1 - target.len();
+                            let remaining = MAX_STDERR_BYTES + 1 - target.len();
                             target.extend_from_slice(&chunk[..size.min(remaining)]);
                         }
                     }
@@ -251,13 +232,9 @@ impl RpcClient {
                 let mut reader = BufReader::new(output);
                 loop {
                     let mut bytes = Vec::new();
-                    let read = reader
-                        .by_ref()
-                        .take((MAX_RECORD + 1) as u64)
-                        .read_until(b'\n', &mut bytes);
+                    let read = reader.by_ref().read_until(b'\n', &mut bytes);
                     let result = match read {
                         Ok(0) => Err(Error::new("运行时进程已退出")),
-                        Ok(_) if bytes.len() > MAX_RECORD => Err(Error::new("运行时协议记录过大")),
                         Ok(_) => serde_json::from_slice(&bytes).map_err(|error| {
                             Error::new(format!("运行时返回无效协议记录：{error}"))
                         }),
@@ -286,11 +263,11 @@ impl RpcClient {
             .lock()
             .ok()
             .map(|bytes| {
-                let mut text = String::from_utf8_lossy(&bytes[..bytes.len().min(MAX_RECORD)])
+                let mut text = String::from_utf8_lossy(&bytes[..bytes.len().min(MAX_STDERR_BYTES)])
                     .trim()
                     .to_owned();
-                if bytes.len() > MAX_RECORD {
-                    text.push_str("\n[stderr 已截断：本地缓存上限 1 MiB]");
+                if bytes.len() > MAX_STDERR_BYTES {
+                    text.push_str("\n[stderr 已截断：诊断缓存达到上限]");
                 }
                 text
             })
@@ -340,9 +317,6 @@ impl RpcClient {
                     .get("result")
                     .cloned()
                     .ok_or_else(|| Error::new("运行时响应缺少结果"));
-            }
-            if self.queued.len() >= 64 {
-                return Err(Error::new("运行时控制响应前的事件超出限制"));
             }
             self.queued.push_back(record);
         }

@@ -58,10 +58,10 @@ def main():
             protocol = b.BindingGatewayProtocol.CHAT_COMPLETIONS_V1
 
 
-            def model(record='', identity='org/model:版本-1'):
+            def model(record='', identity='org/model:版本-1', adapter_metadata_json=None):
                 return b.BindingProviderModel(record_key=record, provider_model_id=identity,
                     nickname='Synthetic model', icon=None, context_window=None, max_output_tokens=None,
-                    reasoning_levels=None, adapter_metadata_json=None)
+                    reasoning_levels=None, adapter_metadata_json=adapter_metadata_json)
 
             def draft(identity='a', models=None, endpoint='https://synthetic.invalid/v1'):
                 return b.BindingProviderDraft(id=identity, name=identity, protocol=protocol,
@@ -78,24 +78,39 @@ def main():
 
             key_one = 'SYNTHETIC_KEY_ONE'
             key_two = 'SYNTHETIC_KEY_TWO'
-            application.save_provider('default', draft(), b.BindingAuthenticationEdit.SET_API_KEY(value=key_one))
+            projection = json.dumps({'reasoningEnabled': False, 'thinkingLevelMap': {},
+                                    'responsesCompat': None, 'input': ['text']})
+            application.save_provider('default', draft(models=[model(adapter_metadata_json=projection)]),
+                b.BindingAuthenticationEdit.SET_API_KEY(value=key_one))
             snapshot = application.list()
             provider = snapshot.gateways[0].providers[0]
             record = provider.models[0].record_key
             assert record and record != provider.models[0].provider_model_id
+            assert json.loads(provider.models[0].adapter_metadata_json) == json.loads(projection)
             assert key_one not in repr(snapshot)
             assert application.read_provider_api_key('default', 'a') == key_one
             assert stat.S_IMODE(config.stat().st_mode) == 0o600
             assert key_one in config.read_text()
-            edited = draft(models=[model(record, 'changed/model-id')], endpoint='https://changed.invalid/v1')
+            edited = draft(models=[model(record, 'changed/model-id', projection)], endpoint='https://changed.invalid/v1')
             application.save_provider('default', edited, b.BindingAuthenticationEdit.KEEP())
             assert application.read_provider_api_key('default', 'a') == key_one
             saved = application.list().gateways[0].providers[0]
             assert saved.endpoint == 'https://changed.invalid/v1'
             assert saved.models[0].record_key == record and saved.models[0].provider_model_id == 'changed/model-id'
+            assert json.loads(saved.models[0].adapter_metadata_json) == json.loads(projection)
+            saved_model_capabilities = (saved.models[0].nickname, saved.models[0].icon,
+                saved.models[0].context_window, saved.models[0].max_output_tokens,
+                saved.models[0].reasoning_levels)
             edited.protocol = b.BindingGatewayProtocol.RESPONSES_V1
             application.save_provider('default', edited, b.BindingAuthenticationEdit.SET_API_KEY(value=key_two))
             assert application.read_provider_api_key('default', 'a') == key_two
+            switched = application.list().gateways[0].providers[0]
+            assert switched.id == 'a' and switched.models[0].record_key == record
+            assert switched.models[0].provider_model_id == 'changed/model-id'
+            assert (switched.models[0].nickname, switched.models[0].icon,
+                    switched.models[0].context_window, switched.models[0].max_output_tokens,
+                    switched.models[0].reasoning_levels) == saved_model_capabilities
+            assert switched.models[0].adapter_metadata_json is None
             rejected(lambda: application.save_provider('default', edited,
                 b.BindingAuthenticationEdit.SET_API_KEY(value='invalid\nkey')))
 

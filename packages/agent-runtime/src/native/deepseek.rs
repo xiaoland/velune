@@ -22,9 +22,6 @@ impl NativeSession {
             model["maxTokens"] = json!(value);
         }
         let patch = json!([
-            {"id":"settings","disabled":true},
-            {"id":"llm-deepseek","disabled":true},
-            {"id":"llm-deepseek-account","disabled":true},
             {"id":"llm-pi-ai","config":{"providers":{"velune-gateway":{
                 "api":api,"baseURL":config.gateway.endpoint,"apiKeyEnv":"VELUNE_GATEWAY_TOKEN","models":[model]
             }}}},

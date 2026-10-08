@@ -259,13 +259,11 @@ impl GatewayConfig {
         Ok(format!("vln_{digest:x}"))
     }
 
-    /// Validate the stricter boundary used immediately before a gateway call.
-    /// Model ownership determines the provider; no second routing configuration is required.
+    /// Resolve model ownership from the already validated application configuration.
     pub fn validate_dispatch(
         &self,
         model_record_key: &str,
     ) -> Result<&ProviderDefinition, &'static str> {
-        self.validate()?;
         self.providers
             .iter()
             .find(|p| p.models.iter().any(|m| m.record_key == model_record_key))

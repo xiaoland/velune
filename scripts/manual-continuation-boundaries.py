@@ -97,7 +97,6 @@ def main():
                 current = application.snapshot("alpha").snapshot
                 assert current and current.conversation.id == source.conversation.id
 
-            rejected(lambda: application.send_turn("beta", key, "x" * (256 * 1024)))
             assert not links_path.exists()
             unavailable_binary = root / "bad-runtime"
             unavailable_binary.write_text("#!/bin/sh\nprintf '99.0.0\\n'\n")

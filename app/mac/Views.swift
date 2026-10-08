@@ -508,8 +508,6 @@ struct ProviderEditor: View {
     @State private var clearAuthentication = false
     @State private var templateDraft: ModelTemplate?
     @State private var choosingTemplates = false
-    @State private var confirmsProjectionRemoval = false
-    @State private var oldProtocol: ProviderProtocol = .chatCompletionsV1
     @FocusState private var providerNameFocused: Bool
     @FocusState private var modelIDFocused: Bool
     private var authentication: ProviderAuthentication { store.providers.first { $0.id == provider?.id }?.authentication ?? provider?.authentication ?? ProviderAuthentication() }
@@ -552,13 +550,8 @@ struct ProviderEditor: View {
 
             HStack { Spacer(); Button("取消") { dismiss() }.keyboardShortcut(.cancelAction); Button("保存") { commit() }.keyboardShortcut(.defaultAction).disabled(!valid || store.isBusy) }.padding(16)
         }.frame(width: 650, height: 510)
-        .onAppear { name = provider?.name ?? ""; protocolID = provider?.protocolID ?? .chatCompletionsV1; oldProtocol = protocolID; endpoint = provider?.endpoint ?? ""; models = (provider?.models ?? []).map(ProviderModelDraft.init); editingAPIKey = authentication.method == .unconfigured; readAPIKeyIfNeeded() }
+        .onAppear { name = provider?.name ?? ""; protocolID = provider?.protocolID ?? .chatCompletionsV1; endpoint = provider?.endpoint ?? ""; models = (provider?.models ?? []).map(ProviderModelDraft.init); editingAPIKey = authentication.method == .unconfigured; readAPIKeyIfNeeded() }
         .onChange(of: selection) { _, value in if value == .connection { readAPIKeyIfNeeded() } }
-        .onChange(of: protocolID) { old, _ in if protocolID != provider?.protocolID && models.contains(where: { $0.adapterMetadataJSON != nil }) { oldProtocol = old; confirmsProjectionRemoval = true } }
-        .alert("移除来源适配参数？", isPresented: $confirmsProjectionRemoval) {
-            Button("移除并继续") { for index in models.indices { models[index].adapterMetadataJSON = nil } }
-            Button("取消", role: .cancel) { protocolID = oldProtocol }
-        } message: { Text("新协议不能直接沿用原运行时的协议适配参数。模型 ID 与已填写的能力仍保留。") }
         .sheet(isPresented: $choosingTemplates) { ModelTemplatePicker(templates: store.modelTemplates) { values in for template in values { addModel(ProviderModelDraft(template.model)) } } }
         .sheet(item: $templateDraft) { value in ModelTemplateEditor(store: store, template: value) }
         .sheet(isPresented: $store.showsAuthentication) { AuthenticationView(store: store) }
@@ -568,7 +561,13 @@ struct ProviderEditor: View {
             Section("连接") {
                 TextField("名称", text: $name)
                     .focused($providerNameFocused)
-                Picker("协议", selection: $protocolID) { ForEach(store.protocols.filter(\.supported)) { Text($0.name).tag($0.id) } }
+                Picker("协议", selection: Binding(get: { protocolID }, set: { value in
+                    guard value != protocolID else { return }
+                    for index in models.indices { models[index].adapterMetadataJSON = nil }
+                    protocolID = value
+                })) { ForEach(store.protocols.filter(\.supported)) { Text($0.name).tag($0.id) } }
+                Text("切换协议后采用默认适配参数；模型 ID 与已填写的能力保留。")
+                    .font(.caption).foregroundStyle(.secondary)
                 TextField("服务地址", text: $endpoint, prompt: Text(protocolID == .messagesV1 ? "https://…" : "https://…/v1"))
                     .help(protocolID == .messagesV1 ? "Anthropic Messages 协议基础 URL；请求路径为 /v1/messages。" : "提供商的协议服务基础 URL。")
             }

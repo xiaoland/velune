@@ -17,52 +17,10 @@ pub(super) fn runnable_pi_model<'a>(
     gateway: &'a GatewayConfig,
     id: &str,
 ) -> Result<&'a ProviderModel, RuntimeError> {
-    let provider = gateway
+    gateway
         .validate_dispatch(id)
         .map_err(RuntimeError::invalid)?;
-    let protocols = GatewayProtocol::runtime_protocols("pi-1.0.2").expect("registered Pi adapter");
-    if !protocols.contains(&provider.protocol) {
-        return Err(RuntimeError::invalid(
-            "所选模型协议不适用于此 Pi 运行时版本",
-        ));
-    }
     let model = gateway.model(id).expect("validated model");
-    let binding = provider
-        .models
-        .iter()
-        .find(|binding| binding.record_key == id)
-        .expect("validated binding");
-    if binding.context_window.is_none() || binding.max_output_tokens.is_none() {
-        return Err(RuntimeError::invalid(
-            "Pi 运行时需要提供商模型绑定的上下文窗口与输出上限；未知能力请先向该提供商核实并填写。",
-        ));
-    }
-    let levels = pi_declared_levels(binding);
-    if levels.iter().any(|level| {
-        !["off", "minimal", "low", "medium", "high", "xhigh", "max"].contains(&level.as_str())
-    }) {
-        return Err(RuntimeError::invalid(
-            "当前 Pi 适配器不支持该提供商模型的推理等级",
-        ));
-    }
-    if let Some(projection) = &binding.pi_projection {
-        // Pi-specific source mappings are checked only when preparing this adapter.
-        if projection.thinking_level_map.keys().any(|level| {
-            !["off", "minimal", "low", "medium", "high", "xhigh", "max"].contains(&level.as_str())
-        }) {
-            return Err(RuntimeError::invalid(
-                "Pi 来源推理映射无效，请重新预览并导入。",
-            ));
-        }
-        if !levels.is_empty()
-            && projection.reasoning_enabled
-            && projection.supported_levels(&levels).is_empty()
-        {
-            return Err(RuntimeError::invalid(
-                "Pi 适配器与提供商模型推理声明没有共同能力",
-            ));
-        }
-    }
     Ok(model)
 }
 
@@ -115,9 +73,19 @@ pub(super) fn materialize_models(
                 "modelRecordKey": model.record_key,
                 "name": if model.nickname.trim().is_empty() { &model.provider_model_id } else { &model.nickname },
                 "input": ["text"],
-                "maxTokens": binding.max_output_tokens.expect("runnable binding output limit"),
-                "contextWindow": binding.context_window.expect("runnable binding context window"),
+                // `registerProvider` uses Pi's extension-provider path. Unlike
+                // models.json composition, that path keeps the model object as
+                // provided, while Pi's response accounting reads `cost.tiers`.
+                // Keep the neutral zero-cost shape explicit so the injected
+                // gateway model has the same complete model contract.
+                "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
             });
+            if let Some(value) = binding.max_output_tokens {
+                entry["maxTokens"] = json!(value);
+            }
+            if let Some(value) = binding.context_window {
+                entry["contextWindow"] = json!(value);
+            }
             if let Some(api) = api {
                 entry["api"] = Value::String(api.into());
                 if api == "anthropic-messages" {
@@ -255,6 +223,7 @@ pub(super) fn pi_session_helper(
 
 /// Translate the protocol declaration at the Pi adapter boundary, not in the AI model domain.
 fn pi_declared_levels(binding: &crate::config::ProviderModel) -> Vec<String> {
+    const PI_LEVELS: [&str; 7] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
     let Some(reasoning) = &binding.reasoning_levels else {
         return Vec::new();
     };
@@ -262,6 +231,7 @@ fn pi_declared_levels(binding: &crate::config::ProviderModel) -> Vec<String> {
         projection
             .thinking_level_map
             .iter()
+            .filter(|(level, _)| PI_LEVELS.contains(&level.as_str()))
             .filter_map(|(level, wire)| {
                 wire.as_ref()
                     .filter(|wire| reasoning.contains(wire))

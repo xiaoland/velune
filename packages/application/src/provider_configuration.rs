@@ -59,10 +59,10 @@ pub(crate) fn edit_provider(
                         .ok_or_else(|| Error::invalid("authentication revision overflow"))?;
                 }
             }
-            if previous.is_some_and(|p| p.protocol != draft.protocol)
-                && draft.models.iter().any(|m| m.pi_projection.is_some())
-            {
-                return Err(Error::invalid("协议已变更；请明确移除来源适配参数后保存。"));
+            if previous.is_some_and(|p| p.protocol != draft.protocol) {
+                for model in &mut draft.models {
+                    model.pi_projection = None;
+                }
             }
             let provider = ProviderDefinition {
                 id: draft.id.clone(),
@@ -118,10 +118,7 @@ pub(crate) fn edit_template(
     Ok(())
 }
 pub(crate) fn validate_template(template: &ModelTemplate) -> Result<(), Error> {
-    if template.context_window == Some(0)
-        || template.max_output_tokens == Some(0)
-        || matches!((template.context_window,template.max_output_tokens),(Some(c),Some(m)) if m>c)
-    {
+    if template.context_window == Some(0) || template.max_output_tokens == Some(0) {
         return Err(Error::invalid("模板能力参数无效"));
     }
     if let Some(levels) = &template.reasoning_levels {

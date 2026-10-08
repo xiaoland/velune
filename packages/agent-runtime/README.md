@@ -6,7 +6,7 @@
 
 `authentication` 与 `provider_source` 通过本包资源中的薄 Pi helper 执行来源操作，返回非秘密的类型化状态和发现结果。application 负责将结果导入网关及原子提交；application 的提供商私有认证解析器通过固定 `pi_auth.mjs` 委托 OAuth 来源解析与刷新，不读取环境里的默认认证。
 
-执行侧通过 `pi_rpc.mjs` 装配固定 SDK。所选 CLI 必须对应 Pi 1.0.2 安装；原运行时目录继续拥有设置和会话，模型目录与 selection 文件由 application 在独立位置注入。执行侧 ModelRuntime 使用空认证存储及临时网关 token，不读取原 auth 或继承上游 provider 环境密钥。提供商导入仍只读原来源，并排除 Velune 自己生成的网关提供商。来源读取失败保留错误类别、阶段、退出状态和原始原因；SDK 错误输出供本地诊断使用，不以固定说明替换。常规诊断不采集配置文件或会话正文。unit 只发出 tracing 事件，由消费方装配日志订阅器，RPC 读取线程显式继承其 dispatcher 与 span。 Pi 来源扩展注册普通提供商本身不构成执行请求，也不应阻止启动。`velune/auto` 与注入的 `velune-gateway` 由适配器装配；保留名称冲突须明确诊断。该版本 SDK 的实际模型派发入口核对网关路由，不能只凭初始模型选择或空认证存储认定不会绕过网关；这不是任意本机扩展代码的网络沙箱。
+执行侧通过 `pi_rpc.mjs` 装配固定 SDK。所选 CLI 必须对应 Pi 1.0.2 安装；原运行时目录继续拥有设置、认证、扩展和会话，Velune 将本次网关模型目录作为额外 provider 配置追加到同一 `ModelRuntime`。因此原生 provider 与 Velune gateway 可以共存，Pi SDK 自己负责 provider 注册、模型选择和派发；普通来源扩展注册不会因为不是 Velune provider 而被拦截。来源读取失败保留错误类别、阶段、退出状态和原始原因；SDK 错误输出供本地诊断使用，不以固定说明替换。常规诊断不采集配置文件或会话正文。unit 只发出 tracing 事件，由消费方装配日志订阅器，RPC 读取线程显式继承其 dispatcher 与 span。`velune/auto` 与注入的 `velune-gateway` 由适配器装配；Velune hook 仅处理其 virtual model，不修改原生 provider 的请求。
 
 Pi 来源适配器按固定 SDK 1.0.2 的协议与有效兼容要求判断可导入性。Chat Completions 的已知设置只在当前网关请求能保持其语义时放行；原提供商和 URL 推断的输出字段、推理格式等默认要求也参与判断。`max_tokens` 来源设置通过可选 Pi 投影交给 application 转换为提供商模型的类型化 wire 选项，adapter 不依赖 AI-provider。未知字段或需要未实现 wire 行为的设置逐项说明原因，不将所有非空 compat 对象一概拒绝，也不把旧 Codex 后端或 Messages API 冒充受支持的 OpenAI 协议。
 
@@ -22,7 +22,9 @@ Codex 0.159.3 的 thread/revert 保留稳定 thread ID，同时创建新的 roll
 
 原生权限或回答请求映射为 conversation 的类型化交互，用户显式选择、回答或取消；adapter 不自动批准。执行模型由当前会话选择后注入，运行时配置不含默认模型；Codex／DSH 历史没有 Velune 提供商身份时须明确选择，不能凭 API model ID 猜测。DSH 的模型切换关闭会话、更新网关注入后重启并 resume 同一原生 ID。DSH reasoningEfforts 需要实际 wire 映射，当前仅有能力等级列表，不猜测映射，保留 SDK 默认行为。
 
-DSH 执行 overlay 禁用 settings、llm-deepseek 与 llm-deepseek-account，并为 llm-pi-ai／ACP 配置网关目录，防止原来源设置覆盖执行路由；不删除原来源配置。CLI 会按上游行为准备其 ACP profile。实例的 CODEX_HOME／DSH_HOME 与会话 cwd 分开；网关注入文件属于 application 的运行时投影目录。
+DSH 执行 overlay 为 llm-pi-ai／ACP 追加网关目录，同时保留来源已有 provider 和设置；不再通过禁用原来源 provider 来强制执行路径。CLI 会按上游行为准备其 ACP profile。实例的 CODEX_HOME／DSH_HOME 与会话 cwd 分开；网关注入文件属于 application 的运行时投影目录。
+
+Pi 与 Codex 的 stdio JSON-RPC 记录按换行边界读取，不附加固定的 1 MiB 单记录或业务输出上限；历史 helper 的 stdout 也完整读取。stderr 仅保留有界诊断缓存，超出时标记截断，不把诊断量误报成业务输出失败。超时、进程退出、JSON 解析和通道关闭仍按原生错误传播。
 
 Node 与用户配置的 Pi／Codex／DSH 安装均为外部依赖。huihua 固定依赖、完整许可证和安装入口见 [runtime-support 声明](runtime-support/THIRD_PARTY_NOTICES.md) 与 [开发说明](../../docs/development.md#原生运行时与历史读取)。只随 Mac 分发薄 adapter helpers 与 huihua parser 依赖，不分发任何 Agent runtime 或 Pi SDK。所有 Pi 操作从显式 CLI 解析对应外部安装；OAuth 来源固定安装与版本，缺失或变化不隐式回退。
 

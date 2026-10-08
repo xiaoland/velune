@@ -2,7 +2,6 @@ use super::response::{self, Call, Output};
 use super::*;
 use serde_json::json;
 
-const MAX_CONTENT_BYTES: usize = 16 * 1024 * 1024;
 struct ToolState {
     call: Call,
     index: usize,
@@ -15,7 +14,8 @@ struct ToolState {
 /// cancellation and transport backpressure. Text and ordinary OpenAI function
 /// argument deltas are emitted immediately. Messages requires an object, and
 /// custom-tool codecs require a complete wrapper, so those tool arguments are
-/// buffered until completion. Content and final snapshots share a 16 MiB bound.
+/// buffered until completion. The caller controls transport backpressure and
+/// any application-specific resource budget.
 pub struct StreamTranslator {
     from: LlmProtocol,
     to: LlmProtocol,
@@ -31,7 +31,6 @@ pub struct StreamTranslator {
     started: bool,
     terminal: bool,
     finish_seen: bool,
-    bytes: usize,
     sequence: u64,
     notes: Vec<ConversionNote>,
 }
@@ -66,7 +65,6 @@ impl StreamTranslator {
             started: false,
             terminal: false,
             finish_seen: false,
-            bytes: 0,
             sequence: 0,
             notes: vec![],
         }
@@ -141,17 +139,6 @@ impl StreamTranslator {
                 kind: TranslationErrorKind::Truncated,
                 field: "stream.missing_terminal",
             })
-        }
-    }
-    fn charge(&mut self, amount: usize) -> Result<(), TranslationError> {
-        self.bytes = self
-            .bytes
-            .checked_add(amount)
-            .ok_or_else(|| invalid("stream.content_limit"))?;
-        if self.bytes > MAX_CONTENT_BYTES {
-            Err(invalid("stream.content_limit"))
-        } else {
-            Ok(())
         }
     }
     fn event(&mut self, output: &mut Vec<u8>, event: &str, mut value: Value) {
@@ -229,7 +216,6 @@ impl StreamTranslator {
         text: &str,
         kind: &str,
     ) -> Result<(), TranslationError> {
-        self.charge(text.len())?;
         self.start(bytes);
         let existing = match kind {
             "refusal" => self.refusal_index,
@@ -278,9 +264,6 @@ impl StreamTranslator {
         arguments: &str,
         custom_source: bool,
     ) -> Result<(), TranslationError> {
-        self.charge(
-            arguments.len() + id.map(str::len).unwrap_or(0) + name.map(str::len).unwrap_or(0),
-        )?;
         self.start(bytes);
         if !self.calls.contains_key(&key) {
             let index = self.allocate();

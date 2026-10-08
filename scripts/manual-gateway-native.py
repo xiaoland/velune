@@ -54,6 +54,10 @@ def main():
         if not path.is_absolute() or not path.exists():
             parser.error('paths must be absolute and exist')
     captures = []
+    burst_lock = threading.Lock()
+    burst_arrivals = 0
+    burst_ready = threading.Event()
+    burst_release = threading.Event()
     peer_closed = threading.Event()
     requested = threading.Event()
     stream_body = b'data: {"vendor_event":true,"choices":[{"delta":{"reasoning_content":"SYNTHETIC"},"finish_reason":"vendor_stop"}],"usage":{"vendor_counter":9}}\n\ndata: [DONE]\n\n'
@@ -67,9 +71,18 @@ def main():
             pass
 
         def do_POST(self):
+            nonlocal burst_arrivals
             body = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
             captures.append({'path': self.path, 'body': body, 'headers': {name.lower(): value for name,value in self.headers.items()}})
             mode = body['fixture_case']
+            if mode == 'burst':
+                with burst_lock:
+                    burst_arrivals += 1
+                    if burst_arrivals == 17:
+                        burst_ready.set()
+                if not burst_release.wait(5):
+                    self.send_error(504)
+                    return
             if mode == 'slow_headers':
                 requested.set()
                 self.connection.settimeout(5)
@@ -92,7 +105,7 @@ def main():
                 except (BrokenPipeError, ConnectionResetError):
                     peer_closed.set()
                 return
-            status = 429 if mode == 'error' else 201 if mode in ['json', 'incomplete_json'] else 200
+            status = 429 if mode == 'error' else 201 if mode in ['json', 'burst', 'incomplete_json'] else 200
             payload = b'{"error":{"vendor_code":"synthetic_limit"}}' if mode == 'error' else (response_stream if self.path.endswith('/responses') else stream_body) if mode == 'stream' else b'{"status":"completed","choices":[],"vendor_field":{"retained":true}}'
             if mode == 'incomplete_json':
                 payload = incomplete_body
@@ -162,9 +175,11 @@ def main():
             if result['dropMs'] > 2000:
                 raise AssertionError('Runner drop exceeded two seconds')
             return result['dropMs']
-        def open_request(info, mode, model='chat', streaming=False, chunked=False, wire_model=None):
+        def open_request(info, mode, model='chat', streaming=False, chunked=False, wire_model=None, large=False):
             connection = http.client.HTTPConnection('127.0.0.1', info['port'], timeout=8)
             body = {'model': wire_model or 'velune/model/' + model, 'fixture_case': mode, 'stream': streaming, 'vendor_option': {'unchanged': True}, 'messages': [{'role': 'system', 'content': 'first'}, {'role': 'developer', 'content': 'second'}, {'role': 'assistant', 'content': 'history', 'reasoning_content': 'SYNTHETIC_HISTORY'}], 'input': 'synthetic'}
+            if large:
+                body['large_synthetic_field'] = 'x' * 300_000
             encoded = json.dumps(body).encode()
             encoded = [encoded[:12], encoded[12:]] if chunked else encoded
             connection.request('POST', '/v1/responses' if model == 'responses' else '/v1/chat/completions', encoded, {'Authorization': 'Bearer ' + info['token'], 'Content-Type': 'application/json', 'X-Session-Affinity': 'synthetic-session'}, encode_chunked=chunked)
@@ -189,6 +204,12 @@ def main():
             response = connection.getresponse()
             assert response.status == 201
             assert json.loads(response.read())['vendor_field']['retained']
+            connection.close()
+            connection, _ = open_request(info, 'json', large=True, chunked=True)
+            response = connection.getresponse()
+            large_status = response.status
+            large_response = response.read()
+            assert large_status != 413 and b'gateway request body limit' not in large_response, f'gateway rejected a 300 KiB request body: {large_status} {large_response!r}'
             connection.close()
             for mode, expected in [('incomplete_json', incomplete_body), ('failed_stream', failed_stream)]:
                 connection, _ = open_request(info, mode, 'responses', mode == 'failed_stream')
@@ -221,6 +242,33 @@ def main():
             active_ms = stop(active)
             assert peer_closed.wait(3), 'shutdown did not close active upstream'
             connection.close()
+            with burst_lock:
+                burst_arrivals = 0
+            burst_ready.clear()
+            burst_release.clear()
+            burst = start()
+            barrier = threading.Barrier(17)
+            burst_errors = []
+            def burst_request():
+                try:
+                    barrier.wait()
+                    connection, _ = open_request(burst, 'burst')
+                    response = connection.getresponse()
+                    if response.status != 201:
+                        burst_errors.append(response.status)
+                    response.read()
+                    connection.close()
+                except Exception as error:
+                    burst_errors.append(str(error))
+            threads = [threading.Thread(target=burst_request) for _ in range(17)]
+            for thread in threads: thread.start()
+            assert burst_ready.wait(5), f'upstream only observed {burst_arrivals}/17 concurrent requests'
+            assert burst_arrivals == 17
+            burst_release.set()
+            for thread in threads: thread.join()
+            stop(burst)
+            assert not burst_errors, burst_errors
+            print(json.dumps({'requestBodyOver256KiBAccepted': True, 'seventeenConcurrentRequestsAccepted': True, 'upstreamConcurrentArrivals': burst_arrivals}))
             records = []
             for log_path in (info['log_path'], active['log_path']):
                 raw = log_path.read_text()
@@ -234,7 +282,7 @@ def main():
                         return span.get('request_id')
                 return None
             requests = [record for record in records if record.get('fields', {}).get('event') == 'gateway_request_received']
-            assert len(requests) == 13
+            assert len(requests) == 14
             outcomes = []
             for request in requests:
                 identifier = request_id(request)
@@ -249,9 +297,9 @@ def main():
                     assert not attempts
                 else:
                     assert len(attempts) == 1
-                    expected_attempt = 'upstream_failed' if any(event.get('event') == 'gateway_upstream_headers' and event.get('http_status') == 429 for event in group) else outcome
+                    expected_attempt = 'upstream_failed' if any(event.get('event') in ('gateway_dispatch_failed',) or (event.get('event') == 'gateway_upstream_headers' and event.get('http_status') == 429) for event in group) else outcome
                     assert attempts[0]['outcome'] == expected_attempt, (expected_attempt, group)
-            assert outcomes.count('transport_completed') == 9
+            assert outcomes.count('transport_completed') == 10
             assert outcomes.count('rejected') == 1
             assert outcomes.count('downstream_closed') == 2
             assert outcomes.count('gateway_stopped') == 1

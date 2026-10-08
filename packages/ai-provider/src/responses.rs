@@ -9,17 +9,12 @@ use std::sync::Arc;
 use velune_ai::http::{Header, ResponseBody, ResponseMeta};
 use velune_ai::{InvalidContract, OperationFuture, Payload, responses::*};
 
-const MAX_RESPONSE_BODY_BYTES: usize = 16 * 1024 * 1024;
-
 async fn bounded_body(response: Response) -> Result<Vec<u8>, ()> {
     let mut body = Vec::new();
     let mut stream = response.bytes_stream();
     use futures_util::StreamExt;
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(|_| ())?;
-        if body.len().saturating_add(chunk.len()) > MAX_RESPONSE_BODY_BYTES {
-            return Err(());
-        }
         body.extend_from_slice(&chunk);
     }
     Ok(body)
@@ -69,13 +64,6 @@ impl OpenAiResponses {
             ));
         }
         let body = body.clone();
-        if serde_json::to_vec(&body)
-            .map_err(|_| InvalidContract("Responses body encoding"))?
-            .len()
-            > 256 * 1024
-        {
-            return Err(InvalidContract("provider request is too large"));
-        }
         Ok(body)
     }
 
@@ -348,35 +336,15 @@ impl ResponsesProvider for OpenAiResponses {
                 {
                     return Self::failure(ResponsesErrorKind::Cancelled, Some(status), None, true);
                 }
-                const MAX_PENDING_EVENT_BYTES: usize = 256 * 1024;
                 let delivery_failed =
                     std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
                 let delivery_flag = std::sync::Arc::clone(&delivery_failed);
-                let pending_bytes = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-                let pending_flag = std::sync::Arc::clone(&pending_bytes);
-                let pending_exceeded =
-                    std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-                let exceeded_flag = std::sync::Arc::clone(&pending_exceeded);
                 let raw = futures_util::stream::unfold(
-                    (
-                        response.bytes_stream(),
-                        events,
-                        delivery_flag,
-                        pending_flag,
-                        exceeded_flag,
-                    ),
-                    |(mut chunks, mut events, delivery_failed, pending_bytes, pending_exceeded)| async move {
+                    (response.bytes_stream(), events, delivery_flag),
+                    |(mut chunks, mut events, delivery_failed)| async move {
                         use futures_util::StreamExt;
                         match chunks.next().await {
                             Some(Ok(chunk)) => {
-                                let total = pending_bytes
-                                    .fetch_add(chunk.len(), std::sync::atomic::Ordering::AcqRel)
-                                    + chunk.len();
-                                if total > MAX_PENDING_EVENT_BYTES {
-                                    pending_exceeded
-                                        .store(true, std::sync::atomic::Ordering::Release);
-                                    return None;
-                                }
                                 if !chunk.is_empty()
                                     && (events)(ResponsesEvent::Body(Payload::new(chunk.to_vec())))
                                         .await
@@ -386,28 +354,12 @@ impl ResponsesProvider for OpenAiResponses {
                                         .store(true, std::sync::atomic::Ordering::Release);
                                     None
                                 } else {
-                                    Some((
-                                        Ok(chunk),
-                                        (
-                                            chunks,
-                                            events,
-                                            delivery_failed,
-                                            pending_bytes,
-                                            pending_exceeded,
-                                        ),
-                                    ))
+                                    Some((Ok(chunk), (chunks, events, delivery_failed)))
                                 }
                             }
-                            Some(Err(error)) => Some((
-                                Err(error),
-                                (
-                                    chunks,
-                                    events,
-                                    delivery_failed,
-                                    pending_bytes,
-                                    pending_exceeded,
-                                ),
-                            )),
+                            Some(Err(error)) => {
+                                Some((Err(error), (chunks, events, delivery_failed)))
+                            }
                             None => None,
                         }
                     },
@@ -421,14 +373,6 @@ impl ResponsesProvider for OpenAiResponses {
                     let event = match event {
                         Ok(event) => event,
                         Err(error) => {
-                            if pending_exceeded.load(std::sync::atomic::Ordering::Acquire) {
-                                return Self::failure(
-                                    ResponsesErrorKind::ProviderFailure,
-                                    Some(status),
-                                    None,
-                                    true,
-                                );
-                            }
                             if delivery_failed.load(std::sync::atomic::Ordering::Acquire) {
                                 return Self::failure(
                                     ResponsesErrorKind::Cancelled,
@@ -449,7 +393,6 @@ impl ResponsesProvider for OpenAiResponses {
                             return Self::failure(kind, Some(status), None, true);
                         }
                     };
-                    pending_bytes.store(0, std::sync::atomic::Ordering::Release);
                     if observe_event(Some(&event.event), &event.data, &mut terminal).is_err() {
                         return Self::failure(
                             ResponsesErrorKind::ProviderFailure,
@@ -461,14 +404,6 @@ impl ResponsesProvider for OpenAiResponses {
                 }
                 if delivery_failed.load(std::sync::atomic::Ordering::Acquire) {
                     return Self::failure(ResponsesErrorKind::Cancelled, Some(status), None, true);
-                }
-                if pending_exceeded.load(std::sync::atomic::Ordering::Acquire) {
-                    return Self::failure(
-                        ResponsesErrorKind::ProviderFailure,
-                        Some(status),
-                        None,
-                        true,
-                    );
                 }
                 match terminal {
                     Some(ResponsesTerminal::Completed) => ResponsesCompletion {

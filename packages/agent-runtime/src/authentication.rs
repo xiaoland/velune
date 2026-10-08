@@ -74,7 +74,6 @@ impl Login {
             )
             .arg("--device-id")
             .arg(device_id)
-            .env_clear()
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -111,14 +110,13 @@ impl Login {
         std::thread::spawn(move || {
             let mut reader = BufReader::new(output);
             loop {
-                // Bound each event independently; do not materialize arbitrary child output.
+                // Authentication events are newline-delimited JSON; preserve
+                // the complete event so the source adapter owns its payload shape.
                 let mut bytes = Vec::new();
-                let read = Read::by_ref(&mut reader)
-                    .take(65537)
-                    .read_until(b'\n', &mut bytes);
+                let read = Read::by_ref(&mut reader).read_until(b'\n', &mut bytes);
                 match read {
                     Ok(0) => break,
-                    Ok(_) if bytes.len() <= 65536 && bytes.last() == Some(&b'\n') => {
+                    Ok(_) if bytes.last() == Some(&b'\n') => {
                         let event = serde_json::from_slice::<Value>(&bytes)
                             .map_err(|error| error.to_string());
                         if sender.send(event).is_err() {
@@ -133,7 +131,7 @@ impl Login {
                     }
                     Ok(_) => {
                         let _ = sender.send(Err(
-                            "authentication adapter event exceeded the 64 KiB record limit".into(),
+                            "authentication adapter event ended without a newline".into(),
                         ));
                         break;
                     }
@@ -212,7 +210,7 @@ impl Login {
             Ok(value) => {
                 let detail = String::from_utf8_lossy(&value).trim().to_owned();
                 if value.len() >= 65537 {
-                    format!("{detail}；stderr 已截断（64 KiB）")
+                    format!("{detail}；stderr 已截断：诊断缓存达到上限")
                 } else {
                     detail
                 }
@@ -230,9 +228,6 @@ impl Login {
         let value = payload["value"]
             .as_str()
             .ok_or("authentication answer is required")?;
-        if value.len() > 16384 {
-            return Err("authentication answer is too large".into());
-        }
         serde_json::to_writer(
             &mut self.input,
             &json!({"type":"answer","id":id,"value":value}),
@@ -309,14 +304,10 @@ pub fn handle(
                     serde_json::to_string(&source)
                         .map_err(|error| format!("invalid authentication source: {error}"))?,
                 )
-                .env_clear()
                 .stdin(Stdio::null())
                 .stderr(Stdio::piped())
                 .output()
                 .map_err(|error| format!("authentication source inspection failed: {error}"))?;
-            if output.stdout.len() > 65536 {
-                return Err("authentication source inspection output exceeded 64 KiB".into());
-            }
             if !output.status.success() {
                 let detail = String::from_utf8_lossy(&output.stderr).trim().to_owned();
                 return Err(if detail.is_empty() {

@@ -21,7 +21,7 @@ use std::{
     time::Duration,
 };
 
-const MAX_RECORD_BYTES: usize = 1024 * 1024;
+const MAX_STDERR_BYTES: usize = 1024 * 1024;
 const RESPONSE_TIMEOUT: Duration = Duration::from_secs(3);
 // Pi may load an existing session, extensions, and project resources before
 // answering the readiness RPC. Keep startup more patient without extending
@@ -38,8 +38,6 @@ pub enum Error {
     InvalidCommand,
     #[error("Pi RPC command type is required")]
     MissingCommandType,
-    #[error("Pi RPC record exceeds {MAX_RECORD_BYTES} bytes")]
-    RecordTooLarge,
     #[error("Pi RPC child exited before responding")]
     ChildExited,
     #[error("Pi RPC response timed out")]
@@ -147,13 +145,6 @@ fn read_record(reader: &mut impl BufRead) -> std::io::Result<Option<Vec<u8>>> {
         }
         let newline = buffer.iter().position(|byte| *byte == b'\n');
         let count = newline.map_or(buffer.len(), |index| index + 1);
-        if record.len() + count > MAX_RECORD_BYTES {
-            reader.consume(count);
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "Pi RPC record exceeds size limit",
-            ));
-        }
         record.extend_from_slice(&buffer[..count]);
         reader.consume(count);
         if newline.is_some() {
@@ -194,7 +185,7 @@ impl Config {
             .arg("--runtime-type")
             .arg(&self.runtime_type_id)
             .arg("--validate");
-        let output = crate::native::rpc::bounded_process(output, None, MAX_RECORD_BYTES);
+        let output = crate::native::rpc::bounded_process(output, None, MAX_STDERR_BYTES);
         match output {
             Ok(_) => Ok(()),
             Err(error) => Err(Error::Sdk(format!("Pi SDK 入口验证失败：{error}"))),
@@ -229,14 +220,6 @@ impl Client {
                 path.as_ref()
                     .ok_or_else(|| Error::Sdk("SDK 装配路径不完整".into()))?,
             );
-        }
-        command.env_clear();
-        for key in [
-            "PATH", "HOME", "TMPDIR", "LANG", "LC_ALL", "LC_CTYPE", "SHELL",
-        ] {
-            if let Some(value) = std::env::var_os(key) {
-                command.env(key, value);
-            }
         }
         if let Some(value) = &config.provider {
             command.arg("--provider").arg(value);
@@ -293,7 +276,7 @@ impl Client {
                         Ok(size) => {
                             let (state, _) = &*stderr_state;
                             if let Ok(mut state) = state.lock() {
-                                let remaining = MAX_RECORD_BYTES.saturating_sub(state.bytes.len());
+                                let remaining = MAX_STDERR_BYTES.saturating_sub(state.bytes.len());
                                 if remaining != 0 {
                                     let retained = size.min(remaining);
                                     state.bytes.extend_from_slice(&chunk[..retained]);
@@ -389,7 +372,7 @@ impl Client {
         }
         let mut detail = String::from_utf8_lossy(&state.bytes).trim().to_owned();
         if state.truncated {
-            detail.push_str("\n[Pi RPC stderr 已截断：本地缓存上限 1 MiB]");
+            detail.push_str("\n[Pi RPC stderr 已截断：诊断缓存达到上限]");
         }
         detail
     }
@@ -457,9 +440,6 @@ impl Client {
             .ok_or(Error::InvalidCommand)?
             .to_string();
         let mut bytes = serde_json::to_vec(&command)?;
-        if bytes.len() > MAX_RECORD_BYTES {
-            return Err(Error::RecordTooLarge);
-        }
         bytes.push(b'\n');
         if self.stdin.is_none() {
             return Err(self.child_exit_error());

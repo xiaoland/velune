@@ -14,17 +14,12 @@ use velune_ai::{
     messages::*,
 };
 
-const MAX_RESPONSE_BODY_BYTES: usize = 16 * 1024 * 1024;
-
 async fn bounded_body(response: Response) -> Result<Vec<u8>, ()> {
     let mut body = Vec::new();
     let mut stream = response.bytes_stream();
     use futures_util::StreamExt;
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(|_| ())?;
-        if body.len().saturating_add(chunk.len()) > MAX_RESPONSE_BODY_BYTES {
-            return Err(());
-        }
         body.extend_from_slice(&chunk);
     }
     Ok(body)
@@ -100,13 +95,6 @@ impl Messages {
             ));
         }
         let body = body.clone();
-        if serde_json::to_vec(&body)
-            .map_err(|_| InvalidContract("Messages body encoding"))?
-            .len()
-            > 256 * 1024
-        {
-            return Err(InvalidContract("provider request is too large"));
-        }
         Ok(body)
     }
 }
