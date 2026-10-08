@@ -271,7 +271,7 @@ Mac 的“问题”窗口集中显示操作失败与当前读取问题，主界�
 
 运行时 stderr 使用有界本地缓存，并持续排空进程管道；达到容量后在诊断中明确标记截断，不能把容量限制伪装成隐私过滤或停止读取管道。工作时长是本机观察的执行区间，精度受轮询间隔影响；它不是提供商统计，也不回填到原生历史。
 
-本次消息列表与诊断的隔离验收入口是 `scripts/manual-transcript-outline.py`、`scripts/manual-problems.py`、`scripts/manual-error-diagnostics.py`。这些按需手动脚本使用临时配置与合成内容，不接入自动测试或 CI；消息流脚本使用外部已安装 Pi 与本地服务，不依赖真实模型账户。
+本次消息列表与诊断的隔离验收入口是 `scripts/manual-transcript-outline.py`、`scripts/manual-problems.py`、`scripts/manual-error-diagnostics.py`。这些按需手动脚本使用临时配置与合成内容，不接入自动测试或 CI；消息流脚本使用外部已安装 Pi 与本地服务，不依赖真实模型账户。该脚本直接调用 composer 使用的实际 AppStore 发送入口，经 Transport／UniFFI／外部 Pi 到合成 HTTP 上游，覆盖关闭后重开原生会话再发送；检查精确用户正文、所选模型、回复投影及原生会话身份。它不替代实际界面按键或真实账户验收。
 
 ## 用量分析
 

@@ -250,7 +250,8 @@ def main():
             before_rename = len(captures)
             application.rename_conversation(runtime.id, renamed_draft.conversation.id, 'SYNTHETIC_PERSISTED_DRAFT_TITLE')
             assert not renamed_path.exists() and len(captures) == before_rename
-            application.send_turn(runtime.id, binding.record_key, 'Persist the renamed synthetic native draft.')
+            persisted_prompt = 'Persist the renamed synthetic native draft.'
+            application.send_turn(runtime.id, binding.record_key, persisted_prompt)
             deadline = time.monotonic() + 30
             while time.monotonic() < deadline:
                 snapshot = application.snapshot(runtime.id).snapshot
@@ -266,6 +267,41 @@ def main():
             assert native_saved['name'] == 'SYNTHETIC_PERSISTED_DRAFT_TITLE'
             reopened_draft = application.open_conversation(runtime.id, renamed_draft.conversation.id).snapshot
             assert reopened_draft.conversation.title == 'SYNTHETIC_PERSISTED_DRAFT_TITLE'
+            reopened_prompt = 'Continue the already persisted synthetic session.'
+            def text_content(value):
+                if isinstance(value, str):
+                    return value
+                if isinstance(value, dict) and value.get('type') == 'text':
+                    return value.get('text', '')
+                if isinstance(value, list):
+                    return ''.join(text_content(item) for item in value)
+                return ''
+
+            def assistant_text_count(snapshot):
+                return sum(
+                    1 for message in snapshot.messages
+                    if message.role == bindings.BindingMessageRole.ASSISTANT
+                    for block in message.blocks
+                    if isinstance(block, bindings.BindingMessageBlock.TEXT)
+                )
+
+            before_reopen = len(captures)
+            before_reopen_texts = assistant_text_count(reopened_draft)
+            application.send_turn(runtime.id, binding.record_key, reopened_prompt)
+            deadline = time.monotonic() + 30
+            while time.monotonic() < deadline:
+                reopened_snapshot = application.snapshot(runtime.id).snapshot
+                if reopened_snapshot and reopened_snapshot.run_state == bindings.BindingRunState.FAILED:
+                    raise RuntimeError('reopened synthetic session failed')
+                if reopened_snapshot and reopened_snapshot.actions.can_send and len(captures) > before_reopen:
+                    break
+                time.sleep(.05)
+            else: raise RuntimeError('reopened synthetic session did not settle')
+            assert reopened_snapshot.conversation.id == renamed_draft.conversation.id
+            assert any(item.get('role') == 'user' and text_content(item.get('content')) == reopened_prompt
+                       for item in captures[-1]['messages'])
+            reopened_texts = assistant_text_count(reopened_snapshot)
+            assert reopened_texts > before_reopen_texts, 'reopened reply was not projected'
             preview = application.preview_provider_import('default', source)
             skipped = application.apply_provider_import('default', source, preview.token,
                 [bindings.BindingImportSelection(provider_id=selected.id, candidate_keys=[candidate.candidate_key])], False)
@@ -340,7 +376,8 @@ def main():
             print(json.dumps({'acceptance': 'PASSED', 'bundle': {'sourceCommit': manifest['source_commit'],
                 'dirty': manifest['dirty'], 'uiVersion': manifest['ui_version']},
                 'normalPath': 'configured runtime → import → choose conversation model → automatic prepare → create → send → tool → continuation → next turn',
-                'upstreamRequests': len(captures), 'onlySelectedProviderSaved': True, 'providerOwnedAuthentication': True,
+                'upstreamRequests': len(captures), 'persistedSessionReopenAndSend': True,
+                'onlySelectedProviderSaved': True, 'providerOwnedAuthentication': True,
                 'startupFailureHasCauseInstanceAndTrace': True, 'recoversAfterFailedStartup': True,
                 'emptyDraftRenameAndDeleteUseNativeSession': True,
                 'renamedDraftPersistsOnFirstMessage': True,

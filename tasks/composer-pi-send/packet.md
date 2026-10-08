@@ -1,6 +1,8 @@
 # 输入区与 Pi 发送修复
 
-当前进展（2026-10-08）：本轮内部模型归属已由只读关联类型表达，重复查找／不可达错误／目录静默过滤已删除；workspace静态及Mac整包构建通过，已重新安装打开0.1 beta.1，完成当前任务本地提交收尾。上一轮状态如下。
+当前进展（2026-10-08）：同一Pi会话发送端到端通过，包括关闭应用用例后重开已持久化会话再发送。Mac实际AppStore→Transport→UniFFI→外部Pi→HTTP合成上游→回复投影4请求无重试，Pi用例完整7请求。当前安装665ec60产品代码无需修改；补强既有手工脚本和证据记录，已完成本任务本地提交收尾。真实提供商和界面按键仍由用户验收。
+
+本轮内部模型归属已由只读关联类型表达，重复查找／不可达错误／目录静默过滤已删除；workspace静态及Mac整包构建通过，已重新安装打开0.1 beta.1，完成当前任务本地提交收尾。上一轮状态如下。
 
 网关作为新增提供商入口的需求已归 PRD。已删除 Pi 强制注册／派发检查及排他装配、DSH 原生提供商禁用、任意业务容量／并发门禁与重复校验；原生 SDK 保留来源配置并追加网关。清单见 [门禁复核](gate-audit.md)。Rust 静态、合成网关与提供商编辑验收通过，Mac 整包构建并安装重新打开 0.1 beta.1；已完成本地提交收尾。下文此前记录仅代表当时状态。
 
@@ -79,3 +81,11 @@ Pi owner 最终补证据已采用：最新完整手工E2E acceptance PASSED、up
 2026-10-08 后续静态化已落实到 application 模型解析：`ResolvedProviderModel` 私有字段只由配置入口关联构造，readonly借用贯通Pi身份／目录、native注入／alias和派发。删除旧validate_dispatch/model双查、validated expect、目录静默过滤及确定协议上的Option分支。用户要求已归开发说明／AGENTS，纠正其中旧的排他网关与Pi规格必填表述。workspace fmt/check、clippy all-targets/all-features -D warnings和application no-default-features检查通过；配置schema／UniFFI不变，无通用校验框架或新增lint。正在整包构建安装，行为没有新增协议路径，本轮不重复真实服务或GUI验收。
 
 静态化切片整合交付：release Rust与UniFFI生成、Swift warnings-as-errors构建（13.07秒）及签名通过。安装前未发现运行中的Applications Velune进程；安装后可执行文件／Rust库／manifest与构建SHA256一致，严格签名通过，应用已打开。manifest忠实记录提交前a24b9ee/dirty=true；本轮没有读取真实配置或调用真实模型，没有新增自动化测试。局部相对链接与diff检查通过，仅自主提交本任务9个文件，不push/PR。
+
+本轮完成标准：同一Pi实例已有会话加载，下一条用户消息经真实外部Pi发出HTTP请求，合成上游捕获精确输入；生成回复重新投影到Mac发送入口，操作恢复可发送。仅启动成功、send回调触发或gateway存活均不足以完成。真正提供商和用户UI体验仍由用户验收，不将loopback成功宣称为真实账户成功。
+
+本轮实际Mac端证据：安装bundle对应665ec60（manifest保存提交前a24b9ee/dirty=true，与当前产品构建一致）；实际Store创建／首轮工具与续轮／第二轮／shutdown／新Store.start重开同原生会话／send RESUME_NATIVE_USER成功。HTTP捕获模型synthetic和精确正文，reply RESUMED_FINAL在新turn完成；3条user／3个完成turn，runtime fixture、model record key、原生conversation ID保持，accepted回调1次，无Problems，共4请求无重试。Swift人工入口warnings-as-errors编译通过。初次新增fixture误以为user content只能为String，修为同时接受标准text块数组后严格重跑通过；该故障属于合成服务，没有产品代码补丁。复用manual-transcript-outline.py，未新增自动化测试或CUA按键验收。
+
+Pi用例独立证据：当前安装bundle＋新生成Python UniFFI，经临时source/project导入提供商后完整流程7请求，通过已持久化同原生会话打开后发送。原公开入口为系统外部Pi1.0.2，Node24.15.0。开发方没有新调用真实服务或查看原生真实会话；对应当天日志只见既有timeout和旧注册失败，未观察到当前安装后新send失败。增加手工脚本步骤时root要求回复断言只计assistant新增，不能让新增user文本满足reply条件。
+
+最终7请求复验通过：上游user content按String／标准text数组精确匹配；新增reply仅统计assistant TEXT，排除用户消息假阳性。两手工脚本py_compile和diff检查通过，文档相对链接检查通过。只改验收脚本与说明，当前安装产品代码完全相同，不重复重建；自主本地提交4文件，不push/PR。

@@ -53,6 +53,7 @@ import VeluneBindings
         var created = false
         print("PHASE create"); store.createConversation(runtimeID: "fixture", cwd: root.appendingPathComponent("project").path, modelRecordKey: key) { created = true }
         try await wait { !store.isLoading }; try require(created, "create failed: \(store.problems.map(\.detail))")
+        try require(store.nextTurnRuntimeID == "fixture" && store.nextTurnModelRecordKey == key, "next-turn intent mismatched created session")
         print("PHASE first-send canSend=\(store.canSend) problems=\(store.problems.map(\.detail))"); store.send(text: "READ_FIXTURE")
         print("PHASE first-prefix"); try await wait { FileManager.default.fileExists(atPath: root.appendingPathComponent("ready-first").path) && store.transcript.rows.contains { $0.message.role == .assistant } }
         let firstAssistant = store.transcript.rows.first { $0.message.role == .assistant }!
@@ -128,12 +129,23 @@ import VeluneBindings
         try require(reopened.transcript.turns.allSatisfy { $0.durationMs == nil && !$0.isRunning }, "historical work duration was invented")
         try require(reopened.transcript.userRows.count == 2)
         try require(reopened.transcript.rows.contains { $0.id == finalFirstAssistantID }, "canonical finalized message identity changed on reopen")
+        reopened.selectNextTurnRuntime("fixture"); reopened.selectModel(modelRecordKey: key)
+        try require(reopened.canSend && reopened.nextTurnRuntimeID == "fixture" && reopened.nextTurnModelRecordKey == key, "resumed next-turn intent unavailable")
+        var accepted = 0
+        print("PHASE resumed-native-send")
+        reopened.send(text: "RESUME_NATIVE_USER") { accepted += 1 }
+        try await wait { reopened.canSend && reopened.transcript.userRows.count == 3 && reopened.transcript.rows.contains { $0.message.blocks.contains(.text("RESUMED_FINAL")) } }
+        try require(accepted == 1 && reopened.problems.isEmpty, "resumed send was not accepted exactly once")
+        try require(reopened.loadedConversationID == originalConversationID && reopened.manualSnapshot()?.contextRuntimeID == "fixture", "resumed send switched native conversation/runtime")
+        try require(reopened.nextTurnModelRecordKey == key && reopened.manualSnapshot()?.modelRecordKey == key, "resumed send used wrong model")
+        try require(reopened.transcript.userRows.filter { $0.message.blocks.contains(.text("RESUME_NATIVE_USER")) }.count == 1, "resumed user body changed or duplicated")
+        try require(reopened.transcript.turns.count == 3 && !reopened.transcript.turns.last!.isRunning, "resumed turn did not reach terminal projection")
         var nextCreated = false
         reopened.createConversation(runtimeID: "fixture", cwd: root.appendingPathComponent("project").path, modelRecordKey: key) { nextCreated = true }
         try await wait { !reopened.isLoading && nextCreated }
         try require(reopened.loadedConversationID != originalConversationID && reopened.transcript.rows.isEmpty)
         stopped = nil; reopened.shutdown { stopped = $0 }; try await wait { stopped != nil }; try require(stopped == true)
-        print("{\"acceptance\":\"PASSED\",\"actualStoreAndPiToolStream\":true,\"typedCoreWorkReferences\":true,\"userAndLastVisible\":true,\"observedDurationAndUnknownHistory\":true,\"stableRowAndMarkdownCache\":true,\"canonicalConfirmationState\":true,\"lateNativeUserFollowsExplicitSend\":true,\"outlineSuffixAndAnchorChanges\":true,\"nativeConversationSwitchResetsRows\":true,\"preferenceSurvivesReopen\":true}")
+        print("{\"acceptance\":\"PASSED\",\"actualStoreAndPiToolStream\":true,\"existingNativeSessionSend\":true,\"typedCoreWorkReferences\":true,\"userAndLastVisible\":true,\"observedDurationAndUnknownHistory\":true,\"stableRowAndMarkdownCache\":true,\"canonicalConfirmationState\":true,\"lateNativeUserFollowsExplicitSend\":true,\"outlineSuffixAndAnchorChanges\":true,\"nativeConversationSwitchResetsRows\":true,\"preferenceSurvivesReopen\":true}")
     }
 }
 '''
@@ -167,6 +179,7 @@ def main():
 
             def do_POST(self):
                 body = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
+                assert body['model'] == 'synthetic', 'selected provider model did not reach upstream'
                 requests.append(body)
                 print("UPSTREAM request", len(requests), flush=True)
                 number = len(requests)
@@ -197,7 +210,12 @@ def main():
                         assert 'SYNTHETIC_TOOL_RESULT' in json.dumps(body), 'actual tool result missing'
                         chunk({'content': '_FINAL'})
                 else:
-                    chunk({'role': 'assistant', 'content': 'SECOND_FINAL'})
+                    if number == 4:
+                        current = next(value['content'] for value in reversed(body['messages']) if value['role'] == 'user')
+                        if isinstance(current, list):
+                            current = ''.join(block['text'] for block in current if block.get('type') == 'text')
+                        assert current == 'RESUME_NATIVE_USER', 'resumed exact user text did not reach actual Pi upstream'
+                    chunk({'role': 'assistant', 'content': 'RESUMED_FINAL' if number == 4 else 'SECOND_FINAL'})
                 chunk({}, 'tool_calls' if number == 1 else 'stop')
                 self.wfile.write(b'data: [DONE]\n\n')
                 self.wfile.flush()
@@ -207,7 +225,7 @@ def main():
         try:
             main_source = root / 'Manual.swift'; main_source.write_text(SWIFT)
             store_source = root / 'Store.swift'
-            store_source.write_text((repository / 'app/mac/Store.swift').read_text() + '\nextension AppStore { func manualPoll() { poll() } }\n')
+            store_source.write_text((repository / 'app/mac/Store.swift').read_text() + '\nextension AppStore { func manualPoll() { poll() }; func manualSnapshot() -> ConversationSnapshot? { snapshot } }\n')
             import_models = root / 'ImportModels.swift'
             import_models.write_text((repository / 'app/mac/ProviderImport.swift').read_text().split('struct ProviderImportView: View {')[0])
             build = args.swift_build
@@ -224,7 +242,7 @@ def main():
             env = {'HOME': str(root / 'home'), 'PATH': str(args.node.parent) + ':/usr/bin:/bin', 'NO_PROXY': '127.0.0.1,localhost'}
             subprocess.run([str(root / 'manual'), str(root), str(root / 'resources'), str(args.node), str(args.pi),
                             'http://127.0.0.1:%d/v1' % server.server_port], cwd=root, env=env, check=True, timeout=100)
-            assert len(requests) == 3, 'unexpected provider retries'
+            assert len(requests) == 4, 'unexpected provider retries'
         finally:
             server.shutdown(); server.server_close()
 
