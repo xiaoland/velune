@@ -23,6 +23,52 @@ async function main() {
   const { InMemoryCodingAgentModelsStore } = await installation.importModule("dist/core/models-store.js");
   const modelRuntime = await sdk.ModelRuntime.create({modelsPath,credentials,modelsStore:new InMemoryCodingAgentModelsStore(),refreshOnCreate:false,allowModelNetwork:false});
   if (modelRuntime.getError()) fail("Velune 执行模型目录无效");
+  const reservedProviderIds = new Set(["velune", "velune-gateway"]);
+  let reservedProviderConflict;
+  const providerRegistrationError = (providerId) => {
+    reservedProviderConflict = providerId;
+    return new Error(`Pi 扩展不能注册 Velune 保留提供商：${providerId}`);
+  };
+  const registerProvider = modelRuntime.registerProvider.bind(modelRuntime);
+  modelRuntime.registerProvider = (...args) => {
+    const providerId = typeof args[0] === "string" ? args[0] : args[0]?.id;
+    if (reservedProviderIds.has(providerId)) throw providerRegistrationError(providerId);
+    return registerProvider(...args);
+  };
+  const registerNativeProvider = modelRuntime.registerNativeProvider.bind(modelRuntime);
+  modelRuntime.registerNativeProvider = (provider) => {
+    if (reservedProviderIds.has(provider?.id)) throw providerRegistrationError(provider.id);
+    return registerNativeProvider(provider);
+  };
+  const registerVirtualModel = modelRuntime.registerVirtualModel.bind(modelRuntime);
+  modelRuntime.registerVirtualModel = (definition) => {
+    const providerId = definition?.provider;
+    const modelId = definition?.id;
+    if (providerId === "velune-gateway" || (providerId === "velune" && modelId !== "auto")) {
+      throw providerRegistrationError(`${providerId}/${modelId}`);
+    }
+    if (providerId === "velune" && modelId === "auto" && definition?.__veluneOwned !== true) {
+      throw providerRegistrationError(`${providerId}/${modelId}`);
+    }
+    return registerVirtualModel(definition);
+  };
+  const injectedGatewayModels = new Map(
+    modelRuntime.getAllModels("velune-gateway").map((model) => [model.id, {
+      api: model.api,
+      baseUrl: model.baseUrl,
+    }]),
+  );
+  const streamSimple = modelRuntime.streamSimple.bind(modelRuntime);
+  modelRuntime.streamSimple = (model, context, options) => {
+    const isVeluneVirtualModel = model?.api === "pi-virtual" && model.provider === "velune" && model.id === "auto";
+    const expected = injectedGatewayModels.get(model?.id);
+    const isInjectedGatewayModel = expected !== undefined && model?.provider === "velune-gateway" && expected.api === model.api && expected.baseUrl === model.baseUrl;
+    if (!isVeluneVirtualModel && !isInjectedGatewayModel) fail("Velune 会话请求必须使用注入网关");
+    if (modelRuntime.getRegisteredProviderIds().some((id) => reservedProviderIds.has(id))) {
+      fail("扩展覆盖了 Velune 保留提供商");
+    }
+    return streamSimple(model, context, options);
+  };
   const sessionPath = value("--session"), sessionDir = value("--session-dir");
   const sessionManager = sessionPath ? sdk.SessionManager.open(sessionPath, sessionDir) : sdk.SessionManager.create(process.cwd(), sessionDir);
   const trustStore = new sdk.ProjectTrustStore(agentDir), trustByCwd = new Map();
@@ -32,6 +78,7 @@ async function main() {
     const shouldResolve = cached === undefined && hasProjectResources;
     const projectTrusted = shouldResolve ? false : (cached ?? (!hasProjectResources || trustStore.get(cwd) === true));
     const settingsManager = sdk.SettingsManager.create(cwd,agentDir,{projectTrusted});
+    reservedProviderConflict = undefined;
     const services = await sdk.createAgentSessionServices({cwd,agentDir,settingsManager,modelRuntime,
       resourceLoaderOptions:{additionalExtensionPaths:[extension]},
       resourceLoaderReloadOptions:shouldResolve ? {resolveProjectTrust:async ({extensionsResult})=> {
@@ -40,12 +87,14 @@ async function main() {
         trustByCwd.set(cwd,trusted); return trusted;
       }} : undefined,
     });
-    // SDK extension registration is a supported, observable boundary. A
-    // direct provider registration would bypass Velune routing, so reject it
-    // rather than attempting to rewrite or sandbox extension code.
-    if (services.modelRuntime.getRegisteredProviderIds().length !== 0) fail("当前接入不支持注册直连 AI 提供商的 Pi 扩展");
+    if (reservedProviderConflict) fail(`Pi 扩展不能注册 Velune 保留提供商：${reservedProviderConflict}`);
+    // Existing Pi extensions may register unrelated source providers while the
+    // source runtime loads. The application selects velune/auto at session
+    // creation and rebinds it before every user turn; Pi's virtual-model
+    // stream path then resolves only the injected velune-gateway catalog.
     const model = services.modelRuntime.getModel("velune","auto");
     if (!model) fail("Velune 网关模型未注册");
+    if (model.api !== "pi-virtual") fail("Velune 网关模型命名空间被其他 Pi 模型占用");
     const result = await sdk.createAgentSessionFromServices({services,sessionManager,model,thinkingLevel:"off",sessionStartEvent});
     return {...result,services,diagnostics:services.diagnostics};
   };

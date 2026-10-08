@@ -1,6 +1,6 @@
 # 输入区与 Pi 发送修复
 
-当前进展（2026-10-08）：上轮已提交508c7c4并安装，工作转为新版Pi发送失败诊断及列表浏览偏好持久化。新失败定位为首次RPC响应3秒超时，已区分启动15秒与普通命令3秒窗口。列表分组／排序／筛选已持久化并隔离验证；新版已安装重新打开，root完成本地提交收尾。真实会话重试仍由用户验收。下文早期“未提交／等待重试”记录仅为当时状态。
+当前进展（2026-10-08）：最新重试为extension provider注册被一刀切拒绝导致exit1。已允许普通注册并将执行约束放在Pi公开streamSimple入口，合成6请求／续接、直连模型拒绝和保留名称冲突检查通过。新版已安装重新打开；root完成本地提交收尾。真实会话重试仍由用户验收。下文早期记录仅代表当时状态。
 
 2026-10-07 用户报告 composer 占位文字与实际输入位置不一致，输入区过度复杂，并授权诊断修复连续两次 Pi 发送失败。目标是简洁的原生输入体验和可靠的发送链路，不扩展会话功能。真实凭据、配置与会话正文不得读取；仅查看对应失败诊断，行为验证使用临时 HOME 与合成本机服务，不调用真实模型。
 
@@ -49,3 +49,13 @@ Mac最终返回已采用并冻结：Views.swift／Transcript.swift，严格Swift
 Pi最终证据已采用：state()三个readiness RPC用15秒静默响应窗口，ordinary RPC仍3秒。timeout查询区分alive／exit／状态查询失败；持续非匹配事件会重新等待，不承诺绝对总15秒。实际外部Pi1.0.2+合成配置延迟4秒完整6请求通过，延迟16秒在约15秒失败且带alive和实例入口上下文。新记录足以修复短等待边界，但不证明真实会话仅此问题；若重试仍失败从新诊断继续调查。
 
 整合完成：release Rust＋当前UniFFI＋Swift warnings-as-errors整包构建通过（Swift29.91秒），签名通过。正常退出真实应用，重新安装／打开Applications中的0.1 beta.1；可执行文件、Rust库、manifest逐一SHA256与构建包一致。PRD、Mac README、开发说明同步，局部文档链接及diff检查通过。本次安装manifest忠实保留提交前508c7c4/dirty=true的构建状态；源码无后续变化。准备自主本地提交本轮19文件，不push/PR。浏览持久化与启动窗口修复已交付；真实调用最终反馈留用户。
+
+2026-10-08 用户在510d9e0新版再次重试仍失败；当前恢复诊断，前轮只修复短等待边界，不认定真实发送已恢复。继续稳定Pi owner核对新operation_id/cause，禁止盲目再扩大timeout。Root检查SDK装配与readiness链路，保留真实来源与协议边界；有新根因时隔离复现、修复、静态检查、安装及自主提交。
+
+本次重试根因已确认：UTC04:33:09，operation_id 18dc73b7cf1fc918-15fcc-2b，runtime_start_failed原始cause为“当前接入不支持注册直连 AI 提供商的 Pi 扩展”，exit1，约4068ms；不是timeout。pi_rpc.mjs将任何extension provider注册等同于绕过gateway，启动时一刀切拒绝。owner已用合成provider扩展完成6请求，但root尚未仅凭固定初始模型选择采用其“始终经gateway”断言；advisor核对namespace/运行时模型选择边界，owner补实际route与无direct请求判别。真实扩展内容不读取。
+
+advisor判别已采用：Pi公开1.0.2 SDK允许运行中registerProvider/registerVirtualModel及pi.setModel，空credential store不防配置apiKey；prepareRequest为private，不覆盖它。主turn/compaction/summary/cache经公开ModelRuntime.streamSimple，virtualdirect resolve后递归同入口。删除普通注册禁令，准确保护适配器owned名称，实际派发核对注入gateway并委托原方法；不引入扩展sandbox。owner须验收普通注册/continuation成功且网关收到请求、选普通provider不会调用模拟上游并报明确错误、保留名称冲突具体诊断。
+
+最终Pi实现已采用并冻结：普通provider注册允许；拦截保留provider/virtual名称覆盖，explicit冲突变量；streamSimple同步守卫放行ownedauto虚拟模型和snapshot catalog匹配的gateway物理模型（expected必须存在，核对api/baseUrl）。自有virtual注册带内部标记适应SDKreload，不将该标记当恶意扩展隔离证明。实际SDK派发继续委托原方法。现有manual-pi-native-loop.py临时PI_HOME添加普通fixture-direct扩展，6请求完整gateway loop通过；临时真实SDK脚本在set_model直连后prompt产生明确guard错误；reserved provider/auto冲突check通过。Node syntax、Python compile及diff检查通过。Root复核实际source和directguard脚本后采用证据，Rust/Swift源码未变不重跑无关静态检查。真实扩展／凭据／正文未读取，真实上游未调用。开始标准构建安装。
+
+本轮整合交付：标准release构建完成，Swift warnings-as-errors 12.47秒；正常退出旧App、安装并重新打开Applications中的0.1 beta.1。安装二进制、Rust库、manifest和两个Pi helper与构建一致，两helper另外与源码逐字节一致，严格签名通过。Runtime README／开发说明同步，局部文档链接与diff检查通过。manifest忠实记录构建时510d9e0/dirty=true，不伪改构建来源。自主提交本轮6文件，不push/PR；当前故障原因已修正并隔离验证，不代替真实会话最终验收。

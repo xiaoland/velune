@@ -40,6 +40,13 @@ def main():
         root = Path(directory)
         for name in ('home', 'source', 'bindings', 'project', 'resources'):
             (root / name).mkdir()
+        (root / 'source' / 'extensions').mkdir()
+        (root / 'source' / 'extensions' / 'direct-provider.ts').write_text(
+            "export default function (pi) { pi.registerProvider('fixture-direct', { "
+            "baseUrl: 'http://127.0.0.1:1/v1', api: 'openai-completions', apiKey: 'synthetic-only', "
+            "models: [{ id: 'direct', name: 'direct', reasoning: false, input: ['text'], "
+            "contextWindow: 16384, maxTokens: 128 }] }); }\n"
+        )
         resources = root / 'resources'
         for helper in ('pi_sdk.mjs', 'pi_sessions.mjs', 'pi_rpc.mjs', 'pi_virtual_model.mjs',
                        'pi_auth.mjs', 'pi_provider_import.mjs'):

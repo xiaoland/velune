@@ -82,7 +82,7 @@ export default function (pi) {
     ]) delete payload[key];
     return payload;
   });
-  pi.registerVirtualModel({
+  const definition = {
     provider: "velune",
     id: "auto",
     name: "Velune Auto",
@@ -106,5 +106,7 @@ export default function (pi) {
         },
       };
     },
-  });
+  };
+  definition.__veluneOwned = true;
+  pi.registerVirtualModel(definition);
 }
