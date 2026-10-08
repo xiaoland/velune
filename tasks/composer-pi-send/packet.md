@@ -1,6 +1,8 @@
 # 输入区与 Pi 发送修复
 
-当前进展（2026-10-08）：网关作为新增提供商入口的需求已归 PRD。已删除 Pi 强制注册／派发检查及排他装配、DSH 原生提供商禁用、任意业务容量／并发门禁与重复校验；原生 SDK 保留来源配置并追加网关。清单见 [门禁复核](gate-audit.md)。Rust 静态、合成网关与提供商编辑验收通过，Mac 整包构建并安装重新打开 0.1 beta.1；已完成本地提交收尾。下文此前记录仅代表当时状态。
+当前进展（2026-10-08）：本轮内部模型归属已由只读关联类型表达，重复查找／不可达错误／目录静默过滤已删除；workspace静态及Mac整包构建通过，已重新安装打开0.1 beta.1，完成当前任务本地提交收尾。上一轮状态如下。
+
+网关作为新增提供商入口的需求已归 PRD。已删除 Pi 强制注册／派发检查及排他装配、DSH 原生提供商禁用、任意业务容量／并发门禁与重复校验；原生 SDK 保留来源配置并追加网关。清单见 [门禁复核](gate-audit.md)。Rust 静态、合成网关与提供商编辑验收通过，Mac 整包构建并安装重新打开 0.1 beta.1；已完成本地提交收尾。下文此前记录仅代表当时状态。
 
 2026-10-07 用户报告 composer 占位文字与实际输入位置不一致，输入区过度复杂，并授权诊断修复连续两次 Pi 发送失败。目标是简洁的原生输入体验和可靠的发送链路，不扩展会话功能。真实凭据、配置与会话正文不得读取；仅查看对应失败诊断，行为验证使用临时 HOME 与合成本机服务，不调用真实模型。
 
@@ -73,3 +75,7 @@ advisor判别已采用：Pi公开1.0.2 SDK允许运行中registerProvider/regist
 
 
 Pi owner 最终补证据已采用：最新完整手工E2E acceptance PASSED、upstreamRequests=6，覆盖来源扩展注册、网关注入、工具、续接和下一轮；另原生provider和gateway回环请求均stopReason=stop并返回ok。缺省contextWindow/maxTokens模型实际发送成功，未由Velune填常数。DSH本轮未实际派发验收，保留该明确边界。源码已冻结，root静态/整包构建对应当前源码，无后续改动。
+
+2026-10-08 后续静态化已落实到 application 模型解析：`ResolvedProviderModel` 私有字段只由配置入口关联构造，readonly借用贯通Pi身份／目录、native注入／alias和派发。删除旧validate_dispatch/model双查、validated expect、目录静默过滤及确定协议上的Option分支。用户要求已归开发说明／AGENTS，纠正其中旧的排他网关与Pi规格必填表述。workspace fmt/check、clippy all-targets/all-features -D warnings和application no-default-features检查通过；配置schema／UniFFI不变，无通用校验框架或新增lint。正在整包构建安装，行为没有新增协议路径，本轮不重复真实服务或GUI验收。
+
+静态化切片整合交付：release Rust与UniFFI生成、Swift warnings-as-errors构建（13.07秒）及签名通过。安装前未发现运行中的Applications Velune进程；安装后可执行文件／Rust库／manifest与构建SHA256一致，严格签名通过，应用已打开。manifest忠实记录提交前a24b9ee/dirty=true；本轮没有读取真实配置或调用真实模型，没有新增自动化测试。局部相对链接与diff检查通过，仅自主提交本任务9个文件，不push/PR。

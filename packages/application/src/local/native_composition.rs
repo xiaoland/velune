@@ -11,12 +11,11 @@ impl CoreRuntime {
             .iter()
             .find(|g| g.id == runtime.gateway_id)
             .ok_or_else(|| RuntimeError::invalid("runtime gateway"))?;
-        let provider = gateway
-            .validate_dispatch(key)
+        let resolved = gateway
+            .resolve_dispatch(key)
             .map_err(RuntimeError::invalid)?;
-        let model = gateway
-            .model(key)
-            .ok_or_else(|| RuntimeError::invalid("runtime model"))?;
+        let provider = resolved.provider();
+        let model = resolved.model();
         let ingress = GatewayProtocol::runtime_ingress(&runtime.type_id, &provider.protocol)
             .ok_or_else(|| RuntimeError::invalid("不支持的运行时版本类型"))?;
         let protocol = match &ingress {
@@ -57,8 +56,9 @@ impl CoreRuntime {
             .find(|g| g.id == runtime.gateway_id)
             .ok_or_else(|| RuntimeError::invalid("runtime gateway"))?;
         let model = gateway
-            .model(key)
-            .ok_or_else(|| RuntimeError::invalid("runtime model"))?;
+            .resolve_dispatch(key)
+            .map_err(RuntimeError::invalid)?
+            .model();
         Ok(BTreeMap::from([(
             model.provider_model_id.clone(),
             key.into(),

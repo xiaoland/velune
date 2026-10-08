@@ -17,11 +17,10 @@ pub(super) fn runnable_pi_model<'a>(
     gateway: &'a GatewayConfig,
     id: &str,
 ) -> Result<&'a ProviderModel, RuntimeError> {
-    gateway
-        .validate_dispatch(id)
-        .map_err(RuntimeError::invalid)?;
-    let model = gateway.model(id).expect("validated model");
-    Ok(model)
+    Ok(gateway
+        .resolve_dispatch(id)
+        .map_err(RuntimeError::invalid)?
+        .model())
 }
 
 pub(super) fn materialize_models(
@@ -50,22 +49,19 @@ pub(super) fn materialize_models(
     let entries = gateway
         .providers
         .iter().flat_map(|p| &p.models)
-        .filter(|model| runnable_pi_model(gateway, &model.record_key).is_ok())
         .map(|model| -> Result<Value, RuntimeError> {
             let physical_id = gateway
                 .pi_binding_id(&model.record_key, gateway.authentication_revision(&model.record_key))
                 .map_err(RuntimeError::invalid)?;
-            let api =
-                gateway
-                    .validate_dispatch(&model.record_key)
-                    .ok()
-                    .map(|provider| match provider.protocol {
-                        GatewayProtocol::ChatCompletionsV1 => "openai-completions",
-                        GatewayProtocol::ResponsesV1 => "openai-responses",
-                        GatewayProtocol::MessagesV1 => "anthropic-messages",
-                    });
-            let routed_provider = gateway.validate_dispatch(&model.record_key).map_err(RuntimeError::invalid)?;
-            let binding = routed_provider.models.iter().find(|binding| binding.record_key == model.record_key).expect("validated binding");
+            let routed = gateway
+                .resolve_dispatch(&model.record_key)
+                .map_err(RuntimeError::invalid)?;
+            let api = match routed.provider().protocol {
+                GatewayProtocol::ChatCompletionsV1 => "openai-completions",
+                GatewayProtocol::ResponsesV1 => "openai-responses",
+                GatewayProtocol::MessagesV1 => "anthropic-messages",
+            };
+            let binding = routed.model();
             let binding_projection = binding.pi_projection.as_ref();
             let declared_levels = pi_declared_levels(binding);
             let mut entry = json!({
@@ -86,12 +82,10 @@ pub(super) fn materialize_models(
             if let Some(value) = binding.context_window {
                 entry["contextWindow"] = json!(value);
             }
-            if let Some(api) = api {
-                entry["api"] = Value::String(api.into());
-                if api == "anthropic-messages" {
-                    // The Anthropic SDK appends /v1/messages to its base URL.
-                    entry["baseUrl"] = json!(endpoint.strip_suffix("/v1").expect("gateway base path"));
-                }
+            entry["api"] = Value::String(api.into());
+            if api == "anthropic-messages" {
+                // The Anthropic SDK appends /v1/messages to its base URL.
+                entry["baseUrl"] = json!(endpoint.strip_suffix("/v1").expect("gateway base path"));
             }
             let supported_levels = binding_projection
                 .map(|projection| projection.supported_levels(&declared_levels))

@@ -130,8 +130,9 @@ impl CoreRuntime {
             .validate_sdk()
             .map_err(|error| RuntimeError::Invalid(error.to_string()))?;
         let protocol = match gateway
-            .validate_dispatch(model_record_key)
+            .resolve_dispatch(model_record_key)
             .map_err(RuntimeError::invalid)?
+            .provider()
             .protocol
         {
             GatewayProtocol::ChatCompletionsV1 => "openai-completions",

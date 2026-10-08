@@ -74,6 +74,23 @@ pub struct GatewayConfig {
     pub failover: FailoverPolicy,
 }
 
+/// The provider and model are resolved together so callers cannot repeat the
+/// lookup and introduce a second, potentially divergent missing-model branch.
+pub struct ResolvedProviderModel<'a> {
+    provider: &'a ProviderDefinition,
+    model: &'a ProviderModel,
+}
+
+impl<'a> ResolvedProviderModel<'a> {
+    pub fn provider(&self) -> &'a ProviderDefinition {
+        self.provider
+    }
+
+    pub fn model(&self) -> &'a ProviderModel {
+        self.model
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RuntimeInstance {
@@ -216,13 +233,6 @@ impl GatewayConfig {
             }
         }
     }
-    pub fn model(&self, key: &str) -> Option<&ProviderModel> {
-        self.providers
-            .iter()
-            .flat_map(|p| &p.models)
-            .find(|m| m.record_key == key)
-    }
-
     /// Return the stable physical model identity used by a Pi catalog.
     ///
     /// The logical model remains the gateway request key. This identity binds
@@ -235,12 +245,9 @@ impl GatewayConfig {
         model_record_key: &str,
         authentication_revision: u64,
     ) -> Result<String, &'static str> {
-        let provider = self.validate_dispatch(model_record_key)?;
-        let binding = provider
-            .models
-            .iter()
-            .find(|binding| binding.record_key == model_record_key)
-            .ok_or("provider model binding is missing")?;
+        let resolved = self.resolve_dispatch(model_record_key)?;
+        let provider = resolved.provider();
+        let binding = resolved.model();
         let identity = PiBindingIdentity {
             model_record_key,
             provider_id: provider.id.as_str(),
@@ -260,13 +267,19 @@ impl GatewayConfig {
     }
 
     /// Resolve model ownership from the already validated application configuration.
-    pub fn validate_dispatch(
+    pub fn resolve_dispatch(
         &self,
         model_record_key: &str,
-    ) -> Result<&ProviderDefinition, &'static str> {
+    ) -> Result<ResolvedProviderModel<'_>, &'static str> {
         self.providers
             .iter()
-            .find(|p| p.models.iter().any(|m| m.record_key == model_record_key))
+            .find_map(|provider| {
+                provider
+                    .models
+                    .iter()
+                    .find(|model| model.record_key == model_record_key)
+                    .map(|model| ResolvedProviderModel { provider, model })
+            })
             .ok_or("provider model is not configured")
     }
 }
