@@ -2,7 +2,7 @@
 
 ## 当前任务
 
-2026-10-09 当前修复用户反馈的Markdown尾部点击重排、连续上滑跳动与长历史上滑卡住。上轮MarkdownView替换已安装至`/Applications/Velune.app`，源码`e1165e791afce77050e8dbcd7b217ef427e3c81b`，版本仍为`0.1 beta.1`；本轮尚未安装，尺寸／滚动判别见最后一节。
+2026-10-09 当前修复用户反馈的Markdown尾部点击重排、连续上滑跳动与长历史上滑卡住。上轮MarkdownView替换已安装至`/Applications/Velune.app`，源码`e1165e791afce77050e8dbcd7b217ef427e3c81b`，版本仍为`0.1 beta.1`；本轮修复已构建安装，源码`4c5f4ed912005041aea7ca64187780fddf921a23`；尺寸／滚动判别见最后一节。
 
 产品意图归[PRD](../../docs/prd/index.md)，跨单元契约归[architecture](../../docs/design/architecture.md)，平台行为归[Mac README](../../app/mac/README.md)。本任务也维护消息链接、大纲、可选CWD及独立原生Tabs。
 
@@ -54,6 +54,12 @@ click／scroll没有直接读取原生历史文件的路径，正常已同步Pi�
 
 advisor复核Textual0.5.0：MIT，tools6.0，macOS15／iOS18；用户随后已明确授权提高至macOS15，平台要求已同步PRD、SwiftPM与打包元数据。公开MarkupParser可接解析缓存，StructuredText默认仍是视图内整段parse缓存，选择有其自己的AppKit overlay，不能承诺直接解决列表问题。候选本身不授权立刻换包；原平台底线门槛已由用户独立决定解除。源码依据为tag manifest与公开实现，未复制源码。ListViewKit4.6.0有macOS12／Swift6.2／MIT，但自实现滚动及隐藏prototype测量，不优先于标准List；无LICENSE的AppKitScrollView不采用。
 
-稳定Mac owner正在临时单变量比较SwiftUI List＋当前MarkdownView3，同一240行及实际消息组件，不改冻结产品source。首轮初始CPU1.04s／14cache填充，32步上移CPU4.25s；首跳成功，但尾部增高后scrollTo的真实state远跳5秒内偏255.7pt（body31325.7，clip31070），有一次delegate warning。marker／row rect oracle核对与cleanup尚待最终回报，不因候选失败扩回我们的桥接。root完成现有修复的提交／构建，安装状态稍后记录；不把当前组合永久固化。
+标准SwiftUI List＋MarkdownView3隔离判别使用同一240行及实际消息组件，不改产品源码。初次远跳及32步上移通过；尾部增高后真实SwiftUI scrollTo状态远跳五秒仍偏255.7pt，唯一标记／row外框核对排除了24pt inset和边界clamp。此候选未能完整替代当前接入，不为其追加定位桥。初始CPU1.04s／14cache填充，上移CPU4.25s；含离屏layout／物化，不是物理FPS。后续width／tool／follow／idle未验，exit0仅表示记录失败并正常清理，不是候选PASS。
 
-List＋MarkdownView3隔离oracle核对完成：唯一长尾5139（其它最高984），偏255.7pt不是24pt inset，初次同布局精确。此候选不能在不新增定位桥接时完整替代已修复接入；子进程exit0仅正常记录失败／清理，不是候选PASS，后续width／tool／follow／idle未验。CPU口径含离屏layout／物化，非物理FPS；不外推Textual。冻结产品source未改，候选进程／tmp目录0。用户已允许macOS15，稳定owner现继续独立List＋Textual0.5.0单变量判别，使用包不复制源码，不先改产品依赖。
+标准List＋Textual0.5.0使用正式包与公开MarkupParser缓存。初次跳转、32步上移、同ID末条增长及宽→窄→宽（高度5168→6688→5168）通过。初次报告28.4pt偏差已撤回：它包含合法24pt listRowInsets，真实row外框偏差仅4.3995pt，不足以拒绝候选。纠正oracle后继续核对，尾部增高及宽变后远跳u40，唯一representedID归属nativeRow80，outerY2246、bodyY2270、clipY1959，真实外框偏差287pt，目标已物化且五秒未收敛；不是末端clamp。此必要定位门失败，未继续reader／follow／tool／work／idle，不添加补偿桥或修改上游。候选进程、临时目录均清理。
+
+advisor建议必要行为全部通过时采用List＋Textual以删除自有尺寸／锚点桥，但本次远跳证据不满足前提。因此本轮保留已修复NSTableView接入和MarkdownView，不把标准List或Textual本身定性为有缺陷，也不将当前选择永久固化。真实文本点击及物理滚轮仍未验，不用候选合成路径冒充用户体验通过。
+
+## 本轮构建与安装
+
+2026-10-09 当前修复及macOS15底线提交为`4c5f4ed912005041aea7ca64187780fddf921a23`。完整locked Rust release与Xcode SwiftPM release构建、严格签名通过，已原子安装至`/Applications/Velune.app`，版本仍为`0.1 beta.1`。安装manifest的source一致且dirty=false，Info.plist与主Mach-O最低系统均为15.0；安装主二进制和Rust库SHA-256与签名构建包一致。所需两个资源bundle均位于Contents/Resources，app根无bundle。未运行真实会话／提供商；本轮没有运行中的Velune需要退出。不push。
