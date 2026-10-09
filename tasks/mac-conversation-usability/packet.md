@@ -2,7 +2,7 @@
 
 ## 当前任务
 
-2026-10-09 用户要求用LiYanan2004/MarkdownView替换MarkdownUI。接入与隔离验收已完成，正在提交、release构建及安装。Applications当前仍是上一轮`8df749b`原生消息列表修复版本`0.1 beta.1`；本轮安装后更新下方证据。
+2026-10-09 用户要求用LiYanan2004/MarkdownView替换MarkdownUI。替换已完成并安装至`/Applications/Velune.app`，源码`e1165e791afce77050e8dbcd7b217ef427e3c81b`，版本仍为`0.1 beta.1`。实际体验由用户复验；锁屏阻断的独立idle诊断限制见下方。
 
 产品意图归[PRD](../../docs/prd/index.md)，跨单元契约归[architecture](../../docs/design/architecture.md)，平台行为归[Mac README](../../app/mac/README.md)。本任务也维护消息链接、大纲、可选CWD及独立原生Tabs。
 
@@ -26,7 +26,7 @@ session_management拥有SwiftPM依赖、消息缓存／渲染、许可、打包�
 
 ## 验证与安装
 
-Swift严格debug、cache手动脚本、Xcode完整debug、资源隔离签名／加载通过。改动manual脚本语法、shell语法及diff／相对文档链接检查通过；Rust源码未变。下一步冻结源提交，执行正式release、严格签名、安装、manifest／二进制比对及零GUI残留。
+Swift严格debug、cache手动脚本、Xcode完整debug、资源隔离签名／加载通过。改动manual脚本语法、shell语法及diff／相对文档链接检查通过；Rust源码未变。正式Xcode后端release构建、严格签名与安装通过。安装manifest指向上述源码且dirty=false，主二进制及Rust库SHA-256与签名构建包一致；标准Contents/Resources恰好包含Highlightr／SwiftMath两个所需bundle，根目录没有bundle；新锁文件与许可随包分发，旧渲染依赖／许可已移除。git diff／cached及相对链接检查通过，合成进程和固定临时目录均清理。源码替换提交e00bf98，许可空白格式规范提交e1165e7；不push。
 
 ## 已完成前置与边界
 
