@@ -8,7 +8,7 @@ root负责Tab/窗口级Swift状态、共享backend装配、文档与整合；ses
 
 ## 当前状态与下一步
 
-本任务因用户实际验收反馈重新打开：修复工作过程三角位置、所有消息文本模糊、非纯正文末条折叠，以及投影的区间／完成状态／身份和原子消费缺口。当前开发中，以下旧验收仅适用于此前四项行为，不能作为本轮视觉修复已完成的证据。
+本任务因用户实际验收反馈重新打开：修复工作过程三角位置、所有消息文本模糊、非纯正文末条折叠，以及投影的区间／完成状态／身份和原子消费缺口。本轮源码、隔离验收与Applications安装已完成；用户截图中特定字形暗重仍未独立复现，不标为完全解决。以下旧验收仅适用于此前四项行为，不能作为本轮视觉修复已完成的证据。
 
 Tab／来源绑定发送和可选CWD实现已完成。Rust全工作区fmt/check/clippy、无默认features的bindings clippy通过，最终UniFFI已重新生成，Swift debug warnings-as-errors通过。最新AppStore→Pi七请求隔离脚本通过。
 
@@ -73,3 +73,5 @@ Mac已严格debug product构建通过，5000消息缓存手动验收通过：100
 真实产品预览发现工具／推理折叠也被List合并、缺独立三角入口，现三类消息折叠共用行内原生NSButton组件，设置Disclosure不改。动态重分组实际帧通过：外露纯正文追加tool后从屏幕完整移除，收进collapsed work；展开后内容仅出现一次，work/tool三角在内容列内且AX独立、状态正确。该唯一fixture child0及finally清理完成。最后产品preview使用显式known-messages工作范围，不在Swift复刻业务分组算法。
 
 源码冻结。最终真实产品--preview在完整NavigationSplitView中确认work在正文列内，展开后工具／推理各有独立原生AX disclosure(0→1)并显示内容；Markdown、用户气泡未观察错位叠绘。strict debug和提取实际消息源码的warnings-as-errors均通过，manual Python编译与diff检查通过。所有本轮GUI进程、current目录均已清理。有限首次布局AttributeGraph诊断仍存在，未见持续反馈或崩溃。用户特定PNG的暗重根因没有独立复现，不宣称完全治愈；已完成结构、身份与背景修复，准备当前任务提交及严格release安装，真实视觉仍由用户复验。
+
+安装完成：源码25f2e3a已严格release构建、签名验证并安装至/Applications/Velune.app，仍0.1 beta.1。安装manifest记录25f2e3a、dirty=false，执行文件与Rust库和已签名构建产物逐字节一致；未启动真实配置应用。全局进程复查无Velune/fixture/preview，导航目录无残留。本轮没有push。用户真实场景中的字形重影仍待复验，不能以合成场景未复现替代根因确认；首次布局有限框架诊断也未消除。
