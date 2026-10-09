@@ -2,7 +2,7 @@
 
 ## 当前任务
 
-2026-10-09 用户复验：文字重影改善／似乎消失，但消息背景突然变白、工作过程折叠丢失，且消息列表严重卡顿。用户补充大纲项双击直接前往。本轮源码已冻结，隔离端到端与原生交互验收通过，正在最终构建安装。Applications仍是上一轮源码`25f2e3a`，待下方安装证据更新。
+2026-10-09 用户复验：文字重影改善／似乎消失，但消息背景突然变白、工作过程折叠丢失，且消息列表严重卡顿。用户补充大纲项双击直接前往。本轮修复已完成并安装至`/Applications/Velune.app`，源码提交`8df749b1277ad3ac8892c92f32340ec4b5fbdf8d`，版本`0.1 beta.1`。隔离端到端及原生交互验收通过，真实会话体验由用户复验。
 
 本任务也维护网页／本地文件链接与失败原文复制、outline定位、可选CWD、独立原生Tabs。产品意图归[PRD](../../docs/prd/index.md)，跨单元契约归[architecture](../../docs/design/architecture.md)，平台行为归[Mac README](../../app/mac/README.md)。
 
@@ -28,7 +28,7 @@ List还将DisclosureGroup当outline节点，导致三角出列／整表缩进，
 
 ## 验证与下一步
 
-本轮cargo fmt/check/clippy workspace all-targets/all-features -D warnings、bindings no-default clippy、Node语法、四个改动manual脚本py_compile及diff检查通过；新release核心已供Mac联调，public绑定形状未变。接下来统一strict release构建、签名、提交安装、比对manifest/hashes及零GUI残留。
+本轮cargo fmt/check/clippy workspace all-targets/all-features -D warnings、bindings no-default clippy、Node语法、四个改动manual脚本py_compile及diff检查通过；新release核心已供Mac联调，public绑定形状未变。最终strict release构建通过（Swift warnings-as-errors），签名验证通过。安装manifest为上述源码提交且dirty=false，主二进制及Rust库SHA-256与签名构建包完全一致。target/manual-transcript*目录为空，进程复核无Velune／导航fixture运行。
 
 此前链接验到系统接收，未知scheme原文弹窗和复制一致，未验外部查看器内容。DSH可选CWD已处理，实际CLI端到端尚未验。截图特定暗重未独立复现，用户本轮报告改善／似乎消失。真实长期历史与实际提供商体验仍由用户复验，不读取其内容代替验收。
 
