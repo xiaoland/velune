@@ -30,6 +30,7 @@ struct TranscriptView: View {
                                 ForEach(rows) { row in ConversationMessageView(row: row, cwd: cwd).id(row.id) }
                             }.padding(.top, 12)
                         } label: { Text(workLabel(turn)).font(.callout).foregroundStyle(.secondary) }
+                        .frame(maxWidth: .infinity, alignment: .leading)
                     } }
                     .frame(maxWidth: 760).frame(maxWidth: .infinity)
                     .listRowInsets(EdgeInsets(top: 24, leading: 24, bottom: 0, trailing: 24))

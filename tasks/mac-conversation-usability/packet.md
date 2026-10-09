@@ -35,3 +35,7 @@ Pi默认CWD隔离创建／发送通过。Codex省略未指定cwd并优先投影�
 最终原生验收补齐：末条同ID Markdown增高超过一屏仍显示STREAM END；阅读历史时增高不拉回，随后040→001依旧准确。对照使用同stderr phase marker和真实child退出码，原生List即使初始无probe也出现有限首布局诊断，添加probe与空闲未持续增加，HEAD Lazy对照未出现；框架内部根因未确定。advisor建议采用List并记录限制，不加fixedSize猜测补丁或升级自有NSTableView。诊断对照分支已从手动脚本删除，避免HEAD提交后失去基线意义；纯行为探针保留，非零child使脚本失败，诊断读取失败不阻断finally清理。
 
 安装后再次复查：fixture进程和导航临时目录均零残留，未启动真实配置应用、未调用真实模型。无远端发布。后续修改须以此实现及有限框架诊断边界为基线，不恢复共享导航或旧ABI。
+
+2026-10-09 后续反馈：“工作过程”在List改造后居中，用户要求恢复左侧。工作过程应与内容列内的LLM／工具左边缘对齐；外层内容列仍居中，用户右侧和系统状态布局不变。session owner修复work分支的frame对齐，root执行整包严格构建／安装和当前修复提交；单行原生布局修复不启动新的fixture。
+
+工作过程窄修已完成：work分支的DisclosureGroup显式填满内容列并leading对齐，仅新增一行；实际源strict Swift warnings-as-errors与diff检查通过，未启动GUI。等待该修复提交后的整包构建安装。
