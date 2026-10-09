@@ -53,7 +53,7 @@ struct TranscriptTurn: Codable, Sendable, Equatable, Identifiable {
     var id: String
     var userMessageID: String
     var workMessageIDs: [String]
-    /// Visible text-only assistant; Message.completed determines whether the range has ended.
+    /// Visible text-only range tail; harness lifecycle determines whether work is running.
     var lastMessageID: String?
     var durationMs: UInt64?
     var isRunning: Bool

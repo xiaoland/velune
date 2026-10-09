@@ -15,7 +15,15 @@ fn message(id: &str, role: MessageRole, completed: bool, blocks: Vec<MessageBloc
 fn text(id: &str, role: MessageRole, completed: bool) -> Message {
     message(id, role, completed, vec![MessageBlock::Text { text: id.into() }])
 }
-fn replace(p: &mut TranscriptProjection, messages: &[Message]) { p.apply(TranscriptEvent::ReplaceMessages(messages)); }
+fn replace(p: &mut TranscriptProjection, messages: &[Message]) {
+    p.apply(TranscriptEvent::ReplaceMessages(messages));
+    let turns=p.turns();
+    let displayed:Vec<String>=p.items().into_iter().flat_map(|item| match item {
+        TranscriptItem::Message{message_id,..}=>vec![message_id],
+        TranscriptItem::Work{turn_id}=>turns.iter().find(|turn|turn.id==turn_id).unwrap().work_message_ids.clone(),
+    }).collect();
+    assert_eq!(displayed, messages.iter().map(|message|message.id.clone()).collect::<Vec<_>>(), "every snapshot message belongs to exactly one ordered item");
+}
 fn main() {
     let mut projection = TranscriptProjection::default();
     let user = text("live-user", MessageRole::User, true);
@@ -25,6 +33,26 @@ fn main() {
     projection.apply(TranscriptEvent::ExecutionState(RunState::Running));
     assert!(projection.turns()[0].is_running);
     assert_eq!(projection.turns()[0].last_message_id.as_deref(), Some("answer"));
+    let progress=text("progress", MessageRole::Assistant, true);
+    let call=message("call", MessageRole::Tool, true, vec![MessageBlock::Notice { text:"tool".into() }]);
+    let final_text=text("final", MessageRole::Assistant, true);
+    let mut regression=TranscriptProjection::default();
+    replace(&mut regression, &[user.clone(),progress.clone()]);
+    regression.apply(TranscriptEvent::ExecutionState(RunState::Running));
+    assert!(regression.turns()[0].is_running);
+    replace(&mut regression, &[user.clone(),progress.clone(),call.clone()]);
+    assert_eq!(regression.turns()[0].last_message_id,None);
+    let mut final_stream=final_text.clone(); final_stream.completed=false;
+    replace(&mut regression, &[user.clone(),progress.clone(),call.clone(),final_stream.clone()]);
+    assert_eq!(regression.turns()[0].last_message_id.as_deref(),Some("final"));
+    final_stream.blocks.push(MessageBlock::Reasoning{text:"thinking".into()});
+    replace(&mut regression, &[user.clone(),progress.clone(),call.clone(),final_stream]);
+    assert_eq!(regression.turns()[0].last_message_id,None);
+    replace(&mut regression, &[user.clone(),progress.clone(),call.clone(),final_text]);
+    assert!(regression.turns()[0].is_running);
+    regression.apply(TranscriptEvent::ExecutionState(RunState::Idle));
+    assert!(!regression.turns()[0].is_running);
+    assert_eq!(regression.turns()[0].work_message_ids,["progress","call"], "completed progress must stay inside work");
     let original_turn = projection.turns()[0].id.clone();
     let original_outline = projection.outline()[0].id.clone();
     let original_answer = projection.message_identities()[2].id.clone();
@@ -37,9 +65,10 @@ fn main() {
     let mut final_answer = streaming.clone(); final_answer.completed = true;
     let tail = message("tail", MessageRole::System, true, vec![MessageBlock::Notice {text:"settled".into()}]);
     replace(&mut projection, &[user.clone(), thought.clone(), final_answer.clone(), tail.clone()]);
-    assert!(!projection.turns()[0].is_running);
-    assert_eq!(projection.turns()[0].last_message_id.as_deref(), Some("answer"));
-    assert_eq!(projection.items().len(), 4); // System tail lies after the completed text boundary.
+    assert!(projection.turns()[0].is_running); // Only the harness lifecycle ends execution.
+    assert_eq!(projection.turns()[0].last_message_id, None);
+    assert_eq!(projection.turns()[0].work_message_ids, ["thought", "answer", "tail"]);
+    assert_eq!(projection.items().len(), 2); // A system tail is folded, without searching backward.
     projection.apply(TranscriptEvent::ConfirmIdentities(&[MessageIdentityConfirmation {previous_id:"live-user".into(), current_id:"native-user".into()}, MessageIdentityConfirmation {previous_id:"answer".into(), current_id:"native-answer".into()}]));
     let mut native_user=user.clone(); native_user.id="native-user".into();
     final_answer.id="native-answer".into();
@@ -90,7 +119,7 @@ fn main() {
     let mut history = TranscriptProjection::default();
     replace(&mut history, &[next_user, message("tool",MessageRole::Tool,true,vec![MessageBlock::Notice{text:"tool result".into()}])]);
     assert_eq!(history.items(), first);
-    println!("projection acceptance passed: streaming, mixed content, completed boundary, strict tail, stable confirmation, branch replacement, outline, deterministic history");
+    println!("projection acceptance passed: streaming, mixed content, full user range, strict tail, stable confirmation, branch replacement, outline, deterministic history");
 }
 '''
 with tempfile.TemporaryDirectory(prefix="velune-projection-acceptance-") as directory:

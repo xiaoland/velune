@@ -261,7 +261,7 @@ pub struct TranscriptTurn {
     pub user_message_id: String,
     pub work_message_ids: Vec<String>,
     /// The text-only assistant currently visible outside the work group. It may
-    /// still be streaming; only Message.completed closes the interval.
+    /// still be streaming; execution lifecycle determines whether work is running.
     pub last_message_id: Option<String>,
     /// Observed execution elapsed time. None for history without lifecycle evidence.
     pub duration_ms: Option<u64>,

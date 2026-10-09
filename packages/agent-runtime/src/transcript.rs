@@ -19,7 +19,6 @@ struct MessageAnchor {
     id: String,
     role: MessageRole,
     pure_text: bool,
-    completed: bool,
 }
 
 #[derive(Default)]
@@ -76,7 +75,6 @@ impl TranscriptProjection {
                                 .blocks
                                 .iter()
                                 .all(|block| matches!(block, MessageBlock::Text { .. })),
-                        completed: message.completed,
                     })
                     .collect();
                 let identities: BTreeSet<_> = self
@@ -125,8 +123,8 @@ impl TranscriptProjection {
         }
     }
 
-    /// A completed text-only assistant closes the range; streaming text may remain
-    /// visible but cannot yet determine where the work interval ends.
+    /// Fold the complete user range. Message completion is not an agent turn
+    /// boundary: text progress can be followed by more tools and another answer.
     pub fn turns(&self) -> Vec<TranscriptTurn> {
         let starts: Vec<_> = self
             .messages
@@ -144,11 +142,6 @@ impl TranscriptProjection {
                     .copied()
                     .unwrap_or(self.messages.len());
                 let responses = &self.messages[start + 1..next_user];
-                let closed = responses
-                    .iter()
-                    .position(|message| message.pure_text && message.completed);
-                let end = closed.map_or(responses.len(), |index| index + 1);
-                let responses = &responses[..end];
                 let visible = responses.last().filter(|message| message.pure_text);
                 let work_end = responses.len() - usize::from(visible.is_some());
                 let user = &self.messages[*start];
@@ -167,7 +160,7 @@ impl TranscriptProjection {
                         .collect(),
                     last_message_id: visible.map(|message| message.id.clone()),
                     duration_ms,
-                    is_running: ordinal + 1 == starts.len() && self.running && closed.is_none(),
+                    is_running: ordinal + 1 == starts.len() && self.running,
                 }
             })
             .collect()

@@ -120,7 +120,7 @@ async function main() {
   }
   const codes = [...new Set(session.diagnostics.map(diagnostic => diagnostic.code))];
   if (codes.length) messages.push({id:"history:diagnostics",timestamp_unix_ms:null,role:"system",blocks:[{kind:"notice",text:`部分运行时记录未投影：${codes.join("、")}`}]});
-  return {contractVersion:1,history:{...summary(session,session.events),messages}};
+  return {contractVersion:1,history:{...summary(session,session.events),messages:messages.map(message=>({...message,completed:true}))}};
 }
 try { process.stdout.write(JSON.stringify(await main())); }
 catch (error) {

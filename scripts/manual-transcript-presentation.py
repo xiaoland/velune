@@ -43,7 +43,14 @@ import MarkdownUI
         // Cmark handles complete structural Markdown and unfinished streaming input.
         precondition(model.rows.last!.markdown[0]!.renderPlainText().contains("Streamed tail"))
         for stream in ["**partial", "```swift\nlet", "| A | B |\n| ---", "- first\n  - nested"] { _ = MarkdownContent(stream) }
-        let result: [String:Any] = ["rows":5000,"initialMarkdownParses":parses,"initialSeconds":String(describing:initial),"unchangedApplications":100,"unchangedSeconds":String(describing:repeated),"tailChangedParses":1,"tailSeconds":String(describing:tail),"stableRowIdentities":true,"onScreenScrollFrameRateMeasured":false]
+        let grouped = TranscriptModel()
+        let sequence = [Message(id:"u",role:.user,blocks:[.text("Synthetic user")]), Message(id:"commentary",role:.assistant,blocks:[.text("Synthetic commentary")]), Message(id:"tool",role:.tool,blocks:[.tool(id:"call",title:"Synthetic tool",state:.completed,output:"Synthetic output")]),Message(id:"final",role:.assistant,blocks:[.text("Synthetic final")])]
+        let turn=TranscriptTurn(id:"turn",userMessageID:"u",workMessageIDs:["commentary","tool"],lastMessageID:"final",durationMs:nil,isRunning:false)
+        grouped.apply(sequence,turns:[turn],items:[.message(id:"ui:u",messageID:"u"),.work(turnID:"turn"),.message(id:"ui:final",messageID:"final")],outline:[TranscriptOutlineEntry(id:"ui:u",messageID:"u")],identities:sequence.map { TranscriptMessageIdentity(id:"ui:"+$0.id,messageID:$0.id) })
+        let rendered=grouped.items(for:grouped.rows)
+        precondition(rendered.count == 3)
+        if case .work(let work,let members)=rendered[1] { precondition(work.id == "turn" && members.map(\.message.id) == ["commentary","tool"]) } else { preconditionFailure("Authoritative work item lost") }
+        let result: [String:Any] = ["rows":5000,"initialMarkdownParses":parses,"initialSeconds":String(describing:initial),"unchangedApplications":100,"unchangedSeconds":String(describing:repeated),"tailChangedParses":1,"tailSeconds":String(describing:tail),"stableRowIdentities":true,"authoritativeWorkPreserved":true,"onScreenScrollFrameRateMeasured":false]
         print(String(decoding:try JSONSerialization.data(withJSONObject:result,options:[.sortedKeys]),as:UTF8.self))
     }
 }

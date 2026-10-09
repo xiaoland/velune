@@ -80,7 +80,12 @@ import VeluneBindings
         try require(!finished.isRunning && (finished.durationMs ?? 0) > 0, "final lifecycle=\(finished)")
         let visibleItems = store.transcript.items(for: store.transcript.rows)
         let directIDs = visibleItems.compactMap { item -> String? in if case .message(let row) = item { return row.message.id }; return nil }
-        try require(directIDs.contains(finished.userMessageID) && directIDs.contains(finished.lastMessageID!))
+        try require(directIDs.contains(finished.userMessageID))
+        if let answerID = finished.lastMessageID { try require(directIDs.contains(answerID)) }
+        else {
+            try require(store.transcript.rows.last?.message.role == .system, "non-text terminal fixture must fold the full work range")
+            try require(finished.workMessageIDs.contains { id in store.transcript.rows.contains { $0.message.id == id && $0.message.text == "SYNTHETIC_FINAL" } }, "system tail incorrectly exposed an earlier answer")
+        }
         try require(finished.workMessageIDs.allSatisfy { !directIDs.contains($0) })
         try require(visibleItems.contains { item in if case .work(let group, let rows) = item { return group.id == finished.id && rows.map(\.message.id) == finished.workMessageIDs }; return false })
         try require(firstAssistant.id == firstPresentationID, "presentation identity changed on native confirmation")
@@ -91,7 +96,7 @@ import VeluneBindings
         outline.collapse()
         try require(outline.visibleRows(store.transcript.rows, userIDs:Set(store.transcript.userRows.map(\.id))).allSatisfy { $0.message.role == .user })
         try require(outline.expand(from: store.transcript.userRows[0].id, in: store.transcript.rows))
-        try require(outline.visibleRows(store.transcript.rows, userIDs:Set(store.transcript.userRows.map(\.id))).contains { $0.message.id == finished.lastMessageID })
+        try require(outline.visibleRows(store.transcript.rows, userIDs:Set(store.transcript.userRows.map(\.id))).contains { $0.message.text == "SYNTHETIC_FINAL" })
         store.setTranscriptPresentation(.userOutline); try await wait { !store.isLoading }
         try require(store.transcriptPresentation == .userOutline)
         outline.followSentUser(after: store.transcript.userRows.last?.id, in: store.transcript.rows)
