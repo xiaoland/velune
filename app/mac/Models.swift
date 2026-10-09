@@ -222,13 +222,13 @@ struct SettingField: Codable, Sendable, Identifiable, Equatable {
     var executableDiscovery: ExecutableDiscoverySpec? = nil
 }
 
-struct AuthenticationPrompt: Decodable, Sendable, Identifiable {
+struct AuthenticationPrompt: Decodable, Sendable, Identifiable, Equatable {
     var id: String
     var kind: String
     var text: String
     var options: [SettingOption]?
 }
-struct AuthenticationNotification: Decodable, Sendable {
+struct AuthenticationNotification: Decodable, Sendable, Equatable {
     var kind: String
     var id: String?
     var text: String?

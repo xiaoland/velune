@@ -10,7 +10,7 @@
 
 Mac 应用图标由 `scripts/render-app-icon.swift` 将 graphite 光学稿生成十档传统 ICNS 资源。Dock／应用库使用的图标应保留 macOS 的透明光学留白，不能将品牌稿直接铺满画布；具体绘制范围在生成器中维护，不能通过修改品牌 SVG 补偿平台外框尺寸。
 
-Mac 使用根目录 SwiftPM manifest 与 Package.resolved 锁定 MarkdownView 及传递依赖；构建脚本先生成UniFFI模块，再用SwiftPM的Xcode后端构建本机架构产品，固定 macOS 14 部署底线并随包保留 Swift 许可证。MarkdownView 3.0.0需要Swift6.2或以上工具链。应用与生成绑定目标各自启用warnings-as-errors，依赖保持其声明的Swift语言模式；不全局提升第三方警告。此后端生成的资源访问器支持标准Contents/Resources，资源bundle必须随app打包。不会构建或执行依赖的测试 targets。安装历史读取依赖后构建：
+Mac 使用根目录 SwiftPM manifest 与 Package.resolved 锁定 MarkdownView 及传递依赖；构建脚本先生成UniFFI模块，再用SwiftPM的Xcode后端构建本机架构产品，固定 macOS 15 部署底线并随包保留 Swift 许可证。MarkdownView 3.0.0需要Swift6.2或以上工具链。应用与生成绑定目标各自启用warnings-as-errors，依赖保持其声明的Swift语言模式；不全局提升第三方警告。此后端生成的资源访问器支持标准Contents/Resources，资源bundle必须随app打包。不会构建或执行依赖的测试 targets。安装历史读取依赖后构建：
 
 ```sh
 ./scripts/install-runtime-support.sh
@@ -274,6 +274,10 @@ Mac 的“问题”窗口集中显示操作失败与当前读取问题，主界�
 本次消息列表与诊断的隔离验收入口是 `scripts/manual-transcript-outline.py`、`scripts/manual-problems.py`、`scripts/manual-error-diagnostics.py`。这些按需手动脚本使用临时配置与合成内容，不接入自动测试或 CI；消息流脚本使用外部已安装 Pi 与本地服务，不依赖真实模型账户。该脚本直接调用 composer 使用的实际 AppStore 发送入口，经 Transport／UniFFI／外部 Pi 到合成 HTTP 上游，覆盖关闭后重开原生会话再发送；检查精确用户正文、所选模型、回复投影及原生会话身份。它不替代实际界面按键或真实账户验收。多工作区切片另覆盖同一共享核心下的两个未发送草稿、不同原生会话的首次发送和身份绑定续接、另一工作区生成时只读历史、关闭Tab保留活跃任务，以及配置广播不覆盖合法下一轮选择。
 
 原生长列表与链接可按需运行 `scripts/manual-transcript-navigation.py`，传入显式新建的临时目录、Swift构建目录和当前库路径。只复用一个验收实例，脚本在退出、异常和中断时关闭子进程与本地HTTP服务，删除本次目录；子进程非零退出不能计为成功。在macOS 15.4.1的长Markdown探针中，List首次及新虚拟行测量出现有限AttributeGraph诊断，无定位探针时也出现，空闲和加入探针未继续增加；未确定框架内部根因。该现象不能解释为已修复或已证明无害，后续出现持续循环、丢布局或卡顿时应重新核对容器选择。
+
+消息尺寸与连续滚动可按需运行 `scripts/manual-transcript-layout.py`，使用显式Swift构建目录与库路径。该入口只使用合成历史和离屏原生窗口，临时目录／子进程退出即清理，不接入CI。检查实际正文宽、唯一显示host intrinsic与原生行框同步、稳定阅读行／行内偏移、展开工作成员逐行虚拟化及静止收敛；未物化行高度变化不能只按绝对documentY判断视觉反弹。SwiftUI Text没有可供该入口执行选择的NSTextView，不能把空选择循环或离屏稳定高度算作真实鼠标点击验收。
+
+`scripts/manual-store-idle.py` 使用隔离配置和实际AppStore成功回调，检查未变化输入不向应用／工作区／消息投影重复发布，同时确认真实问题恢复和配置修改仍传播。它与尺寸脚本一样是按需手动入口，不接入CI，不读取真实配置或会话。
 
 ## 用量分析
 

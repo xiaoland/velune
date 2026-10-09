@@ -4,7 +4,7 @@ import PackageDescription
 // The Mac unit consumes generated UniFFI Swift and the embedded Rust library.
 let package = Package(
     name: "VeluneMac",
-    platforms: [.macOS(.v14)],
+    platforms: [.macOS("15.0")],
     dependencies: [
         .package(url: "https://github.com/LiYanan2004/MarkdownView.git", exact: "3.0.0")
     ],

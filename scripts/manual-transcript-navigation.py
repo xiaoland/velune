@@ -129,7 +129,7 @@ def main():
         app = root/'Transcript Navigation Fixture.app'
         binary = app/'Contents/MacOS/Observation'
         binary.parent.mkdir(parents=True)
-        (app/'Contents/Info.plist').write_bytes(plistlib.dumps({'CFBundleExecutable':'Observation','CFBundleIdentifier':'local.velune.transcript-navigation-fixture','CFBundleName':'Transcript Navigation Fixture','CFBundlePackageType':'APPL','LSMinimumSystemVersion':'14.0','NSHighResolutionCapable':True}))
+        (app/'Contents/Info.plist').write_bytes(plistlib.dumps({'CFBundleExecutable':'Observation','CFBundleIdentifier':'local.velune.transcript-navigation-fixture','CFBundleName':'Transcript Navigation Fixture','CFBundlePackageType':'APPL','LSMinimumSystemVersion':'15.0','NSHighResolutionCapable':True}))
         server = ThreadingHTTPServer(('127.0.0.1',0),partial(SimpleHTTPRequestHandler,directory=str(root)))
         threading.Thread(target=server.serve_forever,daemon=True).start()
         server_running = True

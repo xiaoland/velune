@@ -97,21 +97,25 @@ final class AppStore: ObservableObject {
     func makeWorkspace() -> AppStore { AppStore(preview: isPreview, sharedApplication: self) }
 
     private func copyApplicationState(_ application: AppStore) {
-        gateway = application.gateway; hasGateway = application.hasGateway
-        runtimeInstances = application.runtimeInstances; runtimeTypes = application.runtimeTypes
-        protocols = application.protocols; modelTemplates = application.modelTemplates
-        providerImportTypes = application.providerImportTypes
-        conversationBrowserPreferences = application.conversationBrowserPreferences
+        if gateway != application.gateway { gateway = application.gateway }
+        hasGateway = application.hasGateway
+        if runtimeInstances != application.runtimeInstances { runtimeInstances = application.runtimeInstances }
+        if runtimeTypes != application.runtimeTypes { runtimeTypes = application.runtimeTypes }
+        if protocols != application.protocols { protocols = application.protocols }
+        if modelTemplates != application.modelTemplates { modelTemplates = application.modelTemplates }
+        if providerImportTypes != application.providerImportTypes { providerImportTypes = application.providerImportTypes }
+        if conversationBrowserPreferences != application.conversationBrowserPreferences { conversationBrowserPreferences = application.conversationBrowserPreferences }
         savedBrowserPreferences = application.savedBrowserPreferences
-        conversationBrowserGroupLimit = application.conversationBrowserGroupLimit
-        transcriptPresentation = application.transcriptPresentation
-        conversations = application.conversations
-        if let current = snapshot?.conversation, !isDraft, !conversations.contains(where: { $0.id == current.id }) { conversations.insert(current, at: 0) }
-        authenticationRunning = application.authenticationRunning
-        authenticationPrompt = application.authenticationPrompt
-        authenticationNotifications = application.authenticationNotifications
-        authenticationResult = application.authenticationResult
-        problems = application.problems
+        if conversationBrowserGroupLimit != application.conversationBrowserGroupLimit { conversationBrowserGroupLimit = application.conversationBrowserGroupLimit }
+        if transcriptPresentation != application.transcriptPresentation { transcriptPresentation = application.transcriptPresentation }
+        var sharedConversations = application.conversations
+        if let current = snapshot?.conversation, !isDraft, !sharedConversations.contains(where: { $0.id == current.id }) { sharedConversations.insert(current, at: 0) }
+        if conversations != sharedConversations { conversations = sharedConversations }
+        if authenticationRunning != application.authenticationRunning { authenticationRunning = application.authenticationRunning }
+        if authenticationPrompt != application.authenticationPrompt { authenticationPrompt = application.authenticationPrompt }
+        if authenticationNotifications != application.authenticationNotifications { authenticationNotifications = application.authenticationNotifications }
+        if authenticationResult != application.authenticationResult { authenticationResult = application.authenticationResult }
+        if problems != application.problems { problems = application.problems }
         reconcileNextTurnIntent()
         if !isDraft, pendingConversationID == nil, let active = application.snapshot,
            active.conversation.id == loadedConversationID, active.conversation.runtimeID == snapshot?.conversation.runtimeID {
@@ -162,7 +166,7 @@ final class AppStore: ObservableObject {
         guard !isShuttingDown, enabledRuntimeInstances.contains(where: { $0.id == id }) else { return }
         hasInitializedNextTurnIntent = true
         nextTurnRuntimeID = id
-        if !runtimeCompatibleModels.contains(where: { $0.recordKey == nextTurnModelRecordKey }) { nextTurnModelRecordKey = nil }
+        if nextTurnModelRecordKey != nil, !runtimeCompatibleModels.contains(where: { $0.recordKey == nextTurnModelRecordKey }) { nextTurnModelRecordKey = nil }
     }
     var pendingInteractions: [RuntimeInteraction] { snapshot?.pendingInteractions ?? [] }
     func replyInteraction(_ interaction: RuntimeInteraction, reply: RuntimeInteractionReply) {
@@ -687,7 +691,7 @@ final class AppStore: ObservableObject {
         problems.append(contentsOf: values)
         if problems.count > 100 { problems.removeFirst(problems.count - 100) }
     }
-    private func clearActivityProblem(_ key: String) { if let sharedApplication { sharedApplication.clearActivityProblem(key); return }; problems.removeAll { $0.activityKey == key } }
+    private func clearActivityProblem(_ key: String) { if let sharedApplication { sharedApplication.clearActivityProblem(key); return }; guard problems.contains(where: { $0.activityKey == key }) else { return }; problems.removeAll { $0.activityKey == key } }
     func clearProblem(_ id: UUID) { if let sharedApplication { sharedApplication.clearProblem(id); return }; problems.removeAll { $0.id == id } }
     func clearProblems() { if let sharedApplication { sharedApplication.clearProblems(); return }; problems.removeAll() }
     private func reconcileHistoryProblems(_ failures: [HistoryFailure]) {
@@ -708,11 +712,13 @@ final class AppStore: ObservableObject {
         } else if let nextTurnRuntimeID, !enabledRuntimeInstances.contains(where: { $0.id == nextTurnRuntimeID }) {
             self.nextTurnRuntimeID = nil; nextTurnModelRecordKey = nil
         }
-        if !runtimeCompatibleModels.contains(where: { $0.recordKey == nextTurnModelRecordKey }) { nextTurnModelRecordKey = nil }
+        if nextTurnModelRecordKey != nil, !runtimeCompatibleModels.contains(where: { $0.recordKey == nextTurnModelRecordKey }) { nextTurnModelRecordKey = nil }
     }
     private func apply(_ value: ConversationSnapshot?, preserveSelection: Bool = false) {
         guard let value else { return }
-        problems.removeAll { $0.activityKey?.hasPrefix("poll:") == true && $0.activityKey != "poll:" + value.contextRuntimeID }
+        let remainingProblems = problems.filter { !($0.activityKey?.hasPrefix("poll:") == true && $0.activityKey != "poll:" + value.contextRuntimeID) }
+        if problems != remainingProblems { problems = remainingProblems }
+        guard snapshot != value else { return }
         snapshot = value; projectionRuntimeID = value.contextRuntimeID; selectedConversationID = value.conversation.id; if !preserveSelection && selectedConversationIDs.count <= 1 { selectedConversationIDs = [value.conversation.id] }; transcript.apply(value.messages, turns: value.transcriptTurns, items: value.transcriptItems, outline: value.transcriptOutline, identities: value.transcriptMessageIdentities)
         if let index = conversations.firstIndex(where: { $0.id == value.conversation.id }) { if conversations[index] != value.conversation { conversations[index] = value.conversation } }
         else if !isDraft { conversations.insert(value.conversation, at: 0) }

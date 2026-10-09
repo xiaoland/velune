@@ -24,12 +24,14 @@ final class CachedMarkdownDocument {
 final class TranscriptRow: ObservableObject, @MainActor Identifiable {
     let id: String
     @Published private(set) var message: Message
+    private(set) var contentRevision: UInt64 = 0
     private(set) var markdown: [Int: CachedMarkdownDocument] = [:]
     private(set) var cacheFillCount = 0
     init(_ message: Message, id: String) { self.id = id; self.message = message; prepareMarkdown(message) }
     func update(_ message: Message) {
         guard self.message != message else { return }
         if self.message.blocks != message.blocks { prepareMarkdown(message) }
+        contentRevision &+= 1
         self.message = message
     }
     private func prepareMarkdown(_ message: Message) {

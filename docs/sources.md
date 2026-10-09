@@ -223,3 +223,5 @@ S17 实施授权：用户决定全面切换 UniFFI，并要求现在开始拆分
 2026-10-09 用户要求链接可打开／原文复制、大纲准确定位、新会话目录默认可选、各Tab独立展示会话。产品行为归PRD，共享核心与工作区边界归架构说明，证据归 [会话体验任务](../tasks/mac-conversation-usability/packet.md)。
 
 2026-10-09 用户要求替换MarkdownUI，采用[LiYanan2004/MarkdownView](https://github.com/LiYanan2004/MarkdownView)。用户以MarkdownUI维护趋于停滞为替换理由。已按3.0.0的[Package.swift](https://github.com/LiYanan2004/MarkdownView/blob/3.0.0/Package.swift)和[LICENSE](https://github.com/LiYanan2004/MarkdownView/blob/3.0.0/LICENSE)核对macOS13+、Swift6.2及MIT；API接入按锁定源码核对；实施及验证归[会话体验任务](../tasks/mac-conversation-usability/packet.md)。
+
+2026-10-09 用户反馈Markdown点击重排与长列表上滑异常，要求核对我们的组件接入和虚拟化层；明确若是MarkdownView自身缺陷不必修上游，建议考虑[gonzalezreal/textual](https://github.com/gonzalezreal/textual)。随后明确允许Velune最低支持macOS15。平台底线归PRD；依赖与容器的隔离判别、适用边界归[会话体验任务](../tasks/mac-conversation-usability/packet.md)，候选不等同于已采用。
