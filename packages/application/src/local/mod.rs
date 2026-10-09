@@ -191,6 +191,9 @@ impl CoreRuntime {
         self.transcript_projection
             .apply(TranscriptEvent::ExecutionState(snapshot.run_state.clone()));
         snapshot.transcript_turns = self.transcript_projection.turns();
+        snapshot.transcript_items = self.transcript_projection.items();
+        snapshot.transcript_outline = self.transcript_projection.outline();
+        snapshot.transcript_message_identities = self.transcript_projection.message_identities();
         Some(snapshot)
     }
     fn drain_runtime(&mut self) -> Result<(), RuntimeError> {

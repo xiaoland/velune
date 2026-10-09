@@ -17,7 +17,7 @@ struct TranscriptView: View {
     @State private var jumpTarget: String?
     @StateObject private var scrollObserver = TranscriptScrollObserver()
     @State private var expandedWork: Set<String> = []
-    private var visibleRows: [TranscriptRow] { presentation == .userOutline ? outline.visibleRows(model.rows) : model.rows }
+    private var visibleRows: [TranscriptRow] { presentation == .userOutline ? outline.visibleRows(model.rows, userIDs: Set(model.userRows.map(\.id))) : model.rows }
     var body: some View {
         ScrollViewReader { proxy in
             List {
@@ -25,12 +25,11 @@ struct TranscriptView: View {
                     Group { switch item {
                     case .message(let row): message(row, proxy: proxy)
                     case .work(let turn, let rows):
-                        ImmediateDisclosureGroup(isExpanded: workExpansion(turn.id)) {
+                        InlineMessageDisclosure(isExpanded: workExpansion(turn.id), accessibilityLabel: workLabel(turn)) {
                             LazyVStack(alignment: .leading, spacing: 24) {
                                 ForEach(rows) { row in ConversationMessageView(row: row, cwd: cwd).id(row.id) }
-                            }.padding(.top, 12)
+                            }
                         } label: { Text(workLabel(turn)).font(.callout).foregroundStyle(.secondary) }
-                        .frame(maxWidth: .infinity, alignment: .leading)
                     } }
                     .frame(maxWidth: 760).frame(maxWidth: .infinity)
                     .listRowInsets(EdgeInsets(top: 24, leading: 24, bottom: 0, trailing: 24))
@@ -41,7 +40,7 @@ struct TranscriptView: View {
                 Color.clear.frame(height: 1).id("transcript-bottom")
                     .listRowSeparator(.hidden).listRowBackground(Color.clear)
             }
-            .listStyle(.plain).scrollContentBackground(.hidden)
+            .listStyle(.plain)
             .overlay(alignment: .bottomTrailing) {
                 HStack(spacing: 8) {
                     if !following {
@@ -64,12 +63,11 @@ struct TranscriptView: View {
             .onChange(of: conversationID) { _, _ in outline = TranscriptOutlineState(); expandedWork = []; following = true; scrollToBottom(proxy) }
             .onChange(of: presentation) { _, _ in outline = TranscriptOutlineState(); following = true; scrollToBottom(proxy) }
             .onChange(of: scrollRequest) { _, _ in
-                if presentation == .userOutline { outline.followSentUser(after: sentAfterUserID.map { model.confirmedMessageIDs[$0] ?? $0 }, in: model.rows) }
+                if presentation == .userOutline { outline.followSentUser(after: sentAfterUserID, in: model.rows) }
                 following = true; scrollToBottom(proxy)
             }
             .onChange(of: model.contentRevision) { _, _ in
                 expandedWork = model.retainedExpandedTurnIDs(expandedWork)
-                outline.confirmIdentities(model.confirmedMessageIDs)
                 if outline.reconcile(model.rows) { following = false }
                 if following && !userScrolling { scrollToBottom(proxy) }
             }

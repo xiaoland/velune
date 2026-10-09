@@ -275,7 +275,7 @@ struct ConversationMessageView: View {
                     case .tool(_, let title, let state, let output):
                         ToolDisclosure(title: title, detail: output ?? "", state: state)
                     case .reasoning(let text):
-                        ImmediateDisclosureGroup { Text(text).textSelection(.enabled).font(.callout).foregroundStyle(.secondary) } label: { Text("思考过程").font(.callout).foregroundStyle(.secondary) }
+                        InlineMessageDisclosure(accessibilityLabel: "思考过程") { Text(text).textSelection(.enabled).font(.callout).foregroundStyle(.secondary) } label: { Text("思考过程").font(.callout).foregroundStyle(.secondary) }
                     case .notice(let text):
                         Text(text).font(.callout).foregroundStyle(.secondary).textSelection(.enabled)
                     case .text(let text):
@@ -352,14 +352,69 @@ struct ToolDisclosure: View {
     let state: ToolState
     @State private var expanded = false
     var body: some View {
-        ImmediateDisclosureGroup(isExpanded: $expanded) {
+        InlineMessageDisclosure(isExpanded: $expanded, accessibilityLabel: title) {
             Text(detail.isEmpty ? "没有附加输出" : detail).font(.system(.callout, design: .monospaced)).foregroundStyle(.secondary).textSelection(.enabled).padding(.top, 4)
         } label: {
             Label(title, systemImage: state == .running ? "circle.dotted" : state == .failed ? "exclamationmark.circle" : state == .pending ? "circle" : "checkmark.circle").font(.callout).foregroundStyle(.secondary)
-        }.frame(maxWidth: expanded ? 560 : nil).fixedSize(horizontal: !expanded, vertical: false).frame(maxWidth: .infinity, alignment: .leading)
+        }.frame(maxWidth: expanded ? 560 : .infinity, alignment: .leading)
     }
 }
 
+
+/// Message folds stay inside their content column instead of becoming List outline nodes.
+struct InlineMessageDisclosure<Label: View, Content: View>: View {
+    @State private var expanded = false
+    private var externalExpansion: Binding<Bool>?
+    private let accessibilityLabel: String
+    private let content: Content
+    private let label: Label
+    init(isExpanded: Binding<Bool>? = nil, accessibilityLabel: String, @ViewBuilder content: () -> Content, @ViewBuilder label: () -> Label) {
+        externalExpansion = isExpanded
+        self.accessibilityLabel = accessibilityLabel
+        self.content = content(); self.label = label()
+    }
+    private var expansion: Binding<Bool> { externalExpansion ?? $expanded }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 6) {
+                NativeMessageDisclosureButton(isExpanded: expansion, label: accessibilityLabel)
+                Button { expansion.wrappedValue.toggle() } label: { label }.buttonStyle(.plain)
+            }
+            if expansion.wrappedValue { content }
+        }.frame(maxWidth: .infinity, alignment: .leading)
+        .transaction { $0.animation = nil; $0.disablesAnimations = true }
+    }
+}
+
+/// A message work header is not a List outline node. Its native disclosure button
+/// stays inside the same content column as its label and expanded messages.
+private struct NativeMessageDisclosureButton: NSViewRepresentable {
+    @Binding var isExpanded: Bool
+    let label: String
+    func makeCoordinator() -> Coordinator { Coordinator($isExpanded) }
+    func makeNSView(context: Context) -> NSButton {
+        let button = NSButton()
+        button.bezelStyle = .disclosure
+        button.setButtonType(.pushOnPushOff)
+        button.title = ""
+        button.controlSize = .small
+        button.target = context.coordinator
+        button.action = #selector(Coordinator.toggle(_:))
+        button.sizeToFit()
+        return button
+    }
+    func updateNSView(_ button: NSButton, context: Context) {
+        context.coordinator.expansion = $isExpanded
+        button.state = isExpanded ? .on : .off
+        button.setAccessibilityLabel(label)
+    }
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView: NSButton, context: Context) -> CGSize? { nsView.intrinsicContentSize }
+    final class Coordinator: NSObject {
+        var expansion: Binding<Bool>
+        init(_ expansion: Binding<Bool>) { self.expansion = expansion }
+        @objc func toggle(_ sender: NSButton) { expansion.wrappedValue = sender.state == .on }
+    }
+}
 
 struct SettingsView: View {
     @ObservedObject var store: AppStore

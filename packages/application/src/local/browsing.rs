@@ -170,6 +170,9 @@ impl CoreRuntime {
             run_state: RunState::Idle,
             messages: Vec::new(),
             transcript_turns: Vec::new(),
+            transcript_items: Vec::new(),
+            transcript_outline: Vec::new(),
+            transcript_message_identities: Vec::new(),
             message_identity_confirmations: Vec::new(),
             pending_interactions: Vec::new(),
             actions: ConversationActions {
@@ -354,6 +357,7 @@ impl CoreRuntime {
             self.model_record_key = previous.as_ref().and_then(|s| s.model_record_key.clone());
             if let Some(mut view) = previous {
                 view.messages.push(Message {
+                    completed: true,
                     id: format!("prepare-failed:{}", view.revision),
                     role: velune_conversation::MessageRole::System,
                     timestamp_unix_ms: None,

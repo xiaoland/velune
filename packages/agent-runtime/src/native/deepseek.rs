@@ -171,6 +171,7 @@ impl NativeSession {
         self.pending_rpc.insert(id, "prompt".into());
         self.turn_id = Some(id.to_string());
         self.message(Message {
+            completed: true,
             id: format!("{}:user:{id}", self.epoch),
             role: crate::conversation::MessageRole::User,
             timestamp_unix_ms: None,
@@ -316,6 +317,7 @@ impl NativeSession {
                     .and_then(|s| s.messages.iter().find(|m| m.id == id))
                     .cloned()
                     .unwrap_or(Message {
+                        completed: false,
                         id,
                         role: crate::conversation::MessageRole::Assistant,
                         timestamp_unix_ms: None,
@@ -357,6 +359,7 @@ impl NativeSession {
                     })
                     .unwrap_or_else(|| "工具操作".into());
                 self.message(Message {
+                    completed: true,
                     id,
                     role: crate::conversation::MessageRole::Tool,
                     timestamp_unix_ms: None,

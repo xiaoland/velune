@@ -1,6 +1,7 @@
 //! Ordered, disposable message-list projection. Native snapshots remain authoritative.
 use crate::conversation::{
-    Message, MessageIdentityConfirmation, MessageRole, RunState, TranscriptTurn,
+    Message, MessageBlock, MessageIdentityConfirmation, MessageRole, RunState, TranscriptItem,
+    TranscriptMessageIdentity, TranscriptOutlineEntry, TranscriptTurn,
 };
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -17,6 +18,8 @@ pub enum TranscriptEvent<'a> {
 struct MessageAnchor {
     id: String,
     role: MessageRole,
+    pure_text: bool,
+    completed: bool,
 }
 
 #[derive(Default)]
@@ -25,6 +28,7 @@ pub struct TranscriptProjection {
     running: bool,
     active: Option<(String, Instant)>,
     durations: BTreeMap<String, u64>,
+    presentation_ids: BTreeMap<String, String>,
 }
 impl TranscriptProjection {
     pub fn apply(&mut self, event: TranscriptEvent<'_>) {
@@ -50,6 +54,10 @@ impl TranscriptProjection {
                     *id = (*current).into();
                 }
                 for confirmation in confirmations {
+                    if let Some(id) = self.presentation_ids.remove(&confirmation.previous_id) {
+                        self.presentation_ids
+                            .insert(confirmation.current_id.clone(), id);
+                    }
                     if let Some(duration) = self.durations.remove(&confirmation.previous_id) {
                         self.durations
                             .insert(confirmation.current_id.clone(), duration);
@@ -62,6 +70,13 @@ impl TranscriptProjection {
                     .map(|message| MessageAnchor {
                         id: message.id.clone(),
                         role: message.role.clone(),
+                        pure_text: message.role == MessageRole::Assistant
+                            && message.blocks.iter().any(|block| matches!(block, MessageBlock::Text { text } if !text.trim().is_empty()))
+                            && message
+                                .blocks
+                                .iter()
+                                .all(|block| matches!(block, MessageBlock::Text { .. })),
+                        completed: message.completed,
                     })
                     .collect();
                 let identities: BTreeSet<_> = self
@@ -69,6 +84,13 @@ impl TranscriptProjection {
                     .iter()
                     .map(|message| message.id.as_str())
                     .collect();
+                self.presentation_ids
+                    .retain(|id, _| identities.contains(id.as_str()));
+                for message in messages {
+                    self.presentation_ids
+                        .entry(message.id.clone())
+                        .or_insert_with(|| format!("message:{}", message.id));
+                }
                 self.durations
                     .retain(|id, _| identities.contains(id.as_str()));
                 // An authoritative replacement can remove the in-progress branch.
@@ -88,7 +110,12 @@ impl TranscriptProjection {
                     .rev()
                     .find(|m| m.role == MessageRole::User)
                     .map(|m| m.id.clone());
-                if running && (!self.running || self.active.is_none()) {
+                if running
+                    && (!self.running || self.active.as_ref().map(|(id, _)| id) != user.as_ref())
+                {
+                    if let Some((id, started)) = self.active.take() {
+                        self.durations.insert(id, elapsed_ms(started));
+                    }
                     self.active = user.map(|id| (id, Instant::now()));
                 } else if !running && let Some((id, started)) = self.active.take() {
                     self.durations.insert(id, elapsed_ms(started));
@@ -98,32 +125,33 @@ impl TranscriptProjection {
         }
     }
 
-    /// User messages are persistent outline anchors. The latest result remains visible
-    /// even when execution failed or ended with a tool result instead of an answer.
+    /// A completed text-only assistant closes the range; streaming text may remain
+    /// visible but cannot yet determine where the work interval ends.
     pub fn turns(&self) -> Vec<TranscriptTurn> {
         let starts: Vec<_> = self
             .messages
             .iter()
             .enumerate()
-            .filter(|(_, m)| m.role == MessageRole::User)
+            .filter(|(_, message)| message.role == MessageRole::User)
             .map(|(i, _)| i)
             .collect();
         starts
             .iter()
             .enumerate()
             .map(|(ordinal, start)| {
-                let end = starts
+                let next_user = starts
                     .get(ordinal + 1)
                     .copied()
                     .unwrap_or(self.messages.len());
-                let user = &self.messages[*start];
-                let responses = &self.messages[start + 1..end];
-                // A handoff or status notice after the result must not hide that result.
-                let last_result = responses
+                let responses = &self.messages[start + 1..next_user];
+                let closed = responses
                     .iter()
-                    .rposition(|message| message.role != MessageRole::System)
-                    .unwrap_or_else(|| responses.len().saturating_sub(1));
-                let is_running = ordinal + 1 == starts.len() && self.running;
+                    .position(|message| message.pure_text && message.completed);
+                let end = closed.map_or(responses.len(), |index| index + 1);
+                let responses = &responses[..end];
+                let visible = responses.last().filter(|message| message.pure_text);
+                let work_end = responses.len() - usize::from(visible.is_some());
+                let user = &self.messages[*start];
                 let duration_ms = self
                     .active
                     .as_ref()
@@ -131,17 +159,64 @@ impl TranscriptProjection {
                     .map(|(_, started)| elapsed_ms(*started))
                     .or_else(|| self.durations.get(&user.id).copied());
                 TranscriptTurn {
-                    id: format!("turn:{}", user.id),
+                    id: format!("turn:{}", self.presentation_ids[&user.id]),
                     user_message_id: user.id.clone(),
-                    work_message_ids: responses
+                    work_message_ids: responses[..work_end]
                         .iter()
-                        .take(last_result)
-                        .map(|m| m.id.clone())
+                        .map(|message| message.id.clone())
                         .collect(),
-                    last_message_id: responses.get(last_result).map(|m| m.id.clone()),
+                    last_message_id: visible.map(|message| message.id.clone()),
                     duration_ms,
-                    is_running,
+                    is_running: ordinal + 1 == starts.len() && self.running && closed.is_none(),
                 }
+            })
+            .collect()
+    }
+
+    pub fn items(&self) -> Vec<TranscriptItem> {
+        let turns = self.turns();
+        let work: BTreeMap<_, _> = turns
+            .iter()
+            .flat_map(|turn| {
+                turn.work_message_ids
+                    .iter()
+                    .map(move |id| (id.as_str(), turn.id.as_str()))
+            })
+            .collect();
+        let mut emitted = BTreeSet::new();
+        self.messages
+            .iter()
+            .filter_map(|message| {
+                if let Some(turn_id) = work.get(message.id.as_str()) {
+                    return emitted.insert(*turn_id).then(|| TranscriptItem::Work {
+                        turn_id: (*turn_id).into(),
+                    });
+                }
+                Some(TranscriptItem::Message {
+                    id: self.presentation_ids[&message.id].clone(),
+                    message_id: message.id.clone(),
+                })
+            })
+            .collect()
+    }
+
+    pub fn message_identities(&self) -> Vec<TranscriptMessageIdentity> {
+        self.messages
+            .iter()
+            .map(|message| TranscriptMessageIdentity {
+                id: self.presentation_ids[&message.id].clone(),
+                message_id: message.id.clone(),
+            })
+            .collect()
+    }
+
+    pub fn outline(&self) -> Vec<TranscriptOutlineEntry> {
+        self.messages
+            .iter()
+            .filter(|message| message.role == MessageRole::User)
+            .map(|message| TranscriptOutlineEntry {
+                id: self.presentation_ids[&message.id].clone(),
+                message_id: message.id.clone(),
             })
             .collect()
     }

@@ -8,6 +8,8 @@ root负责Tab/窗口级Swift状态、共享backend装配、文档与整合；ses
 
 ## 当前状态与下一步
 
+本任务因用户实际验收反馈重新打开：修复工作过程三角位置、所有消息文本模糊、非纯正文末条折叠，以及投影的区间／完成状态／身份和原子消费缺口。当前开发中，以下旧验收仅适用于此前四项行为，不能作为本轮视觉修复已完成的证据。
+
 Tab／来源绑定发送和可选CWD实现已完成。Rust全工作区fmt/check/clippy、无默认features的bindings clippy通过，最终UniFFI已重新生成，Swift debug warnings-as-errors通过。最新AppStore→Pi七请求隔离脚本通过。
 
 导航／链接源码已冻结，最终strict Swift编译、手动原生窗口验收及整包release构建／签名验证通过。网页及相对文件链接验证到系统接收，不声称验过外部查看器内容；失败弹窗原文与复制精确一致。唯一UI实例正常退出，服务器与临时目录已删除，root全局路径复查零残留。实现提交为d328c25，已重新构建并安装Applications的0.1 beta.1；安装包manifest记录该提交、dirty=false，二进制与库均和已签名构建产物逐字节一致。开发方实现与隔离验证完成，等待用户真实提供商和最终UI验收。
@@ -41,3 +43,33 @@ Pi默认CWD隔离创建／发送通过。Codex省略未指定cwd并优先投影�
 工作过程窄修已完成：work分支的DisclosureGroup显式填满内容列并leading对齐，仅新增一行；实际源strict Swift warnings-as-errors与diff检查通过，未启动GUI。等待该修复提交后的整包构建安装。
 
 窄修安装完成：55d70fd已严格release构建、签名验证并安装至Applications，版本仍0.1 beta.1；manifest dirty=false且执行文件／库和构建产物一致。安装前正常退出已确认的Velune进程；未启动fixture或读取真实会话。工作过程左对齐要求已明确归入PRD，后续不以系统状态的居中规则覆盖折叠块。
+
+## 2026-10-09 消息投影重新核对
+
+用户实际截图发现工作过程triangle出内容列、用户与LLM文字均模糊；上一轮导航合成验收没有证明这两项视觉质量。用户优先要求核对canonical session/message到UI events的设计，再推进修复。新增折叠要求已归PRD：末条非纯LLM正文也隐藏到工作过程。
+
+只读审计确认：agent-runtime解析原生事件为conversation snapshot；application装配逻辑段后把完整消息、身份确认及状态送入TranscriptProjection；其TranscriptEvent只是Rust内部输入，不是导出给Mac的UI事件。Mac每0.6秒轮询snapshot，TranscriptModel复用row/Markdown缓存并根据turn引用合并work项。turn分组只存role、不存内容类别，选最后非system消息作为外露结果，导致tool/mixed assistant被外露；边界当前只有下一user，尚未表达无工具正文结束边界。
+
+session_management只读确认没有显式blur/shadow/scale或重复work/独立行绘制。共享List/row布局/原生探针是文本问题待判别路径，不能将模糊归罪Markdown或宣称已经定位根因。Disclosure在List内的原生accessory外置待单变量合成验证；再次padding猜补不构成修复证据。mac_navigation_advisor负责事件契约、稳定身份与替换语义的工程判断，root负责采用和解释。
+
+本轮先完成设计对照与建议，不改源码或启动GUI。后续修复须单进程固定合成消息，逐项比较静态/更新、probe有无、原生Text/Markdown、List/非List，保持outline/跟底验证并finally清理。视觉与投影规则分别提供证据，不能用cargo/Swift构建通过替代。
+
+Advisor建议已采用为待用户核对的方案：canonical只表达Harness事实，agent-runtime统一产出有序presentation行／工作范围／outline锚点；Mac保留渲染和展开／滚动，不二次决定可见消息。保留typed snapshot传输，不新增订阅或event log；展示更新原子消费，先明确projection epoch和其内revision，必要时用Reset/ReplacePresentation批次表达forward消费，不提前引入细粒度patch。末条纯正文判定为assistant、非空blocks且全部Text、至少一个非空正文；不能向前找旧assistant冒充最后结果。所有这些是方案而非已实施行为，文字模糊仍待渲染判别。
+
+用户随后明确授权先修复全部反馈与审计缺口，再讨论。transcript_projection负责canonical完成事实、Rust统一展示项／大纲身份及bindings契约；session_management负责Mac原子消费、列表/Disclosure视觉调查修复与单实例隔离验收；root负责长期文档、整合静态检查、构建安装及当前任务提交。不存在等待用户复核的设计闸门。
+
+Rust新契约实现已冻结：Message.completed独立于成功；工作范围按已完成纯Text答复或next-user结束；新TranscriptItem／outline／全消息展示身份覆盖实时与只读历史。Pi start/update与Codex delta为未完成，原生message/item结束及ACP settled确认完成。空Text不作为终点；连续user更新观察计时归属。bindings已重新生成、release核心已构建。workspace fmt/check/clippy(all-targets/all-features,-D warnings)及no-default bindings clippy通过；隔离manual-transcript-projection显式执行通过，没有调用测试runner或真实服务。
+
+三角已有单变量证据：同快照List将triangle置于x约9、标签x约50；非List普通容器triangle/label由同列布局。修复采用work局部NSButton原生disclosure，不修改全局DisclosureGroup或加偏移。关闭row probe、关闭textSelection、Markdown换原生Text的静态对照未解释用户重影；动态与像素对齐仍在验收，不能宣布字形已修复。
+
+Mac已严格debug product构建通过，5000消息缓存手动验收通过：100次同快照不发布revision、不重解析，单末条变化仅一次Markdown解析且对象稳定。新的完整Presentation一次发布rows/turns/items/outline/revision；preview seed/send明确构造新契约，不保留旧apply接口。
+
+真实Pi loopback验收中的旧oracle已纠正：last_message_id只是折叠外当前纯正文，允许streaming；关闭区间依据canonical completed与turn.is_running。跨新projection重启不要求UIID保持相等，而要求nativecanonical引用一致；活跃生命周期的UIID、展开状态和row/Markdown缓存保持稳定仍严格验收。禁止为满足旧oracle伪造持久别名。
+
+渲染变量矩阵覆盖探针、Markdown/原生Text、textSelection、List/普通ScrollView、12帧流式、canonical确认、820/1920窗口宽度；backingScale=1、clip和行坐标为整数，没有像素snap修复依据。新work头去除了整List的隐式outline缩进；恢复系统默认List背景实际改善内容对比，未证明它是用户文字重影根因。下一步补真实产品--preview的NavigationSplitView/窗口层级验收后关闭唯一实例，再冻结build/install；真实环境重影尚不能宣称完全消除。
+
+最终实际Store→UniFFI→外部Pi→loopback七请求通过：流式completed旗标、工作时长/历史unknown、原生确认保持对象与展示ID/Markdown缓存、outline suffix与删除锚点、重开canonical引用一致、原生续接以及Tab隔离。严格debug product与缓存验收均通过。原生导航fixture进程正常退出(child0)、finally删除本次目录；只保留实际产品隔离--preview作最终窗口层级检查，检查后必须退出并删除其临时HOME。默认List背景已恢复，不添加固定颜色或渲染猜测补丁。
+
+真实产品预览发现工具／推理折叠也被List合并、缺独立三角入口，现三类消息折叠共用行内原生NSButton组件，设置Disclosure不改。动态重分组实际帧通过：外露纯正文追加tool后从屏幕完整移除，收进collapsed work；展开后内容仅出现一次，work/tool三角在内容列内且AX独立、状态正确。该唯一fixture child0及finally清理完成。最后产品preview使用显式known-messages工作范围，不在Swift复刻业务分组算法。
+
+源码冻结。最终真实产品--preview在完整NavigationSplitView中确认work在正文列内，展开后工具／推理各有独立原生AX disclosure(0→1)并显示内容；Markdown、用户气泡未观察错位叠绘。strict debug和提取实际消息源码的warnings-as-errors均通过，manual Python编译与diff检查通过。所有本轮GUI进程、current目录均已清理。有限首次布局AttributeGraph诊断仍存在，未见持续反馈或崩溃。用户特定PNG的暗重根因没有独立复现，不宣称完全治愈；已完成结构、身份与背景修复，准备当前任务提交及严格release安装，真实视觉仍由用户复验。

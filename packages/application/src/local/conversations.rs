@@ -228,6 +228,9 @@ impl CoreRuntime {
         transcript.apply(TranscriptEvent::ReplaceMessages(&snapshot.messages));
         transcript.apply(TranscriptEvent::ExecutionState(snapshot.run_state.clone()));
         snapshot.transcript_turns = transcript.turns();
+        snapshot.transcript_items = transcript.items();
+        snapshot.transcript_outline = transcript.outline();
+        snapshot.transcript_message_identities = transcript.message_identities();
         Ok(json!({"snapshot":Some(snapshot)}))
     }
 

@@ -33,3 +33,5 @@ Mac 由根目录 [Package.swift](../../Package.swift) 定义独立 SwiftPM 产�
 各原生窗口与Tab持有独立AppStore工作区，共享一个Transport/application、配置、认证、问题和单活跃执行。只读历史与绑定来源会话的发送由UniFFI具名接口承载。窗口命令使用focused scene，不广播发送；Tab关闭不关闭核心。未发送草稿仅留在工作区，首发创建成功后立即保留原生身份，之后派发失败不自动重建或重发。验收见 [会话体验任务](../../tasks/mac-conversation-usability/packet.md)。
 
 消息列表使用SwiftUI List复用行，保留稳定消息ID与缓存的Markdown内容。大纲先由原生列表定位目标，再由该消息的真实布局框对齐可见区域；跳转、用户滚动与跟底互斥，不估算消息高度或循环重试。AppKit通知owner仅观察消息行所属的滚动容器，不持有它；关闭窗口释放观察。Markdown链接交给系统注册的应用，相对文件以当前会话目录解析，失败由原生alert提供原文与复制。
+
+消息列表消费 Rust 产出的有序展示项与稳定身份，原子更新行、工作范围与大纲。工作过程、工具和推理使用行内 AppKit 原生 disclosure 按钮；它们不是 List 的 outline 节点，开合不改变整表缩进。消息内容采用系统默认列表背景，Markdown 仅在正文变化时重新解析。

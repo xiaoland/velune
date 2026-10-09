@@ -62,6 +62,8 @@ pub struct ConversationActions {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Message {
+    /// Content is no longer streaming; completion does not imply execution success.
+    pub completed: bool,
     pub id: String,
     pub role: MessageRole,
     /// Native message time in Unix epoch milliseconds, when available.
@@ -123,6 +125,9 @@ pub struct ConversationSnapshot {
     pub messages: Vec<Message>,
     #[serde(default)]
     pub transcript_turns: Vec<TranscriptTurn>,
+    pub transcript_items: Vec<TranscriptItem>,
+    pub transcript_outline: Vec<TranscriptOutlineEntry>,
+    pub transcript_message_identities: Vec<TranscriptMessageIdentity>,
     /// Idempotent live-to-native confirmations within this projection lifecycle.
     #[serde(default)]
     pub message_identity_confirmations: Vec<MessageIdentityConfirmation>,
@@ -255,6 +260,8 @@ pub struct TranscriptTurn {
     pub id: String,
     pub user_message_id: String,
     pub work_message_ids: Vec<String>,
+    /// The text-only assistant currently visible outside the work group. It may
+    /// still be streaming; only Message.completed closes the interval.
     pub last_message_id: Option<String>,
     /// Observed execution elapsed time. None for history without lifecycle evidence.
     pub duration_ms: Option<u64>,
@@ -267,4 +274,26 @@ pub struct TranscriptTurn {
 pub struct MessageIdentityConfirmation {
     pub previous_id: String,
     pub current_id: String,
+}
+
+/// Complete ordered presentation, emitted atomically with canonical content.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum TranscriptItem {
+    Message { id: String, message_id: String },
+    Work { turn_id: String },
+}
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct TranscriptOutlineEntry {
+    pub id: String,
+    pub message_id: String,
+}
+
+/// Stable disposable row identity, including rows currently inside a work group.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct TranscriptMessageIdentity {
+    pub id: String,
+    pub message_id: String,
 }

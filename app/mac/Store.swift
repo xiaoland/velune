@@ -423,7 +423,16 @@ final class AppStore: ObservableObject {
     func send(text: String, onAccepted: (() -> Void)? = nil) {
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         guard canSend, let target = nextTurnRuntimeID, let model = nextTurnModelRecordKey, let source = snapshot?.conversation.runtimeID, let conversationID = loadedConversationID else { return }
-        if isPreview { snapshot?.modelRecordKey = model; snapshot?.messages.append(Message(id: UUID().uuidString, role: .user, blocks: [.text(text)])); apply(snapshot); onAccepted?(); return }
+        if isPreview {
+            guard var value = snapshot else { return }
+            value.modelRecordKey = model
+            let message = Message(id: UUID().uuidString, role: .user, blocks: [.text(text)])
+            value.messages.append(message)
+            value.transcriptItems.append(.message(id: message.id, messageID: message.id))
+            value.transcriptOutline.append(TranscriptOutlineEntry(id: message.id, messageID: message.id))
+            value.transcriptMessageIdentities.append(TranscriptMessageIdentity(id: message.id, messageID: message.id))
+            apply(value); onAccepted?(); return
+        }
         guard let transport else { recordProblem("本地核心未配置"); return }
         let application = sharedApplication ?? self
         application.executionStarting = true
@@ -704,7 +713,7 @@ final class AppStore: ObservableObject {
     private func apply(_ value: ConversationSnapshot?, preserveSelection: Bool = false) {
         guard let value else { return }
         problems.removeAll { $0.activityKey?.hasPrefix("poll:") == true && $0.activityKey != "poll:" + value.contextRuntimeID }
-        snapshot = value; projectionRuntimeID = value.contextRuntimeID; selectedConversationID = value.conversation.id; if !preserveSelection && selectedConversationIDs.count <= 1 { selectedConversationIDs = [value.conversation.id] }; transcript.apply(value.messages, turns: value.transcriptTurns, confirmations: value.messageIdentityConfirmations)
+        snapshot = value; projectionRuntimeID = value.contextRuntimeID; selectedConversationID = value.conversation.id; if !preserveSelection && selectedConversationIDs.count <= 1 { selectedConversationIDs = [value.conversation.id] }; transcript.apply(value.messages, turns: value.transcriptTurns, items: value.transcriptItems, outline: value.transcriptOutline, identities: value.transcriptMessageIdentities)
         if let index = conversations.firstIndex(where: { $0.id == value.conversation.id }) { if conversations[index] != value.conversation { conversations[index] = value.conversation } }
         else if !isDraft { conversations.insert(value.conversation, at: 0) }
         activity = value.runState == .running ? "正在思考与执行" : value.runState == .stopping ? "正在停止" : nil
@@ -774,7 +783,15 @@ final class AppStore: ObservableObject {
             history[1].blocks.insert(.reasoning("先确认上下文，再选择最小的修改范围。"), at: 0)
             history[1].blocks.append(.tool(id: "sample-tool-\(index)", title: index == 1 ? "检查项目代码" : "读取工作上下文", state: .completed, output: index == 1 ? "已读取 3 个文件，未修改项目。" : "已梳理当前任务的上下文。"))
             if index == 2 { history[history.count - 1].blocks.append(.tool(id: "sample-progress", title: "整理项目计划", state: .running, output: "正在整理计划。")) }
-            previewSnapshots[conversation.id] = ConversationSnapshot(revision: 1, conversation: conversation, contextRuntimeID: conversation.runtimeID, modelRecordKey: models[0].id, runState: .idle, messages: history, actions: ConversationActions(canSend: true, canCancel: false, canSwitch: true))
+            previewSnapshots[conversation.id] = ConversationSnapshot(revision: 1, conversation: conversation, contextRuntimeID: conversation.runtimeID, modelRecordKey: models[0].id, runState: .idle, messages: history,
+                transcriptTurns: [
+                    TranscriptTurn(id: "preview-work-" + conversation.id, userMessageID: history[0].id, workMessageIDs: [history[1].id], lastMessageID: nil, durationMs: nil, isRunning: false),
+                    TranscriptTurn(id: "preview-answer-" + conversation.id, userMessageID: history[2].id, workMessageIDs: [], lastMessageID: history[3].id, durationMs: nil, isRunning: false)
+                ],
+                transcriptItems: [.message(id: history[0].id, messageID: history[0].id), .work(turnID: "preview-work-" + conversation.id), .message(id: history[2].id, messageID: history[2].id), .message(id: history[3].id, messageID: history[3].id)] + history.dropFirst(4).map { .message(id: $0.id, messageID: $0.id) },
+                transcriptOutline: history.filter { $0.role == .user }.map { TranscriptOutlineEntry(id: $0.id, messageID: $0.id) },
+                transcriptMessageIdentities: history.map { TranscriptMessageIdentity(id: $0.id, messageID: $0.id) },
+                actions: ConversationActions(canSend: true, canCancel: false, canSwitch: true))
             conversations.append(conversation)
         }
         apply(previewSnapshots["sample-0"])

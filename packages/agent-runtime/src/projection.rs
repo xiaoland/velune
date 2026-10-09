@@ -26,6 +26,9 @@ impl PiProjection {
                 run_state: RunState::Idle,
                 messages: Vec::new(),
                 transcript_turns: Vec::new(),
+                transcript_items: Vec::new(),
+                transcript_outline: Vec::new(),
+                transcript_message_identities: Vec::new(),
                 message_identity_confirmations: Vec::new(),
                 pending_interactions: Vec::new(),
                 actions: ConversationActions {
@@ -123,7 +126,9 @@ impl PiProjection {
                     (&self.active_message_id, &mut self.active_native_message)
                 {
                     apply_assistant_delta(native, &event["assistantMessageEvent"]);
-                    if let Some(message) = message_from_pi(native, id.clone()) {
+                    if let Some(mut message) = message_from_pi(native, id.clone()) {
+                        message.completed = event["type"] == "message_end"
+                            || message.role != MessageRole::Assistant;
                         if let Some(existing) = snapshot.messages.iter_mut().find(|m| m.id == *id) {
                             *existing = message;
                         } else {
@@ -166,7 +171,9 @@ impl PiProjection {
                             .clone()
                             .unwrap_or_else(|| format!("message-{}", self.next_message_id))
                     };
-                    if let Some(message) = message_from_pi(native, id.clone()) {
+                    if let Some(mut message) = message_from_pi(native, id.clone()) {
+                        message.completed = event["type"] == "message_end"
+                            || message.role != MessageRole::Assistant;
                         if let Some(existing) = snapshot.messages.iter_mut().find(|m| m.id == id) {
                             *existing = message;
                         } else {
@@ -194,6 +201,7 @@ impl PiProjection {
                 );
                 if !update_tool(&mut snapshot.messages, id, state.clone(), output.clone()) {
                     snapshot.messages.push(Message {
+                        completed: true,
                         id: format!("tool-{}", id.unwrap_or_default()),
                         role: MessageRole::Tool,
                         timestamp_unix_ms: None,
@@ -226,6 +234,7 @@ impl PiProjection {
                     snapshot.run_state = RunState::Failed;
                     snapshot.actions.can_send = false;
                     snapshot.messages.push(Message {
+                        completed: true,
                         id: format!("notice-{}", self.next_message_id),
                         role: MessageRole::System,
                         timestamp_unix_ms: None,
@@ -258,6 +267,9 @@ impl PiProjection {
                 self.history_synchronized = false;
             }
             "agent_settled" => {
+                for message in &mut snapshot.messages {
+                    message.completed = true;
+                }
                 self.history_synchronized = false;
                 snapshot.run_state = RunState::Idle;
                 snapshot.actions.can_send = true;
@@ -271,6 +283,7 @@ impl PiProjection {
                 snapshot.actions.can_send = false;
                 snapshot.actions.can_cancel = false;
                 snapshot.messages.push(Message {
+                    completed: true,
                     id: format!("notice-{}", self.next_message_id),
                     role: MessageRole::System,
                     timestamp_unix_ms: None,
@@ -420,6 +433,7 @@ fn apply_tool_result(messages: &mut Vec<Message>, native: &Value, identity: Opti
     let output = text_content(&native["content"]);
     if !update_tool(messages, id, state.clone(), output.clone()) {
         messages.push(Message {
+            completed: true,
             id: identity
                 .map(str::to_owned)
                 .unwrap_or_else(|| format!("tool-result-{}", messages.len())),
@@ -492,6 +506,7 @@ fn message_from_pi(message: &Value, fallback_id: String) -> Option<Message> {
         blocks.push(MessageBlock::Notice { text: error.into() });
     }
     (!blocks.is_empty()).then(|| Message {
+        completed: true,
         id,
         role,
         timestamp_unix_ms: message["timestamp"].as_i64(),

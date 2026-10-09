@@ -31,6 +31,7 @@ enum ToolState: String, Codable, Sendable { case pending, running, completed, fa
 struct Message: Codable, Sendable, Identifiable, Equatable {
     let id: String
     var role: MessageRole
+    var completed: Bool = true
     var timestampUnixMs: Int64? = nil
     var blocks: [MessageBlock]
     var text: String { blocks.compactMap { block in switch block { case .text(let text), .notice(let text), .reasoning(let text): return text; case .tool: return nil } }.joined() }
@@ -52,9 +53,23 @@ struct TranscriptTurn: Codable, Sendable, Equatable, Identifiable {
     var id: String
     var userMessageID: String
     var workMessageIDs: [String]
+    /// Visible text-only assistant; Message.completed determines whether the range has ended.
     var lastMessageID: String?
     var durationMs: UInt64?
     var isRunning: Bool
+}
+
+enum TranscriptItem: Codable, Sendable, Equatable {
+    case message(id: String, messageID: String)
+    case work(turnID: String)
+}
+struct TranscriptOutlineEntry: Codable, Sendable, Equatable, Identifiable {
+    var id: String
+    var messageID: String
+}
+struct TranscriptMessageIdentity: Codable, Sendable, Equatable {
+    var id: String
+    var messageID: String
 }
 
 struct ConversationSnapshot: Codable, Sendable, Equatable {
@@ -65,10 +80,13 @@ struct ConversationSnapshot: Codable, Sendable, Equatable {
     var runState: RunState
     var messages: [Message]
     var transcriptTurns: [TranscriptTurn] = []
+    var transcriptItems: [TranscriptItem] = []
+    var transcriptOutline: [TranscriptOutlineEntry] = []
+    var transcriptMessageIdentities: [TranscriptMessageIdentity] = []
     var messageIdentityConfirmations: [MessageIdentityConfirmation] = []
     var pendingInteractions: [RuntimeInteraction] = []
     var actions: ConversationActions
-    enum CodingKeys: String, CodingKey { case revision, conversation, runState, messages, transcriptTurns, messageIdentityConfirmations, pendingInteractions, actions; case modelRecordKey = "modelRecordKey", contextRuntimeID = "contextRuntimeId" }
+    enum CodingKeys: String, CodingKey { case revision, conversation, runState, messages, transcriptTurns, transcriptItems, transcriptOutline, transcriptMessageIdentities, messageIdentityConfirmations, pendingInteractions, actions; case modelRecordKey = "modelRecordKey", contextRuntimeID = "contextRuntimeId" }
 }
 
 

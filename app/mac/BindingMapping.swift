@@ -13,7 +13,7 @@ enum BindingMapping {
     static func snapshot(_ value: BindingConversationSnapshot) -> ConversationSnapshot {
         ConversationSnapshot(revision: value.revision, conversation: conversation(value.conversation), contextRuntimeID: value.contextRuntimeId,
                              modelRecordKey: value.modelRecordKey, runState: runState(value.runState),
-                             messages: value.messages.map(message), transcriptTurns: value.transcriptTurns.map { TranscriptTurn(id: $0.id, userMessageID: $0.userMessageId, workMessageIDs: $0.workMessageIds, lastMessageID: $0.lastMessageId, durationMs: $0.durationMs, isRunning: $0.isRunning) }, messageIdentityConfirmations: value.messageIdentityConfirmations.map { MessageIdentityConfirmation(previousID: $0.previousId, currentID: $0.currentId) }, pendingInteractions: value.pendingInteractions.map(interaction), actions: actions(value.actions))
+                             messages: value.messages.map(message), transcriptTurns: value.transcriptTurns.map { TranscriptTurn(id: $0.id, userMessageID: $0.userMessageId, workMessageIDs: $0.workMessageIds, lastMessageID: $0.lastMessageId, durationMs: $0.durationMs, isRunning: $0.isRunning) }, transcriptItems: value.transcriptItems.map { switch $0 { case .message(let id, let messageID): return .message(id: id, messageID: messageID); case .work(let turnID): return .work(turnID: turnID) } }, transcriptOutline: value.transcriptOutline.map { TranscriptOutlineEntry(id: $0.id, messageID: $0.messageId) }, transcriptMessageIdentities: value.transcriptMessageIdentities.map { TranscriptMessageIdentity(id: $0.id, messageID: $0.messageId) }, messageIdentityConfirmations: value.messageIdentityConfirmations.map { MessageIdentityConfirmation(previousID: $0.previousId, currentID: $0.currentId) }, pendingInteractions: value.pendingInteractions.map(interaction), actions: actions(value.actions))
     }
 
     static func runState(_ value: BindingRunState) -> RunState {
@@ -25,7 +25,7 @@ enum BindingMapping {
     }
 
     static func message(_ value: BindingMessage) -> Message {
-        Message(id: value.id, role: messageRole(value.role), timestampUnixMs: value.timestampUnixMs, blocks: value.blocks.map(block))
+        Message(id: value.id, role: messageRole(value.role), completed: value.completed, timestampUnixMs: value.timestampUnixMs, blocks: value.blocks.map(block))
     }
 
     static func messageRole(_ value: BindingMessageRole) -> MessageRole {

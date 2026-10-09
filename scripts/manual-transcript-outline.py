@@ -58,6 +58,7 @@ import VeluneBindings
         print("PHASE first-prefix"); try await wait { FileManager.default.fileExists(atPath: root.appendingPathComponent("ready-first").path) && store.transcript.rows.contains { $0.message.role == .assistant } }
         let firstAssistant = store.transcript.rows.first { $0.message.role == .assistant }!
         let firstIdentity = ObjectIdentifier(firstAssistant)
+        let firstPresentationID = firstAssistant.id
         let initialParse = firstAssistant.parseCount
         try require(store.transcript.turns.count == 1 && store.transcript.turns[0].isRunning, "first-prefix turns=\(store.transcript.turns) rows=\(store.transcript.rows.map { $0.message.role.rawValue + ":" + String(reflecting: $0.message.blocks) })")
         try! FileManager.default.removeItem(at: root.appendingPathComponent("gate-first"))
@@ -66,9 +67,11 @@ import VeluneBindings
         try require(firstAssistant.parseCount >= initialParse)
         let streamingTurn = store.transcript.turns[0]
         try require(!streamingTurn.workMessageIDs.isEmpty && !streamingTurn.workMessageIDs.contains(streamingTurn.userMessageID))
-        try require(streamingTurn.lastMessageID != nil && !streamingTurn.workMessageIDs.contains(streamingTurn.lastMessageID!))
+        try require(streamingTurn.isRunning, "streaming text prematurely closed the work interval")
+        let streamingAnswer=store.transcript.rows.first { $0.message.id == streamingTurn.lastMessageID }
+        try require(streamingAnswer != nil && streamingAnswer?.message.completed == false, "streaming message reported completed")
         var outline = TranscriptOutlineState()
-        try require(outline.expand(from: streamingTurn.userMessageID, in: store.transcript.rows))
+        try require(outline.expand(from: store.transcript.userRows[0].id, in: store.transcript.rows))
         let expandedBeforeConfirmation: Set<String> = [streamingTurn.id]
         try! FileManager.default.removeItem(at: root.appendingPathComponent("gate-final"))
         print("PHASE final-settle"); try await wait { store.canSend && store.transcript.rows.contains { $0.message.text == "SYNTHETIC_FINAL" } }
@@ -76,59 +79,63 @@ import VeluneBindings
         let finished = store.transcript.turns[0]
         try require(!finished.isRunning && (finished.durationMs ?? 0) > 0, "final lifecycle=\(finished)")
         let visibleItems = store.transcript.items(for: store.transcript.rows)
-        let directIDs = visibleItems.compactMap { item -> String? in if case .message(let row) = item { return row.id }; return nil }
+        let directIDs = visibleItems.compactMap { item -> String? in if case .message(let row) = item { return row.message.id }; return nil }
         try require(directIDs.contains(finished.userMessageID) && directIDs.contains(finished.lastMessageID!))
         try require(finished.workMessageIDs.allSatisfy { !directIDs.contains($0) })
-        try require(visibleItems.contains { item in if case .work(let group, let rows) = item { return group.id == finished.id && rows.map(\.id) == finished.workMessageIDs }; return false })
+        try require(visibleItems.contains { item in if case .work(let group, let rows) = item { return group.id == finished.id && rows.map(\.message.id) == finished.workMessageIDs }; return false })
+        try require(firstAssistant.id == firstPresentationID, "presentation identity changed on native confirmation")
         let parseAfterFirstTurn = firstAssistant.parseCount
-        outline.confirmIdentities(store.transcript.confirmedMessageIDs)
-        try require(!outline.reconcile(store.transcript.rows) && outline.expandedFromUserID == finished.userMessageID)
+        try require(!outline.reconcile(store.transcript.rows) && outline.expandedFromUserID == store.transcript.userRows[0].id)
         try require(store.transcript.retainedExpandedTurnIDs(expandedBeforeConfirmation) == [finished.id])
-        let finalFirstAssistantID = firstAssistant.id
+        let finalFirstAssistantID = firstAssistant.message.id
         outline.collapse()
-        try require(outline.visibleRows(store.transcript.rows).allSatisfy { $0.message.role == .user })
-        try require(outline.expand(from: finished.userMessageID, in: store.transcript.rows))
-        try require(outline.visibleRows(store.transcript.rows).contains { $0.id == finished.lastMessageID })
+        try require(outline.visibleRows(store.transcript.rows, userIDs:Set(store.transcript.userRows.map(\.id))).allSatisfy { $0.message.role == .user })
+        try require(outline.expand(from: store.transcript.userRows[0].id, in: store.transcript.rows))
+        try require(outline.visibleRows(store.transcript.rows, userIDs:Set(store.transcript.userRows.map(\.id))).contains { $0.message.id == finished.lastMessageID })
         store.setTranscriptPresentation(.userOutline); try await wait { !store.isLoading }
         try require(store.transcriptPresentation == .userOutline)
         outline.followSentUser(after: store.transcript.userRows.last?.id, in: store.transcript.rows)
-        try require(outline.expandedFromUserID == finished.userMessageID, "send before native arrival expanded a different user")
+        try require(outline.expandedFromUserID == store.transcript.userRows[0].id, "send before native arrival expanded a different user")
         print("PHASE second-send"); store.send(text: "SECOND_USER")
         try await wait { store.canSend && store.transcript.userRows.count == 2 && store.transcript.turns.count == 2 }
         try require(store.problems.isEmpty)
         try require(firstAssistant.parseCount == parseAfterFirstTurn, "unchanged Markdown was reparsed")
         try require(store.transcript.rows.contains { ObjectIdentifier($0) == firstIdentity })
         let secondUser = store.transcript.userRows.last!.id
-        outline.confirmIdentities(store.transcript.confirmedMessageIDs)
         _ = outline.reconcile(store.transcript.rows)
         try require(outline.expandedFromUserID == secondUser, "late native user did not fulfill explicit send-follow intent")
         try require(outline.expand(from: secondUser, in: store.transcript.rows))
-        let suffix = outline.visibleRows(store.transcript.rows)
-        try require(suffix.contains { $0.id == finished.userMessageID } && !suffix.contains { $0.id == firstAssistant.id })
+        let suffix = outline.visibleRows(store.transcript.rows, userIDs:Set(store.transcript.userRows.map(\.id)))
+        try require(suffix.contains { $0.message.id == finished.userMessageID } && !suffix.contains { $0.id == firstAssistant.id })
         // Feed actual native projected messages into the same UI state function.
         // Position changes do not change the selected identity; deleting that
         // identity returns to the user-only outline instead of guessing a row.
         let ui = TranscriptModel()
         let shifted = [Message(id: "synthetic-position-shift", role: .system, blocks: [.notice("Synthetic")])] + store.transcript.rows.map(\.message)
-        ui.apply(shifted, turns: store.transcript.turns)
+        let projected = store.manualSnapshot()!
+        let shiftedIdentities = [TranscriptMessageIdentity(id:"shift",messageID:"synthetic-position-shift")] + projected.transcriptMessageIdentities
+        ui.apply(shifted, turns:projected.transcriptTurns,items:[.message(id:"shift",messageID:"synthetic-position-shift")]+projected.transcriptItems,outline:projected.transcriptOutline,identities:shiftedIdentities)
         try require(!outline.reconcile(ui.rows) && outline.expandedFromUserID == secondUser)
-        try require(outline.visibleRows(ui.rows).map(\.id) == suffix.map(\.id))
-        ui.apply(shifted.filter { $0.id != secondUser }, turns: [])
+        try require(outline.visibleRows(ui.rows, userIDs:Set(ui.userRows.map(\.id))).map(\.id) == suffix.map(\.id))
+        let secondCanonical = store.transcript.userRows.last!.message.id
+        ui.apply(shifted.filter { $0.id != secondCanonical },turns:[],items:[],outline:projected.transcriptOutline.filter { $0.id != secondUser },identities:shiftedIdentities.filter { $0.id != secondUser })
         try require(outline.reconcile(ui.rows) && outline.expandedFromUserID == nil)
-        try require(outline.visibleRows(ui.rows).allSatisfy { $0.message.role == .user })
+        try require(outline.visibleRows(ui.rows, userIDs:Set(ui.userRows.map(\.id))).allSatisfy { $0.message.role == .user })
         outline.collapse(); try require(outline.expandedFromUserID == nil)
         let originalConversationID = store.loadedConversationID!
-        let turnIDs = store.transcript.turns.map(\.id)
+        let turnUsers = store.transcript.turns.map(\.userMessageID)
+        let turnWork = store.transcript.turns.map(\.workMessageIDs)
+        let turnAnswers = store.transcript.turns.map(\.lastMessageID)
         var stopped: Bool?
         store.shutdown { stopped = $0 }; try await wait { stopped != nil }; try require(stopped == true)
         stores.removeAll { $0 === store }
         let reopened = opened()
         print("PHASE reopen"); reopened.start(); try await wait { !reopened.isLoading && reopened.loadedConversationID == originalConversationID }
         try require(reopened.transcriptPresentation == .userOutline)
-        try require(reopened.transcript.turns.map(\.id) == turnIDs)
+        try require(reopened.transcript.turns.map(\.userMessageID) == turnUsers && reopened.transcript.turns.map(\.workMessageIDs) == turnWork && reopened.transcript.turns.map(\.lastMessageID) == turnAnswers, "native turn references changed on reopen")
         try require(reopened.transcript.turns.allSatisfy { $0.durationMs == nil && !$0.isRunning }, "historical work duration was invented")
         try require(reopened.transcript.userRows.count == 2)
-        try require(reopened.transcript.rows.contains { $0.id == finalFirstAssistantID }, "canonical finalized message identity changed on reopen")
+        try require(reopened.transcript.rows.contains { $0.message.id == finalFirstAssistantID }, "canonical finalized message identity changed on reopen")
         reopened.selectNextTurnRuntime("fixture"); reopened.selectModel(modelRecordKey: key)
         try require(reopened.canSend && reopened.nextTurnRuntimeID == "fixture" && reopened.nextTurnModelRecordKey == key, "resumed next-turn intent unavailable")
         var accepted = 0

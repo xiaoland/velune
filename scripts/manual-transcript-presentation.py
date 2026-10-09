@@ -13,26 +13,29 @@ build = args.swift_build or pathlib.Path(subprocess.check_output(['swift','build
 source = r'''
 import Foundation
 import MarkdownUI
+@MainActor func apply(_ model:TranscriptModel, _ messages:[Message]) {
+    model.apply(messages,turns:[],items:messages.map { .message(id:$0.id,messageID:$0.id) },outline:messages.filter { $0.role == .user }.map { TranscriptOutlineEntry(id:$0.id,messageID:$0.id) },identities:messages.map { TranscriptMessageIdentity(id:$0.id,messageID:$0.id) })
+}
 @main struct ManualPresentation {
     @MainActor static func main() throws {
         let markdown = "# Heading\n\n- item\n- **strong**\n\n> quote\n\n| A | B |\n| --- | --- |\n| one | two |\n\n```swift\nlet value = 42\n```\n"
         var messages = (0..<5000).map { Message(id: "synthetic-\($0)", role: $0.isMultiple(of: 2) ? .user : .assistant, blocks: [.text(markdown)]) }
         let model = TranscriptModel()
         let start = ContinuousClock.now
-        model.apply(messages)
+        apply(model, messages)
         let initial = start.duration(to: .now)
         let identities = model.rows.map(ObjectIdentifier.init)
         let parses = model.rows.reduce(0) { $0 + $1.parseCount }
         let revision = model.contentRevision
         let repeatStart = ContinuousClock.now
-        for _ in 0..<100 { model.apply(messages) }
+        for _ in 0..<100 { apply(model, messages) }
         let repeated = repeatStart.duration(to: .now)
         precondition(model.contentRevision == revision)
         precondition(model.rows.map(ObjectIdentifier.init) == identities)
         precondition(model.rows.reduce(0) { $0 + $1.parseCount } == parses)
         messages[messages.count-1].blocks[0] = .text(markdown + "\nStreamed tail")
         let tailStart = ContinuousClock.now
-        model.apply(messages)
+        apply(model, messages)
         let tail = tailStart.duration(to: .now)
         precondition(model.rows.map(ObjectIdentifier.init) == identities)
         precondition(model.rows.reduce(0) { $0 + $1.parseCount } == parses + 1)

@@ -351,6 +351,9 @@ impl NativeSession {
             run_state: RunState::Idle,
             messages: history,
             transcript_turns: Vec::new(),
+            transcript_items: Vec::new(),
+            transcript_outline: Vec::new(),
+            transcript_message_identities: Vec::new(),
             message_identity_confirmations: Vec::new(),
             pending_interactions: Vec::new(),
             actions: ConversationActions {
@@ -381,6 +384,9 @@ impl NativeSession {
         self.turn_id = None;
         self.interactions.clear();
         if let Some(snapshot) = &mut self.snapshot {
+            for message in &mut snapshot.messages {
+                message.completed = true;
+            }
             snapshot.run_state = state;
             snapshot.pending_interactions.clear();
             snapshot.actions = ConversationActions {
@@ -410,6 +416,7 @@ impl NativeSession {
         if let Some(snapshot) = &mut self.snapshot {
             let id = format!("notice-{}", snapshot.revision);
             self.message(Message {
+                completed: true,
                 id,
                 role: crate::conversation::MessageRole::System,
                 timestamp_unix_ms: None,

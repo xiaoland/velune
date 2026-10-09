@@ -36,6 +36,7 @@ pub struct BindingConversationActions {
 
 #[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 pub struct BindingMessage {
+    pub completed: bool,
     pub id: String,
     pub role: BindingMessageRole,
     /// Native message time in Unix epoch milliseconds, when available.
@@ -95,6 +96,9 @@ pub struct BindingConversationSnapshot {
     pub run_state: BindingRunState,
     pub messages: Vec<BindingMessage>,
     pub transcript_turns: Vec<BindingTranscriptTurn>,
+    pub transcript_items: Vec<BindingTranscriptItem>,
+    pub transcript_outline: Vec<BindingTranscriptOutlineEntry>,
+    pub transcript_message_identities: Vec<BindingTranscriptMessageIdentity>,
     pub message_identity_confirmations: Vec<BindingMessageIdentityConfirmation>,
     #[serde(default)]
     pub pending_interactions: Vec<BindingRuntimeInteraction>,
@@ -692,6 +696,7 @@ pub struct BindingTranscriptTurn {
     pub id: String,
     pub user_message_id: String,
     pub work_message_ids: Vec<String>,
+    /// Visible text-only assistant, including streaming content; not a final-answer flag.
     pub last_message_id: Option<String>,
     pub duration_ms: Option<u64>,
     pub is_running: bool,
@@ -738,4 +743,24 @@ pub enum BindingConversationBrowserProject {
     Path {
         path: String,
     },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Enum)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum BindingTranscriptItem {
+    Message { id: String, message_id: String },
+    Work { turn_id: String },
+}
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BindingTranscriptOutlineEntry {
+    pub id: String,
+    pub message_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BindingTranscriptMessageIdentity {
+    pub id: String,
+    pub message_id: String,
 }

@@ -25,7 +25,6 @@ struct TranscriptOutlineView: View {
             }.padding(16)
         }.frame(width: 440, height: 400)
         .onChange(of: model.contentRevision) { _, _ in
-            if let selectedID { self.selectedID = model.confirmedMessageIDs[selectedID] ?? selectedID }
             if let selectedID, !model.userRows.contains(where: { $0.id == selectedID }) { self.selectedID = nil }
         }
     }

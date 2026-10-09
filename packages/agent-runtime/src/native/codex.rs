@@ -150,7 +150,17 @@ impl NativeSession {
             return self.codex_request(&record);
         }
         match method {
-            "item/started" | "item/completed" => self.codex_item(&params["item"]),
+            "item/started" | "item/completed" => {
+                self.codex_item(&params["item"]);
+                if let Some(message) = self.snapshot.as_mut().and_then(|snapshot| {
+                    snapshot
+                        .messages
+                        .iter_mut()
+                        .find(|message| Some(message.id.as_str()) == params["item"]["id"].as_str())
+                }) {
+                    message.completed = method == "item/completed";
+                }
+            }
             "item/agentMessage/delta" => {
                 if let (Some(id), Some(delta)) =
                     (params["itemId"].as_str(), params["delta"].as_str())
@@ -169,6 +179,7 @@ impl NativeSession {
                         })
                         .unwrap_or_default();
                     self.message(Message {
+                        completed: false,
                         id: id.into(),
                         role: crate::conversation::MessageRole::Assistant,
                         timestamp_unix_ms: None,
@@ -491,6 +502,7 @@ pub(super) fn project_item(item: &Value) -> Option<Message> {
         _ => return None,
     };
     Some(Message {
+        completed: true,
         id: id.into(),
         role: kind,
         timestamp_unix_ms: None,
