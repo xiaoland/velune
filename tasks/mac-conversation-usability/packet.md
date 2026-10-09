@@ -39,3 +39,5 @@ Pi默认CWD隔离创建／发送通过。Codex省略未指定cwd并优先投影�
 2026-10-09 后续反馈：“工作过程”在List改造后居中，用户要求恢复左侧。工作过程应与内容列内的LLM／工具左边缘对齐；外层内容列仍居中，用户右侧和系统状态布局不变。session owner修复work分支的frame对齐，root执行整包严格构建／安装和当前修复提交；单行原生布局修复不启动新的fixture。
 
 工作过程窄修已完成：work分支的DisclosureGroup显式填满内容列并leading对齐，仅新增一行；实际源strict Swift warnings-as-errors与diff检查通过，未启动GUI。等待该修复提交后的整包构建安装。
+
+窄修安装完成：55d70fd已严格release构建、签名验证并安装至Applications，版本仍0.1 beta.1；manifest dirty=false且执行文件／库和构建产物一致。安装前正常退出已确认的Velune进程；未启动fixture或读取真实会话。工作过程左对齐要求已明确归入PRD，后续不以系统状态的居中规则覆盖折叠块。
