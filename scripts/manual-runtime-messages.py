@@ -73,12 +73,12 @@ def main():
             assert (root/'pi/models.json').read_bytes()==original
             for runtime in runtimes:
                 assert b.BindingGatewayProtocol.MESSAGES_V1 in next(d for d in app.list().runtime_types if d.id==runtime.type_id).supported_protocols
-                app.create_conversation(runtime.id,str(root/'project'),imported.models[0].record_key)
+                conversation_id=app.create_conversation(runtime.id,str(root/'project'),imported.models[0].record_key).snapshot.conversation.id
                 for turn in range(2):
-                    before=len(captures);app.send_turn(runtime.id, imported.models[0].record_key, 'Reply with the synthetic answer, no tools.')
+                    before=len(captures);app.send_turn(runtime.id, conversation_id, runtime.id, imported.models[0].record_key, 'Reply with the synthetic answer, no tools.')
                     deadline=time.monotonic()+45
                     while time.monotonic()<deadline:
-                        snapshot=app.snapshot(runtime.id).snapshot
+                        snapshot=app.snapshot(runtime.id, conversation_id).snapshot
                         if snapshot and snapshot.run_state==b.BindingRunState.FAILED:raise AssertionError(runtime.id+' run failed')
                         if snapshot and snapshot.actions.can_send and len(captures)>before:break
                         time.sleep(.05)

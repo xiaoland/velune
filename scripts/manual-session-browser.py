@@ -134,7 +134,7 @@ def main():
                     return
                 raise AssertionError('operation unexpectedly succeeded')
             rejected(lambda: application.open_conversation('fixture', 'fixture:' + str(foreign)))
-            assert application.snapshot('fixture').snapshot.conversation.id == item.id
+            assert application.snapshot('fixture', item.id).snapshot.conversation.id == item.id
             model = b.BindingProviderModel(record_key='', provider_model_id='synthetic',
                 nickname='Synthetic', icon=None, context_window=8192, max_output_tokens=128,
                 reasoning_levels=None, adapter_metadata_json=None)
@@ -144,10 +144,10 @@ def main():
             application.save_provider('default', provider, b.BindingAuthenticationEdit.KEEP())
             key = application.list().gateways[0].providers[0].models[0].record_key
             model.record_key = key
-            chosen = application.snapshot('fixture').snapshot
+            chosen = application.snapshot('fixture', item.id).snapshot
             assert chosen.model_record_key is None and chosen.conversation.id == item.id
-            rejected(lambda: application.send_turn('fixture', key, 'DO_NOT_ACCEPT_THIS_MESSAGE'))
-            current = application.snapshot('fixture').snapshot
+            rejected(lambda: application.send_turn('fixture', item.id, 'fixture', key, 'DO_NOT_ACCEPT_THIS_MESSAGE'))
+            current = application.snapshot('fixture', item.id).snapshot
             assert current.conversation.id == item.id and current.model_record_key is None
             assert current.messages == chosen.messages
             assert not marker.exists(), 'missing cwd was checked after running the CLI'
@@ -156,7 +156,7 @@ def main():
                 b.BindingAuthenticationEdit.SET_API_KEY(value='SYNTHETIC_ONLY'))
             # A valid history can now submit a future turn with an explicit
             # model key; selecting the model does not mutate the loaded history.
-            current = application.snapshot('fixture').snapshot
+            current = application.snapshot('fixture', item.id).snapshot
             assert current.conversation.id == item.id and current.model_record_key is None
             assert current.actions.can_send
             assert current.messages == chosen.messages

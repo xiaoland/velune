@@ -14,11 +14,10 @@ impl NativeSession {
         )?;
         self.rpc.notify("initialized", &json!({}))
     }
-    fn codex_options(&self, cwd: &Path) -> Value {
-        json!({
+    fn codex_options(&self, cwd: Option<&Path>) -> Value {
+        let mut options = json!({
             "model": self.config.gateway.model_alias,
             "modelProvider": "velune",
-            "cwd": cwd,
             "approvalPolicy": "on-request",
             "sandbox": "workspace-write",
             "config": {
@@ -32,14 +31,22 @@ impl NativeSession {
                 }},
                 "features": {"responses_websockets":false, "responses_websockets_v2":false}
             }
-        })
+        });
+        if let Some(cwd) = cwd {
+            options["cwd"] = json!(cwd);
+        }
+        options
     }
-    pub(super) fn codex_create(&mut self, cwd: &Path, runtime_id: &str) -> Result<()> {
+    pub(super) fn codex_create(&mut self, cwd: Option<&Path>, runtime_id: &str) -> Result<()> {
         let result = self.rpc.request("thread/start", &self.codex_options(cwd))?;
         let id = result["thread"]["id"]
             .as_str()
             .ok_or_else(|| Error::new("Codex 未返回会话身份"))?;
-        self.replace_snapshot(id, cwd, runtime_id, Vec::new());
+        let resolved_cwd = result["thread"]["cwd"]
+            .as_str()
+            .map(PathBuf::from)
+            .or_else(|| cwd.map(Path::to_path_buf));
+        self.replace_snapshot(id, resolved_cwd.as_deref(), runtime_id, Vec::new());
         if let Some(snapshot) = self.snapshot.as_mut() {
             // app-server Thread dates are Unix seconds, including before the
             // first rollout is persisted. Preserve that native creation date.
@@ -55,7 +62,7 @@ impl NativeSession {
     pub(super) fn codex_open(
         &mut self,
         id: &str,
-        cwd: &Path,
+        cwd: Option<&Path>,
         runtime_id: &str,
         history: Vec<Message>,
     ) -> Result<()> {
@@ -66,7 +73,11 @@ impl NativeSession {
         if result["thread"]["id"].as_str() != Some(id) {
             return Err(Error::new("Codex 恢复了不同的会话"));
         }
-        self.replace_snapshot(id, cwd, runtime_id, history);
+        let resolved_cwd = result["thread"]["cwd"]
+            .as_str()
+            .map(PathBuf::from)
+            .or_else(|| cwd.map(Path::to_path_buf));
+        self.replace_snapshot(id, resolved_cwd.as_deref(), runtime_id, history);
         if let Some(turns) = result["thread"]["turns"].as_array() {
             // A resumed native snapshot owns current history, including compaction and rollback.
             if let Some(snapshot) = &mut self.snapshot {

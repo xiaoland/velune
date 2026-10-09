@@ -260,13 +260,10 @@ impl CoreRuntime {
         let runtime_id = snapshot.conversation.runtime_id.clone();
         let runtime = self.runtime_instance(&runtime_id)?.clone();
         self.validate_session_model(&runtime, key)?;
-        let cwd = snapshot
-            .conversation
-            .cwd
-            .as_deref()
-            .map(PathBuf::from)
-            .ok_or_else(|| RuntimeError::invalid("会话工作目录不可用"))?;
-        validate_session_cwd(&cwd)?;
+        let cwd = snapshot.conversation.cwd.as_deref().map(PathBuf::from);
+        if let Some(cwd) = &cwd {
+            validate_session_cwd(cwd)?;
+        }
         let gateway = self
             .gateways
             .iter()
@@ -296,7 +293,7 @@ impl CoreRuntime {
             self.prepare_runtime(&runtime_id, key)?;
             if runtime.type_id != "pi-1.0.2" {
                 if is_new {
-                    self.native_create(&cwd, key)?;
+                    self.native_create(cwd.as_deref(), key)?;
                 } else {
                     self.native_resume(&snapshot, key)?;
                 }
@@ -323,7 +320,7 @@ impl CoreRuntime {
                 )
             };
             self.start_pi_for_session(
-                &cwd,
+                cwd.as_deref(),
                 session.map(Path::new),
                 Some(key),
                 Some(&physical),

@@ -135,7 +135,11 @@ impl CoreRuntime {
             home,
         })
     }
-    pub(super) fn native_create(&mut self, cwd: &Path, key: &str) -> Result<(), RuntimeError> {
+    pub(super) fn native_create(
+        &mut self,
+        cwd: Option<&Path>,
+        key: &str,
+    ) -> Result<(), RuntimeError> {
         let runtime = self.active_instance()?.clone();
         if let ActiveState::Native(session) = &mut self.active_state {
             session
@@ -175,15 +179,15 @@ impl CoreRuntime {
             .strip_prefix(&format!("{}:", runtime.id))
             .filter(|id| !id.is_empty())
             .ok_or_else(|| RuntimeError::invalid("conversation id"))?;
-        let cwd = snapshot
-            .conversation
-            .cwd
-            .as_deref()
-            .map(PathBuf::from)
-            .ok_or_else(|| RuntimeError::invalid("会话工作目录不可用"))?;
+        let cwd = snapshot.conversation.cwd.as_deref().map(PathBuf::from);
         if let ActiveState::Native(session) = &mut self.active_state {
             session
-                .open(native_id, &cwd, &runtime.id, snapshot.messages.clone())
+                .open(
+                    native_id,
+                    cwd.as_deref(),
+                    &runtime.id,
+                    snapshot.messages.clone(),
+                )
                 .map_err(|error| RuntimeError::context("会话恢复失败", error))?;
             session.set_conversation(snapshot.conversation.clone());
         }

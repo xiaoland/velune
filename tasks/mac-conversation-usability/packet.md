@@ -1,0 +1,35 @@
+# Mac 会话阅读与多 Tab 修复
+
+2026-10-09 用户授权四项优化：Markdown网页／本地文件链接能打开，失败显示原文并复制；outline精确跳转；创建会话工作目录可选，使用运行时默认；每个原生Tab展示独立会话。产品意图归docs/prd/index.md，跨语言／共享执行边界归docs/design/architecture.md，平台使用说明归app/mac/README.md及docs/development.md。
+
+root负责Tab/窗口级Swift状态、共享backend装配、文档与整合；session_management负责Markdown链接与outline；pi_install_repair负责可选CWD从Mac到runtime；ai_service_audit负责只读会话读取与按来源会话身份发送的Rust/UniFFI边界。mac_navigation_advisor判断共享执行与原生导航的工程取舍。各owner明确到同文件区域，不撤销他人编辑。
+
+继续保持一个共享application与单活跃执行，不为每个窗口新开核心。无自动化测试，不读真实秘密或会话，不调用真实提供商；手动隔离脚本及原生合成UI验收获准。用户执行真实模型和最终界面验收。完成后重建安装Applications并自主提交本地当前任务，不push。
+
+## 当前状态与下一步
+
+Tab／来源绑定发送和可选CWD实现已完成。Rust全工作区fmt/check/clippy、无默认features的bindings clippy通过，最终UniFFI已重新生成，Swift debug warnings-as-errors通过。最新AppStore→Pi七请求隔离脚本通过。
+
+导航／链接源码已冻结，最终strict Swift编译、手动原生窗口验收及整包release构建／签名验证通过。网页及相对文件链接验证到系统接收，不声称验过外部查看器内容；失败弹窗原文与复制精确一致。唯一UI实例正常退出，服务器与临时目录已删除，root全局路径复查零残留。当前等待本地提交与最终安装。
+
+## 已采用的边界与证据
+
+原根因是App级一个AppStore注入全部WindowGroup，且旧open_conversation改变全局active、send_turn不携带来源身份。现窗口与Tab各持有独立工作区，共享Transport/application、配置、认证、问题与唯一runner；只读read_conversation不切换执行，snapshot同时绑定上下文运行时和会话，send_turn绑定来源与目标。命令使用focused scene，关闭Tab不关闭核心。加载目标期间不采纳旧会话轮询，工作区更新比较运行时和会话两项身份。
+
+Mac未发送草稿仅留在工作区，首次发送才串行create＋send，避免Pi尚未落盘会话被第二Tab覆盖。创建成功先接收native ID，发送失败不自动重建／重发。只读历史由临时TranscriptProjection推导稳定turn，不污染活动计时。正常启动的Transport也订阅配置变更广播。
+
+实际AppStore→Transport→UniFFI→外部Pi→loopback七请求通过。A/B草稿独立，首次发送取得不同原生身份；B最后执行后A续接仍带A历史和精确正文，无B文本。A生成时B只读自己的历史且不启动第二runner；关闭B工作区后A仍完成。配置广播保留合法下一轮模型／运行时与选择。无额外上游重试。
+
+实际native UI隔离验收：当前产品--preview创建两个原生Tabs，分别选择sample0/sample1与输入不同草稿；切换保留会话和草稿。真实⌘Return仅给当前Tab新增用户bubble，反向同样独立；关闭A后B仍可发送。AX与截图核对，预览进程已退出。
+
+Pi默认CWD隔离创建／发送通过。Codex省略未指定cwd并优先投影服务端返回值。DSH0.2.0rc2源码表明ACP要求cwd wire字段，但runtime以process.cwd()作为默认，adapter在新建时补启动目录；恢复必须沿用保存目录，缺失不替换为新默认。DSH实际CLI端到端尚未验收。
+
+导航不保留估高／循环重试：原LazyVStack远距目标有时未materialize，原生List由稳定row ID与目标真实layout frame校正。advisor指出跳转与跟底必须互斥，不能强制layout驱动bounds反馈；实际消息row识别自己的scroll容器，删除无限祖先搜索。单实例160row已通过040→001→060、窗口zoom后跳040、用户大纲展开／折叠，新增reply跟底和阅读历史不yank。未知scheme原生alert显示原文及复制按钮；其它链接与末条高度变动仍待最终证据。
+
+## 验收实例清理
+
+用户指出导航fixture未及时关闭后，已终止最后一个合成UI进程、删除16份旧导航副本及临时Tab预览，停止早期遗留core原型进程，全局路径复查无残留。导航脚本只创建一个显式新目录，统一finally清理子进程、local HTTP server和本次目录，覆盖退出／异常／中断。用户随后要求继续，已恢复同一固定目录一个实例的验收；结束后必须再确认零残留。
+
+完成条件是四项行为的相关证据通过、无本轮持续布局反馈或实际导航失败、最终静态与整包构建安装通过、当前任务提交完成。构建成功不能代替界面验收，合成HTTP成功不能代替真实模型验收。
+
+最终原生验收补齐：末条同ID Markdown增高超过一屏仍显示STREAM END；阅读历史时增高不拉回，随后040→001依旧准确。对照使用同stderr phase marker和真实child退出码，原生List即使初始无probe也出现有限首布局诊断，添加probe与空闲未持续增加，HEAD Lazy对照未出现；框架内部根因未确定。advisor建议采用List并记录限制，不加fixedSize猜测补丁或升级自有NSTableView。诊断对照分支已从手动脚本删除，避免HEAD提交后失去基线意义；纯行为探针保留，非零child使脚本失败，诊断读取失败不阻断finally清理。

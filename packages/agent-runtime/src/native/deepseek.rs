@@ -79,7 +79,11 @@ impl NativeSession {
         Ok(())
     }
 
-    pub(super) fn dsh_create(&mut self, cwd: &Path, runtime_id: &str) -> Result<()> {
+    pub(super) fn dsh_create(&mut self, cwd: Option<&Path>, runtime_id: &str) -> Result<()> {
+        let cwd = cwd
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| self.default_cwd.clone());
+        self.validate_cwd(Some(&cwd))?;
         self.dsh_close_active()?;
         let result = self
             .rpc
@@ -87,23 +91,26 @@ impl NativeSession {
         let id = result["sessionId"]
             .as_str()
             .ok_or_else(|| Error::new("DeepSeek 未返回原生会话身份"))?;
-        self.replace_snapshot(id, cwd, runtime_id, Vec::new());
+        self.replace_snapshot(id, Some(&cwd), runtime_id, Vec::new());
         self.dsh_gateway_model(&result)
     }
 
     pub(super) fn dsh_open(
         &mut self,
         id: &str,
-        cwd: &Path,
+        cwd: Option<&Path>,
         runtime_id: &str,
         history: Vec<Message>,
     ) -> Result<()> {
+        let cwd = cwd
+            .map(Path::to_path_buf)
+            .ok_or_else(|| Error::new("DeepSeek 原生会话缺少已保存的工作目录，无法恢复"))?;
         self.dsh_close_active()?;
         let result = self.rpc.request(
             "session/resume",
             &json!({"sessionId":id,"cwd":cwd,"mcpServers":[]}),
         )?;
-        self.replace_snapshot(id, cwd, runtime_id, history);
+        self.replace_snapshot(id, Some(&cwd), runtime_id, history);
         self.dsh_gateway_model(&result)
     }
 

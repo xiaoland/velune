@@ -82,6 +82,7 @@ struct PendingRequest {
 }
 pub struct NativeSession {
     config: NativeConfig,
+    default_cwd: PathBuf,
     rpc: rpc::RpcClient,
     snapshot: Option<ConversationSnapshot>,
     native_id: Option<String>,
@@ -110,12 +111,15 @@ impl NativeSession {
             &config.binary,
             config.node_binary.as_deref(),
         )?;
+        let default_cwd = std::env::current_dir()
+            .map_err(|error| Error::new(format!("运行时默认工作目录不可用：{error}")))?;
         let rpc = Self::spawn_rpc(&config)?;
         let mut bytes = [0; 8];
         getrandom::fill(&mut bytes)
             .map_err(|error| Error::new(format!("运行时会话身份生成失败：{error}")))?;
         let mut session = Self {
             config,
+            default_cwd,
             rpc,
             snapshot: None,
             native_id: None,
@@ -160,7 +164,7 @@ impl NativeSession {
             NativeKind::DeepSeek => self.dsh_initialize(),
         }
     }
-    pub fn create(&mut self, cwd: &Path, runtime_id: &str) -> Result<ConversationSnapshot> {
+    pub fn create(&mut self, cwd: Option<&Path>, runtime_id: &str) -> Result<ConversationSnapshot> {
         self.ensure_idle()?;
         self.validate_cwd(cwd)?;
         match self.config.kind {
@@ -174,7 +178,7 @@ impl NativeSession {
     pub fn open(
         &mut self,
         native_id: &str,
-        cwd: &Path,
+        cwd: Option<&Path>,
         runtime_id: &str,
         history: Vec<Message>,
     ) -> Result<ConversationSnapshot> {
@@ -308,14 +312,20 @@ impl NativeSession {
             Ok(())
         }
     }
-    fn validate_cwd(&self, cwd: &Path) -> Result<()> {
-        if !cwd.is_absolute() || !cwd.is_dir() {
+    fn validate_cwd(&self, cwd: Option<&Path>) -> Result<()> {
+        if cwd.is_some_and(|path| !path.is_absolute() || !path.is_dir()) {
             Err(Error::new("会话工作目录必须是已有绝对目录"))
         } else {
             Ok(())
         }
     }
-    fn replace_snapshot(&mut self, id: &str, cwd: &Path, runtime_id: &str, history: Vec<Message>) {
+    fn replace_snapshot(
+        &mut self,
+        id: &str,
+        cwd: Option<&Path>,
+        runtime_id: &str,
+        history: Vec<Message>,
+    ) {
         self.native_id = Some(id.into());
         self.turn_id = None;
         self.interactions.clear();
@@ -334,7 +344,7 @@ impl NativeSession {
                 updated_at_unix_ms: None,
                 created_at_unix_ms: None,
                 runtime_id: runtime_id.into(),
-                cwd: Some(cwd.to_string_lossy().into_owned()),
+                cwd: cwd.map(|path| path.to_string_lossy().into_owned()),
             },
             resource_id: None,
             model_record_key: None,

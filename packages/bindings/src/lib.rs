@@ -300,7 +300,7 @@ impl VeluneApplication {
     pub fn create_conversation(
         &self,
         runtime_id: String,
-        cwd: String,
+        cwd: Option<String>,
         model_record_key: String,
     ) -> Result<BindingSnapshotResult, BindingError> {
         convert(self.with("create_conversation", |application| {
@@ -315,6 +315,15 @@ impl VeluneApplication {
     ) -> Result<BindingSnapshotResult, BindingError> {
         convert(self.with("open_conversation", |application| {
             application.open_conversation(runtime_id, conversation_id)
+        })?)
+    }
+    pub fn read_conversation(
+        &self,
+        runtime_id: String,
+        conversation_id: String,
+    ) -> Result<BindingSnapshotResult, BindingError> {
+        convert(self.with("read_conversation", |application| {
+            application.read_conversation(runtime_id, conversation_id)
         })?)
     }
 
@@ -337,18 +346,32 @@ impl VeluneApplication {
             application.delete_conversation(runtime_id, conversation_id)
         })?)
     }
-    pub fn snapshot(&self, runtime_id: String) -> Result<BindingSnapshotResult, BindingError> {
-        convert(self.with("snapshot", |application| application.snapshot(runtime_id))?)
+    pub fn snapshot(
+        &self,
+        runtime_id: String,
+        conversation_id: String,
+    ) -> Result<BindingSnapshotResult, BindingError> {
+        convert(self.with("snapshot", |application| {
+            application.snapshot(runtime_id, conversation_id)
+        })?)
     }
 
     pub fn send_turn(
         &self,
-        runtime_id: String,
+        source_runtime_id: String,
+        conversation_id: String,
+        target_runtime_id: String,
         model_record_key: String,
         text: String,
     ) -> Result<BindingSnapshotResult, BindingError> {
         convert(self.with("send_turn", |application| {
-            application.send_turn(runtime_id, model_record_key, text)
+            application.send_turn(
+                source_runtime_id,
+                conversation_id,
+                target_runtime_id,
+                model_record_key,
+                text,
+            )
         })?)
     }
 

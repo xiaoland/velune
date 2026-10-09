@@ -74,7 +74,7 @@ struct VeluneRootView: View {
                         .help("会话大纲")
                         .disabled(store.pendingConversationID != nil || store.transcript.userRows.isEmpty)
                     Button { store.createConversation() } label: { Label("新建会话", systemImage: "square.and.pencil") }
-                        .help("新建会话（⌘ N）").disabled(store.isGenerating || store.isLoading)
+                        .help("新建会话（⌘ N）").disabled(store.applicationIsGenerating || store.isLoading)
                 }
             }
         }
@@ -99,7 +99,7 @@ struct VeluneRootView: View {
         }
         .sheet(isPresented: $store.showsNewConversation) { NewConversationView(store: store) }
         .sheet(item: Binding(get: { store.pendingInteractions.first }, set: { _ in })) { RuntimeInteractionView(store: store, interaction: $0) }
-        .onReceive(NotificationCenter.default.publisher(for: .veluneSend)) { _ in send() }
+        .focusedSceneValue(\.conversationCommands, ConversationCommandTarget(store: store, send: send))
         .task {
             store.start()
             if previewSettings { openSettings() }
@@ -184,15 +184,15 @@ struct VeluneRootView: View {
         ContentUnavailableView {
             Label { Text("新会话") } icon: { VeluneLogo(size: 48) }
         } description: {
-            Text(store.canSend ? "输入消息，开始工作。" : "先在设置中配置AI提供商、模型与Agent 运行时。")
+            Text(store.executionBusyElsewhere ? "另一个会话正在运行，完成后即可发送。" : store.needsModelSelection ? "选择下一轮模型后即可发送。" : store.canSend ? "输入消息，开始工作。" : "先在设置中配置AI提供商、模型与Agent 运行时。")
         } actions: {
-            if !store.canSend { SettingsLink { Text("打开设置") } }
+            if !store.canSend && !store.executionBusyElsewhere && !store.needsModelSelection { SettingsLink { Text("打开设置") } }
         }
     }
 
     private var transcript: some View {
         TranscriptView(model: store.transcript, conversationID: store.loadedConversationID,
-                       scrollRequest: scrollRequest, sentAfterUserID: sentAfterUserID, showsOutline: $showsOutline, activity: store.activity, presentation: store.transcriptPresentation)
+                       scrollRequest: scrollRequest, sentAfterUserID: sentAfterUserID, cwd: store.loadedConversationWorkingDirectory, showsOutline: $showsOutline, activity: store.activity, presentation: store.transcriptPresentation)
     }
 
     private var composer: some View {
@@ -209,6 +209,7 @@ struct VeluneRootView: View {
             HStack(spacing: 8) {
                 nextTurnControls
                 Spacer(minLength: 8)
+                if store.executionBusyElsewhere { Text("另一个会话正在运行").font(.caption).foregroundStyle(.secondary) }
                 if store.isGenerating {
                     Button("停止生成", systemImage: "stop.fill", action: store.cancel)
                         .fixedSize().disabled(!store.canCancel).help("停止当前生成")
@@ -264,6 +265,7 @@ struct ConversationRenameView: View {
 
 struct ConversationMessageView: View {
     @ObservedObject var row: TranscriptRow
+    var cwd: String? = nil
     var body: some View {
         HStack(alignment: .top, spacing: 0) {
             if row.message.role == .user { Spacer(minLength: 60) }
@@ -279,6 +281,7 @@ struct ConversationMessageView: View {
                     case .text(let text):
                         if row.message.role == .assistant, let content = row.markdown[index] {
                             Markdown(content)
+                                .modifier(MessageLinkOpener(cwd: cwd))
                                 .markdownTheme(.basic.codeBlock { configuration in CodeBlockView(language: configuration.language ?? "", code: configuration.content) })
                                 .textSelection(.enabled)
                         } else { Text(text).textSelection(.enabled).multilineTextAlignment(.leading) }
@@ -971,6 +974,8 @@ struct NewConversationView: View {
                 LabeledContent("工作目录") {
                     HStack { TextField("项目目录", text: $cwd); Button("选择…") { chooseDirectory() } }
                 }
+                Text("可选；留空时使用 Agent 运行时的默认工作目录。")
+                    .font(.caption).foregroundStyle(.secondary)
                 if store.enabledRuntimeInstances.isEmpty {
                     Text("请先添加 Agent 运行时实例。").foregroundStyle(.secondary)
                     SettingsLink { Text("打开运行时设置") }
@@ -978,14 +983,18 @@ struct NewConversationView: View {
                     Text("此运行时尚无兼容模型，请在 AI 提供商设置中添加。").foregroundStyle(.secondary)
                     SettingsLink { Text("打开 AI 提供商设置") }
                 }
-                Text("模型与工作目录属于此会话。创建时会自动准备运行时；浏览已有会话不需要执行准备。").font(.caption).foregroundStyle(.secondary)
+                Text("首次发送时自动准备运行时并创建会话；浏览已有会话不需要执行准备。").font(.caption).foregroundStyle(.secondary)
             }.formStyle(.grouped)
 
             HStack {
                 Spacer(); Button("取消") { dismiss() }.keyboardShortcut(.cancelAction)
                 Button("创建") {
-                    if let modelRecordKey { store.createConversation(runtimeID: runtimeID, cwd: MacPath.expanded(cwd), modelRecordKey: modelRecordKey) { dismiss() } }
-                }.keyboardShortcut(.defaultAction).disabled(runtimeID.isEmpty || modelRecordKey == nil || cwd.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || store.isBusy)
+                    if let modelRecordKey {
+                        let trimmed = cwd.trimmingCharacters(in: .whitespacesAndNewlines)
+                        let selectedCWD = trimmed.isEmpty ? nil : MacPath.expanded(trimmed)
+                        store.createConversation(runtimeID: runtimeID, cwd: selectedCWD, modelRecordKey: modelRecordKey) { dismiss() }
+                    }
+                }.keyboardShortcut(.defaultAction).disabled(runtimeID.isEmpty || modelRecordKey == nil || store.isBusy)
             }.padding(16)
         }.frame(width: 480, height: 310)
         .onAppear { runtimeID = store.enabledRuntimeInstances.first(where: { $0.id == store.nextTurnRuntimeID })?.id ?? store.enabledRuntimeInstances.first?.id ?? "" }

@@ -145,7 +145,43 @@ import VeluneBindings
         try await wait { !reopened.isLoading && nextCreated }
         try require(reopened.loadedConversationID != originalConversationID && reopened.transcript.rows.isEmpty)
         stopped = nil; reopened.shutdown { stopped = $0 }; try await wait { stopped != nil }; try require(stopped == true)
-        print("{\"acceptance\":\"PASSED\",\"actualStoreAndPiToolStream\":true,\"existingNativeSessionSend\":true,\"typedCoreWorkReferences\":true,\"userAndLastVisible\":true,\"observedDurationAndUnknownHistory\":true,\"stableRowAndMarkdownCache\":true,\"canonicalConfirmationState\":true,\"lateNativeUserFollowsExplicitSend\":true,\"outlineSuffixAndAnchorChanges\":true,\"nativeConversationSwitchResetsRows\":true,\"preferenceSurvivesReopen\":true}")
+        stores.removeAll { $0 === reopened }
+        let application = opened()
+        let a = application.makeWorkspace(), b = application.makeWorkspace()
+        stores += [a, b]
+        print("PHASE independent-workspaces")
+        a.start(); b.start()
+        try await wait { !a.isLoading && !b.isLoading && a.loadedConversationID == originalConversationID && b.loadedConversationID == originalConversationID }
+        var madeA = false, madeB = false
+        a.createConversation(runtimeID: "fixture", cwd: root.appendingPathComponent("project").path, modelRecordKey: key) { madeA = true }
+        b.createConversation(runtimeID: "fixture", cwd: nil, modelRecordKey: key) { madeB = true }
+        try require(madeA && madeB && a.loadedConversationID != b.loadedConversationID && a.canSend && b.canSend, "independent unsent drafts lost")
+        let draftB = b.loadedConversationID
+        a.send(text: "WORKSPACE_A_DRAFT")
+        try await wait { a.canSend && a.transcript.rows.contains { $0.message.text == "WORKSPACE_A_FINAL" } }
+        let nativeA = a.loadedConversationID!
+        try require(b.loadedConversationID == draftB && b.transcript.rows.isEmpty, "A dispatch overwrote B draft")
+        b.send(text: "WORKSPACE_B_DRAFT")
+        try await wait { b.canSend && b.transcript.rows.contains { $0.message.text == "WORKSPACE_B_FINAL" } }
+        let nativeB = b.loadedConversationID!
+        try require(nativeA != nativeB && a.loadedConversationID == nativeA && a.transcript.userRows.count == 1, "B dispatch overwrote A native projection")
+        a.send(text: "WORKSPACE_A_RESUME")
+        try await wait { FileManager.default.fileExists(atPath: root.appendingPathComponent("ready-workspace").path) && a.isGenerating }
+        b.selectConversation(id: nativeB)
+        try await wait { !b.isLoading && b.loadedConversationID == nativeB }
+        try require(!b.canSend && a.loadedConversationID == nativeA && a.isGenerating, "reading B disturbed A execution or allowed another runner")
+        var detached = false
+        b.shutdown { detached = $0 }
+        try require(detached && a.isGenerating, "closing B stopped shared backend")
+        try FileManager.default.removeItem(at: root.appendingPathComponent("gate-workspace"))
+        try await wait { a.canSend && a.transcript.rows.contains { $0.message.text == "WORKSPACE_A_RESUMED" } }
+        try require(a.transcript.userRows.count == 2 && a.nextTurnModelRecordKey == key && a.problems.isEmpty && application.problems.isEmpty, "A resumed turn failed")
+        var provider = application.providers[0]; provider.name = "Updated synthetic provider"
+        application.saveProvider(provider, authenticationEdit: .keep)
+        try await wait { !application.isLoading && a.providers.first?.name == provider.name }
+        try require(a.nextTurnModelRecordKey == key && a.nextTurnRuntimeID == "fixture" && a.loadedConversationID == nativeA, "config broadcast overwrote personal intent")
+        stopped = nil; application.shutdown { stopped = $0 }; try await wait { stopped != nil }; try require(stopped == true)
+        print("{\"acceptance\":\"PASSED\",\"actualStoreAndPiToolStream\":true,\"independentSharedBackendWorkspaces\":true,\"separateUnsentDrafts\":true,\"sourceBoundResume\":true,\"readDuringOtherTurn\":true,\"closeTabKeepsRunner\":true,\"configurationBroadcast\":true,\"existingNativeSessionSend\":true,\"typedCoreWorkReferences\":true,\"userAndLastVisible\":true,\"observedDurationAndUnknownHistory\":true,\"stableRowAndMarkdownCache\":true,\"canonicalConfirmationState\":true,\"lateNativeUserFollowsExplicitSend\":true,\"outlineSuffixAndAnchorChanges\":true,\"nativeConversationSwitchResetsRows\":true,\"preferenceSurvivesReopen\":true}")
     }
 }
 '''
@@ -170,7 +206,7 @@ def main():
         (root / 'resources/node_modules').symlink_to(args.bundle / 'Contents/Resources/node_modules')
         file = root / 'project/fixture.txt'
         file.write_text('SYNTHETIC_TOOL_RESULT\n')
-        for name in ('gate-first', 'gate-final'):
+        for name in ('gate-first', 'gate-final', 'gate-workspace'):
             (root / name).touch()
 
         class Upstream(BaseHTTPRequestHandler):
@@ -215,7 +251,24 @@ def main():
                         if isinstance(current, list):
                             current = ''.join(block['text'] for block in current if block.get('type') == 'text')
                         assert current == 'RESUME_NATIVE_USER', 'resumed exact user text did not reach actual Pi upstream'
-                    chunk({'role': 'assistant', 'content': 'RESUMED_FINAL' if number == 4 else 'SECOND_FINAL'})
+                    answers = {3: 'SECOND_FINAL', 4: 'RESUMED_FINAL', 5: 'WORKSPACE_A_FINAL', 6: 'WORKSPACE_B_FINAL', 7: 'WORKSPACE_A_RESUMED'}
+                    if number >= 5:
+                        users = []
+                        for item in body['messages']:
+                            if item['role'] != 'user': continue
+                            content = item['content']
+                            users.append(content if isinstance(content, str) else ''.join(block['text'] for block in content if block.get('type') == 'text'))
+                        expected = {5: 'WORKSPACE_A_DRAFT', 6: 'WORKSPACE_B_DRAFT', 7: 'WORKSPACE_A_RESUME'}[number]
+                        assert users[-1] == expected, (number, users)
+                        assert ('WORKSPACE_A_DRAFT' not in users if number == 6 else 'WORKSPACE_B_DRAFT' not in users), 'turn went into wrong native session'
+                    if number == 7:
+                        chunk({'role': 'assistant', 'content': 'WORKSPACE_A_'})
+                        (root / 'ready-workspace').touch()
+                        deadline = time.monotonic() + 35
+                        while (root / 'gate-workspace').exists() and time.monotonic() < deadline: time.sleep(.02)
+                        assert not (root / 'gate-workspace').exists(), 'workspace stream not released'
+                        chunk({'content': 'RESUMED'})
+                    else: chunk({'role': 'assistant', 'content': answers[number]})
                 chunk({}, 'tool_calls' if number == 1 else 'stop')
                 self.wfile.write(b'data: [DONE]\n\n')
                 self.wfile.flush()
@@ -241,8 +294,8 @@ def main():
             subprocess.run(command, check=True, cwd=repository)
             env = {'HOME': str(root / 'home'), 'PATH': str(args.node.parent) + ':/usr/bin:/bin', 'NO_PROXY': '127.0.0.1,localhost'}
             subprocess.run([str(root / 'manual'), str(root), str(root / 'resources'), str(args.node), str(args.pi),
-                            'http://127.0.0.1:%d/v1' % server.server_port], cwd=root, env=env, check=True, timeout=100)
-            assert len(requests) == 4, 'unexpected provider retries'
+                            'http://127.0.0.1:%d/v1' % server.server_port], cwd=root, env=env, check=True, timeout=160)
+            assert len(requests) == 7, 'unexpected provider retries'
         finally:
             server.shutdown(); server.server_close()
 

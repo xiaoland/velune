@@ -256,9 +256,13 @@ impl CoreRuntime {
             "selectRuntime" => self.select_runtime_action(request),
             "create" => self.create_conversation(request),
             "open" => self.open_conversation(request),
+            "readConversation" => self.read_conversation(request),
             "renameConversation" => self.manage_conversation(request, false),
             "deleteConversation" => self.manage_conversation(request, true),
             "getSnapshot" => {
+                let conversation_id = request["payload"]["conversationID"]
+                    .as_str()
+                    .ok_or_else(|| RuntimeError::invalid("conversation id"))?;
                 if matches!(self.active_state, ActiveState::Empty) {
                     let id = request["payload"]["runtimeInstanceID"]
                         .as_str()
@@ -268,9 +272,18 @@ impl CoreRuntime {
                     }
                     return Ok(json!({"snapshot":null}));
                 }
-                self.ensure_active(request)?;
                 self.sync_projection()?;
-                Ok(json!({"snapshot":self.current_snapshot()}))
+                let snapshot = self.current_snapshot();
+                let runtime_id = request["payload"]["runtimeInstanceID"]
+                    .as_str()
+                    .ok_or_else(|| RuntimeError::invalid("runtime instance id"))?;
+                if snapshot.as_ref().is_none_or(|value| {
+                    value.context_runtime_id != runtime_id
+                        || value.conversation.id != conversation_id
+                }) {
+                    return Ok(json!({"snapshot":null}));
+                }
+                Ok(json!({"snapshot":snapshot}))
             }
             "sendTurn" => self.send_turn_action(request),
             "cancel" => self.cancel_action(request),

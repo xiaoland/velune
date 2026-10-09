@@ -23,7 +23,7 @@ fn prefix_digest(messages: &[Message]) -> Result<String, RuntimeError> {
     Ok(digest(&serde_json::to_vec(&content)?))
 }
 
-fn display_segment(
+pub(super) fn display_segment(
     segment: &ConversationSegmentReference,
     messages: &[Message],
     index: usize,
@@ -76,7 +76,11 @@ fn display_segment(
 }
 
 impl CoreRuntime {
-    fn boundary_message(&self, segment: &ConversationSegmentReference, index: usize) -> Message {
+    pub(super) fn boundary_message(
+        &self,
+        segment: &ConversationSegmentReference,
+        index: usize,
+    ) -> Message {
         Message {
             id: format!("segment-{index}:boundary"),
             role: MessageRole::System,

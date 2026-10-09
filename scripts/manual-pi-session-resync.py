@@ -63,18 +63,18 @@ pi.registerCommand('manual-switch',{handler:async (_args,ctx)=>{await ctx.switch
         app.upsert_runtime(runtime)
         session=next(item for item in app.list().conversations if item.id=='pi:'+paths['path'])
         before=app.open_conversation('pi',session.id).snapshot
-        first=app.send_turn('pi',saved.models[0].record_key, '/manual-tree').snapshot
+        first=app.send_turn('pi',before.conversation.id,'pi',saved.models[0].record_key, '/manual-tree').snapshot
         text=lambda view:' '.join(block.text for message in view.messages for block in message.blocks if isinstance(block,b.BindingMessageBlock.TEXT))
         assert first.conversation.id==before.conversation.id and len(first.messages)==len(before.messages)
         assert 'BRANCH_B' in text(first) and 'BRANCH_A' not in text(first) and '/manual-tree' not in text(first)
         assert [message.id for message in first.messages]==[message.id for message in before.messages]
         # Native name may coincide with the displayed untitled placeholder.
         assert first.conversation.title=='未命名会话'
-        second=app.send_turn('pi',saved.models[0].record_key, '/manual-switch').snapshot
+        second=app.send_turn('pi',first.conversation.id,'pi',saved.models[0].record_key, '/manual-switch').snapshot
         assert second.conversation.id=='pi:'+paths['other'] and second.conversation.cwd==str(root/'other-project'), repr((second.conversation.id,second.conversation.cwd,second.conversation.title,paths))
         assert second.conversation.title=='Second native title' and 'OTHER_SESSION' in text(second)
         assert '/manual-switch' not in text(second) and not requests
         revision=second.revision
-        for _ in range(3): assert app.snapshot('pi').snapshot.revision==revision
+        for _ in range(3): assert app.snapshot('pi',second.conversation.id).snapshot.revision==revision
         print(json.dumps({'acceptance':'PASSED','sameIdSameCountBranchResync':True,'stableMessageIds':True,'nativePlaceholderNamePreserved':True,'handledCommandsNotUserMessages':True,'changedSessionIdAndCwd':True,'upstreamRequests':len(requests)}))
     finally: app.shutdown();os.environ.clear();os.environ.update(environment);server.shutdown()

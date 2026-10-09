@@ -515,7 +515,7 @@ impl Application {
     pub fn create_conversation(
         &mut self,
         runtime_id: String,
-        cwd: String,
+        cwd: Option<String>,
         model_record_key: String,
     ) -> Result<SnapshotResult, Error> {
         self.execute(
@@ -531,6 +531,19 @@ impl Application {
     ) -> Result<SnapshotResult, Error> {
         self.execute(
             "open",
+            json!({"conversationID":conversation_id}),
+            Some(&runtime_id),
+        )
+    }
+    /// Read one native conversation without changing the active execution or
+    /// transcript projection.
+    pub fn read_conversation(
+        &mut self,
+        runtime_id: String,
+        conversation_id: String,
+    ) -> Result<SnapshotResult, Error> {
+        self.execute(
+            "readConversation",
             json!({"conversationID":conversation_id}),
             Some(&runtime_id),
         )
@@ -562,23 +575,33 @@ impl Application {
     /// instance returns no snapshot when no conversation is loaded; a different
     /// instance cannot query another instance's loaded conversation. Use the
     /// snapshot's context_runtime_id, not its logical conversation's origin.
-    pub fn snapshot(&mut self, runtime_id: String) -> Result<SnapshotResult, Error> {
-        self.execute("getSnapshot", json!({}), Some(&runtime_id))
+    pub fn snapshot(
+        &mut self,
+        runtime_id: String,
+        conversation_id: String,
+    ) -> Result<SnapshotResult, Error> {
+        self.execute(
+            "getSnapshot",
+            json!({"conversationID":conversation_id}),
+            Some(&runtime_id),
+        )
     }
-    /// Accept this turn's runtime and model. A different instance creates a new
+    /// Accept this turn's source conversation and target runtime/model. A different instance creates a new
     /// native segment and carries quoted text context; it does not replay tools
     /// or resume a foreign native session. Association commits precede dispatch,
     /// and an ambiguous dispatch is never automatically retried.
     pub fn send_turn(
         &mut self,
-        runtime_id: String,
+        source_runtime_id: String,
+        conversation_id: String,
+        target_runtime_id: String,
         model_record_key: String,
         text: String,
     ) -> Result<SnapshotResult, Error> {
         self.execute(
             "sendTurn",
-            json!({"modelRecordKey":model_record_key,"text":text}),
-            Some(&runtime_id),
+            json!({"sourceRuntimeID":source_runtime_id,"conversationID":conversation_id,"runtimeInstanceID":target_runtime_id,"modelRecordKey":model_record_key,"text":text}),
+            Some(&target_runtime_id),
         )
     }
     pub fn cancel(&mut self, runtime_id: String) -> Result<SnapshotResult, Error> {

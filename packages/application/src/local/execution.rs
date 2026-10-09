@@ -162,13 +162,15 @@ impl CoreRuntime {
 
     pub(super) fn start_pi_for_session(
         &mut self,
-        cwd: &Path,
+        cwd: Option<&Path>,
         session: Option<&Path>,
         model_record_key: Option<&str>,
         physical_model_id: Option<&str>,
         subscription_capability: bool,
     ) -> Result<(), RuntimeError> {
-        validate_session_cwd(cwd)?;
+        if let Some(cwd) = cwd {
+            validate_session_cwd(cwd)?;
+        }
         let runtime = self
             .execution_runtime_id
             .as_deref()
@@ -193,7 +195,9 @@ impl CoreRuntime {
             );
             RuntimeError::context(&runtime_context, error)
         };
-        let cwd = fs::canonicalize(cwd)
+        let cwd = cwd
+            .map(fs::canonicalize)
+            .transpose()
             .map_err(|error| RuntimeError::context("conversation working directory", error))?;
         let mut config = self
             .pi
@@ -201,7 +205,7 @@ impl CoreRuntime {
             .clone()
             .ok_or_else(|| RuntimeError::invalid("会话执行尚未准备"))?;
         self.shutdown_pi()?;
-        config.working_dir = Some(cwd.clone());
+        config.working_dir = cwd.clone();
         config.session = session.map(Path::to_owned);
         config.name = None;
         if let (Some(logical), Some(physical)) = (model_record_key, physical_model_id) {
@@ -226,7 +230,7 @@ impl CoreRuntime {
             updated_at_unix_ms: None,
             created_at_unix_ms: None,
             runtime_id: runtime_id.into(),
-            cwd: Some(cwd.to_string_lossy().into_owned()),
+            cwd: cwd.as_ref().map(|path| path.to_string_lossy().into_owned()),
         });
         if let Some(snapshot) = projection.snapshot.as_mut() {
             snapshot.model_record_key = model_record_key.map(str::to_owned);

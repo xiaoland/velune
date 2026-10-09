@@ -63,11 +63,11 @@ def main():
             record=application.list().gateways[0].providers[0].models[0].record_key
             runtime=b.BindingRuntimeInstance(enabled=True, id='fixture',name='Synthetic',type_id='codex-0.159.3',gateway_id='default',settings={'binary':str(binary),'nodeBinary':str(args.node),'agentDir':str(root/'runtime')})
             application.upsert_runtime(runtime);application.select_runtime('fixture')
-            application.create_conversation('fixture',str(root/'project'),record)
+            conversation_id=application.create_conversation('fixture',str(root/'project'),record).snapshot.conversation.id
             def wait(predicate, allow_error=False):
                 deadline=time.monotonic()+8
                 while time.monotonic()<deadline:
-                    try: snapshot=application.snapshot('fixture').snapshot
+                    try: snapshot=application.snapshot('fixture',conversation_id).snapshot
                     except b.BindingError:
                         if not allow_error: raise
                         time.sleep(.02);continue
@@ -79,11 +79,11 @@ def main():
                 try: call()
                 except b.BindingError: return
                 raise AssertionError('invalid reply succeeded')
-            application.send_turn('fixture',record,'approve');approval=pending()
-            active_id = application.snapshot('fixture').snapshot.conversation.id
+            application.send_turn('fixture',conversation_id,'fixture',record,'approve');approval=pending()
+            active_id = application.snapshot('fixture',conversation_id).snapshot.conversation.id
             rejected(lambda: application.rename_conversation('fixture', active_id, 'DO_NOT_CHANGE_BUSY'))
             rejected(lambda: application.delete_conversation('fixture', active_id))
-            assert application.snapshot('fixture').snapshot.pending_interactions[0].id == approval.id
+            assert application.snapshot('fixture',conversation_id).snapshot.pending_interactions[0].id == approval.id
             assert isinstance(approval.kind,b.BindingInteractionKind.APPROVAL)
             assert [o.id for o in approval.kind.options]==['accept','decline']
             rejected(lambda: application.reply_runtime_interaction('fixture',approval.id,b.BindingRuntimeInteractionReply.DECISION(option_id='not-offered')))
@@ -93,16 +93,16 @@ def main():
             application.reply_runtime_interaction('fixture',question.id,b.BindingRuntimeInteractionReply.ANSWERS(answers=[b.BindingInteractionAnswer(question_id='q',values=['SYNTHETIC_PRIVATE_ANSWER'])]))
             settled=wait(lambda s: s.actions.can_send)
             assert any(block.text=='INTERACTION_PASSED' for m in settled.messages for block in m.blocks if isinstance(block,b.BindingMessageBlock.TEXT))
-            application.send_turn('fixture',record,'reject');approval=pending()
+            application.send_turn('fixture',conversation_id,'fixture',record,'reject');approval=pending()
             application.reply_runtime_interaction('fixture',approval.id,b.BindingRuntimeInteractionReply.CANCEL())
             wait(lambda s: s.actions.can_send)
-            application.send_turn('fixture',record,'cancel');old=pending();application.cancel('fixture');wait(lambda s: s.actions.can_send and not s.pending_interactions)
+            application.send_turn('fixture',conversation_id,'fixture',record,'cancel');old=pending();application.cancel('fixture');wait(lambda s: s.actions.can_send and not s.pending_interactions)
             rejected(lambda: application.reply_runtime_interaction('fixture',old.id,b.BindingRuntimeInteractionReply.DECISION(option_id='accept')))
-            application.send_turn('fixture',record,'exit');failed=wait(lambda s: s.run_state==b.BindingRunState.FAILED,allow_error=True)
+            application.send_turn('fixture',conversation_id,'fixture',record,'exit');failed=wait(lambda s: s.run_state==b.BindingRunState.FAILED,allow_error=True)
             assert any(block.text=='PRESERVED_PARTIAL' for m in failed.messages for block in m.blocks if isinstance(block,b.BindingMessageBlock.TEXT))
             assert not failed.pending_interactions and not failed.actions.can_send
             assert application.list().runtime_instances
-            rejected(lambda: application.send_turn('fixture',record,'cannot send on failed transport'))
+            rejected(lambda: application.send_turn('fixture',conversation_id,'fixture',record,'cannot send on failed transport'))
             application.select_runtime('fixture');application.create_conversation('fixture',str(root/'project'),record);assert application.list().selected_runtime_instance_id=='fixture'
             for path in (root/'home').rglob('*.jsonl'):
                 assert 'SYNTHETIC_PRIVATE_ANSWER' not in path.read_text() and 'SYNTHETIC_KEY' not in path.read_text()

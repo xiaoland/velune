@@ -38,6 +38,14 @@ final class AppStore: ObservableObject {
     @Published private var snapshot: ConversationSnapshot?
 
     private let transport: Transport?
+    // Workspaces share application services; their navigation and transcript stay local.
+    private let sharedApplication: AppStore?
+    private var subscriptions: Set<AnyCancellable> = []
+    private var sharesApplication = false
+    private var sharedUpdateScheduled = false
+    @Published private var executionStarting = false
+    private var started = false
+    private var isDraft = false
     let isPreview: Bool
     @Published private(set) var analyticsReport: BindingAnalyticsReport?
     @Published private(set) var analyticsLoadedQuery: BindingAnalyticsQuery?
@@ -55,25 +63,92 @@ final class AppStore: ObservableObject {
     private var queuedConversationManagement: (() -> Void)?
     private var previewSnapshots: [String: ConversationSnapshot] = [:]
 
-    init(transport: Transport? = nil, preview: Bool = false) {
+    init(transport: Transport? = nil, preview: Bool = false, sharedApplication: AppStore? = nil) {
+        self.sharedApplication = sharedApplication
         isPreview = preview
         if preview { self.transport = nil }
+        else if let sharedApplication { self.transport = sharedApplication.transport }
         else if let transport { self.transport = transport }
         else {
             do { self.transport = try Transport.applicationDefault() }
             catch { self.transport = nil; self.recordProblem(error, source: "初始化") }
         }
         if preview { seedPreview() }
+        if let sharedApplication {
+            sharedApplication.sharesApplication = true
+            copyApplicationState(sharedApplication)
+            sharedApplication.objectWillChange.sink { [weak self, weak sharedApplication] in
+                guard let self, !self.sharedUpdateScheduled else { return }
+                self.sharedUpdateScheduled = true
+                Task { @MainActor in
+                    guard let sharedApplication else { return }
+                    self.sharedUpdateScheduled = false
+                    self.copyApplicationState(sharedApplication)
+                }
+            }.store(in: &subscriptions)
+        } else if let transport = self.transport {
+            transport.configurationChanged.receive(on: DispatchQueue.main).sink { [weak self] in
+                guard let self, self.sharesApplication else { return }
+                self.refreshApplicationConfiguration()
+            }.store(in: &subscriptions)
+        }
     }
+
+    func makeWorkspace() -> AppStore { AppStore(preview: isPreview, sharedApplication: self) }
+
+    private func copyApplicationState(_ application: AppStore) {
+        gateway = application.gateway; hasGateway = application.hasGateway
+        runtimeInstances = application.runtimeInstances; runtimeTypes = application.runtimeTypes
+        protocols = application.protocols; modelTemplates = application.modelTemplates
+        providerImportTypes = application.providerImportTypes
+        conversationBrowserPreferences = application.conversationBrowserPreferences
+        savedBrowserPreferences = application.savedBrowserPreferences
+        conversationBrowserGroupLimit = application.conversationBrowserGroupLimit
+        transcriptPresentation = application.transcriptPresentation
+        conversations = application.conversations
+        if let current = snapshot?.conversation, !isDraft, !conversations.contains(where: { $0.id == current.id }) { conversations.insert(current, at: 0) }
+        authenticationRunning = application.authenticationRunning
+        authenticationPrompt = application.authenticationPrompt
+        authenticationNotifications = application.authenticationNotifications
+        authenticationResult = application.authenticationResult
+        problems = application.problems
+        reconcileNextTurnIntent()
+        if !isDraft, pendingConversationID == nil, let active = application.snapshot,
+           active.conversation.id == loadedConversationID, active.conversation.runtimeID == snapshot?.conversation.runtimeID {
+            apply(active, preserveSelection: true)
+        }
+    }
+
+    private func refreshApplicationConfiguration() {
+        guard let transport, !isShuttingDown else { return }
+        queue.async { [weak self] in
+            let result = Result { try transport.list() }
+            DispatchQueue.main.async {
+                guard let self else { return }
+                switch result {
+                case .success(let value): self.applyList(value)
+                case .failure(let error): self.recordProblem(error, source: "刷新配置")
+                }
+            }
+        }
+    }
+
+    var executionBusyElsewhere: Bool {
+        guard let sharedApplication, sharedApplication.applicationIsGenerating else { return false }
+        return sharedApplication.loadedConversationID != loadedConversationID || sharedApplication.snapshot?.conversation.runtimeID != snapshot?.conversation.runtimeID
+    }
+    var applicationIsGenerating: Bool { isGenerating || executionStarting || sharedApplication?.applicationIsGenerating == true }
+
     var models: [ModelChoice] { gateway.providers.flatMap { provider in provider.models.map { ModelChoice(recordKey: $0.recordKey, displayName: "\($0.displayName) · \(provider.name)", protocolID: provider.protocolID) } } }
     var enabledRuntimeInstances: [RuntimeInstance] { runtimeInstances.filter(\.enabled) }
     var providers: [AIProvider] { gateway.providers }
     var loadedConversationID: String? { snapshot?.conversation.id }
-    var selectedConversationTitle: String? { conversations.first { $0.id == selectedConversationID }?.title }
+    var loadedConversationWorkingDirectory: String? { snapshot?.conversation.cwd }
+    var selectedConversationTitle: String? { conversations.first { $0.id == selectedConversationID }?.title ?? (snapshot?.conversation.id == selectedConversationID ? snapshot?.conversation.title : nil) }
     var isGenerating: Bool { snapshot?.runState == .running || snapshot?.runState == .stopping }
     var isBusy: Bool { isLoading || isGenerating || isShuttingDown || authenticationRunning }
-    var canManageConversations: Bool { !isGenerating && !authenticationRunning && !isShuttingDown && conversationManagementStatus == nil && (!isLoading || pendingConversationID != nil) }
-    var canSend: Bool { !authenticationRunning && !isLoading && !isGenerating && !isShuttingDown && (snapshot?.actions.canSend ?? false) && nextTurnModelRecordKey != nil && runtimeCompatibleModels.contains { $0.recordKey == nextTurnModelRecordKey } }
+    var canManageConversations: Bool { !applicationIsGenerating && !authenticationRunning && !isShuttingDown && conversationManagementStatus == nil && (!isLoading || pendingConversationID != nil) }
+    var canSend: Bool { !applicationIsGenerating && !authenticationRunning && !isLoading && !isGenerating && !isShuttingDown && (snapshot?.actions.canSend ?? false) && nextTurnModelRecordKey != nil && runtimeCompatibleModels.contains { $0.recordKey == nextTurnModelRecordKey } }
     var canCancel: Bool { snapshot?.actions.canCancel ?? false }
     var canSwitchModel: Bool { nextTurnRuntimeID != nil && !isShuttingDown }
     var needsModelSelection: Bool { snapshot != nil && nextTurnModelRecordKey == nil }
@@ -98,6 +173,7 @@ final class AppStore: ObservableObject {
         }
     }
     func shutdown(completion: @escaping (Bool) -> Void) {
+        if sharedApplication != nil { subscriptions.removeAll(); completion(true); return }
         guard !isShuttingDown else { completion(false); return }
         guard !isPreview, let transport else { completion(true); return }
         isShuttingDown = true
@@ -111,6 +187,7 @@ final class AppStore: ObservableObject {
                 case .success:
                     self.timer?.invalidate(); self.timer = nil
                     self.generation += 1
+                    self.started = false
                     completion(true)
                 case .failure(let failure):
                     self.recordProblem(failure)
@@ -126,13 +203,15 @@ final class AppStore: ObservableObject {
             Task { @MainActor in self?.pollAuthentication(); self?.poll() }
         }
     }
-    func start() {
+    func start(loadFirstConversation: Bool = true) {
+        guard !started else { return }; started = true
+        sharedApplication?.start(loadFirstConversation: false)
         guard !isPreview, let transport else { return }
         enqueue({ try transport.list() }) { [weak self] data in
             guard let self else { return }
             applyList(data)
-            schedulePolling()
-            if let id = conversations.first?.id { selectConversation(id: id) }
+            if sharedApplication == nil { schedulePolling() }
+            if loadFirstConversation, let id = conversations.first?.id { selectConversation(id: id) }
         }
     }
     func refreshConversations() {
@@ -210,6 +289,7 @@ final class AppStore: ObservableObject {
         // The sidebar reflects user intent immediately. The old loaded transcript
         // is retained until success, but hidden while this destination is loading.
         let previousSelection = snapshot?.conversation.id
+        isDraft = false
         generation += 1 // Invalidate any poll already queued for the old conversation.
         selectedConversationID = id
         pendingConversationID = id
@@ -307,7 +387,7 @@ final class AppStore: ObservableObject {
                     do { latest = try transport.list() }
                     catch { failures.append(AppProblem.failure(error, source: "刷新会话列表")) }
                     if let contextID, !deleted.contains(loadedID ?? "") {
-                        do { refreshed = try transport.snapshot(runtimeID: contextID) }
+                        do { refreshed = try transport.snapshot(runtimeID: contextID, conversationID: loadedID ?? "") }
                         catch { lostContext = true; failures.append(AppProblem.failure(error, source: "读取当前会话")) }
                     }
                 }
@@ -325,27 +405,47 @@ final class AppStore: ObservableObject {
         }
     }
     func createConversation() { showsNewConversation = true }
-    func createConversation(runtimeID: String, cwd: String, modelRecordKey: String, onCreated: @escaping () -> Void) {
+    func createConversation(runtimeID: String, cwd: String?, modelRecordKey: String, onCreated: @escaping () -> Void) {
         hasInitializedNextTurnIntent = true
         nextTurnRuntimeID = runtimeID; nextTurnModelRecordKey = modelRecordKey
-        guard !isLoading, !isGenerating else { return }
+        guard !isLoading, !applicationIsGenerating else { return }
         if isPreview {
             let conversation = Conversation(id: UUID().uuidString, title: "新会话", updatedAtUnixMs: Int64(Date().timeIntervalSince1970 * 1000), runtimeID: runtimeID, cwd: cwd)
             projectionRuntimeID = runtimeID
             apply(ConversationSnapshot(revision: 1, conversation: conversation, contextRuntimeID: runtimeID, modelRecordKey: modelRecordKey, runState: .idle, messages: [], actions: ConversationActions(canSend: true, canCancel: false, canSwitch: true)))
             onCreated(); return
         }
-        guard let transport else { recordProblem("本地核心未配置"); return }
-        enqueue({ try transport.createConversation(runtimeID: runtimeID, cwd: cwd, modelRecordKey: modelRecordKey) }) { [weak self] in
-            self?.generation += 1; self?.projectionRuntimeID = runtimeID; self?.applySnapshotResult($0); onCreated()
-        }
+        isDraft = true
+        let conversation = Conversation(id: "draft:" + UUID().uuidString, title: "新会话", updatedAtUnixMs: nil, runtimeID: runtimeID, cwd: cwd, canRename: false, canDelete: false)
+        apply(ConversationSnapshot(revision: 1, conversation: conversation, contextRuntimeID: runtimeID, modelRecordKey: modelRecordKey, runState: .idle, messages: [], actions: ConversationActions(canSend: true, canCancel: false, canSwitch: true)))
+        onCreated()
     }
     func send(text: String, onAccepted: (() -> Void)? = nil) {
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-        guard canSend, let target = nextTurnRuntimeID, let model = nextTurnModelRecordKey else { return }
+        guard canSend, let target = nextTurnRuntimeID, let model = nextTurnModelRecordKey, let source = snapshot?.conversation.runtimeID, let conversationID = loadedConversationID else { return }
         if isPreview { snapshot?.modelRecordKey = model; snapshot?.messages.append(Message(id: UUID().uuidString, role: .user, blocks: [.text(text)])); apply(snapshot); onAccepted?(); return }
         guard let transport else { recordProblem("本地核心未配置"); return }
-        enqueue({ try transport.sendTurn(runtimeID: target, modelRecordKey: model, text: text) }, onAccepted: onAccepted) { [weak self] in self?.applySnapshotResult($0) }
+        let application = sharedApplication ?? self
+        application.executionStarting = true
+        let creating = isDraft
+        let cwd = snapshot?.conversation.cwd
+        enqueue({
+            if creating {
+                return try transport.createAndSend(runtimeID: target, cwd: cwd, modelRecordKey: model, text: text) { [weak self] created in
+                    DispatchQueue.main.async {
+                        guard let self else { return }
+                        self.isDraft = false
+                        self.sharedApplication?.applySnapshotResult(created)
+                        self.applySnapshotResult(created)
+                    }
+                }
+            }
+            return try transport.sendTurn(sourceRuntimeID: source, conversationID: conversationID, targetRuntimeID: target, modelRecordKey: model, text: text)
+        }, onAccepted: onAccepted, onFailure: { _ in application.executionStarting = false }) { [weak self] value in
+            application.executionStarting = false
+            self?.sharedApplication?.applySnapshotResult(value)
+            self?.applySnapshotResult(value)
+        }
     }
     func cancel() {
         guard canCancel, !isLoading else { return }
@@ -418,6 +518,7 @@ final class AppStore: ObservableObject {
             }
     }
     func startAuthentication(_ providerID: String) {
+        if let sharedApplication { sharedApplication.startAuthentication(providerID); showsAuthentication = true; return }
         guard !isGenerating else { recordProblem("请先停止当前任务，再开始登录"); return }
         guard !isPreview else { recordProblem("预览不会启动认证"); return }
         guard let transport else { recordProblem("本地核心未配置"); return }
@@ -428,10 +529,12 @@ final class AppStore: ObservableObject {
             }
     }
     func answerAuthentication(id: String, value: String) {
+        if let sharedApplication { sharedApplication.answerAuthentication(id: id, value: value); return }
         guard let transport else { recordProblem("本地核心未配置"); return }
         enqueue({ try transport.authenticationReply(promptID: id, value: value) }) { [weak self] in self?.authenticationPrompt = nil; self?.applyAuthentication(BindingMapping.authenticationProgress($0)) }
     }
     func cancelAuthentication() {
+        if let sharedApplication { sharedApplication.cancelAuthentication(); return }
         guard let transport else { recordProblem("本地核心未配置"); return }
         enqueue({ try transport.authenticationCancel() }) { [weak self] in self?.applyAuthentication(BindingMapping.authenticationProgress($0)) }
     }
@@ -539,12 +642,12 @@ final class AppStore: ObservableObject {
         guard let transport else { recordProblem("本地核心未配置"); return }
         enqueue({ try transport.list() }) { [weak self] data in
             guard let self else { return }; applyList(data)
-            if let runtimeID = snapshot?.contextRuntimeID {
-                enqueue({ try transport.snapshot(runtimeID: runtimeID) }) { [weak self] in self?.applySnapshotResult($0) }
+            if let runtimeID = snapshot?.conversation.runtimeID, let conversationID = loadedConversationID {
+                enqueue({ try transport.openConversation(runtimeID: runtimeID, conversationID: conversationID) }) { [weak self] in self?.applySnapshotResult($0) }
             } else { resetProjection() }
         }
     }
-    private func resetProjection() { problems.removeAll { $0.activityKey?.hasPrefix("poll:") == true }; generation += 1; snapshot = nil; projectionRuntimeID = nil; selectedConversationID = nil; pendingConversationID = nil; transcript.reset(); activity = nil }
+    private func resetProjection() { isDraft = false; problems.removeAll { $0.activityKey?.hasPrefix("poll:") == true }; generation += 1; snapshot = nil; projectionRuntimeID = nil; selectedConversationID = nil; pendingConversationID = nil; transcript.reset(); activity = nil }
     private func applyList(_ data: BindingConfigurationSnapshot) {
         let mapped = BindingMapping.configuration(data)
         if conversationBrowserPreferences == nil {
@@ -563,6 +666,7 @@ final class AppStore: ObservableObject {
         reconcileNextTurnIntent()
     }
     func recordProblem(_ error: Error, source: String = "操作", activityKey: String? = nil) {
+        if let sharedApplication { sharedApplication.recordProblem(error, source: source, activityKey: activityKey); return }
         let value = AppProblem.failure(error, source: source, activityKey: activityKey)
         if let activityKey, problems.contains(where: { $0.activityKey == activityKey && $0.detail == value.detail && $0.code == value.code && $0.phase == value.phase }) { return }
         if let activityKey { problems.removeAll { $0.activityKey == activityKey } }
@@ -570,13 +674,15 @@ final class AppStore: ObservableObject {
     }
     func recordProblem(_ message: String, source: String = "操作") { recordProblem(TransportError.rejected(message), source: source) }
     private func appendProblems(_ values: [AppProblem]) {
+        if let sharedApplication { sharedApplication.appendProblems(values); return }
         problems.append(contentsOf: values)
         if problems.count > 100 { problems.removeFirst(problems.count - 100) }
     }
-    private func clearActivityProblem(_ key: String) { problems.removeAll { $0.activityKey == key } }
-    func clearProblem(_ id: UUID) { problems.removeAll { $0.id == id } }
-    func clearProblems() { problems.removeAll() }
+    private func clearActivityProblem(_ key: String) { if let sharedApplication { sharedApplication.clearActivityProblem(key); return }; problems.removeAll { $0.activityKey == key } }
+    func clearProblem(_ id: UUID) { if let sharedApplication { sharedApplication.clearProblem(id); return }; problems.removeAll { $0.id == id } }
+    func clearProblems() { if let sharedApplication { sharedApplication.clearProblems(); return }; problems.removeAll() }
     private func reconcileHistoryProblems(_ failures: [HistoryFailure]) {
+        guard sharedApplication == nil else { return }
         let keys = Set(failures.map { "history:" + $0.runtimeID })
         problems.removeAll { $0.activityKey?.hasPrefix("history:") == true && !keys.contains($0.activityKey ?? "") }
         for failure in failures {
@@ -600,7 +706,7 @@ final class AppStore: ObservableObject {
         problems.removeAll { $0.activityKey?.hasPrefix("poll:") == true && $0.activityKey != "poll:" + value.contextRuntimeID }
         snapshot = value; projectionRuntimeID = value.contextRuntimeID; selectedConversationID = value.conversation.id; if !preserveSelection && selectedConversationIDs.count <= 1 { selectedConversationIDs = [value.conversation.id] }; transcript.apply(value.messages, turns: value.transcriptTurns, confirmations: value.messageIdentityConfirmations)
         if let index = conversations.firstIndex(where: { $0.id == value.conversation.id }) { if conversations[index] != value.conversation { conversations[index] = value.conversation } }
-        else { conversations.insert(value.conversation, at: 0) }
+        else if !isDraft { conversations.insert(value.conversation, at: 0) }
         activity = value.runState == .running ? "正在思考与执行" : value.runState == .stopping ? "正在停止" : nil
         if isPreview { previewSnapshots[value.conversation.id] = value }
     }
@@ -613,18 +719,18 @@ final class AppStore: ObservableObject {
         apply(BindingMapping.snapshot(incoming), preserveSelection: unchangedPoll)
     }
     private func poll() {
-        guard !isPreview, !isShuttingDown, snapshot != nil, !isLoading, !pollPending, let transport, let runtimeID = projectionRuntimeID else { return }
+        guard sharedApplication == nil, started, !isDraft, !isPreview, !isShuttingDown, snapshot != nil, !isLoading, !pollPending, let transport, let runtimeID = projectionRuntimeID else { return }
         let revision = generation
         let selected = selectedConversationID
         pollPending = true
         queue.async { [weak self] in
-            let result = Result { try transport.snapshot(runtimeID: runtimeID) }
+            let result = Result { try transport.snapshot(runtimeID: runtimeID, conversationID: selected ?? "") }
             DispatchQueue.main.async {
                 guard let self else { return }
                 self.pollPending = false
                 guard self.generation == revision, self.selectedConversationID == selected else { return }
                 switch result {
-                case .success(let data): self.clearActivityProblem("poll:" + runtimeID); self.applySnapshotResult(data, unchangedPoll: true)
+                case .success(let data): self.clearActivityProblem("poll:" + runtimeID); if data.snapshot != nil { self.applySnapshotResult(data, unchangedPoll: true) }
                 case .failure(let failure): self.recordProblem(failure, source: "读取会话", activityKey: "poll:" + runtimeID)
                 }
             }

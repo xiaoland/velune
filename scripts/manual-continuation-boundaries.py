@@ -67,10 +67,11 @@ def main():
                 application.upsert_runtime(b.BindingRuntimeInstance(enabled=True, id=identity, name=identity,
                     type_id="pi-1.0.2", gateway_id="default", settings={"binary": str(binary), "nodeBinary": str(args.node), "agentDir": str(root / identity)}))
 
+            active_conversation_id = None
             def settle(identity, expected):
                 deadline = time.monotonic() + 30
                 while time.monotonic() < deadline:
-                    snapshot = application.snapshot(identity).snapshot
+                    snapshot = application.snapshot(identity, active_conversation_id).snapshot
                     if snapshot and snapshot.run_state == b.BindingRunState.FAILED:
                         raise AssertionError("synthetic native turn failed")
                     if snapshot and snapshot.actions.can_send and len(captures) == expected:
@@ -78,8 +79,9 @@ def main():
                     time.sleep(.05)
                 raise AssertionError("native turn did not settle")
 
-            application.create_conversation("alpha", str(root / "project"), key)
-            application.send_turn("alpha", key, "BOUNDARY_ORIGIN")
+            created = application.create_conversation("alpha", str(root / "project"), key).snapshot
+            active_conversation_id = created.conversation.id
+            application.send_turn("alpha", active_conversation_id, "alpha", key, "BOUNDARY_ORIGIN")
             source = settle("alpha", 1)
             source_path = Path(source.conversation.id.removeprefix("alpha:"))
             source_bytes = source_path.read_bytes()
@@ -94,7 +96,7 @@ def main():
                     raise AssertionError("operation unexpectedly accepted")
                 assert len(captures) == 1, "a rejected handoff dispatched upstream"
                 assert source_path.read_bytes() == source_bytes, "rejected handoff changed native source"
-                current = application.snapshot("alpha").snapshot
+                current = application.snapshot("alpha", source.conversation.id).snapshot
                 assert current and current.conversation.id == source.conversation.id
 
             assert not links_path.exists()
@@ -104,13 +106,13 @@ def main():
             application.upsert_runtime(b.BindingRuntimeInstance(enabled=True, id="bad", name="bad", type_id="codex-0.159.3",
                 gateway_id="default", settings={"binary": str(unavailable_binary), "nodeBinary": str(args.node), "agentDir": str(root / "beta")}))
             # A ChatCompletions model cannot execute on Codex: reject before preparation.
-            rejected(lambda: application.send_turn("bad", key, "NEVER_SENT"))
+            rejected(lambda: application.send_turn("alpha", source.conversation.id, "bad", key, "NEVER_SENT"))
             assert not links_path.exists()
             links_path.mkdir()  # Atomic rename cannot replace this directory.
-            rejected(lambda: application.send_turn("beta", key, "PERSIST_FAILURE"))
+            rejected(lambda: application.send_turn("alpha", source.conversation.id, "beta", key, "PERSIST_FAILURE"))
             links_path.rmdir()
             assert len(application.list().conversations) == 1
-            application.send_turn("beta", key, "BOUNDARY_TARGET")
+            application.send_turn("alpha", source.conversation.id, "beta", key, "BOUNDARY_TARGET")
             target = settle("beta", 2)
             assert target.conversation.id == source.conversation.id and target.context_runtime_id == "beta"
             assert source_path.read_bytes() == source_bytes
@@ -133,7 +135,7 @@ def main():
             visible = [block.text for message in unavailable.messages for block in message.blocks if isinstance(block, b.BindingMessageBlock.TEXT)]
             assert "BOUNDARY_ORIGIN" in visible and "BOUNDARY_TARGET" not in visible
             try:
-                application.send_turn("beta", key, "NEVER_RESEND")
+                application.send_turn("alpha", source.conversation.id, "beta", key, "NEVER_RESEND")
             except b.BindingError:
                 pass
             else:

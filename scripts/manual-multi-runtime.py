@@ -76,14 +76,15 @@ def main():
                 runtime=b.BindingRuntimeInstance(enabled=True, id=family,name=family,type_id=type_id,gateway_id='default',settings={'binary':str(binary),'nodeBinary':str(args.node),'agentDir':str(agent_home)})
                 application.upsert_runtime(runtime);application.select_runtime(family)
                 created=application.create_conversation(family,str(root/'project'),saved.models[0].record_key).snapshot
+                conversation_id = created.conversation.id
                 assert created and created.conversation.cwd==str(root/'project')
                 assert created.conversation.created_at_unix_ms is not None and created.conversation.created_at_unix_ms > 0, family+' new native creation date missing'
                 native_created_at = created.conversation.created_at_unix_ms
                 time.sleep(1.2) # Separate native creation from first event persistence.
-                before=len(captures);application.send_turn(family,saved.models[0].record_key,'Reply with the synthetic answer; no tools are needed.')
+                before=len(captures);application.send_turn(family,conversation_id,family,saved.models[0].record_key,'Reply with the synthetic answer; no tools are needed.')
                 deadline=time.monotonic()+45
                 while time.monotonic()<deadline:
-                    snapshot=application.snapshot(family).snapshot
+                    snapshot=application.snapshot(family,conversation_id).snapshot
                     if snapshot and snapshot.run_state==b.BindingRunState.FAILED: raise AssertionError(family+' run failed')
                     if snapshot and snapshot.pending_interactions: raise AssertionError('unexpected interaction in no-tool turn')
                     if snapshot and snapshot.actions.can_send and len(captures)>before: break
@@ -109,10 +110,10 @@ def main():
                 assert reopened.conversation.title == snapshot.conversation.title, family+' reopened title changed: '+repr(reopened.conversation.title)+' vs '+repr(snapshot.conversation.title)
                 assert reopened.model_record_key is None,family+' inferred provider from bare history model ID'
                 assert reopened.actions.can_send,family+' history refused an explicit next-turn model'
-                before=len(captures);application.send_turn(family,alternate_saved.models[0].record_key,'Continue after the explicitly selected provider change.')
+                before=len(captures);application.send_turn(family,conversation_id,family,alternate_saved.models[0].record_key,'Continue after the explicitly selected provider change.')
                 deadline=time.monotonic()+45
                 while time.monotonic()<deadline:
-                    selected_snapshot=application.snapshot(family).snapshot
+                    selected_snapshot=application.snapshot(family,conversation_id).snapshot
                     if selected_snapshot and selected_snapshot.run_state==b.BindingRunState.FAILED: raise AssertionError(family+' selected provider run failed')
                     if selected_snapshot and selected_snapshot.actions.can_send and len(captures)>before: break
                     time.sleep(.05)
@@ -125,13 +126,13 @@ def main():
                 cross_protocol = False
                 if family == 'deepseek':
                     before=len(captures)
-                    selected=application.snapshot(family).snapshot
+                    selected=application.snapshot(family,conversation_id).snapshot
                     assert len(captures)==before and selected.model_record_key==alternate_saved.models[0].record_key
                     assert selected.conversation.id==selected_snapshot.conversation.id and selected.messages
-                    application.send_turn(family,switched_saved.models[0].record_key,'Continue this native session using the explicitly chosen Responses model.')
+                    application.send_turn(family,conversation_id,family,switched_saved.models[0].record_key,'Continue this native session using the explicitly chosen Responses model.')
                     deadline=time.monotonic()+45
                     while time.monotonic()<deadline:
-                        switched_snapshot=application.snapshot(family).snapshot
+                        switched_snapshot=application.snapshot(family,conversation_id).snapshot
                         if switched_snapshot and switched_snapshot.run_state==b.BindingRunState.FAILED: raise AssertionError('cross-protocol native resume failed')
                         if switched_snapshot and switched_snapshot.actions.can_send and len(captures)>before: break
                         time.sleep(.05)

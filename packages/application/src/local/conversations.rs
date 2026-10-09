@@ -1,13 +1,21 @@
 //! Local application conversations use cases.
 use super::*;
+use crate::conversation::ConversationSnapshot;
+use crate::local::continuation::{LogicalProjection, display_segment};
 impl CoreRuntime {
     pub(super) fn send_turn_action(&mut self, request: &Value) -> Result<Value, RuntimeError> {
         if self.busy() {
             return Err(RuntimeError::invalid("runtime is busy"));
         }
+        let source_runtime_id = request["payload"]["sourceRuntimeID"]
+            .as_str()
+            .ok_or_else(|| RuntimeError::invalid("source runtime instance id"))?;
         let runtime_id = request["payload"]["runtimeInstanceID"]
             .as_str()
             .ok_or_else(|| RuntimeError::invalid("runtime instance id"))?;
+        let conversation_id = request["payload"]["conversationID"]
+            .as_str()
+            .ok_or_else(|| RuntimeError::invalid("conversation id"))?;
         let model = request["payload"]["modelRecordKey"]
             .as_str()
             .ok_or_else(|| RuntimeError::invalid("model id"))?;
@@ -15,6 +23,35 @@ impl CoreRuntime {
             .as_str()
             .filter(|t| !t.trim().is_empty())
             .ok_or_else(|| RuntimeError::invalid("message text"))?;
+        let active_snapshot = self.native_snapshot();
+        let active_conversation_id = self
+            .logical_projection
+            .as_ref()
+            .map(|projection| projection.origin.id.as_str())
+            .or_else(|| {
+                active_snapshot
+                    .as_ref()
+                    .map(|snapshot| snapshot.conversation.id.as_str())
+            });
+        let active_source_runtime = self
+            .logical_projection
+            .as_ref()
+            .map(|projection| projection.origin.runtime_id.as_str())
+            .or_else(|| {
+                active_snapshot
+                    .as_ref()
+                    .map(|snapshot| snapshot.conversation.runtime_id.as_str())
+            });
+        if active_conversation_id != Some(conversation_id)
+            || active_source_runtime != Some(source_runtime_id)
+        {
+            let (source, projection) =
+                self.read_conversation_source(source_runtime_id, conversation_id)?;
+            self.invalidate_execution()?;
+            self.logical_projection = projection;
+            self.model_record_key = source.model_record_key.clone();
+            self.active_state = ActiveState::History(Box::new(source));
+        }
         let snapshot = self
             .native_snapshot()
             .ok_or_else(|| RuntimeError::invalid("conversation is not active"))?;
@@ -51,14 +88,13 @@ impl CoreRuntime {
         if !runtime.enabled {
             return Err(RuntimeError::invalid("此运行时已停用，请先启用"));
         }
-        let cwd = request["payload"]["cwd"]
-            .as_str()
-            .map(PathBuf::from)
-            .ok_or_else(|| RuntimeError::invalid("conversation working directory"))?;
+        let cwd = request["payload"]["cwd"].as_str().map(PathBuf::from);
         let key = request["payload"]["modelRecordKey"]
             .as_str()
             .ok_or_else(|| RuntimeError::invalid("请选择会话模型"))?;
-        validate_session_cwd(&cwd)?;
+        if let Some(cwd) = &cwd {
+            validate_session_cwd(cwd)?;
+        }
         self.validate_session_model(&runtime, key)?;
         let snapshot = PiProjection::new(ConversationSummary {
             can_rename: false,
@@ -68,7 +104,7 @@ impl CoreRuntime {
             updated_at_unix_ms: None,
             created_at_unix_ms: None,
             runtime_id: runtime_id.into(),
-            cwd: Some(cwd.to_string_lossy().into_owned()),
+            cwd: cwd.map(|path| path.to_string_lossy().into_owned()),
         })
         .snapshot
         .expect("new projection");
@@ -105,6 +141,94 @@ impl CoreRuntime {
         self.model_record_key = snapshot.model_record_key.clone();
         self.active_state = ActiveState::History(Box::new(snapshot));
         Ok(json!({"snapshot":self.current_snapshot()}))
+    }
+
+    fn read_conversation_source(
+        &self,
+        runtime_id: &str,
+        id: &str,
+    ) -> Result<(ConversationSnapshot, Option<LogicalProjection>), RuntimeError> {
+        if let Some(link) = self.conversation_links.iter().find(|link| link.id == id) {
+            if link
+                .segments
+                .first()
+                .is_none_or(|segment| segment.runtime_instance_id != runtime_id)
+            {
+                return Err(RuntimeError::invalid("会话来源运行时不匹配"));
+            }
+            let (snapshot, projection) = self.read_link(link)?;
+            Ok((snapshot, Some(projection)))
+        } else {
+            Ok((self.read_history(runtime_id, id)?, None))
+        }
+    }
+
+    pub(super) fn read_conversation(&mut self, request: &Value) -> Result<Value, RuntimeError> {
+        let runtime_id = request["payload"]["runtimeInstanceID"]
+            .as_str()
+            .ok_or_else(|| RuntimeError::invalid("runtime instance id"))?;
+        let id = request["payload"]["conversationID"]
+            .as_str()
+            .ok_or_else(|| RuntimeError::invalid("conversation id"))?;
+        let active_snapshot = self.native_snapshot();
+        let active_id = self
+            .logical_projection
+            .as_ref()
+            .map(|projection| projection.origin.id.as_str())
+            .or_else(|| {
+                active_snapshot
+                    .as_ref()
+                    .map(|snapshot| snapshot.conversation.id.as_str())
+            });
+        let active_runtime = self
+            .logical_projection
+            .as_ref()
+            .map(|projection| projection.origin.runtime_id.as_str())
+            .or_else(|| {
+                active_snapshot
+                    .as_ref()
+                    .map(|snapshot| snapshot.conversation.runtime_id.as_str())
+            });
+        if active_id == Some(id) && active_runtime == Some(runtime_id) {
+            self.sync_projection()?;
+            return Ok(json!({"snapshot":self.current_snapshot()}));
+        }
+        let (mut snapshot, projection) = self.read_conversation_source(runtime_id, id)?;
+        if let Some(projection) = projection {
+            let segment = projection
+                .link
+                .segments
+                .last()
+                .ok_or_else(|| RuntimeError::invalid("关联会话缺少当前段"))?;
+            let index = projection.link.segments.len() - 1;
+            let mut messages = projection.prefix;
+            if index > 0 {
+                messages.push(self.boundary_message(segment, index));
+            }
+            for confirmation in &mut snapshot.message_identity_confirmations {
+                confirmation.previous_id = format!("segment-{index}:{}", confirmation.previous_id);
+                confirmation.current_id = format!("segment-{index}:{}", confirmation.current_id);
+            }
+            messages.extend(display_segment(segment, &snapshot.messages, index)?);
+            snapshot.conversation = projection.origin;
+            snapshot.context_runtime_id = segment.runtime_instance_id.clone();
+            snapshot.messages = messages;
+            self.set_management_capabilities(&mut snapshot.conversation);
+        } else {
+            snapshot.context_runtime_id = runtime_id.into();
+            self.set_management_capabilities(&mut snapshot.conversation);
+        }
+        // Read-only history must reproduce stable transcript turn IDs without
+        // touching the shared live projection or its timing state.
+        use velune_agent_runtime::transcript::{TranscriptEvent, TranscriptProjection};
+        let mut transcript = TranscriptProjection::default();
+        transcript.apply(TranscriptEvent::ConfirmIdentities(
+            &snapshot.message_identity_confirmations,
+        ));
+        transcript.apply(TranscriptEvent::ReplaceMessages(&snapshot.messages));
+        transcript.apply(TranscriptEvent::ExecutionState(snapshot.run_state.clone()));
+        snapshot.transcript_turns = transcript.turns();
+        Ok(json!({"snapshot":Some(snapshot)}))
     }
 
     pub(super) fn manage_conversation(

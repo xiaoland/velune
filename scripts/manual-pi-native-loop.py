@@ -201,20 +201,22 @@ def main():
             draft_path = Path(draft.conversation.id.split(':', 1)[1])
             assert not draft_path.exists() and not captures
             application.rename_conversation(runtime.id, draft.conversation.id, 'SYNTHETIC_DISCARDED_DRAFT')
-            assert application.snapshot(runtime.id).snapshot.conversation.title == 'SYNTHETIC_DISCARDED_DRAFT'
+            assert application.snapshot(runtime.id, draft.conversation.id).snapshot.conversation.title == 'SYNTHETIC_DISCARDED_DRAFT'
             assert not draft_path.exists() and not captures, 'empty rename forced persistence or sampling'
             try: application.delete_conversation(runtime.id, draft.conversation.id + '.not-native')
             except bindings.BindingError: pass
             else: raise AssertionError('unlisted arbitrary draft path accepted')
             application.delete_conversation(runtime.id, draft.conversation.id)
-            assert application.snapshot(runtime.id).snapshot is None and not draft_path.exists() and not captures
-            application.create_conversation(runtime.id, str(root / 'project'), binding.record_key)
+            assert application.snapshot(runtime.id, draft.conversation.id).snapshot is None and not draft_path.exists() and not captures
+            default_cwd_snapshot = application.create_conversation(runtime.id, None, binding.record_key).snapshot
+            assert default_cwd_snapshot.conversation.cwd and default_cwd_snapshot.conversation.cwd.startswith('/'), 'runtime did not report its default CWD'
+            active_conversation_id = default_cwd_snapshot.conversation.id
             for turn in ('Read the synthetic local file.', 'Continue the synthetic conversation.'):
                 before = len(captures)
-                application.send_turn(runtime.id, binding.record_key, turn)
+                application.send_turn(runtime.id, active_conversation_id, runtime.id, binding.record_key, turn)
                 deadline = time.monotonic() + 30
                 while time.monotonic() < deadline:
-                    snapshot = application.snapshot(runtime.id).snapshot
+                    snapshot = application.snapshot(runtime.id, active_conversation_id).snapshot
                     if snapshot and snapshot.run_state == bindings.BindingRunState.FAILED:
                         raise RuntimeError('synthetic Pi run failed')
                     if snapshot and snapshot.actions.can_send and len(captures) > before:
@@ -228,7 +230,7 @@ def main():
             assert 'SYNTHETIC_TOOL_RESULT' in (tool_blocks[0].output or '')
             assert any(isinstance(block, bindings.BindingMessageBlock.REASONING) for message in snapshot.messages for block in message.blocks)
             revision = snapshot.revision
-            for _ in range(3): assert application.snapshot(runtime.id).snapshot.revision == revision, 'idle poll rebuilt unchanged Pi history'
+            for _ in range(3): assert application.snapshot(runtime.id, active_conversation_id).snapshot.revision == revision, 'idle poll rebuilt unchanged Pi history'
             assert len(captures) == 3, f'expected tool continuation plus next turn, got {len(captures)}'
             assert not upstream_errors, upstream_errors
             for request in captures:
@@ -247,14 +249,15 @@ def main():
             renamed_draft = application.create_conversation(runtime.id, str(root / 'project'), binding.record_key).snapshot
             renamed_path = Path(renamed_draft.conversation.id.split(':', 1)[1])
             assert not renamed_path.exists()
+            active_conversation_id = renamed_draft.conversation.id
             before_rename = len(captures)
             application.rename_conversation(runtime.id, renamed_draft.conversation.id, 'SYNTHETIC_PERSISTED_DRAFT_TITLE')
             assert not renamed_path.exists() and len(captures) == before_rename
             persisted_prompt = 'Persist the renamed synthetic native draft.'
-            application.send_turn(runtime.id, binding.record_key, persisted_prompt)
+            application.send_turn(runtime.id, renamed_draft.conversation.id, runtime.id, binding.record_key, persisted_prompt)
             deadline = time.monotonic() + 30
             while time.monotonic() < deadline:
-                snapshot = application.snapshot(runtime.id).snapshot
+                snapshot = application.snapshot(runtime.id, active_conversation_id).snapshot
                 if snapshot and snapshot.run_state == bindings.BindingRunState.FAILED: raise RuntimeError('renamed draft failed')
                 if snapshot and snapshot.actions.can_send and len(captures) > before_rename: break
                 time.sleep(.05)
@@ -287,10 +290,10 @@ def main():
 
             before_reopen = len(captures)
             before_reopen_texts = assistant_text_count(reopened_draft)
-            application.send_turn(runtime.id, binding.record_key, reopened_prompt)
+            application.send_turn(runtime.id, renamed_draft.conversation.id, runtime.id, binding.record_key, reopened_prompt)
             deadline = time.monotonic() + 30
             while time.monotonic() < deadline:
-                reopened_snapshot = application.snapshot(runtime.id).snapshot
+                reopened_snapshot = application.snapshot(runtime.id, renamed_draft.conversation.id).snapshot
                 if reopened_snapshot and reopened_snapshot.run_state == bindings.BindingRunState.FAILED:
                     raise RuntimeError('reopened synthetic session failed')
                 if reopened_snapshot and reopened_snapshot.actions.can_send and len(captures) > before_reopen:
@@ -331,13 +334,14 @@ def main():
                 raise AssertionError('old preview overwrote edited provider authentication')
             assert application.read_provider_api_key('default', selected.id) == 'synthetic-replacement'
             def send_after_edit():
+                nonlocal active_conversation_id
                 application.select_runtime(runtime.id)
-                application.create_conversation(runtime.id, str(root / 'project'), binding.record_key)
+                active_conversation_id = application.create_conversation(runtime.id, str(root / 'project'), binding.record_key).snapshot.conversation.id
                 before = len(captures)
-                application.send_turn(runtime.id, binding.record_key, 'Confirm the synthetic edited configuration.')
+                application.send_turn(runtime.id, active_conversation_id, runtime.id, binding.record_key, 'Confirm the synthetic edited configuration.')
                 deadline = time.monotonic() + 30
                 while time.monotonic() < deadline:
-                    current_snapshot = application.snapshot(runtime.id).snapshot
+                    current_snapshot = application.snapshot(runtime.id, active_conversation_id).snapshot
                     if current_snapshot and current_snapshot.run_state == bindings.BindingRunState.FAILED:
                         raise RuntimeError('edited synthetic provider run failed')
                     if current_snapshot and current_snapshot.actions.can_send and len(captures) > before:
@@ -376,6 +380,7 @@ def main():
             print(json.dumps({'acceptance': 'PASSED', 'bundle': {'sourceCommit': manifest['source_commit'],
                 'dirty': manifest['dirty'], 'uiVersion': manifest['ui_version']},
                 'normalPath': 'configured runtime → import → choose conversation model → automatic prepare → create → send → tool → continuation → next turn',
+                'runtimeDefaultCwdUsed': True,
                 'upstreamRequests': len(captures), 'persistedSessionReopenAndSend': True,
                 'onlySelectedProviderSaved': True, 'providerOwnedAuthentication': True,
                 'startupFailureHasCauseInstanceAndTrace': True, 'recoversAfterFailedStartup': True,

@@ -115,12 +115,12 @@ def main():
                 app.save_provider('default', b.BindingProviderDraft(id=case, name=case, protocol=protocol, endpoint=endpoint, models=[model]),
                     b.BindingAuthenticationEdit.SET_API_KEY(value='synthetic-only'))
                 key = next(p.models[0].record_key for g in app.list().gateways for p in g.providers if p.id == case)
-                app.create_conversation(case, str(root / 'project'), key)
+                conversation_id = app.create_conversation(case, str(root / 'project'), key).snapshot.conversation.id
                 before = len(captures)
-                app.send_turn(case, key, 'Read fixture.txt using the available command tool, then answer.')
+                app.send_turn(case, conversation_id, case, key, 'Read fixture.txt using the available command tool, then answer.')
                 deadline = time.monotonic() + 60
                 while time.monotonic() < deadline:
-                    snapshot = app.snapshot(case).snapshot
+                    snapshot = app.snapshot(case, conversation_id).snapshot
                     if errors:
                         raise RuntimeError(errors[-1])
                     if snapshot and snapshot.run_state == b.BindingRunState.FAILED:

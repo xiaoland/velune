@@ -38,4 +38,4 @@ Swift 生成模块名为 `VeluneBindings`，FFI 模块名为 `VeluneBindingsFFI`
 
 会话管理通过具名 rename_conversation／delete_conversation API 作用于所属运行时，版本描述公开管理能力；不支持的适配器明确拒绝。平台仅提交实例与会话身份，不获得直接修改来源文件的接口。
 
-`BindingConversationSummary.runtime_id` 表示逻辑会话的首段来源，`BindingConversationSnapshot.context_runtime_id` 表示当前原生上下文；平台不得用来源身份代替当前查询、取消或审批归属。摘要 `can_rename`／`can_delete` 为应用装配的关联会话原生管理能力。`send_turn` 原子接纳下一轮目标及模型，跨实例接续和关联持久化由 application 处理，bindings 不保存消息副本。
+`BindingConversationSummary.runtime_id` 表示逻辑会话的首段来源，`BindingConversationSnapshot.context_runtime_id` 表示当前原生上下文；平台不得用来源身份代替当前查询、取消或审批归属。摘要 `can_rename`／`can_delete` 为应用装配的关联会话原生管理能力。`read_conversation`只读指定来源会话而不激活执行；`snapshot`同时携带上下文运行时和会话ID，非当前活动身份返回无快照。`send_turn` 原子接纳来源运行时／会话ID及下一轮目标和模型，跨实例接续和关联持久化由 application 处理，bindings 不保存消息副本。

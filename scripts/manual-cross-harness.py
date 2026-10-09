@@ -167,11 +167,12 @@ def main():
             initial = application.create_conversation(
                 "pi", str(root / "project"), providers["pi"].models[0].record_key)
             assert initial.snapshot is not None, "Pi source conversation was not created"
+            conversation_id = initial.snapshot.conversation.id
 
             def wait_for_turn(runtime_id, before):
                 deadline = time.monotonic() + 45
                 while time.monotonic() < deadline:
-                    snapshot = application.snapshot(runtime_id).snapshot
+                    snapshot = application.snapshot(runtime_id, conversation_id).snapshot
                     if snapshot and snapshot.run_state == bindings.BindingRunState.FAILED:
                         raise RuntimeError(runtime_id + " synthetic turn failed")
                     if snapshot and snapshot.actions.can_send and len(captures) > before:
@@ -186,7 +187,7 @@ def main():
             for family, text in (("pi", "PI_ORIGIN"), ("codex", "CODEX_TURN"),
                                  ("dsh", "DSH_TURN"), ("pi", "PI_RETURN")):
                 before = len(captures)
-                result = application.send_turn(family, providers[family].models[0].record_key, text)
+                result = application.send_turn("pi", conversation_id, family, providers[family].models[0].record_key, text)
                 snapshot = wait_for_turn(family, before)
                 snapshots.append(snapshot)
                 assert snapshot.context_runtime_id == family, (
