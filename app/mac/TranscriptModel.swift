@@ -1,27 +1,43 @@
 import Combine
 import Foundation
-import MarkdownUI
+import MarkdownView
+
+/// Retains the public parser result across native cell reuse, without invoking a
+/// parser for off-screen messages. MarkdownReader supplies the first result.
+/// Parsing configuration is fixed; future parse-affecting options must invalidate this cache.
+@MainActor
+final class CachedMarkdownDocument {
+    let source: String
+    private(set) var result: MarkdownParseResult?
+    private let parsed: () -> Void
+    init(_ source: String, parsed: @escaping () -> Void) { self.source = source; self.parsed = parsed }
+    func retain(_ result: MarkdownParseResult) {
+        guard self.result == nil else { return }
+        self.result = result
+        parsed()
+    }
+}
 
 /// Stable presentation objects derived from the authoritative conversation projection.
-/// Markdown is parsed only when that message's content changes.
+/// Parsed results survive native cell reuse until their source content changes.
 @MainActor
 final class TranscriptRow: ObservableObject, @MainActor Identifiable {
     let id: String
     @Published private(set) var message: Message
-    private(set) var markdown: [Int: MarkdownContent] = [:]
-    private(set) var parseCount = 0
-    init(_ message: Message, id: String) { self.id = id; self.message = message; parse(message) }
+    private(set) var markdown: [Int: CachedMarkdownDocument] = [:]
+    private(set) var cacheFillCount = 0
+    init(_ message: Message, id: String) { self.id = id; self.message = message; prepareMarkdown(message) }
     func update(_ message: Message) {
         guard self.message != message else { return }
-        if self.message.blocks != message.blocks { parse(message) }
+        if self.message.blocks != message.blocks { prepareMarkdown(message) }
         self.message = message
     }
-    private func parse(_ message: Message) {
-        var next: [Int: MarkdownContent] = [:]
+    private func prepareMarkdown(_ message: Message) {
+        var next: [Int: CachedMarkdownDocument] = [:]
         for (index, block) in message.blocks.enumerated() {
             guard case .text(let text) = block, message.role == .assistant else { continue }
             if index < self.message.blocks.count, self.message.blocks[index] == block, let cached = markdown[index] { next[index] = cached }
-            else { next[index] = MarkdownContent(text); parseCount += 1 }
+            else { next[index] = CachedMarkdownDocument(text) { [weak self] in self?.cacheFillCount += 1 } }
         }
         markdown = next
     }

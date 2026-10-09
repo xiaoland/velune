@@ -1,6 +1,6 @@
 import SwiftUI
 import AppKit
-import MarkdownUI
+import MarkdownView
 import VeluneBindings
 
 struct VeluneRootView: View {
@@ -280,9 +280,9 @@ struct ConversationMessageView: View {
                         Text(text).font(.callout).foregroundStyle(.secondary).textSelection(.enabled)
                     case .text(let text):
                         if row.message.role == .assistant, let content = row.markdown[index] {
-                            Markdown(content)
+                            CachedMessageMarkdown(document: content)
                                 .modifier(MessageLinkOpener(cwd: cwd))
-                                .markdownTheme(.basic.codeBlock { configuration in CodeBlockView(language: configuration.language ?? "", code: configuration.content) })
+                                .markdownCodeBlockStyle(MessageCodeBlockStyle())
                                 .textSelection(.enabled)
                         } else { Text(text).textSelection(.enabled).multilineTextAlignment(.leading) }
                     }
@@ -295,6 +295,25 @@ struct ConversationMessageView: View {
         }
         .frame(maxWidth: .infinity, alignment: row.message.role == .system ? .center : .leading)
         .multilineTextAlignment(row.message.role == .system ? .center : .leading)
+    }
+}
+
+struct CachedMessageMarkdown: View {
+    let document: CachedMarkdownDocument
+    var body: some View {
+        if let result = document.result { MarkdownView(result) }
+        else {
+            MarkdownReader(document.source) { result in
+                let _ = document.retain(result)
+                MarkdownView(result)
+            }
+        }
+    }
+}
+
+struct MessageCodeBlockStyle: MarkdownCodeBlockStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        CodeBlockView(language: configuration.language ?? "", code: configuration.code)
     }
 }
 

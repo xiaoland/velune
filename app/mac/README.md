@@ -12,7 +12,7 @@ app 通过生成的 UniFFI 接口消费 application 的完整用例，不解析 
 
 会话内容消费 Rust 的类型权威，Mac 只派生展示行与展开、滚动状态。用户内容在右侧气泡，assistant 正文及工具左对齐；系统通知居中，工具输出不按 LLM Markdown 解析。Markdown 采用固定 Swift Package Manager 依赖，许可证随应用分发；不恢复手写 fence 解析。懒布局使用稳定行身份，打开／发送到底，阅读历史时暂停流式跟随。当前实施与验收见 [展示任务](../../tasks/conversation-presentation/packet.md)。
 
-Mac 由根目录 [Package.swift](../../Package.swift) 定义独立 SwiftPM 产品，依赖固定 MarkdownUI 2.4.1；[Package.resolved](../../Package.resolved) 锁传递依赖。build-macos 先生成 UniFFI 模块，再以 SwiftPM release／warnings-as-errors 构建原生 app，并打包 `app/mac/Licenses` 与解析锁文件。Swift 包不依赖领域 Rust 包源码，只链接对应生成绑定与库。
+Mac 由根目录 [Package.swift](../../Package.swift) 定义独立 SwiftPM 产品，依赖固定 MarkdownView 3.0.0；[Package.resolved](../../Package.resolved) 锁传递依赖。build-macos 先生成 UniFFI 模块，再以SwiftPM的Xcode后端构建本机架构release产品，应用与生成绑定目标各自启用warnings-as-errors，并打包`app/mac/Licenses`与解析锁文件。依赖保持各自声明的Swift语言模式；资源bundle置于标准Contents/Resources，由该后端生成的Bundle.module访问，不依赖开发路径。Swift 包不依赖领域 Rust 包源码，只链接对应生成绑定与库。
 
 会话上下文菜单按运行时能力提供重命名和永久删除确认。选中目标、待加载身份与已加载详情分别管理；加载时显示进度，暂停其它选择并隔离旧轮询，失败恢复原会话。操作交给生成绑定和运行时执行，不建立 Mac 标题覆盖存储。隔离验收见 [会话管理任务](../../tasks/session-management/packet.md)。
 
@@ -32,6 +32,6 @@ Mac 由根目录 [Package.swift](../../Package.swift) 定义独立 SwiftPM 产�
 
 各原生窗口与Tab持有独立AppStore工作区，共享一个Transport/application、配置、认证、问题和单活跃执行。只读历史与绑定来源会话的发送由UniFFI具名接口承载。窗口命令使用focused scene，不广播发送；Tab关闭不关闭核心。未发送草稿仅留在工作区，首发创建成功后立即保留原生身份，之后派发失败不自动重建或重发。验收见 [会话体验任务](../../tasks/mac-conversation-usability/packet.md)。
 
-消息列表消费 Rust 产出的有序展示项与稳定身份，原子更新行、工作范围与大纲，Markdown仅在正文变化时重新解析。工作过程、工具和推理使用行内 AppKit 原生 disclosure 按钮；三角与内容共同布局，开合不改变整表缩进。消息区域采用系统windowBackgroundColor不透明背景。Markdown链接交给系统注册的应用，相对文件以当前会话目录解析，失败由原生alert提供原文与复制。
+消息列表消费 Rust 产出的有序展示项与稳定身份，原子更新行、工作范围与大纲。正文首次显示时经上游MarkdownReader解析，结果随稳定消息对象保留；未变化轮询、离屏重入和原生cell复用不重新解析，正文变化才失效。工作过程、工具和推理使用行内 AppKit 原生 disclosure 按钮；三角与内容共同布局，开合不改变整表缩进。消息区域采用系统windowBackgroundColor不透明背景。Markdown链接交给系统注册的应用，相对文件以当前会话目录解析，失败由原生alert提供原文与复制。
 
 消息容器使用AppKit单列NSTableView：SwiftUI List在长Markdown对照中开销严重，LazyVStack则未能可靠定位增高后的远距离目标。原生行索引负责定位，仅复用可见消息内容，实际列宽下测量得到唯一cell高度约束；结构替换时保留稳定阅读行及真实行内偏移。跳转、用户滚动与跟底互斥，不估算消息高度或循环重试。实施与验收状态见[会话阅读任务](../../tasks/mac-conversation-usability/packet.md)。

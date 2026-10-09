@@ -449,14 +449,17 @@ manager.appendSessionInfo(title); console.log(manager.getSessionFile());
         import_models = temporary / 'ImportModels.swift'
         import_models.write_text((root / 'app/mac/ProviderImport.swift').read_text().split('struct ProviderImportView: View {')[0])
         objects = []
-        for name in ['VeluneBindings','MarkdownUI','NetworkImage','cmark_gfm','cmark_gfm_extensions']:
+        for name in ['VeluneBindings','MarkdownView','Markdown','Highlightr','RichText','Introspection','SwiftMath','CAtomic','cmark_gfm','cmark_gfm_extensions']:
             objects.extend(str(path) for path in (build / (name + '.build')).rglob('*.o'))
         command = ['xcrun','swiftc','-parse-as-library','-swift-version','5','-warnings-as-errors','-I',str(build / 'Modules'),'-I',str(root / 'target/swift-ffi')]
+        command += ['-Xcc', '-I' + str(root/'.build/checkouts/swift-cmark/src/include'), '-Xcc', '-fmodule-map-file=' + str(root/'.build/checkouts/swift-markdown/Sources/CAtomic/include/module.modulemap')]
         for path in [root/'.build/checkouts/swift-cmark/src/include/module.modulemap',root/'.build/checkouts/swift-cmark/extensions/include/module.modulemap']:
             command += ['-Xcc','-fmodule-map-file=' + str(path)]
         command += [str(root / 'app/mac' / name) for name in ['Models.swift','TranscriptModel.swift','Transport.swift','BindingMapping.swift','ConversationBrowser.swift','Problems.swift']]
         command += [str(import_models),str(store),str(main),*objects,'-L',str(args.bundle / 'Contents/Frameworks'),'-lvelune_bindings','-Xlinker','-rpath','-Xlinker',str(args.bundle / 'Contents/Frameworks'),'-o',str(temporary / 'manual')]
         subprocess.run(command,check=True,cwd=root)
+        for name in ('Highlightr_Highlightr.bundle', 'SwiftMath_SwiftMath.bundle'):
+            shutil.copytree(build/name, temporary/name)
         identities = ['fixture:' + paths[name] for name in ['A','B','C','D']]
         subprocess.run([str(temporary / 'manual'),str(temporary),str(resources),*identities,str(args.node),endpoint,str(args.pi)],check=True,cwd=temporary,env=env)
         server.shutdown(); server.server_close()

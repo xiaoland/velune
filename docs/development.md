@@ -10,7 +10,7 @@
 
 Mac 应用图标由 `scripts/render-app-icon.swift` 将 graphite 光学稿生成十档传统 ICNS 资源。Dock／应用库使用的图标应保留 macOS 的透明光学留白，不能将品牌稿直接铺满画布；具体绘制范围在生成器中维护，不能通过修改品牌 SVG 补偿平台外框尺寸。
 
-Mac 使用根目录 SwiftPM manifest 与 Package.resolved 锁定 MarkdownUI 及传递依赖；构建脚本先生成 UniFFI 模块，再构建原生 SwiftPM 产品，固定 macOS 14 部署底线并随包保留 Swift 许可证。不会构建或执行依赖的测试 targets。安装历史读取依赖后构建：
+Mac 使用根目录 SwiftPM manifest 与 Package.resolved 锁定 MarkdownView 及传递依赖；构建脚本先生成UniFFI模块，再用SwiftPM的Xcode后端构建本机架构产品，固定 macOS 14 部署底线并随包保留 Swift 许可证。MarkdownView 3.0.0需要Swift6.2或以上工具链。应用与生成绑定目标各自启用warnings-as-errors，依赖保持其声明的Swift语言模式；不全局提升第三方警告。此后端生成的资源访问器支持标准Contents/Resources，资源bundle必须随app打包。不会构建或执行依赖的测试 targets。安装历史读取依赖后构建：
 
 ```sh
 ./scripts/install-runtime-support.sh

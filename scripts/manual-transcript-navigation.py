@@ -14,7 +14,7 @@ import threading
 MAIN = r'''
 import SwiftUI
 import AppKit
-import MarkdownUI
+import MarkdownView
 import VeluneBindings
 @MainActor func applyFlat(_ model:TranscriptModel, messages:[Message]) {
     model.apply(messages,turns:[],items:messages.map { .message(id:"ui:"+$0.id,messageID:$0.id) },outline:messages.filter { $0.role == .user }.map { TranscriptOutlineEntry(id:"ui:"+$0.id,messageID:$0.id) },identities:messages.map { TranscriptMessageIdentity(id:"ui:"+$0.id,messageID:$0.id) })
@@ -73,7 +73,7 @@ struct Fixture: View {
                     Button("末条增高") {
                         var messages = model.rows.map(\.message)
                         guard let last = messages.last else { return }
-                        messages[messages.count-1] = Message(id:last.id,role:last.role,blocks:[.text(last.text+"\n\n"+String(repeating:"增高合成 Markdown **文本**。\n\n",count:15)+"STREAM END")])
+                        messages[messages.count-1] = Message(id:last.id,role:last.role,blocks:[.text(last.text+"\n\n"+String(repeating:"增高合成 Markdown **文本**。\n\n",count:15)+"```swift\n"+String(repeating:"print(\"SYNTHETIC\")\n",count:20)+"```\n\n| 列 | 值 |\n| --- | --- |\n| 合成 | 42 |\n\nSTREAM END")])
                         applyFlat(model, messages:messages)
                     }
                 }
@@ -93,7 +93,7 @@ struct Fixture: View {
             let key = String(format:"%03d",index)
             rows.append(Message(id:"u"+key,role:.user,blocks:[.text("目标用户 "+key)]))
             let paragraphs = (0..<(index % 5 == 0 ? 18 : 1)).map { "段落 \($0)：长短混合 Markdown，用于验证实际布局后的远距离定位。 **强调**、`inline code`。" }.joined(separator:"\n\n")
-            var text = "# 回复 "+key+"\n\n"+paragraphs
+            var text = "# 回复 "+key+"\n\n"+paragraphs+"\n\n- 合成无序项\n  - 子项 **强调**\n1. 合成有序项\n2. 下一项"
             if mode == "全部" || mode == "代码" { text += "\n\n```swift\nlet sample = \"synthetic\"\nprint(sample)\n```" }
             if mode == "全部" || mode == "表格" { text += "\n\n| 内容 | 状态 |\n| --- | --- |\n| 合成数据 | 已完成 |" }
             if index == 79 { text += "\n\n[网页]("+CommandLine.arguments[2]+") · [本地文件](fixture.html) · [无法打开](velune-manual-unregistered://synthetic-original)" }
@@ -138,11 +138,14 @@ def main():
         main_file.write_text(main_source)
         views=(repository/'app/mac/Views.swift').read_text()
         message_file=root/'Messages.swift'
-        message_source='import SwiftUI\nimport AppKit\nimport MarkdownUI\n'+views[views.index('struct ConversationMessageView:'):views.index('struct SettingsView:')]
+        message_source='import SwiftUI\nimport AppKit\nimport MarkdownView\n'+views[views.index('struct ConversationMessageView:'):views.index('struct SettingsView:')]
         message_file.write_text(message_source)
         build=args.swift_build
-        objects=[str(p) for name in ('VeluneBindings','MarkdownUI','NetworkImage','cmark_gfm','cmark_gfm_extensions') for p in (build/(name+'.build')).rglob('*.o')]
+        for name in ('Highlightr_Highlightr.bundle', 'SwiftMath_SwiftMath.bundle'):
+            shutil.copytree(build/name, app/name)
+        objects=[str(p) for name in ('VeluneBindings','MarkdownView','Markdown','Highlightr','RichText','Introspection','SwiftMath','CAtomic','cmark_gfm','cmark_gfm_extensions') for p in (build/(name+'.build')).rglob('*.o')]
         command=['xcrun','swiftc','-parse-as-library','-swift-version','5','-module-name','TranscriptNavigationProbe','-warnings-as-errors','-I',str(build/'Modules'),'-I',str(repository/'target/swift-ffi')]
+        command += ['-Xcc', '-I' + str(repository/'.build/checkouts/swift-cmark/src/include'), '-Xcc', '-fmodule-map-file=' + str(repository/'.build/checkouts/swift-markdown/Sources/CAtomic/include/module.modulemap')]
         for p in (repository/'.build/checkouts/swift-cmark/src/include/module.modulemap',repository/'.build/checkouts/swift-cmark/extensions/include/module.modulemap'): command+=['-Xcc','-fmodule-map-file='+str(p)]
         transcript_file = repository/'app/mac/Transcript.swift'
         command += [str(repository/'app/mac'/name) for name in ('Models.swift','TranscriptModel.swift','TranscriptOutline.swift','MessageLinks.swift')]+[str(transcript_file)]

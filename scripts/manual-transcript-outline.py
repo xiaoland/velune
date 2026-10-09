@@ -59,12 +59,12 @@ import VeluneBindings
         let firstAssistant = store.transcript.rows.first { $0.message.role == .assistant }!
         let firstIdentity = ObjectIdentifier(firstAssistant)
         let firstPresentationID = firstAssistant.id
-        let initialParse = firstAssistant.parseCount
+        let initialParse = firstAssistant.cacheFillCount
         try require(store.transcript.turns.count == 1 && store.transcript.turns[0].isRunning, "first-prefix turns=\(store.transcript.turns) rows=\(store.transcript.rows.map { $0.message.role.rawValue + ":" + String(reflecting: $0.message.blocks) })")
         try! FileManager.default.removeItem(at: root.appendingPathComponent("gate-first"))
         print("PHASE final-prefix"); try await wait { FileManager.default.fileExists(atPath: root.appendingPathComponent("ready-final").path) && store.transcript.rows.filter { $0.message.role == .assistant }.count >= 2 }
         try require(store.transcript.rows.contains { ObjectIdentifier($0) == firstIdentity })
-        try require(firstAssistant.parseCount >= initialParse)
+        try require(firstAssistant.cacheFillCount >= initialParse)
         let streamingTurn = store.transcript.turns[0]
         try require(!streamingTurn.workMessageIDs.isEmpty && !streamingTurn.workMessageIDs.contains(streamingTurn.userMessageID))
         try require(streamingTurn.isRunning, "streaming text prematurely closed the work interval")
@@ -89,7 +89,7 @@ import VeluneBindings
         try require(finished.workMessageIDs.allSatisfy { !directIDs.contains($0) })
         try require(visibleItems.contains { item in if case .work(let group, let rows) = item { return group.id == finished.id && rows.map(\.message.id) == finished.workMessageIDs }; return false })
         try require(firstAssistant.id == firstPresentationID, "presentation identity changed on native confirmation")
-        let parseAfterFirstTurn = firstAssistant.parseCount
+        let parseAfterFirstTurn = firstAssistant.cacheFillCount
         try require(!outline.reconcile(store.transcript.rows) && outline.expandedFromUserID == store.transcript.userRows[0].id)
         try require(store.transcript.retainedExpandedTurnIDs(expandedBeforeConfirmation) == [finished.id])
         let finalFirstAssistantID = firstAssistant.message.id
@@ -104,7 +104,7 @@ import VeluneBindings
         print("PHASE second-send"); store.send(text: "SECOND_USER")
         try await wait { store.canSend && store.transcript.userRows.count == 2 && store.transcript.turns.count == 2 }
         try require(store.problems.isEmpty)
-        try require(firstAssistant.parseCount == parseAfterFirstTurn, "unchanged Markdown was reparsed")
+        try require(firstAssistant.cacheFillCount == parseAfterFirstTurn, "unchanged Markdown was reparsed")
         try require(store.transcript.rows.contains { ObjectIdentifier($0) == firstIdentity })
         let secondUser = store.transcript.userRows.last!.id
         _ = outline.reconcile(store.transcript.rows)
@@ -294,16 +294,19 @@ def main():
             import_models = root / 'ImportModels.swift'
             import_models.write_text((repository / 'app/mac/ProviderImport.swift').read_text().split('struct ProviderImportView: View {')[0])
             build = args.swift_build
-            objects = [str(path) for name in ('VeluneBindings', 'MarkdownUI', 'NetworkImage', 'cmark_gfm', 'cmark_gfm_extensions')
+            objects = [str(path) for name in ('VeluneBindings', 'MarkdownView', 'Markdown', 'Highlightr', 'RichText', 'Introspection', 'SwiftMath', 'CAtomic', 'cmark_gfm', 'cmark_gfm_extensions')
                        for path in (build / (name + '.build')).rglob('*.o')]
             library = args.library or args.bundle / 'Contents/Frameworks/libvelune_bindings.dylib'
             (root / 'frameworks/libvelune_bindings.dylib').symlink_to(library)
             command = ['xcrun', 'swiftc', '-parse-as-library', '-swift-version', '5', '-warnings-as-errors', '-I', str(build / 'Modules'), '-I', str(repository / 'target/swift-ffi')]
+            command += ['-Xcc', '-I' + str(repository/'.build/checkouts/swift-cmark/src/include'), '-Xcc', '-fmodule-map-file=' + str(repository/'.build/checkouts/swift-markdown/Sources/CAtomic/include/module.modulemap')]
             for path in (repository / '.build/checkouts/swift-cmark/src/include/module.modulemap', repository / '.build/checkouts/swift-cmark/extensions/include/module.modulemap'):
                 command += ['-Xcc', '-fmodule-map-file=' + str(path)]
             command += [str(repository / 'app/mac' / name) for name in ('Models.swift', 'TranscriptModel.swift', 'Transport.swift', 'BindingMapping.swift', 'ConversationBrowser.swift', 'Problems.swift')]
             command += [str(store_source), str(import_models), str(main_source), *objects, '-L', str(root / 'frameworks'), '-lvelune_bindings', '-Xlinker', '-rpath', '-Xlinker', str(root / 'frameworks'), '-o', str(root / 'manual')]
             subprocess.run(command, check=True, cwd=repository)
+            for name in ('Highlightr_Highlightr.bundle', 'SwiftMath_SwiftMath.bundle'):
+                shutil.copytree(build/name, root/name)
             env = {'HOME': str(root / 'home'), 'PATH': str(args.node.parent) + ':/usr/bin:/bin', 'NO_PROXY': '127.0.0.1,localhost'}
             subprocess.run([str(root / 'manual'), str(root), str(root / 'resources'), str(args.node), str(args.pi),
                             'http://127.0.0.1:%d/v1' % server.server_port], cwd=root, env=env, check=True, timeout=160)

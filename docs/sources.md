@@ -221,3 +221,5 @@ S17 实施授权：用户决定全面切换 UniFFI，并要求现在开始拆分
 2026-10-08 用户进一步要求边界、校验、门禁尽可能由类型检查与 lint 等静态检查表达。内部关系优先通过类型和编译器维持，外部动态输入仍在接入边界解析；实施约定归 [开发说明](development.md)，当前切片归 [任务](../tasks/composer-pi-send/packet.md)。
 
 2026-10-09 用户要求链接可打开／原文复制、大纲准确定位、新会话目录默认可选、各Tab独立展示会话。产品行为归PRD，共享核心与工作区边界归架构说明，证据归 [会话体验任务](../tasks/mac-conversation-usability/packet.md)。
+
+2026-10-09 用户要求替换MarkdownUI，采用[LiYanan2004/MarkdownView](https://github.com/LiYanan2004/MarkdownView)。用户以MarkdownUI维护趋于停滞为替换理由。已按3.0.0的[Package.swift](https://github.com/LiYanan2004/MarkdownView/blob/3.0.0/Package.swift)和[LICENSE](https://github.com/LiYanan2004/MarkdownView/blob/3.0.0/LICENSE)核对macOS13+、Swift6.2及MIT；API接入按锁定源码核对；实施及验证归[会话体验任务](../tasks/mac-conversation-usability/packet.md)。

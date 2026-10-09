@@ -22,11 +22,16 @@ mkdir -p target/swift-ffi target/swift-bindings
 cp "$bindings/VeluneBindings.swift" target/swift-bindings/
 cp "$bindings/VeluneBindingsFFI.h" target/swift-ffi/
 cp "$bindings/VeluneBindingsFFI.modulemap" target/swift-ffi/module.modulemap
-swift build --configuration release --product VeluneMac --force-resolved-versions \
-  -Xswiftc -warnings-as-errors -Xlinker -L -Xlinker "$app/Contents/Frameworks" \
+swift build --build-system xcode --arch "$(uname -m)" --configuration release --product VeluneMac --force-resolved-versions \
+  -Xlinker -L -Xlinker "$app/Contents/Frameworks" \
   -Xlinker -lvelune_bindings -Xlinker -rpath -Xlinker '@executable_path/../Frameworks'
-swift_binary_directory=$(swift build --configuration release --show-bin-path)
+swift_binary_directory=$(swift build --build-system xcode --arch "$(uname -m)" --configuration release --show-bin-path)
 cp "$swift_binary_directory/VeluneMac" "$app/Contents/MacOS/Velune"
+# The Xcode backend uses standard Bundle.main.resourceURL lookup and preserves
+# each dependency's declared Swift language mode. Bundle resources must be sealed inside Contents.
+for resource_name in Highlightr_Highlightr.bundle SwiftMath_SwiftMath.bundle; do
+  cp -R "$swift_binary_directory/$resource_name" "$app/Contents/Resources/"
+done
 # JavaScript is a sealed resource, not a nested macOS executable.
 cp packages/agent-runtime/resources/pi_sdk.mjs packages/agent-runtime/resources/pi_sessions.mjs packages/agent-runtime/resources/pi_rpc.mjs packages/agent-runtime/resources/pi_virtual_model.mjs packages/agent-runtime/resources/pi_auth.mjs packages/agent-runtime/resources/pi_provider_import.mjs "$app/Contents/Resources/"
 cp packages/agent-runtime/resources/huihua_sessions.mjs "$app/Contents/Resources/"

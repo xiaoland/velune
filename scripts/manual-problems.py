@@ -127,14 +127,17 @@ def main():
         import_models = root / 'ImportModels.swift'
         import_models.write_text((repository / 'app/mac/ProviderImport.swift').read_text().split('struct ProviderImportView: View {')[0])
         build = args.swift_build
-        objects = [str(path) for name in ('VeluneBindings', 'MarkdownUI', 'NetworkImage', 'cmark_gfm', 'cmark_gfm_extensions')
+        objects = [str(path) for name in ('VeluneBindings', 'MarkdownView', 'Markdown', 'Highlightr', 'RichText', 'Introspection', 'SwiftMath', 'CAtomic', 'cmark_gfm', 'cmark_gfm_extensions')
                    for path in (build / (name + '.build')).rglob('*.o')]
         command = ['xcrun', 'swiftc', '-parse-as-library', '-swift-version', '5', '-warnings-as-errors', '-I', str(build / 'Modules'), '-I', str(repository / 'target/swift-ffi')]
+        command += ['-Xcc', '-I' + str(repository/'.build/checkouts/swift-cmark/src/include'), '-Xcc', '-fmodule-map-file=' + str(repository/'.build/checkouts/swift-markdown/Sources/CAtomic/include/module.modulemap')]
         for path in (repository / '.build/checkouts/swift-cmark/src/include/module.modulemap', repository / '.build/checkouts/swift-cmark/extensions/include/module.modulemap'):
             command += ['-Xcc', '-fmodule-map-file=' + str(path)]
         command += [str(repository / 'app/mac' / name) for name in ('Models.swift', 'TranscriptModel.swift', 'BindingMapping.swift', 'ConversationBrowser.swift', 'Problems.swift', 'Store.swift')]
         command += [str(import_models), str(transport_source), str(main_source), *objects, '-L', str(root / 'frameworks'), '-lvelune_bindings', '-Xlinker', '-rpath', '-Xlinker', str(root / 'frameworks'), '-o', str(root / 'manual')]
         subprocess.run(command, check=True, cwd=repository)
+        for name in ('Highlightr_Highlightr.bundle', 'SwiftMath_SwiftMath.bundle'):
+            shutil.copytree(build/name, root/name)
         env = {'HOME': str(root / 'home'), 'PATH': str(args.node.parent) + ':/usr/bin:/bin', 'NO_PROXY': '127.0.0.1,localhost'}
         subprocess.run([str(root / 'manual'), str(root), str(resources), str(args.node), str(args.pi)], cwd=root, env=env, check=True, timeout=70)
 

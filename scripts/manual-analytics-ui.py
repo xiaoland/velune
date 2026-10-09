@@ -141,8 +141,9 @@ def main():
         analytics.write_text('import Foundation\nimport VeluneBindings\n' + 'private enum AnalyticsFormatting {' + (repository / 'app/mac/Analytics.swift').read_text().split('private enum AnalyticsFormatting {', 1)[1] + '\nfunc manualAnalyticsTokenText(_ value: UInt64?) -> String { AnalyticsFormatting.tokens(value) }\nfunc manualAnalyticsDayBoundaries(now: Date, calendar: Calendar) -> [Int64] { AnalyticsPeriod.sevenDays.timeRange(now: now, calendar: calendar).boundaries }\nfunc manualAnalyticsPlotEnd(now: Date, calendar: Calendar) -> Date { AnalyticsPeriod.sevenDays.timeRange(now: now, calendar: calendar).plotEnd }\n')
         source = root / 'Manual.swift'; source.write_text(SWIFT)
         build = args.swift_build
-        objects = [str(path) for name in ('VeluneBindings', 'MarkdownUI', 'NetworkImage', 'cmark_gfm', 'cmark_gfm_extensions') for path in (build / (name + '.build')).rglob('*.o')]
+        objects = [str(path) for name in ('VeluneBindings', 'MarkdownView', 'Markdown', 'Highlightr', 'RichText', 'Introspection', 'SwiftMath', 'CAtomic', 'cmark_gfm', 'cmark_gfm_extensions') for path in (build / (name + '.build')).rglob('*.o')]
         command = ['xcrun', 'swiftc', '-parse-as-library', '-swift-version', '5', '-warnings-as-errors', '-I', str(build / 'Modules'), '-I', str(repository / 'target/swift-ffi')]
+        command += ['-Xcc', '-I' + str(repository/'.build/checkouts/swift-cmark/src/include'), '-Xcc', '-fmodule-map-file=' + str(repository/'.build/checkouts/swift-markdown/Sources/CAtomic/include/module.modulemap')]
         for path in (repository / '.build/checkouts/swift-cmark/src/include/module.modulemap', repository / '.build/checkouts/swift-cmark/extensions/include/module.modulemap'):
             command += ['-Xcc', '-fmodule-map-file=' + str(path)]
         import_models = root / 'ImportModels.swift'
@@ -151,6 +152,8 @@ def main():
         command += [str(import_models)]
         command += [str(analytics), str(source), *objects, '-L', str(root / 'frameworks'), '-lvelune_bindings', '-Xlinker', '-rpath', '-Xlinker', str(root / 'frameworks'), '-o', str(root / 'manual')]
         subprocess.run(command, check=True, cwd=repository)
+        for name in ('Highlightr_Highlightr.bundle', 'SwiftMath_SwiftMath.bundle'):
+            shutil.copytree(build/name, root/name)
         env = {'HOME': str(root / 'home'), 'VELUNE_HOME': str(root / 'home'), 'PATH': '/usr/bin:/bin'}
         subprocess.run([str(root / 'manual'), str(root), str(first - 1), str(last + 1), str(args.expected_requests), str(args.expected_input), str(args.expected_output), str(args.expected_total), str(args.expected_eligible)], env=env, cwd=root, check=True, timeout=60)
 
