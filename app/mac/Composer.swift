@@ -53,13 +53,13 @@ import AppKit
         return manager
     }
 
+    fileprivate func focusChanged(_ value: Bool) { if isFocused != value { isFocused = value } }
+
     fileprivate func edited(_ value: String) {
         text = value
         updateEmpty()
         if let conversationID { store?.setDraft(value, for: conversationID) }
     }
-
-    fileprivate func focusChanged(_ value: Bool) { if isFocused != value { isFocused = value } }
 
     fileprivate func attach(_ view: ComposerTextView) {
         textView = view
@@ -82,6 +82,7 @@ import AppKit
 /// placeholder shares the text's typography, and the height follows the
 /// content up to a limit, after which it scrolls.
 struct ComposerEditor: NSViewRepresentable {
+    static let cornerRadius: CGFloat = 6
     @ObservedObject var model: ComposerModel
     let placeholder: String
     let submit: () -> Void
@@ -89,11 +90,9 @@ struct ComposerEditor: NSViewRepresentable {
     func makeCoordinator() -> Coordinator { Coordinator(model: model) }
 
     func makeNSView(context: Context) -> NSScrollView {
-        let scroll = NSScrollView()
-        scroll.drawsBackground = false
+        let scroll = ComposerFieldView()
         scroll.hasVerticalScroller = true
         scroll.autohidesScrollers = true
-        scroll.borderType = .noBorder
         let view = ComposerTextView()
         view.delegate = context.coordinator
         view.coordinator = context.coordinator
@@ -136,7 +135,7 @@ struct ComposerEditor: NSViewRepresentable {
 @MainActor final class ComposerTextView: NSTextView {
     static let minimumHeight: CGFloat = 2 * ceil(NSFont.preferredFont(forTextStyle: .body).boundingRectForFont.height) + 2 * inset
     static let maximumHeight: CGFloat = 240
-    private static let inset: CGFloat = 8
+    private static let inset: CGFloat = 5
     fileprivate weak var coordinator: ComposerEditor.Coordinator?
     var placeholder = "" { didSet { needsDisplay = true } }
 
@@ -155,10 +154,16 @@ struct ComposerEditor: NSViewRepresentable {
         isRichText = false
         importsGraphics = false
         allowsUndo = true
+        // Plain multi-line text sent verbatim: no substitutions, corrections,
+        // smart spacing or detected links rewrite what the user typed or pasted.
         isAutomaticQuoteSubstitutionEnabled = false
         isAutomaticDashSubstitutionEnabled = false
         isAutomaticTextReplacementEnabled = false
-        textContainerInset = NSSize(width: 4, height: Self.inset)
+        isAutomaticSpellingCorrectionEnabled = false
+        isAutomaticLinkDetectionEnabled = false
+        isAutomaticDataDetectionEnabled = false
+        smartInsertDeleteEnabled = false
+        textContainerInset = NSSize(width: 3, height: Self.inset)
         isVerticallyResizable = true
         isHorizontallyResizable = false
         minSize = .zero
@@ -224,45 +229,66 @@ struct ComposerEditor: NSViewRepresentable {
     }
 }
 
-/// The bottom panel: one rounded field holding the editor and its few
-/// actions — next-turn runtime and model, then send or stop.
+/// The editor's bezel: a standard text-field background and border that
+/// follow the system appearance.
+@MainActor final class ComposerFieldView: NSScrollView {
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        borderType = .noBorder
+        drawsBackground = false
+        wantsLayer = true
+        layer?.cornerRadius = ComposerEditor.cornerRadius
+        layer?.masksToBounds = true
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) is unavailable") }
+    override var wantsUpdateLayer: Bool { true }
+    override func updateLayer() {
+        layer?.backgroundColor = NSColor.textBackgroundColor.cgColor
+        layer?.borderColor = NSColor.separatorColor.cgColor
+        layer?.borderWidth = 1
+    }
+}
+
+/// The bottom panel: a native multi-line field, with the next-turn runtime
+/// and model and the send or stop button on a row beneath it.
 struct ComposerView: View {
     @ObservedObject var store: AppStore
     @ObservedObject var model: ComposerModel
     let send: () -> Void
+    @Environment(\.controlActiveState) private var activeState
     private var nextTurnRuntime: RuntimeInstance? { store.runtimeInstances.first { $0.id == store.nextTurnRuntimeID } }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 8) {
             if store.pendingConversationID == nil, let status = store.conversationManagementStatus {
                 HStack { ProgressView().controlSize(.small); Text(status) }.font(.callout).foregroundStyle(.secondary)
             }
-            VStack(spacing: 0) {
-                ComposerEditor(model: model, placeholder: "输入消息，⌘Return 发送", submit: send)
-                    .frame(height: model.height)
-                HStack(spacing: 8) {
-                    nextTurnControls
-                    Spacer(minLength: 8)
-                    if store.executionBusyElsewhere { Text("另一个会话正在运行").font(.caption).foregroundStyle(.secondary).lineLimit(1) }
-                    if store.isGenerating {
-                        Button(action: store.cancel) { Image(systemName: "stop.fill") }
-                            .buttonStyle(.bordered).buttonBorderShape(.circle)
-                            .disabled(!store.canCancel).help("停止生成").accessibilityLabel("停止生成")
-                    } else {
-                        Button(action: send) { Image(systemName: "arrow.up").fontWeight(.semibold) }
-                            .buttonStyle(.borderedProminent).buttonBorderShape(.circle)
-                            .disabled(!store.canSend || model.isEmpty)
-                            .help("发送消息（⌘ Return）").accessibilityLabel("发送")
+            ComposerEditor(model: model, placeholder: "输入消息，⌘Return 发送", submit: send)
+                .frame(height: model.height)
+                // The text view sits in a clipping scroll view, which hides its
+                // own ring; this follows the system ring: focus colour, just
+                // outside the field, only while the window is key.
+                .overlay {
+                    if model.isFocused && activeState == .key {
+                        RoundedRectangle(cornerRadius: ComposerEditor.cornerRadius + 2)
+                            .strokeBorder(Color(nsColor: .keyboardFocusIndicatorColor), lineWidth: 3).padding(-3)
+                            .allowsHitTesting(false)
                     }
                 }
-                .padding(.horizontal, 8).padding(.bottom, 8)
-                // The row's empty space belongs to the field: clicking it edits.
-                .background(Color.clear.contentShape(Rectangle()).onTapGesture { model.focus() })
+            HStack(spacing: 8) {
+                nextTurnControls
+                Spacer(minLength: 8)
+                if store.executionBusyElsewhere { Text("另一个会话正在运行").font(.callout).foregroundStyle(.secondary).lineLimit(1) }
+                else if store.needsModelSelection { Text("此会话的模型不可用").font(.callout).foregroundStyle(.secondary).lineLimit(1) }
+                if store.isGenerating {
+                    Button("停止", action: store.cancel).disabled(!store.canCancel).help("停止当前生成")
+                } else {
+                    Button("发送", action: send).buttonStyle(.borderedProminent)
+                        .disabled(!store.canSend || model.isEmpty).help("发送消息（⌘ Return）")
+                }
             }
-            .background(RoundedRectangle(cornerRadius: 12).fill(Color(nsColor: .textBackgroundColor)))
-            .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(model.isFocused ? Color(nsColor: .keyboardFocusIndicatorColor) : Color(nsColor: .separatorColor), lineWidth: model.isFocused ? 2 : 1))
         }
-        .frame(maxWidth: 760).padding(.horizontal, 16).padding(.top, 8).padding(.bottom, 14).frame(maxWidth: .infinity)
+        .frame(maxWidth: 760).padding(.horizontal, 16).padding(.top, 10).padding(.bottom, 14).frame(maxWidth: .infinity)
         .onAppear {
             model.attach(store); model.show(conversationID: store.loadedConversationID)
             // A new window starts in the composer; later selections keep focus where it is.
@@ -280,9 +306,9 @@ struct ComposerView: View {
                 Divider()
                 SettingsLink { Text("设置…") }
             } label: {
-                Label { Text(nextTurnRuntime?.name ?? "选择运行时").lineLimit(1).truncationMode(.middle) } icon: { Image(systemName: "terminal") }
+                Text(nextTurnRuntime?.name ?? "选择运行时").lineLimit(1).truncationMode(.middle).frame(maxWidth: 140, alignment: .leading)
             }
-            .frame(maxWidth: 140, alignment: .leading)
+            .fixedSize()
             .accessibilityLabel("下一轮 Agent 运行时：\(nextTurnRuntime?.name ?? "未选择")")
             .help("下一轮运行时：\(nextTurnRuntime?.name ?? "未选择")")
             .disabled(store.isShuttingDown)
@@ -293,17 +319,12 @@ struct ComposerView: View {
                 Divider()
                 SettingsLink { Text("设置…") }
             } label: {
-                if store.needsModelSelection {
-                    Label { Text("选择模型").lineLimit(1) } icon: { Image(systemName: "exclamationmark.triangle.fill") }
-                        .foregroundStyle(.orange)
-                } else {
-                    Label { Text(store.selectedModelName ?? "选择模型").lineLimit(1).truncationMode(.middle) } icon: { Image(systemName: "cpu") }
-                }
+                Text(store.selectedModelName ?? "选择模型").lineLimit(1).truncationMode(.middle).frame(maxWidth: 200, alignment: .leading)
             }
-            .frame(maxWidth: 180, alignment: .leading)
+            .fixedSize()
             .accessibilityLabel("下一轮模型：\(store.selectedModelName ?? "未选择")")
             .help(store.needsModelSelection ? "此会话的模型当前不可用，请选择已配置的模型" : "下一轮模型：\(store.selectedModelName ?? "未选择")")
             .disabled(store.isShuttingDown)
-        }.menuStyle(.borderlessButton).controlSize(.small).font(.callout).labelStyle(.titleAndIcon)
+        }.menuStyle(.button)
     }
 }
