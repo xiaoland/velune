@@ -14,7 +14,7 @@
 
 只接受 schema 7。更低版本的普通配置原子覆盖为空配置，不备份、不迁移、不操作原 Harness 会话、认证或既有平台秘密；未来版本、损坏 JSON 和当前版本中的未知字段明确报错。
 
-运行时描述包含 familyId、versioned variant ID 与 versionRegex，配置实例引用精确 variant。当前支持 `pi-1.0.2`、`codex-0.159.3`、`claude-code-2.1.286` 与 `dsh-acp-0.2.0-rc.2`；family 不参与控制协议派发。应用协调 Codex app-server／DSH ACP 与 huihua 历史读取，原生 ID 与 runtimeId 共同形成公开会话身份；读取成功不等于原生恢复成功。运行时添加后直接可读历史，不要求模型或执行准备。新建显式给出会话模型并自动准备；历史视图选择模型后，在发送时按需恢复执行。Pi 历史中的 Velune 模型标记只恢复 managed 引用；原生目录提供的模型通过显式 native 选择发送，不另存会话状态。
+运行时描述包含 familyId、versioned variant ID 与 versionRegex，配置实例引用精确 variant。专用适配器支持 `pi-1.0.2`、`codex-0.159.3`、`claude-code-2.1.286` 与 `dsh-acp-0.2.0-rc.2`；通用 `acp-v1` 表示协商的协议版本，不限定 Agent 品牌或 CLI 版本。family 不参与控制协议派发。应用协调 Codex app-server／DSH ACP 与 huihua 历史读取，原生 ID 与 runtimeId 共同形成公开会话身份；读取成功不等于原生恢复成功。运行时添加后直接可读历史，不要求模型或执行准备。新建显式给出会话模型并自动准备；历史视图选择模型后，在发送时按需恢复执行。Pi 历史中的 Velune 模型标记只恢复 managed 引用；原生目录提供的模型通过显式 native 选择发送，不另存会话状态。
 
 原生审批、问题回答及取消通过 RuntimeInteraction／RuntimeInteractionReply 完成，配置变更、执行和失败清理由应用协调。提供商导入和订阅来源认证仍只支持 Pi 适配器，增加 Codex／DSH 执行不自动增加其提供商导入。DSH 模型能力注入只使用已知字段，reasoning wire 映射未实现，不将能力列表解释为请求参数。
 
@@ -36,12 +36,22 @@ Pi 草稿的原生重命名可能尚未落盘，因此重命名不消耗未提�
 
 会话阅读与执行身份分开：`read_conversation`只读指定来源的原生历史／关联投影，不切换活跃runner；相同活动身份返回当前投影。`snapshot`同时接收上下文运行时和会话ID，非当前活动身份返回None。`send_turn`接收来源运行时／会话ID、目标运行时／模型和文本，在同一个核心操作中激活指定来源再派发，不能用全局最后打开的会话代替发送来源。调用方可为多个工作区保存阅读投影，但共享核心仍只有一个活跃执行。
 
-`ModelSelection` 区分 `Managed { model_record_key }` 与 `Native { provider_id, model_id }`。`runtime_models` 从指定实例读取原生模型目录，并附加该实例网关中的 managed 模型；原生标识不经过网关查找，也不要求已有提供商支持并存。Pi 和 DSH 的 native 选择必须指定 provider ID；Claude Code 使用既有单一 provider，不能另传 provider ID；Codex 可省略 provider ID 以使用现有默认 provider。`create_conversation_with_selection` 和 `send_turn_with_selection` 接受两类选择；原 `create_conversation`／`send_turn` 是合法的 managed 便捷入口。`next_turn_model_selection` 表示当前上下文的下一轮选择意图，managed turn 结束后仍可保持 managed，不声称进程仍在使用网关。snapshot 的 `model_record_key` 仅表示 managed 模型，native 选择返回 None。
+`ModelSelection` 区分 `Managed { model_record_key }`、`Native { provider_id, model_id }` 和通用 ACP 的 `RuntimeDefault`。专用适配器的 `runtime_models` 从指定实例读取原生模型目录，并附加该实例网关中的 managed 模型；通用 ACP 只提供当前会话的原生模型选项。原生标识不经过网关查找，也不要求已有提供商支持并存。Pi 和 DSH 的 native 选择必须指定 provider ID；Claude Code 使用既有单一 provider，不能另传 provider ID；Codex 可省略 provider ID 以使用现有默认 provider。`create_conversation_with_selection` 和 `send_turn_with_selection` 接受上述选择；原 `create_conversation`／`send_turn` 是合法的 managed 便捷入口。`next_turn_model_selection` 表示当前上下文的下一轮选择意图，managed turn 结束后仍可保持 managed，不声称进程仍在使用网关。snapshot 的 `model_record_key` 仅表示 managed 模型，native 选择返回 None。
 
 managed 发送只在本轮执行子进程注入网关；正常结束、失败或取消完成后关闭该执行进程和隧道，原生配置文件保持原状。下一轮 native 选择重新以原生 provider 启动。跨实例交接沿用原生历史和关联机制，模型来源不改变交接资格；调用方必须为目标实例显式提供其 native 或 managed 选择，不把来源实例的模型身份自动解释为目标模型。
 
-`RuntimeExecution` 通过 `runtime_execution`／`configure_runtime_execution` 读取与修改；`upsert_runtime_with_execution` 在同一次保存中接纳实例及 typed execution，新建 managed HOME 实例不需要先填假的 agentDir。`RuntimeTransport` 区分 Local 与 Ssh；SSH 使用显式 OpenSSH 入口、目标和可选端口，认证和已知主机仍由用户的 OpenSSH 管理。所有 binary、agentDir、sessionDir、cwd 与 existing HOME 均属于执行机器；远端版本、历史、草稿检查和写入都经 transport 完成，不落回本机同名路径。SSH 实例要求目标具备 Python 3，并给出独立的 `remote_resources_directory`，application 每次打开期间首次使用时投送已知 helper 与随包解析依赖；网关通过有生命周期的远端 loopback 转发访问。
+`RuntimeExecution` 通过 `runtime_execution`／`configure_runtime_execution` 读取与修改；`upsert_runtime_with_execution` 在同一次保存中接纳实例及 typed execution，新建 managed HOME 实例不需要先填假的 agentDir。`RuntimeTransport` 区分 Local 与 Ssh；SSH 使用显式 OpenSSH 入口、目标和可选端口，认证和已知主机仍由用户的 OpenSSH 管理。所有 binary、agentDir、sessionDir、cwd 与 existing HOME 均属于执行机器；远端版本、历史、草稿检查和写入都经 transport 完成，不落回本机同名路径。SSH transport 要求目标具备 Python 3。专用适配器还需独立的 `remote_resources_directory`，application 每次打开期间首次使用时投送已知 helper 与随包解析依赖；网关通过有生命周期的远端 loopback 转发访问。
 
 `RuntimeHome` 区分 Inherit、Existing 和 Managed。本机 Managed HOME 稳定分配到 `VELUNE_HOME/runtime-homes/<实例摘要>`；远端必须提供远端绝对根目录，实例目录在该根下派生。managed HOME 内再建立对应 Harness 的原生配置目录，不复制既有认证或会话，也不随普通配置重置或运行时删除而移除。HOME 不隔离项目设置、系统配置或系统凭据存储，因此不是安全沙箱。新配置经唯一 `runtime_execution` 模块编码在现有 settings 中，不改变 schema 7 的结构或既有绑定 record。
 
-本轮仅提供 Rust／UniFFI 能力；**待实现**：平台 composer 展示并选择 native／managed 模型，以及 SSH、远端资源目录和 HOME 的原生配置界面。提供商导入当前仅接受默认本机 execution 配置；SSH、existing HOME 覆盖或 managed HOME 仍可直接执行原生 provider，但不把其目录交给本机来源认证 helper。指定 WSL 主机的真实 SSH 传输已通过合成 Harness 闭环；真实提供商、远端真实 Harness 和前端体验仍待验收，证据见 [本轮任务](../../tasks/runtime-provider-ssh/packet.md)。
+本轮仅提供 Rust／UniFFI 能力；**待实现**：平台 composer 展示并选择 native／managed 模型，以及 SSH、远端资源目录和 HOME 的原生配置界面；通用 ACP 的命令、参数、环境配置、协商能力、外部登录提示与会话配置编辑同样待平台接入。提供商导入当前仅接受默认本机 execution 配置；SSH、existing HOME 覆盖或 managed HOME 仍可直接执行原生 provider，但不把其目录交给本机来源认证 helper。指定 WSL 主机的真实 SSH 传输已通过合成 Harness 闭环；真实提供商、远端真实 Harness 和前端体验仍待验收，证据见 [本轮任务](../../tasks/runtime-provider-ssh/packet.md)。
+
+通用 ACP 实例通过 `upsert_acp_runtime` 一次保存 `RuntimeInstance`、`RuntimeExecution` 和 `AcpLaunch`。实例只要求 `settings.binary` 为目标机器上的绝对路径；`AcpLaunch.args` 作为独立 argv 传递，不通过 shell 解析，`environment` 由用户显式配置，`acp_launch` 提供 typed 读取。环境值可能含秘密，与普通应用配置一起保存，Debug 仅显示参数数量或配置键，不输出值。应用不复制原 HOME 的认证，不自动执行登录、安装 Agent 或下载 bridge；用户已安装的原生 ACP Agent 或第三方 bridge 均使用同一协议适配器。
+
+ACP 不要求 Node、agentDir、特定历史目录或 helper bundle；SSH 的 `remote_resources_directory` 可省略，`Options.resources_directory` 可以是已有空目录。Managed HOME 只创建该实例稳定的 HOME，不替 Agent 指定私有配置子目录。ACP 初始化直接协商协议，不运行专用 Harness 的版本探测。
+
+`acp_runtime_info` 返回 Agent 名称／版本、认证方式描述和实际会话能力。认证信息仅用于说明外部登录途径，不表示 Velune 已认证。`RuntimeDefault` 表示保留 Agent 当前会话的模型选择；无模型选项的 Agent 仍可创建并连续发送。`runtime_models` 只读取活动 ACP 会话的首个 model 配置项，未建立会话时明确返回不支持，绝不为探测创建隐藏会话。没有 model 类别的活动会话返回空候选。`acp_session_config`／`set_acp_session_config` 保留原配置 ID、opaque value、类别、分组和 boolean／select 类型，类别可缺省或重复；修改配置和模型继续使用同一活动进程。
+
+ACP 的列表能力缺失与空列表不同；汇总列表通过 `history_failures` 保留不支持说明，当前活动会话仍可显示与使用。`open_acp_conversation(runtime_id, native_session_id, cwd)` 按明确引用加载会话，不依赖列表能力；普通 `open_conversation` 可从 Agent 列表取得真实 cwd。只有 `session/load` 的原生回放可用于读取历史；`resume` 能力不等于历史读取。无 load 的 Agent 在当前进程中支持多轮、权限答复与取消，关闭后的重开明确不支持，不创建新会话冒充恢复。重命名没有通用协议入口，删除按协商能力执行。
+
+同一公开身份的持久跨 Harness 接续要求 ACP 来源和目标都能加载原生历史。能力不足在关闭来源、创建目标或发送之前拒绝，原活动对话保持可用；这不限制普通 ACP 新建或发送。关联段保存真实 cwd 以定位无列表能力的 ACP 会话，仍不保存消息副本。专用 adapter 的 provider overlay 不推广到 ACP，通用 ACP 明确拒绝 managed 模型注入。

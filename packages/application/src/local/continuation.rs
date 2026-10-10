@@ -115,6 +115,17 @@ impl CoreRuntime {
 
     pub(super) fn set_management_capabilities(&self, summary: &mut ConversationSummary) {
         let capability = |id: &str, deleting: bool| {
+            if self
+                .runtime_instance(id)
+                .is_ok_and(|runtime| runtime.type_id == "acp-v1" && runtime.enabled)
+            {
+                return deleting
+                    && self
+                        .acp_capability_cache
+                        .borrow()
+                        .get(id)
+                        .is_some_and(|capability| capability.delete_session);
+            }
             self.runtime_instance(id)
                 .ok()
                 .filter(|r| r.enabled)
@@ -206,6 +217,19 @@ impl CoreRuntime {
             return Err(RuntimeError::invalid(
                 "关联会话的原生来源已停用、删除或版本变更",
             ));
+        }
+        let runtime = self.runtime_instance(&segment.runtime_instance_id)?;
+        if runtime.type_id == "acp-v1" {
+            let native_id = segment
+                .native_conversation_id
+                .strip_prefix(&format!("{}:", runtime.id))
+                .ok_or_else(|| RuntimeError::invalid("ACP 会话引用"))?;
+            let cwd = segment
+                .cwd
+                .as_deref()
+                .map(Path::new)
+                .ok_or_else(|| RuntimeError::invalid("ACP 会话关联缺少工作目录"))?;
+            return self.read_acp_history(runtime, native_id, cwd);
         }
         self.read_history(
             &segment.runtime_instance_id,
@@ -359,6 +383,7 @@ impl CoreRuntime {
         runtime_id: &str,
         selection: &crate::ModelSelection,
     ) -> Result<(), RuntimeError> {
+        self.validate_acp_handoff_target(self.runtime_instance(runtime_id)?)?;
         let draft = self
             .unsubmitted_draft
             .as_ref()
@@ -444,10 +469,11 @@ impl CoreRuntime {
         model: &crate::ModelSelection,
         text: &str,
     ) -> Result<Value, RuntimeError> {
+        self.validate_acp_handoff_target(self.runtime_instance(runtime_id)?)?;
         let raw = self
             .native_snapshot()
             .ok_or_else(|| RuntimeError::invalid("conversation is not active"))?;
-        let source = self.read_history(&raw.conversation.runtime_id, &raw.conversation.id)?;
+        let source = self.read_segment(&self.segment_reference(&raw)?)?;
         let (mut link, mut prefix, origin) = if let Some(projection) = &self.logical_projection {
             // Re-read every sealed segment before carrying context into another runtime.
             let (_, checked) = self.read_link(&projection.link)?;
@@ -550,6 +576,7 @@ impl CoreRuntime {
                 .type_id
                 .clone(),
             native_conversation_id: snapshot.conversation.id.clone(),
+            cwd: snapshot.conversation.cwd.clone(),
             cutoff: None,
             handoff: None,
             deleted: false,
@@ -562,12 +589,26 @@ impl CoreRuntime {
         request: &Value,
         deleting: bool,
     ) -> Result<Value, RuntimeError> {
+        if deleting {
+            for segment in link.segments.iter().filter(|segment| !segment.deleted) {
+                self.refresh_acp_capabilities(
+                    self.runtime_instance(&segment.runtime_instance_id)?,
+                )?;
+            }
+        }
         if deleting && let Some(segment) = single_target_alias(&link) {
             let runtime = self.runtime_instance(&segment.runtime_instance_id)?;
-            if !self
-                .summaries_for(runtime)?
-                .iter()
-                .any(|summary| summary.id == segment.native_conversation_id)
+            let can_list = runtime.type_id != "acp-v1"
+                || self
+                    .acp_capability_cache
+                    .borrow()
+                    .get(&runtime.id)
+                    .is_some_and(|capabilities| capabilities.list_sessions);
+            if can_list
+                && !self
+                    .summaries_for(runtime)?
+                    .iter()
+                    .any(|summary| summary.id == segment.native_conversation_id)
             {
                 if self
                     .current_snapshot()

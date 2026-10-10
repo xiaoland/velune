@@ -91,7 +91,7 @@ impl<'a> ResolvedProviderModel<'a> {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RuntimeInstance {
     #[serde(default = "runtime_enabled_by_default")]
@@ -101,6 +101,17 @@ pub struct RuntimeInstance {
     pub type_id: String,
     pub gateway_id: String,
     pub settings: BTreeMap<String, String>,
+}
+impl std::fmt::Debug for RuntimeInstance {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("RuntimeInstance")
+            .field("id", &self.id)
+            .field("type_id", &self.type_id)
+            .field("enabled", &self.enabled)
+            .field("setting_keys", &self.settings.keys().collect::<Vec<_>>())
+            .finish()
+    }
 }
 
 /// Association metadata only. Native sessions remain the authority for content.
@@ -118,6 +129,7 @@ pub(crate) struct ConversationSegmentReference {
     pub runtime_instance_id: String,
     pub runtime_type_id: String,
     pub native_conversation_id: String,
+    pub cwd: Option<String>,
     pub cutoff: Option<ConversationCutoff>,
     pub handoff: Option<ConversationHandoff>,
     pub deleted: bool,
@@ -163,12 +175,18 @@ impl RuntimeInstance {
     pub(crate) fn validate_execution_paths(&self) -> Result<(), &'static str> {
         if !matches!(
             self.type_id.as_str(),
-            "pi-1.0.2" | "codex-0.159.3" | "dsh-acp-0.2.0-rc.2" | "claude-code-2.1.286"
+            "pi-1.0.2" | "codex-0.159.3" | "dsh-acp-0.2.0-rc.2" | "claude-code-2.1.286" | "acp-v1"
         ) {
             return Err("不支持的运行时版本类型");
         }
         let execution = self.execution().map_err(|_| "运行位置或 HOME 配置无效")?;
+        if self.type_id == "acp-v1" {
+            self.acp_launch().map_err(|_| "ACP 启动配置无效")?;
+        }
         for key in ["binary", "agentDir", "nodeBinary"] {
+            if self.type_id == "acp-v1" && key != "binary" {
+                continue;
+            }
             if key == "agentDir" && matches!(execution.home, crate::RuntimeHome::Managed { .. }) {
                 continue;
             }

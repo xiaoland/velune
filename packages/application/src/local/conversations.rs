@@ -315,6 +315,15 @@ impl CoreRuntime {
         if !runtime.enabled {
             return Err(RuntimeError::invalid("此运行时已停用，请先启用"));
         }
+        if runtime.type_id == "acp-v1" {
+            return if deleting {
+                self.delete_acp_conversation(&runtime, id)
+            } else {
+                Err(RuntimeError::Unsupported(
+                    "通用 ACP 没有会话重命名接口".into(),
+                ))
+            };
+        }
         let variant = velune_agent_runtime::version::variant(&runtime.type_id)
             .ok_or_else(|| RuntimeError::invalid("runtime type"))?;
         if (deleting && !variant.can_delete_conversations)
@@ -484,6 +493,14 @@ impl CoreRuntime {
                 .ok_or_else(|| RuntimeError::invalid("请选择此会话的模型"))?;
             self.prepare_with_selection(snapshot, &selection, false)?;
         }
+        if let ActiveState::Acp(session) = &mut self.active_state {
+            self.unsubmitted_draft = None;
+            session
+                .send(text)
+                .map_err(|error| RuntimeError::context("ACP message send", error))?;
+            self.drain_runtime()?;
+            return Ok(json!({"snapshot":self.current_snapshot()}));
+        }
         if let ActiveState::Native(session) = &mut self.active_state {
             self.unsubmitted_draft = None;
             let result = session
@@ -557,6 +574,13 @@ impl CoreRuntime {
 
     pub(super) fn cancel_action(&mut self, request: &Value) -> Result<Value, RuntimeError> {
         self.ensure_active(request)?;
+        if let ActiveState::Acp(session) = &mut self.active_state {
+            session
+                .cancel()
+                .map_err(|error| RuntimeError::context("ACP cancel", error))?;
+            self.drain_runtime()?;
+            return Ok(json!({"snapshot":self.current_snapshot()}));
+        }
         if let ActiveState::Native(session) = &mut self.active_state {
             session
                 .cancel()
@@ -590,8 +614,10 @@ impl CoreRuntime {
 
     pub(super) fn sync_projection(&mut self) -> Result<(), RuntimeError> {
         self.drain_runtime()?;
-        if matches!(self.active_state, ActiveState::Native(_))
-            || self.pi.busy
+        if matches!(
+            self.active_state,
+            ActiveState::Native(_) | ActiveState::Acp(_)
+        ) || self.pi.busy
             || self
                 .pi
                 .projection

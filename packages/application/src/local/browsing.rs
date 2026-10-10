@@ -81,6 +81,9 @@ impl CoreRuntime {
         &self,
         runtime: &RuntimeInstance,
     ) -> Result<Vec<ConversationSummary>, RuntimeError> {
+        if runtime.type_id == "acp-v1" {
+            return self.acp_summaries(runtime);
+        }
         if runtime.type_id != "pi-1.0.2" {
             return history::list(&self.history_config(runtime)?, &runtime.id).map_err(|error| {
                 let variant = velune_agent_runtime::version::variant(&runtime.type_id);
@@ -164,6 +167,14 @@ impl CoreRuntime {
             .into_iter()
             .find(|s| s.id == id)
             .ok_or_else(|| RuntimeError::invalid("此会话不属于所选运行时历史目录"))?;
+        if runtime.type_id == "acp-v1" {
+            let cwd = summary
+                .cwd
+                .as_deref()
+                .map(Path::new)
+                .ok_or_else(|| RuntimeError::invalid("ACP 会话列表缺少工作目录"))?;
+            return self.read_acp_history(runtime, native_id, cwd);
+        }
         let mut snapshot = ConversationSnapshot {
             revision: 1,
             context_runtime_id: runtime_id.into(),
@@ -221,6 +232,10 @@ impl CoreRuntime {
         Ok(snapshot)
     }
     pub(super) fn invalidate_execution(&mut self) -> Result<(), RuntimeError> {
+        let can_restore = match &self.active_state {
+            ActiveState::Acp(session) => session.capabilities().load_session,
+            _ => true,
+        };
         let mut snapshot = self.native_snapshot();
         // Closing execution leaves its native history view usable. A read-only
         // view has no execution owner, so restoration must follow its source.
@@ -242,7 +257,7 @@ impl CoreRuntime {
                 view.run_state = RunState::Idle;
                 view.pending_interactions.clear();
                 view.actions = ConversationActions {
-                    can_send: true,
+                    can_send: can_restore,
                     can_cancel: false,
                     can_switch: true,
                 };

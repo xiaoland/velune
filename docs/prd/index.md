@@ -64,7 +64,7 @@ Mac 应用最低支持 macOS 15；2026-10-09 用户明确允许提高平台底�
 - HAPI、Lody 是帮助解释想法的例子，不要求复制功能或实现
 - 例外：可以研究它们处理 Claude Code 订阅认证的思路，仍须以官方限制和实际证据检验
 - 先前“原生 runtime＋官方登录＋隔离配置”的 Claude Code 方案只是待验证想法，没有成为已批准架构决定
-- 跨 harness 会话通信可以研究 lexoliu/acphub，也允许提出其他方案；参考项目不构成强制技术依赖
+- 跨 harness 会话通信可以研究 [lexoliu/acpsub](https://github.com/lexoliu/acpsub)（2026-10-10 用户更正原 acphub 拼写），也允许提出其他方案；参考项目不构成强制技术依赖
 
 来源见[参考边界](../sources.md#s4)、[认证研究例外](../sources.md#s5)及[最新设计委托](../sources.md#s9)。
 
@@ -139,6 +139,8 @@ Mac 开发交付安装到 `/Applications/Velune.app`，每次修改后重新构�
 应用数据与配置通过文件系统持久化，根目录由 `VELUNE_HOME` 指定，默认 `~/.velune`。AI provider 资源和 Harness 配置可采用 JSON／TOML 或 SQLite；当前切片采用 JSON。此要求归属应用配置，不改变 Harness 拥有会话历史的边界；API key 可在本机应用配置中保存，并在提供商表单查看、修改；订阅认证保留其必要的来源与刷新能力。开发方不读取、输出或提交真实秘密。来源见 [S15](../sources.md#s15)。
 
 ## AI 网关与 Agent 运行时配置
+
+2026-10-10 用户进一步授权通用 ACP Adapter，继续限定 Rust packages。用户随后澄清，目标是尽可能覆盖更多 Agent Harness，同时避免为每个 Harness 分别开发适配；ACP 是服务该目标的技术方案，不是不可推敲的产品约束。它作为已有专用 Harness adapter 之外的接入方式，使用 Agent 公布的协议能力；配置、模型／会话选项与能力展示的 **App 前端待实现**。指定参考为 [lexoliu/acpsub](https://github.com/lexoliu/acpsub)，不由参考项目自动扩展为 MCP 协作服务或独立 daemon。实现与验收归 [ACP 任务](../../tasks/acp-adapter/packet.md)。
 
 2026-10-10 用户授权推进 Claude Code、SSH 远程运行时及 Velune 管理的运行时 HOME，并明确本轮仅实现 Rust packages。运行时不必同时注册多个提供商：保留它已有的提供商，允许会话下一轮选择其原生模型；选择 Velune 管理的模型时，仅该 turn 临时使用 Velune Gateway，结束后恢复原生提供商。成功、失败及取消都必须结束临时覆盖，不修改或删除原 Harness 的持久提供商配置。运行时原生模型的身份属于其具体实例，不能按裸 model ID 当成 Velune 提供商或另一 Harness 的模型。
 

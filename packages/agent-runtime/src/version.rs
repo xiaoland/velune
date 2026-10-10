@@ -16,12 +16,22 @@ pub struct RuntimeVariant {
     pub id: &'static str,
     pub family_id: &'static str,
     pub name: &'static str,
+    /// CLI version for dedicated adapters; negotiated protocol major for `acp-v1`.
     pub version_regex: &'static str,
     pub can_rename_conversations: bool,
     pub can_delete_conversations: bool,
     pub supported_protocols: &'static [RuntimeProtocol],
 }
 const VARIANTS: &[RuntimeVariant] = &[
+    RuntimeVariant {
+        id: "acp-v1",
+        family_id: "acp",
+        name: "ACP v1",
+        version_regex: r"^1$",
+        can_rename_conversations: false,
+        can_delete_conversations: false,
+        supported_protocols: &[],
+    },
     RuntimeVariant {
         id: "claude-code-2.1.286",
         family_id: "claude-code",
@@ -208,6 +218,12 @@ pub fn probe_version_at(
 ) -> Result<String> {
     if !VARIANTS.iter().any(|v| v.family_id == family_id) {
         return Err(Error::new("未知运行时系列"));
+    }
+    if family_id == "acp" {
+        return Err(Error::with_code(
+            "通用 ACP 通过 acp::Client::connect 的 initialize 握手检查协议版本，不执行 CLI 版本探测",
+            "unsupported",
+        ));
     }
     if !binary.is_absolute() || node_binary.is_some_and(|p| !p.is_absolute()) {
         return Err(Error::new("运行时可执行文件必须为绝对路径"));

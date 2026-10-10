@@ -247,6 +247,9 @@ impl CoreRuntime {
     pub(super) fn shutdown_active(&mut self) -> Result<(), RuntimeError> {
         let state = std::mem::replace(&mut self.active_state, ActiveState::Empty);
         let result = match state {
+            ActiveState::Acp(mut session) => session
+                .shutdown()
+                .map_err(|error| RuntimeError::context("ACP shutdown", error)),
             ActiveState::Native(mut session) => session
                 .shutdown()
                 .map_err(|error| RuntimeError::context("runtime shutdown", error)),

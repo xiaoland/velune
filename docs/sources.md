@@ -229,3 +229,7 @@ S17 实施授权：用户决定全面切换 UniFFI，并要求现在开始拆分
 2026-10-09 用户反馈快速上滑仍跳动甚至卡住，授权重写整个消息列表渲染实现（含必要的 agent runtime UI 事件投影）、自由本地提交，并允许更换 Markdown 渲染框架（举例 Textual）；有余力时继续优化列表与交互体验。实现选择与判别归[会话体验任务](../tasks/mac-conversation-usability/packet.md)。
 
 2026-10-10 用户要求推进 Rust packages：Claude Code、运行时既有提供商模型选择、每 turn 临时 Velune Gateway 与结束恢复、SSH 远程运行时及 Velune 管理 HOME。用户明确排除本轮 app／前端实施，要求把相关交互标记待实现并沉淀文档。产品行为归 [PRD](prd/index.md#ai-网关与-agent-运行时配置)，实现与证据归 [运行时扩展任务](../tasks/runtime-provider-ssh/packet.md)。
+
+2026-10-10 用户授权继续实现 ACP Adapter，随后更正参考项目为 [lexoliu/acpsub](https://github.com/lexoliu/acpsub)。本轮沿用 Rust packages 范围，App 仍待实现；产品归 PRD，协议与参考证据归 [ACP 任务](../tasks/acp-adapter/packet.md)。
+
+同轮用户补充：技术提议未必正确，应理解背后动机；本次目标是尽可能支持更多 Agent Harness，而不逐个适配。通用 ACP 方案必须以接入成本和真实能力覆盖判断，不以协议名称本身作为完成依据。

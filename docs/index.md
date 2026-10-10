@@ -15,6 +15,8 @@
 
 ## 当前工作
 
+- [通用 ACP Adapter](../tasks/acp-adapter/packet.md)：Rust 侧 stable v1 接入、能力协商与会话恢复；App 前端待实现
+
 - [Claude Code、原生模型与 SSH 运行时](../tasks/runtime-provider-ssh/packet.md)：Rust packages 的模型选择、单轮网关、远端执行与受管 HOME；前端明确待实现
 
 - [跨 Harness 会话接续](../tasks/cross-harness-continuation/packet.md)：目标原生会话、上下文交接、仅关联元数据与重启投影

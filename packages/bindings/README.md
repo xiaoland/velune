@@ -40,8 +40,14 @@ Swift 生成模块名为 `VeluneBindings`，FFI 模块名为 `VeluneBindingsFFI`
 
 `BindingConversationSummary.runtime_id` 表示逻辑会话首个实际原生段的来源。未提交草稿首发前改换 Harness 时，公开 ID 保持稳定，但该来源随实际首发目标更新；平台应采用返回的 snapshot。`BindingConversationSnapshot.context_runtime_id` 表示当前原生上下文；平台不得用来源身份代替当前查询、取消或审批归属。摘要 `can_rename`／`can_delete` 为应用装配的关联会话原生管理能力。`read_conversation`只读指定来源会话而不激活执行；`snapshot`同时携带上下文运行时和会话ID，非当前活动身份返回无快照。`send_turn` 原子接纳来源运行时／会话ID及下一轮目标和模型，跨实例接续和关联持久化由 application 处理，bindings 不保存消息副本。
 
-`BindingModelSelection` 明确区分 `Managed`（Velune model record key）与 `Native`（运行时 provider／model ID）。`runtime_models` 返回两类具名候选；新 `create_conversation_with_selection`／`send_turn_with_selection` 接受完整选择，原有 create／send 入口继续仅接纳 managed key。`next_turn_model_selection` 返回下一轮意图；它不表示本轮已结束后仍存在网关注入。native 模型不会占用 `BindingConversationSnapshot.model_record_key`。
+`BindingModelSelection` 明确区分 `Managed`（Velune model record key）、`Native`（运行时 provider／model ID）与 `RuntimeDefault`（通用 ACP 保留 Agent 当前模型选择）。专用适配器的 `runtime_models` 返回 native／managed 两类具名候选，通用 ACP 只返回当前会话的原生选项；新 `create_conversation_with_selection`／`send_turn_with_selection` 接受完整选择，原有 create／send 入口继续仅接纳 managed key。`next_turn_model_selection` 返回下一轮意图；它不表示本轮已结束后仍存在网关注入。native 模型不会占用 `BindingConversationSnapshot.model_record_key`。
 
 `BindingRuntimeExecution` 通过 `runtime_execution`／`configure_runtime_execution` 提供 typed Local／Ssh 位置、Inherit／Existing／Managed HOME 和远端资源目录。`upsert_runtime_with_execution` 一次保存实例和执行配置，新建 managed HOME 实例不需要假的 agentDir。既有 `BindingRuntimeInstance` 形状不变，平台不得另行解码内部 execution setting。SSH 目标和所有执行路径的校验、helper 投送、gateway 转发、模型临时覆盖及结束清理由 application／agent-runtime 协调。具体语义见 [application README](../application/README.md)。
 
 **待实现**：Mac 等平台调用上述新入口、在 composer 呈现两类模型并编辑 SSH／HOME；本轮不修改前端、不生成或提交平台绑定产物、不安装应用。
+
+通用 ACP 使用同一个 `acp-v1` 类型接纳任意已安装的 ACP 命令或 bridge。`upsert_acp_runtime` 接收 `BindingAcpLaunch` 的 argv／环境和既有 typed execution，不要求 Node、agentDir 或 SSH helper 目录。`acp_launch` 提供配置读取；环境值为用户显式配置，Debug 不包含值。
+
+`acp_runtime_info` 返回 typed Agent 信息、认证方式描述和会话能力，平台不能把无 list／load 解释为零会话或加载成功。`open_acp_conversation` 接纳明确原生 ID 与 cwd，允许有 load、无 list 的 Agent 重开。模型目录属于会话，先以 `RuntimeDefault` 新建或打开后查询；`acp_session_config`／`set_acp_session_config` 保留所有已知 select／boolean 配置项的原 ID、值和分组。普通执行、权限回复、取消复用现有接口；模型切换不重启当前 ACP 进程。外部认证仍由用户完成，bindings 不自动登录。
+
+**待实现**：平台的通用 ACP 命令编辑、能力状态与外部认证提示、默认模型选项、会话配置编辑，以及对无历史恢复能力的清晰展示；本轮只交付 Rust／UniFFI 入口。

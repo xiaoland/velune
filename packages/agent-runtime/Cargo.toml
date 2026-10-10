@@ -12,6 +12,8 @@ velune-conversation = { path = "../conversation" }
 getrandom = "0.4"
 tracing = { version = "0.1", default-features = false, features = ["std"] }
 regex = "1"
+time = { version = "0.3", features = ["parsing"] }
+agent-client-protocol-schema = { version = "=1.11.0", default-features = false }
 
 [target."cfg(unix)".dependencies]
 libc = "0.2"

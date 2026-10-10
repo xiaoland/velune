@@ -14,7 +14,7 @@ use std::{
 };
 const MAX_STDERR_BYTES: usize = 1024 * 1024;
 const TIMEOUT: Duration = Duration::from_secs(15);
-pub(super) struct RpcClient {
+pub(crate) struct RpcClient {
     child: Child,
     input: Option<ChildStdin>,
     records: Receiver<Result<Value>>,
@@ -180,7 +180,7 @@ pub(crate) fn bounded_process(
 }
 
 impl RpcClient {
-    pub(super) fn spawn_at(
+    pub(crate) fn spawn_at(
         command: Command,
         execution: &crate::execution::ExecutionTarget,
         os_home: Option<&std::path::Path>,
@@ -281,7 +281,7 @@ impl RpcClient {
         let code = error.code();
         Error::with_code(format!("{}；原始错误：{}", error, detail), code)
     }
-    pub(super) fn write(&mut self, value: &Value) -> Result<()> {
+    pub(crate) fn write(&mut self, value: &Value) -> Result<()> {
         let input = self
             .input
             .as_mut()
@@ -293,7 +293,7 @@ impl RpcClient {
             .and_then(|_| input.flush())
             .map_err(|error| Error::new(format!("运行时请求发送失败：{error}")))
     }
-    pub(super) fn claude_control(&mut self, request: Value) -> Result<Value> {
+    pub(crate) fn claude_control(&mut self, request: Value) -> Result<Value> {
         let id = format!("velune-{}", self.next);
         self.next += 1;
         self.write(&json!({"type":"control_request","request_id":id,"request":request}))?;
@@ -315,7 +315,7 @@ impl RpcClient {
             self.queued.push_back(record);
         }
     }
-    pub(super) fn begin(&mut self, method: &str, params: &Value) -> Result<u64> {
+    pub(crate) fn begin(&mut self, method: &str, params: &Value) -> Result<u64> {
         let id = self.next;
         self.next = self
             .next
@@ -324,7 +324,7 @@ impl RpcClient {
         self.write(&json!({"jsonrpc":"2.0","id":id,"method":method,"params":params}))?;
         Ok(id)
     }
-    pub(super) fn request(&mut self, method: &str, params: &Value) -> Result<Value> {
+    pub(crate) fn request(&mut self, method: &str, params: &Value) -> Result<Value> {
         let id = self.begin(method, params)?;
         let deadline = Instant::now() + TIMEOUT;
         loop {
@@ -350,16 +350,31 @@ impl RpcClient {
             self.queued.push_back(record);
         }
     }
-    pub(super) fn notify(&mut self, method: &str, params: &Value) -> Result<()> {
+    /// Read one record while a protocol adapter services interleaved agent requests.
+    pub(crate) fn receive(&mut self, deadline: Instant) -> Result<Value> {
+        if let Some(record) = self.queued.pop_front() {
+            return Ok(record);
+        }
+        self.records
+            .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+            .map_err(|error| {
+                self.with_stderr(Error::with_code(
+                    format!("运行时控制请求等待失败：{error}"),
+                    "transport",
+                ))
+            })?
+            .map_err(|error| self.with_stderr(error))
+    }
+    pub(crate) fn notify(&mut self, method: &str, params: &Value) -> Result<()> {
         self.write(&json!({"jsonrpc":"2.0","method":method,"params":params}))
     }
-    pub(super) fn respond(&mut self, id: &Value, result: &Value) -> Result<()> {
+    pub(crate) fn respond(&mut self, id: &Value, result: &Value) -> Result<()> {
         self.write(&json!({"jsonrpc":"2.0","id":id,"result":result}))
     }
-    pub(super) fn reject(&mut self, id: &Value, message: &str) -> Result<()> {
+    pub(crate) fn reject(&mut self, id: &Value, message: &str) -> Result<()> {
         self.write(&json!({"jsonrpc":"2.0","id":id,"error":{"code":-32601,"message":message}}))
     }
-    pub(super) fn poll(&mut self) -> Result<Vec<Value>> {
+    pub(crate) fn poll(&mut self) -> Result<Vec<Value>> {
         if let Some(error) = self.failed.take() {
             return Err(error);
         }
@@ -387,7 +402,7 @@ impl RpcClient {
         Ok(values)
     }
 
-    pub(super) fn finish(&mut self) {
+    pub(crate) fn finish(&mut self) {
         self.input.take();
         for _ in 0..50 {
             if self.child.try_wait().is_ok_and(|status| status.is_some()) {
@@ -397,7 +412,7 @@ impl RpcClient {
         }
         self.shutdown();
     }
-    pub(super) fn shutdown(&mut self) {
+    pub(crate) fn shutdown(&mut self) {
         stop(&mut self.child);
     }
 }

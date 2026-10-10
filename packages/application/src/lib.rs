@@ -1,4 +1,9 @@
 //! Shared application use cases, ordinary configuration and lifecycle.
+mod acp;
+pub use acp::{
+    AcpAgentInfo, AcpAuthMethod, AcpCapabilities, AcpConfigChoice, AcpConfigOption, AcpConfigValue,
+    AcpLaunch, AcpRuntimeInfo,
+};
 mod analytics;
 mod api;
 #[cfg(feature = "local-runtime")]

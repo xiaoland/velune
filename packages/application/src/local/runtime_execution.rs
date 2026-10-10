@@ -13,10 +13,10 @@ pub(super) struct ExecutionContext {
 }
 
 impl CoreRuntime {
-    pub(super) fn execution_context(
+    pub(super) fn runtime_location(
         &self,
         runtime: &RuntimeInstance,
-    ) -> Result<ExecutionContext, RuntimeError> {
+    ) -> Result<(ExecutionTarget, Option<PathBuf>), RuntimeError> {
         let execution = runtime.execution()?;
         let target = match &execution.transport {
             RuntimeTransport::Local => ExecutionTarget::Local,
@@ -46,6 +46,29 @@ impl CoreRuntime {
                 }
             }),
         };
+        Ok((target, os_home))
+    }
+
+    pub(super) fn prepare_runtime_location(
+        &self,
+        runtime: &RuntimeInstance,
+    ) -> Result<(ExecutionTarget, Option<PathBuf>), RuntimeError> {
+        let (target, home) = self.runtime_location(runtime)?;
+        if matches!(runtime.execution()?.home, RuntimeHome::Managed { .. }) {
+            target
+                .create_dir_all(home.as_deref().expect("managed HOME"))
+                .map_err(|error| RuntimeError::context("managed HOME 初始化", error))?;
+        }
+        Ok((target, home))
+    }
+
+    pub(super) fn execution_context(
+        &self,
+        runtime: &RuntimeInstance,
+    ) -> Result<ExecutionContext, RuntimeError> {
+        let execution = runtime.execution()?;
+        let (target, os_home) = self.runtime_location(runtime)?;
+        let key = format!("{:x}", sha2::Sha256::digest(runtime.id.as_bytes()));
         let agent_dir = if matches!(execution.home, RuntimeHome::Managed { .. }) {
             let directory = match runtime.type_id.as_str() {
                 "pi-1.0.2" => ".pi/agent",
@@ -145,8 +168,8 @@ impl CoreRuntime {
     ) -> Result<(), RuntimeError> {
         if !cwd.is_absolute()
             || !self
-                .execution_context(runtime)?
-                .target
+                .runtime_location(runtime)?
+                .0
                 .is_directory(cwd)
                 .map_err(|error| RuntimeError::context("会话工作目录检查", error))?
         {

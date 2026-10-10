@@ -1,8 +1,8 @@
 # Agent 运行时
 
-本 unit 实现版本化 Agent 运行时适配器：Pi RPC／SDK、Codex app-server、Claude Code stream-json 和 DeepSeek Harness ACP。它负责原生控制、会话读取与消息 projection；真实会话由各 Harness 持久化，Velune 不复制为另一套会话历史。Pi 适配器另提供显式来源的认证交互和只读提供商发现。
+本 unit 实现通用 ACP v1 接入，以及 Pi RPC／SDK、Codex app-server、Claude Code stream-json 和 DeepSeek Harness ACP 的专用适配器。它负责原生控制、会话读取与消息 projection；真实会话由各 Harness 持久化，Velune 不复制为另一套会话历史。Pi 适配器另提供显式来源的认证交互和只读提供商发现。
 
-它只依赖 [会话契约](../conversation/README.md)，不依赖 AI 服务、网关、application 或 UniFFI。执行配置与网关注入的临时 token 由 application 显式传入；它不选择上游模型路由、保存应用配置，也不拥有原生界面。
+在工作区内，它只依赖 [会话契约](../conversation/README.md)，不依赖 AI 服务、网关、application 或 UniFFI。执行配置与网关注入的临时 token 由 application 显式传入；它不选择上游模型路由、保存应用配置，也不拥有原生界面。
 
 `authentication` 与 `provider_source` 通过本包资源中的薄 Pi helper 执行来源操作，返回非秘密的类型化状态和发现结果。application 负责将结果导入网关及原子提交；application 的提供商私有认证解析器通过固定 `pi_auth.mjs` 委托 OAuth 来源解析与刷新，不读取环境里的默认认证。
 
@@ -14,7 +14,27 @@ Pi 固定版本及协议边界见 [开发说明](../../docs/development.md)。SD
 
 ## 版本与原生控制
 
-运行时类型是 versioned variant，family 仅用于展示分组，不作为派发键。当前四个 variant 为 `pi-1.0.2`（family `pi`）、`codex-0.159.3`（family `codex`）、`dsh-acp-0.2.0-rc.2`（family `deepseek-harness`）、`claude-code-2.1.286`（family `claude-code`）。各自版本 regex 是 `^1\.0\.2$`、`^0\.159\.3$`、`^0\.2\.0-rc\.2$`、`^2\.1\.286$`。启动前探测配置的 CLI 版本；协议握手继续检查所需能力。不同 breaking-change 版本应增加独立 variant 与 adapter，不能放宽 regex 假定兼容；多个 variant 与同 variant 的多个实例可并存。
+运行时类型是 versioned variant，family 仅用于展示分组，不作为派发键。四个专用 variant 为 `pi-1.0.2`（family `pi`）、`codex-0.159.3`（family `codex`）、`dsh-acp-0.2.0-rc.2`（family `deepseek-harness`）、`claude-code-2.1.286`（family `claude-code`）。各自版本 regex 是 `^1\.0\.2$`、`^0\.159\.3$`、`^0\.2\.0-rc\.2$`、`^2\.1\.286$`。专用适配器启动前探测配置的 CLI 版本；协议握手继续检查所需能力。不同 breaking-change 版本应增加独立 variant 与 adapter，不能放宽 regex 假定兼容；多个 variant 与同 variant 的多个实例可并存。
+
+通用 `acp-v1`（family `acp`）的 `version_regex` 为 `^1$`，表示协议主版本。它通过 `acp::Client::connect` 的 `initialize` 协商，既不执行未知程序的 `--version`，也不根据 `agentInfo` 名称或版本筛选 Harness。公开 CLI 版本探测 API 对此 family 明确返回 `unsupported`，调用方应使用协议握手。
+
+## 通用 ACP v1
+
+`acp::Config` 接受目标机器上的绝对 `binary`、完整 `args`、显式 `environment`、`ExecutionTarget` 与可选 `os_home`。用户安装的原生 ACP 程序和社区 bridge 均可直接作为启动命令；本包不安装 Agent、不维护程序名单，也不要求通用 ACP 使用 Node 或本包 helper。SSH 与 HOME 复用下文执行边界。设置 `os_home` 时禁止环境表重复设置 `HOME`，避免家目录归属不明确；环境值可能包含秘密，因此该配置不实现 Debug。
+
+wire 类型采用官方 `agent-client-protocol-schema = 1.11.0` 的稳定 v1 模块，关闭默认与不稳定特性。握手只接受协议 1，保留 Agent 信息、认证方法描述和实际协商能力。`create`、`send`、`poll`、`cancel` 与 `reply` 提供会话、流式更新和权限控制；`list_sessions`、`load`、`resume`、`close_session`、`delete_session` 分别检查 Agent 公布的能力。注册表里的静态删除标记不能替代连接上的动态能力。连接会跨 turn 保留，未支持 load 的 Agent 仍可在当前连接持续对话。
+
+显式 `shutdown` 对空闲且支持关闭的会话先发送 `session/close`，让 Agent 完成资源释放与自身持久化，再关闭输入并有界等待进程退出；关闭请求失败仍清理进程并向调用方返回错误。不支持 close 时只关闭连接；忙碌或已失败的连接直接终止。Drop 仅执行进程清理，不阻塞等待新的协议请求。
+
+模型与其他会话配置统一通过 `config_options` 和 `set_config_option(config_id, value)` 暴露。`ConfigOption` 保留 id、名称、说明、可选 category、当前值及带分组的选项；`ConfigValue` 区分 Select 与 Boolean，选项值是不透明字符串，不能拆解或推测 provider。`models`／`select_model` 是首个 `category=model` 配置的便利入口，不替代完整配置 API。没有模型配置、缺少 category 或出现未知配置类型时，仍可使用 Agent 默认值运行；官方 schema 会忽略不支持的可选配置类型。配置响应与 `config_option_update` 都完整替换当前配置。Agent 明确拒绝配置请求时保留原状态；传输中断、超时或无效响应使结果未知，会终止连接并禁止继续发送，不能展示旧配置后猜测成功或自动重试。
+
+权限请求保留 Agent 公布的 opaque option ID，只有调用方的明确选择才会回复；不会默认批准。取消先将待答权限回复为 cancelled，再发送 `session/cancel`，继续消费更新直到原 prompt 响应确认结束。输入输出目前限于文本消息、文本资源、工具与计划 projection；图片、音频和二进制资源显示明确的内容占位。客户端不公布文件系统、终端或终端认证能力，不在 SSH 场景误把目标文件操作执行到本机。`auth_methods` 仅用于描述外部认证入口，本轮没有 `authenticate` API；认证不足的原生错误保留来源码与说明，由用户在外部完成登录或配置。
+
+会话列表来自 `session/list`，保留原生 ID、cwd、标题与 RFC 3339 更新时间，支持分页，不伪造创建时间。`load` 消费 Agent 实际回放的历史；`resume` 只恢复原生上下文并明确提示没有回放，不能当作历史读取。原生消息 ID 可直接确认本地投影身份；没有原生 ID 时使用会话 ID 与消息位置生成确定性投影 ID，同样的回放结构可重复得到同样的身份，但它不是原生持久 UUID。live 用户消息的首个原生回声按本轮位置替换待确认消息，不按正文匹配；若 Agent 改变历史顺序或消息分段，位置身份不能保证跨版本稳定。Velune 不为这些缺口建立另一套历史存储。
+
+通用 ACP 不假定任何 gateway 环境变量、提供商配置格式或认证来源，因而没有 Velune managed provider 注入能力；专用适配器继续负责已验证的注入路径。协议依据于 2026-10-10 复核：[官方初始化](https://agentclientprotocol.com/protocol/v1/initialization)、[会话配置](https://agentclientprotocol.com/protocol/v1/session-config-options)、[会话建立与加载](https://agentclientprotocol.com/protocol/v1/session-setup)。[acpsub](https://github.com/lexoliu/acpsub) 用于参考任意命令接入与已公布配置选项；其 daemon、自动安装、强制模型选择和自动批准策略不属于本包契约。隔离验证及仍待实现的 app 入口见 [任务记录](../../tasks/acp-adapter/packet.md)。
+
+## 专用适配器行为
 
 Codex 使用 app-server 的 thread／turn 控制；DSH 使用 ACP v1 的 session/new、resume、prompt、cancel、set_config_option。DSH 的 agentInfo.version 是 ACP 插件版本，不用于判断 CLI 版本。Codex 历史由 app-server 的 thread/list、thread/read 与 thread/items/list 分页读取，原生服务负责逻辑身份和历史继承；DSH 历史通过 huihua `0.2.0` 公开 provider API 读取显式 home／roots，未知记录不原样输出。历史浏览不启动 turn 或模型网关，不替代原生 resume；Pi 保留 SDK SessionManager 的分支与模型选择语义。
 

@@ -60,9 +60,9 @@ impl RuntimeExecution {
             if self
                 .remote_resources_directory
                 .as_deref()
-                .is_none_or(|path| !absolute(path))
+                .is_some_and(|path| !absolute(path))
             {
-                return Err(Error::invalid("SSH 运行时必须指定远端辅助资源的绝对目录"));
+                return Err(Error::invalid("远端辅助资源必须是绝对目录"));
             }
         }
         match (&self.transport, &self.home) {
@@ -99,6 +99,12 @@ impl RuntimeInstance {
             .transpose()?
             .unwrap_or_default();
         RuntimeExecution::validate(&execution)?;
+        if self.type_id != "acp-v1"
+            && matches!(execution.transport, RuntimeTransport::Ssh { .. })
+            && execution.remote_resources_directory.is_none()
+        {
+            return Err(Error::invalid("此运行时必须指定远端辅助资源目录"));
+        }
         Ok(execution)
     }
 

@@ -23,6 +23,7 @@ use velune_agent_runtime::{self as pi, Config as PiConfig, PiProjection};
 use velune_gateway::Runner;
 
 const CONTRACT_VERSION: u64 = 3;
+mod acp_composition;
 mod discovery;
 
 fn runtime_types() -> Vec<crate::config::RuntimeTypeDescriptor> {
@@ -52,6 +53,7 @@ fn runtime_types() -> Vec<crate::config::RuntimeTypeDescriptor> {
     });
     velune_agent_runtime::version::variants().iter().map(|variant| {
         let mut binary=field("binary","运行时入口","filePath",true,String::new(),"当前运行时版本的绝对可执行路径。执行准备时会核对实际版本。");
+        if variant.id=="acp-v1" {binary.help=Some("支持 ACP v1 的命令或 bridge 的绝对路径；参数使用 AcpLaunch 配置，启动时协商协议。".into());}
         if variant.family_id=="pi" {binary.executable_discovery=Some(crate::conversation::ExecutableDiscovery{command:"pi".into(),minimum_version:"1.0.2".into()});}
         if variant.id=="codex-0.159.3" {binary.executable_discovery=Some(crate::conversation::ExecutableDiscovery{command:"codex".into(),minimum_version:"0.159.3".into()});}
         if variant.id=="dsh-acp-0.2.0-rc.2" {binary.executable_discovery=Some(crate::conversation::ExecutableDiscovery{command:"dsh".into(),minimum_version:"0.2.0".into()});}
@@ -59,6 +61,7 @@ fn runtime_types() -> Vec<crate::config::RuntimeTypeDescriptor> {
         runtime_node.required = variant.family_id != "claude-code";
         if variant.family_id == "claude-code" { binary.executable_discovery=Some(crate::conversation::ExecutableDiscovery{command:"claude".into(),minimum_version:"2.1.286".into()}); }
         let mut fields=vec![binary,runtime_node,field("agentDir","运行时目录","directoryPath",true,String::new(),match variant.id {"claude-code-2.1.286"=>"该实例的 CLAUDE_CONFIG_DIR；配置与原生会话目录，不是任务工作目录。","codex-0.159.3"=>"该实例的 CODEX_HOME；配置与会话根目录，不是任务工作目录。","dsh-acp-0.2.0-rc.2"=>"该实例的 DeepSeek Harness 配置与会话根目录，不是任务工作目录。",_=>"该实例的 Pi 配置与状态根目录，不是任务工作目录。"})];
+        if variant.id=="acp-v1" {fields.retain(|field| field.key=="binary");}
         if variant.id=="pi-1.0.2" {fields.push(field("sessionDir","会话存储目录","directoryPath",false,String::new(),"覆盖 Pi 默认的会话存储位置；留空采用运行时目录的 sessions，此项不是任务工作目录。"));}
         crate::config::RuntimeTypeDescriptor{id:variant.id.into(),family_id:variant.family_id.into(),version_regex:variant.version_regex.into(),can_rename_conversations:variant.can_rename_conversations,can_delete_conversations:variant.can_delete_conversations,supported_protocols:GatewayProtocol::runtime_protocols(variant.id).expect("registered runtime adapter"),supported_provider_protocols:GatewayProtocol::runtime_provider_protocols(variant.id).expect("registered runtime adapter"),name:variant.name.into(),fields}
     }).collect()
@@ -79,6 +82,7 @@ enum ActiveState {
     History(Box<crate::conversation::ConversationSnapshot>),
     Pi,
     Native(Box<NativeSession>),
+    Acp(Box<velune_agent_runtime::acp::Client>),
 }
 
 struct UnsubmittedDraft {
@@ -111,6 +115,7 @@ pub struct CoreRuntime {
     model_record_key: Option<String>,
     model_selection: Option<crate::ModelSelection>,
     unsubmitted_draft: Option<UnsubmittedDraft>,
+    acp_capability_cache: std::cell::RefCell<BTreeMap<String, crate::AcpCapabilities>>,
     gateway_tunnel: Option<velune_agent_runtime::execution::GatewayTunnel>,
     prepared_remote_resources: std::cell::RefCell<std::collections::BTreeSet<String>>,
     analytics: Arc<crate::analytics::AnalyticsStore>,
@@ -160,6 +165,7 @@ impl CoreRuntime {
             model_record_key: None,
             model_selection: None,
             unsubmitted_draft: None,
+            acp_capability_cache: Default::default(),
             gateway_tunnel: None,
             prepared_remote_resources: Default::default(),
             analytics,
@@ -169,6 +175,7 @@ impl CoreRuntime {
     fn busy(&self) -> bool {
         match &self.active_state {
             ActiveState::Native(session) => session.busy(),
+            ActiveState::Acp(session) => session.busy(),
             ActiveState::Pi => self.pi.busy,
             ActiveState::Empty | ActiveState::History(_) => false,
         }
@@ -176,6 +183,7 @@ impl CoreRuntime {
     fn native_snapshot(&self) -> Option<crate::conversation::ConversationSnapshot> {
         let snapshot = match &self.active_state {
             ActiveState::Native(session) => session.snapshot(),
+            ActiveState::Acp(session) => session.snapshot(),
             ActiveState::Pi => self
                 .pi
                 .projection
@@ -218,6 +226,9 @@ impl CoreRuntime {
     fn drain_runtime(&mut self) -> Result<(), RuntimeError> {
         let was_busy = self.busy();
         let result = match &mut self.active_state {
+            ActiveState::Acp(session) => session
+                .poll()
+                .map_err(|error| RuntimeError::context("ACP 事件读取失败", error)),
             ActiveState::Native(session) => session
                 .poll()
                 .map_err(|error| RuntimeError::context("运行时事件读取失败", error)),
@@ -304,6 +315,18 @@ impl CoreRuntime {
             "runtimeExecution" => self.runtime_execution_action(request, false),
             "configureRuntimeExecution" => self.runtime_execution_action(request, true),
             "runtimeModels" => self.runtime_models_action(request),
+            "acpLaunch" => Ok(serde_json::to_value(
+                self.runtime_instance(
+                    request["payload"]["runtimeInstanceID"]
+                        .as_str()
+                        .ok_or_else(|| RuntimeError::invalid("runtime instance id"))?,
+                )?
+                .acp_launch()?,
+            )?),
+            "acpRuntimeInfo" => self.acp_runtime_info_action(request),
+            "openAcpConversation" => self.open_acp_conversation_action(request),
+            "acpSessionConfig" => self.acp_session_config_action(request, false),
+            "setAcpSessionConfig" => self.acp_session_config_action(request, true),
             "nextTurnModelSelection" => {
                 Ok(serde_json::to_value(if self.native_snapshot().is_some() {
                     &self.model_selection

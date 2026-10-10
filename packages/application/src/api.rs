@@ -128,6 +128,8 @@ pub struct RuntimeUpdate {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub enum ModelSelection {
+    /// Keep the ACP Agent's own session default; no model identifier is invented.
+    RuntimeDefault,
     Managed {
         model_record_key: String,
     },
@@ -530,6 +532,58 @@ impl Application {
     ) -> Result<RuntimeUpdate, Error> {
         runtime.set_execution(execution)?;
         self.upsert_runtime(runtime)
+    }
+    pub fn upsert_acp_runtime(
+        &mut self,
+        mut runtime: RuntimeInstance,
+        execution: crate::RuntimeExecution,
+        launch: crate::AcpLaunch,
+    ) -> Result<RuntimeUpdate, Error> {
+        runtime.set_acp_launch(launch)?;
+        self.upsert_runtime_with_execution(runtime, execution)
+    }
+    pub fn acp_launch(&mut self, runtime_id: String) -> Result<crate::AcpLaunch, Error> {
+        self.execute("acpLaunch", json!({}), Some(&runtime_id))
+    }
+    pub fn acp_runtime_info(&mut self, runtime_id: String) -> Result<crate::AcpRuntimeInfo, Error> {
+        self.execute("acpRuntimeInfo", json!({}), Some(&runtime_id))
+    }
+    /// Load a known native ACP reference even when the Agent cannot list sessions.
+    pub fn open_acp_conversation(
+        &mut self,
+        runtime_id: String,
+        native_session_id: String,
+        cwd: String,
+    ) -> Result<SnapshotResult, Error> {
+        self.execute(
+            "openAcpConversation",
+            json!({"nativeSessionID":native_session_id,"cwd":cwd}),
+            Some(&runtime_id),
+        )
+    }
+    pub fn acp_session_config(
+        &mut self,
+        runtime_id: String,
+        conversation_id: String,
+    ) -> Result<Vec<crate::AcpConfigOption>, Error> {
+        self.execute(
+            "acpSessionConfig",
+            json!({"conversationID":conversation_id}),
+            Some(&runtime_id),
+        )
+    }
+    pub fn set_acp_session_config(
+        &mut self,
+        runtime_id: String,
+        conversation_id: String,
+        config_id: String,
+        value: crate::AcpConfigValue,
+    ) -> Result<Vec<crate::AcpConfigOption>, Error> {
+        self.execute(
+            "setAcpSessionConfig",
+            json!({"conversationID":conversation_id,"configID":config_id,"value":value}),
+            Some(&runtime_id),
+        )
     }
     pub fn delete_runtime(&mut self, id: String) -> Result<RuntimeUpdate, Error> {
         self.execute(

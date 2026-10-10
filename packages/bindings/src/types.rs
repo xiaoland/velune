@@ -214,7 +214,7 @@ pub struct BindingGatewayConfig {
     pub failover: BindingFailoverPolicy,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+#[derive(Clone, Serialize, Deserialize, uniffi::Record)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct BindingRuntimeInstance {
     pub enabled: bool,
@@ -223,6 +223,17 @@ pub struct BindingRuntimeInstance {
     pub type_id: String,
     pub gateway_id: String,
     pub settings: HashMap<String, String>,
+}
+impl std::fmt::Debug for BindingRuntimeInstance {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("BindingRuntimeInstance")
+            .field("id", &self.id)
+            .field("type_id", &self.type_id)
+            .field("enabled", &self.enabled)
+            .field("setting_keys", &self.settings.keys().collect::<Vec<_>>())
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
@@ -309,6 +320,7 @@ pub struct BindingRuntimeUpdate {
 #[derive(Debug, Clone, Serialize, Deserialize, uniffi::Enum)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub enum BindingModelSelection {
+    RuntimeDefault,
     Managed {
         model_record_key: String,
     },
@@ -316,6 +328,73 @@ pub enum BindingModelSelection {
         provider_id: Option<String>,
         model_id: String,
     },
+}
+
+#[derive(Clone, Serialize, Deserialize, uniffi::Record)]
+#[serde(rename_all = "camelCase")]
+pub struct BindingAcpLaunch {
+    pub args: Vec<String>,
+    pub environment: HashMap<String, String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+#[serde(rename_all = "camelCase")]
+pub struct BindingAcpCapabilities {
+    pub load_session: bool,
+    pub list_sessions: bool,
+    pub resume_session: bool,
+    pub close_session: bool,
+    pub delete_session: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+#[serde(rename_all = "camelCase")]
+pub struct BindingAcpAgentInfo {
+    pub name: String,
+    pub title: Option<String>,
+    pub version: String,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+#[serde(rename_all = "camelCase")]
+pub struct BindingAcpAuthMethod {
+    pub id: String,
+    pub name: String,
+    pub description: Option<String>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+#[serde(rename_all = "camelCase")]
+pub struct BindingAcpRuntimeInfo {
+    pub capabilities: BindingAcpCapabilities,
+    pub agent_info: Option<BindingAcpAgentInfo>,
+    pub auth_methods: Vec<BindingAcpAuthMethod>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Enum)]
+#[serde(tag = "type", content = "value", rename_all = "camelCase")]
+pub enum BindingAcpConfigValue {
+    Select(String),
+    Boolean(bool),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+#[serde(rename_all = "camelCase")]
+pub struct BindingAcpConfigChoice {
+    pub value: String,
+    pub name: String,
+    pub description: Option<String>,
+    pub group: Option<String>,
+    pub group_name: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+#[serde(rename_all = "camelCase")]
+pub struct BindingAcpConfigOption {
+    pub id: String,
+    pub name: String,
+    pub description: Option<String>,
+    pub category: Option<String>,
+    pub value: BindingAcpConfigValue,
+    pub choices: Vec<BindingAcpConfigChoice>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]

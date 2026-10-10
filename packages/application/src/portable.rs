@@ -102,6 +102,18 @@ impl CoreRuntime {
                 self.config = next;
                 Ok(json!(self.config.model_templates))
             }
+            Some("acpLaunch") => {
+                let id = payload["runtimeInstanceID"]
+                    .as_str()
+                    .ok_or_else(|| Error::invalid("runtime instance id"))?;
+                let runtime = self
+                    .config
+                    .runtime_instances
+                    .iter()
+                    .find(|runtime| runtime.id == id)
+                    .ok_or_else(|| Error::invalid("runtime instance id"))?;
+                Ok(serde_json::to_value(runtime.acp_launch()?)?)
+            }
             Some("runtimeExecution" | "configureRuntimeExecution") => {
                 let id = payload["runtimeInstanceID"]
                     .as_str()

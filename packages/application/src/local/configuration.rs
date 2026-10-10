@@ -68,8 +68,10 @@ impl CoreRuntime {
         }
         // Active native drafts are legitimate current sessions even before their
         // runtime writes history. They disappear when that native session closes.
-        if matches!(self.active_state, ActiveState::Pi | ActiveState::Native(_))
-            && let Some(snapshot) = self.native_snapshot()
+        if matches!(
+            self.active_state,
+            ActiveState::Pi | ActiveState::Native(_) | ActiveState::Acp(_)
+        ) && let Some(snapshot) = self.native_snapshot()
             && !conversations
                 .iter()
                 .any(|item| item.id == snapshot.conversation.id)
@@ -193,6 +195,7 @@ impl CoreRuntime {
         if self.busy() {
             return Err(RuntimeError::invalid("runtime is busy"));
         }
+        self.acp_capability_cache.borrow_mut().clear();
         let previous = self.runtime_instances.clone();
         let previous_gateways = self.gateways.clone();
         match request["payload"]["operation"].as_str().unwrap_or("list") {
@@ -205,7 +208,11 @@ impl CoreRuntime {
                     || runtime.name.is_empty()
                     || !matches!(
                         runtime.type_id.as_str(),
-                        "pi-1.0.2" | "codex-0.159.3" | "dsh-acp-0.2.0-rc.2" | "claude-code-2.1.286"
+                        "pi-1.0.2"
+                            | "codex-0.159.3"
+                            | "dsh-acp-0.2.0-rc.2"
+                            | "claude-code-2.1.286"
+                            | "acp-v1"
                     )
                     || (runtime.gateway_id != "default"
                         && !self

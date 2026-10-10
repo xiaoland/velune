@@ -70,7 +70,7 @@ impl CoreRuntime {
     pub(super) fn active_instance(&self) -> Result<&RuntimeInstance, RuntimeError> {
         let id = match &self.active_state {
             ActiveState::History(snapshot) => &snapshot.conversation.runtime_id,
-            ActiveState::Native(_) | ActiveState::Pi => self
+            ActiveState::Native(_) | ActiveState::Acp(_) | ActiveState::Pi => self
                 .execution_runtime_id
                 .as_ref()
                 .ok_or_else(|| RuntimeError::invalid("active runtime"))?,
@@ -177,6 +177,9 @@ impl CoreRuntime {
             .ok_or_else(|| RuntimeError::invalid("interaction id"))?;
         let reply = serde_json::from_value(request["payload"]["reply"].clone())?;
         match &mut self.active_state {
+            ActiveState::Acp(session) => session
+                .reply(id, reply)
+                .map_err(|error| RuntimeError::context("ACP 请求回复失败", error))?,
             ActiveState::Native(session) => session.reply(id, reply).map_err(|error| {
                 RuntimeError::context("运行时请求回复失败；请求可能已取消或所属会话已改变", error)
             })?,

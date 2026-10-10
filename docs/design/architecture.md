@@ -65,7 +65,7 @@ conversation 定义审批、问题回答与取消的类型契约，bindings 生�
 
 做一个**本地优先的任务控制服务**，掌握任务树、会话身份、路由策略、权限、消息和恢复；下挂三个原生 Harness Adapter。LLM 路由采用“统一决策、分协议执行”：Codex 接 Responses 路径，Claude Code 接 Messages 路径，Pi 优先接原生逐请求路由钩子。订阅身份保持独立，使用各供应商允许的原生或正式集成路径；API 资源可由协议网关选择上游。
 
-跨 Harness 协作由**协调逻辑＋原生会话接入**完成：发现有能力且获准的目标、传递输入、在目标的安全边界注入、委派工作、回传结果，并处理并发／取消／失败。任务树、消息、权限和恢复状态的持久化为这些行为提供可靠性，保存它们本身不构成协作。MCP 暴露协作工具、ACP 作为可替换接入方式已获用户认可；ACPHub 不设为前置依赖。具体工作链见第 7 节。
+跨 Harness 协作由**协调逻辑＋原生会话接入**完成：发现有能力且获准的目标、传递输入、在目标的安全边界注入、委派工作、回传结果，并处理并发／取消／失败。任务树、消息、权限和恢复状态的持久化为这些行为提供可靠性，保存它们本身不构成协作。MCP 暴露协作工具、ACP 作为可替换接入方式已获用户认可；acpsub 不设为前置依赖。具体工作链见第 7 节。
 
 技术基线更新为 **Rust 主核心＋SQLite＋原生客户端**：Apple 用 Swift／UIKit 方向，Android 用 Kotlin／Jetpack Compose。此前 TypeScript／Node.js 主核心与 Web 前端建议已被用户替换；不再作为备选默认。用户接受多套原生 UI 的实验成本，设计重点改为共享领域契约、生命周期和可验证的桥接边界。具体模块划分、薄 SDK 桥及 Mac Catalyst 等仍为下述技术推荐，见[复核来源](../sources.md#s10)。
 
@@ -271,12 +271,12 @@ Codex 原生审批事件、Claude 的 hooks／permission 机制、Pi 的扩展 t
 
 可信边界包括 Supervisor、原生 Harness、获准 adapters／hooks／extensions 和凭据设施；agent 可操作的工作区与工具子进程不属于它。数据库、策略、hook 代码、凭据目录不在 agent 工具的可读写范围；子进程清理环境并收窄 OS 权限，不能继承控制 socket／完整凭据。Gateway／Broker 票据绑定 Segment＋Run epoch＋操作范围；推理票据无会话控制权。Pi 内置文件工具与同进程扩展还须做路径／配置策略，单改 HOME 不够；项目自带扩展／MCP 不能自动进入可信边界。若某平台无法保证这些条件，该组合不能标为安全受管，只能明确以用户信任的执行模式提供，且不承诺防恶意代码。
 
-### ACP、MCP、ACPHub 的位置
+### ACP、MCP、acpsub 的位置
 
 - **ACP**：客户端与 agent 的会话、prompt、流事件、权限、取消，以及按能力声明的 list／load／resume 等。适合接编辑器或已有 ACP adapter；不是供应商 LLM API，也不自动定义产品任务树、跨服务可靠投递和单写接管
 - **MCP**：把 broker 的协作操作暴露为工具／资源；不直接承担 Harness 生命周期和 agent 到 agent 的可靠业务协议
 - **原生 adapters**：Codex app-server、Claude CLI／SDK、Pi RPC／SDK 保留各自真实控制能力；统一一个接口并保留扩展，而非强行把三者削成相同文本输入输出
-- **ACPHub**：本轮未取得 `lexoliu/acphub` 可核验源码／commit，不能断言其已有全局发现、可靠恢复、安全控制或具体依赖。获得正确可读来源后只评估复用 transport／registry／adapter 的价值；替换它不改变 Task／Session／Message 契约
+- **acpsub**：2026-10-10 用户更正原参考拼写，已检查 `lexoliu/acpsub` 的 `259db0d`。参考其 ACP 会话恢复与配置确认方式；其 MCP 服务、daemon、transcript 副本与排队策略不构成 Velune 依赖或实施范围。协议证据见 [ACP 任务](../../tasks/acp-adapter/protocol-evidence.md)。
 
 ## 8. Adapter 必须声明的能力
 
@@ -322,7 +322,7 @@ V1 是基础检查点，**V2＋V3 才构成首个可用版本**。不能只接�
 3. Rust 主核心、SQLite、Apple Swift／UIKit 方向与 Android Kotlin／Jetpack Compose 原生 UI；替换 TypeScript 主核心和 Web UI，接受实验成本
 4. 先核心闭环，后分布式扩展；底层细节仍由设计方收敛，不让用户重做方案选择
 
-Mac 当前落点与 C ABI 嵌入已按用户反馈确认，其他 Apple 平台、远程接入、官方 SDK 桥及分发安全边界仍需验证。官方集成资格、具体账户权益、ACPHub 来源、真实路由／恢复效果不由原型成功证明；登录、付费和部署仍需相应授权。
+Mac 当前落点与 C ABI 嵌入已按用户反馈确认，其他 Apple 平台、远程接入、官方 SDK 桥及分发安全边界仍需验证。官方集成资格、具体账户权益、真实路由／恢复效果不由原型成功证明；登录、付费和部署仍需相应授权。
 
 ## 11. 历史模拟核心与原生壳接线
 
@@ -449,3 +449,13 @@ SSH 执行边界覆盖版本检查、模型发现、启动、恢复和历史操�
 HOME 是 Harness 及其工具子进程看到的用户家目录，agentDir 是 Harness 自己的配置和状态目录，会话 cwd 是工作目录。Velune 管理 HOME 时按实例稳定分配，普通配置重置或临时执行结束不能删除其历史与认证。它提供实例环境归属，不承诺阻止工具访问其它文件。SSH 的连接认证与模型认证分别归 OpenSSH 和 Harness／网关，不把用户原生 refresh credential 转移给传输层。
 
 本节约定的 app 消费方仍待实现：composer 的原生／managed 模型选择、SSH 连接设置、HOME 归属设置及远端工作目录输入。2026-10-10 本轮不修改、重新构建或安装 app。
+
+## 通用 ACP 接入
+
+2026-10-10 的目标是降低新增 Harness 的接入与维护成本。`agent-runtime::acp` 作为独立 ACP v1 客户端，连接用户安装的原生 ACP Agent 或社区 bridge；application 只装配执行位置、HOME、可执行文件、参数与显式环境。新增 Agent 不要求新增 Harness 类型分支、私有历史解析器或 CLI 版本正则。协议 major 通过 initialize 协商；第三方程序名称、版本和可选能力作为数据，不作为支持白名单。官方 Rust schema 定义 wire 类型，Velune 自己拥有 conversation projection 与进程生命周期。
+
+原生 ACP 与现有专用 adapters 并存。ACP 控制会话，不定义通用 LLM provider 注入；其 `acp-v1` 类型不宣称支持 Velune managed gateway。模型与其它会话选项使用 Agent 提供的 config ID、category、opaque value 和最终返回值；运行时默认模型是明确的选择方式，不需要伪造默认 model ID。查询模型不能创建隐藏会话，普通模型切换不得销毁唯一活跃进程。
+
+创建、prompt、流式更新、权限与取消构成基础交互。list、load、resume、close、delete 分别按能力调用；load 回放原生历史，resume 本身不提供历史。无历史能力的 Agent 仍可 live 多轮使用，但关闭后不保证重开。已知 session ID 与 cwd 可以显式 load，无需先具备 list；跨 Harness 持久关联保存原生引用与真实 cwd，不保存会话正文。该类接续的源与目标都必须能够重新读取原生历史，否则在创建目标或关闭源前明确拒绝，不能写明知重启无法复原的关联。
+
+正常显式关闭对已协商 close 能力的空闲会话先等待 `session/close`，再有界结束进程；业务关闭失败仍清理并报告，Drop 不执行阻塞协议请求。客户端只声明实际实现的能力；当前文件和终端回调不在本次接入范围，权限请求沿用显式答复契约。未知可选配置保持 Agent 默认行为，不把上游未来字段解释为已支持功能。App 的启动配置、模型／会话选项和能力展示仍待实现。协议来源、手动隔离验收与剩余边界见 [ACP 任务](../../tasks/acp-adapter/packet.md)。

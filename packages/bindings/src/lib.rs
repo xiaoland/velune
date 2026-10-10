@@ -387,6 +387,64 @@ impl VeluneApplication {
         })?)
     }
 
+    pub fn upsert_acp_runtime(
+        &self,
+        runtime: BindingRuntimeInstance,
+        execution: BindingRuntimeExecution,
+        launch: BindingAcpLaunch,
+    ) -> Result<BindingRuntimeUpdate, BindingError> {
+        let runtime = convert(runtime)?;
+        let execution = convert(execution)?;
+        let launch = convert(launch)?;
+        convert(self.with("upsert_acp_runtime", |application| {
+            application.upsert_acp_runtime(runtime, execution, launch)
+        })?)
+    }
+    pub fn acp_launch(&self, runtime_id: String) -> Result<BindingAcpLaunch, BindingError> {
+        convert(self.with("acp_launch", |application| {
+            application.acp_launch(runtime_id)
+        })?)
+    }
+    pub fn acp_runtime_info(
+        &self,
+        runtime_id: String,
+    ) -> Result<BindingAcpRuntimeInfo, BindingError> {
+        convert(self.with("acp_runtime_info", |application| {
+            application.acp_runtime_info(runtime_id)
+        })?)
+    }
+    pub fn open_acp_conversation(
+        &self,
+        runtime_id: String,
+        native_session_id: String,
+        cwd: String,
+    ) -> Result<BindingSnapshotResult, BindingError> {
+        convert(self.with("open_acp_conversation", |application| {
+            application.open_acp_conversation(runtime_id, native_session_id, cwd)
+        })?)
+    }
+    pub fn acp_session_config(
+        &self,
+        runtime_id: String,
+        conversation_id: String,
+    ) -> Result<Vec<BindingAcpConfigOption>, BindingError> {
+        convert(self.with("acp_session_config", |application| {
+            application.acp_session_config(runtime_id, conversation_id)
+        })?)
+    }
+    pub fn set_acp_session_config(
+        &self,
+        runtime_id: String,
+        conversation_id: String,
+        config_id: String,
+        value: BindingAcpConfigValue,
+    ) -> Result<Vec<BindingAcpConfigOption>, BindingError> {
+        let value = convert(value)?;
+        convert(self.with("set_acp_session_config", |application| {
+            application.set_acp_session_config(runtime_id, conversation_id, config_id, value)
+        })?)
+    }
+
     pub fn runtime_execution(
         &self,
         runtime_id: String,

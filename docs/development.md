@@ -304,3 +304,15 @@ managed 请求通过远端 loopback 反向转发访问本机网关，释放执�
 Pi 提供商导入／OAuth 来源操作仍限定默认本机 execution，SSH 或显式 HOME 配置返回不支持；原生 provider 的直接执行不受此限制。Claude、Codex、DSH 的 provider 导入与订阅登录没有因为增加运行控制而自动实现。
 
 人工验收可构建 Rust 动态库并生成相同版本 Python bindings，再运行 [选择与 HOME 脚本](../scripts/manual-runtime-selection.py)，传入 `--library`、`--bindings`、`--resources` 的绝对路径。该脚本只使用临时 HOME 和合成控制 peer，覆盖原生／managed 模型、终态／失败／取消清理、跨实例接续、原子执行配置和来源文件不变。实际 Claude CLI、真实 OpenSSH 本机隔离连接及旧运行时回归的适用条件归 [本轮 packet](../tasks/runtime-provider-ssh/packet.md)，不把合成 peer 当成真实外部 SSH 主机或真实提供商验收。
+
+## 通用 ACP Agent
+
+通用入口为运行时类型 `acp-v1`。它连接用户已安装的原生 ACP 程序或社区 bridge；通过 `initialize` 协商协议，不调用任意程序的 `--version`，也不按 Agent 名称建立白名单。将可执行文件的目标机器绝对路径写入实例 `binary`，参数与显式环境通过 `AcpLaunch` 配置；参数直接作为 argv 传入，不经过 shell。登录与运行时安装仍由用户完成，Velune 不导入或复制既有认证。
+
+Rust application 与 UniFFI 提供 `upsert_acp_runtime`，一次保存实例、`RuntimeExecution` 与 `AcpLaunch`。ACP 不要求 `nodeBinary`、`agentDir` 或远端 helper 资源目录；如果具体 bridge 使用 Node，可直接将 Node 作为 binary、bridge 脚本作为参数。SSH 仍需目标机器上的 Python 3 来承载已有执行传输，HOME 使用继承、现有路径或 Velune managed 选择。
+
+使用 `acp_runtime_info` 查看 Agent 身份、认证方法描述与协商能力。`create_conversation_with_selection` 配合 `ModelSelection::RuntimeDefault` 可创建无模型选择器的会话；普通发送、权限答复、取消使用现有 conversation API。模型目录只来自活动会话的 `configOptions`；需要完整的模式、布尔选项或多个选择器时使用 `acp_session_config`／`set_acp_session_config`，保留 Agent 的 config ID 与 opaque value。配置更新以 Agent 返回结果为准。
+
+有 list 能力的 Agent 使用通用会话列表；只有 load 的 Agent 可通过 `open_acp_conversation(runtime_id, native_session_id, cwd)` 显式打开。直接使用 `agent-runtime::acp::Client` 时可分别调用 load 与 resume，后者恢复上下文但不回放历史；application 的历史浏览和持久跨 Harness 接续要求 load。无 load 的连接仍可连续多轮运行，但关闭后不保证重开。通用 ACP 不支持统一的 managed provider 注入，应使用该 Harness 的专用 adapter 获取已实现的网关能力。
+
+本轮不提供 App 的 ACP 配置、会话选项或能力展示界面，也不构建或安装 App。无真实认证与模型调用的手动验收入口为 `scripts/manual-acp-adapter.py`，具体构建产物、参数、实际 Agent 与 SSH 证据见 [ACP 任务](../tasks/acp-adapter/packet.md)。自动化测试不在仓库验证流程内。

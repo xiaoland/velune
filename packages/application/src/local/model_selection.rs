@@ -15,7 +15,17 @@ impl CoreRuntime {
         runtime: &RuntimeInstance,
         selection: &ModelSelection,
     ) -> Result<(), RuntimeError> {
+        if runtime.type_id == "acp-v1" {
+            return match selection {
+                ModelSelection::RuntimeDefault => Ok(()),
+                ModelSelection::Native { provider_id: None, model_id } if !model_id.is_empty() && !model_id.chars().any(char::is_control) => Ok(()),
+                _ => Err(RuntimeError::Unsupported("通用 ACP 只接受 Agent 默认模型或其会话中的原生模型选项，不支持 managed provider 注入".into())),
+            };
+        }
         match selection {
+            ModelSelection::RuntimeDefault => Err(RuntimeError::Unsupported(
+                "默认模型选择当前只适用于通用 ACP".into(),
+            )),
             ModelSelection::Managed { model_record_key } => {
                 self.validate_session_model(runtime, model_record_key)
             }
@@ -52,7 +62,22 @@ impl CoreRuntime {
         selection: &ModelSelection,
         is_new: bool,
     ) -> Result<(), RuntimeError> {
+        if self
+            .runtime_instance(&snapshot.conversation.runtime_id)?
+            .type_id
+            == "acp-v1"
+        {
+            self.prepare_acp_snapshot(&snapshot, selection, is_new)?;
+            self.model_selection = Some(selection.clone());
+            self.model_record_key = None;
+            return Ok(());
+        }
         match selection {
+            ModelSelection::RuntimeDefault => {
+                return Err(RuntimeError::Unsupported(
+                    "默认模型选择当前只适用于通用 ACP".into(),
+                ));
+            }
             ModelSelection::Managed { model_record_key } => {
                 self.prepare_snapshot(snapshot, model_record_key, is_new)?
             }
@@ -77,7 +102,7 @@ impl CoreRuntime {
         self.model_selection = Some(selection.clone());
         self.model_record_key = match selection {
             ModelSelection::Managed { model_record_key } => Some(model_record_key.clone()),
-            ModelSelection::Native { .. } => None,
+            ModelSelection::Native { .. } | ModelSelection::RuntimeDefault => None,
         };
         Ok(())
     }
@@ -203,6 +228,32 @@ impl CoreRuntime {
         let runtime = self.runtime_instance(id)?.clone();
         if !runtime.enabled {
             return Err(RuntimeError::invalid("此运行时已停用"));
+        }
+        if runtime.type_id == "acp-v1" {
+            return if let ActiveState::Acp(session) = &self.active_state
+                && self.execution_runtime_id.as_deref() == Some(&runtime.id)
+                && session.snapshot().is_some()
+            {
+                let models = session
+                    .models()
+                    .map_err(|error| RuntimeError::context("ACP 模型目录", error))?;
+                Ok(json!(
+                    models
+                        .into_iter()
+                        .map(|model| RuntimeModel {
+                            selection: ModelSelection::Native {
+                                provider_id: None,
+                                model_id: model.id
+                            },
+                            name: model.name,
+                        })
+                        .collect::<Vec<_>>()
+                ))
+            } else {
+                Err(RuntimeError::Unsupported(
+                    "ACP 模型目录属于会话，请先新建或打开该实例的会话".into(),
+                ))
+            };
         }
         let mut models = Vec::new();
         if runtime.type_id == "pi-1.0.2" {
