@@ -46,3 +46,13 @@ App／前端未修改、未构建、未安装；启动配置、默认模型／�
 补充 shutdown 的手动 peer 验收已通过：成功 close 后收到 EOF，业务拒绝与无效响应返回错误但清理进程，无能力不发 close，Drop 不发 RPC，忙碌关闭终止进程，重复 shutdown 不重复调用。
 
 实现与限定验收已完成；本轮本地提交包含代码、手动验收入口与文档，不 push。其它会话的 Mac 与滚动脚本工作不纳入本任务。
+
+## 补充真实 runtime 验收
+
+用户随后要求验证其它原生 ACP runtime，点名 Devin CLI。本轮用隔离安装、HOME 与工作目录验证 Devin，并以 OpenCode 补充另一种真实实现；继续禁止读取真实凭据／会话、执行真实登录或调用真实模型。优先经过现有 Rust Client 或 UniFFI，区分协议握手、无认证会话能力和合成上游 prompt 闭环。若认证阻塞，记录版本、准确阶段与返回错误，不把握手成功写成完整兼容。
+
+Devin 验证由既有 claude_probe owner 负责，OpenCode 由 runtime_application owner 负责；主执行者负责采用证据、归位文档与本地提交。临时安装与探针只放 ignored target，不引入产品自动安装或专用 Harness 分支。
+
+[Devin CLI 实测](devin-evidence.md)已完成：官方 binary `3000.11.3 (9c803229faa4)` 经真实 Rust Client 通过 initialize、new、配置发现、模式修改／读回、live list 与空会话 delete。未认证、未发送 prompt 的未删除空会话在 shutdown 后 fresh list/load 不可见；不能外推已登录或执行后持久化。未执行真实认证或模型请求，没有针对 Devin 修改 adapter。
+
+[OpenCode 实测](opencode-evidence.md)已完成：`1.18.35` 经 UniFFI 通过 initialize、new、配置／模型选择、真实 ACP prompt 与本机合成 Chat Completions 流式答复，以及 shutdown 后 list、重新 load 和重复 load 的消息身份稳定性。未接触真实 provider，未修改生产源码；本轮只补充验证记录与开发说明，因此不重复此前已经通过的 Rust 静态检查。
