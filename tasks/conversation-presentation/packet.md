@@ -38,7 +38,7 @@ Codex actual loopback发现 huihua 将 response_item 初始化模型上下文映
 
 `manual-pi-session-resync.py` 以固定 SDK 验证 same-ID／same-count 分支、显式名称恰好为占位文字、新 session 与 cwd、handled slash 不伪造用户消息、idle 不重载，零 upstream。metadata 已改由公开 ctx.ui.setStatus 的专属键传输，直接 stdout 会被 SDK 捕获；adapter 消费该状态，不将它暴露为业务通知或持久化记录。`manual-pi-native-loop.py` 五合成请求与 `manual-multi-runtime.py` Codex／DSH 五合成请求通过新建、打开、准备、继续的标题一致性及工具／推理；审批／取消／终态失败恢复仍通过。
 
-长列表手工脚本为 `scripts/manual-transcript-presentation.py`，需先构建 SwiftPM 产品，或显式给 `--swift-build`；它测量稳定展示对象与解析缓存，未测屏幕帧率。既有 --preview 合成样例覆盖标题、列表、任务列表、引用、表格、代码、推理与已完成工具，用于无 Transport 的原生预览。当前正在 clean 构建和安装，尚不将 debug 证据当作安装交付。
+长列表手工脚本现为 `scripts/manual-transcript-scroll.py`（原 presentation／navigation／layout 脚本随 MarkdownView 接入一并移除），说明见[会话体验任务](../mac-conversation-usability/packet.md)。既有 --preview 合成样例覆盖标题、列表、任务列表、引用、表格、代码、推理与已完成工具，用于无 Transport 的原生预览。当前正在 clean 构建和安装，尚不将 debug 证据当作安装交付。
 
 ## 最终安装与验收状态
 

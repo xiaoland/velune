@@ -10,9 +10,9 @@ app 通过生成的 UniFFI 接口消费 application 的完整用例，不解析 
 
 构建前只需安装 runtime-support，huihua parser 依赖及许可证随 bundle 打包；不分发 Agent runtime 或完整 Pi SDK。具体步骤见 [开发说明](../../docs/development.md#原生运行时与历史读取)。构建产物不等于已安装或用户验收，最终状态以任务记录为准。
 
-会话内容消费 Rust 的类型权威，Mac 只派生展示行与展开、滚动状态。用户内容在右侧气泡，assistant 正文及工具左对齐；系统通知居中，工具输出不按 LLM Markdown 解析。Markdown 采用固定 Swift Package Manager 依赖，许可证随应用分发；不恢复手写 fence 解析。懒布局使用稳定行身份，打开／发送到底，阅读历史时暂停流式跟随。当前实施与验收见 [展示任务](../../tasks/conversation-presentation/packet.md)。
+会话内容消费 Rust 的类型权威，Mac 只派生展示行与展开、滚动状态。用户内容在右侧气泡，assistant 正文及工具左对齐；系统通知居中，工具输出不按 LLM Markdown 解析。Markdown 由固定 SwiftPM 依赖 swift-markdown 解析，许可证随应用分发；不恢复手写 fence 解析。虚拟列表使用稳定行身份，打开／发送到底，阅读历史时暂停流式跟随。当前实施与验收见 [展示任务](../../tasks/conversation-presentation/packet.md)。
 
-Mac 最低支持macOS15，由根目录 [Package.swift](../../Package.swift) 定义独立 SwiftPM 产品，依赖固定 MarkdownView 3.0.0；[Package.resolved](../../Package.resolved) 锁传递依赖。build-macos 先生成 UniFFI 模块，再以SwiftPM的Xcode后端构建本机架构release产品，应用与生成绑定目标各自启用warnings-as-errors，并打包`app/mac/Licenses`与解析锁文件。依赖保持各自声明的Swift语言模式；资源bundle置于标准Contents/Resources，由该后端生成的Bundle.module访问，不依赖开发路径。Swift 包不依赖领域 Rust 包源码，只链接对应生成绑定与库。
+Mac 最低支持macOS15，由根目录 [Package.swift](../../Package.swift) 定义独立 SwiftPM 产品，依赖固定 swift-markdown 0.9.0；[Package.resolved](../../Package.resolved) 锁传递依赖 swift-cmark。build-macos 先生成 UniFFI 模块，再以SwiftPM的Xcode后端构建本机架构release产品，应用与生成绑定目标各自启用warnings-as-errors，并打包`app/mac/Licenses`与解析锁文件。依赖保持各自声明的Swift语言模式；当前依赖没有资源bundle。Swift 包不依赖领域 Rust 包源码，只链接对应生成绑定与库。
 
 会话上下文菜单按运行时能力提供重命名和永久删除确认。选中目标、待加载身份与已加载详情分别管理；加载时显示进度，暂停其它选择并隔离旧轮询，失败恢复原会话。操作交给生成绑定和运行时执行，不建立 Mac 标题覆盖存储。隔离验收见 [会话管理任务](../../tasks/session-management/packet.md)。
 
@@ -32,8 +32,8 @@ Mac 最低支持macOS15，由根目录 [Package.swift](../../Package.swift) 定�
 
 各原生窗口与Tab持有独立AppStore工作区，共享一个Transport/application、配置、认证、问题和单活跃执行。只读历史与绑定来源会话的发送由UniFFI具名接口承载。窗口命令使用focused scene，不广播发送；Tab关闭不关闭核心。未发送草稿仅留在工作区，首发创建成功后立即保留原生身份，之后派发失败不自动重建或重发。验收见 [会话体验任务](../../tasks/mac-conversation-usability/packet.md)。
 
-消息列表消费 Rust 产出的有序展示项与稳定身份，原子更新行、工作范围与大纲。正文首次显示时经上游MarkdownReader解析，结果随稳定消息对象保留；未变化轮询、离屏重入和原生cell复用不重新解析，正文变化才失效。工作过程、工具和推理使用行内 AppKit 原生 disclosure 按钮；三角与内容共同布局，开合不改变整表缩进。消息区域采用系统windowBackgroundColor不透明背景。Markdown链接交给系统注册的应用，相对文件以当前会话目录解析，失败由原生alert提供原文与复制。
+消息列表消费 Rust 产出的有序展示项与稳定身份，原子更新行、工作范围与大纲。assistant 正文经 swift-markdown 解析并映射为 TextKit 1 属性文本；围栏代码是独立布局元素，带圆角背景、语言标签与原生复制按钮。渲染结果按消息内容修订缓存，未变化轮询、离屏重入和 cell 复用不重新解析。工作过程、工具和推理使用行内 AppKit 原生 disclosure 按钮，开合只改变所在行。消息区域采用系统windowBackgroundColor不透明背景。Markdown链接交给系统注册的应用，相对文件以当前会话目录解析，失败由原生alert提供原文与复制。正文可在原生 NSTextView 内选择与复制。
 
-消息容器使用AppKit单列NSTableView：此前特定渲染负载的SwiftUI List对照开销较高，LazyVStack未能可靠定位增高后的远距离目标；这些结果不能自动外推到新的渲染器组合，最新容器判别归任务。原生行索引负责定位，仅复用可见消息内容；展开工作过程保留独立消息行，不在一行中排版全部成员。实际显示的NSHostingView以intrinsicContentSize提供尺寸；NSTableView关闭自动行高，heightOfRow只读取稳定消息、实际宽度与内容版本对应的真实高度缓存，不在查询中触发布局。未知行使用原生暂态高度，定位待目标真实高度提交后完成。SwiftUI根内容显式接收实际列宽，不另设人工高度约束，也不从cell.layout重复提出sizeThatFits测量请求。[NSHostingView的intrinsic尺寸按未指定proposal计算](https://developer.apple.com/documentation/swiftui/nshostingsizingoptions/intrinsiccontentsize)，所以外部列宽约束不能替代传给正文的实际宽度。正文版本／宽度配置以及同一host原生布局完成都可以触发合并尺寸通知，本地工具展开不需要伪造消息修订号。读取intrinsic期间不再次自排队；仅真实高度或版本变化向表格提交。结构和尺寸变化保留稳定阅读行及真实行内偏移。用户滚动暂停跟底，明确返回底部或发送消息才恢复；任意frame变化和滚动结束不改变跟底意图。实施与验收状态见[会话阅读任务](../../tasks/mac-conversation-usability/packet.md)。
+消息容器使用AppKit单列NSTableView，cell 为纯 AppKit 视图，不在行内承载 SwiftUI。每行几何由纯函数根据消息内容修订、局部展开状态与实际列宽计算：TextKit 1 测量与显示使用同一属性文本和容器配置，帧取整数，避免 layer 对齐改变已测宽度。heightOfRow 只返回精确布局、上次已知高度或廉价估计，不在查询中布局。可见带（视口上下各 0.75 屏）在显示前同步测量；其余行在后台队列按距阅读位置由近及远测量，分批提交。任何高度提交都在同一主线程步骤内恢复视口顶部行及其行内偏移，阅读位置不随离屏行变化移动。NSTableView 会延迟其 clip view bounds 变化通知内的行高提交，因此滚动与宽度变化触发的测量排到下一个主队列轮次。用户滚动离开底部即暂停跟随，滚回底部、点击回到底部或发送消息恢复。实施与验收状态见[会话阅读任务](../../tasks/mac-conversation-usability/packet.md)。
 
-共享应用状态仅在值变化时发布到工作区；无匹配的轮询问题清理及相同会话快照不触发重复界面应用。正常空闲轮询消费内存快照，点击／滚动不直接读取历史文件。完整快照跨语言传输仍有成本，不能把界面无变化等同于核心不做任何工作。
+共享应用状态仅在值变化时发布到工作区；无匹配的轮询问题清理及相同会话快照不触发重复界面应用。正常空闲轮询消费内存快照，点击／滚动不直接读取历史文件。完整快照跨语言传输仍有成本，不能把界面无变化等同于核心不做任何工作。轮询在后台请求队列比较修订：未变化时不映射，变化时也在后台完成绑定到 Swift 模型的映射，主线程只应用结果。
