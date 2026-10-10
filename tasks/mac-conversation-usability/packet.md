@@ -35,6 +35,10 @@
 - Swift warnings-as-errors debug 与 Xcode 后端 release 构建通过；preview 模式窗口截图核对版式。Rust 源码本轮未改。
 - 边界：合成探针中个别步骤偶发 40–200ms 停顿，插桩显示本程序主线程工作 0–3ms，停顿不在列表代码内，未进一步归因；首次显示约 0.2–0.5s 主要为 CoreText 首次初始化。真实物理滚轮、真实长历史与提供商体验未由开发方验证。
 
+## 构建与安装
+
+2026-10-10 主工作区含其他会话未提交的 Rust／文档改动，为避免打包他人未完成工作，从源码 `6c764bb` 的独立干净 worktree 完成 locked Rust release 与 Xcode SwiftPM release 构建、严格签名，并安装至 `/Applications/Velune.app`（版本 `0.1 beta.1`）。安装 manifest source 一致且 dirty=false；主二进制与 Rust 库 SHA-256 与签名构建包一致；包内不再有资源 bundle。安装前正常退出运行中的 Velune，安装后重新打开。不 push。
+
 ## 已完成前置与边界
 
 完整 user→nextuser 范围折叠，只有真实末条纯 LLM 正文外露，生命周期决定状态／时长；系统背景、左对齐三角和 outline 双击已验。网页／相对文件链接此前验到系统接收，未验外部查看器内容。DSH 可选 CWD 已处理，实际 CLI 端到端尚未验。真实长期历史与实际提供商体验仍由用户验收。
