@@ -556,8 +556,10 @@ struct TranscriptTable: NSViewRepresentable {
     }
 
     private func recycle(_ cell: TranscriptCellView) {
-        cell.isHidden = true
+        // NSView.prepareForReuse unhides the view; hide afterwards so a parked
+        // cell never shows its stale headers over the rows now in its place.
         cell.prepareForReuse()
+        cell.isHidden = true
         reusableCells.append(cell)
     }
 

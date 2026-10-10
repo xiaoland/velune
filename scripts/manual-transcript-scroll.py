@@ -2,10 +2,11 @@
 """Explicit native transcript scroll/geometry diagnostic; synthetic content only, never CI.
 
 Compiles the actual Mac transcript sources into a temporary probe, loads a long
-synthetic history into an unordered window and checks: no visible displacement
+synthetic history into a window (shown only with --snapshot, which captures that
+window alone) and checks: no visible displacement
 of the reading row while scrolling fast through unmeasured history, displayed
 text geometry equals the measured layout, far jumps, bottom following, width
-changes and local disclosure toggles. Prints timings; exits non-zero on failure.
+changes, local disclosure toggles and that parked reusable cells stay hidden. Prints timings; exits non-zero on failure.
 """
 import argparse
 import os
@@ -68,6 +69,12 @@ func synthetic(_ count: Int) -> [Message] {
 @MainActor func gapToBottom(_ document: TranscriptDocumentView, _ scroll: NSScrollView) -> CGFloat { document.frame.maxY - scroll.contentView.bounds.maxY }
 @MainActor func snapshot(_ scroll: NSScrollView, _ name: String) {
     guard let directory = ProcessInfo.processInfo.environment["PROBE_SNAPSHOT"] else { return }
+    if let window = scroll.window, window.isVisible {
+        window.displayIfNeeded()
+        let task = Process(); task.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
+        task.arguments = ["-x", "-o", "-l", String(window.windowNumber), directory + "/" + name + "-screen.png"]
+        try? task.run(); task.waitUntilExit()
+    }
     guard let rep = scroll.bitmapImageRepForCachingDisplay(in: scroll.bounds) else { return }
     scroll.cacheDisplay(in: scroll.bounds, to: rep)
     try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: directory).appendingPathComponent(name + ".png"))
@@ -76,6 +83,8 @@ func synthetic(_ count: Int) -> [Message] {
     let clip = scroll.contentView.bounds
     if abs(document.frame.width - clip.width) > 0.5 { fail("\(label): document \(document.frame.width) != viewport \(clip.width)") }
     let shown = cells(document)
+    // A parked reusable cell must stay hidden, or it draws stale content over live rows.
+    if let parked = document.subviews.first(where: { ($0 as? TranscriptCellView).map { !$0.isHidden && $0.rowID == nil } ?? false }) { fail("\(label): unassigned cell visible at \(parked.frame)") }
     guard let first = shown.first, let last = shown.last, first.frame.minY <= clip.minY + 0.5 || first.frame.minY <= 0.5, last.frame.maxY >= min(clip.maxY, document.frame.maxY) - 0.5 else { fail("\(label): viewport not covered by cells") }
     var checked = 0
     for (index, cell) in shown.enumerated() {
@@ -103,6 +112,7 @@ func synthetic(_ count: Int) -> [Message] {
         var messages = synthetic(count)
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 900, height: 700), styleMask: [.titled, .resizable], backing: .buffered, defer: false)
         window.contentView = NSHostingView(rootView: Harness(model: model, driver: driver))
+        if ProcessInfo.processInfo.environment["PROBE_VISIBLE"] != nil { app.setActivationPolicy(.accessory); window.orderFrontRegardless() }
         await spin(3)
         let clock = ContinuousClock()
         let loadStart = clock.now
@@ -259,7 +269,15 @@ func synthetic(_ count: Int) -> [Message] {
         note("WORK ok")
 
         // Tool rows inside an expanded work turn: expanding one pushes its siblings down.
-        let tools = (0..<6).map { k in Message(id: "w\(k)", role: .assistant, blocks: [.tool(id: "wt\(k)", title: "工具 \(k)", state: .completed, output: k == 1 ? .deferred(bytes: 40_000) : .inline((0..<30).map { "工具 \(k) 输出第 \($0) 行" }.joined(separator: "\n")))], stamp: 1) }
+        let shapes: [String] = [
+            (0..<30).map { "工具 0 输出第 \($0) 行" }.joined(separator: "\n"),
+            "",
+            (0..<40).map { "/Users/example/very/long/path/\(String(repeating: "segment", count: 20))/file\($0).swift:\($0): " + String(repeating: "word ", count: 60) }.joined(separator: "\n"),
+            (0..<40).map { "\t\tcol\t\($0)\r\u{1B}[32mgreen\u{1B}[0m " + String(repeating: "x", count: 400) }.joined(separator: "\n"),
+            (0..<3000).map { "第 \($0) 行 😀 混合 mixed text" }.joined(separator: "\n"),
+            String(repeating: "{\"key\":\"value\",\"n\":12345}", count: 400),
+        ]
+        let tools = (0..<6).map { k in Message(id: "w\(k)", role: .assistant, blocks: [.tool(id: "wt\(k)", title: "工具 \(k)", state: .completed, output: k == 1 ? .deferred(bytes: 40_000) : .inline(shapes[k]))], stamp: 1) }
         var workMessages = [messages[0]] + tools + [messages[1]]
         let toolTurn = TranscriptTurn(id: "turnw", userMessageID: "u0", workMessageIDs: tools.map(\.id), lastMessageID: "a0", durationMs: 900, isRunning: false)
         func applyWork() {
@@ -275,12 +293,14 @@ func synthetic(_ count: Int) -> [Message] {
               let toolTriangle = descendants(toolWork).compactMap({ $0 as? NSButton }).first(where: { $0.bezelStyle == .disclosure && $0.superview?.isHidden == false }) else { fail("tool work header missing") }
         toolTriangle.performClick(nil); await spin(3); materialize(window)
         checkGeometry(document, scroll, "tool-work-expanded")
-        for k in [0, 1, 3] {
+        for k in [0, 1, 2, 3, 4] {
+            if let row = cell(document, "w\(k)") { clip.scroll(to: NSPoint(x: 0, y: max(0, row.frame.minY - 150))); scroll.reflectScrolledClipView(clip); await spin(3); materialize(window) }
             guard let row = cell(document, "w\(k)"), let button = descendants(row).compactMap({ $0 as? NSButton }).first(where: { $0.bezelStyle == .disclosure && $0.superview?.isHidden == false }) else { fail("tool row w\(k) missing") }
             let nextTop = cell(document, "w\(k + 1)").map { $0.frame.minY }
             button.performClick(nil); await spin(3); materialize(window)
-            checkGeometry(document, scroll, "tool-\(k)-expanded")
+            checkGeometry(document, scroll, "tool-\(k)-expanded"); snapshot(scroll, "tool-\(k)")
             if let nextTop, let next = cell(document, "w\(k + 1)"), next.frame.minY <= nextTop { fail("expanding w\(k) did not push w\(k + 1)") }
+            if k >= 2 { button.performClick(nil); await spin(3); materialize(window); checkGeometry(document, scroll, "tool-\(k)-collapsed") }
         }
         // The deferred output loads later, as from the Store.
         workMessages[2].blocks[0] = .tool(id: "wt1", title: "工具 1", state: .completed, output: .inline((0..<120).map { "载入输出第 \($0) 行" }.joined(separator: "\n")))
@@ -328,7 +348,7 @@ def main():
         if subprocess.run(cmd, cwd=repo).returncode != 0: raise SystemExit('probe compilation failed')
         if args.keep: shutil.copy2(root / 'Probe', args.keep)
         env = dict(os.environ, PROBE_PAIRS=str(args.pairs))
-        if args.snapshot: env['PROBE_SNAPSHOT'] = str(args.snapshot)
+        if args.snapshot: env['PROBE_SNAPSHOT'] = str(args.snapshot); env['PROBE_VISIBLE'] = '1'
         if subprocess.run([str(root / 'Probe')], cwd=root, env=env, timeout=300).returncode != 0: raise SystemExit('probe failed')
 
 
