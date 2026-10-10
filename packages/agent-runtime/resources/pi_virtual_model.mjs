@@ -45,6 +45,7 @@ export default function (pi) {
       ctx.ui.setStatus("velune.session-metadata", JSON.stringify({sessionFile:manager.getSessionFile() ?? null,cwd:manager.getCwd(),name:manager.getSessionName() ?? null,createdUnixMs:Date.parse(manager.getHeader()?.timestamp ?? ""),messageIds,identityConfirmations}));
     },
   });
+  if (!selectionPath) return;
   const appendSelection = () => {
     const chosen = selection();
     pi.appendEntry("pi.virtual-model-state", {

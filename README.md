@@ -21,7 +21,7 @@
 - 已建立共享 Agent 指引、产品知识与下一步 Task Packet，由 Git 记录版本
 - 用户已认可核心产品设计、MCP／ACP 分工，以及 Rust＋SQLite、Apple／Android 原生 UI 方向
 - 已按复核澄清实际协作机制与持久化支撑的区别；Apple 桌面、FFI、SDK 桥等具体边界仍待原型验证
-- Pi、Codex app-server 与 DeepSeek Harness 已有版本化适配器；隔离验收使用真实运行时和本机合成上游，账户登录、真实服务与 UI 体验由用户验收
+- Pi、Codex app-server、DeepSeek Harness 与 Claude Code 已有版本化 Rust 适配器；原生／managed 模型、SSH 与受管 HOME 的共享核心和前端交付状态分别记录。账户登录、真实服务与 UI 体验由用户验收
 - 当前仓库同时承载产品实现、权威长期文档和易变的任务状态
 
 用户要求以持久化仓库承载后续讨论，不交付压缩包。远端地址为 <https://github.com/xiaoland/velune>；最初导入为重建文档快照，后续源码与文档由本仓库持续维护。
@@ -53,10 +53,12 @@ cargo run --locked -p velune-host -- inspect /tmp/velune-demo.sqlite
 
 Mac 构建默认安装到 `/Applications/Velune.app`，当前产品版本为 `0.1 beta.1`（归属 `VERSION`）；生成绑定契约与配置 schema 分开维护。安装器要求旧应用先退出；开发方按既有授权完成退出与重建安装。协作采用敏捷开发，需求可在实现中调整，关键设计先收敛再实施，具体规则见 [共享指引](AGENTS.md)。
 
-当前版本化运行时为 Pi 1.0.2、Codex 0.159.3、DeepSeek Harness 0.2.0-rc.2；不同 breaking-change 版本使用独立适配器。Codex 通过原生 thread API 读取逻辑历史，DeepSeek 通过 huihua 发行包只读历史；原生 app-server／ACP 控制执行，不复制解析器源码或新建会话数据库。实施与安装状态见 [多运行时任务](tasks/multi-runtime/packet.md)，构建和操作入口见 [开发说明](docs/development.md)。不要将隔离协议检查或成功构建当成真实模型循环已通过。
+当前 Rust 版本化运行时为 Pi 1.0.2、Codex 0.159.3、DeepSeek Harness 0.2.0-rc.2、Claude Code 2.1.286；不同 breaking-change 版本使用独立适配器。Codex 通过原生 thread API 读取逻辑历史，DeepSeek 通过 huihua 发行包只读历史；原生 app-server／ACP 控制执行，不复制解析器源码或新建会话数据库。实施与安装状态见 [多运行时任务](tasks/multi-runtime/packet.md)，构建和操作入口见 [开发说明](docs/development.md)。不要将隔离协议检查或成功构建当成真实模型循环已通过。
 
 跨 Harness 接续创建目标原生会话并交接可携带的文本上下文，Velune 只持久化原生引用和切换位置，消息仍由各 Harness 保存；统一逻辑会话可在重启后重新投影。不会重放工具执行或审批状态。当前能力与安装证据见 [接续任务](tasks/cross-harness-continuation/packet.md)。
 
 各平台遵循所属平台的原生视觉与交互习惯；品牌在图标和少量细节中体现。Mac 使用系统侧栏、工具栏和独立设置窗口，具体原则见 [产品定义](docs/prd/index.md#已确认的产品结构与质量方向)。
 
 共享 unit 入口：[ai](packages/ai/README.md)、[ai-provider](packages/ai-provider/README.md)、[conversation](packages/conversation/README.md)、[agent-runtime](packages/agent-runtime/README.md)、[gateway](packages/gateway/README.md)、[application](packages/application/README.md)、[bindings](packages/bindings/README.md)。平台入口：[Mac](app/mac/README.md)；本次拆分与验证见 [任务](tasks/package-boundaries/packet.md)。
+
+2026-10-10 的 [运行时扩展](tasks/runtime-provider-ssh/packet.md) 仅推进 Rust packages：新增 Claude Code、运行时既有模型选择、单轮 Velune Gateway 覆盖、OpenSSH 执行和受管 HOME。composer 及 SSH／HOME 设置界面明确待实现，本轮没有重新构建或安装 Mac app。

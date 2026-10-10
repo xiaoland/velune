@@ -12,6 +12,16 @@ pub(super) struct LogicalProjection {
     pub prefix: Vec<Message>,
 }
 
+fn single_target_alias(link: &ConversationLink) -> Option<&ConversationSegmentReference> {
+    let [segment] = link.segments.as_slice() else {
+        return None;
+    };
+    (link.id != segment.native_conversation_id
+        && segment.cutoff.is_none()
+        && segment.handoff.is_none())
+    .then_some(segment)
+}
+
 fn digest(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
 }
@@ -147,9 +157,7 @@ impl CoreRuntime {
                 .cloned()
                 .unwrap_or_else(|| ConversationSummary {
                     id: link.id.clone(),
-                    title: velune_conversation::ConversationTitle::Native(
-                        "来源不可用的关联会话".into(),
-                    ),
+                    title: velune_conversation::ConversationTitle::Untitled,
                     runtime_id: origin.runtime_instance_id.clone(),
                     cwd: None,
                     created_at_unix_ms: None,
@@ -175,6 +183,17 @@ impl CoreRuntime {
         }
         for summary in &mut native {
             self.set_management_capabilities(summary);
+            if let Some(segment) = self
+                .conversation_links
+                .iter()
+                .find(|link| link.id == summary.id)
+                .and_then(single_target_alias)
+                && !original
+                    .iter()
+                    .any(|item| item.id == segment.native_conversation_id)
+            {
+                summary.can_delete = self.segment_available(segment);
+            }
         }
         native
     }
@@ -213,15 +232,19 @@ impl CoreRuntime {
                     // a reserved Pi file not yet persisted after an ambiguous send.
                     // Keep checked source history visible, but never fabricate a resume.
                     tracing::warn!(target:"velune_application", event="conversation_context_unavailable", phase="history_tail", detail=%error);
-                    tail = Some(ConversationSnapshot {
+                    let unavailable = ConversationSnapshot {
                         revision:1, context_runtime_id:segment.runtime_instance_id.clone(),
                         conversation:ConversationSummary {id:segment.native_conversation_id.clone(),runtime_id:segment.runtime_instance_id.clone(),
                             title:velune_conversation::ConversationTitle::Untitled,cwd:None,created_at_unix_ms:None,updated_at_unix_ms:None,can_rename:false,can_delete:false},
                         resource_id:None, model_record_key:None,run_state:RunState::Failed,pending_interactions:Vec::new(),transcript_turns:Vec::new(),transcript_items:Vec::new(),transcript_outline:Vec::new(),transcript_message_identities:Vec::new(),message_identity_confirmations:Vec::new(),
                         messages:vec![Message { completed: true, id:"context-unavailable".into(),role:MessageRole::System,timestamp_unix_ms:None,
-                            blocks:vec![MessageBlock::Notice {text:"当前运行时的原生会话尚不可读取；来源历史已保留，未自动重发。请修复来源后重新打开。".into()}]}],
+                            blocks:vec![MessageBlock::Notice {text:"当前运行时的原生会话尚不可读取，未自动重发。请修复来源后重新打开。".into()}]}],
                         actions:crate::conversation::ConversationActions {can_send:false,can_cancel:false,can_switch:true},
-                    });
+                    };
+                    if index == 0 {
+                        origin = Some(unavailable.conversation.clone());
+                    }
+                    tail = Some(unavailable);
                     break;
                 }
                 Err(error) => return Err(error),
@@ -291,14 +314,20 @@ impl CoreRuntime {
         }
         let messages = display_segment(segment, &snapshot.messages, index);
         let activity = snapshot.conversation.updated_at_unix_ms;
-        snapshot.conversation = projection.origin.clone();
+        if index == 0 {
+            snapshot.conversation.id = projection.link.id.clone();
+        } else {
+            snapshot.conversation = projection.origin.clone();
+        }
         snapshot.conversation.updated_at_unix_ms =
             activity.or(snapshot.conversation.updated_at_unix_ms);
         self.set_management_capabilities(&mut snapshot.conversation);
         snapshot.messages = projection.prefix.clone();
-        snapshot
-            .messages
-            .push(self.boundary_message(segment, index));
+        if index > 0 {
+            snapshot
+                .messages
+                .push(self.boundary_message(segment, index));
+        }
         match messages {
             Ok(messages) => snapshot.messages.extend(messages),
             Err(error) => {
@@ -325,39 +354,100 @@ impl CoreRuntime {
         Ok(())
     }
 
+    pub(super) fn replace_unsubmitted_target(
+        &mut self,
+        runtime_id: &str,
+        selection: &crate::ModelSelection,
+    ) -> Result<(), RuntimeError> {
+        let draft = self
+            .unsubmitted_draft
+            .as_ref()
+            .ok_or_else(|| RuntimeError::invalid("未提交草稿不可用"))?;
+        let public_id = draft.public_id.clone();
+        let previous = self
+            .native_snapshot()
+            .ok_or_else(|| RuntimeError::invalid("未提交草稿不可用"))?;
+        let previous_selection = self.model_selection.clone();
+        let previous_projection = self.logical_projection.take();
+        let mut target = previous.clone();
+        let native_title = match &target.conversation.title {
+            velune_conversation::ConversationTitle::Native(title) => Some(title.clone()),
+            _ => None,
+        };
+        target.conversation.runtime_id = runtime_id.into();
+        let prepared = (|| {
+            self.prepare_with_selection(target, selection, true)?;
+            if matches!(self.active_state, ActiveState::Pi)
+                && let Some(title) = native_title
+            {
+                self.pi
+                    .client
+                    .as_mut()
+                    .expect("created Pi draft")
+                    .request(json!({"type":"set_session_name","name":title}))
+                    .map_err(|error| RuntimeError::context("Pi 草稿名称转交", error))?;
+                self.pi
+                    .projection
+                    .as_mut()
+                    .expect("created Pi draft")
+                    .invalidate_history();
+                self.sync_projection()?;
+            }
+            Ok(())
+        })();
+        if let Err(error) = prepared {
+            let _ = self.shutdown_active();
+            self.model_record_key = previous.model_record_key.clone();
+            self.model_selection = previous_selection;
+            self.active_state = ActiveState::History(Box::new(previous));
+            self.logical_projection = previous_projection;
+            return Err(error);
+        }
+        let native = self
+            .native_snapshot()
+            .expect("created replacement conversation");
+        let link = ConversationLink {
+            id: public_id.clone(),
+            segments: vec![self.segment_reference(&native)?],
+        };
+        let mut origin = native.conversation.clone();
+        origin.id = public_id;
+        self.logical_projection = Some(LogicalProjection {
+            link,
+            origin,
+            prefix: Vec::new(),
+        });
+        let draft = self
+            .unsubmitted_draft
+            .as_mut()
+            .expect("unsubmitted replacement");
+        draft.native_id = native.conversation.id;
+        draft.runtime_id = native.conversation.runtime_id;
+        Ok(())
+    }
+
+    pub(super) fn commit_unsubmitted_alias(&mut self) -> Result<(), RuntimeError> {
+        if self.unsubmitted_draft.is_some()
+            && let Some(projection) = &self.logical_projection
+        {
+            let mut links = self.conversation_links.clone();
+            links.retain(|link| link.id != projection.link.id);
+            links.push(projection.link.clone());
+            self.store_links(links)?;
+        }
+        Ok(())
+    }
+
     pub(super) fn continue_in_runtime(
         &mut self,
         runtime_id: &str,
-        model: &str,
+        model: &crate::ModelSelection,
         text: &str,
     ) -> Result<Value, RuntimeError> {
         let raw = self
             .native_snapshot()
             .ok_or_else(|| RuntimeError::invalid("conversation is not active"))?;
-        let source = self.read_history(&raw.conversation.runtime_id, &raw.conversation.id);
-        let empty_pi_draft = matches!(self.active_state, ActiveState::Pi)
-            && raw.messages.is_empty()
-            && self.logical_projection.is_none()
-            && raw
-                .conversation
-                .id
-                .strip_prefix(&format!("{}:", raw.conversation.runtime_id))
-                .is_some_and(|path| {
-                    fs::symlink_metadata(path)
-                        .is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound)
-                });
-        if empty_pi_draft {
-            // A native empty draft has no durable history to associate. The first
-            // accepted target becomes the origin; do not persist a fictitious source.
-            let mut target = raw.clone();
-            target.conversation.runtime_id = runtime_id.into();
-            target.messages.clear();
-            self.prepare_snapshot(target, model, true)?;
-            self.logical_projection = None;
-            return self
-                .send_action(&json!({"payload":{"runtimeInstanceID":runtime_id,"text":text}}));
-        }
-        let source = source?;
+        let source = self.read_history(&raw.conversation.runtime_id, &raw.conversation.id)?;
         let (mut link, mut prefix, origin) = if let Some(projection) = &self.logical_projection {
             // Re-read every sealed segment before carrying context into another runtime.
             let (_, checked) = self.read_link(&projection.link)?;
@@ -412,7 +502,7 @@ impl CoreRuntime {
         let mut target = source.clone();
         target.conversation.runtime_id = runtime_id.into();
         target.messages.clear();
-        self.prepare_snapshot(target, model, true)?;
+        self.prepare_with_selection(target, model, true)?;
         tracing::info!(target:"velune_application", event="conversation_handoff_prepared", phase="prepare");
         let native = self
             .native_snapshot()
@@ -472,6 +562,27 @@ impl CoreRuntime {
         request: &Value,
         deleting: bool,
     ) -> Result<Value, RuntimeError> {
+        if deleting && let Some(segment) = single_target_alias(&link) {
+            let runtime = self.runtime_instance(&segment.runtime_instance_id)?;
+            if !self
+                .summaries_for(runtime)?
+                .iter()
+                .any(|summary| summary.id == segment.native_conversation_id)
+            {
+                if self
+                    .current_snapshot()
+                    .is_some_and(|snapshot| snapshot.conversation.id == link.id)
+                {
+                    self.shutdown_active()?;
+                    self.logical_projection = None;
+                    self.unsubmitted_draft = None;
+                }
+                let mut links = self.conversation_links.clone();
+                links.retain(|existing| existing.id != link.id);
+                self.store_links(links)?;
+                return self.list();
+            }
+        }
         if deleting {
             let mut summary = ConversationSummary {
                 id: link.id.clone(),

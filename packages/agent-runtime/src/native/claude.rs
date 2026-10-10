@@ -1,0 +1,471 @@
+//! Claude Code 2.1.286 stream-json control; provider overrides exist only in the turn child.
+use super::*;
+
+impl NativeSession {
+    pub(super) fn claude_command(
+        config: &NativeConfig,
+        selection: Option<&RuntimeModel>,
+        session: Option<(&str, Option<&Path>, bool)>,
+    ) -> Result<Command> {
+        let mut command = Command::new(&config.binary);
+        command.env("CLAUDE_CODE_SDK_READS_SESSION_STATE", "1");
+        command.args([
+            "--print",
+            "--input-format",
+            "stream-json",
+            "--output-format",
+            "stream-json",
+            "--verbose",
+            "--include-partial-messages",
+            "--permission-prompt-tool",
+            "stdio",
+        ]);
+        if let Some((id, cwd, fresh)) = session {
+            command
+                .arg(if fresh { "--session-id" } else { "--resume" })
+                .arg(id);
+            if let Some(cwd) = cwd {
+                command.current_dir(cwd);
+            }
+        }
+        if let Some(gateway) = &config.gateway {
+            if gateway.protocol != "anthropic-messages" {
+                return Err(Error::new("Claude Code 需要 Anthropic Messages 网关协议"));
+            }
+            // The host-managed flag prevents settings.env from replacing the turn's endpoint and auth.
+            command
+                .env("CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST", "1")
+                .env(
+                    "ANTHROPIC_BASE_URL",
+                    gateway
+                        .endpoint
+                        .strip_suffix("/v1")
+                        .unwrap_or(&gateway.endpoint),
+                )
+                .env("ANTHROPIC_AUTH_TOKEN", &gateway.token)
+                .env("ANTHROPIC_API_KEY", "")
+                .env("CLAUDE_CODE_OAUTH_TOKEN", "")
+                .env("CLAUDE_CODE_USE_BEDROCK", "0")
+                .env("CLAUDE_CODE_USE_VERTEX", "0")
+                .env("CLAUDE_CODE_USE_FOUNDRY", "0")
+                .env("ANTHROPIC_CUSTOM_HEADERS", "")
+                .env("ANTHROPIC_MODEL", &gateway.model_alias)
+                .env("ANTHROPIC_DEFAULT_SONNET_MODEL", &gateway.model_alias)
+                .env("ANTHROPIC_DEFAULT_OPUS_MODEL", &gateway.model_alias)
+                .env("ANTHROPIC_DEFAULT_HAIKU_MODEL", &gateway.model_alias)
+                .env("CLAUDE_CODE_SUBAGENT_MODEL", &gateway.model_alias)
+                .arg("--model")
+                .arg(&gateway.model_alias);
+        } else {
+            command.env_remove("CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST");
+            if let Some(selection) = selection {
+                command.arg("--model").arg(&selection.id);
+            }
+        }
+        Ok(command)
+    }
+    pub(super) fn claude_initialize(&mut self) -> Result<()> {
+        let response = self
+            .rpc
+            .claude_control(json!({"subtype":"initialize","hooks":{}}))?;
+        self.available_models = response["models"].as_array().cloned().unwrap_or_default();
+        Ok(())
+    }
+    pub(super) fn claude_models(&self) -> Result<Vec<RuntimeModel>> {
+        Ok(self
+            .available_models
+            .iter()
+            .filter_map(|model| {
+                let id = model["value"].as_str()?;
+                Some(RuntimeModel {
+                    provider_id: None,
+                    id: id.into(),
+                    name: model["displayName"].as_str().unwrap_or(id).into(),
+                })
+            })
+            .collect())
+    }
+    pub(super) fn claude_create(&mut self, cwd: Option<&Path>, runtime_id: &str) -> Result<()> {
+        let mut bytes = [0_u8; 16];
+        getrandom::fill(&mut bytes)
+            .map_err(|error| Error::new(format!("Claude 会话身份生成失败：{error}")))?;
+        bytes[6] = (bytes[6] & 0x0f) | 0x40;
+        bytes[8] = (bytes[8] & 0x3f) | 0x80;
+        let hex: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
+        let id = format!(
+            "{}-{}-{}-{}-{}",
+            &hex[..8],
+            &hex[8..12],
+            &hex[12..16],
+            &hex[16..20],
+            &hex[20..]
+        );
+        let cwd = cwd
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| self.default_cwd.clone());
+        self.replace_snapshot(&id, Some(&cwd), runtime_id, Vec::new());
+        self.claude_fresh = true;
+        Ok(())
+    }
+    pub(super) fn claude_open(
+        &mut self,
+        id: &str,
+        cwd: Option<&Path>,
+        runtime_id: &str,
+        history: Vec<Message>,
+    ) -> Result<()> {
+        self.replace_snapshot(id, cwd, runtime_id, history);
+        self.claude_fresh = false;
+        Ok(())
+    }
+    pub(super) fn claude_send(&mut self, text: &str) -> Result<()> {
+        self.claude_result = None;
+        self.claude_tasks.clear();
+        self.claude_requires_action = false;
+        self.claude_stream_id = None;
+        self.rpc.write(&json!({"type":"user","session_id":self.native_id,"parent_tool_use_id":null,"message":{"role":"user","content":[{"type":"text","text":text}]}}))?;
+        self.turn_id = Some(format!(
+            "{}:{}",
+            self.epoch,
+            self.snapshot.as_ref().map_or(0, |s| s.revision)
+        ));
+        self.message(Message {
+            completed: true,
+            id: format!("{}:user", self.turn_id.as_deref().unwrap_or_default()),
+            role: MessageRole::User,
+            timestamp_unix_ms: None,
+            blocks: vec![MessageBlock::Text { text: text.into() }],
+        });
+        self.claude_fresh = false;
+        self.running();
+        Ok(())
+    }
+    pub(super) fn claude_cancel(&mut self) -> Result<()> {
+        self.rpc.claude_control(json!({"subtype":"interrupt"}))?;
+        if let Some(snapshot) = &mut self.snapshot {
+            snapshot.run_state = RunState::Stopping;
+            snapshot.revision += 1;
+        }
+        Ok(())
+    }
+    pub(super) fn claude_handle_record(&mut self, record: Value) -> Result<()> {
+        match record["type"].as_str() {
+            Some("control_cancel_request") => {
+                let expired = self
+                    .interactions
+                    .iter()
+                    .find(|(_, pending)| pending.id == record["request_id"])
+                    .map(|(id, _)| id.clone());
+                if let Some(id) = expired {
+                    self.interactions.remove(&id);
+                    if let Some(snapshot) = &mut self.snapshot {
+                        snapshot
+                            .pending_interactions
+                            .retain(|interaction| interaction.id != id);
+                        snapshot.revision += 1;
+                    }
+                }
+            }
+            Some("control_request") => {
+                let request = &record["request"];
+                let id = record["request_id"].clone();
+                if request["subtype"] == "can_use_tool"
+                    && self.busy()
+                    && request["tool_name"] == "AskUserQuestion"
+                {
+                    let questions = request["input"]["questions"]
+                        .as_array()
+                        .ok_or_else(|| Error::new("Claude 用户问题格式无效"))?
+                        .iter()
+                        .map(|question| {
+                            let text = question["question"]
+                                .as_str()
+                                .filter(|text| !text.is_empty())
+                                .ok_or_else(|| Error::new("Claude 用户问题为空"))?;
+                            let options = question["options"]
+                                .as_array()
+                                .into_iter()
+                                .flatten()
+                                .filter_map(|option| {
+                                    option["label"].as_str().map(|label| InteractionOption {
+                                        id: label.into(),
+                                        label: label.into(),
+                                    })
+                                })
+                                .collect();
+                            Ok(InteractionQuestion {
+                                id: text.into(),
+                                text: text.into(),
+                                options,
+                                secret: false,
+                            })
+                        })
+                        .collect::<Result<Vec<_>>>()?;
+                    if questions.is_empty() {
+                        return Err(Error::new("Claude 用户问题为空"));
+                    }
+                    self.add_interaction(
+                        PendingRequest {
+                            id,
+                            method: "AskUserQuestion".into(),
+                            options: Vec::new(),
+                            question_ids: questions.iter().map(|q| q.id.clone()).collect(),
+                            payload: request.clone(),
+                        },
+                        InteractionKind::UserInput { questions },
+                    );
+                } else if request["subtype"] == "can_use_tool" && self.busy() {
+                    self.add_interaction(
+                        PendingRequest {
+                            id,
+                            method: "can_use_tool".into(),
+                            options: vec!["allow".into(), "deny".into()],
+                            question_ids: Vec::new(),
+                            payload: request.clone(),
+                        },
+                        InteractionKind::Approval {
+                            title: format!(
+                                "允许 {}？",
+                                request["tool_name"].as_str().unwrap_or("工具操作")
+                            ),
+                            detail: serde_json::to_string(&request["input"]).unwrap_or_default(),
+                            options: vec![
+                                InteractionOption {
+                                    id: "allow".into(),
+                                    label: "允许这一次".into(),
+                                },
+                                InteractionOption {
+                                    id: "deny".into(),
+                                    label: "拒绝".into(),
+                                },
+                            ],
+                        },
+                    );
+                } else {
+                    self.rpc.write(&json!({"type":"control_response","response":{"subtype":"error","request_id":id,"error":"Unsupported control request"}}))?;
+                }
+            }
+            Some("system") => match record["subtype"].as_str() {
+                Some("session_state_changed") => {
+                    self.claude_requires_action = record["state"] == "requires_action";
+                    if record["state"] == "idle"
+                        && self.busy()
+                        && let Some((failed, _)) = self.claude_result.take()
+                    {
+                        self.finish_turn(if failed {
+                            RunState::Failed
+                        } else {
+                            RunState::Idle
+                        })?;
+                        if failed {
+                            self.notice("Claude Code 轮次未成功完成，请检查运行时诊断。");
+                        }
+                    }
+                }
+                Some("task_started")
+                    if matches!(
+                        record["task_type"].as_str(),
+                        Some("local_agent" | "local_workflow")
+                    ) =>
+                {
+                    if let Some(id) = record["task_id"].as_str() {
+                        self.claude_tasks.insert(id.into());
+                    }
+                }
+                Some("task_notification") => {
+                    if let Some(id) = record["task_id"].as_str() {
+                        self.claude_tasks.remove(id);
+                    }
+                }
+                Some("task_updated")
+                    if matches!(
+                        record["patch"]["status"].as_str(),
+                        Some("completed" | "failed" | "stopped" | "killed")
+                    ) =>
+                {
+                    if let Some(id) = record["task_id"].as_str() {
+                        self.claude_tasks.remove(id);
+                    }
+                }
+                _ => {}
+            },
+            Some("assistant" | "user") => {
+                if let Some((_, last_activity)) = &mut self.claude_result {
+                    *last_activity = std::time::Instant::now();
+                }
+                let role = if record["type"] == "assistant" {
+                    MessageRole::Assistant
+                } else {
+                    MessageRole::Tool
+                };
+                let id = record["message"]["id"]
+                    .as_str()
+                    .or_else(|| record["uuid"].as_str())
+                    .unwrap_or("message");
+                let blocks = claude_blocks(&record["message"]["content"]);
+                if !blocks.is_empty() {
+                    self.message(Message {
+                        completed: true,
+                        id: id.into(),
+                        role,
+                        timestamp_unix_ms: None,
+                        blocks,
+                    });
+                }
+            }
+            Some("stream_event") => {
+                if let Some((_, last_activity)) = &mut self.claude_result {
+                    *last_activity = std::time::Instant::now();
+                }
+                let event = &record["event"];
+                if event["type"] == "message_start" {
+                    self.claude_stream_id = event["message"]["id"].as_str().map(str::to_owned);
+                }
+                if event["type"] == "content_block_delta" {
+                    let thought = event["delta"]["type"] == "thinking_delta";
+                    let delta = if thought {
+                        event["delta"]["thinking"].as_str()
+                    } else {
+                        event["delta"]["text"].as_str()
+                    };
+                    if let Some(delta) = delta {
+                        let id = self.claude_stream_id.clone().unwrap_or_else(|| {
+                            format!(
+                                "{}:stream:{}",
+                                self.turn_id.as_deref().unwrap_or_default(),
+                                event["index"]
+                            )
+                        });
+                        let mut message = self
+                            .snapshot
+                            .as_ref()
+                            .and_then(|s| s.messages.iter().find(|m| m.id == id))
+                            .cloned()
+                            .unwrap_or(Message {
+                                completed: false,
+                                id,
+                                role: MessageRole::Assistant,
+                                timestamp_unix_ms: None,
+                                blocks: Vec::new(),
+                            });
+                        match message.blocks.last_mut() {
+                            Some(MessageBlock::Text { text }) if !thought => text.push_str(delta),
+                            Some(MessageBlock::Reasoning { text }) if thought => {
+                                text.push_str(delta)
+                            }
+                            _ => message.blocks.push(if thought {
+                                MessageBlock::Reasoning { text: delta.into() }
+                            } else {
+                                MessageBlock::Text { text: delta.into() }
+                            }),
+                        }
+                        self.message(message);
+                    }
+                }
+            }
+            Some("result") => {
+                // Partial records are replaced by the authoritative assistant message before terminal delivery.
+                let prefix = format!("{}:stream:", self.turn_id.as_deref().unwrap_or_default());
+                if let Some(snapshot) = &mut self.snapshot {
+                    snapshot
+                        .messages
+                        .retain(|message| !message.id.starts_with(&prefix));
+                }
+                let failed = record["is_error"] == true || record["subtype"] != "success";
+                self.claude_result = Some((failed, std::time::Instant::now()));
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+    pub(super) fn claude_check_terminal_timeout(&mut self) {
+        // Claude SDK 2.1.286 can keep observers alive after result; its between-turn ceiling is ten minutes.
+        if self
+            .claude_result
+            .as_ref()
+            .is_some_and(|(_, at)| at.elapsed() >= std::time::Duration::from_secs(600))
+            && self.claude_tasks.is_empty()
+            && !self.claude_requires_action
+            && self.interactions.is_empty()
+        {
+            self.claude_result = None;
+            self.settle(RunState::Failed);
+            self.notice("Claude Code 返回结果后未确认空闲；已结束本轮进程，请检查原生运行时状态。");
+        }
+    }
+    pub(super) fn claude_reply(
+        &mut self,
+        pending: &PendingRequest,
+        reply: RuntimeInteractionReply,
+    ) -> Result<()> {
+        let response = match reply {
+            RuntimeInteractionReply::Answers { answers } if pending.method == "AskUserQuestion" => {
+                let mut selected = serde_json::Map::new();
+                for answer in answers {
+                    if !pending.question_ids.contains(&answer.question_id)
+                        || selected.contains_key(&answer.question_id)
+                    {
+                        return Err(Error::new("Claude 答案与当前问题不匹配"));
+                    }
+                    selected.insert(answer.question_id, json!(answer.values.join(", ")));
+                }
+                if selected.len() != pending.question_ids.len() {
+                    return Err(Error::new("请回答所有问题"));
+                }
+                let mut input = pending.payload["input"].clone();
+                input["answers"] = json!(selected);
+                json!({"behavior":"allow","updatedInput":input})
+            }
+            RuntimeInteractionReply::Decision { option_id } if option_id == "allow" => {
+                json!({"behavior":"allow","updatedInput":pending.payload["input"]})
+            }
+            RuntimeInteractionReply::Decision { option_id } if option_id == "deny" => {
+                json!({"behavior":"deny","message":"User denied this operation"})
+            }
+            RuntimeInteractionReply::Cancel => {
+                json!({"behavior":"deny","message":"User cancelled this operation","interrupt":true})
+            }
+            _ => return Err(Error::new("Claude 工具权限回复无效")),
+        };
+        self.rpc.write(&json!({"type":"control_response","response":{"subtype":"success","request_id":pending.id,"response":response}}))
+    }
+}
+fn claude_blocks(content: &Value) -> Vec<MessageBlock> {
+    if let Some(text) = content.as_str() {
+        return vec![MessageBlock::Text { text: text.into() }];
+    }
+    content
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|block| match block["type"].as_str() {
+            Some("text") => block["text"]
+                .as_str()
+                .map(|text| MessageBlock::Text { text: text.into() }),
+            Some("thinking") => block["thinking"]
+                .as_str()
+                .map(|text| MessageBlock::Reasoning { text: text.into() }),
+            Some("tool_use") => Some(MessageBlock::Tool {
+                tool_id: block["id"].as_str().map(str::to_owned),
+                title: block["name"].as_str().unwrap_or("工具操作").into(),
+                state: ToolState::Running,
+                output: None,
+            }),
+            Some("tool_result") => Some(MessageBlock::Tool {
+                tool_id: block["tool_use_id"].as_str().map(str::to_owned),
+                title: "工具结果".into(),
+                state: if block["is_error"] == true {
+                    ToolState::Failed
+                } else {
+                    ToolState::Completed
+                },
+                output: Some(if let Some(text) = block["content"].as_str() {
+                    text.into()
+                } else {
+                    block["content"].to_string()
+                }),
+            }),
+            _ => None,
+        })
+        .collect()
+}

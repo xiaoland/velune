@@ -191,13 +191,15 @@ impl Repository {
         let valid_digest =
             |digest: &str| digest.len() == 64 && digest.bytes().all(|b| b.is_ascii_hexdigit());
         for link in &links {
+            // Replacing an unsubmitted draft preserves its public ID as an alias
+            // for the first real target, including after later handoffs.
             if link.id.is_empty()
                 || !ids.insert(&link.id)
-                || link.segments.len() < 2
-                || link
-                    .segments
-                    .first()
-                    .is_none_or(|s| s.native_conversation_id != link.id)
+                || link.segments.is_empty()
+                || link.segments.first().is_none_or(|s| {
+                    s.handoff.is_some()
+                        || (link.segments.len() == 1 && s.native_conversation_id == link.id)
+                })
             {
                 return Err(RuntimeError::invalid("关联会话身份或段顺序无效"));
             }

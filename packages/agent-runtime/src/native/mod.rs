@@ -6,10 +6,13 @@ use std::{
     path::{Path, PathBuf},
     process::Command,
 };
+mod claude;
 mod codex;
-pub use codex::manage_thread;
+pub use codex::{manage_thread, manage_thread_at};
 mod codex_history;
-pub use codex_history::{list_codex_history, read_codex_history};
+pub use codex_history::{
+    list_codex_history, list_codex_history_at, read_codex_history, read_codex_history_at,
+};
 mod deepseek;
 pub(crate) mod rpc;
 #[derive(thiserror::Error, Debug)]
@@ -38,21 +41,28 @@ impl Error {
         &self.detail
     }
 }
+impl From<crate::execution::Error> for Error {
+    fn from(error: crate::execution::Error) -> Self {
+        Self::new(error.to_string())
+    }
+}
 pub type Result<T> = std::result::Result<T, Error>;
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum NativeKind {
     Codex,
     DeepSeek,
+    ClaudeCode,
 }
 impl NativeKind {
     pub fn type_id(self) -> &'static str {
         match self {
             Self::Codex => "codex-0.159.3",
             Self::DeepSeek => "dsh-acp-0.2.0-rc.2",
+            Self::ClaudeCode => "claude-code-2.1.286",
         }
     }
 }
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct GatewayInjection {
     pub endpoint: String,
     pub token: String,
@@ -64,13 +74,21 @@ pub struct GatewayInjection {
 }
 #[derive(Clone)]
 pub struct NativeConfig {
+    pub execution: crate::execution::ExecutionTarget,
+    pub os_home: Option<PathBuf>,
     pub kind: NativeKind,
     pub binary: PathBuf,
     pub node_binary: Option<PathBuf>,
     pub agent_dir: PathBuf,
     pub resources_directory: PathBuf,
     pub projection_directory: PathBuf,
-    pub gateway: GatewayInjection,
+    pub gateway: Option<GatewayInjection>,
+}
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct RuntimeModel {
+    pub provider_id: Option<String>,
+    pub id: String,
+    pub name: String,
 }
 #[derive(Clone)]
 struct PendingRequest {
@@ -93,9 +111,19 @@ pub struct NativeSession {
     interaction_sequence: u64,
     epoch: String,
     failed: bool,
+    native_selection: Option<RuntimeModel>,
+    native_provider: Option<String>,
+    claude_result: Option<(bool, std::time::Instant)>,
+    claude_tasks: std::collections::BTreeSet<String>,
+    claude_requires_action: bool,
+    claude_stream_id: Option<String>,
+    restart_required: bool,
+    gateway_turn: bool,
+    claude_fresh: bool,
+    tunnel: Option<crate::execution::GatewayTunnel>,
 }
 impl NativeSession {
-    pub fn connect(config: NativeConfig) -> Result<Self> {
+    pub fn connect(mut config: NativeConfig) -> Result<Self> {
         for path in [
             &config.binary,
             &config.agent_dir,
@@ -106,14 +134,46 @@ impl NativeSession {
                 return Err(Error::new("运行时路径必须为绝对路径"));
             }
         }
-        crate::version::check_version(
+        crate::version::check_version_at(
             config.kind.type_id(),
             &config.binary,
             config.node_binary.as_deref(),
+            &config.execution,
+            config.os_home.as_deref(),
         )?;
-        let default_cwd = std::env::current_dir()
-            .map_err(|error| Error::new(format!("运行时默认工作目录不可用：{error}")))?;
-        let rpc = Self::spawn_rpc(&config)?;
+        let default_cwd = if config.execution.is_local() {
+            std::env::current_dir()
+                .map_err(|error| Error::new(format!("运行时默认工作目录不可用：{error}")))?
+        } else if let Some(home) = &config.os_home {
+            home.clone()
+        } else {
+            let bytes = config.execution.output(Command::new("pwd"), None, None)?;
+            let cwd = std::str::from_utf8(&bytes)
+                .map_err(|_| Error::new("远端工作目录不是有效文本"))?
+                .trim_end_matches(['\r', '\n']);
+            let path = PathBuf::from(cwd);
+            if !path.is_absolute() {
+                return Err(Error::new("远端工作目录不是绝对路径"));
+            }
+            path
+        };
+        let selected_gateway = config.gateway.take();
+        let mut active = config.clone();
+        let tunnel = if config.kind == NativeKind::Codex {
+            if let Some(gateway) = selected_gateway.as_ref() {
+                let tunnel =
+                    crate::execution::GatewayTunnel::open(&config.execution, &gateway.endpoint)?;
+                let mut injection = gateway.clone();
+                injection.endpoint = tunnel.endpoint().into();
+                active.gateway = Some(injection);
+                Some(tunnel)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        let rpc = Self::spawn_rpc(&active, None, None)?;
         let mut bytes = [0; 8];
         getrandom::fill(&mut bytes)
             .map_err(|error| Error::new(format!("运行时会话身份生成失败：{error}")))?;
@@ -129,48 +189,77 @@ impl NativeSession {
             available_models: Vec::new(),
             interaction_sequence: 0,
             failed: false,
+            native_selection: None,
+            native_provider: None,
+            claude_result: None,
+            claude_tasks: std::collections::BTreeSet::new(),
+            claude_requires_action: false,
+            claude_stream_id: None,
+            restart_required: false,
+            gateway_turn: tunnel.is_some(),
+            claude_fresh: false,
+            tunnel,
             epoch: format!("{:x}", u64::from_le_bytes(bytes)),
         };
         session.initialize()?;
+        session.config.gateway = selected_gateway;
         Ok(session)
     }
-    fn spawn_rpc(config: &NativeConfig) -> Result<rpc::RpcClient> {
-        let command = match config.kind {
+    fn spawn_rpc(
+        config: &NativeConfig,
+        selection: Option<&RuntimeModel>,
+        session: Option<(&str, Option<&Path>, bool)>,
+    ) -> Result<rpc::RpcClient> {
+        let mut command = match config.kind {
             NativeKind::Codex => {
-                let mut c = Command::new(&config.binary);
-                c.arg("app-server");
-                c
+                let mut command = Command::new(&config.binary);
+                command.arg("app-server");
+                command
             }
             NativeKind::DeepSeek => Self::dsh_command(config)?,
+            NativeKind::ClaudeCode => Self::claude_command(config, selection, session)?,
         };
         let home_key = match config.kind {
             NativeKind::Codex => "CODEX_HOME",
             NativeKind::DeepSeek => "DSH_HOME",
+            NativeKind::ClaudeCode => "CLAUDE_CONFIG_DIR",
         };
-        rpc::RpcClient::spawn(
-            command,
-            &[
-                (
-                    home_key.into(),
-                    config.agent_dir.to_string_lossy().into_owned(),
-                ),
-                ("VELUNE_GATEWAY_TOKEN".into(), config.gateway.token.clone()),
-            ],
-        )
+        command.env(home_key, &config.agent_dir);
+        if let Some(gateway) = &config.gateway {
+            command.env("VELUNE_GATEWAY_TOKEN", &gateway.token);
+        } else {
+            command.env_remove("VELUNE_GATEWAY_TOKEN");
+        }
+        rpc::RpcClient::spawn_at(command, &config.execution, config.os_home.as_deref())
     }
     fn initialize(&mut self) -> Result<()> {
         match self.config.kind {
             NativeKind::Codex => self.codex_initialize(),
             NativeKind::DeepSeek => self.dsh_initialize(),
+            NativeKind::ClaudeCode => self.claude_initialize(),
         }
     }
     pub fn create(&mut self, cwd: Option<&Path>, runtime_id: &str) -> Result<ConversationSnapshot> {
         self.ensure_idle()?;
         self.validate_cwd(cwd)?;
-        match self.config.kind {
-            NativeKind::Codex => self.codex_create(cwd, runtime_id)?,
-            NativeKind::DeepSeek => self.dsh_create(cwd, runtime_id)?,
+        let gateway = if self.gateway_turn {
+            None
+        } else {
+            self.config.gateway.take()
         };
+        let outcome: Result<()> = (|| {
+            match self.config.kind {
+                NativeKind::Codex => self.codex_create(cwd, runtime_id)?,
+                NativeKind::DeepSeek => self.dsh_create(cwd, runtime_id)?,
+                NativeKind::ClaudeCode => self.claude_create(cwd, runtime_id)?,
+            };
+            Ok(())
+        })();
+        if let Some(gateway) = gateway {
+            self.config.gateway = Some(gateway);
+        }
+        outcome?;
+        self.restart_required = false;
         self.snapshot
             .clone()
             .ok_or_else(|| Error::new("运行时未创建会话"))
@@ -187,10 +276,24 @@ impl NativeSession {
         if native_id.is_empty() {
             return Err(Error::new("会话身份为空"));
         }
-        match self.config.kind {
-            NativeKind::Codex => self.codex_open(native_id, cwd, runtime_id, history)?,
-            NativeKind::DeepSeek => self.dsh_open(native_id, cwd, runtime_id, history)?,
+        let gateway = if self.gateway_turn {
+            None
+        } else {
+            self.config.gateway.take()
         };
+        let outcome: Result<()> = (|| {
+            match self.config.kind {
+                NativeKind::Codex => self.codex_open(native_id, cwd, runtime_id, history)?,
+                NativeKind::DeepSeek => self.dsh_open(native_id, cwd, runtime_id, history)?,
+                NativeKind::ClaudeCode => self.claude_open(native_id, cwd, runtime_id, history)?,
+            };
+            Ok(())
+        })();
+        if let Some(gateway) = gateway {
+            self.config.gateway = Some(gateway);
+        }
+        outcome?;
+        self.restart_required = false;
         self.snapshot
             .clone()
             .ok_or_else(|| Error::new("运行时未恢复会话"))
@@ -203,10 +306,15 @@ impl NativeSession {
         if self.native_id.is_none() {
             return Err(Error::new("没有活动会话"));
         }
-        match self.config.kind {
+        let result = self.prepare_turn().and_then(|()| match self.config.kind {
             NativeKind::Codex => self.codex_send(text),
             NativeKind::DeepSeek => self.dsh_send(text),
+            NativeKind::ClaudeCode => self.claude_send(text),
+        });
+        if result.is_err() {
+            self.fail_connection();
         }
+        result
     }
     pub fn cancel(&mut self) -> Result<()> {
         if !self.busy() {
@@ -215,34 +323,126 @@ impl NativeSession {
         match self.config.kind {
             NativeKind::Codex => self.codex_cancel(),
             NativeKind::DeepSeek => self.dsh_cancel(),
+            NativeKind::ClaudeCode => self.claude_cancel(),
         }
     }
+    /// Select a gateway for the next turn. Existing native provider settings are never rewritten.
     pub fn select_model(&mut self, injection: GatewayInjection) -> Result<()> {
         self.ensure_idle()?;
-        if injection.protocol != self.config.gateway.protocol
-            || injection.endpoint != self.config.gateway.endpoint
-            || injection.token != self.config.gateway.token
-        {
-            return Err(Error::new("模型协议或网关实例已变化，请重新连接运行时"));
+        if self.config.gateway.as_ref() != Some(&injection) {
+            self.restart_required = true;
         }
+        self.config.gateway = Some(injection);
+        Ok(())
+    }
+    /// DeepSeek requires the provider identity returned by its native catalog.
+    /// Claude Code retains its configured provider and accepts no provider identity.
+    pub fn select_native_model(
+        &mut self,
+        provider_id: Option<String>,
+        model_id: String,
+    ) -> Result<()> {
+        self.ensure_idle()?;
+        if model_id.trim().is_empty()
+            || model_id.chars().any(char::is_control)
+            || provider_id
+                .as_deref()
+                .is_some_and(|id| id.trim().is_empty() || id.chars().any(char::is_control))
+        {
+            return Err(Error::new("原生模型身份不能为空"));
+        }
+        if self.config.kind == NativeKind::ClaudeCode && provider_id.is_some() {
+            return Err(Error::new(
+                "Claude Code 使用运行时既有提供商，不能指定另一份提供商身份",
+            ));
+        }
+        if self.config.kind == NativeKind::DeepSeek && provider_id.is_none() {
+            return Err(Error::new("DeepSeek 原生模型选择必须包含提供商身份"));
+        }
+        self.native_selection = Some(RuntimeModel {
+            provider_id,
+            name: model_id.clone(),
+            id: model_id,
+        });
+        self.config.gateway = None;
+        self.restart_required = true;
+        Ok(())
+    }
+    pub fn models(&mut self) -> Result<Vec<RuntimeModel>> {
+        self.ensure_idle()?;
         match self.config.kind {
-            NativeKind::Codex => {
-                self.config.gateway = injection;
-                Ok(())
-            }
-            NativeKind::DeepSeek => {
-                let outcome = self.dsh_select_model(injection);
-                if outcome.is_err() {
-                    // DSH selection replaces its control process; a partial replacement
-                    // cannot safely continue under the previous model selection.
-                    self.fail_connection();
-                }
-                outcome
-            }
+            NativeKind::Codex => self.codex_models(),
+            NativeKind::DeepSeek => self.dsh_models(),
+            NativeKind::ClaudeCode => self.claude_models(),
         }
     }
+    fn prepare_turn(&mut self) -> Result<()> {
+        if self.config.kind != NativeKind::ClaudeCode
+            && (self.config.gateway.is_none() || self.gateway_turn)
+            && !self.restart_required
+        {
+            return Ok(());
+        }
+        let saved = self
+            .snapshot
+            .clone()
+            .ok_or_else(|| Error::new("没有活动会话"))?;
+        let id = self
+            .native_id
+            .clone()
+            .ok_or_else(|| Error::new("没有原生会话身份"))?;
+        let cwd = saved.conversation.cwd.as_deref().map(PathBuf::from);
+        self.rpc.shutdown();
+        self.tunnel = None;
+        let mut active = self.config.clone();
+        if let Some(gateway) = active.gateway.as_mut() {
+            let tunnel =
+                crate::execution::GatewayTunnel::open(&active.execution, &gateway.endpoint)?;
+            gateway.endpoint = tunnel.endpoint().to_owned();
+            self.tunnel = Some(tunnel);
+        }
+        self.rpc = Self::spawn_rpc(
+            &active,
+            self.native_selection.as_ref(),
+            Some((&id, cwd.as_deref(), self.claude_fresh)),
+        )?;
+        // The active endpoint may be a remote loopback tunnel, only valid for this child.
+        let desired = self.config.gateway.take();
+        self.config.gateway = active.gateway;
+        self.gateway_turn = self.config.gateway.is_some();
+        let outcome = (|| {
+            self.initialize()?;
+            // The previous process owned this loaded-session handle; the replacement has none yet.
+            self.native_id = None;
+            match self.config.kind {
+                NativeKind::Codex => self.codex_open(
+                    &id,
+                    cwd.as_deref(),
+                    &saved.context_runtime_id,
+                    saved.messages.clone(),
+                )?,
+                NativeKind::DeepSeek => self.dsh_open(
+                    &id,
+                    cwd.as_deref(),
+                    &saved.context_runtime_id,
+                    saved.messages.clone(),
+                )?,
+                NativeKind::ClaudeCode => {
+                    self.native_id = Some(id.clone());
+                }
+            }
+            Ok(())
+        })();
+        self.config.gateway = desired;
+        self.snapshot = Some(saved);
+        self.restart_required = false;
+        if outcome.is_err() {
+            self.fail_connection();
+        }
+        outcome
+    }
     pub fn poll(&mut self) -> Result<()> {
-        if self.failed {
+        if self.failed || self.restart_required {
             return Ok(());
         }
         let outcome = (|| {
@@ -251,7 +451,11 @@ impl NativeSession {
                 match self.config.kind {
                     NativeKind::Codex => self.codex_handle_record(record)?,
                     NativeKind::DeepSeek => self.dsh_handle_record(record)?,
+                    NativeKind::ClaudeCode => self.claude_handle_record(record)?,
                 }
+            }
+            if self.config.kind == NativeKind::ClaudeCode {
+                self.claude_check_terminal_timeout();
             }
             Ok(())
         })();
@@ -285,6 +489,7 @@ impl NativeSession {
         match self.config.kind {
             NativeKind::Codex => self.codex_reply(&pending, reply)?,
             NativeKind::DeepSeek => self.dsh_reply(&pending, reply)?,
+            NativeKind::ClaudeCode => self.claude_reply(&pending, reply)?,
         };
         self.interactions.remove(interaction_id);
         if let Some(snapshot) = &mut self.snapshot {
@@ -313,11 +518,12 @@ impl NativeSession {
         }
     }
     fn validate_cwd(&self, cwd: Option<&Path>) -> Result<()> {
-        if cwd.is_some_and(|path| !path.is_absolute() || !path.is_dir()) {
-            Err(Error::new("会话工作目录必须是已有绝对目录"))
-        } else {
-            Ok(())
+        if let Some(path) = cwd
+            && (!path.is_absolute() || !self.config.execution.is_directory(path)?)
+        {
+            return Err(Error::new("会话工作目录必须是目标主机上的已有绝对目录"));
         }
+        Ok(())
     }
     fn replace_snapshot(
         &mut self,
@@ -380,7 +586,41 @@ impl NativeSession {
             snapshot.revision += 1;
         }
     }
+    fn finish_turn(&mut self, state: RunState) -> Result<()> {
+        if self.gateway_turn && self.config.kind != NativeKind::ClaudeCode {
+            let id = self
+                .native_id
+                .clone()
+                .ok_or_else(|| Error::new("缺少原生会话身份"))?;
+            let snapshot = self
+                .snapshot
+                .clone()
+                .ok_or_else(|| Error::new("缺少会话投影"))?;
+            let cwd = snapshot.conversation.cwd.as_deref().map(PathBuf::from);
+            self.config.gateway = None;
+            match self.config.kind {
+                NativeKind::Codex => self.codex_open(
+                    &id,
+                    cwd.as_deref(),
+                    &snapshot.context_runtime_id,
+                    snapshot.messages.clone(),
+                )?,
+                NativeKind::DeepSeek => {}
+                NativeKind::ClaudeCode => {}
+            }
+            self.snapshot = Some(snapshot);
+        }
+        self.settle(state);
+        Ok(())
+    }
     fn settle(&mut self, state: RunState) {
+        if self.gateway_turn || self.config.kind == NativeKind::ClaudeCode {
+            self.rpc.finish();
+            self.tunnel = None;
+            self.restart_required = true;
+            self.gateway_turn = false;
+            self.config.gateway = None;
+        }
         self.turn_id = None;
         self.interactions.clear();
         if let Some(snapshot) = &mut self.snapshot {

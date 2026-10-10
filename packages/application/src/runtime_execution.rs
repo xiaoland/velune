@@ -1,0 +1,111 @@
+//! Typed execution settings are encoded once inside the runtime's extensible settings map.
+use crate::{Error, config::RuntimeInstance};
+use serde::{Deserialize, Serialize};
+
+const EXECUTION_SETTING: &str = "execution";
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub enum RuntimeTransport {
+    #[default]
+    Local,
+    Ssh {
+        binary: String,
+        destination: String,
+        port: Option<u16>,
+    },
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub enum RuntimeHome {
+    #[default]
+    Inherit,
+    Existing {
+        path: String,
+    },
+    /// Local roots are assigned under VELUNE_HOME; SSH roots belong to the remote machine.
+    Managed {
+        remote_root: Option<String>,
+    },
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RuntimeExecution {
+    pub transport: RuntimeTransport,
+    pub home: RuntimeHome,
+    pub remote_resources_directory: Option<String>,
+}
+
+impl RuntimeExecution {
+    pub fn validate(&self) -> Result<(), Error> {
+        let absolute = |value: &str| value.starts_with('/') && !value.contains('\0');
+        if let RuntimeTransport::Ssh {
+            binary,
+            destination,
+            port,
+        } = &self.transport
+        {
+            if !absolute(binary)
+                || destination.is_empty()
+                || destination.starts_with('-')
+                || destination
+                    .chars()
+                    .any(|c| c.is_whitespace() || c.is_control())
+                || *port == Some(0)
+            {
+                return Err(Error::invalid("SSH 入口、目标或端口无效"));
+            }
+            if self
+                .remote_resources_directory
+                .as_deref()
+                .is_none_or(|path| !absolute(path))
+            {
+                return Err(Error::invalid("SSH 运行时必须指定远端辅助资源的绝对目录"));
+            }
+        }
+        match (&self.transport, &self.home) {
+            (_, RuntimeHome::Existing { path }) if !absolute(path) => {
+                return Err(Error::invalid("HOME 必须是执行机器上的绝对目录"));
+            }
+            (RuntimeTransport::Ssh { .. }, RuntimeHome::Managed { remote_root })
+                if remote_root.as_deref().is_none_or(|path| !absolute(path)) =>
+            {
+                return Err(Error::invalid("远端 managed HOME 必须指定远端绝对根目录"));
+            }
+            (
+                RuntimeTransport::Local,
+                RuntimeHome::Managed {
+                    remote_root: Some(_),
+                },
+            ) => {
+                return Err(Error::invalid(
+                    "本地 managed HOME 由应用分配，不接受远端根目录",
+                ));
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+}
+
+impl RuntimeInstance {
+    pub fn execution(&self) -> Result<RuntimeExecution, Error> {
+        let execution = self
+            .settings
+            .get(EXECUTION_SETTING)
+            .map(|value| serde_json::from_str(value))
+            .transpose()?
+            .unwrap_or_default();
+        RuntimeExecution::validate(&execution)?;
+        Ok(execution)
+    }
+
+    pub fn set_execution(&mut self, execution: RuntimeExecution) -> Result<(), Error> {
+        execution.validate()?;
+        self.settings
+            .insert(EXECUTION_SETTING.into(), serde_json::to_string(&execution)?);
+        Ok(())
+    }
+}

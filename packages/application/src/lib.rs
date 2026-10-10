@@ -20,6 +20,8 @@ mod provider_configuration;
 #[cfg(feature = "local-runtime")]
 mod provider_import;
 mod repository;
+mod runtime_execution;
+pub use runtime_execution::{RuntimeExecution, RuntimeHome, RuntimeTransport};
 #[cfg(feature = "local-runtime")]
 mod runtime_discovery;
 pub use api::*;

@@ -1,42 +1,83 @@
 //! DeepSeek Harness 0.2.0-rc.2 ACP v1 control. huihua supplies historical projection.
 use super::*;
-use std::fs;
 
 impl NativeSession {
     pub(super) fn dsh_command(config: &NativeConfig) -> Result<Command> {
-        let api = match config.gateway.protocol.as_str() {
-            "openai-completions" => "openai-completions",
-            "openai-responses" => "openai-responses",
-            "anthropic-messages" => "anthropic-messages",
-            _ => return Err(Error::new("DeepSeek 运行时不支持此网关协议")),
+        let path = if let Some(gateway) = &config.gateway {
+            let api = match gateway.protocol.as_str() {
+                "openai-completions" => "openai-completions",
+                "openai-responses" => "openai-responses",
+                "anthropic-messages" => "anthropic-messages",
+                _ => return Err(Error::new("DeepSeek 运行时不支持此网关协议")),
+            };
+            config
+                .execution
+                .create_dir_all(&config.projection_directory)?;
+            let mut model = json!({"id":gateway.model_alias,"name":gateway.model_alias});
+            if let Some(value) = gateway.context_window {
+                model["contextWindow"] = json!(value);
+            }
+            // An explicit maxTokens is an upstream request default, not just catalog metadata.
+            // Only pass the authoritative capability configured by the selected provider.
+            if let Some(value) = gateway.max_output_tokens {
+                model["maxTokens"] = json!(value);
+            }
+            let path = config
+                .projection_directory
+                .join("deepseek-gateway.patch.yml");
+            let mut models = if config.execution.path_exists(&path)? {
+                let previous: Value = serde_json::from_slice(&config.execution.read_file(&path)?)
+                    .map_err(|error| {
+                    Error::new(format!("应用的 DeepSeek 模型投影无效：{error}"))
+                })?;
+                previous[0]["config"]["providers"]["velune-gateway"]["models"]
+                    .as_array()
+                    .cloned()
+                    .unwrap_or_default()
+            } else {
+                Vec::new()
+            };
+            models.retain(|old| old["id"] != model["id"]);
+            models.push(model);
+            // Historical request headers need their model metadata to resume; no credential is stored here.
+            let patch = json!([
+                {"id":"llm-pi-ai","config":{"providers":{"velune-gateway":{
+                    "api":api,"baseURL":gateway.endpoint,"apiKeyEnv":"VELUNE_GATEWAY_TOKEN","models":models
+                }}}}
+            ]);
+            config.execution.write_file_atomic(
+                &path,
+                &serde_json::to_vec(&patch)
+                    .map_err(|error| Error::new(format!("网关配置编码失败：{error}")))?,
+            )?;
+            Some(path)
+        } else {
+            let path = config
+                .projection_directory
+                .join("deepseek-gateway.patch.yml");
+            if config.execution.path_exists(&path)? {
+                let mut metadata: Value = serde_json::from_slice(
+                    &config.execution.read_file(&path)?,
+                )
+                .map_err(|error| Error::new(format!("应用的 DeepSeek 模型投影无效：{error}")))?;
+                let provider = metadata[0]["config"]["providers"]["velune-gateway"]
+                    .as_object_mut()
+                    .ok_or_else(|| Error::new("应用的 DeepSeek 模型投影缺少提供商"))?;
+                // Port zero cannot address a listening service; old gateway ports may have been reused.
+                provider.insert("baseURL".into(), json!("http://127.0.0.1:0"));
+                let path = config
+                    .projection_directory
+                    .join("deepseek-native-history.patch.yml");
+                config.execution.write_file_atomic(
+                    &path,
+                    &serde_json::to_vec(&metadata)
+                        .map_err(|error| Error::new(error.to_string()))?,
+                )?;
+                Some(path)
+            } else {
+                None
+            }
         };
-        fs::create_dir_all(&config.projection_directory)
-            .map_err(|error| Error::new(format!("无法建立运行时网关注入目录：{error}")))?;
-        let mut model = json!({"id":config.gateway.model_alias,"name":config.gateway.model_alias});
-        if let Some(value) = config.gateway.context_window {
-            model["contextWindow"] = json!(value);
-        }
-        // An explicit maxTokens is an upstream request default, not just catalog metadata.
-        // Only pass the authoritative capability configured by the selected provider.
-        if let Some(value) = config.gateway.max_output_tokens {
-            model["maxTokens"] = json!(value);
-        }
-        let patch = json!([
-            {"id":"llm-pi-ai","config":{"providers":{"velune-gateway":{
-                "api":api,"baseURL":config.gateway.endpoint,"apiKeyEnv":"VELUNE_GATEWAY_TOKEN","models":[model]
-            }}}},
-            {"id":"acp","config":{"provider":"velune-gateway","model":config.gateway.model_alias}}
-        ]);
-        // JSON is valid YAML and avoids quoting upstream model IDs as YAML syntax.
-        let path = config
-            .projection_directory
-            .join("deepseek-gateway.patch.yml");
-        fs::write(
-            &path,
-            serde_json::to_vec(&patch)
-                .map_err(|error| Error::new(format!("网关配置编码失败：{error}")))?,
-        )
-        .map_err(|error| Error::new(format!("网关配置写入失败：{error}")))?;
         let mut command = if let Some(node) = &config.node_binary {
             if !node.is_absolute() {
                 return Err(Error::new("Node 可执行文件必须为绝对路径"));
@@ -47,27 +88,15 @@ impl NativeSession {
         } else {
             Command::new(&config.binary)
         };
-        command.args(["--profile", "acp", "--patch"]).arg(path);
+        command.args(["--profile", "acp"]);
+        if let Some(path) = path {
+            command.arg("--patch").arg(path);
+        }
         Ok(command)
     }
 
     pub(super) fn dsh_initialize(&mut self) -> Result<()> {
-        let result = self.rpc.request(
-            "initialize",
-            &json!({
-                "protocolVersion":1,"clientInfo":{"name":"velune","version":"0.1.0-beta.1"},
-                "clientCapabilities":{}
-            }),
-        )?;
-        if result["protocolVersion"] != 1
-            || result["agentCapabilities"]["sessionCapabilities"]
-                .get("resume")
-                .is_none()
-        {
-            return Err(Error::new("DeepSeek ACP 协议或恢复能力与适配器不匹配"));
-        }
-        // agentInfo.version is the ACP plugin version, not the CLI release gate.
-        Ok(())
+        initialize(&mut self.rpc)
     }
 
     fn dsh_close_active(&mut self) -> Result<()> {
@@ -92,7 +121,7 @@ impl NativeSession {
             .as_str()
             .ok_or_else(|| Error::new("DeepSeek 未返回原生会话身份"))?;
         self.replace_snapshot(id, Some(&cwd), runtime_id, Vec::new());
-        self.dsh_gateway_model(&result)
+        self.dsh_configure_model(&result)
     }
 
     pub(super) fn dsh_open(
@@ -111,11 +140,11 @@ impl NativeSession {
             &json!({"sessionId":id,"cwd":cwd,"mcpServers":[]}),
         )?;
         self.replace_snapshot(id, Some(&cwd), runtime_id, history);
-        self.dsh_gateway_model(&result)
+        self.dsh_configure_model(&result)
     }
 
-    fn dsh_gateway_model(&mut self, result: &Value) -> Result<()> {
-        let outcome = self.dsh_configure_gateway_model(result);
+    fn dsh_configure_model(&mut self, result: &Value) -> Result<()> {
+        let outcome = self.dsh_apply_model(result);
         if outcome.is_err() {
             let _ = self.dsh_close_active();
             self.native_id = None;
@@ -124,7 +153,7 @@ impl NativeSession {
         outcome
     }
 
-    fn dsh_configure_gateway_model(&mut self, result: &Value) -> Result<()> {
+    fn dsh_apply_model(&mut self, result: &Value) -> Result<()> {
         self.available_models = result["configOptions"]
             .as_array()
             .cloned()
@@ -137,7 +166,32 @@ impl NativeSession {
         let values = option["options"]
             .as_array()
             .ok_or_else(|| Error::new("DeepSeek 模型目录无效"))?;
-        let alias = &self.config.gateway.model_alias;
+        if self.config.gateway.is_none()
+            && self.native_selection.is_none()
+            && let Some(current) = option["currentValue"].as_str()
+            && let Ok(pair) = serde_json::from_str::<Vec<String>>(current)
+            && pair.len() == 2
+            && pair[0] != "velune-gateway"
+        {
+            self.native_selection = Some(RuntimeModel {
+                provider_id: Some(pair[0].clone()),
+                id: pair[1].clone(),
+                name: pair[1].clone(),
+            });
+        }
+        let (provider, alias) = if let Some(gateway) = &self.config.gateway {
+            ("velune-gateway", gateway.model_alias.as_str())
+        } else if let Some(model) = &self.native_selection {
+            (
+                model
+                    .provider_id
+                    .as_deref()
+                    .expect("DeepSeek native selections include their provider identity"),
+                model.id.as_str(),
+            )
+        } else {
+            return Ok(());
+        };
         // Decode upstream's advertised opaque value solely to identify our route.
         // Send that exact advertised string back, never construct a replacement value.
         let advertised = values
@@ -146,9 +200,9 @@ impl NativeSession {
             .filter_map(|value| value["value"].as_str())
             .find(|value| {
                 serde_json::from_str::<Vec<String>>(value)
-                    .is_ok_and(|pair| pair == ["velune-gateway", alias.as_str()])
+                    .is_ok_and(|pair| pair.len() == 2 && pair[0] == provider && pair[1] == alias)
             })
-            .ok_or_else(|| Error::new("DeepSeek 未公布已注入的网关模型"))?
+            .ok_or_else(|| Error::new(format!("DeepSeek 未公布所选模型（{provider}/{alias}）")))?
             .to_owned();
         let response = self.rpc.request(
             "session/set_config_option",
@@ -164,6 +218,14 @@ impl NativeSession {
     }
 
     pub(super) fn dsh_send(&mut self, text: &str) -> Result<()> {
+        if self.config.gateway.is_none()
+            && self
+                .native_selection
+                .as_ref()
+                .is_none_or(|model| model.provider_id.as_deref() == Some("velune-gateway"))
+        {
+            return Err(Error::new("请先选择运行时既有提供商的模型"));
+        }
         let id = self.rpc.begin(
             "session/prompt",
             &json!({"sessionId":self.native_id,"prompt":[{"type":"text","text":text}]}),
@@ -191,41 +253,95 @@ impl NativeSession {
         Ok(())
     }
 
-    pub(super) fn dsh_select_model(&mut self, injection: GatewayInjection) -> Result<()> {
+    pub(super) fn dsh_models(&mut self) -> Result<Vec<RuntimeModel>> {
         if self.native_id.is_none() {
-            self.config.gateway = injection;
-            return Ok(());
+            self.available_models = self.dsh_discover_models()?;
         }
-        let snapshot = self
-            .snapshot
-            .clone()
-            .ok_or_else(|| Error::new("当前会话不存在"))?;
-        let id = self
-            .native_id
-            .clone()
-            .ok_or_else(|| Error::new("当前会话身份不存在"))?;
-        let cwd = PathBuf::from(
-            snapshot
-                .conversation
-                .cwd
-                .as_ref()
-                .ok_or_else(|| Error::new("原生会话缺少工作目录"))?,
-        );
-        self.dsh_close_active()?;
-        self.rpc.shutdown();
-        self.config.gateway = injection;
-        self.rpc = Self::spawn_rpc(&self.config)?;
-        self.dsh_initialize()?;
-        // Resume restores native execution state; it does not replay the old transcript.
-        let result = self.rpc.request(
-            "session/resume",
-            &json!({"sessionId":id,"cwd":cwd,"mcpServers":[]}),
-        )?;
-        self.native_id = Some(id);
-        self.dsh_gateway_model(&result)?;
-        Ok(())
+        let models = self
+            .available_models
+            .iter()
+            .find(|option| option["id"] == "model")
+            .and_then(|option| option["options"].as_array());
+        let mut result = Vec::new();
+        for value in models
+            .into_iter()
+            .flatten()
+            .flat_map(|group| group["options"].as_array().into_iter().flatten())
+        {
+            let Some(value_id) = value["value"].as_str() else {
+                continue;
+            };
+            let Ok(pair) = serde_json::from_str::<Vec<String>>(value_id) else {
+                continue;
+            };
+            if pair.len() == 2 && pair[0] != "velune-gateway" {
+                result.push(RuntimeModel {
+                    provider_id: Some(pair[0].clone()),
+                    id: pair[1].clone(),
+                    name: value["name"].as_str().unwrap_or(&pair[1]).into(),
+                });
+            }
+        }
+        Ok(result)
     }
 
+    fn dsh_discover_models(&self) -> Result<Vec<Value>> {
+        // ACP exposes the catalog only on a session. DSH flushes even an empty
+        // session, so discovery must use a private persistence root, then remove it.
+        let directory = self
+            .config
+            .projection_directory
+            .join(format!("dsh-catalog-{}", self.epoch));
+        self.config.execution.create_dir_all(&directory)?;
+        let outcome = (|| {
+            let patch = directory.join("catalog.patch.json");
+            self.config.execution.write_file_atomic(
+                &patch,
+                &serde_json::to_vec(&json!([
+                    {"id":"session-persistence-jsonl","config":{"root":directory.join("sessions")}},
+                    {"id":"storage-json","config":{"root":directory.join("storages")}},
+                    {"id":"session-query-sqlite","config":{"path":":memory:","openAt":"never"}}
+                ]))
+                .map_err(|error| Error::new(error.to_string()))?,
+            )?;
+            let mut config = self.config.clone();
+            config.gateway = None;
+            let mut command = Self::dsh_command(&config)?;
+            command
+                .arg("--patch")
+                .arg(&patch)
+                .env("DSH_HOME", &config.agent_dir)
+                .env_remove("VELUNE_GATEWAY_TOKEN");
+            let mut rpc =
+                rpc::RpcClient::spawn_at(command, &config.execution, config.os_home.as_deref())?;
+            let result = (|| {
+                initialize(&mut rpc)?;
+                let response = rpc.request(
+                    "session/new",
+                    &json!({"cwd":self.default_cwd,"mcpServers":[]}),
+                )?;
+                let id = response["sessionId"]
+                    .as_str()
+                    .ok_or_else(|| Error::new("DeepSeek 模型目录未返回临时会话身份"))?;
+                rpc.request("session/close", &json!({"sessionId":id}))?;
+                response["configOptions"]
+                    .as_array()
+                    .cloned()
+                    .ok_or_else(|| Error::new("DeepSeek 模型目录格式无效"))
+            })();
+            rpc.finish();
+            result
+        })();
+        let cleanup = self.config.execution.remove_dir_all(&directory);
+        match (outcome, cleanup) {
+            (Ok(models), Ok(())) => Ok(models),
+            (Err(error), Ok(())) => Err(error),
+            (Ok(_), Err(error)) => Err(error.into()),
+            (Err(error), Err(cleanup)) => Err(Error::new(format!(
+                "{error}；DeepSeek 临时模型目录清理失败：{cleanup}"
+            ))),
+        }
+    }
     pub(super) fn dsh_handle_record(&mut self, record: Value) -> Result<()> {
         if let Some(method) = record["method"].as_str() {
             let params = &record["params"];
@@ -288,9 +404,9 @@ impl NativeSession {
         {
             if record.get("error").is_some() {
                 self.notice("DeepSeek 执行请求失败");
-                self.settle(RunState::Failed);
+                self.finish_turn(RunState::Failed)?;
             } else {
-                self.settle(RunState::Idle);
+                self.finish_turn(RunState::Idle)?;
             }
         }
         Ok(())
@@ -436,4 +552,23 @@ impl NativeSession {
         };
         self.rpc.respond(&pending.id, &json!({"outcome":outcome}))
     }
+}
+
+fn initialize(rpc: &mut rpc::RpcClient) -> Result<()> {
+    let result = rpc.request(
+        "initialize",
+        &json!({
+            "protocolVersion":1,"clientInfo":{"name":"velune","version":"0.1.0-beta.1"},
+            "clientCapabilities":{}
+        }),
+    )?;
+    if result["protocolVersion"] != 1
+        || result["agentCapabilities"]["sessionCapabilities"]
+            .get("resume")
+            .is_none()
+    {
+        return Err(Error::new("DeepSeek ACP 协议或恢复能力与适配器不匹配"));
+    }
+    // agentInfo.version is the ACP plugin version, not the CLI release gate.
+    Ok(())
 }

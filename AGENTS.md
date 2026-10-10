@@ -70,7 +70,7 @@ model ID 指提供商 API 规定的模型标识；内部记录键和网关路由
 
 AI 服务不限于 LLM；当前 gateway 仅为 LLM Gateway，是 AI 模块的一种应用模式，直接 AI 消费不要求经过网关。原生执行按协议组织，服务商作为配置，不经 sampling 重建。业务与可观测性职责分离，usage／finish reason 可被两者消费。当前实施与边界以 docs/design/ai-service.md 为准，不将旧有界 MiniMax sampling 原型提升为通用协议架构。
 
-AI 提供商与模型分开建模，模型跨提供商存在且拥有自己的参数；提供商关联模型。协议为枚举选项，支持 OpenAI ChatCompletions v1、Responses v1 与 Anthropic Messages；同协议保持原生路径，异协议按2026-10-06授权best-effort互转，不采用fail-closed。提供商、路由和 fail-over 归属 Velune AI 服务网关；Velune 为 Harness 追加网关提供商，原生提供商可以共存，不设排他派发检查。用户可显式选择原 Harness 认证来源，网关委托该来源解析与刷新，不删除原配置、不复制 refresh credential。模型参数以提供商协议为权威，聊天示例不提升为每个提供商必须支持的字段。Agent 运行时区分类型与配置实例，同类型可配置多个独立实例，不能在 UI 或 Host 假定只有一份配置。
+AI 提供商与模型分开建模，模型跨提供商存在且拥有自己的参数；提供商关联模型。协议为枚举选项，支持 OpenAI ChatCompletions v1、Responses v1 与 Anthropic Messages；同协议保持原生路径，异协议按2026-10-06授权best-effort互转，不采用fail-closed。提供商、路由和 fail-over 归属 Velune AI 服务网关；Velune 保留 Harness 原生提供商与模型选择；支持多个提供商时可追加网关提供商，只支持单提供商时按 turn 临时使用网关，结束、失败或取消后释放覆盖，不改原持久提供商配置。原生模型仍可参与跨 Harness 会话接续，不设排他派发检查。用户可显式选择原 Harness 认证来源，网关委托该来源解析与刷新，不删除原配置、不复制 refresh credential。模型参数以提供商协议为权威，聊天示例不提升为每个提供商必须支持的字段。Agent 运行时区分类型与配置实例，同类型可配置多个独立实例，不能在 UI 或 Host 假定只有一份配置。
 
 core 是跨平台 Rust lib，通过 ABI 嵌入平台 app；产品不得另启常驻 core／Host 进程或依赖 App↔Host socket。外部 Harness 子进程与本机模型网关保留各自的职责。Mac 修改后重新构建并安装至 `/Applications/Velune.app`。用户已授权开发方随时直接退出正在运行的 Velune：先正常退出，若应用拒绝退出，可终止已确认的 Velune 应用进程，无需再次要求用户手动退出；当前产品显示版本为 `0.1 beta.1`。
 

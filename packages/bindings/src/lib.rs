@@ -375,6 +375,87 @@ impl VeluneApplication {
         })?)
     }
 
+    pub fn upsert_runtime_with_execution(
+        &self,
+        runtime: BindingRuntimeInstance,
+        execution: BindingRuntimeExecution,
+    ) -> Result<BindingRuntimeUpdate, BindingError> {
+        let runtime = convert(runtime)?;
+        let execution = convert(execution)?;
+        convert(self.with("upsert_runtime_with_execution", |application| {
+            application.upsert_runtime_with_execution(runtime, execution)
+        })?)
+    }
+
+    pub fn runtime_execution(
+        &self,
+        runtime_id: String,
+    ) -> Result<BindingRuntimeExecution, BindingError> {
+        convert(self.with("runtime_execution", |application| {
+            application.runtime_execution(runtime_id)
+        })?)
+    }
+
+    pub fn configure_runtime_execution(
+        &self,
+        runtime_id: String,
+        execution: BindingRuntimeExecution,
+    ) -> Result<BindingRuntimeUpdate, BindingError> {
+        let execution = convert(execution)?;
+        convert(self.with("configure_runtime_execution", |application| {
+            application.configure_runtime_execution(runtime_id, execution)
+        })?)
+    }
+
+    pub fn create_conversation_with_selection(
+        &self,
+        runtime_id: String,
+        cwd: Option<String>,
+        selection: BindingModelSelection,
+    ) -> Result<BindingSnapshotResult, BindingError> {
+        let selection = convert(selection)?;
+        convert(
+            self.with("create_conversation_with_selection", |application| {
+                application.create_conversation_with_selection(runtime_id, cwd, selection)
+            })?,
+        )
+    }
+
+    pub fn send_turn_with_selection(
+        &self,
+        source_runtime_id: String,
+        conversation_id: String,
+        target_runtime_id: String,
+        selection: BindingModelSelection,
+        text: String,
+    ) -> Result<BindingSnapshotResult, BindingError> {
+        let selection = convert(selection)?;
+        convert(self.with("send_turn_with_selection", |application| {
+            application.send_turn_with_selection(
+                source_runtime_id,
+                conversation_id,
+                target_runtime_id,
+                selection,
+                text,
+            )
+        })?)
+    }
+
+    pub fn runtime_models(
+        &self,
+        runtime_id: String,
+    ) -> Result<Vec<BindingRuntimeModel>, BindingError> {
+        convert(self.with("runtime_models", |application| {
+            application.runtime_models(runtime_id)
+        })?)
+    }
+
+    pub fn next_turn_model_selection(&self) -> Result<Option<BindingModelSelection>, BindingError> {
+        convert(self.with("next_turn_model_selection", |application| {
+            application.next_turn_model_selection()
+        })?)
+    }
+
     pub fn cancel(&self, runtime_id: String) -> Result<BindingSnapshotResult, BindingError> {
         convert(self.with("cancel", |application| application.cancel(runtime_id))?)
     }

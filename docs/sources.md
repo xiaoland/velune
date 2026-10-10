@@ -227,3 +227,5 @@ S17 实施授权：用户决定全面切换 UniFFI，并要求现在开始拆分
 2026-10-09 用户反馈Markdown点击重排与长列表上滑异常，要求核对我们的组件接入和虚拟化层；明确若是MarkdownView自身缺陷不必修上游，建议考虑[gonzalezreal/textual](https://github.com/gonzalezreal/textual)。随后明确允许Velune最低支持macOS15。平台底线归PRD；依赖与容器的隔离判别、适用边界归[会话体验任务](../tasks/mac-conversation-usability/packet.md)，候选不等同于已采用。
 
 2026-10-09 用户反馈快速上滑仍跳动甚至卡住，授权重写整个消息列表渲染实现（含必要的 agent runtime UI 事件投影）、自由本地提交，并允许更换 Markdown 渲染框架（举例 Textual）；有余力时继续优化列表与交互体验。实现选择与判别归[会话体验任务](../tasks/mac-conversation-usability/packet.md)。
+
+2026-10-10 用户要求推进 Rust packages：Claude Code、运行时既有提供商模型选择、每 turn 临时 Velune Gateway 与结束恢复、SSH 远程运行时及 Velune 管理 HOME。用户明确排除本轮 app／前端实施，要求把相关交互标记待实现并沉淀文档。产品行为归 [PRD](prd/index.md#ai-网关与-agent-运行时配置)，实现与证据归 [运行时扩展任务](../tasks/runtime-provider-ssh/packet.md)。

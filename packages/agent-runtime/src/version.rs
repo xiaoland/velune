@@ -1,5 +1,5 @@
 //! Versioned adapter identities. A family is a grouping, never a dispatch key.
-use crate::native::{Error, Result, rpc::bounded_output};
+use crate::native::{Error, Result};
 use regex::Regex;
 use std::{
     path::{Path, PathBuf},
@@ -22,6 +22,15 @@ pub struct RuntimeVariant {
     pub supported_protocols: &'static [RuntimeProtocol],
 }
 const VARIANTS: &[RuntimeVariant] = &[
+    RuntimeVariant {
+        id: "claude-code-2.1.286",
+        family_id: "claude-code",
+        name: "Claude Code 2.1.286",
+        version_regex: r"^2\.1\.286$",
+        can_rename_conversations: false,
+        can_delete_conversations: false,
+        supported_protocols: &[RuntimeProtocol::MessagesV1],
+    },
     RuntimeVariant {
         id: "pi-1.0.2",
         family_id: "pi",
@@ -65,8 +74,23 @@ pub fn variant(id: &str) -> Option<&'static RuntimeVariant> {
     VARIANTS.iter().find(|v| v.id == id)
 }
 pub fn check_version(type_id: &str, binary: &Path, node_binary: Option<&Path>) -> Result<String> {
+    check_version_at(
+        type_id,
+        binary,
+        node_binary,
+        &crate::execution::ExecutionTarget::Local,
+        None,
+    )
+}
+pub fn check_version_at(
+    type_id: &str,
+    binary: &Path,
+    node_binary: Option<&Path>,
+    execution: &crate::execution::ExecutionTarget,
+    os_home: Option<&Path>,
+) -> Result<String> {
     let adapter = variant(type_id).ok_or_else(|| Error::new("运行时版本类型不受支持"))?;
-    let version = probe_version(adapter.family_id, binary, node_binary)?;
+    let version = probe_version_at(adapter.family_id, binary, node_binary, execution, os_home)?;
     if !Regex::new(adapter.version_regex)
         .map_err(|error| Error::new(format!("适配器版本规则无效：{error}")))?
         .is_match(&version)
@@ -82,6 +106,19 @@ pub fn check_version(type_id: &str, binary: &Path, node_binary: Option<&Path>) -
 /// Resolve only a Pi installation's public CLI and manifest, including known
 /// npm/pnpm literal launchers. No shell evaluation or Agent startup occurs.
 pub fn resolve_pi_binary(binary: &Path, node: &Path) -> Result<PathBuf> {
+    resolve_pi_binary_at(
+        binary,
+        node,
+        &crate::execution::ExecutionTarget::Local,
+        None,
+    )
+}
+pub fn resolve_pi_binary_at(
+    binary: &Path,
+    node: &Path,
+    execution: &crate::execution::ExecutionTarget,
+    os_home: Option<&Path>,
+) -> Result<PathBuf> {
     if !binary.is_absolute() || !node.is_absolute() {
         return Err(Error::new("Pi 与 Node 入口必须为绝对路径"));
     }
@@ -101,7 +138,7 @@ try {
     command
         .args(["--input-type=module", "--eval", script])
         .arg(binary);
-    let output = bounded_output(command)?;
+    let output = execution.output(command, None, os_home)?;
     let value: serde_json::Value = serde_json::from_slice(&output)
         .map_err(|error| Error::new(format!("Pi 安装解析未返回有效结果：{error}")))?;
     if let Some(binary) = value["binary"]
@@ -154,6 +191,21 @@ try {
 
 /// Read only the public CLI version; never start an Agent session.
 pub fn probe_version(family_id: &str, binary: &Path, node_binary: Option<&Path>) -> Result<String> {
+    probe_version_at(
+        family_id,
+        binary,
+        node_binary,
+        &crate::execution::ExecutionTarget::Local,
+        None,
+    )
+}
+pub fn probe_version_at(
+    family_id: &str,
+    binary: &Path,
+    node_binary: Option<&Path>,
+    execution: &crate::execution::ExecutionTarget,
+    os_home: Option<&Path>,
+) -> Result<String> {
     if !VARIANTS.iter().any(|v| v.family_id == family_id) {
         return Err(Error::new("未知运行时系列"));
     }
@@ -162,15 +214,17 @@ pub fn probe_version(family_id: &str, binary: &Path, node_binary: Option<&Path>)
     }
     let resolved;
     let binary = if family_id == "pi" {
-        resolved = resolve_pi_binary(
+        resolved = resolve_pi_binary_at(
             binary,
             node_binary.ok_or_else(|| Error::new("Pi 需要配置 Node 可执行文件"))?,
+            execution,
+            os_home,
         )?;
         resolved.as_path()
     } else {
         binary
     };
-    let mut command = if family_id == "codex" {
+    let mut command = if matches!(family_id, "codex" | "claude-code") {
         Command::new(binary)
     } else if let Some(node) = node_binary {
         let mut command = Command::new(node);
@@ -180,22 +234,25 @@ pub fn probe_version(family_id: &str, binary: &Path, node_binary: Option<&Path>)
         return Err(Error::new("此运行时需要配置 Node 可执行文件"));
     };
     command.arg("--version");
-    let bytes = bounded_output(command).map_err(|error| {
-        tracing::warn!(
-            runtime_family = family_id,
-            code = error.code(),
-            phase = "version",
-            "runtime version probe failed"
-        );
-        if error.code() == "process_exit" {
-            Error::with_code(
-                "公开版本命令执行失败，请检查外部安装是否完整及 Node 版本",
-                "version_probe_failed",
-            )
-        } else {
-            error
-        }
-    })?;
+    let bytes = execution
+        .output(command, None, os_home)
+        .map_err(Error::from)
+        .map_err(|error| {
+            tracing::warn!(
+                runtime_family = family_id,
+                code = error.code(),
+                phase = "version",
+                "runtime version probe failed"
+            );
+            if error.code() == "process_exit" {
+                Error::with_code(
+                    "公开版本命令执行失败，请检查外部安装是否完整及 Node 版本",
+                    "version_probe_failed",
+                )
+            } else {
+                error
+            }
+        })?;
     let text = std::str::from_utf8(&bytes)
         .map_err(|error| Error::new(format!("运行时版本不是有效文本：{error}")))?;
     let extractor = Regex::new(r"\b[0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9.-]+)?\b")

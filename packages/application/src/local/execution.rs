@@ -1,6 +1,5 @@
 //! On-demand execution preparation and process/gateway lifecycle.
 use super::*;
-use sha2::Digest;
 impl CoreRuntime {
     pub(super) fn prepare_runtime(
         &mut self,
@@ -34,25 +33,8 @@ impl CoreRuntime {
             self.gateway_runner = Some(runner);
             let result = (|| {
                 let injection = self.native_injection(&runtime, model_record_key)?;
-                let kind = match runtime.type_id.as_str() {
-                    "codex-0.159.3" => NativeKind::Codex,
-                    "dsh-acp-0.2.0-rc.2" => NativeKind::DeepSeek,
-                    _ => return Err(RuntimeError::invalid("runtime type")),
-                };
-                NativeSession::connect(NativeConfig {
-                    kind,
-                    binary: setting_path(&runtime, "binary")?,
-                    node_binary: setting_path_optional(&runtime, "nodeBinary"),
-                    agent_dir: setting_path(&runtime, "agentDir")?,
-                    resources_directory: self.options.resources_directory.clone(),
-                    projection_directory: self
-                        .options
-                        .home_directory
-                        .join("runtime-projections")
-                        .join(format!("{:x}", sha2::Sha256::digest(runtime.id.as_bytes()))),
-                    gateway: injection,
-                })
-                .map_err(|error| RuntimeError::context("运行时连接失败", error))
+                NativeSession::connect(self.native_config(&runtime, Some(injection))?)
+                    .map_err(|error| RuntimeError::context("运行时连接失败", error))
             })();
             match result {
                 Ok(session) => {
@@ -96,27 +78,27 @@ impl CoreRuntime {
             Some(self.analytics.clone()),
         )
         .map_err(|error| RuntimeError::context("gateway startup", error))?;
-        let projection_dir = self
-            .options
-            .home_directory
-            .join("runtime-projections")
-            .join(format!("{:x}", sha2::Sha256::digest(runtime.id.as_bytes())));
+        let context = self.prepare_execution_context(&runtime)?;
+        let tunnel = velune_agent_runtime::execution::GatewayTunnel::open(
+            &context.target,
+            runner.endpoint(),
+        )
+        .map_err(|error| RuntimeError::context("网关 SSH 转发", error))?;
+        let projection_dir = context.projection;
         let config = PiConfig {
             runtime_type_id: runtime.type_id.clone(),
             binary: setting_path(&runtime, "binary")?,
             node_binary: setting_path_optional(&runtime, "nodeBinary"),
             sdk_helper: setting_path_optional(&runtime, "sdkHelper")
-                .or_else(|| Some(self.options.resources_directory.join("pi_sessions.mjs"))),
-            extension: Some(
-                self.options
-                    .resources_directory
-                    .join("pi_virtual_model.mjs"),
-            ),
-            agent_dir: Some(setting_path(&runtime, "agentDir")?),
+                .or_else(|| Some(context.resources.join("pi_sessions.mjs"))),
+            extension: Some(context.resources.join("pi_virtual_model.mjs")),
+            agent_dir: Some(context.agent_dir),
+            execution: context.target,
+            os_home: context.os_home,
             working_dir: None,
-            provider: Some("velune-gateway".into()),
-            model: Some("velune/auto".into()),
-            rpc_entry: Some(self.options.resources_directory.join("pi_rpc.mjs")),
+            provider: Some("velune".into()),
+            model: Some("auto".into()),
+            rpc_entry: Some(context.resources.join("pi_rpc.mjs")),
             models_path: Some(projection_dir.join("models.json")),
             selection_file: Some(projection_dir.join("velune-selection.json")),
             gateway_token: Some(runner.token().into()),
@@ -139,7 +121,7 @@ impl CoreRuntime {
             GatewayProtocol::ResponsesV1 => "openai-responses",
             GatewayProtocol::MessagesV1 => "anthropic-messages",
         };
-        if let Err(error) = materialize_models(&config, &gateway, runner.endpoint(), protocol) {
+        if let Err(error) = materialize_models(&config, &gateway, tunnel.endpoint(), protocol) {
             drop(runner);
             return Err(error);
         }
@@ -151,6 +133,7 @@ impl CoreRuntime {
             subscription_capability,
         )?;
         self.gateway_runner = Some(runner);
+        self.gateway_tunnel = Some(tunnel);
         self.pi.config = Some(config);
         self.active_state = ActiveState::Pi;
         self.execution_runtime_id = Some(runtime_id.into());
@@ -168,9 +151,6 @@ impl CoreRuntime {
         physical_model_id: Option<&str>,
         subscription_capability: bool,
     ) -> Result<(), RuntimeError> {
-        if let Some(cwd) = cwd {
-            validate_session_cwd(cwd)?;
-        }
         let runtime = self
             .execution_runtime_id
             .as_deref()
@@ -195,10 +175,10 @@ impl CoreRuntime {
             );
             RuntimeError::context(&runtime_context, error)
         };
-        let cwd = cwd
-            .map(fs::canonicalize)
-            .transpose()
-            .map_err(|error| RuntimeError::context("conversation working directory", error))?;
+        if let Some(cwd) = cwd {
+            self.validate_runtime_cwd(&runtime, cwd)?;
+        }
+        let cwd = cwd.map(Path::to_owned);
         let mut config = self
             .pi
             .config
@@ -284,6 +264,7 @@ impl CoreRuntime {
         };
         self.pi = PiState::default();
         self.gateway_runner = None;
+        self.gateway_tunnel = None;
         self.execution_runtime_id = None;
         self.model_record_key = None;
         result

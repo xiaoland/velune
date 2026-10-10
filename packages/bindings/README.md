@@ -8,7 +8,7 @@
 
 本 unit 在 `home_directory/logs` 装配对象专属的 tracing subscriber，不占用进程全局 subscriber。操作失败的 `BindingError.Diagnostic` 保留分类、白名单 code/phase、说明和 operation ID，平台使用该 ID 关联日志；领域包不依赖这一日志输出或 UniFFI。日志安全字段、轮转和后续 layer 扩展见 [开发说明](../../docs/development.md#本地诊断)。
 
-默认启用 `local-runtime`。使用 `--no-default-features` 构建会排除本地 Agent runtime；这只表示不携带本地执行能力，不提供尚未实现的远程连接。
+默认启用 `local-runtime`。使用 `--no-default-features` 构建会排除本地 Agent runtime；这表示不携带本机或 SSH 子进程执行能力；两种执行位置都需要该 feature。
 
 ## 生成绑定
 
@@ -28,7 +28,7 @@ Swift 生成模块名为 `VeluneBindings`，FFI 模块名为 `VeluneBindingsFFI`
 
 模型条目的 `recordKey` 自动生成并隐藏；`providerModelId` 是提供商规定的可编辑 API 标识。运行时选择与 snapshot 引用稳定 `modelRecordKey`，导入选择只包含 `candidateKeys`。能力中的 `None` 表示未知，空推理等级列表表示明确不支持。`BindingModelTemplate` 复制填写参数，不形成调用依赖。旧全局模型、关联映射和中央认证接口已删除，不保留兼容入口。
 
-运行时描述携带 `family_id`、精确 variant ID 与 `version_regex`；schema 7 配置通过应用用例持久化。当前 variant 为 Pi 1.0.2、Codex 0.159.3 与 DSH 0.2.0-rc.2，绑定不根据 family 自行选择协议。`BindingRuntimeInteraction` 与 `BindingRuntimeInteractionReply` 表达审批选项、问题／答案和取消；回复关联当前交互 ID，不通过字符串命令或隐式批准。原生 snapshot 历史由 huihua／Harness adapter 投影，绑定不暴露来源 JSON 或实现会话存储。
+运行时描述携带 `family_id`、精确 variant ID 与 `version_regex`；schema 7 配置通过应用用例持久化。当前 variant 为 Pi 1.0.2、Codex 0.159.3、Claude Code 2.1.286 与 DSH 0.2.0-rc.2，绑定不根据 family 自行选择协议。`BindingRuntimeInteraction` 与 `BindingRuntimeInteractionReply` 表达审批选项、问题／答案和取消；回复关联当前交互 ID，不通过字符串命令或隐式批准。原生 snapshot 历史由 huihua／Harness adapter 投影，绑定不暴露来源 JSON 或实现会话存储。
 
 运行时 descriptor 的 `supported_protocols` 为具名协议枚举列表；平台按精确 variant 消费，不按 family 自行维护协议矩阵。协议能力仍由精确 adapter 声明，与会话模型选择分开。
 
@@ -38,4 +38,10 @@ Swift 生成模块名为 `VeluneBindings`，FFI 模块名为 `VeluneBindingsFFI`
 
 会话管理通过具名 rename_conversation／delete_conversation API 作用于所属运行时，版本描述公开管理能力；不支持的适配器明确拒绝。平台仅提交实例与会话身份，不获得直接修改来源文件的接口。
 
-`BindingConversationSummary.runtime_id` 表示逻辑会话的首段来源，`BindingConversationSnapshot.context_runtime_id` 表示当前原生上下文；平台不得用来源身份代替当前查询、取消或审批归属。摘要 `can_rename`／`can_delete` 为应用装配的关联会话原生管理能力。`read_conversation`只读指定来源会话而不激活执行；`snapshot`同时携带上下文运行时和会话ID，非当前活动身份返回无快照。`send_turn` 原子接纳来源运行时／会话ID及下一轮目标和模型，跨实例接续和关联持久化由 application 处理，bindings 不保存消息副本。
+`BindingConversationSummary.runtime_id` 表示逻辑会话首个实际原生段的来源。未提交草稿首发前改换 Harness 时，公开 ID 保持稳定，但该来源随实际首发目标更新；平台应采用返回的 snapshot。`BindingConversationSnapshot.context_runtime_id` 表示当前原生上下文；平台不得用来源身份代替当前查询、取消或审批归属。摘要 `can_rename`／`can_delete` 为应用装配的关联会话原生管理能力。`read_conversation`只读指定来源会话而不激活执行；`snapshot`同时携带上下文运行时和会话ID，非当前活动身份返回无快照。`send_turn` 原子接纳来源运行时／会话ID及下一轮目标和模型，跨实例接续和关联持久化由 application 处理，bindings 不保存消息副本。
+
+`BindingModelSelection` 明确区分 `Managed`（Velune model record key）与 `Native`（运行时 provider／model ID）。`runtime_models` 返回两类具名候选；新 `create_conversation_with_selection`／`send_turn_with_selection` 接受完整选择，原有 create／send 入口继续仅接纳 managed key。`next_turn_model_selection` 返回下一轮意图；它不表示本轮已结束后仍存在网关注入。native 模型不会占用 `BindingConversationSnapshot.model_record_key`。
+
+`BindingRuntimeExecution` 通过 `runtime_execution`／`configure_runtime_execution` 提供 typed Local／Ssh 位置、Inherit／Existing／Managed HOME 和远端资源目录。`upsert_runtime_with_execution` 一次保存实例和执行配置，新建 managed HOME 实例不需要假的 agentDir。既有 `BindingRuntimeInstance` 形状不变，平台不得另行解码内部 execution setting。SSH 目标和所有执行路径的校验、helper 投送、gateway 转发、模型临时覆盖及结束清理由 application／agent-runtime 协调。具体语义见 [application README](../application/README.md)。
+
+**待实现**：Mac 等平台调用上述新入口、在 composer 呈现两类模型并编辑 SSH／HOME；本轮不修改前端、不生成或提交平台绑定产物、不安装应用。

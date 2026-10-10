@@ -1,13 +1,11 @@
 //! Historical projection through native Codex APIs and the installed DSH reader.
 use crate::{
     conversation::*,
-    native::{Error, Result as NativeResult, rpc::bounded_process},
+    native::{Error, Result as NativeResult},
 };
 use serde::Deserialize;
 use serde_json::json;
 use std::{path::PathBuf, process::Command};
-
-const STDERR_DIAGNOSTIC_LIMIT: usize = 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HistoryFailureKind {
@@ -82,6 +80,8 @@ impl HistoryError {
 }
 
 pub struct HistoryConfig {
+    pub execution: crate::execution::ExecutionTarget,
+    pub os_home: Option<PathBuf>,
     pub provider: String,
     pub binary: PathBuf,
     pub node_binary: PathBuf,
@@ -141,7 +141,7 @@ fn execute(
     operation: &str,
     native_id: Option<&str>,
 ) -> Result<Vec<u8>, HistoryError> {
-    if config.provider != "deepseek" {
+    if !matches!(config.provider.as_str(), "deepseek" | "claude-code") {
         return Err(HistoryError::new(
             HistoryFailureKind::UnsupportedProvider,
             "validate",
@@ -153,7 +153,8 @@ fn execute(
         &config.root,
         &config.home,
     ] {
-        if !path.is_absolute() {
+        if !(config.provider == "claude-code" && path == &config.node_binary) && !path.is_absolute()
+        {
             return Err(HistoryError::new(
                 HistoryFailureKind::InvalidConfiguration,
                 "validate",
@@ -165,27 +166,45 @@ fn execute(
         HistoryError::new(HistoryFailureKind::BridgeContract, "request")
             .with_detail(error.to_string())
     })?;
-    let mut command = Command::new(&config.node_binary);
-    command.arg(config.resources_directory.join("huihua_sessions.mjs"));
+    let mut command = if config.provider == "claude-code" {
+        let mut command = Command::new("python3");
+        command.args(["-c", include_str!("../resources/claude_history.py")]);
+        command
+    } else {
+        let mut command = Command::new(&config.node_binary);
+        command.arg(config.resources_directory.join("huihua_sessions.mjs"));
+        command
+    };
+    command.env("CLAUDE_CONFIG_DIR", &config.home);
     // The helper stdout is the history payload and is read completely. The
     // limit applies only to retained stderr diagnostics.
-    bounded_process(command, Some(input), STDERR_DIAGNOSTIC_LIMIT).map_err(|error| {
-        let kind = match error.code() {
-            "spawn" => HistoryFailureKind::Spawn,
-            "timeout" => HistoryFailureKind::Timeout,
-            "process_exit" => HistoryFailureKind::ProcessExit,
-            _ => HistoryFailureKind::Transport,
-        };
-        HistoryError::new(kind, "helper").with_detail(error.detail())
-    })
+    config
+        .execution
+        .output(command, Some(input), config.os_home.as_deref())
+        .map_err(Error::from)
+        .map_err(|error| {
+            let kind = match error.code() {
+                "spawn" => HistoryFailureKind::Spawn,
+                "timeout" => HistoryFailureKind::Timeout,
+                "process_exit" => HistoryFailureKind::ProcessExit,
+                _ => HistoryFailureKind::Transport,
+            };
+            HistoryError::new(kind, "helper").with_detail(error.detail())
+        })
 }
 pub fn list(
     config: &HistoryConfig,
     runtime_id: &str,
 ) -> Result<Vec<ConversationSummary>, HistoryError> {
     if config.provider == "codex" {
-        return crate::native::list_codex_history(&config.binary, &config.home, runtime_id)
-            .map_err(|error| native_history_error(error, "native_list"));
+        return crate::native::list_codex_history_at(
+            &config.binary,
+            &config.home,
+            runtime_id,
+            &config.execution,
+            config.os_home.as_deref(),
+        )
+        .map_err(|error| native_history_error(error, "native_list"));
     }
     let bytes = execute(config, "list", None)?;
     let result: List = serde_json::from_slice(&bytes).map_err(|error| {
@@ -217,8 +236,14 @@ pub fn list(
 }
 pub fn read(config: &HistoryConfig, native_id: &str) -> Result<History, HistoryError> {
     if config.provider == "codex" {
-        return crate::native::read_codex_history(&config.binary, &config.home, native_id)
-            .map_err(|error| native_history_error(error, "native_read"));
+        return crate::native::read_codex_history_at(
+            &config.binary,
+            &config.home,
+            native_id,
+            &config.execution,
+            config.os_home.as_deref(),
+        )
+        .map_err(|error| native_history_error(error, "native_read"));
     }
     let bytes = execute(config, "read", Some(native_id))?;
     let value: serde_json::Value = serde_json::from_slice(&bytes).map_err(|error| {
@@ -321,7 +346,9 @@ fn execute_pi(
         .map(|title| serde_json::to_vec(&json!({"title":title})))
         .transpose()
         .map_err(|error| Error::new(format!("Pi 会话修改请求无效：{error}")))?;
-    let output = bounded_process(command, input, STDERR_DIAGNOSTIC_LIMIT)?;
+    let output = config
+        .execution
+        .output(command, input, config.os_home.as_deref())?;
     serde_json::from_slice(&output)
         .map_err(|error| Error::new(format!("Pi 历史 SDK 格式不匹配：{error}")))
 }

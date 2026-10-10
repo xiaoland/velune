@@ -71,6 +71,11 @@ fn configured_source(
         .iter()
         .find(|runtime| runtime.id == id)
         .ok_or_else(|| RuntimeError::invalid("所选 Agent 运行时已不存在，请重新选择"))?;
+    if runtime.execution()? != crate::RuntimeExecution::default() {
+        return Err(RuntimeError::invalid(
+            "提供商导入目前只支持使用既有本机 HOME 的运行时；远端与 managed HOME 可直接使用原生提供商",
+        ));
+    }
     if runtime.type_id != "pi-1.0.2" || selection.harness_type_id != "pi" {
         return Err(RuntimeError::invalid("所选 Agent 运行时不支持提供商导入"));
     }

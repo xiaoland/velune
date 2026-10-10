@@ -36,13 +36,21 @@ pub(super) fn materialize_models(
     let catalog_dir = target
         .parent()
         .ok_or_else(|| RuntimeError::invalid("runtime catalog directory"))?;
-    let provider = config
-        .provider
-        .as_deref()
-        .ok_or_else(|| RuntimeError::invalid("gateway provider"))?;
-    fs::create_dir_all(catalog_dir)?;
+    let provider = "velune-gateway";
+    config
+        .execution
+        .create_dir_all(catalog_dir)
+        .map_err(|error| RuntimeError::context("运行时模型目录", error))?;
     let marker = catalog_dir.join(".velune-managed");
-    if target.exists() && !marker.exists() {
+    if config
+        .execution
+        .path_exists(target)
+        .map_err(|error| RuntimeError::context("运行时模型目录", error))?
+        && !config
+            .execution
+            .path_exists(&marker)
+            .map_err(|error| RuntimeError::context("运行时模型目录", error))?
+    {
         return Err(RuntimeError::invalid("refusing unmanaged runtime catalog"));
     }
     // Materialize each runnable provider model so Pi can switch using the same gateway revision.
@@ -153,22 +161,15 @@ pub(super) fn materialize_models(
         },
     });
     let bytes = serde_json::to_vec_pretty(&value)?;
-    let temporary = target.with_extension("json.velune.tmp");
-    let mut file = fs::OpenOptions::new()
-        .create(true)
-        .truncate(true)
-        .write(true)
-        .open(&temporary)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        file.set_permissions(fs::Permissions::from_mode(0o600))?;
-    }
-    file.write_all(&bytes)?;
-    file.sync_all()?;
-    drop(file);
-    fs::rename(temporary, target)?;
-    fs::write(marker, b"velune managed models config v1\n")?;
+    config
+        .execution
+        .write_file_atomic(target, &bytes)
+        .and_then(|()| {
+            config
+                .execution
+                .write_file_atomic(&marker, b"velune managed models config v1\n")
+        })
+        .map_err(|error| RuntimeError::context("运行时模型配置保存", error))?;
     Ok(())
 }
 
@@ -182,11 +183,6 @@ pub(super) fn write_selection_file(
         .selection_file
         .as_ref()
         .ok_or_else(|| RuntimeError::invalid("runtime selection file"))?;
-    fs::create_dir_all(
-        path.parent()
-            .ok_or_else(|| RuntimeError::invalid("runtime selection directory"))?,
-    )?;
-    let temporary = path.with_extension("json.tmp");
     let bytes = serde_json::to_vec(&json!({
         "provider": "velune-gateway",
         "modelRecordKey": model_record_key,
@@ -194,15 +190,10 @@ pub(super) fn write_selection_file(
         "thinkingLevel": "off",
         "subscriptionCapability": subscription_capability
     }))?;
-    fs::write(&temporary, bytes)?;
-    fs::rename(temporary, path)?;
-    Ok(())
-}
-
-pub(super) fn validate_session_cwd(cwd: &Path) -> Result<(), RuntimeError> {
-    if !cwd.is_absolute() || !cwd.is_dir() {
-        return Err(RuntimeError::invalid("conversation working directory"));
-    }
+    config
+        .execution
+        .write_file_atomic(path, &bytes)
+        .map_err(|error| RuntimeError::context("运行时模型选择保存", error))?;
     Ok(())
 }
 

@@ -12,9 +12,10 @@ async function main() {
   const installation = resolvePiSdk({binary:cli,runtimeTypeId:value("--runtime-type")});
   if (args.includes("--validate")) return;
   const required = (key) => { const path = value(key); if (!path || !isAbsolute(path)) fail("Pi SDK 装配路径无效"); return path; };
-  const agentDir = required("--agent-dir"), modelsPath = required("--models-path"), selectionFile = required("--selection-file"), extension = required("--extension");
+  const agentDir = required("--agent-dir"), modelsPath = value("--models-path"), selectionFile = value("--selection-file"), extension = required("--extension");
   process.env.PI_CODING_AGENT_DIR = agentDir;
-  process.env.VELUNE_PI_SELECTION_FILE = selectionFile;
+  if (selectionFile) process.env.VELUNE_PI_SELECTION_FILE = selectionFile;
+  else delete process.env.VELUNE_PI_SELECTION_FILE;
   const sdk = await installation.importSdk();
   const { resolveProjectTrusted } = await installation.importModule("dist/core/project-trust.js");
   const { createProjectTrustContext } = await installation.importModule("dist/cli/project-trust.js");
@@ -22,7 +23,7 @@ async function main() {
   const modelRuntime = await sdk.ModelRuntime.create({authPath:join(agentDir,"auth.json"),modelsPath:sourceModelsPath});
   const modelRuntimeError = modelRuntime.getError();
   if (modelRuntimeError) fail(`Pi 源模型目录无效（${sourceModelsPath}）：${modelRuntimeError}`);
-  const gatewayCatalog = JSON.parse(readFileSync(modelsPath,"utf8"));
+  const gatewayCatalog = modelsPath ? JSON.parse(readFileSync(modelsPath,"utf8")) : {};
   for (const [providerId, provider] of Object.entries(gatewayCatalog.providers ?? {})) {
     modelRuntime.registerProvider(providerId, provider);
   }
@@ -43,8 +44,9 @@ async function main() {
         trustByCwd.set(cwd,trusted); return trusted;
       }} : undefined,
     });
-    const model = services.modelRuntime.getModel("velune","auto");
-    if (!model) fail("Velune 网关模型未注册");
+    const provider = value("--provider"), modelId = value("--model");
+    const model = provider && modelId ? services.modelRuntime.getModel(provider,modelId) : undefined;
+    if (provider && modelId && !model) fail("所选运行时模型未注册");
     const result = await sdk.createAgentSessionFromServices({services,sessionManager,model,thinkingLevel:"off",sessionStartEvent});
     return {...result,services,diagnostics:services.diagnostics};
   };

@@ -58,6 +58,10 @@ impl CoreRuntime {
             };
             let already_configured = self.runtime_instances.iter().any(|r| {
                 r.type_id == runtime.type_id
+                    && r.execution().is_ok_and(|execution| {
+                        matches!(execution.transport, crate::RuntimeTransport::Local)
+                            && !matches!(execution.home, crate::RuntimeHome::Managed { .. })
+                    })
                     && ["binary", "agentDir"].iter().all(|key| {
                         let existing = r.settings.get(*key).and_then(|p| fs::canonicalize(p).ok());
                         let candidate = runtime

@@ -16,7 +16,7 @@ const MAX_STDERR_BYTES: usize = 1024 * 1024;
 const TIMEOUT: Duration = Duration::from_secs(15);
 pub(super) struct RpcClient {
     child: Child,
-    input: ChildStdin,
+    input: Option<ChildStdin>,
     records: Receiver<Result<Value>>,
     queued: VecDeque<Value>,
     next: u64,
@@ -30,7 +30,7 @@ fn prepare(command: &mut Command) {
         command.process_group(0);
     }
 }
-pub(super) fn stop(child: &mut Child) {
+pub(crate) fn stop(child: &mut Child) {
     #[cfg(unix)]
     {
         // Each child is placed in its own process group before exec. Close inherited pipes and tools too.
@@ -40,9 +40,6 @@ pub(super) fn stop(child: &mut Child) {
     }
     let _ = child.kill();
     let _ = child.wait();
-}
-pub(crate) fn bounded_output(command: Command) -> Result<Vec<u8>> {
-    bounded_process(command, None, 32768)
 }
 /// Run a short-lived helper. `stderr_limit` only bounds retained diagnostics;
 /// stdout is a business payload and is read to EOF without an adapter limit.
@@ -183,21 +180,27 @@ pub(crate) fn bounded_process(
 }
 
 impl RpcClient {
-    pub(super) fn spawn(mut command: Command, environment: &[(String, String)]) -> Result<Self> {
+    pub(super) fn spawn_at(
+        command: Command,
+        execution: &crate::execution::ExecutionTarget,
+        os_home: Option<&std::path::Path>,
+    ) -> Result<Self> {
+        let prepared = execution.prepare(command, os_home)?;
+        let mut command = prepared.command;
         prepare(&mut command);
-        for (key, value) in environment {
-            command.env(key, value);
-        }
         let mut child = command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
             .map_err(|error| Error::new(format!("运行时进程无法启动：{error}")))?;
-        let input = child
+        let mut input = child
             .stdin
             .take()
             .ok_or_else(|| Error::new("运行时输入不可用"))?;
+        input
+            .write_all(&prepared.input_prefix)
+            .map_err(|error| Error::new(format!("运行时启动请求发送失败：{error}")))?;
         let output = child
             .stdout
             .take()
@@ -249,7 +252,7 @@ impl RpcClient {
         });
         Ok(Self {
             child,
-            input,
+            input: Some(input),
             records,
             queued: VecDeque::new(),
             next: 1,
@@ -278,13 +281,39 @@ impl RpcClient {
         let code = error.code();
         Error::with_code(format!("{}；原始错误：{}", error, detail), code)
     }
-    fn write(&mut self, value: &Value) -> Result<()> {
-        serde_json::to_writer(&mut self.input, value)
+    pub(super) fn write(&mut self, value: &Value) -> Result<()> {
+        let input = self
+            .input
+            .as_mut()
+            .ok_or_else(|| Error::new("运行时输入已关闭"))?;
+        serde_json::to_writer(&mut *input, value)
             .map_err(|error| Error::new(format!("运行时请求编码失败：{error}")))?;
-        self.input
+        input
             .write_all(b"\n")
-            .and_then(|_| self.input.flush())
+            .and_then(|_| input.flush())
             .map_err(|error| Error::new(format!("运行时请求发送失败：{error}")))
+    }
+    pub(super) fn claude_control(&mut self, request: Value) -> Result<Value> {
+        let id = format!("velune-{}", self.next);
+        self.next += 1;
+        self.write(&json!({"type":"control_request","request_id":id,"request":request}))?;
+        let deadline = Instant::now() + TIMEOUT;
+        loop {
+            let record = self
+                .records
+                .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+                .map_err(|error| {
+                    self.with_stderr(Error::new(format!("Claude 控制请求等待失败：{error}")))
+                })?
+                .map_err(|error| self.with_stderr(error))?;
+            if record["type"] == "control_response" && record["response"]["request_id"] == id {
+                if record["response"]["subtype"] != "success" {
+                    return Err(Error::new("Claude 拒绝控制请求"));
+                }
+                return Ok(record["response"]["response"].clone());
+            }
+            self.queued.push_back(record);
+        }
     }
     pub(super) fn begin(&mut self, method: &str, params: &Value) -> Result<u64> {
         let id = self.next;
@@ -358,6 +387,16 @@ impl RpcClient {
         Ok(values)
     }
 
+    pub(super) fn finish(&mut self) {
+        self.input.take();
+        for _ in 0..50 {
+            if self.child.try_wait().is_ok_and(|status| status.is_some()) {
+                return;
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+        self.shutdown();
+    }
     pub(super) fn shutdown(&mut self) {
         stop(&mut self.child);
     }

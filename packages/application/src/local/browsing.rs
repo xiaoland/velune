@@ -55,12 +55,15 @@ impl CoreRuntime {
         &self,
         runtime: &RuntimeInstance,
     ) -> Result<PiConfig, RuntimeError> {
+        let context = self.prepare_execution_context(runtime)?;
         Ok(PiConfig {
+            execution: context.target,
+            os_home: context.os_home,
             runtime_type_id: runtime.type_id.clone(),
             binary: setting_path(runtime, "binary")?,
             node_binary: Some(setting_path(runtime, "nodeBinary")?),
-            sdk_helper: Some(self.options.resources_directory.join("pi_sessions.mjs")),
-            agent_dir: Some(setting_path(runtime, "agentDir")?),
+            sdk_helper: Some(context.resources.join("pi_sessions.mjs")),
+            agent_dir: Some(context.agent_dir),
             session_dir: setting_path_optional(runtime, "sessionDir"),
             working_dir: None,
             provider: None,
@@ -265,7 +268,7 @@ impl CoreRuntime {
         self.validate_session_model(&runtime, key)?;
         let cwd = snapshot.conversation.cwd.as_deref().map(PathBuf::from);
         if let Some(cwd) = &cwd {
-            validate_session_cwd(cwd)?;
+            self.validate_runtime_cwd(&runtime, cwd)?;
         }
         let gateway = self
             .gateways
@@ -282,10 +285,13 @@ impl CoreRuntime {
                 "此模型的提供商尚未配置认证，请先完成提供商配置",
             ));
         }
-        velune_agent_runtime::version::check_version(
+        let context = self.prepare_execution_context(&runtime)?;
+        velune_agent_runtime::version::check_version_at(
             &runtime.type_id,
             &setting_path(&runtime, "binary")?,
             setting_path_optional(&runtime, "nodeBinary").as_deref(),
+            &context.target,
+            context.os_home.as_deref(),
         )
         .map_err(|error| RuntimeError::Invalid(error.to_string()))?;
         if runtime.type_id == "pi-1.0.2" {

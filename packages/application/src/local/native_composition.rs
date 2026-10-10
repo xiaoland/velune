@@ -27,15 +27,18 @@ impl CoreRuntime {
             .gateway_runner
             .as_ref()
             .ok_or_else(|| RuntimeError::invalid("runtime gateway"))?;
+        let endpoint = self
+            .gateway_tunnel
+            .as_ref()
+            .map_or(runner.endpoint(), |tunnel| tunnel.endpoint());
         Ok(GatewayInjection {
             endpoint: if ingress == GatewayProtocol::MessagesV1 {
-                runner
-                    .endpoint()
+                endpoint
                     .strip_suffix("/v1")
                     .expect("gateway base path")
                     .into()
             } else {
-                runner.endpoint().into()
+                endpoint.into()
             },
             token: runner.token().into(),
             model_alias: model.provider_model_id.clone(),
@@ -64,44 +67,6 @@ impl CoreRuntime {
             key.into(),
         )]))
     }
-    pub(super) fn select_native_model(
-        &mut self,
-        runtime: &RuntimeInstance,
-        key: &str,
-    ) -> Result<(), RuntimeError> {
-        let injection = self.native_injection(runtime, key)?;
-        let previous = self
-            .model_record_key
-            .as_deref()
-            .ok_or_else(|| RuntimeError::invalid("runtime model"))?;
-        let previous_aliases = self.native_aliases(runtime, previous)?;
-        let aliases = self.native_aliases(runtime, key)?;
-        self.gateway_runner
-            .as_ref()
-            .ok_or_else(|| RuntimeError::invalid("runtime gateway"))?
-            .replace_aliases(aliases)
-            .map_err(|error| RuntimeError::context("模型路由更新失败", error))?;
-        let result = match &mut self.active_state {
-            ActiveState::Native(session) => session.select_model(injection),
-            _ => return Err(RuntimeError::invalid("native runtime")),
-        };
-        if result.is_err() {
-            if self
-                .gateway_runner
-                .as_ref()
-                .expect("active gateway")
-                .replace_aliases(previous_aliases)
-                .is_err()
-            {
-                self.shutdown_active()?;
-                return Err(RuntimeError::invalid("模型路由恢复失败，运行时已断开"));
-            }
-            return Err(RuntimeError::invalid(
-                "模型选择失败；已保留当前会话与原模型选择",
-            ));
-        }
-        Ok(())
-    }
     pub(super) fn active_instance(&self) -> Result<&RuntimeInstance, RuntimeError> {
         let id = match &self.active_state {
             ActiveState::History(snapshot) => &snapshot.conversation.runtime_id,
@@ -123,15 +88,23 @@ impl CoreRuntime {
         let provider = match runtime.type_id.as_str() {
             "codex-0.159.3" => "codex",
             "dsh-acp-0.2.0-rc.2" => "deepseek",
+            "claude-code-2.1.286" => "claude-code",
             _ => return Err(RuntimeError::invalid("native history type")),
         };
-        let home = setting_path(runtime, "agentDir")?;
+        let context = self.prepare_execution_context(runtime)?;
+        let home = context.agent_dir;
         Ok(HistoryConfig {
             provider: provider.into(),
             binary: setting_path(runtime, "binary")?,
-            node_binary: setting_path(runtime, "nodeBinary")?,
-            resources_directory: self.options.resources_directory.clone(),
-            root: home.join("sessions"),
+            node_binary: setting_path_optional(runtime, "nodeBinary").unwrap_or_default(),
+            resources_directory: context.resources,
+            execution: context.target,
+            os_home: context.os_home,
+            root: home.join(if provider == "claude-code" {
+                "projects"
+            } else {
+                "sessions"
+            }),
             home,
         })
     }

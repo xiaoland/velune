@@ -14,7 +14,6 @@ use serde_json::{Value, json};
 use std::{
     collections::BTreeMap,
     fs,
-    io::Write,
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -56,7 +55,10 @@ fn runtime_types() -> Vec<crate::config::RuntimeTypeDescriptor> {
         if variant.family_id=="pi" {binary.executable_discovery=Some(crate::conversation::ExecutableDiscovery{command:"pi".into(),minimum_version:"1.0.2".into()});}
         if variant.id=="codex-0.159.3" {binary.executable_discovery=Some(crate::conversation::ExecutableDiscovery{command:"codex".into(),minimum_version:"0.159.3".into()});}
         if variant.id=="dsh-acp-0.2.0-rc.2" {binary.executable_discovery=Some(crate::conversation::ExecutableDiscovery{command:"dsh".into(),minimum_version:"0.2.0".into()});}
-        let mut fields=vec![binary,node.clone(),field("agentDir","运行时目录","directoryPath",true,String::new(),match variant.id {"codex-0.159.3"=>"该实例的 CODEX_HOME；配置与会话根目录，不是任务工作目录。","dsh-acp-0.2.0-rc.2"=>"该实例的 DeepSeek Harness 配置与会话根目录，不是任务工作目录。",_=>"该实例的 Pi 配置与状态根目录，不是任务工作目录。"})];
+        let mut runtime_node = node.clone();
+        runtime_node.required = variant.family_id != "claude-code";
+        if variant.family_id == "claude-code" { binary.executable_discovery=Some(crate::conversation::ExecutableDiscovery{command:"claude".into(),minimum_version:"2.1.286".into()}); }
+        let mut fields=vec![binary,runtime_node,field("agentDir","运行时目录","directoryPath",true,String::new(),match variant.id {"claude-code-2.1.286"=>"该实例的 CLAUDE_CONFIG_DIR；配置与原生会话目录，不是任务工作目录。","codex-0.159.3"=>"该实例的 CODEX_HOME；配置与会话根目录，不是任务工作目录。","dsh-acp-0.2.0-rc.2"=>"该实例的 DeepSeek Harness 配置与会话根目录，不是任务工作目录。",_=>"该实例的 Pi 配置与状态根目录，不是任务工作目录。"})];
         if variant.id=="pi-1.0.2" {fields.push(field("sessionDir","会话存储目录","directoryPath",false,String::new(),"覆盖 Pi 默认的会话存储位置；留空采用运行时目录的 sessions，此项不是任务工作目录。"));}
         crate::config::RuntimeTypeDescriptor{id:variant.id.into(),family_id:variant.family_id.into(),version_regex:variant.version_regex.into(),can_rename_conversations:variant.can_rename_conversations,can_delete_conversations:variant.can_delete_conversations,supported_protocols:GatewayProtocol::runtime_protocols(variant.id).expect("registered runtime adapter"),supported_provider_protocols:GatewayProtocol::runtime_provider_protocols(variant.id).expect("registered runtime adapter"),name:variant.name.into(),fields}
     }).collect()
@@ -77,6 +79,13 @@ enum ActiveState {
     History(Box<crate::conversation::ConversationSnapshot>),
     Pi,
     Native(Box<NativeSession>),
+}
+
+struct UnsubmittedDraft {
+    public_id: String,
+    original_runtime_id: String,
+    runtime_id: String,
+    native_id: String,
 }
 
 pub struct CoreRuntime {
@@ -100,6 +109,10 @@ pub struct CoreRuntime {
     execution_runtime_id: Option<String>,
     authentication: Option<authentication::Login>,
     model_record_key: Option<String>,
+    model_selection: Option<crate::ModelSelection>,
+    unsubmitted_draft: Option<UnsubmittedDraft>,
+    gateway_tunnel: Option<velune_agent_runtime::execution::GatewayTunnel>,
+    prepared_remote_resources: std::cell::RefCell<std::collections::BTreeSet<String>>,
     analytics: Arc<crate::analytics::AnalyticsStore>,
 }
 
@@ -109,9 +122,11 @@ mod configuration;
 mod continuation;
 mod conversations;
 mod execution;
+mod model_selection;
 mod native_composition;
 mod pi_composition;
 mod provider_management;
+mod runtime_execution;
 use pi_composition::*;
 
 impl CoreRuntime {
@@ -143,6 +158,10 @@ impl CoreRuntime {
             execution_runtime_id: None,
             authentication: None,
             model_record_key: None,
+            model_selection: None,
+            unsubmitted_draft: None,
+            gateway_tunnel: None,
+            prepared_remote_resources: Default::default(),
             analytics,
         })
     }
@@ -197,16 +216,41 @@ impl CoreRuntime {
         Some(snapshot)
     }
     fn drain_runtime(&mut self) -> Result<(), RuntimeError> {
-        match &mut self.active_state {
+        let was_busy = self.busy();
+        let result = match &mut self.active_state {
             ActiveState::Native(session) => session
                 .poll()
-                .map_err(|error| RuntimeError::Invalid(format!("运行时事件读取失败：{error}"))),
+                .map_err(|error| RuntimeError::context("运行时事件读取失败", error)),
             ActiveState::Pi => {
                 self.drain_pi();
                 Ok(())
             }
             ActiveState::Empty | ActiveState::History(_) => Ok(()),
+        };
+        if self.gateway_runner.is_some() && ((was_busy && !self.busy()) || result.is_err()) {
+            self.finish_managed_turn()?;
         }
+        result
+    }
+
+    fn finish_managed_turn(&mut self) -> Result<(), RuntimeError> {
+        // Pi confirms durable message identities only during the settled RPC resync.
+        let synchronized = if matches!(self.active_state, ActiveState::Pi) && !self.pi.busy {
+            self.sync_projection()
+        } else {
+            Ok(())
+        };
+        let snapshot = self.native_snapshot();
+        let selection = self.model_selection.clone();
+        let result = self.shutdown_active();
+        self.model_selection = selection;
+        if let Some(mut snapshot) = snapshot {
+            self.model_record_key = snapshot.model_record_key.clone();
+            snapshot.pending_interactions.clear();
+            snapshot.actions.can_cancel = false;
+            self.active_state = ActiveState::History(Box::new(snapshot));
+        }
+        synchronized.and(result)
     }
     fn public_gateways(&self) -> Vec<crate::GatewaySummary> {
         crate::provider_configuration::summaries(&self.gateways)
@@ -257,6 +301,16 @@ impl CoreRuntime {
             "modelTemplates" => self.template_action(&request["payload"]),
             "runtimeInstances" => self.runtime_action(request),
             "selectRuntime" => self.select_runtime_action(request),
+            "runtimeExecution" => self.runtime_execution_action(request, false),
+            "configureRuntimeExecution" => self.runtime_execution_action(request, true),
+            "runtimeModels" => self.runtime_models_action(request),
+            "nextTurnModelSelection" => {
+                Ok(serde_json::to_value(if self.native_snapshot().is_some() {
+                    &self.model_selection
+                } else {
+                    &None
+                })?)
+            }
             "create" => self.create_conversation(request),
             "open" => self.open_conversation(request),
             "readConversation" => self.read_conversation(request),

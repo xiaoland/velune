@@ -163,11 +163,18 @@ impl RuntimeInstance {
     pub(crate) fn validate_execution_paths(&self) -> Result<(), &'static str> {
         if !matches!(
             self.type_id.as_str(),
-            "pi-1.0.2" | "codex-0.159.3" | "dsh-acp-0.2.0-rc.2"
+            "pi-1.0.2" | "codex-0.159.3" | "dsh-acp-0.2.0-rc.2" | "claude-code-2.1.286"
         ) {
             return Err("不支持的运行时版本类型");
         }
+        let execution = self.execution().map_err(|_| "运行位置或 HOME 配置无效")?;
         for key in ["binary", "agentDir", "nodeBinary"] {
+            if key == "agentDir" && matches!(execution.home, crate::RuntimeHome::Managed { .. }) {
+                continue;
+            }
+            if key == "nodeBinary" && self.type_id == "claude-code-2.1.286" {
+                continue;
+            }
             let value = self
                 .settings
                 .get(key)

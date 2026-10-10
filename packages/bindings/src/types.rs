@@ -306,6 +306,25 @@ pub struct BindingRuntimeUpdate {
     pub execution_invalidated: bool,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Enum)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub enum BindingModelSelection {
+    Managed {
+        model_record_key: String,
+    },
+    Native {
+        provider_id: Option<String>,
+        model_id: String,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+#[serde(rename_all = "camelCase")]
+pub struct BindingRuntimeModel {
+    pub selection: BindingModelSelection,
+    pub name: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct BindingSnapshotResult {
@@ -763,4 +782,29 @@ pub struct BindingTranscriptOutlineEntry {
 pub struct BindingTranscriptMessageIdentity {
     pub id: String,
     pub message_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Enum)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub enum BindingRuntimeTransport {
+    Local,
+    Ssh {
+        binary: String,
+        destination: String,
+        port: Option<u16>,
+    },
+}
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Enum)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub enum BindingRuntimeHome {
+    Inherit,
+    Existing { path: String },
+    Managed { remote_root: Option<String> },
+}
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BindingRuntimeExecution {
+    pub transport: BindingRuntimeTransport,
+    pub home: BindingRuntimeHome,
+    pub remote_resources_directory: Option<String>,
 }

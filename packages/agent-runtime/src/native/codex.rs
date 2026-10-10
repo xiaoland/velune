@@ -2,7 +2,12 @@
 use super::*;
 impl NativeSession {
     pub(super) fn codex_initialize(&mut self) -> Result<()> {
-        if self.config.gateway.protocol != "openai-responses" {
+        if self
+            .config
+            .gateway
+            .as_ref()
+            .is_some_and(|g| g.protocol != "openai-responses")
+        {
             return Err(Error::new("此 Codex 适配器仅支持原生 Responses 模型"));
         }
         self.rpc.request(
@@ -12,33 +17,70 @@ impl NativeSession {
                 "capabilities": {"experimentalApi":true}
             }),
         )?;
-        self.rpc.notify("initialized", &json!({}))
+        self.rpc.notify("initialized", &json!({}))?;
+        Ok(())
+    }
+    fn codex_capture_provider(&mut self, cwd: Option<&Path>) -> Result<()> {
+        let source = self
+            .rpc
+            .request("config/read", &json!({"includeLayers":false,"cwd":cwd}))?;
+        self.native_provider = Some(
+            source["config"]["model_provider"]
+                .as_str()
+                .unwrap_or("openai")
+                .into(),
+        );
+        if self.native_selection.is_none()
+            && let Some(model) = source["config"]["model"].as_str()
+        {
+            self.native_selection = Some(RuntimeModel {
+                provider_id: self.native_provider.clone(),
+                id: model.into(),
+                name: model.into(),
+            });
+        }
+        Ok(())
     }
     fn codex_options(&self, cwd: Option<&Path>) -> Value {
-        let mut options = json!({
-            "model": self.config.gateway.model_alias,
-            "modelProvider": "velune",
-            "approvalPolicy": "on-request",
-            "sandbox": "workspace-write",
-            "config": {
-                "model_provider": "velune",
-                "model_providers": {"velune": {
-                    "name": "Velune LLM Gateway",
-                    "base_url": self.config.gateway.endpoint,
-                    "env_key": "VELUNE_GATEWAY_TOKEN",
-                    "wire_api": "responses",
-                    "requires_openai_auth": false
-                }},
-                "features": {"responses_websockets":false, "responses_websockets_v2":false}
+        let mut options = json!({"approvalPolicy":"on-request","sandbox":"workspace-write"});
+        if let Some(gateway) = &self.config.gateway {
+            options["model"] = json!(gateway.model_alias);
+            options["modelProvider"] = json!("velune");
+            options["config"] = json!({
+                "model_provider":"velune",
+                "model_providers":{"velune":{"name":"Velune LLM Gateway","base_url":self.tunnel.as_ref().map(|t| t.endpoint()).unwrap_or(&gateway.endpoint),"env_key":"VELUNE_GATEWAY_TOKEN","wire_api":"responses","requires_openai_auth":false}},
+                "features":{"responses_websockets":false,"responses_websockets_v2":false}
+            });
+        } else {
+            let provider = self
+                .native_selection
+                .as_ref()
+                .and_then(|m| m.provider_id.as_ref())
+                .or(self.native_provider.as_ref());
+            options["modelProvider"] = json!(provider);
+            options["config"] = json!({"model_provider":provider});
+            if let Some(model) = &self.native_selection {
+                options["model"] = json!(model.id);
             }
-        });
+        }
         if let Some(cwd) = cwd {
             options["cwd"] = json!(cwd);
         }
         options
     }
     pub(super) fn codex_create(&mut self, cwd: Option<&Path>, runtime_id: &str) -> Result<()> {
+        self.codex_capture_provider(cwd)?;
         let result = self.rpc.request("thread/start", &self.codex_options(cwd))?;
+        if self.native_selection.is_none()
+            && self.config.gateway.is_none()
+            && let Some(model) = result["model"].as_str()
+        {
+            self.native_selection = Some(RuntimeModel {
+                provider_id: self.native_provider.clone(),
+                id: model.into(),
+                name: model.into(),
+            });
+        }
         let id = result["thread"]["id"]
             .as_str()
             .ok_or_else(|| Error::new("Codex 未返回会话身份"))?;
@@ -66,12 +108,23 @@ impl NativeSession {
         runtime_id: &str,
         history: Vec<Message>,
     ) -> Result<()> {
+        self.codex_capture_provider(cwd)?;
         let mut options = self.codex_options(cwd);
         options["threadId"] = json!(id);
         options["excludeTurns"] = json!(false);
         let result = self.rpc.request("thread/resume", &options)?;
         if result["thread"]["id"].as_str() != Some(id) {
             return Err(Error::new("Codex 恢复了不同的会话"));
+        }
+        if self.native_selection.is_none()
+            && self.config.gateway.is_none()
+            && let Some(model) = result["model"].as_str()
+        {
+            self.native_selection = Some(RuntimeModel {
+                provider_id: self.native_provider.clone(),
+                id: model.into(),
+                name: model.into(),
+            });
         }
         let resolved_cwd = result["thread"]["cwd"]
             .as_str()
@@ -102,7 +155,7 @@ impl NativeSession {
             "turn/start",
             &json!({
                 "threadId": id,
-                "model": self.config.gateway.model_alias,
+                "model": self.config.gateway.as_ref().map(|g| g.model_alias.as_str()).or_else(|| self.native_selection.as_ref().map(|m| m.id.as_str())),
                 "input": [{"type":"text", "text":text}]
             }),
         )?;
@@ -112,6 +165,59 @@ impl NativeSession {
         self.turn_id = Some(turn_id.into());
         self.running();
         Ok(())
+    }
+    pub(super) fn codex_models(&mut self) -> Result<Vec<RuntimeModel>> {
+        let cwd = self
+            .snapshot
+            .as_ref()
+            .and_then(|snapshot| snapshot.conversation.cwd.as_deref());
+        let source = self
+            .rpc
+            .request("config/read", &json!({"includeLayers":false,"cwd":cwd}))?;
+        let configured = source["config"]["model"].as_str();
+        let provider = source["config"]["model_provider"]
+            .as_str()
+            .unwrap_or("openai");
+        let mut result = configured
+            .map(|id| {
+                vec![RuntimeModel {
+                    provider_id: Some(provider.into()),
+                    id: id.into(),
+                    name: id.into(),
+                }]
+            })
+            .unwrap_or_default();
+        let mut cursor = Value::Null;
+        let mut seen = std::collections::BTreeSet::new();
+        loop {
+            let page = self.rpc.request(
+                "model/list",
+                &json!({"cursor":cursor,"limit":100,"includeHidden":false}),
+            )?;
+            for model in page["data"]
+                .as_array()
+                .ok_or_else(|| Error::new("Codex 模型目录格式无效"))?
+            {
+                let id = model["model"]
+                    .as_str()
+                    .ok_or_else(|| Error::new("Codex 模型缺少身份"))?;
+                if configured != Some(id) {
+                    result.push(RuntimeModel {
+                        provider_id: None,
+                        id: id.into(),
+                        name: model["displayName"].as_str().unwrap_or(id).into(),
+                    });
+                }
+            }
+            let Some(next) = page["nextCursor"].as_str() else {
+                break;
+            };
+            if !seen.insert(next.to_owned()) {
+                return Err(Error::new("Codex 模型分页游标重复"));
+            }
+            cursor = json!(next);
+        }
+        Ok(result)
     }
     pub(super) fn codex_cancel(&mut self) -> Result<()> {
         let thread = self
@@ -190,11 +296,11 @@ impl NativeSession {
             "turn/completed" => {
                 if params["turn"]["id"].as_str() == self.turn_id.as_deref() {
                     let status = params["turn"]["status"].as_str();
-                    self.settle(if status == Some("failed") {
+                    self.finish_turn(if status == Some("failed") {
                         RunState::Failed
                     } else {
                         RunState::Idle
-                    });
+                    })?;
                     if status == Some("failed") {
                         self.notice("Codex 执行失败；请通过诊断日志关联操作，或检查上游配置。");
                     }
@@ -385,7 +491,24 @@ impl NativeSession {
 
 /// Native thread metadata management without model selection or gateway startup.
 pub fn manage_thread(binary: &Path, home: &Path, id: &str, title: Option<&str>) -> Result<()> {
-    let mut rpc = history_client(binary, home)?;
+    manage_thread_at(
+        binary,
+        home,
+        id,
+        title,
+        &crate::execution::ExecutionTarget::Local,
+        None,
+    )
+}
+pub fn manage_thread_at(
+    binary: &Path,
+    home: &Path,
+    id: &str,
+    title: Option<&str>,
+    execution: &crate::execution::ExecutionTarget,
+    os_home: Option<&Path>,
+) -> Result<()> {
+    let mut rpc = history_client_at(binary, home, execution, os_home)?;
     let result = match title {
         Some(name) => rpc.request("thread/name/set", &json!({"threadId":id,"name":name})),
         None => rpc.request("thread/delete", &json!({"threadId":id})),
@@ -393,17 +516,20 @@ pub fn manage_thread(binary: &Path, home: &Path, id: &str, title: Option<&str>) 
     rpc.shutdown();
     result.map(|_| ())
 }
-pub(super) fn history_client(binary: &Path, home: &Path) -> Result<rpc::RpcClient> {
+pub(super) fn history_client_at(
+    binary: &Path,
+    home: &Path,
+    execution: &crate::execution::ExecutionTarget,
+    os_home: Option<&Path>,
+) -> Result<rpc::RpcClient> {
     if !binary.is_absolute() || !home.is_absolute() {
         return Err(Error::new("Codex 历史配置必须使用绝对路径"));
     }
-    crate::version::check_version("codex-0.159.3", binary, None)?;
+    crate::version::check_version_at("codex-0.159.3", binary, None, execution, os_home)?;
     let mut command = Command::new(binary);
     command.arg("app-server");
-    let mut rpc = rpc::RpcClient::spawn(
-        command,
-        &[("CODEX_HOME".into(), home.to_string_lossy().into_owned())],
-    )?;
+    command.env("CODEX_HOME", home);
+    let mut rpc = rpc::RpcClient::spawn_at(command, execution, os_home)?;
     rpc.request("initialize", &json!({"clientInfo":{"name":"velune","version":"0.1.0-beta.1"},"capabilities":{"experimentalApi":true}}))?;
     rpc.notify("initialized", &json!({}))?;
     Ok(rpc)

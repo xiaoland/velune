@@ -123,6 +123,27 @@ pub struct RuntimeUpdate {
     pub execution_invalidated: bool,
 }
 
+/// The selected model belongs either to Velune's gateway or to the target runtime.
+/// Native identifiers are never resolved through the gateway catalog.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub enum ModelSelection {
+    Managed {
+        model_record_key: String,
+    },
+    Native {
+        provider_id: Option<String>,
+        model_id: String,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RuntimeModel {
+    pub selection: ModelSelection,
+    pub name: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SnapshotResult {
@@ -502,6 +523,14 @@ impl Application {
             None,
         )
     }
+    pub fn upsert_runtime_with_execution(
+        &mut self,
+        mut runtime: RuntimeInstance,
+        execution: crate::RuntimeExecution,
+    ) -> Result<RuntimeUpdate, Error> {
+        runtime.set_execution(execution)?;
+        self.upsert_runtime(runtime)
+    }
     pub fn delete_runtime(&mut self, id: String) -> Result<RuntimeUpdate, Error> {
         self.execute(
             "runtimeInstances",
@@ -512,17 +541,53 @@ impl Application {
     pub fn select_runtime(&mut self, id: String) -> Result<ConfigurationSnapshot, Error> {
         self.execute("selectRuntime", json!({"runtimeInstanceID":id}), None)
     }
+    pub fn runtime_execution(
+        &mut self,
+        runtime_id: String,
+    ) -> Result<crate::RuntimeExecution, Error> {
+        self.execute("runtimeExecution", json!({}), Some(&runtime_id))
+    }
+    pub fn configure_runtime_execution(
+        &mut self,
+        runtime_id: String,
+        execution: crate::RuntimeExecution,
+    ) -> Result<RuntimeUpdate, Error> {
+        self.execute(
+            "configureRuntimeExecution",
+            json!({"execution":execution}),
+            Some(&runtime_id),
+        )
+    }
     pub fn create_conversation(
         &mut self,
         runtime_id: String,
         cwd: Option<String>,
         model_record_key: String,
     ) -> Result<SnapshotResult, Error> {
+        self.create_conversation_with_selection(
+            runtime_id,
+            cwd,
+            ModelSelection::Managed { model_record_key },
+        )
+    }
+    pub fn create_conversation_with_selection(
+        &mut self,
+        runtime_id: String,
+        cwd: Option<String>,
+        selection: ModelSelection,
+    ) -> Result<SnapshotResult, Error> {
         self.execute(
             "create",
-            json!({"cwd":cwd,"modelRecordKey":model_record_key}),
+            json!({"cwd":cwd,"modelSelection":selection}),
             Some(&runtime_id),
         )
+    }
+    pub fn runtime_models(&mut self, runtime_id: String) -> Result<Vec<RuntimeModel>, Error> {
+        self.execute("runtimeModels", json!({}), Some(&runtime_id))
+    }
+    /// The next turn's explicit intent, retained after a managed turn releases its provider override.
+    pub fn next_turn_model_selection(&mut self) -> Result<Option<ModelSelection>, Error> {
+        self.execute("nextTurnModelSelection", json!({}), None)
     }
     pub fn open_conversation(
         &mut self,
@@ -598,11 +663,23 @@ impl Application {
         model_record_key: String,
         text: String,
     ) -> Result<SnapshotResult, Error> {
-        self.execute(
-            "sendTurn",
-            json!({"sourceRuntimeID":source_runtime_id,"conversationID":conversation_id,"runtimeInstanceID":target_runtime_id,"modelRecordKey":model_record_key,"text":text}),
-            Some(&target_runtime_id),
+        self.send_turn_with_selection(
+            source_runtime_id,
+            conversation_id,
+            target_runtime_id,
+            ModelSelection::Managed { model_record_key },
+            text,
         )
+    }
+    pub fn send_turn_with_selection(
+        &mut self,
+        source_runtime_id: String,
+        conversation_id: String,
+        target_runtime_id: String,
+        selection: ModelSelection,
+        text: String,
+    ) -> Result<SnapshotResult, Error> {
+        self.execute("sendTurn", json!({"sourceRuntimeID":source_runtime_id,"conversationID":conversation_id,"modelSelection":selection,"text":text}), Some(&target_runtime_id))
     }
     pub fn cancel(&mut self, runtime_id: String) -> Result<SnapshotResult, Error> {
         self.execute("cancel", json!({}), Some(&runtime_id))

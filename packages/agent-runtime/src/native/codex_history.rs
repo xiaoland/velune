@@ -66,7 +66,22 @@ pub fn list_codex_history(
     home: &Path,
     runtime_id: &str,
 ) -> Result<Vec<ConversationSummary>> {
-    let mut rpc = codex::history_client(binary, home)?;
+    list_codex_history_at(
+        binary,
+        home,
+        runtime_id,
+        &crate::execution::ExecutionTarget::Local,
+        None,
+    )
+}
+pub fn list_codex_history_at(
+    binary: &Path,
+    home: &Path,
+    runtime_id: &str,
+    execution: &crate::execution::ExecutionTarget,
+    os_home: Option<&Path>,
+) -> Result<Vec<ConversationSummary>> {
+    let mut rpc = codex::history_client_at(binary, home, execution, os_home)?;
     let threads = pages(
         &mut rpc,
         "thread/list",
@@ -89,7 +104,22 @@ pub fn list_codex_history(
 }
 
 pub fn read_codex_history(binary: &Path, home: &Path, id: &str) -> Result<History> {
-    let mut rpc = codex::history_client(binary, home)?;
+    read_codex_history_at(
+        binary,
+        home,
+        id,
+        &crate::execution::ExecutionTarget::Local,
+        None,
+    )
+}
+pub fn read_codex_history_at(
+    binary: &Path,
+    home: &Path,
+    id: &str,
+    execution: &crate::execution::ExecutionTarget,
+    os_home: Option<&Path>,
+) -> Result<History> {
+    let mut rpc = codex::history_client_at(binary, home, execution, os_home)?;
     let metadata = rpc.request("thread/read", &json!({"threadId":id,"includeTurns":false}))?;
     let thread = &metadata["thread"];
     if thread["id"].as_str() != Some(id) {

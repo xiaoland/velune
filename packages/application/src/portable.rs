@@ -102,6 +102,24 @@ impl CoreRuntime {
                 self.config = next;
                 Ok(json!(self.config.model_templates))
             }
+            Some("runtimeExecution" | "configureRuntimeExecution") => {
+                let id = payload["runtimeInstanceID"]
+                    .as_str()
+                    .ok_or_else(|| Error::invalid("runtime instance id"))?;
+                let mut runtime = self
+                    .config
+                    .runtime_instances
+                    .iter()
+                    .find(|runtime| runtime.id == id)
+                    .cloned()
+                    .ok_or_else(|| Error::invalid("runtime instance id"))?;
+                if request["action"] == "runtimeExecution" {
+                    return Ok(serde_json::to_value(runtime.execution()?)?);
+                }
+                runtime.set_execution(serde_json::from_value(payload["execution"].clone())?)?;
+                self.request_inner(&json!({"action":"runtimeInstances","payload":{"operation":"upsert","runtimeInstance":serde_json::to_string(&runtime)?}}))
+            }
+            Some("nextTurnModelSelection") => Ok(Value::Null),
             Some("runtimeInstances") => {
                 let mut next = self.config.clone();
                 match payload["operation"].as_str() {

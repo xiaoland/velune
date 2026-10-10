@@ -26,7 +26,7 @@ Velune 的产品身份是 control surface：UI、AI 服务网关与协调层服�
 
 ## 当前版本化运行时接入
 
-schema 7 的实例引用精确 variant ID；family 是展示分组，不是 dispatch key。当前 `pi-1.0.2`／`pi`、`codex-0.159.3`／`codex`、`dsh-acp-0.2.0-rc.2`／`deepseek-harness` 分别使用 `^1\.0\.2$`、`^0\.159\.3$`、`^0\.2\.0-rc\.2$` 版本规则。breaking-change 版本应增设独立 adapter 与 variant，允许并存，不靠放宽 regex 声称兼容。配置版本重置不触及原 Harness 文件。
+schema 7 的实例引用精确 variant ID；family 是展示分组，不是 dispatch key。当前 `pi-1.0.2`／`pi`、`codex-0.159.3`／`codex`、`dsh-acp-0.2.0-rc.2`／`deepseek-harness`、`claude-code-2.1.286`／`claude-code` 分别使用 `^1\.0\.2$`、`^0\.159\.3$`、`^0\.2\.0-rc\.2$`、`^2\.1\.286$` 版本规则。breaking-change 版本应增设独立 adapter 与 variant，允许并存，不靠放宽 regex 声称兼容。配置版本重置不触及原 Harness 文件。
 
 agent-runtime 拥有 Codex app-server 与 DSH ACP 控制和原生事件转换；Codex 原生 thread API 提供逻辑历史的列表与分页详情，处理 revert 的多个 rollout 与继承前缀；huihua `0.2.0` package 提供 DSH 只读历史 snapshot，不替代 resume。Pi 保留固定 SDK 的分支历史语义。application 显式传入 home、roots、资源与 Node 路径；Node 是外部依赖，huihua 依赖及许可证由 Mac 打包，Codex／DSH CLI 由用户安装。没有第二份会话 DB，也不引入 Obelisk 索引服务。
 
@@ -34,7 +34,7 @@ conversation 定义审批、问题回答与取消的类型契约，bindings 生�
 
 ## 独立 package 与平台装配
 
-2026-10-05 用户决定全面采用 UniFFI，并授权按独立 package 拆分。实施采用 ai、ai-provider、conversation、agent-runtime、gateway、application、bindings；配置持久化保留在 application 内部。remote 和移动端尚未实现，不建立空包。
+2026-10-05 用户决定全面采用 UniFFI，并授权按独立 package 拆分。实施采用 ai、ai-provider、conversation、agent-runtime、gateway、application、bindings；配置持久化保留在 application 内部。2026-10-10 SSH 运行时扩展沿用 agent-runtime 的进程边界，不建立 remote 空包；移动端及独立远端控制服务仍未实现。
 
 每个 package 和每个平台 app 都是一个 unit，具有明确的契约、依赖和知识维护归属。下表列职责，不要求每一行成为 package。内部模块可以形成清楚的边界而不成为独立 unit；代码目录、unit、ABI 产物不能默认一一对应。
 
@@ -307,6 +307,8 @@ V1 是基础检查点，**V2＋V3 才构成首个可用版本**。不能只接�
 
 ### 分布式路线
 
+以下 Runner Agent、设备注册与持久 spool 是后续分布式候选，不是 2026-10-10 SSH 切片的前置条件。当前获准 SSH 切片由本机 application 经 OpenSSH 启动远端 Harness 并读取其原生历史，不部署远端 Velune Host；断连不自动重发或转移执行。
+
 核心通过后再拆出 Runner Agent：控制服务持有全局任务、策略和消息；设备只保留本地执行、原生凭据、受控工作区与可恢复 spool。使用显式设备注册、认证加密连接、重连游标、lease epoch 和版本能力协商。控制指令由 session owner 执行，离线期间不双写；断网既不立刻判任务失败，也不自动在别处重跑。
 
 模型网关优先随凭据／Runner 部署，按允许的数据驻留位置路由；不为远控便利集中复制所有订阅凭据。产物按 hash 同步，运行中工作区不当普通网盘双向同步。迁移先停到 checkpoint，确认源端失去控制，再在目标建立新 Run；无法迁移的原生上下文用可见续作。设备调度独立于 LLM 路由。
@@ -345,7 +347,7 @@ Mastra、HAPI、Lody 是用户提出的候选参考。研究围绕待决问题�
 
 ## Harness 配置来源与稳定网关入口（候选）
 
-用户希望保留 Harness 原提供商配置，复用它的登录能力，并将相应提供商纳入 Unified AI Gateway。执行侧仍为 `Harness → Velune Gateway → provider adapter`；原配置是可明确接入的来源，不因为接管而删除。只为 Velune 管理的运行实例派生网关配置，独立启动原 Harness 的行为保持可用。普通配置的导入快照和受委托认证引用需分别处理，记录来源并明确后续更新方式，避免形成两个不明的配置权威。
+用户希望保留 Harness 原提供商配置，复用它的登录能力，并将相应提供商纳入 Unified AI Gateway。选择 Velune 管理模型的 turn 使用 `Harness → Velune Gateway → provider adapter`；选择原生模型的 turn 由 Harness 沿用其原提供商。原配置是可明确接入的来源，不因为接管而删除。仅在本轮执行环境派生网关配置，独立启动原 Harness 的行为保持可用。普通配置的导入快照和受委托认证引用需分别处理，记录来源并明确后续更新方式，避免形成两个不明的配置权威。
 
 用户已授权推进原生 Responses 与认证来源委托。application 私有保存提供商认证并装配来源 adapter，复用 SDK 的登录和刷新；provider adapter 仅消费本次短生命周期认证并执行原生协议请求。提供商与网关不接触来源 locator，认证保留同一个权威来源，而非复制 OAuth 后各自刷新。统一网关与 app 的契约仍不依赖 Pi；Pi SDK 只属于具体后端实现，不能要求一个活跃 Pi Agent 会话才能发起上游请求。复用 SDK 的实现与复用 Pi 的客户端注册身份是不同决定，现有公开登录参数是否支持 Velune 身份及授权来源仍有缺口。Pi 的受控 Node resolver helper 仅负责认证解析和刷新，不承担推理、不需要活跃 Pi Agent 会话、不恢复常驻 core Host。
 
@@ -360,7 +362,7 @@ Pi 的物理模型身份不能只使用全局逻辑模型 ID。相同逻辑模�
 
 ## AI 网关职责复核
 
-2026-10-05 用户明确当前 gateway 仅为 LLM Gateway，是 AI 模块的一种应用模式；AI 服务不限于 LLM，直接调用 AI 能力无需经过 gateway。该阶段 LLM Gateway 采用同协议原生透传，2026-10-06 已进一步授权三协议 best-effort 双向转换；网关也不限于 Harness 调用方。独立 gateway package 保留应用模式的职责，AI 契约不反向依赖它；不为非 LLM 能力预建通用网关。跨单元职责、原生操作与当前偏差以 [AI 服务设计](ai-service.md) 为准；此前 Pi 原生 provider 直接承担上游派发的候选路径不再是 Velune 管理会话的目标。当前 fail-over 未实现，配置仍 Disabled。源码和独立审计证据归 [AI 网关审计](../../tasks/ai-gateway-audit/packet.md)。
+2026-10-05 用户明确当前 gateway 仅为 LLM Gateway，是 AI 模块的一种应用模式；AI 服务不限于 LLM，直接调用 AI 能力无需经过 gateway。该阶段 LLM Gateway 采用同协议原生透传，2026-10-06 已进一步授权三协议 best-effort 双向转换；网关也不限于 Harness 调用方。独立 gateway package 保留应用模式的职责，AI 契约不反向依赖它；不为非 LLM 能力预建通用网关。跨单元职责、原生操作与当前偏差以 [AI 服务设计](ai-service.md) 为准。选择 Velune 管理模型时由网关派发，选择 Harness 原生模型时保留原生派发，两者不改变 AI 服务与 Agent 运行时的独立性。当前 fail-over 未实现，配置仍 Disabled。源码和独立审计证据归 [AI 网关审计](../../tasks/ai-gateway-audit/packet.md)。
 
 版本化运行时 descriptor 同时公开 `supportedProtocols`，由 agent-runtime 的 variant 注册表声明，经 application／UniFFI 传给平台。Mac 模型过滤与执行准备消费同一声明，不按 family 猜测能力。当前 Pi 与 DSH variant 声明 ChatCompletions／Responses，Codex variant 声明 Responses；这是 adapter 的配置能力，不扩大上游协议支持，也不使 AI unit 依赖运行时类型。未知 descriptor 不显示所有模型。
 
@@ -431,3 +433,19 @@ Pi 首条消息前的未落盘会话仍由活动 SessionManager 拥有。仅在�
 窗口与原生Tab各自持有AppStore工作区，共享同一个Transport与内嵌application。共享层管理配置、认证、问题与唯一执行投影；各工作区管理当前阅读会话、加载代次、消息投影和下一轮意图。只读read_conversation返回指定会话历史或当前相同身份的活动投影，不替换执行上下文；历史turn由临时TranscriptProjection推导，不改活动计时。snapshot查询同时携带运行时和会话身份，非活动来源返回无快照。send_turn携带来源运行时／会话以及目标运行时／模型，在一个核心操作内激活并派发指定来源。平台命令作用于focused scene，不能广播给全部窗口。
 
 Mac未发送草稿不提前创建原生SDK会话，防止多个Tab覆盖尚未落盘的Pi会话。首次发送由共享Transport锁串行执行create与send，创建阶段立即将原生身份交给工作区；发送失败不撤销创建、不自动重发。窗口关闭只释放该工作区，应用终止才关闭共享Transport。该设计没有会话内容数据库或新的Tab布局持久化。
+
+## 原生模型、单轮网关与 SSH 执行
+
+2026-10-10 获准的 Rust 扩展把三个独立选择分开：运行位置决定本机或 SSH，HOME 归属决定实例使用的用户家目录，模型来源决定本轮由原生提供商或 Velune 网关执行。配置文件及 UI 不依据 runtime family 猜测三者；application 解析实例配置并协调准备和释放，agent-runtime 封装原生协议及进程。具体交付与验证归 [运行时扩展任务](../../tasks/runtime-provider-ssh/packet.md)。
+
+模型选择必须区分 Velune 模型条目身份与运行时原生模型身份。原生选择附属于一个实例；应用向目标实例发现模型和传递选择，不按相同 model ID 推断跨提供商等价。使用原生模型不要求建立 Velune provider、复制认证或启动模型网关。跨 Harness 接续依然创建目标原生会话并引用来源文本，原生模型选择不改变历史关联文件的职责。
+
+某些 Harness 的新建会话在首次消息前没有可恢复的持久记录。application 显式记录本次创建且尚未提交 prompt 的草稿身份；首发前改变模型来源或 Harness 时，可重建这样的目标并使用既有单段关联保留公开会话身份，不制造旧消息或虚假来源段。关联提交成功后才提交 prompt；一旦尝试发送，就撤销草稿重建资格，失败或断连不能自动重发。空历史本身不构成未发送证据。首次实际目标拥有原生标题与管理能力；同 Pi 草稿重建保留用户已设置的原生名称，切换到不支持命名的目标不伪造其原生标题。未发送草稿不保证跨重启保留，已经提交的关联若暂时不可读取则禁止继续发送。
+
+单轮网关覆盖属于执行环境，不属于持久配置编辑。应用捕获本轮路由并准备 adapter 原生参数，终态及失败清理释放临时进程和网关访问。没有运行中的受管 turn 时，Harness 的持久 provider 基线始终可用；不为“恢复”写回一份启动前配置快照，避免覆盖用户或 Harness 并发产生的更新。下一轮模型意图可以继续选择 managed model，但这不表示后台一直保留 provider 覆盖。
+
+SSH 执行边界覆盖版本检查、模型发现、启动、恢复和历史操作。binary、agentDir、Node 和会话 cwd 以执行机器的路径解释；resources 则是本机可分发的 adapter 资源。远端不启动常驻 Velune Host，也不复制原生会话到本机作为权威。仅受管 turn 需要反向转发到本机 LLM Gateway；隧道绑定远端 loopback，随执行资源释放，断连不自动重发消息。跨机器接续目前沿用来源 cwd，目标必须存在同一路径；不隐式重定位。这一切片不实现设备调度、离线继续控制或远端会话服务。
+
+HOME 是 Harness 及其工具子进程看到的用户家目录，agentDir 是 Harness 自己的配置和状态目录，会话 cwd 是工作目录。Velune 管理 HOME 时按实例稳定分配，普通配置重置或临时执行结束不能删除其历史与认证。它提供实例环境归属，不承诺阻止工具访问其它文件。SSH 的连接认证与模型认证分别归 OpenSSH 和 Harness／网关，不把用户原生 refresh credential 转移给传输层。
+
+本节约定的 app 消费方仍待实现：composer 的原生／managed 模型选择、SSH 连接设置、HOME 归属设置及远端工作目录输入。2026-10-10 本轮不修改、重新构建或安装 app。

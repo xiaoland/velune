@@ -1,10 +1,9 @@
 // Small, credential-blind client for Pi's versioned RPC subprocess.
 //
 // The host owns the child process and JSONL transport, and injects a
-// credential-blind loopback Velune gateway configuration. Pi owns session
-// files, message history, and tools; upstream provider credentials stay in
-//! the host gateway. This module never reads environment variables or Pi auth
-//! files.
+// optional loopback Velune gateway configuration. Pi owns session files,
+// message history, tools, and native provider authentication. This Rust client
+// never reads environment variables or Pi auth files.
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -47,6 +46,8 @@ pub enum Error {
     #[error("Pi SDK 接入失败: {0}")]
     Sdk(String),
     #[error(transparent)]
+    Execution(#[from] crate::execution::Error),
+    #[error(transparent)]
     Io(#[from] std::io::Error),
     #[error(transparent)]
     Json(#[from] serde_json::Error),
@@ -59,6 +60,8 @@ pub type Result<T> = std::result::Result<T, Error>;
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
+    pub execution: crate::execution::ExecutionTarget,
+    pub os_home: Option<PathBuf>,
     pub runtime_type_id: String,
     pub binary: PathBuf,
     pub node_binary: Option<PathBuf>,
@@ -185,7 +188,7 @@ impl Config {
             .arg("--runtime-type")
             .arg(&self.runtime_type_id)
             .arg("--validate");
-        let output = crate::native::rpc::bounded_process(output, None, MAX_STDERR_BYTES);
+        let output = self.execution.output(output, None, self.os_home.as_deref());
         match output {
             Ok(_) => Ok(()),
             Err(error) => Err(Error::Sdk(format!("Pi SDK 入口验证失败：{error}"))),
@@ -216,10 +219,9 @@ impl Client {
             ("--selection-file", &config.selection_file),
             ("--agent-dir", &config.agent_dir),
         ] {
-            command.arg(name).arg(
-                path.as_ref()
-                    .ok_or_else(|| Error::Sdk("SDK 装配路径不完整".into()))?,
-            );
+            if let Some(path) = path {
+                command.arg(name).arg(path);
+            }
         }
         if let Some(value) = &config.provider {
             command.arg("--provider").arg(value);
@@ -248,12 +250,22 @@ impl Client {
         if let Some(token) = &config.gateway_token {
             command.env("VELUNE_GATEWAY_TOKEN", token);
         }
+        let prepared = config
+            .execution
+            .prepare(command, config.os_home.as_deref())?;
+        let mut command = prepared.command;
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            command.process_group(0);
+        }
         let mut child = command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()?;
-        let stdin = child.stdin.take().ok_or(Error::ChildExited)?;
+        let mut stdin = child.stdin.take().ok_or(Error::ChildExited)?;
+        stdin.write_all(&prepared.input_prefix)?;
         let stdout = child.stdout.take().ok_or(Error::ChildExited)?;
         let stderr_output = child.stderr.take().ok_or(Error::ChildExited)?;
         let stderr: SharedStderr = Arc::new((
@@ -505,6 +517,25 @@ impl Client {
         self.request_with_timeout(command, RESPONSE_TIMEOUT)
     }
 
+    pub fn models(&mut self) -> Result<Vec<crate::native::RuntimeModel>> {
+        let result = self.request(json!({"type":"get_available_models"}))?;
+        result["data"]["models"]
+            .as_array()
+            .ok_or_else(|| Error::Sdk("Pi 模型目录格式无效".into()))?
+            .iter()
+            .filter(|m| !matches!(m["provider"].as_str(), Some("velune" | "velune-gateway")))
+            .map(|model| {
+                let id = model["id"]
+                    .as_str()
+                    .ok_or_else(|| Error::Sdk("Pi 模型身份为空".into()))?;
+                Ok(crate::native::RuntimeModel {
+                    provider_id: model["provider"].as_str().map(str::to_owned),
+                    id: id.into(),
+                    name: model["name"].as_str().unwrap_or(id).into(),
+                })
+            })
+            .collect()
+    }
     pub fn prompt(&mut self, message: &str) -> Result<Value> {
         self.request(json!({"type":"prompt","message":message}))
     }
@@ -612,8 +643,7 @@ impl Client {
             }
             thread::sleep(Duration::from_millis(50));
         }
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        crate::native::rpc::stop(&mut self.child);
         Ok(())
     }
 }

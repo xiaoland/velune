@@ -12,6 +12,7 @@ pub(crate) fn hints(
     [
         ("pi", "pi", "PI_CODING_AGENT_DIR", ".pi/agent"),
         ("codex", "codex", "CODEX_HOME", ".codex"),
+        ("claude-code", "claude", "CLAUDE_CONFIG_DIR", ".claude"),
         ("deepseek-harness", "dsh", "DSH_HOME", ".dsh"),
     ]
     .into_iter()

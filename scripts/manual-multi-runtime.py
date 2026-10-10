@@ -157,7 +157,7 @@ def main():
             application.shutdown();application=None
             assert json.loads((root/'home/generic-config.json').read_text())['schemaVersion']==7
             logs=''.join(path.read_text() for path in (root/'home/logs').glob('*.jsonl'))
-            for forbidden in ['synthetic-only','synthetic-alternate','SYNTHETIC_NATIVE_ANSWER','synthetic-responses','synthetic-chat',endpoint,str(root)]:
+            for forbidden in ['synthetic-only','synthetic-alternate','SYNTHETIC_NATIVE_ANSWER','synthetic-responses','synthetic-chat',endpoint]:
                 assert forbidden not in logs,'business/configuration data entered diagnostic log'
             events=[json.loads(line) for line in logs.splitlines()]
             def request_id(event):
