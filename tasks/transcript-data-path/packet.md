@@ -67,6 +67,8 @@
 
 2026-10-10 从源码 `af265fc` 的独立干净 worktree 完成 locked Rust release 与 Xcode SwiftPM release 构建、严格签名，安装至 `/Applications/Velune.app`（版本 `0.1 beta.1`）。manifest source 一致且 dirty=false；主二进制与 Rust 库 SHA-256 与签名构建包一致。安装前正常退出运行中的 Velune，安装后重新打开并确认进程运行、无崩溃报告。不 push。
 
+2026-10-10 展开覆盖修复源码 `71e0575` 同样从干净 worktree 构建签名安装；manifest source 一致、dirty=false，主二进制 SHA-256 与构建包一致，正常退出后重装并重新打开，无崩溃报告。
+
 ## 后续候选
 
 - 其他 Harness 列表的增量化需要各自来源契约，按实际规模再定。
