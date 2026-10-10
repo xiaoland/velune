@@ -227,7 +227,8 @@ def main():
             assert snapshot.conversation.title == 'Read the synthetic local file.', 'first user title was not retained'
             tool_blocks = [block for message in snapshot.messages for block in message.blocks if isinstance(block, bindings.BindingMessageBlock.TOOL) and block.tool_id == 'call_fixture']
             assert len(tool_blocks) == 1 and tool_blocks[0].state == bindings.BindingToolState.COMPLETED
-            assert 'SYNTHETIC_TOOL_RESULT' in (tool_blocks[0].output or '')
+            output = tool_blocks[0].output
+            assert isinstance(output, bindings.BindingMessagePayload.INLINE) and 'SYNTHETIC_TOOL_RESULT' in output.text
             assert any(isinstance(block, bindings.BindingMessageBlock.REASONING) for message in snapshot.messages for block in message.blocks)
             revision = snapshot.revision
             for _ in range(3): assert application.snapshot(runtime.id, active_conversation_id).snapshot.revision == revision, 'idle poll rebuilt unchanged Pi history'

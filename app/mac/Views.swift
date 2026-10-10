@@ -191,7 +191,8 @@ struct VeluneRootView: View {
 
     private var transcript: some View {
         TranscriptView(model: store.transcript, conversationID: store.loadedConversationID,
-                       scrollRequest: scrollRequest, sentAfterUserID: sentAfterUserID, cwd: store.loadedConversationWorkingDirectory, showsOutline: $showsOutline, activity: store.activity, presentation: store.transcriptPresentation)
+                       scrollRequest: scrollRequest, sentAfterUserID: sentAfterUserID, cwd: store.loadedConversationWorkingDirectory, showsOutline: $showsOutline, activity: store.activity, presentation: store.transcriptPresentation,
+                       loadPayloads: { [store] ids in store.loadPayloads(messageIDs: ids) })
     }
 
     private var composer: some View {

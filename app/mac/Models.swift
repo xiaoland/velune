@@ -34,14 +34,37 @@ struct Message: Codable, Sendable, Identifiable, Equatable {
     var completed: Bool = true
     var timestampUnixMs: Int64? = nil
     var blocks: [MessageBlock]
-    var text: String { blocks.compactMap { block in switch block { case .text(let text), .notice(let text), .reasoning(let text): return text; case .tool: return nil } }.joined() }
+    /// Core delivery sequence of this content; a changed message gets a new stamp.
+    var stamp: UInt64 = 0
+    /// Visible message text; reasoning and tool output are separate disclosures.
+    var text: String { blocks.compactMap { block in switch block { case .text(let text), .notice(let text): return text; case .reasoning, .tool: return nil } }.joined() }
+    var hasDeferredPayload: Bool {
+        blocks.contains { block in
+            switch block {
+            case .reasoning(.deferred), .tool(_, _, _, .deferred?): return true
+            case .text, .notice, .reasoning(.inline), .tool: return false
+            }
+        }
+    }
 }
 
 enum MessageBlock: Codable, Sendable, Equatable {
     case text(String)
-    case reasoning(String)
-    case tool(id: String?, title: String, state: ToolState, output: String?)
+    case reasoning(MessagePayload)
+    case tool(id: String?, title: String, state: ToolState, output: MessagePayload?)
     case notice(String)
+}
+
+/// Large reasoning and tool output arrive by size and are read when shown.
+enum MessagePayload: Codable, Sendable, Equatable {
+    case inline(String)
+    case deferred(bytes: UInt64)
+}
+
+/// Position in the core's delivery history of one conversation view.
+struct TranscriptCursor: Codable, Sendable, Equatable {
+    var generation: UInt64
+    var sequence: UInt64
 }
 
 struct MessageIdentityConfirmation: Codable, Sendable, Equatable {
@@ -73,6 +96,8 @@ struct TranscriptMessageIdentity: Codable, Sendable, Equatable {
 }
 
 struct ConversationSnapshot: Codable, Sendable, Equatable {
+    /// Nil for local drafts and previews, which the core has not delivered.
+    var cursor: TranscriptCursor? = nil
     var revision: UInt64
     var conversation: Conversation
     var contextRuntimeID: String

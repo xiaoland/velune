@@ -355,6 +355,29 @@ impl VeluneApplication {
             application.snapshot(runtime_id, conversation_id)
         })?)
     }
+    /// Poll a view relative to the cursor of its latest delivery.
+    pub fn snapshot_update(
+        &self,
+        runtime_id: String,
+        conversation_id: String,
+        since: BindingTranscriptCursor,
+    ) -> Result<BindingSnapshotUpdate, BindingError> {
+        let since = convert(since)?;
+        convert(self.with("snapshot_update", |application| {
+            application.snapshot_update(runtime_id, conversation_id, since)
+        })?)
+    }
+    /// Complete reasoning and tool output of delivered messages.
+    pub fn message_payloads(
+        &self,
+        runtime_id: String,
+        conversation_id: String,
+        message_ids: Vec<String>,
+    ) -> Result<Vec<BindingMessage>, BindingError> {
+        convert(self.with("message_payloads", |application| {
+            application.message_payloads(runtime_id, conversation_id, message_ids)
+        })?)
+    }
 
     pub fn send_turn(
         &self,

@@ -3,9 +3,7 @@ use crate::{Application, Error, config::*};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
-use velune_conversation::{
-    ConversationSnapshot, ConversationSummary, SettingAction, SettingOption,
-};
+use velune_conversation::{ConversationSummary, SettingAction, SettingOption};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -149,7 +147,7 @@ pub struct RuntimeModel {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SnapshotResult {
-    pub snapshot: Option<ConversationSnapshot>,
+    pub snapshot: Option<crate::DeliveredSnapshot>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -702,6 +700,33 @@ impl Application {
         self.execute(
             "getSnapshot",
             json!({"conversationID":conversation_id}),
+            Some(&runtime_id),
+        )
+    }
+    /// Like `snapshot`, relative to a cursor from an earlier delivery of the
+    /// same view: unchanged content is not transferred again.
+    pub fn snapshot_update(
+        &mut self,
+        runtime_id: String,
+        conversation_id: String,
+        since: crate::TranscriptCursor,
+    ) -> Result<crate::SnapshotUpdate, Error> {
+        self.execute(
+            "getSnapshotUpdate",
+            json!({"conversationID":conversation_id,"since":since}),
+            Some(&runtime_id),
+        )
+    }
+    /// Complete payloads of messages in a delivered view, by message identifier.
+    pub fn message_payloads(
+        &mut self,
+        runtime_id: String,
+        conversation_id: String,
+        message_ids: Vec<String>,
+    ) -> Result<Vec<crate::DeliveredMessage>, Error> {
+        self.execute(
+            "messagePayloads",
+            json!({"conversationID":conversation_id,"messageIDs":message_ids}),
             Some(&runtime_id),
         )
     }

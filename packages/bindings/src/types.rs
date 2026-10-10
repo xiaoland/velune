@@ -35,7 +35,10 @@ pub struct BindingConversationActions {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+#[serde(deny_unknown_fields)]
 pub struct BindingMessage {
+    /// Delivery sequence of this content; unchanged content keeps its stamp.
+    pub stamp: u64,
     pub completed: bool,
     pub id: String,
     pub role: BindingMessageRole,
@@ -69,23 +72,58 @@ pub enum BindingMessageBlock {
         text: String,
     },
     Reasoning {
-        text: String,
+        text: BindingMessagePayload,
     },
     Tool {
         #[serde(rename = "toolID")]
         tool_id: Option<String>,
         title: String,
         state: BindingToolState,
-        output: Option<String>,
+        output: Option<BindingMessagePayload>,
     },
     Notice {
         text: String,
     },
 }
 
+/// Large reasoning and tool output arrive by size; read them with `message_payloads`.
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Enum)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum BindingMessagePayload {
+    Inline { text: String },
+    Deferred { bytes: u64 },
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, uniffi::Record)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BindingTranscriptCursor {
+    pub generation: u64,
+    pub sequence: u64,
+}
+
+// UniFFI enum variants cannot box their records; the size difference is one
+// short-lived poll result.
+#[allow(clippy::large_enum_variant)]
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Enum)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum BindingSnapshotUpdate {
+    /// No conversation is loaded in the queried runtime context.
+    Absent,
+    /// The cursor is current.
+    Unchanged,
+    Changed {
+        snapshot: BindingConversationSnapshot,
+    },
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct BindingConversationSnapshot {
+    pub cursor: BindingTranscriptCursor,
+    /// None: `messages` is complete. Some: `messages` holds only messages
+    /// changed after this cursor, and `message_ids` gives the complete order.
+    pub base: Option<BindingTranscriptCursor>,
+    pub message_ids: Vec<String>,
     /// Local projection revision; may reset between history and execution preparation.
     /// Do not use it to order snapshots across those lifecycle boundaries.
     pub revision: u64,

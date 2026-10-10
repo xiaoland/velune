@@ -10,10 +10,19 @@ enum BindingMapping {
                      runtimeID: value.runtimeId, cwd: value.cwd, canRename: value.canRename, canDelete: value.canDelete)
     }
 
+    /// A complete delivery. An incremental one (non-nil `base`) carries only
+    /// changed messages; see `snapshotUpdate`.
     static func snapshot(_ value: BindingConversationSnapshot) -> ConversationSnapshot {
-        ConversationSnapshot(revision: value.revision, conversation: conversation(value.conversation), contextRuntimeID: value.contextRuntimeId,
+        var mapped = snapshotHeader(value)
+        mapped.messages = value.messages.map(message)
+        return mapped
+    }
+
+    /// Every field except messages, which an incremental update merges by identity.
+    static func snapshotHeader(_ value: BindingConversationSnapshot) -> ConversationSnapshot {
+        ConversationSnapshot(cursor: cursor(value.cursor), revision: value.revision, conversation: conversation(value.conversation), contextRuntimeID: value.contextRuntimeId,
                              modelRecordKey: value.modelRecordKey, runState: runState(value.runState),
-                             messages: value.messages.map(message), transcriptTurns: value.transcriptTurns.map { TranscriptTurn(id: $0.id, userMessageID: $0.userMessageId, workMessageIDs: $0.workMessageIds, lastMessageID: $0.lastMessageId, durationMs: $0.durationMs, isRunning: $0.isRunning) }, transcriptItems: value.transcriptItems.map { switch $0 { case .message(let id, let messageID): return .message(id: id, messageID: messageID); case .work(let turnID): return .work(turnID: turnID) } }, transcriptOutline: value.transcriptOutline.map { TranscriptOutlineEntry(id: $0.id, messageID: $0.messageId) }, transcriptMessageIdentities: value.transcriptMessageIdentities.map { TranscriptMessageIdentity(id: $0.id, messageID: $0.messageId) }, messageIdentityConfirmations: value.messageIdentityConfirmations.map { MessageIdentityConfirmation(previousID: $0.previousId, currentID: $0.currentId) }, pendingInteractions: value.pendingInteractions.map(interaction), actions: actions(value.actions))
+                             messages: [], transcriptTurns: value.transcriptTurns.map { TranscriptTurn(id: $0.id, userMessageID: $0.userMessageId, workMessageIDs: $0.workMessageIds, lastMessageID: $0.lastMessageId, durationMs: $0.durationMs, isRunning: $0.isRunning) }, transcriptItems: value.transcriptItems.map { switch $0 { case .message(let id, let messageID): return .message(id: id, messageID: messageID); case .work(let turnID): return .work(turnID: turnID) } }, transcriptOutline: value.transcriptOutline.map { TranscriptOutlineEntry(id: $0.id, messageID: $0.messageId) }, transcriptMessageIdentities: value.transcriptMessageIdentities.map { TranscriptMessageIdentity(id: $0.id, messageID: $0.messageId) }, messageIdentityConfirmations: value.messageIdentityConfirmations.map { MessageIdentityConfirmation(previousID: $0.previousId, currentID: $0.currentId) }, pendingInteractions: value.pendingInteractions.map(interaction), actions: actions(value.actions))
     }
 
     static func runState(_ value: BindingRunState) -> RunState {
@@ -24,8 +33,11 @@ enum BindingMapping {
         ConversationActions(canSend: value.canSend, canCancel: value.canCancel, canSwitch: value.canSwitch)
     }
 
+    static func cursor(_ value: BindingTranscriptCursor) -> TranscriptCursor { TranscriptCursor(generation: value.generation, sequence: value.sequence) }
+    static func bindingCursor(_ value: TranscriptCursor) -> BindingTranscriptCursor { BindingTranscriptCursor(generation: value.generation, sequence: value.sequence) }
+
     static func message(_ value: BindingMessage) -> Message {
-        Message(id: value.id, role: messageRole(value.role), completed: value.completed, timestampUnixMs: value.timestampUnixMs, blocks: value.blocks.map(block))
+        Message(id: value.id, role: messageRole(value.role), completed: value.completed, timestampUnixMs: value.timestampUnixMs, blocks: value.blocks.map(block), stamp: value.stamp)
     }
 
     static func messageRole(_ value: BindingMessageRole) -> MessageRole {
@@ -37,9 +49,16 @@ enum BindingMapping {
     static func block(_ value: BindingMessageBlock) -> MessageBlock {
         switch value {
         case .text(let text): return .text(text)
-        case .reasoning(let text): return .reasoning(text)
-        case .tool(let id, let title, let state, let output): return .tool(id: id, title: title, state: toolState(state), output: output)
+        case .reasoning(let text): return .reasoning(payload(text))
+        case .tool(let id, let title, let state, let output): return .tool(id: id, title: title, state: toolState(state), output: output.map(payload))
         case .notice(let text): return .notice(text)
+        }
+    }
+
+    static func payload(_ value: BindingMessagePayload) -> MessagePayload {
+        switch value {
+        case .inline(let text): return .inline(text)
+        case .deferred(let bytes): return .deferred(bytes: bytes)
         }
     }
 

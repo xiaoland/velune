@@ -61,7 +61,7 @@ const inspect=process.argv.includes('--inspect-session');
 if(mode==='list-error'||(inspect&&mode==='read-error')){process.stderr.write(inspect?'SYNTHETIC_HISTORY_READ_CAUSE':'SYNTHETIC_HISTORY_LIST_CAUSE');process.exitCode=1;}
 else if(inspect&&mode==='invalid-json'){process.stdout.write('{ invalid json');}
 else if(inspect&&mode==='valid-history'){process.stdout.write(JSON.stringify({name:'Synthetic',cwd:CWD,messages:[{role:'user',content:'Question',timestamp:1},{role:'assistant',content:[{type:'thinking',thinking:'Work'}],timestamp:2},{role:'assistant',content:'Answer',timestamp:3},{role:'system',content:'Handoff status',timestamp:4}]}));}
-else{process.stdout.write(JSON.stringify({sessions:[{path:SESSION,cwd:CWD,name:'Synthetic',firstMessage:'Synthetic',modifiedUnixMs:1,createdUnixMs:1}]}));}
+else{process.stdout.write(JSON.stringify({contractVersion:2,files:[{path:SESSION,size:'1',mtimeNs:'1',changed:true}],sessions:[{path:SESSION,cwd:CWD,name:'Synthetic',firstMessage:'Synthetic',modifiedUnixMs:1,createdUnixMs:1}]}));}
 """.replace('SESSION', json.dumps(str(synthetic_session))).replace('CWD', json.dumps(str(agent)))
             (resources / "pi_sessions.mjs").write_text(helper)
             for operation, expected in (("read-error", "SYNTHETIC_HISTORY_READ_CAUSE"), ("invalid-json", "line 1 column")):

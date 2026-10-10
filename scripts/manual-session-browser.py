@@ -120,12 +120,12 @@ def main():
             assert 'SYNTHETIC_READ_ONLY_HISTORY' in texts
             blocks = [block for message in opened.messages for block in message.blocks]
             assert any(isinstance(block, b.BindingMessageBlock.REASONING)
-                       and block.text == 'SYNTHETIC_REASONING' for block in blocks)
+                       and block.text == b.BindingMessagePayload.INLINE(text='SYNTHETIC_REASONING') for block in blocks)
             tools = [block for block in blocks if isinstance(block, b.BindingMessageBlock.TOOL)
                      and block.tool_id == 'synthetic-read']
             assert len(tools) == 1, 'one native tool call/result became duplicate executions'
             assert tools[0].state == b.BindingToolState.COMPLETED
-            assert tools[0].output == 'SYNTHETIC_TOOL_OUTPUT'
+            assert tools[0].output == b.BindingMessagePayload.INLINE(text='SYNTHETIC_TOOL_OUTPUT')
             assert not marker.exists(), 'browsing ran the configured execution CLI'
             def rejected(call):
                 try:

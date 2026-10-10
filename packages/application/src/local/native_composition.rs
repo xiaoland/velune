@@ -186,6 +186,6 @@ impl CoreRuntime {
             _ => return Err(RuntimeError::invalid("此运行时没有待回复的请求")),
         };
         self.drain_runtime()?;
-        Ok(json!({"snapshot":self.current_snapshot()}))
+        self.snapshot_result()
     }
 }

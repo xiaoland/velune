@@ -27,20 +27,46 @@ final class RenderedMessage: @unchecked Sendable {
             case .notice(let text):
                 return [.text(TranscriptTypography.plain(text, font: TranscriptTypography.callout, color: .secondaryLabelColor, alignment: alignment))]
             case .reasoning(let text):
-                return [.disclosure(key: "reasoning:\(index)", title: "思考过程", symbol: nil,
-                                    detail: TranscriptTypography.plain(text, font: TranscriptTypography.callout, color: .secondaryLabelColor), detailMaxWidth: nil)]
-            case .tool(let id, let title, let state, let output):
+                return [.disclosure(key: Self.disclosureKey(block, at: index)!, title: "思考过程", symbol: nil,
+                                    detail: Self.detail(text, font: TranscriptTypography.callout, empty: ""), detailMaxWidth: nil)]
+            case .tool(_, let title, let state, let output):
                 let symbol = switch state {
                 case .running: "circle.dotted"
                 case .failed: "exclamationmark.circle"
                 case .pending: "circle"
                 case .completed: "checkmark.circle"
                 }
-                let detail = output.flatMap { $0.isEmpty ? nil : $0 } ?? "没有附加输出"
-                return [.disclosure(key: "tool:" + (id ?? String(index)), title: title, symbol: symbol,
-                                    detail: TranscriptTypography.plain(detail, font: TranscriptTypography.code, color: .secondaryLabelColor), detailMaxWidth: 560)]
+                return [.disclosure(key: Self.disclosureKey(block, at: index)!, title: title, symbol: symbol,
+                                    detail: Self.detail(output ?? .inline(""), font: TranscriptTypography.code, empty: "没有附加输出"), detailMaxWidth: 560)]
             }
         }
+    }
+}
+
+extension RenderedMessage {
+    /// Local disclosure identity of a reasoning or tool block within its message.
+    static func disclosureKey(_ block: MessageBlock, at index: Int) -> String? {
+        switch block {
+        case .reasoning: return "reasoning:\(index)"
+        case .tool(let id, _, _, _): return "tool:" + (id ?? String(index))
+        case .text, .notice: return nil
+        }
+    }
+    /// Disclosures whose content has not been read from the core yet.
+    static func deferredDisclosureKeys(_ message: Message) -> Set<String> {
+        Set(message.blocks.enumerated().compactMap { index, block in
+            switch block {
+            case .reasoning(.deferred), .tool(_, _, _, .deferred?): return disclosureKey(block, at: index)
+            case .text, .notice, .reasoning(.inline), .tool: return nil
+            }
+        })
+    }
+    private static func detail(_ payload: MessagePayload, font: NSFont, empty: String) -> NSAttributedString {
+        let text = switch payload {
+        case .inline(let text): text.isEmpty ? empty : text
+        case .deferred(let bytes): "正在载入（\(ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file))）…"
+        }
+        return TranscriptTypography.plain(text, font: font, color: .secondaryLabelColor)
     }
 }
 

@@ -30,12 +30,17 @@ pub use runtime_execution::{RuntimeExecution, RuntimeHome, RuntimeTransport};
 #[cfg(feature = "local-runtime")]
 mod runtime_discovery;
 pub use api::*;
+mod transcript_delivery;
 #[cfg(feature = "local-runtime")]
 use local as implementation;
 #[cfg(not(feature = "local-runtime"))]
 use portable as implementation;
 use serde::{Deserialize, Serialize};
 use std::{fs, path::PathBuf};
+pub use transcript_delivery::{
+    DeliveredBlock, DeliveredMessage, DeliveredSnapshot, MessagePayload, SnapshotUpdate,
+    TranscriptCursor,
+};
 pub use velune_conversation as conversation;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]

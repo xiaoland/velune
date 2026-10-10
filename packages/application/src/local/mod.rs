@@ -117,6 +117,7 @@ pub struct CoreRuntime {
     unsubmitted_draft: Option<UnsubmittedDraft>,
     acp_capability_cache: std::cell::RefCell<BTreeMap<String, crate::AcpCapabilities>>,
     history_listings: std::cell::RefCell<BTreeMap<String, browsing::HistoryListing>>,
+    delivery: delivery::TranscriptDelivery,
     gateway_tunnel: Option<velune_agent_runtime::execution::GatewayTunnel>,
     prepared_remote_resources: std::cell::RefCell<std::collections::BTreeSet<String>>,
     analytics: Arc<crate::analytics::AnalyticsStore>,
@@ -127,6 +128,7 @@ mod browsing;
 mod configuration;
 mod continuation;
 mod conversations;
+mod delivery;
 mod execution;
 mod model_selection;
 mod native_composition;
@@ -168,6 +170,7 @@ impl CoreRuntime {
             unsubmitted_draft: None,
             acp_capability_cache: Default::default(),
             history_listings: Default::default(),
+            delivery: delivery::TranscriptDelivery::new(),
             gateway_tunnel: None,
             prepared_remote_resources: Default::default(),
             analytics,
@@ -224,6 +227,33 @@ impl CoreRuntime {
         snapshot.transcript_outline = self.transcript_projection.outline();
         snapshot.transcript_message_identities = self.transcript_projection.message_identities();
         Some(snapshot)
+    }
+    fn snapshot_result(&mut self) -> Result<Value, RuntimeError> {
+        let snapshot = self.current_snapshot();
+        Ok(json!({"snapshot": snapshot.map(|snapshot| self.delivery.snapshot(snapshot))}))
+    }
+    /// The projection a snapshot query names: only the loaded conversation, in
+    /// its own runtime context. An enabled instance with nothing loaded has none.
+    fn queried_snapshot(
+        &mut self,
+        request: &Value,
+    ) -> Result<Option<crate::conversation::ConversationSnapshot>, RuntimeError> {
+        let conversation_id = request["payload"]["conversationID"]
+            .as_str()
+            .ok_or_else(|| RuntimeError::invalid("conversation id"))?;
+        let runtime_id = request["payload"]["runtimeInstanceID"]
+            .as_str()
+            .ok_or_else(|| RuntimeError::invalid("runtime instance id"))?;
+        if matches!(self.active_state, ActiveState::Empty) {
+            if !self.runtime_instance(runtime_id)?.enabled {
+                return Err(RuntimeError::invalid("此运行时已停用"));
+            }
+            return Ok(None);
+        }
+        self.sync_projection()?;
+        Ok(self.current_snapshot().filter(|snapshot| {
+            snapshot.context_runtime_id == runtime_id && snapshot.conversation.id == conversation_id
+        }))
     }
     fn drain_runtime(&mut self) -> Result<(), RuntimeError> {
         let was_busy = self.busy();
@@ -299,7 +329,10 @@ impl CoreRuntime {
             .authentication
             .as_ref()
             .is_some_and(authentication::Login::is_running)
-            && !matches!(action, "authentication" | "list" | "getSnapshot")
+            && !matches!(
+                action,
+                "authentication" | "list" | "getSnapshot" | "getSnapshotUpdate" | "messagePayloads"
+            )
         {
             return Err(RuntimeError::invalid("authentication is running"));
         }
@@ -341,31 +374,28 @@ impl CoreRuntime {
             "readConversation" => self.read_conversation(request),
             "renameConversation" => self.manage_conversation(request, false),
             "deleteConversation" => self.manage_conversation(request, true),
-            "getSnapshot" => {
-                let conversation_id = request["payload"]["conversationID"]
-                    .as_str()
-                    .ok_or_else(|| RuntimeError::invalid("conversation id"))?;
-                if matches!(self.active_state, ActiveState::Empty) {
-                    let id = request["payload"]["runtimeInstanceID"]
-                        .as_str()
-                        .ok_or_else(|| RuntimeError::invalid("runtime instance id"))?;
-                    if !self.runtime_instance(id)?.enabled {
-                        return Err(RuntimeError::invalid("此运行时已停用"));
-                    }
-                    return Ok(json!({"snapshot":null}));
-                }
-                self.sync_projection()?;
-                let snapshot = self.current_snapshot();
-                let runtime_id = request["payload"]["runtimeInstanceID"]
-                    .as_str()
-                    .ok_or_else(|| RuntimeError::invalid("runtime instance id"))?;
-                if snapshot.as_ref().is_none_or(|value| {
-                    value.context_runtime_id != runtime_id
-                        || value.conversation.id != conversation_id
-                }) {
-                    return Ok(json!({"snapshot":null}));
-                }
-                Ok(json!({"snapshot":snapshot}))
+            "getSnapshot" => Ok(json!({"snapshot": self
+                .queried_snapshot(request)?
+                .map(|snapshot| self.delivery.snapshot(snapshot))})),
+            "getSnapshotUpdate" => {
+                let since = serde_json::from_value(request["payload"]["since"].clone())?;
+                let snapshot = self.queried_snapshot(request)?;
+                Ok(serde_json::to_value(self.delivery.update(snapshot, since))?)
+            }
+            "messagePayloads" => {
+                let ids: Vec<String> =
+                    serde_json::from_value(request["payload"]["messageIDs"].clone())?;
+                Ok(serde_json::to_value(
+                    self.delivery.payloads(
+                        request["payload"]["runtimeInstanceID"]
+                            .as_str()
+                            .ok_or_else(|| RuntimeError::invalid("runtime instance id"))?,
+                        request["payload"]["conversationID"]
+                            .as_str()
+                            .ok_or_else(|| RuntimeError::invalid("conversation id"))?,
+                        &ids,
+                    ),
+                )?)
             }
             "sendTurn" => self.send_turn_action(request),
             "cancel" => self.cancel_action(request),

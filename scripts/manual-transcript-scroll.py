@@ -21,7 +21,7 @@ import AppKit
 @MainActor func descendants(_ view: NSView) -> [NSView] { [view] + view.subviews.flatMap(descendants) }
 @MainActor func fail(_ message: String) -> Never { FileHandle.standardError.write(Data(("FAIL " + message + "\n").utf8)); exit(1) }
 @MainActor func note(_ message: String) { print(message); fflush(stdout) }
-@MainActor final class Driver: ObservableObject { @Published var request: UInt64 = 0; @Published var jump: TranscriptJump?; var following = true }
+@MainActor final class Driver: ObservableObject { @Published var request: UInt64 = 0; @Published var jump: TranscriptJump?; var following = true; var payloadRequests: [String] = [] }
 /// Mirrors TranscriptView's inputs, adding explicit jump requests.
 struct Harness: View {
     @ObservedObject var model: TranscriptModel
@@ -29,7 +29,7 @@ struct Harness: View {
     var body: some View {
         TranscriptTable(conversationID: "probe", items: model.items(for: model.rows), revision: model.contentRevision, activity: nil,
                         outlineToggleIDs: [], outlineExpandedID: nil, cwd: "/tmp", bottomRequest: driver.request, jump: driver.jump,
-                        followingChanged: { driver.following = $0 }, outlineToggle: { _ in })
+                        followingChanged: { driver.following = $0 }, outlineToggle: { _ in }, loadPayloads: { driver.payloadRequests += $0 })
     }
 }
 func synthetic(_ count: Int) -> [Message] {
@@ -40,7 +40,9 @@ func synthetic(_ count: Int) -> [Message] {
         var body = "## 合成回复 \(i)\n\n" + String(repeating: paragraph + "\n\n", count: i % 5 == 0 ? 8 : 2)
         body += "- 列表项一\n- 列表项二\n  1. 嵌套有序\n  2. 第二项\n\n> 引用内容\n\n"
         body += "```swift\nfunc probe\(i)() -> Int {\n    return \(i)\n}\n```\n\n| 列 | 值 |\n| --- | ---: |\n| 合成 | \(i) |\n"
-        messages.append(Message(id: "a\(i)", role: .assistant, blocks: [.reasoning("推理 \(i)"), .text(body), .tool(id: "t\(i)", title: "读取文件 \(i)", state: .completed, output: "输出\n第二行")]))
+        // Every fourth tool output is large and arrives by size only, as from the core.
+        let output: MessagePayload = i % 4 == 0 ? .deferred(bytes: 30_000) : .inline("输出\n第二行")
+        messages.append(Message(id: "a\(i)", role: .assistant, blocks: [.reasoning(.inline("推理 \(i)")), .text(body), .tool(id: "t\(i)", title: "读取文件 \(i)", state: .completed, output: output)], stamp: 1))
     }
     return messages
 }
@@ -181,6 +183,24 @@ func synthetic(_ count: Int) -> [Message] {
         checkGeometry(document, scroll, "expanded")
         snapshot(scroll, "expanded")
         note("DISCLOSURE ok \(toolHeight) -> \(grown.frame.height)")
+
+        // A deferred tool output is requested when expanded and fills in place.
+        driver.jump = TranscriptJump(id: "a148", token: 40); await spin(3); materialize(window); await spin(3)
+        guard let deferredCell = cell(document, "a148"),
+              let deferredButton = descendants(deferredCell).compactMap({ $0 as? NSButton }).last(where: { $0.bezelStyle == .disclosure && $0.superview?.isHidden == false }) else { fail("deferred disclosure missing") }
+        driver.payloadRequests = []
+        deferredButton.performClick(nil); await spin(3); materialize(window)
+        if !driver.payloadRequests.contains("a148") { fail("expanding deferred output requested \(driver.payloadRequests)") }
+        driver.payloadRequests = []
+        let placeholderHeight = cell(document, "a148")!.frame.height; let deferredTop = top(document, scroll, "a148")
+        let index = messages.firstIndex { $0.id == "a148" }!
+        messages[index].blocks[2] = .tool(id: "t148", title: "读取文件 148", state: .completed, output: .inline((0..<200).map { "第 \($0) 行合成输出" }.joined(separator: "\n")))
+        apply(model, messages); await spin(3); materialize(window)
+        guard let loaded = cell(document, "a148"), loaded.frame.height > placeholderHeight + 1000 else { fail("loaded output did not fill the row") }
+        if abs(top(document, scroll, "a148") - deferredTop) > 1 { fail("loaded output moved its row") }
+        if driver.payloadRequests.contains("a148") { fail("inline output was requested again") }
+        checkGeometry(document, scroll, "payload-loaded")
+        note("PAYLOAD ok \(placeholderHeight) -> \(loaded.frame.height)")
 
         // Far jumps land the target's top just below the viewport top, also after
         // tail growth and while history is only partly measured.

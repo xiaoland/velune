@@ -21,6 +21,8 @@ struct TranscriptTable: NSViewRepresentable {
     let jump: TranscriptJump?
     let followingChanged: (Bool) -> Void
     let outlineToggle: (String) -> Void
+    /// Read deferred content of messages with an expanded disclosure.
+    let loadPayloads: ([String]) -> Void
 
     func makeCoordinator() -> TranscriptTableController { TranscriptTableController() }
     func makeNSView(context: Context) -> NSScrollView { context.coordinator.makeView() }
@@ -205,6 +207,18 @@ struct TranscriptTable: NSViewRepresentable {
         prepareBand(around: anchor)
         commitExactHeights(in: entries.indices, keeping: anchor)
         scheduleBackgroundMeasure()
+        requestExpandedPayloads()
+    }
+
+    /// Expanded disclosures show a placeholder until their content is read;
+    /// a newer delivery of the same message is read again while it stays expanded.
+    private func requestExpandedPayloads() {
+        let ids = expandedBlocks.compactMap { rowID, keys -> String? in
+            guard let index = indexByID[rowID], case .message(let row) = entries[index],
+                  !keys.isDisjoint(with: RenderedMessage.deferredDisclosureKeys(row.message)) else { return nil }
+            return row.message.id
+        }
+        if !ids.isEmpty { parent?.loadPayloads(ids) }
     }
 
     /// Exact layouts for the rows that will be on screen after a change.
@@ -563,6 +577,7 @@ struct TranscriptTable: NSViewRepresentable {
             expandedBlocks[entryID] = blocks
             exactLayout(index)
             commitExactHeights(in: [index], keeping: anchor)
+            requestExpandedPayloads()
         }
         following = wasFollowing
         setFollowing(isAtBottom)

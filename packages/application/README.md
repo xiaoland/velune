@@ -34,7 +34,7 @@ Pi 草稿的原生重命名可能尚未落盘，因此重命名不消耗未提�
 
 分析记录由 application 在配置根目录的 `analytics.sqlite` 独立维护，后台有界写入与应用生命周期共同关闭。`analytics_query` 接收明确 UTC 区间及平台自然日边界，返回具名概览、趋势、提供商／模型拆分与有界请求页。明细页不截断概览人口，未知计量和存储告警明确返回；统计不可用不阻止应用配置与执行。具体口径归 [AI 服务设计](../../docs/design/ai-service.md#用量与性能分析契约)。
 
-会话阅读与执行身份分开：`read_conversation`只读指定来源的原生历史／关联投影，不切换活跃runner；相同活动身份返回当前投影。`snapshot`同时接收上下文运行时和会话ID，非当前活动身份返回None。`send_turn`接收来源运行时／会话ID、目标运行时／模型和文本，在同一个核心操作中激活指定来源再派发，不能用全局最后打开的会话代替发送来源。调用方可为多个工作区保存阅读投影，但共享核心仍只有一个活跃执行。
+会话阅读与执行身份分开：`read_conversation`只读指定来源的原生历史／关联投影，不切换活跃runner；相同活动身份返回当前投影。`snapshot`同时接收上下文运行时和会话ID，非当前活动身份返回None。快照结果是交付形式 `DeliveredSnapshot`：超过 2KB 的推理与工具输出只携带字节数，由 `message_payloads` 按消息读取；`snapshot_update(since)` 依据上次交付游标返回未变化或只含变化消息的快照，供展示客户端轮询。`send_turn`接收来源运行时／会话ID、目标运行时／模型和文本，在同一个核心操作中激活指定来源再派发，不能用全局最后打开的会话代替发送来源。调用方可为多个工作区保存阅读投影，但共享核心仍只有一个活跃执行。
 
 `ModelSelection` 区分 `Managed { model_record_key }`、`Native { provider_id, model_id }` 和通用 ACP 的 `RuntimeDefault`。专用适配器的 `runtime_models` 从指定实例读取原生模型目录，并附加该实例网关中的 managed 模型；通用 ACP 只提供当前会话的原生模型选项。原生标识不经过网关查找，也不要求已有提供商支持并存。Pi 和 DSH 的 native 选择必须指定 provider ID；Claude Code 使用既有单一 provider，不能另传 provider ID；Codex 可省略 provider ID 以使用现有默认 provider。`create_conversation_with_selection` 和 `send_turn_with_selection` 接受上述选择；原 `create_conversation`／`send_turn` 是合法的 managed 便捷入口。`next_turn_model_selection` 表示当前上下文的下一轮选择意图，managed turn 结束后仍可保持 managed，不声称进程仍在使用网关。snapshot 的 `model_record_key` 仅表示 managed 模型，native 选择返回 None。
 

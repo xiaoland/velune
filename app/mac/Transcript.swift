@@ -13,6 +13,7 @@ struct TranscriptView: View {
     @Binding var showsOutline: Bool
     let activity: String?
     let presentation: BindingTranscriptPresentation
+    let loadPayloads: ([String]) -> Void
     @State private var following = true
     @State private var outline = TranscriptOutlineState()
     @State private var jump: TranscriptJump?
@@ -27,7 +28,7 @@ struct TranscriptView: View {
                         activity: activity, outlineToggleIDs: outlineMode ? userIDs : [], outlineExpandedID: outline.expandedFromUserID,
                         cwd: cwd, bottomRequest: bottomRequest, jump: jump,
                         followingChanged: { value in if following != value { following = value } },
-                        outlineToggle: toggleOutline)
+                        outlineToggle: toggleOutline, loadPayloads: loadPayloads)
             .background(Color(nsColor: .windowBackgroundColor))
             .overlay(alignment: .bottomTrailing) {
                 if !following {

@@ -57,6 +57,9 @@ final class AppStore: ObservableObject {
     private var generation = 0
     private var timer: Timer?
     private var pollPending = false
+    private var payloadRequests: Set<PayloadKey> = []
+    /// Complete messages read on demand, by message identifier.
+    private var loadedPayloads: [String: Message] = [:]
     private var authenticationPollPending = false
     private var hasGateway = false
     private var hasInitializedNextTurnIntent = false
@@ -660,7 +663,7 @@ final class AppStore: ObservableObject {
             } else { resetProjection() }
         }
     }
-    private func resetProjection() { isDraft = false; problems.removeAll { $0.activityKey?.hasPrefix("poll:") == true }; generation += 1; snapshot = nil; projectionRuntimeID = nil; selectedConversationID = nil; pendingConversationID = nil; transcript.reset(); activity = nil }
+    private func resetProjection() { loadedPayloads.removeAll(); isDraft = false; problems.removeAll { $0.activityKey?.hasPrefix("poll:") == true }; generation += 1; snapshot = nil; projectionRuntimeID = nil; selectedConversationID = nil; pendingConversationID = nil; transcript.reset(); activity = nil }
     private func applyList(_ data: BindingConfigurationSnapshot) {
         let mapped = BindingMapping.configuration(data)
         if conversationBrowserPreferences == nil {
@@ -715,7 +718,9 @@ final class AppStore: ObservableObject {
         if nextTurnModelRecordKey != nil, !runtimeCompatibleModels.contains(where: { $0.recordKey == nextTurnModelRecordKey }) { nextTurnModelRecordKey = nil }
     }
     private func apply(_ value: ConversationSnapshot?, preserveSelection: Bool = false) {
-        guard let value else { return }
+        guard var value else { return }
+        if value.conversation.id != snapshot?.conversation.id || value.contextRuntimeID != snapshot?.contextRuntimeID { loadedPayloads.removeAll() }
+        value.messages = withLoadedPayloads(value.messages)
         let remainingProblems = problems.filter { !($0.activityKey?.hasPrefix("poll:") == true && $0.activityKey != "poll:" + value.contextRuntimeID) }
         if problems != remainingProblems { problems = remainingProblems }
         guard snapshot != value else { return }
@@ -725,26 +730,37 @@ final class AppStore: ObservableObject {
         activity = value.runState == .running ? "正在思考与执行" : value.runState == .stopping ? "正在停止" : nil
         if isPreview { previewSnapshots[value.conversation.id] = value }
     }
-    /// Preparation/open results replace the projection; polling compares
-    /// revisions off the main thread before mapping (see `poll`).
+    /// Preparation and operation results replace the projection; polling asks
+    /// the core only for changes after the current cursor (see `poll`).
     private func applySnapshotResult(_ value: BindingSnapshotResult) {
         guard let incoming = value.snapshot else { resetProjection(); return }
         apply(BindingMapping.snapshot(incoming))
     }
-    private enum PolledSnapshot: Sendable { case absent, unchanged, changed(ConversationSnapshot) }
+    private enum PolledSnapshot: Sendable {
+        case absent, unchanged
+        case complete(ConversationSnapshot)
+        /// Changed messages only; merged on the main actor into the snapshot at `base`.
+        case changes(base: TranscriptCursor, header: ConversationSnapshot, order: [String], changed: [Message])
+    }
     private func poll() {
         guard sharedApplication == nil, started, !isDraft, !isPreview, !isShuttingDown, snapshot != nil, !isLoading, !pollPending, let transport, let runtimeID = projectionRuntimeID else { return }
         let revision = generation
         let selected = selectedConversationID
-        let known = snapshot.map { ($0.conversation.id, $0.revision) }
+        let since = snapshot?.cursor
         pollPending = true
         queue.async { [weak self] in
-            // Mapping a long projection is linear in its size; keep it off the
-            // main thread, and skip it entirely for an unchanged revision.
-            let result = Result { try transport.snapshot(runtimeID: runtimeID, conversationID: selected ?? "") }.map { data -> PolledSnapshot in
-                guard let incoming = data.snapshot else { return .absent }
-                if let known, incoming.conversation.id == known.0, incoming.revision == known.1 { return .unchanged }
-                return .changed(BindingMapping.snapshot(incoming))
+            // Only changed messages cross the boundary; mapping stays off the main thread.
+            let result = Result { () throws -> PolledSnapshot in
+                guard let since else {
+                    return try transport.snapshot(runtimeID: runtimeID, conversationID: selected ?? "").snapshot.map { .complete(BindingMapping.snapshot($0)) } ?? .absent
+                }
+                switch try transport.snapshotUpdate(runtimeID: runtimeID, conversationID: selected ?? "", since: since) {
+                case .absent: return .absent
+                case .unchanged: return .unchanged
+                case .changed(let incoming):
+                    guard let base = incoming.base else { return .complete(BindingMapping.snapshot(incoming)) }
+                    return .changes(base: BindingMapping.cursor(base), header: BindingMapping.snapshotHeader(incoming), order: incoming.messageIds, changed: incoming.messages.map(BindingMapping.message))
+                }
             }
             DispatchQueue.main.async {
                 guard let self else { return }
@@ -753,11 +769,64 @@ final class AppStore: ObservableObject {
                 switch result {
                 case .success(let polled):
                     self.clearActivityProblem("poll:" + runtimeID)
-                    if case .changed(let value) = polled { self.apply(value, preserveSelection: true) }
+                    switch polled {
+                    case .absent, .unchanged: break
+                    case .complete(let value): self.apply(value, preserveSelection: true)
+                    case .changes(let base, var header, let order, let changed):
+                        // A newer complete delivery may have replaced the base; the
+                        // next poll then continues from that delivery's cursor.
+                        guard let current = self.snapshot, current.cursor == base else { return }
+                        var known = Dictionary(current.messages.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+                        for message in changed { known[message.id] = message }
+                        let messages = order.compactMap { known[$0] }
+                        guard messages.count == order.count else { self.snapshot?.cursor = nil; return }
+                        header.messages = messages
+                        self.apply(header, preserveSelection: true)
+                    }
                 case .failure(let failure): self.recordProblem(failure, source: "读取会话", activityKey: "poll:" + runtimeID)
                 }
             }
         }
+    }
+    /// Read deferred reasoning and tool output of shown messages. Loaded content
+    /// replaces a delivered message only while its stamp is current.
+    func loadPayloads(messageIDs: [String]) {
+        guard !isPreview, let transport, let snapshot else { return }
+        let deferred = Dictionary(snapshot.messages.filter(\.hasDeferredPayload).map { ($0.id, $0.stamp) }, uniquingKeysWith: { first, _ in first })
+        let wanted = Set(messageIDs).filter { id in deferred[id].map { !payloadRequests.contains(PayloadKey(id: id, stamp: $0)) } ?? false }
+        guard !wanted.isEmpty else { return }
+        let keys = wanted.map { PayloadKey(id: $0, stamp: deferred[$0]!) }
+        payloadRequests.formUnion(keys)
+        let runtimeID = snapshot.contextRuntimeID, conversationID = snapshot.conversation.id
+        queue.async { [weak self] in
+            let result = Result { try transport.messagePayloads(runtimeID: runtimeID, conversationID: conversationID, messageIDs: Array(wanted)).map(BindingMapping.message) }
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.payloadRequests.subtract(keys)
+                switch result {
+                case .success(let loaded):
+                    guard var current = self.snapshot, current.conversation.id == conversationID, current.contextRuntimeID == runtimeID else { return }
+                    for message in loaded { self.loadedPayloads[message.id] = message }
+                    current.messages = self.withLoadedPayloads(current.messages)
+                    self.apply(current, preserveSelection: true)
+                case .failure(let failure): self.recordProblem(failure, source: "读取消息内容")
+                }
+            }
+        }
+    }
+    private struct PayloadKey: Hashable { var id: String; var stamp: UInt64 }
+    /// Substitute loaded payloads for deliveries of the same content; a newer
+    /// stamp means the content changed and its old payload is dropped.
+    private func withLoadedPayloads(_ messages: [Message]) -> [Message] {
+        guard !loadedPayloads.isEmpty else { return messages }
+        var retained: [String: Message] = [:]
+        let merged = messages.map { message -> Message in
+            guard let loaded = loadedPayloads[message.id], loaded.stamp == message.stamp else { return message }
+            retained[message.id] = loaded
+            return loaded
+        }
+        loadedPayloads = retained
+        return merged
     }
     private func enqueue<T: Sendable>(_ operation: @escaping () throws -> T, onAccepted: (() -> Void)? = nil, onFailure: ((Error) -> Void)? = nil, apply: @escaping (T) -> Void) {
         guard !isLoading, !isShuttingDown else { recordProblem("请等待当前操作完成后重试"); return }
@@ -794,9 +863,9 @@ final class AppStore: ObservableObject {
         for index in topics.indices {
             let conversation = Conversation(id: "sample-\(index)", title: topics[index], updatedAtUnixMs: Int64(Date().timeIntervalSince1970 * 1000) - Int64(index * 86_400_000), createdAtUnixMs: Int64(Date().timeIntervalSince1970 * 1000) - Int64((index + 3) * 86_400_000), runtimeID: runtimeInstances[index == 2 ? 1 : 0].id, cwd: index == 0 ? "/Users/example/Projects/Velune" : index == 1 ? "/Users/example/Projects/Sample" : nil)
             var history = pairs[index].enumerated().map { Message(id: "sample-\(index)-\($0.offset)", role: $0.offset.isMultiple(of: 2) ? .user : .assistant, blocks: [.text($0.element)]) }
-            history[1].blocks.insert(.reasoning("先确认上下文，再选择最小的修改范围。"), at: 0)
-            history[1].blocks.append(.tool(id: "sample-tool-\(index)", title: index == 1 ? "检查项目代码" : "读取工作上下文", state: .completed, output: index == 1 ? "已读取 3 个文件，未修改项目。" : "已梳理当前任务的上下文。"))
-            if index == 2 { history[history.count - 1].blocks.append(.tool(id: "sample-progress", title: "整理项目计划", state: .running, output: "正在整理计划。")) }
+            history[1].blocks.insert(.reasoning(.inline("先确认上下文，再选择最小的修改范围。")), at: 0)
+            history[1].blocks.append(.tool(id: "sample-tool-\(index)", title: index == 1 ? "检查项目代码" : "读取工作上下文", state: .completed, output: .inline(index == 1 ? "已读取 3 个文件，未修改项目。" : "已梳理当前任务的上下文。")))
+            if index == 2 { history[history.count - 1].blocks.append(.tool(id: "sample-progress", title: "整理项目计划", state: .running, output: .inline("正在整理计划。"))) }
             previewSnapshots[conversation.id] = ConversationSnapshot(revision: 1, conversation: conversation, contextRuntimeID: conversation.runtimeID, modelRecordKey: models[0].id, runState: .idle, messages: history,
                 transcriptTurns: [
                     TranscriptTurn(id: "preview-work-" + conversation.id, userMessageID: history[0].id, workMessageIDs: [history[1].id], lastMessageID: nil, durationMs: nil, isRunning: false),

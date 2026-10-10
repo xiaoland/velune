@@ -223,7 +223,7 @@ impl CoreRuntime {
         self.execution_runtime_id = Some(runtime.id);
         self.model_selection = Some(crate::ModelSelection::RuntimeDefault);
         self.active_state = ActiveState::Acp(Box::new(session));
-        Ok(json!({"snapshot":self.current_snapshot()}))
+        self.snapshot_result()
     }
 
     pub(super) fn acp_session_config_action(

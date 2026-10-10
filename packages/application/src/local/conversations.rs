@@ -143,7 +143,7 @@ impl CoreRuntime {
             runtime_id: native.runtime_id,
             native_id: native.id,
         });
-        Ok(json!({"snapshot":self.current_snapshot()}))
+        self.snapshot_result()
     }
     pub(super) fn open_conversation(&mut self, request: &Value) -> Result<Value, RuntimeError> {
         if self.busy() {
@@ -178,7 +178,7 @@ impl CoreRuntime {
             .clone()
             .map(|model_record_key| crate::ModelSelection::Managed { model_record_key });
         self.active_state = ActiveState::History(Box::new(snapshot));
-        Ok(json!({"snapshot":self.current_snapshot()}))
+        self.snapshot_result()
     }
 
     fn read_conversation_source(
@@ -229,7 +229,7 @@ impl CoreRuntime {
             });
         if active_id == Some(id) && active_runtime == Some(runtime_id) {
             self.sync_projection()?;
-            return Ok(json!({"snapshot":self.current_snapshot()}));
+            return self.snapshot_result();
         }
         let (mut snapshot, projection) = self.read_conversation_source(runtime_id, id)?;
         if let Some(projection) = projection {
@@ -269,7 +269,7 @@ impl CoreRuntime {
         snapshot.transcript_items = transcript.items();
         snapshot.transcript_outline = transcript.outline();
         snapshot.transcript_message_identities = transcript.message_identities();
-        Ok(json!({"snapshot":Some(snapshot)}))
+        Ok(json!({"snapshot":self.delivery.snapshot(snapshot)}))
     }
 
     pub(super) fn manage_conversation(
@@ -499,7 +499,7 @@ impl CoreRuntime {
                 .send(text)
                 .map_err(|error| RuntimeError::context("ACP message send", error))?;
             self.drain_runtime()?;
-            return Ok(json!({"snapshot":self.current_snapshot()}));
+            return self.snapshot_result();
         }
         if let ActiveState::Native(session) = &mut self.active_state {
             self.unsubmitted_draft = None;
@@ -514,7 +514,7 @@ impl CoreRuntime {
             if self.gateway_runner.is_some() && !self.busy() {
                 self.finish_managed_turn()?;
             }
-            return Ok(json!({"snapshot":self.current_snapshot()}));
+            return self.snapshot_result();
         }
         if matches!(
             self.model_selection,
@@ -559,7 +559,7 @@ impl CoreRuntime {
         if self.gateway_runner.is_some() && !self.busy() {
             self.finish_managed_turn()?;
         }
-        Ok(json!({"snapshot":self.current_snapshot()}))
+        self.snapshot_result()
     }
 
     pub(super) fn bind_gateway_model(&mut self) -> Result<(), RuntimeError> {
@@ -579,14 +579,14 @@ impl CoreRuntime {
                 .cancel()
                 .map_err(|error| RuntimeError::context("ACP cancel", error))?;
             self.drain_runtime()?;
-            return Ok(json!({"snapshot":self.current_snapshot()}));
+            return self.snapshot_result();
         }
         if let ActiveState::Native(session) = &mut self.active_state {
             session
                 .cancel()
                 .map_err(|error| RuntimeError::context("message cancel", error))?;
             self.drain_runtime()?;
-            return Ok(json!({"snapshot":self.current_snapshot()}));
+            return self.snapshot_result();
         }
         self.pi
             .client
@@ -595,7 +595,7 @@ impl CoreRuntime {
             .cancel()
             .map_err(|error| RuntimeError::context("message cancel", error))?;
         self.sync_projection()?;
-        Ok(json!({"snapshot":self.current_snapshot()}))
+        self.snapshot_result()
     }
 
     pub(super) fn ensure_active(&self, request: &Value) -> Result<(), RuntimeError> {
