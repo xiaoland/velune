@@ -29,6 +29,15 @@ pub(super) fn runtime_context(runtime: &RuntimeInstance) -> String {
             .unwrap_or("默认"),
     )
 }
+/// The latest native listing of one runtime instance, valid while its
+/// configuration is unchanged.
+pub(super) struct HistoryListing {
+    runtime: RuntimeInstance,
+    summaries: Vec<ConversationSummary>,
+    /// Pi only: every listed file, including files Pi could not read as a session.
+    pi_files: Vec<PiFileEntry>,
+}
+type PiFileEntry = (history::PiSessionFile, Option<ConversationSummary>);
 impl CoreRuntime {
     pub(super) fn runtime_instance(&self, id: &str) -> Result<&RuntimeInstance, RuntimeError> {
         self.runtime_instances
@@ -77,46 +86,101 @@ impl CoreRuntime {
             gateway_token: None,
         })
     }
+    /// List a runtime's native history. The result also becomes the source-scoped
+    /// membership used to open a listed conversation without listing again.
     pub(super) fn summaries_for(
         &self,
         runtime: &RuntimeInstance,
     ) -> Result<Vec<ConversationSummary>, RuntimeError> {
-        if runtime.type_id == "acp-v1" {
-            return self.acp_summaries(runtime);
-        }
-        if runtime.type_id != "pi-1.0.2" {
-            return history::list(&self.history_config(runtime)?, &runtime.id).map_err(|error| {
+        let (summaries, pi_files) = if runtime.type_id == "acp-v1" {
+            (self.acp_summaries(runtime)?, Vec::new())
+        } else if runtime.type_id != "pi-1.0.2" {
+            let summaries = history::list(&self.history_config(runtime)?, &runtime.id).map_err(|error| {
                 let variant = velune_agent_runtime::version::variant(&runtime.type_id);
                 let family = variant.map(|value| value.family_id).unwrap_or("unknown");
                 let runtime_type = variant.map(|value| value.id).unwrap_or("unknown");
                 tracing::warn!(target: "velune_application", event = "runtime_history_read_failed", phase = error.phase(), failure_kind = error.code(), runtime_family = family, runtime_type, runtime_id=%runtime.id, runtime_name=%runtime.name, runtime_type_id=%runtime.type_id, binary=?runtime.settings.get("binary"), node_binary=?runtime.settings.get("nodeBinary"), agent_dir=?runtime.settings.get("agentDir"), detail=%error);
                 RuntimeError::History(error)
-            });
-        }
-        let value = pi_session_helper(&self.pi_history_config(runtime)?, None)?;
-        value["sessions"]
-            .as_array()
-            .ok_or_else(|| RuntimeError::invalid("Pi 历史列表格式不匹配"))?
+            })?;
+            (summaries, Vec::new())
+        } else {
+            let pi_files = self.list_pi_files(runtime)?;
+            let summaries = pi_files
+                .iter()
+                .filter_map(|(_, summary)| summary.clone())
+                .collect();
+            (summaries, pi_files)
+        };
+        self.history_listings.borrow_mut().insert(
+            runtime.id.clone(),
+            HistoryListing {
+                runtime: runtime.clone(),
+                summaries: summaries.clone(),
+                pi_files,
+            },
+        );
+        Ok(summaries)
+    }
+    /// Pi metadata requires reading a whole session file, so only files whose
+    /// identity changed since this instance's previous listing are read again.
+    fn list_pi_files(&self, runtime: &RuntimeInstance) -> Result<Vec<PiFileEntry>, RuntimeError> {
+        let previous = self
+            .history_listings
+            .borrow_mut()
+            .remove(&runtime.id)
+            .filter(|listing| listing.runtime == *runtime)
+            .map(|listing| listing.pi_files)
+            .unwrap_or_default();
+        let known = previous
             .iter()
-            .map(|item| {
-                let path = item["path"]
-                    .as_str()
-                    .ok_or_else(|| RuntimeError::invalid("Pi 历史条目标识无效"))?;
-                Ok(ConversationSummary {
-                    can_rename: false,
-                    can_delete: false,
-                    id: format!("{}:{path}", runtime.id),
-                    title: velune_conversation::conversation_title(
-                        item["name"].as_str(),
-                        item["firstMessage"].as_str(),
-                    ),
-                    updated_at_unix_ms: item["modifiedUnixMs"].as_i64(),
-                    created_at_unix_ms: item["createdUnixMs"].as_i64(),
-                    runtime_id: runtime.id.clone(),
-                    cwd: item["cwd"].as_str().map(str::to_owned),
-                })
+            .map(|(file, _)| file.clone())
+            .collect::<Vec<_>>();
+        let listing =
+            history::list_pi(&self.pi_history_config(runtime)?, &known).map_err(|error| {
+                RuntimeError::context("Pi 历史无法读取；请检查实例路径与 SDK 配置后重试", error)
+            })?;
+        let mut previous = previous
+            .into_iter()
+            .map(|(file, summary)| (file.path, summary))
+            .collect::<BTreeMap<_, _>>();
+        let mut read = listing
+            .sessions
+            .into_iter()
+            .map(|session| (session.path.clone(), session))
+            .collect::<BTreeMap<_, _>>();
+        Ok(listing
+            .files
+            .into_iter()
+            .map(|listed| {
+                let summary = if listed.changed {
+                    read.remove(&listed.file.path)
+                        .map(|session| ConversationSummary {
+                            can_rename: false,
+                            can_delete: false,
+                            id: format!("{}:{}", runtime.id, session.path),
+                            title: velune_conversation::conversation_title(
+                                session.name.as_deref(),
+                                session.first_message.as_deref(),
+                            ),
+                            updated_at_unix_ms: session.modified_unix_ms,
+                            created_at_unix_ms: session.created_unix_ms,
+                            runtime_id: runtime.id.clone(),
+                            cwd: session.cwd,
+                        })
+                } else {
+                    previous.remove(&listed.file.path).flatten()
+                };
+                (listed.file, summary)
             })
-            .collect()
+            .collect())
+    }
+    /// A conversation from this instance's latest listing; no native read.
+    fn listed_summary(&self, runtime: &RuntimeInstance, id: &str) -> Option<ConversationSummary> {
+        self.history_listings
+            .borrow()
+            .get(&runtime.id)
+            .filter(|listing| listing.runtime == *runtime)
+            .and_then(|listing| listing.summaries.iter().find(|s| s.id == id).cloned())
     }
     pub(super) fn validate_session_model(
         &self,
@@ -154,7 +218,11 @@ impl CoreRuntime {
             .filter(|s| !s.is_empty())
             .ok_or_else(|| RuntimeError::invalid("conversation id"))?;
         // Source-scoped lookup prevents arbitrary caller paths from being opened.
-        let summary = self
+        // Conversations are opened from a listing, so its membership is reused;
+        // an identifier the latest listing does not contain lists again.
+        let summary = match self.listed_summary(runtime, id) {
+            Some(summary) => summary,
+            None => self
             .summaries_for(runtime)
             .map_err(|error| {
                 tracing::warn!(target: "velune_application", event="runtime_history_read_failed", phase="history_lookup", runtime_id=%runtime.id, runtime_name=%runtime.name, runtime_type_id=%runtime.type_id, binary=?runtime.settings.get("binary"), node_binary=?runtime.settings.get("nodeBinary"), agent_dir=?runtime.settings.get("agentDir"), detail=%error);
@@ -166,7 +234,8 @@ impl CoreRuntime {
             })?
             .into_iter()
             .find(|s| s.id == id)
-            .ok_or_else(|| RuntimeError::invalid("此会话不属于所选运行时历史目录"))?;
+            .ok_or_else(|| RuntimeError::invalid("此会话不属于所选运行时历史目录"))?,
+        };
         if runtime.type_id == "acp-v1" {
             let cwd = summary
                 .cwd
@@ -198,7 +267,7 @@ impl CoreRuntime {
         if runtime.type_id == "pi-1.0.2" {
             let saved = pi_session_helper(
                 &self.pi_history_config(runtime)?,
-                Some(Path::new(native_id)),
+                Path::new(native_id),
             ).map_err(|error| {
                 tracing::warn!(target: "velune_application", event="runtime_history_read_failed", phase="history_read", runtime_id=%runtime.id, runtime_name=%runtime.name, runtime_type_id=%runtime.type_id, binary=?runtime.settings.get("binary"), node_binary=?runtime.settings.get("nodeBinary"), agent_dir=?runtime.settings.get("agentDir"), detail=%error);
                 RuntimeError::context(&runtime_context(runtime), error)

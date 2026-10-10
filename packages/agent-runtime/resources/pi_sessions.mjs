@@ -12,13 +12,15 @@ const agentDir = value("--agent-dir");
 if (agentDir) process.env.PI_CODING_AGENT_DIR = agentDir;
 // Set the explicit instance root before SDK initialization. The Rust helper
 // transport clears ambient configuration so history cannot select another HOME.
+// Module loading dominates small reads and unchanged listings. Import only the
+// version-pinned session module, and only when Pi must read or modify a session.
 const installation = resolvePiSdk({binary:value("--cli"),runtimeTypeId:value("--runtime-type")});
-const { SessionManager } = await installation.importSdk();
-const cwd = value("--cwd") ?? process.cwd();
+const sessionManager = () => installation.importModule("dist/core/session-manager.js");
 const sessionDir = value("--session-dir");
 const inspectPath = value("--inspect-session");
 const mutationPath = value("--rename-session") ?? value("--delete-session");
 if (mutationPath) {
+  const { SessionManager } = await sessionManager();
   const { realpath, lstat, unlink } = await import("node:fs/promises");
   const { resolve, relative, isAbsolute } = await import("node:path");
   const root = await realpath(sessionDir ?? resolve(agentDir, "sessions"));
@@ -44,6 +46,7 @@ if (mutationPath) {
   process.stdout.write(JSON.stringify({ok:true}));
 } else
 if (inspectPath) {
+  const { SessionManager } = await sessionManager();
   const manager = SessionManager.open(inspectPath);
   const context = manager.buildSessionContext();
   const virtualEntry = [...manager.getBranch()]
@@ -59,24 +62,56 @@ if (inspectPath) {
     virtualState: virtualEntry?.data ?? null,
   }));
 } else {
-const sessions = args.includes("--all")
-  ? await SessionManager.listAll(sessionDir)
-  : await SessionManager.list(cwd, sessionDir);
-process.stdout.write(
-  JSON.stringify({
-    contract_version: 1,
-    pi_sdk: installation.version,
-    sessions: sessions.map((session) => ({
-      path: session.path,
-      id: session.id,
-      cwd: session.cwd,
-      name: session.name ?? null,
-      createdUnixMs: session.created.getTime(),
-      modifiedUnixMs: session.modified.getTime(),
-      messageCount: session.messageCount,
-      firstMessage: session.firstMessage,
-    })),
-  }),
-);
-
+  // Discovery mirrors SessionManager.listAll. The caller reports the file
+  // identities of its previous listing; only new or changed files are parsed,
+  // and Pi's own metadata reader parses them through a private directory of
+  // links, so Pi stays authoritative for every listed field.
+  const { readdir, stat, mkdtemp, symlink, rm } = await import("node:fs/promises");
+  const { join, resolve } = await import("node:path");
+  const { tmpdir } = await import("node:os");
+  let input = "";
+  for await (const chunk of process.stdin) input += chunk;
+  const known = new Map(JSON.parse(input).files.map((file) => [file.path, file]));
+  const sessionsRoot = resolve(agentDir, "sessions");
+  const directories = sessionDir
+    ? [sessionDir]
+    : await readdir(sessionsRoot, { withFileTypes: true })
+        .then((entries) => entries.filter((entry) => entry.isDirectory() || entry.isSymbolicLink()).map((entry) => join(sessionsRoot, entry.name)))
+        .catch(() => []);
+  const paths = (await Promise.all(directories.map((directory) => readdir(directory)
+    .then((names) => names.filter((name) => name.endsWith(".jsonl")).map((name) => join(directory, name)))
+    .catch(() => [])))).flat();
+  // Nanoseconds as a decimal string survive the JSON round trip exactly.
+  const files = (await Promise.all(paths.map((path) => stat(path, { bigint: true })
+    .then((stats) => ({ path, size: String(stats.size), mtimeNs: String(stats.mtimeNs) }))
+    .catch(() => null)))).filter((file) => file !== null);
+  for (const file of files) {
+    const previous = known.get(file.path);
+    file.changed = previous?.size !== file.size || previous?.mtimeNs !== file.mtimeNs;
+  }
+  const changed = files.filter((file) => file.changed);
+  let sessions = [];
+  if (changed.length) {
+    const { SessionManager } = await sessionManager();
+    const links = await mkdtemp(join(tmpdir(), "velune-pi-list-"));
+    try {
+      await Promise.all(changed.map((file, index) => symlink(file.path, join(links, `${index}.jsonl`))));
+      sessions = (await SessionManager.listAll(links)).map((session) => {
+        const index = Number(session.path.slice(links.length + 1, -".jsonl".length));
+        return {
+          path: changed[index].path,
+          id: session.id,
+          cwd: session.cwd,
+          name: session.name ?? null,
+          createdUnixMs: session.created.getTime(),
+          modifiedUnixMs: session.modified.getTime(),
+          messageCount: session.messageCount,
+          firstMessage: session.firstMessage,
+        };
+      });
+    } finally {
+      await rm(links, { recursive: true, force: true });
+    }
+  }
+  process.stdout.write(JSON.stringify({ contractVersion: 2, files, sessions }));
 }

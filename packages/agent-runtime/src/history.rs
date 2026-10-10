@@ -3,7 +3,7 @@ use crate::{
     conversation::*,
     native::{Error, Result as NativeResult},
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::{path::PathBuf, process::Command};
 
@@ -278,13 +278,63 @@ fn native_history_error(error: Error, phase: &'static str) -> HistoryError {
     HistoryError::new(HistoryFailureKind::ProviderRead, phase).with_detail(error.detail())
 }
 
+/// A Pi session file as observed by a previous listing. Pi appends to its
+/// session files, so an unchanged size and modification time mean unchanged metadata.
+/// Size and nanosecond modification time are opaque decimal strings compared
+/// only by the helper, so no precision is lost crossing JSON.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PiSessionFile {
+    pub path: String,
+    pub size: String,
+    pub mtime_ns: String,
+}
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PiListedFile {
+    #[serde(flatten)]
+    pub file: PiSessionFile,
+    /// False only for a file reported in `known` with the same identity.
+    pub changed: bool,
+}
+/// Pi SessionManager metadata, read only for new or changed files.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PiSessionSummary {
+    pub path: String,
+    pub cwd: Option<String>,
+    pub name: Option<String>,
+    pub created_unix_ms: Option<i64>,
+    pub modified_unix_ms: Option<i64>,
+    pub first_message: Option<String>,
+}
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PiListing {
+    contract_version: u32,
+    pub files: Vec<PiListedFile>,
+    pub sessions: Vec<PiSessionSummary>,
+}
+
+/// List Pi sessions, re-reading only files that differ from `known`.
+pub fn list_pi(config: &crate::Config, known: &[PiSessionFile]) -> NativeResult<PiListing> {
+    let input = serde_json::to_vec(&json!({ "files": known }))
+        .map_err(|error| Error::new(format!("Pi 历史列表请求无效：{error}")))?;
+    let listing: PiListing =
+        serde_json::from_value(execute_pi(config, PiOperation::List, Some(input))?)
+            .map_err(|error| Error::new(format!("Pi 历史 SDK 格式不匹配：{error}")))?;
+    if listing.contract_version != 2 {
+        return Err(Error::new("Pi 历史列表契约版本不匹配"));
+    }
+    Ok(listing)
+}
 /// Execute the fixed Pi SDK history helper without starting the Agent. Output
 /// and wall time share the bounded native helper transport; stderr is discarded.
 pub fn read_pi(
     config: &crate::Config,
-    session: Option<&std::path::Path>,
+    session: &std::path::Path,
 ) -> NativeResult<serde_json::Value> {
-    execute_pi(config, session, None)
+    execute_pi(config, PiOperation::Inspect(session), None)
 }
 /// Modify Pi's native source with the fixed SDK; no Velune metadata overlay.
 pub fn manage_pi(
@@ -292,16 +342,32 @@ pub fn manage_pi(
     session: &std::path::Path,
     title: Option<&str>,
 ) -> NativeResult<()> {
-    let result = execute_pi(config, Some(session), Some(title))?;
+    let (operation, input) = match title {
+        Some(title) => (
+            PiOperation::Rename(session),
+            Some(
+                serde_json::to_vec(&json!({"title":title}))
+                    .map_err(|error| Error::new(format!("Pi 会话修改请求无效：{error}")))?,
+            ),
+        ),
+        None => (PiOperation::Delete(session), None),
+    };
+    let result = execute_pi(config, operation, input)?;
     if result["ok"] != true {
         return Err(Error::new("Pi 会话修改未确认"));
     }
     Ok(())
 }
+enum PiOperation<'a> {
+    List,
+    Inspect(&'a std::path::Path),
+    Rename(&'a std::path::Path),
+    Delete(&'a std::path::Path),
+}
 fn execute_pi(
     config: &crate::Config,
-    session: Option<&std::path::Path>,
-    mutation: Option<Option<&str>>,
+    operation: PiOperation<'_>,
+    input: Option<Vec<u8>>,
 ) -> NativeResult<serde_json::Value> {
     let node = config
         .node_binary
@@ -327,25 +393,21 @@ fn execute_pi(
         .arg(&config.binary)
         .arg("--runtime-type")
         .arg(&config.runtime_type_id);
-    if let Some(session) = session {
-        command
-            .arg(match mutation {
-                Some(Some(_)) => "--rename-session",
-                Some(None) => "--delete-session",
-                None => "--inspect-session",
-            })
-            .arg(session);
-    } else {
-        command.arg("--all");
+    match operation {
+        PiOperation::List => {}
+        PiOperation::Inspect(session) => {
+            command.arg("--inspect-session").arg(session);
+        }
+        PiOperation::Rename(session) => {
+            command.arg("--rename-session").arg(session);
+        }
+        PiOperation::Delete(session) => {
+            command.arg("--delete-session").arg(session);
+        }
     }
     if let Some(root) = &config.session_dir {
         command.arg("--session-dir").arg(root);
     }
-    let input = mutation
-        .flatten()
-        .map(|title| serde_json::to_vec(&json!({"title":title})))
-        .transpose()
-        .map_err(|error| Error::new(format!("Pi 会话修改请求无效：{error}")))?;
     let output = config
         .execution
         .output(command, input, config.os_home.as_deref())?;

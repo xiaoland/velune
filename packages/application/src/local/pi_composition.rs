@@ -197,10 +197,7 @@ pub(super) fn write_selection_file(
     Ok(())
 }
 
-pub(super) fn pi_session_helper(
-    config: &PiConfig,
-    session: Option<&Path>,
-) -> Result<Value, RuntimeError> {
+pub(super) fn pi_session_helper(config: &PiConfig, session: &Path) -> Result<Value, RuntimeError> {
     history::read_pi(config, session).map_err(|error| {
         RuntimeError::context("Pi 历史无法读取；请检查实例路径与 SDK 配置后重试", error)
     })
