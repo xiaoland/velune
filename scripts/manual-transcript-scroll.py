@@ -80,6 +80,9 @@ func synthetic(_ count: Int) -> [Message] {
     var checked = 0
     for (index, cell) in shown.enumerated() {
         if index > 0, abs(shown[index - 1].frame.maxY - cell.frame.minY) > 0.01 { fail("\(label): gap/overlap before \(cell.rowID!)") }
+        for view in descendants(cell).dropFirst() where !view.isHiddenOrHasHiddenAncestor && view.superview === cell {
+            if view.frame.maxY > cell.bounds.height + 0.5 { fail("\(label): row \(cell.rowID!) \(type(of: view)) overflows cell \(view.frame.maxY) > \(cell.bounds.height)") }
+        }
         for case let text as TranscriptTextView in descendants(cell) where !text.isHiddenOrHasHiddenAncestor {
             guard let lm = text.layoutManager, let tc = text.textContainer else { continue }
             lm.ensureLayout(for: tc)
@@ -254,6 +257,42 @@ func synthetic(_ count: Int) -> [Message] {
         triangle.performClick(nil); await spin(3); materialize(window)
         if cell(document, "a0") != nil { fail("work collapse kept its member") }
         note("WORK ok")
+
+        // Tool rows inside an expanded work turn: expanding one pushes its siblings down.
+        let tools = (0..<6).map { k in Message(id: "w\(k)", role: .assistant, blocks: [.tool(id: "wt\(k)", title: "工具 \(k)", state: .completed, output: k == 1 ? .deferred(bytes: 40_000) : .inline((0..<30).map { "工具 \(k) 输出第 \($0) 行" }.joined(separator: "\n")))], stamp: 1) }
+        var workMessages = [messages[0]] + tools + [messages[1]]
+        let toolTurn = TranscriptTurn(id: "turnw", userMessageID: "u0", workMessageIDs: tools.map(\.id), lastMessageID: "a0", durationMs: 900, isRunning: false)
+        func applyWork() {
+            let rest = Array(messages.dropFirst(2))
+            let all = workMessages + rest
+            var workItems: [TranscriptItem] = [.message(id: "u0", messageID: "u0"), .work(turnID: "turnw"), .message(id: "a0", messageID: "a0")]
+            workItems += rest.map { .message(id: $0.id, messageID: $0.id) }
+            model.apply(all, turns: [toolTurn], items: workItems, outline: all.filter { $0.role == .user }.map { .init(id: $0.id, messageID: $0.id) }, identities: all.map { .init(id: $0.id, messageID: $0.id) })
+        }
+        applyWork(); await spin(3)
+        driver.jump = TranscriptJump(id: "u0", token: 70); await spin(3); materialize(window); await spin(2)
+        guard let toolWork = cell(document, "work:turnw"),
+              let toolTriangle = descendants(toolWork).compactMap({ $0 as? NSButton }).first(where: { $0.bezelStyle == .disclosure && $0.superview?.isHidden == false }) else { fail("tool work header missing") }
+        toolTriangle.performClick(nil); await spin(3); materialize(window)
+        checkGeometry(document, scroll, "tool-work-expanded")
+        for k in [0, 1, 3] {
+            guard let row = cell(document, "w\(k)"), let button = descendants(row).compactMap({ $0 as? NSButton }).first(where: { $0.bezelStyle == .disclosure && $0.superview?.isHidden == false }) else { fail("tool row w\(k) missing") }
+            let nextTop = cell(document, "w\(k + 1)").map { $0.frame.minY }
+            button.performClick(nil); await spin(3); materialize(window)
+            checkGeometry(document, scroll, "tool-\(k)-expanded")
+            if let nextTop, let next = cell(document, "w\(k + 1)"), next.frame.minY <= nextTop { fail("expanding w\(k) did not push w\(k + 1)") }
+        }
+        // The deferred output loads later, as from the Store.
+        workMessages[2].blocks[0] = .tool(id: "wt1", title: "工具 1", state: .completed, output: .inline((0..<120).map { "载入输出第 \($0) 行" }.joined(separator: "\n")))
+        applyWork(); await spin(3); materialize(window)
+        checkGeometry(document, scroll, "tool-payload-loaded")
+        // A later message update while tools stay expanded.
+        workMessages[4].blocks[0] = .tool(id: "wt3", title: "工具 3", state: .completed, output: .inline((0..<90).map { "更新输出第 \($0) 行" }.joined(separator: "\n")))
+        applyWork(); await spin(3); materialize(window)
+        checkGeometry(document, scroll, "tool-updated")
+        for _ in 0..<20 { await spin(); try? await Task.sleep(for: .milliseconds(5)) }
+        checkGeometry(document, scroll, "tool-settled")
+        note("TOOL-SIBLINGS ok")
         note("PASS")
         exit(0)
     }

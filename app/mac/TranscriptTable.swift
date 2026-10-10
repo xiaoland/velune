@@ -323,6 +323,11 @@ struct TranscriptTable: NSViewRepresentable {
     /// Applies exact heights for `indices` and restores the anchor (or the
     /// bottom) in the same step; the only place displayed geometry changes.
     private func commitExactHeights(in indices: some Sequence<Int>, keeping anchor: Anchor?) {
+        applyExactHeights(in: indices, keeping: anchor)
+        materializeVisibleRows()
+    }
+
+    private func applyExactHeights(in indices: some Sequence<Int>, keeping anchor: Anchor?) {
         var first: Int?
         for index in indices {
             guard let layout = currentLayout(index), heights[index] != layout.height else { continue }
@@ -331,7 +336,6 @@ struct TranscriptTable: NSViewRepresentable {
         }
         if let first { recomputeOffsets(from: first) }
         restore(anchor)
-        materializeVisibleRows()
     }
 
     private func captureAnchor() -> Anchor? {
@@ -515,10 +519,24 @@ struct TranscriptTable: NSViewRepresentable {
     /// leaving it are kept for reuse.
     func materializeVisibleRows(extra rect: NSRect? = nil) {
         guard let scroll, let document else { return }
-        let clip = scroll.contentView.bounds
-        var area = clip.insetBy(dx: 0, dy: -clip.height * 0.5)
-        if let rect { area = area.union(rect) }
-        let range = rows(in: area)
+        func area() -> NSRect { scroll.contentView.bounds.insetBy(dx: 0, dy: -scroll.contentView.bounds.height * 0.5) }
+        // A cell draws its row's exact layout, so a row is shown only at that
+        // layout's committed height; otherwise its content covers the rows
+        // below. Rows near the viewport that no earlier step measured (after a
+        // width or content change) are committed here, keeping the reading
+        // anchor; that can bring further rows into the area until it settles.
+        while true {
+            let pending = rows(in: area()).filter { heights[$0] != exactLayout($0).height }
+            guard !pending.isEmpty else { break }
+            applyExactHeights(in: pending, keeping: captureAnchor())
+        }
+        var range = Array(rows(in: area()))
+        // AppKit's responsive-scrolling overdraw only prepares rows that are
+        // already consistent; geometry never changes while it prepares content.
+        if let rect {
+            let core = Set(range)
+            range += rows(in: rect).filter { !core.contains($0) && currentLayout($0)?.height == heights[$0] }
+        }
         let wanted = Set(range.map { entries[$0].id })
         for (id, cell) in visibleCells where !wanted.contains(id) { recycle(cell); visibleCells[id] = nil }
         for index in range {
