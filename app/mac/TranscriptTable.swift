@@ -7,7 +7,7 @@ struct TranscriptJump: Equatable {
     var token: UInt64
 }
 
-/// SwiftUI supplies the ordered presentation; the native table owns geometry,
+/// SwiftUI supplies the ordered presentation; the native list owns geometry,
 /// row reuse, local disclosure state and the reading position.
 struct TranscriptTable: NSViewRepresentable {
     let conversationID: String?
@@ -27,7 +27,12 @@ struct TranscriptTable: NSViewRepresentable {
     func updateNSView(_ scroll: NSScrollView, context: Context) { context.coordinator.update(self) }
 }
 
-@MainActor final class TranscriptTableController: NSObject, NSTableViewDataSource, NSTableViewDelegate, NSTextViewDelegate {
+/// A virtualized transcript. Row geometry is exactly the controller's height
+/// list (prefix sums), so a row moves only when the controller changes a height,
+/// and every such change restores the reading anchor in the same main-thread
+/// step. NSTableView is deliberately not used: it estimates unmeasured rows,
+/// measures them lazily from arbitrary calls and re-anchors on its own.
+@MainActor final class TranscriptTableController: NSObject, NSTextViewDelegate {
     enum Entry {
         case message(TranscriptRow)
         case work(TranscriptTurn, label: String)
@@ -70,10 +75,11 @@ struct TranscriptTable: NSViewRepresentable {
         var rendered: RenderedMessage?
         var layout: TranscriptRowLayout
     }
+    private typealias Anchor = (id: String, offset: CGFloat)
 
     private var parent: TranscriptTable?
     private weak var scroll: NSScrollView?
-    private weak var table: NSTableView?
+    private weak var document: TranscriptDocumentView?
     private var entries: [Entry] = []
     private var indexByID: [String: Int] = [:]
     private var conversationID: String?
@@ -86,22 +92,25 @@ struct TranscriptTable: NSViewRepresentable {
 
     private var rendered: [String: (revision: UInt64, value: RenderedMessage)] = [:]
     private var measured: [String: Measured] = [:]
-    /// Height last handed to NSTableView, which caches it until told otherwise.
-    private var committed: [String: CGFloat] = [:]
+    /// Displayed geometry: one height per entry and their prefix offsets.
+    private var heights: [CGFloat] = []
+    private var offsets: [CGFloat] = [0]
     private var lastKnown: [String: CGFloat] = [:]
     private let measurer = TextMeasurer()
     private let measureQueue = DispatchQueue(label: "local.velune.transcript-measure", qos: .utility)
     private var measureToken: MeasureToken?
     private var measureScheduled = false
 
-    /// Provisional until the table reports its real column width.
+    private var visibleCells: [String: TranscriptCellView] = [:]
+    private var reusableCells: [TranscriptCellView] = []
+
+    /// Provisional until the clip view reports its real width.
     private var width: CGFloat = 800
     private var following = true
     private var programmatic = 0
     private var lastOrigin: CGFloat = 0
     private var lastBottomRequest: UInt64?
     private var lastJumpToken: UInt64?
-    private var bandCheckScheduled = false
 
     // MARK: Setup
 
@@ -111,28 +120,17 @@ struct TranscriptTable: NSViewRepresentable {
         scroll.autohidesScrollers = true
         scroll.drawsBackground = true
         scroll.backgroundColor = .windowBackgroundColor
-        let table = TranscriptTableView()
-        table.headerView = nil
-        table.backgroundColor = .windowBackgroundColor
-        table.style = .fullWidth
-        table.selectionHighlightStyle = .none
-        table.intercellSpacing = .zero
-        table.usesAutomaticRowHeights = false
-        table.focusRingType = .none
-        let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("message"))
-        column.resizingMask = .autoresizingMask
-        table.addTableColumn(column)
-        table.columnAutoresizingStyle = .noColumnAutoresizing
-        table.dataSource = self
-        table.delegate = self
-        scroll.documentView = table
+        let document = TranscriptDocumentView()
+        document.controller = self
+        document.frame = NSRect(x: 0, y: 0, width: width, height: 0)
+        scroll.documentView = document
         self.scroll = scroll
-        self.table = table
-        scroll.contentView.postsBoundsChangedNotifications = true
-        NotificationCenter.default.addObserver(self, selector: #selector(clipBoundsChanged), name: NSView.boundsDidChangeNotification, object: scroll.contentView)
-        table.geometryChanged = { [weak self] in self?.tableFrameChanged() }
-        scroll.contentView.postsFrameChangedNotifications = true
-        NotificationCenter.default.addObserver(self, selector: #selector(clipFrameChanged), name: NSView.frameDidChangeNotification, object: scroll.contentView)
+        self.document = document
+        let clip = scroll.contentView
+        clip.postsBoundsChangedNotifications = true
+        clip.postsFrameChangedNotifications = true
+        NotificationCenter.default.addObserver(self, selector: #selector(clipBoundsChanged), name: NSView.boundsDidChangeNotification, object: clip)
+        NotificationCenter.default.addObserver(self, selector: #selector(clipFrameChanged), name: NSView.frameDidChangeNotification, object: clip)
         NotificationCenter.default.addObserver(self, selector: #selector(liveResizeEnded), name: NSWindow.didEndLiveResizeNotification, object: nil)
         return scroll
     }
@@ -141,16 +139,17 @@ struct TranscriptTable: NSViewRepresentable {
 
     func update(_ input: TranscriptTable) {
         parent = input
-        guard let table else { return }
+        clipFrameChanged()
         if input.conversationID != conversationID {
             conversationID = input.conversationID
             expandedWork = []; expandedBlocks = [:]
-            rendered = [:]; measured = [:]; committed = [:]; lastKnown = [:]
-            entries = []; indexByID = [:]
+            rendered = [:]; measured = [:]; lastKnown = [:]
+            entries = []; indexByID = [:]; heights = []; offsets = [0]
+            for cell in visibleCells.values { recycle(cell) }
+            visibleCells = [:]
             revision = nil
             following = true
             measureToken?.cancel()
-            programmatically { table.reloadData() }
         }
         let structureChanged = input.revision != revision || input.activity != activity || input.outlineExpandedID != outlineExpandedID || input.outlineToggleIDs != outlineToggleIDs
         if structureChanged {
@@ -162,6 +161,7 @@ struct TranscriptTable: NSViewRepresentable {
             lastBottomRequest = input.bottomRequest
             setFollowing(true)
             scrollToBottom()
+            materializeVisibleRows()
         }
         if let jump = input.jump, jump.token != lastJumpToken {
             lastJumpToken = jump.token
@@ -170,7 +170,6 @@ struct TranscriptTable: NSViewRepresentable {
     }
 
     private func rebuildEntries() {
-        guard let table else { return }
         let liveTurns = Set((parent?.items ?? []).compactMap { item -> String? in
             if case .work(let turn, _) = item { return turn.id }
             return nil
@@ -188,42 +187,28 @@ struct TranscriptTable: NSViewRepresentable {
         if let activity = parent?.activity { next.append(.activity(activity)) }
         if !next.isEmpty { next.append(.end) }
 
-        let oldIDs = entries.map(\.id)
-        let newIDs = next.map(\.id)
         let anchor = captureAnchor()
+        let previousHeights = Dictionary(entries.indices.map { (entries[$0].id, heights[$0]) }, uniquingKeysWith: { first, _ in first })
         entries = next
-        indexByID = Dictionary(newIDs.enumerated().map { ($1, $0) }, uniquingKeysWith: { first, _ in first })
-        let live = Set(newIDs)
+        indexByID = Dictionary(next.indices.map { (next[$0].id, $0) }, uniquingKeysWith: { first, _ in first })
+        let live = Set(indexByID.keys)
         rendered = rendered.filter { live.contains($0.key) }
         measured = measured.filter { live.contains($0.key) }
-        committed = committed.filter { live.contains($0.key) }
         lastKnown = lastKnown.filter { live.contains($0.key) }
         expandedBlocks = expandedBlocks.filter { live.contains($0.key) }
+        for (id, cell) in visibleCells where !live.contains(id) { recycle(cell); visibleCells[id] = nil }
 
-        // Exact layouts for whatever will be on screen are computed before
-        // the table sees the change, so no visible row starts at a guess.
-        prepareVisibleBand(after: newIDs, anchor: anchor)
-
-        programmatically {
-            if oldIDs != newIDs {
-                let difference = newIDs.difference(from: oldIDs)
-                if difference.count > 200 || oldIDs.isEmpty {
-                    table.reloadData()
-                } else {
-                    table.beginUpdates()
-                    for change in difference.removals.reversed() { if case .remove(let offset, _, _) = change { table.removeRows(at: IndexSet(integer: offset), withAnimation: []) } }
-                    for change in difference.insertions { if case .insert(let offset, _, _) = change { table.insertRows(at: IndexSet(integer: offset), withAnimation: []) } }
-                    table.endUpdates()
-                }
-            }
-            noteChangedHeights()
-            reconfigureVisibleCells()
-            restore(anchor)
-        }
+        // Rows keep their displayed height; changes go through the exact
+        // layouts below, measured before anything is drawn.
+        heights = entries.indices.map { index in previousHeights[entries[index].id] ?? fallbackHeight(index) }
+        recomputeOffsets(from: 0)
+        prepareBand(around: anchor)
+        commitExactHeights(in: entries.indices, keeping: anchor)
         scheduleBackgroundMeasure()
     }
 
-    private func prepareVisibleBand(after ids: [String], anchor: (id: String, offset: CGFloat)?) {
+    /// Exact layouts for the rows that will be on screen after a change.
+    private func prepareBand(around anchor: Anchor?) {
         guard let scroll else { return }
         let viewport = scroll.contentView.bounds.height
         if following || anchor == nil {
@@ -233,7 +218,7 @@ struct TranscriptTable: NSViewRepresentable {
                 if filled > viewport * 1.5 { break }
             }
         } else if let anchor, let start = indexByID[anchor.id] {
-            var filled: CGFloat = -anchor.offset
+            var filled = -anchor.offset
             for index in start ..< entries.count {
                 filled += exactLayout(index).height
                 if filled > viewport * 1.5 { break }
@@ -259,9 +244,12 @@ struct TranscriptTable: NSViewRepresentable {
     }
 
     private func currentLayout(_ index: Int) -> TranscriptRowLayout? {
-        let id = entries[index].id
-        guard let value = measured[id], value.width == width, value.key == content(index).0 else { return nil }
+        guard let value = measured[entries[index].id], value.width == width, value.key == content(index).0 else { return nil }
         return value.layout
+    }
+
+    private func fallbackHeight(_ index: Int) -> CGFloat {
+        currentLayout(index)?.height ?? lastKnown[entries[index].id] ?? TranscriptRowLayout.estimate(content(index).1, width: width)
     }
 
     @discardableResult
@@ -284,44 +272,63 @@ struct TranscriptTable: NSViewRepresentable {
         return layout
     }
 
-    func numberOfRows(in tableView: NSTableView) -> Int { entries.count }
-
-    func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat {
-        guard entries.indices.contains(row) else { return 1 }
-        let id = entries[row].id
-        let height = currentLayout(row)?.height ?? lastKnown[id] ?? TranscriptRowLayout.estimate(content(row).1, width: width)
-        committed[id] = height
-        return max(height, 1)
-    }
-
-    /// Rows whose exact height differs from what the table believes.
-    private func noteChangedHeights(_ candidates: [Int]? = nil) {
-        guard let table else { return }
-        var changed = IndexSet()
-        for index in candidates ?? Array(entries.indices) {
-            guard entries.indices.contains(index), let layout = currentLayout(index) else { continue }
-            if committed[entries[index].id] != layout.height { changed.insert(index) }
+    private func recomputeOffsets(from start: Int) {
+        if offsets.count != heights.count + 1 { offsets = Array(repeating: 0, count: heights.count + 1) }
+        var y = start == 0 ? 0 : offsets[start]
+        for index in start ..< heights.count {
+            offsets[index] = y
+            y += heights[index]
         }
-        guard !changed.isEmpty else { return }
-        NSAnimationContext.beginGrouping()
-        NSAnimationContext.current.duration = 0
-        table.noteHeightOfRows(withIndexesChanged: changed)
-        NSAnimationContext.endGrouping()
-        table.tile()
+        offsets[heights.count] = y
+        if let document, let scroll {
+            let size = NSSize(width: scroll.contentView.bounds.width, height: y)
+            if document.frame.size != size { programmatically { document.setFrameSize(size) } }
+        }
     }
 
-    private func captureAnchor() -> (id: String, offset: CGFloat)? {
-        guard let scroll, let table, !entries.isEmpty else { return nil }
-        let top = scroll.contentView.bounds.minY
-        let row = table.row(at: NSPoint(x: 1, y: max(top, 0)))
-        guard entries.indices.contains(row) else { return nil }
-        return (entries[row].id, top - table.rect(ofRow: row).minY)
+    private func rowRect(_ index: Int) -> NSRect {
+        NSRect(x: 0, y: offsets[index], width: document?.bounds.width ?? width, height: heights[index])
     }
 
-    private func restore(_ anchor: (id: String, offset: CGFloat)?) {
+    /// The row containing `y`, clamped to the list.
+    private func row(at y: CGFloat) -> Int? {
+        guard !heights.isEmpty else { return nil }
+        var low = 0, high = heights.count - 1
+        while low < high {
+            let middle = (low + high + 1) / 2
+            if offsets[middle] <= y { low = middle } else { high = middle - 1 }
+        }
+        return low
+    }
+
+    private func rows(in rect: NSRect) -> Range<Int> {
+        guard let first = row(at: max(rect.minY, 0)), let last = row(at: rect.maxY) else { return 0 ..< 0 }
+        return first ..< last + 1
+    }
+
+    /// Applies exact heights for `indices` and restores the anchor (or the
+    /// bottom) in the same step; the only place displayed geometry changes.
+    private func commitExactHeights(in indices: some Sequence<Int>, keeping anchor: Anchor?) {
+        var first: Int?
+        for index in indices {
+            guard let layout = currentLayout(index), heights[index] != layout.height else { continue }
+            heights[index] = layout.height
+            first = min(first ?? index, index)
+        }
+        if let first { recomputeOffsets(from: first) }
+        restore(anchor)
+        materializeVisibleRows()
+    }
+
+    private func captureAnchor() -> Anchor? {
+        guard let scroll, let index = row(at: scroll.contentView.bounds.minY), entries.indices.contains(index) else { return nil }
+        return (entries[index].id, scroll.contentView.bounds.minY - offsets[index])
+    }
+
+    private func restore(_ anchor: Anchor?) {
         if following { scrollToBottom(); return }
-        guard let anchor, let index = indexByID[anchor.id], let table else { return }
-        setOrigin(table.rect(ofRow: index).minY + anchor.offset)
+        guard let anchor, let index = indexByID[anchor.id] else { return }
+        setOrigin(offsets[index] + anchor.offset)
     }
 
     private func setOrigin(_ y: CGFloat) {
@@ -335,23 +342,22 @@ struct TranscriptTable: NSViewRepresentable {
         }
     }
 
-    private func scrollToBottom() {
-        guard let table else { return }
-        setOrigin(table.bounds.maxY)
-    }
+    private func scrollToBottom() { setOrigin(offsets.last ?? 0) }
 
     private func scrollTo(_ id: String) {
-        guard let index = indexByID[id], let table, let scroll else { return }
+        guard let index = indexByID[id], let scroll else { return }
         setFollowing(false)
         // Lay out the target and what follows it, then pin the target's top.
         var filled: CGFloat = 0
+        var last = index
         for row in index ..< entries.count {
             filled += exactLayout(row).height
+            last = row
             if filled > scroll.contentView.bounds.height * 1.5 { break }
         }
-        programmatically { noteChangedHeights() }
-        setOrigin(table.rect(ofRow: index).minY + TranscriptRowLayout.rowInset - 8)
-        reconfigureVisibleCells()
+        commitExactHeights(in: index ... last, keeping: nil)
+        setOrigin(offsets[index] + TranscriptRowLayout.rowInset - 8)
+        materializeVisibleRows()
     }
 
     private func programmatically(_ body: () -> Void) {
@@ -362,9 +368,9 @@ struct TranscriptTable: NSViewRepresentable {
     }
 
     private var isAtBottom: Bool {
-        guard let scroll, let table else { return true }
+        guard let scroll else { return true }
         let clip = scroll.contentView
-        let bottom = clip.constrainBoundsRect(NSRect(origin: NSPoint(x: 0, y: table.bounds.maxY), size: clip.bounds.size)).minY
+        let bottom = clip.constrainBoundsRect(NSRect(origin: NSPoint(x: 0, y: offsets.last ?? 0), size: clip.bounds.size)).minY
         return clip.bounds.minY >= bottom - 2
     }
 
@@ -377,57 +383,47 @@ struct TranscriptTable: NSViewRepresentable {
     // MARK: Scrolling and resizing
 
     @objc private func clipBoundsChanged() {
-        guard let scroll else { return }
+        guard programmatic == 0, let scroll else { return }
         let origin = scroll.contentView.bounds.minY
-        let userScrolled = programmatic == 0 && origin != lastOrigin
-        lastOrigin = origin
-        if userScrolled { setFollowing(isAtBottom) }
-        // NSTableView defers row-height notes made inside its clip view's
-        // bounds change, so geometry would land later without compensation.
-        if programmatic == 0 { scheduleBandCheck() }
+        if origin != lastOrigin {
+            lastOrigin = origin
+            setFollowing(isAtBottom)
+        }
+        measureVisibleBand()
     }
 
-    /// Rows about to appear get exact geometry synchronously; rows above the
-    /// viewport that change height are compensated in the same pass.
+    /// Rows about to appear get exact geometry synchronously, before drawing;
+    /// rows above the viewport that change height are compensated in place.
     private func measureVisibleBand() {
-        guard let table, let scroll, !entries.isEmpty else { return }
+        guard let scroll, !entries.isEmpty else { return }
         for _ in 0 ..< 3 {
             let clip = scroll.contentView.bounds
-            let range = table.rows(in: clip.insetBy(dx: 0, dy: -clip.height * 0.75))
-            guard range.location != NSNotFound, range.length > 0 else { return }
+            let band = rows(in: clip.insetBy(dx: 0, dy: -clip.height * 0.75))
             var pending: [Int] = []
-            for index in range.location ..< min(range.location + range.length, entries.count) where currentLayout(index) == nil || committed[entries[index].id] != currentLayout(index)?.height {
-                exactLayout(index)
-                pending.append(index)
-            }
-            guard !pending.isEmpty else { return }
-            let anchor = captureAnchor()
-            programmatically {
-                noteChangedHeights(pending)
-                if following { scrollToBottom() } else { restore(anchor) }
-                reconfigureVisibleCells()
-            }
+            for index in band where heights[index] != exactLayout(index).height { pending.append(index) }
+            guard !pending.isEmpty else { break }
+            commitExactHeights(in: pending, keeping: captureAnchor())
         }
+        materializeVisibleRows()
     }
 
-    @objc private func clipFrameChanged() { table?.tile() }
-
-    private func tableFrameChanged() {
-        guard let table else { return }
-        let newWidth = table.tableColumns.first?.width ?? table.bounds.width
-        guard newWidth > 0, newWidth != width else { return }
-        width = newWidth
+    @objc private func clipFrameChanged() {
+        guard let scroll, let document else { return }
+        let clipWidth = scroll.contentView.bounds.width
+        guard clipWidth > 0 else { return }
+        if document.frame.width != clipWidth { programmatically { document.setFrameSize(NSSize(width: clipWidth, height: offsets.last ?? 0)) } }
+        guard clipWidth != width else { materializeVisibleRows(); return }
+        let anchor = captureAnchor()
+        width = clipWidth
         measureToken?.cancel()
-        // Off-screen rows keep their last known height until re-measured; the
-        // visible band is re-measured outside this notification (see above).
-        scheduleBandCheck()
-        if !(table.window?.inLiveResize ?? false) { scheduleBackgroundMeasure() }
+        // Off-screen rows keep their last displayed height until re-measured.
+        prepareBand(around: anchor)
+        commitExactHeights(in: entries.indices, keeping: anchor)
+        if !(scroll.window?.inLiveResize ?? false) { scheduleBackgroundMeasure() }
     }
-
-    func tableViewColumnDidResize(_ notification: Notification) { tableFrameChanged() }
 
     @objc private func liveResizeEnded(_ notification: Notification) {
-        guard (notification.object as? NSWindow) === table?.window else { return }
+        guard (notification.object as? NSWindow) === scroll?.window else { return }
         scheduleBackgroundMeasure()
     }
 
@@ -445,9 +441,8 @@ struct TranscriptTable: NSViewRepresentable {
 
     private func startBackgroundMeasure() {
         measureToken?.cancel()
-        guard let table, width > 0, !entries.isEmpty else { return }
-        let visible = table.rows(in: table.visibleRect)
-        let center = visible.location == NSNotFound ? entries.count - 1 : visible.location + visible.length / 2
+        guard let scroll, !entries.isEmpty else { return }
+        let center = row(at: scroll.contentView.bounds.midY) ?? entries.count - 1
         // Nearest rows first: the reading position settles before distant history.
         let order = entries.indices.sorted { abs($0 - center) < abs($1 - center) }
         var jobs: [MeasureJob] = []
@@ -497,81 +492,79 @@ struct TranscriptTable: NSViewRepresentable {
             changed.append(index)
         }
         guard !changed.isEmpty else { return }
-        let anchor = captureAnchor()
-        programmatically {
-            noteChangedHeights(changed)
-            restore(anchor)
-        }
+        commitExactHeights(in: changed, keeping: captureAnchor())
     }
 
     // MARK: Cells
 
-    func tableView(_ tableView: NSTableView, shouldSelectRow row: Int) -> Bool { false }
-
-    func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
-        guard entries.indices.contains(row) else { return nil }
-        let identifier = NSUserInterfaceItemIdentifier("transcript-cell")
-        let cell = tableView.makeView(withIdentifier: identifier, owner: nil) as? TranscriptCellView ?? TranscriptCellView()
-        cell.identifier = identifier
-        configure(cell, row: row)
-        if currentLayout(row).map({ committed[entries[row].id] != $0.height }) ?? false { scheduleBandCheck() }
-        return cell
+    /// Materializes and positions cells for the viewport plus overdraw; cells
+    /// leaving it are kept for reuse.
+    func materializeVisibleRows(extra rect: NSRect? = nil) {
+        guard let scroll, let document else { return }
+        let clip = scroll.contentView.bounds
+        var area = clip.insetBy(dx: 0, dy: -clip.height * 0.5)
+        if let rect { area = area.union(rect) }
+        let range = rows(in: area)
+        let wanted = Set(range.map { entries[$0].id })
+        for (id, cell) in visibleCells where !wanted.contains(id) { recycle(cell); visibleCells[id] = nil }
+        for index in range {
+            let id = entries[index].id
+            let cell: TranscriptCellView
+            if let existing = visibleCells[id] { cell = existing }
+            else {
+                cell = reusableCells.popLast() ?? TranscriptCellView()
+                if cell.superview !== document { document.addSubview(cell) }
+                cell.isHidden = false
+                visibleCells[id] = cell
+            }
+            configure(cell, row: index)
+            let frame = rowRect(index)
+            if cell.frame != frame { cell.frame = frame }
+        }
     }
 
-    private func scheduleBandCheck() {
-        guard !bandCheckScheduled else { return }
-        bandCheckScheduled = true
-        DispatchQueue.main.async { [weak self] in
-            self?.bandCheckScheduled = false
-            self?.measureVisibleBand()
-        }
+    private func recycle(_ cell: TranscriptCellView) {
+        cell.isHidden = true
+        cell.prepareForReuse()
+        reusableCells.append(cell)
     }
 
     private func configure(_ cell: TranscriptCellView, row: Int) {
         let entry = entries[row]
         let layout = exactLayout(row)
+        let toggles = outlineToggleIDs.contains(entry.id)
+        let token = "\(content(row).0)|\(width)|\(toggles)|\(outlineExpandedID == entry.id)"
+        guard cell.configurationToken != token || cell.rowID != entry.id else { return }
         var outlineToggle: (() -> Void)?
         var toggleHelp: String?
-        if case .message(let row) = entry, outlineToggleIDs.contains(row.id) {
-            outlineToggle = { [weak self] in self?.parent?.outlineToggle(row.id) }
-            toggleHelp = outlineExpandedID == row.id ? "返回用户消息大纲" : "展开从此消息开始的会话"
+        if toggles {
+            outlineToggle = { [weak self] in self?.parent?.outlineToggle(entry.id) }
+            toggleHelp = outlineExpandedID == entry.id ? "返回用户消息大纲" : "展开从此消息开始的会话"
         }
         cell.apply(layout, rowID: entry.id, outlineToggle: outlineToggle, toggleHelp: toggleHelp, textDelegate: self) { [weak self] key in
             self?.toggle(entryID: entry.id, key: key)
         }
-    }
-
-    private func reconfigureVisibleCells() {
-        guard let table else { return }
-        let range = table.rows(in: table.visibleRect)
-        guard range.location != NSNotFound else { return }
-        for index in range.location ..< min(range.location + range.length, entries.count) {
-            if let cell = table.view(atColumn: 0, row: index, makeIfNecessary: false) as? TranscriptCellView { configure(cell, row: index) }
-        }
+        cell.configurationToken = token
     }
 
     private func toggle(entryID: String, key: String) {
-        guard let table, let index = indexByID[entryID] else { return }
+        guard let index = indexByID[entryID] else { return }
+        // A local disclosure keeps the reading position, even at the bottom.
         let anchor = captureAnchor()
+        let wasFollowing = following
+        following = false
         if case .work(let turn, _) = entries[index] {
             if expandedWork.contains(turn.id) { expandedWork.remove(turn.id) } else { expandedWork.insert(turn.id) }
-            let wasFollowing = following
-            following = false
             rebuildEntries()
-            following = wasFollowing
-            programmatically { restore(anchor) }
+            restore(anchor)
         } else {
             var blocks = expandedBlocks[entryID] ?? []
             if blocks.contains(key) { blocks.remove(key) } else { blocks.insert(key) }
             expandedBlocks[entryID] = blocks
             exactLayout(index)
-            // A local disclosure keeps the clicked row in place, even at the bottom.
-            programmatically {
-                noteChangedHeights([index])
-                if let anchor, let anchorIndex = indexByID[anchor.id] { setOrigin(table.rect(ofRow: anchorIndex).minY + anchor.offset) }
-                reconfigureVisibleCells()
-            }
+            commitExactHeights(in: [index], keeping: anchor)
         }
+        following = wasFollowing
         setFollowing(isAtBottom)
     }
 
@@ -587,7 +580,9 @@ struct TranscriptTable: NSViewRepresentable {
     /// Adds a whole-message copy to the native text menu; a selection rarely
     /// spans every paragraph and code block of a long reply.
     func textView(_ view: NSTextView, menu: NSMenu, for event: NSEvent, at charIndex: Int) -> NSMenu? {
-        guard let table, case let row = table.row(for: view), entries.indices.contains(row), case .message(let message) = entries[row] else { return menu }
+        var ancestor: NSView? = view
+        while let current = ancestor, !(current is TranscriptCellView) { ancestor = current.superview }
+        guard let rowID = (ancestor as? TranscriptCellView)?.rowID, let row = indexByID[rowID], case .message(let message) = entries[row] else { return menu }
         let source = message.message.blocks.compactMap { block -> String? in
             switch block {
             case .text(let text), .notice(let text): return text
@@ -640,31 +635,25 @@ struct TranscriptTable: NSViewRepresentable {
     }
 }
 
-private final class TranscriptTableView: NSTableView {
-    /// Column autoresizing happens while tiling, after frame notifications, so
-    /// the controller reads the settled column width from here.
-    var geometryChanged: (() -> Void)?
+/// Flipped document whose height is the controller's total row height.
+@MainActor final class TranscriptDocumentView: NSView {
+    weak var controller: TranscriptTableController?
+    override var isFlipped: Bool { true }
     override var acceptsFirstResponder: Bool { false }
-    private var fitting = false
-    override func tile() {
-        // Keep the table exactly as wide as the viewport and let AppKit fit the
-        // single column inside the style's padding; a wider column would widen
-        // the table past the viewport.
-        if !fitting, let clip = enclosingScrollView?.contentView, clip.bounds.width > 0 {
-            fitting = true
-            if frame.width != clip.bounds.width { setFrameSize(NSSize(width: clip.bounds.width, height: frame.height)) }
-            sizeLastColumnToFit()
-            fitting = false
-        }
-        super.tile()
-        geometryChanged?()
+    /// Responsive scrolling asks for overdraw before it is visible.
+    override func prepareContent(in rect: NSRect) {
+        super.prepareContent(in: rect)
+        controller?.materializeVisibleRows(extra: rect)
     }
 }
 
 // MARK: - Cell views
 
 /// Applies a precomputed layout; never measures or asks for its own size.
-@MainActor final class TranscriptCellView: NSTableCellView {
+@MainActor final class TranscriptCellView: NSView {
+    private(set) var rowID: String?
+    /// Identifies the applied layout so scrolling does not reapply it.
+    var configurationToken: String?
     private var textViews: [TranscriptTextView] = []
     private var disclosures: [TranscriptDisclosureView] = []
     private var codeBlocks: [TranscriptCodeBlockView] = []
@@ -686,7 +675,19 @@ private final class TranscriptTableView: NSTableView {
 
     @objc private func bubbleClicked() { outlineToggle?() }
 
+    /// Drops text so hidden reusable cells keep no stale selection or storage.
+    override func prepareForReuse() {
+        super.prepareForReuse()
+        rowID = nil
+        configurationToken = nil
+        outlineToggle = nil
+        for view in textViews { view.clear() }
+        for view in codeBlocks { view.clear() }
+        spinner?.stopAnimation(nil)
+    }
+
     func apply(_ layout: TranscriptRowLayout, rowID: String, outlineToggle: (() -> Void)?, toggleHelp: String?, textDelegate: NSTextViewDelegate, toggle: @escaping (String) -> Void) {
+        self.rowID = rowID
         self.outlineToggle = outlineToggle
         var textIndex = 0, disclosureIndex = 0, codeIndex = 0
         bubble.isHidden = true

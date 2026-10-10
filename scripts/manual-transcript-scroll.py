@@ -49,41 +49,46 @@ func synthetic(_ count: Int) -> [Message] {
                 outline: messages.filter { $0.role == .user }.map { .init(id: $0.id, messageID: $0.id) },
                 identities: messages.map { .init(id: $0.id, messageID: $0.id) })
 }
-@MainActor func rowTop(_ table: NSTableView, _ scroll: NSScrollView, _ row: Int) -> CGFloat { table.rect(ofRow: row).minY - scroll.contentView.bounds.minY }
-@MainActor func materialize(_ window: NSWindow, _ table: NSTableView) {
-    window.contentView?.layoutSubtreeIfNeeded()
-    let range = table.rows(in: table.visibleRect)
-    if range.location != NSNotFound { for i in range.location ..< range.location + range.length { _ = table.view(atColumn: 0, row: i, makeIfNecessary: true) } }
-    table.layoutSubtreeIfNeeded()
+/// Materialized, non-hidden row cells in document order.
+@MainActor func cells(_ document: TranscriptDocumentView) -> [TranscriptCellView] {
+    document.subviews.compactMap { $0 as? TranscriptCellView }.filter { !$0.isHidden && $0.rowID != nil }.sorted { $0.frame.minY < $1.frame.minY }
 }
+@MainActor func cell(_ document: TranscriptDocumentView, _ id: String) -> TranscriptCellView? { cells(document).first { $0.rowID == id } }
+@MainActor func top(_ document: TranscriptDocumentView, _ scroll: NSScrollView, _ id: String) -> CGFloat {
+    guard let cell = cell(document, id) else { fail("row \(id) not materialized") }
+    return cell.frame.minY - scroll.contentView.bounds.minY
+}
+@MainActor func rowAt(_ document: TranscriptDocumentView, _ y: CGFloat) -> String {
+    guard let id = cells(document).first(where: { $0.frame.minY <= y && $0.frame.maxY > y })?.rowID else { fail("no row at \(y)") }
+    return id
+}
+@MainActor func materialize(_ window: NSWindow) { window.contentView?.layoutSubtreeIfNeeded() }
+@MainActor func gapToBottom(_ document: TranscriptDocumentView, _ scroll: NSScrollView) -> CGFloat { document.frame.maxY - scroll.contentView.bounds.maxY }
 @MainActor func snapshot(_ scroll: NSScrollView, _ name: String) {
     guard let directory = ProcessInfo.processInfo.environment["PROBE_SNAPSHOT"] else { return }
-    let view = scroll
-    guard let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { return }
-    view.cacheDisplay(in: view.bounds, to: rep)
+    guard let rep = scroll.bitmapImageRepForCachingDisplay(in: scroll.bounds) else { return }
+    scroll.cacheDisplay(in: scroll.bounds, to: rep)
     try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: directory).appendingPathComponent(name + ".png"))
 }
-@MainActor func checkGeometry(_ table: NSTableView, _ label: String) async {
-    if let clip = table.enclosingScrollView?.contentView, abs(table.bounds.width - clip.bounds.width) > 0.5 || table.tableColumns[0].width > clip.bounds.width {
-        fail("\(label): table \(table.bounds.width) / column \(table.tableColumns[0].width) != viewport \(clip.bounds.width)")
-    }
-    let range = table.rows(in: table.visibleRect)
-    guard range.location != NSNotFound else { return }
+@MainActor func checkGeometry(_ document: TranscriptDocumentView, _ scroll: NSScrollView, _ label: String) {
+    let clip = scroll.contentView.bounds
+    if abs(document.frame.width - clip.width) > 0.5 { fail("\(label): document \(document.frame.width) != viewport \(clip.width)") }
+    let shown = cells(document)
+    guard let first = shown.first, let last = shown.last, first.frame.minY <= clip.minY + 0.5 || first.frame.minY <= 0.5, last.frame.maxY >= min(clip.maxY, document.frame.maxY) - 0.5 else { fail("\(label): viewport not covered by cells") }
     var checked = 0
-    for i in range.location ..< range.location + range.length {
-        guard let cell = table.view(atColumn: 0, row: i, makeIfNecessary: false) else { continue }
-        if abs(cell.frame.height - table.rect(ofRow: i).height) > 0.5 { fail("\(label): cell \(i) frame \(cell.frame.height) != row \(table.rect(ofRow: i).height)") }
+    for (index, cell) in shown.enumerated() {
+        if index > 0, abs(shown[index - 1].frame.maxY - cell.frame.minY) > 0.01 { fail("\(label): gap/overlap before \(cell.rowID!)") }
         for case let text as TranscriptTextView in descendants(cell) where !text.isHiddenOrHasHiddenAncestor {
             guard let lm = text.layoutManager, let tc = text.textContainer else { continue }
             lm.ensureLayout(for: tc)
             // Displayed TextKit layout must equal the measured frame (ceil of used height).
             let used = lm.usedRect(for: tc).height
-            if used > text.frame.height + 0.01 || text.frame.height - used >= 1 { fail("\(label): row \(i) text used \(used) != frame \(text.frame.height)") }
-            if text.frame.maxY > cell.bounds.height + 0.5 { fail("\(label): row \(i) text overflows cell") }
+            if used > text.frame.height + 0.01 || text.frame.height - used >= 1 { fail("\(label): row \(cell.rowID!) text used \(used) != frame \(text.frame.height)") }
+            if text.convert(text.bounds, to: cell).maxY > cell.bounds.height + 0.5 { fail("\(label): row \(cell.rowID!) text overflows cell") }
             checked += 1
         }
     }
-    note("GEOMETRY \(label) rows=\(range.length) texts=\(checked) ok")
+    note("GEOMETRY \(label) rows=\(shown.count) texts=\(checked) ok")
 }
 @main struct Probe {
     @MainActor static func main() async {
@@ -97,114 +102,99 @@ func synthetic(_ count: Int) -> [Message] {
         let clock = ContinuousClock()
         let loadStart = clock.now
         apply(model, messages)
-        await spin(1)
-        await spin(1)
-        guard let table = descendants(window.contentView!).compactMap({ $0 as? NSTableView }).first, let scroll = table.enclosingScrollView else { fail("table absent") }
-        materialize(window, table)
-        note("LOAD rows=\(table.numberOfRows) firstPaint=\(clock.now - loadStart)")
+        await spin(2)
+        guard let document = descendants(window.contentView!).compactMap({ $0 as? TranscriptDocumentView }).first, let scroll = document.enclosingScrollView else { fail("transcript absent") }
+        materialize(window)
+        note("LOAD rows=\(messages.count) firstPaint=\(clock.now - loadStart)")
         let clip = scroll.contentView
-        let bottomGap = table.bounds.maxY - clip.bounds.maxY
-        if bottomGap > 1 { fail("not at bottom after load gap=\(bottomGap)") }
-        await checkGeometry(table, "bottom")
+        if gapToBottom(document, scroll) > 1 { fail("not at bottom after load gap=\(gapToBottom(document, scroll))") }
+        checkGeometry(document, scroll, "bottom")
 
         // Jump into unmeasured history immediately after load.
-        driver.jump = TranscriptJump(id: "u7", token: 100); await spin(2); materialize(window, table)
+        driver.jump = TranscriptJump(id: "u7", token: 100); await spin(2); materialize(window)
         for _ in 0..<40 { await spin(); try? await Task.sleep(for: .milliseconds(2)) }
-        if abs(rowTop(table, scroll, 14) + TranscriptRowLayout.rowInset - 8) > 1 { fail("early jump drifted to \(rowTop(table, scroll, 14))") }
-        await checkGeometry(table, "early-jump")
+        if abs(top(document, scroll, "u7") + TranscriptRowLayout.rowInset - 8) > 1 { fail("early jump drifted to \(top(document, scroll, "u7"))") }
+        checkGeometry(document, scroll, "early-jump")
         snapshot(scroll, "early-jump")
-        driver.request &+= 1; await spin(3); materialize(window, table)
-        if table.bounds.maxY - clip.bounds.maxY > 1 { fail("bottom request after jump") }
+        driver.request &+= 1; await spin(3); materialize(window)
+        if gapToBottom(document, scroll) > 1 { fail("bottom request after jump") }
         note("EARLY-JUMP ok")
 
         // Fast upward scroll immediately, while distant rows are still estimates.
         var maxJitter: CGFloat = 0; var worstStep = Duration.zero; var steps = 0
         let stepSize: CGFloat = 260
         while clip.bounds.minY > 0 && steps < 4000 {
-            let top = table.row(at: NSPoint(x: 1, y: clip.bounds.minY + clip.bounds.height / 2))
-            let before = rowTop(table, scroll, top)
+            let id = rowAt(document, clip.bounds.midY)
+            let before = top(document, scroll, id)
             let start = clock.now
             let delta = min(stepSize, clip.bounds.minY)
             clip.setBoundsOrigin(NSPoint(x: 0, y: clip.bounds.minY - delta))
             scroll.reflectScrolledClipView(clip)
-            let expectedDelta = before + delta
-            let scrolled = clock.now - start
-            materialize(window, table)
-            let materialized = clock.now - start
+            materialize(window)
             await spin()
             let elapsed = clock.now - start
             worstStep = max(worstStep, elapsed)
-            if elapsed > .milliseconds(40) { note("SLOW step=\(steps) \(elapsed) scroll=\(scrolled) materialize=\(materialized) row=\(top)") }
-            let after = rowTop(table, scroll, top)
-            let jitter = abs(after - expectedDelta)
-            if jitter > 1 && maxJitter <= 1 { note("JITTER step=\(steps) row=\(top) before=\(before) after=\(after) expected=\(expectedDelta) origin=\(clip.bounds.minY)") }
+            if elapsed > .milliseconds(40) { note("SLOW step=\(steps) \(elapsed) row=\(id)") }
+            let jitter = abs(top(document, scroll, id) - (before + delta))
+            if jitter > 1 && maxJitter <= 1 { note("JITTER step=\(steps) row=\(id) before=\(before) after=\(top(document, scroll, id)) delta=\(delta)") }
             maxJitter = max(maxJitter, jitter)
             steps += 1
         }
         note("FASTSCROLL steps=\(steps) maxJitter=\(maxJitter) worstStep=\(worstStep)")
         if maxJitter > 1 { fail("reading row moved by \(maxJitter)pt beyond the scroll delta") }
-        await checkGeometry(table, "top")
+        checkGeometry(document, scroll, "top")
 
         // Let background measurement finish, then check stability at a mid anchor.
         let settleStart = clock.now
-        var lastHeight = table.bounds.height; var stable = 0
-        while stable < 30 { await spin(); try? await Task.sleep(for: .milliseconds(5)); if table.bounds.height == lastHeight { stable += 1 } else { stable = 0; lastHeight = table.bounds.height } }
-        note("SETTLED documentHeight=\(table.bounds.height) after=\(clock.now - settleStart)")
-        clip.setBoundsOrigin(NSPoint(x: 0, y: table.bounds.height / 2)); scroll.reflectScrolledClipView(clip)
-        materialize(window, table); await spin(3)
-        let midRow = table.row(at: NSPoint(x: 1, y: clip.bounds.minY + 10)); let midTop = rowTop(table, scroll, midRow)
+        var lastHeight = document.frame.height; var stable = 0
+        while stable < 30 { await spin(); try? await Task.sleep(for: .milliseconds(5)); if document.frame.height == lastHeight { stable += 1 } else { stable = 0; lastHeight = document.frame.height } }
+        note("SETTLED documentHeight=\(document.frame.height) after=\(clock.now - settleStart)")
+        clip.setBoundsOrigin(NSPoint(x: 0, y: document.frame.height / 2)); scroll.reflectScrolledClipView(clip)
+        materialize(window); await spin(3)
+        let midRow = rowAt(document, clip.bounds.minY + 10); let midTop = top(document, scroll, midRow)
         await spin(10)
-        if abs(rowTop(table, scroll, midRow) - midTop) > 0.5 { fail("settled history still moves") }
-        await checkGeometry(table, "middle")
+        if abs(top(document, scroll, midRow) - midTop) > 0.5 { fail("settled history still moves") }
+        checkGeometry(document, scroll, "middle")
 
         // Width change keeps the reading row.
-        window.setContentSize(NSSize(width: 640, height: 700)); materialize(window, table); await spin(3)
-        let afterNarrow = rowTop(table, scroll, midRow)
-        if abs(afterNarrow - midTop) > 1 { fail("narrowing moved reading row \(midTop) -> \(afterNarrow)") }
-        await checkGeometry(table, "narrow")
-        window.setContentSize(NSSize(width: 1200, height: 700)); materialize(window, table); await spin(3)
-        if abs(rowTop(table, scroll, midRow) - midTop) > 1 { fail("widening moved reading row") }
-        await checkGeometry(table, "wide")
+        window.setContentSize(NSSize(width: 640, height: 700)); materialize(window); await spin(3)
+        if abs(top(document, scroll, midRow) - midTop) > 1 { fail("narrowing moved reading row \(midTop) -> \(top(document, scroll, midRow))") }
+        checkGeometry(document, scroll, "narrow")
+        window.setContentSize(NSSize(width: 1200, height: 700)); materialize(window); await spin(3)
+        if abs(top(document, scroll, midRow) - midTop) > 1 { fail("widening moved reading row") }
+        checkGeometry(document, scroll, "wide")
         note("RESIZE ok")
 
         // Tail growth while reading history does not move the reading row.
         messages[messages.count - 1].blocks.append(.text(String(repeating: "尾部增长。", count: 400)))
-        apply(model, messages); await spin(3); materialize(window, table)
-        if abs(rowTop(table, scroll, midRow) - midTop) > 1 { fail("tail growth moved reading row") }
+        apply(model, messages); await spin(3); materialize(window)
+        if abs(top(document, scroll, midRow) - midTop) > 1 { fail("tail growth moved reading row") }
         note("TAIL-WHILE-READING ok")
 
         // Local disclosure: the toggled row keeps its place.
-        let toolRow = (midRow ..< table.numberOfRows).first { row in
-            guard let cell = table.view(atColumn: 0, row: row, makeIfNecessary: false) else { return false }
-            return descendants(cell).contains { ($0 as? NSButton)?.bezelStyle == .disclosure && !$0.isHidden && $0.superview?.isHidden == false }
-        }
-        if let toolRow, let cell = table.view(atColumn: 0, row: toolRow, makeIfNecessary: false),
-           let button = descendants(cell).compactMap({ $0 as? NSButton }).last(where: { $0.bezelStyle == .disclosure && $0.superview?.isHidden == false }) {
-            let height = table.rect(ofRow: toolRow).height; let top = rowTop(table, scroll, toolRow)
-            button.performClick(nil); await spin(3); materialize(window, table)
-            if table.rect(ofRow: toolRow).height <= height { fail("disclosure did not grow row") }
-            if abs(rowTop(table, scroll, toolRow) - top) > 1 { fail("disclosure moved its row") }
-            await checkGeometry(table, "expanded")
-            snapshot(scroll, "expanded")
-            note("DISCLOSURE ok \(height) -> \(table.rect(ofRow: toolRow).height)")
-        } else { fail("no visible disclosure") }
+        guard let toolCell = cells(document).first(where: { $0.frame.minY >= clip.bounds.minY && descendants($0).contains { ($0 as? NSButton)?.bezelStyle == .disclosure && $0.superview?.isHidden == false } }),
+              let button = descendants(toolCell).compactMap({ $0 as? NSButton }).last(where: { $0.bezelStyle == .disclosure && $0.superview?.isHidden == false }), let toolID = toolCell.rowID else { fail("no visible disclosure") }
+        let toolHeight = toolCell.frame.height; let toolTop = top(document, scroll, toolID)
+        button.performClick(nil); await spin(3); materialize(window)
+        guard let grown = cell(document, toolID), grown.frame.height > toolHeight else { fail("disclosure did not grow row") }
+        if abs(top(document, scroll, toolID) - toolTop) > 1 { fail("disclosure moved its row") }
+        checkGeometry(document, scroll, "expanded")
+        snapshot(scroll, "expanded")
+        note("DISCLOSURE ok \(toolHeight) -> \(grown.frame.height)")
 
         // Far jumps land the target's top just below the viewport top, also after
         // tail growth and while history is only partly measured.
         for (token, id) in ["u20", "a150", "u390", "u3"].enumerated() {
-            driver.jump = TranscriptJump(id: id, token: UInt64(token + 1)); await spin(3); materialize(window, table); await spin(3)
-            guard let row = (0 ..< table.numberOfRows).first(where: { messages[$0].id == id }) else { fail("jump target missing") }
-            let top = rowTop(table, scroll, row)
-            if abs(top + TranscriptRowLayout.rowInset - 8) > 1 { fail("jump \(id) top=\(top)") }
+            driver.jump = TranscriptJump(id: id, token: UInt64(token + 1)); await spin(3); materialize(window); await spin(3)
+            if abs(top(document, scroll, id) + TranscriptRowLayout.rowInset - 8) > 1 { fail("jump \(id) top=\(top(document, scroll, id))") }
             if driver.following { fail("jump kept following") }
         }
         note("JUMP ok")
 
         // Whole-message copy is offered from a message's native text menu.
-        driver.jump = TranscriptJump(id: "a150", token: 50); await spin(3); materialize(window, table); await spin(3)
-        if let row = (0 ..< table.numberOfRows).first(where: { messages.indices.contains($0) && messages[$0].id == "a150" }),
-           let cell = table.view(atColumn: 0, row: row, makeIfNecessary: false),
-           let text = descendants(cell).compactMap({ $0 as? TranscriptTextView }).first(where: { !$0.isHiddenOrHasHiddenAncestor }),
+        driver.jump = TranscriptJump(id: "a150", token: 50); await spin(3); materialize(window); await spin(3)
+        if let message = cell(document, "a150"),
+           let text = descendants(message).compactMap({ $0 as? TranscriptTextView }).first(where: { !$0.isHiddenOrHasHiddenAncestor }),
            let menu = text.delegate?.textView?(text, menu: NSMenu(), for: NSEvent.mouseEvent(with: .rightMouseDown, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: 0, context: nil, eventNumber: 0, clickCount: 1, pressure: 1)!, at: 0),
            let item = menu.items.first, item.title == "拷贝整条消息" {
             // Restore the user's clipboard text after checking what was copied.
@@ -218,15 +208,32 @@ func synthetic(_ count: Int) -> [Message] {
         } else { fail("message menu item missing") }
 
         // Back to bottom, then streaming growth follows.
-        driver.request &+= 1; await spin(4); materialize(window, table)
+        driver.request &+= 1; await spin(4); materialize(window)
         for i in 0..<5 {
             messages[messages.count - 1].blocks.append(.text("流式片段 \(i) " + String(repeating: "内容", count: 80)))
-            apply(model, messages); await spin(3); materialize(window, table)
-            let gap = table.bounds.maxY - clip.bounds.maxY
-            if gap > 1 { fail("following lost bottom gap=\(gap)") }
+            apply(model, messages); await spin(3); materialize(window)
+            if gapToBottom(document, scroll) > 1 { fail("following lost bottom gap=\(gapToBottom(document, scroll))") }
         }
-        await checkGeometry(table, "stream")
+        checkGeometry(document, scroll, "stream")
         note("FOLLOW ok")
+
+        // A folded work turn expands into a separate member row and collapses back.
+        let turn = TranscriptTurn(id: "turn0", userMessageID: "u0", workMessageIDs: ["a0"], lastMessageID: nil, durationMs: 1500, isRunning: false)
+        var items: [TranscriptItem] = messages.map { .message(id: $0.id, messageID: $0.id) }
+        items[1] = .work(turnID: "turn0")
+        model.apply(messages, turns: [turn], items: items, outline: messages.filter { $0.role == .user }.map { .init(id: $0.id, messageID: $0.id) }, identities: messages.map { .init(id: $0.id, messageID: $0.id) })
+        await spin(3)
+        driver.jump = TranscriptJump(id: "u0", token: 60); await spin(3); materialize(window); await spin(2)
+        guard let work = cell(document, "work:turn0"),
+              let triangle = descendants(work).compactMap({ $0 as? NSButton }).first(where: { $0.bezelStyle == .disclosure && $0.superview?.isHidden == false }) else { fail("work header missing") }
+        let workTop = top(document, scroll, "work:turn0")
+        triangle.performClick(nil); await spin(3); materialize(window)
+        if cell(document, "a0") == nil { fail("work expansion did not show its member") }
+        if abs(top(document, scroll, "work:turn0") - workTop) > 1 { fail("work expansion moved its header \(workTop) -> \(top(document, scroll, "work:turn0"))") }
+        checkGeometry(document, scroll, "work-expanded")
+        triangle.performClick(nil); await spin(3); materialize(window)
+        if cell(document, "a0") != nil { fail("work collapse kept its member") }
+        note("WORK ok")
         note("PASS")
         exit(0)
     }
