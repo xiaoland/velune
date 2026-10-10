@@ -37,7 +37,7 @@
 
 ## 构建与安装
 
-2026-10-10 主工作区含其他会话未提交的 Rust／文档改动，为避免打包他人未完成工作，从源码 `6c764bb` 的独立干净 worktree 完成 locked Rust release 与 Xcode SwiftPM release 构建、严格签名，并安装至 `/Applications/Velune.app`（版本 `0.1 beta.1`）。安装 manifest source 一致且 dirty=false；主二进制与 Rust 库 SHA-256 与签名构建包一致；包内不再有资源 bundle。安装前正常退出运行中的 Velune，安装后重新打开。不 push。
+2026-10-10 主工作区含其他会话未提交的 Rust／文档改动，为避免打包他人未完成工作，从源码 `6243887`（自有文档视图版本）的独立干净 worktree 完成 locked Rust release 与 Xcode SwiftPM release 构建、严格签名，并安装至 `/Applications/Velune.app`（版本 `0.1 beta.1`）。安装 manifest source 一致且 dirty=false；主二进制与 Rust 库 SHA-256 与签名构建包一致；包内不再有资源 bundle。安装前正常退出运行中的 Velune，安装后重新打开。不 push。
 
 ## 已完成前置与边界
 
