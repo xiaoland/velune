@@ -19,7 +19,7 @@ pub(crate) struct PersistedConfig {
     #[serde(default = "default_conversation_browser_group_limit")]
     pub(crate) conversation_browser_group_limit: u32,
     #[serde(default)]
-    pub(crate) transcript_presentation: crate::config::TranscriptPresentation,
+    pub(crate) outline_presentation: crate::config::OutlinePresentation,
     #[serde(default)]
     pub(crate) conversation_browser_preferences: crate::config::ConversationBrowserPreferences,
 }
@@ -36,7 +36,7 @@ impl Default for PersistedConfig {
             runtime_instances: Vec::new(),
             model_templates: Vec::new(),
             conversation_browser_group_limit: default_conversation_browser_group_limit(),
-            transcript_presentation: Default::default(),
+            outline_presentation: Default::default(),
             conversation_browser_preferences: Default::default(),
         }
     }
@@ -81,16 +81,16 @@ impl Repository {
                 let version = raw["schemaVersion"].as_u64().ok_or_else(|| {
                     RuntimeError::invalid("configuration schema version is required")
                 })?;
-                if version < 7 {
+                if version < 8 {
                     reset = true;
                     PersistedConfig {
-                        schema_version: 7,
+                        schema_version: 8,
                         ..PersistedConfig::default()
                     }
                 } else {
-                    if version > 7 {
+                    if version > 8 {
                         return Err(RuntimeError::invalid(
-                            "配置版本高于本应用支持的 schema 7；请使用支持该版本的应用。",
+                            "配置版本高于本应用支持的 schema 8；请使用支持该版本的应用。",
                         ));
                     }
                     let value: PersistedConfig = serde_json::from_value(raw)?;
@@ -128,7 +128,7 @@ impl Repository {
                 }
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => PersistedConfig {
-                schema_version: 7,
+                schema_version: 8,
                 ..PersistedConfig::default()
             },
             Err(error) => return Err(error.into()),
@@ -147,27 +147,60 @@ impl Repository {
         Ok(())
     }
     pub(crate) fn store(&self, config: &PersistedConfig) -> Result<(), RuntimeError> {
-        let path = self.home.join("generic-config.json");
-        let bytes = serde_json::to_vec_pretty(config)?;
-        let temporary = path.with_extension("json.tmp");
-        let mut options = OpenOptions::new();
-        options.create(true).truncate(true).write(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
+        commit(
+            &self.home.join("generic-config.json"),
+            &serde_json::to_vec_pretty(config)?,
+        )
+    }
+
+    /// Composer drafts live beside the configuration, not in it: they change
+    /// while typing and survive an ordinary configuration reset.
+    #[cfg(feature = "local-runtime")]
+    pub(crate) fn load_composer_drafts(
+        &self,
+    ) -> Result<std::collections::BTreeMap<String, String>, RuntimeError> {
+        let bytes = match fs::read(self.home.join("composer-drafts.json")) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(Default::default());
+            }
+            Err(error) => return Err(error.into()),
+        };
+        let value: serde_json::Value = serde_json::from_slice(&bytes)?;
+        if value["schemaVersion"].as_u64() != Some(1) {
+            return Err(RuntimeError::invalid("composer drafts schema version"));
         }
-        let mut file = options.open(&temporary)?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            file.set_permissions(fs::Permissions::from_mode(0o600))?;
+        let drafts: Vec<crate::config::ComposerDraft> =
+            serde_json::from_value(value["drafts"].clone())?;
+        let mut result = std::collections::BTreeMap::new();
+        for draft in drafts {
+            if draft.conversation_id.is_empty()
+                || draft.text.is_empty()
+                || result.insert(draft.conversation_id, draft.text).is_some()
+            {
+                return Err(RuntimeError::invalid("composer draft identity"));
+            }
         }
-        file.write_all(&bytes)?;
-        file.sync_all()?;
-        drop(file);
-        fs::rename(temporary, &path)?;
-        Ok(())
+        Ok(result)
+    }
+
+    #[cfg(feature = "local-runtime")]
+    pub(crate) fn store_composer_drafts(
+        &self,
+        drafts: &std::collections::BTreeMap<String, String>,
+    ) -> Result<(), RuntimeError> {
+        let drafts: Vec<_> = drafts
+            .iter()
+            .map(|(id, text)| crate::config::ComposerDraft {
+                conversation_id: id.clone(),
+                text: text.clone(),
+            })
+            .collect();
+        let value = serde_json::json!({"schemaVersion":1,"drafts":drafts});
+        commit(
+            &self.home.join("composer-drafts.json"),
+            &serde_json::to_vec_pretty(&value)?,
+        )
     }
 
     #[cfg(feature = "local-runtime")]
@@ -233,27 +266,33 @@ impl Repository {
         &self,
         links: &[crate::config::ConversationLink],
     ) -> Result<(), RuntimeError> {
-        let path = self.home.join("conversation-links.json");
-        let temporary = path.with_extension("json.tmp");
         let value = serde_json::json!({"schemaVersion":1,"links":links});
-        let bytes = serde_json::to_vec_pretty(&value)?;
-        let mut options = OpenOptions::new();
-        options.create(true).truncate(true).write(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
-        }
-        let mut file = options.open(&temporary)?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            file.set_permissions(fs::Permissions::from_mode(0o600))?;
-        }
-        file.write_all(&bytes)?;
-        file.sync_all()?;
-        drop(file);
-        fs::rename(temporary, path)?;
-        Ok(())
+        commit(
+            &self.home.join("conversation-links.json"),
+            &serde_json::to_vec_pretty(&value)?,
+        )
     }
+}
+
+/// Private (0600) atomic replacement of one application file.
+fn commit(path: &Path, bytes: &[u8]) -> Result<(), RuntimeError> {
+    let temporary = path.with_extension("json.tmp");
+    let mut options = OpenOptions::new();
+    options.create(true).truncate(true).write(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(&temporary)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        file.set_permissions(fs::Permissions::from_mode(0o600))?;
+    }
+    file.write_all(bytes)?;
+    file.sync_all()?;
+    drop(file);
+    fs::rename(temporary, path)?;
+    Ok(())
 }

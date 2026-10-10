@@ -90,7 +90,7 @@ pub struct ConfigurationSnapshot {
     pub runtime_types: Vec<RuntimeTypeDescriptor>,
     pub model_templates: Vec<ModelTemplate>,
     pub conversation_browser_group_limit: u32,
-    pub transcript_presentation: TranscriptPresentation,
+    pub outline_presentation: OutlinePresentation,
     pub conversation_browser_preferences: ConversationBrowserPreferences,
     pub provider_import_types: Vec<RuntimeTypeDescriptor>,
     pub protocols: Vec<ProtocolDescriptor>,
@@ -493,12 +493,12 @@ impl Application {
     pub fn list(&mut self) -> Result<ConfigurationSnapshot, Error> {
         self.execute("list", json!({}), None)
     }
-    pub fn set_transcript_presentation(
+    pub fn set_outline_presentation(
         &mut self,
-        presentation: TranscriptPresentation,
-    ) -> Result<TranscriptPresentation, Error> {
+        presentation: OutlinePresentation,
+    ) -> Result<OutlinePresentation, Error> {
         self.execute(
-            "transcriptPresentation",
+            "outlinePresentation",
             json!({"presentation": presentation}),
             None,
         )
@@ -510,6 +510,21 @@ impl Application {
         self.execute(
             "conversationBrowserPreferences",
             json!({"preferences":preferences}),
+            None,
+        )
+    }
+    pub fn composer_drafts(&mut self) -> Result<Vec<crate::config::ComposerDraft>, Error> {
+        self.execute("composerDrafts", json!({"operation":"list"}), None)
+    }
+    /// Empty text removes the conversation's draft.
+    pub fn set_composer_draft(
+        &mut self,
+        conversation_id: String,
+        text: String,
+    ) -> Result<(), Error> {
+        self.execute(
+            "composerDrafts",
+            json!({"operation":"set","conversationID":conversation_id,"text":text}),
             None,
         )
     }

@@ -8,7 +8,7 @@ final class AppStore: ObservableObject {
     @Published private(set) var conversationBrowserPreferences: BindingConversationBrowserPreferences?
     private var savedBrowserPreferences: BindingConversationBrowserPreferences?
     private var browserPreferencesGeneration: UInt64 = 0
-    @Published private(set) var transcriptPresentation: BindingTranscriptPresentation = .conversation
+    @Published private(set) var outlinePresentation: BindingOutlinePresentation = .popover
     @Published private(set) var conversationBrowserGroupLimit = 20
     @Published private(set) var conversations: [Conversation] = []
     @Published private(set) var selectedConversationIDs: Set<String> = []
@@ -65,6 +65,16 @@ final class AppStore: ObservableObject {
     private var hasInitializedNextTurnIntent = false
     private var queuedConversationManagement: (() -> Void)?
     private var previewSnapshots: [String: ConversationSnapshot] = [:]
+    /// Unsent composer text by conversation. Deliberately not published: the
+    /// composer owns the text while editing and reads a draft when it switches.
+    private var composerDrafts: [String: String] = [:]
+    private var unsavedDrafts: [String: String] = [:]
+    private var draftSave: DispatchWorkItem?
+    /// Next-turn runtime and model chosen per conversation in this workspace.
+    private var nextTurnIntents: [String: NextTurnIntent] = [:]
+    private var intentConversationID: String?
+    private var lastChosenModelRecordKey: String?
+    private struct NextTurnIntent { var runtimeID: String?; var modelRecordKey: String? }
 
     init(transport: Transport? = nil, preview: Bool = false, sharedApplication: AppStore? = nil) {
         self.sharedApplication = sharedApplication
@@ -110,7 +120,7 @@ final class AppStore: ObservableObject {
         if conversationBrowserPreferences != application.conversationBrowserPreferences { conversationBrowserPreferences = application.conversationBrowserPreferences }
         savedBrowserPreferences = application.savedBrowserPreferences
         if conversationBrowserGroupLimit != application.conversationBrowserGroupLimit { conversationBrowserGroupLimit = application.conversationBrowserGroupLimit }
-        if transcriptPresentation != application.transcriptPresentation { transcriptPresentation = application.transcriptPresentation }
+        if outlinePresentation != application.outlinePresentation { outlinePresentation = application.outlinePresentation }
         var sharedConversations = application.conversations
         if let current = snapshot?.conversation, !isDraft, !sharedConversations.contains(where: { $0.id == current.id }) { sharedConversations.insert(current, at: 0) }
         if conversations != sharedConversations { conversations = sharedConversations }
@@ -170,6 +180,7 @@ final class AppStore: ObservableObject {
         hasInitializedNextTurnIntent = true
         nextTurnRuntimeID = id
         if nextTurnModelRecordKey != nil, !runtimeCompatibleModels.contains(where: { $0.recordKey == nextTurnModelRecordKey }) { nextTurnModelRecordKey = nil }
+        rememberNextTurnIntent()
     }
     var pendingInteractions: [RuntimeInteraction] { snapshot?.pendingInteractions ?? [] }
     func replyInteraction(_ interaction: RuntimeInteraction, reply: RuntimeInteractionReply) {
@@ -183,6 +194,7 @@ final class AppStore: ObservableObject {
         if sharedApplication != nil { subscriptions.removeAll(); completion(true); return }
         guard !isShuttingDown else { completion(false); return }
         guard !isPreview, let transport else { completion(true); return }
+        saveDrafts()
         isShuttingDown = true
         timer?.invalidate(); timer = nil
         queue.async { [weak self] in
@@ -214,6 +226,7 @@ final class AppStore: ObservableObject {
         guard !started else { return }; started = true
         sharedApplication?.start(loadFirstConversation: false)
         guard !isPreview, let transport else { return }
+        if sharedApplication == nil { loadDrafts(transport) }
         enqueue({ try transport.list() }) { [weak self] data in
             guard let self else { return }
             applyList(data)
@@ -272,11 +285,63 @@ final class AppStore: ObservableObject {
             }
         }
     }
-    func setTranscriptPresentation(_ presentation: BindingTranscriptPresentation) {
-        if isPreview { transcriptPresentation = presentation; return }
+    func setOutlinePresentation(_ presentation: BindingOutlinePresentation) {
+        if isPreview { outlinePresentation = presentation; return }
         guard let transport else { recordProblem("本地核心未配置"); return }
-        enqueue({ try transport.setTranscriptPresentation(presentation) }) { [weak self] in self?.transcriptPresentation = $0 }
+        enqueue({ try transport.setOutlinePresentation(presentation) }) { [weak self] in self?.outlinePresentation = $0 }
     }
+    func draft(for conversationID: String) -> String {
+        if let sharedApplication { return sharedApplication.draft(for: conversationID) }
+        return composerDrafts[conversationID] ?? ""
+    }
+    /// Records the composer text; persisted shortly after typing pauses. A new
+    /// conversation's draft lives only as long as that unsent conversation.
+    func setDraft(_ text: String, for conversationID: String) {
+        if let sharedApplication { sharedApplication.setDraft(text, for: conversationID); return }
+        guard composerDrafts[conversationID, default: ""] != text else { return }
+        composerDrafts[conversationID] = text.isEmpty ? nil : text
+        guard !isPreview, !conversationID.hasPrefix(Self.draftConversationPrefix) else { return }
+        unsavedDrafts[conversationID] = text
+        draftSave?.cancel()
+        let work = DispatchWorkItem { [weak self] in self?.saveDrafts() }
+        draftSave = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: work)
+    }
+    private func moveDraft(from old: String, to new: String) {
+        if let sharedApplication { sharedApplication.moveDraft(from: old, to: new); return }
+        guard let text = composerDrafts.removeValue(forKey: old) else { return }
+        setDraft(text, for: new)
+    }
+    private func loadDrafts(_ transport: Transport) {
+        queue.async { [weak self] in
+            let result = Result { try transport.composerDrafts() }
+            DispatchQueue.main.async {
+                guard let self else { return }
+                switch result {
+                case .success(let drafts):
+                    for draft in drafts where self.composerDrafts[draft.conversationId] == nil { self.composerDrafts[draft.conversationId] = draft.text }
+                case .failure(let failure): self.recordProblem(failure, source: "读取草稿")
+                }
+            }
+        }
+    }
+    /// Draft writes bypass the operation queue's loading state: typing never
+    /// waits for, or blocks, a conversation operation.
+    private func saveDrafts() {
+        draftSave?.cancel(); draftSave = nil
+        guard !unsavedDrafts.isEmpty, let transport else { return }
+        let pending = unsavedDrafts
+        unsavedDrafts = [:]
+        queue.async { [weak self] in
+            var failure: Error?
+            for (id, text) in pending {
+                do { try transport.setComposerDraft(conversationID: id, text: text) } catch { failure = error }
+            }
+            guard let failure else { return }
+            DispatchQueue.main.async { self?.recordProblem(failure, source: "保存草稿") }
+        }
+    }
+    static let draftConversationPrefix = "draft:"
     func setConversationBrowserGroupLimit(_ limit: Int) {
         guard let value = UInt32(exactly: limit), value > 0 else { recordProblem("每组展示数量须为正整数"); return }
         if isPreview { conversationBrowserGroupLimit = limit; return }
@@ -361,17 +426,26 @@ final class AppStore: ObservableObject {
         }
     }
     func deleteConversation(_ conversation: Conversation) { deleteConversations([conversation]) }
+    /// The core already removed the persisted draft with the conversation.
+    private func dropDeletedConversationState(_ id: String) {
+        nextTurnIntents[id] = nil
+        if let sharedApplication { sharedApplication.composerDrafts[id] = nil; sharedApplication.unsavedDrafts[id] = nil }
+        else { composerDrafts[id] = nil; unsavedDrafts[id] = nil }
+    }
     func deleteConversations(_ targets: [Conversation]) {
         guard canManageConversations else { recordProblem("请等待正在进行的操作结束，再修改会话"); return }
         guard !targets.isEmpty, targets.allSatisfy(canDeleteConversation) else { recordProblem("所选会话中有原生会话当前无法删除"); return }
         if isPreview {
             let ids = Set(targets.map(\.id))
             conversations.removeAll { ids.contains($0.id) }; selectedConversationIDs.subtract(ids)
+            for id in ids { dropDeletedConversationState(id) }
             for id in ids { previewSnapshots.removeValue(forKey: id) }
             if let loadedConversationID, ids.contains(loadedConversationID) { resetProjection() }
             return
         }
         guard let transport else { recordProblem("本地核心未配置"); return }
+        // A pending write must not recreate the draft of a deleted conversation.
+        for target in targets { (sharedApplication ?? self).unsavedDrafts[target.id] = nil }
         scheduleConversationManagement("删除 \(targets.count) 个会话") { [weak self] in
             guard let self else { return }
             generation += 1
@@ -403,6 +477,7 @@ final class AppStore: ObservableObject {
                 guard let self else { return }
                 if let data = result.0 { applyList(data) }
                 selectedConversationIDs.subtract(result.1)
+                for id in result.1 { dropDeletedConversationState(id) }
                 if let loadedConversationID, result.1.contains(loadedConversationID) { resetProjection() }
                 else if result.4 { resetProjection() }
                 else if let refreshed = result.3 { applySnapshotResult(refreshed) }
@@ -413,9 +488,9 @@ final class AppStore: ObservableObject {
     }
     func createConversation() { showsNewConversation = true }
     func createConversation(runtimeID: String, cwd: String?, modelRecordKey: String, onCreated: @escaping () -> Void) {
-        hasInitializedNextTurnIntent = true
-        nextTurnRuntimeID = runtimeID; nextTurnModelRecordKey = modelRecordKey
         guard !isLoading, !applicationIsGenerating else { return }
+        // The new conversation's snapshot carries this choice as its next-turn intent.
+        lastChosenModelRecordKey = modelRecordKey
         if isPreview {
             let conversation = Conversation(id: UUID().uuidString, title: "新会话", updatedAtUnixMs: Int64(Date().timeIntervalSince1970 * 1000), runtimeID: runtimeID, cwd: cwd)
             projectionRuntimeID = runtimeID
@@ -423,11 +498,13 @@ final class AppStore: ObservableObject {
             onCreated(); return
         }
         isDraft = true
-        let conversation = Conversation(id: "draft:" + UUID().uuidString, title: "新会话", updatedAtUnixMs: nil, runtimeID: runtimeID, cwd: cwd, canRename: false, canDelete: false)
+        let conversation = Conversation(id: Self.draftConversationPrefix + UUID().uuidString, title: "新会话", updatedAtUnixMs: nil, runtimeID: runtimeID, cwd: cwd, canRename: false, canDelete: false)
         apply(ConversationSnapshot(revision: 1, conversation: conversation, contextRuntimeID: runtimeID, modelRecordKey: modelRecordKey, runState: .idle, messages: [], actions: ConversationActions(canSend: true, canCancel: false, canSwitch: true)))
         onCreated()
     }
-    func send(text: String, onAccepted: (() -> Void)? = nil) {
+    /// `onAccepted` receives the conversation that took the turn; sending in a
+    /// new conversation replaces its unsent identity with the created one.
+    func send(text: String, onAccepted: ((String?) -> Void)? = nil) {
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         guard canSend, let target = nextTurnRuntimeID, let model = nextTurnModelRecordKey, let source = snapshot?.conversation.runtimeID, let conversationID = loadedConversationID else { return }
         if isPreview {
@@ -438,7 +515,7 @@ final class AppStore: ObservableObject {
             value.transcriptItems.append(.message(id: message.id, messageID: message.id))
             value.transcriptOutline.append(TranscriptOutlineEntry(id: message.id, messageID: message.id))
             value.transcriptMessageIdentities.append(TranscriptMessageIdentity(id: message.id, messageID: message.id))
-            apply(value); onAccepted?(); return
+            apply(value); onAccepted?(loadedConversationID); return
         }
         guard let transport else { recordProblem("本地核心未配置"); return }
         let application = sharedApplication ?? self
@@ -451,13 +528,18 @@ final class AppStore: ObservableObject {
                     DispatchQueue.main.async {
                         guard let self else { return }
                         self.isDraft = false
+                        // Text typed while sending and the next-turn choice follow the created conversation.
+                        if let id = created.snapshot?.conversation.id {
+                            self.moveDraft(from: conversationID, to: id)
+                            self.nextTurnIntents[id] = self.nextTurnIntents.removeValue(forKey: conversationID)
+                        }
                         self.sharedApplication?.applySnapshotResult(created)
                         self.applySnapshotResult(created)
                     }
                 }
             }
             return try transport.sendTurn(sourceRuntimeID: source, conversationID: conversationID, targetRuntimeID: target, modelRecordKey: model, text: text)
-        }, onAccepted: onAccepted, onFailure: { _ in application.executionStarting = false }) { [weak self] value in
+        }, onAccepted: { [weak self] in onAccepted?(self?.loadedConversationID) }, onFailure: { _ in application.executionStarting = false }) { [weak self] value in
             application.executionStarting = false
             self?.sharedApplication?.applySnapshotResult(value)
             self?.applySnapshotResult(value)
@@ -653,6 +735,27 @@ final class AppStore: ObservableObject {
     func selectModel(modelRecordKey: String) {
         guard canSwitchModel, runtimeCompatibleModels.contains(where: { $0.recordKey == modelRecordKey }) else { return }
         nextTurnModelRecordKey = modelRecordKey
+        lastChosenModelRecordKey = modelRecordKey
+        rememberNextTurnIntent()
+    }
+    private func rememberNextTurnIntent() {
+        guard let intentConversationID else { return }
+        nextTurnIntents[intentConversationID] = NextTurnIntent(runtimeID: nextTurnRuntimeID, modelRecordKey: nextTurnModelRecordKey)
+    }
+    /// Each conversation keeps its own next-turn choice. A conversation opened
+    /// for the first time continues on its current runtime and model; without a
+    /// recorded model, the most recently chosen compatible one.
+    private func restoreNextTurnIntent(for value: ConversationSnapshot) {
+        guard value.conversation.id != intentConversationID else { return }
+        intentConversationID = value.conversation.id
+        let intent = nextTurnIntents[value.conversation.id] ?? NextTurnIntent(runtimeID: value.contextRuntimeID, modelRecordKey: value.modelRecordKey)
+        if let runtimeID = intent.runtimeID, enabledRuntimeInstances.contains(where: { $0.id == runtimeID }) {
+            hasInitializedNextTurnIntent = true
+            nextTurnRuntimeID = runtimeID
+        }
+        let compatible = Set(runtimeCompatibleModels.map(\.recordKey))
+        nextTurnModelRecordKey = [intent.modelRecordKey, lastChosenModelRecordKey].compactMap { $0 }.first { compatible.contains($0) }
+        rememberNextTurnIntent()
     }
     private func refreshAfterExecutionInvalidation() {
         guard let transport else { recordProblem("本地核心未配置"); return }
@@ -663,14 +766,14 @@ final class AppStore: ObservableObject {
             } else { resetProjection() }
         }
     }
-    private func resetProjection() { loadedPayloads.removeAll(); isDraft = false; problems.removeAll { $0.activityKey?.hasPrefix("poll:") == true }; generation += 1; snapshot = nil; projectionRuntimeID = nil; selectedConversationID = nil; pendingConversationID = nil; transcript.reset(); activity = nil }
+    private func resetProjection() { intentConversationID = nil; loadedPayloads.removeAll(); isDraft = false; problems.removeAll { $0.activityKey?.hasPrefix("poll:") == true }; generation += 1; snapshot = nil; projectionRuntimeID = nil; selectedConversationID = nil; pendingConversationID = nil; transcript.reset(); activity = nil }
     private func applyList(_ data: BindingConfigurationSnapshot) {
         let mapped = BindingMapping.configuration(data)
         if conversationBrowserPreferences == nil {
             conversationBrowserPreferences = data.conversationBrowserPreferences
             savedBrowserPreferences = data.conversationBrowserPreferences
         }
-        transcriptPresentation = data.transcriptPresentation
+        outlinePresentation = data.outlinePresentation
         conversationBrowserGroupLimit = Int(data.conversationBrowserGroupLimit)
         conversations = mapped.conversations; selectedConversationIDs.formIntersection(conversations.map(\.id))
         if let saved = mapped.gateways.first(where: { $0.id == gateway.id }) ?? mapped.gateways.first { gateway = saved; hasGateway = true }
@@ -724,7 +827,7 @@ final class AppStore: ObservableObject {
         let remainingProblems = problems.filter { !($0.activityKey?.hasPrefix("poll:") == true && $0.activityKey != "poll:" + value.contextRuntimeID) }
         if problems != remainingProblems { problems = remainingProblems }
         guard snapshot != value else { return }
-        snapshot = value; projectionRuntimeID = value.contextRuntimeID; selectedConversationID = value.conversation.id; if !preserveSelection && selectedConversationIDs.count <= 1 { selectedConversationIDs = [value.conversation.id] }; transcript.apply(value.messages, turns: value.transcriptTurns, items: value.transcriptItems, outline: value.transcriptOutline, identities: value.transcriptMessageIdentities)
+        snapshot = value; projectionRuntimeID = value.contextRuntimeID; selectedConversationID = value.conversation.id; restoreNextTurnIntent(for: value); if !preserveSelection && selectedConversationIDs.count <= 1 { selectedConversationIDs = [value.conversation.id] }; transcript.apply(value.messages, turns: value.transcriptTurns, items: value.transcriptItems, outline: value.transcriptOutline, identities: value.transcriptMessageIdentities)
         if let index = conversations.firstIndex(where: { $0.id == value.conversation.id }) { if conversations[index] != value.conversation { conversations[index] = value.conversation } }
         else if !isDraft { conversations.insert(value.conversation, at: 0) }
         activity = value.runState == .running ? "正在思考与执行" : value.runState == .stopping ? "正在停止" : nil

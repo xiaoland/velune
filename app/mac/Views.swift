@@ -8,15 +8,16 @@ struct VeluneRootView: View {
     let previewSettings: Bool
     @Environment(\.openSettings) private var openSettings
     @State private var browser = ConversationBrowser()
-    @State private var draft = ""
+    /// Not observed here: only the composer re-renders while typing.
+    @State private var composer = ComposerModel()
     @State private var scrollRequest: UInt64 = 0
-    @State private var sentAfterUserID: String?
-    @State private var showsOutline = false
+    @State private var showsOutlinePopover = false
+    @State private var outlineCollapsed = false
+    @State private var outlineNavigation: TranscriptJump?
     @State private var renameTarget: Conversation?
     @State private var deleteTargets: [Conversation] = []
     private var conversationSections: [ConversationBrowser.Section] { browser.sections(conversations: store.conversations, runtimes: store.runtimeInstances) }
     private var projects: [String] { Array(Set(store.conversations.filter { conversation in store.enabledRuntimeInstances.contains { $0.id == conversation.runtimeID } }.compactMap(\.cwd))).sorted { $0.localizedStandardCompare($1) == .orderedAscending } }
-    private var nextTurnRuntime: RuntimeInstance? { store.runtimeInstances.first { $0.id == store.nextTurnRuntimeID } }
 
     var body: some View {
         NavigationSplitView {
@@ -63,15 +64,12 @@ struct VeluneRootView: View {
                 if store.pendingConversationID != nil { ProgressView(store.conversationManagementStatus ?? "正在加载会话…").frame(maxWidth: .infinity, maxHeight: .infinity) }
                 else if previewEmpty || store.transcript.rows.isEmpty { emptyState.frame(maxWidth: .infinity, maxHeight: .infinity) }
                 else { transcript }
-                Divider()
-                composer
+                ComposerView(store: store, model: composer, send: send)
             }
             .navigationTitle(previewEmpty ? "新会话" : store.selectedConversationTitle ?? "Velune")
             .toolbar {
                 ToolbarItemGroup(placement: .primaryAction) {
-                    Button { showsOutline = true } label: { Label("会话大纲", systemImage: "list.bullet") }
-                        .help("会话大纲")
-                        .disabled(store.pendingConversationID != nil || store.transcript.userRows.isEmpty)
+                    outlineButton
                     Button { store.createConversation() } label: { Label("新建会话", systemImage: "square.and.pencil") }
                         .help("新建会话（⌘ N）").disabled(store.applicationIsGenerating || store.isLoading)
                 }
@@ -86,8 +84,10 @@ struct VeluneRootView: View {
             if store.conversationBrowserPreferences != nil { store.setConversationBrowserPreferences(value) }
         }
         .onChange(of: browser.query) { _, _ in browser.resetPagination() }
-        .onChange(of: store.pendingConversationID) { _, value in if value != nil { showsOutline = false } }
-        .onChange(of: store.loadedConversationID) { _, _ in showsOutline = false }
+        .onChange(of: store.pendingConversationID) { _, value in if value != nil { showsOutlinePopover = false } }
+        .onChange(of: store.loadedConversationID) { _, _ in showsOutlinePopover = false; outlineCollapsed = false }
+        .onChange(of: store.outlinePresentation) { _, _ in showsOutlinePopover = false; outlineCollapsed = false }
+        .onChange(of: store.showsNewConversation) { _, shown in if !shown { composer.focus() } }
         .toolbar { if !store.problems.isEmpty { ToolbarItem(placement: .primaryAction) { ProblemsButton(store: store) } } }
         .sheet(item: $renameTarget) { ConversationRenameView(store: store, conversation: $0) }
         .alert(deleteTargets.count == 1 ? "删除会话？" : "删除 \(deleteTargets.count) 个会话？", isPresented: Binding(get: { !deleteTargets.isEmpty }, set: { if !$0 { deleteTargets = [] } })) {
@@ -148,37 +148,6 @@ struct VeluneRootView: View {
         .disabled(store.conversationBrowserPreferences == nil)
     }
 
-    private var nextTurnControls: some View {
-        HStack(spacing: 8) {
-            Menu {
-                Picker("Agent 运行时", selection: Binding(get: { store.nextTurnRuntimeID }, set: { if let id = $0 { store.selectNextTurnRuntime(id) } })) {
-                    ForEach(store.enabledRuntimeInstances) { runtime in Text(runtime.name).tag(Optional(runtime.id)) }
-                }.pickerStyle(.inline)
-                Divider()
-                SettingsLink { Text("设置…") }
-            } label: {
-                Text(nextTurnRuntime?.name ?? "选择运行时").lineLimit(1).truncationMode(.middle).frame(maxWidth: 120, alignment: .leading)
-            }
-            .frame(maxWidth: 120, alignment: .leading)
-            .accessibilityLabel("下一轮 Agent 运行时：\(nextTurnRuntime?.name ?? "未选择")")
-            .help("下一轮运行时：\(nextTurnRuntime?.name ?? "未选择")")
-            .disabled(store.isShuttingDown)
-            Menu {
-                Picker("模型", selection: Binding(get: { store.nextTurnModelRecordKey }, set: { if let key = $0 { store.selectModel(modelRecordKey: key) } })) {
-                    ForEach(store.runtimeCompatibleModels) { model in Text(model.displayName).tag(Optional(model.recordKey)) }
-                }.pickerStyle(.inline).disabled(!store.canSwitchModel)
-                Divider()
-                SettingsLink { Text("设置…") }
-            } label: {
-                Text(store.selectedModelName ?? "选择模型").lineLimit(1).truncationMode(.middle).frame(maxWidth: 160, alignment: .leading)
-            }
-            .frame(maxWidth: 160, alignment: .leading)
-            .accessibilityLabel("下一轮模型：\(store.selectedModelName ?? "未选择")")
-            .help("下一轮模型：\(store.selectedModelName ?? "未选择")")
-            .disabled(store.isShuttingDown)
-        }.menuStyle(.borderlessButton).controlSize(.small).font(.callout)
-    }
-
     private var emptyState: some View {
         ContentUnavailableView {
             Label { Text("新会话") } icon: { VeluneLogo(size: 48) }
@@ -190,45 +159,37 @@ struct VeluneRootView: View {
     }
 
     private var transcript: some View {
-        TranscriptView(model: store.transcript, conversationID: store.loadedConversationID,
-                       scrollRequest: scrollRequest, sentAfterUserID: sentAfterUserID, cwd: store.loadedConversationWorkingDirectory, showsOutline: $showsOutline, activity: store.activity, presentation: store.transcriptPresentation,
-                       loadPayloads: { [store] ids in store.loadPayloads(messageIDs: ids) })
+        TranscriptView(model: store.transcript, conversationID: store.loadedConversationID, scrollRequest: scrollRequest,
+                       cwd: store.loadedConversationWorkingDirectory, outlineCollapsed: $outlineCollapsed, navigation: outlineNavigation,
+                       activity: store.activity, loadPayloads: { [store] ids in store.loadPayloads(messageIDs: ids) })
     }
 
-    private var composer: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            if store.pendingConversationID == nil, let status = store.conversationManagementStatus {
-                HStack { ProgressView().controlSize(.small); Text(status) }.font(.callout).foregroundStyle(.secondary)
-            }
-            if store.needsModelSelection {
-                Text("此会话的模型当前不可用，请选择已配置的模型。").font(.callout).foregroundStyle(.secondary)
-            }
-            Text("输入消息").font(.caption).foregroundStyle(.secondary)
-            TextEditor(text: $draft).font(.body).frame(height: 88)
-                .accessibilityLabel("消息内容").help("Return 换行，⌘ Return 发送")
-            HStack(spacing: 8) {
-                nextTurnControls
-                Spacer(minLength: 8)
-                if store.executionBusyElsewhere { Text("另一个会话正在运行").font(.caption).foregroundStyle(.secondary) }
-                if store.isGenerating {
-                    Button("停止生成", systemImage: "stop.fill", action: store.cancel)
-                        .fixedSize().disabled(!store.canCancel).help("停止当前生成")
-                } else {
-                    Button("发送", systemImage: "arrow.up", action: send)
-                        .buttonStyle(.borderedProminent).fixedSize()
-                        .disabled(!store.canSend || draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                        .help("发送消息（⌘ Return）")
+    /// The setting decides what the outline button does: a popover anchored to
+    /// it, or a toggle that collapses the message list in place.
+    @ViewBuilder private var outlineButton: some View {
+        let unavailable = store.pendingConversationID != nil || store.transcript.userRows.isEmpty
+        switch store.outlinePresentation {
+        case .popover:
+            Button { showsOutlinePopover.toggle() } label: { Label("会话大纲", systemImage: "list.bullet") }
+                .help("会话大纲").disabled(unavailable)
+                .popover(isPresented: $showsOutlinePopover, arrowEdge: .bottom) {
+                    TranscriptOutlineView(model: store.transcript) { id in
+                        showsOutlinePopover = false
+                        outlineNavigation = TranscriptJump(id: id, token: (outlineNavigation?.token ?? 0) &+ 1)
+                    }
                 }
-            }.controlSize(.small)
-        }.frame(maxWidth: 760).padding(12).frame(maxWidth: .infinity)
+        case .inPlace:
+            Toggle(isOn: $outlineCollapsed) { Label("会话大纲", systemImage: "list.bullet") }
+                .help(outlineCollapsed ? "展开完整会话" : "折叠为用户消息大纲")
+                .disabled(unavailable && !outlineCollapsed)
+        }
     }
 
     private func send() {
-        let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard store.canSend, !text.isEmpty else { return }
-        let submittedDraft = draft
-        let previousUserID = store.transcript.userRows.last?.id
-        store.send(text: text) { if draft == submittedDraft { draft = "" }; sentAfterUserID = previousUserID; scrollRequest &+= 1 }
+        let submitted = composer.submission
+        let text = submitted.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard store.canSend, !text.isEmpty, !composer.isComposing else { return }
+        store.send(text: text) { [composer] conversationID in composer.clear(submitted: submitted, conversationID: conversationID); scrollRequest &+= 1 }
     }
     private func shortDate(_ unixMs: Int64) -> String {
         Date(timeIntervalSince1970: Double(unixMs) / 1000).formatted(.dateTime.month(.abbreviated).day())
@@ -315,12 +276,12 @@ private struct ConversationSettingsView: View {
     @State private var limit = 20
     var body: some View {
         Form {
-            Section("消息列表") {
-                Picker("默认显示", selection: Binding(get: { store.transcriptPresentation }, set: { store.setTranscriptPresentation($0) })) {
-                    Text("完整会话").tag(BindingTranscriptPresentation.conversation)
-                    Text("用户消息大纲").tag(BindingTranscriptPresentation.userOutline)
+            Section("大纲") {
+                Picker("大纲按钮", selection: Binding(get: { store.outlinePresentation }, set: { store.setOutlinePresentation($0) })) {
+                    Text("弹出面板").tag(BindingOutlinePresentation.popover)
+                    Text("就地折叠").tag(BindingOutlinePresentation.inPlace)
                 }.disabled(store.isLoading || store.isShuttingDown)
-                Text("大纲模式仅显示用户消息，点击消息可展开从此处开始的后续内容。").font(.caption).foregroundStyle(.secondary)
+                Text("大纲以用户消息为条目。弹出面板在按钮处列出大纲；就地折叠把消息列表缩起为只剩用户消息，点击其中一条即恢复完整会话并停在该处。").font(.caption).foregroundStyle(.secondary)
             }
             Section("会话列表") {
                 LabeledContent("每组首次展示") { TextField("数量", value: $limit, format: .number).frame(width: 70); Text("个会话") }

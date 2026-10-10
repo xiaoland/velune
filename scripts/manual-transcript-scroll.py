@@ -6,7 +6,9 @@ synthetic history into a window (shown only with --snapshot, which captures that
 window alone) and checks: no visible displacement
 of the reading row while scrolling fast through unmeasured history, displayed
 text geometry equals the measured layout, far jumps, bottom following, width
-changes, local disclosure toggles and that parked reusable cells stay hidden. Prints timings; exits non-zero on failure.
+changes, local disclosure toggles, the in-place outline collapse/expand (animated
+only in a visible window) and that parked reusable cells stay hidden. Prints
+timings; exits non-zero on failure.
 """
 import argparse
 import os
@@ -22,15 +24,20 @@ import AppKit
 @MainActor func descendants(_ view: NSView) -> [NSView] { [view] + view.subviews.flatMap(descendants) }
 @MainActor func fail(_ message: String) -> Never { FileHandle.standardError.write(Data(("FAIL " + message + "\n").utf8)); exit(1) }
 @MainActor func note(_ message: String) { print(message); fflush(stdout) }
-@MainActor final class Driver: ObservableObject { @Published var request: UInt64 = 0; @Published var jump: TranscriptJump?; var following = true; var payloadRequests: [String] = [] }
+@MainActor final class Driver: ObservableObject {
+    @Published var request: UInt64 = 0; @Published var jump: TranscriptJump?; var following = true; var payloadRequests: [String] = []
+    @Published var collapsed = false; @Published var anchor: String?
+}
 /// Mirrors TranscriptView's inputs, adding explicit jump requests.
 struct Harness: View {
     @ObservedObject var model: TranscriptModel
     @ObservedObject var driver: Driver
     var body: some View {
-        TranscriptTable(conversationID: "probe", items: model.items(for: model.rows), revision: model.contentRevision, activity: nil,
-                        outlineToggleIDs: [], outlineExpandedID: nil, cwd: "/tmp", bottomRequest: driver.request, jump: driver.jump,
-                        followingChanged: { driver.following = $0 }, outlineToggle: { _ in }, loadPayloads: { driver.payloadRequests += $0 })
+        let userIDs = Set(model.userRows.map(\.id))
+        let rows = driver.collapsed ? model.rows.filter { userIDs.contains($0.id) } : model.rows
+        TranscriptTable(conversationID: "probe", items: model.items(for: rows), revision: model.contentRevision, activity: nil,
+                        outlineCollapsed: driver.collapsed, outlineAnchorID: driver.anchor, cwd: "/tmp", bottomRequest: driver.request, jump: driver.jump,
+                        followingChanged: { driver.following = $0 }, outlineToggle: { driver.anchor = $0; driver.collapsed = false }, loadPayloads: { driver.payloadRequests += $0 })
     }
 }
 func synthetic(_ count: Int) -> [Message] {
@@ -313,6 +320,55 @@ func synthetic(_ count: Int) -> [Message] {
         for _ in 0..<20 { await spin(); try? await Task.sleep(for: .milliseconds(5)) }
         checkGeometry(document, scroll, "tool-settled")
         note("TOOL-SIBLINGS ok")
+
+        // In-place outline: collapsing keeps the section's user message in place
+        // (at the top when it started above), shows only user rows, and a bubble
+        // click expands back with the clicked row fixed. Visible windows animate.
+        let animated = window.isVisible
+        func settle() async { for _ in 0..<50 { await spin(); try? await Task.sleep(for: .milliseconds(10)) } ; materialize(window) }
+        driver.jump = TranscriptJump(id: "u50", token: 80); await spin(3); materialize(window); await spin(3)
+        let sectionTop = top(document, scroll, "u50")
+        driver.anchor = nil; driver.collapsed = true; await spin(2)
+        if animated {
+            try? await Task.sleep(for: .milliseconds(120)); await spin()
+            let fading = document.subviews.compactMap { $0 as? TranscriptCellView }.filter { !$0.isHidden && $0.alphaValue < 0.99 }
+            if fading.isEmpty { fail("collapse showed no transition") }
+            snapshot(scroll, "outline-collapsing")
+        }
+        await settle()
+        let collapsedRows = cells(document).compactMap(\.rowID)
+        if let stray = collapsedRows.first(where: { !$0.hasPrefix("u") && $0 != "transcript-end" }) { fail("collapsed list shows \(stray)") }
+        if abs(top(document, scroll, "u50") - max(sectionTop, 0)) > 1 { fail("collapse moved anchor \(sectionTop) -> \(top(document, scroll, "u50"))") }
+        if document.subviews.contains(where: { ($0 as? TranscriptCellView).map { !$0.isHidden && ($0.alphaValue < 1 || $0.clipsToBounds) } ?? false }) { fail("transition state left on cells") }
+        checkGeometry(document, scroll, "outline-collapsed"); snapshot(scroll, "outline-collapsed")
+        note("OUTLINE-COLLAPSE ok rows=\(collapsedRows.count)")
+
+        guard let clicked = cells(document).first(where: { $0.rowID?.hasPrefix("u") == true && $0.frame.minY >= clip.bounds.minY + 200 }), let clickedID = clicked.rowID else { fail("no visible user row to expand") }
+        let clickedTop = top(document, scroll, clickedID)
+        clicked.perform(Selector(("bubbleClicked")))
+        if driver.collapsed || driver.anchor != clickedID { fail("bubble click did not request expansion") }
+        await spin(2)
+        if animated { try? await Task.sleep(for: .milliseconds(120)); await spin(); snapshot(scroll, "outline-expanding") }
+        await settle()
+        if abs(top(document, scroll, clickedID) - clickedTop) > 1 { fail("expansion moved clicked row \(clickedTop) -> \(top(document, scroll, clickedID))") }
+        let assistant = "a" + clickedID.dropFirst()
+        if cell(document, assistant) == nil { fail("expanded list lacks \(assistant)") }
+        checkGeometry(document, scroll, "outline-expanded"); snapshot(scroll, "outline-expanded")
+        // Disclosure state survives the collapsed outline.
+        driver.jump = TranscriptJump(id: "u0", token: 81); await spin(3); materialize(window); await spin(3)
+        if cell(document, "w0") == nil { fail("work expansion lost across outline collapse") }
+        note("OUTLINE-EXPAND ok")
+
+        // A scroll during the animation ends it at its final geometry.
+        driver.jump = TranscriptJump(id: "u120", token: 82); await spin(3); materialize(window); await spin(3)
+        driver.anchor = nil; driver.collapsed = true; await spin(2)
+        clip.setBoundsOrigin(NSPoint(x: 0, y: clip.bounds.minY + 40)); scroll.reflectScrolledClipView(clip); materialize(window); await spin(2)
+        await settle()
+        checkGeometry(document, scroll, "outline-interrupted")
+        if cells(document).contains(where: { $0.rowID?.hasPrefix("a") == true }) { fail("interrupted collapse kept assistant rows") }
+        driver.anchor = nil; driver.collapsed = false; await settle()
+        checkGeometry(document, scroll, "outline-toolbar-expanded")
+        note("OUTLINE-INTERRUPT ok")
         note("PASS")
         exit(0)
     }

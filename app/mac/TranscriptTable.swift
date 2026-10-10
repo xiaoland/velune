@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import QuartzCore
 
 /// One explicit navigation request; the token distinguishes repeats of the same row.
 struct TranscriptJump: Equatable {
@@ -14,8 +15,11 @@ struct TranscriptTable: NSViewRepresentable {
     let items: [TranscriptModel.Item]
     let revision: UInt64
     let activity: String?
-    let outlineToggleIDs: Set<String>
-    let outlineExpandedID: String?
+    /// The list shows only user messages; their bubbles expand it again.
+    let outlineCollapsed: Bool
+    /// The row kept in place when `outlineCollapsed` changes; nil picks the
+    /// user message at the top of the viewport.
+    let outlineAnchorID: String?
     let cwd: String?
     let bottomRequest: UInt64
     let jump: TranscriptJump?
@@ -78,6 +82,24 @@ struct TranscriptTable: NSViewRepresentable {
         var layout: TranscriptRowLayout
     }
     private typealias Anchor = (id: String, offset: CGFloat)
+    /// Collapsing to user messages or expanding back. During it `entries` is
+    /// the full list; rows absent from the smaller list change height while
+    /// the anchor row stays in place, so every row moves continuously.
+    private struct OutlineTransition {
+        var target: [Entry]
+        var changing: [Bool]
+        var full: [CGFloat]
+        var collapsing: Bool
+        var anchorID: String
+        var startOffset: CGFloat
+        var endOffset: CGFloat
+        var wasFollowing: Bool
+        var start: CFTimeInterval
+        var link: CADisplayLink?
+        /// Eased progress of the last applied frame.
+        var eased: CGFloat = 0
+    }
+    private static let transitionDuration: CFTimeInterval = 0.3
 
     private var parent: TranscriptTable?
     private weak var scroll: NSScrollView?
@@ -87,8 +109,8 @@ struct TranscriptTable: NSViewRepresentable {
     private var conversationID: String?
     private var revision: UInt64?
     private var activity: String?
-    private var outlineExpandedID: String?
-    private var outlineToggleIDs: Set<String> = []
+    private var outlineCollapsed = false
+    private var transition: OutlineTransition?
     private var expandedWork: Set<String> = []
     private var expandedBlocks: [String: Set<String>] = [:]
 
@@ -140,6 +162,11 @@ struct TranscriptTable: NSViewRepresentable {
     // MARK: SwiftUI input
 
     func update(_ input: TranscriptTable) {
+        let contentChanged = input.conversationID != conversationID || input.revision != revision || input.activity != activity
+        let outlineChanged = input.outlineCollapsed != outlineCollapsed
+        let scrollRequested = lastBottomRequest != input.bottomRequest || input.jump?.token != lastJumpToken
+        // Unrelated SwiftUI updates leave a running outline animation alone.
+        if contentChanged || outlineChanged || scrollRequested { finishTransition() }
         parent = input
         clipFrameChanged()
         if input.conversationID != conversationID {
@@ -153,11 +180,16 @@ struct TranscriptTable: NSViewRepresentable {
             following = true
             measureToken?.cancel()
         }
-        let structureChanged = input.revision != revision || input.activity != activity || input.outlineExpandedID != outlineExpandedID || input.outlineToggleIDs != outlineToggleIDs
-        if structureChanged {
+        if contentChanged || outlineChanged {
             revision = input.revision; activity = input.activity
-            outlineExpandedID = input.outlineExpandedID; outlineToggleIDs = input.outlineToggleIDs
-            rebuildEntries()
+            outlineCollapsed = input.outlineCollapsed
+            // Only a pure outline change on a shown list is animated; content
+            // changes and explicit scrolling in the same update take precedence.
+            if outlineChanged, !contentChanged, !scrollRequested, !entries.isEmpty {
+                changeOutline(anchorID: input.outlineAnchorID)
+            } else {
+                rebuildEntries()
+            }
         }
         if lastBottomRequest != input.bottomRequest {
             lastBottomRequest = input.bottomRequest
@@ -171,12 +203,16 @@ struct TranscriptTable: NSViewRepresentable {
         }
     }
 
-    private func rebuildEntries() {
-        let liveTurns = Set((parent?.items ?? []).compactMap { item -> String? in
-            if case .work(let turn, _) = item { return turn.id }
-            return nil
-        })
-        expandedWork.formIntersection(liveTurns)
+    private func buildEntries() -> [Entry] {
+        // A collapsed outline hides work rows and their disclosures only for
+        // now; their state and caches are kept for the expanded list.
+        if !outlineCollapsed {
+            let liveTurns = Set((parent?.items ?? []).compactMap { item -> String? in
+                if case .work(let turn, _) = item { return turn.id }
+                return nil
+            })
+            expandedWork.formIntersection(liveTurns)
+        }
         var next: [Entry] = []
         for item in parent?.items ?? [] {
             switch item {
@@ -188,17 +224,27 @@ struct TranscriptTable: NSViewRepresentable {
         }
         if let activity = parent?.activity { next.append(.activity(activity)) }
         if !next.isEmpty { next.append(.end) }
+        return next
+    }
 
-        let anchor = captureAnchor()
-        let previousHeights = Dictionary(entries.indices.map { (entries[$0].id, heights[$0]) }, uniquingKeysWith: { first, _ in first })
+    private func setEntries(_ next: [Entry]) {
         entries = next
         indexByID = Dictionary(next.indices.map { (next[$0].id, $0) }, uniquingKeysWith: { first, _ in first })
         let live = Set(indexByID.keys)
-        rendered = rendered.filter { live.contains($0.key) }
-        measured = measured.filter { live.contains($0.key) }
-        lastKnown = lastKnown.filter { live.contains($0.key) }
-        expandedBlocks = expandedBlocks.filter { live.contains($0.key) }
+        if !outlineCollapsed {
+            rendered = rendered.filter { live.contains($0.key) }
+            measured = measured.filter { live.contains($0.key) }
+            lastKnown = lastKnown.filter { live.contains($0.key) }
+            expandedBlocks = expandedBlocks.filter { live.contains($0.key) }
+        }
         for (id, cell) in visibleCells where !live.contains(id) { recycle(cell); visibleCells[id] = nil }
+    }
+
+    private func rebuildEntries(anchor requested: Anchor? = nil) {
+        let next = buildEntries()
+        let anchor = requested ?? captureAnchor()
+        let previousHeights = Dictionary(entries.indices.map { (entries[$0].id, heights[$0]) }, uniquingKeysWith: { first, _ in first })
+        setEntries(next)
 
         // Rows keep their displayed height; changes go through the exact
         // layouts below, measured before anything is drawn.
@@ -206,6 +252,152 @@ struct TranscriptTable: NSViewRepresentable {
         recomputeOffsets(from: 0)
         prepareBand(around: anchor)
         commitExactHeights(in: entries.indices, keeping: anchor)
+        scheduleBackgroundMeasure()
+        requestExpandedPayloads()
+    }
+
+    // MARK: Outline transition
+
+    /// Collapses to (or expands from) the user messages around one anchor row.
+    private func changeOutline(anchorID requested: String?) {
+        let next = buildEntries()
+        let collapsing = outlineCollapsed
+        let master = collapsing ? entries : next
+        let smaller = collapsing ? next : entries
+        // The smaller list must be an ordered subset of the larger one.
+        var changing = Array(repeating: true, count: master.count)
+        var cursor = 0
+        for index in master.indices where cursor < smaller.count && master[index].id == smaller[cursor].id {
+            changing[index] = false
+            cursor += 1
+        }
+        guard let scroll, cursor == smaller.count,
+              let anchorID = outlineAnchor(requested, kept: smaller.map(\.id)),
+              let anchorIndex = indexByID[anchorID] else { rebuildEntries(); return }
+        let clip = scroll.contentView.bounds
+        let startOffset = clip.minY - offsets[anchorIndex]
+        // A collapse anchored on a message above the viewport brings it to the top.
+        let endOffset = collapsing ? min(startOffset, 0) : startOffset
+        let wasFollowing = following
+        following = false
+        measureToken?.cancel()
+
+        if NSWorkspace.shared.accessibilityDisplayShouldReduceMotion || scroll.window?.isVisible != true {
+            rebuildEntries(anchor: (anchorID, endOffset))
+            following = wasFollowing
+            setFollowing(isAtBottom)
+            return
+        }
+        let previousHeights = Dictionary(entries.indices.map { (entries[$0].id, heights[$0]) }, uniquingKeysWith: { first, _ in first })
+        entries = master
+        indexByID = Dictionary(master.indices.map { (master[$0].id, $0) }, uniquingKeysWith: { first, _ in first })
+        var full = master.indices.map { previousHeights[master[$0].id] ?? fallbackHeight($0) }
+        // Exact layouts for the rows that will surround the anchor afterwards.
+        if let index = indexByID[anchorID] {
+            let viewport = clip.height
+            var above: CGFloat = 0
+            for row in stride(from: index - 1, through: 0, by: -1) where !(collapsing && changing[row]) {
+                if above > viewport * 0.5 - endOffset { break }
+                full[row] = exactLayout(row).height; above += full[row]
+            }
+            var below: CGFloat = 0
+            for row in index ..< master.count where !(collapsing && changing[row]) {
+                if below > viewport * 1.5 + endOffset { break }
+                full[row] = exactLayout(row).height; below += full[row]
+            }
+        }
+        heights = master.indices.map { collapsing || !changing[$0] ? full[$0] : 0 }
+        recomputeOffsets(from: 0)
+        var value = OutlineTransition(target: next, changing: changing, full: full, collapsing: collapsing, anchorID: anchorID,
+                                      startOffset: startOffset, endOffset: endOffset, wasFollowing: wasFollowing, start: CACurrentMediaTime())
+        let link = scroll.displayLink(target: self, selector: #selector(stepTransition(_:)))
+        link.add(to: .main, forMode: .common)
+        value.link = link
+        transition = value
+        applyTransition(progress: 0)
+    }
+
+    /// The anchor stays fixed; without an explicit row, the user message that
+    /// begins the section at the top of the viewport.
+    private func outlineAnchor(_ requested: String?, kept: [String]) -> String? {
+        if let requested, indexByID[requested] != nil, kept.contains(requested) { return requested }
+        guard let scroll else { return nil }
+        let top = scroll.contentView.bounds.minY + 1
+        let candidates = kept.compactMap { id in indexByID[id].map { (id, $0) } }.filter { _, index in
+            if case .message(let row) = entries[index] { return row.message.role == .user }
+            return false
+        }
+        return (candidates.last { offsets[$0.1] <= top } ?? candidates.first)?.0
+    }
+
+    @objc private func stepTransition(_ link: CADisplayLink) {
+        guard let transition else { return }
+        let progress = CGFloat(min(1, (CACurrentMediaTime() - transition.start) / Self.transitionDuration))
+        if progress >= 1 { finishTransition() } else { applyTransition(progress: progress) }
+    }
+
+    private func applyTransition(progress: CGFloat) {
+        guard var value = transition else { return }
+        let eased = progress < 0.5 ? 4 * progress * progress * progress : 1 - pow(-2 * progress + 2, 3) / 2
+        value.eased = eased
+        transition = value
+        var first: Int?
+        for index in entries.indices where value.changing[index] {
+            heights[index] = value.full[index] * (value.collapsing ? 1 - eased : eased)
+            first = min(first ?? index, index)
+        }
+        if let first { recomputeOffsets(from: first) }
+        if let index = indexByID[value.anchorID] {
+            setOrigin(offsets[index] + value.startOffset + (value.endOffset - value.startOffset) * eased)
+        }
+        materializeTransitionRows(value)
+    }
+
+    /// Rows are clipped to their animated height; changing rows fade with it.
+    private func materializeTransitionRows(_ value: OutlineTransition) {
+        guard let scroll, let document else { return }
+        let fade = value.collapsing ? 1 - value.eased : value.eased
+        let range = rows(in: scroll.contentView.bounds.insetBy(dx: 0, dy: -scroll.contentView.bounds.height * 0.5))
+        let wanted = Set(range.map { entries[$0].id })
+        for (id, cell) in visibleCells where !wanted.contains(id) { recycle(cell); visibleCells[id] = nil }
+        for index in range {
+            let id = entries[index].id
+            let cell: TranscriptCellView
+            if let existing = visibleCells[id] { cell = existing }
+            else {
+                cell = reusableCells.popLast() ?? TranscriptCellView()
+                if cell.superview !== document { document.addSubview(cell) }
+                cell.isHidden = false
+                visibleCells[id] = cell
+            }
+            configure(cell, row: index)
+            cell.clipsToBounds = true
+            cell.alphaValue = value.changing[index] ? fade : 1
+            let frame = rowRect(index)
+            if cell.frame != frame { cell.frame = frame }
+        }
+    }
+
+    /// Ends the animation at its final geometry; also used when a scroll,
+    /// resize or content change arrives before it completes.
+    private func finishTransition() {
+        guard let value = transition else { return }
+        transition = nil
+        value.link?.invalidate()
+        for cell in visibleCells.values { cell.clipsToBounds = false; cell.alphaValue = 1 }
+        let anchor: Anchor? = indexByID[value.anchorID] == nil ? nil : (value.anchorID, value.endOffset)
+        var next: [CGFloat] = []
+        var kept: [Entry] = []
+        for index in entries.indices where !(value.collapsing && value.changing[index]) {
+            kept.append(entries[index]); next.append(value.full[index])
+        }
+        setEntries(kept)
+        heights = next
+        recomputeOffsets(from: 0)
+        prepareBand(around: anchor)
+        commitExactHeights(in: entries.indices, keeping: anchor)
+        following = value.wasFollowing
+        setFollowing(isAtBottom)
         scheduleBackgroundMeasure()
         requestExpandedPayloads()
     }
@@ -402,6 +594,7 @@ struct TranscriptTable: NSViewRepresentable {
 
     @objc private func clipBoundsChanged() {
         guard programmatic == 0, let scroll else { return }
+        finishTransition()
         let origin = scroll.contentView.bounds.minY
         if origin != lastOrigin {
             lastOrigin = origin
@@ -429,6 +622,7 @@ struct TranscriptTable: NSViewRepresentable {
         guard let scroll, let document else { return }
         let clipWidth = scroll.contentView.bounds.width
         guard clipWidth > 0 else { return }
+        if clipWidth != width { finishTransition() }
         if document.frame.width != clipWidth { programmatically { document.setFrameSize(NSSize(width: clipWidth, height: offsets.last ?? 0)) } }
         guard clipWidth != width else { materializeVisibleRows(); return }
         let anchor = captureAnchor()
@@ -500,7 +694,8 @@ struct TranscriptTable: NSViewRepresentable {
     }
 
     private func apply(_ results: [MeasureResult], width: CGFloat, token: MeasureToken) {
-        guard !token.cancelled, width == self.width else { return }
+        // An outline animation owns geometry; it re-measures when it ends.
+        guard !token.cancelled, width == self.width, transition == nil else { return }
         var changed: [Int] = []
         for result in results {
             guard let index = indexByID[result.id], content(index).0 == result.key else { continue }
@@ -518,6 +713,7 @@ struct TranscriptTable: NSViewRepresentable {
     /// Materializes and positions cells for the viewport plus overdraw; cells
     /// leaving it are kept for reuse.
     func materializeVisibleRows(extra rect: NSRect? = nil) {
+        if let transition { materializeTransitionRows(transition); return }
         guard let scroll, let document else { return }
         func area() -> NSRect { scroll.contentView.bounds.insetBy(dx: 0, dy: -scroll.contentView.bounds.height * 0.5) }
         // A cell draws its row's exact layout, so a row is shown only at that
@@ -566,14 +762,15 @@ struct TranscriptTable: NSViewRepresentable {
     private func configure(_ cell: TranscriptCellView, row: Int) {
         let entry = entries[row]
         let layout = exactLayout(row)
-        let toggles = outlineToggleIDs.contains(entry.id)
-        let token = "\(content(row).0)|\(width)|\(toggles)|\(outlineExpandedID == entry.id)"
+        var toggles = false
+        if outlineCollapsed, case .message(let message) = entry { toggles = message.message.role == .user }
+        let token = "\(content(row).0)|\(width)|\(toggles)"
         guard cell.configurationToken != token || cell.rowID != entry.id else { return }
         var outlineToggle: (() -> Void)?
         var toggleHelp: String?
         if toggles {
             outlineToggle = { [weak self] in self?.parent?.outlineToggle(entry.id) }
-            toggleHelp = outlineExpandedID == entry.id ? "返回用户消息大纲" : "展开从此消息开始的会话"
+            toggleHelp = "展开完整会话并停在此消息"
         }
         cell.apply(layout, rowID: entry.id, outlineToggle: outlineToggle, toggleHelp: toggleHelp, textDelegate: self) { [weak self] key in
             self?.toggle(entryID: entry.id, key: key)
@@ -582,6 +779,7 @@ struct TranscriptTable: NSViewRepresentable {
     }
 
     private func toggle(entryID: String, key: String) {
+        finishTransition()
         guard let index = indexByID[entryID] else { return }
         // A local disclosure keeps the reading position, even at the bottom.
         let anchor = captureAnchor()
@@ -713,6 +911,7 @@ struct TranscriptTable: NSViewRepresentable {
     /// Drops text so hidden reusable cells keep no stale selection or storage.
     override func prepareForReuse() {
         super.prepareForReuse()
+        clipsToBounds = false
         rowID = nil
         configurationToken = nil
         outlineToggle = nil

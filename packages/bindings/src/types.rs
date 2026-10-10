@@ -324,7 +324,7 @@ pub struct BindingConfigurationSnapshot {
     pub runtime_types: Vec<BindingRuntimeTypeDescriptor>,
     pub model_templates: Vec<BindingModelTemplate>,
     pub conversation_browser_group_limit: u32,
-    pub transcript_presentation: BindingTranscriptPresentation,
+    pub outline_presentation: BindingOutlinePresentation,
     pub conversation_browser_preferences: BindingConversationBrowserPreferences,
     pub provider_import_types: Vec<BindingRuntimeTypeDescriptor>,
     pub protocols: Vec<BindingProtocolDescriptor>,
@@ -819,11 +819,19 @@ fn display_conversation_title<'de, D: serde::Deserializer<'de>>(
     Ok(title.display_text().into())
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BindingComposerDraft {
+    #[serde(rename = "conversationID")]
+    pub conversation_id: String,
+    pub text: String,
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, uniffi::Enum)]
 #[serde(rename_all = "camelCase")]
-pub enum BindingTranscriptPresentation {
-    Conversation,
-    UserOutline,
+pub enum BindingOutlinePresentation {
+    Popover,
+    InPlace,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]

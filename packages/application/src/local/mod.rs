@@ -100,7 +100,8 @@ pub struct CoreRuntime {
     conversation_links: Vec<crate::config::ConversationLink>,
     logical_projection: Option<continuation::LogicalProjection>,
     conversation_browser_group_limit: u32,
-    transcript_presentation: crate::config::TranscriptPresentation,
+    outline_presentation: crate::config::OutlinePresentation,
+    composer_drafts: BTreeMap<String, String>,
     conversation_browser_preferences: crate::config::ConversationBrowserPreferences,
     transcript_projection: velune_agent_runtime::transcript::TranscriptProjection,
     transcript_conversation_id: Option<String>,
@@ -145,6 +146,7 @@ impl CoreRuntime {
         options.validate()?;
         let (repository, persisted) = crate::repository::Repository::open(&options.home_directory)?;
         let conversation_links = repository.load_conversation_links()?;
+        let composer_drafts = repository.load_composer_drafts()?;
         Ok(Self {
             options,
             repository,
@@ -153,7 +155,8 @@ impl CoreRuntime {
             conversation_links,
             logical_projection: None,
             conversation_browser_group_limit: persisted.conversation_browser_group_limit,
-            transcript_presentation: persisted.transcript_presentation,
+            outline_presentation: persisted.outline_presentation,
+            composer_drafts,
             conversation_browser_preferences: persisted.conversation_browser_preferences,
             transcript_projection: Default::default(),
             transcript_conversation_id: None,
@@ -331,14 +334,20 @@ impl CoreRuntime {
             .is_some_and(authentication::Login::is_running)
             && !matches!(
                 action,
-                "authentication" | "list" | "getSnapshot" | "getSnapshotUpdate" | "messagePayloads"
+                "authentication"
+                    | "list"
+                    | "getSnapshot"
+                    | "getSnapshotUpdate"
+                    | "messagePayloads"
+                    | "composerDrafts"
             )
         {
             return Err(RuntimeError::invalid("authentication is running"));
         }
         match action {
             "list" => self.list(),
-            "transcriptPresentation" => self.set_transcript_presentation(request),
+            "outlinePresentation" => self.set_outline_presentation(request),
+            "composerDrafts" => self.composer_drafts_action(request),
             "conversationBrowserPreferences" => self.set_conversation_browser_preferences(request),
             "conversationBrowserSettings" => self.set_conversation_browser_group_limit(request),
             "discoverRuntimes" => self.discover_runtimes(request),
@@ -373,7 +382,13 @@ impl CoreRuntime {
             "open" => self.open_conversation(request),
             "readConversation" => self.read_conversation(request),
             "renameConversation" => self.manage_conversation(request, false),
-            "deleteConversation" => self.manage_conversation(request, true),
+            "deleteConversation" => {
+                let result = self.manage_conversation(request, true)?;
+                if let Some(id) = request["payload"]["conversationID"].as_str() {
+                    self.discard_composer_draft(id);
+                }
+                Ok(result)
+            }
             "getSnapshot" => Ok(json!({"snapshot": self
                 .queried_snapshot(request)?
                 .map(|snapshot| self.delivery.snapshot(snapshot))})),

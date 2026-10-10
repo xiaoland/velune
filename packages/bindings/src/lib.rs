@@ -199,13 +199,13 @@ impl VeluneApplication {
         let probes = convert(probes)?;
         convert(self.with("discover_runtimes", |app| app.discover_runtimes(probes))?)
     }
-    pub fn set_transcript_presentation(
+    pub fn set_outline_presentation(
         &self,
-        presentation: BindingTranscriptPresentation,
-    ) -> Result<BindingTranscriptPresentation, BindingError> {
+        presentation: BindingOutlinePresentation,
+    ) -> Result<BindingOutlinePresentation, BindingError> {
         let presentation = convert(presentation)?;
-        convert(self.with("set_transcript_presentation", |app| {
-            app.set_transcript_presentation(presentation)
+        convert(self.with("set_outline_presentation", |app| {
+            app.set_outline_presentation(presentation)
         })?)
     }
     pub fn set_conversation_browser_preferences(
@@ -216,6 +216,18 @@ impl VeluneApplication {
         convert(self.with("set_conversation_browser_preferences", |app| {
             app.set_conversation_browser_preferences(preferences)
         })?)
+    }
+    pub fn composer_drafts(&self) -> Result<Vec<BindingComposerDraft>, BindingError> {
+        convert(self.with("composer_drafts", |app| app.composer_drafts())?)
+    }
+    pub fn set_composer_draft(
+        &self,
+        conversation_id: String,
+        text: String,
+    ) -> Result<(), BindingError> {
+        self.with("set_composer_draft", |app| {
+            app.set_composer_draft(conversation_id, text)
+        })
     }
     pub fn set_conversation_browser_group_limit(&self, limit: u32) -> Result<u32, BindingError> {
         self.with("set_conversation_browser_group_limit", |app| {

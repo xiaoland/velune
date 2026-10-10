@@ -14,18 +14,65 @@ impl CoreRuntime {
         Ok(json!(self.conversation_browser_preferences))
     }
 
-    pub(super) fn set_transcript_presentation(
+    pub(super) fn set_outline_presentation(
         &mut self,
         request: &Value,
     ) -> Result<Value, RuntimeError> {
         let presentation = serde_json::from_value(request["payload"]["presentation"].clone())?;
-        let previous = self.transcript_presentation;
-        self.transcript_presentation = presentation;
+        let previous = self.outline_presentation;
+        self.outline_presentation = presentation;
         if let Err(error) = self.persist() {
-            self.transcript_presentation = previous;
+            self.outline_presentation = previous;
             return Err(error);
         }
         Ok(json!(presentation))
+    }
+
+    pub(super) fn composer_drafts_action(
+        &mut self,
+        request: &Value,
+    ) -> Result<Value, RuntimeError> {
+        let payload = &request["payload"];
+        match payload["operation"].as_str() {
+            Some("list") => Ok(json!(
+                self.composer_drafts
+                    .iter()
+                    .map(|(id, text)| crate::config::ComposerDraft {
+                        conversation_id: id.clone(),
+                        text: text.clone(),
+                    })
+                    .collect::<Vec<_>>()
+            )),
+            Some("set") => {
+                let id = payload["conversationID"]
+                    .as_str()
+                    .filter(|id| !id.is_empty())
+                    .ok_or_else(|| RuntimeError::invalid("conversation id"))?;
+                let text = payload["text"]
+                    .as_str()
+                    .ok_or_else(|| RuntimeError::invalid("composer draft text"))?;
+                let mut next = self.composer_drafts.clone();
+                if text.is_empty() {
+                    next.remove(id);
+                } else {
+                    next.insert(id.to_owned(), text.to_owned());
+                }
+                if next != self.composer_drafts {
+                    self.repository.store_composer_drafts(&next)?;
+                    self.composer_drafts = next;
+                }
+                Ok(Value::Null)
+            }
+            _ => Err(RuntimeError::invalid("composer draft operation")),
+        }
+    }
+
+    /// The conversation is already deleted; a failed write only leaves a stale
+    /// entry on disk, which the next successful draft write drops.
+    pub(super) fn discard_composer_draft(&mut self, conversation_id: &str) {
+        if self.composer_drafts.remove(conversation_id).is_some() {
+            let _ = self.repository.store_composer_drafts(&self.composer_drafts);
+        }
     }
 
     pub(super) fn set_conversation_browser_group_limit(
@@ -89,7 +136,7 @@ impl CoreRuntime {
             "runtimeTypes": runtime_types(),
             "modelTemplates":self.model_templates,
             "conversationBrowserGroupLimit":self.conversation_browser_group_limit,
-            "transcriptPresentation":self.transcript_presentation,
+            "outlinePresentation":self.outline_presentation,
             "conversationBrowserPreferences":self.conversation_browser_preferences,
             "providerImportTypes": [provider_import::descriptor()],
             "protocols": [
@@ -325,12 +372,12 @@ impl CoreRuntime {
 
     pub(super) fn persist(&self) -> Result<(), RuntimeError> {
         self.repository.store(&crate::repository::PersistedConfig {
-            schema_version: 7,
+            schema_version: 8,
             model_templates: self.model_templates.clone(),
             gateways: self.gateways.clone(),
             runtime_instances: self.runtime_instances.clone(),
             conversation_browser_group_limit: self.conversation_browser_group_limit,
-            transcript_presentation: self.transcript_presentation,
+            outline_presentation: self.outline_presentation,
             conversation_browser_preferences: self.conversation_browser_preferences.clone(),
         })
     }

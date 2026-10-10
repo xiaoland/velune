@@ -427,13 +427,24 @@ impl GatewayConfig {
     }
 }
 
-/// Message-list presentation preference; independent of native conversation storage.
+/// What the conversation outline button does; the outline lists user messages.
 #[derive(Debug, Default, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-pub enum TranscriptPresentation {
+pub enum OutlinePresentation {
+    /// A popover anchored to the button.
     #[default]
-    Conversation,
-    UserOutline,
+    Popover,
+    /// Collapses the message list in place to its user messages.
+    InPlace,
+}
+
+/// Unsent composer text of one conversation, keyed by its public identity.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ComposerDraft {
+    #[serde(rename = "conversationID")]
+    pub conversation_id: String,
+    pub text: String,
 }
 
 /// Application-owned sidebar choices; these never select an execution runtime.

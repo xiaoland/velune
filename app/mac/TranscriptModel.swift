@@ -79,34 +79,3 @@ final class TranscriptModel: ObservableObject {
     }
 
 }
-
-/// UI visibility is anchored to message identity, never a cached position.
-struct TranscriptOutlineState {
-    private(set) var expandedFromUserID: String?
-    private var followsSentUser = false
-    private var sentAfterUserID: String?
-    @MainActor mutating func expand(from id: String, in rows: [TranscriptRow]) -> Bool {
-        guard rows.contains(where: { $0.id == id && $0.message.role == .user }) else { return false }
-        expandedFromUserID = id; followsSentUser = false
-        return true
-    }
-    mutating func collapse() { expandedFromUserID = nil; followsSentUser = false }
-    @MainActor mutating func followSentUser(after id: String?, in rows: [TranscriptRow]) {
-        followsSentUser = true; sentAfterUserID = id
-        revealSentUser(in: rows)
-    }
-    @MainActor private mutating func revealSentUser(in rows: [TranscriptRow]) {
-        guard followsSentUser, let latest = rows.last(where: { $0.message.role == .user }), latest.id != sentAfterUserID else { return }
-        expandedFromUserID = latest.id; followsSentUser = false
-    }
-    @MainActor mutating func reconcile(_ rows: [TranscriptRow]) -> Bool {
-        revealSentUser(in: rows)
-        guard let id = expandedFromUserID, !rows.contains(where: { $0.id == id && $0.message.role == .user }) else { return false }
-        expandedFromUserID = nil
-        return true
-    }
-    @MainActor func visibleRows(_ rows: [TranscriptRow], userIDs: Set<String>) -> [TranscriptRow] {
-        guard let id = expandedFromUserID, let index = rows.firstIndex(where: { $0.id == id && $0.message.role == .user }) else { return rows.filter { userIDs.contains($0.id) } }
-        return rows.enumerated().compactMap { offset, row in offset >= index || userIDs.contains(row.id) ? row : nil }
-    }
-}

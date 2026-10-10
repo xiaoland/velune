@@ -68,8 +68,6 @@ import VeluneBindings
         try require(streamingTurn.isRunning, "streaming text prematurely closed the work interval")
         let streamingAnswer=store.transcript.rows.first { $0.message.id == streamingTurn.lastMessageID }
         try require(streamingAnswer != nil && streamingAnswer?.message.completed == false, "streaming message reported completed")
-        var outline = TranscriptOutlineState()
-        try require(outline.expand(from: store.transcript.userRows[0].id, in: store.transcript.rows))
         let expandedBeforeConfirmation: Set<String> = [streamingTurn.id]
         try! FileManager.default.removeItem(at: root.appendingPathComponent("gate-final"))
         print("PHASE final-settle"); try await wait { store.canSend && store.transcript.rows.contains { $0.message.text == "SYNTHETIC_FINAL" } }
@@ -89,43 +87,28 @@ import VeluneBindings
         try require(firstAssistant.id == firstPresentationID, "presentation identity changed on native confirmation")
         // Native render caches key on the content revision; unchanged content must keep it.
         let revisionAfterFirstTurn = firstAssistant.contentRevision
-        try require(!outline.reconcile(store.transcript.rows) && outline.expandedFromUserID == store.transcript.userRows[0].id)
         try require(store.transcript.retainedExpandedTurnIDs(expandedBeforeConfirmation) == [finished.id])
         let finalFirstAssistantID = firstAssistant.message.id
-        outline.collapse()
-        try require(outline.visibleRows(store.transcript.rows, userIDs:Set(store.transcript.userRows.map(\.id))).allSatisfy { $0.message.role == .user })
-        try require(outline.expand(from: store.transcript.userRows[0].id, in: store.transcript.rows))
-        try require(outline.visibleRows(store.transcript.rows, userIDs:Set(store.transcript.userRows.map(\.id))).contains { $0.message.text == "SYNTHETIC_FINAL" })
-        store.setTranscriptPresentation(.userOutline); try await wait { !store.isLoading }
-        try require(store.transcriptPresentation == .userOutline)
-        outline.followSentUser(after: store.transcript.userRows.last?.id, in: store.transcript.rows)
-        try require(outline.expandedFromUserID == store.transcript.userRows[0].id, "send before native arrival expanded a different user")
+        store.setOutlinePresentation(.inPlace); try await wait { !store.isLoading }
+        try require(store.outlinePresentation == .inPlace)
         print("PHASE second-send"); store.send(text: "SECOND_USER")
         try await wait { store.canSend && store.transcript.userRows.count == 2 && store.transcript.turns.count == 2 }
         try require(store.problems.isEmpty)
         try require(firstAssistant.contentRevision == revisionAfterFirstTurn, "unchanged Markdown changed revision")
         try require(store.transcript.rows.contains { ObjectIdentifier($0) == firstIdentity })
         let secondUser = store.transcript.userRows.last!.id
-        _ = outline.reconcile(store.transcript.rows)
-        try require(outline.expandedFromUserID == secondUser, "late native user did not fulfill explicit send-follow intent")
-        try require(outline.expand(from: secondUser, in: store.transcript.rows))
-        let suffix = outline.visibleRows(store.transcript.rows, userIDs:Set(store.transcript.userRows.map(\.id)))
-        try require(suffix.contains { $0.message.id == finished.userMessageID } && !suffix.contains { $0.id == firstAssistant.id })
-        // Feed actual native projected messages into the same UI state function.
-        // Position changes do not change the selected identity; deleting that
-        // identity returns to the user-only outline instead of guessing a row.
+        // Feed actual native projected messages into a separate UI model: outline
+        // entries keep their identities across position changes and disappear
+        // with their message instead of moving to a neighbour.
         let ui = TranscriptModel()
         let shifted = [Message(id: "synthetic-position-shift", role: .system, blocks: [.notice("Synthetic")])] + store.transcript.rows.map(\.message)
         let projected = store.manualSnapshot()!
         let shiftedIdentities = [TranscriptMessageIdentity(id:"shift",messageID:"synthetic-position-shift")] + projected.transcriptMessageIdentities
         ui.apply(shifted, turns:projected.transcriptTurns,items:[.message(id:"shift",messageID:"synthetic-position-shift")]+projected.transcriptItems,outline:projected.transcriptOutline,identities:shiftedIdentities)
-        try require(!outline.reconcile(ui.rows) && outline.expandedFromUserID == secondUser)
-        try require(outline.visibleRows(ui.rows, userIDs:Set(ui.userRows.map(\.id))).map(\.id) == suffix.map(\.id))
+        try require(ui.userRows.map(\.id) == store.transcript.userRows.map(\.id))
         let secondCanonical = store.transcript.userRows.last!.message.id
         ui.apply(shifted.filter { $0.id != secondCanonical },turns:[],items:[],outline:projected.transcriptOutline.filter { $0.id != secondUser },identities:shiftedIdentities.filter { $0.id != secondUser })
-        try require(outline.reconcile(ui.rows) && outline.expandedFromUserID == nil)
-        try require(outline.visibleRows(ui.rows, userIDs:Set(ui.userRows.map(\.id))).allSatisfy { $0.message.role == .user })
-        outline.collapse(); try require(outline.expandedFromUserID == nil)
+        try require(!ui.userRows.contains { $0.id == secondUser } && ui.userRows.count == 1)
         let originalConversationID = store.loadedConversationID!
         let turnUsers = store.transcript.turns.map(\.userMessageID)
         let turnWork = store.transcript.turns.map(\.workMessageIDs)
@@ -135,7 +118,7 @@ import VeluneBindings
         stores.removeAll { $0 === store }
         let reopened = opened()
         print("PHASE reopen"); reopened.start(); try await wait { !reopened.isLoading && reopened.loadedConversationID == originalConversationID }
-        try require(reopened.transcriptPresentation == .userOutline)
+        try require(reopened.outlinePresentation == .inPlace)
         try require(reopened.transcript.turns.map(\.userMessageID) == turnUsers && reopened.transcript.turns.map(\.workMessageIDs) == turnWork && reopened.transcript.turns.map(\.lastMessageID) == turnAnswers, "native turn references changed on reopen")
         try require(reopened.transcript.turns.allSatisfy { $0.durationMs == nil && !$0.isRunning }, "historical work duration was invented")
         try require(reopened.transcript.userRows.count == 2)
@@ -144,7 +127,7 @@ import VeluneBindings
         try require(reopened.canSend && reopened.nextTurnRuntimeID == "fixture" && reopened.nextTurnModelRecordKey == key, "resumed next-turn intent unavailable")
         var accepted = 0
         print("PHASE resumed-native-send")
-        reopened.send(text: "RESUME_NATIVE_USER") { accepted += 1 }
+        reopened.send(text: "RESUME_NATIVE_USER") { _ in accepted += 1 }
         try await wait { reopened.canSend && reopened.transcript.userRows.count == 3 && reopened.transcript.rows.contains { $0.message.blocks.contains(.text("RESUMED_FINAL")) } }
         try require(accepted == 1 && reopened.problems.isEmpty, "resumed send was not accepted exactly once")
         try require(reopened.loadedConversationID == originalConversationID && reopened.manualSnapshot()?.contextRuntimeID == "fixture", "resumed send switched native conversation/runtime")
@@ -192,7 +175,7 @@ import VeluneBindings
         try await wait { !application.isLoading && a.providers.first?.name == provider.name }
         try require(a.nextTurnModelRecordKey == key && a.nextTurnRuntimeID == "fixture" && a.loadedConversationID == nativeA, "config broadcast overwrote personal intent")
         stopped = nil; application.shutdown { stopped = $0 }; try await wait { stopped != nil }; try require(stopped == true)
-        print("{\"acceptance\":\"PASSED\",\"actualStoreAndPiToolStream\":true,\"independentSharedBackendWorkspaces\":true,\"separateUnsentDrafts\":true,\"sourceBoundResume\":true,\"readDuringOtherTurn\":true,\"closeTabKeepsRunner\":true,\"configurationBroadcast\":true,\"existingNativeSessionSend\":true,\"typedCoreWorkReferences\":true,\"userAndLastVisible\":true,\"observedDurationAndUnknownHistory\":true,\"stableRowAndMarkdownCache\":true,\"canonicalConfirmationState\":true,\"lateNativeUserFollowsExplicitSend\":true,\"outlineSuffixAndAnchorChanges\":true,\"nativeConversationSwitchResetsRows\":true,\"preferenceSurvivesReopen\":true}")
+        print("{\"acceptance\":\"PASSED\",\"actualStoreAndPiToolStream\":true,\"independentSharedBackendWorkspaces\":true,\"separateUnsentDrafts\":true,\"sourceBoundResume\":true,\"readDuringOtherTurn\":true,\"closeTabKeepsRunner\":true,\"configurationBroadcast\":true,\"existingNativeSessionSend\":true,\"typedCoreWorkReferences\":true,\"userAndLastVisible\":true,\"observedDurationAndUnknownHistory\":true,\"stableRowAndMarkdownCache\":true,\"canonicalConfirmationState\":true,\"outlineIdentityAcrossPositionChanges\":true,\"nativeConversationSwitchResetsRows\":true,\"preferenceSurvivesReopen\":true}")
     }
 }
 '''

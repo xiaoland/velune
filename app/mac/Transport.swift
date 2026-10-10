@@ -57,7 +57,9 @@ final class Transport: @unchecked Sendable {
     }
 
     func setConversationBrowserPreferences(_ preferences: BindingConversationBrowserPreferences) throws -> BindingConversationBrowserPreferences { try withApplication("setConversationBrowserPreferences", changesConfiguration: true) { try $0.setConversationBrowserPreferences(preferences: preferences) } }
-    func setTranscriptPresentation(_ presentation: BindingTranscriptPresentation) throws -> BindingTranscriptPresentation { try withApplication("setTranscriptPresentation", changesConfiguration: true) { try $0.setTranscriptPresentation(presentation: presentation) } }
+    func setOutlinePresentation(_ presentation: BindingOutlinePresentation) throws -> BindingOutlinePresentation { try withApplication("setOutlinePresentation", changesConfiguration: true) { try $0.setOutlinePresentation(presentation: presentation) } }
+    func composerDrafts() throws -> [BindingComposerDraft] { try withApplication("composerDrafts") { try $0.composerDrafts() } }
+    func setComposerDraft(conversationID: String, text: String) throws { try withApplication("setComposerDraft") { try $0.setComposerDraft(conversationId: conversationID, text: text) } }
     func setConversationBrowserGroupLimit(_ limit: UInt32) throws -> UInt32 { try withApplication("setConversationBrowserGroupLimit", changesConfiguration: true) { try $0.setConversationBrowserGroupLimit(limit: limit) } }
     func runtimeDiscoveryHints(userHome: String, overrides: [String: String]) throws -> [BindingRuntimeDiscoveryHint] { try withApplication("runtimeDiscoveryHints") { try $0.runtimeDiscoveryHints(userHome: userHome, overrides: overrides) } }
     func discoverRuntimes(_ probes: [BindingRuntimeDiscoveryProbe]) throws -> [BindingRuntimeDiscoveryCandidate] { try withApplication("discoverRuntimes") { try $0.discoverRuntimes(probes: probes) } }
