@@ -725,27 +725,35 @@ final class AppStore: ObservableObject {
         activity = value.runState == .running ? "正在思考与执行" : value.runState == .stopping ? "正在停止" : nil
         if isPreview { previewSnapshots[value.conversation.id] = value }
     }
-    private func applySnapshotResult(_ value: BindingSnapshotResult, unchangedPoll: Bool = false) {
+    /// Preparation/open results replace the projection; polling compares
+    /// revisions off the main thread before mapping (see `poll`).
+    private func applySnapshotResult(_ value: BindingSnapshotResult) {
         guard let incoming = value.snapshot else { resetProjection(); return }
-        // A revision is only compared inside the currently selected projection.
-        // Preparation/open reset that projection; repeated idle polling does no UI work.
-        if unchangedPoll, let current = snapshot, incoming.conversation.id == current.conversation.id,
-           incoming.revision == current.revision { return }
-        apply(BindingMapping.snapshot(incoming), preserveSelection: unchangedPoll)
+        apply(BindingMapping.snapshot(incoming))
     }
+    private enum PolledSnapshot: Sendable { case absent, unchanged, changed(ConversationSnapshot) }
     private func poll() {
         guard sharedApplication == nil, started, !isDraft, !isPreview, !isShuttingDown, snapshot != nil, !isLoading, !pollPending, let transport, let runtimeID = projectionRuntimeID else { return }
         let revision = generation
         let selected = selectedConversationID
+        let known = snapshot.map { ($0.conversation.id, $0.revision) }
         pollPending = true
         queue.async { [weak self] in
-            let result = Result { try transport.snapshot(runtimeID: runtimeID, conversationID: selected ?? "") }
+            // Mapping a long projection is linear in its size; keep it off the
+            // main thread, and skip it entirely for an unchanged revision.
+            let result = Result { try transport.snapshot(runtimeID: runtimeID, conversationID: selected ?? "") }.map { data -> PolledSnapshot in
+                guard let incoming = data.snapshot else { return .absent }
+                if let known, incoming.conversation.id == known.0, incoming.revision == known.1 { return .unchanged }
+                return .changed(BindingMapping.snapshot(incoming))
+            }
             DispatchQueue.main.async {
                 guard let self else { return }
                 self.pollPending = false
                 guard self.generation == revision, self.selectedConversationID == selected else { return }
                 switch result {
-                case .success(let data): self.clearActivityProblem("poll:" + runtimeID); if data.snapshot != nil { self.applySnapshotResult(data, unchangedPoll: true) }
+                case .success(let polled):
+                    self.clearActivityProblem("poll:" + runtimeID)
+                    if case .changed(let value) = polled { self.apply(value, preserveSelection: true) }
                 case .failure(let failure): self.recordProblem(failure, source: "读取会话", activityKey: "poll:" + runtimeID)
                 }
             }

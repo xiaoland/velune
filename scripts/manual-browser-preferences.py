@@ -91,7 +91,7 @@ def main():
         (root/'frameworks/libvelune_bindings.dylib').symlink_to(args.library)
         source = root / 'Manual.swift'; source.write_text(SWIFT)
         build = args.swift_build
-        objects = [str(path) for name in ('VeluneBindings', 'MarkdownView', 'Markdown', 'Highlightr', 'RichText', 'Introspection', 'SwiftMath', 'CAtomic', 'cmark_gfm', 'cmark_gfm_extensions') for path in (build / (name + '.build')).rglob('*.o')]
+        objects = [str(path) for name in ('VeluneBindings', 'Markdown', 'CAtomic', 'cmark_gfm', 'cmark_gfm_extensions') for path in (build / (name + '.build')).rglob('*.o')]
         command = ['xcrun', 'swiftc', '-parse-as-library', '-swift-version', '5', '-warnings-as-errors', '-I', str(build / 'Modules'), '-I', str(repository / 'target/swift-ffi')]
         command += ['-Xcc', '-I' + str(repository/'.build/checkouts/swift-cmark/src/include'), '-Xcc', '-fmodule-map-file=' + str(repository/'.build/checkouts/swift-markdown/Sources/CAtomic/include/module.modulemap')]
         for path in (repository / '.build/checkouts/swift-cmark/src/include/module.modulemap', repository / '.build/checkouts/swift-cmark/extensions/include/module.modulemap'):
@@ -102,8 +102,6 @@ def main():
         command += [str(import_models)]
         command += [str(source), *objects, '-L', str(root / 'frameworks'), '-lvelune_bindings', '-Xlinker', '-rpath', '-Xlinker', str(root / 'frameworks'), '-o', str(root / 'manual')]
         subprocess.run(command, check=True, cwd=repository)
-        for name in ('Highlightr_Highlightr.bundle', 'SwiftMath_SwiftMath.bundle'):
-            shutil.copytree(build/name, root/name)
         env = {'HOME':str(root/'home'),'VELUNE_HOME':str(root/'home'),'PATH':'/usr/bin:/bin'}
         subprocess.run([str(root/'manual'),str(root)],env=env,cwd=root,check=True,timeout=60)
 

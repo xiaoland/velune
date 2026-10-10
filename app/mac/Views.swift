@@ -1,6 +1,5 @@
 import SwiftUI
 import AppKit
-import MarkdownView
 import VeluneBindings
 
 struct VeluneRootView: View {
@@ -263,72 +262,6 @@ struct ConversationRenameView: View {
     private func rename() { store.renameConversation(conversation, title: title) { dismiss() } }
 }
 
-struct ConversationMessageView: View {
-    @ObservedObject var row: TranscriptRow
-    var cwd: String? = nil
-    var body: some View {
-        HStack(alignment: .top, spacing: 0) {
-            if row.message.role == .user { Spacer(minLength: 60) }
-            VStack(alignment: .leading, spacing: 9) {
-                ForEach(Array(row.message.blocks.enumerated()), id: \.offset) { index, block in
-                    switch block {
-                    case .tool(_, let title, let state, let output):
-                        ToolDisclosure(title: title, detail: output ?? "", state: state)
-                    case .reasoning(let text):
-                        InlineMessageDisclosure(accessibilityLabel: "思考过程") { Text(text).textSelection(.enabled).font(.callout).foregroundStyle(.secondary) } label: { Text("思考过程").font(.callout).foregroundStyle(.secondary) }
-                    case .notice(let text):
-                        Text(text).font(.callout).foregroundStyle(.secondary).textSelection(.enabled)
-                    case .text(let text):
-                        if row.message.role == .assistant, let content = row.markdown[index] {
-                            CachedMessageMarkdown(document: content)
-                                .modifier(MessageLinkOpener(cwd: cwd))
-                                .markdownCodeBlockStyle(MessageCodeBlockStyle())
-                                .textSelection(.enabled)
-                        } else { Text(text).textSelection(.enabled).multilineTextAlignment(.leading) }
-                    }
-                }
-            }
-            .frame(maxWidth: row.message.role == .user ? 600 : .infinity, alignment: row.message.role == .system ? .center : .leading)
-            .padding(row.message.role == .user ? 12 : 0)
-            .background { if row.message.role == .user { RoundedRectangle(cornerRadius: 12).fill(.quaternary) } }
-            if row.message.role == .user { EmptyView() }
-        }
-        .frame(maxWidth: .infinity, alignment: row.message.role == .system ? .center : .leading)
-        .multilineTextAlignment(row.message.role == .system ? .center : .leading)
-    }
-}
-
-struct CachedMessageMarkdown: View {
-    let document: CachedMarkdownDocument
-    var body: some View {
-        if let result = document.result { MarkdownView(result) }
-        else {
-            MarkdownReader(document.source) { result in
-                let _ = document.retain(result)
-                MarkdownView(result)
-            }
-        }
-    }
-}
-
-struct MessageCodeBlockStyle: MarkdownCodeBlockStyle {
-    func makeBody(configuration: Configuration) -> some View {
-        CodeBlockView(language: configuration.language ?? "", code: configuration.code)
-    }
-}
-
-struct CodeBlockView: View {
-    let language: String
-    let code: String
-    @State private var copied = false
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack { Text(language.isEmpty ? "代码" : language).font(.caption).foregroundStyle(.secondary); Spacer(); Button(copied ? "已复制" : "复制", systemImage: copied ? "checkmark" : "doc.on.doc") { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(code, forType: .string); copied = true; DispatchQueue.main.asyncAfter(deadline: .now() + 2) { copied = false } }.controlSize(.small) }
-            ScrollView(.horizontal) { Text(code).font(.system(.body, design: .monospaced)).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading) }
-        }.padding(12).background(.quaternary.opacity(0.45), in: RoundedRectangle(cornerRadius: 6))
-    }
-}
-
 // Limit the workaround to expansion writes; content controls keep their own transactions.
 struct ImmediateDisclosureGroup<Label: View, Content: View>: View {
     @State private var expanded = false
@@ -362,76 +295,6 @@ struct ImmediateDisclosureGroup<Label: View, Content: View>: View {
 extension ImmediateDisclosureGroup where Label == Text {
     init(_ title: String, @ViewBuilder content: () -> Content) {
         self.init(content: content, label: { Text(title) })
-    }
-}
-
-struct ToolDisclosure: View {
-    let title: String
-    let detail: String
-    let state: ToolState
-    @State private var expanded = false
-    var body: some View {
-        InlineMessageDisclosure(isExpanded: $expanded, accessibilityLabel: title) {
-            Text(detail.isEmpty ? "没有附加输出" : detail).font(.system(.callout, design: .monospaced)).foregroundStyle(.secondary).textSelection(.enabled).padding(.top, 4)
-        } label: {
-            Label(title, systemImage: state == .running ? "circle.dotted" : state == .failed ? "exclamationmark.circle" : state == .pending ? "circle" : "checkmark.circle").font(.callout).foregroundStyle(.secondary)
-        }.frame(maxWidth: expanded ? 560 : .infinity, alignment: .leading)
-    }
-}
-
-
-/// Message folds stay inside their content column instead of becoming List outline nodes.
-struct InlineMessageDisclosure<Label: View, Content: View>: View {
-    @State private var expanded = false
-    private var externalExpansion: Binding<Bool>?
-    private let accessibilityLabel: String
-    private let content: Content
-    private let label: Label
-    init(isExpanded: Binding<Bool>? = nil, accessibilityLabel: String, @ViewBuilder content: () -> Content, @ViewBuilder label: () -> Label) {
-        externalExpansion = isExpanded
-        self.accessibilityLabel = accessibilityLabel
-        self.content = content(); self.label = label()
-    }
-    private var expansion: Binding<Bool> { externalExpansion ?? $expanded }
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 6) {
-                NativeMessageDisclosureButton(isExpanded: expansion, label: accessibilityLabel)
-                Button { expansion.wrappedValue.toggle() } label: { label }.buttonStyle(.plain)
-            }
-            if expansion.wrappedValue { content }
-        }.frame(maxWidth: .infinity, alignment: .leading)
-        .transaction { $0.animation = nil; $0.disablesAnimations = true }
-    }
-}
-
-/// A message work header is not a List outline node. Its native disclosure button
-/// stays inside the same content column as its label and expanded messages.
-private struct NativeMessageDisclosureButton: NSViewRepresentable {
-    @Binding var isExpanded: Bool
-    let label: String
-    func makeCoordinator() -> Coordinator { Coordinator($isExpanded) }
-    func makeNSView(context: Context) -> NSButton {
-        let button = NSButton()
-        button.bezelStyle = .disclosure
-        button.setButtonType(.pushOnPushOff)
-        button.title = ""
-        button.controlSize = .small
-        button.target = context.coordinator
-        button.action = #selector(Coordinator.toggle(_:))
-        button.sizeToFit()
-        return button
-    }
-    func updateNSView(_ button: NSButton, context: Context) {
-        context.coordinator.expansion = $isExpanded
-        button.state = isExpanded ? .on : .off
-        button.setAccessibilityLabel(label)
-    }
-    func sizeThatFits(_ proposal: ProposedViewSize, nsView: NSButton, context: Context) -> CGSize? { nsView.intrinsicContentSize }
-    final class Coordinator: NSObject {
-        var expansion: Binding<Bool>
-        init(_ expansion: Binding<Bool>) { self.expansion = expansion }
-        @objc func toggle(_ sender: NSButton) { expansion.wrappedValue = sender.state == .on }
     }
 }
 
