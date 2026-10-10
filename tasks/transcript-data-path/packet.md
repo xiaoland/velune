@@ -59,6 +59,10 @@
 - `manual-session-browser.py`、`manual-pi-session-resync.py` 通过（使用本分支资源与绑定）。`manual-error-diagnostics.py` 的列表／读取失败原因部分通过；其后“系统通知不归入工作过程”断言在基线 `cc97cd5` 上同样失败，与本任务无关，未处理。`manual-pi-native-loop.py` 需要构建 manifest 的完整安装包，未运行。
 - 未验证：真实 Harness 历史规模与物理滚动体验由用户验收；Codex／Claude／DSH 列表仍按其原有方式全量读取，只有打开时不再重复列出。
 
+## 构建与安装
+
+2026-10-10 从源码 `af265fc` 的独立干净 worktree 完成 locked Rust release 与 Xcode SwiftPM release 构建、严格签名，安装至 `/Applications/Velune.app`（版本 `0.1 beta.1`）。manifest source 一致且 dirty=false；主二进制与 Rust 库 SHA-256 与签名构建包一致。安装前正常退出运行中的 Velune，安装后重新打开并确认进程运行、无崩溃报告。不 push。
+
 ## 后续候选
 
 - 其他 Harness 列表的增量化需要各自来源契约，按实际规模再定。
