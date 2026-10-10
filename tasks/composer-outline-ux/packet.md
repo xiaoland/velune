@@ -27,7 +27,7 @@
 
 - 核心：`OutlinePresentation { popover, inPlace }` 取代 `TranscriptPresentation`，schema 8。草稿是 `VELUNE_HOME/composer-drafts.json`（schema 1，会话公开身份 → 文字），与普通配置分离，不随配置重置；删除会话时一并移除。
 - Mac 大纲：根视图持有折叠状态与导航请求；popover 模式在按钮处弹出原生大纲列表，就地模式按钮为 toggle。消息列表的折叠／展开以行高插值动画实现（显示链驱动，约 0.3s），锚点用户消息保持屏幕位置，缩起／出现的行裁剪并淡出／淡入；减少动态效果时直接切换。动画中的滚动、内容更新与宽度变化先完成动画再处理。
-- composer：NSTextView 包装，原生占位、随内容增高至上限后滚动、⌘Return 发送且输入法组字时不发送、切换会话清除撤销栈；输入与操作行放在同一圆角容器，去掉说明行，状态并入操作行。草稿与运行时／模型按会话保存（运行时／模型只在内存，打开会话时从快照初始化）。
+- composer：NSTextView 包装，原生占位、随内容增高至上限后滚动、⌘Return 发送且输入法组字时不发送、撤销历史按会话分开；输入与操作行放在同一圆角容器，去掉说明行，状态并入操作行。草稿与运行时／模型按会话保存（运行时／模型只在内存，打开会话时从快照初始化）。
 
 ## 验证计划
 
@@ -40,6 +40,10 @@ cargo fmt／check／clippy；Swift 严格构建；扩展 `manual-transcript-scro
 - 临时脚本（未提交）在 preview store 与临时 HOME 的真实核心上确认：下一轮运行时／模型按会话保存并从快照初始化；schema 7 配置被重置为 8；草稿 0600、重开保留、空文字删除、`draft:` 会话不写入；Store 启动读取草稿并在停顿后写入。
 - `manual-transcript-outline.py`（隔离 Pi 1.0.2＋本机合成上游）改用新接口后通过。
 - preview 模式整窗截图确认输入区布局、启动聚焦、随内容增高与焦点环。
+
+## 安装
+
+clean `e52848a` release 构建已安装 `/Applications/Velune.app`：manifest source_commit 一致、dirty=false、0.1 beta.1、config schema 8；严格签名通过，主程序与核心库 SHA 与构建一致。正常退出旧应用后安装并重新打开，无崩溃报告。首次启动按 schema 8 hard-cutoff 重置普通配置（用户已同意），原 Harness 会话与认证、`conversation-links.json` 和草稿文件不受影响。
 
 ## 用户后续反馈
 
