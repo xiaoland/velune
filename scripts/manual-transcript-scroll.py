@@ -200,6 +200,23 @@ func synthetic(_ count: Int) -> [Message] {
         }
         note("JUMP ok")
 
+        // Whole-message copy is offered from a message's native text menu.
+        driver.jump = TranscriptJump(id: "a150", token: 50); await spin(3); materialize(window, table); await spin(3)
+        if let row = (0 ..< table.numberOfRows).first(where: { messages.indices.contains($0) && messages[$0].id == "a150" }),
+           let cell = table.view(atColumn: 0, row: row, makeIfNecessary: false),
+           let text = descendants(cell).compactMap({ $0 as? TranscriptTextView }).first(where: { !$0.isHiddenOrHasHiddenAncestor }),
+           let menu = text.delegate?.textView?(text, menu: NSMenu(), for: NSEvent.mouseEvent(with: .rightMouseDown, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: 0, context: nil, eventNumber: 0, clickCount: 1, pressure: 1)!, at: 0),
+           let item = menu.items.first, item.title == "拷贝整条消息" {
+            // Restore the user's clipboard text after checking what was copied.
+            let saved = NSPasteboard.general.string(forType: .string)
+            NSApp.sendAction(item.action!, to: item.target, from: item)
+            let copied = NSPasteboard.general.string(forType: .string)
+            NSPasteboard.general.clearContents()
+            if let saved { NSPasteboard.general.setString(saved, forType: .string) }
+            guard copied?.hasPrefix("## 合成回复 150") == true else { fail("copied message source mismatch") }
+            note("COPY-MESSAGE ok")
+        } else { fail("message menu item missing") }
+
         // Back to bottom, then streaming growth follows.
         driver.request &+= 1; await spin(4); materialize(window, table)
         for i in 0..<5 {

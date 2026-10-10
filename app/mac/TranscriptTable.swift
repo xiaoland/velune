@@ -32,16 +32,18 @@ struct TranscriptTable: NSViewRepresentable {
         case message(TranscriptRow)
         case work(TranscriptTurn, label: String)
         case activity(String)
+        case end
         var id: String {
             switch self {
             case .message(let row): return row.id
             case .work(let turn, _): return "work:" + turn.id
             case .activity: return "transcript-activity"
+            case .end: return "transcript-end"
             }
         }
     }
     private enum ContentKey: Equatable {
-        case message(UInt64, [String]), work(String, Bool), activity(String)
+        case message(UInt64, [String]), work(String, Bool), activity(String), end
     }
     private struct Measured {
         var key: ContentKey
@@ -184,6 +186,7 @@ struct TranscriptTable: NSViewRepresentable {
             }
         }
         if let activity = parent?.activity { next.append(.activity(activity)) }
+        if !next.isEmpty { next.append(.end) }
 
         let oldIDs = entries.map(\.id)
         let newIDs = next.map(\.id)
@@ -250,6 +253,8 @@ struct TranscriptTable: NSViewRepresentable {
             return (.work(label, expanded), .work(label: label, expanded: expanded))
         case .activity(let text):
             return (.activity(text), .activity(text))
+        case .end:
+            return (.end, .end)
         }
     }
 
@@ -575,6 +580,33 @@ struct TranscriptTable: NSViewRepresentable {
         guard let milliseconds = turn.durationMs else { return "工作过程" }
         let duration = Duration.milliseconds(Double(milliseconds)).formatted(.units(allowed: [.hours, .minutes, .seconds], width: .abbreviated, fractionalPart: .show(length: 1)))
         return "工作了 " + duration
+    }
+
+    // MARK: Context menu
+
+    /// Adds a whole-message copy to the native text menu; a selection rarely
+    /// spans every paragraph and code block of a long reply.
+    func textView(_ view: NSTextView, menu: NSMenu, for event: NSEvent, at charIndex: Int) -> NSMenu? {
+        guard let table, case let row = table.row(for: view), entries.indices.contains(row), case .message(let message) = entries[row] else { return menu }
+        let source = message.message.blocks.compactMap { block -> String? in
+            switch block {
+            case .text(let text), .notice(let text): return text
+            case .reasoning, .tool: return nil
+            }
+        }.joined(separator: "\n\n")
+        guard !source.isEmpty else { return menu }
+        let item = NSMenuItem(title: "拷贝整条消息", action: #selector(copyMessage(_:)), keyEquivalent: "")
+        item.target = self
+        item.representedObject = source
+        menu.insertItem(item, at: 0)
+        menu.insertItem(.separator(), at: 1)
+        return menu
+    }
+
+    @objc private func copyMessage(_ sender: NSMenuItem) {
+        guard let source = sender.representedObject as? String else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(source, forType: .string)
     }
 
     // MARK: Links

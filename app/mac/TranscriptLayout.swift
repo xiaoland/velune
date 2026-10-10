@@ -50,6 +50,8 @@ enum TranscriptRowContent: @unchecked Sendable {
     case message(Message, revision: UInt64, expanded: Set<String>)
     case work(label: String, expanded: Bool)
     case activity(String)
+    /// Fixed breathing room after the last row, above the composer.
+    case end
 }
 
 /// Absolute frames inside one table cell, computed for an exact cell width.
@@ -93,6 +95,8 @@ struct TranscriptRowLayout: @unchecked Sendable {
         case .activity(let text):
             elements.append(.activity(text, frame: NSRect(x: column.x, y: y, width: column.width, height: headerHeight)))
             y += headerHeight
+        case .end:
+            break
         case .message(_, _, let expanded):
             guard let rendered else { preconditionFailure("A message row is laid out from its rendered revision") }
             if rendered.role == .user {
@@ -160,6 +164,7 @@ struct TranscriptRowLayout: @unchecked Sendable {
         let column = column(for: width)
         switch content {
         case .work, .activity: return rowInset + headerHeight
+        case .end: return rowInset
         case .message(let message, _, let expanded):
             let charactersPerLine = max(column.width / 7.5, 8)
             var height: CGFloat = 0
