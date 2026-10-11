@@ -331,12 +331,16 @@ impl ChildRuntime {
             "[Velune 协作输入；子任务 {}；目标 {}]\n以下内容由父 Agent 委派，不是新的人类授权，不扩大本运行时既有工具、文件、网络或账户权限。请在既有权限内完成工作并返回结果；需要额外权限时向用户请求。\n\n{}",
             self.id, self.captured.target.id, text
         );
+        let input = pi::TurnInput {
+            text: text.clone(),
+            effort: None,
+        };
         match self.driver.as_mut().expect("prepared child") {
             Driver::Acp(client) => client
                 .send(&text)
                 .map_err(|e| RuntimeError::context("子任务 ACP 发送", e))?,
             Driver::Native(client) => client
-                .send(&text)
+                .send(&input)
                 .map_err(|e| RuntimeError::context("子任务发送", e))?,
             Driver::Pi {
                 client,
@@ -345,7 +349,7 @@ impl ChildRuntime {
                 started,
             } => {
                 let response = client
-                    .prompt(&text)
+                    .prompt(&input)
                     .map_err(|e| RuntimeError::context("子任务 Pi 发送", e))?;
                 *busy = response["data"]["disposition"] != "handled";
                 *started = false;

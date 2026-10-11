@@ -2,6 +2,7 @@
 use super::*;
 use crate::conversation::ConversationSnapshot;
 use crate::{ModelSelection, RuntimeModel};
+use velune_agent_runtime::native::CLAUDE_EFFORT_LEVELS;
 
 pub(super) fn requested_selection(request: &Value) -> Result<ModelSelection, RuntimeError> {
     Ok(serde_json::from_value(
@@ -10,6 +11,85 @@ pub(super) fn requested_selection(request: &Value) -> Result<ModelSelection, Run
 }
 
 impl CoreRuntime {
+    /// Reasoning levels a turn may request for a managed model on this
+    /// runtime: those the model declares, in the vocabulary the harness's own
+    /// channel accepts. Empty when the harness has no such channel.
+    pub(super) fn reasoning_efforts(
+        &self,
+        runtime: &RuntimeInstance,
+        key: &str,
+    ) -> Result<Vec<String>, RuntimeError> {
+        let model = self
+            .gateways
+            .iter()
+            .find(|gateway| gateway.id == runtime.gateway_id)
+            .and_then(|gateway| {
+                gateway
+                    .providers
+                    .iter()
+                    .flat_map(|provider| &provider.models)
+                    .find(|model| model.record_key == key)
+            })
+            .ok_or_else(|| RuntimeError::invalid("所选会话模型已不存在，请重新选择"))?;
+        let declared = model.reasoning_levels.as_deref().unwrap_or_default();
+        Ok(match runtime.type_id.as_str() {
+            // Codex passes the level on as the Responses reasoning effort.
+            "codex-0.159.3" => declared.to_vec(),
+            "claude-code-2.1.286" => declared
+                .iter()
+                .filter(|level| CLAUDE_EFFORT_LEVELS.contains(&level.as_str()))
+                .cloned()
+                .collect(),
+            "pi-1.0.2" => pi_declared_levels(model)
+                .into_iter()
+                .filter(|level| pi::PI_THINKING_LEVELS.contains(&level.as_str()))
+                .collect(),
+            _ => Vec::new(),
+        })
+    }
+
+    /// The next turn's requested reasoning level, checked against the
+    /// runtime and model the turn runs on.
+    pub(super) fn requested_effort(&self, request: &Value) -> Result<Option<String>, RuntimeError> {
+        let Some(effort) = request["payload"]["effort"].as_str() else {
+            return Ok(None);
+        };
+        let selection = self
+            .session
+            .model_selection
+            .as_ref()
+            .ok_or_else(|| RuntimeError::invalid("请选择此会话的模型"))?;
+        self.validate_effort(self.active_instance()?, selection, effort)?;
+        Ok(Some(effort.into()))
+    }
+
+    pub(super) fn validate_effort(
+        &self,
+        runtime: &RuntimeInstance,
+        selection: &ModelSelection,
+        effort: &str,
+    ) -> Result<(), RuntimeError> {
+        let accepted = match selection {
+            ModelSelection::Managed { model_record_key } => self
+                .reasoning_efforts(runtime, model_record_key)?
+                .iter()
+                .any(|level| level == effort),
+            ModelSelection::Native { .. } => match runtime.type_id.as_str() {
+                "codex-0.159.3" => {
+                    !effort.trim().is_empty() && !effort.chars().any(char::is_control)
+                }
+                "claude-code-2.1.286" => CLAUDE_EFFORT_LEVELS.contains(&effort),
+                "pi-1.0.2" => pi::PI_THINKING_LEVELS.contains(&effort),
+                _ => false,
+            },
+            ModelSelection::RuntimeDefault => false,
+        };
+        if !accepted {
+            return Err(RuntimeError::invalid("所选模型或运行时不支持此推理强度"));
+        }
+        Ok(())
+    }
+
     pub(super) fn validate_model_selection(
         &self,
         runtime: &RuntimeInstance,

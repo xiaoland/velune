@@ -370,8 +370,41 @@ struct ComposerView: View {
             .accessibilityLabel("下一轮模型：\(store.selectedModelName ?? "未选择")")
             .help(store.needsModelSelection ? "此会话的模型当前不可用，请选择已配置的模型" : "下一轮模型：\(store.selectedModelName ?? "未选择")")
             .disabled(store.isShuttingDown)
+            if !store.reasoningEffortOptions.isEmpty { reasoningEffortMenu }
             if store.isUnsentConversation { workingDirectoryMenu }
         }.menuStyle(.button)
+    }
+
+    /// Levels come from the model and runtime; "默认" sends none and leaves
+    /// the level to the runtime's default.
+    private var reasoningEffortMenu: some View {
+        let title = store.nextTurnEffort.map(Self.effortName) ?? "默认"
+        return Menu {
+            Picker("推理强度", selection: Binding(get: { store.nextTurnEffort }, set: { store.selectEffort($0) })) {
+                Text("默认").tag(String?.none)
+                Divider()
+                ForEach(store.reasoningEffortOptions, id: \.self) { level in Text(Self.effortName(level)).tag(Optional(level)) }
+            }.pickerStyle(.inline)
+        } label: {
+            Label("推理：\(title)", systemImage: "brain").labelStyle(.titleOnly).lineLimit(1)
+        }
+        .fixedSize()
+        .accessibilityLabel("下一轮推理强度：\(title)")
+        .help("推理强度：\(title)。默认时由运行时决定")
+        .disabled(store.isShuttingDown)
+    }
+
+    private static func effortName(_ level: String) -> String {
+        switch level {
+        case "none", "off": "关闭"
+        case "minimal": "最低"
+        case "low": "低"
+        case "medium": "中"
+        case "high": "高"
+        case "xhigh": "超高"
+        case "max": "最高"
+        default: level
+        }
     }
 
     /// Only a conversation that has not been sent yet can still pick where it works.

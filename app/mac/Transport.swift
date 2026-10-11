@@ -90,12 +90,12 @@ final class Transport: @unchecked Sendable {
     func createConversation(runtimeID: String, cwd: String?, modelRecordKey: String) throws -> BindingSnapshotResult { try withApplication("createConversation") { try $0.createConversation(runtimeId: runtimeID, cwd: cwd, modelRecordKey: modelRecordKey) } }
     /// Keep first creation and dispatch under the same shared application lock.
     /// Report the native identity before dispatch so failure never recreates a draft.
-    func createAndSend(runtimeID: String, cwd: String?, modelRecordKey: String, text: String, onCreated: (BindingSnapshotResult) -> Void) throws -> BindingSnapshotResult {
+    func createAndSend(runtimeID: String, cwd: String?, modelRecordKey: String, turn: BindingComposedTurn, onCreated: (BindingSnapshotResult) -> Void) throws -> BindingSnapshotResult {
         try withApplication("sendTurn") { application in
             let created = try application.createConversation(runtimeId: runtimeID, cwd: cwd, modelRecordKey: modelRecordKey)
             onCreated(created)
             guard let native = created.snapshot else { throw TransportError.rejected("运行时未返回新会话") }
-            return try application.sendTurn(sourceRuntimeId: native.conversation.runtimeId, conversationId: native.conversation.id, targetRuntimeId: runtimeID, modelRecordKey: modelRecordKey, text: text)
+            return try application.sendTurnWithSelection(sourceRuntimeId: native.conversation.runtimeId, conversationId: native.conversation.id, targetRuntimeId: runtimeID, selection: .managed(modelRecordKey: modelRecordKey), turn: turn)
         }
     }
     func openConversation(runtimeID: String, conversationID: String) throws -> BindingSnapshotResult { try withApplication("openConversation") { try $0.readConversation(runtimeId: runtimeID, conversationId: conversationID) } }
@@ -104,7 +104,8 @@ final class Transport: @unchecked Sendable {
     func snapshot(runtimeID: String, conversationID: String) throws -> BindingSnapshotResult { try withApplication("snapshot") { try $0.snapshot(runtimeId: runtimeID, conversationId: conversationID) } }
     func snapshotUpdate(runtimeID: String, conversationID: String, since: TranscriptCursor) throws -> BindingSnapshotUpdate { try withApplication("snapshotUpdate") { try $0.snapshotUpdate(runtimeId: runtimeID, conversationId: conversationID, since: BindingMapping.bindingCursor(since)) } }
     func messagePayloads(runtimeID: String, conversationID: String, messageIDs: [String]) throws -> [BindingMessage] { try withApplication("messagePayloads") { try $0.messagePayloads(runtimeId: runtimeID, conversationId: conversationID, messageIds: messageIDs) } }
-    func sendTurn(sourceRuntimeID: String, conversationID: String, targetRuntimeID: String, modelRecordKey: String, text: String) throws -> BindingSnapshotResult { try withApplication("sendTurn") { try $0.sendTurn(sourceRuntimeId: sourceRuntimeID, conversationId: conversationID, targetRuntimeId: targetRuntimeID, modelRecordKey: modelRecordKey, text: text) } }
+    func sendTurn(sourceRuntimeID: String, conversationID: String, targetRuntimeID: String, modelRecordKey: String, turn: BindingComposedTurn) throws -> BindingSnapshotResult { try withApplication("sendTurn") { try $0.sendTurnWithSelection(sourceRuntimeId: sourceRuntimeID, conversationId: conversationID, targetRuntimeId: targetRuntimeID, selection: .managed(modelRecordKey: modelRecordKey), turn: turn) } }
+    func reasoningEfforts(runtimeID: String, modelRecordKey: String) throws -> [String] { try withApplication("reasoningEfforts") { try $0.reasoningEfforts(runtimeId: runtimeID, modelRecordKey: modelRecordKey) } }
     func cancel(runtimeID: String, conversationID: String) throws -> BindingSnapshotResult { try withApplication("cancel") { try $0.cancel(runtimeId: runtimeID, conversationId: conversationID) } }
     func workingChanges(runtimeID: String, conversationID: String) throws -> BindingWorkingChanges { try withApplication("workingChanges") { try $0.workingChanges(runtimeId: runtimeID, conversationId: conversationID) } }
     func fileDiff(runtimeID: String, conversationID: String, path: String) throws -> BindingFileDiff { try withApplication("fileDiff") { try $0.fileDiff(runtimeId: runtimeID, conversationId: conversationID, path: path) } }

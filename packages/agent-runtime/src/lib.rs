@@ -22,3 +22,12 @@ pub mod native;
 pub mod version;
 
 pub mod transcript;
+
+/// One user turn as delivered through a harness's own input channel.
+#[derive(Debug, Clone)]
+pub struct TurnInput {
+    pub text: String,
+    /// A reasoning level in the harness's own vocabulary for this turn;
+    /// `None` leaves it to the harness default.
+    pub effort: Option<String>,
+}

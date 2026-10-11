@@ -23,10 +23,15 @@ final class AppStore: ObservableObject {
     @Published private(set) var elsewhereConversationIDs: Set<String> = []
     /// Conversations running elsewhere that the list did not contain when last read again.
     private var unlistedElsewhereIDs: Set<String> = []
-    @Published private(set) var nextTurnRuntimeID: String?
-    @Published private(set) var nextTurnModelRecordKey: String?
+    @Published private(set) var nextTurnRuntimeID: String? { didSet { if oldValue != nextTurnRuntimeID { refreshReasoningEfforts() } } }
+    @Published private(set) var nextTurnModelRecordKey: String? { didSet { if oldValue != nextTurnModelRecordKey { refreshReasoningEfforts() } } }
+    /// Reasoning levels the next turn's runtime and model accept, in the runtime's own vocabulary.
+    @Published private(set) var reasoningEffortOptions: [String] = []
+    /// The next turn's reasoning level; `nil` leaves it to the runtime's default.
+    @Published private(set) var nextTurnEffort: String?
+    private var reasoningEffortRequest = 0
     let transcript = TranscriptModel()
-    @Published private(set) var gateway = GatewayConfig()
+    @Published private(set) var gateway = GatewayConfig() { didSet { if oldValue != gateway { refreshReasoningEfforts() } } }
     @Published private(set) var runtimeInstances: [RuntimeInstance] = []
     @Published private(set) var runtimeTypes: [RuntimeTypeDescriptor] = []
     @Published private(set) var protocols: [ProtocolDescriptor] = []
@@ -82,7 +87,7 @@ final class AppStore: ObservableObject {
     private var nextTurnIntents: [String: NextTurnIntent] = [:]
     private var intentConversationID: String?
     private var lastChosenModelRecordKey: String?
-    private struct NextTurnIntent { var runtimeID: String?; var modelRecordKey: String? }
+    private struct NextTurnIntent { var runtimeID: String?; var modelRecordKey: String?; var effort: String? }
 
     init(transport: Transport? = nil, preview: Bool = false, sharedApplication: AppStore? = nil) {
         self.sharedApplication = sharedApplication
@@ -614,9 +619,10 @@ final class AppStore: ObservableObject {
         executionStarting = true
         let creating = isDraft
         let cwd = snapshot?.conversation.cwd
+        let turn = BindingComposedTurn(text: text, effort: nextTurnEffort.flatMap { reasoningEffortOptions.contains($0) ? $0 : nil })
         enqueue({
             if creating {
-                return try transport.createAndSend(runtimeID: target, cwd: cwd, modelRecordKey: model, text: text) { [weak self] created in
+                return try transport.createAndSend(runtimeID: target, cwd: cwd, modelRecordKey: model, turn: turn) { [weak self] created in
                     DispatchQueue.main.async {
                         guard let self else { return }
                         self.isDraft = false
@@ -629,7 +635,7 @@ final class AppStore: ObservableObject {
                     }
                 }
             }
-            return try transport.sendTurn(sourceRuntimeID: source, conversationID: conversationID, targetRuntimeID: target, modelRecordKey: model, text: text)
+            return try transport.sendTurn(sourceRuntimeID: source, conversationID: conversationID, targetRuntimeID: target, modelRecordKey: model, turn: turn)
         }, onAccepted: { [weak self] in onAccepted?(self?.loadedConversationID) }, onFailure: { [weak self] _ in self?.executionStarting = false }) { [weak self] value in
             self?.executionStarting = false
             self?.applySnapshotResult(value)
@@ -830,7 +836,33 @@ final class AppStore: ObservableObject {
     }
     private func rememberNextTurnIntent() {
         guard let intentConversationID else { return }
-        nextTurnIntents[intentConversationID] = NextTurnIntent(runtimeID: nextTurnRuntimeID, modelRecordKey: nextTurnModelRecordKey)
+        nextTurnIntents[intentConversationID] = NextTurnIntent(runtimeID: nextTurnRuntimeID, modelRecordKey: nextTurnModelRecordKey, effort: nextTurnEffort)
+    }
+    func selectEffort(_ effort: String?) {
+        guard effort == nil || reasoningEffortOptions.contains(effort!) else { return }
+        nextTurnEffort = effort
+        rememberNextTurnIntent()
+    }
+    /// The core maps the model's declared levels onto the runtime's own
+    /// channel; a level the new choice does not offer is dropped.
+    private func refreshReasoningEfforts() {
+        reasoningEffortRequest += 1
+        let request = reasoningEffortRequest
+        guard let runtimeID = nextTurnRuntimeID, let model = nextTurnModelRecordKey else { applyReasoningEfforts([]); return }
+        if isPreview { applyReasoningEfforts(gateway.providers.flatMap(\.models).first { $0.recordKey == model }?.reasoningLevels ?? []); return }
+        guard let transport, !isShuttingDown else { return }
+        queue.async { [weak self] in
+            let result = Result { try transport.reasoningEfforts(runtimeID: runtimeID, modelRecordKey: model) }
+            DispatchQueue.main.async {
+                guard let self, request == self.reasoningEffortRequest else { return }
+                // A model removed meanwhile offers nothing; sending reports it.
+                self.applyReasoningEfforts((try? result.get()) ?? [])
+            }
+        }
+    }
+    private func applyReasoningEfforts(_ levels: [String]) {
+        if reasoningEffortOptions != levels { reasoningEffortOptions = levels }
+        if let effort = nextTurnEffort, !levels.contains(effort) { nextTurnEffort = nil; rememberNextTurnIntent() }
     }
     /// Each conversation keeps its own next-turn choice. A conversation opened
     /// for the first time continues on its current runtime and model; without a
@@ -844,7 +876,9 @@ final class AppStore: ObservableObject {
             nextTurnRuntimeID = runtimeID
         }
         nextTurnModelRecordKey = defaultModelRecordKey(preferring: intent.modelRecordKey)
+        nextTurnEffort = intent.effort
         rememberNextTurnIntent()
+        refreshReasoningEfforts()
     }
     private func refreshAfterExecutionInvalidation() {
         guard let transport else { recordProblem("本地核心未配置"); return }

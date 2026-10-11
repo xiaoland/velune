@@ -357,6 +357,13 @@ pub struct BindingRuntimeUpdate {
     pub execution_invalidated: bool,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BindingComposedTurn {
+    pub text: String,
+    pub effort: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, uniffi::Enum)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub enum BindingModelSelection {

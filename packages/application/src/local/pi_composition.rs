@@ -106,8 +106,9 @@ pub(super) fn materialize_models(
                         projection.catalog_thinking_level_map(&declared_levels)
                     })
                     .unwrap_or_else(|| {
-                        declared_levels.iter()
-                            .map(|level| (level.clone(), Some(level.clone())))
+                        // Pi level names map back to the declared wire values.
+                        binding.reasoning_levels.iter().flatten()
+                            .map(|wire| (if wire == "none" { "off" } else { wire }.to_owned(), Some(wire.clone())))
                             .collect()
                     });
                 let levels = levels
@@ -187,7 +188,6 @@ pub(super) fn write_selection_file(
         "provider": "velune-gateway",
         "modelRecordKey": model_record_key,
         "physicalModelId": physical_model_id,
-        "thinkingLevel": "off",
         "subscriptionCapability": subscription_capability
     }))?;
     config
@@ -204,7 +204,7 @@ pub(super) fn pi_session_helper(config: &PiConfig, session: &Path) -> Result<Val
 }
 
 /// Translate the protocol declaration at the Pi adapter boundary, not in the AI model domain.
-fn pi_declared_levels(binding: &crate::config::ProviderModel) -> Vec<String> {
+pub(super) fn pi_declared_levels(binding: &crate::config::ProviderModel) -> Vec<String> {
     const PI_LEVELS: [&str; 7] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
     let Some(reasoning) = &binding.reasoning_levels else {
         return Vec::new();

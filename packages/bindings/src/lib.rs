@@ -720,18 +720,29 @@ impl VeluneApplication {
         conversation_id: String,
         target_runtime_id: String,
         selection: BindingModelSelection,
-        text: String,
+        turn: BindingComposedTurn,
     ) -> Result<BindingSnapshotResult, BindingError> {
         let selection = convert(selection)?;
+        let turn = convert(turn)?;
         convert(self.with("send_turn_with_selection", |application| {
             application.send_turn_with_selection(
                 source_runtime_id,
                 conversation_id,
                 target_runtime_id,
                 selection,
-                text,
+                turn,
             )
         })?)
+    }
+
+    pub fn reasoning_efforts(
+        &self,
+        runtime_id: String,
+        model_record_key: String,
+    ) -> Result<Vec<String>, BindingError> {
+        self.with("reasoning_efforts", |application| {
+            application.reasoning_efforts(runtime_id, model_record_key)
+        })
     }
 
     pub fn runtime_models(

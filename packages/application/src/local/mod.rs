@@ -434,6 +434,17 @@ impl CoreRuntime {
             "runtimeExecution" => self.runtime_execution_action(request, false),
             "configureRuntimeExecution" => self.runtime_execution_action(request, true),
             "runtimeModels" => self.runtime_models_action(request),
+            "reasoningEfforts" => {
+                let runtime = self.runtime_instance(
+                    request["payload"]["runtimeInstanceID"]
+                        .as_str()
+                        .ok_or_else(|| RuntimeError::invalid("runtime instance id"))?,
+                )?;
+                let key = request["payload"]["modelRecordKey"]
+                    .as_str()
+                    .ok_or_else(|| RuntimeError::invalid("model record key"))?;
+                Ok(serde_json::to_value(self.reasoning_efforts(runtime, key)?)?)
+            }
             "acpLaunch" => Ok(serde_json::to_value(
                 self.runtime_instance(
                     request["payload"]["runtimeInstanceID"]

@@ -158,6 +158,10 @@ fn read_record(reader: &mut impl BufRead) -> std::io::Result<Option<Vec<u8>>> {
     }
 }
 
+/// Levels Pi 1.0.2 `set_thinking_level` accepts.
+pub const PI_THINKING_LEVELS: [&str; 7] =
+    ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+
 /// One long-lived Pi RPC subprocess. Records are retained until the host asks
 /// for them, so the UI can poll without losing fast stream events.
 pub struct Client {
@@ -553,12 +557,19 @@ impl Client {
             })
             .collect()
     }
-    pub fn prompt(&mut self, message: &str) -> Result<Value> {
-        self.request(json!({"type":"prompt","message":message}))
+    /// Pi clamps the thinking level to what the selected model supports.
+    pub fn prompt(&mut self, input: &crate::TurnInput) -> Result<Value> {
+        if let Some(level) = &input.effort {
+            if !PI_THINKING_LEVELS.contains(&level.as_str()) {
+                return Err(Error::Sdk("Pi 不接受此推理强度".into()));
+            }
+            self.request(json!({"type":"set_thinking_level","level":level}))?;
+        }
+        self.request(json!({"type":"prompt","message":input.text}))
     }
 
     pub fn sync_virtual_selection(&mut self) -> Result<Value> {
-        self.prompt("/velune-sync-selection")
+        self.request(json!({"type":"prompt","message":"/velune-sync-selection"}))
     }
 
     pub fn cancel(&mut self) -> Result<Vec<Value>> {

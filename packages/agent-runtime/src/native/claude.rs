@@ -1,11 +1,16 @@
 //! Claude Code 2.1.286 stream-json control; provider overrides exist only in the turn child.
 use super::*;
 
+/// Levels `--effort` accepts; the CLI applies one per launch and keeps none
+/// in the session.
+pub const CLAUDE_EFFORT_LEVELS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
+
 impl NativeSession {
     pub(super) fn claude_command(
         config: &NativeConfig,
         selection: Option<&RuntimeModel>,
         session: Option<(&str, Option<&Path>, bool)>,
+        effort: Option<&str>,
     ) -> Result<Command> {
         let mut command = Command::new(&config.binary);
         command.env("CLAUDE_CODE_SDK_READS_SESSION_STATE", "1");
@@ -20,6 +25,12 @@ impl NativeSession {
             "--permission-prompt-tool",
             "stdio",
         ]);
+        if let Some(effort) = effort {
+            if !CLAUDE_EFFORT_LEVELS.contains(&effort) {
+                return Err(Error::new("Claude Code 不接受此推理强度"));
+            }
+            command.arg("--effort").arg(effort);
+        }
         if let Some((id, cwd, fresh)) = session {
             command
                 .arg(if fresh { "--session-id" } else { "--resume" })

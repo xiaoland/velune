@@ -6,6 +6,8 @@
 
 会话的权威在 Harness；Velune 对本机 Codex、Claude Code 与 Pi 运行时 best-effort 跟随原生文件。被 snapshot 轮询的会话在没有会话通道时（例如只读打开的视图）由首次轮询读入并打开通道；其后约每秒检查原生文件，未在 Velune 中执行且文件被改动时重新读取，空闲的执行先释放，下一 turn 从改动后的会话继续；读取较慢时按耗时放宽间隔。自身执行期间及结束后 5 秒内的写入视为自己的。末尾记录显示 turn 未结束且 10 分钟内有写入时，视图的 `run_state` 为 `Elsewhere`（不可由 Velune 取消，仍可发送），超过时间窗即视为已放弃。其活动列表另外每 5 秒扫描这些运行时的会话目录，附加未被 Velune 执行的 `Elsewhere` 会话。SSH、ACP、DeepSeek Harness 与跨 Harness 续接的会话不跟随，仍靠手动重新读取。[实时会话手动验收](../../scripts/manual-live-sessions.py) 用另一进程改写合成 Pi 会话检查上述行为。
 
+发送接受 `ComposedTurn`（正文与可选推理强度）。`reasoning_efforts(runtime, model)` 给出该运行时与 managed 模型可选的强度：模型声明的级别按 Harness 自身通道的词汇映射——Codex 原样作为 Responses reasoning effort（`turn/start.effort`），Claude Code 取与 `--effort` 接受集合（low／medium／high／xhigh／max）的交集，Pi 用 Pi 级别名（`none` 对应 `off`）并经 `set_thinking_level` 设置；DeepSeek Harness 与通用 ACP 不提供。不在选项内的强度在任何状态改变与发送前拒绝。强度只作用于该 turn：Codex 不选时不发送，Claude Code 每 turn 启动一次，Pi 的执行以 off 开始，因此“默认”即运行时自身的默认。按会话记住所选强度是平台的职责。[推理强度手动验收](../../scripts/manual-reasoning-effort.py) 用实际 Codex、Claude Code 与 Pi 经回环上游检查选项、拒绝与上游实际收到的推理字段。
+
 `runtime_resource_catalog`、`read_runtime_resource`、`write_runtime_resource` 和 `delete_runtime_resource` 管理指定实例的原生 user instructions、MCP server 条目、skills 与原生 Agent 定义。调用方明确给出 User／Project 范围；Project 的 cwd 属于执行机器。目录是 adapter 已知的原生来源，不是 Harness 合并后的最终配置，也不扫描任意命令猜测其资源格式。catalog 将功能不支持与资源 Missing／Invalid 分开，并单独说明可写或只读；不支持原因可能是原生功能缺失、协议没有入口或适配器尚未实现。
 
 资源查询不会启动 Harness、创建资源根目录或安装辅助 bundle；停用实例仍可管理。本机／SSH 与 managed HOME 复用同一位置解析，但不要求与资源读写无关的执行路径。写入在父 turn 忙碌或协作 scope 存在时拒绝，不隐式关闭空闲会话；保存只表示原生文件已变更，生效时间由 Harness 决定，不宣称进行了 live reload。

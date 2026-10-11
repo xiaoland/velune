@@ -55,7 +55,7 @@ export default function (pi) {
         modelRecordKey: chosen.modelRecordKey,
         physicalModelId: chosen.physicalModelId,
         modelId: chosen.physicalModelId,
-        thinkingLevel: chosen.thinkingLevel ?? "off",
+        thinkingLevel: pi.getThinkingLevel(),
       },
     });
   };
@@ -95,7 +95,8 @@ export default function (pi) {
       const physicalModelId = chosen.physicalModelId;
       const model = ctx.modelRegistry.find("velune-gateway", physicalModelId);
       if (!model) throw new Error(`Velune gateway model is unavailable: ${physicalModelId}`);
-      const thinkingLevel = chosen.thinkingLevel ?? request.thinkingLevel ?? "off";
+      // The session's level, which Velune sets per turn through RPC.
+      const thinkingLevel = request.thinkingLevel ?? "off";
       return {
         model,
         thinkingLevel,

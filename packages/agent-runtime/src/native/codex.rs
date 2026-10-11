@@ -166,7 +166,7 @@ impl NativeSession {
         }
         Ok(())
     }
-    pub(super) fn codex_send(&mut self, text: &str) -> Result<()> {
+    pub(super) fn codex_send(&mut self, input: &crate::TurnInput) -> Result<()> {
         let id = self
             .native_id
             .as_deref()
@@ -176,7 +176,8 @@ impl NativeSession {
             &json!({
                 "threadId": id,
                 "model": self.config.gateway.as_ref().map(|g| g.model_alias.as_str()).or_else(|| self.native_selection.as_ref().map(|m| m.id.as_str())),
-                "input": [{"type":"text", "text":text}]
+                "effort": input.effort,
+                "input": [{"type":"text", "text":input.text}]
             }),
         )?;
         let turn_id = result["turn"]["id"]

@@ -137,6 +137,16 @@ pub enum ModelSelection {
     },
 }
 
+/// What the user composed for one turn.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ComposedTurn {
+    pub text: String,
+    /// One of `reasoning_efforts` for the turn's runtime and model; `None`
+    /// leaves the level to the runtime's default.
+    pub effort: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RuntimeModel {
@@ -1098,7 +1108,7 @@ impl Application {
             conversation_id,
             target_runtime_id,
             ModelSelection::Managed { model_record_key },
-            text,
+            ComposedTurn { text, effort: None },
         )
     }
     pub fn send_turn_with_selection(
@@ -1107,9 +1117,22 @@ impl Application {
         conversation_id: String,
         target_runtime_id: String,
         selection: ModelSelection,
-        text: String,
+        turn: ComposedTurn,
     ) -> Result<SnapshotResult, Error> {
-        self.execute("sendTurn", json!({"sourceRuntimeID":source_runtime_id,"conversationID":conversation_id,"modelSelection":selection,"text":text}), Some(&target_runtime_id))
+        self.execute("sendTurn", json!({"sourceRuntimeID":source_runtime_id,"conversationID":conversation_id,"modelSelection":selection,"text":turn.text,"effort":turn.effort}), Some(&target_runtime_id))
+    }
+    /// Reasoning levels a turn may request for a managed model on a runtime,
+    /// in the runtime's own vocabulary; empty when it offers no choice.
+    pub fn reasoning_efforts(
+        &mut self,
+        runtime_id: String,
+        model_record_key: String,
+    ) -> Result<Vec<String>, Error> {
+        self.execute(
+            "reasoningEfforts",
+            json!({"modelRecordKey":model_record_key}),
+            Some(&runtime_id),
+        )
     }
     pub fn cancel(
         &mut self,

@@ -7,6 +7,7 @@ use std::{
     process::Command,
 };
 mod claude;
+pub use claude::CLAUDE_EFFORT_LEVELS;
 mod codex;
 pub use codex::{manage_thread, manage_thread_at};
 mod codex_history;
@@ -181,7 +182,7 @@ impl NativeSession {
         } else {
             None
         };
-        let rpc = Self::spawn_rpc(&active, None, None)?;
+        let rpc = Self::spawn_rpc(&active, None, None, None)?;
         let mut bytes = [0; 8];
         getrandom::fill(&mut bytes)
             .map_err(|error| Error::new(format!("运行时会话身份生成失败：{error}")))?;
@@ -218,6 +219,7 @@ impl NativeSession {
         config: &NativeConfig,
         selection: Option<&RuntimeModel>,
         session: Option<(&str, Option<&Path>, bool)>,
+        effort: Option<&str>,
     ) -> Result<rpc::RpcClient> {
         let mut command = match config.kind {
             NativeKind::Codex => {
@@ -226,7 +228,7 @@ impl NativeSession {
                 command
             }
             NativeKind::DeepSeek => Self::dsh_command(config)?,
-            NativeKind::ClaudeCode => Self::claude_command(config, selection, session)?,
+            NativeKind::ClaudeCode => Self::claude_command(config, selection, session, effort)?,
         };
         let home_key = match config.kind {
             NativeKind::Codex => "CODEX_HOME",
@@ -308,19 +310,24 @@ impl NativeSession {
             .clone()
             .ok_or_else(|| Error::new("运行时未恢复会话"))
     }
-    pub fn send(&mut self, text: &str) -> Result<()> {
+    pub fn send(&mut self, input: &crate::TurnInput) -> Result<()> {
         self.ensure_idle()?;
-        if text.trim().is_empty() {
+        if input.text.trim().is_empty() {
             return Err(Error::new("消息内容为空"));
         }
         if self.native_id.is_none() {
             return Err(Error::new("没有活动会话"));
         }
-        let result = self.prepare_turn().and_then(|()| match self.config.kind {
-            NativeKind::Codex => self.codex_send(text),
-            NativeKind::DeepSeek => self.dsh_send(text),
-            NativeKind::ClaudeCode => self.claude_send(text),
-        });
+        if self.config.kind == NativeKind::DeepSeek && input.effort.is_some() {
+            return Err(Error::new("DeepSeek 运行时不提供推理强度设置"));
+        }
+        let result =
+            self.prepare_turn(input.effort.as_deref())
+                .and_then(|()| match self.config.kind {
+                    NativeKind::Codex => self.codex_send(input),
+                    NativeKind::DeepSeek => self.dsh_send(&input.text),
+                    NativeKind::ClaudeCode => self.claude_send(&input.text),
+                });
         if result.is_err() {
             self.fail_connection();
         }
@@ -386,7 +393,9 @@ impl NativeSession {
             NativeKind::ClaudeCode => self.claude_models(),
         }
     }
-    fn prepare_turn(&mut self) -> Result<()> {
+    /// Claude Code takes the turn's reasoning level only at launch, so its
+    /// turn child is always replaced.
+    fn prepare_turn(&mut self, effort: Option<&str>) -> Result<()> {
         if self.config.kind != NativeKind::ClaudeCode
             && (self.config.gateway.is_none() || self.gateway_turn)
             && !self.restart_required
@@ -415,6 +424,7 @@ impl NativeSession {
             &active,
             self.native_selection.as_ref(),
             Some((&id, cwd.as_deref(), self.claude_fresh)),
+            effort,
         )?;
         // The active endpoint may be a remote loopback tunnel, only valid for this child.
         let desired = self.config.gateway.take();

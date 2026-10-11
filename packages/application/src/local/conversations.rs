@@ -33,6 +33,7 @@ impl CoreRuntime {
             .as_str()
             .filter(|t| !t.trim().is_empty())
             .ok_or_else(|| RuntimeError::invalid("message text"))?;
+        let effort = request["payload"]["effort"].as_str();
         let active_snapshot = self.native_snapshot();
         let active_conversation_id = self
             .session
@@ -87,6 +88,9 @@ impl CoreRuntime {
             return Err(RuntimeError::invalid("请先处理当前运行时请求"));
         }
         self.validate_model_selection(self.runtime_instance(runtime_id)?, &selection)?;
+        if let Some(effort) = effort {
+            self.validate_effort(self.runtime_instance(runtime_id)?, &selection, effort)?;
+        }
         let unsubmitted = self
             .session
             .unsubmitted_draft
@@ -111,19 +115,22 @@ impl CoreRuntime {
             }
             self.commit_unsubmitted_alias()?;
             if needs_new_target {
-                return self
-                    .send_action(&json!({"payload":{"runtimeInstanceID":runtime_id,"text":text}}));
+                return self.send_action(
+                    &json!({"payload":{"runtimeInstanceID":runtime_id,"text":text,"effort":effort}}),
+                );
             }
         }
         if snapshot.conversation.runtime_id != runtime_id {
-            return self.continue_in_runtime(runtime_id, &selection, text);
+            return self.continue_in_runtime(runtime_id, &selection, text, effort);
         }
         if matches!(self.session.active_state, ActiveState::History(_))
             || self.session.model_selection.as_ref() != Some(&selection)
         {
             self.prepare_with_selection(snapshot, &selection, false)?;
         }
-        self.send_action(&json!({"payload":{"runtimeInstanceID":runtime_id,"text":text}}))
+        self.send_action(
+            &json!({"payload":{"runtimeInstanceID":runtime_id,"text":text,"effort":effort}}),
+        )
     }
 
     pub(super) fn create_conversation(&mut self, request: &Value) -> Result<Value, RuntimeError> {
@@ -524,6 +531,10 @@ impl CoreRuntime {
                 .ok_or_else(|| RuntimeError::invalid("请选择此会话的模型"))?;
             self.prepare_with_selection(snapshot, &selection, false)?;
         }
+        let input = pi::TurnInput {
+            text: text.into(),
+            effort: self.requested_effort(request)?,
+        };
         if let ActiveState::Acp(session) = &mut self.session.active_state {
             self.session.unsubmitted_draft = None;
             session
@@ -535,7 +546,7 @@ impl CoreRuntime {
         if let ActiveState::Native(session) = &mut self.session.active_state {
             self.session.unsubmitted_draft = None;
             let result = session
-                .send(text)
+                .send(&input)
                 .map_err(|error| RuntimeError::context("message send", error));
             if result.is_err() && self.session.gateway_runner.is_some() {
                 self.finish_managed_turn()?;
@@ -561,7 +572,7 @@ impl CoreRuntime {
             .client
             .as_mut()
             .ok_or_else(|| RuntimeError::invalid("会话执行尚未准备"))?
-            .prompt(text)
+            .prompt(&input)
             .map_err(|error| RuntimeError::context("message send", error));
         if response.is_err() && self.session.gateway_runner.is_some() {
             self.finish_managed_turn()?;

@@ -133,3 +133,10 @@
 - 显示：`MessageBlock` 增加附件块（图片／文件、名称、本机路径或原生内嵌数据的引用）；缩略图走既有按需 payload 读取，不随快照传输图片数据。Codex／Claude／Pi 的实时投影与历史读取把原生图片映射为附件块。
 - Mac：输入区附件按钮（NSOpenPanel 多选）、拖放、粘贴图片（写入 VELUNE_HOME 下的附件目录）；输入框上方显示可移除的附件标签；操作行增加推理强度弹出按钮。
 - 切片：A 推理强度；B 附件发送；C 消息列表附件显示。
+
+### 切片 A：推理强度（2026-10-11 完成）
+
+- 契约：`ComposedTurn{text, effort}` 经 `send_turn_with_selection` 发送；`reasoning_efforts(runtime, model)` 为 managed 模型给出选项（Codex 原样、Claude 交集、Pi 级别名）。范围外强度在 `send_turn` 改变任何状态前拒绝；native 选择按 Harness 接受集合校验。Mac 只用 managed 模型，选项异步查询，所选强度随下一轮意图按会话保存在工作区内存（不跨应用重启）。
+- 实测（`scripts/manual-reasoning-effort.py`，实际 CLI＋回环）：Codex `turn/start.effort` 只在该 turn 发出 Responses `reasoning.effort`，下一 turn 不选时不发送；Claude Code `--effort` 成为 `output_config.effort`，不选时为 CLI 默认 `high`（adaptive thinking）；Pi `set_thinking_level` 生效，下一次执行以 off 开始。因此三者“默认”均为单 turn 外的运行时默认。
+- 修复：Pi 虚拟模型路由原先总用选择文件里的 `thinkingLevel: "off"`，忽略会话级别；改为跟随会话级别，选择文件不再携带该字段。无 Pi 投影元数据时 thinkingLevelMap 原把 Pi 级别名当作上游值（声明 `none` 时上游收到 `off`），改为映射回声明的 wire 值。
+- 顺带修正 `manual-runtime-management-api.py` 中按会话寻址前遗留的 `cancel(runtime)` 调用。
