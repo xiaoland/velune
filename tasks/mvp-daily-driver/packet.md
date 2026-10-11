@@ -114,3 +114,22 @@
 - 验证：静态检查与 Swift 严格构建通过；`scripts/manual-working-changes.py`（新增）以临时仓库检查修改／暂存新增／删除／重命名／未跟踪／二进制／冲突、空格与中文文件名、缺少末尾换行、子目录会话解析到仓库根、非仓库目录、拒绝仓库外路径、读取后不留索引锁——通过。隔离开发构建中打开 inspector 与选择文件的窗口截图确认列表与差异着色。
 - 未做：暂存、提交、丢弃、行号栏、并排视图；SSH 运行时。
 - 安装：`0f6d0ae`（变更审阅入口关闭）release 构建已安装 `/Applications/Velune.app`（0.1 beta.1、config schema 8、manifest dirty=false），严格签名通过；正常退出旧应用后安装并重新打开，无崩溃报告。
+
+## ⑤ composer 增强：附件与推理强度（2026-10-11 设计）
+
+用户决定（已写入 PRD）：本轮只做图片／文件附件与推理强度；非图片文件传绝对路径引用；消息列表显示缩略图与文件名。参考 [OAR](https://github.com/botiverse/oar/tree/67d77ddec470dda5add664644c0cfb29c679660c) 的 `InputImage`（本机路径、png/jpeg/gif/webp、交付前读取，不可读或类型不符则整条输入拒绝）与 Claude `--effort`（2.1.284 探测：每次启动生效、会话不保留，`get_settings` 回读实际值）。
+
+各 Harness 通道（2026-10-11 核对）：
+
+| | 图片 | 推理强度 |
+| --- | --- | --- |
+| Codex 0.159.3 | `turn/start.input` 的 `localImage{path}`（app-server 生成 schema） | `turn/start.effort`（任意非空字符串） |
+| Claude Code 2.1.286 | stream-json user 消息 `image` base64 块 | 每轮子进程 `--effort`（low/medium/high/xhigh/max） |
+| Pi 1.0.2 | RPC `prompt.images` base64（`docs/rpc-commands.md`） | RPC `set_thinking_level`（off/minimal/low/medium/high/xhigh/max） |
+| ACP／DSH | `promptCapabilities.image` 为真时 `image` 块，否则拒绝图片 | 不提供（ACP 会话配置项另有入口） |
+
+- 契约：`send_turn` 增加附件路径列表与可选强度。core 在边界按扩展名分为图片（png/jpeg/gif/webp）与文件，校验存在且可读；不支持图片的运行时、远端运行时的附件直接拒绝整条发送，不静默丢弃。非图片文件追加到消息文本末尾的“附件：”路径列表。
+- 强度：选项 = 所选模型声明的 `reasoning_levels` 与 Harness 接受集合的交集（Pi 的 none→off 沿用既有映射）；空则不显示。未选择 = Harness 默认。按会话记住，与下一轮模型意图一起保存。
+- 显示：`MessageBlock` 增加附件块（图片／文件、名称、本机路径或原生内嵌数据的引用）；缩略图走既有按需 payload 读取，不随快照传输图片数据。Codex／Claude／Pi 的实时投影与历史读取把原生图片映射为附件块。
+- Mac：输入区附件按钮（NSOpenPanel 多选）、拖放、粘贴图片（写入 VELUNE_HOME 下的附件目录）；输入框上方显示可移除的附件标签；操作行增加推理强度弹出按钮。
+- 切片：A 推理强度；B 附件发送；C 消息列表附件显示。
