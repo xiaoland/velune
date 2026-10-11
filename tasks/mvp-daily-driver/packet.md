@@ -140,3 +140,4 @@
 - 实测（`scripts/manual-reasoning-effort.py`，实际 CLI＋回环）：Codex `turn/start.effort` 只在该 turn 发出 Responses `reasoning.effort`，下一 turn 不选时不发送；Claude Code `--effort` 成为 `output_config.effort`，不选时为 CLI 默认 `high`（adaptive thinking）；Pi `set_thinking_level` 生效，下一次执行以 off 开始。因此三者“默认”均为单 turn 外的运行时默认。
 - 修复：Pi 虚拟模型路由原先总用选择文件里的 `thinkingLevel: "off"`，忽略会话级别；改为跟随会话级别，选择文件不再携带该字段。无 Pi 投影元数据时 thinkingLevelMap 原把 Pi 级别名当作上游值（声明 `none` 时上游收到 `off`），改为映射回声明的 wire 值。
 - 顺带修正 `manual-runtime-management-api.py` 中按会话寻址前遗留的 `cancel(runtime)` 调用。
+- 安装：e6910c2 已构建安装到 `/Applications/Velune.app`（签名校验通过，manifest commit 一致、dirty=false，重开无崩溃报告）。输入区“推理”按钮的实际提供商体验待用户验收。
