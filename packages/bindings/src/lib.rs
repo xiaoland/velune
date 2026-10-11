@@ -298,6 +298,15 @@ impl VeluneApplication {
             application.resource_sync_status()
         })?)
     }
+    pub fn resource_drift(
+        &self,
+        runtime_id: String,
+        template_id: String,
+    ) -> Result<Vec<BindingResourceDriftFile>, BindingError> {
+        convert(self.with("resource_drift", |application| {
+            application.resource_drift(runtime_id, template_id)
+        })?)
+    }
     pub fn unmanaged_runtime_resources(
         &self,
         kind: BindingRuntimeResourceKind,

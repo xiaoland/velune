@@ -33,10 +33,10 @@ mod runtime_execution;
 pub use runtime_execution::{RuntimeExecution, RuntimeHome, RuntimeTransport};
 mod resource_library;
 pub use resource_library::{
-    BindingResolution, BoundEntry, ResourceBinding, ResourceSaveResult, ResourceSyncState,
-    ResourceSyncStatus, ResourceTemplate, ResourceTemplateContent, ResourceTemplateImport,
-    ResourceTemplateSummary, TemplateApplyOutcome, TemplateApplyReport, TemplateApplyTarget,
-    TemplateMcpTransport, TemplateSkillFile, UnmanagedRuntimeResource,
+    BindingResolution, BoundEntry, ResourceBinding, ResourceDriftFile, ResourceSaveResult,
+    ResourceSyncState, ResourceSyncStatus, ResourceTemplate, ResourceTemplateContent,
+    ResourceTemplateImport, ResourceTemplateSummary, TemplateApplyOutcome, TemplateApplyReport,
+    TemplateApplyTarget, TemplateMcpTransport, TemplateSkillFile, UnmanagedRuntimeResource,
 };
 mod runtime_management;
 pub use runtime_management::{

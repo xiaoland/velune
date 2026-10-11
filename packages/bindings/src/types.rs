@@ -1110,6 +1110,7 @@ pub enum BindingTemplateMcpTransport {
         command: String,
         args: Vec<String>,
         env: HashMap<String, String>,
+        cwd: Option<String>,
     },
     Http {
         url: String,
@@ -1133,6 +1134,7 @@ pub enum BindingResourceTemplateContent {
     },
     Mcp {
         transport: BindingTemplateMcpTransport,
+        timeout_seconds: Option<u32>,
     },
     Subagent {
         description: String,
@@ -1244,4 +1246,21 @@ pub enum BindingResolution {
 pub struct BindingResourceTemplateImport {
     pub template: BindingResourceTemplate,
     pub notes: Vec<String>,
+}
+
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq, uniffi::Record)]
+#[serde(rename_all = "camelCase")]
+pub struct BindingResourceDriftFile {
+    pub path: String,
+    pub native: Option<String>,
+    pub library: Option<String>,
+    pub binary: bool,
+}
+impl std::fmt::Debug for BindingResourceDriftFile {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("BindingResourceDriftFile")
+            .field("path", &self.path)
+            .finish_non_exhaustive()
+    }
 }

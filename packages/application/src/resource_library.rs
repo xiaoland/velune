@@ -9,15 +9,13 @@ use std::{collections::BTreeMap, fmt};
 #[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
 pub enum ResourceTemplateContent {
     /// The whole user instruction file.
-    Instructions {
-        body: String,
-    },
+    Instructions { body: String },
     /// `SKILL.md` and its assets, with paths relative to the bundle.
-    Skill {
-        files: Vec<TemplateSkillFile>,
-    },
+    Skill { files: Vec<TemplateSkillFile> },
     Mcp {
         transport: TemplateMcpTransport,
+        #[serde(default)]
+        timeout_seconds: Option<u32>,
     },
     Subagent {
         description: String,
@@ -42,6 +40,8 @@ pub enum TemplateMcpTransport {
         command: String,
         args: Vec<String>,
         env: BTreeMap<String, String>,
+        #[serde(default)]
+        cwd: Option<String>,
     },
     Http {
         url: String,
@@ -229,4 +229,24 @@ pub struct ResourceTemplateImport {
     pub template: ResourceTemplate,
     /// Native fields the template has no place for.
     pub notes: Vec<String>,
+}
+
+/// One native entry that differs from what the library would write there. Texts are `None`
+/// when that side has no such entry; non-text content is not shown, only reported.
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ResourceDriftFile {
+    pub path: String,
+    pub native: Option<String>,
+    pub library: Option<String>,
+    pub binary: bool,
+}
+// MCP environment values and headers are part of the texts.
+impl fmt::Debug for ResourceDriftFile {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ResourceDriftFile")
+            .field("path", &self.path)
+            .finish_non_exhaustive()
+    }
 }

@@ -523,6 +523,20 @@ impl Application {
         self.execute("resourceSync", json!({"operation":"status"}), None)
     }
 
+    /// How the native entries of an enabled resource differ from the library's version. The texts
+    /// may contain MCP secrets, like an explicit read.
+    pub fn resource_drift(
+        &mut self,
+        runtime_id: String,
+        template_id: String,
+    ) -> Result<Vec<crate::ResourceDriftFile>, Error> {
+        self.execute(
+            "resourceSync",
+            json!({"operation":"drift","templateID":template_id}),
+            Some(&runtime_id),
+        )
+    }
+
     /// Native entries of one kind that no resource manages, on every runtime instance.
     pub fn unmanaged_runtime_resources(
         &mut self,

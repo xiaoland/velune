@@ -345,6 +345,23 @@ impl CoreRuntime {
         })
     }
 
+    /// Retries the writes a busy runtime held back, once nothing runs. Failures stay visible as
+    /// pending states rather than failing the unrelated request that triggered the retry.
+    pub(super) fn sync_due_resources(&mut self) {
+        if !self.resource_sync_due || self.busy() || self.collaboration.is_some() {
+            return;
+        }
+        self.resource_sync_due = false;
+        let ids: Vec<_> = self
+            .resource_templates
+            .iter()
+            .map(|template| template.id.clone())
+            .collect();
+        for id in ids {
+            let _ = self.sync_pending(&id);
+        }
+    }
+
     /// Writes a saved resource to the runtimes where it is due. Runtimes whose native entries
     /// were changed or removed wait for the user; while a turn runs everything stays pending.
     fn sync_pending(
@@ -352,6 +369,7 @@ impl CoreRuntime {
         template_id: &str,
     ) -> Result<Vec<TemplateApplyReport>, RuntimeError> {
         if self.busy() || self.collaboration.is_some() {
+            self.resource_sync_due = true;
             return Ok(Vec::new());
         }
         let template = self.template(template_id)?.clone();
@@ -385,6 +403,10 @@ impl CoreRuntime {
         let runtime_id = || payload["runtimeInstanceID"].as_str().unwrap_or_default();
         match operation {
             Some("status") => Ok(json!(self.sync_statuses())),
+            Some("drift") => {
+                let template = self.template(payload["templateID"].as_str().unwrap_or_default())?;
+                Ok(json!(self.drift(template, runtime_id())?))
+            }
             Some("unmanaged") => Ok(json!(
                 self.unmanaged_resources(serde_json::from_value(payload["kind"].clone())?)
             )),
@@ -512,6 +534,71 @@ impl CoreRuntime {
         } else {
             ResourceSyncState::Pending
         }
+    }
+
+    /// The native entries of an enabled resource that differ from what the library would write.
+    /// MCP declarations are shown as formatted JSON on both sides, so only meaning differs.
+    fn drift(
+        &self,
+        template: &ResourceTemplate,
+        runtime_id: &str,
+    ) -> Result<Vec<crate::ResourceDriftFile>, RuntimeError> {
+        let config = self.management_config(runtime_id)?;
+        let kind = template.content.kind();
+        // Path → what the library would write there, if anything.
+        let mut sides: BTreeMap<String, Option<Vec<u8>>> = BTreeMap::new();
+        if let Rendering::Files { files, .. } = management::render(
+            &config.variant_id,
+            &template.name,
+            &canonical(&template.content)?,
+        )? {
+            for file in files {
+                sides.insert(file.key.path.clone(), Some(file.bytes));
+            }
+        }
+        if let Some(index) = self.binding_index(runtime_id, &template.id) {
+            for entry in &self.resource_bindings[index].entries {
+                sides.entry(entry.key.path.clone()).or_default();
+            }
+        }
+        let mut files = Vec::new();
+        for (path, library) in sides {
+            let native = match management::read(&config, &user_key(kind, &path)) {
+                Ok(document) => Some(document.bytes),
+                Err(error) if error.code() == management::ErrorCode::Missing => None,
+                Err(error) => return Err(error.into()),
+            };
+            let same = match (&native, &library) {
+                (Some(native), Some(library)) => {
+                    management::fingerprint(management_kind(kind), native)
+                        == management::fingerprint(management_kind(kind), library)
+                }
+                (None, None) => true,
+                _ => false,
+            };
+            if same {
+                continue;
+            }
+            let show = |bytes: Option<Vec<u8>>| -> Option<Option<String>> {
+                let Some(bytes) = bytes else {
+                    return Some(None);
+                };
+                if kind == RuntimeResourceKind::McpServers
+                    && let Ok(value) = serde_json::from_slice::<Value>(&bytes)
+                {
+                    return serde_json::to_string_pretty(&value).ok().map(Some);
+                }
+                String::from_utf8(bytes).ok().map(Some)
+            };
+            let (native, library) = (show(native), show(library));
+            files.push(crate::ResourceDriftFile {
+                path,
+                binary: native.is_none() || library.is_none(),
+                native: native.flatten(),
+                library: library.flatten(),
+            });
+        }
+        Ok(files)
     }
 
     /// Native entries of one kind, on every runtime, that no resource manages. Skill bundles are

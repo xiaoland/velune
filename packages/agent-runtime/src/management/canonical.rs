@@ -10,15 +10,13 @@ use std::{collections::BTreeMap, fmt, path::Path};
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum Canonical {
     /// The whole user instruction file.
-    Instructions {
-        body: String,
-    },
+    Instructions { body: String },
     /// A skill bundle: `SKILL.md` and its assets, with paths relative to the bundle.
-    Skill {
-        files: Vec<SkillFile>,
-    },
+    Skill { files: Vec<SkillFile> },
     Mcp {
         transport: McpTransport,
+        /// How long one tool call may take; each Harness has its own unit and name for it.
+        timeout_seconds: Option<u32>,
     },
     Subagent {
         description: String,
@@ -45,6 +43,7 @@ pub enum McpTransport {
         command: String,
         args: Vec<String>,
         env: BTreeMap<String, String>,
+        cwd: Option<String>,
     },
     Http {
         url: String,
@@ -156,12 +155,20 @@ pub fn render(variant_id: &str, name: &str, canonical: &Canonical) -> Result<Ren
             validate_name(name)?;
             skill_files(name, files, &key)?
         }
-        Canonical::Mcp { transport } => {
+        Canonical::Mcp {
+            transport,
+            timeout_seconds,
+        } => {
             validate_name(name)?;
             vec![RenderedFile {
                 key: key(name.into()),
-                bytes: serde_json::to_vec_pretty(&mcp_object(variant_id, transport))
-                    .map_err(|_| Error::new(ErrorCode::Invalid, "MCP 声明无法序列化"))?,
+                bytes: serde_json::to_vec_pretty(&mcp_object(
+                    variant_id,
+                    transport,
+                    *timeout_seconds,
+                    &mut notes,
+                ))
+                .map_err(|_| Error::new(ErrorCode::Invalid, "MCP 声明无法序列化"))?,
                 executable: None,
             }]
         }
@@ -230,7 +237,12 @@ fn skill_files(
     Ok(rendered)
 }
 
-fn mcp_object(variant_id: &str, transport: &McpTransport) -> Value {
+fn mcp_object(
+    variant_id: &str,
+    transport: &McpTransport,
+    timeout_seconds: Option<u32>,
+    notes: &mut Vec<String>,
+) -> Value {
     let strings = |map: &BTreeMap<String, String>| {
         Value::Object(
             map.iter()
@@ -242,7 +254,12 @@ fn mcp_object(variant_id: &str, transport: &McpTransport) -> Value {
     let claude = variant_id == "claude-code-2.1.286";
     let codex = variant_id == "codex-0.159.3";
     match transport {
-        McpTransport::Stdio { command, args, env } => {
+        McpTransport::Stdio {
+            command,
+            args,
+            env,
+            cwd,
+        } => {
             if claude {
                 object.insert("type".into(), "stdio".into());
             }
@@ -252,6 +269,15 @@ fn mcp_object(variant_id: &str, transport: &McpTransport) -> Value {
             }
             if !env.is_empty() {
                 object.insert("env".into(), strings(env));
+            }
+            match cwd {
+                Some(_) if claude => {
+                    notes.push("Claude Code 的 MCP 声明没有工作目录，未写入".into())
+                }
+                Some(cwd) => {
+                    object.insert("cwd".into(), cwd.clone().into());
+                }
+                None => {}
             }
         }
         McpTransport::Http { url, headers } => {
@@ -264,6 +290,17 @@ fn mcp_object(variant_id: &str, transport: &McpTransport) -> Value {
                 object.insert(field.into(), strings(headers));
             }
         }
+    }
+    // Claude Code takes milliseconds, Codex and Pi seconds.
+    if let Some(seconds) = timeout_seconds {
+        let (field, value) = if claude {
+            ("timeout", u64::from(seconds) * 1000)
+        } else if codex {
+            ("tool_timeout_sec", u64::from(seconds))
+        } else {
+            ("timeout", u64::from(seconds))
+        };
+        object.insert(field.into(), value.into());
     }
     Value::Object(object)
 }
@@ -391,9 +428,17 @@ pub fn parse(
                 }
                 map
             };
-            let known: &[&str];
+            let claude = variant_id == "claude-code-2.1.286";
+            let codex = variant_id == "codex-0.159.3";
+            let timeout_field = if codex { "tool_timeout_sec" } else { "timeout" };
+            let timeout_seconds = match object.get(timeout_field).and_then(Value::as_u64) {
+                Some(value) if claude => u32::try_from(value.div_ceil(1000)).ok(),
+                Some(value) => u32::try_from(value).ok(),
+                None => None,
+            };
+            let mut known: Vec<&str> = vec![timeout_field];
             let transport = if let Some(url) = object.get("url").and_then(Value::as_str) {
-                known = &["type", "url", "headers", "http_headers"];
+                known.extend(["type", "url", "headers", "http_headers"]);
                 let field = if object.contains_key("http_headers") {
                     "http_headers"
                 } else {
@@ -404,7 +449,7 @@ pub fn parse(
                     headers: strings(object.get(field), &mut notes, field),
                 }
             } else if let Some(command) = object.get("command").and_then(Value::as_str) {
-                known = &["type", "command", "args", "env"];
+                known.extend(["type", "command", "args", "env", "cwd"]);
                 McpTransport::Stdio {
                     command: command.to_owned(),
                     args: object
@@ -415,6 +460,7 @@ pub fn parse(
                         .filter_map(|value| value.as_str().map(str::to_owned))
                         .collect(),
                     env: strings(object.get("env"), &mut notes, "env"),
+                    cwd: object.get("cwd").and_then(Value::as_str).map(str::to_owned),
                 }
             } else {
                 return Err(invalid("MCP 声明既没有 command 也没有 url"));
@@ -422,7 +468,10 @@ pub fn parse(
             for key in object.keys().filter(|key| !known.contains(&key.as_str())) {
                 notes.push(format!("字段 {key} 没有对应位置，未导入"));
             }
-            Canonical::Mcp { transport }
+            Canonical::Mcp {
+                transport,
+                timeout_seconds,
+            }
         }
         ResourceKind::NativeAgentDefinitions => {
             validate_name(name)?;

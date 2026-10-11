@@ -15,6 +15,54 @@ import tempfile
 import time
 
 
+PEER = r'''
+import json, os, sys, uuid
+from pathlib import Path
+state = Path(os.environ['FIXTURE_STATE'])
+state.mkdir(parents=True, exist_ok=True)
+session = None
+pending = None
+
+def record(kind):
+    with (state / 'events.jsonl').open('a') as output:
+        output.write(json.dumps({'kind': kind, 'pid': os.getpid()}) + '\n')
+
+def emit(value):
+    print(json.dumps({'jsonrpc': '2.0', **value}), flush=True)
+
+record('start')
+for line in sys.stdin:
+    request = json.loads(line)
+    method, identity = request.get('method'), request.get('id')
+    params = request.get('params', {})
+    if method == 'initialize':
+        emit({'id': identity, 'result': {'protocolVersion': 1,
+              'agentInfo': {'name': 'management-lifecycle-fixture', 'version': '1'},
+              'agentCapabilities': {'mcpCapabilities': {'http': True}}}})
+    elif method == 'session/new':
+        session = str(uuid.uuid4())
+        record('new')
+        emit({'id': identity, 'result': {'sessionId': session}})
+    elif method == 'session/prompt':
+        assert params['sessionId'] == session
+        record('prompt')
+        if params['prompt'][0]['text'] == 'CANCEL':
+            pending = identity
+        else:
+            emit({'method': 'session/update', 'params': {'sessionId': session,
+                  'update': {'sessionUpdate': 'agent_message_chunk',
+                             'content': {'type': 'text', 'text': 'FIXTURE_REPLY'}}}})
+            emit({'id': identity, 'result': {'stopReason': 'end_turn'}})
+    elif method == 'session/cancel':
+        if pending is not None:
+            emit({'id': pending, 'result': {'stopReason': 'cancelled'}})
+            pending = None
+    elif identity is not None:
+        emit({'id': identity, 'error': {'code': -32601, 'message': 'unsupported'}})
+'''
+
+
+
 def exercise(app, b, root):
     kind = b.BindingRuntimeResourceKind
     content = b.BindingResourceTemplateContent
@@ -116,7 +164,8 @@ def exercise(app, b, root):
     rules = app.save_resource_template(resource('rules', content.INSTRUCTIONS(body='RULES\n'))).summary
     docs = app.save_resource_template(resource('docs', content.MCP(
         transport=b.BindingTemplateMcpTransport.STDIO(
-            command='docs-mcp', args=['--x'], env={'TOKEN': 'SYNTHETIC-SECRET'})))).summary
+            command='docs-mcp', args=['--x'], env={'TOKEN': 'SYNTHETIC-SECRET'}, cwd=None),
+        timeout_seconds=None))).summary
     helper = app.save_resource_template(resource('helper', content.SUBAGENT(
         description='d', instructions='do it', model=None, tools=[]))).summary
     assert 'SYNTHETIC-SECRET' not in repr(app.read_resource_template(docs.id))
@@ -158,7 +207,60 @@ def exercise(app, b, root):
         enabled=False, id='codex', name='codex', type_id='codex-0.159.3',
         gateway_id='default', settings={'agentDir': str(root / 'codex')}))
     assert isinstance(states(docs.id)['codex'], state.NOT_ENABLED), '删除运行时应清理启用记录'
+    app.apply_resource_template(docs.id, [target('codex')])
     print('PASS 删除资源与运行时', flush=True)
+
+    # MCP 工作目录与超时按运行时换算；Claude 没有工作目录。
+    tuned = app.save_resource_template(resource('tuned', content.MCP(
+        transport=b.BindingTemplateMcpTransport.STDIO(command='t', args=[], env={}, cwd='/srv'),
+        timeout_seconds=30))).summary
+    reports = app.apply_resource_template(tuned.id, [target('claude'), target('codex'), target('pi')])
+    assert any('工作目录' in n for n in next(r.notes for r in reports if r.runtime_id == 'claude'))
+    claude_json = json.loads((root / 'claude' / '.claude.json').read_text())['mcpServers']['tuned']
+    assert claude_json['timeout'] == 30000 and 'cwd' not in claude_json
+    codex_toml = (root / 'codex' / 'config.toml').read_text()
+    assert 'tool_timeout_sec = 30' in codex_toml and 'cwd = "/srv"' in codex_toml
+    pi_json = json.loads((root / 'pi' / 'mcp.json').read_text())['mcpServers']['tuned']
+    assert pi_json['timeout'] == 30 and pi_json['cwd'] == '/srv'
+    back = app.import_runtime_resource('codex', kind.MCP_SERVERS, 'tuned').template.content
+    assert back.timeout_seconds == 30 and back.transport.cwd == '/srv'
+    print('PASS MCP 工作目录与超时', flush=True)
+
+    # 差异：原生被改时给出两侧文本。
+    (root / 'pi' / 'mcp.json').write_text(json.dumps({'mcpServers': {'tuned': {'command': 'other'}}}))
+    drift = app.resource_drift('pi', tuned.id)
+    assert len(drift) == 1 and '"other"' in drift[0].native and '"t"' in drift[0].library
+    assert 'other' not in repr(drift)
+    app.resolve_resource_binding('pi', tuned.id, b.BindingResolution.OVERWRITE)
+    assert app.resource_drift('pi', tuned.id) == []
+    print('PASS 差异', flush=True)
+
+    # 忙时保存留作待同步，空闲后任一请求自动补写。
+    (root / 'peer.py').write_text(PEER)
+    (root / 'project').mkdir(exist_ok=True)
+    app.upsert_acp_runtime(b.BindingRuntimeInstance(
+        enabled=True, id='live', name='Live', type_id='acp-v1', gateway_id='default',
+        settings={'binary': sys.executable}),
+        b.BindingRuntimeExecution(transport=b.BindingRuntimeTransport.LOCAL(),
+                                  home=b.BindingRuntimeHome.INHERIT(), remote_resources_directory=None),
+        b.BindingAcpLaunch(args=[str(root / 'peer.py')], environment={'FIXTURE_STATE': str(root / 'live')}))
+    default = b.BindingModelSelection.RUNTIME_DEFAULT()
+    conversation = app.create_conversation_with_selection('live', str(root / 'project'), default).snapshot.conversation.id
+    app.send_turn_with_selection('live', conversation, 'live', default, 'CANCEL')
+    saved = app.save_resource_template(resource('tuned', content.MCP(
+        transport=b.BindingTemplateMcpTransport.STDIO(command='t2', args=[], env={}, cwd=None),
+        timeout_seconds=None), tuned.id))
+    assert saved.reports == []
+    assert isinstance(states(tuned.id)['codex'], state.PENDING)
+    reject(lambda: app.apply_resource_template(tuned.id, [target('codex')]))
+    app.cancel('live')
+    deadline = time.monotonic() + 5
+    while not isinstance(states(tuned.id)['codex'], state.SYNCED):
+        assert time.monotonic() < deadline, '空闲后应自动补写'
+        time.sleep(.05)
+    assert 'command = "t2"' in (root / 'codex' / 'config.toml').read_text()
+    app.close_collaboration()
+    print('PASS 忙时待同步、空闲后自动补写', flush=True)
 
     app.shutdown()
     reopened = type(app).open(b.BindingOptions(

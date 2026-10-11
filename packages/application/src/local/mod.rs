@@ -106,6 +106,8 @@ pub struct CoreRuntime {
     composer_drafts: BTreeMap<String, String>,
     resource_templates: Vec<crate::ResourceTemplate>,
     resource_bindings: Vec<crate::ResourceBinding>,
+    /// A resource save could not reach its runtimes because one was busy; retried once idle.
+    resource_sync_due: bool,
     conversation_browser_preferences: crate::config::ConversationBrowserPreferences,
     transcript_projection: velune_agent_runtime::transcript::TranscriptProjection,
     transcript_conversation_id: Option<String>,
@@ -167,6 +169,7 @@ impl CoreRuntime {
             outline_presentation: persisted.outline_presentation,
             composer_drafts,
             resource_templates,
+            resource_sync_due: !resource_bindings.is_empty(),
             resource_bindings,
             conversation_browser_preferences: persisted.conversation_browser_preferences,
             transcript_projection: Default::default(),
@@ -335,6 +338,7 @@ impl CoreRuntime {
 
     pub(crate) fn request_inner(&mut self, request: &Value) -> Result<Value, RuntimeError> {
         self.drain_runtime()?;
+        self.sync_due_resources();
         if request["version"] != CONTRACT_VERSION {
             return Err(RuntimeError::Unsupported(
                 "projection contract version".into(),
