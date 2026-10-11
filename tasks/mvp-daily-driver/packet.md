@@ -50,3 +50,17 @@
 ## 仓库卫生（2026-10-11）
 
 用户指出 `.DS_Store` 未被忽略说明 `.gitignore` 不完善，且仓库接近 monorepo，各 unit 至少应有自己的 `.gitignore`。已补根目录的系统／编辑器元数据规则，并为 packages 下七个 unit、`app/mac`、`app/host` 各加 `.gitignore`（单独构建输出、npm／Go 手动构建产物、SwiftPM／Xcode 用户状态）；没有已跟踪文件被新规则命中。
+
+## ① 多会话并行：设计（2026-10-11）
+
+现状：执行相关状态（`active_state`、`pi`、网关 runner／隧道、执行运行时、模型选择、未提交草稿、逻辑投影、transcript 投影、协作范围）是 `CoreRuntime` 的单份字段，所有会话用例都围绕“当前会话”编写。
+
+- **会话通道 `Session`**：把上述字段收进一个结构，`CoreRuntime.session` 为当前聚焦的会话，其余在 `parked`。切换是整体 swap，既有用例逻辑不改写。备选“每个用例显式接收 `&mut Session`”改动面大，留待后续需要时再做。
+- **身份与路由**：会话以公开会话 ID 标识（逻辑链接用 origin，未提交草稿用其公开 ID）。open／sendTurn／cancel／回复交互／重命名／删除／ACP 会话配置先聚焦目标会话（没有则新建空通道）；getSnapshot／getSnapshotUpdate 只读已有通道，没有则 absent，不新建；create 总是新通道。`cancel` 与 `replyRuntimeInteraction` 增加会话 ID（hard-cutoff）。
+- **推进**：每个请求先推进所有通道（swap 进入、drain、swap 回）。每个会话同一时刻最多一个 turn。
+- **保留**：执行中、有待处理交互或有协作范围的通道不淘汰；空闲通道按最近使用保留 8 个，淘汰时正常关闭。
+- **隔离**：同一运行时的并发执行各用一个 lane 目录（`runtime-projections/<runtime>/lane-<n>`），避免 Pi 的 models.json／选择文件与 DSH 网关补丁互相覆盖；lane 取未被其他存活通道占用的最小编号。
+- **全局操作**：配置类检查从“当前会话忙”改为“任一通道忙或有协作范围”；提供商／运行时／认证变更对每个受影响通道执行原有失效逻辑。
+- **新接口 `active_conversations`**：列出执行中或有待处理交互的会话（上下文运行时、会话 ID、运行状态、待处理交互数），供侧栏指示与后续通知轮询。
+- **Mac**：每个窗口轮询自己打开的会话；应用级 store 轮询 `active_conversations`；执行时不再禁用侧栏、切换与新建会话；重命名／删除拒绝正在执行的会话；配置编辑在任一会话执行时仍被阻止。
+- 协作 API（脚本使用，Mac 未接入）仍作用于当前聚焦的会话。
