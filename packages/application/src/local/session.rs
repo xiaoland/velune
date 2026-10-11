@@ -20,6 +20,10 @@ pub(super) struct Session {
     pub(super) gateway_tunnel: Option<velune_agent_runtime::execution::LoopbackTunnel>,
     /// Private execution files of this session's runtime; see `CoreRuntime::lane`.
     pub(super) lane: Option<usize>,
+    pub(super) source: Option<live::SourceWatch>,
+    /// When this session was last seen executing; its native writes until
+    /// shortly after that are Velune's own.
+    pub(super) last_execution: Option<std::time::Instant>,
 }
 
 impl Session {
@@ -209,10 +213,11 @@ impl CoreRuntime {
         runtime_projection.join(format!("lane-{lane}"))
     }
 
-    /// Conversations that execute or wait for the user, across sessions.
-    /// Polled often, so it reads each native view without building a snapshot.
-    pub(super) fn active_conversations(&self) -> Vec<crate::ActiveConversation> {
-        std::iter::once(&self.session)
+    /// Conversations that execute or wait for the user, across sessions, then
+    /// those running outside Velune. Polled often, so it reads each native
+    /// view without building a snapshot.
+    pub(super) fn active_conversations(&mut self) -> Vec<crate::ActiveConversation> {
+        let mut active: Vec<_> = std::iter::once(&self.session)
             .chain(&self.parked)
             .filter_map(|session| {
                 let view = session.projected()?;
@@ -224,6 +229,8 @@ impl CoreRuntime {
                     pending_interactions: pending as u32,
                 })
             })
-            .collect()
+            .collect();
+        active.extend(self.elsewhere_conversations());
+        active
     }
 }

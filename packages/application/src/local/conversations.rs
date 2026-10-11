@@ -180,21 +180,19 @@ impl CoreRuntime {
         let id = request["payload"]["conversationID"]
             .as_str()
             .ok_or_else(|| RuntimeError::invalid("conversation id"))?;
-        let (snapshot, projection) =
-            if let Some(link) = self.conversation_links.iter().find(|link| link.id == id) {
-                if link
-                    .segments
-                    .first()
-                    .is_none_or(|s| s.runtime_instance_id != runtime_id)
-                {
-                    return Err(RuntimeError::invalid("会话来源运行时不匹配"));
-                }
-                let (snapshot, projection) = self.read_link(link)?;
-                (snapshot, Some(projection))
-            } else {
-                (self.read_history(runtime_id, id)?, None)
-            };
+        let (snapshot, projection) = self.read_conversation_source(runtime_id, id)?;
         self.invalidate_execution()?;
+        self.present_history(snapshot, projection);
+        self.snapshot_result()
+    }
+
+    /// Show a conversation as read from its native history in the addressed
+    /// session, which holds no execution.
+    pub(super) fn present_history(
+        &mut self,
+        snapshot: ConversationSnapshot,
+        projection: Option<LogicalProjection>,
+    ) {
         self.session.logical_projection = projection;
         self.session.unsubmitted_draft = None;
         self.session.model_record_key = snapshot.model_record_key.clone();
@@ -203,10 +201,11 @@ impl CoreRuntime {
             .clone()
             .map(|model_record_key| crate::ModelSelection::Managed { model_record_key });
         self.session.active_state = ActiveState::History(Box::new(snapshot));
-        self.snapshot_result()
+        // Follow the native file from this read on.
+        self.session.source = None;
     }
 
-    fn read_conversation_source(
+    pub(super) fn read_conversation_source(
         &self,
         runtime_id: &str,
         id: &str,

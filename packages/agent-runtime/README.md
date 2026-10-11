@@ -10,6 +10,8 @@
 
 Pi 来源适配器按固定 SDK 1.0.2 的协议与有效兼容要求判断可导入性。Chat Completions 的已知设置只在当前网关请求能保持其语义时放行；原提供商和 URL 推断的输出字段、推理格式等默认要求也参与判断。`max_tokens` 来源设置通过可选 Pi 投影交给 application 转换为提供商模型的类型化 wire 选项，adapter 不依赖 AI-provider。未知字段或需要未实现 wire 行为的设置逐项说明原因，不将所有非空 compat 对象一概拒绝，也不把旧 Codex 后端或 Messages API 冒充受支持的 OpenAI 协议。
 
+`activity` 是对本机原生会话文件的 best-effort 观察：按 Codex rollout、Claude Code project JSONL 与 Pi 会话目录的布局定位会话文件、给出变化标记，并读取文件末尾记录判断最近的 turn 是否尚未结束（Codex 的 `task_started`／`turn_started` 与 `task_complete`／`turn_complete`／`turn_aborted`；Claude Code 末条未回答的用户输入或等待结果的工具调用；Pi 末条 user／toolResult 或 `stopReason=toolUse`）。它不解析展示用历史，进程中途退出与仍在运行无法区分，由调用方按最近修改时间限定。
+
 Pi 固定版本及协议边界见 [开发说明](../../docs/development.md)。SDK 与 Node 资源只随需要本地执行的 app 装配，不进入禁用 local-runtime 的绑定产物。
 
 ## 版本与原生控制

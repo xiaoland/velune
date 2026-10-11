@@ -10,6 +10,7 @@ pub use client::*;
 pub use projection::PiProjection;
 
 pub mod acp;
+pub mod activity;
 pub mod authentication;
 pub mod provider_source;
 

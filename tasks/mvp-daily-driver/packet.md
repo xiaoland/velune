@@ -75,3 +75,20 @@
 - 既有脚本：`manual-runtime-interactions`、`manual-acp-adapter`、`manual-resource-library`、`manual-continuation-boundaries` 通过（前两者已改用新签名）。`manual-session-loading.py` 在本改动前已因 `createConversation` 签名过时无法编译，未修；`manual-cross-harness`／`manual-harness-interoperation` 需要 DSH／OpenCode，本机没有，协作路径未复验。
 - 未验证：Codex／Claude Code 原生会话的并发执行（逻辑与 Pi 同路径，未用真实 CLI 并发跑）；SSH 运行时的并发。
 - 安装：`994b7c4` release 构建已安装 `/Applications/Velune.app`（0.1 beta.1、config schema 8、manifest dirty=false），严格签名通过；正常退出旧应用后安装并重新打开，无崩溃报告。
+
+## ② 会话实时状态（2026-10-11）
+
+- 观察：Mac 打开会话使用只读 `readConversation`，核心不保留会话通道，窗口轮询一直返回 absent；因此打开的会话从不实时更新，此前只能靠“重新读取”。
+- 核心：被 snapshot 轮询而没有通道的会话由首次轮询读入并打开通道（读失败仍返回 absent）；`live.rs` 对本机 Codex／Claude Code／Pi 运行时每秒比对原生文件 mtime／长度，未在 Velune 执行且有改动时重读（空闲执行先释放），按读取耗时放宽间隔；自身执行中及结束 5 秒内的写入视为自己的。
+- 外部进行中：`agent-runtime::activity` 读文件末尾 256 KiB 判断 turn 是否未结束；10 分钟内写入的未结束 turn 为新增 `RunState::Elsewhere`，不能取消、仍可发送；`active_conversations` 每 5 秒扫描会话目录附加 Elsewhere 会话，排除 Velune 正在或刚刚执行的会话。Codex 0.159.3 二进制同时含 `task_*` 与 `turn_*` 两套事件名，两者都接受。
+- Mac：侧栏对 Elsewhere 会话显示同样的小型进度指示（提示“可能正在 Velune 之外运行”）；对话底部状态行说明内容随原生记录更新；出现列表中没有的外部会话时自动重新读取列表；Elsewhere 不锁定配置，不阻止发送。
+- 不跟随：SSH、ACP、DeepSeek Harness、跨 Harness 续接的逻辑会话；这些仍靠手动重新读取。
+
+验证：
+
+- 静态检查 fmt／clippy（workspace all-targets all-features）／`--no-default-features`、Swift 严格构建通过。
+- `scripts/manual-live-sessions.py`（新增）：另一进程经 Pi SDK 追加消息——打开的会话重读并标 Elsewhere；外部回复后恢复空闲；外部新建会话被报告并列入列表；自身执行及其尾随写入从不报告为 Elsewhere；自身执行后的外部改动被重读，下一 turn 接续改动后的会话——全部通过。
+- 临时 Rust 程序（/tmp，未提交）以合成 Codex rollout 与 Claude Code JSONL 检查 turn 边界、中断、本地命令、sidechain、sub-agent 目录、定位、最近扫描与截断尾部——通过。
+- Mac：隔离 HOME 的开发构建打开会话 A，外部进程追加提示后数秒内侧栏出现指示、消息列表出现新提示与 Elsewhere 状态行；追加回复后指示与状态行消失（窗口截图）。
+- 既有脚本 parallel-sessions、runtime-interactions、acp-adapter、continuation-boundaries、resource-library 通过。
+- 未验证：真实 Codex／Claude Code 会话的事件格式与 Codex app-server 重读耗时（未读取真实会话）；实际外部 Harness 长时间工具调用超过 10 分钟无写入时会被视为已放弃。

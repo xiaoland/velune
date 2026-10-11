@@ -24,6 +24,8 @@ pub enum BindingRunState {
     Running,
     Stopping,
     Failed,
+    /// Best-effort: the conversation appears to run outside Velune.
+    Elsewhere,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]

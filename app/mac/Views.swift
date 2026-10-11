@@ -35,6 +35,9 @@ struct VeluneRootView: View {
                                 if store.runningConversationIDs.contains(conversation.id) {
                                     Spacer(minLength: 0)
                                     ProgressView().controlSize(.mini).help("正在运行").accessibilityLabel("正在运行")
+                                } else if store.elsewhereConversationIDs.contains(conversation.id) {
+                                    Spacer(minLength: 0)
+                                    ProgressView().controlSize(.mini).help("可能正在 Velune 之外运行").accessibilityLabel("可能正在 Velune 之外运行")
                                 }
                             }
                             HStack(spacing: 8) {

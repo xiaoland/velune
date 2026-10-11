@@ -26,7 +26,7 @@ enum BindingMapping {
     }
 
     static func runState(_ value: BindingRunState) -> RunState {
-        switch value { case .idle: return .idle; case .running: return .running; case .stopping: return .stopping; case .failed: return .failed }
+        switch value { case .idle: return .idle; case .running: return .running; case .stopping: return .stopping; case .failed: return .failed; case .elsewhere: return .elsewhere }
     }
 
     static func actions(_ value: BindingConversationActions) -> ConversationActions {

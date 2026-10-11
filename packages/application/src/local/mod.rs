@@ -102,6 +102,7 @@ pub struct CoreRuntime {
     session: session::Session,
     /// Other open conversation sessions, most recently used last.
     parked: Vec<session::Session>,
+    elsewhere: live::ElsewhereScan,
     gateways: Vec<GatewayConfig>,
     model_templates: Vec<crate::config::ModelTemplate>,
     conversation_links: Vec<crate::config::ConversationLink>,
@@ -133,6 +134,7 @@ mod continuation;
 mod conversations;
 mod delivery;
 mod execution;
+mod live;
 mod model_selection;
 mod native_composition;
 mod pi_composition;
@@ -157,6 +159,7 @@ impl CoreRuntime {
             options,
             session: Default::default(),
             parked: Vec::new(),
+            elsewhere: live::ElsewhereScan::default(),
             repository,
             gateways: persisted.gateways,
             model_templates: persisted.model_templates,
@@ -239,15 +242,27 @@ impl CoreRuntime {
             if !self.runtime_instance(runtime_id)?.enabled {
                 return Err(RuntimeError::invalid("此运行时已停用"));
             }
-            return Ok(None);
+            // A conversation shown read-only has no session yet; its first
+            // poll opens one so the view can follow native changes.
+            match self.read_conversation_source(runtime_id, conversation_id) {
+                Ok((snapshot, projection)) => self.present_history(snapshot, projection),
+                Err(error) => {
+                    tracing::warn!(target: "velune_application", event = "followed_conversation_read_failed", detail = %error);
+                    return Ok(None);
+                }
+            }
         }
         self.sync_projection()?;
+        self.follow_source();
         Ok(self.current_snapshot().filter(|snapshot| {
             snapshot.context_runtime_id == runtime_id && snapshot.conversation.id == conversation_id
         }))
     }
     fn drain_runtime(&mut self) -> Result<(), RuntimeError> {
         let was_busy = self.busy();
+        if was_busy {
+            self.session.last_execution = Some(std::time::Instant::now());
+        }
         let result = match &mut self.session.active_state {
             ActiveState::Acp(session) => session
                 .poll()

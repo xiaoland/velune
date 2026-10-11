@@ -50,6 +50,9 @@ pub enum RunState {
     Running,
     Stopping,
     Failed,
+    /// Best-effort: the native records show a turn that has not ended and was
+    /// written recently, outside this Velune execution. Velune cannot stop it.
+    Elsewhere,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

@@ -19,6 +19,10 @@ final class AppStore: ObservableObject {
     /// Conversations executing in this application, across windows; polled by
     /// the application store and copied by workspaces.
     @Published private(set) var runningConversationIDs: Set<String> = []
+    /// Best-effort: conversations whose native records show a turn running outside Velune.
+    @Published private(set) var elsewhereConversationIDs: Set<String> = []
+    /// Conversations running elsewhere that the list did not contain when last read again.
+    private var unlistedElsewhereIDs: Set<String> = []
     @Published private(set) var nextTurnRuntimeID: String?
     @Published private(set) var nextTurnModelRecordKey: String?
     let transcript = TranscriptModel()
@@ -134,6 +138,7 @@ final class AppStore: ObservableObject {
         if authenticationResult != application.authenticationResult { authenticationResult = application.authenticationResult }
         if problems != application.problems { problems = application.problems }
         if runningConversationIDs != application.runningConversationIDs { runningConversationIDs = application.runningConversationIDs }
+        if elsewhereConversationIDs != application.elsewhereConversationIDs { elsewhereConversationIDs = application.elsewhereConversationIDs }
         reconcileNextTurnIntent()
     }
 
@@ -248,6 +253,12 @@ final class AppStore: ObservableObject {
                     self.clearActivityProblem("active-conversations")
                     let running = Set(active.filter { $0.runState == .running || $0.runState == .stopping }.map(\.conversationId))
                     if self.runningConversationIDs != running { self.runningConversationIDs = running }
+                    let elsewhere = Set(active.filter { $0.runState == .elsewhere }.map(\.conversationId))
+                    if self.elsewhereConversationIDs != elsewhere { self.elsewhereConversationIDs = elsewhere }
+                    // A conversation started outside Velune appears once the list is read again.
+                    let unlisted = elsewhere.filter { id in !self.conversations.contains { $0.id == id } }
+                    if !unlisted.isSubset(of: self.unlistedElsewhereIDs) { self.refreshConversations() }
+                    self.unlistedElsewhereIDs = unlisted
                 case .failure(let failure): self.recordProblem(failure, source: "读取运行状态", activityKey: "active-conversations")
                 }
             }
@@ -271,8 +282,9 @@ final class AppStore: ObservableObject {
     }
     var canReloadFromRuntimes: Bool { !isPreview && !isLoading && !isShuttingDown && !isGenerating && !executionStarting && pendingConversationID == nil }
     /// Runtimes own their sessions and can change them outside Velune (another
-    /// client, a turn still running there). Velune does not watch for that; this
-    /// reads the conversation list and the open conversation again.
+    /// client, a turn still running there). The core follows local native files
+    /// best-effort; this reads the conversation list and the open conversation
+    /// again for whatever that misses.
     func reloadFromRuntimes() {
         guard canReloadFromRuntimes, let transport else { return }
         let open = isDraft ? nil : snapshot?.conversation
@@ -882,7 +894,12 @@ final class AppStore: ObservableObject {
         snapshot = value; projectionRuntimeID = value.contextRuntimeID; selectedConversationID = value.conversation.id; restoreNextTurnIntent(for: value); if !preserveSelection && selectedConversationIDs.count <= 1 { selectedConversationIDs = [value.conversation.id] }; transcript.apply(value.messages, turns: value.transcriptTurns, items: value.transcriptItems, outline: value.transcriptOutline, identities: value.transcriptMessageIdentities)
         if let index = conversations.firstIndex(where: { $0.id == value.conversation.id }) { if conversations[index] != value.conversation { conversations[index] = value.conversation } }
         else if !isDraft { conversations.insert(value.conversation, at: 0) }
-        activity = value.runState == .running ? "正在思考与执行" : value.runState == .stopping ? "正在停止" : nil
+        activity = switch value.runState {
+        case .running: "正在思考与执行"
+        case .stopping: "正在停止"
+        case .elsewhere: "可能正在 Velune 之外运行；内容随原生记录更新"
+        case .idle, .failed: nil
+        }
         if isPreview { previewSnapshots[value.conversation.id] = value }
     }
     /// Preparation and operation results replace the projection; polling asks

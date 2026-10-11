@@ -17,6 +17,8 @@ enum RunState: String, Codable {
     case running
     case stopping
     case failed
+    /// Best-effort: the native records show a turn running outside Velune.
+    case elsewhere
 }
 
 struct ConversationActions: Codable, Sendable, Equatable {
