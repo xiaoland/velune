@@ -100,3 +100,4 @@
 - Mac：`Notifications.swift` 的 `ConversationNotifier` 由应用级 store 持有；完成、失败与待确认交互数增加时发系统通知（每会话一条，新状态替换旧的），前台正在查看该会话时不发，用户停止的不发；首次需要时请求通知授权（提示、声音），是否显示由系统设置决定。点击通知激活应用并在最近成为 key 的窗口打开该会话。Dock 标记 = 有待确认交互的会话 ∪ 后台期间结束的会话，回到前台清除后者。
 - 验证：静态检查与 Swift 严格构建通过；`manual-parallel-sessions.py` 新增结果检查（完成、停止、上游 400 拒绝为失败，同一游标不重复返回）通过；live-sessions 脚本通过。
 - 未验证：Mac 的系统通知、授权提示、点击打开与 Dock 标记未实际运行——开发构建与安装版同为 `local.velune.prototype`，首次通知会弹出系统授权提示，属于用户决定，开发方不在调试中触发。所有窗口都关闭时点击通知只激活应用，不新开窗口。
+- 安装：`8ea8655` release 构建已安装 `/Applications/Velune.app`（0.1 beta.1、config schema 8、manifest dirty=false），严格签名通过；正常退出旧应用后安装并重新打开，无崩溃报告；安装后 runtime-interactions、continuation-boundaries、acp-adapter 脚本通过。
