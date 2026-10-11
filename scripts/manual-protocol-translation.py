@@ -38,6 +38,137 @@ PROTOCOL_PATH = {
 }
 
 
+def parse_sse(payload):
+    """Return (event, JSON data) pairs from an SSE response."""
+    records = []
+    for block in payload.decode("utf-8").replace("\r\n", "\n").split("\n\n"):
+        event = "message"
+        data = []
+        for line in block.splitlines():
+            if line.startswith("event:"):
+                event = line[6:].strip()
+            elif line.startswith("data:"):
+                data.append(line[5:].lstrip())
+        if data and "[DONE]" not in data:
+            records.append((event, json.loads("\n".join(data))))
+    return records
+
+
+def assert_tool_result(source, payload):
+    """Validate the response using the request's wire protocol."""
+    tools = {"call-1": ("lookup", {"input": "x 🌿"}),
+             "call-2": ("search", {"query": "x"})}
+    if payload.startswith(b"{"):
+        value = json.loads(payload)
+        usage = value.get("usage") or {}
+        assert usage, (source, value)
+        if source == "chat":
+            calls = value["choices"][0]["message"]["tool_calls"]
+            got = [(c["id"], c["function"]["name"], json.loads(c["function"]["arguments"])) for c in calls]
+        elif source == "messages":
+            calls = [c for c in value["content"] if c["type"] == "tool_use"]
+            got = [(c["id"], c["name"], c["input"]) for c in calls]
+        else:
+            calls = [c for c in value["output"] if c["type"] == "function_call"]
+            got = [(c["call_id"], c["name"], json.loads(c["arguments"])) for c in calls]
+        assert got == [(key, name, args) for key, (name, args) in tools.items()], (source, got)
+        if source == "chat":
+            assert value["choices"][0]["finish_reason"] == "tool_calls"
+        elif source == "messages":
+            assert value["stop_reason"] == "tool_use"
+        else:
+            assert value["status"] == "completed"
+        return
+    records = parse_sse(payload)
+    assert records, (source, payload[:300])
+    got = {}
+    usage = False
+    stop = None
+    if source == "chat":
+        for _, item in records:
+            usage |= bool(item.get("usage"))
+            for choice in item.get("choices", []):
+                delta = choice.get("delta", {})
+                for call in delta.get("tool_calls", []):
+                    key = call.get("index", 0)
+                    item_state = got.setdefault(key, [None, None, ""])
+                    fn = call.get("function", {})
+                    item_state[0] = call.get("id", item_state[0])
+                    item_state[1] = fn.get("name", item_state[1])
+                    item_state[2] += fn.get("arguments", "")
+                stop = choice.get("finish_reason") or stop
+        assert [(i[0], i[1], json.loads(i[2])) for i in got.values()] == [(key, name, args) for key, (name, args) in tools.items()], (source, got)
+    elif source == "messages":
+        for event, item in records:
+            if event == "content_block_start" and item.get("content_block", {}).get("type") == "tool_use":
+                block = item["content_block"]
+                got[item.get("index", len(got))] = [block["id"], block["name"], json.dumps(block.get("input", {}), ensure_ascii=False, separators=(",", ":")) if block.get("input") else ""]
+            elif event == "content_block_delta":
+                delta = item.get("delta", {})
+                if delta.get("type") == "input_json_delta":
+                    got[item["index"]][2] += delta["partial_json"]
+            elif event == "message_delta":
+                stop = item.get("delta", {}).get("stop_reason") or stop
+                usage |= bool(item.get("usage"))
+        assert [(i[0], i[1], json.loads(i[2])) for i in got.values()] == [(key, name, args) for key, (name, args) in tools.items()], (source, got)
+    else:
+        for event, item in records:
+            if event == "response.output_item.added" and item.get("item", {}).get("type") == "function_call":
+                call = item["item"]
+                key = call.get("id") or call.get("call_id") or item.get("output_index")
+                got[key] = [call["call_id"], call["name"], call.get("arguments", "")]
+            elif event == "response.function_call_arguments.delta":
+                key = item.get("item_id", item.get("output_index"))
+                if key not in got:
+                    key = next((k for k, value in got.items() if value[0] == item.get("call_id")), None)
+                got[key][2] += item["delta"]
+            elif event in ("response.completed", "response.incomplete"):
+                response = item.get("response", {})
+                usage |= bool(response.get("usage"))
+                stop = response.get("status")
+        assert [(i[0], i[1], json.loads(i[2])) for i in got.values()] == [(key, name, args) for key, (name, args) in tools.items()], (source, got)
+    assert usage and stop in ("tool_calls", "tool_use", "completed"), (source, stop, records)
+
+
+def assert_final_result(source, payload):
+    if payload.startswith(b"{"):
+        value = json.loads(payload)
+        usage = value.get("usage") or {}
+        if source == "chat":
+            text = value["choices"][0]["message"]["content"]
+            stop = value["choices"][0]["finish_reason"]
+        elif source == "messages":
+            text = value["content"][0]["text"]
+            stop = value["stop_reason"]
+        else:
+            text = value["output"][0]["content"][0]["text"]
+            stop = value["status"]
+    else:
+        records = parse_sse(payload)
+        usage = {}
+        text = ""
+        stop = None
+        for event, item in records:
+            if source == "chat":
+                usage.update(item.get("usage") or {})
+                choices = item.get("choices") or []
+                if choices:
+                    text += choices[0].get("delta", {}).get("content") or ""
+                    stop = choices[0].get("finish_reason") or stop
+            elif source == "messages":
+                delta = item.get("delta", {})
+                text += delta.get("text", "") if delta.get("type") == "text_delta" else ""
+                stop = delta.get("stop_reason") or stop
+                usage.update(item.get("usage") or {})
+            elif event == "response.output_text.delta":
+                text += item.get("delta", "")
+            elif event in ("response.completed", "response.incomplete"):
+                response = item.get("response", {})
+                stop = response.get("status")
+                usage.update(response.get("usage") or {})
+    assert text == "SYNTHETIC_FINAL 🌿" and usage and stop in ("stop", "end_turn", "completed"), (source, text, stop, usage)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--deps", required=True, type=Path)
@@ -130,12 +261,29 @@ def main():
                 created = {**response, "status": "in_progress", "output": []}
                 events = [("response.created", {"type": "response.created", "response": created})]
                 for index, item in enumerate(output):
-                    events.append(("response.output_item.added", {"type": "response.output_item.added", "output_index": index, "item": {**item, "status": "in_progress"}}))
+                    added = {**item, "status": "in_progress"}
+                    if item.get("type") == "function_call":
+                        added["arguments"] = ""
+                    elif item.get("type") == "message":
+                        added["content"] = []
+                    events.append(("response.output_item.added", {"type": "response.output_item.added", "output_index": index, "item": added}))
+                    if item.get("type") == "function_call":
+                        arguments = item["arguments"]
+                        for offset in range(0, len(arguments), 5):
+                            events.append(("response.function_call_arguments.delta", {"type": "response.function_call_arguments.delta", "item_id": item["id"], "output_index": index, "delta": arguments[offset:offset + 5]}))
+                    elif item.get("type") == "message":
+                        part = item["content"][0]
+                        events.append(("response.content_part.added", {"type": "response.content_part.added", "item_id": item["id"], "output_index": index, "part": {"type": "output_text", "text": ""}}))
+                        text = part["text"]
+                        for offset in range(0, len(text), 5):
+                            events.append(("response.output_text.delta", {"type": "response.output_text.delta", "item_id": item["id"], "output_index": index, "delta": text[offset:offset + 5]}))
+                        events.append(("response.output_text.done", {"type": "response.output_text.done", "item_id": item["id"], "output_index": index, "text": text}))
+                        events.append(("response.content_part.done", {"type": "response.content_part.done", "item_id": item["id"], "output_index": index, "part": {"type": "output_text", "text": text}}))
                     events.append(("response.output_item.done", {"type": "response.output_item.done", "output_index": index, "item": item}))
                 events.append(("response.completed", {"type": "response.completed", "response": response}))
                 payload = "".join("event: %s\ndata: %s\n\n" % (name, json.dumps(data)) for name, data in events).encode()
                 content_type = "text/event-stream"
-            if not body.get("stream", True):
+            if not body.get("stream", False):
                 if self.path.endswith("/chat/completions"):
                     response = {"id": "json-1", "object": "chat.completion", "model": body.get("model", "fixture"), "choices": [{"index": 0, "message": {"role": "assistant", "tool_calls": [{"id": "call-1", "type": "function", "function": {"name": "lookup", "arguments": '{"input":"x 🌿"}'}}, {"id": "call-2", "type": "function", "function": {"name": "search", "arguments": '{"query":"x"}'}}]}, "finish_reason": "tool_calls"}], "usage": {"prompt_tokens": 3, "completion_tokens": 2}}
                     if second:
@@ -246,19 +394,22 @@ def main():
                 body = request_body(source_name, target)
                 status, payload = send_json(source_name, body, fragmented=(source_name == "chat"))
                 assert status == 200, (source_name, target, status, payload[:300])
-                assert payload and b"call-1" in payload and b"call-2" in payload and b"\xf0\x9f\x8c\xbf" in payload, (source_name, target, payload[:300])
+                assert_tool_result(source_name, payload)
                 body = request_body(source_name, target, second=True)
                 status, payload = send_json(source_name, body)
-                assert status == 200 and b"SYNTHETIC_FINAL" in payload and b"\xf0\x9f\x8c\xbf" in payload, (source_name, target, payload[:300])
+                assert status == 200, (source_name, target, status, payload[:300])
+                assert_final_result(source_name, payload)
             for source_name, target in directions:
                 body = request_body(source_name, target)
                 body["stream"] = False
                 status, payload = send_json(source_name, body)
-                assert status == 200 and b"call-1" in payload and b"\xf0\x9f\x8c\xbf" in payload, ("json", source_name, target, status, payload[:300])
+                assert status == 200, ("json", source_name, target, status, payload[:300])
+                assert_tool_result(source_name, payload)
                 body = request_body(source_name, target, second=True)
                 body["stream"] = False
                 status, payload = send_json(source_name, body)
-                assert status == 200 and b"SYNTHETIC_FINAL" in payload and b"usage" in payload and b"\xf0\x9f\x8c\xbf" in payload, ("json", source_name, target, status, payload[:300])
+                assert status == 200, ("json", source_name, target, status, payload[:300])
+                assert_final_result(source_name, payload)
             status, payload = send_json("chat", request_body("chat", "responses"), fixture_case="unknown-tail")
             assert status == 200 and b"call-1" in payload, ("unknown-tail", status, payload[:300])
             status, payload = send_json("chat", request_body("chat", "responses"), fixture_case="incomplete")

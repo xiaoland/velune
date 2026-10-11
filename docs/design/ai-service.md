@@ -182,7 +182,9 @@ Payload Debug 脱敏正文及工具参数；观测无正文／headers／原始�
 
 转换器保留上游未知计量：OpenAI 响应的未知 token 字段不补零，只有已知输入和输出才计算 total。Messages 必需的数值字段在无法获知时使用协议结构占位，并记录 `usage / required_numeric_placeholder`；占位不表示实际观测到零用量，不进入网关计量事实。缺少上游 response ID 时生成请求范围的转换 ID，它不是可用于上游查询或历史状态恢复的原生 ID。
 
-本轮参考 LiteLLM 的协议转换组织方式和 Magpie 的同协议旁路边界；固定提交及具体文件见 [转换任务研究证据](../../tasks/llm-protocol-translation/packet.md)。只借鉴职责与流式状态处理，不引入其运行时、厂商策略、隐藏重试或全局配置。
+首版参考 LiteLLM 的协议转换组织方式和 Magpie 的同协议旁路边界；固定提交及具体文件见 [转换任务研究证据](../../tasks/llm-protocol-translation/packet.md)。2026-10-11 用户授权改为接入 New API 的独立 RelayKit 转换模块，以共同维护协议兼容并减少重复实现；接入及验收状态归 [RelayKit 任务](../../tasks/new-api-reuse/packet.md)。
+
+接入边界为 ai-provider 内部的 Go 转换库，不引入 New API 管理服务。Rust 继续拥有 HTTP/SSE、认证、路由、取消、背压和原始计量；App 仍只消费 UniFFI。第三方库私有 ABI 封装请求范围的转换状态，不成为平台产品接口，也不建立常驻 Host 或 IPC。正常结束、失败和释放分别表达，取消及截断不调用成功收尾；同协议继续绕过转换。上游版本和依赖须固定，不能以桥接为名长期保留第二套协议实现或隐藏 fallback。最终发行必须按适用许可完成源码与声明义务。
 
 ## 用量与性能分析契约
 

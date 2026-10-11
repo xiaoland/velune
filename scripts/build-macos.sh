@@ -4,6 +4,7 @@ cd "$(dirname "$0")/.."
 [[ $# -eq 0 || ( $# -eq 1 && "$1" == "--build-only" ) ]] || { echo '用法：scripts/build-macos.sh [--build-only]' >&2; exit 1; }
 [[ "$(uname -s)" == Darwin ]] || { echo 'This script requires macOS + Xcode Command Line Tools.' >&2; exit 1; }
 command -v cargo >/dev/null
+command -v go >/dev/null
 xcrun --find swiftc >/dev/null
 [[ -d target/runtime-support/node_modules/huihua && -f target/runtime-support/THIRD_PARTY_NOTICES.md ]] || {
   echo 'Runtime support is missing; run ./scripts/install-runtime-support.sh first.' >&2
@@ -36,7 +37,11 @@ mkdir -p "$app/Contents/Resources/ThirdParty"
 cp packages/agent-runtime/runtime-support/THIRD_PARTY_NOTICES.md "$app/Contents/Resources/ThirdParty/"
 cp -R packages/agent-runtime/runtime-support/licenses "$app/Contents/Resources/ThirdParty/"
 cp packages/agent-runtime/runtime-support/package-lock.json "$app/Contents/Resources/ThirdParty/runtime-support-package-lock.json"
-cp -R app/mac/Licenses "$app/Contents/Resources/ThirdParty/Swift"
+mkdir -p "$app/Contents/Resources/ThirdParty/Swift"
+cp app/mac/Licenses/*.txt app/mac/Licenses/NOTICE.md "$app/Contents/Resources/ThirdParty/Swift/"
+cp -R app/mac/Licenses/RelayKit "$app/Contents/Resources/ThirdParty/RelayKit"
+cat app/mac/Licenses/RelayKit/NOTICE.md >> "$app/Contents/Resources/ThirdParty/THIRD_PARTY_NOTICES.md"
+cp packages/ai-provider/relaykit-bridge/go.mod packages/ai-provider/relaykit-bridge/go.sum "$app/Contents/Resources/ThirdParty/RelayKit/"
 cp Package.resolved "$app/Contents/Resources/ThirdParty/swift-package-resolved.json"
 cp -R app/mac/Assets/Brand "$app/Contents/Resources/Brand"
 xcrun swift scripts/render-app-icon.swift app/mac/Assets/Brand target/macos/Velune.iconset
@@ -66,6 +71,9 @@ plist['VeluneDisplayVersion']=version
 plist['CFBundleGetInfoString']=version
 plist_path.write_bytes(plistlib.dumps(plist))
 manifest={'source_commit':cmd('git','rev-parse','HEAD'),'dirty':bool(cmd('git','status','--porcelain')),'lock_sha256':hashlib.sha256(Path('Cargo.lock').read_bytes()).hexdigest(),'bindings_version':'0.1.0','uniffi_version':'0.32.2','ui_version':version,'simulation':False,'control_transport':'uniffi','language_contract':'typed','config_schema_version':8,'supported_modes':['conversation_projection','llm_gateway','runtime_instances','synthetic_preview'],'native_verified':False,'rust':cmd('rustc','--version'),'swift':cmd('xcrun','swiftc','--version'),'xcode':cmd('xcodebuild','-version'),'architecture':platform.machine(),'macos':platform.mac_ver()[0],'build_command':'bash scripts/build-macos.sh'}
+manifest['go']=cmd('go','version')
+manifest['relaykit_go_mod_sha256']=hashlib.sha256(Path('packages/ai-provider/relaykit-bridge/go.mod').read_bytes()).hexdigest()
+manifest['relaykit_go_sum_sha256']=hashlib.sha256(Path('packages/ai-provider/relaykit-bridge/go.sum').read_bytes()).hexdigest()
 Path(sys.argv[1]).write_text(json.dumps(manifest,ensure_ascii=False,indent=2))
 PY
 # Ad-hoc local debug signing only. No identity/keychain selection, certificate, or notarization.

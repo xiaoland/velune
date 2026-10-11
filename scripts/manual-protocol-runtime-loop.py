@@ -47,8 +47,7 @@ def main():
                     tool_name = next((name for name in names if name.endswith('exec_command')), None)
                     namespace_case = body['model'].endswith('-namespace')
                     if namespace_case:
-                        tool_name = next((tool.get('function', tool).get('name') for tool in tools
-                                          if tool.get('function', tool).get('description', '').startswith('Wait for agents')), None)
+                        tool_name = next((name for name in names if name.endswith('wait_agent')), None)
                         arguments = {'targets': ['00000000-0000-0000-0000-000000000001'], 'timeout_ms': 0}
                     elif tool_name:
                         arguments = {'cmd': 'cat ' + str(tool_file), 'max_output_tokens': 1000}
@@ -124,7 +123,8 @@ def main():
                     if errors:
                         raise RuntimeError(errors[-1])
                     if snapshot and snapshot.run_state == b.BindingRunState.FAILED:
-                        raise RuntimeError('runtime failed: ' + repr(snapshot))
+                        details = [str(block) for message in snapshot.messages for block in message.blocks]
+                        raise RuntimeError('synthetic runtime failed: ' + case + '; ' + json.dumps(details) + '; requests=' + str(len(captures) - before))
                     if snapshot and snapshot.actions.can_send and len(captures) >= before + 2:
                         texts = [block.text for msg in snapshot.messages for block in msg.blocks if isinstance(block, b.BindingMessageBlock.TEXT)]
                         assert 'SYNTHETIC_FINAL' in texts, texts
@@ -178,18 +178,22 @@ fn main()->Result<(),Box<dyn std::error::Error>> {
                 'models': [{'recordKey': 'pi-chat', 'providerModelId': 'synthetic-pi', 'nickname': 'synthetic', 'maxOutputTokens': 128}]}],
                 'failover': {'mode': 'disabled'}}))
             # Locate only the selected external installation's public SDK exports.
-            ai_package = next((parent / 'node_modules/@earendil-works/pi-ai' for parent in args.pi.resolve().parents
+            resolved = subprocess.run([str(args.node), '--input-type=module', '-e',
+                'import {pathToFileURL} from "node:url"; const {resolvePiInstallation}=await import(pathToFileURL(process.argv[1])); console.log(resolvePiInstallation(process.argv[2]).cli);',
+                str(args.bundle / 'Contents/Resources/pi_sdk.mjs'), str(args.pi)], capture_output=True, text=True, check=True)
+            pi_cli = Path(resolved.stdout.strip())
+            ai_package = next((parent / 'node_modules/@earendil-works/pi-ai' for parent in pi_cli.parents
                               if (parent / 'node_modules/@earendil-works/pi-ai/package.json').exists()), None)
             if ai_package is None:
                 raise RuntimeError('Pi installation does not resolve its public pi-ai package')
             ai_manifest = json.loads((ai_package / 'package.json').read_text())
-            assert ai_manifest['version'] == '1.0.2', 'probe requires Pi SDK 1.0.2'
+            assert ai_manifest['version'] in ('1.0.2', '1.1.0'), 'probe requires a qualified Pi AI SDK version'
             public_index = ai_package / ai_manifest['exports']['.']['import']
             public_responses = ai_package / ai_manifest['exports']['./api/*']['import'].replace('*', 'openai-responses')
             js = root / 'pi-client.mjs'
             js.write_text(r'''import fs from 'node:fs';
 import {pathToFileURL} from 'node:url';
-const [indexPath,apiPath,endpoint,token,file]=process.argv.slice(2);
+const [indexPath,apiPath,endpoint,token,file,sdkVersion]=process.argv.slice(2);
 const {normalizeContext}=await import(pathToFileURL(indexPath));
 const {stream}=await import(pathToFileURL(apiPath));
 const model={id:'velune/model/pi-chat',name:'Synthetic',api:'openai-responses',provider:'synthetic',baseUrl:endpoint,
@@ -206,13 +210,13 @@ context.messages.push(first,{role:'toolResult',toolCallId:call.id,toolName:call.
 const final=await stream(model,normalizeContext(context),{apiKey:token}).result();
 if(final.stopReason==='error'||!final.content.some(c=>c.type==='text'&&c.text==='SYNTHETIC_FINAL'))
  throw Error('SDK failed to complete translated continuation: '+JSON.stringify(final));
-console.log(JSON.stringify({client:'Pi SDK 1.0.2',ingress:'Responses',upstream:'ChatCompletions',requests:2,actualToolContinuation:true}));
+console.log(JSON.stringify({client:'Pi AI SDK '+sdkVersion,ingress:'Responses',upstream:'ChatCompletions',requests:2,actualToolContinuation:true}));
 ''')
             process = subprocess.Popen([str(binary), str(config)], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
             try:
                 info = json.loads(process.stdout.readline())
                 before = len(captures)
-                result = subprocess.run([str(args.node), str(js), str(public_index), str(public_responses), info['endpoint'], info['token'], str(tool_file)],
+                result = subprocess.run([str(args.node), str(js), str(public_index), str(public_responses), info['endpoint'], info['token'], str(tool_file), ai_manifest['version']],
                                         capture_output=True, text=True, timeout=40, check=True)
                 reports.append(json.loads(result.stdout))
                 assert len(captures) == before + 2, 'Pi SDK issued unexpected retries'

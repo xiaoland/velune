@@ -1,14 +1,8 @@
-//! Explicit, request-scoped translation between LLM wire protocols.
-//!
-//! Native requests bypass this module. Best-effort projections report static
-//! conversion notes; malformed structures never become successful outputs.
-mod request;
-mod response;
-mod stream;
-
-use serde_json::Value;
-use std::{collections::BTreeMap, fmt};
-pub use stream::StreamTranslator;
+//! Request-scoped RelayKit protocol conversion. Rust owns transport and authentication.
+mod bridge;
+use bridge::{Session, call};
+use serde_json::{Value, json};
+use std::fmt;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LlmProtocol {
@@ -16,13 +10,20 @@ pub enum LlmProtocol {
     Responses,
     Messages,
 }
-
+impl LlmProtocol {
+    fn wire(self) -> &'static str {
+        match self {
+            Self::ChatCompletions => "openai",
+            Self::Responses => "openai_responses",
+            Self::Messages => "claude",
+        }
+    }
+}
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TranslationErrorKind {
     Invalid,
     Truncated,
 }
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TranslationError {
     pub kind: TranslationErrorKind,
@@ -34,39 +35,45 @@ impl fmt::Display for TranslationError {
     }
 }
 impl std::error::Error for TranslationError {}
-pub(super) fn invalid(field: &'static str) -> TranslationError {
+fn invalid(field: &'static str) -> TranslationError {
     TranslationError {
         kind: TranslationErrorKind::Invalid,
         field,
     }
 }
-/// Immutable conversion plan for one request. Tool names and custom-tool codecs
-/// belong to this plan, not global gateway state.
-pub struct PreparedTranslation {
-    from: LlmProtocol,
-    to: LlmProtocol,
-    request: Value,
-    tools: BTreeMap<String, ToolIdentity>,
-    notes: Vec<ConversionNote>,
-}
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConversionNote {
-    pub field: &'static str,
-    pub code: &'static str,
+    pub field: String,
+    pub code: String,
+}
+
+fn append_notes(notes: &mut Vec<ConversionNote>, result: &Value) {
+    if let Some(values) = result["notes"].as_array() {
+        for value in values {
+            if let (Some(field), Some(code)) = (value["field"].as_str(), value["code"].as_str()) {
+                let note = ConversionNote {
+                    field: field.into(),
+                    code: code.into(),
+                };
+                if !notes.contains(&note) {
+                    notes.push(note);
+                }
+            }
+        }
+    }
+}
+
+pub struct PreparedTranslation {
+    session: Session,
+    request: Value,
+    notes: Vec<ConversionNote>,
 }
 impl fmt::Debug for PreparedTranslation {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("PreparedTranslation")
-            .field("from", &self.from)
-            .field("to", &self.to)
             .finish_non_exhaustive()
     }
-}
-#[derive(Clone)]
-pub(super) struct ToolIdentity {
-    original: String,
-    namespace: Option<String>,
-    custom: bool,
 }
 impl PreparedTranslation {
     pub fn request(&self) -> &Value {
@@ -76,17 +83,20 @@ impl PreparedTranslation {
         &self.notes
     }
     pub fn translate_json(&mut self, body: &Value) -> Result<Value, TranslationError> {
-        request::note(&mut self.notes, "response", "best_effort_projection");
-        response::translate(self.to, self.from, body, &self.tools, &mut self.notes)
+        let mut result = call(self.session.handle, json!({"op":"response", "body":body}))?;
+        append_notes(&mut self.notes, &result);
+        Ok(result["body"].take())
     }
-    pub fn stream(&self, model: String) -> StreamTranslator {
-        StreamTranslator::new(self.to, self.from, model, self.tools.clone())
+    pub fn stream(self, model: String) -> Result<StreamTranslator, TranslationError> {
+        call(self.session.handle, json!({"op":"stream", "model":model}))?;
+        Ok(StreamTranslator {
+            session: self.session,
+            notes: self.notes,
+        })
     }
 }
 
-/// Prepares an asynchronous operation without reading configuration or secrets.
-/// Explicit request output limits take precedence over `target_output_limit`.
-/// The latter is used only when Messages requires a missing `max_tokens`.
+/// Native protocols bypass conversion. Messages uses the configured output limit only when absent.
 pub fn prepare(
     from: LlmProtocol,
     to: LlmProtocol,
@@ -96,49 +106,69 @@ pub fn prepare(
     if from == to {
         return Err(invalid("translation_requires_different_protocols"));
     }
-    let (request, tools, notes) = request::translate(from, to, body, target_output_limit)?;
+    if !body.is_object() {
+        return Err(invalid("request.object"));
+    }
+    if to == LlmProtocol::Messages
+        && target_output_limit.is_none()
+        && ["max_tokens", "max_completion_tokens", "max_output_tokens"]
+            .iter()
+            .all(|key| body[*key].is_null())
+    {
+        return Err(invalid("max_tokens_required"));
+    }
+    let mut result = call(
+        0,
+        json!({"op":"prepare", "from":from.wire(), "to":to.wire(), "body":body, "limit":target_output_limit.unwrap_or(0)}),
+    )?;
+    let handle = result["handle"]
+        .as_u64()
+        .and_then(|v| usize::try_from(v).ok())
+        .filter(|v| *v != 0)
+        .ok_or_else(|| invalid("relaykit.handle"))?;
+    let mut notes = vec![];
+    append_notes(&mut notes, &result);
     Ok(PreparedTranslation {
-        from,
-        to,
-        request,
-        tools,
+        session: Session::new(handle),
+        request: result["body"].take(),
         notes,
     })
 }
 
-pub(super) fn object<'a>(
-    value: &'a Value,
-    field: &'static str,
-) -> Result<&'a serde_json::Map<String, Value>, TranslationError> {
-    value.as_object().ok_or_else(|| invalid(field))
+pub struct StreamTranslator {
+    session: Session,
+    notes: Vec<ConversionNote>,
 }
-pub(super) fn string<'a>(
-    value: &'a Value,
-    field: &'static str,
-) -> Result<&'a str, TranslationError> {
-    value.as_str().ok_or_else(|| invalid(field))
+impl fmt::Debug for StreamTranslator {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("StreamTranslator").finish_non_exhaustive()
+    }
 }
-pub(super) fn array<'a>(
-    value: &'a Value,
-    field: &'static str,
-) -> Result<&'a Vec<Value>, TranslationError> {
-    value.as_array().ok_or_else(|| invalid(field))
-}
-
-/// Local conversion identity, never a reference to upstream server-side state.
-pub(super) fn local_response_id() -> String {
-    use std::{
-        sync::atomic::{AtomicU64, Ordering},
-        time::{SystemTime, UNIX_EPOCH},
-    };
-    static NEXT: AtomicU64 = AtomicU64::new(0);
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|value| value.as_nanos())
-        .unwrap_or(0);
-    format!(
-        "velune_translation_{:x}_{now:x}_{:x}",
-        std::process::id(),
-        NEXT.fetch_add(1, Ordering::Relaxed)
-    )
+impl StreamTranslator {
+    pub fn notes(&self) -> &[ConversionNote] {
+        &self.notes
+    }
+    pub fn push_event(&mut self, event: &str, data: &str) -> Result<Vec<u8>, TranslationError> {
+        self.command(json!({"op":"push", "event":event, "data":data}))
+    }
+    pub fn finish(&mut self) -> Result<Vec<u8>, TranslationError> {
+        self.command(json!({"op":"finish"}))
+    }
+    fn command(&mut self, command: Value) -> Result<Vec<u8>, TranslationError> {
+        let result = call(self.session.handle, command)?;
+        append_notes(&mut self.notes, &result);
+        let mut bytes = Vec::new();
+        if let Some(events) = result["events"].as_array() {
+            for event in events {
+                if let Some(kind) = event["type"].as_str() {
+                    bytes.extend_from_slice(format!("event: {kind}\n").as_bytes());
+                }
+                bytes.extend_from_slice(format!("data: {event}\n\n").as_bytes());
+            }
+        }
+        if result["done"] == true {
+            bytes.extend_from_slice(b"data: [DONE]\n\n");
+        }
+        Ok(bytes)
+    }
 }

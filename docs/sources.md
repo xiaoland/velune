@@ -235,3 +235,5 @@ S17 实施授权：用户决定全面切换 UniFFI，并要求现在开始拆分
 同轮用户补充：技术提议未必正确，应理解背后动机；本次目标是尽可能支持更多 Agent Harness，而不逐个适配。通用 ACP 方案必须以接入成本和真实能力覆盖判断，不以协议名称本身作为完成依据。
 
 2026-10-11 用户进一步指出 acpsub 的重点是让不同 runtime 成为另一 runtime 的 sub-agent，并明确这是 Harness 互联互通的关键功能。此要求将工作从通用 ACP 接入扩展到实际跨 Harness 委派与结果闭环，仍沿用 Rust packages 和前端待实现边界。产品要求归 [PRD](prd/index.md#ai-网关与-agent-运行时配置)，实施归 [Harness 协作任务](../tasks/harness-interoperation/packet.md)。
+
+2026-10-11 用户提出复用 New API 的 RelayKit，以参与生态并减少重复维护协议转换；明确授权持续推进至接入完成或获得无法接入的具体证据，允许自主提交，并可考虑相邻 Factory26 的真实提供商或重放入口。技术归属及接入边界归 [AI service](design/ai-service.md)，版本、许可调查与验证归 [RelayKit 任务](../tasks/new-api-reuse/packet.md)。此授权不等于公开发布或替整个项目选择许可证。

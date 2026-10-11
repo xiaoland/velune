@@ -18,6 +18,8 @@ bash scripts/build-macos.sh
 open /Applications/Velune.app
 ```
 
+RelayKit 接入构建还需要 Go 工具链，桥接模块版本及依赖由 `packages/ai-provider/relaykit-bridge/go.mod` 与 `go.sum` 固定；Go 最低版本以该模块声明为准。Go 转换库作为同进程依赖链接，不启动独立网关后台。Mac bundle 的 ThirdParty/RelayKit 保留上游、Go runtime 和传递依赖许可证，以及模块锁文件；“开源许可…”入口包含 New API 署名与原项目链接。构建 manifest 记录 Go 版本和两个模块文件的摘要。具体平台与行为验收见 [RelayKit 任务](../tasks/new-api-reuse/packet.md)，本机成功构建不代表其它平台已通过验证。
+
 应用根目录由启动进程的 `VELUNE_HOME` 环境变量指定，未设置或留空时为 `~/.velune`，非空值必须是绝对目录路径。平台将该路径显式传给 Application，库不自行读取环境。根目录下的 `generic-config.json` 持久化 AI 网关与 Agent 运行时实例配置，API key 由提供商私有认证配置保存，文件权限为 0600；订阅仍委托原 Harness 登录与刷新。公开列表不含 key，查看编辑通过提供商内显式操作。Finder 启动通常不继承 shell 配置，隔离开发可直接带环境运行 bundle 可执行文件：
 
 ```sh

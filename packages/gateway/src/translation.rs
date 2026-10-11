@@ -166,7 +166,13 @@ pub(super) async fn deliver(
     });
     let events = bytes.eventsource();
     futures_util::pin_mut!(events);
-    let mut translator = plan.stream(model);
+    let mut translator = match plan.stream(model) {
+        Ok(translator) => translator,
+        Err(_) => {
+            interrupted(&sender, false, "translation_stream_initialization_failed").await;
+            return;
+        }
+    };
     let mut committed = false;
     let mut meta = Some(converted_meta(meta, true));
     while let Some(event) = events.next().await {

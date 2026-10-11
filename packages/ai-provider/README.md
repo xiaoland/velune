@@ -10,4 +10,8 @@ Messages 保留调用方的 `anthropic-version`／beta 请求头与原生 JSON�
 
 `translation` 提供 ChatCompletions、Responses、Messages 六向 best-effort 转换。调用方只在异协议时构造请求转换计划，并用同一计划转换 JSON 或增量 SSE，保留工具别名的请求内映射。它不依赖 Harness、路由、应用配置或网络。无法对应的字段、状态引用和不透明推理信息尽量降级并给出不含业务值的 `ConversionNote`；真实错误和缺失终态不会被改造成成功。Messages 请求必须有输出上限，调用方可提供模型配置上限作为缺省值；同协议操作不经过此转换器。
 
+转换语义由固定版本的 New API RelayKit 提供，Go 依赖见 `relaykit-bridge/go.mod` 和 `go.sum`。Rust 内部桥接管理唯一请求句柄，流转换消费请求计划，释放不会生成终态。桥接仅处理 JSON 与事件；HTTP、认证、取消和原始计量仍由 Rust 持有。不能跨提供商复用的服务端引用按 best-effort 省略并诊断，不补造历史；内联媒体在本地解析，外部媒体 URL 不触发桥接联网。诊断丢弃上游任意说明与字段值，不把原始错误送入日志。
+
+Cargo 构建会调用 Go，以同进程库链接。Mac 使用 c-archive；Android 配置为 c-shared，需要平台打包相应共享库，不能把它作为常驻进程运行。目标映射不是运行验证，当前平台证据归 [接入任务](../../tasks/new-api-reuse/packet.md)。平台公开接口仍是 UniFFI，这个私有桥接不对 App 暴露。RelayKit 使用 AGPLv3，发行时必须连同适用源码义务处理；Mac 的原始声明和传递依赖许可保存在 [许可证目录](../../app/mac/Licenses/RelayKit/NOTICE.md)。
+
 `metrics::ResponseMetrics` 从原生 JSON／SSE 提取用量、语义输出和业务终态，仅观察、不改写正文。独立未知字段和 Messages 缓存组成保留原始含义；协议转换占位不是其计量来源。统计关联与持久化分别由 gateway 和 application 承担。
