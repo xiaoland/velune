@@ -42,6 +42,21 @@ python3 scripts/manual-runtime-management.py --library "$LIBRARY" --bindings "$B
   --claude "$CLAUDE" --node "$NODE" --pi-module "$PI_MODULE"
 ```
 
+## 资源库写入的加载
+
+2026-10-11，[manual-resource-library-native.py](../../scripts/manual-resource-library-native.py) 以同样的 sandbox 约束（拒绝读取 `/Users`、Managed Preferences 与 ConfigurationProfiles，只放行 Node 可执行文件；仅 loopback 网络；临时 HOME 与 agentDir）通过 UniFFI 保存资源并启用到停用的 Claude Code 2.1.286、Codex 0.159.3 与 Pi 1.0.2 实例：指令、技能、stdio MCP（工作目录 `/tmp`、超时 30 秒）、HTTP MCP（请求头）与子 Agent（Claude、Codex）。写入后：
+
+- Claude：`mcp list` 列出两个服务，`mcp get` 读出 stdio 命令（严格 JSON 解析通过，写入 `timeout` 30000、无 `cwd`）；stream-json `initialize` 的 `agents` 含所写子 Agent，`commands` 含所写技能。
+- Codex：`mcp list --json` 读出 stdio 的 `cwd`、`tool_timeout_sec = 30` 与 HTTP 的 `url`；`app-server` 的 `skills/list` 返回所写技能。子 Agent TOML 与上文已由原生 loader 发现的格式相同（`name`／`description`／`developer_instructions`），本轮未另做发现实验。
+- Pi：固定包自身的 `loadMcpConfig` 无错误地接受两个服务，`cwd` 与 `timeout`（秒）保留。Pi 依赖以 `npm install --omit=dev --ignore-scripts` 装在 `/Users` 之外的临时目录。
+
+指令与技能正文的实际进入请求已由上文 Claude／Pi 实验覆盖，资源库写入的是同样的原生文件；本轮不调用模型，也不发起 loopback 模型请求。
+
+```sh
+python3 scripts/manual-resource-library-native.py --library "$LIBRARY" --bindings "$BINDINGS" \
+  --claude "$CLAUDE" --codex "$CODEX" --node "$NODE" --pi-mcp-config "$PI_MCP_CONFIG"
+```
+
 ## 文件边界
 
 资源操作依赖目标端目录句柄和 no-follow 打开。本机 macOS 与用户授权的 WSL 临时目录执行相同公共 API fixture；远端使用 `ExecutionTarget::Ssh` 实际传输，不以本机文件系统模拟远端。
