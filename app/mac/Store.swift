@@ -336,6 +336,21 @@ final class AppStore: ObservableObject {
             }
         }
     }
+    /// Git changes in the loaded conversation's working directory.
+    func readWorkingChanges(_ apply: @escaping (Result<BindingWorkingChanges, Error>) -> Void) {
+        guard !isPreview, !isShuttingDown, let transport, let conversation = snapshot?.conversation, !isDraft else { return }
+        queue.async {
+            let result = Result { try transport.workingChanges(runtimeID: conversation.runtimeID, conversationID: conversation.id) }
+            DispatchQueue.main.async { apply(result) }
+        }
+    }
+    func readFileDiff(path: String, _ apply: @escaping (Result<BindingFileDiff, Error>) -> Void) {
+        guard !isPreview, !isShuttingDown, let transport, let conversation = snapshot?.conversation, !isDraft else { return }
+        queue.async {
+            let result = Result { try transport.fileDiff(runtimeID: conversation.runtimeID, conversationID: conversation.id, path: path) }
+            DispatchQueue.main.async { apply(result) }
+        }
+    }
     func cancelAnalyticsRead() { analyticsGeneration &+= 1; analyticsIsLoading = false }
     func setConversationBrowserPreferences(_ preferences: BindingConversationBrowserPreferences) {
         guard preferences != conversationBrowserPreferences, !isShuttingDown else { return }

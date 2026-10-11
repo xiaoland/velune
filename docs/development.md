@@ -205,7 +205,7 @@ python3 scripts/manual-relaykit-provider.py replay \
 
 [交互脚本](../scripts/manual-runtime-interactions.py) 另传 `--node`，以合成 app-server 验证 UniFFI 到控制协议的审批、私密回答、拒绝非法／陈旧回复、取消与意外 EOF。它不替代 Mac GUI 验收，也不连接真实上游。
 
-[并行会话脚本](../scripts/manual-parallel-sessions.py) 与 [实时会话脚本](../scripts/manual-live-sessions.py) 传入 `--library`、`--bindings`、`--bundle`、`--node` 与外部 Pi 1.0.2 的 `--pi`（包内 `dist/bundle/cli.js`），以临时 HOME、合成 Pi 会话和回环上游分别检查多会话同时执行，以及外部进程改写原生会话后的实时重读、“可能在 Velune 之外运行”和自身执行的排除。
+[并行会话脚本](../scripts/manual-parallel-sessions.py) 与 [实时会话脚本](../scripts/manual-live-sessions.py) 传入 `--library`、`--bindings`、`--bundle`、`--node` 与外部 Pi 1.0.2 的 `--pi`（包内 `dist/bundle/cli.js`），以临时 HOME、合成 Pi 会话和回环上游分别检查多会话同时执行与 turn 结果，以及外部进程改写原生会话后的实时重读、“可能在 Velune 之外运行”和自身执行的排除。[变更审阅脚本](../scripts/manual-working-changes.py) 使用同样参数，在临时 git 仓库中检查变更列表、差异行与路径拒绝。
 
 ## 工作区 units 与绑定构建
 

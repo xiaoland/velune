@@ -759,6 +759,29 @@ impl VeluneApplication {
         })?)
     }
 
+    /// Uncommitted changes in the conversation's working directory.
+    pub fn working_changes(
+        &self,
+        runtime_id: String,
+        conversation_id: String,
+    ) -> Result<BindingWorkingChanges, BindingError> {
+        convert(self.with("working_changes", |application| {
+            application.working_changes(runtime_id, conversation_id)
+        })?)
+    }
+
+    /// The diff of one file listed by `working_changes`.
+    pub fn file_diff(
+        &self,
+        runtime_id: String,
+        conversation_id: String,
+        path: String,
+    ) -> Result<BindingFileDiff, BindingError> {
+        convert(self.with("file_diff", |application| {
+            application.file_diff(runtime_id, conversation_id, path)
+        })?)
+    }
+
     /// Conversations executing or waiting for the user across open
     /// sessions, and turns that ended after `since` (0 for all retained).
     pub fn conversation_activity(

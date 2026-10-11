@@ -101,3 +101,11 @@
 - 验证：静态检查与 Swift 严格构建通过；`manual-parallel-sessions.py` 新增结果检查（完成、停止、上游 400 拒绝为失败，同一游标不重复返回）通过；live-sessions 脚本通过。
 - 未验证：Mac 的系统通知、授权提示、点击打开与 Dock 标记未实际运行——开发构建与安装版同为 `local.velune.prototype`，首次通知会弹出系统授权提示，属于用户决定，开发方不在调试中触发。所有窗口都关闭时点击通知只激活应用，不新开窗口。
 - 安装：`8ea8655` release 构建已安装 `/Applications/Velune.app`（0.1 beta.1、config schema 8、manifest dirty=false），严格签名通过；正常退出旧应用后安装并重新打开，无崩溃报告；安装后 runtime-interactions、continuation-boundaries、acp-adapter 脚本通过。
+
+## ④ 变更审阅（2026-10-11）
+
+- 核心：`working_changes.rs` 调用本机 `git`（`-C`、`core.quotePath=false`、`GIT_OPTIONAL_LOCKS=0`、`LC_ALL=C`）。工作目录取自会话通道或最近列表；`status --porcelain=v2 --branch -z --untracked-files=all` 解析为类型化变更，`diff HEAD --numstat -z --no-renames` 给出行数；单文件差异对已跟踪文件用 `diff HEAD`（无提交时 `--cached`），未跟踪用 `--no-index /dev/null`，解析为 hunk／上下文／增／删／说明行，去掉与列表重复的文件头，超过 1 MiB 截断。拒绝绝对路径与 `..`。远端运行时暂不支持。
+- Mac：详情工具栏“变更”开关（⌥⌘D）打开原生 inspector：仓库名与分支、文件列表、选中文件的差异（VSplitView）；双击以默认应用打开，菜单在访达中显示／拷贝路径；打开、切换会话、本会话 turn 结束与手动刷新时读取。“重新读取”的帮助文字改为补上自动跟随遗漏的变化。
+- 选择 inspector 而非独立窗口：与会话并排、可调宽度，与 Xcode 等原生检查器一致；如需独立窗口或更宽的差异视图以后再调。
+- 验证：静态检查与 Swift 严格构建通过；`scripts/manual-working-changes.py`（新增）以临时仓库检查修改／暂存新增／删除／重命名／未跟踪／二进制／冲突、空格与中文文件名、缺少末尾换行、子目录会话解析到仓库根、非仓库目录、拒绝仓库外路径、读取后不留索引锁——通过。隔离开发构建中打开 inspector 与选择文件的窗口截图确认列表与差异着色。
+- 未做：暂存、提交、丢弃、行号栏、并排视图；SSH 运行时。

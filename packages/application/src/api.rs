@@ -160,6 +160,70 @@ pub struct ActiveConversation {
     pub pending_interactions: u32,
 }
 
+/// Uncommitted changes in a conversation's working directory.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkingChanges {
+    pub directory: String,
+    /// The git work tree containing the directory; None outside one.
+    pub repository: Option<String>,
+    /// None when HEAD is detached.
+    pub branch: Option<String>,
+    pub files: Vec<ChangedFile>,
+}
+
+/// A file that differs from HEAD or is not tracked, by repository path.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChangedFile {
+    pub path: String,
+    pub kind: ChangeKind,
+    pub staged: bool,
+    pub unstaged: bool,
+    /// Lines against HEAD; None for binary or untracked files.
+    pub additions: Option<u32>,
+    pub deletions: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum ChangeKind {
+    Added,
+    Modified,
+    Deleted,
+    Renamed { from: String },
+    Untracked,
+    Conflicted,
+}
+
+/// One file's diff against HEAD (or as a new file when untracked).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileDiff {
+    pub path: String,
+    pub lines: Vec<DiffLine>,
+    /// The diff was longer than shown.
+    pub truncated: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DiffLine {
+    pub kind: DiffLineKind,
+    pub text: String,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum DiffLineKind {
+    Hunk,
+    Context,
+    Added,
+    Removed,
+    /// Binary content, mode changes, missing final newline.
+    Notice,
+}
+
 /// How a Velune turn ended.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -1063,6 +1127,31 @@ impl Application {
     /// to poll.
     pub fn conversation_activity(&mut self, since: u64) -> Result<ConversationActivity, Error> {
         self.execute("conversationActivity", json!({"since":since}), None)
+    }
+    /// Uncommitted changes in the conversation's working directory.
+    pub fn working_changes(
+        &mut self,
+        runtime_id: String,
+        conversation_id: String,
+    ) -> Result<WorkingChanges, Error> {
+        self.execute(
+            "workingChanges",
+            json!({"conversationID":conversation_id}),
+            Some(&runtime_id),
+        )
+    }
+    /// The diff of one file listed by `working_changes`.
+    pub fn file_diff(
+        &mut self,
+        runtime_id: String,
+        conversation_id: String,
+        path: String,
+    ) -> Result<FileDiff, Error> {
+        self.execute(
+            "fileDiff",
+            json!({"conversationID":conversation_id,"path":path}),
+            Some(&runtime_id),
+        )
     }
     pub fn preview_provider_import(
         &mut self,

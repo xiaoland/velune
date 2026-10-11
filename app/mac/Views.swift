@@ -13,6 +13,7 @@ struct VeluneRootView: View {
     @State private var composer = ComposerModel()
     @State private var scrollRequest: UInt64 = 0
     @State private var showsOutlinePopover = false
+    @State private var showsChanges = false
     @State private var outlineCollapsed = false
     @State private var outlineNavigation: TranscriptJump?
     @State private var renameTarget: Conversation?
@@ -85,9 +86,15 @@ struct VeluneRootView: View {
                 ToolbarItemGroup(placement: .primaryAction) {
                     Button { store.reloadFromRuntimes() } label: { Label("重新读取", systemImage: "arrow.clockwise") }
                         .keyboardShortcut("r").disabled(!store.canReloadFromRuntimes)
-                        .help("从 Agent 运行时重新读取会话列表和当前会话（⌘ R）；在 Velune 之外发生的变化不会自动出现")
+                        .help("从 Agent 运行时重新读取会话列表和当前会话（⌘ R）；用于补上自动跟随遗漏的变化")
                     outlineButton
+                    Toggle(isOn: $showsChanges) { Label("变更", systemImage: "plusminus") }
+                        .help("工作目录的 git 变更").keyboardShortcut("d", modifiers: [.command, .option])
+                        .disabled(store.loadedConversationWorkingDirectory == nil && !showsChanges)
                 }
+            }
+            .inspector(isPresented: $showsChanges) {
+                ChangeReviewView(store: store).inspectorColumnWidth(min: 300, ideal: 440, max: 900)
             }
         }
         .navigationSplitViewStyle(.balanced)

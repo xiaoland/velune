@@ -176,7 +176,11 @@ impl CoreRuntime {
             .collect())
     }
     /// A conversation from this instance's latest listing; no native read.
-    fn listed_summary(&self, runtime: &RuntimeInstance, id: &str) -> Option<ConversationSummary> {
+    pub(super) fn listed_summary(
+        &self,
+        runtime: &RuntimeInstance,
+        id: &str,
+    ) -> Option<ConversationSummary> {
         self.history_listings
             .borrow()
             .get(&runtime.id)

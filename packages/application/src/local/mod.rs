@@ -144,6 +144,7 @@ mod resource_library;
 mod runtime_execution;
 mod runtime_management;
 mod session;
+mod working_changes;
 use pi_composition::*;
 
 impl CoreRuntime {
@@ -483,6 +484,8 @@ impl CoreRuntime {
                 }
                 Ok(result)
             }
+            "workingChanges" => Ok(serde_json::to_value(self.working_changes(request)?)?),
+            "fileDiff" => Ok(serde_json::to_value(self.file_diff(request)?)?),
             "conversationActivity" => {
                 let since = request["payload"]["since"]
                     .as_u64()

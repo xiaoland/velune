@@ -509,6 +509,70 @@ pub struct BindingActiveConversation {
     pub pending_interactions: u32,
 }
 
+/// Uncommitted changes in a conversation's working directory.
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BindingWorkingChanges {
+    pub directory: String,
+    /// The git work tree containing the directory; None outside one.
+    pub repository: Option<String>,
+    /// None when HEAD is detached.
+    pub branch: Option<String>,
+    pub files: Vec<BindingChangedFile>,
+}
+
+/// A file that differs from HEAD or is not tracked, by repository path.
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BindingChangedFile {
+    pub path: String,
+    pub kind: BindingChangeKind,
+    pub staged: bool,
+    pub unstaged: bool,
+    /// Lines against HEAD; None for binary or untracked files.
+    pub additions: Option<u32>,
+    pub deletions: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Enum)]
+#[serde(rename_all = "camelCase")]
+pub enum BindingChangeKind {
+    Added,
+    Modified,
+    Deleted,
+    Renamed { from: String },
+    Untracked,
+    Conflicted,
+}
+
+/// One file's diff against HEAD (or as a new file when untracked).
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BindingFileDiff {
+    pub path: String,
+    pub lines: Vec<BindingDiffLine>,
+    /// The diff was longer than shown.
+    pub truncated: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BindingDiffLine {
+    pub kind: BindingDiffLineKind,
+    pub text: String,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, uniffi::Enum)]
+#[serde(rename_all = "camelCase")]
+pub enum BindingDiffLineKind {
+    Hunk,
+    Context,
+    Added,
+    Removed,
+    /// Binary content, mode changes, missing final newline.
+    Notice,
+}
+
 /// How a Velune turn ended.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, uniffi::Enum)]
 #[serde(rename_all = "camelCase")]
