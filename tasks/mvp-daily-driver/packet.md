@@ -31,7 +31,7 @@
 - 截图：preview 中段落／表格／引用的间距一致；临时 HOME 中 Pi 编辑表单新布局。
 - 未验证：长会话中“回到底部”按钮外观（未构造长会话）；侧栏右键菜单无法经 AX 打开，删除仅由脚本验证。
 
-## 建议路线（候选，待用户决定）
+## 路线（2026-10-11 用户确认 1–5 的顺序；6 暂缓，待决定 Velune 是否管理 git worktree）
 
 按“能否每天替代 Codex App”排序：
 
@@ -46,3 +46,7 @@
 ## 安装
 
 `48ccb32` release 构建已安装 `/Applications/Velune.app`：0.1 beta.1、config schema 8，严格签名通过；正常退出旧应用后安装并重新打开，无崩溃报告。manifest dirty=true 仅因工作区未跟踪的 `app/mac/.DS_Store` 与 `app/mac/Assets/`（非本任务文件，未删除）。
+
+## 仓库卫生（2026-10-11）
+
+用户指出 `.DS_Store` 未被忽略说明 `.gitignore` 不完善，且仓库接近 monorepo，各 unit 至少应有自己的 `.gitignore`。已补根目录的系统／编辑器元数据规则，并为 packages 下七个 unit、`app/mac`、`app/host` 各加 `.gitignore`（单独构建输出、npm／Go 手动构建产物、SwiftPM／Xcode 用户状态）；没有已跟踪文件被新规则命中。
