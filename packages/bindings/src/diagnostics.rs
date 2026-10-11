@@ -118,6 +118,7 @@ impl BindingFailureKind {
             Self::Unavailable => "unavailable",
             Self::ProviderImport => "provider_import",
             Self::History => "history",
+            Self::RuntimeManagement => "runtime_management",
         }
     }
 }

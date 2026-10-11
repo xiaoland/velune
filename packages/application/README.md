@@ -2,6 +2,16 @@
 
 `velune-application` 是平台 app 共用的应用用例 unit。公开入口 `Application` 提供类型化的配置、连接、会话、模型选择、提供商导入与认证操作。平台不自行协调文件提交、子进程状态与投影失败清理。
 
+`runtime_resource_catalog`、`read_runtime_resource`、`write_runtime_resource` 和 `delete_runtime_resource` 管理指定实例的原生 user instructions、MCP server 条目、skills 与原生 Agent 定义。调用方明确给出 User／Project 范围；Project 的 cwd 属于执行机器。目录是 adapter 已知的原生来源，不是 Harness 合并后的最终配置，也不扫描任意命令猜测其资源格式。catalog 将功能不支持与资源 Missing／Invalid 分开，并单独说明可写或只读；不支持原因可能是原生功能缺失、协议没有入口或适配器尚未实现。
+
+资源查询不会启动 Harness、创建资源根目录或安装辅助 bundle；停用实例仍可管理。本机／SSH 与 managed HOME 复用同一位置解析，但不要求与资源读写无关的执行路径。写入在父 turn 忙碌或协作 scope 存在时拒绝，不隐式关闭空闲会话；保存只表示原生文件已变更，生效时间由 Harness 决定，不宣称进行了 live reload。
+
+资源 key 是类别根目录内的相对路径，MCP key 则是 opaque server name。读取返回单文件 bytes 或单个 MCP 条目的原生 JSON；内容可能含私有设置，不进入 Debug 或日志。写入必须提供 `RuntimeResourceRevision::Missing` 或此前读取的 `Match` revision，外部修改返回可识别的 conflict；混合原生配置由 adapter 只修改目标条目并保留其余内容。Skills 按文件和资产管理，catalog 包含目录及资产；先创建 SKILL.md 再添加资产，不提供整包替换，目录只允许在为空时删除。原生 Agent 定义与协作 scope 的 target grants、运行中的 child 和权限彼此独立，编辑定义不会启动或授权子任务。
+
+**待实现**：平台调用原生资源入口的浏览、编辑、冲突处理和敏感内容展示；本轮没有 App 改动，也没有新增资源副本配置库。
+
+[资源 API 手动验收](../../scripts/manual-runtime-management-api.py) 接收本次构建的动态库与 Python 绑定目录，在隔离 HOME 中检查 typed CRUD、revision 冲突和会话生命周期门禁；默认只需空资源目录。它内置合成 ACP peer，不代替原生 Harness 的实际资源加载验收。
+
 `create_collaborative_conversation` 接纳父运行时、模型选择、已授权目标和子任务数量／轮次期限。每个目标固定运行时实例、cwd 和模型选择，建立 scope 时捕获执行与提供商配置；Agent 只能引用 opaque target ID，不能通过协作工具修改 binary、环境、cwd 或模型。scope 存在时拒绝运行时、提供商和登录配置变更，调用方先关闭协作范围，再编辑配置。
 
 父 Agent 通过临时 MCP 使用 `agents`、`spawn`、`send`、`status`、`wait`、`cancel` 和 `close`。每个子任务 worker 独占 adapter、轮询、网关和执行覆盖目录，共享配置实例原有 HOME 与原生历史；父 turn 等待工具时子任务仍可运行。首版允许一层并行委派和空闲子任务的多轮发送，不排队、不 steer、不 adopt。委派文字带有可见来源说明，作为普通消息提交，不冒充人类授权。返回的最终助手正文是子 Agent 的报告，不是独立验收结论。没有 load 能力的 ACP 也可作活动子任务，关闭后不承诺恢复。

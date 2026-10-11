@@ -91,3 +91,28 @@ Claude Code 的每轮执行使用独立 `--print --input-format stream-json --ou
 固定版本启用 `CLAUDE_CODE_SDK_READS_SESSION_STATE`。`result` 只记录轮次结果，原生 `session_state_changed: idle` 确认本轮及其原生后台工作结束后才撤销注入。长期观察任务可能阻止 idle：复用 SDK 的十分钟无后续主线程活动上限，且仅在无待答交互、无 local agent/workflow 任务时关闭进程并将结束状态标为失败，不伪造成功。原生运行时退出、取消或派发失败都释放本轮进程与隧道。Claude 历史只读取显式 projects 根下的原生 JSONL，按 parent UUID 还原当前分支，排除 subagents；不扫描认证文件。
 
 协议依据于 2026-10-10 复核：[Claude Code CLI](https://code.claude.com/docs/en/cli-reference)、[环境变量与 host-managed provider](https://code.claude.com/docs/en/env-vars)、[官方 SDK 控制协议](https://github.com/anthropics/claude-agent-sdk-python/blob/main/src/claude_agent_sdk/_internal/query.py)、[OpenSSH 转发与控制连接](https://man.openbsd.org/ssh.1)。固定版本与隔离实验范围见当前 [任务记录](../../tasks/runtime-provider-ssh/packet.md)。composer 的来源模型选择、SSH/HOME 编辑入口属于 app，明确待实现；本 unit 只提供可消费契约。
+
+## 原生资源管理
+
+`management` 在目标机器上管理固定版本的原生来源文件，不维护第二份资源库，也不计算 Harness 的合并配置。`Config` 只接受版本、`ExecutionTarget`、显式 `agent_dir` 与可选 `cwd`；User 使用配置根，Project 使用项目根。managed HOME 中的资源仍归原生 Harness。读取不启动 Harness、不初始化 HOME；配置目录缺失与能力不支持分别表达。
+
+`catalog` 返回 `Support` 与条目；`EntryState` 区分 Present、Missing、Invalid，`Access` 独立说明 Writable／ReadOnly。`read` 返回选中的字节、revision 和执行位，`write`／`delete` 必须提供 `ExpectedRevision::Missing` 或 `Match`。错误通过 `Error::code()` 保留 conflict、missing、invalid、unsupported、unavailable。声明语法错误可以读取修复；无法定位的共享 MCP section 只能报告源文件问题，不能当成空配置重建。
+
+以下均为本包当前可管理的位置。`A` 是显式 `agent_dir`，`P` 是显式项目 `cwd`；指令括号内为可编辑的其它原生候选，目录顺序不表示实际加载优先级。Claude Agent 目录递归展示源文件，但本轮只验证直属声明加载，不承诺任意嵌套路径的原生发现。
+
+| 固定版本 | User／Project 指令 | User／Project skills 根 | User／Project MCP | User／Project 原生 Agent 定义 |
+| --- | --- | --- | --- | --- |
+| Codex 0.159.3 | `A/AGENTS.md`、`P/AGENTS.md`（各自的 `AGENTS.override.md`） | `A/skills`／`P/.agents/skills` | `A/config.toml`／`P/.codex/config.toml` 的 `mcp_servers` | `A/agents`／`P/.codex/agents` 下递归 `.toml` |
+| Claude Code 2.1.286 | `A/CLAUDE.md`／`P/CLAUDE.md`（项目 `.claude/CLAUDE.md`、`CLAUDE.local.md`） | `A/skills`／`P/.claude/skills` | `A/.claude.json`／`P/.mcp.json` 的 `mcpServers` | `A/agents`／`P/.claude/agents` 下 `.md` |
+| Pi 1.0.2 | `A/AGENTS.md`／`P/AGENTS.md`（各自的 `AGENTS.override.md`、`AGENTS.MD`、`CLAUDE.md`、`CLAUDE.MD`） | `A/skills`／`P/.pi/skills` | `A/mcp.json`／`P/.pi/mcp.json` 的 `mcpServers` | 当前没有内置定义格式；扩展自有格式不在范围内 |
+| DSH 0.2.0-rc.2 | `A/AGENTS.md`／`P/AGENTS.md`（项目 `CLAUDE.md`、`AGENTS.local.md`、`CLAUDE.local.md`） | `A/skills`／`P/.dsh/skills` | 当前管理适配未支持 Cordis patch／插件声明 | 当前管理适配未支持 Cordis persona／preset 定义 |
+
+通用 ACP v1 未声明这些原生持久资源的管理接口，四类均明确 Unsupported。DSH 的管理限制不表示该 Harness 没有 MCP 或子 Agent 运行能力。其它祖先目录、`~/.agents/skills` 等共享来源、自定义 settings 路径、插件／安装包资源和 Codex 外部 `config_file` 不在此表范围内；同名资源不会从另一个根任意回退。原生 trust、优先级、覆盖、启用开关和重新加载仍由 Harness 决定。
+
+Skill catalog 保留完整目录与附件，普通文件按字节读写；现有执行位默认保留，显式 `executable` 可改变执行位。`SKILL.md` 校验 UTF-8 与 YAML frontmatter 语法，普通附件不强制声明格式。DSH 的 skills 根 `.md` 文件也是声明候选；Pi 只有带有效 description 的根 Markdown 才成为技能，普通 README 仍可作为资产编辑。目录资产并不因此全部成为 Harness 可执行技能。新建 bundle 先写入口，再逐文件添加资产；既有 bundle 修改是单文件操作，不承诺多文件事务或整目录替换。删除仅支持文件与空 skill 目录。
+
+MCP 的 key 是 opaque 服务名，其 `Document.bytes` 仅为该服务的原生 JSON 对象。写入替换该条目，保留未知兄弟服务、provider 字段与其它根配置；Codex TOML 保留非目标注释，Claude／Pi JSON 会规范化排版。两者固定版本的这些配置入口使用严格 JSON，不接受 JSONC／JSON5。调用方应以显式读取的对象编辑，不能将展示用掩码作为真实字段保存；读取可能含该服务自己的 env／header 值，Debug、catalog 和解析诊断不包含正文。管理不连接 MCP、不解析环境引用、不执行脚本，也不改变会话级 `mcp::Server` 注入契约。
+
+资源上限为单文件 16 MiB、每次目录遍历 4096 节点、资源相对路径 64 层。symlink 与特殊节点可见但只读，不跟随读取；超过上限或访问失败有明确错误，不伪装为空目录。本机实现支持 Linux、Android、macOS、iOS、FreeBSD 的目录句柄操作，其它本机目标明确 Unsupported；SSH 使用目标端 Python 3 的 POSIX 文件接口。所有操作在实际目标执行。修改在同次目标操作内复核 revision，单文件替换原子发布；首次创建独占发布，已有文件更新仍是乐观并发控制，不能排除外部编辑器在复核后同时写入。revision 包含内容和权限，MCP revision 覆盖整个共享配置，因此兄弟条目变更也会要求重读。
+
+原生入口和实际加载证据见 [固定版本验收](../../tasks/runtime-management/native-evidence.md)。application 负责 busy／协作 scope 的修改门控；本包不做 UI、自动同步或热重载。App 的资源管理入口明确待实现。

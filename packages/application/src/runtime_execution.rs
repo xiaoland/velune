@@ -91,7 +91,7 @@ impl RuntimeExecution {
 }
 
 impl RuntimeInstance {
-    pub fn execution(&self) -> Result<RuntimeExecution, Error> {
+    pub(crate) fn execution_settings(&self) -> Result<RuntimeExecution, Error> {
         let execution = self
             .settings
             .get(EXECUTION_SETTING)
@@ -99,6 +99,11 @@ impl RuntimeInstance {
             .transpose()?
             .unwrap_or_default();
         RuntimeExecution::validate(&execution)?;
+        Ok(execution)
+    }
+
+    pub fn execution(&self) -> Result<RuntimeExecution, Error> {
+        let execution = self.execution_settings()?;
         if self.type_id != "acp-v1"
             && matches!(execution.transport, RuntimeTransport::Ssh { .. })
             && execution.remote_resources_directory.is_none()

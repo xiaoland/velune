@@ -2,6 +2,8 @@
 
 `velune-bindings` 是共享 application unit 的 UniFFI 接入层。Swift、Kotlin 和 Python 使用同一份 Rust 元数据生成接口。领域 package 不依赖 UniFFI；此处的 `Binding*` records 与 enums 将领域契约转换为语言绑定能够表达的类型。Mac 在应用进程内加载此 unit 的动态库，不通过 Host 或 socket 调用 Rust。
 
+原生资源通过 `runtime_resource_catalog`／`read_runtime_resource`／`write_runtime_resource`／`delete_runtime_resource` 管理。`BindingRuntimeResourceKind`、scope、key、state、access 和 revision 均为具名类型；资源内容用 bytes 保留原生文件或单条 MCP JSON，Rust Debug 隐去正文。写入传 Missing 或此前的 Match revision，冲突保留为 `BindingFailureKind::RuntimeManagement`、`phase=runtime_management`、`code=conflict`，不退化为普通字符串错误。原生 Agent 定义不是活动子任务，bindings 不据此生成协作授权。**待实现**：平台资源管理与冲突处理界面；资源保存不自动重启会话。
+
 `create_collaborative_conversation` 接受 typed target grant 与 limits，子任务通过 `collaboration_children`／`child_snapshot` 观察，权限答复必须同时匹配 child ID、turn 和 interaction ID。`close_collaboration` 关闭范围及其子任务。父 Agent 的 MCP 请求直接访问独立 Coordinator，不获取 `VeluneApplication` 操作锁；子任务 worker 在当前应用进程内运行。子任务最终正文仅表示其报告，不能当作独立验证的成功。**待实现**：平台授权、状态与审批界面。
 
 `VeluneApplication` 公开配置维护、会话控制、提供商导入、认证交互与关闭操作，参数和结果具有具名类型。提供商拥有模型条目；`BindingProviderDraft` 与 `BindingAuthenticationEdit` 共同保存普通字段和认证编辑，后者明确区分保留、更新 API key 和清除。列表与 snapshot 只返回非秘密认证描述，`read_provider_api_key` 显式读取一个提供商的已保存 key。认证检查和登录以网关／提供商 ID 定位，不存在独立认证资源 CRUD。`BindingProviderModel.adapter_metadata_json` 由运行时 adapter 拥有，平台只保留它，不解释其结构。

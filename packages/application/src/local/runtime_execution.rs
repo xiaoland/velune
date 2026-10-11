@@ -17,7 +17,7 @@ impl CoreRuntime {
         &self,
         runtime: &RuntimeInstance,
     ) -> Result<(ExecutionTarget, Option<PathBuf>), RuntimeError> {
-        let execution = runtime.execution()?;
+        let execution = runtime.execution_settings()?;
         let target = match &execution.transport {
             RuntimeTransport::Local => ExecutionTarget::Local,
             RuntimeTransport::Ssh {
@@ -69,18 +69,9 @@ impl CoreRuntime {
         let execution = runtime.execution()?;
         let (target, os_home) = self.runtime_location(runtime)?;
         let key = format!("{:x}", sha2::Sha256::digest(runtime.id.as_bytes()));
-        let agent_dir = if matches!(execution.home, RuntimeHome::Managed { .. }) {
-            let directory = match runtime.type_id.as_str() {
-                "pi-1.0.2" => ".pi/agent",
-                "codex-0.159.3" => ".codex",
-                "claude-code-2.1.286" => ".claude",
-                "dsh-acp-0.2.0-rc.2" => ".dsh",
-                _ => return Err(RuntimeError::invalid("不支持的运行时版本类型")),
-            };
-            os_home.as_ref().expect("managed HOME").join(directory)
-        } else {
-            setting_path(runtime, "agentDir")?
-        };
+        let agent_dir = self
+            .native_agent_directory(runtime, os_home.as_deref())?
+            .ok_or_else(|| RuntimeError::invalid("此运行时没有原生配置目录"))?;
         let resources = match &target {
             ExecutionTarget::Local => self.options.resources_directory.clone(),
             ExecutionTarget::Ssh(_) => PathBuf::from(
@@ -104,6 +95,36 @@ impl CoreRuntime {
             resources,
             projection,
         })
+    }
+
+    /// Resolve native roots without creating HOME or preparing execution resources.
+    pub(super) fn native_agent_directory(
+        &self,
+        runtime: &RuntimeInstance,
+        os_home: Option<&Path>,
+    ) -> Result<Option<PathBuf>, RuntimeError> {
+        if runtime.type_id == "acp-v1" {
+            return Ok(None);
+        }
+        if matches!(
+            runtime.execution_settings()?.home,
+            RuntimeHome::Managed { .. }
+        ) {
+            let directory = match runtime.type_id.as_str() {
+                "pi-1.0.2" => ".pi/agent",
+                "codex-0.159.3" => ".codex",
+                "claude-code-2.1.286" => ".claude",
+                "dsh-acp-0.2.0-rc.2" => ".dsh",
+                _ => return Err(RuntimeError::invalid("不支持的运行时版本类型")),
+            };
+            Ok(Some(
+                os_home
+                    .ok_or_else(|| RuntimeError::invalid("managed HOME 尚未解析"))?
+                    .join(directory),
+            ))
+        } else {
+            Ok(setting_path_optional(runtime, "agentDir"))
+        }
     }
 
     pub(super) fn prepare_execution_context(

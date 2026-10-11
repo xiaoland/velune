@@ -334,3 +334,19 @@ Rust／UniFFI 的 `create_collaborative_conversation` 创建新的父会话，�
 轮次期限和取消在执行器边界检查；初始化或控制 RPC 尚在同步等待时，以 adapter 自身的有界超时为准，不能承诺立即中断。取消或期限在启动期间到达后，不再提交原 prompt。原生历史仍归 Harness；Velune 不保存 transcript 副本，不自动恢复重启前的协作 scope，也不把子 Agent 的报告视为已经验收。App 子任务关系、状态和审批界面待实现。隔离验收与适用边界见 [Harness 协作任务](../tasks/harness-interoperation/packet.md)。
 
 手动闭环入口为 [manual-harness-interoperation.py](../scripts/manual-harness-interoperation.py)，通过参数传入本次构建的 UniFFI 库、生成的 Python 绑定与 OpenCode／DSH／Node；脚本在 macOS sandbox 中使用临时 HOME 和 loopback 合成 provider，断言无前台轮询时子结果仍返回父 Agent。具体版本和复现方式见 [互操作验收](../tasks/harness-interoperation/interoperation-evidence.md)。
+
+## Agent runtime 原生资源管理
+
+`runtime_resource_catalog(runtime_id, cwd, kind, scope)` 查询指定实例的资源位置与支持状态；`read_runtime_resource` 读取一项，`write_runtime_resource` 保存一项，`delete_runtime_resource` 删除文件或空目录。四类资源为 `UserInstructions`、`McpServers`、`Skills` 和 `NativeAgentDefinitions`。`User` 使用该实例的原生配置位置，`Project` 使用显式 cwd；路径属于运行时的执行机器，SSH 不会回退到本机同名目录。查询不要求运行时启用、建立会话或安装执行 helper。
+
+先读取目录和条目状态；`Unsupported` 不是空集合，`Missing` 不是读取失败。读取返回的 document 含原生字节、执行位和条目 revision；编辑或删除传 `Match(revision)`，新建传 `Missing`。发生 `conflict` 时须重新读取再决定，不能以无条件保存覆盖外部编辑。管理错误经 UniFFI 保留 `runtime_management` 类别与具体 code。资源访问失败不会重置配置或创建一个空替代。
+
+普通资源 key 是类别根内相对路径；skills 按完整目录树列出附件，并按单文件读取、创建、更新和删除，保存时默认保留已有执行位。MCP key 是服务器名称，document 是该服务器的原生 JSON 对象；显式详情可能含 env 或 header 秘密，列表和诊断不含这些值。更新只替换该服务条目，未编辑的服务与其他原生配置字段保持；不把各 Harness 的 MCP 格式统一转换，也不执行或安装配置中的命令。
+
+当前适配覆盖 Codex／Claude 的四类、Pi 的 instruction／MCP／skills、DSH 的 instruction／skills。Pi 没有内置 sub-agent 定义；DSH 的插件式 MCP／sub-agent 配置和通用 ACP 的私有资源布局没有接入本管理契约，会明确说明不支持。该列表是管理适配范围，不等于对应 Harness 的全部运行能力，也不是组织策略、插件与祖先目录合并后的有效配置视图。
+
+修改在运行中的 turn 或协作 scope 存在时拒绝；停用实例仍可编辑原生资源。成功保存不自动重启或重载运行时，具体生效时机由 Harness 决定。受管 HOME 仍保存原生配置，不形成 Velune 同步副本。**App 资源列表、编辑器、冲突处理和生效提示待实现**；本轮不构建或安装 App。实施、具体原生路径与隔离验收见 [运行时资源管理任务](../tasks/runtime-management/packet.md)。
+
+**待实现的 App 编译接入**：下次为 Mac 重新生成绑定时，须在 `app/mac/Transport.swift` 的 `kindName` 穷尽匹配中处理新增的 `BindingFailureKind.runtimeManagement`。当前非 UI 切片保留该 App 源码不变，不能直接把生成的新绑定替换进 App 后宣称构建通过。
+
+手动 API 验收入口为 [manual-runtime-management-api.py](../scripts/manual-runtime-management-api.py)，真实 Claude／Pi 加载入口为 [manual-runtime-management.py](../scripts/manual-runtime-management.py)。后者要求 macOS sandbox、匹配的 CLI 和隔离安装的 Pi，使用 loopback 合成模型响应；运行参数、Codex／DSH 加载与 WSL 文件边界证据见 [固定版本验收](../tasks/runtime-management/native-evidence.md)。

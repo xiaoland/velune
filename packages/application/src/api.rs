@@ -383,6 +383,69 @@ pub struct AuthenticationNotification {
 }
 
 impl Application {
+    /// List native source resources without launching the Harness or creating resource roots.
+    /// Project scope requires a cwd on the execution machine. Disabled instances remain manageable.
+    pub fn runtime_resource_catalog(
+        &mut self,
+        runtime_id: String,
+        cwd: Option<String>,
+        kind: crate::RuntimeResourceKind,
+        scope: crate::RuntimeResourceScope,
+    ) -> Result<crate::RuntimeResourceCatalog, Error> {
+        self.execute(
+            "runtimeResourceCatalog",
+            json!({"cwd":cwd,"kind":kind,"scope":scope}),
+            Some(&runtime_id),
+        )
+    }
+
+    /// Read one native file or MCP server entry. The returned bytes may contain private settings.
+    pub fn read_runtime_resource(
+        &mut self,
+        runtime_id: String,
+        cwd: Option<String>,
+        key: crate::RuntimeResourceKey,
+    ) -> Result<crate::RuntimeResourceDocument, Error> {
+        self.execute(
+            "readRuntimeResource",
+            json!({"cwd":cwd,"key":key}),
+            Some(&runtime_id),
+        )
+    }
+
+    /// Save one native resource against its last observed revision. This does not reload or close
+    /// an active session; when the Harness notices the change is owned by that Harness.
+    pub fn write_runtime_resource(
+        &mut self,
+        runtime_id: String,
+        cwd: Option<String>,
+        key: crate::RuntimeResourceKey,
+        expected: crate::RuntimeResourceRevision,
+        bytes: Vec<u8>,
+        executable: Option<bool>,
+    ) -> Result<crate::RuntimeResourceDocument, Error> {
+        self.execute(
+            "writeRuntimeResource",
+            json!({"cwd":cwd,"key":key,"expected":expected,"bytes":bytes,"executable":executable}),
+            Some(&runtime_id),
+        )
+    }
+
+    /// Delete one native resource, or an empty directory. Never removes a complete skill tree.
+    pub fn delete_runtime_resource(
+        &mut self,
+        runtime_id: String,
+        cwd: Option<String>,
+        key: crate::RuntimeResourceKey,
+        expected: crate::RuntimeResourceRevision,
+    ) -> Result<(), Error> {
+        self.execute(
+            "deleteRuntimeResource",
+            json!({"cwd":cwd,"key":key,"expected":expected}),
+            Some(&runtime_id),
+        )
+    }
+
     /// Create a root session with a fixed, host-authorized set of child targets.
     pub fn create_collaborative_conversation(
         &mut self,

@@ -982,3 +982,104 @@ pub struct BindingRuntimeExecution {
     pub home: BindingRuntimeHome,
     pub remote_resources_directory: Option<String>,
 }
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, uniffi::Enum)]
+#[serde(rename_all = "camelCase")]
+pub enum BindingRuntimeResourceKind {
+    UserInstructions,
+    McpServers,
+    Skills,
+    NativeAgentDefinitions,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, uniffi::Enum)]
+#[serde(rename_all = "camelCase")]
+pub enum BindingRuntimeResourceScope {
+    User,
+    Project,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, uniffi::Record)]
+#[serde(rename_all = "camelCase")]
+pub struct BindingRuntimeResourceKey {
+    pub kind: BindingRuntimeResourceKind,
+    pub scope: BindingRuntimeResourceScope,
+    /// Relative source path, or an opaque server name for MCP entries.
+    pub path: String,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, uniffi::Enum)]
+#[serde(rename_all = "camelCase")]
+pub enum BindingRuntimeResourceNode {
+    File,
+    Directory,
+    Symlink,
+    Other,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, uniffi::Enum)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum BindingRuntimeResourceState {
+    Present,
+    Missing,
+    Invalid { reason: String },
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, uniffi::Enum)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum BindingRuntimeResourceAccess {
+    Writable,
+    ReadOnly { reason: String },
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, uniffi::Record)]
+#[serde(rename_all = "camelCase")]
+pub struct BindingRuntimeResourceEntry {
+    pub key: BindingRuntimeResourceKey,
+    pub absolute_path: String,
+    pub node: BindingRuntimeResourceNode,
+    pub revision: Option<String>,
+    pub state: BindingRuntimeResourceState,
+    pub access: BindingRuntimeResourceAccess,
+    pub size: u64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, uniffi::Enum)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum BindingRuntimeResourceSupport {
+    Supported,
+    Unsupported { reason: String },
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, uniffi::Record)]
+#[serde(rename_all = "camelCase")]
+pub struct BindingRuntimeResourceCatalog {
+    pub support: BindingRuntimeResourceSupport,
+    pub entries: Vec<BindingRuntimeResourceEntry>,
+}
+
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq, uniffi::Record)]
+#[serde(rename_all = "camelCase")]
+pub struct BindingRuntimeResourceDocument {
+    pub entry: BindingRuntimeResourceEntry,
+    /// Only the requested file, or one MCP server's native JSON object.
+    pub bytes: Vec<u8>,
+    pub executable: bool,
+}
+impl std::fmt::Debug for BindingRuntimeResourceDocument {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("BindingRuntimeResourceDocument")
+            .field("entry", &self.entry)
+            .field("bytes", &"[redacted]")
+            .field("executable", &self.executable)
+            .finish()
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, uniffi::Enum)]
+#[serde(tag = "kind", content = "revision", rename_all = "camelCase")]
+pub enum BindingRuntimeResourceRevision {
+    Missing,
+    Match(String),
+}

@@ -140,6 +140,7 @@ mod native_composition;
 mod pi_composition;
 mod provider_management;
 mod runtime_execution;
+mod runtime_management;
 use pi_composition::*;
 
 impl CoreRuntime {
@@ -365,6 +366,10 @@ impl CoreRuntime {
             "discoverRuntimes" => self.discover_runtimes(request),
             "providerImport" => self.provider_import_action(request),
             "providers" => self.provider_action(&request["payload"]),
+            "runtimeResourceCatalog"
+            | "readRuntimeResource"
+            | "writeRuntimeResource"
+            | "deleteRuntimeResource" => self.runtime_management_action(request),
             "modelTemplates" => self.template_action(&request["payload"]),
             "runtimeInstances" => self.runtime_action(request),
             "selectRuntime" => self.select_runtime_action(request),

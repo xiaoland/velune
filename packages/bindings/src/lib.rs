@@ -23,6 +23,7 @@ pub enum BindingFailureKind {
     Closed,
     Unavailable,
     ProviderImport,
+    RuntimeManagement,
 }
 
 #[derive(Debug, thiserror::Error, uniffi::Error)]
@@ -86,6 +87,21 @@ impl From<Error> for BindingError {
                 detail: error.full_message(),
                 code: error.code().into(),
                 phase: error.phase().into(),
+                operation_id: String::new(),
+            },
+            #[cfg(feature = "local-runtime")]
+            Error::RuntimeManagement(error) => Self::Diagnostic {
+                kind: BindingFailureKind::RuntimeManagement,
+                detail: error.to_string(),
+                code: match error.code() {
+                    velune_application::RuntimeManagementErrorCode::Conflict => "conflict",
+                    velune_application::RuntimeManagementErrorCode::Missing => "missing",
+                    velune_application::RuntimeManagementErrorCode::Invalid => "invalid",
+                    velune_application::RuntimeManagementErrorCode::Unsupported => "unsupported",
+                    velune_application::RuntimeManagementErrorCode::Unavailable => "unavailable",
+                }
+                .into(),
+                phase: "runtime_management".into(),
                 operation_id: String::new(),
             },
             Error::Json(error) => Self::Contract {
@@ -173,6 +189,58 @@ impl VeluneApplication {
 
     pub fn list(&self) -> Result<BindingConfigurationSnapshot, BindingError> {
         convert(self.with("list", |application| application.list())?)
+    }
+    pub fn runtime_resource_catalog(
+        &self,
+        runtime_id: String,
+        cwd: Option<String>,
+        kind: BindingRuntimeResourceKind,
+        scope: BindingRuntimeResourceScope,
+    ) -> Result<BindingRuntimeResourceCatalog, BindingError> {
+        let kind = convert(kind)?;
+        let scope = convert(scope)?;
+        convert(self.with("runtime_resource_catalog", |application| {
+            application.runtime_resource_catalog(runtime_id, cwd, kind, scope)
+        })?)
+    }
+    pub fn read_runtime_resource(
+        &self,
+        runtime_id: String,
+        cwd: Option<String>,
+        key: BindingRuntimeResourceKey,
+    ) -> Result<BindingRuntimeResourceDocument, BindingError> {
+        let key = convert(key)?;
+        convert(self.with("read_runtime_resource", |application| {
+            application.read_runtime_resource(runtime_id, cwd, key)
+        })?)
+    }
+    pub fn write_runtime_resource(
+        &self,
+        runtime_id: String,
+        cwd: Option<String>,
+        key: BindingRuntimeResourceKey,
+        expected: BindingRuntimeResourceRevision,
+        bytes: Vec<u8>,
+        executable: Option<bool>,
+    ) -> Result<BindingRuntimeResourceDocument, BindingError> {
+        let key = convert(key)?;
+        let expected = convert(expected)?;
+        convert(self.with("write_runtime_resource", |application| {
+            application.write_runtime_resource(runtime_id, cwd, key, expected, bytes, executable)
+        })?)
+    }
+    pub fn delete_runtime_resource(
+        &self,
+        runtime_id: String,
+        cwd: Option<String>,
+        key: BindingRuntimeResourceKey,
+        expected: BindingRuntimeResourceRevision,
+    ) -> Result<(), BindingError> {
+        let key = convert(key)?;
+        let expected = convert(expected)?;
+        self.with("delete_runtime_resource", |application| {
+            application.delete_runtime_resource(runtime_id, cwd, key, expected)
+        })
     }
     pub fn analytics_query(
         &self,

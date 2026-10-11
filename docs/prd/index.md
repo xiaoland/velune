@@ -144,6 +144,8 @@ Mac 开发交付安装到 `/Applications/Velune.app`，每次修改后重新构�
 
 2026-10-11 用户明确，Harness 互联互通必须让一种 Agent runtime 把另一种 runtime 作为 sub-agent 使用。这是跨 Harness 协作的关键能力：运行中的父 Agent 能发现获准目标、委派具体任务、取得可关联的进度与结果，并继续自己的工作；子 Agent 可继续接收该任务的后续输入。仅能从 Velune 启动不同 runtime 或切换会话不满足此目标。通用协作工具与现有 ACP／原生 adapter 分工，避免按每一对 Harness 开发连接。取消、失败、待审批和未知结果须明确，子任务不因被委派而取得额外授权。继续限定 Rust packages；子任务关系、状态、审批与结果的 **App 前端待实现**。实施与证据归 [Harness 协作任务](../../tasks/harness-interoperation/packet.md)。
 
+2026-10-11 用户进一步要求将 Agent runtime 管理从会话、模型扩展到 user instruction、MCP、agent skills 与 sub-agent 定义。各运行时允许缺少相应能力或资源；宿主须能区分不支持、尚未配置和读取失败，不能把缺失伪装成统一支持。管理保留原生资源归属与运行时差异，sub-agent 定义不等同于执行中的子会话。本轮仍仅实现非 UI 层，相关 **App 管理界面待实现**。实施与验收归 [运行时资源管理任务](../../tasks/runtime-management/packet.md)。
+
 2026-10-10 用户授权推进 Claude Code、SSH 远程运行时及 Velune 管理的运行时 HOME，并明确本轮仅实现 Rust packages。运行时不必同时注册多个提供商：保留它已有的提供商，允许会话下一轮选择其原生模型；选择 Velune 管理的模型时，仅该 turn 临时使用 Velune Gateway，结束后恢复原生提供商。成功、失败及取消都必须结束临时覆盖，不修改或删除原 Harness 的持久提供商配置。运行时原生模型的身份属于其具体实例，不能按裸 model ID 当成 Velune 提供商或另一 Harness 的模型。
 
 使用原生提供商不阻止跨 Harness 接续。会话的历史来源、下一轮目标运行时和下一轮模型分别表达；切换 Harness 后仍按现有目标原生会话与文本上下文交接机制继续，不能重放原生工具或审批状态。SSH 是运行时执行位置，HOME 是实例环境归属；两者都不改变 Harness 拥有会话历史的边界。Velune 管理 HOME 时不复制用户原有凭据或会话，也不把 HOME 隔离描述成安全沙箱。

@@ -31,6 +31,14 @@ mod provider_import;
 mod repository;
 mod runtime_execution;
 pub use runtime_execution::{RuntimeExecution, RuntimeHome, RuntimeTransport};
+mod runtime_management;
+pub use runtime_management::{
+    RuntimeResourceAccess, RuntimeResourceCatalog, RuntimeResourceDocument, RuntimeResourceEntry,
+    RuntimeResourceKey, RuntimeResourceKind, RuntimeResourceNode, RuntimeResourceRevision,
+    RuntimeResourceScope, RuntimeResourceState, RuntimeResourceSupport,
+};
+#[cfg(feature = "local-runtime")]
+pub use velune_agent_runtime::management::ErrorCode as RuntimeManagementErrorCode;
 #[cfg(feature = "local-runtime")]
 mod runtime_discovery;
 pub use api::*;
@@ -78,6 +86,9 @@ pub enum Error {
     #[cfg(feature = "local-runtime")]
     #[error("{0}")]
     History(#[from] velune_agent_runtime::history::HistoryError),
+    #[cfg(feature = "local-runtime")]
+    #[error("{0}")]
+    RuntimeManagement(#[from] velune_agent_runtime::management::Error),
     #[error("invalid application operation: {0}")]
     Invalid(String),
     #[error("unsupported application operation: {0}")]
