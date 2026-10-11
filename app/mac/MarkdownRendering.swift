@@ -90,12 +90,14 @@ struct MarkdownAttributedRenderer {
         let spacing = paragraphs.isEmpty ? 0 : max(style.paragraphSpacingBefore, pendingSpacing)
         // TextKit paints a block's margins with its own background, so the gap
         // between blocks goes on whichever side does not paint it. A table
-        // cell opens or closes its whole table, not just itself.
+        // cell opens or closes its whole table, not just itself. TextKit lays
+        // out a table's own margins unreliably (dropped below, narrowing the
+        // table above), so the gaps around a table go on its neighbours.
         func outer(_ block: NSTextBlock) -> NSTextBlock { (block as? NSTextTableBlock)?.table ?? block }
         let previous = (paragraphs.last?.style.textBlocks ?? []).map(outer)
         let current = style.textBlocks.map(outer)
-        let closed = previous.last { block in !current.contains { $0 === block } && block.backgroundColor == nil }
-        let opened = current.first { block in !previous.contains { $0 === block } && block.backgroundColor == nil }
+        let closed = previous.last { block in !current.contains { $0 === block } && block.backgroundColor == nil && !(block is NSTextTable) }
+        let opened = current.first { block in !previous.contains { $0 === block } && block.backgroundColor == nil && !(block is NSTextTable) }
         style.paragraphSpacingBefore = 0
         if spacing <= 0 {
         } else if let closed {

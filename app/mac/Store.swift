@@ -16,6 +16,8 @@ final class AppStore: ObservableObject {
     @Published private(set) var pendingConversationID: String?
     @Published private(set) var conversationManagementStatus: String?
     @Published private(set) var projectionRuntimeID: String?
+    /// The conversation whose turn this application is running, for the sidebar.
+    @Published private(set) var runningConversationID: String?
     @Published private(set) var nextTurnRuntimeID: String?
     @Published private(set) var nextTurnModelRecordKey: String?
     let transcript = TranscriptModel()
@@ -130,6 +132,8 @@ final class AppStore: ObservableObject {
         if authenticationNotifications != application.authenticationNotifications { authenticationNotifications = application.authenticationNotifications }
         if authenticationResult != application.authenticationResult { authenticationResult = application.authenticationResult }
         if problems != application.problems { problems = application.problems }
+        let running = application.isGenerating ? application.snapshot?.conversation.id : nil
+        if runningConversationID != running { runningConversationID = running }
         reconcileNextTurnIntent()
         if !isDraft, pendingConversationID == nil, let active = application.snapshot,
            active.conversation.id == loadedConversationID, active.conversation.runtimeID == snapshot?.conversation.runtimeID {
@@ -180,8 +184,14 @@ final class AppStore: ObservableObject {
         guard !isShuttingDown, enabledRuntimeInstances.contains(where: { $0.id == id }) else { return }
         hasInitializedNextTurnIntent = true
         nextTurnRuntimeID = id
-        if nextTurnModelRecordKey != nil, !runtimeCompatibleModels.contains(where: { $0.recordKey == nextTurnModelRecordKey }) { nextTurnModelRecordKey = nil }
+        if !runtimeCompatibleModels.contains(where: { $0.recordKey == nextTurnModelRecordKey }) { nextTurnModelRecordKey = defaultModelRecordKey(preferring: nil) }
         rememberNextTurnIntent()
+    }
+    /// The preferred model when it suits the next-turn runtime; otherwise the
+    /// most recently chosen compatible model, then the first compatible one.
+    private func defaultModelRecordKey(preferring preferred: String?) -> String? {
+        let compatible = runtimeCompatibleModels.map(\.recordKey)
+        return [preferred, lastChosenModelRecordKey].compactMap { $0 }.first { compatible.contains($0) } ?? compatible.first
     }
     var pendingInteractions: [RuntimeInteraction] { snapshot?.pendingInteractions ?? [] }
     func replyInteraction(_ interaction: RuntimeInteraction, reply: RuntimeInteractionReply) {
@@ -238,6 +248,22 @@ final class AppStore: ObservableObject {
     func refreshConversations() {
         guard !isPreview, !isBusy, let transport else { return }
         enqueue({ try transport.list() }) { [weak self] in self?.applyList($0) }
+    }
+    var canReloadFromRuntimes: Bool { !isPreview && !isBusy && !applicationIsGenerating && pendingConversationID == nil }
+    /// Runtimes own their sessions and can change them outside Velune (another
+    /// client, a turn still running there). Velune does not watch for that; this
+    /// reads the conversation list and the open conversation again.
+    func reloadFromRuntimes() {
+        guard canReloadFromRuntimes, let transport else { return }
+        let open = isDraft ? nil : snapshot?.conversation
+        generation += 1
+        enqueue({ () -> (BindingConfigurationSnapshot, BindingSnapshotResult?) in
+            (try transport.list(), try open.map { try transport.openConversation(runtimeID: $0.runtimeID, conversationID: $0.id) })
+        }) { [weak self] result in
+            guard let self else { return }
+            applyList(result.0)
+            if let conversation = result.1 { applySnapshotResult(conversation) }
+        }
     }
     func loadAnalytics(_ query: BindingAnalyticsQuery) {
         analyticsGeneration &+= 1
@@ -747,7 +773,7 @@ final class AppStore: ObservableObject {
     }
     /// Each conversation keeps its own next-turn choice. A conversation opened
     /// for the first time continues on its current runtime and model; without a
-    /// recorded model, the most recently chosen compatible one.
+    /// usable recorded model, the default (see `defaultModelRecordKey`).
     private func restoreNextTurnIntent(for value: ConversationSnapshot) {
         guard value.conversation.id != intentConversationID else { return }
         intentConversationID = value.conversation.id
@@ -756,8 +782,7 @@ final class AppStore: ObservableObject {
             hasInitializedNextTurnIntent = true
             nextTurnRuntimeID = runtimeID
         }
-        let compatible = Set(runtimeCompatibleModels.map(\.recordKey))
-        nextTurnModelRecordKey = [intent.modelRecordKey, lastChosenModelRecordKey].compactMap { $0 }.first { compatible.contains($0) }
+        nextTurnModelRecordKey = defaultModelRecordKey(preferring: intent.modelRecordKey)
         rememberNextTurnIntent()
     }
     private func refreshAfterExecutionInvalidation() {
@@ -771,6 +796,10 @@ final class AppStore: ObservableObject {
     }
     private func resetProjection() { intentConversationID = nil; loadedPayloads.removeAll(); isDraft = false; problems.removeAll { $0.activityKey?.hasPrefix("poll:") == true }; generation += 1; snapshot = nil; projectionRuntimeID = nil; selectedConversationID = nil; pendingConversationID = nil; transcript.reset(); activity = nil }
     private func applyList(_ data: BindingConfigurationSnapshot) {
+        // The application owns the conversation list and configuration that
+        // workspaces copy; a workspace's result must reach it, or the stale
+        // copy returns (a deleted conversation reappearing in the sidebar).
+        sharedApplication?.applyList(data)
         let mapped = BindingMapping.configuration(data)
         if conversationBrowserPreferences == nil {
             conversationBrowserPreferences = data.conversationBrowserPreferences
@@ -821,7 +850,10 @@ final class AppStore: ObservableObject {
         } else if let nextTurnRuntimeID, !enabledRuntimeInstances.contains(where: { $0.id == nextTurnRuntimeID }) {
             self.nextTurnRuntimeID = nil; nextTurnModelRecordKey = nil
         }
-        if nextTurnModelRecordKey != nil, !runtimeCompatibleModels.contains(where: { $0.recordKey == nextTurnModelRecordKey }) { nextTurnModelRecordKey = nil }
+        if nextTurnRuntimeID != nil, snapshot != nil, !runtimeCompatibleModels.contains(where: { $0.recordKey == nextTurnModelRecordKey }) {
+            nextTurnModelRecordKey = defaultModelRecordKey(preferring: nil)
+            rememberNextTurnIntent()
+        }
     }
     private func apply(_ value: ConversationSnapshot?, preserveSelection: Bool = false) {
         guard var value else { return }
@@ -957,7 +989,7 @@ final class AppStore: ObservableObject {
         gateway = GatewayConfig(providers: [AIProvider(id: "sample-provider", name: "示例 AI 服务", protocolID: .chatCompletionsV1, endpoint: "https://example.invalid/v1", models: [ProviderModel(recordKey: "sample-model", providerModelID: "external-example", nickname: "通用模型", contextWindow: 8192, maxOutputTokens: 4096)])])
         hasGateway = true
         protocols = [ProtocolDescriptor(id: .chatCompletionsV1, name: "OpenAI Chat Completions v1", supported: true), ProtocolDescriptor(id: .responsesV1, name: "OpenAI Responses v1", supported: true), ProtocolDescriptor(id: .messagesV1, name: "Anthropic Messages v1", supported: true)]
-        runtimeTypes = [RuntimeTypeDescriptor(id: "sample-type", familyID: "sample", versionRegex: ".*", canRenameConversations: true, canDeleteConversations: true, supportedProtocols: [.chatCompletionsV1, .responsesV1, .messagesV1], supportedProviderProtocols: [.chatCompletionsV1, .responsesV1, .messagesV1], name: "示例运行时", fields: [])]
+        runtimeTypes = [RuntimeTypeDescriptor(id: "sample-type", familyID: "sample", canRenameConversations: true, canDeleteConversations: true, supportedProtocols: [.chatCompletionsV1, .responsesV1, .messagesV1], supportedProviderProtocols: [.chatCompletionsV1, .responsesV1, .messagesV1], name: "示例运行时", fields: [])]
         runtimeInstances = [RuntimeInstance(id: "sample-instance", name: "示例运行时", typeID: "sample-type", gatewayID: gateway.id, settings: [:]), RuntimeInstance(id: "sample-review", name: "另一个运行时", typeID: "sample-type", gatewayID: gateway.id, settings: [:])]
         projectionRuntimeID = runtimeInstances[0].id; hasInitializedNextTurnIntent = true; nextTurnRuntimeID = projectionRuntimeID; nextTurnModelRecordKey = "sample-model"
         let topics = ["让设置页更安静", "整理一段代码", "下一步的项目计划"]

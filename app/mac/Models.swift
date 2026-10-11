@@ -199,7 +199,6 @@ struct RuntimeInstance: Codable, Sendable, Identifiable, Equatable {
 struct RuntimeTypeDescriptor: Codable, Sendable, Identifiable, Equatable {
     var id: String
     var familyID: String
-    var versionRegex: String
     var canRenameConversations: Bool = false
     var canDeleteConversations: Bool = false
     var supportedProtocols: [ProviderProtocol]

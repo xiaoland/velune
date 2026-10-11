@@ -34,7 +34,7 @@ struct TranscriptView: View {
             .overlay(alignment: .bottomTrailing) {
                 if !following {
                     Button { following = true; bottomRequest &+= 1 } label: { Image(systemName: "arrow.down") }
-                        .buttonStyle(.bordered).buttonBorderShape(.circle).controlSize(.large)
+                        .buttonStyle(.bordered).controlSize(.large)
                         .help("回到底部").accessibilityLabel("回到底部")
                         .padding(.bottom, 16).padding(.trailing, 16 + scrollerInset)
                 }

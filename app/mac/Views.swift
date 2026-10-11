@@ -30,7 +30,13 @@ struct VeluneRootView: View {
                   Section {
                     ForEach(section.conversations) { conversation in
                         VStack(alignment: .leading, spacing: 3) {
-                            Text(conversation.title).lineLimit(1)
+                            HStack(spacing: 6) {
+                                Text(conversation.title).lineLimit(1)
+                                if store.runningConversationID == conversation.id {
+                                    Spacer(minLength: 0)
+                                    ProgressView().controlSize(.mini).help("正在运行").accessibilityLabel("正在运行")
+                                }
+                            }
                             HStack(spacing: 8) {
                                 Text(rowContext(conversation)).lineLimit(1).truncationMode(.middle).help(conversation.cwd ?? "未指定项目")
                                 Spacer(minLength: 0)
@@ -73,6 +79,9 @@ struct VeluneRootView: View {
             .navigationTitle(previewEmpty ? "新会话" : store.selectedConversationTitle ?? "Velune")
             .toolbar {
                 ToolbarItemGroup(placement: .primaryAction) {
+                    Button { store.reloadFromRuntimes() } label: { Label("重新读取", systemImage: "arrow.clockwise") }
+                        .keyboardShortcut("r").disabled(!store.canReloadFromRuntimes)
+                        .help("从 Agent 运行时重新读取会话列表和当前会话（⌘ R）；在 Velune 之外发生的变化不会自动出现")
                     outlineButton
                 }
             }
@@ -636,7 +645,7 @@ struct RuntimeSettingsView: View {
             }
             .listStyle(.bordered).padding(.horizontal, 20).padding(.top, 16)
             HStack {
-                Button { rememberIDs(); creating = true } label: { Image(systemName: "plus") }.help("添加Agent 运行时实例")
+                Button { rememberIDs(); creating = true } label: { Image(systemName: "plus") }.help("添加 Agent 运行时实例")
                 Button("快速导入…") { rememberIDs(); discovering = true }.disabled(store.isBusy)
                 Button { deleting = selected } label: { Image(systemName: "minus") }.disabled(selected == nil).help("删除运行时实例")
                 Spacer()
@@ -716,7 +725,7 @@ struct RuntimeEditor: View {
     }
     var body: some View {
         VStack(spacing: 0) {
-            Text(instance == nil ? "添加Agent 运行时" : "编辑Agent 运行时").font(.headline).frame(maxWidth: .infinity, alignment: .leading).padding(20)
+            Text(instance == nil ? "添加 Agent 运行时" : "编辑 Agent 运行时").font(.headline).frame(maxWidth: .infinity, alignment: .leading).padding([.horizontal, .top], 20)
             Form {
                 Section {
                     TextField("实例名称", text: $name)
@@ -725,7 +734,6 @@ struct RuntimeEditor: View {
                 }
                 if let descriptor {
                     Section("实例配置") {
-                        LabeledContent("兼容版本", value: descriptor.versionRegex).font(.caption).foregroundStyle(.secondary)
                         ForEach(descriptor.fields) { field in
                             SettingFieldView(
                                 field: field,
@@ -838,13 +846,18 @@ struct SettingFieldView: View {
         if field.kind == .choice {
             Picker(field.label, selection: $value) { ForEach(field.options) { option in Text(option.label).tag(option.id) } }.help(field.help ?? field.label)
         } else {
-            LabeledContent(field.label) {
+            // Paths are long: the value gets the row's full width, with the
+            // label above and the explanation below instead of beside it.
+            VStack(alignment: .leading, spacing: 6) {
+                Text(field.label)
                 HStack {
-                    TextField(field.required ? "必填" : "可选", text: $value).textFieldStyle(.roundedBorder)
+                    TextField(field.label, text: $value, prompt: Text(field.required ? "必填" : "可选"))
+                        .labelsHidden().textFieldStyle(.roundedBorder).multilineTextAlignment(.leading)
                     if field.kind == .filePath || field.kind == .directoryPath { Button("选择…", action: choosePath) }
                     if let discoveryTitle, let discoveryAction { Button(discoveryTitle, action: discoveryAction).disabled(discoveryTitle == "探测中…") }
                 }
-            }.help(field.help ?? field.label)
+                if let help = field.help { Text(help).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true) }
+            }
         }
     }
     private func choosePath() {
