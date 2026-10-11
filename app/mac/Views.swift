@@ -284,10 +284,12 @@ struct SettingsView: View {
     @ObservedObject private var navigator = SettingsNavigator.shared
     var body: some View {
         TabView(selection: $navigator.tab) {
-            ProviderSettingsView(store: store).frame(width: 690, height: 560).tabItem { Label("AI提供商", systemImage: "network") }.tag(SettingsTab.providers)
-            ConversationSettingsView(store: store).frame(width: 690, height: 560).tabItem { Label("会话", systemImage: "bubble.left.and.bubble.right") }.tag(SettingsTab.conversation)
-            RuntimeSettingsView(store: store).frame(width: 900, height: 600).tabItem { Label("Agent 运行时", systemImage: "terminal") }.tag(SettingsTab.runtimes)
+            ProviderSettingsView(store: store).tabItem { Label("AI提供商", systemImage: "network") }.tag(SettingsTab.providers)
+            ConversationSettingsView(store: store).tabItem { Label("会话", systemImage: "bubble.left.and.bubble.right") }.tag(SettingsTab.conversation)
+            RuntimeSettingsView(store: store).tabItem { Label("Agent 运行时", systemImage: "terminal") }.tag(SettingsTab.runtimes)
         }
+        // One size for every tab: the window must not jump when switching.
+        .frame(minWidth: 760, idealWidth: 900, maxWidth: .infinity, minHeight: 520, idealHeight: 620, maxHeight: .infinity)
     }
 }
 
