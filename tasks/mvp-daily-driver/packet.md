@@ -74,3 +74,4 @@
 - 临时 Swift 脚本（未提交）编译生产 Store：一个窗口发送 A 后切到 B 再发送，两个都在运行；另一窗口打开 A 显示运行中且可停止；两者分别结束——通过。可见窗口截图确认侧栏两个会话都有运行指示、A 实时显示。
 - 既有脚本：`manual-runtime-interactions`、`manual-acp-adapter`、`manual-resource-library`、`manual-continuation-boundaries` 通过（前两者已改用新签名）。`manual-session-loading.py` 在本改动前已因 `createConversation` 签名过时无法编译，未修；`manual-cross-harness`／`manual-harness-interoperation` 需要 DSH／OpenCode，本机没有，协作路径未复验。
 - 未验证：Codex／Claude Code 原生会话的并发执行（逻辑与 Pi 同路径，未用真实 CLI 并发跑）；SSH 运行时的并发。
+- 安装：`994b7c4` release 构建已安装 `/Applications/Velune.app`（0.1 beta.1、config schema 8、manifest dirty=false），严格签名通过；正常退出旧应用后安装并重新打开，无崩溃报告。
