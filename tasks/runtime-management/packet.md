@@ -72,3 +72,4 @@ runtime_adapter 进一步把独立资源文件边界委派给既有 ssh_executio
 - 走查（临时 VELUNE_HOME、停用的合成运行时，仅用 AX 操作 Velune 元素）：差异 sheet 显示改写行并覆盖落盘；Codex 批量导入 3 项（含无法带入字段的子 Agent，原生改写为规范形式）；技能“全部启用”遇 Pi 同名条目统一确认并覆盖；MCP JSON 粘贴 HTTP 声明后保存同步到 Claude Code 与 Codex；搜索过滤；退出确认；新增 Pi 实例出现提示（5 项可用），新增 ACP 实例不提示。
 - 一次未复现的退出：首次添加运行时后应用在提示出现时异常结束，核心日志无 shutdown、无崩溃报告（本机 ReportCrash 自身异常）。推测为 sheet 关闭动画中弹出 alert；改为 sheet 的 onDismiss 后再提示，后续三次均正常。
 - ⑦ 真实 Harness 加载：`scripts/manual-resource-library-native.py` 在 sandbox（拒绝读取 /Users、仅 loopback 网络、临时 HOME）中通过 UniFFI 保存并启用资源库内容，再由固定版本自身的加载器确认，见 [原生证据](native-evidence.md#资源库写入的加载)。未调用模型。
+- 安装：`08c609e` release 构建已安装 `/Applications/Velune.app`（0.1 beta.1、schema 8），manifest 提交一致，严格签名与主程序／核心库 SHA 核对通过，启动正常。manifest 的 dirty=true 仅因工作区存在未跟踪的 `app/mac/.DS_Store` 与只含 `.DS_Store` 的 `app/mac/Assets/`（非本任务文件，未删除）。
