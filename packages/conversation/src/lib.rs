@@ -260,7 +260,7 @@ pub struct TranscriptTurn {
     pub id: String,
     pub user_message_id: String,
     pub work_message_ids: Vec<String>,
-    /// The text-only assistant currently visible outside the work group. It may
+    /// The closing assistant message, visible outside the work group. It may
     /// still be streaming; execution lifecycle determines whether work is running.
     pub last_message_id: Option<String>,
     /// Observed execution elapsed time. None for history without lifecycle evidence.

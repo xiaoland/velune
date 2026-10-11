@@ -92,7 +92,6 @@ struct ProviderImportView: View {
                 .disabled(store.isLoading || supportedInstances.isEmpty)
                 Button(preview == nil ? "读取配置" : "重新读取") { readSource() }
                     .disabled(source == nil || store.isLoading)
-                ProblemsButton(store: store).buttonStyle(.borderless)
                 if store.isLoading { ProgressView().controlSize(.small) }
             }
             .padding(16)

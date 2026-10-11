@@ -17,7 +17,6 @@ struct PublicModelCatalogView: View {
             HStack {
                 Text("公开模型目录").font(.headline)
                 Spacer()
-                ProblemsButton(store: store).buttonStyle(.borderless)
                 Link("models.dev", destination: URL(string: "https://models.dev")!)
             }.padding(20)
             Text("选择来源提供商的模型，复制为可编辑模板。目录信息仅供参考；协议、服务地址与能力参数仍需核对提供商文档。")

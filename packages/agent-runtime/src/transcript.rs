@@ -1,6 +1,6 @@
 //! Ordered, disposable message-list projection. Native snapshots remain authoritative.
 use crate::conversation::{
-    Message, MessageBlock, MessageIdentityConfirmation, MessageRole, RunState, TranscriptItem,
+    Message, MessageIdentityConfirmation, MessageRole, RunState, TranscriptItem,
     TranscriptMessageIdentity, TranscriptOutlineEntry, TranscriptTurn,
 };
 use std::{
@@ -18,7 +18,6 @@ pub enum TranscriptEvent<'a> {
 struct MessageAnchor {
     id: String,
     role: MessageRole,
-    pure_text: bool,
 }
 
 #[derive(Default)]
@@ -69,12 +68,6 @@ impl TranscriptProjection {
                     .map(|message| MessageAnchor {
                         id: message.id.clone(),
                         role: message.role.clone(),
-                        pure_text: message.role == MessageRole::Assistant
-                            && message.blocks.iter().any(|block| matches!(block, MessageBlock::Text { text } if !text.trim().is_empty()))
-                            && message
-                                .blocks
-                                .iter()
-                                .all(|block| matches!(block, MessageBlock::Text { .. })),
                     })
                     .collect();
                 let identities: BTreeSet<_> = self
@@ -142,7 +135,11 @@ impl TranscriptProjection {
                     .copied()
                     .unwrap_or(self.messages.len());
                 let responses = &self.messages[start + 1..next_user];
-                let visible = responses.last().filter(|message| message.pure_text);
+                // The closing assistant message is the turn's answer and stays
+                // outside the work group; a turn ending in anything else folds fully.
+                let visible = responses
+                    .last()
+                    .filter(|message| message.role == MessageRole::Assistant);
                 let work_end = responses.len() - usize::from(visible.is_some());
                 let user = &self.messages[*start];
                 let duration_ms = self

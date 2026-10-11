@@ -57,7 +57,11 @@ struct VeluneRootView: View {
             .navigationSplitViewColumnWidth(min: 190, ideal: 240, max: 340)
             .disabled(store.isGenerating || store.authenticationRunning || store.isShuttingDown)
             .toolbar {
-                ToolbarItem(placement: .automatic) { browserMenu }
+                ToolbarItemGroup(placement: .automatic) {
+                    browserMenu
+                    Button { store.createConversation() } label: { Label("新建会话", systemImage: "square.and.pencil") }
+                        .help("新建会话（⌘ N）").disabled(store.applicationIsGenerating || store.isLoading || store.enabledRuntimeInstances.isEmpty)
+                }
             }
         } detail: {
             VStack(spacing: 0) {
@@ -70,8 +74,6 @@ struct VeluneRootView: View {
             .toolbar {
                 ToolbarItemGroup(placement: .primaryAction) {
                     outlineButton
-                    Button { store.createConversation() } label: { Label("新建会话", systemImage: "square.and.pencil") }
-                        .help("新建会话（⌘ N）").disabled(store.applicationIsGenerating || store.isLoading)
                 }
             }
         }
@@ -87,7 +89,6 @@ struct VeluneRootView: View {
         .onChange(of: store.pendingConversationID) { _, value in if value != nil { showsOutlinePopover = false } }
         .onChange(of: store.loadedConversationID) { _, _ in showsOutlinePopover = false; outlineCollapsed = false }
         .onChange(of: store.outlinePresentation) { _, _ in showsOutlinePopover = false; outlineCollapsed = false }
-        .onChange(of: store.showsNewConversation) { _, shown in if !shown { composer.focus() } }
         .toolbar { if !store.problems.isEmpty { ToolbarItem(placement: .primaryAction) { ProblemsButton(store: store) } } }
         .sheet(item: $renameTarget) { ConversationRenameView(store: store, conversation: $0) }
         .alert(deleteTargets.count == 1 ? "删除会话？" : "删除 \(deleteTargets.count) 个会话？", isPresented: Binding(get: { !deleteTargets.isEmpty }, set: { if !$0 { deleteTargets = [] } })) {
@@ -96,7 +97,6 @@ struct VeluneRootView: View {
         } message: {
             Text("将永久删除所选 \(deleteTargets.count) 个会话，以及它们在各 Agent 运行时中的关联会话数据。此操作无法撤销。")
         }
-        .sheet(isPresented: $store.showsNewConversation) { NewConversationView(store: store) }
         .sheet(item: Binding(get: { store.pendingInteractions.first }, set: { _ in })) { RuntimeInteractionView(store: store, interaction: $0) }
         .focusedSceneValue(\.conversationCommands, ConversationCommandTarget(store: store, send: send))
         .task {
@@ -154,7 +154,7 @@ struct VeluneRootView: View {
         } description: {
             Text(store.executionBusyElsewhere ? "另一个会话正在运行，完成后即可发送。" : store.needsModelSelection ? "选择下一轮模型后即可发送。" : store.canSend ? "输入消息，开始工作。" : "先在设置中配置AI提供商、模型与Agent 运行时。")
         } actions: {
-            if !store.canSend && !store.executionBusyElsewhere && !store.needsModelSelection { SettingsLink { Text("打开设置") } }
+            if !store.canSend && !store.executionBusyElsewhere && !store.needsModelSelection { SettingsTabLink(tab: store.enabledRuntimeInstances.isEmpty ? .runtimes : .providers, title: "打开设置") }
         }
     }
 
@@ -208,7 +208,7 @@ struct ConversationRenameView: View {
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            ProblemsSheetHeading(title: "重命名会话", store: store)
+            Text("重命名会话").font(.headline)
             TextField("会话名称", text: $title).focused($titleFocused).onSubmit(rename)
                 .disabled(store.conversationManagementStatus != nil)
             if let status = store.conversationManagementStatus { Text(status).font(.callout).foregroundStyle(.secondary) }
@@ -260,13 +260,33 @@ extension ImmediateDisclosureGroup where Label == Text {
     }
 }
 
+enum SettingsTab: Hashable { case providers, conversation, runtimes }
+
+/// The settings tab that is showing. Entry points elsewhere in the app set it
+/// before opening the window, so settings open where the task needs them.
+@MainActor final class SettingsNavigator: ObservableObject {
+    static let shared = SettingsNavigator()
+    @Published var tab: SettingsTab = .providers
+}
+
+/// Opens settings on a specific tab.
+struct SettingsTabLink: View {
+    let tab: SettingsTab
+    let title: String
+    @Environment(\.openSettings) private var openSettings
+    var body: some View {
+        Button(title) { SettingsNavigator.shared.tab = tab; openSettings() }
+    }
+}
+
 struct SettingsView: View {
     @ObservedObject var store: AppStore
+    @ObservedObject private var navigator = SettingsNavigator.shared
     var body: some View {
-        TabView {
-            ProviderSettingsView(store: store).tabItem { Label("AI提供商", systemImage: "network") }
-            ConversationSettingsView(store: store).tabItem { Label("会话", systemImage: "bubble.left.and.bubble.right") }
-            RuntimeSettingsView(store: store).tabItem { Label("Agent 运行时", systemImage: "terminal") }
+        TabView(selection: $navigator.tab) {
+            ProviderSettingsView(store: store).tabItem { Label("AI提供商", systemImage: "network") }.tag(SettingsTab.providers)
+            ConversationSettingsView(store: store).tabItem { Label("会话", systemImage: "bubble.left.and.bubble.right") }.tag(SettingsTab.conversation)
+            RuntimeSettingsView(store: store).tabItem { Label("Agent 运行时", systemImage: "terminal") }.tag(SettingsTab.runtimes)
         }.frame(width: 690, height: 560)
     }
 }
@@ -417,7 +437,7 @@ struct ProviderEditor: View {
     private var valid: Bool { !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && URL(string: endpoint)?.host != nil && models.allSatisfy(\.valid) && (!editingAPIKey || (!apiKey.isEmpty && (originalAPIKey != nil || authentication.method != .apiKey || clearAuthentication))) }
     var body: some View {
         VStack(spacing: 0) {
-            ProblemsSheetHeading(title: provider == nil ? "添加 AI 提供商" : "编辑 AI 提供商", store: store).padding(20)
+            Text(provider == nil ? "添加 AI 提供商" : "编辑 AI 提供商").font(.headline).frame(maxWidth: .infinity, alignment: .leading).padding(20)
             Divider()
             HSplitView {
                 VStack(spacing: 0) {
@@ -550,7 +570,7 @@ struct ModelTemplatesView: View {
     @State private var catalog = false
     var body: some View {
         VStack(spacing: 0) {
-            ProblemsSheetHeading(title: "模型模板", store: store).padding(20)
+            Text("模型模板").font(.headline).frame(maxWidth: .infinity, alignment: .leading).padding(20)
             Text("模板用于快速填写模型，修改模板不会改变已配置的模型。").font(.callout).foregroundStyle(.secondary).padding(.horizontal, 20).padding(.bottom, 12)
             List(selection: $selectedID) { ForEach(store.modelTemplates) { template in VStack(alignment: .leading, spacing: 3) { Text(template.name); Text(template.suggestedProviderModelID).font(.caption).foregroundStyle(.secondary) }.tag(template.id) } }
             .contextMenu(forSelectionType: String.self) { ids in
@@ -577,7 +597,7 @@ struct ModelTemplateEditor: View {
     @FocusState private var modelIDFocused: Bool
     var body: some View {
         VStack(spacing: 0) {
-            ProblemsSheetHeading(title: "编辑模型模板", store: store).padding(16)
+            Text("编辑模型模板").font(.headline).frame(maxWidth: .infinity, alignment: .leading).padding(16)
             Form { Section { TextField("模板名称", text: $name) }; ProviderModelFields(draft: $draft, modelIDFocused: $modelIDFocused) }.formStyle(.grouped)
 
             HStack { Spacer(); Button("取消") { dismiss() }.keyboardShortcut(.cancelAction); Button("保存") { let model = draft.definition; store.saveTemplate(ModelTemplate(id: template.id, name: name, suggestedProviderModelID: model.providerModelID, nickname: model.nickname, icon: model.icon, contextWindow: model.contextWindow, maxOutputTokens: model.maxOutputTokens, reasoningLevels: model.reasoningLevels)) { dismiss() } }.keyboardShortcut(.defaultAction).disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !draft.valid || store.isLoading) }.padding(16)
@@ -645,7 +665,7 @@ struct RuntimeEditor: View {
     }
     var body: some View {
         VStack(spacing: 0) {
-            ProblemsSheetHeading(title: instance == nil ? "添加Agent 运行时" : "编辑Agent 运行时", store: store).padding(20)
+            Text(instance == nil ? "添加Agent 运行时" : "编辑Agent 运行时").font(.headline).frame(maxWidth: .infinity, alignment: .leading).padding(20)
             Form {
                 Section {
                     TextField("实例名称", text: $name)
@@ -782,7 +802,7 @@ struct AuthenticationView: View {
     @State private var answer = ""
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            ProblemsSheetHeading(title: "认证来源登录", store: store)
+            Text("认证来源登录").font(.headline).frame(maxWidth: .infinity, alignment: .leading)
             ScrollView {
                 VStack(alignment: .leading, spacing: 12) {
                     ForEach(Array(store.authenticationNotifications.enumerated()), id: \.offset) { _, notice in
@@ -825,11 +845,11 @@ struct RuntimeInteractionView: View {
         VStack(alignment: .leading, spacing: 16) {
             switch interaction.kind {
             case .approval(let title, let detail, let options):
-                ProblemsSheetHeading(title: title, store: store)
+                Text(title).font(.headline).frame(maxWidth: .infinity, alignment: .leading)
                 ScrollView { Text(detail).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading) }.frame(maxHeight: 220)
                 HStack { Button("取消请求", role: .cancel) { reply(.cancel) }; Spacer(); ForEach(options) { option in Button(option.label) { reply(.decision(option.id)) } } }.disabled(store.isLoading)
             case .userInput(let questions):
-                ProblemsSheetHeading(title: "运行时需要输入", store: store)
+                Text("运行时需要输入").font(.headline).frame(maxWidth: .infinity, alignment: .leading)
                 Form {
                     ForEach(questions) { question in
                         Section {
@@ -849,58 +869,4 @@ struct RuntimeInteractionView: View {
     }
     private func value(_ id: String) -> Binding<String> { Binding(get: { values[id] ?? "" }, set: { values[id] = $0 }) }
     private func reply(_ value: RuntimeInteractionReply) { store.replyInteraction(interaction, reply: value) }
-}
-
-struct NewConversationView: View {
-    @ObservedObject var store: AppStore
-    @Environment(\.dismiss) private var dismiss
-    @State private var runtimeID = ""
-    @State private var modelRecordKey: String?
-    @State private var cwd = ""
-    private var compatibleModels: [ModelChoice] {
-        guard let runtime = store.enabledRuntimeInstances.first(where: { $0.id == runtimeID }), let type = store.runtimeTypes.first(where: { $0.id == runtime.typeID }) else { return [] }
-        return store.models.filter { type.supportedProviderProtocols.contains($0.protocolID) }
-    }
-    var body: some View {
-        VStack(spacing: 0) {
-            ProblemsSheetHeading(title: "新建会话", store: store).padding(20)
-            Form {
-                Picker("Agent 运行时", selection: $runtimeID) { ForEach(store.enabledRuntimeInstances) { Text($0.name).tag($0.id) } }
-                Picker("模型", selection: $modelRecordKey) {
-                    Text("选择会话模型").tag(Optional<String>.none)
-                    ForEach(compatibleModels) { Text($0.displayName).tag(Optional($0.recordKey)) }
-                }
-                LabeledContent("工作目录") {
-                    HStack { TextField("项目目录", text: $cwd); Button("选择…") { chooseDirectory() } }
-                }
-                Text("可选；留空时使用 Agent 运行时的默认工作目录。")
-                    .font(.caption).foregroundStyle(.secondary)
-                if store.enabledRuntimeInstances.isEmpty {
-                    Text("请先添加 Agent 运行时实例。").foregroundStyle(.secondary)
-                    SettingsLink { Text("打开运行时设置") }
-                } else if compatibleModels.isEmpty {
-                    Text("此运行时尚无兼容模型，请在 AI 提供商设置中添加。").foregroundStyle(.secondary)
-                    SettingsLink { Text("打开 AI 提供商设置") }
-                }
-                Text("首次发送时自动准备运行时并创建会话；浏览已有会话不需要执行准备。").font(.caption).foregroundStyle(.secondary)
-            }.formStyle(.grouped)
-
-            HStack {
-                Spacer(); Button("取消") { dismiss() }.keyboardShortcut(.cancelAction)
-                Button("创建") {
-                    if let modelRecordKey {
-                        let trimmed = cwd.trimmingCharacters(in: .whitespacesAndNewlines)
-                        let selectedCWD = trimmed.isEmpty ? nil : MacPath.expanded(trimmed)
-                        store.createConversation(runtimeID: runtimeID, cwd: selectedCWD, modelRecordKey: modelRecordKey) { dismiss() }
-                    }
-                }.keyboardShortcut(.defaultAction).disabled(runtimeID.isEmpty || modelRecordKey == nil || store.isBusy)
-            }.padding(16)
-        }.frame(width: 480, height: 310)
-        .onAppear { runtimeID = store.enabledRuntimeInstances.first(where: { $0.id == store.nextTurnRuntimeID })?.id ?? store.enabledRuntimeInstances.first?.id ?? "" }
-        .onChange(of: runtimeID) { _, _ in modelRecordKey = nil }
-    }
-    private func chooseDirectory() {
-        let panel = NSOpenPanel(); panel.title = "选择新会话的工作目录"; panel.canChooseDirectories = true; panel.canChooseFiles = false; panel.allowsMultipleSelection = false
-        if panel.runModal() == .OK, let url = panel.url { cwd = url.standardizedFileURL.path }
-    }
 }

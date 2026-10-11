@@ -18,7 +18,7 @@ struct RuntimeDiscoveryView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            ProblemsSheetHeading(title: "快速导入 Agent 运行时", store: store).padding(20)
+            Text("快速导入 Agent 运行时").font(.headline).frame(maxWidth: .infinity, alignment: .leading).padding(20)
             Text("选择已安装的运行时，预览版本与目录后添加配置。提供商与模型可在下一步单独导入。")
                 .font(.callout).foregroundStyle(.secondary).padding(.horizontal, 20).padding(.bottom, 12)
             List(selection: $selectedIDs) {

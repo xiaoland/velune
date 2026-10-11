@@ -52,3 +52,15 @@ clean `e52848a` release 构建已安装 `/Applications/Velune.app`：manifest so
 用户决定：格式编辑选“只要可靠的纯文本多行编辑”，布局保留自动增高的输入框、改为原生样式。实施：标准文本框外观（系统背景／边框），运行时／模型改为按标题宽度的原生弹出按钮，发送／停止改为标准文字按钮并移到框外下方一行，关闭自动纠错、链接／数据检测与智能空格。系统焦点环被滚动视图裁掉（独立测试与 preview 均确认 `focusRingMaskBounds` 方案不显示），改为按系统样式在框外绘制焦点色描边，仅在窗口为主窗口时显示。preview 整窗截图确认外观、启动聚焦、输入与弹出按钮宽度。
 
 原生样式 composer 已以 clean `e13fc55` 构建安装：manifest 一致、dirty=false、0.1 beta.1、schema 8，严格签名与 SHA 核对通过；正常退出后重新打开，无崩溃报告。核心未变，不重复静态检查。
+
+## 零碎改进（2026-10-11）
+
+用户提出：设置入口跳到对应页、sheet 去除问题按钮、工作过程折叠区间、新建会话改为侧栏按钮与空会话（⌘N）、composer 占位与输入跳动、中文输入法候选列表出现时整行跳动。
+
+- 设置入口：`SettingsNavigator` 保存当前设置页，`SettingsTabLink` 先设页再打开设置；composer 运行时→Agent 运行时、模型→AI 提供商，空状态按是否有运行时选页。
+- 问题按钮：删除 `ProblemsSheetHeading` 及目录、导入页内的按钮；主窗口工具栏与分析窗口保留。操作失败时如何提醒仍待设计。
+- 折叠区间（core）：`TranscriptProjection::turns` 末条是 assistant 消息即留在折叠外，否则整段折叠；原“纯文本”判定删除。
+- 新建会话：删除 `NewConversationView`；`createConversation()` 直接建立未首发会话（沿用当前运行时，模型沿用上次选择），composer 对未首发会话多出工作目录菜单并聚焦输入区；侧栏工具栏放“新建会话”。
+- composer 排版：输入、组字文本与占位共用同一字体与固定行高；`setMarkedText` 保留输入法下划线但统一字体与段落样式，提交后统一已提交文本的字体。无法在无输入法环境复现候选列表跳动，需用户用中文输入法确认。
+- 顺带修复：HEAD 的 `kindName` 缺 `runtimeManagement` 导致 Swift 构建失败（核心新增失败类别后 Mac 未跟进）。
+- 验证：cargo fmt／check／clippy；Swift 严格构建通过；preview 窗口里 ⌘N 进入空会话并聚焦，模型菜单“AI 提供商设置…”与运行时菜单“Agent 运行时设置…”分别使设置窗口落在对应页；占位与输入文字起点和基线对齐。

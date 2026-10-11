@@ -177,6 +177,7 @@ final class Transport: @unchecked Sendable {
         case .closed: return "closed"
         case .unavailable: return "unavailable"
         case .providerImport: return "provider_import"
+        case .runtimeManagement: return "runtime_management"
         }
     }
 

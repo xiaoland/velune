@@ -19,7 +19,6 @@ final class AppStore: ObservableObject {
     @Published private(set) var nextTurnRuntimeID: String?
     @Published private(set) var nextTurnModelRecordKey: String?
     let transcript = TranscriptModel()
-    @Published var showsNewConversation = false
     @Published private(set) var gateway = GatewayConfig()
     @Published private(set) var runtimeInstances: [RuntimeInstance] = []
     @Published private(set) var runtimeTypes: [RuntimeTypeDescriptor] = []
@@ -486,21 +485,23 @@ final class AppStore: ObservableObject {
             }
         }
     }
-    func createConversation() { showsNewConversation = true }
-    func createConversation(runtimeID: String, cwd: String?, modelRecordKey: String, onCreated: @escaping () -> Void) {
+    /// Opens an unsent conversation: an empty transcript and composer. The
+    /// runtime and model start from the current next-turn choice and can be
+    /// changed in the composer; the conversation is created at the first send.
+    func createConversation() {
         guard !isLoading, !applicationIsGenerating else { return }
-        // The new conversation's snapshot carries this choice as its next-turn intent.
-        lastChosenModelRecordKey = modelRecordKey
-        if isPreview {
-            let conversation = Conversation(id: UUID().uuidString, title: "新会话", updatedAtUnixMs: Int64(Date().timeIntervalSince1970 * 1000), runtimeID: runtimeID, cwd: cwd)
-            projectionRuntimeID = runtimeID
-            apply(ConversationSnapshot(revision: 1, conversation: conversation, contextRuntimeID: runtimeID, modelRecordKey: modelRecordKey, runState: .idle, messages: [], actions: ConversationActions(canSend: true, canCancel: false, canSwitch: true)))
-            onCreated(); return
-        }
-        isDraft = true
-        let conversation = Conversation(id: Self.draftConversationPrefix + UUID().uuidString, title: "新会话", updatedAtUnixMs: nil, runtimeID: runtimeID, cwd: cwd, canRename: false, canDelete: false)
-        apply(ConversationSnapshot(revision: 1, conversation: conversation, contextRuntimeID: runtimeID, modelRecordKey: modelRecordKey, runState: .idle, messages: [], actions: ConversationActions(canSend: true, canCancel: false, canSwitch: true)))
-        onCreated()
+        guard let runtimeID = enabledRuntimeInstances.first(where: { $0.id == nextTurnRuntimeID })?.id ?? enabledRuntimeInstances.first?.id else { return }
+        let id = isPreview ? UUID().uuidString : Self.draftConversationPrefix + UUID().uuidString
+        let conversation = Conversation(id: id, title: "新会话", updatedAtUnixMs: isPreview ? Int64(Date().timeIntervalSince1970 * 1000) : nil, runtimeID: runtimeID, cwd: nil, canRename: isPreview, canDelete: isPreview)
+        isDraft = !isPreview
+        projectionRuntimeID = runtimeID
+        apply(ConversationSnapshot(revision: 1, conversation: conversation, contextRuntimeID: runtimeID, modelRecordKey: nil, runState: .idle, messages: [], actions: ConversationActions(canSend: true, canCancel: false, canSwitch: true)))
+    }
+    /// An unsent conversation can still choose its working directory.
+    var isUnsentConversation: Bool { isDraft }
+    func setUnsentWorkingDirectory(_ path: String?) {
+        guard isDraft, snapshot != nil else { return }
+        snapshot?.conversation.cwd = path
     }
     /// `onAccepted` receives the conversation that took the turn; sending in a
     /// new conversation replaces its unsent identity with the created one.

@@ -79,14 +79,6 @@ struct ProblemsButton: View {
     }
 }
 
-struct ProblemsSheetHeading: View {
-    let title: String
-    let store: AppStore
-    var body: some View {
-        HStack { Text(title).font(.headline); Spacer(); ProblemsButton(store: store).buttonStyle(.borderless) }
-    }
-}
-
 struct ProblemsMenuItem: View {
     @ObservedObject var store: AppStore
     @Environment(\.openWindow) private var openWindow

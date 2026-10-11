@@ -133,7 +133,19 @@ struct ComposerEditor: NSViewRepresentable {
 }
 
 @MainActor final class ComposerTextView: NSTextView {
-    static let minimumHeight: CGFloat = 2 * ceil(NSFont.preferredFont(forTextStyle: .body).boundingRectForFont.height) + 2 * inset
+    /// One typography for typed text, composition text and the placeholder. The
+    /// line height is fixed: otherwise it follows whichever fonts the line holds
+    /// (including the input method's own for composition text) and the line
+    /// moves while typing.
+    private static let font = NSFont.preferredFont(forTextStyle: .body)
+    private static let lineHeight = ceil(NSLayoutManager().defaultLineHeight(for: font))
+    private static let paragraph: NSParagraphStyle = {
+        let style = NSMutableParagraphStyle()
+        style.minimumLineHeight = lineHeight; style.maximumLineHeight = lineHeight
+        return style
+    }()
+    private static let typography: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: NSColor.labelColor, .paragraphStyle: paragraph]
+    static let minimumHeight: CGFloat = 2 * lineHeight + 2 * inset
     static let maximumHeight: CGFloat = 240
     private static let inset: CGFloat = 5
     fileprivate weak var coordinator: ComposerEditor.Coordinator?
@@ -147,9 +159,10 @@ struct ComposerEditor: NSViewRepresentable {
         container.widthTracksTextView = true
         layoutManager.addTextContainer(container)
         super.init(frame: .zero, textContainer: container)
-        font = .preferredFont(forTextStyle: .body)
+        font = Self.font
         textColor = .labelColor
-        typingAttributes = [.font: NSFont.preferredFont(forTextStyle: .body), .foregroundColor: NSColor.labelColor]
+        defaultParagraphStyle = Self.paragraph
+        typingAttributes = Self.typography
         drawsBackground = false
         isRichText = false
         importsGraphics = false
@@ -221,11 +234,38 @@ struct ComposerEditor: NSViewRepresentable {
         let origin = textContainerOrigin
         let padding = textContainer.lineFragmentPadding
         let rect = NSRect(x: origin.x + padding, y: origin.y, width: bounds.width - origin.x * 2 - padding * 2, height: bounds.height - origin.y)
-        NSAttributedString(string: placeholder, attributes: [.font: font ?? .preferredFont(forTextStyle: .body), .foregroundColor: NSColor.placeholderTextColor]).draw(in: rect)
+        var attributes = Self.typography
+        attributes[.foregroundColor] = NSColor.placeholderTextColor
+        NSAttributedString(string: placeholder, attributes: attributes).draw(in: rect)
     }
     override func didChangeText() {
+        normalizeTypography()
         super.didChangeText()
         needsDisplay = true
+    }
+
+    /// Composition text keeps the input method's underline and clause marks
+    /// but is set in the editor's own font and line height.
+    override func setMarkedText(_ string: Any, selectedRange: NSRange, replacementRange: NSRange) {
+        let marked = NSMutableAttributedString(attributedString: (string as? NSAttributedString) ?? NSAttributedString(string: string as? String ?? ""))
+        let whole = NSRange(location: 0, length: marked.length)
+        marked.addAttributes([.font: Self.font, .paragraphStyle: Self.paragraph], range: whole)
+        super.setMarkedText(marked, selectedRange: selectedRange, replacementRange: replacementRange)
+    }
+
+    /// Committed text can arrive carrying another font; plain text has one.
+    private func normalizeTypography() {
+        typingAttributes = Self.typography
+        guard !hasMarkedText(), let storage = textStorage, storage.length > 0 else { return }
+        let whole = NSRange(location: 0, length: storage.length)
+        var uniform = true
+        storage.enumerateAttributes(in: whole) { attributes, _, stop in
+            if (attributes[.font] as? NSFont) != Self.font || (attributes[.paragraphStyle] as? NSParagraphStyle) != Self.paragraph { uniform = false; stop.pointee = true }
+        }
+        guard !uniform else { return }
+        storage.beginEditing()
+        storage.addAttributes(Self.typography, range: whole)
+        storage.endEditing()
     }
 }
 
@@ -279,7 +319,7 @@ struct ComposerView: View {
                 nextTurnControls
                 Spacer(minLength: 8)
                 if store.executionBusyElsewhere { Text("另一个会话正在运行").font(.callout).foregroundStyle(.secondary).lineLimit(1) }
-                else if store.needsModelSelection { Text("此会话的模型不可用").font(.callout).foregroundStyle(.secondary).lineLimit(1) }
+                else if store.needsModelSelection { Text(store.isUnsentConversation ? "请选择模型" : "此会话的模型不可用").font(.callout).foregroundStyle(.secondary).lineLimit(1) }
                 if store.isGenerating {
                     Button("停止", action: store.cancel).disabled(!store.canCancel).help("停止当前生成")
                 } else {
@@ -294,7 +334,11 @@ struct ComposerView: View {
             // A new window starts in the composer; later selections keep focus where it is.
             DispatchQueue.main.async { model.focus() }
         }
-        .onChange(of: store.loadedConversationID) { _, id in model.show(conversationID: id) }
+        .onChange(of: store.loadedConversationID) { _, id in
+            model.show(conversationID: id)
+            // A new conversation starts in the composer.
+            if store.isUnsentConversation { DispatchQueue.main.async { model.focus() } }
+        }
     }
 
     private var nextTurnControls: some View {
@@ -304,7 +348,7 @@ struct ComposerView: View {
                     ForEach(store.enabledRuntimeInstances) { runtime in Text(runtime.name).tag(Optional(runtime.id)) }
                 }.pickerStyle(.inline)
                 Divider()
-                SettingsLink { Text("设置…") }
+                SettingsTabLink(tab: .runtimes, title: "Agent 运行时设置…")
             } label: {
                 Text(nextTurnRuntime?.name ?? "选择运行时").lineLimit(1).truncationMode(.middle).frame(maxWidth: 140, alignment: .leading)
             }
@@ -317,7 +361,7 @@ struct ComposerView: View {
                     ForEach(store.runtimeCompatibleModels) { model in Text(model.displayName).tag(Optional(model.recordKey)) }
                 }.pickerStyle(.inline).disabled(!store.canSwitchModel)
                 Divider()
-                SettingsLink { Text("设置…") }
+                SettingsTabLink(tab: .providers, title: "AI 提供商设置…")
             } label: {
                 Text(store.selectedModelName ?? "选择模型").lineLimit(1).truncationMode(.middle).frame(maxWidth: 200, alignment: .leading)
             }
@@ -325,6 +369,29 @@ struct ComposerView: View {
             .accessibilityLabel("下一轮模型：\(store.selectedModelName ?? "未选择")")
             .help(store.needsModelSelection ? "此会话的模型当前不可用，请选择已配置的模型" : "下一轮模型：\(store.selectedModelName ?? "未选择")")
             .disabled(store.isShuttingDown)
+            if store.isUnsentConversation { workingDirectoryMenu }
         }.menuStyle(.button)
+    }
+
+    /// Only a conversation that has not been sent yet can still pick where it works.
+    private var workingDirectoryMenu: some View {
+        let path = store.loadedConversationWorkingDirectory
+        let name = path.map { URL(fileURLWithPath: $0).lastPathComponent }
+        return Menu {
+            Button("选择目录…") { chooseDirectory() }
+            if path != nil { Button("使用运行时默认目录") { store.setUnsentWorkingDirectory(nil) } }
+        } label: {
+            Text(name ?? "工作目录").lineLimit(1).truncationMode(.middle).frame(maxWidth: 160, alignment: .leading)
+        }
+        .fixedSize()
+        .accessibilityLabel("工作目录：\(path ?? "运行时默认目录")")
+        .help(path ?? "工作目录：留空时使用运行时的默认目录")
+    }
+
+    private func chooseDirectory() {
+        let panel = NSOpenPanel()
+        panel.title = "选择新会话的工作目录"
+        panel.canChooseDirectories = true; panel.canChooseFiles = false; panel.allowsMultipleSelection = false
+        if panel.runModal() == .OK, let url = panel.url { store.setUnsentWorkingDirectory(url.standardizedFileURL.path) }
     }
 }
