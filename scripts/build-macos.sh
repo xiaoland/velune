@@ -43,8 +43,8 @@ cp -R app/mac/Licenses/RelayKit "$app/Contents/Resources/ThirdParty/RelayKit"
 cat app/mac/Licenses/RelayKit/NOTICE.md >> "$app/Contents/Resources/ThirdParty/THIRD_PARTY_NOTICES.md"
 cp packages/ai-provider/relaykit-bridge/go.mod packages/ai-provider/relaykit-bridge/go.sum "$app/Contents/Resources/ThirdParty/RelayKit/"
 cp Package.resolved "$app/Contents/Resources/ThirdParty/swift-package-resolved.json"
-cp -R app/mac/Assets/Brand "$app/Contents/Resources/Brand"
-xcrun swift scripts/render-app-icon.swift app/mac/Assets/Brand target/macos/Velune.iconset
+cp -R assets/brand "$app/Contents/Resources/Brand"
+xcrun swift scripts/render-app-icon.swift assets/brand target/macos/Velune.iconset
 iconutil -c icns target/macos/Velune.iconset -o "$app/Contents/Resources/Velune.icns"
 cat > "$app/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>

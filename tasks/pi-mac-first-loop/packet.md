@@ -225,3 +225,7 @@ advisor 指出 max_tokens 仍是 OpenAI ChatCompletions 的正式但已弃用字
 2026-10-06 最新迭代：完整本地错误原因、turn 工作过程折叠与两种用户消息 outline，见 [消息工作过程任务](../transcript-turns-outline/packet.md)。
 
 2026-10-06 消息工作过程／两种大纲及完整本地诊断已完成隔离验收，安装源码 `86b4778` 的干净 `0.1 beta.1` 构建。实际安装核心库复验通过；UI 体验仍待用户。细节见 [消息任务](../transcript-turns-outline/packet.md)。
+
+## 2026-10-11 共享品牌资源归属
+
+用户指出 logo 属于整个仓库的设计资源。已将15份 SVG 与原始 README 从 Mac app 子树移到 `assets/brand`，原稿内容保持不变；根 README、开发说明与 Mac 打包／图标生成入口同步引用新位置。验收检查原稿逐字节一致、旧路径无引用，以及新路径图标生成和 bundle 打包；不修改品牌设计或其它进行中的 Mac 源码。16份原稿与 Git 原版本逐字节一致；旧路径引用检查、文档链接、shell 语法、diff 检查通过。新路径独立生成十档 ICNS 成功，完整 Mac release 构建与 deep／strict 签名通过；共享产物曾被另一项并行 Mac 构建重置，待其完成后核对品牌资源与签名；已按授权退出并安装到 `/Applications/Velune.app`，版本保持0.1 beta.1。未新增或运行自动化测试。

@@ -8,7 +8,7 @@
 
 当前应用为 SwiftUI 原生 Mac control surface：系统侧栏和工具栏、Chatbot 阅读与输入区、独立 Settings 窗口。系统决定基础字体、语义颜色及明暗外观，Velune 品牌仅保留在图标与少量细节。应用通过 UniFFI 0.32.2 生成的类型接口嵌入 Rust lib，消费 application 的具名用例，不解析 Harness 原生事件，也不启动常驻 Host 或访问 Unix socket。下文 IPC v1 与模拟体验段落描述历史原型，不能作为当前产品接入说明。
 
-Mac 应用图标由 `scripts/render-app-icon.swift` 将 graphite 光学稿生成十档传统 ICNS 资源。Dock／应用库使用的图标应保留 macOS 的透明光学留白，不能将品牌稿直接铺满画布；具体绘制范围在生成器中维护，不能通过修改品牌 SVG 补偿平台外框尺寸。
+共享品牌 SVG 原稿与原始说明归属仓库级 [assets/brand](../assets/brand)，不归属任一平台 app。Mac 应用图标由 `scripts/render-app-icon.swift` 将该目录中的 graphite 光学稿生成十档传统 ICNS 资源。Dock／应用库使用的图标应保留 macOS 的透明光学留白，不能将品牌稿直接铺满画布；具体绘制范围在生成器中维护，不能通过修改品牌 SVG 补偿平台外框尺寸。
 
 Mac 使用根目录 SwiftPM manifest 与 Package.resolved 锁定 swift-markdown 及其传递依赖 swift-cmark；构建脚本先生成UniFFI模块，再用SwiftPM的Xcode后端构建本机架构产品，固定 macOS 15 部署底线并随包保留 Swift 许可证。swift-markdown 0.9.0 的 manifest 需要 Swift 6.2 或以上工具链。应用与生成绑定目标各自启用warnings-as-errors，依赖保持其声明的Swift语言模式；不全局提升第三方警告。当前依赖没有资源bundle。不会构建或执行依赖的测试 targets。安装历史读取依赖后构建：
 
