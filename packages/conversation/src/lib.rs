@@ -263,6 +263,10 @@ pub struct TranscriptTurn {
     /// The closing assistant message, visible outside the work group. It may
     /// still be streaming; execution lifecycle determines whether work is running.
     pub last_message_id: Option<String>,
+    /// First block of `last_message_id` that belongs to the reply; blocks before
+    /// it are work, and a non-zero value means the message is also the last work
+    /// member. Zero when the whole message is the reply.
+    pub reply_start_block: usize,
     /// Observed execution elapsed time. None for history without lifecycle evidence.
     pub duration_ms: Option<u64>,
     pub is_running: bool,

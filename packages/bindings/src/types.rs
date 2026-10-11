@@ -891,6 +891,7 @@ pub struct BindingTranscriptTurn {
     pub work_message_ids: Vec<String>,
     /// Visible text-only assistant, including streaming content; not a final-answer flag.
     pub last_message_id: Option<String>,
+    pub reply_start_block: u32,
     pub duration_ms: Option<u64>,
     pub is_running: bool,
 }

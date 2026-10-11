@@ -41,12 +41,14 @@ final class TranscriptModel: ObservableObject {
     }
     func items(for visibleRows: [TranscriptRow]) -> [Item] {
         let visible = Set(visibleRows.map(\.id))
-        let byMessage = Dictionary(uniqueKeysWithValues: rows.map { ($0.message.id, $0) })
+        let byID = Dictionary(uniqueKeysWithValues: rows.map { ($0.id, $0) })
+        // A message split into work and reply has two rows; work members use the first.
+        let byMessage = Dictionary(rows.map { ($0.message.id, $0) }, uniquingKeysWith: { first, _ in first })
         let byTurn = Dictionary(uniqueKeysWithValues: turns.map { ($0.id, $0) })
         return presentation.items.compactMap { item in
             switch item {
-            case .message(let id, let messageID):
-                guard visible.contains(id), let row = byMessage[messageID] else { return nil }
+            case .message(let id, _):
+                guard visible.contains(id), let row = byID[id] else { return nil }
                 return .message(row)
             case .work(let turnID):
                 guard let turn = byTurn[turnID] else { return nil }
@@ -62,14 +64,22 @@ final class TranscriptModel: ObservableObject {
         let identitiesByMessage = Dictionary(uniqueKeysWithValues: identities.map { ($0.messageID, $0.id) })
         let existing = Dictionary(uniqueKeysWithValues: rows.map { ($0.id, $0) })
         var changed = presentation.turns != turns || presentation.items != items || presentation.outline != outline
-        let next = messages.map { message -> TranscriptRow in
-            guard let id = identitiesByMessage[message.id] else { preconditionFailure("Missing transcript presentation identity") }
+        func row(_ id: String, _ message: Message) -> TranscriptRow {
             if let row = existing[id] {
                 if row.message != message { row.update(message); changed = true }
                 return row
             }
             changed = true
             return TranscriptRow(message, id: id)
+        }
+        // The closing message splits into its work blocks and its reply.
+        let replyStarts = Dictionary(turns.compactMap { turn in turn.lastMessageID.map { ($0, turn.replyStartBlock) } }, uniquingKeysWith: { first, _ in first })
+        let next = messages.flatMap { message -> [TranscriptRow] in
+            guard let id = identitiesByMessage[message.id] else { preconditionFailure("Missing transcript presentation identity") }
+            guard let start = replyStarts[message.id], start > 0, start < message.blocks.count else { return [row(id, message)] }
+            var work = message, reply = message
+            work.blocks = Array(message.blocks[..<start]); reply.blocks = Array(message.blocks[start...])
+            return [row(id, work), row("reply:" + id, reply)]
         }
         if rows.count != next.count || zip(rows, next).contains(where: { $0 !== $1 }) { changed = true }
         guard changed else { return }

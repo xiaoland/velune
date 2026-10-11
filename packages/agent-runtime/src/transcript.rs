@@ -1,6 +1,6 @@
 //! Ordered, disposable message-list projection. Native snapshots remain authoritative.
 use crate::conversation::{
-    Message, MessageIdentityConfirmation, MessageRole, RunState, TranscriptItem,
+    Message, MessageBlock, MessageIdentityConfirmation, MessageRole, RunState, TranscriptItem,
     TranscriptMessageIdentity, TranscriptOutlineEntry, TranscriptTurn,
 };
 use std::{
@@ -18,6 +18,9 @@ pub enum TranscriptEvent<'a> {
 struct MessageAnchor {
     id: String,
     role: MessageRole,
+    /// Index of the first block of the trailing visible text, which is the
+    /// agent's reply; `None` when an assistant message does not end in text.
+    reply_start: Option<usize>,
 }
 
 #[derive(Default)]
@@ -68,6 +71,9 @@ impl TranscriptProjection {
                     .map(|message| MessageAnchor {
                         id: message.id.clone(),
                         role: message.role.clone(),
+                        reply_start: (message.role == MessageRole::Assistant)
+                            .then(|| trailing_text_start(&message.blocks))
+                            .flatten(),
                     })
                     .collect();
                 let identities: BTreeSet<_> = self
@@ -135,12 +141,15 @@ impl TranscriptProjection {
                     .copied()
                     .unwrap_or(self.messages.len());
                 let responses = &self.messages[start + 1..next_user];
-                // The closing assistant message is the turn's answer and stays
-                // outside the work group; a turn ending in anything else folds fully.
+                // The reply is the text at the end of the closing assistant
+                // message. Everything before it, including that message's own
+                // reasoning and tool blocks, is work; a turn that does not end
+                // in text folds fully.
                 let visible = responses
                     .last()
-                    .filter(|message| message.role == MessageRole::Assistant);
-                let work_end = responses.len() - usize::from(visible.is_some());
+                    .filter(|message| message.reply_start.is_some());
+                let reply_start = visible.and_then(|message| message.reply_start).unwrap_or(0);
+                let work_end = responses.len() - usize::from(visible.is_some() && reply_start == 0);
                 let user = &self.messages[*start];
                 let duration_ms = self
                     .active
@@ -156,6 +165,7 @@ impl TranscriptProjection {
                         .map(|message| message.id.clone())
                         .collect(),
                     last_message_id: visible.map(|message| message.id.clone()),
+                    reply_start_block: reply_start,
                     duration_ms,
                     is_running: ordinal + 1 == starts.len() && self.running,
                 }
@@ -173,19 +183,37 @@ impl TranscriptProjection {
                     .map(move |id| (id.as_str(), turn.id.as_str()))
             })
             .collect();
+        // A reply that shares its message with work gets its own item identity.
+        let split: BTreeSet<_> = turns
+            .iter()
+            .filter(|turn| turn.reply_start_block > 0)
+            .filter_map(|turn| turn.last_message_id.as_deref())
+            .collect();
         let mut emitted = BTreeSet::new();
         self.messages
             .iter()
-            .filter_map(|message| {
-                if let Some(turn_id) = work.get(message.id.as_str()) {
-                    return emitted.insert(*turn_id).then(|| TranscriptItem::Work {
+            .flat_map(|message| {
+                let mut items = Vec::new();
+                if let Some(turn_id) = work.get(message.id.as_str())
+                    && emitted.insert(*turn_id)
+                {
+                    items.push(TranscriptItem::Work {
                         turn_id: (*turn_id).into(),
                     });
                 }
-                Some(TranscriptItem::Message {
-                    id: self.presentation_ids[&message.id].clone(),
-                    message_id: message.id.clone(),
-                })
+                let presentation_id = &self.presentation_ids[&message.id];
+                if split.contains(message.id.as_str()) {
+                    items.push(TranscriptItem::Message {
+                        id: format!("reply:{presentation_id}"),
+                        message_id: message.id.clone(),
+                    });
+                } else if !work.contains_key(message.id.as_str()) {
+                    items.push(TranscriptItem::Message {
+                        id: presentation_id.clone(),
+                        message_id: message.id.clone(),
+                    });
+                }
+                items
             })
             .collect()
     }
@@ -213,4 +241,16 @@ impl TranscriptProjection {
 }
 fn elapsed_ms(started: Instant) -> u64 {
     u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX)
+}
+
+/// First block of the run of non-blank text that ends the message.
+fn trailing_text_start(blocks: &[MessageBlock]) -> Option<usize> {
+    let start = blocks
+        .iter()
+        .rposition(|block| !matches!(block, MessageBlock::Text { .. }))
+        .map_or(0, |index| index + 1);
+    blocks[start..]
+        .iter()
+        .any(|block| matches!(block, MessageBlock::Text { text } if !text.trim().is_empty()))
+        .then_some(start)
 }

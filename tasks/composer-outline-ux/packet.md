@@ -64,3 +64,7 @@ clean `e52848a` release 构建已安装 `/Applications/Velune.app`：manifest so
 - composer 排版：输入、组字文本与占位共用同一字体与固定行高；`setMarkedText` 保留输入法下划线但统一字体与段落样式，提交后统一已提交文本的字体。无法在无输入法环境复现候选列表跳动，需用户用中文输入法确认。
 - 顺带修复：HEAD 的 `kindName` 缺 `runtimeManagement` 导致 Swift 构建失败（核心新增失败类别后 Mac 未跟进）。
 - 验证：cargo fmt／check／clippy；Swift 严格构建通过；preview 窗口里 ⌘N 进入空会话并聚焦，模型菜单“AI 提供商设置…”与运行时菜单“Agent 运行时设置…”分别使设置窗口落在对应页；占位与输入文字起点和基线对齐。
+
+### 折叠区间修订（2026-10-11）
+
+上一版“末条 assistant 即留在折叠外”仍会把该消息的思考带出折叠。用户澄清：回复 = 最后一条 assistant 消息的末尾正文，不含 thinking。核心 `TranscriptTurn` 增 `reply_start_block`（回复首块索引，0 表示整条即回复）；末条消息不以非空正文结尾则没有回复。回复前有其他块时该消息既是最后一个工作成员，又以 `reply:<展示身份>` 作为回复条目；Mac 的 `TranscriptModel` 把它切成两个展示行（前缀块沿用原行身份，因此思考／工具的块索引与展开状态不变）。临时测试（已还原）验证：思考＋工具＋正文、纯文本末条、以工具结尾、末条为工具消息四种形态的区间与条目；fmt／clippy／Swift 严格构建通过，未用真实会话验证渲染。

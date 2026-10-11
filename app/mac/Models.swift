@@ -76,8 +76,10 @@ struct TranscriptTurn: Codable, Sendable, Equatable, Identifiable {
     var id: String
     var userMessageID: String
     var workMessageIDs: [String]
-    /// Visible text-only range tail; harness lifecycle determines whether work is running.
+    /// The closing assistant message that carries the reply; harness lifecycle determines whether work is running.
     var lastMessageID: String?
+    /// Blocks of the last message before this index are work; the rest is the reply.
+    var replyStartBlock: Int = 0
     var durationMs: UInt64?
     var isRunning: Bool
 }
