@@ -6,7 +6,7 @@
 
 ## 已核对事实
 
-New API 本轮查询 main 为 `0f38a14a5e8e322ea741478b0e49878be3130e1d`。其 [RelayKit README](https://github.com/QuantumNous/new-api/blob/0f38a14a5e8e322ea741478b0e49878be3130e1d/relaykit/README.md) 描述独立 Go 模块，覆盖 ChatCompletions、Responses、Messages、Gemini 的请求、非流式响应和流式事件；HTTP、SSE、鉴权、路由和计费由宿主承担。Go 最低版本为 1.25.1，模块处于 v0.x，公开 API 和 DTO 可能随小版本改变。此为上游文档声明，尚未运行验证。
+New API 本轮查询 main 为 `0f38a14a5e8e322ea741478b0e49878be3130e1d`。其 [RelayKit README](https://github.com/QuantumNous/new-api/blob/0f38a14a5e8e322ea741478b0e49878be3130e1d/relaykit/README.md) 描述独立 Go 模块，覆盖 ChatCompletions、Responses、Messages、Gemini 的请求、非流式响应和流式事件；HTTP、SSE、鉴权、路由和计费由宿主承担。Go 最低版本为 1.25.1，模块处于 v0.x，公开 API 和 DTO 可能随小版本改变。其中当前三个已支持协议的六向转换已按下文实测；Gemini 不在本次接入范围。
 
 RelayKit 明确沿用根 AGPLv3，不能因独立模块而当作宽松许可。[NOTICE](https://github.com/QuantumNous/new-api/blob/0f38a14a5e8e322ea741478b0e49878be3130e1d/NOTICE) 另列署名和界面链接要求。Velune 当前 Git 跟踪文件中未发现项目根许可证；产品许可选择不能由本次依赖建议代替。
 
@@ -22,7 +22,7 @@ Velune 现有 `packages/ai-provider` 拥有转换语义，`packages/gateway/src/
 
 调查者固定 Magpie `612b759d2141cccb4f477645c9d765c0878476b0`：[go.mod](https://github.com/yetone/magpie/blob/612b759d2141cccb4f477645c9d765c0878476b0/go.mod) 没有 new-api／RelayKit 模块依赖，[LICENSE](https://github.com/yetone/magpie/blob/612b759d2141cccb4f477645c9d765c0878476b0/LICENSE) 为 MIT。[README](https://github.com/yetone/magpie/blob/612b759d2141cccb4f477645c9d765c0878476b0/README.md) 的 New API 复用描述指社区渠道 middleware 的行为与 JSON 配置兼容，不能等同于直接使用转换库。未穷尽逐文件代码来源、历史或社区插件许可，因此也不能由无依赖推断绝无复制代码。
 
-## 已授权实施与当前计划
+## 已授权实施范围
 
 用户已确认所指组件为 RelayKit，授权技术接入及验证。最终发行许可方向正等待用户选择；本地开发继续，不擅自给整个 Velune 添加许可证。独立 advisor 确认第三方库私有 C ABI 不改变 App 的 UniFFI 产品接口，建议 Go c-archive 链入 Rust cdylib，以同步字节缓冲和请求范围句柄封装转换状态，不接管网络或凭据。
 
@@ -38,6 +38,10 @@ Velune 现有 `packages/ai-provider` 拥有转换语义，`packages/gateway/src/
 
 HTTP 人工脚本已改为消费者协议解析，检查工具 ID／名称／参数、最终文本和终态，支持交错工具与空 choices 的独立 usage。修正了旧 Responses 合成 fixture 同时在 added 与 delta 提供全文的不规范序列，没有为该 fixture 修改生产转换逻辑。真实 Codex 0.159.3 的 command／namespace × ChatCompletions／Messages 四闭环已通过；实际 Pi Agent 1.0.2 安装的 AI SDK 为 1.1.0，验收入口按真实安装解析，报告实际 SDK 版本。
 
-另一项独立任务同时修改原工作区的 runtime/application 及依赖，最终验证转入仅包含本任务改动的隔离工作树，不混入其源码或提交。隔离 fmt、cargo check --locked、workspace/all-targets/all-features clippy -D warnings、bindings no-default-features check/clippy 均通过。六向 JSON／SSE 29 次合成请求通过，包含两轮工具、分片、错误、取消、截断和缺省上限。实际 release bundle 的 Codex 四闭环与 Pi AI SDK 1.1.0 闭环合计 10 次上游请求通过。同协议 9 条保真路径、17 路并发、取消和关闭回归通过；最新 usage 字段清理后六向 29 次再次通过，Go vet 通过。Mac release 构建、Swift 自有目标 warnings-as-errors 和签名校验通过；最终提交版本的重建安装待执行。
+另一项独立任务同时修改原工作区的 runtime/application 及依赖，最终验证转入仅包含本任务改动的隔离工作树，不混入其源码或提交。隔离 fmt、cargo check --locked、workspace/all-targets/all-features clippy -D warnings、bindings no-default-features check/clippy 均通过。六向 JSON／SSE 29 次合成请求通过，包含两轮工具、分片、错误、取消、截断和缺省上限。实际 release bundle 的 Codex 四闭环与 Pi AI SDK 1.1.0 闭环合计 10 次上游请求通过。同协议 9 条保真路径、17 路并发、取消和关闭回归通过；最新 usage 字段清理后六向 29 次再次通过，Go vet 通过。Mac release 构建、Swift 自有目标 warnings-as-errors 和签名校验通过；源码提交 `ff2aa83` 已从干净隔离工作树重建并安装至 `/Applications/Velune.app`（0.1 beta.1），安装包 manifest 的 source_commit 一致且 dirty=false。安装包内动态库再次通过 Codex 四闭环与 Pi SDK 闭环，共 10 次合成上游请求；安装签名校验通过。
 
 Factory26 仅只读检查公开部署说明、模型目录与脚本，未读取 endpoint/key 私有值或真实会话，未发现可直接使用的脱敏协议重放。未调用真实提供商。安装包保留固定 RelayKit、Go runtime 及七个实际运行时依赖许可证；七个许可证已与固定模块缓存核对完整正文，仅规范化 sjson 许可证末尾空行。最终公开发行许可方向仍待用户确认，本地接入不擅自给整个项目添加许可证。
+
+## 完成状态
+
+技术接入、删除旧转换器、静态检查、人工闭环、Mac 打包安装均已完成。公开发行尚未授权；AGPLv3 及上游 NOTICE 的最终发行安排仍待产品许可决定，不影响已完成的本地验证。未验证其他平台实际构建，未调用真实模型。
