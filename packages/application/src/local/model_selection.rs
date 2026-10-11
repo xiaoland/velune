@@ -137,6 +137,7 @@ impl CoreRuntime {
         self.execution_runtime_id = Some(runtime.id.clone());
         if runtime.type_id == "pi-1.0.2" {
             let mut config = self.pi_history_config(&runtime)?;
+            config.mcp_servers = self.collaboration_servers();
             config.provider = provider_id;
             config.model = Some(model_id.into());
             config.rpc_entry = Some(context.resources.join("pi_rpc.mjs"));
@@ -171,7 +172,9 @@ impl CoreRuntime {
                 .map_err(|error| RuntimeError::context("原生模型选择", error))?;
             self.sync_projection()?;
         } else {
-            let mut session = NativeSession::connect(self.native_config(&runtime, None)?)
+            let mut config = self.native_config(&runtime, None)?;
+            config.mcp_servers = self.collaboration_servers();
+            let mut session = NativeSession::connect(config)
                 .map_err(|error| RuntimeError::context("原生运行时连接", error))?;
             session
                 .select_native_model(provider_id, model_id.into())
@@ -218,6 +221,7 @@ impl CoreRuntime {
             execution: context.target,
             os_home: context.os_home,
             gateway,
+            mcp_servers: Vec::new(),
         })
     }
 

@@ -94,7 +94,9 @@ struct UnsubmittedDraft {
 
 pub struct CoreRuntime {
     options: RuntimeOptions,
-    repository: crate::repository::Repository,
+    // Fields drop in declaration order: close collaboration and execution owners
+    // before releasing the repository's exclusive application-home lock.
+    collaboration: Option<collaboration::Scope>,
     gateways: Vec<GatewayConfig>,
     model_templates: Vec<crate::config::ModelTemplate>,
     conversation_links: Vec<crate::config::ConversationLink>,
@@ -119,13 +121,15 @@ pub struct CoreRuntime {
     acp_capability_cache: std::cell::RefCell<BTreeMap<String, crate::AcpCapabilities>>,
     history_listings: std::cell::RefCell<BTreeMap<String, browsing::HistoryListing>>,
     delivery: delivery::TranscriptDelivery,
-    gateway_tunnel: Option<velune_agent_runtime::execution::GatewayTunnel>,
+    gateway_tunnel: Option<velune_agent_runtime::execution::LoopbackTunnel>,
     prepared_remote_resources: std::cell::RefCell<std::collections::BTreeSet<String>>,
     analytics: Arc<crate::analytics::AnalyticsStore>,
+    repository: crate::repository::Repository,
 }
 
 mod authentication_coordination;
 mod browsing;
+mod collaboration;
 mod configuration;
 mod continuation;
 mod conversations;
@@ -177,6 +181,7 @@ impl CoreRuntime {
             gateway_tunnel: None,
             prepared_remote_resources: Default::default(),
             analytics,
+            collaboration: None,
         })
     }
 
@@ -310,9 +315,10 @@ impl CoreRuntime {
         {
             return Err(RuntimeError::invalid("runtime is busy"));
         }
-        if self.busy() {
+        if self.busy() || self.collaboration_busy() {
             return Err(RuntimeError::invalid("runtime is busy"));
         }
+        self.close_collaboration();
         self.shutdown_active()?;
         // Release the lock explicitly; a concurrent child spawn can briefly
         // inherit the open file description before exec closes its descriptors.
@@ -343,6 +349,12 @@ impl CoreRuntime {
             )
         {
             return Err(RuntimeError::invalid("authentication is running"));
+        }
+        if matches!(action, "create" | "open" | "openAcpConversation") && self.collaboration_busy()
+        {
+            return Err(RuntimeError::invalid(
+                "子任务仍在执行，请先取消或显式关闭协作范围",
+            ));
         }
         match action {
             "list" => self.list(),
@@ -378,12 +390,32 @@ impl CoreRuntime {
                     &None
                 })?)
             }
-            "create" => self.create_conversation(request),
-            "open" => self.open_conversation(request),
+            "createCollaborative" => self.create_collaborative(request),
+            "collaborationChildren"
+            | "childSnapshot"
+            | "replyChildInteraction"
+            | "closeCollaboration" => self.collaboration_action(request),
+            "create" => {
+                if !self.busy() {
+                    self.close_collaboration();
+                }
+                self.create_conversation(request)
+            }
+            "open" => {
+                if !self.busy() {
+                    self.close_collaboration();
+                }
+                self.open_conversation(request)
+            }
             "readConversation" => self.read_conversation(request),
             "renameConversation" => self.manage_conversation(request, false),
             "deleteConversation" => {
                 let result = self.manage_conversation(request, true)?;
+                if self.collaboration.as_ref().is_some_and(|scope| {
+                    scope.root_id.as_deref() == request["payload"]["conversationID"].as_str()
+                }) {
+                    self.close_collaboration();
+                }
                 if let Some(id) = request["payload"]["conversationID"].as_str() {
                     self.discard_composer_draft(id);
                 }

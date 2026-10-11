@@ -69,6 +69,60 @@ impl NativeSession {
             .rpc
             .claude_control(json!({"subtype":"initialize","hooks":{}}))?;
         self.available_models = response["models"].as_array().cloned().unwrap_or_default();
+        if !self.config.mcp_servers.is_empty() {
+            let existing = self.rpc.claude_control(json!({"subtype":"mcp_status"}))?;
+            let existing = existing["mcpServers"]
+                .as_array()
+                .ok_or_else(|| Error::new("Claude MCP 服务目录无效"))?;
+            for server in &self.config.mcp_servers {
+                if existing.iter().any(|value| value["name"] == server.name) {
+                    return Err(Error::new("临时 MCP 服务与 Claude 既有服务名称冲突"));
+                }
+            }
+            // The fixed CLI's dynamic host control merges these servers without writing .mcp.json.
+            // Sending headers on stdin also keeps the lease out of process arguments and files.
+            let servers: serde_json::Map<String, Value> = self
+                .config
+                .mcp_servers
+                .iter()
+                .map(|server| (server.name.clone(), server.http()))
+                .collect();
+            let result = self
+                .rpc
+                .claude_control(json!({"subtype":"mcp_set_servers","servers":servers}))?;
+            if result["errors"]
+                .as_object()
+                .is_none_or(|errors| !errors.is_empty())
+            {
+                return Err(Error::new("Claude 未能添加临时 MCP 服务"));
+            }
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+            loop {
+                let status = self.rpc.claude_control(json!({"subtype":"mcp_status"}))?;
+                let statuses = status["mcpServers"]
+                    .as_array()
+                    .ok_or_else(|| Error::new("Claude MCP 服务状态无效"))?;
+                let mut ready = true;
+                for server in &self.config.mcp_servers {
+                    match statuses
+                        .iter()
+                        .find(|value| value["name"] == server.name)
+                        .and_then(|value| value["status"].as_str())
+                    {
+                        Some("connected") => {}
+                        Some("pending") => ready = false,
+                        _ => return Err(Error::new("Claude 临时 MCP 服务未能连接")),
+                    }
+                }
+                if ready {
+                    break;
+                }
+                if std::time::Instant::now() >= deadline {
+                    return Err(Error::new("Claude 临时 MCP 服务连接超时"));
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+        }
         Ok(())
     }
     pub(super) fn claude_models(&self) -> Result<Vec<RuntimeModel>> {

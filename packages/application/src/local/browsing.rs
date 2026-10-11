@@ -66,6 +66,7 @@ impl CoreRuntime {
     ) -> Result<PiConfig, RuntimeError> {
         let context = self.prepare_execution_context(runtime)?;
         Ok(PiConfig {
+            mcp_servers: Vec::new(),
             execution: context.target,
             os_home: context.os_home,
             runtime_type_id: runtime.type_id.clone(),

@@ -140,7 +140,9 @@ Mac 开发交付安装到 `/Applications/Velune.app`，每次修改后重新构�
 
 ## AI 网关与 Agent 运行时配置
 
-2026-10-10 用户进一步授权通用 ACP Adapter，继续限定 Rust packages。用户随后澄清，目标是尽可能覆盖更多 Agent Harness，同时避免为每个 Harness 分别开发适配；ACP 是服务该目标的技术方案，不是不可推敲的产品约束。它作为已有专用 Harness adapter 之外的接入方式，使用 Agent 公布的协议能力；配置、模型／会话选项与能力展示的 **App 前端待实现**。指定参考为 [lexoliu/acpsub](https://github.com/lexoliu/acpsub)，不由参考项目自动扩展为 MCP 协作服务或独立 daemon。实现与验收归 [ACP 任务](../../tasks/acp-adapter/packet.md)。
+2026-10-10 用户进一步授权通用 ACP Adapter，继续限定 Rust packages。用户随后澄清，目标是尽可能覆盖更多 Agent Harness，同时避免为每个 Harness 分别开发适配；ACP 是服务该目标的技术方案，不是不可推敲的产品约束。它作为已有专用 Harness adapter 之外的接入方式，使用 Agent 公布的协议能力；配置、模型／会话选项与能力展示的 **App 前端待实现**。指定参考为 [lexoliu/acpsub](https://github.com/lexoliu/acpsub)，不引入其独立 daemon。实现与验收归 [ACP 任务](../../tasks/acp-adapter/packet.md)。
+
+2026-10-11 用户明确，Harness 互联互通必须让一种 Agent runtime 把另一种 runtime 作为 sub-agent 使用。这是跨 Harness 协作的关键能力：运行中的父 Agent 能发现获准目标、委派具体任务、取得可关联的进度与结果，并继续自己的工作；子 Agent 可继续接收该任务的后续输入。仅能从 Velune 启动不同 runtime 或切换会话不满足此目标。通用协作工具与现有 ACP／原生 adapter 分工，避免按每一对 Harness 开发连接。取消、失败、待审批和未知结果须明确，子任务不因被委派而取得额外授权。继续限定 Rust packages；子任务关系、状态、审批与结果的 **App 前端待实现**。实施与证据归 [Harness 协作任务](../../tasks/harness-interoperation/packet.md)。
 
 2026-10-10 用户授权推进 Claude Code、SSH 远程运行时及 Velune 管理的运行时 HOME，并明确本轮仅实现 Rust packages。运行时不必同时注册多个提供商：保留它已有的提供商，允许会话下一轮选择其原生模型；选择 Velune 管理的模型时，仅该 turn 临时使用 Velune Gateway，结束后恢复原生提供商。成功、失败及取消都必须结束临时覆盖，不修改或删除原 Harness 的持久提供商配置。运行时原生模型的身份属于其具体实例，不能按裸 model ID 当成 Velune 提供商或另一 Harness 的模型。
 

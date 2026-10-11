@@ -2,6 +2,8 @@
 
 `velune-bindings` 是共享 application unit 的 UniFFI 接入层。Swift、Kotlin 和 Python 使用同一份 Rust 元数据生成接口。领域 package 不依赖 UniFFI；此处的 `Binding*` records 与 enums 将领域契约转换为语言绑定能够表达的类型。Mac 在应用进程内加载此 unit 的动态库，不通过 Host 或 socket 调用 Rust。
 
+`create_collaborative_conversation` 接受 typed target grant 与 limits，子任务通过 `collaboration_children`／`child_snapshot` 观察，权限答复必须同时匹配 child ID、turn 和 interaction ID。`close_collaboration` 关闭范围及其子任务。父 Agent 的 MCP 请求直接访问独立 Coordinator，不获取 `VeluneApplication` 操作锁；子任务 worker 在当前应用进程内运行。子任务最终正文仅表示其报告，不能当作独立验证的成功。**待实现**：平台授权、状态与审批界面。
+
 `VeluneApplication` 公开配置维护、会话控制、提供商导入、认证交互与关闭操作，参数和结果具有具名类型。提供商拥有模型条目；`BindingProviderDraft` 与 `BindingAuthenticationEdit` 共同保存普通字段和认证编辑，后者明确区分保留、更新 API key 和清除。列表与 snapshot 只返回非秘密认证描述，`read_provider_api_key` 显式读取一个提供商的已保存 key。认证检查和登录以网关／提供商 ID 定位，不存在独立认证资源 CRUD。`BindingProviderModel.adapter_metadata_json` 由运行时 adapter 拥有，平台只保留它，不解释其结构。
 
 一个对象串行执行应用操作。`shutdown` 在应用忙碌时返回错误并保留对象，调用方可继续读取 snapshot 或明确取消 Agent 执行；关闭成功后除再次关闭外的操作返回 `Closed` 类型的诊断。释放语言包装对象负责释放其 Rust 引用，不代表用户发出了取消 Agent 的命令。会话状态仍通过 `snapshot` 或游标式 `snapshot_update` 观察，本 unit 不新增事件订阅或后台宿主。`BindingMessagePayload` 区分内联内容与只带字节数的延迟内容，`message_payloads` 读取后者。

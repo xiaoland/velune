@@ -64,3 +64,5 @@ Mac 构建默认安装到 `/Applications/Velune.app`，当前产品版本为 `0.
 2026-10-10 的 [运行时扩展](tasks/runtime-provider-ssh/packet.md) 仅推进 Rust packages：新增 Claude Code、运行时既有模型选择、单轮 Velune Gateway 覆盖、OpenSSH 执行和受管 HOME。composer 及 SSH／HOME 设置界面明确待实现，本轮没有重新构建或安装 Mac app。
 
 通用 `acp-v1` 接入用于减少逐个适配 Harness 的维护成本：用户安装原生 ACP Agent 或社区 bridge 后，通过启动配置接入，按协商能力提供会话、模型选项与历史。既有专用适配器继续提供各 Harness 的网关与原生能力。Rust 实现和限定验收见 [ACP 任务](tasks/acp-adapter/packet.md)；App 入口待实现。
+
+Harness 互联互通进一步包括不同运行时互为 sub-agent：父 Agent 通过嵌入式 MCP 协作工具，在宿主授权的目标中委派、等待结果并继续工作。子执行器复用原生／ACP adapter，支持一层并行委派与后续输入；不引入独立 Host 或 transcript 副本。实现与验收见 [Harness 协作任务](tasks/harness-interoperation/packet.md)，操作契约见 [开发说明](docs/development.md#harness-子-agent-协作)；App 子任务入口待实现。

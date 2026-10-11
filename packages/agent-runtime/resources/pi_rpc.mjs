@@ -17,6 +17,9 @@ async function main() {
   if (selectionFile) process.env.VELUNE_PI_SELECTION_FILE = selectionFile;
   else delete process.env.VELUNE_PI_SELECTION_FILE;
   const sdk = await installation.importSdk();
+  const injectedMcp = JSON.parse(process.env.VELUNE_MCP_SERVERS ?? "{}");
+  delete process.env.VELUNE_MCP_SERVERS;
+  const mcpNames = Object.keys(injectedMcp);
   const { resolveProjectTrusted } = await installation.importModule("dist/core/project-trust.js");
   const { createProjectTrustContext } = await installation.importModule("dist/cli/project-trust.js");
   const sourceModelsPath = join(agentDir,"models.json");
@@ -37,7 +40,12 @@ async function main() {
     const projectTrusted = shouldResolve ? false : (cached ?? (!hasProjectResources || trustStore.get(cwd) === true));
     const settingsManager = sdk.SettingsManager.create(cwd,agentDir,{projectTrusted});
     const services = await sdk.createAgentSessionServices({cwd,agentDir,settingsManager,modelRuntime,
-      resourceLoaderOptions:{additionalExtensionPaths:[extension]},
+      resourceLoaderOptions:{additionalExtensionPaths:[extension],extensionFactories:mcpNames.length ? [
+        sdk.createMcpExtension(),
+        pi => {
+          for (const [name, config] of Object.entries(injectedMcp)) pi.registerMcpServer(name,{...config,exposure:"direct"});
+        },
+      ] : []},
       resourceLoaderReloadOptions:shouldResolve ? {resolveProjectTrust:async ({extensionsResult})=> {
         const trusted = await resolveProjectTrusted({cwd,trustStore,defaultProjectTrust:settingsManager.getDefaultProjectTrust(),extensionsResult,
           projectTrustContext:projectTrustContext ?? createProjectTrustContext({cwd,mode:"rpc",settingsManager,hasUI:false})});

@@ -315,16 +315,16 @@ fn collect_resource(local: &Path, remote: &Path, files: &mut Vec<Value>) -> Resu
 }
 
 /// Holds the forwarding connection for as long as a remote runtime can use it.
-pub struct GatewayTunnel {
+pub struct LoopbackTunnel {
     endpoint: String,
     master: Option<Child>,
     directory: Option<PathBuf>,
 }
 
-impl GatewayTunnel {
+impl LoopbackTunnel {
     pub fn open(target: &ExecutionTarget, endpoint: &str) -> Result<Self> {
         target.validate()?;
-        let (port, suffix) = gateway_address(endpoint)?;
+        let (port, suffix) = loopback_address(endpoint)?;
         let ExecutionTarget::Ssh(ssh) = target else {
             return Ok(Self {
                 endpoint: endpoint.into(),
@@ -388,10 +388,13 @@ impl GatewayTunnel {
                 .try_wait()?
                 .is_some()
             {
-                return Err(ssh_connection_error("SSH 网关连接未能建立", &diagnostic));
+                return Err(ssh_connection_error(
+                    "SSH loopback 连接未能建立",
+                    &diagnostic,
+                ));
             }
             if Instant::now() >= deadline {
-                return Err(ssh_connection_error("SSH 网关连接超时", &diagnostic));
+                return Err(ssh_connection_error("SSH loopback 连接超时", &diagnostic));
             }
             thread::sleep(Duration::from_millis(20));
         }
@@ -404,12 +407,12 @@ impl GatewayTunnel {
             .arg(format!("127.0.0.1:0:127.0.0.1:{port}"))
             .arg(&ssh.destination);
         let bytes = crate::native::rpc::bounded_process(forward, None, 32768)
-            .map_err(|error| Error(format!("SSH 网关转发失败：{error}")))?;
+            .map_err(|error| Error(format!("SSH loopback 转发失败：{error}")))?;
         let remote_port = std::str::from_utf8(&bytes)
             .ok()
             .and_then(|value| value.trim().parse::<u16>().ok())
             .filter(|value| *value != 0)
-            .ok_or_else(|| Error("SSH 未返回有效的远程网关端口".into()))?;
+            .ok_or_else(|| Error("SSH 未返回有效的远程 loopback 端口".into()))?;
         ssh.request(&json!({"operation":"verify_loopback", "port":remote_port}))?;
         tunnel.endpoint = format!("http://127.0.0.1:{remote_port}{suffix}");
         Ok(tunnel)
@@ -420,7 +423,7 @@ impl GatewayTunnel {
     }
 }
 
-impl Drop for GatewayTunnel {
+impl Drop for LoopbackTunnel {
     fn drop(&mut self) {
         if let Some(child) = &mut self.master {
             let _ = child.kill();
@@ -445,10 +448,10 @@ fn ssh_connection_error(message: &str, diagnostic: &Mutex<Vec<u8>>) -> Error {
     })
 }
 
-fn gateway_address(endpoint: &str) -> Result<(u16, &str)> {
+fn loopback_address(endpoint: &str) -> Result<(u16, &str)> {
     let address = endpoint
         .strip_prefix("http://127.0.0.1:")
-        .ok_or_else(|| Error("运行时网关必须为 HTTP IPv4 loopback 地址".into()))?;
+        .ok_or_else(|| Error("运行时服务必须为 HTTP IPv4 loopback 地址".into()))?;
     let (port, suffix) = address
         .split_once('/')
         .map_or((address, ""), |(port, _)| (port, &address[port.len()..]));
@@ -456,7 +459,7 @@ fn gateway_address(endpoint: &str) -> Result<(u16, &str)> {
         .parse::<u16>()
         .ok()
         .filter(|port| *port != 0)
-        .ok_or_else(|| Error("运行时网关端口无效".into()))?;
+        .ok_or_else(|| Error("运行时 loopback 服务端口无效".into()))?;
     Ok((port, suffix))
 }
 

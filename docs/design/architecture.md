@@ -276,7 +276,17 @@ Codex 原生审批事件、Claude 的 hooks／permission 机制、Pi 的扩展 t
 - **ACP**：客户端与 agent 的会话、prompt、流事件、权限、取消，以及按能力声明的 list／load／resume 等。适合接编辑器或已有 ACP adapter；不是供应商 LLM API，也不自动定义产品任务树、跨服务可靠投递和单写接管
 - **MCP**：把 broker 的协作操作暴露为工具／资源；不直接承担 Harness 生命周期和 agent 到 agent 的可靠业务协议
 - **原生 adapters**：Codex app-server、Claude CLI／SDK、Pi RPC／SDK 保留各自真实控制能力；统一一个接口并保留扩展，而非强行把三者削成相同文本输入输出
-- **acpsub**：2026-10-10 用户更正原参考拼写，已检查 `lexoliu/acpsub` 的 `259db0d`。参考其 ACP 会话恢复与配置确认方式；其 MCP 服务、daemon、transcript 副本与排队策略不构成 Velune 依赖或实施范围。协议证据见 [ACP 任务](../../tasks/acp-adapter/protocol-evidence.md)。
+- **acpsub**：已检查 `lexoliu/acpsub` 的 `259db0d`。2026-10-11 用户明确要采用其核心产品能力：父 runtime 通过协作工具把另一 runtime 当作可继续的 sub-agent。Velune 参考 MCP→协调→ACP 的分工，子端也复用已有专用 adapters；不引入 acpsub daemon 或 transcript 副本。原 ACP 接入的证据仍见 [ACP 任务](../../tasks/acp-adapter/protocol-evidence.md)，当前协作实施见 [Harness 协作任务](../../tasks/harness-interoperation/packet.md)。
+
+### 2026-10-11 子 Agent 协作切片（Rust 已实现，App 待实现）
+
+MCP 服务与协调器位于嵌入式 application 内，外部 Harness 通过会话级临时 MCP 配置访问 loopback HTTP 入口；这不是 App 与独立 Host 的通信。ACP Agent 未声明 HTTP MCP 时，使用无任务状态的 stdio→HTTP helper。SSH 复用受管 loopback 转发，helper 与转发跟随所属协作会话清理，不改用户永久 MCP 配置。
+
+宿主显式创建协作父会话并传入获准执行 profile：目标身份、运行时实例、目标机器工作目录、模型选择及并发／期限上限。MCP 只允许选择 target ID 和提交任务文本，不能自己传入新的程序、环境、目录或认证。每个父会话独享随机票据和协调器，工具自报身份不作为授权。此机制限制协作入口，不声称目标 Harness 的沙箱或原生工具权限与父 Harness 相同；执行 profile 仍是用户信任的已配置环境，权限请求通过 typed 宿主接口处理，父 Agent 没有自动批准子 Agent 的工具。
+
+首轮支持一层委派、多个并行子 Agent、空闲子会话的后续输入，以及状态、结果、等待、取消和关闭；不增加递归委派、busy 队列、steer 或自动重启／重试。父 turn 等待 MCP 结果时，子执行器独立轮询原生事件，不回调已加锁的 Application。结果经父 Agent 正在等待的工具响应返回，不向 busy 父会话强行注入 prompt。每个子执行器独占原生进程、网关、转发和模型临时投影；同实例的 HOME 与原生历史仍由该实例共享管理。
+
+父 turn 结束不等于子会话关闭；子会话可以被后续 turn 继续使用。父取消向活动子 turn 传播；父会话关闭或应用退出撤销入口并清理子进程。等待请求超时或断连只结束等待，不能冒充取消；明确区分运行、待审批、失败、取消与正常结束。结果是子 Agent 的报告，不是 Velune 对正确性的验收。会话 transcript 仍由 Harness 持有，本轮不为恢复新建历史副本，也不自动接管重启前的未决工作。App 关系、状态、审批和结果入口待实现。
 
 ## 8. Adapter 必须声明的能力
 

@@ -233,3 +233,5 @@ S17 实施授权：用户决定全面切换 UniFFI，并要求现在开始拆分
 2026-10-10 用户授权继续实现 ACP Adapter，随后更正参考项目为 [lexoliu/acpsub](https://github.com/lexoliu/acpsub)。本轮沿用 Rust packages 范围，App 仍待实现；产品归 PRD，协议与参考证据归 [ACP 任务](../tasks/acp-adapter/packet.md)。
 
 同轮用户补充：技术提议未必正确，应理解背后动机；本次目标是尽可能支持更多 Agent Harness，而不逐个适配。通用 ACP 方案必须以接入成本和真实能力覆盖判断，不以协议名称本身作为完成依据。
+
+2026-10-11 用户进一步指出 acpsub 的重点是让不同 runtime 成为另一 runtime 的 sub-agent，并明确这是 Harness 互联互通的关键功能。此要求将工作从通用 ACP 接入扩展到实际跨 Harness 委派与结果闭环，仍沿用 Rust packages 和前端待实现边界。产品要求归 [PRD](prd/index.md#ai-网关与-agent-运行时配置)，实施归 [Harness 协作任务](../tasks/harness-interoperation/packet.md)。

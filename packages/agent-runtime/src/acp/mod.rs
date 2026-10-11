@@ -22,11 +22,13 @@ pub struct Config {
     pub environment: BTreeMap<String, String>,
     pub execution: ExecutionTarget,
     pub os_home: Option<PathBuf>,
+    pub mcp_servers: Vec<crate::mcp::Server>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct Capabilities {
+    pub mcp_http: bool,
     pub load_session: bool,
     pub list_sessions: bool,
     pub resume_session: bool,
@@ -75,6 +77,8 @@ pub struct Client {
     establishing: bool,
     initial_updates: Vec<Value>,
     stream: Option<projection::Stream>,
+    mcp_servers: Vec<Value>,
+    _mcp: crate::mcp::Prepared,
 }
 
 impl Client {
@@ -96,6 +100,11 @@ impl Client {
                 "ACP HOME 已由运行时执行配置指定，不能在环境变量中重复指定",
             ));
         }
+        let mcp = crate::mcp::Prepared::new(
+            &config.mcp_servers,
+            &config.execution,
+            config.os_home.as_deref(),
+        )?;
         let mut command = Command::new(&config.binary);
         command.args(&config.args).envs(&config.environment);
         let rpc = RpcClient::spawn_at(command, &config.execution, config.os_home.as_deref())?;
@@ -120,6 +129,8 @@ impl Client {
             establishing: false,
             initial_updates: Vec::new(),
             stream: None,
+            mcp_servers: Vec::new(),
+            _mcp: mcp,
         };
         let response: wire::InitializeResponse = client.request(
             "initialize",
@@ -138,12 +149,14 @@ impl Client {
         let capabilities = &response.agent_capabilities;
         let sessions = &capabilities.session_capabilities;
         client.capabilities = Capabilities {
+            mcp_http: capabilities.mcp_capabilities.http,
             load_session: capabilities.load_session,
             list_sessions: sessions.list.is_some(),
             resume_session: sessions.resume.is_some(),
             close_session: sessions.close.is_some(),
             delete_session: sessions.delete.is_some(),
         };
+        client.mcp_servers = client._mcp.acp_servers(client.capabilities.mcp_http)?;
         client.agent_info = response.agent_info.map(|info| AgentInfo {
             name: info.name,
             title: info.title,
@@ -185,7 +198,7 @@ impl Client {
         self.establishing = true;
         let result = self.request::<wire::NewSessionResponse>(
             "session/new",
-            &json!({"cwd":cwd,"mcpServers":[]}),
+            &json!({"cwd":cwd,"mcpServers":self.mcp_servers}),
         );
         self.establishing = false;
         let outcome = result.and_then(|response| {
@@ -223,7 +236,7 @@ impl Client {
         self.replace_snapshot(native_id, cwd, runtime_id);
         let response = self.request::<wire::LoadSessionResponse>(
             "session/load",
-            &json!({"sessionId":native_id,"cwd":cwd,"mcpServers":[]}),
+            &json!({"sessionId":native_id,"cwd":cwd,"mcpServers":self.mcp_servers}),
         );
         let outcome = response.and_then(|response| {
             self.options = config::project(response.config_options.unwrap_or_default())?;
@@ -253,7 +266,7 @@ impl Client {
         self.replace_snapshot(native_id, cwd, runtime_id);
         let response = self.request::<wire::ResumeSessionResponse>(
             "session/resume",
-            &json!({"sessionId":native_id,"cwd":cwd,"mcpServers":[]}),
+            &json!({"sessionId":native_id,"cwd":cwd,"mcpServers":self.mcp_servers}),
         );
         let outcome = response.and_then(|response| {
             self.options = config::project(response.config_options.unwrap_or_default())?;

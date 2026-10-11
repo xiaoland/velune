@@ -62,6 +62,8 @@ pub type Result<T> = std::result::Result<T, Error>;
 pub struct Config {
     pub execution: crate::execution::ExecutionTarget,
     pub os_home: Option<PathBuf>,
+    #[serde(skip)]
+    pub mcp_servers: Vec<crate::mcp::Server>,
     pub runtime_type_id: String,
     pub binary: PathBuf,
     pub node_binary: Option<PathBuf>,
@@ -166,6 +168,7 @@ pub struct Client {
     next_id: u64,
     stderr: SharedStderr,
     pub config: Config,
+    _mcp: crate::mcp::Prepared,
 }
 
 impl Config {
@@ -197,8 +200,15 @@ impl Config {
 }
 
 impl Client {
-    pub fn spawn(config: Config) -> Result<Self> {
+    pub fn spawn(mut config: Config) -> Result<Self> {
         config.validate()?;
+        let mcp = crate::mcp::Prepared::new(
+            &config.mcp_servers,
+            &config.execution,
+            config.os_home.as_deref(),
+        )
+        .map_err(|error| Error::Sdk(error.to_string()))?;
+        config.mcp_servers = mcp.servers.clone();
         let node = config
             .node_binary
             .as_ref()
@@ -250,6 +260,12 @@ impl Client {
         if let Some(token) = &config.gateway_token {
             command.env("VELUNE_GATEWAY_TOKEN", token);
         }
+        let mcp_servers: serde_json::Map<String, Value> = config
+            .mcp_servers
+            .iter()
+            .map(|server| (server.name.clone(), server.http()))
+            .collect();
+        command.env("VELUNE_MCP_SERVERS", Value::Object(mcp_servers).to_string());
         let prepared = config
             .execution
             .prepare(command, config.os_home.as_deref())?;
@@ -367,6 +383,7 @@ impl Client {
             next_id: 1,
             stderr,
             config,
+            _mcp: mcp,
         })
     }
 

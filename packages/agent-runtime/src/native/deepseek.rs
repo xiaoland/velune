@@ -96,7 +96,7 @@ impl NativeSession {
     }
 
     pub(super) fn dsh_initialize(&mut self) -> Result<()> {
-        initialize(&mut self.rpc)
+        initialize(&mut self.rpc, !self.config.mcp_servers.is_empty())
     }
 
     fn dsh_close_active(&mut self) -> Result<()> {
@@ -114,9 +114,10 @@ impl NativeSession {
             .unwrap_or_else(|| self.default_cwd.clone());
         self.validate_cwd(Some(&cwd))?;
         self.dsh_close_active()?;
-        let result = self
-            .rpc
-            .request("session/new", &json!({"cwd":cwd,"mcpServers":[]}))?;
+        let result = self.rpc.request(
+            "session/new",
+            &json!({"cwd":cwd,"mcpServers":self.dsh_mcp_servers()}),
+        )?;
         let id = result["sessionId"]
             .as_str()
             .ok_or_else(|| Error::new("DeepSeek 未返回原生会话身份"))?;
@@ -137,10 +138,18 @@ impl NativeSession {
         self.dsh_close_active()?;
         let result = self.rpc.request(
             "session/resume",
-            &json!({"sessionId":id,"cwd":cwd,"mcpServers":[]}),
+            &json!({"sessionId":id,"cwd":cwd,"mcpServers":self.dsh_mcp_servers()}),
         )?;
         self.replace_snapshot(id, Some(&cwd), runtime_id, history);
         self.dsh_configure_model(&result)
+    }
+
+    fn dsh_mcp_servers(&self) -> Vec<Value> {
+        self.config
+            .mcp_servers
+            .iter()
+            .map(crate::mcp::Server::acp_http)
+            .collect()
     }
 
     fn dsh_configure_model(&mut self, result: &Value) -> Result<()> {
@@ -315,7 +324,7 @@ impl NativeSession {
             let mut rpc =
                 rpc::RpcClient::spawn_at(command, &config.execution, config.os_home.as_deref())?;
             let result = (|| {
-                initialize(&mut rpc)?;
+                initialize(&mut rpc, false)?;
                 let response = rpc.request(
                     "session/new",
                     &json!({"cwd":self.default_cwd,"mcpServers":[]}),
@@ -554,7 +563,7 @@ impl NativeSession {
     }
 }
 
-fn initialize(rpc: &mut rpc::RpcClient) -> Result<()> {
+fn initialize(rpc: &mut rpc::RpcClient, require_http_mcp: bool) -> Result<()> {
     let result = rpc.request(
         "initialize",
         &json!({
@@ -568,6 +577,9 @@ fn initialize(rpc: &mut rpc::RpcClient) -> Result<()> {
             .is_none()
     {
         return Err(Error::new("DeepSeek ACP 协议或恢复能力与适配器不匹配"));
+    }
+    if require_http_mcp && result["agentCapabilities"]["mcpCapabilities"]["http"] != true {
+        return Err(Error::new("DeepSeek ACP 未公布 HTTP MCP 能力"));
     }
     // agentInfo.version is the ACP plugin version, not the CLI release gate.
     Ok(())

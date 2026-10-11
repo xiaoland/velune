@@ -15,6 +15,7 @@ pub mod provider_source;
 
 pub mod execution;
 pub mod history;
+pub mod mcp;
 pub mod native;
 pub mod version;
 

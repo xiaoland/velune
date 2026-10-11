@@ -152,7 +152,7 @@ impl CoreRuntime {
         &mut self,
         request: &Value,
     ) -> Result<Value, RuntimeError> {
-        if self.busy() {
+        if self.busy() || self.collaboration.is_some() {
             return Err(RuntimeError::invalid("runtime is busy"));
         }
         let operation = request["payload"]["operation"]
@@ -239,7 +239,7 @@ impl CoreRuntime {
     }
 
     pub(super) fn runtime_action(&mut self, request: &Value) -> Result<Value, RuntimeError> {
-        if self.busy() {
+        if self.busy() || self.collaboration.is_some() {
             return Err(RuntimeError::invalid("runtime is busy"));
         }
         self.acp_capability_cache.borrow_mut().clear();

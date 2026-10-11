@@ -34,6 +34,24 @@ wire 类型采用官方 `agent-client-protocol-schema = 1.11.0` 的稳定 v1 模
 
 通用 ACP 不假定任何 gateway 环境变量、提供商配置格式或认证来源，因而没有 Velune managed provider 注入能力；专用适配器继续负责已验证的注入路径。协议依据于 2026-10-10 复核：[官方初始化](https://agentclientprotocol.com/protocol/v1/initialization)、[会话配置](https://agentclientprotocol.com/protocol/v1/session-config-options)、[会话建立与加载](https://agentclientprotocol.com/protocol/v1/session-setup)。[acpsub](https://github.com/lexoliu/acpsub) 用于参考任意命令接入与已公布配置选项；其 daemon、自动安装、强制模型选择和自动批准策略不属于本包契约。隔离验证及仍待实现的 app 入口见 [任务记录](../../tasks/acp-adapter/packet.md)。
 
+## 会话级协作 MCP 注入
+
+`mcp::Server { name, endpoint, token }` 描述 application 为当前执行授权的临时 loopback HTTP 服务，Pi、`NativeConfig` 和 `acp::Config` 通过 `mcp_servers` 接收。MCP 服务、父子关系、任务调度与权限范围归 application，本包只把连接交给实际 Harness。application 为父执行生成独立服务名称，子执行传空列表；本包不从工具参数推断父身份，也不自动批准原生权限请求。名称限定为不超过 32 字节的 ASCII 字母、数字、下划线或连字符，列表内不得重复。Debug 隐去 endpoint 和 token；Pi 配置序列化跳过全部临时 MCP 注入，token 不进入命令行。
+
+| 适配器 | 临时注入入口 |
+| --- | --- |
+| Codex | `thread/start` 与 `thread/resume` 的 `config.mcp_servers`；通过子进程环境传入 bearer token，保留原生配置中的其它服务。 |
+| Claude Code | 初始化后读取 `mcp_status`，拒绝与已加载服务重名，再通过 `mcp_set_servers` 追加并确认连接；每轮新进程重新注入，全程经控制 stdin，不写 `.mcp.json`。 |
+| Pi | 装配 SDK 的 `createMcpExtension()`，通过 `registerMcpServer` 注册当前会话的 direct 工具；SDK 保留既有 MCP 来源与权限扩展，注册不写回配置。 |
+| DSH | `session/new` 与 `session/resume` 的标准 `mcpServers`；核对 HTTP 能力，模型目录发现的临时会话不注入协作服务。 |
+| 通用 ACP | `session/new/load/resume` 的标准 `mcpServers`；HTTP 仅在 Agent 公布 `mcpCapabilities.http` 时使用，否则采用标准必需的 stdio 传输。 |
+
+SDK 或协议已有目录入口时只使用其结果处理重名；不扫描认证文件或另行解析用户持久 MCP 配置。通用 ACP 没有枚举 Agent 自有 MCP 服务的标准入口，因此 application 的随机执行名称是避免跨来源名称碰撞的共同约束。Pi 的文件配置优先于扩展注册，重名不会覆写原配置。
+
+MCP 与模型网关复用 `LoopbackTunnel`。远端服务地址由运行时改写为经过核验的目标 loopback 端口，Guard 随运行时执行对象持有；调用方不能再为相同注入包一层转发。通用 ACP 的 stdio 回退在目标机器的私有临时目录投送内嵌 `mcp_stdio_relay.py`，需要当地可用的 Python 3，独立于 Node 与专用 helper 资源包。relay 仅传递 JSON-RPC、初始化的 MCP session/version HTTP 头和显式取消通知；不拥有任务、会话历史、重试或授权决定。每个 HTTP 请求独立等待，避免等待子任务时堵住状态或取消；stdin EOF 与 stdout 断开会结束 relay。执行对象释放后删除临时目录并关闭转发。
+
+relay 只连接显式端口的 `http://127.0.0.1` 服务，忽略代理环境，不跟随重定向。application 的 MCP 服务必须采用 JSON 响应模式和有界等待；relay 的单请求上限为 60 秒，不支持 SSE 或服务端主动请求。正常 HTTP-capable Harness 使用自身原生 MCP 客户端。接入证据见 [运行时注入验收](../../tasks/harness-interoperation/runtime-injection-evidence.md)，父子任务完整闭环归 [当前任务](../../tasks/harness-interoperation/packet.md)。
+
 ## 专用适配器行为
 
 Codex 使用 app-server 的 thread／turn 控制；DSH 使用 ACP v1 的 session/new、resume、prompt、cancel、set_config_option。DSH 的 agentInfo.version 是 ACP 插件版本，不用于判断 CLI 版本。Codex 历史由 app-server 的 thread/list、thread/read 与 thread/items/list 分页读取，原生服务负责逻辑身份和历史继承；DSH 历史通过 huihua `0.2.0` 公开 provider API 读取显式 home／roots，未知记录不原样输出。历史浏览不启动 turn 或模型网关，不替代原生 resume；Pi 保留 SDK SessionManager 的分支与模型选择语义。

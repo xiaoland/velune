@@ -83,6 +83,7 @@ pub struct NativeConfig {
     pub resources_directory: PathBuf,
     pub projection_directory: PathBuf,
     pub gateway: Option<GatewayInjection>,
+    pub mcp_servers: Vec<crate::mcp::Server>,
 }
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 pub struct RuntimeModel {
@@ -120,7 +121,8 @@ pub struct NativeSession {
     restart_required: bool,
     gateway_turn: bool,
     claude_fresh: bool,
-    tunnel: Option<crate::execution::GatewayTunnel>,
+    tunnel: Option<crate::execution::LoopbackTunnel>,
+    _mcp: crate::mcp::Prepared,
 }
 impl NativeSession {
     pub fn connect(mut config: NativeConfig) -> Result<Self> {
@@ -141,6 +143,12 @@ impl NativeSession {
             &config.execution,
             config.os_home.as_deref(),
         )?;
+        let mcp = crate::mcp::Prepared::new(
+            &config.mcp_servers,
+            &config.execution,
+            config.os_home.as_deref(),
+        )?;
+        config.mcp_servers = mcp.servers.clone();
         let default_cwd = if config.execution.is_local() {
             std::env::current_dir()
                 .map_err(|error| Error::new(format!("运行时默认工作目录不可用：{error}")))?
@@ -162,7 +170,7 @@ impl NativeSession {
         let tunnel = if config.kind == NativeKind::Codex {
             if let Some(gateway) = selected_gateway.as_ref() {
                 let tunnel =
-                    crate::execution::GatewayTunnel::open(&config.execution, &gateway.endpoint)?;
+                    crate::execution::LoopbackTunnel::open(&config.execution, &gateway.endpoint)?;
                 let mut injection = gateway.clone();
                 injection.endpoint = tunnel.endpoint().into();
                 active.gateway = Some(injection);
@@ -199,6 +207,7 @@ impl NativeSession {
             gateway_turn: tunnel.is_some(),
             claude_fresh: false,
             tunnel,
+            _mcp: mcp,
             epoch: format!("{:x}", u64::from_le_bytes(bytes)),
         };
         session.initialize()?;
@@ -225,6 +234,7 @@ impl NativeSession {
             NativeKind::ClaudeCode => "CLAUDE_CONFIG_DIR",
         };
         command.env(home_key, &config.agent_dir);
+        crate::mcp::set_environment(&mut command, &config.mcp_servers);
         if let Some(gateway) = &config.gateway {
             command.env("VELUNE_GATEWAY_TOKEN", &gateway.token);
         } else {
@@ -397,7 +407,7 @@ impl NativeSession {
         let mut active = self.config.clone();
         if let Some(gateway) = active.gateway.as_mut() {
             let tunnel =
-                crate::execution::GatewayTunnel::open(&active.execution, &gateway.endpoint)?;
+                crate::execution::LoopbackTunnel::open(&active.execution, &gateway.endpoint)?;
             gateway.endpoint = tunnel.endpoint().to_owned();
             self.tunnel = Some(tunnel);
         }

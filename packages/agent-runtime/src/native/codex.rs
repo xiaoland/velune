@@ -24,6 +24,11 @@ impl NativeSession {
         let source = self
             .rpc
             .request("config/read", &json!({"includeLayers":false,"cwd":cwd}))?;
+        for server in &self.config.mcp_servers {
+            if source["config"]["mcp_servers"].get(&server.name).is_some() {
+                return Err(Error::new("临时 MCP 服务与 Codex 既有服务名称冲突"));
+            }
+        }
         self.native_provider = Some(
             source["config"]["model_provider"]
                 .as_str()
@@ -65,6 +70,21 @@ impl NativeSession {
         }
         if let Some(cwd) = cwd {
             options["cwd"] = json!(cwd);
+        }
+        if !self.config.mcp_servers.is_empty() {
+            options["config"]["mcp_servers"] = Value::Object(
+                self.config
+                    .mcp_servers
+                    .iter()
+                    .enumerate()
+                    .map(|(index, server)| {
+                        (
+                            server.name.clone(),
+                            json!({"url":server.endpoint,"bearer_token_env_var":crate::mcp::token_environment(index)}),
+                        )
+                    })
+                    .collect(),
+            );
         }
         options
     }

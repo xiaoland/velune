@@ -318,3 +318,17 @@ Rust application 与 UniFFI 提供 `upsert_acp_runtime`，一次保存实例、`
 本轮不提供 App 的 ACP 配置、会话选项或能力展示界面，也不构建或安装 App。无真实认证与模型调用的手动验收入口为 `scripts/manual-acp-adapter.py`，具体构建产物、参数、实际 Agent 与 SSH 证据见 [ACP 任务](../tasks/acp-adapter/packet.md)。自动化测试不在仓库验证流程内。
 
 2026-10-10 补充验收了两个原生 ACP 入口，均使用同一通用 adapter，没有新增 Agent 专用分支。Devin CLI `3000.11.3` 的启动参数为 `acp`，隔离未认证状态下通过握手、创建、模式修改、live list 和空会话删除；未验证真实 prompt，未发送 prompt 的空会话跨进程 load 失败。OpenCode `1.18.35` 同样使用 `acp`，经过 UniFFI 在本机合成 provider 上通过模型选择、prompt、流式答复、shutdown 后列表与历史重开。这些是特定版本和条件下的观察，不是对所有 ACP 实现或真实账户的兼容承诺。详见 [Devin 证据](../tasks/acp-adapter/devin-evidence.md)与 [OpenCode 证据](../tasks/acp-adapter/opencode-evidence.md)。
+
+## Harness 子 Agent 协作
+
+Rust／UniFFI 的 `create_collaborative_conversation` 创建新的父会话，传入父运行时、工作目录、模型选择、`CollaborationTarget` 列表和 `CollaborationLimits`。每个 target 是宿主明确授权的执行 profile，绑定运行时实例、目标机器工作目录与模型；不能由父 Agent 在工具参数里增加或覆盖。随后仍通过现有发送接口驱动父会话。普通会话不会自动获得协作工具，现有 App 尚无此入口。
+
+父 Harness 的临时 MCP 服务提供 `agents`、`spawn`、`send`、`status`、`wait`、`cancel` 和 `close`。先发现目标，再传 `target_id` 与任务文本创建子 Agent；后续操作使用返回的 `child_id`。实际返回对象的身份字段为 `id`，状态对象同时带 `revision`、`turn`、`state`、`result` 与错误信息。`wait` 使用已读 revision，单次最多等待 30 秒；等待超时不取消子任务。可并行执行多个子 Agent，也可给空闲子 Agent 续发；忙时不会隐式排队或插话。子 Agent 不获协作工具，本切片只提供一层委派。
+
+`collaboration_children` 查看子状态，`child_snapshot` 取得原生投影和待审批项，`reply_child_interaction` 需要子任务 ID、当前 turn 与原生交互 ID。父 Agent 的 MCP 工具不能代替用户批准子任务权限。父取消会级联取消活动子 turn；父 turn 正常结束保留子会话，供后续 turn 使用。显式 `close_collaboration` 关闭协作范围；普通应用关闭仍在父或子忙碌时拒绝并保留执行状态，资源析构负责最终清理。配置修改要求先关闭协作范围，防止授权快照与配置更新混用。
+
+协调器与 HTTP MCP 服务在 application 进程内；每个子执行器独立轮询事件，等待工具结果不需要 UI 轮询，也不会持有 Application 的全局锁。Pi、Codex、Claude、DSH 和通用 ACP 使用各自会话级 MCP 注入，不修改原持久配置。SSH 使用会话持有的 loopback 反向转发；仅支持 stdio MCP 的 ACP Agent 使用内嵌 Python helper，目标机器需可运行 Python 3。helper 不管理任务状态或自动重试，不是独立 Host。
+
+轮次期限和取消在执行器边界检查；初始化或控制 RPC 尚在同步等待时，以 adapter 自身的有界超时为准，不能承诺立即中断。取消或期限在启动期间到达后，不再提交原 prompt。原生历史仍归 Harness；Velune 不保存 transcript 副本，不自动恢复重启前的协作 scope，也不把子 Agent 的报告视为已经验收。App 子任务关系、状态和审批界面待实现。隔离验收与适用边界见 [Harness 协作任务](../tasks/harness-interoperation/packet.md)。
+
+手动闭环入口为 [manual-harness-interoperation.py](../scripts/manual-harness-interoperation.py)，通过参数传入本次构建的 UniFFI 库、生成的 Python 绑定与 OpenCode／DSH／Node；脚本在 macOS sandbox 中使用临时 HOME 和 loopback 合成 provider，断言无前台轮询时子结果仍返回父 Agent。具体版本和复现方式见 [互操作验收](../tasks/harness-interoperation/interoperation-evidence.md)。

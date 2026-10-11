@@ -16,7 +16,7 @@ impl CoreRuntime {
             return crate::authentication_resolver::read_api_key(provider, &self.options)
                 .map(Value::String);
         }
-        if self.busy()
+        if (self.busy() || self.collaboration.is_some())
             || self
                 .authentication
                 .as_ref()

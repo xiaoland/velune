@@ -5,6 +5,13 @@ use velune_agent_runtime::acp::{Client, Config};
 
 impl CoreRuntime {
     fn acp_client(&self, runtime: &RuntimeInstance) -> Result<Client, RuntimeError> {
+        self.acp_client_with_servers(runtime, Vec::new())
+    }
+    fn acp_client_with_servers(
+        &self,
+        runtime: &RuntimeInstance,
+        mcp_servers: Vec<velune_agent_runtime::mcp::Server>,
+    ) -> Result<Client, RuntimeError> {
         if !runtime.enabled {
             return Err(RuntimeError::invalid("此运行时已停用，请先启用"));
         }
@@ -16,6 +23,7 @@ impl CoreRuntime {
             environment: launch.environment,
             execution,
             os_home,
+            mcp_servers,
         })
         .map_err(|error| RuntimeError::context("ACP 初始化", error))?;
         self.acp_capability_cache.borrow_mut().insert(
@@ -165,7 +173,7 @@ impl CoreRuntime {
             .map(Path::new)
             .ok_or_else(|| RuntimeError::invalid("ACP 会话必须指定执行机器上的工作目录"))?;
         self.validate_runtime_cwd(&runtime, cwd)?;
-        let mut session = self.acp_client(&runtime)?;
+        let mut session = self.acp_client_with_servers(&runtime, self.collaboration_servers())?;
         if let Some(native_id) = native_id {
             if !session.capabilities().load_session {
                 return Err(RuntimeError::Unsupported(
@@ -195,6 +203,7 @@ impl CoreRuntime {
         if self.busy() {
             return Err(RuntimeError::invalid("runtime is busy"));
         }
+        self.close_collaboration();
         let runtime_id = request["payload"]["runtimeInstanceID"]
             .as_str()
             .ok_or_else(|| RuntimeError::invalid("runtime instance id"))?;

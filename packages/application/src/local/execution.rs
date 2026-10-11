@@ -33,7 +33,9 @@ impl CoreRuntime {
             self.gateway_runner = Some(runner);
             let result = (|| {
                 let injection = self.native_injection(&runtime, model_record_key)?;
-                NativeSession::connect(self.native_config(&runtime, Some(injection))?)
+                let mut config = self.native_config(&runtime, Some(injection))?;
+                config.mcp_servers = self.collaboration_servers();
+                NativeSession::connect(config)
                     .map_err(|error| RuntimeError::context("运行时连接失败", error))
             })();
             match result {
@@ -79,13 +81,14 @@ impl CoreRuntime {
         )
         .map_err(|error| RuntimeError::context("gateway startup", error))?;
         let context = self.prepare_execution_context(&runtime)?;
-        let tunnel = velune_agent_runtime::execution::GatewayTunnel::open(
+        let tunnel = velune_agent_runtime::execution::LoopbackTunnel::open(
             &context.target,
             runner.endpoint(),
         )
         .map_err(|error| RuntimeError::context("网关 SSH 转发", error))?;
         let projection_dir = context.projection;
         let config = PiConfig {
+            mcp_servers: self.collaboration_servers(),
             runtime_type_id: runtime.type_id.clone(),
             binary: setting_path(&runtime, "binary")?,
             node_binary: setting_path_optional(&runtime, "nodeBinary"),

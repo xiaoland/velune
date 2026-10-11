@@ -368,6 +368,55 @@ pub enum BindingModelSelection {
     },
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+#[serde(rename_all = "camelCase")]
+pub struct BindingCollaborationTarget {
+    pub id: String,
+    pub name: String,
+    pub runtime_id: String,
+    pub cwd: String,
+    pub model_selection: BindingModelSelection,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+#[serde(rename_all = "camelCase")]
+pub struct BindingCollaborationLimits {
+    pub max_children: u32,
+    pub turn_timeout_ms: u64,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Enum)]
+#[serde(rename_all = "camelCase")]
+pub enum BindingChildState {
+    Starting,
+    Running,
+    WaitingForApproval,
+    Cancelling,
+    Idle,
+    Failed,
+    Cancelled,
+    TimedOut,
+    Closed,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+#[serde(rename_all = "camelCase")]
+pub struct BindingChildStatus {
+    pub id: String,
+    pub target_id: String,
+    pub runtime_id: String,
+    pub conversation_id: Option<String>,
+    pub revision: u64,
+    pub state: BindingChildState,
+    pub turn: u64,
+    pub result: Option<String>,
+    pub error: Option<String>,
+    pub pending_interaction_count: u32,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+#[serde(rename_all = "camelCase")]
+pub struct BindingChildSnapshot {
+    pub status: BindingChildStatus,
+    pub snapshot: Option<BindingConversationSnapshot>,
+}
+
 #[derive(Clone, Serialize, Deserialize, uniffi::Record)]
 #[serde(rename_all = "camelCase")]
 pub struct BindingAcpLaunch {

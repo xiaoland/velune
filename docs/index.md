@@ -20,6 +20,7 @@
 - [Claude Code、原生模型与 SSH 运行时](../tasks/runtime-provider-ssh/packet.md)：Rust packages 的模型选择、单轮网关、远端执行与受管 HOME；前端明确待实现
 
 - [跨 Harness 会话接续](../tasks/cross-harness-continuation/packet.md)：目标原生会话、上下文交接、仅关联元数据与重启投影
+- [Harness 子 Agent 协作](../tasks/harness-interoperation/packet.md)：父 Agent 经 MCP 委派，独立运行时执行、结果回传与生命周期；App 入口待实现
 
 - [配置体验与原生 Messages](../tasks/settings-protocol-refinement/packet.md)：历史诊断、原生多选与模板、运行时检测、按组分页及协议扩展
 
