@@ -39,8 +39,17 @@ extension BindingResourceTemplateSummary: Identifiable {}
 
 /// The library, the state of every resource on every runtime, and the native
 /// entries no resource manages. Edits are kept per selection until saved or
-/// reverted, so moving around the window loses nothing.
+/// reverted; the model lives as long as the app, so closing the window loses
+/// nothing either, and quitting asks first.
 @MainActor final class ResourceLibraryModel: ObservableObject {
+    private(set) static var shared: ResourceLibraryModel?
+    static func shared(transport: Transport?) -> ResourceLibraryModel {
+        if let shared { return shared }
+        let model = ResourceLibraryModel(transport: transport)
+        shared = model
+        return model
+    }
+
     @Published private(set) var summaries: [BindingResourceTemplateSummary] = []
     /// Resource id → runtime id → state.
     @Published private(set) var states: [String: [String: BindingResourceSyncState]] = [:]
@@ -102,6 +111,22 @@ extension BindingResourceTemplateSummary: Identifiable {}
         resources(kind).filter { item in states[item.id]?.values.contains { $0.needsAttention } ?? false }.count
     }
     func summary(named name: String, kind: BindingRuntimeResourceKind) -> BindingResourceTemplateSummary? { summaries.first { $0.kind == kind && $0.name == name } }
+
+    var unsavedNames: [String] { drafts.keys.filter(isDirty).compactMap { drafts[$0]?.name }.map { $0.isEmpty ? "未命名" : $0 } }
+
+    /// A new, unsaved copy of a resource, opened in the editor.
+    func duplicate(_ item: BindingResourceTemplateSummary, then: @escaping (LibrarySelection) -> Void) {
+        let id = item.id
+        run({ try $0.readResourceTemplate(id) }, done: { [weak self] template in
+            guard let self else { return }
+            var copy = TemplateDraft(template)
+            copy.id = ""
+            copy.name = item.kind == .userInstructions ? item.name + " 副本" : item.name + "-copy"
+            let selection = LibrarySelection.newResource(item.kind)
+            self.drafts[selection] = copy; self.saved[selection] = TemplateDraft(kind: item.kind)
+            then(selection)
+        })
+    }
 
     func isDirty(_ selection: LibrarySelection) -> Bool { drafts[selection] != nil && drafts[selection] != saved[selection] }
 
@@ -170,10 +195,11 @@ struct ResourceLibraryView: View {
     @ObservedObject var store: AppStore
     @ObservedObject private var navigator = ResourceLibraryNavigator.shared
     @StateObject private var library: ResourceLibraryModel
+    @State private var importing = false
 
     init(store: AppStore) {
         self.store = store
-        _library = StateObject(wrappedValue: ResourceLibraryModel(transport: store.resourceTransport))
+        _library = StateObject(wrappedValue: ResourceLibraryModel.shared(transport: store.resourceTransport))
     }
 
     var body: some View {
@@ -201,11 +227,19 @@ struct ResourceLibraryView: View {
                 }.fixedSize().help("只看某个运行时的状态与其他内容")
             }
             ToolbarItem {
+                Button { importing = true } label: { Label("从运行时导入…", systemImage: "square.and.arrow.down") }
+                    .help("从运行时导入：把某个运行时中不在资源库的内容一次加入资源库")
+                    .disabled(store.runtimeInstances.isEmpty)
+            }
+            ToolbarItem {
                 Button { navigator.selection = .newResource(navigator.kind) } label: { Label("新建\(navigator.kind.templateTitle)", systemImage: "plus") }
                     .help("新建\(navigator.kind.templateTitle)")
             }
         }
+        .sheet(isPresented: $importing) { RuntimeImportSheet(store: store, library: library, navigator: navigator) }
         .onAppear { library.reload() }
+        // A finished turn lets the core write what waited; show it.
+        .onChange(of: store.applicationIsGenerating) { _, generating in if !generating { library.reload() } }
         .onChange(of: store.runtimeInstances) { _, instances in
             if let id = navigator.runtimeID, !instances.contains(where: { $0.id == id }) { navigator.runtimeID = nil }
             library.reload()
@@ -233,15 +267,17 @@ private struct ResourceListView: View {
     @ObservedObject var library: ResourceLibraryModel
     @ObservedObject var navigator: ResourceLibraryNavigator
     @State private var deleting: BindingResourceTemplateSummary?
+    @State private var query = ""
 
-    private var resources: [BindingResourceTemplateSummary] { library.resources(navigator.kind) }
+    private func matches(_ text: String) -> Bool { query.isEmpty || text.localizedCaseInsensitiveContains(query) }
+    private var resources: [BindingResourceTemplateSummary] { library.resources(navigator.kind).filter { matches($0.name) } }
     private var others: [BindingUnmanagedRuntimeResource] {
-        (library.unmanaged[navigator.kind] ?? []).filter { navigator.runtimeID == nil || $0.runtimeId == navigator.runtimeID }
+        (library.unmanaged[navigator.kind] ?? []).filter { (navigator.runtimeID == nil || $0.runtimeId == navigator.runtimeID) && matches($0.path) }
     }
 
     var body: some View {
         List(selection: $navigator.selection) {
-            if others.isEmpty { resourceRows } else { Section("资源库") { resourceRows } }
+            if others.isEmpty { resourceRows } else if !resources.isEmpty { Section("资源库") { resourceRows } }
             if !others.isEmpty {
                 Section("运行时中的其他内容") {
                     ForEach(others, id: \.self) { entry in
@@ -255,8 +291,11 @@ private struct ResourceListView: View {
                 }
             }
         }
+        .searchable(text: $query, placement: .toolbar, prompt: "搜索\(navigator.kind.templateTitle)")
         .overlay {
-            if library.isLoaded && resources.isEmpty && others.isEmpty {
+            if library.isLoaded && resources.isEmpty && others.isEmpty && !query.isEmpty {
+                ContentUnavailableView.search(text: query)
+            } else if library.isLoaded && resources.isEmpty && others.isEmpty {
                 ContentUnavailableView {
                     Label("还没有\(navigator.kind.templateTitle)", systemImage: navigator.kind.templateSymbol)
                 } actions: {
@@ -281,7 +320,11 @@ private struct ResourceListView: View {
             }
             .padding(.vertical, 2)
             .tag(LibrarySelection.resource(item.id))
-            .contextMenu { Button("删除…", role: .destructive) { deleting = item } }
+            .contextMenu {
+                Button("复制") { library.duplicate(item) { navigator.selection = $0 } }
+                Divider()
+                Button("删除…", role: .destructive) { deleting = item }
+            }
         }
     }
 
@@ -390,12 +433,23 @@ private struct RuntimeTargetsView: View {
     let isDirty: Bool
     @State private var disabling: RuntimeInstance?
     @State private var conflict: (runtime: RuntimeInstance, message: String)?
+    @State private var bulkConflicts: [RuntimeInstance] = []
+    @State private var reviewing: RuntimeInstance?
 
     private var canModify: Bool { !store.applicationIsGenerating && !library.isWorking }
+    /// Runtimes that support the resource but do not have it yet.
+    private var enableable: [RuntimeInstance] {
+        guard let id = resourceID else { return [] }
+        return store.runtimeInstances.filter { if case .notEnabled = library.state(id, $0.id) { true } else { false } }
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("启用于").font(.headline)
+            HStack {
+                Text("启用于").font(.headline)
+                Spacer()
+                if enableable.count > 1 { Button("全部启用") { enableAll() }.disabled(!canModify) }
+            }
             if resourceID == nil {
                 Text("创建后可以启用到运行时。").foregroundStyle(.secondary)
             } else if store.runtimeInstances.isEmpty {
@@ -411,6 +465,7 @@ private struct RuntimeTargetsView: View {
                 .overlay(RoundedRectangle(cornerRadius: 6).stroke(.separator))
                 if store.applicationIsGenerating { Text("有任务运行时不能更改启用状态；保存的修改会在“待同步”的运行时上稍后重试。").font(.caption).foregroundStyle(.secondary) }
                 else if isDirty { Text("启用时写入的是已保存的内容。").font(.caption).foregroundStyle(.secondary) }
+                Text("写入后，运行时通常在新会话中加载这些内容；正在进行的会话何时使用新内容由运行时决定，Velune 不会重启会话。").font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
         }
         .confirmationDialog("在 \(disabling?.name ?? "") 上停用“\(name)”？", isPresented: Binding(get: { disabling != nil }, set: { if !$0 { disabling = nil } })) {
@@ -418,6 +473,15 @@ private struct RuntimeTargetsView: View {
             Button("保留原生内容") { if let runtime = disabling { resolve(runtime, .unmanage) } }
             Button("取消", role: .cancel) {}
         } message: { Text("保留时，原生内容留在该运行时，但不再由 Velune 同步。") }
+        .sheet(item: $reviewing) { runtime in
+            if let id = resourceID {
+                DriftSheet(library: library, runtime: runtime, resourceID: id, resourceName: name, resolve: { resolve(runtime, $0) })
+            }
+        }
+        .alert("覆盖已有的原生内容？", isPresented: Binding(get: { !bulkConflicts.isEmpty }, set: { if !$0 { bulkConflicts = [] } })) {
+            Button("跳过这些运行时", role: .cancel) {}
+            Button("覆盖", role: .destructive) { let runtimes = bulkConflicts; bulkConflicts = []; enable(runtimes, overwrite: true) }
+        } message: { Text("\(bulkConflicts.map(\.name).joined(separator: "、")) 中已有同名内容\(kind == .userInstructions ? "或已启用另一份指令" : "")，启用将替换它。") }
         .alert("覆盖 \(conflict?.runtime.name ?? "") 中的内容？", isPresented: Binding(get: { conflict != nil }, set: { if !$0 { conflict = nil } })) {
             Button("取消", role: .cancel) {}
             Button("覆盖", role: .destructive) { if let runtime = conflict?.runtime { enable(runtime, overwrite: true) } }
@@ -440,6 +504,8 @@ private struct RuntimeTargetsView: View {
                 Button("同步") { enable(runtime, overwrite: false) }.disabled(!canModify)
             case .drifted:
                 Menu("处理…") {
+                    Button("查看差异…") { reviewing = runtime }
+                    Divider()
                     Button("用资源库的内容覆盖") { resolve(runtime, .overwrite) }
                     Button("不再同步，保留原生内容") { resolve(runtime, .unmanage) }
                 }.fixedSize().disabled(!canModify)
@@ -451,6 +517,25 @@ private struct RuntimeTargetsView: View {
             default: EmptyView()
             }
         }
+    }
+
+    private func enableAll() { enable(enableable, overwrite: false) }
+
+    /// Enables on several runtimes at once; those with conflicting native content are asked about together.
+    private func enable(_ runtimes: [RuntimeInstance], overwrite: Bool) {
+        guard let id = resourceID, !runtimes.isEmpty else { return }
+        let targets = runtimes.map { BindingTemplateApplyTarget(runtimeId: $0.id, overwrite: overwrite) }
+        library.run({ try $0.applyResourceTemplate(id, targets: targets) }, done: { reports in
+            let conflicted = Set(reports.filter { if case .conflict = $0.outcome { true } else { false } }.map(\.runtimeId))
+            bulkConflicts = runtimes.filter { conflicted.contains($0.id) }
+            let failed = reports.compactMap { report -> String? in
+                switch report.outcome {
+                case .failed(let reason), .skipped(let reason): "\(runtimes.first { $0.id == report.runtimeId }?.name ?? report.runtimeId)：\(reason)"
+                default: nil
+                }
+            }
+            if !failed.isEmpty { library.failure = failed.joined(separator: "；") }
+        })
     }
 
     private func enable(_ runtime: RuntimeInstance, overwrite: Bool) {
@@ -560,6 +645,186 @@ private struct NativeResourceView: View {
         let target = BindingTemplateApplyTarget(runtimeId: runtimeID, overwrite: true), id = namesake.id
         library.run({ try $0.applyResourceTemplate(id, targets: [target]) }, done: { _ in
             navigator.selection = .resource(id)
+        })
+    }
+}
+
+/// What changed in a runtime's native content, before deciding whether to overwrite it.
+private struct DriftSheet: View {
+    @ObservedObject var library: ResourceLibraryModel
+    let runtime: RuntimeInstance
+    let resourceID: String
+    let resourceName: String
+    let resolve: (BindingResolution) -> Void
+    @Environment(\.dismiss) private var dismiss
+    @State private var files: [BindingResourceDriftFile]?
+    @State private var selected = 0
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("“\(resourceName)”在 \(runtime.name) 中的改动").font(.title3.bold())
+            HStack(spacing: 16) {
+                Label("− 当前原生内容", systemImage: "square.fill").foregroundStyle(.red.opacity(0.7))
+                Label("+ 覆盖后（资源库）", systemImage: "square.fill").foregroundStyle(.green.opacity(0.7))
+            }.font(.caption).labelStyle(.titleOnly)
+            if let files {
+                if files.isEmpty {
+                    Text("没有差异。").foregroundStyle(.secondary).frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    if files.count > 1 {
+                        Picker("文件", selection: $selected) { ForEach(Array(files.enumerated()), id: \.offset) { Text($0.element.path).tag($0.offset) } }.fixedSize()
+                    } else {
+                        Text(files[0].path).font(.headline)
+                    }
+                    let file = files[min(selected, files.count - 1)]
+                    if file.binary {
+                        Text("这是非文本内容，无法逐行比较。").foregroundStyle(.secondary).frame(maxWidth: .infinity, maxHeight: .infinity)
+                    } else {
+                        if file.native == nil { Text("原生侧没有这个文件；覆盖将创建它。").font(.callout).foregroundStyle(.secondary) }
+                        if file.library == nil { Text("资源库不再包含这个文件；覆盖将删除它。").font(.callout).foregroundStyle(.secondary) }
+                        TextDiffView(native: file.native, library: file.library)
+                    }
+                }
+            } else if let message = library.failure {
+                FailureBanner(message: message)
+            } else {
+                ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+            HStack {
+                Button("不再同步，保留原生内容") { dismiss(); resolve(.unmanage) }
+                Spacer()
+                Button("取消") { dismiss() }.keyboardShortcut(.cancelAction)
+                Button("用资源库的内容覆盖") { dismiss(); resolve(.overwrite) }.buttonStyle(.borderedProminent)
+            }
+        }
+        .padding(20).frame(width: 720, height: 520)
+        .onAppear {
+            let runtimeID = runtime.id, resourceID = resourceID
+            library.run({ try $0.resourceDrift(runtimeID: runtimeID, templateID: resourceID) }, done: { files = $0 })
+        }
+    }
+}
+
+/// Adds several native entries of one runtime to the library at once; each
+/// stays enabled on that runtime.
+private struct RuntimeImportSheet: View {
+    @ObservedObject var store: AppStore
+    @ObservedObject var library: ResourceLibraryModel
+    @ObservedObject var navigator: ResourceLibraryNavigator
+    @Environment(\.dismiss) private var dismiss
+
+    struct Candidate: Identifiable {
+        let kind: BindingRuntimeResourceKind
+        let path: String
+        let name: String
+        let notes: [String]
+        /// The library already has a resource of this kind and name.
+        let clashes: Bool
+        var id: String { "\(kind)/\(path)" }
+    }
+
+    @State private var runtimeID = ""
+    @State private var candidates: [Candidate]?
+    @State private var chosen: Set<String> = []
+    @State private var result: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("从运行时导入").font(.title3.bold())
+            Picker("运行时", selection: $runtimeID) { ForEach(store.runtimeInstances) { Text($0.name).tag($0.id) } }.fixedSize()
+            Text("选中的内容将加入资源库，并继续启用于该运行时；原生文件改写为资源库的形式。").font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            Group {
+                if let candidates {
+                    if candidates.isEmpty {
+                        ContentUnavailableView("没有可导入的内容", systemImage: "tray", description: Text("此运行时的内容都已在资源库中，或还没有内容。"))
+                    } else {
+                        List {
+                            ForEach(BindingRuntimeResourceKind.templateKinds, id: \.self) { kind in
+                                let group = candidates.filter { $0.kind == kind }
+                                if !group.isEmpty {
+                                    Section(kind.templateTitle) { ForEach(group) { row($0) } }
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
+            }.frame(minHeight: 260, maxHeight: .infinity)
+            if let result { Text(result).font(.callout).foregroundStyle(.secondary) }
+            if let message = library.failure { FailureBanner(message: message) }
+            HStack {
+                if let candidates, candidates.contains(where: { !$0.clashes }) {
+                    Button(chosen.count == candidates.filter { !$0.clashes }.count ? "全不选" : "全选") {
+                        let all = Set(candidates.filter { !$0.clashes }.map(\.id))
+                        chosen = chosen == all ? [] : all
+                    }
+                }
+                Spacer()
+                if library.isWorking { ProgressView().controlSize(.small) }
+                Button(result == nil ? "取消" : "完成") { dismiss() }.keyboardShortcut(.cancelAction)
+                Button("导入 \(chosen.count) 项") { importChosen() }.buttonStyle(.borderedProminent)
+                    .disabled(chosen.isEmpty || library.isWorking || store.applicationIsGenerating)
+            }
+        }
+        .padding(20).frame(width: 560, height: 560)
+        .onAppear { runtimeID = navigator.runtimeID ?? store.runtimeInstances.first?.id ?? ""; load() }
+        .onChange(of: runtimeID) { _, _ in load() }
+    }
+
+    private func row(_ candidate: Candidate) -> some View {
+        Toggle(isOn: Binding(get: { chosen.contains(candidate.id) }, set: { if $0 { chosen.insert(candidate.id) } else { chosen.remove(candidate.id) } })) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(candidate.path)
+                if candidate.clashes {
+                    Text("资源库已有同名的“\(candidate.name)”，请在“运行时中的其他内容”中逐项处理").font(.caption).foregroundStyle(.secondary)
+                } else if !candidate.notes.isEmpty {
+                    Text("不会带入：" + candidate.notes.joined(separator: "；")).font(.caption).foregroundStyle(.orange)
+                }
+            }
+        }
+        .toggleStyle(.checkbox)
+        .disabled(candidate.clashes)
+    }
+
+    private func load() {
+        candidates = nil; chosen = []; result = nil
+        guard !runtimeID.isEmpty else { candidates = []; return }
+        let runtimeID = runtimeID
+        let entries = BindingRuntimeResourceKind.templateKinds.flatMap { library.unmanaged[$0] ?? [] }.filter { $0.runtimeId == runtimeID }
+        let existing = Set(library.summaries.map { "\($0.kind)/\($0.name)" })
+        library.run({ transport in
+            try entries.map { entry in
+                let imported = try transport.importRuntimeResource(runtimeID: runtimeID, kind: entry.kind, path: entry.path)
+                return (entry, imported)
+            }
+        }, done: { pairs in
+            guard runtimeID == self.runtimeID else { return }
+            let list = pairs.map { entry, imported in
+                Candidate(kind: entry.kind, path: entry.path, name: imported.template.name, notes: imported.notes, clashes: existing.contains("\(entry.kind)/\(imported.template.name)"))
+            }
+            candidates = list
+            chosen = Set(list.filter { !$0.clashes && $0.notes.isEmpty }.map(\.id))
+        })
+    }
+
+    private func importChosen() {
+        let runtimeID = runtimeID
+        let picked = (candidates ?? []).filter { chosen.contains($0.id) }
+        library.run({ transport in
+            var failures: [String] = []
+            for candidate in picked {
+                do { _ = try transport.adoptRuntimeResource(runtimeID: runtimeID, kind: candidate.kind, path: candidate.path) }
+                catch { failures.append("\(candidate.path)：\(ResourceFailure(error).message)") }
+            }
+            return failures
+        }, done: { failures in
+            let added = picked.count - failures.count
+            result = failures.isEmpty ? "已导入 \(added) 项。" : "已导入 \(added) 项；未导入：" + failures.joined(separator: "；")
+            candidates = (candidates ?? []).filter { candidate in
+                !chosen.contains(candidate.id) || failures.contains { $0.hasPrefix(candidate.path + "：") }
+            }
+            chosen = []
         })
     }
 }

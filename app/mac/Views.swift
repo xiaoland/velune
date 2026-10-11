@@ -615,6 +615,10 @@ struct RuntimeSettingsView: View {
     @State private var creating = false
     @State private var discovering = false
     @State private var deleting: RuntimeInstance?
+    /// Runtime ids before an add sheet opened, to find what it added.
+    @State private var knownIDs: Set<String> = []
+    /// A just-added runtime and how many library resources it could use.
+    @State private var added: (runtime: RuntimeInstance, resources: Int)?
     private var selected: RuntimeInstance? { store.runtimeInstances.first { $0.id == selectedID } }
 
     var body: some View {
@@ -632,8 +636,8 @@ struct RuntimeSettingsView: View {
             }
             .listStyle(.bordered).padding(.horizontal, 20).padding(.top, 16)
             HStack {
-                Button { creating = true } label: { Image(systemName: "plus") }.help("添加Agent 运行时实例")
-                Button("快速导入…") { discovering = true }.disabled(store.isBusy)
+                Button { rememberIDs(); creating = true } label: { Image(systemName: "plus") }.help("添加Agent 运行时实例")
+                Button("快速导入…") { rememberIDs(); discovering = true }.disabled(store.isBusy)
                 Button { deleting = selected } label: { Image(systemName: "minus") }.disabled(selected == nil).help("删除运行时实例")
                 Spacer()
                 Button("在资源库中查看…") { if let id = selectedID { ResourceLibraryNavigator.shared.show(id, openWindow) } }
@@ -641,15 +645,38 @@ struct RuntimeSettingsView: View {
                 Button("编辑…") { editor = selected }.disabled(selected == nil)
             }.padding(.horizontal, 20).padding(.vertical, 12)
         }
-        .sheet(isPresented: $discovering) { RuntimeDiscoveryView(store: store) }
+        .sheet(isPresented: $discovering, onDismiss: offerResources) { RuntimeDiscoveryView(store: store) }
         .sheet(item: $editor) { instance in RuntimeEditor(store: store, instance: instance) }
-        .sheet(isPresented: $creating) { RuntimeEditor(store: store, instance: nil) }
+        .alert("在 \(added?.runtime.name ?? "") 中启用资源？", isPresented: Binding(get: { added != nil }, set: { if !$0 { added = nil } })) {
+            Button("在资源库中查看") { if let id = added?.runtime.id { ResourceLibraryNavigator.shared.show(id, openWindow) } }
+            Button("以后", role: .cancel) {}
+        } message: {
+            Text("资源库中有 \(added?.resources ?? 0) 项资源可用于这个运行时。新运行时不会自动启用它们，可以在资源库中选择要启用的内容。")
+        }
+        .sheet(isPresented: $creating, onDismiss: offerResources) { RuntimeEditor(store: store, instance: nil) }
         .alert("删除运行时实例？", isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } }), presenting: deleting) { instance in
             Button("删除", role: .destructive) { store.deleteRuntimeInstance(id: instance.id) }
             Button("取消", role: .cancel) {}
         } message: { _ in
             Text("只删除此配置实例；Agent 运行时自己的会话、资源和配置文件不会被删除。")
         }
+    }
+
+    private func rememberIDs() { knownIDs = Set(store.runtimeInstances.map(\.id)) }
+
+    /// After an add sheet has closed, offers the library to a new runtime that
+    /// can use some of its resources.
+    private func offerResources() {
+        guard let runtime = store.runtimeInstances.first(where: { !knownIDs.contains($0.id) }) else { return }
+        let id = runtime.id
+        ResourceLibraryModel.shared(transport: store.resourceTransport).run({ transport in
+            try transport.resourceSyncStatus().filter { status in
+                guard status.runtimeId == id, case .notEnabled = status.state else { return false }
+                return true
+            }.count
+        }, done: { count in
+            if count > 0 { added = (runtime, count) }
+        })
     }
 
     @ViewBuilder private func instanceMenu(_ ids: Set<String>) -> some View {

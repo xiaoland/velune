@@ -30,7 +30,7 @@ struct AppProblem: Identifiable, Sendable, Equatable {
         case "shutdown": return "关闭应用"
         case "analyticsQuery": return "读取分析记录"
         case "list": return "读取会话与配置"
-        case "listResourceTemplates", "readResourceTemplate", "resourceSyncStatus", "unmanagedRuntimeResources", "importRuntimeResource": return "读取资源库"
+        case "listResourceTemplates", "readResourceTemplate", "resourceSyncStatus", "unmanagedRuntimeResources", "importRuntimeResource", "resourceDrift": return "读取资源库"
         case "saveResourceTemplate": return "保存资源"
         case "deleteResourceTemplate": return "删除资源"
         case "adoptRuntimeResource": return "加入资源库"

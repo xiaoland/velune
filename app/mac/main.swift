@@ -57,6 +57,14 @@ final class VeluneApplicationDelegate: NSObject, NSApplicationDelegate {
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         guard !terminationPending else { return .terminateLater }
+        if let unsaved = ResourceLibraryModel.shared?.unsavedNames, !unsaved.isEmpty {
+            let alert = NSAlert()
+            alert.messageText = "资源库中有未保存的修改"
+            alert.informativeText = "退出将放弃对“\(unsaved.joined(separator: "”“"))”的修改。"
+            alert.addButton(withTitle: "取消")
+            alert.addButton(withTitle: "放弃并退出").hasDestructiveAction = true
+            guard alert.runModal() == .alertSecondButtonReturn else { return .terminateCancel }
+        }
         guard let store else { return .terminateNow }
         terminationPending = true
         store.shutdown { [weak self] closed in

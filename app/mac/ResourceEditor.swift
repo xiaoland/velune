@@ -89,6 +89,9 @@ struct TemplateDraft: Equatable {
     var command = ""
     var arguments = ""
     var url = ""
+    var cwd = ""
+    /// Seconds, as typed; empty leaves each runtime's default.
+    var timeout = ""
     /// Environment values (stdio) or request headers (http); either may be secret.
     var pairs: [DraftKeyValue] = []
 
@@ -105,11 +108,12 @@ struct TemplateDraft: Equatable {
         case .skill(let files):
             kind = .skills
             skillFiles = files.map { DraftSkillFile(path: $0.path, bytes: $0.bytes, executable: $0.executable) }
-        case .mcp(let transport):
+        case .mcp(let transport, let timeoutSeconds):
             kind = .mcpServers
+            timeout = timeoutSeconds.map(String.init) ?? ""
             switch transport {
-            case .stdio(let command, let args, let env):
-                self.command = command; arguments = args.joined(separator: "\n")
+            case .stdio(let command, let args, let env, let cwd):
+                self.command = command; arguments = args.joined(separator: "\n"); self.cwd = cwd ?? ""
                 pairs = env.sorted { $0.key < $1.key }.map { DraftKeyValue(key: $0.key, value: $0.value) }
             case .http(let url, let headers):
                 isHTTP = true; self.url = url
@@ -129,9 +133,11 @@ struct TemplateDraft: Equatable {
         case .mcpServers:
             var dictionary: [String: String] = [:]
             for pair in pairs where !pair.key.isEmpty { dictionary[pair.key] = pair.value }
+            let cwd = cwd.trimmingCharacters(in: .whitespaces)
             content = .mcp(transport: isHTTP
                 ? .http(url: url, headers: dictionary)
-                : .stdio(command: command, args: arguments.split(separator: "\n").map(String.init), env: dictionary))
+                : .stdio(command: command, args: arguments.split(separator: "\n").map(String.init), env: dictionary, cwd: cwd.isEmpty ? nil : cwd),
+                timeoutSeconds: UInt32(timeout.trimmingCharacters(in: .whitespaces)))
         case .nativeAgentDefinitions:
             let list = tools.split(whereSeparator: { $0 == "," || $0 == "\n" }).map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
             let model = model.trimmingCharacters(in: .whitespaces)
@@ -141,11 +147,77 @@ struct TemplateDraft: Equatable {
     }
 }
 
+extension TemplateDraft {
+    /// The MCP declaration as editable JSON, in the common `command`/`url` shape.
+    var mcpJSON: String {
+        var object: [String: Any] = [:]
+        let pairs = Dictionary(self.pairs.filter { !$0.key.isEmpty }.map { ($0.key, $0.value) }, uniquingKeysWith: { _, last in last })
+        if isHTTP {
+            object["url"] = url
+            if !pairs.isEmpty { object["headers"] = pairs }
+        } else {
+            object["command"] = command
+            let args = arguments.split(separator: "\n").map(String.init)
+            if !args.isEmpty { object["args"] = args }
+            if !pairs.isEmpty { object["env"] = pairs }
+            if !cwd.isEmpty { object["cwd"] = cwd }
+        }
+        if let seconds = UInt32(timeout) { object["timeoutSeconds"] = seconds }
+        let data = (try? JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes])) ?? Data()
+        return String(data: data, encoding: .utf8) ?? ""
+    }
+
+    /// Reads a pasted declaration: one server object, or `{"mcpServers": {name: {...}}}` with one
+    /// server, whose name fills an empty name. Returns the fields it ignored.
+    mutating func applyMCPJSON(_ text: String) throws -> [String] {
+        guard let root = try JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any] else { throw MCPJSONError.notObject }
+        var object = root
+        if let servers = root["mcpServers"] as? [String: Any] {
+            guard servers.count == 1, let (serverName, value) = servers.first, let server = value as? [String: Any] else { throw MCPJSONError.serverCount }
+            if name.trimmingCharacters(in: .whitespaces).isEmpty { name = serverName }
+            object = server
+        }
+        let strings = { (value: Any?) -> [DraftKeyValue] in
+            ((value as? [String: Any]) ?? [:]).compactMap { key, value in (value as? String).map { DraftKeyValue(key: key, value: $0) } }.sorted { $0.key < $1.key }
+        }
+        if let url = object["url"] as? String {
+            isHTTP = true; self.url = url
+            pairs = strings(object["headers"] ?? object["http_headers"])
+        } else if let command = object["command"] as? String {
+            isHTTP = false; self.command = command
+            arguments = ((object["args"] as? [Any]) ?? []).compactMap { $0 as? String }.joined(separator: "\n")
+            pairs = strings(object["env"]); cwd = object["cwd"] as? String ?? ""
+        } else {
+            throw MCPJSONError.noTransport
+        }
+        timeout = (object["timeoutSeconds"] as? NSNumber).map { String($0.uint32Value) } ?? ""
+        let known: Set<String> = ["type", "url", "headers", "http_headers", "command", "args", "env", "cwd", "timeoutSeconds"]
+        return object.keys.filter { !known.contains($0) }.sorted()
+    }
+}
+
+enum MCPJSONError: LocalizedError {
+    case notObject, serverCount, noTransport
+    var errorDescription: String? {
+        switch self {
+        case .notObject: "需要一个 JSON 对象。"
+        case .serverCount: "mcpServers 中应只有一个服务器。"
+        case .noTransport: "需要 command（本地进程）或 url（HTTP）。"
+        }
+    }
+}
+
 /// The fields of one resource kind; read-only when previewing native content.
 struct ResourceForm: View {
     @Binding var draft: TemplateDraft
     let canEdit: Bool
     @State private var revealSecrets = false
+    @State private var showsJSON = false
+    @State private var jsonText = ""
+    @State private var jsonMessage: String?
+    /// The draft the JSON text last produced; any other change (revert, a new
+    /// selection) re-renders the text.
+    @State private var jsonDraft: TemplateDraft?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -168,6 +240,9 @@ struct ResourceForm: View {
             case .skills: SkillFilesEditor(files: $draft.skillFiles, canEdit: canEdit)
             }
         }
+        .onChange(of: draft) { _, draft in
+            if showsJSON && draft != jsonDraft { jsonText = draft.mcpJSON; jsonDraft = draft; jsonMessage = nil }
+        }
     }
 
     /// An editable field, or its value as text when previewing.
@@ -188,6 +263,35 @@ struct ResourceForm: View {
 
     @ViewBuilder private var mcp: some View {
         if canEdit {
+            Picker("编辑方式", selection: Binding(get: { showsJSON }, set: { json in
+                if json { jsonText = draft.mcpJSON; jsonDraft = draft; jsonMessage = nil }
+                showsJSON = json
+            })) { Text("表单").tag(false); Text("JSON").tag(true) }.pickerStyle(.segmented).fixedSize()
+        }
+        if showsJSON && canEdit { mcpJSONEditor } else { mcpForm }
+    }
+
+    @ViewBuilder private var mcpJSONEditor: some View {
+        Text("可直接粘贴 MCP 文档中的声明（含 mcpServers 的片段亦可）；超时以 timeoutSeconds 表示，单位为秒。").font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+        PlainTextEditor(text: Binding(get: { jsonText }, set: { text in
+            jsonText = text
+            var updated = draft
+            do {
+                let ignored = try updated.applyMCPJSON(text)
+                jsonDraft = updated
+                draft = updated
+                jsonMessage = ignored.isEmpty ? nil : "已忽略不支持的字段：\(ignored.joined(separator: "、"))"
+            } catch { jsonMessage = error.localizedDescription }
+        }), isEditable: true)
+        .frame(height: 260)
+        .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 6))
+        .overlay(RoundedRectangle(cornerRadius: 6).stroke(.separator))
+        if let jsonMessage { Text(jsonMessage).font(.caption).foregroundStyle(.orange) }
+        Text("JSON 含环境变量与请求头的值，可能包含密钥。").font(.caption).foregroundStyle(.secondary)
+    }
+
+    @ViewBuilder private var mcpForm: some View {
+        if canEdit {
             Picker("传输", selection: $draft.isHTTP) { Text("本地进程（stdio）").tag(false); Text("HTTP").tag(true) }.pickerStyle(.segmented).fixedSize()
         } else {
             LabeledContent("传输", value: draft.isHTTP ? "HTTP" : "本地进程（stdio）")
@@ -196,7 +300,10 @@ struct ResourceForm: View {
         if !draft.isHTTP {
             Text("参数（每行一个）").font(.subheadline)
             editor($draft.arguments, height: 80)
+            field("工作目录", $draft.cwd, prompt: "可选，绝对路径")
+            if !draft.cwd.isEmpty { Text("Claude Code 的 MCP 配置没有工作目录，写入 Claude Code 时会省略。").font(.caption).foregroundStyle(.secondary) }
         }
+        field("超时（秒）", $draft.timeout, prompt: "可选，单次工具调用的上限")
         HStack {
             Text(draft.isHTTP ? "请求头" : "环境变量").font(.subheadline)
             Spacer()
@@ -347,4 +454,52 @@ struct PlainTextEditor: NSViewRepresentable {
         NSAttributedString(string: placeholder, attributes: [.font: font ?? .systemFont(ofSize: NSFont.systemFontSize), .foregroundColor: NSColor.placeholderTextColor]).draw(in: rect)
     }
     override func didChangeText() { super.didChangeText(); needsDisplay = true }
+}
+
+/// Line differences between the native text and what the library would write.
+struct TextDiffView: View {
+    let native: String?
+    let library: String?
+
+    private enum Mark { case same, removed, added }
+    private var lines: [(mark: Mark, text: String)] {
+        let old = (native ?? "").components(separatedBy: "\n"), new = (library ?? "").components(separatedBy: "\n")
+        let difference = new.difference(from: old)
+        var removed = Set<Int>(), inserted = Set<Int>()
+        for change in difference {
+            switch change {
+            case .remove(let offset, _, _): removed.insert(offset)
+            case .insert(let offset, _, _): inserted.insert(offset)
+            }
+        }
+        var result: [(Mark, String)] = []
+        var i = 0, j = 0
+        while i < old.count || j < new.count {
+            if i < old.count, removed.contains(i) { result.append((.removed, old[i])); i += 1 }
+            else if j < new.count, inserted.contains(j) { result.append((.added, new[j])); j += 1 }
+            else if i < old.count { result.append((.same, old[i])); i += 1; j += 1 }
+            else { break }
+        }
+        return result
+    }
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 0) {
+                ForEach(Array(lines.enumerated()), id: \.offset) { _, line in
+                    HStack(alignment: .firstTextBaseline, spacing: 6) {
+                        Text(line.mark == .removed ? "−" : line.mark == .added ? "+" : " ")
+                            .foregroundStyle(line.mark == .removed ? Color.red : line.mark == .added ? Color.green : Color.secondary)
+                        Text(line.text.isEmpty ? " " : line.text).fixedSize(horizontal: false, vertical: true)
+                    }
+                    .font(.system(.body, design: .monospaced))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 6)
+                    .background(line.mark == .removed ? Color.red.opacity(0.12) : line.mark == .added ? Color.green.opacity(0.12) : .clear)
+                }
+            }.textSelection(.enabled).padding(.vertical, 4).frame(maxWidth: .infinity, alignment: .topLeading)
+        }
+        .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 6))
+        .overlay(RoundedRectangle(cornerRadius: 6).stroke(.separator))
+    }
 }
