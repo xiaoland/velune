@@ -64,6 +64,18 @@ final class Transport: @unchecked Sendable {
     func runtimeDiscoveryHints(userHome: String, overrides: [String: String]) throws -> [BindingRuntimeDiscoveryHint] { try withApplication("runtimeDiscoveryHints") { try $0.runtimeDiscoveryHints(userHome: userHome, overrides: overrides) } }
     func discoverRuntimes(_ probes: [BindingRuntimeDiscoveryProbe]) throws -> [BindingRuntimeDiscoveryCandidate] { try withApplication("discoverRuntimes") { try $0.discoverRuntimes(probes: probes) } }
     func analyticsQuery(_ query: BindingAnalyticsQuery) throws -> BindingAnalyticsReport { try withApplication("analyticsQuery") { try $0.analyticsQuery(query: query) } }
+    func runtimeResourceCatalog(runtimeID: String, kind: BindingRuntimeResourceKind, scope: BindingRuntimeResourceScope) throws -> BindingRuntimeResourceCatalog {
+        try withApplication("runtimeResourceCatalog") { try $0.runtimeResourceCatalog(runtimeId: runtimeID, cwd: nil, kind: kind, scope: scope) }
+    }
+    func readRuntimeResource(runtimeID: String, key: BindingRuntimeResourceKey) throws -> BindingRuntimeResourceDocument {
+        try withApplication("readRuntimeResource") { try $0.readRuntimeResource(runtimeId: runtimeID, cwd: nil, key: key) }
+    }
+    func writeRuntimeResource(runtimeID: String, key: BindingRuntimeResourceKey, expected: BindingRuntimeResourceRevision, bytes: Data) throws -> BindingRuntimeResourceDocument {
+        try withApplication("writeRuntimeResource") { try $0.writeRuntimeResource(runtimeId: runtimeID, cwd: nil, key: key, expected: expected, bytes: bytes, executable: nil) }
+    }
+    func deleteRuntimeResource(runtimeID: String, key: BindingRuntimeResourceKey, expected: BindingRuntimeResourceRevision) throws {
+        try withApplication("deleteRuntimeResource") { try $0.deleteRuntimeResource(runtimeId: runtimeID, cwd: nil, key: key, expected: expected) }
+    }
     func list() throws -> BindingConfigurationSnapshot { try withApplication("list") { try $0.list() } }
     func saveProvider(gatewayID: String, provider: AIProvider, authenticationEdit: AuthenticationEdit) throws -> BindingGatewayUpdate {
         try withApplication("saveProvider", changesConfiguration: true) { try $0.saveProvider(gatewayId: gatewayID, provider: BindingMapping.bindingProvider(provider), authenticationEdit: BindingMapping.bindingAuthenticationEdit(authenticationEdit)) }

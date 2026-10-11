@@ -37,6 +37,8 @@ final class AppStore: ObservableObject {
     @Published private var snapshot: ConversationSnapshot?
 
     private let transport: Transport?
+    /// Native runtime resources are edited from settings with their own loading state.
+    var resourceTransport: Transport? { transport }
     // Workspaces share application services; their navigation and transcript stay local.
     private let sharedApplication: AppStore?
     private var subscriptions: Set<AnyCancellable> = []
