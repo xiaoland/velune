@@ -24,6 +24,8 @@ pub(super) struct Session {
     /// When this session was last seen executing; its native writes until
     /// shortly after that are Velune's own.
     pub(super) last_execution: Option<std::time::Instant>,
+    /// The user asked to stop the current turn.
+    pub(super) cancel_requested: bool,
 }
 
 impl Session {
@@ -97,6 +99,12 @@ impl Session {
             })
     }
 
+    /// The identity clients know this session's conversation by.
+    fn conversation_id(&self) -> Option<&str> {
+        self.public_id()
+            .or_else(|| self.projected().map(|view| view.conversation.id.as_str()))
+    }
+
     fn is_empty(&self) -> bool {
         matches!(self.active_state, ActiveState::Empty)
             && self.collaboration.is_none()
@@ -108,6 +116,16 @@ impl Session {
 /// Idle sessions kept open besides pinned ones, so several windows can each
 /// keep showing their conversation.
 const RETAINED_IDLE_SESSIONS: usize = 8;
+
+/// Turns that ended recently, for clients that poll activity.
+#[derive(Default)]
+pub(super) struct FinishedTurns {
+    sequence: u64,
+    turns: std::collections::VecDeque<crate::FinishedTurn>,
+}
+
+/// Ended turns kept for clients that poll less often than turns end.
+const RETAINED_FINISHED_TURNS: usize = 64;
 
 impl CoreRuntime {
     /// Address the open session of conversation `id`, if there is one.
@@ -213,10 +231,59 @@ impl CoreRuntime {
         runtime_projection.join(format!("lane-{lane}"))
     }
 
+    /// Record how the addressed session's turn ended.
+    pub(super) fn record_finished_turn(&mut self, failed: bool) {
+        let Some(view) = self.session.projected() else {
+            return;
+        };
+        let outcome = if self.session.cancel_requested {
+            crate::TurnOutcome::Cancelled
+        } else if failed
+            || view.run_state == RunState::Failed
+            || matches!(self.session.active_state, ActiveState::Pi)
+                && self
+                    .session
+                    .pi
+                    .projection
+                    .as_ref()
+                    .is_some_and(PiProjection::turn_failed)
+        {
+            crate::TurnOutcome::Failed
+        } else {
+            crate::TurnOutcome::Completed
+        };
+        let finished = &mut self.finished_turns;
+        finished.sequence += 1;
+        finished.turns.push_back(crate::FinishedTurn {
+            sequence: finished.sequence,
+            context_runtime_id: view.conversation.runtime_id.clone(),
+            conversation_id: self.session.conversation_id().unwrap_or_default().into(),
+            outcome,
+        });
+        if finished.turns.len() > RETAINED_FINISHED_TURNS {
+            finished.turns.pop_front();
+        }
+        self.session.cancel_requested = false;
+    }
+
+    pub(super) fn conversation_activity(&mut self, since: u64) -> crate::ConversationActivity {
+        crate::ConversationActivity {
+            active: self.active_conversations(),
+            finished: self
+                .finished_turns
+                .turns
+                .iter()
+                .filter(|turn| turn.sequence > since)
+                .cloned()
+                .collect(),
+            cursor: self.finished_turns.sequence,
+        }
+    }
+
     /// Conversations that execute or wait for the user, across sessions, then
     /// those running outside Velune. Polled often, so it reads each native
     /// view without building a snapshot.
-    pub(super) fn active_conversations(&mut self) -> Vec<crate::ActiveConversation> {
+    fn active_conversations(&mut self) -> Vec<crate::ActiveConversation> {
         let mut active: Vec<_> = std::iter::once(&self.session)
             .chain(&self.parked)
             .filter_map(|session| {
@@ -224,7 +291,7 @@ impl CoreRuntime {
                 let pending = view.pending_interactions.len();
                 (session.busy() || pending > 0).then(|| crate::ActiveConversation {
                     context_runtime_id: view.conversation.runtime_id.clone(),
-                    conversation_id: session.public_id().unwrap_or(&view.conversation.id).into(),
+                    conversation_id: session.conversation_id().unwrap_or_default().into(),
                     run_state: view.run_state.clone(),
                     pending_interactions: pending as u32,
                 })

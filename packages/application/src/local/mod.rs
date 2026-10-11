@@ -103,6 +103,7 @@ pub struct CoreRuntime {
     /// Other open conversation sessions, most recently used last.
     parked: Vec<session::Session>,
     elsewhere: live::ElsewhereScan,
+    finished_turns: session::FinishedTurns,
     gateways: Vec<GatewayConfig>,
     model_templates: Vec<crate::config::ModelTemplate>,
     conversation_links: Vec<crate::config::ConversationLink>,
@@ -160,6 +161,7 @@ impl CoreRuntime {
             session: Default::default(),
             parked: Vec::new(),
             elsewhere: live::ElsewhereScan::default(),
+            finished_turns: session::FinishedTurns::default(),
             repository,
             gateways: persisted.gateways,
             model_templates: persisted.model_templates,
@@ -276,6 +278,9 @@ impl CoreRuntime {
             }
             ActiveState::Empty | ActiveState::History(_) => Ok(()),
         };
+        if was_busy && (!self.busy() || result.is_err()) {
+            self.record_finished_turn(result.is_err());
+        }
         if self.session.gateway_runner.is_some() && ((was_busy && !self.busy()) || result.is_err())
         {
             self.finish_managed_turn()?;
@@ -478,7 +483,12 @@ impl CoreRuntime {
                 }
                 Ok(result)
             }
-            "activeConversations" => Ok(serde_json::to_value(self.active_conversations())?),
+            "conversationActivity" => {
+                let since = request["payload"]["since"]
+                    .as_u64()
+                    .ok_or_else(|| RuntimeError::invalid("activity cursor"))?;
+                Ok(serde_json::to_value(self.conversation_activity(since))?)
+            }
             "getSnapshot" => Ok(json!({"snapshot": self
                 .queried_snapshot(request)?
                 .map(|snapshot| self.delivery.snapshot(snapshot))})),

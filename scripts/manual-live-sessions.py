@@ -136,7 +136,7 @@ console.log(manager.getSessionFile());
                         if isinstance(block, b.BindingMessageBlock.TEXT)]
 
             def elsewhere():
-                return {item.conversation_id for item in app.active_conversations()
+                return {item.conversation_id for item in app.conversation_activity(0).active
                         if item.run_state == b.BindingRunState.ELSEWHERE}
 
             def wait(predicate, label, timeout=20):
@@ -176,7 +176,7 @@ console.log(manager.getSessionFile());
             wait(lambda: snapshot(b_id).run_state == b.BindingRunState.RUNNING, 'own turn runs')
             time.sleep(6)
             assert b_id not in elsewhere(), 'own execution is not running elsewhere'
-            assert {item.conversation_id: item.run_state for item in app.active_conversations()}[b_id] == b.BindingRunState.RUNNING
+            assert {item.conversation_id: item.run_state for item in app.conversation_activity(0).active}[b_id] == b.BindingRunState.RUNNING
             (root / 'gate').unlink()
             wait(lambda: 'OWN_REPLY' in texts(b_id) and snapshot(b_id).actions.can_send, 'own turn finished')
             time.sleep(7)

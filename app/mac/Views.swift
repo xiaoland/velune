@@ -7,6 +7,7 @@ struct VeluneRootView: View {
     let previewEmpty: Bool
     let previewSettings: Bool
     @Environment(\.openSettings) private var openSettings
+    @Environment(\.controlActiveState) private var activeState
     @State private var browser = ConversationBrowser()
     /// Not observed here: only the composer re-renders while typing.
     @State private var composer = ComposerModel()
@@ -98,6 +99,7 @@ struct VeluneRootView: View {
             if store.conversationBrowserPreferences != nil { store.setConversationBrowserPreferences(value) }
         }
         .onChange(of: browser.query) { _, _ in browser.resetPagination() }
+        .onChange(of: activeState, initial: true) { _, value in if value == .key { store.noteFocused() } }
         .onChange(of: store.pendingConversationID) { _, value in if value != nil { showsOutlinePopover = false } }
         .onChange(of: store.loadedConversationID) { _, _ in showsOutlinePopover = false; outlineCollapsed = false }
         .onChange(of: store.outlinePresentation) { _, _ in showsOutlinePopover = false; outlineCollapsed = false }

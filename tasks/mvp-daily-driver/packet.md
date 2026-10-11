@@ -93,3 +93,10 @@
 - 既有脚本 parallel-sessions、runtime-interactions、acp-adapter、continuation-boundaries、resource-library 通过。
 - 未验证：真实 Codex／Claude Code 会话的事件格式与 Codex app-server 重读耗时（未读取真实会话）；实际外部 Harness 长时间工具调用超过 10 分钟无写入时会被视为已放弃。
 - 安装：`fd2e7cd` release 构建已安装 `/Applications/Velune.app`（0.1 beta.1、config schema 8、manifest dirty=false），严格签名通过；正常退出旧应用后安装并重新打开，无崩溃报告。
+
+## ③ 完成与待确认通知（2026-10-11）
+
+- 核心：会话的 turn 从执行变为结束时记录结果——用户停止为 Cancelled；推进出错、快照 Failed 或 Pi 以 `stopReason=error` 结束模型响应为 Failed（Pi 把模型错误记为 assistant 消息且会话仍可用，投影新增 `turn_failed`）；其余为 Completed。`active_conversations` hard-cutoff 为 `conversation_activity(since)`：活动会话 + 游标后结束的 turn（序号递增，保留最近 64 个）+ 新游标。
+- Mac：`Notifications.swift` 的 `ConversationNotifier` 由应用级 store 持有；完成、失败与待确认交互数增加时发系统通知（每会话一条，新状态替换旧的），前台正在查看该会话时不发，用户停止的不发；首次需要时请求通知授权（提示、声音），是否显示由系统设置决定。点击通知激活应用并在最近成为 key 的窗口打开该会话。Dock 标记 = 有待确认交互的会话 ∪ 后台期间结束的会话，回到前台清除后者。
+- 验证：静态检查与 Swift 严格构建通过；`manual-parallel-sessions.py` 新增结果检查（完成、停止、上游 400 拒绝为失败，同一游标不重复返回）通过；live-sessions 脚本通过。
+- 未验证：Mac 的系统通知、授权提示、点击打开与 Dock 标记未实际运行——开发构建与安装版同为 `local.velune.prototype`，首次通知会弹出系统授权提示，属于用户决定，开发方不在调试中触发。所有窗口都关闭时点击通知只激活应用，不新开窗口。

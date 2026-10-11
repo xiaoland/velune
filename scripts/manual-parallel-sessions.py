@@ -5,7 +5,7 @@ Two synthetic Pi 1.0.2 conversations in a temporary HOME run turns at the same
 time through the UniFFI application against a loopback upstream that holds
 each turn until released. Checks independent progress, active-conversation
 reporting, private execution lanes, cancellation of one conversation, reopening
-a running conversation and the configuration guard. No real credential,
+a running conversation, the configuration guard and reported turn outcomes. No real credential,
 provider, configuration or session is read; this is not an automated test.
 """
 import argparse
@@ -21,7 +21,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 
-GATES = ('TURN_A', 'TURN_B', 'TURN_C', 'TURN_D')
+GATES = ('TURN_A', 'TURN_B', 'TURN_C', 'TURN_D', 'TURN_FAIL')
 
 
 def main():
@@ -62,6 +62,12 @@ def main():
                 last = json.dumps(users[-1]['content']) if users else ''
                 name = next((n for n in GATES if n in last), 'OTHER')
                 requests.append(name)
+                if name == 'TURN_FAIL':
+                    self.send_response(400)
+                    self.send_header('Content-Type', 'application/json')
+                    self.end_headers()
+                    self.wfile.write(b'{"error":{"message":"synthetic rejection","type":"invalid_request_error"}}')
+                    return
                 self.send_response(200)
                 self.send_header('Content-Type', 'text/event-stream')
                 self.end_headers()
@@ -151,7 +157,7 @@ manager.appendSessionInfo(title); console.log(manager.getSessionFile());
             app.send_turn('pi', b_id, 'pi', model, 'TURN_B')
             wait(lambda: 'TURN_B' in requests, 'B reached the upstream while A runs')
             assert running(a) and running(b_id), 'both conversations run at once'
-            active = {item.conversation_id: item for item in app.active_conversations()}
+            active = {item.conversation_id: item for item in app.conversation_activity(0).active}
             assert set(active) == {a, b_id} and all(item.run_state == b.BindingRunState.RUNNING for item in active.values()), active
             lanes = sorted(path.parent.name for path in (root / 'app/runtime-projections').glob('*/lane-*/velune-selection.json'))
             assert lanes == ['lane-0', 'lane-1'], lanes
@@ -169,10 +175,10 @@ manager.appendSessionInfo(title); console.log(manager.getSessionFile());
             (root / 'gate-TURN_B').unlink()
             wait(lambda: replied(b_id, 'REPLY_TURN_B'), 'B finished')
             assert running(a), 'A keeps running after B finished'
-            assert [item.conversation_id for item in app.active_conversations()] == [a]
+            assert [item.conversation_id for item in app.conversation_activity(0).active] == [a]
             (root / 'gate-TURN_A').unlink()
             wait(lambda: replied(a, 'REPLY_TURN_A'), 'A finished')
-            assert app.active_conversations() == []
+            assert app.conversation_activity(0).active == []
             print('PASS each conversation finished independently with its own reply', flush=True)
 
             app.send_turn('pi', a, 'pi', model, 'TURN_C')
@@ -184,6 +190,17 @@ manager.appendSessionInfo(title); console.log(manager.getSessionFile());
             (root / 'gate-TURN_D').unlink()
             wait(lambda: replied(b_id, 'REPLY_TURN_D'), 'B finished after A was cancelled')
             print('PASS cancelling one conversation leaves the other running', flush=True)
+
+            outcomes = [(turn.conversation_id, turn.outcome) for turn in app.conversation_activity(0).finished]
+            assert outcomes == [(b_id, b.BindingTurnOutcome.COMPLETED), (a, b.BindingTurnOutcome.COMPLETED),
+                                (a, b.BindingTurnOutcome.CANCELLED), (b_id, b.BindingTurnOutcome.COMPLETED)], outcomes
+            cursor = app.conversation_activity(0).cursor
+            app.send_turn('pi', a, 'pi', model, 'TURN_FAIL')
+            wait(lambda: app.conversation_activity(cursor).finished, 'failed turn ended')
+            finished = app.conversation_activity(cursor).finished
+            assert [(turn.conversation_id, turn.outcome) for turn in finished] == [(a, b.BindingTurnOutcome.FAILED)], finished
+            assert app.conversation_activity(finished[-1].sequence).finished == []
+            print('PASS ended turns are reported once per cursor as completed, cancelled or failed', flush=True)
             app.upsert_runtime(runtime)
         finally:
             for gate in root.glob('gate-*'):

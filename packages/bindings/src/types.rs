@@ -509,6 +509,36 @@ pub struct BindingActiveConversation {
     pub pending_interactions: u32,
 }
 
+/// How a Velune turn ended.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, uniffi::Enum)]
+#[serde(rename_all = "camelCase")]
+pub enum BindingTurnOutcome {
+    Completed,
+    Failed,
+    /// The user stopped it.
+    Cancelled,
+}
+
+/// A Velune turn that ended, numbered in the order turns ended.
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BindingFinishedTurn {
+    pub sequence: u64,
+    pub context_runtime_id: String,
+    pub conversation_id: String,
+    pub outcome: BindingTurnOutcome,
+}
+
+/// Active conversations and turns that ended after the polled cursor;
+/// `cursor` is the value to pass next time.
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BindingConversationActivity {
+    pub active: Vec<BindingActiveConversation>,
+    pub finished: Vec<BindingFinishedTurn>,
+    pub cursor: u64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 #[serde(rename_all = "camelCase")]
 pub struct BindingAnalyticsQuery {

@@ -7,6 +7,7 @@ impl CoreRuntime {
         if self.busy() {
             return Err(RuntimeError::invalid("runtime is busy"));
         }
+        self.session.cancel_requested = false;
         let source_runtime_id = request["payload"]["sourceRuntimeID"]
             .as_str()
             .ok_or_else(|| RuntimeError::invalid("source runtime instance id"))?;
@@ -608,6 +609,7 @@ impl CoreRuntime {
 
     pub(super) fn cancel_action(&mut self, request: &Value) -> Result<Value, RuntimeError> {
         self.ensure_active(request)?;
+        self.session.cancel_requested = true;
         self.cancel_children();
         if let ActiveState::Acp(session) = &mut self.session.active_state {
             session

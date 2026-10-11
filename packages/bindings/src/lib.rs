@@ -759,10 +759,14 @@ impl VeluneApplication {
         })?)
     }
 
-    /// Conversations executing or waiting for the user across open sessions.
-    pub fn active_conversations(&self) -> Result<Vec<BindingActiveConversation>, BindingError> {
-        convert(self.with("active_conversations", |application| {
-            application.active_conversations()
+    /// Conversations executing or waiting for the user across open
+    /// sessions, and turns that ended after `since` (0 for all retained).
+    pub fn conversation_activity(
+        &self,
+        since: u64,
+    ) -> Result<BindingConversationActivity, BindingError> {
+        convert(self.with("conversation_activity", |application| {
+            application.conversation_activity(since)
         })?)
     }
 

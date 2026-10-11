@@ -12,6 +12,8 @@ pub struct PiProjection {
     active_native_message: Option<Value>,
     next_native_identity: Option<String>,
     history_synchronized: bool,
+    /// The current or latest turn ended a model response with an error.
+    turn_failed: bool,
 }
 
 impl PiProjection {
@@ -42,7 +44,14 @@ impl PiProjection {
             active_native_message: None,
             next_native_identity: None,
             history_synchronized: false,
+            turn_failed: false,
         }
+    }
+
+    /// Pi records a failed model response as an assistant message and keeps
+    /// the conversation usable; this tells such a turn from a completed one.
+    pub fn turn_failed(&self) -> bool {
+        self.turn_failed
     }
 
     pub fn invalidate_history(&mut self) {
@@ -115,6 +124,9 @@ impl PiProjection {
         };
         match event["type"].as_str().unwrap_or_default() {
             "agent_start" | "turn_start" => {
+                if event["type"] == "agent_start" {
+                    self.turn_failed = false;
+                }
                 snapshot.run_state = RunState::Running;
                 snapshot.actions.can_send = false;
                 snapshot.actions.can_cancel = true;
@@ -139,6 +151,9 @@ impl PiProjection {
             }
             "message_start" | "message_end" => {
                 let native = &event["message"];
+                if event["type"] == "message_end" && native["role"] == "assistant" {
+                    self.turn_failed = native["stopReason"] == "error";
+                }
                 if native["role"] == "toolResult" {
                     if event["type"] == "message_start" {
                         self.active_message_id = self.next_native_identity.take();

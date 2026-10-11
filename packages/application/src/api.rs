@@ -160,6 +160,36 @@ pub struct ActiveConversation {
     pub pending_interactions: u32,
 }
 
+/// How a Velune turn ended.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum TurnOutcome {
+    Completed,
+    Failed,
+    /// The user stopped it.
+    Cancelled,
+}
+
+/// A Velune turn that ended, numbered in the order turns ended.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FinishedTurn {
+    pub sequence: u64,
+    pub context_runtime_id: String,
+    pub conversation_id: String,
+    pub outcome: TurnOutcome,
+}
+
+/// Conversations executing or waiting for the user, and turns that ended
+/// after a cursor. `cursor` is the sequence to pass next time.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationActivity {
+    pub active: Vec<ActiveConversation>,
+    pub finished: Vec<FinishedTurn>,
+    pub cursor: u64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AnalyticsQuery {
@@ -1028,10 +1058,11 @@ impl Application {
             Some(&runtime_id),
         )
     }
-    /// Conversations executing or waiting for the user across open sessions;
-    /// cheap enough to poll.
-    pub fn active_conversations(&mut self) -> Result<Vec<ActiveConversation>, Error> {
-        self.execute("activeConversations", json!({}), None)
+    /// Conversations executing or waiting for the user across open sessions,
+    /// and turns that ended after `since` (0 for all retained); cheap enough
+    /// to poll.
+    pub fn conversation_activity(&mut self, since: u64) -> Result<ConversationActivity, Error> {
+        self.execute("conversationActivity", json!({"since":since}), None)
     }
     pub fn preview_provider_import(
         &mut self,

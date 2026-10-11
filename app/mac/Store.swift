@@ -240,17 +240,32 @@ final class AppStore: ObservableObject {
         }
     }
     private var activePollPending = false
+    private var activityCursor: UInt64 = 0
+    private var notifier: ConversationNotifier?
+    /// The workspace whose window was key most recently; notifications open
+    /// conversations there.
+    private weak var focusedWorkspace: AppStore?
+    func noteFocused() { sharedApplication?.focusedWorkspace = self }
+    /// The user is looking at this conversation now.
+    func isShowingConversation(_ id: String) -> Bool { NSApp.isActive && focusedWorkspace?.loadedConversationID == id }
+    func showConversation(_ id: String) {
+        guard let workspace = focusedWorkspace else { return }
+        if workspace.loadedConversationID != id { workspace.selectConversation(id: id) }
+    }
     private func pollActiveConversations() {
         guard started, !isPreview, !isShuttingDown, !activePollPending, let transport else { return }
         activePollPending = true
+        let since = activityCursor
         queue.async { [weak self] in
-            let result = Result { try transport.activeConversations() }
+            let result = Result { try transport.conversationActivity(since: since) }
             DispatchQueue.main.async {
                 guard let self else { return }
                 self.activePollPending = false
                 switch result {
-                case .success(let active):
+                case .success(let activity):
                     self.clearActivityProblem("active-conversations")
+                    self.activityCursor = activity.cursor
+                    let active = activity.active
                     let running = Set(active.filter { $0.runState == .running || $0.runState == .stopping }.map(\.conversationId))
                     if self.runningConversationIDs != running { self.runningConversationIDs = running }
                     let elsewhere = Set(active.filter { $0.runState == .elsewhere }.map(\.conversationId))
@@ -259,6 +274,7 @@ final class AppStore: ObservableObject {
                     let unlisted = elsewhere.filter { id in !self.conversations.contains { $0.id == id } }
                     if !unlisted.isSubset(of: self.unlistedElsewhereIDs) { self.refreshConversations() }
                     self.unlistedElsewhereIDs = unlisted
+                    self.notifier?.observe(activity)
                 case .failure(let failure): self.recordProblem(failure, source: "读取运行状态", activityKey: "active-conversations")
                 }
             }
@@ -268,6 +284,7 @@ final class AppStore: ObservableObject {
         guard !started else { return }; started = true
         sharedApplication?.start(loadFirstConversation: false)
         guard !isPreview, let transport else { return }
+        if sharedApplication == nil { notifier = ConversationNotifier(application: self) }
         if sharedApplication == nil { loadDrafts(transport) }
         enqueue({ try transport.list() }) { [weak self] data in
             guard let self else { return }
