@@ -104,6 +104,8 @@ pub struct CoreRuntime {
     conversation_browser_group_limit: u32,
     outline_presentation: crate::config::OutlinePresentation,
     composer_drafts: BTreeMap<String, String>,
+    resource_templates: Vec<crate::ResourceTemplate>,
+    resource_bindings: Vec<crate::ResourceBinding>,
     conversation_browser_preferences: crate::config::ConversationBrowserPreferences,
     transcript_projection: velune_agent_runtime::transcript::TranscriptProjection,
     transcript_conversation_id: Option<String>,
@@ -139,6 +141,7 @@ mod model_selection;
 mod native_composition;
 mod pi_composition;
 mod provider_management;
+mod resource_library;
 mod runtime_execution;
 mod runtime_management;
 use pi_composition::*;
@@ -152,6 +155,7 @@ impl CoreRuntime {
         let (repository, persisted) = crate::repository::Repository::open(&options.home_directory)?;
         let conversation_links = repository.load_conversation_links()?;
         let composer_drafts = repository.load_composer_drafts()?;
+        let (resource_templates, resource_bindings) = repository.load_resource_library()?;
         Ok(Self {
             options,
             repository,
@@ -162,6 +166,8 @@ impl CoreRuntime {
             conversation_browser_group_limit: persisted.conversation_browser_group_limit,
             outline_presentation: persisted.outline_presentation,
             composer_drafts,
+            resource_templates,
+            resource_bindings,
             conversation_browser_preferences: persisted.conversation_browser_preferences,
             transcript_projection: Default::default(),
             transcript_conversation_id: None,
@@ -370,6 +376,8 @@ impl CoreRuntime {
             | "readRuntimeResource"
             | "writeRuntimeResource"
             | "deleteRuntimeResource" => self.runtime_management_action(request),
+            "resourceTemplates" => self.resource_templates_action(request),
+            "resourceSync" => self.resource_sync_action(request),
             "modelTemplates" => self.template_action(&request["payload"]),
             "runtimeInstances" => self.runtime_action(request),
             "selectRuntime" => self.select_runtime_action(request),

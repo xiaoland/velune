@@ -55,3 +55,5 @@ Swift 生成模块名为 `VeluneBindings`，FFI 模块名为 `VeluneBindingsFFI`
 `acp_runtime_info` 返回 typed Agent 信息、认证方式描述和会话能力，平台不能把无 list／load 解释为零会话或加载成功。`open_acp_conversation` 接纳明确原生 ID 与 cwd，允许有 load、无 list 的 Agent 重开。模型目录属于会话，先以 `RuntimeDefault` 新建或打开后查询；`acp_session_config`／`set_acp_session_config` 保留所有已知 select／boolean 配置项的原 ID、值和分组。普通执行、权限回复、取消复用现有接口；模型切换不重启当前 ACP 进程。外部认证仍由用户完成，bindings 不自动登录。
 
 **待实现**：平台的通用 ACP 命令编辑、能力状态与外部认证提示、默认模型选项、会话配置编辑，以及对无历史恢复能力的清晰展示；本轮只交付 Rust／UniFFI 入口。
+
+资源模板库与受管同步：`list/read/save/delete_resource_template`、`runtime_template_status`、`preview/apply_resource_template`、`resolve_resource_binding` 以具名类型暴露（`BindingResourceTemplate*`、`BindingTemplateApply*`、`BindingResolution`）；模板内容的 Debug 不含秘密。平台界面待接入。

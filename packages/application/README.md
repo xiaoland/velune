@@ -73,3 +73,5 @@ ACP 不要求 Node、agentDir、特定历史目录或 helper bundle；SSH 的 `r
 ACP 的列表能力缺失与空列表不同；汇总列表通过 `history_failures` 保留不支持说明，当前活动会话仍可显示与使用。`open_acp_conversation(runtime_id, native_session_id, cwd)` 按明确引用加载会话，不依赖列表能力；普通 `open_conversation` 可从 Agent 列表取得真实 cwd。只有 `session/load` 的原生回放可用于读取历史；`resume` 能力不等于历史读取。无 load 的 Agent 在当前进程中支持多轮、权限答复与取消，关闭后的重开明确不支持，不创建新会话冒充恢复。重命名没有通用协议入口，删除按协商能力执行。
 
 同一公开身份的持久跨 Harness 接续要求 ACP 来源和目标都能加载原生历史。能力不足在关闭来源、创建目标或发送之前拒绝，原活动对话保持可用；这不限制普通 ACP 新建或发送。关联段保存真实 cwd 以定位无列表能力的 ACP 会话，仍不保存消息副本。专用 adapter 的 provider overlay 不推广到 ACP，通用 ACP 明确拒绝 managed 模型注入。
+
+资源模板库与受管同步（2026-10-11）：`list/read/save/delete_resource_template` 管理 canonical 模板（`resource-templates.json`，0600，与普通配置分离、不随配置重置；列表摘要不含内容，`read` 显式返回含秘密的内容，Debug 一律遮盖）。`preview/apply_resource_template` 对一组运行时实例渲染并通过既有原生资源 API 带 revision 写入，`resource-bindings.json` 记录每个实例上模板写入的条目及其指纹；`runtime_template_status` 由模板、记录与当前原生内容三方比较得到已同步／模板有更新／漂移／缺失／跳过；`resolve_resource_binding` 提供以模板覆盖、解除受管（保留原生）、移除原生条目并解除受管。同名的非受管原生条目与漂移条目都报冲突，由调用方显式 `overwrite`。应用与处置遵守资源写入同一闸门（运行中轮次或协作范围时拒绝）；删除模板或运行时实例只丢弃绑定，不触碰原生条目。手动验收见 `scripts/manual-resource-library.py`（合成禁用实例，不启动 Harness）。

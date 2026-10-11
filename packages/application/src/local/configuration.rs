@@ -304,6 +304,7 @@ impl CoreRuntime {
                     self.gateways = previous_gateways.clone();
                     return Err(error);
                 }
+                self.discard_runtime_bindings(id);
             }
             "list" => {}
             _ => return Err(RuntimeError::invalid("runtime operation")),

@@ -446,6 +446,98 @@ impl Application {
         )
     }
 
+    /// Template summaries; no content, so no secrets.
+    pub fn list_resource_templates(
+        &mut self,
+    ) -> Result<Vec<crate::ResourceTemplateSummary>, Error> {
+        self.execute("resourceTemplates", json!({"operation":"list"}), None)
+    }
+
+    /// One template with its full content, including any secret values.
+    pub fn read_resource_template(
+        &mut self,
+        template_id: String,
+    ) -> Result<crate::ResourceTemplate, Error> {
+        self.execute(
+            "resourceTemplates",
+            json!({"operation":"read","templateID":template_id}),
+            None,
+        )
+    }
+
+    /// Create (empty id) or replace a template. Applied copies change only when synced.
+    pub fn save_resource_template(
+        &mut self,
+        template: crate::ResourceTemplate,
+    ) -> Result<crate::ResourceTemplateSummary, Error> {
+        self.execute(
+            "resourceTemplates",
+            json!({"operation":"save","template":template}),
+            None,
+        )
+    }
+
+    /// Delete a template. Runtimes keep the native entries it wrote, now unmanaged.
+    pub fn delete_resource_template(&mut self, template_id: String) -> Result<(), Error> {
+        self.execute(
+            "resourceTemplates",
+            json!({"operation":"delete","templateID":template_id}),
+            None,
+        )
+    }
+
+    /// Templates applied to one runtime and whether each is in sync.
+    pub fn runtime_template_status(
+        &mut self,
+        runtime_id: String,
+    ) -> Result<Vec<crate::RuntimeTemplateStatus>, Error> {
+        self.execute(
+            "resourceSync",
+            json!({"operation":"status"}),
+            Some(&runtime_id),
+        )
+    }
+
+    /// What applying a template to each target would do; writes nothing.
+    pub fn preview_resource_template(
+        &mut self,
+        template_id: String,
+        targets: Vec<crate::TemplateApplyTarget>,
+    ) -> Result<Vec<crate::TemplateApplyReport>, Error> {
+        self.execute(
+            "resourceSync",
+            json!({"operation":"preview","templateID":template_id,"targets":targets}),
+            None,
+        )
+    }
+
+    /// Apply (or re-sync) a template to each target and keep the entries managed.
+    pub fn apply_resource_template(
+        &mut self,
+        template_id: String,
+        targets: Vec<crate::TemplateApplyTarget>,
+    ) -> Result<Vec<crate::TemplateApplyReport>, Error> {
+        self.execute(
+            "resourceSync",
+            json!({"operation":"apply","templateID":template_id,"targets":targets}),
+            None,
+        )
+    }
+
+    /// Settle an applied template whose native entries drifted or went missing.
+    pub fn resolve_resource_binding(
+        &mut self,
+        runtime_id: String,
+        template_id: String,
+        resolution: crate::BindingResolution,
+    ) -> Result<(), Error> {
+        self.execute(
+            "resourceSync",
+            json!({"operation":"resolve","templateID":template_id,"resolution":resolution}),
+            Some(&runtime_id),
+        )
+    }
+
     /// Create a root session with a fixed, host-authorized set of child targets.
     pub fn create_collaborative_conversation(
         &mut self,

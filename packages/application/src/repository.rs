@@ -203,6 +203,70 @@ impl Repository {
         )
     }
 
+    /// Reusable resource templates (with their secrets) and the managed bindings
+    /// to runtimes are application files of their own, not part of the configuration.
+    #[cfg(feature = "local-runtime")]
+    pub(crate) fn load_resource_library(
+        &self,
+    ) -> Result<(Vec<crate::ResourceTemplate>, Vec<crate::ResourceBinding>), RuntimeError> {
+        let read = |name: &str, field: &str| -> Result<serde_json::Value, RuntimeError> {
+            let bytes = match fs::read(self.home.join(name)) {
+                Ok(bytes) => bytes,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    return Ok(serde_json::Value::Array(Vec::new()));
+                }
+                Err(error) => return Err(error.into()),
+            };
+            let value: serde_json::Value = serde_json::from_slice(&bytes)?;
+            if value["schemaVersion"].as_u64() != Some(1) {
+                return Err(RuntimeError::invalid("resource library schema version"));
+            }
+            Ok(value[field].clone())
+        };
+        let templates: Vec<crate::ResourceTemplate> =
+            serde_json::from_value(read("resource-templates.json", "templates")?)?;
+        let bindings: Vec<crate::ResourceBinding> =
+            serde_json::from_value(read("resource-bindings.json", "bindings")?)?;
+        let mut ids = std::collections::BTreeSet::new();
+        if templates
+            .iter()
+            .any(|template| template.id.is_empty() || !ids.insert(template.id.as_str()))
+        {
+            return Err(RuntimeError::invalid("resource template identity"));
+        }
+        if bindings
+            .iter()
+            .any(|binding| !ids.contains(binding.template_id.as_str()))
+        {
+            return Err(RuntimeError::invalid("resource binding template"));
+        }
+        Ok((templates, bindings))
+    }
+
+    #[cfg(feature = "local-runtime")]
+    pub(crate) fn store_resource_templates(
+        &self,
+        templates: &[crate::ResourceTemplate],
+    ) -> Result<(), RuntimeError> {
+        let value = serde_json::json!({"schemaVersion":1,"templates":templates});
+        commit(
+            &self.home.join("resource-templates.json"),
+            &serde_json::to_vec_pretty(&value)?,
+        )
+    }
+
+    #[cfg(feature = "local-runtime")]
+    pub(crate) fn store_resource_bindings(
+        &self,
+        bindings: &[crate::ResourceBinding],
+    ) -> Result<(), RuntimeError> {
+        let value = serde_json::json!({"schemaVersion":1,"bindings":bindings});
+        commit(
+            &self.home.join("resource-bindings.json"),
+            &serde_json::to_vec_pretty(&value)?,
+        )
+    }
+
     #[cfg(feature = "local-runtime")]
     pub(crate) fn load_conversation_links(
         &self,

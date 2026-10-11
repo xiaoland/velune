@@ -13,19 +13,12 @@ impl CoreRuntime {
             ));
         }
         let payload = &request["payload"];
-        let runtime = self.runtime_instance(
+        let mut config = self.management_config(
             payload["runtimeInstanceID"]
                 .as_str()
                 .ok_or_else(|| RuntimeError::invalid("runtime instance id"))?,
         )?;
-        let (execution, os_home) = self.runtime_location(runtime)?;
-        let agent_dir = self.native_agent_directory(runtime, os_home.as_deref())?;
-        let config = management::Config {
-            variant_id: runtime.type_id.clone(),
-            execution,
-            agent_dir,
-            cwd: serde_json::from_value::<Option<PathBuf>>(payload["cwd"].clone())?,
-        };
+        config.cwd = serde_json::from_value::<Option<PathBuf>>(payload["cwd"].clone())?;
         match action {
             "runtimeResourceCatalog" => Ok(serde_json::to_value(management::catalog(
                 &config,
@@ -53,5 +46,21 @@ impl CoreRuntime {
             }
             _ => Err(RuntimeError::invalid("原生资源操作无效")),
         }
+    }
+
+    /// Where a runtime's native resources live, on the machine it runs on.
+    pub(super) fn management_config(
+        &self,
+        runtime_id: &str,
+    ) -> Result<management::Config, RuntimeError> {
+        let runtime = self.runtime_instance(runtime_id)?;
+        let (execution, os_home) = self.runtime_location(runtime)?;
+        let agent_dir = self.native_agent_directory(runtime, os_home.as_deref())?;
+        Ok(management::Config {
+            variant_id: runtime.type_id.clone(),
+            execution,
+            agent_dir,
+            cwd: None,
+        })
     }
 }

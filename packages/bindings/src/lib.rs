@@ -242,6 +242,74 @@ impl VeluneApplication {
             application.delete_runtime_resource(runtime_id, cwd, key, expected)
         })
     }
+    pub fn list_resource_templates(
+        &self,
+    ) -> Result<Vec<BindingResourceTemplateSummary>, BindingError> {
+        convert(self.with("list_resource_templates", |application| {
+            application.list_resource_templates()
+        })?)
+    }
+    pub fn read_resource_template(
+        &self,
+        template_id: String,
+    ) -> Result<BindingResourceTemplate, BindingError> {
+        convert(self.with("read_resource_template", |application| {
+            application.read_resource_template(template_id)
+        })?)
+    }
+    pub fn save_resource_template(
+        &self,
+        template: BindingResourceTemplate,
+    ) -> Result<BindingResourceTemplateSummary, BindingError> {
+        let template = convert(template)?;
+        convert(self.with("save_resource_template", |application| {
+            application.save_resource_template(template)
+        })?)
+    }
+    pub fn delete_resource_template(&self, template_id: String) -> Result<(), BindingError> {
+        self.with("delete_resource_template", |application| {
+            application.delete_resource_template(template_id)
+        })
+    }
+    pub fn runtime_template_status(
+        &self,
+        runtime_id: String,
+    ) -> Result<Vec<BindingRuntimeTemplateStatus>, BindingError> {
+        convert(self.with("runtime_template_status", |application| {
+            application.runtime_template_status(runtime_id)
+        })?)
+    }
+    pub fn preview_resource_template(
+        &self,
+        template_id: String,
+        targets: Vec<BindingTemplateApplyTarget>,
+    ) -> Result<Vec<BindingTemplateApplyReport>, BindingError> {
+        let targets = convert(targets)?;
+        convert(self.with("preview_resource_template", |application| {
+            application.preview_resource_template(template_id, targets)
+        })?)
+    }
+    pub fn apply_resource_template(
+        &self,
+        template_id: String,
+        targets: Vec<BindingTemplateApplyTarget>,
+    ) -> Result<Vec<BindingTemplateApplyReport>, BindingError> {
+        let targets = convert(targets)?;
+        convert(self.with("apply_resource_template", |application| {
+            application.apply_resource_template(template_id, targets)
+        })?)
+    }
+    pub fn resolve_resource_binding(
+        &self,
+        runtime_id: String,
+        template_id: String,
+        resolution: BindingResolution,
+    ) -> Result<(), BindingError> {
+        let resolution = convert(resolution)?;
+        self.with("resolve_resource_binding", |application| {
+            application.resolve_resource_binding(runtime_id, template_id, resolution)
+        })
+    }
     pub fn analytics_query(
         &self,
         query: BindingAnalyticsQuery,

@@ -1084,3 +1084,142 @@ pub enum BindingRuntimeResourceRevision {
     Missing,
     Match(String),
 }
+
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq, uniffi::Record)]
+#[serde(rename_all = "camelCase")]
+pub struct BindingTemplateSkillFile {
+    pub path: String,
+    pub bytes: Vec<u8>,
+    pub executable: bool,
+}
+impl std::fmt::Debug for BindingTemplateSkillFile {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("BindingTemplateSkillFile")
+            .field("path", &self.path)
+            .field("bytes", &self.bytes.len())
+            .finish()
+    }
+}
+
+/// Environment values and headers may be secrets; Debug prints none of the content.
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq, uniffi::Enum)]
+#[serde(tag = "transport", rename_all = "camelCase")]
+pub enum BindingTemplateMcpTransport {
+    Stdio {
+        command: String,
+        args: Vec<String>,
+        env: HashMap<String, String>,
+    },
+    Http {
+        url: String,
+        headers: HashMap<String, String>,
+    },
+}
+impl std::fmt::Debug for BindingTemplateMcpTransport {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("BindingTemplateMcpTransport([redacted])")
+    }
+}
+
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq, uniffi::Enum)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum BindingResourceTemplateContent {
+    Instructions {
+        body: String,
+    },
+    Skill {
+        files: Vec<BindingTemplateSkillFile>,
+    },
+    Mcp {
+        transport: BindingTemplateMcpTransport,
+    },
+    Subagent {
+        description: String,
+        instructions: String,
+        model: Option<String>,
+        tools: Vec<String>,
+    },
+}
+impl std::fmt::Debug for BindingResourceTemplateContent {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("BindingResourceTemplateContent([redacted])")
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, uniffi::Record)]
+#[serde(rename_all = "camelCase")]
+pub struct BindingResourceTemplate {
+    /// Empty when saving a new template.
+    pub id: String,
+    pub name: String,
+    pub content: BindingResourceTemplateContent,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, uniffi::Record)]
+#[serde(rename_all = "camelCase")]
+pub struct BindingResourceTemplateSummary {
+    pub id: String,
+    pub name: String,
+    pub kind: BindingRuntimeResourceKind,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, uniffi::Enum)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum BindingTemplateSyncState {
+    Synced,
+    TemplateUpdated,
+    Drifted { paths: Vec<String> },
+    Missing { paths: Vec<String> },
+    Skipped { reason: String },
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, uniffi::Record)]
+#[serde(rename_all = "camelCase")]
+pub struct BindingRuntimeTemplateStatus {
+    pub template_id: String,
+    pub template_name: String,
+    pub kind: BindingRuntimeResourceKind,
+    pub state: BindingTemplateSyncState,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, uniffi::Enum)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum BindingTemplateApplyOutcome {
+    Create,
+    Update,
+    Unchanged,
+    Conflict {
+        unmanaged: Vec<String>,
+        drifted: Vec<String>,
+    },
+    Skipped {
+        reason: String,
+    },
+    Failed {
+        reason: String,
+    },
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, uniffi::Record)]
+#[serde(rename_all = "camelCase")]
+pub struct BindingTemplateApplyReport {
+    pub runtime_id: String,
+    pub outcome: BindingTemplateApplyOutcome,
+    pub notes: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, uniffi::Record)]
+#[serde(rename_all = "camelCase")]
+pub struct BindingTemplateApplyTarget {
+    pub runtime_id: String,
+    pub overwrite: bool,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, uniffi::Enum)]
+#[serde(rename_all = "camelCase")]
+pub enum BindingResolution {
+    Overwrite,
+    Unmanage,
+    Remove,
+}
