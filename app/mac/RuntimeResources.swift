@@ -353,3 +353,113 @@ struct PlainTextEditor: NSViewRepresentable {
     }
     override func didChangeText() { super.didChangeText(); needsDisplay = true }
 }
+
+/// Which runtime the resources window shows; entry points elsewhere set it
+/// before opening the window.
+@MainActor final class RuntimeResourcesNavigator: ObservableObject {
+    static let shared = RuntimeResourcesNavigator()
+    @Published var runtimeID: String?
+    func show(_ runtimeID: String, _ openWindow: OpenWindowAction) {
+        self.runtimeID = runtimeID
+        openWindow(id: "runtime-resources")
+    }
+}
+
+struct RuntimeResourcesMenuItem: View {
+    @Environment(\.openWindow) private var openWindow
+    var body: some View { Button("运行时资源…") { openWindow(id: "runtime-resources") } }
+}
+
+/// Native instructions, skills, MCP servers and sub-agent definitions of each
+/// runtime. These are large editing surfaces, so they live in a resizable
+/// window of their own rather than in the compact settings.
+struct RuntimeResourcesView: View {
+    @ObservedObject var store: AppStore
+    @ObservedObject private var navigator = RuntimeResourcesNavigator.shared
+    @StateObject private var resources = RuntimeResourceModels()
+    @State private var section = RuntimeSection.overview
+    @State private var editor: RuntimeInstance?
+    private var selected: RuntimeInstance? { store.runtimeInstances.first { $0.id == navigator.runtimeID } }
+
+    var body: some View {
+        NavigationSplitView {
+            List(selection: $navigator.runtimeID) {
+                ForEach(store.runtimeInstances) { instance in
+                    VStack(alignment: .leading, spacing: 3) {
+                        HStack { Text(instance.name).lineLimit(1); if !instance.enabled { Text("已停用").foregroundStyle(.secondary) } }
+                        Text(store.runtimeTypes.first { $0.id == instance.typeID }?.name ?? instance.typeID).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                    }.padding(.vertical, 2).tag(instance.id)
+                }
+            }
+            .listStyle(.sidebar)
+            .navigationSplitViewColumnWidth(min: 190, ideal: 230, max: 300)
+        } detail: {
+            if let instance = selected {
+                RuntimeDetailView(store: store, instance: instance, section: $section, resources: resources, edit: { editor = instance }).id(instance.id)
+            } else {
+                ContentUnavailableView("选择一个 Agent 运行时", systemImage: "terminal", description: Text("在左侧选择运行时，管理它的原生指令与其他资源。"))
+            }
+        }
+        .navigationTitle(selected.map { "运行时资源 — \($0.name)" } ?? "运行时资源")
+        .onAppear { if selected == nil { navigator.runtimeID = store.runtimeInstances.first?.id } }
+        .onChange(of: store.runtimeInstances) { _, instances in
+            if !instances.contains(where: { $0.id == navigator.runtimeID }) { navigator.runtimeID = instances.first?.id }
+        }
+        .sheet(item: $editor) { instance in RuntimeEditor(store: store, instance: instance) }
+    }
+}
+
+enum RuntimeSection: Hashable {
+    case overview, instructions
+    var title: String { switch self { case .overview: "概览"; case .instructions: "指令" } }
+    static let all: [RuntimeSection] = [.overview, .instructions]
+}
+
+/// The selected runtime: its configuration summary and the native resources
+/// it owns, one section at a time.
+private struct RuntimeDetailView: View {
+    @ObservedObject var store: AppStore
+    let instance: RuntimeInstance
+    @Binding var section: RuntimeSection
+    @ObservedObject var resources: RuntimeResourceModels
+    let edit: () -> Void
+    private var descriptor: RuntimeTypeDescriptor? { store.runtimeTypes.first { $0.id == instance.typeID } }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(alignment: .firstTextBaseline) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(instance.name).font(.title2.bold()).lineLimit(1)
+                    Text(descriptor?.name ?? instance.typeID).foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button("编辑配置…", action: edit)
+            }.padding([.horizontal, .top], 16)
+            Picker("内容", selection: $section) { ForEach(RuntimeSection.all, id: \.self) { Text($0.title).tag($0) } }
+                .pickerStyle(.segmented).labelsHidden().fixedSize().padding(.top, 12).padding(.bottom, 8)
+            Divider()
+            switch section {
+            case .overview: overview
+            case .instructions:
+                InstructionsView(model: resources.instructions(for: instance.id, transport: store.resourceTransport), canModify: !store.applicationIsGenerating)
+            }
+        }.frame(maxHeight: .infinity, alignment: .top)
+    }
+
+    private var overview: some View {
+        Form {
+            Section {
+                LabeledContent("类型", value: descriptor?.name ?? instance.typeID)
+                LabeledContent("状态", value: instance.enabled ? "已启用" : "已停用")
+            }
+            let fields = (descriptor?.fields ?? []).filter { !(instance.settings[$0.key] ?? "").isEmpty }
+            if !fields.isEmpty {
+                Section("配置") {
+                    ForEach(fields) { field in
+                        LabeledContent(field.label) { Text(instance.settings[field.key] ?? "").lineLimit(2).truncationMode(.middle).textSelection(.enabled) }
+                    }
+                }
+            }
+        }.formStyle(.grouped)
+    }
+}

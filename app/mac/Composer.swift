@@ -296,6 +296,7 @@ struct ComposerView: View {
     @ObservedObject var model: ComposerModel
     let send: () -> Void
     @Environment(\.controlActiveState) private var activeState
+    @Environment(\.openWindow) private var openWindow
     private var nextTurnRuntime: RuntimeInstance? { store.runtimeInstances.first { $0.id == store.nextTurnRuntimeID } }
 
     var body: some View {
@@ -348,6 +349,7 @@ struct ComposerView: View {
                     ForEach(store.enabledRuntimeInstances) { runtime in Text(runtime.name).tag(Optional(runtime.id)) }
                 }.pickerStyle(.inline)
                 Divider()
+                if let runtime = nextTurnRuntime { Button("管理 \(runtime.name) 的资源…") { RuntimeResourcesNavigator.shared.show(runtime.id, openWindow) } }
                 SettingsTabLink(tab: .runtimes, title: "Agent 运行时设置…")
             } label: {
                 Text(nextTurnRuntime?.name ?? "选择运行时").lineLimit(1).truncationMode(.middle).frame(maxWidth: 140, alignment: .leading)

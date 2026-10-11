@@ -110,6 +110,7 @@ struct VeluneApp: App {
             ConversationCommands()
             CommandGroup(after: .sidebar) {
                 AnalyticsMenuItem()
+                RuntimeResourcesMenuItem()
                 ProblemsMenuItem(store: store)
             }
 
@@ -117,6 +118,9 @@ struct VeluneApp: App {
         Window("问题", id: "problems") {
             ProblemsView(store: store).frame(minWidth: 600, minHeight: 320)
         }.defaultSize(width: 760, height: 480)
+        Window("运行时资源", id: "runtime-resources") {
+            RuntimeResourcesView(store: store).frame(minWidth: 760, minHeight: 480)
+        }.defaultSize(width: 920, height: 640)
         Window("分析", id: "analytics") {
             AnalyticsView(store: store).frame(minWidth: 680, minHeight: 460)
         }.defaultSize(width: 860, height: 640)

@@ -288,8 +288,8 @@ struct SettingsView: View {
             ConversationSettingsView(store: store).tabItem { Label("会话", systemImage: "bubble.left.and.bubble.right") }.tag(SettingsTab.conversation)
             RuntimeSettingsView(store: store).tabItem { Label("Agent 运行时", systemImage: "terminal") }.tag(SettingsTab.runtimes)
         }
-        // One size for every tab: the window must not jump when switching.
-        .frame(minWidth: 760, idealWidth: 900, maxWidth: .infinity, minHeight: 520, idealHeight: 620, maxHeight: .infinity)
+        // Settings are compact forms of one fixed size, so switching tabs never resizes the window.
+        .frame(width: 690, height: 560)
     }
 }
 
@@ -609,23 +609,37 @@ struct ModelTemplateEditor: View {
 
 struct RuntimeSettingsView: View {
     @ObservedObject var store: AppStore
-    @StateObject private var resources = RuntimeResourceModels()
+    @Environment(\.openWindow) private var openWindow
     @State private var selectedID: String?
-    @State private var section = RuntimeSection.overview
     @State private var editor: RuntimeInstance?
     @State private var creating = false
     @State private var discovering = false
     @State private var deleting: RuntimeInstance?
     private var selected: RuntimeInstance? { store.runtimeInstances.first { $0.id == selectedID } }
+
     var body: some View {
-        HStack(spacing: 0) {
-            sidebar
-            Divider()
-            detail
-        }
-        .onAppear { if selectedID == nil { selectedID = store.runtimeInstances.first?.id } }
-        .onChange(of: store.runtimeInstances) { _, instances in
-            if !instances.contains(where: { $0.id == selectedID }) { selectedID = instances.first?.id }
+        VStack(spacing: 0) {
+            List(selection: $selectedID) {
+                ForEach(store.runtimeInstances) { instance in
+                    VStack(alignment: .leading, spacing: 3) {
+                        HStack { Text(instance.name); if !instance.enabled { Text("已停用").foregroundStyle(.secondary) } }
+                        Text(store.runtimeTypes.first { $0.id == instance.typeID }?.name ?? instance.typeID).font(.caption).foregroundStyle(.secondary)
+                    }.tag(instance.id)
+                }
+            }
+            .contextMenu(forSelectionType: String.self) { ids in instanceMenu(ids) } primaryAction: { ids in
+                if let id = ids.first { editor = store.runtimeInstances.first { $0.id == id } }
+            }
+            .listStyle(.bordered).padding(.horizontal, 20).padding(.top, 16)
+            HStack {
+                Button { creating = true } label: { Image(systemName: "plus") }.help("添加Agent 运行时实例")
+                Button("快速导入…") { discovering = true }.disabled(store.isBusy)
+                Button { deleting = selected } label: { Image(systemName: "minus") }.disabled(selected == nil).help("删除运行时实例")
+                Spacer()
+                Button("管理资源…") { if let id = selectedID { RuntimeResourcesNavigator.shared.show(id, openWindow) } }
+                    .disabled(selected == nil).help("管理所选运行时的指令、技能等原生资源")
+                Button("编辑…") { editor = selected }.disabled(selected == nil)
+            }.padding(.horizontal, 20).padding(.vertical, 12)
         }
         .sheet(isPresented: $discovering) { RuntimeDiscoveryView(store: store) }
         .sheet(item: $editor) { instance in RuntimeEditor(store: store, instance: instance) }
@@ -638,98 +652,13 @@ struct RuntimeSettingsView: View {
         }
     }
 
-    private var sidebar: some View {
-        VStack(spacing: 0) {
-            List(selection: $selectedID) {
-                ForEach(store.runtimeInstances) { instance in
-                    VStack(alignment: .leading, spacing: 3) {
-                        HStack { Text(instance.name).lineLimit(1); if !instance.enabled { Text("已停用").foregroundStyle(.secondary) } }
-                        Text(store.runtimeTypes.first { $0.id == instance.typeID }?.name ?? instance.typeID).font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                    }.tag(instance.id)
-                }
-            }
-            .contextMenu(forSelectionType: String.self) { ids in instanceMenu(ids) } primaryAction: { ids in
-                if let id = ids.first { editor = store.runtimeInstances.first { $0.id == id } }
-            }
-            .listStyle(.bordered).padding([.horizontal, .top], 12)
-            HStack {
-                Button { creating = true } label: { Image(systemName: "plus") }.help("添加Agent 运行时实例")
-                Button { deleting = selected } label: { Image(systemName: "minus") }.disabled(selected == nil).help("删除运行时实例")
-                Spacer()
-                Button("快速导入…") { discovering = true }.disabled(store.isBusy)
-            }.padding(12)
-        }.frame(width: 230)
-    }
-
     @ViewBuilder private func instanceMenu(_ ids: Set<String>) -> some View {
         if let id = ids.first, let runtime = store.runtimeInstances.first(where: { $0.id == id }) {
             Button("编辑…") { editor = runtime }
+            Button("管理资源…") { RuntimeResourcesNavigator.shared.show(id, openWindow) }
             Button(runtime.enabled ? "停用" : "启用") { var updated = runtime; updated.enabled.toggle(); store.saveRuntimeInstance(updated) }.disabled(store.isBusy)
             Button("删除…") { deleting = runtime }
         }
-    }
-
-    @ViewBuilder private var detail: some View {
-        if let instance = selected {
-            RuntimeDetailView(store: store, instance: instance, section: $section, resources: resources, edit: { editor = instance }).id(instance.id)
-        } else {
-            ContentUnavailableView("选择一个 Agent 运行时", systemImage: "terminal", description: Text("在左侧选择运行时，查看并管理它的配置与原生资源。"))
-        }
-    }
-}
-
-enum RuntimeSection: Hashable {
-    case overview, instructions
-    var title: String { switch self { case .overview: "概览"; case .instructions: "指令" } }
-    static let all: [RuntimeSection] = [.overview, .instructions]
-}
-
-/// The selected runtime: its configuration summary and the native resources
-/// it owns, one section at a time.
-private struct RuntimeDetailView: View {
-    @ObservedObject var store: AppStore
-    let instance: RuntimeInstance
-    @Binding var section: RuntimeSection
-    @ObservedObject var resources: RuntimeResourceModels
-    let edit: () -> Void
-    private var descriptor: RuntimeTypeDescriptor? { store.runtimeTypes.first { $0.id == instance.typeID } }
-
-    var body: some View {
-        VStack(spacing: 0) {
-            HStack(alignment: .firstTextBaseline) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(instance.name).font(.title2.bold()).lineLimit(1)
-                    Text(descriptor?.name ?? instance.typeID).foregroundStyle(.secondary)
-                }
-                Spacer()
-                Button("编辑…", action: edit)
-            }.padding([.horizontal, .top], 16)
-            Picker("内容", selection: $section) { ForEach(RuntimeSection.all, id: \.self) { Text($0.title).tag($0) } }
-                .pickerStyle(.segmented).labelsHidden().fixedSize().padding(.top, 12).padding(.bottom, 8)
-            Divider()
-            switch section {
-            case .overview: overview
-            case .instructions:
-                InstructionsView(model: resources.instructions(for: instance.id, transport: store.resourceTransport), canModify: !store.applicationIsGenerating)
-            }
-        }.frame(maxHeight: .infinity, alignment: .top)
-    }
-
-    private var overview: some View {
-        Form {
-            Section {
-                LabeledContent("类型", value: descriptor?.name ?? instance.typeID)
-                LabeledContent("状态", value: instance.enabled ? "已启用" : "已停用")
-            }
-            let fields = (descriptor?.fields ?? []).filter { !(instance.settings[$0.key] ?? "").isEmpty }
-            if !fields.isEmpty {
-                Section("配置") {
-                    ForEach(fields) { field in
-                        LabeledContent(field.label) { Text(instance.settings[field.key] ?? "").lineLimit(2).truncationMode(.middle).textSelection(.enabled) }
-                    }
-                }
-            }
-        }.formStyle(.grouped)
     }
 }
 
