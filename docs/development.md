@@ -176,6 +176,25 @@ live 入口 `minimax_manual live text|text-diagnostic|tool SOURCE_COMMIT` 仅供
 
 普通输出只列 case／attempts／typed usage／fixture 路径；正文与工具片段仅存获准的合成白名单 fixture。手动入口的本地 admission 文件不是防并发跨进程／跨目录绕过的全局产品预算服务，调用范围由本次授权和人工流程限定。
 
+## RelayKit 的真实提供商采集与重放
+
+[人工入口](../scripts/manual-relaykit-provider.py) 以真实 Pi CLI 的小型代码阅读任务经过 Rust gateway 和 RelayKit，核对工具调用、实际读取、匹配调用 ID 的结果续轮和正常终态。`collect` 会调用指定提供商，须有本轮真实调用授权；不沿用旧 MiniMax 示例的历史采集预算。`replay` 使用固定响应，不读取提供商凭据或发送外部模型请求。两者均非 CI 入口。
+
+执行时显式传入 Node、Pi JavaScript CLI、rustc 的路径，以及 `target/` 下尚不存在的输出目录。采集还需要私有环境文件、变量前缀、允许的 HTTPS 主机、实际提供商／模型和入口／上游协议；Python 未配置系统信任根时，可用 `--ca-file` 指定已有可信 CA 文件，不能关闭 TLS 验证。运行 `--help` 查看参数。脚本仅在 HTTPS 边界注入凭据，不跟随重定向，不保存认证头；每次任务最多三次上游请求，提供商失败后阻断进一步真实调用。输出只固定本次合成代码任务的脱敏协议材料，不读取既有会话。
+
+已固定 [Ark 的两次真实 SSE 响应](../fixtures/relaykit/ark-glm-5.3-flash-pi-tool-loop.json)。例如在仓库根目录执行以下命令，把占位路径替换为本机已有工具路径；`--pi` 指向所选 Pi 包的 JavaScript CLI，不能传 shell launcher。每次使用新的输出目录。
+
+```sh
+python3 scripts/manual-relaykit-provider.py replay \
+  --fixture fixtures/relaykit/ark-glm-5.3-flash-pi-tool-loop.json \
+  --output target/relaykit-replay-01 \
+  --node /path/to/node --pi /path/to/pi/dist/cli.js --rustc /path/to/rustc
+```
+
+重放会启动实际 Pi 读取合成文件，并检查上游模型、对话、工具 schema、结果关联及输出上限与采集时一致。动态 system／developer 提示不纳入比较，固定样本也省略这些提示；保留原有 SSE 事件顺序与工具参数分片，不包含认证信息或本机路径。
+
+真实调用证明所记录的入口与上游方向；离线协议投影只证明已有响应样本能被消费，不能证明另一上游接口接受相应请求。具体供应商身份、版本、覆盖和缺失条件归 [RelayKit 任务](../tasks/new-api-reuse/packet.md)。
+
 ## UniFFI 的临时端到端验收
 
 先构建动态库，并按 [bindings unit](../packages/bindings/README.md) 生成与其匹配的 Python 绑定。提供商配置验收使用 [提供商与模板脚本](../scripts/manual-provider-configuration.py)，传入绝对路径 `--bundle` 和 `--bindings`，验证本机文件 API key 显式读取／编辑／重开、公开描述与日志不含 key、模型 ID／协议／地址编辑、模板快照和 schema 7 hard-cutoff。使用临时 HOME 与合成 key，不读取真实资料。

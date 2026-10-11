@@ -1,0 +1,147 @@
+{
+  "schema": 1,
+  "provider": "Ark Coding Plan",
+  "model": "glm-5.3-flash",
+  "ingress": "messages",
+  "upstream": "chat",
+  "records": [
+    {
+      "path": "/v1/chat/completions",
+      "request": {
+        "max_tokens": 2048,
+        "messages": [
+          {
+            "content": [
+              {
+                "cache_control": {
+                  "type": "ephemeral"
+                },
+                "text": "Read fixture.py with the read tool exactly once. Inspect its multiply function. Then answer only RESULT=<the integer returned by multiply()>. Do not edit files or call other tools.",
+                "type": "text"
+              }
+            ],
+            "role": "user"
+          }
+        ],
+        "model": "glm-5.3-flash",
+        "stream": true,
+        "tools": [
+          {
+            "function": {
+              "description": "Read the contents of a file. Supports text files and images (jpg, png, gif, webp, bmp). Images are sent as attachments. For text files, output is truncated to 2000 lines or 50KB (whichever is hit first). Use offset/limit for large files. When you need the full file, continue with offset until complete.",
+              "name": "read",
+              "parameters": {
+                "properties": {
+                  "limit": {
+                    "description": "Maximum number of lines to read",
+                    "type": "number"
+                  },
+                  "offset": {
+                    "description": "Line number to start reading from (1-indexed)",
+                    "type": "number"
+                  },
+                  "path": {
+                    "description": "Path to the file to read (relative or absolute)",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "path"
+                ],
+                "type": "object"
+              }
+            },
+            "type": "function"
+          }
+        ]
+      },
+      "status": 200,
+      "contentType": "text/event-stream",
+      "response": "data: {\"choices\": [{\"delta\": {\"reasoning_content\": \"The\", \"role\": \"assistant\"}, \"index\": 0}], \"created\": 1791686950, \"id\": \"synthetic-response\", \"model\": \"glm-5-3-flash\", \"service_tier\": \"default\", \"object\": \"chat.completion.chunk\", \"usage\": null}\n\ndata: {\"choices\": [{\"delta\": {\"reasoning_content\": \" user\", \"role\": \"assistant\"}, \"index\": 0}], \"created\": 1791686950, \"id\": \"synthetic-response\", \"model\": \"glm-5-3-flash\", \"service_tier\": \"default\", \"object\": \"chat.completion.chunk\", \"usage\": null}\n\ndata: {\"choices\": [{\"delta\": {\"reasoning_content\": \" wants\", \"role\": \"assistant\"}, \"index\": 0}], \"created\": 1791686950, \"id\": \"synthetic-response\", \"model\": \"glm-5-3-flash\", \"service_tier\": \"default\", \"object\": \"chat.completion.chunk\", \"usage\": null}\n\ndata: {\"choices\": [{\"delta\": {\"reasoning_content\": \" me\", \"role\": \"assistant\"}, \"index\": 0}], \"created\": 1791686950, \"id\": \"synthetic-response\", \"model\": \"glm-5-3-flash\", \"service_tier\": \"default\", \"object\": \"chat.completion.chunk\", \"usage\": null}\n\ndata: {\"choices\": [{\"delta\": {\"reasoning_content\": \" to\", \"role\": \"assistant\"}, \"index\": 0}], \"created\": 1791686950, \"id\": \"synthetic-response\", \"model\": \"glm-5-3-flash\", \"service_tier\": \"default\", \"object\": \"chat.completion.chunk\", \"usage\": null}\n\ndata: {\"choices\": [{\"delta\": {\"reasoning_content\": \" read\", \"role\": \"assistant\"}, \"index\": 0}], \"created\": 1791686950, \"id\": \"synthetic-response\", \"model\": \"glm-5-3-flash\", \"service_tier\": \"default\", \"object\": \"chat.completion.chunk\", \"usage\": null}\n\ndata: {\"choices\": [{\"delta\": {\"reasoning_content\": \" fixture\", \"role\": \"assistant\"}, \"index\": 0}], \"created\": 1791686950, \"id\": \"synthetic-response\", \"model\": \"glm-5-3-flash\", \"service_tier\": \"default\", \"object\": \"chat.completion.chunk\", \"usage\": null}\n\ndata: {\"choices\": [{\"delta\": {\"reasoning_content\": \".py\", \"role\": \"assistant\"}, \"index\": 0}], \"created\": 1791686950, \"id\": \"synthetic-response\", \"model\": \"glm-5-3-flash\", \"service_tier\": \"default\", \"object\": \"chat.completion.chunk\", \"usage\": null}\n\ndata: {\"choices\": [{\"delta\": {\"reasoning_content\": \" once\", \"role\": \"assistant\"}, \"index\": 0}], \"created\": 1791686950, \"id\": \"synthetic-response\", \"model\": \"glm-5-3-flash\", \"service_tier\": \"default\", \"object\": \"chat.completion.chunk\", \"usage\": null}\n\ndata: {\"choices\": [{\"delta\": {\"reasoning_content\": \",\", \"role\": \"assistant\"}, \"index\": 0}], \"created\": 1791686950, \"id\": \"synthetic-response\", \"model\": \"glm-5-3-flash\", \"service_tier\": \"default\", \"object\": \"chat.completion.chunk\", \"usage\": null}\n\ndata: {\"choices\": [{\"delta\": {\"reasoning_content\": \" inspect\", \"role\": \"assistant\"}, \"index\": 0}], \"created\": 1791686950, \"id\": \"synthetic-response\", \"model\": \"glm-5-3-flash\", \"service_tier\": \"default\", \"object\": \"chat.completion.chunk\", \"usage\": null}\n\ndata: {\"choices\": [{\"delta\": {\"reasoning_content\": \" the\", \"role\": \"assistant\"}, \"index\": 0}], \"created\": 1791686950, \"id\": \"synthetic-response\", \"model\": \"glm-5-3-flash\", \"service_tier\": \"default\", \"object\": \"chat.completion.chunk\", \"usage\": null}\n\ndata: {\"choices\": [{\"delta\": {\"reasoning_content\": \" multiply\", \"role\": \"assistant\"}, \"index\": 0}], \"created\": 1791686950, \"id\": \"synthetic-response\", \"model\": \"glm-5-3-flash\", \"service_tier\": \"default\", \"object\": \"chat.completion.chunk\", \"usage\": null}\n\ndata: {\"choices\": [{\"delta\": {\"reasoning_content\": \" function\", \"role\": \"assistant\"}, \"index\": 0}], \"created\": 1791686950, \"id\": \"synthetic-response\", \"model\": \"glm-5-3-flash\", \"service_tier\": \"default\", \"object\": \"chat.completion.chunk\", \"usage\": null}\n\ndata: {\"choices\": [{\"delta\": {\"reasoning_content\": \",\", \"role\": \"assistant\"}, \"index\": 0}], \"created\": 1791686950, \"id\": \"synthetic-response\", \"model\": \"glm-5-3-flash\", \"service_tier\": \"default\", \"object\": \"chat.completion.chunk\", \"usage\": null}\n\ndata: {\"choices\": [{\"delta\": {\"reasoning_content\": \" and\", \"role\": \"assistant\"}, \"index\": 0}], \"created\": 1791686950, \"id\": \"synthetic-response\", \"model\": \"glm-5-3-flash\", \"service_tier\": \"default\", \"object\": \"chat.completion.chunk\", \"usage\": null}\n\ndata: {\"choices\": [{\"delta\": {\"reasoning_content\": \" answer\", \"role\": \"assistant\"}, \"index\": 0}], \"created\": 1791686950, \"id\": \"synthetic-response\", \"model\": \"glm-5-3-flash\", \"service_tier\": \"default\", \"object\": \"chat.completion.chunk\", \"usage\": null}\n\ndata: {\"choices\": [{\"delta\": {\"reasoning_content\": \" only\", \"role\": \"assistant\"}, \"index\": 0}], \"created\": 1791686950, \"id\": \"synthetic-response\", \"model\": \"glm-5-3-flash\", \"service_tier\": \"default\", \"object\": \"chat.completion.chunk\", \"usage\": null}\n\ndata: {\"choices\": [{\"delta\": {\"reasoning_content\": \" with\", \"role\": \"assistant\"}, \"index\": 0}], \"created\": 1791686950, \"id\": \"synthetic-response\", \"model\": \"glm-5-3-flash\", \"service_tier\": \"default\", \"object\": \"chat.completion.chunk\", \"usage\": null}\n\ndata: {\"choices\": [{\"delta\": {\"reasoning_content\": \" RESULT\", \"role\": \"assistant\"}, \"index\": 0}], \"created\": 1791686950, \"id\": \"synthetic-response\", \"model\": \"glm-5-3-flash\", \"service_tier\": \"default\", \"object\": \"chat.completion.chunk\", \"usage\": null}\n\ndata: {\"choices\": [{\"delta\": {\"reasoning_content\": \"=<\", \"role\": \"assistant\"}, \"index\": 0}], \"created\": 1791686950, \"id\": \"synthetic-response\", \"model\": \"glm-5-3-flash\", \"service_tier\": \"default\", \"object\": \"chat.completion.chunk\", \"usage\": null}\n\ndata: {\"choices\": [{\"delta\": {\"reasoning_content\": \"integer\", \"role\": \"assistant\"}, \"index\": 0}], \"created\": 1791686950, \"id\": \"synthetic-response\", \"model\": \"glm-5-3-flash\", \"service_tier\": \"default\", \"object\": \"chat.completion.chunk\", \"usage\": null}\n\ndata: {\"choices\": [{\"delta\": {\"reasoning_content\": \">.\", \"role\": \"assistant\"}, \"index\": 0}], \"created\": 1791686950, \"id\": \"synthetic-response\", \"model\": \"glm-5-3-flash\", \"service_tier\": \"default\", \"object\": \"chat.completion.chunk\", \"usage\": null}\n\ndata: {\"choices\": [{\"delta\": {\"role\": \"assistant\", \"tool_calls\": [{\"function\": {\"arguments\": \"{\\\"\", \"name\": \"read\"}, \"id\": \"call_236f0e044ca94d77b99c7cf4\", \"index\": 0, \"type\": \"function\"}]}, \"index\": 0}], \"created\": 1791686950, \"id\": \"synthetic-response\", \"model\": \"glm-5-3-flash\", \"service_tier\": \"default\", \"object\": \"chat.completion.chunk\", \"usage\": null}\n\ndata: {\"choices\": [{\"delta\": {\"role\": \"assistant\", \"tool_calls\": [{\"function\": {\"arguments\": \"path\"}, \"index\": 0}]}, \"index\": 0}], \"created\": 1791686950, \"id\": \"synthetic-response\", \"model\": \"glm-5-3-flash\", \"service_tier\": \"default\", \"object\": \"chat.completion.chunk\", \"usage\": null}\n\ndata: {\"choices\": [{\"delta\": {\"role\": \"assistant\", \"tool_calls\": [{\"function\": {\"arguments\": \"\\\":\\\"\"}, \"index\": 0}]}, \"index\": 0}], \"created\": 1791686950, \"id\": \"synthetic-response\", \"model\": \"glm-5-3-flash\", \"service_tier\": \"default\", \"object\": \"chat.completion.chunk\", \"usage\": null}\n\ndata: {\"choices\": [{\"delta\": {\"role\": \"assistant\", \"tool_calls\": [{\"function\": {\"arguments\": \"fixture\"}, \"index\": 0}]}, \"index\": 0}], \"created\": 1791686950, \"id\": \"synthetic-response\", \"model\": \"glm-5-3-flash\", \"service_tier\": \"default\", \"object\": \"chat.completion.chunk\", \"usage\": null}\n\ndata: {\"choices\": [{\"delta\": {\"role\": \"assistant\", \"tool_calls\": [{\"function\": {\"arguments\": \".py\"}, \"index\": 0}]}, \"index\": 0}], \"created\": 1791686950, \"id\": \"synthetic-response\", \"model\": \"glm-5-3-flash\", \"service_tier\": \"default\", \"object\": \"chat.completion.chunk\", \"usage\": null}\n\ndata: {\"choices\": [{\"delta\": {\"role\": \"assistant\", \"tool_calls\": [{\"function\": {\"arguments\": \"\\\"\"}, \"index\": 0}]}, \"index\": 0}], \"created\": 1791686950, \"id\": \"synthetic-response\", \"model\": \"glm-5-3-flash\", \"service_tier\": \"default\", \"object\": \"chat.completion.chunk\", \"usage\": null}\n\ndata: {\"choices\": [{\"delta\": {\"role\": \"assistant\", \"tool_calls\": [{\"function\": {\"arguments\": \"}\"}, \"index\": 0}]}, \"index\": 0}], \"created\": 1791686950, \"id\": \"synthetic-response\", \"model\": \"glm-5-3-flash\", \"service_tier\": \"default\", \"object\": \"chat.completion.chunk\", \"usage\": null}\n\ndata: {\"choices\": [{\"delta\": {\"content\": \"\", \"role\": \"assistant\"}, \"finish_reason\": \"tool_calls\", \"index\": 0}], \"created\": 1791686950, \"id\": \"synthetic-response\", \"model\": \"glm-5-3-flash\", \"service_tier\": \"default\", \"object\": \"chat.completion.chunk\", \"usage\": null}\n\ndata: [DONE]\n\n"
+    },
+    {
+      "path": "/v1/chat/completions",
+      "request": {
+        "max_tokens": 2048,
+        "messages": [
+          {
+            "content": [
+              {
+                "text": "Read fixture.py with the read tool exactly once. Inspect its multiply function. Then answer only RESULT=<the integer returned by multiply()>. Do not edit files or call other tools.",
+                "type": "text"
+              }
+            ],
+            "role": "user"
+          },
+          {
+            "content": null,
+            "role": "assistant",
+            "tool_calls": [
+              {
+                "function": {
+                  "arguments": "{\"path\":\"fixture.py\"}",
+                  "name": "read"
+                },
+                "id": "call_236f0e044ca94d77b99c7cf4",
+                "type": "function"
+              }
+            ]
+          },
+          {
+            "content": "def multiply():\n    return 17 * 23\n\n# RELAYKIT_SYNTHETIC_CODE\n",
+            "name": "read",
+            "role": "tool",
+            "tool_call_id": "call_236f0e044ca94d77b99c7cf4"
+          }
+        ],
+        "model": "glm-5.3-flash",
+        "stream": true,
+        "tools": [
+          {
+            "function": {
+              "description": "Read the contents of a file. Supports text files and images (jpg, png, gif, webp, bmp). Images are sent as attachments. For text files, output is truncated to 2000 lines or 50KB (whichever is hit first). Use offset/limit for large files. When you need the full file, continue with offset until complete.",
+              "name": "read",
+              "parameters": {
+                "properties": {
+                  "limit": {
+                    "description": "Maximum number of lines to read",
+                    "type": "number"
+                  },
+                  "offset": {
+                    "description": "Line number to start reading from (1-indexed)",
+                    "type": "number"
+                  },
+                  "path": {
+                    "description": "Path to the file to read (relative or absolute)",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "path"
+                ],
+                "type": "object"
+              }
+            },
+            "type": "function"
+          }
+        ]
+      },
+      "status": 200,
+      "contentType": "text/event-stream",
+      "response": "data: {\"choices\": [{\"delta\": {\"reasoning_content\": \"17\", \"role\": \"assistant\"}, \"index\": 0}], \"created\": 1791686954, \"id\": \"synthetic-response\", \"model\": \"glm-5-3-flash\", \"service_tier\": \"default\", \"object\": \"chat.completion.chunk\", \"usage\": null}\n\ndata: {\"choices\": [{\"delta\": {\"reasoning_content\": \" *\", \"role\": \"assistant\"}, \"index\": 0}], \"created\": 1791686954, \"id\": \"synthetic-response\", \"model\": \"glm-5-3-flash\", \"service_tier\": \"default\", \"object\": \"chat.completion.chunk\", \"usage\": null}\n\ndata: {\"choices\": [{\"delta\": {\"reasoning_content\": \" \", \"role\": \"assistant\"}, \"index\": 0}], \"created\": 1791686954, \"id\": \"synthetic-response\", \"model\": \"glm-5-3-flash\", \"service_tier\": \"default\", \"object\": \"chat.completion.chunk\", \"usage\": null}\n\ndata: {\"choices\": [{\"delta\": {\"reasoning_content\": \"23\", \"role\": \"assistant\"}, \"index\": 0}], \"created\": 1791686954, \"id\": \"synthetic-response\", \"model\": \"glm-5-3-flash\", \"service_tier\": \"default\", \"object\": \"chat.completion.chunk\", \"usage\": null}\n\ndata: {\"choices\": [{\"delta\": {\"reasoning_content\": \" =\", \"role\": \"assistant\"}, \"index\": 0}], \"created\": 1791686954, \"id\": \"synthetic-response\", \"model\": \"glm-5-3-flash\", \"service_tier\": \"default\", \"object\": \"chat.completion.chunk\", \"usage\": null}\n\ndata: {\"choices\": [{\"delta\": {\"reasoning_content\": \" \", \"role\": \"assistant\"}, \"index\": 0}], \"created\": 1791686954, \"id\": \"synthetic-response\", \"model\": \"glm-5-3-flash\", \"service_tier\": \"default\", \"object\": \"chat.completion.chunk\", \"usage\": null}\n\ndata: {\"choices\": [{\"delta\": {\"reasoning_content\": \"39\", \"role\": \"assistant\"}, \"index\": 0}], \"created\": 1791686954, \"id\": \"synthetic-response\", \"model\": \"glm-5-3-flash\", \"service_tier\": \"default\", \"object\": \"chat.completion.chunk\", \"usage\": null}\n\ndata: {\"choices\": [{\"delta\": {\"reasoning_content\": \"1\", \"role\": \"assistant\"}, \"index\": 0}], \"created\": 1791686954, \"id\": \"synthetic-response\", \"model\": \"glm-5-3-flash\", \"service_tier\": \"default\", \"object\": \"chat.completion.chunk\", \"usage\": null}\n\ndata: {\"choices\": [{\"delta\": {\"content\": \"RESULT\", \"role\": \"assistant\"}, \"index\": 0}], \"created\": 1791686954, \"id\": \"synthetic-response\", \"model\": \"glm-5-3-flash\", \"service_tier\": \"default\", \"object\": \"chat.completion.chunk\", \"usage\": null}\n\ndata: {\"choices\": [{\"delta\": {\"content\": \"=\", \"role\": \"assistant\"}, \"index\": 0}], \"created\": 1791686954, \"id\": \"synthetic-response\", \"model\": \"glm-5-3-flash\", \"service_tier\": \"default\", \"object\": \"chat.completion.chunk\", \"usage\": null}\n\ndata: {\"choices\": [{\"delta\": {\"content\": \"39\", \"role\": \"assistant\"}, \"index\": 0}], \"created\": 1791686954, \"id\": \"synthetic-response\", \"model\": \"glm-5-3-flash\", \"service_tier\": \"default\", \"object\": \"chat.completion.chunk\", \"usage\": null}\n\ndata: {\"choices\": [{\"delta\": {\"content\": \"1\", \"role\": \"assistant\"}, \"index\": 0}], \"created\": 1791686954, \"id\": \"synthetic-response\", \"model\": \"glm-5-3-flash\", \"service_tier\": \"default\", \"object\": \"chat.completion.chunk\", \"usage\": null}\n\ndata: {\"choices\": [{\"delta\": {\"content\": \"\", \"role\": \"assistant\"}, \"finish_reason\": \"stop\", \"index\": 0}], \"created\": 1791686954, \"id\": \"synthetic-response\", \"model\": \"glm-5-3-flash\", \"service_tier\": \"default\", \"object\": \"chat.completion.chunk\", \"usage\": null}\n\ndata: [DONE]\n\n"
+    }
+  ],
+  "redactions": [
+    "system/developer prompts omitted",
+    "provider response identifiers canonicalized",
+    "local paths replaced"
+  ],
+  "collection": {
+    "date": "2026-10-11",
+    "client": "Pi coding agent 1.0.2",
+    "sourceCommit": "a9446a3d23a5ddff389f7cc23cef02e5dc7ce530",
+    "responseMode": "SSE",
+    "upstreamUsage": "not reported",
+    "scope": "One synthetic code read and its tool-result continuation; no real user session."
+  }
+}

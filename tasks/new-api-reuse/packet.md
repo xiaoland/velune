@@ -44,4 +44,32 @@ Factory26 仅只读检查公开部署说明、模型目录与脚本，未读取 
 
 ## 完成状态
 
-技术接入、删除旧转换器、静态检查、人工闭环、Mac 打包安装均已完成。公开发行尚未授权；AGPLv3 及上游 NOTICE 的最终发行安排仍待产品许可决定，不影响已完成的本地验证。未验证其他平台实际构建，未调用真实模型。
+技术接入、删除旧转换器、静态检查、人工闭环、Mac 打包安装均已完成。公开发行尚未授权；AGPLv3 及上游 NOTICE 的最终发行安排仍待产品许可决定，不影响已完成的本地验证。未验证其他平台实际构建。后续真实模型验证见下节。
+
+## 真实提供商验证（2026-10-11 继续）
+
+用户明确要求“进行真实测试”，指出相邻 Factory26 的 MiniMax、Ark coding plan、Qwen coding plan 可用，并允许固定请求重放。这一新授权替代本任务此前的无真实调用边界。只以合成输入经 Velune gateway／RelayKit 做有限小型工具调用及结果续轮；凭据仅由执行程序在内存中注入，不输出、保存或提交，不读取既有真实会话。固定材料只含脱敏请求／响应和必要协议元数据。
+
+原接入 owner 负责 live／replay 脚本、实际调用与必要协议修复；调查 owner 核对安全入口和官方调用约定；主执行者维护文档并采用证据。矩阵以实际提供商支持的协议为准，覆盖 JSON／SSE 和消费者工具续轮；先采集，后断网重放，不自动重复付费失败请求。静态检查及人工验收沿用仓库规则，不新增或运行自动化测试。完成条件是列出实际供应商／模型／请求数／usage、消费者闭环结果、重放证据及明确的供应商限制。
+
+公开 catalog 已定位 MiniMax 与 Ark 的 deployment／凭据变量；Qwen 的公开 token-plan 条目不能自动视作 Coding Plan，实际装配仍待执行边界核对。Coding Plan 采用真实 Codex／Pi 小型编程任务，工具调用、实际执行、匹配 ID 的结果续轮与正常模型终态必须同时取证。只从真实 Chat 响应做离线协议投影不能证明其他上游请求被提供商接受，报告分别标注 live 和 replay 的覆盖。
+
+执行前安全检查：Factory26 私有输入的 MiniMax key 为空；Ark Coding Plan key 存在且 endpoint 为官方 coding/v3。Qwen 仅发现第三方 Token Plan（qianwenaiapi.com），与官方 Coding Plan 不同，已向用户询问是否采用该实际配置；回答前不调用第三方端点。先推进 Ark 的 Pi Messages→Chat 工具闭环。
+
+用户已回答采用现有 Qwen Token Plan，按真实名称记录。执行 owner 继续 Qwen Pi Responses→Chat 闭环；与 Ark Pi Messages→Chat 的真实转换方向区分。
+
+Ark 已完成首次真实闭环：`glm-5.3-flash`，Pi 1.0.2 的 Messages 入口→RelayKit→Chat 上游，2 次 HTTP 200；工具 ID、实际读取合成文件、结果续轮与 `RESULT=391` 正常终态均通过。两次原始 SSE 均未含 usage，消耗保留未知。前置本机 URL 拼接与 CA 配置问题在发出带认证模型请求前修正，未归因于产品转换。固定材料重放与 Qwen 调用继续。
+
+Qwen Token Plan（实际模型 `glm-5.3`）首个真实请求返回 HTTP 429 `insufficient_quota`，月套餐额度耗尽。执行入口阻断客户端进一步重试，共 1 次真实 HTTP 请求，无成功 usage；没有换模型或路由规避额度。MiniMax 沿公开引用未发现其它明确注入来源，本轮 0 请求。Ark 已通过固定样本的实际 Pi 离线工具续轮重放，关键请求结构一致，0 外网模型请求。
+
+## 本轮真实验证结论
+
+| 实际服务／模型 | 请求与结果 | 适用边界 |
+| --- | --- | --- |
+| Ark Coding Plan／glm-5.3-flash | 2 次 HTTP 200；Pi 1.0.2 Messages→RelayKit→Chat，实际工具读取、匹配 ID 的结果续轮与正常终态通过 | 两次响应均为 SSE，未返回 usage，不能计算实际 token 或费用 |
+| Qwen Token Plan／glm-5.3 | 1 次 HTTP 429 `insufficient_quota`，未重试、未换模型 | 套餐月额度耗尽，未取得成功转换证据；不是官方 Qwen Coding Plan |
+| MiniMax／MiniMax-M3 | 0 次请求 | 明确注入入口的 key 为空，无其它已确认来源 |
+
+[固定 Ark fixture](../../fixtures/relaykit/ark-glm-5.3-flash-pi-tool-loop.json) 保存两次真实响应，省略动态提示、规范化响应 ID 和本机路径，不保存认证头。使用该最终固定文件的实际 Pi consumer replay 再次通过，关键请求结构一致，0 外部模型请求。入口与复现方式已归 [开发文档](../../docs/development.md#relaykit-的真实提供商采集与重放)。产品源码未改动，实际 gateway 基线为 `a9446a3`；新增手动脚本完成语法检查、脱敏检查与实际 replay，文档相对链接及 diff whitespace 检查通过。没有新增或运行自动化测试，也无需重建未改动的 Mac 产品。
+
+本轮实际发送 3 次带认证的模型 HTTP 请求。真实 JSON 响应和其它 live 转换方向未验证，既有合成 JSON／六向结果不冒充本轮真实证据。继续 MiniMax 需要在既有私有入口配置有效 key；继续 Qwen 需要可用额度。没有为完成覆盖额外更换凭据、服务或付费方案。
