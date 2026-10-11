@@ -4,6 +4,11 @@ use crate::execution::ExecutionTarget;
 use serde::{Deserialize, Serialize};
 use std::{fmt, path::PathBuf};
 
+pub use canonical::{
+    Canonical, McpTransport, RenderedFile, Rendering, SkillFile, fingerprint, render, validate_name,
+};
+
+mod canonical;
 mod fs;
 mod layout;
 mod mcp_definition;

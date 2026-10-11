@@ -115,4 +115,6 @@ MCP 的 key 是 opaque 服务名，其 `Document.bytes` 仅为该服务的原生
 
 资源上限为单文件 16 MiB、每次目录遍历 4096 节点、资源相对路径 64 层。symlink 与特殊节点可见但只读，不跟随读取；超过上限或访问失败有明确错误，不伪装为空目录。本机实现支持 Linux、Android、macOS、iOS、FreeBSD 的目录句柄操作，其它本机目标明确 Unsupported；SSH 使用目标端 Python 3 的 POSIX 文件接口。所有操作在实际目标执行。修改在同次目标操作内复核 revision，单文件替换原子发布；首次创建独占发布，已有文件更新仍是乐观并发控制，不能排除外部编辑器在复核后同时写入。revision 包含内容和权限，MCP revision 覆盖整个共享配置，因此兄弟条目变更也会要求重读。
 
+`management::Canonical` 是 Velune 模板的 canonical resource definition：整文件指令、以 `SKILL.md` 为入口的技能文件树、与运行时无关的 MCP 传输（stdio 命令／环境，或 http 地址／请求头），以及子 Agent（描述、指令、可选模型与工具提示）。`render(variant, name, canonical)` 按固定版本产出可直接写入的 User 范围原生文件或声明对象：Claude 的 MCP 带 `type`，Codex 的 HTTP 头写作 `http_headers`，子 Agent 在 Claude 为 Markdown＋frontmatter、在 Codex 为 TOML；运行时没有对应位置的提示字段不写入并在 `notes` 中说明，运行时不支持该类别时返回 `Skipped` 与原因，不伪造。名称限定为不以 `.` 开头、不超过 64 字符的字母数字及 `-_.`。`fingerprint` 对 MCP 按排序后的 JSON 值哈希，其余按字节哈希，使手工或 Harness 重排 MCP 声明不被当作内容变化。canonical 的 Debug 不输出任何内容，因为环境值与请求头值可能是秘密。
+
 原生入口和实际加载证据见 [固定版本验收](../../tasks/runtime-management/native-evidence.md)。application 负责 busy／协作 scope 的修改门控；本包不做 UI、自动同步或热重载。App 的资源管理入口明确待实现。

@@ -42,7 +42,11 @@ impl Layout {
 }
 
 pub(super) fn unsupported(config: &Config, kind: ResourceKind) -> Option<&'static str> {
-    match (config.variant_id.as_str(), kind) {
+    unsupported_variant(&config.variant_id, kind)
+}
+
+pub(super) fn unsupported_variant(variant_id: &str, kind: ResourceKind) -> Option<&'static str> {
+    match (variant_id, kind) {
         ("acp-v1", _) => Some("ACP v1 未声明原生持久资源管理协议，无法从启动命令推断资源位置"),
         ("pi-1.0.2", ResourceKind::NativeAgentDefinitions) => {
             Some("Pi 1.0.2 没有内置子 Agent 定义格式；扩展提供的定义不在当前管理范围")
