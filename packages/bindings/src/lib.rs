@@ -260,7 +260,7 @@ impl VeluneApplication {
     pub fn save_resource_template(
         &self,
         template: BindingResourceTemplate,
-    ) -> Result<BindingResourceTemplateSummary, BindingError> {
+    ) -> Result<BindingResourceSaveResult, BindingError> {
         let template = convert(template)?;
         convert(self.with("save_resource_template", |application| {
             application.save_resource_template(template)
@@ -282,22 +282,29 @@ impl VeluneApplication {
             application.import_runtime_resource(runtime_id, kind, path)
         })?)
     }
-    pub fn runtime_template_status(
+    pub fn adopt_runtime_resource(
         &self,
         runtime_id: String,
-    ) -> Result<Vec<BindingRuntimeTemplateStatus>, BindingError> {
-        convert(self.with("runtime_template_status", |application| {
-            application.runtime_template_status(runtime_id)
+        kind: BindingRuntimeResourceKind,
+        path: String,
+    ) -> Result<BindingResourceTemplateSummary, BindingError> {
+        let kind = convert(kind)?;
+        convert(self.with("adopt_runtime_resource", |application| {
+            application.adopt_runtime_resource(runtime_id, kind, path)
         })?)
     }
-    pub fn preview_resource_template(
+    pub fn resource_sync_status(&self) -> Result<Vec<BindingResourceSyncStatus>, BindingError> {
+        convert(self.with("resource_sync_status", |application| {
+            application.resource_sync_status()
+        })?)
+    }
+    pub fn unmanaged_runtime_resources(
         &self,
-        template_id: String,
-        targets: Vec<BindingTemplateApplyTarget>,
-    ) -> Result<Vec<BindingTemplateApplyReport>, BindingError> {
-        let targets = convert(targets)?;
-        convert(self.with("preview_resource_template", |application| {
-            application.preview_resource_template(template_id, targets)
+        kind: BindingRuntimeResourceKind,
+    ) -> Result<Vec<BindingUnmanagedRuntimeResource>, BindingError> {
+        let kind = convert(kind)?;
+        convert(self.with("unmanaged_runtime_resources", |application| {
+            application.unmanaged_runtime_resources(kind)
         })?)
     }
     pub fn apply_resource_template(

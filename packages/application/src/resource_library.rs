@@ -122,32 +122,55 @@ pub struct ResourceBinding {
     pub entries: Vec<BoundEntry>,
 }
 
+/// How one resource stands on one runtime instance.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "camelCase")]
-pub enum TemplateSyncState {
+pub enum ResourceSyncState {
+    /// Not enabled; enabling writes it.
+    NotEnabled,
+    /// This runtime has no place for the resource, or cannot be reached.
+    Unsupported {
+        reason: String,
+    },
     Synced,
-    /// The template changed; the native entries are as Velune wrote them.
-    TemplateUpdated,
-    /// A native entry was changed outside Velune.
+    /// Enabled, and the native entries are as Velune wrote them, but the resource changed since:
+    /// the write is still due, usually because a turn was running when it was saved.
+    Pending,
+    /// A native entry was changed outside Velune; the user decides.
     Drifted {
         paths: Vec<String>,
     },
-    /// A native entry was removed outside Velune.
+    /// A native entry was removed outside Velune; the user decides.
     Missing {
         paths: Vec<String>,
-    },
-    Skipped {
-        reason: String,
     },
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-pub struct RuntimeTemplateStatus {
+pub struct ResourceSyncStatus {
     pub template_id: String,
-    pub template_name: String,
+    pub runtime_id: String,
+    pub state: ResourceSyncState,
+}
+
+/// A native entry of a runtime that no resource manages.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct UnmanagedRuntimeResource {
+    pub runtime_id: String,
     pub kind: RuntimeResourceKind,
-    pub state: TemplateSyncState,
+    /// The native key path: a skill directory, MCP server name, or agent/instruction file.
+    pub path: String,
+}
+
+/// A saved resource and how writing it to its enabled runtimes went.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ResourceSaveResult {
+    pub summary: ResourceTemplateSummary,
+    /// Only runtimes that were written to, or failed to be.
+    pub reports: Vec<TemplateApplyReport>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]

@@ -3,10 +3,10 @@
 //! outside Velune is reported as a conflict instead of being overwritten.
 use super::*;
 use crate::{
-    BindingResolution, BoundEntry, ResourceBinding, ResourceTemplate, ResourceTemplateContent,
-    ResourceTemplateSummary, RuntimeResourceKey, RuntimeResourceKind, RuntimeResourceScope,
-    RuntimeTemplateStatus, TemplateApplyOutcome, TemplateApplyReport, TemplateApplyTarget,
-    TemplateSyncState,
+    BindingResolution, BoundEntry, ResourceBinding, ResourceSaveResult, ResourceSyncState,
+    ResourceSyncStatus, ResourceTemplate, ResourceTemplateContent, ResourceTemplateSummary,
+    RuntimeResourceKey, RuntimeResourceKind, RuntimeResourceScope, TemplateApplyOutcome,
+    TemplateApplyReport, TemplateApplyTarget, UnmanagedRuntimeResource,
 };
 use management::{ExpectedRevision, Rendering};
 use std::collections::BTreeMap;
@@ -127,7 +127,7 @@ fn prune_directories(config: &management::Config, kind: RuntimeResourceKind, rem
 
 fn random_id() -> Result<String, RuntimeError> {
     let mut random = [0; 16];
-    getrandom::fill(&mut random).map_err(|_| RuntimeError::invalid("无法生成模板标识"))?;
+    getrandom::fill(&mut random).map_err(|_| RuntimeError::invalid("无法生成资源标识"))?;
     Ok(random.iter().map(|byte| format!("{byte:02x}")).collect())
 }
 
@@ -145,7 +145,7 @@ impl CoreRuntime {
         self.resource_templates
             .iter()
             .find(|template| template.id == id)
-            .ok_or_else(|| RuntimeError::invalid("资源模板不存在"))
+            .ok_or_else(|| RuntimeError::invalid("资源不存在"))
     }
 
     pub(super) fn resource_templates_action(
@@ -169,9 +169,16 @@ impl CoreRuntime {
                 let id = payload["templateID"].as_str().unwrap_or_default();
                 Ok(serde_json::to_value(self.template(id)?)?)
             }
-            Some("import") => self.import_runtime_resource(payload),
+            Some("import") => Ok(json!(self.import_runtime_resource(
+                payload["runtimeInstanceID"].as_str().unwrap_or_default(),
+                serde_json::from_value(payload["kind"].clone())?,
+                payload["path"].as_str().unwrap_or_default(),
+            )?)),
             Some("save") => {
-                self.save_resource_template(serde_json::from_value(payload["template"].clone())?)
+                let summary =
+                    self.store_template(serde_json::from_value(payload["template"].clone())?)?;
+                let reports = self.sync_pending(&summary.id)?;
+                Ok(json!(ResourceSaveResult { summary, reports }))
             }
             Some("delete") => {
                 let id = payload["templateID"]
@@ -198,17 +205,19 @@ impl CoreRuntime {
                 self.resource_templates = templates;
                 Ok(Value::Null)
             }
-            _ => Err(RuntimeError::invalid("资源模板操作")),
+            _ => Err(RuntimeError::invalid("资源库操作")),
         }
     }
 
     /// Reads one native entry back into an unsaved template. Nothing is bound: applying the saved
     /// template to the same runtime later finds identical content and starts managing it.
-    fn import_runtime_resource(&self, payload: &Value) -> Result<Value, RuntimeError> {
-        let runtime_id = payload["runtimeInstanceID"].as_str().unwrap_or_default();
+    fn import_runtime_resource(
+        &self,
+        runtime_id: &str,
+        kind: RuntimeResourceKind,
+        path: &str,
+    ) -> Result<crate::ResourceTemplateImport, RuntimeError> {
         let config = self.management_config(runtime_id)?;
-        let kind: RuntimeResourceKind = serde_json::from_value(payload["kind"].clone())?;
-        let path = payload["path"].as_str().unwrap_or_default();
         let scope = management::ResourceScope::User;
         let (name, files) = match kind {
             RuntimeResourceKind::Skills => {
@@ -251,22 +260,50 @@ impl CoreRuntime {
         };
         let (content, notes) =
             management::parse(&config.variant_id, management_kind(kind), &name, files)?;
-        Ok(json!(crate::ResourceTemplateImport {
+        Ok(crate::ResourceTemplateImport {
             template: ResourceTemplate {
                 id: String::new(),
                 name,
                 content: serde_json::from_value(serde_json::to_value(content)?)?,
             },
             notes,
-        }))
+        })
     }
 
-    fn save_resource_template(
+    /// Takes a native entry into the library and keeps it enabled on its runtime. The native
+    /// entry is rewritten in the library's form, dropping what the import notes listed.
+    fn adopt_runtime_resource(
+        &mut self,
+        runtime_id: &str,
+        kind: RuntimeResourceKind,
+        path: &str,
+    ) -> Result<ResourceTemplateSummary, RuntimeError> {
+        let imported = self.import_runtime_resource(runtime_id, kind, path)?;
+        let summary = self.store_template(imported.template)?;
+        let template = self.template(&summary.id)?.clone();
+        let report = self.apply_to_runtime(
+            &template,
+            &TemplateApplyTarget {
+                runtime_id: runtime_id.to_owned(),
+                overwrite: true,
+            },
+        )?;
+        if let TemplateApplyOutcome::Failed { reason } | TemplateApplyOutcome::Skipped { reason } =
+            report.outcome
+        {
+            return Err(RuntimeError::Invalid(format!(
+                "已加入资源库，但未能启用于该运行时：{reason}"
+            )));
+        }
+        Ok(summary)
+    }
+
+    fn store_template(
         &mut self,
         mut template: ResourceTemplate,
-    ) -> Result<Value, RuntimeError> {
+    ) -> Result<ResourceTemplateSummary, RuntimeError> {
         if template.name.trim().is_empty() {
-            return Err(RuntimeError::invalid("模板名称不能为空"));
+            return Err(RuntimeError::invalid("名称不能为空"));
         }
         let kind = template.content.kind();
         if kind != RuntimeResourceKind::UserInstructions {
@@ -281,7 +318,7 @@ impl CoreRuntime {
         if self.resource_templates.iter().any(|other| {
             other.id != template.id && other.name == template.name && other.content.kind() == kind
         }) {
-            return Err(RuntimeError::invalid("同类模板中已有相同名称"));
+            return Err(RuntimeError::invalid("同类资源中已有相同名称"));
         }
         let existing = self
             .resource_templates
@@ -289,7 +326,7 @@ impl CoreRuntime {
             .position(|other| other.id == template.id && !template.id.is_empty());
         if let Some(index) = existing {
             if self.resource_templates[index].content.kind() != kind {
-                return Err(RuntimeError::invalid("模板的类别不能更改"));
+                return Err(RuntimeError::invalid("资源的类别不能更改"));
             }
         } else {
             template.id = random_id()?;
@@ -301,25 +338,57 @@ impl CoreRuntime {
         }
         self.repository.store_resource_templates(&templates)?;
         self.resource_templates = templates;
-        Ok(json!(ResourceTemplateSummary {
+        Ok(ResourceTemplateSummary {
             id: template.id,
             name: template.name,
-            kind
-        }))
+            kind,
+        })
+    }
+
+    /// Writes a saved resource to the runtimes where it is due. Runtimes whose native entries
+    /// were changed or removed wait for the user; while a turn runs everything stays pending.
+    fn sync_pending(
+        &mut self,
+        template_id: &str,
+    ) -> Result<Vec<TemplateApplyReport>, RuntimeError> {
+        if self.busy() || self.collaboration.is_some() {
+            return Ok(Vec::new());
+        }
+        let template = self.template(template_id)?.clone();
+        let runtime_ids: Vec<_> = self
+            .resource_bindings
+            .iter()
+            .filter(|binding| binding.template_id == template_id)
+            .map(|binding| binding.runtime_id.clone())
+            .collect();
+        let mut reports = Vec::new();
+        for runtime_id in runtime_ids {
+            if self.sync_state(&template, &runtime_id) == ResourceSyncState::Pending {
+                reports.push(self.apply_to_runtime(
+                    &template,
+                    &TemplateApplyTarget {
+                        runtime_id,
+                        overwrite: false,
+                    },
+                )?);
+            }
+        }
+        Ok(reports)
     }
 
     pub(super) fn resource_sync_action(&mut self, request: &Value) -> Result<Value, RuntimeError> {
         let payload = &request["payload"];
-        let applying = matches!(payload["operation"].as_str(), Some("apply" | "resolve"));
-        if applying {
+        let operation = payload["operation"].as_str();
+        if matches!(operation, Some("apply" | "resolve" | "adopt")) {
             self.require_idle_for_resources()?;
         }
-        match payload["operation"].as_str() {
-            Some("status") => {
-                let runtime_id = payload["runtimeInstanceID"].as_str().unwrap_or_default();
-                Ok(json!(self.sync_status(runtime_id)?))
-            }
-            Some("preview") | Some("apply") => {
+        let runtime_id = || payload["runtimeInstanceID"].as_str().unwrap_or_default();
+        match operation {
+            Some("status") => Ok(json!(self.sync_statuses())),
+            Some("unmanaged") => Ok(json!(
+                self.unmanaged_resources(serde_json::from_value(payload["kind"].clone())?)
+            )),
+            Some("apply") => {
                 let template = self
                     .template(payload["templateID"].as_str().unwrap_or_default())?
                     .clone();
@@ -327,20 +396,24 @@ impl CoreRuntime {
                     serde_json::from_value(payload["targets"].clone())?;
                 let mut reports = Vec::new();
                 for target in targets {
-                    reports.push(self.apply_to_runtime(&template, &target, applying)?);
+                    reports.push(self.apply_to_runtime(&template, &target)?);
                 }
                 Ok(json!(reports))
             }
             Some("resolve") => {
-                let runtime_id = payload["runtimeInstanceID"].as_str().unwrap_or_default();
                 let template = self
                     .template(payload["templateID"].as_str().unwrap_or_default())?
                     .clone();
                 let resolution: BindingResolution =
                     serde_json::from_value(payload["resolution"].clone())?;
-                self.resolve_binding(runtime_id, &template, resolution)?;
+                self.resolve_binding(runtime_id(), &template, resolution)?;
                 Ok(Value::Null)
             }
+            Some("adopt") => Ok(json!(self.adopt_runtime_resource(
+                runtime_id(),
+                serde_json::from_value(payload["kind"].clone())?,
+                payload["path"].as_str().unwrap_or_default(),
+            )?)),
             _ => Err(RuntimeError::invalid("资源同步操作")),
         }
     }
@@ -370,72 +443,125 @@ impl CoreRuntime {
         }
     }
 
-    fn sync_status(&self, runtime_id: &str) -> Result<Vec<RuntimeTemplateStatus>, RuntimeError> {
-        let config = self.management_config(runtime_id)?;
+    /// Every resource on every runtime instance, enabled or not.
+    fn sync_statuses(&self) -> Vec<ResourceSyncStatus> {
         let mut statuses = Vec::new();
-        for binding in self
-            .resource_bindings
+        for template in &self.resource_templates {
+            for runtime in &self.runtime_instances {
+                statuses.push(ResourceSyncStatus {
+                    template_id: template.id.clone(),
+                    runtime_id: runtime.id.clone(),
+                    state: self.sync_state(template, &runtime.id),
+                });
+            }
+        }
+        statuses
+    }
+
+    fn sync_state(&self, template: &ResourceTemplate, runtime_id: &str) -> ResourceSyncState {
+        let unsupported = |reason: String| ResourceSyncState::Unsupported { reason };
+        let config = match self.management_config(runtime_id) {
+            Ok(config) => config,
+            Err(error) => return unsupported(error.to_string()),
+        };
+        let kind = template.content.kind();
+        let rendered = match canonical(&template.content).and_then(|content| {
+            management::render(&config.variant_id, &template.name, &content).map_err(Into::into)
+        }) {
+            Ok(Rendering::Skipped { reason }) => return unsupported(reason),
+            Ok(Rendering::Files { files, .. }) => files,
+            Err(error) => return unsupported(error.to_string()),
+        };
+        let Some(index) = self.binding_index(runtime_id, &template.id) else {
+            return ResourceSyncState::NotEnabled;
+        };
+        let binding = &self.resource_bindings[index];
+        let (mut drifted, mut missing) = (Vec::new(), Vec::new());
+        for entry in &binding.entries {
+            match read_native(&config, &user_key(kind, &entry.key.path)) {
+                Ok(Native::Absent) => missing.push(entry.key.path.clone()),
+                Ok(Native::Present { fingerprint, .. }) if fingerprint != entry.fingerprint => {
+                    drifted.push(entry.key.path.clone())
+                }
+                Ok(Native::Present { .. }) => {}
+                Err(error) => return unsupported(error.to_string()),
+            }
+        }
+        if !drifted.is_empty() {
+            return ResourceSyncState::Drifted { paths: drifted };
+        }
+        if !missing.is_empty() {
+            return ResourceSyncState::Missing { paths: missing };
+        }
+        let rendered: BTreeMap<_, _> = rendered
             .iter()
-            .filter(|binding| binding.runtime_id == runtime_id)
-        {
-            let template = self.template(&binding.template_id)?;
-            let kind = template.content.kind();
-            let (mut drifted, mut missing) = (Vec::new(), Vec::new());
-            for entry in &binding.entries {
-                let key = user_key(kind, &entry.key.path);
-                match read_native(&config, &key)? {
-                    Native::Absent => missing.push(entry.key.path.clone()),
-                    Native::Present { fingerprint, .. } if fingerprint != entry.fingerprint => {
-                        drifted.push(entry.key.path.clone())
+            .map(|file| {
+                (
+                    file.key.path.as_str(),
+                    management::fingerprint(file.key.kind, &file.bytes),
+                )
+            })
+            .collect();
+        let bound: BTreeMap<_, _> = binding
+            .entries
+            .iter()
+            .map(|entry| (entry.key.path.as_str(), entry.fingerprint.clone()))
+            .collect();
+        if rendered == bound {
+            ResourceSyncState::Synced
+        } else {
+            ResourceSyncState::Pending
+        }
+    }
+
+    /// Native entries of one kind, on every runtime, that no resource manages. Skill bundles are
+    /// listed by directory; files inside a managed bundle count as managed.
+    fn unmanaged_resources(&self, kind: RuntimeResourceKind) -> Vec<UnmanagedRuntimeResource> {
+        let mut found = Vec::new();
+        for runtime in &self.runtime_instances {
+            let Ok(config) = self.management_config(&runtime.id) else {
+                continue;
+            };
+            let Ok(catalog) = management::catalog(
+                &config,
+                management_kind(kind),
+                management::ResourceScope::User,
+            ) else {
+                continue;
+            };
+            let managed: Vec<&str> = self
+                .resource_bindings
+                .iter()
+                .filter(|binding| binding.runtime_id == runtime.id)
+                .flat_map(|binding| binding.entries.iter())
+                .filter(|entry| entry.key.kind == kind)
+                .map(|entry| entry.key.path.as_str())
+                .collect();
+            for entry in catalog.entries {
+                if entry.state != management::EntryState::Present {
+                    continue;
+                }
+                let path = entry.key.path;
+                let listed = match kind {
+                    RuntimeResourceKind::Skills => {
+                        entry.node == management::Node::Directory
+                            && !path.contains('/')
+                            && !managed
+                                .iter()
+                                .any(|managed| managed.starts_with(&format!("{path}/")))
                     }
-                    Native::Present { .. } => {}
+                    _ => entry.node == management::Node::File && !managed.contains(&path.as_str()),
+                };
+                if listed {
+                    found.push(UnmanagedRuntimeResource {
+                        runtime_id: runtime.id.clone(),
+                        kind,
+                        path,
+                    });
                 }
             }
-            let state = if !drifted.is_empty() {
-                TemplateSyncState::Drifted { paths: drifted }
-            } else if !missing.is_empty() {
-                TemplateSyncState::Missing { paths: missing }
-            } else {
-                match management::render(
-                    &config.variant_id,
-                    &template.name,
-                    &canonical(&template.content)?,
-                ) {
-                    Ok(Rendering::Skipped { reason }) => TemplateSyncState::Skipped { reason },
-                    Ok(Rendering::Files { files, .. }) => {
-                        let rendered: BTreeMap<_, _> = files
-                            .iter()
-                            .map(|file| {
-                                (
-                                    file.key.path.clone(),
-                                    management::fingerprint(file.key.kind, &file.bytes),
-                                )
-                            })
-                            .collect();
-                        let bound: BTreeMap<_, _> = binding
-                            .entries
-                            .iter()
-                            .map(|entry| (entry.key.path.clone(), entry.fingerprint.clone()))
-                            .collect();
-                        if rendered == bound {
-                            TemplateSyncState::Synced
-                        } else {
-                            TemplateSyncState::TemplateUpdated
-                        }
-                    }
-                    Err(error) => TemplateSyncState::Skipped {
-                        reason: error.to_string(),
-                    },
-                }
-            };
-            statuses.push(RuntimeTemplateStatus {
-                template_id: template.id.clone(),
-                template_name: template.name.clone(),
-                kind,
-                state,
-            });
         }
-        Ok(statuses)
+        found
     }
 
     /// Compares the rendered template with the native entries and the bindings' record of what
@@ -584,7 +710,6 @@ impl CoreRuntime {
         &mut self,
         template: &ResourceTemplate,
         target: &TemplateApplyTarget,
-        perform: bool,
     ) -> Result<TemplateApplyReport, RuntimeError> {
         let runtime_id = target.runtime_id.as_str();
         let report = |outcome, notes| TemplateApplyReport {
@@ -620,7 +745,7 @@ impl CoreRuntime {
                 | TemplateApplyOutcome::Update
                 | TemplateApplyOutcome::Unchanged
         );
-        if !perform || !applicable {
+        if !applicable {
             return Ok(report(plan.outcome, plan.notes));
         }
         let kind = template.content.kind();
@@ -719,7 +844,7 @@ impl CoreRuntime {
         resolution: BindingResolution,
     ) -> Result<(), RuntimeError> {
         let Some(index) = self.binding_index(runtime_id, &template.id) else {
-            return Err(RuntimeError::invalid("此运行时没有应用该模板"));
+            return Err(RuntimeError::invalid("此运行时没有启用该资源"));
         };
         match resolution {
             BindingResolution::Overwrite => {
@@ -729,7 +854,6 @@ impl CoreRuntime {
                         runtime_id: runtime_id.to_owned(),
                         overwrite: true,
                     },
-                    true,
                 )?;
                 match report.outcome {
                     TemplateApplyOutcome::Failed { reason } => Err(RuntimeError::Invalid(reason)),

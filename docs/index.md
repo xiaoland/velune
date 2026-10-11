@@ -21,7 +21,7 @@
 
 - [跨 Harness 会话接续](../tasks/cross-harness-continuation/packet.md)：目标原生会话、上下文交接、仅关联元数据与重启投影
 - [Harness 子 Agent 协作](../tasks/harness-interoperation/packet.md)：父 Agent 经 MCP 委派，独立运行时执行、结果回传与生命周期；App 入口待实现
-- [运行时资源管理](../tasks/runtime-management/packet.md)：原生 instruction、MCP、skills 与 sub-agent 定义的非 UI 管理；缺失能力与 App 待办明确区分
+- [运行时资源管理](../tasks/runtime-management/packet.md)：原生 instruction、MCP、skills 与 sub-agent 定义的管理，以及 Mac“资源库”（以资源为中心、保存即同步）
 
 - [配置体验与原生 Messages](../tasks/settings-protocol-refinement/packet.md)：历史诊断、原生多选与模板、运行时检测、按组分页及协议扩展
 

@@ -66,25 +66,14 @@ final class Transport: @unchecked Sendable {
     func analyticsQuery(_ query: BindingAnalyticsQuery) throws -> BindingAnalyticsReport { try withApplication("analyticsQuery") { try $0.analyticsQuery(query: query) } }
     func listResourceTemplates() throws -> [BindingResourceTemplateSummary] { try withApplication("listResourceTemplates") { try $0.listResourceTemplates() } }
     func readResourceTemplate(_ id: String) throws -> BindingResourceTemplate { try withApplication("readResourceTemplate") { try $0.readResourceTemplate(templateId: id) } }
-    func saveResourceTemplate(_ template: BindingResourceTemplate) throws -> BindingResourceTemplateSummary { try withApplication("saveResourceTemplate") { try $0.saveResourceTemplate(template: template) } }
+    func saveResourceTemplate(_ template: BindingResourceTemplate) throws -> BindingResourceSaveResult { try withApplication("saveResourceTemplate") { try $0.saveResourceTemplate(template: template) } }
     func deleteResourceTemplate(_ id: String) throws { try withApplication("deleteResourceTemplate") { try $0.deleteResourceTemplate(templateId: id) } }
-    func runtimeTemplateStatus(runtimeID: String) throws -> [BindingRuntimeTemplateStatus] { try withApplication("runtimeTemplateStatus") { try $0.runtimeTemplateStatus(runtimeId: runtimeID) } }
-    func previewResourceTemplate(_ id: String, targets: [BindingTemplateApplyTarget]) throws -> [BindingTemplateApplyReport] { try withApplication("previewResourceTemplate") { try $0.previewResourceTemplate(templateId: id, targets: targets) } }
+    func importRuntimeResource(runtimeID: String, kind: BindingRuntimeResourceKind, path: String) throws -> BindingResourceTemplateImport { try withApplication("importRuntimeResource") { try $0.importRuntimeResource(runtimeId: runtimeID, kind: kind, path: path) } }
+    func adoptRuntimeResource(runtimeID: String, kind: BindingRuntimeResourceKind, path: String) throws -> BindingResourceTemplateSummary { try withApplication("adoptRuntimeResource") { try $0.adoptRuntimeResource(runtimeId: runtimeID, kind: kind, path: path) } }
+    func resourceSyncStatus() throws -> [BindingResourceSyncStatus] { try withApplication("resourceSyncStatus") { try $0.resourceSyncStatus() } }
+    func unmanagedRuntimeResources(_ kind: BindingRuntimeResourceKind) throws -> [BindingUnmanagedRuntimeResource] { try withApplication("unmanagedRuntimeResources") { try $0.unmanagedRuntimeResources(kind: kind) } }
     func applyResourceTemplate(_ id: String, targets: [BindingTemplateApplyTarget]) throws -> [BindingTemplateApplyReport] { try withApplication("applyResourceTemplate") { try $0.applyResourceTemplate(templateId: id, targets: targets) } }
     func resolveResourceBinding(runtimeID: String, templateID: String, resolution: BindingResolution) throws { try withApplication("resolveResourceBinding") { try $0.resolveResourceBinding(runtimeId: runtimeID, templateId: templateID, resolution: resolution) } }
-    func importRuntimeResource(runtimeID: String, kind: BindingRuntimeResourceKind, path: String) throws -> BindingResourceTemplateImport { try withApplication("importRuntimeResource") { try $0.importRuntimeResource(runtimeId: runtimeID, kind: kind, path: path) } }
-    func runtimeResourceCatalog(runtimeID: String, kind: BindingRuntimeResourceKind, scope: BindingRuntimeResourceScope) throws -> BindingRuntimeResourceCatalog {
-        try withApplication("runtimeResourceCatalog") { try $0.runtimeResourceCatalog(runtimeId: runtimeID, cwd: nil, kind: kind, scope: scope) }
-    }
-    func readRuntimeResource(runtimeID: String, key: BindingRuntimeResourceKey) throws -> BindingRuntimeResourceDocument {
-        try withApplication("readRuntimeResource") { try $0.readRuntimeResource(runtimeId: runtimeID, cwd: nil, key: key) }
-    }
-    func writeRuntimeResource(runtimeID: String, key: BindingRuntimeResourceKey, expected: BindingRuntimeResourceRevision, bytes: Data) throws -> BindingRuntimeResourceDocument {
-        try withApplication("writeRuntimeResource") { try $0.writeRuntimeResource(runtimeId: runtimeID, cwd: nil, key: key, expected: expected, bytes: bytes, executable: nil) }
-    }
-    func deleteRuntimeResource(runtimeID: String, key: BindingRuntimeResourceKey, expected: BindingRuntimeResourceRevision) throws {
-        try withApplication("deleteRuntimeResource") { try $0.deleteRuntimeResource(runtimeId: runtimeID, cwd: nil, key: key, expected: expected) }
-    }
     func list() throws -> BindingConfigurationSnapshot { try withApplication("list") { try $0.list() } }
     func saveProvider(gatewayID: String, provider: AIProvider, authenticationEdit: AuthenticationEdit) throws -> BindingGatewayUpdate {
         try withApplication("saveProvider", changesConfiguration: true) { try $0.saveProvider(gatewayId: gatewayID, provider: BindingMapping.bindingProvider(provider), authenticationEdit: BindingMapping.bindingAuthenticationEdit(authenticationEdit)) }

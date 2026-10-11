@@ -17,11 +17,9 @@ import time
 
 def exercise(app, b, root):
     kind = b.BindingRuntimeResourceKind
-    scope = b.BindingRuntimeResourceScope
-    revision = b.BindingRuntimeResourceRevision
     content = b.BindingResourceTemplateContent
     outcome = b.BindingTemplateApplyOutcome
-    state = b.BindingTemplateSyncState
+    state = b.BindingResourceSyncState
 
     for identity, variant in [('claude', 'claude-code-2.1.286'), ('codex', 'codex-0.159.3'),
                               ('pi', 'pi-1.0.2')]:
@@ -29,7 +27,7 @@ def exercise(app, b, root):
             enabled=False, id=identity, name=identity, type_id=variant,
             gateway_id='default', settings={'agentDir': str(root / identity)}))
 
-    def template(name, body, identity=''):
+    def resource(name, body, identity=''):
         return b.BindingResourceTemplate(id=identity, name=name, content=body)
 
     def skill(text, extra=()):
@@ -47,135 +45,127 @@ def exercise(app, b, root):
             return
         raise AssertionError('应被拒绝')
 
-    def report(reports, identity):
+    def outcome_of(reports, identity):
         return next(r.outcome for r in reports if r.runtime_id == identity)
 
-    def native(identity, path):
-        return root / identity / path
+    def states(resource_id):
+        return {s.runtime_id: s.state for s in app.resource_sync_status() if s.template_id == resource_id}
 
-    # 模板：摘要不含内容；名称与同类唯一；类别不可改。
-    summary = app.save_resource_template(template(
-        'review', skill(b'---\nname: review\ndescription: d\n---\nv1\n', [('notes/a.md', b'A')])))
-    assert summary.id and summary.kind == kind.SKILLS
-    reject(lambda: app.save_resource_template(template('review', skill(b'---\nname: review\ndescription: d\n---\n'))))
-    reject(lambda: app.save_resource_template(template('bad name', skill(b'x'))))
-    reject(lambda: app.save_resource_template(template('nofile', content.SKILL(files=[]))))
-    reject(lambda: app.save_resource_template(template(
-        'review', content.INSTRUCTIONS(body='x'), summary.id)))
-    assert [s.name for s in app.list_resource_templates()] == ['review']
-    print('PASS 模板保存与校验', flush=True)
+    def unmanaged(category):
+        return {(e.runtime_id, e.path) for e in app.unmanaged_runtime_resources(category)}
 
-    # 首次应用：预览不写入；应用创建并受管。
-    reports = app.preview_resource_template(summary.id, [target('claude'), target('codex')])
-    assert isinstance(report(reports, 'claude'), outcome.CREATE)
-    assert not (root / 'claude').exists()
-    reports = app.apply_resource_template(summary.id, [target('claude'), target('codex')])
-    assert isinstance(report(reports, 'claude'), outcome.CREATE)
-    assert native('claude', 'skills/review/SKILL.md').is_file() or any((root / 'claude').rglob('SKILL.md'))
-    assert all(isinstance(s.state, state.SYNCED) for s in app.runtime_template_status('claude'))
-    reports = app.apply_resource_template(summary.id, [target('claude')])
-    assert isinstance(report(reports, 'claude'), outcome.UNCHANGED)
-    print('PASS 应用、预览、幂等', flush=True)
+    def skill_text(identity):
+        return next((root / identity).rglob('review/SKILL.md')).read_bytes()
 
-    # 模板更新 → TemplateUpdated → 同步；删去文件会同步删除。
-    app.save_resource_template(template(
-        'review', skill(b'---\nname: review\ndescription: d\n---\nv2\n'), summary.id))
-    assert isinstance(app.runtime_template_status('claude')[0].state, state.TEMPLATE_UPDATED)
-    reports = app.apply_resource_template(summary.id, [target('claude')])
-    assert isinstance(report(reports, 'claude'), outcome.UPDATE)
-    skill_root = next((root / 'claude').rglob('SKILL.md')).parent
-    assert not (skill_root / 'notes' / 'a.md').exists()
-    assert b'v2' in (skill_root / 'SKILL.md').read_bytes()
-    assert isinstance(app.runtime_template_status('claude')[0].state, state.SYNCED)
-    print('PASS 模板更新同步、移除的文件被清理', flush=True)
+    # 资源：摘要不含内容；名称与同类唯一；类别不可改。
+    review = app.save_resource_template(resource(
+        'review', skill(b'---\nname: review\ndescription: d\n---\nv1\n', [('notes/a.md', b'A')]))).summary
+    assert review.kind == kind.SKILLS
+    reject(lambda: app.save_resource_template(resource('review', skill(b'x'))))
+    reject(lambda: app.save_resource_template(resource('bad name', skill(b'x'))))
+    reject(lambda: app.save_resource_template(resource('nofile', content.SKILL(files=[]))))
+    reject(lambda: app.save_resource_template(resource('review', content.INSTRUCTIONS(body='x'), review.id)))
+    print('PASS 资源保存与校验', flush=True)
 
-    # 原生侧修改 → Drifted；应用报 Conflict；三种处置。
+    # 状态矩阵：未启用；Pi 支持技能。
+    assert all(isinstance(v, state.NOT_ENABLED) for v in states(review.id).values())
+    reports = app.apply_resource_template(review.id, [target('claude'), target('codex')])
+    assert isinstance(outcome_of(reports, 'claude'), outcome.CREATE)
+    assert isinstance(states(review.id)['claude'], state.SYNCED)
+    assert isinstance(states(review.id)['pi'], state.NOT_ENABLED)
+    assert isinstance(outcome_of(app.apply_resource_template(review.id, [target('claude')]), 'claude'), outcome.UNCHANGED)
+    print('PASS 启用与状态矩阵', flush=True)
+
+    # 保存即同步：已启用且同步的运行时立即写入，移除的文件被清理。
+    saved = app.save_resource_template(resource(
+        'review', skill(b'---\nname: review\ndescription: d\n---\nv2\n'), review.id))
+    assert {r.runtime_id for r in saved.reports} == {'claude', 'codex'}
+    assert b'v2' in skill_text('claude') and b'v2' in skill_text('codex')
+    assert not any((root / 'claude').rglob('notes/a.md'))
+    assert all(isinstance(states(review.id)[r], state.SYNCED) for r in ('claude', 'codex'))
+    print('PASS 保存即同步、移除的文件被清理', flush=True)
+
+    # 原生被改：保存跳过该运行时；三种处置。
+    skill_root = next((root / 'claude').rglob('review/SKILL.md')).parent
     (skill_root / 'SKILL.md').write_bytes(b'---\nname: review\ndescription: d\n---\nhand edit\n')
-    assert isinstance(app.runtime_template_status('claude')[0].state, state.DRIFTED)
-    reports = app.apply_resource_template(summary.id, [target('claude')])
-    assert isinstance(report(reports, 'claude'), outcome.CONFLICT)
-    assert b'hand edit' in (skill_root / 'SKILL.md').read_bytes()
-    app.resolve_resource_binding('claude', summary.id, b.BindingResolution.OVERWRITE)
-    assert b'v2' in (skill_root / 'SKILL.md').read_bytes()
-    assert isinstance(app.runtime_template_status('claude')[0].state, state.SYNCED)
+    saved = app.save_resource_template(resource(
+        'review', skill(b'---\nname: review\ndescription: d\n---\nv3\n'), review.id))
+    assert {r.runtime_id for r in saved.reports} == {'codex'}
+    assert b'hand edit' in skill_text('claude') and b'v3' in skill_text('codex')
+    assert isinstance(states(review.id)['claude'], state.DRIFTED)
+    app.resolve_resource_binding('claude', review.id, b.BindingResolution.OVERWRITE)
+    assert b'v3' in skill_text('claude') and isinstance(states(review.id)['claude'], state.SYNCED)
     (skill_root / 'SKILL.md').write_bytes(b'---\nname: review\ndescription: d\n---\nkeep\n')
-    app.resolve_resource_binding('claude', summary.id, b.BindingResolution.UNMANAGE)
-    assert app.runtime_template_status('claude') == []
-    assert b'keep' in (skill_root / 'SKILL.md').read_bytes()
-    # 解除后原生条目成为未受管：应用冲突，覆盖后重新受管。
-    reports = app.apply_resource_template(summary.id, [target('claude')])
-    assert isinstance(report(reports, 'claude'), outcome.CONFLICT)
-    reports = app.apply_resource_template(summary.id, [target('claude', True)])
-    assert isinstance(report(reports, 'claude'), outcome.UPDATE)
-    # 被外部删除 → Missing。
+    app.resolve_resource_binding('claude', review.id, b.BindingResolution.UNMANAGE)
+    assert isinstance(states(review.id)['claude'], state.NOT_ENABLED)
+    assert ('claude', 'review') in unmanaged(kind.SKILLS)
+    reports = app.apply_resource_template(review.id, [target('claude')])
+    assert isinstance(outcome_of(reports, 'claude'), outcome.CONFLICT)
+    app.apply_resource_template(review.id, [target('claude', True)])
+    assert ('claude', 'review') not in unmanaged(kind.SKILLS)
     (skill_root / 'SKILL.md').unlink()
-    assert isinstance(app.runtime_template_status('claude')[0].state, state.MISSING)
-    app.resolve_resource_binding('claude', summary.id, b.BindingResolution.REMOVE)
-    assert app.runtime_template_status('claude') == [] and not skill_root.exists()
-    print('PASS 漂移、冲突、覆盖／解除受管／移除', flush=True)
+    assert isinstance(states(review.id)['claude'], state.MISSING)
+    saved = app.save_resource_template(resource(
+        'review', skill(b'---\nname: review\ndescription: d\n---\nv4\n'), review.id))
+    assert not (skill_root / 'SKILL.md').exists(), '缺失的运行时等待用户选择，不自动重建'
+    app.resolve_resource_binding('claude', review.id, b.BindingResolution.REMOVE)
+    assert isinstance(states(review.id)['claude'], state.NOT_ENABLED) and not skill_root.exists()
+    print('PASS 原生被改／被删：保存跳过，覆盖／停止同步／移除', flush=True)
 
-    # 指令整文件、MCP 秘密、子代理、跨运行时跳过原因。
-    instructions = app.save_resource_template(template('global', content.INSTRUCTIONS(body='RULES\n')))
-    mcp = app.save_resource_template(template('docs', content.MCP(
+    # 指令、MCP 秘密、子 Agent、不支持。
+    rules = app.save_resource_template(resource('rules', content.INSTRUCTIONS(body='RULES\n'))).summary
+    docs = app.save_resource_template(resource('docs', content.MCP(
         transport=b.BindingTemplateMcpTransport.STDIO(
-            command='docs-mcp', args=['--x'], env={'TOKEN': 'SYNTHETIC-SECRET'}))))
-    agent = app.save_resource_template(template('helper', content.SUBAGENT(
-        description='d', instructions='do it', model=None, tools=[])))
-    assert 'SYNTHETIC-SECRET' not in repr(app.read_resource_template(mcp.id))
-    assert 'SYNTHETIC-SECRET' not in repr(app.list_resource_templates())
-    stored = (root / 'app' / 'resource-templates.json')
-    assert oct(stored.stat().st_mode & 0o777) == '0o600'
-    for item in (instructions, mcp, agent):
-        reports = app.apply_resource_template(item.id, [target('claude'), target('codex'), target('pi')])
-        assert not any(isinstance(r.outcome, outcome.FAILED) for r in reports)
+            command='docs-mcp', args=['--x'], env={'TOKEN': 'SYNTHETIC-SECRET'})))).summary
+    helper = app.save_resource_template(resource('helper', content.SUBAGENT(
+        description='d', instructions='do it', model=None, tools=[]))).summary
+    assert 'SYNTHETIC-SECRET' not in repr(app.read_resource_template(docs.id))
+    assert oct((root / 'app' / 'resource-templates.json').stat().st_mode & 0o777) == '0o600'
+    assert isinstance(states(helper.id)['pi'], state.UNSUPPORTED)
+    for item in (rules, docs, helper):
+        reports = app.apply_resource_template(item.id, [target('claude'), target('codex')])
+        assert not any(isinstance(r.outcome, (outcome.FAILED, outcome.CONFLICT)) for r in reports), reports
     assert (root / 'claude' / 'CLAUDE.md').read_text() == 'RULES\n'
     assert (root / 'codex' / 'AGENTS.md').read_text() == 'RULES\n'
-    print('PASS 指令、MCP、子代理模板', flush=True)
+    # 每个运行时只启用一份指令：另一份需确认覆盖，接管后前一份不再启用。
+    other = app.save_resource_template(resource('other', content.INSTRUCTIONS(body='OTHER\n'))).summary
+    assert isinstance(outcome_of(app.apply_resource_template(other.id, [target('codex')]), 'codex'), outcome.CONFLICT)
+    app.apply_resource_template(other.id, [target('codex', True)])
+    assert isinstance(states(rules.id)['codex'], state.NOT_ENABLED)
+    assert isinstance(states(other.id)['codex'], state.SYNCED)
+    print('PASS 指令（每运行时一份）、MCP、子 Agent、不支持', flush=True)
 
-    # 删除模板解除受管但不删原生条目；删除运行时清理绑定。
-    app.delete_resource_template(instructions.id)
-    assert (root / 'claude' / 'CLAUDE.md').exists()
-    assert all(s.template_id != instructions.id for s in app.runtime_template_status('claude'))
+    # 运行时中的其他内容与加入资源库。
+    (root / 'codex' / 'agents').mkdir(exist_ok=True)
+    (root / 'codex' / 'agents' / 'linter.toml').write_text(
+        'name = "linter"\ndescription = "lint"\ndeveloper_instructions = "check"\nextra = 1\n')
+    assert ('codex', 'linter.toml') in unmanaged(kind.NATIVE_AGENT_DEFINITIONS)
+    preview = app.import_runtime_resource('codex', kind.NATIVE_AGENT_DEFINITIONS, 'linter.toml')
+    assert preview.template.name == 'linter' and preview.notes, preview.notes
+    adopted = app.adopt_runtime_resource('codex', kind.NATIVE_AGENT_DEFINITIONS, 'linter.toml')
+    assert isinstance(states(adopted.id)['codex'], state.SYNCED)
+    assert ('codex', 'linter.toml') not in unmanaged(kind.NATIVE_AGENT_DEFINITIONS)
+    assert 'extra' not in (root / 'codex' / 'agents' / 'linter.toml').read_text()
+    reject(lambda: app.adopt_runtime_resource('claude', kind.MCP_SERVERS, 'docs'))  # 同名已在资源库
+    print('PASS 其他内容列表、加入资源库', flush=True)
+
+    # 删除资源保留原生内容；删除运行时清理启用记录。
+    app.delete_resource_template(other.id)
+    assert (root / 'codex' / 'AGENTS.md').read_text() == 'OTHER\n'
+    assert ('codex', 'AGENTS.md') in unmanaged(kind.USER_INSTRUCTIONS)
     app.delete_runtime('codex')
     app.upsert_runtime(b.BindingRuntimeInstance(
         enabled=False, id='codex', name='codex', type_id='codex-0.159.3',
         gateway_id='default', settings={'agentDir': str(root / 'codex')}))
-    assert app.runtime_template_status('codex') == [], '删除运行时应清理绑定'
-    print('PASS 模板删除', flush=True)
+    assert isinstance(states(docs.id)['codex'], state.NOT_ENABLED), '删除运行时应清理启用记录'
+    print('PASS 删除资源与运行时', flush=True)
 
-    app.apply_resource_template(summary.id, [target('claude')])
-    # 从运行时原生条目导入：往返一致；导入的模板应用回同一运行时是“已是最新”并开始受管。
-    for runtime, entries in {'claude': [(kind.SKILLS, 'review'), (kind.MCP_SERVERS, 'docs'),
-                                        (kind.NATIVE_AGENT_DEFINITIONS, 'helper.md'),
-                                        (kind.USER_INSTRUCTIONS, 'CLAUDE.md')],
-                             'codex': [(kind.MCP_SERVERS, 'docs'), (kind.USER_INSTRUCTIONS, 'AGENTS.md')]}.items():
-        for category, path in entries:
-            imported = app.import_runtime_resource(runtime, category, path)
-            assert imported.template.id == ''
-            assert imported.notes == [], imported.notes
-    imported = app.import_runtime_resource('claude', kind.NATIVE_AGENT_DEFINITIONS, 'helper.md')
-    assert imported.template.name == 'helper'
-    assert imported.template.content.description == 'd' and imported.template.content.instructions == 'do it'
-    imported = app.import_runtime_resource('claude', kind.MCP_SERVERS, 'docs')
-    assert imported.template.content.transport.command == 'docs-mcp'
-    # 同名模板已存在：改名后保存，再应用回原运行时。
-    copy = imported.template
-    copy.name = 'docs-copy'
-    saved_copy = app.save_resource_template(copy)
-    reports = app.apply_resource_template(saved_copy.id, [target('claude')])
-    # 新名字写入新条目；原 docs 条目仍由 docs 模板管理。
-    assert isinstance(report(reports, 'claude'), outcome.CREATE)
-    skill_copy = app.import_runtime_resource('claude', kind.SKILLS, 'review')
-    assert [f.path for f in skill_copy.template.content.files] == ['SKILL.md']
-    reject(lambda: app.import_runtime_resource('claude', kind.SKILLS, 'missing'))
-    print('PASS 从运行时导入', flush=True)
-
-    # 持久化：重开后绑定仍在。
     app.shutdown()
     reopened = type(app).open(b.BindingOptions(
         home_directory=str(root / 'app'), resources_directory=str(root / 'resources')))
-    assert {'review', 'docs', 'helper'} <= {s.name for s in reopened.list_resource_templates()}
-    assert reopened.runtime_template_status('claude')
+    assert {'review', 'docs', 'helper', 'linter'} <= {s.name for s in reopened.list_resource_templates()}
+    assert isinstance(next(s.state for s in reopened.resource_sync_status()
+                           if s.template_id == docs.id and s.runtime_id == 'claude'), state.SYNCED)
     reopened.shutdown()
     print('PASS 重开保留', flush=True)
 

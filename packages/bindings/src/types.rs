@@ -1166,21 +1166,36 @@ pub struct BindingResourceTemplateSummary {
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, uniffi::Enum)]
 #[serde(tag = "kind", rename_all = "camelCase")]
-pub enum BindingTemplateSyncState {
+pub enum BindingResourceSyncState {
+    NotEnabled,
+    Unsupported { reason: String },
     Synced,
-    TemplateUpdated,
+    Pending,
     Drifted { paths: Vec<String> },
     Missing { paths: Vec<String> },
-    Skipped { reason: String },
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, uniffi::Record)]
 #[serde(rename_all = "camelCase")]
-pub struct BindingRuntimeTemplateStatus {
+pub struct BindingResourceSyncStatus {
     pub template_id: String,
-    pub template_name: String,
+    pub runtime_id: String,
+    pub state: BindingResourceSyncState,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, uniffi::Record)]
+#[serde(rename_all = "camelCase")]
+pub struct BindingUnmanagedRuntimeResource {
+    pub runtime_id: String,
     pub kind: BindingRuntimeResourceKind,
-    pub state: BindingTemplateSyncState,
+    pub path: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, uniffi::Record)]
+#[serde(rename_all = "camelCase")]
+pub struct BindingResourceSaveResult {
+    pub summary: BindingResourceTemplateSummary,
+    pub reports: Vec<BindingTemplateApplyReport>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, uniffi::Enum)]

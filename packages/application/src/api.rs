@@ -446,14 +446,14 @@ impl Application {
         )
     }
 
-    /// Template summaries; no content, so no secrets.
+    /// Resource library summaries; no content, so no secrets.
     pub fn list_resource_templates(
         &mut self,
     ) -> Result<Vec<crate::ResourceTemplateSummary>, Error> {
         self.execute("resourceTemplates", json!({"operation":"list"}), None)
     }
 
-    /// One template with its full content, including any secret values.
+    /// One resource with its full content, including any secret values.
     pub fn read_resource_template(
         &mut self,
         template_id: String,
@@ -465,11 +465,13 @@ impl Application {
         )
     }
 
-    /// Create (empty id) or replace a template. Applied copies change only when synced.
+    /// Create (empty id) or replace a resource, then write it to the runtimes it is enabled on
+    /// and in sync with. Runtimes changed outside Velune, or all of them while a turn runs, stay
+    /// as they are and report their state through `resource_sync_status`.
     pub fn save_resource_template(
         &mut self,
         template: crate::ResourceTemplate,
-    ) -> Result<crate::ResourceTemplateSummary, Error> {
+    ) -> Result<crate::ResourceSaveResult, Error> {
         self.execute(
             "resourceTemplates",
             json!({"operation":"save","template":template}),
@@ -477,7 +479,7 @@ impl Application {
         )
     }
 
-    /// Delete a template. Runtimes keep the native entries it wrote, now unmanaged.
+    /// Delete a resource. Runtimes keep the native entries it wrote, now unmanaged.
     pub fn delete_resource_template(&mut self, template_id: String) -> Result<(), Error> {
         self.execute(
             "resourceTemplates",
@@ -486,8 +488,8 @@ impl Application {
         )
     }
 
-    /// Read one native entry of a runtime back into an unsaved template. `path` is the entry's key
-    /// path: the skill directory, MCP server name, or agent/instruction file.
+    /// Read one native entry back into an unsaved resource, with what could not be carried over.
+    /// `path` is the entry's key path: skill directory, MCP server name, or agent/instruction file.
     pub fn import_runtime_resource(
         &mut self,
         runtime_id: String,
@@ -501,32 +503,40 @@ impl Application {
         )
     }
 
-    /// Templates applied to one runtime and whether each is in sync.
-    pub fn runtime_template_status(
+    /// Add a native entry to the library and keep it enabled on its runtime; the native entry is
+    /// rewritten in the library's form.
+    pub fn adopt_runtime_resource(
         &mut self,
         runtime_id: String,
-    ) -> Result<Vec<crate::RuntimeTemplateStatus>, Error> {
+        kind: crate::RuntimeResourceKind,
+        path: String,
+    ) -> Result<crate::ResourceTemplateSummary, Error> {
         self.execute(
             "resourceSync",
-            json!({"operation":"status"}),
+            json!({"operation":"adopt","kind":kind,"path":path}),
             Some(&runtime_id),
         )
     }
 
-    /// What applying a template to each target would do; writes nothing.
-    pub fn preview_resource_template(
+    /// Every resource on every runtime instance.
+    pub fn resource_sync_status(&mut self) -> Result<Vec<crate::ResourceSyncStatus>, Error> {
+        self.execute("resourceSync", json!({"operation":"status"}), None)
+    }
+
+    /// Native entries of one kind that no resource manages, on every runtime instance.
+    pub fn unmanaged_runtime_resources(
         &mut self,
-        template_id: String,
-        targets: Vec<crate::TemplateApplyTarget>,
-    ) -> Result<Vec<crate::TemplateApplyReport>, Error> {
+        kind: crate::RuntimeResourceKind,
+    ) -> Result<Vec<crate::UnmanagedRuntimeResource>, Error> {
         self.execute(
             "resourceSync",
-            json!({"operation":"preview","templateID":template_id,"targets":targets}),
+            json!({"operation":"unmanaged","kind":kind}),
             None,
         )
     }
 
-    /// Apply (or re-sync) a template to each target and keep the entries managed.
+    /// Enable a resource on, or re-sync it to, each target. A conflicting native entry stops the
+    /// target unless `overwrite` is set.
     pub fn apply_resource_template(
         &mut self,
         template_id: String,
@@ -539,7 +549,7 @@ impl Application {
         )
     }
 
-    /// Settle an applied template whose native entries drifted or went missing.
+    /// Overwrite drifted entries, stop syncing (keeping native content), or remove them.
     pub fn resolve_resource_binding(
         &mut self,
         runtime_id: String,

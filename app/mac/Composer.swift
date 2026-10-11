@@ -349,7 +349,7 @@ struct ComposerView: View {
                     ForEach(store.enabledRuntimeInstances) { runtime in Text(runtime.name).tag(Optional(runtime.id)) }
                 }.pickerStyle(.inline)
                 Divider()
-                if let runtime = nextTurnRuntime { Button("管理 \(runtime.name) 的资源…") { RuntimeResourcesNavigator.shared.show(runtime.id, openWindow) } }
+                if let runtime = nextTurnRuntime { Button("在资源库中查看 \(runtime.name)…") { ResourceLibraryNavigator.shared.show(runtime.id, openWindow) } }
                 SettingsTabLink(tab: .runtimes, title: "Agent 运行时设置…")
             } label: {
                 Text(nextTurnRuntime?.name ?? "选择运行时").lineLimit(1).truncationMode(.middle).frame(maxWidth: 140, alignment: .leading)
