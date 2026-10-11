@@ -4,7 +4,7 @@ use crate::provider_authentication::*;
 impl CoreRuntime {
     pub(super) fn authentication_action(&mut self, payload: &Value) -> Result<Value, RuntimeError> {
         let operation = payload["operation"].as_str().unwrap_or("poll");
-        if operation == "start" && (self.busy() || self.collaboration.is_some()) {
+        if operation == "start" && self.execution_active() {
             return Err(RuntimeError::invalid("runtime is busy"));
         }
         let mut request = payload.clone();
@@ -85,7 +85,7 @@ impl CoreRuntime {
                     "来源已完成登录，但提供商配置保存失败；请检查配置目录后重试。",
                 ));
             }
-            self.invalidate_execution()?;
+            self.for_each_session(Self::invalidate_execution)?;
             data["gateways"] = serde_json::to_value(self.public_gateways())?;
             data["executionInvalidated"] = Value::Bool(true);
         }

@@ -23,6 +23,8 @@ impl CoreRuntime {
             .ok_or_else(|| RuntimeError::invalid("gateway id"))?;
         if runtime.type_id != "pi-1.0.2" {
             self.shutdown_active()?;
+            let runtime_projection = self.execution_context(&runtime)?.projection;
+            let lane = self.lane_projection(&runtime_projection);
             let runner = Runner::start_with_analytics(
                 gateway.to_gateway_config()?,
                 crate::authentication_resolver::ProviderResolver::capture(&gateway, &self.options),
@@ -30,23 +32,24 @@ impl CoreRuntime {
                 Some(self.analytics.clone()),
             )
             .map_err(|error| RuntimeError::context("gateway startup", error))?;
-            self.gateway_runner = Some(runner);
+            self.session.gateway_runner = Some(runner);
             let result = (|| {
                 let injection = self.native_injection(&runtime, model_record_key)?;
                 let mut config = self.native_config(&runtime, Some(injection))?;
+                config.projection_directory = lane;
                 config.mcp_servers = self.collaboration_servers();
                 NativeSession::connect(config)
                     .map_err(|error| RuntimeError::context("运行时连接失败", error))
             })();
             match result {
                 Ok(session) => {
-                    self.active_state = ActiveState::Native(Box::new(session));
-                    self.execution_runtime_id = Some(runtime.id);
-                    self.model_record_key = None;
+                    self.session.active_state = ActiveState::Native(Box::new(session));
+                    self.session.execution_runtime_id = Some(runtime.id);
+                    self.session.model_record_key = None;
                     return Ok(());
                 }
                 Err(error) => {
-                    self.gateway_runner = None;
+                    self.session.gateway_runner = None;
                     return Err(error);
                 }
             }
@@ -86,7 +89,7 @@ impl CoreRuntime {
             runner.endpoint(),
         )
         .map_err(|error| RuntimeError::context("网关 SSH 转发", error))?;
-        let projection_dir = context.projection;
+        let projection_dir = self.lane_projection(&context.projection);
         let config = PiConfig {
             mcp_servers: self.collaboration_servers(),
             runtime_type_id: runtime.type_id.clone(),
@@ -135,14 +138,14 @@ impl CoreRuntime {
             &physical_model_id,
             subscription_capability,
         )?;
-        self.gateway_runner = Some(runner);
-        self.gateway_tunnel = Some(tunnel);
-        self.pi.config = Some(config);
-        self.active_state = ActiveState::Pi;
-        self.execution_runtime_id = Some(runtime_id.into());
-        self.pi.physical_model_id = None;
-        self.model_record_key = None;
-        self.pi.subscription_capability = false;
+        self.session.gateway_runner = Some(runner);
+        self.session.gateway_tunnel = Some(tunnel);
+        self.session.pi.config = Some(config);
+        self.session.active_state = ActiveState::Pi;
+        self.session.execution_runtime_id = Some(runtime_id.into());
+        self.session.pi.physical_model_id = None;
+        self.session.model_record_key = None;
+        self.session.pi.subscription_capability = false;
         Ok(())
     }
 
@@ -155,6 +158,7 @@ impl CoreRuntime {
         subscription_capability: bool,
     ) -> Result<(), RuntimeError> {
         let runtime = self
+            .session
             .execution_runtime_id
             .as_deref()
             .ok_or_else(|| RuntimeError::invalid("Pi 执行运行时不可用"))
@@ -183,6 +187,7 @@ impl CoreRuntime {
         }
         let cwd = cwd.map(Path::to_owned);
         let mut config = self
+            .session
             .pi
             .config
             .clone()
@@ -202,7 +207,11 @@ impl CoreRuntime {
         client
             .state()
             .map_err(|error| runtime_start_error("startup", error))?;
-        let runtime_id = self.execution_runtime_id.as_deref().unwrap_or_default();
+        let runtime_id = self
+            .session
+            .execution_runtime_id
+            .as_deref()
+            .unwrap_or_default();
         let mut projection = PiProjection::new(ConversationSummary {
             can_rename: false,
             can_delete: false,
@@ -218,29 +227,29 @@ impl CoreRuntime {
         if let Some(snapshot) = projection.snapshot.as_mut() {
             snapshot.model_record_key = model_record_key.map(str::to_owned);
         }
-        self.pi.client = Some(client);
-        self.pi.config = Some(config);
-        self.pi.projection = Some(projection);
-        self.model_record_key = model_record_key.map(str::to_owned);
-        self.pi.physical_model_id = physical_model_id.map(str::to_owned);
-        self.pi.subscription_capability = subscription_capability;
+        self.session.pi.client = Some(client);
+        self.session.pi.config = Some(config);
+        self.session.pi.projection = Some(projection);
+        self.session.model_record_key = model_record_key.map(str::to_owned);
+        self.session.pi.physical_model_id = physical_model_id.map(str::to_owned);
+        self.session.pi.subscription_capability = subscription_capability;
         self.drain_runtime()?;
         Ok(())
     }
 
     pub(super) fn shutdown_pi(&mut self) -> Result<(), RuntimeError> {
-        if let Some(mut client) = self.pi.client.take() {
+        if let Some(mut client) = self.session.pi.client.take() {
             client
                 .shutdown()
                 .map_err(|error| RuntimeError::context("runtime shutdown", error))?;
         }
-        self.pi.busy = false;
-        self.pi.turn_started = false;
-        self.pi.projection = None;
-        self.pi.physical_model_id = None;
-        self.model_record_key = None;
-        self.pi.subscription_capability = false;
-        if let Some(config) = self.pi.config.as_mut() {
+        self.session.pi.busy = false;
+        self.session.pi.turn_started = false;
+        self.session.pi.projection = None;
+        self.session.pi.physical_model_id = None;
+        self.session.model_record_key = None;
+        self.session.pi.subscription_capability = false;
+        if let Some(config) = self.session.pi.config.as_mut() {
             config.working_dir = None;
             config.session = None;
         }
@@ -248,7 +257,7 @@ impl CoreRuntime {
     }
 
     pub(super) fn shutdown_active(&mut self) -> Result<(), RuntimeError> {
-        let state = std::mem::replace(&mut self.active_state, ActiveState::Empty);
+        let state = std::mem::replace(&mut self.session.active_state, ActiveState::Empty);
         let result = match state {
             ActiveState::Acp(mut session) => session
                 .shutdown()
@@ -257,6 +266,7 @@ impl CoreRuntime {
                 .shutdown()
                 .map_err(|error| RuntimeError::context("runtime shutdown", error)),
             ActiveState::Pi => self
+                .session
                 .pi
                 .client
                 .take()
@@ -268,11 +278,11 @@ impl CoreRuntime {
                 .unwrap_or(Ok(())),
             ActiveState::Empty | ActiveState::History(_) => Ok(()),
         };
-        self.pi = PiState::default();
-        self.gateway_runner = None;
-        self.gateway_tunnel = None;
-        self.execution_runtime_id = None;
-        self.model_record_key = None;
+        self.session.pi = PiState::default();
+        self.session.gateway_runner = None;
+        self.session.gateway_tunnel = None;
+        self.session.execution_runtime_id = None;
+        self.session.model_record_key = None;
         result
     }
 }

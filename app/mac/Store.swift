@@ -16,8 +16,9 @@ final class AppStore: ObservableObject {
     @Published private(set) var pendingConversationID: String?
     @Published private(set) var conversationManagementStatus: String?
     @Published private(set) var projectionRuntimeID: String?
-    /// The conversation whose turn this application is running, for the sidebar.
-    @Published private(set) var runningConversationID: String?
+    /// Conversations executing in this application, across windows; polled by
+    /// the application store and copied by workspaces.
+    @Published private(set) var runningConversationIDs: Set<String> = []
     @Published private(set) var nextTurnRuntimeID: String?
     @Published private(set) var nextTurnModelRecordKey: String?
     let transcript = TranscriptModel()
@@ -132,13 +133,8 @@ final class AppStore: ObservableObject {
         if authenticationNotifications != application.authenticationNotifications { authenticationNotifications = application.authenticationNotifications }
         if authenticationResult != application.authenticationResult { authenticationResult = application.authenticationResult }
         if problems != application.problems { problems = application.problems }
-        let running = application.isGenerating ? application.snapshot?.conversation.id : nil
-        if runningConversationID != running { runningConversationID = running }
+        if runningConversationIDs != application.runningConversationIDs { runningConversationIDs = application.runningConversationIDs }
         reconcileNextTurnIntent()
-        if !isDraft, pendingConversationID == nil, let active = application.snapshot,
-           active.conversation.id == loadedConversationID, active.conversation.runtimeID == snapshot?.conversation.runtimeID {
-            apply(active, preserveSelection: true)
-        }
     }
 
     private func refreshApplicationConfiguration() {
@@ -155,11 +151,9 @@ final class AppStore: ObservableObject {
         }
     }
 
-    var executionBusyElsewhere: Bool {
-        guard let sharedApplication, sharedApplication.applicationIsGenerating else { return false }
-        return sharedApplication.loadedConversationID != loadedConversationID || sharedApplication.snapshot?.conversation.runtimeID != snapshot?.conversation.runtimeID
-    }
-    var applicationIsGenerating: Bool { isGenerating || executionStarting || sharedApplication?.applicationIsGenerating == true }
+    /// Some conversation executes, in any window. Configuration its execution
+    /// depends on cannot change meanwhile; other conversations stay usable.
+    var applicationIsGenerating: Bool { isGenerating || executionStarting || !(sharedApplication ?? self).runningConversationIDs.isEmpty }
 
     var models: [ModelChoice] { gateway.providers.flatMap { provider in provider.models.map { ModelChoice(recordKey: $0.recordKey, displayName: "\($0.displayName) · \(provider.name)", protocolID: provider.protocolID) } } }
     var enabledRuntimeInstances: [RuntimeInstance] { runtimeInstances.filter(\.enabled) }
@@ -168,9 +162,11 @@ final class AppStore: ObservableObject {
     var loadedConversationWorkingDirectory: String? { snapshot?.conversation.cwd }
     var selectedConversationTitle: String? { conversations.first { $0.id == selectedConversationID }?.title ?? (snapshot?.conversation.id == selectedConversationID ? snapshot?.conversation.title : nil) }
     var isGenerating: Bool { snapshot?.runState == .running || snapshot?.runState == .stopping }
-    var isBusy: Bool { isLoading || isGenerating || isShuttingDown || authenticationRunning }
-    var canManageConversations: Bool { !applicationIsGenerating && !authenticationRunning && !isShuttingDown && conversationManagementStatus == nil && (!isLoading || pendingConversationID != nil) }
-    var canSend: Bool { !applicationIsGenerating && !authenticationRunning && !isLoading && !isGenerating && !isShuttingDown && (snapshot?.actions.canSend ?? false) && nextTurnModelRecordKey != nil && runtimeCompatibleModels.contains { $0.recordKey == nextTurnModelRecordKey } }
+    var isBusy: Bool { isLoading || applicationIsGenerating || isShuttingDown || authenticationRunning }
+    var canManageConversations: Bool { !authenticationRunning && !isShuttingDown && conversationManagementStatus == nil && (!isLoading || pendingConversationID != nil) }
+    /// A running conversation keeps its native session until the turn ends.
+    func isRunning(_ conversation: Conversation) -> Bool { runningConversationIDs.contains(conversation.id) || (loadedConversationID == conversation.id && (isGenerating || executionStarting)) }
+    var canSend: Bool { !executionStarting && !authenticationRunning && !isLoading && !isGenerating && !isShuttingDown && (snapshot?.actions.canSend ?? false) && nextTurnModelRecordKey != nil && runtimeCompatibleModels.contains { $0.recordKey == nextTurnModelRecordKey } }
     var canCancel: Bool { snapshot?.actions.canCancel ?? false }
     var canSwitchModel: Bool { nextTurnRuntimeID != nil && !isShuttingDown }
     var needsModelSelection: Bool { snapshot != nil && nextTurnModelRecordKey == nil }
@@ -195,14 +191,14 @@ final class AppStore: ObservableObject {
     }
     var pendingInteractions: [RuntimeInteraction] { snapshot?.pendingInteractions ?? [] }
     func replyInteraction(_ interaction: RuntimeInteraction, reply: RuntimeInteractionReply) {
-        guard pendingInteractions.contains(where: { $0.id == interaction.id }), let runtimeID = projectionRuntimeID, let transport else { return }
+        guard pendingInteractions.contains(where: { $0.id == interaction.id }), let runtimeID = projectionRuntimeID, let conversationID = loadedConversationID, let transport else { return }
         let currentGeneration = generation
-        enqueue({ try transport.replyRuntimeInteraction(runtimeID: runtimeID, interactionID: interaction.id, reply: reply) }) { [weak self] value in
+        enqueue({ try transport.replyRuntimeInteraction(runtimeID: runtimeID, conversationID: conversationID, interactionID: interaction.id, reply: reply) }) { [weak self] value in
             guard let self, generation == currentGeneration else { return }; applySnapshotResult(value)
         }
     }
     func shutdown(completion: @escaping (Bool) -> Void) {
-        if sharedApplication != nil { subscriptions.removeAll(); completion(true); return }
+        if sharedApplication != nil { subscriptions.removeAll(); timer?.invalidate(); timer = nil; completion(true); return }
         guard !isShuttingDown else { completion(false); return }
         guard !isPreview, let transport else { completion(true); return }
         saveDrafts()
@@ -227,10 +223,34 @@ final class AppStore: ObservableObject {
             }
         }
     }
+    /// The application store follows login and which conversations execute;
+    /// each workspace follows the conversation it shows.
     private func schedulePolling() {
         timer?.invalidate()
         timer = Timer.scheduledTimer(withTimeInterval: 0.6, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.pollAuthentication(); self?.poll() }
+            Task { @MainActor in
+                guard let self else { return }
+                if self.sharedApplication == nil { self.pollAuthentication(); self.pollActiveConversations() } else { self.poll() }
+            }
+        }
+    }
+    private var activePollPending = false
+    private func pollActiveConversations() {
+        guard started, !isPreview, !isShuttingDown, !activePollPending, let transport else { return }
+        activePollPending = true
+        queue.async { [weak self] in
+            let result = Result { try transport.activeConversations() }
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.activePollPending = false
+                switch result {
+                case .success(let active):
+                    self.clearActivityProblem("active-conversations")
+                    let running = Set(active.filter { $0.runState == .running || $0.runState == .stopping }.map(\.conversationId))
+                    if self.runningConversationIDs != running { self.runningConversationIDs = running }
+                case .failure(let failure): self.recordProblem(failure, source: "读取运行状态", activityKey: "active-conversations")
+                }
+            }
         }
     }
     func start(loadFirstConversation: Bool = true) {
@@ -241,15 +261,15 @@ final class AppStore: ObservableObject {
         enqueue({ try transport.list() }) { [weak self] data in
             guard let self else { return }
             applyList(data)
-            if sharedApplication == nil { schedulePolling() }
+            schedulePolling()
             if loadFirstConversation, let id = conversations.first?.id { selectConversation(id: id) }
         }
     }
     func refreshConversations() {
-        guard !isPreview, !isBusy, let transport else { return }
+        guard !isPreview, !isLoading, !isShuttingDown, let transport else { return }
         enqueue({ try transport.list() }) { [weak self] in self?.applyList($0) }
     }
-    var canReloadFromRuntimes: Bool { !isPreview && !isBusy && !applicationIsGenerating && pendingConversationID == nil }
+    var canReloadFromRuntimes: Bool { !isPreview && !isLoading && !isShuttingDown && !isGenerating && !executionStarting && pendingConversationID == nil }
     /// Runtimes own their sessions and can change them outside Velune (another
     /// client, a turn still running there). Velune does not watch for that; this
     /// reads the conversation list and the open conversation again.
@@ -376,12 +396,12 @@ final class AppStore: ObservableObject {
         enqueue({ try transport.setConversationBrowserGroupLimit(value) }) { [weak self] result in self?.conversationBrowserGroupLimit = Int(result) }
     }
     func selectConversations(ids: Set<String>) {
-        guard !isLoading, !isGenerating, !isShuttingDown, !authenticationRunning else { return }
+        guard !isLoading, !isShuttingDown, !authenticationRunning else { return }
         selectedConversationIDs = ids.intersection(conversations.map(\.id))
         if selectedConversationIDs.count == 1, let id = selectedConversationIDs.first, id != loadedConversationID { selectConversation(id: id) }
     }
     func selectConversation(id: String) {
-        guard !isLoading, !isGenerating, let conversation = conversations.first(where: { $0.id == id }) else { return }
+        guard !isLoading, !executionStarting, let conversation = conversations.first(where: { $0.id == id }) else { return }
         selectedConversationIDs = [id]
         if isPreview { projectionRuntimeID = conversation.runtimeID; apply(previewSnapshots[id]); return }
         guard let transport else { recordProblem("本地核心未配置"); return }
@@ -422,10 +442,10 @@ final class AppStore: ObservableObject {
         pendingConversationID = nil
     }
     func canRenameConversation(_ conversation: Conversation) -> Bool {
-        conversation.canRename
+        conversation.canRename && !isRunning(conversation)
     }
     func canDeleteConversation(_ conversation: Conversation) -> Bool {
-        conversation.canDelete
+        conversation.canDelete && !isRunning(conversation)
     }
     func renameConversation(_ conversation: Conversation, title: String, onRenamed: @escaping () -> Void) {
         guard canManageConversations else { recordProblem("请等待正在进行的操作结束，再修改会话"); return }
@@ -517,7 +537,7 @@ final class AppStore: ObservableObject {
     /// runtime and model start from the current next-turn choice and can be
     /// changed in the composer; the conversation is created at the first send.
     func createConversation() {
-        guard !isLoading, !applicationIsGenerating else { return }
+        guard !isLoading, !executionStarting else { return }
         guard let runtimeID = enabledRuntimeInstances.first(where: { $0.id == nextTurnRuntimeID })?.id ?? enabledRuntimeInstances.first?.id else { return }
         let id = isPreview ? UUID().uuidString : Self.draftConversationPrefix + UUID().uuidString
         let conversation = Conversation(id: id, title: "新会话", updatedAtUnixMs: isPreview ? Int64(Date().timeIntervalSince1970 * 1000) : nil, runtimeID: runtimeID, cwd: nil, canRename: isPreview, canDelete: isPreview)
@@ -547,8 +567,7 @@ final class AppStore: ObservableObject {
             apply(value); onAccepted?(loadedConversationID); return
         }
         guard let transport else { recordProblem("本地核心未配置"); return }
-        let application = sharedApplication ?? self
-        application.executionStarting = true
+        executionStarting = true
         let creating = isDraft
         let cwd = snapshot?.conversation.cwd
         enqueue({
@@ -562,24 +581,22 @@ final class AppStore: ObservableObject {
                             self.moveDraft(from: conversationID, to: id)
                             self.nextTurnIntents[id] = self.nextTurnIntents.removeValue(forKey: conversationID)
                         }
-                        self.sharedApplication?.applySnapshotResult(created)
                         self.applySnapshotResult(created)
                     }
                 }
             }
             return try transport.sendTurn(sourceRuntimeID: source, conversationID: conversationID, targetRuntimeID: target, modelRecordKey: model, text: text)
-        }, onAccepted: { [weak self] in onAccepted?(self?.loadedConversationID) }, onFailure: { _ in application.executionStarting = false }) { [weak self] value in
-            application.executionStarting = false
-            self?.sharedApplication?.applySnapshotResult(value)
+        }, onAccepted: { [weak self] in onAccepted?(self?.loadedConversationID) }, onFailure: { [weak self] _ in self?.executionStarting = false }) { [weak self] value in
+            self?.executionStarting = false
             self?.applySnapshotResult(value)
         }
     }
     func cancel() {
         guard canCancel, !isLoading else { return }
         if isPreview { snapshot?.runState = .idle; snapshot?.actions.canCancel = false; apply(snapshot); return }
-        guard let runtimeID = projectionRuntimeID else { recordProblem("请选择运行时实例"); return }
+        guard let runtimeID = projectionRuntimeID, let conversationID = loadedConversationID else { recordProblem("请选择运行时实例"); return }
         guard let transport else { recordProblem("本地核心未配置"); return }
-        enqueue({ try transport.cancel(runtimeID: runtimeID) }) { [weak self] in self?.applySnapshotResult($0) }
+        enqueue({ try transport.cancel(runtimeID: runtimeID, conversationID: conversationID) }) { [weak self] in self?.applySnapshotResult($0) }
     }
     func saveProvider(_ value: AIProvider, authenticationEdit: AuthenticationEdit, onSaved: (() -> Void)? = nil) {
         guard !authenticationRunning, !isGenerating else { recordProblem("请先停止当前任务或完成登录"); return }
@@ -881,7 +898,7 @@ final class AppStore: ObservableObject {
         case changes(base: TranscriptCursor, header: ConversationSnapshot, order: [String], changed: [Message])
     }
     private func poll() {
-        guard sharedApplication == nil, started, !isDraft, !isPreview, !isShuttingDown, snapshot != nil, !isLoading, !pollPending, let transport, let runtimeID = projectionRuntimeID else { return }
+        guard started, !isDraft, !isPreview, !isShuttingDown, sharedApplication?.isShuttingDown != true, snapshot != nil, !isLoading, !pollPending, let transport, let runtimeID = projectionRuntimeID else { return }
         let revision = generation
         let selected = selectedConversationID
         let since = snapshot?.cursor

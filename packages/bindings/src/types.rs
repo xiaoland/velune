@@ -497,6 +497,16 @@ pub struct BindingSnapshotResult {
     pub snapshot: Option<BindingConversationSnapshot>,
 }
 
+/// A conversation that executes or waits for the user, in any open session.
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BindingActiveConversation {
+    pub context_runtime_id: String,
+    pub conversation_id: String,
+    pub run_state: BindingRunState,
+    pub pending_interactions: u32,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 #[serde(rename_all = "camelCase")]
 pub struct BindingAnalyticsQuery {

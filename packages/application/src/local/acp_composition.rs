@@ -39,8 +39,8 @@ impl CoreRuntime {
                 .as_str()
                 .ok_or_else(|| RuntimeError::invalid("runtime instance id"))?,
         )?;
-        if self.execution_runtime_id.as_deref() == Some(&runtime.id)
-            && let ActiveState::Acp(session) = &self.active_state
+        if self.session.execution_runtime_id.as_deref() == Some(&runtime.id)
+            && let ActiveState::Acp(session) = &self.session.active_state
         {
             return Ok(
                 json!({"capabilities":session.capabilities(),"agentInfo":session.agent_info(),"authMethods":session.auth_methods()}),
@@ -153,8 +153,8 @@ impl CoreRuntime {
             })
             .transpose()?;
         if !is_new
-            && self.execution_runtime_id.as_deref() == Some(&runtime.id)
-            && let ActiveState::Acp(session) = &mut self.active_state
+            && self.session.execution_runtime_id.as_deref() == Some(&runtime.id)
+            && let ActiveState::Acp(session) = &mut self.session.active_state
             && session
                 .snapshot()
                 .is_some_and(|active| active.conversation.id == snapshot.conversation.id)
@@ -191,8 +191,8 @@ impl CoreRuntime {
                 .map_err(|error| RuntimeError::context("ACP 模型选择", error))?;
         }
         self.shutdown_active()?;
-        self.execution_runtime_id = Some(runtime.id);
-        self.active_state = ActiveState::Acp(Box::new(session));
+        self.session.execution_runtime_id = Some(runtime.id);
+        self.session.active_state = ActiveState::Acp(Box::new(session));
         Ok(())
     }
 
@@ -227,11 +227,11 @@ impl CoreRuntime {
             .load(native_id, cwd, runtime_id)
             .map_err(|error| RuntimeError::context("ACP 会话打开", error))?;
         self.shutdown_active()?;
-        self.logical_projection = None;
-        self.unsubmitted_draft = None;
-        self.execution_runtime_id = Some(runtime.id);
-        self.model_selection = Some(crate::ModelSelection::RuntimeDefault);
-        self.active_state = ActiveState::Acp(Box::new(session));
+        self.session.logical_projection = None;
+        self.session.unsubmitted_draft = None;
+        self.session.execution_runtime_id = Some(runtime.id);
+        self.session.model_selection = Some(crate::ModelSelection::RuntimeDefault);
+        self.session.active_state = ActiveState::Acp(Box::new(session));
         self.snapshot_result()
     }
 
@@ -250,7 +250,7 @@ impl CoreRuntime {
         {
             return Err(RuntimeError::invalid("ACP 配置不属于当前会话"));
         }
-        let ActiveState::Acp(session) = &mut self.active_state else {
+        let ActiveState::Acp(session) = &mut self.session.active_state else {
             return Err(RuntimeError::Unsupported("当前会话不是通用 ACP".into()));
         };
         if update {
@@ -261,7 +261,7 @@ impl CoreRuntime {
             session
                 .set_config_option(config_id, value)
                 .map_err(|error| RuntimeError::context("ACP 配置选择", error))?;
-            self.model_selection = Some(crate::ModelSelection::RuntimeDefault);
+            self.session.model_selection = Some(crate::ModelSelection::RuntimeDefault);
         }
         Ok(serde_json::to_value(session.config_options())?)
     }
@@ -292,7 +292,7 @@ impl CoreRuntime {
             .is_some_and(|snapshot| snapshot.conversation.id == id)
         {
             self.shutdown_active()?;
-            self.unsubmitted_draft = None;
+            self.session.unsubmitted_draft = None;
         }
         self.list()
     }

@@ -154,10 +154,10 @@ def main():
             reject(lambda:application.send_turn_with_selection('full',identity,'full',b.BindingModelSelection.MANAGED(model_record_key='irrelevant'),'NO_MANAGED'),'managed')
             application.send_turn_with_selection('full',identity,'full',default,'PERMIT')
             pending=wait('full',identity,lambda snapshot:bool(snapshot.pending_interactions)).pending_interactions[0]
-            reject(lambda:application.reply_runtime_interaction('full',pending.id,b.BindingRuntimeInteractionReply.DECISION(option_id='missing')))
-            application.reply_runtime_interaction('full',pending.id,b.BindingRuntimeInteractionReply.DECISION(option_id='allow'));wait('full',identity)
-            application.send_turn_with_selection('full',identity,'full',default,'CANCEL');application.cancel('full');wait('full',identity)
-            reject(lambda:application.reply_runtime_interaction('full',pending.id,b.BindingRuntimeInteractionReply.DECISION(option_id='allow')))
+            reject(lambda:application.reply_runtime_interaction('full',identity,pending.id,b.BindingRuntimeInteractionReply.DECISION(option_id='missing')))
+            application.reply_runtime_interaction('full',identity,pending.id,b.BindingRuntimeInteractionReply.DECISION(option_id='allow'));wait('full',identity)
+            application.send_turn_with_selection('full',identity,'full',default,'CANCEL');application.cancel('full',identity);wait('full',identity)
+            reject(lambda:application.reply_runtime_interaction('full',identity,pending.id,b.BindingRuntimeInteractionReply.DECISION(option_id='allow')))
             before=count('live','new')
             reject(lambda:application.send_turn_with_selection('full',identity,'live',default,'NO_TARGET'),'历史')
             assert count('live','new')==before and application.snapshot('full',identity).snapshot.actions.can_send

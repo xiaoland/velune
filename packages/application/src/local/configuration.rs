@@ -116,7 +116,7 @@ impl CoreRuntime {
         // Active native drafts are legitimate current sessions even before their
         // runtime writes history. They disappear when that native session closes.
         if matches!(
-            self.active_state,
+            self.session.active_state,
             ActiveState::Pi | ActiveState::Native(_) | ActiveState::Acp(_)
         ) && let Some(snapshot) = self.native_snapshot()
             && !conversations
@@ -152,7 +152,7 @@ impl CoreRuntime {
         &mut self,
         request: &Value,
     ) -> Result<Value, RuntimeError> {
-        if self.busy() || self.collaboration.is_some() {
+        if self.execution_active() {
             return Err(RuntimeError::invalid("runtime is busy"));
         }
         let operation = request["payload"]["operation"]
@@ -228,7 +228,7 @@ impl CoreRuntime {
                     return Err(error);
                 }
                 if execution_invalidated {
-                    self.invalidate_execution()?;
+                    self.for_each_session(Self::invalidate_execution)?;
                 }
                 Ok(
                     json!({"importedProviderIds":result["importedProviderIds"],"skippedProviderIds":result["skippedProviderIds"],"gateways":self.public_gateways(),"executionInvalidated":execution_invalidated}),
@@ -239,7 +239,7 @@ impl CoreRuntime {
     }
 
     pub(super) fn runtime_action(&mut self, request: &Value) -> Result<Value, RuntimeError> {
-        if self.busy() || self.collaboration.is_some() {
+        if self.execution_active() {
             return Err(RuntimeError::invalid("runtime is busy"));
         }
         self.acp_capability_cache.borrow_mut().clear();
@@ -309,55 +309,66 @@ impl CoreRuntime {
             "list" => {}
             _ => return Err(RuntimeError::invalid("runtime operation")),
         }
-        let source_ids: Vec<String> = if let Some(projection) = &self.logical_projection {
-            projection
-                .link
-                .segments
-                .iter()
-                .map(|s| s.runtime_instance_id.clone())
-                .collect()
-        } else {
-            self.native_snapshot()
-                .map(|view| vec![view.conversation.runtime_id])
-                .unwrap_or_default()
-        };
-        let changed = |id: &String| {
-            previous.iter().find(|runtime| &runtime.id == id)
-                != self
-                    .runtime_instances
+        // Each open session checks whether the edit reaches its source or execution.
+        let mut execution_invalidated = false;
+        self.for_each_session(|core| {
+            let source_ids: Vec<String> = if let Some(projection) = &core.session.logical_projection
+            {
+                projection
+                    .link
+                    .segments
                     .iter()
-                    .find(|runtime| &runtime.id == id)
-        };
-        let source_changed = source_ids.iter().any(|id| {
-            let origin = |runtime: &RuntimeInstance| {
-                (
-                    runtime.type_id.clone(),
-                    runtime.enabled,
-                    runtime.settings.clone(),
-                )
+                    .map(|s| s.runtime_instance_id.clone())
+                    .collect()
+            } else {
+                core.native_snapshot()
+                    .map(|view| vec![view.conversation.runtime_id])
+                    .unwrap_or_default()
             };
-            previous
-                .iter()
-                .find(|runtime| &runtime.id == id)
-                .map(origin)
-                != self
-                    .runtime_instances
+            let changed = |id: &String| {
+                previous.iter().find(|runtime| &runtime.id == id)
+                    != core
+                        .runtime_instances
+                        .iter()
+                        .find(|runtime| &runtime.id == id)
+            };
+            let source_changed = source_ids.iter().any(|id| {
+                let origin = |runtime: &RuntimeInstance| {
+                    (
+                        runtime.type_id.clone(),
+                        runtime.enabled,
+                        runtime.settings.clone(),
+                    )
+                };
+                previous
                     .iter()
                     .find(|runtime| &runtime.id == id)
                     .map(origin)
-        });
-        let execution_invalidated =
-            source_changed || self.execution_runtime_id.as_ref().is_some_and(changed);
-        if execution_invalidated {
-            self.invalidate_execution()?;
-            if source_changed {
-                // A native ID is scoped to the source configuration used to
-                // load it. Editing that source requires an explicit reopen.
-                self.active_state = ActiveState::Empty;
-                self.logical_projection = None;
-                self.model_record_key = None;
+                    != core
+                        .runtime_instances
+                        .iter()
+                        .find(|runtime| &runtime.id == id)
+                        .map(origin)
+            });
+            let invalidated = source_changed
+                || core
+                    .session
+                    .execution_runtime_id
+                    .as_ref()
+                    .is_some_and(changed);
+            execution_invalidated |= invalidated;
+            if invalidated {
+                core.invalidate_execution()?;
+                if source_changed {
+                    // A native ID is scoped to the source configuration used to
+                    // load it. Editing that source requires an explicit reopen.
+                    core.session.active_state = ActiveState::Empty;
+                    core.session.logical_projection = None;
+                    core.session.model_record_key = None;
+                }
             }
-        }
+            Ok(())
+        })?;
         if self.next_turn_runtime_id.as_ref().is_some_and(|id| {
             !self
                 .runtime_instances

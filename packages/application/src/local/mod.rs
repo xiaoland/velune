@@ -77,7 +77,9 @@ struct PiState {
     physical_model_id: Option<String>,
     subscription_capability: bool,
 }
+#[derive(Default)]
 enum ActiveState {
+    #[default]
     Empty,
     History(Box<crate::conversation::ConversationSnapshot>),
     Pi,
@@ -96,11 +98,13 @@ pub struct CoreRuntime {
     options: RuntimeOptions,
     // Fields drop in declaration order: close collaboration and execution owners
     // before releasing the repository's exclusive application-home lock.
-    collaboration: Option<collaboration::Scope>,
+    /// The conversation session requests currently address; see `session`.
+    session: session::Session,
+    /// Other open conversation sessions, most recently used last.
+    parked: Vec<session::Session>,
     gateways: Vec<GatewayConfig>,
     model_templates: Vec<crate::config::ModelTemplate>,
     conversation_links: Vec<crate::config::ConversationLink>,
-    logical_projection: Option<continuation::LogicalProjection>,
     conversation_browser_group_limit: u32,
     outline_presentation: crate::config::OutlinePresentation,
     composer_drafts: BTreeMap<String, String>,
@@ -109,23 +113,13 @@ pub struct CoreRuntime {
     /// A resource save could not reach its runtimes because one was busy; retried once idle.
     resource_sync_due: bool,
     conversation_browser_preferences: crate::config::ConversationBrowserPreferences,
-    transcript_projection: velune_agent_runtime::transcript::TranscriptProjection,
-    transcript_conversation_id: Option<String>,
     authentication_provider: Option<(String, String)>,
     runtime_instances: Vec<RuntimeInstance>,
-    pi: PiState,
-    active_state: ActiveState,
-    gateway_runner: Option<Runner>,
     next_turn_runtime_id: Option<String>,
-    execution_runtime_id: Option<String>,
     authentication: Option<authentication::Login>,
-    model_record_key: Option<String>,
-    model_selection: Option<crate::ModelSelection>,
-    unsubmitted_draft: Option<UnsubmittedDraft>,
     acp_capability_cache: std::cell::RefCell<BTreeMap<String, crate::AcpCapabilities>>,
     history_listings: std::cell::RefCell<BTreeMap<String, browsing::HistoryListing>>,
     delivery: delivery::TranscriptDelivery,
-    gateway_tunnel: Option<velune_agent_runtime::execution::LoopbackTunnel>,
     prepared_remote_resources: std::cell::RefCell<std::collections::BTreeSet<String>>,
     analytics: Arc<crate::analytics::AnalyticsStore>,
     repository: crate::repository::Repository,
@@ -146,6 +140,7 @@ mod provider_management;
 mod resource_library;
 mod runtime_execution;
 mod runtime_management;
+mod session;
 use pi_composition::*;
 
 impl CoreRuntime {
@@ -160,11 +155,12 @@ impl CoreRuntime {
         let (resource_templates, resource_bindings) = repository.load_resource_library()?;
         Ok(Self {
             options,
+            session: Default::default(),
+            parked: Vec::new(),
             repository,
             gateways: persisted.gateways,
             model_templates: persisted.model_templates,
             conversation_links,
-            logical_projection: None,
             conversation_browser_group_limit: persisted.conversation_browser_group_limit,
             outline_presentation: persisted.outline_presentation,
             composer_drafts,
@@ -172,78 +168,55 @@ impl CoreRuntime {
             resource_sync_due: !resource_bindings.is_empty(),
             resource_bindings,
             conversation_browser_preferences: persisted.conversation_browser_preferences,
-            transcript_projection: Default::default(),
-            transcript_conversation_id: None,
             authentication_provider: None,
             runtime_instances: persisted.runtime_instances,
-            pi: PiState::default(),
-            active_state: ActiveState::Empty,
-            gateway_runner: None,
             next_turn_runtime_id: None,
-            execution_runtime_id: None,
             authentication: None,
-            model_record_key: None,
-            model_selection: None,
-            unsubmitted_draft: None,
             acp_capability_cache: Default::default(),
             history_listings: Default::default(),
             delivery: delivery::TranscriptDelivery::new(),
-            gateway_tunnel: None,
             prepared_remote_resources: Default::default(),
             analytics,
-            collaboration: None,
         })
     }
 
     fn busy(&self) -> bool {
-        match &self.active_state {
-            ActiveState::Native(session) => session.busy(),
-            ActiveState::Acp(session) => session.busy(),
-            ActiveState::Pi => self.pi.busy,
-            ActiveState::Empty | ActiveState::History(_) => false,
-        }
+        self.session.busy()
     }
     fn native_snapshot(&self) -> Option<crate::conversation::ConversationSnapshot> {
-        let snapshot = match &self.active_state {
-            ActiveState::Native(session) => session.snapshot(),
-            ActiveState::Acp(session) => session.snapshot(),
-            ActiveState::Pi => self
-                .pi
-                .projection
-                .as_ref()
-                .and_then(|p| p.snapshot.as_ref()),
-            ActiveState::History(snapshot) => Some(snapshot.as_ref()),
-            ActiveState::Empty => None,
-        };
-        snapshot.cloned().map(|mut snapshot| {
-            snapshot.model_record_key = self.model_record_key.clone();
+        self.session.projected().cloned().map(|mut snapshot| {
+            snapshot.model_record_key = self.session.model_record_key.clone();
             snapshot
         })
     }
     fn current_snapshot(&mut self) -> Option<crate::conversation::ConversationSnapshot> {
         use velune_agent_runtime::transcript::{TranscriptEvent, TranscriptProjection};
         let Some(native) = self.native_snapshot() else {
-            self.transcript_projection = TranscriptProjection::default();
-            self.transcript_conversation_id = None;
+            self.session.transcript_projection = TranscriptProjection::default();
+            self.session.transcript_conversation_id = None;
             return None;
         };
         let mut snapshot = self.decorate_snapshot(native);
-        if self.transcript_conversation_id.as_deref() != Some(&snapshot.conversation.id) {
-            self.transcript_projection = TranscriptProjection::default();
-            self.transcript_conversation_id = Some(snapshot.conversation.id.clone());
+        if self.session.transcript_conversation_id.as_deref() != Some(&snapshot.conversation.id) {
+            self.session.transcript_projection = TranscriptProjection::default();
+            self.session.transcript_conversation_id = Some(snapshot.conversation.id.clone());
         }
-        self.transcript_projection
+        self.session
+            .transcript_projection
             .apply(TranscriptEvent::ConfirmIdentities(
                 &snapshot.message_identity_confirmations,
             ));
-        self.transcript_projection
+        self.session
+            .transcript_projection
             .apply(TranscriptEvent::ReplaceMessages(&snapshot.messages));
-        self.transcript_projection
+        self.session
+            .transcript_projection
             .apply(TranscriptEvent::ExecutionState(snapshot.run_state.clone()));
-        snapshot.transcript_turns = self.transcript_projection.turns();
-        snapshot.transcript_items = self.transcript_projection.items();
-        snapshot.transcript_outline = self.transcript_projection.outline();
-        snapshot.transcript_message_identities = self.transcript_projection.message_identities();
+        snapshot.transcript_turns = self.session.transcript_projection.turns();
+        snapshot.transcript_items = self.session.transcript_projection.items();
+        snapshot.transcript_outline = self.session.transcript_projection.outline();
+        snapshot.transcript_message_identities =
+            self.session.transcript_projection.message_identities();
         Some(snapshot)
     }
     fn snapshot_result(&mut self) -> Result<Value, RuntimeError> {
@@ -262,7 +235,7 @@ impl CoreRuntime {
         let runtime_id = request["payload"]["runtimeInstanceID"]
             .as_str()
             .ok_or_else(|| RuntimeError::invalid("runtime instance id"))?;
-        if matches!(self.active_state, ActiveState::Empty) {
+        if matches!(self.session.active_state, ActiveState::Empty) {
             if !self.runtime_instance(runtime_id)?.enabled {
                 return Err(RuntimeError::invalid("此运行时已停用"));
             }
@@ -275,7 +248,7 @@ impl CoreRuntime {
     }
     fn drain_runtime(&mut self) -> Result<(), RuntimeError> {
         let was_busy = self.busy();
-        let result = match &mut self.active_state {
+        let result = match &mut self.session.active_state {
             ActiveState::Acp(session) => session
                 .poll()
                 .map_err(|error| RuntimeError::context("ACP 事件读取失败", error)),
@@ -288,7 +261,8 @@ impl CoreRuntime {
             }
             ActiveState::Empty | ActiveState::History(_) => Ok(()),
         };
-        if self.gateway_runner.is_some() && ((was_busy && !self.busy()) || result.is_err()) {
+        if self.session.gateway_runner.is_some() && ((was_busy && !self.busy()) || result.is_err())
+        {
             self.finish_managed_turn()?;
         }
         result
@@ -296,20 +270,21 @@ impl CoreRuntime {
 
     fn finish_managed_turn(&mut self) -> Result<(), RuntimeError> {
         // Pi confirms durable message identities only during the settled RPC resync.
-        let synchronized = if matches!(self.active_state, ActiveState::Pi) && !self.pi.busy {
-            self.sync_projection()
-        } else {
-            Ok(())
-        };
+        let synchronized =
+            if matches!(self.session.active_state, ActiveState::Pi) && !self.session.pi.busy {
+                self.sync_projection()
+            } else {
+                Ok(())
+            };
         let snapshot = self.native_snapshot();
-        let selection = self.model_selection.clone();
+        let selection = self.session.model_selection.clone();
         let result = self.shutdown_active();
-        self.model_selection = selection;
+        self.session.model_selection = selection;
         if let Some(mut snapshot) = snapshot {
-            self.model_record_key = snapshot.model_record_key.clone();
+            self.session.model_record_key = snapshot.model_record_key.clone();
             snapshot.pending_interactions.clear();
             snapshot.actions.can_cancel = false;
-            self.active_state = ActiveState::History(Box::new(snapshot));
+            self.session.active_state = ActiveState::History(Box::new(snapshot));
         }
         synchronized.and(result)
     }
@@ -317,7 +292,7 @@ impl CoreRuntime {
         crate::provider_configuration::summaries(&self.gateways)
     }
     pub fn close_if_idle(&mut self) -> Result<(), RuntimeError> {
-        self.drain_runtime()?;
+        self.drain_sessions()?;
         if self
             .authentication
             .as_ref()
@@ -325,11 +300,18 @@ impl CoreRuntime {
         {
             return Err(RuntimeError::invalid("runtime is busy"));
         }
-        if self.busy() || self.collaboration_busy() {
+        if std::iter::once(&self.session)
+            .chain(&self.parked)
+            .any(|session| session.busy() || session.collaboration_busy())
+        {
             return Err(RuntimeError::invalid("runtime is busy"));
         }
-        self.close_collaboration();
-        self.shutdown_active()?;
+        let result = self.for_each_session(|core| {
+            core.close_collaboration();
+            core.shutdown_active()
+        });
+        self.parked.clear();
+        result?;
         // Release the lock explicitly; a concurrent child spawn can briefly
         // inherit the open file description before exec closes its descriptors.
         self.repository.unlock()?;
@@ -337,7 +319,50 @@ impl CoreRuntime {
     }
 
     pub(crate) fn request_inner(&mut self, request: &Value) -> Result<Value, RuntimeError> {
-        self.drain_runtime()?;
+        let result = self.route(request);
+        self.trim_sessions();
+        result
+    }
+
+    /// Address the session a conversation request names, then advance every
+    /// session. Only the addressed session's failure fails the request; others
+    /// settle into their failed state and are reported when addressed.
+    fn route(&mut self, request: &Value) -> Result<Value, RuntimeError> {
+        let action = request["action"].as_str().unwrap_or_default();
+        let conversation_id = request["payload"]["conversationID"].as_str();
+        match (action, conversation_id) {
+            ("create" | "createCollaborative" | "openAcpConversation", _) => self.focus_new(),
+            (
+                "open"
+                | "sendTurn"
+                | "cancel"
+                | "replyRuntimeInteraction"
+                | "renameConversation"
+                | "deleteConversation"
+                | "getSnapshot"
+                | "getSnapshotUpdate"
+                | "acpSessionConfig"
+                | "setAcpSessionConfig",
+                Some(id),
+            ) => self.focus_conversation(id),
+            ("readConversation", Some(id)) => {
+                self.focus_existing(id);
+            }
+            _ => {}
+        }
+        let focused = self.drain_runtime();
+        for index in 0..self.parked.len() {
+            std::mem::swap(&mut self.session, &mut self.parked[index]);
+            if let Err(error) = self.drain_runtime() {
+                tracing::warn!(target: "velune_application", event = "session_drain_failed", detail = %error);
+            }
+            std::mem::swap(&mut self.session, &mut self.parked[index]);
+        }
+        focused?;
+        self.dispatch(request)
+    }
+
+    fn dispatch(&mut self, request: &Value) -> Result<Value, RuntimeError> {
         self.sync_due_resources();
         if request["version"] != CONTRACT_VERSION {
             return Err(RuntimeError::Unsupported(
@@ -402,7 +427,7 @@ impl CoreRuntime {
             "setAcpSessionConfig" => self.acp_session_config_action(request, true),
             "nextTurnModelSelection" => {
                 Ok(serde_json::to_value(if self.native_snapshot().is_some() {
-                    &self.model_selection
+                    &self.session.model_selection
                 } else {
                     &None
                 })?)
@@ -428,7 +453,7 @@ impl CoreRuntime {
             "renameConversation" => self.manage_conversation(request, false),
             "deleteConversation" => {
                 let result = self.manage_conversation(request, true)?;
-                if self.collaboration.as_ref().is_some_and(|scope| {
+                if self.session.collaboration.as_ref().is_some_and(|scope| {
                     scope.root_id.as_deref() == request["payload"]["conversationID"].as_str()
                 }) {
                     self.close_collaboration();
@@ -438,6 +463,7 @@ impl CoreRuntime {
                 }
                 Ok(result)
             }
+            "activeConversations" => Ok(serde_json::to_value(self.active_conversations())?),
             "getSnapshot" => Ok(json!({"snapshot": self
                 .queried_snapshot(request)?
                 .map(|snapshot| self.delivery.snapshot(snapshot))})),

@@ -24,10 +24,12 @@ impl CoreRuntime {
             GatewayProtocol::MessagesV1 => "anthropic-messages",
         };
         let runner = self
+            .session
             .gateway_runner
             .as_ref()
             .ok_or_else(|| RuntimeError::invalid("runtime gateway"))?;
         let endpoint = self
+            .session
             .gateway_tunnel
             .as_ref()
             .map_or(runner.endpoint(), |tunnel| tunnel.endpoint());
@@ -68,9 +70,10 @@ impl CoreRuntime {
         )]))
     }
     pub(super) fn active_instance(&self) -> Result<&RuntimeInstance, RuntimeError> {
-        let id = match &self.active_state {
+        let id = match &self.session.active_state {
             ActiveState::History(snapshot) => &snapshot.conversation.runtime_id,
             ActiveState::Native(_) | ActiveState::Acp(_) | ActiveState::Pi => self
+                .session
                 .execution_runtime_id
                 .as_ref()
                 .ok_or_else(|| RuntimeError::invalid("active runtime"))?,
@@ -114,7 +117,7 @@ impl CoreRuntime {
         key: &str,
     ) -> Result<(), RuntimeError> {
         let runtime = self.active_instance()?.clone();
-        if let ActiveState::Native(session) = &mut self.active_state {
+        if let ActiveState::Native(session) = &mut self.session.active_state {
             session
                 .create(cwd, &runtime.id)
                 .map_err(|error| RuntimeError::context("会话创建失败", error))?;
@@ -133,11 +136,11 @@ impl CoreRuntime {
                 .into_iter()
                 .find(|conversation| conversation.id == id)
                 .ok_or_else(|| RuntimeError::invalid("新建会话的原生元数据不可用"))?;
-            if let ActiveState::Native(session) = &mut self.active_state {
+            if let ActiveState::Native(session) = &mut self.session.active_state {
                 session.set_conversation(conversation);
             }
         }
-        self.model_record_key = Some(key.into());
+        self.session.model_record_key = Some(key.into());
         Ok(())
     }
     pub(super) fn native_resume(
@@ -153,7 +156,7 @@ impl CoreRuntime {
             .filter(|id| !id.is_empty())
             .ok_or_else(|| RuntimeError::invalid("conversation id"))?;
         let cwd = snapshot.conversation.cwd.as_deref().map(PathBuf::from);
-        if let ActiveState::Native(session) = &mut self.active_state {
+        if let ActiveState::Native(session) = &mut self.session.active_state {
             session
                 .open(
                     native_id,
@@ -164,7 +167,7 @@ impl CoreRuntime {
                 .map_err(|error| RuntimeError::context("会话恢复失败", error))?;
             session.set_conversation(snapshot.conversation.clone());
         }
-        self.model_record_key = Some(key.into());
+        self.session.model_record_key = Some(key.into());
         Ok(())
     }
     pub(super) fn reply_runtime_interaction(
@@ -176,7 +179,7 @@ impl CoreRuntime {
             .as_str()
             .ok_or_else(|| RuntimeError::invalid("interaction id"))?;
         let reply = serde_json::from_value(request["payload"]["reply"].clone())?;
-        match &mut self.active_state {
+        match &mut self.session.active_state {
             ActiveState::Acp(session) => session
                 .reply(id, reply)
                 .map_err(|error| RuntimeError::context("ACP 请求回复失败", error))?,

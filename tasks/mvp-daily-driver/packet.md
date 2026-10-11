@@ -64,3 +64,13 @@
 - **新接口 `active_conversations`**：列出执行中或有待处理交互的会话（上下文运行时、会话 ID、运行状态、待处理交互数），供侧栏指示与后续通知轮询。
 - **Mac**：每个窗口轮询自己打开的会话；应用级 store 轮询 `active_conversations`；执行时不再禁用侧栏、切换与新建会话；重命名／删除拒绝正在执行的会话；配置编辑在任一会话执行时仍被阻止。
 - 协作 API（脚本使用，Mac 未接入）仍作用于当前聚焦的会话。
+
+## ① 实施与验证（2026-10-11）
+
+- core：`local/session.rs` 的 `Session` 收拢执行字段，`CoreRuntime.session`／`parked`；请求先按会话 ID 聚焦再推进全部会话，非聚焦会话的推进失败只记日志；配置门禁改为 `execution_active`，提供商／导入／登录／运行时变更对每个会话执行原失效逻辑；lane 目录用于 Pi models／selection 与原生 projection；`active_conversations`；`cancel`／`reply_runtime_interaction` 增加会话 ID；重开执行中的会话返回运行视图。
+- Mac：应用级 store 轮询 `activeConversations`，各窗口轮询自己的会话；执行中不再禁用侧栏、切换与新建；重命名／删除排除执行中的会话；配置编辑在任一会话执行时仍禁用。
+- 静态检查：fmt、clippy（workspace all-targets all-features）、`--no-default-features`、Swift 严格构建。
+- `scripts/manual-parallel-sessions.py`（新增）：同一 Pi 运行时两个会话同时执行、各自 lane、重开运行中的会话、配置门禁、先后独立结束、取消一个不影响另一个——通过。
+- 临时 Swift 脚本（未提交）编译生产 Store：一个窗口发送 A 后切到 B 再发送，两个都在运行；另一窗口打开 A 显示运行中且可停止；两者分别结束——通过。可见窗口截图确认侧栏两个会话都有运行指示、A 实时显示。
+- 既有脚本：`manual-runtime-interactions`、`manual-acp-adapter`、`manual-resource-library`、`manual-continuation-boundaries` 通过（前两者已改用新签名）。`manual-session-loading.py` 在本改动前已因 `createConversation` 签名过时无法编译，未修；`manual-cross-harness`／`manual-harness-interoperation` 需要 DSH／OpenCode，本机没有，协作路径未复验。
+- 未验证：Codex／Claude Code 原生会话的并发执行（逻辑与 Pi 同路径，未用真实 CLI 并发跑）；SSH 运行时的并发。

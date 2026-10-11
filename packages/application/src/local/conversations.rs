@@ -17,6 +17,7 @@ impl CoreRuntime {
             .as_str()
             .ok_or_else(|| RuntimeError::invalid("conversation id"))?;
         if self
+            .session
             .collaboration
             .as_ref()
             .is_some_and(|scope| scope.root_id.as_deref() != Some(conversation_id))
@@ -33,6 +34,7 @@ impl CoreRuntime {
             .ok_or_else(|| RuntimeError::invalid("message text"))?;
         let active_snapshot = self.native_snapshot();
         let active_conversation_id = self
+            .session
             .logical_projection
             .as_ref()
             .map(|projection| projection.origin.id.as_str())
@@ -42,6 +44,7 @@ impl CoreRuntime {
                     .map(|snapshot| snapshot.conversation.id.as_str())
             });
         let active_source_runtime = self
+            .session
             .logical_projection
             .as_ref()
             .map(|projection| projection.origin.runtime_id.as_str())
@@ -50,9 +53,13 @@ impl CoreRuntime {
                     .as_ref()
                     .map(|snapshot| snapshot.conversation.runtime_id.as_str())
             });
-        let known_draft_source = self.unsubmitted_draft.as_ref().is_some_and(|draft| {
-            draft.public_id == conversation_id && draft.original_runtime_id == source_runtime_id
-        });
+        let known_draft_source = self
+            .session
+            .unsubmitted_draft
+            .as_ref()
+            .is_some_and(|draft| {
+                draft.public_id == conversation_id && draft.original_runtime_id == source_runtime_id
+            });
         if !known_draft_source
             && (active_conversation_id != Some(conversation_id)
                 || active_source_runtime != Some(source_runtime_id))
@@ -60,15 +67,17 @@ impl CoreRuntime {
             let (source, projection) =
                 self.read_conversation_source(source_runtime_id, conversation_id)?;
             self.invalidate_execution()?;
-            self.logical_projection = projection;
-            self.unsubmitted_draft = None;
-            self.model_record_key = source.model_record_key.clone();
-            self.active_state = ActiveState::History(Box::new(source));
+            self.session.logical_projection = projection;
+            self.session.unsubmitted_draft = None;
+            self.session.model_record_key = source.model_record_key.clone();
+            self.session.active_state = ActiveState::History(Box::new(source));
         }
         let snapshot = self
             .native_snapshot()
             .ok_or_else(|| RuntimeError::invalid("conversation is not active"))?;
-        if matches!(self.active_state, ActiveState::History(_)) && !snapshot.actions.can_send {
+        if matches!(self.session.active_state, ActiveState::History(_))
+            && !snapshot.actions.can_send
+        {
             return Err(RuntimeError::invalid(
                 "当前原生上下文不可用，请修复来源后重新打开；未自动重发",
             ));
@@ -77,10 +86,14 @@ impl CoreRuntime {
             return Err(RuntimeError::invalid("请先处理当前运行时请求"));
         }
         self.validate_model_selection(self.runtime_instance(runtime_id)?, &selection)?;
-        let unsubmitted = self.unsubmitted_draft.as_ref().is_some_and(|draft| {
-            draft.native_id == snapshot.conversation.id
-                && draft.runtime_id == snapshot.conversation.runtime_id
-        });
+        let unsubmitted = self
+            .session
+            .unsubmitted_draft
+            .as_ref()
+            .is_some_and(|draft| {
+                draft.native_id == snapshot.conversation.id
+                    && draft.runtime_id == snapshot.conversation.runtime_id
+            });
         if unsubmitted {
             let supports_unpersisted_draft = matches!(
                 self.runtime_instance(&snapshot.conversation.runtime_id)?
@@ -90,8 +103,8 @@ impl CoreRuntime {
             );
             let needs_new_target = supports_unpersisted_draft
                 && (snapshot.conversation.runtime_id != runtime_id
-                    || matches!(self.active_state, ActiveState::History(_))
-                    || self.model_selection.as_ref() != Some(&selection));
+                    || matches!(self.session.active_state, ActiveState::History(_))
+                    || self.session.model_selection.as_ref() != Some(&selection));
             if needs_new_target {
                 self.replace_unsubmitted_target(runtime_id, &selection)?;
             }
@@ -104,8 +117,8 @@ impl CoreRuntime {
         if snapshot.conversation.runtime_id != runtime_id {
             return self.continue_in_runtime(runtime_id, &selection, text);
         }
-        if matches!(self.active_state, ActiveState::History(_))
-            || self.model_selection.as_ref() != Some(&selection)
+        if matches!(self.session.active_state, ActiveState::History(_))
+            || self.session.model_selection.as_ref() != Some(&selection)
         {
             self.prepare_with_selection(snapshot, &selection, false)?;
         }
@@ -142,12 +155,12 @@ impl CoreRuntime {
         .snapshot
         .expect("new projection");
         self.prepare_with_selection(snapshot, &selection, true)?;
-        self.logical_projection = None;
+        self.session.logical_projection = None;
         let native = self
             .native_snapshot()
             .expect("created conversation")
             .conversation;
-        self.unsubmitted_draft = Some(UnsubmittedDraft {
+        self.session.unsubmitted_draft = Some(UnsubmittedDraft {
             public_id: native.id.clone(),
             original_runtime_id: native.runtime_id.clone(),
             runtime_id: native.runtime_id,
@@ -156,8 +169,10 @@ impl CoreRuntime {
         self.snapshot_result()
     }
     pub(super) fn open_conversation(&mut self, request: &Value) -> Result<Value, RuntimeError> {
+        // Reopening a conversation whose turn is running shows it as it runs;
+        // its native history is read again once the turn has ended.
         if self.busy() {
-            return Err(RuntimeError::invalid("runtime is busy"));
+            return self.snapshot_result();
         }
         let runtime_id = request["payload"]["runtimeInstanceID"]
             .as_str()
@@ -180,14 +195,14 @@ impl CoreRuntime {
                 (self.read_history(runtime_id, id)?, None)
             };
         self.invalidate_execution()?;
-        self.logical_projection = projection;
-        self.unsubmitted_draft = None;
-        self.model_record_key = snapshot.model_record_key.clone();
-        self.model_selection = snapshot
+        self.session.logical_projection = projection;
+        self.session.unsubmitted_draft = None;
+        self.session.model_record_key = snapshot.model_record_key.clone();
+        self.session.model_selection = snapshot
             .model_record_key
             .clone()
             .map(|model_record_key| crate::ModelSelection::Managed { model_record_key });
-        self.active_state = ActiveState::History(Box::new(snapshot));
+        self.session.active_state = ActiveState::History(Box::new(snapshot));
         self.snapshot_result()
     }
 
@@ -220,6 +235,7 @@ impl CoreRuntime {
             .ok_or_else(|| RuntimeError::invalid("conversation id"))?;
         let active_snapshot = self.native_snapshot();
         let active_id = self
+            .session
             .logical_projection
             .as_ref()
             .map(|projection| projection.origin.id.as_str())
@@ -229,6 +245,7 @@ impl CoreRuntime {
                     .map(|snapshot| snapshot.conversation.id.as_str())
             });
         let active_runtime = self
+            .session
             .logical_projection
             .as_ref()
             .map(|projection| projection.origin.runtime_id.as_str())
@@ -365,8 +382,8 @@ impl CoreRuntime {
             .any(|summary| summary.id == id);
         if !listed
             && runtime.type_id == "pi-1.0.2"
-            && matches!(self.active_state, ActiveState::Pi)
-            && self.execution_runtime_id.as_deref() == Some(runtime_id)
+            && matches!(self.session.active_state, ActiveState::Pi)
+            && self.session.execution_runtime_id.as_deref() == Some(runtime_id)
             && self
                 .native_snapshot()
                 .is_some_and(|snapshot| snapshot.conversation.id == id)
@@ -374,7 +391,8 @@ impl CoreRuntime {
             // A newly created Pi SessionManager reserves its native file path but
             // persists only after the first user/assistant record. Verify fresh
             // native metadata before granting this exact active draft exception.
-            self.pi
+            self.session
+                .pi
                 .projection
                 .as_mut()
                 .expect("active Pi projection")
@@ -391,10 +409,11 @@ impl CoreRuntime {
             {
                 if deleting {
                     self.invalidate_execution()?;
-                    self.active_state = ActiveState::Empty;
-                    self.model_record_key = None;
+                    self.session.active_state = ActiveState::Empty;
+                    self.session.model_record_key = None;
                 } else {
-                    self.pi
+                    self.session
+                        .pi
                         .client
                         .as_mut()
                         .expect("active Pi client")
@@ -404,7 +423,8 @@ impl CoreRuntime {
                         .map_err(|error| {
                             RuntimeError::context("Pi 原生草稿重命名失败，请重试", error)
                         })?;
-                    self.pi
+                    self.session
+                        .pi
                         .projection
                         .as_mut()
                         .expect("active Pi projection")
@@ -419,7 +439,7 @@ impl CoreRuntime {
                     }
                 }
                 if deleting {
-                    self.unsubmitted_draft = None;
+                    self.session.unsubmitted_draft = None;
                 }
                 return self.list();
             }
@@ -467,8 +487,8 @@ impl CoreRuntime {
                 ));
             }
             if current {
-                self.active_state = ActiveState::Empty;
-                self.model_record_key = None;
+                self.session.active_state = ActiveState::Empty;
+                self.session.model_record_key = None;
             }
         } else {
             let summary = summaries
@@ -477,12 +497,12 @@ impl CoreRuntime {
                     summary.id == id && summary.title.display_text() == title.expect("rename title")
                 })
                 .ok_or_else(|| RuntimeError::invalid("运行时尚未确认会话重命名，请刷新后重试"))?;
-            if current && let ActiveState::History(snapshot) = &mut self.active_state {
+            if current && let ActiveState::History(snapshot) = &mut self.session.active_state {
                 snapshot.conversation = summary;
                 snapshot.revision = snapshot.revision.saturating_add(1);
             }
         }
-        self.unsubmitted_draft = None;
+        self.session.unsubmitted_draft = None;
         self.list()
     }
 
@@ -495,67 +515,71 @@ impl CoreRuntime {
             .as_str()
             .filter(|item| !item.trim().is_empty())
             .ok_or_else(|| RuntimeError::invalid("message text"))?;
-        if matches!(self.active_state, ActiveState::History(_)) {
+        if matches!(self.session.active_state, ActiveState::History(_)) {
             let snapshot = self.native_snapshot().expect("history snapshot");
             let selection = self
+                .session
                 .model_selection
                 .clone()
                 .ok_or_else(|| RuntimeError::invalid("请选择此会话的模型"))?;
             self.prepare_with_selection(snapshot, &selection, false)?;
         }
-        if let ActiveState::Acp(session) = &mut self.active_state {
-            self.unsubmitted_draft = None;
+        if let ActiveState::Acp(session) = &mut self.session.active_state {
+            self.session.unsubmitted_draft = None;
             session
                 .send(text)
                 .map_err(|error| RuntimeError::context("ACP message send", error))?;
             self.drain_runtime()?;
             return self.snapshot_result();
         }
-        if let ActiveState::Native(session) = &mut self.active_state {
-            self.unsubmitted_draft = None;
+        if let ActiveState::Native(session) = &mut self.session.active_state {
+            self.session.unsubmitted_draft = None;
             let result = session
                 .send(text)
                 .map_err(|error| RuntimeError::context("message send", error));
-            if result.is_err() && self.gateway_runner.is_some() {
+            if result.is_err() && self.session.gateway_runner.is_some() {
                 self.finish_managed_turn()?;
             }
             result?;
             self.drain_runtime()?;
-            if self.gateway_runner.is_some() && !self.busy() {
+            if self.session.gateway_runner.is_some() && !self.busy() {
                 self.finish_managed_turn()?;
             }
             return self.snapshot_result();
         }
         if matches!(
-            self.model_selection,
+            self.session.model_selection,
             Some(crate::ModelSelection::Managed { .. })
         ) {
             self.bind_gateway_model()?;
         }
         self.drain_runtime()?;
-        self.unsubmitted_draft = None;
+        self.session.unsubmitted_draft = None;
         let response = self
+            .session
             .pi
             .client
             .as_mut()
             .ok_or_else(|| RuntimeError::invalid("会话执行尚未准备"))?
             .prompt(text)
             .map_err(|error| RuntimeError::context("message send", error));
-        if response.is_err() && self.gateway_runner.is_some() {
+        if response.is_err() && self.session.gateway_runner.is_some() {
             self.finish_managed_turn()?;
         }
         let response = response?;
-        self.pi.busy = response["data"]["disposition"] != "handled";
-        if !self.pi.busy {
-            self.pi
+        self.session.pi.busy = response["data"]["disposition"] != "handled";
+        if !self.session.pi.busy {
+            self.session
+                .pi
                 .projection
                 .as_mut()
                 .expect("accepted Pi prompt")
                 .invalidate_history();
         }
-        self.pi.turn_started = false;
+        self.session.pi.turn_started = false;
         if self.busy()
             && let Some(snapshot) = self
+                .session
                 .pi
                 .projection
                 .as_mut()
@@ -566,14 +590,15 @@ impl CoreRuntime {
             snapshot.actions.can_cancel = true;
         }
         self.sync_projection()?;
-        if self.gateway_runner.is_some() && !self.busy() {
+        if self.session.gateway_runner.is_some() && !self.busy() {
             self.finish_managed_turn()?;
         }
         self.snapshot_result()
     }
 
     pub(super) fn bind_gateway_model(&mut self) -> Result<(), RuntimeError> {
-        self.pi
+        self.session
+            .pi
             .client
             .as_mut()
             .ok_or_else(|| RuntimeError::invalid("会话执行尚未准备"))?
@@ -585,21 +610,22 @@ impl CoreRuntime {
     pub(super) fn cancel_action(&mut self, request: &Value) -> Result<Value, RuntimeError> {
         self.ensure_active(request)?;
         self.cancel_children();
-        if let ActiveState::Acp(session) = &mut self.active_state {
+        if let ActiveState::Acp(session) = &mut self.session.active_state {
             session
                 .cancel()
                 .map_err(|error| RuntimeError::context("ACP cancel", error))?;
             self.drain_runtime()?;
             return self.snapshot_result();
         }
-        if let ActiveState::Native(session) = &mut self.active_state {
+        if let ActiveState::Native(session) = &mut self.session.active_state {
             session
                 .cancel()
                 .map_err(|error| RuntimeError::context("message cancel", error))?;
             self.drain_runtime()?;
             return self.snapshot_result();
         }
-        self.pi
+        self.session
+            .pi
             .client
             .as_mut()
             .ok_or_else(|| RuntimeError::invalid("会话执行尚未准备"))?
@@ -616,7 +642,7 @@ impl CoreRuntime {
         let active_runtime = self
             .native_snapshot()
             .map(|snapshot| snapshot.conversation.runtime_id)
-            .or_else(|| self.execution_runtime_id.clone());
+            .or_else(|| self.session.execution_runtime_id.clone());
         if active_runtime.as_deref() != Some(requested) {
             return Err(RuntimeError::invalid("runtime instance is not active"));
         }
@@ -626,10 +652,11 @@ impl CoreRuntime {
     pub(super) fn sync_projection(&mut self) -> Result<(), RuntimeError> {
         self.drain_runtime()?;
         if matches!(
-            self.active_state,
+            self.session.active_state,
             ActiveState::Native(_) | ActiveState::Acp(_)
-        ) || self.pi.busy
+        ) || self.session.pi.busy
             || self
+                .session
                 .pi
                 .projection
                 .as_ref()
@@ -637,9 +664,10 @@ impl CoreRuntime {
         {
             return Ok(());
         }
-        if let (Some(client), Some(projection)) =
-            (self.pi.client.as_mut(), self.pi.projection.as_mut())
-        {
+        if let (Some(client), Some(projection)) = (
+            self.session.pi.client.as_mut(),
+            self.session.pi.projection.as_mut(),
+        ) {
             let (state, messages) = client
                 .state()
                 .map_err(|error| RuntimeError::context("runtime state", error))?;
@@ -650,6 +678,7 @@ impl CoreRuntime {
             }
             if let Some(path) = state["data"]["sessionFile"].as_str() {
                 let runtime_id = self
+                    .session
                     .execution_runtime_id
                     .as_deref()
                     .expect("a Pi client has an active runtime instance");
@@ -678,9 +707,9 @@ impl CoreRuntime {
             }
             projection.replace_history(&messages);
             if let Some(snapshot) = projection.snapshot.as_mut() {
-                snapshot.model_record_key = self.model_record_key.clone();
-                snapshot.actions.can_send = !self.pi.busy;
-                snapshot.actions.can_cancel = self.pi.busy;
+                snapshot.model_record_key = self.session.model_record_key.clone();
+                snapshot.actions.can_send = !self.session.pi.busy;
+                snapshot.actions.can_cancel = self.session.pi.busy;
             }
         }
         self.drain_runtime()?;
@@ -689,6 +718,7 @@ impl CoreRuntime {
 
     pub(super) fn drain_pi(&mut self) {
         let events = self
+            .session
             .pi
             .client
             .as_mut()
@@ -696,18 +726,18 @@ impl CoreRuntime {
             .unwrap_or_default();
         for event in events {
             let is_settled = event["type"] == "agent_settled";
-            let matched_settled = is_settled && self.pi.turn_started;
+            let matched_settled = is_settled && self.session.pi.turn_started;
             // History and bootstrap message events do not begin an agent run.
             // Only the SDK's run boundary can authorize its settled event.
             if event["type"] == "agent_start" {
-                self.pi.turn_started = true;
+                self.session.pi.turn_started = true;
             }
             if matched_settled {
-                self.pi.busy = false;
-                self.pi.turn_started = false;
+                self.session.pi.busy = false;
+                self.session.pi.turn_started = false;
             }
             if (!is_settled || matched_settled)
-                && let Some(projection) = self.pi.projection.as_mut()
+                && let Some(projection) = self.session.pi.projection.as_mut()
             {
                 projection.apply_event(&event);
             }

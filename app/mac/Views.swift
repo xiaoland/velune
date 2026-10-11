@@ -32,7 +32,7 @@ struct VeluneRootView: View {
                         VStack(alignment: .leading, spacing: 3) {
                             HStack(spacing: 6) {
                                 Text(conversation.title).lineLimit(1)
-                                if store.runningConversationID == conversation.id {
+                                if store.runningConversationIDs.contains(conversation.id) {
                                     Spacer(minLength: 0)
                                     ProgressView().controlSize(.mini).help("正在运行").accessibilityLabel("正在运行")
                                 }
@@ -61,12 +61,12 @@ struct VeluneRootView: View {
             .searchable(text: $browser.search, placement: .sidebar, prompt: "搜索会话")
             .navigationTitle("会话")
             .navigationSplitViewColumnWidth(min: 190, ideal: 240, max: 340)
-            .disabled(store.isGenerating || store.authenticationRunning || store.isShuttingDown)
+            .disabled(store.authenticationRunning || store.isShuttingDown)
             .toolbar {
                 ToolbarItemGroup(placement: .automatic) {
                     browserMenu
                     Button { store.createConversation() } label: { Label("新建会话", systemImage: "square.and.pencil") }
-                        .help("新建会话（⌘ N）").disabled(store.applicationIsGenerating || store.isLoading || store.enabledRuntimeInstances.isEmpty)
+                        .help("新建会话（⌘ N）").disabled(store.isLoading || store.enabledRuntimeInstances.isEmpty)
                 }
             }
         } detail: {
@@ -161,9 +161,9 @@ struct VeluneRootView: View {
         ContentUnavailableView {
             Label { Text("新会话") } icon: { VeluneLogo(size: 48) }
         } description: {
-            Text(store.executionBusyElsewhere ? "另一个会话正在运行，完成后即可发送。" : store.needsModelSelection ? "选择下一轮模型后即可发送。" : store.canSend ? "输入消息，开始工作。" : "先在设置中配置AI提供商、模型与Agent 运行时。")
+            Text(store.needsModelSelection ? "选择下一轮模型后即可发送。" : store.canSend ? "输入消息，开始工作。" : "先在设置中配置AI提供商、模型与Agent 运行时。")
         } actions: {
-            if !store.canSend && !store.executionBusyElsewhere && !store.needsModelSelection { SettingsTabLink(tab: store.enabledRuntimeInstances.isEmpty ? .runtimes : .providers, title: "打开设置") }
+            if !store.canSend && !store.needsModelSelection { SettingsTabLink(tab: store.enabledRuntimeInstances.isEmpty ? .runtimes : .providers, title: "打开设置") }
         }
     }
 

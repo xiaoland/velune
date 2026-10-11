@@ -319,8 +319,7 @@ struct ComposerView: View {
             HStack(spacing: 8) {
                 nextTurnControls
                 Spacer(minLength: 8)
-                if store.executionBusyElsewhere { Text("另一个会话正在运行").font(.callout).foregroundStyle(.secondary).lineLimit(1) }
-                else if store.needsModelSelection { Text(store.isUnsentConversation ? "请选择模型" : "此会话的模型不可用").font(.callout).foregroundStyle(.secondary).lineLimit(1) }
+                if store.needsModelSelection { Text(store.isUnsentConversation ? "请选择模型" : "此会话的模型不可用").font(.callout).foregroundStyle(.secondary).lineLimit(1) }
                 if store.isGenerating {
                     Button("停止", action: store.cancel).disabled(!store.canCancel).help("停止当前生成")
                 } else {

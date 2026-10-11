@@ -560,6 +560,11 @@ pub(super) struct Scope {
     coordinator: Arc<Coordinator>,
     server: mcp::Server,
 }
+impl Scope {
+    pub(super) fn busy(&self) -> bool {
+        self.coordinator.busy()
+    }
+}
 impl Drop for Scope {
     fn drop(&mut self) {
         self.coordinator.shutdown();
@@ -568,7 +573,8 @@ impl Drop for Scope {
 
 impl CoreRuntime {
     pub(super) fn collaboration_servers(&self) -> Vec<velune_agent_runtime::mcp::Server> {
-        self.collaboration
+        self.session
+            .collaboration
             .as_ref()
             .map(|scope| {
                 vec![velune_agent_runtime::mcp::Server {
@@ -580,15 +586,16 @@ impl CoreRuntime {
             .unwrap_or_default()
     }
     pub(super) fn collaboration_busy(&self) -> bool {
-        self.collaboration
+        self.session
+            .collaboration
             .as_ref()
             .is_some_and(|scope| scope.coordinator.busy())
     }
     pub(super) fn close_collaboration(&mut self) {
-        self.collaboration = None;
+        self.session.collaboration = None;
     }
     pub(super) fn cancel_children(&self) {
-        if let Some(scope) = &self.collaboration {
+        if let Some(scope) = &self.session.collaboration {
             scope.coordinator.cancel_all();
         }
     }
@@ -624,7 +631,7 @@ impl CoreRuntime {
         self.close_collaboration();
         let coordinator = Coordinator::new(captured, limits);
         let server = mcp::Server::start(coordinator.clone())?;
-        self.collaboration = Some(Scope {
+        self.session.collaboration = Some(Scope {
             root_id: None,
             coordinator,
             server,
@@ -632,7 +639,7 @@ impl CoreRuntime {
         match self.create_conversation(request) {
             Ok(result) => {
                 let id = self.current_snapshot().map(|s| s.conversation.id);
-                self.collaboration.as_mut().expect("scope").root_id = id;
+                self.session.collaboration.as_mut().expect("scope").root_id = id;
                 Ok(result)
             }
             Err(error) => {
@@ -651,6 +658,7 @@ impl CoreRuntime {
             return Ok(Value::Null);
         }
         let scope = self
+            .session
             .collaboration
             .as_ref()
             .ok_or_else(|| RuntimeError::invalid("没有活动协作范围"))?;

@@ -22,7 +22,7 @@ struct ConversationCommands: Commands {
         CommandGroup(replacing: .newItem) {
             Button("新建会话") { target?.store.createConversation() }
                 .keyboardShortcut("n")
-                .disabled(target == nil || target?.store.applicationIsGenerating == true || target?.store.isLoading == true)
+                .disabled(target == nil || target?.store.isLoading == true)
         }
         CommandMenu("会话") {
             Button("发送消息") { target?.send() }

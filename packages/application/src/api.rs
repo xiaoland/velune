@@ -150,6 +150,16 @@ pub struct SnapshotResult {
     pub snapshot: Option<crate::DeliveredSnapshot>,
 }
 
+/// A conversation that executes or waits for the user, in any open session.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ActiveConversation {
+    pub context_runtime_id: String,
+    pub conversation_id: String,
+    pub run_state: crate::conversation::RunState,
+    pub pending_interactions: u32,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AnalyticsQuery {
@@ -1007,8 +1017,21 @@ impl Application {
     ) -> Result<SnapshotResult, Error> {
         self.execute("sendTurn", json!({"sourceRuntimeID":source_runtime_id,"conversationID":conversation_id,"modelSelection":selection,"text":text}), Some(&target_runtime_id))
     }
-    pub fn cancel(&mut self, runtime_id: String) -> Result<SnapshotResult, Error> {
-        self.execute("cancel", json!({}), Some(&runtime_id))
+    pub fn cancel(
+        &mut self,
+        runtime_id: String,
+        conversation_id: String,
+    ) -> Result<SnapshotResult, Error> {
+        self.execute(
+            "cancel",
+            json!({"conversationID":conversation_id}),
+            Some(&runtime_id),
+        )
+    }
+    /// Conversations executing or waiting for the user across open sessions;
+    /// cheap enough to poll.
+    pub fn active_conversations(&mut self) -> Result<Vec<ActiveConversation>, Error> {
+        self.execute("activeConversations", json!({}), None)
     }
     pub fn preview_provider_import(
         &mut self,
@@ -1082,12 +1105,13 @@ impl Application {
     pub fn reply_runtime_interaction(
         &mut self,
         runtime_id: String,
+        conversation_id: String,
         interaction_id: String,
         reply: velune_conversation::RuntimeInteractionReply,
     ) -> Result<SnapshotResult, Error> {
         self.execute(
             "replyRuntimeInteraction",
-            json!({"interactionID":interaction_id,"reply":reply}),
+            json!({"conversationID":conversation_id,"interactionID":interaction_id,"reply":reply}),
             Some(&runtime_id),
         )
     }

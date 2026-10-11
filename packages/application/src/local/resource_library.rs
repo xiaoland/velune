@@ -133,7 +133,7 @@ fn random_id() -> Result<String, RuntimeError> {
 
 impl CoreRuntime {
     fn require_idle_for_resources(&self) -> Result<(), RuntimeError> {
-        if self.busy() || self.collaboration.is_some() {
+        if self.execution_active() {
             return Err(RuntimeError::invalid(
                 "请先结束运行中的轮次并关闭协作范围，再修改原生资源",
             ));
@@ -348,7 +348,7 @@ impl CoreRuntime {
     /// Retries the writes a busy runtime held back, once nothing runs. Failures stay visible as
     /// pending states rather than failing the unrelated request that triggered the retry.
     pub(super) fn sync_due_resources(&mut self) {
-        if !self.resource_sync_due || self.busy() || self.collaboration.is_some() {
+        if !self.resource_sync_due || self.execution_active() {
             return;
         }
         self.resource_sync_due = false;
@@ -368,7 +368,7 @@ impl CoreRuntime {
         &mut self,
         template_id: &str,
     ) -> Result<Vec<TemplateApplyReport>, RuntimeError> {
-        if self.busy() || self.collaboration.is_some() {
+        if self.execution_active() {
             self.resource_sync_due = true;
             return Ok(Vec::new());
         }

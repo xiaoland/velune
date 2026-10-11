@@ -302,7 +302,7 @@ impl CoreRuntime {
         Ok(snapshot)
     }
     pub(super) fn invalidate_execution(&mut self) -> Result<(), RuntimeError> {
-        let can_restore = match &self.active_state {
+        let can_restore = match &self.session.active_state {
             ActiveState::Acp(session) => session.capabilities().load_session,
             _ => true,
         };
@@ -332,10 +332,10 @@ impl CoreRuntime {
                     can_switch: true,
                 };
                 view.revision = view.revision.saturating_add(1);
-                self.model_record_key = view.model_record_key.clone();
+                self.session.model_record_key = view.model_record_key.clone();
             }
             if let Some(snapshot) = snapshot {
-                self.active_state = ActiveState::History(Box::new(snapshot));
+                self.session.active_state = ActiveState::History(Box::new(snapshot));
             }
         }
         shutdown_result
@@ -421,7 +421,8 @@ impl CoreRuntime {
                 subscription,
             )?;
             if is_new {
-                self.pi
+                self.session
+                    .pi
                     .client
                     .as_mut()
                     .expect("started Pi")
@@ -429,13 +430,14 @@ impl CoreRuntime {
                     .map_err(|error| RuntimeError::context("conversation create", error))?;
             }
             if !is_new {
-                self.pi
+                self.session
+                    .pi
                     .projection
                     .as_mut()
                     .expect("started Pi")
                     .set_conversation(snapshot.conversation.clone());
             }
-            self.model_record_key = Some(key.into());
+            self.session.model_record_key = Some(key.into());
             self.bind_gateway_model()?;
             self.sync_projection()?;
             Ok(())
@@ -445,7 +447,8 @@ impl CoreRuntime {
             // an accepted send is never automatically dispatched a second time.
             let _ = self.shutdown_active();
             self.next_turn_runtime_id = previous_runtime;
-            self.model_record_key = previous.as_ref().and_then(|s| s.model_record_key.clone());
+            self.session.model_record_key =
+                previous.as_ref().and_then(|s| s.model_record_key.clone());
             if let Some(mut view) = previous {
                 view.messages.push(Message {
                     completed: true,
@@ -457,7 +460,7 @@ impl CoreRuntime {
                     }],
                 });
                 view.revision = view.revision.saturating_add(1);
-                self.active_state = ActiveState::History(Box::new(view));
+                self.session.active_state = ActiveState::History(Box::new(view));
             }
             return Err(error);
         }

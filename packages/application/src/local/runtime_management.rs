@@ -6,7 +6,7 @@ impl CoreRuntime {
     pub(super) fn runtime_management_action(&self, request: &Value) -> Result<Value, RuntimeError> {
         let action = request["action"].as_str().unwrap_or_default();
         if matches!(action, "writeRuntimeResource" | "deleteRuntimeResource")
-            && (self.busy() || self.collaboration.is_some())
+            && self.execution_active()
         {
             return Err(RuntimeError::invalid(
                 "请先结束运行中的轮次并关闭协作范围，再修改原生资源",

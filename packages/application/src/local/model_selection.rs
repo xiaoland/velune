@@ -68,8 +68,8 @@ impl CoreRuntime {
             == "acp-v1"
         {
             self.prepare_acp_snapshot(&snapshot, selection, is_new)?;
-            self.model_selection = Some(selection.clone());
-            self.model_record_key = None;
+            self.session.model_selection = Some(selection.clone());
+            self.session.model_record_key = None;
             return Ok(());
         }
         match selection {
@@ -86,21 +86,21 @@ impl CoreRuntime {
                 model_id,
             } => {
                 let previous = self.native_snapshot();
-                let previous_selection = self.model_selection.clone();
+                let previous_selection = self.session.model_selection.clone();
                 let result =
                     self.prepare_native_snapshot(&snapshot, provider_id.clone(), model_id, is_new);
                 if let Err(error) = result {
                     let _ = self.shutdown_active();
                     if let Some(snapshot) = previous {
-                        self.active_state = ActiveState::History(Box::new(snapshot));
+                        self.session.active_state = ActiveState::History(Box::new(snapshot));
                     }
-                    self.model_selection = previous_selection;
+                    self.session.model_selection = previous_selection;
                     return Err(error);
                 }
             }
         }
-        self.model_selection = Some(selection.clone());
-        self.model_record_key = match selection {
+        self.session.model_selection = Some(selection.clone());
+        self.session.model_record_key = match selection {
             ModelSelection::Managed { model_record_key } => Some(model_record_key.clone()),
             ModelSelection::Native { .. } | ModelSelection::RuntimeDefault => None,
         };
@@ -134,7 +134,7 @@ impl CoreRuntime {
         )
         .map_err(|error| RuntimeError::context("运行时版本检查", error))?;
         self.shutdown_active()?;
-        self.execution_runtime_id = Some(runtime.id.clone());
+        self.session.execution_runtime_id = Some(runtime.id.clone());
         if runtime.type_id == "pi-1.0.2" {
             let mut config = self.pi_history_config(&runtime)?;
             config.mcp_servers = self.collaboration_servers();
@@ -142,8 +142,8 @@ impl CoreRuntime {
             config.model = Some(model_id.into());
             config.rpc_entry = Some(context.resources.join("pi_rpc.mjs"));
             config.extension = Some(context.resources.join("pi_virtual_model.mjs"));
-            self.pi.config = Some(config);
-            self.active_state = ActiveState::Pi;
+            self.session.pi.config = Some(config);
+            self.session.active_state = ActiveState::Pi;
             let native_id = (!is_new)
                 .then(|| {
                     snapshot
@@ -155,20 +155,22 @@ impl CoreRuntime {
                 .transpose()?;
             self.start_pi_for_session(cwd, native_id.map(Path::new), None, None, false)?;
             if is_new {
-                self.pi
+                self.session
+                    .pi
                     .client
                     .as_mut()
                     .expect("started Pi")
                     .request(json!({"type":"new_session"}))
                     .map_err(|error| RuntimeError::context("会话创建", error))?;
             } else {
-                self.pi
+                self.session
+                    .pi
                     .projection
                     .as_mut()
                     .expect("started Pi")
                     .set_conversation(snapshot.conversation.clone());
             }
-            self.pi.client.as_mut().expect("started Pi").request(json!({"type":"set_model","provider":self.pi.config.as_ref().and_then(|config| config.provider.as_ref()),"modelId":model_id}))
+            self.session.pi.client.as_mut().expect("started Pi").request(json!({"type":"set_model","provider":self.session.pi.config.as_ref().and_then(|config| config.provider.as_ref()),"modelId":model_id}))
                 .map_err(|error| RuntimeError::context("原生模型选择", error))?;
             self.sync_projection()?;
         } else {
@@ -194,7 +196,7 @@ impl CoreRuntime {
                     .map_err(|error| RuntimeError::context("原生会话恢复", error))?;
                 session.set_conversation(snapshot.conversation.clone());
             }
-            self.active_state = ActiveState::Native(Box::new(session));
+            self.session.active_state = ActiveState::Native(Box::new(session));
         }
         Ok(())
     }
@@ -234,8 +236,8 @@ impl CoreRuntime {
             return Err(RuntimeError::invalid("此运行时已停用"));
         }
         if runtime.type_id == "acp-v1" {
-            return if let ActiveState::Acp(session) = &self.active_state
-                && self.execution_runtime_id.as_deref() == Some(&runtime.id)
+            return if let ActiveState::Acp(session) = &self.session.active_state
+                && self.session.execution_runtime_id.as_deref() == Some(&runtime.id)
                 && session.snapshot().is_some()
             {
                 let models = session

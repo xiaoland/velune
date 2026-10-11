@@ -320,7 +320,7 @@ impl CoreRuntime {
     ) -> ConversationSnapshot {
         snapshot.context_runtime_id = snapshot.conversation.runtime_id.clone();
         self.set_management_capabilities(&mut snapshot.conversation);
-        let Some(projection) = &self.logical_projection else {
+        let Some(projection) = &self.session.logical_projection else {
             return snapshot;
         };
         let Some(segment) = projection
@@ -385,6 +385,7 @@ impl CoreRuntime {
     ) -> Result<(), RuntimeError> {
         self.validate_acp_handoff_target(self.runtime_instance(runtime_id)?)?;
         let draft = self
+            .session
             .unsubmitted_draft
             .as_ref()
             .ok_or_else(|| RuntimeError::invalid("未提交草稿不可用"))?;
@@ -392,8 +393,8 @@ impl CoreRuntime {
         let previous = self
             .native_snapshot()
             .ok_or_else(|| RuntimeError::invalid("未提交草稿不可用"))?;
-        let previous_selection = self.model_selection.clone();
-        let previous_projection = self.logical_projection.take();
+        let previous_selection = self.session.model_selection.clone();
+        let previous_projection = self.session.logical_projection.take();
         let mut target = previous.clone();
         let native_title = match &target.conversation.title {
             velune_conversation::ConversationTitle::Native(title) => Some(title.clone()),
@@ -402,16 +403,18 @@ impl CoreRuntime {
         target.conversation.runtime_id = runtime_id.into();
         let prepared = (|| {
             self.prepare_with_selection(target, selection, true)?;
-            if matches!(self.active_state, ActiveState::Pi)
+            if matches!(self.session.active_state, ActiveState::Pi)
                 && let Some(title) = native_title
             {
-                self.pi
+                self.session
+                    .pi
                     .client
                     .as_mut()
                     .expect("created Pi draft")
                     .request(json!({"type":"set_session_name","name":title}))
                     .map_err(|error| RuntimeError::context("Pi 草稿名称转交", error))?;
-                self.pi
+                self.session
+                    .pi
                     .projection
                     .as_mut()
                     .expect("created Pi draft")
@@ -422,10 +425,10 @@ impl CoreRuntime {
         })();
         if let Err(error) = prepared {
             let _ = self.shutdown_active();
-            self.model_record_key = previous.model_record_key.clone();
-            self.model_selection = previous_selection;
-            self.active_state = ActiveState::History(Box::new(previous));
-            self.logical_projection = previous_projection;
+            self.session.model_record_key = previous.model_record_key.clone();
+            self.session.model_selection = previous_selection;
+            self.session.active_state = ActiveState::History(Box::new(previous));
+            self.session.logical_projection = previous_projection;
             return Err(error);
         }
         let native = self
@@ -437,12 +440,13 @@ impl CoreRuntime {
         };
         let mut origin = native.conversation.clone();
         origin.id = public_id;
-        self.logical_projection = Some(LogicalProjection {
+        self.session.logical_projection = Some(LogicalProjection {
             link,
             origin,
             prefix: Vec::new(),
         });
         let draft = self
+            .session
             .unsubmitted_draft
             .as_mut()
             .expect("unsubmitted replacement");
@@ -452,8 +456,8 @@ impl CoreRuntime {
     }
 
     pub(super) fn commit_unsubmitted_alias(&mut self) -> Result<(), RuntimeError> {
-        if self.unsubmitted_draft.is_some()
-            && let Some(projection) = &self.logical_projection
+        if self.session.unsubmitted_draft.is_some()
+            && let Some(projection) = &self.session.logical_projection
         {
             let mut links = self.conversation_links.clone();
             links.retain(|link| link.id != projection.link.id);
@@ -474,21 +478,22 @@ impl CoreRuntime {
             .native_snapshot()
             .ok_or_else(|| RuntimeError::invalid("conversation is not active"))?;
         let source = self.read_segment(&self.segment_reference(&raw)?)?;
-        let (mut link, mut prefix, origin) = if let Some(projection) = &self.logical_projection {
-            // Re-read every sealed segment before carrying context into another runtime.
-            let (_, checked) = self.read_link(&projection.link)?;
-            (checked.link, checked.prefix, checked.origin)
-        } else {
-            let segment = self.segment_reference(&source)?;
-            (
-                ConversationLink {
-                    id: source.conversation.id.clone(),
-                    segments: vec![segment],
-                },
-                Vec::new(),
-                source.conversation.clone(),
-            )
-        };
+        let (mut link, mut prefix, origin) =
+            if let Some(projection) = &self.session.logical_projection {
+                // Re-read every sealed segment before carrying context into another runtime.
+                let (_, checked) = self.read_link(&projection.link)?;
+                (checked.link, checked.prefix, checked.origin)
+            } else {
+                let segment = self.segment_reference(&source)?;
+                (
+                    ConversationLink {
+                        id: source.conversation.id.clone(),
+                        segments: vec![segment],
+                    },
+                    Vec::new(),
+                    source.conversation.clone(),
+                )
+            };
         let index = link.segments.len() - 1;
         let segment = link.segments.last_mut().expect("source segment");
         segment.cutoff = Some(ConversationCutoff {
@@ -550,10 +555,10 @@ impl CoreRuntime {
             // No prompt was sent. Retain the source; the native empty target is
             // left untouched, because its creation may have succeeded upstream.
             let _ = self.shutdown_active();
-            self.active_state = ActiveState::History(Box::new(source));
+            self.session.active_state = ActiveState::History(Box::new(source));
             return Err(error);
         }
-        self.logical_projection = Some(LogicalProjection {
+        self.session.logical_projection = Some(LogicalProjection {
             link,
             origin,
             prefix,
@@ -615,8 +620,8 @@ impl CoreRuntime {
                     .is_some_and(|snapshot| snapshot.conversation.id == link.id)
                 {
                     self.shutdown_active()?;
-                    self.logical_projection = None;
-                    self.unsubmitted_draft = None;
+                    self.session.logical_projection = None;
+                    self.session.unsubmitted_draft = None;
                 }
                 let mut links = self.conversation_links.clone();
                 links.retain(|existing| existing.id != link.id);
@@ -650,9 +655,9 @@ impl CoreRuntime {
             if deleting {
                 // A partial native deletion can invalidate the readable prefix.
                 // Clear execution before mutations, including a later metadata I/O failure.
-                self.logical_projection = None;
-                self.active_state = ActiveState::Empty;
-                self.model_record_key = None;
+                self.session.logical_projection = None;
+                self.session.active_state = ActiveState::Empty;
+                self.session.model_record_key = None;
             }
         }
         let mut updated = link.clone();
@@ -695,14 +700,14 @@ impl CoreRuntime {
             }
             self.store_links(links)?;
             if is_current {
-                self.logical_projection = None;
-                self.active_state = ActiveState::Empty;
-                self.model_record_key = None;
+                self.session.logical_projection = None;
+                self.session.active_state = ActiveState::Empty;
+                self.session.model_record_key = None;
             }
         } else if is_current && !failed {
             let (tail, projection) = self.read_link(&link)?;
-            self.logical_projection = Some(projection);
-            self.active_state = ActiveState::History(Box::new(tail));
+            self.session.logical_projection = Some(projection);
+            self.session.active_state = ActiveState::History(Box::new(tail));
         }
         if failed {
             return Err(RuntimeError::invalid(if deleting {

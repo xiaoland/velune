@@ -749,19 +749,33 @@ impl VeluneApplication {
         })?)
     }
 
-    pub fn cancel(&self, runtime_id: String) -> Result<BindingSnapshotResult, BindingError> {
-        convert(self.with("cancel", |application| application.cancel(runtime_id))?)
+    pub fn cancel(
+        &self,
+        runtime_id: String,
+        conversation_id: String,
+    ) -> Result<BindingSnapshotResult, BindingError> {
+        convert(self.with("cancel", |application| {
+            application.cancel(runtime_id, conversation_id)
+        })?)
+    }
+
+    /// Conversations executing or waiting for the user across open sessions.
+    pub fn active_conversations(&self) -> Result<Vec<BindingActiveConversation>, BindingError> {
+        convert(self.with("active_conversations", |application| {
+            application.active_conversations()
+        })?)
     }
 
     pub fn reply_runtime_interaction(
         &self,
         runtime_id: String,
+        conversation_id: String,
         interaction_id: String,
         reply: BindingRuntimeInteractionReply,
     ) -> Result<BindingSnapshotResult, BindingError> {
         let reply = convert(reply)?;
         convert(self.with("reply_runtime_interaction", |app| {
-            app.reply_runtime_interaction(runtime_id, interaction_id, reply)
+            app.reply_runtime_interaction(runtime_id, conversation_id, interaction_id, reply)
         })?)
     }
     pub fn preview_provider_import(

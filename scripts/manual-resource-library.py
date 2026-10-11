@@ -253,7 +253,7 @@ def exercise(app, b, root):
     assert saved.reports == []
     assert isinstance(states(tuned.id)['codex'], state.PENDING)
     reject(lambda: app.apply_resource_template(tuned.id, [target('codex')]))
-    app.cancel('live')
+    app.cancel('live', conversation)
     deadline = time.monotonic() + 5
     while not isinstance(states(tuned.id)['codex'], state.SYNCED):
         assert time.monotonic() < deadline, '空闲后应自动补写'

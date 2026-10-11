@@ -16,7 +16,7 @@ impl CoreRuntime {
             return crate::authentication_resolver::read_api_key(provider, &self.options)
                 .map(Value::String);
         }
-        if (self.busy() || self.collaboration.is_some())
+        if self.execution_active()
             || self
                 .authentication
                 .as_ref()
@@ -52,7 +52,7 @@ impl CoreRuntime {
                 })
         });
         if reconnect {
-            self.invalidate_execution()?;
+            self.for_each_session(Self::invalidate_execution)?;
         }
         Ok(json!({"gateways":self.public_gateways(),"executionInvalidated":reconnect}))
     }
