@@ -92,3 +92,4 @@
 - Mac：隔离 HOME 的开发构建打开会话 A，外部进程追加提示后数秒内侧栏出现指示、消息列表出现新提示与 Elsewhere 状态行；追加回复后指示与状态行消失（窗口截图）。
 - 既有脚本 parallel-sessions、runtime-interactions、acp-adapter、continuation-boundaries、resource-library 通过。
 - 未验证：真实 Codex／Claude Code 会话的事件格式与 Codex app-server 重读耗时（未读取真实会话）；实际外部 Harness 长时间工具调用超过 10 分钟无写入时会被视为已放弃。
+- 安装：`fd2e7cd` release 构建已安装 `/Applications/Velune.app`（0.1 beta.1、config schema 8、manifest dirty=false），严格签名通过；正常退出旧应用后安装并重新打开，无崩溃报告。
