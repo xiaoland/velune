@@ -486,6 +486,21 @@ impl Application {
         )
     }
 
+    /// Read one native entry of a runtime back into an unsaved template. `path` is the entry's key
+    /// path: the skill directory, MCP server name, or agent/instruction file.
+    pub fn import_runtime_resource(
+        &mut self,
+        runtime_id: String,
+        kind: crate::RuntimeResourceKind,
+        path: String,
+    ) -> Result<crate::ResourceTemplateImport, Error> {
+        self.execute(
+            "resourceTemplates",
+            json!({"operation":"import","kind":kind,"path":path}),
+            Some(&runtime_id),
+        )
+    }
+
     /// Templates applied to one runtime and whether each is in sync.
     pub fn runtime_template_status(
         &mut self,

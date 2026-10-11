@@ -198,3 +198,12 @@ pub enum BindingResolution {
     /// Delete the native entries and stop managing.
     Remove,
 }
+
+/// A template read back from a runtime's native entry; not saved until the user saves it.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ResourceTemplateImport {
+    pub template: ResourceTemplate,
+    /// Native fields the template has no place for.
+    pub notes: Vec<String>,
+}

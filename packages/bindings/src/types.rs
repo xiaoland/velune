@@ -1223,3 +1223,10 @@ pub enum BindingResolution {
     Unmanage,
     Remove,
 }
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, uniffi::Record)]
+#[serde(rename_all = "camelCase")]
+pub struct BindingResourceTemplateImport {
+    pub template: BindingResourceTemplate,
+    pub notes: Vec<String>,
+}

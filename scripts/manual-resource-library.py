@@ -143,11 +143,38 @@ def exercise(app, b, root):
     assert app.runtime_template_status('codex') == [], '删除运行时应清理绑定'
     print('PASS 模板删除', flush=True)
 
+    app.apply_resource_template(summary.id, [target('claude')])
+    # 从运行时原生条目导入：往返一致；导入的模板应用回同一运行时是“已是最新”并开始受管。
+    for runtime, entries in {'claude': [(kind.SKILLS, 'review'), (kind.MCP_SERVERS, 'docs'),
+                                        (kind.NATIVE_AGENT_DEFINITIONS, 'helper.md'),
+                                        (kind.USER_INSTRUCTIONS, 'CLAUDE.md')],
+                             'codex': [(kind.MCP_SERVERS, 'docs'), (kind.USER_INSTRUCTIONS, 'AGENTS.md')]}.items():
+        for category, path in entries:
+            imported = app.import_runtime_resource(runtime, category, path)
+            assert imported.template.id == ''
+            assert imported.notes == [], imported.notes
+    imported = app.import_runtime_resource('claude', kind.NATIVE_AGENT_DEFINITIONS, 'helper.md')
+    assert imported.template.name == 'helper'
+    assert imported.template.content.description == 'd' and imported.template.content.instructions == 'do it'
+    imported = app.import_runtime_resource('claude', kind.MCP_SERVERS, 'docs')
+    assert imported.template.content.transport.command == 'docs-mcp'
+    # 同名模板已存在：改名后保存，再应用回原运行时。
+    copy = imported.template
+    copy.name = 'docs-copy'
+    saved_copy = app.save_resource_template(copy)
+    reports = app.apply_resource_template(saved_copy.id, [target('claude')])
+    # 新名字写入新条目；原 docs 条目仍由 docs 模板管理。
+    assert isinstance(report(reports, 'claude'), outcome.CREATE)
+    skill_copy = app.import_runtime_resource('claude', kind.SKILLS, 'review')
+    assert [f.path for f in skill_copy.template.content.files] == ['SKILL.md']
+    reject(lambda: app.import_runtime_resource('claude', kind.SKILLS, 'missing'))
+    print('PASS 从运行时导入', flush=True)
+
     # 持久化：重开后绑定仍在。
     app.shutdown()
     reopened = type(app).open(b.BindingOptions(
         home_directory=str(root / 'app'), resources_directory=str(root / 'resources')))
-    assert {s.name for s in reopened.list_resource_templates()} == {'review', 'docs', 'helper'}
+    assert {'review', 'docs', 'helper'} <= {s.name for s in reopened.list_resource_templates()}
     assert reopened.runtime_template_status('claude')
     reopened.shutdown()
     print('PASS 重开保留', flush=True)

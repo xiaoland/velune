@@ -169,6 +169,7 @@ impl CoreRuntime {
                 let id = payload["templateID"].as_str().unwrap_or_default();
                 Ok(serde_json::to_value(self.template(id)?)?)
             }
+            Some("import") => self.import_runtime_resource(payload),
             Some("save") => {
                 self.save_resource_template(serde_json::from_value(payload["template"].clone())?)
             }
@@ -199,6 +200,65 @@ impl CoreRuntime {
             }
             _ => Err(RuntimeError::invalid("资源模板操作")),
         }
+    }
+
+    /// Reads one native entry back into an unsaved template. Nothing is bound: applying the saved
+    /// template to the same runtime later finds identical content and starts managing it.
+    fn import_runtime_resource(&self, payload: &Value) -> Result<Value, RuntimeError> {
+        let runtime_id = payload["runtimeInstanceID"].as_str().unwrap_or_default();
+        let config = self.management_config(runtime_id)?;
+        let kind: RuntimeResourceKind = serde_json::from_value(payload["kind"].clone())?;
+        let path = payload["path"].as_str().unwrap_or_default();
+        let scope = management::ResourceScope::User;
+        let (name, files) = match kind {
+            RuntimeResourceKind::Skills => {
+                let catalog = management::catalog(&config, management_kind(kind), scope)?;
+                let prefix = format!("{path}/");
+                let mut files = Vec::new();
+                for entry in catalog.entries.iter().filter(|entry| {
+                    entry.node == management::Node::File && entry.key.path.starts_with(&prefix)
+                }) {
+                    let document = management::read(&config, &entry.key)?;
+                    files.push(management::SkillFile {
+                        path: entry.key.path[prefix.len()..].to_owned(),
+                        bytes: document.bytes,
+                        executable: document.executable,
+                    });
+                }
+                (path.to_owned(), files)
+            }
+            _ => {
+                let document = management::read(&config, &user_key(kind, path))?;
+                let name = match kind {
+                    RuntimeResourceKind::UserInstructions => {
+                        self.runtime_instance(runtime_id)?.name.clone()
+                    }
+                    RuntimeResourceKind::NativeAgentDefinitions => std::path::Path::new(path)
+                        .file_stem()
+                        .map(|stem| stem.to_string_lossy().into_owned())
+                        .unwrap_or_default(),
+                    _ => path.to_owned(),
+                };
+                (
+                    name,
+                    vec![management::SkillFile {
+                        path: path.to_owned(),
+                        bytes: document.bytes,
+                        executable: document.executable,
+                    }],
+                )
+            }
+        };
+        let (content, notes) =
+            management::parse(&config.variant_id, management_kind(kind), &name, files)?;
+        Ok(json!(crate::ResourceTemplateImport {
+            template: ResourceTemplate {
+                id: String::new(),
+                name,
+                content: serde_json::from_value(serde_json::to_value(content)?)?,
+            },
+            notes,
+        }))
     }
 
     fn save_resource_template(

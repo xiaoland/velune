@@ -72,6 +72,7 @@ final class Transport: @unchecked Sendable {
     func previewResourceTemplate(_ id: String, targets: [BindingTemplateApplyTarget]) throws -> [BindingTemplateApplyReport] { try withApplication("previewResourceTemplate") { try $0.previewResourceTemplate(templateId: id, targets: targets) } }
     func applyResourceTemplate(_ id: String, targets: [BindingTemplateApplyTarget]) throws -> [BindingTemplateApplyReport] { try withApplication("applyResourceTemplate") { try $0.applyResourceTemplate(templateId: id, targets: targets) } }
     func resolveResourceBinding(runtimeID: String, templateID: String, resolution: BindingResolution) throws { try withApplication("resolveResourceBinding") { try $0.resolveResourceBinding(runtimeId: runtimeID, templateId: templateID, resolution: resolution) } }
+    func importRuntimeResource(runtimeID: String, kind: BindingRuntimeResourceKind, path: String) throws -> BindingResourceTemplateImport { try withApplication("importRuntimeResource") { try $0.importRuntimeResource(runtimeId: runtimeID, kind: kind, path: path) } }
     func runtimeResourceCatalog(runtimeID: String, kind: BindingRuntimeResourceKind, scope: BindingRuntimeResourceScope) throws -> BindingRuntimeResourceCatalog {
         try withApplication("runtimeResourceCatalog") { try $0.runtimeResourceCatalog(runtimeId: runtimeID, cwd: nil, kind: kind, scope: scope) }
     }

@@ -271,6 +271,17 @@ impl VeluneApplication {
             application.delete_resource_template(template_id)
         })
     }
+    pub fn import_runtime_resource(
+        &self,
+        runtime_id: String,
+        kind: BindingRuntimeResourceKind,
+        path: String,
+    ) -> Result<BindingResourceTemplateImport, BindingError> {
+        let kind = convert(kind)?;
+        convert(self.with("import_runtime_resource", |application| {
+            application.import_runtime_resource(runtime_id, kind, path)
+        })?)
+    }
     pub fn runtime_template_status(
         &self,
         runtime_id: String,

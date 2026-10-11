@@ -34,6 +34,7 @@ struct AppProblem: Identifiable, Sendable, Equatable {
         case "writeRuntimeResource": return "保存运行时资源"
         case "deleteRuntimeResource": return "删除运行时资源"
         case "listResourceTemplates", "readResourceTemplate", "runtimeTemplateStatus": return "读取资源模板"
+        case "importRuntimeResource": return "从运行时导入资源"
         case "saveResourceTemplate": return "保存资源模板"
         case "deleteResourceTemplate": return "删除资源模板"
         case "previewResourceTemplate": return "预览模板应用"

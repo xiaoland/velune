@@ -33,6 +33,7 @@ struct TemplateEditorView: View {
     @State private var saved: TemplateDraft?
     @State private var confirmingDelete = false
     @State private var applying = false
+    @State private var importNotes: [String] = []
 
     private var isNew: Bool { TemplateSelection.newKind(selection) != nil }
     private var isDirty: Bool { draft != saved }
@@ -43,6 +44,12 @@ struct TemplateEditorView: View {
                 VStack(spacing: 0) {
                     ScrollView {
                         VStack(alignment: .leading, spacing: 16) {
+                            if !importNotes.isEmpty {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("从运行时导入时有内容没有带入：").font(.callout)
+                                    ForEach(importNotes, id: \.self) { Text("• \($0)").font(.caption).foregroundStyle(.secondary) }
+                                }
+                            }
                             TemplateForm(draft: Binding(get: { draft ?? TemplateDraft(kind: .userInstructions) }, set: { draft = $0 }), canEdit: canModify)
                             if !isNew { appliedSection }
                         }.padding(16)
@@ -67,8 +74,16 @@ struct TemplateEditorView: View {
     }
 
     private func load() {
-        draft = nil; saved = nil
+        draft = nil; saved = nil; importNotes = []
         if let kind = TemplateSelection.newKind(selection) {
+            if let imported = library.importedDraft, imported.draft.kind == kind {
+                library.importedDraft = nil
+                importNotes = imported.notes
+                draft = imported.draft
+                // Unsaved, so the editor shows a pending creation.
+                saved = TemplateDraft(kind: kind)
+                return
+            }
             let value = TemplateDraft(kind: kind)
             draft = value; saved = value
             return
@@ -341,6 +356,7 @@ struct RuntimeTemplatesView: View {
     let canModify: Bool
     @State private var applyingTemplate: BindingResourceTemplateSummary?
     @State private var removing: BindingRuntimeTemplateStatus?
+    @State private var importing = false
 
     private var statuses: [BindingRuntimeTemplateStatus] { library.statuses[instance.id] ?? [] }
 
@@ -355,6 +371,7 @@ struct RuntimeTemplatesView: View {
                         }
                     }
                 }.fixedSize().disabled(library.summaries.isEmpty || !canModify)
+                Button("从运行时导入…") { importing = true }.disabled(library.isWorking)
                 if statuses.contains(where: { $0.state.isTemplateUpdated }) {
                     Button("同步全部更新") { syncUpdated() }.disabled(!canModify || library.isWorking)
                 }
@@ -373,6 +390,7 @@ struct RuntimeTemplatesView: View {
         .sheet(item: $applyingTemplate) { item in
             ApplyTemplateSheet(store: store, library: library, templateID: item.id, templateName: item.name, kind: item.kind, initial: [instance.id])
         }
+        .sheet(isPresented: $importing) { ImportFromRuntimeSheet(library: library, instance: instance) }
         .alert("移除“\(removing?.templateName ?? "")”？", isPresented: Binding(get: { removing != nil }, set: { if !$0 { removing = nil } })) {
             Button("取消", role: .cancel) {}
             Button("移除", role: .destructive) { if let removing { resolve(removing, .remove) } }
@@ -421,3 +439,67 @@ struct RuntimeTemplatesView: View {
 
 extension BindingTemplateSyncState { var isDrifted: Bool { if case .drifted = self { true } else { false } } }
 extension BindingResourceTemplateSummary: Identifiable {}
+
+
+/// Lists the native entries of a runtime so one can become a template. The template is only
+/// created in the editor; nothing is saved or bound until the user saves it.
+struct ImportFromRuntimeSheet: View {
+    @ObservedObject var library: TemplateLibrary
+    let instance: RuntimeInstance
+    @Environment(\.dismiss) private var dismiss
+    @State private var candidates: [(kind: BindingRuntimeResourceKind, paths: [String])] = []
+    @State private var loaded = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("从 \(instance.name) 导入").font(.title3.bold())
+            Text("选择一项原生内容，在模板编辑器中检查后保存为模板。").foregroundStyle(.secondary)
+            if !loaded {
+                ProgressView().frame(maxWidth: .infinity, minHeight: 160)
+            } else if candidates.allSatisfy({ $0.paths.isEmpty }) {
+                ContentUnavailableView("没有可导入的内容", systemImage: "tray", description: Text("此运行时的用户目录里还没有指令、技能、MCP 或子 Agent。")).frame(minHeight: 160)
+            } else {
+                List {
+                    ForEach(candidates.filter { !$0.paths.isEmpty }, id: \.kind) { group in
+                        Section(group.kind.templateTitle) {
+                            ForEach(group.paths, id: \.self) { path in
+                                Button { choose(group.kind, path) } label: {
+                                    HStack { Image(systemName: group.kind.templateSymbol).foregroundStyle(.secondary); Text(path); Spacer() }.contentShape(Rectangle())
+                                }.buttonStyle(.plain)
+                            }
+                        }
+                    }
+                }.frame(minHeight: 240)
+            }
+            if let message = library.failure { FailureBanner(message: message) }
+            HStack { Spacer(); Button("取消") { dismiss() }.keyboardShortcut(.cancelAction) }
+        }
+        .padding(20).frame(width: 460)
+        .task { load() }
+    }
+
+    private func load() {
+        let runtimeID = instance.id
+        library.run({ transport in
+            BindingRuntimeResourceKind.templateKinds.map { kind in
+                let catalog = try? transport.runtimeResourceCatalog(runtimeID: runtimeID, kind: kind, scope: .user)
+                guard let catalog, case .supported = catalog.support else { return (kind, [String]()) }
+                let paths = catalog.entries.filter { entry in
+                    guard case .present = entry.state else { return false }
+                    return kind == .skills ? entry.node == .directory && !entry.key.path.contains("/") : entry.node == .file
+                }.map(\.key.path)
+                return (kind, paths)
+            }
+        }, done: { value in candidates = value.map { (kind: $0.0, paths: $0.1) }; loaded = true })
+    }
+
+    private func choose(_ kind: BindingRuntimeResourceKind, _ path: String) {
+        let runtimeID = instance.id
+        library.run({ try $0.importRuntimeResource(runtimeID: runtimeID, kind: kind, path: path) }, done: { imported in
+            library.importedDraft = (TemplateDraft(imported.template), imported.notes)
+            RuntimeResourcesNavigator.shared.templateID = TemplateSelection.new(kind)
+            RuntimeResourcesNavigator.shared.runtimeID = nil
+            dismiss()
+        })
+    }
+}

@@ -5,7 +5,8 @@ use serde::{Deserialize, Serialize};
 use std::{fmt, path::PathBuf};
 
 pub use canonical::{
-    Canonical, McpTransport, RenderedFile, Rendering, SkillFile, fingerprint, render, validate_name,
+    Canonical, McpTransport, RenderedFile, Rendering, SkillFile, fingerprint, parse, render,
+    validate_name,
 };
 
 mod canonical;

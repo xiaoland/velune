@@ -339,3 +339,150 @@ fn sorted(value: &Value) -> String {
         other => other.to_string(),
     }
 }
+
+/// The inverse of `render`, best effort: reads native files back into a canonical definition and
+/// names what it could not carry over, without the values. `files` are the entry's own files
+/// with paths relative to the entry (a skill's bundle) or the single native file (`path` is
+/// its file name).
+pub fn parse(
+    variant_id: &str,
+    kind: ResourceKind,
+    name: &str,
+    files: Vec<SkillFile>,
+) -> Result<(Canonical, Vec<String>)> {
+    let invalid = |message: &str| Error::new(ErrorCode::Invalid, message.to_owned());
+    let text = |file: &SkillFile| {
+        String::from_utf8(file.bytes.clone()).map_err(|_| invalid("文件不是有效的 UTF-8 文本"))
+    };
+    let mut notes = Vec::new();
+    let canonical = match kind {
+        ResourceKind::UserInstructions => {
+            let [file] = files.as_slice() else {
+                return Err(invalid("指令应为单个文件"));
+            };
+            Canonical::Instructions { body: text(file)? }
+        }
+        ResourceKind::Skills => {
+            validate_name(name)?;
+            if !files.iter().any(|file| file.path == "SKILL.md") {
+                return Err(invalid("技能需要根目录的 SKILL.md"));
+            }
+            Canonical::Skill { files }
+        }
+        ResourceKind::McpServers => {
+            validate_name(name)?;
+            let [file] = files.as_slice() else {
+                return Err(invalid("MCP 声明应为单个对象"));
+            };
+            let Value::Object(object) = serde_json::from_slice(&file.bytes)
+                .map_err(|_| invalid("MCP 声明不是 JSON 对象"))?
+            else {
+                return Err(invalid("MCP 声明不是 JSON 对象"));
+            };
+            let strings = |value: Option<&Value>, notes: &mut Vec<String>, field: &str| {
+                let mut map = BTreeMap::new();
+                for (key, value) in value.and_then(Value::as_object).into_iter().flatten() {
+                    match value.as_str() {
+                        Some(value) => {
+                            map.insert(key.clone(), value.to_owned());
+                        }
+                        None => notes.push(format!("{field} 中的 {key} 不是文本，未导入")),
+                    }
+                }
+                map
+            };
+            let known: &[&str];
+            let transport = if let Some(url) = object.get("url").and_then(Value::as_str) {
+                known = &["type", "url", "headers", "http_headers"];
+                let field = if object.contains_key("http_headers") {
+                    "http_headers"
+                } else {
+                    "headers"
+                };
+                McpTransport::Http {
+                    url: url.to_owned(),
+                    headers: strings(object.get(field), &mut notes, field),
+                }
+            } else if let Some(command) = object.get("command").and_then(Value::as_str) {
+                known = &["type", "command", "args", "env"];
+                McpTransport::Stdio {
+                    command: command.to_owned(),
+                    args: object
+                        .get("args")
+                        .and_then(Value::as_array)
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|value| value.as_str().map(str::to_owned))
+                        .collect(),
+                    env: strings(object.get("env"), &mut notes, "env"),
+                }
+            } else {
+                return Err(invalid("MCP 声明既没有 command 也没有 url"));
+            };
+            for key in object.keys().filter(|key| !known.contains(&key.as_str())) {
+                notes.push(format!("字段 {key} 没有对应位置，未导入"));
+            }
+            Canonical::Mcp { transport }
+        }
+        ResourceKind::NativeAgentDefinitions => {
+            validate_name(name)?;
+            let [file] = files.as_slice() else {
+                return Err(invalid("子 Agent 应为单个文件"));
+            };
+            let source = text(file)?;
+            if variant_id == "codex-0.159.3" {
+                let document = source
+                    .parse::<toml_edit::DocumentMut>()
+                    .map_err(|_| invalid("子 Agent 定义不是有效的 TOML"))?;
+                let field = |key: &str| document.get(key).and_then(|item| item.as_str());
+                for (key, _) in document.iter() {
+                    if !matches!(key, "name" | "description" | "developer_instructions") {
+                        notes.push(format!("字段 {key} 没有对应位置，未导入"));
+                    }
+                }
+                Canonical::Subagent {
+                    description: field("description").unwrap_or_default().to_owned(),
+                    instructions: field("developer_instructions")
+                        .unwrap_or_default()
+                        .to_owned(),
+                    model: None,
+                    tools: Vec::new(),
+                }
+            } else {
+                let rest = source
+                    .strip_prefix("---\n")
+                    .ok_or_else(|| invalid("子 Agent 缺少 frontmatter"))?;
+                let (header, body) = rest
+                    .split_once("\n---")
+                    .ok_or_else(|| invalid("子 Agent frontmatter 未结束"))?;
+                let header: serde_yaml_ng::Mapping = serde_yaml_ng::from_str(header)
+                    .map_err(|_| invalid("子 Agent frontmatter 不是有效的 YAML"))?;
+                let field = |key: &str| header.get(key).and_then(|value| value.as_str());
+                for key in header.keys().filter_map(|key| key.as_str()) {
+                    if !matches!(key, "name" | "description" | "tools" | "model") {
+                        notes.push(format!("字段 {key} 没有对应位置，未导入"));
+                    }
+                }
+                let tools = match header.get("tools") {
+                    Some(serde_yaml_ng::Value::String(list)) => list
+                        .split(',')
+                        .map(|tool| tool.trim().to_owned())
+                        .filter(|tool| !tool.is_empty())
+                        .collect(),
+                    Some(serde_yaml_ng::Value::Sequence(items)) => items
+                        .iter()
+                        .filter_map(|tool| tool.as_str().map(str::to_owned))
+                        .collect(),
+                    _ => Vec::new(),
+                };
+                Canonical::Subagent {
+                    description: field("description").unwrap_or_default().to_owned(),
+                    instructions: body.trim().to_owned(),
+                    model: field("model").map(str::to_owned),
+                    tools,
+                }
+            }
+        }
+    };
+    Ok((canonical, notes))
+}

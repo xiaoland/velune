@@ -151,6 +151,8 @@ struct TemplateDraft: Equatable {
     @Published private(set) var statuses: [String: [BindingRuntimeTemplateStatus]] = [:]
     @Published private(set) var isWorking = false
     @Published var failure: String?
+    /// A template read from a runtime, waiting for the editor to take it over.
+    var importedDraft: (draft: TemplateDraft, notes: [String])?
     private let transport: Transport?
     private let queue = DispatchQueue(label: "local.velune.template-library", qos: .userInitiated)
 
