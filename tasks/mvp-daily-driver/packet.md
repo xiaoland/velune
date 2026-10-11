@@ -42,3 +42,7 @@
 5. composer 增强：图片／文件附件、@ 文件引用、推理强度（提供商模型已有推理级别）、技能／命令入口。
 6. worktree 隔离：新会话可在独立 git worktree 中运行，便于同一仓库并行任务。
 7. 之后：跨 Harness sub-agent（PRD 的核心协作能力）建立在 1–3 之上。
+
+## 安装
+
+`48ccb32` release 构建已安装 `/Applications/Velune.app`：0.1 beta.1、config schema 8，严格签名通过；正常退出旧应用后安装并重新打开，无崩溃报告。manifest dirty=true 仅因工作区未跟踪的 `app/mac/.DS_Store` 与 `app/mac/Assets/`（非本任务文件，未删除）。
