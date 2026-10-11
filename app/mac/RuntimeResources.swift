@@ -359,6 +359,7 @@ struct PlainTextEditor: NSViewRepresentable {
 @MainActor final class RuntimeResourcesNavigator: ObservableObject {
     static let shared = RuntimeResourcesNavigator()
     @Published var runtimeID: String?
+    @Published var templateID: String?
     func show(_ runtimeID: String, _ openWindow: OpenWindowAction) {
         self.runtimeID = runtimeID
         openWindow(id: "runtime-resources")
@@ -377,42 +378,72 @@ struct RuntimeResourcesView: View {
     @ObservedObject var store: AppStore
     @ObservedObject private var navigator = RuntimeResourcesNavigator.shared
     @StateObject private var resources = RuntimeResourceModels()
+    @StateObject private var library: TemplateLibrary
     @State private var section = RuntimeSection.overview
     @State private var editor: RuntimeInstance?
+    init(store: AppStore) { self.store = store; _library = StateObject(wrappedValue: TemplateLibrary(transport: store.resourceTransport)) }
     private var selected: RuntimeInstance? { store.runtimeInstances.first { $0.id == navigator.runtimeID } }
 
     var body: some View {
         NavigationSplitView {
-            List(selection: $navigator.runtimeID) {
-                ForEach(store.runtimeInstances) { instance in
-                    VStack(alignment: .leading, spacing: 3) {
-                        HStack { Text(instance.name).lineLimit(1); if !instance.enabled { Text("已停用").foregroundStyle(.secondary) } }
-                        Text(store.runtimeTypes.first { $0.id == instance.typeID }?.name ?? instance.typeID).font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                    }.padding(.vertical, 2).tag(instance.id)
+            List(selection: Binding<String?>(get: { navigator.templateID.map { "t:" + $0 } ?? navigator.runtimeID.map { "r:" + $0 } }, set: { value in
+                if let value, value.hasPrefix("t:") { navigator.templateID = String(value.dropFirst(2)); navigator.runtimeID = nil }
+                else if let value { navigator.runtimeID = String(value.dropFirst(2)); navigator.templateID = nil }
+            })) {
+                Section {
+                    ForEach(store.runtimeInstances) { instance in
+                        VStack(alignment: .leading, spacing: 3) {
+                            HStack { Text(instance.name).lineLimit(1); if !instance.enabled { Text("已停用").foregroundStyle(.secondary) } }
+                            Text(store.runtimeTypes.first { $0.id == instance.typeID }?.name ?? instance.typeID).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                        }.padding(.vertical, 2).tag("r:" + instance.id)
+                    }
+                } header: { Text("运行时") }
+                Section {
+                    ForEach(library.summaries, id: \.id) { item in
+                        Label {
+                            HStack { Text(item.name).lineLimit(1); if library.hasUpdates(item.id) { Spacer(); Circle().fill(.orange).frame(width: 7, height: 7).help("有运行时尚未同步此模板的更新") } }
+                        } icon: { Image(systemName: item.kind.templateSymbol) }.tag("t:" + item.id)
+                    }
+                } header: {
+                    HStack {
+                        Text("模板")
+                        Spacer()
+                        Menu {
+                            ForEach(BindingRuntimeResourceKind.templateKinds, id: \.self) { kind in
+                                Button { navigator.templateID = TemplateSelection.new(kind); navigator.runtimeID = nil } label: { Label(kind.templateTitle, systemImage: kind.templateSymbol) }
+                            }
+                        } label: { Image(systemName: "plus") }.menuStyle(.borderlessButton).fixedSize().help("新建模板").accessibilityLabel("新建模板")
+                    }
                 }
             }
             .listStyle(.sidebar)
             .navigationSplitViewColumnWidth(min: 190, ideal: 230, max: 300)
         } detail: {
-            if let instance = selected {
-                RuntimeDetailView(store: store, instance: instance, section: $section, resources: resources, edit: { editor = instance }).id(instance.id)
+            if let template = navigator.templateID {
+                TemplateEditorView(library: library, store: store, selection: template, canModify: !store.applicationIsGenerating, select: { navigator.templateID = $0; if $0 == nil { navigator.runtimeID = store.runtimeInstances.first?.id } }).id(template)
+            } else if let instance = selected {
+                RuntimeDetailView(store: store, instance: instance, section: $section, resources: resources, library: library, edit: { editor = instance }).id(instance.id)
             } else {
                 ContentUnavailableView("选择一个 Agent 运行时", systemImage: "terminal", description: Text("在左侧选择运行时，管理它的原生指令与其他资源。"))
             }
         }
-        .navigationTitle(selected.map { "运行时资源 — \($0.name)" } ?? "运行时资源")
-        .onAppear { if selected == nil { navigator.runtimeID = store.runtimeInstances.first?.id } }
+        .navigationTitle(navigator.templateID != nil ? "运行时资源 — 模板" : selected.map { "运行时资源 — \($0.name)" } ?? "运行时资源")
+        .onAppear {
+            if selected == nil && navigator.templateID == nil { navigator.runtimeID = store.runtimeInstances.first?.id }
+            library.reload(runtimeIDs: store.runtimeInstances.map(\.id))
+        }
         .onChange(of: store.runtimeInstances) { _, instances in
-            if !instances.contains(where: { $0.id == navigator.runtimeID }) { navigator.runtimeID = instances.first?.id }
+            if navigator.templateID == nil, !instances.contains(where: { $0.id == navigator.runtimeID }) { navigator.runtimeID = instances.first?.id }
+            library.reload(runtimeIDs: instances.map(\.id))
         }
         .sheet(item: $editor) { instance in RuntimeEditor(store: store, instance: instance) }
     }
 }
 
 enum RuntimeSection: Hashable {
-    case overview, instructions
-    var title: String { switch self { case .overview: "概览"; case .instructions: "指令" } }
-    static let all: [RuntimeSection] = [.overview, .instructions]
+    case overview, instructions, templates
+    var title: String { switch self { case .overview: "概览"; case .instructions: "指令"; case .templates: "模板" } }
+    static let all: [RuntimeSection] = [.overview, .instructions, .templates]
 }
 
 /// The selected runtime: its configuration summary and the native resources
@@ -422,6 +453,7 @@ private struct RuntimeDetailView: View {
     let instance: RuntimeInstance
     @Binding var section: RuntimeSection
     @ObservedObject var resources: RuntimeResourceModels
+    @ObservedObject var library: TemplateLibrary
     let edit: () -> Void
     private var descriptor: RuntimeTypeDescriptor? { store.runtimeTypes.first { $0.id == instance.typeID } }
 
@@ -442,6 +474,8 @@ private struct RuntimeDetailView: View {
             case .overview: overview
             case .instructions:
                 InstructionsView(model: resources.instructions(for: instance.id, transport: store.resourceTransport), canModify: !store.applicationIsGenerating)
+            case .templates:
+                RuntimeTemplatesView(store: store, library: library, instance: instance, canModify: !store.applicationIsGenerating)
             }
         }.frame(maxHeight: .infinity, alignment: .top)
     }

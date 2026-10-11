@@ -64,6 +64,14 @@ final class Transport: @unchecked Sendable {
     func runtimeDiscoveryHints(userHome: String, overrides: [String: String]) throws -> [BindingRuntimeDiscoveryHint] { try withApplication("runtimeDiscoveryHints") { try $0.runtimeDiscoveryHints(userHome: userHome, overrides: overrides) } }
     func discoverRuntimes(_ probes: [BindingRuntimeDiscoveryProbe]) throws -> [BindingRuntimeDiscoveryCandidate] { try withApplication("discoverRuntimes") { try $0.discoverRuntimes(probes: probes) } }
     func analyticsQuery(_ query: BindingAnalyticsQuery) throws -> BindingAnalyticsReport { try withApplication("analyticsQuery") { try $0.analyticsQuery(query: query) } }
+    func listResourceTemplates() throws -> [BindingResourceTemplateSummary] { try withApplication("listResourceTemplates") { try $0.listResourceTemplates() } }
+    func readResourceTemplate(_ id: String) throws -> BindingResourceTemplate { try withApplication("readResourceTemplate") { try $0.readResourceTemplate(templateId: id) } }
+    func saveResourceTemplate(_ template: BindingResourceTemplate) throws -> BindingResourceTemplateSummary { try withApplication("saveResourceTemplate") { try $0.saveResourceTemplate(template: template) } }
+    func deleteResourceTemplate(_ id: String) throws { try withApplication("deleteResourceTemplate") { try $0.deleteResourceTemplate(templateId: id) } }
+    func runtimeTemplateStatus(runtimeID: String) throws -> [BindingRuntimeTemplateStatus] { try withApplication("runtimeTemplateStatus") { try $0.runtimeTemplateStatus(runtimeId: runtimeID) } }
+    func previewResourceTemplate(_ id: String, targets: [BindingTemplateApplyTarget]) throws -> [BindingTemplateApplyReport] { try withApplication("previewResourceTemplate") { try $0.previewResourceTemplate(templateId: id, targets: targets) } }
+    func applyResourceTemplate(_ id: String, targets: [BindingTemplateApplyTarget]) throws -> [BindingTemplateApplyReport] { try withApplication("applyResourceTemplate") { try $0.applyResourceTemplate(templateId: id, targets: targets) } }
+    func resolveResourceBinding(runtimeID: String, templateID: String, resolution: BindingResolution) throws { try withApplication("resolveResourceBinding") { try $0.resolveResourceBinding(runtimeId: runtimeID, templateId: templateID, resolution: resolution) } }
     func runtimeResourceCatalog(runtimeID: String, kind: BindingRuntimeResourceKind, scope: BindingRuntimeResourceScope) throws -> BindingRuntimeResourceCatalog {
         try withApplication("runtimeResourceCatalog") { try $0.runtimeResourceCatalog(runtimeId: runtimeID, cwd: nil, kind: kind, scope: scope) }
     }
