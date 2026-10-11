@@ -1,7 +1,15 @@
+# Operating system and editor metadata, anywhere in the tree.
+.DS_Store
+._*
+*.swp
+*~
+
+# Workspace build outputs (Cargo workspace, SwiftPM package at the root).
 /target/
+/.build/
+/.swiftpm/
+
+# Local state and secrets.
 *.sqlite*
 .env
 __pycache__/
-
-/.build/
-/.swiftpm/

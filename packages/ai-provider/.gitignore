@@ -1,0 +1,8 @@
+# Built outside the Cargo workspace.
+/target/
+
+# A manual `go build` of the RelayKit bridge (build.rs writes to OUT_DIR).
+/relaykit-bridge/relaykit-bridge
+/relaykit-bridge/*.a
+/relaykit-bridge/*.so
+/relaykit-bridge/*.h

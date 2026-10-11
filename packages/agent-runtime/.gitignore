@@ -1,0 +1,6 @@
+# Built outside the Cargo workspace.
+/target/
+
+# Runtime support is installed into the workspace target by scripts/install-runtime-support.sh;
+# an npm install here must not be committed.
+/runtime-support/node_modules/
