@@ -636,7 +636,7 @@ struct RuntimeSettingsView: View {
                 Button("快速导入…") { discovering = true }.disabled(store.isBusy)
                 Button { deleting = selected } label: { Image(systemName: "minus") }.disabled(selected == nil).help("删除运行时实例")
                 Spacer()
-                Button("管理资源…") { if let id = selectedID { RuntimeResourcesNavigator.shared.show(id, openWindow) } }
+                Button("管理该运行时的资源…") { if let id = selectedID { RuntimeResourcesNavigator.shared.show(id, openWindow) } }
                     .disabled(selected == nil).help("管理所选运行时的指令、技能等原生资源")
                 Button("编辑…") { editor = selected }.disabled(selected == nil)
             }.padding(.horizontal, 20).padding(.vertical, 12)
@@ -655,7 +655,7 @@ struct RuntimeSettingsView: View {
     @ViewBuilder private func instanceMenu(_ ids: Set<String>) -> some View {
         if let id = ids.first, let runtime = store.runtimeInstances.first(where: { $0.id == id }) {
             Button("编辑…") { editor = runtime }
-            Button("管理资源…") { RuntimeResourcesNavigator.shared.show(id, openWindow) }
+            Button("管理该运行时的资源…") { RuntimeResourcesNavigator.shared.show(id, openWindow) }
             Button(runtime.enabled ? "停用" : "启用") { var updated = runtime; updated.enabled.toggle(); store.saveRuntimeInstance(updated) }.disabled(store.isBusy)
             Button("删除…") { deleting = runtime }
         }
@@ -669,6 +669,7 @@ struct RuntimeEditor: View {
     private var gatewayID: String { store.gateway.id }
     private var isSaving: Bool { store.isLoading }
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.openWindow) private var openWindow
     @State private var name = ""
     @State private var enabled = true
     @State private var typeID = ""
@@ -713,7 +714,13 @@ struct RuntimeEditor: View {
                     }
                 }
             }.formStyle(.grouped)
-            HStack { Spacer(); Button("取消") { dismiss() }.keyboardShortcut(.cancelAction); Button("保存") { commit() }.keyboardShortcut(.defaultAction).disabled(!valid || isSaving) }.padding(20)
+            HStack {
+                if let instance {
+                    Button("管理该运行时的资源…") { dismiss(); RuntimeResourcesNavigator.shared.show(instance.id, openWindow) }
+                        .help("在“运行时资源”窗口管理此运行时的指令等原生资源")
+                }
+                Spacer(); Button("取消") { dismiss() }.keyboardShortcut(.cancelAction); Button("保存") { commit() }.keyboardShortcut(.defaultAction).disabled(!valid || isSaving)
+            }.padding(20)
 
         }.frame(width: 590, height: 540)
         .onAppear {
