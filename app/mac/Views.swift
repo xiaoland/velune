@@ -14,6 +14,9 @@ struct VeluneRootView: View {
     @State private var scrollRequest: UInt64 = 0
     @State private var showsOutlinePopover = false
     @State private var showsChanges = false
+    /// Change review is implemented but not yet part of the product
+    /// (2026-10-11 decision); this keeps its entry closed.
+    private static let changeReviewEnabled = false
     @State private var outlineCollapsed = false
     @State private var outlineNavigation: TranscriptJump?
     @State private var renameTarget: Conversation?
@@ -88,9 +91,11 @@ struct VeluneRootView: View {
                         .keyboardShortcut("r").disabled(!store.canReloadFromRuntimes)
                         .help("从 Agent 运行时重新读取会话列表和当前会话（⌘ R）；用于补上自动跟随遗漏的变化")
                     outlineButton
-                    Toggle(isOn: $showsChanges) { Label("变更", systemImage: "plusminus") }
-                        .help("工作目录的 git 变更").keyboardShortcut("d", modifiers: [.command, .option])
-                        .disabled(store.loadedConversationWorkingDirectory == nil && !showsChanges)
+                    if Self.changeReviewEnabled {
+                        Toggle(isOn: $showsChanges) { Label("变更", systemImage: "plusminus") }
+                            .help("工作目录的 git 变更").keyboardShortcut("d", modifiers: [.command, .option])
+                            .disabled(store.loadedConversationWorkingDirectory == nil && !showsChanges)
+                    }
                 }
             }
             .inspector(isPresented: $showsChanges) {

@@ -38,7 +38,7 @@
 1. 多会话并行：核心从单一 `active_state` 改为按会话的执行，执行中可浏览／发送其他会话，侧栏不再整体禁用。
 2. 会话实时状态：打开的会话在运行时文件变化时增量重读；按各 Harness 记录推断外部进行中的 turn（如 Codex rollout 的任务开始／完成事件、Claude Code 与 Pi 末条消息的停止原因），标为“可能仍在运行”，保留手动重新读取。
 3. 完成与待审批通知：系统通知与 Dock 标记，配合并行。
-4. 变更审阅：按会话工作目录查看 git 改动与逐文件差异，可在编辑器中打开；以后再考虑暂存／提交。
+4. 变更审阅：按会话工作目录查看 git 改动与逐文件差异，可在编辑器中打开；以后再考虑暂存／提交。（已实现但入口关闭，用户尚未决定纳入。）
 5. composer 增强：图片／文件附件、@ 文件引用、推理强度（提供商模型已有推理级别）、技能／命令入口。
 6. worktree 隔离：新会话可在独立 git worktree 中运行，便于同一仓库并行任务。
 7. 之后：跨 Harness sub-agent（PRD 的核心协作能力）建立在 1–3 之上。
@@ -102,7 +102,9 @@
 - 未验证：Mac 的系统通知、授权提示、点击打开与 Dock 标记未实际运行——开发构建与安装版同为 `local.velune.prototype`，首次通知会弹出系统授权提示，属于用户决定，开发方不在调试中触发。所有窗口都关闭时点击通知只激活应用，不新开窗口。
 - 安装：`8ea8655` release 构建已安装 `/Applications/Velune.app`（0.1 beta.1、config schema 8、manifest dirty=false），严格签名通过；正常退出旧应用后安装并重新打开，无崩溃报告；安装后 runtime-interactions、continuation-boundaries、acp-adapter 脚本通过。
 
-## ④ 变更审阅（2026-10-11）
+## ④ 变更审阅（2026-10-11，入口已关闭）
+
+用户随后澄清尚未打算加入文件变更功能（已写入 PRD）：保留核心 API、Mac 视图与验收脚本，Mac 入口由 `changeReviewEnabled = false` 短路，是否启用另行决定。
 
 - 核心：`working_changes.rs` 调用本机 `git`（`-C`、`core.quotePath=false`、`GIT_OPTIONAL_LOCKS=0`、`LC_ALL=C`）。工作目录取自会话通道或最近列表；`status --porcelain=v2 --branch -z --untracked-files=all` 解析为类型化变更，`diff HEAD --numstat -z --no-renames` 给出行数；单文件差异对已跟踪文件用 `diff HEAD`（无提交时 `--cached`），未跟踪用 `--no-index /dev/null`，解析为 hunk／上下文／增／删／说明行，去掉与列表重复的文件头，超过 1 MiB 截断。拒绝绝对路径与 `..`。远端运行时暂不支持。
 - Mac：详情工具栏“变更”开关（⌥⌘D）打开原生 inspector：仓库名与分支、文件列表、选中文件的差异（VSplitView）；双击以默认应用打开，菜单在访达中显示／拷贝路径；打开、切换会话、本会话 turn 结束与手动刷新时读取。“重新读取”的帮助文字改为补上自动跟随遗漏的变化。
