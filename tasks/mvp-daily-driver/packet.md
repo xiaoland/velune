@@ -91,7 +91,9 @@
 - 临时 Rust 程序（/tmp，未提交）以合成 Codex rollout 与 Claude Code JSONL 检查 turn 边界、中断、本地命令、sidechain、sub-agent 目录、定位、最近扫描与截断尾部——通过。
 - Mac：隔离 HOME 的开发构建打开会话 A，外部进程追加提示后数秒内侧栏出现指示、消息列表出现新提示与 Elsewhere 状态行；追加回复后指示与状态行消失（窗口截图）。
 - 既有脚本 parallel-sessions、runtime-interactions、acp-adapter、continuation-boundaries、resource-library 通过。
-- 未验证：真实 Codex／Claude Code 会话的事件格式与 Codex app-server 重读耗时（未读取真实会话）；实际外部 Harness 长时间工具调用超过 10 分钟无写入时会被视为已放弃。
+- 2026-10-11 补验（用户提示可用独立 HOME）：`scripts/manual-live-native.py` 以临时 VELUNE_HOME 中 managed HOME 的 Codex 0.159.3 与 Claude Code 2.1.286 实际 CLI、回环合成上游（Responses／Messages，按 turn 闸门挂起）验证：外部 `codex exec`／`claude -p` 新建的会话被报告为 Elsewhere 并列入列表，结束后消失；已打开会话在外部 `exec resume`／`--resume` 期间显示新提示与 Elsewhere，结束后重读出回复——全部通过。实际 rollout 的 turn 事件为 `task_started`／`task_complete`。未读取任何真实 HOME 或会话，未调用真实模型。
+- 观察：Mac 运行时设置尚未接入 application 已有的 `RuntimeHome`（继承／指定／managed HOME），只能经绑定配置。
+- 未验证：实际外部 Harness 长时间无写入超过 10 分钟时显示回到空闲。
 - 安装：`fd2e7cd` release 构建已安装 `/Applications/Velune.app`（0.1 beta.1、config schema 8、manifest dirty=false），严格签名通过；正常退出旧应用后安装并重新打开，无崩溃报告。
 
 ## ③ 完成与待确认通知（2026-10-11）
