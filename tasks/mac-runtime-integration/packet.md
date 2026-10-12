@@ -33,3 +33,4 @@
 - Mac composer：会话在本应用中活动后（首次发送后）读取 `acp_session_config`，“会话选项”菜单按 Agent 名称与分组列出选择项和开关，生成中禁用；首个 model 类选项由模型菜单提供而不重复。会话变为活动时重新读取该运行时的模型目录，修正切片 1 需手动“重新读取模型”的边界。未活动的读取失败不作为问题上报。
 - 未做：按原生 ID 打开无 list 能力的 ACP 会话（`open_acp_conversation`）暂无界面。
 - 验证：fmt／clippy／no-default-features、Mac 构建通过；`manual-acp-adapter.py` 通过。开发版隔离 HOME 用该脚本的合成 ACP Agent：打开会话后经 AX 发送，“会话选项”出现，模型菜单变为 Agent 默认／Alpha／Beta 并可选 Beta；切换布尔选项后 Agent 记录到 `config flag-without-category=false`；编辑器载入参数与环境变量、读取到 Agent 名称／版本／能力／登录方式，原样保存后配置中的启动参数不变。检查中 AX 按标题包含匹配误点了 Apple 菜单的“系统设置…”，已立即退出该次启动的系统设置，辅助工具改为精确匹配。
+- 安装：72d7e10 已构建安装至 `/Applications/Velune.app`（签名校验通过，manifest 对应该提交且无未提交改动），重新打开后无崩溃报告。
