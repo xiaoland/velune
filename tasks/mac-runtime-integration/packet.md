@@ -42,3 +42,4 @@
 - Mac composer：SSH 运行时的未发送会话以提示框输入远端绝对目录，菜单列出同一机器最近会话的工作目录；远端会话消息中的文件链接不当作本机路径打开。
 - 边界：工作目录存在性由核心在执行机器检查；跨机器接续仍沿用来源 cwd（核心既有边界）；变更审阅对远端会话由核心拒绝。
 - 验证：fmt／clippy／no-default-features、Mac 构建；`manual-runtime-selection.py`、`manual-acp-adapter.py` 通过。以临时非特权 sshd（127.0.0.1、临时主机／客户端密钥与 known_hosts，经 ssh 包装指定临时配置，不读写 `~/.ssh`）运行合成 ACP Agent：bindings 经 SSH 获取 Agent 信息、创建并完成一轮，远端不存在的目录被拒绝；开发版隔离 HOME 中经 AX 在该会话发送第二轮成功，新建会话的工作目录菜单显示“输入 velune-test 上的目录…”与最近目录，提示框输入后生效；编辑器载入并原样保存 SSH 配置。验收后 sshd 已停止、临时目录已删除。
+- 安装：ba3b95d 已构建安装至 `/Applications/Velune.app`（签名校验通过，manifest 对应该提交且无未提交改动），重新打开后无崩溃报告。
