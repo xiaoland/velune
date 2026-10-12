@@ -85,6 +85,9 @@ final class Transport: @unchecked Sendable {
     func publicModelCatalog() throws -> [BindingCatalogModel] { try withApplication("fetchPublicModelCatalog") { try $0.fetchPublicModelCatalog() } }
     func deleteTemplate(id: String) throws -> [BindingModelTemplate] { try withApplication("deleteModelTemplate", changesConfiguration: true) { try $0.deleteModelTemplate(id: id) } }
     func upsertRuntime(_ runtime: BindingRuntimeInstance) throws -> BindingRuntimeUpdate { try withApplication("upsertRuntime", changesConfiguration: true) { try $0.upsertRuntime(runtime: runtime) } }
+    func upsertRuntime(_ runtime: BindingRuntimeInstance, execution: BindingRuntimeExecution) throws -> BindingRuntimeUpdate { try withApplication("upsertRuntime", changesConfiguration: true) { try $0.upsertRuntimeWithExecution(runtime: runtime, execution: execution) } }
+    /// The saved execution settings and the HOME they resolve to, if not inherited.
+    func runtimeExecution(id: String) throws -> (BindingRuntimeExecution, String?) { try withApplication("runtimeExecution") { (try $0.runtimeExecution(runtimeId: id), try $0.runtimeHomeDirectory(runtimeId: id)) } }
     func deleteRuntime(id: String) throws -> BindingRuntimeUpdate { try withApplication("deleteRuntime", changesConfiguration: true) { try $0.deleteRuntime(id: id) } }
     func selectRuntime(id: String) throws -> BindingConfigurationSnapshot { try withApplication("selectRuntime") { try $0.selectRuntime(id: id) } }
     func createConversation(runtimeID: String, cwd: String?, modelRecordKey: String) throws -> BindingSnapshotResult { try withApplication("createConversation") { try $0.createConversation(runtimeId: runtimeID, cwd: cwd, modelRecordKey: modelRecordKey) } }

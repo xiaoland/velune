@@ -960,6 +960,11 @@ impl Application {
     ) -> Result<crate::RuntimeExecution, Error> {
         self.execute("runtimeExecution", json!({}), Some(&runtime_id))
     }
+    /// The HOME a runtime is launched with on its execution machine; `None`
+    /// when it inherits the user's. A managed HOME is not created by asking.
+    pub fn runtime_home_directory(&mut self, runtime_id: String) -> Result<Option<String>, Error> {
+        self.execute("runtimeHomeDirectory", json!({}), Some(&runtime_id))
+    }
     pub fn configure_runtime_execution(
         &mut self,
         runtime_id: String,

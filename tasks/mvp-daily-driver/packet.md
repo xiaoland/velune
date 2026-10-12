@@ -141,3 +141,12 @@
 - 修复：Pi 虚拟模型路由原先总用选择文件里的 `thinkingLevel: "off"`，忽略会话级别；改为跟随会话级别，选择文件不再携带该字段。无 Pi 投影元数据时 thinkingLevelMap 原把 Pi 级别名当作上游值（声明 `none` 时上游收到 `off`），改为映射回声明的 wire 值。
 - 顺带修正 `manual-runtime-management-api.py` 中按会话寻址前遗留的 `cancel(runtime)` 调用。
 - 安装：e6910c2 已构建安装到 `/Applications/Velune.app`（签名校验通过，manifest commit 一致、dirty=false，重开无崩溃报告）。输入区“推理”按钮的实际提供商体验待用户验收。
+
+## 运行时 HOME 设置（2026-10-12）
+
+用户要求把 application 已有的 `RuntimeHome` 接入 Mac 运行时设置（已写入 PRD）。
+
+- 编辑器增加 HOME 区：继承／指定目录／由 Velune 管理。managed 时隐藏“运行时目录”（core 从 HOME 推出 `.codex`／`.claude`／`.pi/agent`／`.dsh`）。保存走 `upsert_runtime_with_execution`，保留既有 transport 与远端资源目录；SSH 实例在 managed 时需要远端根目录。
+- 已保存的 managed 实例显示 core 解析出的 HOME 位置，可在 Finder 中显示。
+- 发现：Mac 保存实例时只回写描述字段，会丢掉 settings 中的 `execution` 等非字段键；改为保留其余键。
+- 验证：临时 VELUNE_HOME 中经绑定写入 managed 与指定目录两个实例，`runtime_home_directory` 分别返回 `VELUNE_HOME/runtime-homes/<摘要>` 与指定目录；开发版编辑器（AX 打开）显示对应 HOME 选项、managed 位置与指定目录字段，managed 实例经“保存”回写后 `execution` 保持 managed。AX 无法操作 SwiftUI 弹出菜单与文本框，切换 HOME 选项与改路径未经界面实测。

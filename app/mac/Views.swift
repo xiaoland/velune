@@ -731,13 +731,45 @@ struct RuntimeEditor: View {
     @State private var typeDrafts: [String: [String: String]] = [:]
     @State private var executableDiscoveryRunning = false
     @State private var executableDiscoveryMessage: String?
+    @State private var execution: ExecutionLoad = .loading
+    @State private var home: HomeChoice = .inherit
+    @State private var homePath = ""
+    @State private var remoteRoot = ""
+    /// Where the saved instance's managed HOME is, for revealing it.
+    @State private var managedHome: String?
+    private enum ExecutionLoad { case loading, failed, ready(BindingRuntimeTransport, remoteResources: String?) }
+    private enum HomeChoice: Hashable { case inherit, existing, managed }
     private var descriptor: RuntimeTypeDescriptor? { types.first { $0.id == typeID } }
-    private var valid: Bool { !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && descriptor != nil && (!enabled || (descriptor?.fields.allSatisfy { field in
+    private var remote: Bool { if case .ready(.ssh, _) = execution { return true }; return false }
+    /// A managed HOME holds the runtime directory, so that field goes away.
+    private var fields: [SettingField] { (descriptor?.fields ?? []).filter { !(home == .managed && $0.key == "agentDir") } }
+    private var homeField: SettingField {
+        SettingField(key: "home", label: "HOME 目录", kind: remote ? .text : .directoryPath, required: true, value: "", options: [],
+                     help: remote ? "执行机器上的绝对目录。" : nil)
+    }
+    private var remoteRootField: SettingField {
+        SettingField(key: "remoteRoot", label: "远端根目录", kind: .text, required: true, value: "", options: [],
+                     help: "执行机器上的绝对目录；Velune 在其下为此实例建立 HOME。")
+    }
+    private var homeExecution: BindingRuntimeHome? {
+        let absolute = { (value: String) in value.hasPrefix("/") && !value.contains("\0") }
+        switch home {
+        case .inherit: return .inherit
+        case .existing:
+            let path = remote ? homePath.trimmingCharacters(in: .whitespacesAndNewlines) : MacPath.normalized(homePath, field: homeField)
+            return absolute(path) ? .existing(path: path) : nil
+        case .managed:
+            guard remote else { return .managed(remoteRoot: nil) }
+            let root = remoteRoot.trimmingCharacters(in: .whitespacesAndNewlines)
+            return absolute(root) ? .managed(remoteRoot: root) : nil
+        }
+    }
+    private var valid: Bool { !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && descriptor != nil && homeExecution != nil && (!enabled || fields.allSatisfy { field in
         let value = settings[field.key] ?? field.value
         return (!field.required || !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) && MacPath.isValid(value, field: field)
-    } ?? false)) }
+    }) }
     private var pathValidationMessage: String? {
-        guard enabled, let field = descriptor?.fields.first(where: { !MacPath.isValid(settings[$0.key] ?? $0.value, field: $0) }) else { return nil }
+        guard enabled, let field = fields.first(where: { !MacPath.isValid(settings[$0.key] ?? $0.value, field: $0) }) else { return nil }
         return "「\(field.label)」必须是绝对路径；可使用 ~/ 开头，保存时会展开。"
     }
     var body: some View {
@@ -749,9 +781,10 @@ struct RuntimeEditor: View {
                     Toggle("启用此运行时", isOn: $enabled).help("停用后不读取其历史，也不创建或执行新任务；原生会话数据保留。")
                     Picker("类型", selection: $typeID) { ForEach(types) { type in Text(type.name).tag(type.id) } }.disabled(instance != nil)
                 }
-                if let descriptor {
+                Section("运行环境") { homeSection }
+                if descriptor != nil {
                     Section("实例配置") {
-                        ForEach(descriptor.fields) { field in
+                        ForEach(fields) { field in
                             SettingFieldView(
                                 field: field,
                                 value: Binding(get: { settings[field.key] ?? field.value }, set: { settings[field.key] = $0 }),
@@ -774,8 +807,9 @@ struct RuntimeEditor: View {
                 Spacer(); Button("取消") { dismiss() }.keyboardShortcut(.cancelAction); Button("保存") { commit() }.keyboardShortcut(.defaultAction).disabled(!valid || isSaving)
             }.padding(20)
 
-        }.frame(width: 590, height: 540)
+        }.frame(width: 590, height: 600)
         .onAppear {
+            if instance == nil { execution = .ready(.local, remoteResources: nil) } else { loadExecution() }
             name = instance?.name ?? ""
             enabled = instance?.enabled ?? true
             typeID = instance?.typeID ?? types.first?.id ?? ""
@@ -791,6 +825,56 @@ struct RuntimeEditor: View {
             if instance == nil { typeDrafts[old] = settings; settings = typeDrafts[new] ?? [:] }
             executableDiscoveryMessage = nil
             DispatchQueue.main.async { discoverExecutableIfNeeded() }
+        }
+    }
+
+    @ViewBuilder private var homeSection: some View {
+        switch execution {
+        case .loading:
+            HStack { ProgressView().controlSize(.small); Text("正在读取运行环境…").foregroundStyle(.secondary) }
+        case .failed:
+            HStack { Text("无法读取此实例的运行环境。").foregroundStyle(.secondary); Spacer(); Button("重试") { loadExecution() } }
+        case .ready(let transport, _):
+            if case .ssh(_, let destination, _) = transport { LabeledContent("运行位置", value: "SSH · \(destination)") }
+            Picker("HOME", selection: $home) {
+                Text("继承当前用户").tag(HomeChoice.inherit)
+                Text("指定目录").tag(HomeChoice.existing)
+                Text("由 Velune 管理").tag(HomeChoice.managed)
+            }
+            switch home {
+            case .inherit:
+                Text("以\(remote ? "执行机器上用户" : "你")的 HOME 启动，与在终端中直接运行相同。").font(.caption).foregroundStyle(.secondary)
+            case .existing:
+                SettingFieldView(field: homeField, value: $homePath)
+                Text("以此目录作为 HOME 启动；运行时目录仍按下方设置。").font(.caption).foregroundStyle(.secondary)
+            case .managed:
+                if remote { SettingFieldView(field: remoteRootField, value: $remoteRoot) }
+                Text("Velune 为此实例单独建立 HOME，运行时目录位于其中，首次使用时创建。不会复制现有的登录、配置或会话；HOME 也不是安全沙箱。")
+                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                if let managedHome, !remote {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("位置")
+                        HStack {
+                            Text(managedHome).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle).textSelection(.enabled)
+                            Spacer()
+                            Button("在 Finder 中显示") { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: managedHome)]) }
+                                .disabled(!FileManager.default.fileExists(atPath: managedHome))
+                        }
+                    }
+                }
+            }
+        }
+    }
+    private func loadExecution() {
+        guard let instance else { return }
+        execution = .loading
+        store.runtimeExecution(id: instance.id, onFailure: { execution = .failed }) { saved, directory in
+            switch saved.home {
+            case .inherit: home = .inherit
+            case .existing(let path): home = .existing; homePath = path
+            case .managed(let root): home = .managed; remoteRoot = root ?? ""; managedHome = directory
+            }
+            execution = .ready(saved.transport, remoteResources: saved.remoteResourcesDirectory)
         }
     }
 
@@ -822,12 +906,14 @@ struct RuntimeEditor: View {
         }
     }
     private func commit() {
-        guard valid, let descriptor else { return }
-        var values: [String: String] = [:]
+        guard valid, let descriptor, let homeExecution, case .ready(let transport, let remoteResources) = execution else { return }
+        // Settings this form does not edit, such as an ACP launch, stay as saved.
+        var values = instance?.settings ?? [:]
         for field in descriptor.fields {
             values[field.key] = MacPath.normalized(settings[field.key] ?? field.value, field: field)
         }
-        store.saveRuntimeInstance(RuntimeInstance(enabled: enabled, id: instance?.id ?? draftID, name: name.trimmingCharacters(in: .whitespacesAndNewlines), typeID: typeID, gatewayID: instance?.gatewayID ?? gatewayID, settings: values)) { dismiss() }
+        store.saveRuntimeInstance(RuntimeInstance(enabled: enabled, id: instance?.id ?? draftID, name: name.trimmingCharacters(in: .whitespacesAndNewlines), typeID: typeID, gatewayID: instance?.gatewayID ?? gatewayID, settings: values),
+                                  execution: BindingRuntimeExecution(transport: transport, home: homeExecution, remoteResourcesDirectory: remoteResources)) { dismiss() }
     }
 }
 

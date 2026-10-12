@@ -652,6 +652,15 @@ impl VeluneApplication {
         })?)
     }
 
+    pub fn runtime_home_directory(
+        &self,
+        runtime_id: String,
+    ) -> Result<Option<String>, BindingError> {
+        self.with("runtime_home_directory", |application| {
+            application.runtime_home_directory(runtime_id)
+        })
+    }
+
     pub fn configure_runtime_execution(
         &self,
         runtime_id: String,

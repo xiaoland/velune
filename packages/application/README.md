@@ -68,7 +68,7 @@ managed 发送只在本轮执行子进程注入网关；正常结束、失败或
 
 `RuntimeHome` 区分 Inherit、Existing 和 Managed。本机 Managed HOME 稳定分配到 `VELUNE_HOME/runtime-homes/<实例摘要>`；远端必须提供远端绝对根目录，实例目录在该根下派生。managed HOME 内再建立对应 Harness 的原生配置目录，不复制既有认证或会话，也不随普通配置重置或运行时删除而移除。HOME 不隔离项目设置、系统配置或系统凭据存储，因此不是安全沙箱。新配置经唯一 `runtime_execution` 模块编码在现有 settings 中，不改变 schema 7 的结构或既有绑定 record。
 
-本轮仅提供 Rust／UniFFI 能力；**待实现**：平台 composer 展示并选择 native／managed 模型，以及 SSH、远端资源目录和 HOME 的原生配置界面；通用 ACP 的命令、参数、环境配置、协商能力、外部登录提示与会话配置编辑同样待平台接入。提供商导入当前仅接受默认本机 execution 配置；SSH、existing HOME 覆盖或 managed HOME 仍可直接执行原生 provider，但不把其目录交给本机来源认证 helper。指定 WSL 主机的真实 SSH 传输已通过合成 Harness 闭环；真实提供商、远端真实 Harness 和前端体验仍待验收，证据见 [本轮任务](../../tasks/runtime-provider-ssh/packet.md)。
+`runtime_home_directory` 只解析实例实际使用的 HOME（Inherit 为 None），不创建目录。Mac 运行时设置已接入 HOME 归属编辑（2026-10-12）；**待实现**：平台 composer 展示并选择 native 模型，以及 SSH 与远端资源目录的原生配置界面；通用 ACP 的命令、参数、环境配置、协商能力、外部登录提示与会话配置编辑同样待平台接入。提供商导入当前仅接受默认本机 execution 配置；SSH、existing HOME 覆盖或 managed HOME 仍可直接执行原生 provider，但不把其目录交给本机来源认证 helper。指定 WSL 主机的真实 SSH 传输已通过合成 Harness 闭环；真实提供商、远端真实 Harness 和前端体验仍待验收，证据见 [本轮任务](../../tasks/runtime-provider-ssh/packet.md)。
 
 通用 ACP 实例通过 `upsert_acp_runtime` 一次保存 `RuntimeInstance`、`RuntimeExecution` 和 `AcpLaunch`。实例只要求 `settings.binary` 为目标机器上的绝对路径；`AcpLaunch.args` 作为独立 argv 传递，不通过 shell 解析，`environment` 由用户显式配置，`acp_launch` 提供 typed 读取。环境值可能含秘密，与普通应用配置一起保存，Debug 仅显示参数数量或配置键，不输出值。应用不复制原 HOME 的认证，不自动执行登录、安装 Agent 或下载 bridge；用户已安装的原生 ACP Agent 或第三方 bridge 均使用同一协议适配器。
 

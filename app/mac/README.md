@@ -6,7 +6,7 @@ app 通过生成的 UniFFI 接口消费 application 的完整用例，不解析 
 
 构建与本地安装入口为 [build-macos.sh](../../scripts/build-macos.sh)。真实登录、提供商调用和体验由用户验收；静态检查与隔离合成验证归 [开发说明](../../docs/development.md)。
 
-运行时设置展示 family、精确版本类型与配置实例，当前提供 Pi 1.0.2、Codex 0.159.3 和 DeepSeek Harness 0.2.0-rc.2。同类型可保存多个实例，工作目录属于具体会话。App 只消费通用消息与类型化权限／回答交互，不解析 ACP 或 app-server envelope；选择、回答和取消通过生成接口交给 adapter。运行时要求外部 Node 22.19+ 的绝对路径；Pi、Codex 与 DSH CLI 均由用户外部安装并配置。添加实例后即可浏览会话，新建表单选择实例／模型，目录可选；Mac首次发送才准备运行时并创建原生会话，继续历史时自动准备。恢复 Codex／DSH 缺少提供商身份的模型选择须明确指定，不宣称恢复上次 Velune 路由。
+运行时设置展示 family、精确版本类型与配置实例，当前提供 Pi 1.0.2、Codex 0.159.3 和 DeepSeek Harness 0.2.0-rc.2。同类型可保存多个实例，工作目录属于具体会话。App 只消费通用消息与类型化权限／回答交互，不解析 ACP 或 app-server envelope；选择、回答和取消通过生成接口交给 adapter。运行时要求外部 Node 22.19+ 的绝对路径；Pi、Codex 与 DSH CLI 均由用户外部安装并配置。添加实例后即可浏览会话，新建表单选择实例／模型，目录可选；Mac首次发送才准备运行时并创建原生会话，继续历史时自动准备。恢复 Codex／DSH 缺少提供商身份的模型选择须明确指定，不宣称恢复上次 Velune 路由。编辑实例时可在“运行环境”中选择 HOME：继承当前用户、指定目录，或由 Velune 管理。Velune 管理时“运行时目录”隐去，由 core 在该 HOME 中推出；已保存实例显示 core 解析出的位置，可在 Finder 中显示（首次使用时创建）。保存经 `upsert_runtime_with_execution`，保留既有运行位置（SSH 实例在此只可改 HOME，远端 managed HOME 需远端根目录）与表单不编辑的其他设置。SSH 连接配置尚无界面。
 
 构建前只需安装 runtime-support，huihua parser 依赖及许可证随 bundle 打包；不分发 Agent runtime 或完整 Pi SDK。具体步骤见 [开发说明](../../docs/development.md#原生运行时与历史读取)。构建产物不等于已安装或用户验收，最终状态以任务记录为准。
 

@@ -803,11 +803,16 @@ final class AppStore: ObservableObject {
             completion(result.1)
         }
     }
-    func saveRuntimeInstance(_ instance: RuntimeInstance, onSaved: (() -> Void)? = nil) {
+    /// Saves an instance; with `execution`, its location and HOME are replaced
+    /// too, otherwise the saved ones are kept.
+    func saveRuntimeInstance(_ instance: RuntimeInstance, execution: BindingRuntimeExecution? = nil, onSaved: (() -> Void)? = nil) {
         guard !isGenerating else { recordProblem("请先停止当前任务，再修改运行时实例"); return }
         if isPreview { runtimeInstances.removeAll { $0.id == instance.id }; runtimeInstances.append(instance); if !instance.enabled && projectionRuntimeID == instance.id { resetProjection(); projectionRuntimeID = nil }; onSaved?(); return }
         guard let transport else { recordProblem("本地核心未配置"); return }
-        enqueue({ try transport.upsertRuntime(BindingMapping.bindingRuntime(instance)) }) { [weak self] data in
+        enqueue({
+            let runtime = BindingMapping.bindingRuntime(instance)
+            return try execution.map { try transport.upsertRuntime(runtime, execution: $0) } ?? transport.upsertRuntime(runtime)
+        }) { [weak self] data in
             guard let self else { return }
             runtimeInstances = data.runtimeInstances.map(BindingMapping.runtime); runtimeTypes = data.runtimeTypes.map(BindingMapping.runtimeType)
             if data.executionInvalidated { refreshAfterExecutionInvalidation() }
@@ -815,6 +820,10 @@ final class AppStore: ObservableObject {
             if data.runtimeInstances.contains(where: { $0.id == instance.id }) { onSaved?() }
             else { recordProblem("核心未返回保存后的运行时实例") }
         }
+    }
+    func runtimeExecution(id: String, onFailure: @escaping () -> Void, completion: @escaping (BindingRuntimeExecution, String?) -> Void) {
+        guard let transport, !isLoading, !isShuttingDown else { onFailure(); return }
+        enqueue({ try transport.runtimeExecution(id: id) }, onFailure: { _ in onFailure() }) { completion($0.0, $0.1) }
     }
     func deleteRuntimeInstance(id: String) {
         if isPreview {

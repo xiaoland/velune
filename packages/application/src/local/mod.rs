@@ -433,6 +433,14 @@ impl CoreRuntime {
             "selectRuntime" => self.select_runtime_action(request),
             "runtimeExecution" => self.runtime_execution_action(request, false),
             "configureRuntimeExecution" => self.runtime_execution_action(request, true),
+            "runtimeHomeDirectory" => {
+                let runtime = self.runtime_instance(
+                    request["payload"]["runtimeInstanceID"]
+                        .as_str()
+                        .ok_or_else(|| RuntimeError::invalid("runtime instance id"))?,
+                )?;
+                Ok(serde_json::to_value(self.runtime_location(runtime)?.1)?)
+            }
             "runtimeModels" => self.runtime_models_action(request),
             "reasoningEfforts" => {
                 let runtime = self.runtime_instance(
