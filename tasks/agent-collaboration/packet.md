@@ -58,3 +58,4 @@
 - 工具块的 `linked_conversation_id` 由交付层从协作工具返回的状态对象（含 `conversation_id`、`runtime_id`、`state`）解析，不按运行时或工具名分支。Codex 的 MCP 调用此前不显示结果（`aggregatedOutput` 只属于命令），现取 `structuredContent` 或文本内容、错误信息。
 - Mac：工具行下方“打开对方会话”，用户侧气泡顶部“来自 运行时 会话「标题」”，均为 `velune-conversation:` 链接，在当前窗口打开（不在列表时先重读）；活动轮询发现未列出的运行中会话即重读列表。composer 不再有协作控件。
 - 验证：`manual-collaboration.py` 增加来源块、标题与工具链接断言；合成 Alpha 改为可列出与重载，`--seed` 运行一次新建流程后停在 Alpha 草稿“ASK hello”。开发版隔离 HOME 中：Alpha 的工作过程显示 `velune: start_conversation` 与“打开对方会话”，AX 按下后打开 Beta；Beta 气泡顶部显示“来自 Alpha 会话「START Beta PERMIT」”与正文“PERMIT”，列表标题为“PERMIT”，按下来源链接回到 Alpha。检查后已退出开发版。
+- 安装：5e96def 已构建安装至 `/Applications/Velune.app`（签名校验通过，manifest 对应该提交且无未提交改动），重新打开后无崩溃报告。
