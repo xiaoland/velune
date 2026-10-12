@@ -738,6 +738,12 @@ struct RuntimeEditor: View {
     @State private var remoteRoot = ""
     /// Where the saved instance's managed HOME is, for revealing it.
     @State private var managedHome: String?
+    @State private var launchArguments: [LaunchArgument] = []
+    @State private var environment: [EnvironmentEntry] = []
+    @State private var agent: AgentLoad?
+    private struct LaunchArgument: Identifiable { let id = UUID(); var value = "" }
+    private struct EnvironmentEntry: Identifiable { let id = UUID(); var name = ""; var value = "" }
+    private enum AgentLoad { case loading, failed(String), ready(BindingAcpRuntimeInfo) }
     private enum ExecutionLoad { case loading, failed, ready(BindingRuntimeTransport, remoteResources: String?) }
     private enum HomeChoice: Hashable { case inherit, existing, managed }
     private var descriptor: RuntimeTypeDescriptor? { types.first { $0.id == typeID } }
@@ -765,7 +771,18 @@ struct RuntimeEditor: View {
             return absolute(root) ? .managed(remoteRoot: root) : nil
         }
     }
-    private var valid: Bool { !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && descriptor != nil && homeExecution != nil && (!enabled || fields.allSatisfy { field in
+    /// Blank rows are dropped; a variable needs a name without "=".
+    private var launch: BindingAcpLaunch? {
+        var variables: [String: String] = [:]
+        for entry in environment {
+            let name = entry.name.trimmingCharacters(in: .whitespacesAndNewlines)
+            if name.isEmpty && entry.value.isEmpty { continue }
+            guard !name.isEmpty, !name.contains("="), variables[name] == nil else { return nil }
+            variables[name] = entry.value
+        }
+        return BindingAcpLaunch(args: launchArguments.map(\.value).filter { !$0.isEmpty }, environment: variables)
+    }
+    private var valid: Bool { !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && descriptor != nil && homeExecution != nil && (descriptor?.launchOptions != true || launch != nil) && (!enabled || fields.allSatisfy { field in
         let value = settings[field.key] ?? field.value
         return (!field.required || !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) && MacPath.isValid(value, field: field)
     }) }
@@ -799,6 +816,8 @@ struct RuntimeEditor: View {
                         }
                     }
                 }
+                if descriptor?.launchOptions == true, case .ready = execution { launchSections }
+                if descriptor?.agentInfo == true, let instance { agentSection(instance) }
             }.formStyle(.grouped)
             HStack {
                 if let instance {
@@ -810,10 +829,10 @@ struct RuntimeEditor: View {
 
         }.frame(width: 590, height: 600)
         .onAppear {
-            if instance == nil { execution = .ready(.local, remoteResources: nil) } else { loadExecution() }
             name = instance?.name ?? ""
             enabled = instance?.enabled ?? true
             typeID = instance?.typeID ?? types.first?.id ?? ""
+            if instance == nil { execution = .ready(.local, remoteResources: nil) } else { loadExecution() }
             settings = instance?.settings ?? [:]
             if let descriptor {
                 for field in descriptor.fields where field.kind == .filePath || field.kind == .directoryPath {
@@ -866,10 +885,102 @@ struct RuntimeEditor: View {
             }
         }
     }
+    @ViewBuilder private var launchSections: some View {
+        Section {
+            ForEach($launchArguments) { $argument in
+                HStack {
+                    TextField("参数", text: $argument.value, prompt: Text("参数")).labelsHidden()
+                    Button { launchArguments.removeAll { $0.id == argument.id } } label: { Image(systemName: "minus.circle") }
+                        .buttonStyle(.borderless).help("移除此参数").accessibilityLabel("移除参数")
+                }
+            }
+            Button("添加参数") { launchArguments.append(LaunchArgument()) }
+        } header: { Text("启动参数") } footer: {
+            Text("按顺序逐个传给运行时入口，不经过 shell，因此空格与引号原样保留。").font(.caption).foregroundStyle(.secondary)
+        }
+        Section {
+            ForEach($environment) { $entry in
+                HStack {
+                    TextField("名称", text: $entry.name, prompt: Text("名称")).labelsHidden().frame(width: 170)
+                    TextField("值", text: $entry.value, prompt: Text("值")).labelsHidden()
+                    Button { environment.removeAll { $0.id == entry.id } } label: { Image(systemName: "minus.circle") }
+                        .buttonStyle(.borderless).help("移除此变量").accessibilityLabel("移除变量 \(entry.name)")
+                }
+            }
+            Button("添加变量") { environment.append(EnvironmentEntry()) }
+            if launch == nil { Text("变量需要名称，名称不能包含“=”或重复。").font(.caption).foregroundStyle(.red) }
+        } header: { Text("环境变量") } footer: {
+            Text("在继承的环境之上设置，只用于此实例。值以明文保存在本机应用配置中。").font(.caption).foregroundStyle(.secondary)
+        }
+    }
+
+    /// Reading starts the saved Agent once; it reports the saved settings,
+    /// not unsaved edits in this form.
+    @ViewBuilder private func agentSection(_ instance: RuntimeInstance) -> some View {
+        Section {
+            switch agent {
+            case nil:
+                Text("启动一次已保存的 Agent，读取它报告的名称、版本、会话能力与登录方式；不会发送消息。").font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            case .loading:
+                HStack { ProgressView().controlSize(.small); Text("正在读取 Agent 信息…").foregroundStyle(.secondary) }
+            case .failed(let detail):
+                Text(detail).foregroundStyle(.secondary).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+            case .ready(let info):
+                if let agent = info.agentInfo {
+                    LabeledContent("名称", value: agent.title ?? agent.name)
+                    LabeledContent("版本", value: agent.version)
+                } else {
+                    LabeledContent("名称", value: "未报告")
+                }
+                let capabilities = [("加载历史", info.capabilities.loadSession), ("列出会话", info.capabilities.listSessions), ("恢复会话", info.capabilities.resumeSession), ("关闭会话", info.capabilities.closeSession), ("删除会话", info.capabilities.deleteSession)]
+                LabeledContent("会话能力") {
+                    VStack(alignment: .trailing, spacing: 2) {
+                        ForEach(capabilities, id: \.0) { name, supported in
+                            Label(name, systemImage: supported ? "checkmark" : "minus").foregroundStyle(supported ? .primary : .secondary)
+                                .accessibilityElement(children: .ignore).accessibilityLabel(name).accessibilityValue(supported ? "支持" : "不支持")
+                        }
+                    }
+                }
+                if info.authMethods.isEmpty {
+                    LabeledContent("登录方式", value: "无")
+                } else {
+                    LabeledContent("登录方式") {
+                        VStack(alignment: .trailing, spacing: 2) {
+                            ForEach(info.authMethods, id: \.id) { method in
+                                Text(method.name).help(method.description ?? method.name)
+                            }
+                        }
+                    }
+                    Text("登录在 Agent 自己的流程中完成，Velune 不代为认证。").font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            HStack {
+                Spacer()
+                Button(agentLoaded ? "重新读取" : "读取 Agent 信息") { readAgent(instance) }
+                    .disabled(!instance.enabled || isLoadingAgent)
+            }
+        } header: { Text("Agent") }
+    }
+    private var agentLoaded: Bool { if case .ready = agent { return true }; return false }
+    private var isLoadingAgent: Bool { if case .loading = agent { return true }; return false }
+    private func readAgent(_ instance: RuntimeInstance) {
+        agent = .loading
+        store.agentInfo(runtimeID: instance.id) { result in
+            switch result {
+            case .success(let info): agent = .ready(info)
+            case .failure(let error): agent = .failed(AppProblem.failure(error, source: "读取 Agent 信息").detail)
+            }
+        }
+    }
+
     private func loadExecution() {
         guard let instance else { return }
         execution = .loading
-        store.runtimeExecution(id: instance.id, onFailure: { execution = .failed }) { saved, directory in
+        store.runtimeExecution(id: instance.id, launch: types.first { $0.id == instance.typeID }?.launchOptions == true, onFailure: { execution = .failed }) { saved, directory, launch in
+            if let launch {
+                launchArguments = launch.args.map { LaunchArgument(value: $0) }
+                environment = launch.environment.sorted { $0.key < $1.key }.map { EnvironmentEntry(name: $0.key, value: $0.value) }
+            }
             switch saved.home {
             case .inherit: home = .inherit
             case .existing(let path): home = .existing; homePath = path
@@ -914,7 +1025,8 @@ struct RuntimeEditor: View {
             values[field.key] = MacPath.normalized(settings[field.key] ?? field.value, field: field)
         }
         store.saveRuntimeInstance(RuntimeInstance(enabled: enabled, id: instance?.id ?? draftID, name: name.trimmingCharacters(in: .whitespacesAndNewlines), typeID: typeID, gatewayID: instance?.gatewayID ?? gatewayID, settings: values),
-                                  execution: BindingRuntimeExecution(transport: transport, home: homeExecution, remoteResourcesDirectory: remoteResources)) { dismiss() }
+                                  execution: BindingRuntimeExecution(transport: transport, home: homeExecution, remoteResourcesDirectory: remoteResources),
+                                  launch: descriptor.launchOptions ? launch : nil) { dismiss() }
     }
 }
 

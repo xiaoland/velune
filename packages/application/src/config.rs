@@ -158,6 +158,14 @@ pub struct RuntimeTypeDescriptor {
     pub version_regex: String,
     pub can_rename_conversations: bool,
     pub can_delete_conversations: bool,
+    /// Instances take launch arguments and environment (`acp_launch`,
+    /// `upsert_acp_runtime`).
+    pub launch_options: bool,
+    /// `acp_runtime_info` describes the Agent, its capabilities and sign-in methods.
+    pub agent_info: bool,
+    /// A live conversation has options (`acp_session_config`); the runtime's
+    /// own model catalog belongs to that session.
+    pub session_options: bool,
     pub supported_protocols: Vec<GatewayProtocol>,
     /// Provider protocols reachable through native dispatch or gateway conversion.
     pub supported_provider_protocols: Vec<GatewayProtocol>,

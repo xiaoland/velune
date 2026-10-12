@@ -88,6 +88,13 @@ final class Transport: @unchecked Sendable {
     func upsertRuntime(_ runtime: BindingRuntimeInstance, execution: BindingRuntimeExecution) throws -> BindingRuntimeUpdate { try withApplication("upsertRuntime", changesConfiguration: true) { try $0.upsertRuntimeWithExecution(runtime: runtime, execution: execution) } }
     /// The saved execution settings and the HOME they resolve to, if not inherited.
     func runtimeExecution(id: String) throws -> (BindingRuntimeExecution, String?) { try withApplication("runtimeExecution") { (try $0.runtimeExecution(runtimeId: id), try $0.runtimeHomeDirectory(runtimeId: id)) } }
+    /// Saves an instance whose type takes launch options, with its arguments and environment.
+    func upsertRuntime(_ runtime: BindingRuntimeInstance, execution: BindingRuntimeExecution, launch: BindingAcpLaunch) throws -> BindingRuntimeUpdate { try withApplication("upsertRuntime", changesConfiguration: true) { try $0.upsertAcpRuntime(runtime: runtime, execution: execution, launch: launch) } }
+    func runtimeLaunch(id: String) throws -> BindingAcpLaunch { try withApplication("runtimeLaunch") { try $0.acpLaunch(runtimeId: id) } }
+    /// Starts the Agent to read what it reports about itself unless a session of it is live.
+    func agentInfo(runtimeID: String) throws -> BindingAcpRuntimeInfo { try withApplication("agentInfo") { try $0.acpRuntimeInfo(runtimeId: runtimeID) } }
+    func sessionOptions(runtimeID: String, conversationID: String) throws -> [BindingAcpConfigOption] { try withApplication("sessionOptions") { try $0.acpSessionConfig(runtimeId: runtimeID, conversationId: conversationID) } }
+    func setSessionOption(runtimeID: String, conversationID: String, optionID: String, value: BindingAcpConfigValue) throws -> [BindingAcpConfigOption] { try withApplication("setSessionOption") { try $0.setAcpSessionConfig(runtimeId: runtimeID, conversationId: conversationID, configId: optionID, value: value) } }
     func deleteRuntime(id: String) throws -> BindingRuntimeUpdate { try withApplication("deleteRuntime", changesConfiguration: true) { try $0.deleteRuntime(id: id) } }
     func selectRuntime(id: String) throws -> BindingConfigurationSnapshot { try withApplication("selectRuntime") { try $0.selectRuntime(id: id) } }
     /// Keep first creation and dispatch under the same shared application lock.

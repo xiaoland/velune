@@ -53,7 +53,7 @@ fn runtime_types() -> Vec<crate::config::RuntimeTypeDescriptor> {
     });
     velune_agent_runtime::version::variants().iter().map(|variant| {
         let mut binary=field("binary","运行时入口","filePath",true,String::new(),"当前运行时版本的绝对可执行路径。执行准备时会核对实际版本。");
-        if variant.id=="acp-v1" {binary.help=Some("支持 ACP v1 的命令或 bridge 的绝对路径；参数使用 AcpLaunch 配置，启动时协商协议。".into());}
+        if variant.id=="acp-v1" {binary.help=Some("支持 ACP v1 的命令或 bridge 的绝对路径；启动参数与环境变量在下方设置，启动时协商协议。".into());}
         if variant.family_id=="pi" {binary.executable_discovery=Some(crate::conversation::ExecutableDiscovery{command:"pi".into(),minimum_version:"1.0.2".into()});}
         if variant.id=="codex-0.159.3" {binary.executable_discovery=Some(crate::conversation::ExecutableDiscovery{command:"codex".into(),minimum_version:"0.159.3".into()});}
         if variant.id=="dsh-acp-0.2.0-rc.2" {binary.executable_discovery=Some(crate::conversation::ExecutableDiscovery{command:"dsh".into(),minimum_version:"0.2.0".into()});}
@@ -63,7 +63,7 @@ fn runtime_types() -> Vec<crate::config::RuntimeTypeDescriptor> {
         let mut fields=vec![binary,runtime_node,field("agentDir","运行时目录","directoryPath",true,String::new(),match variant.id {"claude-code-2.1.286"=>"该实例的 CLAUDE_CONFIG_DIR；配置与原生会话目录，不是任务工作目录。","codex-0.159.3"=>"该实例的 CODEX_HOME；配置与会话根目录，不是任务工作目录。","dsh-acp-0.2.0-rc.2"=>"该实例的 DeepSeek Harness 配置与会话根目录，不是任务工作目录。",_=>"该实例的 Pi 配置与状态根目录，不是任务工作目录。"})];
         if variant.id=="acp-v1" {fields.retain(|field| field.key=="binary");}
         if variant.id=="pi-1.0.2" {fields.push(field("sessionDir","会话存储目录","directoryPath",false,String::new(),"覆盖 Pi 默认的会话存储位置；留空采用运行时目录的 sessions，此项不是任务工作目录。"));}
-        crate::config::RuntimeTypeDescriptor{id:variant.id.into(),family_id:variant.family_id.into(),version_regex:variant.version_regex.into(),can_rename_conversations:variant.can_rename_conversations,can_delete_conversations:variant.can_delete_conversations,supported_protocols:GatewayProtocol::runtime_protocols(variant.id).expect("registered runtime adapter"),supported_provider_protocols:GatewayProtocol::runtime_provider_protocols(variant.id).expect("registered runtime adapter"),name:variant.name.into(),fields}
+        crate::config::RuntimeTypeDescriptor{id:variant.id.into(),family_id:variant.family_id.into(),version_regex:variant.version_regex.into(),can_rename_conversations:variant.can_rename_conversations,can_delete_conversations:variant.can_delete_conversations,launch_options:variant.id=="acp-v1",agent_info:variant.id=="acp-v1",session_options:variant.id=="acp-v1",supported_protocols:GatewayProtocol::runtime_protocols(variant.id).expect("registered runtime adapter"),supported_provider_protocols:GatewayProtocol::runtime_provider_protocols(variant.id).expect("registered runtime adapter"),name:variant.name.into(),fields}
     }).collect()
 }
 

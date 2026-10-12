@@ -30,6 +30,9 @@ pub(crate) fn descriptor() -> crate::config::RuntimeTypeDescriptor {
         version_regex: r"^1\.0\.2$".into(),
         can_rename_conversations: true,
         can_delete_conversations: true,
+        launch_options: false,
+        agent_info: false,
+        session_options: false,
         supported_protocols: GatewayProtocol::runtime_protocols("pi-1.0.2")
             .expect("registered Pi adapter"),
         supported_provider_protocols: GatewayProtocol::runtime_provider_protocols("pi-1.0.2")

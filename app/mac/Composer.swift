@@ -464,6 +464,7 @@ struct ComposerView: View {
             .help(store.needsModelSelection ? "此会话的模型当前不可用，请选择已配置的模型" : "下一轮模型：\(store.selectedModelName ?? "未选择")")
             .disabled(store.isShuttingDown)
             if !store.reasoningEffortOptions.isEmpty { reasoningEffortMenu }
+            if !store.editableSessionOptions.isEmpty { sessionOptionsMenu }
             if store.isUnsentConversation { workingDirectoryMenu }
         }
         .menuStyle(.button)
@@ -497,6 +498,49 @@ struct ComposerView: View {
         Divider()
         Button("重新读取模型", action: store.reloadModelCatalog).disabled(!store.canSwitchModel || store.modelCatalog == .loading)
         SettingsTabLink(tab: .providers, title: "AI 提供商设置…")
+    }
+
+    /// The live session's own options (modes and the like), as the Agent
+    /// names and groups them; changes apply to the session at once.
+    private var sessionOptionsMenu: some View {
+        Menu {
+            ForEach(store.editableSessionOptions) { option in sessionOptionControl(option) }
+        } label: {
+            Label("会话选项", systemImage: "slider.horizontal.3").labelStyle(.titleOnly).lineLimit(1)
+        }
+        .fixedSize()
+        .accessibilityLabel("会话选项")
+        .help("此会话由 Agent 提供的选项，修改立即生效")
+        .disabled(!store.canChangeSessionOptions)
+    }
+
+    @ViewBuilder private func sessionOptionControl(_ option: SessionOption) -> some View {
+        switch option.value {
+        case .select(let current):
+            let selection = Binding<String>(get: { current }, set: { store.setSessionOption(option, value: .select($0)) })
+            Picker(option.name, selection: selection) {
+                ForEach(Self.choiceGroups(option.choices), id: \.offset) { group in
+                    if let name = group.name { Section(name) { choiceItems(group.choices) } } else { choiceItems(group.choices) }
+                }
+            }.pickerStyle(.inline).help(option.description ?? option.name)
+        case .boolean(let current):
+            let isOn = Binding<Bool>(get: { current }, set: { store.setSessionOption(option, value: .boolean($0)) })
+            Toggle(option.name, isOn: isOn).help(option.description ?? option.name)
+        }
+    }
+
+    private func choiceItems(_ choices: [SessionOptionChoice]) -> some View {
+        ForEach(choices, id: \.value) { choice in Text(choice.name).tag(choice.value).help(choice.description ?? choice.name) }
+    }
+
+    /// Choices in the Agent's order, consecutive ones of a group together.
+    private static func choiceGroups(_ choices: [SessionOptionChoice]) -> [(offset: Int, name: String?, choices: [SessionOptionChoice])] {
+        var groups: [(offset: Int, name: String?, choices: [SessionOptionChoice])] = []
+        for choice in choices {
+            if let last = groups.last, last.name == choice.group { groups[groups.count - 1].choices.append(choice) }
+            else { groups.append((groups.count, choice.group, [choice])) }
+        }
+        return groups
     }
 
     /// Levels come from the model and runtime; "默认" sends none and leaves

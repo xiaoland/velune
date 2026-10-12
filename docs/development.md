@@ -338,7 +338,7 @@ Rust application 与 UniFFI 提供 `upsert_acp_runtime`，一次保存实例、`
 
 有 list 能力的 Agent 使用通用会话列表；只有 load 的 Agent 可通过 `open_acp_conversation(runtime_id, native_session_id, cwd)` 显式打开。直接使用 `agent-runtime::acp::Client` 时可分别调用 load 与 resume，后者恢复上下文但不回放历史；application 的历史浏览和持久跨 Harness 接续要求 load。无 load 的连接仍可连续多轮运行，但关闭后不保证重开。通用 ACP 不支持统一的 managed provider 注入，应使用该 Harness 的专用 adapter 获取已实现的网关能力。
 
-本轮不提供 App 的 ACP 配置、会话选项或能力展示界面，也不构建或安装 App。无真实认证与模型调用的手动验收入口为 `scripts/manual-acp-adapter.py`，具体构建产物、参数、实际 Agent 与 SSH 证据见 [ACP 任务](../tasks/acp-adapter/packet.md)。自动化测试不在仓库验证流程内。
+Mac 按运行时类型描述的 `launchOptions`／`agentInfo`／`sessionOptions` 提供启动参数与环境变量、Agent 信息和会话选项界面（见 [Mac README](../app/mac/README.md)）。无真实认证与模型调用的手动验收入口为 `scripts/manual-acp-adapter.py`，具体构建产物、参数、实际 Agent 与 SSH 证据见 [ACP 任务](../tasks/acp-adapter/packet.md)。自动化测试不在仓库验证流程内。
 
 2026-10-10 补充验收了两个原生 ACP 入口，均使用同一通用 adapter，没有新增 Agent 专用分支。Devin CLI `3000.11.3` 的启动参数为 `acp`，隔离未认证状态下通过握手、创建、模式修改、live list 和空会话删除；未验证真实 prompt，未发送 prompt 的空会话跨进程 load 失败。OpenCode `1.18.35` 同样使用 `acp`，经过 UniFFI 在本机合成 provider 上通过模型选择、prompt、流式答复、shutdown 后列表与历史重开。这些是特定版本和条件下的观察，不是对所有 ACP 实现或真实账户的兼容承诺。详见 [Devin 证据](../tasks/acp-adapter/devin-evidence.md)与 [OpenCode 证据](../tasks/acp-adapter/opencode-evidence.md)。
 

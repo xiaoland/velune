@@ -167,6 +167,23 @@ enum RuntimeModelCatalog: Equatable, Sendable {
     /// The runtime's default when it has one, its own models, then managed models.
     case ready([ModelChoice])
 }
+/// An option a live session offers, as its Agent names and groups it.
+struct SessionOption: Identifiable, Hashable, Sendable {
+    var id: String
+    var name: String
+    var description: String?
+    /// The Agent's kind of option, such as "model" or "mode".
+    var category: String?
+    var value: SessionOptionValue
+    var choices: [SessionOptionChoice]
+}
+enum SessionOptionValue: Hashable, Sendable { case select(String), boolean(Bool) }
+struct SessionOptionChoice: Hashable, Sendable {
+    var value: String
+    var name: String
+    var description: String?
+    var group: String?
+}
 struct ModelTemplate: Codable, Sendable, Identifiable, Equatable {
     var id: String = ""
     var name: String
@@ -232,6 +249,12 @@ struct RuntimeTypeDescriptor: Codable, Sendable, Identifiable, Equatable {
     var familyID: String
     var canRenameConversations: Bool = false
     var canDeleteConversations: Bool = false
+    /// Instances take launch arguments and environment.
+    var launchOptions = false
+    /// The runtime can describe its Agent, capabilities and sign-in methods.
+    var agentInfo = false
+    /// A live conversation has options; the runtime's own models belong to that session.
+    var sessionOptions = false
     var supportedProtocols: [ProviderProtocol]
     var supportedProviderProtocols: [ProviderProtocol]
     var name: String

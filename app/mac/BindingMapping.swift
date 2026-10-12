@@ -12,6 +12,22 @@ enum BindingMapping {
         case .native(let provider, let model): .native(providerID: provider, modelID: model)
         }
     }
+    static func sessionOption(_ value: BindingAcpConfigOption) -> SessionOption {
+        SessionOption(id: value.id, name: value.name, description: value.description, category: value.category, value: sessionOptionValue(value.value),
+                      choices: value.choices.map { SessionOptionChoice(value: $0.value, name: $0.name, description: $0.description, group: $0.groupName ?? $0.group) })
+    }
+    static func sessionOptionValue(_ value: BindingAcpConfigValue) -> SessionOptionValue {
+        switch value {
+        case .select(let choice): .select(choice)
+        case .boolean(let on): .boolean(on)
+        }
+    }
+    static func bindingSessionOptionValue(_ value: SessionOptionValue) -> BindingAcpConfigValue {
+        switch value {
+        case .select(let choice): .select(choice)
+        case .boolean(let on): .boolean(on)
+        }
+    }
     static func modelChoice(_ value: BindingRuntimeModel) -> ModelChoice {
         ModelChoice(selection: selection(value.selection), displayName: value.name, reasoningEfforts: value.reasoningEfforts)
     }
@@ -149,7 +165,7 @@ enum BindingMapping {
     }
 
     static func runtimeType(_ value: BindingRuntimeTypeDescriptor) -> RuntimeTypeDescriptor {
-        RuntimeTypeDescriptor(id: value.id, familyID: value.familyId, canRenameConversations: value.canRenameConversations, canDeleteConversations: value.canDeleteConversations, supportedProtocols: value.supportedProtocols.map(protocolID), supportedProviderProtocols: value.supportedProviderProtocols.map(protocolID), name: value.name, fields: value.fields.map(settingField))
+        RuntimeTypeDescriptor(id: value.id, familyID: value.familyId, canRenameConversations: value.canRenameConversations, canDeleteConversations: value.canDeleteConversations, launchOptions: value.launchOptions, agentInfo: value.agentInfo, sessionOptions: value.sessionOptions, supportedProtocols: value.supportedProtocols.map(protocolID), supportedProviderProtocols: value.supportedProviderProtocols.map(protocolID), name: value.name, fields: value.fields.map(settingField))
     }
 
     static func configuration(_ value: BindingConfigurationSnapshot) -> (conversations: [Conversation], historyFailures: [HistoryFailure], gateways: [GatewayConfig], runtimes: [RuntimeInstance], runtimeTypes: [RuntimeTypeDescriptor], modelTemplates: [ModelTemplate], importTypes: [RuntimeTypeDescriptor], protocols: [ProtocolDescriptor], selectedRuntimeID: String?) {

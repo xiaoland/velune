@@ -32,6 +32,11 @@ final class AppStore: ObservableObject {
     /// gateway; configuration changes discard them.
     @Published private(set) var modelCatalogs: [String: RuntimeModelCatalog] = [:]
     private var modelCatalogRequests: [String: UUID] = [:]
+    /// The open conversation's live-session options, for runtimes that have
+    /// them; `nil` until its session is live in this application.
+    @Published private(set) var sessionOptions: [SessionOption]?
+    /// Conversation and run state the options were last read for.
+    private var sessionOptionsKey: String?
     let transcript = TranscriptModel()
     @Published private(set) var gateway = GatewayConfig() { didSet { if oldValue != gateway { invalidateModelCatalogs() } } }
     @Published private(set) var runtimeInstances: [RuntimeInstance] = [] { didSet { if oldValue != runtimeInstances { invalidateModelCatalogs() } } }
@@ -825,12 +830,13 @@ final class AppStore: ObservableObject {
     }
     /// Saves an instance; with `execution`, its location and HOME are replaced
     /// too, otherwise the saved ones are kept.
-    func saveRuntimeInstance(_ instance: RuntimeInstance, execution: BindingRuntimeExecution? = nil, onSaved: (() -> Void)? = nil) {
+    func saveRuntimeInstance(_ instance: RuntimeInstance, execution: BindingRuntimeExecution? = nil, launch: BindingAcpLaunch? = nil, onSaved: (() -> Void)? = nil) {
         guard !isGenerating else { recordProblem("请先停止当前任务，再修改运行时实例"); return }
         if isPreview { runtimeInstances.removeAll { $0.id == instance.id }; runtimeInstances.append(instance); if !instance.enabled && projectionRuntimeID == instance.id { resetProjection(); projectionRuntimeID = nil }; onSaved?(); return }
         guard let transport else { recordProblem("本地核心未配置"); return }
         enqueue({
             let runtime = BindingMapping.bindingRuntime(instance)
+            if let execution, let launch { return try transport.upsertRuntime(runtime, execution: execution, launch: launch) }
             return try execution.map { try transport.upsertRuntime(runtime, execution: $0) } ?? transport.upsertRuntime(runtime)
         }) { [weak self] data in
             guard let self else { return }
@@ -841,9 +847,63 @@ final class AppStore: ObservableObject {
             else { recordProblem("核心未返回保存后的运行时实例") }
         }
     }
-    func runtimeExecution(id: String, onFailure: @escaping () -> Void, completion: @escaping (BindingRuntimeExecution, String?) -> Void) {
+    /// The saved location and HOME (and where that HOME is), plus the launch
+    /// options when the instance's type takes them.
+    func runtimeExecution(id: String, launch: Bool, onFailure: @escaping () -> Void, completion: @escaping (BindingRuntimeExecution, String?, BindingAcpLaunch?) -> Void) {
         guard let transport, !isLoading, !isShuttingDown else { onFailure(); return }
-        enqueue({ try transport.runtimeExecution(id: id) }, onFailure: { _ in onFailure() }) { completion($0.0, $0.1) }
+        enqueue({
+            let (execution, home) = try transport.runtimeExecution(id: id)
+            return (execution, home, launch ? try transport.runtimeLaunch(id: id) : nil)
+        }, onFailure: { _ in onFailure() }) { completion($0.0, $0.1, $0.2) }
+    }
+    /// Starts the saved instance's Agent (unless a session of it is live) to
+    /// read what it reports; this does not send anything to a model.
+    func agentInfo(runtimeID: String, completion: @escaping (Result<BindingAcpRuntimeInfo, Error>) -> Void) {
+        guard let transport, !isShuttingDown else { return }
+        queue.async {
+            let result = Result { try transport.agentInfo(runtimeID: runtimeID) }
+            DispatchQueue.main.async { completion(result) }
+        }
+    }
+    /// The option the composer's model menu already offers: the session's
+    /// first model-category option, which the runtime's catalog is read from.
+    var editableSessionOptions: [SessionOption] {
+        guard var options = sessionOptions else { return [] }
+        if let model = options.firstIndex(where: { $0.category == "model" }) { options.remove(at: model) }
+        return options
+    }
+    var canChangeSessionOptions: Bool { !isGenerating && !executionStarting && !isLoading && !isShuttingDown }
+    func setSessionOption(_ option: SessionOption, value: SessionOptionValue) {
+        guard canChangeSessionOptions, value != option.value, let runtimeID = snapshot?.conversation.runtimeID, let conversationID = loadedConversationID, let transport else { return }
+        enqueue({ try transport.setSessionOption(runtimeID: runtimeID, conversationID: conversationID, optionID: option.id, value: BindingMapping.bindingSessionOptionValue(value)) }) { [weak self] options in
+            guard let self, self.loadedConversationID == conversationID else { return }
+            self.sessionOptions = options.map(BindingMapping.sessionOption)
+        }
+    }
+    /// Options exist only while the conversation's session is live here, so
+    /// they are read again when the conversation or its run state changes;
+    /// not being live yet is not a problem to report.
+    private func refreshSessionOptions() {
+        guard let value = snapshot, !isDraft, !isPreview, let transport,
+              let typeID = runtimeInstances.first(where: { $0.id == value.conversation.runtimeID })?.typeID,
+              runtimeTypes.first(where: { $0.id == typeID })?.sessionOptions == true else {
+            if sessionOptions != nil { sessionOptions = nil }; sessionOptionsKey = nil; return
+        }
+        let key = "\(value.conversation.id)|\(value.runState)"
+        guard key != sessionOptionsKey else { return }
+        if sessionOptionsKey?.hasPrefix(value.conversation.id + "|") != true { sessionOptions = nil }
+        sessionOptionsKey = key
+        let runtimeID = value.conversation.runtimeID, conversationID = value.conversation.id
+        queue.async { [weak self] in
+            let options = (try? transport.sessionOptions(runtimeID: runtimeID, conversationID: conversationID))?.map(BindingMapping.sessionOption)
+            DispatchQueue.main.async {
+                guard let self, self.sessionOptionsKey == key else { return }
+                let becameLive = self.sessionOptions == nil && options != nil
+                self.sessionOptions = options
+                // The runtime's own models come from this session.
+                if becameLive, case .ready = self.modelCatalogs[runtimeID] { self.modelCatalogs[runtimeID] = nil; self.loadModelCatalog() }
+            }
+        }
     }
     func deleteRuntimeInstance(id: String) {
         if isPreview {
@@ -959,7 +1019,7 @@ final class AppStore: ObservableObject {
             } else { resetProjection() }
         }
     }
-    private func resetProjection() { intentConversationID = nil; loadedPayloads.removeAll(); isDraft = false; problems.removeAll { $0.activityKey?.hasPrefix("poll:") == true }; generation += 1; snapshot = nil; projectionRuntimeID = nil; selectedConversationID = nil; pendingConversationID = nil; transcript.reset(); activity = nil }
+    private func resetProjection() { intentConversationID = nil; loadedPayloads.removeAll(); isDraft = false; problems.removeAll { $0.activityKey?.hasPrefix("poll:") == true }; generation += 1; snapshot = nil; projectionRuntimeID = nil; selectedConversationID = nil; pendingConversationID = nil; transcript.reset(); activity = nil; sessionOptions = nil; sessionOptionsKey = nil }
     private func applyList(_ data: BindingConfigurationSnapshot) {
         // The application owns the conversation list and configuration that
         // workspaces copy; a workspace's result must reach it, or the stale
@@ -1034,6 +1094,7 @@ final class AppStore: ObservableObject {
         case .idle, .failed: nil
         }
         if isPreview { previewSnapshots[value.conversation.id] = value }
+        refreshSessionOptions()
     }
     /// What a running turn is doing, from the newest block of its last
     /// message: a reasoning summary, the running tool, or replying.
