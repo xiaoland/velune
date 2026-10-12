@@ -1,13 +1,13 @@
 # Mac 接入运行时与 AI 服务更新
 
-2026-10-12 开始。用户指出 Mac App 还没有接入 PRD 中标记为“前端待实现”的 AI 服务与 Agent 运行时更新，因此无法实际发送（见 [PRD](../../docs/prd/index.md#ai-网关与-agent-运行时配置)）。核心契约均已存在（UniFFI：`runtime_models`、`create_conversation_with_selection`／`send_turn_with_selection`、ACP launch／info／session config、`upsert_runtime_with_execution` 的 SSH、协作父会话与子任务）；本任务是平台接入，必要时补核心契约。沿用 AGENTS.md 的验证与安装规则，真实提供商与产品体验由用户验收。
+2026-10-12 开始。用户指出 Mac App 还没有接入 PRD 中标记为“前端待实现”的 AI 服务与 Agent 运行时更新，因此无法实际发送（见 [PRD](../../docs/prd/index.md#ai-网关与-agent-运行时配置)）。核心契约均已存在（UniFFI：`runtime_models`、`create_conversation_with_selection`／`send_turn_with_selection`、ACP launch／info／session config、`upsert_runtime_with_execution` 的 SSH、协作父会话与子任务，后被 A2A 取代）；本任务是平台接入，必要时补核心契约。沿用 AGENTS.md 的验证与安装规则，真实提供商与产品体验由用户验收。
 
 ## 切片与顺序
 
 1. composer 模型选择：运行时原生模型、Velune 管理模型、通用 ACP 的 Agent 默认；按所选模型给出推理强度；创建与发送经 selection 接口。（已实现，待用户验收）
 2. ACP 运行时：启动命令／参数／环境的设置，Agent 信息与能力展示，会话配置选项。（已实现，待用户验收）
 3. SSH：运行时设置中的连接配置，远端工作目录的输入与展示。（已实现，待用户验收）
-4. 跨 Harness 协作：协作会话的创建、子任务状态／投影、审批回复与关闭。
+4. 跨 Harness 协作：2026-10-12 用户纠正为 A2A 与原生 sub-agent 展示，父子委派界面不再提交；转入 [Agent 间协作任务](../agent-collaboration/packet.md)。
 
 顺序依据：1 直接阻止发送；2–4 依次扩展可用运行时与协作。用户可调整。
 

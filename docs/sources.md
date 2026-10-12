@@ -241,3 +241,7 @@ S17 实施授权：用户决定全面切换 UniFFI，并要求现在开始拆分
 - 2026-10-11 用户在 RelayKit 安装后明确要求进行真实测试，允许使用相邻 Factory26 的 MiniMax、Ark Coding Plan、Qwen Coding Plan 提供商，并可固定请求用于重放。此授权覆盖合成输入的有限真实调用及脱敏采集，不涉及既有真实会话或公开凭据。
 
 - 同轮核对发现 Qwen 实际配置为第三方 Token Plan（qianwenaiapi.com），用户明确选择“使用现有 Qwen Token Plan，按真实名称记录”；不将其称为官方 Qwen Coding Plan。
+
+## S18
+
+2026-10-12 用户检查开发中的协作界面后指出：子 Agent（sub-agent）与跨 Harness 协作（A2A）不同，二者本质是否一样不是 Velune 这个 shell 要考虑的；2026-10-11 的 PRD 表述由另一会话编撰，可能有误。用户确认：A2A 参与方是普通会话（出现在会话列表、可单独打开，Agent 可联系已有会话）；联系授权若需要则归运行时设置，但倾向不做任何限制；原生 sub-agent 属于会话体验，暂时只需在消息列表中看到并可单独打开其会话。用户另提示 composer 之后需要简化（已有三个弹出按钮）。产品归 [PRD](prd/index.md#ai-网关与-agent-运行时配置)，实施归 [Agent 间协作任务](../tasks/agent-collaboration/packet.md)。

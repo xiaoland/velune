@@ -77,6 +77,8 @@ Mac 应用最低支持 macOS 15；2026-10-09 用户明确允许提高平台底�
 - **任务**：需要持续跟踪目标和进展的工作单元；具体状态模型见架构中的细化契约
 - **会话**：与某个 harness 执行交互的工作上下文；跨 harness 统一表示见架构中的细化契约
 - **跨会话协作**：会话间的感知、交流与共同推进工作；通信协议、共享程度与权限见架构中的细化契约
+- **原生 sub-agent**：Harness 自身创建和拥有的子会话，属于该会话的体验，不由 Velune 创建
+- **Agent 间协作（A2A）**：Velune 提供的会话之间的对等交流，参与方都是普通会话；与原生 sub-agent 分别呈现
 
 ## 已确认的架构与技术方向
 
@@ -142,7 +144,12 @@ Mac 开发交付安装到 `/Applications/Velune.app`，每次修改后重新构�
 
 2026-10-10 用户进一步授权通用 ACP Adapter，继续限定 Rust packages。用户随后澄清，目标是尽可能覆盖更多 Agent Harness，同时避免为每个 Harness 分别开发适配；ACP 是服务该目标的技术方案，不是不可推敲的产品约束。它作为已有专用 Harness adapter 之外的接入方式，使用 Agent 公布的协议能力；配置、模型／会话选项与能力展示已于 2026-10-12 接入 Mac（见 [Mac 接入任务](../../tasks/mac-runtime-integration/packet.md)）。指定参考为 [lexoliu/acpsub](https://github.com/lexoliu/acpsub)，不引入其独立 daemon。实现与验收归 [ACP 任务](../../tasks/acp-adapter/packet.md)。
 
-2026-10-11 用户明确，Harness 互联互通必须让一种 Agent runtime 把另一种 runtime 作为 sub-agent 使用。这是跨 Harness 协作的关键能力：运行中的父 Agent 能发现获准目标、委派具体任务、取得可关联的进度与结果，并继续自己的工作；子 Agent 可继续接收该任务的后续输入。仅能从 Velune 启动不同 runtime 或切换会话不满足此目标。通用协作工具与现有 ACP／原生 adapter 分工，避免按每一对 Harness 开发连接。取消、失败、待审批和未知结果须明确，子任务不因被委派而取得额外授权。继续限定 Rust packages；子任务关系、状态、审批与结果的 **App 前端待实现**。实施与证据归 [Harness 协作任务](../../tasks/harness-interoperation/packet.md)。
+2026-10-11 用户要求 Harness 互联互通：运行中的 Agent 能发现其他运行时与会话、与之交流并委派具体工作，取得可关联的进度与结果后继续自己的工作；仅能从 Velune 启动不同 runtime 或切换会话不满足此目标。通用协作工具与现有 ACP／原生 adapter 分工，避免按每一对 Harness 开发连接。2026-10-12 用户纠正此前另一会话将其记为“把另一 runtime 当作 sub-agent”的表述，Velune 区分两种关系：
+
+- **原生 sub-agent**：Harness 自身创建和拥有的子会话（例如 Claude Code、Codex 的子 Agent），属于会话体验。Velune 不创建它们；当前只在消息列表中显示其发生，并可单独打开该子 Agent 的会话。
+- **Agent 间协作（A2A）**：Velune 提供的、不同会话之间的对等交流，可跨运行时与 Harness。参与方都是普通会话：出现在会话列表，可由用户单独打开、继续和处理审批；Agent 可以新建会话，也可以联系已有会话。Velune 不另设父子任务树、协作 scope 或“子任务”视图。
+
+两者本质是否相同不由 Velune 这个 shell 判断，产品上按上述归属分别呈现。A2A 默认不设联系限制：Velune 执行的任一会话都可联系所有已启用运行时及其会话；以后若需要限制，设置归运行时设置，不在 composer 中逐会话授权。协作消息带出处、不授予额外权限；接收会话的待审批仍按其自身流程交给用户，忙碌、取消、失败和未知结果须明确。实施归 [Agent 间协作任务](../../tasks/agent-collaboration/packet.md)；2026-10-11 的父子委派实现及其证据见 [Harness 协作任务](../../tasks/harness-interoperation/packet.md)，其父子 scope 模型已被取代。
 
 2026-10-11 用户进一步要求将 Agent runtime 管理从会话、模型扩展到 user instruction、MCP、agent skills 与 sub-agent 定义。各运行时允许缺少相应能力或资源；宿主须能区分不支持、尚未配置和读取失败，不能把缺失伪装成统一支持。管理保留原生资源归属与运行时差异，sub-agent 定义不等同于执行中的子会话。App 管理界面的组织见下文“资源库”段落。实施与验收归 [运行时资源管理任务](../../tasks/runtime-management/packet.md)。
 
@@ -154,7 +161,7 @@ Mac 开发交付安装到 `/Applications/Velune.app`，每次修改后重新构�
 
 2026-10-12 用户要求把 Velune 管理的运行时 HOME 接入 Mac 运行时设置：编辑运行时实例时可选继承当前用户 HOME、指定目录或由 Velune 管理。SSH 连接配置已于同日接入（见下段任务）。
 
-2026-10-12 用户指出 Mac App 尚未接入 AI 服务与 Agent 运行时的多项更新（本节及上文标记为前端待实现的内容），因此还无法实际发送消息；这些前端接入成为当前工作，Mac 不再限于本节“本轮不修改 app”的边界。先接入能发送所需的 composer 模型选择（运行时原生模型与 Velune 管理模型），再接入 ACP 运行时配置与会话选项、SSH 连接与远端工作目录、跨 Harness 协作的子任务展示与操作。composer 模型选择（含通用 ACP 的 Agent 默认）、ACP 运行时配置、Agent 信息和会话选项，以及 SSH 运行位置与远端工作目录已接入 Mac；跨 Harness 协作仍待实现，状态见 [Mac 接入任务](../../tasks/mac-runtime-integration/packet.md)。
+2026-10-12 用户指出 Mac App 尚未接入 AI 服务与 Agent 运行时的多项更新（本节及上文标记为前端待实现的内容），因此还无法实际发送消息；这些前端接入成为当前工作，Mac 不再限于本节“本轮不修改 app”的边界。先接入能发送所需的 composer 模型选择（运行时原生模型与 Velune 管理模型），再接入 ACP 运行时配置与会话选项、SSH 连接与远端工作目录、跨 Harness 协作。composer 模型选择（含通用 ACP 的 Agent 默认）、ACP 运行时配置、Agent 信息和会话选项，以及 SSH 运行位置与远端工作目录已接入 Mac，状态见 [Mac 接入任务](../../tasks/mac-runtime-integration/packet.md)；跨 Harness 协作按上文 2026-10-12 纠正，改为 A2A 与原生 sub-agent 展示，归 [Agent 间协作任务](../../tasks/agent-collaboration/packet.md)。
 
 2026-10-04 用户纠正首循环配置模型：产品使用“AI 提供商”，废弃“模型资源”实体。模型独立于提供商存在，同一个模型可以由多个提供商提供，一个提供商也可以提供多个模型。模型具有提供商规定的 model ID，以及昵称、图标及能力参数；最大输出 token 数、支持的推理级别是示例，不要求所有提供商支持这些参数。字段与编码以提供商协议为权威；提供商配置包含可调用模型、可编辑的协议与端点，以及其认证配置；不要求用户另行建立认证资源。model ID 是提供商 API 接受的模型标识，不是由用户另填的 Velune 内部记录键；内部引用和显式网关路由别名须与它分别命名。跨提供商的模型关联不能凭同名自动推断等价。 用户可从公开模型目录显式拉取、搜索并挑选条目作为模板快填。目录给出来源声明，不决定实际提供商的协议、端点或可用性；填入后成为独立可编辑快照，不能自动覆盖已保存模型或因 reasoning 支持标记猜测具体级别。
 
