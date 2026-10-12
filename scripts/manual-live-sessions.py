@@ -153,12 +153,16 @@ console.log(manager.getSessionFile());
             external('append', path_a, 'user', 'EXTERNAL_PROMPT')
             wait(lambda: 'EXTERNAL_PROMPT' in texts(a), 'open conversation read again after a native change')
             assert snapshot(a).run_state == b.BindingRunState.ELSEWHERE, snapshot(a).run_state
+            # Its unfinished turn is presented as running, untimed.
+            last = snapshot(a).transcript_turns[-1]
+            assert last.is_running and last.duration_ms is None, last
             wait(lambda: a in elsewhere(), 'conversation reported running elsewhere')
-            print('PASS an external prompt appears live and the conversation runs elsewhere', flush=True)
+            print('PASS an external prompt appears live and the conversation runs elsewhere, its turn running', flush=True)
 
             external('append', path_a, 'assistant', 'EXTERNAL_REPLY')
             wait(lambda: 'EXTERNAL_REPLY' in texts(a), 'external reply appears')
             assert snapshot(a).run_state == b.BindingRunState.IDLE and snapshot(a).actions.can_send
+            assert not snapshot(a).transcript_turns[-1].is_running
             wait(lambda: a not in elsewhere(), 'conversation no longer runs elsewhere')
             print('PASS the external reply ends running elsewhere', flush=True)
 

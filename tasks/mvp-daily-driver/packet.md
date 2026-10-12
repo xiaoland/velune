@@ -169,3 +169,4 @@
 - 状态行：进度指示＋当前工作（最新推理块首行／运行中工具标题／“正在回复”），文字带 CAGradientLayer 遮罩 shimmer，尊重减少动态效果；“正在停止”不闪；Elsewhere 只显示进度指示。
 - 验证：临时 VELUNE_HOME＋Pi 1.0.2＋回环 Messages 上游（思考块后挂起 45 秒）：运行中工作过程展开、状态行显示“Inspecting the project layout”并有高光移过，弹出按钮指示器为中性灰。发现：把开发版设为前台会让用户正在进行的键盘输入落入其输入框，改用 `open -n -g --env VELUNE_HOME=…` 后台启动；AX 点击发送仍会把它带到前台，验证后立即退出。turn 结束后收起与 Elsewhere 只显示指示未截图核对。
 - 安装：483887e 已构建安装（签名校验通过，manifest commit 一致、dirty=false，重开无崩溃报告）。
+- 用户验收反馈：运行中的会话工作过程仍是收起的。原因：`TranscriptProjection` 只把 Velune 自己执行（Running／Stopping）的最后一个 turn 记为运行中，判断为在外部运行（Elsewhere）的不算，Mac 因而按已结束处理。修复：Elsewhere 时最后一个 turn 的 `is_running` 为真，但不计时（未观察到执行）。`manual-live-sessions.py` 增加断言：外部运行时最后一个 turn 运行中且无时长，外部回复后不再运行中——通过。

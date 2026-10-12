@@ -27,6 +27,9 @@ struct MessageAnchor {
 pub struct TranscriptProjection {
     messages: Vec<MessageAnchor>,
     running: bool,
+    /// The native record shows the last turn unfinished outside Velune. It is
+    /// presented as running but not timed: no execution was observed.
+    elsewhere: bool,
     active: Option<(String, Instant)>,
     durations: BTreeMap<String, u64>,
     presentation_ids: BTreeMap<String, String>,
@@ -118,6 +121,7 @@ impl TranscriptProjection {
                     self.durations.insert(id, elapsed_ms(started));
                 }
                 self.running = running;
+                self.elsewhere = matches!(state, RunState::Elsewhere);
             }
         }
     }
@@ -167,7 +171,7 @@ impl TranscriptProjection {
                     last_message_id: visible.map(|message| message.id.clone()),
                     reply_start_block: reply_start,
                     duration_ms,
-                    is_running: ordinal + 1 == starts.len() && self.running,
+                    is_running: ordinal + 1 == starts.len() && (self.running || self.elsewhere),
                 }
             })
             .collect()
