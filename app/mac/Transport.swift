@@ -95,6 +95,12 @@ final class Transport: @unchecked Sendable {
     func agentInfo(runtimeID: String) throws -> BindingAcpRuntimeInfo { try withApplication("agentInfo") { try $0.acpRuntimeInfo(runtimeId: runtimeID) } }
     func sessionOptions(runtimeID: String, conversationID: String) throws -> [BindingAcpConfigOption] { try withApplication("sessionOptions") { try $0.acpSessionConfig(runtimeId: runtimeID, conversationId: conversationID) } }
     func setSessionOption(runtimeID: String, conversationID: String, optionID: String, value: BindingAcpConfigValue) throws -> [BindingAcpConfigOption] { try withApplication("setSessionOption") { try $0.setAcpSessionConfig(runtimeId: runtimeID, conversationId: conversationID, configId: optionID, value: value) } }
+    /// Where each instance runs; an instance whose saved execution cannot be read is left out.
+    func runtimeLocations(ids: [String]) throws -> [String: BindingRuntimeTransport] {
+        try withApplication("runtimeLocations") { application in
+            ids.reduce(into: [:]) { result, id in result[id] = try? application.runtimeExecution(runtimeId: id).transport }
+        }
+    }
     func deleteRuntime(id: String) throws -> BindingRuntimeUpdate { try withApplication("deleteRuntime", changesConfiguration: true) { try $0.deleteRuntime(id: id) } }
     func selectRuntime(id: String) throws -> BindingConfigurationSnapshot { try withApplication("selectRuntime") { try $0.selectRuntime(id: id) } }
     /// Keep first creation and dispatch under the same shared application lock.

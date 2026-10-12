@@ -342,6 +342,9 @@ pub struct BindingRuntimeTypeDescriptor {
     /// A live conversation has options (`acp_session_config`); the runtime's
     /// own model catalog belongs to that session.
     pub session_options: bool,
+    /// Running over SSH needs a helper resources directory on the remote
+    /// machine (`RuntimeExecution::remote_resources_directory`).
+    pub remote_resources: bool,
     pub supported_protocols: Vec<BindingGatewayProtocol>,
     pub supported_provider_protocols: Vec<BindingGatewayProtocol>,
     pub name: String,

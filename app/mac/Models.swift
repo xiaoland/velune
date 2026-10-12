@@ -167,6 +167,12 @@ enum RuntimeModelCatalog: Equatable, Sendable {
     /// The runtime's default when it has one, its own models, then managed models.
     case ready([ModelChoice])
 }
+/// Where a runtime instance runs; paths of a remote one belong to that machine.
+enum RuntimeLocation: Equatable, Sendable {
+    case local
+    case ssh(destination: String)
+    var host: String? { if case .ssh(let destination) = self { destination } else { nil } }
+}
 /// An option a live session offers, as its Agent names and groups it.
 struct SessionOption: Identifiable, Hashable, Sendable {
     var id: String
@@ -255,6 +261,8 @@ struct RuntimeTypeDescriptor: Codable, Sendable, Identifiable, Equatable {
     var agentInfo = false
     /// A live conversation has options; the runtime's own models belong to that session.
     var sessionOptions = false
+    /// Running over SSH needs a helper resources directory on the remote machine.
+    var remoteResources = false
     var supportedProtocols: [ProviderProtocol]
     var supportedProviderProtocols: [ProviderProtocol]
     var name: String

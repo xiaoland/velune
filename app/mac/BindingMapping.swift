@@ -12,6 +12,12 @@ enum BindingMapping {
         case .native(let provider, let model): .native(providerID: provider, modelID: model)
         }
     }
+    static func location(_ value: BindingRuntimeTransport) -> RuntimeLocation {
+        switch value {
+        case .local: .local
+        case .ssh(_, let destination, _): .ssh(destination: destination)
+        }
+    }
     static func sessionOption(_ value: BindingAcpConfigOption) -> SessionOption {
         SessionOption(id: value.id, name: value.name, description: value.description, category: value.category, value: sessionOptionValue(value.value),
                       choices: value.choices.map { SessionOptionChoice(value: $0.value, name: $0.name, description: $0.description, group: $0.groupName ?? $0.group) })
@@ -165,7 +171,7 @@ enum BindingMapping {
     }
 
     static func runtimeType(_ value: BindingRuntimeTypeDescriptor) -> RuntimeTypeDescriptor {
-        RuntimeTypeDescriptor(id: value.id, familyID: value.familyId, canRenameConversations: value.canRenameConversations, canDeleteConversations: value.canDeleteConversations, launchOptions: value.launchOptions, agentInfo: value.agentInfo, sessionOptions: value.sessionOptions, supportedProtocols: value.supportedProtocols.map(protocolID), supportedProviderProtocols: value.supportedProviderProtocols.map(protocolID), name: value.name, fields: value.fields.map(settingField))
+        RuntimeTypeDescriptor(id: value.id, familyID: value.familyId, canRenameConversations: value.canRenameConversations, canDeleteConversations: value.canDeleteConversations, launchOptions: value.launchOptions, agentInfo: value.agentInfo, sessionOptions: value.sessionOptions, remoteResources: value.remoteResources, supportedProtocols: value.supportedProtocols.map(protocolID), supportedProviderProtocols: value.supportedProviderProtocols.map(protocolID), name: value.name, fields: value.fields.map(settingField))
     }
 
     static func configuration(_ value: BindingConfigurationSnapshot) -> (conversations: [Conversation], historyFailures: [HistoryFailure], gateways: [GatewayConfig], runtimes: [RuntimeInstance], runtimeTypes: [RuntimeTypeDescriptor], modelTemplates: [ModelTemplate], importTypes: [RuntimeTypeDescriptor], protocols: [ProtocolDescriptor], selectedRuntimeID: String?) {

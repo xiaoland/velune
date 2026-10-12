@@ -39,7 +39,10 @@ final class AppStore: ObservableObject {
     private var sessionOptionsKey: String?
     let transcript = TranscriptModel()
     @Published private(set) var gateway = GatewayConfig() { didSet { if oldValue != gateway { invalidateModelCatalogs() } } }
-    @Published private(set) var runtimeInstances: [RuntimeInstance] = [] { didSet { if oldValue != runtimeInstances { invalidateModelCatalogs() } } }
+    @Published private(set) var runtimeInstances: [RuntimeInstance] = [] { didSet { if oldValue != runtimeInstances { invalidateModelCatalogs(); refreshRuntimeLocations() } } }
+    /// Where each instance runs, read with its saved execution; unknown ones count as local.
+    @Published private(set) var runtimeLocations: [String: RuntimeLocation] = [:]
+    private var runtimeLocationsRequest = UUID()
     @Published private(set) var runtimeTypes: [RuntimeTypeDescriptor] = []
     @Published private(set) var protocols: [ProtocolDescriptor] = []
     @Published private(set) var modelTemplates: [ModelTemplate] = []
@@ -932,6 +935,32 @@ final class AppStore: ObservableObject {
         guard effort == nil || reasoningEffortOptions.contains(effort!) else { return }
         nextTurnEffort = effort
         rememberNextTurnIntent()
+    }
+    func location(of runtimeID: String?) -> RuntimeLocation { runtimeID.flatMap { runtimeLocations[$0] } ?? .local }
+    /// Where the open conversation's files are: its runtime's machine.
+    var loadedConversationLocation: RuntimeLocation { location(of: snapshot?.conversation.runtimeID) }
+    /// Working directories of the latest conversations on the machine the
+    /// next turn runs on, newest first.
+    var recentWorkingDirectories: [String] {
+        let location = location(of: nextTurnRuntimeID)
+        var seen = Set<String>()
+        return conversations.filter { self.location(of: $0.runtimeID) == location }
+            .sorted { ($0.updatedAtUnixMs ?? 0) > ($1.updatedAtUnixMs ?? 0) }
+            .compactMap(\.cwd).filter { seen.insert($0).inserted }.prefix(5).map { $0 }
+    }
+    private func refreshRuntimeLocations() {
+        let ids = runtimeInstances.map(\.id)
+        guard let transport, !isPreview, !isShuttingDown else { return }
+        let request = UUID()
+        runtimeLocationsRequest = request
+        queue.async { [weak self] in
+            let result = Result { try transport.runtimeLocations(ids: ids) }
+            DispatchQueue.main.async {
+                guard let self, self.runtimeLocationsRequest == request, case .success(let transports) = result else { return }
+                let locations = transports.mapValues(BindingMapping.location)
+                if self.runtimeLocations != locations { self.runtimeLocations = locations }
+            }
+        }
     }
     /// Reads the next-turn runtime's catalog again, e.g. after its native
     /// configuration or session changed outside Velune's settings.

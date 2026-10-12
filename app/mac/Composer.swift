@@ -372,6 +372,8 @@ struct ComposerView: View {
     let send: () -> Void
     @Environment(\.controlActiveState) private var activeState
     @Environment(\.openWindow) private var openWindow
+    @State private var enteringRemoteDirectory = false
+    @State private var remoteDirectory = ""
     private var nextTurnRuntime: RuntimeInstance? { store.runtimeInstances.first { $0.id == store.nextTurnRuntimeID } }
 
     var body: some View {
@@ -403,6 +405,14 @@ struct ComposerView: View {
                         .disabled(!store.canSend || (model.isEmpty && model.attachments.isEmpty)).help("发送消息（⌘ Return）")
                 }
             }
+        }
+        .alert("远端工作目录", isPresented: $enteringRemoteDirectory) {
+            TextField("绝对路径", text: $remoteDirectory)
+            Button("使用") { store.setUnsentWorkingDirectory(remoteDirectory.trimmingCharacters(in: .whitespacesAndNewlines)) }
+                .disabled(!remoteDirectory.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("/"))
+            Button("取消", role: .cancel) {}
+        } message: {
+            if case .ssh(let host) = store.location(of: store.nextTurnRuntimeID) { Text("\(host) 上的绝对路径；发送时在该机器上检查。") }
         }
         .onDrop(of: [.fileURL], isTargeted: nil) { providers in
             for provider in providers {
@@ -579,9 +589,22 @@ struct ComposerView: View {
     private var workingDirectoryMenu: some View {
         let path = store.loadedConversationWorkingDirectory
         let name = path.map { URL(fileURLWithPath: $0).lastPathComponent }
+        let recent = store.recentWorkingDirectories
         return Menu {
-            Button("选择目录…") { chooseDirectory() }
+            // A remote runtime's directories exist only on its machine.
+            if case .ssh(let host) = store.location(of: store.nextTurnRuntimeID) {
+                Button("输入 \(host) 上的目录…") { remoteDirectory = path ?? ""; enteringRemoteDirectory = true }
+            } else {
+                Button("选择目录…") { chooseDirectory() }
+            }
             if path != nil { Button("使用运行时默认目录") { store.setUnsentWorkingDirectory(nil) } }
+            if !recent.isEmpty {
+                Section("最近使用") {
+                    ForEach(recent, id: \.self) { directory in
+                        Button(directory) { store.setUnsentWorkingDirectory(directory) }
+                    }
+                }
+            }
         } label: {
             Text(name ?? "工作目录").lineLimit(1).truncationMode(.middle).frame(maxWidth: 160, alignment: .leading)
         }

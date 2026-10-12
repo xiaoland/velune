@@ -184,7 +184,7 @@ struct VeluneRootView: View {
 
     private var transcript: some View {
         TranscriptView(model: store.transcript, conversationID: store.loadedConversationID, scrollRequest: scrollRequest,
-                       cwd: store.loadedConversationWorkingDirectory, outlineCollapsed: $outlineCollapsed, navigation: outlineNavigation,
+                       cwd: store.loadedConversationWorkingDirectory, remoteHost: store.loadedConversationLocation.host, outlineCollapsed: $outlineCollapsed, navigation: outlineNavigation,
                        activity: store.activity, loadPayloads: { [store] ids in store.loadPayloads(messageIDs: ids) })
     }
 
@@ -654,7 +654,7 @@ struct RuntimeSettingsView: View {
                 ForEach(store.runtimeInstances) { instance in
                     VStack(alignment: .leading, spacing: 3) {
                         HStack { Text(instance.name); if !instance.enabled { Text("已停用").foregroundStyle(.secondary) } }
-                        Text(store.runtimeTypes.first { $0.id == instance.typeID }?.name ?? instance.typeID).font(.caption).foregroundStyle(.secondary)
+                        Text((store.runtimeTypes.first { $0.id == instance.typeID }?.name ?? instance.typeID) + (store.location(of: instance.id).host.map { " · SSH \($0)" } ?? "")).font(.caption).foregroundStyle(.secondary)
                     }.tag(instance.id)
                 }
             }
@@ -744,10 +744,49 @@ struct RuntimeEditor: View {
     private struct LaunchArgument: Identifiable { let id = UUID(); var value = "" }
     private struct EnvironmentEntry: Identifiable { let id = UUID(); var name = ""; var value = "" }
     private enum AgentLoad { case loading, failed(String), ready(BindingAcpRuntimeInfo) }
-    private enum ExecutionLoad { case loading, failed, ready(BindingRuntimeTransport, remoteResources: String?) }
+    @State private var location: LocationChoice = .local
+    @State private var sshBinary = "/usr/bin/ssh"
+    @State private var sshDestination = ""
+    @State private var sshPort = ""
+    @State private var remoteResources = ""
+    private enum ExecutionLoad { case loading, failed, ready }
     private enum HomeChoice: Hashable { case inherit, existing, managed }
+    private enum LocationChoice: Hashable { case local, ssh }
     private var descriptor: RuntimeTypeDescriptor? { types.first { $0.id == typeID } }
-    private var remote: Bool { if case .ready(.ssh, _) = execution { return true }; return false }
+    /// Paths of a remote instance are on its machine: typed, not chosen or discovered here.
+    private var remote: Bool { location == .ssh }
+    private var sshBinaryField: SettingField {
+        SettingField(key: "sshBinary", label: "SSH 程序", kind: .filePath, required: true, value: "", options: [],
+                     help: "本机 OpenSSH 客户端的绝对路径。")
+    }
+    private var sshDestinationField: SettingField {
+        SettingField(key: "sshDestination", label: "主机", kind: .text, required: true, value: "", options: [],
+                     help: "OpenSSH 主机名或 ~/.ssh/config 中的别名。连接不交互：请预先完成登录认证与主机信任；不转发认证 agent。")
+    }
+    private var sshPortField: SettingField {
+        SettingField(key: "sshPort", label: "端口", kind: .text, required: false, value: "", options: [], help: "留空使用 SSH 配置中的端口。")
+    }
+    private var remoteResourcesField: SettingField {
+        SettingField(key: "remoteResources", label: "远端辅助目录", kind: .text, required: descriptor?.remoteResources == true, value: "", options: [],
+                     help: "执行机器上的绝对目录，Velune 首次使用时在其中放入读取会话等所需的辅助程序；应独立于运行时目录。")
+    }
+    private var transportExecution: BindingRuntimeTransport? {
+        guard remote else { return .local }
+        let binary = MacPath.normalized(sshBinary, field: sshBinaryField)
+        let destination = sshDestination.trimmingCharacters(in: .whitespacesAndNewlines)
+        let portText = sshPort.trimmingCharacters(in: .whitespacesAndNewlines)
+        let port = UInt16(portText)
+        guard binary.hasPrefix("/"), !destination.isEmpty, !destination.hasPrefix("-"), !destination.contains(where: { $0.isWhitespace }),
+              portText.isEmpty || (port ?? 0) > 0 else { return nil }
+        return .ssh(binary: binary, destination: destination, port: portText.isEmpty ? nil : port)
+    }
+    /// `nil` when invalid; the inner value is what is saved.
+    private var remoteResourcesExecution: String?? {
+        guard remote else { return .some(nil) }
+        let path = remoteResources.trimmingCharacters(in: .whitespacesAndNewlines)
+        if path.isEmpty { return descriptor?.remoteResources == true ? nil : .some(nil) }
+        return path.hasPrefix("/") && !path.contains("\0") ? .some(path) : nil
+    }
     /// A managed HOME holds the runtime directory, so that field goes away.
     private var fields: [SettingField] { (descriptor?.fields ?? []).filter { !(home == .managed && $0.key == "agentDir") } }
     private var homeField: SettingField {
@@ -782,13 +821,13 @@ struct RuntimeEditor: View {
         }
         return BindingAcpLaunch(args: launchArguments.map(\.value).filter { !$0.isEmpty }, environment: variables)
     }
-    private var valid: Bool { !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && descriptor != nil && homeExecution != nil && (descriptor?.launchOptions != true || launch != nil) && (!enabled || fields.allSatisfy { field in
+    private var valid: Bool { !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && descriptor != nil && homeExecution != nil && transportExecution != nil && remoteResourcesExecution != nil && (descriptor?.launchOptions != true || launch != nil) && (!enabled || fields.allSatisfy { field in
         let value = settings[field.key] ?? field.value
-        return (!field.required || !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) && MacPath.isValid(value, field: field)
+        return (!field.required || !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) && MacPath.isValid(value, field: field, remote: remote)
     }) }
     private var pathValidationMessage: String? {
-        guard enabled, let field = fields.first(where: { !MacPath.isValid(settings[$0.key] ?? $0.value, field: $0) }) else { return nil }
-        return "「\(field.label)」必须是绝对路径；可使用 ~/ 开头，保存时会展开。"
+        guard enabled, let field = fields.first(where: { !MacPath.isValid(settings[$0.key] ?? $0.value, field: $0, remote: remote) }) else { return nil }
+        return remote ? "「\(field.label)」必须是执行机器上的绝对路径。" : "「\(field.label)」必须是绝对路径；可使用 ~/ 开头，保存时会展开。"
     }
     var body: some View {
         VStack(spacing: 0) {
@@ -806,6 +845,7 @@ struct RuntimeEditor: View {
                             SettingFieldView(
                                 field: field,
                                 value: Binding(get: { settings[field.key] ?? field.value }, set: { settings[field.key] = $0 }),
+                                remote: remote,
                                 discoveryTitle: discoveryTitle(for: field),
                                 discoveryAction: discoveryAction(for: field)
                             )
@@ -832,7 +872,7 @@ struct RuntimeEditor: View {
             name = instance?.name ?? ""
             enabled = instance?.enabled ?? true
             typeID = instance?.typeID ?? types.first?.id ?? ""
-            if instance == nil { execution = .ready(.local, remoteResources: nil) } else { loadExecution() }
+            if instance == nil { execution = .ready } else { loadExecution() }
             settings = instance?.settings ?? [:]
             if let descriptor {
                 for field in descriptor.fields where field.kind == .filePath || field.kind == .directoryPath {
@@ -854,8 +894,19 @@ struct RuntimeEditor: View {
             HStack { ProgressView().controlSize(.small); Text("正在读取运行环境…").foregroundStyle(.secondary) }
         case .failed:
             HStack { Text("无法读取此实例的运行环境。").foregroundStyle(.secondary); Spacer(); Button("重试") { loadExecution() } }
-        case .ready(let transport, _):
-            if case .ssh(_, let destination, _) = transport { LabeledContent("运行位置", value: "SSH · \(destination)") }
+        case .ready:
+            Picker("运行位置", selection: $location) {
+                Text("本机").tag(LocationChoice.local)
+                Text("SSH").tag(LocationChoice.ssh)
+            }
+            if remote {
+                SettingFieldView(field: sshBinaryField, value: $sshBinary)
+                SettingFieldView(field: sshDestinationField, value: $sshDestination)
+                SettingFieldView(field: sshPortField, value: $sshPort)
+                if transportExecution == nil { Text("需要 SSH 程序的绝对路径、不含空白且不以“-”开头的主机，端口为 1–65535。").font(.caption).foregroundStyle(.red) }
+                SettingFieldView(field: remoteResourcesField, value: $remoteResources, remote: true)
+                Text("执行机器需要 POSIX 环境与 Python 3，运行时自身也须安装在那里；下方的路径均指执行机器上的路径。").font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
             Picker("HOME", selection: $home) {
                 Text("继承当前用户").tag(HomeChoice.inherit)
                 Text("指定目录").tag(HomeChoice.existing)
@@ -986,24 +1037,31 @@ struct RuntimeEditor: View {
             case .existing(let path): home = .existing; homePath = path
             case .managed(let root): home = .managed; remoteRoot = root ?? ""; managedHome = directory
             }
-            execution = .ready(saved.transport, remoteResources: saved.remoteResourcesDirectory)
+            switch saved.transport {
+            case .local: location = .local
+            case .ssh(let binary, let destination, let port):
+                location = .ssh; sshBinary = binary; sshDestination = destination; sshPort = port.map(String.init) ?? ""
+            }
+            remoteResources = saved.remoteResourcesDirectory ?? ""
+            execution = .ready
         }
     }
 
     private func discoveryValue(for field: SettingField) -> String { (settings[field.key] ?? field.value).trimmingCharacters(in: .whitespacesAndNewlines) }
     private func discoveryTitle(for field: SettingField) -> String? {
-        guard field.executableDiscovery != nil, discoveryValue(for: field).isEmpty else { return nil }
+        guard !remote, field.executableDiscovery != nil, discoveryValue(for: field).isEmpty else { return nil }
         return executableDiscoveryRunning ? "探测中…" : (executableDiscoveryMessage == nil ? "自动发现" : "重新发现")
     }
     private func discoveryAction(for field: SettingField) -> (() -> Void)? {
-        guard field.executableDiscovery != nil, discoveryValue(for: field).isEmpty, !executableDiscoveryRunning else { return nil }
+        guard !remote, field.executableDiscovery != nil, discoveryValue(for: field).isEmpty, !executableDiscoveryRunning else { return nil }
         return { discoverExecutables([field], type: typeID) }
     }
     private func discoverExecutableIfNeeded() {
         discoverExecutables(descriptor?.fields.filter { $0.executableDiscovery != nil && discoveryValue(for: $0).isEmpty } ?? [], type: typeID)
     }
     private func discoverExecutables(_ fields: [SettingField], type: String) {
-        guard !executableDiscoveryRunning, type == typeID, let field = fields.first, let discovery = field.executableDiscovery else { return }
+        // Discovery looks on this Mac; a remote instance's executables are elsewhere.
+        guard !remote, !executableDiscoveryRunning, type == typeID, let field = fields.first, let discovery = field.executableDiscovery else { return }
         executableDiscoveryRunning = true
         executableDiscoveryMessage = "正在查找\(field.label)…"
         MacExecutableDiscovery.discover(discovery) { result in
@@ -1018,11 +1076,11 @@ struct RuntimeEditor: View {
         }
     }
     private func commit() {
-        guard valid, let descriptor, let homeExecution, case .ready(let transport, let remoteResources) = execution else { return }
+        guard valid, let descriptor, let homeExecution, let transport = transportExecution, let remoteResources = remoteResourcesExecution, case .ready = execution else { return }
         // Settings this form does not edit, such as an ACP launch, stay as saved.
         var values = instance?.settings ?? [:]
         for field in descriptor.fields {
-            values[field.key] = MacPath.normalized(settings[field.key] ?? field.value, field: field)
+            values[field.key] = MacPath.normalized(settings[field.key] ?? field.value, field: field, remote: remote)
         }
         store.saveRuntimeInstance(RuntimeInstance(enabled: enabled, id: instance?.id ?? draftID, name: name.trimmingCharacters(in: .whitespacesAndNewlines), typeID: typeID, gatewayID: instance?.gatewayID ?? gatewayID, settings: values),
                                   execution: BindingRuntimeExecution(transport: transport, home: homeExecution, remoteResourcesDirectory: remoteResources),
@@ -1035,8 +1093,9 @@ private enum MacPath {
         NSString(string: value.trimmingCharacters(in: .whitespacesAndNewlines)).expandingTildeInPath
     }
 
-    static func normalized(_ value: String, field: SettingField) -> String {
-        guard field.kind == .filePath || field.kind == .directoryPath else {
+    /// A remote path is the other machine's: kept as typed, with no `~` expansion.
+    static func normalized(_ value: String, field: SettingField, remote: Bool = false) -> String {
+        guard !remote, field.kind == .filePath || field.kind == .directoryPath else {
             return value.trimmingCharacters(in: .whitespacesAndNewlines)
         }
         let path = expanded(value)
@@ -1044,10 +1103,11 @@ private enum MacPath {
         return URL(fileURLWithPath: path).standardizedFileURL.path
     }
 
-    static func isValid(_ value: String, field: SettingField) -> Bool {
+    static func isValid(_ value: String, field: SettingField, remote: Bool = false) -> Bool {
         guard field.kind == .filePath || field.kind == .directoryPath else { return true }
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return !field.required }
+        if remote { return trimmed.hasPrefix("/") && !trimmed.contains("\0") }
         let path = expanded(trimmed)
         return path.hasPrefix("/") && !path.contains("\0")
     }
@@ -1056,6 +1116,8 @@ private enum MacPath {
 struct SettingFieldView: View {
     let field: SettingField
     @Binding var value: String
+    /// The path is on a remote machine, so there is nothing here to choose.
+    var remote = false
     var discoveryTitle: String? = nil
     var discoveryAction: (() -> Void)? = nil
     var body: some View {
@@ -1069,7 +1131,7 @@ struct SettingFieldView: View {
                 HStack {
                     TextField(field.label, text: $value, prompt: Text(field.required ? "必填" : "可选"))
                         .labelsHidden().textFieldStyle(.roundedBorder).multilineTextAlignment(.leading)
-                    if field.kind == .filePath || field.kind == .directoryPath { Button("选择…", action: choosePath) }
+                    if !remote && (field.kind == .filePath || field.kind == .directoryPath) { Button("选择…", action: choosePath) }
                     if let discoveryTitle, let discoveryAction { Button(discoveryTitle, action: discoveryAction).disabled(discoveryTitle == "探测中…") }
                 }
                 if let help = field.help { Text(help).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true) }

@@ -6,7 +6,7 @@
 
 1. composer 模型选择：运行时原生模型、Velune 管理模型、通用 ACP 的 Agent 默认；按所选模型给出推理强度；创建与发送经 selection 接口。（已实现，待用户验收）
 2. ACP 运行时：启动命令／参数／环境的设置，Agent 信息与能力展示，会话配置选项。（已实现，待用户验收）
-3. SSH：运行时设置中的连接配置，远端工作目录的输入与展示。
+3. SSH：运行时设置中的连接配置，远端工作目录的输入与展示。（已实现，待用户验收）
 4. 跨 Harness 协作：协作会话的创建、子任务状态／投影、审批回复与关闭。
 
 顺序依据：1 直接阻止发送；2–4 依次扩展可用运行时与协作。用户可调整。
@@ -34,3 +34,11 @@
 - 未做：按原生 ID 打开无 list 能力的 ACP 会话（`open_acp_conversation`）暂无界面。
 - 验证：fmt／clippy／no-default-features、Mac 构建通过；`manual-acp-adapter.py` 通过。开发版隔离 HOME 用该脚本的合成 ACP Agent：打开会话后经 AX 发送，“会话选项”出现，模型菜单变为 Agent 默认／Alpha／Beta 并可选 Beta；切换布尔选项后 Agent 记录到 `config flag-without-category=false`；编辑器载入参数与环境变量、读取到 Agent 名称／版本／能力／登录方式，原样保存后配置中的启动参数不变。检查中 AX 按标题包含匹配误点了 Apple 菜单的“系统设置…”，已立即退出该次启动的系统设置，辅助工具改为精确匹配。
 - 安装：72d7e10 已构建安装至 `/Applications/Velune.app`（签名校验通过，manifest 对应该提交且无未提交改动），重新打开后无崩溃报告。
+
+## 切片 3：SSH 运行位置与远端工作目录（2026-10-12）
+
+- 核心：类型描述增加 `remote_resources`（SSH 执行需远端辅助目录；当前除通用 ACP 外为真），与 `RuntimeInstance::execution` 的既有校验一致。
+- Mac 编辑器：“运行位置”本机／SSH，SSH 程序、主机、可选端口、远端辅助目录（按描述必填）；远端时路径字段不展开 `~`、不提供选择面板与自动发现，校验为执行机器绝对路径。设置列表标注 SSH 主机。Store 按实例读取 `runtime_execution` 得到运行位置（读取失败视为本机）。
+- Mac composer：SSH 运行时的未发送会话以提示框输入远端绝对目录，菜单列出同一机器最近会话的工作目录；远端会话消息中的文件链接不当作本机路径打开。
+- 边界：工作目录存在性由核心在执行机器检查；跨机器接续仍沿用来源 cwd（核心既有边界）；变更审阅对远端会话由核心拒绝。
+- 验证：fmt／clippy／no-default-features、Mac 构建；`manual-runtime-selection.py`、`manual-acp-adapter.py` 通过。以临时非特权 sshd（127.0.0.1、临时主机／客户端密钥与 known_hosts，经 ssh 包装指定临时配置，不读写 `~/.ssh`）运行合成 ACP Agent：bindings 经 SSH 获取 Agent 信息、创建并完成一轮，远端不存在的目录被拒绝；开发版隔离 HOME 中经 AX 在该会话发送第二轮成功，新建会话的工作目录菜单显示“输入 velune-test 上的目录…”与最近目录，提示框输入后生效；编辑器载入并原样保存 SSH 配置。验收后 sshd 已停止、临时目录已删除。

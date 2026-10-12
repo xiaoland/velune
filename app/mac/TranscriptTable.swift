@@ -32,6 +32,8 @@ struct TranscriptTable: NSViewRepresentable {
     /// user message at the top of the viewport.
     let outlineAnchorID: String?
     let cwd: String?
+    /// The machine `cwd` and file links belong to, when it is not this Mac.
+    var remoteHost: String? = nil
     let bottomRequest: UInt64
     let jump: TranscriptJump?
     let followingChanged: (Bool) -> Void
@@ -870,7 +872,8 @@ struct TranscriptTable: NSViewRepresentable {
         if let url = link as? URL { original = url.absoluteString } else if let string = link as? String { original = string } else { return false }
         if let destination = resolve(original), NSWorkspace.shared.open(destination) { return true }
         let alert = NSAlert()
-        alert.messageText = "无法打开链接"
+        let remoteFile = parent?.remoteHost.flatMap { host in URL(string: original)?.scheme == nil || URL(string: original)?.isFileURL == true ? host : nil }
+        alert.messageText = remoteFile.map { "此文件位于 \($0)" } ?? "无法打开链接"
         alert.informativeText = original
         alert.addButton(withTitle: "复制链接")
         alert.addButton(withTitle: "关闭")
@@ -886,7 +889,9 @@ struct TranscriptTable: NSViewRepresentable {
 
     /// Relative file links belong to the conversation's working directory.
     private func resolve(_ original: String) -> URL? {
-        if let url = URL(string: original), url.scheme != nil { return url }
+        if let url = URL(string: original), url.scheme != nil { return url.isFileURL && parent?.remoteHost != nil ? nil : url }
+        // Paths of a remote conversation name files on its machine, not here.
+        guard parent?.remoteHost == nil else { return nil }
         let path = original.removingPercentEncoding ?? original
         if path.hasPrefix("/") { return URL(fileURLWithPath: path) }
         guard let cwd = parent?.cwd, !path.isEmpty else { return nil }

@@ -314,7 +314,7 @@ Mac 主窗口底部面板在输入正文下方提供一条紧凑操作行：运�
 
 ## Rust 运行时的模型来源、SSH 与 HOME
 
-2026-10-10 的切片只交付共享 Rust／UniFFI 能力，未改动、构建或安装 app。平台入口仍待实现；不能根据核心验收推断当前已安装的 Mac 应用已有新选择器或配置入口。用例及类型契约归 [application](../packages/application/README.md) 和 [bindings](../packages/bindings/README.md)。
+2026-10-10 的切片只交付共享 Rust／UniFFI 能力；Mac 的模型选择、HOME 与 SSH 运行位置、远端工作目录入口于 2026-10-12 接入（见 [Mac README](../app/mac/README.md)）。用例及类型契约归 [application](../packages/application/README.md) 和 [bindings](../packages/bindings/README.md)。
 
 通过 `runtime_models` 读取目标实例的原生模型及 managed 模型候选，使用 `create_conversation_with_selection`／`send_turn_with_selection` 提交明确来源。原生提供商由 Harness 自行解析，不需先导入网关。`next_turn_model_selection` 是下一轮意图；managed turn 结束后仍选择 managed，不代表临时网关覆盖仍在运行。既有 `create_conversation`／`send_turn` 继续是 managed model 的便捷入口。
 

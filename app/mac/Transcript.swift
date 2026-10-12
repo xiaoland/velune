@@ -8,6 +8,8 @@ struct TranscriptView: View {
     let conversationID: String?
     let scrollRequest: UInt64
     let cwd: String?
+    /// The machine `cwd` and file links belong to, when it is not this Mac.
+    var remoteHost: String? = nil
     /// The list shows only user messages (in-place outline).
     @Binding var outlineCollapsed: Bool
     /// A jump chosen in the outline popover.
@@ -27,7 +29,7 @@ struct TranscriptView: View {
         } else { visibleRows = model.rows }
         return TranscriptTable(conversationID: conversationID, items: model.items(for: visibleRows), revision: model.contentRevision,
                                activity: activity, outlineCollapsed: outlineCollapsed, outlineAnchorID: outlineAnchorID,
-                               cwd: cwd, bottomRequest: bottomRequest, jump: navigation,
+                               cwd: cwd, remoteHost: remoteHost, bottomRequest: bottomRequest, jump: navigation,
                                followingChanged: { value in if following != value { following = value } },
                                outlineToggle: { id in outlineAnchorID = id; outlineCollapsed = false }, loadPayloads: loadPayloads)
             .background(Color(nsColor: .windowBackgroundColor))
