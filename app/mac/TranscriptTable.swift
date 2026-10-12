@@ -40,6 +40,8 @@ struct TranscriptTable: NSViewRepresentable {
     let outlineToggle: (String) -> Void
     /// Read deferred content of messages with an expanded disclosure.
     let loadPayloads: ([String]) -> Void
+    /// Show another conversation, from a collaboration link in this one.
+    let openConversation: (String) -> Void
 
     func makeCoordinator() -> TranscriptTableController { TranscriptTableController() }
     func makeNSView(context: Context) -> NSScrollView { context.coordinator.makeView() }
@@ -847,7 +849,7 @@ struct TranscriptTable: NSViewRepresentable {
         let source = message.message.blocks.compactMap { block -> String? in
             switch block {
             case .text(let text), .notice(let text): return text
-            case .reasoning, .tool, .image, .file: return nil
+            case .reasoning, .tool, .image, .file, .agentSender: return nil
             }
         }.joined(separator: "\n\n")
         guard !source.isEmpty else { return menu }
@@ -868,6 +870,10 @@ struct TranscriptTable: NSViewRepresentable {
     // MARK: Links
 
     func textView(_ textView: NSTextView, clickedOnLink link: Any, at charIndex: Int) -> Bool {
+        if let url = link as? URL, let conversation = TranscriptConversationLink.conversation(url) {
+            parent?.openConversation(conversation)
+            return true
+        }
         let original: String
         if let url = link as? URL { original = url.absoluteString } else if let string = link as? String { original = string } else { return false }
         if let destination = resolve(original), NSWorkspace.shared.open(destination) { return true }
@@ -896,6 +902,21 @@ struct TranscriptTable: NSViewRepresentable {
         if path.hasPrefix("/") { return URL(fileURLWithPath: path) }
         guard let cwd = parent?.cwd, !path.isEmpty else { return nil }
         return URL(fileURLWithPath: cwd, isDirectory: true).appendingPathComponent(path).standardizedFileURL
+    }
+}
+
+/// Links in a transcript that open another conversation rather than a URL.
+enum TranscriptConversationLink {
+    private static let scheme = "velune-conversation"
+    static func url(_ conversation: String) -> URL {
+        var components = URLComponents()
+        components.scheme = scheme
+        components.path = conversation
+        return components.url ?? URL(string: scheme + ":")!
+    }
+    static func conversation(_ url: URL) -> String? {
+        guard url.scheme == scheme, let path = URLComponents(url: url, resolvingAgainstBaseURL: false)?.path, !path.isEmpty else { return nil }
+        return path
     }
 }
 

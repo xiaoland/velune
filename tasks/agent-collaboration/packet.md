@@ -37,7 +37,7 @@
 ## 切片
 
 1. 核心 A2A broker 替换父子 scope；bindings 去掉子任务 API；脚本改为两个普通会话互相联系。（已实现）
-2. Mac：消息列表中 A2A 调用的“打开会话”、收到消息的来源、会话列表刷新。
+2. Mac：消息列表中 A2A 调用的“打开会话”、收到消息的来源、会话列表刷新。（已实现）
 3. 原生 sub-agent：证据、消息列表显示与单独打开。
 
 ## 待用户决定
@@ -51,3 +51,10 @@
 - 删除：`create_collaborative_conversation`、子任务 API 与类型、Coordinator／ChildRuntime、依赖旧 API 且需本机没有的 OpenCode／DSH 的 `manual-harness-interoperation.py`（旧证据仍在 harness-interoperation 任务）。`manual-runtime-management-api.py` 去掉 scope 门禁检查；`manual-resource-library.py` 修正过时的 `BindingComposedTurn` 调用。
 - 取舍：协作调用在客户端请求时执行，进度依赖轮询（Mac 每 0.6 秒）；旧子执行器“无前台轮询也能完成”的性质不再保留。
 - 验证：fmt／check／clippy／no-default-features、Mac `--build-only` 通过；`manual-collaboration.py`（新建并联系已有会话、审批留在对方会话、忙碌与未知票据被拒）、`manual-acp-adapter.py`、`manual-runtime-selection.py`、`manual-runtime-management-api.py`、`manual-resource-library.py` 通过。真实 Harness 经新路径的 A2A 尚未验证（Codex／Claude 每轮会话都会注入服务，需要用户实际使用或后续合成上游脚本确认）。
+
+## 切片 2：消息列表中的 A2A（2026-10-12）
+
+- 来源行改为追加在正文之后（`velune_conversation::agent_message`），原因：原生首条消息标题会被截断和折叠空白，放在正文前会让被联系会话的标题只剩出处说明。交付把来源行还原为 `AgentSender` 块，标题只取正文。
+- 工具块的 `linked_conversation_id` 由交付层从协作工具返回的状态对象（含 `conversation_id`、`runtime_id`、`state`）解析，不按运行时或工具名分支。Codex 的 MCP 调用此前不显示结果（`aggregatedOutput` 只属于命令），现取 `structuredContent` 或文本内容、错误信息。
+- Mac：工具行下方“打开对方会话”，用户侧气泡顶部“来自 运行时 会话「标题」”，均为 `velune-conversation:` 链接，在当前窗口打开（不在列表时先重读）；活动轮询发现未列出的运行中会话即重读列表。composer 不再有协作控件。
+- 验证：`manual-collaboration.py` 增加来源块、标题与工具链接断言；合成 Alpha 改为可列出与重载，`--seed` 运行一次新建流程后停在 Alpha 草稿“ASK hello”。开发版隔离 HOME 中：Alpha 的工作过程显示 `velune: start_conversation` 与“打开对方会话”，AX 按下后打开 Beta；Beta 气泡顶部显示“来自 Alpha 会话「START Beta PERMIT」”与正文“PERMIT”，列表标题为“PERMIT”，按下来源链接回到 Alpha。检查后已退出开发版。

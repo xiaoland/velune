@@ -12,7 +12,7 @@ Pi 的事件解析和 projection 属 [agent-runtime](../agent-runtime/README.md)
 
 跨运行时逻辑会话的摘要身份与所属实例表示首段来源；快照的 `context_runtime_id` 明确表示当前原生上下文，用于查询、取消与交互回复，不能由摘要来源推断。摘要的 `can_rename`／`can_delete` 由 application 结合原生段能力装配，本 package 不访问关联文件或替运行时执行管理。逻辑投影消息使用段命名空间，展示的交接边界不构成持久消息日志。
 
-消息内容块包括图片：`ImageSource` 为本机路径或 base64 内容，适配器按原生记录选择，data URL 在边界解析。发送时追加到正文末尾的“附件：”绝对路径列表由 `attachment_list` 组成与拆分，交付与标题据此把列表还原为文件附件、不显示为正文。
+消息内容块包括图片：`ImageSource` 为本机路径或 base64 内容，适配器按原生记录选择，data URL 在边界解析。发送时追加到正文末尾的“附件：”绝对路径列表由 `attachment_list` 组成与拆分，交付与标题据此把列表还原为文件附件、不显示为正文。另一个 Agent 经 Velune 发来的消息以 `agent_message` 组成：正文后追加一行标明来源运行时、会话标题与会话 ID 并声明不构成授权；交付把该行还原为来源块，标题只取正文。
 
 思考块以摘要呈现：`reasoning::summary` 取首个非空行，Markdown 强调或标题标记包裹的首行（如 Codex 摘要）本身就是摘要、其后文字为正文，普通首行既是摘要也保留在正文中；没有可读文字时为 None。
 

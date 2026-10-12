@@ -32,15 +32,20 @@ final class RenderedMessage: @unchecked Sendable {
                 // A summary without further text is a label only.
                 let detail: NSAttributedString? = if case .inline("") = text { nil } else { Self.detail(text, font: TranscriptTypography.callout, empty: "") }
                 return [.disclosure(key: Self.disclosureKey(block, at: index)!, title: summary, symbol: nil, detail: detail, detailMaxWidth: nil)]
-            case .tool(_, let title, let state, let output):
+            case .tool(_, let title, let state, let output, let conversation):
                 let symbol = switch state {
                 case .running: "circle.dotted"
                 case .failed: "exclamationmark.circle"
                 case .pending: "circle"
                 case .completed: "checkmark.circle"
                 }
-                return [.disclosure(key: Self.disclosureKey(block, at: index)!, title: title, symbol: symbol,
-                                    detail: Self.detail(output ?? .inline(""), font: TranscriptTypography.code, empty: "没有附加输出"), detailMaxWidth: 560)]
+                let disclosure = Block.disclosure(key: Self.disclosureKey(block, at: index)!, title: title, symbol: symbol,
+                                                  detail: Self.detail(output ?? .inline(""), font: TranscriptTypography.code, empty: "没有附加输出"), detailMaxWidth: 560)
+                guard let conversation else { return [disclosure] }
+                return [disclosure, .text(Self.conversationLink("打开对方会话", conversation: conversation, alignment: .natural))]
+            case .agentSender(let conversationID, let runtimeName, let title):
+                let shortTitle = title.count > 40 ? String(title.prefix(40)) + "…" : title
+                return [.text(Self.conversationLink("来自 \(runtimeName) 会话「\(shortTitle)」", conversation: conversationID, alignment: .natural))]
             case .image(let mediaType, .path(let path)):
                 return [.attachment(TranscriptAttachment(name: URL(fileURLWithPath: path).lastPathComponent, content: .imageFile(path), mediaType: mediaType))]
             case .image(let mediaType, .data(.inline(let data))):
@@ -59,18 +64,24 @@ extension RenderedMessage {
     static func disclosureKey(_ block: MessageBlock, at index: Int) -> String? {
         switch block {
         case .reasoning: return "reasoning:\(index)"
-        case .tool(let id, _, _, _): return "tool:" + (id ?? String(index))
-        case .text, .notice, .image, .file: return nil
+        case .tool(let id, _, _, _, _): return "tool:" + (id ?? String(index))
+        case .text, .notice, .image, .file, .agentSender: return nil
         }
     }
     /// Disclosures whose content has not been read from the core yet.
     static func deferredDisclosureKeys(_ message: Message) -> Set<String> {
         Set(message.blocks.enumerated().compactMap { index, block in
             switch block {
-            case .reasoning(_, .deferred), .tool(_, _, _, .deferred?): return disclosureKey(block, at: index)
-            case .text, .notice, .reasoning(_, .inline), .tool, .image, .file: return nil
+            case .reasoning(_, .deferred), .tool(_, _, _, .deferred?, _): return disclosureKey(block, at: index)
+            case .text, .notice, .reasoning(_, .inline), .tool, .image, .file, .agentSender: return nil
             }
         })
+    }
+    /// A link that opens another conversation in this window.
+    static func conversationLink(_ label: String, conversation: String, alignment: NSTextAlignment) -> NSAttributedString {
+        let text = NSMutableAttributedString(attributedString: TranscriptTypography.plain(label, font: TranscriptTypography.callout, alignment: alignment))
+        text.addAttribute(.link, value: TranscriptConversationLink.url(conversation), range: NSRange(location: 0, length: text.length))
+        return text
     }
     private static func detail(_ payload: MessagePayload, font: NSFont, empty: String) -> NSAttributedString {
         let text = switch payload {
@@ -262,6 +273,8 @@ struct TranscriptRowLayout: @unchecked Sendable {
                 case .reasoning, .tool:
                     height += headerHeight
                     if !expanded.isEmpty { height += 60 }
+                case .agentSender:
+                    height += 16
                 case .image, .file:
                     height += attachmentHeight
                 }

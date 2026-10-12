@@ -685,7 +685,10 @@ pub(super) fn project_item(item: &Value) -> Option<Message> {
                     Some("inProgress") => ToolState::Running,
                     _ => ToolState::Pending,
                 },
-                output: item["aggregatedOutput"].as_str().map(str::to_owned),
+                output: item["aggregatedOutput"]
+                    .as_str()
+                    .map(str::to_owned)
+                    .or_else(|| mcp_output(item)),
             }],
         ),
         "plan" => (
@@ -703,4 +706,23 @@ pub(super) fn project_item(item: &Value) -> Option<Message> {
         timestamp_unix_ms: None,
         blocks,
     })
+}
+
+/// An MCP call's result as text: its structured content when the server gave
+/// one, else its text content, or the error message.
+fn mcp_output(item: &Value) -> Option<String> {
+    let result = &item["result"];
+    if !result["structuredContent"].is_null() {
+        return Some(result["structuredContent"].to_string());
+    }
+    let text = result["content"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|content| content["text"].as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    (!text.is_empty())
+        .then_some(text)
+        .or_else(|| item["error"]["message"].as_str().map(str::to_owned))
 }

@@ -189,11 +189,25 @@ fn delivered(stamp: u64, message: &Message, inline_limit: usize) -> DeliveredMes
             .iter()
             .flat_map(|block| match block {
                 // The paths Velune appended to a user's text are shown as files.
+                // So is the line naming the agent that sent the text.
                 MessageBlock::Text { text } if message.role == MessageRole::User => {
+                    let (text, sender) = match velune_conversation::agent_message::split(text) {
+                        Some((text, sender)) => (
+                            text,
+                            Some(DeliveredBlock::AgentSender {
+                                conversation_id: sender.conversation_id,
+                                runtime_name: sender.runtime_name,
+                                title: sender.title,
+                            }),
+                        ),
+                        None => (text.as_str(), None),
+                    };
                     let (text, files) = velune_conversation::attachment_list::split(text);
-                    (!text.is_empty())
-                        .then(|| DeliveredBlock::Text { text: text.into() })
+                    sender
                         .into_iter()
+                        .chain(
+                            (!text.is_empty()).then(|| DeliveredBlock::Text { text: text.into() }),
+                        )
                         .chain(
                             files
                                 .into_iter()
@@ -232,6 +246,7 @@ fn delivered_block(
             title: title.clone(),
             state: state.clone(),
             output: output.as_deref().map(payload),
+            linked_conversation_id: output.as_deref().and_then(collaboration_conversation),
         },
         MessageBlock::Image { media_type, source } => DeliveredBlock::Image {
             media_type: media_type.clone(),
@@ -243,4 +258,16 @@ fn delivered_block(
             },
         },
     })
+}
+
+/// The conversation a collaboration tool reported on: its result is a status
+/// object naming the conversation and its state.
+fn collaboration_conversation(output: &str) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_str(output.trim()).ok()?;
+    value["state"].as_str()?;
+    value["runtime_id"].as_str()?;
+    value["conversation_id"]
+        .as_str()
+        .filter(|id| !id.is_empty())
+        .map(str::to_owned)
 }

@@ -89,11 +89,12 @@ enum BindingMapping {
         switch value {
         case .text(let text): return .text(text)
         case .reasoning(let summary, let text): return .reasoning(summary: summary, text: payload(text))
-        case .tool(let id, let title, let state, let output): return .tool(id: id, title: title, state: toolState(state), output: output.map(payload))
+        case .tool(let id, let title, let state, let output, let conversation): return .tool(id: id, title: title, state: toolState(state), output: output.map(payload), conversation: conversation)
         case .notice(let text): return .notice(text)
         case .image(let mediaType, .path(let path)): return .image(mediaType: mediaType, source: .path(path))
         case .image(let mediaType, .data(let data)): return .image(mediaType: mediaType, source: .data(payload(data)))
         case .file(let path): return .file(path: path)
+        case .agentSender(let conversationID, let runtimeName, let title): return .agentSender(conversationID: conversationID, runtimeName: runtimeName, title: title)
         }
     }
 

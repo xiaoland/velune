@@ -46,6 +46,10 @@ pub enum DeliveredBlock {
         title: String,
         state: ToolState,
         output: Option<MessagePayload>,
+        /// The conversation this call started or addressed, when it was one of
+        /// Velune's collaboration tools; clients offer to open it.
+        #[serde(rename = "linkedConversationID")]
+        linked_conversation_id: Option<String>,
     },
     Notice {
         text: String,
@@ -57,6 +61,14 @@ pub enum DeliveredBlock {
     /// A non-image file the user attached by path.
     File {
         path: String,
+    },
+    /// The conversation whose agent sent this user-side message through
+    /// Velune; it precedes the message text.
+    AgentSender {
+        #[serde(rename = "conversationID")]
+        conversation_id: String,
+        runtime_name: String,
+        title: String,
     },
 }
 

@@ -39,12 +39,12 @@ struct Message: Codable, Sendable, Identifiable, Equatable {
     /// Core delivery sequence of this content; a changed message gets a new stamp.
     var stamp: UInt64 = 0
     /// Visible message text; reasoning and tool output are separate disclosures.
-    var text: String { blocks.compactMap { block in switch block { case .text(let text), .notice(let text): return text; case .reasoning, .tool, .image, .file: return nil } }.joined() }
+    var text: String { blocks.compactMap { block in switch block { case .text(let text), .notice(let text): return text; case .reasoning, .tool, .image, .file, .agentSender: return nil } }.joined() }
     var hasDeferredPayload: Bool {
         blocks.contains { block in
             switch block {
-            case .reasoning(_, .deferred), .tool(_, _, _, .deferred?), .image(_, .data(.deferred)): return true
-            case .text, .notice, .reasoning(_, .inline), .tool, .image, .file: return false
+            case .reasoning(_, .deferred), .tool(_, _, _, .deferred?, _), .image(_, .data(.deferred)): return true
+            case .text, .notice, .reasoning(_, .inline), .tool, .image, .file, .agentSender: return false
             }
         }
     }
@@ -56,12 +56,15 @@ enum MessageBlock: Codable, Sendable, Equatable {
     case text(String)
     /// Reasoning shown by its summary; the payload is the text under it.
     case reasoning(summary: String, text: MessagePayload)
-    case tool(id: String?, title: String, state: ToolState, output: MessagePayload?)
+    /// `conversation` is the conversation a Velune collaboration tool started or addressed.
+    case tool(id: String?, title: String, state: ToolState, output: MessagePayload?, conversation: String?)
     case notice(String)
     /// An image the user attached.
     case image(mediaType: String?, source: ImageSource)
     /// A non-image file the user attached by absolute path.
     case file(path: String)
+    /// The conversation whose agent sent this user-side message through Velune.
+    case agentSender(conversationID: String, runtimeName: String, title: String)
 }
 
 enum ImageSource: Codable, Sendable, Equatable {

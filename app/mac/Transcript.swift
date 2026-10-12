@@ -16,6 +16,7 @@ struct TranscriptView: View {
     let navigation: TranscriptJump?
     let activity: TranscriptActivity?
     let loadPayloads: ([String]) -> Void
+    let openConversation: (String) -> Void
     @State private var following = true
     @State private var bottomRequest: UInt64 = 0
     @State private var outlineAnchorID: String?
@@ -31,7 +32,8 @@ struct TranscriptView: View {
                                activity: activity, outlineCollapsed: outlineCollapsed, outlineAnchorID: outlineAnchorID,
                                cwd: cwd, remoteHost: remoteHost, bottomRequest: bottomRequest, jump: navigation,
                                followingChanged: { value in if following != value { following = value } },
-                               outlineToggle: { id in outlineAnchorID = id; outlineCollapsed = false }, loadPayloads: loadPayloads)
+                               outlineToggle: { id in outlineAnchorID = id; outlineCollapsed = false }, loadPayloads: loadPayloads,
+                               openConversation: openConversation)
             .background(Color(nsColor: .windowBackgroundColor))
             .overlay(alignment: .bottomTrailing) {
                 if !following {

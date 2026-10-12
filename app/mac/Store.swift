@@ -299,8 +299,9 @@ final class AppStore: ObservableObject {
                     if self.runningConversationIDs != running { self.runningConversationIDs = running }
                     let elsewhere = Set(active.filter { $0.runState == .elsewhere }.map(\.conversationId))
                     if self.elsewhereConversationIDs != elsewhere { self.elsewhereConversationIDs = elsewhere }
-                    // A conversation started outside Velune appears once the list is read again.
-                    let unlisted = elsewhere.filter { id in !self.conversations.contains { $0.id == id } }
+                    // A conversation started outside Velune, or by an agent through
+                    // Velune, appears once the list is read again.
+                    let unlisted = elsewhere.union(running).filter { id in !self.conversations.contains { $0.id == id } }
                     if !unlisted.isSubset(of: self.unlistedElsewhereIDs) { self.refreshConversations() }
                     self.unlistedElsewhereIDs = unlisted
                     self.notifier?.observe(activity)
@@ -472,6 +473,17 @@ final class AppStore: ObservableObject {
         guard !isLoading, !isShuttingDown, !authenticationRunning else { return }
         selectedConversationIDs = ids.intersection(conversations.map(\.id))
         if selectedConversationIDs.count == 1, let id = selectedConversationIDs.first, id != loadedConversationID { selectConversation(id: id) }
+    }
+    /// Open a conversation a collaboration link names; an agent may have
+    /// started it after the list was last read.
+    func openLinkedConversation(id: String) {
+        if conversations.contains(where: { $0.id == id }) { selectConversation(id: id); return }
+        guard !isPreview, !isShuttingDown, let transport else { return }
+        enqueue({ try transport.list() }) { [weak self] data in
+            guard let self else { return }
+            applyList(data)
+            if conversations.contains(where: { $0.id == id }) { selectConversation(id: id) } else { recordProblem("会话列表中没有这个会话；它可能已被删除或其运行时已停用", source: "打开会话") }
+        }
     }
     func selectConversation(id: String) {
         guard !isLoading, !executionStarting, let conversation = conversations.first(where: { $0.id == id }) else { return }
@@ -1131,9 +1143,9 @@ final class AppStore: ObservableObject {
         guard let message, message.role == .assistant, let block = message.blocks.last else { return "正在思考" }
         switch block {
         case .reasoning(let summary, _): return summary
-        case .tool(_, let title, .running, _), .tool(_, let title, .pending, _): return title
+        case .tool(_, let title, .running, _, _), .tool(_, let title, .pending, _, _): return title
         case .text: return "正在回复"
-        case .tool, .notice, .image, .file: return "正在思考"
+        case .tool, .notice, .image, .file, .agentSender: return "正在思考"
         }
     }
     /// Preparation and operation results replace the projection; polling asks
@@ -1270,10 +1282,10 @@ final class AppStore: ObservableObject {
             let conversation = Conversation(id: "sample-\(index)", title: topics[index], updatedAtUnixMs: Int64(Date().timeIntervalSince1970 * 1000) - Int64(index * 86_400_000), createdAtUnixMs: Int64(Date().timeIntervalSince1970 * 1000) - Int64((index + 3) * 86_400_000), runtimeID: runtimeInstances[index == 2 ? 1 : 0].id, cwd: index == 0 ? "/Users/example/Projects/Velune" : index == 1 ? "/Users/example/Projects/Sample" : nil)
             var history = pairs[index].enumerated().map { Message(id: "sample-\(index)-\($0.offset)", role: $0.offset.isMultiple(of: 2) ? .user : .assistant, blocks: [.text($0.element)]) }
             history[1].blocks.insert(.reasoning(summary: "先确认上下文", text: .inline("再选择最小的修改范围。")), at: 0)
-            history[1].blocks.append(.tool(id: "sample-tool-\(index)", title: index == 1 ? "检查项目代码" : "读取工作上下文", state: .completed, output: .inline(index == 1 ? "已读取 3 个文件，未修改项目。" : "已梳理当前任务的上下文。")))
+            history[1].blocks.append(.tool(id: "sample-tool-\(index)", title: index == 1 ? "检查项目代码" : "读取工作上下文", state: .completed, output: .inline(index == 1 ? "已读取 3 个文件，未修改项目。" : "已梳理当前任务的上下文。"), conversation: nil))
             // The last sample is mid-turn: summaries with and without text yet, then a running tool.
             let running = index == 2
-            if running { history[history.count - 1].blocks = [.reasoning(summary: "Reading the settings view", text: .inline("The sidebar and the detail pane share one split view.")), .reasoning(summary: "Inspecting the project layout", text: .inline("")), .tool(id: "sample-progress", title: "整理项目计划", state: .running, output: .inline("正在整理计划。"))] }
+            if running { history[history.count - 1].blocks = [.reasoning(summary: "Reading the settings view", text: .inline("The sidebar and the detail pane share one split view.")), .reasoning(summary: "Inspecting the project layout", text: .inline("")), .tool(id: "sample-progress", title: "整理项目计划", state: .running, output: .inline("正在整理计划。"), conversation: nil)] }
             previewSnapshots[conversation.id] = ConversationSnapshot(revision: 1, conversation: conversation, contextRuntimeID: conversation.runtimeID, modelRecordKey: "sample-model", runState: running ? .running : .idle, messages: history,
                 transcriptTurns: [
                     TranscriptTurn(id: "preview-work-" + conversation.id, userMessageID: history[0].id, workMessageIDs: [history[1].id], lastMessageID: nil, durationMs: nil, isRunning: false),

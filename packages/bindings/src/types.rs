@@ -85,6 +85,9 @@ pub enum BindingMessageBlock {
         title: String,
         state: BindingToolState,
         output: Option<BindingMessagePayload>,
+        /// The conversation a Velune collaboration tool started or addressed.
+        #[serde(rename = "linkedConversationID")]
+        linked_conversation_id: Option<String>,
     },
     Notice {
         text: String,
@@ -97,6 +100,13 @@ pub enum BindingMessageBlock {
     /// A non-image file the user attached by absolute path.
     File {
         path: String,
+    },
+    /// The conversation whose agent sent this user-side message through Velune.
+    AgentSender {
+        #[serde(rename = "conversationID")]
+        conversation_id: String,
+        runtime_name: String,
+        title: String,
     },
 }
 
