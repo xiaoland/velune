@@ -149,6 +149,7 @@
 - 修复：Pi 网关物理模型与虚拟模型原只声明 `input: ["text"]`，Pi 会丢弃图片；改为 text＋image，由上游决定接受与否。
 - Mac：操作行最左的回形针（NSOpenPanel 多选）、拖放到输入区、粘贴文件或单独的图片（存为 `VELUNE_HOME/attachments/*.png`）；编辑区上方为 Quick Look 缩略图＋文件名的可移除标签，按会话保存在内存，发送被接受后清除。Claude 等本地回显的用户消息暂只显示正文，附件显示属切片 C。
 - 验证：`scripts/manual-attachments.py`（实际 Codex 0.159.3、Claude Code 2.1.286、Pi 1.0.2＋回环上游）：三者上游收到的图片字节与原 PNG 一致，文本含“附件：”路径行；仅图片的 turn 发出图片；缺失、相对路径、目录、内容不符的 .png 均未发送即拒绝——全部通过。回归 `manual-reasoning-effort.py`、`manual-parallel-sessions.py` 通过。开发版界面（临时 VELUNE_HOME）确认回形针按钮位置与打开的“添加附件”面板；AX 无法在面板中选文件或模拟拖放／粘贴（不改用户剪贴板），附件标签与拖放／粘贴的实际体验待用户验收。
+- 安装：0337d14 已构建安装（签名校验通过，manifest commit 一致、dirty=false，重开无崩溃报告）；运行时 HOME 设置随 b1fdbc8 先行安装。
 
 ## 运行时 HOME 设置（2026-10-12）
 
