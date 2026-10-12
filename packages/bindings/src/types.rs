@@ -24,7 +24,8 @@ pub enum BindingRunState {
     Running,
     Stopping,
     Failed,
-    /// Best-effort: the conversation appears to run outside Velune.
+    /// Running in a Harness process other than this Velune execution, by the
+    /// Harness's own liveness record. Velune cannot stop it.
     Elsewhere,
 }
 
@@ -73,7 +74,9 @@ pub enum BindingMessageBlock {
     Text {
         text: String,
     },
+    /// Reasoning with a summary; `text` is what to show under it.
     Reasoning {
+        summary: String,
         text: BindingMessagePayload,
     },
     Tool {

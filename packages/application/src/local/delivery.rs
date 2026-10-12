@@ -169,9 +169,9 @@ impl View {
 }
 
 fn delivered(stamp: u64, message: &Message, inline_limit: usize) -> DeliveredMessage {
-    let payload = |text: &String| {
+    let payload = |text: &str| {
         if text.len() <= inline_limit {
-            MessagePayload::Inline { text: text.clone() }
+            MessagePayload::Inline { text: text.into() }
         } else {
             MessagePayload::Deferred {
                 bytes: text.len() as u64,
@@ -199,24 +199,29 @@ fn delivered(stamp: u64, message: &Message, inline_limit: usize) -> DeliveredMes
                                 .into_iter()
                                 .map(|path| DeliveredBlock::File { path: path.into() }),
                         )
-                        .collect()
+                        .collect::<Vec<_>>()
                 }
-                block => vec![delivered_block(block, &payload)],
+                block => delivered_block(block, &payload).into_iter().collect(),
             })
             .collect(),
     }
 }
 
+/// None for reasoning without a summary, which has nothing to show.
 fn delivered_block(
     block: &MessageBlock,
-    payload: &impl Fn(&String) -> MessagePayload,
-) -> DeliveredBlock {
-    match block {
+    payload: &impl Fn(&str) -> MessagePayload,
+) -> Option<DeliveredBlock> {
+    Some(match block {
         MessageBlock::Text { text } => DeliveredBlock::Text { text: text.clone() },
         MessageBlock::Notice { text } => DeliveredBlock::Notice { text: text.clone() },
-        MessageBlock::Reasoning { text } => DeliveredBlock::Reasoning {
-            text: payload(text),
-        },
+        MessageBlock::Reasoning { text } => {
+            let (summary, text) = velune_conversation::reasoning::summary(text)?;
+            DeliveredBlock::Reasoning {
+                summary: summary.into(),
+                text: payload(text),
+            }
+        }
         MessageBlock::Tool {
             tool_id,
             title,
@@ -226,7 +231,7 @@ fn delivered_block(
             tool_id: tool_id.clone(),
             title: title.clone(),
             state: state.clone(),
-            output: output.as_ref().map(payload),
+            output: output.as_deref().map(payload),
         },
         MessageBlock::Image { media_type, source } => DeliveredBlock::Image {
             media_type: media_type.clone(),
@@ -237,5 +242,5 @@ fn delivered_block(
                 },
             },
         },
-    }
+    })
 }

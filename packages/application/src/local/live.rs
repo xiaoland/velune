@@ -1,69 +1,80 @@
 //! Best-effort live view of native conversations on this machine: an open
-//! conversation is read again when its native file changes, and turns that
-//! run outside Velune are noticed from native records. The Harness stays the
-//! conversation's source of truth; whatever this misses, a manual reload of
-//! the list and conversation still shows.
+//! conversation is read again when its native file changes, and whether a
+//! conversation is running comes from each Harness's own liveness record (see
+//! `velune_agent_runtime::activity`), whoever started the turn. The Harness
+//! stays the conversation's source of truth; whatever this misses, a manual
+//! reload of the list and conversation still shows.
 use super::*;
-use std::time::{Duration, Instant, SystemTime};
-use velune_agent_runtime::activity::{self, SessionFormat, Signature};
+use std::time::{Duration, Instant};
+use velune_agent_runtime::activity::{self, Processes, SessionFormat, SessionStore, Signature};
 
-/// An unfinished turn written within this window is presented as running
-/// elsewhere; an older one is assumed abandoned by a process that ended.
-const ELSEWHERE_WINDOW: Duration = Duration::from_secs(10 * 60);
 const SOURCE_CHECK_INTERVAL: Duration = Duration::from_secs(1);
 /// A source that could not be located is looked for again after this.
 const SOURCE_LOCATE_INTERVAL: Duration = Duration::from_secs(10);
 /// Velune's own execution may still write native records after its turn.
 const OWN_WRITES_SETTLE: Duration = Duration::from_secs(5);
-const ELSEWHERE_SCAN_INTERVAL: Duration = Duration::from_secs(5);
+/// Native liveness is read again at most this often; a Harness process can
+/// start or end a turn without Velune noticing a file change first.
+const LIVENESS_INTERVAL: Duration = Duration::from_secs(5);
 
 /// The native file behind a session's conversation.
 pub(super) struct SourceWatch {
     conversation_id: String,
-    source: Option<(SessionFormat, PathBuf)>,
+    source: Option<Source>,
     signature: Option<Signature>,
     next_check: Instant,
     settle_until: Instant,
+    liveness_checked: Instant,
 }
 
-/// Conversations running elsewhere, from the latest scan of native files.
+#[derive(Clone)]
+struct Source {
+    store: SessionStore,
+    native_id: String,
+    path: PathBuf,
+}
+
+impl Source {
+    fn running(&self) -> bool {
+        self.store
+            .is_running(&self.native_id, &self.path, &mut Processes::default())
+    }
+}
+
+/// Conversations that Harness processes outside Velune's own execution are
+/// running, from the latest read of native liveness.
 #[derive(Default)]
 pub(super) struct ElsewhereScan {
     at: Option<Instant>,
     found: Vec<crate::ActiveConversation>,
 }
 
-fn recent(signature: Option<Signature>) -> bool {
-    signature.is_some_and(|signature| {
-        SystemTime::now()
-            .duration_since(signature.modified)
-            .is_ok_and(|age| age < ELSEWHERE_WINDOW)
-            || signature.modified > SystemTime::now()
-    })
-}
-
 impl CoreRuntime {
-    /// Native session files of a runtime on this machine, when Velune knows
-    /// their layout.
-    fn session_root(&self, runtime: &RuntimeInstance) -> Option<(SessionFormat, PathBuf)> {
+    /// Native sessions of a runtime on this machine, when Velune knows their
+    /// layout.
+    fn session_store(&self, runtime: &RuntimeInstance) -> Option<SessionStore> {
         let format = SessionFormat::for_runtime_type(&runtime.type_id)?;
         let context = self.execution_context(runtime).ok()?;
         if !context.target.is_local() {
             return None;
         }
-        let root = match format {
+        let sessions = match format {
             SessionFormat::Codex => context.agent_dir.join("sessions"),
             SessionFormat::ClaudeCode => context.agent_dir.join("projects"),
             SessionFormat::Pi => setting_path_optional(runtime, "sessionDir")
                 .unwrap_or_else(|| context.agent_dir.join("sessions")),
         };
-        Some((format, root))
+        Some(SessionStore {
+            format,
+            agent_dir: context.agent_dir,
+            sessions,
+        })
     }
 
     /// Follow the addressed session's native file: read the conversation
     /// again after a change that Velune's own execution did not make, and
-    /// present an unfinished recent turn as running elsewhere. Failures only
-    /// leave the current view in place.
+    /// present it as running while a Harness process outside this execution
+    /// runs a turn. Failures only leave the current view in place.
     pub(super) fn follow_source(&mut self) {
         if let Err(error) = self.try_follow_source() {
             tracing::warn!(target: "velune_application", event = "native_source_follow_failed", detail = %error);
@@ -96,6 +107,7 @@ impl CoreRuntime {
                 signature: None,
                 next_check: now,
                 settle_until: now,
+                liveness_checked: now,
             });
         }
         let busy = self.session.busy();
@@ -109,10 +121,15 @@ impl CoreRuntime {
                 let located = self
                     .runtime_instance(&runtime_id)
                     .ok()
-                    .and_then(|runtime| self.session_root(runtime))
-                    .and_then(|(format, root)| {
-                        let native = id.strip_prefix(&format!("{runtime_id}:"))?;
-                        activity::locate(format, &root, native).map(|path| (format, path))
+                    .and_then(|runtime| self.session_store(runtime))
+                    .and_then(|store| {
+                        let native_id = id.strip_prefix(&format!("{runtime_id}:"))?.to_owned();
+                        let path = store.locate(&native_id)?;
+                        Some(Source {
+                            store,
+                            native_id,
+                            path,
+                        })
                     });
                 let watch = self.session.source.as_mut().expect("watch");
                 let Some(source) = located else {
@@ -120,19 +137,17 @@ impl CoreRuntime {
                     return Ok(());
                 };
                 // The view was read from this file; follow changes from here.
-                watch.signature = activity::signature(&source.1);
+                watch.signature = activity::signature(&source.path);
                 watch.source = Some(source.clone());
-                if let ActiveState::History(view) = &mut self.session.active_state
-                    && recent(watch.signature)
-                    && activity::unfinished(source.0, &source.1)
-                {
-                    view.run_state = RunState::Elsewhere;
-                    view.revision = view.revision.saturating_add(1);
+                watch.liveness_checked = now;
+                if !busy {
+                    let running = source.running();
+                    self.present_running_elsewhere(running);
                 }
                 source
             }
         };
-        let signature = activity::signature(&source.1);
+        let signature = activity::signature(&source.path);
         let watch = self.session.source.as_mut().expect("watch");
         watch.next_check = now + SOURCE_CHECK_INTERVAL;
         if busy || now < watch.settle_until {
@@ -143,18 +158,16 @@ impl CoreRuntime {
             return Ok(());
         }
         if signature == watch.signature {
-            // An abandoned turn stops counting as running elsewhere.
-            if let ActiveState::History(view) = &mut self.session.active_state
-                && view.run_state == RunState::Elsewhere
-                && !recent(signature)
-            {
-                view.run_state = RunState::Idle;
-                view.revision = view.revision.saturating_add(1);
+            if now >= watch.liveness_checked + LIVENESS_INTERVAL {
+                watch.liveness_checked = now;
+                let running = source.running();
+                self.present_running_elsewhere(running);
             }
             return Ok(());
         }
         watch.signature = signature;
-        let elsewhere = recent(signature) && activity::unfinished(source.0, &source.1);
+        watch.liveness_checked = now;
+        let elsewhere = source.running();
         let started = Instant::now();
         // An idle execution holds the native conversation as Velune last
         // left it; release it so the next turn resumes the changed one.
@@ -176,43 +189,58 @@ impl CoreRuntime {
         Ok(())
     }
 
-    /// Conversations whose native records show a recent unfinished turn that
-    /// no Velune session is executing. Scans at most every few seconds.
+    /// Present a viewed history as running, or not, outside this execution.
+    fn present_running_elsewhere(&mut self, running: bool) {
+        if let ActiveState::History(view) = &mut self.session.active_state {
+            let state = if running {
+                RunState::Elsewhere
+            } else {
+                RunState::Idle
+            };
+            if view.run_state != state
+                && matches!(view.run_state, RunState::Idle | RunState::Elsewhere)
+            {
+                view.run_state = state;
+                view.revision = view.revision.saturating_add(1);
+            }
+        }
+    }
+
+    /// Conversations that Harness processes are running and no Velune
+    /// session is executing. Reads liveness at most every few seconds.
     pub(super) fn elsewhere_conversations(&mut self) -> Vec<crate::ActiveConversation> {
         let now = Instant::now();
         if self
             .elsewhere
             .at
-            .is_none_or(|at| now.duration_since(at) >= ELSEWHERE_SCAN_INTERVAL)
+            .is_none_or(|at| now.duration_since(at) >= LIVENESS_INTERVAL)
         {
-            let since = SystemTime::now() - ELSEWHERE_WINDOW;
+            let mut processes = Processes::default();
             let mut found = Vec::new();
             for runtime in self
                 .runtime_instances
                 .iter()
                 .filter(|runtime| runtime.enabled)
             {
-                let Some((format, root)) = self.session_root(runtime) else {
+                let Some(store) = self.session_store(runtime) else {
                     continue;
                 };
-                found.extend(
-                    activity::unfinished_since(format, &root, since)
-                        .into_iter()
-                        .map(|native| crate::ActiveConversation {
-                            context_runtime_id: runtime.id.clone(),
-                            conversation_id: format!("{}:{native}", runtime.id),
-                            run_state: RunState::Elsewhere,
-                            pending_interactions: 0,
-                        }),
-                );
+                found.extend(store.running(&mut processes).into_iter().map(|native| {
+                    crate::ActiveConversation {
+                        context_runtime_id: runtime.id.clone(),
+                        conversation_id: format!("{}:{native}", runtime.id),
+                        run_state: RunState::Elsewhere,
+                        pending_interactions: 0,
+                    }
+                }));
             }
             self.elsewhere = ElsewhereScan {
                 at: Some(now),
                 found,
             };
         }
-        // The scan may have seen a session's own writes: those of its running
-        // turn, or those shortly after it ended.
+        // Velune's own execution is a Harness process too: while its turn
+        // runs, and shortly after, the native records show it running.
         let scanned = self.elsewhere.at.expect("scanned");
         let executing: Vec<&session::Session> = std::iter::once(&self.session)
             .chain(&self.parked)

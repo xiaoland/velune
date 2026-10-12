@@ -120,6 +120,7 @@ def main():
             assert 'SYNTHETIC_READ_ONLY_HISTORY' in texts
             blocks = [block for message in opened.messages for block in message.blocks]
             assert any(isinstance(block, b.BindingMessageBlock.REASONING)
+                       and block.summary == 'SYNTHETIC_REASONING'
                        and block.text == b.BindingMessagePayload.INLINE(text='SYNTHETIC_REASONING') for block in blocks)
             tools = [block for block in blocks if isinstance(block, b.BindingMessageBlock.TOOL)
                      and block.tool_id == 'synthetic-read']
@@ -196,9 +197,9 @@ def main():
             assert named_history.read_bytes() == named_original
             assert placeholder_named_history.read_bytes() == placeholder_named_original
             config = json.loads((root / 'home/generic-config.json').read_text())
-            assert config['schemaVersion'] == 7
+            assert config['schemaVersion'] == 8
             assert all('modelRecordKey' not in runtime for runtime in config['runtimeInstances'])
-            print(json.dumps({'acceptance': 'PASSED', 'schema': 7,
+            print(json.dumps({'acceptance': 'PASSED', 'schema': 8,
                 'historyWithoutProvidersOrExistingCwd': True,
                 'nativeTitleAndFirstMessageFallback': True,
                 'typedRoleAndUnixMillis': True,

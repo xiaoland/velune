@@ -49,7 +49,7 @@ enum BindingMapping {
     static func block(_ value: BindingMessageBlock) -> MessageBlock {
         switch value {
         case .text(let text): return .text(text)
-        case .reasoning(let text): return .reasoning(payload(text))
+        case .reasoning(let summary, let text): return .reasoning(summary: summary, text: payload(text))
         case .tool(let id, let title, let state, let output): return .tool(id: id, title: title, state: toolState(state), output: output.map(payload))
         case .notice(let text): return .notice(text)
         case .image(let mediaType, .path(let path)): return .image(mediaType: mediaType, source: .path(path))

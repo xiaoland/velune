@@ -35,7 +35,9 @@ pub enum DeliveredBlock {
     Text {
         text: String,
     },
+    /// Reasoning with a summary; `text` is what to show under it.
     Reasoning {
+        summary: String,
         text: MessagePayload,
     },
     Tool {

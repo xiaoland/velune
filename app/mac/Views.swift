@@ -37,12 +37,10 @@ struct VeluneRootView: View {
                         VStack(alignment: .leading, spacing: 3) {
                             HStack(spacing: 6) {
                                 Text(conversation.title).lineLimit(1)
-                                if store.runningConversationIDs.contains(conversation.id) {
+                                // Who started the turn does not matter; running does.
+                                if store.runningConversationIDs.contains(conversation.id) || store.elsewhereConversationIDs.contains(conversation.id) {
                                     Spacer(minLength: 0)
                                     ProgressView().controlSize(.mini).help("正在运行").accessibilityLabel("正在运行")
-                                } else if store.elsewhereConversationIDs.contains(conversation.id) {
-                                    Spacer(minLength: 0)
-                                    ProgressView().controlSize(.mini).help("可能正在 Velune 之外运行").accessibilityLabel("可能正在 Velune 之外运行")
                                 }
                             }
                             HStack(spacing: 8) {

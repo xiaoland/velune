@@ -93,7 +93,7 @@
 - 既有脚本 parallel-sessions、runtime-interactions、acp-adapter、continuation-boundaries、resource-library 通过。
 - 2026-10-11 补验（用户提示可用独立 HOME）：`scripts/manual-live-native.py` 以临时 VELUNE_HOME 中 managed HOME 的 Codex 0.159.3 与 Claude Code 2.1.286 实际 CLI、回环合成上游（Responses／Messages，按 turn 闸门挂起）验证：外部 `codex exec`／`claude -p` 新建的会话被报告为 Elsewhere 并列入列表，结束后消失；已打开会话在外部 `exec resume`／`--resume` 期间显示新提示与 Elsewhere，结束后重读出回复——全部通过。实际 rollout 的 turn 事件为 `task_started`／`task_complete`。未读取任何真实 HOME 或会话，未调用真实模型。
 - 观察：Mac 运行时设置尚未接入 application 已有的 `RuntimeHome`（继承／指定／managed HOME），只能经绑定配置。
-- 未验证：实际外部 Harness 长时间无写入超过 10 分钟时显示回到空闲。
+- 10 分钟时间窗与“可能在 Velune 之外运行”的表达已于 2026-10-12 取消，见下文“运行状态对齐原生”。
 - 安装：`fd2e7cd` release 构建已安装 `/Applications/Velune.app`（0.1 beta.1、config schema 8、manifest dirty=false），严格签名通过；正常退出旧应用后安装并重新打开，无崩溃报告。
 
 ## ③ 完成与待确认通知（2026-10-11）
@@ -179,3 +179,15 @@
 - 安装：483887e 已构建安装（签名校验通过，manifest commit 一致、dirty=false，重开无崩溃报告）。
 - 用户验收反馈：运行中的会话工作过程仍是收起的。原因：`TranscriptProjection` 只把 Velune 自己执行（Running／Stopping）的最后一个 turn 记为运行中，判断为在外部运行（Elsewhere）的不算，Mac 因而按已结束处理。修复：Elsewhere 时最后一个 turn 的 `is_running` 为真，但不计时（未观察到执行）。`manual-live-sessions.py` 增加断言：外部运行时最后一个 turn 运行中且无时长，外部回复后不再运行中——通过。
 - 安装：b38e744 已构建安装（签名校验通过，manifest commit 一致、dirty=false，重开无崩溃报告）。
+
+## 运行状态对齐原生、思考摘要（2026-10-12）
+
+用户反馈（已写入 PRD）：“是否在 Velune 外运行”不重要，重要的是“正在运行”，这是 shell 对齐原生运行状态的 SSoT 问题，各适配器分别处理；运行中 turn 的思考块不自动展开，有摘要时以摘要为标题，无摘要时不显示思考块。
+
+- 原机制：读会话文件末尾判断 turn 未结束，且 10 分钟内有写入即 Elsewhere；进程中途退出的 turn 在窗口内仍显示运行，长时间无写入的运行则被误判结束。
+- 原生存活证据（2026-10-12，临时 HOME＋回环上游挂起 turn 实测）：Codex 0.159.3 在线程载入期间持有 `CODEX_HOME/thread-writer-locks/<thread id>.lock` 并保持 rollout 打开；被杀后锁文件残留但锁释放；`F_GETLK` 不加锁即可看到（macOS 报告 flock，pid -1）。Claude Code 2.1.286 写 `CLAUDE_CONFIG_DIR/sessions/<pid>.json`（sessionId、status busy／shell／idle／waiting、procStart 为 UTC `ps` 启动时间），其自身判断活跃会话也按 pid 存活＋procStart 一致；同目录还有 `.key` 文件，不读取。Pi 1.0.2 无锁、无登记，`appendFileSync` 逐条写入且不保持打开，进程标题为 `pi`／`pi-rpc`。
+- 实现：`activity::SessionStore::{running, is_running}` 按格式判断——Codex 写入锁＋turn 未结束；Claude 登记 busy／waiting＋同一进程；Pi 同工作目录、在文件最后写入前启动的 Pi 进程（排除本进程子进程）＋turn 未结束。进程表每次观察 `ps` 一次，Pi 工作目录用 `lsof`。打开的会话在文件变化时及每 5 秒重判，活动列表每 5 秒读取；删除时间窗与 Claude 末尾记录解析。`RunState::Elsewhere` 保留为“其他进程在运行、Velune 不能停止”的能力区分。
+- Mac：侧栏与底部状态行对 Elsewhere 与自身运行使用同一表达（“正在运行”、当前工作＋shimmer）。
+- 思考摘要：conversation `reasoning::summary`——强调／标题标记包裹的首行为摘要、其后为正文，普通首行为摘要且保留在正文；无可读文字为 None。交付 `Reasoning{summary, text}`，无摘要不交付；Mac 以摘要为折叠标题（尾部截断、帮助显示全文），摘要下尚无正文时只显示文字不带展开按钮；状态行当前工作直接用摘要（删除 Mac 端首行推断）。预览数据的第三个会话改为运行中（两个摘要＋运行中工具）。
+- 验证：`manual-live-native.py`（实际 Codex 0.159.3／Claude Code 2.1.286）增加 turn 中途杀进程后立即不再运行——全部通过，Claude procStart 与 Velune 读取的 `ps` 一致。`manual-live-sessions.py` 改用实际 Pi CLI 作为另一客户端（经 shell 启动，避免被当作本进程子进程排除），含中途杀进程——全部通过；修正被杀客户端的断管噪声。`manual-session-browser.py` 增加摘要断言并修正过期的 schema 7 断言为 8——通过。绑定直接读取：完成的 turn 只交付一个摘要“Reading the layout”，仅签名的空思考块不交付。开发版预览截图：运行中工作过程展开，带正文的摘要为收起的折叠项，无正文的摘要为对齐的纯文字，状态行为运行中工具。
+- 观察（与本改动无关，未修）：开发版以 `open -n -g` 后台启动且窗口落在其他桌面空间时，Pi 历史辅助进程固定 15 秒超时，而同一配置经 Python 绑定 0.24 秒完成；安装版 7ccb787 同样复现，`PI_OFFLINE`、关闭 App Nap 无效，TCC 日志无记录，原因未查明。后台启动时 SwiftUI 可能不建窗口，`open -g <dev app>` 对运行中实例发送 reopen 可建窗口且不前置。

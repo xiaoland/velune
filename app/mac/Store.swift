@@ -974,31 +974,23 @@ final class AppStore: ObservableObject {
         if let index = conversations.firstIndex(where: { $0.id == value.conversation.id }) { if conversations[index] != value.conversation { conversations[index] = value.conversation } }
         else if !isDraft { conversations.insert(value.conversation, at: 0) }
         activity = switch value.runState {
-        case .running: TranscriptActivity(text: Self.currentWork(value.messages.last), isLive: true)
+        // A turn that a Harness process outside this execution runs reads the same.
+        case .running, .elsewhere: TranscriptActivity(text: Self.currentWork(value.messages.last), isLive: true)
         case .stopping: TranscriptActivity(text: "正在停止", isLive: false)
-        // Running elsewhere is only inferred from the native record: a spinner, no claim.
-        case .elsewhere: TranscriptActivity(text: "", isLive: false)
         case .idle, .failed: nil
         }
         if isPreview { previewSnapshots[value.conversation.id] = value }
     }
     /// What a running turn is doing, from the newest block of its last
-    /// message: a reasoning summary's headline, the running tool, or replying.
+    /// message: a reasoning summary, the running tool, or replying.
     private static func currentWork(_ message: Message?) -> String {
         guard let message, message.role == .assistant, let block = message.blocks.last else { return "正在思考" }
         switch block {
-        case .reasoning(.inline(let text)): return headline(text) ?? "正在思考"
+        case .reasoning(let summary, _): return summary
         case .tool(_, let title, .running, _), .tool(_, let title, .pending, _): return title
         case .text: return "正在回复"
-        case .reasoning, .tool, .notice, .image, .file: return "正在思考"
+        case .tool, .notice, .image, .file: return "正在思考"
         }
-    }
-    /// The first line of a summary without its Markdown emphasis or heading marks.
-    private static func headline(_ text: String) -> String? {
-        guard let line = text.split(whereSeparator: \.isNewline).lazy.map({ $0.trimmingCharacters(in: .whitespaces) }).first(where: { !$0.isEmpty }) else { return nil }
-        let plain = line.replacingOccurrences(of: "**", with: "").replacingOccurrences(of: "__", with: "")
-            .trimmingCharacters(in: CharacterSet(charactersIn: "# ")).trimmingCharacters(in: .whitespaces)
-        return plain.isEmpty ? nil : plain
     }
     /// Preparation and operation results replace the projection; polling asks
     /// the core only for changes after the current cursor (see `poll`).
@@ -1133,18 +1125,21 @@ final class AppStore: ObservableObject {
         for index in topics.indices {
             let conversation = Conversation(id: "sample-\(index)", title: topics[index], updatedAtUnixMs: Int64(Date().timeIntervalSince1970 * 1000) - Int64(index * 86_400_000), createdAtUnixMs: Int64(Date().timeIntervalSince1970 * 1000) - Int64((index + 3) * 86_400_000), runtimeID: runtimeInstances[index == 2 ? 1 : 0].id, cwd: index == 0 ? "/Users/example/Projects/Velune" : index == 1 ? "/Users/example/Projects/Sample" : nil)
             var history = pairs[index].enumerated().map { Message(id: "sample-\(index)-\($0.offset)", role: $0.offset.isMultiple(of: 2) ? .user : .assistant, blocks: [.text($0.element)]) }
-            history[1].blocks.insert(.reasoning(.inline("先确认上下文，再选择最小的修改范围。")), at: 0)
+            history[1].blocks.insert(.reasoning(summary: "先确认上下文", text: .inline("再选择最小的修改范围。")), at: 0)
             history[1].blocks.append(.tool(id: "sample-tool-\(index)", title: index == 1 ? "检查项目代码" : "读取工作上下文", state: .completed, output: .inline(index == 1 ? "已读取 3 个文件，未修改项目。" : "已梳理当前任务的上下文。")))
-            if index == 2 { history[history.count - 1].blocks.append(.tool(id: "sample-progress", title: "整理项目计划", state: .running, output: .inline("正在整理计划。"))) }
-            previewSnapshots[conversation.id] = ConversationSnapshot(revision: 1, conversation: conversation, contextRuntimeID: conversation.runtimeID, modelRecordKey: models[0].id, runState: .idle, messages: history,
+            // The last sample is mid-turn: summaries with and without text yet, then a running tool.
+            let running = index == 2
+            if running { history[history.count - 1].blocks = [.reasoning(summary: "Reading the settings view", text: .inline("The sidebar and the detail pane share one split view.")), .reasoning(summary: "Inspecting the project layout", text: .inline("")), .tool(id: "sample-progress", title: "整理项目计划", state: .running, output: .inline("正在整理计划。"))] }
+            previewSnapshots[conversation.id] = ConversationSnapshot(revision: 1, conversation: conversation, contextRuntimeID: conversation.runtimeID, modelRecordKey: models[0].id, runState: running ? .running : .idle, messages: history,
                 transcriptTurns: [
                     TranscriptTurn(id: "preview-work-" + conversation.id, userMessageID: history[0].id, workMessageIDs: [history[1].id], lastMessageID: nil, durationMs: nil, isRunning: false),
-                    TranscriptTurn(id: "preview-answer-" + conversation.id, userMessageID: history[2].id, workMessageIDs: [], lastMessageID: history[3].id, durationMs: nil, isRunning: false)
+                    TranscriptTurn(id: "preview-answer-" + conversation.id, userMessageID: history[2].id, workMessageIDs: running ? [history[3].id] : [], lastMessageID: running ? nil : history[3].id, durationMs: nil, isRunning: running)
                 ],
-                transcriptItems: [.message(id: history[0].id, messageID: history[0].id), .work(turnID: "preview-work-" + conversation.id), .message(id: history[2].id, messageID: history[2].id), .message(id: history[3].id, messageID: history[3].id)] + history.dropFirst(4).map { .message(id: $0.id, messageID: $0.id) },
+                transcriptItems: [.message(id: history[0].id, messageID: history[0].id), .work(turnID: "preview-work-" + conversation.id), .message(id: history[2].id, messageID: history[2].id)]
+                    + (running ? [.work(turnID: "preview-answer-" + conversation.id)] : [.message(id: history[3].id, messageID: history[3].id)]) + history.dropFirst(4).map { .message(id: $0.id, messageID: $0.id) },
                 transcriptOutline: history.filter { $0.role == .user }.map { TranscriptOutlineEntry(id: $0.id, messageID: $0.id) },
                 transcriptMessageIdentities: history.map { TranscriptMessageIdentity(id: $0.id, messageID: $0.id) },
-                actions: ConversationActions(canSend: true, canCancel: false, canSwitch: true))
+                actions: ConversationActions(canSend: !running, canCancel: running, canSwitch: true))
             conversations.append(conversation)
         }
         apply(previewSnapshots["sample-0"])

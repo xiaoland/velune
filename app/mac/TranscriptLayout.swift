@@ -6,7 +6,8 @@ final class RenderedMessage: @unchecked Sendable {
     enum Block {
         case text(NSAttributedString)
         case code(language: String?, text: NSAttributedString, source: String, indent: CGFloat)
-        case disclosure(key: String, title: String, symbol: String?, detail: NSAttributedString, detailMaxWidth: CGFloat?)
+        /// A nil detail has nothing to expand.
+        case disclosure(key: String, title: String, symbol: String?, detail: NSAttributedString?, detailMaxWidth: CGFloat?)
         case attachment(TranscriptAttachment)
     }
     let role: MessageRole
@@ -27,9 +28,10 @@ final class RenderedMessage: @unchecked Sendable {
                 }
             case .notice(let text):
                 return [.text(TranscriptTypography.plain(text, font: TranscriptTypography.callout, color: .secondaryLabelColor, alignment: alignment))]
-            case .reasoning(let text):
-                return [.disclosure(key: Self.disclosureKey(block, at: index)!, title: "思考过程", symbol: nil,
-                                    detail: Self.detail(text, font: TranscriptTypography.callout, empty: ""), detailMaxWidth: nil)]
+            case .reasoning(let summary, let text):
+                // A summary without further text is a label only.
+                let detail: NSAttributedString? = if case .inline("") = text { nil } else { Self.detail(text, font: TranscriptTypography.callout, empty: "") }
+                return [.disclosure(key: Self.disclosureKey(block, at: index)!, title: summary, symbol: nil, detail: detail, detailMaxWidth: nil)]
             case .tool(_, let title, let state, let output):
                 let symbol = switch state {
                 case .running: "circle.dotted"
@@ -65,8 +67,8 @@ extension RenderedMessage {
     static func deferredDisclosureKeys(_ message: Message) -> Set<String> {
         Set(message.blocks.enumerated().compactMap { index, block in
             switch block {
-            case .reasoning(.deferred), .tool(_, _, _, .deferred?): return disclosureKey(block, at: index)
-            case .text, .notice, .reasoning(.inline), .tool, .image, .file: return nil
+            case .reasoning(_, .deferred), .tool(_, _, _, .deferred?): return disclosureKey(block, at: index)
+            case .text, .notice, .reasoning(_, .inline), .tool, .image, .file: return nil
             }
         })
     }
@@ -96,7 +98,8 @@ struct TranscriptRowLayout: @unchecked Sendable {
         case bubble(NSRect)
         /// Background frame; the code text sits below a label row inside it.
         case code(language: String?, source: String, text: NSAttributedString, frame: NSRect, textFrame: NSRect)
-        case disclosure(key: String, title: String, symbol: String?, expanded: Bool, frame: NSRect)
+        /// `expanded` is nil when there is nothing to expand.
+        case disclosure(key: String, title: String, symbol: String?, expanded: Bool?, frame: NSRect)
         case activity(TranscriptActivity, frame: NSRect)
         case attachment(TranscriptAttachment, frame: NSRect)
     }
@@ -181,7 +184,7 @@ struct TranscriptRowLayout: @unchecked Sendable {
                     switch block {
                     case .text(let value): text = value
                     case .code(_, let value, _, _): text = value
-                    case .disclosure(_, let title, _, let detail, _): text = TranscriptTypography.plain(title + "\n" + detail.string)
+                    case .disclosure(_, let title, _, let detail, _): text = TranscriptTypography.plain(title + (detail.map { "\n" + $0.string } ?? ""))
                     case .attachment: continue
                     }
                     measured.append((text, measurer.size(of: text, width: maxText)))
@@ -221,10 +224,10 @@ struct TranscriptRowLayout: @unchecked Sendable {
                     case .attachment(let item):
                         elements += attachmentElements([item], column: column, trailing: false, y: &y, measurer: measurer)
                     case .disclosure(let key, let title, let symbol, let detail, let detailMaxWidth):
-                        let isExpanded = expanded.contains(key)
-                        elements.append(.disclosure(key: key, title: title, symbol: symbol, expanded: isExpanded, frame: NSRect(x: column.x, y: y, width: column.width, height: headerHeight)))
+                        let isExpanded = detail != nil && expanded.contains(key)
+                        elements.append(.disclosure(key: key, title: title, symbol: symbol, expanded: detail == nil ? nil : isExpanded, frame: NSRect(x: column.x, y: y, width: column.width, height: headerHeight)))
                         y += headerHeight
-                        if isExpanded {
+                        if isExpanded, let detail {
                             y += 12
                             let detailWidth = min(column.width, detailMaxWidth ?? column.width)
                             let height = measurer.size(of: detail, width: detailWidth).height

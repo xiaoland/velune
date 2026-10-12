@@ -1,14 +1,18 @@
-//! Best-effort observation of native session files on this machine, including
-//! files that Harness processes outside Velune are writing. The native files
-//! stay the source of truth: this only locates a session file, notices that it
-//! changed and reads its last records to tell whether a turn has not ended.
-//! History for display is still read through the Harness adapters.
+//! Best-effort observation of native sessions on this machine, including
+//! sessions that Harness processes outside Velune are running. The Harness
+//! stays the source of truth: whether a session is running comes from the
+//! Harness's own liveness record where it keeps one (Codex's thread writer
+//! lock, Claude Code's session registry), and only Pi, which keeps none, is
+//! judged from its processes. Session files are located and watched for
+//! changes; history for display is still read through the Harness adapters.
 use serde_json::Value;
 use std::{
+    collections::HashMap,
     fs::{self, File},
-    io::{Read, Seek, SeekFrom},
+    io::{BufRead, BufReader, Read, Seek, SeekFrom},
     path::{Path, PathBuf},
-    time::SystemTime,
+    process::{Command, Stdio},
+    time::{Duration, SystemTime},
 };
 
 /// Native session file layouts this module understands.
@@ -96,35 +100,344 @@ fn session_files(format: SessionFormat, root: &Path, mut visit: impl FnMut(&Path
     walk(root, format.depth(), &mut visit);
 }
 
-/// The session file of `native_id` below `root`.
-pub fn locate(format: SessionFormat, root: &Path, native_id: &str) -> Option<PathBuf> {
-    if format == SessionFormat::Pi {
-        let path = Path::new(native_id);
-        return (path.starts_with(root) && path.is_file()).then(|| path.to_owned());
-    }
-    let mut found = None;
-    session_files(format, root, |path, _| {
-        if found.is_none() && format.native_id(path).as_deref() == Some(native_id) {
-            found = Some(path.to_owned());
-        }
-    });
-    found
+/// A runtime's native sessions on this machine.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionStore {
+    pub format: SessionFormat,
+    /// The Harness's own directory: `CODEX_HOME`, `CLAUDE_CONFIG_DIR` or the
+    /// Pi agent directory.
+    pub agent_dir: PathBuf,
+    /// Root of the session files.
+    pub sessions: PathBuf,
 }
 
-/// Native ids of sessions below `root` modified at or after `since` whose
-/// last records describe a turn that has not ended.
-pub fn unfinished_since(format: SessionFormat, root: &Path, since: SystemTime) -> Vec<String> {
-    let mut recent = Vec::new();
-    session_files(format, root, |path, metadata| {
-        if metadata.modified().is_ok_and(|modified| modified >= since) {
-            recent.push(path.to_owned());
+impl SessionStore {
+    /// The session file of `native_id`.
+    pub fn locate(&self, native_id: &str) -> Option<PathBuf> {
+        if self.format == SessionFormat::Pi {
+            let path = Path::new(native_id);
+            return (path.starts_with(&self.sessions) && path.is_file()).then(|| path.to_owned());
         }
-    });
-    recent
-        .into_iter()
-        .filter(|path| unfinished(format, path))
-        .filter_map(|path| format.native_id(&path))
+        let mut found = None;
+        session_files(self.format, &self.sessions, |path, _| {
+            if found.is_none() && self.format.native_id(path).as_deref() == Some(native_id) {
+                found = Some(path.to_owned());
+            }
+        });
+        found
+    }
+
+    /// Native ids of the sessions that a Harness process is running a turn of.
+    pub fn running(&self, processes: &mut Processes) -> Vec<String> {
+        match self.format {
+            SessionFormat::Codex => {
+                let writers = self.codex_writers();
+                if writers.is_empty() {
+                    return Vec::new();
+                }
+                let mut running = Vec::new();
+                session_files(self.format, &self.sessions, |path, _| {
+                    if let Some(id) = self.format.native_id(path)
+                        && writers.contains(&id)
+                        && unfinished(self.format, path)
+                    {
+                        running.push(id);
+                    }
+                });
+                running
+            }
+            SessionFormat::ClaudeCode => self.claude_busy(processes),
+            SessionFormat::Pi => {
+                let pis = processes.pi();
+                if pis.is_empty() {
+                    return Vec::new();
+                }
+                let mut running = Vec::new();
+                session_files(self.format, &self.sessions, |path, metadata| {
+                    if pi_running(path, metadata, pis)
+                        && let Some(id) = self.format.native_id(path)
+                    {
+                        running.push(id);
+                    }
+                });
+                running
+            }
+        }
+    }
+
+    /// Whether a Harness process is running a turn of the session at `path`.
+    pub fn is_running(&self, native_id: &str, path: &Path, processes: &mut Processes) -> bool {
+        match self.format {
+            SessionFormat::Codex => {
+                locked(&self.codex_lock(native_id)) && unfinished(self.format, path)
+            }
+            SessionFormat::ClaudeCode => {
+                self.claude_busy(processes).iter().any(|id| id == native_id)
+            }
+            SessionFormat::Pi => {
+                fs::metadata(path).is_ok_and(|metadata| pi_running(path, &metadata, processes.pi()))
+            }
+        }
+    }
+
+    fn codex_lock(&self, thread_id: &str) -> PathBuf {
+        self.agent_dir
+            .join("thread-writer-locks")
+            .join(format!("{thread_id}.lock"))
+    }
+
+    /// Threads whose writer lock a Codex process holds. Codex 0.159.3 holds
+    /// `thread-writer-locks/<thread id>.lock` while a thread is loaded,
+    /// running or not, and leaves the file behind when it exits.
+    fn codex_writers(&self) -> Vec<String> {
+        let Ok(entries) = fs::read_dir(self.agent_dir.join("thread-writer-locks")) else {
+            return Vec::new();
+        };
+        entries
+            .flatten()
+            .filter_map(|entry| {
+                let path = entry.path();
+                let id = path.file_stem()?.to_str()?;
+                (path
+                    .extension()
+                    .is_some_and(|extension| extension == "lock")
+                    && !id.starts_with('.')
+                    && locked(&path))
+                .then(|| id.to_owned())
+            })
+            .collect()
+    }
+
+    /// Sessions that Claude Code's registry reports busy or waiting for the
+    /// user. Claude Code 2.1.286 keeps `sessions/<pid>.json` per process with
+    /// its session id, status (busy, shell, idle, waiting) and process start;
+    /// a crashed process leaves its entry behind.
+    fn claude_busy(&self, processes: &mut Processes) -> Vec<String> {
+        let Ok(entries) = fs::read_dir(self.agent_dir.join("sessions")) else {
+            return Vec::new();
+        };
+        entries
+            .flatten()
+            .filter_map(|entry| {
+                // Only `<pid>.json`; the registry directory also holds keys.
+                let path = entry.path();
+                let pid: u32 = path
+                    .file_name()?
+                    .to_str()?
+                    .strip_suffix(".json")?
+                    .parse()
+                    .ok()?;
+                let record: Value = serde_json::from_slice(&fs::read(&path).ok()?).ok()?;
+                matches!(record["status"].as_str(), Some("busy" | "waiting")).then_some(())?;
+                (record["pid"].as_u64() == Some(u64::from(pid))).then_some(())?;
+                let session = record["sessionId"].as_str()?.to_owned();
+                processes
+                    .alive(pid, record["procStart"].as_str())
+                    .then_some(session)
+            })
+            .collect()
+    }
+}
+
+/// A live Pi process in the session's working directory that started before
+/// the session file was last written, and a turn that has not ended. Pi
+/// 1.0.2 keeps no liveness record and writes a file per entry without holding
+/// it open.
+fn pi_running(path: &Path, metadata: &fs::Metadata, pis: &[PiProcess]) -> bool {
+    let Ok(modified) = metadata.modified() else {
+        return false;
+    };
+    let candidates: Vec<&PiProcess> = pis
+        .iter()
+        .filter(|process| modified + Duration::from_secs(2) >= process.started)
+        .collect();
+    if candidates.is_empty() {
+        return false;
+    }
+    let Some(cwd) = pi_session_cwd(path) else {
+        return false;
+    };
+    candidates.iter().any(|process| process.cwd == cwd) && unfinished(SessionFormat::Pi, path)
+}
+
+/// The working directory in a Pi session file's header record.
+fn pi_session_cwd(path: &Path) -> Option<PathBuf> {
+    let mut line = String::new();
+    BufReader::new(File::open(path).ok()?)
+        .read_line(&mut line)
+        .ok()?;
+    let header: Value = serde_json::from_str(&line).ok()?;
+    (header["type"] == "session").then_some(())?;
+    header["cwd"].as_str().map(PathBuf::from)
+}
+
+/// Whether another open file description holds a lock on `path`. Asks with
+/// `F_GETLK`, which takes no lock; on macOS it also reports `flock` locks.
+#[cfg(unix)]
+fn locked(path: &Path) -> bool {
+    use std::os::fd::AsRawFd;
+    let Ok(file) = File::open(path) else {
+        return false;
+    };
+    // SAFETY: an all-zero `flock` is a valid value of the plain C struct.
+    let mut lock: libc::flock = unsafe { std::mem::zeroed() };
+    lock.l_type = libc::F_WRLCK as _;
+    lock.l_whence = libc::SEEK_SET as _;
+    // SAFETY: the descriptor is open for the call and `lock` outlives it.
+    let status = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GETLK, &mut lock) };
+    status == 0 && i32::from(lock.l_type) != i32::from(libc::F_UNLCK)
+}
+
+#[cfg(not(unix))]
+fn locked(_: &Path) -> bool {
+    false
+}
+
+struct Process {
+    pid: u32,
+    parent: u32,
+    elapsed: Duration,
+    /// `ps` start time in UTC, as Claude Code records it.
+    started: String,
+    command: String,
+}
+
+struct PiProcess {
+    cwd: PathBuf,
+    started: SystemTime,
+}
+
+/// This machine's processes, read with `ps` on first use and kept for one
+/// observation.
+#[derive(Default)]
+pub struct Processes {
+    table: Option<Vec<Process>>,
+    pis: Option<Vec<PiProcess>>,
+}
+
+impl Processes {
+    fn table(&mut self) -> &[Process] {
+        self.table.get_or_insert_with(read_processes)
+    }
+
+    /// Whether `pid` is still the process that started at `started`, when known.
+    fn alive(&mut self, pid: u32, started: Option<&str>) -> bool {
+        let started = started.map(|value| value.split_whitespace().collect::<Vec<_>>().join(" "));
+        self.table().iter().any(|process| {
+            process.pid == pid
+                && started
+                    .as_ref()
+                    .is_none_or(|value| *value == process.started)
+        })
+    }
+
+    /// Pi processes other than this process's own children, with their
+    /// working directories.
+    fn pi(&mut self) -> &[PiProcess] {
+        if self.pis.is_none() {
+            let own = std::process::id();
+            let now = SystemTime::now();
+            let found: Vec<(u32, SystemTime)> = self
+                .table()
+                .iter()
+                .filter(|process| process.parent != own && is_pi(&process.command))
+                .map(|process| (process.pid, now - process.elapsed))
+                .collect();
+            let cwds = working_directories(found.iter().map(|(pid, _)| *pid));
+            self.pis = Some(
+                found
+                    .into_iter()
+                    .filter_map(|(pid, started)| {
+                        Some(PiProcess {
+                            cwd: cwds.get(&pid)?.clone(),
+                            started,
+                        })
+                    })
+                    .collect(),
+            );
+        }
+        self.pis.as_deref().expect("read")
+    }
+}
+
+/// Pi 1.0.2 titles its processes `pi` and `pi-rpc`; before it does, the
+/// command names its package.
+fn is_pi(command: &str) -> bool {
+    matches!(command.split_whitespace().next(), Some("pi" | "pi-rpc"))
+        || command
+            .split_whitespace()
+            .any(|argument| argument.contains("/pi-coding-agent/"))
+}
+
+fn read_processes() -> Vec<Process> {
+    let Ok(output) = Command::new("ps")
+        .args(["axww", "-o", "pid=,ppid=,etime=,lstart=,command="])
+        .env("TZ", "UTC")
+        .env("LC_ALL", "C")
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+    else {
+        return Vec::new();
+    };
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.split_whitespace();
+            let pid = fields.next()?.parse().ok()?;
+            let parent = fields.next()?.parse().ok()?;
+            let elapsed = elapsed(fields.next()?)?;
+            // `lstart` is five fields, such as `Mon Oct 12 04:51:53 2026`.
+            let started: Vec<&str> = fields.by_ref().take(5).collect();
+            (started.len() == 5).then_some(())?;
+            Some(Process {
+                pid,
+                parent,
+                elapsed,
+                started: started.join(" "),
+                command: fields.collect::<Vec<_>>().join(" "),
+            })
+        })
         .collect()
+}
+
+/// `ps` elapsed time: `[[dd-]hh:]mm:ss`.
+fn elapsed(value: &str) -> Option<Duration> {
+    let (days, clock) = match value.split_once('-') {
+        Some((days, clock)) => (days.parse::<u64>().ok()?, clock),
+        None => (0, value),
+    };
+    let mut seconds = 0;
+    for part in clock.split(':') {
+        seconds = seconds * 60 + part.parse::<u64>().ok()?;
+    }
+    Some(Duration::from_secs(days * 86_400 + seconds))
+}
+
+/// Working directories of processes, from `lsof`.
+fn working_directories(pids: impl Iterator<Item = u32>) -> HashMap<u32, PathBuf> {
+    let pids: Vec<String> = pids.map(|pid| pid.to_string()).collect();
+    if pids.is_empty() {
+        return HashMap::new();
+    }
+    let Ok(output) = Command::new("lsof")
+        .args(["-a", "-d", "cwd", "-Fn", "-p", &pids.join(",")])
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+    else {
+        return HashMap::new();
+    };
+    let mut found = HashMap::new();
+    let mut pid = None;
+    for line in String::from_utf8_lossy(&output.stdout).lines() {
+        if let Some(value) = line.strip_prefix('p') {
+            pid = value.parse().ok();
+        } else if let (Some(value), Some(pid)) = (line.strip_prefix('n'), pid) {
+            found.insert(pid, PathBuf::from(value));
+        }
+    }
+    found
 }
 
 /// Bytes read from the end of a session file; records of the latest turn
@@ -132,8 +445,8 @@ pub fn unfinished_since(format: SessionFormat, root: &Path, since: SystemTime) -
 const TAIL_BYTES: u64 = 256 * 1024;
 
 /// Whether the session's last records describe a turn that has not ended. A
-/// process that died mid-turn looks the same; callers bound this by recency.
-pub fn unfinished(format: SessionFormat, path: &Path) -> bool {
+/// process that died mid-turn looks the same; callers pair this with liveness.
+fn unfinished(format: SessionFormat, path: &Path) -> bool {
     let Some((tail, truncated)) = read_tail(path) else {
         return false;
     };
@@ -149,7 +462,8 @@ pub fn unfinished(format: SessionFormat, path: &Path) -> bool {
         .filter_map(|line| serde_json::from_str::<Value>(line).ok());
     let boundary = match format {
         SessionFormat::Codex => codex_boundary(records),
-        SessionFormat::ClaudeCode => claude_boundary(records),
+        // Claude Code's registry reports its status directly.
+        SessionFormat::ClaudeCode => None,
         SessionFormat::Pi => pi_boundary(records),
     };
     // A tail without any boundary belongs to one long turn when truncated.
@@ -175,36 +489,6 @@ fn codex_boundary(records: impl Iterator<Item = Value>) -> Option<bool> {
             "task_started" | "turn_started" => Some(true),
             "task_complete" | "turn_complete" | "turn_aborted" => Some(false),
             _ => None,
-        })
-}
-
-fn claude_boundary(records: impl Iterator<Item = Value>) -> Option<bool> {
-    records
-        .filter(|record| record["isSidechain"] != true && record["isMeta"] != true)
-        .find_map(|record| {
-            let content = &record["message"]["content"];
-            match record["type"].as_str()? {
-                // A prompt or tool result the model has not answered yet.
-                // Local commands and interruptions do not start a model turn.
-                "user" => Some(match content {
-                    Value::String(text) => {
-                        !text.starts_with('<') && !text.starts_with("[Request interrupted")
-                    }
-                    Value::Array(blocks) => !blocks.iter().any(|block| {
-                        block["text"]
-                            .as_str()
-                            .is_some_and(|text| text.starts_with("[Request interrupted"))
-                    }),
-                    _ => false,
-                }),
-                // A tool call waits for its result, or for permission.
-                "assistant" => {
-                    Some(content.as_array().is_some_and(|blocks| {
-                        blocks.iter().any(|block| block["type"] == "tool_use")
-                    }))
-                }
-                _ => None,
-            }
         })
 }
 

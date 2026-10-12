@@ -43,8 +43,8 @@ struct Message: Codable, Sendable, Identifiable, Equatable {
     var hasDeferredPayload: Bool {
         blocks.contains { block in
             switch block {
-            case .reasoning(.deferred), .tool(_, _, _, .deferred?), .image(_, .data(.deferred)): return true
-            case .text, .notice, .reasoning(.inline), .tool, .image, .file: return false
+            case .reasoning(_, .deferred), .tool(_, _, _, .deferred?), .image(_, .data(.deferred)): return true
+            case .text, .notice, .reasoning(_, .inline), .tool, .image, .file: return false
             }
         }
     }
@@ -54,7 +54,8 @@ struct Message: Codable, Sendable, Identifiable, Equatable {
 
 enum MessageBlock: Codable, Sendable, Equatable {
     case text(String)
-    case reasoning(MessagePayload)
+    /// Reasoning shown by its summary; the payload is the text under it.
+    case reasoning(summary: String, text: MessagePayload)
     case tool(id: String?, title: String, state: ToolState, output: MessagePayload?)
     case notice(String)
     /// An image the user attached.

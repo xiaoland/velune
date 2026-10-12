@@ -56,8 +56,9 @@ pub enum RunState {
     Running,
     Stopping,
     Failed,
-    /// Best-effort: the native records show a turn that has not ended and was
-    /// written recently, outside this Velune execution. Velune cannot stop it.
+    /// Running in a Harness process other than this Velune execution, by the
+    /// Harness's own liveness record; presented as running. Velune cannot
+    /// stop it.
     Elsewhere,
 }
 
@@ -391,5 +392,31 @@ pub mod attachment_list {
                 rest.is_empty() || rest.starts_with(&format!("{ITEM}/"))
             })
             .map_or(text, |(at, _)| text[..at].trim_end())
+    }
+}
+
+/// Reasoning is shown by its summary: Codex summaries open with an emphasized
+/// title line, and other reasoning text is summarized by its first line.
+pub mod reasoning {
+    /// The summary of reasoning text and the text to show under it; None
+    /// when the reasoning has no readable text, such as encrypted reasoning.
+    pub fn summary(text: &str) -> Option<(&str, &str)> {
+        let text = text.trim();
+        let (line, rest) = text.split_once('\n').unwrap_or((text, ""));
+        let line = line.trim();
+        let title = line
+            .trim_matches(|character: char| matches!(character, '*' | '_' | '#'))
+            .trim();
+        if title.is_empty() {
+            return None;
+        }
+        // A marked-up title line is the summary itself; a plain first line
+        // stays part of the text.
+        let body = if title.len() == line.len() {
+            text
+        } else {
+            rest.trim()
+        };
+        Some((title, body))
     }
 }

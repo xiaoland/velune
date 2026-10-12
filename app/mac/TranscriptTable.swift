@@ -1098,6 +1098,7 @@ struct TranscriptTable: NSViewRepresentable {
         triangle.target = self; triangle.action = #selector(clicked)
         triangle.sizeToFit()
         label.isBordered = false
+        label.lineBreakMode = .byTruncatingTail
         label.imagePosition = .imageLeading
         label.alignment = .left
         label.contentTintColor = .secondaryLabelColor
@@ -1106,11 +1107,17 @@ struct TranscriptTable: NSViewRepresentable {
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is unavailable") }
 
-    func configure(title: String, symbol: String?, expanded: Bool, action: @escaping () -> Void) {
-        self.action = action
-        triangle.state = expanded ? .on : .off
+    /// A nil `expanded` shows the label alone, aligned with expandable ones.
+    func configure(title: String, symbol: String?, expanded: Bool?, action: @escaping () -> Void) {
+        self.action = expanded == nil ? nil : action
+        triangle.isHidden = expanded == nil
+        triangle.state = expanded == true ? .on : .off
         triangle.setAccessibilityLabel(title)
-        label.attributedTitle = NSAttributedString(string: title, attributes: [.font: TranscriptTypography.callout, .foregroundColor: NSColor.secondaryLabelColor])
+        label.setAccessibilityRole(expanded == nil ? .staticText : .button)
+        label.toolTip = title
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.lineBreakMode = .byTruncatingTail
+        label.attributedTitle = NSAttributedString(string: title, attributes: [.font: TranscriptTypography.callout, .foregroundColor: NSColor.secondaryLabelColor, .paragraphStyle: paragraph])
         label.image = symbol.flatMap { NSImage(systemSymbolName: $0, accessibilityDescription: nil)?.withSymbolConfiguration(.init(pointSize: 11, weight: .regular)) }
         needsLayout = true
     }

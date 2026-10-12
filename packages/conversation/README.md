@@ -14,6 +14,8 @@ Pi 的事件解析和 projection 属 [agent-runtime](../agent-runtime/README.md)
 
 消息内容块包括图片：`ImageSource` 为本机路径或 base64 内容，适配器按原生记录选择，data URL 在边界解析。发送时追加到正文末尾的“附件：”绝对路径列表由 `attachment_list` 组成与拆分，交付与标题据此把列表还原为文件附件、不显示为正文。
 
+思考块以摘要呈现：`reasoning::summary` 取首个非空行，Markdown 强调或标题标记包裹的首行（如 Codex 摘要）本身就是摘要、其后文字为正文，普通首行既是摘要也保留在正文中；没有可读文字时为 None。
+
 `Message.completed` 表达消息内容是否完成，不等同于执行成功。`TranscriptTurn` 是消息列表展示范围的轻量契约，仅引用用户、过程及外露正文的 canonical ID；`TranscriptItem` 给出完整有序展示项，大纲和消息身份映射使用稳定展示 ID。顺序投影实现位于 agent-runtime，平台不另建分组规则。展示记录不替代 canonical 消息，也不成为持久化 turn 数据库。
 
 `MessageIdentityConfirmation` 仅表示当前投影生命周期内的 live 身份确认，重复消费必须幂等；它不是持久身份表。原生会话条目是最终身份来源。

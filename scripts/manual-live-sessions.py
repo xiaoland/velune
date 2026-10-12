@@ -1,20 +1,25 @@
 #!/usr/bin/env python3
 """Manual acceptance for following native conversations live.
 
-Synthetic Pi 1.0.2 sessions in a temporary HOME are changed by a separate
-process, as another Pi client would, while the UniFFI application watches
-them. Checks that an open conversation is read again after a native change,
-that an unfinished external turn is presented as running elsewhere and ends
-when its reply is written, that a conversation started outside Velune is
-reported, and that Velune's own execution is never reported as running
-elsewhere. No real credential, provider, configuration or session is read;
-this is not an automated test.
+Pi 1.0.2 sessions in a temporary HOME are seeded through the Pi SDK, and the
+real Pi CLI, started separately as another client would be, runs turns in
+them against a loopback upstream that holds each turn until released, while
+the UniFFI application watches. Pi keeps no liveness record, so Velune takes
+a session as running while a live Pi process in its working directory has an
+unfinished turn. Checks that an open conversation is read again after a
+native change, that an external turn is presented as running and ends with
+its reply, that a conversation started outside Velune is reported and stops
+running when its process is killed mid-turn, and that Velune's own execution
+is never reported as running elsewhere. No real credential, provider,
+configuration or session is read; this is not an automated test.
 """
 import argparse
 import importlib.util
 import json
+import os
 import pathlib
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -50,13 +55,15 @@ def main():
         for resource in (args.bundle / 'Contents/Resources').glob('*.mjs'):
             shutil.copy(resource, root / 'resources')
 
-        # Velune's own turn streams until its gate file disappears.
+        # Every turn streams until the gate file disappears.
         class Upstream(BaseHTTPRequestHandler):
             def log_message(self, *_):
                 pass
 
             def do_POST(self):
-                body = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
+                raw = self.rfile.read(int(self.headers['Content-Length'])).decode()
+                body = json.loads(raw)
+                reply = 'EXTERNAL_REPLY' if 'EXTERNAL_' in raw.rsplit('OWN_', 1)[-1] else 'OWN_REPLY'
                 self.send_response(200)
                 self.send_header('Content-Type', 'text/event-stream')
                 self.end_headers()
@@ -69,11 +76,14 @@ def main():
                 deadline = time.monotonic() + 30
                 while (root / 'gate').exists() and time.monotonic() < deadline:
                     time.sleep(.02)
-                for item in (chunk({'content': 'OWN_REPLY'}),
-                             dict(chunk({}, 'stop'), usage={'prompt_tokens': 1, 'completion_tokens': 1, 'total_tokens': 2})):
-                    self.wfile.write(('data: ' + json.dumps(item) + '\n\n').encode())
-                self.wfile.write(b'data: [DONE]\n\n')
-                self.wfile.flush()
+                try:
+                    for item in (chunk({'content': reply}),
+                                 dict(chunk({}, 'stop'), usage={'prompt_tokens': 1, 'completion_tokens': 1, 'total_tokens': 2})):
+                        self.wfile.write(('data: ' + json.dumps(item) + '\n\n').encode())
+                    self.wfile.write(b'data: [DONE]\n\n')
+                    self.wfile.flush()
+                except (BrokenPipeError, ConnectionResetError):
+                    pass  # a client killed mid-turn
 
         server = ThreadingHTTPServer(('127.0.0.1', 0), Upstream)
         threading.Thread(target=server.serve_forever, daemon=True).start()
@@ -99,6 +109,29 @@ console.log(manager.getSessionFile());
             result = subprocess.run([str(args.node), str(native), operation, target, role, text],
                                     env=native_env, check=True, capture_output=True, text=True)
             return result.stdout.strip()
+
+        # The real Pi CLI as another client, with its own agent directory and a
+        # loopback provider, writing into the runtime's sessions. A shell
+        # parents it: this process hosts the application, whose own Pi
+        # children are its execution, not another client.
+        external_agent = root / 'external-agent'
+        external_agent.mkdir()
+        (external_agent / 'models.json').write_text(json.dumps({'providers': {'synthetic': {
+            'baseUrl': f'http://127.0.0.1:{server.server_port}/v1', 'api': 'openai-completions', 'apiKey': 'SYNTHETIC_ONLY',
+            'models': [{'id': 'synthetic', 'name': 'Synthetic', 'contextWindow': 8192, 'maxTokens': 128}]}}}))
+        pi_env = dict(env, PI_CODING_AGENT_DIR=str(external_agent))
+
+        def pi_client(prompt, session=None):
+            command = [str(args.node), str(args.pi), '--session-dir', str(sessions),
+                       *(['--session', session] if session else []),
+                       '--provider', 'synthetic', '--model', 'synthetic', '-p', prompt]
+            return subprocess.Popen(['/bin/sh', '-c', '"$@"; exit $?', 'sh', *command], cwd=root / 'project', env=pi_env,
+                                    stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                    text=True, start_new_session=True)
+
+        def ended(process, label):
+            out, err = process.communicate(timeout=30)
+            assert process.returncode == 0, (label, out[-800:], err[-1500:])
 
         for title in ('A', 'B'):
             path = external('create', title, 'user', 'PROMPT_' + title)
@@ -150,29 +183,35 @@ console.log(manager.getSessionFile());
 
             app.open_conversation('pi', a)
             assert snapshot(a).run_state == b.BindingRunState.IDLE
-            external('append', path_a, 'user', 'EXTERNAL_PROMPT')
+            (root / 'gate').write_text('hold')
+            client = pi_client('EXTERNAL_PROMPT', path_a)
             wait(lambda: 'EXTERNAL_PROMPT' in texts(a), 'open conversation read again after a native change')
-            assert snapshot(a).run_state == b.BindingRunState.ELSEWHERE, snapshot(a).run_state
+            wait(lambda: snapshot(a).run_state == b.BindingRunState.ELSEWHERE, 'external turn runs')
             # Its unfinished turn is presented as running, untimed.
             last = snapshot(a).transcript_turns[-1]
             assert last.is_running and last.duration_ms is None, last
             wait(lambda: a in elsewhere(), 'conversation reported running elsewhere')
-            print('PASS an external prompt appears live and the conversation runs elsewhere, its turn running', flush=True)
+            print('PASS an external Pi turn appears live and the conversation runs, its turn running', flush=True)
 
-            external('append', path_a, 'assistant', 'EXTERNAL_REPLY')
+            (root / 'gate').unlink()
+            ended(client, 'external turn')
             wait(lambda: 'EXTERNAL_REPLY' in texts(a), 'external reply appears')
-            assert snapshot(a).run_state == b.BindingRunState.IDLE and snapshot(a).actions.can_send
-            assert not snapshot(a).transcript_turns[-1].is_running
+            wait(lambda: snapshot(a).run_state == b.BindingRunState.IDLE, 'external turn ended')
+            assert snapshot(a).actions.can_send and not snapshot(a).transcript_turns[-1].is_running
             wait(lambda: a not in elsewhere(), 'conversation no longer runs elsewhere')
-            print('PASS the external reply ends running elsewhere', flush=True)
+            print('PASS the external reply ends the run', flush=True)
 
-            # Pi writes a new session file once its first assistant message exists.
-            path_c = external('create', 'C', 'user', 'PROMPT_C')
-            external('append', path_c, 'tool-call', 'read')
-            c = 'pi:' + path_c
-            wait(lambda: c in elsewhere(), 'conversation started outside Velune reported')
+            (root / 'gate').write_text('hold')
+            client = pi_client('EXTERNAL_PROMPT_C')
+            started = wait(lambda: {item for item in elsewhere() if item not in (a, b_id)}, 'conversation started outside Velune reported')
+            c = next(iter(started))
             assert c in {item.id for item in app.list().conversations}
-            print('PASS a conversation started outside Velune is reported running elsewhere and listed', flush=True)
+            print('PASS a conversation started outside Velune is reported running and listed', flush=True)
+            os.killpg(client.pid, signal.SIGKILL)
+            client.wait()
+            wait(lambda: c not in elsewhere(), 'a Pi process killed mid-turn no longer runs', timeout=15)
+            (root / 'gate').unlink()
+            print('PASS a turn whose Pi process ended mid-turn is no longer running', flush=True)
 
             (root / 'gate').write_text('hold')
             app.open_conversation('pi', b_id)
@@ -187,14 +226,16 @@ console.log(manager.getSessionFile());
             assert snapshot(b_id).run_state == b.BindingRunState.IDLE and b_id not in elsewhere()
             print('PASS own execution and its trailing writes are never running elsewhere', flush=True)
 
-            external('append', b_id.removeprefix('pi:'), 'user', 'EXTERNAL_AFTER_OWN')
+            (root / 'gate').write_text('hold')
+            client = pi_client('EXTERNAL_AFTER_OWN', b_id.removeprefix('pi:'))
             wait(lambda: 'EXTERNAL_AFTER_OWN' in texts(b_id), 'idle execution released and read again')
-            assert 'OWN_REPLY' in texts(b_id) and snapshot(b_id).run_state == b.BindingRunState.ELSEWHERE
-            external('append', b_id.removeprefix('pi:'), 'assistant', 'EXTERNAL_REPLY_B')
-            wait(lambda: snapshot(b_id).run_state == b.BindingRunState.IDLE, 'external turn after own ended')
+            wait(lambda: snapshot(b_id).run_state == b.BindingRunState.ELSEWHERE, 'external turn after own runs')
+            assert 'OWN_REPLY' in texts(b_id)
+            (root / 'gate').unlink()
+            ended(client, 'external turn after own')
+            wait(lambda: 'EXTERNAL_REPLY' in texts(b_id) and snapshot(b_id).run_state == b.BindingRunState.IDLE, 'external turn after own ended')
             app.send_turn('pi', b_id, 'pi', model, 'OWN_AGAIN')
             wait(lambda: texts(b_id).count('OWN_REPLY') == 2 and snapshot(b_id).actions.can_send, 'own turn resumes the changed conversation')
-            assert 'EXTERNAL_REPLY_B' in texts(b_id)
             print('PASS an external change after own execution is read and the next turn continues it', flush=True)
         finally:
             for gate in root.glob('gate'):

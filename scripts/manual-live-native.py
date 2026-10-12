@@ -4,10 +4,12 @@
 Velune runtimes for Codex 0.159.3 and Claude Code 2.1.286 use managed HOMEs
 inside a temporary VELUNE_HOME. The real CLIs, started separately as another
 client would be, write sessions into those HOMEs against a loopback upstream
-that holds each turn until released. Checks that a session started outside
-Velune is reported running elsewhere and listed, that its end is noticed,
-and that an open conversation is read again with a resumed external turn
-running elsewhere and then its reply. Only loopback synthetic responses are
+that holds each turn until released. Running comes from each Harness's own
+liveness record: Codex's thread writer lock, Claude Code's session registry.
+Checks that a session started outside Velune is reported running and listed,
+that its end is noticed, that an open conversation is read again with a
+resumed external turn running and then its reply, and that a process killed
+mid-turn stops running at once. Only loopback synthetic responses are
 used: no real model, credential, HOME or session is read; this is not an
 automated test.
 """
@@ -23,7 +25,7 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-GATES = ('CODEX_ONE', 'CODEX_TWO', 'CLAUDE_ONE', 'CLAUDE_TWO')
+GATES = ('CODEX_ONE', 'CODEX_TWO', 'CODEX_THREE', 'CLAUDE_ONE', 'CLAUDE_TWO', 'CLAUDE_THREE')
 
 
 def main():
@@ -187,7 +189,7 @@ def main():
                 return current, [block.text for message in current.messages for block in message.blocks
                                  if isinstance(block, b.BindingMessageBlock.TEXT)]
 
-            def follow(runtime, start, resume, first, second, files):
+            def follow(runtime, start, resume, first, second, third, files):
                 (root / ('gate-' + first)).write_text('hold')
                 process = start(first)
                 path = wait(lambda: next(iter(files()), None), runtime + ' session file written')
@@ -197,7 +199,7 @@ def main():
                 (root / ('gate-' + first)).unlink()
                 finished(process, first)
                 wait(lambda: conversation not in elsewhere(), runtime + ' end noticed')
-                print('PASS %s: a session started outside Velune runs elsewhere, is listed and ends (%s)' % (runtime, path.name), flush=True)
+                print('PASS %s: a session started outside Velune runs, is listed and ends (%s)' % (runtime, path.name), flush=True)
 
                 app.open_conversation(runtime, conversation)
                 current, shown = texts(runtime, conversation)
@@ -211,6 +213,17 @@ def main():
                 wait(lambda: (lambda c, t: c.run_state == b.BindingRunState.IDLE and 'REPLY_' + second in t)(*texts(runtime, conversation)),
                      runtime + ' external reply read again')
                 print('PASS %s: an open conversation shows a resumed external turn live, then its reply' % runtime, flush=True)
+
+                (root / ('gate-' + third)).write_text('hold')
+                process = resume(conversation.split(':', 1)[1], third)
+                wait(lambda: conversation in elsewhere(), runtime + ' third external turn runs')
+                process.kill()
+                process.wait()
+                wait(lambda: conversation not in elsewhere()
+                     and texts(runtime, conversation)[0].run_state == b.BindingRunState.IDLE,
+                     runtime + ' killed mid-turn no longer runs', timeout=15)
+                (root / ('gate-' + third)).unlink()
+                print('PASS %s: a process killed mid-turn stops running' % runtime, flush=True)
                 return path
 
             codex_args = ['--skip-git-repo-check', '--dangerously-bypass-approvals-and-sandbox', '--model', 'gpt-6.1-sol']
@@ -218,7 +231,7 @@ def main():
                 'codex',
                 lambda gate: external([str(codex), 'exec', *codex_args, gate + ' prompt'], codex_env),
                 lambda native, gate: external([str(codex), 'exec', 'resume', *codex_args, native, gate + ' prompt'], codex_env),
-                'CODEX_ONE', 'CODEX_TWO',
+                'CODEX_ONE', 'CODEX_TWO', 'CODEX_THREE',
                 lambda: sorted((codex_home / '.codex/sessions').rglob('rollout-*.jsonl')))
             kinds = [json.loads(line).get('payload', {}).get('type') for line in rollout.read_text().splitlines()
                      if json.loads(line).get('type') == 'event_msg']
@@ -229,7 +242,7 @@ def main():
                 'claude',
                 lambda gate: external([str(claude), *claude_args, gate + ' prompt'], claude_env),
                 lambda native, gate: external([str(claude), *claude_args, '--resume', native, gate + ' prompt'], claude_env),
-                'CLAUDE_ONE', 'CLAUDE_TWO',
+                'CLAUDE_ONE', 'CLAUDE_TWO', 'CLAUDE_THREE',
                 lambda: [path for path in (claude_home / '.claude/projects').rglob('*.jsonl') if 'subagents' not in path.parts])
         finally:
             for gate in root.glob('gate-*'):
