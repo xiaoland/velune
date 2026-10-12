@@ -538,7 +538,8 @@ impl Client {
         self.request_with_timeout(command, RESPONSE_TIMEOUT)
     }
 
-    pub fn models(&mut self) -> Result<Vec<crate::native::RuntimeModel>> {
+    /// Pi takes its fixed thinking levels for models marked `reasoning`.
+    pub fn models(&mut self) -> Result<Vec<crate::native::ModelOption>> {
         let result = self.request(json!({"type":"get_available_models"}))?;
         result["data"]["models"]
             .as_array()
@@ -549,10 +550,17 @@ impl Client {
                 let id = model["id"]
                     .as_str()
                     .ok_or_else(|| Error::Sdk("Pi 模型身份为空".into()))?;
-                Ok(crate::native::RuntimeModel {
-                    provider_id: model["provider"].as_str().map(str::to_owned),
-                    id: id.into(),
-                    name: model["name"].as_str().unwrap_or(id).into(),
+                Ok(crate::native::ModelOption {
+                    model: crate::native::RuntimeModel {
+                        provider_id: model["provider"].as_str().map(str::to_owned),
+                        id: id.into(),
+                        name: model["name"].as_str().unwrap_or(id).into(),
+                    },
+                    reasoning_efforts: if model["reasoning"] == true {
+                        PI_THINKING_LEVELS.map(str::to_owned).to_vec()
+                    } else {
+                        Vec::new()
+                    },
                 })
             })
             .collect()

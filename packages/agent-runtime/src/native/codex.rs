@@ -198,7 +198,9 @@ impl NativeSession {
         self.running();
         Ok(())
     }
-    pub(super) fn codex_models(&mut self) -> Result<Vec<RuntimeModel>> {
+    /// The configured model first, then the catalog. Codex 0.159.3 lists each
+    /// model's `supportedReasoningEfforts`.
+    pub(super) fn codex_models(&mut self) -> Result<Vec<ModelOption>> {
         let cwd = self
             .snapshot
             .as_ref()
@@ -206,19 +208,12 @@ impl NativeSession {
         let source = self
             .rpc
             .request("config/read", &json!({"includeLayers":false,"cwd":cwd}))?;
-        let configured = source["config"]["model"].as_str();
+        let configured = source["config"]["model"].as_str().map(str::to_owned);
         let provider = source["config"]["model_provider"]
             .as_str()
-            .unwrap_or("openai");
-        let mut result = configured
-            .map(|id| {
-                vec![RuntimeModel {
-                    provider_id: Some(provider.into()),
-                    id: id.into(),
-                    name: id.into(),
-                }]
-            })
-            .unwrap_or_default();
+            .unwrap_or("openai")
+            .to_owned();
+        let mut catalog = Vec::new();
         let mut cursor = Value::Null;
         let mut seen = std::collections::BTreeSet::new();
         loop {
@@ -233,13 +228,20 @@ impl NativeSession {
                 let id = model["model"]
                     .as_str()
                     .ok_or_else(|| Error::new("Codex 模型缺少身份"))?;
-                if configured != Some(id) {
-                    result.push(RuntimeModel {
+                let efforts = model["supportedReasoningEfforts"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|effort| effort["reasoningEffort"].as_str().map(str::to_owned))
+                    .collect();
+                catalog.push(ModelOption {
+                    model: RuntimeModel {
                         provider_id: None,
                         id: id.into(),
                         name: model["displayName"].as_str().unwrap_or(id).into(),
-                    });
-                }
+                    },
+                    reasoning_efforts: efforts,
+                });
             }
             let Some(next) = page["nextCursor"].as_str() else {
                 break;
@@ -249,7 +251,27 @@ impl NativeSession {
             }
             cursor = json!(next);
         }
-        Ok(result)
+        let Some(configured) = configured else {
+            return Ok(catalog);
+        };
+        let efforts = catalog
+            .iter()
+            .find(|option| option.model.id == configured)
+            .map(|option| option.reasoning_efforts.clone())
+            .unwrap_or_default();
+        catalog.retain(|option| option.model.id != configured);
+        catalog.insert(
+            0,
+            ModelOption {
+                model: RuntimeModel {
+                    provider_id: Some(provider),
+                    id: configured.clone(),
+                    name: configured,
+                },
+                reasoning_efforts: efforts,
+            },
+        );
+        Ok(catalog)
     }
     pub(super) fn codex_cancel(&mut self) -> Result<()> {
         let thread = self

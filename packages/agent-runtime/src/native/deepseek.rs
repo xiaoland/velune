@@ -262,7 +262,7 @@ impl NativeSession {
         Ok(())
     }
 
-    pub(super) fn dsh_models(&mut self) -> Result<Vec<RuntimeModel>> {
+    pub(super) fn dsh_models(&mut self) -> Result<Vec<ModelOption>> {
         if self.native_id.is_none() {
             self.available_models = self.dsh_discover_models()?;
         }
@@ -284,10 +284,13 @@ impl NativeSession {
                 continue;
             };
             if pair.len() == 2 && pair[0] != "velune-gateway" {
-                result.push(RuntimeModel {
-                    provider_id: Some(pair[0].clone()),
-                    id: pair[1].clone(),
-                    name: value["name"].as_str().unwrap_or(&pair[1]).into(),
+                result.push(ModelOption {
+                    model: RuntimeModel {
+                        provider_id: Some(pair[0].clone()),
+                        id: pair[1].clone(),
+                        name: value["name"].as_str().unwrap_or(&pair[1]).into(),
+                    },
+                    reasoning_efforts: Vec::new(),
                 });
             }
         }

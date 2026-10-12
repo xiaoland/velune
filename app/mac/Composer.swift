@@ -455,11 +455,7 @@ struct ComposerView: View {
             .help("下一轮运行时：\(nextTurnRuntime?.name ?? "未选择")")
             .disabled(store.isShuttingDown)
             Menu {
-                Picker("模型", selection: Binding(get: { store.nextTurnModelRecordKey }, set: { if let key = $0 { store.selectModel(modelRecordKey: key) } })) {
-                    ForEach(store.runtimeCompatibleModels) { model in Text(model.displayName).tag(Optional(model.recordKey)) }
-                }.pickerStyle(.inline).disabled(!store.canSwitchModel)
-                Divider()
-                SettingsTabLink(tab: .providers, title: "AI 提供商设置…")
+                modelMenuContent
             } label: {
                 Text(store.selectedModelName ?? "选择模型").lineLimit(1).truncationMode(.middle).frame(maxWidth: 200, alignment: .leading)
             }
@@ -474,6 +470,33 @@ struct ComposerView: View {
         // Side by side, accent-coloured indicators would all compete; this
         // neutral tint draws them like the system's graphite appearance.
         .tint(Color(nsColor: .controlColor))
+    }
+
+    /// The runtime's own models (and its default, when it has one) come
+    /// before the models Velune's providers serve through the gateway.
+    @ViewBuilder private var modelMenuContent: some View {
+        let choices = store.modelChoices
+        let runtimeChoices = choices.filter { if case .managed = $0.selection { false } else { true } }
+        let managedChoices = choices.filter { if case .managed = $0.selection { true } else { false } }
+        let selection = Binding(get: { store.nextTurnModel }, set: { if let value = $0 { store.selectModel(value) } })
+        switch store.modelCatalog {
+        case .loading: Text("正在读取运行时的模型…")
+        case .failed(let detail): Text("无法读取运行时的模型：\(detail)")
+        case .ready, nil: EmptyView()
+        }
+        if !runtimeChoices.isEmpty {
+            Picker("运行时模型", selection: selection) {
+                ForEach(runtimeChoices) { model in Text(model.displayName).tag(Optional(model.selection)) }
+            }.pickerStyle(.inline).disabled(!store.canSwitchModel)
+        }
+        if !managedChoices.isEmpty {
+            Picker("Velune 提供商", selection: selection) {
+                ForEach(managedChoices) { model in Text(model.displayName).tag(Optional(model.selection)) }
+            }.pickerStyle(.inline).disabled(!store.canSwitchModel)
+        }
+        Divider()
+        Button("重新读取模型", action: store.reloadModelCatalog).disabled(!store.canSwitchModel || store.modelCatalog == .loading)
+        SettingsTabLink(tab: .providers, title: "AI 提供商设置…")
     }
 
     /// Levels come from the model and runtime; "默认" sends none and leaves

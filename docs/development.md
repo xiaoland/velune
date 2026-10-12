@@ -205,7 +205,7 @@ python3 scripts/manual-relaykit-provider.py replay \
 
 [交互脚本](../scripts/manual-runtime-interactions.py) 另传 `--node`，以合成 app-server 验证 UniFFI 到控制协议的审批、私密回答、拒绝非法／陈旧回复、取消与意外 EOF。它不替代 Mac GUI 验收，也不连接真实上游。
 
-[并行会话脚本](../scripts/manual-parallel-sessions.py) 与 [实时会话脚本](../scripts/manual-live-sessions.py) 传入 `--library`、`--bindings`、`--bundle`、`--node` 与外部 Pi 1.0.2 的 `--pi`（包内 `dist/bundle/cli.js`），以临时 HOME、合成 Pi 会话和回环上游分别检查多会话同时执行与 turn 结果，以及实际 Pi CLI 作为另一客户端运行 turn 时的实时重读、运行识别、进程中途被杀后不再运行和自身执行的排除。[实际 Harness 实时脚本](../scripts/manual-live-native.py) 另传 `--codex` 与 `--claude`，在临时 managed HOME 中由实际 Codex 0.159.3／Claude Code 2.1.286 CLI 对回环合成上游执行外部 turn，检查按其存活记录（写入锁、会话登记）的运行识别、打开会话的实时重读与进程被杀后不再运行。[变更审阅脚本](../scripts/manual-working-changes.py) 使用同样参数，在临时 git 仓库中检查变更列表、差异行与路径拒绝。[推理强度脚本](../scripts/manual-reasoning-effort.py) 传入 `--library`、`--bindings`、`--bundle`、`--node`、`--codex`、`--claude` 与 `--pi`，在临时 managed HOME 中由实际三种 Harness 经网关与回环上游执行，检查可选强度、范围外强度未发送即拒绝，以及上游实际收到的推理字段只作用于所选 turn。[附件脚本](../scripts/manual-attachments.py) 参数相同，检查图片经三种 Harness 自身图片输入原样到达上游、非图片文件以绝对路径列入正文、仅图片的 turn、已发送消息在实时快照与原生记录中显示为正文＋图片＋文件，以及缺失、相对路径、目录与内容不符的图片在发送前整条拒绝。
+[并行会话脚本](../scripts/manual-parallel-sessions.py) 与 [实时会话脚本](../scripts/manual-live-sessions.py) 传入 `--library`、`--bindings`、`--bundle`、`--node` 与外部 Pi 1.0.2 的 `--pi`（包内 `dist/bundle/cli.js`），以临时 HOME、合成 Pi 会话和回环上游分别检查多会话同时执行与 turn 结果，以及实际 Pi CLI 作为另一客户端运行 turn 时的实时重读、运行识别、进程中途被杀后不再运行和自身执行的排除。[实际 Harness 实时脚本](../scripts/manual-live-native.py) 另传 `--codex` 与 `--claude`，在临时 managed HOME 中由实际 Codex 0.159.3／Claude Code 2.1.286 CLI 对回环合成上游执行外部 turn，检查按其存活记录（写入锁、会话登记）的运行识别、打开会话的实时重读与进程被杀后不再运行。[变更审阅脚本](../scripts/manual-working-changes.py) 使用同样参数，在临时 git 仓库中检查变更列表、差异行与路径拒绝。[推理强度脚本](../scripts/manual-reasoning-effort.py) 传入 `--library`、`--bindings`、`--bundle`、`--node`、`--codex`、`--claude` 与 `--pi`，在临时 managed HOME 中由实际三种 Harness 经网关与回环上游执行，检查可选强度、各运行时模型目录（原生模型带 Harness 自身强度、managed 模型随后且带提供商名；Pi 在临时 agentDir 写入合成 `models.json`）、范围外强度未发送即拒绝、上游实际收到的推理字段只作用于所选 turn，以及 Pi 原生模型经其自身提供商带所选强度派发。[附件脚本](../scripts/manual-attachments.py) 参数相同，检查图片经三种 Harness 自身图片输入原样到达上游、非图片文件以绝对路径列入正文、仅图片的 turn、已发送消息在实时快照与原生记录中显示为正文＋图片＋文件，以及缺失、相对路径、目录与内容不符的图片在发送前整条拒绝。
 
 ## 工作区 units 与绑定构建
 
@@ -334,7 +334,7 @@ Pi 提供商导入／OAuth 来源操作仍限定默认本机 execution，SSH 或
 
 Rust application 与 UniFFI 提供 `upsert_acp_runtime`，一次保存实例、`RuntimeExecution` 与 `AcpLaunch`。ACP 不要求 `nodeBinary`、`agentDir` 或远端 helper 资源目录；如果具体 bridge 使用 Node，可直接将 Node 作为 binary、bridge 脚本作为参数。SSH 仍需目标机器上的 Python 3 来承载已有执行传输，HOME 使用继承、现有路径或 Velune managed 选择。
 
-使用 `acp_runtime_info` 查看 Agent 身份、认证方法描述与协商能力。`create_conversation_with_selection` 配合 `ModelSelection::RuntimeDefault` 可创建无模型选择器的会话；普通发送、权限答复、取消使用现有 conversation API。模型目录只来自活动会话的 `configOptions`；需要完整的模式、布尔选项或多个选择器时使用 `acp_session_config`／`set_acp_session_config`，保留 Agent 的 config ID 与 opaque value。配置更新以 Agent 返回结果为准。
+使用 `acp_runtime_info` 查看 Agent 身份、认证方法描述与协商能力。`create_conversation_with_selection` 配合 `ModelSelection::RuntimeDefault` 可创建无模型选择器的会话；普通发送、权限答复、取消使用现有 conversation API。原生模型目录只来自活动会话的 `configOptions`，`runtime_models` 另总是先列 Agent 默认；需要完整的模式、布尔选项或多个选择器时使用 `acp_session_config`／`set_acp_session_config`，保留 Agent 的 config ID 与 opaque value。配置更新以 Agent 返回结果为准。
 
 有 list 能力的 Agent 使用通用会话列表；只有 load 的 Agent 可通过 `open_acp_conversation(runtime_id, native_session_id, cwd)` 显式打开。直接使用 `agent-runtime::acp::Client` 时可分别调用 load 与 resume，后者恢复上下文但不回放历史；application 的历史浏览和持久跨 Harness 接续要求 load。无 load 的连接仍可连续多轮运行，但关闭后不保证重开。通用 ACP 不支持统一的 managed provider 注入，应使用该 Harness 的专用 adapter 获取已实现的网关能力。
 

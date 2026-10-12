@@ -5,6 +5,23 @@ import VeluneBindings
 /// Converts generated UniFFI records at the application boundary. The Swift UI
 /// models remain platform-friendly; no JSON action envelope crosses this file.
 enum BindingMapping {
+    static func selection(_ value: BindingModelSelection) -> ModelSelection {
+        switch value {
+        case .runtimeDefault: .runtimeDefault
+        case .managed(let key): .managed(recordKey: key)
+        case .native(let provider, let model): .native(providerID: provider, modelID: model)
+        }
+    }
+    static func modelChoice(_ value: BindingRuntimeModel) -> ModelChoice {
+        ModelChoice(selection: selection(value.selection), displayName: value.name, reasoningEfforts: value.reasoningEfforts)
+    }
+    static func bindingSelection(_ value: ModelSelection) -> BindingModelSelection {
+        switch value {
+        case .runtimeDefault: .runtimeDefault
+        case .managed(let key): .managed(modelRecordKey: key)
+        case .native(let provider, let model): .native(providerId: provider, modelId: model)
+        }
+    }
     static func conversation(_ value: BindingConversationSummary) -> Conversation {
         Conversation(id: value.id, title: value.title, updatedAtUnixMs: value.updatedAtUnixMs, createdAtUnixMs: value.createdAtUnixMs,
                      runtimeID: value.runtimeId, cwd: value.cwd, canRename: value.canRename, canDelete: value.canDelete)

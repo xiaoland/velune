@@ -316,30 +316,30 @@ impl CoreRuntime {
             return Err(RuntimeError::invalid("此运行时已停用"));
         }
         if runtime.type_id == "acp-v1" {
-            return if let ActiveState::Acp(session) = &self.session.active_state
+            // The Agent's own default is always offered; its native catalog
+            // belongs to a live ACP session and is listed only while one runs.
+            let mut models = vec![RuntimeModel {
+                selection: ModelSelection::RuntimeDefault,
+                name: "Agent 默认模型".into(),
+                reasoning_efforts: Vec::new(),
+            }];
+            if let ActiveState::Acp(session) = &self.session.active_state
                 && self.session.execution_runtime_id.as_deref() == Some(&runtime.id)
                 && session.snapshot().is_some()
             {
-                let models = session
+                let native = session
                     .models()
                     .map_err(|error| RuntimeError::context("ACP 模型目录", error))?;
-                Ok(json!(
-                    models
-                        .into_iter()
-                        .map(|model| RuntimeModel {
-                            selection: ModelSelection::Native {
-                                provider_id: None,
-                                model_id: model.id
-                            },
-                            name: model.name,
-                        })
-                        .collect::<Vec<_>>()
-                ))
-            } else {
-                Err(RuntimeError::Unsupported(
-                    "ACP 模型目录属于会话，请先新建或打开该实例的会话".into(),
-                ))
-            };
+                models.extend(native.into_iter().map(|option| RuntimeModel {
+                    selection: ModelSelection::Native {
+                        provider_id: None,
+                        model_id: option.model.id,
+                    },
+                    name: option.model.name,
+                    reasoning_efforts: option.reasoning_efforts,
+                }));
+            }
+            return Ok(json!(models));
         }
         let mut models = Vec::new();
         if runtime.type_id == "pi-1.0.2" {
@@ -353,12 +353,13 @@ impl CoreRuntime {
             let shutdown = client.shutdown();
             let native = result.map_err(|error| RuntimeError::context("Pi 模型目录", error))?;
             shutdown.map_err(|error| RuntimeError::context("Pi 模型目录连接关闭", error))?;
-            models.extend(native.into_iter().map(|model| RuntimeModel {
+            models.extend(native.into_iter().map(|option| RuntimeModel {
                 selection: ModelSelection::Native {
-                    provider_id: model.provider_id,
-                    model_id: model.id,
+                    provider_id: option.model.provider_id,
+                    model_id: option.model.id,
                 },
-                name: model.name,
+                name: option.model.name,
+                reasoning_efforts: option.reasoning_efforts,
             }));
         } else {
             let mut session = NativeSession::connect(self.native_config(&runtime, None)?)
@@ -367,12 +368,13 @@ impl CoreRuntime {
             let shutdown = session.shutdown();
             let native = result.map_err(|error| RuntimeError::context("原生模型目录", error))?;
             shutdown.map_err(|error| RuntimeError::context("原生模型目录连接关闭", error))?;
-            models.extend(native.into_iter().map(|model| RuntimeModel {
+            models.extend(native.into_iter().map(|option| RuntimeModel {
                 selection: ModelSelection::Native {
-                    provider_id: model.provider_id,
-                    model_id: model.id,
+                    provider_id: option.model.provider_id,
+                    model_id: option.model.id,
                 },
-                name: model.name,
+                name: option.model.name,
+                reasoning_efforts: option.reasoning_efforts,
             }));
         }
         if let Some(gateway) = self
@@ -380,22 +382,25 @@ impl CoreRuntime {
             .iter()
             .find(|gateway| gateway.id == runtime.gateway_id)
         {
-            models.extend(
-                gateway
-                    .providers
-                    .iter()
-                    .flat_map(|provider| &provider.models)
-                    .map(|model| RuntimeModel {
-                        selection: ModelSelection::Managed {
-                            model_record_key: model.record_key.clone(),
-                        },
-                        name: if model.nickname.is_empty() {
-                            model.provider_model_id.clone()
-                        } else {
-                            model.nickname.clone()
-                        },
-                    }),
-            );
+            for (provider, model) in gateway
+                .providers
+                .iter()
+                .flat_map(|provider| provider.models.iter().map(move |model| (provider, model)))
+            {
+                let model_name = if model.nickname.is_empty() {
+                    &model.provider_model_id
+                } else {
+                    &model.nickname
+                };
+                models.push(RuntimeModel {
+                    selection: ModelSelection::Managed {
+                        model_record_key: model.record_key.clone(),
+                    },
+                    // Managed records may share a model name across providers.
+                    name: format!("{model_name} · {}", provider.name),
+                    reasoning_efforts: self.reasoning_efforts(&runtime, &model.record_key)?,
+                });
+            }
         }
         Ok(serde_json::to_value(models)?)
     }

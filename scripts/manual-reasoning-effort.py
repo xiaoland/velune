@@ -108,6 +108,12 @@ def main():
             app.upsert_runtime_with_execution(b.BindingRuntimeInstance(
                 enabled=True, id='claude', name='Claude Code', type_id='claude-code-2.1.286', gateway_id='default',
                 settings={'binary': str(args.claude.resolve())}), managed)
+            # Pi's own provider, so its native catalog and dispatch have a model.
+            (root / 'pi').mkdir()
+            (root / 'pi' / 'models.json').write_text(json.dumps({'providers': {'synthetic': {
+                'baseUrl': endpoint, 'api': 'openai-responses', 'apiKey': 'SYNTHETIC_ONLY', 'models': [
+                    {'id': 'synthetic-thinking', 'name': 'Synthetic thinking', 'reasoning': True, 'contextWindow': 8192, 'maxTokens': 128},
+                    {'id': 'synthetic-plain', 'name': 'Synthetic plain', 'reasoning': False, 'contextWindow': 8192, 'maxTokens': 128}]}}}))
             app.upsert_runtime(b.BindingRuntimeInstance(
                 enabled=True, id='pi', name='Pi', type_id='pi-1.0.2', gateway_id='default',
                 settings={'binary': str(args.pi), 'nodeBinary': str(args.node), 'agentDir': str(root / 'pi')}))
@@ -135,6 +141,28 @@ def main():
                 ('codex', 'plain'): [],
             }, offered
             print('PASS levels offered follow the model declaration in each runtime\'s own vocabulary', flush=True)
+
+            # The composer's catalog: native entries carry the harness's own
+            # levels, managed entries the mapped ones above, named with provider.
+            pi_levels = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']
+            for runtime in ('codex', 'claude', 'pi'):
+                catalog = app.runtime_models(runtime)
+                native = [m for m in catalog if isinstance(m.selection, b.BindingModelSelection.NATIVE)]
+                managed = {m.selection.model_record_key: m for m in catalog if isinstance(m.selection, b.BindingModelSelection.MANAGED)}
+                assert catalog[:len(native)] == native, (runtime, 'native entries first')
+                assert any(m.reasoning_efforts for m in native), (runtime, 'no native levels')
+                if runtime == 'pi':
+                    assert {(m.selection.provider_id, m.selection.model_id): m.reasoning_efforts for m in native} == {
+                        ('synthetic', 'synthetic-thinking'): pi_levels, ('synthetic', 'synthetic-plain'): []}, native
+                if runtime == 'claude':
+                    assert all(m.selection.provider_id is None for m in native)
+                assert managed[responses].name == 'responses · responses' and managed[plain].reasoning_efforts == []
+                expected = {'codex': ['none', 'low', 'medium', 'high', 'xhigh'], 'claude': ['low', 'medium', 'high', 'xhigh'], 'pi': ['off', 'low', 'medium', 'high', 'xhigh']}[runtime]
+                assert managed[responses].reasoning_efforts == expected, (runtime, managed[responses].reasoning_efforts)
+                print('  %s: %d native (%d with levels, e.g. %s %s), %d managed' % (
+                    runtime, len(native), sum(1 for m in native if m.reasoning_efforts), native[0].selection.model_id,
+                    native[0].reasoning_efforts, len(managed)), flush=True)
+            print('PASS runtime catalogs list native models with their own levels, then managed models', flush=True)
 
             def wait_idle(runtime, conversation, label, timeout=60):
                 deadline = time.monotonic() + timeout
@@ -197,6 +225,18 @@ def main():
                 assert kept == baseline != picked, (runtime, baseline, kept)
             print('PASS a chosen level reaches the upstream through each harness for its turn only; '
                   'levels outside the offer are refused unsent', flush=True)
+
+            # A native selection runs on the harness's own provider; its level
+            # goes through the same channel.
+            thinking = b.BindingModelSelection.NATIVE(provider_id='synthetic', model_id='synthetic-thinking')
+            conversation = app.create_conversation_with_selection('pi', str(root / 'project'), thinking).snapshot.conversation.id
+            before = len(captures)
+            conversation = app.send_turn_with_selection('pi', conversation, 'pi', thinking, b.BindingComposedTurn(
+                text='NATIVE_pi', effort='high', attachments=[])).snapshot.conversation.id
+            wait_idle('pi', conversation, 'pi native')
+            body = [body for _, body in captures[before:] if 'NATIVE_pi' in json.dumps(body)][-1]
+            assert body['model'] == 'synthetic-thinking' and reasoning['pi'](body) == 'high', body.get('model')
+            print('PASS a native Pi model is dispatched on Pi\'s own provider with the chosen level', flush=True)
         finally:
             app.shutdown()
             server.shutdown()

@@ -2,6 +2,8 @@
 
 本 unit 实现通用 ACP v1 接入，以及 Pi RPC／SDK、Codex app-server、Claude Code stream-json 和 DeepSeek Harness ACP 的专用适配器。它负责原生控制、会话读取与消息 projection；真实会话由各 Harness 持久化，Velune 不复制为另一套会话历史。Pi 适配器另提供显式来源的认证交互和只读提供商发现。
 
+各适配器的模型目录返回 `ModelOption`：原生模型及该 Harness 对它接受的推理强度，取自 Harness 自身目录（Codex `model/list` 的 `supportedReasoningEfforts`、Claude Code initialize 的 `supportsEffort`／`supportedEffortLevels`、Pi `reasoning` 模型的 `PI_THINKING_LEVELS`；DSH 与通用 ACP 暂无对应目录字段，为空）。
+
 在工作区内，它只依赖 [会话契约](../conversation/README.md)，不依赖 AI 服务、网关、application 或 UniFFI。执行配置与网关注入的临时 token 由 application 显式传入；它不选择上游模型路由、保存应用配置，也不拥有原生界面。
 
 `authentication` 与 `provider_source` 通过本包资源中的薄 Pi helper 执行来源操作，返回非秘密的类型化状态和发现结果。application 负责将结果导入网关及原子提交；application 的提供商私有认证解析器通过固定 `pi_auth.mjs` 委托 OAuth 来源解析与刷新，不读取环境里的默认认证。

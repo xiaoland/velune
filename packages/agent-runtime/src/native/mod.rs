@@ -92,6 +92,13 @@ pub struct RuntimeModel {
     pub id: String,
     pub name: String,
 }
+/// A model a runtime offers, with the reasoning levels the runtime accepts
+/// for it, in the runtime's own vocabulary; empty when it takes none.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ModelOption {
+    pub model: RuntimeModel,
+    pub reasoning_efforts: Vec<String>,
+}
 #[derive(Clone)]
 struct PendingRequest {
     id: Value,
@@ -388,7 +395,7 @@ impl NativeSession {
         self.restart_required = true;
         Ok(())
     }
-    pub fn models(&mut self) -> Result<Vec<RuntimeModel>> {
+    pub fn models(&mut self) -> Result<Vec<ModelOption>> {
         self.ensure_idle()?;
         match self.config.kind {
             NativeKind::Codex => self.codex_models(),

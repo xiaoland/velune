@@ -155,6 +155,8 @@ pub struct ComposedTurn {
 pub struct RuntimeModel {
     pub selection: ModelSelection,
     pub name: String,
+    /// Levels the runtime accepts for this model; empty when it takes none.
+    pub reasoning_efforts: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

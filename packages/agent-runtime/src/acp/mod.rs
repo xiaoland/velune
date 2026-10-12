@@ -368,7 +368,8 @@ impl Client {
         Ok(())
     }
 
-    pub fn models(&self) -> Result<Vec<crate::native::RuntimeModel>> {
+    /// Reasoning is a session configuration option of its own in ACP.
+    pub fn models(&self) -> Result<Vec<crate::native::ModelOption>> {
         self.ensure_idle()?;
         Ok(self
             .options
@@ -376,10 +377,13 @@ impl Client {
             .find(|option| option.category.as_deref() == Some("model"))
             .into_iter()
             .flat_map(|option| &option.choices)
-            .map(|choice| crate::native::RuntimeModel {
-                provider_id: None,
-                id: choice.value.clone(),
-                name: choice.name.clone(),
+            .map(|choice| crate::native::ModelOption {
+                model: crate::native::RuntimeModel {
+                    provider_id: None,
+                    id: choice.value.clone(),
+                    name: choice.name.clone(),
+                },
+                reasoning_efforts: Vec::new(),
             })
             .collect())
     }

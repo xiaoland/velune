@@ -129,40 +129,40 @@ def main():
             info=application.acp_runtime_info('full')
             assert info.capabilities.load_session and info.capabilities.list_sessions
             assert info.agent_info.name=='fixture' and info.auth_methods[0].id=='external'
-            reject(lambda:application.runtime_models('full'),'会话')
+            assert [model.selection for model in application.runtime_models('full')]==[default]
             assert count('full','new')==0
             created=application.create_conversation_with_selection('live',str(root/'project'),default).snapshot;identity=created.conversation.id;live_id=identity
             assert not application.acp_runtime_info('live').capabilities.load_session
-            assert application.runtime_models('live')==[]
+            assert [model.selection for model in application.runtime_models('live')]==[default]
             for text in ('FIRST','SECOND'):
-                application.send_turn_with_selection('live',identity,'live',default,text);wait('live',identity)
+                application.send_turn_with_selection('live',identity,'live',default,b.BindingComposedTurn(text=text, effort=None, attachments=[]));wait('live',identity)
             assert count('live','new')==1 and count('live','load')==0
             assert len({record['pid'] for record in records('live') if record['kind']=='prompt'})==1
-            reject(lambda:application.send_turn_with_selection('live',identity,'full',default,'NO_HANDOFF'),'历史')
+            reject(lambda:application.send_turn_with_selection('live',identity,'full',default,b.BindingComposedTurn(text='NO_HANDOFF', effort=None, attachments=[])),'历史')
             assert count('full','new')==0
-            application.send_turn_with_selection('live',identity,'live',default,'STILL_LIVE');wait('live',identity)
+            application.send_turn_with_selection('live',identity,'live',default,b.BindingComposedTurn(text='STILL_LIVE', effort=None, attachments=[]));wait('live',identity)
             created=application.create_conversation_with_selection('full',str(root/'project'),default).snapshot;identity=created.conversation.id;first_full_id=identity
-            models=application.runtime_models('full');assert [model.selection.model_id for model in models]==['alpha','beta']
+            models=application.runtime_models('full');assert models[0].selection==default and [model.selection.model_id for model in models[1:]]==['alpha','beta']
             config=application.acp_session_config('full',identity);assert config[0].choices[0].group=='fixture'
             application.set_acp_session_config('full',identity,'flag-without-category',b.BindingAcpConfigValue.BOOLEAN(False))
             reject(lambda:application.set_acp_session_config('full',identity,'primary-selector',b.BindingAcpConfigValue.SELECT('missing')))
             beta=b.BindingModelSelection.NATIVE(provider_id=None,model_id='beta')
             for text in ('MODEL_SELECTION','SECOND_TURN'):
-                application.send_turn_with_selection('full',identity,'full',beta,text);wait('full',identity)
+                application.send_turn_with_selection('full',identity,'full',beta,b.BindingComposedTurn(text=text, effort=None, attachments=[]));wait('full',identity)
             assert count('full','new')==1 and count('full','load')==0
             assert len({record['pid'] for record in records('full') if record['kind']=='prompt'})==1
-            reject(lambda:application.send_turn_with_selection('full',identity,'full',b.BindingModelSelection.MANAGED(model_record_key='irrelevant'),'NO_MANAGED'),'managed')
-            application.send_turn_with_selection('full',identity,'full',default,'PERMIT')
+            reject(lambda:application.send_turn_with_selection('full',identity,'full',b.BindingModelSelection.MANAGED(model_record_key='irrelevant'),b.BindingComposedTurn(text='NO_MANAGED', effort=None, attachments=[])),'managed')
+            application.send_turn_with_selection('full',identity,'full',default,b.BindingComposedTurn(text='PERMIT', effort=None, attachments=[]))
             pending=wait('full',identity,lambda snapshot:bool(snapshot.pending_interactions)).pending_interactions[0]
             reject(lambda:application.reply_runtime_interaction('full',identity,pending.id,b.BindingRuntimeInteractionReply.DECISION(option_id='missing')))
             application.reply_runtime_interaction('full',identity,pending.id,b.BindingRuntimeInteractionReply.DECISION(option_id='allow'));wait('full',identity)
-            application.send_turn_with_selection('full',identity,'full',default,'CANCEL');application.cancel('full',identity);wait('full',identity)
+            application.send_turn_with_selection('full',identity,'full',default,b.BindingComposedTurn(text='CANCEL', effort=None, attachments=[]));application.cancel('full',identity);wait('full',identity)
             reject(lambda:application.reply_runtime_interaction('full',identity,pending.id,b.BindingRuntimeInteractionReply.DECISION(option_id='allow')))
             before=count('live','new')
-            reject(lambda:application.send_turn_with_selection('full',identity,'live',default,'NO_TARGET'),'历史')
+            reject(lambda:application.send_turn_with_selection('full',identity,'live',default,b.BindingComposedTurn(text='NO_TARGET', effort=None, attachments=[])),'历史')
             assert count('live','new')==before and application.snapshot('full',identity).snapshot.actions.can_send
             created=application.create_conversation_with_selection('listless',str(root/'project'),default).snapshot;listless_id=created.conversation.id
-            application.send_turn_with_selection('listless',listless_id,'listless',default,'RELOAD_ME');live_replay_ids=[message.id for message in wait('listless',listless_id).messages]
+            application.send_turn_with_selection('listless',listless_id,'listless',default,b.BindingComposedTurn(text='RELOAD_ME', effort=None, attachments=[]));live_replay_ids=[message.id for message in wait('listless',listless_id).messages]
             application.shutdown();application=b.VeluneApplication.open(options)
             reject(lambda:application.open_acp_conversation('live',live_id.split(':',1)[1],str(root/'project')),'历史')
             assert count('live','new')==1
@@ -173,20 +173,20 @@ def main():
             reloaded=application.open_acp_conversation('listless',listless_id.split(':',1)[1],str(root/'project')).snapshot
             assert [message.id for message in reloaded.messages]==loaded_ids, 'identical ACP replay changed message IDs'
             assert count('listless','new')==1
-            application.send_turn_with_selection('listless',listless_id,'listless',default,'AFTER_REOPEN');wait('listless',listless_id)
-            application.send_turn_with_selection('listless',listless_id,'listless',default,'EOF')
+            application.send_turn_with_selection('listless',listless_id,'listless',default,b.BindingComposedTurn(text='AFTER_REOPEN', effort=None, attachments=[]));wait('listless',listless_id)
+            application.send_turn_with_selection('listless',listless_id,'listless',default,b.BindingComposedTurn(text='EOF', effort=None, attachments=[]))
             failed=wait('listless',listless_id,lambda snapshot:snapshot.run_state==b.BindingRunState.FAILED,True)
             assert not failed.actions.can_send and any(block.text=='PARTIAL' for message in failed.messages for block in message.blocks if isinstance(block,b.BindingMessageBlock.TEXT))
-            reject(lambda:application.send_turn_with_selection('listless',listless_id,'listless',default,'NO_RETRY'))
+            reject(lambda:application.send_turn_with_selection('listless',listless_id,'listless',default,b.BindingComposedTurn(text='NO_RETRY', effort=None, attachments=[])))
             application.shutdown();application=b.VeluneApplication.open(b.BindingOptions(home_directory=str(root/'application'),resources_directory=str(args.resources)))
             claude_peer=runpy.run_path(str(Path(__file__).with_name('manual-runtime-selection.py')))['PEER']
             claude=root/'claude-peer';claude.write_text(claude_peer.replace('__PYTHON__',sys.executable).replace('__LOG__',repr(str(root/'claude-events.jsonl'))));claude.chmod(0o700)
             application.upsert_runtime(b.BindingRuntimeInstance(enabled=True,id='claude',name='Claude fixture',type_id='claude-code-2.1.286',gateway_id='default',settings={'binary':str(claude),'agentDir':str(root/'claude')}))
             source=application.create_conversation_with_selection('full',str(root/'project'),default).snapshot;identity=source.conversation.id
-            application.send_turn_with_selection('full',identity,'full',default,'ACP_ORIGIN');wait('full',identity)
+            application.send_turn_with_selection('full',identity,'full',default,b.BindingComposedTurn(text='ACP_ORIGIN', effort=None, attachments=[]));wait('full',identity)
             native=b.BindingModelSelection.NATIVE(provider_id=None,model_id='native-model')
-            application.send_turn_with_selection('full',identity,'claude',native,'CLAUDE_HANDOFF');wait('claude',identity)
-            application.send_turn_with_selection('full',identity,'full',default,'ACP_RETURN');wait('full',identity)
+            application.send_turn_with_selection('full',identity,'claude',native,b.BindingComposedTurn(text='CLAUDE_HANDOFF', effort=None, attachments=[]));wait('claude',identity)
+            application.send_turn_with_selection('full',identity,'full',default,b.BindingComposedTurn(text='ACP_RETURN', effort=None, attachments=[]));wait('full',identity)
             application.shutdown();application=b.VeluneApplication.open(b.BindingOptions(home_directory=str(root/'application'),resources_directory=str(args.resources)))
             reopened=application.open_conversation('full',identity).snapshot
             texts=[block.text for message in reopened.messages for block in message.blocks if isinstance(block,b.BindingMessageBlock.TEXT)]
@@ -198,7 +198,7 @@ def main():
             application.delete_conversation('full',first_full_id)
             assert not any(row.id==first_full_id for row in application.list().conversations)
             draft=application.create_conversation_with_selection('claude',str(root/'project'),native).snapshot
-            application.send_turn_with_selection('claude',draft.conversation.id,'listless',default,'LISTLESS_ALIAS_DELETE')
+            application.send_turn_with_selection('claude',draft.conversation.id,'listless',default,b.BindingComposedTurn(text='LISTLESS_ALIAS_DELETE', effort=None, attachments=[]))
             wait('listless',draft.conversation.id)
             application.delete_conversation('listless',draft.conversation.id)
             assert not any(row.id==draft.conversation.id for row in application.list().conversations)

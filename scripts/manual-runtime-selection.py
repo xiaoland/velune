@@ -125,7 +125,7 @@ def main():
                 return [json.loads(line) for line in log.read_text().splitlines()]
 
             def turn(target, selection, text='SYNTHETIC_REQUEST'):
-                application.send_turn_with_selection('first', conversation, target, selection, text)
+                application.send_turn_with_selection('first', conversation, target, selection, b.BindingComposedTurn(text=text, effort=None, attachments=[]))
                 deadline = time.monotonic() + 10
                 while time.monotonic() < deadline:
                     value = application.snapshot(target, conversation).snapshot
@@ -152,8 +152,8 @@ def main():
             failed = turn('first', managed, 'FAIL_SYNTHETIC')
             assert failed.run_state == b.BindingRunState.FAILED
             turn('first', native)
-            application.send_turn_with_selection('first', conversation, 'first', managed, 'CANCEL_SYNTHETIC')
-            application.cancel('first')
+            application.send_turn_with_selection('first', conversation, 'first', managed, b.BindingComposedTurn(text='CANCEL_SYNTHETIC', effort=None, attachments=[]))
+            application.cancel('first', conversation)
             deadline = time.monotonic() + 10
             while time.monotonic() < deadline:
                 cancelled = application.snapshot('first', conversation).snapshot
@@ -188,7 +188,7 @@ def main():
 
             for initial, selected, target_runtime in ((native, managed, 'first'), (managed, native, 'first'), (native, native, 'second')):
                 draft = application.create_conversation_with_selection('first', str(root / 'project'), initial).snapshot
-                result = application.send_turn_with_selection('first', draft.conversation.id, target_runtime, selected, 'FRESH_SELECTION')
+                result = application.send_turn_with_selection('first', draft.conversation.id, target_runtime, selected, b.BindingComposedTurn(text='FRESH_SELECTION', effort=None, attachments=[]))
                 current = wait_snapshot(target_runtime, draft.conversation.id)
                 assert current.conversation.id == draft.conversation.id
                 assert current.conversation.runtime_id == target_runtime
@@ -199,7 +199,7 @@ def main():
                 alias = next(link for link in links if link['id'] == draft.conversation.id)
                 assert len(alias['segments']) == 1 and alias['segments'][0]['nativeConversationId'] != draft.conversation.id
                 if target_runtime == 'second':
-                    application.send_turn_with_selection('second', draft.conversation.id, 'first', managed, 'ALIAS_HANDOFF')
+                    application.send_turn_with_selection('second', draft.conversation.id, 'first', managed, b.BindingComposedTurn(text='ALIAS_HANDOFF', effort=None, attachments=[]))
                     extended = wait_snapshot('first', draft.conversation.id)
                     assert extended.conversation.runtime_id == 'second'
                     assert any(message.id == 'segment-1:boundary' for message in extended.messages)
@@ -212,14 +212,14 @@ def main():
             launch_failure = root / 'fail-launch'
             launch_failure.touch()
             try:
-                application.send_turn_with_selection('first', draft.conversation.id, 'first', managed, 'SETUP_RETRY')
+                application.send_turn_with_selection('first', draft.conversation.id, 'first', managed, b.BindingComposedTurn(text='SETUP_RETRY', effort=None, attachments=[]))
             except b.BindingError:
                 pass
             else:
                 raise AssertionError('Injected setup failure was ignored')
             launch_failure.unlink()
             assert sum(record['kind'] == 'turn' for record in records()) == before
-            application.send_turn_with_selection('first', draft.conversation.id, 'first', managed, 'SETUP_RETRY')
+            application.send_turn_with_selection('first', draft.conversation.id, 'first', managed, b.BindingComposedTurn(text='SETUP_RETRY', effort=None, attachments=[]))
             wait_snapshot('first', draft.conversation.id)
 
             draft = application.create_conversation_with_selection('first', str(root / 'project'), native).snapshot
@@ -227,7 +227,7 @@ def main():
             blocked_alias.mkdir()
             before = sum(record['kind'] == 'turn' for record in records())
             try:
-                application.send_turn_with_selection('first', draft.conversation.id, 'first', managed, 'ALIAS_RETRY')
+                application.send_turn_with_selection('first', draft.conversation.id, 'first', managed, b.BindingComposedTurn(text='ALIAS_RETRY', effort=None, attachments=[]))
             except b.BindingError:
                 pass
             else:
@@ -235,12 +235,12 @@ def main():
             blocked_alias.rmdir()
             assert sum(record['kind'] == 'turn' for record in records()) == before
             starts = sum(record['kind'] == 'start' for record in records())
-            application.send_turn_with_selection('first', draft.conversation.id, 'first', managed, 'ALIAS_RETRY')
+            application.send_turn_with_selection('first', draft.conversation.id, 'first', managed, b.BindingComposedTurn(text='ALIAS_RETRY', effort=None, attachments=[]))
             wait_snapshot('first', draft.conversation.id)
             assert sum(record['kind'] == 'start' for record in records()) == starts + 1, 'Alias retry recreated the prepared target'
 
             draft = application.create_conversation_with_selection('first', str(root / 'project'), native).snapshot
-            application.send_turn_with_selection('first', draft.conversation.id, 'first', managed, 'NO_HISTORY_FAILURE')
+            application.send_turn_with_selection('first', draft.conversation.id, 'first', managed, b.BindingComposedTurn(text='NO_HISTORY_FAILURE', effort=None, attachments=[]))
             wait_snapshot('first', draft.conversation.id)
             application.shutdown()
             application = b.VeluneApplication.open(b.BindingOptions(home_directory=str(root / 'application'), resources_directory=str(args.resources)))

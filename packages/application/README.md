@@ -60,7 +60,7 @@ Pi 草稿的原生重命名可能尚未落盘，因此重命名不消耗未提�
 
 会话阅读与执行身份分开：`read_conversation`只读指定来源的原生历史／关联投影，不切换活跃runner；相同活动身份返回当前投影。`snapshot`同时接收上下文运行时和会话ID，非当前活动身份返回None。快照结果是交付形式 `DeliveredSnapshot`：思考块交付为摘要与其下的正文（`DeliveredBlock::Reasoning{summary, text}`），没有摘要的思考块不交付；超过 2KB 的推理与工具输出只携带字节数，由 `message_payloads` 按消息读取；图片内容同样延迟，路径图片只交付路径；用户正文末尾的“附件：”路径列表交付为文件块（`DeliveredBlock::File`），不作为正文；`snapshot_update(since)` 依据上次交付游标返回未变化或只含变化消息的快照，供展示客户端轮询。`send_turn`接收来源运行时／会话ID、目标运行时／模型和文本，在同一个核心操作中激活指定来源再派发，不能用全局最后打开的会话代替发送来源。调用方可为多个工作区保存阅读投影，但共享核心仍只有一个活跃执行。
 
-`ModelSelection` 区分 `Managed { model_record_key }`、`Native { provider_id, model_id }` 和通用 ACP 的 `RuntimeDefault`。专用适配器的 `runtime_models` 从指定实例读取原生模型目录，并附加该实例网关中的 managed 模型；通用 ACP 只提供当前会话的原生模型选项。原生标识不经过网关查找，也不要求已有提供商支持并存。Pi 和 DSH 的 native 选择必须指定 provider ID；Claude Code 使用既有单一 provider，不能另传 provider ID；Codex 可省略 provider ID 以使用现有默认 provider。`create_conversation_with_selection` 和 `send_turn_with_selection` 接受上述选择；原 `create_conversation`／`send_turn` 是合法的 managed 便捷入口。`next_turn_model_selection` 表示当前上下文的下一轮选择意图，managed turn 结束后仍可保持 managed，不声称进程仍在使用网关。snapshot 的 `model_record_key` 仅表示 managed 模型，native 选择返回 None。
+`ModelSelection` 区分 `Managed { model_record_key }`、`Native { provider_id, model_id }` 和通用 ACP 的 `RuntimeDefault`。专用适配器的 `runtime_models` 从指定实例读取原生模型目录，并附加该实例网关中的 managed 模型（名称带提供商名）；通用 ACP 先提供 `RuntimeDefault`（“Agent 默认模型”），活动会话时再列其原生模型选项。每个 `RuntimeModel` 带 `reasoning_efforts`：原生取 Harness 自身目录（Codex `model/list` 的 `supportedReasoningEfforts`、Claude Code initialize 的 `supportedEffortLevels`、Pi `reasoning` 模型的固定级别），managed 与 `reasoning_efforts` 用例相同；平台据此展示菜单，不另行判断运行时。原生标识不经过网关查找，也不要求已有提供商支持并存。Pi 和 DSH 的 native 选择必须指定 provider ID；Claude Code 使用既有单一 provider，不能另传 provider ID；Codex 可省略 provider ID 以使用现有默认 provider。`create_conversation_with_selection` 和 `send_turn_with_selection` 接受上述选择；原 `create_conversation`／`send_turn` 是合法的 managed 便捷入口。`next_turn_model_selection` 表示当前上下文的下一轮选择意图，managed turn 结束后仍可保持 managed，不声称进程仍在使用网关。snapshot 的 `model_record_key` 仅表示 managed 模型，native 选择返回 None。
 
 managed 发送只在本轮执行子进程注入网关；正常结束、失败或取消完成后关闭该执行进程和隧道，原生配置文件保持原状。下一轮 native 选择重新以原生 provider 启动。跨实例交接沿用原生历史和关联机制，模型来源不改变交接资格；调用方必须为目标实例显式提供其 native 或 managed 选择，不把来源实例的模型身份自动解释为目标模型。
 
@@ -74,7 +74,7 @@ managed 发送只在本轮执行子进程注入网关；正常结束、失败或
 
 ACP 不要求 Node、agentDir、特定历史目录或 helper bundle；SSH 的 `remote_resources_directory` 可省略，`Options.resources_directory` 可以是已有空目录。Managed HOME 只创建该实例稳定的 HOME，不替 Agent 指定私有配置子目录。ACP 初始化直接协商协议，不运行专用 Harness 的版本探测。
 
-`acp_runtime_info` 返回 Agent 名称／版本、认证方式描述和实际会话能力。认证信息仅用于说明外部登录途径，不表示 Velune 已认证。`RuntimeDefault` 表示保留 Agent 当前会话的模型选择；无模型选项的 Agent 仍可创建并连续发送。`runtime_models` 只读取活动 ACP 会话的首个 model 配置项，未建立会话时明确返回不支持，绝不为探测创建隐藏会话。没有 model 类别的活动会话返回空候选。`acp_session_config`／`set_acp_session_config` 保留原配置 ID、opaque value、类别、分组和 boolean／select 类型，类别可缺省或重复；修改配置和模型继续使用同一活动进程。
+`acp_runtime_info` 返回 Agent 名称／版本、认证方式描述和实际会话能力。认证信息仅用于说明外部登录途径，不表示 Velune 已认证。`RuntimeDefault` 表示保留 Agent 当前会话的模型选择；无模型选项的 Agent 仍可创建并连续发送。`runtime_models` 总是先返回 `RuntimeDefault`，再读取活动 ACP 会话的首个 model 配置项；未建立会话或没有 model 类别时只有默认项，绝不为探测创建隐藏会话。`acp_session_config`／`set_acp_session_config` 保留原配置 ID、opaque value、类别、分组和 boolean／select 类型，类别可缺省或重复；修改配置和模型继续使用同一活动进程。
 
 ACP 的列表能力缺失与空列表不同；汇总列表通过 `history_failures` 保留不支持说明，当前活动会话仍可显示与使用。`open_acp_conversation(runtime_id, native_session_id, cwd)` 按明确引用加载会话，不依赖列表能力；普通 `open_conversation` 可从 Agent 列表取得真实 cwd。只有 `session/load` 的原生回放可用于读取历史；`resume` 能力不等于历史读取。无 load 的 Agent 在当前进程中支持多轮、权限答复与取消，关闭后的重开明确不支持，不创建新会话冒充恢复。重命名没有通用协议入口，删除按协商能力执行。
 

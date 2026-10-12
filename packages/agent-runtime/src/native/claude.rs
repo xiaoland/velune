@@ -136,16 +136,31 @@ impl NativeSession {
         }
         Ok(())
     }
-    pub(super) fn claude_models(&self) -> Result<Vec<RuntimeModel>> {
+    /// Claude Code 2.1.286 lists `supportedEffortLevels` for models that
+    /// `supportsEffort`.
+    pub(super) fn claude_models(&self) -> Result<Vec<ModelOption>> {
         Ok(self
             .available_models
             .iter()
             .filter_map(|model| {
                 let id = model["value"].as_str()?;
-                Some(RuntimeModel {
-                    provider_id: None,
-                    id: id.into(),
-                    name: model["displayName"].as_str().unwrap_or(id).into(),
+                let efforts = if model["supportsEffort"] == true {
+                    model["supportedEffortLevels"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|level| level.as_str().map(str::to_owned))
+                        .collect()
+                } else {
+                    Vec::new()
+                };
+                Some(ModelOption {
+                    model: RuntimeModel {
+                        provider_id: None,
+                        id: id.into(),
+                        name: model["displayName"].as_str().unwrap_or(id).into(),
+                    },
+                    reasoning_efforts: efforts,
                 })
             })
             .collect())

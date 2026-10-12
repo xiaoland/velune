@@ -523,6 +523,8 @@ pub struct BindingAcpConfigOption {
 pub struct BindingRuntimeModel {
     pub selection: BindingModelSelection,
     pub name: String,
+    /// Levels the runtime accepts for this model; empty when it takes none.
+    pub reasoning_efforts: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]

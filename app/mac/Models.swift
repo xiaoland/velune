@@ -145,11 +145,27 @@ struct ProviderModel: Codable, Sendable, Identifiable, Equatable {
     var adapterMetadataJSON: String? = nil
     var displayName: String { nickname.isEmpty ? providerModelID : nickname }
 }
-struct ModelChoice: Identifiable, Sendable {
-    var id: String { recordKey }
-    var recordKey: String
+/// What the next turn runs on: a model of the runtime's own providers, a
+/// Velune-managed model, or (generic ACP) the Agent's current choice.
+enum ModelSelection: Hashable, Sendable {
+    case runtimeDefault
+    case managed(recordKey: String)
+    case native(providerID: String?, modelID: String)
+}
+/// A model the next turn can use, with the reasoning levels the runtime
+/// accepts for it.
+struct ModelChoice: Identifiable, Hashable, Sendable {
+    var id: ModelSelection { selection }
+    var selection: ModelSelection
     var displayName: String
-    var protocolID: ProviderProtocol
+    var reasoningEfforts: [String] = []
+}
+/// The models a runtime instance offers, read from the core when first needed.
+enum RuntimeModelCatalog: Equatable, Sendable {
+    case loading
+    case failed(String)
+    /// The runtime's default when it has one, its own models, then managed models.
+    case ready([ModelChoice])
 }
 struct ModelTemplate: Codable, Sendable, Identifiable, Equatable {
     var id: String = ""
