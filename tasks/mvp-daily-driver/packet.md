@@ -191,3 +191,4 @@
 - 思考摘要：conversation `reasoning::summary`——强调／标题标记包裹的首行为摘要、其后为正文，普通首行为摘要且保留在正文；无可读文字为 None。交付 `Reasoning{summary, text}`，无摘要不交付；Mac 以摘要为折叠标题（尾部截断、帮助显示全文），摘要下尚无正文时只显示文字不带展开按钮；状态行当前工作直接用摘要（删除 Mac 端首行推断）。预览数据的第三个会话改为运行中（两个摘要＋运行中工具）。
 - 验证：`manual-live-native.py`（实际 Codex 0.159.3／Claude Code 2.1.286）增加 turn 中途杀进程后立即不再运行——全部通过，Claude procStart 与 Velune 读取的 `ps` 一致。`manual-live-sessions.py` 改用实际 Pi CLI 作为另一客户端（经 shell 启动，避免被当作本进程子进程排除），含中途杀进程——全部通过；修正被杀客户端的断管噪声。`manual-session-browser.py` 增加摘要断言并修正过期的 schema 7 断言为 8——通过。绑定直接读取：完成的 turn 只交付一个摘要“Reading the layout”，仅签名的空思考块不交付。开发版预览截图：运行中工作过程展开，带正文的摘要为收起的折叠项，无正文的摘要为对齐的纯文字，状态行为运行中工具。
 - 观察（与本改动无关，未修）：开发版以 `open -n -g` 后台启动且窗口落在其他桌面空间时，Pi 历史辅助进程固定 15 秒超时，而同一配置经 Python 绑定 0.24 秒完成；安装版 7ccb787 同样复现，`PI_OFFLINE`、关闭 App Nap 无效，TCC 日志无记录，原因未查明。后台启动时 SwiftUI 可能不建窗口，`open -g <dev app>` 对运行中实例发送 reopen 可建窗口且不前置。
+- 安装：3a04097 已构建安装（签名校验通过，manifest commit 一致、dirty=false，重开无崩溃报告）。
