@@ -168,3 +168,4 @@
 - 工作过程：运行中的 turn 除非用户收起，否则展开；结束后按已完成 turn 的规则（默认收起）。
 - 状态行：进度指示＋当前工作（最新推理块首行／运行中工具标题／“正在回复”），文字带 CAGradientLayer 遮罩 shimmer，尊重减少动态效果；“正在停止”不闪；Elsewhere 只显示进度指示。
 - 验证：临时 VELUNE_HOME＋Pi 1.0.2＋回环 Messages 上游（思考块后挂起 45 秒）：运行中工作过程展开、状态行显示“Inspecting the project layout”并有高光移过，弹出按钮指示器为中性灰。发现：把开发版设为前台会让用户正在进行的键盘输入落入其输入框，改用 `open -n -g --env VELUNE_HOME=…` 后台启动；AX 点击发送仍会把它带到前台，验证后立即退出。turn 结束后收起与 Elsewhere 只显示指示未截图核对。
+- 安装：483887e 已构建安装（签名校验通过，manifest commit 一致、dirty=false，重开无崩溃报告）。
