@@ -24,3 +24,4 @@
 - Mac：`ModelSelection`／`ModelChoice`／`RuntimeModelCatalog`；Store 按运行时实例缓存目录（仅在打开会话时读取，网关或运行时配置变化即丢弃），默认取目录顺序；读取中／失败时列出本地可达的 managed 模型，未读到的选择由核心发送时校验。Composer 菜单按选择类别分组，附“重新读取模型”。
 - 已知边界：原生选择只在本进程按会话记住；会话快照仅含 managed key，重开应用后回到默认。通用 ACP 打开会话后才有原生目录，需“重新读取模型”刷新缓存。
 - 验证：fmt／check／clippy／no-default-features、`build-macos.sh --build-only` 通过。`manual-reasoning-effort.py` 以实际 Codex 0.159.3（8 个原生模型均带强度）、Claude Code 2.1.286（5 个，4 个带强度）、Pi 1.0.2（临时 agentDir 合成提供商：reasoning 模型带七级、普通模型为空）核对目录与 managed 映射，并以 Pi 原生模型经回环上游带 `high` 派发。`manual-acp-adapter.py`、`manual-runtime-selection.py` 通过（顺带修正二者对 `BindingComposedTurn` 与 `cancel` 的过时调用）。开发版隔离 HOME 新建会话默认选中 Pi 原生模型并显示推理菜单。
+- 安装：afefe95 已构建安装至 `/Applications/Velune.app`（签名校验通过，manifest 对应该提交且无未提交改动），重新打开后无崩溃报告。
