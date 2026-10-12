@@ -246,7 +246,7 @@ def exercise(app, b, root):
         b.BindingAcpLaunch(args=[str(root / 'peer.py')], environment={'FIXTURE_STATE': str(root / 'live')}))
     default = b.BindingModelSelection.RUNTIME_DEFAULT()
     conversation = app.create_conversation_with_selection('live', str(root / 'project'), default).snapshot.conversation.id
-    app.send_turn_with_selection('live', conversation, 'live', default, 'CANCEL')
+    app.send_turn_with_selection('live', conversation, 'live', default, b.BindingComposedTurn(text='CANCEL', effort=None, attachments=[]))
     saved = app.save_resource_template(resource('tuned', content.MCP(
         transport=b.BindingTemplateMcpTransport.STDIO(command='t2', args=[], env={}, cwd=None),
         timeout_seconds=None), tuned.id))
@@ -259,7 +259,6 @@ def exercise(app, b, root):
         assert time.monotonic() < deadline, '空闲后应自动补写'
         time.sleep(.05)
     assert 'command = "t2"' in (root / 'codex' / 'config.toml').read_text()
-    app.close_collaboration()
     print('PASS 忙时待同步、空闲后自动补写', flush=True)
 
     app.shutdown()

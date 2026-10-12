@@ -5,10 +5,6 @@ pub use acp::{
     AcpLaunch, AcpRuntimeInfo,
 };
 mod analytics;
-mod collaboration;
-pub use collaboration::{
-    ChildSnapshot, ChildState, ChildStatus, CollaborationLimits, CollaborationTarget,
-};
 mod api;
 #[cfg(feature = "local-runtime")]
 mod authentication_resolver;

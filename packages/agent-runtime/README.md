@@ -40,7 +40,7 @@ wire 类型采用官方 `agent-client-protocol-schema = 1.11.0` 的稳定 v1 模
 
 ## 会话级协作 MCP 注入
 
-`mcp::Server { name, endpoint, token }` 描述 application 为当前执行授权的临时 loopback HTTP 服务，Pi、`NativeConfig` 和 `acp::Config` 通过 `mcp_servers` 接收。MCP 服务、父子关系、任务调度与权限范围归 application，本包只把连接交给实际 Harness。application 为父执行生成独立服务名称，子执行传空列表；本包不从工具参数推断父身份，也不自动批准原生权限请求。名称限定为不超过 32 字节的 ASCII 字母、数字、下划线或连字符，列表内不得重复。Debug 隐去 endpoint 和 token；Pi 配置序列化跳过全部临时 MCP 注入，token 不进入命令行。
+`mcp::Server { name, endpoint, token }` 描述 application 为当前执行授权的临时 loopback HTTP 服务，Pi、`NativeConfig` 和 `acp::Config` 通过 `mcp_servers` 接收。MCP 服务与协作语义归 application，本包只把连接交给实际 Harness。application 为每个会话执行注入同一服务（名称 `velune`）与该会话独有的票据；本包不从工具参数推断调用方，也不自动批准原生权限请求。名称限定为不超过 32 字节的 ASCII 字母、数字、下划线或连字符，列表内不得重复。Debug 隐去 endpoint 和 token；Pi 配置序列化跳过全部临时 MCP 注入，token 不进入命令行。
 
 | 适配器 | 临时注入入口 |
 | --- | --- |
@@ -52,9 +52,9 @@ wire 类型采用官方 `agent-client-protocol-schema = 1.11.0` 的稳定 v1 模
 
 SDK 或协议已有目录入口时只使用其结果处理重名；不扫描认证文件或另行解析用户持久 MCP 配置。通用 ACP 没有枚举 Agent 自有 MCP 服务的标准入口，因此 application 的随机执行名称是避免跨来源名称碰撞的共同约束。Pi 的文件配置优先于扩展注册，重名不会覆写原配置。
 
-MCP 与模型网关复用 `LoopbackTunnel`。远端服务地址由运行时改写为经过核验的目标 loopback 端口，Guard 随运行时执行对象持有；调用方不能再为相同注入包一层转发。通用 ACP 的 stdio 回退在目标机器的私有临时目录投送内嵌 `mcp_stdio_relay.py`，需要当地可用的 Python 3，独立于 Node 与专用 helper 资源包。relay 仅传递 JSON-RPC、初始化的 MCP session/version HTTP 头和显式取消通知；不拥有任务、会话历史、重试或授权决定。每个 HTTP 请求独立等待，避免等待子任务时堵住状态或取消；stdin EOF 与 stdout 断开会结束 relay。执行对象释放后删除临时目录并关闭转发。
+MCP 与模型网关复用 `LoopbackTunnel`。远端服务地址由运行时改写为经过核验的目标 loopback 端口，Guard 随运行时执行对象持有；调用方不能再为相同注入包一层转发。通用 ACP 的 stdio 回退在目标机器的私有临时目录投送内嵌 `mcp_stdio_relay.py`，需要当地可用的 Python 3，独立于 Node 与专用 helper 资源包。relay 仅传递 JSON-RPC、初始化的 MCP session/version HTTP 头和显式取消通知；不拥有任务、会话历史、重试或授权决定。每个 HTTP 请求独立等待，避免一次等待堵住其他调用；stdin EOF 与 stdout 断开会结束 relay。执行对象释放后删除临时目录并关闭转发。服务属于会话的可选能力：转发失败或 relay 不可用时省略该服务并记录警告，会话照常运行。
 
-relay 只连接显式端口的 `http://127.0.0.1` 服务，忽略代理环境，不跟随重定向。application 的 MCP 服务必须采用 JSON 响应模式和有界等待；relay 的单请求上限为 60 秒，不支持 SSE 或服务端主动请求。正常 HTTP-capable Harness 使用自身原生 MCP 客户端。接入证据见 [运行时注入验收](../../tasks/harness-interoperation/runtime-injection-evidence.md)，父子任务完整闭环归 [当前任务](../../tasks/harness-interoperation/packet.md)。
+relay 只连接显式端口的 `http://127.0.0.1` 服务，忽略代理环境，不跟随重定向。application 的 MCP 服务必须采用 JSON 响应模式和有界等待；relay 的单请求上限为 60 秒，不支持 SSE 或服务端主动请求。正常 HTTP-capable Harness 使用自身原生 MCP 客户端。接入证据见 [运行时注入验收](../../tasks/harness-interoperation/runtime-injection-evidence.md)，Agent 间协作归 [Agent 间协作任务](../../tasks/agent-collaboration/packet.md)。
 
 ## 专用适配器行为
 
@@ -121,4 +121,4 @@ MCP 的 key 是 opaque 服务名，其 `Document.bytes` 仅为该服务的原生
 
 `management::Canonical` 是 Velune 模板的 canonical resource definition：整文件指令、以 `SKILL.md` 为入口的技能文件树、与运行时无关的 MCP 传输（stdio 命令／环境，或 http 地址／请求头），以及子 Agent（描述、指令、可选模型与工具提示）。`render(variant, name, canonical)` 按固定版本产出可直接写入的 User 范围原生文件或声明对象：Claude 的 MCP 带 `type`，Codex 的 HTTP 头写作 `http_headers`，子 Agent 在 Claude 为 Markdown＋frontmatter、在 Codex 为 TOML；运行时没有对应位置的提示字段不写入并在 `notes` 中说明，运行时不支持该类别时返回 `Skipped` 与原因，不伪造。名称限定为不以 `.` 开头、不超过 64 字符的字母数字及 `-_.`。`fingerprint` 对 MCP 按排序后的 JSON 值哈希，其余按字节哈希，使手工或 Harness 重排 MCP 声明不被当作内容变化。canonical 的 Debug 不输出任何内容，因为环境值与请求头值可能是秘密。
 
-原生入口和实际加载证据见 [固定版本验收](../../tasks/runtime-management/native-evidence.md)。application 负责 busy／协作 scope 的修改门控；本包不做 UI、自动同步或热重载。App 的资源管理入口明确待实现。
+原生入口和实际加载证据见 [固定版本验收](../../tasks/runtime-management/native-evidence.md)。application 负责 busy 修改门控；本包不做 UI、自动同步或热重载。App 的资源管理入口明确待实现。

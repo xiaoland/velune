@@ -2,7 +2,7 @@
 
 `velune-application` 是平台 app 共用的应用用例 unit。公开入口 `Application` 提供类型化的配置、连接、会话、模型选择、提供商导入与认证操作。平台不自行协调文件提交、子进程状态与投影失败清理。
 
-多个会话可以同时执行。每个打开的会话有自己的执行、模型选择、投影与协作范围；以会话 ID 寻址的操作（打开、发送、取消、回复交互、重命名、删除、snapshot）作用于该会话，每次操作都推进所有会话。每个会话同一时刻最多一个 turn；`cancel` 与 `reply_runtime_interaction` 需要会话 ID。重开正在执行的会话返回其运行中的视图，结束后再打开才重读原生历史。执行中、有待处理交互或有协作范围的会话保持打开，空闲会话按最近使用保留 8 个。同一运行时的并发执行各用一个 lane 目录（`runtime-projections/<运行时>/lane-<n>`）存放网关模型与选择文件。`conversation_activity(since)` 列出执行中或待处理交互的会话，并返回游标之后结束的 Velune turn 及其结果（完成、失败、用户停止；Pi 以错误结束模型响应也算失败），最近 64 个可补读；可频繁轮询。运行时、提供商、导入与登录配置在任一会话执行或存在协作范围时拒绝变更。[并行会话手动验收](../../scripts/manual-parallel-sessions.py) 用隔离 Pi 1.0.2 与本机 loopback 上游检查同时执行、独立结束、取消与配置门禁。
+多个会话可以同时执行。每个打开的会话有自己的执行、模型选择、投影与协作票据；以会话 ID 寻址的操作（打开、发送、取消、回复交互、重命名、删除、snapshot）作用于该会话，每次操作都推进所有会话。每个会话同一时刻最多一个 turn；`cancel` 与 `reply_runtime_interaction` 需要会话 ID。重开正在执行的会话返回其运行中的视图，结束后再打开才重读原生历史。执行中或有待处理交互的会话保持打开，空闲会话按最近使用保留 8 个。同一运行时的并发执行各用一个 lane 目录（`runtime-projections/<运行时>/lane-<n>`）存放网关模型与选择文件。`conversation_activity(since)` 列出执行中或待处理交互的会话，并返回游标之后结束的 Velune turn 及其结果（完成、失败、用户停止；Pi 以错误结束模型响应也算失败），最近 64 个可补读；可频繁轮询。运行时、提供商、导入与登录配置在任一会话执行时拒绝变更。[并行会话手动验收](../../scripts/manual-parallel-sessions.py) 用隔离 Pi 1.0.2 与本机 loopback 上游检查同时执行、独立结束、取消与配置门禁。
 
 会话的权威在 Harness；Velune 对本机 Codex、Claude Code 与 Pi 运行时 best-effort 跟随原生文件。被 snapshot 轮询的会话在没有会话通道时（例如只读打开的视图）由首次轮询读入并打开通道；其后约每秒检查原生文件，未在 Velune 中执行且文件被改动时重新读取，空闲的执行先释放，下一 turn 从改动后的会话继续；读取较慢时按耗时放宽间隔。自身执行期间及结束后 5 秒内的写入视为自己的。Harness 自己的存活记录（见 agent-runtime `activity`）显示另一进程正在运行该会话时，视图的 `run_state` 为 `Elsewhere`（展示为运行中，不可由 Velune 取消，仍可发送）；文件变化时及之后每 5 秒重新判断，进程中途退出后即回到空闲，不依赖时间窗。活动列表另外每 5 秒读取这些运行时的存活记录，附加未被 Velune 执行的 `Elsewhere` 会话。SSH、ACP、DeepSeek Harness 与跨 Harness 续接的会话不跟随，仍靠手动重新读取。[实时会话手动验收](../../scripts/manual-live-sessions.py) 以实际 Pi CLI 作为另一客户端检查上述行为，[实际 Harness 实时脚本](../../scripts/manual-live-native.py) 检查 Codex 与 Claude Code，包括进程中途被杀后不再运行。
 
@@ -10,21 +10,17 @@
 
 `runtime_resource_catalog`、`read_runtime_resource`、`write_runtime_resource` 和 `delete_runtime_resource` 管理指定实例的原生 user instructions、MCP server 条目、skills 与原生 Agent 定义。调用方明确给出 User／Project 范围；Project 的 cwd 属于执行机器。目录是 adapter 已知的原生来源，不是 Harness 合并后的最终配置，也不扫描任意命令猜测其资源格式。catalog 将功能不支持与资源 Missing／Invalid 分开，并单独说明可写或只读；不支持原因可能是原生功能缺失、协议没有入口或适配器尚未实现。
 
-资源查询不会启动 Harness、创建资源根目录或安装辅助 bundle；停用实例仍可管理。本机／SSH 与 managed HOME 复用同一位置解析，但不要求与资源读写无关的执行路径。写入在父 turn 忙碌或协作 scope 存在时拒绝，不隐式关闭空闲会话；保存只表示原生文件已变更，生效时间由 Harness 决定，不宣称进行了 live reload。
+资源查询不会启动 Harness、创建资源根目录或安装辅助 bundle；停用实例仍可管理。本机／SSH 与 managed HOME 复用同一位置解析，但不要求与资源读写无关的执行路径。写入在有 turn 执行时拒绝，不隐式关闭空闲会话；保存只表示原生文件已变更，生效时间由 Harness 决定，不宣称进行了 live reload。
 
-资源 key 是类别根目录内的相对路径，MCP key 则是 opaque server name。读取返回单文件 bytes 或单个 MCP 条目的原生 JSON；内容可能含私有设置，不进入 Debug 或日志。写入必须提供 `RuntimeResourceRevision::Missing` 或此前读取的 `Match` revision，外部修改返回可识别的 conflict；混合原生配置由 adapter 只修改目标条目并保留其余内容。Skills 按文件和资产管理，catalog 包含目录及资产；先创建 SKILL.md 再添加资产，不提供整包替换，目录只允许在为空时删除。原生 Agent 定义与协作 scope 的 target grants、运行中的 child 和权限彼此独立，编辑定义不会启动或授权子任务。
+资源 key 是类别根目录内的相对路径，MCP key 则是 opaque server name。读取返回单文件 bytes 或单个 MCP 条目的原生 JSON；内容可能含私有设置，不进入 Debug 或日志。写入必须提供 `RuntimeResourceRevision::Missing` 或此前读取的 `Match` revision，外部修改返回可识别的 conflict；混合原生配置由 adapter 只修改目标条目并保留其余内容。Skills 按文件和资产管理，catalog 包含目录及资产；先创建 SKILL.md 再添加资产，不提供整包替换，目录只允许在为空时删除。原生 Agent 定义与 Agent 间协作无关，编辑定义不会启动会话。
 
 **待实现**：平台调用原生资源入口的浏览、编辑、冲突处理和敏感内容展示；本轮没有 App 改动，也没有新增资源副本配置库。
 
 [资源 API 手动验收](../../scripts/manual-runtime-management-api.py) 接收本次构建的动态库与 Python 绑定目录，在隔离 HOME 中检查 typed CRUD、revision 冲突和会话生命周期门禁；默认只需空资源目录。它内置合成 ACP peer，不代替原生 Harness 的实际资源加载验收。
 
-`create_collaborative_conversation` 接纳父运行时、模型选择、已授权目标和子任务数量／轮次期限。每个目标固定运行时实例、cwd 和模型选择，建立 scope 时捕获执行与提供商配置；Agent 只能引用 opaque target ID，不能通过协作工具修改 binary、环境、cwd 或模型。scope 存在时拒绝运行时、提供商和登录配置变更，调用方先关闭协作范围，再编辑配置。
+**Agent 间协作（A2A）**：application 持有一个 loopback MCP 服务（服务名 `velune`），在 Velune 执行的每个会话启动时注入；每个会话一张随机票据，HTTP 层校验票据、Origin 与 Host，票据决定调用方会话，工具参数不能自报身份。工具为 `list_agents`、`list_conversations`、`start_conversation`、`send_message`、`get_conversation`、`wait_conversation` 与 `cancel_turn`。参与方都是普通会话：Agent 新建的会话发出首条消息后即出现在列表（原生历史写入前也列出），用户可打开、继续并处理其审批。消息以“[Velune 协作消息]”出处包装作为对方的下一轮提交，声明不是人类授权；对方执行中、待审批或在 Velune 外运行时拒绝，不排队。`start_conversation` 的工作目录缺省沿用调用方（同一执行机器时），模型缺省为对方会话已有的选择或运行时目录的第一项。`wait_conversation` 在对方进入调用方尚未读到的非运行状态时返回，单次最长 30 秒，超时不取消。不建立父子关系、不传播取消，也不设联系限制（PRD 决定）。
 
-父 Agent 通过临时 MCP 使用 `agents`、`spawn`、`send`、`status`、`wait`、`cancel` 和 `close`。每个子任务 worker 独占 adapter、轮询、网关和执行覆盖目录，共享配置实例原有 HOME 与原生历史；父 turn 等待工具时子任务仍可运行。首版允许一层并行委派和空闲子任务的多轮发送，不排队、不 steer、不 adopt。委派文字带有可见来源说明，作为普通消息提交，不冒充人类授权。返回的最终助手正文是子 Agent 的报告，不是独立验收结论。没有 load 能力的 ACP 也可作活动子任务，关闭后不承诺恢复。
-
-宿主通过 `collaboration_children`、`child_snapshot` 与绑定 child／turn／interaction ID 的 `reply_child_interaction` 处理子任务权限。父 Agent 没有批准子权限的工具；`wait` 遇到待审批立即返回。父 turn 结束保留子任务，父取消会级联取消，显式 `close_collaboration` 撤销范围并清理子任务。普通 shutdown 在父或子任务忙碌时拒绝；成功关闭或直接释放应用时，先清理执行对象，再释放配置目录独占锁。
-
-轮次期限在 worker 中检查；adapter 的同步启动与控制请求仍受各自有界超时约束，不承诺硬实时中断。启动返回后若已经取消或过期，不再提交 prompt；未知结果不自动重试。协作关系和结果只在本次应用生命周期内保存，原生历史仍由 Harness 负责。**待实现**：平台授权目标、子任务状态和子权限审批界面；本轮不修改 App。
+MCP 线程不访问 application：工具调用进入收件箱，由下一次客户端请求在推进各会话后执行，并在结束后恢复原先寻址的会话；协作进度因此与会话事件一样依赖客户端轮询（Mac 每 0.6 秒读取活动），60 秒内未被处理的调用向 Agent 返回结果未知。服务启动失败、SSH 转发失败或 ACP stdio relay 不可用时，会话照常运行而不带协作工具；会话关闭即撤销其票据。没有专门的 bindings API，平台通过普通会话、消息与交互呈现。[A2A 手动验收](../../scripts/manual-collaboration.py)以两个合成 ACP 运行时检查新建与联系已有会话、审批留在对方会话、忙碌与未知票据被拒。
 
 `config` 定义 schema 8 的应用配置；`repository` 是内部文件设施，负责锁、加载和原子提交。提供商拥有模型条目和私有认证，参数模板仅用于复制填写字段，不参与调用解析。API key 与普通配置在同一文件原子保存，文件创建权限为 0600；公开配置摘要不含 key，只有显式单提供商读取接口返回已保存的值。认证编辑区分保留、更新和清除，读取失败不清空原值。OAuth 保留原来源登录和刷新，来源定位不进入公开摘要。根目录与资源目录由平台通过 `Options` 显式传入。
 
@@ -80,6 +76,6 @@ ACP 的列表能力缺失与空列表不同；汇总列表通过 `history_failur
 
 同一公开身份的持久跨 Harness 接续要求 ACP 来源和目标都能加载原生历史。能力不足在关闭来源、创建目标或发送之前拒绝，原活动对话保持可用；这不限制普通 ACP 新建或发送。关联段保存真实 cwd 以定位无列表能力的 ACP 会话，仍不保存消息副本。专用 adapter 的 provider overlay 不推广到 ACP，通用 ACP 明确拒绝 managed 模型注入。
 
-资源库（2026-10-11，内部类型仍名 `ResourceTemplate`）：资源是 canonical 定义，保存于 `resource-templates.json`（0600，与普通配置分离、不随配置重置；列表摘要不含内容，`read_resource_template` 显式返回含秘密的内容，Debug 一律遮盖）；`resource-bindings.json` 记录资源在各运行时写入的条目及指纹。`save_resource_template` 保存后立即写入已启用且处于同步状态的运行时，原生被改／被删的运行时等待用户处置，运行中轮次或协作 scope 存在时全部留作“待同步”。`resource_sync_status` 返回每个资源在每个运行时的状态（未启用、不支持、已同步、待同步、原生被改、原生被删）；`apply_resource_template` 启用或重试同步，同名非受管条目或另一份指令需显式 `overwrite`；`resolve_resource_binding` 覆盖、停止同步（保留原生）或删除原生。`unmanaged_runtime_resources` 列出各运行时未被资源库管理的用户级条目，`import_runtime_resource` 尽力读回为未保存的资源并列出无法带入的字段，`adopt_runtime_resource` 将其加入资源库并启用于来源运行时（原生改写为规范形式）。`resource_drift` 返回原生被改／被删时逐文件的原生与资源库内容（MCP 为排版后的 JSON），供用户覆盖前比较。保存时若运行中轮次或协作 scope 使写入延后，核心记下待补写，在后续请求中发现运行时空闲后自动写入待同步的绑定。MCP 资源含可选工作目录与超时（秒），各运行时按原生字段渲染，无法表达的字段在写入报告中说明。写操作遵守资源写入闸门；删除资源或运行时实例只丢弃启用记录，不触碰原生条目。手动验收见 `scripts/manual-resource-library.py`；真实 Harness 加载见 `scripts/manual-resource-library-native.py`。
+资源库（2026-10-11，内部类型仍名 `ResourceTemplate`）：资源是 canonical 定义，保存于 `resource-templates.json`（0600，与普通配置分离、不随配置重置；列表摘要不含内容，`read_resource_template` 显式返回含秘密的内容，Debug 一律遮盖）；`resource-bindings.json` 记录资源在各运行时写入的条目及指纹。`save_resource_template` 保存后立即写入已启用且处于同步状态的运行时，原生被改／被删的运行时等待用户处置，运行中轮次存在时全部留作“待同步”。`resource_sync_status` 返回每个资源在每个运行时的状态（未启用、不支持、已同步、待同步、原生被改、原生被删）；`apply_resource_template` 启用或重试同步，同名非受管条目或另一份指令需显式 `overwrite`；`resolve_resource_binding` 覆盖、停止同步（保留原生）或删除原生。`unmanaged_runtime_resources` 列出各运行时未被资源库管理的用户级条目，`import_runtime_resource` 尽力读回为未保存的资源并列出无法带入的字段，`adopt_runtime_resource` 将其加入资源库并启用于来源运行时（原生改写为规范形式）。`resource_drift` 返回原生被改／被删时逐文件的原生与资源库内容（MCP 为排版后的 JSON），供用户覆盖前比较。保存时若运行中轮次或协作 scope 使写入延后，核心记下待补写，在后续请求中发现运行时空闲后自动写入待同步的绑定。MCP 资源含可选工作目录与超时（秒），各运行时按原生字段渲染，无法表达的字段在写入报告中说明。写操作遵守资源写入闸门；删除资源或运行时实例只丢弃启用记录，不触碰原生条目。手动验收见 `scripts/manual-resource-library.py`；真实 Harness 加载见 `scripts/manual-resource-library-native.py`。
 
 `working_changes` 与 `file_diff` 以本机 `git` CLI 只读会话工作目录（取自打开的会话或最近列表）所在仓库：状态解析为新增、修改、删除、重命名、未跟踪与冲突，相对 HEAD 的增删行数（二进制与未跟踪文件无行数），单文件差异解析为 hunk、上下文、增删与说明行，超过 1 MiB 截断；未跟踪文件以新文件显示。文件路径只接受仓库内相对路径；执行时设 `GIT_OPTIONAL_LOCKS=0`，不刷新索引、不与 Harness 的 git 操作争锁。远端运行时的会话暂不支持。[变更审阅手动验收](../../scripts/manual-working-changes.py) 以临时仓库检查各类变更、差异行、仓库根解析与路径拒绝。

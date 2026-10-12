@@ -33,11 +33,12 @@ impl CoreRuntime {
             )
             .map_err(|error| RuntimeError::context("gateway startup", error))?;
             self.session.gateway_runner = Some(runner);
+            let servers = self.collaboration_servers();
             let result = (|| {
                 let injection = self.native_injection(&runtime, model_record_key)?;
                 let mut config = self.native_config(&runtime, Some(injection))?;
                 config.projection_directory = lane;
-                config.mcp_servers = self.collaboration_servers();
+                config.mcp_servers = servers;
                 NativeSession::connect(config)
                     .map_err(|error| RuntimeError::context("运行时连接失败", error))
             })();

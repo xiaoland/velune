@@ -206,14 +206,7 @@ def exercise(app, b, root, python):
     events = [json.loads(line) for line in (root / 'live' / 'events.jsonl').read_text().splitlines()]
     assert sum(event['kind'] == 'start' for event in events) == 1
     assert sum(event['kind'] == 'prompt' for event in events) == 1
-    targets = [b.BindingCollaborationTarget(
-        id='live', name='Live', runtime_id='live', cwd=project, model_selection=default)]
-    app.create_collaborative_conversation('live', project, default, targets,
-                                         b.BindingCollaborationLimits(max_children=1, turn_timeout_ms=5000))
-    app.runtime_resource_catalog('codex', None, kind.USER_INSTRUCTIONS, scope.USER)
-    reject(lambda: write('codex', change, b'MUST_REJECT_SCOPE'))
-    app.close_collaboration()
-    print('PASS busy／scope 写入门禁、只读可用、空闲合成 ACP 进程保持', flush=True)
+    print('PASS busy 写入门禁、只读可用、空闲合成 ACP 进程保持', flush=True)
 
 
 def main():
@@ -277,7 +270,6 @@ def main():
                     deadline = time.monotonic() + 5
                     while True:
                         try:
-                            app.close_collaboration()
                             app.shutdown()
                             break
                         except bindings.BindingError:

@@ -686,43 +686,6 @@ impl VeluneApplication {
         )
     }
 
-    pub fn create_collaborative_conversation(
-        &self,
-        runtime_id: String,
-        cwd: String,
-        selection: BindingModelSelection,
-        targets: Vec<BindingCollaborationTarget>,
-        limits: BindingCollaborationLimits,
-    ) -> Result<BindingSnapshotResult, BindingError> {
-        let selection = convert(selection)?;
-        let targets = convert(targets)?;
-        let limits = convert(limits)?;
-        convert(self.with("create_collaborative_conversation", |app| {
-            app.create_collaborative_conversation(runtime_id, cwd, selection, targets, limits)
-        })?)
-    }
-    pub fn collaboration_children(&self) -> Result<Vec<BindingChildStatus>, BindingError> {
-        convert(self.with("collaboration_children", |app| app.collaboration_children())?)
-    }
-    pub fn child_snapshot(&self, child_id: String) -> Result<BindingChildSnapshot, BindingError> {
-        convert(self.with("child_snapshot", |app| app.child_snapshot(child_id))?)
-    }
-    pub fn reply_child_interaction(
-        &self,
-        child_id: String,
-        turn: u64,
-        interaction_id: String,
-        reply: BindingRuntimeInteractionReply,
-    ) -> Result<BindingChildStatus, BindingError> {
-        let reply = convert(reply)?;
-        convert(self.with("reply_child_interaction", |app| {
-            app.reply_child_interaction(child_id, turn, interaction_id, reply)
-        })?)
-    }
-    pub fn close_collaboration(&self) -> Result<(), BindingError> {
-        self.with("close_collaboration", |app| app.close_collaboration())
-    }
-
     pub fn send_turn_with_selection(
         &self,
         source_runtime_id: String,

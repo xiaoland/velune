@@ -696,44 +696,6 @@ impl Application {
         )
     }
 
-    /// Create a root session with a fixed, host-authorized set of child targets.
-    pub fn create_collaborative_conversation(
-        &mut self,
-        runtime_id: String,
-        cwd: String,
-        selection: ModelSelection,
-        targets: Vec<crate::CollaborationTarget>,
-        limits: crate::CollaborationLimits,
-    ) -> Result<SnapshotResult, Error> {
-        self.execute(
-            "createCollaborative",
-            json!({"cwd":cwd,"modelSelection":selection,"targets":targets,"limits":limits}),
-            Some(&runtime_id),
-        )
-    }
-    pub fn collaboration_children(&mut self) -> Result<Vec<crate::ChildStatus>, Error> {
-        self.execute("collaborationChildren", json!({}), None)
-    }
-    pub fn child_snapshot(&mut self, child_id: String) -> Result<crate::ChildSnapshot, Error> {
-        self.execute("childSnapshot", json!({"childID":child_id}), None)
-    }
-    pub fn reply_child_interaction(
-        &mut self,
-        child_id: String,
-        turn: u64,
-        interaction_id: String,
-        reply: crate::conversation::RuntimeInteractionReply,
-    ) -> Result<crate::ChildStatus, Error> {
-        self.execute(
-            "replyChildInteraction",
-            json!({"childID":child_id,"turn":turn,"interactionID":interaction_id,"reply":reply}),
-            None,
-        )
-    }
-    /// Explicitly revoke the root's collaboration tools and close all its children.
-    pub fn close_collaboration(&mut self) -> Result<(), Error> {
-        self.execute("closeCollaboration", json!({}), None)
-    }
     pub fn analytics_query(&self, query: AnalyticsQuery) -> Result<AnalyticsReport, Error> {
         if query.from_ms >= query.to_ms
             || query.bucket_boundaries_ms.len() < 2

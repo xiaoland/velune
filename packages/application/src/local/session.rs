@@ -2,11 +2,22 @@
 //! several; requests address one at a time through `CoreRuntime::session`.
 use super::*;
 
-/// Fields drop in declaration order: the collaboration scope closes before
-/// the execution it serves.
+/// Identifies a session while it moves between addressed and parked.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) struct SessionKey(u64);
+
+impl Default for SessionKey {
+    fn default() -> Self {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        Self(NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
+    }
+}
+
 #[derive(Default)]
 pub(super) struct Session {
-    pub(super) collaboration: Option<collaboration::Scope>,
+    pub(super) key: SessionKey,
+    /// Authorizes this session's executions to use Velune's collaboration tools.
+    pub(super) collaboration_ticket: Option<collaboration::Ticket>,
     pub(super) logical_projection: Option<continuation::LogicalProjection>,
     pub(super) transcript_projection: velune_agent_runtime::transcript::TranscriptProjection,
     pub(super) transcript_conversation_id: Option<String>,
@@ -38,17 +49,10 @@ impl Session {
         }
     }
 
-    pub(super) fn collaboration_busy(&self) -> bool {
-        self.collaboration
-            .as_ref()
-            .is_some_and(collaboration::Scope::busy)
-    }
-
     /// Must stay open: closing it would end work or drop a request the user
     /// has not answered.
     pub(super) fn pinned(&self) -> bool {
         self.busy()
-            || self.collaboration.is_some()
             || self
                 .projected()
                 .is_some_and(|snapshot| !snapshot.pending_interactions.is_empty())
@@ -100,14 +104,13 @@ impl Session {
     }
 
     /// The identity clients know this session's conversation by.
-    fn conversation_id(&self) -> Option<&str> {
+    pub(super) fn conversation_id(&self) -> Option<&str> {
         self.public_id()
             .or_else(|| self.projected().map(|view| view.conversation.id.as_str()))
     }
 
     fn is_empty(&self) -> bool {
         matches!(self.active_state, ActiveState::Empty)
-            && self.collaboration.is_none()
             && self.unsubmitted_draft.is_none()
             && self.logical_projection.is_none()
     }
@@ -150,6 +153,22 @@ impl CoreRuntime {
         }
     }
 
+    /// Address the session `key` again, or a new empty one when it has
+    /// closed; an empty session is not kept when another is addressed.
+    pub(super) fn focus_key(&mut self, key: SessionKey) {
+        if self.session.key == key {
+            return;
+        }
+        match self.parked.iter().position(|session| session.key == key) {
+            Some(index) => {
+                let session = self.parked.remove(index);
+                let previous = std::mem::replace(&mut self.session, session);
+                self.park(previous);
+            }
+            None => self.focus_new(),
+        }
+    }
+
     /// Address a new empty session; the current one stays open.
     pub(super) fn focus_new(&mut self) {
         let previous = std::mem::take(&mut self.session);
@@ -184,12 +203,12 @@ impl CoreRuntime {
         self.for_each_session(Self::drain_runtime)
     }
 
-    /// Any session executes or owns a collaboration scope; configuration that
-    /// execution depends on must not change underneath it.
+    /// Any session executes; configuration that execution depends on must
+    /// not change underneath it.
     pub(super) fn execution_active(&self) -> bool {
         std::iter::once(&self.session)
             .chain(&self.parked)
-            .any(|session| session.busy() || session.collaboration.is_some())
+            .any(Session::busy)
     }
 
     /// Close the least recently used idle sessions beyond the retained number.
@@ -283,7 +302,7 @@ impl CoreRuntime {
     /// Conversations that execute or wait for the user, across sessions, then
     /// those running outside Velune. Polled often, so it reads each native
     /// view without building a snapshot.
-    fn active_conversations(&mut self) -> Vec<crate::ActiveConversation> {
+    pub(super) fn active_conversations(&mut self) -> Vec<crate::ActiveConversation> {
         let mut active: Vec<_> = std::iter::once(&self.session)
             .chain(&self.parked)
             .filter_map(|session| {

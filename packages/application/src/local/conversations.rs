@@ -17,17 +17,6 @@ impl CoreRuntime {
         let conversation_id = request["payload"]["conversationID"]
             .as_str()
             .ok_or_else(|| RuntimeError::invalid("conversation id"))?;
-        if self
-            .session
-            .collaboration
-            .as_ref()
-            .is_some_and(|scope| scope.root_id.as_deref() != Some(conversation_id))
-        {
-            if self.collaboration_busy() {
-                return Err(RuntimeError::invalid("子任务仍在执行，不能替换父会话"));
-            }
-            self.close_collaboration();
-        }
         let selection = super::model_selection::requested_selection(request)?;
         let attachments = self.turn_attachments(self.runtime_instance(runtime_id)?, request)?;
         let text = super::attachments::compose_text(
@@ -629,7 +618,6 @@ impl CoreRuntime {
     pub(super) fn cancel_action(&mut self, request: &Value) -> Result<Value, RuntimeError> {
         self.ensure_active(request)?;
         self.session.cancel_requested = true;
-        self.cancel_children();
         if let ActiveState::Acp(session) = &mut self.session.active_state {
             session
                 .cancel()

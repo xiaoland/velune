@@ -24,9 +24,11 @@ impl NativeSession {
         let source = self
             .rpc
             .request("config/read", &json!({"includeLayers":false,"cwd":cwd}))?;
+        // Velune's services are optional; one named like the user's own is left out.
         for server in &self.config.mcp_servers {
             if source["config"]["mcp_servers"].get(&server.name).is_some() {
-                return Err(Error::new("临时 MCP 服务与 Codex 既有服务名称冲突"));
+                tracing::warn!(server = %server.name, "Codex already has an MCP service of this name; running without Velune's");
+                self.shadowed_mcp_servers.insert(server.name.clone());
             }
         }
         self.native_provider = Some(
@@ -77,6 +79,7 @@ impl NativeSession {
                     .mcp_servers
                     .iter()
                     .enumerate()
+                    .filter(|(_, server)| !self.shadowed_mcp_servers.contains(&server.name))
                     .map(|(index, server)| {
                         (
                             server.name.clone(),

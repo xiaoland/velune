@@ -77,6 +77,8 @@ pub(crate) fn token_environment(index: usize) -> String {
 }
 
 /// Keep reverse forwarding and relay resources alive until after the Agent exits.
+/// The services are optional for the conversation: one that cannot be
+/// reached from the execution machine is left out rather than failing it.
 pub(crate) struct Prepared {
     pub servers: Vec<Server>,
     target: ExecutionTarget,
@@ -100,7 +102,13 @@ impl Prepared {
             relay: None,
         };
         for server in servers {
-            let tunnel = LoopbackTunnel::open(target, &server.endpoint)?;
+            let tunnel = match LoopbackTunnel::open(target, &server.endpoint) {
+                Ok(tunnel) => tunnel,
+                Err(error) => {
+                    tracing::warn!(%error, server = %server.name, "MCP service forwarding failed; running without it");
+                    continue;
+                }
+            };
             let mut server = server.clone();
             server.endpoint = tunnel.endpoint().into();
             prepared.servers.push(server);
@@ -114,7 +122,13 @@ impl Prepared {
             return Ok(self.servers.iter().map(Server::acp_http).collect());
         }
         if self.relay.is_none() {
-            self.relay = Some(Relay::install(&self.target, self.os_home.as_deref())?);
+            match Relay::install(&self.target, self.os_home.as_deref()) {
+                Ok(relay) => self.relay = Some(relay),
+                Err(error) => {
+                    tracing::warn!(%error, "MCP stdio relay unavailable; running without MCP services");
+                    return Ok(Vec::new());
+                }
+            }
         }
         let relay = self.relay.as_ref().expect("installed ACP relay");
         Ok(self

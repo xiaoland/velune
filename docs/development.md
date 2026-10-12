@@ -342,19 +342,13 @@ Mac 按运行时类型描述的 `launchOptions`／`agentInfo`／`sessionOptions`
 
 2026-10-10 补充验收了两个原生 ACP 入口，均使用同一通用 adapter，没有新增 Agent 专用分支。Devin CLI `3000.11.3` 的启动参数为 `acp`，隔离未认证状态下通过握手、创建、模式修改、live list 和空会话删除；未验证真实 prompt，未发送 prompt 的空会话跨进程 load 失败。OpenCode `1.18.35` 同样使用 `acp`，经过 UniFFI 在本机合成 provider 上通过模型选择、prompt、流式答复、shutdown 后列表与历史重开。这些是特定版本和条件下的观察，不是对所有 ACP 实现或真实账户的兼容承诺。详见 [Devin 证据](../tasks/acp-adapter/devin-evidence.md)与 [OpenCode 证据](../tasks/acp-adapter/opencode-evidence.md)。
 
-## Harness 子 Agent 协作
+## Agent 间协作
 
-Rust／UniFFI 的 `create_collaborative_conversation` 创建新的父会话，传入父运行时、工作目录、模型选择、`CollaborationTarget` 列表和 `CollaborationLimits`。每个 target 是宿主明确授权的执行 profile，绑定运行时实例、目标机器工作目录与模型；不能由父 Agent 在工具参数里增加或覆盖。随后仍通过现有发送接口驱动父会话。普通会话不会自动获得协作工具，现有 App 尚无此入口。
+Velune 执行的每个会话都获得 application 注入的 `velune` MCP 服务，不需要单独创建协作会话，也没有专门的 bindings API。Agent 用 `list_agents` 查看已启用运行时（含运行位置与是否与自己同一机器），用 `list_conversations` 按工作目录或标题查找已有会话；`start_conversation {runtime_id, message, cwd?, model?}` 新建普通会话并发出首条消息，`send_message {conversation_id, message}` 给空闲会话发消息，二者都立即返回状态。随后 `wait_conversation {conversation_id, timeout_ms ≤ 30000}` 在对方进入调用方尚未读到的非运行状态（回复完成、失败或等待审批）时返回，带最近一轮回复文本；超时（`timed_out`）只结束等待。`get_conversation` 读取状态，`cancel_turn` 取消对方当前一轮。
 
-父 Harness 的临时 MCP 服务提供 `agents`、`spawn`、`send`、`status`、`wait`、`cancel` 和 `close`。先发现目标，再传 `target_id` 与任务文本创建子 Agent；后续操作使用返回的 `child_id`。实际返回对象的身份字段为 `id`，状态对象同时带 `revision`、`turn`、`state`、`result` 与错误信息。`wait` 使用已读 revision，单次最多等待 30 秒；等待超时不取消子任务。可并行执行多个子 Agent，也可给空闲子 Agent 续发；忙时不会隐式排队或插话。子 Agent 不获协作工具，本切片只提供一层委派。
+参与方都是普通会话，出现在会话列表；对方的权限请求留在对方会话，由用户在那里处理，调用方没有批准工具。消息以“[Velune 协作消息] 来自 … 会话「…」（conversation_id: …）”包装提交，声明不是人类授权；对方忙碌、待审批或在 Velune 外运行时拒绝，不排队。没有父子关系、取消传播或联系限制。工具调用在下一次客户端请求推进会话时执行，因此需要客户端持续轮询（Mac 已按活动轮询；脚本需轮询 snapshot 或 `conversation_activity`）。SSH 运行时经会话持有的 loopback 反向转发访问服务；只支持 stdio MCP 的 ACP Agent 使用内嵌 Python helper，目标机器需可运行 Python 3，不可用时会话照常运行但没有协作工具。
 
-`collaboration_children` 查看子状态，`child_snapshot` 取得原生投影和待审批项，`reply_child_interaction` 需要子任务 ID、当前 turn 与原生交互 ID。父 Agent 的 MCP 工具不能代替用户批准子任务权限。父取消会级联取消活动子 turn；父 turn 正常结束保留子会话，供后续 turn 使用。显式 `close_collaboration` 关闭协作范围；普通应用关闭仍在父或子忙碌时拒绝并保留执行状态，资源析构负责最终清理。配置修改要求先关闭协作范围，防止授权快照与配置更新混用。
-
-协调器与 HTTP MCP 服务在 application 进程内；每个子执行器独立轮询事件，等待工具结果不需要 UI 轮询，也不会持有 Application 的全局锁。Pi、Codex、Claude、DSH 和通用 ACP 使用各自会话级 MCP 注入，不修改原持久配置。SSH 使用会话持有的 loopback 反向转发；仅支持 stdio MCP 的 ACP Agent 使用内嵌 Python helper，目标机器需可运行 Python 3。helper 不管理任务状态或自动重试，不是独立 Host。
-
-轮次期限和取消在执行器边界检查；初始化或控制 RPC 尚在同步等待时，以 adapter 自身的有界超时为准，不能承诺立即中断。取消或期限在启动期间到达后，不再提交原 prompt。原生历史仍归 Harness；Velune 不保存 transcript 副本，不自动恢复重启前的协作 scope，也不把子 Agent 的报告视为已经验收。App 子任务关系、状态和审批界面待实现。隔离验收与适用边界见 [Harness 协作任务](../tasks/harness-interoperation/packet.md)。
-
-手动闭环入口为 [manual-harness-interoperation.py](../scripts/manual-harness-interoperation.py)，通过参数传入本次构建的 UniFFI 库、生成的 Python 绑定与 OpenCode／DSH／Node；脚本在 macOS sandbox 中使用临时 HOME 和 loopback 合成 provider，断言无前台轮询时子结果仍返回父 Agent。具体版本和复现方式见 [互操作验收](../tasks/harness-interoperation/interoperation-evidence.md)。
+手动验收入口为 [manual-collaboration.py](../scripts/manual-collaboration.py)，传入本次构建的 `--library`、`--bindings` 与 `--resources` 绝对路径；`--seed DIR` 只写入含两个合成 ACP 运行时的 `DIR/velune`，供开发版 App 人工检查。2026-10-11 父子委派模型（`create_collaborative_conversation` 与子任务 API）已按 hard-cutoff 删除，其真实 OpenCode／DSH 证据仍见 [Harness 协作任务](../tasks/harness-interoperation/packet.md)，但不代表新路径的真实 Harness 验收。产品意图与实施状态见 [Agent 间协作任务](../tasks/agent-collaboration/packet.md)。
 
 ## Agent runtime 原生资源管理
 
@@ -366,7 +360,7 @@ Rust／UniFFI 的 `create_collaborative_conversation` 创建新的父会话，�
 
 当前适配覆盖 Codex／Claude 的四类、Pi 的 instruction／MCP／skills、DSH 的 instruction／skills。Pi 没有内置 sub-agent 定义；DSH 的插件式 MCP／sub-agent 配置和通用 ACP 的私有资源布局没有接入本管理契约，会明确说明不支持。该列表是管理适配范围，不等于对应 Harness 的全部运行能力，也不是组织策略、插件与祖先目录合并后的有效配置视图。
 
-修改在运行中的 turn 或协作 scope 存在时拒绝；停用实例仍可编辑原生资源。成功保存不自动重启或重载运行时，具体生效时机由 Harness 决定。受管 HOME 仍保存原生配置，不形成 Velune 同步副本。Mac 以“资源库”窗口管理这些资源：资源在 Velune 中定义，启用到运行时后由 Velune 写入并保持同步，原生被改时由用户选择处理（可先查看差异），忙时延后的写入在运行时空闲后自动补写；手动验收脚本为 `scripts/manual-resource-library.py`，真实 Harness 加载为 `scripts/manual-resource-library-native.py`（sandbox、无模型请求）。实施、具体原生路径与隔离验收见 [运行时资源管理任务](../tasks/runtime-management/packet.md)。
+修改在运行中的 turn 存在时拒绝；停用实例仍可编辑原生资源。成功保存不自动重启或重载运行时，具体生效时机由 Harness 决定。受管 HOME 仍保存原生配置，不形成 Velune 同步副本。Mac 以“资源库”窗口管理这些资源：资源在 Velune 中定义，启用到运行时后由 Velune 写入并保持同步，原生被改时由用户选择处理（可先查看差异），忙时延后的写入在运行时空闲后自动补写；手动验收脚本为 `scripts/manual-resource-library.py`，真实 Harness 加载为 `scripts/manual-resource-library-native.py`（sandbox、无模型请求）。实施、具体原生路径与隔离验收见 [运行时资源管理任务](../tasks/runtime-management/packet.md)。
 
 **待实现的 App 编译接入**：下次为 Mac 重新生成绑定时，须在 `app/mac/Transport.swift` 的 `kindName` 穷尽匹配中处理新增的 `BindingFailureKind.runtimeManagement`。当前非 UI 切片保留该 App 源码不变，不能直接把生成的新绑定替换进 App 后宣称构建通过。
 

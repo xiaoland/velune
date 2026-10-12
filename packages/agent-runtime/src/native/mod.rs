@@ -122,6 +122,8 @@ pub struct NativeSession {
     failed: bool,
     native_selection: Option<RuntimeModel>,
     native_provider: Option<String>,
+    /// Injected MCP services the Harness already has under the same name.
+    shadowed_mcp_servers: std::collections::BTreeSet<String>,
     claude_result: Option<(bool, std::time::Instant)>,
     claude_tasks: std::collections::BTreeSet<String>,
     claude_requires_action: bool,
@@ -207,6 +209,7 @@ impl NativeSession {
             failed: false,
             native_selection: None,
             native_provider: None,
+            shadowed_mcp_servers: std::collections::BTreeSet::new(),
             claude_result: None,
             claude_tasks: std::collections::BTreeSet::new(),
             claude_requires_action: false,

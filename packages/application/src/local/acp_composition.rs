@@ -173,7 +173,8 @@ impl CoreRuntime {
             .map(Path::new)
             .ok_or_else(|| RuntimeError::invalid("ACP 会话必须指定执行机器上的工作目录"))?;
         self.validate_runtime_cwd(&runtime, cwd)?;
-        let mut session = self.acp_client_with_servers(&runtime, self.collaboration_servers())?;
+        let servers = self.collaboration_servers();
+        let mut session = self.acp_client_with_servers(&runtime, servers)?;
         if let Some(native_id) = native_id {
             if !session.capabilities().load_session {
                 return Err(RuntimeError::Unsupported(
@@ -203,7 +204,6 @@ impl CoreRuntime {
         if self.busy() {
             return Err(RuntimeError::invalid("runtime is busy"));
         }
-        self.close_collaboration();
         let runtime_id = request["payload"]["runtimeInstanceID"]
             .as_str()
             .ok_or_else(|| RuntimeError::invalid("runtime instance id"))?;

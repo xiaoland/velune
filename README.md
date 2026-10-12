@@ -67,4 +67,4 @@ Mac 构建默认安装到 `/Applications/Velune.app`，当前产品版本为 `0.
 
 通用 `acp-v1` 接入用于减少逐个适配 Harness 的维护成本：用户安装原生 ACP Agent 或社区 bridge 后，通过启动配置接入，按协商能力提供会话、模型选项与历史。既有专用适配器继续提供各 Harness 的网关与原生能力。Rust 实现和限定验收见 [ACP 任务](tasks/acp-adapter/packet.md)；App 入口待实现。
 
-Harness 互联互通进一步包括不同运行时互为 sub-agent：父 Agent 通过嵌入式 MCP 协作工具，在宿主授权的目标中委派、等待结果并继续工作。子执行器复用原生／ACP adapter，支持一层并行委派与后续输入；不引入独立 Host 或 transcript 副本。实现与验收见 [Harness 协作任务](tasks/harness-interoperation/packet.md)，操作契约见 [开发说明](docs/development.md#harness-子-agent-协作)；App 子任务入口待实现。
+Harness 互联互通区分两种关系：Harness 自身的原生 sub-agent 属于会话体验；Agent 间协作（A2A）由 Velune 提供，任一会话中的 Agent 可经嵌入式 MCP 工具新建或联系其他运行时的普通会话、等待其回复并继续工作，参与方都出现在会话列表。操作契约见 [开发说明](docs/development.md#agent-间协作)，实施与 App 呈现见 [Agent 间协作任务](tasks/agent-collaboration/packet.md)。

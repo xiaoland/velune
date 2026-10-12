@@ -96,8 +96,10 @@ struct UnsubmittedDraft {
 
 pub struct CoreRuntime {
     options: RuntimeOptions,
-    // Fields drop in declaration order: close collaboration and execution owners
-    // before releasing the repository's exclusive application-home lock.
+    // Fields drop in declaration order: stop the collaboration service and
+    // execution owners before releasing the repository's exclusive
+    // application-home lock.
+    collaboration: collaboration::Broker,
     /// The conversation session requests currently address; see `session`.
     session: session::Session,
     /// Other open conversation sessions, most recently used last.
@@ -160,6 +162,7 @@ impl CoreRuntime {
         let (resource_templates, resource_bindings) = repository.load_resource_library()?;
         Ok(Self {
             options,
+            collaboration: Default::default(),
             session: Default::default(),
             parked: Vec::new(),
             elsewhere: live::ElsewhereScan::default(),
@@ -324,14 +327,12 @@ impl CoreRuntime {
         }
         if std::iter::once(&self.session)
             .chain(&self.parked)
-            .any(|session| session.busy() || session.collaboration_busy())
+            .any(session::Session::busy)
         {
             return Err(RuntimeError::invalid("runtime is busy"));
         }
-        let result = self.for_each_session(|core| {
-            core.close_collaboration();
-            core.shutdown_active()
-        });
+        self.collaboration.shutdown();
+        let result = self.for_each_session(Self::shutdown_active);
         self.parked.clear();
         result?;
         // Release the lock explicitly; a concurrent child spawn can briefly
@@ -353,7 +354,7 @@ impl CoreRuntime {
         let action = request["action"].as_str().unwrap_or_default();
         let conversation_id = request["payload"]["conversationID"].as_str();
         match (action, conversation_id) {
-            ("create" | "createCollaborative" | "openAcpConversation", _) => self.focus_new(),
+            ("create" | "openAcpConversation", _) => self.focus_new(),
             (
                 "open"
                 | "sendTurn"
@@ -380,6 +381,7 @@ impl CoreRuntime {
             }
             std::mem::swap(&mut self.session, &mut self.parked[index]);
         }
+        self.serve_collaboration();
         focused?;
         self.dispatch(request)
     }
@@ -407,12 +409,6 @@ impl CoreRuntime {
             )
         {
             return Err(RuntimeError::invalid("authentication is running"));
-        }
-        if matches!(action, "create" | "open" | "openAcpConversation") && self.collaboration_busy()
-        {
-            return Err(RuntimeError::invalid(
-                "子任务仍在执行，请先取消或显式关闭协作范围",
-            ));
         }
         match action {
             "list" => self.list(),
@@ -473,32 +469,12 @@ impl CoreRuntime {
                     &None
                 })?)
             }
-            "createCollaborative" => self.create_collaborative(request),
-            "collaborationChildren"
-            | "childSnapshot"
-            | "replyChildInteraction"
-            | "closeCollaboration" => self.collaboration_action(request),
-            "create" => {
-                if !self.busy() {
-                    self.close_collaboration();
-                }
-                self.create_conversation(request)
-            }
-            "open" => {
-                if !self.busy() {
-                    self.close_collaboration();
-                }
-                self.open_conversation(request)
-            }
+            "create" => self.create_conversation(request),
+            "open" => self.open_conversation(request),
             "readConversation" => self.read_conversation(request),
             "renameConversation" => self.manage_conversation(request, false),
             "deleteConversation" => {
                 let result = self.manage_conversation(request, true)?;
-                if self.session.collaboration.as_ref().is_some_and(|scope| {
-                    scope.root_id.as_deref() == request["payload"]["conversationID"].as_str()
-                }) {
-                    self.close_collaboration();
-                }
                 if let Some(id) = request["payload"]["conversationID"].as_str() {
                     self.discard_composer_draft(id);
                 }

@@ -113,17 +113,20 @@ impl CoreRuntime {
                 }
             }
         }
-        // Active native drafts are legitimate current sessions even before their
-        // runtime writes history. They disappear when that native session closes.
-        if matches!(
-            self.session.active_state,
-            ActiveState::Pi | ActiveState::Native(_) | ActiveState::Acp(_)
-        ) && let Some(snapshot) = self.native_snapshot()
-            && !conversations
-                .iter()
-                .any(|item| item.id == snapshot.conversation.id)
-        {
-            conversations.push(snapshot.conversation);
+        // Active native drafts, of any open session, are legitimate current
+        // conversations even before their runtime writes history; an agent may
+        // have started one. They disappear when that native session closes.
+        for session in std::iter::once(&self.session).chain(&self.parked) {
+            if matches!(
+                session.active_state,
+                ActiveState::Pi | ActiveState::Native(_) | ActiveState::Acp(_)
+            ) && let Some(view) = session.projected()
+                && !conversations
+                    .iter()
+                    .any(|item| item.id == view.conversation.id)
+            {
+                conversations.push(view.conversation.clone());
+            }
         }
         let mut conversations = self.linked_summaries(conversations);
         conversations

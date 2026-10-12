@@ -15,7 +15,7 @@
 - 切片 4 未提交的 Mac 父子界面（composer“子 Agent”菜单、子任务面板、子任务审批）和面向会话寻址的子任务 API 已存入 `git stash`（“slice 4 parent/child collaboration UI”），不再提交。
 - 按 hard-cutoff 删除：`create_collaborative_conversation`、子任务状态／快照／审批／关闭 API 及其 binding 类型、Coordinator／ChildRuntime。可复用的是 MCP 入口（rmcp loopback、票据、Origin／Host 校验）、各 adapter 的 MCP 注入与 SSH 转发／relay。
 
-## 方案（候选，实施中）
+## 方案（核心已实现）
 
 **Broker**：application 持有一个 loopback MCP 服务，向 Velune 执行的每个会话注入，每个会话一张随机票据；票据决定调用方会话，工具自报身份不作为依据。MCP 线程不持有 application；请求进入 broker 收件箱，由 application 在处理客户端请求、推进各会话时执行，等待在推进后按修订号或期限回复。因此会话推进仍依赖客户端轮询（Mac 已按活动轮询）。
 
@@ -36,10 +36,18 @@
 
 ## 切片
 
-1. 核心 A2A broker 替换父子 scope；bindings 去掉子任务 API；脚本改为两个普通会话互相联系。
+1. 核心 A2A broker 替换父子 scope；bindings 去掉子任务 API；脚本改为两个普通会话互相联系。（已实现）
 2. Mac：消息列表中 A2A 调用的“打开会话”、收到消息的来源、会话列表刷新。
 3. 原生 sub-agent：证据、消息列表显示与单独打开。
 
 ## 待用户决定
 
 - 收到的协作消息在消息列表中的位置：当前计划仍在用户侧并标注来源会话（Harness 原生历史把它记为用户消息）；若希望居中作为系统／Harness 状态，请指出。
+
+## 切片 1：核心 broker（2026-10-12）
+
+- 实现：`local/collaboration` 改为 Broker（收件箱、票据、等待者、调用方已读状态）与 MCP 入口；`Session` 增加稳定 key 与票据，`route` 在推进全部会话后执行收件箱并恢复原寻址会话。`list()` 列出所有打开会话的原生草稿，使 Agent 新建、尚未写入历史的会话也出现在列表。设计记录见 [架构](../../docs/design/architecture.md#agent-间协作2026-10-12取代-10-11-子-agent-切片)，操作契约见 [开发说明](../../docs/development.md#agent-间协作)。
+- 注入改为每个会话都有，因此失败不能阻断普通会话：MCP 转发失败、ACP stdio relay 不可用、Claude 不接受动态服务时省略服务并记录警告；Codex 已有同名服务时只省略该服务（不移动其余服务的票据环境变量序号）。此前合成 Claude peer 不实现 `mcp_status`，`manual-acp-adapter.py`／`manual-runtime-selection.py` 正是因此失败后修正。
+- 删除：`create_collaborative_conversation`、子任务 API 与类型、Coordinator／ChildRuntime、依赖旧 API 且需本机没有的 OpenCode／DSH 的 `manual-harness-interoperation.py`（旧证据仍在 harness-interoperation 任务）。`manual-runtime-management-api.py` 去掉 scope 门禁检查；`manual-resource-library.py` 修正过时的 `BindingComposedTurn` 调用。
+- 取舍：协作调用在客户端请求时执行，进度依赖轮询（Mac 每 0.6 秒）；旧子执行器“无前台轮询也能完成”的性质不再保留。
+- 验证：fmt／check／clippy／no-default-features、Mac `--build-only` 通过；`manual-collaboration.py`（新建并联系已有会话、审批留在对方会话、忙碌与未知票据被拒）、`manual-acp-adapter.py`、`manual-runtime-selection.py`、`manual-runtime-management-api.py`、`manual-resource-library.py` 通过。真实 Harness 经新路径的 A2A 尚未验证（Codex／Claude 每轮会话都会注入服务，需要用户实际使用或后续合成上游脚本确认）。
