@@ -463,7 +463,16 @@ impl Client {
             role: MessageRole::User,
             completed: true,
             timestamp_unix_ms: None,
-            blocks: vec![MessageBlock::Text { text: text.into() }],
+            blocks: (!text.is_empty())
+                .then(|| MessageBlock::Text { text: text.into() })
+                .into_iter()
+                .chain(images.iter().map(|image| MessageBlock::Image {
+                    media_type: Some(image.kind.media_type().into()),
+                    source: crate::conversation::ImageSource::Path {
+                        path: image.path.to_string_lossy().into_owned(),
+                    },
+                }))
+                .collect(),
         });
         self.state(RunState::Running, false, true);
         Ok(())

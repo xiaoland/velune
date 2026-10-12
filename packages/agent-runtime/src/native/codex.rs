@@ -579,9 +579,21 @@ pub(super) fn project_item(item: &Value) -> Option<Message> {
                     Some("text") => part["text"]
                         .as_str()
                         .map(|t| MessageBlock::Text { text: t.into() }),
-                    Some("image" | "localImage") => Some(MessageBlock::Notice {
-                        text: "图片输入".into(),
+                    Some("localImage") => part["path"].as_str().map(|path| MessageBlock::Image {
+                        media_type: None,
+                        source: crate::conversation::ImageSource::Path { path: path.into() },
                     }),
+                    Some("image") => Some(
+                        part["url"]
+                            .as_str()
+                            .and_then(crate::conversation::ImageSource::from_data_url)
+                            .map_or_else(
+                                || MessageBlock::Notice {
+                                    text: "图片输入".into(),
+                                },
+                                |(media_type, source)| MessageBlock::Image { media_type, source },
+                            ),
+                    ),
                     _ => None,
                 })
                 .collect();

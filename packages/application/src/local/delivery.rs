@@ -2,7 +2,7 @@
 //! messages and answers cursor polls and payload reads.
 use crate::transcript_delivery::*;
 use std::collections::HashMap;
-use velune_conversation::{ConversationSnapshot, Message, MessageBlock};
+use velune_conversation::{ConversationSnapshot, ImageSource, Message, MessageBlock, MessageRole};
 
 /// Reasoning and tool output longer than this many UTF-8 bytes are read on demand.
 const INLINE_PAYLOAD_LIMIT: usize = 2048;
@@ -187,24 +187,55 @@ fn delivered(stamp: u64, message: &Message, inline_limit: usize) -> DeliveredMes
         blocks: message
             .blocks
             .iter()
-            .map(|block| match block {
-                MessageBlock::Text { text } => DeliveredBlock::Text { text: text.clone() },
-                MessageBlock::Notice { text } => DeliveredBlock::Notice { text: text.clone() },
-                MessageBlock::Reasoning { text } => DeliveredBlock::Reasoning {
-                    text: payload(text),
-                },
-                MessageBlock::Tool {
-                    tool_id,
-                    title,
-                    state,
-                    output,
-                } => DeliveredBlock::Tool {
-                    tool_id: tool_id.clone(),
-                    title: title.clone(),
-                    state: state.clone(),
-                    output: output.as_ref().map(payload),
-                },
+            .flat_map(|block| match block {
+                // The paths Velune appended to a user's text are shown as files.
+                MessageBlock::Text { text } if message.role == MessageRole::User => {
+                    let (text, files) = velune_conversation::attachment_list::split(text);
+                    (!text.is_empty())
+                        .then(|| DeliveredBlock::Text { text: text.into() })
+                        .into_iter()
+                        .chain(
+                            files
+                                .into_iter()
+                                .map(|path| DeliveredBlock::File { path: path.into() }),
+                        )
+                        .collect()
+                }
+                block => vec![delivered_block(block, &payload)],
             })
             .collect(),
+    }
+}
+
+fn delivered_block(
+    block: &MessageBlock,
+    payload: &impl Fn(&String) -> MessagePayload,
+) -> DeliveredBlock {
+    match block {
+        MessageBlock::Text { text } => DeliveredBlock::Text { text: text.clone() },
+        MessageBlock::Notice { text } => DeliveredBlock::Notice { text: text.clone() },
+        MessageBlock::Reasoning { text } => DeliveredBlock::Reasoning {
+            text: payload(text),
+        },
+        MessageBlock::Tool {
+            tool_id,
+            title,
+            state,
+            output,
+        } => DeliveredBlock::Tool {
+            tool_id: tool_id.clone(),
+            title: title.clone(),
+            state: state.clone(),
+            output: output.as_ref().map(payload),
+        },
+        MessageBlock::Image { media_type, source } => DeliveredBlock::Image {
+            media_type: media_type.clone(),
+            source: match source {
+                ImageSource::Path { path } => DeliveredImageSource::Path { path: path.clone() },
+                ImageSource::Data { data } => DeliveredImageSource::Data {
+                    data: payload(data),
+                },
+            },
+        },
     }
 }

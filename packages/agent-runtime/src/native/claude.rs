@@ -207,7 +207,17 @@ impl NativeSession {
             id: format!("{}:user", self.turn_id.as_deref().unwrap_or_default()),
             role: MessageRole::User,
             timestamp_unix_ms: None,
-            blocks: vec![MessageBlock::Text { text: text.into() }],
+            blocks: input
+                .images
+                .iter()
+                .map(|image| MessageBlock::Image {
+                    media_type: Some(image.kind.media_type().into()),
+                    source: crate::conversation::ImageSource::Path {
+                        path: image.path.to_string_lossy().into_owned(),
+                    },
+                })
+                .chain((!text.is_empty()).then(|| MessageBlock::Text { text: text.into() }))
+                .collect(),
         });
         self.claude_fresh = false;
         self.running();

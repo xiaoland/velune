@@ -48,6 +48,26 @@ pub enum DeliveredBlock {
     Notice {
         text: String,
     },
+    Image {
+        media_type: Option<String>,
+        source: DeliveredImageSource,
+    },
+    /// A non-image file the user attached by path.
+    File {
+        path: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum DeliveredImageSource {
+    Path {
+        path: String,
+    },
+    /// Base64 content; usually large enough to be read with `message_payloads`.
+    Data {
+        data: MessagePayload,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -58,22 +58,13 @@ impl CoreRuntime {
     }
 }
 
-/// The message text with non-image files listed by absolute path, which the
-/// Agent reads with its own tools.
+/// The message text with non-image files listed by absolute path.
 pub(super) fn compose_text(text: &str, files: &[PathBuf]) -> String {
-    if files.is_empty() {
-        return text.into();
-    }
-    let list = files
+    let paths = files
         .iter()
-        .map(|path| format!("- {}", path.display()))
-        .collect::<Vec<_>>()
-        .join("\n");
-    if text.trim().is_empty() {
-        format!("附件：\n{list}")
-    } else {
-        format!("{text}\n\n附件：\n{list}")
-    }
+        .map(|path| path.to_string_lossy())
+        .collect::<Vec<_>>();
+    velune_conversation::attachment_list::compose(text, paths.iter().map(|path| path.as_ref()))
 }
 
 /// The images a send payload names, read for delivery.

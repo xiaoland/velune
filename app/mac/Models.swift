@@ -39,15 +39,17 @@ struct Message: Codable, Sendable, Identifiable, Equatable {
     /// Core delivery sequence of this content; a changed message gets a new stamp.
     var stamp: UInt64 = 0
     /// Visible message text; reasoning and tool output are separate disclosures.
-    var text: String { blocks.compactMap { block in switch block { case .text(let text), .notice(let text): return text; case .reasoning, .tool: return nil } }.joined() }
+    var text: String { blocks.compactMap { block in switch block { case .text(let text), .notice(let text): return text; case .reasoning, .tool, .image, .file: return nil } }.joined() }
     var hasDeferredPayload: Bool {
         blocks.contains { block in
             switch block {
-            case .reasoning(.deferred), .tool(_, _, _, .deferred?): return true
-            case .text, .notice, .reasoning(.inline), .tool: return false
+            case .reasoning(.deferred), .tool(_, _, _, .deferred?), .image(_, .data(.deferred)): return true
+            case .text, .notice, .reasoning(.inline), .tool, .image, .file: return false
             }
         }
     }
+    /// An image whose content is still to be read for its thumbnail.
+    var hasDeferredImage: Bool { blocks.contains { if case .image(_, .data(.deferred)) = $0 { return true }; return false } }
 }
 
 enum MessageBlock: Codable, Sendable, Equatable {
@@ -55,6 +57,16 @@ enum MessageBlock: Codable, Sendable, Equatable {
     case reasoning(MessagePayload)
     case tool(id: String?, title: String, state: ToolState, output: MessagePayload?)
     case notice(String)
+    /// An image the user attached.
+    case image(mediaType: String?, source: ImageSource)
+    /// A non-image file the user attached by absolute path.
+    case file(path: String)
+}
+
+enum ImageSource: Codable, Sendable, Equatable {
+    case path(String)
+    /// Base64 content.
+    case data(MessagePayload)
 }
 
 /// Large reasoning and tool output arrive by size and are read when shown.

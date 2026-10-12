@@ -1,6 +1,9 @@
 import SwiftUI
 import AppKit
 import QuartzCore
+import ImageIO
+import CryptoKit
+import UniformTypeIdentifiers
 
 /// One explicit navigation request; the token distinguishes repeats of the same row.
 struct TranscriptJump: Equatable {
@@ -747,6 +750,12 @@ struct TranscriptTable: NSViewRepresentable {
         }
         let wanted = Set(range.map { entries[$0].id })
         for (id, cell) in visibleCells where !wanted.contains(id) { recycle(cell); visibleCells[id] = nil }
+        // Image content is read once its message comes near the viewport.
+        let images = range.compactMap { index -> String? in
+            guard case .message(let row) = entries[index], row.message.hasDeferredImage else { return nil }
+            return row.message.id
+        }
+        if !images.isEmpty { parent?.loadPayloads(images) }
         for index in range {
             let id = entries[index].id
             let cell: TranscriptCellView
@@ -836,7 +845,7 @@ struct TranscriptTable: NSViewRepresentable {
         let source = message.message.blocks.compactMap { block -> String? in
             switch block {
             case .text(let text), .notice(let text): return text
-            case .reasoning, .tool: return nil
+            case .reasoning, .tool, .image, .file: return nil
             }
         }.joined(separator: "\n\n")
         guard !source.isEmpty else { return menu }
@@ -907,6 +916,7 @@ struct TranscriptTable: NSViewRepresentable {
     private var textViews: [TranscriptTextView] = []
     private var disclosures: [TranscriptDisclosureView] = []
     private var codeBlocks: [TranscriptCodeBlockView] = []
+    private var attachments: [TranscriptAttachmentView] = []
     private let bubble = TranscriptBubbleView()
     private var spinner: NSProgressIndicator?
     private var activityLabel: ShimmeringLabel?
@@ -941,7 +951,7 @@ struct TranscriptTable: NSViewRepresentable {
     func apply(_ layout: TranscriptRowLayout, rowID: String, outlineToggle: (() -> Void)?, toggleHelp: String?, textDelegate: NSTextViewDelegate, toggle: @escaping (String) -> Void) {
         self.rowID = rowID
         self.outlineToggle = outlineToggle
-        var textIndex = 0, disclosureIndex = 0, codeIndex = 0
+        var textIndex = 0, disclosureIndex = 0, codeIndex = 0, attachmentIndex = 0
         bubble.isHidden = true
         bubble.toolTip = toggleHelp
         spinner?.isHidden = true; spinner?.stopAnimation(nil)
@@ -981,6 +991,16 @@ struct TranscriptTable: NSViewRepresentable {
                 view.frame = frame
                 view.configure(title: title, symbol: symbol, expanded: expanded) { toggle(key) }
                 view.isHidden = false
+            case .attachment(let item, let frame):
+                if attachmentIndex == attachments.count {
+                    let view = TranscriptAttachmentView()
+                    attachments.append(view)
+                    addSubview(view)
+                }
+                let view = attachments[attachmentIndex]; attachmentIndex += 1
+                view.frame = frame
+                view.show(item)
+                view.isHidden = false
             case .activity(let activity, let frame):
                 if spinner == nil {
                     let indicator = NSProgressIndicator()
@@ -999,6 +1019,7 @@ struct TranscriptTable: NSViewRepresentable {
         for view in textViews[textIndex...] { view.isHidden = true; view.clear() }
         for view in disclosures[disclosureIndex...] { view.isHidden = true }
         for view in codeBlocks[codeIndex...] { view.isHidden = true; view.clear() }
+        for view in attachments[attachmentIndex...] { view.isHidden = true }
     }
 }
 
@@ -1231,4 +1252,125 @@ struct TranscriptTable: NSViewRepresentable {
         move.duration = 2; move.repeatCount = .infinity
         band.add(move, forKey: "shimmer")
     }
+}
+
+/// An attachment chip: thumbnail or file icon and name; clicking it opens the
+/// file with its default application.
+@MainActor private final class TranscriptAttachmentView: NSView {
+    private static let thumbnails = NSCache<NSString, NSImage>()
+    private static let thumbnailQueue = DispatchQueue(label: "local.velune.transcript-thumbnails", qos: .userInitiated)
+    private let image = NSImageView()
+    private let name = NSTextField(labelWithString: "")
+    private var item: TranscriptAttachment?
+    override var isFlipped: Bool { true }
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        wantsLayer = true
+        layer?.cornerRadius = 6
+        image.imageScaling = .scaleProportionallyUpOrDown
+        image.wantsLayer = true
+        image.layer?.cornerRadius = 4
+        image.layer?.masksToBounds = true
+        name.font = TranscriptTypography.callout
+        name.lineBreakMode = .byTruncatingMiddle
+        name.maximumNumberOfLines = 1
+        addSubview(image); addSubview(name)
+        addGestureRecognizer(NSClickGestureRecognizer(target: self, action: #selector(open)))
+        setAccessibilityRole(.button)
+    }
+    convenience init() { self.init(frame: .zero) }
+    required init?(coder: NSCoder) { fatalError("init(coder:) is unavailable") }
+
+    override var wantsUpdateLayer: Bool { true }
+    override func updateLayer() { layer?.backgroundColor = NSColor.quaternarySystemFill.cgColor }
+
+    func show(_ item: TranscriptAttachment) {
+        guard item != self.item else { return }
+        self.item = item
+        name.stringValue = item.name
+        let path: String? = switch item.content { case .imageFile(let path), .file(let path): path; case .imageData, .imagePending: nil }
+        toolTip = path ?? item.name
+        setAccessibilityLabel("打开附件 \(item.name)")
+        let side = TranscriptRowLayout.attachmentThumbnail
+        image.frame = NSRect(x: 4, y: (bounds.height - side) / 2, width: side, height: side)
+        name.frame = NSRect(x: image.frame.maxX + 8, y: (bounds.height - 17) / 2, width: max(bounds.width - image.frame.maxX - 18, 0), height: 17)
+        guard let key = Self.thumbnailKey(item) else {
+            image.image = Self.placeholder(item)
+            return
+        }
+        if let cached = Self.thumbnails.object(forKey: key as NSString) { image.image = cached; return }
+        image.image = Self.placeholder(item)
+        let content = item.content
+        let pixels = side * (window?.backingScaleFactor ?? 2)
+        Self.thumbnailQueue.async { [weak self] in
+            guard let thumbnail = Self.thumbnail(content, pixels: pixels) else { return }
+            DispatchQueue.main.async {
+                Self.thumbnails.setObject(thumbnail, forKey: key as NSString)
+                if self?.item?.content == content { self?.image.image = thumbnail }
+            }
+        }
+    }
+
+    override func layout() {
+        super.layout()
+        let side = TranscriptRowLayout.attachmentThumbnail
+        image.frame = NSRect(x: 4, y: (bounds.height - side) / 2, width: side, height: side)
+        name.frame = NSRect(x: image.frame.maxX + 8, y: (bounds.height - 17) / 2, width: max(bounds.width - image.frame.maxX - 18, 0), height: 17)
+    }
+
+    private static func thumbnailKey(_ item: TranscriptAttachment) -> String? {
+        switch item.content {
+        case .imageFile(let path): "file:" + path
+        case .imageData(let data): "data:\(data.count):\(data.hashValue)"
+        case .imagePending, .file: nil
+        }
+    }
+
+    private static func placeholder(_ item: TranscriptAttachment) -> NSImage? {
+        switch item.content {
+        case .file(let path): NSWorkspace.shared.icon(forFile: path)
+        case .imageFile, .imageData, .imagePending: NSImage(systemSymbolName: "photo", accessibilityDescription: nil)
+        }
+    }
+
+    /// Decodes no more than the thumbnail needs.
+    nonisolated private static func thumbnail(_ content: TranscriptAttachment.Content, pixels: CGFloat) -> NSImage? {
+        let source: CGImageSource? = switch content {
+        case .imageFile(let path): CGImageSourceCreateWithURL(URL(fileURLWithPath: path) as CFURL, nil)
+        case .imageData(let data): Data(base64Encoded: data).flatMap { CGImageSourceCreateWithData($0 as CFData, nil) }
+        case .imagePending, .file: nil
+        }
+        guard let source, let image = CGImageSourceCreateThumbnailAtIndex(source, 0, [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceThumbnailMaxPixelSize: pixels,
+        ] as CFDictionary) else { return nil }
+        return NSImage(cgImage: image, size: .zero)
+    }
+
+    /// A file opens where it is; embedded image content is written to a
+    /// temporary file first.
+    @objc private func open() {
+        guard let item else { return }
+        let url: URL
+        switch item.content {
+        case .imageFile(let path), .file(let path): url = URL(fileURLWithPath: path)
+        case .imageData(let data):
+            guard let bytes = Data(base64Encoded: data) else { return }
+            let directory = FileManager.default.temporaryDirectory.appendingPathComponent("Velune 图片", isDirectory: true)
+            let ext = item.mediaType.flatMap { UTType(mimeType: $0)?.preferredFilenameExtension } ?? "png"
+            let digest = SHA256.hash(data: bytes).prefix(8).map { String(format: "%02x", $0) }.joined()
+            url = directory.appendingPathComponent("图片 \(digest).\(ext)")
+            do {
+                try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+                if !FileManager.default.fileExists(atPath: url.path) { try bytes.write(to: url) }
+            } catch { NSSound.beep(); return }
+        case .imagePending: return
+        }
+        guard FileManager.default.fileExists(atPath: url.path) else { NSSound.beep(); return }
+        NSWorkspace.shared.open(url)
+    }
+
+    override func accessibilityPerformPress() -> Bool { open(); return true }
 }

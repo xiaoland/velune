@@ -147,9 +147,16 @@
 - 契约：`ComposedTurn.attachments`（本机绝对路径）。application `attachments` 模块在任何状态改变前检查：普通可读文件；按扩展名分出图片（agent-runtime `TurnImage::read` 校验文件头与 20 MB 上限），其余文件追加“附件：”路径列表；远端运行时与 DeepSeek 的图片直接拒绝；有图片时正文可为空。图片路径随 send payload 传到执行处再读出交付（含跨 Harness 接续）。
 - 通道：Codex `localImage{path}`；Claude Code base64 `image` 块置于正文前；Pi `prompt.images`；通用 ACP 仅在 `promptCapabilities.image` 时发 `image` 块，否则发送时拒绝。
 - 修复：Pi 网关物理模型与虚拟模型原只声明 `input: ["text"]`，Pi 会丢弃图片；改为 text＋image，由上游决定接受与否。
-- Mac：操作行最左的回形针（NSOpenPanel 多选）、拖放到输入区、粘贴文件或单独的图片（存为 `VELUNE_HOME/attachments/*.png`）；编辑区上方为 Quick Look 缩略图＋文件名的可移除标签，按会话保存在内存，发送被接受后清除。Claude 等本地回显的用户消息暂只显示正文，附件显示属切片 C。
+- Mac：操作行最左的回形针（NSOpenPanel 多选）、拖放到输入区、粘贴文件或单独的图片（存为 `VELUNE_HOME/attachments/*.png`）；编辑区上方为 Quick Look 缩略图＋文件名的可移除标签，按会话保存在内存，发送被接受后清除。附件显示见切片 C。
 - 验证：`scripts/manual-attachments.py`（实际 Codex 0.159.3、Claude Code 2.1.286、Pi 1.0.2＋回环上游）：三者上游收到的图片字节与原 PNG 一致，文本含“附件：”路径行；仅图片的 turn 发出图片；缺失、相对路径、目录、内容不符的 .png 均未发送即拒绝——全部通过。回归 `manual-reasoning-effort.py`、`manual-parallel-sessions.py` 通过。开发版界面（临时 VELUNE_HOME）确认回形针按钮位置与打开的“添加附件”面板；AX 无法在面板中选文件或模拟拖放／粘贴（不改用户剪贴板），附件标签与拖放／粘贴的实际体验待用户验收。
 - 安装：0337d14 已构建安装（签名校验通过，manifest commit 一致、dirty=false，重开无崩溃报告）；运行时 HOME 设置随 b1fdbc8 先行安装。
+
+### 切片 C：消息列表附件显示（2026-10-12 完成）
+
+- 契约：conversation `MessageBlock::Image{media_type, source}`，`ImageSource` 为本机路径或 base64 内容（data URL 在边界解析）。“附件：”路径列表的组成与拆分归 conversation `attachment_list`：发送时组成，交付时把用户正文拆为 Text＋`DeliveredBlock::File{path}`，会话标题与列表显示去掉路径列表。图片内容走既有 `MessagePayload` 延迟读取，快照不携带图片数据。
+- 投影：Codex `localImage` → 路径（`image` 的 data URL → 内容，其他 URL 为通知）；Claude 本地回显为路径、原生历史为内容；Pi 实时与历史均为内容；ACP 回显为路径、用户 image 块为内容。
+- Mac：用户消息在气泡上方右对齐显示附件标签（缩略图＋文件名，图片在前、文件在后，按宽度换行）；缩略图由 ImageIO 在后台生成并缓存，可见行的延迟图片按需读取；点按（含辅助功能按下）打开文件，内容图片先写入临时目录。
+- 验证：`scripts/manual-attachments.py` 增加显示检查：三种 Harness 的实时快照与原生记录各显示正文、图片（路径或解码后与原 PNG 一致的内容）与文件——全部通过。开发版（临时 VELUNE_HOME＋Pi＋回环上游）截图：图片与 `设计说明.md` 标签完整显示，标题与侧栏不含路径列表。点按打开未经界面实测。
 
 ## 运行时 HOME 设置（2026-10-12）
 
@@ -170,3 +177,4 @@
 - 验证：临时 VELUNE_HOME＋Pi 1.0.2＋回环 Messages 上游（思考块后挂起 45 秒）：运行中工作过程展开、状态行显示“Inspecting the project layout”并有高光移过，弹出按钮指示器为中性灰。发现：把开发版设为前台会让用户正在进行的键盘输入落入其输入框，改用 `open -n -g --env VELUNE_HOME=…` 后台启动；AX 点击发送仍会把它带到前台，验证后立即退出。turn 结束后收起与 Elsewhere 只显示指示未截图核对。
 - 安装：483887e 已构建安装（签名校验通过，manifest commit 一致、dirty=false，重开无崩溃报告）。
 - 用户验收反馈：运行中的会话工作过程仍是收起的。原因：`TranscriptProjection` 只把 Velune 自己执行（Running／Stopping）的最后一个 turn 记为运行中，判断为在外部运行（Elsewhere）的不算，Mac 因而按已结束处理。修复：Elsewhere 时最后一个 turn 的 `is_running` 为真，但不计时（未观察到执行）。`manual-live-sessions.py` 增加断言：外部运行时最后一个 turn 运行中且无时长，外部回复后不再运行中——通过。
+- 安装：b38e744 已构建安装（签名校验通过，manifest commit 一致、dirty=false，重开无崩溃报告）。

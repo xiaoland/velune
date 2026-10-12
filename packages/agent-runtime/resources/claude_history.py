@@ -23,6 +23,9 @@ def blocks(content):
         kind = block.get("type")
         if kind == "text":
             result.append({"kind": "text", "text": block.get("text", "")})
+        elif kind == "image" and (block.get("source") or {}).get("type") == "base64":
+            result.append({"kind": "image", "media_type": block["source"].get("media_type"),
+                           "source": {"kind": "data", "data": block["source"].get("data", "")}})
         elif kind == "thinking":
             result.append({"kind": "reasoning", "text": block.get("thinking", "")})
         elif kind in ("tool_use", "tool_result"):

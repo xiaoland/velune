@@ -156,6 +156,19 @@ impl Client {
                 timestamp_unix_ms: None,
                 blocks: Vec::new(),
             });
+        // A user's image comes back in the Agent's echo of the prompt.
+        if let (MessageRole::User, wire::ContentBlock::Image(image)) =
+            (&message.role, &chunk.content)
+        {
+            message.blocks.push(MessageBlock::Image {
+                media_type: Some(image.mime_type.clone()),
+                source: crate::conversation::ImageSource::Data {
+                    data: image.data.clone(),
+                },
+            });
+            self.message(message);
+            return;
+        }
         let text = content_text(chunk.content);
         match message.blocks.last_mut() {
             Some(MessageBlock::Text { text: previous }) if !thought => previous.push_str(&text),

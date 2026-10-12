@@ -57,8 +57,8 @@ use portable as implementation;
 use serde::{Deserialize, Serialize};
 use std::{fs, path::PathBuf};
 pub use transcript_delivery::{
-    DeliveredBlock, DeliveredMessage, DeliveredSnapshot, MessagePayload, SnapshotUpdate,
-    TranscriptCursor,
+    DeliveredBlock, DeliveredImageSource, DeliveredMessage, DeliveredSnapshot, MessagePayload,
+    SnapshotUpdate, TranscriptCursor,
 };
 pub use velune_conversation as conversation;
 #[derive(Debug, Clone, Serialize, Deserialize)]

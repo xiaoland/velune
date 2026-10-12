@@ -502,8 +502,14 @@ fn message_from_pi(message: &Value, fallback_id: String) -> Option<Message> {
                     state: ToolState::Pending,
                     output: None,
                 }),
-                "image" => blocks.push(MessageBlock::Notice {
-                    text: "图片".into(),
+                "image" => blocks.push(match block["data"].as_str() {
+                    Some(data) => MessageBlock::Image {
+                        media_type: block["mimeType"].as_str().map(str::to_owned),
+                        source: crate::conversation::ImageSource::Data { data: data.into() },
+                    },
+                    None => MessageBlock::Notice {
+                        text: "图片".into(),
+                    },
                 }),
                 _ => {}
             }

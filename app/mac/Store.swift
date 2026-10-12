@@ -990,7 +990,7 @@ final class AppStore: ObservableObject {
         case .reasoning(.inline(let text)): return headline(text) ?? "正在思考"
         case .tool(_, let title, .running, _), .tool(_, let title, .pending, _): return title
         case .text: return "正在回复"
-        case .reasoning, .tool, .notice: return "正在思考"
+        case .reasoning, .tool, .notice, .image, .file: return "正在思考"
         }
     }
     /// The first line of a summary without its Markdown emphasis or heading marks.

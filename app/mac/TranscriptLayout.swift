@@ -7,6 +7,7 @@ final class RenderedMessage: @unchecked Sendable {
         case text(NSAttributedString)
         case code(language: String?, text: NSAttributedString, source: String, indent: CGFloat)
         case disclosure(key: String, title: String, symbol: String?, detail: NSAttributedString, detailMaxWidth: CGFloat?)
+        case attachment(TranscriptAttachment)
     }
     let role: MessageRole
     let blocks: [Block]
@@ -38,6 +39,14 @@ final class RenderedMessage: @unchecked Sendable {
                 }
                 return [.disclosure(key: Self.disclosureKey(block, at: index)!, title: title, symbol: symbol,
                                     detail: Self.detail(output ?? .inline(""), font: TranscriptTypography.code, empty: "没有附加输出"), detailMaxWidth: 560)]
+            case .image(let mediaType, .path(let path)):
+                return [.attachment(TranscriptAttachment(name: URL(fileURLWithPath: path).lastPathComponent, content: .imageFile(path), mediaType: mediaType))]
+            case .image(let mediaType, .data(.inline(let data))):
+                return [.attachment(TranscriptAttachment(name: "图片", content: .imageData(data), mediaType: mediaType))]
+            case .image(let mediaType, .data(.deferred)):
+                return [.attachment(TranscriptAttachment(name: "图片", content: .imagePending, mediaType: mediaType))]
+            case .file(let path):
+                return [.attachment(TranscriptAttachment(name: URL(fileURLWithPath: path).lastPathComponent, content: .file(path), mediaType: nil))]
             }
         }
     }
@@ -49,7 +58,7 @@ extension RenderedMessage {
         switch block {
         case .reasoning: return "reasoning:\(index)"
         case .tool(let id, _, _, _): return "tool:" + (id ?? String(index))
-        case .text, .notice: return nil
+        case .text, .notice, .image, .file: return nil
         }
     }
     /// Disclosures whose content has not been read from the core yet.
@@ -57,7 +66,7 @@ extension RenderedMessage {
         Set(message.blocks.enumerated().compactMap { index, block in
             switch block {
             case .reasoning(.deferred), .tool(_, _, _, .deferred?): return disclosureKey(block, at: index)
-            case .text, .notice, .reasoning(.inline), .tool: return nil
+            case .text, .notice, .reasoning(.inline), .tool, .image, .file: return nil
             }
         })
     }
@@ -89,6 +98,7 @@ struct TranscriptRowLayout: @unchecked Sendable {
         case code(language: String?, source: String, text: NSAttributedString, frame: NSRect, textFrame: NSRect)
         case disclosure(key: String, title: String, symbol: String?, expanded: Bool, frame: NSRect)
         case activity(TranscriptActivity, frame: NSRect)
+        case attachment(TranscriptAttachment, frame: NSRect)
     }
     var elements: [Element]
     var height: CGFloat
@@ -102,6 +112,37 @@ struct TranscriptRowLayout: @unchecked Sendable {
     static let codePadding: CGFloat = 12
     static let codeLabelHeight: CGFloat = 18
     static let codeLabelGap: CGFloat = 6
+    static let attachmentHeight: CGFloat = 48
+    static let attachmentThumbnail: CGFloat = 40
+    static let attachmentNameMaxWidth: CGFloat = 180
+    static let attachmentSpacing: CGFloat = 6
+
+    /// Attachments flow in rows of chips, against the trailing edge for the
+    /// user's own messages.
+    static func attachmentElements(_ items: [TranscriptAttachment], column: (x: CGFloat, width: CGFloat), trailing: Bool, y: inout CGFloat, measurer: TextMeasurer) -> [Element] {
+        var rows: [[(TranscriptAttachment, CGFloat)]] = [[]]
+        var used: CGFloat = 0
+        for item in items {
+            let name = measurer.size(of: TranscriptTypography.plain(item.name, font: TranscriptTypography.callout), width: 10_000).width
+            // A label draws its text inset by a few points on each side.
+            let width = min(4 + attachmentThumbnail + 8 + min(ceil(name) + 6, attachmentNameMaxWidth) + 10, column.width)
+            if !rows[rows.count - 1].isEmpty, used + attachmentSpacing + width > column.width { rows.append([]); used = 0 }
+            used += (rows[rows.count - 1].isEmpty ? 0 : attachmentSpacing) + width
+            rows[rows.count - 1].append((item, width))
+        }
+        var elements: [Element] = []
+        for (index, row) in rows.enumerated() {
+            if index > 0 { y += attachmentSpacing }
+            let total = row.map(\.1).reduce(0, +) + attachmentSpacing * CGFloat(max(row.count - 1, 0))
+            var x = trailing ? column.x + column.width - total : column.x
+            for (item, width) in row {
+                elements.append(.attachment(item, frame: NSRect(x: x, y: y, width: width, height: attachmentHeight)))
+                x += width + attachmentSpacing
+            }
+            y += attachmentHeight
+        }
+        return elements
+    }
 
     static func column(for width: CGFloat) -> (x: CGFloat, width: CGFloat) {
         // Integral frames: layer-backed text views pixel-align fractional
@@ -126,17 +167,27 @@ struct TranscriptRowLayout: @unchecked Sendable {
         case .message(_, _, let expanded):
             guard let rendered else { preconditionFailure("A message row is laid out from its rendered revision") }
             if rendered.role == .user {
+                // Images lead files regardless of which part of the native record carried them.
+                let items = rendered.blocks.compactMap { if case .attachment(let item) = $0 { return item }; return nil }
+                let attachments = items.filter(\.isImage) + items.filter { !$0.isImage }
+                if !attachments.isEmpty {
+                    elements += attachmentElements(attachments, column: column, trailing: true, y: &y, measurer: measurer)
+                }
                 let maxText = floor(max(min(bubbleMaxWidth, column.width - 60) - bubblePadding * 2, 20))
                 var measured: [(NSAttributedString, NSSize)] = []
                 for block in rendered.blocks {
                     // User content has no disclosures; render any defensively as plain text.
-                    let text: NSAttributedString = switch block {
-                    case .text(let text): text
-                    case .code(_, let text, _, _): text
-                    case .disclosure(_, let title, _, let detail, _): TranscriptTypography.plain(title + "\n" + detail.string)
+                    let text: NSAttributedString
+                    switch block {
+                    case .text(let value): text = value
+                    case .code(_, let value, _, _): text = value
+                    case .disclosure(_, let title, _, let detail, _): text = TranscriptTypography.plain(title + "\n" + detail.string)
+                    case .attachment: continue
                     }
                     measured.append((text, measurer.size(of: text, width: maxText)))
                 }
+                if measured.isEmpty { return TranscriptRowLayout(elements: elements, height: ceil(y)) }
+                if !attachments.isEmpty { y += blockSpacing }
                 let textWidth = min(ceil(measured.map(\.1.width).max() ?? 0) + 1, maxText)
                 var inner = y + bubblePadding
                 var texts: [Element] = []
@@ -167,6 +218,8 @@ struct TranscriptRowLayout: @unchecked Sendable {
                         let textFrame = NSRect(x: frame.minX + codePadding, y: y + codePadding + codeLabelHeight + codeLabelGap, width: textWidth, height: textHeight)
                         elements.append(.code(language: language, source: source, text: text, frame: frame, textFrame: textFrame))
                         y += frame.height
+                    case .attachment(let item):
+                        elements += attachmentElements([item], column: column, trailing: false, y: &y, measurer: measurer)
                     case .disclosure(let key, let title, let symbol, let detail, let detailMaxWidth):
                         let isExpanded = expanded.contains(key)
                         elements.append(.disclosure(key: key, title: title, symbol: symbol, expanded: isExpanded, frame: NSRect(x: column.x, y: y, width: column.width, height: headerHeight)))
@@ -206,6 +259,8 @@ struct TranscriptRowLayout: @unchecked Sendable {
                 case .reasoning, .tool:
                     height += headerHeight
                     if !expanded.isEmpty { height += 60 }
+                case .image, .file:
+                    height += attachmentHeight
                 }
             }
             return rowInset + max(height, 19) + (message.role == .user ? bubblePadding * 2 : 0)
@@ -227,5 +282,25 @@ final class TextMeasurer {
         layoutManager.ensureLayout(for: container)
         let used = layoutManager.usedRect(for: container)
         return NSSize(width: used.width, height: ceil(used.height))
+    }
+}
+
+/// A file attached to a message, as shown in the transcript.
+struct TranscriptAttachment: Sendable, Equatable {
+    enum Content: Sendable, Equatable {
+        case imageFile(String)
+        /// Base64 image content.
+        case imageData(String)
+        /// Image content not read from the core yet.
+        case imagePending
+        case file(String)
+    }
+    let name: String
+    let content: Content
+    let mediaType: String?
+
+    var isImage: Bool {
+        if case .file = content { return false }
+        return true
     }
 }

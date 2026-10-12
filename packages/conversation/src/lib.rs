@@ -12,10 +12,16 @@ pub enum ConversationTitle {
     Untitled,
 }
 impl ConversationTitle {
+    /// History readers report titles as their harness made them, which may
+    /// end in the files Velune listed in the first message.
     pub fn display_text(&self) -> &str {
         match self {
-            Self::Native(text) | Self::FirstMessage(text) => text,
-            Self::Untitled => "未命名会话",
+            Self::Native(text) | Self::FirstMessage(text)
+                if !attachment_list::strip(text).trim().is_empty() =>
+            {
+                attachment_list::strip(text)
+            }
+            _ => "未命名会话",
         }
     }
     pub fn refresh(&mut self, first_user_text: Option<&str>) {
@@ -111,6 +117,33 @@ pub enum MessageBlock {
     Notice {
         text: String,
     },
+    /// An image the user attached, as the native record keeps it.
+    Image {
+        media_type: Option<String>,
+        source: ImageSource,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum ImageSource {
+    /// A local path the harness read the image from.
+    Path { path: String },
+    /// Base64 content embedded in the native record.
+    Data { data: String },
+}
+
+impl ImageSource {
+    /// A `data:` URL as a media type and embedded content; other URLs are not
+    /// content Velune holds.
+    pub fn from_data_url(url: &str) -> Option<(Option<String>, Self)> {
+        let (header, data) = url.strip_prefix("data:")?.split_once(',')?;
+        let media_type = header.strip_suffix(";base64")?;
+        Some((
+            (!media_type.is_empty()).then(|| media_type.to_owned()),
+            Self::Data { data: data.into() },
+        ))
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -236,6 +269,10 @@ pub fn conversation_title(
         let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
         (!text.is_empty()).then(|| text.chars().take(80).collect())
     }
+    // Harnesses name a conversation after its first message, which may end in
+    // the files Velune listed there.
+    let native_name = native_name.map(attachment_list::strip);
+    let first_user_text = first_user_text.map(attachment_list::strip);
     if let Some(text) = native_name.filter(|text| !text.trim().is_empty()) {
         ConversationTitle::Native(text.trim().into())
     } else if let Some(text) = first_user_text.and_then(readable) {
@@ -303,4 +340,56 @@ pub struct TranscriptOutlineEntry {
 pub struct TranscriptMessageIdentity {
     pub id: String,
     pub message_id: String,
+}
+
+/// Files other than images are attached to a turn as absolute paths listed
+/// after the user's text, for the Agent to read with its own tools.
+pub mod attachment_list {
+    const HEADER: &str = "附件：";
+    const ITEM: &str = "- ";
+
+    pub fn compose<'a>(text: &str, paths: impl IntoIterator<Item = &'a str>) -> String {
+        let list = paths
+            .into_iter()
+            .map(|path| format!("{ITEM}{path}"))
+            .collect::<Vec<_>>();
+        if list.is_empty() {
+            text.into()
+        } else if text.trim().is_empty() {
+            format!("{HEADER}\n{}", list.join("\n"))
+        } else {
+            format!("{text}\n\n{HEADER}\n{}", list.join("\n"))
+        }
+    }
+
+    /// The user's text and the paths `compose` appended to it; text that does
+    /// not end in such a list is returned whole.
+    pub fn split(text: &str) -> (&str, Vec<&str>) {
+        let (body, list) = match text.rsplit_once(&format!("\n\n{HEADER}\n")) {
+            Some(parts) => parts,
+            None => match text.strip_prefix(&format!("{HEADER}\n")) {
+                Some(list) => ("", list),
+                None => return (text, Vec::new()),
+            },
+        };
+        let paths = list
+            .lines()
+            .map(|line| line.strip_prefix(ITEM).filter(|path| path.starts_with('/')))
+            .collect::<Option<Vec<_>>>();
+        match paths {
+            Some(paths) if !paths.is_empty() => (body, paths),
+            _ => (text, Vec::new()),
+        }
+    }
+
+    /// The text before an appended list, also after a harness has collapsed
+    /// its whitespace or cut it short.
+    pub fn strip(text: &str) -> &str {
+        text.match_indices(HEADER)
+            .find(|(at, _)| {
+                let rest = text[at + HEADER.len()..].trim_start();
+                rest.is_empty() || rest.starts_with(&format!("{ITEM}/"))
+            })
+            .map_or(text, |(at, _)| text[..at].trim_end())
+    }
 }

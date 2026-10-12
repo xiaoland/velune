@@ -52,6 +52,9 @@ enum BindingMapping {
         case .reasoning(let text): return .reasoning(payload(text))
         case .tool(let id, let title, let state, let output): return .tool(id: id, title: title, state: toolState(state), output: output.map(payload))
         case .notice(let text): return .notice(text)
+        case .image(let mediaType, .path(let path)): return .image(mediaType: mediaType, source: .path(path))
+        case .image(let mediaType, .data(let data)): return .image(mediaType: mediaType, source: .data(payload(data)))
+        case .file(let path): return .file(path: path)
         }
     }
 

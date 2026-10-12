@@ -86,6 +86,27 @@ pub enum BindingMessageBlock {
     Notice {
         text: String,
     },
+    /// An image the user attached.
+    Image {
+        media_type: Option<String>,
+        source: BindingImageSource,
+    },
+    /// A non-image file the user attached by absolute path.
+    File {
+        path: String,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Enum)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum BindingImageSource {
+    Path {
+        path: String,
+    },
+    /// Base64 content, normally deferred until read with `message_payloads`.
+    Data {
+        data: BindingMessagePayload,
+    },
 }
 
 /// Large reasoning and tool output arrive by size; read them with `message_payloads`.

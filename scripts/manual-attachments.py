@@ -201,6 +201,33 @@ def main():
                 assert images_in(parts) == [PNG], (runtime, [part.get('type') for part in parts])
                 assert ('LOOK_%s\n\n附件：\n- %s' % (runtime, notes)) in text_in(parts), (runtime, text_in(parts))
                 print('PASS %s delivers the image through its own input and lists the file by path' % runtime, flush=True)
+
+                def shown(snapshot_result, label):
+                    current = snapshot_result.snapshot
+                    message = next(m for m in reversed(current.messages)
+                                   if m.role == b.BindingMessageRole.USER and any(
+                                       isinstance(block, b.BindingMessageBlock.TEXT) and block.text == 'LOOK_' + runtime
+                                       for block in m.blocks))
+                    kinds = [type(block).__name__ for block in message.blocks]
+                    assert [block.path for block in message.blocks if isinstance(block, b.BindingMessageBlock.FILE)] == [str(notes)], (label, kinds)
+                    images = [block for block in message.blocks if isinstance(block, b.BindingMessageBlock.IMAGE)]
+                    assert len(images) == 1, (label, kinds)
+                    source = images[0].source
+                    if isinstance(source, b.BindingImageSource.PATH):
+                        assert source.path == str(image), (label, source.path)
+                        how = 'path'
+                    else:
+                        payload = source.data
+                        if isinstance(payload, b.BindingMessagePayload.DEFERRED):
+                            loaded = app.message_payloads(current.context_runtime_id, current.conversation.id, [message.id])[0]
+                            payload = next(block for block in loaded.blocks if isinstance(block, b.BindingMessageBlock.IMAGE)).source.data
+                        assert base64.b64decode(payload.text) == PNG, label
+                        how = 'content'
+                    print('INFO %s %s shows text, the image by %s and the file' % (runtime, label, how), flush=True)
+
+                shown(app.snapshot(runtime, conversation), 'live')
+                shown(app.open_conversation(runtime, conversation), 'native record')
+                print('PASS %s shows the attachments of a sent message, live and from its native record' % runtime, flush=True)
                 before = len(captures)
                 conversation = app.send_turn_with_selection(
                     runtime, conversation, runtime, b.BindingModelSelection.MANAGED(model_record_key=key),
