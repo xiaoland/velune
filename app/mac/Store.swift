@@ -44,7 +44,7 @@ final class AppStore: ObservableObject {
     @Published var showsAuthentication = false
     @Published private(set) var isLoading = false
     @Published private(set) var isShuttingDown = false
-    @Published private(set) var activity: String?
+    @Published private(set) var activity: TranscriptActivity?
     @Published private(set) var problems: [AppProblem] = []
     @Published private var snapshot: ConversationSnapshot?
 
@@ -974,12 +974,31 @@ final class AppStore: ObservableObject {
         if let index = conversations.firstIndex(where: { $0.id == value.conversation.id }) { if conversations[index] != value.conversation { conversations[index] = value.conversation } }
         else if !isDraft { conversations.insert(value.conversation, at: 0) }
         activity = switch value.runState {
-        case .running: "正在思考与执行"
-        case .stopping: "正在停止"
-        case .elsewhere: "可能正在 Velune 之外运行；内容随原生记录更新"
+        case .running: TranscriptActivity(text: Self.currentWork(value.messages.last), isLive: true)
+        case .stopping: TranscriptActivity(text: "正在停止", isLive: false)
+        // Running elsewhere is only inferred from the native record: a spinner, no claim.
+        case .elsewhere: TranscriptActivity(text: "", isLive: false)
         case .idle, .failed: nil
         }
         if isPreview { previewSnapshots[value.conversation.id] = value }
+    }
+    /// What a running turn is doing, from the newest block of its last
+    /// message: a reasoning summary's headline, the running tool, or replying.
+    private static func currentWork(_ message: Message?) -> String {
+        guard let message, message.role == .assistant, let block = message.blocks.last else { return "正在思考" }
+        switch block {
+        case .reasoning(.inline(let text)): return headline(text) ?? "正在思考"
+        case .tool(_, let title, .running, _), .tool(_, let title, .pending, _): return title
+        case .text: return "正在回复"
+        case .reasoning, .tool, .notice: return "正在思考"
+        }
+    }
+    /// The first line of a summary without its Markdown emphasis or heading marks.
+    private static func headline(_ text: String) -> String? {
+        guard let line = text.split(whereSeparator: \.isNewline).lazy.map({ $0.trimmingCharacters(in: .whitespaces) }).first(where: { !$0.isEmpty }) else { return nil }
+        let plain = line.replacingOccurrences(of: "**", with: "").replacingOccurrences(of: "__", with: "")
+            .trimmingCharacters(in: CharacterSet(charactersIn: "# ")).trimmingCharacters(in: .whitespaces)
+        return plain.isEmpty ? nil : plain
     }
     /// Preparation and operation results replace the projection; polling asks
     /// the core only for changes after the current cursor (see `poll`).

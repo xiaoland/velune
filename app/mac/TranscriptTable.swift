@@ -10,11 +10,19 @@ struct TranscriptJump: Equatable {
 
 /// SwiftUI supplies the ordered presentation; the native list owns geometry,
 /// row reuse, local disclosure state and the reading position.
+/// The status line under a conversation whose turn is not finished: a
+/// spinner, and what the turn is doing now when that is known.
+struct TranscriptActivity: Equatable, Sendable {
+    var text: String
+    /// The text describes live work and shimmers while it lasts.
+    var isLive: Bool
+}
+
 struct TranscriptTable: NSViewRepresentable {
     let conversationID: String?
     let items: [TranscriptModel.Item]
     let revision: UInt64
-    let activity: String?
+    let activity: TranscriptActivity?
     /// The list shows only user messages; their bubbles expand it again.
     let outlineCollapsed: Bool
     /// The row kept in place when `outlineCollapsed` changes; nil picks the
@@ -42,7 +50,7 @@ struct TranscriptTable: NSViewRepresentable {
     enum Entry {
         case message(TranscriptRow)
         case work(TranscriptTurn, label: String)
-        case activity(String)
+        case activity(TranscriptActivity)
         case end
         var id: String {
             switch self {
@@ -54,7 +62,7 @@ struct TranscriptTable: NSViewRepresentable {
         }
     }
     private enum ContentKey: Equatable {
-        case message(UInt64, [String]), work(String, Bool), activity(String), end
+        case message(UInt64, [String]), work(String, Bool), activity(TranscriptActivity), end
     }
     private struct Measured {
         var key: ContentKey
@@ -108,10 +116,13 @@ struct TranscriptTable: NSViewRepresentable {
     private var indexByID: [String: Int] = [:]
     private var conversationID: String?
     private var revision: UInt64?
-    private var activity: String?
+    private var activity: TranscriptActivity?
     private var outlineCollapsed = false
     private var transition: OutlineTransition?
+    /// Finished turns the user expanded, and running turns the user collapsed:
+    /// a running turn shows its work until it finishes.
     private var expandedWork: Set<String> = []
+    private var collapsedRunningWork: Set<String> = []
     private var expandedBlocks: [String: Set<String>] = [:]
 
     private var rendered: [String: (revision: UInt64, value: RenderedMessage)] = [:]
@@ -171,7 +182,7 @@ struct TranscriptTable: NSViewRepresentable {
         clipFrameChanged()
         if input.conversationID != conversationID {
             conversationID = input.conversationID
-            expandedWork = []; expandedBlocks = [:]
+            expandedWork = []; collapsedRunningWork = []; expandedBlocks = [:]
             rendered = [:]; measured = [:]; lastKnown = [:]
             entries = []; indexByID = [:]; heights = []; offsets = [0]
             for cell in visibleCells.values { recycle(cell) }
@@ -212,6 +223,7 @@ struct TranscriptTable: NSViewRepresentable {
                 return nil
             })
             expandedWork.formIntersection(liveTurns)
+            collapsedRunningWork.formIntersection(liveTurns)
         }
         var next: [Entry] = []
         for item in parent?.items ?? [] {
@@ -219,7 +231,7 @@ struct TranscriptTable: NSViewRepresentable {
             case .message(let row): next.append(.message(row))
             case .work(let turn, let rows):
                 next.append(.work(turn, label: Self.workLabel(turn)))
-                if expandedWork.contains(turn.id) { next += rows.map(Entry.message) }
+                if showsWork(turn) { next += rows.map(Entry.message) }
             }
         }
         if let activity = parent?.activity { next.append(.activity(activity)) }
@@ -440,10 +452,10 @@ struct TranscriptTable: NSViewRepresentable {
             let expanded = expandedBlocks[row.id] ?? []
             return (.message(row.contentRevision, expanded.sorted()), .message(row.message, revision: row.contentRevision, expanded: expanded))
         case .work(let turn, let label):
-            let expanded = expandedWork.contains(turn.id)
+            let expanded = showsWork(turn)
             return (.work(label, expanded), .work(label: label, expanded: expanded))
-        case .activity(let text):
-            return (.activity(text), .activity(text))
+        case .activity(let activity):
+            return (.activity(activity), .activity(activity))
         case .end:
             return (.end, .end)
         }
@@ -786,7 +798,8 @@ struct TranscriptTable: NSViewRepresentable {
         let wasFollowing = following
         following = false
         if case .work(let turn, _) = entries[index] {
-            if expandedWork.contains(turn.id) { expandedWork.remove(turn.id) } else { expandedWork.insert(turn.id) }
+            if turn.isRunning { collapsedRunningWork.formSymmetricDifference([turn.id]) }
+            else { expandedWork.formSymmetricDifference([turn.id]) }
             rebuildEntries()
             restore(anchor)
         } else {
@@ -799,6 +812,10 @@ struct TranscriptTable: NSViewRepresentable {
         }
         following = wasFollowing
         setFollowing(isAtBottom)
+    }
+
+    private func showsWork(_ turn: TranscriptTurn) -> Bool {
+        turn.isRunning ? !collapsedRunningWork.contains(turn.id) : expandedWork.contains(turn.id)
     }
 
     static func workLabel(_ turn: TranscriptTurn) -> String {
@@ -892,7 +909,7 @@ struct TranscriptTable: NSViewRepresentable {
     private var codeBlocks: [TranscriptCodeBlockView] = []
     private let bubble = TranscriptBubbleView()
     private var spinner: NSProgressIndicator?
-    private var activityLabel: NSTextField?
+    private var activityLabel: ShimmeringLabel?
     private var outlineToggle: (() -> Void)?
 
     override var isFlipped: Bool { true }
@@ -918,6 +935,7 @@ struct TranscriptTable: NSViewRepresentable {
         for view in textViews { view.clear() }
         for view in codeBlocks { view.clear() }
         spinner?.stopAnimation(nil)
+        activityLabel?.show("", shimmering: false)
     }
 
     func apply(_ layout: TranscriptRowLayout, rowID: String, outlineToggle: (() -> Void)?, toggleHelp: String?, textDelegate: NSTextViewDelegate, toggle: @escaping (String) -> Void) {
@@ -963,20 +981,19 @@ struct TranscriptTable: NSViewRepresentable {
                 view.frame = frame
                 view.configure(title: title, symbol: symbol, expanded: expanded) { toggle(key) }
                 view.isHidden = false
-            case .activity(let text, let frame):
+            case .activity(let activity, let frame):
                 if spinner == nil {
                     let indicator = NSProgressIndicator()
                     indicator.style = .spinning; indicator.controlSize = .small; indicator.isDisplayedWhenStopped = false
-                    let label = NSTextField(labelWithString: "")
-                    label.font = TranscriptTypography.callout; label.textColor = .secondaryLabelColor
+                    let label = ShimmeringLabel()
                     addSubview(indicator); addSubview(label)
                     spinner = indicator; activityLabel = label
                 }
                 spinner?.frame = NSRect(x: frame.minX, y: frame.minY + 1, width: 16, height: 16)
                 spinner?.isHidden = false; spinner?.startAnimation(nil)
-                activityLabel?.stringValue = text
                 activityLabel?.frame = NSRect(x: frame.minX + 22, y: frame.minY, width: frame.width - 22, height: frame.height)
-                activityLabel?.isHidden = false
+                activityLabel?.show(activity.text, shimmering: activity.isLive)
+                activityLabel?.isHidden = activity.text.isEmpty
             }
         }
         for view in textViews[textIndex...] { view.isHidden = true; view.clear() }
@@ -1159,5 +1176,59 @@ struct TranscriptTable: NSViewRepresentable {
         let work = DispatchWorkItem { [weak self] in self?.reset() }
         resetWork = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 2, execute: work)
+    }
+}
+
+/// One line of secondary text; while it describes live work a band of light
+/// passes over it, unless the user has asked for reduced motion.
+@MainActor private final class ShimmeringLabel: NSView {
+    private let label = NSTextField(labelWithString: "")
+    private let band = CAGradientLayer()
+    private var shimmering = false
+    override var isFlipped: Bool { true }
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        wantsLayer = true
+        label.font = TranscriptTypography.callout
+        label.textColor = .secondaryLabelColor
+        label.lineBreakMode = .byTruncatingTail
+        label.maximumNumberOfLines = 1
+        label.wantsLayer = true
+        addSubview(label)
+        band.startPoint = CGPoint(x: 0, y: 0.5); band.endPoint = CGPoint(x: 1, y: 0.5)
+        band.colors = [NSColor.black.withAlphaComponent(0.45).cgColor, NSColor.black.cgColor, NSColor.black.withAlphaComponent(0.45).cgColor]
+        band.locations = [0, 0.5, 1]
+    }
+    convenience init() { self.init(frame: .zero) }
+    required init?(coder: NSCoder) { fatalError("init(coder:) is unavailable") }
+
+    func show(_ text: String, shimmering: Bool) {
+        if label.stringValue != text { label.stringValue = text; needsLayout = true }
+        setAccessibilityLabel(text)
+        let shimmer = shimmering && !text.isEmpty && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        guard shimmer != self.shimmering else { return }
+        self.shimmering = shimmer
+        needsLayout = true
+    }
+
+    override func layout() {
+        super.layout()
+        label.frame = NSRect(x: 0, y: 0, width: min(ceil(label.fittingSize.width), bounds.width), height: bounds.height)
+        guard shimmering, let layer = label.layer else {
+            label.layer?.mask = nil; band.removeAllAnimations()
+            return
+        }
+        // The band spans three widths so it enters and leaves fully.
+        let width = max(label.frame.width, 1)
+        CATransaction.begin(); CATransaction.setDisableActions(true)
+        band.frame = CGRect(x: -width, y: 0, width: width * 3, height: bounds.height)
+        CATransaction.commit()
+        layer.mask = band
+        guard band.animation(forKey: "shimmer") == nil else { return }
+        let move = CABasicAnimation(keyPath: "locations")
+        move.fromValue = [0, 0.05, 0.1]; move.toValue = [0.9, 0.95, 1]
+        move.duration = 2; move.repeatCount = .infinity
+        band.add(move, forKey: "shimmer")
     }
 }

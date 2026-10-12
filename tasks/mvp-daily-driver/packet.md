@@ -159,3 +159,12 @@
 - 已保存的 managed 实例显示 core 解析出的 HOME 位置，可在 Finder 中显示。
 - 发现：Mac 保存实例时只回写描述字段，会丢掉 settings 中的 `execution` 等非字段键；改为保留其余键。
 - 验证：临时 VELUNE_HOME 中经绑定写入 managed 与指定目录两个实例，`runtime_home_directory` 分别返回 `VELUNE_HOME/runtime-homes/<摘要>` 与指定目录；开发版编辑器（AX 打开）显示对应 HOME 选项、managed 位置与指定目录字段，managed 实例经“保存”回写后 `execution` 保持 managed。AX 无法操作 SwiftUI 弹出菜单与文本框，切换 HOME 选项与改路径未经界面实测。
+
+## 零碎改进（2026-10-12）
+
+用户反馈（已写入 PRD）：composer 弹出按钮指示器用中性色；未结束 turn 默认展开工作过程，运行表达参考 Claude Code／Codex（shimmer）但优先原生；外部运行的说明文字去掉。
+
+- 弹出按钮：`.tint(controlColor)`。对比试验窗口中 `.secondary`／`.gray` 在浅色下近黑、过重，controlColor 呈中灰，接近系统石墨色外观；深色下各中性色接近。
+- 工作过程：运行中的 turn 除非用户收起，否则展开；结束后按已完成 turn 的规则（默认收起）。
+- 状态行：进度指示＋当前工作（最新推理块首行／运行中工具标题／“正在回复”），文字带 CAGradientLayer 遮罩 shimmer，尊重减少动态效果；“正在停止”不闪；Elsewhere 只显示进度指示。
+- 验证：临时 VELUNE_HOME＋Pi 1.0.2＋回环 Messages 上游（思考块后挂起 45 秒）：运行中工作过程展开、状态行显示“Inspecting the project layout”并有高光移过，弹出按钮指示器为中性灰。发现：把开发版设为前台会让用户正在进行的键盘输入落入其输入框，改用 `open -n -g --env VELUNE_HOME=…` 后台启动；AX 点击发送仍会把它带到前台，验证后立即退出。turn 结束后收起与 Elsewhere 只显示指示未截图核对。

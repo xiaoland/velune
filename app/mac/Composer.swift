@@ -469,7 +469,11 @@ struct ComposerView: View {
             .disabled(store.isShuttingDown)
             if !store.reasoningEffortOptions.isEmpty { reasoningEffortMenu }
             if store.isUnsentConversation { workingDirectoryMenu }
-        }.menuStyle(.button)
+        }
+        .menuStyle(.button)
+        // Side by side, accent-coloured indicators would all compete; this
+        // neutral tint draws them like the system's graphite appearance.
+        .tint(Color(nsColor: .controlColor))
     }
 
     /// Levels come from the model and runtime; "默认" sends none and leaves

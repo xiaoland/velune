@@ -12,7 +12,7 @@ struct TranscriptView: View {
     @Binding var outlineCollapsed: Bool
     /// A jump chosen in the outline popover.
     let navigation: TranscriptJump?
-    let activity: String?
+    let activity: TranscriptActivity?
     let loadPayloads: ([String]) -> Void
     @State private var following = true
     @State private var bottomRequest: UInt64 = 0

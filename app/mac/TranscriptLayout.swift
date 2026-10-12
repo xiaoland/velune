@@ -75,7 +75,7 @@ extension RenderedMessage {
 enum TranscriptRowContent: @unchecked Sendable {
     case message(Message, revision: UInt64, expanded: Set<String>)
     case work(label: String, expanded: Bool)
-    case activity(String)
+    case activity(TranscriptActivity)
     /// Fixed breathing room after the last row, above the composer.
     case end
 }
@@ -88,7 +88,7 @@ struct TranscriptRowLayout: @unchecked Sendable {
         /// Background frame; the code text sits below a label row inside it.
         case code(language: String?, source: String, text: NSAttributedString, frame: NSRect, textFrame: NSRect)
         case disclosure(key: String, title: String, symbol: String?, expanded: Bool, frame: NSRect)
-        case activity(String, frame: NSRect)
+        case activity(TranscriptActivity, frame: NSRect)
     }
     var elements: [Element]
     var height: CGFloat
@@ -118,8 +118,8 @@ struct TranscriptRowLayout: @unchecked Sendable {
         case .work(let label, let expanded):
             elements.append(.disclosure(key: "", title: label, symbol: nil, expanded: expanded, frame: NSRect(x: column.x, y: y, width: column.width, height: headerHeight)))
             y += headerHeight
-        case .activity(let text):
-            elements.append(.activity(text, frame: NSRect(x: column.x, y: y, width: column.width, height: headerHeight)))
+        case .activity(let activity):
+            elements.append(.activity(activity, frame: NSRect(x: column.x, y: y, width: column.width, height: headerHeight)))
             y += headerHeight
         case .end:
             break
