@@ -251,7 +251,7 @@ def run(args, root):
             bindings.BindingCollaborationLimits(max_children=1, turn_timeout_ms=20000))
         identity = result.snapshot.conversation.id
         app.send_turn_with_selection("parent", identity, "parent", default, bindings.BindingComposedTurn(
-            text="Delegate this task to the child, wait, then report its result.", effort=None))
+            text="Delegate this task to the child, wait, then report its result.", effort=None, attachments=[]))
         # Do not call any application polling API until the parent has received
         # the child's result. The child must make progress on its own worker.
         deadline = time.monotonic() + 45

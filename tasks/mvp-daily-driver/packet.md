@@ -142,6 +142,14 @@
 - 顺带修正 `manual-runtime-management-api.py` 中按会话寻址前遗留的 `cancel(runtime)` 调用。
 - 安装：e6910c2 已构建安装到 `/Applications/Velune.app`（签名校验通过，manifest commit 一致、dirty=false，重开无崩溃报告）。输入区“推理”按钮的实际提供商体验待用户验收。
 
+### 切片 B：附件发送（2026-10-12 完成）
+
+- 契约：`ComposedTurn.attachments`（本机绝对路径）。application `attachments` 模块在任何状态改变前检查：普通可读文件；按扩展名分出图片（agent-runtime `TurnImage::read` 校验文件头与 20 MB 上限），其余文件追加“附件：”路径列表；远端运行时与 DeepSeek 的图片直接拒绝；有图片时正文可为空。图片路径随 send payload 传到执行处再读出交付（含跨 Harness 接续）。
+- 通道：Codex `localImage{path}`；Claude Code base64 `image` 块置于正文前；Pi `prompt.images`；通用 ACP 仅在 `promptCapabilities.image` 时发 `image` 块，否则发送时拒绝。
+- 修复：Pi 网关物理模型与虚拟模型原只声明 `input: ["text"]`，Pi 会丢弃图片；改为 text＋image，由上游决定接受与否。
+- Mac：操作行最左的回形针（NSOpenPanel 多选）、拖放到输入区、粘贴文件或单独的图片（存为 `VELUNE_HOME/attachments/*.png`）；编辑区上方为 Quick Look 缩略图＋文件名的可移除标签，按会话保存在内存，发送被接受后清除。Claude 等本地回显的用户消息暂只显示正文，附件显示属切片 C。
+- 验证：`scripts/manual-attachments.py`（实际 Codex 0.159.3、Claude Code 2.1.286、Pi 1.0.2＋回环上游）：三者上游收到的图片字节与原 PNG 一致，文本含“附件：”路径行；仅图片的 turn 发出图片；缺失、相对路径、目录、内容不符的 .png 均未发送即拒绝——全部通过。回归 `manual-reasoning-effort.py`、`manual-parallel-sessions.py` 通过。开发版界面（临时 VELUNE_HOME）确认回形针按钮位置与打开的“添加附件”面板；AX 无法在面板中选文件或模拟拖放／粘贴（不改用户剪贴板），附件标签与拖放／粘贴的实际体验待用户验收。
+
 ## 运行时 HOME 设置（2026-10-12）
 
 用户要求把 application 已有的 `RuntimeHome` 接入 Mac 运行时设置（已写入 PRD）。

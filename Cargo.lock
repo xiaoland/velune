@@ -2526,6 +2526,7 @@ name = "velune-agent-runtime"
 version = "0.1.0"
 dependencies = [
  "agent-client-protocol-schema",
+ "base64",
  "getrandom",
  "libc",
  "regex",

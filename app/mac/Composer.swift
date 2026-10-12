@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import QuickLookThumbnailing
 
 /// Editing state of the composer in one window. The text view owns the text
 /// while editing; each conversation keeps its draft (persisted by the store)
@@ -8,6 +9,9 @@ import AppKit
     @Published private(set) var isEmpty = true
     @Published private(set) var isFocused = false
     @Published fileprivate(set) var height = ComposerTextView.minimumHeight
+    /// Files attached to the next turn of the shown conversation.
+    @Published private(set) var attachments: [URL] = []
+    private var attachmentsByConversation: [String: [URL]] = [:]
     private(set) var conversationID: String?
     fileprivate weak var textView: ComposerTextView?
     private var text = ""
@@ -25,10 +29,48 @@ import AppKit
         guard conversationID != self.conversationID else { return }
         self.conversationID = conversationID
         replace(with: conversationID.flatMap { store?.draft(for: $0) } ?? "")
+        attachments = conversationID.flatMap { attachmentsByConversation[$0] } ?? []
+    }
+
+    /// Adds regular files; folders and files already attached are skipped.
+    func addAttachments(_ urls: [URL]) {
+        let files = urls.map(\.standardizedFileURL).filter { url in
+            var directory: ObjCBool = false
+            return url.isFileURL && FileManager.default.fileExists(atPath: url.path, isDirectory: &directory) && !directory.boolValue
+        }
+        let added = files.reduce(into: attachments) { list, url in if !list.contains(url) { list.append(url) } }
+        guard added != attachments else { return }
+        setAttachments(added)
+    }
+
+    func removeAttachment(_ url: URL) { setAttachments(attachments.filter { $0 != url }) }
+
+    /// Keeps a pasted image as a PNG file in the application's attachment
+    /// folder, so it can be attached by path like any other file.
+    fileprivate func attachPastedImage(_ data: Data) {
+        guard let store else { return }
+        do {
+            let directory = store.attachmentsDirectory
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            let url = directory.appendingPathComponent("粘贴的图片 \(Date().formatted(.iso8601.year().month().day().time(includingFractionalSeconds: false).timeSeparator(.omitted).dateTimeSeparator(.space))) \(UUID().uuidString.prefix(4)).png")
+            try data.write(to: url, options: .withoutOverwriting)
+            addAttachments([url])
+        } catch {
+            store.recordProblem(error, source: "粘贴图片")
+        }
+    }
+
+    private func setAttachments(_ value: [URL]) {
+        attachments = value
+        if let conversationID { attachmentsByConversation[conversationID] = value.isEmpty ? nil : value }
     }
 
     /// Clears a sent draft unless it was edited while the send was accepted.
-    func clear(submitted: String, conversationID: String?) {
+    func clear(submitted: String, attachments sent: [URL], conversationID: String?) {
+        if !sent.isEmpty {
+            attachmentsByConversation = attachmentsByConversation.filter { $0.value != sent }
+            if attachments == sent { attachments = [] }
+        }
         guard let conversationID else { return }
         if conversationID == self.conversationID {
             guard text == submitted else { return }
@@ -210,6 +252,39 @@ struct ComposerEditor: NSViewRepresentable {
         if widthChanged { fitHeight() }
     }
 
+    /// Dropped or pasted files become attachments rather than path text.
+    override var acceptableDragTypes: [NSPasteboard.PasteboardType] { super.acceptableDragTypes + [.fileURL] }
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        Self.fileURLs(sender.draggingPasteboard).isEmpty ? super.draggingEntered(sender) : .copy
+    }
+    override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
+        Self.fileURLs(sender.draggingPasteboard).isEmpty ? super.draggingUpdated(sender) : .copy
+    }
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        let urls = Self.fileURLs(sender.draggingPasteboard)
+        guard !urls.isEmpty else { return super.performDragOperation(sender) }
+        coordinator?.model.addAttachments(urls)
+        return true
+    }
+    override func paste(_ sender: Any?) {
+        let board = NSPasteboard.general
+        let urls = Self.fileURLs(board)
+        if !urls.isEmpty { coordinator?.model.addAttachments(urls); return }
+        // An image on its own, such as a screenshot; text with an image is pasted as text.
+        if board.availableType(from: [.string]) == nil, let data = Self.pngData(board) {
+            coordinator?.model.attachPastedImage(data); return
+        }
+        super.paste(sender)
+    }
+    fileprivate static func fileURLs(_ board: NSPasteboard) -> [URL] {
+        (board.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL]) ?? []
+    }
+    private static func pngData(_ board: NSPasteboard) -> Data? {
+        if let png = board.data(forType: .png) { return png }
+        guard let tiff = board.data(forType: .tiff) else { return nil }
+        return NSBitmapImageRep(data: tiff)?.representation(using: .png, properties: [:])
+    }
+
     override func keyDown(with event: NSEvent) {
         let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
         let isReturn = event.keyCode == 36 || event.keyCode == 76
@@ -304,6 +379,7 @@ struct ComposerView: View {
             if store.pendingConversationID == nil, let status = store.conversationManagementStatus {
                 HStack { ProgressView().controlSize(.small); Text(status) }.font(.callout).foregroundStyle(.secondary)
             }
+            if !model.attachments.isEmpty { attachmentRow }
             ComposerEditor(model: model, placeholder: "输入消息，⌘Return 发送", submit: send)
                 .frame(height: model.height)
                 // The text view sits in a clipping scroll view, which hides its
@@ -324,9 +400,18 @@ struct ComposerView: View {
                     Button("停止", action: store.cancel).disabled(!store.canCancel).help("停止当前生成")
                 } else {
                     Button("发送", action: send).buttonStyle(.borderedProminent)
-                        .disabled(!store.canSend || model.isEmpty).help("发送消息（⌘ Return）")
+                        .disabled(!store.canSend || (model.isEmpty && model.attachments.isEmpty)).help("发送消息（⌘ Return）")
                 }
             }
+        }
+        .onDrop(of: [.fileURL], isTargeted: nil) { providers in
+            for provider in providers {
+                _ = provider.loadObject(ofClass: NSURL.self) { url, _ in
+                    guard let url = url as? URL else { return }
+                    Task { @MainActor in model.addAttachments([url]) }
+                }
+            }
+            return !providers.isEmpty
         }
         .frame(maxWidth: 760).padding(.horizontal, 16).padding(.top, 10).padding(.bottom, 14).frame(maxWidth: .infinity)
         .onAppear {
@@ -341,8 +426,20 @@ struct ComposerView: View {
         }
     }
 
+    private var attachmentRow: some View {
+        ScrollView(.horizontal) {
+            HStack(spacing: 6) {
+                ForEach(model.attachments, id: \.self) { url in AttachmentChip(url: url) { model.removeAttachment(url) } }
+            }
+        }.scrollIndicators(.never)
+    }
+
     private var nextTurnControls: some View {
         HStack(spacing: 8) {
+            Button(action: chooseAttachments) { Image(systemName: "paperclip") }
+                .accessibilityLabel("添加附件")
+                .help("添加附件：图片随消息发送，其他文件以路径告知 Agent")
+                .disabled(store.isShuttingDown)
             Menu {
                 Picker("Agent 运行时", selection: Binding(get: { store.nextTurnRuntimeID }, set: { if let id = $0 { store.selectNextTurnRuntime(id) } })) {
                     ForEach(store.enabledRuntimeInstances) { runtime in Text(runtime.name).tag(Optional(runtime.id)) }
@@ -422,10 +519,45 @@ struct ComposerView: View {
         .help(path ?? "工作目录：留空时使用运行时的默认目录")
     }
 
+    private func chooseAttachments() {
+        let panel = NSOpenPanel()
+        panel.title = "添加附件"
+        panel.canChooseFiles = true; panel.canChooseDirectories = false; panel.allowsMultipleSelection = true
+        if panel.runModal() == .OK { model.addAttachments(panel.urls) }
+    }
+
     private func chooseDirectory() {
         let panel = NSOpenPanel()
         panel.title = "选择新会话的工作目录"
         panel.canChooseDirectories = true; panel.canChooseFiles = false; panel.allowsMultipleSelection = false
         if panel.runModal() == .OK, let url = panel.url { store.setUnsentWorkingDirectory(url.standardizedFileURL.path) }
+    }
+}
+
+/// An attached file above the composer: its thumbnail or icon, its name, and
+/// a button to remove it.
+private struct AttachmentChip: View {
+    let url: URL
+    let remove: () -> Void
+    @State private var thumbnail: NSImage?
+    @Environment(\.displayScale) private var displayScale
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(nsImage: thumbnail ?? NSWorkspace.shared.icon(forFile: url.path))
+                .resizable().aspectRatio(contentMode: .fill)
+                .frame(width: 28, height: 28).clipShape(RoundedRectangle(cornerRadius: 4))
+            Text(url.lastPathComponent).lineLimit(1).truncationMode(.middle).frame(maxWidth: 160, alignment: .leading)
+            Button(action: remove) { Image(systemName: "xmark.circle.fill") }
+                .buttonStyle(.borderless).foregroundStyle(.secondary)
+                .accessibilityLabel("移除附件 \(url.lastPathComponent)").help("移除附件")
+        }
+        .padding(4).padding(.trailing, 2)
+        .background(.quaternary, in: RoundedRectangle(cornerRadius: 6))
+        .help(url.path)
+        .task(id: url) {
+            let request = QLThumbnailGenerator.Request(fileAt: url, size: CGSize(width: 28, height: 28), scale: displayScale, representationTypes: .thumbnail)
+            thumbnail = try? await QLThumbnailGenerator.shared.generateBestRepresentation(for: request).nsImage
+        }
     }
 }

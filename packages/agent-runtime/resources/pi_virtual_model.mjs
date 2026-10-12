@@ -89,7 +89,7 @@ export default function (pi) {
     id: "auto",
     name: "Velune Auto",
     thinkingLevels: ["off", "minimal", "low", "medium", "high", "xhigh", "max"],
-    input: ["text"],
+    input: ["text", "image"],
     route(request, ctx) {
       const chosen = selection();
       const physicalModelId = chosen.physicalModelId;

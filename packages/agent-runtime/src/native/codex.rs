@@ -171,13 +171,24 @@ impl NativeSession {
             .native_id
             .as_deref()
             .ok_or_else(|| Error::new("Codex 没有活动会话"))?;
+        // Codex reads attached images from their paths itself.
+        let items = (!input.text.is_empty())
+            .then(|| json!({"type":"text", "text":input.text}))
+            .into_iter()
+            .chain(
+                input
+                    .images
+                    .iter()
+                    .map(|image| json!({"type":"localImage", "path":image.path})),
+            )
+            .collect::<Vec<_>>();
         let result = self.rpc.request(
             "turn/start",
             &json!({
                 "threadId": id,
                 "model": self.config.gateway.as_ref().map(|g| g.model_alias.as_str()).or_else(|| self.native_selection.as_ref().map(|m| m.id.as_str())),
                 "effort": input.effort,
-                "input": [{"type":"text", "text":input.text}]
+                "input": items
             }),
         )?;
         let turn_id = result["turn"]["id"]

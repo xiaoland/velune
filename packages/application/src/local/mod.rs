@@ -127,6 +127,7 @@ pub struct CoreRuntime {
     repository: crate::repository::Repository,
 }
 
+mod attachments;
 mod authentication_coordination;
 mod browsing;
 mod collaboration;

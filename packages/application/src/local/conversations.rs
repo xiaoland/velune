@@ -29,10 +29,16 @@ impl CoreRuntime {
             self.close_collaboration();
         }
         let selection = super::model_selection::requested_selection(request)?;
-        let text = request["payload"]["text"]
-            .as_str()
-            .filter(|t| !t.trim().is_empty())
-            .ok_or_else(|| RuntimeError::invalid("message text"))?;
+        let attachments = self.turn_attachments(self.runtime_instance(runtime_id)?, request)?;
+        let text = super::attachments::compose_text(
+            request["payload"]["text"].as_str().unwrap_or_default(),
+            &attachments.files,
+        );
+        if text.trim().is_empty() && attachments.images.is_empty() {
+            return Err(RuntimeError::invalid("message text"));
+        }
+        let text = text.as_str();
+        let images = &attachments.images;
         let effort = request["payload"]["effort"].as_str();
         let active_snapshot = self.native_snapshot();
         let active_conversation_id = self
@@ -116,12 +122,12 @@ impl CoreRuntime {
             self.commit_unsubmitted_alias()?;
             if needs_new_target {
                 return self.send_action(
-                    &json!({"payload":{"runtimeInstanceID":runtime_id,"text":text,"effort":effort}}),
+                    &json!({"payload":{"runtimeInstanceID":runtime_id,"text":text,"effort":effort,"images":images}}),
                 );
             }
         }
         if snapshot.conversation.runtime_id != runtime_id {
-            return self.continue_in_runtime(runtime_id, &selection, text, effort);
+            return self.continue_in_runtime(runtime_id, &selection, text, effort, images);
         }
         if matches!(self.session.active_state, ActiveState::History(_))
             || self.session.model_selection.as_ref() != Some(&selection)
@@ -129,7 +135,7 @@ impl CoreRuntime {
             self.prepare_with_selection(snapshot, &selection, false)?;
         }
         self.send_action(
-            &json!({"payload":{"runtimeInstanceID":runtime_id,"text":text,"effort":effort}}),
+            &json!({"payload":{"runtimeInstanceID":runtime_id,"text":text,"effort":effort,"images":images}}),
         )
     }
 
@@ -518,10 +524,11 @@ impl CoreRuntime {
         if self.busy() {
             return Err(RuntimeError::invalid("runtime is busy"));
         }
-        let text = request["payload"]["text"]
-            .as_str()
-            .filter(|item| !item.trim().is_empty())
-            .ok_or_else(|| RuntimeError::invalid("message text"))?;
+        let text = request["payload"]["text"].as_str().unwrap_or_default();
+        let images = super::attachments::turn_images(request)?;
+        if text.trim().is_empty() && images.is_empty() {
+            return Err(RuntimeError::invalid("message text"));
+        }
         if matches!(self.session.active_state, ActiveState::History(_)) {
             let snapshot = self.native_snapshot().expect("history snapshot");
             let selection = self
@@ -534,11 +541,12 @@ impl CoreRuntime {
         let input = pi::TurnInput {
             text: text.into(),
             effort: self.requested_effort(request)?,
+            images,
         };
         if let ActiveState::Acp(session) = &mut self.session.active_state {
             self.session.unsubmitted_draft = None;
             session
-                .send(text)
+                .send(text, &input.images)
                 .map_err(|error| RuntimeError::context("ACP message send", error))?;
             self.drain_runtime()?;
             return self.snapshot_result();

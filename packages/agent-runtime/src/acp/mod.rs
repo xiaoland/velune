@@ -62,6 +62,8 @@ pub struct Client {
     config: Config,
     rpc: RpcClient,
     capabilities: Capabilities,
+    /// Whether the Agent accepts image blocks in a prompt.
+    prompt_image: bool,
     agent_info: Option<AgentInfo>,
     auth_methods: Vec<AuthMethod>,
     options: Vec<ConfigOption>,
@@ -114,6 +116,7 @@ impl Client {
             config,
             rpc,
             capabilities: Capabilities::default(),
+            prompt_image: false,
             agent_info: None,
             auth_methods: Vec::new(),
             options: Vec::new(),
@@ -156,6 +159,7 @@ impl Client {
             close_session: sessions.close.is_some(),
             delete_session: sessions.delete.is_some(),
         };
+        client.prompt_image = capabilities.prompt_capabilities.image;
         client.mcp_servers = client._mcp.acp_servers(client.capabilities.mcp_http)?;
         client.agent_info = response.agent_info.map(|info| AgentInfo {
             name: info.name,
@@ -424,16 +428,25 @@ impl Client {
         Ok(())
     }
 
-    pub fn send(&mut self, text: &str) -> Result<()> {
+    pub fn send(&mut self, text: &str, images: &[crate::TurnImage]) -> Result<()> {
         self.ensure_idle()?;
-        if text.trim().is_empty() {
+        if text.trim().is_empty() && images.is_empty() {
             return Err(Error::new("消息内容为空"));
         }
+        if !images.is_empty() && !self.prompt_image {
+            return Err(Error::with_code("此 ACP Agent 不接受图片", "unsupported"));
+        }
         let id = self.session_id()?.to_owned();
-        let result = self.rpc.begin(
-            "session/prompt",
-            &json!({"sessionId":id,"prompt":[{"type":"text","text":text}]}),
-        );
+        let prompt = (!text.is_empty())
+            .then(|| json!({"type":"text","text":text}))
+            .into_iter()
+            .chain(images.iter().map(|image| {
+                json!({"type":"image","mimeType":image.kind.media_type(),"data":image.base64()})
+            }))
+            .collect::<Vec<_>>();
+        let result = self
+            .rpc
+            .begin("session/prompt", &json!({"sessionId":id,"prompt":prompt}));
         let request = match result {
             Ok(id) => id,
             Err(error) => {

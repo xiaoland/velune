@@ -76,7 +76,9 @@ pub(super) fn materialize_models(
                 "id": physical_id,
                 "modelRecordKey": model.record_key,
                 "name": if model.nickname.trim().is_empty() { &model.provider_model_id } else { &model.nickname },
-                "input": ["text"],
+                // Velune does not know a gateway model's modalities; images
+                // reach the upstream, which accepts or refuses them.
+                "input": ["text", "image"],
                 // `registerProvider` uses Pi's extension-provider path. Unlike
                 // models.json composition, that path keeps the model object as
                 // provided, while Pi's response accounting reads `cost.tiers`.

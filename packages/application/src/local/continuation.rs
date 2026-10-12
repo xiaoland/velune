@@ -473,6 +473,7 @@ impl CoreRuntime {
         model: &crate::ModelSelection,
         text: &str,
         effort: Option<&str>,
+        images: &[PathBuf],
     ) -> Result<Value, RuntimeError> {
         self.validate_acp_handoff_target(self.runtime_instance(runtime_id)?)?;
         let raw = self
@@ -566,7 +567,7 @@ impl CoreRuntime {
         });
         tracing::info!(target:"velune_application", event="conversation_handoff_committed", phase="association_commit");
         // Persist ownership before sending. Never retry an ambiguous native send.
-        self.send_action(&json!({"payload":{"runtimeInstanceID":runtime_id,"text":payload,"effort":effort}})).inspect_err(|_| {
+        self.send_action(&json!({"payload":{"runtimeInstanceID":runtime_id,"text":payload,"effort":effort,"images":images}})).inspect_err(|_| {
             tracing::warn!(target:"velune_application", event="conversation_handoff_failed", phase="dispatch");
         })
     }

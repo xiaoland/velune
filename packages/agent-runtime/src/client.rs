@@ -565,7 +565,12 @@ impl Client {
             }
             self.request(json!({"type":"set_thinking_level","level":level}))?;
         }
-        self.request(json!({"type":"prompt","message":input.text}))
+        let images = input
+            .images
+            .iter()
+            .map(|image| json!({"type":"image","data":image.base64(),"mimeType":image.kind.media_type()}))
+            .collect::<Vec<_>>();
+        self.request(json!({"type":"prompt","message":input.text,"images":images}))
     }
 
     pub fn sync_virtual_selection(&mut self) -> Result<Value> {

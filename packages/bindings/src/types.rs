@@ -362,6 +362,7 @@ pub struct BindingRuntimeUpdate {
 pub struct BindingComposedTurn {
     pub text: String,
     pub effort: Option<String>,
+    pub attachments: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, uniffi::Enum)]

@@ -155,7 +155,7 @@ def main():
                 before = len(captures)
                 conversation = app.send_turn_with_selection(
                     runtime, conversation, runtime, b.BindingModelSelection.MANAGED(model_record_key=key),
-                    b.BindingComposedTurn(text=text, effort=effort)).snapshot.conversation.id
+                    b.BindingComposedTurn(text=text, effort=effort, attachments=[])).snapshot.conversation.id
                 wait_idle(runtime, conversation, '%s %s' % (runtime, text))
                 sent = [body for _, body in captures[before:] if text in json.dumps(body)]
                 assert sent, (runtime, text, 'no upstream request')
@@ -165,7 +165,7 @@ def main():
                 before = len(captures)
                 try:
                     app.send_turn_with_selection(runtime, conversation, runtime, b.BindingModelSelection.MANAGED(model_record_key=key),
-                                                 b.BindingComposedTurn(text='NEVER_SENT', effort=effort))
+                                                 b.BindingComposedTurn(text="NEVER_SENT", effort=effort, attachments=[]))
                 except b.BindingError:
                     pass
                 else:

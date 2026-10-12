@@ -23,11 +23,17 @@ pub mod version;
 
 pub mod transcript;
 
+mod attachment;
+pub use attachment::{ImageType, TurnImage};
+
 /// One user turn as delivered through a harness's own input channel.
 #[derive(Debug, Clone)]
 pub struct TurnInput {
+    /// May be empty when the turn carries images.
     pub text: String,
     /// A reasoning level in the harness's own vocabulary for this turn;
     /// `None` leaves it to the harness default.
     pub effort: Option<String>,
+    /// Delivered through the harness's own image input, in attached order.
+    pub images: Vec<TurnImage>,
 }

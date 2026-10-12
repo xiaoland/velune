@@ -192,7 +192,7 @@ def exercise(app, b, root, python):
     change = key(kind.USER_INSTRUCTIONS, 'AGENTS.md')
     write('codex', change, b'IDLE RESOURCE EDIT\n')
     assert app.snapshot('live', conversation).snapshot.actions.can_send, '资源编辑不应替换空闲执行器'
-    app.send_turn_with_selection('live', conversation, 'live', default, b.BindingComposedTurn(text='CANCEL', effort=None))
+    app.send_turn_with_selection('live', conversation, 'live', default, b.BindingComposedTurn(text='CANCEL', effort=None, attachments=[]))
     app.runtime_resource_catalog('codex', None, kind.USER_INSTRUCTIONS, scope.USER)
     reject(lambda: write('codex', change, b'MUST_REJECT'))
     app.cancel('live', conversation)

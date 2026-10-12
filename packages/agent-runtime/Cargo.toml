@@ -17,6 +17,7 @@ agent-client-protocol-schema = { version = "=1.11.0", default-features = false }
 sha2 = "0.10"
 toml_edit = { version = "0.25", features = ["serde"] }
 serde_yaml_ng = "0.10"
+base64 = "0.23"
 
 [target."cfg(unix)".dependencies]
 libc = "0.2"

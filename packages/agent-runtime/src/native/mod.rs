@@ -312,7 +312,7 @@ impl NativeSession {
     }
     pub fn send(&mut self, input: &crate::TurnInput) -> Result<()> {
         self.ensure_idle()?;
-        if input.text.trim().is_empty() {
+        if input.text.trim().is_empty() && input.images.is_empty() {
             return Err(Error::new("消息内容为空"));
         }
         if self.native_id.is_none() {
@@ -321,12 +321,15 @@ impl NativeSession {
         if self.config.kind == NativeKind::DeepSeek && input.effort.is_some() {
             return Err(Error::new("DeepSeek 运行时不提供推理强度设置"));
         }
+        if self.config.kind == NativeKind::DeepSeek && !input.images.is_empty() {
+            return Err(Error::new("DeepSeek 运行时不接受图片"));
+        }
         let result =
             self.prepare_turn(input.effort.as_deref())
                 .and_then(|()| match self.config.kind {
                     NativeKind::Codex => self.codex_send(input),
                     NativeKind::DeepSeek => self.dsh_send(&input.text),
-                    NativeKind::ClaudeCode => self.claude_send(&input.text),
+                    NativeKind::ClaudeCode => self.claude_send(input),
                 });
         if result.is_err() {
             self.fail_connection();

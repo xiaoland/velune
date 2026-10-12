@@ -602,8 +602,12 @@ final class AppStore: ObservableObject {
     }
     /// `onAccepted` receives the conversation that took the turn; sending in a
     /// new conversation replaces its unsent identity with the created one.
-    func send(text: String, onAccepted: ((String?) -> Void)? = nil) {
-        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+    /// Where pasted images are kept so they can be attached by path.
+    var attachmentsDirectory: URL {
+        (transport?.stateDirectory ?? FileManager.default.temporaryDirectory).appendingPathComponent("attachments", isDirectory: true)
+    }
+    func send(text: String, attachments: [String] = [], onAccepted: ((String?) -> Void)? = nil) {
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !attachments.isEmpty else { return }
         guard canSend, let target = nextTurnRuntimeID, let model = nextTurnModelRecordKey, let source = snapshot?.conversation.runtimeID, let conversationID = loadedConversationID else { return }
         if isPreview {
             guard var value = snapshot else { return }
@@ -619,7 +623,7 @@ final class AppStore: ObservableObject {
         executionStarting = true
         let creating = isDraft
         let cwd = snapshot?.conversation.cwd
-        let turn = BindingComposedTurn(text: text, effort: nextTurnEffort.flatMap { reasoningEffortOptions.contains($0) ? $0 : nil })
+        let turn = BindingComposedTurn(text: text, effort: nextTurnEffort.flatMap { reasoningEffortOptions.contains($0) ? $0 : nil }, attachments: attachments)
         enqueue({
             if creating {
                 return try transport.createAndSend(runtimeID: target, cwd: cwd, modelRecordKey: model, turn: turn) { [weak self] created in

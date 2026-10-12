@@ -145,6 +145,9 @@ pub struct ComposedTurn {
     /// One of `reasoning_efforts` for the turn's runtime and model; `None`
     /// leaves the level to the runtime's default.
     pub effort: Option<String>,
+    /// Absolute local paths. Images go through the harness's own image
+    /// input; other files are listed by path in the text.
+    pub attachments: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1113,7 +1116,11 @@ impl Application {
             conversation_id,
             target_runtime_id,
             ModelSelection::Managed { model_record_key },
-            ComposedTurn { text, effort: None },
+            ComposedTurn {
+                text,
+                effort: None,
+                attachments: Vec::new(),
+            },
         )
     }
     pub fn send_turn_with_selection(
@@ -1124,7 +1131,7 @@ impl Application {
         selection: ModelSelection,
         turn: ComposedTurn,
     ) -> Result<SnapshotResult, Error> {
-        self.execute("sendTurn", json!({"sourceRuntimeID":source_runtime_id,"conversationID":conversation_id,"modelSelection":selection,"text":turn.text,"effort":turn.effort}), Some(&target_runtime_id))
+        self.execute("sendTurn", json!({"sourceRuntimeID":source_runtime_id,"conversationID":conversation_id,"modelSelection":selection,"text":turn.text,"effort":turn.effort,"attachments":turn.attachments}), Some(&target_runtime_id))
     }
     /// Reasoning levels a turn may request for a managed model on a runtime,
     /// in the runtime's own vocabulary; empty when it offers no choice.

@@ -183,12 +183,20 @@ impl NativeSession {
         self.claude_fresh = false;
         Ok(())
     }
-    pub(super) fn claude_send(&mut self, text: &str) -> Result<()> {
+    pub(super) fn claude_send(&mut self, input: &crate::TurnInput) -> Result<()> {
+        let text = input.text.as_str();
         self.claude_result = None;
         self.claude_tasks.clear();
         self.claude_requires_action = false;
         self.claude_stream_id = None;
-        self.rpc.write(&json!({"type":"user","session_id":self.native_id,"parent_tool_use_id":null,"message":{"role":"user","content":[{"type":"text","text":text}]}}))?;
+        // Images go before the text, as Anthropic recommends.
+        let content = input
+            .images
+            .iter()
+            .map(|image| json!({"type":"image","source":{"type":"base64","media_type":image.kind.media_type(),"data":image.base64()}}))
+            .chain((!text.is_empty()).then(|| json!({"type":"text","text":text})))
+            .collect::<Vec<_>>();
+        self.rpc.write(&json!({"type":"user","session_id":self.native_id,"parent_tool_use_id":null,"message":{"role":"user","content":content}}))?;
         self.turn_id = Some(format!(
             "{}:{}",
             self.epoch,

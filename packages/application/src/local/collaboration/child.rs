@@ -334,10 +334,11 @@ impl ChildRuntime {
         let input = pi::TurnInput {
             text: text.clone(),
             effort: None,
+            images: Vec::new(),
         };
         match self.driver.as_mut().expect("prepared child") {
             Driver::Acp(client) => client
-                .send(&text)
+                .send(&text, &[])
                 .map_err(|e| RuntimeError::context("子任务 ACP 发送", e))?,
             Driver::Native(client) => client
                 .send(&input)

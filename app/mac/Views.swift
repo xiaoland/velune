@@ -213,9 +213,12 @@ struct VeluneRootView: View {
 
     private func send() {
         let submitted = composer.submission
+        let attachments = composer.attachments
         let text = submitted.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard store.canSend, !text.isEmpty, !composer.isComposing else { return }
-        store.send(text: text) { [composer] conversationID in composer.clear(submitted: submitted, conversationID: conversationID); scrollRequest &+= 1 }
+        guard store.canSend, !text.isEmpty || !attachments.isEmpty, !composer.isComposing else { return }
+        store.send(text: text, attachments: attachments.map(\.path)) { [composer] conversationID in
+            composer.clear(submitted: submitted, attachments: attachments, conversationID: conversationID); scrollRequest &+= 1
+        }
     }
     private func shortDate(_ unixMs: Int64) -> String {
         Date(timeIntervalSince1970: Double(unixMs) / 1000).formatted(.dateTime.month(.abbreviated).day())
