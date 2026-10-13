@@ -35,6 +35,12 @@ fn summary(thread: &Value, runtime_id: &str) -> Result<ConversationSummary> {
             .and_then(|v| v.checked_mul(1000)),
         can_rename: false,
         can_delete: false,
+        // Only a spawned thread names its parent; Codex's other internal
+        // sub-agents (review, compaction) are listed as they are.
+        parent_conversation_id: thread["parentThreadId"]
+            .as_str()
+            .or_else(|| thread["source"]["subAgent"]["thread_spawn"]["parent_thread_id"].as_str())
+            .map(|parent| format!("{runtime_id}:{parent}")),
     })
 }
 
@@ -103,10 +109,16 @@ pub fn list_codex_history_at(
         .collect()
 }
 
-pub fn read_codex_history(binary: &Path, home: &Path, id: &str) -> Result<History> {
+pub fn read_codex_history(
+    binary: &Path,
+    home: &Path,
+    runtime_id: &str,
+    id: &str,
+) -> Result<History> {
     read_codex_history_at(
         binary,
         home,
+        runtime_id,
         id,
         &crate::execution::ExecutionTarget::Local,
         None,
@@ -115,6 +127,7 @@ pub fn read_codex_history(binary: &Path, home: &Path, id: &str) -> Result<Histor
 pub fn read_codex_history_at(
     binary: &Path,
     home: &Path,
+    runtime_id: &str,
     id: &str,
     execution: &crate::execution::ExecutionTarget,
     os_home: Option<&Path>,
@@ -138,7 +151,7 @@ pub fn read_codex_history_at(
     let messages: Vec<Message> = items
         .iter()
         .filter_map(|entry| {
-            let mut message = codex::project_item(&entry["item"])?;
+            let mut message = codex::project_item(&entry["item"], runtime_id)?;
             message.timestamp_unix_ms = entry["startedAtMs"]
                 .as_i64()
                 .or_else(|| entry["completedAtMs"].as_i64());

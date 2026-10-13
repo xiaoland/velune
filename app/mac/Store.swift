@@ -180,6 +180,10 @@ final class AppStore: ObservableObject {
     var providers: [AIProvider] { gateway.providers }
     var loadedConversationID: String? { snapshot?.conversation.id }
     var loadedConversationWorkingDirectory: String? { snapshot?.conversation.cwd }
+    /// Set while a native sub-agent's conversation is shown: the conversation that started it.
+    var loadedParentConversationID: String? { snapshot?.conversation.parentConversationID }
+    /// The conversations the sidebar lists; native sub-agents open from their parent's transcript.
+    var sidebarConversations: [Conversation] { conversations.filter { $0.parentConversationID == nil } }
     var selectedConversationTitle: String? { conversations.first { $0.id == selectedConversationID }?.title ?? (snapshot?.conversation.id == selectedConversationID ? snapshot?.conversation.title : nil) }
     var isGenerating: Bool { snapshot?.runState == .running || snapshot?.runState == .stopping }
     var isBusy: Bool { isLoading || applicationIsGenerating || isShuttingDown || authenticationRunning }
@@ -320,7 +324,7 @@ final class AppStore: ObservableObject {
             guard let self else { return }
             applyList(data)
             schedulePolling()
-            if loadFirstConversation, let id = conversations.first?.id { selectConversation(id: id) }
+            if loadFirstConversation, let id = sidebarConversations.first?.id { selectConversation(id: id) }
         }
     }
     func refreshConversations() {

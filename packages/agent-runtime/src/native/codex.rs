@@ -294,7 +294,14 @@ impl NativeSession {
         Ok(())
     }
     fn codex_item(&mut self, item: &Value) {
-        if let Some(message) = project_item(item) {
+        let Some(runtime_id) = self
+            .snapshot
+            .as_ref()
+            .map(|snapshot| snapshot.conversation.runtime_id.clone())
+        else {
+            return;
+        };
+        if let Some(message) = project_item(item, &runtime_id) {
             self.message(message);
         }
     }
@@ -592,7 +599,7 @@ pub(super) fn history_client_at(
     Ok(rpc)
 }
 
-pub(super) fn project_item(item: &Value) -> Option<Message> {
+pub(super) fn project_item(item: &Value, runtime_id: &str) -> Option<Message> {
     let id = item["id"].as_str()?;
     let (kind, blocks) = match item["type"].as_str().unwrap_or_default() {
         "userMessage" => {
@@ -658,6 +665,7 @@ pub(super) fn project_item(item: &Value) -> Option<Message> {
                     _ => ToolState::Pending,
                 },
                 output: item["aggregatedOutput"].as_str().map(str::to_owned),
+                conversation_id: None,
             }],
         ),
         "fileChange" => (
@@ -672,9 +680,10 @@ pub(super) fn project_item(item: &Value) -> Option<Message> {
                     _ => ToolState::Pending,
                 },
                 output: item["aggregatedOutput"].as_str().map(str::to_owned),
+                conversation_id: None,
             }],
         ),
-        "mcpToolCall" | "dynamicToolCall" | "collabAgentToolCall" => (
+        "mcpToolCall" | "dynamicToolCall" => (
             MessageRole::Tool,
             vec![MessageBlock::Tool {
                 tool_id: Some(id.into()),
@@ -689,8 +698,52 @@ pub(super) fn project_item(item: &Value) -> Option<Message> {
                     .as_str()
                     .map(str::to_owned)
                     .or_else(|| mcp_output(item)),
+                conversation_id: None,
             }],
         ),
+        // A native sub-agent call names the sub-agent threads it started or
+        // addressed; one thread is the call's conversation.
+        "collabAgentToolCall" => {
+            let receivers = item["receiverThreadIds"]
+                .as_array()
+                .map(Vec::as_slice)
+                .unwrap_or_default();
+            let states = receivers.iter().filter_map(|thread| {
+                let state = &item["agentsStates"][thread.as_str()?];
+                let status = state["status"].as_str()?;
+                Some(match state["message"].as_str() {
+                    Some(message) => format!("{status}: {message}"),
+                    None => status.to_owned(),
+                })
+            });
+            let output = item["prompt"]
+                .as_str()
+                .map(str::to_owned)
+                .into_iter()
+                .chain(states)
+                .collect::<Vec<_>>()
+                .join("\n");
+            (
+                MessageRole::Tool,
+                vec![MessageBlock::Tool {
+                    tool_id: Some(id.into()),
+                    title: item["tool"].as_str().unwrap_or("sub-agent").into(),
+                    state: match item["status"].as_str() {
+                        Some("completed") => ToolState::Completed,
+                        Some("failed") => ToolState::Failed,
+                        Some("inProgress") => ToolState::Running,
+                        _ => ToolState::Pending,
+                    },
+                    output: (!output.is_empty()).then_some(output),
+                    conversation_id: match receivers {
+                        [thread] => thread
+                            .as_str()
+                            .map(|thread| format!("{runtime_id}:{thread}")),
+                        _ => None,
+                    },
+                }],
+            )
+        }
         "plan" => (
             MessageRole::System,
             vec![MessageBlock::Notice {

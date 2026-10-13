@@ -105,6 +105,9 @@ struct Summary {
     cwd: Option<String>,
     updated_at_unix_ms: Option<i64>,
     created_at_unix_ms: Option<i64>,
+    /// A native sub-agent's session names the session that started it.
+    #[serde(default)]
+    parent_native_id: Option<String>,
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -139,6 +142,7 @@ fn bridge_error(code: &str, detail: &str, phase: &'static str) -> HistoryError {
 fn execute(
     config: &HistoryConfig,
     operation: &str,
+    runtime_id: &str,
     native_id: Option<&str>,
 ) -> Result<Vec<u8>, HistoryError> {
     if !matches!(config.provider.as_str(), "deepseek" | "claude-code") {
@@ -161,7 +165,7 @@ fn execute(
             ));
         }
     }
-    let request = json!({"operation":operation,"provider":config.provider,"home":config.home,"roots":[config.root],"nativeId":native_id});
+    let request = json!({"operation":operation,"provider":config.provider,"home":config.home,"roots":[config.root],"runtimeId":runtime_id,"nativeId":native_id});
     let input = serde_json::to_vec(&request).map_err(|error| {
         HistoryError::new(HistoryFailureKind::BridgeContract, "request")
             .with_detail(error.to_string())
@@ -206,7 +210,7 @@ pub fn list(
         )
         .map_err(|error| native_history_error(error, "native_list"));
     }
-    let bytes = execute(config, "list", None)?;
+    let bytes = execute(config, "list", runtime_id, None)?;
     let result: List = serde_json::from_slice(&bytes).map_err(|error| {
         HistoryError::new(HistoryFailureKind::BridgeContract, "list").with_detail(error.to_string())
     })?;
@@ -231,21 +235,29 @@ pub fn list(
             created_at_unix_ms: s.created_at_unix_ms,
             runtime_id: runtime_id.into(),
             cwd: s.cwd,
+            parent_conversation_id: s
+                .parent_native_id
+                .map(|parent| format!("{runtime_id}:{parent}")),
         })
         .collect())
 }
-pub fn read(config: &HistoryConfig, native_id: &str) -> Result<History, HistoryError> {
+pub fn read(
+    config: &HistoryConfig,
+    runtime_id: &str,
+    native_id: &str,
+) -> Result<History, HistoryError> {
     if config.provider == "codex" {
         return crate::native::read_codex_history_at(
             &config.binary,
             &config.home,
+            runtime_id,
             native_id,
             &config.execution,
             config.os_home.as_deref(),
         )
         .map_err(|error| native_history_error(error, "native_read"));
     }
-    let bytes = execute(config, "read", Some(native_id))?;
+    let bytes = execute(config, "read", runtime_id, Some(native_id))?;
     let value: serde_json::Value = serde_json::from_slice(&bytes).map_err(|error| {
         HistoryError::new(HistoryFailureKind::BridgeContract, "read").with_detail(error.to_string())
     })?;

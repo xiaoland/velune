@@ -225,6 +225,7 @@ impl PiProjection {
                             title: event["toolName"].as_str().unwrap_or("工具").into(),
                             state,
                             output,
+                            conversation_id: None,
                         }],
                     });
                 }
@@ -459,6 +460,7 @@ fn apply_tool_result(messages: &mut Vec<Message>, native: &Value, identity: Opti
                 title: native["toolName"].as_str().unwrap_or("工具").into(),
                 state,
                 output,
+                conversation_id: None,
             }],
         });
     }
@@ -501,6 +503,7 @@ fn message_from_pi(message: &Value, fallback_id: String) -> Option<Message> {
                     title: block["name"].as_str().unwrap_or("工具").into(),
                     state: ToolState::Pending,
                     output: None,
+                    conversation_id: None,
                 }),
                 "image" => blocks.push(match block["data"].as_str() {
                     Some(data) => MessageBlock::Image {

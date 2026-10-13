@@ -72,6 +72,11 @@ impl CoreRuntime {
         let snapshot = self
             .native_snapshot()
             .ok_or_else(|| RuntimeError::invalid("conversation is not active"))?;
+        if snapshot.conversation.parent_conversation_id.is_some() {
+            return Err(RuntimeError::invalid(
+                "原生 sub-agent 会话由启动它的会话继续，不能直接发送",
+            ));
+        }
         if matches!(self.session.active_state, ActiveState::History(_))
             && !snapshot.actions.can_send
         {
@@ -154,6 +159,7 @@ impl CoreRuntime {
             created_at_unix_ms: None,
             runtime_id: runtime_id.into(),
             cwd: cwd.map(|path| path.to_string_lossy().into_owned()),
+            parent_conversation_id: None,
         })
         .snapshot
         .expect("new projection");
@@ -711,6 +717,7 @@ impl CoreRuntime {
                         .snapshot
                         .as_ref()
                         .and_then(|s| s.conversation.cwd.clone()),
+                    parent_conversation_id: None,
                 });
             }
             projection.replace_history(&messages);

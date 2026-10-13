@@ -50,6 +50,11 @@ pub struct ConversationSummary {
     pub can_rename: bool,
     #[serde(default)]
     pub can_delete: bool,
+    /// A native sub-agent's conversation names the conversation whose agent
+    /// started it. Velune shows such a conversation from its parent's
+    /// transcript and reads it; the parent's agent continues it.
+    #[serde(default)]
+    pub parent_conversation_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -117,6 +122,10 @@ pub enum MessageBlock {
         title: String,
         state: ToolState,
         output: Option<String>,
+        /// The conversation this call started or addressed, when the runtime
+        /// records one: a native sub-agent's conversation.
+        #[serde(default)]
+        conversation_id: Option<String>,
     },
     Notice {
         text: String,

@@ -528,6 +528,7 @@ impl NativeSession {
                                     }
                                 })
                             }),
+                        conversation_id: None,
                     }],
                 });
             }

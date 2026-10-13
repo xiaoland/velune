@@ -2,8 +2,11 @@
 import datetime
 import json
 import os
+import re
 import sys
 import uuid
+
+AGENT_ID = re.compile(r"[A-Za-z0-9_-]+")
 
 
 def timestamp(value):
@@ -15,7 +18,8 @@ def timestamp(value):
         return None
 
 
-def blocks(content):
+def blocks(content, agent=None):
+    """`agent` is the Velune conversation of the sub-agent a tool result started."""
     if isinstance(content, str):
         return [{"kind": "text", "text": content}]
     result = []
@@ -33,11 +37,36 @@ def blocks(content):
             result.append({"kind": "tool", "tool_id": block.get("id", block.get("tool_use_id")),
                            "title": block.get("name", "工具结果"),
                            "state": "failed" if block.get("is_error") else ("completed" if kind == "tool_result" else "running"),
-                           "output": output if isinstance(output, str) or output is None else json.dumps(output, ensure_ascii=False)})
+                           "output": output if isinstance(output, str) or output is None else json.dumps(output, ensure_ascii=False),
+                           "conversation_id": agent if kind == "tool_result" else None})
     return result
 
 
-def history(path):
+def tag(text, name):
+    match = re.search(r"<%s>(.*?)</%s>" % (name, name), text, re.S)
+    return match.group(1).strip() if match else None
+
+
+def notification(text, link):
+    """A background task's completion, which Claude Code records as a user turn."""
+    status = tag(text, "status")
+    return {"kind": "tool", "tool_id": tag(text, "tool-use-id"), "title": "任务通知",
+            "state": "completed" if status == "completed" else "failed",
+            "output": tag(text, "result") or tag(text, "summary"), "conversation_id": link(tag(text, "task-id"))}
+
+
+def history(path, native_id, runtime_id, sidechain=False):
+    """A main session, or with `sidechain` one of its sub-agents' sessions."""
+    session = native_id.split("/")[0]
+    agents = os.path.dirname(path) if sidechain else os.path.join(os.path.dirname(path), session, "subagents")
+
+    def link(agent_id):
+        if not isinstance(agent_id, str) or not AGENT_ID.fullmatch(agent_id):
+            return None
+        if not os.path.isfile(os.path.join(agents, "agent-%s.jsonl" % agent_id)):
+            return None
+        return "%s:%s/agent-%s" % (runtime_id, session, agent_id)
+
     records = []
     with open(path, encoding="utf-8") as file:
         for line in file:
@@ -51,8 +80,7 @@ def history(path):
                     raise
                 if isinstance(record, dict):
                     records.append(record)
-    native_id = os.path.basename(path)[:-6]
-    entries = {entry["uuid"]: entry for entry in records if isinstance(entry.get("uuid"), str) and not entry.get("isSidechain")}
+    entries = {entry["uuid"]: entry for entry in records if isinstance(entry.get("uuid"), str) and bool(entry.get("isSidechain")) == sidechain}
     leaf = next((entry["uuid"] for entry in reversed(records) if entry.get("uuid") in entries and entry.get("type") in ("user", "assistant")), None)
     chain, seen = [], set()
     while leaf in entries:
@@ -67,7 +95,16 @@ def history(path):
         role = entry.get("type")
         if role not in ("user", "assistant"):
             continue
-        content = blocks(entry.get("message", {}).get("content"))
+        if role == "user" and entry.get("isMeta"):
+            # Context the Harness injected, which its own transcript does not show.
+            continue
+        content = entry.get("message", {}).get("content")
+        if role == "user" and (entry.get("origin") or {}).get("kind") == "task-notification" and isinstance(content, str):
+            messages.append({"id": entry["uuid"], "role": "tool", "completed": True,
+                             "timestamp_unix_ms": timestamp(entry.get("timestamp")), "blocks": [notification(content, link)]})
+            continue
+        result = entry.get("toolUseResult")
+        content = blocks(content, link(result.get("agentId")) if isinstance(result, dict) else None)
         if not content:
             continue
         if role == "user" and first_user is None:
@@ -75,6 +112,16 @@ def history(path):
         messages.append({"id": entry["uuid"], "role": "tool" if role == "user" and all(b["kind"] == "tool" for b in content) else role,
                          "completed": True, "timestamp_unix_ms": timestamp(entry.get("timestamp")), "blocks": content})
     title = next((r.get("customTitle") for r in reversed(records) if r.get("type") == "custom-title" and isinstance(r.get("customTitle"), str)), None)
+    if sidechain:
+        # The description the parent agent gave the sub-agent is its native name.
+        try:
+            with open(path[:-6] + ".meta.json", encoding="utf-8") as file:
+                meta = json.load(file)
+        except (OSError, ValueError):
+            meta = None
+        title = meta.get("description") if isinstance(meta, dict) else None
+    if not isinstance(title, str):
+        title = None
     if title is not None:
         title = title.strip() or None
     if first_user is not None:
@@ -85,14 +132,34 @@ def history(path):
             "messages": messages, "createdAtUnixMs": min(dates) if dates else None, "updatedAtUnixMs": max(dates) if dates else None}
 
 
+def subagents(path):
+    """The sub-agent sessions beside a main session, as (native id, path)."""
+    session = os.path.basename(path)[:-6]
+    directory = os.path.join(os.path.dirname(path), session, "subagents")
+    if os.path.islink(os.path.join(os.path.dirname(path), session)) or os.path.islink(directory) or not os.path.isdir(directory):
+        return []
+    found = []
+    for name in sorted(os.listdir(directory)):
+        agent = name[len("agent-"):-len(".jsonl")]
+        candidate = os.path.join(directory, name)
+        if name.startswith("agent-") and name.endswith(".jsonl") and AGENT_ID.fullmatch(agent) and os.path.isfile(candidate) and not os.path.islink(candidate):
+            found.append(("%s/agent-%s" % (session, agent), candidate))
+    return found
+
+
 def main():
     request = json.load(sys.stdin)
     roots = request["roots"]
     if not roots or any(not os.path.isabs(root) for root in roots):
         raise ValueError("absolute session roots required")
+    runtime_id = request["runtimeId"]
     requested = request.get("nativeId")
+    session = agent = None
     if requested:
-        uuid.UUID(requested)
+        session, _, agent = requested.partition("/")
+        uuid.UUID(session)
+        if agent and not (agent.startswith("agent-") and AGENT_ID.fullmatch(agent[len("agent-"):])):
+            raise ValueError("invalid sub-agent id")
     found = {}
     for root in roots:
         if not os.path.exists(root):
@@ -100,7 +167,7 @@ def main():
         for directory, children, files in os.walk(root, followlinks=False):
             children[:] = [name for name in children if name != "subagents" and not os.path.islink(os.path.join(directory, name))]
             for name in files:
-                if not name.endswith(".jsonl") or (requested and name != requested + ".jsonl"):
+                if not name.endswith(".jsonl") or (session and name != session + ".jsonl"):
                     continue
                 try:
                     uuid.UUID(name[:-6])
@@ -113,15 +180,23 @@ def main():
                     raise ValueError("ambiguous_session")
                 found[name] = path
     if request["operation"] == "read":
-        path = found.get(requested + ".jsonl")
+        path = found.get(session + ".jsonl")
+        if path is not None and agent:
+            path = dict(subagents(path)).get(requested)
         if path is None:
             return {"error": {"code": "session_not_found"}}
-        return {"contractVersion": 1, "history": history(path)}
+        return {"contractVersion": 1, "history": history(path, requested, runtime_id, sidechain=bool(agent))}
     sessions = []
     for path in found.values():
-        item = history(path)
+        item = history(path, os.path.basename(path)[:-6], runtime_id)
         item.pop("messages")
         sessions.append(item)
+        for native_id, candidate in subagents(path):
+            child = history(candidate, native_id, runtime_id, sidechain=True)
+            child.pop("messages")
+            child["parentNativeId"] = item["nativeId"]
+            child["cwd"] = child["cwd"] or item["cwd"]
+            sessions.append(child)
     return {"contractVersion": 1, "sessions": sessions, "failures": []}
 
 

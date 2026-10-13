@@ -9,7 +9,10 @@ struct Conversation: Codable, Sendable, Identifiable, Equatable {
     var cwd: String?
     var canRename = true
     var canDelete = true
-    enum CodingKeys: String, CodingKey { case id, title, updatedAtUnixMs, createdAtUnixMs, cwd, canRename, canDelete; case runtimeID = "runtimeId" }
+    /// A native sub-agent's conversation: opened from its parent's transcript,
+    /// not listed in the sidebar, and continued only by the parent's agent.
+    var parentConversationID: String? = nil
+    enum CodingKeys: String, CodingKey { case id, title, updatedAtUnixMs, createdAtUnixMs, cwd, canRename, canDelete; case runtimeID = "runtimeId"; case parentConversationID = "parentConversationId" }
 }
 
 enum RunState: String, Codable {

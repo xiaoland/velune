@@ -191,6 +191,7 @@ impl NativeSession {
             .map(Path::to_path_buf)
             .unwrap_or_else(|| self.default_cwd.clone());
         self.replace_snapshot(&id, Some(&cwd), runtime_id, Vec::new());
+        self.claude_agents.clear();
         self.claude_fresh = true;
         Ok(())
     }
@@ -201,6 +202,19 @@ impl NativeSession {
         runtime_id: &str,
         history: Vec<Message>,
     ) -> Result<()> {
+        self.claude_agents = history
+            .iter()
+            .flat_map(|message| &message.blocks)
+            .filter_map(|block| match block {
+                MessageBlock::Tool {
+                    conversation_id: Some(conversation),
+                    ..
+                } => conversation
+                    .rsplit_once("/agent-")
+                    .map(|(_, agent)| agent.to_owned()),
+                _ => None,
+            })
+            .collect();
         self.replace_snapshot(id, cwd, runtime_id, history);
         self.claude_fresh = false;
         Ok(())
@@ -375,11 +389,33 @@ impl NativeSession {
                 {
                     if let Some(id) = record["task_id"].as_str() {
                         self.claude_tasks.insert(id.into());
+                        if record["task_type"] == "local_agent" {
+                            self.claude_agents.insert(id.into());
+                        }
                     }
                 }
                 Some("task_notification") => {
                     if let Some(id) = record["task_id"].as_str() {
                         self.claude_tasks.remove(id);
+                        if self.claude_agents.contains(id) {
+                            self.message(Message {
+                                completed: true,
+                                id: record["uuid"].as_str().unwrap_or(id).into(),
+                                role: MessageRole::Tool,
+                                timestamp_unix_ms: None,
+                                blocks: vec![MessageBlock::Tool {
+                                    tool_id: record["tool_use_id"].as_str().map(str::to_owned),
+                                    title: "任务通知".into(),
+                                    state: if record["status"] == "completed" {
+                                        ToolState::Completed
+                                    } else {
+                                        ToolState::Failed
+                                    },
+                                    output: record["summary"].as_str().map(str::to_owned),
+                                    conversation_id: self.claude_agent_conversation(id),
+                                }],
+                            });
+                        }
                     }
                 }
                 Some("task_updated")
@@ -398,6 +434,16 @@ impl NativeSession {
                 if let Some((_, last_activity)) = &mut self.claude_result {
                     *last_activity = std::time::Instant::now();
                 }
+                // A sub-agent's own messages belong to its conversation, as
+                // in the native history, not to this transcript.
+                if record["parent_tool_use_id"].is_string() {
+                    return Ok(());
+                }
+                let agent = record["tool_use_result"]["agentId"].as_str();
+                if let Some(agent) = agent {
+                    self.claude_agents.insert(agent.into());
+                }
+                let agent = agent.and_then(|agent| self.claude_agent_conversation(agent));
                 let role = if record["type"] == "assistant" {
                     MessageRole::Assistant
                 } else {
@@ -407,7 +453,7 @@ impl NativeSession {
                     .as_str()
                     .or_else(|| record["uuid"].as_str())
                     .unwrap_or("message");
-                let blocks = claude_blocks(&record["message"]["content"]);
+                let blocks = claude_blocks(&record["message"]["content"], agent);
                 if !blocks.is_empty() {
                     self.message(Message {
                         completed: true,
@@ -483,6 +529,14 @@ impl NativeSession {
         }
         Ok(())
     }
+    /// A sub-agent's session, as the history reader names it.
+    fn claude_agent_conversation(&self, agent: &str) -> Option<String> {
+        let runtime_id = &self.snapshot.as_ref()?.conversation.runtime_id;
+        Some(format!(
+            "{runtime_id}:{}/agent-{agent}",
+            self.native_id.as_deref()?
+        ))
+    }
     pub(super) fn claude_check_terminal_timeout(&mut self) {
         // Claude SDK 2.1.286 can keep observers alive after result; its between-turn ceiling is ten minutes.
         if self
@@ -535,7 +589,8 @@ impl NativeSession {
         self.rpc.write(&json!({"type":"control_response","response":{"subtype":"success","request_id":pending.id,"response":response}}))
     }
 }
-fn claude_blocks(content: &Value) -> Vec<MessageBlock> {
+/// `agent` is the conversation of the sub-agent a tool result started.
+fn claude_blocks(content: &Value, agent: Option<String>) -> Vec<MessageBlock> {
     if let Some(text) = content.as_str() {
         return vec![MessageBlock::Text { text: text.into() }];
     }
@@ -555,6 +610,7 @@ fn claude_blocks(content: &Value) -> Vec<MessageBlock> {
                 title: block["name"].as_str().unwrap_or("工具操作").into(),
                 state: ToolState::Running,
                 output: None,
+                conversation_id: None,
             }),
             Some("tool_result") => Some(MessageBlock::Tool {
                 tool_id: block["tool_use_id"].as_str().map(str::to_owned),
@@ -569,6 +625,7 @@ fn claude_blocks(content: &Value) -> Vec<MessageBlock> {
                 } else {
                     block["content"].to_string()
                 }),
+                conversation_id: agent.clone(),
             }),
             _ => None,
         })

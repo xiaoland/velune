@@ -15,6 +15,9 @@ pub struct BindingConversationSummary {
     pub cwd: Option<String>,
     pub can_rename: bool,
     pub can_delete: bool,
+    /// Set for a native sub-agent's conversation: the conversation whose
+    /// agent started it. It opens from the parent's transcript and is read-only.
+    pub parent_conversation_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, uniffi::Enum)]

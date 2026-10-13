@@ -46,7 +46,8 @@ enum BindingMapping {
     }
     static func conversation(_ value: BindingConversationSummary) -> Conversation {
         Conversation(id: value.id, title: value.title, updatedAtUnixMs: value.updatedAtUnixMs, createdAtUnixMs: value.createdAtUnixMs,
-                     runtimeID: value.runtimeId, cwd: value.cwd, canRename: value.canRename, canDelete: value.canDelete)
+                     runtimeID: value.runtimeId, cwd: value.cwd, canRename: value.canRename, canDelete: value.canDelete,
+                     parentConversationID: value.parentConversationId)
     }
 
     /// A complete delivery. An incremental one (non-nil `base`) carries only

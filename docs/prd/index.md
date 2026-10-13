@@ -146,7 +146,7 @@ Mac 开发交付安装到 `/Applications/Velune.app`，每次修改后重新构�
 
 2026-10-11 用户要求 Harness 互联互通：运行中的 Agent 能发现其他运行时与会话、与之交流并委派具体工作，取得可关联的进度与结果后继续自己的工作；仅能从 Velune 启动不同 runtime 或切换会话不满足此目标。通用协作工具与现有 ACP／原生 adapter 分工，避免按每一对 Harness 开发连接。2026-10-12 用户纠正此前另一会话将其记为“把另一 runtime 当作 sub-agent”的表述，Velune 区分两种关系：
 
-- **原生 sub-agent**：Harness 自身创建和拥有的子会话（例如 Claude Code、Codex 的子 Agent），属于会话体验。Velune 不创建它们；当前只在消息列表中显示其发生，并可单独打开该子 Agent 的会话。
+- **原生 sub-agent**：Harness 自身创建和拥有的子会话（例如 Claude Code、Codex 的子 Agent），属于会话体验。Velune 不创建它们；当前只在消息列表中显示其发生，并可单独打开该子 Agent 的会话（2026-10-12 已实现 Codex 与 Claude Code；子 Agent 会话不进入会话列表，只读，由启动它的会话继续）。
 - **Agent 间协作（A2A）**：Velune 提供的、不同会话之间的对等交流，可跨运行时与 Harness。参与方都是普通会话：出现在会话列表，可由用户单独打开、继续和处理审批；Agent 可以新建会话，也可以联系已有会话。Velune 不另设父子任务树、协作 scope 或“子任务”视图。
 
 两者本质是否相同不由 Velune 这个 shell 判断，产品上按上述归属分别呈现。A2A 默认不设联系限制：Velune 执行的任一会话都可联系所有已启用运行时及其会话；以后若需要限制，设置归运行时设置，不在 composer 中逐会话授权。协作消息带出处、不授予额外权限；接收会话的待审批仍按其自身流程交给用户，忙碌、取消、失败和未知结果须明确。实施归 [Agent 间协作任务](../../tasks/agent-collaboration/packet.md)；2026-10-11 的父子委派实现及其证据见 [Harness 协作任务](../../tasks/harness-interoperation/packet.md)，其父子 scope 模型已被取代。

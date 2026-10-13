@@ -437,6 +437,8 @@ impl CoreRuntime {
         let conversations: Vec<Value> = listed
             .iter()
             .filter(|item| item.id != caller.conversation_id)
+            // A native sub-agent belongs to its parent's agent.
+            .filter(|item| item.parent_conversation_id.is_none())
             .filter(|item| request.cwd.is_none() || item.cwd == request.cwd)
             .filter(|item| {
                 query

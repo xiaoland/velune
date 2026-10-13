@@ -126,6 +126,9 @@ pub struct NativeSession {
     shadowed_mcp_servers: std::collections::BTreeSet<String>,
     claude_result: Option<(bool, std::time::Instant)>,
     claude_tasks: std::collections::BTreeSet<String>,
+    /// Sub-agents this session's tool results reported starting; their
+    /// later task notifications link to the sub-agent's conversation.
+    claude_agents: std::collections::BTreeSet<String>,
     claude_requires_action: bool,
     claude_stream_id: Option<String>,
     restart_required: bool,
@@ -212,6 +215,7 @@ impl NativeSession {
             shadowed_mcp_servers: std::collections::BTreeSet::new(),
             claude_result: None,
             claude_tasks: std::collections::BTreeSet::new(),
+            claude_agents: std::collections::BTreeSet::new(),
             claude_requires_action: false,
             claude_stream_id: None,
             restart_required: false,
@@ -584,6 +588,7 @@ impl NativeSession {
                 created_at_unix_ms: None,
                 runtime_id: runtime_id.into(),
                 cwd: cwd.map(|path| path.to_string_lossy().into_owned()),
+                parent_conversation_id: None,
             },
             resource_id: None,
             model_record_key: None,

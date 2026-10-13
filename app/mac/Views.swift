@@ -21,13 +21,13 @@ struct VeluneRootView: View {
     @State private var outlineNavigation: TranscriptJump?
     @State private var renameTarget: Conversation?
     @State private var deleteTargets: [Conversation] = []
-    private var conversationSections: [ConversationBrowser.Section] { browser.sections(conversations: store.conversations, runtimes: store.runtimeInstances) }
-    private var projects: [String] { Array(Set(store.conversations.filter { conversation in store.enabledRuntimeInstances.contains { $0.id == conversation.runtimeID } }.compactMap(\.cwd))).sorted { $0.localizedStandardCompare($1) == .orderedAscending } }
+    private var conversationSections: [ConversationBrowser.Section] { browser.sections(conversations: store.sidebarConversations, runtimes: store.runtimeInstances) }
+    private var projects: [String] { Array(Set(store.sidebarConversations.filter { conversation in store.enabledRuntimeInstances.contains { $0.id == conversation.runtimeID } }.compactMap(\.cwd))).sorted { $0.localizedStandardCompare($1) == .orderedAscending } }
 
     var body: some View {
         NavigationSplitView {
             List(selection: Binding(get: { store.selectedConversationIDs }, set: { store.selectConversations(ids: $0) })) {
-                if conversationSections.isEmpty && !store.isLoading && !store.conversations.isEmpty {
+                if conversationSections.isEmpty && !store.isLoading && !store.sidebarConversations.isEmpty {
                     Text("没有匹配的会话").foregroundStyle(.secondary)
                     Button("清除筛选") { browser.runtimeID = nil; browser.project = .all; browser.search = "" }
                 }
@@ -80,7 +80,7 @@ struct VeluneRootView: View {
                 if store.pendingConversationID != nil { ProgressView(store.conversationManagementStatus ?? "正在加载会话…").frame(maxWidth: .infinity, maxHeight: .infinity) }
                 else if previewEmpty || store.transcript.rows.isEmpty { emptyState.frame(maxWidth: .infinity, maxHeight: .infinity) }
                 else { transcript }
-                ComposerView(store: store, model: composer, send: send)
+                footer
             }
             .navigationTitle(previewEmpty ? "新会话" : store.selectedConversationTitle ?? "Velune")
             .toolbar {
@@ -170,6 +170,29 @@ struct VeluneRootView: View {
         } label: { Label("显示", systemImage: browser.hasFilters ? "line.3.horizontal.decrease.circle.fill" : "line.3.horizontal.decrease") }
         .help("会话分组、筛选与排序")
         .disabled(store.conversationBrowserPreferences == nil)
+    }
+
+    /// A native sub-agent is continued by the agent that started it, so its
+    /// conversation has no composer.
+    @ViewBuilder private var footer: some View {
+        if let parent = store.loadedParentConversationID, store.pendingConversationID == nil {
+            subAgentFooter(parent: parent)
+        } else {
+            ComposerView(store: store, model: composer, send: send)
+        }
+    }
+
+    private func subAgentFooter(parent: String) -> some View {
+        VStack(spacing: 0) {
+            Divider()
+            HStack(spacing: 8) {
+                Text("这是原生 sub-agent 的会话，由启动它的会话继续。").foregroundStyle(.secondary)
+                Spacer(minLength: 0)
+                Button("打开父会话") { store.openLinkedConversation(id: parent) }
+            }
+            .padding(.horizontal, 16).padding(.vertical, 10)
+        }
+        .background(.bar)
     }
 
     private var emptyState: some View {

@@ -241,12 +241,15 @@ fn delivered_block(
             title,
             state,
             output,
+            conversation_id,
         } => DeliveredBlock::Tool {
             tool_id: tool_id.clone(),
             title: title.clone(),
             state: state.clone(),
             output: output.as_deref().map(payload),
-            linked_conversation_id: output.as_deref().and_then(collaboration_conversation),
+            linked_conversation_id: conversation_id
+                .clone()
+                .or_else(|| output.as_deref().and_then(collaboration_conversation)),
         },
         MessageBlock::Image { media_type, source } => DeliveredBlock::Image {
             media_type: media_type.clone(),

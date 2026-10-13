@@ -337,6 +337,7 @@ impl Client {
                     updated_at_unix_ms: value.updated_at.as_deref().and_then(timestamp),
                     can_rename: false,
                     can_delete: self.capabilities.delete_session,
+                    parent_conversation_id: None,
                 });
             }
             let Some(next) = response.next_cursor else {

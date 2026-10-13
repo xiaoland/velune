@@ -244,6 +244,7 @@ impl Client {
                 title: title.unwrap_or(old_title),
                 state,
                 output,
+                conversation_id: None,
             }],
         });
     }
@@ -333,6 +334,7 @@ impl Client {
                 updated_at_unix_ms: None,
                 can_rename: false,
                 can_delete: self.capabilities.delete_session,
+                parent_conversation_id: None,
             },
             context_runtime_id: runtime_id.into(),
             resource_id: None,

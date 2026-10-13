@@ -167,6 +167,7 @@ impl CoreRuntime {
                             created_at_unix_ms: session.created_unix_ms,
                             runtime_id: runtime.id.clone(),
                             cwd: session.cwd,
+                            parent_conversation_id: None,
                         })
                 } else {
                     previous.remove(&listed.file.path).flatten()
@@ -289,7 +290,7 @@ impl CoreRuntime {
                     .map(str::to_owned);
             }
         } else {
-            let read = history::read(&self.history_config(runtime)?, native_id).map_err(|error| {
+            let read = history::read(&self.history_config(runtime)?, runtime_id, native_id).map_err(|error| {
                 let variant = velune_agent_runtime::version::variant(&runtime.type_id);
                 let family = variant.map(|value| value.family_id).unwrap_or("unknown");
                 let runtime_type = variant.map(|value| value.id).unwrap_or("unknown");
@@ -302,7 +303,8 @@ impl CoreRuntime {
         // A history projection is send-capable once the UI supplies the next
         // turn's model. The source record may intentionally have no model
         // marker, so this flag must not encode the old model-selection state.
-        snapshot.actions.can_send = true;
+        // A native sub-agent's conversation is continued by its parent's agent.
+        snapshot.actions.can_send = snapshot.conversation.parent_conversation_id.is_none();
         Ok(snapshot)
     }
     pub(super) fn invalidate_execution(&mut self) -> Result<(), RuntimeError> {
@@ -331,7 +333,7 @@ impl CoreRuntime {
                 view.run_state = RunState::Idle;
                 view.pending_interactions.clear();
                 view.actions = ConversationActions {
-                    can_send: can_restore,
+                    can_send: can_restore && view.conversation.parent_conversation_id.is_none(),
                     can_cancel: false,
                     can_switch: true,
                 };

@@ -175,6 +175,7 @@ impl CoreRuntime {
                     updated_at_unix_ms: None,
                     can_rename: false,
                     can_delete: false,
+                    parent_conversation_id: None,
                 });
             summary.id = link.id.clone();
             summary.updated_at_unix_ms = link.segments.last().and_then(|segment| {
@@ -259,7 +260,7 @@ impl CoreRuntime {
                     let unavailable = ConversationSnapshot {
                         revision:1, context_runtime_id:segment.runtime_instance_id.clone(),
                         conversation:ConversationSummary {id:segment.native_conversation_id.clone(),runtime_id:segment.runtime_instance_id.clone(),
-                            title:velune_conversation::ConversationTitle::Untitled,cwd:None,created_at_unix_ms:None,updated_at_unix_ms:None,can_rename:false,can_delete:false},
+                            title:velune_conversation::ConversationTitle::Untitled,cwd:None,created_at_unix_ms:None,updated_at_unix_ms:None,can_rename:false,can_delete:false, parent_conversation_id: None,},
                         resource_id:None, model_record_key:None,run_state:RunState::Failed,pending_interactions:Vec::new(),transcript_turns:Vec::new(),transcript_items:Vec::new(),transcript_outline:Vec::new(),transcript_message_identities:Vec::new(),message_identity_confirmations:Vec::new(),
                         messages:vec![Message { completed: true, id:"context-unavailable".into(),role:MessageRole::System,timestamp_unix_ms:None,
                             blocks:vec![MessageBlock::Notice {text:"当前运行时的原生会话尚不可读取，未自动重发。请修复来源后重新打开。".into()}]}],
@@ -641,6 +642,7 @@ impl CoreRuntime {
                 updated_at_unix_ms: None,
                 can_rename: false,
                 can_delete: false,
+                parent_conversation_id: None,
             };
             self.set_management_capabilities(&mut summary);
             if !summary.can_delete {

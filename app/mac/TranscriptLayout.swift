@@ -42,7 +42,7 @@ final class RenderedMessage: @unchecked Sendable {
                 let disclosure = Block.disclosure(key: Self.disclosureKey(block, at: index)!, title: title, symbol: symbol,
                                                   detail: Self.detail(output ?? .inline(""), font: TranscriptTypography.code, empty: "没有附加输出"), detailMaxWidth: 560)
                 guard let conversation else { return [disclosure] }
-                return [disclosure, .text(Self.conversationLink("打开对方会话", conversation: conversation, alignment: .natural))]
+                return [disclosure, .text(Self.conversationLink("打开会话", conversation: conversation, alignment: .natural))]
             case .agentSender(let conversationID, let runtimeName, let title):
                 let shortTitle = title.count > 40 ? String(title.prefix(40)) + "…" : title
                 return [.text(Self.conversationLink("来自 \(runtimeName) 会话「\(shortTitle)」", conversation: conversationID, alignment: .natural))]

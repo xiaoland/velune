@@ -58,7 +58,7 @@ relay 只连接显式端口的 `http://127.0.0.1` 服务，忽略代理环境，
 
 ## 专用适配器行为
 
-Codex 使用 app-server 的 thread／turn 控制；DSH 使用 ACP v1 的 session/new、resume、prompt、cancel、set_config_option。DSH 的 agentInfo.version 是 ACP 插件版本，不用于判断 CLI 版本。Codex 历史由 app-server 的 thread/list、thread/read 与 thread/items/list 分页读取，原生服务负责逻辑身份和历史继承；DSH 历史通过 huihua `0.2.0` 公开 provider API 读取显式 home／roots，未知记录不原样输出。历史浏览不启动 turn 或模型网关，不替代原生 resume；Pi 保留 SDK SessionManager 的分支与模型选择语义。
+Codex 使用 app-server 的 thread／turn 控制；DSH 使用 ACP v1 的 session/new、resume、prompt、cancel、set_config_option。DSH 的 agentInfo.version 是 ACP 插件版本，不用于判断 CLI 版本。Codex 历史由 app-server 的 thread/list、thread/read 与 thread/items/list 分页读取，原生服务负责逻辑身份和历史继承；spawn 的子 Agent 线程带父会话，`collabAgentToolCall` 在恰有一个 receiver 时链接该线程；DSH 历史通过 huihua `0.2.0` 公开 provider API 读取显式 home／roots，未知记录不原样输出。历史浏览不启动 turn 或模型网关，不替代原生 resume；Pi 保留 SDK SessionManager 的分支与模型选择语义。
 
 Codex 0.159.3 的 thread/revert 保留稳定 thread ID，同时创建新的 rollout 文件并更新当前历史；paginated 历史还可以引用旧文件的前缀。因此不能把 thread ID 当成物理文件唯一键，也不能按时间任选重复文件。列表使用原生 thread/list 的完整来源枚举与空提供商过滤；详情用 thread/read 核对身份，再按升序分页读取 thread/items/list。legacy 与 paginated 共用原生入口及实时消息的 item 投影，保留原生 item 时间，不自行解析 history_base 或扫描所有文件。短生命周期 app-server 与既有原生管理共用有界 RPC；原生读取失败明确诊断，不回退为文件选择。
 
@@ -92,7 +92,7 @@ SSH 启动请求通过 stdin 长度帧传入 argv、环境与 cwd，后续 stdin
 
 Claude Code 的每轮执行使用独立 `--print --input-format stream-json --output-format stream-json` 控制进程，首轮 `--session-id`、后续 `--resume` 保留原生会话身份。工具权限通过 `can_use_tool` 转为 conversation 交互，由调用方明确答复。已有 provider 由 Claude 自己解析；managed 轮次设置 `CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST` 与临时 Messages 端点／token，清除该子进程的其它 provider 认证开关，避免来源 `settings.env` 覆盖本轮注入。没有修改、备份或恢复用户 provider 文件。
 
-固定版本启用 `CLAUDE_CODE_SDK_READS_SESSION_STATE`。`result` 只记录轮次结果，原生 `session_state_changed: idle` 确认本轮及其原生后台工作结束后才撤销注入。长期观察任务可能阻止 idle：复用 SDK 的十分钟无后续主线程活动上限，且仅在无待答交互、无 local agent/workflow 任务时关闭进程并将结束状态标为失败，不伪造成功。原生运行时退出、取消或派发失败都释放本轮进程与隧道。Claude 历史只读取显式 projects 根下的原生 JSONL，按 parent UUID 还原当前分支，排除 subagents；不扫描认证文件。
+固定版本启用 `CLAUDE_CODE_SDK_READS_SESSION_STATE`。`result` 只记录轮次结果，原生 `session_state_changed: idle` 确认本轮及其原生后台工作结束后才撤销注入。长期观察任务可能阻止 idle：复用 SDK 的十分钟无后续主线程活动上限，且仅在无待答交互、无 local agent/workflow 任务时关闭进程并将结束状态标为失败，不伪造成功。原生运行时退出、取消或派发失败都释放本轮进程与隧道。Claude 历史只读取显式 projects 根下的原生 JSONL，按 parent UUID 还原当前分支；不扫描认证文件，不显示 Harness 注入的 `isMeta` 用户记录。会话旁 `subagents/agent-<id>.jsonl` 以 `<session>/agent-<id>` 列为带父会话的只读子会话（标题取 meta 的 description），父会话的工具结果与 `<task-notification>` 记录（显示为“任务通知”工具块）链接该子会话；实时流同样链接，并丢弃带 `parent_tool_use_id` 的子 Agent 消息。
 
 协议依据于 2026-10-10 复核：[Claude Code CLI](https://code.claude.com/docs/en/cli-reference)、[环境变量与 host-managed provider](https://code.claude.com/docs/en/env-vars)、[官方 SDK 控制协议](https://github.com/anthropics/claude-agent-sdk-python/blob/main/src/claude_agent_sdk/_internal/query.py)、[OpenSSH 转发与控制连接](https://man.openbsd.org/ssh.1)。固定版本与隔离实验范围见当前 [任务记录](../../tasks/runtime-provider-ssh/packet.md)。composer 的来源模型选择、SSH/HOME 编辑入口属于 app，明确待实现；本 unit 只提供可消费契约。
 

@@ -282,11 +282,13 @@ Codex 原生审批事件、Claude 的 hooks／permission 机制、Pi 的扩展 t
 
 用户纠正：原生 sub-agent 是 Harness 自身的子会话，属于会话体验；跨 Harness 协作是会话之间的对等交流（A2A），参与方都是普通会话（[PRD](../prd/index.md#ai-网关与-agent-运行时配置)）。10-11 的父子 scope、独立子执行器与子任务 API 已按 hard-cutoff 删除；其 MCP 入口、各 adapter 的会话级注入、SSH 反向转发与 stdio relay 继续沿用。
 
-**状态：已实现核心，合成 ACP 验收通过；真实 Harness 与 App 呈现待验证。** 嵌入式 application 持有一个 loopback MCP 服务，向 Velune 执行的每个会话注入，每个会话一张随机票据；票据由 HTTP 层校验并决定调用方会话，工具参数不能自报身份。工具只接受运行时、会话、文本、工作目录、模型名与等待条件，不能传程序、环境或认证。MCP 线程只把调用放进收件箱，不访问 application；下一次客户端请求推进全部会话后，在同一组会话上执行这些调用（新建会话、作为下一轮发送、读取状态、取消），再恢复客户端原先寻址的会话。因此被联系的会话与用户打开的会话是同一个执行对象，不会出现两个执行者争用同一原生会话。
+**状态：已实现核心与 Mac 呈现，合成 ACP 验收通过；真实 Harness 经此路径的 A2A 待验证。** 嵌入式 application 持有一个 loopback MCP 服务，向 Velune 执行的每个会话注入，每个会话一张随机票据；票据由 HTTP 层校验并决定调用方会话，工具参数不能自报身份。工具只接受运行时、会话、文本、工作目录、模型名与等待条件，不能传程序、环境或认证。MCP 线程只把调用放进收件箱，不访问 application；下一次客户端请求推进全部会话后，在同一组会话上执行这些调用（新建会话、作为下一轮发送、读取状态、取消），再恢复客户端原先寻址的会话。因此被联系的会话与用户打开的会话是同一个执行对象，不会出现两个执行者争用同一原生会话。
 
 代价是协作进度依赖客户端请求，与会话事件的推进方式相同；10-11 子执行器“无前台轮询也能完成”的性质不再成立。Mac 持续轮询活动，可接受；若以后需要无客户端推进，再考虑由绑定层的后台线程按收件箱信号推进，不另启 Host。
 
 协作消息带出处包装，作为对方的普通下一轮提交，不授予权限；对方忙碌、待审批或在 Velune 外运行时拒绝，不排队、不注入 busy 会话。等待以“调用方尚未读到的非运行状态”判定，避免把流式修订号暴露给 Agent。取消不跨会话传播，不设递归或联系限制；循环联系由忙碌拒绝自然阻断，不另设上限。服务、转发或 relay 失败时会话照常运行而不带协作工具。实施与验收归 [Agent 间协作任务](../../tasks/agent-collaboration/packet.md)。
+
+**原生 sub-agent 展示（已实现，Codex 0.159.3、Claude Code 2.1.286 经实际 CLI 与合成上游验收）。** 会话模型增加两个通用字段，平台不按运行时分支：`ConversationSummary.parent_conversation_id` 标出原生子 Agent 的会话及其父会话，`MessageBlock::Tool.conversation_id` 记录调用启动或指向的子会话。adapter 在产生消息处填写：Codex 的 `collabAgentToolCall` 在恰有一个 receiver 线程时链接该线程，线程列表按 `parentThreadId` 或 `source.subAgent.thread_spawn.parent_thread_id` 标父会话；Claude Code 以工具结果的 `agentId` 与任务通知链接 `<session>/agent-<id>`，历史读取父会话旁的 `subagents/agent-<id>.jsonl`（标题取 meta 的 description），实时流丢弃带 `parent_tool_use_id` 的子 Agent 消息，与原生历史一致。子会话进入 application 列表（打开仍复用“只打开列表中的会话”的来源校验），客户端不在侧栏显示；其历史快照不可发送，`send_turn` 明确拒绝，A2A 的 `list_conversations` 不提供它们。子 Agent 的审批、继续与取消仍归启动它的会话；Codex 子线程上的审批请求目前仍按非活动线程拒绝，见任务 packet。
 
 ## 8. Adapter 必须声明的能力
 

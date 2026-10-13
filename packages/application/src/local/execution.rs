@@ -224,6 +224,7 @@ impl CoreRuntime {
             created_at_unix_ms: None,
             runtime_id: runtime_id.into(),
             cwd: cwd.as_ref().map(|path| path.to_string_lossy().into_owned()),
+            parent_conversation_id: None,
         });
         if let Some(snapshot) = projection.snapshot.as_mut() {
             snapshot.model_record_key = model_record_key.map(str::to_owned);

@@ -38,7 +38,7 @@
 
 1. 核心 A2A broker 替换父子 scope；bindings 去掉子任务 API；脚本改为两个普通会话互相联系。（已实现）
 2. Mac：消息列表中 A2A 调用的“打开会话”、收到消息的来源、会话列表刷新。（已实现）
-3. 原生 sub-agent：证据、消息列表显示与单独打开。
+3. 原生 sub-agent：证据、消息列表显示与单独打开。（已实现 Codex 与 Claude Code）
 
 ## 待用户决定
 
@@ -59,3 +59,10 @@
 - Mac：工具行下方“打开对方会话”，用户侧气泡顶部“来自 运行时 会话「标题」”，均为 `velune-conversation:` 链接，在当前窗口打开（不在列表时先重读）；活动轮询发现未列出的运行中会话即重读列表。composer 不再有协作控件。
 - 验证：`manual-collaboration.py` 增加来源块、标题与工具链接断言；合成 Alpha 改为可列出与重载，`--seed` 运行一次新建流程后停在 Alpha 草稿“ASK hello”。开发版隔离 HOME 中：Alpha 的工作过程显示 `velune: start_conversation` 与“打开对方会话”，AX 按下后打开 Beta；Beta 气泡顶部显示“来自 Alpha 会话「START Beta PERMIT」”与正文“PERMIT”，列表标题为“PERMIT”，按下来源链接回到 Alpha。检查后已退出开发版。
 - 安装：5e96def 已构建安装至 `/Applications/Velune.app`（签名校验通过，manifest 对应该提交且无未提交改动），重新打开后无崩溃报告。
+
+## 切片 3：原生 sub-agent（2026-10-12）
+
+- 证据（合成 loopback 上游、隔离 HOME，不读真实会话）：Claude Code 2.1.286 的 `Agent` 工具在 SDK 非交互下后台启动；工具结果带 `tool_use_result.agentId`（历史为 `toolUseResult.agentId`），子 Agent 消息在实时流中带 `parent_tool_use_id`，历史在 `<session>/subagents/agent-<id>.jsonl`（`isSidechain`）与 `.meta.json`（description、toolUseId）；完成时实时流有 `system task_notification`，历史记一条 `origin.kind = task-notification` 的用户记录。Codex 0.159.3 的 `multi_agent_v1` 工具（spawn_agent、wait_agent 等）在 app-server 中表现为 `collabAgentToolCall`（`receiverThreadIds`、`agentsStates`），子线程是独立 rollout，`thread/list` 的 `source.subAgent.thread_spawn.parent_thread_id` 指向父线程（`parentThreadId` 只在 `thread/read` 中出现）。Pi、DSH、通用 ACP 没有可核对的标准子 Agent 记录，本切片不涉及。
+- 实现：见 [架构](../../docs/design/architecture.md#agent-间协作2026-10-12取代-10-11-子-agent-切片) 末段。子会话进入核心列表（复用打开时的列表来源校验），Mac 不在侧栏列出；从父会话工具块的“打开会话”进入，底部以“打开父会话”代替输入区。核心拒绝向子会话发送，A2A 的 `list_conversations` 不提供它们。Claude 历史同时不再显示 `isMeta` 用户记录（Harness 注入的提醒，Claude Code 自身界面也不显示），原先会以用户气泡出现；任务通知不再显示为原始 XML 用户消息，改为“任务通知”工具块。Mac 链接文字由“打开对方会话”统一为“打开会话”。
+- 取舍与已知缺口：Claude 父会话中同一子 Agent 有两处链接（工具结果与任务通知），均为真实事件，保留。Claude 的 `Agent` 调用行与结果行仍是两行，调用行保持运行图标（既有行为，未合并工具调用与结果）。Claude 列表现在也解析子 Agent 文件，会话多时列表成本随之增加。Codex 子线程上的审批请求仍按“非活动会话”拒绝（`codex_handle_record` 只接受当前线程），子 Agent 需要审批的命令会被拒绝；是否把子 Agent 审批交到父会话尚未设计。子会话不可在 Velune 中继续，与“由启动它的会话继续”的产品归属一致。
+- 验证：fmt／check／clippy／no-default-features、Mac `--build-only` 通过。新增 [manual-native-subagents.py](../../scripts/manual-native-subagents.py)：实际 Codex／Claude Code 经网关与合成上游，实时与历史读取下的链接、父会话无子 Agent 消息、子会话父标记、内容与拒绝发送全部通过（Claude Code 在 Velune 中以 auto 模式运行，其安全分类请求由合成上游答复放行）。回归：`manual-collaboration`、`manual-acp-adapter`、`manual-runtime-selection`、`manual-codex-history-identity`（revert／items）通过；`manual-live-native` 6 次中 1 次在“外部启动的会话已列出”断言失败、其余通过，未能确认失败的运行时及是否与本切片有关。开发版隔离 HOME（`--seed`）中：侧栏只列出两个父会话；Claude 父会话展开工作过程后，工具结果与任务通知下各有“打开会话”，AX 按下后打开标题为子 Agent description 的会话，底部为说明与“打开父会话”，侧栏无选中项。随后隐藏 `isMeta` 的改动只经 bindings 读取确认（开发版窗口位于其他桌面空间，未切换前台）；Codex 父会话的链接未在 App 中逐一点按，只经脚本确认。

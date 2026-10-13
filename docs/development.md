@@ -350,6 +350,8 @@ Velune 执行的每个会话都获得 application 注入的 `velune` MCP 服务�
 
 手动验收入口为 [manual-collaboration.py](../scripts/manual-collaboration.py)，传入本次构建的 `--library`、`--bindings` 与 `--resources` 绝对路径；`--seed DIR` 只写入含两个合成 ACP 运行时的 `DIR/velune`，供开发版 App 人工检查。2026-10-11 父子委派模型（`create_collaborative_conversation` 与子任务 API）已按 hard-cutoff 删除，其真实 OpenCode／DSH 证据仍见 [Harness 协作任务](../tasks/harness-interoperation/packet.md)，但不代表新路径的真实 Harness 验收。产品意图与实施状态见 [Agent 间协作任务](../tasks/agent-collaboration/packet.md)。
 
+原生 sub-agent 不经上述工具：Harness 自己启动的子 Agent 会话在会话列表中带 `parent_conversation_id`（平台不在侧栏列出），父会话的对应工具块带 `linked_conversation_id`，打开后只读。手动验收入口为 [manual-native-subagents.py](../scripts/manual-native-subagents.py)，传入 `--library`、`--bindings`、`--bundle`、`--node`、`--codex` 与 `--claude` 绝对路径；它在临时 managed HOME 中由实际 Codex 0.159.3／Claude Code 2.1.286 经网关对回环合成上游执行一轮会启动子 Agent 的 turn（合成上游同时对 Claude Code auto 模式的分类请求答复放行），检查实时与历史两种读取下的链接、父会话不含子 Agent 消息、子会话的父标记、内容与拒绝发送。`--seed DIR` 保留 `DIR/velune` 供开发版 App 检查。
+
 ## Agent runtime 原生资源管理
 
 `runtime_resource_catalog(runtime_id, cwd, kind, scope)` 查询指定实例的资源位置与支持状态；`read_runtime_resource` 读取一项，`write_runtime_resource` 保存一项，`delete_runtime_resource` 删除文件或空目录。四类资源为 `UserInstructions`、`McpServers`、`Skills` 和 `NativeAgentDefinitions`。`User` 使用该实例的原生配置位置，`Project` 使用显式 cwd；路径属于运行时的执行机器，SSH 不会回退到本机同名目录。查询不要求运行时启用、建立会话或安装执行 helper。
