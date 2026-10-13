@@ -469,31 +469,39 @@ struct ComposerView: View {
         .buttonStyle(.borderless)
     }
 
-    /// Who answers the next turn: the runtime, its model and the reasoning
-    /// level, one section each.
+    /// Who answers the next turn. The button reads as the current choice;
+    /// the menu keeps one short submenu each for the runtime, its model and
+    /// the reasoning level, with the settings that belong to each inside it.
     private var agentMenu: some View {
         let runtime = nextTurnRuntime?.name ?? "选择运行时"
         let model = store.selectedModelName ?? "选择模型"
         let effort = store.reasoningEffortOptions.isEmpty ? nil : store.nextTurnEffort.map(Self.effortName)
         let title = ([runtime, model] + (effort.map { [$0] } ?? [])).joined(separator: " · ")
         return Menu {
-            Picker("Agent 运行时", selection: Binding(get: { store.nextTurnRuntimeID }, set: { if let id = $0 { store.selectNextTurnRuntime(id) } })) {
-                ForEach(store.enabledRuntimeInstances) { runtime in Text(runtime.name).tag(Optional(runtime.id)) }
-            }.pickerStyle(.inline)
-            modelMenuContent
-            if !store.reasoningEffortOptions.isEmpty {
-                Picker("推理强度", selection: Binding(get: { store.nextTurnEffort }, set: { store.selectEffort($0) })) {
-                    Text("默认").tag(String?.none).help("由运行时决定")
-                    ForEach(store.reasoningEffortOptions, id: \.self) { level in Text(Self.effortName(level)).tag(Optional(level)) }
-                }.pickerStyle(.inline)
+            Menu("运行时：\(runtime)") {
+                Picker("Agent 运行时", selection: Binding(get: { store.nextTurnRuntimeID }, set: { if let id = $0 { store.selectNextTurnRuntime(id) } })) {
+                    ForEach(store.enabledRuntimeInstances) { runtime in Text(runtime.name).tag(Optional(runtime.id)) }
+                }.pickerStyle(.inline).labelsHidden()
+                Divider()
+                if let runtime = nextTurnRuntime { Button("在资源库中查看 \(runtime.name)…") { ResourceLibraryNavigator.shared.show(runtime.id, openWindow) } }
+                SettingsTabLink(tab: .runtimes, title: "Agent 运行时设置…")
             }
-            Divider()
-            Button("重新读取模型", action: store.reloadModelCatalog).disabled(!store.canSwitchModel || store.modelCatalog == .loading)
-            if let runtime = nextTurnRuntime { Button("在资源库中查看 \(runtime.name)…") { ResourceLibraryNavigator.shared.show(runtime.id, openWindow) } }
-            SettingsTabLink(tab: .runtimes, title: "Agent 运行时设置…")
-            SettingsTabLink(tab: .providers, title: "AI 提供商设置…")
+            Menu("模型：\(model)") {
+                modelMenuContent
+                Divider()
+                Button("重新读取模型", action: store.reloadModelCatalog).disabled(!store.canSwitchModel || store.modelCatalog == .loading)
+                SettingsTabLink(tab: .providers, title: "AI 提供商设置…")
+            }
+            if !store.reasoningEffortOptions.isEmpty {
+                Menu("推理强度：\(effort ?? "默认")") {
+                    Picker("推理强度", selection: Binding(get: { store.nextTurnEffort }, set: { store.selectEffort($0) })) {
+                        Text("默认").tag(String?.none).help("由运行时决定")
+                        ForEach(store.reasoningEffortOptions, id: \.self) { level in Text(Self.effortName(level)).tag(Optional(level)) }
+                    }.pickerStyle(.inline).labelsHidden()
+                }
+            }
         } label: {
-            Text(title).lineLimit(1).truncationMode(.middle).frame(maxWidth: 360, alignment: .leading)
+            Text(Self.pullDownTitle(title)).lineLimit(1).truncationMode(.middle).frame(maxWidth: 360, alignment: .leading)
         }
         .fixedSize()
         .accessibilityLabel("下一轮：运行时 \(runtime)，模型 \(model)，推理强度 \(effort ?? "默认")")
@@ -577,13 +585,18 @@ struct ComposerView: View {
                 }.disabled(!store.canChangeSessionOptions)
             }
         } label: {
-            Label(title, systemImage: hasModes ? "lock.shield" : "slider.horizontal.3").lineLimit(1)
+            Label(Self.pullDownTitle(title), systemImage: hasModes ? "lock.shield" : "slider.horizontal.3").lineLimit(1)
         }
         .fixedSize()
         .accessibilityLabel(hasModes ? "下一轮权限模式：\(title)" : "会话选项")
         .help(hasModes ? (mode.map { "权限模式：\($0.label)。\($0.detail)" } ?? "权限模式：沿用会话当前的模式\(current.map { "（\($0.label)）" } ?? "")") : "此会话由 Agent 提供的选项，修改立即生效")
         .disabled(store.isShuttingDown)
     }
+
+    /// The system draws a borderless pull-down's chevron right against its
+    /// title (and lays a custom label out as title and icon only), so the
+    /// title carries a no-break space to keep the two apart.
+    private static func pullDownTitle(_ title: String) -> String { title + "\u{00A0}" }
 
     static func effortName(_ level: String) -> String {
         switch level {
@@ -619,7 +632,7 @@ struct ComposerView: View {
                 }
             }
         } label: {
-            Text(name ?? "工作目录").lineLimit(1).truncationMode(.middle).frame(maxWidth: 160, alignment: .leading)
+            Text(Self.pullDownTitle(name ?? "工作目录")).lineLimit(1).truncationMode(.middle).frame(maxWidth: 160, alignment: .leading)
         }
         .fixedSize()
         .accessibilityLabel("工作目录：\(path ?? "运行时默认目录")")
