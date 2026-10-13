@@ -17,6 +17,7 @@ struct TranscriptView: View {
     let activity: TranscriptActivity?
     let loadPayloads: ([String]) -> Void
     let openConversation: (String) -> Void
+    let describeSettings: (TurnSettings) -> TurnSettingsSummary?
     @State private var following = true
     @State private var bottomRequest: UInt64 = 0
     @State private var outlineAnchorID: String?
@@ -28,12 +29,12 @@ struct TranscriptView: View {
             let userIDs = Set(model.userRows.map(\.id))
             visibleRows = model.rows.filter { userIDs.contains($0.id) }
         } else { visibleRows = model.rows }
-        return TranscriptTable(conversationID: conversationID, items: model.items(for: visibleRows), revision: model.contentRevision,
+        return TranscriptTable(conversationID: conversationID, items: model.items(for: visibleRows, turnHeaders: !outlineCollapsed), revision: model.contentRevision,
                                activity: activity, outlineCollapsed: outlineCollapsed, outlineAnchorID: outlineAnchorID,
                                cwd: cwd, remoteHost: remoteHost, bottomRequest: bottomRequest, jump: navigation,
                                followingChanged: { value in if following != value { following = value } },
                                outlineToggle: { id in outlineAnchorID = id; outlineCollapsed = false }, loadPayloads: loadPayloads,
-                               openConversation: openConversation)
+                               openConversation: openConversation, describeSettings: describeSettings)
             .background(Color(nsColor: .windowBackgroundColor))
             .overlay(alignment: .bottomTrailing) {
                 if !following {

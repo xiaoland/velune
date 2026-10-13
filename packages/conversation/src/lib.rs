@@ -87,6 +87,25 @@ pub struct Message {
     /// Native message time in Unix epoch milliseconds, when available.
     pub timestamp_unix_ms: Option<i64>,
     pub blocks: Vec<MessageBlock>,
+    /// On a user message: what the native record says the turn it starts ran with.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_settings: Option<TurnSettings>,
+}
+
+/// What a turn ran with, as far as it is known; each part is absent when
+/// neither the native record nor Velune's own request says.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct TurnSettings {
+    /// The runtime instance that ran the turn.
+    pub runtime_id: Option<String>,
+    /// The model as the record names it: Velune's name for a model it chose,
+    /// otherwise the runtime's model ID.
+    pub model: Option<String>,
+    /// Reasoning level, in the runtime's own vocabulary.
+    pub effort: Option<String>,
+    /// Permission mode ID, in the runtime type's own vocabulary where it has one.
+    pub permission_mode: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -323,6 +342,8 @@ pub struct TranscriptTurn {
     /// Observed execution elapsed time. None for history without lifecycle evidence.
     pub duration_ms: Option<u64>,
     pub is_running: bool,
+    #[serde(default)]
+    pub settings: Option<TurnSettings>,
 }
 
 /// A transient identity confirmation; native messages remain the durable authority.

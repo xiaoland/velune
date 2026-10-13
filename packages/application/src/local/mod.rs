@@ -207,6 +207,7 @@ impl CoreRuntime {
             return None;
         };
         let mut snapshot = self.decorate_snapshot(native);
+        continuation::stamp_turn_runtime(&mut snapshot.messages, &snapshot.context_runtime_id);
         if self.session.transcript_conversation_id.as_deref() != Some(&snapshot.conversation.id) {
             self.session.transcript_projection = TranscriptProjection::default();
             self.session.transcript_conversation_id = Some(snapshot.conversation.id.clone());
@@ -223,6 +224,7 @@ impl CoreRuntime {
             .transcript_projection
             .apply(TranscriptEvent::ExecutionState(snapshot.run_state.clone()));
         snapshot.transcript_turns = self.session.transcript_projection.turns();
+        self.name_turn_models(&mut snapshot.transcript_turns);
         snapshot.transcript_items = self.session.transcript_projection.items();
         snapshot.transcript_outline = self.session.transcript_projection.outline();
         snapshot.transcript_message_identities =

@@ -44,31 +44,39 @@ final class TranscriptModel: ObservableObject {
         case work(TranscriptTurn, [TranscriptRow])
         @MainActor var id: String { switch self { case .message(let row): return row.id; case .work(let turn, _): return "work:" + turn.id } }
     }
-    func items(for visibleRows: [TranscriptRow]) -> [Item] {
+    /// `turnHeaders` adds a header (with no work under it) after the user
+    /// message of each turn that has settings to show but no work of its own.
+    func items(for visibleRows: [TranscriptRow], turnHeaders: Bool) -> [Item] {
         let visible = Set(visibleRows.map(\.id))
+        let worked = Set(presentation.items.compactMap { item -> String? in if case .work(let id) = item { return id }; return nil })
+        let headed = turnHeaders ? Dictionary(turns.filter { $0.settings != nil && !worked.contains($0.id) }.map { ($0.userMessageID, $0) }, uniquingKeysWith: { first, _ in first }) : [:]
         let byID = Dictionary(uniqueKeysWithValues: rows.map { ($0.id, $0) })
         // A message split into work and reply has two rows; work members use the first.
         let byMessage = Dictionary(rows.map { ($0.message.id, $0) }, uniquingKeysWith: { first, _ in first })
         let byTurn = Dictionary(uniqueKeysWithValues: turns.map { ($0.id, $0) })
         let pendingItem = pending.flatMap { visible.contains($0.id) ? Item.message($0) : nil }
-        return presentation.items.compactMap { item -> Item? in
+        return presentation.items.flatMap { item -> [Item] in
             switch item {
-            case .message(let id, _):
-                guard visible.contains(id), let row = byID[id] else { return nil }
-                return .message(row)
+            case .message(let id, let messageID):
+                guard visible.contains(id), let row = byID[id] else { return [] }
+                return [.message(row)] + (headed[messageID].map { [.work($0, [])] } ?? [])
             case .work(let turnID):
-                guard let turn = byTurn[turnID] else { return nil }
+                guard let turn = byTurn[turnID] else { return [] }
                 let members = turn.workMessageIDs.compactMap { byMessage[$0] }.filter { visible.contains($0.id) }
-                guard !members.isEmpty else { return nil }
-                return .work(turn, members)
+                guard !members.isEmpty else { return [] }
+                return [.work(turn, members)]
             }
         } + (pendingItem.map { [$0] } ?? [])
     }
     /// Shows `message` at the end of the list with `status` under it; nil removes it.
     func showPending(_ message: Message?, status: String?) {
-        guard let message else { if pending != nil { pending = nil }; return }
+        guard let message else {
+            if pending != nil { pending = nil; presentation.revision &+= 1 }
+            return
+        }
         guard pending?.message != message || pending?.status != status else { return }
         pending = TranscriptRow(message, id: message.id, status: status)
+        presentation.revision &+= 1
     }
     func retainedExpandedTurnIDs(_ ids: Set<String>) -> Set<String> { ids.intersection(turns.map(\.id)) }
     func reset() { presentation = Presentation(revision: contentRevision &+ 1) }

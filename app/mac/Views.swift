@@ -209,7 +209,8 @@ struct VeluneRootView: View {
         TranscriptView(model: store.transcript, conversationID: store.loadedConversationID, scrollRequest: scrollRequest,
                        cwd: store.loadedConversationWorkingDirectory, remoteHost: store.loadedConversationLocation.host, outlineCollapsed: $outlineCollapsed, navigation: outlineNavigation,
                        activity: store.activity, loadPayloads: { [store] ids in store.loadPayloads(messageIDs: ids) },
-                       openConversation: { [store] id in store.openLinkedConversation(id: id) })
+                       openConversation: { [store] id in store.openLinkedConversation(id: id) },
+                       describeSettings: { [store] in store.describe($0) })
     }
 
     /// The setting decides what the outline button does: a popover anchored to

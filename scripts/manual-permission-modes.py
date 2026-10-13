@@ -5,11 +5,12 @@ Real Codex 0.159.3 and Claude Code 2.1.286 run in managed HOMEs inside a
 temporary VELUNE_HOME, through Velune's gateway, against a loopback upstream
 that answers every turn with text. Checks the modes each runtime type
 declares (none for a generic ACP type), that an undeclared mode is refused
-before anything is sent, and what each harness then tells the model about
-its permissions: the Codex sandbox and approval policy for a chosen preset
-and for a following turn without one, which returns to the thread's default,
-and Claude Code's plan mode. No real model, credential, HOME or session is
-read; this is not an automated test.
+before anything is sent, and what each harness then runs with: the Codex
+sandbox and approval policy it tells the model, and the mode Claude Code
+reports in its requests. A mode is session state: a turn without one keeps
+the conversation's current mode (Velune sends it again, since Codex resumes
+a thread in its configured policy), and choosing another changes it. No real
+model, credential, HOME or session is read; this is not an automated test.
 """
 import argparse
 import importlib.util
@@ -152,6 +153,19 @@ def main():
                 assert sent, (runtime, text, 'no upstream request')
                 return sent[-1], conversation
 
+            def mode(body):
+                """The permission mode Claude Code reports in a request."""
+                found = []
+                def walk(value):
+                    if isinstance(value, dict):
+                        found.extend(v for k, v in value.items() if k == 'permission_mode')
+                        for v in value.values(): walk(v)
+                    elif isinstance(value, list):
+                        for v in value: walk(v)
+                walk(json.loads(body))
+                assert len(set(found)) == 1, found
+                return found[0]
+
             def refused(runtime, conversation, mode):
                 before = len(captures)
                 try:
@@ -172,22 +186,25 @@ def main():
             body, conversation = turn('codex', conversation, 'CODEX_FULL_ACCESS', 'full-access')
             tail = body.split('CODEX_READ_ONLY')[-1]
             assert '`sandbox_mode` is `danger-full-access`' in tail and 'Approval policy is currently never' in tail, 'full access'
-            body, conversation = turn('codex', conversation, 'CODEX_DEFAULT', None)
+            body, conversation = turn('codex', conversation, 'CODEX_KEPT', None)
             tail = body.split('CODEX_FULL_ACCESS')[-1]
-            assert '`sandbox_mode` is `workspace-write`' in tail and 'Approval policy is currently never' not in tail, \
-                'a turn without a mode returns to the thread default'
-            print('PASS codex: presets reach Codex as sandbox and approval policy; a turn without one returns to the default', flush=True)
+            assert '`sandbox_mode` is `workspace-write`' not in tail, 'a turn without a mode keeps the thread\'s mode'
+            body, conversation = turn('codex', conversation, 'CODEX_WORKSPACE', 'workspace')
+            tail = body.split('CODEX_KEPT')[-1]
+            assert '`sandbox_mode` is `workspace-write`' in tail and 'Approval policy is currently never' not in tail, 'default preset'
+            print('PASS codex: presets reach Codex as sandbox and approval policy; a turn without one keeps the thread\'s mode', flush=True)
 
             conversation = app.create_conversation('claude', str(root / 'project'), keys['claude']).snapshot.conversation.id
             refused('claude', conversation, 'full-access')
             body, conversation = turn('claude', conversation, 'CLAUDE_PLAN', 'plan')
-            assert 'Plan mode is active' in body, 'plan mode'
-            body, conversation = turn('claude', conversation, 'CLAUDE_DEFAULT', None)
-            # The plan turn's reminder stays in the resent history; only what follows the new prompt counts.
-            messages = json.loads(body)['messages']
-            start = next(i for i, message in enumerate(messages) if 'CLAUDE_DEFAULT' in json.dumps(message))
-            assert 'Plan mode is active' not in json.dumps(messages[start:]), 'a turn without a mode leaves plan mode'
-            print('PASS claude: the chosen mode starts Claude Code in it; a turn without one does not', flush=True)
+            assert 'Plan mode is active' in body and mode(body) == 'plan', 'plan mode'
+            # Claude Code resumes a session in its last mode, and reminds of
+            # plan mode only now and then, so the request's own mode decides.
+            body, conversation = turn('claude', conversation, 'CLAUDE_KEPT', None)
+            assert mode(body) == 'plan', ('a turn without a mode keeps the session\'s mode', mode(body))
+            body, conversation = turn('claude', conversation, 'CLAUDE_AUTO', 'auto')
+            assert mode(body) == 'auto', ('a chosen mode replaces it', mode(body))
+            print('PASS claude: the chosen mode starts Claude Code in it; a turn without one keeps the session\'s mode', flush=True)
         finally:
             app.shutdown()
             server.shutdown()

@@ -555,16 +555,19 @@ struct ComposerView: View {
     }
 
     /// What the next turn may do: the runtime type's permission modes, in
-    /// its own names ("默认" sends none), and the live session's own options
-    /// (an ACP Agent's modes and the like), which apply at once.
+    /// its own names, and the live session's own options (an ACP Agent's
+    /// modes and the like), which apply at once. A mode is the session's
+    /// state in the runtime: choosing none keeps the current one.
     private var permissionMenu: some View {
         let mode = store.effectivePermissionMode
+        let current = store.currentPermissionMode
         let hasModes = !store.permissionModeOptions.isEmpty
-        let title = hasModes ? (mode?.label ?? "默认权限") : "会话选项"
+        let title = hasModes ? (mode ?? current)?.label ?? "默认权限" : "会话选项"
         return Menu {
             if hasModes {
                 Picker("权限模式", selection: Binding(get: { mode?.id }, set: { store.selectPermissionMode($0) })) {
-                    Text("默认").tag(String?.none).help("沿用运行时自己的权限设置")
+                    Text(current.map { "沿用当前（\($0.label)）" } ?? "沿用当前").tag(String?.none)
+                        .help("不更改：沿用会话当前的权限模式，新会话为运行时自己的默认")
                     ForEach(store.permissionModeOptions) { option in Text(option.label).tag(Optional(option.id)).help(option.detail) }
                 }.pickerStyle(.inline)
             }
@@ -578,11 +581,11 @@ struct ComposerView: View {
         }
         .fixedSize()
         .accessibilityLabel(hasModes ? "下一轮权限模式：\(title)" : "会话选项")
-        .help(hasModes ? (mode.map { "权限模式：\($0.label)。\($0.detail)" } ?? "权限模式：默认，沿用运行时自己的权限设置") : "此会话由 Agent 提供的选项，修改立即生效")
+        .help(hasModes ? (mode.map { "权限模式：\($0.label)。\($0.detail)" } ?? "权限模式：沿用会话当前的模式\(current.map { "（\($0.label)）" } ?? "")") : "此会话由 Agent 提供的选项，修改立即生效")
         .disabled(store.isShuttingDown)
     }
 
-    private static func effortName(_ level: String) -> String {
+    static func effortName(_ level: String) -> String {
         switch level {
         case "none", "off": "关闭"
         case "minimal": "最低"

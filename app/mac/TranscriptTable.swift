@@ -42,6 +42,8 @@ struct TranscriptTable: NSViewRepresentable {
     let loadPayloads: ([String]) -> Void
     /// Show another conversation, from a collaboration link in this one.
     let openConversation: (String) -> Void
+    /// Names a turn's settings: runtime and permission names come from the configuration.
+    let describeSettings: (TurnSettings) -> TurnSettingsSummary?
 
     func makeCoordinator() -> TranscriptTableController { TranscriptTableController() }
     func makeNSView(context: Context) -> NSScrollView { context.coordinator.makeView() }
@@ -56,20 +58,21 @@ struct TranscriptTable: NSViewRepresentable {
 @MainActor final class TranscriptTableController: NSObject, NSTextViewDelegate {
     enum Entry {
         case message(TranscriptRow)
-        case work(TranscriptTurn, label: String)
+        /// `expandable` is false for a header with no work under it.
+        case work(TranscriptTurn, label: String, expandable: Bool, settings: TurnSettingsSummary?)
         case activity(TranscriptActivity)
         case end
         var id: String {
             switch self {
             case .message(let row): return row.id
-            case .work(let turn, _): return "work:" + turn.id
+            case .work(let turn, _, _, _): return "work:" + turn.id
             case .activity: return "transcript-activity"
             case .end: return "transcript-end"
             }
         }
     }
     private enum ContentKey: Equatable {
-        case message(UInt64, [String], String?), work(String, Bool), activity(TranscriptActivity), end
+        case message(UInt64, [String], String?), work(String, Bool?, TurnSettingsSummary?), activity(TranscriptActivity), end
     }
     private struct Measured {
         var key: ContentKey
@@ -237,7 +240,8 @@ struct TranscriptTable: NSViewRepresentable {
             switch item {
             case .message(let row): next.append(.message(row))
             case .work(let turn, let rows):
-                next.append(.work(turn, label: Self.workLabel(turn)))
+                next.append(.work(turn, label: Self.workLabel(turn, hasWork: !rows.isEmpty), expandable: !rows.isEmpty,
+                                  settings: turn.settings.flatMap { parent?.describeSettings($0) }))
                 if showsWork(turn) { next += rows.map(Entry.message) }
             }
         }
@@ -458,9 +462,9 @@ struct TranscriptTable: NSViewRepresentable {
         case .message(let row):
             let expanded = expandedBlocks[row.id] ?? []
             return (.message(row.contentRevision, expanded.sorted(), row.status), .message(row.message, revision: row.contentRevision, expanded: expanded, status: row.status))
-        case .work(let turn, let label):
-            let expanded = showsWork(turn)
-            return (.work(label, expanded), .work(label: label, expanded: expanded))
+        case .work(let turn, let label, let expandable, let settings):
+            let expanded = expandable ? showsWork(turn) : nil
+            return (.work(label, expanded, settings), .work(label: label, expanded: expanded, settings: settings))
         case .activity(let activity):
             return (.activity(activity), .activity(activity))
         case .end:
@@ -810,7 +814,7 @@ struct TranscriptTable: NSViewRepresentable {
         let anchor = captureAnchor()
         let wasFollowing = following
         following = false
-        if case .work(let turn, _) = entries[index] {
+        if case .work(let turn, _, true, _) = entries[index] {
             if turn.isRunning { collapsedRunningWork.formSymmetricDifference([turn.id]) }
             else { expandedWork.formSymmetricDifference([turn.id]) }
             rebuildEntries()
@@ -831,11 +835,13 @@ struct TranscriptTable: NSViewRepresentable {
         turn.isRunning ? !collapsedRunningWork.contains(turn.id) : expandedWork.contains(turn.id)
     }
 
-    static func workLabel(_ turn: TranscriptTurn) -> String {
+    /// A turn without work of its own has a header only for its settings;
+    /// it shows how long the turn took, when that is known.
+    static func workLabel(_ turn: TranscriptTurn, hasWork: Bool) -> String {
         if turn.isRunning { return "工作中" }
-        guard let milliseconds = turn.durationMs else { return "工作过程" }
+        guard let milliseconds = turn.durationMs else { return hasWork ? "工作过程" : "" }
         let duration = Duration.milliseconds(Double(milliseconds)).formatted(.units(allowed: [.hours, .minutes, .seconds], width: .abbreviated, fractionalPart: .show(length: 1)))
-        return "工作了 " + duration
+        return (hasWork ? "工作了 " : "用时 ") + duration
     }
 
     // MARK: Context menu
@@ -946,6 +952,7 @@ enum TranscriptConversationLink {
     private let bubble = TranscriptBubbleView()
     private var spinner: NSProgressIndicator?
     private var activityLabel: ShimmeringLabel?
+    private var turnSettings: TranscriptTurnSettingsView?
     private var outlineToggle: (() -> Void)?
 
     override var isFlipped: Bool { true }
@@ -982,6 +989,7 @@ enum TranscriptConversationLink {
         bubble.toolTip = toggleHelp
         spinner?.isHidden = true; spinner?.stopAnimation(nil)
         activityLabel?.isHidden = true
+        turnSettings?.isHidden = true
         for element in layout.elements {
             switch element {
             case .bubble(let frame):
@@ -1027,6 +1035,15 @@ enum TranscriptConversationLink {
                 view.frame = frame
                 view.show(item)
                 view.isHidden = false
+            case .turnSettings(let settings, let frame):
+                if turnSettings == nil {
+                    let view = TranscriptTurnSettingsView()
+                    addSubview(view)
+                    turnSettings = view
+                }
+                turnSettings?.frame = frame
+                turnSettings?.show(settings)
+                turnSettings?.isHidden = false
             case .activity(let activity, let frame):
                 if spinner == nil {
                     let indicator = NSProgressIndicator()
@@ -1406,4 +1423,98 @@ enum TranscriptConversationLink {
     }
 
     override func accessibilityPerformPress() -> Bool { open(); return true }
+}
+
+/// A turn's settings on its header row: a plain icon at the trailing end,
+/// the summary beside it while the pointer is over the row, and the full
+/// settings in a popover from the icon. Only the icon takes clicks; the rest
+/// of the row stays the header's.
+@MainActor private final class TranscriptTurnSettingsView: NSView {
+    private let button = NSButton()
+    private let summary = NSTextField(labelWithString: "")
+    private var settings: TurnSettingsSummary?
+    private var popover: NSPopover?
+    override var isFlipped: Bool { true }
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        button.isBordered = false
+        button.image = NSImage(systemSymbolName: "info.circle", accessibilityDescription: "本轮配置")?.withSymbolConfiguration(.init(pointSize: 11, weight: .regular))
+        button.contentTintColor = .tertiaryLabelColor
+        button.target = self; button.action = #selector(showSettings)
+        summary.font = TranscriptTypography.callout
+        summary.textColor = .secondaryLabelColor
+        summary.lineBreakMode = .byTruncatingMiddle
+        summary.alignment = .right
+        summary.alphaValue = 0
+        summary.setAccessibilityElement(false)
+        addSubview(summary); addSubview(button)
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) is unavailable") }
+
+    func show(_ value: TurnSettingsSummary) {
+        settings = value
+        summary.stringValue = value.summary
+        button.toolTip = value.summary
+        button.setAccessibilityLabel("本轮配置")
+        button.setAccessibilityValue(value.summary)
+        needsLayout = true
+    }
+
+    override func layout() {
+        super.layout()
+        let icon: CGFloat = 16
+        button.frame = NSRect(x: bounds.width - icon, y: (bounds.height - icon) / 2, width: icon, height: icon)
+        let width = min(ceil(summary.fittingSize.width), bounds.width * 0.6)
+        summary.frame = NSRect(x: button.frame.minX - 6 - width, y: (bounds.height - summary.fittingSize.height) / 2, width: width, height: summary.fittingSize.height)
+    }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        guard !isHidden, let superview else { return nil }
+        return button.frame.contains(convert(point, from: superview)) ? button : nil
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        for area in trackingAreas { removeTrackingArea(area) }
+        addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeInActiveApp, .inVisibleRect], owner: self))
+    }
+    override func mouseEntered(with event: NSEvent) { reveal(true) }
+    override func mouseExited(with event: NSEvent) { reveal(false) }
+    private func reveal(_ shown: Bool) {
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? 0 : 0.15
+            summary.animator().alphaValue = shown ? 1 : 0
+        }
+    }
+
+    @objc private func showSettings() {
+        guard let settings else { return }
+        let popover = NSPopover()
+        popover.behavior = .transient
+        popover.contentViewController = NSHostingController(rootView: TurnSettingsPopover(settings: settings))
+        popover.show(relativeTo: button.bounds, of: button, preferredEdge: .maxY)
+        self.popover = popover
+    }
+}
+
+/// The parts of a turn's settings, labelled, with where they come from.
+private struct TurnSettingsPopover: View {
+    let settings: TurnSettingsSummary
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("本轮配置").font(.headline)
+            Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 6) {
+                ForEach(settings.parts, id: \.label) { part in
+                    GridRow {
+                        Text(part.label).foregroundStyle(.secondary).gridColumnAlignment(.trailing)
+                        Text(part.value).textSelection(.enabled)
+                    }
+                }
+            }
+            Text("取自运行时的记录与 Velune 发送时的选择；没有记录的项不显示。")
+                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(14).frame(width: 300, alignment: .leading)
+    }
 }

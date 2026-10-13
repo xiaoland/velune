@@ -4,7 +4,15 @@
 
 各适配器的模型目录返回 `ModelOption`：原生模型及该 Harness 对它接受的推理强度，取自 Harness 自身目录（Codex `model/list` 的 `supportedReasoningEfforts`、Claude Code initialize 的 `supportsEffort`／`supportedEffortLevels`、Pi `reasoning` 模型的 `PI_THINKING_LEVELS`；DSH 与通用 ACP 暂无对应目录字段，为空）。
 
-权限模式由版本类型声明（`RuntimeVariant.permission_modes`），`TurnInput.permission_mode` 只作用于该 turn。Claude Code 2.1.286 的取值是其 `--permission-mode` 接受的六种（manual、acceptEdits、plan、auto、dontAsk、bypassPermissions），作为该轮控制进程的启动参数；不选时不传，由 Claude Code 自身设置决定。Codex 0.159.3 的取值对应其预设：read-only、workspace（Default）、auto-review、full-access。它们映射为 `turn/start` 的 `approvalPolicy`、`sandboxPolicy` 与 `approvalsReviewer`。Codex 的轮次覆盖会延续到之后的轮次，因此不选时显式发送 Default 预设。Pi、DSH 与通用 ACP 不声明权限模式，ACP Agent 自报的模式仍是会话配置项。范围外的模式在发送前被拒绝。
+权限模式由版本类型声明（`RuntimeVariant.permission_modes`）。`TurnInput.permission_mode` 是这一轮的模式；为空时 adapter 不发送任何权限设置。Claude Code 2.1.286 的取值是其 `--permission-mode` 接受的六种（manual、acceptEdits、plan、auto、dontAsk、bypassPermissions），作为该轮控制进程的启动参数；不传时 Claude Code 在 `--resume` 中沿用会话上次的模式，CLI 没有“回到默认”的取值。Codex 0.159.3 的取值对应其预设：read-only、workspace（Default）、auto-review、full-access，映射为 `turn/start` 的 `approvalPolicy`、`sandboxPolicy` 与 `approvalsReviewer`；Velune 托管路径每轮重启 app-server 后恢复线程，上一轮的覆盖不会保留。因此“沿用会话当前模式”由 application 负责，见其 README。Pi、DSH 与通用 ACP 不声明权限模式，ACP Agent 自报的模式仍是会话配置项。范围外的模式在发送前被拒绝。
+
+用户消息的 `turn_settings` 是原生记录里这一轮的配置，读不到就留空：
+
+- Claude Code：历史取该轮提示记录的 `permissionMode`，模型取其后第一条非 `<synthetic>` 回复的 `message.model`；不记录推理强度。
+- Codex：历史按 `thread/items/list` 每项的 `turnId`，读本机 rollout（`thread/read` 的 `path`）中的 `turn_context`。取 `model`、推理强度，并把审批策略与 sandbox 反推为上述预设，对不上时保留“策略 · sandbox”原文；SSH 远端的 rollout 不读。
+- Pi：取该轮第一条回复记录的 `model`。思考级别只有会话级状态，不逐轮记录。
+
+`TranscriptProjection::request` 记下 Velune 为下一轮发送的配置，绑定到之后出现的第一条新用户消息；原生身份确认时迁移，只存在于这次执行的内存中。发送失败用 `withdraw_request` 撤回。`TranscriptTurn.settings` 逐项合并两者：模型优先 Velune 的名称，其余优先原生记录。
 
 在工作区内，它只依赖 [会话契约](../conversation/README.md)，不依赖 AI 服务、网关、application 或 UniFFI。执行配置与网关注入的临时 token 由 application 显式传入；它不选择上游模型路由、保存应用配置，也不拥有原生界面。
 

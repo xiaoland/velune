@@ -464,6 +464,7 @@ impl Client {
         let message_id = self.next_message_id();
         self.pending_user_echo = Some(message_id.clone());
         self.message(Message {
+            turn_settings: None,
             id: message_id,
             role: MessageRole::User,
             completed: true,

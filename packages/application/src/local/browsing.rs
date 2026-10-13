@@ -457,6 +457,7 @@ impl CoreRuntime {
                 previous.as_ref().and_then(|s| s.model_record_key.clone());
             if let Some(mut view) = previous {
                 view.messages.push(Message {
+                    turn_settings: None,
                     completed: true,
                     id: format!("prepare-failed:{}", view.revision),
                     role: velune_conversation::MessageRole::System,

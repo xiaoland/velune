@@ -81,6 +81,7 @@ impl Client {
                     .map(|message| message.id.as_str())
                     .unwrap_or("initial");
                 self.message(Message {
+                    turn_settings: None,
                     id: format!("acp:plan:{parent}"),
                     completed: true,
                     role: MessageRole::System,
@@ -150,6 +151,7 @@ impl Client {
             .and_then(|snapshot| snapshot.messages.iter().find(|message| message.id == id))
             .cloned()
             .unwrap_or(Message {
+                turn_settings: None,
                 id,
                 completed: false,
                 role,
@@ -235,6 +237,7 @@ impl Client {
             })
             .or(old_output);
         self.message(Message {
+            turn_settings: None,
             id,
             completed: matches!(state, ToolState::Completed | ToolState::Failed),
             role: MessageRole::Tool,
@@ -302,6 +305,7 @@ impl Client {
     pub fn notice(&mut self, text: &str) {
         let id = self.next_id("notice");
         self.message(Message {
+            turn_settings: None,
             id,
             completed: true,
             role: MessageRole::System,

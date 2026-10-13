@@ -235,6 +235,7 @@ impl NativeSession {
             self.snapshot.as_ref().map_or(0, |s| s.revision)
         ));
         self.message(Message {
+            turn_settings: None,
             completed: true,
             id: format!("{}:user", self.turn_id.as_deref().unwrap_or_default()),
             role: MessageRole::User,
@@ -400,6 +401,7 @@ impl NativeSession {
                             conversation.filter(|c| self.sub_agents.contains(c))
                         {
                             self.message(Message {
+                                turn_settings: None,
                                 completed: true,
                                 id: record["uuid"].as_str().unwrap_or(id).into(),
                                 role: MessageRole::Tool,
@@ -458,6 +460,7 @@ impl NativeSession {
                 }
                 if !blocks.is_empty() {
                     self.message(Message {
+                        turn_settings: None,
                         completed: true,
                         id: id.into(),
                         role,
@@ -495,6 +498,7 @@ impl NativeSession {
                             .and_then(|s| s.messages.iter().find(|m| m.id == id))
                             .cloned()
                             .unwrap_or(Message {
+                                turn_settings: None,
                                 completed: false,
                                 id,
                                 role: MessageRole::Assistant,

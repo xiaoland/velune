@@ -90,7 +90,7 @@ def history(path, native_id, runtime_id, sidechain=False):
         entry = entries[leaf]
         chain.append(entry)
         leaf = entry.get("parentUuid")
-    messages, first_user, calls = [], None, {}
+    messages, first_user, calls, turn = [], None, {}, None
     for entry in reversed(chain):
         role = entry.get("type")
         if role not in ("user", "assistant"):
@@ -112,12 +112,22 @@ def history(path, native_id, runtime_id, sidechain=False):
                 content.remove(block)
         else:
             calls.update((b["tool_id"], b) for b in content if b["kind"] == "tool" and b["tool_id"])
+        model = entry.get("message", {}).get("model")
+        # The turn's model is the first its replies name; Claude Code marks
+        # replies it wrote itself (errors and the like) with "<synthetic>".
+        if role == "assistant" and turn is not None and "model" not in turn and isinstance(model, str) and not model.startswith("<"):
+            turn["model"] = model
         if not content:
             continue
         if role == "user" and first_user is None:
             first_user = next((b["text"] for b in content if b["kind"] == "text"), None)
-        messages.append({"id": entry["uuid"], "role": "tool" if role == "user" and all(b["kind"] == "tool" for b in content) else role,
-                         "completed": True, "timestamp_unix_ms": timestamp(entry.get("timestamp")), "blocks": content})
+        message = {"id": entry["uuid"], "role": "tool" if role == "user" and all(b["kind"] == "tool" for b in content) else role,
+                   "completed": True, "timestamp_unix_ms": timestamp(entry.get("timestamp")), "blocks": content}
+        if message["role"] == "user":
+            # Claude Code records the permission mode on the prompt that starts a turn.
+            mode = entry.get("permissionMode")
+            turn = message["turn_settings"] = {"permissionMode": mode} if isinstance(mode, str) else {}
+        messages.append(message)
     title = next((r.get("customTitle") for r in reversed(records) if r.get("type") == "custom-title" and isinstance(r.get("customTitle"), str)), None)
     if sidechain:
         title = meta_title(path)

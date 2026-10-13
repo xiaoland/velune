@@ -1,7 +1,7 @@
 //! Ordered, disposable message-list projection. Native snapshots remain authoritative.
 use crate::conversation::{
     Message, MessageBlock, MessageIdentityConfirmation, MessageRole, RunState, TranscriptItem,
-    TranscriptMessageIdentity, TranscriptOutlineEntry, TranscriptTurn,
+    TranscriptMessageIdentity, TranscriptOutlineEntry, TranscriptTurn, TurnSettings,
 };
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -21,6 +21,8 @@ struct MessageAnchor {
     /// Index of the first block of the trailing visible text, which is the
     /// agent's reply; `None` when an assistant message does not end in text.
     reply_start: Option<usize>,
+    /// What the native record says about the turn a user message starts.
+    settings: Option<TurnSettings>,
 }
 
 #[derive(Default)]
@@ -33,6 +35,12 @@ pub struct TranscriptProjection {
     active: Option<(String, Instant)>,
     durations: BTreeMap<String, u64>,
     presentation_ids: BTreeMap<String, String>,
+    /// What Velune asked for, by the user message of the turn it sent. Like
+    /// durations, only for turns observed here.
+    requested: BTreeMap<String, TurnSettings>,
+    /// A request whose user message has not appeared yet, with the number of
+    /// user messages before it.
+    pending_request: Option<(TurnSettings, usize)>,
 }
 impl TranscriptProjection {
     pub fn apply(&mut self, event: TranscriptEvent<'_>) {
@@ -66,6 +74,10 @@ impl TranscriptProjection {
                         self.durations
                             .insert(confirmation.current_id.clone(), duration);
                     }
+                    if let Some(settings) = self.requested.remove(&confirmation.previous_id) {
+                        self.requested
+                            .insert(confirmation.current_id.clone(), settings);
+                    }
                 }
             }
             TranscriptEvent::ReplaceMessages(messages) => {
@@ -77,6 +89,7 @@ impl TranscriptProjection {
                         reply_start: (message.role == MessageRole::Assistant)
                             .then(|| trailing_text_start(&message.blocks))
                             .flatten(),
+                        settings: message.turn_settings.clone(),
                     })
                     .collect();
                 let identities: BTreeSet<_> = self
@@ -93,6 +106,8 @@ impl TranscriptProjection {
                 }
                 self.durations
                     .retain(|id, _| identities.contains(id.as_str()));
+                self.requested
+                    .retain(|id, _| identities.contains(id.as_str()));
                 // An authoritative replacement can remove the in-progress branch.
                 if self
                     .active
@@ -101,6 +116,7 @@ impl TranscriptProjection {
                 {
                     self.active = None;
                 }
+                self.bind_request();
             }
             TranscriptEvent::ExecutionState(state) => {
                 let running = matches!(state, RunState::Running | RunState::Stopping);
@@ -124,6 +140,70 @@ impl TranscriptProjection {
                 self.elsewhere = matches!(state, RunState::Elsewhere);
             }
         }
+    }
+
+    /// Velune's request for the turn it is about to send. It belongs to the
+    /// next user message, whenever the runtime shows it.
+    pub fn request(&mut self, settings: TurnSettings) {
+        self.pending_request = Some((settings, self.user_messages().count()));
+        self.bind_request();
+    }
+
+    /// The turn was not sent after all.
+    pub fn withdraw_request(&mut self) {
+        self.pending_request = None;
+    }
+
+    fn user_messages(&self) -> impl Iterator<Item = &MessageAnchor> {
+        self.messages
+            .iter()
+            .filter(|message| message.role == MessageRole::User)
+    }
+
+    fn bind_request(&mut self) {
+        let Some((_, before)) = &self.pending_request else {
+            return;
+        };
+        let Some(id) = self
+            .user_messages()
+            .nth(*before)
+            .map(|user| user.id.clone())
+        else {
+            return;
+        };
+        if let Some((settings, _)) = self.pending_request.take() {
+            self.requested.insert(id, settings);
+        }
+    }
+
+    /// Native record first, except the model: Velune's name for a model it
+    /// chose reads better than the runtime's ID for it.
+    fn settings(&self, user: &MessageAnchor) -> Option<TurnSettings> {
+        let requested = self.requested.get(&user.id);
+        let native = user.settings.as_ref();
+        if requested.is_none() && native.is_none() {
+            return None;
+        }
+        let pick =
+            |native: Option<&String>, requested: Option<&String>| native.or(requested).cloned();
+        Some(TurnSettings {
+            runtime_id: pick(
+                native.and_then(|n| n.runtime_id.as_ref()),
+                requested.and_then(|r| r.runtime_id.as_ref()),
+            ),
+            model: pick(
+                requested.and_then(|r| r.model.as_ref()),
+                native.and_then(|n| n.model.as_ref()),
+            ),
+            effort: pick(
+                native.and_then(|n| n.effort.as_ref()),
+                requested.and_then(|r| r.effort.as_ref()),
+            ),
+            permission_mode: pick(
+                native.and_then(|n| n.permission_mode.as_ref()),
+                requested.and_then(|r| r.permission_mode.as_ref()),
+            ),
+        })
     }
 
     /// Fold the complete user range. Message completion is not an agent turn
@@ -172,6 +252,7 @@ impl TranscriptProjection {
                     reply_start_block: reply_start,
                     duration_ms,
                     is_running: ordinal + 1 == starts.len() && (self.running || self.elsewhere),
+                    settings: self.settings(user),
                 }
             })
             .collect()

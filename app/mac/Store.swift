@@ -235,8 +235,28 @@ final class AppStore: ObservableObject {
         let type = runtimeInstances.first { $0.id == nextTurnRuntimeID }?.typeID
         return runtimeTypes.first { $0.id == type }?.permissionModes ?? []
     }
-    /// The remembered mode while the next turn's runtime offers it; otherwise its default.
+    /// The remembered mode while the next turn's runtime offers it; otherwise
+    /// none, and the turn keeps the conversation's current mode.
     var effectivePermissionMode: PermissionMode? { permissionModeOptions.first { $0.id == nextTurnPermissionMode } }
+    /// The conversation's current mode, as its last turn on the next turn's
+    /// runtime recorded it; a mode is the session's state in the runtime.
+    var currentPermissionMode: PermissionMode? {
+        guard let settings = snapshot?.transcriptTurns.last?.settings, settings.runtimeID == nextTurnRuntimeID else { return nil }
+        return permissionModeOptions.first { $0.id == settings.permissionMode }
+    }
+    /// A turn's settings in the names the composer uses; an unknown runtime
+    /// or a mode its type does not declare shows as recorded.
+    func describe(_ settings: TurnSettings) -> TurnSettingsSummary? {
+        let runtime = settings.runtimeID.flatMap { id in runtimeInstances.first { $0.id == id } }
+        let type = runtime.flatMap { instance in runtimeTypes.first { $0.id == instance.typeID } }
+        let parts: [TurnSettingsSummary.Part] = [
+            settings.runtimeID.map { .init(label: "运行时", value: runtime?.name ?? $0) },
+            settings.model.map { .init(label: "模型", value: $0) },
+            settings.effort.map { .init(label: "推理强度", value: ComposerView.effortName($0)) },
+            settings.permissionMode.map { mode in .init(label: "权限", value: type?.permissionModes.first { $0.id == mode }?.label ?? mode) },
+        ].compactMap { $0 }
+        return parts.isEmpty ? nil : TurnSettingsSummary(parts: parts)
+    }
     func selectPermissionMode(_ mode: String?) {
         guard mode == nil || permissionModeOptions.contains(where: { $0.id == mode }) else { return }
         nextTurnPermissionMode = mode

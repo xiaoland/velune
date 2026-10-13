@@ -1022,6 +1022,22 @@ pub struct BindingTranscriptTurn {
     pub reply_start_block: u32,
     pub duration_ms: Option<u64>,
     pub is_running: bool,
+    /// What the turn ran with, as far as the native record and Velune's own
+    /// request say.
+    pub settings: Option<BindingTurnSettings>,
+}
+
+/// Each part is absent when nothing says. The runtime is an instance ID; the
+/// effort and permission mode are IDs in the runtime type's vocabulary (a
+/// permission mode the type does not declare is the native record's own
+/// value); the model is display text.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, uniffi::Record)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BindingTurnSettings {
+    pub runtime_id: Option<String>,
+    pub model: Option<String>,
+    pub effort: Option<String>,
+    pub permission_mode: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]

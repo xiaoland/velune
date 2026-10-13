@@ -302,6 +302,10 @@ impl CoreRuntime {
             snapshot.context_runtime_id = runtime_id.into();
             self.set_management_capabilities(&mut snapshot.conversation);
         }
+        super::continuation::stamp_turn_runtime(
+            &mut snapshot.messages,
+            &snapshot.context_runtime_id,
+        );
         // Read-only history must reproduce stable transcript turn IDs without
         // touching the shared live projection or its timing state.
         use velune_agent_runtime::transcript::{TranscriptEvent, TranscriptProjection};
@@ -312,6 +316,7 @@ impl CoreRuntime {
         transcript.apply(TranscriptEvent::ReplaceMessages(&snapshot.messages));
         transcript.apply(TranscriptEvent::ExecutionState(snapshot.run_state.clone()));
         snapshot.transcript_turns = transcript.turns();
+        self.name_turn_models(&mut snapshot.transcript_turns);
         snapshot.transcript_items = transcript.items();
         snapshot.transcript_outline = transcript.outline();
         snapshot.transcript_message_identities = transcript.message_identities();
@@ -525,7 +530,16 @@ impl CoreRuntime {
         self.list()
     }
 
+    /// A turn that is not sent withdraws what it asked for from the transcript.
     pub(super) fn send_action(&mut self, request: &Value) -> Result<Value, RuntimeError> {
+        let result = self.send_turn_input(request);
+        if result.is_err() {
+            self.session.transcript_projection.withdraw_request();
+        }
+        result
+    }
+
+    fn send_turn_input(&mut self, request: &Value) -> Result<Value, RuntimeError> {
         self.ensure_active(request)?;
         if self.busy() {
             return Err(RuntimeError::invalid("runtime is busy"));
@@ -550,6 +564,7 @@ impl CoreRuntime {
             permission_mode: self.requested_permission_mode(request)?,
             images,
         };
+        self.request_turn_settings(request, &input)?;
         if let ActiveState::Acp(session) = &mut self.session.active_state {
             self.session.unsubmitted_draft = None;
             session
@@ -769,5 +784,33 @@ impl CoreRuntime {
                 projection.apply_event(&event);
             }
         }
+    }
+}
+
+impl CoreRuntime {
+    /// Tells the transcript what this turn asks for, against the projection
+    /// as it stands before the runtime shows the turn's user message.
+    fn request_turn_settings(
+        &mut self,
+        request: &Value,
+        input: &pi::TurnInput,
+    ) -> Result<(), RuntimeError> {
+        let runtime_id = request["payload"]["runtimeInstanceID"]
+            .as_str()
+            .ok_or_else(|| RuntimeError::invalid("runtime instance id"))?;
+        let model = self
+            .session
+            .model_selection
+            .as_ref()
+            .and_then(|selection| self.turn_model_name(runtime_id, selection));
+        let settings = crate::conversation::TurnSettings {
+            runtime_id: Some(runtime_id.to_owned()),
+            model,
+            effort: input.effort.clone(),
+            permission_mode: input.permission_mode.clone(),
+        };
+        let _ = self.current_snapshot();
+        self.session.transcript_projection.request(settings);
+        Ok(())
     }
 }

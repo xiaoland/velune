@@ -103,6 +103,19 @@ struct TranscriptTurn: Codable, Sendable, Equatable, Identifiable {
     var replyStartBlock: Int = 0
     var durationMs: UInt64?
     var isRunning: Bool
+    var settings: TurnSettings? = nil
+}
+
+/// What a turn ran with, as far as the runtime's record and Velune's own
+/// request say; each part is absent when nothing says.
+struct TurnSettings: Codable, Sendable, Equatable {
+    var runtimeID: String?
+    /// Display text.
+    var model: String?
+    /// In the runtime's vocabulary.
+    var effort: String?
+    /// An ID the runtime type declares, or the record's own value.
+    var permissionMode: String?
 }
 
 enum TranscriptItem: Codable, Sendable, Equatable {

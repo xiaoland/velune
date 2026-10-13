@@ -73,12 +73,26 @@ impl PiProjection {
             self.snapshot = Some(snapshot);
             return;
         };
-        let mut projected = Vec::new();
+        let mut projected: Vec<Message> = Vec::new();
+        // The user message that starts the turn the following replies belong to.
+        let mut turn = None;
         for (index, message) in messages.iter().enumerate() {
             if message["role"] == "toolResult" {
                 apply_tool_result(&mut projected, message, message["id"].as_str());
-            } else if let Some(message) = message_from_pi(message, format!("message-{index}")) {
+            } else if let Some(mut message) = message_from_pi(message, format!("message-{index}")) {
+                if message.role == MessageRole::User {
+                    message.turn_settings = Some(crate::conversation::TurnSettings::default());
+                    turn = Some(projected.len());
+                }
                 projected.push(message);
+            }
+            // Pi records the model on each reply; the turn's is its first reply's.
+            if message["role"] == "assistant"
+                && let Some(model) = message["model"].as_str().filter(|model| !model.is_empty())
+                && let Some(settings) =
+                    turn.and_then(|index| projected[index].turn_settings.as_mut())
+            {
+                settings.model.get_or_insert_with(|| model.to_owned());
             }
         }
         self.history_synchronized = true;
@@ -216,6 +230,7 @@ impl PiProjection {
                 );
                 if !update_tool(&mut snapshot.messages, id, state.clone(), output.clone()) {
                     snapshot.messages.push(Message {
+                        turn_settings: None,
                         completed: true,
                         id: format!("tool-{}", id.unwrap_or_default()),
                         role: MessageRole::Tool,
@@ -250,6 +265,7 @@ impl PiProjection {
                     snapshot.run_state = RunState::Failed;
                     snapshot.actions.can_send = false;
                     snapshot.messages.push(Message {
+                        turn_settings: None,
                         completed: true,
                         id: format!("notice-{}", self.next_message_id),
                         role: MessageRole::System,
@@ -299,6 +315,7 @@ impl PiProjection {
                 snapshot.actions.can_send = false;
                 snapshot.actions.can_cancel = false;
                 snapshot.messages.push(Message {
+                    turn_settings: None,
                     completed: true,
                     id: format!("notice-{}", self.next_message_id),
                     role: MessageRole::System,
@@ -449,6 +466,7 @@ fn apply_tool_result(messages: &mut Vec<Message>, native: &Value, identity: Opti
     let output = text_content(&native["content"]);
     if !update_tool(messages, id, state.clone(), output.clone()) {
         messages.push(Message {
+            turn_settings: None,
             completed: true,
             id: identity
                 .map(str::to_owned)
@@ -530,6 +548,7 @@ fn message_from_pi(message: &Value, fallback_id: String) -> Option<Message> {
         blocks.push(MessageBlock::Notice { text: error.into() });
     }
     (!blocks.is_empty()).then(|| Message {
+        turn_settings: None,
         completed: true,
         id,
         role,

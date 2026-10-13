@@ -704,6 +704,7 @@ impl NativeSession {
         if let Some(snapshot) = &mut self.snapshot {
             let id = format!("notice-{}", snapshot.revision);
             self.message(Message {
+                turn_settings: None,
                 completed: true,
                 id,
                 role: crate::conversation::MessageRole::System,

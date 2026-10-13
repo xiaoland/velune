@@ -63,15 +63,26 @@ impl CoreRuntime {
         Ok(Some(effort.into()))
     }
 
+    /// The turn's permission mode: the one asked for, or else the
+    /// conversation's current one. A mode is session state, but a harness
+    /// does not always keep it (Codex resumes a thread in its configured
+    /// policy), so the current mode is sent again where Velune knows it.
     pub(super) fn requested_permission_mode(
-        &self,
+        &mut self,
         request: &Value,
     ) -> Result<Option<String>, RuntimeError> {
-        let Some(mode) = request["payload"]["permissionMode"].as_str() else {
-            return Ok(None);
-        };
-        self.validate_permission_mode(self.active_instance()?, mode)?;
-        Ok(Some(mode.into()))
+        let runtime = self.active_instance()?.clone();
+        if let Some(mode) = request["payload"]["permissionMode"].as_str() {
+            self.validate_permission_mode(&runtime, mode)?;
+            return Ok(Some(mode.into()));
+        }
+        let current = self
+            .current_snapshot()
+            .and_then(|snapshot| snapshot.transcript_turns.into_iter().last())
+            .and_then(|turn| turn.settings)
+            .filter(|settings| settings.runtime_id.as_deref() == Some(runtime.id.as_str()))
+            .and_then(|settings| settings.permission_mode);
+        Ok(current.filter(|mode| self.validate_permission_mode(&runtime, mode).is_ok()))
     }
 
     /// A mode the runtime version declares; runtimes without modes take none.
@@ -433,5 +444,72 @@ impl CoreRuntime {
             }
         }
         Ok(serde_json::to_value(models)?)
+    }
+
+    /// How a turn names the model it was sent with: the managed model as the
+    /// model list names it, a runtime model by its ID.
+    pub(super) fn turn_model_name(
+        &self,
+        runtime_id: &str,
+        selection: &ModelSelection,
+    ) -> Option<String> {
+        match selection {
+            ModelSelection::Managed { model_record_key } => {
+                let runtime = self.runtime_instance(runtime_id).ok()?;
+                let gateway = self
+                    .gateways
+                    .iter()
+                    .find(|gateway| gateway.id == runtime.gateway_id)?;
+                gateway.providers.iter().find_map(|provider| {
+                    let model = provider
+                        .models
+                        .iter()
+                        .find(|model| &model.record_key == model_record_key)?;
+                    let name = if model.nickname.is_empty() {
+                        &model.provider_model_id
+                    } else {
+                        &model.nickname
+                    };
+                    Some(format!("{name} · {}", provider.name))
+                })
+            }
+            ModelSelection::Native { model_id, .. } => Some(model_id.clone()),
+            ModelSelection::RuntimeDefault => None,
+        }
+    }
+
+    /// A runtime that records the gateway's route alias as its model (Pi
+    /// does) names a managed model; turns show the model's own name instead.
+    pub(super) fn name_turn_models(&self, turns: &mut [crate::conversation::TranscriptTurn]) {
+        for settings in turns.iter_mut().filter_map(|turn| turn.settings.as_mut()) {
+            let (Some(runtime_id), Some(model)) = (&settings.runtime_id, &settings.model) else {
+                continue;
+            };
+            let Some(gateway) = self.runtime_instance(runtime_id).ok().and_then(|runtime| {
+                self.gateways
+                    .iter()
+                    .find(|gateway| gateway.id == runtime.gateway_id)
+            }) else {
+                continue;
+            };
+            let key = gateway
+                .providers
+                .iter()
+                .flat_map(|provider| &provider.models)
+                .find(|route| {
+                    gateway
+                        .pi_binding_id(
+                            &route.record_key,
+                            gateway.authentication_revision(&route.record_key),
+                        )
+                        .is_ok_and(|alias| &alias == model)
+                })
+                .map(|route| route.record_key.clone());
+            if let Some(name) = key.and_then(|model_record_key| {
+                self.turn_model_name(runtime_id, &ModelSelection::Managed { model_record_key })
+            }) {
+                settings.model = Some(name);
+            }
+        }
     }
 }

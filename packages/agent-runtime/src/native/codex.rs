@@ -185,31 +185,33 @@ impl NativeSession {
                     .map(|image| json!({"type":"localImage", "path":image.path})),
             )
             .collect::<Vec<_>>();
-        // Turn overrides persist to later turns, so a turn without a mode
-        // restores the thread's own start policy explicitly.
-        let (approval, sandbox, reviewer) = match input.permission_mode.as_deref() {
-            Some("read-only") => ("on-request", json!({"type":"readOnly"}), "user"),
-            None | Some("workspace") => ("on-request", json!({"type":"workspaceWrite"}), "user"),
-            Some("auto-review") => (
+        // A permission mode is thread state: Codex keeps a turn's override for
+        // later turns, so a turn without a mode sends none and keeps the
+        // thread's current mode, as Claude Code does.
+        let policy = match input.permission_mode.as_deref() {
+            None => None,
+            Some("read-only") => Some(("on-request", json!({"type":"readOnly"}), "user")),
+            Some("workspace") => Some(("on-request", json!({"type":"workspaceWrite"}), "user")),
+            Some("auto-review") => Some((
                 "on-request",
                 json!({"type":"workspaceWrite"}),
                 "auto_review",
-            ),
-            Some("full-access") => ("never", json!({"type":"dangerFullAccess"}), "user"),
+            )),
+            Some("full-access") => Some(("never", json!({"type":"dangerFullAccess"}), "user")),
             Some(_) => return Err(Error::new("Codex 不接受此权限模式")),
         };
-        let result = self.rpc.request(
-            "turn/start",
-            &json!({
-                "threadId": id,
-                "model": self.config.gateway.as_ref().map(|g| g.model_alias.as_str()).or_else(|| self.native_selection.as_ref().map(|m| m.id.as_str())),
-                "effort": input.effort,
-                "approvalPolicy": approval,
-                "sandboxPolicy": sandbox,
-                "approvalsReviewer": reviewer,
-                "input": items
-            }),
-        )?;
+        let mut params = json!({
+            "threadId": id,
+            "model": self.config.gateway.as_ref().map(|g| g.model_alias.as_str()).or_else(|| self.native_selection.as_ref().map(|m| m.id.as_str())),
+            "effort": input.effort,
+            "input": items
+        });
+        if let Some((approval, sandbox, reviewer)) = policy {
+            params["approvalPolicy"] = json!(approval);
+            params["sandboxPolicy"] = sandbox;
+            params["approvalsReviewer"] = json!(reviewer);
+        }
+        let result = self.rpc.request("turn/start", &params)?;
         let turn_id = result["turn"]["id"]
             .as_str()
             .ok_or_else(|| Error::new("Codex 未返回轮次身份"))?;
@@ -386,6 +388,7 @@ impl NativeSession {
                         })
                         .unwrap_or_default();
                     self.message(Message {
+                        turn_settings: None,
                         completed: false,
                         id: id.into(),
                         role: crate::conversation::MessageRole::Assistant,
@@ -796,6 +799,7 @@ pub(super) fn project_item(item: &Value, runtime_id: &str) -> Option<Message> {
         _ => return None,
     };
     Some(Message {
+        turn_settings: None,
         completed: true,
         id: id.into(),
         role: kind,

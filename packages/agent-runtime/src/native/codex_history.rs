@@ -2,7 +2,11 @@
 use super::{Error, Result, codex, rpc::RpcClient};
 use crate::{conversation::*, history::History};
 use serde_json::{Value, json};
-use std::{collections::HashSet, path::Path};
+use std::{
+    collections::{HashMap, HashSet},
+    io::BufRead,
+    path::Path,
+};
 
 const SOURCE_KINDS: [&str; 10] = [
     "cli",
@@ -148,6 +152,11 @@ pub fn read_codex_history_at(
         "thread/items/list",
         json!({"threadId":id,"limit":50,"sortDirection":"asc"}),
     )?;
+    // The rollout is a file on the executing machine; only a local one is read.
+    let turns = match (execution, thread["path"].as_str()) {
+        (crate::execution::ExecutionTarget::Local, Some(path)) => turn_contexts(Path::new(path)),
+        _ => HashMap::new(),
+    };
     let messages: Vec<Message> = items
         .iter()
         .filter_map(|entry| {
@@ -155,6 +164,15 @@ pub fn read_codex_history_at(
             message.timestamp_unix_ms = entry["startedAtMs"]
                 .as_i64()
                 .or_else(|| entry["completedAtMs"].as_i64());
+            if message.role == MessageRole::User {
+                message.turn_settings = Some(
+                    entry["turnId"]
+                        .as_str()
+                        .and_then(|turn| turns.get(turn))
+                        .cloned()
+                        .unwrap_or_default(),
+                );
+            }
             Some(message)
         })
         .collect();
@@ -165,4 +183,53 @@ pub fn read_codex_history_at(
         cwd: thread["cwd"].as_str().map(str::to_owned),
         messages,
     })
+}
+
+/// What each turn of a rollout ran with, from Codex's `turn_context` records.
+/// Best effort: an unreadable file or record leaves the turns unnamed.
+fn turn_contexts(path: &Path) -> HashMap<String, TurnSettings> {
+    let Ok(file) = std::fs::File::open(path) else {
+        return HashMap::new();
+    };
+    std::io::BufReader::new(file)
+        .lines()
+        .map_while(std::result::Result::ok)
+        .filter(|line| line.contains("\"turn_context\""))
+        .filter_map(|line| serde_json::from_str::<Value>(&line).ok())
+        .filter(|record| record["type"] == "turn_context")
+        .filter_map(|record| {
+            let context = &record["payload"];
+            let turn = context["turn_id"].as_str()?.to_owned();
+            let text = |value: &Value| value.as_str().filter(|v| !v.is_empty()).map(str::to_owned);
+            Some((
+                turn,
+                TurnSettings {
+                    runtime_id: None,
+                    model: text(&context["model"]),
+                    effort: text(&context["effort"]).or_else(|| {
+                        text(&context["collaboration_mode"]["settings"]["reasoning_effort"])
+                    }),
+                    permission_mode: permission_mode(context),
+                },
+            ))
+        })
+        .collect()
+}
+
+/// The preset Velune offers that a turn's policies amount to, or the policies
+/// themselves when they match none.
+fn permission_mode(context: &Value) -> Option<String> {
+    let approval = context["approval_policy"].as_str()?;
+    let sandbox = context["sandbox_policy"]["type"].as_str()?;
+    let reviewer = context["approvals_reviewer"].as_str().unwrap_or("user");
+    Some(
+        match (approval, sandbox, reviewer) {
+            ("on-request", "read-only", "user") => "read-only",
+            ("on-request", "workspace-write", "user") => "workspace",
+            ("on-request", "workspace-write", "auto_review") => "auto-review",
+            ("never", "danger-full-access", _) => "full-access",
+            _ => return Some(format!("{approval} · {sandbox}")),
+        }
+        .to_owned(),
+    )
 }

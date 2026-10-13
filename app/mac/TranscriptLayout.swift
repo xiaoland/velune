@@ -97,7 +97,8 @@ extension RenderedMessage {
 enum TranscriptRowContent: @unchecked Sendable {
     /// `status` is a caption under a message the runtime has not confirmed yet.
     case message(Message, revision: UInt64, expanded: Set<String>, status: String?)
-    case work(label: String, expanded: Bool)
+    /// `expanded` is nil for a turn with no work under its header.
+    case work(label: String, expanded: Bool?, settings: TurnSettingsSummary?)
     case activity(TranscriptActivity)
     /// Fixed breathing room after the last row, above the composer.
     case end
@@ -114,6 +115,8 @@ struct TranscriptRowLayout: @unchecked Sendable {
         case disclosure(key: String, title: String, symbol: String?, expanded: Bool?, frame: NSRect)
         case activity(TranscriptActivity, frame: NSRect)
         case attachment(TranscriptAttachment, frame: NSRect)
+        /// A turn's settings at the trailing end of its header row.
+        case turnSettings(TurnSettingsSummary, frame: NSRect)
     }
     var elements: [Element]
     var height: CGFloat
@@ -171,8 +174,10 @@ struct TranscriptRowLayout: @unchecked Sendable {
         var y = rowInset
         var elements: [Element] = []
         switch content {
-        case .work(let label, let expanded):
-            elements.append(.disclosure(key: "", title: label, symbol: nil, expanded: expanded, frame: NSRect(x: column.x, y: y, width: column.width, height: headerHeight)))
+        case .work(let label, let expanded, let settings):
+            let frame = NSRect(x: column.x, y: y, width: column.width, height: headerHeight)
+            elements.append(.disclosure(key: "", title: label, symbol: nil, expanded: expanded, frame: frame))
+            if let settings { elements.append(.turnSettings(settings, frame: frame)) }
             y += headerHeight
         case .activity(let activity):
             elements.append(.activity(activity, frame: NSRect(x: column.x, y: y, width: column.width, height: headerHeight)))
@@ -327,4 +332,15 @@ struct TranscriptAttachment: Sendable, Equatable {
         if case .file = content { return false }
         return true
     }
+}
+
+/// A turn's settings as the transcript shows them: a one-line summary and
+/// the labelled parts behind it.
+struct TurnSettingsSummary: Equatable, Sendable {
+    struct Part: Equatable, Sendable {
+        let label: String
+        let value: String
+    }
+    let parts: [Part]
+    var summary: String { parts.map(\.value).joined(separator: " · ") }
 }
