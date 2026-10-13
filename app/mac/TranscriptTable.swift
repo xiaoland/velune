@@ -69,7 +69,7 @@ struct TranscriptTable: NSViewRepresentable {
         }
     }
     private enum ContentKey: Equatable {
-        case message(UInt64, [String]), work(String, Bool), activity(TranscriptActivity), end
+        case message(UInt64, [String], String?), work(String, Bool), activity(TranscriptActivity), end
     }
     private struct Measured {
         var key: ContentKey
@@ -457,7 +457,7 @@ struct TranscriptTable: NSViewRepresentable {
         switch entries[index] {
         case .message(let row):
             let expanded = expandedBlocks[row.id] ?? []
-            return (.message(row.contentRevision, expanded.sorted()), .message(row.message, revision: row.contentRevision, expanded: expanded))
+            return (.message(row.contentRevision, expanded.sorted(), row.status), .message(row.message, revision: row.contentRevision, expanded: expanded, status: row.status))
         case .work(let turn, let label):
             let expanded = showsWork(turn)
             return (.work(label, expanded), .work(label: label, expanded: expanded))
@@ -695,7 +695,7 @@ struct TranscriptTable: NSViewRepresentable {
                 if token.cancelled { return }
                 var renderedMessage = job.rendered
                 var revision: UInt64?
-                if case .message(let message, let messageRevision, _) = job.content {
+                if case .message(let message, let messageRevision, _, _) = job.content {
                     revision = messageRevision
                     if renderedMessage == nil { renderedMessage = RenderedMessage(message) }
                 }

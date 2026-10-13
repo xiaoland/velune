@@ -82,6 +82,14 @@ import QuickLookThumbnailing
         }
     }
 
+    /// Puts an unsent message back, unless the shown conversation has a new draft.
+    func restore(_ value: String, attachments sent: [URL]) {
+        guard text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, attachments.isEmpty else { return }
+        replace(with: value)
+        if let conversationID { store?.setDraft(value, for: conversationID) }
+        setAttachments(sent)
+    }
+
     func focus() {
         guard let textView, let window = textView.window else { return }
         window.makeFirstResponder(textView)
@@ -445,43 +453,52 @@ struct ComposerView: View {
     }
 
     private var nextTurnControls: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: 10) {
             Button(action: chooseAttachments) { Image(systemName: "paperclip") }
+                .buttonStyle(.borderless)
                 .accessibilityLabel("添加附件")
                 .help("添加附件：图片随消息发送，其他文件以路径告知 Agent")
                 .disabled(store.isShuttingDown)
-            Menu {
-                Picker("Agent 运行时", selection: Binding(get: { store.nextTurnRuntimeID }, set: { if let id = $0 { store.selectNextTurnRuntime(id) } })) {
-                    ForEach(store.enabledRuntimeInstances) { runtime in Text(runtime.name).tag(Optional(runtime.id)) }
-                }.pickerStyle(.inline)
-                Divider()
-                if let runtime = nextTurnRuntime { Button("在资源库中查看 \(runtime.name)…") { ResourceLibraryNavigator.shared.show(runtime.id, openWindow) } }
-                SettingsTabLink(tab: .runtimes, title: "Agent 运行时设置…")
-            } label: {
-                Text(nextTurnRuntime?.name ?? "选择运行时").lineLimit(1).truncationMode(.middle).frame(maxWidth: 140, alignment: .leading)
-            }
-            .fixedSize()
-            .accessibilityLabel("下一轮 Agent 运行时：\(nextTurnRuntime?.name ?? "未选择")")
-            .help("下一轮运行时：\(nextTurnRuntime?.name ?? "未选择")")
-            .disabled(store.isShuttingDown)
-            Menu {
-                modelMenuContent
-            } label: {
-                Text(store.selectedModelName ?? "选择模型").lineLimit(1).truncationMode(.middle).frame(maxWidth: 200, alignment: .leading)
-            }
-            .fixedSize()
-            .accessibilityLabel("下一轮模型：\(store.selectedModelName ?? "未选择")")
-            .help(store.needsModelSelection ? "此会话的模型当前不可用，请选择已配置的模型" : "下一轮模型：\(store.selectedModelName ?? "未选择")")
-            .disabled(store.isShuttingDown)
-            if !store.reasoningEffortOptions.isEmpty { reasoningEffortMenu }
-            if !store.permissionModeOptions.isEmpty { permissionModeMenu }
-            if !store.editableSessionOptions.isEmpty { sessionOptionsMenu }
+            agentMenu
+            if !store.permissionModeOptions.isEmpty || !store.editableSessionOptions.isEmpty { permissionMenu }
             if store.isUnsentConversation { workingDirectoryMenu }
         }
+        // Borderless pull-downs in the system's own colours: the label is the
+        // current choice, so the row reads as a sentence rather than a toolbar.
         .menuStyle(.button)
-        // Side by side, accent-coloured indicators would all compete; this
-        // neutral tint draws them like the system's graphite appearance.
-        .tint(Color(nsColor: .controlColor))
+        .buttonStyle(.borderless)
+    }
+
+    /// Who answers the next turn: the runtime, its model and the reasoning
+    /// level, one section each.
+    private var agentMenu: some View {
+        let runtime = nextTurnRuntime?.name ?? "选择运行时"
+        let model = store.selectedModelName ?? "选择模型"
+        let effort = store.reasoningEffortOptions.isEmpty ? nil : store.nextTurnEffort.map(Self.effortName)
+        let title = ([runtime, model] + (effort.map { [$0] } ?? [])).joined(separator: " · ")
+        return Menu {
+            Picker("Agent 运行时", selection: Binding(get: { store.nextTurnRuntimeID }, set: { if let id = $0 { store.selectNextTurnRuntime(id) } })) {
+                ForEach(store.enabledRuntimeInstances) { runtime in Text(runtime.name).tag(Optional(runtime.id)) }
+            }.pickerStyle(.inline)
+            modelMenuContent
+            if !store.reasoningEffortOptions.isEmpty {
+                Picker("推理强度", selection: Binding(get: { store.nextTurnEffort }, set: { store.selectEffort($0) })) {
+                    Text("默认").tag(String?.none).help("由运行时决定")
+                    ForEach(store.reasoningEffortOptions, id: \.self) { level in Text(Self.effortName(level)).tag(Optional(level)) }
+                }.pickerStyle(.inline)
+            }
+            Divider()
+            Button("重新读取模型", action: store.reloadModelCatalog).disabled(!store.canSwitchModel || store.modelCatalog == .loading)
+            if let runtime = nextTurnRuntime { Button("在资源库中查看 \(runtime.name)…") { ResourceLibraryNavigator.shared.show(runtime.id, openWindow) } }
+            SettingsTabLink(tab: .runtimes, title: "Agent 运行时设置…")
+            SettingsTabLink(tab: .providers, title: "AI 提供商设置…")
+        } label: {
+            Text(title).lineLimit(1).truncationMode(.middle).frame(maxWidth: 360, alignment: .leading)
+        }
+        .fixedSize()
+        .accessibilityLabel("下一轮：运行时 \(runtime)，模型 \(model)，推理强度 \(effort ?? "默认")")
+        .help(store.needsModelSelection ? "此会话的模型当前不可用，请选择已配置的模型" : "下一轮：\(runtime) · \(model) · 推理强度\(effort ?? "默认")")
+        .disabled(store.isShuttingDown)
     }
 
     /// The runtime's own models (and its default, when it has one) come
@@ -506,23 +523,6 @@ struct ComposerView: View {
                 ForEach(managedChoices) { model in Text(model.displayName).tag(Optional(model.selection)) }
             }.pickerStyle(.inline).disabled(!store.canSwitchModel)
         }
-        Divider()
-        Button("重新读取模型", action: store.reloadModelCatalog).disabled(!store.canSwitchModel || store.modelCatalog == .loading)
-        SettingsTabLink(tab: .providers, title: "AI 提供商设置…")
-    }
-
-    /// The live session's own options (modes and the like), as the Agent
-    /// names and groups them; changes apply to the session at once.
-    private var sessionOptionsMenu: some View {
-        Menu {
-            ForEach(store.editableSessionOptions) { option in sessionOptionControl(option) }
-        } label: {
-            Label("会话选项", systemImage: "slider.horizontal.3").labelStyle(.titleOnly).lineLimit(1)
-        }
-        .fixedSize()
-        .accessibilityLabel("会话选项")
-        .help("此会话由 Agent 提供的选项，修改立即生效")
-        .disabled(!store.canChangeSessionOptions)
     }
 
     @ViewBuilder private func sessionOptionControl(_ option: SessionOption) -> some View {
@@ -554,42 +554,31 @@ struct ComposerView: View {
         return groups
     }
 
-    /// Levels come from the model and runtime; "默认" sends none and leaves
-    /// the level to the runtime's default.
-    private var reasoningEffortMenu: some View {
-        let title = store.nextTurnEffort.map(Self.effortName) ?? "默认"
-        return Menu {
-            Picker("推理强度", selection: Binding(get: { store.nextTurnEffort }, set: { store.selectEffort($0) })) {
-                Text("默认").tag(String?.none)
-                Divider()
-                ForEach(store.reasoningEffortOptions, id: \.self) { level in Text(Self.effortName(level)).tag(Optional(level)) }
-            }.pickerStyle(.inline)
-        } label: {
-            Label("推理：\(title)", systemImage: "brain").labelStyle(.titleOnly).lineLimit(1)
-        }
-        .fixedSize()
-        .accessibilityLabel("下一轮推理强度：\(title)")
-        .help("推理强度：\(title)。默认时由运行时决定")
-        .disabled(store.isShuttingDown)
-    }
-
-    /// Modes come from the runtime type, in its own names; "默认" sends none
-    /// and leaves the mode to the runtime's own settings.
-    private var permissionModeMenu: some View {
+    /// What the next turn may do: the runtime type's permission modes, in
+    /// its own names ("默认" sends none), and the live session's own options
+    /// (an ACP Agent's modes and the like), which apply at once.
+    private var permissionMenu: some View {
         let mode = store.effectivePermissionMode
-        let title = mode?.label ?? "默认"
+        let hasModes = !store.permissionModeOptions.isEmpty
+        let title = hasModes ? (mode?.label ?? "默认权限") : "会话选项"
         return Menu {
-            Picker("权限模式", selection: Binding(get: { mode?.id }, set: { store.selectPermissionMode($0) })) {
-                Text("默认").tag(String?.none).help("沿用运行时自己的权限设置")
-                Divider()
-                ForEach(store.permissionModeOptions) { option in Text(option.label).tag(Optional(option.id)).help(option.detail) }
-            }.pickerStyle(.inline)
+            if hasModes {
+                Picker("权限模式", selection: Binding(get: { mode?.id }, set: { store.selectPermissionMode($0) })) {
+                    Text("默认").tag(String?.none).help("沿用运行时自己的权限设置")
+                    ForEach(store.permissionModeOptions) { option in Text(option.label).tag(Optional(option.id)).help(option.detail) }
+                }.pickerStyle(.inline)
+            }
+            if !store.editableSessionOptions.isEmpty {
+                Section("会话选项") {
+                    ForEach(store.editableSessionOptions) { option in sessionOptionControl(option) }
+                }.disabled(!store.canChangeSessionOptions)
+            }
         } label: {
-            Label("权限：\(title)", systemImage: "lock.shield").labelStyle(.titleOnly).lineLimit(1)
+            Label(title, systemImage: hasModes ? "lock.shield" : "slider.horizontal.3").lineLimit(1)
         }
         .fixedSize()
-        .accessibilityLabel("下一轮权限模式：\(title)")
-        .help(mode.map { "权限模式：\($0.label)。\($0.detail)" } ?? "权限模式：默认，沿用运行时自己的权限设置")
+        .accessibilityLabel(hasModes ? "下一轮权限模式：\(title)" : "会话选项")
+        .help(hasModes ? (mode.map { "权限模式：\($0.label)。\($0.detail)" } ?? "权限模式：默认，沿用运行时自己的权限设置") : "此会话由 Agent 提供的选项，修改立即生效")
         .disabled(store.isShuttingDown)
     }
 

@@ -9,7 +9,9 @@ final class TranscriptRow: @MainActor Identifiable {
     let id: String
     private(set) var message: Message
     private(set) var contentRevision: UInt64 = 0
-    init(_ message: Message, id: String) { self.id = id; self.message = message }
+    /// A caption under a message the runtime has not confirmed yet, such as "发送中".
+    let status: String?
+    init(_ message: Message, id: String, status: String? = nil) { self.id = id; self.message = message; self.status = status }
     func update(_ message: Message) {
         guard self.message != message else { return }
         contentRevision &+= 1
@@ -27,7 +29,10 @@ final class TranscriptModel: ObservableObject {
         var revision: UInt64 = 0
     }
     @Published private var presentation = Presentation()
-    var rows: [TranscriptRow] { presentation.rows }
+    /// The message just sent, shown after the projection until the runtime's
+    /// own copy appears in it.
+    @Published private var pending: TranscriptRow?
+    var rows: [TranscriptRow] { presentation.rows + (pending.map { [$0] } ?? []) }
     var turns: [TranscriptTurn] { presentation.turns }
     var contentRevision: UInt64 { presentation.revision }
     var userRows: [TranscriptRow] {
@@ -45,7 +50,8 @@ final class TranscriptModel: ObservableObject {
         // A message split into work and reply has two rows; work members use the first.
         let byMessage = Dictionary(rows.map { ($0.message.id, $0) }, uniquingKeysWith: { first, _ in first })
         let byTurn = Dictionary(uniqueKeysWithValues: turns.map { ($0.id, $0) })
-        return presentation.items.compactMap { item in
+        let pendingItem = pending.flatMap { visible.contains($0.id) ? Item.message($0) : nil }
+        return presentation.items.compactMap { item -> Item? in
             switch item {
             case .message(let id, _):
                 guard visible.contains(id), let row = byID[id] else { return nil }
@@ -56,7 +62,13 @@ final class TranscriptModel: ObservableObject {
                 guard !members.isEmpty else { return nil }
                 return .work(turn, members)
             }
-        }
+        } + (pendingItem.map { [$0] } ?? [])
+    }
+    /// Shows `message` at the end of the list with `status` under it; nil removes it.
+    func showPending(_ message: Message?, status: String?) {
+        guard let message else { if pending != nil { pending = nil }; return }
+        guard pending?.message != message || pending?.status != status else { return }
+        pending = TranscriptRow(message, id: message.id, status: status)
     }
     func retainedExpandedTurnIDs(_ ids: Set<String>) -> Set<String> { ids.intersection(turns.map(\.id)) }
     func reset() { presentation = Presentation(revision: contentRevision &+ 1) }

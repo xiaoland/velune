@@ -40,6 +40,14 @@ final class AppStore: ObservableObject {
     /// Conversation and run state the options were last read for.
     private var sessionOptionsKey: String?
     let transcript = TranscriptModel()
+    /// The turn just sent, shown in the transcript until the runtime's own copy
+    /// of the user message appears or the turn ends.
+    private struct PendingSend {
+        /// The last user message before this turn; a different one is the turn's own.
+        let previousUserMessageID: String?
+        var accepted = false
+    }
+    private var pendingSend: PendingSend?
     @Published private(set) var gateway = GatewayConfig() { didSet { if oldValue != gateway { invalidateModelCatalogs() } } }
     @Published private(set) var runtimeInstances: [RuntimeInstance] = [] { didSet { if oldValue != runtimeInstances { invalidateModelCatalogs(); refreshRuntimeLocations() } } }
     /// Where each instance runs, read with its saved execution; unknown ones count as local.
@@ -660,21 +668,29 @@ final class AppStore: ObservableObject {
     var attachmentsDirectory: URL {
         (transport?.stateDirectory ?? FileManager.default.temporaryDirectory).appendingPathComponent("attachments", isDirectory: true)
     }
-    func send(text: String, attachments: [String] = [], onAccepted: ((String?) -> Void)? = nil) {
-        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !attachments.isEmpty else { return }
-        guard canSend, let target = nextTurnRuntimeID, let model = nextTurnModel, let source = snapshot?.conversation.runtimeID, let conversationID = loadedConversationID else { return }
+    /// Returns whether the turn was sent; the message shows at once, marked as
+    /// sending until the runtime accepts it. `onFailure` runs when it was not.
+    @discardableResult
+    func send(text: String, attachments: [String] = [], onAccepted: ((String?) -> Void)? = nil, onFailure: (() -> Void)? = nil) -> Bool {
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !attachments.isEmpty else { return false }
+        guard canSend, let target = nextTurnRuntimeID, let model = nextTurnModel, let source = snapshot?.conversation.runtimeID, let conversationID = loadedConversationID else { return false }
         if isPreview {
-            guard var value = snapshot else { return }
+            guard var value = snapshot else { return false }
             if case .managed(let key) = model { value.modelRecordKey = key }
             let message = Message(id: UUID().uuidString, role: .user, blocks: [.text(text)])
             value.messages.append(message)
             value.transcriptItems.append(.message(id: message.id, messageID: message.id))
             value.transcriptOutline.append(TranscriptOutlineEntry(id: message.id, messageID: message.id))
             value.transcriptMessageIdentities.append(TranscriptMessageIdentity(id: message.id, messageID: message.id))
-            apply(value); onAccepted?(loadedConversationID); return
+            apply(value); onAccepted?(loadedConversationID); return true
         }
-        guard let transport else { recordProblem("本地核心未配置"); return }
+        guard let transport else { recordProblem("本地核心未配置"); return false }
         executionStarting = true
+        pendingSend = PendingSend(previousUserMessageID: snapshot?.messages.last { $0.role == .user }?.id)
+        let sent: [MessageBlock] = (text.isEmpty ? [] : [.text(text)]) + attachments.map { path in
+            Self.imageExtensions.contains(URL(fileURLWithPath: path).pathExtension.lowercased()) ? .image(mediaType: nil, source: .path(path)) : .file(path: path)
+        }
+        transcript.showPending(Message(id: "pending:" + UUID().uuidString, role: .user, blocks: sent), status: "发送中")
         let creating = isDraft
         let cwd = snapshot?.conversation.cwd
         let turn = BindingComposedTurn(text: text, effort: nextTurnEffort.flatMap { reasoningEffortOptions.contains($0) ? $0 : nil },
@@ -695,10 +711,32 @@ final class AppStore: ObservableObject {
                 }
             }
             return try transport.sendTurn(sourceRuntimeID: source, conversationID: conversationID, targetRuntimeID: target, selection: model, turn: turn)
-        }, onAccepted: { [weak self] in onAccepted?(self?.loadedConversationID) }, onFailure: { [weak self] _ in self?.executionStarting = false }) { [weak self] value in
+        }, onAccepted: { [weak self] in onAccepted?(self?.loadedConversationID) }, onFailure: { [weak self] _ in
             self?.executionStarting = false
-            self?.applySnapshotResult(value)
+            self?.endPendingSend()
+            onFailure?()
+        }) { [weak self] value in
+            guard let self else { return }
+            self.executionStarting = false
+            self.pendingSend?.accepted = true
+            self.applySnapshotResult(value)
         }
+        return true
+    }
+    /// Images go to the runtime as images, as the core decides from the extension.
+    private static let imageExtensions: Set<String> = ["png", "jpg", "jpeg", "gif", "webp"]
+    private func endPendingSend() {
+        pendingSend = nil
+        transcript.showPending(nil, status: nil)
+    }
+    /// The sent message gives way to the runtime's own copy, or to the end of
+    /// a turn that never showed one; once accepted it is no longer "sending".
+    private func updatePendingSend(_ value: ConversationSnapshot) {
+        guard let pending = pendingSend else { return }
+        let ownCopy = value.messages.last { $0.role == .user }?.id != pending.previousUserMessageID
+        let ended = pending.accepted && !(value.runState == .running || value.runState == .stopping)
+        if ownCopy || ended { endPendingSend() }
+        else if pending.accepted, let row = transcript.rows.last, row.status != nil { transcript.showPending(row.message, status: nil) }
     }
     func cancel() {
         guard canCancel, !isLoading else { return }
@@ -1080,7 +1118,7 @@ final class AppStore: ObservableObject {
             } else { resetProjection() }
         }
     }
-    private func resetProjection() { intentConversationID = nil; loadedPayloads.removeAll(); isDraft = false; problems.removeAll { $0.activityKey?.hasPrefix("poll:") == true }; generation += 1; snapshot = nil; projectionRuntimeID = nil; selectedConversationID = nil; pendingConversationID = nil; transcript.reset(); activity = nil; sessionOptions = nil; sessionOptionsKey = nil }
+    private func resetProjection() { intentConversationID = nil; loadedPayloads.removeAll(); isDraft = false; problems.removeAll { $0.activityKey?.hasPrefix("poll:") == true }; generation += 1; snapshot = nil; projectionRuntimeID = nil; selectedConversationID = nil; pendingConversationID = nil; transcript.reset(); endPendingSend(); activity = nil; sessionOptions = nil; sessionOptionsKey = nil }
     private func applyList(_ data: BindingConfigurationSnapshot) {
         // The application owns the conversation list and configuration that
         // workspaces copy; a workspace's result must reach it, or the stale
@@ -1144,6 +1182,7 @@ final class AppStore: ObservableObject {
         value.messages = withLoadedPayloads(value.messages)
         let remainingProblems = problems.filter { !($0.activityKey?.hasPrefix("poll:") == true && $0.activityKey != "poll:" + value.contextRuntimeID) }
         if problems != remainingProblems { problems = remainingProblems }
+        updatePendingSend(value)
         guard snapshot != value else { return }
         snapshot = value; projectionRuntimeID = value.contextRuntimeID; selectedConversationID = value.conversation.id; restoreNextTurnIntent(for: value); if !preserveSelection && selectedConversationIDs.count <= 1 { selectedConversationIDs = [value.conversation.id] }; transcript.apply(value.messages, turns: value.transcriptTurns, items: value.transcriptItems, outline: value.transcriptOutline, identities: value.transcriptMessageIdentities)
         if let index = conversations.firstIndex(where: { $0.id == value.conversation.id }) { if conversations[index] != value.conversation { conversations[index] = value.conversation } }

@@ -95,7 +95,8 @@ extension RenderedMessage {
 /// Everything that determines one row's geometry. Immutable values only, so a
 /// background pass can lay rows out without touching main-actor state.
 enum TranscriptRowContent: @unchecked Sendable {
-    case message(Message, revision: UInt64, expanded: Set<String>)
+    /// `status` is a caption under a message the runtime has not confirmed yet.
+    case message(Message, revision: UInt64, expanded: Set<String>, status: String?)
     case work(label: String, expanded: Bool)
     case activity(TranscriptActivity)
     /// Fixed breathing room after the last row, above the composer.
@@ -178,7 +179,7 @@ struct TranscriptRowLayout: @unchecked Sendable {
             y += headerHeight
         case .end:
             break
-        case .message(_, _, let expanded):
+        case .message(_, _, let expanded, let status):
             guard let rendered else { preconditionFailure("A message row is laid out from its rendered revision") }
             if rendered.role == .user {
                 // Images lead files regardless of which part of the native record carried them.
@@ -216,6 +217,13 @@ struct TranscriptRowLayout: @unchecked Sendable {
                 elements.append(.bubble(NSRect(x: column.x + column.width - textWidth - bubblePadding * 2, y: y, width: textWidth + bubblePadding * 2, height: bubbleHeight)))
                 elements += texts
                 y += bubbleHeight
+                if let status {
+                    let caption = TranscriptTypography.plain(status, font: TranscriptTypography.caption, color: .secondaryLabelColor)
+                    let size = measurer.size(of: caption, width: column.width)
+                    y += 4
+                    elements.append(.text(caption, frame: NSRect(x: column.x + column.width - ceil(size.width) - 1, y: y, width: ceil(size.width) + 1, height: size.height), inBubble: false))
+                    y += size.height
+                }
             } else {
                 for (index, block) in rendered.blocks.enumerated() {
                     if index > 0 { y += blockSpacing }
@@ -258,7 +266,7 @@ struct TranscriptRowLayout: @unchecked Sendable {
         switch content {
         case .work, .activity: return rowInset + headerHeight
         case .end: return rowInset
-        case .message(let message, _, let expanded):
+        case .message(let message, _, let expanded, _):
             let charactersPerLine = max(column.width / 7.5, 8)
             var height: CGFloat = 0
             for (index, block) in message.blocks.enumerated() {
