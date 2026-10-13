@@ -220,6 +220,9 @@ pub enum BindingResolution {
     Unmanage,
     /// Delete the native entries and stop managing.
     Remove,
+    /// Update the resource from the native entries, which become its new
+    /// baseline here, and write it to its other runtimes as saving does.
+    TakeNative,
 }
 
 /// A template read back from a runtime's native entry; not saved until the user saves it.

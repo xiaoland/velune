@@ -435,6 +435,9 @@ private struct RuntimeTargetsView: View {
     @State private var conflict: (runtime: RuntimeInstance, message: String)?
     @State private var bulkConflicts: [RuntimeInstance] = []
     @State private var reviewing: RuntimeInstance?
+    /// Taking a runtime's native content into the resource, once the fields it
+    /// cannot carry are known.
+    @State private var taking: (runtime: RuntimeInstance, notes: [String])?
 
     private var canModify: Bool { !store.applicationIsGenerating && !library.isWorking }
     /// Runtimes that support the resource but do not have it yet.
@@ -475,13 +478,22 @@ private struct RuntimeTargetsView: View {
         } message: { Text("保留时，原生内容留在该运行时，但不再由 Velune 同步。") }
         .sheet(item: $reviewing) { runtime in
             if let id = resourceID {
-                DriftSheet(library: library, runtime: runtime, resourceID: id, resourceName: name, resolve: { resolve(runtime, $0) })
+                DriftSheet(library: library, runtime: runtime, resourceID: id, resourceName: name, canTakeNative: !isDirty,
+                           resolve: { resolution in resolution == .takeNative ? take(runtime) : resolve(runtime, resolution) })
             }
         }
         .alert("覆盖已有的原生内容？", isPresented: Binding(get: { !bulkConflicts.isEmpty }, set: { if !$0 { bulkConflicts = [] } })) {
             Button("跳过这些运行时", role: .cancel) {}
             Button("覆盖", role: .destructive) { let runtimes = bulkConflicts; bulkConflicts = []; enable(runtimes, overwrite: true) }
         } message: { Text("\(bulkConflicts.map(\.name).joined(separator: "、")) 中已有同名内容\(kind == .userInstructions ? "或已启用另一份指令" : "")，启用将替换它。") }
+        .alert("用 \(taking?.runtime.name ?? "") 中的内容更新“\(name)”？", isPresented: Binding(get: { taking != nil }, set: { if !$0 { taking = nil } })) {
+            Button("取消", role: .cancel) {}
+            Button("更新资源库") { if let runtime = taking?.runtime { resolve(runtime, .takeNative) } }
+        } message: {
+            let others = store.runtimeInstances.filter { runtime in runtime.id != taking?.runtime.id && resourceID.map { library.state($0, runtime.id).isEnabled } == true }.map(\.name)
+            Text(["资源库中的版本将被替换\(others.isEmpty ? "" : "，并写入 \(others.joined(separator: "、"))")；\(taking?.runtime.name ?? "") 中的内容按资源库的格式重写。",
+                  (taking?.notes ?? []).isEmpty ? nil : "以下原生内容无法带入，将被丢弃：\((taking?.notes ?? []).joined(separator: "；"))"].compactMap { $0 }.joined(separator: "\n\n"))
+        }
         .alert("覆盖 \(conflict?.runtime.name ?? "") 中的内容？", isPresented: Binding(get: { conflict != nil }, set: { if !$0 { conflict = nil } })) {
             Button("取消", role: .cancel) {}
             Button("覆盖", role: .destructive) { if let runtime = conflict?.runtime { enable(runtime, overwrite: true) } }
@@ -507,6 +519,8 @@ private struct RuntimeTargetsView: View {
                     Button("查看差异…") { reviewing = runtime }
                     Divider()
                     Button("用资源库的内容覆盖") { resolve(runtime, .overwrite) }
+                    Button("用原生内容更新资源库…") { take(runtime) }
+                        .disabled(isDirty).help(isDirty ? "先保存或还原未保存的修改" : "以该运行时中的内容替换资源库中的版本")
                     Button("不再同步，保留原生内容") { resolve(runtime, .unmanage) }
                 }.fixedSize().disabled(!canModify)
             case .missing:
@@ -559,7 +573,17 @@ private struct RuntimeTargetsView: View {
     private func resolve(_ runtime: RuntimeInstance, _ resolution: BindingResolution) {
         guard let id = resourceID else { return }
         let runtimeID = runtime.id
-        library.run({ try $0.resolveResourceBinding(runtimeID: runtimeID, templateID: id, resolution: resolution) })
+        library.run({ try $0.resolveResourceBinding(runtimeID: runtimeID, templateID: id, resolution: resolution) }, done: { _ in
+            // The resource itself changed; the editor shows the new version.
+            if resolution == .takeNative { library.forget(.resource(id)); library.open(.resource(id)) }
+        })
+    }
+
+    /// Reads what the resource would become first, to list what cannot be carried over.
+    private func take(_ runtime: RuntimeInstance) {
+        guard let id = resourceID, !isDirty else { return }
+        let runtimeID = runtime.id
+        library.run({ try $0.resourceNativeImport(runtimeID: runtimeID, templateID: id) }, done: { imported in taking = (runtime, imported.notes) })
     }
 }
 
@@ -655,6 +679,8 @@ private struct DriftSheet: View {
     let runtime: RuntimeInstance
     let resourceID: String
     let resourceName: String
+    /// False while the resource has unsaved edits.
+    let canTakeNative: Bool
     let resolve: (BindingResolution) -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var files: [BindingResourceDriftFile]?
@@ -692,6 +718,8 @@ private struct DriftSheet: View {
             }
             HStack {
                 Button("不再同步，保留原生内容") { dismiss(); resolve(.unmanage) }
+                Button("用原生内容更新资源库…") { dismiss(); resolve(.takeNative) }
+                    .disabled(!canTakeNative).help(canTakeNative ? "以该运行时中的内容替换资源库中的版本" : "先保存或还原未保存的修改")
                 Spacer()
                 Button("取消") { dismiss() }.keyboardShortcut(.cancelAction)
                 Button("用资源库的内容覆盖") { dismiss(); resolve(.overwrite) }.buttonStyle(.borderedProminent)

@@ -326,6 +326,15 @@ impl VeluneApplication {
             application.apply_resource_template(template_id, targets)
         })?)
     }
+    pub fn resource_native_import(
+        &self,
+        runtime_id: String,
+        template_id: String,
+    ) -> Result<BindingResourceTemplateImport, BindingError> {
+        convert(self.with("resource_native_import", |application| {
+            application.resource_native_import(runtime_id, template_id)
+        })?)
+    }
     pub fn resolve_resource_binding(
         &self,
         runtime_id: String,

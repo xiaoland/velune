@@ -685,7 +685,22 @@ impl Application {
         )
     }
 
-    /// Overwrite drifted entries, stop syncing (keeping native content), or remove them.
+    /// What a resource would become if taken from its native entries on a runtime, with the
+    /// native fields it has no place for; nothing is saved.
+    pub fn resource_native_import(
+        &mut self,
+        runtime_id: String,
+        template_id: String,
+    ) -> Result<crate::ResourceTemplateImport, Error> {
+        self.execute(
+            "resourceSync",
+            json!({"operation":"nativeImport","templateID":template_id}),
+            Some(&runtime_id),
+        )
+    }
+
+    /// Overwrite drifted entries, stop syncing (keeping native content), remove them, or take
+    /// the native content into the resource.
     pub fn resolve_resource_binding(
         &mut self,
         runtime_id: String,

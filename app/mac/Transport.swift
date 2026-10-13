@@ -74,6 +74,7 @@ final class Transport: @unchecked Sendable {
     func resourceDrift(runtimeID: String, templateID: String) throws -> [BindingResourceDriftFile] { try withApplication("resourceDrift") { try $0.resourceDrift(runtimeId: runtimeID, templateId: templateID) } }
     func unmanagedRuntimeResources(_ kind: BindingRuntimeResourceKind) throws -> [BindingUnmanagedRuntimeResource] { try withApplication("unmanagedRuntimeResources") { try $0.unmanagedRuntimeResources(kind: kind) } }
     func applyResourceTemplate(_ id: String, targets: [BindingTemplateApplyTarget]) throws -> [BindingTemplateApplyReport] { try withApplication("applyResourceTemplate") { try $0.applyResourceTemplate(templateId: id, targets: targets) } }
+    func resourceNativeImport(runtimeID: String, templateID: String) throws -> BindingResourceTemplateImport { try withApplication("resourceNativeImport") { try $0.resourceNativeImport(runtimeId: runtimeID, templateId: templateID) } }
     func resolveResourceBinding(runtimeID: String, templateID: String, resolution: BindingResolution) throws { try withApplication("resolveResourceBinding") { try $0.resolveResourceBinding(runtimeId: runtimeID, templateId: templateID, resolution: resolution) } }
     func list() throws -> BindingConfigurationSnapshot { try withApplication("list") { try $0.list() } }
     func saveProvider(gatewayID: String, provider: AIProvider, authenticationEdit: AuthenticationEdit) throws -> BindingGatewayUpdate {

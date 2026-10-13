@@ -407,6 +407,10 @@ impl CoreRuntime {
                 let template = self.template(payload["templateID"].as_str().unwrap_or_default())?;
                 Ok(json!(self.drift(template, runtime_id())?))
             }
+            Some("nativeImport") => {
+                let template = self.template(payload["templateID"].as_str().unwrap_or_default())?;
+                Ok(json!(self.native_import(template, runtime_id())?))
+            }
             Some("unmanaged") => Ok(json!(
                 self.unmanaged_resources(serde_json::from_value(payload["kind"].clone())?)
             )),
@@ -924,6 +928,37 @@ impl CoreRuntime {
         })
     }
 
+    /// Reads an enabled resource's native entries on a runtime back into its content.
+    fn native_import(
+        &self,
+        template: &ResourceTemplate,
+        runtime_id: &str,
+    ) -> Result<crate::ResourceTemplateImport, RuntimeError> {
+        let Some(index) = self.binding_index(runtime_id, &template.id) else {
+            return Err(RuntimeError::invalid("此运行时没有启用该资源"));
+        };
+        let kind = template.content.kind();
+        // The entry's key path: a skill's directory, otherwise its one file or server name.
+        let path = self.resource_bindings[index]
+            .entries
+            .first()
+            .map(|entry| match kind {
+                RuntimeResourceKind::Skills => entry
+                    .key
+                    .path
+                    .split('/')
+                    .next()
+                    .unwrap_or_default()
+                    .to_owned(),
+                _ => entry.key.path.clone(),
+            })
+            .ok_or_else(|| RuntimeError::invalid("该运行时没有此资源的原生内容"))?;
+        let mut imported = self.import_runtime_resource(runtime_id, kind, &path)?;
+        imported.template.id = template.id.clone();
+        imported.template.name = template.name.clone();
+        Ok(imported)
+    }
+
     fn resolve_binding(
         &mut self,
         runtime_id: &str,
@@ -947,6 +982,27 @@ impl CoreRuntime {
                     TemplateApplyOutcome::Skipped { reason } => Err(RuntimeError::Invalid(reason)),
                     _ => Ok(()),
                 }
+            }
+            BindingResolution::TakeNative => {
+                let mut updated = template.clone();
+                updated.content = self.native_import(template, runtime_id)?.template.content;
+                self.store_template(updated.clone())?;
+                // The native entries are rewritten in the library's form, as adopting does.
+                let report = self.apply_to_runtime(
+                    &updated,
+                    &TemplateApplyTarget {
+                        runtime_id: runtime_id.to_owned(),
+                        overwrite: true,
+                    },
+                )?;
+                if let TemplateApplyOutcome::Failed { reason }
+                | TemplateApplyOutcome::Skipped { reason } = report.outcome
+                {
+                    return Err(RuntimeError::Invalid(format!(
+                        "资源库已更新，但未能写回该运行时：{reason}"
+                    )));
+                }
+                self.sync_pending(&template.id).map(|_| ())
             }
             BindingResolution::Unmanage => {
                 let mut bindings = self.resource_bindings.clone();

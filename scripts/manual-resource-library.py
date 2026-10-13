@@ -235,6 +235,33 @@ def exercise(app, b, root):
     assert app.resource_drift('pi', tuned.id) == []
     print('PASS 差异', flush=True)
 
+    # 用原生内容更新资源库：资源取原生内容，原生按资源库格式重写，其他运行时随之同步。
+    shared = app.save_resource_template(resource(
+        'shared', skill(b'---\nname: shared\ndescription: d\n---\nlibrary\n'))).summary
+    app.apply_resource_template(shared.id, [target('claude'), target('codex'), target('pi')])
+    shared_file = lambda identity: next((root / identity).rglob('shared/SKILL.md'))
+    shared_file('claude').write_bytes(b'---\nname: shared\ndescription: d\n---\nnative edit\n')
+    assert isinstance(states(shared.id)['claude'], state.DRIFTED)
+    preview = app.resource_native_import('claude', shared.id)
+    assert preview.template.id == shared.id and preview.template.name == 'shared'
+    assert b'native edit' in preview.template.content.files[0].bytes
+    assert b'library' in app.read_resource_template(shared.id).content.files[0].bytes, '预览不保存'
+    reject(lambda: app.resource_native_import('claude', review.id))
+    app.resolve_resource_binding('claude', shared.id, b.BindingResolution.TAKE_NATIVE)
+    assert b'native edit' in app.read_resource_template(shared.id).content.files[0].bytes
+    assert all(b'native edit' in shared_file(r).read_bytes() for r in ('claude', 'codex', 'pi'))
+    assert all(isinstance(states(shared.id)[r], state.SYNCED) for r in ('claude', 'codex', 'pi'))
+    # MCP：原生的命令进入资源，并写入其他运行时；带不进的字段在预览中列出。
+    (root / 'pi' / 'mcp.json').write_text(json.dumps({'mcpServers': {'tuned': {'command': 'native-cmd', 'timeout': 30, 'cwd': '/srv', 'unknownField': 1}}}))
+    preview = app.resource_native_import('pi', tuned.id)
+    print('INFO MCP 预览说明：%r' % (preview.notes,), flush=True)
+    assert preview.template.content.transport.command == 'native-cmd'
+    app.resolve_resource_binding('pi', tuned.id, b.BindingResolution.TAKE_NATIVE)
+    assert json.loads((root / 'claude' / '.claude.json').read_text())['mcpServers']['tuned']['command'] == 'native-cmd'
+    assert 'native-cmd' in (root / 'codex' / 'config.toml').read_text()
+    assert all(isinstance(states(tuned.id)[r], state.SYNCED) for r in ('claude', 'codex', 'pi'))
+    print('PASS 用原生内容更新资源库', flush=True)
+
     # 忙时保存留作待同步，空闲后任一请求自动补写。
     (root / 'peer.py').write_text(PEER)
     (root / 'project').mkdir(exist_ok=True)

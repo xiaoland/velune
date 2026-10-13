@@ -73,3 +73,10 @@ runtime_adapter 进一步把独立资源文件边界委派给既有 ssh_executio
 - 一次未复现的退出：首次添加运行时后应用在提示出现时异常结束，核心日志无 shutdown、无崩溃报告（本机 ReportCrash 自身异常）。推测为 sheet 关闭动画中弹出 alert；改为 sheet 的 onDismiss 后再提示，后续三次均正常。
 - ⑦ 真实 Harness 加载：`scripts/manual-resource-library-native.py` 在 sandbox（拒绝读取 /Users、仅 loopback 网络、临时 HOME）中通过 UniFFI 保存并启用资源库内容，再由固定版本自身的加载器确认，见 [原生证据](native-evidence.md#资源库写入的加载)。未调用模型。
 - 安装：`08c609e` release 构建已安装 `/Applications/Velune.app`（0.1 beta.1、schema 8），manifest 提交一致，严格签名与主程序／核心库 SHA 核对通过，启动正常。manifest 的 dirty=true 仅因工作区存在未跟踪的 `app/mac/.DS_Store` 与只含 `.DS_Store` 的 `app/mac/Assets/`（非本任务文件，未删除）。
+
+## 原生改动回填资源库（2026-10-13，[S21](../../docs/sources.md#s21)）
+
+- 用户改为需要回填：原生被改时可“用原生内容更新资源库”。
+- 核心：`BindingResolution::TakeNative` 读回该运行时的条目（技能取目录，其余取唯一条目），替换资源内容，保留资源 ID 与名称。随后以覆盖方式写回该运行时（按规范形式重写，作为新基线），再按保存同步其他运行时；原生被改的其他运行时仍等待用户处理。`resource_native_import` 返回更新后的资源和无法带入的字段，不保存。
+- Mac：“处理…”菜单与差异 sheet 增“用原生内容更新资源库…”。先读预览，再用确认框列出将写入的其他运行时与将丢弃的字段。资源有未保存修改时不可用；完成后编辑器重新读取资源。
+- 验证：`manual-resource-library.py` 增“用原生内容更新资源库”，覆盖技能（三个运行时同步）与 MCP（预览列出无法带入的字段），全部 PASS。Mac 的菜单与确认框未在 App 中操作，需用户验收。

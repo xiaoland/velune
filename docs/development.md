@@ -362,7 +362,7 @@ Velune 执行的每个会话都获得 application 注入的 `velune` MCP 服务�
 
 当前适配覆盖 Codex／Claude 的四类、Pi 的 instruction／MCP／skills、DSH 的 instruction／skills。Pi 没有内置 sub-agent 定义；DSH 的插件式 MCP／sub-agent 配置和通用 ACP 的私有资源布局没有接入本管理契约，会明确说明不支持。该列表是管理适配范围，不等于对应 Harness 的全部运行能力，也不是组织策略、插件与祖先目录合并后的有效配置视图。
 
-修改在运行中的 turn 存在时拒绝；停用实例仍可编辑原生资源。成功保存不自动重启或重载运行时，具体生效时机由 Harness 决定。受管 HOME 仍保存原生配置，不形成 Velune 同步副本。Mac 以“资源库”窗口管理这些资源：资源在 Velune 中定义，启用到运行时后由 Velune 写入并保持同步，原生被改时由用户选择处理（可先查看差异），忙时延后的写入在运行时空闲后自动补写；手动验收脚本为 `scripts/manual-resource-library.py`，真实 Harness 加载为 `scripts/manual-resource-library-native.py`（sandbox、无模型请求）。实施、具体原生路径与隔离验收见 [运行时资源管理任务](../tasks/runtime-management/packet.md)。
+修改在运行中的 turn 存在时拒绝；停用实例仍可编辑原生资源。成功保存不自动重启或重载运行时，具体生效时机由 Harness 决定。受管 HOME 仍保存原生配置，不形成 Velune 同步副本。Mac 以“资源库”窗口管理这些资源：资源在 Velune 中定义，启用到运行时后由 Velune 写入并保持同步，原生被改时由用户选择处理（可先查看差异；可用资源库覆盖、停止同步，或用原生内容更新资源库），忙时延后的写入在运行时空闲后自动补写；手动验收脚本为 `scripts/manual-resource-library.py`，真实 Harness 加载为 `scripts/manual-resource-library-native.py`（sandbox、无模型请求）。实施、具体原生路径与隔离验收见 [运行时资源管理任务](../tasks/runtime-management/packet.md)。
 
 **待实现的 App 编译接入**：下次为 Mac 重新生成绑定时，须在 `app/mac/Transport.swift` 的 `kindName` 穷尽匹配中处理新增的 `BindingFailureKind.runtimeManagement`。当前非 UI 切片保留该 App 源码不变，不能直接把生成的新绑定替换进 App 后宣称构建通过。
 

@@ -1398,6 +1398,7 @@ pub enum BindingResolution {
     Overwrite,
     Unmanage,
     Remove,
+    TakeNative,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, uniffi::Record)]
