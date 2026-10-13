@@ -154,7 +154,7 @@ pub fn read_codex_history_at(
     )?;
     // The rollout is a file on the executing machine; only a local one is read.
     let turns = match (execution, thread["path"].as_str()) {
-        (crate::execution::ExecutionTarget::Local, Some(path)) => turn_contexts(Path::new(path)),
+        (crate::execution::ExecutionTarget::Local, Some(path)) => rollout_turns(Path::new(path)),
         _ => HashMap::new(),
     };
     let messages: Vec<Message> = items
@@ -165,13 +165,9 @@ pub fn read_codex_history_at(
                 .as_i64()
                 .or_else(|| entry["completedAtMs"].as_i64());
             if message.role == MessageRole::User {
-                message.turn_settings = Some(
-                    entry["turnId"]
-                        .as_str()
-                        .and_then(|turn| turns.get(turn))
-                        .cloned()
-                        .unwrap_or_default(),
-                );
+                let turn = entry["turnId"].as_str().and_then(|turn| turns.get(turn));
+                message.turn_settings = Some(turn.map(|t| t.settings.clone()).unwrap_or_default());
+                message.turn_usage = turn.and_then(|t| t.usage.clone());
             }
             Some(message)
         })
@@ -185,35 +181,81 @@ pub fn read_codex_history_at(
     })
 }
 
-/// What each turn of a rollout ran with, from Codex's `turn_context` records.
-/// Best effort: an unreadable file or record leaves the turns unnamed.
-fn turn_contexts(path: &Path) -> HashMap<String, TurnSettings> {
+/// What a turn of a rollout ran with and used.
+#[derive(Default)]
+pub(super) struct RolloutTurn {
+    pub(super) settings: TurnSettings,
+    pub(super) usage: Option<TurnUsage>,
+}
+
+/// Each turn of a rollout, from Codex's `turn_context` records and the
+/// running totals of its `token_usage_record`s. Best effort: an unreadable
+/// file or record leaves the turns unnamed.
+pub(super) fn rollout_turns(path: &Path) -> HashMap<String, RolloutTurn> {
     let Ok(file) = std::fs::File::open(path) else {
         return HashMap::new();
     };
-    std::io::BufReader::new(file)
+    let mut turns: HashMap<String, RolloutTurn> = HashMap::new();
+    let records = std::io::BufReader::new(file)
         .lines()
         .map_while(std::result::Result::ok)
-        .filter(|line| line.contains("\"turn_context\""))
-        .filter_map(|line| serde_json::from_str::<Value>(&line).ok())
-        .filter(|record| record["type"] == "turn_context")
-        .filter_map(|record| {
-            let context = &record["payload"];
-            let turn = context["turn_id"].as_str()?.to_owned();
-            let text = |value: &Value| value.as_str().filter(|v| !v.is_empty()).map(str::to_owned);
-            Some((
-                turn,
-                TurnSettings {
+        .filter(|line| line.contains("\"turn_context\"") || line.contains("\"token_usage_record\""))
+        .filter_map(|line| serde_json::from_str::<Value>(&line).ok());
+    for record in records {
+        let payload = &record["payload"];
+        let Some(turn) = payload["turn_id"].as_str() else {
+            continue;
+        };
+        let entry = turns.entry(turn.to_owned()).or_default();
+        let text = |value: &Value| value.as_str().filter(|v| !v.is_empty()).map(str::to_owned);
+        match record["type"].as_str() {
+            Some("turn_context") => {
+                entry.settings = TurnSettings {
                     runtime_id: None,
-                    model: text(&context["model"]),
-                    effort: text(&context["effort"]).or_else(|| {
-                        text(&context["collaboration_mode"]["settings"]["reasoning_effort"])
+                    model: text(&payload["model"]),
+                    effort: text(&payload["effort"]).or_else(|| {
+                        text(&payload["collaboration_mode"]["settings"]["reasoning_effort"])
                     }),
-                    permission_mode: permission_mode(context),
-                },
-            ))
-        })
-        .collect()
+                    permission_mode: permission_mode(payload),
+                };
+            }
+            // Each record carries the turn's total so far; the last one counts.
+            Some("token_usage_record") => {
+                let usage = &payload["turn_token_usage"];
+                if usage.is_object() {
+                    entry.usage = Some(codex_usage(
+                        usage,
+                        "input_tokens",
+                        "cached_input_tokens",
+                        "cache_write_input_tokens",
+                        "output_tokens",
+                        "reasoning_output_tokens",
+                    ));
+                }
+            }
+            _ => {}
+        }
+    }
+    turns
+}
+
+/// Codex counts cached input within input, and reasoning within output, as
+/// the Responses API does. Keys differ between the rollout and app-server.
+pub(super) fn codex_usage(
+    usage: &Value,
+    input: &str,
+    cached: &str,
+    cache_write: &str,
+    output: &str,
+    reasoning: &str,
+) -> TurnUsage {
+    TurnUsage {
+        input_tokens: usage[input].as_u64(),
+        cache_read_tokens: usage[cached].as_u64(),
+        cache_write_tokens: usage[cache_write].as_u64(),
+        output_tokens: usage[output].as_u64(),
+        reasoning_tokens: usage[reasoning].as_u64(),
+    }
 }
 
 /// The preset Velune offers that a turn's policies amount to, or the policies

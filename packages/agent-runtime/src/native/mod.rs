@@ -688,7 +688,12 @@ impl NativeSession {
             .extend(sub_agent_conversations(std::slice::from_ref(&message)));
         if let Some(snapshot) = &mut self.snapshot {
             if let Some(old) = snapshot.messages.iter_mut().find(|m| m.id == message.id) {
+                // What the turn used arrives apart from its user message.
+                let usage = old.turn_usage.take();
                 *old = message;
+                if old.turn_usage.is_none() {
+                    old.turn_usage = usage;
+                }
             } else {
                 snapshot.messages.push(message);
             }
@@ -699,12 +704,26 @@ impl NativeSession {
             snapshot.revision += 1;
         }
     }
+    /// Updates the usage of the turn the last user message starts.
+    fn turn_usage(&mut self, update: impl FnOnce(&mut Option<TurnUsage>)) {
+        if let Some(snapshot) = &mut self.snapshot
+            && let Some(user) = snapshot
+                .messages
+                .iter_mut()
+                .rev()
+                .find(|message| message.role == MessageRole::User)
+        {
+            update(&mut user.turn_usage);
+            snapshot.revision += 1;
+        }
+    }
     /// Appends an application status notice to the current projection, if a session exists.
     pub fn notice(&mut self, text: &str) {
         if let Some(snapshot) = &mut self.snapshot {
             let id = format!("notice-{}", snapshot.revision);
             self.message(Message {
                 turn_settings: None,
+                turn_usage: None,
                 completed: true,
                 id,
                 role: crate::conversation::MessageRole::System,

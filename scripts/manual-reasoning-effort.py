@@ -6,7 +6,8 @@ against gateway providers whose upstream is a loopback synthetic server.
 Checks the levels offered for each runtime and model, that a level outside
 them is refused before anything is sent, and the reasoning field each
 harness then sends upstream through its own channel, for a chosen level and
-for a following turn without one, which returns to the runtime's default. No real model,
+for a following turn without one, which keeps the conversation's current
+level: Velune sends it again, since the harnesses keep it differently. No real model,
 credential, HOME or session is read; this is not an automated test.
 """
 import argparse
@@ -217,13 +218,13 @@ def main():
                 picked = reasoning[runtime](body)
                 body, conversation = turn(runtime, conversation, key, 'KEPT_' + runtime, None)
                 kept = reasoning[runtime](body)
-                print('INFO %s upstream reasoning: default %r, chosen %r, next default %r' % (runtime, baseline, picked, kept), flush=True)
+                print('INFO %s upstream reasoning: default %r, chosen %r, next without a choice %r' % (runtime, baseline, picked, kept), flush=True)
                 assert (picked[0] if runtime == 'claude' else picked) == chosen, (runtime, picked)
-                # Under Velune a level applies to its turn: Codex sends none
-                # by default, Claude Code is launched per turn and Pi's
-                # session starts each execution at off.
-                assert kept == baseline != picked, (runtime, baseline, kept)
-            print('PASS a chosen level reaches the upstream through each harness for its turn only; '
+                # By itself no harness keeps it under Velune (Codex sends none
+                # by default, Claude Code is launched per turn, Pi's session
+                # starts each execution at off), so Velune sends it again.
+                assert kept == picked != baseline, (runtime, baseline, kept)
+            print('PASS a chosen level reaches the upstream through each harness and stays the conversation\'s level; '
                   'levels outside the offer are refused unsent', flush=True)
 
             # A native selection runs on the harness's own provider; its level

@@ -1,6 +1,6 @@
 //! Model provenance stays explicit across discovery, preparation, and continuation.
 use super::*;
-use crate::conversation::ConversationSnapshot;
+use crate::conversation::{ConversationSnapshot, TurnSettings};
 use crate::{ModelSelection, RuntimeModel};
 use velune_agent_runtime::native::CLAUDE_EFFORT_LEVELS;
 
@@ -48,19 +48,38 @@ impl CoreRuntime {
         })
     }
 
-    /// The next turn's requested reasoning level, checked against the
-    /// runtime and model the turn runs on.
-    pub(super) fn requested_effort(&self, request: &Value) -> Result<Option<String>, RuntimeError> {
-        let Some(effort) = request["payload"]["effort"].as_str() else {
-            return Ok(None);
-        };
+    /// The next turn's reasoning level, checked against the runtime and model
+    /// the turn runs on: the one asked for, or else the conversation's
+    /// current one while the model accepts it. Like a permission mode it is
+    /// session state that harnesses keep differently (Claude Code takes one
+    /// per launch, Codex resumes in its configured level, Pi keeps its own),
+    /// so the current level is sent again where Velune knows it.
+    pub(super) fn requested_effort(
+        &mut self,
+        request: &Value,
+    ) -> Result<Option<String>, RuntimeError> {
+        let runtime = self.active_instance()?.clone();
         let selection = self
             .session
             .model_selection
-            .as_ref()
+            .clone()
             .ok_or_else(|| RuntimeError::invalid("请选择此会话的模型"))?;
-        self.validate_effort(self.active_instance()?, selection, effort)?;
-        Ok(Some(effort.into()))
+        if let Some(effort) = request["payload"]["effort"].as_str() {
+            self.validate_effort(&runtime, &selection, effort)?;
+            return Ok(Some(effort.into()));
+        }
+        let current = self
+            .current_turn_settings(&runtime)
+            .and_then(|settings| settings.effort);
+        Ok(current.filter(|effort| self.validate_effort(&runtime, &selection, effort).is_ok()))
+    }
+
+    /// Settings of the conversation's last turn when it ran on `runtime`.
+    fn current_turn_settings(&mut self, runtime: &RuntimeInstance) -> Option<TurnSettings> {
+        self.current_snapshot()
+            .and_then(|snapshot| snapshot.transcript_turns.into_iter().last())
+            .and_then(|turn| turn.settings)
+            .filter(|settings| settings.runtime_id.as_deref() == Some(runtime.id.as_str()))
     }
 
     /// The turn's permission mode: the one asked for, or else the
@@ -77,10 +96,7 @@ impl CoreRuntime {
             return Ok(Some(mode.into()));
         }
         let current = self
-            .current_snapshot()
-            .and_then(|snapshot| snapshot.transcript_turns.into_iter().last())
-            .and_then(|turn| turn.settings)
-            .filter(|settings| settings.runtime_id.as_deref() == Some(runtime.id.as_str()))
+            .current_turn_settings(&runtime)
             .and_then(|settings| settings.permission_mode);
         Ok(current.filter(|mode| self.validate_permission_mode(&runtime, mode).is_ok()))
     }

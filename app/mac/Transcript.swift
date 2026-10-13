@@ -17,7 +17,7 @@ struct TranscriptView: View {
     let activity: TranscriptActivity?
     let loadPayloads: ([String]) -> Void
     let openConversation: (String) -> Void
-    let describeSettings: (TurnSettings) -> TurnSettingsSummary?
+    let describeSettings: (TranscriptTurn) -> TurnSettingsSummary?
     @State private var following = true
     @State private var bottomRequest: UInt64 = 0
     @State private var outlineAnchorID: String?

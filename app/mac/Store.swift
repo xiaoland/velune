@@ -103,12 +103,18 @@ final class AppStore: ObservableObject {
     private var composerDrafts: [String: String] = [:]
     private var unsavedDrafts: [String: String] = [:]
     private var draftSave: DispatchWorkItem?
-    /// Next-turn runtime and model chosen per conversation in this workspace.
+    /// Next-turn choices per conversation in this workspace, while the application runs.
     private var nextTurnIntents: [String: NextTurnIntent] = [:]
     private var intentConversationID: String?
     /// The model last chosen on each runtime instance.
     private var lastChosenModels: [String: ModelSelection] = [:]
-    private struct NextTurnIntent { var runtimeID: String?; var model: ModelSelection?; var effort: String?; var permissionMode: String? }
+    /// A conversation's choices: each runtime keeps its own until sent. The
+    /// runtime itself is kept only for a conversation not yet sent; a sent one
+    /// comes back on its current runtime.
+    private struct NextTurnIntent { var runtimeID: String?; var choices: [String: RuntimeChoice] = [:] }
+    /// What the user chose for one runtime; `nil` follows the conversation's
+    /// latest turn on it.
+    private struct RuntimeChoice { var model: ModelSelection?; var effort: String?; var permissionMode: String? }
 
     init(transport: Transport? = nil, preview: Bool = false, sharedApplication: AppStore? = nil) {
         self.sharedApplication = sharedApplication
@@ -241,21 +247,55 @@ final class AppStore: ObservableObject {
     /// The conversation's current mode, as its last turn on the next turn's
     /// runtime recorded it; a mode is the session's state in the runtime.
     var currentPermissionMode: PermissionMode? {
-        guard let settings = snapshot?.transcriptTurns.last?.settings, settings.runtimeID == nextTurnRuntimeID else { return nil }
+        guard let settings = currentTurnSettings else { return nil }
         return permissionModeOptions.first { $0.id == settings.permissionMode }
     }
-    /// A turn's settings in the names the composer uses; an unknown runtime
-    /// or a mode its type does not declare shows as recorded.
-    func describe(_ settings: TurnSettings) -> TurnSettingsSummary? {
+    /// The conversation's current level, as its last turn on the next turn's
+    /// runtime recorded it, while the chosen model offers it.
+    var currentEffort: String? { currentTurnSettings?.effort.flatMap { reasoningEffortOptions.contains($0) ? $0 : nil } }
+    /// Settings of the conversation's last turn when it ran on the next turn's runtime.
+    private var currentTurnSettings: TurnSettings? {
+        guard let settings = snapshot?.transcriptTurns.last?.settings, settings.runtimeID == nextTurnRuntimeID else { return nil }
+        return settings
+    }
+    /// The model of the conversation's latest turn on a runtime, among the
+    /// choices it offers. A turn records the name Velune sent, the native
+    /// model ID, or a provider's model ID; the last counts only when one
+    /// provider model has it.
+    private func latestTurnModel(on runtimeID: String) -> ModelSelection? {
+        guard let model = snapshot?.transcriptTurns.last(where: { $0.settings?.runtimeID == runtimeID && $0.settings?.model != nil })?.settings?.model else { return nil }
+        let choices = modelChoices
+        if let choice = choices.first(where: { $0.displayName == model }) { return choice.selection }
+        if let choice = choices.first(where: { if case .native(_, model) = $0.selection { true } else { false } }) { return choice.selection }
+        let keys = Set(gateway.providers.flatMap(\.models).filter { $0.providerModelID == model }.map(\.recordKey))
+        let managed = choices.filter { if case .managed(let key) = $0.selection { keys.contains(key) } else { false } }
+        return managed.count == 1 ? managed[0].selection : nil
+    }
+    /// A turn's settings in the names the composer uses (an unknown runtime
+    /// or a mode its type does not declare shows as recorded), and its usage.
+    func describe(_ turn: TranscriptTurn) -> TurnSettingsSummary? {
+        let settings = turn.settings ?? TurnSettings()
         let runtime = settings.runtimeID.flatMap { id in runtimeInstances.first { $0.id == id } }
         let type = runtime.flatMap { instance in runtimeTypes.first { $0.id == instance.typeID } }
         let parts: [TurnSettingsSummary.Part] = [
             settings.runtimeID.map { .init(label: "运行时", value: runtime?.name ?? $0) },
             settings.model.map { .init(label: "模型", value: $0) },
-            settings.effort.map { .init(label: "推理强度", value: ComposerView.effortName($0)) },
+            settings.effort.map { .init(label: "推理强度", value: $0) },
             settings.permissionMode.map { mode in .init(label: "权限", value: type?.permissionModes.first { $0.id == mode }?.label ?? mode) },
         ].compactMap { $0 }
-        return parts.isEmpty ? nil : TurnSettingsSummary(parts: parts)
+        let brief = [runtime?.name ?? settings.runtimeID, settings.model].compactMap { $0 }.joined(separator: " · ")
+        let usage = turn.usage.map { usage -> [TurnSettingsSummary.Part] in
+            let count = { (value: UInt64?) in value.map { $0.formatted() } }
+            return [
+                count(usage.inputTokens).map { .init(label: "输入", value: $0) },
+                count(usage.cacheReadTokens).map { .init(label: "缓存读取", value: $0) },
+                count(usage.cacheWriteTokens).map { .init(label: "缓存写入", value: $0) },
+                count(usage.outputTokens).map { .init(label: "输出", value: $0) },
+                // Shown even when unknown: a harness may count it only within output.
+                .init(label: "推理", value: count(usage.reasoningTokens) ?? "未单独记录"),
+            ].compactMap { $0 }
+        } ?? []
+        return parts.isEmpty && usage.isEmpty ? nil : TurnSettingsSummary(parts: parts, brief: brief, usage: usage)
     }
     func selectPermissionMode(_ mode: String?) {
         guard mode == nil || permissionModeOptions.contains(where: { $0.id == mode }) else { return }
@@ -265,9 +305,16 @@ final class AppStore: ObservableObject {
     func selectNextTurnRuntime(_ id: String) {
         guard !isShuttingDown, enabledRuntimeInstances.contains(where: { $0.id == id }) else { return }
         hasInitializedNextTurnIntent = true
-        nextTurnRuntimeID = id
-        reconcileModelSelection()
-        rememberNextTurnIntent()
+        switchNextTurnRuntime(to: id)
+        if let intentConversationID { nextTurnIntents[intentConversationID, default: NextTurnIntent()].runtimeID = id }
+    }
+    /// The runtime's own choices in this conversation come back with it.
+    private func switchNextTurnRuntime(to id: String) {
+        let choice = intentConversationID.flatMap { nextTurnIntents[$0]?.choices[id] } ?? RuntimeChoice()
+        nextTurnModel = choice.model
+        nextTurnEffort = choice.effort
+        nextTurnPermissionMode = choice.permissionMode
+        if nextTurnRuntimeID == id { reconcileModelSelection() } else { nextTurnRuntimeID = id }
     }
     var pendingInteractions: [RuntimeInteraction] { snapshot?.pendingInteractions ?? [] }
     func replyInteraction(_ interaction: RuntimeInteraction, reply: RuntimeInteractionReply) {
@@ -713,6 +760,7 @@ final class AppStore: ObservableObject {
         transcript.showPending(Message(id: "pending:" + UUID().uuidString, role: .user, blocks: sent), status: "发送中")
         let creating = isDraft
         let cwd = snapshot?.conversation.cwd
+        // Without a level or mode the core keeps the conversation's current one.
         let turn = BindingComposedTurn(text: text, effort: nextTurnEffort.flatMap { reasoningEffortOptions.contains($0) ? $0 : nil },
                                        permissionMode: effectivePermissionMode?.id, attachments: attachments)
         enqueue({
@@ -1016,9 +1064,10 @@ final class AppStore: ObservableObject {
         dropUnofferedEffort()
         rememberNextTurnIntent()
     }
+    /// Keeps what the user chose for the next turn's runtime in this conversation.
     private func rememberNextTurnIntent() {
-        guard let intentConversationID else { return }
-        nextTurnIntents[intentConversationID] = NextTurnIntent(runtimeID: nextTurnRuntimeID, model: nextTurnModel, effort: nextTurnEffort, permissionMode: nextTurnPermissionMode)
+        guard let intentConversationID, let runtimeID = nextTurnRuntimeID else { return }
+        nextTurnIntents[intentConversationID, default: NextTurnIntent()].choices[runtimeID] = RuntimeChoice(model: nextTurnModel, effort: nextTurnEffort, permissionMode: nextTurnPermissionMode)
     }
     func selectEffort(_ effort: String?) {
         guard effort == nil || reasoningEffortOptions.contains(effort!) else { return }
@@ -1088,21 +1137,25 @@ final class AppStore: ObservableObject {
             }
         }
     }
-    /// Once the catalog is read, an unavailable choice falls back to the
-    /// model last chosen on this runtime, then the catalog's first entry: the
-    /// runtime's default, its own models, then managed models. An unread
-    /// catalog leaves the choice for the core to check at sending.
+    /// Without a choice the model follows the conversation's latest turn on
+    /// this runtime, then the conversation's recorded model, then the model
+    /// last chosen on this runtime. Once the catalog is read, an unavailable
+    /// one falls back to the catalog's first entry: the runtime's default, its
+    /// own models, then managed models. An unread catalog leaves the choice
+    /// for the core to check at sending. Only a user's choice is remembered.
     private func reconcileModelSelection() {
-        guard snapshot != nil, let runtimeID = nextTurnRuntimeID else { return }
+        guard let snapshot, let runtimeID = nextTurnRuntimeID else { return }
         let available = modelChoices.map(\.selection)
+        let recorded = snapshot.conversation.runtimeID == runtimeID ? snapshot.modelRecordKey.map { ModelSelection.managed(recordKey: $0) } : nil
+        let candidates = [nextTurnModel, latestTurnModel(on: runtimeID), recorded, lastChosenModels[runtimeID]].compactMap { $0 }
         let chosen: ModelSelection?
         if case .ready = modelCatalog {
-            chosen = [nextTurnModel, lastChosenModels[runtimeID]].compactMap { $0 }.first { available.contains($0) } ?? available.first
+            chosen = candidates.first { available.contains($0) } ?? available.first
         } else {
             let failed = if case .failed = modelCatalog { true } else { false }
-            chosen = nextTurnModel ?? lastChosenModels[runtimeID] ?? (failed ? available.first : nil)
+            chosen = candidates.first ?? (failed ? available.first : nil)
         }
-        if chosen != nextTurnModel { nextTurnModel = chosen; rememberNextTurnIntent() }
+        if chosen != nextTurnModel { nextTurnModel = chosen }
         dropUnofferedEffort()
     }
     /// Levels are known only from a read catalog; until then the remembered
@@ -1110,24 +1163,18 @@ final class AppStore: ObservableObject {
     private func dropUnofferedEffort() {
         guard case .ready = modelCatalog, let effort = nextTurnEffort, !reasoningEffortOptions.contains(effort) else { return }
         nextTurnEffort = nil
-        rememberNextTurnIntent()
     }
-    /// Each conversation keeps its own next-turn choice. A conversation opened
-    /// for the first time continues on its current runtime and recorded model;
-    /// otherwise see `reconcileModelSelection`.
+    /// A conversation comes back on its current runtime (one not sent yet on
+    /// the runtime chosen for it), with that runtime's choices in it; see
+    /// `reconcileModelSelection` for the model.
     private func restoreNextTurnIntent(for value: ConversationSnapshot) {
         guard value.conversation.id != intentConversationID else { return }
         intentConversationID = value.conversation.id
-        let intent = nextTurnIntents[value.conversation.id] ?? NextTurnIntent(runtimeID: value.contextRuntimeID, model: value.modelRecordKey.map { .managed(recordKey: $0) })
-        if let runtimeID = intent.runtimeID, enabledRuntimeInstances.contains(where: { $0.id == runtimeID }) {
-            hasInitializedNextTurnIntent = true
-            nextTurnRuntimeID = runtimeID
-        }
-        nextTurnModel = intent.model
-        nextTurnEffort = intent.effort
-        nextTurnPermissionMode = intent.permissionMode
+        let kept = isDraft ? nextTurnIntents[value.conversation.id]?.runtimeID : nil
+        let runtimeID = [kept, value.contextRuntimeID].compactMap { $0 }.first { id in enabledRuntimeInstances.contains { $0.id == id } }
+        if runtimeID != nil { hasInitializedNextTurnIntent = true }
+        if let id = runtimeID ?? nextTurnRuntimeID { switchNextTurnRuntime(to: id) } else { nextTurnModel = nil; nextTurnEffort = nil; nextTurnPermissionMode = nil }
         loadModelCatalog()
-        rememberNextTurnIntent()
     }
     private func refreshAfterExecutionInvalidation() {
         guard let transport else { recordProblem("本地核心未配置"); return }

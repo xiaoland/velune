@@ -109,6 +109,7 @@ impl CoreRuntime {
     ) -> Message {
         Message {
             turn_settings: None,
+            turn_usage: None,
             completed: true,
             id: format!("segment-{index}:boundary"),
             role: MessageRole::System,
@@ -279,7 +280,7 @@ impl CoreRuntime {
                         conversation:ConversationSummary {id:segment.native_conversation_id.clone(),runtime_id:segment.runtime_instance_id.clone(),
                             title:velune_conversation::ConversationTitle::Untitled,cwd:None,created_at_unix_ms:None,updated_at_unix_ms:None,can_rename:false,can_delete:false, parent_conversation_id: None,},
                         resource_id:None, model_record_key:None,run_state:RunState::Failed,pending_interactions:Vec::new(),transcript_turns:Vec::new(),transcript_items:Vec::new(),transcript_outline:Vec::new(),transcript_message_identities:Vec::new(),message_identity_confirmations:Vec::new(),
-                        messages:vec![Message { turn_settings: None, completed: true, id:"context-unavailable".into(),role:MessageRole::System,timestamp_unix_ms:None,
+                        messages:vec![Message { turn_settings: None, turn_usage: None, completed: true, id:"context-unavailable".into(),role:MessageRole::System,timestamp_unix_ms:None,
                             blocks:vec![MessageBlock::Notice {text:"当前运行时的原生会话尚不可读取，未自动重发。请修复来源后重新打开。".into()}]}],
                         actions:crate::conversation::ConversationActions {can_send:false,can_cancel:false,can_switch:true},
                     };
@@ -378,6 +379,7 @@ impl CoreRuntime {
                 snapshot.actions.can_send = false;
                 snapshot.messages.push(Message {
                     turn_settings: None,
+                    turn_usage: None,
                     completed: true,
                     id: format!("segment-{index}:unavailable"),
                     role: MessageRole::System,

@@ -1025,6 +1025,8 @@ pub struct BindingTranscriptTurn {
     /// What the turn ran with, as far as the native record and Velune's own
     /// request say.
     pub settings: Option<BindingTurnSettings>,
+    /// What the native record says the turn used.
+    pub usage: Option<BindingTurnUsage>,
 }
 
 /// Each part is absent when nothing says. The runtime is an instance ID; the
@@ -1038,6 +1040,19 @@ pub struct BindingTurnSettings {
     pub model: Option<String>,
     pub effort: Option<String>,
     pub permission_mode: Option<String>,
+}
+
+/// Token counts summed over a turn's model requests. Input includes cache
+/// reads and writes, output includes reasoning; a count is absent when the
+/// harness does not record it.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, uniffi::Record)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BindingTurnUsage {
+    pub input_tokens: Option<u64>,
+    pub cache_read_tokens: Option<u64>,
+    pub cache_write_tokens: Option<u64>,
+    pub output_tokens: Option<u64>,
+    pub reasoning_tokens: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]

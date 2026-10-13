@@ -104,6 +104,16 @@ struct TranscriptTurn: Codable, Sendable, Equatable, Identifiable {
     var durationMs: UInt64?
     var isRunning: Bool
     var settings: TurnSettings? = nil
+    var usage: TurnUsage? = nil
+}
+/// Tokens a turn used, as the runtime recorded them: input includes cache
+/// reads and writes, output includes reasoning; `nil` where it records none.
+struct TurnUsage: Codable, Sendable, Equatable {
+    var inputTokens: UInt64?
+    var cacheReadTokens: UInt64?
+    var cacheWriteTokens: UInt64?
+    var outputTokens: UInt64?
+    var reasoningTokens: UInt64?
 }
 
 /// What a turn ran with, as far as the runtime's record and Velune's own

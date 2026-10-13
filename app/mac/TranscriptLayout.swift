@@ -342,5 +342,8 @@ struct TurnSettingsSummary: Equatable, Sendable {
         let value: String
     }
     let parts: [Part]
-    var summary: String { parts.map(\.value).joined(separator: " · ") }
+    /// Runtime and model, shown while the pointer is on the row.
+    let brief: String
+    /// Token counts, empty when the runtime recorded none.
+    let usage: [Part]
 }

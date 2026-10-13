@@ -91,6 +91,9 @@ def history(path, native_id, runtime_id, sidechain=False):
         chain.append(entry)
         leaf = entry.get("parentUuid")
     messages, first_user, calls, turn = [], None, {}, None
+    # The current turn's prompt and the usage of each model response in it,
+    # by message id: a response's records repeat it, the last one complete.
+    prompt, usages = None, {}
     for entry in reversed(chain):
         role = entry.get("type")
         if role not in ("user", "assistant"):
@@ -117,6 +120,9 @@ def history(path, native_id, runtime_id, sidechain=False):
         # replies it wrote itself (errors and the like) with "<synthetic>".
         if role == "assistant" and turn is not None and "model" not in turn and isinstance(model, str) and not model.startswith("<"):
             turn["model"] = model
+        usage = entry.get("message", {}).get("usage")
+        if role == "assistant" and isinstance(usage, dict) and isinstance(entry["message"].get("id"), str):
+            usages[entry["message"]["id"]] = usage
         if not content:
             continue
         if role == "user" and first_user is None:
@@ -127,7 +133,10 @@ def history(path, native_id, runtime_id, sidechain=False):
             # Claude Code records the permission mode on the prompt that starts a turn.
             mode = entry.get("permissionMode")
             turn = message["turn_settings"] = {"permissionMode": mode} if isinstance(mode, str) else {}
+            close_turn(prompt, usages)
+            prompt, usages = message, {}
         messages.append(message)
+    close_turn(prompt, usages)
     title = next((r.get("customTitle") for r in reversed(records) if r.get("type") == "custom-title" and isinstance(r.get("customTitle"), str)), None)
     if sidechain:
         title = meta_title(path)
@@ -139,6 +148,19 @@ def history(path, native_id, runtime_id, sidechain=False):
     dates = [value for r in records if (value := timestamp(r.get("timestamp"))) is not None]
     return {"nativeId": native_id, "title": ({"source":"native", "text":title} if title else {"source":"firstMessage", "text":first_user} if first_user else {"source":"untitled"}), "cwd": cwd,
             "messages": messages, "createdAtUnixMs": min(dates) if dates else None, "updatedAtUnixMs": max(dates) if dates else None}
+
+
+def close_turn(prompt, usages):
+    """The turn's usage on its prompt. Anthropic counts input without cache
+    reads and writes, and does not count thinking apart from output."""
+    if prompt is None or not usages:
+        return
+    def total(key):
+        values = [u.get(key) for u in usages.values()]
+        return sum(values) if all(isinstance(v, int) for v in values) else None
+    read, write, plain = total("cache_read_input_tokens") or 0, total("cache_creation_input_tokens") or 0, total("input_tokens")
+    prompt["turn_usage"] = {"inputTokens": None if plain is None else plain + read + write, "cacheReadTokens": read,
+                            "cacheWriteTokens": write, "outputTokens": total("output_tokens"), "reasoningTokens": None}
 
 
 def meta_title(path):

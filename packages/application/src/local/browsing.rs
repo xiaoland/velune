@@ -458,6 +458,7 @@ impl CoreRuntime {
             if let Some(mut view) = previous {
                 view.messages.push(Message {
                     turn_settings: None,
+                    turn_usage: None,
                     completed: true,
                     id: format!("prepare-failed:{}", view.revision),
                     role: velune_conversation::MessageRole::System,

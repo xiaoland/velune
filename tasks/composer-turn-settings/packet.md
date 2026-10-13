@@ -84,6 +84,45 @@
   - 工作过程行右端显示信息图标，权限按钮显示会话当前模式“Auto”。
   - 窗口在另一桌面空间，AX 不可达。悬停摘要、popover 与“发送中”流程未在 App 中实际操作，需用户验收。
 
+## 第二批（2026-10-13，[S21](../../docs/sources.md#s21)）
+
+已确认：
+
+1. 模型、推理强度、权限模式按“会话 × 运行时”保存（应用运行期间）。切换运行时未发送时，离开再回来只把运行时恢复为会话当前的运行时；尚未首发的新会话保留所选运行时。
+2. 某运行时在此会话中还没有选择时，模型默认取该运行时在此会话中最近一轮的模型。
+3. 推理强度显示原值，不本地化。推理强度改为会话状态：不选时沿用最近一轮在同一运行时上的级别，菜单首项“沿用当前（…）”。
+4. 轮次配置悬停只显示运行时与模型；详情加该轮 token 用量（含推理 token）。
+5. 资源库：原生被改时可“用原生内容更新资源库”。
+
+观察：
+
+- “默认”此前不发送任何值。不发送时：Claude Code 每轮回到自身默认；Pi 沿用会话上次的思考级别；Codex 视路径而定（托管模型每轮重启 app-server 回到配置默认，原生模型沿用上一轮覆盖）。
+- 轮次用量的原生来源：
+  - Codex 0.159.3 rollout 的 `token_usage_record`：按 `turn_id`，`turn_token_usage` 是该轮累计，含 `reasoning_output_tokens`。实时通知 `thread/tokenUsage/updated` 带 `turnId`，以及每次响应的 `last`。
+  - Claude Code 2.1.286：assistant 记录的 `message.usage`，同一 message id 会重复出现；不单列思考 token。
+  - Pi 1.0.2：assistant 消息的 `usage`（`input` 不含缓存，`reasoning` 仅在提供商报告时出现，是 `output` 的子集）。Pi 实时快照也来自 `get_messages`。
+- 网关的分析记录没有会话或轮次归属，不用于轮次用量。
+
+实施（切片 4，composer 与轮次用量）：
+
+- Mac：`NextTurnIntent` 改为每会话一份 `choices[运行时]`（模型、强度、模式）加只对未首发会话保留的运行时。打开会话时运行时取 `contextRuntimeID`，切换运行时时恢复该运行时的选择。只有用户的选择被记住；`reconcileModelSelection` 依次取：所选、该运行时最近一轮的模型、会话记录的 managed 模型、该运行时最近选择、目录第一项。最近一轮的模型按 Velune 名称、原生模型 ID、唯一的提供商 model ID 对应到选项。强度显示原值，菜单首项“沿用当前（…）”。
+- application：`requested_effort` 与 `requested_permission_mode` 一样，未指定时取最近一轮在同一运行时上的值，所选模型仍接受才发送。
+- 核心：`conversation::TurnUsage`（输入含缓存读写、缓存读取、缓存写入、输出含推理、推理，均可空）挂在用户消息 `turn_usage` 上，`TranscriptTurn.usage` 原样取用。来源：
+  - Codex 历史读 rollout 的 `token_usage_record`；实时累加 `thread/tokenUsage/updated`。
+  - Codex 每轮重启 app-server 后 `thread/resume` 会重建消息、丢掉已挂的用量，因此重建时也从本机 rollout 补回配置与用量。
+  - Claude 历史按 message id 去重累加；实时取 `result.usage`。
+  - Pi 在 `replace_history` 中累加。
+- Mac：悬停只显示“运行时 · 模型”；popover 增“Token 用量”一节，推理未单独记录时注明。
+
+验证（切片 4）：
+
+- fmt／check／clippy／no-default-features、Mac `--build-only` 通过。
+- `manual-turn-settings.py` 四项 PASS：
+  - 上游每次请求报告固定用量（Responses 含缓存与推理，Messages 含缓存读写），实时与重启后读历史，三种 Harness 的轮次用量都等于请求数乘以单次用量；Claude 推理为空。
+  - 不选强度的第二轮沿用第一轮的强度，Codex 与 Pi 的上游请求实际带该强度。
+- `manual-reasoning-effort.py` 改为“不选时沿用当前”后 PASS（Codex、Claude、Pi 第三轮都带上一轮所选强度）。`manual-permission-modes.py` PASS。
+- 回归 PASS：acp-adapter、runtime-selection、codex-history-identity、continuation-boundaries、native-subagents、live-native、attachments、collaboration、parallel-sessions。
+
 ## 验收反馈修订（2026-10-13）
 
 - 下拉的三角由系统绘制、紧贴标题。给标题加 padding 不生效；隐藏系统三角、在 label 里自绘也不行，因为菜单按钮只取 label 的文字和图标，自绘的图标被放到了标题前。最后在标题末尾加一个不换行空格，三角仍由系统绘制。开发版截图确认间距变宽。

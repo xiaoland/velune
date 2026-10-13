@@ -243,6 +243,7 @@ impl NativeSession {
         self.turn_id = Some(id.to_string());
         self.message(Message {
             turn_settings: None,
+            turn_usage: None,
             completed: true,
             id: format!("{}:user:{id}", self.epoch),
             role: crate::conversation::MessageRole::User,
@@ -447,6 +448,7 @@ impl NativeSession {
                     .cloned()
                     .unwrap_or(Message {
                         turn_settings: None,
+                        turn_usage: None,
                         completed: false,
                         id,
                         role: crate::conversation::MessageRole::Assistant,
@@ -490,6 +492,7 @@ impl NativeSession {
                     .unwrap_or_else(|| "工具操作".into());
                 self.message(Message {
                     turn_settings: None,
+                    turn_usage: None,
                     completed: true,
                     id,
                     role: crate::conversation::MessageRole::Tool,

@@ -90,6 +90,9 @@ pub struct Message {
     /// On a user message: what the native record says the turn it starts ran with.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub turn_settings: Option<TurnSettings>,
+    /// On a user message: the tokens the native record says the turn it starts used.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_usage: Option<TurnUsage>,
 }
 
 /// What a turn ran with, as far as it is known; each part is absent when
@@ -106,6 +109,35 @@ pub struct TurnSettings {
     pub effort: Option<String>,
     /// Permission mode ID, in the runtime type's own vocabulary where it has one.
     pub permission_mode: Option<String>,
+}
+
+/// Tokens a turn used, summed over its model requests as the harness
+/// recorded them; each count is absent when the harness records none.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct TurnUsage {
+    /// Prompt tokens, cache reads and writes included.
+    pub input_tokens: Option<u64>,
+    pub cache_read_tokens: Option<u64>,
+    pub cache_write_tokens: Option<u64>,
+    /// Generated tokens, reasoning included.
+    pub output_tokens: Option<u64>,
+    pub reasoning_tokens: Option<u64>,
+}
+
+impl TurnUsage {
+    /// Adds another request's counts; a count stays known only while every
+    /// request reports it.
+    pub fn add(&mut self, other: &TurnUsage) {
+        fn sum(total: &mut Option<u64>, value: Option<u64>) {
+            *total = total.zip(value).map(|(a, b)| a + b);
+        }
+        sum(&mut self.input_tokens, other.input_tokens);
+        sum(&mut self.cache_read_tokens, other.cache_read_tokens);
+        sum(&mut self.cache_write_tokens, other.cache_write_tokens);
+        sum(&mut self.output_tokens, other.output_tokens);
+        sum(&mut self.reasoning_tokens, other.reasoning_tokens);
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -344,6 +376,9 @@ pub struct TranscriptTurn {
     pub is_running: bool,
     #[serde(default)]
     pub settings: Option<TurnSettings>,
+    /// What the native record says the turn used.
+    #[serde(default)]
+    pub usage: Option<TurnUsage>,
 }
 
 /// A transient identity confirmation; native messages remain the durable authority.

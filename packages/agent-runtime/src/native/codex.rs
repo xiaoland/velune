@@ -159,10 +159,30 @@ impl NativeSession {
             if let Some(snapshot) = &mut self.snapshot {
                 snapshot.messages.clear();
             }
+            // What each turn ran with and used, as history reads it.
+            let records = match (&self.config.execution, result["thread"]["path"].as_str()) {
+                (crate::execution::ExecutionTarget::Local, Some(path)) => {
+                    super::codex_history::rollout_turns(Path::new(path))
+                }
+                _ => Default::default(),
+            };
             for turn in turns {
+                let start = self.snapshot.as_ref().map_or(0, |s| s.messages.len());
                 if let Some(items) = turn["items"].as_array() {
                     for item in items {
                         self.codex_item(item);
+                    }
+                }
+                if let Some(record) = turn["id"].as_str().and_then(|id| records.get(id))
+                    && let Some(snapshot) = &mut self.snapshot
+                {
+                    let start = start.min(snapshot.messages.len());
+                    for message in snapshot.messages[start..]
+                        .iter_mut()
+                        .filter(|message| message.role == MessageRole::User)
+                    {
+                        message.turn_settings = Some(record.settings.clone());
+                        message.turn_usage = record.usage.clone();
                     }
                 }
             }
@@ -389,6 +409,7 @@ impl NativeSession {
                         .unwrap_or_default();
                     self.message(Message {
                         turn_settings: None,
+                        turn_usage: None,
                         completed: false,
                         id: id.into(),
                         role: crate::conversation::MessageRole::Assistant,
@@ -408,6 +429,23 @@ impl NativeSession {
                     if status == Some("failed") {
                         self.notice("Codex 执行失败；请通过诊断日志关联操作，或检查上游配置。");
                     }
+                }
+            }
+            // Usage of each model response in the turn; the reread rollout has the turn's total.
+            "thread/tokenUsage/updated" => {
+                if params["turnId"].as_str() == self.turn_id.as_deref() {
+                    let usage = super::codex_history::codex_usage(
+                        &params["tokenUsage"]["last"],
+                        "inputTokens",
+                        "cachedInputTokens",
+                        "cacheWriteInputTokens",
+                        "outputTokens",
+                        "reasoningOutputTokens",
+                    );
+                    self.turn_usage(|total| match total {
+                        Some(total) => total.add(&usage),
+                        None => *total = Some(usage),
+                    });
                 }
             }
             "serverRequest/resolved" => {
@@ -800,6 +838,7 @@ pub(super) fn project_item(item: &Value, runtime_id: &str) -> Option<Message> {
     };
     Some(Message {
         turn_settings: None,
+        turn_usage: None,
         completed: true,
         id: id.into(),
         role: kind,

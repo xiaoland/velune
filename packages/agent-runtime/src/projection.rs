@@ -94,6 +94,16 @@ impl PiProjection {
             {
                 settings.model.get_or_insert_with(|| model.to_owned());
             }
+            if message["role"] == "assistant"
+                && let Some(index) = turn
+                && message["usage"].is_object()
+            {
+                let usage = pi_usage(&message["usage"]);
+                match &mut projected[index].turn_usage {
+                    Some(total) => total.add(&usage),
+                    total => *total = Some(usage),
+                }
+            }
         }
         self.history_synchronized = true;
         let mut confirmed: std::collections::BTreeSet<_> = snapshot
@@ -231,6 +241,7 @@ impl PiProjection {
                 if !update_tool(&mut snapshot.messages, id, state.clone(), output.clone()) {
                     snapshot.messages.push(Message {
                         turn_settings: None,
+                        turn_usage: None,
                         completed: true,
                         id: format!("tool-{}", id.unwrap_or_default()),
                         role: MessageRole::Tool,
@@ -266,6 +277,7 @@ impl PiProjection {
                     snapshot.actions.can_send = false;
                     snapshot.messages.push(Message {
                         turn_settings: None,
+                        turn_usage: None,
                         completed: true,
                         id: format!("notice-{}", self.next_message_id),
                         role: MessageRole::System,
@@ -316,6 +328,7 @@ impl PiProjection {
                 snapshot.actions.can_cancel = false;
                 snapshot.messages.push(Message {
                     turn_settings: None,
+                    turn_usage: None,
                     completed: true,
                     id: format!("notice-{}", self.next_message_id),
                     role: MessageRole::System,
@@ -467,6 +480,7 @@ fn apply_tool_result(messages: &mut Vec<Message>, native: &Value, identity: Opti
     if !update_tool(messages, id, state.clone(), output.clone()) {
         messages.push(Message {
             turn_settings: None,
+            turn_usage: None,
             completed: true,
             id: identity
                 .map(str::to_owned)
@@ -549,10 +563,27 @@ fn message_from_pi(message: &Value, fallback_id: String) -> Option<Message> {
     }
     (!blocks.is_empty()).then(|| Message {
         turn_settings: None,
+        turn_usage: None,
         completed: true,
         id,
         role,
         timestamp_unix_ms: message["timestamp"].as_i64(),
         blocks,
     })
+}
+
+/// Pi counts input without cache reads and writes, and reasoning, when the
+/// provider reports it, within output.
+fn pi_usage(usage: &Value) -> crate::conversation::TurnUsage {
+    let read = usage["cacheRead"].as_u64();
+    let write = usage["cacheWrite"].as_u64();
+    crate::conversation::TurnUsage {
+        input_tokens: usage["input"]
+            .as_u64()
+            .map(|input| input + read.unwrap_or(0) + write.unwrap_or(0)),
+        cache_read_tokens: read,
+        cache_write_tokens: write,
+        output_tokens: usage["output"].as_u64(),
+        reasoning_tokens: usage["reasoning"].as_u64(),
+    }
 }

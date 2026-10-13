@@ -5,12 +5,14 @@ Real Codex 0.159.3, Claude Code 2.1.286 and Pi 1.0.2 run in managed HOMEs
 inside a temporary VELUNE_HOME, through Velune's gateway, against a loopback
 upstream that answers every turn with text. A turn Velune sends shows what it
 asked for (runtime, Velune's name for the model, reasoning level, permission
-mode), bound to that turn and not to the one before; a turn without a mode
-keeps the conversation's current one. After a restart, reading
-the history again shows what each harness recorded: Codex's model, level and
-permission preset from its rollout, Claude Code's model and permission mode,
-Pi's model. No real model, credential, HOME or session is read; this is not
-an automated test.
+mode), bound to that turn and not to the one before; a turn without a level
+or mode keeps the conversation's current one, and Velune sends it again.
+Each turn shows the tokens the harness reports for it, reasoning included
+where the harness counts it apart. After a restart, reading the history
+again shows what each harness recorded: Codex's model, level, permission
+preset and usage from its rollout, Claude Code's model, permission mode and
+usage, Pi's model and usage. No real model, credential, HOME or session is
+read; this is not an automated test.
 """
 import argparse
 import importlib.util
@@ -23,6 +25,10 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 REPLY = 'SYNTHETIC_REPLY'
+# What the upstream reports for every request, in each protocol's own terms.
+RESPONSES_USAGE = {'input_tokens': 100, 'input_tokens_details': {'cached_tokens': 40}, 'output_tokens': 30,
+                   'output_tokens_details': {'reasoning_tokens': 12}, 'total_tokens': 130}
+MESSAGES_USAGE = {'input_tokens': 50, 'cache_read_input_tokens': 20, 'cache_creation_input_tokens': 5, 'output_tokens': 9}
 
 
 def main():
@@ -64,7 +70,7 @@ def main():
                 item = {'id': 'item-%d' % len(captures), 'type': 'message', 'role': 'assistant', 'status': 'completed',
                         'content': [{'type': 'output_text', 'text': REPLY, 'annotations': []}]}
                 response = {'id': 'response', 'object': 'response', 'status': 'completed', 'output': [item],
-                            'usage': {'input_tokens': 1, 'output_tokens': 1, 'total_tokens': 2}}
+                            'usage': RESPONSES_USAGE}
                 return self.events([
                     {'type': 'response.created', 'response': {**response, 'status': 'in_progress', 'output': []}},
                     {'type': 'response.output_item.added', 'output_index': 0, 'item': item},
@@ -73,7 +79,7 @@ def main():
             # Claude Code's auto-mode classifier asks whether to block a call.
             text = '<block>no</block>' if 'security monitor' in json.dumps(body.get('system')) else REPLY
             message = {'id': 'msg_synthetic_%d' % len(captures), 'type': 'message', 'role': 'assistant', 'model': body.get('model', 'synthetic'),
-                       'content': [], 'stop_reason': None, 'stop_sequence': None, 'usage': {'input_tokens': 1, 'output_tokens': 1}}
+                       'content': [], 'stop_reason': None, 'stop_sequence': None, 'usage': MESSAGES_USAGE}
             if not body.get('stream'):
                 payload = json.dumps({**message, 'content': [{'type': 'text', 'text': text}], 'stop_reason': 'end_turn'}).encode()
                 self.send_response(200)
@@ -87,7 +93,7 @@ def main():
                 {'type': 'content_block_start', 'index': 0, 'content_block': {'type': 'text', 'text': ''}},
                 {'type': 'content_block_delta', 'index': 0, 'delta': {'type': 'text_delta', 'text': text}},
                 {'type': 'content_block_stop', 'index': 0},
-                {'type': 'message_delta', 'delta': {'stop_reason': 'end_turn', 'stop_sequence': None}, 'usage': {'output_tokens': 1}},
+                {'type': 'message_delta', 'delta': {'stop_reason': 'end_turn', 'stop_sequence': None}, 'usage': {'output_tokens': MESSAGES_USAGE['output_tokens']}},
                 {'type': 'message_stop'}])
 
     server = ThreadingHTTPServer(('127.0.0.1', 0), Upstream)
@@ -132,7 +138,10 @@ def main():
             messages = provider('messages', b.BindingGatewayProtocol.MESSAGES_V1, ['low', 'medium', 'high', 'max'])
             keys = {'codex': responses, 'claude': messages, 'pi': responses}
 
+            requests = {}
+
             def turn(runtime, conversation, text, effort, mode):
+                before = len(captures)
                 conversation = app.send_turn_with_selection(
                     runtime, conversation, runtime, b.BindingModelSelection.MANAGED(model_record_key=keys[runtime]),
                     b.BindingComposedTurn(text=text, effort=effort, permission_mode=mode, attachments=[])).snapshot.conversation.id
@@ -143,6 +152,7 @@ def main():
                     said = [block.text for message in current.messages[-1:] for block in message.blocks
                             if isinstance(block, b.BindingMessageBlock.TEXT)]
                     if current.run_state == b.BindingRunState.IDLE and REPLY in said:
+                        requests[text] = captures[before:]
                         return conversation, current
                     assert time.monotonic() < deadline, (runtime, text, current.run_state)
                     time.sleep(.1)
@@ -156,6 +166,31 @@ def main():
                 value = found[0]
                 return value and (value.runtime_id, value.model, value.effort, value.permission_mode)
 
+            def usage(snapshot, text):
+                """The usage of the turn whose user message says `text`."""
+                users = {message.id for message in snapshot.messages if message.role == b.BindingMessageRole.USER
+                         and any(isinstance(block, b.BindingMessageBlock.TEXT) and block.text == text for block in message.blocks)}
+                value = next(t.usage for t in snapshot.transcript_turns if t.user_message_id in users)
+                return value and (value.input_tokens, value.cache_read_tokens, value.cache_write_tokens, value.output_tokens, value.reasoning_tokens)
+
+            def expected(runtime, text):
+                """What the upstream reported for the turn's requests, in Velune's terms:
+                input with cache reads and writes, output with reasoning."""
+                n = len(requests[text])
+                assert n >= 1, (runtime, text)
+                if runtime == 'claude':
+                    u = MESSAGES_USAGE
+                    return (n * (u['input_tokens'] + u['cache_read_input_tokens'] + u['cache_creation_input_tokens']),
+                            n * u['cache_read_input_tokens'], n * u['cache_creation_input_tokens'], n * u['output_tokens'], None)
+                u = RESPONSES_USAGE
+                return (n * u['input_tokens'], n * u['input_tokens_details']['cached_tokens'], 0, n * u['output_tokens'],
+                        n * u['output_tokens_details']['reasoning_tokens'])
+
+            def effort_sent(runtime, text):
+                """The reasoning level the turn's last upstream request carried."""
+                body = [c for c in requests[text] if text in json.dumps(c)][-1]
+                return (body.get('reasoning') or {}).get('effort') if runtime != 'claude' else (body.get('output_config') or {}).get('effort') or (body.get('thinking') or {}).get('type')
+
             for runtime, first, second in (('codex', ('high', 'read-only'), (None, None)),
                                            ('claude', ('high', 'plan'), (None, None)),
                                            ('pi', ('high', None), (None, None))):
@@ -167,11 +202,16 @@ def main():
                 assert got[0] == runtime and got[1] == name and got[2] == first[0], got
                 assert first[1] is None or got[3] == first[1], got
                 got = settings(snapshot, runtime.upper() + '_SECOND')
-                assert got[0] == runtime and got[1] == name and got[2] is None, got
-                # Without a choice the turn keeps the conversation's mode, and says so.
+                # Without a choice the turn keeps the conversation's level and mode, and says so.
+                assert got[0] == runtime and got[1] == name and got[2] == first[0], ('a turn without a level keeps the current one', got)
                 assert got[3] == first[1], ('a turn without a mode keeps the current one', got)
+                if runtime != 'claude':
+                    assert effort_sent(runtime, runtime.upper() + '_SECOND') == first[0], (runtime, effort_sent(runtime, runtime.upper() + '_SECOND'))
+                for text in (runtime.upper() + '_FIRST', runtime.upper() + '_SECOND'):
+                    assert usage(snapshot, text) == expected(runtime, text), (runtime, text, usage(snapshot, text), expected(runtime, text))
                 sent[runtime] = conversation
-            print('PASS live: each turn shows the runtime, model name, level and mode Velune sent for it; a turn without a mode keeps the current one', flush=True)
+            print('PASS live: each turn shows the runtime, model name, level and mode Velune sent for it, and its usage; '
+                  'a turn without a level or mode keeps the current one', flush=True)
         finally:
             app.shutdown()
 
@@ -183,17 +223,23 @@ def main():
             assert got == ('codex', 'synthetic-responses', 'high', 'read-only'), got
             # A turn without a mode keeps the session's: the record says so.
             got = settings(history['codex'], 'CODEX_SECOND')
-            assert got[0] == 'codex' and got[1] == 'synthetic-responses' and got[3] == 'read-only', got
-            print('PASS codex history: model, level and permission preset come from the rollout', flush=True)
+            assert got == ('codex', 'synthetic-responses', 'high', 'read-only'), got
+            for text in ('CODEX_FIRST', 'CODEX_SECOND'):
+                assert usage(history['codex'], text) == expected('codex', text), (text, usage(history['codex'], text))
+            print('PASS codex history: model, level, permission preset and usage come from the rollout', flush=True)
             got = settings(history['claude'], 'CLAUDE_FIRST')
             assert got[:2] == ('claude', 'synthetic-messages') and got[3] == 'plan', got
             got = settings(history['claude'], 'CLAUDE_SECOND')
             assert got == ('claude', 'synthetic-messages', None, 'plan'), got
-            print('PASS claude history: model and permission mode come from the session record', flush=True)
+            for text in ('CLAUDE_FIRST', 'CLAUDE_SECOND'):
+                assert usage(history['claude'], text) == expected('claude', text), (text, usage(history['claude'], text))
+            print('PASS claude history: model, permission mode and usage come from the session record', flush=True)
             # Pi records the gateway's route alias; the turn names the managed model.
             got = settings(history['pi'], 'PI_FIRST')
             assert got[:2] == ('pi', 'responses · responses'), got
-            print('PASS pi history: the model comes from the replies, by its Velune name', flush=True)
+            for text in ('PI_FIRST', 'PI_SECOND'):
+                assert usage(history['pi'], text) == expected('pi', text), (text, usage(history['pi'], text))
+            print('PASS pi history: the model comes from the replies, by its Velune name, and the usage from their records', flush=True)
         finally:
             app.shutdown()
             server.shutdown()

@@ -475,7 +475,8 @@ struct ComposerView: View {
     private var agentMenu: some View {
         let runtime = nextTurnRuntime?.name ?? "选择运行时"
         let model = store.selectedModelName ?? "选择模型"
-        let effort = store.reasoningEffortOptions.isEmpty ? nil : store.nextTurnEffort.map(Self.effortName)
+        // Levels show as the runtime receives them.
+        let effort = store.reasoningEffortOptions.isEmpty ? nil : store.nextTurnEffort ?? store.currentEffort
         let title = ([runtime, model] + (effort.map { [$0] } ?? [])).joined(separator: " · ")
         return Menu {
             Menu("运行时：\(runtime)") {
@@ -493,10 +494,11 @@ struct ComposerView: View {
                 SettingsTabLink(tab: .providers, title: "AI 提供商设置…")
             }
             if !store.reasoningEffortOptions.isEmpty {
-                Menu("推理强度：\(effort ?? "默认")") {
+                Menu("推理强度：\(effort ?? "沿用当前")") {
                     Picker("推理强度", selection: Binding(get: { store.nextTurnEffort }, set: { store.selectEffort($0) })) {
-                        Text("默认").tag(String?.none).help("由运行时决定")
-                        ForEach(store.reasoningEffortOptions, id: \.self) { level in Text(Self.effortName(level)).tag(Optional(level)) }
+                        Text(store.currentEffort.map { "沿用当前（\($0)）" } ?? "沿用当前").tag(String?.none)
+                            .help("不更改：沿用会话当前的推理强度，新会话由运行时决定")
+                        ForEach(store.reasoningEffortOptions, id: \.self) { level in Text(level).tag(Optional(level)) }
                     }.pickerStyle(.inline).labelsHidden()
                 }
             }
@@ -504,8 +506,8 @@ struct ComposerView: View {
             Text(Self.pullDownTitle(title)).lineLimit(1).truncationMode(.middle).frame(maxWidth: 360, alignment: .leading)
         }
         .fixedSize()
-        .accessibilityLabel("下一轮：运行时 \(runtime)，模型 \(model)，推理强度 \(effort ?? "默认")")
-        .help(store.needsModelSelection ? "此会话的模型当前不可用，请选择已配置的模型" : "下一轮：\(runtime) · \(model) · 推理强度\(effort ?? "默认")")
+        .accessibilityLabel("下一轮：运行时 \(runtime)，模型 \(model)，推理强度 \(effort ?? "沿用当前")")
+        .help(store.needsModelSelection ? "此会话的模型当前不可用，请选择已配置的模型" : "下一轮：\(runtime) · \(model) · 推理强度 \(effort ?? "沿用当前")")
         .disabled(store.isShuttingDown)
     }
 
@@ -597,19 +599,6 @@ struct ComposerView: View {
     /// title (and lays a custom label out as title and icon only), so the
     /// title carries a no-break space to keep the two apart.
     private static func pullDownTitle(_ title: String) -> String { title + "\u{00A0}" }
-
-    static func effortName(_ level: String) -> String {
-        switch level {
-        case "none", "off": "关闭"
-        case "minimal": "最低"
-        case "low": "低"
-        case "medium": "中"
-        case "high": "高"
-        case "xhigh": "超高"
-        case "max": "最高"
-        default: level
-        }
-    }
 
     /// Only a conversation that has not been sent yet can still pick where it works.
     private var workingDirectoryMenu: some View {

@@ -236,6 +236,7 @@ impl NativeSession {
         ));
         self.message(Message {
             turn_settings: None,
+            turn_usage: None,
             completed: true,
             id: format!("{}:user", self.turn_id.as_deref().unwrap_or_default()),
             role: MessageRole::User,
@@ -402,6 +403,7 @@ impl NativeSession {
                         {
                             self.message(Message {
                                 turn_settings: None,
+                                turn_usage: None,
                                 completed: true,
                                 id: record["uuid"].as_str().unwrap_or(id).into(),
                                 role: MessageRole::Tool,
@@ -461,6 +463,7 @@ impl NativeSession {
                 if !blocks.is_empty() {
                     self.message(Message {
                         turn_settings: None,
+                        turn_usage: None,
                         completed: true,
                         id: id.into(),
                         role,
@@ -499,6 +502,7 @@ impl NativeSession {
                             .cloned()
                             .unwrap_or(Message {
                                 turn_settings: None,
+                                turn_usage: None,
                                 completed: false,
                                 id,
                                 role: MessageRole::Assistant,
@@ -530,6 +534,11 @@ impl NativeSession {
                 }
                 let failed = record["is_error"] == true || record["subtype"] != "success";
                 self.claude_result = Some((failed, std::time::Instant::now()));
+                // The turn's usage over its requests; Claude Code does not count thinking apart.
+                if record["usage"].is_object() {
+                    let usage = claude_usage(&record["usage"]);
+                    self.turn_usage(|total| *total = Some(usage));
+                }
             }
             _ => {}
         }
@@ -677,4 +686,19 @@ fn claude_blocks(content: &Value, agent: Option<String>) -> Vec<MessageBlock> {
             _ => None,
         })
         .collect()
+}
+
+/// Anthropic counts input without the cache reads and writes; Velune's input includes them.
+fn claude_usage(usage: &Value) -> TurnUsage {
+    let read = usage["cache_read_input_tokens"].as_u64().unwrap_or(0);
+    let write = usage["cache_creation_input_tokens"].as_u64().unwrap_or(0);
+    TurnUsage {
+        input_tokens: usage["input_tokens"]
+            .as_u64()
+            .map(|input| input + read + write),
+        cache_read_tokens: Some(read),
+        cache_write_tokens: Some(write),
+        output_tokens: usage["output_tokens"].as_u64(),
+        reasoning_tokens: None,
+    }
 }

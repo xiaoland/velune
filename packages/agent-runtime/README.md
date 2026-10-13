@@ -12,6 +12,12 @@
 - Codex：历史按 `thread/items/list` 每项的 `turnId`，读本机 rollout（`thread/read` 的 `path`）中的 `turn_context`。取 `model`、推理强度，并把审批策略与 sandbox 反推为上述预设，对不上时保留“策略 · sandbox”原文；SSH 远端的 rollout 不读。
 - Pi：取该轮第一条回复记录的 `model`。思考级别只有会话级状态，不逐轮记录。
 
+用户消息的 `turn_usage` 是原生记录里这一轮的 token 用量（输入含缓存读写，输出含推理；Harness 不记录的项留空），`TranscriptTurn.usage` 原样取用：
+
+- Codex：rollout 中该 `turn_id` 最后一条 `token_usage_record` 的 `turn_token_usage`，含推理 token。实时执行时累加 `thread/tokenUsage/updated` 的 `last`；每轮重启 app-server 后 `thread/resume` 重建消息时，从本机 rollout 补回各轮配置与用量（与读历史相同）。
+- Claude Code：历史按 message id 去重后累加该轮各回复的 `message.usage`；实时取 `result` 记录的 `usage`。Anthropic 不单列思考 token，推理留空。
+- Pi：累加该轮各回复的 `usage`（`input` 不含缓存，另加 `cacheRead`／`cacheWrite`）；`reasoning` 只在提供商报告时出现。
+
 `TranscriptProjection::request` 记下 Velune 为下一轮发送的配置，绑定到之后出现的第一条新用户消息；原生身份确认时迁移，只存在于这次执行的内存中。发送失败用 `withdraw_request` 撤回。`TranscriptTurn.settings` 逐项合并两者：模型优先 Velune 的名称，其余优先原生记录。
 
 在工作区内，它只依赖 [会话契约](../conversation/README.md)，不依赖 AI 服务、网关、application 或 UniFFI。执行配置与网关注入的临时 token 由 application 显式传入；它不选择上游模型路由、保存应用配置，也不拥有原生界面。

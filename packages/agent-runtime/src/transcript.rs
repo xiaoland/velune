@@ -1,7 +1,7 @@
 //! Ordered, disposable message-list projection. Native snapshots remain authoritative.
 use crate::conversation::{
     Message, MessageBlock, MessageIdentityConfirmation, MessageRole, RunState, TranscriptItem,
-    TranscriptMessageIdentity, TranscriptOutlineEntry, TranscriptTurn, TurnSettings,
+    TranscriptMessageIdentity, TranscriptOutlineEntry, TranscriptTurn, TurnSettings, TurnUsage,
 };
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -23,6 +23,8 @@ struct MessageAnchor {
     reply_start: Option<usize>,
     /// What the native record says about the turn a user message starts.
     settings: Option<TurnSettings>,
+    /// What the native record says the turn used.
+    usage: Option<TurnUsage>,
 }
 
 #[derive(Default)]
@@ -90,6 +92,7 @@ impl TranscriptProjection {
                             .then(|| trailing_text_start(&message.blocks))
                             .flatten(),
                         settings: message.turn_settings.clone(),
+                        usage: message.turn_usage.clone(),
                     })
                     .collect();
                 let identities: BTreeSet<_> = self
@@ -253,6 +256,7 @@ impl TranscriptProjection {
                     duration_ms,
                     is_running: ordinal + 1 == starts.len() && (self.running || self.elsewhere),
                     settings: self.settings(user),
+                    usage: user.usage.clone(),
                 }
             })
             .collect()

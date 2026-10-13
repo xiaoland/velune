@@ -82,6 +82,7 @@ impl Client {
                     .unwrap_or("initial");
                 self.message(Message {
                     turn_settings: None,
+                    turn_usage: None,
                     id: format!("acp:plan:{parent}"),
                     completed: true,
                     role: MessageRole::System,
@@ -152,6 +153,7 @@ impl Client {
             .cloned()
             .unwrap_or(Message {
                 turn_settings: None,
+                turn_usage: None,
                 id,
                 completed: false,
                 role,
@@ -238,6 +240,7 @@ impl Client {
             .or(old_output);
         self.message(Message {
             turn_settings: None,
+            turn_usage: None,
             id,
             completed: matches!(state, ToolState::Completed | ToolState::Failed),
             role: MessageRole::Tool,
@@ -306,6 +309,7 @@ impl Client {
         let id = self.next_id("notice");
         self.message(Message {
             turn_settings: None,
+            turn_usage: None,
             id,
             completed: true,
             role: MessageRole::System,

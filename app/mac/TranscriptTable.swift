@@ -42,8 +42,8 @@ struct TranscriptTable: NSViewRepresentable {
     let loadPayloads: ([String]) -> Void
     /// Show another conversation, from a collaboration link in this one.
     let openConversation: (String) -> Void
-    /// Names a turn's settings: runtime and permission names come from the configuration.
-    let describeSettings: (TurnSettings) -> TurnSettingsSummary?
+    /// Names a turn's settings and usage: runtime and permission names come from the configuration.
+    let describeSettings: (TranscriptTurn) -> TurnSettingsSummary?
 
     func makeCoordinator() -> TranscriptTableController { TranscriptTableController() }
     func makeNSView(context: Context) -> NSScrollView { context.coordinator.makeView() }
@@ -241,7 +241,7 @@ struct TranscriptTable: NSViewRepresentable {
             case .message(let row): next.append(.message(row))
             case .work(let turn, let rows):
                 next.append(.work(turn, label: Self.workLabel(turn, hasWork: !rows.isEmpty), expandable: !rows.isEmpty,
-                                  settings: turn.settings.flatMap { parent?.describeSettings($0) }))
+                                  settings: parent?.describeSettings(turn)))
                 if showsWork(turn) { next += rows.map(Entry.message) }
             }
         }
@@ -1454,10 +1454,10 @@ enum TranscriptConversationLink {
 
     func show(_ value: TurnSettingsSummary) {
         settings = value
-        summary.stringValue = value.summary
-        button.toolTip = value.summary
+        summary.stringValue = value.brief
+        button.toolTip = value.brief
         button.setAccessibilityLabel("本轮配置")
-        button.setAccessibilityValue(value.summary)
+        button.setAccessibilityValue(value.brief)
         needsLayout = true
     }
 
@@ -1505,16 +1505,24 @@ private struct TurnSettingsPopover: View {
         VStack(alignment: .leading, spacing: 10) {
             Text("本轮配置").font(.headline)
             Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 6) {
-                ForEach(settings.parts, id: \.label) { part in
-                    GridRow {
-                        Text(part.label).foregroundStyle(.secondary).gridColumnAlignment(.trailing)
-                        Text(part.value).textSelection(.enabled)
-                    }
+                rows(settings.parts)
+                if !settings.usage.isEmpty {
+                    GridRow { Text("Token 用量").font(.subheadline.weight(.semibold)).gridCellColumns(2).padding(.top, 4) }
+                    rows(settings.usage)
                 }
             }
-            Text("取自运行时的记录与 Velune 发送时的选择；没有记录的项不显示。")
+            Text(settings.usage.isEmpty ? "取自运行时的记录与 Velune 发送时的选择；没有记录的项不显示。"
+                 : "配置取自运行时的记录与 Velune 发送时的选择，用量取自运行时的记录；输入含缓存，输出含推理。没有记录的项不显示。")
                 .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
         }
         .padding(14).frame(width: 300, alignment: .leading)
+    }
+    private func rows(_ parts: [TurnSettingsSummary.Part]) -> some View {
+        ForEach(parts, id: \.label) { part in
+            GridRow {
+                Text(part.label).foregroundStyle(.secondary).gridColumnAlignment(.trailing)
+                Text(part.value).monospacedDigit().textSelection(.enabled)
+            }
+        }
     }
 }

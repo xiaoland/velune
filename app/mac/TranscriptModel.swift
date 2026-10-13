@@ -49,7 +49,7 @@ final class TranscriptModel: ObservableObject {
     func items(for visibleRows: [TranscriptRow], turnHeaders: Bool) -> [Item] {
         let visible = Set(visibleRows.map(\.id))
         let worked = Set(presentation.items.compactMap { item -> String? in if case .work(let id) = item { return id }; return nil })
-        let headed = turnHeaders ? Dictionary(turns.filter { $0.settings != nil && !worked.contains($0.id) }.map { ($0.userMessageID, $0) }, uniquingKeysWith: { first, _ in first }) : [:]
+        let headed = turnHeaders ? Dictionary(turns.filter { ($0.settings != nil || $0.usage != nil) && !worked.contains($0.id) }.map { ($0.userMessageID, $0) }, uniquingKeysWith: { first, _ in first }) : [:]
         let byID = Dictionary(uniqueKeysWithValues: rows.map { ($0.id, $0) })
         // A message split into work and reply has two rows; work members use the first.
         let byMessage = Dictionary(rows.map { ($0.message.id, $0) }, uniquingKeysWith: { first, _ in first })
