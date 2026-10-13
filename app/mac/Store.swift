@@ -28,6 +28,8 @@ final class AppStore: ObservableObject {
     @Published private(set) var nextTurnModel: ModelSelection?
     /// The next turn's reasoning level; `nil` leaves it to the runtime's default.
     @Published private(set) var nextTurnEffort: String?
+    /// Kept per conversation; offered only while the next turn's runtime declares it.
+    @Published private(set) var nextTurnPermissionMode: String?
     /// Model catalogs by runtime instance, read from the runtime and Velune's
     /// gateway; configuration changes discard them.
     @Published private(set) var modelCatalogs: [String: RuntimeModelCatalog] = [:]
@@ -98,7 +100,7 @@ final class AppStore: ObservableObject {
     private var intentConversationID: String?
     /// The model last chosen on each runtime instance.
     private var lastChosenModels: [String: ModelSelection] = [:]
-    private struct NextTurnIntent { var runtimeID: String?; var model: ModelSelection?; var effort: String? }
+    private struct NextTurnIntent { var runtimeID: String?; var model: ModelSelection?; var effort: String?; var permissionMode: String? }
 
     init(transport: Transport? = nil, preview: Bool = false, sharedApplication: AppStore? = nil) {
         self.sharedApplication = sharedApplication
@@ -220,6 +222,18 @@ final class AppStore: ObservableObject {
     }
     /// Reasoning levels the next turn's runtime and model accept, in the runtime's own vocabulary.
     var reasoningEffortOptions: [String] { modelChoices.first { $0.selection == nextTurnModel }?.reasoningEfforts ?? [] }
+    /// Permission modes the next turn's runtime type declares.
+    var permissionModeOptions: [PermissionMode] {
+        let type = runtimeInstances.first { $0.id == nextTurnRuntimeID }?.typeID
+        return runtimeTypes.first { $0.id == type }?.permissionModes ?? []
+    }
+    /// The remembered mode while the next turn's runtime offers it; otherwise its default.
+    var effectivePermissionMode: PermissionMode? { permissionModeOptions.first { $0.id == nextTurnPermissionMode } }
+    func selectPermissionMode(_ mode: String?) {
+        guard mode == nil || permissionModeOptions.contains(where: { $0.id == mode }) else { return }
+        nextTurnPermissionMode = mode
+        rememberNextTurnIntent()
+    }
     func selectNextTurnRuntime(_ id: String) {
         guard !isShuttingDown, enabledRuntimeInstances.contains(where: { $0.id == id }) else { return }
         hasInitializedNextTurnIntent = true
@@ -663,7 +677,8 @@ final class AppStore: ObservableObject {
         executionStarting = true
         let creating = isDraft
         let cwd = snapshot?.conversation.cwd
-        let turn = BindingComposedTurn(text: text, effort: nextTurnEffort.flatMap { reasoningEffortOptions.contains($0) ? $0 : nil }, attachments: attachments)
+        let turn = BindingComposedTurn(text: text, effort: nextTurnEffort.flatMap { reasoningEffortOptions.contains($0) ? $0 : nil },
+                                       permissionMode: effectivePermissionMode?.id, attachments: attachments)
         enqueue({
             if creating {
                 return try transport.createAndSend(runtimeID: target, cwd: cwd, selection: model, turn: turn) { [weak self] created in
@@ -945,7 +960,7 @@ final class AppStore: ObservableObject {
     }
     private func rememberNextTurnIntent() {
         guard let intentConversationID else { return }
-        nextTurnIntents[intentConversationID] = NextTurnIntent(runtimeID: nextTurnRuntimeID, model: nextTurnModel, effort: nextTurnEffort)
+        nextTurnIntents[intentConversationID] = NextTurnIntent(runtimeID: nextTurnRuntimeID, model: nextTurnModel, effort: nextTurnEffort, permissionMode: nextTurnPermissionMode)
     }
     func selectEffort(_ effort: String?) {
         guard effort == nil || reasoningEffortOptions.contains(effort!) else { return }
@@ -1052,6 +1067,7 @@ final class AppStore: ObservableObject {
         }
         nextTurnModel = intent.model
         nextTurnEffort = intent.effort
+        nextTurnPermissionMode = intent.permissionMode
         loadModelCatalog()
         rememberNextTurnIntent()
     }

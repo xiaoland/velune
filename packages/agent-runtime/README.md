@@ -4,6 +4,8 @@
 
 各适配器的模型目录返回 `ModelOption`：原生模型及该 Harness 对它接受的推理强度，取自 Harness 自身目录（Codex `model/list` 的 `supportedReasoningEfforts`、Claude Code initialize 的 `supportsEffort`／`supportedEffortLevels`、Pi `reasoning` 模型的 `PI_THINKING_LEVELS`；DSH 与通用 ACP 暂无对应目录字段，为空）。
 
+权限模式由版本类型声明（`RuntimeVariant.permission_modes`），`TurnInput.permission_mode` 只作用于该 turn。Claude Code 2.1.286 的取值是其 `--permission-mode` 接受的六种（manual、acceptEdits、plan、auto、dontAsk、bypassPermissions），作为该轮控制进程的启动参数；不选时不传，由 Claude Code 自身设置决定。Codex 0.159.3 的取值对应其预设：read-only、workspace（Default）、auto-review、full-access。它们映射为 `turn/start` 的 `approvalPolicy`、`sandboxPolicy` 与 `approvalsReviewer`。Codex 的轮次覆盖会延续到之后的轮次，因此不选时显式发送 Default 预设。Pi、DSH 与通用 ACP 不声明权限模式，ACP Agent 自报的模式仍是会话配置项。范围外的模式在发送前被拒绝。
+
 在工作区内，它只依赖 [会话契约](../conversation/README.md)，不依赖 AI 服务、网关、application 或 UniFFI。执行配置与网关注入的临时 token 由 application 显式传入；它不选择上游模型路由、保存应用配置，也不拥有原生界面。
 
 `authentication` 与 `provider_source` 通过本包资源中的薄 Pi helper 执行来源操作，返回非秘密的类型化状态和发现结果。application 负责将结果导入网关及原子提交；application 的提供商私有认证解析器通过固定 `pi_auth.mjs` 委托 OAuth 来源解析与刷新，不读取环境里的默认认证。

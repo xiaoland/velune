@@ -11,6 +11,7 @@ impl NativeSession {
         selection: Option<&RuntimeModel>,
         session: Option<(&str, Option<&Path>, bool)>,
         effort: Option<&str>,
+        permission_mode: Option<&str>,
     ) -> Result<Command> {
         let mut command = Command::new(&config.binary);
         command.env("CLAUDE_CODE_SDK_READS_SESSION_STATE", "1");
@@ -30,6 +31,15 @@ impl NativeSession {
                 return Err(Error::new("Claude Code 不接受此推理强度"));
             }
             command.arg("--effort").arg(effort);
+        }
+        if let Some(mode) = permission_mode {
+            if !crate::version::CLAUDE_PERMISSION_MODES
+                .iter()
+                .any(|known| known.id == mode)
+            {
+                return Err(Error::new("Claude Code 不接受此权限模式"));
+            }
+            command.arg("--permission-mode").arg(mode);
         }
         if let Some((id, cwd, fresh)) = session {
             command
@@ -191,7 +201,6 @@ impl NativeSession {
             .map(Path::to_path_buf)
             .unwrap_or_else(|| self.default_cwd.clone());
         self.replace_snapshot(&id, Some(&cwd), runtime_id, Vec::new());
-        self.claude_agents.clear();
         self.claude_fresh = true;
         Ok(())
     }
@@ -202,19 +211,6 @@ impl NativeSession {
         runtime_id: &str,
         history: Vec<Message>,
     ) -> Result<()> {
-        self.claude_agents = history
-            .iter()
-            .flat_map(|message| &message.blocks)
-            .filter_map(|block| match block {
-                MessageBlock::Tool {
-                    conversation_id: Some(conversation),
-                    ..
-                } => conversation
-                    .rsplit_once("/agent-")
-                    .map(|(_, agent)| agent.to_owned()),
-                _ => None,
-            })
-            .collect();
         self.replace_snapshot(id, cwd, runtime_id, history);
         self.claude_fresh = false;
         Ok(())
@@ -389,15 +385,20 @@ impl NativeSession {
                 {
                     if let Some(id) = record["task_id"].as_str() {
                         self.claude_tasks.insert(id.into());
-                        if record["task_type"] == "local_agent" {
-                            self.claude_agents.insert(id.into());
+                        if record["task_type"] == "local_agent"
+                            && let Some(conversation) = self.claude_agent_conversation(id)
+                        {
+                            self.sub_agents.insert(conversation);
                         }
                     }
                 }
                 Some("task_notification") => {
                     if let Some(id) = record["task_id"].as_str() {
                         self.claude_tasks.remove(id);
-                        if self.claude_agents.contains(id) {
+                        let conversation = self.claude_agent_conversation(id);
+                        if let Some(conversation) =
+                            conversation.filter(|c| self.sub_agents.contains(c))
+                        {
                             self.message(Message {
                                 completed: true,
                                 id: record["uuid"].as_str().unwrap_or(id).into(),
@@ -412,7 +413,7 @@ impl NativeSession {
                                         ToolState::Failed
                                     },
                                     output: record["summary"].as_str().map(str::to_owned),
-                                    conversation_id: self.claude_agent_conversation(id),
+                                    conversation_id: Some(conversation),
                                 }],
                             });
                         }
@@ -439,11 +440,9 @@ impl NativeSession {
                 if record["parent_tool_use_id"].is_string() {
                     return Ok(());
                 }
-                let agent = record["tool_use_result"]["agentId"].as_str();
-                if let Some(agent) = agent {
-                    self.claude_agents.insert(agent.into());
-                }
-                let agent = agent.and_then(|agent| self.claude_agent_conversation(agent));
+                let agent = record["tool_use_result"]["agentId"]
+                    .as_str()
+                    .and_then(|agent| self.claude_agent_conversation(agent));
                 let role = if record["type"] == "assistant" {
                     MessageRole::Assistant
                 } else {
@@ -453,7 +452,10 @@ impl NativeSession {
                     .as_str()
                     .or_else(|| record["uuid"].as_str())
                     .unwrap_or("message");
-                let blocks = claude_blocks(&record["message"]["content"], agent);
+                let mut blocks = claude_blocks(&record["message"]["content"], agent);
+                if role == MessageRole::Tool {
+                    blocks.retain(|result| !self.claude_complete_call(result));
+                }
                 if !blocks.is_empty() {
                     self.message(Message {
                         completed: true,
@@ -528,6 +530,47 @@ impl NativeSession {
             _ => {}
         }
         Ok(())
+    }
+    /// Complete the call a tool result answers, as one row like the native
+    /// transcript shows it; false when the call is not in this projection.
+    fn claude_complete_call(&mut self, result: &MessageBlock) -> bool {
+        let MessageBlock::Tool {
+            tool_id: Some(id),
+            state,
+            output,
+            conversation_id,
+            ..
+        } = result
+        else {
+            return false;
+        };
+        let Some(snapshot) = &mut self.snapshot else {
+            return false;
+        };
+        let call = snapshot
+            .messages
+            .iter_mut()
+            .rev()
+            .flat_map(|message| message.blocks.iter_mut())
+            .find_map(|block| match block {
+                MessageBlock::Tool {
+                    tool_id: Some(call),
+                    state,
+                    output,
+                    conversation_id,
+                    ..
+                } if call == id => Some((state, output, conversation_id)),
+                _ => None,
+            });
+        let Some((call_state, call_output, call_conversation)) = call else {
+            return false;
+        };
+        *call_state = state.clone();
+        *call_output = output.clone();
+        *call_conversation = conversation_id.clone();
+        snapshot.revision += 1;
+        self.sub_agents.extend(conversation_id.clone());
+        true
     }
     /// A sub-agent's session, as the history reader names it.
     fn claude_agent_conversation(&self, agent: &str) -> Option<String> {

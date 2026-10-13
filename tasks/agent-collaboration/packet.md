@@ -8,6 +8,7 @@
 2. 联系授权若需要则归运行时设置；用户倾向不做任何限制。本任务不设限制、不加设置项。
 3. 原生 sub-agent 属于会话体验；当前只需在消息列表中看到它，并可单独打开其会话。
 4. composer 之后需要简化（已有模型、会话选项、工作目录等多个弹出按钮）；本任务不扩大该问题，简化另行设计。
+5. （2026-10-13，[S19](../../docs/sources.md#s19)）收到的协作消息留在用户侧，标出来源会话即可（即切片 2 的现行实现）。用户要求继续解决切片 3 的已知缺口。
 
 ## 被取代的实现
 
@@ -40,10 +41,6 @@
 2. Mac：消息列表中 A2A 调用的“打开会话”、收到消息的来源、会话列表刷新。（已实现）
 3. 原生 sub-agent：证据、消息列表显示与单独打开。（已实现 Codex 与 Claude Code）
 
-## 待用户决定
-
-- 收到的协作消息在消息列表中的位置：当前计划仍在用户侧并标注来源会话（Harness 原生历史把它记为用户消息）；若希望居中作为系统／Harness 状态，请指出。
-
 ## 切片 1：核心 broker（2026-10-12）
 
 - 实现：`local/collaboration` 改为 Broker（收件箱、票据、等待者、调用方已读状态）与 MCP 入口；`Session` 增加稳定 key 与票据，`route` 在推进全部会话后执行收件箱并恢复原寻址会话。`list()` 列出所有打开会话的原生草稿，使 Agent 新建、尚未写入历史的会话也出现在列表。设计记录见 [架构](../../docs/design/architecture.md#agent-间协作2026-10-12取代-10-11-子-agent-切片)，操作契约见 [开发说明](../../docs/development.md#agent-间协作)。
@@ -67,3 +64,11 @@
 - 取舍与已知缺口：Claude 父会话中同一子 Agent 有两处链接（工具结果与任务通知），均为真实事件，保留。Claude 的 `Agent` 调用行与结果行仍是两行，调用行保持运行图标（既有行为，未合并工具调用与结果）。Claude 列表现在也解析子 Agent 文件，会话多时列表成本随之增加。Codex 子线程上的审批请求仍按“非活动会话”拒绝（`codex_handle_record` 只接受当前线程），子 Agent 需要审批的命令会被拒绝；是否把子 Agent 审批交到父会话尚未设计。子会话不可在 Velune 中继续，与“由启动它的会话继续”的产品归属一致。
 - 验证：fmt／check／clippy／no-default-features、Mac `--build-only` 通过。新增 [manual-native-subagents.py](../../scripts/manual-native-subagents.py)：实际 Codex／Claude Code 经网关与合成上游，实时与历史读取下的链接、父会话无子 Agent 消息、子会话父标记、内容与拒绝发送全部通过（Claude Code 在 Velune 中以 auto 模式运行，其安全分类请求由合成上游答复放行）。回归：`manual-collaboration`、`manual-acp-adapter`、`manual-runtime-selection`、`manual-codex-history-identity`（revert／items）通过；`manual-live-native` 6 次中 1 次在“外部启动的会话已列出”断言失败、其余通过，未能确认失败的运行时及是否与本切片有关。开发版隔离 HOME（`--seed`）中：侧栏只列出两个父会话；Claude 父会话展开工作过程后，工具结果与任务通知下各有“打开会话”，AX 按下后打开标题为子 Agent description 的会话，底部为说明与“打开父会话”，侧栏无选中项。随后隐藏 `isMeta` 的改动只经 bindings 读取确认（开发版窗口位于其他桌面空间，未切换前台）；Codex 父会话的链接未在 App 中逐一点按，只经脚本确认。
 - 安装：7419ad4 已构建安装至 `/Applications/Velune.app`（签名校验通过，manifest 对应该提交且无未提交改动），重新打开后无崩溃报告。
+
+## 切片 3 后续：已知缺口（2026-10-13）
+
+- Codex 子 Agent 审批：adapter 为每个会话记住其工具块链接过的子会话（`sub_agents`，读历史时从快照重建，实时由 `collabAgentToolCall` 的 receiver 与 Claude 任务事件补充）。子线程的服务端请求因此作为父会话的交互出现，标题前缀“子 Agent：”，答复按原请求 ID 回到子线程；其他非活动线程的请求仍拒绝。已知限制：父会话轮次结束后才到达的子 Agent 请求没有可交付的会话，仍被拒绝。
+- Claude `Agent` 行：工具结果并入同一 ID 的调用块（状态、输出与链接取自结果），实时与历史（`claude_history.py`）一致，不再有一直显示运行的调用行。调用不在投影中时结果行保留。
+- Claude 列表成本：列出子 Agent 时不再解析其 JSONL，只取 `.meta.json` 的 description 与父会话 cwd；子会话时间戳为空。
+- `manual-live-native` 偶发失败：外部启动的会话在 Harness 写出可列出的内容前已有存活记录，断言改为在 10 秒内等到它被列出。之前失败的那一次与本切片无关；Mac 对运行中但未列出的会话本来就会重读列表。
+- 验证：fmt／check／clippy／no-default-features、Mac `--build-only` 通过。`manual-native-subagents.py` 增加 Codex 子 Agent 的 `require_escalated` 命令：父会话收到“子 Agent：”审批，批准后子会话工具输出含 `SUB_APPROVED`；所有工具块以完成或失败结束。`manual-live-native`、`manual-reasoning-effort`、`manual-attachments`、`manual-collaboration` 回归通过。

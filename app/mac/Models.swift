@@ -273,7 +273,15 @@ struct RuntimeTypeDescriptor: Codable, Sendable, Identifiable, Equatable {
     var supportedProviderProtocols: [ProviderProtocol]
     var name: String
     var fields: [SettingField]
+    /// Modes a turn may request, in the runtime's own vocabulary; empty when it offers no choice.
+    var permissionModes: [PermissionMode] = []
+}
 
+struct PermissionMode: Codable, Sendable, Identifiable, Equatable {
+    var id: String
+    var label: String
+    /// What the mode allows.
+    var detail: String
 }
 
 struct ProtocolDescriptor: Codable, Sendable, Identifiable, Equatable {

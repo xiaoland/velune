@@ -126,9 +126,9 @@ pub struct NativeSession {
     shadowed_mcp_servers: std::collections::BTreeSet<String>,
     claude_result: Option<(bool, std::time::Instant)>,
     claude_tasks: std::collections::BTreeSet<String>,
-    /// Sub-agents this session's tool results reported starting; their
-    /// later task notifications link to the sub-agent's conversation.
-    claude_agents: std::collections::BTreeSet<String>,
+    /// Conversations of the native sub-agents this conversation's tool
+    /// calls started; their later events belong to this conversation.
+    sub_agents: std::collections::BTreeSet<String>,
     claude_requires_action: bool,
     claude_stream_id: Option<String>,
     restart_required: bool,
@@ -194,7 +194,7 @@ impl NativeSession {
         } else {
             None
         };
-        let rpc = Self::spawn_rpc(&active, None, None, None)?;
+        let rpc = Self::spawn_rpc(&active, None, None, None, None)?;
         let mut bytes = [0; 8];
         getrandom::fill(&mut bytes)
             .map_err(|error| Error::new(format!("运行时会话身份生成失败：{error}")))?;
@@ -215,7 +215,7 @@ impl NativeSession {
             shadowed_mcp_servers: std::collections::BTreeSet::new(),
             claude_result: None,
             claude_tasks: std::collections::BTreeSet::new(),
-            claude_agents: std::collections::BTreeSet::new(),
+            sub_agents: std::collections::BTreeSet::new(),
             claude_requires_action: false,
             claude_stream_id: None,
             restart_required: false,
@@ -234,6 +234,7 @@ impl NativeSession {
         selection: Option<&RuntimeModel>,
         session: Option<(&str, Option<&Path>, bool)>,
         effort: Option<&str>,
+        permission_mode: Option<&str>,
     ) -> Result<rpc::RpcClient> {
         let mut command = match config.kind {
             NativeKind::Codex => {
@@ -242,7 +243,9 @@ impl NativeSession {
                 command
             }
             NativeKind::DeepSeek => Self::dsh_command(config)?,
-            NativeKind::ClaudeCode => Self::claude_command(config, selection, session, effort)?,
+            NativeKind::ClaudeCode => {
+                Self::claude_command(config, selection, session, effort, permission_mode)?
+            }
         };
         let home_key = match config.kind {
             NativeKind::Codex => "CODEX_HOME",
@@ -335,16 +338,19 @@ impl NativeSession {
         if self.config.kind == NativeKind::DeepSeek && input.effort.is_some() {
             return Err(Error::new("DeepSeek 运行时不提供推理强度设置"));
         }
+        if self.config.kind == NativeKind::DeepSeek && input.permission_mode.is_some() {
+            return Err(Error::new("DeepSeek 运行时不提供权限模式设置"));
+        }
         if self.config.kind == NativeKind::DeepSeek && !input.images.is_empty() {
             return Err(Error::new("DeepSeek 运行时不接受图片"));
         }
-        let result =
-            self.prepare_turn(input.effort.as_deref())
-                .and_then(|()| match self.config.kind {
-                    NativeKind::Codex => self.codex_send(input),
-                    NativeKind::DeepSeek => self.dsh_send(&input.text),
-                    NativeKind::ClaudeCode => self.claude_send(input),
-                });
+        let result = self
+            .prepare_turn(input.effort.as_deref(), input.permission_mode.as_deref())
+            .and_then(|()| match self.config.kind {
+                NativeKind::Codex => self.codex_send(input),
+                NativeKind::DeepSeek => self.dsh_send(&input.text),
+                NativeKind::ClaudeCode => self.claude_send(input),
+            });
         if result.is_err() {
             self.fail_connection();
         }
@@ -410,9 +416,9 @@ impl NativeSession {
             NativeKind::ClaudeCode => self.claude_models(),
         }
     }
-    /// Claude Code takes the turn's reasoning level only at launch, so its
-    /// turn child is always replaced.
-    fn prepare_turn(&mut self, effort: Option<&str>) -> Result<()> {
+    /// Claude Code takes the turn's reasoning level and permission mode only
+    /// at launch, so its turn child is always replaced.
+    fn prepare_turn(&mut self, effort: Option<&str>, permission_mode: Option<&str>) -> Result<()> {
         if self.config.kind != NativeKind::ClaudeCode
             && (self.config.gateway.is_none() || self.gateway_turn)
             && !self.restart_required
@@ -442,6 +448,7 @@ impl NativeSession {
             self.native_selection.as_ref(),
             Some((&id, cwd.as_deref(), self.claude_fresh)),
             effort,
+            permission_mode,
         )?;
         // The active endpoint may be a remote loopback tunnel, only valid for this child.
         let desired = self.config.gateway.take();
@@ -573,6 +580,7 @@ impl NativeSession {
         self.turn_id = None;
         self.interactions.clear();
         self.pending_rpc.clear();
+        self.sub_agents = sub_agent_conversations(&history).collect();
         self.snapshot = Some(ConversationSnapshot {
             context_runtime_id: runtime_id.into(),
             revision: 1,
@@ -676,6 +684,8 @@ impl NativeSession {
         }
     }
     fn message(&mut self, message: Message) {
+        self.sub_agents
+            .extend(sub_agent_conversations(std::slice::from_ref(&message)));
         if let Some(snapshot) = &mut self.snapshot {
             if let Some(old) = snapshot.messages.iter_mut().find(|m| m.id == message.id) {
                 *old = message;
@@ -714,4 +724,18 @@ impl NativeSession {
             self.interactions.insert(id, pending);
         }
     }
+}
+
+/// The conversations that messages' tool calls started or addressed.
+fn sub_agent_conversations(messages: &[Message]) -> impl Iterator<Item = String> + '_ {
+    messages
+        .iter()
+        .flat_map(|message| &message.blocks)
+        .filter_map(|block| match block {
+            MessageBlock::Tool {
+                conversation_id: Some(conversation),
+                ..
+            } => Some(conversation.clone()),
+            _ => None,
+        })
 }

@@ -34,6 +34,9 @@ pub struct TurnInput {
     /// A reasoning level in the harness's own vocabulary for this turn;
     /// `None` leaves it to the harness default.
     pub effort: Option<String>,
+    /// One of the runtime version's `permission_modes` for this turn; `None`
+    /// leaves the harness's own default.
+    pub permission_mode: Option<String>,
     /// Delivered through the harness's own image input, in attached order.
     pub images: Vec<TurnImage>,
 }

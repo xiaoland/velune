@@ -192,3 +192,12 @@
 - 验证：`manual-live-native.py`（实际 Codex 0.159.3／Claude Code 2.1.286）增加 turn 中途杀进程后立即不再运行——全部通过，Claude procStart 与 Velune 读取的 `ps` 一致。`manual-live-sessions.py` 改用实际 Pi CLI 作为另一客户端（经 shell 启动，避免被当作本进程子进程排除），含中途杀进程——全部通过；修正被杀客户端的断管噪声。`manual-session-browser.py` 增加摘要断言并修正过期的 schema 7 断言为 8——通过。绑定直接读取：完成的 turn 只交付一个摘要“Reading the layout”，仅签名的空思考块不交付。开发版预览截图：运行中工作过程展开，带正文的摘要为收起的折叠项，无正文的摘要为对齐的纯文字，状态行为运行中工具。
 - 观察（与本改动无关，未修）：开发版以 `open -n -g` 后台启动且窗口落在其他桌面空间时，Pi 历史辅助进程固定 15 秒超时，而同一配置经 Python 绑定 0.24 秒完成；安装版 7ccb787 同样复现，`PI_OFFLINE`、关闭 App Nap 无效，TCC 日志无记录，原因未查明。后台启动时 SwiftUI 可能不建窗口，`open -g <dev app>` 对运行中实例发送 reopen 可建窗口且不前置。
 - 安装：3a04097 已构建安装（签名校验通过，manifest commit 一致、dirty=false，重开无崩溃报告）。
+
+## composer 权限模式（2026-10-13）
+
+用户指出 composer 缺少权限模式选择器（[S19](../../docs/sources.md#s19)，产品行为见 [PRD](../../docs/prd/index.md)）。
+
+- 证据（固定版本、隔离 HOME、合成上游）：Claude Code 2.1.286 `--permission-mode` 接受 manual、acceptEdits、plan、auto、dontAsk、bypassPermissions。Codex 0.159.3 的 `turn/start` 接受 `approvalPolicy`、`sandboxPolicy`、`approvalsReviewer`，它的预设是 Read Only、Default、Auto-review、Full Access。Codex 的轮次覆盖会延续到之后的轮次。
+- 实现：版本类型声明 `permission_modes`，经 `RuntimeTypeDescriptor` 和 bindings 交给平台。`ComposedTurn.permission_mode` 在发送前按目标类型校验，并随跨 Harness 接续交付。Claude 把模式作为该轮控制进程的启动参数，不选时不传。Codex 把预设映射为上述三个字段，不选时显式发送 Default 预设。Pi、DSH 与通用 ACP 不声明模式，ACP Agent 自报的模式仍在会话选项中。Mac 在推理按钮后显示“权限：…”弹出按钮（无模式的运行时不显示），所选模式按会话记住，下一轮运行时不提供该模式时按默认发送。
+- 取舍：Codex 的“默认”指 Codex 的 Default 预设，而不是用户在 Codex 配置里改过的值，因为不发送就会沿用上一轮的覆盖。尚未把 ACP 的会话模式并入此选择器；composer 简化仍待设计。
+- 验证：fmt／check／clippy／no-default-features、Mac `--build-only` 通过。新增 [manual-permission-modes.py](../../scripts/manual-permission-modes.py)，三项 PASS：各类型的声明；范围外模式未发送即拒绝；Codex 告诉模型的 sandbox／审批策略随预设变化，之后不选模式的轮次回到 workspace-write；Claude plan 模式只出现在所选轮次。plan 轮次的提醒会随历史重发，所以断言只检查新提示之后的消息。开发版隔离 HOME 中，Claude Code 会话的输入区显示“权限：默认”按钮（截图确认）。窗口位于另一显示器空间，AX 不可达，未展开菜单逐项点按。

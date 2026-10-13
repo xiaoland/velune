@@ -174,6 +174,18 @@ pub struct RuntimeTypeDescriptor {
     pub supported_provider_protocols: Vec<GatewayProtocol>,
     pub name: String,
     pub fields: Vec<crate::conversation::SettingField>,
+    /// Modes a turn may request, in the runtime's own vocabulary; empty when
+    /// the runtime offers no choice.
+    pub permission_modes: Vec<PermissionMode>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PermissionMode {
+    pub id: String,
+    pub label: String,
+    /// What the mode allows, for help text.
+    pub detail: String,
 }
 
 fn runtime_enabled_by_default() -> bool {

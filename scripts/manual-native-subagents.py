@@ -6,8 +6,10 @@ inside a temporary VELUNE_HOME, through its gateway, against a loopback
 upstream that has the parent agent start a native sub-agent (Codex
 `spawn_agent` then `wait_agent`; Claude Code's `Agent` tool). Checks, for the
 live turn and again for the conversation read from native history, that the
-sub-agent call links the sub-agent's conversation and the sub-agent's own
-messages stay out of the parent's transcript; that the sub-agent's
+sub-agent call links the sub-agent's conversation, each call row is settled
+by its result, the sub-agent's own messages stay out of the parent's
+transcript, and a Codex sub-agent's approval request is answered in the
+parent's conversation; that the sub-agent's
 conversation is listed with its parent, opens with the sub-agent's reply, and
 refuses sending. With --seed DIR
 the VELUNE_HOME is kept at DIR/velune for checking the Mac app by hand. Only
@@ -26,11 +28,16 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 
 def responses_reply(body):
-    """Codex: the parent spawns a sub-agent and waits for it; the sub-agent answers."""
+    """Codex: the parent spawns a sub-agent and waits for it; the sub-agent runs
+    a command that needs approval, then answers."""
     text = json.dumps(body.get('input', []))
     outputs = [item for item in body.get('input', []) if item.get('type') == 'function_call_output']
     if 'SUBAGENT_TASK' in text and 'PARENT_TASK' not in text:
-        return {'type': 'message', 'text': 'SUB_DONE'}
+        if outputs:
+            return {'type': 'message', 'text': 'SUB_DONE'}
+        return {'type': 'function_call', 'name': 'exec_command', 'call_id': 'call_escalate', 'namespace': None,
+                'arguments': json.dumps({'cmd': 'echo SUB_APPROVED', 'sandbox_permissions': 'require_escalated',
+                                         'justification': 'Synthetic sub-agent check'})}
     if 'PARENT_TASK' not in text:
         return {'type': 'message', 'text': 'OTHER'}
     if len(outputs) >= 2:
@@ -99,7 +106,9 @@ class Upstream(BaseHTTPRequestHandler):
                         'content': [{'type': 'output_text', 'text': out['text'], 'annotations': []}]}
             else:
                 item = {'id': 'fc', 'type': 'function_call', 'status': 'completed', 'name': out['name'],
-                        'namespace': 'multi_agent_v1', 'arguments': out['arguments'], 'call_id': out['call_id']}
+                        'arguments': out['arguments'], 'call_id': out['call_id']}
+                if out.get('namespace', 'multi_agent_v1'):
+                    item['namespace'] = out.get('namespace', 'multi_agent_v1')
             response = {'id': 'response', 'object': 'response', 'status': 'completed', 'output': [item],
                         'usage': {'input_tokens': 1, 'output_tokens': 1, 'total_tokens': 2}}
             return self.events([
@@ -188,17 +197,18 @@ def main():
                     runtime, conversation, runtime, b.BindingModelSelection.MANAGED(model_record_key=keys[runtime]),
                     b.BindingComposedTurn(text='PARENT_TASK', effort=None, attachments=[])).snapshot.conversation.id
                 deadline = time.monotonic() + 120
-                seen = set()
+                seen, asked = set(), []
                 while True:
                     current, texts, links = view(runtime, conversation)
                     seen.update(links)
                     for pending in current.pending_interactions:
                         # The synthetic agents only start a sub-agent; allow it once.
                         options = pending.kind.options if isinstance(pending.kind, b.BindingInteractionKind.APPROVAL) else []
+                        asked.append(pending.kind.title)
                         app.reply_runtime_interaction(runtime, conversation, pending.id,
                                                       b.BindingRuntimeInteractionReply.DECISION(option_id=options[0].id))
                     if current.run_state == b.BindingRunState.IDLE and 'PARENT_DONE' in texts:
-                        return conversation, texts, seen
+                        return conversation, texts, seen, asked
                     assert current.run_state != b.BindingRunState.FAILED, (runtime, texts)
                     assert time.monotonic() < deadline, (runtime, current.run_state, texts)
                     time.sleep(.2)
@@ -211,6 +221,10 @@ def main():
                              if isinstance(block, b.BindingMessageBlock.TOOL)]
                     raise AssertionError((runtime, phase, 'no sub-agent link', texts, tools))
                 assert 'SUB_DONE' not in texts, (runtime, phase, 'sub-agent message in parent transcript', texts)
+                states = [block.state for message in app.snapshot(runtime, conversation).snapshot.messages for block in message.blocks
+                          if isinstance(block, b.BindingMessageBlock.TOOL)]
+                assert all(state in (b.BindingToolState.COMPLETED, b.BindingToolState.FAILED) for state in states), \
+                    (runtime, phase, 'a call is not settled by its result', states)
                 assert len(links) == 1, (runtime, phase, links)
                 child = next(iter(links))
                 assert child.startswith(runtime + ':') and child != conversation, (runtime, phase, child)
@@ -218,9 +232,12 @@ def main():
 
             seeded = {}
             for runtime in ('codex', 'claude'):
-                conversation, texts, links = run(runtime)
+                conversation, texts, links, asked = run(runtime)
                 child = check(runtime, conversation, texts, links, 'live')
-                print('PASS %s live: the sub-agent call links %s; its messages stay in its own conversation' % (runtime, child), flush=True)
+                if runtime == 'codex':
+                    # The sub-agent's own approval is answered in the parent's conversation.
+                    assert any(title.startswith('子 Agent：') for title in asked), asked
+                print('PASS %s live: the sub-agent call links %s; its messages stay in its own conversation%s' % (runtime, child, '; its approval was answered here' if runtime == 'codex' else ''), flush=True)
 
                 app.open_conversation(runtime, conversation)
                 current, texts, links = view(runtime, conversation)
@@ -234,6 +251,10 @@ def main():
                 app.open_conversation(runtime, child)
                 current, texts, _ = view(runtime, child)
                 assert 'SUB_DONE' in texts and 'SUBAGENT_TASK' in ' '.join(texts), (runtime, texts)
+                if runtime == 'codex':
+                    outputs = [block.output.text for message in current.messages for block in message.blocks
+                               if isinstance(block, b.BindingMessageBlock.TOOL) and isinstance(block.output, b.BindingMessagePayload.INLINE)]
+                    assert any('SUB_APPROVED' in output for output in outputs), outputs
                 assert not current.actions.can_send, (runtime, 'sub-agent conversation is read-only')
                 try:
                     app.send_turn_with_selection(runtime, child, runtime, b.BindingModelSelection.MANAGED(model_record_key=keys[runtime]),

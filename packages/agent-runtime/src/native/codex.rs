@@ -185,12 +185,28 @@ impl NativeSession {
                     .map(|image| json!({"type":"localImage", "path":image.path})),
             )
             .collect::<Vec<_>>();
+        // Turn overrides persist to later turns, so a turn without a mode
+        // restores the thread's own start policy explicitly.
+        let (approval, sandbox, reviewer) = match input.permission_mode.as_deref() {
+            Some("read-only") => ("on-request", json!({"type":"readOnly"}), "user"),
+            None | Some("workspace") => ("on-request", json!({"type":"workspaceWrite"}), "user"),
+            Some("auto-review") => (
+                "on-request",
+                json!({"type":"workspaceWrite"}),
+                "auto_review",
+            ),
+            Some("full-access") => ("never", json!({"type":"dangerFullAccess"}), "user"),
+            Some(_) => return Err(Error::new("Codex 不接受此权限模式")),
+        };
         let result = self.rpc.request(
             "turn/start",
             &json!({
                 "threadId": id,
                 "model": self.config.gateway.as_ref().map(|g| g.model_alias.as_str()).or_else(|| self.native_selection.as_ref().map(|m| m.id.as_str())),
                 "effort": input.effort,
+                "approvalPolicy": approval,
+                "sandboxPolicy": sandbox,
+                "approvalsReviewer": reviewer,
                 "input": items
             }),
         )?;
@@ -311,13 +327,34 @@ impl NativeSession {
         if let Some(thread) = params["threadId"].as_str()
             && Some(thread) != self.native_id.as_deref()
         {
-            if let Some(id) = record.get("id") {
-                self.rpc.reject(id, "Inactive conversation")?;
+            // A native sub-agent's thread runs in this app-server; its requests
+            // are answered in this conversation, its own items stay in its own.
+            let runtime_id = self
+                .snapshot
+                .as_ref()
+                .map(|snapshot| snapshot.conversation.runtime_id.clone())
+                .unwrap_or_default();
+            let sub_agent = self.sub_agents.contains(&format!("{runtime_id}:{thread}"));
+            match record.get("id") {
+                Some(_) if sub_agent && record.get("method").is_some() => {
+                    return self.codex_request(&record, true);
+                }
+                Some(id) => self.rpc.reject(id, "Inactive conversation")?,
+                None if sub_agent && params["item"]["type"] == "collabAgentToolCall" => {
+                    let nested = params["item"]["receiverThreadIds"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter_map(Value::as_str)
+                        .map(|nested| format!("{runtime_id}:{nested}"));
+                    self.sub_agents.extend(nested);
+                }
+                None => {}
             }
             return Ok(());
         }
         if record.get("id").is_some() && record.get("method").is_some() {
-            return self.codex_request(&record);
+            return self.codex_request(&record, false);
         }
         match method {
             "item/started" | "item/completed" => {
@@ -391,7 +428,8 @@ impl NativeSession {
         }
         Ok(())
     }
-    fn codex_request(&mut self, record: &Value) -> Result<()> {
+    /// `sub_agent` marks a request from a native sub-agent's thread.
+    fn codex_request(&mut self, record: &Value, sub_agent: bool) -> Result<()> {
         let method = record["method"].as_str().unwrap_or_default();
         let params = &record["params"];
         let id = record["id"].clone();
@@ -423,10 +461,15 @@ impl NativeSession {
                     self.notice("此 Codex 审批方式尚不受支持。");
                     return Ok(());
                 }
-                let title = if method.contains("commandExecution") {
+                let action = if method.contains("commandExecution") {
                     "允许执行命令？"
                 } else {
                     "允许修改文件？"
+                };
+                let title = if sub_agent {
+                    format!("子 Agent：{action}")
+                } else {
+                    action.to_owned()
                 };
                 let detail = [
                     params["command"].as_str(),
@@ -446,7 +489,7 @@ impl NativeSession {
                         payload: Value::Null,
                     },
                     InteractionKind::Approval {
-                        title: title.into(),
+                        title,
                         detail,
                         options,
                     },

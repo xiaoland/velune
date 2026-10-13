@@ -362,6 +362,16 @@ pub struct BindingRuntimeTypeDescriptor {
     pub supported_provider_protocols: Vec<BindingGatewayProtocol>,
     pub name: String,
     pub fields: Vec<BindingSettingField>,
+    /// Modes a turn may request; empty when the runtime offers no choice.
+    pub permission_modes: Vec<BindingPermissionMode>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BindingPermissionMode {
+    pub id: String,
+    pub label: String,
+    pub detail: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
@@ -410,6 +420,9 @@ pub struct BindingRuntimeUpdate {
 pub struct BindingComposedTurn {
     pub text: String,
     pub effort: Option<String>,
+    /// One of the runtime type's `permission_modes`; `None` leaves the runtime default.
+    #[uniffi(default = None)]
+    pub permission_mode: Option<String>,
     pub attachments: Vec<String>,
 }
 

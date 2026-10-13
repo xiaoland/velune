@@ -63,6 +63,34 @@ impl CoreRuntime {
         Ok(Some(effort.into()))
     }
 
+    pub(super) fn requested_permission_mode(
+        &self,
+        request: &Value,
+    ) -> Result<Option<String>, RuntimeError> {
+        let Some(mode) = request["payload"]["permissionMode"].as_str() else {
+            return Ok(None);
+        };
+        self.validate_permission_mode(self.active_instance()?, mode)?;
+        Ok(Some(mode.into()))
+    }
+
+    /// A mode the runtime version declares; runtimes without modes take none.
+    pub(super) fn validate_permission_mode(
+        &self,
+        runtime: &RuntimeInstance,
+        mode: &str,
+    ) -> Result<(), RuntimeError> {
+        velune_agent_runtime::version::variant(&runtime.type_id)
+            .is_some_and(|variant| {
+                variant
+                    .permission_modes
+                    .iter()
+                    .any(|known| known.id == mode)
+            })
+            .then_some(())
+            .ok_or_else(|| RuntimeError::invalid("此运行时不提供该权限模式"))
+    }
+
     pub(super) fn validate_effort(
         &self,
         runtime: &RuntimeInstance,

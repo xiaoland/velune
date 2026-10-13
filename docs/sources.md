@@ -245,3 +245,7 @@ S17 实施授权：用户决定全面切换 UniFFI，并要求现在开始拆分
 ## S18
 
 2026-10-12 用户检查开发中的协作界面后指出：子 Agent（sub-agent）与跨 Harness 协作（A2A）不同，二者本质是否一样不是 Velune 这个 shell 要考虑的；2026-10-11 的 PRD 表述由另一会话编撰，可能有误。用户确认：A2A 参与方是普通会话（出现在会话列表、可单独打开，Agent 可联系已有会话）；联系授权若需要则归运行时设置，但倾向不做任何限制；原生 sub-agent 属于会话体验，暂时只需在消息列表中看到并可单独打开其会话。用户另提示 composer 之后需要简化（已有三个弹出按钮）。产品归 [PRD](prd/index.md#ai-网关与-agent-运行时配置)，实施归 [Agent 间协作任务](../tasks/agent-collaboration/packet.md)。
+
+## S19
+
+2026-10-13 用户在原生 sub-agent 切片之后要求继续解决已报告的缺口，并确认收到的协作消息放在用户侧，标出来源会话即可。同条消息指出 composer 还缺少权限模式选择器。产品归 [PRD](prd/index.md#ai-网关与-agent-运行时配置)，实施归 [Agent 间协作任务](../tasks/agent-collaboration/packet.md)。

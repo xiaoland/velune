@@ -195,7 +195,9 @@ def main():
                 path = wait(lambda: next(iter(files()), None), runtime + ' session file written')
                 ids = wait(lambda: {i for i in elsewhere() if i.startswith(runtime + ':')}, runtime + ' started outside Velune is running elsewhere')
                 conversation = next(iter(ids))
-                assert conversation in {c.id for c in app.list().conversations}, 'listed'
+                # Liveness comes from the Harness's lock or registry, listing from
+                # what it has written; the App lists again while they differ.
+                wait(lambda: conversation in {c.id for c in app.list().conversations}, runtime + ' running session listed', timeout=10)
                 (root / ('gate-' + first)).unlink()
                 finished(process, first)
                 wait(lambda: conversation not in elsewhere(), runtime + ' end noticed')

@@ -12,6 +12,70 @@ pub enum RuntimeProtocol {
     ResponsesV1,
     MessagesV1,
 }
+/// A permission mode a runtime version offers a turn: its own identifier and
+/// name, with what it allows.
+pub struct PermissionMode {
+    pub id: &'static str,
+    pub label: &'static str,
+    pub detail: &'static str,
+}
+/// Claude Code 2.1.286 `--permission-mode` choices, in its own cycle order.
+pub(crate) const CLAUDE_PERMISSION_MODES: &[PermissionMode] = &[
+    PermissionMode {
+        id: "manual",
+        label: "Manual",
+        detail: "需要权限的操作逐次询问",
+    },
+    PermissionMode {
+        id: "acceptEdits",
+        label: "Accept edits",
+        detail: "自动接受文件编辑，其他需要权限的操作仍询问",
+    },
+    PermissionMode {
+        id: "plan",
+        label: "Plan",
+        detail: "只分析并制定计划，不修改文件或执行操作",
+    },
+    PermissionMode {
+        id: "auto",
+        label: "Auto",
+        detail: "由 Claude Code 的安全分类器决定放行或拦截",
+    },
+    PermissionMode {
+        id: "dontAsk",
+        label: "Don't ask",
+        detail: "未预先允许的操作直接拒绝，不询问",
+    },
+    PermissionMode {
+        id: "bypassPermissions",
+        label: "Bypass permissions",
+        detail: "跳过全部权限检查，请谨慎使用",
+    },
+];
+/// Codex 0.159.3 built-in permission presets and Auto-review, applied per
+/// turn as approval policy, sandbox policy and approvals reviewer.
+pub(crate) const CODEX_PERMISSION_MODES: &[PermissionMode] = &[
+    PermissionMode {
+        id: "read-only",
+        label: "Read Only",
+        detail: "可读取工作区文件；编辑文件或访问网络需要批准",
+    },
+    PermissionMode {
+        id: "workspace",
+        label: "Default",
+        detail: "可读写工作区并运行命令；访问网络或编辑其他文件需要批准",
+    },
+    PermissionMode {
+        id: "auto-review",
+        label: "Auto-review",
+        detail: "同 Default，需要批准的操作先由 Codex 自动审查",
+    },
+    PermissionMode {
+        id: "full-access",
+        label: "Full Access",
+        detail: "无需批准即可编辑工作区外的文件和访问网络，请谨慎使用",
+    },
+];
 pub struct RuntimeVariant {
     pub id: &'static str,
     pub family_id: &'static str,
@@ -21,6 +85,8 @@ pub struct RuntimeVariant {
     pub can_rename_conversations: bool,
     pub can_delete_conversations: bool,
     pub supported_protocols: &'static [RuntimeProtocol],
+    /// Empty when the runtime offers no per-turn choice.
+    pub permission_modes: &'static [PermissionMode],
 }
 const VARIANTS: &[RuntimeVariant] = &[
     RuntimeVariant {
@@ -31,6 +97,7 @@ const VARIANTS: &[RuntimeVariant] = &[
         can_rename_conversations: false,
         can_delete_conversations: false,
         supported_protocols: &[],
+        permission_modes: &[],
     },
     RuntimeVariant {
         id: "claude-code-2.1.286",
@@ -40,6 +107,7 @@ const VARIANTS: &[RuntimeVariant] = &[
         can_rename_conversations: false,
         can_delete_conversations: false,
         supported_protocols: &[RuntimeProtocol::MessagesV1],
+        permission_modes: CLAUDE_PERMISSION_MODES,
     },
     RuntimeVariant {
         id: "pi-1.0.2",
@@ -53,6 +121,7 @@ const VARIANTS: &[RuntimeVariant] = &[
             RuntimeProtocol::ResponsesV1,
             RuntimeProtocol::MessagesV1,
         ],
+        permission_modes: &[],
     },
     RuntimeVariant {
         id: "codex-0.159.3",
@@ -62,6 +131,7 @@ const VARIANTS: &[RuntimeVariant] = &[
         can_rename_conversations: true,
         can_delete_conversations: true,
         supported_protocols: &[RuntimeProtocol::ResponsesV1],
+        permission_modes: CODEX_PERMISSION_MODES,
     },
     RuntimeVariant {
         id: "dsh-acp-0.2.0-rc.2",
@@ -75,6 +145,7 @@ const VARIANTS: &[RuntimeVariant] = &[
             RuntimeProtocol::ResponsesV1,
             RuntimeProtocol::MessagesV1,
         ],
+        permission_modes: &[],
     },
 ];
 pub fn variants() -> &'static [RuntimeVariant] {

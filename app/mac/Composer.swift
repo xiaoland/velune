@@ -474,6 +474,7 @@ struct ComposerView: View {
             .help(store.needsModelSelection ? "此会话的模型当前不可用，请选择已配置的模型" : "下一轮模型：\(store.selectedModelName ?? "未选择")")
             .disabled(store.isShuttingDown)
             if !store.reasoningEffortOptions.isEmpty { reasoningEffortMenu }
+            if !store.permissionModeOptions.isEmpty { permissionModeMenu }
             if !store.editableSessionOptions.isEmpty { sessionOptionsMenu }
             if store.isUnsentConversation { workingDirectoryMenu }
         }
@@ -569,6 +570,26 @@ struct ComposerView: View {
         .fixedSize()
         .accessibilityLabel("下一轮推理强度：\(title)")
         .help("推理强度：\(title)。默认时由运行时决定")
+        .disabled(store.isShuttingDown)
+    }
+
+    /// Modes come from the runtime type, in its own names; "默认" sends none
+    /// and leaves the mode to the runtime's own settings.
+    private var permissionModeMenu: some View {
+        let mode = store.effectivePermissionMode
+        let title = mode?.label ?? "默认"
+        return Menu {
+            Picker("权限模式", selection: Binding(get: { mode?.id }, set: { store.selectPermissionMode($0) })) {
+                Text("默认").tag(String?.none).help("沿用运行时自己的权限设置")
+                Divider()
+                ForEach(store.permissionModeOptions) { option in Text(option.label).tag(Optional(option.id)).help(option.detail) }
+            }.pickerStyle(.inline)
+        } label: {
+            Label("权限：\(title)", systemImage: "lock.shield").labelStyle(.titleOnly).lineLimit(1)
+        }
+        .fixedSize()
+        .accessibilityLabel("下一轮权限模式：\(title)")
+        .help(mode.map { "权限模式：\($0.label)。\($0.detail)" } ?? "权限模式：默认，沿用运行时自己的权限设置")
         .disabled(store.isShuttingDown)
     }
 

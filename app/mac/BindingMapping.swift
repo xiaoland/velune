@@ -173,7 +173,8 @@ enum BindingMapping {
     }
 
     static func runtimeType(_ value: BindingRuntimeTypeDescriptor) -> RuntimeTypeDescriptor {
-        RuntimeTypeDescriptor(id: value.id, familyID: value.familyId, canRenameConversations: value.canRenameConversations, canDeleteConversations: value.canDeleteConversations, launchOptions: value.launchOptions, agentInfo: value.agentInfo, sessionOptions: value.sessionOptions, remoteResources: value.remoteResources, supportedProtocols: value.supportedProtocols.map(protocolID), supportedProviderProtocols: value.supportedProviderProtocols.map(protocolID), name: value.name, fields: value.fields.map(settingField))
+        RuntimeTypeDescriptor(id: value.id, familyID: value.familyId, canRenameConversations: value.canRenameConversations, canDeleteConversations: value.canDeleteConversations, launchOptions: value.launchOptions, agentInfo: value.agentInfo, sessionOptions: value.sessionOptions, remoteResources: value.remoteResources, supportedProtocols: value.supportedProtocols.map(protocolID), supportedProviderProtocols: value.supportedProviderProtocols.map(protocolID), name: value.name, fields: value.fields.map(settingField),
+                              permissionModes: value.permissionModes.map { PermissionMode(id: $0.id, label: $0.label, detail: $0.detail) })
     }
 
     static func configuration(_ value: BindingConfigurationSnapshot) -> (conversations: [Conversation], historyFailures: [HistoryFailure], gateways: [GatewayConfig], runtimes: [RuntimeInstance], runtimeTypes: [RuntimeTypeDescriptor], modelTemplates: [ModelTemplate], importTypes: [RuntimeTypeDescriptor], protocols: [ProtocolDescriptor], selectedRuntimeID: String?) {

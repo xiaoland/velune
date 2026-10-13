@@ -90,7 +90,7 @@ def history(path, native_id, runtime_id, sidechain=False):
         entry = entries[leaf]
         chain.append(entry)
         leaf = entry.get("parentUuid")
-    messages, first_user = [], None
+    messages, first_user, calls = [], None, {}
     for entry in reversed(chain):
         role = entry.get("type")
         if role not in ("user", "assistant"):
@@ -105,6 +105,13 @@ def history(path, native_id, runtime_id, sidechain=False):
             continue
         result = entry.get("toolUseResult")
         content = blocks(content, link(result.get("agentId")) if isinstance(result, dict) else None)
+        if role == "user":
+            # A result completes its call's row, as the native transcript shows them.
+            for block in [b for b in content if b["kind"] == "tool" and b["tool_id"] in calls]:
+                calls.pop(block["tool_id"]).update({key: block[key] for key in ("state", "output", "conversation_id")})
+                content.remove(block)
+        else:
+            calls.update((b["tool_id"], b) for b in content if b["kind"] == "tool" and b["tool_id"])
         if not content:
             continue
         if role == "user" and first_user is None:
@@ -113,15 +120,7 @@ def history(path, native_id, runtime_id, sidechain=False):
                          "completed": True, "timestamp_unix_ms": timestamp(entry.get("timestamp")), "blocks": content})
     title = next((r.get("customTitle") for r in reversed(records) if r.get("type") == "custom-title" and isinstance(r.get("customTitle"), str)), None)
     if sidechain:
-        # The description the parent agent gave the sub-agent is its native name.
-        try:
-            with open(path[:-6] + ".meta.json", encoding="utf-8") as file:
-                meta = json.load(file)
-        except (OSError, ValueError):
-            meta = None
-        title = meta.get("description") if isinstance(meta, dict) else None
-    if not isinstance(title, str):
-        title = None
+        title = meta_title(path)
     if title is not None:
         title = title.strip() or None
     if first_user is not None:
@@ -130,6 +129,17 @@ def history(path, native_id, runtime_id, sidechain=False):
     dates = [value for r in records if (value := timestamp(r.get("timestamp"))) is not None]
     return {"nativeId": native_id, "title": ({"source":"native", "text":title} if title else {"source":"firstMessage", "text":first_user} if first_user else {"source":"untitled"}), "cwd": cwd,
             "messages": messages, "createdAtUnixMs": min(dates) if dates else None, "updatedAtUnixMs": max(dates) if dates else None}
+
+
+def meta_title(path):
+    """The description the parent agent gave a sub-agent: its native name."""
+    try:
+        with open(path[:-6] + ".meta.json", encoding="utf-8") as file:
+            meta = json.load(file)
+    except (OSError, ValueError):
+        return None
+    title = meta.get("description") if isinstance(meta, dict) else None
+    return title if isinstance(title, str) else None
 
 
 def subagents(path):
@@ -191,12 +201,13 @@ def main():
         item = history(path, os.path.basename(path)[:-6], runtime_id)
         item.pop("messages")
         sessions.append(item)
+        # Sub-agents open from their parent's transcript, so their listing
+        # needs only identity and name, not a read of every sub-agent file.
         for native_id, candidate in subagents(path):
-            child = history(candidate, native_id, runtime_id, sidechain=True)
-            child.pop("messages")
-            child["parentNativeId"] = item["nativeId"]
-            child["cwd"] = child["cwd"] or item["cwd"]
-            sessions.append(child)
+            title = (meta_title(candidate) or "").strip()
+            sessions.append({"nativeId": native_id, "parentNativeId": item["nativeId"], "cwd": item["cwd"],
+                             "title": {"source": "native", "text": title} if title else {"source": "untitled"},
+                             "createdAtUnixMs": None, "updatedAtUnixMs": None})
     return {"contractVersion": 1, "sessions": sessions, "failures": []}
 
 
