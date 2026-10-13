@@ -72,3 +72,4 @@
 - Claude 列表成本：列出子 Agent 时不再解析其 JSONL，只取 `.meta.json` 的 description 与父会话 cwd；子会话时间戳为空。
 - `manual-live-native` 偶发失败：外部启动的会话在 Harness 写出可列出的内容前已有存活记录，断言改为在 10 秒内等到它被列出。之前失败的那一次与本切片无关；Mac 对运行中但未列出的会话本来就会重读列表。
 - 验证：fmt／check／clippy／no-default-features、Mac `--build-only` 通过。`manual-native-subagents.py` 增加 Codex 子 Agent 的 `require_escalated` 命令：父会话收到“子 Agent：”审批，批准后子会话工具输出含 `SUB_APPROVED`；所有工具块以完成或失败结束。`manual-live-native`、`manual-reasoning-effort`、`manual-attachments`、`manual-collaboration` 回归通过。
+- 安装：b6cc949 已构建安装至 `/Applications/Velune.app`（签名校验通过，manifest 对应该提交且无未提交改动），重新打开后无崩溃报告。

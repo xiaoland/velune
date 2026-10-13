@@ -201,3 +201,4 @@
 - 实现：版本类型声明 `permission_modes`，经 `RuntimeTypeDescriptor` 和 bindings 交给平台。`ComposedTurn.permission_mode` 在发送前按目标类型校验，并随跨 Harness 接续交付。Claude 把模式作为该轮控制进程的启动参数，不选时不传。Codex 把预设映射为上述三个字段，不选时显式发送 Default 预设。Pi、DSH 与通用 ACP 不声明模式，ACP Agent 自报的模式仍在会话选项中。Mac 在推理按钮后显示“权限：…”弹出按钮（无模式的运行时不显示），所选模式按会话记住，下一轮运行时不提供该模式时按默认发送。
 - 取舍：Codex 的“默认”指 Codex 的 Default 预设，而不是用户在 Codex 配置里改过的值，因为不发送就会沿用上一轮的覆盖。尚未把 ACP 的会话模式并入此选择器；composer 简化仍待设计。
 - 验证：fmt／check／clippy／no-default-features、Mac `--build-only` 通过。新增 [manual-permission-modes.py](../../scripts/manual-permission-modes.py)，三项 PASS：各类型的声明；范围外模式未发送即拒绝；Codex 告诉模型的 sandbox／审批策略随预设变化，之后不选模式的轮次回到 workspace-write；Claude plan 模式只出现在所选轮次。plan 轮次的提醒会随历史重发，所以断言只检查新提示之后的消息。开发版隔离 HOME 中，Claude Code 会话的输入区显示“权限：默认”按钮（截图确认）。窗口位于另一显示器空间，AX 不可达，未展开菜单逐项点按。
+- 安装：b6cc949 已构建安装至 `/Applications/Velune.app`（签名校验通过，manifest 对应该提交且无未提交改动），重新打开后无崩溃报告。
