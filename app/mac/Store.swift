@@ -1235,14 +1235,14 @@ final class AppStore: ObservableObject {
     func location(of runtimeID: String?) -> RuntimeLocation { runtimeID.flatMap { runtimeLocations[$0] } ?? .local }
     /// Where the open conversation's files are: its runtime's machine.
     var loadedConversationLocation: RuntimeLocation { location(of: snapshot?.conversation.runtimeID) }
-    /// Working directories of the latest conversations on the machine the
-    /// next turn runs on, newest first.
+    /// Projects of the latest conversations on the machine the next turn
+    /// runs on, newest first.
     var recentWorkingDirectories: [String] {
         let location = location(of: nextTurnRuntimeID)
         var seen = Set<String>()
         return conversations.filter { self.location(of: $0.runtimeID) == location }
             .sorted { ($0.updatedAtUnixMs ?? 0) > ($1.updatedAtUnixMs ?? 0) }
-            .compactMap(\.cwd).filter { seen.insert($0).inserted }.prefix(5).map { $0 }
+            .compactMap(\.project).filter { seen.insert($0).inserted }.prefix(5).map { $0 }
     }
     private func refreshRuntimeLocations() {
         let ids = runtimeInstances.map(\.id)

@@ -30,6 +30,27 @@ pub(super) struct ListedSource {
     pub(super) provisional: bool,
 }
 
+/// Where a runtime starts conversations that have no project: HOME, where
+/// they land given no working directory, and the folders the runtime keeps
+/// such conversations in. The filesystem root, where the app's own land,
+/// counts for every runtime.
+#[derive(Default)]
+pub(super) struct ProjectlessPlaces {
+    home: Option<PathBuf>,
+    directories: Vec<PathBuf>,
+}
+
+impl ProjectlessPlaces {
+    fn contain(&self, cwd: &Path) -> bool {
+        cwd.parent().is_none()
+            || self.home.as_deref() == Some(cwd)
+            || self
+                .directories
+                .iter()
+                .any(|directory| cwd.starts_with(directory))
+    }
+}
+
 pub(super) struct Page {
     pub(super) conversations: Vec<ListedConversation>,
     pub(super) groups: Vec<ConversationGroup>,
@@ -69,6 +90,71 @@ impl CoreRuntime {
         archived
     }
 
+    /// The places each enabled runtime starts conversations without a project.
+    pub(super) fn projectless_places(&self) -> BTreeMap<String, ProjectlessPlaces> {
+        self.runtime_instances
+            .iter()
+            .filter(|runtime| runtime.enabled)
+            .map(|runtime| {
+                let home = self.user_home(runtime);
+                let directories = velune_agent_runtime::version::variant(&runtime.type_id)
+                    .zip(home.as_ref())
+                    .map_or_else(Vec::new, |(variant, home)| {
+                        variant
+                            .projectless_directories
+                            .iter()
+                            .map(|directory| home.join(directory))
+                            .collect()
+                    });
+                (runtime.id.clone(), ProjectlessPlaces { home, directories })
+            })
+            .collect()
+    }
+
+    /// The HOME a runtime's conversations see: the one it is given, else the
+    /// app's on this Mac or the login's over SSH.
+    fn user_home(&self, runtime: &RuntimeInstance) -> Option<PathBuf> {
+        let (target, os_home) = self.runtime_location(runtime).ok()?;
+        if os_home.is_some() {
+            return os_home;
+        }
+        if target.is_local() {
+            return std::env::home_dir();
+        }
+        let key = serde_json::to_string(&runtime.execution().ok()?).ok()?;
+        self.remote_homes
+            .borrow_mut()
+            .entry(key)
+            .or_insert_with(|| {
+                let mut command = std::process::Command::new("printenv");
+                command.arg("HOME");
+                match target.output(command, None, None) {
+                    Ok(bytes) => String::from_utf8(bytes)
+                        .ok()
+                        .map(|home| PathBuf::from(home.trim_end_matches(['\r', '\n'])))
+                        .filter(|home| home.is_absolute()),
+                    Err(error) => {
+                        tracing::warn!(target:"velune_application",event="runtime_home_unavailable",runtime_id=%runtime.id,detail=%error);
+                        None
+                    }
+                }
+            })
+            .clone()
+    }
+
+    /// The project a conversation's working directory makes it part of.
+    fn working_project(
+        summary: &ConversationSummary,
+        places: &BTreeMap<String, ProjectlessPlaces>,
+    ) -> Option<String> {
+        let unknown = ProjectlessPlaces::default();
+        let places = places.get(&summary.runtime_id).unwrap_or(&unknown);
+        summary
+            .cwd
+            .clone()
+            .filter(|cwd| !places.contain(Path::new(cwd)))
+    }
+
     fn marks(&self, id: &str) -> Option<&ConversationMarks> {
         self.organization
             .conversations
@@ -102,7 +188,11 @@ impl CoreRuntime {
             .to_owned()
     }
 
-    fn listed(&self, source: &ListedSource) -> ListedConversation {
+    fn listed(
+        &self,
+        source: &ListedSource,
+        places: &BTreeMap<String, ProjectlessPlaces>,
+    ) -> ListedConversation {
         let summary = &source.summary;
         let marks = self.marks(&summary.id);
         let archived =
@@ -122,7 +212,7 @@ impl CoreRuntime {
                     || summary.updated_at_unix_ms.is_some_and(|at| at > seen)),
             archived,
             moved: moved.is_some(),
-            project: moved.or_else(|| summary.cwd.clone()),
+            project: moved.or_else(|| Self::working_project(summary, places)),
             group: None,
         }
     }
@@ -177,7 +267,11 @@ impl CoreRuntime {
     pub(super) fn browse(&self, sources: Vec<ListedSource>, search: Option<&str>) -> Page {
         let preferences = &self.conversation_browser_preferences;
         let archived_view = self.browser_window.archived;
-        let all: Vec<ListedConversation> = sources.iter().map(|s| self.listed(s)).collect();
+        let places = self.projectless_places();
+        let all: Vec<ListedConversation> = sources
+            .iter()
+            .map(|source| self.listed(source, &places))
+            .collect();
         *self.last_listed.borrow_mut() = sources
             .into_iter()
             .map(|source| (source.summary.id.clone(), source))
@@ -319,7 +413,8 @@ impl CoreRuntime {
                     remaining
                 } else {
                     page.min(remaining)
-                };
+                }
+                .min(indices.len());
                 remaining -= first;
                 indices.len().min(first + page * extra)
             };
@@ -405,7 +500,9 @@ impl CoreRuntime {
             .get(id)
             .filter(|source| !source.provisional)
         {
-            return Ok(serde_json::to_value(self.listed(source))?);
+            return Ok(serde_json::to_value(
+                self.listed(source, &self.projectless_places()),
+            )?);
         }
         let linked = self.conversation_links.iter().any(|link| link.id == id);
         let owner = self
@@ -439,9 +536,9 @@ impl CoreRuntime {
                     provisional: false,
                 })
         });
-        Ok(serde_json::to_value(
-            found.as_ref().map(|source| self.listed(source)),
-        )?)
+        Ok(serde_json::to_value(found.as_ref().map(|source| {
+            self.listed(source, &self.projectless_places())
+        }))?)
     }
 
     pub(super) fn browser_window_action(&mut self, request: &Value) -> Result<Value, RuntimeError> {
@@ -480,6 +577,7 @@ impl CoreRuntime {
         if references.is_empty() {
             return Err(RuntimeError::invalid("没有选择会话"));
         }
+        let places = self.projectless_places();
         let mut targets = Vec::new();
         for reference in &references {
             let listed = self.last_listed.borrow();
@@ -490,7 +588,7 @@ impl CoreRuntime {
             targets.push((
                 source.summary.clone(),
                 source.archived_natively,
-                self.listed(source),
+                self.listed(source, &places),
             ));
         }
         let mut next = self.organization.clone();
@@ -554,7 +652,10 @@ impl CoreRuntime {
                 ConversationOrganizationChange::MoveToProject { path } => {
                     marks.project = path
                         .as_ref()
-                        .filter(|path| Some(*path) != summary.cwd.as_ref())
+                        .filter(|path| {
+                            Some(path.as_str())
+                                != Self::working_project(summary, &places).as_deref()
+                        })
                         .map(|path| {
                             if Path::new(path).is_absolute() {
                                 Ok(path.clone())

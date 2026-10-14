@@ -358,6 +358,34 @@ def main():
         application.set_conversation_browser_limits(b.BindingConversationBrowserLimits(page=3, total=100))
         application.set_conversation_browser_preferences(preferences())
         results['claude_lazy'] = 'ok'
+
+        # Where a runtime starts conversations without a project is no
+        # project: HOME and the root for every runtime, and the Codex app's
+        # chats folder for Codex only.
+        chats = root / 'Documents/Codex/2026-10-14/new-chat'
+        chats.mkdir(parents=True)
+        codex_chat, codex_home = seed_codex(args.codex, root, root / 'codex', server.server_port, [chats, root])
+        pi_paths = seed([{'cwd': str(root), 'dir': str(pi_dir(root)), 'title': 'home chat'},
+                         {'cwd': '/', 'dir': str(pi_dir(Path('/'))), 'title': 'root chat'},
+                         {'cwd': str(chats), 'dir': str(pi_dir(chats)), 'title': 'pi in codex folder'}])
+        # Small groups use only what they load; the rest of the total reaches the last group.
+        application.set_conversation_browser_limits(b.BindingConversationBrowserLimits(page=20, total=30))
+        grouped = application.set_conversation_browser_preferences(preferences(grouping=b.BindingConversationBrowserGrouping.PROJECT))
+        rows = {c.native_id: c for c in grouped.conversations}
+        assert {codex_chat, codex_home, *pi_paths} <= set(rows), [(g.key, g.loaded, g.total) for g in grouped.conversation_groups]
+        assert all(rows[i].project is None and rows[i].group == K.PROJECT(None) for i in (codex_chat, codex_home, *pi_paths[:2]))
+        assert rows[codex_chat].conversation.cwd == str(chats)
+        assert rows[pi_paths[2]].project == str(chats) and rows[pi_paths[2]].group == K.PROJECT(str(chats))
+        assert grouped.conversation_groups[-1].key == K.PROJECT(None) and grouped.conversation_groups[-1].total == 4
+        assert {p.path for p in grouped.conversation_projects} == {str(root / n) for n in ('alpha', 'beta', 'gamma', 'delta')} | {str(chats)}
+        moved = application.organize_conversations([ref(rows[codex_chat])], C.MOVE_TO_PROJECT(str(root / 'alpha')))
+        assert next(c for c in moved.conversations if c.native_id == codex_chat).project == str(root / 'alpha')
+        back = application.organize_conversations([ref(rows[codex_chat])], C.MOVE_TO_PROJECT(None))
+        row = next(c for c in back.conversations if c.native_id == codex_chat)
+        assert not row.moved and row.project is None
+        application.set_conversation_browser_limits(b.BindingConversationBrowserLimits(page=3, total=100))
+        application.set_conversation_browser_preferences(preferences())
+        results['projectless'] = 'ok'
         application.shutdown()
         application = open_application()
         reopened = application.list()

@@ -86,6 +86,9 @@ pub struct RuntimeVariant {
     pub can_delete_conversations: bool,
     /// The runtime archives conversations itself; others are archived by Velune.
     pub can_archive_conversations: bool,
+    /// Where under the user's home the runtime starts conversations given no
+    /// project; they belong to no project.
+    pub projectless_directories: &'static [&'static str],
     pub supported_protocols: &'static [RuntimeProtocol],
     /// Empty when the runtime offers no per-turn choice.
     pub permission_modes: &'static [PermissionMode],
@@ -99,6 +102,7 @@ const VARIANTS: &[RuntimeVariant] = &[
         can_rename_conversations: false,
         can_delete_conversations: false,
         can_archive_conversations: false,
+        projectless_directories: &[],
         supported_protocols: &[],
         permission_modes: &[],
     },
@@ -110,6 +114,7 @@ const VARIANTS: &[RuntimeVariant] = &[
         can_rename_conversations: false,
         can_delete_conversations: false,
         can_archive_conversations: false,
+        projectless_directories: &[],
         supported_protocols: &[RuntimeProtocol::MessagesV1],
         permission_modes: CLAUDE_PERMISSION_MODES,
     },
@@ -121,6 +126,7 @@ const VARIANTS: &[RuntimeVariant] = &[
         can_rename_conversations: true,
         can_delete_conversations: true,
         can_archive_conversations: false,
+        projectless_directories: &[],
         supported_protocols: &[
             RuntimeProtocol::ChatCompletionsV1,
             RuntimeProtocol::ResponsesV1,
@@ -136,6 +142,8 @@ const VARIANTS: &[RuntimeVariant] = &[
         can_rename_conversations: true,
         can_delete_conversations: true,
         can_archive_conversations: true,
+        // The Codex app's default folder for chats without a project.
+        projectless_directories: &["Documents/Codex"],
         supported_protocols: &[RuntimeProtocol::ResponsesV1],
         permission_modes: CODEX_PERMISSION_MODES,
     },
@@ -147,6 +155,7 @@ const VARIANTS: &[RuntimeVariant] = &[
         can_rename_conversations: false,
         can_delete_conversations: false,
         can_archive_conversations: false,
+        projectless_directories: &[],
         supported_protocols: &[
             RuntimeProtocol::ChatCompletionsV1,
             RuntimeProtocol::ResponsesV1,

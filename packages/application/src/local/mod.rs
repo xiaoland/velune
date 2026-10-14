@@ -133,6 +133,8 @@ pub struct CoreRuntime {
     history_listings: std::cell::RefCell<BTreeMap<String, browsing::HistoryListing>>,
     delivery: delivery::TranscriptDelivery,
     prepared_remote_resources: std::cell::RefCell<std::collections::BTreeSet<String>>,
+    /// HOME of each inherited-HOME SSH location, by its execution settings.
+    remote_homes: std::cell::RefCell<BTreeMap<String, Option<PathBuf>>>,
     analytics: Arc<crate::analytics::AnalyticsStore>,
     repository: crate::repository::Repository,
 }
@@ -205,6 +207,7 @@ impl CoreRuntime {
             history_listings: Default::default(),
             delivery: delivery::TranscriptDelivery::new(),
             prepared_remote_resources: Default::default(),
+            remote_homes: Default::default(),
             analytics,
         })
     }

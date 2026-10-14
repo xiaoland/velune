@@ -18,7 +18,8 @@ struct Conversation: Codable, Sendable, Identifiable, Equatable {
     var pinned = false
     var unread = false
     var archived = false
-    /// Where the list files it: where it was moved, else its working directory.
+    /// Where the list files it: where it was moved, else its working
+    /// directory, unless the runtime started it there without a project.
     var project: String? = nil
     var moved = false
     /// The list group showing it; nil for an open conversation the list does not show.

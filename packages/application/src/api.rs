@@ -119,7 +119,8 @@ pub struct ListedConversation {
     pub pinned: bool,
     pub unread: bool,
     pub archived: bool,
-    /// The project it is listed under: where it was moved, else its working directory.
+    /// The project it is listed under: where it was moved, else its working
+    /// directory, unless its runtime started it there without a project.
     pub project: Option<String>,
     /// Moved by the user away from its working directory's project.
     pub moved: bool,

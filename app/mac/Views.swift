@@ -150,7 +150,7 @@ struct VeluneRootView: View {
         case .pinned: "置顶"
         case .runtime(let id): store.runtimeInstances.first { $0.id == id }?.name ?? "Agent 运行时"
         case .project(let path?): ConversationBrowser.projectName(path, projects: store.conversationProjects)
-        case .project(nil): "未指定项目"
+        case .project(nil): "无项目"
         }
     }
 
@@ -196,7 +196,7 @@ struct VeluneRootView: View {
                 }
                 HStack(spacing: 8) {
                     Text(rowContext(conversation)).lineLimit(1).truncationMode(.middle)
-                        .help(conversation.moved ? "工作目录：\(conversation.cwd ?? "未记录")" : conversation.cwd ?? "未指定项目")
+                        .help(conversation.cwd.map { "工作目录：\($0)" } ?? "未记录工作目录")
                     Spacer(minLength: 0)
                     if let date = browser.sort.timestamp(conversation) { Text(shortDate(date)).help("\(browser.sort.title)：\(Date(timeIntervalSince1970: Double(date) / 1000).formatted())").accessibilityLabel("\(browser.sort.title)：\(shortDate(date))") }
                 }.font(.caption).foregroundStyle(.secondary)
@@ -288,7 +288,7 @@ struct VeluneRootView: View {
             }
             Picker("项目", selection: $browser.project) {
                 Text("所有项目").tag(ConversationBrowser.ProjectFilter.all)
-                Text("未指定项目").tag(ConversationBrowser.ProjectFilter.unspecified)
+                Text("无项目").tag(ConversationBrowser.ProjectFilter.unspecified)
                 ForEach(store.conversationProjects, id: \.path) { project in
                     Text(ConversationBrowser.projectName(project.path, projects: store.conversationProjects)).tag(ConversationBrowser.ProjectFilter.path(project.path))
                 }
