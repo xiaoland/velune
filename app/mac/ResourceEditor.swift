@@ -84,6 +84,9 @@ struct TemplateDraft: Equatable {
     var description = ""
     var model = ""
     var tools = ""
+    /// Empty leaves the level to each runtime.
+    var effort = ""
+    var skills: [String] = []
     var skillFiles: [DraftSkillFile] = []
     var isHTTP = false
     var command = ""
@@ -119,9 +122,10 @@ struct TemplateDraft: Equatable {
                 isHTTP = true; self.url = url
                 pairs = headers.sorted { $0.key < $1.key }.map { DraftKeyValue(key: $0.key, value: $0.value) }
             }
-        case .subagent(let description, let instructions, let model, let tools):
+        case .subagent(let description, let instructions, let model, let tools, let effort, let skills):
             kind = .nativeAgentDefinitions
             self.description = description; body = instructions; self.model = model ?? ""; self.tools = tools.joined(separator: ", ")
+            self.effort = effort ?? ""; self.skills = skills
         }
     }
 
@@ -141,7 +145,8 @@ struct TemplateDraft: Equatable {
         case .nativeAgentDefinitions:
             let list = tools.split(whereSeparator: { $0 == "," || $0 == "\n" }).map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
             let model = model.trimmingCharacters(in: .whitespaces)
-            content = .subagent(description: description, instructions: body, model: model.isEmpty ? nil : model, tools: list)
+            content = .subagent(description: description, instructions: body, model: model.isEmpty ? nil : model, tools: list,
+                                effort: effort.isEmpty ? nil : effort, skills: skills)
         }
         return BindingResourceTemplate(id: id, name: name.trimmingCharacters(in: .whitespaces), content: content)
     }
@@ -211,6 +216,8 @@ enum MCPJSONError: LocalizedError {
 struct ResourceForm: View {
     @Binding var draft: TemplateDraft
     let canEdit: Bool
+    /// Names of the library's skills, which a sub-agent can load.
+    var skillNames: [String] = []
     @State private var revealSecrets = false
     @State private var showsJSON = false
     @State private var jsonText = ""
@@ -231,9 +238,13 @@ struct ResourceForm: View {
                 Text("启用后整体写入运行时的用户指令文件；每个运行时只能启用一份指令。").font(.callout).foregroundStyle(.secondary)
                 editor($draft.body, height: 280)
             case .nativeAgentDefinitions:
-                field("描述", $draft.description)
-                field("模型", $draft.model, prompt: "可选")
+                Text("描述").font(.subheadline)
+                editor($draft.description, height: 64)
+                Text("运行时据此决定何时委派给它。").font(.caption).foregroundStyle(.secondary)
+                field("模型", $draft.model, prompt: "可选，运行时的模型标识")
+                effortField
                 field("工具", $draft.tools, prompt: "以逗号分隔，可选")
+                skillsField
                 Text("指令").font(.subheadline)
                 editor($draft.body, height: 220)
             case .mcpServers: mcp
@@ -242,6 +253,49 @@ struct ResourceForm: View {
         }
         .onChange(of: draft) { _, draft in
             if showsJSON && draft != jsonDraft { jsonText = draft.mcpJSON; jsonDraft = draft; jsonMessage = nil }
+        }
+    }
+
+    /// The levels runtimes accept in an agent definition; a runtime that does
+    /// not accept the chosen one skips it and says so when it is written.
+    private static let efforts = ["none", "minimal", "low", "medium", "high", "xhigh", "max"]
+
+    @ViewBuilder private var effortField: some View {
+        if canEdit {
+            Picker("推理强度", selection: $draft.effort) {
+                Text("不指定").tag("")
+                Divider()
+                ForEach(Self.efforts, id: \.self) { Text($0).tag($0) }
+                if !draft.effort.isEmpty && !Self.efforts.contains(draft.effort) { Text(draft.effort).tag(draft.effort) }
+            }
+            Text("Codex 接受 none 至 max，Claude Code 接受 low 至 max；运行时不接受的级别不写入。").font(.caption).foregroundStyle(.secondary)
+        } else {
+            LabeledContent("推理强度", value: draft.effort.isEmpty ? "—" : draft.effort)
+        }
+    }
+
+    /// The library's skills, plus names the definition lists that the library does not hold.
+    @ViewBuilder private var skillsField: some View {
+        let names = skillNames + draft.skills.filter { !skillNames.contains($0) }.sorted()
+        LabeledContent("技能") {
+            if names.isEmpty {
+                Text(canEdit ? "资源库中还没有技能" : "—").foregroundStyle(.secondary)
+            } else if canEdit {
+                VStack(alignment: .leading, spacing: 4) {
+                    ForEach(names, id: \.self) { name in
+                        Toggle(isOn: Binding(get: { draft.skills.contains(name) }, set: { on in
+                            if on { draft.skills.append(name) } else { draft.skills.removeAll { $0 == name } }
+                        })) {
+                            Text(name) + Text(skillNames.contains(name) ? "" : "（不在资源库中）").foregroundStyle(.secondary)
+                        }.toggleStyle(.checkbox)
+                    }
+                }
+            } else {
+                Text(draft.skills.isEmpty ? "—" : draft.skills.joined(separator: "、")).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+        if canEdit {
+            Text("子 Agent 启动时载入所选技能；目前只有 Claude Code 支持，技能也需启用于同一运行时。").font(.caption).foregroundStyle(.secondary)
         }
     }
 

@@ -22,6 +22,12 @@ pub enum ResourceTemplateContent {
         instructions: String,
         model: Option<String>,
         tools: Vec<String>,
+        /// A reasoning level; each runtime writes it where its definition has a place for it.
+        #[serde(default)]
+        effort: Option<String>,
+        /// Names of skills to load into the agent, where the runtime can.
+        #[serde(default)]
+        skills: Vec<String>,
     },
 }
 

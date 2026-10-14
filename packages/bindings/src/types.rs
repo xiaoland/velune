@@ -1330,6 +1330,8 @@ pub enum BindingResourceTemplateContent {
         instructions: String,
         model: Option<String>,
         tools: Vec<String>,
+        effort: Option<String>,
+        skills: Vec<String>,
     },
 }
 impl std::fmt::Debug for BindingResourceTemplateContent {

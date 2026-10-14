@@ -263,3 +263,7 @@ S17 实施授权：用户决定全面切换 UniFFI，并要求现在开始拆分
 ## S22
 
 2026-10-14 用户验收 S21 各项后，要求在 composer（会话详情视图）中增加 status line，出发点是显示上下文用量，可按需扩展。三种位置方案（composer 下方状态行、操作行右侧紧凑显示、窗口底部状态栏）中用户偏好操作行右侧的紧凑方式，依据是避免信息过载、保持界面干净，同时不损害信息披露，并表示三种都不完全满意。其余候选（本会话累计 token、工作目录与 git 分支、Codex 账户额度、Harness 报告的费用）都可以有，但建议默认不放入 status line，由用户在会话设置中自定义；重点是位置与呈现方式。产品归 [PRD](prd/index.md#ai-网关与-agent-运行时配置)，实施归 [status line 任务](../tasks/composer-status-line/packet.md)。
+
+## S23
+
+2026-10-14 用户验收 status line 后，对资源库的子 Agent 提出：描述也应是多行文本编辑器；应可配置推理强度；Codex 的子 Agent 支持模型与推理强度，却没有写入，导入时也被丢弃；可以选择技能（用户不确定 Codex／Claude Code 是否支持，认为 Pi 官方的 subagents 插件支持）。用户计划之后让 Pi adapter 支持 subagent extension，并预见版本兼容会使情况复杂不少。产品归 [PRD](prd/index.md) 资源库段落，实施归 [子 Agent 字段任务](../tasks/resource-subagent-fields/packet.md)。

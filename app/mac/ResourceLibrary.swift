@@ -371,7 +371,7 @@ private struct ResourceDetailView: View {
                 VStack(spacing: 0) {
                     ScrollView {
                         VStack(alignment: .leading, spacing: 20) {
-                            ResourceForm(draft: draft, canEdit: true)
+                            ResourceForm(draft: draft, canEdit: true, skillNames: library.resources(.skills).map(\.name))
                             RuntimeTargetsView(store: store, library: library, resourceID: resourceID, kind: draft.wrappedValue.kind, name: draft.wrappedValue.name, isDirty: library.isDirty(selection))
                         }.padding(20)
                     }
@@ -613,7 +613,7 @@ private struct NativeResourceView: View {
                         VStack(alignment: .leading, spacing: 16) {
                             Text("\(runtimeName) 中的 \(path) 不在资源库中，Velune 不编辑它。加入资源库后即可编辑，并可启用到其他运行时。")
                                 .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                            ResourceForm(draft: .constant(preview), canEdit: false)
+                            ResourceForm(draft: .constant(preview), canEdit: false, skillNames: library.resources(.skills).map(\.name))
                         }.padding(20)
                     }
                     Divider()

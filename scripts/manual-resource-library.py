@@ -167,7 +167,7 @@ def exercise(app, b, root):
             command='docs-mcp', args=['--x'], env={'TOKEN': 'SYNTHETIC-SECRET'}, cwd=None),
         timeout_seconds=None))).summary
     helper = app.save_resource_template(resource('helper', content.SUBAGENT(
-        description='d', instructions='do it', model=None, tools=[]))).summary
+        description='d', instructions='do it', model=None, tools=[], effort=None, skills=[]))).summary
     assert 'SYNTHETIC-SECRET' not in repr(app.read_resource_template(docs.id))
     assert oct((root / 'app' / 'resource-templates.json').stat().st_mode & 0o777) == '0o600'
     assert isinstance(states(helper.id)['pi'], state.UNSUPPORTED)
@@ -184,17 +184,36 @@ def exercise(app, b, root):
     assert isinstance(states(other.id)['codex'], state.SYNCED)
     print('PASS 指令（每运行时一份）、MCP、子 Agent、不支持', flush=True)
 
+    # 子 Agent 的多行描述、模型、推理强度与技能按各运行时的原生字段写入。
+    probe = app.save_resource_template(resource('probe', content.SUBAGENT(
+        description='line one\nline two', instructions='probe', model='m-1', tools=[], effort='minimal', skills=['review'])))
+    notes = {r.runtime_id: r.notes for r in app.apply_resource_template(probe.summary.id, [target('claude'), target('codex')])}
+    codex_agent = (root / 'codex' / 'agents' / 'probe.toml').read_text()
+    claude_agent = (root / 'claude' / 'agents' / 'probe.md').read_text()
+    assert 'model = "m-1"' in codex_agent and 'model_reasoning_effort = "minimal"' in codex_agent and 'line two' in codex_agent, codex_agent
+    assert any('技能' in note for note in notes['codex']), notes
+    # Claude Code 不接受 minimal：跳过并说明；技能写为列表。
+    assert 'effort' not in claude_agent and 'model: m-1' in claude_agent and '- review' in claude_agent, claude_agent
+    assert any('minimal' in note for note in notes['claude']), notes
+    app.save_resource_template(resource('probe', content.SUBAGENT(
+        description='d', instructions='probe', model=None, tools=[], effort='high', skills=['review']), probe.summary.id))
+    assert 'effort: high' in (root / 'claude' / 'agents' / 'probe.md').read_text()
+    print('PASS 子 Agent 的描述、模型、推理强度、技能按运行时写入，不支持的说明', flush=True)
+
     # 运行时中的其他内容与加入资源库。
     (root / 'codex' / 'agents').mkdir(exist_ok=True)
     (root / 'codex' / 'agents' / 'linter.toml').write_text(
-        'name = "linter"\ndescription = "lint"\ndeveloper_instructions = "check"\nextra = 1\n')
+        'name = "linter"\ndescription = "lint"\nmodel = "m-2"\nmodel_reasoning_effort = "low"\ndeveloper_instructions = "check"\nextra = 1\n')
     assert ('codex', 'linter.toml') in unmanaged(kind.NATIVE_AGENT_DEFINITIONS)
     preview = app.import_runtime_resource('codex', kind.NATIVE_AGENT_DEFINITIONS, 'linter.toml')
     assert preview.template.name == 'linter' and preview.notes, preview.notes
+    assert (preview.template.content.model, preview.template.content.effort) == ('m-2', 'low'), preview.template.content
+    assert not any('model' in note for note in preview.notes), preview.notes
     adopted = app.adopt_runtime_resource('codex', kind.NATIVE_AGENT_DEFINITIONS, 'linter.toml')
     assert isinstance(states(adopted.id)['codex'], state.SYNCED)
     assert ('codex', 'linter.toml') not in unmanaged(kind.NATIVE_AGENT_DEFINITIONS)
-    assert 'extra' not in (root / 'codex' / 'agents' / 'linter.toml').read_text()
+    adopted_text = (root / 'codex' / 'agents' / 'linter.toml').read_text()
+    assert 'extra' not in adopted_text and 'model = "m-2"' in adopted_text and 'model_reasoning_effort = "low"' in adopted_text, adopted_text
     reject(lambda: app.adopt_runtime_resource('claude', kind.MCP_SERVERS, 'docs'))  # 同名已在资源库
     print('PASS 其他内容列表、加入资源库', flush=True)
 

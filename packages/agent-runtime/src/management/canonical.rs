@@ -25,8 +25,18 @@ pub enum Canonical {
         /// Hints that only Harnesses with a place for them keep.
         model: Option<String>,
         tools: Vec<String>,
+        /// A reasoning level in the Harnesses' shared vocabulary.
+        #[serde(default)]
+        effort: Option<String>,
+        /// Skill names, loaded into the agent where the Harness can.
+        #[serde(default)]
+        skills: Vec<String>,
     },
 }
+
+/// The reasoning levels each Harness accepts in an agent definition.
+const CODEX_EFFORTS: [&str; 7] = ["none", "minimal", "low", "medium", "high", "xhigh", "max"];
+const CLAUDE_EFFORTS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
 
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -177,23 +187,48 @@ pub fn render(variant_id: &str, name: &str, canonical: &Canonical) -> Result<Ren
             instructions,
             model,
             tools,
+            effort,
+            skills,
         } => {
             validate_name(name)?;
             if description.trim().is_empty() || instructions.trim().is_empty() {
                 return Err(Error::new(ErrorCode::Invalid, "子 Agent 需要描述和指令"));
             }
-            let (extension, bytes) = if codex {
-                if model.is_some() {
-                    notes.push("Codex 定义没有对应位置，模型提示未写入".into());
+            let (harness, accepted): (&str, &[&str]) = if codex {
+                ("Codex", &CODEX_EFFORTS)
+            } else {
+                ("Claude Code", &CLAUDE_EFFORTS)
+            };
+            let effort = effort.as_deref().filter(|level| {
+                let known = accepted.contains(level);
+                if !known {
+                    notes.push(format!("{harness} 不接受推理强度 {level}，未写入"));
                 }
+                known
+            });
+            let (extension, bytes) = if codex {
                 if !tools.is_empty() {
                     notes.push("Codex 定义没有对应位置，工具提示未写入".into());
                 }
-                ("toml", codex_agent(name, description, instructions))
+                if !skills.is_empty() {
+                    notes.push("Codex 定义没有预载技能的位置，技能未写入".into());
+                }
+                (
+                    "toml",
+                    codex_agent(name, description, instructions, model, effort),
+                )
             } else {
                 (
                     "md",
-                    claude_agent(name, description, instructions, model, tools)?,
+                    claude_agent(
+                        name,
+                        description,
+                        instructions,
+                        model,
+                        tools,
+                        effort,
+                        skills,
+                    )?,
                 )
             };
             vec![RenderedFile {
@@ -311,6 +346,8 @@ fn claude_agent(
     instructions: &str,
     model: &Option<String>,
     tools: &[String],
+    effort: Option<&str>,
+    skills: &[String],
 ) -> Result<Vec<u8>> {
     let mut header = serde_yaml_ng::Mapping::new();
     header.insert("name".into(), name.into());
@@ -321,15 +358,39 @@ fn claude_agent(
     if let Some(model) = model {
         header.insert("model".into(), model.as_str().into());
     }
+    if let Some(effort) = effort {
+        header.insert("effort".into(), effort.into());
+    }
+    if !skills.is_empty() {
+        header.insert(
+            "skills".into(),
+            serde_yaml_ng::Value::Sequence(
+                skills.iter().map(|skill| skill.as_str().into()).collect(),
+            ),
+        );
+    }
     let header = serde_yaml_ng::to_string(&header)
         .map_err(|_| Error::new(ErrorCode::Invalid, "子 Agent 头部无法序列化"))?;
     Ok(format!("---\n{header}---\n\n{}\n", instructions.trim_end()).into_bytes())
 }
 
-fn codex_agent(name: &str, description: &str, instructions: &str) -> Vec<u8> {
+/// A Codex agent role: its own keys, then config keys that apply to the agent's threads.
+fn codex_agent(
+    name: &str,
+    description: &str,
+    instructions: &str,
+    model: &Option<String>,
+    effort: Option<&str>,
+) -> Vec<u8> {
     let mut document = toml_edit::DocumentMut::new();
     document["name"] = toml_edit::value(name);
     document["description"] = toml_edit::value(description);
+    if let Some(model) = model {
+        document["model"] = toml_edit::value(model.as_str());
+    }
+    if let Some(effort) = effort {
+        document["model_reasoning_effort"] = toml_edit::value(effort);
+    }
     document["developer_instructions"] = toml_edit::value(instructions.trim_end());
     document.to_string().into_bytes()
 }
@@ -485,7 +546,14 @@ pub fn parse(
                     .map_err(|_| invalid("子 Agent 定义不是有效的 TOML"))?;
                 let field = |key: &str| document.get(key).and_then(|item| item.as_str());
                 for (key, _) in document.iter() {
-                    if !matches!(key, "name" | "description" | "developer_instructions") {
+                    if !matches!(
+                        key,
+                        "name"
+                            | "description"
+                            | "developer_instructions"
+                            | "model"
+                            | "model_reasoning_effort"
+                    ) {
                         notes.push(format!("字段 {key} 没有对应位置，未导入"));
                     }
                 }
@@ -494,8 +562,10 @@ pub fn parse(
                     instructions: field("developer_instructions")
                         .unwrap_or_default()
                         .to_owned(),
-                    model: None,
+                    model: field("model").map(str::to_owned),
                     tools: Vec::new(),
+                    effort: field("model_reasoning_effort").map(str::to_owned),
+                    skills: Vec::new(),
                 }
             } else {
                 let rest = source
@@ -508,27 +578,41 @@ pub fn parse(
                     .map_err(|_| invalid("子 Agent frontmatter 不是有效的 YAML"))?;
                 let field = |key: &str| header.get(key).and_then(|value| value.as_str());
                 for key in header.keys().filter_map(|key| key.as_str()) {
-                    if !matches!(key, "name" | "description" | "tools" | "model") {
+                    if !matches!(
+                        key,
+                        "name" | "description" | "tools" | "model" | "effort" | "skills"
+                    ) {
                         notes.push(format!("字段 {key} 没有对应位置，未导入"));
                     }
                 }
-                let tools = match header.get("tools") {
+                // Claude Code takes a list as a comma-separated string or a sequence.
+                let list = |key: &str| match header.get(key) {
                     Some(serde_yaml_ng::Value::String(list)) => list
                         .split(',')
-                        .map(|tool| tool.trim().to_owned())
-                        .filter(|tool| !tool.is_empty())
+                        .map(|item| item.trim().to_owned())
+                        .filter(|item| !item.is_empty())
                         .collect(),
                     Some(serde_yaml_ng::Value::Sequence(items)) => items
                         .iter()
-                        .filter_map(|tool| tool.as_str().map(str::to_owned))
+                        .filter_map(|item| item.as_str().map(str::to_owned))
                         .collect(),
                     _ => Vec::new(),
+                };
+                let effort = match header.get("effort") {
+                    Some(serde_yaml_ng::Value::String(level)) => Some(level.clone()),
+                    Some(_) => {
+                        notes.push("以数值表示的推理强度没有对应位置，未导入".into());
+                        None
+                    }
+                    None => None,
                 };
                 Canonical::Subagent {
                     description: field("description").unwrap_or_default().to_owned(),
                     instructions: body.trim().to_owned(),
                     model: field("model").map(str::to_owned),
-                    tools,
+                    tools: list("tools"),
+                    effort,
+                    skills: list("skills"),
                 }
             }
         }
