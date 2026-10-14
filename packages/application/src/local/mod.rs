@@ -115,6 +115,8 @@ pub struct CoreRuntime {
     /// The latest listing's conversations by public identity, for organizing
     /// what the list showed.
     last_listed: std::cell::RefCell<BTreeMap<String, organization::ListedSource>>,
+    /// The runtimes' own archives, listed while the archive view shows.
+    archived_listing: std::cell::RefCell<Vec<ConversationSummary>>,
     outline_presentation: crate::config::OutlinePresentation,
     status_line: Vec<crate::config::StatusLineItem>,
     composer_drafts: BTreeMap<String, String>,
@@ -187,6 +189,7 @@ impl CoreRuntime {
             organization,
             browser_window: Default::default(),
             last_listed: Default::default(),
+            archived_listing: Default::default(),
             outline_presentation: persisted.outline_presentation,
             status_line: crate::config::canonical_status_line(persisted.status_line),
             composer_drafts,

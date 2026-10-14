@@ -634,10 +634,9 @@ impl CoreRuntime {
                     .get(&runtime.id)
                     .is_some_and(|capabilities| capabilities.list_sessions);
             if can_list
-                && !self
-                    .summaries_for(runtime)?
-                    .iter()
-                    .any(|summary| summary.id == segment.native_conversation_id)
+                && self
+                    .conversation_summary(runtime, &segment.native_conversation_id)?
+                    .is_none()
             {
                 if self
                     .current_snapshot()
@@ -698,12 +697,11 @@ impl CoreRuntime {
                 && self
                     .runtime_instance(&segment.runtime_instance_id)
                     .ok()
-                    .and_then(|runtime| self.summaries_for(runtime).ok())
-                    .is_some_and(|summaries| {
-                        !summaries
-                            .iter()
-                            .any(|s| s.id == segment.native_conversation_id)
-                    });
+                    .and_then(|runtime| {
+                        self.conversation_summary(runtime, &segment.native_conversation_id)
+                            .ok()
+                    })
+                    .is_some_and(|summary| summary.is_none());
             if !already_absent
                 && (!self.segment_available(segment)
                     || self

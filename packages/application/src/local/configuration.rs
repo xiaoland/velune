@@ -121,10 +121,13 @@ impl CoreRuntime {
         }
         Ok(json!(limits))
     }
+
     /// Every enabled runtime's conversations, continued ones by their link,
-    /// with the runtimes' own archives in the archive view.
+    /// with the runtimes' own archives in the archive view. Indexes each
+    /// runtime's history again and reads all of it only when `complete`.
     pub(super) fn list_sources(
         &self,
+        complete: bool,
     ) -> Result<
         (
             Vec<organization::ListedSource>,
@@ -132,23 +135,64 @@ impl CoreRuntime {
         ),
         RuntimeError,
     > {
-        let mut conversations = Vec::new();
         let mut history_failures = Vec::new();
         for (slot, runtime) in self.runtime_instances.iter().enumerate() {
             if !runtime.enabled {
                 continue;
             }
-            match self.summaries_for(runtime) {
-                Ok(mut summaries) => conversations.append(&mut summaries),
-                Err(error) => {
-                    tracing::warn!(target:"velune_application",event="runtime_history_read_failed",phase="history_list",failure_kind="history_unavailable",runtime_slot=slot+1,runtime_id=%runtime.id,runtime_name=%runtime.name,runtime_type_id=%runtime.type_id,binary=?runtime.settings.get("binary"),node_binary=?runtime.settings.get("nodeBinary"),agent_dir=?runtime.settings.get("agentDir"),detail=%error);
-                    history_failures.push(crate::api::HistoryFailure {
-                        runtime_id: runtime.id.clone(),
-                        detail: format!(
-                            "{}；会话历史无法读取：{error}",
-                            super::browsing::runtime_context(runtime)
-                        ),
-                    });
+            let indexed = self.index_history(runtime).and_then(|()| {
+                if complete {
+                    self.read_unread(runtime)
+                } else {
+                    Ok(())
+                }
+            });
+            if let Err(error) = indexed {
+                // A runtime that cannot be read lists nothing, not its last index.
+                self.forget_index(runtime);
+                tracing::warn!(target:"velune_application",event="runtime_history_read_failed",phase="history_list",failure_kind="history_unavailable",runtime_slot=slot+1,runtime_id=%runtime.id,runtime_name=%runtime.name,runtime_type_id=%runtime.type_id,binary=?runtime.settings.get("binary"),node_binary=?runtime.settings.get("nodeBinary"),agent_dir=?runtime.settings.get("agentDir"),detail=%error);
+                history_failures.push(crate::api::HistoryFailure {
+                    runtime_id: runtime.id.clone(),
+                    detail: format!(
+                        "{}；会话历史无法读取：{error}",
+                        super::browsing::runtime_context(runtime)
+                    ),
+                });
+            }
+        }
+        self.read_link_segments();
+        *self.archived_listing.borrow_mut() = if self.shows_archived() {
+            self.natively_archived()
+        } else {
+            Vec::new()
+        };
+        Ok((self.cached_sources(), history_failures))
+    }
+
+    /// The listing from the indexes as they stand. A conversation not read
+    /// yet is provisional: identity and what its file tells, untitled.
+    pub(super) fn cached_sources(&self) -> Vec<organization::ListedSource> {
+        let mut conversations = Vec::new();
+        let mut provisional = std::collections::BTreeSet::new();
+        for runtime in self.runtime_instances.iter().filter(|r| r.enabled) {
+            for entry in self.indexed(runtime) {
+                match entry.state {
+                    browsing::EntryState::Read(summary) => conversations.push(summary),
+                    browsing::EntryState::Unread => {
+                        provisional.insert(entry.id.clone());
+                        conversations.push(ConversationSummary {
+                            id: entry.id,
+                            title: velune_conversation::ConversationTitle::Untitled,
+                            updated_at_unix_ms: entry.hint.activity_unix_ms,
+                            created_at_unix_ms: entry.hint.created_unix_ms,
+                            runtime_id: runtime.id.clone(),
+                            cwd: entry.hint.cwd,
+                            can_rename: false,
+                            can_delete: false,
+                            parent_conversation_id: None,
+                        });
+                    }
+                    browsing::EntryState::Unreadable => {}
                 }
             }
         }
@@ -171,24 +215,24 @@ impl CoreRuntime {
             .linked_summaries(conversations)
             .into_iter()
             .map(|summary| organization::ListedSource {
+                provisional: provisional.contains(&summary.id),
                 summary,
                 archived_natively: false,
             })
             .collect();
-        if self.shows_archived() {
-            sources.extend(self.natively_archived().into_iter().map(|summary| {
-                organization::ListedSource {
-                    summary,
-                    archived_natively: true,
-                }
-            }));
-        }
-        Ok((sources, history_failures))
+        sources.extend(self.archived_listing.borrow().iter().map(|summary| {
+            organization::ListedSource {
+                summary: summary.clone(),
+                archived_natively: true,
+                provisional: false,
+            }
+        }));
+        sources
     }
 
     pub(super) fn list(&self) -> Result<Value, RuntimeError> {
-        let (sources, history_failures) = self.list_sources()?;
-        let page = self.browse(sources, None);
+        let (sources, history_failures) = self.list_sources(false)?;
+        let page = self.browse_read(sources, None);
         Ok(json!({
             "conversations": page.conversations,
             "conversationGroups": page.groups,

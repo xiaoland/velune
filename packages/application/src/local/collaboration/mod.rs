@@ -583,7 +583,7 @@ impl CoreRuntime {
     /// Every listed conversation, newest first; agents see past the list's window.
     fn all_conversations(&self) -> Result<Vec<ConversationSummary>, RuntimeError> {
         let mut listed: Vec<ConversationSummary> = self
-            .list_sources()?
+            .list_sources(true)?
             .0
             .into_iter()
             .map(|source| source.summary)

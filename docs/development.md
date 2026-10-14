@@ -141,7 +141,7 @@ DSH 的 Velune 执行 overlay 为 llm-pi-ai 追加网关目录，不改 ACP 原�
 
 ## Pi 运行时与本机网关
 
-Rust agent-runtime 的 [Pi adapter](../packages/agent-runtime/src/client.rs) 处理显式 Node／CLI 路径与 JSONL RPC，同进程 application unit 负责运行时实例装配。会话列表使用固定 Pi 1.0.2 的 SDK helper，身份包含运行时实例，避免不同实例的同名会话混淆；helper 只重读大小或修改时间变化的会话文件，打开列表中的会话不再重新列出全部历史。RPC 没有 `list_sessions`；prompt 响应只表示接收，稳定终态为 `agent_settled`。取消先清队列再 abort，仍等待稳定终态后才允许关闭核心。
+Rust agent-runtime 的 [Pi adapter](../packages/agent-runtime/src/client.rs) 处理显式 Node／CLI 路径与 JSONL RPC，同进程 application unit 负责运行时实例装配。会话列表使用固定 Pi 1.0.2 的 SDK helper，身份包含运行时实例，避免不同实例的同名会话混淆；helper 每次列出全部会话文件的状态与会话头（工作目录、开始时间），只解析调用方点名的文件，列表因此只读取窗口显示的会话；打开列表中的会话不再重新列出全部历史。RPC 没有 `list_sessions`；prompt 响应只表示接收，稳定终态为 `agent_settled`。取消先清队列再 abort，仍等待稳定终态后才允许关闭核心。
 
 运行时配置保留入口、配置／状态根目录和可选会话存储目录，不要求工作目录。启用实例即加入统一历史列表，不要求手动连接或初始模型；managed 执行前才准备实例网关；现有 Mac 新建时使用原生目录选择器指定项目目录，恢复时读取 Pi 保存的 cwd。列表覆盖该实例的多个项目，空闲切换重新准备 Pi child，managed turn 终态释放执行进程和网关；已失效的目录明确报错，不能回退到应用启动目录。当前配置不包含 `workingDir`，旧 schema 不保留兼容字段。
 
@@ -276,7 +276,7 @@ Mac 的“问题”窗口集中显示操作失败与当前读取问题，主界�
 
 运行时设置的“快速导入…”只发现可执行文件、公开版本和目录存在性，预览后才保存实例；未支持版本保留在候选列表中但不能导入。Node 仍是运行时配置的必填项。发现采用平台显式传入的用户目录和允许的非秘密目录覆盖，不读取原来源认证；提供商与模型导入通过后续显式预览操作执行。
 
-会话列表的每次加载条数（默认 20）与总数上限（默认 200）在应用配置中保存，必须大于零；core 按它们计算列表窗口，每个分组独立“加载更多”。`scripts/manual-conversation-list.py`（`--bundle`、`--bindings`、`--node`、`--pi`、`--codex`）在临时 HOME 以 Pi SDK 与本机回环 Codex 线程生成会话，核对窗口分配、折叠、置顶、已读、移到项目、别名与搜索、Velune 与 Codex 原生归档、打开已归档会话和重开后的持久化。macOS 使用原生 ⌘／Shift 列表多选，批量删除逐项修改原运行时会话并报告局部失败。提供商和运行时支持双击编辑；模型添加分别提供新建和独立模板选择 sheet，模板可批量选取并继续添加。 分组、运行时／项目筛选及排序方向也保存在应用配置中；它们只影响列表投影，不改变下一轮执行实例或原生会话。搜索文字和每组额外加载数量不持久化。
+会话列表的每次加载条数（默认 20）与总数上限（默认 200）在应用配置中保存，必须大于零；core 按它们计算列表窗口，每个分组独立“加载更多”。`scripts/manual-conversation-list.py`（`--bundle`、`--bindings`、`--node`、`--pi`、`--codex`、`--claude`）在临时 HOME 以 Pi SDK、本机回环 Codex 线程与合成 Claude Code JSONL 生成会话，以记录请求的 node／python3 包装核对 Pi 与 Claude Code 只读取窗口显示的会话（含读取后移出窗口的会话），并核对窗口分配、折叠、置顶、已读、移到项目、别名与搜索、Velune 与 Codex 原生归档、打开已归档会话和重开后的持久化。macOS 使用原生 ⌘／Shift 列表多选，批量删除逐项修改原运行时会话并报告局部失败。提供商和运行时支持双击编辑；模型添加分别提供新建和独立模板选择 sheet，模板可批量选取并继续添加。 分组、运行时／项目筛选及排序方向也保存在应用配置中；它们只影响列表投影，不改变下一轮执行实例或原生会话。搜索文字和每组额外加载数量不持久化。
 
 本轮隔离人工检查可运行 `scripts/manual-runtime-discovery.py`（指定临时 bindings、库、资源、Node 和外部 Pi CLI），覆盖公开版本发现、未支持版本、显式保存、重复候选以及分组数量持久化；`scripts/manual-messages-native.py` 覆盖原生 Messages 直接消费及网关 HTTP／SSE；`scripts/manual-runtime-messages.py` 覆盖合成来源导入及实际 Pi／DSH 接入。脚本不加入自动测试或 CI，真实服务、会话和视觉体验仍由用户验收。 `scripts/manual-browser-preferences.py` 使用临时应用目录，贯通 Mac AppStore、Transport 与 UniFFI，检查快速连续修改、重开恢复和保存失败回滚；要求指定当前debug动态库与Swift构建目录。
 

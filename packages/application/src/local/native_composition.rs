@@ -204,9 +204,7 @@ impl CoreRuntime {
                 .conversation
                 .id;
             let conversation = self
-                .summaries_for(&runtime)?
-                .into_iter()
-                .find(|conversation| conversation.id == id)
+                .conversation_summary(&runtime, &id)?
                 .ok_or_else(|| RuntimeError::invalid("新建会话的原生元数据不可用"))?;
             if let ActiveState::Native(session) = &mut self.session.active_state {
                 session.set_conversation(conversation);

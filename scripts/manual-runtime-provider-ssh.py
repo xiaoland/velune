@@ -31,13 +31,16 @@ def main():
         subagents.mkdir()
         (subagents / f"{uuid.uuid4()}.jsonl").write_text("not session JSON")
 
-        def invoke(operation, selected=None):
-            request = {"operation": operation, "provider": "claude-code", "home": str(root), "roots": [str(projects)], "nativeId": selected}
-            result = subprocess.run(["python3", str(HELPER)], input=json.dumps(request), text=True, capture_output=True, check=True)
+        def invoke(operation, selected=None, **extra):
+            request = {"operation": operation, "provider": "claude-code", "home": str(root), "roots": [str(projects)], "runtimeId": "claude", "nativeId": selected, **extra}
+            result = subprocess.run(["python3", str(HELPER)], input=json.dumps(request), text=True, capture_output=True)
+            assert result.returncode == 0, result.stdout + result.stderr
             return json.loads(result.stdout)
 
-        listed = invoke("list")
-        assert listed["contractVersion"] == 1
+        indexed = invoke("index")
+        assert indexed["contractVersion"] == 1
+        assert [entry["nativeId"] for entry in indexed["entries"]] == [native_id]
+        listed = invoke("summaries", nativeIds=[native_id])
         assert len(listed["sessions"]) == 1
         assert listed["sessions"][0]["title"] == {"source": "native", "text": "合成标题"}
         read = invoke("read", native_id)["history"]

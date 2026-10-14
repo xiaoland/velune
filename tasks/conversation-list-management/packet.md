@@ -38,5 +38,7 @@
 - 已记录决定（S24、PRD）与本 packet。
 - 第一步完成：core 窗口与组描述（`local/organization.rs`）、组织记录文件、Codex 原生归档（`ThreadChange`、`list_archived`）、列表外会话查找、搜索（读最近一次列表）、bindings 与 Mac 侧栏（可折叠组、加载更多、未读圆点、置顶组、行菜单、项目重命名、已归档视图、设置中的两项数量、`velune` URL scheme）。协作工具改为读取全部会话，不受列表窗口限制。
 - 验证：fmt／check／strict clippy／no-default-features、Mac 构建零警告；`manual-conversation-list.py` 全部通过（窗口分配、折叠、置顶、已读、移动、别名与搜索、Velune 与 Codex 归档、打开已归档 Codex 会话、重开持久化）；回归 acp、selection、codex-history、continuation、subagents、live、attach、collab、parallel、session-browser 通过。隔离 HOME 后台启动截图核对了置顶组、项目别名、未读圆点、组计数，并用 AX 操作“加载更多”。
+- 第二步完成：Claude Code 与 Pi 先建索引（`browsing.rs` 的 `index_history`；Claude helper `index`／`summaries` 操作，Pi helper 契约 v3 返回全部文件状态与会话头、只解析 `want` 中的文件），列表以未读会话的文件时间与会话头参与分组、计数与窗口分配，`browse_read` 只读取窗口显示到的会话并重排至稳定；搜索读出全部未读会话，查找按 ID 读取单个会话，协作工具读取全部。Codex 仍由状态库列出全部 thread。
+- 第二步验证：静态检查与 Mac 构建通过；`manual-conversation-list.py` 新增 `lazy`（Pi：初次窗口与“加载更多”只请求显示的文件）与 `claude_lazy`（合成 JSONL：文件最新但记录最旧的会话读取后移出窗口，补读下一条；加载更多、搜索、查找各只读所需会话），全部通过；上述回归与 `manual-session-browser.py` 通过。Claude helper 删除已无调用的 `list` 操作，`manual-runtime-provider-ssh.py` 改用 `index`／`summaries`，并补上它原先缺少的 `runtimeId`（此前即失败）。
 - 未验证：向 Codex 原生归档的会话发送消息时 Codex 的行为；右键菜单、折叠三角、链接打开与 NSOpenPanel 需用户界面验收（自动检查会把应用带到前台）。
 - 既有脚本漂移（与本任务无关，未修）：`manual-browser-preferences.py`／`manual-session-loading.py` 的 Swift harness 缺少后来加入的 Store 依赖文件；`manual-runtime-discovery.py` 第 52 行外部 Pi 路径断言不再成立。

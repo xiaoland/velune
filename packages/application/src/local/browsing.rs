@@ -29,15 +29,41 @@ pub(super) fn runtime_context(runtime: &RuntimeInstance) -> String {
             .unwrap_or("默认"),
     )
 }
-/// The latest native listing of one runtime instance, valid while its
-/// configuration is unchanged.
+/// The latest index of one runtime instance's native history, valid while
+/// its configuration is unchanged. Claude Code and Pi sessions are indexed
+/// from their files and read only when needed; other runtimes list read
+/// summaries directly.
 pub(super) struct HistoryListing {
     runtime: RuntimeInstance,
-    summaries: Vec<ConversationSummary>,
-    /// Pi only: every listed file, including files Pi could not read as a session.
-    pi_files: Vec<PiFileEntry>,
+    entries: Vec<IndexedConversation>,
 }
-type PiFileEntry = (history::PiSessionFile, Option<ConversationSummary>);
+#[derive(Clone)]
+pub(super) struct IndexedConversation {
+    pub(super) id: String,
+    /// The native record's state; a read summary holds while it is unchanged.
+    identity: String,
+    /// What the files tell before the session is read.
+    pub(super) hint: ConversationHint,
+    pub(super) state: EntryState,
+}
+#[derive(Clone, Default)]
+pub(super) struct ConversationHint {
+    pub(super) cwd: Option<String>,
+    /// The file's modification time: which sessions to read first, never shown.
+    pub(super) activity_unix_ms: Option<i64>,
+    pub(super) created_unix_ms: Option<i64>,
+}
+#[derive(Clone)]
+pub(super) enum EntryState {
+    Unread,
+    Read(ConversationSummary),
+    /// The runtime could not read it as a session; not listed until it changes.
+    Unreadable,
+}
+/// Runtimes whose sessions are files read one by one.
+fn reads_lazily(runtime: &RuntimeInstance) -> bool {
+    matches!(runtime.type_id.as_str(), "pi-1.0.2" | "claude-code-2.1.286")
+}
 impl CoreRuntime {
     pub(super) fn runtime_instance(&self, id: &str) -> Result<&RuntimeInstance, RuntimeError> {
         self.runtime_instances
@@ -87,78 +113,154 @@ impl CoreRuntime {
             gateway_token: None,
         })
     }
-    /// List a runtime's native history. The result also becomes the source-scoped
-    /// membership used to open a listed conversation without listing again.
-    pub(super) fn summaries_for(
-        &self,
-        runtime: &RuntimeInstance,
-    ) -> Result<Vec<ConversationSummary>, RuntimeError> {
-        let (summaries, pi_files) = if runtime.type_id == "acp-v1" {
-            (self.acp_summaries(runtime)?, Vec::new())
-        } else if runtime.type_id != "pi-1.0.2" {
-            let summaries = history::list(&self.history_config(runtime)?, &runtime.id).map_err(|error| {
-                let variant = velune_agent_runtime::version::variant(&runtime.type_id);
-                let family = variant.map(|value| value.family_id).unwrap_or("unknown");
-                let runtime_type = variant.map(|value| value.id).unwrap_or("unknown");
-                tracing::warn!(target: "velune_application", event = "runtime_history_read_failed", phase = error.phase(), failure_kind = error.code(), runtime_family = family, runtime_type, runtime_id=%runtime.id, runtime_name=%runtime.name, runtime_type_id=%runtime.type_id, binary=?runtime.settings.get("binary"), node_binary=?runtime.settings.get("nodeBinary"), agent_dir=?runtime.settings.get("agentDir"), detail=%error);
-                RuntimeError::History(error)
-            })?;
-            (summaries, Vec::new())
-        } else {
-            let pi_files = self.list_pi_files(runtime)?;
-            let summaries = pi_files
-                .iter()
-                .filter_map(|(_, summary)| summary.clone())
-                .collect();
-            (summaries, pi_files)
+    /// Index a runtime's native history. Read summaries are kept for records
+    /// that did not change; the index is also the source-scoped membership
+    /// used to open a conversation without listing again.
+    pub(super) fn index_history(&self, runtime: &RuntimeInstance) -> Result<(), RuntimeError> {
+        let read = |summaries: Vec<ConversationSummary>| {
+            summaries
+                .into_iter()
+                .map(|summary| IndexedConversation {
+                    id: summary.id.clone(),
+                    identity: String::new(),
+                    hint: ConversationHint::default(),
+                    state: EntryState::Read(summary),
+                })
+                .collect::<Vec<_>>()
         };
-        self.history_listings.borrow_mut().insert(
-            runtime.id.clone(),
-            HistoryListing {
-                runtime: runtime.clone(),
-                summaries: summaries.clone(),
-                pi_files,
-            },
-        );
-        Ok(summaries)
-    }
-    /// Pi metadata requires reading a whole session file, so only files whose
-    /// identity changed since this instance's previous listing are read again.
-    fn list_pi_files(&self, runtime: &RuntimeInstance) -> Result<Vec<PiFileEntry>, RuntimeError> {
+        let mut entries = match runtime.type_id.as_str() {
+            "acp-v1" => read(self.acp_summaries(runtime)?),
+            "pi-1.0.2" => history::list_pi(&self.pi_history_config(runtime)?, &[])
+                .map_err(|error| {
+                    RuntimeError::context("Pi 历史无法读取；请检查实例路径与 SDK 配置后重试", error)
+                })?
+                .files
+                .into_iter()
+                .map(|file| IndexedConversation {
+                    id: format!("{}:{}", runtime.id, file.path),
+                    identity: format!("{}:{}", file.size, file.mtime_ns),
+                    hint: ConversationHint {
+                        cwd: file.cwd,
+                        activity_unix_ms: file.modified_at_unix_ms,
+                        created_unix_ms: file.created_at_unix_ms,
+                    },
+                    state: EntryState::Unread,
+                })
+                .collect(),
+            "claude-code-2.1.286" => history::index(&self.history_config(runtime)?)
+                .map_err(|error| self.history_failure(runtime, error))?
+                .into_iter()
+                .map(|entry| IndexedConversation {
+                    id: format!("{}:{}", runtime.id, entry.native_id),
+                    identity: format!("{}:{:?}", entry.size, entry.modified_at_unix_ms),
+                    hint: ConversationHint {
+                        cwd: entry.cwd,
+                        activity_unix_ms: entry.modified_at_unix_ms,
+                        created_unix_ms: entry.created_at_unix_ms,
+                    },
+                    state: EntryState::Unread,
+                })
+                .collect(),
+            _ => read(
+                history::list(&self.history_config(runtime)?, &runtime.id)
+                    .map_err(|error| self.history_failure(runtime, error))?,
+            ),
+        };
         let previous = self
             .history_listings
             .borrow_mut()
             .remove(&runtime.id)
             .filter(|listing| listing.runtime == *runtime)
-            .map(|listing| listing.pi_files)
+            .map(|listing| {
+                listing
+                    .entries
+                    .into_iter()
+                    .map(|entry| (entry.id.clone(), entry))
+                    .collect::<BTreeMap<_, _>>()
+            })
             .unwrap_or_default();
-        let known = previous
+        for entry in &mut entries {
+            if matches!(entry.state, EntryState::Unread)
+                && let Some(known) = previous.get(&entry.id)
+                && known.identity == entry.identity
+            {
+                entry.state = known.state.clone();
+            }
+        }
+        self.history_listings.borrow_mut().insert(
+            runtime.id.clone(),
+            HistoryListing {
+                runtime: runtime.clone(),
+                entries,
+            },
+        );
+        Ok(())
+    }
+    fn history_failure(
+        &self,
+        runtime: &RuntimeInstance,
+        error: velune_agent_runtime::history::HistoryError,
+    ) -> RuntimeError {
+        let variant = velune_agent_runtime::version::variant(&runtime.type_id);
+        let family = variant.map(|value| value.family_id).unwrap_or("unknown");
+        let runtime_type = variant.map(|value| value.id).unwrap_or("unknown");
+        tracing::warn!(target: "velune_application", event = "runtime_history_read_failed", phase = error.phase(), failure_kind = error.code(), runtime_family = family, runtime_type, runtime_id=%runtime.id, runtime_name=%runtime.name, runtime_type_id=%runtime.type_id, binary=?runtime.settings.get("binary"), node_binary=?runtime.settings.get("nodeBinary"), agent_dir=?runtime.settings.get("agentDir"), detail=%error);
+        RuntimeError::History(error)
+    }
+    /// The runtime's indexed conversations as last indexed.
+    pub(super) fn indexed(&self, runtime: &RuntimeInstance) -> Vec<IndexedConversation> {
+        self.history_listings
+            .borrow()
+            .get(&runtime.id)
+            .filter(|listing| listing.runtime == *runtime)
+            .map(|listing| listing.entries.clone())
+            .unwrap_or_default()
+    }
+    /// Read the named conversations of an indexed runtime. One the runtime
+    /// cannot read is not listed again until its record changes; a Claude
+    /// Code sub-agent, outside the index, joins it once read.
+    pub(super) fn read_indexed(
+        &self,
+        runtime: &RuntimeInstance,
+        ids: &[String],
+    ) -> Result<(), RuntimeError> {
+        if !reads_lazily(runtime) || ids.is_empty() {
+            return Ok(());
+        }
+        let prefix = format!("{}:", runtime.id);
+        let natives: Vec<String> = ids
             .iter()
-            .map(|(file, _)| file.clone())
-            .collect::<Vec<_>>();
-        let listing =
-            history::list_pi(&self.pi_history_config(runtime)?, &known).map_err(|error| {
-                RuntimeError::context("Pi 历史无法读取；请检查实例路径与 SDK 配置后重试", error)
-            })?;
-        let mut previous = previous
-            .into_iter()
-            .map(|(file, summary)| (file.path, summary))
-            .collect::<BTreeMap<_, _>>();
-        let mut read = listing
-            .sessions
-            .into_iter()
-            .map(|session| (session.path.clone(), session))
-            .collect::<BTreeMap<_, _>>();
-        Ok(listing
-            .files
-            .into_iter()
-            .map(|listed| {
-                let summary = if listed.changed {
-                    read.remove(&listed.file.path)
-                        .map(|session| ConversationSummary {
+            .filter_map(|id| id.strip_prefix(&prefix).map(str::to_owned))
+            .collect();
+        let (summaries, identities): (
+            BTreeMap<String, ConversationSummary>,
+            BTreeMap<String, String>,
+        ) = if runtime.type_id == "pi-1.0.2" {
+            let listing =
+                history::list_pi(&self.pi_history_config(runtime)?, &natives).map_err(|error| {
+                    RuntimeError::context("Pi 历史无法读取；请检查实例路径与 SDK 配置后重试", error)
+                })?;
+            let identities = listing
+                .files
+                .iter()
+                .map(|file| {
+                    (
+                        format!("{prefix}{}", file.path),
+                        format!("{}:{}", file.size, file.mtime_ns),
+                    )
+                })
+                .collect();
+            let summaries = listing
+                .sessions
+                .into_iter()
+                .map(|session| {
+                    let id = format!("{prefix}{}", session.path);
+                    (
+                        id.clone(),
+                        ConversationSummary {
                             can_rename: false,
                             can_delete: false,
-                            id: format!("{}:{}", runtime.id, session.path),
+                            id,
                             title: velune_conversation::conversation_title(
                                 session.name.as_deref(),
                                 session.first_message.as_deref(),
@@ -168,15 +270,106 @@ impl CoreRuntime {
                             runtime_id: runtime.id.clone(),
                             cwd: session.cwd,
                             parent_conversation_id: None,
-                        })
-                } else {
-                    previous.remove(&listed.file.path).flatten()
-                };
-                (listed.file, summary)
-            })
-            .collect())
+                        },
+                    )
+                })
+                .collect();
+            (summaries, identities)
+        } else {
+            let summaries =
+                history::summaries(&self.history_config(runtime)?, &runtime.id, &natives)
+                    .map_err(|error| self.history_failure(runtime, error))?
+                    .into_iter()
+                    .map(|summary| (summary.id.clone(), summary))
+                    .collect();
+            (summaries, BTreeMap::new())
+        };
+        let mut listings = self.history_listings.borrow_mut();
+        let Some(listing) = listings
+            .get_mut(&runtime.id)
+            .filter(|listing| listing.runtime == *runtime)
+        else {
+            return Ok(());
+        };
+        let mut summaries = summaries;
+        for id in ids {
+            let summary = summaries.remove(id);
+            match listing.entries.iter_mut().find(|entry| entry.id == *id) {
+                Some(entry) => {
+                    if let Some(identity) = identities.get(id) {
+                        entry.identity = identity.clone();
+                    }
+                    entry.state = summary.map_or(EntryState::Unreadable, EntryState::Read);
+                }
+                None => {
+                    if let Some(summary) = summary {
+                        listing.entries.push(IndexedConversation {
+                            id: id.clone(),
+                            identity: String::new(),
+                            hint: ConversationHint::default(),
+                            state: EntryState::Read(summary),
+                        });
+                    }
+                }
+            }
+        }
+        Ok(())
     }
-    /// A conversation from this instance's latest listing; no native read.
+    /// Drop a runtime's index, so a runtime that cannot be read lists nothing.
+    pub(super) fn forget_index(&self, runtime: &RuntimeInstance) {
+        self.history_listings.borrow_mut().remove(&runtime.id);
+    }
+    /// Read the native conversations continued ones are made of, so a
+    /// continued conversation lists with its own title and activity.
+    pub(super) fn read_link_segments(&self) {
+        for runtime in self.runtime_instances.iter().filter(|r| r.enabled) {
+            let unread: Vec<String> = self
+                .indexed(runtime)
+                .into_iter()
+                .filter(|entry| {
+                    matches!(entry.state, EntryState::Unread)
+                        && self.conversation_links.iter().any(|link| {
+                            link.segments
+                                .iter()
+                                .any(|segment| segment.native_conversation_id == entry.id)
+                        })
+                })
+                .map(|entry| entry.id)
+                .collect();
+            if let Err(error) = self.read_indexed(runtime, &unread) {
+                tracing::warn!(target:"velune_application",event="runtime_history_read_failed",phase="link_segments",runtime_id=%runtime.id,runtime_type_id=%runtime.type_id,detail=%error);
+            }
+        }
+    }
+    /// Read what the runtime's index has not read yet.
+    pub(super) fn read_unread(&self, runtime: &RuntimeInstance) -> Result<(), RuntimeError> {
+        let unread: Vec<String> = self
+            .indexed(runtime)
+            .into_iter()
+            .filter(|entry| matches!(entry.state, EntryState::Unread))
+            .map(|entry| entry.id)
+            .collect();
+        self.read_indexed(runtime, &unread)
+    }
+    /// One conversation of a runtime, indexed again and read if needed;
+    /// none when the runtime does not have it.
+    pub(super) fn conversation_summary(
+        &self,
+        runtime: &RuntimeInstance,
+        id: &str,
+    ) -> Result<Option<ConversationSummary>, RuntimeError> {
+        self.index_history(runtime)?;
+        let state = self
+            .indexed(runtime)
+            .into_iter()
+            .find(|entry| entry.id == id)
+            .map(|entry| entry.state);
+        if matches!(state, Some(EntryState::Unread)) || (state.is_none() && reads_lazily(runtime)) {
+            self.read_indexed(runtime, &[id.to_owned()])?;
+        }
+        Ok(self.listed_summary(runtime, id))
+    }
+    /// A conversation this instance's index has read; no native read.
     pub(super) fn listed_summary(
         &self,
         runtime: &RuntimeInstance,
@@ -186,16 +379,19 @@ impl CoreRuntime {
             .borrow()
             .get(&runtime.id)
             .filter(|listing| listing.runtime == *runtime)
-            .and_then(|listing| listing.summaries.iter().find(|s| s.id == id).cloned())
+            .and_then(|listing| {
+                listing.entries.iter().find_map(|entry| match &entry.state {
+                    EntryState::Read(summary) if entry.id == id => Some(summary.clone()),
+                    _ => None,
+                })
+            })
             .or_else(|| {
                 // The runtime's own archive is listed apart from its history.
-                self.last_listed
+                self.archived_listing
                     .borrow()
-                    .get(id)
-                    .filter(|source| {
-                        source.archived_natively && source.summary.runtime_id == runtime.id
-                    })
-                    .map(|source| source.summary.clone())
+                    .iter()
+                    .find(|summary| summary.id == id && summary.runtime_id == runtime.id)
+                    .cloned()
             })
     }
     pub(super) fn validate_session_model(
@@ -239,18 +435,16 @@ impl CoreRuntime {
         let summary = match self.listed_summary(runtime, id) {
             Some(summary) => summary,
             None => self
-            .summaries_for(runtime)
-            .map_err(|error| {
-                tracing::warn!(target: "velune_application", event="runtime_history_read_failed", phase="history_lookup", runtime_id=%runtime.id, runtime_name=%runtime.name, runtime_type_id=%runtime.type_id, binary=?runtime.settings.get("binary"), node_binary=?runtime.settings.get("nodeBinary"), agent_dir=?runtime.settings.get("agentDir"), detail=%error);
-                if runtime.type_id == "pi-1.0.2" {
-                    RuntimeError::context(&runtime_context(runtime), error)
-                } else {
-                    error
-                }
-            })?
-            .into_iter()
-            .find(|s| s.id == id)
-            .ok_or_else(|| RuntimeError::invalid("此会话不属于所选运行时历史目录"))?,
+                .conversation_summary(runtime, id)
+                .map_err(|error| {
+                    tracing::warn!(target: "velune_application", event="runtime_history_read_failed", phase="history_lookup", runtime_id=%runtime.id, runtime_name=%runtime.name, runtime_type_id=%runtime.type_id, binary=?runtime.settings.get("binary"), node_binary=?runtime.settings.get("nodeBinary"), agent_dir=?runtime.settings.get("agentDir"), detail=%error);
+                    if runtime.type_id == "pi-1.0.2" {
+                        RuntimeError::context(&runtime_context(runtime), error)
+                    } else {
+                        error
+                    }
+                })?
+                .ok_or_else(|| RuntimeError::invalid("此会话不属于所选运行时历史目录"))?,
         };
         if runtime.type_id == "acp-v1" {
             let cwd = summary

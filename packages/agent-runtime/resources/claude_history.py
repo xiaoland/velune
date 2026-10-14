@@ -205,19 +205,27 @@ def subagents(path):
     return found
 
 
-def main():
-    request = json.load(sys.stdin)
-    roots = request["roots"]
-    if not roots or any(not os.path.isabs(root) for root in roots):
-        raise ValueError("absolute session roots required")
-    runtime_id = request["runtimeId"]
-    requested = request.get("nativeId")
-    session = agent = None
-    if requested:
-        session, _, agent = requested.partition("/")
-        uuid.UUID(session)
-        if agent and not (agent.startswith("agent-") and AGENT_ID.fullmatch(agent[len("agent-"):])):
-            raise ValueError("invalid sub-agent id")
+def first_cwd(path):
+    """The working directory a session started in, from its first records."""
+    try:
+        with open(path, encoding="utf-8") as file:
+            for count, line in enumerate(file):
+                if count >= 200:
+                    break
+                try:
+                    record = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(record, dict) and isinstance(record.get("cwd"), str):
+                    return record["cwd"]
+    except OSError:
+        pass
+    return None
+
+
+def sessions(roots, only=None):
+    """Every main session file under the roots, by file name; with `only`,
+    just that session's."""
     found = {}
     for root in roots:
         if not os.path.exists(root):
@@ -225,7 +233,7 @@ def main():
         for directory, children, files in os.walk(root, followlinks=False):
             children[:] = [name for name in children if name != "subagents" and not os.path.islink(os.path.join(directory, name))]
             for name in files:
-                if not name.endswith(".jsonl") or (session and name != session + ".jsonl"):
+                if not name.endswith(".jsonl") or (only and name != only + ".jsonl"):
                     continue
                 try:
                     uuid.UUID(name[:-6])
@@ -237,27 +245,82 @@ def main():
                 if name in found:
                     raise ValueError("ambiguous_session")
                 found[name] = path
-    if request["operation"] == "read":
+    return found
+
+
+def summary(path, native_id, runtime_id):
+    item = history(path, native_id, runtime_id)
+    item.pop("messages")
+    return item
+
+
+def subagent_summary(native_id, candidate, parent):
+    title = (meta_title(candidate) or "").strip()
+    return {"nativeId": native_id, "parentNativeId": parent["nativeId"], "cwd": parent["cwd"],
+            "title": {"source": "native", "text": title} if title else {"source": "untitled"},
+            "createdAtUnixMs": None, "updatedAtUnixMs": None}
+
+
+def main():
+    request = json.load(sys.stdin)
+    roots = request["roots"]
+    if not roots or any(not os.path.isabs(root) for root in roots):
+        raise ValueError("absolute session roots required")
+    runtime_id = request["runtimeId"]
+    operation = request["operation"]
+    requested = request.get("nativeId")
+    found = sessions(roots, requested.partition("/")[0] if operation == "read" else None)
+    if operation == "index":
+        # File state only: which sessions exist, when their files changed,
+        # and each project folder's working directory from its newest session.
+        entries, cwds = [], {}
+        for name, path in found.items():
+            try:
+                status = os.stat(path)
+            except OSError:
+                continue
+            entries.append({"nativeId": name[:-6], "directory": os.path.dirname(path), "size": status.st_size,
+                            "modifiedAtUnixMs": int(status.st_mtime * 1000),
+                            "createdAtUnixMs": int(status.st_birthtime * 1000) if hasattr(status, "st_birthtime") else None})
+        newest = {}
+        for entry in entries:
+            if entry["modifiedAtUnixMs"] >= newest.get(entry["directory"], (-1, None))[0]:
+                newest[entry["directory"]] = (entry["modifiedAtUnixMs"], entry["nativeId"])
+        for directory, (_, native_id) in newest.items():
+            cwds[directory] = first_cwd(os.path.join(directory, native_id + ".jsonl"))
+        for entry in entries:
+            entry["cwd"] = cwds.get(entry.pop("directory"))
+        return {"contractVersion": 1, "entries": entries}
+    if operation == "summaries":
+        result, failures = [], []
+        for requested in request["nativeIds"]:
+            session, _, agent = requested.partition("/")
+            try:
+                uuid.UUID(session)
+                path = found.get(session + ".jsonl")
+                if path is None:
+                    continue
+                if not agent:
+                    result.append(summary(path, session, runtime_id))
+                    continue
+                candidate = dict(subagents(path)).get(requested)
+                if candidate is not None:
+                    result.append(subagent_summary(requested, candidate, {"nativeId": session, "cwd": first_cwd(path)}))
+            except (ValueError, OSError) as error:
+                failures.append({"code": "provider_read", "detail": type(error).__name__})
+        return {"contractVersion": 1, "sessions": result, "failures": failures}
+    if operation == "read":
+        session, _, agent = requested.partition("/")
+        uuid.UUID(session)
+        if agent and not (agent.startswith("agent-") and AGENT_ID.fullmatch(agent[len("agent-"):])):
+            raise ValueError("invalid sub-agent id")
         path = found.get(session + ".jsonl")
         if path is not None and agent:
             path = dict(subagents(path)).get(requested)
         if path is None:
             return {"error": {"code": "session_not_found"}}
         return {"contractVersion": 1, "history": history(path, requested, runtime_id, sidechain=bool(agent))}
-    sessions = []
-    for path in found.values():
-        item = history(path, os.path.basename(path)[:-6], runtime_id)
-        item.pop("messages")
-        sessions.append(item)
-        # Sub-agents open from their parent's transcript, so their listing
-        # needs only identity and name, not a read of every sub-agent file.
-        for native_id, candidate in subagents(path):
-            title = (meta_title(candidate) or "").strip()
-            sessions.append({"nativeId": native_id, "parentNativeId": item["nativeId"], "cwd": item["cwd"],
-                             "title": {"source": "native", "text": title} if title else {"source": "untitled"},
-                             "createdAtUnixMs": None, "updatedAtUnixMs": None})
-    return {"contractVersion": 1, "sessions": sessions, "failures": []}
-
+    raise ValueError("unknown operation")
 
 try:
     print(json.dumps(main(), ensure_ascii=False))

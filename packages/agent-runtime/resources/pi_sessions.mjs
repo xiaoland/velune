@@ -62,16 +62,18 @@ if (inspectPath) {
     virtualState: virtualEntry?.data ?? null,
   }));
 } else {
-  // Discovery mirrors SessionManager.listAll. The caller reports the file
-  // identities of its previous listing; only new or changed files are parsed,
-  // and Pi's own metadata reader parses them through a private directory of
-  // links, so Pi stays authoritative for every listed field.
-  const { readdir, stat, mkdtemp, symlink, rm } = await import("node:fs/promises");
+  // Discovery mirrors SessionManager.listAll. Every file is reported with
+  // its identity and, from its first line, the working directory and start
+  // time it records, so the list can group and count without reading
+  // sessions. Only the files the caller names are parsed, by Pi's own
+  // metadata reader through a private directory of links, so Pi stays
+  // authoritative for every listed field.
+  const { readdir, stat, mkdtemp, symlink, rm, open } = await import("node:fs/promises");
   const { join, resolve } = await import("node:path");
   const { tmpdir } = await import("node:os");
   let input = "";
   for await (const chunk of process.stdin) input += chunk;
-  const known = new Map(JSON.parse(input).files.map((file) => [file.path, file]));
+  const want = new Set(JSON.parse(input).want);
   const sessionsRoot = resolve(agentDir, "sessions");
   const directories = sessionDir
     ? [sessionDir]
@@ -81,25 +83,45 @@ if (inspectPath) {
   const paths = (await Promise.all(directories.map((directory) => readdir(directory)
     .then((names) => names.filter((name) => name.endsWith(".jsonl")).map((name) => join(directory, name)))
     .catch(() => [])))).flat();
+  const header = async (path) => {
+    const file = await open(path, "r");
+    try {
+      const buffer = Buffer.alloc(65536);
+      const { bytesRead } = await file.read(buffer, 0, buffer.length, 0);
+      const line = buffer.subarray(0, bytesRead).toString("utf8").split("\n")[0];
+      const value = JSON.parse(line);
+      return value?.type === "session" ? value : null;
+    } catch {
+      return null;
+    } finally {
+      await file.close();
+    }
+  };
   // Nanoseconds as a decimal string survive the JSON round trip exactly.
-  const files = (await Promise.all(paths.map((path) => stat(path, { bigint: true })
-    .then((stats) => ({ path, size: String(stats.size), mtimeNs: String(stats.mtimeNs) }))
-    .catch(() => null)))).filter((file) => file !== null);
-  for (const file of files) {
-    const previous = known.get(file.path);
-    file.changed = previous?.size !== file.size || previous?.mtimeNs !== file.mtimeNs;
-  }
-  const changed = files.filter((file) => file.changed);
+  const files = (await Promise.all(paths.map(async (path) => {
+    try {
+      const stats = await stat(path, { bigint: true });
+      const start = await header(path);
+      const created = typeof start?.timestamp === "string" ? Date.parse(start.timestamp) : NaN;
+      return { path, size: String(stats.size), mtimeNs: String(stats.mtimeNs),
+        modifiedAtUnixMs: Number(stats.mtimeMs),
+        cwd: typeof start?.cwd === "string" && start.cwd ? start.cwd : null,
+        createdAtUnixMs: Number.isFinite(created) ? created : null };
+    } catch {
+      return null;
+    }
+  }))).filter((file) => file !== null);
+  const wanted = files.filter((file) => want.has(file.path));
   let sessions = [];
-  if (changed.length) {
+  if (wanted.length) {
     const { SessionManager } = await sessionManager();
     const links = await mkdtemp(join(tmpdir(), "velune-pi-list-"));
     try {
-      await Promise.all(changed.map((file, index) => symlink(file.path, join(links, `${index}.jsonl`))));
+      await Promise.all(wanted.map((file, index) => symlink(file.path, join(links, `${index}.jsonl`))));
       sessions = (await SessionManager.listAll(links)).map((session) => {
         const index = Number(session.path.slice(links.length + 1, -".jsonl".length));
         return {
-          path: changed[index].path,
+          path: wanted[index].path,
           id: session.id,
           cwd: session.cwd,
           name: session.name ?? null,
@@ -113,5 +135,5 @@ if (inspectPath) {
       await rm(links, { recursive: true, force: true });
     }
   }
-  process.stdout.write(JSON.stringify({ contractVersion: 2, files, sessions }));
+  process.stdout.write(JSON.stringify({ contractVersion: 3, files, sessions }));
 }

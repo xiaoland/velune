@@ -2,10 +2,13 @@
 """Manual conversation list management acceptance, never a CI entry point.
 
 Seeds Pi sessions in several projects through the selected Pi SDK and Codex
-threads through a loopback Responses server, all in a temporary HOME, then
-checks the list's window (groups, pages, total), pins, read state, moves,
+threads through a loopback Responses server and synthetic Claude Code JSONL,
+all in a temporary HOME, then checks the list's window (groups, pages,
+total), that only the sessions it shows are read, pins, read state, moves,
 project names, Velune and Codex archives, search, and lookup through the
-generated bindings. No credentials, real histories, or model requests.
+generated bindings. Wrappers of node and python3 record which sessions the
+history helpers are asked to read. No credentials, real histories, or model
+requests.
 """
 import argparse
 import importlib.util
@@ -112,7 +115,7 @@ def seed_codex(codex, root, codex_home, port, cwds):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    for name in ('bundle', 'bindings', 'node', 'pi', 'codex'):
+    for name in ('bundle', 'bindings', 'node', 'pi', 'codex', 'claude'):
         parser.add_argument('--' + name, type=Path, required=True)
     args = parser.parse_args()
     for path in vars(args).values():
@@ -122,7 +125,7 @@ def main():
     threading.Thread(target=server.serve_forever, daemon=True).start()
     with tempfile.TemporaryDirectory(prefix='velune-conversation-list-') as directory:
         root = Path(directory).resolve()
-        for name in ('bindings', 'seed', 'pi', 'codex', 'alpha', 'beta', 'gamma'):
+        for name in ('bindings', 'seed', 'pi', 'codex', 'claude', 'tools', 'alpha', 'beta', 'gamma', 'delta'):
             (root / name).mkdir()
         package = args.pi.resolve()
         while not (package / 'package.json').is_file():
@@ -131,6 +134,27 @@ def main():
         (root / 'seed/node_modules/@earendil-works/pi-coding-agent').symlink_to(package)
         (root / 'seed/create.mjs').write_text(SEED)
         fixture_env = {'HOME': str(root), 'PATH': '/usr/bin:/bin'}
+        # The history helpers read their request from stdin; the wrappers
+        # keep a copy of each one before running the real interpreter.
+        requests = root / 'requests.jsonl'
+        node = root / 'tools/node'
+        node.write_text('#!/bin/bash\ncase "$*" in *pi_sessions.mjs*) input=$(/bin/cat); printf \'%%s\\n\' "$input" >> %s;'
+                        ' exec %s "$@" <<< "$input";; esac\nexec %s "$@"\n' % (requests, args.node, args.node))
+        python = root / 'tools/python3'
+        python.write_text('#!/bin/bash\ninput=$(/bin/cat); printf \'%%s\\n\' "$input" >> %s; exec /usr/bin/python3 "$@" <<< "$input"\n' % requests)
+        node.chmod(0o755)
+        python.chmod(0o755)
+
+        def read_requests():
+            # The paths and session ids the helpers were asked to read since last asked.
+            if not requests.exists():
+                return set()
+            asked = set()
+            for line in requests.read_text().splitlines():
+                request = json.loads(line)
+                asked.update(request.get('want') or request.get('nativeIds') or [])
+            requests.unlink()
+            return asked
 
         def pi_dir(cwd):
             return root / 'pi/sessions' / ('--' + str(cwd).lstrip('/').replace('/', '-') + '--')
@@ -159,13 +183,39 @@ def main():
         def open_application():
             return b.VeluneApplication.open(b.BindingOptions(home_directory=str(home), resources_directory=resources))
         application = open_application()
-        application.upsert_runtime(b.BindingRuntimeInstance(enabled=True, id='pi', name='Synthetic Pi', type_id='pi-1.0.2',
-            gateway_id='default', settings={'binary': str(args.pi), 'nodeBinary': str(args.node), 'agentDir': str(root / 'pi')}))
-        application.upsert_runtime(b.BindingRuntimeInstance(enabled=True, id='codex', name='Synthetic Codex', type_id='codex-0.159.3',
-            gateway_id='default', settings={'binary': str(args.codex), 'nodeBinary': str(args.node), 'agentDir': str(root / 'codex')}))
         results = {}
         K = b.BindingConversationGroupKey
         C = b.BindingConversationOrganizationChange
+        os.environ['PATH'] = str(root / 'tools') + ':/usr/bin:/bin'
+
+        def preferences(**changes):
+            value = dict(grouping=b.BindingConversationBrowserGrouping.NONE, sort=b.BindingConversationBrowserSort.UPDATED,
+                         oldest_first=False, runtime_id=None, project=b.BindingConversationBrowserProject.ALL(), collapsed=[])
+            value.update(changes)
+            return b.BindingConversationBrowserPreferences(**value)
+
+        # A small window before the runtimes join: only what it shows is read.
+        application.set_conversation_browser_limits(b.BindingConversationBrowserLimits(page=3, total=5))
+        application.set_conversation_browser_preferences(preferences(grouping=b.BindingConversationBrowserGrouping.PROJECT))
+        application.upsert_runtime(b.BindingRuntimeInstance(enabled=True, id='pi', name='Synthetic Pi', type_id='pi-1.0.2',
+            gateway_id='default', settings={'binary': str(args.pi), 'nodeBinary': str(node), 'agentDir': str(root / 'pi')}))
+        application.upsert_runtime(b.BindingRuntimeInstance(enabled=True, id='codex', name='Synthetic Codex', type_id='codex-0.159.3',
+            gateway_id='default', settings={'binary': str(args.codex), 'nodeBinary': str(args.node), 'agentDir': str(root / 'codex')}))
+        lazy = application.list()
+        loads = [(g.key, g.loaded, g.total) for g in lazy.conversation_groups]
+        assert loads == [(K.PROJECT(str(root / 'beta')), 3, 6), (K.PROJECT(str(root / 'alpha')), 2, 7),
+                         (K.PROJECT(str(root / 'gamma')), 0, 3)], loads
+        shown_pi = {c.native_id for c in lazy.conversations if c.group is not None and c.conversation.runtime_id == 'pi'}
+        asked = read_requests()
+        assert len([c for c in lazy.conversations if c.group is not None]) == 5 and shown_pi <= set(paths[3:])
+        assert asked == shown_pi, (asked, shown_pi)
+        assert all(c.conversation.title for c in lazy.conversations)
+        more = application.load_more_conversations(K.PROJECT(str(root / 'gamma')))
+        assert read_requests() == set(paths[0:3])
+        assert [c.conversation.title for c in more.conversations if c.group == K.PROJECT(str(root / 'gamma'))] == ['gamma 2', 'gamma 1', 'gamma 0']
+        application.set_conversation_browser_limits(b.BindingConversationBrowserLimits(page=20, total=200))
+        application.set_conversation_browser_preferences(preferences())
+        results['lazy'] = 'ok'
 
         def shown(snapshot):
             return [c for c in snapshot.conversations if c.group is not None]
@@ -178,12 +228,6 @@ def main():
 
         def find(snapshot, title):
             return next(c for c in snapshot.conversations if c.conversation.title == title)
-
-        def preferences(**changes):
-            value = dict(grouping=b.BindingConversationBrowserGrouping.NONE, sort=b.BindingConversationBrowserSort.UPDATED,
-                         oldest_first=False, runtime_id=None, project=b.BindingConversationBrowserProject.ALL(), collapsed=[])
-            value.update(changes)
-            return b.BindingConversationBrowserPreferences(**value)
 
         listed = application.list()
         assert len(shown(listed)) == 16, [c.conversation.title for c in shown(listed)]
@@ -276,6 +320,44 @@ def main():
 
         assert application.find_conversation('pi:' + paths[1]).conversation.title == 'gamma 1'
         assert application.find_conversation('pi:/missing') is None
+
+        # Claude Code: indexed from its project folders; the window reads its
+        # sessions by recency of their files, and a session whose records are
+        # older than its file moves out once read.
+        project = root / 'claude/projects' / str(root / 'delta').replace('/', '-')
+        project.mkdir(parents=True)
+        claude_ids = []
+        base = int(time.time()) - 1000
+        for index in range(6):
+            native = '00000000-0000-4000-8000-%012d' % index
+            claude_ids.append(native)
+            # delta 0's file is the newest, its records the oldest.
+            at = base + (10 if index == 0 else 100 + index * 10)
+            stamp = time.strftime('%Y-%m-%dT%H:%M:%S.000Z', time.gmtime(at))
+            records = [{'type': 'user', 'uuid': native[:-1] + 'a', 'parentUuid': None, 'sessionId': native, 'cwd': str(root / 'delta'),
+                        'timestamp': stamp, 'message': {'role': 'user', 'content': 'synthetic question %d' % index}},
+                       {'type': 'custom-title', 'customTitle': 'delta %d' % index, 'sessionId': native}]
+            file = project / (native + '.jsonl')
+            file.write_text(''.join(json.dumps(record) + '\n' for record in records))
+            os.utime(file, (base + 900 if index == 0 else at, base + 900 if index == 0 else at))
+        read_requests()
+        application.set_conversation_browser_limits(b.BindingConversationBrowserLimits(page=2, total=2))
+        application.upsert_runtime(b.BindingRuntimeInstance(enabled=True, id='claude', name='Synthetic Claude', type_id='claude-code-2.1.286',
+            gateway_id='default', settings={'binary': str(args.claude), 'agentDir': str(root / 'claude')}))
+        window = application.set_conversation_browser_preferences(preferences(runtime_id='claude'))
+        assert [c.conversation.title for c in shown(window)] == ['delta 5', 'delta 4'], [c.conversation.title for c in shown(window)]
+        assert [(g.loaded, g.total) for g in window.conversation_groups] == [(2, 6)]
+        assert read_requests() == {claude_ids[0], claude_ids[5], claude_ids[4]}
+        more = application.load_more_conversations(K.ALL())
+        assert [c.conversation.title for c in shown(more)] == ['delta 5', 'delta 4', 'delta 3', 'delta 2']
+        assert read_requests() == {claude_ids[3], claude_ids[2]}
+        found = application.search_conversations('delta 1')
+        assert [c.conversation.title for c in shown(found)] == ['delta 1']
+        assert read_requests() == {claude_ids[1]}
+        assert application.find_conversation('claude:' + claude_ids[0]).conversation.title == 'delta 0'
+        application.set_conversation_browser_limits(b.BindingConversationBrowserLimits(page=3, total=100))
+        application.set_conversation_browser_preferences(preferences())
+        results['claude_lazy'] = 'ok'
         application.shutdown()
         application = open_application()
         reopened = application.list()

@@ -422,10 +422,7 @@ impl CoreRuntime {
             .filter(|id| !id.is_empty())
             .ok_or_else(|| RuntimeError::invalid("conversation id"))?;
         // Re-resolve within the configured instance before invoking a native mutation.
-        let listed = self
-            .summaries_for(&runtime)?
-            .iter()
-            .any(|summary| summary.id == id);
+        let listed = self.conversation_summary(&runtime, id)?.is_some();
         if !listed
             && runtime.type_id == "pi-1.0.2"
             && matches!(self.session.active_state, ActiveState::Pi)
@@ -528,9 +525,9 @@ impl CoreRuntime {
                 )
             })?;
         }
-        let summaries = self.summaries_for(&runtime)?;
+        let summary = self.conversation_summary(&runtime, id)?;
         if deleting {
-            if summaries.iter().any(|summary| summary.id == id) {
+            if summary.is_some() {
                 return Err(RuntimeError::invalid(
                     "运行时尚未确认会话删除，请刷新后重试",
                 ));
@@ -540,11 +537,8 @@ impl CoreRuntime {
                 self.session.model_record_key = None;
             }
         } else {
-            let summary = summaries
-                .into_iter()
-                .find(|summary| {
-                    summary.id == id && summary.title.display_text() == title.expect("rename title")
-                })
+            let summary = summary
+                .filter(|summary| summary.title.display_text() == title.expect("rename title"))
                 .ok_or_else(|| RuntimeError::invalid("运行时尚未确认会话重命名，请刷新后重试"))?;
             if current && let ActiveState::History(snapshot) = &mut self.session.active_state {
                 snapshot.conversation = summary;

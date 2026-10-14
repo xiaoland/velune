@@ -3,7 +3,7 @@ use crate::{
     conversation::*,
     native::{Error, Result as NativeResult},
 };
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::json;
 use std::{path::PathBuf, process::Command};
 
@@ -144,6 +144,7 @@ fn execute(
     operation: &str,
     runtime_id: &str,
     native_id: Option<&str>,
+    native_ids: &[String],
 ) -> Result<Vec<u8>, HistoryError> {
     if !matches!(config.provider.as_str(), "deepseek" | "claude-code") {
         return Err(HistoryError::new(
@@ -165,7 +166,7 @@ fn execute(
             ));
         }
     }
-    let request = json!({"operation":operation,"provider":config.provider,"home":config.home,"roots":[config.root],"runtimeId":runtime_id,"nativeId":native_id});
+    let request = json!({"operation":operation,"provider":config.provider,"home":config.home,"roots":[config.root],"runtimeId":runtime_id,"nativeId":native_id,"nativeIds":native_ids});
     let input = serde_json::to_vec(&request).map_err(|error| {
         HistoryError::new(HistoryFailureKind::BridgeContract, "request")
             .with_detail(error.to_string())
@@ -211,18 +212,22 @@ pub fn list(
         )
         .map_err(|error| native_history_error(error, "native_list"));
     }
-    let bytes = execute(config, "list", runtime_id, None)?;
-    let result: List = serde_json::from_slice(&bytes).map_err(|error| {
-        HistoryError::new(HistoryFailureKind::BridgeContract, "list").with_detail(error.to_string())
+    let bytes = execute(config, "list", runtime_id, None, &[])?;
+    listed_summaries(&bytes, runtime_id, "list")
+}
+fn listed_summaries(
+    bytes: &[u8],
+    runtime_id: &str,
+    phase: &'static str,
+) -> Result<Vec<ConversationSummary>, HistoryError> {
+    let result: List = serde_json::from_slice(bytes).map_err(|error| {
+        HistoryError::new(HistoryFailureKind::BridgeContract, phase).with_detail(error.to_string())
     })?;
     if result.contract_version != 1 {
-        return Err(HistoryError::new(
-            HistoryFailureKind::BridgeContract,
-            "list",
-        ));
+        return Err(HistoryError::new(HistoryFailureKind::BridgeContract, phase));
     }
     if !result.failures.is_empty() {
-        tracing::warn!(target: "velune_agent_runtime", event = "history_entries_skipped", phase = "list", skipped = result.failures.len(), causes = ?result.failures.iter().map(|failure| (&failure.code, &failure.detail)).collect::<Vec<_>>());
+        tracing::warn!(target: "velune_agent_runtime", event = "history_entries_skipped", phase, skipped = result.failures.len(), causes = ?result.failures.iter().map(|failure| (&failure.code, &failure.detail)).collect::<Vec<_>>());
     }
     Ok(result
         .sessions
@@ -242,6 +247,58 @@ pub fn list(
         })
         .collect())
 }
+
+/// A Claude Code session by its file: when it changed and the working
+/// directory its project folder records, without reading the session.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IndexedSession {
+    pub native_id: String,
+    pub size: u64,
+    pub modified_at_unix_ms: Option<i64>,
+    pub created_at_unix_ms: Option<i64>,
+    pub cwd: Option<String>,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Index {
+    contract_version: u32,
+    entries: Vec<IndexedSession>,
+}
+
+/// The sessions a Claude Code root holds, by file state only.
+pub fn index(config: &HistoryConfig) -> Result<Vec<IndexedSession>, HistoryError> {
+    if config.provider != "claude-code" {
+        return Err(HistoryError::new(
+            HistoryFailureKind::UnsupportedProvider,
+            "validate",
+        ));
+    }
+    let bytes = execute(config, "index", "", None, &[])?;
+    let result: Index = serde_json::from_slice(&bytes).map_err(|error| {
+        HistoryError::new(HistoryFailureKind::BridgeContract, "index")
+            .with_detail(error.to_string())
+    })?;
+    if result.contract_version != 1 {
+        return Err(HistoryError::new(
+            HistoryFailureKind::BridgeContract,
+            "index",
+        ));
+    }
+    Ok(result.entries)
+}
+
+/// Summaries of the named Claude Code sessions (or their sub-agents'); a
+/// session that is gone is left out.
+pub fn summaries(
+    config: &HistoryConfig,
+    runtime_id: &str,
+    native_ids: &[String],
+) -> Result<Vec<ConversationSummary>, HistoryError> {
+    let bytes = execute(config, "summaries", runtime_id, None, native_ids)?;
+    listed_summaries(&bytes, runtime_id, "summaries")
+}
+
 /// The conversations a runtime archived itself; only Codex has an archive.
 pub fn list_archived(
     config: &HistoryConfig,
@@ -276,7 +333,7 @@ pub fn read(
         )
         .map_err(|error| native_history_error(error, "native_read"));
     }
-    let bytes = execute(config, "read", runtime_id, Some(native_id))?;
+    let bytes = execute(config, "read", runtime_id, Some(native_id), &[])?;
     let value: serde_json::Value = serde_json::from_slice(&bytes).map_err(|error| {
         HistoryError::new(HistoryFailureKind::BridgeContract, "read").with_detail(error.to_string())
     })?;
@@ -309,26 +366,23 @@ fn native_history_error(error: Error, phase: &'static str) -> HistoryError {
     HistoryError::new(HistoryFailureKind::ProviderRead, phase).with_detail(error.detail())
 }
 
-/// A Pi session file as observed by a previous listing. Pi appends to its
-/// session files, so an unchanged size and modification time mean unchanged metadata.
-/// Size and nanosecond modification time are opaque decimal strings compared
-/// only by the helper, so no precision is lost crossing JSON.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// A Pi session file and what its first line records. Pi appends to its
+/// session files, so an unchanged size and modification time mean unchanged
+/// metadata. Size and nanosecond modification time are opaque decimal strings,
+/// so no precision is lost crossing JSON.
+#[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PiSessionFile {
     pub path: String,
     pub size: String,
     pub mtime_ns: String,
+    pub modified_at_unix_ms: Option<i64>,
+    /// The session header's working directory and start; a hint until Pi
+    /// reads the session.
+    pub cwd: Option<String>,
+    pub created_at_unix_ms: Option<i64>,
 }
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PiListedFile {
-    #[serde(flatten)]
-    pub file: PiSessionFile,
-    /// False only for a file reported in `known` with the same identity.
-    pub changed: bool,
-}
-/// Pi SessionManager metadata, read only for new or changed files.
+/// Pi SessionManager metadata, read only for the files asked for.
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PiSessionSummary {
@@ -343,18 +397,18 @@ pub struct PiSessionSummary {
 #[serde(rename_all = "camelCase")]
 pub struct PiListing {
     contract_version: u32,
-    pub files: Vec<PiListedFile>,
+    pub files: Vec<PiSessionFile>,
     pub sessions: Vec<PiSessionSummary>,
 }
 
-/// List Pi sessions, re-reading only files that differ from `known`.
-pub fn list_pi(config: &crate::Config, known: &[PiSessionFile]) -> NativeResult<PiListing> {
-    let input = serde_json::to_vec(&json!({ "files": known }))
+/// Every Pi session file, with Pi's metadata for the files in `read`.
+pub fn list_pi(config: &crate::Config, read: &[String]) -> NativeResult<PiListing> {
+    let input = serde_json::to_vec(&json!({ "want": read }))
         .map_err(|error| Error::new(format!("Pi 历史列表请求无效：{error}")))?;
     let listing: PiListing =
         serde_json::from_value(execute_pi(config, PiOperation::List, Some(input))?)
             .map_err(|error| Error::new(format!("Pi 历史 SDK 格式不匹配：{error}")))?;
-    if listing.contract_version != 2 {
+    if listing.contract_version != 3 {
         return Err(Error::new("Pi 历史列表契约版本不匹配"));
     }
     Ok(listing)

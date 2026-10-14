@@ -26,6 +26,8 @@ pub(super) struct BrowserWindow {
 pub(super) struct ListedSource {
     pub(super) summary: ConversationSummary,
     pub(super) archived_natively: bool,
+    /// Indexed but not read yet: identity, project, and file time only.
+    pub(super) provisional: bool,
 }
 
 pub(super) struct Page {
@@ -122,6 +124,49 @@ impl CoreRuntime {
             moved: moved.is_some(),
             project: moved.or_else(|| summary.cwd.clone()),
             group: None,
+        }
+    }
+
+    /// The window over `sources` with every conversation it shows read.
+    /// Reading gives a conversation its native activity time, which may move
+    /// it out of the window and others in, so the window is drawn again
+    /// until it settles; whatever is still unread then is left out.
+    pub(super) fn browse_read(&self, mut sources: Vec<ListedSource>, search: Option<&str>) -> Page {
+        let mut rounds = 0;
+        loop {
+            let mut page = self.browse(sources, search);
+            let unread = |item: &ListedConversation| {
+                self.last_listed
+                    .borrow()
+                    .get(&item.conversation.id)
+                    .is_some_and(|source| source.provisional)
+            };
+            let mut wanted = BTreeMap::<&str, Vec<String>>::new();
+            for item in page.conversations.iter().filter(|item| unread(item)) {
+                wanted
+                    .entry(item.conversation.runtime_id.as_str())
+                    .or_default()
+                    .push(item.conversation.id.clone());
+            }
+            if wanted.is_empty() {
+                return page;
+            }
+            rounds += 1;
+            let mut failed = false;
+            for (runtime_id, ids) in &wanted {
+                let read = self
+                    .runtime_instance(runtime_id)
+                    .and_then(|runtime| self.read_indexed(runtime, ids));
+                if let Err(error) = read {
+                    failed = true;
+                    tracing::warn!(target:"velune_application",event="runtime_history_read_failed",phase="list_window",runtime_id=%runtime_id,detail=%error);
+                }
+            }
+            if failed || rounds > 4 {
+                page.conversations.retain(|item| !unread(item));
+                return page;
+            }
+            sources = self.cached_sources();
         }
     }
 
@@ -336,10 +381,14 @@ impl CoreRuntime {
             .map(str::trim)
             .filter(|text| !text.is_empty())
             .ok_or_else(|| RuntimeError::invalid("搜索文字不能为空"))?;
-        // Searching follows typing, so it reads the latest listing rather
-        // than the runtimes.
-        let sources = self.last_listed.borrow().values().cloned().collect();
-        let page = self.browse(sources, Some(text));
+        // Searching follows typing, so it searches the latest index rather
+        // than indexing the runtimes again; titles need every session read.
+        for runtime in self.runtime_instances.iter().filter(|r| r.enabled) {
+            if let Err(error) = self.read_unread(runtime) {
+                tracing::warn!(target:"velune_application",event="runtime_history_read_failed",phase="search",runtime_id=%runtime.id,runtime_type_id=%runtime.type_id,detail=%error);
+            }
+        }
+        let page = self.browse_read(self.cached_sources(), Some(text));
         Ok(serde_json::to_value(ConversationSearch {
             conversations: page.conversations,
             groups: page.groups,
@@ -350,25 +399,48 @@ impl CoreRuntime {
         let id = request["payload"]["conversationID"]
             .as_str()
             .ok_or_else(|| RuntimeError::invalid("conversation id"))?;
-        if let Some(source) = self.last_listed.borrow().get(id) {
+        if let Some(source) = self
+            .last_listed
+            .borrow()
+            .get(id)
+            .filter(|source| !source.provisional)
+        {
             return Ok(serde_json::to_value(self.listed(source))?);
         }
-        let (mut sources, _) = self.list_sources()?;
-        if !self.browser_window.archived {
-            sources.extend(
-                self.natively_archived()
-                    .into_iter()
+        let linked = self.conversation_links.iter().any(|link| link.id == id);
+        let owner = self
+            .runtime_instances
+            .iter()
+            .find(|r| r.enabled && id.starts_with(&format!("{}:", r.id)));
+        let found = match owner {
+            Some(runtime) if !linked => {
+                self.conversation_summary(runtime, id)?
                     .map(|summary| ListedSource {
                         summary,
-                        archived_natively: true,
-                    }),
-            );
+                        archived_natively: false,
+                        provisional: false,
+                    })
+            }
+            _ => None,
         }
-        Ok(serde_json::to_value(
+        .or_else(|| {
+            let (sources, _) = self.list_sources(false).ok()?;
             sources
-                .iter()
-                .find(|source| source.summary.id == id)
-                .map(|source| self.listed(source)),
+                .into_iter()
+                .find(|source| source.summary.id == id && !source.provisional)
+        })
+        .or_else(|| {
+            self.natively_archived()
+                .into_iter()
+                .find(|summary| summary.id == id)
+                .map(|summary| ListedSource {
+                    summary,
+                    archived_natively: true,
+                    provisional: false,
+                })
+        });
+        Ok(serde_json::to_value(
+            found.as_ref().map(|source| self.listed(source)),
         )?)
     }
 
