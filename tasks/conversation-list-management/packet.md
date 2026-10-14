@@ -51,5 +51,6 @@
 - 2026-10-14 安装：`1653251` 安装至 `/Applications/Velune.app`（0.1 beta.1），签名校验通过，manifest 提交一致且无未提交改动，后台启动无崩溃报告。
 - 实现（未读与失败标记）：Mac 对运行中（本机执行或在别处运行）的会话不显示未读；轮次结束时活动时间晚于运行期间任何一次查看，结束后即显示未读，正在查看则随即标为已读。core 对窗口中未读、在本机的会话读取原生会话文件末尾（`activity::last_turn_failed`，按文件签名缓存），判断最近结束的轮次是否失败：以合成上游返回 400 实测，Codex 0.159.3 以带 `error` 的 `task_complete` 结束、Claude Code 2.1.286 写入 `isApiErrorMessage` 的助手记录、Pi 1.0.2 写入 `stopReason: error` 的助手消息；用户停止的轮次（`turn_aborted`、`aborted`、中断）不算失败。`ListedConversation.failed` 只对未读会话查找，SSH 运行时不查找。Mac 对未读且失败的会话以红色感叹号代替未读圆点。
 - 验证：静态检查与 Mac 构建零警告；`manual-conversation-list.py` 新增 `failed_turns`（实际 Codex 对回环上游失败与成功各一轮、Pi 与 Claude Code 合成失败／正常会话，失败的未读会话被标记、正常的不标记、标为已读后不再查找）全部通过；隔离 HOME 后台启动截图核对红色感叹号与蓝色未读圆点。运行中隐藏未读未在界面上实际运行验证。
+- 2026-10-14 安装：`b502111` 安装至 `/Applications/Velune.app`（0.1 beta.1），签名校验通过，manifest 提交一致且无未提交改动，后台启动无崩溃报告。
 - 未验证：向 Codex 原生归档的会话发送消息时 Codex 的行为；右键菜单、折叠三角、链接打开与 NSOpenPanel 需用户界面验收（自动检查会把应用带到前台）。
 - 既有脚本漂移（与本任务无关，未修）：`manual-browser-preferences.py`／`manual-session-loading.py` 的 Swift harness 缺少后来加入的 Store 依赖文件；`manual-runtime-discovery.py` 第 52 行外部 Pi 路径断言不再成立。
