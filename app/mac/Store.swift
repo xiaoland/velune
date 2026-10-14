@@ -8,6 +8,9 @@ final class AppStore: ObservableObject {
     @Published private(set) var conversationBrowserPreferences: BindingConversationBrowserPreferences?
     private var savedBrowserPreferences: BindingConversationBrowserPreferences?
     private var browserPreferencesGeneration: UInt64 = 0
+    /// Browser choices this store is saving; until they are saved, lists and
+    /// the application's copy still carry the choices before them.
+    private var browserPreferencesSaving = 0
     @Published private(set) var outlinePresentation: BindingOutlinePresentation = .popover
     /// What the composer's status line shows, in display order.
     @Published private(set) var statusLine: [BindingStatusLineItem] = [.contextUsage]
@@ -172,7 +175,7 @@ final class AppStore: ObservableObject {
         if protocols != application.protocols { protocols = application.protocols }
         if modelTemplates != application.modelTemplates { modelTemplates = application.modelTemplates }
         if providerImportTypes != application.providerImportTypes { providerImportTypes = application.providerImportTypes }
-        if conversationBrowserPreferences != application.conversationBrowserPreferences { conversationBrowserPreferences = application.conversationBrowserPreferences }
+        if browserPreferencesSaving == 0, conversationBrowserPreferences != application.conversationBrowserPreferences { conversationBrowserPreferences = application.conversationBrowserPreferences }
         savedBrowserPreferences = application.savedBrowserPreferences
         if conversationBrowserLimits != application.conversationBrowserLimits { conversationBrowserLimits = application.conversationBrowserLimits }
         if conversationGroups != application.conversationGroups { conversationGroups = application.conversationGroups }
@@ -539,12 +542,14 @@ final class AppStore: ObservableObject {
         browserPreferencesGeneration &+= 1
         let revision = browserPreferencesGeneration
         conversationBrowserPreferences = preferences
+        browserPreferencesSaving += 1
         // Sidebar choices are independent of loading/execution. Serialize their
         // commits with core operations without locking ordinary browsing.
         queue.async { [weak self] in
             let result = Result { try transport.setConversationBrowserPreferences(preferences) }
             DispatchQueue.main.async {
                 guard let self else { return }
+                self.browserPreferencesSaving -= 1
                 switch result {
                 case .success(let data):
                     let saved = data.conversationBrowserPreferences
@@ -1350,9 +1355,9 @@ final class AppStore: ObservableObject {
         // copy returns (a deleted conversation reappearing in the sidebar).
         sharedApplication?.applyList(data)
         let mapped = BindingMapping.configuration(data)
-        if conversationBrowserPreferences == nil {
+        savedBrowserPreferences = data.conversationBrowserPreferences
+        if browserPreferencesSaving == 0, conversationBrowserPreferences != data.conversationBrowserPreferences {
             conversationBrowserPreferences = data.conversationBrowserPreferences
-            savedBrowserPreferences = data.conversationBrowserPreferences
         }
         outlinePresentation = data.outlinePresentation
         statusLine = data.statusLine

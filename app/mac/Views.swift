@@ -160,8 +160,6 @@ struct VeluneRootView: View {
         return HStack(spacing: 6) {
             Text(title).lineLimit(1).truncationMode(.middle)
             Spacer(minLength: 0)
-            Text("\(section.group.total)").monospacedDigit().foregroundStyle(.tertiary)
-                .accessibilityLabel("\(section.group.total) 个会话")
         }
         .help(path.map { (($0 as NSString).abbreviatingWithTildeInPath) } ?? title)
         .contentShape(Rectangle())
