@@ -22,6 +22,8 @@ struct Conversation: Codable, Sendable, Identifiable, Equatable {
     /// directory, unless the runtime started it there without a project.
     var project: String? = nil
     var moved = false
+    /// Its latest turn failed; known for unread conversations only.
+    var failed = false
     /// The list group showing it; nil for an open conversation the list does not show.
     var group: BindingConversationGroupKey? = nil
     enum CodingKeys: String, CodingKey { case id, title, updatedAtUnixMs, createdAtUnixMs, cwd, canRename, canDelete; case runtimeID = "runtimeId"; case parentConversationID = "parentConversationId" }
@@ -29,7 +31,7 @@ struct Conversation: Codable, Sendable, Identifiable, Equatable {
     func organized(like listed: Conversation) -> Conversation {
         var value = self
         value.nativeID = listed.nativeID; value.pinned = listed.pinned; value.unread = listed.unread; value.archived = listed.archived
-        value.project = listed.project; value.moved = listed.moved; value.group = listed.group
+        value.project = listed.project; value.moved = listed.moved; value.failed = listed.failed; value.group = listed.group
         return value
     }
 }

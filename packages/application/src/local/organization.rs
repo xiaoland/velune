@@ -12,6 +12,7 @@ use crate::config::{
     ConversationGroupKey, ConversationMarks,
 };
 use std::cmp::Ordering;
+use std::collections::HashMap;
 
 /// What the list loads beyond its first pages; not persisted.
 #[derive(Default)]
@@ -170,8 +171,8 @@ impl CoreRuntime {
             .map(|alias| alias.alias.clone())
     }
 
-    /// The identity a runtime resumes the conversation by.
-    fn native_id(&self, summary: &ConversationSummary) -> String {
+    /// The runtime and identity it resumes the conversation by.
+    fn native_segment(&self, summary: &ConversationSummary) -> (String, String) {
         let segment = self
             .conversation_links
             .iter()
@@ -183,9 +184,51 @@ impl CoreRuntime {
                 &segment.native_conversation_id,
             )
         });
-        id.strip_prefix(&format!("{runtime_id}:"))
-            .unwrap_or(id)
-            .to_owned()
+        let native = id.strip_prefix(&format!("{runtime_id}:")).unwrap_or(id);
+        (runtime_id.clone(), native.to_owned())
+    }
+
+    /// Mark the unread conversations whose latest turn failed, from the
+    /// native records on this machine; a record is read again only after it
+    /// changes.
+    fn mark_failed_turns(&self, conversations: &mut [ListedConversation]) {
+        use velune_agent_runtime::activity::{self, SessionFormat, SessionStore};
+        let mut stores =
+            BTreeMap::<String, Option<(SessionStore, HashMap<String, PathBuf>)>>::new();
+        for item in conversations.iter_mut().filter(|item| item.unread) {
+            let (runtime_id, native_id) = self.native_segment(&item.conversation);
+            let Some((store, paths)) = stores.entry(runtime_id).or_insert_with_key(|runtime_id| {
+                let store = self.session_store(self.runtime_instance(runtime_id).ok()?)?;
+                // Pi names its sessions by path.
+                let paths = if store.format == SessionFormat::Pi {
+                    HashMap::new()
+                } else {
+                    store.paths()
+                };
+                Some((store, paths))
+            }) else {
+                continue;
+            };
+            let path = match store.format {
+                SessionFormat::Pi => PathBuf::from(&native_id),
+                _ => match paths.get(&native_id) {
+                    Some(path) => path.clone(),
+                    None => continue,
+                },
+            };
+            let Some(signature) = activity::signature(&path) else {
+                continue;
+            };
+            let mut known = self.turn_failures.borrow_mut();
+            item.failed = match known.get(&path) {
+                Some((at, failed)) if *at == signature => *failed,
+                _ => {
+                    let failed = activity::last_turn_failed(store.format, &path);
+                    known.insert(path, (signature, failed));
+                    failed
+                }
+            };
+        }
     }
 
     fn listed(
@@ -205,13 +248,14 @@ impl CoreRuntime {
         let moved = marks.and_then(|m| m.project.clone());
         ListedConversation {
             conversation: summary.clone(),
-            native_id: self.native_id(summary),
+            native_id: self.native_segment(summary).1,
             pinned: !archived && marks.is_some_and(|m| m.pinned_at_unix_ms.is_some()),
             unread: !archived
                 && (marks.is_some_and(|m| m.marked_unread)
                     || summary.updated_at_unix_ms.is_some_and(|at| at > seen)),
             archived,
             moved: moved.is_some(),
+            failed: false,
             project: moved.or_else(|| Self::working_project(summary, places)),
             group: None,
         }
@@ -463,6 +507,7 @@ impl CoreRuntime {
                 .cmp(&l.latest_activity_unix_ms)
                 .then_with(|| l.path.cmp(&r.path))
         });
+        self.mark_failed_turns(&mut conversations);
         Page {
             conversations,
             groups: descriptors,

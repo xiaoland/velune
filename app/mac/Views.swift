@@ -179,15 +179,24 @@ struct VeluneRootView: View {
     }
 
     private func conversationRow(_ conversation: Conversation) -> some View {
-        // The conversation the focused window shows is being read.
-        let unread = conversation.unread && !(conversation.id == store.loadedConversationID && activeState == .key)
+        // Who started the turn does not matter; running does.
+        let running = store.runningConversationIDs.contains(conversation.id) || store.elsewhereConversationIDs.contains(conversation.id)
+        // A turn's end is news; its progress is not. The conversation the
+        // focused window shows is being read.
+        let unread = conversation.unread && !running && !(conversation.id == store.loadedConversationID && activeState == .key)
         return HStack(alignment: .firstTextBaseline, spacing: 5) {
-            Circle().fill(.tint).frame(width: 7, height: 7).opacity(unread ? 1 : 0).accessibilityHidden(true)
+            // A turn that ended in failure is news of its own.
+            Group {
+                if unread && conversation.failed {
+                    Image(systemName: "exclamationmark.circle.fill").foregroundStyle(.red).imageScale(.small).help("上一轮失败")
+                } else {
+                    Circle().fill(.tint).frame(width: 7, height: 7).opacity(unread ? 1 : 0)
+                }
+            }.frame(width: 12).accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 6) {
                     Text(conversation.title).lineLimit(1).fontWeight(unread ? .semibold : nil)
-                    // Who started the turn does not matter; running does.
-                    if store.runningConversationIDs.contains(conversation.id) || store.elsewhereConversationIDs.contains(conversation.id) {
+                    if running {
                         Spacer(minLength: 0)
                         ProgressView().controlSize(.mini).help("正在运行").accessibilityLabel("正在运行")
                     }
@@ -202,7 +211,7 @@ struct VeluneRootView: View {
         }
         .padding(.vertical, 3)
         .accessibilityElement(children: .combine)
-        .accessibilityValue(unread ? "未读" : "")
+        .accessibilityValue(unread ? (conversation.failed ? "未读，上一轮失败" : "未读") : "")
     }
 
     @ViewBuilder private func conversationManagementMenu(_ ids: Set<String>) -> some View {

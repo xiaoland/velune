@@ -36,7 +36,8 @@ for (const spec of specs) {
     const session = SessionManager.create(spec.cwd, spec.dir);
     session.appendMessage({role:'user', content:[{type:'text',text:spec.title}], timestamp:Date.now()});
     session.appendMessage({role:'assistant', content:[{type:'text',text:'synthetic reply'}],
-      api:'openai-completions',provider:'synthetic',model:'synthetic',stopReason:'stop',timestamp:Date.now()});
+      api:'openai-completions',provider:'synthetic',model:'synthetic',stopReason:spec.failed?'error':'stop',
+      ...(spec.failed?{errorMessage:'synthetic failure'}:{}),timestamp:Date.now()});
     session.appendSessionInfo(spec.title);
     paths.push(session.getSessionFile());
   }
@@ -51,7 +52,14 @@ class Upstream(BaseHTTPRequestHandler):
         pass
 
     def do_POST(self):
-        self.rfile.read(int(self.headers.get("Content-Length", "0")))
+        if b"SYNTHETIC_FAIL" in self.rfile.read(int(self.headers.get("Content-Length", "0"))):
+            payload = json.dumps({"error": {"type": "invalid_request_error", "message": "synthetic failure"}}).encode()
+            self.send_response(400)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+            return
         item = {"id": "synthetic-item", "type": "message", "role": "assistant", "status": "completed",
                 "content": [{"type": "output_text", "text": "synthetic answer", "annotations": []}]}
         response = {"id": "synthetic-response", "object": "response", "status": "completed", "output": [item]}
@@ -74,7 +82,7 @@ class Upstream(BaseHTTPRequestHandler):
         self.wfile.write(payload)
 
 
-def seed_codex(codex, root, codex_home, port, cwds):
+def seed_codex(codex, root, codex_home, port, cwds, prompt="synthetic codex"):
     environment = {"PATH": str(codex.parent) + ":/usr/bin:/bin", "HOME": str(root), "CODEX_HOME": str(codex_home),
                    "TMPDIR": str(root), "LANG": "C", "SYNTHETIC_KEY": "synthetic-only"}
     process = subprocess.Popen([str(codex), "app-server", "--stdio"], env=environment, stdin=subprocess.PIPE,
@@ -103,7 +111,7 @@ def seed_codex(codex, root, codex_home, port, cwds):
         for cwd in cwds:
             thread = invoke("thread/start", {"cwd": str(cwd), "approvalPolicy": "never", "sandbox": "read-only",
                                              "modelProvider": "synthetic", "config": provider})["thread"]
-            invoke("turn/start", {"threadId": thread["id"], "input": [{"type": "text", "text": "synthetic codex"}],
+            invoke("turn/start", {"threadId": thread["id"], "input": [{"type": "text", "text": prompt}],
                                   "model": "gpt-6.1-sol"})
             time.sleep(2.5)
             ids.append(thread["id"])
@@ -386,6 +394,41 @@ def main():
         application.set_conversation_browser_limits(b.BindingConversationBrowserLimits(page=3, total=100))
         application.set_conversation_browser_preferences(preferences())
         results['projectless'] = 'ok'
+
+        # An unread conversation whose latest turn failed, as each Harness
+        # records it, is marked; one that ended normally is not.
+        (root / 'epsilon').mkdir()
+        codex_failed, = seed_codex(args.codex, root, root / 'codex', server.server_port, [root / 'epsilon'], 'SYNTHETIC_FAIL')
+        codex_fine, = seed_codex(args.codex, root, root / 'codex', server.server_port, [root / 'epsilon'])
+        pi_failed, pi_fine = seed([{'cwd': str(root / 'epsilon'), 'dir': str(pi_dir(root / 'epsilon')), 'title': 'pi failed', 'failed': True},
+                                   {'cwd': str(root / 'epsilon'), 'dir': str(pi_dir(root / 'epsilon')), 'title': 'pi fine'}])
+        project = root / 'claude/projects' / str(root / 'epsilon').replace('/', '-')
+        project.mkdir(parents=True)
+        claude_epsilon = {}
+        for index, failed in ((7, True), (8, False)):
+            native = '00000000-0000-4000-8000-%012d' % index
+            claude_epsilon[failed] = native
+            stamp = time.strftime('%Y-%m-%dT%H:%M:%S.000Z', time.gmtime())
+            answer = {'role': 'assistant', 'model': '<synthetic>' if failed else 'synthetic',
+                      'content': [{'type': 'text', 'text': 'API Error: 400 synthetic failure' if failed else 'synthetic reply'}]}
+            records = [{'type': 'user', 'uuid': native[:-1] + 'a', 'parentUuid': None, 'sessionId': native, 'cwd': str(root / 'epsilon'),
+                        'timestamp': stamp, 'message': {'role': 'user', 'content': 'synthetic question'}},
+                       {'type': 'assistant', 'uuid': native[:-1] + 'b', 'parentUuid': native[:-1] + 'a', 'sessionId': native,
+                        'cwd': str(root / 'epsilon'), 'timestamp': stamp, 'message': answer,
+                        **({'isApiErrorMessage': True, 'error': 'unknown'} if failed else {})},
+                       {'type': 'custom-title', 'customTitle': 'claude %s' % ('failed' if failed else 'fine'), 'sessionId': native}]
+            (project / (native + '.jsonl')).write_text(''.join(json.dumps(record) + '\n' for record in records))
+        application.set_conversation_browser_limits(b.BindingConversationBrowserLimits(page=20, total=100))
+        marked = application.set_conversation_browser_preferences(preferences(project=b.BindingConversationBrowserProject.PATH(str(root / 'epsilon'))))
+        rows = {c.native_id: c for c in shown(marked)}
+        expected = {codex_failed: True, codex_fine: False, pi_failed: True, pi_fine: False, claude_epsilon[True]: True, claude_epsilon[False]: False}
+        assert {native: rows[native].failed for native in expected} == expected, {n: (rows[n].unread, rows[n].failed) for n in expected if n in rows}
+        assert all(rows[native].unread for native in expected)
+        read = application.organize_conversations([ref(rows[pi_failed])], C.MARK_READ())
+        assert not next(c for c in read.conversations if c.native_id == pi_failed).failed  # looked up for unread ones only
+        application.set_conversation_browser_limits(b.BindingConversationBrowserLimits(page=3, total=100))
+        application.set_conversation_browser_preferences(preferences())
+        results['failed_turns'] = 'ok'
         application.shutdown()
         application = open_application()
         reopened = application.list()

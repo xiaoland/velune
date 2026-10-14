@@ -1142,6 +1142,8 @@ pub struct BindingListedConversation {
     /// Where it was moved, else its working directory.
     pub project: Option<String>,
     pub moved: bool,
+    /// Its latest turn failed; looked up for unread conversations only.
+    pub failed: bool,
     /// The group showing it; none for an open conversation the list does not show.
     pub group: Option<BindingConversationGroupKey>,
 }

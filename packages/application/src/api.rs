@@ -124,6 +124,9 @@ pub struct ListedConversation {
     pub project: Option<String>,
     /// Moved by the user away from its working directory's project.
     pub moved: bool,
+    /// Its latest turn failed, as its Harness recorded it on this machine;
+    /// looked up for unread conversations only.
+    pub failed: bool,
     /// The group showing it; none for an open conversation the list does not show.
     pub group: Option<ConversationGroupKey>,
 }

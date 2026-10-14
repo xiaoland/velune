@@ -138,6 +138,21 @@ impl SessionStore {
         found.map(|(path, _)| path)
     }
 
+    /// The session file of each native id: the latest written of its
+    /// segments. Pi's native id is its path.
+    pub fn paths(&self) -> HashMap<String, PathBuf> {
+        let mut found = HashMap::<String, Option<(PathBuf, SystemTime)>>::new();
+        session_files(self.format, &self.sessions, |path, metadata| {
+            if let Some(id) = self.format.native_id(path) {
+                latest(found.entry(id).or_default(), path, metadata);
+            }
+        });
+        found
+            .into_iter()
+            .filter_map(|(id, found)| Some((id, found?.0)))
+            .collect()
+    }
+
     /// Native ids of the sessions that a Harness process is running a turn of.
     pub fn running(&self, processes: &mut Processes) -> Vec<String> {
         match self.format {
@@ -484,6 +499,47 @@ fn unfinished(format: SessionFormat, path: &Path) -> bool {
     };
     // A tail without any boundary belongs to one long turn when truncated.
     boundary.unwrap_or(truncated && format == SessionFormat::Codex)
+}
+
+/// Whether the session's latest ended turn failed, as the Harness recorded
+/// it: Codex 0.159.3 ends it with `task_complete` carrying an `error`, Claude
+/// Code 2.1.286 records the failure as an assistant message with
+/// `isApiErrorMessage`, and Pi 1.0.2 as an assistant message whose
+/// `stopReason` is `error`. A turn the user stopped did not fail.
+pub fn last_turn_failed(format: SessionFormat, path: &Path) -> bool {
+    let Some((tail, truncated)) = read_tail(path) else {
+        return false;
+    };
+    let mut lines: Vec<&str> = tail.split('\n').collect();
+    if truncated {
+        lines.remove(0);
+    }
+    let mut records = lines
+        .iter()
+        .rev()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok());
+    match format {
+        SessionFormat::Codex => records
+            .filter(|record| record["type"] == "event_msg")
+            .find_map(|record| match record["payload"]["type"].as_str()? {
+                "task_complete" | "turn_complete" => Some(!record["payload"]["error"].is_null()),
+                "task_started" | "turn_started" | "turn_aborted" => Some(false),
+                _ => None,
+            })
+            .unwrap_or(false),
+        SessionFormat::ClaudeCode => records
+            .find(|record| matches!(record["type"].as_str(), Some("user" | "assistant")))
+            .is_some_and(|record| record["isApiErrorMessage"] == true),
+        SessionFormat::Pi => records
+            .find(|record| {
+                record["type"] == "message"
+                    && matches!(
+                        record["message"]["role"].as_str(),
+                        Some("user" | "assistant" | "toolResult")
+                    )
+            })
+            .is_some_and(|record| record["message"]["stopReason"] == "error"),
+    }
 }
 
 fn read_tail(path: &Path) -> Option<(String, bool)> {

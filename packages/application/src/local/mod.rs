@@ -135,6 +135,9 @@ pub struct CoreRuntime {
     prepared_remote_resources: std::cell::RefCell<std::collections::BTreeSet<String>>,
     /// HOME of each inherited-HOME SSH location, by its execution settings.
     remote_homes: std::cell::RefCell<BTreeMap<String, Option<PathBuf>>>,
+    /// Whether each session file's latest turn failed, as of its signature.
+    turn_failures:
+        std::cell::RefCell<BTreeMap<PathBuf, (velune_agent_runtime::activity::Signature, bool)>>,
     analytics: Arc<crate::analytics::AnalyticsStore>,
     repository: crate::repository::Repository,
 }
@@ -208,6 +211,7 @@ impl CoreRuntime {
             delivery: delivery::TranscriptDelivery::new(),
             prepared_remote_resources: Default::default(),
             remote_homes: Default::default(),
+            turn_failures: Default::default(),
             analytics,
         })
     }
