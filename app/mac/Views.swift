@@ -2,23 +2,27 @@ import SwiftUI
 import AppKit
 import VeluneBindings
 
+/// A conversation window: the list beside the panes. The list has its own
+/// workspace and opens conversations in the focused pane, which the toolbar
+/// and commands act on.
 struct VeluneRootView: View {
+    @ObservedObject var window: ConversationWindowModel
+    /// The list's workspace.
     @ObservedObject var store: AppStore
+    @ObservedObject var pane: ConversationPane
+    /// The focused pane's workspace.
+    @ObservedObject var focused: AppStore
     let previewEmpty: Bool
     let previewSettings: Bool
     @Environment(\.openSettings) private var openSettings
+    @Environment(\.openWindow) private var openWindow
     @Environment(\.controlActiveState) private var activeState
     @State private var browser = ConversationBrowser()
-    /// Not observed here: only the composer re-renders while typing.
-    @State private var composer = ComposerModel()
-    @State private var scrollRequest: UInt64 = 0
     @State private var showsOutlinePopover = false
     @State private var showsChanges = false
     /// Change review is implemented but not yet part of the product
     /// (2026-10-11 decision); this keeps its entry closed.
     private static let changeReviewEnabled = false
-    @State private var outlineCollapsed = false
-    @State private var outlineNavigation: TranscriptJump?
     @State private var renameTarget: Conversation?
     @State private var deleteTargets: [Conversation] = []
     @State private var search = ""
@@ -30,7 +34,12 @@ struct VeluneRootView: View {
 
     var body: some View {
         NavigationSplitView {
-            List(selection: Binding(get: { store.selectedConversationIDs }, set: { store.selectConversations(ids: $0) })) {
+            // One row is the focused pane's conversation; more are a selection to manage.
+            List(selection: Binding(get: { store.selectedConversationIDs.count > 1 ? store.selectedConversationIDs : Set([focused.selectedConversationID].compactMap { $0 }) },
+                                    set: { ids in
+                                        store.setListSelection(ids)
+                                        if ids.count == 1, let id = ids.first, id != focused.selectedConversationID { window.open(id) }
+                                    })) {
                 if store.showsArchived {
                     HStack {
                         Label("已归档的会话", systemImage: "archivebox").foregroundStyle(.secondary)
@@ -38,7 +47,7 @@ struct VeluneRootView: View {
                         Button("返回") { store.setShowsArchived(false) }.buttonStyle(.link)
                     }.selectionDisabled(true)
                 }
-                if conversationSections.isEmpty && !store.isLoading {
+                if conversationSections.isEmpty && !store.isLoading && !focused.isLoading {
                     if store.searchResults != nil || (browser.hasFilters && !store.conversations.isEmpty) {
                         Text("没有匹配的会话").foregroundStyle(.secondary).selectionDisabled(true)
                         if browser.hasFilters { Button("清除筛选") { browser.runtimeID = nil; browser.project = .all }.selectionDisabled(true) }
@@ -51,7 +60,7 @@ struct VeluneRootView: View {
                         ForEach(section.conversations) { conversation in
                             conversationRow(conversation)
                                 .tag(conversation.id)
-                                .selectionDisabled(store.isLoading)
+                                .selectionDisabled(focused.isLoading)
                                 .contextMenu { conversationManagementMenu(store.selectedConversationIDs.contains(conversation.id) ? store.selectedConversationIDs : [conversation.id]) }
                         }
                         if section.hasMore {
@@ -82,33 +91,31 @@ struct VeluneRootView: View {
             .toolbar {
                 ToolbarItemGroup(placement: .automatic) {
                     browserMenu
-                    Button { store.createConversation() } label: { Label("新建会话", systemImage: "square.and.pencil") }
-                        .help("新建会话（⌘ N）").disabled(store.isLoading || store.enabledRuntimeInstances.isEmpty)
+                    Button { focused.createConversation() } label: { Label("新建会话", systemImage: "square.and.pencil") }
+                        .help("新建会话（⌘ N）").disabled(focused.isLoading || focused.enabledRuntimeInstances.isEmpty)
                 }
             }
         } detail: {
-            VStack(spacing: 0) {
-                if store.pendingConversationID != nil { ProgressView(store.conversationManagementStatus ?? "正在加载会话…").frame(maxWidth: .infinity, maxHeight: .infinity) }
-                else if previewEmpty || store.transcript.rows.isEmpty { emptyState.frame(maxWidth: .infinity, maxHeight: .infinity) }
-                else { transcript }
-                footer
-            }
-            .navigationTitle(previewEmpty ? "新会话" : store.selectedConversationTitle ?? "Velune")
+            PaneLayoutView(window: window, layout: window.layout, path: [], previewEmpty: previewEmpty)
+            .navigationTitle(previewEmpty ? "新会话" : focused.selectedConversationTitle ?? "Velune")
             .toolbar {
                 ToolbarItemGroup(placement: .primaryAction) {
-                    Button { store.reloadFromRuntimes() } label: { Label("重新读取", systemImage: "arrow.clockwise") }
-                        .keyboardShortcut("r").disabled(!store.canReloadFromRuntimes)
+                    Button { focused.reloadFromRuntimes() } label: { Label("重新读取", systemImage: "arrow.clockwise") }
+                        .keyboardShortcut("r").disabled(!focused.canReloadFromRuntimes)
                         .help("从 Agent 运行时重新读取会话列表和当前会话（⌘ R）；用于补上自动跟随遗漏的变化")
                     outlineButton
+                    // As in Xcode: Option-click divides downward.
+                    Button { window.split(NSEvent.modifierFlags.contains(.option) ? .vertical : .horizontal) } label: { Label("拆分", systemImage: "rectangle.split.2x1") }
+                        .help("在右侧拆分出新面板（⌘ D）；按住 Option 点按则向下拆分（⇧⌘ D）")
                     if Self.changeReviewEnabled {
                         Toggle(isOn: $showsChanges) { Label("变更", systemImage: "plusminus") }
                             .help("工作目录的 git 变更").keyboardShortcut("d", modifiers: [.command, .option])
-                            .disabled(store.loadedConversationWorkingDirectory == nil && !showsChanges)
+                            .disabled(focused.loadedConversationWorkingDirectory == nil && !showsChanges)
                     }
                 }
             }
             .inspector(isPresented: $showsChanges) {
-                ChangeReviewView(store: store).inspectorColumnWidth(min: 300, ideal: 440, max: 900)
+                ChangeReviewView(store: focused).inspectorColumnWidth(min: 300, ideal: 440, max: 900)
             }
         }
         .navigationSplitViewStyle(.balanced)
@@ -118,10 +125,11 @@ struct VeluneRootView: View {
         .onChange(of: browser.preferences) { _, value in
             if store.conversationBrowserPreferences != nil { store.setConversationBrowserPreferences(value) }
         }
-        .onChange(of: activeState, initial: true) { _, value in if value == .key { store.noteFocused() } }
-        .onChange(of: store.pendingConversationID) { _, value in if value != nil { showsOutlinePopover = false } }
-        .onChange(of: store.loadedConversationID) { _, _ in showsOutlinePopover = false; outlineCollapsed = false }
-        .onChange(of: store.outlinePresentation) { _, _ in showsOutlinePopover = false; outlineCollapsed = false }
+        .onChange(of: activeState, initial: true) { _, value in if value == .key { focused.noteFocused() } }
+        .onChange(of: window.focusedPaneID) { _, _ in showsOutlinePopover = false }
+        .onChange(of: focused.pendingConversationID) { _, value in if value != nil { showsOutlinePopover = false } }
+        .onChange(of: focused.loadedConversationID) { _, _ in showsOutlinePopover = false }
+        .onChange(of: store.outlinePresentation) { _, _ in showsOutlinePopover = false }
         .toolbar { if !store.problems.isEmpty { ToolbarItem(placement: .primaryAction) { ProblemsButton(store: store) } } }
         .sheet(item: $renameTarget) { ConversationRenameView(store: store, conversation: $0) }
         .sheet(item: $aliasTarget) { ProjectAliasView(store: store, target: $0) }
@@ -131,12 +139,8 @@ struct VeluneRootView: View {
         } message: {
             Text("将永久删除所选 \(deleteTargets.count) 个会话，以及它们在各 Agent 运行时中的关联会话数据。此操作无法撤销。")
         }
-        .sheet(item: Binding(get: { store.pendingInteractions.first }, set: { _ in })) { RuntimeInteractionView(store: store, interaction: $0) }
-        .focusedSceneValue(\.conversationCommands, ConversationCommandTarget(store: store, send: send))
-        .task {
-            store.start()
-            if previewSettings { openSettings() }
-        }
+        .focusedSceneValue(\.conversationCommands, ConversationCommandTarget(store: focused, send: pane.send, window: window))
+        .task { if previewSettings { openSettings() } }
     }
 
     private func expansion(_ key: BindingConversationGroupKey) -> Binding<Bool> {
@@ -183,7 +187,7 @@ struct VeluneRootView: View {
         let running = store.runningConversationIDs.contains(conversation.id) || store.elsewhereConversationIDs.contains(conversation.id)
         // A turn's end is news; its progress is not. The conversation the
         // focused window shows is being read.
-        let unread = conversation.unread && !running && !(conversation.id == store.loadedConversationID && activeState == .key)
+        let unread = conversation.unread && !running && !(conversation.id == focused.loadedConversationID && activeState == .key)
         return HStack(alignment: .firstTextBaseline, spacing: 5) {
             // A turn that ended in failure is news of its own.
             Group {
@@ -235,6 +239,10 @@ struct VeluneRootView: View {
             }
         }
         if targets.count == 1, let target = targets.first {
+            Divider()
+            Button("在右侧拆分打开") { window.split(.horizontal, opening: target.id) }
+            Button("在下方拆分打开") { window.split(.vertical, opening: target.id) }
+            Button("在新窗口中打开") { openWindow(id: WindowSeed.sceneID, value: WindowSeed(conversationID: target.id)) }
             Divider()
             Button("拷贝会话 ID") { copyToPasteboard(target.nativeID) }.disabled(target.nativeID.isEmpty)
             Button("拷贝链接") { copyToPasteboard(ConversationLink.url(runtimeID: target.runtimeID, conversationID: target.id).absoluteString) }
@@ -312,82 +320,27 @@ struct VeluneRootView: View {
         .disabled(store.conversationBrowserPreferences == nil)
     }
 
-    /// A native sub-agent is continued by the agent that started it, so its
-    /// conversation has no composer.
-    @ViewBuilder private var footer: some View {
-        if let parent = store.loadedParentConversationID, store.pendingConversationID == nil {
-            subAgentFooter(parent: parent)
-        } else {
-            ComposerView(store: store, model: composer, send: send)
-        }
-    }
-
-    private func subAgentFooter(parent: String) -> some View {
-        VStack(spacing: 0) {
-            Divider()
-            HStack(spacing: 8) {
-                Text("这是原生 sub-agent 的会话，由启动它的会话继续。").foregroundStyle(.secondary)
-                Spacer(minLength: 0)
-                Button("打开父会话") { store.openLinkedConversation(id: parent) }
-            }
-            .padding(.horizontal, 16).padding(.vertical, 10)
-        }
-        .background(.bar)
-    }
-
-    private var emptyState: some View {
-        ContentUnavailableView {
-            Label { Text("新会话") } icon: { VeluneLogo(size: 48) }
-        } description: {
-            Text(store.needsModelSelection ? "选择下一轮模型后即可发送。" : store.canSend ? "输入消息，开始工作。" : "先在设置中配置AI提供商、模型与Agent 运行时。")
-        } actions: {
-            if !store.canSend && !store.needsModelSelection { SettingsTabLink(tab: store.enabledRuntimeInstances.isEmpty ? .runtimes : .providers, title: "打开设置") }
-        }
-    }
-
-    private var transcript: some View {
-        TranscriptView(model: store.transcript, conversationID: store.loadedConversationID, scrollRequest: scrollRequest,
-                       cwd: store.loadedConversationWorkingDirectory, remoteHost: store.loadedConversationLocation.host, outlineCollapsed: $outlineCollapsed, navigation: outlineNavigation,
-                       activity: store.activity, loadPayloads: { [store] ids in store.loadPayloads(messageIDs: ids) },
-                       openConversation: { [store] id in store.openLinkedConversation(id: id) },
-                       describeSettings: { [store] in store.describe($0) })
-    }
-
     /// The setting decides what the outline button does: a popover anchored to
-    /// it, or a toggle that collapses the message list in place.
+    /// it, or a toggle that collapses the focused pane's message list in place.
     @ViewBuilder private var outlineButton: some View {
-        let unavailable = store.pendingConversationID != nil || store.transcript.userRows.isEmpty
+        let unavailable = focused.pendingConversationID != nil || focused.transcript.userRows.isEmpty
         switch store.outlinePresentation {
         case .popover:
             Button { showsOutlinePopover.toggle() } label: { Label("会话大纲", systemImage: "list.bullet") }
                 .help("会话大纲").disabled(unavailable)
                 .popover(isPresented: $showsOutlinePopover, arrowEdge: .bottom) {
-                    TranscriptOutlineView(model: store.transcript) { id in
+                    TranscriptOutlineView(model: focused.transcript) { id in
                         showsOutlinePopover = false
-                        outlineNavigation = TranscriptJump(id: id, token: (outlineNavigation?.token ?? 0) &+ 1)
+                        pane.navigate(to: id)
                     }
                 }
         case .inPlace:
-            Toggle(isOn: $outlineCollapsed) { Label("会话大纲", systemImage: "list.bullet") }
-                .help(outlineCollapsed ? "展开完整会话" : "折叠为用户消息大纲")
-                .disabled(unavailable && !outlineCollapsed)
+            Toggle(isOn: $pane.outlineCollapsed) { Label("会话大纲", systemImage: "list.bullet") }
+                .help(pane.outlineCollapsed ? "展开完整会话" : "折叠为用户消息大纲")
+                .disabled(unavailable && !pane.outlineCollapsed)
         }
     }
 
-    private func send() {
-        let submitted = composer.submission
-        let attachments = composer.attachments
-        let text = submitted.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard store.canSend, !text.isEmpty || !attachments.isEmpty, !composer.isComposing else { return }
-        // The message moves to the transcript at once; a turn that is not
-        // sent hands its text and attachments back to the composer.
-        let conversationID = store.loadedConversationID
-        let sent = store.send(text: text, attachments: attachments.map(\.path), onFailure: { [composer] in
-            composer.restore(submitted, attachments: attachments)
-        })
-        guard sent else { return }
-        composer.clear(submitted: submitted, attachments: attachments, conversationID: conversationID); scrollRequest &+= 1
-    }
     private func shortDate(_ unixMs: Int64) -> String {
         Date(timeIntervalSince1970: Double(unixMs) / 1000).formatted(.dateTime.month(.abbreviated).day())
     }

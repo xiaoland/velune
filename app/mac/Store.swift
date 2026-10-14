@@ -29,6 +29,9 @@ final class AppStore: ObservableObject {
     private var offListConversations: [Conversation] = []
     /// Conversations a read mark was sent for and not yet confirmed.
     private var markingRead: Set<String> = []
+    /// Deleted in any workspace; the application keeps them so the workspace
+    /// showing one closes it.
+    @Published private var deletedConversationIDs: Set<String> = []
     @Published private(set) var selectedConversationIDs: Set<String> = []
     @Published private(set) var selectedConversationID: String?
     @Published private(set) var pendingConversationID: String?
@@ -184,6 +187,7 @@ final class AppStore: ObservableObject {
         if outlinePresentation != application.outlinePresentation { outlinePresentation = application.outlinePresentation }
         if statusLine != application.statusLine { statusLine = application.statusLine }
         var sharedConversations = application.conversations
+        if let loadedConversationID, application.deletedConversationIDs.contains(loadedConversationID) { resetProjection() }
         if var current = snapshot?.conversation, !isDraft, !sharedConversations.contains(where: { $0.id == current.id }) { current.group = nil; sharedConversations.insert(current, at: 0) }
         if conversations != sharedConversations { conversations = sharedConversations }
         noteSeen()
@@ -454,7 +458,9 @@ final class AppStore: ObservableObject {
             }
         }
     }
-    func start(loadFirstConversation: Bool = true) {
+    /// Begin reading. Once the list is read, a workspace opens `conversationID`,
+    /// else the list's first conversation, or with `newConversation` an unsent one.
+    func start(loadFirstConversation: Bool = true, newConversation: Bool = false, opening conversationID: String? = nil) {
         guard !started else { return }; started = true
         sharedApplication?.start(loadFirstConversation: false)
         guard !isPreview, let transport else { return }
@@ -464,7 +470,9 @@ final class AppStore: ObservableObject {
             guard let self else { return }
             applyList(data)
             schedulePolling()
-            if loadFirstConversation, let id = sidebarConversations.first?.id { selectConversation(id: id) }
+            if let conversationID { openLinkedConversation(id: conversationID) }
+            else if loadFirstConversation, let id = sidebarConversations.first?.id { selectConversation(id: id) }
+            else if newConversation, snapshot == nil, pendingConversationID == nil { createConversation() }
         }
     }
     func refreshConversations() {
@@ -714,6 +722,13 @@ final class AppStore: ObservableObject {
             }
         }
     }
+    /// A window's list selection, for managing several conversations; the
+    /// window opens a single one in a pane.
+    func setListSelection(_ ids: Set<String>) {
+        guard !isShuttingDown else { return }
+        let selected = ids.filter { conversation(id: $0) != nil }
+        if selected != selectedConversationIDs { selectedConversationIDs = selected }
+    }
     func selectConversations(ids: Set<String>) {
         guard !isLoading, !isShuttingDown, !authenticationRunning else { return }
         selectedConversationIDs = ids.filter { conversation(id: $0) != nil }
@@ -866,6 +881,7 @@ final class AppStore: ObservableObject {
                 if let data = result.0 { applyList(data) }
                 selectedConversationIDs.subtract(result.1)
                 for id in result.1 { dropDeletedConversationState(id) }
+                sharedApplication?.deletedConversationIDs.formUnion(result.1)
                 if let loadedConversationID, result.1.contains(loadedConversationID) { resetProjection() }
                 else if result.4 { resetProjection() }
                 else if let refreshed = result.3 { applySnapshotResult(refreshed) }

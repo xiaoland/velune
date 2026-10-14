@@ -1,9 +1,11 @@
 import AppKit
 import SwiftUI
 
+/// The focused pane of the key window, and its window.
 struct ConversationCommandTarget {
     let store: AppStore
     let send: () -> Void
+    let window: ConversationWindowModel
 }
 private struct ConversationCommandTargetKey: FocusedValueKey {
     typealias Value = ConversationCommandTarget
@@ -32,26 +34,58 @@ struct ConversationCommands: Commands {
                 .keyboardShortcut(.escape, modifiers: [])
                 .disabled(target?.store.canCancel != true)
         }
+        CommandGroup(before: .windowArrangement) {
+            Button("向右拆分") { target?.window.split(.horizontal) }
+                .keyboardShortcut("d")
+                .disabled(target == nil)
+            Button("向下拆分") { target?.window.split(.vertical) }
+                .keyboardShortcut("d", modifiers: [.command, .shift])
+                .disabled(target == nil)
+            Button("关闭面板") { if let window = target?.window { window.close(window.focusedPaneID) } }
+                .keyboardShortcut("w", modifiers: [.command, .shift])
+                .disabled(target?.window.isSplit != true)
+            Button("下一个面板") { target?.window.focusNeighbour(forward: true) }
+                .keyboardShortcut("]")
+                .disabled(target?.window.isSplit != true)
+            Button("上一个面板") { target?.window.focusNeighbour(forward: false) }
+                .keyboardShortcut("[")
+                .disabled(target?.window.isSplit != true)
+            Divider()
+        }
     }
 }
 
 @MainActor
 struct ConversationWindow: View {
-    @StateObject private var workspace: AppStore
+    @StateObject private var window: ConversationWindowModel
+    /// The window's panes as last arranged, restored with the window.
+    @SceneStorage("paneLayout") private var savedLayout = ""
+    let seed: WindowSeed?
     let previewEmpty: Bool
     let previewSettings: Bool
-    init(application: AppStore, previewEmpty: Bool, previewSettings: Bool) {
-        _workspace = StateObject(wrappedValue: application.makeWorkspace())
+    init(application: AppStore, seed: WindowSeed?, previewEmpty: Bool, previewSettings: Bool) {
+        _window = StateObject(wrappedValue: ConversationWindowModel(application: application))
+        self.seed = seed
         self.previewEmpty = previewEmpty
         self.previewSettings = previewSettings
     }
     var body: some View {
-        VeluneRootView(store: workspace, previewEmpty: previewEmpty, previewSettings: previewSettings)
+        VeluneRootView(window: window, store: window.list, pane: window.focused, focused: window.focused.store,
+                       previewEmpty: previewEmpty, previewSettings: previewSettings)
+            .onAppear {
+                let saved = savedLayout.data(using: .utf8).flatMap { try? JSONDecoder().decode(SavedWindowLayout.self, from: $0) }
+                window.start(restoring: saved, seed: seed)
+                // Development check of split panes without driving the interface.
+                if CommandLine.arguments.contains("--check-split-panes"), !window.isSplit { window.split(.horizontal); window.split(.vertical) }
+            }
+            .onChange(of: window.savedLayout) { _, layout in
+                if let data = try? JSONEncoder().encode(layout), let text = String(data: data, encoding: .utf8) { savedLayout = text }
+            }
             // A conversation link opens in a window already showing Velune.
             .handlesExternalEvents(preferring: [ConversationLink.scheme], allowing: [ConversationLink.scheme])
             .onOpenURL { url in
                 guard let link = ConversationLink.conversation(in: url) else { return }
-                workspace.openLinkedConversation(id: link.conversationID)
+                window.open(link.conversationID)
             }
     }
 }
@@ -103,8 +137,8 @@ struct VeluneApp: App {
     }
 
     var body: some Scene {
-        WindowGroup("Velune") {
-            ConversationWindow(application: store, previewEmpty: previewEmpty, previewSettings: previewSettings)
+        WindowGroup("Velune", id: WindowSeed.sceneID, for: WindowSeed.self) { $seed in
+            ConversationWindow(application: store, seed: seed, previewEmpty: previewEmpty, previewSettings: previewSettings)
                 .frame(minWidth: 780, minHeight: 540)
         }
         .defaultSize(width: 1060, height: 760)

@@ -382,6 +382,8 @@ struct ComposerView: View {
     @Environment(\.openWindow) private var openWindow
     @State private var enteringRemoteDirectory = false
     @State private var remoteDirectory = ""
+    /// The composer's width; a narrow pane puts the controls on their own row.
+    @State private var width: CGFloat = 760
     private var nextTurnRuntime: RuntimeInstance? { store.runtimeInstances.first { $0.id == store.nextTurnRuntimeID } }
 
     var body: some View {
@@ -402,19 +404,21 @@ struct ComposerView: View {
                             .allowsHitTesting(false)
                     }
                 }
-            HStack(spacing: 8) {
-                nextTurnControls
-                Spacer(minLength: 8)
-                if store.needsModelSelection { Text(store.isUnsentConversation ? "请选择模型" : "此会话的模型不可用").font(.callout).foregroundStyle(.secondary).lineLimit(1) }
-                else { ComposerStatusLine(store: store).layoutPriority(-1).padding(.trailing, 4) }
-                if store.isGenerating {
-                    Button("停止", action: store.cancel).disabled(!store.canCancel).help("停止当前生成")
-                } else {
-                    Button("发送", action: send).buttonStyle(.borderedProminent)
-                        .disabled(!store.canSend || (model.isEmpty && model.attachments.isEmpty)).help("发送消息（⌘ Return）")
+            if width >= Self.singleRowWidth {
+                HStack(spacing: 8) {
+                    nextTurnControls(compact: false)
+                    Spacer(minLength: 8)
+                    sendRow
+                }
+            } else {
+                nextTurnControls(compact: width < Self.fullControlsWidth)
+                HStack(spacing: 8) {
+                    Spacer(minLength: 0)
+                    sendRow
                 }
             }
         }
+        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width = $0 }
         .alert("远端工作目录", isPresented: $enteringRemoteDirectory) {
             TextField("绝对路径", text: $remoteDirectory)
             Button("使用") { store.setUnsentWorkingDirectory(remoteDirectory.trimmingCharacters(in: .whitespacesAndNewlines)) }
@@ -445,6 +449,20 @@ struct ComposerView: View {
         }
     }
 
+    private static let singleRowWidth: CGFloat = 480
+    private static let fullControlsWidth: CGFloat = 400
+
+    @ViewBuilder private var sendRow: some View {
+        if store.needsModelSelection { Text(store.isUnsentConversation ? "请选择模型" : "此会话的模型不可用").font(.callout).foregroundStyle(.secondary).lineLimit(1) }
+        else { ComposerStatusLine(store: store).layoutPriority(-1).padding(.trailing, 4) }
+        if store.isGenerating {
+            Button("停止", action: store.cancel).disabled(!store.canCancel).help("停止当前生成")
+        } else {
+            Button("发送", action: send).buttonStyle(.borderedProminent)
+                .disabled(!store.canSend || (model.isEmpty && model.attachments.isEmpty)).help("发送消息（⌘ Return）")
+        }
+    }
+
     private var attachmentRow: some View {
         ScrollView(.horizontal) {
             HStack(spacing: 6) {
@@ -453,16 +471,17 @@ struct ComposerView: View {
         }.scrollIndicators(.never)
     }
 
-    private var nextTurnControls: some View {
+    /// `compact` shortens the choices' titles to fit a narrow pane.
+    private func nextTurnControls(compact: Bool) -> some View {
         HStack(spacing: 10) {
             Button(action: chooseAttachments) { Image(systemName: "paperclip") }
                 .buttonStyle(.borderless)
                 .accessibilityLabel("添加附件")
                 .help("添加附件：图片随消息发送，其他文件以路径告知 Agent")
                 .disabled(store.isShuttingDown)
-            agentMenu
-            if !store.permissionModeOptions.isEmpty || !store.editableSessionOptions.isEmpty { permissionMenu }
-            if store.isUnsentConversation { workingDirectoryMenu }
+            agentMenu(compact: compact)
+            if !store.permissionModeOptions.isEmpty || !store.editableSessionOptions.isEmpty { permissionMenu(compact: compact) }
+            if store.isUnsentConversation { workingDirectoryMenu(compact: compact) }
         }
         // Borderless pull-downs in the system's own colours: the label is the
         // current choice, so the row reads as a sentence rather than a toolbar.
@@ -473,7 +492,7 @@ struct ComposerView: View {
     /// Who answers the next turn. The button reads as the current choice;
     /// the menu keeps one short submenu each for the runtime, its model and
     /// the reasoning level, with the settings that belong to each inside it.
-    private var agentMenu: some View {
+    private func agentMenu(compact: Bool) -> some View {
         let runtime = nextTurnRuntime?.name ?? "选择运行时"
         let model = store.selectedModelName ?? "选择模型"
         // Levels show as the runtime receives them.
@@ -504,7 +523,7 @@ struct ComposerView: View {
                 }
             }
         } label: {
-            Text(Self.pullDownTitle(title)).lineLimit(1).truncationMode(.middle).frame(maxWidth: 360, alignment: .leading)
+            Text(Self.pullDownTitle(title)).lineLimit(1).truncationMode(.middle).frame(maxWidth: compact ? 150 : 360, alignment: .leading)
         }
         .fixedSize()
         .accessibilityLabel("下一轮：运行时 \(runtime)，模型 \(model)，推理强度 \(effort ?? "沿用当前")")
@@ -569,7 +588,7 @@ struct ComposerView: View {
     /// its own names, and the live session's own options (an ACP Agent's
     /// modes and the like), which apply at once. A mode is the session's
     /// state in the runtime: choosing none keeps the current one.
-    private var permissionMenu: some View {
+    private func permissionMenu(compact: Bool) -> some View {
         let mode = store.effectivePermissionMode
         let current = store.currentPermissionMode
         let hasModes = !store.permissionModeOptions.isEmpty
@@ -588,7 +607,8 @@ struct ComposerView: View {
                 }.disabled(!store.canChangeSessionOptions)
             }
         } label: {
-            Label(Self.pullDownTitle(title), systemImage: hasModes ? "lock.shield" : "slider.horizontal.3").lineLimit(1)
+            if compact { Image(systemName: hasModes ? "lock.shield" : "slider.horizontal.3") }
+            else { Label(Self.pullDownTitle(title), systemImage: hasModes ? "lock.shield" : "slider.horizontal.3").lineLimit(1) }
         }
         .fixedSize()
         .accessibilityLabel(hasModes ? "下一轮权限模式：\(title)" : "会话选项")
@@ -602,7 +622,7 @@ struct ComposerView: View {
     private static func pullDownTitle(_ title: String) -> String { title + "\u{00A0}" }
 
     /// Only a conversation that has not been sent yet can still pick where it works.
-    private var workingDirectoryMenu: some View {
+    private func workingDirectoryMenu(compact: Bool) -> some View {
         let path = store.loadedConversationWorkingDirectory
         let name = path.map { URL(fileURLWithPath: $0).lastPathComponent }
         let recent = store.recentWorkingDirectories
@@ -622,7 +642,7 @@ struct ComposerView: View {
                 }
             }
         } label: {
-            Text(Self.pullDownTitle(name ?? "工作目录")).lineLimit(1).truncationMode(.middle).frame(maxWidth: 160, alignment: .leading)
+            Text(Self.pullDownTitle(name ?? "工作目录")).lineLimit(1).truncationMode(.middle).frame(maxWidth: compact ? 90 : 160, alignment: .leading)
         }
         .fixedSize()
         .accessibilityLabel("工作目录：\(path ?? "运行时默认目录")")
