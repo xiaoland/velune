@@ -25,6 +25,7 @@
 
 - [资源库脚本](../../scripts/manual-resource-library.py)：新增子 Agent 字段写入、不支持的说明与 Codex 加入资源库保留模型／强度，全部 PASS。
 - [子 Agent 定义脚本](../../scripts/manual-subagent-definitions.py)（实际 Codex 0.159.3、Claude Code 2.1.286，回环合成上游）：父轮次 low，子 Agent 请求为 high 且带其指令；Claude Code 子 Agent 请求含技能正文。
+- `eda1f63` 安装至 `/Applications/Velune.app`（0.1 beta.1）：codesign 严格校验通过，manifest 为该提交且 dirty false，后台启动无崩溃报告。资源库窗口未截图核对（打开会使应用置前）。
 
 ## 待用户决定：子 Agent 的模型
 
