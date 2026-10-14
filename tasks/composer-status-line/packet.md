@@ -40,3 +40,7 @@
 - 推理强度、权限模式脚本与 9 项回归脚本（acp、selection、codex-history、continuation、subagents、live、attach、collab、parallel）通过。
 - 隔离开发版（临时 VELUNE_HOME，后台启动，未置前）截图核对 Claude 与 Codex 会话的状态栏及 popover，修正了极小比例显示 0%、路径截断与缺少单位。
 - 未验证：费用与账户额度需要真实价目或真实账户——合成模型价格未知，Claude 不给费用；网关不转发 Codex 额度头，合成会话没有额度。两者的字段形状来自上面的观察，界面仅以代码路径实现。设置页开关未截图（打开设置会把应用置前）。
+
+## 安装（2026-10-14）
+
+`ede7a32` 经 `scripts/build-macos.sh` 安装至 `/Applications/Velune.app`（0.1 beta.1）：codesign --verify --strict --deep 通过，build-manifest `source_commit` 为该提交、`dirty` false；后台启动后进程运行，无新的崩溃报告。等待用户验收。
