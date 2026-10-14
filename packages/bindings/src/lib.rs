@@ -380,6 +380,13 @@ impl VeluneApplication {
             app.set_outline_presentation(presentation)
         })?)
     }
+    pub fn set_status_line(
+        &self,
+        items: Vec<BindingStatusLineItem>,
+    ) -> Result<Vec<BindingStatusLineItem>, BindingError> {
+        let items = convert(items)?;
+        convert(self.with("set_status_line", |app| app.set_status_line(items))?)
+    }
     pub fn set_conversation_browser_preferences(
         &self,
         preferences: BindingConversationBrowserPreferences,
@@ -760,6 +767,18 @@ impl VeluneApplication {
         convert(self.with("working_changes", |application| {
             application.working_changes(runtime_id, conversation_id)
         })?)
+    }
+
+    /// The branch checked out in the conversation's working directory;
+    /// absent outside a repository or on a detached HEAD.
+    pub fn working_branch(
+        &self,
+        runtime_id: String,
+        conversation_id: String,
+    ) -> Result<Option<String>, BindingError> {
+        self.with("working_branch", |application| {
+            application.working_branch(runtime_id, conversation_id)
+        })
     }
 
     /// The diff of one file listed by `working_changes`.

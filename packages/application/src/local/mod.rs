@@ -111,6 +111,7 @@ pub struct CoreRuntime {
     conversation_links: Vec<crate::config::ConversationLink>,
     conversation_browser_group_limit: u32,
     outline_presentation: crate::config::OutlinePresentation,
+    status_line: Vec<crate::config::StatusLineItem>,
     composer_drafts: BTreeMap<String, String>,
     resource_templates: Vec<crate::ResourceTemplate>,
     resource_bindings: Vec<crate::ResourceBinding>,
@@ -173,6 +174,7 @@ impl CoreRuntime {
             conversation_links,
             conversation_browser_group_limit: persisted.conversation_browser_group_limit,
             outline_presentation: persisted.outline_presentation,
+            status_line: crate::config::canonical_status_line(persisted.status_line),
             composer_drafts,
             resource_templates,
             resource_sync_due: !resource_bindings.is_empty(),
@@ -415,6 +417,7 @@ impl CoreRuntime {
         match action {
             "list" => self.list(),
             "outlinePresentation" => self.set_outline_presentation(request),
+            "statusLine" => self.set_status_line(request),
             "composerDrafts" => self.composer_drafts_action(request),
             "conversationBrowserPreferences" => self.set_conversation_browser_preferences(request),
             "conversationBrowserSettings" => self.set_conversation_browser_group_limit(request),
@@ -483,6 +486,7 @@ impl CoreRuntime {
                 Ok(result)
             }
             "workingChanges" => Ok(serde_json::to_value(self.working_changes(request)?)?),
+            "workingBranch" => Ok(serde_json::to_value(self.working_branch(request)?)?),
             "fileDiff" => Ok(serde_json::to_value(self.file_diff(request)?)?),
             "conversationActivity" => {
                 let since = request["payload"]["since"]

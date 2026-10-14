@@ -92,6 +92,7 @@ pub struct ConfigurationSnapshot {
     pub conversation_browser_group_limit: u32,
     pub outline_presentation: OutlinePresentation,
     pub conversation_browser_preferences: ConversationBrowserPreferences,
+    pub status_line: Vec<StatusLineItem>,
     pub provider_import_types: Vec<RuntimeTypeDescriptor>,
     pub protocols: Vec<ProtocolDescriptor>,
     #[serde(rename = "selectedRuntimeInstanceID")]
@@ -834,6 +835,13 @@ impl Application {
             None,
         )
     }
+    /// Stores what the composer's status line shows, returning it in display order.
+    pub fn set_status_line(
+        &mut self,
+        items: Vec<StatusLineItem>,
+    ) -> Result<Vec<StatusLineItem>, Error> {
+        self.execute("statusLine", json!({"items": items}), None)
+    }
     pub fn set_conversation_browser_preferences(
         &mut self,
         preferences: ConversationBrowserPreferences,
@@ -1154,6 +1162,18 @@ impl Application {
     ) -> Result<WorkingChanges, Error> {
         self.execute(
             "workingChanges",
+            json!({"conversationID":conversation_id}),
+            Some(&runtime_id),
+        )
+    }
+    /// The branch checked out in the conversation's working directory.
+    pub fn working_branch(
+        &mut self,
+        runtime_id: String,
+        conversation_id: String,
+    ) -> Result<Option<String>, Error> {
+        self.execute(
+            "workingBranch",
             json!({"conversationID":conversation_id}),
             Some(&runtime_id),
         )

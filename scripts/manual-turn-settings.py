@@ -10,14 +10,20 @@ or mode keeps the conversation's current one, and Velune sends it again.
 Each turn shows the tokens the harness reports for it, reasoning included
 where the harness counts it apart. After a restart, reading the history
 again shows what each harness recorded: Codex's model, level, permission
-preset and usage from its rollout, Claude Code's model, permission mode and
-usage, Pi's model and usage. No real model, credential, HOME or session is
-read; this is not an automated test.
+preset and usage from its rollout, Claude Code's model, level, permission
+mode and usage, Pi's model and usage. Each turn also shows the context its last
+request left and the model's window (the managed model's configured window,
+else the harness's report), which the composer's status line reads; the
+branch of the working directory and the status line's chosen items, kept in
+display order across a restart, are read through the same application.
+No real model, credential, HOME or session is read; this is not an
+automated test.
 """
 import argparse
 import importlib.util
 import json
 import pathlib
+import subprocess
 import sys
 import tempfile
 import threading
@@ -107,10 +113,12 @@ def main():
     with tempfile.TemporaryDirectory(prefix='velune-turn-settings-') as directory:
         root = pathlib.Path(directory).resolve()
         (root / 'project').mkdir()
+        subprocess.run(['git', 'init', '-q', '-b', 'status-line-check', str(root / 'project')], check=True)
         (root / 'pi').mkdir()
         options = b.BindingOptions(home_directory=str(root / 'velune'), resources_directory=str(args.bundle / 'Contents/Resources'))
         app = b.VeluneApplication.open(options)
         keys, sent = {}, {}
+        ordered = [b.BindingStatusLineItem.CONTEXT_USAGE, b.BindingStatusLineItem.WORKING_DIRECTORY, b.BindingStatusLineItem.SESSION_COST]
         try:
             managed = b.BindingRuntimeExecution(transport=b.BindingRuntimeTransport.LOCAL(),
                                                 home=b.BindingRuntimeHome.MANAGED(remote_root=None),
@@ -173,6 +181,20 @@ def main():
                 value = next(t.usage for t in snapshot.transcript_turns if t.user_message_id in users)
                 return value and (value.input_tokens, value.cache_read_tokens, value.cache_write_tokens, value.output_tokens, value.reasoning_tokens)
 
+            def context(snapshot, text):
+                """What the turn's last request left in the context, against the window."""
+                users = {message.id for message in snapshot.messages if message.role == b.BindingMessageRole.USER
+                         and any(isinstance(block, b.BindingMessageBlock.TEXT) and block.text == text for block in message.blocks)}
+                value = next(t.usage for t in snapshot.transcript_turns if t.user_message_id in users)
+                return value and (value.context_tokens, value.context_window)
+
+            def expected_context(runtime):
+                """One request's input, cache included, and its output."""
+                if runtime == 'claude':
+                    u = MESSAGES_USAGE
+                    return u['input_tokens'] + u['cache_read_input_tokens'] + u['cache_creation_input_tokens'] + u['output_tokens']
+                return RESPONSES_USAGE['input_tokens'] + RESPONSES_USAGE['output_tokens']
+
             def expected(runtime, text):
                 """What the upstream reported for the turn's requests, in Velune's terms:
                 input with cache reads and writes, output with reasoning."""
@@ -209,9 +231,19 @@ def main():
                     assert effort_sent(runtime, runtime.upper() + '_SECOND') == first[0], (runtime, effort_sent(runtime, runtime.upper() + '_SECOND'))
                 for text in (runtime.upper() + '_FIRST', runtime.upper() + '_SECOND'):
                     assert usage(snapshot, text) == expected(runtime, text), (runtime, text, usage(snapshot, text), expected(runtime, text))
+                    tokens, window = context(snapshot, text)
+                    # The managed model's window, not the harness's guess at a model it does not know.
+                    assert (tokens, window) == (expected_context(runtime), 32768), (runtime, text, tokens, window)
                 sent[runtime] = conversation
             print('PASS live: each turn shows the runtime, model name, level and mode Velune sent for it, and its usage; '
                   'a turn without a level or mode keeps the current one', flush=True)
+            print('PASS live context: each turn shows its last request\'s context against the managed model\'s window', flush=True)
+            assert app.working_branch('codex', sent['codex']) == 'status-line-check'
+            items = [b.BindingStatusLineItem.SESSION_COST, b.BindingStatusLineItem.CONTEXT_USAGE, b.BindingStatusLineItem.SESSION_COST,
+                     b.BindingStatusLineItem.WORKING_DIRECTORY]
+            assert app.list().status_line == [b.BindingStatusLineItem.CONTEXT_USAGE], app.list().status_line
+            assert app.set_status_line(items) == ordered, app.list().status_line
+            print('PASS status line: the working branch is read; the items default to context usage and are kept once each, in display order', flush=True)
         finally:
             app.shutdown()
 
@@ -219,6 +251,12 @@ def main():
         app = b.VeluneApplication.open(options)
         try:
             history = {runtime: app.read_conversation(runtime, conversation).snapshot for runtime, conversation in sent.items()}
+            assert app.list().status_line == ordered, app.list().status_line
+            for runtime, snapshot in history.items():
+                for text in (runtime.upper() + '_FIRST', runtime.upper() + '_SECOND'):
+                    tokens, window = context(snapshot, text)
+                    assert (tokens, window) == (expected_context(runtime), 32768), (runtime, text, tokens, window)
+            print('PASS history context: each turn\'s context comes from the native record, against the managed model\'s window', flush=True)
             got = settings(history['codex'], 'CODEX_FIRST')
             assert got == ('codex', 'synthetic-responses', 'high', 'read-only'), got
             # A turn without a mode keeps the session's: the record says so.
@@ -230,10 +268,11 @@ def main():
             got = settings(history['claude'], 'CLAUDE_FIRST')
             assert got[:2] == ('claude', 'synthetic-messages') and got[3] == 'plan', got
             got = settings(history['claude'], 'CLAUDE_SECOND')
-            assert got == ('claude', 'synthetic-messages', None, 'plan'), got
+            # Claude Code records the level each reply ran with.
+            assert got == ('claude', 'synthetic-messages', 'high', 'plan'), got
             for text in ('CLAUDE_FIRST', 'CLAUDE_SECOND'):
                 assert usage(history['claude'], text) == expected('claude', text), (text, usage(history['claude'], text))
-            print('PASS claude history: model, permission mode and usage come from the session record', flush=True)
+            print('PASS claude history: model, level, permission mode and usage come from the session record', flush=True)
             # Pi records the gateway's route alias; the turn names the managed model.
             got = settings(history['pi'], 'PI_FIRST')
             assert got[:2] == ('pi', 'responses · responses'), got

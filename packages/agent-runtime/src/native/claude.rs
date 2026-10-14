@@ -447,6 +447,15 @@ impl NativeSession {
                 let agent = record["tool_use_result"]["agentId"]
                     .as_str()
                     .and_then(|agent| self.claude_agent_conversation(agent));
+                // What the latest reply's request held: where the context stands.
+                let reply = &record["message"];
+                if record["type"] == "assistant"
+                    && let (Some(model), Some(tokens)) =
+                        (reply["model"].as_str(), claude_context(&reply["usage"]))
+                    && !model.starts_with('<')
+                {
+                    self.claude_context = Some((model.to_owned(), tokens));
+                }
                 let role = if record["type"] == "assistant" {
                     MessageRole::Assistant
                 } else {
@@ -534,9 +543,24 @@ impl NativeSession {
                 }
                 let failed = record["is_error"] == true || record["subtype"] != "success";
                 self.claude_result = Some((failed, std::time::Instant::now()));
-                // The turn's usage over its requests; Claude Code does not count thinking apart.
+                // The turn's usage over its requests, the context its last
+                // reply left with that model's window, and the session's cost
+                // while Claude Code knows every model's price.
                 if record["usage"].is_object() {
-                    let usage = claude_usage(&record["usage"]);
+                    let mut usage = claude_usage(&record["usage"]);
+                    let models = record["modelUsage"].as_object();
+                    if let Some((model, tokens)) = self.claude_context.take() {
+                        usage.context_tokens = Some(tokens);
+                        usage.context_window = models
+                            .and_then(|models| models.get(&model))
+                            .and_then(|entry| entry["contextWindow"].as_u64());
+                    }
+                    if models.is_some_and(|models| {
+                        models.values().all(|entry| entry["costBasis"] != "unknown")
+                    }) {
+                        usage.session_cost_micro_usd =
+                            record["total_cost_usd"].as_f64().and_then(micro_usd);
+                    }
                     self.turn_usage(|total| *total = Some(usage));
                 }
             }
@@ -688,7 +712,9 @@ fn claude_blocks(content: &Value, agent: Option<String>) -> Vec<MessageBlock> {
         .collect()
 }
 
-/// Anthropic counts input without the cache reads and writes; Velune's input includes them.
+/// Anthropic counts input without the cache reads and writes; Velune's input
+/// includes them. Claude Code copies thinking tokens from the response and
+/// writes 0 when there were none to copy, so only more than 0 counts.
 fn claude_usage(usage: &Value) -> TurnUsage {
     let read = usage["cache_read_input_tokens"].as_u64().unwrap_or(0);
     let write = usage["cache_creation_input_tokens"].as_u64().unwrap_or(0);
@@ -699,6 +725,16 @@ fn claude_usage(usage: &Value) -> TurnUsage {
         cache_read_tokens: Some(read),
         cache_write_tokens: Some(write),
         output_tokens: usage["output_tokens"].as_u64(),
-        reasoning_tokens: None,
+        reasoning_tokens: usage["output_tokens_details"]["thinking_tokens"]
+            .as_u64()
+            .filter(|tokens| *tokens > 0),
+        ..TurnUsage::default()
     }
+}
+
+/// What one reply's request held: its input, cache included, and its output.
+fn claude_context(usage: &Value) -> Option<u64> {
+    let read = usage["cache_read_input_tokens"].as_u64().unwrap_or(0);
+    let write = usage["cache_creation_input_tokens"].as_u64().unwrap_or(0);
+    Some(usage["input_tokens"].as_u64()? + read + write + usage["output_tokens"].as_u64()?)
 }

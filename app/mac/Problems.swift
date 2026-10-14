@@ -37,6 +37,7 @@ struct AppProblem: Identifiable, Sendable, Equatable {
         case "applyResourceTemplate", "resolveResourceBinding": return "同步资源"
         case "setConversationBrowserPreferences": return "保存会话列表设置"
         case "setOutlinePresentation": return "保存大纲设置"
+        case "setStatusLine": return "保存状态栏设置"
         case "composerDrafts": return "读取草稿"
         case "setComposerDraft": return "保存草稿"
         case "setConversationBrowserGroupLimit": return "保存会话列表设置"

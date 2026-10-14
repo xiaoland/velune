@@ -28,6 +28,18 @@ impl CoreRuntime {
         Ok(json!(presentation))
     }
 
+    pub(super) fn set_status_line(&mut self, request: &Value) -> Result<Value, RuntimeError> {
+        let items = crate::config::canonical_status_line(serde_json::from_value(
+            request["payload"]["items"].clone(),
+        )?);
+        let previous = std::mem::replace(&mut self.status_line, items);
+        if let Err(error) = self.persist() {
+            self.status_line = previous;
+            return Err(error);
+        }
+        Ok(json!(self.status_line))
+    }
+
     pub(super) fn composer_drafts_action(
         &mut self,
         request: &Value,
@@ -140,6 +152,7 @@ impl CoreRuntime {
             "modelTemplates":self.model_templates,
             "conversationBrowserGroupLimit":self.conversation_browser_group_limit,
             "outlinePresentation":self.outline_presentation,
+            "statusLine":self.status_line,
             "conversationBrowserPreferences":self.conversation_browser_preferences,
             "providerImportTypes": [provider_import::descriptor()],
             "protocols": [
@@ -394,6 +407,7 @@ impl CoreRuntime {
             conversation_browser_group_limit: self.conversation_browser_group_limit,
             outline_presentation: self.outline_presentation,
             conversation_browser_preferences: self.conversation_browser_preferences.clone(),
+            status_line: self.status_line.clone(),
         })
     }
 }

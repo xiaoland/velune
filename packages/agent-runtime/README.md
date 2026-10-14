@@ -8,15 +8,22 @@
 
 用户消息的 `turn_settings` 是原生记录里这一轮的配置，读不到就留空：
 
-- Claude Code：历史取该轮提示记录的 `permissionMode`，模型取其后第一条非 `<synthetic>` 回复的 `message.model`；不记录推理强度。
+- Claude Code：历史取该轮提示记录的 `permissionMode`，模型取其后第一条非 `<synthetic>` 回复的 `message.model`，推理强度取该回复记录的 `effort`。
 - Codex：历史按 `thread/items/list` 每项的 `turnId`，读本机 rollout（`thread/read` 的 `path`）中的 `turn_context`。取 `model`、推理强度，并把审批策略与 sandbox 反推为上述预设，对不上时保留“策略 · sandbox”原文；SSH 远端的 rollout 不读。
 - Pi：取该轮第一条回复记录的 `model`。思考级别只有会话级状态，不逐轮记录。
 
 用户消息的 `turn_usage` 是原生记录里这一轮的 token 用量（输入含缓存读写，输出含推理；Harness 不记录的项留空），`TranscriptTurn.usage` 原样取用：
 
 - Codex：rollout 中该 `turn_id` 最后一条 `token_usage_record` 的 `turn_token_usage`，含推理 token。实时执行时累加 `thread/tokenUsage/updated` 的 `last`；每轮重启 app-server 后 `thread/resume` 重建消息时，从本机 rollout 补回各轮配置与用量（与读历史相同）。
-- Claude Code：历史按 message id 去重后累加该轮各回复的 `message.usage`；实时取 `result` 记录的 `usage`。Anthropic 不单列思考 token，推理留空。
+- Claude Code：历史按 message id 去重后累加该轮各回复的 `message.usage`；实时取 `result` 记录的 `usage`。思考 token 取 `output_tokens_details.thinking_tokens`：它原样来自上游响应，上游不报告时 Claude Code 写 0，因此 0 视为未报告、推理留空（Velune 网关的协议转换不产生该字段）。
 - Pi：累加该轮各回复的 `usage`（`input` 不含缓存，另加 `cacheRead`／`cacheWrite`）；`reasoning` 只在提供商报告时出现。
+
+同一 `turn_usage` 还记录该轮结束时会话所处的状态，供 composer 的状态栏取最近一轮的值；各项同样只取原生记录：
+
+- 上下文 token（`context_tokens`）是该轮最后一次模型请求的输入（含缓存）加输出。Codex 取 `token_usage_record` 的单次请求 `usage`（实时为 `thread/tokenUsage/updated` 的 `last`）；Claude Code 取该轮最后一条主回复的 `message.usage`；Pi 取最后一条回复的 `usage`。
+- 上下文窗口（`context_window`）：Codex 取紧随该记录的 `token_count` 事件的 `model_context_window`（实时为 `modelContextWindow`）；Claude Code 实时取 `result.modelUsage[模型].contextWindow`，会话记录里没有窗口。Pi 的回复记录也没有。窗口由 application 按 managed 模型配置补上或替换，见其 README。
+- 费用估算（`session_cost_micro_usd`，百万分之一美元）是 Harness 按自身价目算出的整个会话累计：Claude Code 实时取 `result.total_cost_usd`，历史取最后一条 `cost-state` 的 `totalCostUSD`，任一模型的价格未知（`costBasis` 为 unknown、`hasUnknownModelCost`）时不记录；Pi 累加各回复的 `usage.cost.total`；Codex 不报告。为 0 时不记录。
+- 账户额度（`rate_limits`）只有 Codex 报告：rollout `token_count` 的 `rate_limits` 与实时 `account/rateLimits/updated` 的 primary／secondary 窗口（已用百分比、窗口分钟数、重置时间）。
 
 `TranscriptProjection::request` 记下 Velune 为下一轮发送的配置，绑定到之后出现的第一条新用户消息；原生身份确认时迁移，只存在于这次执行的内存中。发送失败用 `withdraw_request` 撤回。`TranscriptTurn.settings` 逐项合并两者：模型优先 Velune 的名称，其余优先原生记录。
 

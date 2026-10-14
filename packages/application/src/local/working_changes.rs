@@ -52,6 +52,19 @@ impl CoreRuntime {
             .ok_or_else(|| RuntimeError::invalid("此会话没有工作目录"))
     }
 
+    /// The branch checked out in the conversation's working directory; absent
+    /// outside a repository or on a detached HEAD.
+    pub(super) fn working_branch(&self, request: &Value) -> Result<Option<String>, RuntimeError> {
+        let (runtime_id, id) = conversation_address(request)?;
+        let directory = self.conversation_directory(runtime_id, id)?;
+        let output = git(&directory, &["symbolic-ref", "--short", "-q", "HEAD"])?;
+        Ok(output
+            .status
+            .success()
+            .then(|| String::from_utf8_lossy(&output.stdout).trim().to_owned())
+            .filter(|branch| !branch.is_empty()))
+    }
+
     pub(super) fn working_changes(&self, request: &Value) -> Result<WorkingChanges, RuntimeError> {
         let (runtime_id, id) = conversation_address(request)?;
         let directory = self.conversation_directory(runtime_id, id)?;

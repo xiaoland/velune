@@ -76,6 +76,8 @@ impl PiProjection {
         let mut projected: Vec<Message> = Vec::new();
         // The user message that starts the turn the following replies belong to.
         let mut turn = None;
+        // Pi's estimate of every reply so far, by its price list.
+        let mut cost = 0.0;
         for (index, message) in messages.iter().enumerate() {
             if message["role"] == "toolResult" {
                 apply_tool_result(&mut projected, message, message["id"].as_str());
@@ -94,11 +96,16 @@ impl PiProjection {
             {
                 settings.model.get_or_insert_with(|| model.to_owned());
             }
+            if message["role"] == "assistant" {
+                cost += message["usage"]["cost"]["total"].as_f64().unwrap_or(0.0);
+            }
             if message["role"] == "assistant"
                 && let Some(index) = turn
                 && message["usage"].is_object()
             {
-                let usage = pi_usage(&message["usage"]);
+                let mut usage = pi_usage(&message["usage"]);
+                // A model without a price costs 0 in Pi's estimate: unknown, not free.
+                usage.session_cost_micro_usd = crate::conversation::micro_usd(cost);
                 match &mut projected[index].turn_usage {
                     Some(total) => total.add(&usage),
                     total => *total = Some(usage),
@@ -573,17 +580,22 @@ fn message_from_pi(message: &Value, fallback_id: String) -> Option<Message> {
 }
 
 /// Pi counts input without cache reads and writes, and reasoning, when the
-/// provider reports it, within output.
+/// provider reports it, within output. A reply's request holds its input and
+/// output, which is where the context stands after it.
 fn pi_usage(usage: &Value) -> crate::conversation::TurnUsage {
     let read = usage["cacheRead"].as_u64();
     let write = usage["cacheWrite"].as_u64();
+    let input = usage["input"]
+        .as_u64()
+        .map(|input| input + read.unwrap_or(0) + write.unwrap_or(0));
+    let output = usage["output"].as_u64();
     crate::conversation::TurnUsage {
-        input_tokens: usage["input"]
-            .as_u64()
-            .map(|input| input + read.unwrap_or(0) + write.unwrap_or(0)),
+        input_tokens: input,
         cache_read_tokens: read,
         cache_write_tokens: write,
-        output_tokens: usage["output"].as_u64(),
+        output_tokens: output,
         reasoning_tokens: usage["reasoning"].as_u64(),
+        context_tokens: input.zip(output).map(|(input, output)| input + output),
+        ..Default::default()
     }
 }

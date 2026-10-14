@@ -120,6 +120,9 @@ def history(path, native_id, runtime_id, sidechain=False):
         # replies it wrote itself (errors and the like) with "<synthetic>".
         if role == "assistant" and turn is not None and "model" not in turn and isinstance(model, str) and not model.startswith("<"):
             turn["model"] = model
+        # Claude Code records the reasoning level each reply ran with.
+        if role == "assistant" and turn is not None and "effort" not in turn and isinstance(entry.get("effort"), str):
+            turn["effort"] = entry["effort"]
         usage = entry.get("message", {}).get("usage")
         if role == "assistant" and isinstance(usage, dict) and isinstance(entry["message"].get("id"), str):
             usages[entry["message"]["id"]] = usage
@@ -137,6 +140,12 @@ def history(path, native_id, runtime_id, sidechain=False):
             prompt, usages = message, {}
         messages.append(message)
     close_turn(prompt, usages)
+    # The session's cost so far, written after each run; only while Claude
+    # Code knows every model's price.
+    cost = next((r for r in reversed(records) if r.get("type") == "cost-state"), None)
+    if prompt is not None and "turn_usage" in prompt and cost and cost.get("hasUnknownModelCost") is False \
+            and isinstance(cost.get("totalCostUSD"), (int, float)) and cost["totalCostUSD"] > 0:
+        prompt["turn_usage"]["sessionCostMicroUsd"] = round(cost["totalCostUSD"] * 1_000_000)
     title = next((r.get("customTitle") for r in reversed(records) if r.get("type") == "custom-title" and isinstance(r.get("customTitle"), str)), None)
     if sidechain:
         title = meta_title(path)
@@ -151,16 +160,23 @@ def history(path, native_id, runtime_id, sidechain=False):
 
 
 def close_turn(prompt, usages):
-    """The turn's usage on its prompt. Anthropic counts input without cache
-    reads and writes, and does not count thinking apart from output."""
+    """The turn's usage on its prompt, and the context its last reply's
+    request held. Anthropic counts input without cache reads and writes.
+    Claude Code copies thinking tokens from the response and writes 0 when
+    there were none to copy, so only more than 0 counts."""
     if prompt is None or not usages:
         return
-    def total(key):
-        values = [u.get(key) for u in usages.values()]
+    def total(key, values=None):
+        values = [u.get(key) for u in usages.values()] if values is None else values
         return sum(values) if all(isinstance(v, int) for v in values) else None
     read, write, plain = total("cache_read_input_tokens") or 0, total("cache_creation_input_tokens") or 0, total("input_tokens")
+    thinking = total(None, [(u.get("output_tokens_details") or {}).get("thinking_tokens") for u in usages.values()])
+    last = list(usages.values())[-1]
+    context = [last.get(k) for k in ("input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens", "output_tokens")]
     prompt["turn_usage"] = {"inputTokens": None if plain is None else plain + read + write, "cacheReadTokens": read,
-                            "cacheWriteTokens": write, "outputTokens": total("output_tokens"), "reasoningTokens": None}
+                            "cacheWriteTokens": write, "outputTokens": total("output_tokens"),
+                            "reasoningTokens": thinking or None,
+                            "contextTokens": sum(v or 0 for v in context) if isinstance(context[0], int) else None}
 
 
 def meta_title(path):

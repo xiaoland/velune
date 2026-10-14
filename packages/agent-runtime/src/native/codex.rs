@@ -434,17 +434,30 @@ impl NativeSession {
             // Usage of each model response in the turn; the reread rollout has the turn's total.
             "thread/tokenUsage/updated" => {
                 if params["turnId"].as_str() == self.turn_id.as_deref() {
-                    let usage = super::codex_history::codex_usage(
-                        &params["tokenUsage"]["last"],
-                        "inputTokens",
-                        "cachedInputTokens",
-                        "cacheWriteInputTokens",
-                        "outputTokens",
-                        "reasoningOutputTokens",
-                    );
+                    use super::codex_history::{APP_SERVER_KEYS, codex_usage, context_tokens};
+                    let last = &params["tokenUsage"]["last"];
+                    let mut usage = codex_usage(last, APP_SERVER_KEYS);
+                    usage.context_tokens = context_tokens(last, APP_SERVER_KEYS);
+                    usage.context_window = params["tokenUsage"]["modelContextWindow"].as_u64();
                     self.turn_usage(|total| match total {
                         Some(total) => total.add(&usage),
                         None => *total = Some(usage),
+                    });
+                }
+            }
+            // The account's limits follow each response's usage; Velune's gateway has none.
+            "account/rateLimits/updated" if self.turn_id.is_some() => {
+                let limits = super::codex_history::rate_limits(
+                    &params["rateLimits"],
+                    "usedPercent",
+                    "windowDurationMins",
+                    "resetsAt",
+                );
+                if !limits.is_empty() {
+                    self.turn_usage(|total| {
+                        if let Some(total) = total {
+                            total.rate_limits = limits;
+                        }
                     });
                 }
             }

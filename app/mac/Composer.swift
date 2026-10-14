@@ -406,6 +406,7 @@ struct ComposerView: View {
                 nextTurnControls
                 Spacer(minLength: 8)
                 if store.needsModelSelection { Text(store.isUnsentConversation ? "请选择模型" : "此会话的模型不可用").font(.callout).foregroundStyle(.secondary).lineLimit(1) }
+                else { ComposerStatusLine(store: store).layoutPriority(-1).padding(.trailing, 4) }
                 if store.isGenerating {
                     Button("停止", action: store.cancel).disabled(!store.canCancel).help("停止当前生成")
                 } else {

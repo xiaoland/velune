@@ -386,6 +386,8 @@ pub struct BindingConfigurationSnapshot {
     pub conversation_browser_group_limit: u32,
     pub outline_presentation: BindingOutlinePresentation,
     pub conversation_browser_preferences: BindingConversationBrowserPreferences,
+    /// What the composer's status line shows, in display order.
+    pub status_line: Vec<BindingStatusLineItem>,
     pub provider_import_types: Vec<BindingRuntimeTypeDescriptor>,
     pub protocols: Vec<BindingProtocolDescriptor>,
     #[serde(rename = "selectedRuntimeInstanceID")]
@@ -1011,6 +1013,17 @@ pub enum BindingOutlinePresentation {
     InPlace,
 }
 
+/// An item the composer's status line can show.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, uniffi::Enum)]
+#[serde(rename_all = "camelCase")]
+pub enum BindingStatusLineItem {
+    ContextUsage,
+    SessionTokens,
+    WorkingDirectory,
+    RateLimits,
+    SessionCost,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct BindingTranscriptTurn {
@@ -1044,7 +1057,11 @@ pub struct BindingTurnSettings {
 
 /// Token counts summed over a turn's model requests. Input includes cache
 /// reads and writes, output includes reasoning; a count is absent when the
-/// harness does not record it.
+/// harness does not record it. The rest is where the conversation stood when
+/// the turn ended: the context its last request left against the model's
+/// window (the harness's report, else the managed model's configuration),
+/// the harness's own cost estimate for the whole session, and the account
+/// limits the harness last reported.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, uniffi::Record)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct BindingTurnUsage {
@@ -1053,6 +1070,19 @@ pub struct BindingTurnUsage {
     pub cache_write_tokens: Option<u64>,
     pub output_tokens: Option<u64>,
     pub reasoning_tokens: Option<u64>,
+    pub context_tokens: Option<u64>,
+    pub context_window: Option<u64>,
+    pub session_cost_micro_usd: Option<u64>,
+    pub rate_limits: Vec<BindingRateLimit>,
+}
+
+/// One window of an account usage limit.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, uniffi::Record)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BindingRateLimit {
+    pub window_minutes: Option<u64>,
+    pub used_percent: u32,
+    pub resets_at_unix_ms: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]

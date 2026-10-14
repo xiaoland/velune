@@ -461,6 +461,29 @@ pub enum OutlinePresentation {
     InPlace,
 }
 
+/// What the composer's status line shows; the context usage alone unless the
+/// user pins more. The line keeps this order whatever order they were chosen in.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "camelCase")]
+pub enum StatusLineItem {
+    ContextUsage,
+    SessionTokens,
+    WorkingDirectory,
+    RateLimits,
+    SessionCost,
+}
+
+pub fn default_status_line() -> Vec<StatusLineItem> {
+    vec![StatusLineItem::ContextUsage]
+}
+
+/// The items in display order, each once.
+pub fn canonical_status_line(mut items: Vec<StatusLineItem>) -> Vec<StatusLineItem> {
+    items.sort();
+    items.dedup();
+    items
+}
+
 /// Unsent composer text of one conversation, keyed by its public identity.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]

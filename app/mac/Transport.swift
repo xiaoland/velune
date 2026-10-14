@@ -57,6 +57,7 @@ final class Transport: @unchecked Sendable {
     }
 
     func setConversationBrowserPreferences(_ preferences: BindingConversationBrowserPreferences) throws -> BindingConversationBrowserPreferences { try withApplication("setConversationBrowserPreferences", changesConfiguration: true) { try $0.setConversationBrowserPreferences(preferences: preferences) } }
+    func setStatusLine(_ items: [BindingStatusLineItem]) throws -> [BindingStatusLineItem] { try withApplication("setStatusLine", changesConfiguration: true) { try $0.setStatusLine(items: items) } }
     func setOutlinePresentation(_ presentation: BindingOutlinePresentation) throws -> BindingOutlinePresentation { try withApplication("setOutlinePresentation", changesConfiguration: true) { try $0.setOutlinePresentation(presentation: presentation) } }
     func composerDrafts() throws -> [BindingComposerDraft] { try withApplication("composerDrafts") { try $0.composerDrafts() } }
     func setComposerDraft(conversationID: String, text: String) throws { try withApplication("setComposerDraft") { try $0.setComposerDraft(conversationId: conversationID, text: text) } }
@@ -126,6 +127,7 @@ final class Transport: @unchecked Sendable {
     /// carries the levels the runtime accepts for it.
     func runtimeModels(runtimeID: String) throws -> [BindingRuntimeModel] { try withApplication("runtimeModels") { try $0.runtimeModels(runtimeId: runtimeID) } }
     func cancel(runtimeID: String, conversationID: String) throws -> BindingSnapshotResult { try withApplication("cancel") { try $0.cancel(runtimeId: runtimeID, conversationId: conversationID) } }
+    func workingBranch(runtimeID: String, conversationID: String) throws -> String? { try withApplication("workingBranch") { try $0.workingBranch(runtimeId: runtimeID, conversationId: conversationID) } }
     func workingChanges(runtimeID: String, conversationID: String) throws -> BindingWorkingChanges { try withApplication("workingChanges") { try $0.workingChanges(runtimeId: runtimeID, conversationId: conversationID) } }
     func fileDiff(runtimeID: String, conversationID: String, path: String) throws -> BindingFileDiff { try withApplication("fileDiff") { try $0.fileDiff(runtimeId: runtimeID, conversationId: conversationID, path: path) } }
     func conversationActivity(since: UInt64) throws -> BindingConversationActivity { try withApplication("conversationActivity") { try $0.conversationActivity(since: since) } }

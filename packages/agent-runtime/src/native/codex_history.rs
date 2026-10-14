@@ -188,21 +188,54 @@ pub(super) struct RolloutTurn {
     pub(super) usage: Option<TurnUsage>,
 }
 
-/// Each turn of a rollout, from Codex's `turn_context` records and the
-/// running totals of its `token_usage_record`s. Best effort: an unreadable
-/// file or record leaves the turns unnamed.
+/// Each turn of a rollout, from Codex's `turn_context` records, the running
+/// totals of its `token_usage_record`s, and the `token_count` event that
+/// follows each of those with the model's window and the account's limits.
+/// Best effort: an unreadable file or record leaves the turns unnamed.
 pub(super) fn rollout_turns(path: &Path) -> HashMap<String, RolloutTurn> {
     let Ok(file) = std::fs::File::open(path) else {
         return HashMap::new();
     };
     let mut turns: HashMap<String, RolloutTurn> = HashMap::new();
+    // A `token_count` event names no turn; it belongs to the record before it.
+    let mut counted: Option<String> = None;
     let records = std::io::BufReader::new(file)
         .lines()
         .map_while(std::result::Result::ok)
-        .filter(|line| line.contains("\"turn_context\"") || line.contains("\"token_usage_record\""))
+        .filter(|line| {
+            [
+                "\"turn_context\"",
+                "\"token_usage_record\"",
+                "\"token_count\"",
+            ]
+            .iter()
+            .any(|kind| line.contains(kind))
+        })
         .filter_map(|line| serde_json::from_str::<Value>(&line).ok());
     for record in records {
         let payload = &record["payload"];
+        if record["type"] == "event_msg" && payload["type"] == "token_count" {
+            if let Some(usage) = counted
+                .as_ref()
+                .and_then(|turn| turns.get_mut(turn))
+                .and_then(|turn| turn.usage.as_mut())
+            {
+                let info = &payload["info"];
+                usage.context_window = info["model_context_window"]
+                    .as_u64()
+                    .or(usage.context_window);
+                let limits = rate_limits(
+                    &payload["rate_limits"],
+                    "used_percent",
+                    "window_minutes",
+                    "resets_at",
+                );
+                if !limits.is_empty() {
+                    usage.rate_limits = limits;
+                }
+            }
+            continue;
+        }
         let Some(turn) = payload["turn_id"].as_str() else {
             continue;
         };
@@ -220,18 +253,15 @@ pub(super) fn rollout_turns(path: &Path) -> HashMap<String, RolloutTurn> {
                 };
             }
             // Each record carries the turn's total so far; the last one counts.
-            Some("token_usage_record") => {
-                let usage = &payload["turn_token_usage"];
-                if usage.is_object() {
-                    entry.usage = Some(codex_usage(
-                        usage,
-                        "input_tokens",
-                        "cached_input_tokens",
-                        "cache_write_input_tokens",
-                        "output_tokens",
-                        "reasoning_output_tokens",
-                    ));
+            Some("token_usage_record") if payload["turn_token_usage"].is_object() => {
+                let mut usage = codex_usage(&payload["turn_token_usage"], ROLLOUT_KEYS);
+                usage.context_tokens = context_tokens(&payload["usage"], ROLLOUT_KEYS);
+                if let Some(previous) = &entry.usage {
+                    usage.context_window = previous.context_window;
+                    usage.rate_limits = previous.rate_limits.clone();
                 }
+                entry.usage = Some(usage);
+                counted = Some(turn.to_owned());
             }
             _ => {}
         }
@@ -239,15 +269,28 @@ pub(super) fn rollout_turns(path: &Path) -> HashMap<String, RolloutTurn> {
     turns
 }
 
+/// Keys of Codex's token counts: input, cached input, cache writes, output, reasoning.
+pub(super) type UsageKeys = [&'static str; 5];
+pub(super) const ROLLOUT_KEYS: UsageKeys = [
+    "input_tokens",
+    "cached_input_tokens",
+    "cache_write_input_tokens",
+    "output_tokens",
+    "reasoning_output_tokens",
+];
+pub(super) const APP_SERVER_KEYS: UsageKeys = [
+    "inputTokens",
+    "cachedInputTokens",
+    "cacheWriteInputTokens",
+    "outputTokens",
+    "reasoningOutputTokens",
+];
+
 /// Codex counts cached input within input, and reasoning within output, as
-/// the Responses API does. Keys differ between the rollout and app-server.
+/// the Responses API does.
 pub(super) fn codex_usage(
     usage: &Value,
-    input: &str,
-    cached: &str,
-    cache_write: &str,
-    output: &str,
-    reasoning: &str,
+    [input, cached, cache_write, output, reasoning]: UsageKeys,
 ) -> TurnUsage {
     TurnUsage {
         input_tokens: usage[input].as_u64(),
@@ -255,7 +298,33 @@ pub(super) fn codex_usage(
         cache_write_tokens: usage[cache_write].as_u64(),
         output_tokens: usage[output].as_u64(),
         reasoning_tokens: usage[reasoning].as_u64(),
+        ..TurnUsage::default()
     }
+}
+
+/// What one request leaves in the context: its input and its output.
+pub(super) fn context_tokens(request: &Value, [input, _, _, output, _]: UsageKeys) -> Option<u64> {
+    Some(request[input].as_u64()? + request[output].as_u64()?)
+}
+
+/// The primary and secondary windows of Codex's account limits; `resets_at` is in seconds.
+pub(super) fn rate_limits(
+    limits: &Value,
+    used: &str,
+    window: &str,
+    resets: &str,
+) -> Vec<RateLimit> {
+    ["primary", "secondary"]
+        .iter()
+        .filter_map(|name| {
+            let limit = &limits[name];
+            Some(RateLimit {
+                used_percent: limit[used].as_f64()?.round().clamp(0.0, 100.0) as u32,
+                window_minutes: limit[window].as_u64(),
+                resets_at_unix_ms: limit[resets].as_i64().map(|seconds| seconds * 1000),
+            })
+        })
+        .collect()
 }
 
 /// The preset Velune offers that a turn's policies amount to, or the policies

@@ -112,7 +112,8 @@ pub struct TurnSettings {
 }
 
 /// Tokens a turn used, summed over its model requests as the harness
-/// recorded them; each count is absent when the harness records none.
+/// recorded them, and where the conversation stood when it ended; each part
+/// is absent when the harness records none.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct TurnUsage {
@@ -123,21 +124,62 @@ pub struct TurnUsage {
     /// Generated tokens, reasoning included.
     pub output_tokens: Option<u64>,
     pub reasoning_tokens: Option<u64>,
+    /// Tokens in the context after the turn's last model request: its
+    /// input, cache included, and its output.
+    #[serde(default)]
+    pub context_tokens: Option<u64>,
+    /// The model's context window, as the harness or Velune's configuration states it.
+    #[serde(default)]
+    pub context_window: Option<u64>,
+    /// The conversation's cost so far, in millionths of a US dollar, as the
+    /// harness estimates it from its own price list; absent when it does not
+    /// know the model's price.
+    #[serde(default)]
+    pub session_cost_micro_usd: Option<u64>,
+    /// Account usage limits the harness reported by the turn's end.
+    #[serde(default)]
+    pub rate_limits: Vec<RateLimit>,
+}
+
+/// One window of an account usage limit, as the harness reports it.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RateLimit {
+    pub window_minutes: Option<u64>,
+    pub used_percent: u32,
+    pub resets_at_unix_ms: Option<i64>,
 }
 
 impl TurnUsage {
-    /// Adds another request's counts; a count stays known only while every
-    /// request reports it.
-    pub fn add(&mut self, other: &TurnUsage) {
+    /// Adds a later request's counts; a count stays known only while every
+    /// request reports it. Where the conversation stands is the later one's.
+    pub fn add(&mut self, later: &TurnUsage) {
         fn sum(total: &mut Option<u64>, value: Option<u64>) {
             *total = total.zip(value).map(|(a, b)| a + b);
         }
-        sum(&mut self.input_tokens, other.input_tokens);
-        sum(&mut self.cache_read_tokens, other.cache_read_tokens);
-        sum(&mut self.cache_write_tokens, other.cache_write_tokens);
-        sum(&mut self.output_tokens, other.output_tokens);
-        sum(&mut self.reasoning_tokens, other.reasoning_tokens);
+        sum(&mut self.input_tokens, later.input_tokens);
+        sum(&mut self.cache_read_tokens, later.cache_read_tokens);
+        sum(&mut self.cache_write_tokens, later.cache_write_tokens);
+        sum(&mut self.output_tokens, later.output_tokens);
+        sum(&mut self.reasoning_tokens, later.reasoning_tokens);
+        if later.context_tokens.is_some() {
+            self.context_tokens = later.context_tokens;
+        }
+        if later.context_window.is_some() {
+            self.context_window = later.context_window;
+        }
+        if later.session_cost_micro_usd.is_some() {
+            self.session_cost_micro_usd = later.session_cost_micro_usd;
+        }
+        if !later.rate_limits.is_empty() {
+            self.rate_limits = later.rate_limits.clone();
+        }
     }
+}
+
+/// US dollars as millionths, the unit `session_cost_micro_usd` uses.
+pub fn micro_usd(dollars: f64) -> Option<u64> {
+    (dollars.is_finite() && dollars > 0.0).then(|| (dollars * 1_000_000.0).round() as u64)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

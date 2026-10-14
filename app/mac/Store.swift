@@ -9,6 +9,8 @@ final class AppStore: ObservableObject {
     private var savedBrowserPreferences: BindingConversationBrowserPreferences?
     private var browserPreferencesGeneration: UInt64 = 0
     @Published private(set) var outlinePresentation: BindingOutlinePresentation = .popover
+    /// What the composer's status line shows, in display order.
+    @Published private(set) var statusLine: [BindingStatusLineItem] = [.contextUsage]
     @Published private(set) var conversationBrowserGroupLimit = 20
     @Published private(set) var conversations: [Conversation] = []
     @Published private(set) var selectedConversationIDs: Set<String> = []
@@ -161,6 +163,7 @@ final class AppStore: ObservableObject {
         savedBrowserPreferences = application.savedBrowserPreferences
         if conversationBrowserGroupLimit != application.conversationBrowserGroupLimit { conversationBrowserGroupLimit = application.conversationBrowserGroupLimit }
         if outlinePresentation != application.outlinePresentation { outlinePresentation = application.outlinePresentation }
+        if statusLine != application.statusLine { statusLine = application.statusLine }
         var sharedConversations = application.conversations
         if let current = snapshot?.conversation, !isDraft, !sharedConversations.contains(where: { $0.id == current.id }) { sharedConversations.insert(current, at: 0) }
         if conversations != sharedConversations { conversations = sharedConversations }
@@ -273,6 +276,25 @@ final class AppStore: ObservableObject {
     }
     /// A turn's settings in the names the composer uses (an unknown runtime
     /// or a mode its type does not declare shows as recorded), and its usage.
+    /// Where the loaded conversation stands, from its turns' native records.
+    var conversationStatus: ConversationStatus {
+        let turns = snapshot?.transcriptTurns ?? []
+        let latest = turns.last { $0.usage != nil }?.usage
+        func total(_ count: KeyPath<TurnUsage, UInt64?>) -> UInt64? {
+            let counts = turns.compactMap { $0.usage?[keyPath: count] }
+            return counts.isEmpty ? nil : counts.reduce(0, +)
+        }
+        return ConversationStatus(
+            conversationID: isDraft ? nil : snapshot?.conversation.id,
+            endedTurns: turns.filter { !$0.isRunning }.count,
+            contextTokens: latest?.contextTokens, contextWindow: latest?.contextWindow,
+            inputTokens: total(\.inputTokens), cacheReadTokens: total(\.cacheReadTokens),
+            outputTokens: total(\.outputTokens), reasoningTokens: total(\.reasoningTokens),
+            unrecordedTurns: turns.filter { !$0.isRunning && $0.usage == nil }.count,
+            directory: isDraft ? nil : snapshot?.conversation.cwd,
+            rateLimits: turns.last { $0.usage?.rateLimits.isEmpty == false }?.usage?.rateLimits ?? [],
+            costMicroUSD: turns.last { $0.usage?.sessionCostMicroUSD != nil }?.usage?.sessionCostMicroUSD)
+    }
     func describe(_ turn: TranscriptTurn) -> TurnSettingsSummary? {
         let settings = turn.settings ?? TurnSettings()
         let runtime = settings.runtimeID.flatMap { id in runtimeInstances.first { $0.id == id } }
@@ -293,6 +315,7 @@ final class AppStore: ObservableObject {
                 count(usage.outputTokens).map { .init(label: "输出", value: $0) },
                 // Shown even when unknown: a harness may count it only within output.
                 .init(label: "推理", value: count(usage.reasoningTokens) ?? "未单独记录"),
+                count(usage.contextTokens).map { tokens in .init(label: "结束时上下文", value: count(usage.contextWindow).map { "\(tokens) / \($0)" } ?? tokens) },
             ].compactMap { $0 }
         } ?? []
         return parts.isEmpty && usage.isEmpty ? nil : TurnSettingsSummary(parts: parts, brief: brief, usage: usage)
@@ -467,6 +490,15 @@ final class AppStore: ObservableObject {
             DispatchQueue.main.async { apply(result) }
         }
     }
+    /// The branch checked out in the loaded conversation's working directory;
+    /// `nil` when there is none or it cannot be read (a remote runtime).
+    func readWorkingBranch(_ apply: @escaping (String?) -> Void) {
+        guard !isPreview, !isShuttingDown, let transport, let conversation = snapshot?.conversation, !isDraft else { apply(nil); return }
+        queue.async {
+            let branch = (try? transport.workingBranch(runtimeID: conversation.runtimeID, conversationID: conversation.id)) ?? nil
+            DispatchQueue.main.async { apply(branch) }
+        }
+    }
     func readFileDiff(path: String, _ apply: @escaping (Result<BindingFileDiff, Error>) -> Void) {
         guard !isPreview, !isShuttingDown, let transport, let conversation = snapshot?.conversation, !isDraft else { return }
         queue.async {
@@ -498,6 +530,11 @@ final class AppStore: ObservableObject {
                 }
             }
         }
+    }
+    func setStatusLine(_ items: [BindingStatusLineItem]) {
+        if isPreview { statusLine = items; return }
+        guard let transport else { recordProblem("本地核心未配置"); return }
+        enqueue({ try transport.setStatusLine(items) }) { [weak self] in self?.statusLine = $0 }
     }
     func setOutlinePresentation(_ presentation: BindingOutlinePresentation) {
         if isPreview { outlinePresentation = presentation; return }
@@ -1197,6 +1234,7 @@ final class AppStore: ObservableObject {
             savedBrowserPreferences = data.conversationBrowserPreferences
         }
         outlinePresentation = data.outlinePresentation
+        statusLine = data.statusLine
         conversationBrowserGroupLimit = Int(data.conversationBrowserGroupLimit)
         conversations = mapped.conversations; selectedConversationIDs.formIntersection(conversations.map(\.id))
         if let saved = mapped.gateways.first(where: { $0.id == gateway.id }) ?? mapped.gateways.first { gateway = saved; hasGateway = true }

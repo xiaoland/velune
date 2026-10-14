@@ -108,12 +108,25 @@ struct TranscriptTurn: Codable, Sendable, Equatable, Identifiable {
 }
 /// Tokens a turn used, as the runtime recorded them: input includes cache
 /// reads and writes, output includes reasoning; `nil` where it records none.
+/// The rest is where the conversation stood when the turn ended.
 struct TurnUsage: Codable, Sendable, Equatable {
     var inputTokens: UInt64?
     var cacheReadTokens: UInt64?
     var cacheWriteTokens: UInt64?
     var outputTokens: UInt64?
     var reasoningTokens: UInt64?
+    /// What the turn's last request left in the context.
+    var contextTokens: UInt64? = nil
+    var contextWindow: UInt64? = nil
+    /// The harness's own estimate for the whole conversation so far.
+    var sessionCostMicroUSD: UInt64? = nil
+    /// Account limits the harness last reported.
+    var rateLimits: [RateLimit] = []
+}
+struct RateLimit: Codable, Sendable, Equatable {
+    var windowMinutes: UInt64?
+    var usedPercent: UInt32
+    var resetsAtUnixMs: Int64?
 }
 
 /// What a turn ran with, as far as the runtime's record and Velune's own

@@ -353,6 +353,10 @@ struct SettingsView: View {
 private struct ConversationSettingsView: View {
     @ObservedObject var store: AppStore
     @State private var limit = 20
+    private static let statusLineItems: [(item: BindingStatusLineItem, title: String)] = [
+        (.contextUsage, "上下文用量"), (.sessionTokens, "本会话累计 token"), (.workingDirectory, "工作目录与 Git 分支"),
+        (.rateLimits, "账户用量限额（Codex）"), (.sessionCost, "费用估算"),
+    ]
     var body: some View {
         Form {
             Section("大纲") {
@@ -361,6 +365,14 @@ private struct ConversationSettingsView: View {
                     Text("就地折叠").tag(BindingOutlinePresentation.inPlace)
                 }.disabled(store.isLoading || store.isShuttingDown)
                 Text("大纲以用户消息为条目。弹出面板在按钮处列出大纲；就地折叠把消息列表缩起为只剩用户消息，点击其中一条即恢复完整会话并停在该处。").font(.caption).foregroundStyle(.secondary)
+            }
+            Section("状态栏") {
+                ForEach(Self.statusLineItems, id: \.item) { entry in
+                    Toggle(entry.title, isOn: Binding(
+                        get: { store.statusLine.contains(entry.item) },
+                        set: { pinned in store.setStatusLine(pinned ? store.statusLine + [entry.item] : store.statusLine.filter { $0 != entry.item }) }))
+                }.disabled(store.isLoading || store.isShuttingDown)
+                Text("状态栏位于输入框下方、发送按钮左侧，只显示运行时原生记录中已有的项；点按它可查看全部项。费用为运行时按其价目的估算。").font(.caption).foregroundStyle(.secondary)
             }
             Section("会话列表") {
                 LabeledContent("每组首次展示") { TextField("数量", value: $limit, format: .number).frame(width: 70); Text("个会话") }

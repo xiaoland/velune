@@ -527,5 +527,49 @@ impl CoreRuntime {
                 settings.model = Some(name);
             }
         }
+        for turn in turns.iter_mut() {
+            // A harness reports its own guess at a model it does not know;
+            // the managed model's configuration describes the actual upstream.
+            if let (Some(settings), Some(usage)) = (&turn.settings, turn.usage.as_mut())
+                && usage.context_tokens.is_some()
+                && let Some(window) = self.managed_context_window(settings)
+            {
+                usage.context_window = Some(window);
+            }
+        }
+    }
+
+    /// The window Velune gave the runtime for a turn's managed model: the
+    /// model Velune named, or the only one with the provider model ID the
+    /// runtime recorded.
+    fn managed_context_window(&self, settings: &crate::conversation::TurnSettings) -> Option<u64> {
+        let (runtime_id, model) = (settings.runtime_id.as_ref()?, settings.model.as_ref()?);
+        let runtime = self.runtime_instance(runtime_id).ok()?;
+        let gateway = self
+            .gateways
+            .iter()
+            .find(|gateway| gateway.id == runtime.gateway_id)?;
+        let models: Vec<_> = gateway
+            .providers
+            .iter()
+            .flat_map(|provider| &provider.models)
+            .collect();
+        let named = models.iter().find(|candidate| {
+            self.turn_model_name(
+                runtime_id,
+                &ModelSelection::Managed {
+                    model_record_key: candidate.record_key.clone(),
+                },
+            )
+            .as_ref()
+                == Some(model)
+        });
+        let found = named.copied().or_else(|| {
+            let mut by_id = models
+                .iter()
+                .filter(|candidate| &candidate.provider_model_id == model);
+            by_id.next().filter(|_| by_id.next().is_none()).copied()
+        })?;
+        found.context_window.map(u64::from)
     }
 }

@@ -131,6 +131,8 @@ pub struct NativeSession {
     sub_agents: std::collections::BTreeSet<String>,
     claude_requires_action: bool,
     claude_stream_id: Option<String>,
+    /// The model and context tokens of the turn's latest reply.
+    claude_context: Option<(String, u64)>,
     restart_required: bool,
     gateway_turn: bool,
     claude_fresh: bool,
@@ -218,6 +220,7 @@ impl NativeSession {
             sub_agents: std::collections::BTreeSet::new(),
             claude_requires_action: false,
             claude_stream_id: None,
+            claude_context: None,
             restart_required: false,
             gateway_turn: tunnel.is_some(),
             claude_fresh: false,

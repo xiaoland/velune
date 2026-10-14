@@ -22,6 +22,8 @@ pub(crate) struct PersistedConfig {
     pub(crate) outline_presentation: crate::config::OutlinePresentation,
     #[serde(default)]
     pub(crate) conversation_browser_preferences: crate::config::ConversationBrowserPreferences,
+    #[serde(default = "crate::config::default_status_line")]
+    pub(crate) status_line: Vec<crate::config::StatusLineItem>,
 }
 
 pub(crate) fn default_conversation_browser_group_limit() -> u32 {
@@ -38,6 +40,7 @@ impl Default for PersistedConfig {
             conversation_browser_group_limit: default_conversation_browser_group_limit(),
             outline_presentation: Default::default(),
             conversation_browser_preferences: Default::default(),
+            status_line: crate::config::default_status_line(),
         }
     }
 }
