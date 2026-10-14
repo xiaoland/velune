@@ -39,6 +39,7 @@ impl CoreRuntime {
                 let mut config = self.native_config(&runtime, Some(injection))?;
                 config.projection_directory = lane;
                 config.mcp_servers = servers;
+                config.session_agents = self.turn_subagents(&runtime);
                 NativeSession::connect(config)
                     .map_err(|error| RuntimeError::context("运行时连接失败", error))
             })();

@@ -267,3 +267,5 @@ S17 实施授权：用户决定全面切换 UniFFI，并要求现在开始拆分
 ## S23
 
 2026-10-14 用户验收 status line 后，对资源库的子 Agent 提出：描述也应是多行文本编辑器；应可配置推理强度；Codex 的子 Agent 支持模型与推理强度，却没有写入，导入时也被丢弃；可以选择技能（用户不确定 Codex／Claude Code 是否支持，认为 Pi 官方的 subagents 插件支持）。用户计划之后让 Pi adapter 支持 subagent extension，并预见版本兼容会使情况复杂不少。产品归 [PRD](prd/index.md) 资源库段落，实施归 [子 Agent 字段任务](../tasks/resource-subagent-fields/packet.md)。
+
+同日助手实测托管轮次中子 Agent 的原生模型 ID 被网关拒绝，提出三种模型指定方式后，用户要求第四种：既能使用 Velune 托管模型也能使用原生模型，并允许随时切换使用 Velune 与原生 Agent 运行时；同意“原生 ID 写入定义、托管轮次按 ID 路由到 Velune 模型”的方案后，进一步要求解决 Velune 独有模型在原生轮次失败的问题——不是让原生轮次能用 Velune 模型，而是保证原生轮次时运行时不会用到该子 Agent。用户确认此前所说“Pi 官方 subagents 插件支持技能”是记错了。

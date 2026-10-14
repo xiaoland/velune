@@ -27,13 +27,16 @@
 - [子 Agent 定义脚本](../../scripts/manual-subagent-definitions.py)（实际 Codex 0.159.3、Claude Code 2.1.286，回环合成上游）：父轮次 low，子 Agent 请求为 high 且带其指令；Claude Code 子 Agent 请求含技能正文。
 - `eda1f63` 安装至 `/Applications/Velune.app`（0.1 beta.1）：codesign 严格校验通过，manifest 为该提交且 dirty false，后台启动无崩溃报告。资源库窗口未截图核对（打开会使应用置前）。
 
-## 待用户决定：子 Agent 的模型
+## 子 Agent 的模型（2026-10-14 用户决定）
 
-用户要求（2026-10-14）：既能用 Velune 托管模型也能用原生模型，并且同一运行时可随时在 Velune 托管轮次与原生轮次之间切换。实测事实：
+用户要求既能用 Velune 托管模型也能用原生模型，同一运行时可随时在经 Velune 网关的轮次与原生轮次之间切换；Velune 独有模型的子 Agent 在原生轮次中不能被用到（不是让原生轮次能用 Velune 模型）。用户确认此前“Pi 官方 subagents 插件支持技能”是记错了。
 
-- 托管轮次中，子 Agent 的请求与父轮次一样都到 Velune 网关。网关只认该轮的别名（父轮次的提供商 model ID）和 `velune/model/<记录键>`；其他名称返回 “gateway model route is missing”，子 Agent 失败（Codex 与 Claude Code 均如此）。
-- `velune/model/<记录键>` 在托管轮次可用，并按协议转换（Claude Code 的子 Agent 被路由到 Responses 提供商）。
-- Codex role 文件中的 `model_provider` 与内联 `[model_providers.*]` 在托管轮次不生效，子 Agent 仍走网关；Claude Code 的端点是进程级环境变量，子 Agent 无法另选端点。
-- 原生轮次不经过 Velune，子 Agent 的模型名由运行时自己的提供商解析。
+判别事实（实际 CLI，合成上游）：
 
-候选方案（建议）：定义文件写入模型的提供商 model ID（所选 Velune 模型取其 `provider_model_id`，或用户填写的原生 ID）；托管轮次中，application 把该运行时已启用的子 Agent 的模型名加入该轮网关别名，指向所选的 Velune 模型（原生 ID 则指向唯一同 ID 的 Velune 模型）。这样同一定义在两种轮次都可用，前提是两侧都认识这个 ID；只有 Velune 有的模型在原生轮次仍会失败，原生提供商没有的 ID 亦然，界面需说明。
+- 托管轮次中子 Agent 请求与父轮次一样到 Velune 网关；网关只认该轮别名与 `velune/model/<记录键>`，其他名称返回 “gateway model route is missing”。
+- `velune/model/<记录键>` 可用且可跨协议。Codex role 中的 `model_provider` 与内联提供商在托管轮次不生效；Claude Code 的端点是进程级环境变量。
+- Codex 的会话配置 `agents.<名称>`（`description`＋`config_file`）在 role 文件不在 agents 目录时仍可被 `spawn_agent` 使用；Claude Code 2.1.286 有 `--agents` JSON。
+
+实施：模型为沿用父会话、原生 model ID（写入定义；托管轮次加该轮网关别名，指向唯一同 ID 的 Velune 模型）或 Velune 模型（不写入原生定义，启用记录无条目仍算启用；只在托管轮次由 `turn_subagents` 注入：Codex 在 lane 投影写 role 并以会话配置引用，Claude Code 用 `--agents`）。
+
+验证：子 Agent 定义脚本 6 项 PASS（原生 ID 子 Agent 在 Codex 托管轮次经别名到 Messages 提供商、Claude Code 到同协议；Velune 模型子 Agent 在两者都到 Responses 提供商，均带指令与级别，Claude Code 带技能正文；Velune 模型子 Agent 始终未写入定义目录）；资源库脚本新增保存拒绝、启用状态与两种模型互相切换时的写入／删除检查，全部 PASS；9 项回归通过。原生轮次未实际运行（需要运行时自己的提供商）；“原生轮次看不到”由不写入文件、注入只在网关路径两点保证。资源库窗口未截图。

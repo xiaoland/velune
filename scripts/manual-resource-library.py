@@ -167,7 +167,7 @@ def exercise(app, b, root):
             command='docs-mcp', args=['--x'], env={'TOKEN': 'SYNTHETIC-SECRET'}, cwd=None),
         timeout_seconds=None))).summary
     helper = app.save_resource_template(resource('helper', content.SUBAGENT(
-        description='d', instructions='do it', model=None, tools=[], effort=None, skills=[]))).summary
+        description='d', instructions='do it', model=None, velune_model=None, tools=[], effort=None, skills=[]))).summary
     assert 'SYNTHETIC-SECRET' not in repr(app.read_resource_template(docs.id))
     assert oct((root / 'app' / 'resource-templates.json').stat().st_mode & 0o777) == '0o600'
     assert isinstance(states(helper.id)['pi'], state.UNSUPPORTED)
@@ -186,7 +186,7 @@ def exercise(app, b, root):
 
     # 子 Agent 的多行描述、模型、推理强度与技能按各运行时的原生字段写入。
     probe = app.save_resource_template(resource('probe', content.SUBAGENT(
-        description='line one\nline two', instructions='probe', model='m-1', tools=[], effort='minimal', skills=['review'])))
+        description='line one\nline two', instructions='probe', model='m-1', velune_model=None, tools=[], effort='minimal', skills=['review'])))
     notes = {r.runtime_id: r.notes for r in app.apply_resource_template(probe.summary.id, [target('claude'), target('codex')])}
     codex_agent = (root / 'codex' / 'agents' / 'probe.toml').read_text()
     claude_agent = (root / 'claude' / 'agents' / 'probe.md').read_text()
@@ -196,9 +196,34 @@ def exercise(app, b, root):
     assert 'effort' not in claude_agent and 'model: m-1' in claude_agent and '- review' in claude_agent, claude_agent
     assert any('minimal' in note for note in notes['claude']), notes
     app.save_resource_template(resource('probe', content.SUBAGENT(
-        description='d', instructions='probe', model=None, tools=[], effort='high', skills=['review']), probe.summary.id))
+        description='d', instructions='probe', model=None, velune_model=None, tools=[], effort='high', skills=['review']), probe.summary.id))
     assert 'effort: high' in (root / 'claude' / 'agents' / 'probe.md').read_text()
     print('PASS 子 Agent 的描述、模型、推理强度、技能按运行时写入，不支持的说明', flush=True)
+
+    # 选 Velune 模型的子 Agent 不写入原生定义，仍是启用状态；改回原生 ID 时写入，再改回时删除。
+    app.save_provider('default', b.BindingProviderDraft(
+        id='p', name='p', protocol=b.BindingGatewayProtocol.RESPONSES_V1, endpoint='http://127.0.0.1:9/v1',
+        models=[b.BindingProviderModel(record_key='', provider_model_id='m-v', nickname='v', icon=None, context_window=None,
+                                       max_output_tokens=None, reasoning_levels=None, adapter_metadata_json=None)]),
+        b.BindingAuthenticationEdit.SET_API_KEY(value='SYNTHETIC_ONLY'))
+    velune_key = app.list().gateways[0].providers[0].models[0].record_key
+
+    def per_turn(model, velune_model):
+        return content.SUBAGENT(description='d', instructions='p', model=model, velune_model=velune_model,
+                                tools=[], effort=None, skills=[])
+    reject(lambda: app.save_resource_template(resource('both', per_turn('m-1', velune_key))))
+    reject(lambda: app.save_resource_template(resource('gone', per_turn(None, 'missing-key'))))
+    probe = app.save_resource_template(resource('probe', per_turn(None, velune_key), probe.summary.id))
+    assert not (root / 'codex' / 'agents' / 'probe.toml').exists() and not (root / 'claude' / 'agents' / 'probe.md').exists()
+    assert isinstance(states(probe.summary.id)['codex'], state.SYNCED) and isinstance(states(probe.summary.id)['claude'], state.SYNCED)
+    app.save_resource_template(resource('probe', per_turn('m-1', None), probe.summary.id))
+    assert 'model = "m-1"' in (root / 'codex' / 'agents' / 'probe.toml').read_text()
+    app.save_resource_template(resource('probe', per_turn(None, velune_key), probe.summary.id))
+    assert not (root / 'codex' / 'agents' / 'probe.toml').exists()
+    # 启用其他资源不影响它。
+    app.apply_resource_template(helper.id, [target('codex')])
+    assert isinstance(states(probe.summary.id)['codex'], state.SYNCED)
+    print('PASS Velune 模型的子 Agent 不写入原生定义而保持启用，与原生 ID 互相切换时写入或删除', flush=True)
 
     # 运行时中的其他内容与加入资源库。
     (root / 'codex' / 'agents').mkdir(exist_ok=True)

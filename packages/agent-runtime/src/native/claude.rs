@@ -5,6 +5,39 @@ use super::*;
 /// in the session.
 pub const CLAUDE_EFFORT_LEVELS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
 
+/// `--agents` takes the definitions a file's frontmatter would hold, keyed
+/// by name, with the instructions as `prompt`.
+fn claude_agents(agents: &[SessionAgent]) -> Value {
+    Value::Object(
+        agents
+            .iter()
+            .map(|agent| {
+                let mut definition = json!({
+                    "description": agent.description,
+                    "prompt": agent.instructions,
+                });
+                if let Some(model) = &agent.model {
+                    definition["model"] = json!(model);
+                }
+                if let Some(effort) = agent
+                    .effort
+                    .as_deref()
+                    .filter(|level| crate::management::CLAUDE_EFFORTS.contains(level))
+                {
+                    definition["effort"] = json!(effort);
+                }
+                if !agent.tools.is_empty() {
+                    definition["tools"] = json!(agent.tools);
+                }
+                if !agent.skills.is_empty() {
+                    definition["skills"] = json!(agent.skills);
+                }
+                (agent.name.clone(), definition)
+            })
+            .collect(),
+    )
+}
+
 impl NativeSession {
     pub(super) fn claude_command(
         config: &NativeConfig,
@@ -77,6 +110,11 @@ impl NativeSession {
                 .env("CLAUDE_CODE_SUBAGENT_MODEL", &gateway.model_alias)
                 .arg("--model")
                 .arg(&gateway.model_alias);
+            if !config.session_agents.is_empty() {
+                command
+                    .arg("--agents")
+                    .arg(claude_agents(&config.session_agents).to_string());
+            }
         } else {
             command.env_remove("CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST");
             if let Some(selection) = selection {

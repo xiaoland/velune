@@ -82,7 +82,12 @@ struct TemplateDraft: Equatable {
     var name = ""
     var body = ""
     var description = ""
+    /// Where a sub-agent's model comes from; `model` holds a native ID,
+    /// `veluneModel` a Velune model record key.
+    enum ModelSource: Hashable { case inherit, native, velune }
+    var modelSource = ModelSource.inherit
     var model = ""
+    var veluneModel = ""
     var tools = ""
     /// Empty leaves the level to each runtime.
     var effort = ""
@@ -122,9 +127,11 @@ struct TemplateDraft: Equatable {
                 isHTTP = true; self.url = url
                 pairs = headers.sorted { $0.key < $1.key }.map { DraftKeyValue(key: $0.key, value: $0.value) }
             }
-        case .subagent(let description, let instructions, let model, let tools, let effort, let skills):
+        case .subagent(let description, let instructions, let model, let veluneModel, let tools, let effort, let skills):
             kind = .nativeAgentDefinitions
-            self.description = description; body = instructions; self.model = model ?? ""; self.tools = tools.joined(separator: ", ")
+            self.description = description; body = instructions; self.tools = tools.joined(separator: ", ")
+            self.model = model ?? ""; self.veluneModel = veluneModel ?? ""
+            modelSource = veluneModel != nil ? .velune : model != nil ? .native : .inherit
             self.effort = effort ?? ""; self.skills = skills
         }
     }
@@ -145,8 +152,10 @@ struct TemplateDraft: Equatable {
         case .nativeAgentDefinitions:
             let list = tools.split(whereSeparator: { $0 == "," || $0 == "\n" }).map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
             let model = model.trimmingCharacters(in: .whitespaces)
-            content = .subagent(description: description, instructions: body, model: model.isEmpty ? nil : model, tools: list,
-                                effort: effort.isEmpty ? nil : effort, skills: skills)
+            content = .subagent(description: description, instructions: body,
+                                model: modelSource == .native && !model.isEmpty ? model : nil,
+                                veluneModel: modelSource == .velune && !veluneModel.isEmpty ? veluneModel : nil,
+                                tools: list, effort: effort.isEmpty ? nil : effort, skills: skills)
         }
         return BindingResourceTemplate(id: id, name: name.trimmingCharacters(in: .whitespaces), content: content)
     }
@@ -218,6 +227,8 @@ struct ResourceForm: View {
     let canEdit: Bool
     /// Names of the library's skills, which a sub-agent can load.
     var skillNames: [String] = []
+    /// Velune's models a sub-agent can run: record key and display name.
+    var veluneModels: [(key: String, name: String)] = []
     @State private var revealSecrets = false
     @State private var showsJSON = false
     @State private var jsonText = ""
@@ -241,7 +252,7 @@ struct ResourceForm: View {
                 Text("描述").font(.subheadline)
                 editor($draft.description, height: 64)
                 Text("运行时据此决定何时委派给它。").font(.caption).foregroundStyle(.secondary)
-                field("模型", $draft.model, prompt: "可选，运行时的模型标识")
+                modelField
                 effortField
                 field("工具", $draft.tools, prompt: "以逗号分隔，可选")
                 skillsField
@@ -253,6 +264,40 @@ struct ResourceForm: View {
         }
         .onChange(of: draft) { _, draft in
             if showsJSON && draft != jsonDraft { jsonText = draft.mcpJSON; jsonDraft = draft; jsonMessage = nil }
+        }
+    }
+
+    /// Inherit the parent's model, a Velune model supplied to gateway turns
+    /// only, or a native ID written into the definition.
+    @ViewBuilder private var modelField: some View {
+        let veluneName = veluneModels.first { $0.key == draft.veluneModel }?.name
+        if canEdit {
+            Picker("模型", selection: Binding(get: { draft.modelSource == .velune ? "velune:\(draft.veluneModel)" : draft.modelSource == .native ? "native" : "inherit" }, set: { tag in
+                if tag == "inherit" { draft.modelSource = .inherit }
+                else if tag == "native" { draft.modelSource = .native }
+                else { draft.modelSource = .velune; draft.veluneModel = String(tag.dropFirst("velune:".count)) }
+            })) {
+                Text("沿用父会话").tag("inherit")
+                Text("原生模型 ID").tag("native")
+                Section("Velune 提供商") {
+                    ForEach(veluneModels, id: \.key) { Text($0.name).tag("velune:\($0.key)") }
+                    if draft.modelSource == .velune && veluneName == nil { Text("已删除的模型").tag("velune:\(draft.veluneModel)") }
+                }
+            }
+            if draft.modelSource == .native {
+                field("模型 ID", $draft.model, prompt: "运行时提供商的 model ID")
+            }
+            Text(modelExplanation).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+        } else {
+            LabeledContent("模型", value: draft.modelSource == .native ? draft.model : draft.modelSource == .velune ? (veluneName ?? "已删除的模型") : "沿用父会话")
+        }
+    }
+
+    private var modelExplanation: String {
+        switch draft.modelSource {
+        case .inherit: "与启动它的会话使用同一个模型。"
+        case .native: "写入运行时的定义，由运行时自己的提供商解析；经 Velune 网关的轮次中改由 Velune 中唯一具有此 model ID 的模型提供。"
+        case .velune: "不写入运行时的定义，只提供给经 Velune 网关的轮次；运行时使用自己的提供商时不会用到这个子 Agent。"
         }
     }
 

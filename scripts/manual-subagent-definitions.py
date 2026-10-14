@@ -1,34 +1,47 @@
 #!/usr/bin/env python3
-"""Manual acceptance that a resource library sub-agent reaches the Harness.
+"""Manual acceptance that resource library sub-agents reach the Harness.
 
-Velune writes a skill and a sub-agent (description over several lines,
-model, reasoning level, the skill) from its resource library into real
-Codex 0.159.3 and Claude Code 2.1.286 managed HOMEs inside a temporary
-VELUNE_HOME. Checks the native files and the notes for what a Harness
-cannot hold, and that Codex has no place for the skill. Then a parent turn at a different level, through Velune's gateway against a loopback
-upstream, starts the defined sub-agent (Codex `spawn_agent` with its role;
-Claude Code's `Agent` tool with its type), and the sub-agent's own upstream
-request shows its instructions and level, and on Claude Code the skill's
-content. Only loopback synthetic responses are used: no real model,
+Velune's resource library holds a skill and two sub-agents for real Codex
+0.159.3 and Claude Code 2.1.286 managed HOMEs inside a temporary
+VELUNE_HOME. `probe` names a native model ID: it is written into each
+Harness's definition with its level and skill (Codex says it has no place
+for the skill), and a turn through Velune's gateway routes that ID to the
+one Velune model with the same provider model ID. `vprobe` names a Velune
+model: nothing of it is written where the Harness keeps its definitions,
+and only turns through the gateway receive it (Codex as a role in the
+thread's config, Claude Code through `--agents`). For each, a parent turn
+at another level starts the sub-agent through Velune's gateway against a
+loopback upstream, and the sub-agent's own request reaches the provider of
+its model with its instructions and level (between protocols, as the
+gateway translates it), and on Claude Code the skill's content. Only loopback synthetic responses are used: no real model,
 credential, HOME or session is read; this is not an automated test.
 """
 import argparse
 import importlib.util
 import json
 import pathlib
+import re
 import sys
 import tempfile
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-INSTRUCTIONS = 'PROBE_INSTRUCTIONS'
 SKILL = 'SKILL_MARKER_TEXT'
 captures = []
 
 
+def instructions(agent):
+    return agent.upper() + '_INSTRUCTIONS'
+
+
+def asked(text):
+    """The sub-agent a parent turn asks for."""
+    return re.search(r'PARENT_TASK=(\w+);', text).group(1)
+
+
 def responses_reply(body):
-    """Codex: the parent spawns the probe role and waits; the sub-agent answers."""
+    """The parent spawns the asked role and waits; the sub-agent answers."""
     text = json.dumps(body.get('input', []))
     outputs = [item for item in body.get('input', []) if item.get('type') == 'function_call_output']
     if 'SUBAGENT_TASK' in text and 'PARENT_TASK' not in text:
@@ -42,24 +55,26 @@ def responses_reply(body):
         target = spawned.get('agent_id') or spawned.get('id') or spawned.get('task_name')
         return {'type': 'function_call', 'name': 'wait_agent', 'call_id': 'call_wait',
                 'arguments': json.dumps({'targets': [target], 'timeout_ms': 30000})}
+    agent = asked(text)
     return {'type': 'function_call', 'name': 'spawn_agent', 'call_id': 'call_spawn',
-            'arguments': json.dumps({'message': 'SUBAGENT_TASK', 'agent_type': 'probe'})}
+            'arguments': json.dumps({'message': 'SUBAGENT_TASK=%s;' % agent, 'agent_type': agent})}
 
 
 def messages_reply(body):
-    """Claude Code: the parent starts the probe agent; the sub-agent answers."""
+    """The parent starts the asked agent; the sub-agent answers."""
     messages = body.get('messages', [])
     text = json.dumps(messages)
     if 'security monitor' in json.dumps(body.get('system')):
         return [{'type': 'text', 'text': '<block>no</block>'}], 'end_turn'
-    agent = next((tool['name'] for tool in body.get('tools', []) if tool.get('name') in ('Agent', 'Task')), None)
-    if 'SUBAGENT_TASK' in json.dumps(messages[:1]) and 'PARENT_TASK' not in text:
+    tool = next((tool['name'] for tool in body.get('tools', []) if tool.get('name') in ('Agent', 'Task')), None)
+    if 'SUBAGENT_TASK' in text and 'PARENT_TASK' not in text:
         return [{'type': 'text', 'text': 'SUB_DONE'}], 'end_turn'
     if 'PARENT_TASK' in text and 'tool_result' in text:
         return [{'type': 'text', 'text': 'PARENT_DONE'}], 'end_turn'
-    if 'PARENT_TASK' in text and agent:
-        return [{'type': 'tool_use', 'id': 'toolu_probe', 'name': agent,
-                 'input': {'description': 'Probe', 'prompt': 'SUBAGENT_TASK', 'subagent_type': 'probe'}}], 'tool_use'
+    if 'PARENT_TASK' in text and tool:
+        agent = asked(text)
+        return [{'type': 'tool_use', 'id': 'toolu_probe', 'name': tool,
+                 'input': {'description': 'Probe', 'prompt': 'SUBAGENT_TASK=%s;' % agent, 'subagent_type': agent}}], 'tool_use'
     return [{'type': 'text', 'text': 'OTHER'}], 'end_turn'
 
 
@@ -91,7 +106,7 @@ class Upstream(BaseHTTPRequestHandler):
         path = self.path.split('?')[0]
         if path.endswith('/count_tokens'):
             return self.payload({'input_tokens': 1})
-        captures.append(body)
+        captures.append((path, body))
         if path.endswith('/responses'):
             out = responses_reply(body)
             if out['type'] == 'message':
@@ -173,21 +188,34 @@ def main():
                 b.BindingTemplateSkillFile(path='SKILL.md', executable=False, bytes=(
                     '---\nname: probe-skill\ndescription: Probe skill\n---\n\n%s\n' % SKILL).encode())]))).summary
             app.apply_resource_template(skill.id, targets)
-            probe = app.save_resource_template(b.BindingResourceTemplate(id='', name='probe', content=content.SUBAGENT(
-                description='Probe agent.\nUse it for the probe task.', instructions=INSTRUCTIONS, model=None, tools=[],
-                effort='high', skills=['probe-skill']))).summary
-            notes = {report.runtime_id: report.notes for report in app.apply_resource_template(probe.id, targets)}
-            assert notes['claude'] == [] and any('技能' in note for note in notes['codex']), notes
-            files = {path.name: path.read_text() for path in (root / 'velune').rglob('probe.*') if path.parent.name == 'agents'}
-            assert 'model_reasoning_effort = "high"' in files['probe.toml'] and 'Use it for the probe task.' in files['probe.toml'], files
-            assert 'effort: high' in files['probe.md'] and '- probe-skill' in files['probe.md'], files
-            print('PASS the definition is written in each Harness\'s own fields; Codex says it has no place for the skill', flush=True)
 
-            def run(runtime):
+            def subagent(name, model, velune_model, effort):
+                saved = app.save_resource_template(b.BindingResourceTemplate(id='', name=name, content=content.SUBAGENT(
+                    description='%s agent.\nUse it for the %s task.' % (name, name), instructions=instructions(name),
+                    model=model, velune_model=velune_model, tools=[], effort=effort, skills=['probe-skill']))).summary
+                return {report.runtime_id: report.notes for report in app.apply_resource_template(saved.id, targets)}
+
+            # A native ID the messages provider also serves; a Velune model on the responses provider.
+            notes = subagent('probe', 'synthetic-messages', None, 'high')
+            assert notes['claude'] == [] and any('技能' in note for note in notes['codex']), notes
+            notes = subagent('vprobe', None, keys['codex'], 'medium')
+            assert all(any('网关' in note for note in found) for found in notes.values()), notes
+            definitions = {path.name: path for path in (root / 'velune').rglob('probe.*') if path.parent.name == 'agents'}
+            native_dirs = {path.parent for path in definitions.values()}
+            text = {name: path.read_text() for name, path in definitions.items()}
+            assert 'model = "synthetic-messages"' in text['probe.toml'] and 'model_reasoning_effort = "high"' in text['probe.toml'], text
+            assert 'model: synthetic-messages' in text['probe.md'] and 'effort: high' in text['probe.md'] and '- probe-skill' in text['probe.md'], text
+
+            def unwritten():
+                return not any(path.name.startswith('vprobe.') for directory in native_dirs for path in directory.iterdir())
+            assert unwritten()
+            print('PASS a native model ID is written into each definition; a Velune model is not written at all', flush=True)
+
+            def run(runtime, agent):
                 conversation = app.create_conversation(runtime, str(root / 'project'), keys[runtime]).snapshot.conversation.id
                 conversation = app.send_turn_with_selection(
                     runtime, conversation, runtime, b.BindingModelSelection.MANAGED(model_record_key=keys[runtime]),
-                    b.BindingComposedTurn(text='PARENT_TASK', effort='low', attachments=[])).snapshot.conversation.id
+                    b.BindingComposedTurn(text='PARENT_TASK=%s;' % agent, effort='low', attachments=[])).snapshot.conversation.id
                 deadline = time.monotonic() + 120
                 while True:
                     current = app.snapshot(runtime, conversation).snapshot
@@ -203,17 +231,28 @@ def main():
                     assert time.monotonic() < deadline, (runtime, current.run_state, texts)
                     time.sleep(.2)
 
+            # Where each sub-agent's requests go, and the level they carry there.
+            expected = {'probe': ('/messages', 'synthetic-messages', 'high'), 'vprobe': ('/responses', 'synthetic-responses', 'medium')}
             for runtime in ('codex', 'claude'):
-                before = len(captures)
-                run(runtime)
-                requests = [body for body in captures[before:] if 'SUBAGENT_TASK' in json.dumps(body) and 'PARENT_TASK' not in json.dumps(body)]
-                assert requests, (runtime, 'the sub-agent made no request')
-                for body in requests:
-                    text = json.dumps(body)
-                    level = (body.get('reasoning') or {}).get('effort') if runtime == 'codex' else (body.get('output_config') or {}).get('effort')
-                    assert INSTRUCTIONS in text and level == 'high', (runtime, level)
-                    assert runtime == 'codex' or SKILL in text, (runtime, 'the skill was not loaded')
-                print('PASS %s: the sub-agent runs with its own instructions and level%s' % (runtime, ' and the skill' if runtime == 'claude' else ''), flush=True)
+                for agent, (path, model, level) in expected.items():
+                    before = len(captures)
+                    run(runtime, agent)
+                    requests = [(where, body) for where, body in captures[before:]
+                                if 'SUBAGENT_TASK=%s;' % agent in json.dumps(body) and 'PARENT_TASK' not in json.dumps(body)]
+                    assert requests, (runtime, agent, 'the sub-agent made no request')
+                    for where, body in requests:
+                        dumped = json.dumps(body)
+                        sent = (body.get('reasoning') or {}).get('effort') if where.endswith('/responses') else (body.get('output_config') or {}).get('effort')
+                        assert where.endswith(path) and body.get('model') == model, (runtime, agent, where, body.get('model'))
+                        assert instructions(agent) in dumped, (runtime, agent)
+                        # Responses to Messages carries a level as a thinking budget, best effort.
+                        translated = runtime == 'codex' and where.endswith('/messages')
+                        assert (body.get('thinking') or {}).get('type') == 'enabled' if translated else sent == level, (runtime, agent, sent, body.get('thinking'))
+                        assert runtime == 'codex' or SKILL in dumped, (runtime, agent, 'the skill was not loaded')
+                    print('PASS %s %s: the sub-agent reaches %s with its instructions and level%s' % (
+                        runtime, agent, model, ' and the skill' if runtime == 'claude' else ''), flush=True)
+            assert unwritten()
+            print('PASS the Velune-model sub-agent was supplied to gateway turns without being written where the Harness keeps its definitions', flush=True)
         finally:
             app.shutdown()
             server.shutdown()

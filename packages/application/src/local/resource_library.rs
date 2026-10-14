@@ -68,6 +68,54 @@ fn user_key(kind: RuntimeResourceKind, path: &str) -> management::ResourceKey {
 }
 
 fn canonical(content: &ResourceTemplateContent) -> Result<management::Canonical, RuntimeError> {
+    if let ResourceTemplateContent::Subagent {
+        description,
+        instructions,
+        model,
+        velune_model,
+        tools,
+        effort,
+        skills,
+    } = content
+    {
+        // A Velune model exists only behind the gateway, so the agent is supplied per turn.
+        return Ok(management::Canonical::Subagent {
+            description: description.clone(),
+            instructions: instructions.clone(),
+            model: model.clone().filter(|_| velune_model.is_none()),
+            tools: tools.clone(),
+            effort: effort.clone(),
+            skills: skills.clone(),
+            per_turn: velune_model.is_some(),
+        });
+    }
+    Ok(serde_json::from_value(serde_json::to_value(content)?)?)
+}
+
+/// A native definition read back: its model is the runtime's own.
+fn template_content(
+    content: management::Canonical,
+) -> Result<ResourceTemplateContent, RuntimeError> {
+    if let management::Canonical::Subagent {
+        description,
+        instructions,
+        model,
+        tools,
+        effort,
+        skills,
+        per_turn: _,
+    } = content
+    {
+        return Ok(ResourceTemplateContent::Subagent {
+            description,
+            instructions,
+            model,
+            velune_model: None,
+            tools,
+            effort,
+            skills,
+        });
+    }
     Ok(serde_json::from_value(serde_json::to_value(content)?)?)
 }
 
@@ -264,7 +312,7 @@ impl CoreRuntime {
             template: ResourceTemplate {
                 id: String::new(),
                 name,
-                content: serde_json::from_value(serde_json::to_value(content)?)?,
+                content: template_content(content)?,
             },
             notes,
         })
@@ -308,6 +356,24 @@ impl CoreRuntime {
         let kind = template.content.kind();
         if kind != RuntimeResourceKind::UserInstructions {
             management::validate_name(&template.name)?;
+        }
+        if let ResourceTemplateContent::Subagent {
+            model: Some(_),
+            velune_model: Some(_),
+            ..
+        } = &template.content
+        {
+            return Err(RuntimeError::invalid("子 Agent 只能指定一个模型"));
+        }
+        if let Some(crate::SubagentModel::Velune(key)) = template.content.subagent_model()
+            && !self
+                .gateways
+                .iter()
+                .flat_map(|gateway| &gateway.providers)
+                .flat_map(|provider| &provider.models)
+                .any(|model| model.record_key == key)
+        {
+            return Err(RuntimeError::invalid("所选的 Velune 模型不存在"));
         }
         // Rendering against a variant that holds every kind checks the content itself.
         management::render(
@@ -892,29 +958,38 @@ impl CoreRuntime {
                 .collect();
             prune_directories(&config, kind, &removed);
         }
-        // Other templates lose a key this one took over.
+        // Other templates lose a key this one took over, and are no longer
+        // enabled once they hold none.
         let mut bindings = self.resource_bindings.clone();
+        let mut emptied = Vec::new();
         for binding in &mut bindings {
             if binding.runtime_id == runtime_id && binding.template_id != template.id {
+                let held = binding.entries.len();
                 binding
                     .entries
                     .retain(|entry| !entries.iter().any(|mine| mine.key == entry.key));
+                if held > 0 && binding.entries.is_empty() {
+                    emptied.push(binding.template_id.clone());
+                }
             }
         }
         bindings.retain(|binding| {
-            !(binding.runtime_id == runtime_id
-                && binding.entries.is_empty()
-                && binding.template_id != template.id)
+            !(binding.runtime_id == runtime_id && emptied.contains(&binding.template_id))
         });
+        // A sub-agent supplied per turn is enabled without writing anything.
+        let per_turn = matches!(
+            template.content.subagent_model(),
+            Some(crate::SubagentModel::Velune(_))
+        );
         match bindings
             .iter()
             .position(|item| item.runtime_id == runtime_id && item.template_id == template.id)
         {
-            Some(index) if entries.is_empty() => {
+            Some(index) if entries.is_empty() && !per_turn => {
                 bindings.remove(index);
             }
             Some(index) => bindings[index].entries = entries,
-            None if entries.is_empty() => {}
+            None if entries.is_empty() && !per_turn => {}
             None => bindings.push(ResourceBinding {
                 runtime_id: runtime_id.to_owned(),
                 template_id: template.id.clone(),

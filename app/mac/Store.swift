@@ -276,6 +276,10 @@ final class AppStore: ObservableObject {
     }
     /// A turn's settings in the names the composer uses (an unknown runtime
     /// or a mode its type does not declare shows as recorded), and its usage.
+    /// Velune's models by record key, named as the composer names them.
+    var veluneModelNames: [(key: String, name: String)] {
+        gateway.providers.flatMap { provider in provider.models.map { (key: $0.recordKey, name: "\($0.displayName) · \(provider.name)") } }
+    }
     /// Where the loaded conversation stands, from its turns' native records.
     var conversationStatus: ConversationStatus {
         let turns = snapshot?.transcriptTurns ?? []

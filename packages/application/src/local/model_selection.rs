@@ -361,6 +361,7 @@ impl CoreRuntime {
             os_home: context.os_home,
             gateway,
             mcp_servers: Vec::new(),
+            session_agents: Vec::new(),
         })
     }
 

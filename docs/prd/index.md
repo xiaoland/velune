@@ -196,7 +196,7 @@ Mac 开发交付安装到 `/Applications/Velune.app`，每次修改后重新构�
 
 实施与验收归 [运行时资源管理任务](../../tasks/runtime-management/packet.md)。
 
-2026-10-14 用户要求补全子 Agent 资源（[S23](../sources.md#s23)）：描述与指令一样用多行文本编辑；可配置推理强度；可选择资源库中的技能；Codex 子 Agent 的模型与推理强度要写入，加入资源库时也要带入，不再丢弃。各运行时按原生格式写入能表达的字段，表达不了的照常跳过并说明。Pi 的子 Agent 由扩展提供，用户计划之后单独支持，届时需处理扩展的版本兼容，不在本轮。实施归 [子 Agent 字段任务](../../tasks/resource-subagent-fields/packet.md)。
+2026-10-14 用户要求补全子 Agent 资源（[S23](../sources.md#s23)）：描述与指令一样用多行文本编辑；可配置推理强度；可选择资源库中的技能；Codex 子 Agent 的模型与推理强度要写入，加入资源库时也要带入，不再丢弃。各运行时按原生格式写入能表达的字段，表达不了的照常跳过并说明。同日用户进一步要求子 Agent 既能用 Velune 托管模型也能用原生模型，同一运行时可随时在经 Velune 网关的轮次与原生轮次之间切换，并且选 Velune 模型的子 Agent 在原生轮次中不会被运行时用到：子 Agent 的模型为“沿用父会话”“原生 model ID”或“Velune 模型”之一；原生 ID 写入原生定义，经网关的轮次中改由 Velune 中唯一同 ID 的模型提供；Velune 模型的子 Agent 不写入原生定义，只提供给经网关的轮次。Pi 的子 Agent 由扩展提供，用户计划之后单独支持，届时需处理扩展的版本兼容，不在本轮。实施归 [子 Agent 字段任务](../../tasks/resource-subagent-fields/packet.md)。
 
 2026-10-06 用户授权增加 Codex（app-server）与 deepseek-harness 接入，并直接消费 huihua 发行包读取会话，不复制其源码；交付须保留对应开源声明与许可证。同一运行时家族的 breaking-change 版本分别作为独立运行时类型，绑定各自适配器与版本正则，允许多种 Pi 版本同时配置。实际版本匹配用于确认所选类型，不是用一个全局版本闸门替代多版本支持。huihua 是只读会话证据库，不代替原生运行控制接口。实施与证据见 [多运行时任务](../../tasks/multi-runtime/packet.md)。
 

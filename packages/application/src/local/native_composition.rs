@@ -1,5 +1,6 @@
 //! Native runtime composition maps model ownership into a credential-blind gateway injection.
 use super::*;
+use velune_agent_runtime::native::SessionAgent;
 impl CoreRuntime {
     pub(super) fn native_injection(
         &self,
@@ -50,6 +51,10 @@ impl CoreRuntime {
             reasoning_levels: model.reasoning_levels.clone(),
         })
     }
+    /// The turn's model under its provider model ID, and each sub-agent
+    /// definition enabled on the runtime that names a native model ID, under
+    /// that ID, when exactly one Velune model has it. The turn's own model
+    /// keeps its name.
     pub(super) fn native_aliases(
         &self,
         runtime: &RuntimeInstance,
@@ -64,10 +69,77 @@ impl CoreRuntime {
             .resolve_dispatch(key)
             .map_err(RuntimeError::invalid)?
             .model();
-        Ok(BTreeMap::from([(
-            model.provider_model_id.clone(),
-            key.into(),
-        )]))
+        let mut aliases = BTreeMap::from([(model.provider_model_id.clone(), key.into())]);
+        for template in self.enabled_subagents(runtime) {
+            let Some(crate::SubagentModel::Native(id)) = template.content.subagent_model() else {
+                continue;
+            };
+            let mut matching = gateway
+                .providers
+                .iter()
+                .flat_map(|provider| &provider.models)
+                .filter(|model| model.provider_model_id == id);
+            if let (Some(model), None) = (matching.next(), matching.next()) {
+                aliases
+                    .entry(id.to_owned())
+                    .or_insert_with(|| model.record_key.clone());
+            }
+        }
+        Ok(aliases)
+    }
+
+    /// The library's sub-agent definitions enabled on a runtime.
+    fn enabled_subagents(&self, runtime: &RuntimeInstance) -> Vec<&crate::ResourceTemplate> {
+        self.resource_bindings
+            .iter()
+            .filter(|binding| binding.runtime_id == runtime.id)
+            .filter_map(|binding| {
+                self.resource_templates
+                    .iter()
+                    .find(|template| template.id == binding.template_id)
+            })
+            .filter(|template| template.content.subagent_model().is_some())
+            .collect()
+    }
+
+    /// The enabled sub-agents on a Velune model, supplied to a turn through
+    /// the runtime's gateway, which routes every Velune model by record key.
+    pub(super) fn turn_subagents(&self, runtime: &RuntimeInstance) -> Vec<SessionAgent> {
+        let Some(gateway) = self.gateways.iter().find(|g| g.id == runtime.gateway_id) else {
+            return Vec::new();
+        };
+        self.enabled_subagents(runtime)
+            .into_iter()
+            .filter_map(|template| {
+                let crate::ResourceTemplateContent::Subagent {
+                    description,
+                    instructions,
+                    velune_model: Some(key),
+                    tools,
+                    effort,
+                    skills,
+                    ..
+                } = &template.content
+                else {
+                    return None;
+                };
+                // A model removed since, or kept by another gateway, leaves the agent out.
+                gateway
+                    .providers
+                    .iter()
+                    .flat_map(|provider| &provider.models)
+                    .any(|model| &model.record_key == key)
+                    .then(|| SessionAgent {
+                        name: template.name.clone(),
+                        description: description.clone(),
+                        instructions: instructions.clone(),
+                        model: Some(format!("velune/model/{key}")),
+                        effort: effort.clone(),
+                        tools: tools.clone(),
+                        skills: skills.clone(),
+                    })
+            })
+            .collect()
     }
     pub(super) fn active_instance(&self) -> Result<&RuntimeInstance, RuntimeError> {
         let id = match &self.session.active_state {

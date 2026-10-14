@@ -48,6 +48,43 @@ impl NativeSession {
         }
         Ok(())
     }
+    /// Where a gateway turn's agent role lives: the execution lane's own
+    /// projection, never the Harness's agents directory.
+    fn codex_role_path(config: &NativeConfig, name: &str) -> PathBuf {
+        config
+            .projection_directory
+            .join("agents")
+            .join(format!("{name}.toml"))
+    }
+
+    /// Writes the role file of each per-turn sub-agent on the executing
+    /// machine; `codex_options` names them in the thread's config.
+    pub(super) fn codex_write_roles(config: &NativeConfig) -> Result<()> {
+        for agent in &config.session_agents {
+            crate::management::validate_name(&agent.name)
+                .map_err(|error| Error::new(error.to_string()))?;
+            let path = Self::codex_role_path(config, &agent.name);
+            if let Some(parent) = path.parent() {
+                config.execution.create_dir_all(parent)?;
+            }
+            let effort = agent
+                .effort
+                .as_deref()
+                .filter(|level| crate::management::CODEX_EFFORTS.contains(level));
+            config.execution.write_file_atomic(
+                &path,
+                &crate::management::codex_agent(
+                    &agent.name,
+                    &agent.description,
+                    &agent.instructions,
+                    &agent.model,
+                    effort,
+                ),
+            )?;
+        }
+        Ok(())
+    }
+
     fn codex_options(&self, cwd: Option<&Path>) -> Value {
         let mut options = json!({"approvalPolicy":"on-request","sandbox":"workspace-write"});
         if let Some(gateway) = &self.config.gateway {
@@ -58,6 +95,23 @@ impl NativeSession {
                 "model_providers":{"velune":{"name":"Velune LLM Gateway","base_url":self.tunnel.as_ref().map(|t| t.endpoint()).unwrap_or(&gateway.endpoint),"env_key":"VELUNE_GATEWAY_TOKEN","wire_api":"responses","requires_openai_auth":false}},
                 "features":{"responses_websockets":false,"responses_websockets_v2":false}
             });
+            if !self.config.session_agents.is_empty() {
+                options["config"]["agents"] = Value::Object(
+                    self.config
+                        .session_agents
+                        .iter()
+                        .map(|agent| {
+                            (
+                                agent.name.clone(),
+                                json!({
+                                    "description": agent.description,
+                                    "config_file": Self::codex_role_path(&self.config, &agent.name),
+                                }),
+                            )
+                        })
+                        .collect(),
+                );
+            }
         } else {
             let provider = self
                 .native_selection

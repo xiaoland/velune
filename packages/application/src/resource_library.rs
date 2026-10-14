@@ -20,7 +20,14 @@ pub enum ResourceTemplateContent {
     Subagent {
         description: String,
         instructions: String,
+        /// A model ID the runtime's own provider serves, written into the
+        /// native definition. Turns through Velune's gateway route it to the
+        /// one Velune model with the same provider model ID, if any.
         model: Option<String>,
+        /// A Velune model (record key) instead: the agent is then never
+        /// written and is supplied only to turns through Velune's gateway.
+        #[serde(default)]
+        velune_model: Option<String>,
         tools: Vec<String>,
         /// A reasoning level; each runtime writes it where its definition has a place for it.
         #[serde(default)]
@@ -55,7 +62,30 @@ pub enum TemplateMcpTransport {
     },
 }
 
+/// Which model a sub-agent runs, as one of the two places it can come from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SubagentModel<'a> {
+    Inherit,
+    Native(&'a str),
+    Velune(&'a str),
+}
+
 impl ResourceTemplateContent {
+    /// The sub-agent's model; a template naming both is refused when stored.
+    pub fn subagent_model(&self) -> Option<SubagentModel<'_>> {
+        match self {
+            Self::Subagent {
+                velune_model: Some(key),
+                ..
+            } => Some(SubagentModel::Velune(key)),
+            Self::Subagent {
+                model: Some(id), ..
+            } => Some(SubagentModel::Native(id)),
+            Self::Subagent { .. } => Some(SubagentModel::Inherit),
+            _ => None,
+        }
+    }
+
     pub fn kind(&self) -> RuntimeResourceKind {
         match self {
             Self::Instructions { .. } => RuntimeResourceKind::UserInstructions,

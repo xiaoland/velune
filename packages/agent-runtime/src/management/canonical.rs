@@ -31,12 +31,17 @@ pub enum Canonical {
         /// Skill names, loaded into the agent where the Harness can.
         #[serde(default)]
         skills: Vec<String>,
+        /// The host supplies the agent to the turns it runs through its
+        /// gateway instead of writing it; such a definition renders no files.
+        #[serde(default)]
+        per_turn: bool,
     },
 }
 
 /// The reasoning levels each Harness accepts in an agent definition.
-const CODEX_EFFORTS: [&str; 7] = ["none", "minimal", "low", "medium", "high", "xhigh", "max"];
-const CLAUDE_EFFORTS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
+pub(crate) const CODEX_EFFORTS: [&str; 7] =
+    ["none", "minimal", "low", "medium", "high", "xhigh", "max"];
+pub(crate) const CLAUDE_EFFORTS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
 
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -189,10 +194,17 @@ pub fn render(variant_id: &str, name: &str, canonical: &Canonical) -> Result<Ren
             tools,
             effort,
             skills,
+            per_turn,
         } => {
             validate_name(name)?;
             if description.trim().is_empty() || instructions.trim().is_empty() {
                 return Err(Error::new(ErrorCode::Invalid, "子 Agent 需要描述和指令"));
+            }
+            if *per_turn {
+                return Ok(Rendering::Files {
+                    files: Vec::new(),
+                    notes: vec!["只在经 Velune 网关的轮次中提供，不写入原生定义".into()],
+                });
             }
             let (harness, accepted): (&str, &[&str]) = if codex {
                 ("Codex", &CODEX_EFFORTS)
@@ -375,7 +387,7 @@ fn claude_agent(
 }
 
 /// A Codex agent role: its own keys, then config keys that apply to the agent's threads.
-fn codex_agent(
+pub(crate) fn codex_agent(
     name: &str,
     description: &str,
     instructions: &str,
@@ -566,6 +578,7 @@ pub fn parse(
                     tools: Vec::new(),
                     effort: field("model_reasoning_effort").map(str::to_owned),
                     skills: Vec::new(),
+                    per_turn: false,
                 }
             } else {
                 let rest = source
@@ -613,6 +626,7 @@ pub fn parse(
                     tools: list("tools"),
                     effort,
                     skills: list("skills"),
+                    per_turn: false,
                 }
             }
         }

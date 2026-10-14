@@ -1325,10 +1325,14 @@ pub enum BindingResourceTemplateContent {
         transport: BindingTemplateMcpTransport,
         timeout_seconds: Option<u32>,
     },
+    /// `model` is a native model ID written into the definition;
+    /// `velune_model` a Velune model record key instead, supplied only to
+    /// turns through Velune's gateway. At most one is set.
     Subagent {
         description: String,
         instructions: String,
         model: Option<String>,
+        velune_model: Option<String>,
         tools: Vec<String>,
         effort: Option<String>,
         skills: Vec<String>,

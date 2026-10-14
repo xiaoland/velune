@@ -31,8 +31,9 @@ mod resource_library;
 pub use resource_library::{
     BindingResolution, BoundEntry, ResourceBinding, ResourceDriftFile, ResourceSaveResult,
     ResourceSyncState, ResourceSyncStatus, ResourceTemplate, ResourceTemplateContent,
-    ResourceTemplateImport, ResourceTemplateSummary, TemplateApplyOutcome, TemplateApplyReport,
-    TemplateApplyTarget, TemplateMcpTransport, TemplateSkillFile, UnmanagedRuntimeResource,
+    ResourceTemplateImport, ResourceTemplateSummary, SubagentModel, TemplateApplyOutcome,
+    TemplateApplyReport, TemplateApplyTarget, TemplateMcpTransport, TemplateSkillFile,
+    UnmanagedRuntimeResource,
 };
 mod runtime_management;
 pub use runtime_management::{

@@ -85,6 +85,23 @@ pub struct NativeConfig {
     pub projection_directory: PathBuf,
     pub gateway: Option<GatewayInjection>,
     pub mcp_servers: Vec<crate::mcp::Server>,
+    /// Sub-agents the host supplies to gateway turns only; nothing of them is
+    /// written where the Harness keeps its own definitions, so a turn on the
+    /// Harness's own provider never sees them.
+    pub session_agents: Vec<SessionAgent>,
+}
+
+/// A sub-agent definition for one execution. The model is a name the
+/// turn's gateway routes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SessionAgent {
+    pub name: String,
+    pub description: String,
+    pub instructions: String,
+    pub model: Option<String>,
+    pub effort: Option<String>,
+    pub tools: Vec<String>,
+    pub skills: Vec<String>,
 }
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 pub struct RuntimeModel {
@@ -189,6 +206,7 @@ impl NativeSession {
                 let mut injection = gateway.clone();
                 injection.endpoint = tunnel.endpoint().into();
                 active.gateway = Some(injection);
+                Self::codex_write_roles(&active)?;
                 Some(tunnel)
             } else {
                 None

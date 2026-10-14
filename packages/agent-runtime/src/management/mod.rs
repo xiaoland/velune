@@ -10,6 +10,7 @@ pub use canonical::{
 };
 
 mod canonical;
+pub(crate) use canonical::{CLAUDE_EFFORTS, CODEX_EFFORTS, codex_agent};
 mod fs;
 mod layout;
 mod mcp_definition;
