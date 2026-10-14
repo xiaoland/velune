@@ -18,7 +18,8 @@ use std::{
 /// Native session file layouts this module understands.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SessionFormat {
-    /// `sessions/YYYY/MM/DD/rollout-<date>-<thread id>.jsonl`
+    /// `sessions/YYYY/MM/DD/rollout-<date>-<thread id>.jsonl`; a thread
+    /// continued in a later segment adds `rollout-<date>-<thread id>_<segment id>.jsonl`.
     Codex,
     /// `projects/<project>/<session id>.jsonl`
     ClaudeCode,
@@ -47,11 +48,13 @@ impl SessionFormat {
     fn native_id(self, path: &Path) -> Option<String> {
         let stem = path.file_stem()?.to_str()?;
         match self {
-            // The thread id is the trailing UUID of the rollout name.
-            Self::Codex => stem
-                .strip_prefix("rollout-")
-                .filter(|_| stem.len() > 36)
-                .map(|_| stem[stem.len() - 36..].to_owned()),
+            // The thread id is the UUID ending the rollout name, before any
+            // segment id.
+            Self::Codex => {
+                let name = stem.strip_prefix("rollout-")?;
+                let name = name.split_once('_').map_or(name, |(thread, _)| thread);
+                (name.len() > 36).then(|| name[name.len() - 36..].to_owned())
+            }
             Self::ClaudeCode => Some(stem.to_owned()),
             Self::Pi => path.to_str().map(str::to_owned),
         }
@@ -100,6 +103,14 @@ fn session_files(format: SessionFormat, root: &Path, mut visit: impl FnMut(&Path
     walk(root, format.depth(), &mut visit);
 }
 
+/// Keep in `found` whichever of it and `path` was written last.
+fn latest(found: &mut Option<(PathBuf, SystemTime)>, path: &Path, metadata: &fs::Metadata) {
+    let modified = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+    if found.as_ref().is_none_or(|(_, at)| modified > *at) {
+        *found = Some((path.to_owned(), modified));
+    }
+}
+
 /// A runtime's native sessions on this machine.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionStore {
@@ -112,19 +123,19 @@ pub struct SessionStore {
 }
 
 impl SessionStore {
-    /// The session file of `native_id`.
+    /// The session file of `native_id`: the latest written of its segments.
     pub fn locate(&self, native_id: &str) -> Option<PathBuf> {
         if self.format == SessionFormat::Pi {
             let path = Path::new(native_id);
             return (path.starts_with(&self.sessions) && path.is_file()).then(|| path.to_owned());
         }
-        let mut found = None;
-        session_files(self.format, &self.sessions, |path, _| {
-            if found.is_none() && self.format.native_id(path).as_deref() == Some(native_id) {
-                found = Some(path.to_owned());
+        let mut found: Option<(PathBuf, SystemTime)> = None;
+        session_files(self.format, &self.sessions, |path, metadata| {
+            if self.format.native_id(path).as_deref() == Some(native_id) {
+                latest(&mut found, path, metadata);
             }
         });
-        found
+        found.map(|(path, _)| path)
     }
 
     /// Native ids of the sessions that a Harness process is running a turn of.
@@ -135,16 +146,21 @@ impl SessionStore {
                 if writers.is_empty() {
                     return Vec::new();
                 }
-                let mut running = Vec::new();
-                session_files(self.format, &self.sessions, |path, _| {
+                let mut segments = HashMap::<String, Option<(PathBuf, SystemTime)>>::new();
+                session_files(self.format, &self.sessions, |path, metadata| {
                     if let Some(id) = self.format.native_id(path)
                         && writers.contains(&id)
-                        && unfinished(self.format, path)
                     {
-                        running.push(id);
+                        latest(segments.entry(id).or_default(), path, metadata);
                     }
                 });
-                running
+                segments
+                    .into_iter()
+                    .filter_map(|(id, found)| {
+                        let (path, _) = found?;
+                        unfinished(self.format, &path).then_some(id)
+                    })
+                    .collect()
             }
             SessionFormat::ClaudeCode => self.claude_busy(processes),
             SessionFormat::Pi => {
