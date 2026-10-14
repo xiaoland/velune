@@ -56,12 +56,18 @@ final class Transport: @unchecked Sendable {
         return URL(fileURLWithPath: configured, isDirectory: true).standardizedFileURL
     }
 
-    func setConversationBrowserPreferences(_ preferences: BindingConversationBrowserPreferences) throws -> BindingConversationBrowserPreferences { try withApplication("setConversationBrowserPreferences", changesConfiguration: true) { try $0.setConversationBrowserPreferences(preferences: preferences) } }
+    func setConversationBrowserPreferences(_ preferences: BindingConversationBrowserPreferences) throws -> BindingConfigurationSnapshot { try withApplication("setConversationBrowserPreferences", changesConfiguration: true) { try $0.setConversationBrowserPreferences(preferences: preferences) } }
     func setStatusLine(_ items: [BindingStatusLineItem]) throws -> [BindingStatusLineItem] { try withApplication("setStatusLine", changesConfiguration: true) { try $0.setStatusLine(items: items) } }
     func setOutlinePresentation(_ presentation: BindingOutlinePresentation) throws -> BindingOutlinePresentation { try withApplication("setOutlinePresentation", changesConfiguration: true) { try $0.setOutlinePresentation(presentation: presentation) } }
     func composerDrafts() throws -> [BindingComposerDraft] { try withApplication("composerDrafts") { try $0.composerDrafts() } }
     func setComposerDraft(conversationID: String, text: String) throws { try withApplication("setComposerDraft") { try $0.setComposerDraft(conversationId: conversationID, text: text) } }
-    func setConversationBrowserGroupLimit(_ limit: UInt32) throws -> UInt32 { try withApplication("setConversationBrowserGroupLimit", changesConfiguration: true) { try $0.setConversationBrowserGroupLimit(limit: limit) } }
+    func setConversationBrowserLimits(_ limits: BindingConversationBrowserLimits) throws -> BindingConversationBrowserLimits { try withApplication("setConversationBrowserLimits", changesConfiguration: true) { try $0.setConversationBrowserLimits(limits: limits) } }
+    func organizeConversations(_ conversations: [BindingConversationReference], _ change: BindingConversationOrganizationChange) throws -> BindingConfigurationSnapshot { try withApplication("organizeConversations") { try $0.organizeConversations(conversations: conversations, change: change) } }
+    func setProjectAlias(path: String, alias: String?) throws -> BindingConfigurationSnapshot { try withApplication("setProjectAlias") { try $0.setProjectAlias(path: path, alias: alias) } }
+    func loadMoreConversations(group: BindingConversationGroupKey) throws -> BindingConfigurationSnapshot { try withApplication("loadMoreConversations") { try $0.loadMoreConversations(group: group) } }
+    func showArchivedConversations(_ archived: Bool) throws -> BindingConfigurationSnapshot { try withApplication("showArchivedConversations") { try $0.showArchivedConversations(archived: archived) } }
+    func searchConversations(_ text: String) throws -> BindingConversationSearch { try withApplication("searchConversations") { try $0.searchConversations(text: text) } }
+    func findConversation(_ id: String) throws -> BindingListedConversation? { try withApplication("findConversation") { try $0.findConversation(conversationId: id) } }
     func runtimeDiscoveryHints(userHome: String, overrides: [String: String]) throws -> [BindingRuntimeDiscoveryHint] { try withApplication("runtimeDiscoveryHints") { try $0.runtimeDiscoveryHints(userHome: userHome, overrides: overrides) } }
     func discoverRuntimes(_ probes: [BindingRuntimeDiscoveryProbe]) throws -> [BindingRuntimeDiscoveryCandidate] { try withApplication("discoverRuntimes") { try $0.discoverRuntimes(probes: probes) } }
     func analyticsQuery(_ query: BindingAnalyticsQuery) throws -> BindingAnalyticsReport { try withApplication("analyticsQuery") { try $0.analyticsQuery(query: query) } }

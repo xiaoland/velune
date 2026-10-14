@@ -50,6 +50,13 @@ enum BindingMapping {
                      parentConversationID: value.parentConversationId)
     }
 
+    static func listed(_ value: BindingListedConversation) -> Conversation {
+        var mapped = conversation(value.conversation)
+        mapped.nativeID = value.nativeId; mapped.pinned = value.pinned; mapped.unread = value.unread
+        mapped.archived = value.archived; mapped.project = value.project; mapped.moved = value.moved; mapped.group = value.group
+        return mapped
+    }
+
     /// A complete delivery. An incremental one (non-nil `base`) carries only
     /// changed messages; see `snapshotUpdate`.
     static func snapshot(_ value: BindingConversationSnapshot) -> ConversationSnapshot {
@@ -178,7 +185,7 @@ enum BindingMapping {
     }
 
     static func configuration(_ value: BindingConfigurationSnapshot) -> (conversations: [Conversation], historyFailures: [HistoryFailure], gateways: [GatewayConfig], runtimes: [RuntimeInstance], runtimeTypes: [RuntimeTypeDescriptor], modelTemplates: [ModelTemplate], importTypes: [RuntimeTypeDescriptor], protocols: [ProtocolDescriptor], selectedRuntimeID: String?) {
-        (value.conversations.map(conversation), value.historyFailures.map { HistoryFailure(runtimeID: $0.runtimeId, detail: $0.detail) }, value.gateways.map(gateway), value.runtimeInstances.map(runtime), value.runtimeTypes.map(runtimeType), value.modelTemplates.map(template), value.providerImportTypes.map(runtimeType), value.protocols.map { ProtocolDescriptor(id: protocolID($0.id), name: $0.name, supported: $0.supported) }, value.selectedRuntimeInstanceId)
+        (value.conversations.map(listed), value.historyFailures.map { HistoryFailure(runtimeID: $0.runtimeId, detail: $0.detail) }, value.gateways.map(gateway), value.runtimeInstances.map(runtime), value.runtimeTypes.map(runtimeType), value.modelTemplates.map(template), value.providerImportTypes.map(runtimeType), value.protocols.map { ProtocolDescriptor(id: protocolID($0.id), name: $0.name, supported: $0.supported) }, value.selectedRuntimeInstanceId)
     }
 
     static func interaction(_ value: BindingRuntimeInteraction) -> RuntimeInteraction {

@@ -704,13 +704,22 @@ impl NativeSession {
     }
 }
 
+/// A change to a native thread's metadata.
+#[derive(Debug, Clone, Copy)]
+pub enum ThreadChange<'a> {
+    Rename(&'a str),
+    Delete,
+    Archive,
+    Unarchive,
+}
+
 /// Native thread metadata management without model selection or gateway startup.
-pub fn manage_thread(binary: &Path, home: &Path, id: &str, title: Option<&str>) -> Result<()> {
+pub fn manage_thread(binary: &Path, home: &Path, id: &str, change: ThreadChange) -> Result<()> {
     manage_thread_at(
         binary,
         home,
         id,
-        title,
+        change,
         &crate::execution::ExecutionTarget::Local,
         None,
     )
@@ -719,14 +728,18 @@ pub fn manage_thread_at(
     binary: &Path,
     home: &Path,
     id: &str,
-    title: Option<&str>,
+    change: ThreadChange,
     execution: &crate::execution::ExecutionTarget,
     os_home: Option<&Path>,
 ) -> Result<()> {
     let mut rpc = history_client_at(binary, home, execution, os_home)?;
-    let result = match title {
-        Some(name) => rpc.request("thread/name/set", &json!({"threadId":id,"name":name})),
-        None => rpc.request("thread/delete", &json!({"threadId":id})),
+    let result = match change {
+        ThreadChange::Rename(name) => {
+            rpc.request("thread/name/set", &json!({"threadId":id,"name":name}))
+        }
+        ThreadChange::Delete => rpc.request("thread/delete", &json!({"threadId":id})),
+        ThreadChange::Archive => rpc.request("thread/archive", &json!({"threadId":id})),
+        ThreadChange::Unarchive => rpc.request("thread/unarchive", &json!({"threadId":id})),
     };
     rpc.shutdown();
     result.map(|_| ())

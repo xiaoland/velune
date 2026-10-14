@@ -94,7 +94,7 @@ def main() -> None:
             (root / "pi-runtime").mkdir()
             application.upsert_runtime(pi_runtime)
             listed = application.list()
-            assert any(item.id == "synthetic:synthetic-failing" for item in listed.conversations)
+            assert any(item.id == "synthetic:synthetic-failing" for item in [_row.conversation for _row in listed.conversations])
             application.select_runtime("pi")
             try:
                 application.open_conversation("synthetic", "synthetic:synthetic-failing")

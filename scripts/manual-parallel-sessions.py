@@ -123,7 +123,7 @@ manager.appendSessionInfo(title); console.log(manager.getSessionFile());
                                                context_window=8192, max_output_tokens=128, reasoning_levels=None, adapter_metadata_json=None)]),
                 b.BindingAuthenticationEdit.SET_API_KEY(value='SYNTHETIC_ONLY'))
             model = app.list().gateways[0].providers[0].models[0].record_key
-            ids = {c.title: c.id for c in app.list().conversations}
+            ids = {c.title: c.id for c in [_row.conversation for _row in app.list().conversations]}
             a, b_id = ids['A'], ids['B']
 
             def snapshot(conversation):

@@ -5,13 +5,30 @@ impl CoreRuntime {
         &mut self,
         request: &Value,
     ) -> Result<Value, RuntimeError> {
-        let preferences = serde_json::from_value(request["payload"]["preferences"].clone())?;
+        let preferences: crate::config::ConversationBrowserPreferences =
+            serde_json::from_value(request["payload"]["preferences"].clone())?;
         let previous = std::mem::replace(&mut self.conversation_browser_preferences, preferences);
         if let Err(error) = self.persist() {
             self.conversation_browser_preferences = previous;
             return Err(error);
         }
-        Ok(json!(self.conversation_browser_preferences))
+        let current = &self.conversation_browser_preferences;
+        if (
+            current.grouping,
+            current.sort,
+            current.oldest_first,
+            &current.runtime_id,
+            &current.project,
+        ) != (
+            previous.grouping,
+            previous.sort,
+            previous.oldest_first,
+            &previous.runtime_id,
+            &previous.project,
+        ) {
+            self.reset_browser_pages();
+        }
+        self.list()
     }
 
     pub(super) fn set_outline_presentation(
@@ -87,24 +104,34 @@ impl CoreRuntime {
         }
     }
 
-    pub(super) fn set_conversation_browser_group_limit(
+    pub(super) fn set_conversation_browser_limits(
         &mut self,
         request: &Value,
     ) -> Result<Value, RuntimeError> {
-        let limit = request["payload"]["limit"]
-            .as_u64()
-            .and_then(|value| u32::try_from(value).ok())
-            .filter(|value| *value > 0)
-            .ok_or_else(|| RuntimeError::invalid("每组会话加载数量必须大于零"))?;
-        let previous = self.conversation_browser_group_limit;
-        self.conversation_browser_group_limit = limit;
+        let limits: crate::api::ConversationBrowserLimits =
+            serde_json::from_value(request["payload"]["limits"].clone())?;
+        if limits.page == 0 || limits.total == 0 {
+            return Err(RuntimeError::invalid("会话加载数量必须大于零"));
+        }
+        let previous = self.conversation_browser_limits;
+        self.conversation_browser_limits = limits;
         if let Err(error) = self.persist() {
-            self.conversation_browser_group_limit = previous;
+            self.conversation_browser_limits = previous;
             return Err(error);
         }
-        Ok(json!(limit))
+        Ok(json!(limits))
     }
-    pub(super) fn list(&self) -> Result<Value, RuntimeError> {
+    /// Every enabled runtime's conversations, continued ones by their link,
+    /// with the runtimes' own archives in the archive view.
+    pub(super) fn list_sources(
+        &self,
+    ) -> Result<
+        (
+            Vec<organization::ListedSource>,
+            Vec<crate::api::HistoryFailure>,
+        ),
+        RuntimeError,
+    > {
         let mut conversations = Vec::new();
         let mut history_failures = Vec::new();
         for (slot, runtime) in self.runtime_instances.iter().enumerate() {
@@ -140,17 +167,39 @@ impl CoreRuntime {
                 conversations.push(view.conversation.clone());
             }
         }
-        let mut conversations = self.linked_summaries(conversations);
-        conversations
-            .sort_by_key(|conversation| std::cmp::Reverse(conversation.updated_at_unix_ms));
+        let mut sources: Vec<_> = self
+            .linked_summaries(conversations)
+            .into_iter()
+            .map(|summary| organization::ListedSource {
+                summary,
+                archived_natively: false,
+            })
+            .collect();
+        if self.shows_archived() {
+            sources.extend(self.natively_archived().into_iter().map(|summary| {
+                organization::ListedSource {
+                    summary,
+                    archived_natively: true,
+                }
+            }));
+        }
+        Ok((sources, history_failures))
+    }
+
+    pub(super) fn list(&self) -> Result<Value, RuntimeError> {
+        let (sources, history_failures) = self.list_sources()?;
+        let page = self.browse(sources, None);
         Ok(json!({
-            "conversations": conversations,
+            "conversations": page.conversations,
+            "conversationGroups": page.groups,
+            "conversationProjects": page.projects,
+            "showsArchived": self.shows_archived(),
             "historyFailures": history_failures,
             "gateways": self.public_gateways(),
             "runtimeInstances": self.runtime_instances,
             "runtimeTypes": runtime_types(),
             "modelTemplates":self.model_templates,
-            "conversationBrowserGroupLimit":self.conversation_browser_group_limit,
+            "conversationBrowserLimits":self.conversation_browser_limits,
             "outlinePresentation":self.outline_presentation,
             "statusLine":self.status_line,
             "conversationBrowserPreferences":self.conversation_browser_preferences,
@@ -404,7 +453,8 @@ impl CoreRuntime {
             model_templates: self.model_templates.clone(),
             gateways: self.gateways.clone(),
             runtime_instances: self.runtime_instances.clone(),
-            conversation_browser_group_limit: self.conversation_browser_group_limit,
+            conversation_browser_group_limit: self.conversation_browser_limits.page,
+            conversation_browser_total_limit: self.conversation_browser_limits.total,
             outline_presentation: self.outline_presentation,
             conversation_browser_preferences: self.conversation_browser_preferences.clone(),
             status_line: self.status_line.clone(),

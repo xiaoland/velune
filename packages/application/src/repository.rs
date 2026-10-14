@@ -18,6 +18,8 @@ pub(crate) struct PersistedConfig {
     pub(crate) model_templates: Vec<crate::config::ModelTemplate>,
     #[serde(default = "default_conversation_browser_group_limit")]
     pub(crate) conversation_browser_group_limit: u32,
+    #[serde(default = "default_conversation_browser_total_limit")]
+    pub(crate) conversation_browser_total_limit: u32,
     #[serde(default)]
     pub(crate) outline_presentation: crate::config::OutlinePresentation,
     #[serde(default)]
@@ -29,6 +31,9 @@ pub(crate) struct PersistedConfig {
 pub(crate) fn default_conversation_browser_group_limit() -> u32 {
     20
 }
+pub(crate) fn default_conversation_browser_total_limit() -> u32 {
+    200
+}
 
 impl Default for PersistedConfig {
     fn default() -> Self {
@@ -38,6 +43,7 @@ impl Default for PersistedConfig {
             runtime_instances: Vec::new(),
             model_templates: Vec::new(),
             conversation_browser_group_limit: default_conversation_browser_group_limit(),
+            conversation_browser_total_limit: default_conversation_browser_total_limit(),
             outline_presentation: Default::default(),
             conversation_browser_preferences: Default::default(),
             status_line: crate::config::default_status_line(),
@@ -266,6 +272,55 @@ impl Repository {
         let value = serde_json::json!({"schemaVersion":1,"bindings":bindings});
         commit(
             &self.home.join("resource-bindings.json"),
+            &serde_json::to_vec_pretty(&value)?,
+        )
+    }
+
+    /// Velune's list organization; a missing file starts read state now.
+    #[cfg(feature = "local-runtime")]
+    pub(crate) fn load_conversation_organization(
+        &self,
+    ) -> Result<crate::config::ConversationOrganization, RuntimeError> {
+        let bytes = match fs::read(self.home.join("conversation-organization.json")) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(crate::config::ConversationOrganization {
+                    read_baseline_unix_ms: crate::local::unix_ms_now(),
+                    ..Default::default()
+                });
+            }
+            Err(error) => return Err(error.into()),
+        };
+        let value: serde_json::Value = serde_json::from_slice(&bytes)?;
+        if value["schemaVersion"].as_u64() != Some(1) {
+            return Err(RuntimeError::invalid(
+                "conversation organization schema version",
+            ));
+        }
+        let organization: crate::config::ConversationOrganization =
+            serde_json::from_value(value["organization"].clone())?;
+        let mut ids = std::collections::BTreeSet::new();
+        let mut paths = std::collections::BTreeSet::new();
+        if organization.conversations.iter().any(|marks| {
+            marks.conversation_id.is_empty()
+                || marks.is_empty()
+                || !ids.insert(&marks.conversation_id)
+        }) || organization.project_aliases.iter().any(|alias| {
+            alias.path.is_empty() || alias.alias.trim().is_empty() || !paths.insert(&alias.path)
+        }) {
+            return Err(RuntimeError::invalid("会话组织记录的会话或项目身份无效"));
+        }
+        Ok(organization)
+    }
+
+    #[cfg(feature = "local-runtime")]
+    pub(crate) fn store_conversation_organization(
+        &self,
+        organization: &crate::config::ConversationOrganization,
+    ) -> Result<(), RuntimeError> {
+        let value = serde_json::json!({"schemaVersion":1,"organization":organization});
+        commit(
+            &self.home.join("conversation-organization.json"),
             &serde_json::to_vec_pretty(&value)?,
         )
     }

@@ -97,7 +97,7 @@ manager.appendSessionInfo(title);
             app.upsert_runtime(b.BindingRuntimeInstance(
                 enabled=True, id='pi', name='Pi', type_id='pi-1.0.2', gateway_id='default',
                 settings={'binary': str(args.pi), 'nodeBinary': str(args.node), 'agentDir': str(root / 'runtime')}))
-            ids = {c.title: c.id for c in app.list().conversations}
+            ids = {c.title: c.id for c in [_row.conversation for _row in app.list().conversations]}
 
             changes = app.working_changes('pi', ids['IN_REPO'])
             assert changes.repository == str(repo) and changes.directory == str(repo / 'app') and changes.branch == 'main', changes

@@ -24,23 +24,28 @@ impl CoreRuntime {
     pub(crate) fn close_if_idle(&mut self) -> Result<(), Error> {
         self.repository.unlock()
     }
+    fn snapshot(&self) -> Value {
+        json!({
+            "conversations":[], "conversationGroups":[], "conversationProjects":[],
+            "showsArchived":false, "historyFailures":[],
+            "gateways":provider_configuration::summaries(&self.config.gateways),
+            "runtimeInstances":self.config.runtime_instances, "runtimeTypes":[],
+            "modelTemplates":self.config.model_templates, "providerImportTypes":[],
+            "conversationBrowserLimits":{"page":self.config.conversation_browser_group_limit,
+                "total":self.config.conversation_browser_total_limit},
+            "outlinePresentation":self.config.outline_presentation,
+            "statusLine":self.config.status_line,
+            "conversationBrowserPreferences":self.config.conversation_browser_preferences,
+            "protocols":[{"id":"chatCompletionsV1","name":"OpenAI Chat Completions v1","supported":true},
+                {"id":"responsesV1","name":"OpenAI Responses v1","supported":true},
+                {"id":"messagesV1","name":"Anthropic Messages","supported":true}],
+            "selectedRuntimeInstanceID":null
+        })
+    }
     pub(crate) fn request_inner(&mut self, request: &Value) -> Result<Value, Error> {
         let payload = &request["payload"];
         match request["action"].as_str() {
-            Some("list") => Ok(json!({
-                "conversations":[], "historyFailures":[],
-                "gateways":provider_configuration::summaries(&self.config.gateways),
-                "runtimeInstances":self.config.runtime_instances, "runtimeTypes":[],
-                "modelTemplates":self.config.model_templates, "providerImportTypes":[],
-                "conversationBrowserGroupLimit":self.config.conversation_browser_group_limit,
-                "outlinePresentation":self.config.outline_presentation,
-                "statusLine":self.config.status_line,
-                "conversationBrowserPreferences":self.config.conversation_browser_preferences,
-                "protocols":[{"id":"chatCompletionsV1","name":"OpenAI Chat Completions v1","supported":true},
-                    {"id":"responsesV1","name":"OpenAI Responses v1","supported":true},
-                    {"id":"messagesV1","name":"Anthropic Messages","supported":true}],
-                "selectedRuntimeInstanceID":null
-            })),
+            Some("list") => Ok(self.snapshot()),
             Some("outlinePresentation") => {
                 let mut next = self.config.clone();
                 next.outline_presentation =
@@ -64,19 +69,20 @@ impl CoreRuntime {
                     serde_json::from_value(payload["preferences"].clone())?;
                 self.repository.store(&next)?;
                 self.config = next;
-                Ok(json!(self.config.conversation_browser_preferences))
+                Ok(self.snapshot())
             }
             Some("conversationBrowserSettings") => {
-                let limit = payload["limit"]
-                    .as_u64()
-                    .and_then(|value| u32::try_from(value).ok())
-                    .filter(|value| *value > 0)
-                    .ok_or_else(|| Error::invalid("每组会话加载数量必须大于零"))?;
+                let limits: crate::api::ConversationBrowserLimits =
+                    serde_json::from_value(payload["limits"].clone())?;
+                if limits.page == 0 || limits.total == 0 {
+                    return Err(Error::invalid("会话加载数量必须大于零"));
+                }
                 let mut next = self.config.clone();
-                next.conversation_browser_group_limit = limit;
+                next.conversation_browser_group_limit = limits.page;
+                next.conversation_browser_total_limit = limits.total;
                 self.repository.store(&next)?;
                 self.config = next;
-                Ok(json!(limit))
+                Ok(json!(limits))
             }
             Some("providers") => {
                 if payload["operation"] == "readApiKey" {

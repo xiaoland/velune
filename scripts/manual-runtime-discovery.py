@@ -19,14 +19,14 @@ def main():
         spec = importlib.util.spec_from_file_location('velune_bindings', module)
         b = importlib.util.module_from_spec(spec); sys.modules[spec.name] = b; spec.loader.exec_module(b)
         app = b.VeluneApplication.open(b.BindingOptions(home_directory=str(home), resources_directory=str(args.resources.resolve())))
-        assert app.list().conversation_browser_group_limit == 20
+        assert (app.list().conversation_browser_limits.page, app.list().conversation_browser_limits.total) == (20, 200)
         assert any(p.id == b.BindingGatewayProtocol.MESSAGES_V1 and p.supported for p in app.list().protocols)
-        assert app.set_conversation_browser_group_limit(7) == 7
-        try: app.set_conversation_browser_group_limit(0)
+        assert app.set_conversation_browser_limits(b.BindingConversationBrowserLimits(page=7, total=50)).page == 7
+        try: app.set_conversation_browser_limits(b.BindingConversationBrowserLimits(page=0, total=50))
         except b.BindingError: pass
         else: raise AssertionError('zero limit accepted')
         hints = app.runtime_discovery_hints(str(home), {})
-        assert {h.family_id:h.agent_directory for h in hints} == {'pi':str(home/'.pi/agent'),'codex':str(home/'.codex'),'deepseek-harness':str(home/'.dsh')}
+        assert {h.family_id:h.agent_directory for h in hints} == {'pi':str(home/'.pi/agent'),'codex':str(home/'.codex'),'claude-code':str(home/'.claude'),'deepseek-harness':str(home/'.dsh')}, {h.family_id:h.agent_directory for h in hints}
         assert not any(h.directory_exists for h in hints)
         agent = home/'.pi/agent'; agent.mkdir(parents=True)
         # An executable that supports only --version cannot accidentally start a session.
@@ -58,7 +58,7 @@ def main():
         assert not (agent/'auth.json').exists()
         app.shutdown()
         app = b.VeluneApplication.open(b.BindingOptions(home_directory=str(home), resources_directory=str(args.resources.resolve())))
-        assert app.list().conversation_browser_group_limit == 7
+        assert (app.list().conversation_browser_limits.page, app.list().conversation_browser_limits.total) == (7, 50)
         assert len(app.list().runtime_instances) == 1
         app.shutdown()
         print('synthetic discovery, version rejection, explicit import, dedup and persisted group limit passed')

@@ -194,7 +194,7 @@ def main():
                     "snapshot context runtime drifted: %r != %r" %
                     (snapshot.context_runtime_id, family))
                 assert len(captures) == before + 1, "a turn issued more than one upstream request"
-                rows = application.list().conversations
+                rows = [_row.conversation for _row in application.list().conversations]
                 assert len(rows) == 1, "logical conversation was split into multiple visible rows"
                 row_ids.append(rows[0].id)
                 user_texts = [block.text for message in snapshot.messages
@@ -215,7 +215,7 @@ def main():
             application.shutdown()
             application = bindings.VeluneApplication.open(bindings.BindingOptions(
                 home_directory=str(root / "home"), resources_directory=str(resources)))
-            reopened_rows = application.list().conversations
+            reopened_rows = [_row.conversation for _row in application.list().conversations]
             assert len(reopened_rows) == 1 and reopened_rows[0].id == row_ids[0], \
                 "restart changed the logical conversation row"
             assert reopened_rows[0].can_rename and not reopened_rows[0].can_delete, \

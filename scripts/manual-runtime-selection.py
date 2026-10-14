@@ -246,9 +246,9 @@ def main():
             application = b.VeluneApplication.open(b.BindingOptions(home_directory=str(root / 'application'), resources_directory=str(args.resources)))
             missing = application.open_conversation('first', draft.conversation.id).snapshot
             assert missing and not missing.actions.can_send
-            assert next(row for row in application.list().conversations if row.id == draft.conversation.id).can_delete
+            assert next(row for row in [_row.conversation for _row in application.list().conversations] if row.id == draft.conversation.id).can_delete
             application.delete_conversation('first', draft.conversation.id)
-            assert all(row.id != draft.conversation.id for row in application.list().conversations)
+            assert all(row.id != draft.conversation.id for row in [_row.conversation for _row in application.list().conversations])
             remote = b.BindingRuntimeExecution(transport=b.BindingRuntimeTransport.SSH(binary='/usr/bin/ssh', destination='synthetic-unused', port=2222), home=b.BindingRuntimeHome.MANAGED(remote_root='/remote/velune-homes'), remote_resources_directory='/remote/velune-resources')
             application.configure_runtime_execution('second', remote)
             assert application.runtime_execution('second').transport.destination == 'synthetic-unused'

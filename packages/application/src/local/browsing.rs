@@ -187,6 +187,16 @@ impl CoreRuntime {
             .get(&runtime.id)
             .filter(|listing| listing.runtime == *runtime)
             .and_then(|listing| listing.summaries.iter().find(|s| s.id == id).cloned())
+            .or_else(|| {
+                // The runtime's own archive is listed apart from its history.
+                self.last_listed
+                    .borrow()
+                    .get(id)
+                    .filter(|source| {
+                        source.archived_natively && source.summary.runtime_id == runtime.id
+                    })
+                    .map(|source| source.summary.clone())
+            })
     }
     pub(super) fn validate_session_model(
         &self,

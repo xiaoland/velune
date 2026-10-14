@@ -205,6 +205,7 @@ pub fn list(
             &config.binary,
             &config.home,
             runtime_id,
+            false,
             &config.execution,
             config.os_home.as_deref(),
         )
@@ -240,6 +241,24 @@ pub fn list(
                 .map(|parent| format!("{runtime_id}:{parent}")),
         })
         .collect())
+}
+/// The conversations a runtime archived itself; only Codex has an archive.
+pub fn list_archived(
+    config: &HistoryConfig,
+    runtime_id: &str,
+) -> Result<Vec<ConversationSummary>, HistoryError> {
+    if config.provider != "codex" {
+        return Ok(Vec::new());
+    }
+    crate::native::list_codex_history_at(
+        &config.binary,
+        &config.home,
+        runtime_id,
+        true,
+        &config.execution,
+        config.os_home.as_deref(),
+    )
+    .map_err(|error| native_history_error(error, "native_list"))
 }
 pub fn read(
     config: &HistoryConfig,

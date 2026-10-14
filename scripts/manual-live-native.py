@@ -197,7 +197,7 @@ def main():
                 conversation = next(iter(ids))
                 # Liveness comes from the Harness's lock or registry, listing from
                 # what it has written; the App lists again while they differ.
-                wait(lambda: conversation in {c.id for c in app.list().conversations}, runtime + ' running session listed', timeout=10)
+                wait(lambda: conversation in {c.id for c in [_row.conversation for _row in app.list().conversations]}, runtime + ' running session listed', timeout=10)
                 (root / ('gate-' + first)).unlink()
                 finished(process, first)
                 wait(lambda: conversation not in elsewhere(), runtime + ' end noticed')

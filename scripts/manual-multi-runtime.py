@@ -94,7 +94,7 @@ def main():
                 assert snapshot.conversation.created_at_unix_ms == native_created_at, family+' first turn lost native creation date'
                 assert snapshot.conversation.title == 'Reply with the synthetic answer; no tools are needed.', family+' first user title missing'
                 assert captures[-1]['body']['model']==api_id and captures[-1]['authorization']=='Bearer synthetic-only'
-                sessions=application.list().conversations
+                sessions=[_row.conversation for _row in application.list().conversations]
                 assert any(s.id==snapshot.conversation.id for s in sessions),family+' native history missing from huihua list'
                 native_summary = next(s for s in sessions if s.id == snapshot.conversation.id)
                 assert native_summary.created_at_unix_ms is not None and native_summary.created_at_unix_ms > 0, family+' native creation time missing'

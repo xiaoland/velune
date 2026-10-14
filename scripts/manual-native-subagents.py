@@ -243,10 +243,12 @@ def main():
                 current, texts, links = view(runtime, conversation)
                 assert check(runtime, conversation, texts, set(links), 'history') == child
                 assert current.actions.can_send, (runtime, 'parent stays sendable')
-                listed = {item.id: item for item in app.list().conversations}
-                assert listed[child].parent_conversation_id == conversation, (runtime, vars(listed[child]))
-                assert listed[conversation].parent_conversation_id is None
-                print('PASS %s history: the link survives reading native history; the sub-agent is listed under its parent' % runtime, flush=True)
+                # The list leaves sub-agents to their parent; lookup still finds them.
+                listed = {item.conversation.id: item for item in app.list().conversations}
+                assert child not in listed or listed[child].group is None
+                assert app.find_conversation(child).conversation.parent_conversation_id == conversation, runtime
+                assert listed[conversation].conversation.parent_conversation_id is None
+                print('PASS %s history: the link survives reading native history; the sub-agent is found under its parent' % runtime, flush=True)
 
                 app.open_conversation(runtime, child)
                 current, texts, _ = view(runtime, child)

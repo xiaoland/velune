@@ -84,6 +84,8 @@ pub struct RuntimeVariant {
     pub version_regex: &'static str,
     pub can_rename_conversations: bool,
     pub can_delete_conversations: bool,
+    /// The runtime archives conversations itself; others are archived by Velune.
+    pub can_archive_conversations: bool,
     pub supported_protocols: &'static [RuntimeProtocol],
     /// Empty when the runtime offers no per-turn choice.
     pub permission_modes: &'static [PermissionMode],
@@ -96,6 +98,7 @@ const VARIANTS: &[RuntimeVariant] = &[
         version_regex: r"^1$",
         can_rename_conversations: false,
         can_delete_conversations: false,
+        can_archive_conversations: false,
         supported_protocols: &[],
         permission_modes: &[],
     },
@@ -106,6 +109,7 @@ const VARIANTS: &[RuntimeVariant] = &[
         version_regex: r"^2\.1\.286$",
         can_rename_conversations: false,
         can_delete_conversations: false,
+        can_archive_conversations: false,
         supported_protocols: &[RuntimeProtocol::MessagesV1],
         permission_modes: CLAUDE_PERMISSION_MODES,
     },
@@ -116,6 +120,7 @@ const VARIANTS: &[RuntimeVariant] = &[
         version_regex: r"^1\.0\.2$",
         can_rename_conversations: true,
         can_delete_conversations: true,
+        can_archive_conversations: false,
         supported_protocols: &[
             RuntimeProtocol::ChatCompletionsV1,
             RuntimeProtocol::ResponsesV1,
@@ -130,6 +135,7 @@ const VARIANTS: &[RuntimeVariant] = &[
         version_regex: r"^0\.159\.3$",
         can_rename_conversations: true,
         can_delete_conversations: true,
+        can_archive_conversations: true,
         supported_protocols: &[RuntimeProtocol::ResponsesV1],
         permission_modes: CODEX_PERMISSION_MODES,
     },
@@ -140,6 +146,7 @@ const VARIANTS: &[RuntimeVariant] = &[
         version_regex: r"^0\.2\.0-rc\.2$",
         can_rename_conversations: false,
         can_delete_conversations: false,
+        can_archive_conversations: false,
         supported_protocols: &[
             RuntimeProtocol::ChatCompletionsV1,
             RuntimeProtocol::ResponsesV1,

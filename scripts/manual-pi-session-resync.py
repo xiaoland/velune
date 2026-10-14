@@ -61,7 +61,7 @@ pi.registerCommand('manual-switch',{handler:async (_args,ctx)=>{await ctx.switch
         saved=app.save_provider('default',draft,b.BindingAuthenticationEdit.SET_API_KEY(value='synthetic-only')).gateways[0].providers[0]
         runtime=b.BindingRuntimeInstance(enabled=True, id='pi',name='Synthetic Pi',type_id='pi-1.0.2',gateway_id='default',settings={'binary':str(args.pi),'nodeBinary':str(args.node),'agentDir':str(root/'runtime')})
         app.upsert_runtime(runtime)
-        session=next(item for item in app.list().conversations if item.id=='pi:'+paths['path'])
+        session=next(item for item in [_row.conversation for _row in app.list().conversations] if item.id=='pi:'+paths['path'])
         before=app.open_conversation('pi',session.id).snapshot
         first=app.send_turn('pi',before.conversation.id,'pi',saved.models[0].record_key, '/manual-tree').snapshot
         text=lambda view:' '.join(block.text for message in view.messages for block in message.blocks if isinstance(block,b.BindingMessageBlock.TEXT))

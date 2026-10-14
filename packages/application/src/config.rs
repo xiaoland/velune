@@ -502,6 +502,77 @@ pub struct ConversationBrowserPreferences {
     pub oldest_first: bool,
     pub runtime_id: Option<String>,
     pub project: ConversationBrowserProject,
+    /// Groups the user folded; remembered with the other choices.
+    #[serde(default)]
+    pub collapsed: Vec<ConversationGroupKey>,
+}
+/// One group of the conversation list. Keys of other groupings may stay in
+/// the folded set; they apply again when that grouping returns.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[serde(rename_all = "camelCase", tag = "kind")]
+pub enum ConversationGroupKey {
+    /// The single group when the list is not grouped.
+    All,
+    Pinned,
+    Runtime {
+        #[serde(rename = "runtimeID")]
+        runtime_id: String,
+    },
+    /// A conversation's project: its working directory unless moved; none
+    /// when the runtime recorded no directory.
+    Project {
+        path: Option<String>,
+    },
+}
+
+/// Velune's own organization of the conversation list, kept apart from the
+/// runtimes' sessions: what the user pinned, archived (where the runtime
+/// has no archive), read, or moved, and the names given to projects.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ConversationOrganization {
+    /// Activity at or before this time counts as read without a mark: the
+    /// conversations that existed before read state was first recorded.
+    pub read_baseline_unix_ms: i64,
+    pub conversations: Vec<ConversationMarks>,
+    pub project_aliases: Vec<ProjectAlias>,
+}
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ConversationMarks {
+    /// The conversation's public identity in the list.
+    #[serde(rename = "conversationID")]
+    pub conversation_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pinned_at_unix_ms: Option<i64>,
+    /// Archived by Velune; a runtime's own archive is not recorded here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub archived_at_unix_ms: Option<i64>,
+    /// The conversation's last activity when the user last saw it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seen_activity_unix_ms: Option<i64>,
+    /// Marked unread by the user, whatever the activity.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub marked_unread: bool,
+    /// The project the user moved the conversation to; its working directory
+    /// is unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project: Option<String>,
+}
+impl ConversationMarks {
+    pub fn is_empty(&self) -> bool {
+        self.pinned_at_unix_ms.is_none()
+            && self.archived_at_unix_ms.is_none()
+            && self.seen_activity_unix_ms.is_none()
+            && !self.marked_unread
+            && self.project.is_none()
+    }
+}
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProjectAlias {
+    pub path: String,
+    pub alias: String,
 }
 #[derive(Debug, Default, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]

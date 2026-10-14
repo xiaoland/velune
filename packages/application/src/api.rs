@@ -83,13 +83,21 @@ pub struct ProviderDraft {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ConfigurationSnapshot {
-    pub conversations: Vec<ConversationSummary>,
+    /// The conversations the list shows, then open ones it does not.
+    pub conversations: Vec<ListedConversation>,
+    /// The list's groups in display order, including folded and unloaded ones.
+    pub conversation_groups: Vec<ConversationGroup>,
+    /// Every project of the shown conversations (archived or not), for
+    /// filtering and moving.
+    pub conversation_projects: Vec<ConversationProject>,
+    /// The list shows archived conversations instead of the others.
+    pub shows_archived: bool,
     pub history_failures: Vec<HistoryFailure>,
     pub gateways: Vec<GatewaySummary>,
     pub runtime_instances: Vec<RuntimeInstance>,
     pub runtime_types: Vec<RuntimeTypeDescriptor>,
     pub model_templates: Vec<ModelTemplate>,
-    pub conversation_browser_group_limit: u32,
+    pub conversation_browser_limits: ConversationBrowserLimits,
     pub outline_presentation: OutlinePresentation,
     pub conversation_browser_preferences: ConversationBrowserPreferences,
     pub status_line: Vec<StatusLineItem>,
@@ -97,6 +105,82 @@ pub struct ConfigurationSnapshot {
     pub protocols: Vec<ProtocolDescriptor>,
     #[serde(rename = "selectedRuntimeInstanceID")]
     pub selected_runtime_instance_id: Option<String>,
+}
+
+/// One conversation of the list with Velune's organization of it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListedConversation {
+    pub conversation: ConversationSummary,
+    /// The identity its runtime resumes it by; for a continued conversation,
+    /// that of its latest segment.
+    #[serde(rename = "nativeID")]
+    pub native_id: String,
+    pub pinned: bool,
+    pub unread: bool,
+    pub archived: bool,
+    /// The project it is listed under: where it was moved, else its working directory.
+    pub project: Option<String>,
+    /// Moved by the user away from its working directory's project.
+    pub moved: bool,
+    /// The group showing it; none for an open conversation the list does not show.
+    pub group: Option<ConversationGroupKey>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationGroup {
+    pub key: ConversationGroupKey,
+    /// The user's name for a project group.
+    pub alias: Option<String>,
+    /// Conversations in the group; the list holds the first `loaded`.
+    pub total: u32,
+    pub loaded: u32,
+    pub latest_activity_unix_ms: Option<i64>,
+    pub collapsed: bool,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationProject {
+    pub path: String,
+    pub alias: Option<String>,
+    pub latest_activity_unix_ms: Option<i64>,
+}
+/// Matching conversations, grouped like the list.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationSearch {
+    pub conversations: Vec<ListedConversation>,
+    pub groups: Vec<ConversationGroup>,
+}
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationBrowserLimits {
+    /// Conversations loaded per group at a time.
+    pub page: u32,
+    /// Conversations the whole list loads before groups are expanded on demand.
+    pub total: u32,
+}
+/// A conversation as the list identifies it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConversationReference {
+    #[serde(rename = "runtimeInstanceID")]
+    pub runtime_id: String,
+    #[serde(rename = "conversationID")]
+    pub conversation_id: String,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", tag = "operation")]
+pub enum ConversationOrganizationChange {
+    Pin,
+    Unpin,
+    Archive,
+    Unarchive,
+    MarkRead,
+    MarkUnread,
+    /// Into the project at `path`; none returns it to its working directory's.
+    MoveToProject {
+        path: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -845,7 +929,7 @@ impl Application {
     pub fn set_conversation_browser_preferences(
         &mut self,
         preferences: ConversationBrowserPreferences,
-    ) -> Result<ConversationBrowserPreferences, Error> {
+    ) -> Result<ConfigurationSnapshot, Error> {
         self.execute(
             "conversationBrowserPreferences",
             json!({"preferences":preferences}),
@@ -867,8 +951,74 @@ impl Application {
             None,
         )
     }
-    pub fn set_conversation_browser_group_limit(&mut self, limit: u32) -> Result<u32, Error> {
-        self.execute("conversationBrowserSettings", json!({"limit": limit}), None)
+    pub fn set_conversation_browser_limits(
+        &mut self,
+        limits: ConversationBrowserLimits,
+    ) -> Result<ConversationBrowserLimits, Error> {
+        self.execute(
+            "conversationBrowserSettings",
+            json!({"limits": limits}),
+            None,
+        )
+    }
+    /// Changes Velune's organization of the conversations; the runtime's own
+    /// archive is used where it has one.
+    pub fn organize_conversations(
+        &mut self,
+        conversations: Vec<ConversationReference>,
+        change: ConversationOrganizationChange,
+    ) -> Result<ConfigurationSnapshot, Error> {
+        self.execute(
+            "conversationOrganization",
+            json!({"conversations":conversations,"change":change}),
+            None,
+        )
+    }
+    /// Names a project in the list; none removes the name.
+    pub fn set_project_alias(
+        &mut self,
+        path: String,
+        alias: Option<String>,
+    ) -> Result<ConfigurationSnapshot, Error> {
+        self.execute("projectAlias", json!({"path":path,"alias":alias}), None)
+    }
+    /// Loads the next page of one group of the list.
+    pub fn load_more_conversations(
+        &mut self,
+        group: ConversationGroupKey,
+    ) -> Result<ConfigurationSnapshot, Error> {
+        self.execute(
+            "conversationBrowserWindow",
+            json!({"operation":"loadMore","group":group}),
+            None,
+        )
+    }
+    /// Shows archived conversations instead of the others, or back.
+    pub fn show_archived_conversations(
+        &mut self,
+        archived: bool,
+    ) -> Result<ConfigurationSnapshot, Error> {
+        self.execute(
+            "conversationBrowserWindow",
+            json!({"operation":"showArchived","archived":archived}),
+            None,
+        )
+    }
+    /// Conversations whose title, project, or runtime contain `text`, within
+    /// the list's filters and archive view.
+    pub fn search_conversations(&mut self, text: String) -> Result<ConversationSearch, Error> {
+        self.execute("searchConversations", json!({"text":text}), None)
+    }
+    /// One conversation by identity, whether or not the list shows it.
+    pub fn find_conversation(
+        &mut self,
+        conversation_id: String,
+    ) -> Result<Option<ListedConversation>, Error> {
+        self.execute(
+            "findConversation",
+            json!({"conversationID":conversation_id}),
+            None,
+        )
     }
     pub fn upsert_runtime(&mut self, runtime: RuntimeInstance) -> Result<RuntimeUpdate, Error> {
         self.execute(

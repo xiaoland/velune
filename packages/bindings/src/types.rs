@@ -377,13 +377,20 @@ pub struct BindingPermissionMode {
 #[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct BindingConfigurationSnapshot {
-    pub conversations: Vec<BindingConversationSummary>,
+    /// The conversations the list shows, then open ones it does not.
+    pub conversations: Vec<BindingListedConversation>,
+    /// The list's groups in display order, including folded and unloaded ones.
+    pub conversation_groups: Vec<BindingConversationGroup>,
+    /// Every project of the shown conversations, for filtering and moving.
+    pub conversation_projects: Vec<BindingConversationProject>,
+    /// The list shows archived conversations instead of the others.
+    pub shows_archived: bool,
     pub history_failures: Vec<BindingHistoryFailure>,
     pub gateways: Vec<BindingGatewayConfig>,
     pub runtime_instances: Vec<BindingRuntimeInstance>,
     pub runtime_types: Vec<BindingRuntimeTypeDescriptor>,
     pub model_templates: Vec<BindingModelTemplate>,
-    pub conversation_browser_group_limit: u32,
+    pub conversation_browser_limits: BindingConversationBrowserLimits,
     pub outline_presentation: BindingOutlinePresentation,
     pub conversation_browser_preferences: BindingConversationBrowserPreferences,
     /// What the composer's status line shows, in display order.
@@ -1101,6 +1108,95 @@ pub struct BindingConversationBrowserPreferences {
     pub oldest_first: bool,
     pub runtime_id: Option<String>,
     pub project: BindingConversationBrowserProject,
+    /// Groups the user folded.
+    #[serde(default)]
+    #[uniffi(default = [])]
+    pub collapsed: Vec<BindingConversationGroupKey>,
+}
+/// One group of the conversation list.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash, uniffi::Enum)]
+#[serde(rename_all = "camelCase", tag = "kind")]
+pub enum BindingConversationGroupKey {
+    All,
+    Pinned,
+    Runtime {
+        #[serde(rename = "runtimeID")]
+        runtime_id: String,
+    },
+    /// None for conversations without a working directory.
+    Project {
+        path: Option<String>,
+    },
+}
+/// One conversation of the list with Velune's organization of it.
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BindingListedConversation {
+    pub conversation: BindingConversationSummary,
+    /// The identity its runtime resumes it by.
+    #[serde(rename = "nativeID")]
+    pub native_id: String,
+    pub pinned: bool,
+    pub unread: bool,
+    pub archived: bool,
+    /// Where it was moved, else its working directory.
+    pub project: Option<String>,
+    pub moved: bool,
+    /// The group showing it; none for an open conversation the list does not show.
+    pub group: Option<BindingConversationGroupKey>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BindingConversationGroup {
+    pub key: BindingConversationGroupKey,
+    pub alias: Option<String>,
+    pub total: u32,
+    /// The list holds the group's first `loaded` conversations.
+    pub loaded: u32,
+    pub latest_activity_unix_ms: Option<i64>,
+    pub collapsed: bool,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BindingConversationProject {
+    pub path: String,
+    pub alias: Option<String>,
+    pub latest_activity_unix_ms: Option<i64>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BindingConversationSearch {
+    pub conversations: Vec<BindingListedConversation>,
+    pub groups: Vec<BindingConversationGroup>,
+}
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, uniffi::Record)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BindingConversationBrowserLimits {
+    /// Conversations loaded per group at a time.
+    pub page: u32,
+    /// Conversations the whole list loads before groups are expanded on demand.
+    pub total: u32,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+pub struct BindingConversationReference {
+    #[serde(rename = "runtimeInstanceID")]
+    pub runtime_id: String,
+    #[serde(rename = "conversationID")]
+    pub conversation_id: String,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Enum)]
+#[serde(rename_all = "camelCase", tag = "operation")]
+pub enum BindingConversationOrganizationChange {
+    Pin,
+    Unpin,
+    Archive,
+    Unarchive,
+    MarkRead,
+    MarkUnread,
+    /// None returns it to its working directory's project.
+    MoveToProject {
+        path: Option<String>,
+    },
 }
 #[derive(Debug, Default, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, uniffi::Enum)]
 #[serde(rename_all = "camelCase")]

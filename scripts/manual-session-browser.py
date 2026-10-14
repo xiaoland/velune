@@ -93,11 +93,11 @@ def main():
             application.upsert_runtime(runtime)
             listed = application.list()
             assert not any(g.providers for g in listed.gateways)
-            item = next(s for s in listed.conversations if s.id == 'fixture:' + str(history))
-            named_item = next(s for s in listed.conversations if s.id == 'fixture:' + str(named_history))
+            item = next(s for s in [_row.conversation for _row in listed.conversations] if s.id == 'fixture:' + str(history))
+            named_item = next(s for s in [_row.conversation for _row in listed.conversations] if s.id == 'fixture:' + str(named_history))
             assert item.title == 'SYNTHETIC_READ_ONLY_HISTORY'
             assert named_item.title == 'SYNTHETIC_EXPLICIT_TITLE'
-            placeholder_item = next(s for s in listed.conversations
+            placeholder_item = next(s for s in [_row.conversation for _row in listed.conversations]
                                     if s.id == 'fixture:' + str(placeholder_named_history))
             assert placeholder_item.title == '未命名会话'
             assert item.updated_at_unix_ms is not None and item.updated_at_unix_ms > 0
@@ -105,7 +105,7 @@ def main():
             other = b.BindingRuntimeInstance(enabled=True, id='other', name='Other Pi',
                 type_id='pi-1.0.2', gateway_id='default', settings=dict(runtime.settings, agentDir=str(root / 'foreign')))
             application.upsert_runtime(other)
-            assert any(s.runtime_id == 'other' for s in application.list().conversations)
+            assert any(s.runtime_id == 'other' for s in [_row.conversation for _row in application.list().conversations])
             selected = application.select_runtime('fixture')
             assert selected.selected_runtime_instance_id == 'fixture'
             named_opened = application.open_conversation('fixture', placeholder_item.id).snapshot
@@ -167,7 +167,7 @@ def main():
                     'agentDir': str(root / 'foreign')})
             application.upsert_runtime(bad)
             listed = application.list()
-            assert any(s.id == item.id for s in listed.conversations)
+            assert any(s.id == item.id for s in [_row.conversation for _row in listed.conversations])
             assert any(error.runtime_id == 'unreadable' for error in listed.history_failures)
             # Disable an invalid source without probing its missing Node; retain its configuration.
             bad.enabled = False
@@ -176,14 +176,14 @@ def main():
             runtime.enabled = False
             application.upsert_runtime(runtime)
             disabled = application.list()
-            assert not any(s.runtime_id == 'fixture' for s in disabled.conversations)
-            assert any(s.runtime_id == 'other' for s in disabled.conversations)
+            assert not any(s.runtime_id == 'fixture' for s in [_row.conversation for _row in disabled.conversations])
+            assert any(s.runtime_id == 'other' for s in [_row.conversation for _row in disabled.conversations])
             assert disabled.selected_runtime_instance_id is None
             rejected(lambda: application.open_conversation('fixture', item.id))
             rejected(lambda: application.create_conversation('fixture', str(root / 'project'), key))
             runtime.enabled = True
             application.upsert_runtime(runtime)
-            assert any(s.id == item.id for s in application.list().conversations)
+            assert any(s.id == item.id for s in [_row.conversation for _row in application.list().conversations])
             application.shutdown()
             application = None
             config_path = root / 'home/generic-config.json'
@@ -192,7 +192,7 @@ def main():
             config_path.write_text(json.dumps(legacy))
             application = b.VeluneApplication.open(b.BindingOptions(home_directory=str(root / 'home'), resources_directory=str(resources)))
             assert all(r.enabled for r in application.list().runtime_instances)
-            assert any(s.id == item.id for s in application.list().conversations)
+            assert any(s.id == item.id for s in [_row.conversation for _row in application.list().conversations])
             assert history.read_bytes() == original
             assert named_history.read_bytes() == named_original
             assert placeholder_named_history.read_bytes() == placeholder_named_original

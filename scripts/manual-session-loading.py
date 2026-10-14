@@ -63,38 +63,13 @@ import VeluneBindings
         store.selectNextTurnRuntime("fixture")
 
         let loadedBeforeBrowsing = store.loadedConversationID
-        var browser = ConversationBrowser()
-        let runtimeB = RuntimeInstance(id: "other", name: "Other", typeID: "pi-1.0.2", gatewayID: "default", settings: [:])
-        let runtimes = store.runtimeInstances
-        let rows = [
-            Conversation(id: "fixture:same", title: "Same", updatedAtUnixMs: 300, createdAtUnixMs: 100, runtimeID: "fixture", cwd: "/one/project"),
-            Conversation(id: "other:same", title: "Same", updatedAtUnixMs: 200, createdAtUnixMs: 400, runtimeID: "other", cwd: "/two/project"),
-            Conversation(id: "unknown", title: "Unknown", updatedAtUnixMs: nil, runtimeID: "other", cwd: nil)
-        ]
-        precondition(browser.sections(conversations: rows, runtimes: runtimes).flatMap(\.conversations).map(\.id) == ["fixture:same", "other:same", "unknown"])
-        browser.sort = .created
-        precondition(browser.sections(conversations: rows, runtimes: runtimes)[0].conversations.first?.id == "other:same")
-        browser.oldestFirst = true
-        precondition(browser.sections(conversations: rows, runtimes: runtimes)[0].conversations.last?.id == "unknown")
-        browser.grouping = .project
-        precondition(browser.sections(conversations: rows, runtimes: runtimes).count == 3)
-        browser.project = .path("/one/project")
-        precondition(browser.sections(conversations: rows, runtimes: runtimes).flatMap(\.conversations).map(\.id) == ["fixture:same"])
-        browser.project = .all; browser.grouping = .runtime
-        precondition(browser.sections(conversations: rows, runtimes: runtimes).count == 2)
-        var disabledB = runtimeB; disabledB.enabled = false
-        precondition(browser.sections(conversations: rows, runtimes: store.runtimeInstances.filter { $0.id != "other" } + [disabledB]).flatMap(\.conversations).count == 1)
+        // The core groups and pages the list (manual-conversation-list.py);
+        // here browsing choices must leave the loaded conversation alone.
+        var browser = ConversationBrowser(); browser.grouping = .runtime
+        store.setConversationBrowserPreferences(browser.preferences)
+        wait { store.conversationGroups.allSatisfy { if case .runtime = $0.key { true } else if case .pinned = $0.key { true } else { false } } }
         precondition(store.loadedConversationID == loadedBeforeBrowsing)
-        browser = ConversationBrowser(); browser.grouping = .runtime
-        let many = (0..<45).flatMap { index in [Conversation(id: "fixture:page\(index)", title: "Page", updatedAtUnixMs: Int64(index), runtimeID: "fixture", cwd: "/one/project"), Conversation(id: "other:page\(index)", title: "Page", updatedAtUnixMs: Int64(index), runtimeID: "other", cwd: "/two/project")] }
-        var pages = browser.sections(conversations: many, runtimes: runtimes)
-        precondition(pages.count == 2 && pages.allSatisfy { $0.conversations.count == 20 && $0.totalCount == 45 && $0.hasMore })
-        browser.loadMore(.runtime("fixture")); pages = browser.sections(conversations: many, runtimes: runtimes)
-        precondition(pages.first { $0.id == .runtime("fixture") }?.conversations.count == 40)
-        precondition(pages.first { $0.id == .runtime("other") }?.conversations.count == 20)
-        browser.resetPagination(); browser.initialLimit = 7
-        precondition(browser.sections(conversations: many, runtimes: runtimes).allSatisfy { $0.conversations.count == 7 })
-        store.setConversationBrowserGroupLimit(7); wait { !store.isLoading && store.conversationBrowserGroupLimit == 7 }
+        store.setConversationBrowserLimits(BindingConversationBrowserLimits(page: 7, total: 200)); wait { !store.isLoading && store.conversationBrowserLimits.page == 7 }
 
         let firstRows = store.transcript.rows.map(ObjectIdentifier.init)
         var selections: [String?] = []

@@ -179,7 +179,7 @@ def main():
             links = [block.linked_conversation_id for message in app.snapshot('alpha', alpha).snapshot.messages
                      for block in message.blocks if isinstance(block, b.BindingMessageBlock.TOOL)]
             assert links == [beta], links
-            listed = [c.id for c in app.list().conversations]
+            listed = [c.id for c in [_row.conversation for _row in app.list().conversations]]
             assert beta in listed and alpha in listed, listed
             first = app.snapshot('beta', beta).snapshot.messages[0]
             assert first.role == b.BindingMessageRole.USER, first
@@ -187,7 +187,7 @@ def main():
             assert isinstance(sender, b.BindingMessageBlock.AGENT_SENDER) and sender.conversation_id == alpha \
                 and sender.runtime_name == 'Alpha' and sender.title == 'START Beta PERMIT', sender
             assert isinstance(body, b.BindingMessageBlock.TEXT) and body.text == 'PERMIT', body
-            title = next(c.title for c in app.list().conversations if c.id == beta)
+            title = next(c.title for c in [_row.conversation for _row in app.list().conversations] if c.id == beta)
             assert 'Velune' not in str(title), title
             if seeding:
                 # Both conversations stay for the Mac app; Alpha's composer offers the next step.

@@ -47,6 +47,12 @@ struct ConversationWindow: View {
     }
     var body: some View {
         VeluneRootView(store: workspace, previewEmpty: previewEmpty, previewSettings: previewSettings)
+            // A conversation link opens in a window already showing Velune.
+            .handlesExternalEvents(preferring: [ConversationLink.scheme], allowing: [ConversationLink.scheme])
+            .onOpenURL { url in
+                guard let link = ConversationLink.conversation(in: url) else { return }
+                workspace.openLinkedConversation(id: link.conversationID)
+            }
     }
 }
 

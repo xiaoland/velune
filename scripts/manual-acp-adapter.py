@@ -193,15 +193,15 @@ def main():
             assert all(text in texts for text in ('ACP_ORIGIN','CLAUDE_HANDOFF','ACP_RETURN'))
             links=json.loads((root/'application/conversation-links.json').read_text())['links'];assert all(Path(segment['cwd']).resolve()==(root/'project').resolve() for segment in links[0]['segments']), [(segment['runtimeInstanceId'],segment['cwd']) for segment in links[0]['segments']]
             assert not any('ACP_ORIGIN' in json.dumps(link) for link in links)
-            rows=application.list().conversations
+            rows=[_row.conversation for _row in application.list().conversations]
             assert any(row.id==first_full_id and row.can_delete for row in rows)
             application.delete_conversation('full',first_full_id)
-            assert not any(row.id==first_full_id for row in application.list().conversations)
+            assert not any(row.id==first_full_id for row in [_row.conversation for _row in application.list().conversations])
             draft=application.create_conversation_with_selection('claude',str(root/'project'),native).snapshot
             application.send_turn_with_selection('claude',draft.conversation.id,'listless',default,b.BindingComposedTurn(text='LISTLESS_ALIAS_DELETE', effort=None, attachments=[]))
             wait('listless',draft.conversation.id)
             application.delete_conversation('listless',draft.conversation.id)
-            assert not any(row.id==draft.conversation.id for row in application.list().conversations)
+            assert not any(row.id==draft.conversation.id for row in [_row.conversation for _row in application.list().conversations])
             application.shutdown();application=None
             assert all(Path(record['home']).is_relative_to(root/'application/runtime-homes') for mode in ('live','full','listless') for record in records(mode))
             print('PASS: generic command/args, managed HOME, negotiated capabilities, no hidden new, live no-load multi-turn, session config/model in same process, permissions/cancel/EOF, no-list explicit load, unsupported durable handoff retains source, ACP<->Claude handoff/reopen')

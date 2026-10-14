@@ -1,4 +1,5 @@
 import Foundation
+import VeluneBindings
 
 struct Conversation: Codable, Sendable, Identifiable, Equatable {
     let id: String
@@ -12,7 +13,24 @@ struct Conversation: Codable, Sendable, Identifiable, Equatable {
     /// A native sub-agent's conversation: opened from its parent's transcript,
     /// not listed in the sidebar, and continued only by the parent's agent.
     var parentConversationID: String? = nil
+    /// Velune's organization of the conversation in the list; see `BindingListedConversation`.
+    var nativeID = ""
+    var pinned = false
+    var unread = false
+    var archived = false
+    /// Where the list files it: where it was moved, else its working directory.
+    var project: String? = nil
+    var moved = false
+    /// The list group showing it; nil for an open conversation the list does not show.
+    var group: BindingConversationGroupKey? = nil
     enum CodingKeys: String, CodingKey { case id, title, updatedAtUnixMs, createdAtUnixMs, cwd, canRename, canDelete; case runtimeID = "runtimeId"; case parentConversationID = "parentConversationId" }
+    /// This conversation's runtime fields with `listed`'s organization.
+    func organized(like listed: Conversation) -> Conversation {
+        var value = self
+        value.nativeID = listed.nativeID; value.pinned = listed.pinned; value.unread = listed.unread; value.archived = listed.archived
+        value.project = listed.project; value.moved = listed.moved; value.group = listed.group
+        return value
+    }
 }
 
 enum RunState: String, Codable {

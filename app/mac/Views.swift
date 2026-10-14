@@ -21,50 +21,61 @@ struct VeluneRootView: View {
     @State private var outlineNavigation: TranscriptJump?
     @State private var renameTarget: Conversation?
     @State private var deleteTargets: [Conversation] = []
-    private var conversationSections: [ConversationBrowser.Section] { browser.sections(conversations: store.sidebarConversations, runtimes: store.runtimeInstances) }
-    private var projects: [String] { Array(Set(store.sidebarConversations.filter { conversation in store.enabledRuntimeInstances.contains { $0.id == conversation.runtimeID } }.compactMap(\.cwd))).sorted { $0.localizedStandardCompare($1) == .orderedAscending } }
+    @State private var search = ""
+    @State private var aliasTarget: ProjectAliasTarget?
+    private var conversationSections: [ConversationBrowser.Section] {
+        if let results = store.searchResults { return ConversationBrowser.sections(conversations: results.conversations, groups: results.groups) }
+        return ConversationBrowser.sections(conversations: store.conversations, groups: store.conversationGroups)
+    }
 
     var body: some View {
         NavigationSplitView {
             List(selection: Binding(get: { store.selectedConversationIDs }, set: { store.selectConversations(ids: $0) })) {
-                if conversationSections.isEmpty && !store.isLoading && !store.sidebarConversations.isEmpty {
-                    Text("没有匹配的会话").foregroundStyle(.secondary)
-                    Button("清除筛选") { browser.runtimeID = nil; browser.project = .all; browser.search = "" }
+                if store.showsArchived {
+                    HStack {
+                        Label("已归档的会话", systemImage: "archivebox").foregroundStyle(.secondary)
+                        Spacer(minLength: 0)
+                        Button("返回") { store.setShowsArchived(false) }.buttonStyle(.link)
+                    }.selectionDisabled(true)
+                }
+                if conversationSections.isEmpty && !store.isLoading {
+                    if store.searchResults != nil || (browser.hasFilters && !store.conversations.isEmpty) {
+                        Text("没有匹配的会话").foregroundStyle(.secondary).selectionDisabled(true)
+                        if browser.hasFilters { Button("清除筛选") { browser.runtimeID = nil; browser.project = .all }.selectionDisabled(true) }
+                    } else if store.showsArchived {
+                        Text("没有已归档的会话").foregroundStyle(.secondary).selectionDisabled(true)
+                    }
                 }
                 ForEach(conversationSections) { section in
-                  Section {
-                    ForEach(section.conversations) { conversation in
-                        VStack(alignment: .leading, spacing: 3) {
-                            HStack(spacing: 6) {
-                                Text(conversation.title).lineLimit(1)
-                                // Who started the turn does not matter; running does.
-                                if store.runningConversationIDs.contains(conversation.id) || store.elsewhereConversationIDs.contains(conversation.id) {
-                                    Spacer(minLength: 0)
-                                    ProgressView().controlSize(.mini).help("正在运行").accessibilityLabel("正在运行")
-                                }
+                    Section(isExpanded: expansion(section.id)) {
+                        ForEach(section.conversations) { conversation in
+                            conversationRow(conversation)
+                                .tag(conversation.id)
+                                .selectionDisabled(store.isLoading)
+                                .contextMenu { conversationManagementMenu(store.selectedConversationIDs.contains(conversation.id) ? store.selectedConversationIDs : [conversation.id]) }
+                        }
+                        if section.hasMore {
+                            if store.searchResults == nil {
+                                Button("加载更多（\(section.group.loaded) / \(section.group.total)）") { store.loadMoreConversations(in: section.id) }
+                                    .buttonStyle(.plain).foregroundStyle(.secondary).selectionDisabled(true)
+                            } else {
+                                Text("只显示前 \(section.group.loaded) 个匹配").foregroundStyle(.secondary).selectionDisabled(true)
                             }
-                            HStack(spacing: 8) {
-                                Text(rowContext(conversation)).lineLimit(1).truncationMode(.middle).help(conversation.cwd ?? "未指定项目")
-                                Spacer(minLength: 0)
-                                if let date = browser.sort.timestamp(conversation) { Text(shortDate(date)).help("\(browser.sort.title)：\(Date(timeIntervalSince1970: Double(date) / 1000).formatted())").accessibilityLabel("\(browser.sort.title)：\(shortDate(date))") }
-                            }.font(.caption).foregroundStyle(.secondary)
-                        }.padding(.vertical, 3).tag(conversation.id)
-                        .selectionDisabled(store.isLoading)
-                        .contextMenu { conversationManagementMenu(store.selectedConversationIDs.contains(conversation.id) ? store.selectedConversationIDs : [conversation.id]) }
-                    }
-                    if section.hasMore {
-                        Button("加载更多（\(section.conversations.count) / \(section.totalCount)）") { browser.loadMore(section.id) }
-                            .buttonStyle(.plain).foregroundStyle(.secondary).selectionDisabled(true)
-                    }
-                  } header: { Text(section.title).lineLimit(1).truncationMode(.middle).help(section.title) }
+                        }
+                    } header: { sectionHeader(section) }
                 }
             }
             .contextMenu(forSelectionType: String.self) { ids in conversationManagementMenu(ids) } primaryAction: { ids in
-                guard ids.count == 1, let id = ids.first, let target = store.conversations.first(where: { $0.id == id }), store.canManageConversations, store.canRenameConversation(target) else { return }
+                guard ids.count == 1, let id = ids.first, let target = store.conversation(id: id), store.canManageConversations, store.canRenameConversation(target) else { return }
                 renameTarget = target
             }
             .listStyle(.sidebar)
-            .searchable(text: $browser.search, placement: .sidebar, prompt: "搜索会话")
+            .searchable(text: $search, placement: .sidebar, prompt: "搜索会话")
+            .task(id: search) {
+                // Searching reads every listed conversation; wait for typing to pause.
+                if !search.isEmpty { try? await Task.sleep(for: .milliseconds(250)) }
+                if !Task.isCancelled { store.setSearchText(search) }
+            }
             .navigationTitle("会话")
             .navigationSplitViewColumnWidth(min: 190, ideal: 240, max: 340)
             .disabled(store.authenticationRunning || store.isShuttingDown)
@@ -101,20 +112,19 @@ struct VeluneRootView: View {
             }
         }
         .navigationSplitViewStyle(.balanced)
-        .onReceive(store.$conversationBrowserGroupLimit) { browser.initialLimit = $0 }
         .onReceive(store.$conversationBrowserPreferences) { value in
             if let value, value != browser.preferences { browser.restore(value) }
         }
         .onChange(of: browser.preferences) { _, value in
             if store.conversationBrowserPreferences != nil { store.setConversationBrowserPreferences(value) }
         }
-        .onChange(of: browser.query) { _, _ in browser.resetPagination() }
         .onChange(of: activeState, initial: true) { _, value in if value == .key { store.noteFocused() } }
         .onChange(of: store.pendingConversationID) { _, value in if value != nil { showsOutlinePopover = false } }
         .onChange(of: store.loadedConversationID) { _, _ in showsOutlinePopover = false; outlineCollapsed = false }
         .onChange(of: store.outlinePresentation) { _, _ in showsOutlinePopover = false; outlineCollapsed = false }
         .toolbar { if !store.problems.isEmpty { ToolbarItem(placement: .primaryAction) { ProblemsButton(store: store) } } }
         .sheet(item: $renameTarget) { ConversationRenameView(store: store, conversation: $0) }
+        .sheet(item: $aliasTarget) { ProjectAliasView(store: store, target: $0) }
         .alert(deleteTargets.count == 1 ? "删除会话？" : "删除 \(deleteTargets.count) 个会话？", isPresented: Binding(get: { !deleteTargets.isEmpty }, set: { if !$0 { deleteTargets = [] } })) {
             Button("取消", role: .cancel) { deleteTargets = [] }
             Button("删除", role: .destructive) { store.deleteConversations(deleteTargets); deleteTargets = [] }
@@ -129,21 +139,137 @@ struct VeluneRootView: View {
         }
     }
 
+    private func expansion(_ key: BindingConversationGroupKey) -> Binding<Bool> {
+        Binding(get: { store.searchResults != nil || !browser.isCollapsed(key) },
+                set: { expanded in if store.searchResults == nil { browser.setCollapsed(key, !expanded) } })
+    }
+
+    private func groupTitle(_ key: BindingConversationGroupKey) -> String {
+        switch key {
+        case .all: "会话"
+        case .pinned: "置顶"
+        case .runtime(let id): store.runtimeInstances.first { $0.id == id }?.name ?? "Agent 运行时"
+        case .project(let path?): ConversationBrowser.projectName(path, projects: store.conversationProjects)
+        case .project(nil): "未指定项目"
+        }
+    }
+
+    private func sectionHeader(_ section: ConversationBrowser.Section) -> some View {
+        let title = groupTitle(section.id)
+        let path: String? = if case .project(let path?) = section.id { path } else { nil }
+        return HStack(spacing: 6) {
+            Text(title).lineLimit(1).truncationMode(.middle)
+            Spacer(minLength: 0)
+            Text("\(section.group.total)").monospacedDigit().foregroundStyle(.tertiary)
+                .accessibilityLabel("\(section.group.total) 个会话")
+        }
+        .help(path.map { (($0 as NSString).abbreviatingWithTildeInPath) } ?? title)
+        .contentShape(Rectangle())
+        .onTapGesture(count: 2) { if let path { aliasTarget = ProjectAliasTarget(path: path) } }
+        .contextMenu {
+            if let path {
+                Button("重命名项目…") { aliasTarget = ProjectAliasTarget(path: path) }
+                if section.group.alias != nil { Button("恢复文件夹名称") { store.setProjectAlias(path: path, alias: nil) } }
+                Button("在 Finder 中显示") { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)]) }
+                    .disabled(store.location(of: section.conversations.first?.runtimeID) != .local)
+                Divider()
+            }
+            if store.searchResults == nil {
+                Button(browser.isCollapsed(section.id) ? "展开" : "折叠") { browser.setCollapsed(section.id, !browser.isCollapsed(section.id)) }
+            }
+        }
+    }
+
+    private func conversationRow(_ conversation: Conversation) -> some View {
+        // The conversation the focused window shows is being read.
+        let unread = conversation.unread && !(conversation.id == store.loadedConversationID && activeState == .key)
+        return HStack(alignment: .firstTextBaseline, spacing: 5) {
+            Circle().fill(.tint).frame(width: 7, height: 7).opacity(unread ? 1 : 0).accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 6) {
+                    Text(conversation.title).lineLimit(1).fontWeight(unread ? .semibold : nil)
+                    // Who started the turn does not matter; running does.
+                    if store.runningConversationIDs.contains(conversation.id) || store.elsewhereConversationIDs.contains(conversation.id) {
+                        Spacer(minLength: 0)
+                        ProgressView().controlSize(.mini).help("正在运行").accessibilityLabel("正在运行")
+                    }
+                }
+                HStack(spacing: 8) {
+                    Text(rowContext(conversation)).lineLimit(1).truncationMode(.middle)
+                        .help(conversation.moved ? "工作目录：\(conversation.cwd ?? "未记录")" : conversation.cwd ?? "未指定项目")
+                    Spacer(minLength: 0)
+                    if let date = browser.sort.timestamp(conversation) { Text(shortDate(date)).help("\(browser.sort.title)：\(Date(timeIntervalSince1970: Double(date) / 1000).formatted())").accessibilityLabel("\(browser.sort.title)：\(shortDate(date))") }
+                }.font(.caption).foregroundStyle(.secondary)
+            }
+        }
+        .padding(.vertical, 3)
+        .accessibilityElement(children: .combine)
+        .accessibilityValue(unread ? "未读" : "")
+    }
+
     @ViewBuilder private func conversationManagementMenu(_ ids: Set<String>) -> some View {
-        let targets = store.conversations.filter { ids.contains($0.id) }
+        let targets = ids.compactMap { store.conversation(id: $0) }
         if targets.count == 1, let target = targets.first {
             Button("重命名…") { renameTarget = target }.disabled(!store.canManageConversations || !store.canRenameConversation(target))
         }
+        if !targets.isEmpty {
+            if !targets.contains(where: \.archived) {
+                if targets.allSatisfy(\.pinned) { Button("取消置顶") { store.organize(targets, .unpin) } }
+                else { Button("置顶") { store.organize(targets, .pin) } }
+            }
+            if targets.contains(where: \.unread) { Button("标为已读") { store.organize(targets, .markRead) } }
+            else { Button("标为未读") { store.organize(targets, .markUnread) }.disabled(targets.contains(where: \.archived)) }
+            moveMenu(targets)
+            if targets.allSatisfy(\.archived) {
+                Button("取消归档") { store.organize(targets, .unarchive) }.disabled(!store.canManageConversations)
+            } else {
+                Button("归档") { store.organize(targets.filter { !$0.archived }, .archive) }
+                    .disabled(!store.canManageConversations || targets.contains(where: store.isRunning))
+            }
+        }
+        if targets.count == 1, let target = targets.first {
+            Divider()
+            Button("拷贝会话 ID") { copyToPasteboard(target.nativeID) }.disabled(target.nativeID.isEmpty)
+            Button("拷贝链接") { copyToPasteboard(ConversationLink.url(runtimeID: target.runtimeID, conversationID: target.id).absoluteString) }
+        }
+        Divider()
         Button(targets.count > 1 ? "删除所选会话…" : "删除…", role: .destructive) { deleteTargets = targets }
             .disabled(targets.isEmpty || !store.canManageConversations || !targets.allSatisfy(store.canDeleteConversation))
         if targets.contains(where: { !store.canDeleteConversation($0) }) { Text("部分关联原生会话当前无法删除") }
         if targets.count == 1, let target = targets.first, !store.canRenameConversation(target) { Text("原生会话标题当前无法修改") }
     }
 
+    /// Moving files a conversation under another project in Velune's list;
+    /// where it runs stays its own working directory.
+    private func moveMenu(_ targets: [Conversation]) -> some View {
+        let current = Set(targets.map(\.project))
+        return Menu("移到项目") {
+            ForEach(store.conversationProjects.filter { current != [$0.path] }, id: \.path) { project in
+                Button(ConversationBrowser.projectName(project.path, projects: store.conversationProjects)) { store.organize(targets, .moveToProject(path: project.path)) }
+            }
+            Divider()
+            Button("其他文件夹…") {
+                let panel = NSOpenPanel()
+                panel.canChooseFiles = false; panel.canChooseDirectories = true; panel.allowsMultipleSelection = false
+                panel.prompt = "移到此项目"
+                if panel.runModal() == .OK, let url = panel.url { store.organize(targets, .moveToProject(path: url.path)) }
+            }
+            if targets.contains(where: \.moved) {
+                Divider()
+                Button("移回工作目录所在项目") { store.organize(targets, .moveToProject(path: nil)) }
+            }
+        }
+    }
+
+    private func copyToPasteboard(_ text: String) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+    }
+
     private func rowContext(_ conversation: Conversation) -> String {
         var parts: [String] = []
         if browser.grouping != .runtime { parts.append(store.runtimeInstances.first { $0.id == conversation.runtimeID }?.name ?? "Agent 运行时") }
-        if browser.grouping != .project, let path = conversation.cwd { parts.append(URL(fileURLWithPath: path).lastPathComponent) }
+        if browser.grouping != .project, let path = conversation.project { parts.append(ConversationBrowser.projectName(path, projects: store.conversationProjects)) }
         return parts.joined(separator: " · ")
     }
 
@@ -163,12 +289,19 @@ struct VeluneRootView: View {
             Picker("项目", selection: $browser.project) {
                 Text("所有项目").tag(ConversationBrowser.ProjectFilter.all)
                 Text("未指定项目").tag(ConversationBrowser.ProjectFilter.unspecified)
-                ForEach(projects, id: \.self) { path in Text(path).tag(ConversationBrowser.ProjectFilter.path(path)) }
-                if case .path(let path) = browser.project, !projects.contains(path) { Text(path).tag(ConversationBrowser.ProjectFilter.path(path)) }
+                ForEach(store.conversationProjects, id: \.path) { project in
+                    Text(ConversationBrowser.projectName(project.path, projects: store.conversationProjects)).tag(ConversationBrowser.ProjectFilter.path(project.path))
+                }
+                if case .path(let path) = browser.project, !store.conversationProjects.contains(where: { $0.path == path }) {
+                    Text(ConversationBrowser.projectName(path, projects: store.conversationProjects)).tag(ConversationBrowser.ProjectFilter.path(path))
+                }
             }
             if browser.hasFilters { Divider(); Button("清除筛选") { browser.runtimeID = nil; browser.project = .all } }
-        } label: { Label("显示", systemImage: browser.hasFilters ? "line.3.horizontal.decrease.circle.fill" : "line.3.horizontal.decrease") }
-        .help("会话分组、筛选与排序")
+            Divider()
+            Toggle("显示已归档的会话", isOn: Binding(get: { store.showsArchived }, set: { store.setShowsArchived($0) }))
+        } label: { Label("显示", systemImage: browser.hasFilters || store.showsArchived ? "line.3.horizontal.decrease.circle.fill" : "line.3.horizontal.decrease") }
+        .help("会话分组、筛选、排序与已归档会话")
+        .accessibilityLabel("显示")
         .disabled(store.conversationBrowserPreferences == nil)
     }
 
@@ -281,6 +414,43 @@ struct ConversationRenameView: View {
     private func rename() { store.renameConversation(conversation, title: title) { dismiss() } }
 }
 
+struct ProjectAliasTarget: Identifiable {
+    let path: String
+    var id: String { path }
+}
+
+/// A project's name in the list; empty restores the folder's name.
+struct ProjectAliasView: View {
+    @ObservedObject var store: AppStore
+    let target: ProjectAliasTarget
+    @Environment(\.dismiss) private var dismiss
+    @State private var alias: String
+    @FocusState private var focused: Bool
+    init(store: AppStore, target: ProjectAliasTarget) {
+        self.store = store; self.target = target
+        _alias = State(initialValue: store.conversationProjects.first { $0.path == target.path }?.alias ?? URL(fileURLWithPath: target.path).lastPathComponent)
+    }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("重命名项目").font(.headline)
+            TextField("项目名称", text: $alias).focused($focused).onSubmit(save)
+            Text((target.path as NSString).abbreviatingWithTildeInPath).font(.callout).foregroundStyle(.secondary)
+                .lineLimit(2).truncationMode(.middle).textSelection(.enabled)
+            Text("名称只用于 Velune 的会话列表，不改变文件夹。留空则显示文件夹名称。").font(.caption).foregroundStyle(.secondary)
+            HStack {
+                Spacer()
+                Button("取消") { dismiss() }.keyboardShortcut(.cancelAction)
+                Button("重命名", action: save).keyboardShortcut(.defaultAction)
+            }
+        }.padding(20).frame(width: 360).onAppear { focused = true }
+    }
+    private func save() {
+        let name = alias.trimmingCharacters(in: .whitespacesAndNewlines)
+        store.setProjectAlias(path: target.path, alias: name.isEmpty || name == URL(fileURLWithPath: target.path).lastPathComponent ? nil : name)
+        dismiss()
+    }
+}
+
 // Limit the workaround to expansion writes; content controls keep their own transactions.
 struct ImmediateDisclosureGroup<Label: View, Content: View>: View {
     @State private var expanded = false
@@ -353,6 +523,7 @@ struct SettingsView: View {
 private struct ConversationSettingsView: View {
     @ObservedObject var store: AppStore
     @State private var limit = 20
+    @State private var totalLimit = 200
     private static let statusLineItems: [(item: BindingStatusLineItem, title: String)] = [
         (.contextUsage, "上下文用量"), (.sessionTokens, "本会话累计 token"), (.workingDirectory, "工作目录与 Git 分支"),
         (.rateLimits, "账户用量限额（Codex）"), (.sessionCost, "费用估算"),
@@ -375,12 +546,14 @@ private struct ConversationSettingsView: View {
                 Text("状态栏位于输入框下方、发送按钮左侧，只显示运行时原生记录中已有的项；点按它可查看全部项。费用为运行时按其价目的估算。").font(.caption).foregroundStyle(.secondary)
             }
             Section("会话列表") {
-                LabeledContent("每组首次展示") { TextField("数量", value: $limit, format: .number).frame(width: 70); Text("个会话") }
-                Text("每组按当前排序显示前若干会话，可在列表中加载更多。").font(.caption).foregroundStyle(.secondary)
-                Button("保存") { store.setConversationBrowserGroupLimit(limit) }.disabled(limit < 1 || limit == store.conversationBrowserGroupLimit || store.isBusy)
+                LabeledContent("每次加载") { TextField("数量", value: $limit, format: .number).frame(width: 70); Text("个会话") }
+                LabeledContent("列表总数上限") { TextField("数量", value: $totalLimit, format: .number).frame(width: 70); Text("个会话") }
+                Text("列表最多先读取总数上限个会话，按组依次分给各组，每组每次加载若干个；折叠的组不读取。之后可在各组中加载更多。").font(.caption).foregroundStyle(.secondary)
+                Button("保存") { store.setConversationBrowserLimits(BindingConversationBrowserLimits(page: UInt32(limit), total: UInt32(totalLimit))) }
+                    .disabled(limit < 1 || totalLimit < 1 || (limit == Int(store.conversationBrowserLimits.page) && totalLimit == Int(store.conversationBrowserLimits.total)) || store.isShuttingDown)
             }
 
-        }.formStyle(.grouped).onAppear { limit = store.conversationBrowserGroupLimit }
+        }.formStyle(.grouped).onAppear { limit = Int(store.conversationBrowserLimits.page); totalLimit = Int(store.conversationBrowserLimits.total) }
     }
 }
 

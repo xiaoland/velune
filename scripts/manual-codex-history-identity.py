@@ -297,7 +297,7 @@ def main():
                     enabled=True, id="codex", name="Synthetic Codex", type_id="codex-0.159.3",
                     gateway_id="default", settings={"binary": str(args.codex),
                     "nodeBinary": str(args.node), "agentDir": str(codex_home)}))
-                application_rows = application.list().conversations
+                application_rows = [_row.conversation for _row in application.list().conversations]
                 codex_rows = [row for row in application_rows if row.runtime_id == "codex"]
                 assert len(codex_rows) == 3, [(row.id, row.runtime_id) for row in application_rows]
                 application_result = {"logicalRows": [row.id for row in codex_rows]}
@@ -326,7 +326,7 @@ def main():
                 application = binding.VeluneApplication.open(binding.BindingOptions(
                     home_directory=str(root / "application-home"),
                     resources_directory=str(args.resources)))
-                restarted_rows = [row for row in application.list().conversations
+                restarted_rows = [row for row in [_row.conversation for _row in application.list().conversations]
                                   if row.runtime_id == "codex"]
                 assert len(restarted_rows) == 3
                 restarted_parent = next(row for row in restarted_rows if parent["id"] in row.id)

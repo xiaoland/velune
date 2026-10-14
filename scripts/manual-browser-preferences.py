@@ -33,31 +33,31 @@ import VeluneBindings
         try require(initial == ConversationBrowser().preferences, "empty-home defaults")
         try require(store.problems.isEmpty, "empty source caused error")
         for value in [
-            BindingConversationBrowserPreferences(grouping:.runtime, sort:.updated, oldestFirst:false, runtimeId:nil, project:.unspecified),
-            BindingConversationBrowserPreferences(grouping:.none, sort:.created, oldestFirst:true, runtimeId:nil, project:.all)
+            BindingConversationBrowserPreferences(grouping:.runtime, sort:.updated, oldestFirst:false, runtimeId:nil, project:.unspecified, collapsed:[]),
+            BindingConversationBrowserPreferences(grouping:.none, sort:.created, oldestFirst:true, runtimeId:nil, project:.all, collapsed:[.all])
         ] {
             store.setConversationBrowserPreferences(value)
             try await wait { (try? transport.list().conversationBrowserPreferences) == value && store.conversationBrowserPreferences == value }
         }
-        let final = BindingConversationBrowserPreferences(grouping:.project, sort:.created, oldestFirst:true, runtimeId:"unavailable-synthetic-instance", project:.path(path:"/synthetic/nonexistent/project"))
+        let final = BindingConversationBrowserPreferences(grouping:.project, sort:.created, oldestFirst:true, runtimeId:"unavailable-synthetic-instance", project:.path(path:"/synthetic/nonexistent/project"), collapsed:[.project(path:nil)])
         store.refreshConversations() // Queued old list must not reset newer optimistic choices.
-        store.setConversationBrowserPreferences(.init(grouping:.runtime, sort:.updated, oldestFirst:false, runtimeId:nil, project:.unspecified))
-        store.setConversationBrowserPreferences(.init(grouping:.none, sort:.created, oldestFirst:false, runtimeId:nil, project:.all))
+        store.setConversationBrowserPreferences(.init(grouping:.runtime, sort:.updated, oldestFirst:false, runtimeId:nil, project:.unspecified, collapsed:[]))
+        store.setConversationBrowserPreferences(.init(grouping:.none, sort:.created, oldestFirst:false, runtimeId:nil, project:.all, collapsed:[]))
         store.setConversationBrowserPreferences(final)
         try require(store.conversationBrowserPreferences == final, "rapid choices not immediately visible")
         try await wait { !store.isLoading }
         try await wait { (try? transport.list().conversationBrowserPreferences) == final }
         try require(store.conversationBrowserPreferences == final, "old completion reverted latest choices")
-        var browser = ConversationBrowser(); browser.search = "temporary search"; browser.restore(final)
-        try require(browser.preferences == final && browser.search == "temporary search", "restore changed transient search")
-        _ = try transport.setConversationBrowserGroupLimit(37)
+        var browser = ConversationBrowser(); browser.restore(final)
+        try require(browser.preferences == final, "restore lost choices")
+        _ = try transport.setConversationBrowserLimits(BindingConversationBrowserLimits(page: 37, total: 90))
         var closed = false; store.shutdown { closed = $0 }; try await wait { closed }
         let reopened = Transport(stateDirectory:home, resourcesDirectory:resources)
         let next = AppStore(transport:reopened); next.start(); try await wait { !next.isLoading }
-        try require(next.conversationBrowserPreferences == final && next.conversationBrowserGroupLimit == 37, "restart lost persisted choices")
+        try require(next.conversationBrowserPreferences == final && next.conversationBrowserLimits == BindingConversationBrowserLimits(page: 37, total: 90), "restart lost persisted choices")
         let configuration = home.appendingPathComponent("generic-config.json")
         let json = try JSONSerialization.jsonObject(with:Data(contentsOf:configuration)) as! [String:Any]
-        try require((json["schemaVersion"] as? Int) == 7 && json["conversationBrowserPreferences"] != nil, "configuration reset schema")
+        try require((json["schemaVersion"] as? Int) == 8 && json["conversationBrowserPreferences"] != nil, "configuration reset schema")
         let configurationText = try String(contentsOf:configuration,encoding:.utf8)
         try require(!configurationText.contains("temporary search"), "search leaked to persistence")
         // Atomic write failure must restore the last durable choice and show a problem.

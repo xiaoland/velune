@@ -111,7 +111,7 @@ def main():
             links_path.mkdir()  # Atomic rename cannot replace this directory.
             rejected(lambda: application.send_turn("alpha", source.conversation.id, "beta", key, "PERSIST_FAILURE"))
             links_path.rmdir()
-            assert len(application.list().conversations) == 1
+            assert len([_row.conversation for _row in application.list().conversations]) == 1
             application.send_turn("alpha", source.conversation.id, "beta", key, "BOUNDARY_TARGET")
             target = settle("beta", 2)
             assert target.conversation.id == source.conversation.id and target.context_runtime_id == "beta"
@@ -150,7 +150,7 @@ def main():
             (root / "home/generic-config.json").write_text('{"schemaVersion":6}')
             application = b.VeluneApplication.open(options)
             assert links_path.read_bytes() == metadata
-            rows = application.list().conversations
+            rows = [_row.conversation for _row in application.list().conversations]
             assert len(rows) == 1 and rows[0].id == source.conversation.id
             assert not rows[0].can_rename and not rows[0].can_delete
             assert len(captures) == 2, "restart dispatched an unsolicited turn"

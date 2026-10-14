@@ -80,14 +80,17 @@ pub fn list_codex_history(
         binary,
         home,
         runtime_id,
+        false,
         &crate::execution::ExecutionTarget::Local,
         None,
     )
 }
+/// The runtime's threads, either those in use or those it archived.
 pub fn list_codex_history_at(
     binary: &Path,
     home: &Path,
     runtime_id: &str,
+    archived: bool,
     execution: &crate::execution::ExecutionTarget,
     os_home: Option<&Path>,
 ) -> Result<Vec<ConversationSummary>> {
@@ -96,7 +99,7 @@ pub fn list_codex_history_at(
         &mut rpc,
         "thread/list",
         json!({
-            "limit":100,"archived":false,"modelProviders":[],
+            "limit":100,"archived":archived,"modelProviders":[],
             "sourceKinds":SOURCE_KINDS,"sortKey":"updated_at","sortDirection":"desc"
         }),
     )?;

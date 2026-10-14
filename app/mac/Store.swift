@@ -11,8 +11,21 @@ final class AppStore: ObservableObject {
     @Published private(set) var outlinePresentation: BindingOutlinePresentation = .popover
     /// What the composer's status line shows, in display order.
     @Published private(set) var statusLine: [BindingStatusLineItem] = [.contextUsage]
-    @Published private(set) var conversationBrowserGroupLimit = 20
+    @Published private(set) var conversationBrowserLimits = BindingConversationBrowserLimits(page: 20, total: 200)
+    /// The conversations the list shows, in display order, then open ones it does not.
     @Published private(set) var conversations: [Conversation] = []
+    /// The list's groups in display order, as the core windows them.
+    @Published private(set) var conversationGroups: [BindingConversationGroup] = []
+    @Published private(set) var conversationProjects: [BindingConversationProject] = []
+    @Published private(set) var showsArchived = false
+    /// This window's search: its text, and the matches once read.
+    @Published private(set) var searchText = ""
+    @Published private(set) var searchResults: (conversations: [Conversation], groups: [BindingConversationGroup])?
+    private var searchRequest = 0
+    /// Conversations reached outside the list (a link, a search result), so they can be opened.
+    private var offListConversations: [Conversation] = []
+    /// Conversations a read mark was sent for and not yet confirmed.
+    private var markingRead: Set<String> = []
     @Published private(set) var selectedConversationIDs: Set<String> = []
     @Published private(set) var selectedConversationID: String?
     @Published private(set) var pendingConversationID: String?
@@ -161,12 +174,16 @@ final class AppStore: ObservableObject {
         if providerImportTypes != application.providerImportTypes { providerImportTypes = application.providerImportTypes }
         if conversationBrowserPreferences != application.conversationBrowserPreferences { conversationBrowserPreferences = application.conversationBrowserPreferences }
         savedBrowserPreferences = application.savedBrowserPreferences
-        if conversationBrowserGroupLimit != application.conversationBrowserGroupLimit { conversationBrowserGroupLimit = application.conversationBrowserGroupLimit }
+        if conversationBrowserLimits != application.conversationBrowserLimits { conversationBrowserLimits = application.conversationBrowserLimits }
+        if conversationGroups != application.conversationGroups { conversationGroups = application.conversationGroups }
+        if conversationProjects != application.conversationProjects { conversationProjects = application.conversationProjects }
+        if showsArchived != application.showsArchived { showsArchived = application.showsArchived }
         if outlinePresentation != application.outlinePresentation { outlinePresentation = application.outlinePresentation }
         if statusLine != application.statusLine { statusLine = application.statusLine }
         var sharedConversations = application.conversations
-        if let current = snapshot?.conversation, !isDraft, !sharedConversations.contains(where: { $0.id == current.id }) { sharedConversations.insert(current, at: 0) }
+        if var current = snapshot?.conversation, !isDraft, !sharedConversations.contains(where: { $0.id == current.id }) { current.group = nil; sharedConversations.insert(current, at: 0) }
         if conversations != sharedConversations { conversations = sharedConversations }
+        noteSeen()
         if authenticationRunning != application.authenticationRunning { authenticationRunning = application.authenticationRunning }
         if authenticationPrompt != application.authenticationPrompt { authenticationPrompt = application.authenticationPrompt }
         if authenticationNotifications != application.authenticationNotifications { authenticationNotifications = application.authenticationNotifications }
@@ -202,8 +219,12 @@ final class AppStore: ObservableObject {
     /// Set while a native sub-agent's conversation is shown: the conversation that started it.
     var loadedParentConversationID: String? { snapshot?.conversation.parentConversationID }
     /// The conversations the sidebar lists; native sub-agents open from their parent's transcript.
-    var sidebarConversations: [Conversation] { conversations.filter { $0.parentConversationID == nil } }
-    var selectedConversationTitle: String? { conversations.first { $0.id == selectedConversationID }?.title ?? (snapshot?.conversation.id == selectedConversationID ? snapshot?.conversation.title : nil) }
+    var sidebarConversations: [Conversation] { conversations.filter { $0.group != nil } }
+    /// A conversation by identity: listed, or reached outside the list.
+    func conversation(id: String) -> Conversation? {
+        conversations.first { $0.id == id } ?? searchResults?.conversations.first { $0.id == id } ?? offListConversations.first { $0.id == id }
+    }
+    var selectedConversationTitle: String? { selectedConversationID.flatMap { conversation(id: $0) }?.title ?? (snapshot?.conversation.id == selectedConversationID ? snapshot?.conversation.title : nil) }
     var isGenerating: Bool { snapshot?.runState == .running || snapshot?.runState == .stopping }
     var isBusy: Bool { isLoading || applicationIsGenerating || isShuttingDown || authenticationRunning }
     var canManageConversations: Bool { !authenticationRunning && !isShuttingDown && conversationManagementStatus == nil && (!isLoading || pendingConversationID != nil) }
@@ -394,7 +415,7 @@ final class AppStore: ObservableObject {
     /// The workspace whose window was key most recently; notifications open
     /// conversations there.
     private weak var focusedWorkspace: AppStore?
-    func noteFocused() { sharedApplication?.focusedWorkspace = self }
+    func noteFocused() { sharedApplication?.focusedWorkspace = self; noteSeen() }
     /// The user is looking at this conversation now.
     func isShowingConversation(_ id: String) -> Bool { NSApp.isActive && focusedWorkspace?.loadedConversationID == id }
     func showConversation(_ id: String) {
@@ -525,9 +546,12 @@ final class AppStore: ObservableObject {
             DispatchQueue.main.async {
                 guard let self else { return }
                 switch result {
-                case .success(let saved):
+                case .success(let data):
+                    let saved = data.conversationBrowserPreferences
                     self.savedBrowserPreferences = saved
                     if revision == self.browserPreferencesGeneration { self.conversationBrowserPreferences = saved }
+                    self.applyList(data)
+                    self.refreshSearch()
                 case .failure(let failure):
                     self.recordProblem(failure)
                     if revision == self.browserPreferencesGeneration { self.conversationBrowserPreferences = self.savedBrowserPreferences }
@@ -597,30 +621,122 @@ final class AppStore: ObservableObject {
         }
     }
     static let draftConversationPrefix = "draft:"
-    func setConversationBrowserGroupLimit(_ limit: Int) {
-        guard let value = UInt32(exactly: limit), value > 0 else { recordProblem("每组展示数量须为正整数"); return }
-        if isPreview { conversationBrowserGroupLimit = limit; return }
+    func setConversationBrowserLimits(_ limits: BindingConversationBrowserLimits) {
+        guard limits.page > 0, limits.total > 0 else { recordProblem("会话加载数量须为正整数"); return }
+        if isPreview { conversationBrowserLimits = limits; return }
         guard let transport else { recordProblem("本地核心未配置"); return }
-        enqueue({ try transport.setConversationBrowserGroupLimit(value) }) { [weak self] result in self?.conversationBrowserGroupLimit = Int(result) }
+        browse({ _ = try transport.setConversationBrowserLimits(limits); return try transport.list() }, source: "保存会话列表设置")
+    }
+    /// List operations run besides loading and management: they change only
+    /// what the list shows and Velune's organization of it.
+    private func browse(_ operation: @escaping () throws -> BindingConfigurationSnapshot, source: String) {
+        guard !isPreview, !isShuttingDown else { return }
+        queue.async { [weak self] in
+            let result = Result { try operation() }
+            DispatchQueue.main.async {
+                guard let self else { return }
+                switch result {
+                case .success(let data): self.applyList(data)
+                case .failure(let failure): self.recordProblem(failure, source: source)
+                }
+            }
+        }
+    }
+    func loadMoreConversations(in group: BindingConversationGroupKey) {
+        guard let transport else { return }
+        browse({ try transport.loadMoreConversations(group: group) }, source: "加载会话")
+    }
+    func setShowsArchived(_ archived: Bool) {
+        guard let transport, archived != showsArchived else { return }
+        showsArchived = archived
+        browse({ try transport.showArchivedConversations(archived) }, source: "切换已归档会话")
+    }
+    func setProjectAlias(path: String, alias: String?) {
+        guard let transport else { return }
+        browse({ try transport.setProjectAlias(path: path, alias: alias) }, source: "重命名项目")
+    }
+    /// Pins, read state, and moves are Velune's records; an archive the
+    /// runtime keeps itself changes its sessions, so it waits for loading
+    /// like the other native changes.
+    func organize(_ targets: [Conversation], _ change: BindingConversationOrganizationChange) {
+        guard !targets.isEmpty, let transport else { return }
+        let references = targets.map { BindingConversationReference(runtimeId: $0.runtimeID, conversationId: $0.id) }
+        switch change {
+        case .archive, .unarchive:
+            guard canManageConversations else { recordProblem("请等待正在进行的操作结束，再修改会话"); return }
+            let verb = { if case .archive = change { return "归档" } else { return "取消归档" } }()
+            scheduleConversationManagement("\(verb) \(targets.count) 个会话") { [weak self] in
+                guard let self else { return }
+                conversationManagementStatus = "正在\(verb) \(targets.count) 个会话…"
+                enqueue({ try transport.organizeConversations(references, change) }, onFailure: { [weak self] _ in self?.finishConversationManagement() }) { [weak self] data in
+                    self?.applyList(data)
+                    self?.finishConversationManagement()
+                }
+            }
+        default:
+            browse({ try transport.organizeConversations(references, change) }, source: "整理会话")
+        }
+    }
+    /// The open conversation is read once it shows in the focused window of
+    /// the active application.
+    private func noteSeen() {
+        guard !isPreview, NSApp.isActive else { return }
+        let application = sharedApplication ?? self
+        guard sharedApplication == nil || application.focusedWorkspace === self,
+              let id = loadedConversationID, pendingConversationID == nil,
+              let conversation = conversation(id: id), conversation.unread, !application.markingRead.contains(id) else { return }
+        application.markingRead.insert(id)
+        organize([conversation], .markRead)
+    }
+    func setSearchText(_ text: String) {
+        guard text != searchText else { return }
+        searchText = text
+        refreshSearch()
+    }
+    private func refreshSearch() {
+        searchRequest += 1
+        let request = searchRequest
+        let text = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty, !isPreview, let transport else { searchResults = nil; return }
+        queue.async { [weak self] in
+            let result = Result { try transport.searchConversations(text) }
+            DispatchQueue.main.async {
+                guard let self, request == self.searchRequest else { return }
+                switch result {
+                case .success(let found): self.searchResults = (found.conversations.map(BindingMapping.listed), found.groups)
+                case .failure(let failure): self.recordProblem(failure, source: "搜索会话")
+                }
+            }
+        }
     }
     func selectConversations(ids: Set<String>) {
         guard !isLoading, !isShuttingDown, !authenticationRunning else { return }
-        selectedConversationIDs = ids.intersection(conversations.map(\.id))
+        selectedConversationIDs = ids.filter { conversation(id: $0) != nil }
         if selectedConversationIDs.count == 1, let id = selectedConversationIDs.first, id != loadedConversationID { selectConversation(id: id) }
     }
     /// Open a conversation a collaboration link names; an agent may have
     /// started it after the list was last read.
     func openLinkedConversation(id: String) {
-        if conversations.contains(where: { $0.id == id }) { selectConversation(id: id); return }
+        if conversation(id: id) != nil { selectConversation(id: id); return }
         guard !isPreview, !isShuttingDown, let transport else { return }
-        enqueue({ try transport.list() }) { [weak self] data in
-            guard let self else { return }
-            applyList(data)
-            if conversations.contains(where: { $0.id == id }) { selectConversation(id: id) } else { recordProblem("会话列表中没有这个会话；它可能已被删除或其运行时已停用", source: "打开会话") }
+        queue.async { [weak self] in
+            let result = Result { try transport.findConversation(id) }
+            DispatchQueue.main.async {
+                guard let self else { return }
+                switch result {
+                case .success(let found?):
+                    let reached = BindingMapping.listed(found)
+                    self.offListConversations.removeAll { $0.id == reached.id }
+                    self.offListConversations.append(reached)
+                    self.selectConversation(id: id)
+                case .success(nil): self.recordProblem("找不到这个会话；它可能已被删除或其运行时已停用", source: "打开会话")
+                case .failure(let failure): self.recordProblem(failure, source: "打开会话")
+                }
+            }
         }
     }
     func selectConversation(id: String) {
-        guard !isLoading, !executionStarting, let conversation = conversations.first(where: { $0.id == id }) else { return }
+        guard !isLoading, !executionStarting, let conversation = conversation(id: id) else { return }
         selectedConversationIDs = [id]
         if isPreview { projectionRuntimeID = conversation.runtimeID; apply(previewSnapshots[id]); return }
         guard let transport else { recordProblem("本地核心未配置"); return }
@@ -649,6 +765,7 @@ final class AppStore: ObservableObject {
             queuedConversationManagement = nil
             operation()
         } else { pendingConversationID = nil }
+        noteSeen()
     }
     private func scheduleConversationManagement(_ action: String, operation: @escaping () -> Void) {
         if isLoading && pendingConversationID != nil {
@@ -1239,8 +1356,16 @@ final class AppStore: ObservableObject {
         }
         outlinePresentation = data.outlinePresentation
         statusLine = data.statusLine
-        conversationBrowserGroupLimit = Int(data.conversationBrowserGroupLimit)
-        conversations = mapped.conversations; selectedConversationIDs.formIntersection(conversations.map(\.id))
+        conversationBrowserLimits = data.conversationBrowserLimits
+        conversations = mapped.conversations
+        conversationGroups = data.conversationGroups; conversationProjects = data.conversationProjects; showsArchived = data.showsArchived
+        // Organization changes the list's own rows; reached ones follow them.
+        let listed = Dictionary(conversations.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        offListConversations = offListConversations.map { listed[$0.id] ?? $0 }
+        if searchResults != nil { refreshSearch() }
+        selectedConversationIDs = selectedConversationIDs.filter { conversation(id: $0) != nil }
+        markingRead.formIntersection(conversations.filter(\.unread).map(\.id))
+        noteSeen()
         if let saved = mapped.gateways.first(where: { $0.id == gateway.id }) ?? mapped.gateways.first { gateway = saved; hasGateway = true }
         runtimeInstances = mapped.runtimes; runtimeTypes = mapped.runtimeTypes; reconcileHistoryProblems(mapped.historyFailures)
         protocols = mapped.protocols
@@ -1294,7 +1419,11 @@ final class AppStore: ObservableObject {
         updatePendingSend(value)
         guard snapshot != value else { return }
         snapshot = value; projectionRuntimeID = value.contextRuntimeID; selectedConversationID = value.conversation.id; restoreNextTurnIntent(for: value); if !preserveSelection && selectedConversationIDs.count <= 1 { selectedConversationIDs = [value.conversation.id] }; transcript.apply(value.messages, turns: value.transcriptTurns, items: value.transcriptItems, outline: value.transcriptOutline, identities: value.transcriptMessageIdentities)
-        if let index = conversations.firstIndex(where: { $0.id == value.conversation.id }) { if conversations[index] != value.conversation { conversations[index] = value.conversation } }
+        if let index = conversations.firstIndex(where: { $0.id == value.conversation.id }) {
+            // The snapshot carries the runtime's fields; the list keeps its organization.
+            let updated = value.conversation.organized(like: conversations[index])
+            if conversations[index] != updated { conversations[index] = updated }
+        }
         else if !isDraft { conversations.insert(value.conversation, at: 0) }
         activity = switch value.runState {
         // A turn that a Harness process outside this execution runs reads the same.

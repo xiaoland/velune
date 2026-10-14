@@ -4,6 +4,16 @@ use crate::conversation::ConversationSnapshot;
 use crate::local::continuation::{LogicalProjection, display_segment};
 impl CoreRuntime {
     pub(super) fn send_turn_action(&mut self, request: &Value) -> Result<Value, RuntimeError> {
+        let result = self.send_turn(request);
+        if result.is_ok()
+            && let Some(id) = request["payload"]["conversationID"].as_str()
+        {
+            self.restore_archived(id);
+        }
+        result
+    }
+
+    fn send_turn(&mut self, request: &Value) -> Result<Value, RuntimeError> {
         if self.busy() {
             return Err(RuntimeError::invalid("runtime is busy"));
         }
@@ -343,9 +353,21 @@ impl CoreRuntime {
             }) {
                 return Err(RuntimeError::invalid("会话来源运行时不匹配"));
             }
-            return self.manage_link(link, request, deleting);
+            let id = link.id.clone();
+            let result = self.manage_link(link, request, deleting);
+            if deleting && result.is_ok() {
+                self.forget_conversation(&id);
+            }
+            return result;
         }
-        self.manage_native_conversation(request, deleting)
+        let result = self.manage_native_conversation(request, deleting);
+        if deleting
+            && result.is_ok()
+            && let Some(id) = request["payload"]["conversationID"].as_str()
+        {
+            self.forget_conversation(id);
+        }
+        result
     }
 
     pub(super) fn manage_native_conversation(
@@ -492,7 +514,10 @@ impl CoreRuntime {
                 &setting_path(&runtime, "binary")?,
                 &context.agent_dir,
                 native_id,
-                title,
+                title.map_or(
+                    velune_agent_runtime::native::ThreadChange::Delete,
+                    velune_agent_runtime::native::ThreadChange::Rename,
+                ),
                 &context.target,
                 context.os_home.as_deref(),
             )

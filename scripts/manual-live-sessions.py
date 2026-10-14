@@ -156,7 +156,7 @@ console.log(manager.getSessionFile());
                                                context_window=8192, max_output_tokens=128, reasoning_levels=None, adapter_metadata_json=None)]),
                 b.BindingAuthenticationEdit.SET_API_KEY(value='SYNTHETIC_ONLY'))
             model = app.list().gateways[0].providers[0].models[0].record_key
-            ids = {c.title: c.id for c in app.list().conversations}
+            ids = {c.title: c.id for c in [_row.conversation for _row in app.list().conversations]}
             a, b_id = ids['A'], ids['B']
             path_a = a.removeprefix('pi:')
 
@@ -205,7 +205,7 @@ console.log(manager.getSessionFile());
             client = pi_client('EXTERNAL_PROMPT_C')
             started = wait(lambda: {item for item in elsewhere() if item not in (a, b_id)}, 'conversation started outside Velune reported')
             c = next(iter(started))
-            assert c in {item.id for item in app.list().conversations}
+            assert c in {item.id for item in [_row.conversation for _row in app.list().conversations]}
             print('PASS a conversation started outside Velune is reported running and listed', flush=True)
             os.killpg(client.pid, signal.SIGKILL)
             client.wait()

@@ -422,8 +422,7 @@ impl CoreRuntime {
     ) -> Result<Value, RuntimeError> {
         let limit = request.limit.unwrap_or(20).clamp(1, 100);
         let query = request.query.map(|query| query.to_lowercase());
-        let listed: Vec<ConversationSummary> =
-            serde_json::from_value(self.list()?["conversations"].take())?;
+        let listed = self.all_conversations()?;
         let active: BTreeMap<String, crate::ActiveConversation> = self
             .active_conversations()
             .into_iter()
@@ -581,14 +580,25 @@ impl CoreRuntime {
         Ok(())
     }
 
+    /// Every listed conversation, newest first; agents see past the list's window.
+    fn all_conversations(&self) -> Result<Vec<ConversationSummary>, RuntimeError> {
+        let mut listed: Vec<ConversationSummary> = self
+            .list_sources()?
+            .0
+            .into_iter()
+            .map(|source| source.summary)
+            .collect();
+        listed.sort_by_key(|summary| std::cmp::Reverse(summary.updated_at_unix_ms));
+        Ok(listed)
+    }
+
     /// Address conversation `id`, opening it from its runtime's history when
     /// no session shows it.
     fn address(&mut self, id: &str) -> Result<(), RuntimeError> {
         if self.focus_existing(id) {
             return Ok(());
         }
-        let listed: Vec<ConversationSummary> =
-            serde_json::from_value(self.list()?["conversations"].take())?;
+        let listed = self.all_conversations()?;
         let summary = listed
             .into_iter()
             .find(|item| item.id == id)

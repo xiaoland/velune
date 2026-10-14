@@ -1,8 +1,10 @@
 import Foundation
 import VeluneBindings
 
-/// Browsing choices only derive sidebar rows. They never select an execution
-/// runtime or rewrite the authoritative conversation snapshot.
+/// Browsing choices only shape the sidebar. They never select an execution
+/// runtime or rewrite the authoritative conversation snapshot. The core
+/// groups, orders, and pages the list by them; this mirrors the choices and
+/// arranges the rows the core returned into its groups.
 struct ConversationBrowser {
     enum Grouping: String, CaseIterable, Identifiable {
         case none, runtime, project
@@ -18,94 +20,68 @@ struct ConversationBrowser {
     enum ProjectFilter: Hashable {
         case all, unspecified, path(String)
     }
-    enum SectionID: Hashable {
-        case all, runtime(String), project(String?)
-    }
     struct Section: Identifiable {
-        let id: SectionID
-        let title: String
+        let group: BindingConversationGroup
         let conversations: [Conversation]
-        let totalCount: Int
-        var hasMore: Bool { conversations.count < totalCount }
+        var id: BindingConversationGroupKey { group.key }
+        var hasMore: Bool { group.loaded < group.total }
     }
-    var initialLimit = 20
-    private var additionalPages: [SectionID: Int] = [:]
-    mutating func loadMore(_ sectionID: SectionID) { additionalPages[sectionID, default: 0] += 1 }
-    mutating func resetPagination() { additionalPages.removeAll() }
     var grouping = Grouping.none
     var sort = Sort.updated
     var oldestFirst = false
     var runtimeID: String?
     var project = ProjectFilter.all
-    var search = ""
-    struct Query: Equatable {
-        let grouping: Grouping
-        let sort: Sort
-        let oldestFirst: Bool
-        let runtimeID: String?
-        let project: ProjectFilter
-        let search: String
-        let initialLimit: Int
-    }
-    var query: Query { Query(grouping: grouping, sort: sort, oldestFirst: oldestFirst, runtimeID: runtimeID, project: project, search: search, initialLimit: initialLimit) }
+    var collapsed: [BindingConversationGroupKey] = []
     var preferences: BindingConversationBrowserPreferences {
         let value: BindingConversationBrowserProject
         switch project { case .all: value = .all; case .unspecified: value = .unspecified; case .path(let path): value = .path(path: path) }
-        return BindingConversationBrowserPreferences(grouping: grouping == .none ? .none : grouping == .runtime ? .runtime : .project, sort: sort == .updated ? .updated : .created, oldestFirst: oldestFirst, runtimeId: runtimeID, project: value)
+        return BindingConversationBrowserPreferences(grouping: grouping == .none ? .none : grouping == .runtime ? .runtime : .project, sort: sort == .updated ? .updated : .created, oldestFirst: oldestFirst, runtimeId: runtimeID, project: value, collapsed: collapsed)
     }
     mutating func restore(_ value: BindingConversationBrowserPreferences) {
         grouping = value.grouping == .none ? .none : value.grouping == .runtime ? .runtime : .project
         sort = value.sort == .updated ? .updated : .created
         oldestFirst = value.oldestFirst; runtimeID = value.runtimeId
         switch value.project { case .all: project = .all; case .unspecified: project = .unspecified; case .path(let path): project = .path(path) }
-        resetPagination()
+        collapsed = value.collapsed
     }
     var hasFilters: Bool { runtimeID != nil || project != .all }
+    func isCollapsed(_ key: BindingConversationGroupKey) -> Bool { collapsed.contains(key) }
+    mutating func setCollapsed(_ key: BindingConversationGroupKey, _ value: Bool) {
+        if value { if !collapsed.contains(key) { collapsed.append(key) } } else { collapsed.removeAll { $0 == key } }
+    }
 
-    func sections(conversations: [Conversation], runtimes: [RuntimeInstance]) -> [Section] {
-        let enabled = Dictionary(uniqueKeysWithValues: runtimes.filter(\.enabled).map { ($0.id, $0.name) })
-        let filtered = conversations.filter { conversation in
-            guard enabled[conversation.runtimeID] != nil,
-                  runtimeID == nil || conversation.runtimeID == runtimeID else { return false }
-            switch project {
-            case .all: break
-            case .unspecified: if conversation.cwd != nil { return false }
-            case .path(let path): if conversation.cwd != path { return false }
-            }
-            return search.isEmpty || conversation.title.localizedCaseInsensitiveContains(search)
-                || conversation.cwd?.localizedCaseInsensitiveContains(search) == true
-                || enabled[conversation.runtimeID]?.localizedCaseInsensitiveContains(search) == true
-        }.sorted { lhs, rhs in
-            let left = sort.timestamp(lhs), right = sort.timestamp(rhs)
-            if left != right {
-                guard let left else { return false } // Unknown native dates stay last in either order.
-                guard let right else { return true }
-                return oldestFirst ? left < right : left > right
-            }
-            let titles = lhs.title.localizedStandardCompare(rhs.title)
-            return titles == .orderedSame ? lhs.id < rhs.id : titles == .orderedAscending
-        }
-        let grouped = Dictionary(grouping: filtered) { conversation in
-            switch grouping {
-            case .none: SectionID.all
-            case .runtime: SectionID.runtime(conversation.runtimeID)
-            case .project: SectionID.project(conversation.cwd)
-            }
-        }
-        return grouped.map { key, rows in
-            let title: String
-            switch key {
-            case .all: title = "会话"
-            case .runtime(let id): title = enabled[id] ?? "Agent 运行时"
-            case .project(let path): title = path ?? "未指定项目"
-            }
-            return Section(id: key, title: title, conversations: Array(rows.prefix(max(1, initialLimit) * (1 + additionalPages[key, default: 0]))), totalCount: rows.count)
-        }.sorted { lhs, rhs in
-            if lhs.id == .project(nil) { return false }
-            if rhs.id == .project(nil) { return true }
-            let titles = lhs.title.localizedStandardCompare(rhs.title)
-            if titles != .orderedSame { return titles == .orderedAscending }
-            return lhs.conversations.first!.id < rhs.conversations.first!.id
-        }
+    /// The core's groups in its order, each with the rows it loaded.
+    static func sections(conversations: [Conversation], groups: [BindingConversationGroup]) -> [Section] {
+        let rows = Dictionary(grouping: conversations.filter { $0.group != nil }) { $0.group! }
+        return groups.map { Section(group: $0, conversations: rows[$0.key] ?? []) }
+    }
+
+    /// A project's name in the list: the user's alias, else its folder's
+    /// name, with the enclosing folder when another project shares the name.
+    static func projectName(_ path: String, projects: [BindingConversationProject]) -> String {
+        if let alias = projects.first(where: { $0.path == path })?.alias { return alias }
+        let url = URL(fileURLWithPath: path)
+        let name = url.lastPathComponent
+        let shared = projects.contains { $0.path != path && $0.alias == nil && URL(fileURLWithPath: $0.path).lastPathComponent == name }
+        return shared ? "\(name)（\(url.deletingLastPathComponent().lastPathComponent)）" : name
+    }
+}
+
+/// Velune's link to a conversation: `velune://conversation?runtime=…&id=…`.
+enum ConversationLink {
+    static let scheme = "velune"
+    static func url(runtimeID: String, conversationID: String) -> URL {
+        var components = URLComponents()
+        components.scheme = scheme; components.host = "conversation"
+        components.queryItems = [URLQueryItem(name: "runtime", value: runtimeID), URLQueryItem(name: "id", value: conversationID)]
+        return components.url!
+    }
+    /// The conversation a link names; nil for any other URL.
+    static func conversation(in url: URL) -> (runtimeID: String, conversationID: String)? {
+        guard url.scheme == scheme, url.host == "conversation",
+              let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems,
+              let runtime = items.first(where: { $0.name == "runtime" })?.value, !runtime.isEmpty,
+              let id = items.first(where: { $0.name == "id" })?.value, !id.isEmpty else { return nil }
+        return (runtime, id)
     }
 }

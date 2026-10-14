@@ -109,7 +109,12 @@ pub struct CoreRuntime {
     gateways: Vec<GatewayConfig>,
     model_templates: Vec<crate::config::ModelTemplate>,
     conversation_links: Vec<crate::config::ConversationLink>,
-    conversation_browser_group_limit: u32,
+    conversation_browser_limits: crate::api::ConversationBrowserLimits,
+    organization: crate::config::ConversationOrganization,
+    browser_window: organization::BrowserWindow,
+    /// The latest listing's conversations by public identity, for organizing
+    /// what the list showed.
+    last_listed: std::cell::RefCell<BTreeMap<String, organization::ListedSource>>,
     outline_presentation: crate::config::OutlinePresentation,
     status_line: Vec<crate::config::StatusLineItem>,
     composer_drafts: BTreeMap<String, String>,
@@ -142,6 +147,7 @@ mod execution;
 mod live;
 mod model_selection;
 mod native_composition;
+mod organization;
 mod pi_composition;
 mod provider_management;
 mod resource_library;
@@ -149,6 +155,7 @@ mod runtime_execution;
 mod runtime_management;
 mod session;
 mod working_changes;
+pub(crate) use organization::unix_ms_now;
 use pi_composition::*;
 
 impl CoreRuntime {
@@ -160,6 +167,7 @@ impl CoreRuntime {
         let (repository, persisted) = crate::repository::Repository::open(&options.home_directory)?;
         let conversation_links = repository.load_conversation_links()?;
         let composer_drafts = repository.load_composer_drafts()?;
+        let organization = repository.load_conversation_organization()?;
         let (resource_templates, resource_bindings) = repository.load_resource_library()?;
         Ok(Self {
             options,
@@ -172,7 +180,13 @@ impl CoreRuntime {
             gateways: persisted.gateways,
             model_templates: persisted.model_templates,
             conversation_links,
-            conversation_browser_group_limit: persisted.conversation_browser_group_limit,
+            conversation_browser_limits: crate::api::ConversationBrowserLimits {
+                page: persisted.conversation_browser_group_limit,
+                total: persisted.conversation_browser_total_limit,
+            },
+            organization,
+            browser_window: Default::default(),
+            last_listed: Default::default(),
             outline_presentation: persisted.outline_presentation,
             status_line: crate::config::canonical_status_line(persisted.status_line),
             composer_drafts,
@@ -406,6 +420,8 @@ impl CoreRuntime {
                 action,
                 "authentication"
                     | "list"
+                    | "searchConversations"
+                    | "findConversation"
                     | "getSnapshot"
                     | "getSnapshotUpdate"
                     | "messagePayloads"
@@ -420,7 +436,12 @@ impl CoreRuntime {
             "statusLine" => self.set_status_line(request),
             "composerDrafts" => self.composer_drafts_action(request),
             "conversationBrowserPreferences" => self.set_conversation_browser_preferences(request),
-            "conversationBrowserSettings" => self.set_conversation_browser_group_limit(request),
+            "conversationBrowserSettings" => self.set_conversation_browser_limits(request),
+            "conversationBrowserWindow" => self.browser_window_action(request),
+            "conversationOrganization" => self.organization_action(request),
+            "projectAlias" => self.project_alias_action(request),
+            "searchConversations" => self.search_conversations(request),
+            "findConversation" => self.find_conversation(request),
             "discoverRuntimes" => self.discover_runtimes(request),
             "providerImport" => self.provider_import_action(request),
             "providers" => self.provider_action(&request["payload"]),

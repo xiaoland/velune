@@ -390,7 +390,7 @@ impl VeluneApplication {
     pub fn set_conversation_browser_preferences(
         &self,
         preferences: BindingConversationBrowserPreferences,
-    ) -> Result<BindingConversationBrowserPreferences, BindingError> {
+    ) -> Result<BindingConfigurationSnapshot, BindingError> {
         let preferences = convert(preferences)?;
         convert(self.with("set_conversation_browser_preferences", |app| {
             app.set_conversation_browser_preferences(preferences)
@@ -408,10 +408,69 @@ impl VeluneApplication {
             app.set_composer_draft(conversation_id, text)
         })
     }
-    pub fn set_conversation_browser_group_limit(&self, limit: u32) -> Result<u32, BindingError> {
-        self.with("set_conversation_browser_group_limit", |app| {
-            app.set_conversation_browser_group_limit(limit)
-        })
+    pub fn set_conversation_browser_limits(
+        &self,
+        limits: BindingConversationBrowserLimits,
+    ) -> Result<BindingConversationBrowserLimits, BindingError> {
+        let limits = convert(limits)?;
+        convert(self.with("set_conversation_browser_limits", |app| {
+            app.set_conversation_browser_limits(limits)
+        })?)
+    }
+    /// Changes Velune's organization of the conversations; the runtime's own
+    /// archive is used where it has one.
+    pub fn organize_conversations(
+        &self,
+        conversations: Vec<BindingConversationReference>,
+        change: BindingConversationOrganizationChange,
+    ) -> Result<BindingConfigurationSnapshot, BindingError> {
+        let conversations = convert(conversations)?;
+        let change = convert(change)?;
+        convert(self.with("organize_conversations", |app| {
+            app.organize_conversations(conversations, change)
+        })?)
+    }
+    /// Names a project in the list; none removes the name.
+    pub fn set_project_alias(
+        &self,
+        path: String,
+        alias: Option<String>,
+    ) -> Result<BindingConfigurationSnapshot, BindingError> {
+        convert(self.with("set_project_alias", |app| {
+            app.set_project_alias(path, alias)
+        })?)
+    }
+    pub fn load_more_conversations(
+        &self,
+        group: BindingConversationGroupKey,
+    ) -> Result<BindingConfigurationSnapshot, BindingError> {
+        let group = convert(group)?;
+        convert(self.with("load_more_conversations", |app| {
+            app.load_more_conversations(group)
+        })?)
+    }
+    pub fn show_archived_conversations(
+        &self,
+        archived: bool,
+    ) -> Result<BindingConfigurationSnapshot, BindingError> {
+        convert(self.with("show_archived_conversations", |app| {
+            app.show_archived_conversations(archived)
+        })?)
+    }
+    pub fn search_conversations(
+        &self,
+        text: String,
+    ) -> Result<BindingConversationSearch, BindingError> {
+        convert(self.with("search_conversations", |app| app.search_conversations(text))?)
+    }
+    /// One conversation by identity, whether or not the list shows it.
+    pub fn find_conversation(
+        &self,
+        conversation_id: String,
+    ) -> Result<Option<BindingListedConversation>, BindingError> {
+        convert(self.with("find_conversation", |app| {
+            app.find_conversation(conversation_id)
+        })?)
     }
 
     pub fn save_provider(
