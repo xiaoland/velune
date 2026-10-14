@@ -40,3 +40,5 @@
 实施：模型为沿用父会话、原生 model ID（写入定义；托管轮次加该轮网关别名，指向唯一同 ID 的 Velune 模型）或 Velune 模型（不写入原生定义，启用记录无条目仍算启用；只在托管轮次由 `turn_subagents` 注入：Codex 在 lane 投影写 role 并以会话配置引用，Claude Code 用 `--agents`）。
 
 验证：子 Agent 定义脚本 6 项 PASS（原生 ID 子 Agent 在 Codex 托管轮次经别名到 Messages 提供商、Claude Code 到同协议；Velune 模型子 Agent 在两者都到 Responses 提供商，均带指令与级别，Claude Code 带技能正文；Velune 模型子 Agent 始终未写入定义目录）；资源库脚本新增保存拒绝、启用状态与两种模型互相切换时的写入／删除检查，全部 PASS；9 项回归通过。原生轮次未实际运行（需要运行时自己的提供商）；“原生轮次看不到”由不写入文件、注入只在网关路径两点保证。资源库窗口未截图。
+
+安装：`9869b16` 安装至 `/Applications/Velune.app`（0.1 beta.1），codesign 严格校验通过，manifest 为该提交且 dirty false，后台启动无崩溃报告。等待用户验收。
