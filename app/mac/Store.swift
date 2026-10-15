@@ -240,6 +240,11 @@ final class AppStore: ObservableObject {
     /// The core validates the selection again; an unread catalog does not block sending.
     var canSend: Bool { !executionStarting && !authenticationRunning && !isLoading && !isGenerating && !isShuttingDown && (snapshot?.actions.canSend ?? false) && nextTurnModel != nil }
     var canCancel: Bool { snapshot?.actions.canCancel ?? false }
+    var followUp: FollowUp { snapshot?.followUp ?? FollowUp() }
+    /// While a turn runs, a sent message waits in the conversation's queue.
+    var canQueue: Bool { !isPreview && isGenerating && !isLoading && !isShuttingDown && !authenticationRunning && nextTurnModel != nil && loadedConversationID != nil && snapshot?.conversation.parentConversationID == nil }
+    /// Asking to continue sends this, as the user's own message.
+    static let continueText = "继续"
     var canSwitchModel: Bool { nextTurnRuntimeID != nil && !isShuttingDown }
     var modelCatalog: RuntimeModelCatalog? { nextTurnRuntimeID.flatMap { modelCatalogs[$0] } }
     var needsModelSelection: Bool {
@@ -459,7 +464,8 @@ final class AppStore: ObservableObject {
         }
     }
     /// Begin reading. Once the list is read, a workspace opens `conversationID`,
-    /// else the list's first conversation, or with `newConversation` an unsent one.
+    /// else the list's first conversation, or an unsent one when asked for
+    /// (`newConversation`) or when the list is empty.
     func start(loadFirstConversation: Bool = true, newConversation: Bool = false, opening conversationID: String? = nil) {
         guard !started else { return }; started = true
         sharedApplication?.start(loadFirstConversation: false)
@@ -472,7 +478,8 @@ final class AppStore: ObservableObject {
             schedulePolling()
             if let conversationID { openLinkedConversation(id: conversationID) }
             else if loadFirstConversation, let id = sidebarConversations.first?.id { selectConversation(id: id) }
-            else if newConversation, snapshot == nil, pendingConversationID == nil { createConversation() }
+            // With nothing to show yet, a window starts an unsent conversation.
+            else if newConversation || loadFirstConversation, snapshot == nil, pendingConversationID == nil { createConversation() }
         }
     }
     func refreshConversations() {
@@ -992,6 +999,29 @@ final class AppStore: ObservableObject {
         guard let transport else { recordProblem("本地核心未配置"); return }
         enqueue({ try transport.cancel(runtimeID: runtimeID, conversationID: conversationID) }) { [weak self] in self?.applySnapshotResult($0) }
     }
+    /// Queue a message after the running turn, with the next-turn choices as
+    /// they are now. `onFailure` runs when it was not queued.
+    @discardableResult
+    func queue(text: String, attachments: [String] = [], onFailure: (() -> Void)? = nil) -> Bool {
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !attachments.isEmpty else { return false }
+        guard canQueue, let target = nextTurnRuntimeID, let model = nextTurnModel, let source = snapshot?.conversation.runtimeID else { return false }
+        let turn = BindingComposedTurn(text: text, effort: nextTurnEffort.flatMap { reasoningEffortOptions.contains($0) ? $0 : nil },
+                                       permissionMode: effectivePermissionMode?.id, attachments: attachments)
+        changeQueue(.add(sourceRuntimeId: source, targetRuntimeId: target, selection: BindingMapping.bindingSelection(model), turn: turn), onFailure: onFailure)
+        return true
+    }
+    /// Continue after a turn that stopped or failed: a real message, not a replay.
+    func continueTurn() { send(text: Self.continueText) }
+    func editQueued(_ id: String, text: String) { changeQueue(.edit(id: id, text: text)) }
+    func removeQueued(_ id: String) { changeQueue(.remove(id: id)) }
+    func moveQueued(_ id: String, to index: Int) { changeQueue(.move(id: id, index: UInt32(max(index, 0)))) }
+    func resumeQueue() { changeQueue(.resume) }
+    private func changeQueue(_ operation: BindingSendQueueOperation, onFailure: (() -> Void)? = nil) {
+        guard !isPreview else { return }
+        guard let runtimeID = projectionRuntimeID, let conversationID = loadedConversationID else { recordProblem("请选择会话"); onFailure?(); return }
+        guard let transport else { recordProblem("本地核心未配置"); onFailure?(); return }
+        enqueue({ try transport.sendQueue(runtimeID: runtimeID, conversationID: conversationID, operation: operation) }, onFailure: { _ in onFailure?() }) { [weak self] in self?.applySnapshotResult($0) }
+    }
     func saveProvider(_ value: AIProvider, authenticationEdit: AuthenticationEdit, onSaved: (() -> Void)? = nil) {
         guard !authenticationRunning, !isGenerating else { recordProblem("请先停止当前任务或完成登录"); return }
         if isPreview { var saved = value; if saved.id.isEmpty { saved.id = UUID().uuidString }; for index in saved.models.indices where saved.models[index].recordKey.isEmpty { saved.models[index].recordKey = UUID().uuidString }; gateway.providers.removeAll { $0.id == saved.id }; gateway.providers.append(saved); hasGateway = true; onSaved?(); return }
@@ -1425,7 +1455,8 @@ final class AppStore: ObservableObject {
     private func reconcileNextTurnIntent() {
         if !hasInitializedNextTurnIntent {
             nextTurnRuntimeID = enabledRuntimeInstances.first(where: { $0.id == nextTurnRuntimeID })?.id ?? enabledRuntimeInstances.first?.id
-            hasInitializedNextTurnIntent = true
+            // A workspace can see the configuration before it has loaded; it chooses once there is a runtime.
+            hasInitializedNextTurnIntent = nextTurnRuntimeID != nil
         } else if let nextTurnRuntimeID, !enabledRuntimeInstances.contains(where: { $0.id == nextTurnRuntimeID }) {
             self.nextTurnRuntimeID = nil; nextTurnModel = nil
         }

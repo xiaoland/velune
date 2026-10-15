@@ -78,6 +78,40 @@ pub struct ConversationActions {
     pub can_switch: bool,
 }
 
+/// What follows the conversation's turns, as Velune keeps it: messages
+/// waiting for the running turn to end, and what the user may do next.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct FollowUp {
+    /// Sent one by one, in order, each as its own turn once the turn before
+    /// it ends normally.
+    pub queue: Vec<QueuedMessage>,
+    /// Why the queue waits for the user although no turn runs.
+    pub paused: Option<QueuePause>,
+    /// The runtime takes a message into the running turn.
+    pub can_steer: bool,
+    /// The last turn stopped or failed; the user may ask to continue.
+    pub can_continue: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct QueuedMessage {
+    pub id: String,
+    pub text: String,
+    /// Absolute paths, as the composer attached them.
+    pub attachments: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum QueuePause {
+    TurnStopped,
+    TurnFailed,
+    /// The queue's first message was not accepted; it is still first.
+    SendFailed,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Message {
     /// Content is no longer streaming; completion does not imply execution success.
@@ -276,6 +310,9 @@ pub struct ConversationSnapshot {
     #[serde(default)]
     pub pending_interactions: Vec<RuntimeInteraction>,
     pub actions: ConversationActions,
+    /// Velune's decoration; adapters leave it empty.
+    #[serde(default)]
+    pub follow_up: FollowUp,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

@@ -18,6 +18,7 @@ impl CoreRuntime {
             return Err(RuntimeError::invalid("runtime is busy"));
         }
         self.session.cancel_requested = false;
+        self.follow_started_turn();
         let source_runtime_id = request["payload"]["sourceRuntimeID"]
             .as_str()
             .ok_or_else(|| RuntimeError::invalid("source runtime instance id"))?;

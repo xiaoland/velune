@@ -180,6 +180,65 @@ pub struct BindingConversationSnapshot {
     #[serde(default)]
     pub pending_interactions: Vec<BindingRuntimeInteraction>,
     pub actions: BindingConversationActions,
+    pub follow_up: BindingFollowUp,
+}
+
+/// Messages waiting for the running turn to end, and what the user may do next.
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BindingFollowUp {
+    /// Sent one by one, in order, each as its own turn.
+    pub queue: Vec<BindingQueuedMessage>,
+    /// Why the queue waits for the user although no turn runs.
+    pub paused: Option<BindingQueuePause>,
+    /// The runtime takes a message into the running turn.
+    pub can_steer: bool,
+    /// The last turn stopped or failed; the user may ask to continue.
+    pub can_continue: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BindingQueuedMessage {
+    pub id: String,
+    pub text: String,
+    pub attachments: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, uniffi::Enum)]
+#[serde(rename_all = "camelCase")]
+pub enum BindingQueuePause {
+    TurnStopped,
+    TurnFailed,
+    /// The first queued message was not accepted; it is still first.
+    SendFailed,
+}
+
+/// How the composer changes a conversation's send queue.
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Enum)]
+#[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
+pub enum BindingSendQueueOperation {
+    #[serde(rename_all = "camelCase")]
+    Add {
+        source_runtime_id: String,
+        target_runtime_id: String,
+        selection: BindingModelSelection,
+        turn: BindingComposedTurn,
+    },
+    Edit {
+        id: String,
+        text: String,
+    },
+    Remove {
+        id: String,
+    },
+    /// Move to `index` in the queue as it is without the message.
+    Move {
+        id: String,
+        index: u32,
+    },
+    /// Send again after a pause, once no turn runs.
+    Resume,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]

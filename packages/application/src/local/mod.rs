@@ -151,6 +151,8 @@ mod continuation;
 mod conversations;
 mod delivery;
 mod execution;
+mod follow_up;
+pub use follow_up::SendQueueOperation;
 mod live;
 mod model_selection;
 mod native_composition;
@@ -255,6 +257,7 @@ impl CoreRuntime {
         snapshot.transcript_outline = self.session.transcript_projection.outline();
         snapshot.transcript_message_identities =
             self.session.transcript_projection.message_identities();
+        snapshot.follow_up = self.follow_up(&snapshot);
         Some(snapshot)
     }
     fn snapshot_result(&mut self) -> Result<Value, RuntimeError> {
@@ -311,12 +314,17 @@ impl CoreRuntime {
             }
             ActiveState::Empty | ActiveState::History(_) => Ok(()),
         };
-        if was_busy && (!self.busy() || result.is_err()) {
-            self.record_finished_turn(result.is_err());
-        }
+        let outcome = if was_busy && (!self.busy() || result.is_err()) {
+            self.record_finished_turn(result.is_err())
+        } else {
+            None
+        };
         if self.session.gateway_runner.is_some() && ((was_busy && !self.busy()) || result.is_err())
         {
             self.finish_managed_turn()?;
+        }
+        if let Some(outcome) = outcome {
+            self.follow_finished_turn(outcome);
         }
         result
     }
@@ -393,7 +401,8 @@ impl CoreRuntime {
                 | "getSnapshot"
                 | "getSnapshotUpdate"
                 | "acpSessionConfig"
-                | "setAcpSessionConfig",
+                | "setAcpSessionConfig"
+                | "sendQueue",
                 Some(id),
             ) => self.focus_conversation(id),
             ("readConversation", Some(id)) => {
@@ -549,6 +558,7 @@ impl CoreRuntime {
                 )?)
             }
             "sendTurn" => self.send_turn_action(request),
+            "sendQueue" => self.send_queue_action(request),
             "cancel" => self.cancel_action(request),
             "replyRuntimeInteraction" => self.reply_runtime_interaction(request),
             "authentication" => self.authentication_action(&request["payload"]),

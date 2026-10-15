@@ -394,6 +394,7 @@ struct ComposerView: View {
             if store.pendingConversationID == nil, let status = store.conversationManagementStatus {
                 HStack { ProgressView().controlSize(.small); Text(status) }.font(.callout).foregroundStyle(.secondary)
             }
+            if !store.followUp.queue.isEmpty || store.followUp.paused != nil { SendQueueView(store: store) }
             if !model.attachments.isEmpty { attachmentRow }
             ComposerEditor(model: model, placeholder: "输入消息，⌘Return 发送", submit: send)
                 .frame(height: model.height)
@@ -476,7 +477,12 @@ struct ComposerView: View {
     @ViewBuilder private var sendButton: some View {
         if store.isGenerating {
             Button("停止", action: store.cancel).disabled(!store.canCancel).help("停止当前生成")
+            Button("排队", action: send).buttonStyle(.borderedProminent)
+                .disabled(!store.canQueue || (model.isEmpty && model.attachments.isEmpty)).help("本轮结束后发送（⌘ Return）")
         } else {
+            if store.followUp.canContinue && model.isEmpty && model.attachments.isEmpty {
+                Button("继续", action: store.continueTurn).disabled(!store.canSend).help("发送“\(AppStore.continueText)”，让运行时接着上一轮继续")
+            }
             Button("发送", action: send).buttonStyle(.borderedProminent)
                 .disabled(!store.canSend || (model.isEmpty && model.attachments.isEmpty)).help("发送消息（⌘ Return）")
         }

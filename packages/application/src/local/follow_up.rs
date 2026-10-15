@@ -1,0 +1,201 @@
+//! What follows a conversation's turns: Velune's send queue, and whether the
+//! user may continue after a turn that stopped or failed.
+//!
+//! The queue belongs to the conversation's session, so every window showing
+//! the conversation shows the same one. It lives while the application runs.
+use super::*;
+use crate::conversation::{FollowUp, QueuePause, QueuedMessage};
+use std::collections::VecDeque;
+
+/// One message waiting for the running turn: the send request it becomes.
+struct QueuedTurn {
+    id: String,
+    payload: Value,
+}
+
+impl QueuedTurn {
+    fn public(&self) -> QueuedMessage {
+        QueuedMessage {
+            id: self.id.clone(),
+            text: self.payload["text"].as_str().unwrap_or_default().into(),
+            attachments: serde_json::from_value(self.payload["attachments"].clone())
+                .unwrap_or_default(),
+        }
+    }
+}
+
+#[derive(Default)]
+pub(super) struct SendQueue {
+    turns: VecDeque<QueuedTurn>,
+    paused: Option<QueuePause>,
+    /// The session's last turn stopped or failed.
+    interrupted: bool,
+}
+
+impl SendQueue {
+    pub(super) fn is_empty(&self) -> bool {
+        self.turns.is_empty()
+    }
+
+    fn position(&self, id: &str) -> Result<usize, RuntimeError> {
+        self.turns
+            .iter()
+            .position(|turn| turn.id == id)
+            .ok_or_else(|| RuntimeError::invalid("此排队消息已经发出或删除"))
+    }
+}
+
+/// How the composer changes the queue.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
+pub enum SendQueueOperation {
+    /// Queue a turn as `send_turn_with_selection` would send it.
+    #[serde(rename_all = "camelCase")]
+    Add {
+        source_runtime_id: String,
+        target_runtime_id: String,
+        selection: crate::ModelSelection,
+        turn: crate::ComposedTurn,
+    },
+    Edit {
+        id: String,
+        text: String,
+    },
+    Remove {
+        id: String,
+    },
+    /// Move to `index` in the queue as it is after removing the message.
+    Move {
+        id: String,
+        index: u32,
+    },
+    /// Send again after a pause, once no turn runs.
+    Resume,
+}
+
+impl CoreRuntime {
+    pub(super) fn send_queue_action(&mut self, request: &Value) -> Result<Value, RuntimeError> {
+        let conversation_id = request["payload"]["conversationID"]
+            .as_str()
+            .ok_or_else(|| RuntimeError::invalid("conversation id"))?;
+        let operation: SendQueueOperation =
+            serde_json::from_value(request["payload"]["operation"].clone())?;
+        let queue = &mut self.session.send_queue;
+        match operation {
+            SendQueueOperation::Add {
+                source_runtime_id,
+                target_runtime_id,
+                selection,
+                turn,
+            } => {
+                if turn.text.trim().is_empty() && turn.attachments.is_empty() {
+                    return Err(RuntimeError::invalid("message text"));
+                }
+                static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+                let id = format!(
+                    "queued-{}",
+                    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                );
+                queue.turns.push_back(QueuedTurn {
+                    id,
+                    payload: json!({
+                        "sourceRuntimeID": source_runtime_id,
+                        "conversationID": conversation_id,
+                        "runtimeInstanceID": target_runtime_id,
+                        "modelSelection": selection,
+                        "text": turn.text,
+                        "effort": turn.effort,
+                        "permissionMode": turn.permission_mode,
+                        "attachments": turn.attachments,
+                    }),
+                });
+            }
+            SendQueueOperation::Edit { id, text } => {
+                let index = queue.position(&id)?;
+                let turn = &mut queue.turns[index];
+                if text.trim().is_empty() && turn.public().attachments.is_empty() {
+                    return Err(RuntimeError::invalid("message text"));
+                }
+                turn.payload["text"] = Value::String(text);
+            }
+            SendQueueOperation::Remove { id } => {
+                let index = queue.position(&id)?;
+                queue.turns.remove(index);
+                if queue.turns.is_empty() {
+                    queue.paused = None;
+                }
+            }
+            SendQueueOperation::Move { id, index } => {
+                let from = queue.position(&id)?;
+                let turn = queue.turns.remove(from).expect("queued turn");
+                let to = (index as usize).min(queue.turns.len());
+                queue.turns.insert(to, turn);
+            }
+            SendQueueOperation::Resume => queue.paused = None,
+        }
+        // A queue added to or resumed while nothing runs starts at once.
+        if !self.busy() && self.session.send_queue.paused.is_none() {
+            self.send_next_queued();
+        }
+        self.snapshot_result()
+    }
+
+    /// The addressed session's turn ended with `outcome`: the queue goes on
+    /// after a normal end and waits for the user otherwise.
+    pub(super) fn follow_finished_turn(&mut self, outcome: crate::TurnOutcome) {
+        let queue = &mut self.session.send_queue;
+        let pause = match outcome {
+            crate::TurnOutcome::Completed => None,
+            crate::TurnOutcome::Cancelled => Some(QueuePause::TurnStopped),
+            crate::TurnOutcome::Failed => Some(QueuePause::TurnFailed),
+        };
+        queue.interrupted = pause.is_some();
+        if queue.turns.is_empty() {
+            return;
+        }
+        if pause.is_some() {
+            queue.paused = pause;
+        } else if queue.paused.is_none() {
+            self.send_next_queued();
+        }
+    }
+
+    /// A turn starts in the addressed session.
+    pub(super) fn follow_started_turn(&mut self) {
+        self.session.send_queue.interrupted = false;
+    }
+
+    /// Send the first queued message as its own turn. One that is not
+    /// accepted stays first and the queue waits; it is never resent unasked.
+    fn send_next_queued(&mut self) {
+        let Some(turn) = self.session.send_queue.turns.pop_front() else {
+            return;
+        };
+        let request =
+            json!({"version": CONTRACT_VERSION, "action": "sendTurn", "payload": turn.payload});
+        if let Err(error) = self.send_turn_action(&request) {
+            tracing::warn!(target: "velune_application", event = "queued_turn_not_sent", detail = %error);
+            let queue = &mut self.session.send_queue;
+            queue.turns.push_front(turn);
+            queue.paused = Some(QueuePause::SendFailed);
+        }
+    }
+
+    /// The follow-up the addressed session presents with `snapshot`.
+    pub(super) fn follow_up(
+        &self,
+        snapshot: &crate::conversation::ConversationSnapshot,
+    ) -> FollowUp {
+        let queue = &self.session.send_queue;
+        let idle = !self.busy();
+        FollowUp {
+            queue: queue.turns.iter().map(QueuedTurn::public).collect(),
+            paused: queue.paused.clone(),
+            can_steer: false,
+            can_continue: idle
+                && snapshot.pending_interactions.is_empty()
+                && snapshot.actions.can_send
+                && (queue.interrupted || snapshot.run_state == RunState::Failed),
+        }
+    }
+}

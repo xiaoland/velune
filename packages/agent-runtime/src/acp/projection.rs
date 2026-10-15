@@ -355,6 +355,7 @@ impl Client {
             transcript_message_identities: Vec::new(),
             message_identity_confirmations: Vec::new(),
             pending_interactions: Vec::new(),
+            follow_up: Default::default(),
             actions: ConversationActions {
                 can_send: true,
                 can_cancel: false,

@@ -37,6 +37,7 @@ pub(super) struct Session {
     pub(super) last_execution: Option<std::time::Instant>,
     /// The user asked to stop the current turn.
     pub(super) cancel_requested: bool,
+    pub(super) send_queue: follow_up::SendQueue,
 }
 
 impl Session {
@@ -49,10 +50,11 @@ impl Session {
         }
     }
 
-    /// Must stay open: closing it would end work or drop a request the user
-    /// has not answered.
+    /// Must stay open: closing it would end work, drop a request the user
+    /// has not answered or drop queued messages.
     pub(super) fn pinned(&self) -> bool {
         self.busy()
+            || !self.send_queue.is_empty()
             || self
                 .projected()
                 .is_some_and(|snapshot| !snapshot.pending_interactions.is_empty())
@@ -251,10 +253,8 @@ impl CoreRuntime {
     }
 
     /// Record how the addressed session's turn ended.
-    pub(super) fn record_finished_turn(&mut self, failed: bool) {
-        let Some(view) = self.session.projected() else {
-            return;
-        };
+    pub(super) fn record_finished_turn(&mut self, failed: bool) -> Option<crate::TurnOutcome> {
+        let view = self.session.projected()?;
         let outcome = if self.session.cancel_requested {
             crate::TurnOutcome::Cancelled
         } else if failed
@@ -283,6 +283,7 @@ impl CoreRuntime {
             finished.turns.pop_front();
         }
         self.session.cancel_requested = false;
+        Some(outcome)
     }
 
     pub(super) fn conversation_activity(&mut self, since: u64) -> crate::ConversationActivity {

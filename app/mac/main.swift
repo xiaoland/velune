@@ -144,6 +144,7 @@ struct ConversationWindow: View {
                 // Development check of split panes without driving the interface.
                 if CommandLine.arguments.contains("--check-split-panes"), !window.isSplit { window.split(.horizontal); window.openInNewTab(); window.split(.vertical) }
                 if CommandLine.arguments.contains("--check-tool-windows") { window.tools.move(.list, to: .floating); window.tools.move(.outline, to: .window); window.tools.move(.composer, to: .floating) }
+                if CommandLine.arguments.contains("--check-send-queue") { window.focused.checkSendQueue() }
                 if CommandLine.arguments.contains("--check-dock-areas") { window.tools.move(.outline, to: .docked(.left)); window.tools.move(.list, to: .docked(.right)); window.tools.move(.composer, to: .docked(.bottom)) }
             }
             .onChange(of: window.savedLayout) { _, layout in

@@ -118,6 +118,7 @@ pub struct DeliveredSnapshot {
     pub message_identity_confirmations: Vec<MessageIdentityConfirmation>,
     pub pending_interactions: Vec<RuntimeInteraction>,
     pub actions: ConversationActions,
+    pub follow_up: velune_conversation::FollowUp,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -164,6 +164,7 @@ impl View {
             message_identity_confirmations: header.message_identity_confirmations.clone(),
             pending_interactions: header.pending_interactions.clone(),
             actions: header.actions.clone(),
+            follow_up: header.follow_up.clone(),
         }
     }
 }

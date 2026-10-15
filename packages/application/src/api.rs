@@ -1291,6 +1291,20 @@ impl Application {
             Some(&runtime_id),
         )
     }
+    /// Change the conversation's send queue. A queue that is added to or
+    /// resumed while no turn runs sends its first message at once.
+    pub fn send_queue(
+        &mut self,
+        runtime_id: String,
+        conversation_id: String,
+        operation: crate::SendQueueOperation,
+    ) -> Result<SnapshotResult, Error> {
+        self.execute(
+            "sendQueue",
+            json!({"conversationID":conversation_id,"operation":operation}),
+            Some(&runtime_id),
+        )
+    }
     pub fn cancel(
         &mut self,
         runtime_id: String,

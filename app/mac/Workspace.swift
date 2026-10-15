@@ -37,7 +37,17 @@ import SwiftUI
         let submitted = composer.submission
         let attachments = composer.attachments
         let text = submitted.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard store.canSend, !text.isEmpty || !attachments.isEmpty, !composer.isComposing else { return }
+        guard !text.isEmpty || !attachments.isEmpty, !composer.isComposing else { return }
+        // While a turn runs the message waits in the queue above the composer.
+        if store.canQueue {
+            let conversationID = store.loadedConversationID
+            guard store.queue(text: text, attachments: attachments.map(\.path), onFailure: { [composer] in
+                composer.restore(submitted, attachments: attachments)
+            }) else { return }
+            composer.clear(submitted: submitted, attachments: attachments, conversationID: conversationID)
+            return
+        }
+        guard store.canSend else { return }
         // The message moves to the transcript at once; a turn that is not
         // sent hands its text and attachments back to the composer.
         let conversationID = store.loadedConversationID
@@ -46,6 +56,20 @@ import SwiftUI
         })
         guard sent else { return }
         composer.clear(submitted: submitted, attachments: attachments, conversationID: conversationID); scrollRequest &+= 1
+    }
+
+    /// Development check of the send queue without driving the interface:
+    /// send a turn, then queue messages while it runs.
+    func checkSendQueue(step: Int = 0, attempts: Int = 0) {
+        guard attempts < 120 else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [self] in
+            let texts = ["第一条排队消息", "第二条排队消息：比较长的一段文字，用来看两行截断在窄面板里是否得体，以及悬停时删除按钮的位置。", "第三条"]
+            let ready = step == 0 ? store.canSend : store.canQueue
+            guard ready, step == 0 ? store.send(text: "TURN_HOLD") : store.queue(text: texts[step - 1]) else {
+                return checkSendQueue(step: step, attempts: attempts + 1)
+            }
+            if step < texts.count { checkSendQueue(step: step + 1) }
+        }
     }
 
     func navigate(to id: String) {

@@ -51,6 +51,31 @@ struct ConversationActions: Codable, Sendable, Equatable {
     var canSwitch: Bool
 }
 
+/// Messages waiting for the running turn to end, and what the user may do next.
+struct FollowUp: Sendable, Equatable {
+    var queue: [QueuedMessage] = []
+    var paused: QueuePause?
+    var canSteer = false
+    var canContinue = false
+}
+
+struct QueuedMessage: Sendable, Equatable, Identifiable {
+    var id: String
+    var text: String
+    var attachments: [String]
+}
+
+enum QueuePause: Sendable, Equatable {
+    case turnStopped, turnFailed, sendFailed
+    var explanation: String {
+        switch self {
+        case .turnStopped: "上一轮已停止，队列暂停"
+        case .turnFailed: "上一轮失败，队列暂停"
+        case .sendFailed: "第一条未能发出，队列暂停"
+        }
+    }
+}
+
 enum MessageRole: String, Codable, Sendable { case user, assistant, tool, system }
 enum ToolState: String, Codable, Sendable { case pending, running, completed, failed }
 
@@ -191,6 +216,8 @@ struct ConversationSnapshot: Codable, Sendable, Equatable {
     var messageIdentityConfirmations: [MessageIdentityConfirmation] = []
     var pendingInteractions: [RuntimeInteraction] = []
     var actions: ConversationActions
+    /// Velune's queue and next actions; previews and drafts have none.
+    var followUp = FollowUp()
     enum CodingKeys: String, CodingKey { case revision, conversation, runState, messages, transcriptTurns, transcriptItems, transcriptOutline, transcriptMessageIdentities, messageIdentityConfirmations, pendingInteractions, actions; case modelRecordKey = "modelRecordKey", contextRuntimeID = "contextRuntimeId" }
 }
 

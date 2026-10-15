@@ -807,6 +807,20 @@ impl VeluneApplication {
         })?)
     }
 
+    /// Change the conversation's send queue; one added to or resumed while
+    /// no turn runs sends its first message at once.
+    pub fn send_queue(
+        &self,
+        runtime_id: String,
+        conversation_id: String,
+        operation: BindingSendQueueOperation,
+    ) -> Result<BindingSnapshotResult, BindingError> {
+        let operation = convert(operation)?;
+        convert(self.with("send_queue", |application| {
+            application.send_queue(runtime_id, conversation_id, operation)
+        })?)
+    }
+
     pub fn cancel(
         &self,
         runtime_id: String,
