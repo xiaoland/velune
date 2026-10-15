@@ -193,8 +193,8 @@ private struct TabContentView: View {
     }
 }
 
-/// A pane's tabs, after the system tab bar: equal widths filling the bar,
-/// titles centred, a close button on hover at the leading end and a new-tab
+/// A pane's tabs, after the system tab bar: equal widths sharing the bar
+/// (narrower, their titles shortened, as tabs are added), titles centred, a close button on hover at the leading end and a new-tab
 /// button at the trailing end. The focused pane's shown tab is marked once
 /// the window is split.
 private struct PaneTabBar: View {
@@ -203,22 +203,20 @@ private struct PaneTabBar: View {
     /// Where a tab dragged over the bar would go.
     @State private var insertion: Int?
     private static let height: CGFloat = 28
-    private static let minimumWidth: CGFloat = 110
 
     var body: some View {
         HStack(spacing: 0) {
+            // No scroll view: clicks in one go to its clip view, not to the tabs' AppKit views.
             GeometryReader { geometry in
-                let width = max(Self.minimumWidth, geometry.size.width / CGFloat(max(pane.tabs.count, 1)))
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 0) {
-                        ForEach(Array(pane.tabs.enumerated()), id: \.element.id) { index, tab in
-                            PaneTabItem(window: window, pane: pane, tab: tab, store: tab.store,
-                                        selected: tab.id == pane.selectedID, marked: window.isSplit && window.focusedPaneID == pane.id && tab.id == pane.selectedID)
-                                .frame(width: width)
-                                .overlay(alignment: .leading) { if insertion == index { insertionMark } }
-                                .overlay(alignment: .trailing) { if insertion == index + 1 && index == pane.tabs.count - 1 { insertionMark } }
-                                .onDrop(of: [.url], delegate: TabDropDelegate(window: window, pane: pane.id, index: index, width: width, insertion: $insertion))
-                        }
+                let width = geometry.size.width / CGFloat(max(pane.tabs.count, 1))
+                HStack(spacing: 0) {
+                    ForEach(Array(pane.tabs.enumerated()), id: \.element.id) { index, tab in
+                        PaneTabItem(window: window, pane: pane, tab: tab, store: tab.store,
+                                    selected: tab.id == pane.selectedID, marked: window.isSplit && window.focusedPaneID == pane.id && tab.id == pane.selectedID)
+                            .frame(width: width)
+                            .overlay(alignment: .leading) { if insertion == index { insertionMark } }
+                            .overlay(alignment: .trailing) { if insertion == index + 1 && index == pane.tabs.count - 1 { insertionMark } }
+                            .onDrop(of: [.url], delegate: TabDropDelegate(window: window, pane: pane.id, index: index, width: width, insertion: $insertion))
                     }
                 }
             }
@@ -241,7 +239,8 @@ private struct PaneTabBar: View {
 }
 
 /// One tab: a click shows it, a double click renames its conversation in
-/// place, a drag carries it, the middle button closes it.
+/// place, a drag carries it, the middle button or the close button shown on
+/// hover closes it.
 private struct PaneTabItem: View {
     @ObservedObject var window: ConversationWindowModel
     @ObservedObject var pane: Pane
@@ -256,10 +255,11 @@ private struct PaneTabItem: View {
 
     var body: some View {
         ZStack {
-            TabHandle(window: window, tab: tab, actions: TabHandle.Actions(
+            TabHandle(window: window, tab: tab, title: tab.title, actions: TabHandle.Actions(
                 select: { window.selectTab(tab.id) },
                 rename: { if canRename { renaming = tab.title } },
                 close: { window.closeTab(tab.id) },
+                hover: { hovering = $0 },
                 menu: menu))
             if let name = renaming {
                 TextField("会话名称", text: Binding(get: { name }, set: { renaming = $0 }))
@@ -278,16 +278,16 @@ private struct PaneTabItem: View {
                     .allowsHitTesting(false)
             }
             HStack(spacing: 0) {
-                leading.frame(width: 16, height: 16).padding(.leading, 6)
+                leading.frame(width: TabHandle.closeSize, height: TabHandle.closeSize).padding(.leading, TabHandle.closeInset)
                 Spacer(minLength: 0)
             }
+            // The handle takes every click, the close button's included.
+            .allowsHitTesting(false)
         }
         .frame(maxHeight: .infinity)
         .background(selected ? Color(nsColor: .windowBackgroundColor) : Color.clear)
         .overlay(alignment: .top) { if marked { Rectangle().fill(Color.accentColor).frame(height: 2) } }
         .overlay(alignment: .trailing) { Rectangle().fill(Color.primary.opacity(0.12)).frame(width: 1) }
-        .onHover { hovering = $0 }
-        .help(tab.title)
         .accessibilityElement(children: .contain)
         .accessibilityLabel(tab.title)
         .accessibilityAddTraits(selected ? .isSelected : [])
@@ -301,13 +301,13 @@ private struct PaneTabItem: View {
     /// Close on hover; otherwise what the conversation is doing.
     @ViewBuilder private var leading: some View {
         if hovering && renaming == nil {
-            Button { window.closeTab(tab.id) } label: { Image(systemName: "xmark").font(.system(size: 9, weight: .semibold)) }
-                .buttonStyle(.borderless).help("关闭标签页（⌘ W）").accessibilityLabel("关闭标签页")
+            Image(systemName: "xmark").font(.system(size: 9, weight: .semibold)).foregroundStyle(.secondary)
+                .accessibilityLabel("关闭标签页")
         } else if !store.pendingInteractions.isEmpty {
             Image(systemName: "exclamationmark.circle.fill").foregroundStyle(.orange).imageScale(.small)
-                .help("等待你的回应").accessibilityLabel("等待你的回应")
+                .accessibilityLabel("等待你的回应")
         } else if running {
-            ProgressView().controlSize(.mini).help("正在运行").accessibilityLabel("正在运行")
+            ProgressView().controlSize(.mini).accessibilityLabel("正在运行")
         }
     }
 
@@ -369,10 +369,15 @@ private struct TabHandle: NSViewRepresentable {
         let select: () -> Void
         let rename: () -> Void
         let close: () -> Void
+        let hover: (Bool) -> Void
         let menu: () -> NSMenu
     }
+    /// Where the close button shows, from the leading edge.
+    static let closeInset: CGFloat = 6
+    static let closeSize: CGFloat = 16
     let window: ConversationWindowModel
     let tab: ConversationTab
+    let title: String
     let actions: Actions
 
     func makeNSView(context: Context) -> HandleView { HandleView() }
@@ -381,6 +386,7 @@ private struct TabHandle: NSViewRepresentable {
         view.model = window
         view.tab = tab
         view.actions = actions
+        view.toolTip = title
     }
 
     final class HandleView: NSView, NSDraggingSource {
@@ -388,16 +394,48 @@ private struct TabHandle: NSViewRepresentable {
         weak var tab: ConversationTab?
         var actions: Actions?
         private var pressed: NSEvent?
+        private var pressedClose = false
+        private var hovering = false
 
         override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 
+        // SwiftUI's hover does not reach through an AppKit view; the handle tracks it.
+        override func updateTrackingAreas() {
+            super.updateTrackingAreas()
+            trackingAreas.forEach(removeTrackingArea)
+            addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeInActiveApp, .inVisibleRect], owner: self))
+        }
+
+        override func mouseEntered(with event: NSEvent) { setHovering(true) }
+        override func mouseExited(with event: NSEvent) { setHovering(false) }
+
+        private func setHovering(_ value: Bool) {
+            guard hovering != value else { return }
+            hovering = value
+            actions?.hover(value)
+        }
+
+        private var closeRect: NSRect {
+            let size = TabHandle.closeSize
+            return NSRect(x: TabHandle.closeInset, y: (bounds.height - size) / 2, width: size, height: size).insetBy(dx: -3, dy: -3)
+        }
+
         override func mouseDown(with event: NSEvent) {
+            if hovering, closeRect.contains(convert(event.locationInWindow, from: nil)) {
+                pressedClose = true
+                return
+            }
             pressed = event
             actions?.select()
             if event.clickCount == 2 { actions?.rename() }
         }
 
-        override func mouseUp(with event: NSEvent) { pressed = nil }
+        override func mouseUp(with event: NSEvent) {
+            pressed = nil
+            guard pressedClose else { return }
+            pressedClose = false
+            if closeRect.contains(convert(event.locationInWindow, from: nil)) { actions?.close() }
+        }
 
         override func otherMouseUp(with event: NSEvent) {
             if event.buttonNumber == 2, bounds.contains(convert(event.locationInWindow, from: nil)) { actions?.close() }
