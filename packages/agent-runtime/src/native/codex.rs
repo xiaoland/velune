@@ -248,17 +248,7 @@ impl NativeSession {
             .native_id
             .as_deref()
             .ok_or_else(|| Error::new("Codex 没有活动会话"))?;
-        // Codex reads attached images from their paths itself.
-        let items = (!input.text.is_empty())
-            .then(|| json!({"type":"text", "text":input.text}))
-            .into_iter()
-            .chain(
-                input
-                    .images
-                    .iter()
-                    .map(|image| json!({"type":"localImage", "path":image.path})),
-            )
-            .collect::<Vec<_>>();
+        let items = codex_input(input);
         // A permission mode is thread state: Codex keeps a turn's override for
         // later turns, so a turn without a mode sends none and keeps the
         // thread's current mode, as Claude Code does.
@@ -291,6 +281,18 @@ impl NativeSession {
             .ok_or_else(|| Error::new("Codex 未返回轮次身份"))?;
         self.turn_id = Some(turn_id.into());
         self.running();
+        Ok(())
+    }
+    /// `turn/steer` names the turn it expects to be running; Codex refuses
+    /// the message when that turn has already ended.
+    pub(super) fn codex_steer(&mut self, input: &crate::TurnInput) -> Result<()> {
+        let (Some(thread), Some(turn)) = (self.native_id.as_deref(), self.turn_id.as_deref())
+        else {
+            return Err(Error::new("Codex 没有正在运行的轮次"));
+        };
+        let params =
+            json!({"threadId": thread, "expectedTurnId": turn, "input": codex_input(input)});
+        self.rpc.request("turn/steer", &params)?;
         Ok(())
     }
     /// The configured model first, then the catalog. Codex 0.159.3 lists each
@@ -944,4 +946,19 @@ fn mcp_output(item: &Value) -> Option<String> {
     (!text.is_empty())
         .then_some(text)
         .or_else(|| item["error"]["message"].as_str().map(str::to_owned))
+}
+
+/// A user message as Codex input items; Codex reads attached images from
+/// their paths itself.
+fn codex_input(input: &crate::TurnInput) -> Vec<Value> {
+    (!input.text.is_empty())
+        .then(|| json!({"type":"text", "text":input.text}))
+        .into_iter()
+        .chain(
+            input
+                .images
+                .iter()
+                .map(|image| json!({"type":"localImage", "path":image.path})),
+        )
+        .collect()
 }

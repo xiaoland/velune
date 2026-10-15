@@ -1012,6 +1012,14 @@ final class AppStore: ObservableObject {
     }
     /// Continue after a turn that stopped or failed: a real message, not a replay.
     func continueTurn() { send(text: Self.continueText) }
+    var canSteer: Bool { canQueue && followUp.canSteer }
+    /// Into the running turn; the turn keeps its own choices.
+    func steer(text: String, attachments: [String] = [], onFailure: (() -> Void)? = nil) {
+        guard canSteer, let runtimeID = projectionRuntimeID, let conversationID = loadedConversationID, let transport else { onFailure?(); return }
+        let turn = BindingComposedTurn(text: text, effort: nil, permissionMode: nil, attachments: attachments)
+        enqueue({ try transport.steerTurn(runtimeID: runtimeID, conversationID: conversationID, turn: turn) }, onFailure: { _ in onFailure?() }) { [weak self] in self?.applySnapshotResult($0) }
+    }
+    func steerQueued(_ id: String) { changeQueue(.steer(id: id)) }
     func editQueued(_ id: String, text: String) { changeQueue(.edit(id: id, text: text)) }
     func removeQueued(_ id: String) { changeQueue(.remove(id: id)) }
     func moveQueued(_ id: String, to index: Int) { changeQueue(.move(id: id, index: UInt32(max(index, 0)))) }

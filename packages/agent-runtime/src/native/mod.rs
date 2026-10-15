@@ -151,6 +151,8 @@ pub struct NativeSession {
     /// The model and context tokens of the turn's latest reply.
     claude_context: Option<(String, u64)>,
     restart_required: bool,
+    /// Messages steered into Claude Code turns, for their local identities.
+    steer_sequence: u64,
     gateway_turn: bool,
     claude_fresh: bool,
     tunnel: Option<crate::execution::LoopbackTunnel>,
@@ -240,6 +242,7 @@ impl NativeSession {
             claude_stream_id: None,
             claude_context: None,
             restart_required: false,
+            steer_sequence: 0,
             gateway_turn: tunnel.is_some(),
             claude_fresh: false,
             tunnel,
@@ -376,6 +379,29 @@ impl NativeSession {
             self.fail_connection();
         }
         result
+    }
+    /// Whether the runtime takes a message into the running turn.
+    pub fn can_steer(&self) -> bool {
+        self.config.kind != NativeKind::DeepSeek
+            && self
+                .snapshot
+                .as_ref()
+                .is_some_and(|s| s.run_state == RunState::Running)
+    }
+    /// Deliver a user message into the running turn through the runtime's
+    /// own channel; it does not start a turn.
+    pub fn steer(&mut self, input: &crate::TurnInput) -> Result<()> {
+        if !self.can_steer() {
+            return Err(Error::new("此运行时当前不能插入消息"));
+        }
+        if input.text.trim().is_empty() && input.images.is_empty() {
+            return Err(Error::new("消息内容为空"));
+        }
+        match self.config.kind {
+            NativeKind::Codex => self.codex_steer(input),
+            NativeKind::ClaudeCode => self.claude_steer(input),
+            NativeKind::DeepSeek => Err(Error::new("DeepSeek 运行时不提供插入消息")),
+        }
     }
     pub fn cancel(&mut self) -> Result<()> {
         if !self.busy() {

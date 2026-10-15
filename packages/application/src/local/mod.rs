@@ -402,7 +402,8 @@ impl CoreRuntime {
                 | "getSnapshotUpdate"
                 | "acpSessionConfig"
                 | "setAcpSessionConfig"
-                | "sendQueue",
+                | "sendQueue"
+                | "steerTurn",
                 Some(id),
             ) => self.focus_conversation(id),
             ("readConversation", Some(id)) => {
@@ -559,6 +560,7 @@ impl CoreRuntime {
             }
             "sendTurn" => self.send_turn_action(request),
             "sendQueue" => self.send_queue_action(request),
+            "steerTurn" => self.steer_turn_action(request),
             "cancel" => self.cancel_action(request),
             "replyRuntimeInteraction" => self.reply_runtime_interaction(request),
             "authentication" => self.authentication_action(&request["payload"]),

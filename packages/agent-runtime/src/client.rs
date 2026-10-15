@@ -581,6 +581,17 @@ impl Client {
         self.request(json!({"type":"prompt","message":input.text,"images":images}))
     }
 
+    /// Pi delivers a steering message after the running tool calls, before
+    /// the next model request.
+    pub fn steer(&mut self, input: &crate::TurnInput) -> Result<Value> {
+        let images = input
+            .images
+            .iter()
+            .map(|image| json!({"type":"image","data":image.base64(),"mimeType":image.kind.media_type()}))
+            .collect::<Vec<_>>();
+        self.request(json!({"type":"steer","message":input.text,"images":images}))
+    }
+
     pub fn sync_virtual_selection(&mut self) -> Result<Value> {
         self.request(json!({"type":"prompt","message":"/velune-sync-selection"}))
     }

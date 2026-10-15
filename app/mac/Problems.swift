@@ -68,6 +68,7 @@ struct AppProblem: Identifiable, Sendable, Equatable {
         case "snapshot": return "读取会话"
         case "sendTurn": return "发送消息"
         case "sendQueue": return "修改发送队列"
+        case "steerTurn": return "插入本轮"
         case "cancel": return "停止生成"
         case "replyRuntimeInteraction": return "回应运行时请求"
         case "providerImportPreview": return "读取提供商配置"

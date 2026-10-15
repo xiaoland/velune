@@ -1305,6 +1305,21 @@ impl Application {
             Some(&runtime_id),
         )
     }
+    /// Deliver a message into the conversation's running turn through the
+    /// runtime's own channel (`FollowUp::can_steer`); it does not start a
+    /// turn, and the next-turn choices do not apply to it.
+    pub fn steer_turn(
+        &mut self,
+        runtime_id: String,
+        conversation_id: String,
+        turn: ComposedTurn,
+    ) -> Result<SnapshotResult, Error> {
+        self.execute(
+            "steerTurn",
+            json!({"conversationID":conversation_id,"text":turn.text,"attachments":turn.attachments}),
+            Some(&runtime_id),
+        )
+    }
     pub fn cancel(
         &mut self,
         runtime_id: String,

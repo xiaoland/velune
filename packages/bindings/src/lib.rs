@@ -821,6 +821,20 @@ impl VeluneApplication {
         })?)
     }
 
+    /// Deliver a message into the running turn through the runtime's own
+    /// channel; it does not start a turn.
+    pub fn steer_turn(
+        &self,
+        runtime_id: String,
+        conversation_id: String,
+        turn: BindingComposedTurn,
+    ) -> Result<BindingSnapshotResult, BindingError> {
+        let turn = convert(turn)?;
+        convert(self.with("steer_turn", |application| {
+            application.steer_turn(runtime_id, conversation_id, turn)
+        })?)
+    }
+
     pub fn cancel(
         &self,
         runtime_id: String,

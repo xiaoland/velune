@@ -71,6 +71,10 @@ pub enum SendQueueOperation {
     },
     /// Send again after a pause, once no turn runs.
     Resume,
+    /// Deliver the message into the running turn instead of queueing it.
+    Steer {
+        id: String,
+    },
 }
 
 impl CoreRuntime {
@@ -132,12 +136,85 @@ impl CoreRuntime {
                 queue.turns.insert(to, turn);
             }
             SendQueueOperation::Resume => queue.paused = None,
+            SendQueueOperation::Steer { id } => {
+                let index = queue.position(&id)?;
+                let turn = queue.turns.remove(index).expect("queued turn");
+                if let Err(error) = self.steer(&turn.payload) {
+                    let queue = &mut self.session.send_queue;
+                    queue.turns.insert(index.min(queue.turns.len()), turn);
+                    return Err(error);
+                }
+                if self.session.send_queue.turns.is_empty() {
+                    self.session.send_queue.paused = None;
+                }
+            }
         }
         // A queue added to or resumed while nothing runs starts at once.
         if !self.busy() && self.session.send_queue.paused.is_none() {
             self.send_next_queued();
         }
         self.snapshot_result()
+    }
+
+    /// Deliver a composed message into the running turn through the
+    /// runtime's own channel. Its next-turn choices do not apply: the turn
+    /// keeps its own.
+    pub(super) fn steer_turn_action(&mut self, request: &Value) -> Result<Value, RuntimeError> {
+        self.steer(&request["payload"])?;
+        self.snapshot_result()
+    }
+
+    fn steer(&mut self, payload: &Value) -> Result<(), RuntimeError> {
+        if !self.can_steer() {
+            return Err(RuntimeError::invalid("此运行时当前不能插入消息"));
+        }
+        let runtime_id = self
+            .native_snapshot()
+            .map(|snapshot| snapshot.conversation.runtime_id)
+            .ok_or_else(|| RuntimeError::invalid("conversation is not active"))?;
+        let request = json!({ "payload": payload });
+        let attachments = self.turn_attachments(self.runtime_instance(&runtime_id)?, &request)?;
+        let text = super::attachments::compose_text(
+            payload["text"].as_str().unwrap_or_default(),
+            &attachments.files,
+        );
+        if text.trim().is_empty() && attachments.images.is_empty() {
+            return Err(RuntimeError::invalid("message text"));
+        }
+        let input = pi::TurnInput {
+            text,
+            effort: None,
+            permission_mode: None,
+            images: super::attachments::turn_images(
+                &json!({"payload": {"images": attachments.images}}),
+            )?,
+        };
+        match &mut self.session.active_state {
+            ActiveState::Native(session) => session
+                .steer(&input)
+                .map_err(|error| RuntimeError::context("message steer", error)),
+            ActiveState::Pi => self
+                .session
+                .pi
+                .client
+                .as_mut()
+                .ok_or_else(|| RuntimeError::invalid("会话执行尚未准备"))?
+                .steer(&input)
+                .map(drop)
+                .map_err(|error| RuntimeError::context("message steer", error)),
+            ActiveState::Acp(_) | ActiveState::History(_) | ActiveState::Empty => {
+                Err(RuntimeError::invalid("此运行时当前不能插入消息"))
+            }
+        }
+    }
+
+    /// The running turn takes messages through the runtime's own channel.
+    fn can_steer(&self) -> bool {
+        match &self.session.active_state {
+            ActiveState::Native(session) => session.can_steer(),
+            ActiveState::Pi => self.session.pi.busy && !self.session.cancel_requested,
+            ActiveState::Acp(_) | ActiveState::History(_) | ActiveState::Empty => false,
+        }
     }
 
     /// The addressed session's turn ended with `outcome`: the queue goes on
@@ -191,7 +268,7 @@ impl CoreRuntime {
         FollowUp {
             queue: queue.turns.iter().map(QueuedTurn::public).collect(),
             paused: queue.paused.clone(),
-            can_steer: false,
+            can_steer: self.can_steer(),
             can_continue: idle
                 && snapshot.pending_interactions.is_empty()
                 && snapshot.actions.can_send

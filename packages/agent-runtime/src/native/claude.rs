@@ -295,6 +295,44 @@ impl NativeSession {
         self.running();
         Ok(())
     }
+    /// A user message written while a turn runs joins that turn: Claude Code
+    /// takes it in at its next step instead of starting another.
+    pub(super) fn claude_steer(&mut self, input: &crate::TurnInput) -> Result<()> {
+        let text = input.text.as_str();
+        let content = input
+            .images
+            .iter()
+            .map(|image| json!({"type":"image","source":{"type":"base64","media_type":image.kind.media_type(),"data":image.base64()}}))
+            .chain((!text.is_empty()).then(|| json!({"type":"text","text":text})))
+            .collect::<Vec<_>>();
+        self.rpc.write(&json!({"type":"user","session_id":self.native_id,"parent_tool_use_id":null,"message":{"role":"user","content":content}}))?;
+        self.steer_sequence += 1;
+        let id = format!(
+            "{}:steer:{}",
+            self.turn_id.as_deref().unwrap_or_default(),
+            self.steer_sequence
+        );
+        self.message(Message {
+            turn_settings: None,
+            turn_usage: None,
+            completed: true,
+            id,
+            role: MessageRole::User,
+            timestamp_unix_ms: None,
+            blocks: input
+                .images
+                .iter()
+                .map(|image| MessageBlock::Image {
+                    media_type: Some(image.kind.media_type().into()),
+                    source: crate::conversation::ImageSource::Path {
+                        path: image.path.to_string_lossy().into_owned(),
+                    },
+                })
+                .chain((!text.is_empty()).then(|| MessageBlock::Text { text: text.into() }))
+                .collect(),
+        });
+        Ok(())
+    }
     pub(super) fn claude_cancel(&mut self) -> Result<()> {
         self.rpc.claude_control(json!({"subtype":"interrupt"}))?;
         if let Some(snapshot) = &mut self.snapshot {

@@ -239,6 +239,10 @@ pub enum BindingSendQueueOperation {
     },
     /// Send again after a pause, once no turn runs.
     Resume,
+    /// Deliver the message into the running turn instead of queueing it.
+    Steer {
+        id: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]

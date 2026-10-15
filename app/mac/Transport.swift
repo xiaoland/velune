@@ -132,6 +132,7 @@ final class Transport: @unchecked Sendable {
     /// The runtime's own models first, then the managed models; every entry
     /// carries the levels the runtime accepts for it.
     func runtimeModels(runtimeID: String) throws -> [BindingRuntimeModel] { try withApplication("runtimeModels") { try $0.runtimeModels(runtimeId: runtimeID) } }
+    func steerTurn(runtimeID: String, conversationID: String, turn: BindingComposedTurn) throws -> BindingSnapshotResult { try withApplication("steerTurn") { try $0.steerTurn(runtimeId: runtimeID, conversationId: conversationID, turn: turn) } }
     func sendQueue(runtimeID: String, conversationID: String, operation: BindingSendQueueOperation) throws -> BindingSnapshotResult { try withApplication("sendQueue") { try $0.sendQueue(runtimeId: runtimeID, conversationId: conversationID, operation: operation) } }
     func cancel(runtimeID: String, conversationID: String) throws -> BindingSnapshotResult { try withApplication("cancel") { try $0.cancel(runtimeId: runtimeID, conversationId: conversationID) } }
     func workingBranch(runtimeID: String, conversationID: String) throws -> String? { try withApplication("workingBranch") { try $0.workingBranch(runtimeId: runtimeID, conversationId: conversationID) } }

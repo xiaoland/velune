@@ -136,6 +136,8 @@ struct ComposerEditor: NSViewRepresentable {
     @ObservedObject var model: ComposerModel
     let placeholder: String
     let submit: () -> Void
+    /// ⌥⌘Return: into the running turn, when the runtime takes it.
+    var steer: () -> Void = {}
 
     func makeCoordinator() -> Coordinator { Coordinator(model: model) }
 
@@ -149,23 +151,25 @@ struct ComposerEditor: NSViewRepresentable {
         scroll.documentView = view
         context.coordinator.view = view
         model.attach(view)
-        context.coordinator.update(placeholder: placeholder, submit: submit)
+        context.coordinator.update(placeholder: placeholder, submit: submit, steer: steer)
         return scroll
     }
 
     func updateNSView(_ scroll: NSScrollView, context: Context) {
         context.coordinator.model = model
-        context.coordinator.update(placeholder: placeholder, submit: submit)
+        context.coordinator.update(placeholder: placeholder, submit: submit, steer: steer)
     }
 
     @MainActor final class Coordinator: NSObject, NSTextViewDelegate {
         var model: ComposerModel
         weak var view: ComposerTextView?
         fileprivate var submit: () -> Void = {}
+        fileprivate var steer: () -> Void = {}
         init(model: ComposerModel) { self.model = model }
 
-        func update(placeholder: String, submit: @escaping () -> Void) {
+        func update(placeholder: String, submit: @escaping () -> Void, steer: @escaping () -> Void) {
             self.submit = submit
+            self.steer = steer
             if view?.placeholder != placeholder { view?.placeholder = placeholder }
             view?.fitHeight()
         }
@@ -297,6 +301,7 @@ struct ComposerEditor: NSViewRepresentable {
         let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
         let isReturn = event.keyCode == 36 || event.keyCode == 76
         if isReturn, modifiers == .command, !hasMarkedText() { coordinator?.submit(); return }
+        if isReturn, modifiers == [.command, .option], !hasMarkedText() { coordinator?.steer(); return }
         super.keyDown(with: event)
     }
 
@@ -396,7 +401,7 @@ struct ComposerView: View {
             }
             if !store.followUp.queue.isEmpty || store.followUp.paused != nil { SendQueueView(store: store) }
             if !model.attachments.isEmpty { attachmentRow }
-            ComposerEditor(model: model, placeholder: "输入消息，⌘Return 发送", submit: send)
+            ComposerEditor(model: model, placeholder: store.isGenerating ? (store.followUp.canSteer ? "⌘Return 排队，⌥⌘Return 插入本轮" : "⌘Return 排队，本轮结束后发送") : "输入消息，⌘Return 发送", submit: send, steer: steer)
                 .frame(height: model.height)
                 // The text view sits in a clipping scroll view, which hides its
                 // own ring; this follows the system ring: focus colour, just
@@ -477,6 +482,10 @@ struct ComposerView: View {
     @ViewBuilder private var sendButton: some View {
         if store.isGenerating {
             Button("停止", action: store.cancel).disabled(!store.canCancel).help("停止当前生成")
+            if store.followUp.canSteer {
+                Button("插入本轮", action: steer).disabled(!store.canSteer || (model.isEmpty && model.attachments.isEmpty))
+                    .help("让正在运行的 Agent 在下一步看到这条消息，不另起一轮（⌥⌘ Return）")
+            }
             Button("排队", action: send).buttonStyle(.borderedProminent)
                 .disabled(!store.canQueue || (model.isEmpty && model.attachments.isEmpty)).help("本轮结束后发送（⌘ Return）")
         } else {
@@ -486,6 +495,18 @@ struct ComposerView: View {
             Button("发送", action: send).buttonStyle(.borderedProminent)
                 .disabled(!store.canSend || (model.isEmpty && model.attachments.isEmpty)).help("发送消息（⌘ Return）")
         }
+    }
+
+    /// Into the running turn through the runtime's own channel; a message it
+    /// does not take goes back to the composer.
+    private func steer() {
+        let submitted = model.submission
+        let attachments = model.attachments
+        let text = submitted.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard store.canSteer, !text.isEmpty || !attachments.isEmpty, !model.isComposing else { return }
+        let conversationID = store.loadedConversationID
+        store.steer(text: text, attachments: attachments.map(\.path), onFailure: { [model] in model.restore(submitted, attachments: attachments) })
+        model.clear(submitted: submitted, attachments: attachments, conversationID: conversationID)
     }
 
     private var attachmentRow: some View {

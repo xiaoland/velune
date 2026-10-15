@@ -66,6 +66,7 @@ struct SendQueueView: View {
         .contextMenu(forSelectionType: String.self) { ids in
             if ids.count == 1, let message = queue.first(where: { ids.contains($0.id) }), let index = queue.firstIndex(of: message) {
                 Button("编辑…") { editing = message }
+                Button("插入本轮") { store.steerQueued(message.id) }.disabled(!store.followUp.canSteer || store.isLoading)
                 Divider()
                 Button("移到最前") { store.moveQueued(message.id, to: 0) }.disabled(index == 0)
                 Button("上移") { store.moveQueued(message.id, to: index - 1) }.disabled(index == 0)
