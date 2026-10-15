@@ -315,15 +315,23 @@ final class ToolPanel: NSPanel {
         return false
     }
 
-    func windowDidResize(_ notification: Notification) {
-        guard !placing, let panel = notification.object as? ToolPanel, panel.inLiveResize else { return }
+    // Recorded once the resize ends: the layout is published, and every
+    // publication lays the window's toolbar out again.
+    func windowDidEndLiveResize(_ notification: Notification) {
+        guard let panel = notification.object as? ToolPanel else { return }
         record(panel)
+    }
+
+    /// Published only when it changes, for the same reason.
+    private func updateDockHint(for panel: ToolPanel) {
+        let hint = dockZone(for: panel.kind)?.contains(NSEvent.mouseLocation) == true ? panel.kind : nil
+        if model.dockHint != hint { model.dockHint = hint }
     }
 
     func windowDidMove(_ notification: Notification) {
         guard !placing, let panel = notification.object as? ToolPanel, NSEvent.pressedMouseButtons & 1 != 0, !following(panel) else { return }
         // The title bar drag is the window server's; it ends when the button comes up.
-        model.dockHint = dockZone(for: panel.kind)?.contains(NSEvent.mouseLocation) == true ? panel.kind : nil
+        updateDockHint(for: panel)
         guard !dragging.contains(panel.kind) else { return }
         dragging.insert(panel.kind)
         waitForDragEnd(panel)
@@ -340,13 +348,13 @@ final class ToolPanel: NSPanel {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self, weak panel] in
             guard let self, let panel else { return }
             if NSEvent.pressedMouseButtons & 1 != 0 {
-                model.dockHint = dockZone(for: panel.kind)?.contains(NSEvent.mouseLocation) == true ? panel.kind : nil
+                updateDockHint(for: panel)
                 waitForDragEnd(panel)
                 return
             }
             dragging.remove(panel.kind)
             let docking = model.dockHint == panel.kind
-            model.dockHint = nil
+            if model.dockHint != nil { model.dockHint = nil }
             if docking { model.tools.dock(panel.kind) } else { snap(panel) }
         }
     }
