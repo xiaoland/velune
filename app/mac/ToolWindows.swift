@@ -15,10 +15,16 @@ enum ToolWindowKind: String, Codable, CodingKeyRepresentable, CaseIterable {
     }
 }
 
+/// The outline's places as the View menu offers them: from the toolbar
+/// button as a popover or in place (an application setting), or a tool window.
+enum OutlineChoice: Hashable {
+    case popover, inPlace, docked, floating
+}
+
 /// Where a window's tool windows are, restored with the window.
 struct ToolWindowLayout: Codable, Equatable {
     enum ListPlacement: String, Codable { case docked, floating, hidden }
-    /// `toolbar`: the toolbar button shows it as the setting says (popover or in place).
+    /// `toolbar`: the toolbar button shows it as a popover or in place, as the application setting says.
     enum OutlinePlacement: String, Codable { case toolbar, docked, floating }
     enum ComposerPlacement: String, Codable { case docked, floating }
 
@@ -112,7 +118,7 @@ struct ToolFrame: Codable, Equatable {
             : NSRect(x: window.minX, y: window.minY, width: width, height: window.height - 52)
         case .outline: window.maxX + width <= screen.maxX ? NSRect(x: window.maxX, y: window.minY, width: width, height: window.height)
             : NSRect(x: window.maxX - width, y: window.minY, width: width, height: window.height - 52)
-        case .composer: NSRect(x: window.midX - 320, y: window.minY + 24, width: 640, height: 150)
+        case .composer: NSRect(x: window.midX - 320, y: window.minY + 24, width: 640, height: 120)
         }
         return ToolFrame(frame, attachedTo: window)
     }
@@ -134,7 +140,7 @@ final class ToolPanel: NSPanel {
         becomesKeyOnlyIfNeeded = false
         isReleasedWhenClosed = false
         collectionBehavior = [.fullScreenAuxiliary]
-        minSize = kind == .composer ? NSSize(width: 360, height: 110) : NSSize(width: 200, height: 200)
+        minSize = kind == .composer ? NSSize(width: 360, height: 60) : NSSize(width: 200, height: 200)
     }
 
     override var canBecomeKey: Bool { true }
@@ -227,16 +233,7 @@ final class ToolPanel: NSPanel {
         hosting.sizingOptions = []
         panel.contentView = hosting
         panel.delegate = self
-        let accessory = NSTitlebarAccessoryViewController()
-        let dock = NSButton(title: "停靠", target: self, action: #selector(dockPressed(_:)))
-        dock.bezelStyle = .accessoryBarAction
-        dock.controlSize = .small
-        dock.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
-        dock.tag = ToolWindowKind.allCases.firstIndex(of: kind)!
-        dock.toolTip = "放回窗口中（也可把面板拖进窗口\(kind == .list ? "左侧" : kind == .outline ? "右侧" : "底部")）"
-        accessory.view = dock
-        accessory.layoutAttribute = .trailing
-        panel.addTitlebarAccessoryViewController(accessory)
+        panel.addTitlebarAccessoryViewController(dockAccessory(for: kind))
         panels[kind] = panel
         let saved = model.tools.frames[kind] ?? ToolFrame.initial(kind, beside: window.frame, screen: window.screen?.visibleFrame ?? window.frame)
         placing = true
@@ -245,6 +242,48 @@ final class ToolPanel: NSPanel {
         if saved.attachment != nil { window.addChildWindow(panel, ordered: .above) }
         if model.tools.frames[kind] == nil { model.tools.frames[kind] = saved }
         if window.isVisible { panel.orderFront(nil) }
+    }
+
+    /// A borderless symbol at the title bar's trailing end, as title bar controls are.
+    private func dockAccessory(for kind: ToolWindowKind) -> NSTitlebarAccessoryViewController {
+        let image = NSImage(systemSymbolName: "pip.enter", accessibilityDescription: "停靠")?
+            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 11, weight: .regular))
+        let dock = NSButton(image: image ?? NSImage(), target: self, action: #selector(dockPressed(_:)))
+        dock.isBordered = false
+        dock.imagePosition = .imageOnly
+        dock.tag = ToolWindowKind.allCases.firstIndex(of: kind)!
+        dock.toolTip = "停靠：放回窗口\(kind == .list ? "侧栏" : kind == .outline ? "右侧" : "的面板底部")（也可把面板拖进窗口\(kind == .list ? "左侧" : kind == .outline ? "右侧" : "底部")）"
+        dock.setAccessibilityLabel("停靠")
+        // In a box that keeps it clear of the panel's edge. A tint colour
+        // leaves a title bar accessory's symbol undrawn.
+        let box = NSView(frame: NSRect(x: 0, y: 0, width: 32, height: 19))
+        dock.frame = NSRect(x: 4, y: 0, width: 20, height: 19)
+        dock.autoresizingMask = [.minYMargin, .maxYMargin]
+        box.addSubview(dock)
+        let accessory = NSTitlebarAccessoryViewController()
+        accessory.view = box
+        accessory.layoutAttribute = .trailing
+        return accessory
+    }
+
+    /// The floating composer is as tall as its content, growing upward as the docked one does.
+    func fitComposer(contentHeight: CGFloat) {
+        guard let panel = panels[.composer], contentHeight > 0 else { return }
+        let chrome = panel.frame.height - panel.contentLayoutRect.height
+        let height = (contentHeight + chrome).rounded()
+        guard abs(panel.frame.height - height) >= 1 else { return }
+        var frame = panel.frame
+        frame.size.height = height
+        placing = true
+        panel.setFrame(frame, display: true)
+        placing = false
+        record(panel)
+    }
+
+    func windowWillResize(_ sender: NSWindow, to size: NSSize) -> NSSize {
+        // Only the composer's width is the user's; its height follows its content.
+        guard (sender as? ToolPanel)?.kind == .composer else { return size }
+        return NSSize(width: size.width, height: sender.frame.height)
     }
 
     private func closePanel(_ kind: ToolWindowKind) {
@@ -433,11 +472,13 @@ private struct ToolComposer: View {
             }
             if store.loadedParentConversationID != nil, store.pendingConversationID == nil {
                 Text("这是原生 sub-agent 的会话，由启动它的会话继续。").foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .frame(maxWidth: .infinity).padding(16)
             } else {
-                Spacer(minLength: 0)
                 ComposerView(store: store, model: pane.composer, send: pane.send)
             }
         }
+        .fixedSize(horizontal: false, vertical: true)
+        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { window.panels.fitComposer(contentHeight: $0) }
+        .frame(maxHeight: .infinity, alignment: .top)
     }
 }

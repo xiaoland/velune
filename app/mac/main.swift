@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import VeluneBindings
 
 /// The focused pane of the key window, and its window.
 struct ConversationCommandTarget {
@@ -65,10 +66,11 @@ struct ConversationCommands: Commands {
                 Text("隐藏").tag(ToolWindowLayout.ListPlacement.hidden)
             }
             .disabled(target == nil)
-            Picker("会话大纲", selection: toolBinding(\.outline, default: .toolbar)) {
-                Text("由工具栏按钮显示").tag(ToolWindowLayout.OutlinePlacement.toolbar)
-                Text("停靠在右侧").tag(ToolWindowLayout.OutlinePlacement.docked)
-                Text("浮动").tag(ToolWindowLayout.OutlinePlacement.floating)
+            Picker("会话大纲", selection: outlineChoice) {
+                Text("弹出").tag(OutlineChoice.popover)
+                Text("就地折叠").tag(OutlineChoice.inPlace)
+                Text("停靠在右侧").tag(OutlineChoice.docked)
+                Text("浮动").tag(OutlineChoice.floating)
             }
             .disabled(target == nil)
             Picker("输入区", selection: toolBinding(\.composer, default: .docked)) {
@@ -80,7 +82,31 @@ struct ConversationCommands: Commands {
         }
     }
 
-    /// A placement of the target window's tools; choosing the outline's shows it.
+    /// Popover and in place are how the toolbar button shows the outline, an
+    /// application setting; docked and floating are this window's.
+    private var outlineChoice: Binding<OutlineChoice> {
+        Binding(get: {
+            guard let window = target?.window else { return .popover }
+            switch window.tools.outline {
+            case .docked: return .docked
+            case .floating: return .floating
+            case .toolbar: return window.application.outlinePresentation == .inPlace ? .inPlace : .popover
+            }
+        }, set: { choice in
+            guard let window = target?.window else { return }
+            switch choice {
+            case .popover, .inPlace:
+                window.tools.outline = .toolbar
+                let presentation: BindingOutlinePresentation = choice == .inPlace ? .inPlace : .popover
+                if window.application.outlinePresentation != presentation { window.application.setOutlinePresentation(presentation) }
+            case .docked: window.tools.outline = .docked
+            case .floating: window.tools.outline = .floating
+            }
+            window.tools.outlineShown = true
+        })
+    }
+
+    /// A placement of the target window's tools.
     private func toolBinding<Value>(_ path: WritableKeyPath<ToolWindowLayout, Value>, default value: Value) -> Binding<Value> {
         Binding(get: { target?.window.tools[keyPath: path] ?? value },
                 set: { new in
