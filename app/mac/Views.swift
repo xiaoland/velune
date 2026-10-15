@@ -62,6 +62,11 @@ struct VeluneRootView: View {
                                 .tag(conversation.id)
                                 .selectionDisabled(focused.isLoading)
                                 .contextMenu { conversationManagementMenu(store.selectedConversationIDs.contains(conversation.id) ? store.selectedConversationIDs : [conversation.id]) }
+                                // Dropped on a pane, it opens there or beside it.
+                                .onDrag {
+                                    PaneDragSource.shared.begin(pane: nil, conversationID: conversation.id)
+                                    return NSItemProvider(object: ConversationLink.url(runtimeID: conversation.runtimeID, conversationID: conversation.id) as NSURL)
+                                }
                         }
                         if section.hasMore {
                             if store.searchResults == nil {
@@ -139,6 +144,8 @@ struct VeluneRootView: View {
         } message: {
             Text("将永久删除所选 \(deleteTargets.count) 个会话，以及它们在各 Agent 运行时中的关联会话数据。此操作无法撤销。")
         }
+        // The title bar's proxy icon carries the focused pane, as the pane title strip does once split.
+        .navigationDocument(PaneDocument(pane: pane.id, conversationID: focused.loadedConversationID, link: pane.link), preview: SharePreview(focused.selectedConversationTitle ?? "Velune"))
         .focusedSceneValue(\.conversationCommands, ConversationCommandTarget(store: focused, send: pane.send, window: window))
         .task { if previewSettings { openSettings() } }
     }

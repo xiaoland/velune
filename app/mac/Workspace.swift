@@ -37,6 +37,58 @@ import SwiftUI
     func navigate(to id: String) {
         outlineNavigation = TranscriptJump(id: id, token: (outlineNavigation?.token ?? 0) &+ 1)
     }
+
+    /// The link a drag carries; an unsent conversation has none yet.
+    var link: URL? {
+        guard let id = store.loadedConversationID, !store.isUnsentConversation,
+              let runtime = store.conversation(id: id)?.runtimeID ?? store.projectionRuntimeID else { return nil }
+        return ConversationLink.url(runtimeID: runtime, conversationID: id)
+    }
+}
+
+/// A pane's conversation as the title bar's proxy icon drags it.
+struct PaneDocument: Transferable {
+    let pane: UUID
+    let conversationID: String?
+    let link: URL?
+
+    static var transferRepresentation: some TransferRepresentation {
+        ProxyRepresentation { (document: PaneDocument) -> URL in
+            guard let link = document.link, let conversationID = document.conversationID else { throw CocoaError(.featureUnsupported) }
+            PaneDragSource.shared.begin(pane: document.pane, conversationID: conversationID)
+            return link
+        }
+    }
+}
+
+/// Which side of a pane something dropped on it goes to.
+enum PaneEdge: Equatable {
+    case leading, trailing, top, bottom
+    var axis: PaneSplit.Axis { self == .leading || self == .trailing ? .horizontal : .vertical }
+    var after: Bool { self == .trailing || self == .bottom }
+}
+
+/// Where a conversation dropped on a pane goes: into it, or beside an edge.
+enum PaneDropZone: Equatable {
+    case center
+    case edge(PaneEdge)
+}
+
+/// The pane a conversation drag started from, so the pane it is dropped on
+/// moves that pane rather than opening the conversation again; a drag from
+/// the list has none. Written where the drag begins, possibly off the main thread.
+final class PaneDragSource: @unchecked Sendable {
+    static let shared = PaneDragSource()
+    private let lock = NSLock()
+    private var current: (pane: UUID, conversationID: String)?
+
+    func begin(pane: UUID?, conversationID: String) {
+        lock.withLock { current = pane.map { ($0, conversationID) } }
+    }
+
+    func pane(dragging conversationID: String) -> UUID? {
+        lock.withLock { current?.conversationID == conversationID ? current?.pane : nil }
+    }
 }
 
 /// How a window's panes are arranged: a pane, or panes side by side
@@ -52,22 +104,23 @@ indirect enum PaneLayout: Codable, Equatable {
         }
     }
 
-    /// `pane` divided along `axis`, with `added` after it.
-    func splitting(_ pane: UUID, axis: PaneSplit.Axis, adding added: UUID) -> PaneLayout {
+    /// `added` beside `pane`'s `edge`, taking half its room.
+    func inserting(_ added: UUID, beside pane: UUID, edge: PaneEdge) -> PaneLayout {
         switch self {
         case .pane(let id):
             guard id == pane else { return self }
-            return .split(PaneSplit(axis: axis, children: [.pane(id), .pane(added)], fractions: [0.5, 0.5]))
+            let children: [PaneLayout] = edge.after ? [.pane(id), .pane(added)] : [.pane(added), .pane(id)]
+            return .split(PaneSplit(axis: edge.axis, children: children, fractions: [0.5, 0.5]))
         case .split(var split):
-            // A pane in a split along the same axis gives half its room to the new one.
-            if split.axis == axis, let index = split.children.firstIndex(of: .pane(pane)) {
+            // A pane in a split along the same axis shares its own room with the new one.
+            if split.axis == edge.axis, let index = split.children.firstIndex(of: .pane(pane)) {
                 let half = split.fractions[index] / 2
                 split.fractions[index] = half
-                split.children.insert(.pane(added), at: index + 1)
-                split.fractions.insert(half, at: index + 1)
+                split.children.insert(.pane(added), at: edge.after ? index + 1 : index)
+                split.fractions.insert(half, at: edge.after ? index + 1 : index)
                 return .split(split)
             }
-            split.children = split.children.map { $0.splitting(pane, axis: axis, adding: added) }
+            split.children = split.children.map { $0.inserting(added, beside: pane, edge: edge) }
             return .split(split)
         }
     }
@@ -122,6 +175,8 @@ struct SavedWindowLayout: Codable, Equatable {
 /// What a new window starts with.
 struct WindowSeed: Codable, Hashable {
     static let sceneID = "conversation"
+    /// Each seed opens its own window; an equal value would bring an existing one forward.
+    var id = UUID()
     /// The conversation to open in its pane.
     var conversationID: String?
 }
@@ -144,6 +199,14 @@ struct WindowSeed: Codable, Hashable {
     private var anchors: [UUID: () -> NSView?] = [:]
     private var mouseMonitor: Any?
 
+    /// Windows by the panes they hold, for moving a pane between them.
+    private static var all: [WeakWindow] = []
+    private struct WeakWindow { weak var model: ConversationWindowModel? }
+    static func owning(pane: UUID) -> ConversationWindowModel? {
+        all.removeAll { $0.model == nil }
+        return all.lazy.compactMap(\.model).first { $0.panes[pane] != nil }
+    }
+
     init(application: AppStore) {
         self.application = application
         list = application.makeWorkspace()
@@ -152,6 +215,7 @@ struct WindowSeed: Codable, Hashable {
         panes = [first.id: first]
         focusedPaneID = first.id
         follow(first)
+        Self.all.append(WeakWindow(model: self))
     }
 
     var focused: ConversationPane { panes[focusedPaneID]! }
@@ -205,13 +269,19 @@ struct WindowSeed: Codable, Hashable {
     /// Divide the focused pane; the new pane takes focus and opens
     /// `conversationID`, or starts a new conversation.
     func split(_ axis: PaneSplit.Axis, opening conversationID: String? = nil) {
-        if let conversationID, let pane = orderedPanes.first(where: { $0.store.selectedConversationID == conversationID }) {
+        insert(beside: focusedPaneID, edge: axis == .horizontal ? .trailing : .bottom, opening: conversationID)
+    }
+
+    /// A new pane beside `target`'s `edge`; one already showing the
+    /// conversation is focused instead.
+    func insert(beside target: UUID, edge: PaneEdge, opening conversationID: String?) {
+        if let conversationID, let pane = pane(showing: conversationID) {
             focus(pane.id)
             return
         }
         let pane = ConversationPane(store: application.makeWorkspace())
         panes[pane.id] = pane
-        layout = layout.splitting(focusedPaneID, axis: axis, adding: pane.id)
+        layout = layout.inserting(pane.id, beside: target, edge: edge)
         follow(pane)
         focusedPaneID = pane.id
         pane.store.start(loadFirstConversation: false, newConversation: conversationID == nil, opening: conversationID)
@@ -235,6 +305,69 @@ struct WindowSeed: Codable, Hashable {
         }
     }
 
+    func pane(showing conversationID: String) -> ConversationPane? {
+        orderedPanes.first { $0.store.selectedConversationID == conversationID }
+    }
+
+    /// Move a pane of this window beside another one's edge.
+    func move(_ id: UUID, beside target: UUID, edge: PaneEdge) {
+        guard id != target, panes[id] != nil, panes[target] != nil, let remaining = layout.removing(id) else { return }
+        layout = remaining.inserting(id, beside: target, edge: edge)
+        focus(id)
+    }
+
+    /// A conversation dropped on `target`: shown there or beside it. A pane
+    /// of this window already showing it moves there; dragged from a pane of
+    /// another window, that pane leaves its window.
+    func drop(_ conversationID: String, on target: UUID, zone: PaneDropZone) {
+        guard panes[target] != nil else { return }
+        let source = PaneDragSource.shared.pane(dragging: conversationID).flatMap { id in Self.owning(pane: id).map { (window: $0, pane: id) } }
+        if let existing = pane(showing: conversationID) {
+            switch zone {
+            case .center where existing.id != target:
+                panes[target]?.store.openLinkedConversation(id: conversationID)
+                close(existing.id)
+                focus(target)
+            case .edge(let edge): move(existing.id, beside: target, edge: edge)
+            case .center: break
+            }
+        } else {
+            switch zone {
+            case .center:
+                panes[target]?.store.openLinkedConversation(id: conversationID)
+                focus(target)
+            case .edge(let edge): insert(beside: target, edge: edge, opening: conversationID)
+            }
+        }
+        if let source, source.window !== self { source.window.remove(source.pane) }
+    }
+
+    /// A pane that moved to another window; the last one takes its window along.
+    func remove(_ id: UUID) {
+        if isSplit { close(id) } else { window?.close() }
+    }
+
+    /// Open a pane's conversation in a new window at `point` (screen
+    /// coordinates, its top left), and close the pane here.
+    func tearOff(_ id: UUID, at point: NSPoint, openWindow: (WindowSeed) -> Void) {
+        guard isSplit, let conversationID = panes[id]?.store.loadedConversationID else { return }
+        let existing = Set(NSApp.windows.map(\.windowNumber))
+        openWindow(WindowSeed(conversationID: conversationID))
+        close(id)
+        Self.place(windowNotIn: existing, at: point, attempts: 20)
+    }
+
+    /// The new window appears a moment after it is asked for.
+    private static func place(windowNotIn existing: Set<Int>, at point: NSPoint, attempts: Int) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+            if let window = NSApp.windows.first(where: { !existing.contains($0.windowNumber) && $0.isVisible }) { window.setFrameTopLeftPoint(point) }
+            else if attempts > 1 { place(windowNotIn: existing, at: point, attempts: attempts - 1) }
+        }
+    }
+
+    /// The AppKit window showing this one.
+    var window: NSWindow? { anchors.values.lazy.compactMap { $0()?.window }.first }
+
     func focus(_ id: UUID) {
         guard panes[id] != nil, focusedPaneID != id else { return }
         focusedPaneID = id
@@ -253,6 +386,7 @@ struct WindowSeed: Codable, Hashable {
     }
 
     func register(_ pane: UUID, anchor: @escaping () -> NSView?) { anchors[pane] = anchor }
+    func view(of pane: UUID) -> NSView? { anchors[pane]?() }
 
     private func follow(_ pane: ConversationPane) {
         subscriptions[pane.id] = pane.store.$selectedConversationID.sink { [weak self] id in

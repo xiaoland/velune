@@ -382,10 +382,11 @@ struct ComposerView: View {
     @Environment(\.openWindow) private var openWindow
     @State private var enteringRemoteDirectory = false
     @State private var remoteDirectory = ""
-    /// The room the composer has, and what its controls take at full length:
-    /// a narrow pane puts them on their own row, then shortens their titles.
+    /// The room the composer has, and what its choices take at full length.
     @State private var width: CGFloat = 760
     @State private var controlsWidth: CGFloat = 0
+    /// The send button and a little of the status line beside the choices.
+    private static let sendWidth: CGFloat = 130
     private var nextTurnRuntime: RuntimeInstance? { store.runtimeInstances.first { $0.id == store.nextTurnRuntimeID } }
 
     var body: some View {
@@ -406,18 +407,12 @@ struct ComposerView: View {
                             .allowsHitTesting(false)
                     }
                 }
-            if width >= controlsWidth + Self.sendRowWidth {
-                HStack(spacing: 8) {
-                    nextTurnControls(compact: false)
-                    Spacer(minLength: 8)
-                    sendRow
-                }
+            // A narrow pane puts the choices on their own row, then shortens their titles.
+            if width >= controlsWidth + Self.sendWidth {
+                HStack(spacing: 8) { nextTurnControls(compact: false); statusRow }
             } else {
-                nextTurnControls(compact: width < controlsWidth)
-                HStack(spacing: 8) {
-                    Spacer(minLength: 0)
-                    sendRow
-                }
+                ViewThatFits(in: .horizontal) { nextTurnControls(compact: false); nextTurnControls(compact: true) }
+                statusRow
             }
         }
         // Measured at full length out of sight, so the choice does not depend on itself.
@@ -459,12 +454,17 @@ struct ComposerView: View {
         }
     }
 
-    /// The send button and a little of the status line beside the controls.
-    private static let sendRowWidth: CGFloat = 130
+    /// The status line and send button, at the trailing end.
+    private var statusRow: some View {
+        HStack(spacing: 8) {
+            Spacer(minLength: 8)
+            if store.needsModelSelection { Text(store.isUnsentConversation ? "请选择模型" : "此会话的模型不可用").font(.callout).foregroundStyle(.secondary).lineLimit(1) }
+            else { ComposerStatusLine(store: store).layoutPriority(-1).padding(.trailing, 4) }
+            sendButton
+        }
+    }
 
-    @ViewBuilder private var sendRow: some View {
-        if store.needsModelSelection { Text(store.isUnsentConversation ? "请选择模型" : "此会话的模型不可用").font(.callout).foregroundStyle(.secondary).lineLimit(1) }
-        else { ComposerStatusLine(store: store).layoutPriority(-1).padding(.trailing, 4) }
+    @ViewBuilder private var sendButton: some View {
         if store.isGenerating {
             Button("停止", action: store.cancel).disabled(!store.canCancel).help("停止当前生成")
         } else {
@@ -533,7 +533,9 @@ struct ComposerView: View {
                 }
             }
         } label: {
-            Text(Self.pullDownTitle(title)).lineLimit(1).truncationMode(.middle).frame(maxWidth: compact ? 110 : 360, alignment: .leading)
+            // Short by characters: a frame's limit does not hold where the menu takes its ideal width.
+            Text(Self.pullDownTitle(compact ? Self.shortened(([model] + (effort.map { [$0] } ?? [])).joined(separator: " · "), to: 16) : title))
+                .lineLimit(1).truncationMode(.middle).frame(maxWidth: 360, alignment: .leading)
         }
         .fixedSize()
         .accessibilityLabel("下一轮：运行时 \(runtime)，模型 \(model)，推理强度 \(effort ?? "沿用当前")")
@@ -630,6 +632,9 @@ struct ComposerView: View {
     /// title (and lays a custom label out as title and icon only), so the
     /// title carries a no-break space to keep the two apart.
     private static func pullDownTitle(_ title: String) -> String { title + "\u{00A0}" }
+    private static func shortened(_ title: String, to length: Int) -> String {
+        title.count <= length ? title : String(title.prefix(length / 2)) + "…" + String(title.suffix(length - length / 2 - 1))
+    }
 
     /// Only a conversation that has not been sent yet can still pick where it works.
     private func workingDirectoryMenu(compact: Bool) -> some View {
@@ -652,7 +657,7 @@ struct ComposerView: View {
                 }
             }
         } label: {
-            Text(Self.pullDownTitle(name ?? "工作目录")).lineLimit(1).truncationMode(.middle).frame(maxWidth: compact ? 70 : 160, alignment: .leading)
+            Text(Self.pullDownTitle(compact ? Self.shortened(name ?? "目录", to: 8) : name ?? "工作目录")).lineLimit(1).truncationMode(.middle).frame(maxWidth: 160, alignment: .leading)
         }
         .fixedSize()
         .accessibilityLabel("工作目录：\(path ?? "运行时默认目录")")
