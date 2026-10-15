@@ -17,89 +17,17 @@ struct VeluneRootView: View {
     @Environment(\.openSettings) private var openSettings
     @Environment(\.openWindow) private var openWindow
     @Environment(\.controlActiveState) private var activeState
-    @State private var browser = ConversationBrowser()
     @State private var showsOutlinePopover = false
     @State private var showsChanges = false
     /// Change review is implemented but not yet part of the product
     /// (2026-10-11 decision); this keeps its entry closed.
     private static let changeReviewEnabled = false
-    @State private var renameTarget: Conversation?
-    @State private var deleteTargets: [Conversation] = []
-    @State private var search = ""
-    @State private var aliasTarget: ProjectAliasTarget?
-    private var conversationSections: [ConversationBrowser.Section] {
-        if let results = store.searchResults { return ConversationBrowser.sections(conversations: results.conversations, groups: results.groups) }
-        return ConversationBrowser.sections(conversations: store.conversations, groups: store.conversationGroups)
-    }
 
     var body: some View {
-        NavigationSplitView {
-            // One row is the focused pane's conversation; more are a selection to manage.
-            List(selection: Binding(get: { store.selectedConversationIDs.count > 1 ? store.selectedConversationIDs : Set([focused.selectedConversationID].compactMap { $0 }) },
-                                    set: { ids in
-                                        store.setListSelection(ids)
-                                        if ids.count == 1, let id = ids.first, id != focused.selectedConversationID { window.open(id) }
-                                    })) {
-                if store.showsArchived {
-                    HStack {
-                        Label("已归档的会话", systemImage: "archivebox").foregroundStyle(.secondary)
-                        Spacer(minLength: 0)
-                        Button("返回") { store.setShowsArchived(false) }.buttonStyle(.link)
-                    }.selectionDisabled(true)
-                }
-                if conversationSections.isEmpty && !store.isLoading && !focused.isLoading {
-                    if store.searchResults != nil || (browser.hasFilters && !store.conversations.isEmpty) {
-                        Text("没有匹配的会话").foregroundStyle(.secondary).selectionDisabled(true)
-                        if browser.hasFilters { Button("清除筛选") { browser.runtimeID = nil; browser.project = .all }.selectionDisabled(true) }
-                    } else if store.showsArchived {
-                        Text("没有已归档的会话").foregroundStyle(.secondary).selectionDisabled(true)
-                    }
-                }
-                ForEach(conversationSections) { section in
-                    Section(isExpanded: expansion(section.id)) {
-                        ForEach(section.conversations) { conversation in
-                            conversationRow(conversation)
-                                .tag(conversation.id)
-                                .selectionDisabled(focused.isLoading)
-                                .contextMenu { conversationManagementMenu(store.selectedConversationIDs.contains(conversation.id) ? store.selectedConversationIDs : [conversation.id]) }
-                                // Dropped on a pane, it opens there or beside it.
-                                .onDrag {
-                                    PaneDragSource.shared.begin(pane: nil, conversationID: conversation.id)
-                                    return NSItemProvider(object: ConversationLink.url(runtimeID: conversation.runtimeID, conversationID: conversation.id) as NSURL)
-                                }
-                        }
-                        if section.hasMore {
-                            if store.searchResults == nil {
-                                Button("加载更多（\(section.group.loaded) / \(section.group.total)）") { store.loadMoreConversations(in: section.id) }
-                                    .buttonStyle(.plain).foregroundStyle(.secondary).selectionDisabled(true)
-                            } else {
-                                Text("只显示前 \(section.group.loaded) 个匹配").foregroundStyle(.secondary).selectionDisabled(true)
-                            }
-                        }
-                    } header: { sectionHeader(section) }
-                }
-            }
-            .contextMenu(forSelectionType: String.self) { ids in conversationManagementMenu(ids) } primaryAction: { ids in
-                guard ids.count == 1, let id = ids.first, let target = store.conversation(id: id), store.canManageConversations, store.canRenameConversation(target) else { return }
-                renameTarget = target
-            }
-            .listStyle(.sidebar)
-            .searchable(text: $search, placement: .sidebar, prompt: "搜索会话")
-            .task(id: search) {
-                // Searching reads every listed conversation; wait for typing to pause.
-                if !search.isEmpty { try? await Task.sleep(for: .milliseconds(250)) }
-                if !Task.isCancelled { store.setSearchText(search) }
-            }
-            .navigationTitle("会话")
-            .navigationSplitViewColumnWidth(min: 190, ideal: 240, max: 340)
-            .disabled(store.authenticationRunning || store.isShuttingDown)
-            .toolbar {
-                ToolbarItemGroup(placement: .automatic) {
-                    browserMenu
-                    Button { focused.createConversation() } label: { Label("新建会话", systemImage: "square.and.pencil") }
-                        .help("新建会话（⌘ N）").disabled(focused.isLoading || focused.enabledRuntimeInstances.isEmpty)
-                }
-            }
+        // The sidebar shows the list only while it is docked there; showing it docks the list.
+        NavigationSplitView(columnVisibility: Binding(get: { window.tools.list == .docked ? .all : .detailOnly },
+                                                      set: { window.tools.list = $0 == .detailOnly ? (window.tools.list == .floating ? .floating : .hidden) : .docked })) {
+            ConversationListView(window: window, store: store, focused: focused, placement: .sidebar)
         } detail: {
             PaneLayoutView(window: window, layout: window.layout, path: [], previewEmpty: previewEmpty)
             .navigationTitle(previewEmpty ? "新会话" : focused.selectedConversationTitle ?? "Velune")
@@ -119,218 +47,41 @@ struct VeluneRootView: View {
                     }
                 }
             }
-            .inspector(isPresented: $showsChanges) {
-                ChangeReviewView(store: focused).inspectorColumnWidth(min: 300, ideal: 440, max: 900)
+            // One inspector column: the docked outline, or change review while that is open.
+            .inspector(isPresented: Binding(get: { showsChanges || (window.tools.outline == .docked && window.tools.outlineShown) },
+                                            set: { shown in if !shown { if showsChanges { showsChanges = false } else { window.tools.outlineShown = false } } })) {
+                if showsChanges { ChangeReviewView(store: focused).inspectorColumnWidth(min: 300, ideal: 440, max: 900) }
+                else { ToolOutline(pane: pane, store: focused).id(pane.id).inspectorColumnWidth(min: 200, ideal: 260, max: 420) }
             }
         }
         .navigationSplitViewStyle(.balanced)
-        .onReceive(store.$conversationBrowserPreferences) { value in
-            if let value, value != browser.preferences { browser.restore(value) }
-        }
-        .onChange(of: browser.preferences) { _, value in
-            if store.conversationBrowserPreferences != nil { store.setConversationBrowserPreferences(value) }
-        }
+        .overlay { if let kind = window.dockHint { DockZoneHighlight(kind: kind) } }
         .onChange(of: activeState, initial: true) { _, value in if value == .key { focused.noteFocused() } }
         .onChange(of: window.focusedPaneID) { _, _ in showsOutlinePopover = false }
         .onChange(of: focused.pendingConversationID) { _, value in if value != nil { showsOutlinePopover = false } }
         .onChange(of: focused.loadedConversationID) { _, _ in showsOutlinePopover = false }
         .onChange(of: store.outlinePresentation) { _, _ in showsOutlinePopover = false }
         .toolbar { if !store.problems.isEmpty { ToolbarItem(placement: .primaryAction) { ProblemsButton(store: store) } } }
-        .sheet(item: $renameTarget) { ConversationRenameView(store: store, conversation: $0) }
-        .sheet(item: $aliasTarget) { ProjectAliasView(store: store, target: $0) }
-        .alert(deleteTargets.count == 1 ? "删除会话？" : "删除 \(deleteTargets.count) 个会话？", isPresented: Binding(get: { !deleteTargets.isEmpty }, set: { if !$0 { deleteTargets = [] } })) {
-            Button("取消", role: .cancel) { deleteTargets = [] }
-            Button("删除", role: .destructive) { store.deleteConversations(deleteTargets); deleteTargets = [] }
-        } message: {
-            Text("将永久删除所选 \(deleteTargets.count) 个会话，以及它们在各 Agent 运行时中的关联会话数据。此操作无法撤销。")
-        }
         // The title bar's proxy icon carries the focused pane, as the pane title strip does once split.
         .navigationDocument(PaneDocument(pane: pane.id, conversationID: focused.loadedConversationID, link: pane.link), preview: SharePreview(focused.selectedConversationTitle ?? "Velune"))
         .focusedSceneValue(\.conversationCommands, ConversationCommandTarget(store: focused, send: pane.send, window: window))
         .task { if previewSettings { openSettings() } }
     }
 
-    private func expansion(_ key: BindingConversationGroupKey) -> Binding<Bool> {
-        Binding(get: { store.searchResults != nil || !browser.isCollapsed(key) },
-                set: { expanded in if store.searchResults == nil { browser.setCollapsed(key, !expanded) } })
-    }
-
-    private func groupTitle(_ key: BindingConversationGroupKey) -> String {
-        switch key {
-        case .all: "会话"
-        case .pinned: "置顶"
-        case .runtime(let id): store.runtimeInstances.first { $0.id == id }?.name ?? "Agent 运行时"
-        case .project(let path?): ConversationBrowser.projectName(path, projects: store.conversationProjects)
-        case .project(nil): "无项目"
-        }
-    }
-
-    private func sectionHeader(_ section: ConversationBrowser.Section) -> some View {
-        let title = groupTitle(section.id)
-        let path: String? = if case .project(let path?) = section.id { path } else { nil }
-        return HStack(spacing: 6) {
-            Text(title).lineLimit(1).truncationMode(.middle)
-            Spacer(minLength: 0)
-        }
-        .help(path.map { (($0 as NSString).abbreviatingWithTildeInPath) } ?? title)
-        .contentShape(Rectangle())
-        .onTapGesture(count: 2) { if let path { aliasTarget = ProjectAliasTarget(path: path) } }
-        .contextMenu {
-            if let path {
-                Button("重命名项目…") { aliasTarget = ProjectAliasTarget(path: path) }
-                if section.group.alias != nil { Button("恢复文件夹名称") { store.setProjectAlias(path: path, alias: nil) } }
-                Button("在 Finder 中显示") { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)]) }
-                    .disabled(store.location(of: section.conversations.first?.runtimeID) != .local)
-                Divider()
-            }
-            if store.searchResults == nil {
-                Button(browser.isCollapsed(section.id) ? "展开" : "折叠") { browser.setCollapsed(section.id, !browser.isCollapsed(section.id)) }
-            }
-        }
-    }
-
-    private func conversationRow(_ conversation: Conversation) -> some View {
-        // Who started the turn does not matter; running does.
-        let running = store.runningConversationIDs.contains(conversation.id) || store.elsewhereConversationIDs.contains(conversation.id)
-        // A turn's end is news; its progress is not. The conversation the
-        // focused window shows is being read.
-        let unread = conversation.unread && !running && !(conversation.id == focused.loadedConversationID && activeState == .key)
-        return HStack(alignment: .firstTextBaseline, spacing: 5) {
-            // A turn that ended in failure is news of its own.
-            Group {
-                if unread && conversation.failed {
-                    Image(systemName: "exclamationmark.circle.fill").foregroundStyle(.red).imageScale(.small).help("上一轮失败")
-                } else {
-                    Circle().fill(.tint).frame(width: 7, height: 7).opacity(unread ? 1 : 0)
-                }
-            }.frame(width: 12).accessibilityHidden(true)
-            VStack(alignment: .leading, spacing: 3) {
-                HStack(spacing: 6) {
-                    Text(conversation.title).lineLimit(1).fontWeight(unread ? .semibold : nil)
-                    if running {
-                        Spacer(minLength: 0)
-                        ProgressView().controlSize(.mini).help("正在运行").accessibilityLabel("正在运行")
-                    }
-                }
-                HStack(spacing: 8) {
-                    Text(rowContext(conversation)).lineLimit(1).truncationMode(.middle)
-                        .help(conversation.cwd.map { "工作目录：\($0)" } ?? "未记录工作目录")
-                    Spacer(minLength: 0)
-                    if let date = browser.sort.timestamp(conversation) { Text(shortDate(date)).help("\(browser.sort.title)：\(Date(timeIntervalSince1970: Double(date) / 1000).formatted())").accessibilityLabel("\(browser.sort.title)：\(shortDate(date))") }
-                }.font(.caption).foregroundStyle(.secondary)
-            }
-        }
-        .padding(.vertical, 3)
-        .accessibilityElement(children: .combine)
-        .accessibilityValue(unread ? (conversation.failed ? "未读，上一轮失败" : "未读") : "")
-    }
-
-    @ViewBuilder private func conversationManagementMenu(_ ids: Set<String>) -> some View {
-        let targets = ids.compactMap { store.conversation(id: $0) }
-        if targets.count == 1, let target = targets.first {
-            Button("重命名…") { renameTarget = target }.disabled(!store.canManageConversations || !store.canRenameConversation(target))
-        }
-        if !targets.isEmpty {
-            if !targets.contains(where: \.archived) {
-                if targets.allSatisfy(\.pinned) { Button("取消置顶") { store.organize(targets, .unpin) } }
-                else { Button("置顶") { store.organize(targets, .pin) } }
-            }
-            if targets.contains(where: \.unread) { Button("标为已读") { store.organize(targets, .markRead) } }
-            else { Button("标为未读") { store.organize(targets, .markUnread) }.disabled(targets.contains(where: \.archived)) }
-            moveMenu(targets)
-            if targets.allSatisfy(\.archived) {
-                Button("取消归档") { store.organize(targets, .unarchive) }.disabled(!store.canManageConversations)
-            } else {
-                Button("归档") { store.organize(targets.filter { !$0.archived }, .archive) }
-                    .disabled(!store.canManageConversations || targets.contains(where: store.isRunning))
-            }
-        }
-        if targets.count == 1, let target = targets.first {
-            Divider()
-            Button("在右侧拆分打开") { window.split(.horizontal, opening: target.id) }
-            Button("在下方拆分打开") { window.split(.vertical, opening: target.id) }
-            Button("在新窗口中打开") { openWindow(id: WindowSeed.sceneID, value: WindowSeed(conversationID: target.id)) }
-            Divider()
-            Button("拷贝会话 ID") { copyToPasteboard(target.nativeID) }.disabled(target.nativeID.isEmpty)
-            Button("拷贝链接") { copyToPasteboard(ConversationLink.url(runtimeID: target.runtimeID, conversationID: target.id).absoluteString) }
-        }
-        Divider()
-        Button(targets.count > 1 ? "删除所选会话…" : "删除…", role: .destructive) { deleteTargets = targets }
-            .disabled(targets.isEmpty || !store.canManageConversations || !targets.allSatisfy(store.canDeleteConversation))
-        if targets.contains(where: { !store.canDeleteConversation($0) }) { Text("部分关联原生会话当前无法删除") }
-        if targets.count == 1, let target = targets.first, !store.canRenameConversation(target) { Text("原生会话标题当前无法修改") }
-    }
-
-    /// Moving files a conversation under another project in Velune's list;
-    /// where it runs stays its own working directory.
-    private func moveMenu(_ targets: [Conversation]) -> some View {
-        let current = Set(targets.map(\.project))
-        return Menu("移到项目") {
-            ForEach(store.conversationProjects.filter { current != [$0.path] }, id: \.path) { project in
-                Button(ConversationBrowser.projectName(project.path, projects: store.conversationProjects)) { store.organize(targets, .moveToProject(path: project.path)) }
-            }
-            Divider()
-            Button("其他文件夹…") {
-                let panel = NSOpenPanel()
-                panel.canChooseFiles = false; panel.canChooseDirectories = true; panel.allowsMultipleSelection = false
-                panel.prompt = "移到此项目"
-                if panel.runModal() == .OK, let url = panel.url { store.organize(targets, .moveToProject(path: url.path)) }
-            }
-            if targets.contains(where: \.moved) {
-                Divider()
-                Button("移回工作目录所在项目") { store.organize(targets, .moveToProject(path: nil)) }
-            }
-        }
-    }
-
-    private func copyToPasteboard(_ text: String) {
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(text, forType: .string)
-    }
-
-    private func rowContext(_ conversation: Conversation) -> String {
-        var parts: [String] = []
-        if browser.grouping != .runtime { parts.append(store.runtimeInstances.first { $0.id == conversation.runtimeID }?.name ?? "Agent 运行时") }
-        if browser.grouping != .project, let path = conversation.project { parts.append(ConversationBrowser.projectName(path, projects: store.conversationProjects)) }
-        return parts.joined(separator: " · ")
-    }
-
-    private var browserMenu: some View {
-        Menu {
-            Picker("分组", selection: $browser.grouping) { ForEach(ConversationBrowser.Grouping.allCases) { Text($0.title).tag($0) } }
-            Picker("排序", selection: $browser.sort) { ForEach(ConversationBrowser.Sort.allCases) { Text($0.title).tag($0) } }
-            Toggle("从旧到新", isOn: $browser.oldestFirst)
-            Divider()
-            Picker("Agent 运行时", selection: $browser.runtimeID) {
-                Text("所有运行时").tag(Optional<String>.none)
-                ForEach(store.enabledRuntimeInstances) { Text($0.name).tag(Optional($0.id)) }
-                if let id = browser.runtimeID, !store.enabledRuntimeInstances.contains(where: { $0.id == id }) {
-                    Text("当前筛选的运行时不可用").tag(Optional(id))
-                }
-            }
-            Picker("项目", selection: $browser.project) {
-                Text("所有项目").tag(ConversationBrowser.ProjectFilter.all)
-                Text("无项目").tag(ConversationBrowser.ProjectFilter.unspecified)
-                ForEach(store.conversationProjects, id: \.path) { project in
-                    Text(ConversationBrowser.projectName(project.path, projects: store.conversationProjects)).tag(ConversationBrowser.ProjectFilter.path(project.path))
-                }
-                if case .path(let path) = browser.project, !store.conversationProjects.contains(where: { $0.path == path }) {
-                    Text(ConversationBrowser.projectName(path, projects: store.conversationProjects)).tag(ConversationBrowser.ProjectFilter.path(path))
-                }
-            }
-            if browser.hasFilters { Divider(); Button("清除筛选") { browser.runtimeID = nil; browser.project = .all } }
-            Divider()
-            Toggle("显示已归档的会话", isOn: Binding(get: { store.showsArchived }, set: { store.setShowsArchived($0) }))
-        } label: { Label("显示", systemImage: browser.hasFilters || store.showsArchived ? "line.3.horizontal.decrease.circle.fill" : "line.3.horizontal.decrease") }
-        .help("会话分组、筛选、排序与已归档会话")
-        .accessibilityLabel("显示")
-        .disabled(store.conversationBrowserPreferences == nil)
-    }
-
-    /// The setting decides what the outline button does: a popover anchored to
-    /// it, or a toggle that collapses the focused pane's message list in place.
+    /// A docked or floating outline is shown and hidden by the button.
+    /// Otherwise the setting decides: a popover anchored to the button, or a
+    /// toggle that collapses the focused pane's message list in place.
     @ViewBuilder private var outlineButton: some View {
         let unavailable = focused.pendingConversationID != nil || focused.transcript.userRows.isEmpty
+        if window.tools.outline != .toolbar {
+            Toggle(isOn: $window.tools.outlineShown) { Label("会话大纲", systemImage: "list.bullet") }
+                .help(window.tools.outlineShown ? "隐藏会话大纲" : "显示会话大纲")
+        } else {
+            settingOutlineButton(unavailable: unavailable)
+        }
+    }
+
+    @ViewBuilder private func settingOutlineButton(unavailable: Bool) -> some View {
         switch store.outlinePresentation {
         case .popover:
             Button { showsOutlinePopover.toggle() } label: { Label("会话大纲", systemImage: "list.bullet") }
@@ -347,9 +98,28 @@ struct VeluneRootView: View {
                 .disabled(unavailable && !pane.outlineCollapsed)
         }
     }
+}
 
-    private func shortDate(_ unixMs: Int64) -> String {
-        Date(timeIntervalSince1970: Double(unixMs) / 1000).formatted(.dateTime.month(.abbreviated).day())
+/// The strip of the window a dragged panel would dock into.
+private struct DockZoneHighlight: View {
+    let kind: ToolWindowKind
+
+    var body: some View {
+        GeometryReader { geometry in
+            let size = geometry.size
+            let rect: CGRect = switch kind {
+            case .list: CGRect(x: 0, y: 0, width: min(260, size.width / 3), height: size.height)
+            case .outline: CGRect(x: size.width - min(280, size.width / 3), y: 0, width: min(280, size.width / 3), height: size.height)
+            case .composer: CGRect(x: 0, y: size.height - 150, width: size.width, height: 150)
+            }
+            RoundedRectangle(cornerRadius: 8)
+                .fill(Color.accentColor.opacity(0.12))
+                .strokeBorder(Color.accentColor.opacity(0.6), lineWidth: 2)
+                .frame(width: max(0, rect.width - 12), height: max(0, rect.height - 12))
+                .position(x: rect.midX, y: rect.midY)
+        }
+        .ignoresSafeArea()
+        .allowsHitTesting(false)
     }
 }
 

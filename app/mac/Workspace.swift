@@ -170,6 +170,7 @@ struct SavedWindowLayout: Codable, Equatable {
     var layout: PaneLayout
     var conversations: [UUID: String]
     var focused: UUID
+    var tools: ToolWindowLayout
 }
 
 /// What a new window starts with.
@@ -198,10 +199,28 @@ struct WindowSeed: Codable, Hashable {
     /// The pane views by pane, for telling which one a click lands in.
     private var anchors: [UUID: () -> NSView?] = [:]
     private var mouseMonitor: Any?
+    /// Where the list, outline and composer are.
+    @Published var tools = ToolWindowLayout() { didSet { if tools != oldValue { panels.sync() } } }
+    /// The tool window a panel dragged now would dock as, for the window to show where.
+    @Published var dockHint: ToolWindowKind?
+    /// The list's search text, shared by the sidebar and a floating list.
+    @Published var listSearch = ""
+    /// Opens a conversation window; set by the window's view, which has the action.
+    var openWindow: ((WindowSeed) -> Void)?
+    private(set) lazy var panels = ToolPanels(model: self)
 
     /// Windows by the panes they hold, for moving a pane between them.
     private static var all: [WeakWindow] = []
     private struct WeakWindow { weak var model: ConversationWindowModel? }
+    static func isConversationWindow(_ window: NSWindow) -> Bool {
+        all.contains { $0.model?.window === window }
+    }
+
+    /// The window whose floating panel is key: commands act on it as on the window itself.
+    static func owning(panel window: NSWindow?) -> ConversationWindowModel? {
+        (window as? ToolPanel)?.model
+    }
+
     static func owning(pane: UUID) -> ConversationWindowModel? {
         all.removeAll { $0.model == nil }
         return all.lazy.compactMap(\.model).first { $0.panes[pane] != nil }
@@ -223,7 +242,7 @@ struct WindowSeed: Codable, Hashable {
     var orderedPanes: [ConversationPane] { layout.paneIDs.compactMap { panes[$0] } }
 
     var savedLayout: SavedWindowLayout {
-        SavedWindowLayout(layout: layout, conversations: paneConversations, focused: focusedPaneID)
+        SavedWindowLayout(layout: layout, conversations: paneConversations, focused: focusedPaneID, tools: tools)
     }
 
     /// Restore a saved arrangement, or open `seed`'s conversation, then start
@@ -244,6 +263,7 @@ struct WindowSeed: Codable, Hashable {
             panes = restored
             layout = saved.layout
             focusedPaneID = saved.focused
+            tools = saved.tools
             for pane in orderedPanes {
                 let id = saved.conversations[pane.id]
                 pane.store.start(loadFirstConversation: restored.count == 1, newConversation: restored.count > 1, opening: id)
@@ -254,6 +274,7 @@ struct WindowSeed: Codable, Hashable {
             focused.store.start()
         }
         installMouseMonitor()
+        panels.sync()
     }
 
     /// Open a conversation in the focused pane; one another pane of this
@@ -349,8 +370,8 @@ struct WindowSeed: Codable, Hashable {
 
     /// Open a pane's conversation in a new window at `point` (screen
     /// coordinates, its top left), and close the pane here.
-    func tearOff(_ id: UUID, at point: NSPoint, openWindow: (WindowSeed) -> Void) {
-        guard isSplit, let conversationID = panes[id]?.store.loadedConversationID else { return }
+    func tearOff(_ id: UUID, at point: NSPoint) {
+        guard isSplit, let openWindow, let conversationID = panes[id]?.store.loadedConversationID else { return }
         let existing = Set(NSApp.windows.map(\.windowNumber))
         openWindow(WindowSeed(conversationID: conversationID))
         close(id)

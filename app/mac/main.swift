@@ -19,7 +19,13 @@ extension FocusedValues {
 
 @MainActor
 struct ConversationCommands: Commands {
-    @FocusedValue(\.conversationCommands) private var target
+    @FocusedValue(\.conversationCommands) private var focusedTarget
+    /// A floating panel is no scene: while one is key, its window is the target.
+    private var target: ConversationCommandTarget? {
+        focusedTarget ?? ConversationWindowModel.owning(panel: NSApp.keyWindow).map { window in
+            ConversationCommandTarget(store: window.focused.store, send: window.focused.send, window: window)
+        }
+    }
     var body: some Commands {
         CommandGroup(replacing: .newItem) {
             Button("新建会话") { target?.store.createConversation() }
@@ -52,6 +58,36 @@ struct ConversationCommands: Commands {
                 .disabled(target?.window.isSplit != true)
             Divider()
         }
+        CommandGroup(before: .sidebar) {
+            Picker("会话列表", selection: toolBinding(\.list, default: .docked)) {
+                Text("停靠在侧栏").tag(ToolWindowLayout.ListPlacement.docked)
+                Text("浮动").tag(ToolWindowLayout.ListPlacement.floating)
+                Text("隐藏").tag(ToolWindowLayout.ListPlacement.hidden)
+            }
+            .disabled(target == nil)
+            Picker("会话大纲", selection: toolBinding(\.outline, default: .toolbar)) {
+                Text("由工具栏按钮显示").tag(ToolWindowLayout.OutlinePlacement.toolbar)
+                Text("停靠在右侧").tag(ToolWindowLayout.OutlinePlacement.docked)
+                Text("浮动").tag(ToolWindowLayout.OutlinePlacement.floating)
+            }
+            .disabled(target == nil)
+            Picker("输入区", selection: toolBinding(\.composer, default: .docked)) {
+                Text("停靠在面板底部").tag(ToolWindowLayout.ComposerPlacement.docked)
+                Text("浮动").tag(ToolWindowLayout.ComposerPlacement.floating)
+            }
+            .disabled(target == nil)
+            Divider()
+        }
+    }
+
+    /// A placement of the target window's tools; choosing the outline's shows it.
+    private func toolBinding<Value>(_ path: WritableKeyPath<ToolWindowLayout, Value>, default value: Value) -> Binding<Value> {
+        Binding(get: { target?.window.tools[keyPath: path] ?? value },
+                set: { new in
+                    guard let window = target?.window else { return }
+                    window.tools[keyPath: path] = new
+                    window.tools.outlineShown = true
+                })
     }
 }
 
@@ -61,6 +97,7 @@ struct ConversationWindow: View {
     /// The window's panes as last arranged, restored with the window.
     @SceneStorage("paneLayout") private var savedLayout = ""
     let seed: WindowSeed?
+    @Environment(\.openWindow) private var openWindow
     let previewEmpty: Bool
     let previewSettings: Bool
     init(application: AppStore, seed: WindowSeed?, previewEmpty: Bool, previewSettings: Bool) {
@@ -73,10 +110,12 @@ struct ConversationWindow: View {
         VeluneRootView(window: window, store: window.list, pane: window.focused, focused: window.focused.store,
                        previewEmpty: previewEmpty, previewSettings: previewSettings)
             .onAppear {
+                window.openWindow = { [openWindow] in openWindow(id: WindowSeed.sceneID, value: $0) }
                 let saved = savedLayout.data(using: .utf8).flatMap { try? JSONDecoder().decode(SavedWindowLayout.self, from: $0) }
                 window.start(restoring: saved, seed: seed)
                 // Development check of split panes without driving the interface.
                 if CommandLine.arguments.contains("--check-split-panes"), !window.isSplit { window.split(.horizontal); window.split(.vertical) }
+                if CommandLine.arguments.contains("--check-tool-windows") { window.tools.float(.list); window.tools.float(.outline); window.tools.float(.composer) }
             }
             .onChange(of: window.savedLayout) { _, layout in
                 if let data = try? JSONEncoder().encode(layout), let text = String(data: data, encoding: .utf8) { savedLayout = text }

@@ -86,7 +86,6 @@ struct ConversationPaneView: View {
     @ObservedObject var pane: ConversationPane
     @ObservedObject var store: AppStore
     let previewEmpty: Bool
-    @Environment(\.openWindow) private var openWindow
     @State private var size: CGSize = .zero
     @State private var dropZone: PaneDropZone?
 
@@ -126,7 +125,7 @@ struct ConversationPaneView: View {
             }
             .frame(maxHeight: .infinity)
             // The title strip carries the pane: to another pane, another window, or out into a new one.
-            .overlay { PaneDragHandle(window: window, pane: pane) { openWindow(id: WindowSeed.sceneID, value: $0) } }
+            .overlay { PaneDragHandle(window: window, pane: pane) }
             .help(pane.link == nil ? "" : "拖动以移到其他位置或其他窗口；拖到窗口外则在新窗口中打开")
             Button { window.close(pane.id) } label: { Image(systemName: "xmark") }
                 .buttonStyle(.borderless).controlSize(.small)
@@ -154,7 +153,7 @@ struct ConversationPaneView: View {
                 .padding(.horizontal, 16).padding(.vertical, 10)
             }
             .background(.bar)
-        } else {
+        } else if window.tools.composer == .docked {
             ComposerView(store: store, model: pane.composer, send: pane.send)
         }
     }
@@ -240,20 +239,17 @@ private struct PaneDropHighlight: View {
 private struct PaneDragHandle: NSViewRepresentable {
     let window: ConversationWindowModel
     let pane: ConversationPane
-    let openWindow: (WindowSeed) -> Void
 
     func makeNSView(context: Context) -> HandleView { HandleView() }
 
     func updateNSView(_ view: HandleView, context: Context) {
         view.model = window
         view.pane = pane
-        view.openWindow = openWindow
     }
 
     final class HandleView: NSView, NSDraggingSource {
         weak var model: ConversationWindowModel?
         weak var pane: ConversationPane?
-        var openWindow: ((WindowSeed) -> Void)?
         private var pressed: NSEvent?
 
         override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
@@ -281,9 +277,9 @@ private struct PaneDragHandle: NSViewRepresentable {
         }
 
         func draggingSession(_ session: NSDraggingSession, endedAt screenPoint: NSPoint, operation: NSDragOperation) {
-            guard operation == [], let model, let pane, let openWindow,
+            guard operation == [], let model, let pane,
                   !NSApp.windows.contains(where: { $0.isVisible && $0.frame.contains(screenPoint) }) else { return }
-            model.tearOff(pane.id, at: screenPoint, openWindow: openWindow)
+            model.tearOff(pane.id, at: screenPoint)
         }
 
         /// The pane, reduced, to drag around.

@@ -1,9 +1,12 @@
 import SwiftUI
 
-/// The outline popover: user messages of the loaded conversation. A click
-/// selects, a double click or Return goes to the message.
+/// The outline: user messages of the loaded conversation. A click selects,
+/// a double click (or Return, in the popover) goes to the message.
 struct TranscriptOutlineView: View {
     @ObservedObject var model: TranscriptModel
+    /// In a popover it has its own size and takes Return; docked or floating
+    /// it fills its place and leaves Return to the composer.
+    var inPopover = true
     let navigate: (String) -> Void
     @State private var selectedID: String?
     var body: some View {
@@ -24,10 +27,10 @@ struct TranscriptOutlineView: View {
                 Text("\(model.userRows.count) 条用户消息").font(.callout).foregroundStyle(.secondary)
                 Spacer()
                 Button("前往") { if let selectedID { go(to: selectedID) } }
-                    .keyboardShortcut(.defaultAction).disabled(selectedID == nil)
+                    .keyboardShortcut(inPopover ? .defaultAction : nil).disabled(selectedID == nil)
             }.padding(10)
         }
-        .frame(width: 360, height: 380)
+        .frame(width: inPopover ? 360 : nil, height: inPopover ? 380 : nil)
         .onChange(of: model.contentRevision) { _, _ in
             if let selectedID, !model.userRows.contains(where: { $0.id == selectedID }) { self.selectedID = nil }
         }
