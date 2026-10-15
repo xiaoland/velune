@@ -153,7 +153,7 @@ struct ConversationPaneView: View {
                 .padding(.horizontal, 16).padding(.vertical, 10)
             }
             .background(.bar)
-        } else if window.tools.composer == .docked {
+        } else if !window.tools.sharesComposer {
             ComposerView(store: store, model: pane.composer, send: pane.send)
         }
     }

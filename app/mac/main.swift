@@ -21,9 +21,9 @@ extension FocusedValues {
 @MainActor
 struct ConversationCommands: Commands {
     @FocusedValue(\.conversationCommands) private var focusedTarget
-    /// A floating panel is no scene: while one is key, its window is the target.
+    /// A floating panel or tool window is no scene: while one is key, its window is the target.
     private var target: ConversationCommandTarget? {
-        focusedTarget ?? ConversationWindowModel.owning(panel: NSApp.keyWindow).map { window in
+        focusedTarget ?? ConversationWindowModel.owning(detached: NSApp.keyWindow).map { window in
             ConversationCommandTarget(store: window.focused.store, send: window.focused.send, window: window)
         }
     }
@@ -60,60 +60,38 @@ struct ConversationCommands: Commands {
             Divider()
         }
         CommandGroup(before: .sidebar) {
-            Picker("会话列表", selection: toolBinding(\.list, default: .docked)) {
-                Text("停靠在侧栏").tag(ToolWindowLayout.ListPlacement.docked)
-                Text("浮动").tag(ToolWindowLayout.ListPlacement.floating)
-                Text("隐藏").tag(ToolWindowLayout.ListPlacement.hidden)
+            ForEach(Array(ToolWindowKind.allCases.enumerated()), id: \.element) { index, kind in
+                Button(toolTitle(kind)) { kind == .composer ? target?.window.focusComposer() : target?.window.toggle(kind) }
+                    .keyboardShortcut(KeyEquivalent(Character("\(index + 1)")))
+                    .disabled(target == nil)
             }
-            .disabled(target == nil)
-            Picker("会话大纲", selection: outlineChoice) {
-                Text("弹出").tag(OutlineChoice.popover)
-                Text("就地折叠").tag(OutlineChoice.inPlace)
-                Text("停靠在右侧").tag(OutlineChoice.docked)
-                Text("浮动").tag(OutlineChoice.floating)
+            Divider()
+            ForEach(ToolWindowKind.allCases, id: \.self) { kind in
+                Picker("\(kind.title)位置", selection: Binding(get: { target?.window.choice(for: kind) ?? .place(.builtIn) },
+                                                           set: { target?.window.choose($0, for: kind) })) {
+                    ForEach(ToolChoice.all(for: kind), id: \.choice) { Text($0.title).tag($0.choice) }
+                }
+                .disabled(target == nil)
             }
-            .disabled(target == nil)
-            Picker("输入区", selection: toolBinding(\.composer, default: .docked)) {
-                Text("停靠在面板底部").tag(ToolWindowLayout.ComposerPlacement.docked)
-                Text("浮动").tag(ToolWindowLayout.ComposerPlacement.floating)
-            }
-            .disabled(target == nil)
+            Divider()
+            Button(target?.window.tools.tools(in: .bottom).isEmpty == false ? "隐藏底部区域" : "显示底部区域") { target?.window.tools.toggleArea(.bottom) }
+                .keyboardShortcut("y", modifiers: [.command, .shift])
+                .disabled(target == nil)
+            Button(target?.window.tools.isEditorOnly == true ? "恢复停靠区域" : "只显示编辑区") { target?.window.tools.toggleEditorOnly() }
+                .keyboardShortcut(.return, modifiers: [.command, .shift])
+                .disabled(target == nil)
             Divider()
         }
     }
 
-    /// Popover and in place are how the toolbar button shows the outline, an
-    /// application setting; docked and floating are this window's.
-    private var outlineChoice: Binding<OutlineChoice> {
-        Binding(get: {
-            guard let window = target?.window else { return .popover }
-            switch window.tools.outline {
-            case .docked: return .docked
-            case .floating: return .floating
-            case .toolbar: return window.application.outlinePresentation == .inPlace ? .inPlace : .popover
-            }
-        }, set: { choice in
-            guard let window = target?.window else { return }
-            switch choice {
-            case .popover, .inPlace:
-                window.tools.outline = .toolbar
-                let presentation: BindingOutlinePresentation = choice == .inPlace ? .inPlace : .popover
-                if window.application.outlinePresentation != presentation { window.application.setOutlinePresentation(presentation) }
-            case .docked: window.tools.outline = .docked
-            case .floating: window.tools.outline = .floating
-            }
-            window.tools.outlineShown = true
-        })
-    }
-
-    /// A placement of the target window's tools.
-    private func toolBinding<Value>(_ path: WritableKeyPath<ToolWindowLayout, Value>, default value: Value) -> Binding<Value> {
-        Binding(get: { target?.window.tools[keyPath: path] ?? value },
-                set: { new in
-                    guard let window = target?.window else { return }
-                    window.tools[keyPath: path] = new
-                    window.tools.outlineShown = true
-                })
+    /// The list and outline show and hide; the composer, always somewhere, takes the keyboard.
+    private func toolTitle(_ kind: ToolWindowKind) -> String {
+        if kind == .composer { return "转到输入区" }
+        guard let window = target?.window else { return "显示\(kind.title)" }
+        let shown = kind == .outline && window.tools[.outline].place == .builtIn
+            ? (window.application.outlinePresentation == .popover ? window.outlinePopover : window.focused.outlineCollapsed)
+            : window.tools.isOpen(kind)
+        return (shown ? "隐藏" : "显示") + kind.title
     }
 }
 
@@ -121,7 +99,7 @@ struct ConversationCommands: Commands {
 struct ConversationWindow: View {
     @StateObject private var window: ConversationWindowModel
     /// The window's panes as last arranged, restored with the window.
-    @SceneStorage("paneLayout") private var savedLayout = ""
+    @SceneStorage("windowLayout") private var savedLayout = ""
     let seed: WindowSeed?
     @Environment(\.openWindow) private var openWindow
     let previewEmpty: Bool
@@ -141,7 +119,8 @@ struct ConversationWindow: View {
                 window.start(restoring: saved, seed: seed)
                 // Development check of split panes without driving the interface.
                 if CommandLine.arguments.contains("--check-split-panes"), !window.isSplit { window.split(.horizontal); window.split(.vertical) }
-                if CommandLine.arguments.contains("--check-tool-windows") { window.tools.float(.list); window.tools.float(.outline); window.tools.float(.composer) }
+                if CommandLine.arguments.contains("--check-tool-windows") { window.tools.move(.list, to: .floating); window.tools.move(.outline, to: .window); window.tools.move(.composer, to: .floating) }
+                if CommandLine.arguments.contains("--check-dock-areas") { window.tools.move(.outline, to: .docked(.left)); window.tools.move(.list, to: .docked(.right)); window.tools.move(.composer, to: .docked(.bottom)) }
             }
             .onChange(of: window.savedLayout) { _, layout in
                 if let data = try? JSONEncoder().encode(layout), let text = String(data: data, encoding: .utf8) { savedLayout = text }
@@ -221,6 +200,7 @@ struct VeluneApp: App {
                 }
             }
             ConversationCommands()
+            InspectorCommands()
             CommandGroup(after: .sidebar) {
                 AnalyticsMenuItem()
                 ResourceLibraryMenuItem()

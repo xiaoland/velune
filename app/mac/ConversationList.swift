@@ -30,7 +30,6 @@ struct ConversationListView: View {
                 list
                     .searchable(text: $window.listSearch, placement: .sidebar, prompt: "搜索会话")
                     .navigationTitle("会话")
-                    .navigationSplitViewColumnWidth(min: 190, ideal: 240, max: 340)
                     .toolbar {
                         ToolbarItemGroup(placement: .automatic) {
                             browserMenu

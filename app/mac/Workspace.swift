@@ -200,14 +200,16 @@ struct WindowSeed: Codable, Hashable {
     private var anchors: [UUID: () -> NSView?] = [:]
     private var mouseMonitor: Any?
     /// Where the list, outline and composer are.
-    @Published var tools = ToolWindowLayout() { didSet { if tools != oldValue { panels.sync() } } }
-    /// The tool window a panel dragged now would dock as, for the window to show where.
-    @Published var dockHint: ToolWindowKind?
+    @Published var tools = ToolWindowLayout() { didSet { if tools != oldValue { detached.sync() } } }
+    /// The area a panel dragged now would dock into, for the window to show where.
+    @Published var dockHint: DockSide?
+    /// The outline popover from the toolbar button.
+    @Published var outlinePopover = false
     /// The list's search text, shared by the sidebar and a floating list.
     @Published var listSearch = ""
     /// Opens a conversation window; set by the window's view, which has the action.
     var openWindow: ((WindowSeed) -> Void)?
-    private(set) lazy var panels = ToolPanels(model: self)
+    private(set) lazy var detached = DetachedTools(model: self)
 
     /// Windows by the panes they hold, for moving a pane between them.
     private static var all: [WeakWindow] = []
@@ -216,9 +218,9 @@ struct WindowSeed: Codable, Hashable {
         all.contains { $0.model?.window === window }
     }
 
-    /// The window whose floating panel is key: commands act on it as on the window itself.
-    static func owning(panel window: NSWindow?) -> ConversationWindowModel? {
-        (window as? ToolPanel)?.model
+    /// The window whose floating panel or tool window is key: commands act on it as on the window itself.
+    static func owning(detached window: NSWindow?) -> ConversationWindowModel? {
+        (window as? any DetachedTool)?.model
     }
 
     static func owning(pane: UUID) -> ConversationWindowModel? {
@@ -263,7 +265,7 @@ struct WindowSeed: Codable, Hashable {
             panes = restored
             layout = saved.layout
             focusedPaneID = saved.focused
-            tools = saved.tools
+            tools = saved.tools.normalized()
             for pane in orderedPanes {
                 let id = saved.conversations[pane.id]
                 pane.store.start(loadFirstConversation: restored.count == 1, newConversation: restored.count > 1, opening: id)
@@ -274,7 +276,7 @@ struct WindowSeed: Codable, Hashable {
             focused.store.start()
         }
         installMouseMonitor()
-        panels.sync()
+        detached.sync()
     }
 
     /// Open a conversation in the focused pane; one another pane of this

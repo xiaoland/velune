@@ -2,9 +2,9 @@ import SwiftUI
 import AppKit
 import VeluneBindings
 
-/// A conversation window: the list beside the panes. The list has its own
-/// workspace and opens conversations in the focused pane, which the toolbar
-/// and commands act on.
+/// A conversation window: the panes, with dock areas for tool windows at
+/// the left, right and bottom. The list has its own workspace and opens
+/// conversations in the focused pane, which the toolbar and commands act on.
 struct VeluneRootView: View {
     @ObservedObject var window: ConversationWindowModel
     /// The list's workspace.
@@ -17,19 +17,24 @@ struct VeluneRootView: View {
     @Environment(\.openSettings) private var openSettings
     @Environment(\.openWindow) private var openWindow
     @Environment(\.controlActiveState) private var activeState
-    @State private var showsOutlinePopover = false
     @State private var showsChanges = false
     /// Change review is implemented but not yet part of the product
     /// (2026-10-11 decision); this keeps its entry closed.
     private static let changeReviewEnabled = false
 
     var body: some View {
-        // The sidebar shows the list only while it is docked there; showing it docks the list.
-        NavigationSplitView(columnVisibility: Binding(get: { window.tools.list == .docked ? .all : .detailOnly },
-                                                      set: { window.tools.list = $0 == .detailOnly ? (window.tools.list == .floating ? .floating : .hidden) : .docked })) {
-            ConversationListView(window: window, store: store, focused: focused, placement: .sidebar)
+        // The sidebar and the inspector are the left and right dock areas; collapsing one collapses the area.
+        NavigationSplitView(columnVisibility: Binding(get: { window.tools.tools(in: .left).isEmpty ? .detailOnly : .all },
+                                                      set: { $0 == .detailOnly ? window.tools.collapse(.left) : window.tools.showArea(.left) })) {
+            DockAreaView(window: window, side: .left)
+                .navigationSplitViewColumnWidth(min: 190, ideal: 240, max: 420)
         } detail: {
-            PaneLayoutView(window: window, layout: window.layout, path: [], previewEmpty: previewEmpty)
+            GeometryReader { geometry in
+                VStack(spacing: 0) {
+                    PaneLayoutView(window: window, layout: window.layout, path: [], previewEmpty: previewEmpty)
+                    if !window.tools.tools(in: .bottom).isEmpty { BottomAreaView(window: window, available: geometry.size.height) }
+                }
+            }
             .navigationTitle(previewEmpty ? "新会话" : focused.selectedConversationTitle ?? "Velune")
             .toolbar {
                 ToolbarItemGroup(placement: .primaryAction) {
@@ -47,20 +52,24 @@ struct VeluneRootView: View {
                     }
                 }
             }
-            // One inspector column: the docked outline, or change review while that is open.
-            .inspector(isPresented: Binding(get: { showsChanges || (window.tools.outline == .docked && window.tools.outlineShown) },
-                                            set: { shown in if !shown { if showsChanges { showsChanges = false } else { window.tools.outlineShown = false } } })) {
+            // One inspector column: the right dock area, or change review while that is open.
+            .inspector(isPresented: Binding(get: { showsChanges || !window.tools.tools(in: .right).isEmpty },
+                                            set: { shown in
+                                                if shown { window.tools.showArea(.right) }
+                                                else if showsChanges { showsChanges = false }
+                                                else { window.tools.collapse(.right) }
+                                            })) {
                 if showsChanges { ChangeReviewView(store: focused).inspectorColumnWidth(min: 300, ideal: 440, max: 900) }
-                else { ToolOutline(pane: pane, store: focused).id(pane.id).inspectorColumnWidth(min: 200, ideal: 260, max: 420) }
+                else { DockAreaView(window: window, side: .right).inspectorColumnWidth(min: 200, ideal: 260, max: 480) }
             }
         }
         .navigationSplitViewStyle(.balanced)
-        .overlay { if let kind = window.dockHint { DockZoneHighlight(kind: kind) } }
+        .overlay { if let side = window.dockHint { DockZoneHighlight(side: side) } }
         .onChange(of: activeState, initial: true) { _, value in if value == .key { focused.noteFocused() } }
-        .onChange(of: window.focusedPaneID) { _, _ in showsOutlinePopover = false }
-        .onChange(of: focused.pendingConversationID) { _, value in if value != nil { showsOutlinePopover = false } }
-        .onChange(of: focused.loadedConversationID) { _, _ in showsOutlinePopover = false }
-        .onChange(of: store.outlinePresentation) { _, _ in showsOutlinePopover = false }
+        .onChange(of: window.focusedPaneID) { _, _ in window.outlinePopover = false }
+        .onChange(of: focused.pendingConversationID) { _, value in if value != nil { window.outlinePopover = false } }
+        .onChange(of: focused.loadedConversationID) { _, _ in window.outlinePopover = false }
+        .onChange(of: store.outlinePresentation) { _, _ in window.outlinePopover = false }
         .toolbar { if !store.problems.isEmpty { ToolbarItem(placement: .primaryAction) { ProblemsButton(store: store) } } }
         // The title bar's proxy icon carries the focused pane, as the pane title strip does once split.
         .navigationDocument(PaneDocument(pane: pane.id, conversationID: focused.loadedConversationID, link: pane.link), preview: SharePreview(focused.selectedConversationTitle ?? "Velune"))
@@ -68,14 +77,14 @@ struct VeluneRootView: View {
         .task { if previewSettings { openSettings() } }
     }
 
-    /// A docked or floating outline is shown and hidden by the button.
-    /// Otherwise the setting decides: a popover anchored to the button, or a
-    /// toggle that collapses the focused pane's message list in place.
+    /// The outline as a tool window is shown and hidden by the button.
+    /// In its own place the setting decides: a popover anchored to the
+    /// button, or a toggle that collapses the focused pane's message list in place.
     @ViewBuilder private var outlineButton: some View {
         let unavailable = focused.pendingConversationID != nil || focused.transcript.userRows.isEmpty
-        if window.tools.outline != .toolbar {
-            Toggle(isOn: $window.tools.outlineShown) { Label("会话大纲", systemImage: "list.bullet") }
-                .help(window.tools.outlineShown ? "隐藏会话大纲" : "显示会话大纲")
+        if window.tools[.outline].place != .builtIn {
+            Toggle(isOn: Binding(get: { window.tools.isOpen(.outline) }, set: { _ in window.toggle(.outline) })) { Label("会话大纲", systemImage: "list.bullet") }
+                .help(window.tools.isOpen(.outline) ? "隐藏会话大纲（⌘ 2）" : "显示会话大纲（⌘ 2）")
         } else {
             settingOutlineButton(unavailable: unavailable)
         }
@@ -84,33 +93,33 @@ struct VeluneRootView: View {
     @ViewBuilder private func settingOutlineButton(unavailable: Bool) -> some View {
         switch store.outlinePresentation {
         case .popover:
-            Button { showsOutlinePopover.toggle() } label: { Label("会话大纲", systemImage: "list.bullet") }
-                .help("会话大纲").disabled(unavailable)
-                .popover(isPresented: $showsOutlinePopover, arrowEdge: .bottom) {
+            Button { window.outlinePopover.toggle() } label: { Label("会话大纲", systemImage: "list.bullet") }
+                .help("会话大纲（⌘ 2）").disabled(unavailable)
+                .popover(isPresented: Binding(get: { window.outlinePopover && !unavailable }, set: { window.outlinePopover = $0 }), arrowEdge: .bottom) {
                     TranscriptOutlineView(model: focused.transcript) { id in
-                        showsOutlinePopover = false
+                        window.outlinePopover = false
                         pane.navigate(to: id)
                     }
                 }
         case .inPlace:
             Toggle(isOn: $pane.outlineCollapsed) { Label("会话大纲", systemImage: "list.bullet") }
-                .help(pane.outlineCollapsed ? "展开完整会话" : "折叠为用户消息大纲")
+                .help(pane.outlineCollapsed ? "展开完整会话（⌘ 2）" : "折叠为用户消息大纲（⌘ 2）")
                 .disabled(unavailable && !pane.outlineCollapsed)
         }
     }
 }
 
-/// The strip of the window a dragged panel would dock into.
+/// Where a dragged panel would dock: the sidebar, the inspector, or the strip below the panes.
 private struct DockZoneHighlight: View {
-    let kind: ToolWindowKind
+    let side: DockSide
 
     var body: some View {
         GeometryReader { geometry in
             let size = geometry.size
-            let rect: CGRect = switch kind {
-            case .list: CGRect(x: 0, y: 0, width: min(260, size.width / 3), height: size.height)
-            case .outline: CGRect(x: size.width - min(280, size.width / 3), y: 0, width: min(280, size.width / 3), height: size.height)
-            case .composer: CGRect(x: 0, y: size.height - 150, width: size.width, height: 150)
+            let rect: CGRect = switch side {
+            case .left: CGRect(x: 0, y: 0, width: min(260, size.width / 3), height: size.height)
+            case .right: CGRect(x: size.width - min(280, size.width / 3), y: 0, width: min(280, size.width / 3), height: size.height)
+            case .bottom: CGRect(x: 0, y: size.height - 180, width: size.width, height: 180)
             }
             RoundedRectangle(cornerRadius: 8)
                 .fill(Color.accentColor.opacity(0.12))
