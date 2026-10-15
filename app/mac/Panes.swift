@@ -14,7 +14,7 @@ struct PaneLayoutView: View {
         switch layout {
         case .pane(let id):
             if let pane = window.panes[id] {
-                ConversationPaneView(window: window, pane: pane, store: pane.store, previewEmpty: previewEmpty).id(id)
+                PaneView(window: window, pane: pane, previewEmpty: previewEmpty).id(id)
             }
         case .split(let split):
             PaneSplitView(window: window, split: split, path: path, previewEmpty: previewEmpty)
@@ -79,19 +79,69 @@ private struct PaneSplitView: View {
     }
 }
 
-/// A pane: its conversation's transcript above its composer. Split panes
-/// carry a header strip with the title; the focused one's is marked.
-struct ConversationPaneView: View {
+/// A pane: its tab bar, shown once the window is split or the pane has more
+/// than one tab, above the shown tab. Tabs shown before stay in place, hidden,
+/// so they keep their scroll position.
+struct PaneView: View {
     @ObservedObject var window: ConversationWindowModel
-    @ObservedObject var pane: ConversationPane
-    @ObservedObject var store: AppStore
+    @ObservedObject var pane: Pane
     let previewEmpty: Bool
     @State private var size: CGSize = .zero
     @State private var dropZone: PaneDropZone?
 
     var body: some View {
         VStack(spacing: 0) {
-            if window.isSplit { header }
+            if window.isSplit || pane.tabs.count > 1 { PaneTabBar(window: window, pane: pane) }
+            ZStack {
+                ForEach(pane.tabs) { tab in
+                    ActiveTab(tab: tab) {
+                        TabContentView(window: window, tab: tab, store: tab.store, shown: tab.id == pane.selectedID, previewEmpty: previewEmpty)
+                    }
+                    .hidden(tab.id != pane.selectedID)
+                }
+            }
+            // Exactly the room the pane has, however wide a tab's content would like to be.
+            .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
+        }
+        .background(PaneAnchor { [window, id = pane.id] in window.register(id, anchor: $0) })
+        .onGeometryChange(for: CGSize.self) { $0.size } action: { size = $0 }
+        .onDrop(of: [.url], delegate: PaneDropDelegate(window: window, pane: pane.id, size: size, zone: $dropZone))
+        .overlay { if let dropZone { PaneDropHighlight(zone: dropZone) } }
+        .onChange(of: pane.selectedID) { old, new in
+            // Typing that went to the tab now hidden goes to the one shown.
+            guard pane.tabs.first(where: { $0.id == old })?.composer.isFocused == true, let tab = pane.tabs.first(where: { $0.id == new }) else { return }
+            DispatchQueue.main.async { tab.composer.focus() }
+        }
+    }
+}
+
+/// A tab's views once it has been shown.
+private struct ActiveTab<Content: View>: View {
+    @ObservedObject var tab: ConversationTab
+    @ViewBuilder let content: () -> Content
+
+    var body: some View {
+        if tab.isActive { content() }
+    }
+}
+
+private extension View {
+    @ViewBuilder func hidden(_ hidden: Bool) -> some View {
+        if hidden { self.hidden().accessibilityHidden(true) } else { self }
+    }
+}
+
+/// A tab's conversation: its transcript above its composer.
+private struct TabContentView: View {
+    @ObservedObject var window: ConversationWindowModel
+    @ObservedObject var tab: ConversationTab
+    @ObservedObject var store: AppStore
+    /// The tab its pane shows; only it presents runtime questions.
+    let shown: Bool
+    let previewEmpty: Bool
+
+    var body: some View {
+        VStack(spacing: 0) {
             Group {
                 if store.pendingConversationID != nil { ProgressView(store.conversationManagementStatus ?? "正在加载会话…") }
                 else if previewEmpty || store.transcript.rows.isEmpty { emptyState }
@@ -100,43 +150,9 @@ struct ConversationPaneView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             footer
         }
-        .background(PaneAnchor { [window, id = pane.id] in window.register(id, anchor: $0) })
-        .onGeometryChange(for: CGSize.self) { $0.size } action: { size = $0 }
-        .onDrop(of: [.url], delegate: PaneDropDelegate(window: window, pane: pane.id, size: size, zone: $dropZone))
-        .overlay { if let dropZone { PaneDropHighlight(zone: dropZone) } }
-        .sheet(item: Binding(get: { store.pendingInteractions.first }, set: { _ in })) { RuntimeInteractionView(store: store, interaction: $0) }
-        .onChange(of: store.loadedConversationID) { _, _ in pane.outlineCollapsed = false }
-        .onChange(of: store.outlinePresentation) { _, _ in pane.outlineCollapsed = false }
-    }
-
-    private var focused: Bool { window.focusedPaneID == pane.id }
-
-    private var header: some View {
-        HStack(spacing: 6) {
-            HStack(spacing: 6) {
-                if let conversation = store.selectedConversationID.flatMap({ store.conversation(id: $0) }), store.isRunning(conversation) {
-                    ProgressView().controlSize(.mini)
-                }
-                Text(previewEmpty ? "新会话" : store.selectedConversationTitle ?? "新会话")
-                    .font(.callout.weight(focused ? .semibold : .regular))
-                    .foregroundStyle(focused ? .primary : .secondary)
-                    .lineLimit(1).truncationMode(.middle)
-                Spacer(minLength: 0)
-            }
-            .frame(maxHeight: .infinity)
-            // The title strip carries the pane: to another pane, another window, or out into a new one.
-            .overlay { PaneDragHandle(window: window, pane: pane) }
-            .help(pane.link == nil ? "" : "拖动以移到其他位置或其他窗口；拖到窗口外则在新窗口中打开")
-            Button { window.close(pane.id) } label: { Image(systemName: "xmark") }
-                .buttonStyle(.borderless).controlSize(.small)
-                .help("关闭面板").accessibilityLabel("关闭面板")
-        }
-        .padding(.horizontal, 10).frame(height: 26)
-        .background(.bar)
-        .overlay(alignment: .top) { if focused { Rectangle().fill(Color.accentColor).frame(height: 2) } }
-        .overlay(alignment: .bottom) { Divider() }
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel(focused ? "聚焦面板" : "面板")
+        .sheet(item: Binding(get: { shown ? store.pendingInteractions.first : nil }, set: { _ in })) { RuntimeInteractionView(store: store, interaction: $0) }
+        .onChange(of: store.loadedConversationID) { _, _ in tab.outlineCollapsed = false }
+        .onChange(of: store.outlinePresentation) { _, _ in tab.outlineCollapsed = false }
     }
 
     /// A native sub-agent is continued by the agent that started it, so its
@@ -154,7 +170,7 @@ struct ConversationPaneView: View {
             }
             .background(.bar)
         } else if !window.tools.sharesComposer {
-            ComposerView(store: store, model: pane.composer, send: pane.send)
+            ComposerView(store: store, model: tab.composer, send: tab.send)
         }
     }
 
@@ -169,16 +185,295 @@ struct ConversationPaneView: View {
     }
 
     private var transcript: some View {
-        TranscriptView(model: store.transcript, conversationID: store.loadedConversationID, scrollRequest: pane.scrollRequest,
-                       cwd: store.loadedConversationWorkingDirectory, remoteHost: store.loadedConversationLocation.host, outlineCollapsed: $pane.outlineCollapsed, navigation: pane.outlineNavigation,
+        TranscriptView(model: store.transcript, conversationID: store.loadedConversationID, scrollRequest: tab.scrollRequest,
+                       cwd: store.loadedConversationWorkingDirectory, remoteHost: store.loadedConversationLocation.host, outlineCollapsed: $tab.outlineCollapsed, navigation: tab.outlineNavigation,
                        activity: store.activity, loadPayloads: { [store] ids in store.loadPayloads(messageIDs: ids) },
                        openConversation: { [store] id in store.openLinkedConversation(id: id) },
                        describeSettings: { [store] in store.describe($0) })
     }
 }
 
-/// Where a conversation dragged over a pane would go: the nearest edge
-/// within a quarter of the pane splits there; the middle shows it here.
+/// A pane's tabs, after the system tab bar: equal widths filling the bar,
+/// titles centred, a close button on hover at the leading end and a new-tab
+/// button at the trailing end. The focused pane's shown tab is marked once
+/// the window is split.
+private struct PaneTabBar: View {
+    @ObservedObject var window: ConversationWindowModel
+    @ObservedObject var pane: Pane
+    /// Where a tab dragged over the bar would go.
+    @State private var insertion: Int?
+    private static let height: CGFloat = 28
+    private static let minimumWidth: CGFloat = 110
+
+    var body: some View {
+        HStack(spacing: 0) {
+            GeometryReader { geometry in
+                let width = max(Self.minimumWidth, geometry.size.width / CGFloat(max(pane.tabs.count, 1)))
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 0) {
+                        ForEach(Array(pane.tabs.enumerated()), id: \.element.id) { index, tab in
+                            PaneTabItem(window: window, pane: pane, tab: tab, store: tab.store,
+                                        selected: tab.id == pane.selectedID, marked: window.isSplit && window.focusedPaneID == pane.id && tab.id == pane.selectedID)
+                                .frame(width: width)
+                                .overlay(alignment: .leading) { if insertion == index { insertionMark } }
+                                .overlay(alignment: .trailing) { if insertion == index + 1 && index == pane.tabs.count - 1 { insertionMark } }
+                                .onDrop(of: [.url], delegate: TabDropDelegate(window: window, pane: pane.id, index: index, width: width, insertion: $insertion))
+                        }
+                    }
+                }
+            }
+            Divider()
+            Button { window.focus(pane.id); window.openInNewTab() } label: { Image(systemName: "plus") }
+                .buttonStyle(.borderless).frame(width: Self.height, height: Self.height)
+                .help("新建标签页（⌘ T）").accessibilityLabel("新建标签页")
+                .onDrop(of: [.url], delegate: TabDropDelegate(window: window, pane: pane.id, index: pane.tabs.count, width: 0, insertion: $insertion))
+        }
+        .frame(height: Self.height)
+        .background(Color.primary.opacity(0.06))
+        .overlay(alignment: .bottom) { Divider() }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(window.focusedPaneID == pane.id ? "聚焦面板的标签页" : "标签页")
+    }
+
+    private var insertionMark: some View {
+        Rectangle().fill(Color.accentColor).frame(width: 2).allowsHitTesting(false)
+    }
+}
+
+/// One tab: a click shows it, a double click renames its conversation in
+/// place, a drag carries it, the middle button closes it.
+private struct PaneTabItem: View {
+    @ObservedObject var window: ConversationWindowModel
+    @ObservedObject var pane: Pane
+    @ObservedObject var tab: ConversationTab
+    @ObservedObject var store: AppStore
+    let selected: Bool
+    /// The focused pane's shown tab, in a split window.
+    let marked: Bool
+    @State private var hovering = false
+    @State private var renaming: String?
+    @FocusState private var renameFocused: Bool
+
+    var body: some View {
+        ZStack {
+            TabHandle(window: window, tab: tab, actions: TabHandle.Actions(
+                select: { window.selectTab(tab.id) },
+                rename: { if canRename { renaming = tab.title } },
+                close: { window.closeTab(tab.id) },
+                menu: menu))
+            if let name = renaming {
+                TextField("会话名称", text: Binding(get: { name }, set: { renaming = $0 }))
+                    .textFieldStyle(.plain).multilineTextAlignment(.center).font(.system(size: 12))
+                    .focused($renameFocused)
+                    .onSubmit(commitRename)
+                    .onExitCommand { renaming = nil }
+                    .onAppear { renameFocused = true }
+                    .onChange(of: renameFocused) { _, focused in if !focused { commitRename() } }
+                    .padding(.horizontal, 26)
+            } else {
+                Text(tab.title)
+                    .font(.system(size: 12)).foregroundStyle(selected ? .primary : .secondary)
+                    .lineLimit(1).truncationMode(.tail)
+                    .padding(.horizontal, 26)
+                    .allowsHitTesting(false)
+            }
+            HStack(spacing: 0) {
+                leading.frame(width: 16, height: 16).padding(.leading, 6)
+                Spacer(minLength: 0)
+            }
+        }
+        .frame(maxHeight: .infinity)
+        .background(selected ? Color(nsColor: .windowBackgroundColor) : Color.clear)
+        .overlay(alignment: .top) { if marked { Rectangle().fill(Color.accentColor).frame(height: 2) } }
+        .overlay(alignment: .trailing) { Rectangle().fill(Color.primary.opacity(0.12)).frame(width: 1) }
+        .onHover { hovering = $0 }
+        .help(tab.title)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(tab.title)
+        .accessibilityAddTraits(selected ? .isSelected : [])
+    }
+
+    private var running: Bool {
+        guard let id = store.selectedConversationID, let conversation = store.conversation(id: id) else { return false }
+        return store.isRunning(conversation)
+    }
+
+    /// Close on hover; otherwise what the conversation is doing.
+    @ViewBuilder private var leading: some View {
+        if hovering && renaming == nil {
+            Button { window.closeTab(tab.id) } label: { Image(systemName: "xmark").font(.system(size: 9, weight: .semibold)) }
+                .buttonStyle(.borderless).help("关闭标签页（⌘ W）").accessibilityLabel("关闭标签页")
+        } else if !store.pendingInteractions.isEmpty {
+            Image(systemName: "exclamationmark.circle.fill").foregroundStyle(.orange).imageScale(.small)
+                .help("等待你的回应").accessibilityLabel("等待你的回应")
+        } else if running {
+            ProgressView().controlSize(.mini).help("正在运行").accessibilityLabel("正在运行")
+        }
+    }
+
+    private var conversation: Conversation? {
+        guard !store.isUnsentConversation, let id = store.loadedConversationID else { return nil }
+        return store.conversation(id: id)
+    }
+
+    private var canRename: Bool {
+        guard let conversation else { return false }
+        return store.canManageConversations && store.canRenameConversation(conversation)
+    }
+
+    private func commitRename() {
+        guard let name = renaming else { return }
+        renaming = nil
+        guard let conversation, name.trimmingCharacters(in: .whitespacesAndNewlines) != conversation.title else { return }
+        store.renameConversation(conversation, title: name) {}
+    }
+
+    private func menu() -> NSMenu {
+        let menu = NSMenu()
+        if canRename { menu.addItem(ClosureMenuItem("重命名") { renaming = tab.title }) }
+        menu.addItem(ClosureMenuItem("关闭标签页") { window.closeTab(tab.id) })
+        if pane.tabs.count > 1 {
+            menu.addItem(ClosureMenuItem("关闭其他标签页") { window.closeOtherTabs(tab.id) })
+            menu.addItem(.separator())
+            menu.addItem(ClosureMenuItem("在右侧拆分") { window.splitTab(tab.id, edge: .trailing) })
+            menu.addItem(ClosureMenuItem("在下方拆分") { window.splitTab(tab.id, edge: .bottom) })
+        }
+        if window.tabCount > 1 {
+            if pane.tabs.count == 1 { menu.addItem(.separator()) }
+            menu.addItem(ClosureMenuItem("移到新窗口") { window.moveToNewWindow(tab.id) })
+        }
+        return menu
+    }
+}
+
+/// A menu item that runs a closure.
+final class ClosureMenuItem: NSMenuItem {
+    private let run: () -> Void
+
+    init(_ title: String, run: @escaping () -> Void) {
+        self.run = run
+        super.init(title: title, action: #selector(runClosure), keyEquivalent: "")
+        target = self
+    }
+
+    required init(coder: NSCoder) { fatalError("not decoded") }
+
+    @objc private func runClosure() { run() }
+}
+
+/// A tab as an AppKit view, since only AppKit tells where a drag ended:
+/// dropped where nothing takes it, outside every window, the tab becomes a
+/// window of its own. It selects on mouse down, as the system's tabs do.
+private struct TabHandle: NSViewRepresentable {
+    struct Actions {
+        let select: () -> Void
+        let rename: () -> Void
+        let close: () -> Void
+        let menu: () -> NSMenu
+    }
+    let window: ConversationWindowModel
+    let tab: ConversationTab
+    let actions: Actions
+
+    func makeNSView(context: Context) -> HandleView { HandleView() }
+
+    func updateNSView(_ view: HandleView, context: Context) {
+        view.model = window
+        view.tab = tab
+        view.actions = actions
+    }
+
+    final class HandleView: NSView, NSDraggingSource {
+        weak var model: ConversationWindowModel?
+        weak var tab: ConversationTab?
+        var actions: Actions?
+        private var pressed: NSEvent?
+
+        override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+        override func mouseDown(with event: NSEvent) {
+            pressed = event
+            actions?.select()
+            if event.clickCount == 2 { actions?.rename() }
+        }
+
+        override func mouseUp(with event: NSEvent) { pressed = nil }
+
+        override func otherMouseUp(with event: NSEvent) {
+            if event.buttonNumber == 2, bounds.contains(convert(event.locationInWindow, from: nil)) { actions?.close() }
+        }
+
+        override func menu(for event: NSEvent) -> NSMenu? { actions?.menu() }
+
+        override func mouseDragged(with event: NSEvent) {
+            guard let start = pressed, let tab else { return }
+            let from = start.locationInWindow, to = event.locationInWindow
+            guard hypot(to.x - from.x, to.y - from.y) > 4 else { return }
+            pressed = nil
+            let link = TabDragSource.link(for: tab.id, conversation: tab.link)
+            TabDragSource.shared.begin(tab: tab.id, link: link)
+            let board = NSPasteboardItem()
+            board.setString(link.absoluteString, forType: .URL)
+            board.setString(link.absoluteString, forType: .string)
+            let item = NSDraggingItem(pasteboardWriter: board)
+            item.setDraggingFrame(bounds, contents: snapshot())
+            beginDraggingSession(with: [item], event: start, source: self)
+        }
+
+        func draggingSession(_ session: NSDraggingSession, sourceOperationMaskFor context: NSDraggingContext) -> NSDragOperation {
+            context == .withinApplication ? .move : .copy
+        }
+
+        func draggingSession(_ session: NSDraggingSession, endedAt screenPoint: NSPoint, operation: NSDragOperation) {
+            guard operation == [], let model, let tab,
+                  !NSApp.windows.contains(where: { $0.isVisible && $0.frame.contains(screenPoint) }) else { return }
+            model.moveToNewWindow(tab.id, at: screenPoint)
+        }
+
+        /// The tab as it looks, to drag around.
+        private func snapshot() -> NSImage {
+            guard let content = window?.contentView else { return NSImage(size: NSSize(width: 1, height: 1)) }
+            let rect = convert(bounds, to: content)
+            guard rect.width > 0, rect.height > 0, let representation = content.bitmapImageRepForCachingDisplay(in: rect) else { return NSImage(size: NSSize(width: 1, height: 1)) }
+            content.cacheDisplay(in: rect, to: representation)
+            let image = NSImage(size: rect.size)
+            image.addRepresentation(representation)
+            return image
+        }
+    }
+}
+
+/// A tab dropped on the bar goes before or after the tab under the pointer.
+private struct TabDropDelegate: DropDelegate {
+    let window: ConversationWindowModel
+    let pane: UUID
+    let index: Int
+    let width: CGFloat
+    @Binding var insertion: Int?
+
+    func validateDrop(info: DropInfo) -> Bool { info.hasItemsConforming(to: [.url]) }
+
+    func dropUpdated(info: DropInfo) -> DropProposal? {
+        let at = width > 0 && info.location.x > width / 2 ? index + 1 : index
+        if insertion != at { insertion = at }
+        return DropProposal(operation: .move)
+    }
+
+    func dropExited(info: DropInfo) { insertion = nil }
+
+    func performDrop(info: DropInfo) -> Bool {
+        guard let at = insertion, let provider = info.itemProviders(for: [.url]).first else { insertion = nil; return false }
+        insertion = nil
+        _ = provider.loadObject(ofClass: NSURL.self) { [window, pane] object, _ in
+            guard let url = object as? URL else { return }
+            Task { @MainActor in window.drop(url, on: pane, zone: .center, at: at) }
+        }
+        return true
+    }
+}
+
+/// Where a tab dragged over a pane would go: the nearest edge within a
+/// quarter of the pane splits there; the middle adds it to the pane's tabs.
 private struct PaneDropDelegate: DropDelegate {
     let window: ConversationWindowModel
     let pane: UUID
@@ -201,8 +496,8 @@ private struct PaneDropDelegate: DropDelegate {
         guard let zone, let provider = info.itemProviders(for: [.url]).first else { zone = nil; return false }
         self.zone = nil
         _ = provider.loadObject(ofClass: NSURL.self) { [window, pane] object, _ in
-            guard let url = object as? URL, let link = ConversationLink.conversation(in: url) else { return }
-            Task { @MainActor in window.drop(link.conversationID, on: pane, zone: zone) }
+            guard let url = object as? URL else { return }
+            Task { @MainActor in window.drop(url, on: pane, zone: zone) }
         }
         return true
     }
@@ -230,70 +525,5 @@ private struct PaneDropHighlight: View {
         }
         .allowsHitTesting(false)
         .animation(.easeOut(duration: 0.12), value: zone)
-    }
-}
-
-/// A pane's title strip as an AppKit drag source, since only AppKit tells
-/// where a drag ended: dropped where nothing takes it, outside every
-/// window, the pane becomes a window of its own.
-private struct PaneDragHandle: NSViewRepresentable {
-    let window: ConversationWindowModel
-    let pane: ConversationPane
-
-    func makeNSView(context: Context) -> HandleView { HandleView() }
-
-    func updateNSView(_ view: HandleView, context: Context) {
-        view.model = window
-        view.pane = pane
-    }
-
-    final class HandleView: NSView, NSDraggingSource {
-        weak var model: ConversationWindowModel?
-        weak var pane: ConversationPane?
-        private var pressed: NSEvent?
-
-        override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
-        override func mouseDown(with event: NSEvent) { pressed = event }
-        override func mouseUp(with event: NSEvent) { pressed = nil }
-
-        override func mouseDragged(with event: NSEvent) {
-            guard let start = pressed, let pane, let link = pane.link, let conversationID = pane.store.loadedConversationID else { return }
-            let from = start.locationInWindow, to = event.locationInWindow
-            guard hypot(to.x - from.x, to.y - from.y) > 4 else { return }
-            pressed = nil
-            PaneDragSource.shared.begin(pane: pane.id, conversationID: conversationID)
-            let board = NSPasteboardItem()
-            board.setString(link.absoluteString, forType: .URL)
-            board.setString(link.absoluteString, forType: .string)
-            let item = NSDraggingItem(pasteboardWriter: board)
-            let image = snapshot(of: pane.id)
-            let point = convert(from, from: nil)
-            item.setDraggingFrame(NSRect(x: point.x - image.size.width / 2, y: point.y - image.size.height + 12, width: image.size.width, height: image.size.height), contents: image)
-            beginDraggingSession(with: [item], event: start, source: self)
-        }
-
-        func draggingSession(_ session: NSDraggingSession, sourceOperationMaskFor context: NSDraggingContext) -> NSDragOperation {
-            context == .withinApplication ? .move : .copy
-        }
-
-        func draggingSession(_ session: NSDraggingSession, endedAt screenPoint: NSPoint, operation: NSDragOperation) {
-            guard operation == [], let model, let pane,
-                  !NSApp.windows.contains(where: { $0.isVisible && $0.frame.contains(screenPoint) }) else { return }
-            model.tearOff(pane.id, at: screenPoint)
-        }
-
-        /// The pane, reduced, to drag around.
-        private func snapshot(of id: UUID) -> NSImage {
-            guard let view = model?.view(of: id), let content = view.window?.contentView else { return NSImage(size: NSSize(width: 1, height: 1)) }
-            let rect = view.convert(view.bounds, to: content)
-            guard rect.width > 0, rect.height > 0, let representation = content.bitmapImageRepForCachingDisplay(in: rect) else { return NSImage(size: NSSize(width: 1, height: 1)) }
-            content.cacheDisplay(in: rect, to: representation)
-            let scale = min(1, 320 / rect.width)
-            let image = NSImage(size: NSSize(width: rect.width * scale, height: rect.height * scale))
-            image.lockFocus()
-            representation.draw(in: NSRect(origin: .zero, size: image.size))
-            image.unlockFocus()
-            return image
-        }
     }
 }

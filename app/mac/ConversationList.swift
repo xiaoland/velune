@@ -75,7 +75,10 @@ struct ConversationListView: View {
         List(selection: Binding(get: { store.selectedConversationIDs.count > 1 ? store.selectedConversationIDs : Set([focused.selectedConversationID].compactMap { $0 }) },
                                 set: { ids in
                                     store.setListSelection(ids)
-                                    if ids.count == 1, let id = ids.first, id != focused.selectedConversationID { window.open(id) }
+                                    if ids.count == 1, let id = ids.first, id != focused.selectedConversationID {
+                                        // Option-click opens beside the shown tab rather than in its place.
+                                        if NSEvent.modifierFlags.contains(.option) { window.openInNewTab(id) } else { window.open(id) }
+                                    }
                                 })) {
             if store.showsArchived {
                 HStack {
@@ -100,10 +103,7 @@ struct ConversationListView: View {
                             .selectionDisabled(focused.isLoading)
                             .contextMenu { conversationManagementMenu(store.selectedConversationIDs.contains(conversation.id) ? store.selectedConversationIDs : [conversation.id]) }
                             // Dropped on a pane, it opens there or beside it.
-                            .onDrag {
-                                PaneDragSource.shared.begin(pane: nil, conversationID: conversation.id)
-                                return NSItemProvider(object: ConversationLink.url(runtimeID: conversation.runtimeID, conversationID: conversation.id) as NSURL)
-                            }
+                            .onDrag { NSItemProvider(object: ConversationLink.url(runtimeID: conversation.runtimeID, conversationID: conversation.id) as NSURL) }
                     }
                     if section.hasMore {
                         if store.searchResults == nil {
@@ -221,6 +221,7 @@ struct ConversationListView: View {
         }
         if targets.count == 1, let target = targets.first {
             Divider()
+            Button("在新标签页中打开") { window.openInNewTab(target.id) }
             Button("在右侧拆分打开") { window.split(.horizontal, opening: target.id) }
             Button("在下方拆分打开") { window.split(.vertical, opening: target.id) }
             Button("在新窗口中打开") { window.openWindow?(WindowSeed(conversationID: target.id)) }

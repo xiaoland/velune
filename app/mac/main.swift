@@ -32,6 +32,22 @@ struct ConversationCommands: Commands {
             Button("新建会话") { target?.store.createConversation() }
                 .keyboardShortcut("n")
                 .disabled(target == nil || target?.store.isLoading == true)
+            Button("新建标签页") { target?.window.openInNewTab() }
+                .keyboardShortcut("t")
+                .disabled(target == nil)
+            Button("新建窗口") { target?.window.openWindow?(WindowSeed()) }
+                .keyboardShortcut("n", modifiers: [.command, .option])
+                .disabled(target?.window.openWindow == nil)
+        }
+        CommandGroup(replacing: .saveItem) {
+            // A conversation window closes its shown tab; the last one closes the window. Any other window closes.
+            Button("关闭标签页") {
+                if let window = ConversationWindowModel.owning(window: NSApp.keyWindow) { window.closeTab(window.focused.id) }
+                else { NSApp.keyWindow?.performClose(nil) }
+            }
+            .keyboardShortcut("w")
+            Button("关闭窗口") { NSApp.keyWindow?.performClose(nil) }
+                .keyboardShortcut("w", modifiers: [.command, .shift])
         }
         CommandMenu("会话") {
             Button("发送消息") { target?.send() }
@@ -48,15 +64,23 @@ struct ConversationCommands: Commands {
             Button("向下拆分") { target?.window.split(.vertical) }
                 .keyboardShortcut("d", modifiers: [.command, .shift])
                 .disabled(target == nil)
-            Button("关闭面板") { if let window = target?.window { window.close(window.focusedPaneID) } }
-                .keyboardShortcut("w", modifiers: [.command, .shift])
+            Button("关闭分屏") { if let window = target?.window { window.closePane(window.focusedPaneID) } }
                 .disabled(target?.window.isSplit != true)
-            Button("下一个面板") { target?.window.focusNeighbour(forward: true) }
+            Button("下一个分屏") { target?.window.focusNeighbour(forward: true) }
                 .keyboardShortcut("]")
                 .disabled(target?.window.isSplit != true)
-            Button("上一个面板") { target?.window.focusNeighbour(forward: false) }
+            Button("上一个分屏") { target?.window.focusNeighbour(forward: false) }
                 .keyboardShortcut("[")
                 .disabled(target?.window.isSplit != true)
+            Divider()
+            Button("下一个标签页") { target?.window.selectNeighbourTab(forward: true) }
+                .keyboardShortcut("]", modifiers: [.command, .shift])
+                .disabled((target?.window.focusedPane.tabs.count ?? 0) < 2)
+            Button("上一个标签页") { target?.window.selectNeighbourTab(forward: false) }
+                .keyboardShortcut("[", modifiers: [.command, .shift])
+                .disabled((target?.window.focusedPane.tabs.count ?? 0) < 2)
+            Button("将标签页移到新窗口") { if let window = target?.window { window.moveToNewWindow(window.focused.id) } }
+                .disabled((target?.window.tabCount ?? 0) < 2)
             Divider()
         }
         CommandGroup(before: .sidebar) {
@@ -111,14 +135,14 @@ struct ConversationWindow: View {
         self.previewSettings = previewSettings
     }
     var body: some View {
-        VeluneRootView(window: window, store: window.list, pane: window.focused, focused: window.focused.store,
+        VeluneRootView(window: window, store: window.list, tab: window.focused, focused: window.focused.store,
                        previewEmpty: previewEmpty, previewSettings: previewSettings)
             .onAppear {
                 window.openWindow = { [openWindow] in openWindow(id: WindowSeed.sceneID, value: $0) }
                 let saved = savedLayout.data(using: .utf8).flatMap { try? JSONDecoder().decode(SavedWindowLayout.self, from: $0) }
                 window.start(restoring: saved, seed: seed)
                 // Development check of split panes without driving the interface.
-                if CommandLine.arguments.contains("--check-split-panes"), !window.isSplit { window.split(.horizontal); window.split(.vertical) }
+                if CommandLine.arguments.contains("--check-split-panes"), !window.isSplit { window.split(.horizontal); window.openInNewTab(); window.split(.vertical) }
                 if CommandLine.arguments.contains("--check-tool-windows") { window.tools.move(.list, to: .floating); window.tools.move(.outline, to: .window); window.tools.move(.composer, to: .floating) }
                 if CommandLine.arguments.contains("--check-dock-areas") { window.tools.move(.outline, to: .docked(.left)); window.tools.move(.list, to: .docked(.right)); window.tools.move(.composer, to: .docked(.bottom)) }
             }

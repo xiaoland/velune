@@ -191,16 +191,16 @@ struct ToolContent: View {
     var contentHeight: ((CGFloat) -> Void)?
 
     var body: some View {
-        let pane = window.focused
+        let tab = window.focused
         switch kind {
         case .list:
             // The sidebar's own search field and toolbar serve the list at its top.
-            ConversationListView(window: window, store: window.list, focused: pane.store,
+            ConversationListView(window: window, store: window.list, focused: tab.store,
                                  placement: side == .left && window.tools.tools(in: .left).first == .list ? .sidebar : .panel)
         case .outline:
-            ToolOutline(pane: pane, store: pane.store, inSidebar: side == .left).id(pane.id)
+            ToolOutline(tab: tab, store: tab.store, inSidebar: side == .left).id(tab.id)
         case .composer:
-            ToolComposer(window: window, pane: pane, store: pane.store, contentHeight: contentHeight).id(pane.id)
+            ToolComposer(window: window, tab: tab, store: tab.store, contentHeight: contentHeight).id(tab.id)
         }
     }
 }
@@ -229,9 +229,9 @@ private struct SubtitleFollower: ViewModifier {
     }
 }
 
-/// The focused pane's outline, beside the panes or floating.
+/// The focused tab's outline, docked, floating or in a window.
 struct ToolOutline: View {
-    @ObservedObject var pane: ConversationPane
+    @ObservedObject var tab: ConversationTab
     @ObservedObject var store: AppStore
     let inSidebar: Bool
 
@@ -239,21 +239,21 @@ struct ToolOutline: View {
         if store.pendingConversationID != nil || store.transcript.userRows.isEmpty {
             ContentUnavailableView("没有用户消息", systemImage: "list.bullet", description: Text("会话有了用户消息后，在这里列出并可跳转。"))
         } else {
-            TranscriptOutlineView(model: store.transcript, inPopover: false, inSidebar: inSidebar) { pane.navigate(to: $0) }
+            TranscriptOutlineView(model: store.transcript, inPopover: false, inSidebar: inSidebar) { tab.navigate(to: $0) }
         }
     }
 }
 
-/// One composer for the window, sending to the focused pane.
+/// One composer for the window, sending to the focused tab.
 private struct ToolComposer: View {
     @ObservedObject var window: ConversationWindowModel
-    @ObservedObject var pane: ConversationPane
+    @ObservedObject var tab: ConversationTab
     @ObservedObject var store: AppStore
     let contentHeight: ((CGFloat) -> Void)?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            if window.isSplit {
+            if window.isSplit || window.tabCount > 1 {
                 Text("发往：\(store.selectedConversationTitle ?? "新会话")")
                     .font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
                     .padding(.horizontal, 16).padding(.top, 8)
@@ -262,7 +262,7 @@ private struct ToolComposer: View {
                 Text("这是原生 sub-agent 的会话，由启动它的会话继续。").foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity).padding(16)
             } else {
-                ComposerView(store: store, model: pane.composer, send: pane.send)
+                ComposerView(store: store, model: tab.composer, send: tab.send)
             }
         }
         .fixedSize(horizontal: false, vertical: true)

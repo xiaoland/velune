@@ -2,21 +2,35 @@ import AppKit
 import Combine
 import SwiftUI
 
-/// One conversation pane of a window: its own workspace, composer and
-/// reading state. A window with one pane looks as it always did.
-@MainActor final class ConversationPane: ObservableObject, Identifiable {
+/// One conversation tab: its own workspace, composer and reading state. A
+/// tab keeps them while it is in the background and when it moves to another
+/// pane or window.
+@MainActor final class ConversationTab: ObservableObject, Identifiable {
     let id: UUID
     let store: AppStore
-    /// Not observed by the pane: only the composer re-renders while typing.
+    /// Not observed by the tab: only the composer re-renders while typing.
     let composer = ComposerModel()
     @Published var scrollRequest: UInt64 = 0
     /// The list shows only user messages (in-place outline).
     @Published var outlineCollapsed = false
     @Published var outlineNavigation: TranscriptJump?
+    /// Reading starts when the tab is first shown, so restored background tabs cost nothing.
+    private var pendingStart: (() -> Void)?
 
-    init(id: UUID = UUID(), store: AppStore) {
+    init(id: UUID = UUID(), store: AppStore, start: @escaping () -> Void) {
         self.id = id
         self.store = store
+        pendingStart = start
+    }
+
+    /// Shown at least once: its views stay, keeping their scroll and selection, while it is in the background.
+    @Published private(set) var isActive = false
+
+    func activate() {
+        guard let start = pendingStart else { return }
+        pendingStart = nil
+        isActive = true
+        start()
     }
 
     func send() {
@@ -38,24 +52,68 @@ import SwiftUI
         outlineNavigation = TranscriptJump(id: id, token: (outlineNavigation?.token ?? 0) &+ 1)
     }
 
-    /// The link a drag carries; an unsent conversation has none yet.
+    /// The link a drag carries to other apps; an unsent conversation has none yet.
     var link: URL? {
         guard let id = store.loadedConversationID, !store.isUnsentConversation,
               let runtime = store.conversation(id: id)?.runtimeID ?? store.projectionRuntimeID else { return nil }
         return ConversationLink.url(runtimeID: runtime, conversationID: id)
     }
+
+    var title: String { store.selectedConversationTitle ?? "新会话" }
 }
 
-/// A pane's conversation as the title bar's proxy icon drags it.
-struct PaneDocument: Transferable {
-    let pane: UUID
-    let conversationID: String?
+/// A leaf of a window's split: its tabs and the one it shows.
+@MainActor final class Pane: ObservableObject, Identifiable {
+    let id: UUID
+    @Published private(set) var tabs: [ConversationTab]
+    @Published private(set) var selectedID: UUID
+
+    init(id: UUID = UUID(), tabs: [ConversationTab], selected: UUID? = nil) {
+        self.id = id
+        self.tabs = tabs
+        selectedID = selected.flatMap { id in tabs.contains { $0.id == id } ? id : nil } ?? tabs[0].id
+    }
+
+    var selected: ConversationTab { tabs.first { $0.id == selectedID } ?? tabs[0] }
+
+    func select(_ id: UUID) {
+        guard let tab = tabs.first(where: { $0.id == id }) else { return }
+        if selectedID != id { selectedID = id }
+        tab.activate()
+    }
+
+    /// `tab` at `index` (the end when nil), shown.
+    func insert(_ tab: ConversationTab, at index: Int? = nil) {
+        tabs.insert(tab, at: min(index ?? tabs.count, tabs.count))
+        select(tab.id)
+    }
+
+    /// Without `id`; the tab after it shows, or the one before when it was
+    /// last. False when it was the only tab, which stays.
+    @discardableResult func remove(_ id: UUID) -> Bool {
+        guard tabs.count > 1, let index = tabs.firstIndex(where: { $0.id == id }) else { return false }
+        tabs.remove(at: index)
+        if selectedID == id { select(tabs[min(index, tabs.count - 1)].id) }
+        return true
+    }
+
+    func move(_ id: UUID, to index: Int) {
+        guard let from = tabs.firstIndex(where: { $0.id == id }) else { return }
+        let tab = tabs.remove(at: from)
+        tabs.insert(tab, at: min(from < index ? index - 1 : index, tabs.count))
+        select(id)
+    }
+}
+
+/// A pane's tab as a title bar's proxy icon drags it.
+struct TabDocument: Transferable {
+    let tab: UUID
     let link: URL?
 
     static var transferRepresentation: some TransferRepresentation {
-        ProxyRepresentation { (document: PaneDocument) -> URL in
-            guard let link = document.link, let conversationID = document.conversationID else { throw CocoaError(.featureUnsupported) }
-            PaneDragSource.shared.begin(pane: document.pane, conversationID: conversationID)
+        ProxyRepresentation { (document: TabDocument) -> URL in
+            guard let link = document.link else { throw CocoaError(.featureUnsupported) }
+            TabDragSource.shared.begin(tab: document.tab, link: link)
             return link
         }
     }
@@ -68,26 +126,39 @@ enum PaneEdge: Equatable {
     var after: Bool { self == .trailing || self == .bottom }
 }
 
-/// Where a conversation dropped on a pane goes: into it, or beside an edge.
+/// Where a tab dropped on a pane goes: among its tabs, or beside an edge.
 enum PaneDropZone: Equatable {
     case center
     case edge(PaneEdge)
 }
 
-/// The pane a conversation drag started from, so the pane it is dropped on
-/// moves that pane rather than opening the conversation again; a drag from
-/// the list has none. Written where the drag begins, possibly off the main thread.
-final class PaneDragSource: @unchecked Sendable {
-    static let shared = PaneDragSource()
+/// The tab a drag carries, so a drop moves that tab rather than opening its
+/// conversation again; a drag from the list has none. A tab with no
+/// conversation yet drags a link naming the tab itself. Written where the
+/// drag begins, possibly off the main thread.
+final class TabDragSource: @unchecked Sendable {
+    static let shared = TabDragSource()
+    private static let scheme = "x-velune-tab"
     private let lock = NSLock()
-    private var current: (pane: UUID, conversationID: String)?
+    private var current: (tab: UUID, link: URL)?
 
-    func begin(pane: UUID?, conversationID: String) {
-        lock.withLock { current = pane.map { ($0, conversationID) } }
+    /// The link a tab's drag carries: its conversation's, or one naming the tab.
+    static func link(for tab: UUID, conversation: URL?) -> URL {
+        conversation ?? URL(string: "\(scheme):\(tab.uuidString)")!
     }
 
-    func pane(dragging conversationID: String) -> UUID? {
-        lock.withLock { current?.conversationID == conversationID ? current?.pane : nil }
+    func begin(tab: UUID, link: URL) {
+        lock.withLock { current = (tab, link) }
+    }
+
+    func end() {
+        lock.withLock { current = nil }
+    }
+
+    /// The tab a dropped link came from; nil for a conversation dragged from the list.
+    func tab(dropping link: URL) -> UUID? {
+        if link.scheme == Self.scheme { return UUID(uuidString: link.absoluteString.dropFirst(Self.scheme.count + 1).description) }
+        return lock.withLock { current?.link == link ? current?.tab : nil }
     }
 }
 
@@ -164,13 +235,27 @@ struct PaneSplit: Codable, Equatable {
     var fractions: [Double]
 }
 
-/// What a window restores: its arrangement, each pane's conversation and
-/// which pane had focus.
+/// What a window restores: its arrangement, each pane's tabs, each tab's
+/// conversation, the focused pane and the tool windows.
 struct SavedWindowLayout: Codable, Equatable {
+    struct SavedPane: Codable, Equatable {
+        var tabs: [UUID]
+        var selected: UUID
+    }
     var layout: PaneLayout
+    var panes: [UUID: SavedPane]
     var conversations: [UUID: String]
     var focused: UUID
     var tools: ToolWindowLayout
+
+    /// Every pane and tab named once, the focused pane among them.
+    var isWhole: Bool {
+        let paneIDs = layout.paneIDs
+        let tabIDs = paneIDs.flatMap { panes[$0]?.tabs ?? [] }
+        return Set(paneIDs).count == paneIDs.count && paneIDs.contains(focused)
+            && paneIDs.allSatisfy { panes[$0].map { !$0.tabs.isEmpty && $0.tabs.contains($0.selected) } ?? false }
+            && Set(tabIDs).count == tabIDs.count
+    }
 }
 
 /// What a new window starts with.
@@ -180,21 +265,26 @@ struct WindowSeed: Codable, Hashable {
     var id = UUID()
     /// The conversation to open in its pane.
     var conversationID: String?
+    /// A tab another window hands over, with its state.
+    var tab: UUID?
 }
 
 /// A conversation window: the list with its own workspace, and the panes
-/// that show conversations. The list opens conversations in the focused
-/// pane; the window's toolbar and commands act on it.
+/// whose tabs show conversations. The list opens conversations in the
+/// focused pane's tab; the window's toolbar and commands act on it.
 @MainActor final class ConversationWindowModel: ObservableObject {
     let application: AppStore
     /// The list's workspace: list, search and selection; it opens no conversation.
     let list: AppStore
     @Published private(set) var layout: PaneLayout
-    @Published private(set) var panes: [UUID: ConversationPane]
+    @Published private(set) var panes: [UUID: Pane]
     @Published private(set) var focusedPaneID: UUID
-    /// Each pane's conversation as last selected, for the layout the window restores.
-    @Published private(set) var paneConversations: [UUID: String] = [:]
+    /// Each tab's conversation as last selected, for the layout the window restores.
+    @Published private(set) var tabConversations: [UUID: String] = [:]
+    /// Bumped when a pane's tabs change, for the layout the window restores.
+    @Published private(set) var tabsRevision = 0
     private var subscriptions: [UUID: AnyCancellable] = [:]
+    private var paneSubscriptions: [UUID: AnyCancellable] = [:]
     private var started = false
     /// The pane views by pane, for telling which one a click lands in.
     private var anchors: [UUID: () -> NSView?] = [:]
@@ -211,9 +301,12 @@ struct WindowSeed: Codable, Hashable {
     var openWindow: ((WindowSeed) -> Void)?
     private(set) lazy var detached = DetachedTools(model: self)
 
-    /// Windows by the panes they hold, for moving a pane between them.
+    /// Windows by the panes they hold, for moving a tab between them.
     private static var all: [WeakWindow] = []
     private struct WeakWindow { weak var model: ConversationWindowModel? }
+    /// Tabs on their way to a window being opened for them.
+    private static var handoff: [UUID: ConversationTab] = [:]
+
     static func isConversationWindow(_ window: NSWindow) -> Bool {
         all.contains { $0.model?.window === window }
     }
@@ -223,15 +316,22 @@ struct WindowSeed: Codable, Hashable {
         (window as? any DetachedTool)?.model
     }
 
-    static func owning(pane: UUID) -> ConversationWindowModel? {
+    /// The conversation window an AppKit window shows.
+    static func owning(window: NSWindow?) -> ConversationWindowModel? {
+        guard let window else { return nil }
+        return all.lazy.compactMap(\.model).first { $0.window === window }
+    }
+
+    static func owning(tab: UUID) -> ConversationWindowModel? {
         all.removeAll { $0.model == nil }
-        return all.lazy.compactMap(\.model).first { $0.panes[pane] != nil }
+        return all.lazy.compactMap(\.model).first { $0.pane(holding: tab) != nil }
     }
 
     init(application: AppStore) {
         self.application = application
         list = application.makeWorkspace()
-        let first = ConversationPane(store: application.makeWorkspace())
+        let store = application.makeWorkspace()
+        let first = Pane(tabs: [ConversationTab(store: store, start: { store.start() })])
         layout = .pane(first.id)
         panes = [first.id: first]
         focusedPaneID = first.id
@@ -239,88 +339,181 @@ struct WindowSeed: Codable, Hashable {
         Self.all.append(WeakWindow(model: self))
     }
 
-    var focused: ConversationPane { panes[focusedPaneID]! }
+    var focusedPane: Pane { panes[focusedPaneID]! }
+    /// The focused pane's tab, which the toolbar, commands and tool windows act on.
+    var focused: ConversationTab { focusedPane.selected }
     var isSplit: Bool { panes.count > 1 }
-    var orderedPanes: [ConversationPane] { layout.paneIDs.compactMap { panes[$0] } }
+    var orderedPanes: [Pane] { layout.paneIDs.compactMap { panes[$0] } }
+    var allTabs: [ConversationTab] { orderedPanes.flatMap(\.tabs) }
+    var tabCount: Int { panes.values.reduce(0) { $0 + $1.tabs.count } }
 
     var savedLayout: SavedWindowLayout {
-        SavedWindowLayout(layout: layout, conversations: paneConversations, focused: focusedPaneID, tools: tools)
+        _ = tabsRevision
+        return SavedWindowLayout(layout: layout,
+                                 panes: panes.mapValues { SavedWindowLayout.SavedPane(tabs: $0.tabs.map(\.id), selected: $0.selectedID) },
+                                 conversations: tabConversations, focused: focusedPaneID, tools: tools)
     }
 
-    /// Restore a saved arrangement, or open `seed`'s conversation, then start
-    /// reading. The first pane alone opens the list's first conversation.
+    /// Restore a saved arrangement, take a handed-over tab, or open `seed`'s
+    /// conversation, then start reading. A lone new tab opens the list's
+    /// first conversation.
     func start(restoring saved: SavedWindowLayout?, seed: WindowSeed?) {
         guard !started else { return }
         started = true
         list.start(loadFirstConversation: false)
-        if let saved, Set(saved.layout.paneIDs).count == saved.layout.paneIDs.count, saved.layout.paneIDs.contains(saved.focused) {
-            for pane in panes.values { pane.store.shutdown { _ in } }
-            subscriptions = [:]
-            var restored: [UUID: ConversationPane] = [:]
-            for id in saved.layout.paneIDs {
-                let pane = ConversationPane(id: id, store: application.makeWorkspace())
-                restored[id] = pane
-                follow(pane)
+        if let id = seed?.tab, let tab = Self.handoff.removeValue(forKey: id) {
+            replacePanes(with: [Pane(tabs: [tab])], layout: nil)
+            tab.activate()
+            tab.store.noteFocused()
+        } else if let saved, saved.isWhole {
+            let lone = saved.layout.paneIDs.count == 1 && saved.panes.values.first?.tabs.count == 1
+            let restored = saved.layout.paneIDs.map { paneID in
+                let savedPane = saved.panes[paneID]!
+                let tabs = savedPane.tabs.map { tabID in
+                    let store = application.makeWorkspace()
+                    let conversationID = saved.conversations[tabID]
+                    return ConversationTab(id: tabID, store: store, start: {
+                        store.start(loadFirstConversation: lone, newConversation: !lone && conversationID == nil, opening: conversationID)
+                    })
+                }
+                return Pane(id: paneID, tabs: tabs, selected: savedPane.selected)
             }
-            panes = restored
-            layout = saved.layout
+            replacePanes(with: restored, layout: saved.layout)
             focusedPaneID = saved.focused
             tools = saved.tools.normalized()
-            for pane in orderedPanes {
-                let id = saved.conversations[pane.id]
-                pane.store.start(loadFirstConversation: restored.count == 1, newConversation: restored.count > 1, opening: id)
-            }
+            for pane in restored { pane.selected.activate() }
         } else if let id = seed?.conversationID {
-            focused.store.start(loadFirstConversation: false, opening: id)
+            let store = application.makeWorkspace()
+            replacePanes(with: [Pane(tabs: [ConversationTab(store: store, start: { store.start(loadFirstConversation: false, opening: id) })])], layout: nil)
+            focused.activate()
         } else {
-            focused.store.start()
+            focused.activate()
         }
         installMouseMonitor()
         detached.sync()
     }
 
-    /// Open a conversation in the focused pane; one another pane of this
-    /// window already shows is focused there instead.
+    /// The panes before reading starts: the first pane's untouched tab gives way.
+    private func replacePanes(with replacement: [Pane], layout: PaneLayout?) {
+        for tab in allTabs { tab.store.shutdown { _ in } }
+        subscriptions = [:]
+        paneSubscriptions = [:]
+        panes = Dictionary(uniqueKeysWithValues: replacement.map { ($0.id, $0) })
+        self.layout = layout ?? .pane(replacement[0].id)
+        focusedPaneID = replacement[0].id
+        replacement.forEach(follow)
+    }
+
+    // MARK: Opening
+
+    /// Open a conversation in the focused tab; one a tab of this window
+    /// already shows is selected there instead.
     func open(_ conversationID: String) {
-        if let pane = orderedPanes.first(where: { $0.store.selectedConversationID == conversationID }) {
-            focus(pane.id)
-            return
-        }
+        if select(showing: conversationID) { return }
         focused.store.openLinkedConversation(id: conversationID)
+    }
+
+    /// Open a conversation, or a new one, in a new tab after the focused pane's shown tab.
+    func openInNewTab(_ conversationID: String? = nil) {
+        if let conversationID, select(showing: conversationID) { return }
+        let pane = focusedPane
+        let index = pane.tabs.firstIndex { $0.id == pane.selectedID }.map { $0 + 1 }
+        pane.insert(makeTab(opening: conversationID), at: index)
+        focused.store.noteFocused()
     }
 
     /// Divide the focused pane; the new pane takes focus and opens
     /// `conversationID`, or starts a new conversation.
     func split(_ axis: PaneSplit.Axis, opening conversationID: String? = nil) {
-        insert(beside: focusedPaneID, edge: axis == .horizontal ? .trailing : .bottom, opening: conversationID)
+        if let conversationID, select(showing: conversationID) { return }
+        addPane(with: makeTab(opening: conversationID), beside: focusedPaneID, edge: axis == .horizontal ? .trailing : .bottom)
     }
 
-    /// A new pane beside `target`'s `edge`; one already showing the
-    /// conversation is focused instead.
-    func insert(beside target: UUID, edge: PaneEdge, opening conversationID: String?) {
-        if let conversationID, let pane = pane(showing: conversationID) {
-            focus(pane.id)
-            return
+    private func makeTab(opening conversationID: String?) -> ConversationTab {
+        let store = application.makeWorkspace()
+        return ConversationTab(store: store, start: {
+            store.start(loadFirstConversation: false, newConversation: conversationID == nil, opening: conversationID)
+        })
+    }
+
+    /// Select the tab showing a conversation, if one does.
+    private func select(showing conversationID: String) -> Bool {
+        guard let (pane, tab) = tab(showing: conversationID) else { return false }
+        pane.select(tab.id)
+        focus(pane.id)
+        return true
+    }
+
+    func tab(showing conversationID: String) -> (Pane, ConversationTab)? {
+        for pane in orderedPanes {
+            if let tab = pane.tabs.first(where: { $0.store.selectedConversationID == conversationID }) { return (pane, tab) }
         }
-        let pane = ConversationPane(store: application.makeWorkspace())
-        panes[pane.id] = pane
-        layout = layout.inserting(pane.id, beside: target, edge: edge)
-        follow(pane)
-        focusedPaneID = pane.id
-        pane.store.start(loadFirstConversation: false, newConversation: conversationID == nil, opening: conversationID)
-        pane.store.noteFocused()
+        return nil
     }
 
-    /// Close a pane; the last one stays, since closing it is closing the window.
-    func close(_ id: UUID) {
-        guard isSplit, let pane = panes[id], let remaining = layout.removing(id) else { return }
+    func pane(holding tab: UUID) -> Pane? {
+        panes.values.first { $0.tabs.contains { $0.id == tab } }
+    }
+
+    // MARK: Tabs
+
+    func selectTab(_ id: UUID) {
+        guard let pane = pane(holding: id) else { return }
+        pane.select(id)
+        focus(pane.id)
+        pane.selected.store.noteFocused()
+    }
+
+    /// The tab after (or before) the focused pane's shown one.
+    func selectNeighbourTab(forward: Bool) {
+        let pane = focusedPane
+        guard pane.tabs.count > 1, let index = pane.tabs.firstIndex(where: { $0.id == pane.selectedID }) else { return }
+        selectTab(pane.tabs[(index + (forward ? 1 : pane.tabs.count - 1)) % pane.tabs.count].id)
+    }
+
+    /// Close a tab: its pane's last tab closes the pane, the window's last closes the window.
+    func closeTab(_ id: UUID) {
+        guard let tab = detach(id, closingEmptyWindow: true) else { return }
+        tab.store.shutdown { _ in }
+    }
+
+    func closeOtherTabs(_ id: UUID) {
+        guard let pane = pane(holding: id) else { return }
+        for tab in pane.tabs where tab.id != id { closeTab(tab.id) }
+    }
+
+    /// Close a pane with all its tabs.
+    func closePane(_ id: UUID) {
+        guard isSplit, let pane = panes[id] else { return }
+        for tab in pane.tabs { tab.store.shutdown { _ in } }
+        removePane(id)
+    }
+
+    /// Take a tab out of this window without ending it. Its pane goes with
+    /// its last tab; the window's last tab is kept unless `closingEmptyWindow`.
+    private func detach(_ id: UUID, closingEmptyWindow: Bool) -> ConversationTab? {
+        guard let pane = pane(holding: id), let tab = pane.tabs.first(where: { $0.id == id }) else { return nil }
+        if pane.remove(id) {
+            if pane.id == focusedPaneID { pane.selected.store.noteFocused() }
+        } else if isSplit {
+            removePane(pane.id)
+        } else {
+            guard closingEmptyWindow else { return nil }
+            window?.close()
+        }
+        subscriptions[id] = nil
+        tabConversations[id] = nil
+        tabsRevision &+= 1
+        return tab
+    }
+
+    private func removePane(_ id: UUID) {
+        guard let remaining = layout.removing(id) else { return }
         let order = layout.paneIDs
         layout = remaining
         panes[id] = nil
-        subscriptions[id] = nil
-        paneConversations[id] = nil
+        paneSubscriptions[id] = nil
         anchors[id] = nil
-        pane.store.shutdown { _ in }
         if focusedPaneID == id, let index = order.firstIndex(of: id) {
             // Focus moves to the pane before it, or the next when it was first.
             let neighbours = order.filter { $0 != id }
@@ -328,56 +521,76 @@ struct WindowSeed: Codable, Hashable {
         }
     }
 
-    func pane(showing conversationID: String) -> ConversationPane? {
-        orderedPanes.first { $0.store.selectedConversationID == conversationID }
+    private func addPane(with tab: ConversationTab, beside target: UUID, edge: PaneEdge) {
+        let pane = Pane(tabs: [tab])
+        panes[pane.id] = pane
+        layout = layout.inserting(pane.id, beside: target, edge: edge)
+        follow(pane)
+        focusedPaneID = pane.id
+        tab.activate()
+        tab.store.noteFocused()
     }
 
-    /// Move a pane of this window beside another one's edge.
-    func move(_ id: UUID, beside target: UUID, edge: PaneEdge) {
-        guard id != target, panes[id] != nil, panes[target] != nil, let remaining = layout.removing(id) else { return }
-        layout = remaining.inserting(id, beside: target, edge: edge)
-        focus(id)
-    }
+    // MARK: Moving
 
-    /// A conversation dropped on `target`: shown there or beside it. A pane
-    /// of this window already showing it moves there; dragged from a pane of
-    /// another window, that pane leaves its window.
-    func drop(_ conversationID: String, on target: UUID, zone: PaneDropZone) {
-        guard panes[target] != nil else { return }
-        let source = PaneDragSource.shared.pane(dragging: conversationID).flatMap { id in Self.owning(pane: id).map { (window: $0, pane: id) } }
-        if let existing = pane(showing: conversationID) {
+    /// A tab, or a conversation from the list, dropped on a pane: among its
+    /// tabs (at `index`, else at the end) or beside an edge. A tab comes
+    /// from wherever it is, this window or another; a conversation a tab of
+    /// this window shows moves that tab; any other opens in a new tab.
+    func drop(_ link: URL, on target: UUID, zone: PaneDropZone, at index: Int? = nil) {
+        guard let targetPane = panes[target] else { return }
+        let tabID = TabDragSource.shared.tab(dropping: link)
+            ?? ConversationLink.conversation(in: link).flatMap { tab(showing: $0.conversationID)?.1.id }
+        // A tab closed since its drag began leaves its conversation to open anew.
+        guard let tabID, let source = Self.owning(tab: tabID), let sourcePane = source.pane(holding: tabID) else {
+            guard let conversationID = ConversationLink.conversation(in: link)?.conversationID else { return }
+            if let (pane, existing) = tab(showing: conversationID) { pane.select(existing.id); focus(pane.id); return }
+            let tab = makeTab(opening: conversationID)
             switch zone {
-            case .center where existing.id != target:
-                panes[target]?.store.openLinkedConversation(id: conversationID)
-                close(existing.id)
-                focus(target)
-            case .edge(let edge): move(existing.id, beside: target, edge: edge)
-            case .center: break
+            case .center: targetPane.insert(tab, at: index); focus(target); tab.store.noteFocused()
+            case .edge(let edge): addPane(with: tab, beside: target, edge: edge)
             }
-        } else {
+            return
+        }
+        switch zone {
+        case .center where sourcePane === targetPane:
+            targetPane.move(tabID, to: index ?? targetPane.tabs.count)
+            focus(target)
+        case .edge where sourcePane === targetPane && targetPane.tabs.count == 1:
+            // A pane's only tab beside its own pane has nowhere new to go.
+            break
+        default:
+            guard let tab = source.detach(tabID, closingEmptyWindow: true) else { return }
+            adopt(tab)
             switch zone {
-            case .center:
-                panes[target]?.store.openLinkedConversation(id: conversationID)
-                focus(target)
-            case .edge(let edge): insert(beside: target, edge: edge, opening: conversationID)
+            case .center: targetPane.insert(tab, at: index); focus(target); tab.store.noteFocused()
+            case .edge(let edge):
+                guard panes[target] != nil else { return }
+                addPane(with: tab, beside: target, edge: edge)
             }
         }
-        if let source, source.window !== self { source.window.remove(source.pane) }
     }
 
-    /// A pane that moved to another window; the last one takes its window along.
-    func remove(_ id: UUID) {
-        if isSplit { close(id) } else { window?.close() }
+    /// Move a tab into a new pane beside the pane it is in.
+    func splitTab(_ id: UUID, edge: PaneEdge) {
+        guard let pane = pane(holding: id), pane.tabs.count > 1, let tab = detach(id, closingEmptyWindow: false) else { return }
+        addPane(with: tab, beside: pane.id, edge: edge)
     }
 
-    /// Open a pane's conversation in a new window at `point` (screen
-    /// coordinates, its top left), and close the pane here.
-    func tearOff(_ id: UUID, at point: NSPoint) {
-        guard isSplit, let openWindow, let conversationID = panes[id]?.store.loadedConversationID else { return }
+    /// Open a tab in a new window at `point` (screen coordinates, its top
+    /// left; nil lets the system place it), and take it out of this one.
+    func moveToNewWindow(_ id: UUID, at point: NSPoint? = nil) {
+        guard tabCount > 1, let openWindow, let tab = detach(id, closingEmptyWindow: false) else { return }
+        Self.handoff[tab.id] = tab
         let existing = Set(NSApp.windows.map(\.windowNumber))
-        openWindow(WindowSeed(conversationID: conversationID))
-        close(id)
-        Self.place(windowNotIn: existing, at: point, attempts: 20)
+        openWindow(WindowSeed(tab: tab.id))
+        if let point { Self.place(windowNotIn: existing, at: point, attempts: 20) }
+    }
+
+    /// A tab arriving from another window.
+    private func adopt(_ tab: ConversationTab) {
+        follow(tab)
+        tabsRevision &+= 1
     }
 
     /// The new window appears a moment after it is asked for.
@@ -388,13 +601,15 @@ struct WindowSeed: Codable, Hashable {
         }
     }
 
+    // MARK: Focus
+
     /// The AppKit window showing this one.
     var window: NSWindow? { anchors.values.lazy.compactMap { $0()?.window }.first }
 
     func focus(_ id: UUID) {
-        guard panes[id] != nil, focusedPaneID != id else { return }
+        guard let pane = panes[id], focusedPaneID != id else { return }
         focusedPaneID = id
-        panes[id]?.store.noteFocused()
+        pane.selected.store.noteFocused()
     }
 
     /// Focus the pane after (or before) the focused one, in layout order.
@@ -411,10 +626,19 @@ struct WindowSeed: Codable, Hashable {
     func register(_ pane: UUID, anchor: @escaping () -> NSView?) { anchors[pane] = anchor }
     func view(of pane: UUID) -> NSView? { anchors[pane]?() }
 
-    private func follow(_ pane: ConversationPane) {
-        subscriptions[pane.id] = pane.store.$selectedConversationID.sink { [weak self] id in
+    private func follow(_ pane: Pane) {
+        pane.tabs.forEach(follow)
+        paneSubscriptions[pane.id] = pane.$tabs.combineLatest(pane.$selectedID).dropFirst().sink { [weak self] tabs, _ in
             guard let self else { return }
-            if self.paneConversations[pane.id] != id { self.paneConversations[pane.id] = id }
+            tabs.filter { self.subscriptions[$0.id] == nil }.forEach(self.follow)
+            self.tabsRevision &+= 1
+        }
+    }
+
+    private func follow(_ tab: ConversationTab) {
+        subscriptions[tab.id] = tab.store.$selectedConversationID.sink { [weak self] id in
+            guard let self else { return }
+            if self.tabConversations[tab.id] != id { self.tabConversations[tab.id] = id }
         }
     }
 

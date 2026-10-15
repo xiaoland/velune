@@ -9,8 +9,9 @@ struct VeluneRootView: View {
     @ObservedObject var window: ConversationWindowModel
     /// The list's workspace.
     @ObservedObject var store: AppStore
-    @ObservedObject var pane: ConversationPane
-    /// The focused pane's workspace.
+    /// The focused pane's shown tab.
+    @ObservedObject var tab: ConversationTab
+    /// Its workspace.
     @ObservedObject var focused: AppStore
     let previewEmpty: Bool
     let previewSettings: Bool
@@ -66,14 +67,14 @@ struct VeluneRootView: View {
         .navigationSplitViewStyle(.balanced)
         .overlay { if let side = window.dockHint { DockZoneHighlight(side: side) } }
         .onChange(of: activeState, initial: true) { _, value in if value == .key { focused.noteFocused() } }
-        .onChange(of: window.focusedPaneID) { _, _ in window.outlinePopover = false }
+        .onChange(of: tab.id) { _, _ in window.outlinePopover = false }
         .onChange(of: focused.pendingConversationID) { _, value in if value != nil { window.outlinePopover = false } }
         .onChange(of: focused.loadedConversationID) { _, _ in window.outlinePopover = false }
         .onChange(of: store.outlinePresentation) { _, _ in window.outlinePopover = false }
         .toolbar { if !store.problems.isEmpty { ToolbarItem(placement: .primaryAction) { ProblemsButton(store: store) } } }
-        // The title bar's proxy icon carries the focused pane, as the pane title strip does once split.
-        .navigationDocument(PaneDocument(pane: pane.id, conversationID: focused.loadedConversationID, link: pane.link), preview: SharePreview(focused.selectedConversationTitle ?? "Velune"))
-        .focusedSceneValue(\.conversationCommands, ConversationCommandTarget(store: focused, send: pane.send, window: window))
+        // The title bar's proxy icon carries the focused tab, as its tab does once shown.
+        .navigationDocument(TabDocument(tab: tab.id, link: tab.link), preview: SharePreview(focused.selectedConversationTitle ?? "Velune"))
+        .focusedSceneValue(\.conversationCommands, ConversationCommandTarget(store: focused, send: tab.send, window: window))
         .task { if previewSettings { openSettings() } }
     }
 
@@ -98,13 +99,13 @@ struct VeluneRootView: View {
                 .popover(isPresented: Binding(get: { window.outlinePopover && !unavailable }, set: { window.outlinePopover = $0 }), arrowEdge: .bottom) {
                     TranscriptOutlineView(model: focused.transcript) { id in
                         window.outlinePopover = false
-                        pane.navigate(to: id)
+                        tab.navigate(to: id)
                     }
                 }
         case .inPlace:
-            Toggle(isOn: $pane.outlineCollapsed) { Label("会话大纲", systemImage: "list.bullet") }
-                .help(pane.outlineCollapsed ? "展开完整会话（⌘ 2）" : "折叠为用户消息大纲（⌘ 2）")
-                .disabled(unavailable && !pane.outlineCollapsed)
+            Toggle(isOn: $tab.outlineCollapsed) { Label("会话大纲", systemImage: "list.bullet") }
+                .help(tab.outlineCollapsed ? "展开完整会话（⌘ 2）" : "折叠为用户消息大纲（⌘ 2）")
+                .disabled(unavailable && !tab.outlineCollapsed)
         }
     }
 }
