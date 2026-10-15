@@ -97,7 +97,9 @@ struct VeluneRootView: View {
             Button { window.outlinePopover.toggle() } label: { Label("会话大纲", systemImage: "list.bullet") }
                 .help("会话大纲（⌘ 2）").disabled(unavailable)
                 .popover(isPresented: Binding(get: { window.outlinePopover && !unavailable }, set: { window.outlinePopover = $0 }), arrowEdge: .bottom) {
-                    TranscriptOutlineView(model: focused.transcript) { id in
+                    TranscriptOutlineView(model: focused.transcript, editMessage: { [focused, tab] id in
+                        focused.editability(of: id) == nil ? nil : { window.outlinePopover = false; tab.edit(messageID: id) }
+                    }) { id in
                         window.outlinePopover = false
                         tab.navigate(to: id)
                     }

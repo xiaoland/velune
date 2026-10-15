@@ -250,6 +250,7 @@ impl PiProjection {
                     snapshot.messages.push(Message {
                         turn_settings: None,
                         turn_usage: None,
+                        branch_point: None,
                         completed: true,
                         id: format!("tool-{}", id.unwrap_or_default()),
                         role: MessageRole::Tool,
@@ -286,6 +287,7 @@ impl PiProjection {
                     snapshot.messages.push(Message {
                         turn_settings: None,
                         turn_usage: None,
+                        branch_point: None,
                         completed: true,
                         id: format!("notice-{}", self.next_message_id),
                         role: MessageRole::System,
@@ -337,6 +339,7 @@ impl PiProjection {
                 snapshot.messages.push(Message {
                     turn_settings: None,
                     turn_usage: None,
+                    branch_point: None,
                     completed: true,
                     id: format!("notice-{}", self.next_message_id),
                     role: MessageRole::System,
@@ -489,6 +492,7 @@ fn apply_tool_result(messages: &mut Vec<Message>, native: &Value, identity: Opti
         messages.push(Message {
             turn_settings: None,
             turn_usage: None,
+            branch_point: None,
             completed: true,
             id: identity
                 .map(str::to_owned)
@@ -572,6 +576,7 @@ fn message_from_pi(message: &Value, fallback_id: String) -> Option<Message> {
     (!blocks.is_empty()).then(|| Message {
         turn_settings: None,
         turn_usage: None,
+        branch_point: None,
         completed: true,
         id,
         role,

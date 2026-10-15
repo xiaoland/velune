@@ -592,6 +592,43 @@ impl Client {
         self.request(json!({"type":"steer","message":input.text,"images":images}))
     }
 
+    /// Move the session's leaf to just before the user entry `entry_id`, in
+    /// the same session: the next prompt replaces that message. Pi keeps the
+    /// earlier branch in its session tree.
+    pub fn rewind(&mut self, entry_id: &str) -> Result<()> {
+        let response =
+            self.request(json!({"type":"prompt","message":format!("/velune-rewind {entry_id}")}))?;
+        if response["data"]["disposition"] != "handled" {
+            return Err(Error::Sdk("消息回退未被扩展处理".into()));
+        }
+        let outcome = self
+            .pending
+            .iter()
+            .rev()
+            .find(|event| {
+                event["type"] == "extension_ui_request"
+                    && event["method"] == "setStatus"
+                    && event["statusKey"] == "velune.rewind"
+            })
+            .and_then(|event| event["statusText"].as_str())
+            .and_then(|text| serde_json::from_str::<Value>(text).ok())
+            .ok_or_else(|| Error::Sdk("消息回退没有结果".into()))?;
+        if outcome["entryId"].as_str() != Some(entry_id) {
+            return Err(Error::Sdk("Pi 未能回到这条消息之前".into()));
+        }
+        Ok(())
+    }
+
+    /// Continue in a new session holding what precedes the user entry
+    /// `entry_id`; this client then runs that session.
+    pub fn fork(&mut self, entry_id: &str) -> Result<()> {
+        let response = self.request(json!({"type":"fork","entryId":entry_id}))?;
+        if response["data"]["cancelled"] == true {
+            return Err(Error::Sdk("Pi 扩展取消了 fork".into()));
+        }
+        Ok(())
+    }
+
     pub fn sync_virtual_selection(&mut self) -> Result<Value> {
         self.request(json!({"type":"prompt","message":"/velune-sync-selection"}))
     }

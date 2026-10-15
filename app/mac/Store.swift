@@ -1019,6 +1019,31 @@ final class AppStore: ObservableObject {
         let turn = BindingComposedTurn(text: text, effort: nil, permissionMode: nil, attachments: attachments)
         enqueue({ try transport.steerTurn(runtimeID: runtimeID, conversationID: conversationID, turn: turn) }, onFailure: { _ in onFailure?() }) { [weak self] in self?.applySnapshotResult($0) }
     }
+    /// Whether the user message may be edited now, and how. The edit goes to
+    /// the conversation's own runtime with the next turn's choices.
+    func editability(of messageID: String) -> EditableMessage? {
+        guard !isPreview, !isDraft, canSend, nextTurnRuntimeID == snapshot?.conversation.runtimeID else { return nil }
+        return followUp.editable.first { $0.messageID == messageID }
+    }
+    func message(id: String) -> Message? { snapshot?.messages.first { $0.id == id } }
+    func isLastUserMessage(_ messageID: String) -> Bool { snapshot?.messages.last { $0.role == .user }?.id == messageID }
+    /// Send `text` in place of a user message. In place the conversation
+    /// shows the new turn here; a fork's new conversation goes to `forked`.
+    func editMessage(_ messageID: String, placement: BindingEditPlacement, text: String, attachments: [String], forked: @escaping (BindingSnapshotResult) -> Void) {
+        guard editability(of: messageID) != nil, let model = nextTurnModel, let runtimeID = snapshot?.conversation.runtimeID, let conversationID = loadedConversationID else { return }
+        guard let transport else { recordProblem("本地核心未配置"); return }
+        executionStarting = true
+        let turn = BindingComposedTurn(text: text, effort: nextTurnEffort.flatMap { reasoningEffortOptions.contains($0) ? $0 : nil },
+                                       permissionMode: effectivePermissionMode?.id, attachments: attachments)
+        enqueue({ try transport.editMessage(runtimeID: runtimeID, conversationID: conversationID, messageID: messageID, placement: placement, selection: model, turn: turn) },
+                onFailure: { [weak self] _ in self?.executionStarting = false }) { [weak self] value in
+            guard let self else { return }
+            self.executionStarting = false
+            if placement == .fork { forked(value); self.refreshConversations() } else { self.applySnapshotResult(value) }
+        }
+    }
+    /// Show a conversation the core has already opened, as `result` gives it.
+    func adopt(_ result: BindingSnapshotResult) { applySnapshotResult(result) }
     func steerQueued(_ id: String) { changeQueue(.steer(id: id)) }
     func editQueued(_ id: String, text: String) { changeQueue(.edit(id: id, text: text)) }
     func removeQueued(_ id: String) { changeQueue(.remove(id: id)) }

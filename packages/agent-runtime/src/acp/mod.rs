@@ -466,6 +466,7 @@ impl Client {
         self.message(Message {
             turn_settings: None,
             turn_usage: None,
+            branch_point: None,
             id: message_id,
             role: MessageRole::User,
             completed: true,

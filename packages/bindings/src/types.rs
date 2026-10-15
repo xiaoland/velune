@@ -195,6 +195,27 @@ pub struct BindingFollowUp {
     pub can_steer: bool,
     /// The last turn stopped or failed; the user may ask to continue.
     pub can_continue: bool,
+    /// User messages that may be edited now.
+    pub editable: Vec<BindingEditableMessage>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BindingEditableMessage {
+    pub message_id: String,
+    /// The replacement may go into this conversation; otherwise only a new
+    /// conversation can continue from the message.
+    pub in_place: bool,
+}
+
+/// Where an edited user message continues.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, uniffi::Enum)]
+#[serde(rename_all = "camelCase")]
+pub enum BindingEditPlacement {
+    /// In this conversation, replacing the message and all after it.
+    InPlace,
+    /// In a new conversation holding what precedes the message.
+    Fork,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]

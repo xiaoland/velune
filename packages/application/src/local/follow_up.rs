@@ -273,6 +273,7 @@ impl CoreRuntime {
                 && snapshot.pending_interactions.is_empty()
                 && snapshot.actions.can_send
                 && (queue.interrupted || snapshot.run_state == RunState::Failed),
+            editable: self.editable_messages(snapshot),
         }
     }
 }

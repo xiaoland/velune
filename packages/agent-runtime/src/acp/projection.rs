@@ -83,6 +83,7 @@ impl Client {
                 self.message(Message {
                     turn_settings: None,
                     turn_usage: None,
+                    branch_point: None,
                     id: format!("acp:plan:{parent}"),
                     completed: true,
                     role: MessageRole::System,
@@ -154,6 +155,7 @@ impl Client {
             .unwrap_or(Message {
                 turn_settings: None,
                 turn_usage: None,
+                branch_point: None,
                 id,
                 completed: false,
                 role,
@@ -241,6 +243,7 @@ impl Client {
         self.message(Message {
             turn_settings: None,
             turn_usage: None,
+            branch_point: None,
             id,
             completed: matches!(state, ToolState::Completed | ToolState::Failed),
             role: MessageRole::Tool,
@@ -310,6 +313,7 @@ impl Client {
         self.message(Message {
             turn_settings: None,
             turn_usage: None,
+            branch_point: None,
             id,
             completed: true,
             role: MessageRole::System,

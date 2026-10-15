@@ -1320,6 +1320,20 @@ impl Application {
             Some(&runtime_id),
         )
     }
+    /// Send `turn` in place of the user message `message_id`
+    /// (`FollowUp::editable`), continuing as `placement` says. A fork's
+    /// result is the new conversation's snapshot.
+    pub fn edit_message(
+        &mut self,
+        runtime_id: String,
+        conversation_id: String,
+        message_id: String,
+        placement: crate::conversation::EditPlacement,
+        selection: ModelSelection,
+        turn: ComposedTurn,
+    ) -> Result<SnapshotResult, Error> {
+        self.execute("editMessage", json!({"conversationID":conversation_id,"messageID":message_id,"placement":placement,"modelSelection":selection,"text":turn.text,"effort":turn.effort,"permissionMode":turn.permission_mode,"attachments":turn.attachments}), Some(&runtime_id))
+    }
     pub fn cancel(
         &mut self,
         runtime_id: String,

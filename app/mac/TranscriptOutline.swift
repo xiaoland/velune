@@ -9,6 +9,8 @@ struct TranscriptOutlineView: View {
     var inPopover = true
     /// In the sidebar it takes the sidebar's look.
     var inSidebar = false
+    /// Edits the user message of this ID, when it may be edited now.
+    var editMessage: (String) -> (() -> Void)? = { _ in nil }
     let navigate: (String) -> Void
     @State private var selectedID: String?
     var body: some View {
@@ -36,7 +38,10 @@ struct TranscriptOutlineView: View {
         }
         .accessibilityLabel("会话大纲")
         .contextMenu(forSelectionType: String.self) { ids in
-            if let id = ids.first { Button("前往消息") { go(to: id) } }
+            if let id = ids.first {
+                Button("前往消息") { go(to: id) }
+                if let edit = model.userRows.first(where: { $0.id == id }).flatMap({ editMessage($0.message.id) }) { Button("编辑消息…", action: edit) }
+            }
         } primaryAction: { ids in if let id = ids.first { go(to: id) } }
     }
     private func go(to id: String) {

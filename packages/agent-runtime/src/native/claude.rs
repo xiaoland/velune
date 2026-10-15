@@ -38,11 +38,27 @@ fn claude_agents(agents: &[SessionAgent]) -> Value {
     )
 }
 
+/// How the next Claude Code turn child takes up the conversation's session.
+#[derive(Clone, Default)]
+pub(super) enum ClaudeStart {
+    /// Resume the session.
+    #[default]
+    Resume,
+    /// Begin a new session under the conversation's identity.
+    Fresh,
+    /// Resume with the history cut after record `at`: the new prompt follows
+    /// it, and what came after stays in the file on another branch.
+    ResumeAt { at: String },
+    /// Begin the conversation's session as a copy of session `from` up to
+    /// record `at`; `from` is left as it is.
+    Fork { from: String, at: String },
+}
+
 impl NativeSession {
     pub(super) fn claude_command(
         config: &NativeConfig,
         selection: Option<&RuntimeModel>,
-        session: Option<(&str, Option<&Path>, bool)>,
+        session: Option<(&str, Option<&Path>, &ClaudeStart)>,
         effort: Option<&str>,
         permission_mode: Option<&str>,
     ) -> Result<Command> {
@@ -74,10 +90,25 @@ impl NativeSession {
             }
             command.arg("--permission-mode").arg(mode);
         }
-        if let Some((id, cwd, fresh)) = session {
-            command
-                .arg(if fresh { "--session-id" } else { "--resume" })
-                .arg(id);
+        if let Some((id, cwd, start)) = session {
+            // `--resume-session-at` and `--fork-session` apply in print mode.
+            match start {
+                ClaudeStart::Resume => command.arg("--resume").arg(id),
+                ClaudeStart::Fresh => command.arg("--session-id").arg(id),
+                ClaudeStart::ResumeAt { at } => command
+                    .arg("--resume")
+                    .arg(id)
+                    .arg("--resume-session-at")
+                    .arg(at),
+                ClaudeStart::Fork { from, at } => command
+                    .arg("--resume")
+                    .arg(from)
+                    .arg("--resume-session-at")
+                    .arg(at)
+                    .arg("--fork-session")
+                    .arg("--session-id")
+                    .arg(id),
+            };
             if let Some(cwd) = cwd {
                 command.current_dir(cwd);
             }
@@ -221,25 +252,41 @@ impl NativeSession {
             .collect())
     }
     pub(super) fn claude_create(&mut self, cwd: Option<&Path>, runtime_id: &str) -> Result<()> {
-        let mut bytes = [0_u8; 16];
-        getrandom::fill(&mut bytes)
-            .map_err(|error| Error::new(format!("Claude 会话身份生成失败：{error}")))?;
-        bytes[6] = (bytes[6] & 0x0f) | 0x40;
-        bytes[8] = (bytes[8] & 0x3f) | 0x80;
-        let hex: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
-        let id = format!(
-            "{}-{}-{}-{}-{}",
-            &hex[..8],
-            &hex[8..12],
-            &hex[12..16],
-            &hex[16..20],
-            &hex[20..]
-        );
+        let id = claude_session_id()?;
         let cwd = cwd
             .map(Path::to_path_buf)
             .unwrap_or_else(|| self.default_cwd.clone());
         self.replace_snapshot(&id, Some(&cwd), runtime_id, Vec::new());
-        self.claude_fresh = true;
+        self.claude_start = ClaudeStart::Fresh;
+        Ok(())
+    }
+    /// The next turn child resumes at the record before the message; a fork
+    /// copies the session up to there under a new identity, which the
+    /// first turn creates.
+    pub(super) fn claude_branch(&mut self, index: usize, placement: EditPlacement) -> Result<()> {
+        let snapshot = self.snapshot.as_ref().expect("branched snapshot");
+        let at = snapshot.messages[index]
+            .branch_point
+            .clone()
+            .ok_or_else(|| Error::new("Claude Code 不能替换会话的第一条消息"))?;
+        match placement {
+            EditPlacement::InPlace => {
+                self.claude_start = ClaudeStart::ResumeAt { at };
+                self.truncate_snapshot(index);
+            }
+            EditPlacement::Fork => {
+                let from = self
+                    .native_id
+                    .clone()
+                    .ok_or_else(|| Error::new("没有原生会话身份"))?;
+                let id = claude_session_id()?;
+                let cwd = snapshot.conversation.cwd.as_deref().map(PathBuf::from);
+                let runtime_id = snapshot.conversation.runtime_id.clone();
+                let history = snapshot.messages[..index].to_vec();
+                self.replace_snapshot(&id, cwd.as_deref(), &runtime_id, history);
+                self.claude_start = ClaudeStart::Fork { from, at };
+            }
+        }
         Ok(())
     }
     pub(super) fn claude_open(
@@ -250,7 +297,7 @@ impl NativeSession {
         history: Vec<Message>,
     ) -> Result<()> {
         self.replace_snapshot(id, cwd, runtime_id, history);
-        self.claude_fresh = false;
+        self.claude_start = ClaudeStart::Resume;
         Ok(())
     }
     pub(super) fn claude_send(&mut self, input: &crate::TurnInput) -> Result<()> {
@@ -275,6 +322,7 @@ impl NativeSession {
         self.message(Message {
             turn_settings: None,
             turn_usage: None,
+            branch_point: None,
             completed: true,
             id: format!("{}:user", self.turn_id.as_deref().unwrap_or_default()),
             role: MessageRole::User,
@@ -291,7 +339,7 @@ impl NativeSession {
                 .chain((!text.is_empty()).then(|| MessageBlock::Text { text: text.into() }))
                 .collect(),
         });
-        self.claude_fresh = false;
+        self.claude_start = ClaudeStart::Resume;
         self.running();
         Ok(())
     }
@@ -315,6 +363,7 @@ impl NativeSession {
         self.message(Message {
             turn_settings: None,
             turn_usage: None,
+            branch_point: None,
             completed: true,
             id,
             role: MessageRole::User,
@@ -480,6 +529,7 @@ impl NativeSession {
                             self.message(Message {
                                 turn_settings: None,
                                 turn_usage: None,
+                                branch_point: None,
                                 completed: true,
                                 id: record["uuid"].as_str().unwrap_or(id).into(),
                                 role: MessageRole::Tool,
@@ -549,6 +599,7 @@ impl NativeSession {
                     self.message(Message {
                         turn_settings: None,
                         turn_usage: None,
+                        branch_point: None,
                         completed: true,
                         id: id.into(),
                         role,
@@ -588,6 +639,7 @@ impl NativeSession {
                             .unwrap_or(Message {
                                 turn_settings: None,
                                 turn_usage: None,
+                                branch_point: None,
                                 completed: false,
                                 id,
                                 role: MessageRole::Assistant,
@@ -813,4 +865,22 @@ fn claude_context(usage: &Value) -> Option<u64> {
     let read = usage["cache_read_input_tokens"].as_u64().unwrap_or(0);
     let write = usage["cache_creation_input_tokens"].as_u64().unwrap_or(0);
     Some(usage["input_tokens"].as_u64()? + read + write + usage["output_tokens"].as_u64()?)
+}
+
+/// A new random (version 4) UUID, the form Claude Code names sessions by.
+fn claude_session_id() -> Result<String> {
+    let mut bytes = [0_u8; 16];
+    getrandom::fill(&mut bytes)
+        .map_err(|error| Error::new(format!("Claude 会话身份生成失败：{error}")))?;
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    let hex: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
+    Ok(format!(
+        "{}-{}-{}-{}-{}",
+        &hex[..8],
+        &hex[8..12],
+        &hex[12..16],
+        &hex[16..20],
+        &hex[20..]
+    ))
 }

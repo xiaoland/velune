@@ -92,6 +92,32 @@ pub struct FollowUp {
     pub can_steer: bool,
     /// The last turn stopped or failed; the user may ask to continue.
     pub can_continue: bool,
+    /// User messages that may be edited now, in conversation order; none
+    /// while a turn runs.
+    #[serde(default)]
+    pub editable: Vec<EditableMessage>,
+}
+
+/// A user message an edit can replace, continuing from just before it.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct EditableMessage {
+    pub message_id: String,
+    /// The replacement may go into this conversation, in place of the
+    /// message and all after it; otherwise only a new conversation can
+    /// continue from it.
+    pub in_place: bool,
+}
+
+/// Where an edited user message continues.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum EditPlacement {
+    /// In this conversation, replacing the message and all after it.
+    InPlace,
+    /// In a new conversation holding what precedes the message; this one
+    /// stays as it is.
+    Fork,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -127,6 +153,11 @@ pub struct Message {
     /// On a user message: the tokens the native record says the turn it starts used.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub turn_usage: Option<TurnUsage>,
+    /// On a user message read from a runtime's history: the native point a
+    /// replacement of this message branches at, in the adapter's own terms
+    /// (Codex: the turn it starts; Claude Code: the record before it).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch_point: Option<String>,
 }
 
 /// What a turn ran with, as far as it is known; each part is absent when

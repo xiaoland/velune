@@ -17,6 +17,8 @@ struct TranscriptView: View {
     let activity: TranscriptActivity?
     let loadPayloads: ([String]) -> Void
     let openConversation: (String) -> Void
+    /// Edits the user message of this ID, when it may be edited now.
+    var editMessage: (String) -> (() -> Void)? = { _ in nil }
     let describeSettings: (TranscriptTurn) -> TurnSettingsSummary?
     @State private var following = true
     @State private var bottomRequest: UInt64 = 0
@@ -34,7 +36,7 @@ struct TranscriptView: View {
                                cwd: cwd, remoteHost: remoteHost, bottomRequest: bottomRequest, jump: navigation,
                                followingChanged: { value in if following != value { following = value } },
                                outlineToggle: { id in outlineAnchorID = id; outlineCollapsed = false }, loadPayloads: loadPayloads,
-                               openConversation: openConversation, describeSettings: describeSettings)
+                               openConversation: openConversation, editMessage: editMessage, describeSettings: describeSettings)
             .background(Color(nsColor: .windowBackgroundColor))
             .overlay(alignment: .bottomTrailing) {
                 if !following {

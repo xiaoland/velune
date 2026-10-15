@@ -151,6 +151,9 @@ private struct TabContentView: View {
             footer
         }
         .sheet(item: Binding(get: { shown ? store.pendingInteractions.first : nil }, set: { _ in })) { RuntimeInteractionView(store: store, interaction: $0) }
+        .sheet(item: $tab.editing) { request in
+            MessageEditorSheet(store: store, request: request, forked: window.openInNewTab(adopting:))
+        }
         .onChange(of: store.loadedConversationID) { _, _ in tab.outlineCollapsed = false }
         .onChange(of: store.outlinePresentation) { _, _ in tab.outlineCollapsed = false }
     }
@@ -189,6 +192,7 @@ private struct TabContentView: View {
                        cwd: store.loadedConversationWorkingDirectory, remoteHost: store.loadedConversationLocation.host, outlineCollapsed: $tab.outlineCollapsed, navigation: tab.outlineNavigation,
                        activity: store.activity, loadPayloads: { [store] ids in store.loadPayloads(messageIDs: ids) },
                        openConversation: { [store] id in store.openLinkedConversation(id: id) },
+                       editMessage: { [store, tab] id in store.editability(of: id) == nil ? nil : { tab.edit(messageID: id) } },
                        describeSettings: { [store] in store.describe($0) })
     }
 }

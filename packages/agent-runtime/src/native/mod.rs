@@ -154,7 +154,7 @@ pub struct NativeSession {
     /// Messages steered into Claude Code turns, for their local identities.
     steer_sequence: u64,
     gateway_turn: bool,
-    claude_fresh: bool,
+    claude_start: claude::ClaudeStart,
     tunnel: Option<crate::execution::LoopbackTunnel>,
     _mcp: crate::mcp::Prepared,
 }
@@ -244,7 +244,7 @@ impl NativeSession {
             restart_required: false,
             steer_sequence: 0,
             gateway_turn: tunnel.is_some(),
-            claude_fresh: false,
+            claude_start: Default::default(),
             tunnel,
             _mcp: mcp,
             epoch: format!("{:x}", u64::from_le_bytes(bytes)),
@@ -256,7 +256,7 @@ impl NativeSession {
     fn spawn_rpc(
         config: &NativeConfig,
         selection: Option<&RuntimeModel>,
-        session: Option<(&str, Option<&Path>, bool)>,
+        session: Option<(&str, Option<&Path>, &claude::ClaudeStart)>,
         effort: Option<&str>,
         permission_mode: Option<&str>,
     ) -> Result<rpc::RpcClient> {
@@ -403,6 +403,35 @@ impl NativeSession {
             NativeKind::DeepSeek => Err(Error::new("DeepSeek 运行时不提供插入消息")),
         }
     }
+    /// Make the next send replace the user message `message_id` and all
+    /// after it. In place, the conversation goes back to just before the
+    /// message; a fork continues in a new native conversation holding what
+    /// precedes it, which this session then presents, and leaves the
+    /// original as it is. The snapshot no longer shows the replaced messages.
+    pub fn branch(&mut self, message_id: &str, placement: EditPlacement) -> Result<()> {
+        self.ensure_idle()?;
+        let snapshot = self
+            .snapshot
+            .as_ref()
+            .ok_or_else(|| Error::new("没有活动会话"))?;
+        let index = snapshot
+            .messages
+            .iter()
+            .position(|message| message.id == message_id && message.role == MessageRole::User)
+            .ok_or_else(|| Error::new("会话中没有这条用户消息"))?;
+        match self.config.kind {
+            NativeKind::Codex => self.codex_branch(index, placement),
+            NativeKind::ClaudeCode => self.claude_branch(index, placement),
+            NativeKind::DeepSeek => Err(Error::new("DeepSeek 运行时不提供消息编辑")),
+        }
+    }
+    /// Drop the messages from `index` on from the snapshot.
+    fn truncate_snapshot(&mut self, index: usize) {
+        if let Some(snapshot) = &mut self.snapshot {
+            snapshot.messages.truncate(index);
+            snapshot.revision += 1;
+        }
+    }
     pub fn cancel(&mut self) -> Result<()> {
         if !self.busy() {
             return Ok(());
@@ -493,7 +522,7 @@ impl NativeSession {
         self.rpc = Self::spawn_rpc(
             &active,
             self.native_selection.as_ref(),
-            Some((&id, cwd.as_deref(), self.claude_fresh)),
+            Some((&id, cwd.as_deref(), &self.claude_start)),
             effort,
             permission_mode,
         )?;
@@ -772,6 +801,7 @@ impl NativeSession {
             self.message(Message {
                 turn_settings: None,
                 turn_usage: None,
+                branch_point: None,
                 completed: true,
                 id,
                 role: crate::conversation::MessageRole::System,

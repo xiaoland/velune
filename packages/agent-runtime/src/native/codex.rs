@@ -224,7 +224,7 @@ impl NativeSession {
                 let start = self.snapshot.as_ref().map_or(0, |s| s.messages.len());
                 if let Some(items) = turn["items"].as_array() {
                     for item in items {
-                        self.codex_item(item);
+                        self.codex_item(item, turn["id"].as_str());
                     }
                 }
                 if let Some(record) = turn["id"].as_str().and_then(|id| records.get(id))
@@ -293,6 +293,51 @@ impl NativeSession {
         let params =
             json!({"threadId": thread, "expectedTurnId": turn, "input": codex_input(input)});
         self.rpc.request("turn/steer", &params)?;
+        Ok(())
+    }
+    /// In place, `thread/revert` drops the message's turn and all later ones
+    /// from the loaded thread. A fork copies the thread through the turn
+    /// before it with `thread/fork` and resumes the copy here.
+    pub(super) fn codex_branch(&mut self, index: usize, placement: EditPlacement) -> Result<()> {
+        let snapshot = self.snapshot.as_ref().expect("branched snapshot");
+        let thread = self
+            .native_id
+            .clone()
+            .ok_or_else(|| Error::new("Codex 没有活动会话"))?;
+        let turn = snapshot.messages[index]
+            .branch_point
+            .clone()
+            .ok_or_else(|| Error::new("这条消息没有对应的 Codex 轮次"))?;
+        match placement {
+            EditPlacement::InPlace => {
+                self.rpc.request(
+                    "thread/revert",
+                    &json!({"threadId": thread, "beforeTurnId": turn}),
+                )?;
+                self.truncate_snapshot(index);
+            }
+            EditPlacement::Fork => {
+                let previous = snapshot.messages[..index]
+                    .iter()
+                    .rev()
+                    .filter(|message| message.role == MessageRole::User)
+                    .find_map(|message| message.branch_point.clone().filter(|point| *point != turn))
+                    .ok_or_else(|| Error::new("第一条消息没有可复制的上文"))?;
+                let cwd = snapshot.conversation.cwd.as_deref().map(PathBuf::from);
+                let runtime_id = snapshot.conversation.runtime_id.clone();
+                let mut options = self.codex_options(cwd.as_deref());
+                options["threadId"] = json!(thread);
+                options["lastTurnId"] = json!(previous);
+                options["excludeTurns"] = json!(true);
+                let result = self.rpc.request("thread/fork", &options)?;
+                let fork = result["thread"]["id"]
+                    .as_str()
+                    .ok_or_else(|| Error::new("Codex 未返回 fork 会话身份"))?
+                    .to_owned();
+                self.native_id = None;
+                self.codex_open(&fork, cwd.as_deref(), &runtime_id, Vec::new())?;
+            }
+        }
         Ok(())
     }
     /// The configured model first, then the catalog. Codex 0.159.3 lists each
@@ -387,7 +432,7 @@ impl NativeSession {
         }
         Ok(())
     }
-    fn codex_item(&mut self, item: &Value) {
+    fn codex_item(&mut self, item: &Value, turn: Option<&str>) {
         let Some(runtime_id) = self
             .snapshot
             .as_ref()
@@ -395,7 +440,10 @@ impl NativeSession {
         else {
             return;
         };
-        if let Some(message) = project_item(item, &runtime_id) {
+        if let Some(mut message) = project_item(item, &runtime_id) {
+            if message.role == MessageRole::User {
+                message.branch_point = turn.map(str::to_owned);
+            }
             self.message(message);
         }
     }
@@ -436,7 +484,7 @@ impl NativeSession {
         }
         match method {
             "item/started" | "item/completed" => {
-                self.codex_item(&params["item"]);
+                self.codex_item(&params["item"], params["turnId"].as_str());
                 if let Some(message) = self.snapshot.as_mut().and_then(|snapshot| {
                     snapshot
                         .messages
@@ -466,6 +514,7 @@ impl NativeSession {
                     self.message(Message {
                         turn_settings: None,
                         turn_usage: None,
+                        branch_point: None,
                         completed: false,
                         id: id.into(),
                         role: crate::conversation::MessageRole::Assistant,
@@ -921,6 +970,7 @@ pub(super) fn project_item(item: &Value, runtime_id: &str) -> Option<Message> {
     Some(Message {
         turn_settings: None,
         turn_usage: None,
+        branch_point: None,
         completed: true,
         id: id.into(),
         role: kind,

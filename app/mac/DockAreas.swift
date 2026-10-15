@@ -239,7 +239,8 @@ struct ToolOutline: View {
         if store.pendingConversationID != nil || store.transcript.userRows.isEmpty {
             ContentUnavailableView("没有用户消息", systemImage: "list.bullet", description: Text("会话有了用户消息后，在这里列出并可跳转。"))
         } else {
-            TranscriptOutlineView(model: store.transcript, inPopover: false, inSidebar: inSidebar) { tab.navigate(to: $0) }
+            TranscriptOutlineView(model: store.transcript, inPopover: false, inSidebar: inSidebar,
+                                  editMessage: { [store, tab] id in store.editability(of: id) == nil ? nil : { tab.edit(messageID: id) } }) { tab.navigate(to: $0) }
         }
     }
 }

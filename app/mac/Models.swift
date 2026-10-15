@@ -57,6 +57,16 @@ struct FollowUp: Sendable, Equatable {
     var paused: QueuePause?
     var canSteer = false
     var canContinue = false
+    /// User messages that may be edited now.
+    var editable: [EditableMessage] = []
+}
+
+/// A user message an edit can replace, continuing from just before it.
+struct EditableMessage: Sendable, Equatable {
+    var messageID: String
+    /// The replacement may go into this conversation; otherwise only a new
+    /// conversation can continue from the message.
+    var inPlace: Bool
 }
 
 struct QueuedMessage: Sendable, Equatable, Identifiable {

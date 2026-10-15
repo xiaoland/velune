@@ -1,6 +1,7 @@
 import AppKit
 import Combine
 import SwiftUI
+import VeluneBindings
 
 /// One conversation tab: its own workspace, composer and reading state. A
 /// tab keeps them while it is in the background and when it moves to another
@@ -14,6 +15,8 @@ import SwiftUI
     /// The list shows only user messages (in-place outline).
     @Published var outlineCollapsed = false
     @Published var outlineNavigation: TranscriptJump?
+    /// The user message being edited, in a sheet over the tab.
+    @Published var editing: MessageEditRequest?
     /// Reading starts when the tab is first shown, so restored background tabs cost nothing.
     private var pendingStart: (() -> Void)?
 
@@ -72,8 +75,26 @@ import SwiftUI
         }
     }
 
+    /// Development check of message editing without driving the interface:
+    /// open the editor on the conversation's second user message.
+    func checkEditMessage(attempts: Int = 0) {
+        guard attempts < 120 else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [self] in
+            let users = transcript(of: store).filter { $0.role == .user }
+            guard users.count > 1, store.editability(of: users[1].id) != nil else { return checkEditMessage(attempts: attempts + 1) }
+            edit(messageID: users[1].id)
+        }
+    }
+    private func transcript(of store: AppStore) -> [Message] { store.transcript.rows.map(\.message) }
+
     func navigate(to id: String) {
         outlineNavigation = TranscriptJump(id: id, token: (outlineNavigation?.token ?? 0) &+ 1)
+    }
+
+    /// Edit a user message of the transcript, when it may be edited now.
+    func edit(messageID: String) {
+        guard let editable = store.editability(of: messageID), let message = store.message(id: messageID) else { return }
+        editing = MessageEditRequest(message: message, inPlace: editable.inPlace, isLast: store.isLastUserMessage(messageID))
     }
 
     /// The link a drag carries to other apps; an unsent conversation has none yet.
@@ -443,6 +464,21 @@ struct WindowSeed: Codable, Hashable {
         let pane = focusedPane
         let index = pane.tabs.firstIndex { $0.id == pane.selectedID }.map { $0 + 1 }
         pane.insert(makeTab(opening: conversationID), at: index)
+        focused.store.noteFocused()
+    }
+
+    /// Show in a new tab a conversation the core has just opened, such as an
+    /// edit's fork, as `result` gives it.
+    func openInNewTab(adopting result: BindingSnapshotResult) {
+        guard let id = result.snapshot?.conversation.id else { return }
+        if select(showing: id) { return }
+        let store = application.makeWorkspace()
+        let pane = focusedPane
+        let index = pane.tabs.firstIndex { $0.id == pane.selectedID }.map { $0 + 1 }
+        pane.insert(ConversationTab(store: store, start: {
+            store.start(loadFirstConversation: false)
+            store.adopt(result)
+        }), at: index)
         focused.store.noteFocused()
     }
 

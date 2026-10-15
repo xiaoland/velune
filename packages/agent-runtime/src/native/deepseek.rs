@@ -244,6 +244,7 @@ impl NativeSession {
         self.message(Message {
             turn_settings: None,
             turn_usage: None,
+            branch_point: None,
             completed: true,
             id: format!("{}:user:{id}", self.epoch),
             role: crate::conversation::MessageRole::User,
@@ -449,6 +450,7 @@ impl NativeSession {
                     .unwrap_or(Message {
                         turn_settings: None,
                         turn_usage: None,
+                        branch_point: None,
                         completed: false,
                         id,
                         role: crate::conversation::MessageRole::Assistant,
@@ -493,6 +495,7 @@ impl NativeSession {
                 self.message(Message {
                     turn_settings: None,
                     turn_usage: None,
+                    branch_point: None,
                     completed: true,
                     id,
                     role: crate::conversation::MessageRole::Tool,

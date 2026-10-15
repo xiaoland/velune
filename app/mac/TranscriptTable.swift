@@ -42,6 +42,8 @@ struct TranscriptTable: NSViewRepresentable {
     let loadPayloads: ([String]) -> Void
     /// Show another conversation, from a collaboration link in this one.
     let openConversation: (String) -> Void
+    /// Edits the user message of this ID, when it may be edited now.
+    let editMessage: (String) -> (() -> Void)?
     /// Names a turn's settings and usage: runtime and permission names come from the configuration.
     let describeSettings: (TranscriptTurn) -> TurnSettingsSummary?
 
@@ -846,25 +848,40 @@ struct TranscriptTable: NSViewRepresentable {
 
     // MARK: Context menu
 
-    /// Adds a whole-message copy to the native text menu; a selection rarely
-    /// spans every paragraph and code block of a long reply.
+    /// Adds editing a user message and a whole-message copy to the native
+    /// text menu; a selection rarely spans every paragraph and code block of
+    /// a long reply.
     func textView(_ view: NSTextView, menu: NSMenu, for event: NSEvent, at charIndex: Int) -> NSMenu? {
         var ancestor: NSView? = view
         while let current = ancestor, !(current is TranscriptCellView) { ancestor = current.superview }
         guard let rowID = (ancestor as? TranscriptCellView)?.rowID, let row = indexByID[rowID], case .message(let message) = entries[row] else { return menu }
+        var leading: [NSMenuItem] = []
+        if message.message.role == .user, let edit = parent?.editMessage(message.message.id) {
+            let item = NSMenuItem(title: "编辑消息…", action: #selector(editMessage(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = edit
+            leading.append(item)
+        }
         let source = message.message.blocks.compactMap { block -> String? in
             switch block {
             case .text(let text), .notice(let text): return text
             case .reasoning, .tool, .image, .file, .agentSender: return nil
             }
         }.joined(separator: "\n\n")
-        guard !source.isEmpty else { return menu }
-        let item = NSMenuItem(title: "拷贝整条消息", action: #selector(copyMessage(_:)), keyEquivalent: "")
-        item.target = self
-        item.representedObject = source
-        menu.insertItem(item, at: 0)
-        menu.insertItem(.separator(), at: 1)
+        if !source.isEmpty {
+            let item = NSMenuItem(title: "拷贝整条消息", action: #selector(copyMessage(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = source
+            leading.append(item)
+        }
+        guard !leading.isEmpty else { return menu }
+        for (index, item) in leading.enumerated() { menu.insertItem(item, at: index) }
+        menu.insertItem(.separator(), at: leading.count)
         return menu
+    }
+
+    @objc private func editMessage(_ sender: NSMenuItem) {
+        (sender.representedObject as? () -> Void)?()
     }
 
     @objc private func copyMessage(_ sender: NSMenuItem) {

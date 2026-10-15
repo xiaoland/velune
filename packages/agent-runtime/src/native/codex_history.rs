@@ -168,6 +168,7 @@ pub fn read_codex_history_at(
                 .as_i64()
                 .or_else(|| entry["completedAtMs"].as_i64());
             if message.role == MessageRole::User {
+                message.branch_point = entry["turnId"].as_str().map(str::to_owned);
                 let turn = entry["turnId"].as_str().and_then(|turn| turns.get(turn));
                 message.turn_settings = Some(turn.map(|t| t.settings.clone()).unwrap_or_default());
                 message.turn_usage = turn.and_then(|t| t.usage.clone());

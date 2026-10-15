@@ -45,6 +45,25 @@ export default function (pi) {
       ctx.ui.setStatus("velune.session-metadata", JSON.stringify({sessionFile:manager.getSessionFile() ?? null,cwd:manager.getCwd(),name:manager.getSessionName() ?? null,createdUnixMs:Date.parse(manager.getHeader()?.timestamp ?? ""),messageIds,identityConfirmations}));
     },
   });
+  // Editing a user message in place: the leaf moves to just before the
+  // message's entry, in the same session file, so the next prompt replaces
+  // it; the earlier branch stays in Pi's tree. Reports its outcome as a status.
+  pi.registerCommand("velune-rewind", {
+    description: "Move the session leaf to before a user message",
+    handler: async (args, ctx) => {
+      const entryId = args.trim();
+      let outcome;
+      try {
+        const entry = ctx.sessionManager.getEntry(entryId);
+        if (entry?.type !== "message" || entry.message.role !== "user") throw new Error("not a user message");
+        const result = await ctx.navigateTree(entryId, {summarize:false});
+        outcome = result.cancelled ? {error:"cancelled"} : {entryId};
+      } catch (error) {
+        outcome = {error: error instanceof Error ? error.message : "rewind failed"};
+      }
+      ctx.ui.setStatus("velune.rewind", JSON.stringify(outcome));
+    },
+  });
   if (!selectionPath) return;
   const appendSelection = () => {
     const chosen = selection();

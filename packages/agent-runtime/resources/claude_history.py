@@ -133,6 +133,13 @@ def history(path, native_id, runtime_id, sidechain=False):
         message = {"id": entry["uuid"], "role": "tool" if role == "user" and all(b["kind"] == "tool" for b in content) else role,
                    "completed": True, "timestamp_unix_ms": timestamp(entry.get("timestamp")), "blocks": content}
         if message["role"] == "user":
+            # A replacement resumes at the nearest message record before the
+            # prompt (`--resume-session-at`); the first prompt has none.
+            parent = entries.get(entry.get("parentUuid"))
+            while parent is not None and parent.get("type") not in ("user", "assistant"):
+                parent = entries.get(parent.get("parentUuid"))
+            if parent is not None:
+                message["branch_point"] = parent["uuid"]
             # Claude Code records the permission mode on the prompt that starts a turn.
             mode = entry.get("permissionMode")
             turn = message["turn_settings"] = {"permissionMode": mode} if isinstance(mode, str) else {}

@@ -664,6 +664,7 @@ impl CoreRuntime {
                 view.messages.push(Message {
                     turn_settings: None,
                     turn_usage: None,
+                    branch_point: None,
                     completed: true,
                     id: format!("prepare-failed:{}", view.revision),
                     role: velune_conversation::MessageRole::System,
