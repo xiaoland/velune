@@ -276,7 +276,7 @@ final class ToolPanel: NSPanel, DetachedTool {
 }
 
 /// A tool window of its own: in Mission Control and the Window menu, able
-/// to go full screen, never merged into its workspace's tabs.
+/// to go full screen.
 final class ToolWindow: NSWindow, DetachedTool {
     let kind: ToolWindowKind
     weak var model: ConversationWindowModel?
@@ -290,7 +290,6 @@ final class ToolWindow: NSWindow, DetachedTool {
         isReleasedWhenClosed = false
         // Its conversation window's layout restores it, not the system.
         isRestorable = false
-        tabbingMode = .disallowed
         collectionBehavior = [.fullScreenPrimary, .managed]
         minSize = kind == .composer ? NSSize(width: 360, height: 60) : NSSize(width: 220, height: 240)
     }

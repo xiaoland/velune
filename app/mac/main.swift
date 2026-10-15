@@ -202,6 +202,8 @@ struct VeluneApp: App {
         previewEmpty = CommandLine.arguments.contains("--preview-empty")
         previewSettings = CommandLine.arguments.contains("--preview-settings")
         appDelegate.store = applicationStore
+        // Tabs live in each pane; the system's window tabs would stack a second, look-alike bar above them.
+        NSWindow.allowsAutomaticWindowTabbing = false
     }
 
     var body: some Scene {

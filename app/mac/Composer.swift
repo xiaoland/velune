@@ -417,7 +417,9 @@ struct ComposerView: View {
         }
         // Measured at full length out of sight, so the choice does not depend on itself.
         .background(alignment: .leading) {
-            nextTurnControls(compact: false).fixedSize().hidden()
+            // Made anew whenever the titles change: a hidden copy kept in place
+            // can miss reporting its new width, leaving a narrow pane on one row.
+            nextTurnControls(compact: false).fixedSize().hidden().id(controlsKey)
                 .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { controlsWidth = $0 }
         }
         .alert("远端工作目录", isPresented: $enteringRemoteDirectory) {
@@ -452,6 +454,13 @@ struct ComposerView: View {
             // A new conversation starts in the composer.
             if store.isUnsentConversation { DispatchQueue.main.async { model.focus() } }
         }
+    }
+
+    /// What the choices' titles are made of.
+    private var controlsKey: [String] {
+        [nextTurnRuntime?.name ?? "", store.selectedModelName ?? "", store.nextTurnEffort ?? store.currentEffort ?? "",
+         (store.effectivePermissionMode ?? store.currentPermissionMode)?.label ?? "", "\(store.permissionModeOptions.isEmpty)\(store.editableSessionOptions.isEmpty)",
+         store.isUnsentConversation ? store.loadedConversationWorkingDirectory ?? "-" : ""]
     }
 
     /// The status line and send button, at the trailing end.
