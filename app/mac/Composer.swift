@@ -382,8 +382,10 @@ struct ComposerView: View {
     @Environment(\.openWindow) private var openWindow
     @State private var enteringRemoteDirectory = false
     @State private var remoteDirectory = ""
-    /// The composer's width; a narrow pane puts the controls on their own row.
+    /// The room the composer has, and what its controls take at full length:
+    /// a narrow pane puts them on their own row, then shortens their titles.
     @State private var width: CGFloat = 760
+    @State private var controlsWidth: CGFloat = 0
     private var nextTurnRuntime: RuntimeInstance? { store.runtimeInstances.first { $0.id == store.nextTurnRuntimeID } }
 
     var body: some View {
@@ -404,21 +406,25 @@ struct ComposerView: View {
                             .allowsHitTesting(false)
                     }
                 }
-            if width >= Self.singleRowWidth {
+            if width >= controlsWidth + Self.sendRowWidth {
                 HStack(spacing: 8) {
                     nextTurnControls(compact: false)
                     Spacer(minLength: 8)
                     sendRow
                 }
             } else {
-                nextTurnControls(compact: width < Self.fullControlsWidth)
+                nextTurnControls(compact: width < controlsWidth)
                 HStack(spacing: 8) {
                     Spacer(minLength: 0)
                     sendRow
                 }
             }
         }
-        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width = $0 }
+        // Measured at full length out of sight, so the choice does not depend on itself.
+        .background(alignment: .leading) {
+            nextTurnControls(compact: false).fixedSize().hidden()
+                .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { controlsWidth = $0 }
+        }
         .alert("远端工作目录", isPresented: $enteringRemoteDirectory) {
             TextField("绝对路径", text: $remoteDirectory)
             Button("使用") { store.setUnsentWorkingDirectory(remoteDirectory.trimmingCharacters(in: .whitespacesAndNewlines)) }
@@ -436,7 +442,11 @@ struct ComposerView: View {
             }
             return !providers.isEmpty
         }
-        .frame(maxWidth: 760).padding(.horizontal, 16).padding(.top, 10).padding(.bottom, 14).frame(maxWidth: .infinity)
+        .frame(maxWidth: 760).padding(.horizontal, 16).padding(.top, 10).padding(.bottom, 14)
+        // Takes the room offered whatever the controls ask for, so a narrow
+        // pane is measured as narrow rather than overflowing.
+        .frame(minWidth: 0, maxWidth: .infinity)
+        .onGeometryChange(for: CGFloat.self) { min($0.size.width, 792) - 32 } action: { width = $0 }
         .onAppear {
             model.attach(store); model.show(conversationID: store.loadedConversationID)
             // A new window starts in the composer; later selections keep focus where it is.
@@ -449,8 +459,8 @@ struct ComposerView: View {
         }
     }
 
-    private static let singleRowWidth: CGFloat = 480
-    private static let fullControlsWidth: CGFloat = 400
+    /// The send button and a little of the status line beside the controls.
+    private static let sendRowWidth: CGFloat = 130
 
     @ViewBuilder private var sendRow: some View {
         if store.needsModelSelection { Text(store.isUnsentConversation ? "请选择模型" : "此会话的模型不可用").font(.callout).foregroundStyle(.secondary).lineLimit(1) }
@@ -523,7 +533,7 @@ struct ComposerView: View {
                 }
             }
         } label: {
-            Text(Self.pullDownTitle(title)).lineLimit(1).truncationMode(.middle).frame(maxWidth: compact ? 150 : 360, alignment: .leading)
+            Text(Self.pullDownTitle(title)).lineLimit(1).truncationMode(.middle).frame(maxWidth: compact ? 110 : 360, alignment: .leading)
         }
         .fixedSize()
         .accessibilityLabel("下一轮：运行时 \(runtime)，模型 \(model)，推理强度 \(effort ?? "沿用当前")")
@@ -642,7 +652,7 @@ struct ComposerView: View {
                 }
             }
         } label: {
-            Text(Self.pullDownTitle(name ?? "工作目录")).lineLimit(1).truncationMode(.middle).frame(maxWidth: compact ? 90 : 160, alignment: .leading)
+            Text(Self.pullDownTitle(name ?? "工作目录")).lineLimit(1).truncationMode(.middle).frame(maxWidth: compact ? 70 : 160, alignment: .leading)
         }
         .fixedSize()
         .accessibilityLabel("工作目录：\(path ?? "运行时默认目录")")

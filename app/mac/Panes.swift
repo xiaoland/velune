@@ -29,7 +29,7 @@ private struct PaneSplitView: View {
     let previewEmpty: Bool
     /// The fractions when the divider being dragged was picked up.
     @State private var dragStart: [Double]?
-    private static let minimumLength: CGFloat = 280
+    private static let minimumLength: CGFloat = 320
 
     var body: some View {
         GeometryReader { geometry in
