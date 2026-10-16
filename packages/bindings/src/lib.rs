@@ -56,6 +56,9 @@ impl From<Error> for BindingError {
         match error {
             Error::Invalid(message) => Self::Invalid { detail: message },
             Error::Unsupported(message) => Self::Unsupported { detail: message },
+            error @ Error::OutstandingWork => Self::Invalid {
+                detail: error.to_string(),
+            },
             Error::Io(error) => Self::Io {
                 detail: error.to_string(),
             },
@@ -176,11 +179,24 @@ impl VeluneApplication {
 
     /// Close only when the application allows it. A failed close retains all
     /// resources and remains available for polling or an explicit Agent cancel.
+    /// Refused while a conversation's turn or its sub-agents run.
     pub fn shutdown(&self) -> Result<(), BindingError> {
         self.diagnostics.run("shutdown", || {
             let mut state = self.lock()?;
             if let Some(application) = state.as_mut() {
                 application.close()?;
+                *state = None;
+            }
+            Ok(())
+        })
+    }
+
+    /// Ends running turns and sub-agents with their runtime processes.
+    pub fn shutdown_stopping_work(&self) -> Result<(), BindingError> {
+        self.diagnostics.run("shutdown_stopping_work", || {
+            let mut state = self.lock()?;
+            if let Some(application) = state.as_mut() {
+                application.close_stopping_work()?;
                 *state = None;
             }
             Ok(())
@@ -887,6 +903,16 @@ impl VeluneApplication {
     ) -> Result<BindingSnapshotResult, BindingError> {
         convert(self.with("cancel", |application| {
             application.cancel(runtime_id, conversation_id)
+        })?)
+    }
+
+    pub fn stop_sub_agents(
+        &self,
+        runtime_id: String,
+        conversation_id: String,
+    ) -> Result<BindingSnapshotResult, BindingError> {
+        convert(self.with("stop_sub_agents", |application| {
+            application.stop_sub_agents(runtime_id, conversation_id)
         })?)
     }
 

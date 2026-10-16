@@ -4,7 +4,7 @@
 //! The queue belongs to the conversation's session, so every window showing
 //! the conversation shows the same one. It lives while the application runs.
 use super::*;
-use crate::conversation::{FollowUp, QueuePause, QueuedMessage};
+use crate::conversation::{FollowUp, QueuePause, QueueWait, QueuedMessage};
 use std::collections::VecDeque;
 
 /// One message waiting for the running turn: the send request it becomes.
@@ -28,6 +28,8 @@ impl QueuedTurn {
 pub(super) struct SendQueue {
     turns: VecDeque<QueuedTurn>,
     paused: Option<QueuePause>,
+    /// The next message waits for work besides the turn to end.
+    waiting: Option<QueueWait>,
     /// The session's last turn stopped or failed.
     interrupted: bool,
 }
@@ -43,6 +45,14 @@ impl SendQueue {
             .position(|turn| turn.id == id)
             .ok_or_else(|| RuntimeError::invalid("此排队消息已经发出或删除"))
     }
+}
+
+fn queued_id() -> String {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    format!(
+        "queued-{}",
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    )
 }
 
 impl CoreRuntime {
@@ -63,13 +73,8 @@ impl CoreRuntime {
                 if turn.text.trim().is_empty() && turn.attachments.is_empty() {
                     return Err(RuntimeError::invalid("message text"));
                 }
-                static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
-                let id = format!(
-                    "queued-{}",
-                    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-                );
                 queue.turns.push_back(QueuedTurn {
-                    id,
+                    id: queued_id(),
                     payload: json!({
                         "sourceRuntimeID": source_runtime_id,
                         "conversationID": conversation_id,
@@ -95,6 +100,7 @@ impl CoreRuntime {
                 queue.turns.remove(index);
                 if queue.turns.is_empty() {
                     queue.paused = None;
+                    queue.waiting = None;
                 }
             }
             SendQueueOperation::Move { id, index } => {
@@ -118,7 +124,10 @@ impl CoreRuntime {
             }
         }
         // A queue added to or resumed while nothing runs starts at once.
-        if !self.turn_running() && self.session.send_queue.paused.is_none() {
+        if !self.turn_running()
+            && self.session.send_queue.paused.is_none()
+            && self.session.send_queue.waiting.is_none()
+        {
             self.send_next_queued();
         }
         self.snapshot_result()
@@ -205,6 +214,26 @@ impl CoreRuntime {
         }
     }
 
+    /// A send that needs another runtime process while sub-agents still run
+    /// in the current one goes last in the queue, which waits for them.
+    pub(super) fn queue_after_work(&mut self, payload: Value) {
+        let queue = &mut self.session.send_queue;
+        queue.turns.push_back(QueuedTurn {
+            id: queued_id(),
+            payload,
+        });
+        queue.waiting = Some(QueueWait::SubAgents);
+    }
+
+    /// The addressed session's runtime process does nothing more: a queue
+    /// waiting for its work goes on.
+    pub(super) fn follow_ended_work(&mut self) {
+        let queue = &mut self.session.send_queue;
+        if queue.waiting.take().is_some() && queue.paused.is_none() {
+            self.send_next_queued();
+        }
+    }
+
     /// A turn starts in the addressed session.
     pub(super) fn follow_started_turn(&mut self) {
         self.session.send_queue.interrupted = false;
@@ -218,11 +247,19 @@ impl CoreRuntime {
         };
         let request =
             json!({"version": CONTRACT_VERSION, "action": "sendTurn", "payload": turn.payload});
-        if let Err(error) = self.send_turn_action(&request) {
-            tracing::warn!(target: "velune_application", event = "queued_turn_not_sent", detail = %error);
-            let queue = &mut self.session.send_queue;
-            queue.turns.push_front(turn);
-            queue.paused = Some(QueuePause::SendFailed);
+        match self.send_and_restore(&request) {
+            Ok(_) => {}
+            Err(RuntimeError::OutstandingWork) => {
+                let queue = &mut self.session.send_queue;
+                queue.turns.push_front(turn);
+                queue.waiting = Some(QueueWait::SubAgents);
+            }
+            Err(error) => {
+                tracing::warn!(target: "velune_application", event = "queued_turn_not_sent", detail = %error);
+                let queue = &mut self.session.send_queue;
+                queue.turns.push_front(turn);
+                queue.paused = Some(QueuePause::SendFailed);
+            }
         }
     }
 
@@ -236,6 +273,12 @@ impl CoreRuntime {
         FollowUp {
             queue: queue.turns.iter().map(QueuedTurn::public).collect(),
             paused: queue.paused.clone(),
+            waiting: queue.waiting.clone(),
+            can_stop_sub_agents: self
+                .session
+                .work()
+                .iter()
+                .any(|task| task.state != velune_agent_runtime::work::BackgroundState::Stopping),
             can_steer: self.can_steer(),
             can_continue: idle
                 && snapshot.pending_interactions.is_empty()

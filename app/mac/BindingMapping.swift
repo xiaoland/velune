@@ -76,6 +76,8 @@ enum BindingMapping {
     static func followUp(_ value: BindingFollowUp) -> FollowUp {
         FollowUp(queue: value.queue.map { QueuedMessage(id: $0.id, text: $0.text, attachments: $0.attachments) },
                  paused: value.paused.map { switch $0 { case .turnStopped: .turnStopped; case .turnFailed: .turnFailed; case .sendFailed: .sendFailed } },
+                 waitingForSubAgents: value.waiting.map { switch $0 { case .subAgents: true } } ?? false,
+                 canStopSubAgents: value.canStopSubAgents,
                  canSteer: value.canSteer, canContinue: value.canContinue,
                  editable: value.editable.map { EditableMessage(messageID: $0.messageId, inPlace: $0.inPlace) })
     }

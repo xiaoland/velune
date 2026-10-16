@@ -138,6 +138,7 @@ final class Transport: @unchecked Sendable {
     func sendQueue(runtimeID: String, conversationID: String, operation: BindingSendQueueOperation) throws -> BindingSnapshotResult { try withApplication("sendQueue") { try $0.sendQueue(runtimeId: runtimeID, conversationId: conversationID, operation: operation) } }
     func editMessage(runtimeID: String, conversationID: String, messageID: String, placement: BindingEditPlacement, selection: ModelSelection, turn: BindingComposedTurn) throws -> BindingSnapshotResult { try withApplication("editMessage") { try $0.editMessage(runtimeId: runtimeID, conversationId: conversationID, messageId: messageID, placement: placement, selection: BindingMapping.bindingSelection(selection), turn: turn) } }
     func cancel(runtimeID: String, conversationID: String) throws -> BindingSnapshotResult { try withApplication("cancel") { try $0.cancel(runtimeId: runtimeID, conversationId: conversationID) } }
+    func stopSubAgents(runtimeID: String, conversationID: String) throws -> BindingSnapshotResult { try withApplication("stopSubAgents") { try $0.stopSubAgents(runtimeId: runtimeID, conversationId: conversationID) } }
     func workingBranch(runtimeID: String, conversationID: String) throws -> String? { try withApplication("workingBranch") { try $0.workingBranch(runtimeId: runtimeID, conversationId: conversationID) } }
     func workingChanges(runtimeID: String, conversationID: String) throws -> BindingWorkingChanges { try withApplication("workingChanges") { try $0.workingChanges(runtimeId: runtimeID, conversationId: conversationID) } }
     func fileDiff(runtimeID: String, conversationID: String, path: String) throws -> BindingFileDiff { try withApplication("fileDiff") { try $0.fileDiff(runtimeId: runtimeID, conversationId: conversationID, path: path) } }
@@ -151,11 +152,12 @@ final class Transport: @unchecked Sendable {
     func authenticationReply(promptID: String, value: String) throws -> BindingAuthenticationProgress { try withApplication("authenticationReply") { try $0.authenticationReply(promptId: promptID, value: value) } }
     func authenticationCancel() throws -> BindingAuthenticationProgress { try withApplication("authenticationCancel") { try $0.authenticationCancel() } }
 
-    func close() throws {
+    /// `stoppingWork` ends running turns and sub-agents; otherwise they refuse it.
+    func close(stoppingWork: Bool = false) throws {
         lock.lock(); defer { lock.unlock() }
         guard let application else { isClosed = true; return }
         do {
-            try application.shutdown()
+            if stoppingWork { try application.shutdownStoppingWork() } else { try application.shutdown() }
             self.application = nil
             isClosed = true
         } catch { logFailure(operation: "shutdown", localCorrelation: nil, error: error); throw TransportError.operation("shutdown", map(error)) }

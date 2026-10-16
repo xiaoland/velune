@@ -3,7 +3,19 @@ use super::*;
 use crate::conversation::ConversationSnapshot;
 use crate::local::continuation::{LogicalProjection, display_segment};
 impl CoreRuntime {
+    /// A turn that needs another runtime process while sub-agents still run
+    /// in the current one is queued; the queue sends it once they have ended.
     pub(super) fn send_turn_action(&mut self, request: &Value) -> Result<Value, RuntimeError> {
+        match self.send_and_restore(request) {
+            Err(RuntimeError::OutstandingWork) => {
+                self.queue_after_work(request["payload"].clone());
+                self.snapshot_result()
+            }
+            result => result,
+        }
+    }
+
+    pub(super) fn send_and_restore(&mut self, request: &Value) -> Result<Value, RuntimeError> {
         let result = self.send_turn(request);
         if result.is_ok()
             && let Some(id) = request["payload"]["conversationID"].as_str()
@@ -570,6 +582,11 @@ impl CoreRuntime {
         if self.turn_running() {
             return Err(RuntimeError::invalid("runtime is busy"));
         }
+        if let ActiveState::Native(session) = &self.session.active_state
+            && session.restart_needed()
+        {
+            self.ensure_work_ended()?;
+        }
         let text = request["payload"]["text"].as_str().unwrap_or_default();
         let images = super::attachments::turn_images(request)?;
         if text.trim().is_empty() && images.is_empty() {
@@ -685,9 +702,11 @@ impl CoreRuntime {
             self.drain_runtime()?;
             return self.snapshot_result();
         }
+        // Stopping the turn stops the sub-agents it started too.
         if let ActiveState::Native(session) = &mut self.session.active_state {
             session
                 .cancel()
+                .and_then(|()| session.stop_background())
                 .map_err(|error| RuntimeError::context("message cancel", error))?;
             self.drain_runtime()?;
             return self.snapshot_result();
@@ -700,6 +719,22 @@ impl CoreRuntime {
             .cancel()
             .map_err(|error| RuntimeError::context("message cancel", error))?;
         self.sync_projection()?;
+        self.snapshot_result()
+    }
+
+    /// Stop the native sub-agents the conversation started, which may run
+    /// after its turn has ended.
+    pub(super) fn stop_sub_agents_action(
+        &mut self,
+        request: &Value,
+    ) -> Result<Value, RuntimeError> {
+        self.ensure_active(request)?;
+        if let ActiveState::Native(session) = &mut self.session.active_state {
+            session
+                .stop_background()
+                .map_err(|error| RuntimeError::context("子 Agent 停止", error))?;
+            self.drain_runtime()?;
+        }
         self.snapshot_result()
     }
 

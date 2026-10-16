@@ -1350,6 +1350,19 @@ impl Application {
             Some(&runtime_id),
         )
     }
+    /// Stop the native sub-agents the conversation started (`FollowUp::can_stop_sub_agents`);
+    /// they may run after its turn has ended. A queue waiting for them goes on once they have.
+    pub fn stop_sub_agents(
+        &mut self,
+        runtime_id: String,
+        conversation_id: String,
+    ) -> Result<SnapshotResult, Error> {
+        self.execute(
+            "stopSubAgents",
+            json!({"conversationID":conversation_id}),
+            Some(&runtime_id),
+        )
+    }
     /// Conversations executing or waiting for the user across open sessions,
     /// and turns that ended after `since` (0 for all retained); cheap enough
     /// to poll.

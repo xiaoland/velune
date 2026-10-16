@@ -340,6 +340,9 @@ impl CoreRuntime {
         if let Some(outcome) = outcome {
             self.follow_finished_turn(outcome);
         }
+        if !self.session.executing() {
+            self.follow_ended_work();
+        }
         result
     }
 
@@ -379,7 +382,8 @@ impl CoreRuntime {
         }
         summaries
     }
-    pub fn close_if_idle(&mut self) -> Result<(), RuntimeError> {
+    /// `stop_work` ends executing sessions too; otherwise any refuses.
+    pub fn close_if_idle(&mut self, stop_work: bool) -> Result<(), RuntimeError> {
         self.drain_sessions()?;
         if self
             .authentication
@@ -392,9 +396,10 @@ impl CoreRuntime {
         {
             return Err(RuntimeError::invalid("runtime is busy"));
         }
-        if std::iter::once(&self.session)
-            .chain(&self.parked)
-            .any(session::Session::executing)
+        if !stop_work
+            && std::iter::once(&self.session)
+                .chain(&self.parked)
+                .any(session::Session::executing)
         {
             return Err(RuntimeError::invalid("runtime is busy"));
         }
@@ -426,6 +431,7 @@ impl CoreRuntime {
                 "open"
                 | "sendTurn"
                 | "cancel"
+                | "stopSubAgents"
                 | "replyRuntimeInteraction"
                 | "renameConversation"
                 | "deleteConversation"
@@ -599,6 +605,7 @@ impl CoreRuntime {
             "steerTurn" => self.steer_turn_action(request),
             "editMessage" => self.edit_message_action(request),
             "cancel" => self.cancel_action(request),
+            "stopSubAgents" => self.stop_sub_agents_action(request),
             "replyRuntimeInteraction" => self.reply_runtime_interaction(request),
             "authentication" => self.authentication_action(&request["payload"]),
             action => Err(RuntimeError::Unsupported(action.into())),

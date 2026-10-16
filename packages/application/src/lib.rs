@@ -99,6 +99,10 @@ pub enum Error {
     Invalid(String),
     #[error("unsupported application operation: {0}")]
     Unsupported(String),
+    /// What was asked would end a runtime process whose native sub-agents
+    /// or background tasks still run.
+    #[error("子 Agent 仍在运行；请等待其结束，或先停止子 Agent")]
+    OutstandingWork,
     #[error("application I/O failed: {0}")]
     Io(#[from] std::io::Error),
     #[error("application JSON failed: {0}")]
@@ -133,8 +137,15 @@ impl Application {
             analytics,
         })
     }
+    /// Close unless a conversation's turn or its sub-agents still run.
     pub fn close(&mut self) -> Result<(), Error> {
-        self.runtime.close_if_idle()?;
+        self.runtime.close_if_idle(false)?;
+        let _ = self.analytics.barrier();
+        Ok(())
+    }
+    /// Close, ending running turns and sub-agents with their runtime processes.
+    pub fn close_stopping_work(&mut self) -> Result<(), Error> {
+        self.runtime.close_if_idle(true)?;
         let _ = self.analytics.barrier();
         Ok(())
     }

@@ -32,6 +32,12 @@ struct SendQueueView: View {
                 Label(pause.explanation, systemImage: "pause.circle")
                 Spacer(minLength: 8)
                 if !queue.isEmpty { Button("继续发送", action: store.resumeQueue).controlSize(.small).disabled(store.isLoading) }
+            } else if store.followUp.waitingForSubAgents {
+                Label("子 Agent 仍在运行；结束后发送", systemImage: "hourglass")
+                    .help("下一条需要重新启动运行时，这会结束仍在运行的子 Agent")
+                Spacer(minLength: 8)
+                Button("停止子 Agent 并发送", action: store.stopSubAgents).controlSize(.small)
+                    .disabled(!store.followUp.canStopSubAgents || store.isLoading)
             } else {
                 Text(store.isGenerating ? "排队 \(queue.count) 条，本轮结束后依次发送" : "排队 \(queue.count) 条，依次发送")
                 Spacer(minLength: 0)

@@ -88,6 +88,14 @@ pub struct FollowUp {
     pub queue: Vec<QueuedMessage>,
     /// Why the queue waits for the user although no turn runs.
     pub paused: Option<QueuePause>,
+    /// What the queue waits for before its next message, which it then
+    /// sends by itself.
+    #[serde(default)]
+    pub waiting: Option<QueueWait>,
+    /// Native sub-agents the conversation started still run in its runtime
+    /// process; the user may stop them.
+    #[serde(default)]
+    pub can_stop_sub_agents: bool,
     /// The runtime takes a message into the running turn.
     pub can_steer: bool,
     /// The last turn stopped or failed; the user may ask to continue.
@@ -127,6 +135,14 @@ pub struct QueuedMessage {
     pub text: String,
     /// Absolute paths, as the composer attached them.
     pub attachments: Vec<String>,
+}
+
+/// The queue's next message needs another runtime process, which would end
+/// the work still running in the current one.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum QueueWait {
+    SubAgents,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

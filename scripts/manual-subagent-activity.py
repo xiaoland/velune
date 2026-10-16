@@ -12,9 +12,11 @@ the sub-agent's approval comes to the idle parent and its answer reaches the
 sub-agent, and that the sub-agent then ends. Through Velune's gateway (a turn
 that uses the gateway only for itself) it checks that the sub-agent outlives
 the parent's turn: a next turn on the same model reuses the process, one that
-needs another process is refused while the sub-agent runs, and once the
-sub-agent has ended the turn's app-server ends, the Harness configuration is
-unchanged and the parent goes on with a native turn. With
+needs another process waits in the send queue while the sub-agent runs, and
+once the sub-agent has ended the turn's app-server ends, the Harness
+configuration is unchanged and the queue sends the waiting native turn;
+stopping a second conversation's sub-agents ends them and lets its waiting
+message go. With
 --seed DIR the VELUNE_HOME is kept at DIR/velune for checking the Mac app by
 hand. Only loopback synthetic responses are used: no real model, credential,
 HOME or session is read; this is not an automated test.
@@ -84,6 +86,12 @@ class Upstream(BaseHTTPRequestHandler):
                 item['namespace'] = out.get('namespace', 'multi_agent_v1')
         response = {'id': 'response', 'object': 'response', 'status': 'completed', 'output': [item],
                     'usage': {'input_tokens': 1, 'output_tokens': 1, 'total_tokens': 2}}
+        try:
+            self.send_events(item, response)
+        except (BrokenPipeError, ConnectionResetError):
+            pass  # a stopped sub-agent no longer waits for its reply
+
+    def send_events(self, item, response):
         self.send_response(200)
         self.send_header('Content-Type', 'text/event-stream')
         self.send_header('Connection', 'close')
@@ -188,32 +196,48 @@ def main():
                 wait(lambda: child in running_sub_agents(conversation), 'sub-agent running after the gateway turn')
                 servers = app_servers()
                 print('PASS gateway: the sub-agent keeps running after the parent\'s gateway turn ended', flush=True)
-                refused = None
-                try:
-                    turn(conversation, selections['native'], 'NATIVE_NEXT')
-                except Exception as error:  # the bindings' error variants
-                    refused = error
-                assert refused is not None and '子 Agent' in str(refused), refused
+                turn(conversation, selections['native'], 'NATIVE_NEXT')
+                follow = snapshot(conversation).follow_up
+                assert follow.waiting == b.BindingQueueWait.SUB_AGENTS and [m.text for m in follow.queue] == ['NATIVE_NEXT'] \
+                    and follow.can_stop_sub_agents, follow
                 assert child in running_sub_agents(conversation) and app_servers() == servers
-                print('PASS gateway: a turn needing another process is refused and the sub-agent goes on', flush=True)
+                print('PASS gateway: a turn needing another process waits in the queue and the sub-agent goes on', flush=True)
                 turn(conversation, selection, 'SAME_MODEL_NEXT')
                 idle_after(conversation, 2, 'same-model turn while the sub-agent runs')
                 assert child in running_sub_agents(conversation) and app_servers() == servers
+                assert snapshot(conversation).follow_up.waiting == b.BindingQueueWait.SUB_AGENTS
                 print('PASS gateway: a next turn on the same model reused the process', flush=True)
                 RELEASE.set()
                 pending = wait(lambda: snapshot(conversation).pending_interactions, 'sub-agent approval after the gateway turn')
                 app.reply_runtime_interaction('codex', conversation, pending[0].id, b.BindingRuntimeInteractionReply.DECISION(
                     option_id=pending[0].kind.options[0].id))
                 wait(lambda: child not in running_sub_agents(conversation), 'gateway sub-agent ends', 90)
-                wait(lambda: len(app_servers()) == len(servers) - 1, 'gateway turn\'s app-server ends')
+                idle_after(conversation, 3, 'queued native turn after the sub-agent ended')
+                follow = snapshot(conversation).follow_up
+                assert not follow.queue and follow.waiting is None and not follow.can_stop_sub_agents, follow
+                assert not set(servers) & set(app_servers()), (servers, app_servers())
                 assert (codex_home / 'config.toml').read_text() == harness_config
-                print('PASS gateway: after the sub-agent ended the app-server ended and the Harness configuration is unchanged', flush=True)
+                print('PASS gateway: once the sub-agent ended its app-server ended, the Harness configuration is unchanged '
+                      'and the queued native turn was sent', flush=True)
                 app.open_conversation('codex', child)
                 assert 'SUB_DONE' in texts(snapshot(child))
                 app.open_conversation('codex', conversation)
-                turn(conversation, selections['native'], 'NATIVE_AFTER')
-                idle_after(conversation, 3, 'native turn after the gateway turn')
-                print('PASS gateway: the sub-agent completed and the parent went on with a native turn', flush=True)
+
+            def stopped_sub_agent(selection):
+                RELEASE.clear()
+                conversation = app.create_conversation_with_selection('codex', str(root / 'project'), selection).snapshot.conversation.id
+                conversation = turn(conversation, selection, 'PARENT_TASK').snapshot.conversation.id
+                idle_after(conversation, 1, 'second gateway parent turn ends')
+                child = snapshot(conversation).sub_agents[0].conversation_id
+                wait(lambda: child in running_sub_agents(conversation), 'second sub-agent running')
+                turn(conversation, selections['native'], 'AFTER_STOP')
+                assert snapshot(conversation).follow_up.waiting == b.BindingQueueWait.SUB_AGENTS
+                app.stop_sub_agents('codex', conversation)
+                wait(lambda: child not in running_sub_agents(conversation), 'stopped sub-agent ends')
+                idle_after(conversation, 2, 'queued native turn after stopping the sub-agent')
+                assert not snapshot(conversation).follow_up.queue
+                print('PASS gateway: stopping the sub-agents ended them and the waiting message was sent', flush=True)
+                return conversation, child
 
             seeded = {}
             for mode in ('native', 'gateway'):
@@ -232,6 +256,7 @@ def main():
                 if mode == 'gateway':
                     gateway_turn(conversation, child, selection)
                     seeded[mode] = (conversation, child)
+                    seeded['stopped'] = stopped_sub_agent(selection)
                     continue
                 wait(lambda: child in running_sub_agents(conversation), 'native sub-agent reported running under its parent')
                 print('PASS native: activity reports the sub-agent running under the idle parent', flush=True)

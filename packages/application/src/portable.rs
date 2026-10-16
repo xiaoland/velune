@@ -21,7 +21,7 @@ impl CoreRuntime {
         let (repository, config) = Repository::open(&options.home_directory)?;
         Ok(Self { repository, config })
     }
-    pub(crate) fn close_if_idle(&mut self) -> Result<(), Error> {
+    pub(crate) fn close_if_idle(&mut self, _stop_work: bool) -> Result<(), Error> {
         self.repository.unlock()
     }
     fn snapshot(&self) -> Value {

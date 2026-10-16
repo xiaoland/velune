@@ -235,9 +235,7 @@ impl CoreRuntime {
         if self.session.work().is_empty() {
             Ok(())
         } else {
-            Err(RuntimeError::invalid(
-                "子 Agent 仍在运行；请等待其结束，或先停止子 Agent",
-            ))
+            Err(RuntimeError::OutstandingWork)
         }
     }
 

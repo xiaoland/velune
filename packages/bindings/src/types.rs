@@ -204,6 +204,10 @@ pub struct BindingFollowUp {
     pub queue: Vec<BindingQueuedMessage>,
     /// Why the queue waits for the user although no turn runs.
     pub paused: Option<BindingQueuePause>,
+    /// What the queue waits for before sending its next message by itself.
+    pub waiting: Option<BindingQueueWait>,
+    /// Native sub-agents the conversation started still run; they may be stopped.
+    pub can_stop_sub_agents: bool,
     /// The runtime takes a message into the running turn.
     pub can_steer: bool,
     /// The last turn stopped or failed; the user may ask to continue.
@@ -237,6 +241,14 @@ pub struct BindingQueuedMessage {
     pub id: String,
     pub text: String,
     pub attachments: Vec<String>,
+}
+
+/// The next queued message needs another runtime process, which would end
+/// the sub-agents still running in the current one.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, uniffi::Enum)]
+#[serde(rename_all = "camelCase")]
+pub enum BindingQueueWait {
+    SubAgents,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, uniffi::Enum)]

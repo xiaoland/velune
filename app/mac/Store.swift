@@ -401,7 +401,9 @@ final class AppStore: ObservableObject {
             guard let self, generation == currentGeneration else { return }; applySnapshotResult(value)
         }
     }
-    func shutdown(completion: @escaping (Bool) -> Void) {
+    /// Turns or sub-agents run in Velune's runtime processes; quitting ends them.
+    var hasRunningWork: Bool { applicationIsGenerating }
+    func shutdown(stoppingWork: Bool = false, completion: @escaping (Bool) -> Void) {
         if sharedApplication != nil { subscriptions.removeAll(); timer?.invalidate(); timer = nil; completion(true); return }
         guard !isShuttingDown else { completion(false); return }
         guard !isPreview, let transport else { completion(true); return }
@@ -409,7 +411,7 @@ final class AppStore: ObservableObject {
         isShuttingDown = true
         timer?.invalidate(); timer = nil
         queue.async { [weak self] in
-            let result = Result { try transport.close() }
+            let result = Result { try transport.close(stoppingWork: stoppingWork) }
             DispatchQueue.main.async {
                 guard let self else { completion(false); return }
                 self.isShuttingDown = false
@@ -1049,6 +1051,13 @@ final class AppStore: ObservableObject {
         let ended = pending.accepted && !(value.runState == .running || value.runState == .stopping)
         if ownCopy || ended { endPendingSend() }
         else if pending.accepted, let row = transcript.rows.last, row.status != nil { transcript.showPending(row.message, status: nil) }
+    }
+    /// Stop the sub-agents the loaded conversation started; they may run after its turn.
+    func stopSubAgents() {
+        guard followUp.canStopSubAgents, !isPreview else { return }
+        guard let runtimeID = projectionRuntimeID, let conversationID = loadedConversationID else { recordProblem("请选择会话"); return }
+        guard let transport else { recordProblem("本地核心未配置"); return }
+        enqueue({ try transport.stopSubAgents(runtimeID: runtimeID, conversationID: conversationID) }) { [weak self] in self?.applySnapshotResult($0) }
     }
     func cancel() {
         guard canCancel, !isLoading else { return }

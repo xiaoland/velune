@@ -55,6 +55,11 @@ struct ConversationActions: Codable, Sendable, Equatable {
 struct FollowUp: Sendable, Equatable {
     var queue: [QueuedMessage] = []
     var paused: QueuePause?
+    /// The next message needs another runtime process; the queue sends it
+    /// by itself once the conversation's sub-agents have ended.
+    var waitingForSubAgents = false
+    /// Sub-agents the conversation started still run and may be stopped.
+    var canStopSubAgents = false
     var canSteer = false
     var canContinue = false
     /// User messages that may be edited now.

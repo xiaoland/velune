@@ -57,6 +57,8 @@ struct ConversationCommands: Commands {
             Button("停止生成") { target?.store.cancel() }
                 .keyboardShortcut(.escape, modifiers: [])
                 .disabled(target?.store.canCancel != true)
+            Button("停止子 Agent") { target?.store.stopSubAgents() }
+                .disabled(target?.store.followUp.canStopSubAgents != true)
         }
         CommandGroup(before: .windowArrangement) {
             Button("向右拆分") { target?.window.split(.horizontal) }
@@ -191,9 +193,18 @@ final class VeluneApplicationDelegate: NSObject, NSApplicationDelegate {
             guard alert.runModal() == .alertSecondButtonReturn else { return .terminateCancel }
         }
         guard let store else { return .terminateNow }
+        let stoppingWork = store.hasRunningWork
+        if stoppingWork {
+            let alert = NSAlert()
+            alert.messageText = "有会话或子 Agent 正在运行"
+            alert.informativeText = "退出会停止它们。"
+            alert.addButton(withTitle: "取消")
+            alert.addButton(withTitle: "停止并退出").hasDestructiveAction = true
+            guard alert.runModal() == .alertSecondButtonReturn else { return .terminateCancel }
+        }
         store.rememberedToolLayout.flush()
         terminationPending = true
-        store.shutdown { [weak self] closed in
+        store.shutdown(stoppingWork: stoppingWork) { [weak self] closed in
             // Preview and unopened cores can complete synchronously. Reply only
             // after AppKit has entered its terminateLater state.
             DispatchQueue.main.async {
