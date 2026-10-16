@@ -169,12 +169,16 @@ struct ConversationListView: View {
     }
 
     private func conversationRow(_ conversation: Conversation) -> some View {
-        // Who started the turn does not matter; running does.
-        let running = store.runningConversationIDs.contains(conversation.id) || store.elsewhereConversationIDs.contains(conversation.id)
+        // Who started the turn does not matter; running does, its own or a
+        // native sub-agent's that outlives it.
+        let ownTurn = store.runningConversationIDs.contains(conversation.id) || store.elsewhereConversationIDs.contains(conversation.id)
+        let running = ownTurn || store.subAgentParentIDs.contains(conversation.id)
+        // An approval or question, its own or a sub-agent's, waits for the user.
+        let waiting = store.waitingConversationIDs.contains(conversation.id)
         // A turn's end is news; its progress is not. The conversation the
         // focused window shows is being read.
         let unread = conversation.unread && !running && !(conversation.id == focused.loadedConversationID && activeState == .key)
-        // Its title and state only: unread, failed or running.
+        // Its title and state only: unread, failed, running or waiting.
         return HStack(alignment: .firstTextBaseline, spacing: 5) {
             // A turn that ended in failure is news of its own.
             Group {
@@ -185,9 +189,14 @@ struct ConversationListView: View {
                 }
             }.frame(width: 12).accessibilityHidden(true)
             Text(conversation.title).lineLimit(1).fontWeight(unread ? .semibold : nil).help(conversation.title)
-            if running {
+            if waiting {
                 Spacer(minLength: 0)
-                ProgressView().controlSize(.mini).help("正在运行").accessibilityLabel("正在运行")
+                Image(systemName: "hand.raised.fill").foregroundStyle(.orange).imageScale(.small)
+                    .help("等待你处理").accessibilityLabel("等待你处理")
+            } else if running {
+                Spacer(minLength: 0)
+                let label = ownTurn ? "正在运行" : "子 Agent 正在运行"
+                ProgressView().controlSize(.mini).help(label).accessibilityLabel(label)
             }
         }
         .accessibilityElement(children: .combine)

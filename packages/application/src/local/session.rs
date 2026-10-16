@@ -213,19 +213,39 @@ impl CoreRuntime {
             .any(Session::busy)
     }
 
+    /// A native sub-agent of the session still runs; it may run in the
+    /// session's own runtime process.
+    fn runs_sub_agents(&self, session: &Session) -> bool {
+        let ActiveState::Native(native) = &session.active_state else {
+            return false;
+        };
+        !native.running_sub_agents().is_empty()
+            || native.snapshot().is_some_and(|view| {
+                view.messages
+                    .iter()
+                    .flat_map(|message| &message.blocks)
+                    .any(|block| {
+                        matches!(block, crate::conversation::MessageBlock::Tool { conversation_id: Some(id), .. } if self.runs_elsewhere(id))
+                    })
+            })
+    }
+
     /// Close the least recently used idle sessions beyond the retained number.
+    /// One whose native sub-agents still run is not idle.
     pub(super) fn trim_sessions(&mut self) {
-        let mut idle = self
+        let mut kept: Vec<bool> = self
             .parked
             .iter()
-            .filter(|session| !session.pinned())
-            .count();
+            .map(|session| session.pinned() || self.runs_sub_agents(session))
+            .collect();
+        let mut idle = kept.iter().filter(|kept| !**kept).count();
         let mut index = 0;
         while idle > RETAINED_IDLE_SESSIONS && index < self.parked.len() {
-            if self.parked[index].pinned() {
+            if kept[index] {
                 index += 1;
                 continue;
             }
+            kept.remove(index);
             let session = self.parked.remove(index);
             let previous = std::mem::replace(&mut self.session, session);
             if let Err(error) = self.shutdown_active() {
@@ -300,24 +320,47 @@ impl CoreRuntime {
         }
     }
 
-    /// Conversations that execute or wait for the user, across sessions, then
-    /// those running outside Velune. Polled often, so it reads each native
-    /// view without building a snapshot.
+    /// Conversations that execute or wait for the user, across sessions, with
+    /// the native sub-agents they run, then those running outside Velune.
+    /// Polled often, so it reads each native view without building a snapshot.
     pub(super) fn active_conversations(&mut self) -> Vec<crate::ActiveConversation> {
-        let mut active: Vec<_> = std::iter::once(&self.session)
-            .chain(&self.parked)
-            .filter_map(|session| {
-                let view = session.projected()?;
-                let pending = view.pending_interactions.len();
-                (session.busy() || pending > 0).then(|| crate::ActiveConversation {
+        let mut active = Vec::new();
+        for session in std::iter::once(&self.session).chain(&self.parked) {
+            let Some(view) = session.projected() else {
+                continue;
+            };
+            let id = session.conversation_id().unwrap_or_default();
+            let pending = view.pending_interactions.len();
+            if session.busy() || pending > 0 {
+                active.push(crate::ActiveConversation {
                     context_runtime_id: view.conversation.runtime_id.clone(),
-                    conversation_id: session.conversation_id().unwrap_or_default().into(),
+                    conversation_id: id.into(),
                     run_state: view.run_state.clone(),
                     pending_interactions: pending as u32,
-                })
-            })
-            .collect();
-        active.extend(self.elsewhere_conversations());
+                    parent_conversation_id: None,
+                });
+            }
+            if let ActiveState::Native(native) = &session.active_state {
+                active.extend(native.running_sub_agents().into_iter().map(|sub_agent| {
+                    crate::ActiveConversation {
+                        context_runtime_id: view.conversation.runtime_id.clone(),
+                        conversation_id: sub_agent,
+                        run_state: crate::conversation::RunState::Running,
+                        pending_interactions: 0,
+                        parent_conversation_id: Some(id.into()),
+                    }
+                }));
+            }
+        }
+        for mut item in self.elsewhere_conversations() {
+            if !active
+                .iter()
+                .any(|known| known.conversation_id == item.conversation_id)
+            {
+                item.parent_conversation_id = self.sub_agent_parent(&item.conversation_id);
+                active.push(item);
+            }
+        }
         active
     }
 }

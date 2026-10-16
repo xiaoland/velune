@@ -34,6 +34,7 @@ impl PiProjection {
                 message_identity_confirmations: Vec::new(),
                 pending_interactions: Vec::new(),
                 follow_up: Default::default(),
+                sub_agents: Vec::new(),
                 actions: ConversationActions {
                     can_send: true,
                     can_cancel: false,

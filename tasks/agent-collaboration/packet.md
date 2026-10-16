@@ -95,3 +95,10 @@
 1. 核心：子 Agent 列表、活动父会话关联、迟到审批。
 2. Mac：子 Agent 工具窗口、侧栏汇总、后退／前进。
 3. 验收脚本（合成上游、临时 HOME）与安装。
+
+### 实施（2026-10-16）
+
+- 核心：`ConversationSnapshot.sub_agents`（`local/sub_agents.rs`），成员取自转录链接与列表来源，失败在列表阶段与未读会话共用一次原生记录查找（`failed_turns`）并缓存。`ActiveConversation.parent_conversation_id`：Claude 由 adapter 的未结束任务（`running_sub_agents`），Codex 由写入锁扫描并按列表或打开会话的链接找父会话。Codex 子 Agent 请求在父会话空闲时也成为父会话的交互；子 Agent 仍在运行的会话不被 `trim_sessions` 关闭。
+- Mac：“子 Agent”工具窗口（⌘4，默认从工具栏按钮弹出，仅在会话有子 Agent 时显示按钮，可停靠／浮动／独立窗口），行显示运行中／失败／结束，双击或回车打开。侧栏父会话行在子 Agent 运行时显示运行指示（提示“子 Agent 正在运行”），有待处理交互时显示橙色举手图标。每个标签页有后退／前进（工具栏与 ⌃⌘←／⌃⌘→；⌘[／⌘] 已用于分屏），历史返回时恢复离开时的阅读位置与展开状态。
+- 验证：fmt／check／clippy、Mac 构建通过。新增 [manual-subagent-activity.py](../../scripts/manual-subagent-activity.py)：原生轮次四项通过（快照列出子 Agent；活动中父会话下运行；空闲父会话收到“子 Agent：”审批并答复；命令执行、子 Agent 结束且未失败），两次运行结果一致。开发版隔离 HOME 截图确认工具栏出现后退／前进与“子 Agent”按钮；弹出内容、侧栏运行指示、后退恢复位置未在 App 中操作（AX 点按可能使开发版成为前台），留待用户验收。
+- 已知缺口：经网关的 Codex 轮次结束时 `settle` 结束 app-server，仍在运行的子 Agent 被终止（脚本观察：父轮次后无运行中的子 Agent，上游连接被断开，无审批到达）。修复需要改变经网关轮次的进程生命周期，未在本轮处理。Claude Code 子会话的失败状态无法从原生记录取得，显示为结束。在 Velune 之外运行（如 Codex 桌面端）的子 Agent 无法在 Velune 中审批。

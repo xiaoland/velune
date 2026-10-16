@@ -40,6 +40,12 @@ struct VeluneRootView: View {
             .navigationTitle(previewEmpty ? "新会话" : focused.selectedConversationTitle ?? "Velune")
             .toolbar(removing: .title)
             .toolbar {
+                ToolbarItemGroup(placement: .navigation) {
+                    Button { tab.goBack() } label: { Label("后退", systemImage: "chevron.backward") }
+                        .help("回到之前查看的会话（⌃⌘←）").disabled(focused.backHistory.isEmpty)
+                    Button { tab.goForward() } label: { Label("前进", systemImage: "chevron.forward") }
+                        .help("前往后退前的会话（⌃⌘→）").disabled(focused.forwardHistory.isEmpty)
+                }
                 // Without the title nothing holds the buttons to the trailing end.
                 ToolbarItem(placement: .automatic) { Spacer() }
                 ToolbarItemGroup(placement: .automatic) {
@@ -47,6 +53,7 @@ struct VeluneRootView: View {
                         .keyboardShortcut("r").disabled(!focused.canReloadFromRuntimes)
                         .help("从 Agent 运行时重新读取会话列表和当前会话（⌘ R）；用于补上自动跟随遗漏的变化")
                     outlineButton
+                    subAgentsButton
                     // A window of the editor area alone is often one to keep in view.
                     if !window.hasToolWindows || window.pinned {
                         Toggle(isOn: $window.pinned) { Label("保持在最前面", systemImage: window.pinned ? "pin.fill" : "pin") }
@@ -77,9 +84,9 @@ struct VeluneRootView: View {
         .background(WindowLevelSetter(pinned: window.pinned))
         .overlay { if let side = window.dockHint { DockZoneHighlight(side: side) } }
         .onChange(of: activeState, initial: true) { _, value in if value == .key { focused.noteFocused() } }
-        .onChange(of: tab.id) { _, _ in window.outlinePopover = false }
-        .onChange(of: focused.pendingConversationID) { _, value in if value != nil { window.outlinePopover = false } }
-        .onChange(of: focused.loadedConversationID) { _, _ in window.outlinePopover = false }
+        .onChange(of: tab.id) { _, _ in window.outlinePopover = false; window.subAgentsPopover = false }
+        .onChange(of: focused.pendingConversationID) { _, value in if value != nil { window.outlinePopover = false; window.subAgentsPopover = false } }
+        .onChange(of: focused.loadedConversationID) { _, _ in window.outlinePopover = false; window.subAgentsPopover = false }
         .onChange(of: store.outlinePresentation) { _, _ in window.outlinePopover = false }
         .toolbar { if !store.problems.isEmpty { ToolbarItem(placement: .automatic) { ProblemsButton(store: store) } } }
         .focusedSceneValue(\.conversationCommands, ConversationCommandTarget(store: focused, send: tab.send, window: window))
@@ -96,6 +103,28 @@ struct VeluneRootView: View {
                 .help(window.tools.isOpen(.outline) ? "隐藏会话大纲（⌘ 2）" : "显示会话大纲（⌘ 2）")
         } else {
             settingOutlineButton(unavailable: unavailable)
+        }
+    }
+
+    /// The sub-agents as a tool window are shown and hidden by the button; in
+    /// their own place they pop over from it, offered only when the focused
+    /// conversation has any.
+    @ViewBuilder private var subAgentsButton: some View {
+        let agents = focused.subAgents
+        let running = agents.filter { focused.isSubAgentRunning($0.id) }.count
+        let summary = running > 0 ? "\(agents.count) 个子 Agent，\(running) 个正在运行" : "\(agents.count) 个子 Agent"
+        if window.tools[.subAgents].place != .builtIn {
+            Toggle(isOn: Binding(get: { window.tools.isOpen(.subAgents) }, set: { _ in window.toggle(.subAgents) })) { Label("子 Agent", systemImage: "person.2") }
+                .help(window.tools.isOpen(.subAgents) ? "隐藏子 Agent（⌘ 4）" : "显示子 Agent（⌘ 4）")
+        } else if !agents.isEmpty {
+            Button { window.subAgentsPopover.toggle() } label: { Label("子 Agent", systemImage: running > 0 ? "person.2.fill" : "person.2") }
+                .help("\(summary)（⌘ 4）")
+                .popover(isPresented: $window.subAgentsPopover, arrowEdge: .bottom) {
+                    SubAgentsView(store: focused, layout: window) { id in
+                        window.subAgentsPopover = false
+                        focused.openLinkedConversation(id: id)
+                    }
+                }
         }
     }
 

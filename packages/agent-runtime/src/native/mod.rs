@@ -595,6 +595,14 @@ impl NativeSession {
     pub fn snapshot(&self) -> Option<&ConversationSnapshot> {
         self.snapshot.as_ref()
     }
+    /// Native sub-agents running now, as this session's events tell; Codex's
+    /// are known from their threads' writer locks instead.
+    pub fn running_sub_agents(&self) -> Vec<String> {
+        match self.config.kind {
+            NativeKind::ClaudeCode => self.claude_running_sub_agents(),
+            NativeKind::Codex | NativeKind::DeepSeek => Vec::new(),
+        }
+    }
     pub fn busy(&self) -> bool {
         self.snapshot
             .as_ref()
@@ -685,6 +693,7 @@ impl NativeSession {
             message_identity_confirmations: Vec::new(),
             pending_interactions: Vec::new(),
             follow_up: Default::default(),
+            sub_agents: Vec::new(),
             actions: ConversationActions {
                 can_send: true,
                 can_cancel: false,

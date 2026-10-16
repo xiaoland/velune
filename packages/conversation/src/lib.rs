@@ -344,6 +344,22 @@ pub struct ConversationSnapshot {
     /// Velune's decoration; adapters leave it empty.
     #[serde(default)]
     pub follow_up: FollowUp,
+    /// The conversation's native sub-agents; Velune's decoration, adapters
+    /// leave it empty.
+    #[serde(default)]
+    pub sub_agents: Vec<SubAgent>,
+}
+
+/// A native sub-agent of a conversation: linked from its transcript, or
+/// listed by its runtime with the conversation as parent. Whether it runs is
+/// conversation activity, not part of the snapshot.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SubAgent {
+    pub conversation_id: String,
+    pub title: String,
+    /// Its native record ends in a failed turn, as last listed.
+    pub failed: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

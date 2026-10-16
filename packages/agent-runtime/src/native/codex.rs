@@ -592,7 +592,9 @@ impl NativeSession {
         let method = record["method"].as_str().unwrap_or_default();
         let params = &record["params"];
         let id = record["id"].clone();
-        if !self.busy() {
+        // A sub-agent may outlive the turn that started it; its requests
+        // still come to this conversation.
+        if !self.busy() && !sub_agent {
             self.rpc.reject(&id, "No active turn")?;
             return Ok(());
         }

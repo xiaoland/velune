@@ -219,6 +219,8 @@ struct ToolContent: View {
             ToolOutline(window: window, tab: tab, store: tab.store, inSidebar: side == .left).id(tab.id)
         case .composer:
             ToolComposer(window: window, tab: tab, store: tab.store, contentHeight: contentHeight).id(tab.id)
+        case .subAgents:
+            ToolSubAgents(window: window, tab: tab, store: tab.store, inSidebar: side == .left).id(tab.id)
         }
     }
 }
@@ -261,6 +263,17 @@ struct ToolOutline: View {
             TranscriptOutlineView(model: store.transcript, inPopover: false, inSidebar: inSidebar, layout: window,
                                   editMessage: { [store, tab] id in store.editability(of: id) == nil ? nil : { tab.edit(messageID: id) } }) { tab.navigate(to: $0) }
         }
+    }
+}
+
+private struct ToolSubAgents: View {
+    let window: ConversationWindowModel
+    let tab: ConversationTab
+    @ObservedObject var store: AppStore
+    let inSidebar: Bool
+
+    var body: some View {
+        SubAgentsView(store: store, inPopover: false, inSidebar: inSidebar, layout: window) { store.openLinkedConversation(id: $0) }
     }
 }
 

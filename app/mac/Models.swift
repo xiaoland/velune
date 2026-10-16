@@ -210,6 +210,14 @@ struct TranscriptMessageIdentity: Codable, Sendable, Equatable {
     var messageID: String
 }
 
+/// A native sub-agent of a conversation: its own conversation, opened read-only.
+struct SubAgent: Codable, Sendable, Equatable, Identifiable {
+    var id: String
+    var title: String
+    /// Its last turn failed, as last listed.
+    var failed: Bool
+}
+
 struct ConversationSnapshot: Codable, Sendable, Equatable {
     /// Nil for local drafts and previews, which the core has not delivered.
     var cursor: TranscriptCursor? = nil
@@ -228,6 +236,8 @@ struct ConversationSnapshot: Codable, Sendable, Equatable {
     var actions: ConversationActions
     /// Velune's queue and next actions; previews and drafts have none.
     var followUp = FollowUp()
+    /// Native sub-agents; whether one runs is conversation activity.
+    var subAgents: [SubAgent] = []
     enum CodingKeys: String, CodingKey { case revision, conversation, runState, messages, transcriptTurns, transcriptItems, transcriptOutline, transcriptMessageIdentities, messageIdentityConfirmations, pendingInteractions, actions; case modelRecordKey = "modelRecordKey", contextRuntimeID = "contextRuntimeId" }
 }
 

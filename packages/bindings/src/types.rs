@@ -181,6 +181,19 @@ pub struct BindingConversationSnapshot {
     pub pending_interactions: Vec<BindingRuntimeInteraction>,
     pub actions: BindingConversationActions,
     pub follow_up: BindingFollowUp,
+    /// The conversation's native sub-agents; whether one runs is conversation activity.
+    pub sub_agents: Vec<BindingSubAgent>,
+}
+
+/// A native sub-agent of a conversation, linked from its transcript or listed
+/// by its runtime with the conversation as parent.
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BindingSubAgent {
+    pub conversation_id: String,
+    pub title: String,
+    /// Its native record ends in a failed turn, as last listed.
+    pub failed: bool,
 }
 
 /// Messages waiting for the running turn to end, and what the user may do next.
@@ -634,6 +647,8 @@ pub struct BindingActiveConversation {
     pub conversation_id: String,
     pub run_state: BindingRunState,
     pub pending_interactions: u32,
+    /// The conversation this one is a native sub-agent of.
+    pub parent_conversation_id: Option<String>,
 }
 
 /// Uncommitted changes in a conversation's working directory.

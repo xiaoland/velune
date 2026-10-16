@@ -67,6 +67,14 @@ struct ConversationCommands: Commands {
                 .disabled(target == nil)
             Button("关闭分屏") { if let window = target?.window { window.closePane(window.focusedPaneID) } }
                 .disabled(target?.window.isSplit != true)
+            // As in Xcode; Command-brackets switch panes.
+            Button("后退") { target?.window.focused.goBack() }
+                .keyboardShortcut(.leftArrow, modifiers: [.command, .control])
+                .disabled(target?.store.backHistory.isEmpty != false)
+            Button("前进") { target?.window.focused.goForward() }
+                .keyboardShortcut(.rightArrow, modifiers: [.command, .control])
+                .disabled(target?.store.forwardHistory.isEmpty != false)
+            Divider()
             Button("下一个分屏") { target?.window.focusNeighbour(forward: true) }
                 .keyboardShortcut("]")
                 .disabled(target?.window.isSplit != true)
@@ -116,9 +124,12 @@ struct ConversationCommands: Commands {
     private func toolTitle(_ kind: ToolWindowKind) -> String {
         if kind == .composer { return "转到输入区" }
         guard let window = target?.window else { return "显示\(kind.title)" }
-        let shown = kind == .outline && window.tools[.outline].place == .builtIn
-            ? (window.application.outlinePresentation == .popover ? window.outlinePopover : window.focused.outlineCollapsed)
-            : window.tools.isOpen(kind)
+        let shown = switch kind {
+        case .outline where window.tools[.outline].place == .builtIn:
+            window.application.outlinePresentation == .popover ? window.outlinePopover : window.focused.outlineCollapsed
+        case .subAgents where window.tools[.subAgents].place == .builtIn: window.subAgentsPopover
+        default: window.tools.isOpen(kind)
+        }
         return (shown ? "隐藏" : "显示") + kind.title
     }
 }

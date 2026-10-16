@@ -3,15 +3,16 @@ import SwiftUI
 import VeluneBindings
 
 /// The parts of a conversation window that can leave their place: the list,
-/// the outline and the composer. Everything else stays where it is.
+/// the outline, the composer and the sub-agents. Everything else stays where it is.
 enum ToolWindowKind: String, Codable, CodingKeyRepresentable, CaseIterable {
-    case list, outline, composer
+    case list, outline, composer, subAgents
 
     var title: String {
         switch self {
         case .list: "会话列表"
         case .outline: "会话大纲"
         case .composer: "输入区"
+        case .subAgents: "子 Agent"
         }
     }
 }
@@ -41,8 +42,8 @@ enum DockSide: String, Codable, CaseIterable {
 
 /// Where a tool window is.
 enum ToolPlace: Codable, Hashable {
-    /// The tool's own place: the outline from the toolbar button, the
-    /// composer in each pane. The list has none.
+    /// The tool's own place: the outline and the sub-agents from their
+    /// toolbar buttons, the composer in each pane. The list has none.
     case builtIn
     case docked(DockSide)
     /// A utility panel above its window that snaps to it and follows it.
@@ -82,6 +83,7 @@ enum ToolChoice: Hashable {
         case .list: docked + detached
         case .outline: [(.outline(.popover), "弹出"), (.outline(.inPlace), "就地折叠")] + docked + detached
         case .composer: [(.place(.builtIn), "在每个面板中")] + docked + detached
+        case .subAgents: [(.place(.builtIn), "弹出")] + docked + detached
         }
     }
 }
@@ -234,7 +236,7 @@ struct ToolFrame: Codable, Equatable {
         // Inside, it leaves the window's title bar uncovered.
         case .list: window.minX - width >= screen.minX ? NSRect(x: window.minX - width, y: window.minY, width: width, height: window.height)
             : NSRect(x: window.minX, y: window.minY, width: width, height: window.height - 52)
-        case .outline: window.maxX + width <= screen.maxX ? NSRect(x: window.maxX, y: window.minY, width: width, height: window.height)
+        case .outline, .subAgents: window.maxX + width <= screen.maxX ? NSRect(x: window.maxX, y: window.minY, width: width, height: window.height)
             : NSRect(x: window.maxX - width, y: window.minY, width: width, height: window.height - 52)
         case .composer: NSRect(x: window.midX - 320, y: window.minY + 24, width: 640, height: 120)
         }
@@ -656,8 +658,12 @@ extension ConversationWindowModel {
     }
 
     /// Show a tool, or hide it when it shows. The outline in its own place
-    /// pops over or collapses the focused pane in place.
+    /// pops over or collapses the focused pane in place; the sub-agents pop over.
     func toggle(_ kind: ToolWindowKind) {
+        if kind == .subAgents, tools[.subAgents].place == .builtIn {
+            subAgentsPopover.toggle()
+            return
+        }
         if kind == .outline, tools[.outline].place == .builtIn {
             switch application.outlinePresentation {
             case .popover: outlinePopover.toggle()

@@ -44,6 +44,10 @@ final class AppStore: ObservableObject {
     @Published private(set) var runningConversationIDs: Set<String> = []
     /// Best-effort: conversations whose native records show a turn running outside Velune.
     @Published private(set) var elsewhereConversationIDs: Set<String> = []
+    /// Conversations a native sub-agent of which runs, here or elsewhere.
+    @Published private(set) var subAgentParentIDs: Set<String> = []
+    /// Conversations with a request waiting for the user, such as an approval.
+    @Published private(set) var waitingConversationIDs: Set<String> = []
     /// Conversations running elsewhere that the list did not contain when last read again.
     private var unlistedElsewhereIDs: Set<String> = []
     @Published private(set) var nextTurnRuntimeID: String? { didSet { if oldValue != nextTurnRuntimeID { loadModelCatalog() } } }
@@ -101,7 +105,7 @@ final class AppStore: ObservableObject {
     private var sharedUpdateScheduled = false
     @Published private var executionStarting = false
     /// A conversation chosen while an operation ran, opened when it ends.
-    private var deferredSelection: String?
+    private var deferredSelection: (id: String, move: NavigationMove)?
     private var started = false
     private var isDraft = false
     let isPreview: Bool
@@ -202,6 +206,8 @@ final class AppStore: ObservableObject {
         if problems != application.problems { problems = application.problems }
         if runningConversationIDs != application.runningConversationIDs { runningConversationIDs = application.runningConversationIDs }
         if elsewhereConversationIDs != application.elsewhereConversationIDs { elsewhereConversationIDs = application.elsewhereConversationIDs }
+        if subAgentParentIDs != application.subAgentParentIDs { subAgentParentIDs = application.subAgentParentIDs }
+        if waitingConversationIDs != application.waitingConversationIDs { waitingConversationIDs = application.waitingConversationIDs }
         reconcileNextTurnIntent()
     }
 
@@ -245,6 +251,9 @@ final class AppStore: ObservableObject {
     var canSend: Bool { !executionStarting && !authenticationRunning && !isLoading && !isGenerating && !isShuttingDown && (snapshot?.actions.canSend ?? false) && nextTurnModel != nil }
     var canCancel: Bool { snapshot?.actions.canCancel ?? false }
     var followUp: FollowUp { snapshot?.followUp ?? FollowUp() }
+    /// The loaded conversation's native sub-agents.
+    var subAgents: [SubAgent] { pendingConversationID == nil ? snapshot?.subAgents ?? [] : [] }
+    func isSubAgentRunning(_ id: String) -> Bool { runningConversationIDs.contains(id) || elsewhereConversationIDs.contains(id) }
     /// While a turn runs, a sent message waits in the conversation's queue.
     var canQueue: Bool { !isPreview && isGenerating && !isLoading && !isShuttingDown && !authenticationRunning && nextTurnModel != nil && loadedConversationID != nil && snapshot?.conversation.parentConversationID == nil }
     /// Asking to continue sends this, as the user's own message.
@@ -456,9 +465,17 @@ final class AppStore: ObservableObject {
                     if self.runningConversationIDs != running { self.runningConversationIDs = running }
                     let elsewhere = Set(active.filter { $0.runState == .elsewhere }.map(\.conversationId))
                     if self.elsewhereConversationIDs != elsewhere { self.elsewhereConversationIDs = elsewhere }
+                    let parents = Set(active.compactMap { item in
+                        [.running, .stopping, .elsewhere].contains(item.runState) ? item.parentConversationId : nil
+                    })
+                    if self.subAgentParentIDs != parents { self.subAgentParentIDs = parents }
+                    let waiting = Set(active.filter { $0.pendingInteractions > 0 }.map(\.conversationId))
+                    if self.waitingConversationIDs != waiting { self.waitingConversationIDs = waiting }
                     // A conversation started outside Velune, or by an agent through
-                    // Velune, appears once the list is read again.
-                    let unlisted = elsewhere.union(running).filter { id in !self.conversations.contains { $0.id == id } }
+                    // Velune, appears once the list is read again; a sub-agent is
+                    // listed under its parent instead.
+                    let subAgents = Set(active.filter { $0.parentConversationId != nil }.map(\.conversationId))
+                    let unlisted = elsewhere.union(running).subtracting(subAgents).filter { id in !self.conversations.contains { $0.id == id } }
                     if !unlisted.isSubset(of: self.unlistedElsewhereIDs) { self.refreshConversations() }
                     self.unlistedElsewhereIDs = unlisted
                     self.notifier?.observe(activity)
@@ -750,10 +767,27 @@ final class AppStore: ObservableObject {
         selectedConversationIDs = ids.filter { conversation(id: $0) != nil }
         if selectedConversationIDs.count == 1, let id = selectedConversationIDs.first, id != loadedConversationID { selectConversation(id: id) }
     }
-    /// Open a conversation a collaboration link names; an agent may have
-    /// started it after the list was last read.
-    func openLinkedConversation(id: String) {
-        if conversation(id: id) != nil { selectConversation(id: id); return }
+    /// How opening a conversation moves through the conversations shown before.
+    enum NavigationMove { case new, back, forward }
+    /// Conversations shown before the current one, oldest first, and those
+    /// gone back from, nearest last.
+    @Published private(set) var backHistory: [String] = []
+    @Published private(set) var forwardHistory: [String] = []
+    private static let historyLimit = 50
+    func goBack() { if let id = backHistory.last { openLinkedConversation(id: id, move: .back) } }
+    func goForward() { if let id = forwardHistory.last { openLinkedConversation(id: id, move: .forward) } }
+    private func recordNavigation(from previous: String, _ move: NavigationMove) {
+        switch move {
+        case .new: backHistory.append(previous); forwardHistory.removeAll()
+        case .back: if !backHistory.isEmpty { backHistory.removeLast() }; forwardHistory.append(previous)
+        case .forward: if !forwardHistory.isEmpty { forwardHistory.removeLast() }; backHistory.append(previous)
+        }
+        if backHistory.count > Self.historyLimit { backHistory.removeFirst(backHistory.count - Self.historyLimit) }
+    }
+    /// Open a conversation a link names, such as a sub-agent's, or one gone
+    /// back to; an agent may have started it after the list was last read.
+    func openLinkedConversation(id: String, move: NavigationMove = .new) {
+        if conversation(id: id) != nil { selectConversation(id: id, move: move); return }
         guard !isPreview, !isShuttingDown, let transport else { return }
         queue.async { [weak self] in
             let result = Result { try transport.findConversation(id) }
@@ -764,17 +798,17 @@ final class AppStore: ObservableObject {
                     let reached = BindingMapping.listed(found)
                     self.offListConversations.removeAll { $0.id == reached.id }
                     self.offListConversations.append(reached)
-                    self.selectConversation(id: id)
+                    self.selectConversation(id: id, move: move)
                 case .success(nil): self.recordProblem("找不到这个会话；它可能已被删除或其运行时已停用", source: "打开会话")
                 case .failure(let failure): self.recordProblem(failure, source: "打开会话")
                 }
             }
         }
     }
-    func selectConversation(id: String) {
+    func selectConversation(id: String, move: NavigationMove = .new) {
         guard let conversation = conversation(id: id) else { return }
         // Chosen while another operation runs, it opens once that is done; the latest choice wins.
-        guard !isLoading, !executionStarting else { deferredSelection = id; return }
+        guard !isLoading, !executionStarting else { deferredSelection = (id, move); return }
         deferredSelection = nil
         selectedConversationIDs = [id]
         if isPreview { projectionRuntimeID = conversation.runtimeID; apply(previewSnapshots[id]); return }
@@ -782,6 +816,8 @@ final class AppStore: ObservableObject {
         // The sidebar reflects user intent immediately. The old loaded transcript
         // is retained until success, but hidden while this destination is loading.
         let previousSelection = snapshot?.conversation.id
+        // An unsent conversation is not one to go back to.
+        let shown = isDraft ? nil : previousSelection
         isDraft = false
         generation += 1 // Invalidate any poll already queued for the old conversation.
         selectedConversationID = id
@@ -791,14 +827,15 @@ final class AppStore: ObservableObject {
             self?.selectedConversationIDs = Set([previousSelection].compactMap { $0 })
             self?.finishConversationLoading()
         }) { [weak self] in
+            if let shown, shown != id { self?.recordNavigation(from: shown, move) }
             self?.applySnapshotResult($0)
             self?.finishConversationLoading()
         }
     }
     private func selectDeferredConversation() {
-        guard let id = deferredSelection, !isLoading, !executionStarting else { return }
+        guard let (id, move) = deferredSelection, !isLoading, !executionStarting else { return }
         deferredSelection = nil
-        selectConversation(id: id)
+        selectConversation(id: id, move: move)
     }
     private func finishConversationLoading() {
         guard !isShuttingDown else {

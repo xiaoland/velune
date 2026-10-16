@@ -165,6 +165,7 @@ impl View {
             pending_interactions: header.pending_interactions.clone(),
             actions: header.actions.clone(),
             follow_up: header.follow_up.clone(),
+            sub_agents: header.sub_agents.clone(),
         }
     }
 }

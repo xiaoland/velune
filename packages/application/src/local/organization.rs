@@ -12,7 +12,7 @@ use crate::config::{
     ConversationGroupKey, ConversationMarks,
 };
 use std::cmp::Ordering;
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 
 /// What the list loads beyond its first pages; not persisted.
 #[derive(Default)]
@@ -188,15 +188,19 @@ impl CoreRuntime {
         (runtime_id.clone(), native.to_owned())
     }
 
-    /// Mark the unread conversations whose latest turn failed, from the
-    /// native records on this machine; a record is read again only after it
-    /// changes.
-    fn mark_failed_turns(&self, conversations: &mut [ListedConversation]) {
+    /// Whether the latest turn of each conversation failed, from the native
+    /// records on this machine; a record is read again only after it changes.
+    /// A conversation without a record found is left out.
+    fn failed_turns<'a>(
+        &self,
+        conversations: impl Iterator<Item = &'a ConversationSummary>,
+    ) -> HashMap<String, bool> {
         use velune_agent_runtime::activity::{self, SessionFormat, SessionStore};
         let mut stores =
             BTreeMap::<String, Option<(SessionStore, HashMap<String, PathBuf>)>>::new();
-        for item in conversations.iter_mut().filter(|item| item.unread) {
-            let (runtime_id, native_id) = self.native_segment(&item.conversation);
+        let mut found = HashMap::new();
+        for conversation in conversations {
+            let (runtime_id, native_id) = self.native_segment(conversation);
             let Some((store, paths)) = stores.entry(runtime_id).or_insert_with_key(|runtime_id| {
                 let store = self.session_store(self.runtime_instance(runtime_id).ok()?)?;
                 // Pi names its sessions by path.
@@ -220,7 +224,7 @@ impl CoreRuntime {
                 continue;
             };
             let mut known = self.turn_failures.borrow_mut();
-            item.failed = match known.get(&path) {
+            let failed = match known.get(&path) {
                 Some((at, failed)) if *at == signature => *failed,
                 _ => {
                     let failed = activity::last_turn_failed(store.format, &path);
@@ -228,7 +232,9 @@ impl CoreRuntime {
                     failed
                 }
             };
+            found.insert(conversation.id.clone(), failed);
         }
+        found
     }
 
     fn listed(
@@ -507,7 +513,39 @@ impl CoreRuntime {
                 .cmp(&l.latest_activity_unix_ms)
                 .then_with(|| l.path.cmp(&r.path))
         });
-        self.mark_failed_turns(&mut conversations);
+        // Unread conversations show a failed last turn; so do the native
+        // sub-agents of the listed ones, in their parent's sub-agents.
+        let parents: BTreeSet<&str> = conversations
+            .iter()
+            .map(|item| item.conversation.id.as_str())
+            .collect();
+        let sub_agents: Vec<&ConversationSummary> = all
+            .iter()
+            .map(|item| &item.conversation)
+            .filter(|summary| {
+                summary
+                    .parent_conversation_id
+                    .as_deref()
+                    .is_some_and(|parent| parents.contains(parent))
+            })
+            .collect();
+        let failed = self.failed_turns(
+            conversations
+                .iter()
+                .filter(|item| item.unread)
+                .map(|item| &item.conversation)
+                .chain(sub_agents.iter().copied()),
+        );
+        self.sub_agent_failures.borrow_mut().extend(
+            sub_agents
+                .iter()
+                .filter_map(|summary| Some((summary.id.clone(), *failed.get(&summary.id)?))),
+        );
+        for item in &mut conversations {
+            if let Some(failed) = failed.get(&item.conversation.id) {
+                item.failed = *failed;
+            }
+        }
         Page {
             conversations,
             groups: descriptors,

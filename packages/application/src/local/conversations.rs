@@ -332,6 +332,7 @@ impl CoreRuntime {
         snapshot.transcript_items = transcript.items();
         snapshot.transcript_outline = transcript.outline();
         snapshot.transcript_message_identities = transcript.message_identities();
+        snapshot.sub_agents = self.sub_agents(&snapshot);
         Ok(json!({"snapshot":self.delivery.snapshot(snapshot)}))
     }
 

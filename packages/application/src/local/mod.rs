@@ -135,6 +135,8 @@ pub struct CoreRuntime {
     prepared_remote_resources: std::cell::RefCell<std::collections::BTreeSet<String>>,
     /// HOME of each inherited-HOME SSH location, by its execution settings.
     remote_homes: std::cell::RefCell<BTreeMap<String, Option<PathBuf>>>,
+    /// Whether each listed native sub-agent's latest turn failed.
+    sub_agent_failures: std::cell::RefCell<BTreeMap<String, bool>>,
     /// Whether each session file's latest turn failed, as of its signature.
     turn_failures:
         std::cell::RefCell<BTreeMap<PathBuf, (velune_agent_runtime::activity::Signature, bool)>>,
@@ -166,6 +168,7 @@ mod resource_library;
 mod runtime_execution;
 mod runtime_management;
 mod session;
+mod sub_agents;
 mod working_changes;
 pub(crate) use organization::unix_ms_now;
 use pi_composition::*;
@@ -216,6 +219,7 @@ impl CoreRuntime {
             delivery: delivery::TranscriptDelivery::new(),
             prepared_remote_resources: Default::default(),
             remote_homes: Default::default(),
+            sub_agent_failures: Default::default(),
             turn_failures: Default::default(),
             analytics,
             route_health: Default::default(),
@@ -262,6 +266,7 @@ impl CoreRuntime {
         snapshot.transcript_message_identities =
             self.session.transcript_projection.message_identities();
         snapshot.follow_up = self.follow_up(&snapshot);
+        snapshot.sub_agents = self.sub_agents(&snapshot);
         Some(snapshot)
     }
     fn snapshot_result(&mut self) -> Result<Value, RuntimeError> {

@@ -50,6 +50,14 @@ pub(super) struct ElsewhereScan {
 }
 
 impl CoreRuntime {
+    /// The latest scan found the conversation running outside Velune's own
+    /// execution.
+    pub(super) fn runs_elsewhere(&self, conversation_id: &str) -> bool {
+        self.elsewhere
+            .found
+            .iter()
+            .any(|item| item.conversation_id == conversation_id)
+    }
     /// Native sessions of a runtime on this machine, when Velune knows their
     /// layout.
     pub(super) fn session_store(&self, runtime: &RuntimeInstance) -> Option<SessionStore> {
@@ -231,6 +239,7 @@ impl CoreRuntime {
                         conversation_id: format!("{}:{native}", runtime.id),
                         run_state: RunState::Elsewhere,
                         pending_interactions: 0,
+                        parent_conversation_id: None,
                     }
                 }));
             }

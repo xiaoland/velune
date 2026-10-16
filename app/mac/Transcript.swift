@@ -58,7 +58,7 @@ struct TranscriptView: View {
             .onReceive(NotificationCenter.default.publisher(for: NSScroller.preferredScrollerStyleDidChangeNotification)) { _ in
                 scrollerStyle = NSScroller.preferredScrollerStyle
             }
-            .onChange(of: conversationID) { _, _ in reading.following = true; reading.outlineAnchorID = nil }
+            .onChange(of: conversationID) { _, _ in reading.following = reading.table.isFollowing; reading.outlineAnchorID = nil }
             // A toolbar toggle keeps the section at the top of the viewport.
             .onChange(of: outlineCollapsed) { _, collapsed in if collapsed { reading.outlineAnchorID = nil } }
             .onChange(of: scrollRequest) { _, _ in

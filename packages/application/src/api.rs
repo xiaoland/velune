@@ -267,6 +267,8 @@ pub struct ActiveConversation {
     pub conversation_id: String,
     pub run_state: crate::conversation::RunState,
     pub pending_interactions: u32,
+    /// The conversation this one is a native sub-agent of.
+    pub parent_conversation_id: Option<String>,
 }
 
 /// Uncommitted changes in a conversation's working directory.

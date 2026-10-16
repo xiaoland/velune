@@ -737,6 +737,14 @@ impl NativeSession {
         self.sub_agents.extend(conversation_id.clone());
         true
     }
+    /// The sub-agents whose tasks have not ended.
+    pub(super) fn claude_running_sub_agents(&self) -> Vec<String> {
+        self.claude_tasks
+            .iter()
+            .filter_map(|task| self.claude_agent_conversation(task))
+            .filter(|conversation| self.sub_agents.contains(conversation))
+            .collect()
+    }
     /// A sub-agent's session, as the history reader names it.
     fn claude_agent_conversation(&self, agent: &str) -> Option<String> {
         let runtime_id = &self.snapshot.as_ref()?.conversation.runtime_id;

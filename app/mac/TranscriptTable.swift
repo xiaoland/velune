@@ -142,6 +142,16 @@ struct TranscriptTable: NSViewRepresentable {
     private var expandedWork: Set<String> = []
     private var collapsedRunningWork: Set<String> = []
     private var expandedBlocks: [String: Set<String>] = [:]
+    /// Where reading stood in conversations shown before, while not at the bottom.
+    private struct Position {
+        var top: String
+        var expandedWork: Set<String>
+        var collapsedRunningWork: Set<String>
+        var expandedBlocks: [String: Set<String>]
+    }
+    private var positions: [String: Position] = [:]
+    /// The conversation to show again where reading stood, when it next shows.
+    var restoring: String?
 
     private var rendered: [String: (revision: UInt64, value: RenderedMessage)] = [:]
     private var measured: [String: Measured] = [:]
@@ -215,9 +225,19 @@ struct TranscriptTable: NSViewRepresentable {
         if contentChanged || outlineChanged || scrollRequested { finishTransition() }
         parent = input
         clipFrameChanged()
+        var restored: Position?
         if input.conversationID != conversationID {
+            if let previous = conversationID {
+                positions[previous] = following ? nil : topEntryID().map {
+                    Position(top: $0, expandedWork: expandedWork, collapsedRunningWork: collapsedRunningWork, expandedBlocks: expandedBlocks)
+                }
+            }
+            if let id = input.conversationID {
+                if restoring == id { restored = positions[id] }
+                restoring = nil
+            }
             conversationID = input.conversationID
-            expandedWork = []; collapsedRunningWork = []; expandedBlocks = [:]
+            expandedWork = restored?.expandedWork ?? []; collapsedRunningWork = restored?.collapsedRunningWork ?? []; expandedBlocks = restored?.expandedBlocks ?? [:]
             rendered = [:]; measured = [:]; lastKnown = [:]
             entries = []; indexByID = [:]; heights = []; offsets = [0]
             for cell in visibleCells.values { recycle(cell) }
@@ -247,6 +267,16 @@ struct TranscriptTable: NSViewRepresentable {
             lastJumpToken = jump.token
             scrollTo(jump.id)
         }
+        if let restored { scrollTo(restored.top) }
+    }
+
+    /// Reading follows the end of the conversation.
+    var isFollowing: Bool { following }
+
+    /// The entry at the top of the viewport.
+    private func topEntryID() -> String? {
+        guard let scroll, let index = row(at: max(scroll.contentView.bounds.minY, 0)), entries.indices.contains(index) else { return nil }
+        return entries[index].id
     }
 
     private func buildEntries() -> [Entry] {

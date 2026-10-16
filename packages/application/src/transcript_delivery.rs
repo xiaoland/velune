@@ -119,6 +119,7 @@ pub struct DeliveredSnapshot {
     pub pending_interactions: Vec<RuntimeInteraction>,
     pub actions: ConversationActions,
     pub follow_up: velune_conversation::FollowUp,
+    pub sub_agents: Vec<velune_conversation::SubAgent>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -85,6 +85,16 @@ import VeluneBindings
     }
     private func transcript(of store: AppStore) -> [Message] { store.transcript.rows.map(\.message) }
 
+    /// Go back to the conversation shown before, where reading stood in it.
+    func goBack() {
+        reading.table.restoring = store.backHistory.last
+        store.goBack()
+    }
+    func goForward() {
+        reading.table.restoring = store.forwardHistory.last
+        store.goForward()
+    }
+
     func navigate(to id: String) {
         outlineNavigation = TranscriptJump(id: id, token: (outlineNavigation?.token ?? 0) &+ 1)
     }
@@ -332,6 +342,7 @@ struct WindowSeed: Codable, Hashable {
     @Published var dockHint: DockSide?
     /// The outline popover from the toolbar button.
     @Published var outlinePopover = false
+    @Published var subAgentsPopover = false
     /// The list's search text, shared by the sidebar and a floating list.
     @Published var listSearch = ""
     /// Opens a conversation window; set by the window's view, which has the action.
