@@ -44,3 +44,4 @@
 - 本次只改动 Swift，Rust 核心不受影响；`bash scripts/build-macos.sh --build-only` 零警告。
 - 隔离开发版截图已核对拆分、拖动中的重排、标签切换与移动。
 - 不新增自动化测试。
+- 2026-10-16 安装：随提交 23eac4d 重建并安装到 `/Applications/Velune.app`。codesign 严格校验通过；构建清单的 source_commit 与 HEAD 一致，dirty 为 false；后台启动后没有新的崩溃报告。真实拖动与动画是否流畅，由用户验收。
