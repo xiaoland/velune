@@ -302,9 +302,10 @@ struct ConversationListView: View {
             Divider()
             Toggle("显示已归档的会话", isOn: Binding(get: { store.showsArchived }, set: { store.setShowsArchived($0) }))
             Divider()
-            LayoutMenu(window: window)
+            // Where the list itself is; the rest of the window's layout is in a tab's menu.
+            Menu("布局") { ToolPlaceMenu(window: window, kind: .list) }
         } label: { Label("显示", systemImage: browser.hasFilters || store.showsArchived ? "line.3.horizontal.decrease.circle.fill" : "line.3.horizontal.decrease") }
-        .help("会话分组、筛选、排序、已归档会话与窗口布局")
+        .help("会话分组、筛选、排序、已归档会话与列表的位置")
         .accessibilityLabel("显示")
         .disabled(store.conversationBrowserPreferences == nil)
     }
