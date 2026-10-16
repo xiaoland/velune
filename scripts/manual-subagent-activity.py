@@ -14,7 +14,8 @@ that uses the gateway only for itself) it checks that the sub-agent outlives
 the parent's turn: a next turn on the same model reuses the process, one that
 needs another process waits in the send queue while the sub-agent runs, and
 once the sub-agent has ended the turn's app-server ends, the Harness
-configuration is unchanged and the queue sends the waiting native turn;
+configuration is unchanged, the sub-agent's thread is kept on the Harness's
+own provider again and the queue sends the waiting native turn;
 stopping a second conversation's sub-agents ends them and lets its waiting
 message go. With
 --seed DIR the VELUNE_HOME is kept at DIR/velune for checking the Mac app by
@@ -27,6 +28,7 @@ import importlib.util
 import itertools
 import json
 import os
+import sqlite3
 import pathlib
 import subprocess
 import sys
@@ -192,6 +194,13 @@ def main():
             def idle_after(conversation, count, what):
                 wait(lambda: snapshot(conversation).run_state == b.BindingRunState.IDLE and replies(conversation) == count, what)
 
+            def persisted_provider(conversation):
+                """The provider Codex keeps for a thread in this synthetic home."""
+                database = next(codex_home.glob('state_*.sqlite'))
+                with sqlite3.connect('file:%s?mode=ro' % database, uri=True) as db:
+                    return db.execute('select model_provider from threads where id = ?',
+                                      (conversation.split(':', 1)[1],)).fetchone()[0]
+
             def gateway_turn(conversation, child, selection):
                 wait(lambda: child in running_sub_agents(conversation), 'sub-agent running after the gateway turn')
                 servers = app_servers()
@@ -219,6 +228,8 @@ def main():
                 assert (codex_home / 'config.toml').read_text() == harness_config
                 print('PASS gateway: once the sub-agent ended its app-server ended, the Harness configuration is unchanged '
                       'and the queued native turn was sent', flush=True)
+                assert persisted_provider(child) == 'synthetic', persisted_provider(child)
+                print('PASS gateway: the sub-agent\'s thread is kept on the Harness\'s own provider again', flush=True)
                 app.open_conversation('codex', child)
                 assert 'SUB_DONE' in texts(snapshot(child))
                 app.open_conversation('codex', conversation)
@@ -236,6 +247,7 @@ def main():
                 wait(lambda: child not in running_sub_agents(conversation), 'stopped sub-agent ends')
                 idle_after(conversation, 2, 'queued native turn after stopping the sub-agent')
                 assert not snapshot(conversation).follow_up.queue
+                assert persisted_provider(child) == 'synthetic', persisted_provider(child)
                 print('PASS gateway: stopping the sub-agents ended them and the waiting message was sent', flush=True)
                 return conversation, child
 

@@ -594,6 +594,9 @@ impl NativeSession {
     /// active. Tracking every thread, not only those the spawning item
     /// names, does not depend on which of their events arrives first.
     fn codex_track_thread(&mut self, thread: &str, method: &str, params: &Value) {
+        if !self.codex_ran_threads.contains(thread) {
+            self.codex_ran_threads.insert(thread.into());
+        }
         match method {
             "thread/status/changed" => {
                 let status = &params["status"];
@@ -625,6 +628,41 @@ impl NativeSession {
             }
             _ => {}
         }
+    }
+    /// Codex keeps the provider a thread last ran with, so the threads a
+    /// gateway turn's app-server ran, the conversation's and its sub-agents',
+    /// would look for the gateway when resumed later. Once that process has
+    /// ended, a short-lived app-server resumes each on the runtime's own
+    /// provider: one that already has a thread loaded keeps its provider.
+    pub(super) fn codex_restore_provider(&mut self) -> Result<()> {
+        let threads = self
+            .native_id
+            .clone()
+            .into_iter()
+            .chain(std::mem::take(&mut self.codex_ran_threads))
+            .collect::<Vec<_>>();
+        let provider = self
+            .native_selection
+            .as_ref()
+            .and_then(|model| model.provider_id.clone())
+            .or_else(|| self.native_provider.clone())
+            .ok_or_else(|| Error::new("Codex 原生提供商未知，未能恢复会话的提供商"))?;
+        let mut rpc = history_client_at(
+            &self.config.binary,
+            &self.config.agent_dir,
+            &self.config.execution,
+            self.config.os_home.as_deref(),
+        )?;
+        let result = threads.iter().try_for_each(|thread| {
+            let mut options = json!({"threadId":thread,"excludeTurns":true,"modelProvider":provider,
+                "config":{"model_provider":provider},"approvalPolicy":"on-request","sandbox":"workspace-write"});
+            if let Some(model) = &self.native_selection {
+                options["model"] = json!(model.id);
+            }
+            rpc.request("thread/resume", &options).map(drop)
+        });
+        rpc.shutdown();
+        result
     }
     /// Interrupts each sub-agent thread's turn; interrupting the
     /// conversation's own turn does not stop them. They end when their

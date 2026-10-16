@@ -152,6 +152,9 @@ pub struct NativeSession {
     /// Codex threads of this app-server besides the conversation's own,
     /// by thread id, while they work.
     codex_threads: BTreeMap<String, codex::CodexThread>,
+    /// Every Codex thread besides the conversation's own that this
+    /// app-server has run.
+    codex_ran_threads: std::collections::BTreeSet<String>,
     claude_requires_action: bool,
     claude_stream_id: Option<String>,
     /// The model and context tokens of the turn's latest reply.
@@ -247,6 +250,7 @@ impl NativeSession {
             claude_tasks: std::collections::BTreeSet::new(),
             sub_agents: std::collections::BTreeSet::new(),
             codex_threads: BTreeMap::new(),
+            codex_ran_threads: std::collections::BTreeSet::new(),
             claude_requires_action: false,
             claude_stream_id: None,
             claude_context: None,
@@ -542,6 +546,7 @@ impl NativeSession {
             self.tunnel = Some(tunnel);
         }
         self.codex_threads.clear();
+        self.codex_ran_threads.clear();
         self.process_ended = false;
         self.rpc = Self::spawn_rpc(
             &active,
@@ -689,37 +694,19 @@ impl NativeSession {
         }
         Ok(())
     }
-    /// Before the process ends after a turn on Velune's gateway: Codex keeps
-    /// the provider a thread was resumed with, so the conversation is resumed
-    /// on the runtime's own provider once more, and a later native session
-    /// does not look for the gateway.
+    /// Ends a gateway turn's process once the turn and its work have ended.
+    /// Codex keeps the provider a thread last ran with, so the threads the
+    /// process ran are put back on the runtime's own provider, and a later
+    /// native session does not look for the gateway.
     pub fn release_override(&mut self) -> Result<()> {
-        if !self.gateway_turn
-            || self.config.kind != NativeKind::Codex
-            || self.process_ended
-            || self.failed
-        {
+        self.rpc.shutdown();
+        self.process_ended = true;
+        self.codex_threads.clear();
+        if !std::mem::take(&mut self.gateway_turn) || self.config.kind != NativeKind::Codex {
             return Ok(());
         }
-        let id = self
-            .native_id
-            .clone()
-            .ok_or_else(|| Error::new("缺少原生会话身份"))?;
-        let snapshot = self
-            .snapshot
-            .clone()
-            .ok_or_else(|| Error::new("缺少会话投影"))?;
-        let cwd = snapshot.conversation.cwd.as_deref().map(PathBuf::from);
         self.config.gateway = None;
-        self.gateway_turn = false;
-        let result = self.codex_open(
-            &id,
-            cwd.as_deref(),
-            &snapshot.context_runtime_id,
-            snapshot.messages.clone(),
-        );
-        self.snapshot = Some(snapshot);
-        result
+        self.codex_restore_provider()
     }
     pub fn shutdown(&mut self) -> Result<()> {
         self.rpc.shutdown();

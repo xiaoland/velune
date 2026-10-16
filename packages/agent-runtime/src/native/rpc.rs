@@ -31,6 +31,10 @@ fn prepare(command: &mut Command) {
     }
 }
 pub(crate) fn stop(child: &mut Child) {
+    // A reaped child's process group id may already belong to another process.
+    if matches!(child.try_wait(), Ok(Some(_))) {
+        return;
+    }
     #[cfg(unix)]
     {
         // Each child is placed in its own process group before exec. Close inherited pipes and tools too.
