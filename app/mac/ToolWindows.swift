@@ -92,6 +92,8 @@ struct ToolWindowLayout: Codable, Equatable {
     var tools: [ToolWindowKind: ToolWindowState] = [.list: ToolWindowState(place: .docked(.left)), .outline: ToolWindowState(place: .builtIn), .composer: ToolWindowState(place: .builtIn)]
     var collapsed: Set<DockSide> = []
     var bottomHeight = 220.0
+    /// The composer's text box below the panes, when dragged taller than its text.
+    var composerHeight: Double?
     /// The areas "editor only" collapsed, to open again.
     var editorOnly: Set<DockSide>?
 

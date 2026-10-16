@@ -400,6 +400,8 @@ struct ComposerView: View {
     /// Its window: right-clicked outside the text, the composer offers its places.
     let layout: ConversationWindowModel
     let send: () -> Void
+    /// The text box's height when the user made it taller, docked below the panes.
+    var minimumTextHeight: CGFloat?
     @Environment(\.controlActiveState) private var activeState
     @Environment(\.openWindow) private var openWindow
     @State private var enteringRemoteDirectory = false
@@ -420,7 +422,7 @@ struct ComposerView: View {
             if !model.attachments.isEmpty { attachmentRow }
             ComposerEditor(model: model, placeholder: store.isGenerating ? (store.followUp.canSteer ? "⌘Return 排队，⌥⌘Return 插入本轮" : "⌘Return 排队，本轮结束后发送") : "输入消息，⌘Return 发送", submit: send, steer: steer,
                            placeMenu: { [layout] in layout.placeMenuItem(for: .composer) })
-                .frame(height: model.height)
+                .frame(height: max(model.height, minimumTextHeight ?? 0))
                 // The text view sits in a clipping scroll view, which hides its
                 // own ring; this follows the system ring: focus colour, just
                 // outside the field, only while the window is key.

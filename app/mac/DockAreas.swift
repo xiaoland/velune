@@ -146,8 +146,9 @@ struct WeightedSplit<ID: Hashable, Content: View>: View {
 }
 
 /// The strip below the panes: as tall as the user made it, or, holding the
-/// composer alone, as tall as the composer. Its top divider's grip reaches
-/// over the panes' edge; a double click restores the usual height.
+/// composer alone, as tall as the composer, whose text box the divider then
+/// makes taller (its text still grows past that). Its top divider's grip
+/// reaches over the panes' edge; a double click restores the usual height.
 struct BottomAreaView: View {
     @ObservedObject var window: ConversationWindowModel
     /// The room the panes and this area share.
@@ -163,9 +164,22 @@ struct BottomAreaView: View {
             Divider()
             DockAreaView(window: window, side: .bottom)
                 .frame(height: fits ? nil : min(dragged ?? window.tools.bottomHeight, limit))
+                // Otherwise the composer's room, which fills downward, would share the height with the panes.
+                .fixedSize(horizontal: false, vertical: fits)
         }
         .overlay(alignment: .top) {
-            if !fits {
+            if fits {
+                SplitSash(axis: .vertical,
+                          drag: { distance in
+                              let start = dragStart ?? Double(max(window.focused.composer.height, window.tools.composerHeight.map { CGFloat($0) } ?? 0))
+                              if dragStart == nil { dragStart = start }
+                              window.tools.composerHeight = min(max(start - distance, Double(ComposerTextView.minimumHeight)), limit - 80)
+                          },
+                          end: { dragStart = nil },
+                          reset: { window.tools.composerHeight = nil })
+                    .frame(height: SplitSash.thickness)
+                    .offset(y: -SplitSash.thickness / 2)
+            } else {
                 SplitSash(axis: .vertical,
                           drag: { distance in
                               let start = dragStart ?? min(window.tools.bottomHeight, limit)
@@ -268,7 +282,8 @@ private struct ToolComposer: View {
                 Text("这是原生 sub-agent 的会话，由启动它的会话继续。").foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity).padding(16)
             } else {
-                ComposerView(store: store, model: tab.composer, layout: window, send: tab.send)
+                ComposerView(store: store, model: tab.composer, layout: window, send: tab.send,
+                             minimumTextHeight: window.tools[.composer].place == .docked(.bottom) ? window.tools.composerHeight.map { CGFloat($0) } : nil)
             }
         }
         .fixedSize(horizontal: false, vertical: true)
