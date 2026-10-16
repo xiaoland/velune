@@ -473,17 +473,25 @@ private struct TabHandle: NSViewRepresentable {
             board.setString(link.absoluteString, forType: .string)
             let item = NSDraggingItem(pasteboardWriter: board)
             item.setDraggingFrame(bounds, contents: snapshot())
-            beginDraggingSession(with: [item], event: start, source: self)
+            let session = beginDraggingSession(with: [item], event: start, source: self)
+            // Let go where nothing takes it, it does not slide back: it opens there.
+            session.animatesToStartingPositionsOnCancelOrFail = false
         }
 
+        /// Outside the app nothing may take the tab: the desktop or another
+        /// app would keep its link as a file or text, and the tab would not
+        /// become a window.
         func draggingSession(_ session: NSDraggingSession, sourceOperationMaskFor context: NSDraggingContext) -> NSDragOperation {
-            context == .withinApplication ? .move : .copy
+            context == .withinApplication ? .move : []
         }
 
+        /// Let go outside every window, the tab becomes a window of its own
+        /// there; a window's only tab that cannot leave it takes its window there.
         func draggingSession(_ session: NSDraggingSession, endedAt screenPoint: NSPoint, operation: NSDragOperation) {
             guard operation == [], let model, let tab,
-                  !NSApp.windows.contains(where: { $0.isVisible && $0.frame.contains(screenPoint) }) else { return }
-            model.moveToNewWindow(tab.id, at: screenPoint)
+                  !NSApp.windows.contains(where: { $0.isVisible && $0.isOnActiveSpace && $0.styleMask.contains(.titled) && $0.frame.contains(screenPoint) }) else { return }
+            if model.canMoveTabToNewWindow { model.moveToNewWindow(tab.id, at: screenPoint) }
+            else { model.window?.setFrameTopLeftPoint(screenPoint) }
         }
 
         /// The tab as it looks, to drag around.
