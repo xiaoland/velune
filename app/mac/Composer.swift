@@ -382,6 +382,8 @@ struct ComposerEditor: NSViewRepresentable {
 struct ComposerView: View {
     @ObservedObject var store: AppStore
     @ObservedObject var model: ComposerModel
+    /// Its window: right-clicked outside the text, the composer offers its places.
+    let layout: ConversationWindowModel
     let send: () -> Void
     @Environment(\.controlActiveState) private var activeState
     @Environment(\.openWindow) private var openWindow
@@ -421,6 +423,7 @@ struct ComposerView: View {
                 statusRow
             }
         }
+        .contextMenu { ToolPlaceSection(window: layout, kind: .composer) }
         // Measured at full length out of sight, so the choice does not depend on itself.
         .background(alignment: .leading) {
             // Made anew whenever the titles change: a hidden copy kept in place

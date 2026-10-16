@@ -46,7 +46,7 @@ struct VeluneRootView: View {
                     Button { focused.reloadFromRuntimes() } label: { Label("重新读取", systemImage: "arrow.clockwise") }
                         .keyboardShortcut("r").disabled(!focused.canReloadFromRuntimes)
                         .help("从 Agent 运行时重新读取会话列表和当前会话（⌘ R）；用于补上自动跟随遗漏的变化")
-                    outlineButton
+                    outlineButton.contextMenu { ToolPlaceSection(window: window, kind: .outline) }
                     // A window of the editor area alone is often one to keep in view.
                     if !window.hasToolWindows || window.pinned {
                         Toggle(isOn: $window.pinned) { Label("保持在最前面", systemImage: window.pinned ? "pin.fill" : "pin") }
@@ -105,7 +105,7 @@ struct VeluneRootView: View {
             Button { window.outlinePopover.toggle() } label: { Label("会话大纲", systemImage: "list.bullet") }
                 .help("会话大纲（⌘ 2）").disabled(unavailable)
                 .popover(isPresented: Binding(get: { window.outlinePopover && !unavailable }, set: { window.outlinePopover = $0 }), arrowEdge: .bottom) {
-                    TranscriptOutlineView(model: focused.transcript, editMessage: { [focused, tab] id in
+                    TranscriptOutlineView(model: focused.transcript, layout: window, editMessage: { [focused, tab] id in
                         focused.editability(of: id) == nil ? nil : { window.outlinePopover = false; tab.edit(messageID: id) }
                     }) { id in
                         window.outlinePopover = false

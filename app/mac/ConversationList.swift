@@ -116,7 +116,10 @@ struct ConversationListView: View {
                 } header: { sectionHeader(section) }
             }
         }
-        .contextMenu(forSelectionType: String.self) { ids in conversationManagementMenu(ids) } primaryAction: { ids in
+        .contextMenu(forSelectionType: String.self) { ids in
+            // Where no conversation is, the list offers its places.
+            if ids.isEmpty { ToolPlaceSection(window: window, kind: .list) } else { conversationManagementMenu(ids) }
+        } primaryAction: { ids in
             guard ids.count == 1, let id = ids.first, let target = store.conversation(id: id), store.canManageConversations, store.canRenameConversation(target) else { return }
             renameTarget = target
         }

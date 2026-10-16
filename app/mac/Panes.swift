@@ -164,7 +164,7 @@ private struct TabContentView: View {
             }
             .background(.bar)
         } else if !window.tools.sharesComposer {
-            ComposerView(store: store, model: tab.composer, send: tab.send)
+            ComposerView(store: store, model: tab.composer, layout: window, send: tab.send)
         }
     }
 
@@ -360,6 +360,8 @@ private struct PaneTabItem: View {
             menu.addItem(ClosureMenuItem("向下拆分") { window.focus(pane.id); window.split(.vertical) })
         }
         if window.canMoveTabToNewWindow { menu.addItem(ClosureMenuItem("移到新窗口") { window.moveToNewWindow(tab.id) }) }
+        menu.addItem(.separator())
+        menu.addItem(window.layoutMenuItem())
         return menu
     }
 }

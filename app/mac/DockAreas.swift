@@ -62,6 +62,16 @@ private struct ToolHeader: View {
     }
 }
 
+/// A tool's places under its name, for the context menu of the tool itself.
+struct ToolPlaceSection: View {
+    @ObservedObject var window: ConversationWindowModel
+    let kind: ToolWindowKind
+
+    var body: some View {
+        Section("\(kind.title)位置") { ToolPlaceMenu(window: window, kind: kind) }
+    }
+}
+
 /// A tool's places, as a picker in a menu.
 struct ToolPlaceMenu: View {
     @ObservedObject var window: ConversationWindowModel
@@ -192,7 +202,7 @@ struct ToolContent: View {
             ConversationListView(window: window, store: window.list, focused: tab.store,
                                  placement: side == .left && window.tools.tools(in: .left).first == .list ? .sidebar : .panel)
         case .outline:
-            ToolOutline(tab: tab, store: tab.store, inSidebar: side == .left).id(tab.id)
+            ToolOutline(window: window, tab: tab, store: tab.store, inSidebar: side == .left).id(tab.id)
         case .composer:
             ToolComposer(window: window, tab: tab, store: tab.store, contentHeight: contentHeight).id(tab.id)
         }
@@ -225,6 +235,7 @@ private struct SubtitleFollower: ViewModifier {
 
 /// The focused tab's outline, docked, floating or in a window.
 struct ToolOutline: View {
+    let window: ConversationWindowModel
     @ObservedObject var tab: ConversationTab
     @ObservedObject var store: AppStore
     let inSidebar: Bool
@@ -233,7 +244,7 @@ struct ToolOutline: View {
         if store.pendingConversationID != nil || store.transcript.userRows.isEmpty {
             ContentUnavailableView("没有用户消息", systemImage: "list.bullet", description: Text("会话有了用户消息后，在这里列出并可跳转。"))
         } else {
-            TranscriptOutlineView(model: store.transcript, inPopover: false, inSidebar: inSidebar,
+            TranscriptOutlineView(model: store.transcript, inPopover: false, inSidebar: inSidebar, layout: window,
                                   editMessage: { [store, tab] id in store.editability(of: id) == nil ? nil : { tab.edit(messageID: id) } }) { tab.navigate(to: $0) }
         }
     }
@@ -257,7 +268,7 @@ private struct ToolComposer: View {
                 Text("这是原生 sub-agent 的会话，由启动它的会话继续。").foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity).padding(16)
             } else {
-                ComposerView(store: store, model: tab.composer, send: tab.send)
+                ComposerView(store: store, model: tab.composer, layout: window, send: tab.send)
             }
         }
         .fixedSize(horizontal: false, vertical: true)

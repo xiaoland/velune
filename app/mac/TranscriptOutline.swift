@@ -9,6 +9,8 @@ struct TranscriptOutlineView: View {
     var inPopover = true
     /// In the sidebar it takes the sidebar's look.
     var inSidebar = false
+    /// The window whose outline it is: right-clicked where no message is, it offers the outline's places.
+    var layout: ConversationWindowModel?
     /// Edits the user message of this ID, when it may be edited now.
     var editMessage: (String) -> (() -> Void)? = { _ in nil }
     let navigate: (String) -> Void
@@ -41,6 +43,8 @@ struct TranscriptOutlineView: View {
             if let id = ids.first {
                 Button("前往消息") { go(to: id) }
                 if let edit = model.userRows.first(where: { $0.id == id }).flatMap({ editMessage($0.message.id) }) { Button("编辑消息…", action: edit) }
+            } else if let layout {
+                ToolPlaceSection(window: layout, kind: .outline)
             }
         } primaryAction: { ids in if let id = ids.first { go(to: id) } }
     }
