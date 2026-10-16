@@ -12,9 +12,9 @@ Axum 负责 HTTP framing，当前只监听随机 loopback 端口并提供三条 
 
 提供商模型条目使用稳定 `recordKey` 和精确 `providerModelId`。入口自动派生为 `velune/model/<recordKey>`，运行时注入的别名另外传入；内部记录键本身不是 wire model 入口。网关完成目标解析后才传递 `ProviderModelId`，协议执行不再次映射。上下文／输出能力与协议推理声明均可未知，同协议网关不要求或补充请求 token 限制，也不以默认规格覆盖提供商实际能力。
 
-模型路由（`ModelRoute`）以自己的 `recordKey` 与提供商模型同列，入口同为 `velune/model/<recordKey>`，别名也可指向它；成员是按优先顺序排列的提供商模型记录键，须同协议，校验拒绝空成员、重复成员与和模型冲突的键。一次请求按顺序捕获成员；在 429 后的冷却期内（Retry-After，缺省 60 秒、至多 24 小时）该提供商排到末尾，全部冷却时仍按顺序尝试。请求带 `previous_response_id` 或 `conversation` 时只尝试第一个成员。冷却状态是调用方持有的 `RouteHealth`，传给 `Runner::start_with_analytics`，使限流跨 Runner 生效；`Runner::start` 使用独立的空状态。
+模型路由（`ModelRoute`）以自己的 `recordKey` 与提供商模型同列，入口同为 `velune/model/<recordKey>`，别名也可指向它；成员是按优先顺序排列的提供商模型记录键，须同协议，校验拒绝空成员、重复成员与和模型冲突的键。一次请求按顺序捕获成员；在 429 后的冷却期内（Retry-After，缺省 60 秒、至多 24 小时）该提供商排到末尾，全部冷却时仍按顺序尝试。模型路由请求携带非空 `previous_response_id` 或 `conversation` 时在转换和派发前拒绝，要求调用方提供完整历史；直接选择提供商模型仍保留原有状态引用契约。冷却状态是调用方持有的 `RouteHealth`，传给 `Runner::start_with_analytics`，使限流跨 Runner 生效；`Runner::start` 使用独立的空状态。
 
-fail-over 只在尚未向调用方转发任何响应时发生：认证解析失败、提供商配置无效、尚未收到响应的连接／传输失败或超时、429 与 5xx 改用下一个成员；401／403、其它 4xx、取消，以及已开始转发后的中断都结束请求。所有成员失败时返回最后一个失败。provider 仍只执行一次尝试，不隐藏重试；异协议请求的所有尝试进入同一个转换。每次尝试各有一条 analytics 记录，第二次起的 `request_id` 为 `<请求>/<序号>`；tracing 在 attempt 中记录 `gateway_route_selected` 与 `gateway_failover`。直接选择的提供商模型只有一个目标，不 fail-over。
+fail-over 只在尚未向调用方转发任何响应时发生：认证解析失败、提供商配置无效、尚未收到响应的连接／传输失败或超时、429、结构化额度错误（402 且 error.code/type 为 `insufficient_quota`、`usage_limit_reached` 或 `quota_exceeded`）与 5xx 改用下一个成员；403、其它请求类 4xx、取消，以及已开始转发后的中断都结束请求。成功 HTTP headers 一经交付即提交响应；200 SSE 内后续出现的额度错误或业务失败也不切换。普通认证的 401 仍结束；`CodexSubscription` 的 401 在提交响应前调用 resolver.refresh 一次，只有相同 account_id 的凭据可重发。永久认证失效或重发仍为 401 时调用 invalidate，并允许下一个成员；续期暂不可用也可尝试下一成员，但不标记会话永久失效。所有成员失败时返回最后一个失败。provider 每次调用只执行一次尝试；401 恢复由 gateway 显式组织。恢复后的同一成员只形成一条最终 exchange 的 analytics 记录，初次 401 由无正文 tracing 保留；异协议请求的所有尝试进入同一个转换。每次尝试各有一条 analytics 记录，第二次起的 `request_id` 为 `<请求>/<序号>`；tracing 在 attempt 中记录 `gateway_route_selected` 与 `gateway_failover`。直接选择的提供商模型只有一个目标，不 fail-over。
 
 Codex／DSH 原生运行时的装配方可额外注册其执行模型字符串为 alias，并映射到已选的提供商模型记录；gateway 不据模型名推断提供商，不解析 app-server／ACP，也不读取 huihua 历史。执行模式由 application 与 adapter 负责注入网关入口和临时本地 token；是否同时保留其它运行时入口由调用方决定。审批、回答、取消 turn 与原生会话恢复不属于本 unit。
 
@@ -27,3 +27,5 @@ Messages 保留调用方的 `anthropic-version`／beta 请求头与原生 JSON�
 跨协议文本增量立即交付。转换到 Messages 的工具参数须形成合法 JSON object，因此在单个工具完成时交付其有界累积参数；Responses custom 工具也在其参数完成后解除 `{input:string}` 包装。无法解析的参数保留为原始字符串并记录降级，不能补造可执行命令或整次拒绝。OpenAI 两协议间普通 function 参数继续增量交付。
 
 调用方可通过 `Runner::start_with_analytics` 注入非阻塞 `AnalyticsSink`，在上游原生响应、协议转换之前接收实际提供商／模型与用量、时间、结果记录。接收器负责持久化；gateway 不读取存储路径，也不从 tracing 重建用量。已有 `Runner::start` 可不采集统计。
+
+`ResolvedCredential.profile` 将普通 API／已有来源认证（`Standard`）与 Codex backend 订阅（`CodexSubscription { account_id }`）分开。profile 不改变网关路由协议；后者只允许精确的 HTTPS ChatGPT Codex Responses 目标，协议 adapter 再次校验。resolver 的 refresh／invalidate 默认分别返回不可用／无操作，现有来源不必实现续期。rejected_token 仅用于识别被拒的会话，不能写入日志。认证的创建、保存、刷新串行化与并发换号保护属于 application。

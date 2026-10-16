@@ -1,9 +1,11 @@
 //! Native OpenAI Responses v1 provider adapter.
 //!
-//! The adapter only replaces the logical model with its provider mapping. All
-//! other request JSON and upstream response bytes remain native Responses data.
-use crate::config::{ProtocolConfig, ProviderConfig, ResolvedCredential, Transport};
-use reqwest::{Client, Response, header::HeaderValue};
+//! Standard profile preserves native requests and response bytes. The explicit
+//! Codex subscription profile adapts the backend's stateless streaming contract.
+use crate::config::{
+    CredentialProfile, ProtocolConfig, ProviderConfig, ResolvedCredential, Transport,
+};
+use reqwest::{Client, ClientBuilder, Response, header::HeaderValue};
 use serde_json::Value;
 use std::sync::Arc;
 use velune_ai::http::{Header, ResponseBody, ResponseMeta};
@@ -20,16 +22,30 @@ async fn bounded_body(response: Response) -> Result<Vec<u8>, ()> {
     Ok(body)
 }
 
+/// A Responses transport that never redirects credentials or repeats a request
+/// behind the gateway's explicit recovery policy.
+#[derive(Clone)]
+pub struct ResponsesClient(Client);
+impl ResponsesClient {
+    pub fn new(builder: ClientBuilder) -> Result<Self, reqwest::Error> {
+        builder
+            .redirect(reqwest::redirect::Policy::none())
+            .retry(reqwest::retry::never())
+            .build()
+            .map(Self)
+    }
+}
+
 pub struct OpenAiResponses {
     config: ProviderConfig,
-    client: Client,
+    client: ResponsesClient,
     credential: Arc<dyn Fn() -> Option<ResolvedCredential> + Send + Sync>,
 }
 
 impl OpenAiResponses {
     pub fn with_resolved_credential(
         config: ProviderConfig,
-        client: Client,
+        client: ResponsesClient,
         credential: ResolvedCredential,
     ) -> Result<Self, InvalidContract> {
         let ProtocolConfig::Responses(protocol) = config.protocol() else {
@@ -41,6 +57,18 @@ impl OpenAiResponses {
         ) {
             return Err(InvalidContract("unsupported provider transport"));
         }
+        if let CredentialProfile::CodexSubscription { account_id } = &credential.profile
+            && (protocol.endpoint.transport() != Transport::Https
+                || protocol.endpoint.host() != "chatgpt.com"
+                || protocol.endpoint.port().get() != 443
+                || protocol.endpoint.base_path().trim_end_matches('/') != "/backend-api/codex"
+                || account_id.is_empty()
+                || HeaderValue::from_str(account_id).is_err())
+        {
+            return Err(InvalidContract(
+                "invalid Codex subscription target or account",
+            ));
+        }
         if credential.token.is_empty() {
             return Err(InvalidContract("provider credential is empty"));
         }
@@ -49,6 +77,7 @@ impl OpenAiResponses {
             client,
             credential: Arc::new(move || {
                 Some(ResolvedCredential {
+                    profile: credential.profile.clone(),
                     token: credential.token.clone(),
                     explicit_output_cap: credential.explicit_output_cap,
                     subscription: credential.subscription,
@@ -141,6 +170,74 @@ fn terminal_from_status(status: &str) -> Option<ResponsesTerminal> {
     }
 }
 
+// Codex keeps no upstream response state; retain the caller's complete input and
+// instructions, adapting only backend fields without inventing calls or results.
+fn codex_request(body: &mut Value) -> Result<(), InvalidContract> {
+    let object = body
+        .as_object_mut()
+        .ok_or(InvalidContract("Responses body"))?;
+    if ["previous_response_id", "conversation"]
+        .iter()
+        .any(|key| object.get(*key).is_some_and(|v| !v.is_null()))
+    {
+        return Err(InvalidContract("Codex requires full history"));
+    }
+    for field in [
+        "max_output_tokens",
+        "max_completion_tokens",
+        "temperature",
+        "top_p",
+        "user",
+        "safety_identifier",
+        "prompt_cache_options",
+        "prompt_cache_retention",
+        "options",
+        "previous_response_id",
+        "conversation",
+    ] {
+        if object.remove(field).is_some() {
+            tracing::info!(event = "codex_request_field_omitted", field);
+        }
+    }
+    if object
+        .get("service_tier")
+        .is_some_and(|v| v != "priority" && v != "ultrafast")
+    {
+        object.remove("service_tier");
+        tracing::info!(
+            event = "codex_request_field_omitted",
+            field = "service_tier"
+        );
+    }
+    object
+        .entry("instructions")
+        .or_insert(Value::String(String::new()));
+    object.insert("store".into(), Value::Bool(false));
+    object.insert("stream".into(), Value::Bool(true));
+    if let Some(Value::String(text)) = object.get("input") {
+        object.insert(
+            "input".into(),
+            serde_json::json!([{"role":"user","content":[{"type":"input_text","text":text}]}]),
+        );
+    }
+    if let Some(Value::Array(input)) = object.get_mut("input") {
+        for item in input {
+            if let Some(item) = item.as_object_mut() {
+                if item.get("type").and_then(Value::as_str) == Some("item_reference") {
+                    return Err(InvalidContract("Codex requires inline history"));
+                }
+                if item.remove("id").is_some() {
+                    tracing::info!(event = "codex_request_field_omitted", field = "input.id");
+                }
+                if item.get("role").and_then(Value::as_str) == Some("system") {
+                    item.insert("role".into(), Value::String("developer".into()));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 fn unsupported_subscription_field(body: &Value, credential: &ResolvedCredential) -> bool {
     if credential.explicit_output_cap != Some(false) {
         return false;
@@ -213,7 +310,7 @@ impl ResponsesProvider for OpenAiResponses {
         request: ResponsesRequest,
         mut events: ResponsesSink,
     ) -> OperationFuture<ResponsesCompletion> {
-        let body = match Self::request_json(request.body.get(), request.model.as_str()) {
+        let mut body = match Self::request_json(request.body.get(), request.model.as_str()) {
             Ok(body) => body,
             Err(_) => {
                 return Box::pin(async {
@@ -230,7 +327,7 @@ impl ResponsesProvider for OpenAiResponses {
             });
         };
         let endpoint = protocol.endpoint.url("/responses");
-        let client = self.client.clone();
+        let client = self.client.0.clone();
         let credential = Arc::clone(&self.credential);
         let headers = request.headers;
         let stream = request.stream;
@@ -238,7 +335,15 @@ impl ResponsesProvider for OpenAiResponses {
             let Some(credential) = credential() else {
                 return Self::failure(ResponsesErrorKind::Authentication, None, None, false);
             };
-            if violates_subscription_contract(&body, stream, &credential)
+            let codex = matches!(
+                credential.profile,
+                CredentialProfile::CodexSubscription { .. }
+            );
+            if codex {
+                if !stream || codex_request(&mut body).is_err() {
+                    return Self::failure(ResponsesErrorKind::Unsupported, Some(422), None, false);
+                }
+            } else if violates_subscription_contract(&body, stream, &credential)
                 || unsupported_subscription_field(&body, &credential)
             {
                 return Self::failure(ResponsesErrorKind::Unsupported, Some(422), None, false);
@@ -267,13 +372,42 @@ impl ResponsesProvider for OpenAiResponses {
                 if matches!(
                     name.as_str(),
                     "authorization" | "host" | "content-length" | "connection"
-                ) {
+                ) || (codex
+                    && matches!(
+                        name.as_str(),
+                        "cookie"
+                            | "x-api-key"
+                            | "chatgpt-account-id"
+                            | "originator"
+                            | "user-agent"
+                            | "openai-beta"
+                            | "version"
+                    ))
+                {
                     continue;
                 }
                 let Ok(value) = HeaderValue::from_str(&header.value) else {
                     continue;
                 };
                 builder = builder.header(&header.name, value);
+            }
+            if let CredentialProfile::CodexSubscription { account_id } = &credential.profile {
+                let mut account =
+                    HeaderValue::from_str(account_id).expect("validated account header");
+                account.set_sensitive(true);
+                builder = builder
+                    .header("chatgpt-account-id", account)
+                    .header("openai-beta", "responses=experimental")
+                    .header("originator", "codex_cli_rs")
+                    .header("version", "0.162.0")
+                    .header("user-agent", "codex_cli_rs/0.162.0 Velune/0.1");
+                if let Some(key) = body["prompt_cache_key"].as_str()
+                    && let Ok(value) = HeaderValue::from_str(key)
+                {
+                    builder = builder
+                        .header("session-id", value.clone())
+                        .header("thread-id", value);
+                }
             }
             let request = match builder.json(&body).build() {
                 Ok(request) => request,

@@ -145,9 +145,26 @@ pub struct ProviderConfig {
     credential: CredentialRef,
 }
 
-/// The composition root supplies this transient material per dispatch. It is not
-/// persisted in provider configuration and its token has no Debug impl.
+/// Authentication protocol selected by the application, independent of the
+/// caller's runtime. Account identity is redacted from Debug output.
+#[derive(Clone, PartialEq, Eq)]
+pub enum CredentialProfile {
+    Standard,
+    CodexSubscription { account_id: String },
+}
+impl fmt::Debug for CredentialProfile {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Standard => "Standard",
+            Self::CodexSubscription { .. } => "CodexSubscription([redacted])",
+        })
+    }
+}
+
+/// Short-lived material supplied per dispatch, never read from global config.
+/// The credential deliberately has no Debug implementation.
 pub struct ResolvedCredential {
+    pub profile: CredentialProfile,
     pub token: String,
     pub explicit_output_cap: Option<bool>,
     /// Protocol restrictions associated with a subscription credential.

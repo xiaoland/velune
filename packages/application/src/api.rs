@@ -542,6 +542,7 @@ pub struct ImportResult {
 #[serde(rename_all = "camelCase")]
 pub struct AuthenticationMetadata {
     pub configured: bool,
+    pub account_label: Option<String>,
     pub capabilities: AuthenticationCapabilities,
     pub actions: Option<Vec<SettingAction>>,
 }
@@ -1705,4 +1706,36 @@ fn analytics_request(row: crate::analytics::AnalyticsRow) -> Result<AnalyticsReq
         usage_reported: row.usage_reported,
         usage_complete: row.usage_complete,
     })
+}
+
+/// How the composer changes the queue.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
+pub enum SendQueueOperation {
+    /// Queue a turn as `send_turn_with_selection` would send it.
+    #[serde(rename_all = "camelCase")]
+    Add {
+        source_runtime_id: String,
+        target_runtime_id: String,
+        selection: crate::ModelSelection,
+        turn: crate::ComposedTurn,
+    },
+    Edit {
+        id: String,
+        text: String,
+    },
+    Remove {
+        id: String,
+    },
+    /// Move to `index` in the queue as it is after removing the message.
+    Move {
+        id: String,
+        index: u32,
+    },
+    /// Send again after a pause, once no turn runs.
+    Resume,
+    /// Deliver the message into the running turn instead of queueing it.
+    Steer {
+        id: String,
+    },
 }

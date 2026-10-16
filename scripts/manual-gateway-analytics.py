@@ -89,7 +89,7 @@ use velune_application::Error;
 struct Auth;
 impl CredentialResolver for Auth {
  fn resolve(&self,_:String,_:CredentialTarget)->velune_ai::OperationFuture<Result<ResolvedCredential,CredentialResolutionError>> {
- Box::pin(async { Ok(ResolvedCredential { token:"SYNTHETIC".into(), explicit_output_cap:None, subscription:false }) }) }
+ Box::pin(async { Ok(ResolvedCredential { token:"SYNTHETIC".into(), explicit_output_cap:None, subscription:false, profile:velune_gateway::CredentialProfile::Standard }) }) }
 }
 fn provider(protocol:GatewayProtocol,cases:&[&str],endpoint:&str)->ProviderDefinition {
  ProviderDefinition { id:format!("{protocol:?}"),name:format!("Synthetic {protocol:?}"),protocol,endpoint:endpoint.into(),credential_ref:Some("synthetic".into()),models:cases.iter().map(|case|ProviderModel{record_key:case.to_string(),provider_model_id:case.to_string(),nickname:String::new(),icon:None,context_window:None,max_output_tokens:Some(100),reasoning_levels:None}).collect() }

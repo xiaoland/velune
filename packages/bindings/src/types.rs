@@ -922,6 +922,7 @@ pub struct BindingImportResult {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct BindingAuthenticationMetadata {
     pub configured: bool,
+    pub account_label: Option<String>,
     pub capabilities: BindingAuthenticationCapabilities,
     pub actions: Option<Vec<BindingSettingAction>>,
 }
@@ -1024,10 +1025,18 @@ pub struct BindingAuthenticationProvenance {
 }
 #[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BindingSubscriptionDisclosure {
+    pub title: String,
+    pub detail: String,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct BindingProviderAuthentication {
     pub method: BindingAuthenticationMethod,
     pub configured: bool,
+    pub account_label: Option<String>,
     pub provenance: Option<BindingAuthenticationProvenance>,
+    pub disclosure: Option<BindingSubscriptionDisclosure>,
     pub actions: Vec<BindingSettingAction>,
 }
 #[derive(Clone, Serialize, Deserialize, uniffi::Enum)]
@@ -1035,6 +1044,7 @@ pub struct BindingProviderAuthentication {
 pub enum BindingAuthenticationEdit {
     Keep,
     SetApiKey { value: String },
+    SetCodexSubscription,
     Clear,
 }
 

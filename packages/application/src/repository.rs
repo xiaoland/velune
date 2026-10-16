@@ -397,7 +397,7 @@ impl Repository {
 }
 
 /// Private (0600) atomic replacement of one application file.
-fn commit(path: &Path, bytes: &[u8]) -> Result<(), RuntimeError> {
+pub(crate) fn commit(path: &Path, bytes: &[u8]) -> Result<(), RuntimeError> {
     let temporary = path.with_extension("json.tmp");
     let mut options = OpenOptions::new();
     options.create(true).truncate(true).write(true);

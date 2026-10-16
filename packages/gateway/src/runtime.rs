@@ -39,7 +39,7 @@ use velune_ai::{
     messages::*,
     responses::*,
 };
-pub use velune_ai_provider::config::ResolvedCredential;
+pub use velune_ai_provider::config::{CredentialProfile, ResolvedCredential};
 
 #[derive(Debug, Clone)]
 pub struct CredentialTarget {
@@ -53,6 +53,7 @@ pub enum CredentialResolutionError {
     Timeout,
     InvalidContract,
     StaleBinding,
+    AuthenticationExpired,
 }
 pub trait CredentialResolver: Send + Sync {
     fn resolve(
@@ -60,6 +61,25 @@ pub trait CredentialResolver: Send + Sync {
         reference: String,
         target: CredentialTarget,
     ) -> velune_ai::OperationFuture<Result<ResolvedCredential, CredentialResolutionError>>;
+    /// Recover the rejected credential once. The token lets an implementation reuse
+    /// a concurrently renewed session instead of rotating its refresh token twice.
+    fn refresh(
+        &self,
+        _reference: String,
+        _target: CredentialTarget,
+        _rejected_token: String,
+    ) -> velune_ai::OperationFuture<Result<ResolvedCredential, CredentialResolutionError>> {
+        Box::pin(async { Err(CredentialResolutionError::Unavailable) })
+    }
+    /// Mark only the still-current rejected session as requiring login.
+    fn invalidate(
+        &self,
+        _reference: String,
+        _target: CredentialTarget,
+        _rejected_token: String,
+    ) -> velune_ai::OperationFuture<()> {
+        Box::pin(async {})
+    }
 }
 
 use velune_ai_provider::{
@@ -69,7 +89,7 @@ use velune_ai_provider::{
     },
     messages::Messages,
     openai::ChatCompletions,
-    responses::OpenAiResponses,
+    responses::{OpenAiResponses, ResponsesClient},
 };
 
 const REQUEST_READ_TIMEOUT: Duration = Duration::from_secs(15);
@@ -85,6 +105,7 @@ impl std::error::Error for GatewayError {}
 
 #[derive(Clone)]
 struct RouteTarget {
+    aggregate: bool,
     max_output_tokens: Option<u32>,
     provider_slot: usize,
     model_slot: usize,
@@ -105,6 +126,7 @@ struct Ingress {
     token: String,
     resolver: Arc<dyn CredentialResolver>,
     client: Client,
+    responses_client: ResponsesClient,
     request_epoch: u64,
     next_request: AtomicU64,
     stopping: Arc<AtomicBool>,
@@ -176,6 +198,8 @@ impl Runner {
             .retry(reqwest::retry::never())
             .connect_timeout(Duration::from_secs(15))
             .build()?;
+        let responses_client =
+            ResponsesClient::new(Client::builder().connect_timeout(Duration::from_secs(15)))?;
         let mut epoch = [0u8; 8];
         getrandom::fill(&mut epoch).map_err(|_| GatewayError("gateway request identity"))?;
         let stopping = Arc::new(AtomicBool::new(false));
@@ -184,6 +208,7 @@ impl Runner {
             token: token.clone(),
             resolver: credential_resolver,
             client,
+            responses_client,
             request_epoch: u64::from_le_bytes(epoch),
             next_request: AtomicU64::new(1),
             stopping: stopping.clone(),
@@ -274,6 +299,7 @@ fn build_routes(
             routes.insert(
                 entry.record_key.clone(),
                 RouteTarget {
+                    aggregate: false,
                     max_output_tokens: entry.max_output_tokens,
                     provider_slot: provider_slot + 1,
                     model_slot: model_slot + 1,
@@ -301,7 +327,11 @@ fn build_routes(
         let members = route
             .members
             .iter()
-            .map(|key| targets.get(key).cloned().expect("validated route member"))
+            .map(|key| {
+                let mut target = targets.get(key).cloned().expect("validated route member");
+                target.aggregate = true;
+                target
+            })
             .collect::<Route>();
         logical.insert(route.record_key.clone(), members);
     }
@@ -485,6 +515,13 @@ async fn ingress_observed(
             "gateway model route is missing",
         );
     };
+    if route[0].aggregate && has_upstream_state(&body) {
+        return rejected(
+            observation,
+            StatusCode::BAD_REQUEST,
+            "model routes require full history; previous_response_id and conversation are unsupported",
+        );
+    }
     // Members share a protocol; the first one stands for the route here.
     let target = &route[0];
     let stream = match body.get("stream") {
@@ -533,7 +570,7 @@ async fn ingress_observed(
         headers
     };
     tracing::Span::current().record("stream", stream);
-    let candidates = state.candidates(&route, &body);
+    let candidates = state.candidates(&route);
     let (sender, mut receiver) = mpsc::channel(1);
     let request_span = tracing::Span::current();
     let dispatcher = tracing::dispatcher::get_default(Clone::clone);
@@ -768,12 +805,35 @@ fn next_candidate(
     }
 }
 
+fn structured_quota_error(body: Option<&Vec<u8>>) -> bool {
+    let Some(value) = body.and_then(|body| serde_json::from_slice::<Value>(body).ok()) else {
+        return false;
+    };
+    [
+        value["error"]["code"].as_str(),
+        value["error"]["type"].as_str(),
+    ]
+    .into_iter()
+    .flatten()
+    .any(|code| {
+        matches!(
+            code,
+            "insufficient_quota" | "usage_limit_reached" | "quota_exceeded"
+        )
+    })
+}
+
+fn has_upstream_state(body: &Value) -> bool {
+    ["previous_response_id", "conversation"]
+        .iter()
+        .any(|field| body.get(*field).is_some_and(|value| !value.is_null()))
+}
+
 impl Ingress {
     /// The route's targets in the order this request tries them: providers
-    /// cooling down after a 429 go last. A request that refers to state kept
-    /// by the upstream (a stored response or conversation) belongs to the
-    /// account that keeps it and gets only the first target.
-    fn candidates(&self, route: &Route, body: &Value) -> Vec<RouteTarget> {
+    /// cooling down after a quota failure go last. Stateful requests have
+    /// already been rejected for aggregate routes before translation.
+    fn candidates(&self, route: &Route) -> Vec<RouteTarget> {
         let now = Instant::now();
         let mut cooldowns = self.health.0.lock().expect("gateway cooldowns");
         cooldowns.retain(|_, until| *until > now);
@@ -782,12 +842,6 @@ impl Ingress {
             .cloned()
             .partition(|target| !cooldowns.contains_key(&target.provider_id));
         ready.extend(cooling);
-        let stateful = ["previous_response_id", "conversation"]
-            .iter()
-            .any(|field| body.get(*field).is_some_and(|value| !value.is_null()));
-        if stateful {
-            ready.truncate(1);
-        }
         ready
     }
     fn cool(&self, provider_id: &str, duration: Duration) {
@@ -996,6 +1050,106 @@ async fn dispatch_observed(
             ));
         }
     };
+    if !matches!(
+        credential.profile,
+        CredentialProfile::CodexSubscription { .. }
+    ) {
+        return dispatch_credential(
+            state,
+            tracker,
+            target,
+            body,
+            headers,
+            stream,
+            sender,
+            observation,
+            credential,
+        )
+        .await;
+    }
+    let profile = credential.profile.clone();
+    let rejected_token = credential.token.clone();
+    let destination = CredentialTarget {
+        protocol: target.protocol.clone(),
+        endpoint: target.endpoint.clone(),
+    };
+    let result = dispatch_credential(
+        state.clone(),
+        tracker.clone(),
+        target.clone(),
+        body.clone(),
+        headers.clone(),
+        stream,
+        sender.clone(),
+        observation,
+        credential,
+    )
+    .await;
+    if !matches!(&result, AttemptEnd::Failed(failure) if failure.status == 401) {
+        return result;
+    }
+    tracing::info!(event = "gateway_credential_recovery");
+    let recovered = state
+        .resolver
+        .refresh(
+            target.reference.clone(),
+            destination.clone(),
+            rejected_token.clone(),
+        )
+        .await;
+    let credential = match recovered {
+        Ok(credential) if credential.profile == profile => credential,
+        Err(CredentialResolutionError::AuthenticationExpired) => {
+            state
+                .resolver
+                .invalidate(target.reference.clone(), destination, rejected_token)
+                .await;
+            return allow_auth_failover(result);
+        }
+        _ => return allow_auth_failover(result),
+    };
+    let rejected_token = credential.token.clone();
+    let result = dispatch_credential(
+        state.clone(),
+        tracker,
+        target.clone(),
+        body,
+        headers,
+        stream,
+        sender,
+        observation,
+        credential,
+    )
+    .await;
+    if matches!(&result, AttemptEnd::Failed(failure) if failure.status == 401) {
+        state
+            .resolver
+            .invalidate(target.reference.clone(), destination, rejected_token)
+            .await;
+        return allow_auth_failover(result);
+    }
+    result
+}
+
+fn allow_auth_failover(mut result: AttemptEnd) -> AttemptEnd {
+    if let AttemptEnd::Failed(failure) = &mut result {
+        failure.next = NextCandidate::Allowed { cooldown: None };
+    }
+    result
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn dispatch_credential(
+    state: Arc<Ingress>,
+    tracker: Option<SharedTracker>,
+    target: RouteTarget,
+    body: Value,
+    headers: Vec<Header>,
+    stream: bool,
+    sender: mpsc::Sender<WireEvent>,
+    observation: &mut Observation,
+    credential: ResolvedCredential,
+) -> AttemptEnd {
     if let Some(tracker) = &tracker {
         tracker.lock().expect("owned analytics tracker").begin();
     }
@@ -1161,7 +1315,7 @@ async fn dispatch_observed(
         GatewayProtocol::ResponsesV1 => {
             let adapter = match OpenAiResponses::with_resolved_credential(
                 target.config,
-                state.client.clone(),
+                state.responses_client.clone(),
                 credential,
             ) {
                 Ok(value) => value,
@@ -1289,7 +1443,11 @@ async fn dispatch_observed(
                         AttemptEnd::Settled
                     } else {
                         let next = next_candidate(
-                            matches!(error.kind, ResponsesErrorKind::RateLimited),
+                            matches!(error.kind, ResponsesErrorKind::RateLimited)
+                                || (error.status == Some(402)
+                                    && structured_quota_error(
+                                        error.body.as_ref().map(Payload::get),
+                                    )),
                             matches!(error.kind, ResponsesErrorKind::Cancelled),
                             error.status,
                             &error.headers,

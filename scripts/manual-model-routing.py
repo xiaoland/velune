@@ -90,7 +90,7 @@ use velune_gateway::*;
 struct Resolver;
 impl CredentialResolver for Resolver {
  fn resolve(&self,reference:String,_:CredentialTarget)->velune_ai::OperationFuture<Result<ResolvedCredential,CredentialResolutionError>> {
-  Box::pin(async move { if reference=="credfail" {Err(CredentialResolutionError::Unavailable)} else {Ok(ResolvedCredential{token:reference,explicit_output_cap:None,subscription:false})} })
+  Box::pin(async move { if reference=="credfail" {Err(CredentialResolutionError::Unavailable)} else {Ok(ResolvedCredential{token:reference,explicit_output_cap:None,subscription:false,profile:velune_gateway::CredentialProfile::Standard})} })
  }
 }
 #[derive(Default)] struct Sink(Mutex<Vec<AnalyticsRecord>>);
@@ -169,7 +169,7 @@ def gateway_phase(upstream, dead):
     check(report['refused']['status'] == 401 and 'ok-f' not in HITS, 'refused account stops')
     check('SERVED_BY:ok-h' in served('connect'), 'failed connection fails over')
     check(report['midstream']['status'] == 200 and 'SERVED_BY' not in (report['midstream']['body'] or '') and 'ok-j' not in HITS, 'started stream is not switched: %s' % report['midstream'])
-    check(report['stateful']['status'] == 429 and 'ok-l' not in HITS, 'stateful request keeps its account')
+    check(report['stateful']['status'] == 400 and '429-k' not in HITS and 'ok-l' not in HITS, 'stateful aggregate request is rejected before upstream')
     check(report['direct']['status'] == 503 and HITS.get('503-c') == 2, 'direct model does not fail over')
     check(report['exhausted']['status'] == 503 and HITS.get('503-m') == 1 and HITS.get('503-n') == 1, 'last failure returned')
     check('SERVED_BY:ok-o' in served('credential'), 'unresolved credential fails over')

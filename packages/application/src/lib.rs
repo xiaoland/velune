@@ -11,14 +11,15 @@ mod authentication_resolver;
 #[cfg(feature = "local-runtime")]
 mod credential_helper;
 mod provider_authentication;
+#[cfg(feature = "local-runtime")]
+mod subscription_auth;
 pub use provider_authentication::{
     AuthenticationEdit, AuthenticationMethod, AuthenticationProvenance,
-    ProviderAuthenticationDescription,
+    ProviderAuthenticationDescription, SubscriptionDisclosure,
 };
 pub mod config;
 #[cfg(feature = "local-runtime")]
 mod local;
-pub use local::SendQueueOperation;
 pub mod model_catalog;
 #[cfg(not(feature = "local-runtime"))]
 mod portable;

@@ -6,7 +6,10 @@
 
 Agent 间协作没有专门的 bindings API：参与方是普通会话，平台用现有会话、消息与交互接口呈现；MCP 工具、票据与收件箱归 application（见其 README）。
 
-`VeluneApplication` 公开配置维护、会话控制、提供商导入、认证交互与关闭操作，参数和结果具有具名类型。提供商拥有模型条目；`BindingProviderDraft` 与 `BindingAuthenticationEdit` 共同保存普通字段和认证编辑，后者明确区分保留、更新 API key 和清除。列表与 snapshot 只返回非秘密认证描述，`read_provider_api_key` 显式读取一个提供商的已保存 key。认证检查和登录以网关／提供商 ID 定位，不存在独立认证资源 CRUD。`BindingProviderModel.adapter_metadata_json` 由运行时 adapter 拥有，平台只保留它，不解释其结构。
+`VeluneApplication` 公开配置维护、会话控制、提供商导入、认证交互与关闭操作，参数和结果具有具名类型。提供商拥有模型条目；`BindingProviderDraft` 与 `BindingAuthenticationEdit` 共同保存普通字段和认证编辑，后者明确区分保留、更新 API key、选择 Codex 订阅认证（`SetCodexSubscription`）和清除。列表与 snapshot 只返回非秘密认证描述，`read_provider_api_key` 显式读取一个提供商的已保存 key。认证检查和登录以网关／提供商 ID 定位，不存在独立认证资源 CRUD。`BindingProviderModel.adapter_metadata_json` 由运行时 adapter 拥有，平台只保留它，不解释其结构。
+
+Codex 订阅的前端接入复用 `authentication_start`／`authentication_poll`／`authentication_cancel`／`authentication_inspect`，无需配置运行时。先以 `SetCodexSubscription` 保存提供商（Responses 协议、`https://chatgpt.com/backend-api/codex`），再开始登录；再次保存原认证使用 `Keep`，不能每次都选择 `SetCodexSubscription`，否则会重置认证。`BindingProviderAuthentication.disclosure` 的 `title`／`detail` 应在选择认证和登录入口呈现；它如实说明 Codex 客户端身份及规则冲突。`AuthenticationProgress.events` 中 `type_id="notify"` 的 notification 提供 `kind="url"`、`url` 和说明，平台打开系统浏览器并保留手动打开入口；URL 与回调参数不进入日志或分析。持续 poll 到 `running=false`，最终 `result` 表示成功、失败或取消；成功使用返回的 gateways 更新视图。前端不读写秘密文件，也不自行兑换、刷新或缓存 bearer。`account_label` 只显示已知绑定账户 ID 的尾 8 位，失效后仍可保留，用于区分多个提供商登录；它不代表有效认证。`configured=false` 表示尚未登录或需重新登录；`configured=true` 仍须实际推理验收。
+
 
 一个对象串行执行应用操作；多个会话可同时执行，`cancel`／`reply_runtime_interaction` 以运行时与会话 ID 寻址，`working_changes`／`file_diff` 返回会话工作目录的 git 变更（`BindingWorkingChanges`、`BindingChangeKind`）与按行分类的差异（`BindingFileDiff`）。`conversation_activity(since)` 返回 `BindingConversationActivity`：执行中、待处理交互或按 Harness 存活记录由其他进程运行（`BindingRunState::Elsewhere`，展示为运行中）的会话，以及游标之后结束的 turn（`BindingTurnOutcome`）和下次使用的游标。`shutdown` 在应用忙碌时返回错误并保留对象，调用方可继续读取 snapshot 或明确取消 Agent 执行；关闭成功后除再次关闭外的操作返回 `Closed` 类型的诊断。释放语言包装对象负责释放其 Rust 引用，不代表用户发出了取消 Agent 的命令。会话状态仍通过 `snapshot` 或游标式 `snapshot_update` 观察，本 unit 不新增事件订阅或后台宿主。`BindingMessagePayload` 区分内联内容与只带字节数的延迟内容，`message_payloads` 读取后者。`BindingMessageBlock` 的 `Reasoning` 带摘要与其下正文，`Image` 带 `BindingImageSource`（本机路径或可延迟的 base64 内容），`File` 是用户消息附带的文件路径。
 

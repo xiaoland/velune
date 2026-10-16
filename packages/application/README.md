@@ -26,9 +26,15 @@
 
 MCP 线程不访问 application：工具调用进入收件箱，由下一次客户端请求在推进各会话后执行，并在结束后恢复原先寻址的会话；协作进度因此与会话事件一样依赖客户端轮询（Mac 每 0.6 秒读取活动），60 秒内未被处理的调用向 Agent 返回结果未知。服务启动失败、SSH 转发失败或 ACP stdio relay 不可用时，会话照常运行而不带协作工具；会话关闭即撤销其票据。没有专门的 bindings API，平台通过普通会话、消息与交互呈现。[A2A 手动验收](../../scripts/manual-collaboration.py)以两个合成 ACP 运行时检查新建与联系已有会话、审批留在对方会话、忙碌与未知票据被拒。
 
-`config` 定义 schema 8 的应用配置；`repository` 是内部文件设施，负责锁、加载和原子提交。提供商拥有模型条目和私有认证，参数模板仅用于复制填写字段，不参与调用解析。API key 与普通配置在同一文件原子保存，文件创建权限为 0600；公开配置摘要不含 key，只有显式单提供商读取接口返回已保存的值。认证编辑区分保留、更新和清除，读取失败不清空原值。OAuth 保留原来源登录和刷新，来源定位不进入公开摘要。根目录与资源目录由平台通过 `Options` 显式传入。
+`config` 定义 schema 8 的应用配置；`repository` 是内部文件设施，负责锁、加载和原子提交。提供商拥有模型条目和私有认证，参数模板仅用于复制填写字段，不参与调用解析。API key 与普通配置在同一文件原子保存，文件创建权限为 0600；公开配置摘要不含 key，只有显式单提供商读取接口返回已保存的值。认证编辑区分保留、更新和清除，读取失败不清空原值。运行时来源 OAuth 保留原来源登录和刷新，来源定位不进入公开摘要。根目录与资源目录由平台通过 `Options` 显式传入。
 
 提供商导入选择已保存的 Agent 运行时实例，应用从其配置确定目录及 Node 路径；调用方不能另填来源配置。预览不解析秘密，应用导入时将静态 API key 保存到提供商私有配置，OAuth 仍委托来源刷新。实例、源目录元数据或目标配置变化使预览失效。读取不要求执行准备或当前会话选择模型。来源文件与 Harness 会话保留，Velune 不新建会话数据库。保存首个使用默认网关的运行时会建立空的默认网关，便于先配置运行时再导入。
+
+Codex 订阅由 application 自身管理，与 Harness 登录独立。保存提供商时使用 `AuthenticationEdit::SetCodexSubscription`，协议须为 Responses，地址须为 `https://chatgpt.com/backend-api/codex`；普通字段与模型仍由原有提供商 API 管理。调用 `authentication_start(gateway_id, provider_id)` 开始登录，`authentication_poll` 获取打开浏览器的 URL 通知与最终结果，`authentication_cancel` 请求取消；任何时刻只允许一项交互式认证，取消完成后才释放回调端口。`authentication_inspect.configured` 和公开提供商摘要反映私有会话是否可续期，而非保证上游接受请求。`ProviderAuthenticationDescription.account_label` 与检查结果的同名字段仅含已知账户 ID 尾 8 位，便于区分订阅；失效后仍可显示绑定，但不代表认证有效。`ProviderAuthenticationDescription.disclosure` 是必须向用户呈现的接入身份与规则冲突说明。
+
+浏览器登录使用 Codex 原生 OAuth 客户端、PKCE 和 state，以及固定 `localhost:1455/auth/callback`；端口占用时明确失败，不结束其他程序。每次登录写独立临时会话，配置成功提交新的引用后才清理旧会话，失败或取消保留原认证。秘密保存在应用 HOME 的 `subscription-auth/` 私有目录（0700），文件权限为 0600；提供商配置只保存内部引用。每个会话的锁覆盖重读、刷新和原子替换，等待锁有 35 秒上限；已经发出的刷新由独立工作线程负责保存结果，turn 取消不会撤销它。客户端禁止重定向与 HTTP 隐式重试。请求前临近过期时刷新，Codex 专用 401 恢复由 gateway 有界触发；轮换 token、账户 ID 和有效期一起更新。明确永久拒绝与再次 401 标记需要重新登录，临时网络或服务错误保留原认证；无效状态写入失败只记录固定、无秘密事件。删除提供商或更换认证后清理旧秘密；若清理失败，错误明确说明配置已经保存，不伪造回滚。进程直接退出或机器掉电仍可能打断尚未收到并保存的轮换响应。
+
+本接入借用 Codex 客户端协议，并非正式 SIWC；多订阅轮换与用量池化和 SIWC 禁止规则冲突，不代表供应商认可。正式 SIWC 不在本轮。现有 Switcher、Codex 或 Pi 的认证文件不被读取、复制或修改；用户在 Velune 分别授权每个提供商实例，避免多个工具争用同一 refresh token。
 
 默认 `local-runtime` feature 组合本机运行时和 LLM 网关。`local` 按配置、连接、会话、认证协调与 Pi／原生运行时装配分模块。应用捕获提供商私有认证快照，装配异步解析器；解析器校验捕获的协议与服务地址，未知引用不回退环境认证。Unix 来源 helper 的期限、输出上限与进程组取消由应用负责，网关不解释来源或调用 helper。Pi 元数据在装配时剥离为 `velune_gateway::GatewayConfig`，AI package 不依赖运行时。
 

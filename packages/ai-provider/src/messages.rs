@@ -74,6 +74,14 @@ impl Messages {
                 "subscription credential does not support Messages",
             ));
         }
+        if !matches!(
+            credential.profile,
+            crate::config::CredentialProfile::Standard
+        ) {
+            return Err(InvalidContract(
+                "Codex subscription requires Responses backend",
+            ));
+        }
         if credential.token.is_empty() {
             return Err(InvalidContract("provider credential is empty"));
         }

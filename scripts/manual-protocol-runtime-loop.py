@@ -149,7 +149,7 @@ def main():
 struct Resolver;
 impl velune_gateway::CredentialResolver for Resolver {
  fn resolve(&self,_:String,_:velune_gateway::CredentialTarget)->velune_ai::OperationFuture<Result<velune_gateway::ResolvedCredential,velune_gateway::CredentialResolutionError>> {
-  Box::pin(async {Ok(velune_gateway::ResolvedCredential {token:"synthetic-only".into(),explicit_output_cap:None,subscription:false})})
+  Box::pin(async {Ok(velune_gateway::ResolvedCredential {token:"synthetic-only".into(),explicit_output_cap:None,subscription:false,profile:velune_gateway::CredentialProfile::Standard})})
  }
 }
 fn main()->Result<(),Box<dyn std::error::Error>> {

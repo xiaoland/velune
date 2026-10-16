@@ -2557,6 +2557,7 @@ dependencies = [
  "reqwest",
  "serde_json",
  "tokio",
+ "tracing",
  "velune-ai",
 ]
 
@@ -2565,6 +2566,7 @@ name = "velune-application"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "base64",
  "getrandom",
  "reqwest",
  "rmcp",

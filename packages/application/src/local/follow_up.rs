@@ -45,38 +45,6 @@ impl SendQueue {
     }
 }
 
-/// How the composer changes the queue.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
-pub enum SendQueueOperation {
-    /// Queue a turn as `send_turn_with_selection` would send it.
-    #[serde(rename_all = "camelCase")]
-    Add {
-        source_runtime_id: String,
-        target_runtime_id: String,
-        selection: crate::ModelSelection,
-        turn: crate::ComposedTurn,
-    },
-    Edit {
-        id: String,
-        text: String,
-    },
-    Remove {
-        id: String,
-    },
-    /// Move to `index` in the queue as it is after removing the message.
-    Move {
-        id: String,
-        index: u32,
-    },
-    /// Send again after a pause, once no turn runs.
-    Resume,
-    /// Deliver the message into the running turn instead of queueing it.
-    Steer {
-        id: String,
-    },
-}
-
 impl CoreRuntime {
     pub(super) fn send_queue_action(&mut self, request: &Value) -> Result<Value, RuntimeError> {
         let conversation_id = request["payload"]["conversationID"]

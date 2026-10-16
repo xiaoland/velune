@@ -21,6 +21,10 @@ impl CoreRuntime {
                 .authentication
                 .as_ref()
                 .is_some_and(authentication::Login::is_running)
+            || self
+                .subscription_login
+                .as_ref()
+                .is_some_and(crate::subscription_auth::Login::is_running)
         {
             return Err(RuntimeError::invalid("runtime or login is busy"));
         }
@@ -33,6 +37,12 @@ impl CoreRuntime {
             self.gateways = previous;
             self.runtime_instances = previous_runtimes;
             return Err(error);
+        }
+        let mut cleanup_failed = false;
+        for old in previous.iter().flat_map(|g| &g.providers) {
+            if let crate::provider_authentication::AuthenticationMaterial::CodexSubscription { credential_id, .. } = &old.authentication.material
+                && !self.gateways.iter().flat_map(|g| &g.providers).any(|p| matches!(&p.authentication.material, crate::provider_authentication::AuthenticationMaterial::CodexSubscription { credential_id: current, .. } if current == credential_id))
+            { cleanup_failed |= crate::subscription_auth::remove(&self.options.home_directory, credential_id).is_err(); }
         }
         let reconnect = self.next_turn_runtime_id.as_ref().is_some_and(|id| {
             let before = previous_runtimes.iter().find(|runtime| &runtime.id == id);
@@ -53,6 +63,12 @@ impl CoreRuntime {
         });
         if reconnect {
             self.for_each_session(Self::invalidate_execution)?;
+        }
+        if cleanup_failed {
+            tracing::warn!(event = "subscription_cleanup_failed");
+            return Err(RuntimeError::invalid(
+                "提供商配置已保存，但旧订阅认证清理失败；请检查应用配置目录的写入权限。",
+            ));
         }
         Ok(json!({"gateways":self.public_gateways(),"executionInvalidated":reconnect}))
     }

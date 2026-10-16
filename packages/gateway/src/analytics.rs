@@ -59,6 +59,7 @@ use std::{
 use velune_ai_provider::metrics::{ModelTerminal, ResponseMetrics};
 
 pub(crate) struct Tracker {
+    protocol: velune_ai_provider::translation::LlmProtocol,
     metrics: ResponseMetrics,
     started: Option<Instant>,
     first_output_ms: Option<u64>,
@@ -68,6 +69,15 @@ pub(crate) struct Tracker {
 }
 impl Tracker {
     pub(crate) fn begin(&mut self) {
+        // A rejected authentication attempt has no model output. Its recovery
+        // records the final exchange without reusing a closed SSE parser.
+        if self.started.is_some() {
+            self.metrics = ResponseMetrics::new(self.protocol);
+            self.first_output_ms = None;
+            self.terminal_elapsed_ms = None;
+            self.status = None;
+            self.transport_outcome = None;
+        }
         self.started = Some(Instant::now());
     }
     pub(crate) fn headers(&mut self, status: u16) {
@@ -128,6 +138,7 @@ impl RequestAnalytics {
             record,
             stopping,
             tracker: Arc::new(Mutex::new(Tracker {
+                protocol,
                 metrics: ResponseMetrics::new(protocol),
                 started: None,
                 first_output_ms: None,

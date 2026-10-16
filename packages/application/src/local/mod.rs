@@ -125,6 +125,7 @@ pub struct CoreRuntime {
     /// A resource save could not reach its runtimes because one was busy; retried once idle.
     resource_sync_due: bool,
     conversation_browser_preferences: crate::config::ConversationBrowserPreferences,
+    subscription_login: Option<crate::subscription_auth::Login>,
     authentication_provider: Option<(String, String)>,
     runtime_instances: Vec<RuntimeInstance>,
     next_turn_runtime_id: Option<String>,
@@ -157,7 +158,7 @@ mod delivery;
 mod editing;
 mod execution;
 mod follow_up;
-pub use follow_up::SendQueueOperation;
+use crate::SendQueueOperation;
 mod live;
 mod model_selection;
 mod native_composition;
@@ -210,6 +211,7 @@ impl CoreRuntime {
             resource_sync_due: !resource_bindings.is_empty(),
             resource_bindings,
             conversation_browser_preferences: persisted.conversation_browser_preferences,
+            subscription_login: None,
             authentication_provider: None,
             runtime_instances: persisted.runtime_instances,
             next_turn_runtime_id: None,
@@ -359,7 +361,15 @@ impl CoreRuntime {
         synchronized.and(result)
     }
     fn public_gateways(&self) -> Vec<crate::GatewaySummary> {
-        crate::provider_configuration::summaries(&self.gateways)
+        let mut summaries = crate::provider_configuration::summaries(&self.gateways);
+        for gateway in &mut summaries {
+            for provider in &mut gateway.providers {
+                if let Some(source) = self.gateways.iter().find(|g| g.id == gateway.id).and_then(|g| g.providers.iter().find(|p| p.id == provider.id))
+                    && let crate::provider_authentication::AuthenticationMaterial::CodexSubscription { credential_id, .. } = &source.authentication.material
+                { (provider.authentication.configured, provider.authentication.account_label) = crate::subscription_auth::status(&self.options.home_directory, credential_id, source.authentication.generation); }
+            }
+        }
+        summaries
     }
     pub fn close_if_idle(&mut self) -> Result<(), RuntimeError> {
         self.drain_sessions()?;
@@ -367,6 +377,10 @@ impl CoreRuntime {
             .authentication
             .as_ref()
             .is_some_and(authentication::Login::is_running)
+            || self
+                .subscription_login
+                .as_ref()
+                .is_some_and(crate::subscription_auth::Login::is_running)
         {
             return Err(RuntimeError::invalid("runtime is busy"));
         }
@@ -442,10 +456,14 @@ impl CoreRuntime {
             ));
         }
         let action = request["action"].as_str().unwrap_or_default();
-        if self
+        if (self
             .authentication
             .as_ref()
             .is_some_and(authentication::Login::is_running)
+            || self
+                .subscription_login
+                .as_ref()
+                .is_some_and(crate::subscription_auth::Login::is_running))
             && !matches!(
                 action,
                 "authentication"

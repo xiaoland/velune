@@ -12,8 +12,8 @@ pub use analytics::{
 };
 pub use config::*;
 pub use runtime::{
-    CredentialResolutionError, CredentialResolver, CredentialTarget, GatewayError,
-    ResolvedCredential, RouteHealth, Runner,
+    CredentialProfile, CredentialResolutionError, CredentialResolver, CredentialTarget,
+    GatewayError, ResolvedCredential, RouteHealth, Runner,
 };
 
 mod observation;

@@ -18,11 +18,19 @@ pub struct AuthenticationProvenance {
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct SubscriptionDisclosure {
+    pub title: String,
+    pub detail: String,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ProviderAuthenticationDescription {
     pub method: AuthenticationMethod,
     pub configured: bool,
+    pub account_label: Option<String>,
     pub provenance: Option<AuthenticationProvenance>,
     pub actions: Vec<crate::conversation::SettingAction>,
+    pub disclosure: Option<SubscriptionDisclosure>,
 }
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -34,12 +42,21 @@ pub(crate) struct AuthenticationSource {
     pub settings: BTreeMap<String, String>,
 }
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
-#[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
 pub(crate) enum AuthenticationMaterial {
     #[default]
     None,
     ApiKey {
         value: String,
+    },
+    CodexSubscription {
+        credential_id: String,
+        configured: bool,
     },
     RuntimeProvider {
         source: AuthenticationSource,
@@ -73,6 +90,21 @@ impl ProviderAuthentication {
                 !value.is_empty(),
                 None,
                 Vec::new(),
+            ),
+            AuthenticationMaterial::CodexSubscription { configured, .. } => (
+                AuthenticationMethod::OAuth,
+                *configured,
+                Some(AuthenticationProvenance {
+                    display_name: "Velune · Codex 订阅".into(),
+                }),
+                vec![crate::conversation::SettingAction {
+                    id: "login".into(),
+                    label: if *configured {
+                        "重新登录…".into()
+                    } else {
+                        "登录…".into()
+                    },
+                }],
             ),
             AuthenticationMaterial::RuntimeProvider {
                 source,
@@ -115,16 +147,19 @@ impl ProviderAuthentication {
             configured,
             provenance,
             actions,
+            account_label: None,
+            disclosure: matches!(&self.material, AuthenticationMaterial::CodexSubscription { .. }).then(|| SubscriptionDisclosure { title: "Codex 订阅协议接入".into(), detail: "当前借用 Codex 客户端协议，非正式 SIWC 接入。多订阅自动轮换与用量池化和 SIWC 禁止规则冲突，不代表供应商认可。使用者应自行决定，并承担账户受限或接入失效的风险。".into() }),
         }
     }
     #[cfg(feature = "local-runtime")]
     pub(crate) fn subscription(&self) -> bool {
         matches!(
             &self.material,
-            AuthenticationMaterial::RuntimeProvider {
-                method: AuthenticationMethod::OAuth,
-                ..
-            }
+            AuthenticationMaterial::CodexSubscription { .. }
+                | AuthenticationMaterial::RuntimeProvider {
+                    method: AuthenticationMethod::OAuth,
+                    ..
+                }
         )
     }
     pub(crate) fn validate_target(
@@ -132,6 +167,14 @@ impl ProviderAuthentication {
         protocol: &GatewayProtocol,
         endpoint: &str,
     ) -> Result<(), &'static str> {
+        if matches!(
+            &self.material,
+            AuthenticationMaterial::CodexSubscription { .. }
+        ) && (protocol != &GatewayProtocol::ResponsesV1
+            || endpoint != "https://chatgpt.com/backend-api/codex")
+        {
+            return Err("Codex 订阅认证仅用于原生订阅 Responses 地址；修改目标前请更换认证。");
+        }
         if let AuthenticationMaterial::RuntimeProvider {
             protocol: authorized,
             endpoint: target,
@@ -149,5 +192,6 @@ impl ProviderAuthentication {
 pub enum AuthenticationEdit {
     Keep,
     SetApiKey { value: String },
+    SetCodexSubscription,
     Clear,
 }

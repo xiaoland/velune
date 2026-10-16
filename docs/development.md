@@ -20,7 +20,7 @@ open /Applications/Velune.app
 
 RelayKit 接入构建还需要 Go 工具链，桥接模块版本及依赖由 `packages/ai-provider/relaykit-bridge/go.mod` 与 `go.sum` 固定；Go 最低版本以该模块声明为准。Go 转换库作为同进程依赖链接，不启动独立网关后台。Mac bundle 的 ThirdParty/RelayKit 保留上游、Go runtime 和传递依赖许可证，以及模块锁文件；“开源许可…”入口包含 New API 署名与原项目链接。构建 manifest 记录 Go 版本和两个模块文件的摘要。具体平台与行为验收见 [RelayKit 任务](../tasks/new-api-reuse/packet.md)，本机成功构建不代表其它平台已通过验证。
 
-应用根目录由启动进程的 `VELUNE_HOME` 环境变量指定，未设置或留空时为 `~/.velune`，非空值必须是绝对目录路径。平台将该路径显式传给 Application，库不自行读取环境。根目录下的 `generic-config.json` 持久化 AI 网关与 Agent 运行时实例配置，API key 由提供商私有认证配置保存，文件权限为 0600；订阅仍委托原 Harness 登录与刷新。公开列表不含 key，查看编辑通过提供商内显式操作。Finder 启动通常不继承 shell 配置，隔离开发可直接带环境运行 bundle 可执行文件：
+应用根目录由启动进程的 `VELUNE_HOME` 环境变量指定，未设置或留空时为 `~/.velune`，非空值必须是绝对目录路径。平台将该路径显式传给 Application，库不自行读取环境。根目录下的 `generic-config.json` 持久化 AI 网关与 Agent 运行时实例配置，API key 由提供商私有认证配置保存，文件权限为 0600；来源型订阅仍委托原 Harness 登录与刷新；Rust lib 另支持由 Velune 独立管理的 Codex 订阅认证，见下文[Codex 订阅与聚合](#codex-订阅与聚合)。公开列表不含 key，查看编辑通过提供商内显式操作。Finder 启动通常不继承 shell 配置，隔离开发可直接带环境运行 bundle 可执行文件：
 
 ```sh
 VELUNE_HOME=/absolute/path/to/isolated-home /Applications/Velune.app/Contents/MacOS/Velune
@@ -34,9 +34,9 @@ Settings 以 AI 提供商和 Agent 运行时为主。提供商编辑器左侧选
 
 Agent 运行时可配置多个实例，每个实例选择精确版本类型及独立配置目录；工作目录属于具体会话。Rust packages 当前提供 Pi 1.0.2、Codex 0.159.3、Claude Code 2.1.286 和 DeepSeek Harness 0.2.0-rc.2，保持一个活跃执行 runner，空闲时切换会话；读取历史不进入执行。Pi 模型能力可以未知，由 SDK 处理缺省；未知规格不阻止准备或原生请求。添加实例后即可读取会话列表和详情，不需要连接或模型。新建表单选择实例与模型，目录留空使用运行时默认；Mac首次发送时自动准备并创建原生会话；历史模型选择与发送按会话进行。Pi 恢复可验证的原生选择记录，Codex／DSH 继续前明确选择，不按同名推断提供商。发送时自动准备／恢复，可观察工具结果、回答原生交互与取消。用户消息为右侧气泡，LLM 与工具左侧左对齐，只有系统／Harness 通知居中，不显示作者头像或昵称。历史由各 Harness 持有，Mac 只投影。
 
-Velune 向 Harness 注入本机网关提供商配置，Velune 管理的提供商 key 不随该注入传给 Harness；这不禁止 Harness 使用其原有提供商与认证。application 管理提供商私有认证，gateway 只接收中立异步解析接口，AI provider 使用当前解析出的短生命周期认证。API key 可查看编辑，OAuth 状态与登录放在原提供商上下文，运行时名称仅作为来源说明。OAuth adapter 保留原 SDK 的登录与刷新，不复制 refresh credential。修改来源绑定的目标时明确更换认证或清除，不能继续沿用旧目标授权。更换认证或模型执行配置后，受影响执行准备失效，历史视图保留，下一次发送重新准备；真实登录与调用由用户验收。
+Velune 向 Harness 注入本机网关提供商配置，Velune 管理的提供商 key 不随该注入传给 Harness；这不禁止 Harness 使用其原有提供商与认证。application 管理提供商私有认证，gateway 只接收中立异步解析接口，AI provider 使用当前解析出的短生命周期认证。API key 可查看编辑，OAuth 状态与登录放在原提供商上下文，运行时名称仅作为来源说明。来源型 OAuth adapter 保留原 SDK 的登录与刷新，不复制 refresh credential；独立 Codex 订阅由 application 管理自己的登录和轮换令牌。修改来源绑定的目标时明确更换认证或清除，不能继续沿用旧目标授权。更换认证或模型执行配置后，受影响执行准备失效，历史视图保留，下一次发送重新准备；真实登录与调用由用户验收。
 
-提供商字段与 API key 一次原子保存，认证编辑明确区分保留、设置新 key 和清除；读取失败或取消草稿不会清空旧值。不建立第二份凭据文件或 Keychain 补偿事务。配置只接受 schema 8，旧 schema 普通配置打开时原子重置为空当前配置，不迁移、不保留旧文件或备份；原 Harness、会话及已有平台秘密不删除。未来 schema 或损坏 JSON 明确报错。模板只是填写快照，不包含认证、服务地址或 Pi 投影，模板更新／删除不改变已有模型。
+提供商字段与 API key 一次原子保存，认证编辑明确区分保留、设置新 key 和清除；读取失败或取消草稿不会清空旧值。API key 不建立第二份凭据文件或 Keychain 补偿事务；独立 Codex 订阅的轮换凭据保存在 application 专属私有文件，不写回 Harness 或 Switcher。配置只接受 schema 8，旧 schema 普通配置打开时原子重置为空当前配置，不迁移、不保留旧文件或备份；原 Harness、会话及已有平台秘密不删除。未来 schema 或损坏 JSON 明确报错。模板只是填写快照，不包含认证、服务地址或 Pi 投影，模板更新／删除不改变已有模型。
 
 AI 提供商页的“从运行时导入…”是完整配置导入入口。选择已配置的 Agent 运行时实例后读取预览，复用该实例的目录与 Node 配置，再选择提供商模型导入；模型能力归导入的提供商条目。原提供商与认证文件保留；导入应用时集中保存静态 API key 到提供商私有配置，OAuth 保留来源刷新。重复项默认跳过，明确替换才更新已导入提供商；当前会话模型不自动改变。运行时实例、来源或目标配置在预览后变化时，须重新读取。读取配置不要求执行准备，也不要求当前会话已有模型或路由。仅支持当前网关能够保留语义的配置；不支持项及原因在预览中显示，动态命令不执行。
 
@@ -153,7 +153,7 @@ Velune 不分发任何 Agent runtime、Pi SDK 或 CLI。Pi 实例必须配置外
 
 Application 在 `VELUNE_HOME/runtime-projections/` 下按运行时实例生成网关模型目录与 selection 文件，只列出 Velune 网关端点、模型投影与临时本地访问凭据，不写上游端点或 Keychain 引用。原运行时目录仍是 Pi home，保留原 `models.json`、认证、设置与会话。固定 SDK RPC launcher 使用原运行时的 ModelRuntime，并追加独立生成的网关提供商，不覆盖原配置。运行时指定的 Pi 入口必须对应固定 1.0.2 SDK，不能对应的 wrapper 或其他版本明确拒绝，不静默替换安装。从 Velune 发起新一轮时按显式 native／managed 选择设置模型，只有 managed 选择注入网关；运行时原有提供商、认证与扩展继续由原 SDK 使用，不增加只准使用网关的执行政策。每次实际请求由 application 的认证解析器校验提供商目标；API key 从捕获的私有配置解析，OAuth 调用内部来源 adapter。来源 adapter 使用原存储锁刷新，不复制 refresh credential；无 Mac Keychain shim。Unix helper 的超时、取消和关闭终止整个进程组；Windows helper 暂不开放。开发验证不读取真实 Keychain 或来源文件。认证 helper 的 AuthStorage 文件入口绑定固定 Pi 1.0.2；版本不符明确拒绝，是依赖升级时须复核的边界。
 
-Pi 的 managed 执行使用 `velune/auto`；native 执行直接选择原生 provider／model。Core 为 managed 轮次决定具体逻辑模型，virtual model 返回相同模型的能力；Pi 的物理模型 ID 使用非秘密路由绑定的稳定身份，网关将该 ID 直接映射到同一次已配置路由，不再二次选择；逻辑模型 ID 保留在界面与选择状态中。Pi 的分支 state 保存实际选择，assistant 历史记录实际模型；新会话在创建表单选择模型，运行时不保存默认模型。模型 `maxTokens` 用作 Harness 元数据；输出参数仅按提供商协议发送和校验，订阅来源不支持服务端输出硬上限，不为其注入 `max_output_tokens`。Pi 的标准推理等级通过 `thinkingLevelMap` 限制为模型声明的等级；本轮不替自定义服务等级猜测转换规则。ChatCompletions 网关保留原生消息、推理历史、多模态内容与未知扩展；实际输入能力仍由所选模型和 Pi SDK 决定。ChatCompletions 与 Responses 保留原生请求 JSON、协议响应状态、安全请求／响应头及 JSON／SSE 内容；Responses 包括工具与 encrypted reasoning，只支持 foreground 创建，不增加查询、删除或 background API。客户端断开或网关停止取消活跃派发；同协议网关不合成 `[DONE]` 或业务终态；异协议按已确认的上游终态映射目标事件，不从 EOF 补造成功。网关不自动重试或切换提供商。合法的 Responses incomplete／failed 等业务终态原样返回，不将其误判为传输断流。
+Pi 的 managed 执行使用 `velune/auto`；native 执行直接选择原生 provider／model。Core 为 managed 轮次决定具体逻辑模型，virtual model 返回相同模型的能力；Pi 的物理模型 ID 使用非秘密路由绑定的稳定身份，网关将该 ID 直接映射到同一次已配置路由，不再二次选择；逻辑模型 ID 保留在界面与选择状态中。Pi 的分支 state 保存实际选择，assistant 历史记录实际模型；新会话在创建表单选择模型，运行时不保存默认模型。模型 `maxTokens` 用作 Harness 元数据；输出参数仅按提供商协议发送和校验，订阅来源不支持服务端输出硬上限，不为其注入 `max_output_tokens`。Pi 的标准推理等级通过 `thinkingLevelMap` 限制为模型声明的等级；本轮不替自定义服务等级猜测转换规则。ChatCompletions 网关保留原生消息、推理历史、多模态内容与未知扩展；实际输入能力仍由所选模型和 Pi SDK 决定。ChatCompletions 与 Responses 保留原生请求 JSON、协议响应状态、安全请求／响应头及 JSON／SSE 内容；Responses 包括工具与 encrypted reasoning，只支持 foreground 创建，不增加查询、删除或 background API。客户端断开或网关停止取消活跃派发；同协议网关不合成 `[DONE]` 或业务终态；异协议按已确认的上游终态映射目标事件，不从 EOF 补造成功。直接模型不自动切换提供商；显式模型路由按下文规则切换，Codex 订阅的 401 允许同账户恢复一次。合法的 Responses incomplete／failed 等业务终态原样返回，不将其误判为传输断流。
 
 隔离验证使用临时目录、fake RPC／假上游与合成工具结果，不启动真实用户会话或调用模型。正式验收状态与具体证据见 [首循环任务](../tasks/pi-mac-first-loop/packet.md)。
 
@@ -302,9 +302,19 @@ Mac 的“问题”窗口集中显示操作失败与当前读取问题，主界�
 
 `scripts/manual-store-idle.py` 使用隔离配置和实际AppStore成功回调，检查未变化输入不向应用／工作区／消息投影重复发布，同时确认真实问题恢复和配置修改仍传播。它与尺寸脚本一样是按需手动入口，不接入CI，不读取真实配置或会话。
 
+## Codex 订阅与聚合
+
+2026-10-16 用户授权 Rust lib 支持独立多订阅认证与聚合，平台前端由用户另行实现；本轮不构建或安装 Mac app。平台通过提供商认证编辑选择 Codex 订阅，再复用 `authentication_start`／`authentication_poll`／`authentication_cancel` 获取浏览器登录 URL 与进度，无需配置或启动 Agent 运行时。具名 bindings 类型与接入顺序见 [bindings unit](../packages/bindings/README.md)。两个提供商分别登录后，使用已有 `save_model_route` 配置有序成员。
+
+当前接入复用 Codex OAuth 客户端身份与 ChatGPT Codex backend 请求约定，不能标作 Velune 正式 SIWC。多订阅轮换与 SIWC 的账户轮换／用量池化限制存在冲突，用户已知悉并要求产品披露；前端应呈现认证描述中的提示，不宣称供应商认可或开源免责。正式 SIWC 留待未来申请后独立接入，不复用当前令牌。
+
+认证由提供商实例持有，application 负责私有保存、串行续期及失效状态，gateway 仅消费本次短生命周期认证。不要复制 Switcher 的 refresh token 再让两个应用各自刷新；本次真实验收建议用户在 Velune 为同样两个订阅分别登录。开发工具不读取真实登录文件，隔离合成验收只证明本地机制，不能证明供应商协议稳定或真实账户可切换。 手动运行 `python3 scripts/manual-codex-subscriptions.py`，脚本在临时源码副本将固定认证与 backend 目标替换为回环服务，仅为组合验收开放 resolver 可见性；生产源码没有测试开关。执行 HOME 与应用根目录均隔离，未替换的远程地址由死代理阻断，不接入自动测试或 CI。
+
+聚合路由只接受完整必要历史，不接受 `previous_response_id` 或 `conversation` 等上游状态引用；这类请求会明确拒绝，不静默删字段或改发其他账户。加密 reasoning、文件引用等仍可能属于原账户，实际跨账户重放须由用户真实验收。完整协议边界与恢复策略见 [gateway unit](../packages/gateway/README.md)。
+
 ## 模型路由
 
-设置的“模型路由”页列出路由：名称和按顺序排列的提供商模型。路由与提供商模型一样出现在模型菜单的 Velune 提供商一节，名称附“模型路由”；运行时得到第一个成员的协议、上下文窗口与 reasoning effort，任一成员是订阅认证时整个路由按订阅约束发送。删除提供商或其模型会从路由中移除对应成员，没有成员的路由随之删除。fail-over 规则与观测见 [gateway unit](../packages/gateway/README.md)，策略待用户复核，见 [模型路由任务](../tasks/model-routing/packet.md)。
+设置的“模型路由”页列出路由：名称和按顺序排列的提供商模型。路由与提供商模型一样出现在模型菜单的 Velune 提供商一节，名称附“模型路由”；运行时得到第一个成员的协议、上下文窗口与 reasoning effort，任一成员是订阅认证时整个路由按订阅约束发送。删除提供商或其模型会从路由中移除对应成员，没有成员的路由随之删除。fail-over 规则与观测见 [gateway unit](../packages/gateway/README.md)，策略已由用户确认，Rust 多订阅接入实施及验证状态见 [模型路由任务](../tasks/model-routing/packet.md)。
 
 人工验收入口为 `scripts/manual-model-routing.py`（指定 `--bundle`、`--bindings`、`--node`、`--codex`、`--pi` 的绝对路径）。第一阶段直接驱动网关和按 bearer 应答的回环上游，核对各类失败是否切换、429 冷却、上游状态引用、异协议转换与每次尝试的 analytics；第二阶段让真实 Codex 与 Pi 在临时 HOME 中经应用选择路由，第一个合成账户返回 429。脚本不读取真实凭据或会话，不接入 CI；真实 ChatGPT 订阅账户的验收由用户完成。
 

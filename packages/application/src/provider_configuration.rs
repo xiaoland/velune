@@ -52,6 +52,16 @@ pub(crate) fn edit_provider(
                         .checked_add(1)
                         .ok_or_else(|| Error::invalid("authentication revision overflow"))?;
                 }
+                AuthenticationEdit::SetCodexSubscription => {
+                    authentication.material = AuthenticationMaterial::CodexSubscription {
+                        credential_id: crate::new_record_key(),
+                        configured: false,
+                    };
+                    authentication.generation = authentication
+                        .generation
+                        .checked_add(1)
+                        .ok_or_else(|| Error::invalid("authentication revision overflow"))?;
+                }
                 AuthenticationEdit::Clear => {
                     authentication.material = AuthenticationMaterial::None;
                     authentication.generation = authentication

@@ -55,7 +55,20 @@ impl CredentialResolver for ProviderResolver {
                         token: value.clone(),
                         explicit_output_cap: None,
                         subscription: false,
+                        profile: velune_gateway::CredentialProfile::Standard,
                     });
+                }
+                AuthenticationMaterial::CodexSubscription { credential_id, .. } => {
+                    if target.endpoint != crate::subscription_auth::ENDPOINT {
+                        return Err(CredentialResolutionError::UnauthorizedTarget);
+                    }
+                    return crate::subscription_auth::resolve(
+                        options.home_directory,
+                        credential_id.clone(),
+                        resource.authentication.generation,
+                        None,
+                    )
+                    .await;
                 }
                 AuthenticationMaterial::RuntimeProvider { source, .. } => {
                     let node = source
@@ -120,7 +133,69 @@ impl CredentialResolver for ProviderResolver {
                 token,
                 explicit_output_cap: value["capabilities"]["explicitOutputCap"].as_bool(),
                 subscription: value["capabilities"]["authentication"] == "subscription",
+                profile: velune_gateway::CredentialProfile::Standard,
             })
+        })
+    }
+    fn refresh(
+        &self,
+        id: String,
+        target: CredentialTarget,
+        rejected_token: String,
+    ) -> Pin<Box<dyn Future<Output = Result<ResolvedCredential, CredentialResolutionError>> + Send>>
+    {
+        let resource = self.providers.get(&id).cloned();
+        let home = self.options.home_directory.clone();
+        Box::pin(async move {
+            let resource = resource.ok_or(CredentialResolutionError::Unavailable)?;
+            if resource.endpoint != target.endpoint
+                || !matches!(
+                    target.protocol,
+                    velune_gateway::GatewayProtocol::ResponsesV1
+                )
+            {
+                return Err(CredentialResolutionError::UnauthorizedTarget);
+            }
+            let AuthenticationMaterial::CodexSubscription { credential_id, .. } =
+                resource.authentication.material
+            else {
+                return Err(CredentialResolutionError::Unavailable);
+            };
+            crate::subscription_auth::resolve(
+                home,
+                credential_id,
+                resource.authentication.generation,
+                Some(rejected_token),
+            )
+            .await
+        })
+    }
+    fn invalidate(
+        &self,
+        id: String,
+        target: CredentialTarget,
+        rejected_token: String,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send>> {
+        let resource = self.providers.get(&id).cloned();
+        let home = self.options.home_directory.clone();
+        Box::pin(async move {
+            if let Some(resource) = resource
+                && resource.endpoint == target.endpoint
+                && matches!(
+                    target.protocol,
+                    velune_gateway::GatewayProtocol::ResponsesV1
+                )
+                && let AuthenticationMaterial::CodexSubscription { credential_id, .. } =
+                    resource.authentication.material
+            {
+                crate::subscription_auth::invalidate(
+                    home,
+                    credential_id,
+                    resource.authentication.generation,
+                    rejected_token,
+                )
+                .await;
+            }
         })
     }
 }
