@@ -7,9 +7,9 @@
 2026-10-16 用户已确认下文具体方案，授权开始，仅实现 Rust lib，前端另行安排。不改 Mac 源码、生成 Swift 或构建安装 app；Rust UniFFI API 与文档须足以供前端接入。
 
 - 当前路线为 Velune 独立管理 Codex 订阅认证及 AI 网关聚合；正式 SIWC 留作未来申请后的独立接入。用户已知悉规则冲突并要求产品披露。
-- Codex Switcher 只是用户指出的两个验收订阅来源，不做专用集成。本轮不读复制真实凭据或调用真实认证／模型端点；建议用户在 Velune 重新登录相同两个账户。
+- Codex Switcher 只是两个验收订阅的来源，不做产品集成。用户最新明确授权直接使用既存两份认证：只在一次性验收进程内读取 access token/account_id，不读取 refresh token 值、不刷新或改写原文件。此前重新登录建议已被用户纠正。
 - implementation owner：codex_source 负责 application 认证生命周期与 bindings API；subscription_transport 负责 ai-provider 与 gateway；subscription_manual 负责新隔离合成脚本；主执行者负责跨模块整合、既有脚本与权威文档及静态验收。其他并行任务改动不纳入提交。
-- 下一步：完成上述 Rust 支持，fmt/check/clippy、Rust 构建与隔离合成验收；真实订阅及前端验收留待用户接入后进行。
+- Rust 支持已提交 `dd5683d`；真实 provider/gateway 双订阅链路已通过：A Completed → 本地注入 429 → 真实 B Completed，普通文本历史标记精确一致。真实诊断发现的 MIME／错误状态问题已修正，20 项合成人工验收、静态检查与 Rust bindings 构建均通过。Rust 范围完成，前端仍不在范围内。
 
 ## 既有模型路由实现（历史基线）
 
@@ -85,3 +85,40 @@
 新增脚本最终 15 项通过，另核对 notify／url 登录事件契约和公开账户尾号／认证描述脱敏。真实双订阅与前端验收仍由用户后续完成，不宣称已经达到真实账户验收效果。
 
 最终源码检查以提交 `4adf1cb` 加本任务改动的隔离副本为准，排除共享工作区正在开发的 runtime work lifetime 改动：`cargo fmt --check`、`cargo check --locked --workspace --all-features`、`cargo clippy --locked --workspace --all-targets --all-features -- -D warnings`、`cargo build --locked -p velune-bindings` 均通过，后三项离线执行。application／bindings 的 configuration-only 构建同时保持可用；纯公开 SendQueueOperation 类型从 local 模块移入 API，形状不变。未执行自动化测试、真实认证或模型请求，未修改前端、未生成 Swift 或安装 app。
+
+
+## 真实验收接续（2026-10-16）
+
+用户要求进行真实验收，并询问历史兼容性。本轮获准发起真实双订阅验收，但不读取此前被工具拒绝访问的 Switcher／原 Harness 认证目录，不通过新 helper 绕过该拒绝。使用本次 Rust 接入流程，在隔离应用 HOME 中由用户在浏览器分别登录两个账户；工具不接收、输出或记录令牌与密码，验收入口只输出阶段、状态、布尔判定和必要用量。
+
+验收冻结源码提交 `dd5683d`，排除工作区其它任务的未提交修改。最多 4 个逻辑推理请求，产品 401 恢复可能使实际 HTTP 推理尝试增至 8 次；不自动重跑整套，不使用 API key 或其它付费 fallback。仅使用短小合成输入，每请求等待上限 60 秒。订阅 backend 不支持输出硬上限，短输出由提示约束，不能将其写成服务端强制限制。
+
+计划先验证 A 的实际工具调用与 B 的短文本响应，再把 A 的真实合成历史和实际执行的无副作用工具结果交给 B 续接。最后在首候选注入一次本机 429，第二候选仍请求真实 B，验证网关切换。不能把合成 429 宣称为供应商真实限流；不故意消耗额度制造限流。文件 ID、服务端状态引用及加密推理的任意跨账户可用性不作预先承诺。
+
+当前状态：验收 runner 准备中，尚未真实登录或调用模型。必要的人机操作是用户完成两次浏览器登录；无需再次确认已经批准的功能方案或使用风险。
+
+
+用户随后明确纠正验收方式：不要重新登录，直接使用 `~/.codex-switcher` 保存的两份订阅凭据。本轮按该新的明确授权通过原执行工具正常进行只读预检，未借其它工具隐瞒访问，工具调用成功。仅输出两个 chat_g_p_t 记录、账户绑定不同、两份 access token 的本地有效期检查通过；未输出 token、账户 ID、邮箱或原始认证 JSON。历史拒绝记录不能当作本轮工具结果，也不据此虚构新的永久禁令。
+
+真实 runner 改为一次性只读来源：仅内部消费 access token/account_id，不复制 refresh token、不刷新、不改写 Switcher／Codex 文件、不向 application 私有存储导入现有会话。这是验收环境适配，不形成产品 Switcher 支持。原计划的浏览器登录与 application 真实 OAuth 验收取消；当前真实验收只覆盖 provider/gateway 双账户调用与切换。若实际 401 则停止对应真实调用，不争用原来源的刷新所有权。
+
+真实诊断进展：最初所选 gpt-5.5 不在两账户目录，返回 400；改用共同公开模型 gpt-6.1-sol。随后上游 200 未形成可解析 SSE。已修正网关将提交前协议失败误报下游 200 的问题（现在 502，analytics 仍记录真实上游 200，不因此扩大切换资格）、SSE MIME 比较与 Codex 单一 Accept。修复后安全诊断确认实际响应缺少 Content-Type 和 Content-Encoding；继续检查正文分类，不将 HTTP 成功当作业务完成。所有请求只含合成短输入，无真实历史；自然额度耗尽未制造或验证。
+
+受限正文诊断（同一只读来源、单个 A 请求）观察：HTTP 200、35 个 headers、无 MIME／编码声明，首块截取 961 字节且仅分类为 SSE。未输出正文。该证据支持仅对 Codex 缺失 Content-Type 的真实流采用现有 SSE 解析；仍要求显式成功终态，其他 profile 与显式错误 MIME 不放宽。首块读取仅用于诊断，最终代码删除，避免错误路径额外等待。
+
+## 真实双订阅结果（2026-10-16）
+
+仅使用用户指定的两份既存认证，账户绑定不同，未刷新、复制 refresh credential 或改写原文件。真实模型目录两次 GET 均 200，选择两边共同公开的 `gpt-6.1-sol`。初始六次推理诊断中，前两次选用目录不存在的 gpt-5.5 返回 400；随后四次请求在 MIME 检查处失败，其中最后一次受限首块诊断证明真实 SSE 没有 Content-Type。没有把这些 HTTP 200 计作成功。
+
+最终两次真实推理通过：
+
+- A 极简文本请求：HTTP 200、显式 `response.completed`、analytics Completed 且 usage_complete=true；精确返回合成 nonce。用量为输入 34、输出 16、合计 50 tokens。
+- 路由请求首候选在回环服务注入一次 429，只使用固定合成凭据，未向回环服务发送真实 token。第二候选真实 B：HTTP 200、显式 `response.completed`、analytics Completed 且 usage_complete=true；从 A 的实际普通文本历史准确取回 nonce，当前追问不重述标记。输入 73、输出 16、合计 89 tokens。
+
+最终生产源码为 `dd5683d` 加两文件 SHA256 overlay：`responses.rs` 为 `9ce0fa04844ebf1ad49fb18cf96422be3714700f217bcfcf42043060fcd0fcbd`，`runtime.rs` 为 `d86231ce835bf78f0529aa722b454bece33071a41727ebfab186cfe2d854857f`。无端点或认证可见性改写；真实验收全程累计 8 个推理 HTTP 尝试和 2 个目录 GET，不含本地注入。初期失败调用是否产生供应商计量不可从失败响应确认；不据此声称零消耗。
+
+修复保留原始 SSE 字节，仅对 Codex 真正缺失 MIME 的成功流补下游类型；显式错误／无效 MIME 与普通 Responses 不放宽。流提交后若空流、HTML、缺终态或断流，仍失败且不切换。删除临时首块诊断读取，不在普通错误路径等待正文。最终整工作区 fmt、locked/offline workspace all-features check、all-targets/all-features clippy（-D warnings）与 velune-bindings build 全通过；没有新增或运行自动化测试，没有改动 Mac。
+
+验收边界：这证明真实双订阅在故障注入下可切换及普通文本历史可接续，不证明自然额度耗尽、加密推理、工具历史、文件或服务端状态跨账户可移植；application 真实 OAuth／续期未运行。产品无 Switcher 导入或后台共享刷新能力。
+
+最终合成人工矩阵 20 项通过，新增 Codex 缺 MIME 的有效 SSE、空流／HTML／缺终态失败且不切换、普通 profile 缺 MIME 与 Codex 显式空 MIME 拒绝；live parser 5 项本地自检及 usage 白名单自检通过。真实响应出现新的 usage.attribution 对象，验收 runner 已改为仅输出五个固定 token 数值字段，不传播未知对象或上游消息 ID。未再为日志收口重复真实请求。

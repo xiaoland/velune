@@ -308,9 +308,11 @@ Mac 的“问题”窗口集中显示操作失败与当前读取问题，主界�
 
 当前接入复用 Codex OAuth 客户端身份与 ChatGPT Codex backend 请求约定，不能标作 Velune 正式 SIWC。多订阅轮换与 SIWC 的账户轮换／用量池化限制存在冲突，用户已知悉并要求产品披露；前端应呈现认证描述中的提示，不宣称供应商认可或开源免责。正式 SIWC 留待未来申请后独立接入，不复用当前令牌。
 
-认证由提供商实例持有，application 负责私有保存、串行续期及失效状态，gateway 仅消费本次短生命周期认证。不要复制 Switcher 的 refresh token 再让两个应用各自刷新；本次真实验收建议用户在 Velune 为同样两个订阅分别登录。开发工具不读取真实登录文件，隔离合成验收只证明本地机制，不能证明供应商协议稳定或真实账户可切换。 手动运行 `python3 scripts/manual-codex-subscriptions.py`，脚本在临时源码副本将固定认证与 backend 目标替换为回环服务，仅为组合验收开放 resolver 可见性；生产源码没有测试开关。执行 HOME 与应用根目录均隔离，未替换的远程地址由死代理阻断，不接入自动测试或 CI。
+认证由提供商实例持有，application 负责私有保存、串行续期及失效状态，gateway 仅消费本次短生命周期认证。不要复制 Switcher 的 refresh token 再让两个应用各自刷新。一次性真实验收在用户明确授权下只读既有 access credential，不将 Switcher 作为产品依赖；它不验证 application 的真实登录或续期。隔离合成验收只证明本地机制，不能证明供应商协议稳定或真实账户可切换。手动运行 `python3 scripts/manual-codex-subscriptions.py`，脚本在临时源码副本将固定认证与 backend 目标替换为回环服务，仅为组合验收开放 resolver 可见性；生产源码没有测试开关。执行 HOME 与应用根目录均隔离，未替换的远程地址由死代理阻断，不接入自动测试或 CI。
 
 聚合路由只接受完整必要历史，不接受 `previous_response_id` 或 `conversation` 等上游状态引用；这类请求会明确拒绝，不静默删字段或改发其他账户。加密 reasoning、文件引用等仍可能属于原账户，实际跨账户重放须由用户真实验收。完整协议边界与恢复策略见 [gateway unit](../packages/gateway/README.md)。
+
+一次性真实验收入口为 `scripts/manual-codex-subscriptions-live.py`，默认只编译、不读取认证或发请求。用户明确授权现有 Switcher 来源后，可运行 `python3 scripts/manual-codex-subscriptions-live.py --run --switcher-credentials --overlay-response-fix --case text-a-route --model <两个账户均支持的真实 model ID>`。脚本冻结 `dd5683d` 基线并覆盖当前 Responses／gateway 两个修复文件，输出源码 SHA256，原 HTTPS 目标不改写；仅在进程内解析 access token/account_id，禁用刷新、重定向及隐式重试，不修改原认证。短合成输入先由真实 A 回复，再将首候选替换为只接受合成凭据的本地 429，真实 B 接续 A 的普通文本历史。验收要求精确回复标记、明确 completed 事件及生产 analytics Completed，不能以 HTTP 200 或 EOF 代替完成。2026-10-16 使用共同模型 `gpt-6.1-sol` 通过此链路；这不是供应商自然限流、真实 OAuth／续期或任意历史可移植性的证明。
 
 ## 模型路由
 

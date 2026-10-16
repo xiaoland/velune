@@ -29,3 +29,5 @@ Messages 保留调用方的 `anthropic-version`／beta 请求头与原生 JSON�
 调用方可通过 `Runner::start_with_analytics` 注入非阻塞 `AnalyticsSink`，在上游原生响应、协议转换之前接收实际提供商／模型与用量、时间、结果记录。接收器负责持久化；gateway 不读取存储路径，也不从 tracing 重建用量。已有 `Runner::start` 可不采集统计。
 
 `ResolvedCredential.profile` 将普通 API／已有来源认证（`Standard`）与 Codex backend 订阅（`CodexSubscription { account_id }`）分开。profile 不改变网关路由协议；后者只允许精确的 HTTPS ChatGPT Codex Responses 目标，协议 adapter 再次校验。resolver 的 refresh／invalidate 默认分别返回不可用／无操作，现有来源不必实现续期。rejected_token 仅用于识别被拒的会话，不能写入日志。认证的创建、保存、刷新串行化与并发换号保护属于 application。
+
+上游 HTTP 2xx 仍可能在响应提交前因协议契约不满足而失败，例如流请求收到非 SSE 类型。此时网关返回 502 合成 JSON 错误，不复用成功响应的正文或实体 headers；analytics 保留实际上游状态。这个下游状态规范化不参与 fail-over 分类，不能把上游协议错误当作上游 5xx。已提交响应后的错误仍按原有中断处理。

@@ -143,12 +143,16 @@ class Fixture(BaseHTTPRequestHandler):
         try:
             check(self.path == '/backend-api/codex/responses', 'unexpected inference path')
             token = self.headers.get('Authorization', '').removeprefix('Bearer ')
-            claims = json.loads(base64.urlsafe_b64decode(token.split('.')[1] + '=='))
-            label, generation = claims['fixture_label'], claims['fixture_generation']
+            if token == 'fixture-standardmissing':
+                label, generation = 'standardmissing', 0
+            else:
+                claims = json.loads(base64.urlsafe_b64decode(token.split('.')[1] + '=='))
+                label, generation = claims['fixture_label'], claims['fixture_generation']
+                check(self.headers.get('ChatGPT-Account-Id') == 'account-' + label, 'account header')
+                check(self.headers.get('originator') == 'codex_cli_rs', 'inference originator')
+                check(self.headers.get_all('Accept') == ['text/event-stream'], 'Codex Accept must be a single SSE value')
+                check(self.headers.get('version') == '0.162.0', 'Codex client version')
             count('request:' + label)
-            check(self.headers.get('ChatGPT-Account-Id') == 'account-' + label, 'account header')
-            check(self.headers.get('originator') == 'codex_cli_rs', 'inference originator')
-            check(self.headers.get('version') == '0.162.0', 'Codex client version')
             request = json.loads(body)
             check(request.get('stream') is True and request.get('store') is False, 'Codex stream/store contract')
             if label in ('redirect302', 'redirect307'):
@@ -163,12 +167,24 @@ class Fixture(BaseHTTPRequestHandler):
             if label == 'denied' or label == 'recover' and generation == 0:
                 self.reply(401, {'error': {'message': 'synthetic rejected access'}})
                 return
+            if label == 'nonsse':
+                self.reply(200, {'unexpected': 'synthetic JSON instead of SSE'})
+                return
             self.send_response(200)
-            self.send_header('Content-Type', 'text/event-stream')
+            if label not in ('missingmime', 'missingempty', 'missinghtml', 'missingincomplete', 'standardmissing'):
+                self.send_header('Content-Type', '' if label == 'emptymime' else ' Text/Event-Stream ; charset=utf-8 ' if label == 'mixedmime' else 'text/event-stream')
             self.send_header('Connection', 'close')
             self.end_headers()
+            if label == 'missingempty':
+                return
+            if label == 'missinghtml':
+                self.wfile.write(b'<!doctype html><html>synthetic non-SSE</html>')
+                self.wfile.flush()
+                return
             self.wfile.write(event({'type': 'response.created', 'response': {'id': 'fixture', 'status': 'in_progress', 'output': []}}).encode())
             self.wfile.flush()
+            if label == 'missingincomplete':
+                return
             if label == 'midstream':
                 self.connection.shutdown(socket.SHUT_RDWR)
                 return
@@ -227,11 +243,11 @@ fn login(app:&mut Application,label:&str) {
   assert!(Instant::now()<deadline,"login timed out");std::thread::sleep(Duration::from_millis(20));
  }
 }
-async fn call(client:&reqwest::Client,runner:&Runner,extra:Value)->(u16,String) {
+async fn call(client:&reqwest::Client,runner:&Runner,extra:Value)->(u16,String,reqwest::header::HeaderMap) {
  let mut body=json!({"model":"velune/model/pool","input":[{"role":"user","content":"fixture"}],"stream":true,"store":false});
  for (key,value) in extra.as_object().unwrap(){body[key]=value.clone();}
- let response=client.post(format!("{}/responses",runner.endpoint())).bearer_auth(runner.token()).json(&body).send().await.unwrap();
- let status=response.status().as_u16();(status,response.text().await.unwrap_or_default())
+ let response=client.post(format!("{}/responses",runner.endpoint())).bearer_auth(runner.token()).header("accept","*/*").json(&body).send().await.unwrap();
+ let status=response.status().as_u16();let headers=response.headers().clone();(status,response.text().await.unwrap_or_default(),headers)
 }
 fn runner(home:&Path,options:&Options,labels:&[&str])->Runner {
  let full=config(home);
@@ -248,14 +264,16 @@ fn main(){
  fs::create_dir_all(home.join("resources")).unwrap();
  let options=Options {home_directory:home.clone(),resources_directory:home.join("resources")};
  let mut app=Application::open(options.clone()).unwrap();
- for label in ["rate","good","recover","denied","concurrent","midstream","transient","cancelled","redirect302","redirect307"] {
+ for label in ["rate","good","recover","denied","concurrent","midstream","transient","cancelled","redirect302","redirect307","nonsse","mixedmime","missingmime","missingempty","missinghtml","missingincomplete","emptymime"] {
   let draft:ProviderDraft=serde_json::from_value(json!({"id":label,"name":label,"protocol":"responsesV1","endpoint":endpoint,"models":[{"recordKey":"","providerModelId":"fixture-model","nickname":"fixture","icon":null,"contextWindow":8192,"maxOutputTokens":256,"reasoningLevels":null}]})).unwrap();
   app.save_provider("default".into(),draft,AuthenticationEdit::SetCodexSubscription).unwrap();
  }
- for label in ["rate","good","recover","denied","concurrent","midstream","transient","cancelled","redirect302","redirect307"] {login(&mut app,label);}
+ let standard:ProviderDraft=serde_json::from_value(json!({"id":"standardmissing","name":"standardmissing","protocol":"responsesV1","endpoint":endpoint,"models":[{"recordKey":"","providerModelId":"fixture-model","nickname":"fixture","icon":null,"contextWindow":8192,"maxOutputTokens":256,"reasoningLevels":null}]})).unwrap();
+ app.save_provider("default".into(),standard,AuthenticationEdit::SetApiKey{value:"fixture-standardmissing".into()}).unwrap();
+ for label in ["rate","good","recover","denied","concurrent","midstream","transient","cancelled","redirect302","redirect307","nonsse","mixedmime","missingmime","missingempty","missinghtml","missingincomplete","emptymime"] {login(&mut app,label);}
  app.close().unwrap();drop(app);
  let mut app=Application::open(options.clone()).unwrap();
- for label in ["rate","good","recover","denied","concurrent","midstream","transient","cancelled","redirect302","redirect307"] {assert!(app.authentication_inspect("default".into(),label.into()).unwrap().configured,"reopen lost login");}
+ for label in ["rate","good","recover","denied","concurrent","midstream","transient","cancelled","redirect302","redirect307","nonsse","mixedmime","missingmime","missingempty","missinghtml","missingincomplete","emptymime"] {assert!(app.authentication_inspect("default".into(),label.into()).unwrap().configured,"reopen lost login");}
  let public=serde_json::to_string(&app.list().unwrap()).unwrap();
  let mut labels=std::collections::BTreeSet::new();
  for label in ["rate","good"] {
@@ -302,6 +320,11 @@ fn main(){
   cancelled.abort();let _=cancelled.await;tokio::time::sleep(Duration::from_millis(850)).await;
   assert!(resolver.resolve("cancelled".into(),target(endpoint)).await.is_ok(),"cancelled caller lost durable refresh");
   for (label,status) in [("redirect302",302),("redirect307",307)] {let redirect=runner(&home,&options,&[label,"good"]);assert_eq!(call(&client,&redirect,json!({})).await.0,status,"redirect followed");drop(redirect);}
+  let nonsse=runner(&home,&options,&["nonsse","good"]);let invalid=call(&client,&nonsse,json!({})).await;assert_eq!(invalid.0,502,"non-SSE HTTP 200 became false success");assert_eq!(invalid.2.get("content-type").unwrap(),"application/json","gateway error JSON content type");assert!(invalid.2.get("content-encoding").is_none(),"upstream entity encoding retained");assert!(serde_json::from_str::<Value>(&invalid.1).unwrap()["error"].is_object(),"gateway error envelope missing");drop(nonsse);
+  let mime=runner(&home,&options,&["mixedmime","good"]);assert_eq!(call(&client,&mime,json!({})).await.0,200,"legal case/whitespace MIME rejected");drop(mime);
+  let missing=runner(&home,&options,&["missingmime","good"]);let response=call(&client,&missing,json!({})).await;assert_eq!(response.0,200,"Codex missing MIME SSE failed");assert_eq!(response.2.get("content-type").unwrap(),"text/event-stream","missing Codex MIME not supplied downstream");drop(missing);
+  for label in ["missingempty","missinghtml","missingincomplete"]{let missing=runner(&home,&options,&[label,"good"]);assert_eq!(call(&client,&missing,json!({})).await.0,200,"already committed headers changed");drop(missing);}
+  for label in ["standardmissing","emptymime"]{let invalid=runner(&home,&options,&[label,"good"]);assert_eq!(call(&client,&invalid,json!({})).await.0,502,"missing standard MIME or present empty Codex MIME was accepted");drop(invalid);}
   let rate=runner(&home,&options,&["rate","good"]);assert_eq!(call(&client,&rate,json!({})).await.0,200,"429 failover");assert_eq!(call(&client,&rate,json!({})).await.0,200,"cooldown next request");drop(rate);
   let recover=runner(&home,&options,&["recover","good"]);assert_eq!(call(&client,&recover,json!({})).await.0,200,"401 refresh recovery");drop(recover);
   let denied=runner(&home,&options,&["denied","good"]);assert_eq!(call(&client,&denied,json!({})).await.0,200,"401 exhausted failover");drop(denied);
@@ -313,13 +336,17 @@ fn main(){
  let recovered:Vec<_>=records.iter().filter(|r|r.provider_id=="recover").collect();
  assert_eq!(recovered.len(),1,"401 recovery must produce one attempt record");
  assert_eq!(recovered[0].outcome,velune_gateway::AnalyticsOutcome::Completed,"recovered stream analytics");
+ assert!(records.iter().any(|r|r.provider_id=="nonsse"&&r.status==Some(200)&&r.outcome==velune_gateway::AnalyticsOutcome::Failed),"non-SSE failure analytics");
+ assert!(records.iter().any(|r|r.provider_id=="mixedmime"&&r.outcome==velune_gateway::AnalyticsOutcome::Completed),"MIME-normalized success analytics");
+ assert!(records.iter().any(|r|r.provider_id=="missingmime"&&r.outcome==velune_gateway::AnalyticsOutcome::Completed),"Codex missing MIME SSE not completed");
+ for label in ["missingempty","missinghtml","missingincomplete","standardmissing","emptymime"]{assert!(records.iter().any(|r|r.provider_id==label&&r.outcome==velune_gateway::AnalyticsOutcome::Failed),"missing/invalid MIME produced false completion");}
  drop(records);
  let mut app=Application::open(options.clone()).unwrap();
  let denied=app.authentication_inspect("default".into(),"denied".into()).unwrap();assert!(!denied.configured&&denied.account_label.is_some(),"invalidated account public state");
  assert!(app.authentication_inspect("default".into(),"transient".into()).unwrap().configured,"temporary failure public state");app.close().unwrap();drop(app);
  monitor_done.store(true,Ordering::SeqCst);assert!(monitor.join().unwrap()>0,"no atomic write observations");
  #[cfg(unix)]{use std::os::unix::fs::PermissionsExt;assert_eq!(fs::metadata(&concurrent).unwrap().permissions().mode()&0o777,0o600,"credential permissions");}
- println!("{}",json!({"cases":["PKCE 回调与错误 state 拒绝","独立订阅登录、持久化与重开","并发续期与原子持久化","凭据目标约束","429 切换与冷却","401 最多恢复一次","401 失效与切换","聚合拒绝账户状态引用","流式提交边界","暂时续期失败后恢复","调用方取消后完成凭据轮换","重新登录写失败保留旧认证","交互登录互斥","重定向目标隔离","公开认证描述脱敏与账户区分"]}));
+ println!("{}",json!({"cases":["PKCE 回调与错误 state 拒绝","独立订阅登录、持久化与重开","并发续期与原子持久化","凭据目标约束","429 切换与冷却","401 最多恢复一次","401 失效与切换","聚合拒绝账户状态引用","流式提交边界","暂时续期失败后恢复","调用方取消后完成凭据轮换","重新登录写失败保留旧认证","交互登录互斥","重定向目标隔离","公开认证描述脱敏与账户区分","非 SSE 200 映射为 502 且不切换","SSE MIME 大小写与空白规范化","Codex 缺 MIME 有效流完成并补下游 MIME","缺 MIME 空流 HTML 无终态均失败且不切换","Standard 缺 MIME 与显式空 MIME 保持拒绝"]}));
 }
 '''
 
@@ -375,9 +402,11 @@ def main():
             check(COUNTS.get('request:rate') == 1, '429 cooldown')
             check(COUNTS.get('request:good') == 3, 'stateful or committed stream unexpectedly reached fallback')
             check(COUNTS.get('request:midstream') == 1, 'midstream fixture unused')
-            check(all(COUNTS.get('login:' + label) == 1 for label in ('rate','recover','denied','concurrent','midstream','transient','cancelled','redirect302','redirect307')), 'independent login count')
+            check(all(COUNTS.get('login:' + label) == 1 for label in ('rate','recover','denied','concurrent','midstream','transient','cancelled','redirect302','redirect307','nonsse','mixedmime','missingmime','missingempty','missinghtml','missingincomplete','emptymime')), 'independent login count')
             check(COUNTS.get('login:good') == 2, 'failed relogin fixture not exercised')
             check(COUNTS.get('refresh:transient') == 2 and COUNTS.get('refresh:cancelled') == 1, 'temporary refresh and cancellation rotation')
+            check(COUNTS.get('request:nonsse') == 1 and COUNTS.get('request:mixedmime') == 1, 'MIME boundary fixtures not exercised')
+            check(all(COUNTS.get('request:' + label) == 1 for label in ('missingmime','missingempty','missinghtml','missingincomplete','standardmissing','emptymime')), 'missing MIME fixtures not exercised')
             check(not COUNTS.get('redirect:sink'), 'redirect leaked second-hop request')
             print('PASS', json.dumps(report, ensure_ascii=False))
             print('合成隔离证据；未验证真实 OAuth/TLS、真实订阅与跨账户历史兼容性。')

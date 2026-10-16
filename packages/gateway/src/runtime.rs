@@ -714,13 +714,40 @@ async fn send_failure(
     status: u16,
     message: &str,
 ) {
-    let meta = meta.unwrap_or(ResponseMeta {
+    let mut meta = meta.unwrap_or(ResponseMeta {
         status,
-        headers: vec![Header {
+        headers: Vec::new(),
+    });
+    let mut body = body;
+    if (200..300).contains(&meta.status) {
+        // An upstream HTTP success can still fail the protocol contract before
+        // commitment. Never label our replacement error body as success.
+        meta = ResponseMeta {
+            status: 502,
+            headers: Vec::new(),
+        };
+        body = None;
+    }
+    if body.is_none() {
+        meta.headers.retain(|header| {
+            !matches!(
+                header.name.to_ascii_lowercase().as_str(),
+                "content-type"
+                    | "content-length"
+                    | "content-encoding"
+                    | "content-range"
+                    | "etag"
+                    | "content-md5"
+                    | "digest"
+                    | "last-modified"
+                    | "accept-ranges"
+            )
+        });
+        meta.headers.push(Header {
             name: "content-type".into(),
             value: "application/json".into(),
-        }],
-    });
+        });
+    }
     let bytes = body.map(Payload::into_inner).unwrap_or_else(|| {
         json!({"error":{"message":message}})
             .to_string()
@@ -1452,16 +1479,21 @@ async fn dispatch_credential(
                             error.status,
                             &error.headers,
                         );
-                        let status = error.status.unwrap_or(match error.kind {
+                        let upstream_status = error.status.unwrap_or(match error.kind {
                             ResponsesErrorKind::Authentication => 401,
                             ResponsesErrorKind::Permission => 403,
                             ResponsesErrorKind::RateLimited => 429,
                             ResponsesErrorKind::Timeout => 504,
                             _ => 502,
                         });
+                        let status = if (200..300).contains(&upstream_status) {
+                            502
+                        } else {
+                            upstream_status
+                        };
                         AttemptEnd::Failed(PendingFailure {
                             meta: Some(ResponseMeta {
-                                status,
+                                status: upstream_status,
                                 headers: error.headers,
                             }),
                             body: error.body,

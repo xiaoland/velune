@@ -160,6 +160,29 @@ fn failure_with_meta(
     }
 }
 
+// Diagnostic labels must remain finite: upstream header values can contain secrets.
+fn media_type_class(value: Option<&str>) -> &'static str {
+    match value {
+        None => "absent",
+        Some(value) if value.eq_ignore_ascii_case("text/event-stream") => "sse",
+        Some(value) if value.eq_ignore_ascii_case("application/json") => "json",
+        Some(value) if value.eq_ignore_ascii_case("text/html") => "html",
+        Some(value) if value.eq_ignore_ascii_case("text/plain") => "plain",
+        Some(_) => "other",
+    }
+}
+fn encoding_class(value: Option<&str>) -> &'static str {
+    match value.map(str::trim) {
+        None => "absent",
+        Some(value) if value.eq_ignore_ascii_case("identity") => "identity",
+        Some(value) if value.eq_ignore_ascii_case("gzip") => "gzip",
+        Some(value) if value.eq_ignore_ascii_case("br") => "br",
+        Some(value) if value.eq_ignore_ascii_case("deflate") => "deflate",
+        Some(value) if value.eq_ignore_ascii_case("zstd") => "zstd",
+        Some(_) => "other",
+    }
+}
+
 fn terminal_from_status(status: &str) -> Option<ResponsesTerminal> {
     match status {
         "completed" => Some(ResponsesTerminal::Completed),
@@ -375,7 +398,8 @@ impl ResponsesProvider for OpenAiResponses {
                 ) || (codex
                     && matches!(
                         name.as_str(),
-                        "cookie"
+                        "accept"
+                            | "cookie"
                             | "x-api-key"
                             | "chatgpt-account-id"
                             | "originator"
@@ -430,8 +454,9 @@ impl ResponsesProvider for OpenAiResponses {
                     );
                 }
             };
-            let meta = response_meta(&response);
+            let mut meta = response_meta(&response);
             let status = meta.status;
+            let content_type_present = response.headers().contains_key("content-type");
             let content_type = response
                 .headers()
                 .get("content-type")
@@ -452,17 +477,40 @@ impl ResponsesProvider for OpenAiResponses {
                 );
             }
             if stream {
-                let is_sse = content_type
+                let media_type = content_type
                     .as_deref()
                     .and_then(|value| value.split(';').next())
-                    == Some("text/event-stream");
-                if !is_sse {
+                    .map(str::trim);
+                let is_sse =
+                    media_type.is_some_and(|value| value.eq_ignore_ascii_case("text/event-stream"));
+                let codex_without_type = codex && !content_type_present;
+                if !is_sse && !codex_without_type {
+                    let encoding = encoding_class(
+                        response
+                            .headers()
+                            .get("content-encoding")
+                            .and_then(|value| value.to_str().ok()),
+                    );
+                    tracing::warn!(
+                        event = "responses_stream_content_type_rejected",
+                        upstream_status = status,
+                        mime = media_type_class(media_type),
+                        encoding
+                    );
                     return Self::failure(
                         ResponsesErrorKind::Unsupported,
                         Some(status),
                         None,
                         true,
                     );
+                }
+                if codex_without_type {
+                    // Codex can omit MIME on its native SSE endpoint. This is
+                    // limited to an absent header, not a contradictory one.
+                    meta.headers.push(Header {
+                        name: "content-type".into(),
+                        value: "text/event-stream".into(),
+                    });
                 }
                 if (events)(ResponsesEvent::Headers(meta.clone()))
                     .await
