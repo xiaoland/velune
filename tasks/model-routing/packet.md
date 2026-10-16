@@ -159,3 +159,6 @@ application按需启动有界刷新周期采集Codex窗口，用中立只读契�
 补充同窗口 ID 的全局与模型专属观测回归后，智能调度矩阵共 13 组全通过：全局已用 10%、模型 A 专属已用 99%、使用上限 50% 时，A 不得发出上游请求；只适用全局窗口的 B 正常完成。gateway 对所有适用的同 ID 窗口逐个检查，不能由第一个低使用窗口掩盖另一个窗口。修后 gateway fmt/check/clippy 与完整 bindings 构建再次通过。历史人工脚本仅同步新必填 quota_limits／路由构造字段，未声称重新验收全部外部 Harness 场景。
 
 本阶段 Rust 实现与隔离验收完成。额度观测尚未对真实 ChatGPT 端点验收；上限仍是观测驱动的请求准入，不能保证在途或外部并发不越线。前端继续由用户另行安排，需按 bindings unit 新契约接入。
+
+
+实现提交为 `8616bd0`。提交后运行 `python3 scripts/manual-codex-subscriptions-live.py`，完整冻结 `8616bd0a95dabc9e11db1cf63203a497a2f38c57` 的 runner 编译成功，5 个本地 SSE fixture 与 usage 白名单自检通过，real_requests=0；未传 `--run`，未读取凭据或执行任何计划中的真实请求。
