@@ -174,6 +174,7 @@ struct ConversationListView: View {
         // A turn's end is news; its progress is not. The conversation the
         // focused window shows is being read.
         let unread = conversation.unread && !running && !(conversation.id == focused.loadedConversationID && activeState == .key)
+        // Its title and state only: unread, failed or running.
         return HStack(alignment: .firstTextBaseline, spacing: 5) {
             // A turn that ended in failure is news of its own.
             Group {
@@ -183,23 +184,12 @@ struct ConversationListView: View {
                     Circle().fill(.tint).frame(width: 7, height: 7).opacity(unread ? 1 : 0)
                 }
             }.frame(width: 12).accessibilityHidden(true)
-            VStack(alignment: .leading, spacing: 3) {
-                HStack(spacing: 6) {
-                    Text(conversation.title).lineLimit(1).fontWeight(unread ? .semibold : nil)
-                    if running {
-                        Spacer(minLength: 0)
-                        ProgressView().controlSize(.mini).help("正在运行").accessibilityLabel("正在运行")
-                    }
-                }
-                HStack(spacing: 8) {
-                    Text(rowContext(conversation)).lineLimit(1).truncationMode(.middle)
-                        .help(conversation.cwd.map { "工作目录：\($0)" } ?? "未记录工作目录")
-                    Spacer(minLength: 0)
-                    if let date = browser.sort.timestamp(conversation) { Text(shortDate(date)).help("\(browser.sort.title)：\(Date(timeIntervalSince1970: Double(date) / 1000).formatted())").accessibilityLabel("\(browser.sort.title)：\(shortDate(date))") }
-                }.font(.caption).foregroundStyle(.secondary)
+            Text(conversation.title).lineLimit(1).fontWeight(unread ? .semibold : nil).help(conversation.title)
+            if running {
+                Spacer(minLength: 0)
+                ProgressView().controlSize(.mini).help("正在运行").accessibilityLabel("正在运行")
             }
         }
-        .padding(.vertical, 3)
         .accessibilityElement(children: .combine)
         .accessibilityValue(unread ? (conversation.failed ? "未读，上一轮失败" : "未读") : "")
     }
@@ -268,13 +258,6 @@ struct ConversationListView: View {
         NSPasteboard.general.setString(text, forType: .string)
     }
 
-    private func rowContext(_ conversation: Conversation) -> String {
-        var parts: [String] = []
-        if browser.grouping != .runtime { parts.append(store.runtimeInstances.first { $0.id == conversation.runtimeID }?.name ?? "Agent 运行时") }
-        if browser.grouping != .project, let path = conversation.project { parts.append(ConversationBrowser.projectName(path, projects: store.conversationProjects)) }
-        return parts.joined(separator: " · ")
-    }
-
     private var newConversationButton: some View {
         Button { focused.createConversation() } label: { Label("新建会话", systemImage: "square.and.pencil") }
             .help("新建会话（⌘ N）").disabled(focused.isLoading || focused.enabledRuntimeInstances.isEmpty)
@@ -313,10 +296,6 @@ struct ConversationListView: View {
         .help("会话分组、筛选、排序、已归档会话与列表的位置")
         .accessibilityLabel("显示")
         .disabled(store.conversationBrowserPreferences == nil)
-    }
-
-    private func shortDate(_ unixMs: Int64) -> String {
-        Date(timeIntervalSince1970: Double(unixMs) / 1000).formatted(.dateTime.month(.abbreviated).day())
     }
 }
 

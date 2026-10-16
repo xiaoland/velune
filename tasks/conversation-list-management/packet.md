@@ -54,3 +54,4 @@
 - 2026-10-14 安装：`b502111` 安装至 `/Applications/Velune.app`（0.1 beta.1），签名校验通过，manifest 提交一致且无未提交改动，后台启动无崩溃报告。
 - 未验证：向 Codex 原生归档的会话发送消息时 Codex 的行为；右键菜单、折叠三角、链接打开与 NSOpenPanel 需用户界面验收（自动检查会把应用带到前台）。
 - 既有脚本漂移（与本任务无关，未修）：`manual-browser-preferences.py`／`manual-session-loading.py` 的 Swift harness 缺少后来加入的 Store 依赖文件；`manual-runtime-discovery.py` 第 52 行外部 Pi 路径断言不再成立。
+- 2026-10-16 用户要求（[S29](../../docs/sources.md#s29)）：会话条目只显示标题与状态，去掉运行时／项目与日期组成的第二行，行变为系统侧栏的单行高度，悬停显示完整标题。同时要求的“点击项目名称展开／收起组”在实现中被用户取消，组标题仍为双击重命名项目、右键菜单展开／折叠。开发版截图核对了单行条目。
