@@ -138,6 +138,8 @@ struct ComposerEditor: NSViewRepresentable {
     let submit: () -> Void
     /// ⌥⌘Return: into the running turn, when the runtime takes it.
     var steer: () -> Void = {}
+    /// Added to the text's context menu: the composer's places.
+    var placeMenu: () -> NSMenuItem? = { nil }
 
     func makeCoordinator() -> Coordinator { Coordinator(model: model) }
 
@@ -150,6 +152,7 @@ struct ComposerEditor: NSViewRepresentable {
         view.coordinator = context.coordinator
         scroll.documentView = view
         context.coordinator.view = view
+        context.coordinator.placeMenu = placeMenu
         model.attach(view)
         context.coordinator.update(placeholder: placeholder, submit: submit, steer: steer)
         return scroll
@@ -157,6 +160,7 @@ struct ComposerEditor: NSViewRepresentable {
 
     func updateNSView(_ scroll: NSScrollView, context: Context) {
         context.coordinator.model = model
+        context.coordinator.placeMenu = placeMenu
         context.coordinator.update(placeholder: placeholder, submit: submit, steer: steer)
     }
 
@@ -165,6 +169,7 @@ struct ComposerEditor: NSViewRepresentable {
         weak var view: ComposerTextView?
         fileprivate var submit: () -> Void = {}
         fileprivate var steer: () -> Void = {}
+        var placeMenu: () -> NSMenuItem? = { nil }
         init(model: ComposerModel) { self.model = model }
 
         func update(placeholder: String, submit: @escaping () -> Void, steer: @escaping () -> Void) {
@@ -278,6 +283,16 @@ struct ComposerEditor: NSViewRepresentable {
         coordinator?.model.addAttachments(urls)
         return true
     }
+    /// The text's own menu, then the composer's places.
+    override func menu(for event: NSEvent) -> NSMenu? {
+        let menu = super.menu(for: event)
+        if let menu, let places = coordinator?.placeMenu() {
+            menu.addItem(.separator())
+            menu.addItem(places)
+        }
+        return menu
+    }
+
     override func paste(_ sender: Any?) {
         let board = NSPasteboard.general
         let urls = Self.fileURLs(board)
@@ -403,7 +418,8 @@ struct ComposerView: View {
             }
             if !store.followUp.queue.isEmpty || store.followUp.paused != nil { SendQueueView(store: store) }
             if !model.attachments.isEmpty { attachmentRow }
-            ComposerEditor(model: model, placeholder: store.isGenerating ? (store.followUp.canSteer ? "⌘Return 排队，⌥⌘Return 插入本轮" : "⌘Return 排队，本轮结束后发送") : "输入消息，⌘Return 发送", submit: send, steer: steer)
+            ComposerEditor(model: model, placeholder: store.isGenerating ? (store.followUp.canSteer ? "⌘Return 排队，⌥⌘Return 插入本轮" : "⌘Return 排队，本轮结束后发送") : "输入消息，⌘Return 发送", submit: send, steer: steer,
+                           placeMenu: { [layout] in layout.placeMenuItem(for: .composer) })
                 .frame(height: model.height)
                 // The text view sits in a clipping scroll view, which hides its
                 // own ring; this follows the system ring: focus colour, just
@@ -423,6 +439,8 @@ struct ComposerView: View {
                 statusRow
             }
         }
+        // Blank parts take a right click too; the text's own menu ends with the same places.
+        .contentShape(Rectangle())
         .contextMenu { ToolPlaceSection(window: layout, kind: .composer) }
         // Measured at full length out of sight, so the choice does not depend on itself.
         .background(alignment: .leading) {

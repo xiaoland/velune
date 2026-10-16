@@ -46,7 +46,7 @@ struct VeluneRootView: View {
                     Button { focused.reloadFromRuntimes() } label: { Label("重新读取", systemImage: "arrow.clockwise") }
                         .keyboardShortcut("r").disabled(!focused.canReloadFromRuntimes)
                         .help("从 Agent 运行时重新读取会话列表和当前会话（⌘ R）；用于补上自动跟随遗漏的变化")
-                    outlineButton.contextMenu { ToolPlaceSection(window: window, kind: .outline) }
+                    outlineButton
                     // A window of the editor area alone is often one to keep in view.
                     if !window.hasToolWindows || window.pinned {
                         Toggle(isOn: $window.pinned) { Label("保持在最前面", systemImage: window.pinned ? "pin.fill" : "pin") }

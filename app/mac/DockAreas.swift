@@ -72,6 +72,24 @@ struct ToolPlaceSection: View {
     }
 }
 
+/// The window's layout as a menu: each tool's places, the bottom area, the
+/// editor area alone and keeping the window in front.
+struct LayoutMenu: View {
+    @ObservedObject var window: ConversationWindowModel
+
+    var body: some View {
+        Menu("布局") {
+            ForEach(ToolWindowKind.allCases, id: \.self) { kind in
+                Menu("\(kind.title)位置") { ToolPlaceMenu(window: window, kind: kind) }
+            }
+            Divider()
+            Button(window.tools.tools(in: .bottom).isEmpty ? "显示底部区域" : "隐藏底部区域") { window.tools.toggleArea(.bottom) }
+            Button(window.tools.isEditorOnly ? "恢复停靠区域" : "只显示编辑区") { window.tools.toggleEditorOnly() }
+            Toggle("保持在最前面", isOn: $window.pinned)
+        }
+    }
+}
+
 /// A tool's places, as a picker in a menu.
 struct ToolPlaceMenu: View {
     @ObservedObject var window: ConversationWindowModel

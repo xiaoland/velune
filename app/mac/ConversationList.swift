@@ -116,10 +116,7 @@ struct ConversationListView: View {
                 } header: { sectionHeader(section) }
             }
         }
-        .contextMenu(forSelectionType: String.self) { ids in
-            // Where no conversation is, the list offers its places.
-            if ids.isEmpty { ToolPlaceSection(window: window, kind: .list) } else { conversationManagementMenu(ids) }
-        } primaryAction: { ids in
+        .contextMenu(forSelectionType: String.self) { ids in conversationManagementMenu(ids) } primaryAction: { ids in
             guard ids.count == 1, let id = ids.first, let target = store.conversation(id: id), store.canManageConversations, store.canRenameConversation(target) else { return }
             renameTarget = target
         }
@@ -304,8 +301,10 @@ struct ConversationListView: View {
             if browser.hasFilters { Divider(); Button("清除筛选") { browser.runtimeID = nil; browser.project = .all } }
             Divider()
             Toggle("显示已归档的会话", isOn: Binding(get: { store.showsArchived }, set: { store.setShowsArchived($0) }))
+            Divider()
+            LayoutMenu(window: window)
         } label: { Label("显示", systemImage: browser.hasFilters || store.showsArchived ? "line.3.horizontal.decrease.circle.fill" : "line.3.horizontal.decrease") }
-        .help("会话分组、筛选、排序与已归档会话")
+        .help("会话分组、筛选、排序、已归档会话与窗口布局")
         .accessibilityLabel("显示")
         .disabled(store.conversationBrowserPreferences == nil)
     }
