@@ -27,7 +27,9 @@ final class AppStore: ObservableObject {
     private var searchRequest = 0
     /// Conversations reached outside the list (a link, a search result), so they can be opened.
     private var offListConversations: [Conversation] = []
-    /// Conversations a read mark was sent for and not yet confirmed.
+    /// Conversations whose read mark is being sent. The mark can leave a
+    /// conversation unread when it changed meanwhile, so this follows the
+    /// request, not the list.
     private var markingRead: Set<String> = []
     /// Deleted in any workspace; the application keeps them so the workspace
     /// showing one closes it.
@@ -651,11 +653,12 @@ final class AppStore: ObservableObject {
     }
     /// List operations run besides loading and management: they change only
     /// what the list shows and Velune's organization of it.
-    private func browse(_ operation: @escaping () throws -> BindingConfigurationSnapshot, source: String) {
-        guard !isPreview, !isShuttingDown else { return }
+    private func browse(_ operation: @escaping () throws -> BindingConfigurationSnapshot, source: String, finished: (() -> Void)? = nil) {
+        guard !isPreview, !isShuttingDown else { finished?(); return }
         queue.async { [weak self] in
             let result = Result { try operation() }
             DispatchQueue.main.async {
+                defer { finished?() }
                 guard let self else { return }
                 switch result {
                 case .success(let data): self.applyList(data)
@@ -706,9 +709,13 @@ final class AppStore: ObservableObject {
         let application = sharedApplication ?? self
         guard sharedApplication == nil || application.focusedWorkspace === self,
               let id = loadedConversationID, pendingConversationID == nil,
-              let conversation = conversation(id: id), conversation.unread, !application.markingRead.contains(id) else { return }
+              let conversation = conversation(id: id), conversation.unread, !application.markingRead.contains(id),
+              let transport else { return }
         application.markingRead.insert(id)
-        organize([conversation], .markRead)
+        let reference = BindingConversationReference(runtimeId: conversation.runtimeID, conversationId: id)
+        browse({ try transport.organizeConversations([reference], .markRead) }, source: "整理会话") { [weak application] in
+            application?.markingRead.remove(id)
+        }
     }
     func setSearchText(_ text: String) {
         guard text != searchText else { return }
@@ -1471,7 +1478,6 @@ final class AppStore: ObservableObject {
         offListConversations = offListConversations.map { listed[$0.id] ?? $0 }
         if searchResults != nil { refreshSearch() }
         selectedConversationIDs = selectedConversationIDs.filter { conversation(id: $0) != nil }
-        markingRead.formIntersection(conversations.filter(\.unread).map(\.id))
         noteSeen()
         if let saved = mapped.gateways.first(where: { $0.id == gateway.id }) ?? mapped.gateways.first { gateway = saved; hasGateway = true }
         runtimeInstances = mapped.runtimes; runtimeTypes = mapped.runtimeTypes; reconcileHistoryProblems(mapped.historyFailures)

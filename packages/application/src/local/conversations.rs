@@ -263,6 +263,7 @@ impl CoreRuntime {
         let id = request["payload"]["conversationID"]
             .as_str()
             .ok_or_else(|| RuntimeError::invalid("conversation id"))?;
+        tracing::info!(target:"velune_application", event="conversation_read_requested", conversation_id=%id, runtime_id=%runtime_id);
         let active_snapshot = self.native_snapshot();
         let active_id = self
             .session

@@ -714,7 +714,16 @@ impl CoreRuntime {
         }
         next.conversations.retain(|marks| !marks.is_empty());
         self.store_organization(next)?;
-        self.list()
+        let listing = self.list()?;
+        // The list read again may already show newer activity than the mark.
+        let listed = self.last_listed.borrow();
+        for (summary, _, _) in &targets {
+            let now = listed
+                .get(&summary.id)
+                .map(|source| self.listed(source, &places));
+            tracing::info!(target:"velune_application", event="conversation_organized", change=?change, conversation_id=%summary.id, runtime_id=%summary.runtime_id, marked_activity_unix_ms=?summary.updated_at_unix_ms, seen_activity_unix_ms=?self.marks(&summary.id).and_then(|marks| marks.seen_activity_unix_ms), listed_activity_unix_ms=?now.as_ref().and_then(|item| item.conversation.updated_at_unix_ms), unread=?now.as_ref().map(|item| item.unread));
+        }
+        Ok(listing)
     }
 
     pub(super) fn project_alias_action(&mut self, request: &Value) -> Result<Value, RuntimeError> {
