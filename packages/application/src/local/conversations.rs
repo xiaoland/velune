@@ -14,7 +14,7 @@ impl CoreRuntime {
     }
 
     fn send_turn(&mut self, request: &Value) -> Result<Value, RuntimeError> {
-        if self.busy() {
+        if self.turn_running() {
             return Err(RuntimeError::invalid("runtime is busy"));
         }
         self.session.cancel_requested = false;
@@ -156,7 +156,7 @@ impl CoreRuntime {
     }
 
     pub(super) fn create_conversation(&mut self, request: &Value) -> Result<Value, RuntimeError> {
-        if self.busy() {
+        if self.turn_running() {
             return Err(RuntimeError::invalid("runtime is busy"));
         }
         let runtime_id = request["payload"]["runtimeInstanceID"]
@@ -200,9 +200,9 @@ impl CoreRuntime {
         self.snapshot_result()
     }
     pub(super) fn open_conversation(&mut self, request: &Value) -> Result<Value, RuntimeError> {
-        // Reopening a conversation whose turn is running shows it as it runs;
-        // its native history is read again once the turn has ended.
-        if self.busy() {
+        // Reopening a conversation whose turn or sub-agents run shows it as it
+        // runs; its native history is read again once they have ended.
+        if self.session.executing() {
             return self.snapshot_result();
         }
         let runtime_id = request["payload"]["runtimeInstanceID"]
@@ -341,8 +341,10 @@ impl CoreRuntime {
         request: &Value,
         deleting: bool,
     ) -> Result<Value, RuntimeError> {
-        if self.busy() {
-            return Err(RuntimeError::invalid("请先停止正在执行的任务，再修改会话"));
+        if self.session.executing() {
+            return Err(RuntimeError::invalid(
+                "请先停止正在执行的任务与子 Agent，再修改会话",
+            ));
         }
         if let Some(link) = self
             .conversation_links
@@ -378,8 +380,10 @@ impl CoreRuntime {
         request: &Value,
         deleting: bool,
     ) -> Result<Value, RuntimeError> {
-        if self.busy() {
-            return Err(RuntimeError::invalid("请先停止正在执行的任务，再修改会话"));
+        if self.session.executing() {
+            return Err(RuntimeError::invalid(
+                "请先停止正在执行的任务与子 Agent，再修改会话",
+            ));
         }
         let runtime_id = request["payload"]["runtimeInstanceID"]
             .as_str()
@@ -563,7 +567,7 @@ impl CoreRuntime {
 
     fn send_turn_input(&mut self, request: &Value) -> Result<Value, RuntimeError> {
         self.ensure_active(request)?;
-        if self.busy() {
+        if self.turn_running() {
             return Err(RuntimeError::invalid("runtime is busy"));
         }
         let text = request["payload"]["text"].as_str().unwrap_or_default();
@@ -600,12 +604,13 @@ impl CoreRuntime {
             let result = session
                 .send(&input)
                 .map_err(|error| RuntimeError::context("message send", error));
-            if result.is_err() && self.session.gateway_runner.is_some() {
+            if result.is_err() && self.session.gateway_runner.is_some() && !self.session.executing()
+            {
                 self.finish_managed_turn()?;
             }
             result?;
             self.drain_runtime()?;
-            if self.session.gateway_runner.is_some() && !self.busy() {
+            if self.session.gateway_runner.is_some() && !self.session.executing() {
                 self.finish_managed_turn()?;
             }
             return self.snapshot_result();
@@ -640,7 +645,7 @@ impl CoreRuntime {
                 .invalidate_history();
         }
         self.session.pi.turn_started = false;
-        if self.busy()
+        if self.turn_running()
             && let Some(snapshot) = self
                 .session
                 .pi
@@ -653,7 +658,7 @@ impl CoreRuntime {
             snapshot.actions.can_cancel = true;
         }
         self.sync_projection()?;
-        if self.session.gateway_runner.is_some() && !self.busy() {
+        if self.session.gateway_runner.is_some() && !self.session.executing() {
             self.finish_managed_turn()?;
         }
         self.snapshot_result()

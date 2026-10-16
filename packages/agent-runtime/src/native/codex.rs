@@ -652,7 +652,7 @@ impl NativeSession {
         let id = record["id"].clone();
         // A sub-agent may outlive the turn that started it; its requests
         // still come to this conversation.
-        if !self.busy() && !sub_agent {
+        if !self.turn_running() && !sub_agent {
             self.rpc.reject(&id, "No active turn")?;
             return Ok(());
         }
@@ -701,6 +701,7 @@ impl NativeSession {
                 .join("\n");
                 self.add_interaction(
                     PendingRequest {
+                        background: sub_agent,
                         id,
                         method: method.into(),
                         options: options.iter().map(|o| o.id.clone()).collect(),
@@ -745,6 +746,7 @@ impl NativeSession {
                 }
                 self.add_interaction(
                     PendingRequest {
+                        background: sub_agent,
                         id,
                         method: method.into(),
                         options: Vec::new(),

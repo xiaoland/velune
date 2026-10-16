@@ -192,6 +192,7 @@ impl CoreRuntime {
         selection: &ModelSelection,
         is_new: bool,
     ) -> Result<(), RuntimeError> {
+        self.ensure_work_ended()?;
         if self
             .runtime_instance(&snapshot.conversation.runtime_id)?
             .type_id

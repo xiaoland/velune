@@ -193,7 +193,7 @@ impl Client {
     pub fn snapshot(&self) -> Option<&ConversationSnapshot> {
         self.snapshot.as_ref()
     }
-    pub fn busy(&self) -> bool {
+    pub fn turn_running(&self) -> bool {
         self.prompt_id.is_some()
     }
 
@@ -487,7 +487,7 @@ impl Client {
     }
 
     pub fn cancel(&mut self) -> Result<()> {
-        if !self.busy() {
+        if !self.turn_running() {
             return Ok(());
         }
         let id = self.session_id()?.to_owned();
@@ -558,7 +558,7 @@ impl Client {
     /// Gracefully close an idle session when supported, then always release its process.
     /// A busy or failed connection is aborted; Drop never performs a protocol request.
     pub fn shutdown(&mut self) -> Result<()> {
-        let outcome = if !self.failed && !self.busy() && self.capabilities.close_session {
+        let outcome = if !self.failed && !self.turn_running() && self.capabilities.close_session {
             if let Some(id) = self.native_id.clone() {
                 self.request::<wire::CloseSessionResponse>(
                     "session/close",
@@ -571,7 +571,7 @@ impl Client {
         } else {
             Ok(())
         };
-        if outcome.is_ok() && !self.failed && !self.busy() {
+        if outcome.is_ok() && !self.failed && !self.turn_running() {
             self.rpc.finish();
         } else {
             self.rpc.shutdown();
@@ -662,7 +662,7 @@ impl Client {
                 let id = record
                     .get("id")
                     .ok_or_else(|| Error::new("ACP 权限请求缺少身份"))?;
-                if !self.busy()
+                if !self.turn_running()
                     || self
                         .snapshot
                         .as_ref()
@@ -793,7 +793,7 @@ impl Client {
         if self.failed {
             return Err(Error::new("ACP 连接已关闭，请重新连接"));
         }
-        if self.busy() {
+        if self.turn_running() {
             return Err(Error::new("ACP 会话仍在执行"));
         }
         Ok(())

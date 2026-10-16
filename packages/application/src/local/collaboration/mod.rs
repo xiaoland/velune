@@ -384,7 +384,7 @@ impl CoreRuntime {
             }
             Operation::Cancel(request) => {
                 self.address_other(&caller, &request.conversation_id)?;
-                if self.session.busy() {
+                if self.session.turn_running() {
                     let runtime_id = self.addressed_runtime()?;
                     let id = self.addressed_id();
                     self.dispatch(&json!({"version":CONTRACT_VERSION,"action":"cancel","runtimeInstanceID":runtime_id,
@@ -548,7 +548,9 @@ impl CoreRuntime {
             .session
             .projected()
             .ok_or_else(|| RuntimeError::invalid("会话尚未载入"))?;
-        if self.session.busy() || matches!(view.run_state, RunState::Running | RunState::Stopping) {
+        if self.session.turn_running()
+            || matches!(view.run_state, RunState::Running | RunState::Stopping)
+        {
             return Err(RuntimeError::invalid(
                 "对方会话正在执行，未排队；请等待后再发送",
             ));
@@ -634,8 +636,8 @@ impl CoreRuntime {
             .session
             .projected()
             .ok_or_else(|| RuntimeError::invalid("会话尚未载入"))?;
-        let running =
-            self.session.busy() || matches!(view.run_state, RunState::Running | RunState::Stopping);
+        let running = self.session.turn_running()
+            || matches!(view.run_state, RunState::Running | RunState::Stopping);
         let state = if !view.pending_interactions.is_empty() {
             "waiting_for_approval"
         } else if running {

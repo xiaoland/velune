@@ -41,19 +41,35 @@ pub(super) struct Session {
 }
 
 impl Session {
-    pub(super) fn busy(&self) -> bool {
+    /// The conversation's own turn runs.
+    pub(super) fn turn_running(&self) -> bool {
         match &self.active_state {
-            ActiveState::Native(session) => session.busy(),
-            ActiveState::Acp(session) => session.busy(),
+            ActiveState::Native(session) => session.turn_running(),
+            ActiveState::Acp(session) => session.turn_running(),
             ActiveState::Pi => self.pi.busy,
             ActiveState::Empty | ActiveState::History(_) => false,
         }
     }
 
+    /// Work the session's runtime process does besides the turn, such as
+    /// native sub-agents the turn started. The process, and the gateway a
+    /// turn used, last until it has ended too.
+    pub(super) fn work(&self) -> Vec<velune_agent_runtime::work::BackgroundTask> {
+        match &self.active_state {
+            ActiveState::Native(session) => session.work(),
+            _ => Vec::new(),
+        }
+    }
+
+    /// Its runtime process works: the turn runs, or work besides it does.
+    pub(super) fn executing(&self) -> bool {
+        self.turn_running() || !self.work().is_empty()
+    }
+
     /// Must stay open: closing it would end work, drop a request the user
     /// has not answered or drop queued messages.
     pub(super) fn pinned(&self) -> bool {
-        self.busy()
+        self.executing()
             || !self.send_queue.is_empty()
             || self
                 .projected()
@@ -210,7 +226,19 @@ impl CoreRuntime {
     pub(super) fn execution_active(&self) -> bool {
         std::iter::once(&self.session)
             .chain(&self.parked)
-            .any(Session::busy)
+            .any(Session::executing)
+    }
+
+    /// Refuses what would end the addressed session's runtime process while
+    /// work besides its turn still runs there.
+    pub(super) fn ensure_work_ended(&self) -> Result<(), RuntimeError> {
+        if self.session.work().is_empty() {
+            Ok(())
+        } else {
+            Err(RuntimeError::invalid(
+                "子 Agent 仍在运行；请等待其结束，或先停止子 Agent",
+            ))
+        }
     }
 
     /// A native sub-agent of the session still runs; it may run in the
@@ -331,7 +359,7 @@ impl CoreRuntime {
             };
             let id = session.conversation_id().unwrap_or_default();
             let pending = view.pending_interactions.len();
-            if session.busy() || pending > 0 {
+            if session.turn_running() || pending > 0 {
                 active.push(crate::ActiveConversation {
                     context_runtime_id: view.conversation.runtime_id.clone(),
                     conversation_id: id.into(),

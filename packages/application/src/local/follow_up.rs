@@ -118,7 +118,7 @@ impl CoreRuntime {
             }
         }
         // A queue added to or resumed while nothing runs starts at once.
-        if !self.busy() && self.session.send_queue.paused.is_none() {
+        if !self.turn_running() && self.session.send_queue.paused.is_none() {
             self.send_next_queued();
         }
         self.snapshot_result()
@@ -232,7 +232,7 @@ impl CoreRuntime {
         snapshot: &crate::conversation::ConversationSnapshot,
     ) -> FollowUp {
         let queue = &self.session.send_queue;
-        let idle = !self.busy();
+        let idle = !self.turn_running();
         FollowUp {
             queue: queue.turns.iter().map(QueuedTurn::public).collect(),
             paused: queue.paused.clone(),

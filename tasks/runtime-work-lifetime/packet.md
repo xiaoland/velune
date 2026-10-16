@@ -36,3 +36,9 @@
 2. 寿命 hard cut：`settle`／`finish_turn` 去掉轮次结束释放，`release_override`，`TurnOverride`，`busy()` 拆分，跟随来源把未结束工作视为自身写入；需要重启时显式报错。验证：经网关时子 Agent 完成，之后进程、runner、隧道结束，Harness 配置未改，父会话原生恢复可用；子 Agent 运行中同模型的下一轮复用进程。
 3. 队列与停止：自动等待、停止子 Agent 并发送、停止范围、退出确认、Mac 界面。验证：扩展队列脚本。
 4. 复核：Claude Code 2.1.286 的后台任务与中断（本机仅 2.1.292）、SSH 隧道长连接、子线程以 velune 提供商持久化后的原生恢复。
+
+## 实施
+
+- 切片 1（e6a6b75）：`velune_agent_runtime::work`；Codex 依线程状态与轮次事件跟踪子线程、`stop_background` 中断其轮次；活动改用 `work()`。脚本原生模式四项通过。
+- 切片 2：`busy()` 拆为 `turn_running()`／`work()`（native、ACP、application 会话），application 增加 `executing()`。`settle` 不再结束经网关轮次的进程，Codex 原生提供商恢复移到 `release_override`，由 `drain_runtime` 在轮次与工作都结束时调用后释放；Claude Code 每轮进程在轮次与任务都结束后才结束；`poll` 只在进程已结束时停止读取；父轮次结束时保留子 Agent 的待答请求。需要另起进程时 `NativeSession::send`（`restart_needed`）与 `prepare_with_selection`／`invalidate_execution`（`ensure_work_ended`）拒绝；回收、退出、跟随来源、删除／归档、编辑、切换运行时以执行中判定。未采用 advisor 的 `TurnOverride` 阶段枚举：释放只在“执行中→不执行”的转变上触发，准备与发送之间不会误释放，现有状态已足够表达。
+- 验证（2026-10-16）：fmt／check／clippy；`manual-subagent-activity.py` 原生四项与经网关五项全部通过（子 Agent 在父轮次后继续；需要另起进程的下一轮被拒绝且子 Agent 不受影响；同模型下一轮复用进程；子 Agent 结束后 app-server 结束、Harness 配置未改；父会话随后原生轮次完成）。`manual-native-subagents.py` 的 Codex 部分通过；Claude Code 部分因本机为 2.1.292、版本检查拒绝而未能运行。脚本合成上游原本每个回复使用同一 item id，Codex 以其作为消息 ID，第二个回复会覆盖第一个；已改为唯一 ID。

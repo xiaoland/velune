@@ -120,6 +120,8 @@ pub struct ModelOption {
 #[derive(Clone)]
 struct PendingRequest {
     id: Value,
+    /// Asked by a native sub-agent, whose work may outlive the turn.
+    background: bool,
     method: String,
     options: Vec<String>,
     question_ids: Vec<String>,
@@ -155,6 +157,8 @@ pub struct NativeSession {
     /// The model and context tokens of the turn's latest reply.
     claude_context: Option<(String, u64)>,
     restart_required: bool,
+    /// The runtime process was ended on purpose; there is nothing to read.
+    process_ended: bool,
     /// Messages steered into Claude Code turns, for their local identities.
     steer_sequence: u64,
     gateway_turn: bool,
@@ -247,6 +251,7 @@ impl NativeSession {
             claude_stream_id: None,
             claude_context: None,
             restart_required: false,
+            process_ended: false,
             steer_sequence: 0,
             gateway_turn: tunnel.is_some(),
             claude_start: Default::default(),
@@ -373,6 +378,12 @@ impl NativeSession {
         if self.config.kind == NativeKind::DeepSeek && !input.images.is_empty() {
             return Err(Error::new("DeepSeek 运行时不接受图片"));
         }
+        if self.restart_needed() && !self.work().is_empty() {
+            return Err(Error::with_code(
+                "子 Agent 仍在运行；此轮需要重新启动运行时，请等待其结束或先停止子 Agent",
+                "outstanding_work",
+            ));
+        }
         let result = self
             .prepare_turn(input.effort.as_deref(), input.permission_mode.as_deref())
             .and_then(|()| match self.config.kind {
@@ -438,7 +449,7 @@ impl NativeSession {
         }
     }
     pub fn cancel(&mut self) -> Result<()> {
-        if !self.busy() {
+        if !self.turn_running() {
             return Ok(());
         }
         match self.config.kind {
@@ -497,13 +508,19 @@ impl NativeSession {
             NativeKind::ClaudeCode => self.claude_models(),
         }
     }
-    /// Claude Code takes the turn's reasoning level and permission mode only
-    /// at launch, so its turn child is always replaced.
+    /// Whether the next turn needs a new runtime process, which ends the
+    /// current one with any work it still does: the turn's model moves
+    /// between the runtime's own provider and Velune's gateway, or another
+    /// gateway injection or native model was selected. Claude Code takes the
+    /// turn's reasoning level and permission mode only at launch, so its
+    /// turn child is always replaced.
+    pub fn restart_needed(&self) -> bool {
+        self.config.kind == NativeKind::ClaudeCode
+            || (self.config.gateway.is_some() && !self.gateway_turn)
+            || self.restart_required
+    }
     fn prepare_turn(&mut self, effort: Option<&str>, permission_mode: Option<&str>) -> Result<()> {
-        if self.config.kind != NativeKind::ClaudeCode
-            && (self.config.gateway.is_none() || self.gateway_turn)
-            && !self.restart_required
-        {
+        if !self.restart_needed() {
             return Ok(());
         }
         let saved = self
@@ -525,6 +542,7 @@ impl NativeSession {
             self.tunnel = Some(tunnel);
         }
         self.codex_threads.clear();
+        self.process_ended = false;
         self.rpc = Self::spawn_rpc(
             &active,
             self.native_selection.as_ref(),
@@ -568,7 +586,7 @@ impl NativeSession {
         outcome
     }
     pub fn poll(&mut self) -> Result<()> {
-        if self.failed || self.restart_required {
+        if self.failed || self.process_ended {
             return Ok(());
         }
         let outcome = (|| {
@@ -583,6 +601,7 @@ impl NativeSession {
             if self.config.kind == NativeKind::ClaudeCode {
                 self.claude_check_terminal_timeout();
             }
+            self.end_spent_process();
             Ok(())
         })();
         if outcome.is_err() {
@@ -593,7 +612,9 @@ impl NativeSession {
 
     fn fail_connection(&mut self) {
         self.rpc.shutdown();
+        self.process_ended = true;
         self.codex_threads.clear();
+        self.interactions.clear();
         self.failed = true;
         self.settle(RunState::Failed);
         self.notice("运行时控制连接已终止，请重新连接；已有消息仍保留。");
@@ -642,7 +663,8 @@ impl NativeSession {
             NativeKind::ClaudeCode | NativeKind::DeepSeek => Ok(()),
         }
     }
-    pub fn busy(&self) -> bool {
+    /// The conversation's own turn runs. Work it started may go on after it; see `work`.
+    pub fn turn_running(&self) -> bool {
         self.snapshot
             .as_ref()
             .is_some_and(|s| matches!(s.run_state, RunState::Running | RunState::Stopping))
@@ -667,8 +689,41 @@ impl NativeSession {
         }
         Ok(())
     }
+    /// Before the process ends after a turn on Velune's gateway: Codex keeps
+    /// the provider a thread was resumed with, so the conversation is resumed
+    /// on the runtime's own provider once more, and a later native session
+    /// does not look for the gateway.
+    pub fn release_override(&mut self) -> Result<()> {
+        if !self.gateway_turn
+            || self.config.kind != NativeKind::Codex
+            || self.process_ended
+            || self.failed
+        {
+            return Ok(());
+        }
+        let id = self
+            .native_id
+            .clone()
+            .ok_or_else(|| Error::new("缺少原生会话身份"))?;
+        let snapshot = self
+            .snapshot
+            .clone()
+            .ok_or_else(|| Error::new("缺少会话投影"))?;
+        let cwd = snapshot.conversation.cwd.as_deref().map(PathBuf::from);
+        self.config.gateway = None;
+        self.gateway_turn = false;
+        let result = self.codex_open(
+            &id,
+            cwd.as_deref(),
+            &snapshot.context_runtime_id,
+            snapshot.messages.clone(),
+        );
+        self.snapshot = Some(snapshot);
+        result
+    }
     pub fn shutdown(&mut self) -> Result<()> {
         self.rpc.shutdown();
+        self.process_ended = true;
         self.codex_threads.clear();
         self.interactions.clear();
         self.pending_rpc.clear();
@@ -679,7 +734,7 @@ impl NativeSession {
         if self.failed {
             return Err(Error::new("运行时连接已关闭，请重新连接"));
         }
-        if self.busy() {
+        if self.turn_running() {
             Err(Error::new("运行时仍在执行"))
         } else {
             Ok(())
@@ -759,55 +814,52 @@ impl NativeSession {
         }
     }
     fn finish_turn(&mut self, state: RunState) -> Result<()> {
-        if self.gateway_turn && self.config.kind != NativeKind::ClaudeCode {
-            let id = self
-                .native_id
-                .clone()
-                .ok_or_else(|| Error::new("缺少原生会话身份"))?;
-            let snapshot = self
-                .snapshot
-                .clone()
-                .ok_or_else(|| Error::new("缺少会话投影"))?;
-            let cwd = snapshot.conversation.cwd.as_deref().map(PathBuf::from);
-            self.config.gateway = None;
-            match self.config.kind {
-                NativeKind::Codex => self.codex_open(
-                    &id,
-                    cwd.as_deref(),
-                    &snapshot.context_runtime_id,
-                    snapshot.messages.clone(),
-                )?,
-                NativeKind::DeepSeek => {}
-                NativeKind::ClaudeCode => {}
-            }
-            self.snapshot = Some(snapshot);
-        }
         self.settle(state);
         Ok(())
     }
+    /// Ends the turn. The process stays while it does other work; the
+    /// host releases the turn's gateway once that work has ended too.
     fn settle(&mut self, state: RunState) {
-        if self.gateway_turn || self.config.kind == NativeKind::ClaudeCode {
-            self.rpc.finish();
-            self.codex_threads.clear();
-            self.tunnel = None;
+        if self.config.kind == NativeKind::ClaudeCode {
             self.restart_required = true;
-            self.gateway_turn = false;
-            self.config.gateway = None;
         }
         self.turn_id = None;
-        self.interactions.clear();
+        // A sub-agent's request still waits for its answer.
+        let background = self
+            .interactions
+            .iter()
+            .filter(|(_, pending)| pending.background)
+            .map(|(id, _)| id.clone())
+            .collect::<std::collections::BTreeSet<_>>();
+        self.interactions.retain(|id, _| background.contains(id));
         if let Some(snapshot) = &mut self.snapshot {
             for message in &mut snapshot.messages {
                 message.completed = true;
             }
             snapshot.run_state = state;
-            snapshot.pending_interactions.clear();
+            snapshot
+                .pending_interactions
+                .retain(|interaction| background.contains(&interaction.id));
             snapshot.actions = ConversationActions {
                 can_send: !self.failed,
                 can_cancel: false,
                 can_switch: true,
             };
             snapshot.revision += 1;
+        }
+        self.end_spent_process();
+    }
+    /// A Claude Code turn's process serves only that turn: it ends once the
+    /// turn and its tasks have.
+    fn end_spent_process(&mut self) {
+        if self.config.kind == NativeKind::ClaudeCode
+            && self.restart_required
+            && !self.process_ended
+            && !self.turn_running()
+            && self.work().is_empty()
+        {
+            self.rpc.finish();
+            self.process_ended = true;
         }
     }
     fn message(&mut self, message: Message) {

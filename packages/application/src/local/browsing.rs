@@ -72,7 +72,7 @@ impl CoreRuntime {
             .ok_or_else(|| RuntimeError::invalid("runtime instance id"))
     }
     pub(super) fn select_runtime_action(&mut self, request: &Value) -> Result<Value, RuntimeError> {
-        if self.busy() {
+        if self.session.executing() {
             return Err(RuntimeError::invalid("runtime is busy"));
         }
         let id = request["payload"]["runtimeInstanceID"]
@@ -513,6 +513,7 @@ impl CoreRuntime {
         Ok(snapshot)
     }
     pub(super) fn invalidate_execution(&mut self) -> Result<(), RuntimeError> {
+        self.ensure_work_ended()?;
         let can_restore = match &self.session.active_state {
             ActiveState::Acp(session) => session.capabilities().load_session,
             _ => true,

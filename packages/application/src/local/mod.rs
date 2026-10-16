@@ -228,8 +228,8 @@ impl CoreRuntime {
         })
     }
 
-    fn busy(&self) -> bool {
-        self.session.busy()
+    fn turn_running(&self) -> bool {
+        self.session.turn_running()
     }
     fn native_snapshot(&self) -> Option<crate::conversation::ConversationSnapshot> {
         self.session.projected().cloned().map(|mut snapshot| {
@@ -308,8 +308,9 @@ impl CoreRuntime {
         }))
     }
     fn drain_runtime(&mut self) -> Result<(), RuntimeError> {
-        let was_busy = self.busy();
-        if was_busy {
+        let was_busy = self.turn_running();
+        let was_executing = self.session.executing();
+        if was_executing {
             self.session.last_execution = Some(std::time::Instant::now());
         }
         let result = match &mut self.session.active_state {
@@ -325,12 +326,14 @@ impl CoreRuntime {
             }
             ActiveState::Empty | ActiveState::History(_) => Ok(()),
         };
-        let outcome = if was_busy && (!self.busy() || result.is_err()) {
+        let outcome = if was_busy && (!self.turn_running() || result.is_err()) {
             self.record_finished_turn(result.is_err())
         } else {
             None
         };
-        if self.session.gateway_runner.is_some() && ((was_busy && !self.busy()) || result.is_err())
+        // A turn's gateway lasts until the turn and the work it started have ended.
+        if self.session.gateway_runner.is_some()
+            && ((was_executing && !self.session.executing()) || result.is_err())
         {
             self.finish_managed_turn()?;
         }
@@ -348,6 +351,11 @@ impl CoreRuntime {
             } else {
                 Ok(())
             };
+        if let ActiveState::Native(session) = &mut self.session.active_state
+            && let Err(error) = session.release_override()
+        {
+            tracing::warn!(target: "velune_application", event = "gateway_release_restore_failed", detail = %error);
+        }
         let snapshot = self.native_snapshot();
         let selection = self.session.model_selection.clone();
         let result = self.shutdown_active();
@@ -386,7 +394,7 @@ impl CoreRuntime {
         }
         if std::iter::once(&self.session)
             .chain(&self.parked)
-            .any(session::Session::busy)
+            .any(session::Session::executing)
         {
             return Err(RuntimeError::invalid("runtime is busy"));
         }

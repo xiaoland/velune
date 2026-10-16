@@ -390,6 +390,7 @@ impl NativeSession {
                 }
                 self.add_interaction(
                     PendingRequest {
+                        background: false,
                         id: request_id,
                         method: method.into(),
                         options: options.iter().map(|o| o.id.clone()).collect(),

@@ -56,7 +56,7 @@ impl CoreRuntime {
         &self,
         snapshot: &ConversationSnapshot,
     ) -> Vec<EditableMessage> {
-        let editable = !self.busy()
+        let editable = !self.session.executing()
             && snapshot.pending_interactions.is_empty()
             && snapshot.actions.can_send
             && snapshot.conversation.parent_conversation_id.is_none()

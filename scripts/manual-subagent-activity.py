@@ -9,8 +9,12 @@ command that needs approval and answers. Checks, on Codex's own provider (a
 native turn), that the parent's snapshot names the sub-agent, that activity
 reports the sub-agent running under its parent while the parent is idle, that
 the sub-agent's approval comes to the idle parent and its answer reaches the
-sub-agent, and that the sub-agent then ends. The same flow through Velune's
-gateway reports whether the sub-agent survives the end of a gateway turn. With
+sub-agent, and that the sub-agent then ends. Through Velune's gateway (a turn
+that uses the gateway only for itself) it checks that the sub-agent outlives
+the parent's turn: a next turn on the same model reuses the process, one that
+needs another process is refused while the sub-agent runs, and once the
+sub-agent has ended the turn's app-server ends, the Harness configuration is
+unchanged and the parent goes on with a native turn. With
 --seed DIR the VELUNE_HOME is kept at DIR/velune for checking the Mac app by
 hand. Only loopback synthetic responses are used: no real model, credential,
 HOME or session is read; this is not an automated test.
@@ -18,14 +22,19 @@ HOME or session is read; this is not an automated test.
 import argparse
 import hashlib
 import importlib.util
+import itertools
 import json
+import os
 import pathlib
+import subprocess
 import sys
 import tempfile
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+# Codex keeps a response item's id as the message's.
+ITEMS = itertools.count()
 # Set once the parent is idle: the held sub-agent request may then go on.
 RELEASE = threading.Event()
 
@@ -66,7 +75,7 @@ class Upstream(BaseHTTPRequestHandler):
             return
         out = responses_reply(body)
         if out['type'] == 'message':
-            item = {'id': 'item', 'type': 'message', 'role': 'assistant', 'status': 'completed',
+            item = {'id': 'item-%d' % next(ITEMS), 'type': 'message', 'role': 'assistant', 'status': 'completed',
                     'content': [{'type': 'output_text', 'text': out['text'], 'annotations': []}]}
         else:
             item = {'id': 'fc', 'type': 'function_call', 'status': 'completed', 'name': out['name'],
@@ -85,6 +94,21 @@ class Upstream(BaseHTTPRequestHandler):
                       {'type': 'response.completed', 'response': response}]:
             self.wfile.write(('event: %s\ndata: %s\n\n' % (event['type'], json.dumps(event))).encode())
         self.wfile.flush()
+
+
+def app_servers():
+    """Codex app-servers Velune runs for this script."""
+    children = {}
+    for line in subprocess.run(['ps', '-A', '-o', 'pid=,ppid=,command='], capture_output=True, text=True).stdout.splitlines():
+        pid, ppid, command = line.split(None, 2)
+        children.setdefault(ppid, []).append((pid, command))
+    found, stack = [], [str(os.getpid())]
+    while stack:
+        for pid, command in children.get(stack.pop(), []):
+            stack.append(pid)
+            if 'app-server' in command:
+                found.append(pid)
+    return found
 
 
 def main():
@@ -116,9 +140,9 @@ def main():
             app.list()
             codex_home = root / 'velune/runtime-homes' / hashlib.sha256(b'codex').hexdigest() / '.codex'
             codex_home.mkdir(parents=True, exist_ok=True)
-            (codex_home / 'config.toml').write_text(
-                'model_provider = "synthetic"\nmodel = "synthetic-model"\n[model_providers.synthetic]\nname = "synthetic"\n'
-                'base_url = "%s"\nwire_api = "responses"\nrequires_openai_auth = false\n' % endpoint)
+            harness_config = ('model_provider = "synthetic"\nmodel = "synthetic-model"\n[model_providers.synthetic]\nname = "synthetic"\n'
+                              'base_url = "%s"\nwire_api = "responses"\nrequires_openai_auth = false\n' % endpoint)
+            (codex_home / 'config.toml').write_text(harness_config)
             app.save_provider('default', b.BindingProviderDraft(
                 id='responses', name='responses', protocol=b.BindingGatewayProtocol.RESPONSES_V1, endpoint=endpoint,
                 models=[b.BindingProviderModel(record_key='', provider_model_id='synthetic-gateway', nickname='gateway',
@@ -150,6 +174,47 @@ def main():
                         if item.parent_conversation_id == parent
                         and item.run_state in (b.BindingRunState.RUNNING, b.BindingRunState.ELSEWHERE)]
 
+            def turn(conversation, selection, text):
+                return app.send_turn_with_selection('codex', conversation, 'codex', selection, b.BindingComposedTurn(
+                    text=text, effort=None, attachments=[]))
+
+            def replies(conversation):
+                return texts(snapshot(conversation)).count('PARENT_DONE')
+
+            def idle_after(conversation, count, what):
+                wait(lambda: snapshot(conversation).run_state == b.BindingRunState.IDLE and replies(conversation) == count, what)
+
+            def gateway_turn(conversation, child, selection):
+                wait(lambda: child in running_sub_agents(conversation), 'sub-agent running after the gateway turn')
+                servers = app_servers()
+                print('PASS gateway: the sub-agent keeps running after the parent\'s gateway turn ended', flush=True)
+                refused = None
+                try:
+                    turn(conversation, selections['native'], 'NATIVE_NEXT')
+                except Exception as error:  # the bindings' error variants
+                    refused = error
+                assert refused is not None and '子 Agent' in str(refused), refused
+                assert child in running_sub_agents(conversation) and app_servers() == servers
+                print('PASS gateway: a turn needing another process is refused and the sub-agent goes on', flush=True)
+                turn(conversation, selection, 'SAME_MODEL_NEXT')
+                idle_after(conversation, 2, 'same-model turn while the sub-agent runs')
+                assert child in running_sub_agents(conversation) and app_servers() == servers
+                print('PASS gateway: a next turn on the same model reused the process', flush=True)
+                RELEASE.set()
+                pending = wait(lambda: snapshot(conversation).pending_interactions, 'sub-agent approval after the gateway turn')
+                app.reply_runtime_interaction('codex', conversation, pending[0].id, b.BindingRuntimeInteractionReply.DECISION(
+                    option_id=pending[0].kind.options[0].id))
+                wait(lambda: child not in running_sub_agents(conversation), 'gateway sub-agent ends', 90)
+                wait(lambda: len(app_servers()) == len(servers) - 1, 'gateway turn\'s app-server ends')
+                assert (codex_home / 'config.toml').read_text() == harness_config
+                print('PASS gateway: after the sub-agent ended the app-server ended and the Harness configuration is unchanged', flush=True)
+                app.open_conversation('codex', child)
+                assert 'SUB_DONE' in texts(snapshot(child))
+                app.open_conversation('codex', conversation)
+                turn(conversation, selections['native'], 'NATIVE_AFTER')
+                idle_after(conversation, 3, 'native turn after the gateway turn')
+                print('PASS gateway: the sub-agent completed and the parent went on with a native turn', flush=True)
+
             seeded = {}
             for mode in ('native', 'gateway'):
                 RELEASE.clear()
@@ -165,16 +230,7 @@ def main():
                 assert child.startswith('codex:') and child != conversation and parent.sub_agents[0].title, (mode, parent.sub_agents)
                 print('PASS %s: the idle parent names its sub-agent %s' % (mode, child), flush=True)
                 if mode == 'gateway':
-                    # The gateway turn's app-server ends with the turn.
-                    time.sleep(3)
-                    print('OBSERVED gateway: sub-agent reported running after the parent turn: %s' % running_sub_agents(conversation), flush=True)
-                    RELEASE.set()
-                    time.sleep(5)
-                    pending = snapshot(conversation).pending_interactions
-                    print('OBSERVED gateway: approvals reaching the idle parent: %s' % [p.kind.title for p in pending], flush=True)
-                    for item in pending:
-                        app.reply_runtime_interaction('codex', conversation, item.id, b.BindingRuntimeInteractionReply.DECISION(
-                            option_id=item.kind.options[0].id))
+                    gateway_turn(conversation, child, selection)
                     seeded[mode] = (conversation, child)
                     continue
                 wait(lambda: child in running_sub_agents(conversation), 'native sub-agent reported running under its parent')

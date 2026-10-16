@@ -689,7 +689,7 @@ impl CoreRuntime {
                 if archiving
                     && std::iter::once(&self.session)
                         .chain(&self.parked)
-                        .any(|session| session.presents(&summary.id) && session.busy())
+                        .any(|session| session.presents(&summary.id) && session.executing())
                 {
                     return Err(RuntimeError::invalid("请先停止正在执行的任务，再归档会话"));
                 }

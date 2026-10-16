@@ -412,7 +412,7 @@ impl NativeSession {
                 let request = &record["request"];
                 let id = record["request_id"].clone();
                 if request["subtype"] == "can_use_tool"
-                    && self.busy()
+                    && self.turn_running()
                     && request["tool_name"] == "AskUserQuestion"
                 {
                     let questions = request["input"]["questions"]
@@ -448,6 +448,7 @@ impl NativeSession {
                     }
                     self.add_interaction(
                         PendingRequest {
+                            background: false,
                             id,
                             method: "AskUserQuestion".into(),
                             options: Vec::new(),
@@ -456,9 +457,10 @@ impl NativeSession {
                         },
                         InteractionKind::UserInput { questions },
                     );
-                } else if request["subtype"] == "can_use_tool" && self.busy() {
+                } else if request["subtype"] == "can_use_tool" && self.turn_running() {
                     self.add_interaction(
                         PendingRequest {
+                            background: false,
                             id,
                             method: "can_use_tool".into(),
                             options: vec!["allow".into(), "deny".into()],
@@ -491,7 +493,7 @@ impl NativeSession {
                 Some("session_state_changed") => {
                     self.claude_requires_action = record["state"] == "requires_action";
                     if record["state"] == "idle"
-                        && self.busy()
+                        && self.turn_running()
                         && let Some((failed, _)) = self.claude_result.take()
                     {
                         self.finish_turn(if failed {

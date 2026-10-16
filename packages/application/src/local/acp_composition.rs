@@ -201,7 +201,7 @@ impl CoreRuntime {
         &mut self,
         request: &Value,
     ) -> Result<Value, RuntimeError> {
-        if self.busy() {
+        if self.turn_running() {
             return Err(RuntimeError::invalid("runtime is busy"));
         }
         let runtime_id = request["payload"]["runtimeInstanceID"]

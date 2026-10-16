@@ -118,7 +118,8 @@ impl CoreRuntime {
                 liveness_checked: now,
             });
         }
-        let busy = self.session.busy();
+        // Velune's own execution writes the native records, sub-agents too.
+        let busy = self.session.executing();
         let watch = self.session.source.as_ref().expect("watch");
         if now < watch.next_check && !busy {
             return Ok(());
@@ -254,7 +255,7 @@ impl CoreRuntime {
         let executing: Vec<&session::Session> = std::iter::once(&self.session)
             .chain(&self.parked)
             .filter(|session| {
-                session.busy()
+                session.executing()
                     || session
                         .last_execution
                         .is_some_and(|at| at + OWN_WRITES_SETTLE >= scanned)
