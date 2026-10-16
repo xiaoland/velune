@@ -73,3 +73,25 @@
 - `manual-live-native` 偶发失败：外部启动的会话在 Harness 写出可列出的内容前已有存活记录，断言改为在 10 秒内等到它被列出。之前失败的那一次与本切片无关；Mac 对运行中但未列出的会话本来就会重读列表。
 - 验证：fmt／check／clippy／no-default-features、Mac `--build-only` 通过。`manual-native-subagents.py` 增加 Codex 子 Agent 的 `require_escalated` 命令：父会话收到“子 Agent：”审批，批准后子会话工具输出含 `SUB_APPROVED`；所有工具块以完成或失败结束。`manual-live-native`、`manual-reasoning-effort`、`manual-attachments`、`manual-collaboration` 回归通过。
 - 安装：b6cc949 已构建安装至 `/Applications/Velune.app`（签名校验通过，manifest 对应该提交且无未提交改动），重新打开后无崩溃报告。
+
+## 2026-10-16：子 Agent 界面补齐
+
+产品意图见 [PRD](../../docs/prd/index.md#ai-网关与-agent-运行时配置)（[S31](../../docs/sources.md#s31)）。范围：子 Agent 概览、侧栏状态汇总、子会话导航、父轮次结束后到达的子 Agent 审批。不改 A2A 呈现，不做运行时互调用。
+
+### 已核对的现状（代码，2026-10-16）
+
+- 子 Agent 只以工具块下的“打开会话”出现，位于折叠的工作过程中。Codex `collabAgentToolCall` 的 `agentsStates` 仅拼入输出文本。
+- 子会话进入核心列表来源（`parent_conversation_id`），`browse` 不放入页面。活动轮询的在别处运行扫描按写入锁也会报告 Codex 子线程（含 Velune 自己的 app-server 子进程持有的锁），但不带父会话，Mac 只把它当作未列出的会话处理。
+- 迟到审批：`codex_request` 在父会话不忙时以 “No active turn” 拒绝所有请求，包括子 Agent 的。
+- 待核实：经网关的 Codex 轮次结束时 `settle` 结束 app-server 连接，仍在运行的子线程可能随之终止。
+
+### 方案
+
+- **核心**：交付快照附带该会话的子 Agent 列表（会话 ID、标题、运行中／结束／失败）。成员取自转录中工具块的链接，以及列表来源中父会话为它的子会话。运行中取自活动扫描、Velune 会话与 adapter 的实时子任务（Claude `claude_tasks`），失败取自子会话原生记录的最后一轮。活动中的子会话带父会话 ID，供列表汇总。Codex 子 Agent 请求在父会话空闲时也作为父会话的交互出现。
+- **Mac**：新增“子 Agent”工具窗口，与大纲同一体系（工具栏按钮弹出／停靠／浮动），仅在会话有子 Agent 时提供；行可双击或回车打开。父会话行在子 Agent 运行时显示运行指示，有待处理交互时显示需要处理。每个窗格按 macOS 习惯提供后退／前进（⌘[／⌘]）以返回打开子会话前的会话。
+
+### 切片
+
+1. 核心：子 Agent 列表、活动父会话关联、迟到审批。
+2. Mac：子 Agent 工具窗口、侧栏汇总、后退／前进。
+3. 验收脚本（合成上游、临时 HOME）与安装。

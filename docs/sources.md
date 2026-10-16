@@ -307,3 +307,7 @@ S17 实施授权：用户决定全面切换 UniFFI，并要求现在开始拆分
 ## S30
 
 2026-10-16 用户要求：“接下来我们来实现模型路由；验证场景就通过聚合两个 ChatGPT subscription，自动 fail-over（在 ~/.codex-switcher 下面有两个 subscription 的认证文件，你可以用）”。开发工具读取该目录的请求被本机权限分类器以凭据探查拒绝；项目此前记录 ChatGPT 订阅的第三方接入以官方 SIWC 路径为准、不借 CLI 缓存 token 冒充正式接入，因此真实账户验收改由用户在应用中通过已支持的 Pi openai 登录完成，是否接入 Codex CLI 认证文件留待用户决定。产品归 [PRD](prd/index.md#ai-网关与-agent-运行时配置)，实施归 [模型路由任务](../tasks/model-routing/packet.md)。
+
+## S31
+
+2026-10-16 诊断一个 Codex 会话未读无法消除时（原因是标已读进行中保护未释放；该会话当时在 Codex 桌面端带子 Agent 运行），用户提出：“我们的 sub-agent / a2a 系列功能不完整，我建议优先补齐 UI 上的短板（未来还需要允许 agent runtime 互调用）”。用户从开发方列出的短板中选定第一批：子 Agent 概览、侧栏状态汇总、子会话导航，并一并解决父轮次结束后到达的子 Agent 审批。随后提醒：“虽然我认为一切都是 A2A，但是现在很多 agent runtime 的实践还有一套并行的 sub-agent 机制”。产品归 [PRD](prd/index.md#ai-网关与-agent-运行时配置)，实施归 [Agent 间协作任务](../tasks/agent-collaboration/packet.md)。

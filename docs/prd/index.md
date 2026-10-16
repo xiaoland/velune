@@ -149,7 +149,9 @@ Mac 开发交付安装到 `/Applications/Velune.app`，每次修改后重新构�
 - **原生 sub-agent**：Harness 自身创建和拥有的子会话（例如 Claude Code、Codex 的子 Agent），属于会话体验。Velune 不创建它们；当前只在消息列表中显示其发生，并可单独打开该子 Agent 的会话（2026-10-12 已实现 Codex 与 Claude Code；子 Agent 会话不进入会话列表，只读，由启动它的会话继续）。
 - **Agent 间协作（A2A）**：Velune 提供的、不同会话之间的对等交流，可跨运行时与 Harness。参与方都是普通会话：出现在会话列表，可由用户单独打开、继续和处理审批；Agent 可以新建会话，也可以联系已有会话。Velune 不另设父子任务树、协作 scope 或“子任务”视图。
 
-两者本质是否相同不由 Velune 这个 shell 判断，产品上按上述归属分别呈现。A2A 默认不设联系限制：Velune 执行的任一会话都可联系所有已启用运行时及其会话；以后若需要限制，设置归运行时设置，不在 composer 中逐会话授权。协作消息带出处、不授予额外权限；接收会话的待审批仍按其自身流程交给用户，忙碌、取消、失败和未知结果须明确。2026-10-13 用户确认收到的协作消息留在用户侧，标出来源会话即可，不改为居中的系统状态。原生 sub-agent 需要的审批交给启动它的会话处理（来源 [S19](../sources.md#s19)）。实施归 [Agent 间协作任务](../../tasks/agent-collaboration/packet.md)；2026-10-11 的父子委派实现及其证据见 [Harness 协作任务](../../tasks/harness-interoperation/packet.md)，其父子 scope 模型已被取代。
+两者本质是否相同不由 Velune 这个 shell 判断，产品上按上述归属分别呈现。A2A 默认不设联系限制：Velune 执行的任一会话都可联系所有已启用运行时及其会话；以后若需要限制，设置归运行时设置，不在 composer 中逐会话授权。协作消息带出处、不授予额外权限；接收会话的待审批仍按其自身流程交给用户，忙碌、取消、失败和未知结果须明确。2026-10-13 用户确认收到的协作消息留在用户侧，标出来源会话即可，不改为居中的系统状态。原生 sub-agent 需要的审批交给启动它的会话处理（来源 [S19](../sources.md#s19)）。
+
+2026-10-16 用户要求优先补齐原生 sub-agent 的界面短板，并指出概念上可都视为 A2A，但多数运行时另有一套并行的原生 sub-agent 机制（[S31](../sources.md#s31)）。本轮范围：会话页可看到该会话的子 Agent 概览（标题、运行中／结束／失败，可直接打开），不必展开工作过程逐个查找；会话列表中父会话行反映其子 Agent 仍在运行或有待处理的审批，即使父会话自身的轮次已结束；从父会话打开子会话后能返回原处。父会话轮次结束后才到达的子 Agent 审批也交给父会话处理，不再拒绝。概览按中立的“关联会话”组织，以后 A2A 参与方可并入同一呈现，但本轮不改变 A2A 的呈现。运行时之间的互相调用是后续方向，不在本轮。实施归 [Agent 间协作任务](../../tasks/agent-collaboration/packet.md)；2026-10-11 的父子委派实现及其证据见 [Harness 协作任务](../../tasks/harness-interoperation/packet.md)，其父子 scope 模型已被取代。实施归 [Agent 间协作任务](../../tasks/agent-collaboration/packet.md)；2026-10-11 的父子委派实现及其证据见 [Harness 协作任务](../../tasks/harness-interoperation/packet.md)，其父子 scope 模型已被取代。
 
 2026-10-11 用户进一步要求将 Agent runtime 管理从会话、模型扩展到 user instruction、MCP、agent skills 与 sub-agent 定义。各运行时允许缺少相应能力或资源；宿主须能区分不支持、尚未配置和读取失败，不能把缺失伪装成统一支持。管理保留原生资源归属与运行时差异，sub-agent 定义不等同于执行中的子会话。App 管理界面的组织见下文“资源库”段落。实施与验收归 [运行时资源管理任务](../../tasks/runtime-management/packet.md)。
 
