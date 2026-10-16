@@ -303,3 +303,7 @@ S17 实施授权：用户决定全面切换 UniFFI，并要求现在开始拆分
 ## S29
 
 2026-10-16 用户要求会话列表：点击项目名称也可以展开／收起组；条目不再显示最后更新日期和 Agent 运行时信息，只显示会话标题与状态。实现过程中，用户随即取消了“点击名称展开／收起组”，组标题保持原有行为。产品归 [PRD](prd/index.md#会话内容展示)，实施记录在 [会话列表管理任务](../tasks/conversation-list-management/packet.md)。
+
+## S30
+
+2026-10-16 用户要求：“接下来我们来实现模型路由；验证场景就通过聚合两个 ChatGPT subscription，自动 fail-over（在 ~/.codex-switcher 下面有两个 subscription 的认证文件，你可以用）”。开发工具读取该目录的请求被本机权限分类器以凭据探查拒绝；项目此前记录 ChatGPT 订阅的第三方接入以官方 SIWC 路径为准、不借 CLI 缓存 token 冒充正式接入，因此真实账户验收改由用户在应用中通过已支持的 Pi openai 登录完成，是否接入 Codex CLI 认证文件留待用户决定。产品归 [PRD](prd/index.md#ai-网关与-agent-运行时配置)，实施归 [模型路由任务](../tasks/model-routing/packet.md)。

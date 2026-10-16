@@ -18,6 +18,7 @@ pub(crate) fn edit_provider(
                 id: gateway_id.into(),
                 name: "默认网关".into(),
                 providers: Vec::new(),
+                routes: Vec::new(),
                 failover: FailoverPolicy {
                     mode: FailoverMode::Disabled,
                 },
@@ -75,6 +76,7 @@ pub(crate) fn edit_provider(
             gateway.providers.retain(|p| p.id != draft.id);
             gateway.providers.push(provider);
             gateway.assign_record_keys();
+            gateway.prune_routes();
             gateway.validate().map_err(Error::invalid)?;
         }
         "delete" => {
@@ -85,6 +87,44 @@ pub(crate) fn edit_provider(
                 return Err(Error::invalid("provider id"));
             }
             gateway.providers.retain(|p| p.id != id);
+            gateway.prune_routes();
+        }
+        "saveRoute" => {
+            let mut route: ModelRoute = serde_json::from_value(payload["route"].clone())?;
+            if route.name.trim().is_empty() {
+                return Err(Error::invalid("路由名称不能为空"));
+            }
+            if route.members.is_empty() {
+                return Err(Error::invalid("路由至少需要一个模型"));
+            }
+            if route.record_key.is_empty() {
+                route.record_key = crate::new_record_key();
+            }
+            match gateway
+                .routes
+                .iter_mut()
+                .find(|r| r.record_key == route.record_key)
+            {
+                Some(existing) => *existing = route,
+                None => gateway.routes.push(route),
+            }
+            gateway.validate().map_err(|error| {
+                Error::invalid(match error {
+                    "model route members must share a protocol" => "路由中的模型必须使用同一协议",
+                    "model route member is duplicated" => "路由中的模型不能重复",
+                    "model route member is not a provider model" => "路由中的模型已不存在",
+                    other => other,
+                })
+            })?;
+        }
+        "deleteRoute" => {
+            let key = payload["routeRecordKey"]
+                .as_str()
+                .ok_or_else(|| Error::invalid("route record key"))?;
+            if !gateway.routes.iter().any(|r| r.record_key == key) {
+                return Err(Error::invalid("route record key"));
+            }
+            gateway.routes.retain(|r| r.record_key != key);
         }
         _ => return Err(Error::invalid("provider operation")),
     }

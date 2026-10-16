@@ -244,7 +244,7 @@ extension ImmediateDisclosureGroup where Label == Text {
     }
 }
 
-enum SettingsTab: Hashable { case providers, conversation, runtimes }
+enum SettingsTab: Hashable { case providers, routes, conversation, runtimes }
 
 /// The settings tab that is showing. Entry points elsewhere in the app set it
 /// before opening the window, so settings open where the task needs them.
@@ -269,6 +269,7 @@ struct SettingsView: View {
     var body: some View {
         TabView(selection: $navigator.tab) {
             ProviderSettingsView(store: store).tabItem { Label("AI提供商", systemImage: "network") }.tag(SettingsTab.providers)
+            ModelRouteSettingsView(store: store).tabItem { Label("模型路由", systemImage: "arrow.triangle.branch") }.tag(SettingsTab.routes)
             ConversationSettingsView(store: store).tabItem { Label("会话", systemImage: "bubble.left.and.bubble.right") }.tag(SettingsTab.conversation)
             RuntimeSettingsView(store: store).tabItem { Label("Agent 运行时", systemImage: "terminal") }.tag(SettingsTab.runtimes)
         }

@@ -1,5 +1,6 @@
 //! Local LLM ingress. Same-protocol traffic remains native; cross-protocol
-//! routing uses request-scoped best-effort translation. Fail-over is disabled.
+//! routing uses request-scoped best-effort translation. A model route fails
+//! over to its next member only before anything has reached the caller.
 use crate::{
     analytics::{
         AnalyticsOutcome, AnalyticsProtocol, AnalyticsRecord, RequestAnalytics,
@@ -26,7 +27,7 @@ use std::{
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
     thread::{self, JoinHandle},
-    time::Duration,
+    time::{Duration, Instant},
 };
 use tokio::sync::{mpsc, oneshot};
 use tracing::{Instrument, instrument::WithSubscriber};
@@ -96,8 +97,11 @@ struct RouteTarget {
     provider_name: String,
     model_record_key: String,
 }
+/// The targets one request may use, in priority order: a provider model's own
+/// target, or a model route's members.
+type Route = Arc<[RouteTarget]>;
 struct Ingress {
-    routes: Arc<RwLock<BTreeMap<String, RouteTarget>>>,
+    routes: Arc<RwLock<BTreeMap<String, Route>>>,
     token: String,
     resolver: Arc<dyn CredentialResolver>,
     client: Client,
@@ -105,11 +109,17 @@ struct Ingress {
     next_request: AtomicU64,
     stopping: Arc<AtomicBool>,
     analytics: Option<SharedAnalyticsSink>,
+    health: RouteHealth,
 }
+
+/// Providers that answered 429, and until when; routes try them last. The
+/// caller keeps one across runners so a rate limit outlives a single turn.
+#[derive(Clone, Default)]
+pub struct RouteHealth(Arc<std::sync::Mutex<BTreeMap<String, Instant>>>);
 
 pub struct Runner {
     config: GatewayConfig,
-    routes: Arc<RwLock<BTreeMap<String, RouteTarget>>>,
+    routes: Arc<RwLock<BTreeMap<String, Route>>>,
     endpoint: String,
     token: String,
     stopping: Arc<AtomicBool>,
@@ -135,13 +145,20 @@ impl Runner {
         credential_resolver: Arc<dyn CredentialResolver>,
         aliases: BTreeMap<String, String>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
-        Self::start_with_analytics(config, credential_resolver, aliases, None)
+        Self::start_with_analytics(
+            config,
+            credential_resolver,
+            aliases,
+            None,
+            RouteHealth::default(),
+        )
     }
     pub fn start_with_analytics(
         config: GatewayConfig,
         credential_resolver: Arc<dyn CredentialResolver>,
         aliases: BTreeMap<String, String>,
         analytics: Option<SharedAnalyticsSink>,
+        health: RouteHealth,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         config.validate().map_err(GatewayError)?;
         let routes = Arc::new(RwLock::new(build_routes(&config, &aliases)?));
@@ -171,6 +188,7 @@ impl Runner {
             next_request: AtomicU64::new(1),
             stopping: stopping.clone(),
             analytics,
+            health,
         });
         let (stop, stopped) = oneshot::channel();
         let dispatcher = tracing::dispatcher::get_default(Clone::clone);
@@ -224,7 +242,7 @@ impl Drop for Runner {
 fn build_routes(
     config: &GatewayConfig,
     aliases: &BTreeMap<String, String>,
-) -> Result<BTreeMap<String, RouteTarget>, Box<dyn std::error::Error>> {
+) -> Result<BTreeMap<String, Route>, Box<dyn std::error::Error>> {
     let mut routes = BTreeMap::new();
     for (provider_slot, configured_provider) in config.providers.iter().enumerate() {
         for (model_slot, entry) in configured_provider.models.iter().enumerate() {
@@ -275,24 +293,25 @@ fn build_routes(
         }
     }
     let targets = routes;
-    let mut routes = BTreeMap::new();
-    for entry in config
-        .providers
+    let mut logical = targets
         .iter()
-        .flat_map(|provider| &provider.models)
-    {
-        let alias = format!("velune/model/{}", entry.record_key);
-        routes.insert(
-            alias,
-            targets
-                .get(&entry.record_key)
-                .expect("built target")
-                .clone(),
-        );
+        .map(|(key, target)| (key.clone(), Route::from([target.clone()])))
+        .collect::<BTreeMap<_, _>>();
+    for route in &config.routes {
+        let members = route
+            .members
+            .iter()
+            .map(|key| targets.get(key).cloned().expect("validated route member"))
+            .collect::<Route>();
+        logical.insert(route.record_key.clone(), members);
     }
-    for (alias, logical) in aliases {
-        let target = targets
-            .get(logical)
+    let mut routes = BTreeMap::new();
+    for (key, route) in &logical {
+        routes.insert(format!("velune/model/{key}"), route.clone());
+    }
+    for (alias, logical_key) in aliases {
+        let target = logical
+            .get(logical_key)
             .cloned()
             .ok_or(GatewayError("gateway route target"))?;
         if routes.insert(alias.clone(), target).is_some() {
@@ -449,7 +468,7 @@ async fn ingress_observed(
             "gateway model is required",
         );
     };
-    let target = match state.routes.read() {
+    let route = match state.routes.read() {
         Ok(routes) => routes.get(model).cloned(),
         Err(_) => {
             return rejected(
@@ -459,13 +478,15 @@ async fn ingress_observed(
             );
         }
     };
-    let Some(target) = target else {
+    let Some(route) = route else {
         return rejected(
             observation,
             StatusCode::BAD_REQUEST,
             "gateway model route is missing",
         );
     };
+    // Members share a protocol; the first one stands for the route here.
+    let target = &route[0];
     let stream = match body.get("stream") {
         None => false,
         Some(Value::Bool(value)) => *value,
@@ -512,48 +533,17 @@ async fn ingress_observed(
         headers
     };
     tracing::Span::current().record("stream", stream);
-    tracing::info!(
-        event = "gateway_route_selected",
-        provider_slot = target.provider_slot,
-        model_slot = target.model_slot
-    );
+    let candidates = state.candidates(&route, &body);
     let (sender, mut receiver) = mpsc::channel(1);
     let request_span = tracing::Span::current();
     let dispatcher = tracing::dispatcher::get_default(Clone::clone);
-    let analytics = state.analytics.clone().map(|sink| {
-        RequestAnalytics::new(
-            sink,
-            AnalyticsRecord {
-                request_id,
-                provider_id: target.provider_id.clone(),
-                provider_name: target.provider_name.clone(),
-                model_record_key: target.model_record_key.clone(),
-                provider_model_id: target.model.as_str().to_owned(),
-                protocol: match target.protocol {
-                    GatewayProtocol::ChatCompletionsV1 => AnalyticsProtocol::ChatCompletions,
-                    GatewayProtocol::ResponsesV1 => AnalyticsProtocol::Responses,
-                    GatewayProtocol::MessagesV1 => AnalyticsProtocol::Messages,
-                },
-                started_at_ms,
-                terminal_at_ms: started_at_ms,
-                elapsed_ms: 0,
-                first_output_ms: None,
-                terminal_elapsed_ms: None,
-                status: None,
-                outcome: AnalyticsOutcome::Cancelled,
-                usage: TokenUsage::default(),
-                usage_reported: false,
-                usage_complete: false,
-            },
-            state.stopping.clone(),
-        )
-    });
     let task = tokio::spawn(async move {
         // Future polls retain the application's scoped diagnostic dispatcher.
         dispatch(
             state,
-            analytics,
-            target,
+            request_id,
+            started_at_ms,
+            candidates,
             body,
             headers,
             stream,
@@ -709,57 +699,258 @@ async fn send_failure(
     .await;
 }
 
-#[allow(clippy::too_many_arguments)] // Captured request, delivery and analytics have distinct lifetimes.
+/// How an attempt ended. Anything delivered, including a cancelled delivery,
+/// settles the request; a failure before delivery is held back so the
+/// request may continue with the next candidate.
+enum AttemptEnd {
+    Settled,
+    Failed(PendingFailure),
+}
+struct PendingFailure {
+    meta: Option<ResponseMeta>,
+    body: Option<Payload<Vec<u8>>>,
+    status: u16,
+    message: &'static str,
+    next: NextCandidate,
+}
+enum NextCandidate {
+    /// The failure says nothing about the other candidates: the request
+    /// itself was refused, the account was refused, or delivery was cancelled.
+    Stop,
+    /// This target could not serve the request; another one may.
+    Allowed { cooldown: Option<Duration> },
+}
+impl PendingFailure {
+    fn new(status: u16, message: &'static str, next: NextCandidate) -> Self {
+        Self {
+            meta: None,
+            body: None,
+            status,
+            message,
+            next,
+        }
+    }
+}
+
+/// A 429 keeps the provider at the back of routes for its Retry-After, or a minute.
+const DEFAULT_COOLDOWN: Duration = Duration::from_secs(60);
+const MAX_COOLDOWN: Duration = Duration::from_secs(24 * 60 * 60);
+
+/// Whether a failure before delivery leaves the other candidates open.
+/// Requests the target refused (4xx other than 429) and refused accounts
+/// (401/403) stop; overload, rate limits and failures to reach it do not.
+fn next_candidate(
+    rate_limited: bool,
+    cancelled: bool,
+    status: Option<u16>,
+    headers: &[Header],
+) -> NextCandidate {
+    if cancelled {
+        return NextCandidate::Stop;
+    }
+    match status {
+        _ if rate_limited || status == Some(429) => NextCandidate::Allowed {
+            cooldown: Some(
+                headers
+                    .iter()
+                    .find(|header| header.name.eq_ignore_ascii_case("retry-after"))
+                    .and_then(|header| header.value.trim().parse::<u64>().ok())
+                    .map_or(DEFAULT_COOLDOWN, Duration::from_secs)
+                    .min(MAX_COOLDOWN),
+            ),
+        },
+        // No response: the connection failed or timed out before headers.
+        // A model request has no effect beyond the call, so trying another
+        // target is allowed even if this one may have started generating.
+        None => NextCandidate::Allowed { cooldown: None },
+        Some(status) if status >= 500 => NextCandidate::Allowed { cooldown: None },
+        Some(_) => NextCandidate::Stop,
+    }
+}
+
+impl Ingress {
+    /// The route's targets in the order this request tries them: providers
+    /// cooling down after a 429 go last. A request that refers to state kept
+    /// by the upstream (a stored response or conversation) belongs to the
+    /// account that keeps it and gets only the first target.
+    fn candidates(&self, route: &Route, body: &Value) -> Vec<RouteTarget> {
+        let now = Instant::now();
+        let mut cooldowns = self.health.0.lock().expect("gateway cooldowns");
+        cooldowns.retain(|_, until| *until > now);
+        let (mut ready, cooling): (Vec<_>, Vec<_>) = route
+            .iter()
+            .cloned()
+            .partition(|target| !cooldowns.contains_key(&target.provider_id));
+        ready.extend(cooling);
+        let stateful = ["previous_response_id", "conversation"]
+            .iter()
+            .any(|field| body.get(*field).is_some_and(|value| !value.is_null()));
+        if stateful {
+            ready.truncate(1);
+        }
+        ready
+    }
+    fn cool(&self, provider_id: &str, duration: Duration) {
+        self.health
+            .0
+            .lock()
+            .expect("gateway cooldowns")
+            .insert(provider_id.to_owned(), Instant::now() + duration);
+    }
+    fn analytics(
+        &self,
+        request_id: String,
+        started_at_ms: i64,
+        target: &RouteTarget,
+    ) -> Option<RequestAnalytics> {
+        self.analytics.clone().map(|sink| {
+            RequestAnalytics::new(
+                sink,
+                AnalyticsRecord {
+                    request_id,
+                    provider_id: target.provider_id.clone(),
+                    provider_name: target.provider_name.clone(),
+                    model_record_key: target.model_record_key.clone(),
+                    provider_model_id: target.model.as_str().to_owned(),
+                    protocol: match target.protocol {
+                        GatewayProtocol::ChatCompletionsV1 => AnalyticsProtocol::ChatCompletions,
+                        GatewayProtocol::ResponsesV1 => AnalyticsProtocol::Responses,
+                        GatewayProtocol::MessagesV1 => AnalyticsProtocol::Messages,
+                    },
+                    started_at_ms,
+                    terminal_at_ms: started_at_ms,
+                    elapsed_ms: 0,
+                    first_output_ms: None,
+                    terminal_elapsed_ms: None,
+                    status: None,
+                    outcome: AnalyticsOutcome::Cancelled,
+                    usage: TokenUsage::default(),
+                    usage_reported: false,
+                    usage_complete: false,
+                },
+                self.stopping.clone(),
+            )
+        })
+    }
+}
+
+#[allow(clippy::too_many_arguments)] // Captured request and delivery have distinct lifetimes.
 async fn dispatch(
     state: Arc<Ingress>,
-    analytics: Option<RequestAnalytics>,
-    target: RouteTarget,
+    request_id: String,
+    started_at_ms: i64,
+    candidates: Vec<RouteTarget>,
     body: Value,
     headers: Vec<Header>,
     stream: bool,
     translation: Option<velune_ai_provider::translation::PreparedTranslation>,
     sender: mpsc::Sender<WireEvent>,
 ) {
-    let tracker = analytics.as_ref().map(|guard| guard.tracker.clone());
-    let attempt_span = tracing::info_span!("gateway_attempt", attempt = 1);
-    let mut observation = Observation::new(
-        "gateway_attempt_finished",
-        attempt_span.clone(),
-        state.stopping.clone(),
-    );
     if let Some(plan) = translation {
-        let model = target.model.as_str().to_owned();
+        let model = candidates[0].model.as_str().to_owned();
         let (upstream, receiver) = mpsc::channel(1);
         // Both futures belong to the ingress task. Downstream drop aborts both;
-        // bounded channels retain native backpressure and cancellation.
-        let native = dispatch_observed(
+        // bounded channels retain native backpressure and cancellation. Every
+        // attempt delivers into the same conversion.
+        let native = attempts(
             state,
-            tracker,
-            target,
+            request_id,
+            started_at_ms,
+            candidates,
             body,
             headers,
             stream,
             upstream,
-            &mut observation,
-        )
-        .instrument(attempt_span);
+        );
         let conversion = crate::translation::deliver(plan, model, stream, receiver, sender);
         tokio::join!(native, conversion);
     } else {
-        dispatch_observed(
+        attempts(
             state,
-            tracker,
-            target,
+            request_id,
+            started_at_ms,
+            candidates,
             body,
             headers,
             stream,
             sender,
-            &mut observation,
         )
-        .instrument(attempt_span)
         .await;
     }
-    drop(analytics);
+}
+
+#[allow(clippy::too_many_arguments)] // Captured request and delivery have distinct lifetimes.
+async fn attempts(
+    state: Arc<Ingress>,
+    request_id: String,
+    started_at_ms: i64,
+    candidates: Vec<RouteTarget>,
+    body: Value,
+    headers: Vec<Header>,
+    stream: bool,
+    sender: mpsc::Sender<WireEvent>,
+) {
+    let count = candidates.len();
+    for (index, target) in candidates.into_iter().enumerate() {
+        let attempt = index + 1;
+        let attempt_span = tracing::info_span!("gateway_attempt", attempt);
+        let mut observation = Observation::new(
+            "gateway_attempt_finished",
+            attempt_span.clone(),
+            state.stopping.clone(),
+        );
+        attempt_span.in_scope(|| {
+            tracing::info!(
+                event = "gateway_route_selected",
+                provider_slot = target.provider_slot,
+                model_slot = target.model_slot
+            )
+        });
+        // Each attempt is its own record; later ones extend the request's ID.
+        let analytics = if attempt == 1 {
+            state.analytics(request_id.clone(), started_at_ms, &target)
+        } else {
+            state.analytics(format!("{request_id}/{attempt}"), now_ms(), &target)
+        };
+        let provider_id = target.provider_id.clone();
+        let end = dispatch_observed(
+            state.clone(),
+            analytics.as_ref().map(|guard| guard.tracker.clone()),
+            target,
+            body.clone(),
+            headers.clone(),
+            stream,
+            sender.clone(),
+            &mut observation,
+        )
+        .instrument(attempt_span.clone())
+        .await;
+        drop(analytics);
+        let AttemptEnd::Failed(failure) = end else {
+            return;
+        };
+        if let NextCandidate::Allowed { cooldown } = &failure.next {
+            if let Some(cooldown) = cooldown {
+                state.cool(&provider_id, *cooldown);
+            }
+            if attempt < count {
+                attempt_span.in_scope(|| {
+                    tracing::info!(event = "gateway_failover", http_status = failure.status)
+                });
+                continue;
+            }
+        }
+        drop(observation);
+        send_failure(
+            &sender,
+            failure.meta,
+            failure.body,
+            failure.status,
+            failure.message,
+        )
+        .await;
+        return;
+    }
 }
 
 #[allow(clippy::too_many_arguments)] // Same native dispatch for both delivery modes.
@@ -772,7 +963,7 @@ async fn dispatch_observed(
     stream: bool,
     sender: mpsc::Sender<WireEvent>,
     observation: &mut Observation,
-) {
+) -> AttemptEnd {
     tracing::info!(event = "gateway_attempt_started");
     // The gateway alone resolves ingress aliases to the exact provider identifier.
     body["model"] = Value::String(target.model.as_str().to_owned());
@@ -797,15 +988,12 @@ async fn dispatch_observed(
             }
             observation.finish("credential_failed");
             tracing::warn!(event="gateway_credential_failed",kind=?error);
-            send_failure(
-                &sender,
-                None,
-                None,
+            // Resolved on this machine; another member's source may still work.
+            return AttemptEnd::Failed(PendingFailure::new(
                 503,
                 "认证资源不可用；请在认证设置中检查认证或重新导入来源。",
-            )
-            .await;
-            return;
+                NextCandidate::Allowed { cooldown: None },
+            ));
         }
     };
     if let Some(tracker) = &tracker {
@@ -827,15 +1015,11 @@ async fn dispatch_observed(
                             .finish(AnalyticsOutcome::Failed);
                     }
                     observation.finish("configuration_failed");
-                    send_failure(
-                        &sender,
-                        None,
-                        None,
+                    return AttemptEnd::Failed(PendingFailure::new(
                         502,
                         "provider configuration is invalid",
-                    )
-                    .await;
-                    return;
+                        NextCandidate::Allowed { cooldown: None },
+                    ));
                 }
             };
             let sink_sender = sender.clone();
@@ -918,8 +1102,9 @@ async fn dispatch_observed(
                             .json(body.meta.status, body.body.get());
                     }
                     send_json(&sender, body).await;
+                    AttemptEnd::Settled
                 }
-                Ok(ChatCompletionsOutput::Stream(_)) => {}
+                Ok(ChatCompletionsOutput::Stream(_)) => AttemptEnd::Settled,
                 Err(error) => {
                     if matches!(error.kind, ChatCompletionsErrorKind::Cancelled) {
                         tracing::info!(event = "gateway_dispatch_canceled");
@@ -947,6 +1132,7 @@ async fn dispatch_observed(
                     }
                     if headers_sent {
                         let _ = sender.send(WireEvent::Failed).await;
+                        AttemptEnd::Settled
                     } else {
                         let status = match error.kind {
                             ChatCompletionsErrorKind::Authentication => 401,
@@ -955,14 +1141,19 @@ async fn dispatch_observed(
                             ChatCompletionsErrorKind::Timeout => 504,
                             _ => 502,
                         };
-                        send_failure(
-                            &sender,
-                            error.response,
-                            error.body,
+                        let next = next_candidate(
+                            matches!(error.kind, ChatCompletionsErrorKind::RateLimited),
+                            matches!(error.kind, ChatCompletionsErrorKind::Cancelled),
+                            error.response.as_ref().map(|meta| meta.status),
+                            error.response.as_ref().map_or(&[], |meta| &meta.headers),
+                        );
+                        AttemptEnd::Failed(PendingFailure {
+                            meta: error.response,
+                            body: error.body,
                             status,
-                            "upstream request failed",
-                        )
-                        .await;
+                            message: "upstream request failed",
+                            next,
+                        })
                     }
                 }
             }
@@ -982,15 +1173,11 @@ async fn dispatch_observed(
                             .finish(AnalyticsOutcome::Failed);
                     }
                     observation.finish("configuration_failed");
-                    send_failure(
-                        &sender,
-                        None,
-                        None,
+                    return AttemptEnd::Failed(PendingFailure::new(
                         502,
                         "provider configuration is invalid",
-                    )
-                    .await;
-                    return;
+                        NextCandidate::Allowed { cooldown: None },
+                    ));
                 }
             };
             let sink_sender = sender.clone();
@@ -1072,8 +1259,9 @@ async fn dispatch_observed(
                             .json(body.meta.status, body.body.get());
                     }
                     send_json(&sender, body).await;
+                    AttemptEnd::Settled
                 }
-                Ok(ResponsesOutput::Stream(..)) => {}
+                Ok(ResponsesOutput::Stream(..)) => AttemptEnd::Settled,
                 Err(error) => {
                     if matches!(error.kind, ResponsesErrorKind::Cancelled) {
                         tracing::info!(event = "gateway_dispatch_canceled");
@@ -1098,7 +1286,14 @@ async fn dispatch_observed(
                     }
                     if sent.load(std::sync::atomic::Ordering::Acquire) {
                         let _ = sender.send(WireEvent::Failed).await;
+                        AttemptEnd::Settled
                     } else {
+                        let next = next_candidate(
+                            matches!(error.kind, ResponsesErrorKind::RateLimited),
+                            matches!(error.kind, ResponsesErrorKind::Cancelled),
+                            error.status,
+                            &error.headers,
+                        );
                         let status = error.status.unwrap_or(match error.kind {
                             ResponsesErrorKind::Authentication => 401,
                             ResponsesErrorKind::Permission => 403,
@@ -1106,12 +1301,16 @@ async fn dispatch_observed(
                             ResponsesErrorKind::Timeout => 504,
                             _ => 502,
                         });
-                        let meta = Some(ResponseMeta {
+                        AttemptEnd::Failed(PendingFailure {
+                            meta: Some(ResponseMeta {
+                                status,
+                                headers: error.headers,
+                            }),
+                            body: error.body,
                             status,
-                            headers: error.headers,
-                        });
-                        send_failure(&sender, meta, error.body, status, "upstream request failed")
-                            .await;
+                            message: "upstream request failed",
+                            next,
+                        })
                     }
                 }
             }
@@ -1131,15 +1330,11 @@ async fn dispatch_observed(
                             .finish(AnalyticsOutcome::Failed);
                     }
                     observation.finish("configuration_failed");
-                    send_failure(
-                        &sender,
-                        None,
-                        None,
+                    return AttemptEnd::Failed(PendingFailure::new(
                         502,
                         "provider configuration is invalid",
-                    )
-                    .await;
-                    return;
+                        NextCandidate::Allowed { cooldown: None },
+                    ));
                 }
             };
             let sink_sender = sender.clone();
@@ -1222,8 +1417,9 @@ async fn dispatch_observed(
                             .json(body.meta.status, body.body.get());
                     }
                     send_json(&sender, body).await;
+                    AttemptEnd::Settled
                 }
-                Ok(MessagesOutput::Stream(_)) => {}
+                Ok(MessagesOutput::Stream(_)) => AttemptEnd::Settled,
                 Err(error) => {
                     if matches!(error.kind, MessagesErrorKind::Cancelled) {
                         tracing::info!(event = "gateway_dispatch_canceled");
@@ -1251,6 +1447,7 @@ async fn dispatch_observed(
                     }
                     if headers_sent {
                         let _ = sender.send(WireEvent::Failed).await;
+                        AttemptEnd::Settled
                     } else {
                         let status = match error.kind {
                             MessagesErrorKind::InvalidInput => 400,
@@ -1260,14 +1457,19 @@ async fn dispatch_observed(
                             MessagesErrorKind::Timeout => 504,
                             _ => 502,
                         };
-                        send_failure(
-                            &sender,
-                            error.response,
-                            error.body,
+                        let next = next_candidate(
+                            matches!(error.kind, MessagesErrorKind::RateLimited),
+                            matches!(error.kind, MessagesErrorKind::Cancelled),
+                            error.response.as_ref().map(|meta| meta.status),
+                            error.response.as_ref().map_or(&[], |meta| &meta.headers),
+                        );
+                        AttemptEnd::Failed(PendingFailure {
+                            meta: error.response,
+                            body: error.body,
                             status,
-                            "upstream request failed",
-                        )
-                        .await;
+                            message: "upstream request failed",
+                            next,
+                        })
                     }
                 }
             }

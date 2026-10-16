@@ -602,6 +602,7 @@ pub(crate) fn apply(
         gateway.providers.push(provider_def);
         imported.push(provider_id);
     }
+    gateway.prune_routes();
     gateway.validate().map_err(RuntimeError::invalid)?;
     Ok(
         json!({"importedProviderIds":imported,"skippedProviderIds":skipped,"sourceFingerprint":snapshot.source_fingerprint,"targetFingerprint":fingerprint(gateway)?}),

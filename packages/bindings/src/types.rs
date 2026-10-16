@@ -366,12 +366,24 @@ pub struct BindingFailoverPolicy {
     pub mode: BindingFailoverMode,
 }
 
+/// Provider models chosen together; the gateway fails over between them in order.
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BindingModelRoute {
+    /// Empty when saving a new route.
+    pub record_key: String,
+    pub name: String,
+    /// Provider model record keys, in priority order.
+    pub members: Vec<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct BindingGatewayConfig {
     pub id: String,
     pub name: String,
     pub providers: Vec<BindingProviderDefinition>,
+    pub routes: Vec<BindingModelRoute>,
     pub failover: BindingFailoverPolicy,
 }
 

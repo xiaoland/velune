@@ -176,7 +176,7 @@ fn main()->Result<(),Box<dyn std::error::Error>> {
             config.write_text(json.dumps({'id': 'synthetic', 'name': 'synthetic', 'providers': [{'id': 'pi-chat', 'name': 'pi-chat',
                 'protocol': 'chatCompletionsV1', 'endpoint': 'http://127.0.0.1:%d/v1' % server.server_port, 'credentialRef': 'synthetic',
                 'models': [{'recordKey': 'pi-chat', 'providerModelId': 'synthetic-pi', 'nickname': 'synthetic', 'maxOutputTokens': 128}]}],
-                'failover': {'mode': 'disabled'}}))
+                'routes': [], 'failover': {'mode': 'disabled'}}))
             # Locate only the selected external installation's public SDK exports.
             resolved = subprocess.run([str(args.node), '--input-type=module', '-e',
                 'import {pathToFileURL} from "node:url"; const {resolvePiInstallation}=await import(pathToFileURL(process.argv[1])); console.log(resolvePiInstallation(process.argv[2]).cli);',

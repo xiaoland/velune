@@ -47,6 +47,7 @@ pub struct GatewaySummary {
     pub id: String,
     pub name: String,
     pub providers: Vec<ProviderSummary>,
+    pub routes: Vec<crate::config::ModelRoute>,
     pub failover: FailoverPolicy,
 }
 impl From<&GatewayConfig> for GatewaySummary {
@@ -66,6 +67,7 @@ impl From<&GatewayConfig> for GatewaySummary {
                     models: p.models.clone(),
                 })
                 .collect(),
+            routes: g.routes.clone(),
             failover: g.failover.clone(),
         }
     }
@@ -1426,6 +1428,29 @@ impl Application {
         self.execute(
             "providers",
             json!({"operation":"delete","gatewayID":gateway_id,"providerID":provider_id}),
+            None,
+        )
+    }
+    /// Save a model route; an empty record key creates one.
+    pub fn save_model_route(
+        &mut self,
+        gateway_id: String,
+        route: crate::config::ModelRoute,
+    ) -> Result<GatewayUpdate, Error> {
+        self.execute(
+            "providers",
+            json!({"operation":"saveRoute","gatewayID":gateway_id,"route":route}),
+            None,
+        )
+    }
+    pub fn delete_model_route(
+        &mut self,
+        gateway_id: String,
+        route_record_key: String,
+    ) -> Result<GatewayUpdate, Error> {
+        self.execute(
+            "providers",
+            json!({"operation":"deleteRoute","gatewayID":gateway_id,"routeRecordKey":route_record_key}),
             None,
         )
     }

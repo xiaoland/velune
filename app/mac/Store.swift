@@ -1183,6 +1183,19 @@ final class AppStore: ObservableObject {
             }
         }
     }
+    func saveModelRoute(_ value: ModelRoute, onSaved: (() -> Void)? = nil) {
+        guard !authenticationRunning, !isGenerating else { recordProblem("请先停止当前任务或完成登录"); return }
+        if isPreview { var saved = value; if saved.recordKey.isEmpty { saved.recordKey = UUID().uuidString }; gateway.routes.removeAll { $0.recordKey == saved.recordKey }; gateway.routes.append(saved); onSaved?(); return }
+        guard let transport else { recordProblem("本地核心未配置"); return }
+        enqueue({ try transport.saveModelRoute(gatewayID: self.gateway.id, route: value) }) { [weak self] data in
+            self?.applyGatewayUpdate(data); onSaved?()
+        }
+    }
+    func deleteModelRoute(_ recordKey: String) {
+        if isPreview { gateway.routes.removeAll { $0.recordKey == recordKey }; return }
+        guard let transport else { recordProblem("本地核心未配置"); return }
+        enqueue({ try transport.deleteModelRoute(gatewayID: self.gateway.id, recordKey: recordKey) }) { [weak self] in self?.applyGatewayUpdate($0) }
+    }
     func deleteProvider(id: String) {
         if isPreview { gateway.providers.removeAll { $0.id == id }; return }
         guard let transport else { recordProblem("本地核心未配置"); return }

@@ -274,6 +274,7 @@ impl CoreRuntime {
             id: "default".into(),
             name: "默认网关".into(),
             providers: Vec::new(),
+            routes: Vec::new(),
             failover: crate::config::FailoverPolicy {
                 mode: crate::config::FailoverMode::Disabled,
             },
@@ -390,6 +391,7 @@ impl CoreRuntime {
                         id: "default".into(),
                         name: "默认网关".into(),
                         providers: Vec::new(),
+                        routes: Vec::new(),
                         failover: crate::config::FailoverPolicy {
                             mode: crate::config::FailoverMode::Disabled,
                         },

@@ -65,12 +65,25 @@ pub struct FailoverPolicy {
     pub mode: FailoverMode,
 }
 
+/// An ordered set of provider models chosen like a model; the gateway fails
+/// over between its members.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ModelRoute {
+    pub record_key: String,
+    pub name: String,
+    /// Provider model record keys, in priority order.
+    pub members: Vec<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct GatewayConfig {
     pub id: String,
     pub name: String,
     pub providers: Vec<ProviderDefinition>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub routes: Vec<ModelRoute>,
     pub failover: FailoverPolicy,
 }
 
@@ -261,23 +274,63 @@ impl GatewayConfig {
 
     #[cfg(feature = "local-runtime")]
     pub(crate) fn authentication_revision(&self, key: &str) -> u64 {
-        self.providers
-            .iter()
-            .find(|p| p.models.iter().any(|m| m.record_key == key))
-            .map_or(0, |p| p.authentication.generation)
+        self.resolve_dispatch(key)
+            .map_or(0, |resolved| resolved.provider.authentication.generation)
     }
+    /// A route's requests must suit every member, so one subscription member
+    /// makes the whole route follow the subscription contract.
     #[cfg(feature = "local-runtime")]
     pub(crate) fn subscription(&self, key: &str) -> bool {
+        self.members(key).iter().any(|member| {
+            self.providers
+                .iter()
+                .find(|p| p.models.iter().any(|m| &m.record_key == member))
+                .is_some_and(|p| p.authentication.subscription())
+        })
+    }
+    /// The provider models a selection key dispatches to: a route's members,
+    /// or the provider model itself.
+    #[cfg_attr(not(feature = "local-runtime"), allow(dead_code))]
+    pub(crate) fn members(&self, key: &str) -> Vec<String> {
+        self.route(key)
+            .map_or_else(|| vec![key.to_owned()], |route| route.members.clone())
+    }
+    pub fn route(&self, key: &str) -> Option<&ModelRoute> {
+        self.routes.iter().find(|route| route.record_key == key)
+    }
+    /// Every key a conversation can select: provider models, then routes.
+    #[cfg(feature = "local-runtime")]
+    pub(crate) fn selectable_keys(&self) -> impl Iterator<Item = &str> {
         self.providers
             .iter()
-            .find(|p| p.models.iter().any(|m| m.record_key == key))
-            .is_some_and(|p| p.authentication.subscription())
+            .flat_map(|p| &p.models)
+            .map(|m| m.record_key.as_str())
+            .chain(self.routes.iter().map(|r| r.record_key.as_str()))
+    }
+    /// Remove route members whose provider model no longer exists, and routes
+    /// left without members.
+    pub(crate) fn prune_routes(&mut self) {
+        let models = self
+            .providers
+            .iter()
+            .flat_map(|p| &p.models)
+            .map(|m| m.record_key.clone())
+            .collect::<std::collections::BTreeSet<_>>();
+        for route in &mut self.routes {
+            route.members.retain(|key| models.contains(key));
+        }
+        self.routes.retain(|route| !route.members.is_empty());
     }
     /// Generate private record keys only for newly-created records. Native provider IDs remain unchanged.
     pub(crate) fn assign_record_keys(&mut self) {
         for model in self.providers.iter_mut().flat_map(|p| &mut p.models) {
             if model.record_key.is_empty() {
                 model.record_key = crate::new_record_key();
+            }
+        }
+        for route in &mut self.routes {
+            if route.record_key.is_empty() {
+                route.record_key = crate::new_record_key();
             }
         }
     }
@@ -314,11 +367,16 @@ impl GatewayConfig {
         Ok(format!("vln_{digest:x}"))
     }
 
-    /// Resolve model ownership from the already validated application configuration.
+    /// Resolve model ownership from the already validated application
+    /// configuration. A route resolves to its first member, whose protocol
+    /// and model parameters the runtime is given; members share a protocol.
     pub fn resolve_dispatch(
         &self,
         model_record_key: &str,
     ) -> Result<ResolvedProviderModel<'_>, &'static str> {
+        let model_record_key = self
+            .route(model_record_key)
+            .map_or(model_record_key, |route| route.members[0].as_str());
         self.providers
             .iter()
             .find_map(|provider| {
@@ -443,6 +501,15 @@ impl GatewayConfig {
                     })
                 })
                 .collect::<Result<Vec<_>, crate::Error>>()?,
+            routes: self
+                .routes
+                .iter()
+                .map(|route| velune_gateway::ModelRoute {
+                    record_key: route.record_key.clone(),
+                    name: route.name.clone(),
+                    members: route.members.clone(),
+                })
+                .collect(),
             failover: velune_gateway::FailoverPolicy {
                 mode: velune_gateway::FailoverMode::Disabled,
             },

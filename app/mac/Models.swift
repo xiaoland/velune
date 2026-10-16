@@ -333,10 +333,19 @@ struct AIProvider: Codable, Sendable, Identifiable, Equatable {
 
 enum FailoverMode: String, Codable, Sendable { case disabled }
 struct FailoverPolicy: Codable, Sendable, Equatable { var mode: FailoverMode = .disabled }
+/// Provider models chosen together; the gateway fails over between them in order.
+struct ModelRoute: Codable, Sendable, Identifiable, Equatable {
+    var recordKey: String
+    var name: String
+    /// Provider model record keys, in priority order.
+    var members: [String]
+    var id: String { recordKey }
+}
 struct GatewayConfig: Codable, Sendable, Equatable {
     var id: String = "default"
     var name: String = "默认网关"
     var providers: [AIProvider] = []
+    var routes: [ModelRoute] = []
     var failover: FailoverPolicy = FailoverPolicy()
 }
 

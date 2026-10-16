@@ -49,12 +49,25 @@ pub struct FailoverPolicy {
     pub mode: FailoverMode,
 }
 
+/// An ordered set of provider models selected under one record key. The
+/// gateway tries members in order and fails over before anything reaches the
+/// caller; a provider model selected directly never fails over.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ModelRoute {
+    pub record_key: String,
+    pub name: String,
+    /// Provider model record keys, in priority order.
+    pub members: Vec<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct GatewayConfig {
     pub id: String,
     pub name: String,
     pub providers: Vec<ProviderDefinition>,
+    pub routes: Vec<ModelRoute>,
     pub failover: FailoverPolicy,
 }
 
@@ -94,6 +107,33 @@ impl GatewayConfig {
                     {
                         return Err("invalid reasoning declaration");
                     }
+                }
+            }
+        }
+        for route in &self.routes {
+            if route.record_key.is_empty() || !models.insert(&route.record_key) {
+                return Err("model route identity is invalid");
+            }
+            if route.name.trim().is_empty() || route.members.is_empty() {
+                return Err("model route needs a name and members");
+            }
+            let mut members = BTreeSet::new();
+            let mut protocol = None;
+            for key in &route.members {
+                let provider = self
+                    .providers
+                    .iter()
+                    .find(|p| p.models.iter().any(|m| &m.record_key == key))
+                    .ok_or("model route member is not a provider model")?;
+                if !members.insert(key) {
+                    return Err("model route member is duplicated");
+                }
+                // Same protocol is necessary for the request to stay as sent.
+                if protocol
+                    .replace(&provider.protocol)
+                    .is_some_and(|p| p != &provider.protocol)
+                {
+                    return Err("model route members must share a protocol");
                 }
             }
         }

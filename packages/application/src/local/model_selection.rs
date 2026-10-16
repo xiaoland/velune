@@ -23,13 +23,8 @@ impl CoreRuntime {
             .gateways
             .iter()
             .find(|gateway| gateway.id == runtime.gateway_id)
-            .and_then(|gateway| {
-                gateway
-                    .providers
-                    .iter()
-                    .flat_map(|provider| &provider.models)
-                    .find(|model| model.record_key == key)
-            })
+            .and_then(|gateway| gateway.resolve_dispatch(key).ok())
+            .map(|resolved| resolved.model())
             .ok_or_else(|| RuntimeError::invalid("所选会话模型已不存在，请重新选择"))?;
         let declared = model.reasoning_levels.as_deref().unwrap_or_default();
         Ok(match runtime.type_id.as_str() {
@@ -459,6 +454,15 @@ impl CoreRuntime {
                     reasoning_efforts: self.reasoning_efforts(&runtime, &model.record_key)?,
                 });
             }
+            for route in &gateway.routes {
+                models.push(RuntimeModel {
+                    selection: ModelSelection::Managed {
+                        model_record_key: route.record_key.clone(),
+                    },
+                    name: format!("{} · 模型路由", route.name),
+                    reasoning_efforts: self.reasoning_efforts(&runtime, &route.record_key)?,
+                });
+            }
         }
         Ok(serde_json::to_value(models)?)
     }
@@ -477,6 +481,9 @@ impl CoreRuntime {
                     .gateways
                     .iter()
                     .find(|gateway| gateway.id == runtime.gateway_id)?;
+                if let Some(route) = gateway.route(model_record_key) {
+                    return Some(format!("{} · 模型路由", route.name));
+                }
                 gateway.providers.iter().find_map(|provider| {
                     let model = provider
                         .models
@@ -510,18 +517,13 @@ impl CoreRuntime {
                 continue;
             };
             let key = gateway
-                .providers
-                .iter()
-                .flat_map(|provider| &provider.models)
-                .find(|route| {
+                .selectable_keys()
+                .find(|key| {
                     gateway
-                        .pi_binding_id(
-                            &route.record_key,
-                            gateway.authentication_revision(&route.record_key),
-                        )
+                        .pi_binding_id(key, gateway.authentication_revision(key))
                         .is_ok_and(|alias| &alias == model)
                 })
-                .map(|route| route.record_key.clone());
+                .map(str::to_owned);
             if let Some(name) = key.and_then(|model_record_key| {
                 self.turn_model_name(runtime_id, &ModelSelection::Managed { model_record_key })
             }) {

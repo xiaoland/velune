@@ -88,6 +88,8 @@ final class Transport: @unchecked Sendable {
         try withApplication("saveProvider", changesConfiguration: true) { try $0.saveProvider(gatewayId: gatewayID, provider: BindingMapping.bindingProvider(provider), authenticationEdit: BindingMapping.bindingAuthenticationEdit(authenticationEdit)) }
     }
     func deleteProvider(gatewayID: String, providerID: String) throws -> BindingGatewayUpdate { try withApplication("deleteProvider", changesConfiguration: true) { try $0.deleteProvider(gatewayId: gatewayID, providerId: providerID) } }
+    func saveModelRoute(gatewayID: String, route: ModelRoute) throws -> BindingGatewayUpdate { try withApplication("saveModelRoute", changesConfiguration: true) { try $0.saveModelRoute(gatewayId: gatewayID, route: BindingMapping.bindingRoute(route)) } }
+    func deleteModelRoute(gatewayID: String, recordKey: String) throws -> BindingGatewayUpdate { try withApplication("deleteModelRoute", changesConfiguration: true) { try $0.deleteModelRoute(gatewayId: gatewayID, routeRecordKey: recordKey) } }
     func readProviderAPIKey(gatewayID: String, providerID: String) throws -> String { try withApplication("readProviderAPIKey") { try $0.readProviderApiKey(gatewayId: gatewayID, providerId: providerID) } }
     func saveTemplate(_ value: ModelTemplate) throws -> [BindingModelTemplate] { try withApplication("saveModelTemplate", changesConfiguration: true) { try $0.saveModelTemplate(template: BindingMapping.bindingTemplate(value)) } }
     func publicModelCatalog() throws -> [BindingCatalogModel] { try withApplication("fetchPublicModelCatalog") { try $0.fetchPublicModelCatalog() } }

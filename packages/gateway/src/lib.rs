@@ -13,7 +13,7 @@ pub use analytics::{
 pub use config::*;
 pub use runtime::{
     CredentialResolutionError, CredentialResolver, CredentialTarget, GatewayError,
-    ResolvedCredential, Runner,
+    ResolvedCredential, RouteHealth, Runner,
 };
 
 mod observation;

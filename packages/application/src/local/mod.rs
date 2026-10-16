@@ -139,6 +139,8 @@ pub struct CoreRuntime {
     turn_failures:
         std::cell::RefCell<BTreeMap<PathBuf, (velune_agent_runtime::activity::Signature, bool)>>,
     analytics: Arc<crate::analytics::AnalyticsStore>,
+    /// Rate-limited providers, kept across the gateway runners of turns.
+    route_health: velune_gateway::RouteHealth,
     repository: crate::repository::Repository,
 }
 
@@ -216,6 +218,7 @@ impl CoreRuntime {
             remote_homes: Default::default(),
             turn_failures: Default::default(),
             analytics,
+            route_health: Default::default(),
         })
     }
 

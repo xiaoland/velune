@@ -30,6 +30,7 @@ impl CoreRuntime {
                 crate::authentication_resolver::ProviderResolver::capture(&gateway, &self.options),
                 self.native_aliases(&runtime, model_record_key)?,
                 Some(self.analytics.clone()),
+                self.route_health.clone(),
             )
             .map_err(|error| RuntimeError::context("gateway startup", error))?;
             self.session.gateway_runner = Some(runner);
@@ -64,16 +65,11 @@ impl CoreRuntime {
             )
             .map_err(RuntimeError::invalid)?;
         let route_aliases = gateway
-            .providers
-            .iter()
-            .flat_map(|p| &p.models)
-            .map(|route| {
+            .selectable_keys()
+            .map(|key| {
                 gateway
-                    .pi_binding_id(
-                        &route.record_key,
-                        gateway.authentication_revision(&route.record_key),
-                    )
-                    .map(|alias| (alias, route.record_key.clone()))
+                    .pi_binding_id(key, gateway.authentication_revision(key))
+                    .map(|alias| (alias, key.to_owned()))
                     .map_err(RuntimeError::invalid)
             })
             .collect::<Result<BTreeMap<_, _>, _>>()?;
@@ -83,6 +79,7 @@ impl CoreRuntime {
             crate::authentication_resolver::ProviderResolver::capture(&gateway, &self.options),
             route_aliases,
             Some(self.analytics.clone()),
+            self.route_health.clone(),
         )
         .map_err(|error| RuntimeError::context("gateway startup", error))?;
         let context = self.prepare_execution_context(&runtime)?;

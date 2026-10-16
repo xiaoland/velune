@@ -140,6 +140,7 @@ pub(crate) fn read_api_key(
                 id: "lookup".into(),
                 name: "lookup".into(),
                 providers: vec![provider.clone()],
+                routes: Vec::new(),
                 failover: crate::config::FailoverPolicy {
                     mode: crate::config::FailoverMode::Disabled,
                 },

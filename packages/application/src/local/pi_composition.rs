@@ -54,16 +54,22 @@ pub(super) fn materialize_models(
         return Err(RuntimeError::invalid("refusing unmanaged runtime catalog"));
     }
     // Materialize each runnable provider model so Pi can switch using the same gateway revision.
+    // A route takes its first member's parameters under the route's name.
     let entries = gateway
-        .providers
-        .iter().flat_map(|p| &p.models)
-        .map(|model| -> Result<Value, RuntimeError> {
+        .selectable_keys()
+        .map(|key| -> Result<Value, RuntimeError> {
             let physical_id = gateway
-                .pi_binding_id(&model.record_key, gateway.authentication_revision(&model.record_key))
+                .pi_binding_id(key, gateway.authentication_revision(key))
                 .map_err(RuntimeError::invalid)?;
             let routed = gateway
-                .resolve_dispatch(&model.record_key)
+                .resolve_dispatch(key)
                 .map_err(RuntimeError::invalid)?;
+            let model = routed.model();
+            let name = match gateway.route(key) {
+                Some(route) => &route.name,
+                None if model.nickname.trim().is_empty() => &model.provider_model_id,
+                None => &model.nickname,
+            };
             let api = match routed.provider().protocol {
                 GatewayProtocol::ChatCompletionsV1 => "openai-completions",
                 GatewayProtocol::ResponsesV1 => "openai-responses",
@@ -74,8 +80,8 @@ pub(super) fn materialize_models(
             let declared_levels = pi_declared_levels(binding);
             let mut entry = json!({
                 "id": physical_id,
-                "modelRecordKey": model.record_key,
-                "name": if model.nickname.trim().is_empty() { &model.provider_model_id } else { &model.nickname },
+                "modelRecordKey": key,
+                "name": name,
                 // Velune does not know a gateway model's modalities; images
                 // reach the upstream, which accepts or refuses them.
                 "input": ["text", "image"],

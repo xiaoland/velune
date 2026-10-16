@@ -494,6 +494,25 @@ impl VeluneApplication {
             app.delete_provider(gateway_id, provider_id)
         })?)
     }
+    pub fn save_model_route(
+        &self,
+        gateway_id: String,
+        route: BindingModelRoute,
+    ) -> Result<BindingGatewayUpdate, BindingError> {
+        let route = convert(route)?;
+        convert(self.with("save_model_route", |app| {
+            app.save_model_route(gateway_id, route)
+        })?)
+    }
+    pub fn delete_model_route(
+        &self,
+        gateway_id: String,
+        route_record_key: String,
+    ) -> Result<BindingGatewayUpdate, BindingError> {
+        convert(self.with("delete_model_route", |app| {
+            app.delete_model_route(gateway_id, route_record_key)
+        })?)
+    }
     pub fn read_provider_api_key(
         &self,
         gateway_id: String,

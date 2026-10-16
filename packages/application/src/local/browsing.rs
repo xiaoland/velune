@@ -405,10 +405,9 @@ impl CoreRuntime {
             .find(|g| g.id == runtime.gateway_id)
             .ok_or_else(|| RuntimeError::invalid("runtime gateway"))?;
         let provider = gateway
-            .providers
-            .iter()
-            .find(|p| p.models.iter().any(|m| m.record_key == key))
-            .ok_or_else(|| RuntimeError::invalid("所选会话模型已不存在，请重新选择"))?;
+            .resolve_dispatch(key)
+            .map_err(|_| RuntimeError::invalid("所选会话模型已不存在，请重新选择"))?
+            .provider();
         let protocols = GatewayProtocol::runtime_provider_protocols(&runtime.type_id)
             .ok_or_else(|| RuntimeError::invalid("runtime type"))?;
         if !protocols.contains(&provider.protocol) {
@@ -571,12 +570,15 @@ impl CoreRuntime {
             .iter()
             .find(|g| g.id == runtime.gateway_id)
             .expect("configured gateway");
-        let provider = gateway
-            .providers
-            .iter()
-            .find(|p| p.models.iter().any(|m| m.record_key == key))
-            .expect("validated model");
-        if !provider.authentication.description().configured {
+        // A route runs while any member can authenticate; the gateway skips the others.
+        let configured = gateway.members(key).iter().any(|member| {
+            gateway
+                .providers
+                .iter()
+                .find(|p| p.models.iter().any(|m| &m.record_key == member))
+                .is_some_and(|p| p.authentication.description().configured)
+        });
+        if !configured {
             return Err(RuntimeError::invalid(
                 "此模型的提供商尚未配置认证，请先完成提供商配置",
             ));

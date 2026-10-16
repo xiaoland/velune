@@ -161,7 +161,10 @@ enum BindingMapping {
         return AIProvider(id: value.id, name: value.name, protocolID: protocolID(value.`protocol`), endpoint: value.endpoint, authentication: ProviderAuthentication(method: method, configured: value.authentication.configured, provenance: value.authentication.provenance?.displayName, actions: value.authentication.actions.map(settingAction)), models: value.models.map(model))
     }
     static func gateway(_ value: BindingGatewayConfig) -> GatewayConfig {
-        GatewayConfig(id: value.id, name: value.name, providers: value.providers.map(provider), failover: FailoverPolicy(mode: .disabled))
+        GatewayConfig(id: value.id, name: value.name, providers: value.providers.map(provider), routes: value.routes.map { ModelRoute(recordKey: $0.recordKey, name: $0.name, members: $0.members) }, failover: FailoverPolicy(mode: .disabled))
+    }
+    static func bindingRoute(_ value: ModelRoute) -> BindingModelRoute {
+        BindingModelRoute(recordKey: value.recordKey, name: value.name, members: value.members)
     }
     static func bindingProvider(_ value: AIProvider) -> BindingProviderDraft {
         BindingProviderDraft(id: value.id, name: value.name, protocol: bindingProtocol(value.protocolID), endpoint: value.endpoint, models: value.models.map(bindingModel))

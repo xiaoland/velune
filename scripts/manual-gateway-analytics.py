@@ -101,7 +101,7 @@ async fn main(){
  let gateway=Runner::start_with_analytics(GatewayConfig{id:"g".into(),name:"Synthetic".into(),providers:vec![
  provider(GatewayProtocol::ChatCompletionsV1,&["chat-json","chat-sse","chat-missing","chat-truncated","chat-error","chat-cancel","translate-unknown"],&args[1]),
  provider(GatewayProtocol::ResponsesV1,&["responses-json","responses-sse"],&args[1]),
- provider(GatewayProtocol::MessagesV1,&["messages-json","messages-sse","translate-messages","messages-uncached-json","messages-zero-json"],&args[1])],failover:FailoverPolicy{mode:FailoverMode::Disabled}},Arc::new(Auth),BTreeMap::new(),Some(store.clone())).unwrap();
+ provider(GatewayProtocol::MessagesV1,&["messages-json","messages-sse","translate-messages","messages-uncached-json","messages-zero-json"],&args[1])],routes:vec![],failover:FailoverPolicy{mode:FailoverMode::Disabled}},Arc::new(Auth),BTreeMap::new(),Some(store.clone()),RouteHealth::default()).unwrap();
  let client=reqwest::Client::new();
  let cases=["chat-json","chat-sse","chat-missing","chat-truncated","chat-error","chat-cancel","responses-json","responses-sse","messages-json","messages-sse","translate-unknown","translate-messages","messages-uncached-json","messages-zero-json"];
  for case in cases {

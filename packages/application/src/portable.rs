@@ -164,6 +164,7 @@ impl CoreRuntime {
                                 id: "default".into(),
                                 name: "默认网关".into(),
                                 providers: Vec::new(),
+                                routes: Vec::new(),
                                 failover: FailoverPolicy {
                                     mode: FailoverMode::Disabled,
                                 },
