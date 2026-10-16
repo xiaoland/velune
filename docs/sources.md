@@ -311,3 +311,7 @@ S17 实施授权：用户决定全面切换 UniFFI，并要求现在开始拆分
 ## S31
 
 2026-10-16 诊断一个 Codex 会话未读无法消除时（原因是标已读进行中保护未释放；该会话当时在 Codex 桌面端带子 Agent 运行），用户提出：“我们的 sub-agent / a2a 系列功能不完整，我建议优先补齐 UI 上的短板（未来还需要允许 agent runtime 互调用）”。用户从开发方列出的短板中选定第一批：子 Agent 概览、侧栏状态汇总、子会话导航，并一并解决父轮次结束后到达的子 Agent 审批。随后提醒：“虽然我认为一切都是 A2A，但是现在很多 agent runtime 的实践还有一套并行的 sub-agent 机制”。产品归 [PRD](prd/index.md#ai-网关与-agent-运行时配置)，实施归 [Agent 间协作任务](../tasks/agent-collaboration/packet.md)。
+
+## S32
+
+2026-10-16 子 Agent 界面补齐的验收发现，经网关的 Codex 轮次结束时 Velune 结束运行时进程，后台子 Agent 随之终止。用户：“是的，需要修复这一点，估计这个问题是普遍存在的，不只是 codex 这个 agent runtime 的，而且应该会对 Velune 的 Agent Runtime lib 的架构有较大改变。”随后从开发方的选项中确认：临时覆盖与进程持续到该轮工作（含子 Agent）全部结束；子 Agent 运行时需要重启的下一轮先等待或经确认停止子 Agent；父会话的停止同时停止其子 Agent。产品归 [PRD](prd/index.md#ai-网关与-agent-运行时配置)，实施归 [运行时工作生命周期任务](../tasks/runtime-work-lifetime/packet.md)。
