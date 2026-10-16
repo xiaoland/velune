@@ -17,6 +17,8 @@ import VeluneBindings
     @Published var outlineNavigation: TranscriptJump?
     /// The user message being edited, in a sheet over the tab.
     @Published var editing: MessageEditRequest?
+    /// Kept while the tab is behind another, with the scroll position.
+    let reading = TranscriptReading()
     /// Reading starts when the tab is first shown, so restored background tabs cost nothing.
     private var pendingStart: (() -> Void)?
 
@@ -26,13 +28,9 @@ import VeluneBindings
         pendingStart = start
     }
 
-    /// Shown at least once: its views stay, keeping their scroll and selection, while it is in the background.
-    @Published private(set) var isActive = false
-
     func activate() {
         guard let start = pendingStart else { return }
         pendingStart = nil
-        isActive = true
         start()
     }
 
@@ -123,7 +121,11 @@ import VeluneBindings
 
     func select(_ id: UUID) {
         guard let tab = tabs.first(where: { $0.id == id }) else { return }
-        if selectedID != id { selectedID = id }
+        if selectedID != id {
+            // Typing that went to the tab put behind goes to the one shown.
+            if selected.composer.isFocused { tab.composer.focusWhenShown() }
+            selectedID = id
+        }
         tab.activate()
     }
 

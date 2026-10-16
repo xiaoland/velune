@@ -23,35 +23,43 @@ struct PaneLayoutView: View {
 }
 
 /// Panes side by side or stacked, with dividers that resize the two panes
-/// beside them; a double click on one shares the room equally again.
+/// beside them; a double click on one shares the room equally again. A
+/// divider's drag is this view's until it ends: published to the window on
+/// every step, it would have every view of the window evaluated again.
 private struct PaneSplitView: View {
     @ObservedObject var window: ConversationWindowModel
     let split: PaneSplit
     let path: [Int]
     let previewEmpty: Bool
-    /// The fractions when the divider being dragged was picked up.
+    /// The fractions when the divider being dragged was picked up, and as dragged.
     @State private var dragStart: [Double]?
+    @State private var dragged: [Double]?
     private static let minimumLength: CGFloat = 320
 
     var body: some View {
         GeometryReader { geometry in
             let horizontal = split.axis == .horizontal
             let length = (horizontal ? geometry.size.width : geometry.size.height) - CGFloat(split.children.count - 1)
+            let fractions = dragged.flatMap { $0.count == split.fractions.count ? $0 : nil } ?? split.fractions
             let stack = horizontal ? AnyLayout(HStackLayout(spacing: 0)) : AnyLayout(VStackLayout(spacing: 0))
             stack {
                 ForEach(Array(split.children.enumerated()), id: \.element.paneIDs) { index, child in
                     if index > 0 { Divider() }
                     // Recursion through a type-erased view: a split can hold splits.
                     AnyView(PaneLayoutView(window: window, layout: child, path: path + [index], previewEmpty: previewEmpty))
-                        .frame(width: horizontal ? max(0, length * split.fractions[index]) : geometry.size.width,
-                               height: horizontal ? geometry.size.height : max(0, length * split.fractions[index]))
+                        .frame(width: horizontal ? max(0, length * fractions[index]) : geometry.size.width,
+                               height: horizontal ? geometry.size.height : max(0, length * fractions[index]))
                         .clipped()
                 }
             }
             .overlay {
-                SashOverlay(axis: horizontal ? .horizontal : .vertical, lengths: split.fractions.map { max(0, length * $0) },
+                SashOverlay(axis: horizontal ? .horizontal : .vertical, lengths: fractions.map { max(0, length * $0) },
                             drag: { index, distance in drag(before: index, distance: distance, length: length) },
-                            end: { dragStart = nil },
+                            end: {
+                                if let dragged { window.resize(at: path, fractions: dragged) }
+                                dragged = nil
+                                dragStart = nil
+                            },
                             reset: { window.resize(at: path, fractions: split.fractions.map { _ in 1 / Double(split.fractions.count) }) })
             }
         }
@@ -66,13 +74,14 @@ private struct PaneSplitView: View {
         var fractions = start
         fractions[index - 1] = min(max(start[index - 1] + Double(distance / length), minimum), pair - minimum)
         fractions[index] = pair - fractions[index - 1]
-        window.resize(at: path, fractions: fractions)
+        dragged = fractions
     }
 }
 
 /// A pane: its tab bar, always there as a handle to drag and a menu to
-/// open, above the shown tab. Tabs shown before stay in place, hidden,
-/// so they keep their scroll position.
+/// open, above the shown tab. Only the shown tab has views: a tab behind it
+/// keeps its transcript's native list (see `TranscriptReading`), so resizing
+/// the pane lays out one tab and switching back keeps the scroll position.
 struct PaneView: View {
     @ObservedObject var window: ConversationWindowModel
     @ObservedObject var pane: Pane
@@ -83,42 +92,16 @@ struct PaneView: View {
     var body: some View {
         VStack(spacing: 0) {
             PaneTabBar(window: window, pane: pane)
-            ZStack {
-                ForEach(pane.tabs) { tab in
-                    ActiveTab(tab: tab) {
-                        TabContentView(window: window, tab: tab, store: tab.store, shown: tab.id == pane.selectedID, previewEmpty: previewEmpty)
-                    }
-                    .hidden(tab.id != pane.selectedID)
-                }
-            }
-            // Exactly the room the pane has, however wide a tab's content would like to be.
-            .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
+            let tab = pane.selected
+            TabContentView(window: window, tab: tab, store: tab.store, previewEmpty: previewEmpty)
+                .id(tab.id)
+                // Exactly the room the pane has, however wide a tab's content would like to be.
+                .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
         }
         .background(PaneAnchor { [window, id = pane.id] in window.register(id, anchor: $0) })
         .onGeometryChange(for: CGSize.self) { $0.size } action: { size = $0 }
         .onDrop(of: [.url], delegate: PaneDropDelegate(window: window, pane: pane.id, size: size, zone: $dropZone))
         .overlay { if let dropZone { PaneDropHighlight(zone: dropZone) } }
-        .onChange(of: pane.selectedID) { old, new in
-            // Typing that went to the tab now hidden goes to the one shown.
-            guard pane.tabs.first(where: { $0.id == old })?.composer.isFocused == true, let tab = pane.tabs.first(where: { $0.id == new }) else { return }
-            DispatchQueue.main.async { tab.composer.focus() }
-        }
-    }
-}
-
-/// A tab's views once it has been shown.
-private struct ActiveTab<Content: View>: View {
-    @ObservedObject var tab: ConversationTab
-    @ViewBuilder let content: () -> Content
-
-    var body: some View {
-        if tab.isActive { content() }
-    }
-}
-
-private extension View {
-    @ViewBuilder func hidden(_ hidden: Bool) -> some View {
-        if hidden { self.hidden().accessibilityHidden(true) } else { self }
     }
 }
 
@@ -127,8 +110,6 @@ private struct TabContentView: View {
     @ObservedObject var window: ConversationWindowModel
     @ObservedObject var tab: ConversationTab
     @ObservedObject var store: AppStore
-    /// The tab its pane shows; only it presents runtime questions.
-    let shown: Bool
     let previewEmpty: Bool
 
     var body: some View {
@@ -141,7 +122,7 @@ private struct TabContentView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             footer
         }
-        .sheet(item: Binding(get: { shown ? store.pendingInteractions.first : nil }, set: { _ in })) { RuntimeInteractionView(store: store, interaction: $0) }
+        .sheet(item: Binding(get: { store.pendingInteractions.first }, set: { _ in })) { RuntimeInteractionView(store: store, interaction: $0) }
         .sheet(item: $tab.editing) { request in
             MessageEditorSheet(store: store, request: request, forked: window.openInNewTab(adopting:))
         }
@@ -179,7 +160,7 @@ private struct TabContentView: View {
     }
 
     private var transcript: some View {
-        TranscriptView(model: store.transcript, conversationID: store.loadedConversationID, scrollRequest: tab.scrollRequest,
+        TranscriptView(model: store.transcript, reading: tab.reading, conversationID: store.loadedConversationID, scrollRequest: tab.scrollRequest,
                        cwd: store.loadedConversationWorkingDirectory, remoteHost: store.loadedConversationLocation.host, outlineCollapsed: $tab.outlineCollapsed, navigation: tab.outlineNavigation,
                        activity: store.activity, loadPayloads: { [store] ids in store.loadPayloads(messageIDs: ids) },
                        openConversation: { [store] id in store.openLinkedConversation(id: id) },

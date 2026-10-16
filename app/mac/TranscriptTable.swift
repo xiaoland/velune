@@ -22,6 +22,8 @@ struct TranscriptActivity: Equatable, Sendable {
 }
 
 struct TranscriptTable: NSViewRepresentable {
+    /// Outlives this view, with its native list (see `TranscriptReading`).
+    let controller: TranscriptTableController
     let conversationID: String?
     let items: [TranscriptModel.Item]
     let revision: UInt64
@@ -47,9 +49,10 @@ struct TranscriptTable: NSViewRepresentable {
     /// Names a turn's settings and usage: runtime and permission names come from the configuration.
     let describeSettings: (TranscriptTurn) -> TurnSettingsSummary?
 
-    func makeCoordinator() -> TranscriptTableController { TranscriptTableController() }
-    func makeNSView(context: Context) -> NSScrollView { context.coordinator.makeView() }
+    func makeCoordinator() -> TranscriptTableController { controller }
+    func makeNSView(context: Context) -> NSScrollView { context.coordinator.view() }
     func updateNSView(_ scroll: NSScrollView, context: Context) { context.coordinator.update(self) }
+    static func dismantleNSView(_ scroll: NSScrollView, coordinator: TranscriptTableController) { coordinator.viewRemoved() }
 }
 
 /// A virtualized transcript. Row geometry is exactly the controller's height
@@ -122,7 +125,10 @@ struct TranscriptTable: NSViewRepresentable {
     private static let transitionDuration: CFTimeInterval = 0.3
 
     private var parent: TranscriptTable?
-    private weak var scroll: NSScrollView?
+    /// Kept while no view shows it, so it is shown again where it was.
+    private var scroll: NSScrollView?
+    /// Views showing the list: two for a moment when a tab moves.
+    private var shownBy = 0
     private weak var document: TranscriptDocumentView?
     private var entries: [Entry] = []
     private var indexByID: [String: Int] = [:]
@@ -158,10 +164,20 @@ struct TranscriptTable: NSViewRepresentable {
     private var lastOrigin: CGFloat = 0
     private var lastBottomRequest: UInt64?
     private var lastJumpToken: UInt64?
+    /// When the text last reflowed to a new width, and the pending reflow and
+    /// settling after a width change (see `clipFrameChanged`).
+    private var lastReflow: CFTimeInterval = 0
+    private var reflowPending = false
+    private var settleWork: DispatchWorkItem?
+    private static let reflowInterval: CFTimeInterval = 0.1
+    private static let settleDelay: TimeInterval = 0.15
 
     // MARK: Setup
 
-    func makeView() -> NSScrollView {
+    /// The list, made when it is first shown.
+    func view() -> NSScrollView {
+        shownBy += 1
+        if let scroll { return scroll }
         let scroll = NSScrollView()
         scroll.hasVerticalScroller = true
         scroll.autohidesScrollers = true
@@ -180,6 +196,13 @@ struct TranscriptTable: NSViewRepresentable {
         NotificationCenter.default.addObserver(self, selector: #selector(clipFrameChanged), name: NSView.frameDidChangeNotification, object: clip)
         NotificationCenter.default.addObserver(self, selector: #selector(liveResizeEnded), name: NSWindow.didEndLiveResizeNotification, object: nil)
         return scroll
+    }
+
+    /// Once no view shows the list its inputs go: their actions hold the
+    /// tab that holds this controller. The next view to show it gives new ones.
+    func viewRemoved() {
+        shownBy -= 1
+        if shownBy == 0 { parent = nil }
     }
 
     // MARK: SwiftUI input
@@ -650,13 +673,52 @@ struct TranscriptTable: NSViewRepresentable {
         if clipWidth != width { finishTransition() }
         if document.frame.width != clipWidth { programmatically { document.setFrameSize(NSSize(width: clipWidth, height: offsets.last ?? 0)) } }
         guard clipWidth != width else { materializeVisibleRows(); return }
+        // A width that keeps changing (a divider or the window being dragged,
+        // a sidebar sliding) reflows the text at most every `reflowInterval`:
+        // laying text out again at each frame, in every pane, is what drops
+        // frames. In between, rows keep their layout. Once the width settles,
+        // the rest of the list is measured at it.
+        scheduleSettle()
+        let elapsed = CACurrentMediaTime() - lastReflow
+        guard elapsed >= Self.reflowInterval else {
+            scheduleReflow(after: Self.reflowInterval - elapsed)
+            materializeVisibleRows()
+            return
+        }
+        reflow(to: clipWidth)
+    }
+
+    private func reflow(to clipWidth: CGFloat) {
+        lastReflow = CACurrentMediaTime()
         let anchor = captureAnchor()
         width = clipWidth
         measureToken?.cancel()
         // Off-screen rows keep their last displayed height until re-measured.
         prepareBand(around: anchor)
         commitExactHeights(in: entries.indices, keeping: anchor)
-        if !(scroll.window?.inLiveResize ?? false) { scheduleBackgroundMeasure() }
+    }
+
+    private func scheduleReflow(after delay: CFTimeInterval) {
+        guard !reflowPending else { return }
+        reflowPending = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+            guard let self else { return }
+            self.reflowPending = false
+            guard let clipWidth = self.scroll?.contentView.bounds.width, clipWidth > 0, clipWidth != self.width else { return }
+            self.reflow(to: clipWidth)
+        }
+    }
+
+    private func scheduleSettle() {
+        settleWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, let scroll = self.scroll else { return }
+            let clipWidth = scroll.contentView.bounds.width
+            if clipWidth > 0, clipWidth != self.width { self.reflow(to: clipWidth) }
+            if !(scroll.window?.inLiveResize ?? false) { self.scheduleBackgroundMeasure() }
+        }
+        settleWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.settleDelay, execute: work)
     }
 
     @objc private func liveResizeEnded(_ notification: Notification) {

@@ -14,6 +14,8 @@ import QuickLookThumbnailing
     private var attachmentsByConversation: [String: [URL]] = [:]
     private(set) var conversationID: String?
     fileprivate weak var textView: ComposerTextView?
+    private var pendingFocus = false
+    private var shownBefore = false
     private var text = ""
     private var undoManagers: [String: UndoManager] = [:]
     private weak var store: AppStore?
@@ -93,6 +95,23 @@ import QuickLookThumbnailing
     func focus() {
         guard let textView, let window = textView.window else { return }
         window.makeFirstResponder(textView)
+    }
+
+    /// Typing goes here once a composer shows this model: its tab is being shown.
+    func focusWhenShown() {
+        if let textView, let window = textView.window { window.makeFirstResponder(textView) } else { pendingFocus = true }
+    }
+
+    /// True the first time a composer shows this model.
+    fileprivate func firstShown() -> Bool {
+        defer { shownBefore = true }
+        return !shownBefore
+    }
+
+    fileprivate func shown(_ view: ComposerTextView) {
+        guard pendingFocus, view === textView, let window = view.window else { return }
+        pendingFocus = false
+        window.makeFirstResponder(view)
     }
 
     fileprivate func undoManager(for view: NSTextView) -> UndoManager? {
@@ -209,6 +228,11 @@ struct ComposerEditor: NSViewRepresentable {
     private static let inset: CGFloat = 5
     fileprivate weak var coordinator: ComposerEditor.Coordinator?
     var placeholder = "" { didSet { needsDisplay = true } }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        coordinator?.model.shown(self)
+    }
 
     init() {
         let storage = NSTextStorage()
@@ -406,11 +430,23 @@ struct ComposerView: View {
     @Environment(\.openWindow) private var openWindow
     @State private var enteringRemoteDirectory = false
     @State private var remoteDirectory = ""
-    /// The room the composer has, and what its choices take at full length.
-    @State private var width: CGFloat = 760
-    @State private var controlsWidth: CGFloat = 0
+    /// The choices fit on the row of the send button. The widths it is
+    /// decided from are not observed, so resizing the pane re-renders the
+    /// composer only when the decision changes.
+    @State private var oneRow = true
+    @State private var fit = RowFit()
+    private final class RowFit {
+        /// The room the composer has, and what its choices take at full length.
+        var width: CGFloat = 760
+        var controlsWidth: CGFloat = 0
+    }
     /// The send button and a little of the status line beside the choices.
     private static let sendWidth: CGFloat = 130
+    private func refit() {
+        let value = fit.width >= fit.controlsWidth + Self.sendWidth
+        if oneRow != value { oneRow = value }
+    }
+
     private var nextTurnRuntime: RuntimeInstance? { store.runtimeInstances.first { $0.id == store.nextTurnRuntimeID } }
 
     var body: some View {
@@ -434,7 +470,7 @@ struct ComposerView: View {
                     }
                 }
             // A narrow pane puts the choices on their own row, then shortens their titles.
-            if width >= controlsWidth + Self.sendWidth {
+            if oneRow {
                 HStack(spacing: 8) { nextTurnControls(compact: false); statusRow }
             } else {
                 ViewThatFits(in: .horizontal) { nextTurnControls(compact: false); nextTurnControls(compact: true) }
@@ -449,7 +485,7 @@ struct ComposerView: View {
             // Made anew whenever the titles change: a hidden copy kept in place
             // can miss reporting its new width, leaving a narrow pane on one row.
             nextTurnControls(compact: false).fixedSize().hidden().id(controlsKey)
-                .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { controlsWidth = $0 }
+                .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { fit.controlsWidth = $0; refit() }
         }
         .alert("远端工作目录", isPresented: $enteringRemoteDirectory) {
             TextField("绝对路径", text: $remoteDirectory)
@@ -472,11 +508,11 @@ struct ComposerView: View {
         // Takes the room offered whatever the controls ask for, so a narrow
         // pane is measured as narrow rather than overflowing.
         .frame(minWidth: 0, maxWidth: .infinity)
-        .onGeometryChange(for: CGFloat.self) { min($0.size.width, 792) - 32 } action: { width = $0 }
+        .onGeometryChange(for: CGFloat.self) { min($0.size.width, 792) - 32 } action: { fit.width = $0; refit() }
         .onAppear {
             model.attach(store); model.show(conversationID: store.loadedConversationID)
-            // A new window starts in the composer; later selections keep focus where it is.
-            DispatchQueue.main.async { model.focus() }
+            // A new window or tab starts in the composer; showing a tab again keeps focus where it is.
+            if model.firstShown() { DispatchQueue.main.async { model.focus() } }
         }
         .onChange(of: store.loadedConversationID) { _, id in
             model.show(conversationID: id)
