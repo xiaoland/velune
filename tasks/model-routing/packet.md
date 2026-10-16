@@ -38,3 +38,4 @@
 - 同时修正三个手动脚本中的网关配置（新增 `routes` 字段与 `RouteHealth` 参数），`manual-gateway-analytics.py` 复跑通过。
 - 设置页“模型路由”的界面没有在开发版中截图：打开设置窗口会激活应用，留给用户验收。
 - 待用户：复核上文 fail-over 策略；用两个 ChatGPT 账户做真实验收（两个 Pi 实例分别登录、导入、组成路由）；决定是否接入 Codex CLI 认证文件来源。
+- 2026-10-16 安装：随提交 554007d 重建并安装到 `/Applications/Velune.app`。codesign 严格校验通过；构建清单的 source_commit 与该提交一致，dirty 为 false；后台启动后没有新的崩溃报告。
