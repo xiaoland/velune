@@ -36,9 +36,13 @@ struct VeluneRootView: View {
                     if !window.tools.tools(in: .bottom).isEmpty { BottomAreaView(window: window, available: geometry.size.height) }
                 }
             }
+            // The window keeps the title for the Window menu and Mission Control; the tab bar shows it.
             .navigationTitle(previewEmpty ? "新会话" : focused.selectedConversationTitle ?? "Velune")
+            .toolbar(removing: .title)
             .toolbar {
-                ToolbarItemGroup(placement: .primaryAction) {
+                // Without the title nothing holds the buttons to the trailing end.
+                ToolbarItem(placement: .automatic) { Spacer() }
+                ToolbarItemGroup(placement: .automatic) {
                     Button { focused.reloadFromRuntimes() } label: { Label("重新读取", systemImage: "arrow.clockwise") }
                         .keyboardShortcut("r").disabled(!focused.canReloadFromRuntimes)
                         .help("从 Agent 运行时重新读取会话列表和当前会话（⌘ R）；用于补上自动跟随遗漏的变化")
@@ -77,9 +81,7 @@ struct VeluneRootView: View {
         .onChange(of: focused.pendingConversationID) { _, value in if value != nil { window.outlinePopover = false } }
         .onChange(of: focused.loadedConversationID) { _, _ in window.outlinePopover = false }
         .onChange(of: store.outlinePresentation) { _, _ in window.outlinePopover = false }
-        .toolbar { if !store.problems.isEmpty { ToolbarItem(placement: .primaryAction) { ProblemsButton(store: store) } } }
-        // The title bar's proxy icon carries the focused tab, as its tab does once shown.
-        .navigationDocument(TabDocument(tab: tab.id, link: tab.link), preview: SharePreview(focused.selectedConversationTitle ?? "Velune"))
+        .toolbar { if !store.problems.isEmpty { ToolbarItem(placement: .automatic) { ProblemsButton(store: store) } } }
         .focusedSceneValue(\.conversationCommands, ConversationCommandTarget(store: focused, send: tab.send, window: window))
         .task { if previewSettings { openSettings() } }
     }

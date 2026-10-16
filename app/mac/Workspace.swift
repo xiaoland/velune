@@ -150,20 +150,6 @@ import VeluneBindings
     }
 }
 
-/// A pane's tab as a title bar's proxy icon drags it.
-struct TabDocument: Transferable {
-    let tab: UUID
-    let link: URL?
-
-    static var transferRepresentation: some TransferRepresentation {
-        ProxyRepresentation { (document: TabDocument) -> URL in
-            guard let link = document.link else { throw CocoaError(.featureUnsupported) }
-            TabDragSource.shared.begin(tab: document.tab, link: link)
-            return link
-        }
-    }
-}
-
 /// Which side of a pane something dropped on it goes to.
 enum PaneEdge: Equatable {
     case leading, trailing, top, bottom
