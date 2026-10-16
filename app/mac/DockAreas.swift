@@ -76,7 +76,8 @@ struct ToolPlaceMenu: View {
 }
 
 /// Tools side by side or stacked, each taking its share of the room, with
-/// dividers between them. A divider's drag is the view's until it ends.
+/// dividers between them. A divider's drag is the view's until it ends; a
+/// double click shares the room equally again.
 struct WeightedSplit<ID: Hashable, Content: View>: View {
     let axis: Axis
     let ids: [ID]
@@ -95,12 +96,22 @@ struct WeightedSplit<ID: Hashable, Content: View>: View {
             let stack = horizontal ? AnyLayout(HStackLayout(spacing: 0)) : AnyLayout(VStackLayout(spacing: 0))
             stack {
                 ForEach(Array(ids.enumerated()), id: \.element) { index, id in
-                    if index > 0 { divider(before: index, length: length, fractions: fractions) }
+                    if index > 0 { Divider() }
                     content(id)
                         .frame(width: horizontal ? max(0, length * fractions[index]) : geometry.size.width,
                                height: horizontal ? geometry.size.height : max(0, length * fractions[index]))
                         .clipped()
                 }
+            }
+            .overlay {
+                SashOverlay(axis: axis, lengths: fractions.map { max(0, length * $0) },
+                            drag: { index, distance in drag(before: index, distance: distance, length: length, fractions: fractions) },
+                            end: {
+                                if let dragged { commit(dragged) }
+                                dragged = nil
+                                dragStart = nil
+                            },
+                            reset: { commit(ids.map { _ in 1 }) })
             }
         }
     }
@@ -111,40 +122,22 @@ struct WeightedSplit<ID: Hashable, Content: View>: View {
         return total > 0 ? values.map { $0 / total } : values.map { _ in 1 / Double(values.count) }
     }
 
-    private func divider(before index: Int, length: CGFloat, fractions: [Double]) -> some View {
-        let horizontal = axis == .horizontal
-        return Divider()
-            .overlay {
-                // A wider grip than the line it moves.
-                Color.clear
-                    .frame(width: horizontal ? 7 : nil, height: horizontal ? nil : 7)
-                    .contentShape(Rectangle())
-                    .pointerStyle(horizontal ? .columnResize : .rowResize)
-                    .gesture(DragGesture(minimumDistance: 1, coordinateSpace: .global)
-                        .onChanged { value in
-                            let start = dragStart ?? fractions
-                            if dragStart == nil { dragStart = start }
-                            guard length > 0 else { return }
-                            let pair = start[index - 1] + start[index]
-                            let minimum = min(pair / 2, Double(Self.minimumLength / length))
-                            let moved = Double((horizontal ? value.translation.width : value.translation.height) / length)
-                            var next = start
-                            next[index - 1] = min(max(start[index - 1] + moved, minimum), pair - minimum)
-                            next[index] = pair - next[index - 1]
-                            dragged = next
-                        }
-                        .onEnded { _ in
-                            if let dragged { commit(dragged) }
-                            dragged = nil
-                            dragStart = nil
-                        })
-            }
-            .zIndex(1)
+    private func drag(before index: Int, distance: CGFloat, length: CGFloat, fractions: [Double]) {
+        let start = dragStart ?? fractions
+        if dragStart == nil { dragStart = start }
+        guard length > 0 else { return }
+        let pair = start[index - 1] + start[index]
+        let minimum = min(pair / 2, Double(Self.minimumLength / length))
+        var next = start
+        next[index - 1] = min(max(start[index - 1] + Double(distance / length), minimum), pair - minimum)
+        next[index] = pair - next[index - 1]
+        dragged = next
     }
 }
 
 /// The strip below the panes: as tall as the user made it, or, holding the
-/// composer alone, as tall as the composer.
+/// composer alone, as tall as the composer. Its top divider's grip reaches
+/// over the panes' edge; a double click restores the usual height.
 struct BottomAreaView: View {
     @ObservedObject var window: ConversationWindowModel
     /// The room the panes and this area share.
@@ -155,28 +148,29 @@ struct BottomAreaView: View {
     var body: some View {
         let kinds = window.tools.tools(in: .bottom)
         let fits = kinds == [.composer]
+        let limit = max(100, available - 200)
         VStack(spacing: 0) {
             Divider()
-                .overlay {
-                    if !fits {
-                        Color.clear.frame(height: 7).contentShape(Rectangle())
-                            .pointerStyle(.rowResize)
-                            .gesture(DragGesture(minimumDistance: 1, coordinateSpace: .global)
-                                .onChanged { value in
-                                    let start = dragStart ?? window.tools.bottomHeight
-                                    if dragStart == nil { dragStart = start }
-                                    dragged = min(max(start - value.translation.height, 100), max(100, available - 200))
-                                }
-                                .onEnded { _ in
-                                    if let dragged { window.tools.bottomHeight = dragged }
-                                    dragged = nil
-                                    dragStart = nil
-                                })
-                    }
-                }
-                .zIndex(1)
             DockAreaView(window: window, side: .bottom)
-                .frame(height: fits ? nil : min(dragged ?? window.tools.bottomHeight, max(100, available - 200)))
+                .frame(height: fits ? nil : min(dragged ?? window.tools.bottomHeight, limit))
+        }
+        .overlay(alignment: .top) {
+            if !fits {
+                SplitSash(axis: .vertical,
+                          drag: { distance in
+                              let start = dragStart ?? min(window.tools.bottomHeight, limit)
+                              if dragStart == nil { dragStart = start }
+                              dragged = min(max(start - distance, 100), limit)
+                          },
+                          end: {
+                              if let dragged { window.tools.bottomHeight = dragged }
+                              dragged = nil
+                              dragStart = nil
+                          },
+                          reset: { window.tools.bottomHeight = ToolWindowLayout().bottomHeight })
+                    .frame(height: SplitSash.thickness)
+                    .offset(y: -SplitSash.thickness / 2)
+            }
         }
     }
 }

@@ -28,7 +28,7 @@ struct VeluneRootView: View {
         NavigationSplitView(columnVisibility: Binding(get: { window.tools.tools(in: .left).isEmpty ? .detailOnly : .all },
                                                       set: { $0 == .detailOnly ? window.tools.collapse(.left) : window.tools.showArea(.left) })) {
             DockAreaView(window: window, side: .left)
-                .navigationSplitViewColumnWidth(min: 190, ideal: 240, max: 420)
+                .navigationSplitViewColumnWidth(min: 190, ideal: 240, max: 600)
         } detail: {
             GeometryReader { geometry in
                 VStack(spacing: 0) {
@@ -43,6 +43,11 @@ struct VeluneRootView: View {
                         .keyboardShortcut("r").disabled(!focused.canReloadFromRuntimes)
                         .help("从 Agent 运行时重新读取会话列表和当前会话（⌘ R）；用于补上自动跟随遗漏的变化")
                     outlineButton
+                    // A window of the editor area alone is often one to keep in view.
+                    if !window.hasToolWindows || window.pinned {
+                        Toggle(isOn: $window.pinned) { Label("保持在最前面", systemImage: window.pinned ? "pin.fill" : "pin") }
+                            .help(window.pinned ? "不再保持在其他应用的窗口前面" : "保持在其他应用的窗口前面")
+                    }
                     // As in Xcode: Option-click divides downward.
                     Button { window.split(NSEvent.modifierFlags.contains(.option) ? .vertical : .horizontal) } label: { Label("拆分", systemImage: "rectangle.split.2x1") }
                         .help("在右侧拆分出新面板（⌘ D）；按住 Option 点按则向下拆分（⇧⌘ D）")
@@ -61,10 +66,11 @@ struct VeluneRootView: View {
                                                 else { window.tools.collapse(.right) }
                                             })) {
                 if showsChanges { ChangeReviewView(store: focused).inspectorColumnWidth(min: 300, ideal: 440, max: 900) }
-                else { DockAreaView(window: window, side: .right).inspectorColumnWidth(min: 200, ideal: 260, max: 480) }
+                else { DockAreaView(window: window, side: .right).inspectorColumnWidth(min: 200, ideal: 260, max: 720) }
             }
         }
         .navigationSplitViewStyle(.balanced)
+        .background(WindowLevelSetter(pinned: window.pinned))
         .overlay { if let side = window.dockHint { DockZoneHighlight(side: side) } }
         .onChange(of: activeState, initial: true) { _, value in if value == .key { focused.noteFocused() } }
         .onChange(of: tab.id) { _, _ in window.outlinePopover = false }

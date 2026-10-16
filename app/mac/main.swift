@@ -21,6 +21,7 @@ extension FocusedValues {
 @MainActor
 struct ConversationCommands: Commands {
     @FocusedValue(\.conversationCommands) private var focusedTarget
+    @ObservedObject private var pinning = WindowPinning.shared
     /// A floating panel or tool window is no scene: while one is key, its window is the target.
     private var target: ConversationCommandTarget? {
         focusedTarget ?? ConversationWindowModel.owning(detached: NSApp.keyWindow).map { window in
@@ -80,7 +81,10 @@ struct ConversationCommands: Commands {
                 .keyboardShortcut("[", modifiers: [.command, .shift])
                 .disabled((target?.window.focusedPane.tabs.count ?? 0) < 2)
             Button("将标签页移到新窗口") { if let window = target?.window { window.moveToNewWindow(window.focused.id) } }
-                .disabled((target?.window.tabCount ?? 0) < 2)
+                .disabled(target?.window.canMoveTabToNewWindow != true)
+            Divider()
+            Toggle("保持在最前面", isOn: Binding(get: { pinning.keyWindowPinned }, set: { _ in pinning.toggle() }))
+                .disabled(!pinning.canPin)
             Divider()
         }
         CommandGroup(before: .sidebar) {
@@ -211,7 +215,7 @@ struct VeluneApp: App {
     var body: some Scene {
         WindowGroup("Velune", id: WindowSeed.sceneID, for: WindowSeed.self) { $seed in
             ConversationWindow(application: store, seed: seed, previewEmpty: previewEmpty, previewSettings: previewSettings)
-                .frame(minWidth: 780, minHeight: 540)
+                .frame(minWidth: 520, minHeight: 420)
         }
         .defaultSize(width: 1060, height: 760)
         .commands {

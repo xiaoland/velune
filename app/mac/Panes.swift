@@ -23,7 +23,7 @@ struct PaneLayoutView: View {
 }
 
 /// Panes side by side or stacked, with dividers that resize the two panes
-/// beside them.
+/// beside them; a double click on one shares the room equally again.
 private struct PaneSplitView: View {
     @ObservedObject var window: ConversationWindowModel
     let split: PaneSplit
@@ -40,7 +40,7 @@ private struct PaneSplitView: View {
             let stack = horizontal ? AnyLayout(HStackLayout(spacing: 0)) : AnyLayout(VStackLayout(spacing: 0))
             stack {
                 ForEach(Array(split.children.enumerated()), id: \.element.paneIDs) { index, child in
-                    if index > 0 { divider(before: index, length: length) }
+                    if index > 0 { Divider() }
                     // Recursion through a type-erased view: a split can hold splits.
                     AnyView(PaneLayoutView(window: window, layout: child, path: path + [index], previewEmpty: previewEmpty))
                         .frame(width: horizontal ? max(0, length * split.fractions[index]) : geometry.size.width,
@@ -48,39 +48,30 @@ private struct PaneSplitView: View {
                         .clipped()
                 }
             }
+            .overlay {
+                SashOverlay(axis: horizontal ? .horizontal : .vertical, lengths: split.fractions.map { max(0, length * $0) },
+                            drag: { index, distance in drag(before: index, distance: distance, length: length) },
+                            end: { dragStart = nil },
+                            reset: { window.resize(at: path, fractions: split.fractions.map { _ in 1 / Double(split.fractions.count) }) })
+            }
         }
     }
 
-    private func divider(before index: Int, length: CGFloat) -> some View {
-        let horizontal = split.axis == .horizontal
-        return Divider()
-            .overlay {
-                // A wider grip than the line it moves.
-                Color.clear
-                    .frame(width: horizontal ? 7 : nil, height: horizontal ? nil : 7)
-                    .contentShape(Rectangle())
-                    .pointerStyle(horizontal ? .columnResize : .rowResize)
-                    .gesture(DragGesture(minimumDistance: 1, coordinateSpace: .global)
-                        .onChanged { value in
-                            let start = dragStart ?? split.fractions
-                            if dragStart == nil { dragStart = start }
-                            guard length > 0 else { return }
-                            let pair = start[index - 1] + start[index]
-                            let minimum = min(pair / 2, Double(Self.minimumLength / length))
-                            let moved = Double((horizontal ? value.translation.width : value.translation.height) / length)
-                            var fractions = start
-                            fractions[index - 1] = min(max(start[index - 1] + moved, minimum), pair - minimum)
-                            fractions[index] = pair - fractions[index - 1]
-                            window.resize(at: path, fractions: fractions)
-                        }
-                        .onEnded { _ in dragStart = nil })
-            }
-            .zIndex(1)
+    private func drag(before index: Int, distance: CGFloat, length: CGFloat) {
+        let start = dragStart ?? split.fractions
+        if dragStart == nil { dragStart = start }
+        guard length > 0 else { return }
+        let pair = start[index - 1] + start[index]
+        let minimum = min(pair / 2, Double(Self.minimumLength / length))
+        var fractions = start
+        fractions[index - 1] = min(max(start[index - 1] + Double(distance / length), minimum), pair - minimum)
+        fractions[index] = pair - fractions[index - 1]
+        window.resize(at: path, fractions: fractions)
     }
 }
 
-/// A pane: its tab bar, shown once the window is split or the pane has more
-/// than one tab, above the shown tab. Tabs shown before stay in place, hidden,
+/// A pane: its tab bar, always there as a handle to drag and a menu to
+/// open, above the shown tab. Tabs shown before stay in place, hidden,
 /// so they keep their scroll position.
 struct PaneView: View {
     @ObservedObject var window: ConversationWindowModel
@@ -91,7 +82,7 @@ struct PaneView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            if window.isSplit || pane.tabs.count > 1 { PaneTabBar(window: window, pane: pane) }
+            PaneTabBar(window: window, pane: pane)
             ZStack {
                 ForEach(pane.tabs) { tab in
                     ActiveTab(tab: tab) {
@@ -197,18 +188,21 @@ private struct TabContentView: View {
     }
 }
 
-/// A pane's tabs, after the system tab bar: equal widths sharing the bar
-/// (narrower, their titles shortened, as tabs are added), titles centred, a close button on hover at the leading end and a new-tab
-/// button at the trailing end. The focused pane's shown tab is marked once
-/// the window is split.
+/// A pane's tabs, drawn as the system's window tab bar: equal widths sharing
+/// the bar (narrower, their titles shortened, as tabs are added), titles
+/// centred, the shown tab in the window's colour and the others a shade
+/// darker, a close button on hover at the leading end and a new-tab button
+/// at the trailing end. Panes other than the focused one look as an inactive
+/// window's bar does.
 private struct PaneTabBar: View {
     @ObservedObject var window: ConversationWindowModel
     @ObservedObject var pane: Pane
     /// Where a tab dragged over the bar would go.
     @State private var insertion: Int?
-    private static let height: CGFloat = 28
+    static let height: CGFloat = 28
 
     var body: some View {
+        let active = !window.isSplit || window.focusedPaneID == pane.id
         HStack(spacing: 0) {
             // No scroll view: clicks in one go to its clip view, not to the tabs' AppKit views.
             GeometryReader { geometry in
@@ -216,7 +210,7 @@ private struct PaneTabBar: View {
                 HStack(spacing: 0) {
                     ForEach(Array(pane.tabs.enumerated()), id: \.element.id) { index, tab in
                         PaneTabItem(window: window, pane: pane, tab: tab, store: tab.store,
-                                    selected: tab.id == pane.selectedID, marked: window.isSplit && window.focusedPaneID == pane.id && tab.id == pane.selectedID)
+                                    selected: tab.id == pane.selectedID, active: active)
                             .frame(width: width)
                             .overlay(alignment: .leading) { if insertion == index { insertionMark } }
                             .overlay(alignment: .trailing) { if insertion == index + 1 && index == pane.tabs.count - 1 { insertionMark } }
@@ -224,21 +218,36 @@ private struct PaneTabBar: View {
                     }
                 }
             }
-            Divider()
-            Button { window.focus(pane.id); window.openInNewTab() } label: { Image(systemName: "plus") }
-                .buttonStyle(.borderless).frame(width: Self.height, height: Self.height)
+            Button { window.focus(pane.id); window.openInNewTab() } label: { Image(systemName: "plus").font(.system(size: 11, weight: .medium)) }
+                .buttonStyle(.borderless).foregroundStyle(.secondary)
+                .frame(width: Self.height, height: Self.height)
+                .background { TabShade.unselected }
                 .help("新建标签页（⌘ T）").accessibilityLabel("新建标签页")
                 .onDrop(of: [.url], delegate: TabDropDelegate(window: window, pane: pane.id, index: pane.tabs.count, width: 0, insertion: $insertion))
         }
         .frame(height: Self.height)
-        .background(Color.primary.opacity(0.06))
-        .overlay(alignment: .bottom) { Divider() }
+        .background(Color(nsColor: .windowBackgroundColor))
+        .overlay(alignment: .bottom) { TabShade.line.frame(height: 1) }
+        .padding(.bottom, 1)
         .accessibilityElement(children: .contain)
         .accessibilityLabel(window.focusedPaneID == pane.id ? "聚焦面板的标签页" : "标签页")
     }
 
     private var insertionMark: some View {
         Rectangle().fill(Color.accentColor).frame(width: 2).allowsHitTesting(false)
+    }
+}
+
+/// The system tab bar's shades over the window's colour: tabs not shown are
+/// darker with a soft shadow under the bar's top edge, and lines part them.
+private enum TabShade {
+    static let line = Color.black.opacity(0.16)
+
+    static var unselected: some View {
+        Color.black.opacity(0.065)
+            .overlay(alignment: .top) {
+                LinearGradient(colors: [Color.black.opacity(0.12), .clear], startPoint: .top, endPoint: .bottom).frame(height: 3)
+            }
     }
 }
 
@@ -251,8 +260,8 @@ private struct PaneTabItem: View {
     @ObservedObject var tab: ConversationTab
     @ObservedObject var store: AppStore
     let selected: Bool
-    /// The focused pane's shown tab, in a split window.
-    let marked: Bool
+    /// In the focused pane, or the window's only one.
+    let active: Bool
     @State private var hovering = false
     @State private var renaming: String?
     @FocusState private var renameFocused: Bool
@@ -267,7 +276,7 @@ private struct PaneTabItem: View {
                 menu: menu))
             if let name = renaming {
                 TextField("会话名称", text: Binding(get: { name }, set: { renaming = $0 }))
-                    .textFieldStyle(.plain).multilineTextAlignment(.center).font(.system(size: 12))
+                    .textFieldStyle(.plain).multilineTextAlignment(.center).font(.system(size: 11))
                     .focused($renameFocused)
                     .onSubmit(commitRename)
                     .onExitCommand { renaming = nil }
@@ -276,7 +285,7 @@ private struct PaneTabItem: View {
                     .padding(.horizontal, 26)
             } else {
                 Text(tab.title)
-                    .font(.system(size: 12)).foregroundStyle(selected ? .primary : .secondary)
+                    .font(.system(size: 11)).foregroundStyle(selected && active ? .primary : .secondary)
                     .lineLimit(1).truncationMode(.tail)
                     .padding(.horizontal, 26)
                     .allowsHitTesting(false)
@@ -289,9 +298,12 @@ private struct PaneTabItem: View {
             .allowsHitTesting(false)
         }
         .frame(maxHeight: .infinity)
-        .background(selected ? Color(nsColor: .windowBackgroundColor) : Color.clear)
-        .overlay(alignment: .top) { if marked { Rectangle().fill(Color.accentColor).frame(height: 2) } }
-        .overlay(alignment: .trailing) { Rectangle().fill(Color.primary.opacity(0.12)).frame(width: 1) }
+        .background {
+            if !selected {
+                TabShade.unselected.overlay { if hovering { Color.black.opacity(0.04) } }
+            }
+        }
+        .overlay(alignment: .trailing) { TabShade.line.frame(width: 1) }
         .accessibilityElement(children: .contain)
         .accessibilityLabel(tab.title)
         .accessibilityAddTraits(selected ? .isSelected : [])
@@ -332,20 +344,22 @@ private struct PaneTabItem: View {
         store.renameConversation(conversation, title: name) {}
     }
 
+    /// Splitting moves the tab beside its pane; a pane's only tab stays, and
+    /// a new conversation opens beside it.
     private func menu() -> NSMenu {
         let menu = NSMenu()
         if canRename { menu.addItem(ClosureMenuItem("重命名") { renaming = tab.title }) }
         menu.addItem(ClosureMenuItem("关闭标签页") { window.closeTab(tab.id) })
+        if pane.tabs.count > 1 { menu.addItem(ClosureMenuItem("关闭其他标签页") { window.closeOtherTabs(tab.id) }) }
+        menu.addItem(.separator())
         if pane.tabs.count > 1 {
-            menu.addItem(ClosureMenuItem("关闭其他标签页") { window.closeOtherTabs(tab.id) })
-            menu.addItem(.separator())
-            menu.addItem(ClosureMenuItem("在右侧拆分") { window.splitTab(tab.id, edge: .trailing) })
-            menu.addItem(ClosureMenuItem("在下方拆分") { window.splitTab(tab.id, edge: .bottom) })
+            menu.addItem(ClosureMenuItem("移到右侧拆分") { window.splitTab(tab.id, edge: .trailing) })
+            menu.addItem(ClosureMenuItem("移到下方拆分") { window.splitTab(tab.id, edge: .bottom) })
+        } else {
+            menu.addItem(ClosureMenuItem("向右拆分") { window.focus(pane.id); window.split(.horizontal) })
+            menu.addItem(ClosureMenuItem("向下拆分") { window.focus(pane.id); window.split(.vertical) })
         }
-        if window.tabCount > 1 {
-            if pane.tabs.count == 1 { menu.addItem(.separator()) }
-            menu.addItem(ClosureMenuItem("移到新窗口") { window.moveToNewWindow(tab.id) })
-        }
+        if window.canMoveTabToNewWindow { menu.addItem(ClosureMenuItem("移到新窗口") { window.moveToNewWindow(tab.id) }) }
         return menu
     }
 }

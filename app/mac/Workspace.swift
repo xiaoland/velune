@@ -292,6 +292,8 @@ struct SavedWindowLayout: Codable, Equatable {
     var conversations: [UUID: String]
     var focused: UUID
     var tools: ToolWindowLayout
+    /// Kept in front of other apps' windows.
+    var pinned: Bool
 
     /// Every pane and tab named once, the focused pane among them.
     var isWhole: Bool {
@@ -312,6 +314,8 @@ struct WindowSeed: Codable, Hashable {
     var conversationID: String?
     /// A tab another window hands over, with its state.
     var tab: UUID?
+    /// A conversation window: the editor area alone, its dock areas collapsed until asked for.
+    var editorOnly = false
 }
 
 /// A conversation window: the list with its own workspace, and the panes
@@ -344,6 +348,8 @@ struct WindowSeed: Codable, Hashable {
     @Published var listSearch = ""
     /// Opens a conversation window; set by the window's view, which has the action.
     var openWindow: ((WindowSeed) -> Void)?
+    /// Kept in front of other apps' windows.
+    @Published var pinned = false
     private(set) lazy var detached = DetachedTools(model: self)
 
     /// Windows by the panes they hold, for moving a tab between them.
@@ -396,7 +402,7 @@ struct WindowSeed: Codable, Hashable {
         _ = tabsRevision
         return SavedWindowLayout(layout: layout,
                                  panes: panes.mapValues { SavedWindowLayout.SavedPane(tabs: $0.tabs.map(\.id), selected: $0.selectedID) },
-                                 conversations: tabConversations, focused: focusedPaneID, tools: tools)
+                                 conversations: tabConversations, focused: focusedPaneID, tools: tools, pinned: pinned)
     }
 
     /// Restore a saved arrangement, take a handed-over tab, or open `seed`'s
@@ -406,6 +412,7 @@ struct WindowSeed: Codable, Hashable {
         guard !started else { return }
         started = true
         list.start(loadFirstConversation: false)
+        if seed?.editorOnly == true { tools.toggleEditorOnly() }
         if let id = seed?.tab, let tab = Self.handoff.removeValue(forKey: id) {
             replacePanes(with: [Pane(tabs: [tab])], layout: nil)
             tab.activate()
@@ -426,6 +433,7 @@ struct WindowSeed: Codable, Hashable {
             replacePanes(with: restored, layout: saved.layout)
             focusedPaneID = saved.focused
             tools = saved.tools.normalized()
+            pinned = saved.pinned
             for pane in restored { pane.selected.activate() }
         } else if let id = seed?.conversationID {
             let store = application.makeWorkspace()
@@ -533,7 +541,7 @@ struct WindowSeed: Codable, Hashable {
 
     /// Close a tab: its pane's last tab closes the pane, the window's last closes the window.
     func closeTab(_ id: UUID) {
-        guard let tab = detach(id, closingEmptyWindow: true) else { return }
+        guard let tab = detach(id, emptying: .close) else { return }
         tab.store.shutdown { _ in }
     }
 
@@ -549,17 +557,40 @@ struct WindowSeed: Codable, Hashable {
         removePane(id)
     }
 
+    /// What becomes of a window whose last tab is taken out.
+    private enum Emptying {
+        /// The tab stays.
+        case keep
+        case close
+        /// A window with tool windows keeps a new conversation; one of the
+        /// editor area alone has nothing left to show and closes.
+        case leave
+    }
+
+    /// Any tool window shows, docked or outside the window.
+    var hasToolWindows: Bool { ToolWindowKind.allCases.contains(where: tools.isOpen) }
+
+    /// A tab can go to a window of its own: one in a window of the editor
+    /// area alone needs another tab beside it.
+    var canMoveTabToNewWindow: Bool { tabCount > 1 || hasToolWindows }
+
     /// Take a tab out of this window without ending it. Its pane goes with
-    /// its last tab; the window's last tab is kept unless `closingEmptyWindow`.
-    private func detach(_ id: UUID, closingEmptyWindow: Bool) -> ConversationTab? {
+    /// its last tab; the window's last tab is kept, leaves a new conversation or closes the window.
+    private func detach(_ id: UUID, emptying: Emptying) -> ConversationTab? {
         guard let pane = pane(holding: id), let tab = pane.tabs.first(where: { $0.id == id }) else { return nil }
         if pane.remove(id) {
             if pane.id == focusedPaneID { pane.selected.store.noteFocused() }
         } else if isSplit {
             removePane(pane.id)
         } else {
-            guard closingEmptyWindow else { return nil }
-            window?.close()
+            switch emptying {
+            case .keep: return nil
+            case .leave where hasToolWindows:
+                pane.insert(makeTab(opening: nil))
+                pane.remove(id)
+                pane.selected.store.noteFocused()
+            case .close, .leave: window?.close()
+            }
         }
         subscriptions[id] = nil
         tabConversations[id] = nil
@@ -620,7 +651,7 @@ struct WindowSeed: Codable, Hashable {
             // A pane's only tab beside its own pane has nowhere new to go.
             break
         default:
-            guard let tab = source.detach(tabID, closingEmptyWindow: true) else { return }
+            guard let tab = source.detach(tabID, emptying: .leave) else { return }
             adopt(tab)
             switch zone {
             case .center: targetPane.insert(tab, at: index); focus(target); tab.store.noteFocused()
@@ -633,18 +664,47 @@ struct WindowSeed: Codable, Hashable {
 
     /// Move a tab into a new pane beside the pane it is in.
     func splitTab(_ id: UUID, edge: PaneEdge) {
-        guard let pane = pane(holding: id), pane.tabs.count > 1, let tab = detach(id, closingEmptyWindow: false) else { return }
+        guard let pane = pane(holding: id), pane.tabs.count > 1, let tab = detach(id, emptying: .keep) else { return }
         addPane(with: tab, beside: pane.id, edge: edge)
     }
 
-    /// Open a tab in a new window at `point` (screen coordinates, its top
-    /// left; nil lets the system place it), and take it out of this one.
+    /// Move a tab to a conversation window of its own, as large as its pane,
+    /// at `point` (screen coordinates, its top left; nil sets it off from this window).
     func moveToNewWindow(_ id: UUID, at point: NSPoint? = nil) {
-        guard tabCount > 1, let openWindow, let tab = detach(id, closingEmptyWindow: false) else { return }
+        guard canMoveTabToNewWindow, let openWindow, let pane = pane(holding: id) else { return }
+        let frame = newWindowFrame(size: view(of: pane.id)?.bounds.size, at: point)
+        guard let tab = detach(id, emptying: .leave) else { return }
         Self.handoff[tab.id] = tab
         let existing = Set(NSApp.windows.map(\.windowNumber))
-        openWindow(WindowSeed(tab: tab.id))
-        if let point { Self.place(windowNotIn: existing, at: point, attempts: 20) }
+        openWindow(WindowSeed(tab: tab.id, editorOnly: true))
+        if let frame { Self.place(windowNotIn: existing, frame: frame, attempts: 20) }
+    }
+
+    /// Open a conversation in a conversation window of its own; a tab of this
+    /// window showing it moves there.
+    func openInNewWindow(_ conversationID: String) {
+        if let (_, tab) = tab(showing: conversationID) { return moveToNewWindow(tab.id) }
+        guard let openWindow else { return }
+        let frame = newWindowFrame(size: nil, at: nil)
+        let existing = Set(NSApp.windows.map(\.windowNumber))
+        openWindow(WindowSeed(conversationID: conversationID, editorOnly: true))
+        if let frame { Self.place(windowNotIn: existing, frame: frame, attempts: 20) }
+    }
+
+    /// A conversation window's frame: a pane's size (else a usual one) under
+    /// this window's title bar and toolbar, at `point` or set off from this window.
+    private func newWindowFrame(size: CGSize?, at point: NSPoint?) -> NSRect? {
+        guard let window else { return nil }
+        let chrome = window.frame.height - window.contentLayoutRect.height
+        let width = max(size?.width ?? 720, 520), height = max((size?.height ?? window.contentLayoutRect.height) + chrome, 420)
+        let topLeft = point ?? NSPoint(x: window.frame.minX + 28, y: window.frame.maxY - 28)
+        var frame = NSRect(x: topLeft.x, y: topLeft.y - height, width: width, height: height)
+        if let screen = (NSScreen.screens.first { $0.frame.contains(topLeft) } ?? window.screen)?.visibleFrame {
+            frame.size.height = min(frame.height, screen.height)
+            frame.origin.x = min(max(frame.minX, screen.minX), screen.maxX - frame.width)
+            frame.origin.y = min(max(frame.minY, screen.minY), screen.maxY - frame.height)
+        }
+        return frame
     }
 
     /// A tab arriving from another window.
@@ -654,10 +714,10 @@ struct WindowSeed: Codable, Hashable {
     }
 
     /// The new window appears a moment after it is asked for.
-    private static func place(windowNotIn existing: Set<Int>, at point: NSPoint, attempts: Int) {
+    private static func place(windowNotIn existing: Set<Int>, frame: NSRect, attempts: Int) {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
-            if let window = NSApp.windows.first(where: { !existing.contains($0.windowNumber) && $0.isVisible }) { window.setFrameTopLeftPoint(point) }
-            else if attempts > 1 { place(windowNotIn: existing, at: point, attempts: attempts - 1) }
+            if let window = NSApp.windows.first(where: { !existing.contains($0.windowNumber) && $0.isVisible && isConversationWindow($0) }) { window.setFrame(frame, display: true) }
+            else if attempts > 1 { place(windowNotIn: existing, frame: frame, attempts: attempts - 1) }
         }
     }
 

@@ -63,6 +63,8 @@ struct ToolWindowState: Codable, Equatable {
     var weight = 1.0
     var panelFrame: ToolFrame?
     var windowFrame: ToolFrame?
+    /// As a window of its own, kept in front of other apps' windows.
+    var pinned = false
 }
 
 /// A tool's places as menus offer them. The outline's own place is the
@@ -336,6 +338,7 @@ final class ToolWindow: NSWindow, DetachedTool {
             }
             if let host = hosts[kind], wanted != (host is ToolPanel) { close(kind) }
             if let wanted, hosts[kind] == nil { open(kind, floating: wanted, beside: window) }
+            if let host = hosts[kind] as? ToolWindow { WindowPinning.apply(model.tools[kind].pinned, to: host) }
         }
     }
 

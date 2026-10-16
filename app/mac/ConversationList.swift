@@ -224,7 +224,7 @@ struct ConversationListView: View {
             Button("在新标签页中打开") { window.openInNewTab(target.id) }
             Button("在右侧拆分打开") { window.split(.horizontal, opening: target.id) }
             Button("在下方拆分打开") { window.split(.vertical, opening: target.id) }
-            Button("在新窗口中打开") { window.openWindow?(WindowSeed(conversationID: target.id)) }
+            Button("在新窗口中打开") { window.openInNewWindow(target.id) }
             Divider()
             Button("拷贝会话 ID") { copyToPasteboard(target.nativeID) }.disabled(target.nativeID.isEmpty)
             Button("拷贝链接") { copyToPasteboard(ConversationLink.url(runtimeID: target.runtimeID, conversationID: target.id).absoluteString) }
