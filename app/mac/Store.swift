@@ -98,6 +98,8 @@ final class AppStore: ObservableObject {
     private var sharesApplication = false
     private var sharedUpdateScheduled = false
     @Published private var executionStarting = false
+    /// A conversation chosen while an operation ran, opened when it ends.
+    private var deferredSelection: String?
     private var started = false
     private var isDraft = false
     let isPreview: Bool
@@ -763,7 +765,10 @@ final class AppStore: ObservableObject {
         }
     }
     func selectConversation(id: String) {
-        guard !isLoading, !executionStarting, let conversation = conversation(id: id) else { return }
+        guard let conversation = conversation(id: id) else { return }
+        // Chosen while another operation runs, it opens once that is done; the latest choice wins.
+        guard !isLoading, !executionStarting else { deferredSelection = id; return }
+        deferredSelection = nil
         selectedConversationIDs = [id]
         if isPreview { projectionRuntimeID = conversation.runtimeID; apply(previewSnapshots[id]); return }
         guard let transport else { recordProblem("本地核心未配置"); return }
@@ -782,6 +787,11 @@ final class AppStore: ObservableObject {
             self?.applySnapshotResult($0)
             self?.finishConversationLoading()
         }
+    }
+    private func selectDeferredConversation() {
+        guard let id = deferredSelection, !isLoading, !executionStarting else { return }
+        deferredSelection = nil
+        selectConversation(id: id)
     }
     private func finishConversationLoading() {
         guard !isShuttingDown else {
@@ -1638,6 +1648,7 @@ final class AppStore: ObservableObject {
             DispatchQueue.main.async {
                 guard let self else { return }
                 self.isLoading = false
+                defer { self.selectDeferredConversation() }
                 guard revision == self.generation else { return }
                 switch result {
                 case .success(let value): onAccepted?(); apply(value)

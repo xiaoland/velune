@@ -100,10 +100,15 @@ struct ConversationListView: View {
                     ForEach(section.conversations) { conversation in
                         conversationRow(conversation)
                             .tag(conversation.id)
-                            .selectionDisabled(focused.isLoading)
+                            // Always selectable, also while the conversation pressed on
+                            // opens: the rows do not change under the press.
                             .contextMenu { conversationManagementMenu(store.selectedConversationIDs.contains(conversation.id) ? store.selectedConversationIDs : [conversation.id]) }
-                            // Dropped on a pane, it opens there or beside it.
-                            .onDrag { NSItemProvider(object: ConversationLink.url(runtimeID: conversation.runtimeID, conversationID: conversation.id) as NSURL) }
+                            // Dropped on a pane, it opens there or beside it. The list's
+                            // own drag (`itemProvider`), not a gesture on the row
+                            // (`onDrag`): the table then starts the drag on any motion,
+                            // where a gesture lost the press to the table's selection
+                            // dragging across rows.
+                            .itemProvider { NSItemProvider(object: ConversationLink.url(runtimeID: conversation.runtimeID, conversationID: conversation.id) as NSURL) }
                     }
                     if section.hasMore {
                         if store.searchResults == nil {
