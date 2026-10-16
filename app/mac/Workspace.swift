@@ -650,6 +650,13 @@ struct WindowSeed: Codable, Hashable {
         }
     }
 
+    /// Move a tab to `place` among its pane's tabs, counted as they will be.
+    func moveTab(_ id: UUID, toPlace place: Int) {
+        guard let pane = pane(holding: id), let from = pane.tabs.firstIndex(where: { $0.id == id }) else { return }
+        pane.move(id, to: place > from ? place + 1 : place)
+        focus(pane.id)
+    }
+
     /// Move a tab into a new pane beside the pane it is in.
     func splitTab(_ id: UUID, edge: PaneEdge) {
         guard let pane = pane(holding: id), pane.tabs.count > 1, let tab = detach(id, emptying: .keep) else { return }

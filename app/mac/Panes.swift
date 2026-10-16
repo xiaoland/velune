@@ -174,12 +174,16 @@ private struct TabContentView: View {
 /// centred, the shown tab in the window's colour and the others a shade
 /// darker, a close button on hover at the leading end and a new-tab button
 /// at the trailing end. Panes other than the focused one look as an inactive
-/// window's bar does.
+/// window's bar does. As in the system's bar, a tab dragged along the bar
+/// slides there, the others making way, and leaves it dragged off the bar.
 private struct PaneTabBar: View {
     @ObservedObject var window: ConversationWindowModel
     @ObservedObject var pane: Pane
     /// Where a tab dragged over the bar would go.
     @State private var insertion: Int?
+    /// The tab sliding along the bar, and how far from its place.
+    @State private var sliding: (id: UUID, distance: CGFloat)?
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     static let height: CGFloat = 28
 
     var body: some View {
@@ -188,22 +192,28 @@ private struct PaneTabBar: View {
             // No scroll view: clicks in one go to its clip view, not to the tabs' AppKit views.
             GeometryReader { geometry in
                 let width = geometry.size.width / CGFloat(max(pane.tabs.count, 1))
+                let slide = sliding.flatMap { sliding in pane.tabs.firstIndex { $0.id == sliding.id }.map { (from: $0, distance: sliding.distance) } }
+                let target = slide.map { slideTarget(from: $0.from, distance: $0.distance, width: width) }
                 HStack(spacing: 0) {
                     ForEach(Array(pane.tabs.enumerated()), id: \.element.id) { index, tab in
+                        let slides = tab.id == sliding?.id
                         PaneTabItem(window: window, pane: pane, tab: tab, store: tab.store,
-                                    selected: tab.id == pane.selectedID, active: active)
+                                    selected: tab.id == pane.selectedID, active: active, place: index,
+                                    slide: { slideChanged(tab.id, $0, width: width) })
                             .frame(width: width)
                             .overlay(alignment: .leading) { if insertion == index { insertionMark } }
                             .overlay(alignment: .trailing) { if insertion == index + 1 && index == pane.tabs.count - 1 { insertionMark } }
+                            .offset(x: slide.flatMap { slide in target.map { slideOffset(index, from: slide.from, distance: slide.distance, to: $0, width: width) } } ?? 0)
+                            // The sliding tab follows the pointer; the others move aside.
+                            .animation(slides ? nil : motion, value: target)
+                            .zIndex(slides ? 1 : 0)
                             .onDrop(of: [.url], delegate: TabDropDelegate(window: window, pane: pane.id, index: index, width: width, insertion: $insertion))
                     }
                 }
+                .animation(motion, value: pane.tabs.map(\.id))
             }
-            Button { window.focus(pane.id); window.openInNewTab() } label: { Image(systemName: "plus").font(.system(size: 11, weight: .medium)) }
-                .buttonStyle(.borderless).foregroundStyle(.secondary)
+            NewTabButton { window.focus(pane.id); window.openInNewTab() }
                 .frame(width: Self.height, height: Self.height)
-                .background { TabShade.unselected }
-                .help("新建标签页（⌘ T）").accessibilityLabel("新建标签页")
                 .onDrop(of: [.url], delegate: TabDropDelegate(window: window, pane: pane.id, index: pane.tabs.count, width: 0, insertion: $insertion))
         }
         .frame(height: Self.height)
@@ -217,6 +227,76 @@ private struct PaneTabBar: View {
     private var insertionMark: some View {
         Rectangle().fill(Color.accentColor).frame(width: 2).allowsHitTesting(false)
     }
+
+    private var motion: Animation? { reduceMotion ? nil : .easeOut(duration: 0.18) }
+
+    /// The place a tab slid `distance` from place `from` would take: the one its middle is over.
+    private func slideTarget(from: Int, distance: CGFloat, width: CGFloat) -> Int {
+        guard width > 0 else { return from }
+        return min(max(Int(((CGFloat(from) * width + distance) / width).rounded()), 0), pane.tabs.count - 1)
+    }
+
+    /// The sliding tab stays within the bar; those between its place and
+    /// where it would go move one place towards its place.
+    private func slideOffset(_ index: Int, from: Int, distance: CGFloat, to target: Int, width: CGFloat) -> CGFloat {
+        if index == from { return min(max(distance, -CGFloat(from) * width), CGFloat(pane.tabs.count - 1 - from) * width) }
+        if from < target, index > from, index <= target { return -width }
+        if target < from, index >= target, index < from { return width }
+        return 0
+    }
+
+    private func slideChanged(_ id: UUID, _ change: TabSlide, width: CGFloat) {
+        switch change {
+        case .moved(let distance): sliding = (id, distance)
+        case .left: sliding = nil
+        case .dropped:
+            guard let slide = sliding, slide.id == id, let from = pane.tabs.firstIndex(where: { $0.id == id }) else { sliding = nil; return }
+            let target = slideTarget(from: from, distance: slide.distance, width: width)
+            withAnimation(motion) {
+                sliding = nil
+                if target != from { window.moveTab(id, toPlace: target) }
+            }
+        }
+    }
+}
+
+/// The new-tab button: the whole square at the bar's end, shaded as the
+/// tabs behind it are, darker under the pointer and while pressed.
+private struct NewTabButton: View {
+    let action: () -> Void
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: "plus").font(.system(size: 11, weight: .medium))
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(Style(hovering: hovering))
+        .onHover { hovering = $0 }
+        .help("新建标签页（⌘ T）").accessibilityLabel("新建标签页")
+    }
+
+    private struct Style: ButtonStyle {
+        let hovering: Bool
+        func makeBody(configuration: Configuration) -> some View {
+            configuration.label
+                .foregroundStyle(.secondary)
+                .background {
+                    TabShade.unselected.overlay { Color.black.opacity(configuration.isPressed ? 0.08 : hovering ? 0.04 : 0) }
+                }
+        }
+    }
+}
+
+/// A tab dragged along its bar.
+enum TabSlide {
+    /// The pointer is this far along the bar from where it was pressed.
+    case moved(CGFloat)
+    /// Let go on the bar: the tab takes the place it is over.
+    case dropped
+    /// Dragged off the bar, where a drag carries it on.
+    case left
 }
 
 /// The system tab bar's shades over the window's colour: tabs not shown are
@@ -243,17 +323,23 @@ private struct PaneTabItem: View {
     let selected: Bool
     /// In the focused pane, or the window's only one.
     let active: Bool
+    /// Its place among the pane's tabs.
+    let place: Int
+    let slide: (TabSlide) -> Void
     @State private var hovering = false
+    @State private var closePointer: TabHandle.ClosePointer = .outside
     @State private var renaming: String?
     @FocusState private var renameFocused: Bool
 
     var body: some View {
         ZStack {
-            TabHandle(window: window, tab: tab, title: tab.title, actions: TabHandle.Actions(
+            TabHandle(window: window, tab: tab, title: tab.title, place: place, count: pane.tabs.count, actions: TabHandle.Actions(
                 select: { window.selectTab(tab.id) },
                 rename: { if canRename { renaming = tab.title } },
                 close: { window.closeTab(tab.id) },
                 hover: { hovering = $0 },
+                closePointer: { closePointer = $0 },
+                slide: slide,
                 menu: menu))
             if let name = renaming {
                 TextField("会话名称", text: Binding(get: { name }, set: { renaming = $0 }))
@@ -280,9 +366,9 @@ private struct PaneTabItem: View {
         }
         .frame(maxHeight: .infinity)
         .background {
-            if !selected {
-                TabShade.unselected.overlay { if hovering { Color.black.opacity(0.04) } }
-            }
+            // Opaque, so a tab slid over another hides it.
+            if selected { Color(nsColor: .windowBackgroundColor) }
+            else { Color(nsColor: .windowBackgroundColor).overlay { TabShade.unselected.overlay { if hovering { Color.black.opacity(0.04) } } } }
         }
         .overlay(alignment: .trailing) { TabShade.line.frame(width: 1) }
         .accessibilityElement(children: .contain)
@@ -299,6 +385,12 @@ private struct PaneTabItem: View {
     @ViewBuilder private var leading: some View {
         if hovering && renaming == nil {
             Image(systemName: "xmark").font(.system(size: 9, weight: .semibold)).foregroundStyle(.secondary)
+                .frame(width: TabHandle.closeSize, height: TabHandle.closeSize)
+                .background {
+                    // As the system's tab close button: a rounded square under the pointer, darker pressed.
+                    RoundedRectangle(cornerRadius: 3, style: .continuous)
+                        .fill(Color.primary.opacity(closePointer == .pressed ? 0.18 : closePointer == .over ? 0.09 : 0))
+                }
                 .accessibilityLabel("关闭标签页")
         } else if !store.pendingInteractions.isEmpty {
             Image(systemName: "exclamationmark.circle.fill").foregroundStyle(.orange).imageScale(.small)
@@ -371,14 +463,22 @@ private struct TabHandle: NSViewRepresentable {
         let rename: () -> Void
         let close: () -> Void
         let hover: (Bool) -> Void
+        let closePointer: (ClosePointer) -> Void
+        let slide: (TabSlide) -> Void
         let menu: () -> NSMenu
     }
+    enum ClosePointer { case outside, over, pressed }
+    /// How far off the bar a sliding tab leaves it.
+    static let leaveDistance: CGFloat = 12
     /// Where the close button shows, from the leading edge.
     static let closeInset: CGFloat = 6
     static let closeSize: CGFloat = 16
     let window: ConversationWindowModel
     let tab: ConversationTab
     let title: String
+    /// Its place among `count` tabs sharing the bar equally.
+    let place: Int
+    let count: Int
     let actions: Actions
 
     func makeNSView(context: Context) -> HandleView { HandleView() }
@@ -387,6 +487,7 @@ private struct TabHandle: NSViewRepresentable {
         view.model = window
         view.tab = tab
         view.actions = actions
+        view.place = (place, count)
         view.toolTip = title
     }
 
@@ -394,9 +495,18 @@ private struct TabHandle: NSViewRepresentable {
         weak var model: ConversationWindowModel?
         weak var tab: ConversationTab?
         var actions: Actions?
+        var place = (index: 0, count: 1)
         private var pressed: NSEvent?
+        /// Where in the tab it was pressed, and the tabs' part of the bar
+        /// then, in the window.
+        private var pressedAt = NSPoint.zero
+        private var bar = NSRect.zero
         private var pressedClose = false
         private var hovering = false
+        private var sliding = false
+        private var closePointer: ClosePointer = .outside {
+            didSet { if closePointer != oldValue { actions?.closePointer(closePointer) } }
+        }
 
         override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 
@@ -404,16 +514,26 @@ private struct TabHandle: NSViewRepresentable {
         override func updateTrackingAreas() {
             super.updateTrackingAreas()
             trackingAreas.forEach(removeTrackingArea)
-            addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeInActiveApp, .inVisibleRect], owner: self))
+            addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .mouseMoved, .activeInActiveApp, .inVisibleRect], owner: self))
         }
 
-        override func mouseEntered(with event: NSEvent) { setHovering(true) }
-        override func mouseExited(with event: NSEvent) { setHovering(false) }
+        override func mouseEntered(with event: NSEvent) { setHovering(true); trackClose(event) }
+        override func mouseMoved(with event: NSEvent) { trackClose(event) }
+        override func mouseExited(with event: NSEvent) { setHovering(false); closePointer = .outside }
 
         private func setHovering(_ value: Bool) {
             guard hovering != value else { return }
             hovering = value
             actions?.hover(value)
+        }
+
+        private func overClose(_ event: NSEvent) -> Bool {
+            hovering && closeRect.contains(convert(event.locationInWindow, from: nil))
+        }
+
+        private func trackClose(_ event: NSEvent) {
+            guard !sliding else { return }
+            closePointer = overClose(event) ? (pressedClose ? .pressed : .over) : .outside
         }
 
         private var closeRect: NSRect {
@@ -422,20 +542,31 @@ private struct TabHandle: NSViewRepresentable {
         }
 
         override func mouseDown(with event: NSEvent) {
-            if hovering, closeRect.contains(convert(event.locationInWindow, from: nil)) {
+            if overClose(event) {
                 pressedClose = true
+                closePointer = .pressed
                 return
             }
             pressed = event
+            pressedAt = convert(event.locationInWindow, from: nil)
+            let frame = convert(bounds, to: nil)
+            bar = NSRect(x: frame.minX - CGFloat(place.index) * frame.width, y: frame.minY, width: CGFloat(place.count) * frame.width, height: frame.height)
             actions?.select()
             if event.clickCount == 2 { actions?.rename() }
         }
 
         override func mouseUp(with event: NSEvent) {
             pressed = nil
+            if sliding {
+                sliding = false
+                actions?.slide(.dropped)
+                return
+            }
             guard pressedClose else { return }
             pressedClose = false
-            if closeRect.contains(convert(event.locationInWindow, from: nil)) { actions?.close() }
+            let inside = overClose(event)
+            closePointer = inside ? .over : .outside
+            if inside { actions?.close() }
         }
 
         override func otherMouseUp(with event: NSEvent) {
@@ -444,10 +575,25 @@ private struct TabHandle: NSViewRepresentable {
 
         override func menu(for event: NSEvent) -> NSMenu? { actions?.menu() }
 
+        /// Along the bar the tab slides there; dragged off it, it is carried
+        /// on to another place, pane or window, or out to become a window.
         override func mouseDragged(with event: NSEvent) {
-            guard let start = pressed, let tab else { return }
+            if pressedClose { trackClose(event); return }
+            guard let start = pressed else { return }
             let from = start.locationInWindow, to = event.locationInWindow
-            guard hypot(to.x - from.x, to.y - from.y) > 4 else { return }
+            guard sliding || hypot(to.x - from.x, to.y - from.y) > 4 else { return }
+            // Along the tabs' part of the bar it slides; off it, it leaves.
+            if bar.insetBy(dx: -TabHandle.leaveDistance, dy: -TabHandle.leaveDistance).contains(to) {
+                if !sliding { sliding = true; closePointer = .outside }
+                actions?.slide(.moved(to.x - from.x))
+                return
+            }
+            if sliding { sliding = false; actions?.slide(.left) }
+            carry(at: event)
+        }
+
+        private func carry(at event: NSEvent) {
+            guard let tab else { return }
             pressed = nil
             let link = TabDragSource.link(for: tab.id, conversation: tab.link)
             TabDragSource.shared.begin(tab: tab.id, link: link)
@@ -455,8 +601,10 @@ private struct TabHandle: NSViewRepresentable {
             board.setString(link.absoluteString, forType: .URL)
             board.setString(link.absoluteString, forType: .string)
             let item = NSDraggingItem(pasteboardWriter: board)
-            item.setDraggingFrame(bounds, contents: snapshot())
-            let session = beginDraggingSession(with: [item], event: start, source: self)
+            // Held where it was pressed, wherever the tab has slid to.
+            let now = convert(event.locationInWindow, from: nil)
+            item.setDraggingFrame(bounds.offsetBy(dx: now.x - pressedAt.x, dy: now.y - pressedAt.y), contents: snapshot())
+            let session = beginDraggingSession(with: [item], event: event, source: self)
             // Let go where nothing takes it, it does not slide back: it opens there.
             session.animatesToStartingPositionsOnCancelOrFail = false
         }
