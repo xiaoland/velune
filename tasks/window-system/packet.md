@@ -106,3 +106,5 @@
 ## 补充（2026-10-16，S33）
 
 用户问布局持久化是否没做。原因：布局只经 SceneStorage 随系统状态恢复，macOS 默认“退出 App 时关闭窗口”（本机未设置 `NSQuitAlwaysKeepsWindows`，也没有 Velune 的 Saved Application State），正常退出后系统丢弃窗口状态；此前只写“布局恢复留待用户验收”，未核对默认设置下能否触发。用户选择工具窗口布局总是记住、窗口与标签跟随系统。实现：`RememberedToolLayout`（`ToolWindows.swift`）记在 `VELUNE_HOME/mac-tool-layout.json`，窗口工具状态变化时稍候写入、退出前补写，新窗口以它开始，系统重开的窗口仍用自己的布局。侧栏与检查器宽度由系统分栏管理，不在此列。
+- 核对（隔离 home，后台启动开发版）：`--check-dock-areas` 后 `mac-tool-layout.json` 写入大纲左、列表右、输入区底；结束进程后不带参数重启（没有系统保存状态），窗口按该布局打开。
+- 已安装 4adf1cb（工具窗口布局记在 VELUNE_HOME）：签名校验通过，manifest 指向该提交且非 dirty。首次启动为默认布局，此后改动即记住。退出重开与新窗口沿用需用户验收。
