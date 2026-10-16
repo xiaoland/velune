@@ -191,6 +191,7 @@ final class VeluneApplicationDelegate: NSObject, NSApplicationDelegate {
             guard alert.runModal() == .alertSecondButtonReturn else { return .terminateCancel }
         }
         guard let store else { return .terminateNow }
+        store.rememberedToolLayout.flush()
         terminationPending = true
         store.shutdown { [weak self] closed in
             // Preview and unopened cores can complete synchronously. Reply only

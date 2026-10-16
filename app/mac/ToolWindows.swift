@@ -192,6 +192,59 @@ struct ToolWindowLayout: Codable, Equatable {
     }
 }
 
+/// The tool windows as last arranged in any window, for each window that
+/// opens without a layout of its own. The system brings back a window's own
+/// layout only when it reopens the window, which by default it does not after
+/// quitting, so this one is kept in `VELUNE_HOME`. "Editor only" is a window's
+/// passing state and is left out.
+@MainActor final class RememberedToolLayout {
+    private struct File: Codable {
+        static let schema = 1
+        var schema = File.schema
+        var tools: ToolWindowLayout
+    }
+    private(set) var layout: ToolWindowLayout
+    private let url: URL?
+    private let failed: (Error) -> Void
+    private var pending: DispatchWorkItem?
+
+    /// Any other schema or an unreadable file starts from the default and is replaced on the next change.
+    init(home: URL?, failed: @escaping (Error) -> Void) {
+        url = home?.appendingPathComponent("mac-tool-layout.json")
+        self.failed = failed
+        let file = url.flatMap { try? Data(contentsOf: $0) }.flatMap { try? JSONDecoder().decode(File.self, from: $0) }
+        layout = file.flatMap { $0.schema == File.schema ? $0.tools.normalized() : nil } ?? ToolWindowLayout()
+    }
+
+    /// Kept a moment later, so a divider being dragged writes once.
+    func remember(_ tools: ToolWindowLayout) {
+        var tools = tools
+        if tools.isEditorOnly { tools.toggleEditorOnly() }
+        guard tools != layout else { return }
+        layout = tools
+        pending?.cancel()
+        let write = DispatchWorkItem { [weak self] in self?.write() }
+        pending = write
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: write)
+    }
+
+    /// Writes a change still waiting, before the application quits.
+    func flush() {
+        guard let pending, !pending.isCancelled else { return }
+        pending.cancel()
+        write()
+    }
+
+    private func write() {
+        pending = nil
+        guard let url else { return }
+        do {
+            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try JSONEncoder().encode(File(tools: layout)).write(to: url, options: .atomic)
+        } catch { failed(error) }
+    }
+}
+
 /// A floating panel's or tool window's size and place: on the screen, or,
 /// attached to its window, from the window's nearer edges so it follows the window.
 struct ToolFrame: Codable, Equatable {

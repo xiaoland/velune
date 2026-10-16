@@ -98,6 +98,10 @@ final class AppStore: ObservableObject {
     private let transport: Transport?
     /// Native runtime resources are edited from settings with their own loading state.
     var resourceTransport: Transport? { transport }
+    /// The tool windows as last arranged, for windows without a layout of their own; the application's alone.
+    private(set) lazy var rememberedToolLayout = RememberedToolLayout(home: transport?.stateDirectory) { [weak self] in
+        self?.recordProblem($0, source: "保存布局")
+    }
     // Workspaces share application services; their navigation and transcript stay local.
     private let sharedApplication: AppStore?
     private var subscriptions: Set<AnyCancellable> = []

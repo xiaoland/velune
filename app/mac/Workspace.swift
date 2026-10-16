@@ -337,7 +337,13 @@ struct WindowSeed: Codable, Hashable {
     private var anchors: [UUID: () -> NSView?] = [:]
     private var mouseMonitor: Any?
     /// Where the list, outline and composer are.
-    @Published var tools = ToolWindowLayout() { didSet { if tools != oldValue { detached.sync() } } }
+    @Published var tools = ToolWindowLayout() {
+        didSet {
+            guard tools != oldValue else { return }
+            detached.sync()
+            application.rememberedToolLayout.remember(tools)
+        }
+    }
     /// The area a panel dragged now would dock into, for the window to show where.
     @Published var dockHint: DockSide?
     /// The outline popover from the toolbar button.
@@ -411,6 +417,8 @@ struct WindowSeed: Codable, Hashable {
         guard !started else { return }
         started = true
         list.start(loadFirstConversation: false)
+        // A layout the system restores below replaces this one.
+        tools = application.rememberedToolLayout.layout
         if seed?.editorOnly == true { tools.toggleEditorOnly() }
         if let id = seed?.tab, let tab = Self.handoff.removeValue(forKey: id) {
             replacePanes(with: [Pane(tabs: [tab])], layout: nil)
