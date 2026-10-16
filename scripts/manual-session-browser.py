@@ -141,7 +141,7 @@ def main():
                 reasoning_levels=None, adapter_metadata_json=None)
             provider = b.BindingProviderDraft(id='fixture-provider', name='Synthetic',
                 protocol=b.BindingGatewayProtocol.CHAT_COMPLETIONS_V1,
-                endpoint='http://127.0.0.1:9/v1', models=[model])
+                endpoint='http://127.0.0.1:9/v1', models=[model], quota_limits=[])
             application.save_provider('default', provider, b.BindingAuthenticationEdit.KEEP())
             key = application.list().gateways[0].providers[0].models[0].record_key
             model.record_key = key

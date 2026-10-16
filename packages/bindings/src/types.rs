@@ -367,6 +367,7 @@ pub struct BindingProviderDefinition {
     pub endpoint: String,
     pub authentication: BindingProviderAuthentication,
     pub models: Vec<BindingProviderModel>,
+    pub quota_limits: Vec<BindingQuotaLimit>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
@@ -377,18 +378,7 @@ pub struct BindingProviderDraft {
     pub protocol: BindingGatewayProtocol,
     pub endpoint: String,
     pub models: Vec<BindingProviderModel>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Enum)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub enum BindingFailoverMode {
-    Disabled,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct BindingFailoverPolicy {
-    pub mode: BindingFailoverMode,
+    pub quota_limits: Vec<BindingQuotaLimit>,
 }
 
 /// Provider models chosen together; the gateway fails over between them in order.
@@ -400,6 +390,9 @@ pub struct BindingModelRoute {
     pub name: String,
     /// Provider model record keys, in priority order.
     pub members: Vec<String>,
+    pub strategy: BindingRoutingStrategy,
+    pub weights: std::collections::HashMap<String, u32>,
+    pub sticky: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
@@ -409,7 +402,6 @@ pub struct BindingGatewayConfig {
     pub name: String,
     pub providers: Vec<BindingProviderDefinition>,
     pub routes: Vec<BindingModelRoute>,
-    pub failover: BindingFailoverPolicy,
 }
 
 #[derive(Clone, Serialize, Deserialize, uniffi::Record)]
@@ -1690,4 +1682,49 @@ impl std::fmt::Debug for BindingResourceDriftFile {
             .field("path", &self.path)
             .finish_non_exhaustive()
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Enum)]
+#[serde(rename_all = "camelCase")]
+pub enum BindingRoutingStrategy {
+    Smart,
+    Order,
+    Rotate,
+    Weight,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BindingQuotaLimit {
+    pub window_id: String,
+    pub max_used_percent: u8,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Enum)]
+#[serde(rename_all = "camelCase")]
+pub enum BindingQuotaFreshness {
+    Fresh,
+    Stale,
+    Unknown,
+    Unsupported,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+#[serde(rename_all = "camelCase")]
+pub struct BindingProviderQuotaWindow {
+    pub id: String,
+    pub model_ids: Option<Vec<String>>,
+    pub used_percent: f64,
+    pub reset_at_ms: Option<i64>,
+    pub observed_at_ms: i64,
+    pub expires_at_ms: i64,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+#[serde(rename_all = "camelCase")]
+pub struct BindingProviderQuotaStatus {
+    pub gateway_id: String,
+    pub provider_id: String,
+    pub freshness: BindingQuotaFreshness,
+    pub windows: Vec<BindingProviderQuotaWindow>,
+    pub available: Option<bool>,
+    pub refreshing: bool,
+    pub problem: Option<String>,
 }

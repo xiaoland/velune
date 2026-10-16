@@ -489,6 +489,24 @@ impl VeluneApplication {
         })?)
     }
 
+    pub fn provider_quota(
+        &self,
+        gateway_id: String,
+        provider_id: String,
+    ) -> Result<BindingProviderQuotaStatus, BindingError> {
+        convert(self.with("provider_quota", |app| {
+            app.provider_quota(gateway_id, provider_id)
+        })?)
+    }
+    pub fn refresh_provider_quota(
+        &self,
+        gateway_id: String,
+        provider_id: String,
+    ) -> Result<BindingProviderQuotaStatus, BindingError> {
+        convert(self.with("refresh_provider_quota", |app| {
+            app.refresh_provider_quota(gateway_id, provider_id)
+        })?)
+    }
     pub fn save_provider(
         &self,
         gateway_id: String,

@@ -1,7 +1,7 @@
 //! Configuration-only composition; shares provider edits without local execution.
 use crate::{
     Error, Options,
-    config::{FailoverMode, FailoverPolicy, GatewayConfig, RuntimeInstance},
+    config::{GatewayConfig, RuntimeInstance},
     provider_authentication::AuthenticationMaterial,
     provider_configuration,
     repository::{PersistedConfig, Repository},
@@ -85,6 +85,15 @@ impl CoreRuntime {
                 Ok(json!(limits))
             }
             Some("providers") => {
+                if matches!(
+                    payload["operation"].as_str(),
+                    Some("quota" | "refreshQuota")
+                ) {
+                    return Err(Error::Unsupported(
+                        "subscription quota collection requires local-runtime".into(),
+                    ));
+                }
+
                 if payload["operation"] == "readApiKey" {
                     let provider = self
                         .config
@@ -165,9 +174,6 @@ impl CoreRuntime {
                                 name: "默认网关".into(),
                                 providers: Vec::new(),
                                 routes: Vec::new(),
-                                failover: FailoverPolicy {
-                                    mode: FailoverMode::Disabled,
-                                },
                             });
                         }
                         if instance.id.is_empty()

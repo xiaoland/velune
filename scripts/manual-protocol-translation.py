@@ -334,8 +334,8 @@ def main():
             protocol = {"chat": "chatCompletionsV1", "responses": "responsesV1", "messages": "messagesV1"}[target]
             providers.append({"id": target, "name": target, "protocol": protocol,
                               "endpoint": f"http://127.0.0.1:{server.server_port}/v1",
-                              "credentialRef": "synthetic", "models": ([{"recordKey": target, "providerModelId": "fixture-" + target, "nickname": target, "maxOutputTokens": 128}, {"recordKey": "messages-nocap", "providerModelId": "fixture-messages-nocap", "nickname": "messages-nocap"}] if target == "messages" else [{"recordKey": target, "providerModelId": "fixture-" + target, "nickname": target}])})
-        config.write_text(json.dumps({"id": "translation", "name": "translation", "providers": providers, "failover": {"mode": "disabled"}}))
+                              "credentialRef": "synthetic", "quotaLimits": [], "models": ([{"recordKey": target, "providerModelId": "fixture-" + target, "nickname": target, "maxOutputTokens": 128}, {"recordKey": "messages-nocap", "providerModelId": "fixture-messages-nocap", "nickname": "messages-nocap"}] if target == "messages" else [{"recordKey": target, "providerModelId": "fixture-" + target, "nickname": target}])})
+        config.write_text(json.dumps({"id": "translation", "name": "translation", "providers": providers, "routes": []}))
         build = subprocess.run(["cargo", "build", "--locked", "-p", "velune-gateway", "--message-format=json"], capture_output=True, text=True, check=True)
         artifacts = {}
         for line in build.stdout.splitlines():

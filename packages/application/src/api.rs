@@ -39,6 +39,7 @@ pub struct ProviderSummary {
     pub protocol: GatewayProtocol,
     pub endpoint: String,
     pub authentication: crate::ProviderAuthenticationDescription,
+    pub quota_limits: Vec<crate::config::QuotaLimit>,
     pub models: Vec<ProviderModel>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -48,7 +49,6 @@ pub struct GatewaySummary {
     pub name: String,
     pub providers: Vec<ProviderSummary>,
     pub routes: Vec<crate::config::ModelRoute>,
-    pub failover: FailoverPolicy,
 }
 impl From<&GatewayConfig> for GatewaySummary {
     fn from(g: &GatewayConfig) -> Self {
@@ -64,11 +64,11 @@ impl From<&GatewayConfig> for GatewaySummary {
                     protocol: p.protocol.clone(),
                     endpoint: p.endpoint.clone(),
                     authentication: p.authentication.description(),
+                    quota_limits: p.quota_limits.clone(),
                     models: p.models.clone(),
                 })
                 .collect(),
             routes: g.routes.clone(),
-            failover: g.failover.clone(),
         }
     }
 }
@@ -80,6 +80,7 @@ pub struct ProviderDraft {
     pub protocol: GatewayProtocol,
     pub endpoint: String,
     pub models: Vec<ProviderModel>,
+    pub quota_limits: Vec<crate::config::QuotaLimit>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1428,6 +1429,30 @@ impl Application {
     ) -> Result<ImportResult, Error> {
         self.execute("providerImport", json!({"operation":"apply","gatewayID":gateway_id,"source":serde_json::to_string(&source)?,"previewToken":preview_token,"selections":serde_json::to_string(&selections)?,"replaceExisting":replace_existing}), None)
     }
+    /// Read the application-owned observation and request a sample when due; never waits for HTTP.
+    pub fn provider_quota(
+        &mut self,
+        gateway_id: String,
+        provider_id: String,
+    ) -> Result<ProviderQuotaStatus, Error> {
+        self.execute(
+            "providers",
+            json!({"operation":"quota","gatewayID":gateway_id,"providerID":provider_id}),
+            None,
+        )
+    }
+    /// Request one bounded sample; concurrent requests are coalesced. Poll provider_quota for completion.
+    pub fn refresh_provider_quota(
+        &mut self,
+        gateway_id: String,
+        provider_id: String,
+    ) -> Result<ProviderQuotaStatus, Error> {
+        self.execute(
+            "providers",
+            json!({"operation":"refreshQuota","gatewayID":gateway_id,"providerID":provider_id}),
+            None,
+        )
+    }
     pub fn save_provider(
         &mut self,
         gateway_id: String,
@@ -1751,4 +1776,34 @@ pub enum SendQueueOperation {
     Steer {
         id: String,
     },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum QuotaFreshness {
+    Fresh,
+    Stale,
+    Unknown,
+    Unsupported,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderQuotaWindow {
+    pub id: String,
+    pub model_ids: Option<Vec<String>>,
+    pub used_percent: f64,
+    pub reset_at_ms: Option<i64>,
+    pub observed_at_ms: i64,
+    pub expires_at_ms: i64,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderQuotaStatus {
+    pub gateway_id: String,
+    pub provider_id: String,
+    pub freshness: QuotaFreshness,
+    pub windows: Vec<ProviderQuotaWindow>,
+    pub available: Option<bool>,
+    pub refreshing: bool,
+    pub problem: Option<String>,
 }

@@ -9,6 +9,8 @@ use std::{
     io::Write,
     path::{Path, PathBuf},
 };
+pub(crate) const CURRENT_SCHEMA_VERSION: u32 = 9;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct PersistedConfig {
@@ -38,7 +40,7 @@ pub(crate) fn default_conversation_browser_total_limit() -> u32 {
 impl Default for PersistedConfig {
     fn default() -> Self {
         Self {
-            schema_version: 0,
+            schema_version: CURRENT_SCHEMA_VERSION,
             gateways: Vec::new(),
             runtime_instances: Vec::new(),
             model_templates: Vec::new(),
@@ -90,16 +92,13 @@ impl Repository {
                 let version = raw["schemaVersion"].as_u64().ok_or_else(|| {
                     RuntimeError::invalid("configuration schema version is required")
                 })?;
-                if version < 8 {
+                if version < u64::from(CURRENT_SCHEMA_VERSION) {
                     reset = true;
-                    PersistedConfig {
-                        schema_version: 8,
-                        ..PersistedConfig::default()
-                    }
+                    PersistedConfig::default()
                 } else {
-                    if version > 8 {
+                    if version > u64::from(CURRENT_SCHEMA_VERSION) {
                         return Err(RuntimeError::invalid(
-                            "配置版本高于本应用支持的 schema 8；请使用支持该版本的应用。",
+                            "配置版本高于本应用支持的版本；请使用支持该版本的应用。",
                         ));
                     }
                     let value: PersistedConfig = serde_json::from_value(raw)?;
@@ -136,10 +135,9 @@ impl Repository {
                     value
                 }
             }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => PersistedConfig {
-                schema_version: 8,
-                ..PersistedConfig::default()
-            },
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                PersistedConfig::default()
+            }
             Err(error) => return Err(error.into()),
         };
         let repository = Self {

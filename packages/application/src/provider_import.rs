@@ -577,6 +577,12 @@ pub(crate) fn apply(
             endpoint,
             authentication,
             models: bindings,
+            quota_limits: gateway
+                .providers
+                .iter()
+                .find(|p| p.id == provider_id)
+                .map(|p| p.quota_limits.clone())
+                .unwrap_or_default(),
         };
         if matches!(
             &provider_def.authentication.material,

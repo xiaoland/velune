@@ -136,6 +136,18 @@ fn merge(
         .ok_or(CredentialResolutionError::InvalidContract)?;
     let access = claims(&tokens.access_token).ok_or(CredentialResolutionError::InvalidContract)?;
     let identity = claims(&id_token).ok_or(CredentialResolutionError::InvalidContract)?;
+    let subject = identity["sub"]
+        .as_str()
+        .filter(|v| nonempty(v))
+        .ok_or(CredentialResolutionError::InvalidContract)?;
+    if previous.is_some_and(|old| {
+        claims(&old.id_token)
+            .and_then(|v| v["sub"].as_str().map(str::to_owned))
+            .as_deref()
+            != Some(subject)
+    }) {
+        return Err(CredentialResolutionError::StaleBinding);
+    }
     let account_id = identity["https://api.openai.com/auth"]["chatgpt_account_id"]
         .as_str()
         .or_else(|| access["https://api.openai.com/auth"]["chatgpt_account_id"].as_str())
@@ -550,4 +562,75 @@ fn login_worker(
         return Ok(());
     }
     Err(failure())
+}
+
+/// Exact usage purpose: subscription credentials are not a general HTTP credential source.
+pub(crate) const USAGE_ENDPOINT: &str = "https://chatgpt.com/backend-api/wham/usage";
+pub(crate) async fn read_usage(
+    home: PathBuf,
+    id: String,
+    generation: u64,
+) -> Result<Value, CredentialResolutionError> {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(15))
+        .redirect(reqwest::redirect::Policy::none())
+        .retry(reqwest::retry::never())
+        .build()
+        .map_err(|_| failure())?;
+    let mut auth = resolve(home.clone(), id.clone(), generation, None).await?;
+    for attempt in 0..2 {
+        let velune_gateway::CredentialProfile::CodexSubscription { account_id } = &auth.profile
+        else {
+            return Err(CredentialResolutionError::UnauthorizedTarget);
+        };
+        let mut bearer = reqwest::header::HeaderValue::from_str(&format!("Bearer {}", auth.token))
+            .map_err(|_| CredentialResolutionError::InvalidContract)?;
+        bearer.set_sensitive(true);
+        let mut response = client
+            .get(USAGE_ENDPOINT)
+            .header("authorization", bearer)
+            .header("chatgpt-account-id", account_id)
+            .header("originator", "codex_cli_rs")
+            .header("user-agent", "codex_cli_rs/0.162.0 Velune/0.1")
+            .send()
+            .await
+            .map_err(|_| failure())?;
+        if response.status() == reqwest::StatusCode::UNAUTHORIZED {
+            if attempt == 0 {
+                auth = resolve(home.clone(), id.clone(), generation, Some(auth.token)).await?;
+                continue;
+            }
+            invalidate(home, id, generation, auth.token).await;
+            return Err(CredentialResolutionError::AuthenticationExpired);
+        }
+        if !response.status().is_success() {
+            return Err(failure());
+        }
+        let mut bytes = Vec::new();
+        while let Some(chunk) = response.chunk().await.map_err(|_| failure())? {
+            if bytes.len() + chunk.len() > LIMIT as usize {
+                return Err(CredentialResolutionError::InvalidContract);
+            }
+            bytes.extend_from_slice(&chunk);
+        }
+        return serde_json::from_slice(&bytes)
+            .map_err(|_| CredentialResolutionError::InvalidContract);
+    }
+    Err(failure())
+}
+
+/// The full subscription identity stays private; email is never used for deduplication.
+pub(crate) fn same_subscription(home: &Path, left: &str, right: &str) -> bool {
+    let identity = |id: &str| -> Option<(String, String)> {
+        let session = read(&path(home, id).ok()?).ok()?;
+        let subject = claims(&session.id_token)?["sub"]
+            .as_str()
+            .filter(|v| nonempty(v))?
+            .to_owned();
+        Some((subject, session.account_id))
+    };
+    match (identity(left), identity(right)) {
+        (Some(a), Some(b)) => a == b,
+        _ => false,
+    }
 }

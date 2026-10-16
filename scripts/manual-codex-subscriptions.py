@@ -27,6 +27,9 @@ CODES = {}
 REFRESH = {}
 COUNTS = {}
 ERRORS = []
+QUOTA_MODE = 'normal'
+QUOTA_GATE = threading.Event()
+QUOTA_ENTERED = threading.Event()
 
 
 def check(ok, message):
@@ -39,7 +42,7 @@ def b64(value):
 
 
 def jwt(label, generation):
-    claims = {'exp': int(time.time()) + 3600, 'fixture_label': label,
+    claims = {'exp': int(time.time()) + 3600, 'sub': 'fixture-user-' + label, 'fixture_label': label,
               'fixture_generation': generation,
               'https://api.openai.com/auth': {'chatgpt_account_id': 'account-' + label}}
     return b64(b'{"alg":"fixture"}') + '.' + b64(json.dumps(claims).encode()) + '.fixture'
@@ -79,7 +82,35 @@ class Fixture(BaseHTTPRequestHandler):
         self.wfile.write(payload)
 
     def do_GET(self):
+        global QUOTA_MODE
         query = parse_qs(urlparse(self.path).query)
+        if urlparse(self.path).path == '/quota-control':
+            mode = query.get('mode', ['status'])[0]
+            if mode == 'hold':
+                QUOTA_MODE = 'hold'
+                QUOTA_GATE.clear()
+                QUOTA_ENTERED.clear()
+            elif mode == 'release':
+                QUOTA_GATE.set()
+            elif mode == 'normal':
+                QUOTA_MODE = 'normal'
+            self.reply(200, {'entered': QUOTA_ENTERED.is_set()})
+            return
+        if urlparse(self.path).path == '/usage':
+            token = self.headers.get('Authorization', '').removeprefix('Bearer ')
+            claims = json.loads(base64.urlsafe_b64decode(token.split('.')[1] + '=='))
+            label = claims['fixture_label']
+            count('quota:' + label)
+            mode = QUOTA_MODE
+            if mode == 'hold':
+                QUOTA_ENTERED.set()
+                QUOTA_GATE.wait(10)
+            used = -1 if label == 'quota-invalid' else 99 if mode == 'hold' else 37.5
+            try:
+                self.reply(200, {'rate_limit': {'allowed': True, 'primary_window': {'used_percent': used, 'limit_window_seconds': 18000, 'reset_at': int(time.time()) + 120}}})
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+            return
         if urlparse(self.path).path == '/fixture/status':
             self.reply(200, dict(COUNTS))
             return
@@ -204,7 +235,7 @@ def rewrite(path, old, new, expected=1):
 PROGRAM = r'''
 use std::{collections::BTreeMap, fs, path::{Path,PathBuf}, sync::{Arc,Mutex,OnceLock,atomic::{AtomicBool, Ordering}}, time::{Duration,Instant}};
 use velune_application::{Application,Options,AuthenticationEdit,ProviderDraft};
-use velune_gateway::{CredentialTarget,GatewayProtocol,ModelRoute,Runner,RouteHealth};
+use velune_gateway::{CredentialTarget,GatewayProtocol,ModelRoute,Runner,SchedulingState};
 use serde_json::{Value,json};
 #[derive(Default)] struct Sink(Mutex<Vec<velune_gateway::AnalyticsRecord>>);
 impl velune_gateway::AnalyticsSink for Sink { fn record(&self,record:velune_gateway::AnalyticsRecord) {self.0.lock().unwrap().push(record);} }
@@ -252,28 +283,28 @@ async fn call(client:&reqwest::Client,runner:&Runner,extra:Value)->(u16,String,r
 fn runner(home:&Path,options:&Options,labels:&[&str])->Runner {
  let full=config(home);
  let providers:Vec<_>=full.providers.iter().filter(|p|labels.contains(&p.id.as_str())).map(|p|velune_gateway::ProviderDefinition {
-  id:p.id.clone(),name:p.name.clone(),protocol:GatewayProtocol::ResponsesV1,endpoint:p.endpoint.clone(),credential_ref:Some(p.id.clone()),
+  id:p.id.clone(),name:p.name.clone(),protocol:GatewayProtocol::ResponsesV1,endpoint:p.endpoint.clone(),credential_ref:Some(p.id.clone()),quota_limits:vec![],
   models:p.models.iter().map(|m|velune_gateway::ProviderModel {record_key:m.record_key.clone(),provider_model_id:m.provider_model_id.clone(),nickname:m.nickname.clone(),icon:None,context_window:None,max_output_tokens:Some(256),reasoning_levels:None}).collect()
  }).collect();
  let members=labels.iter().map(|label|providers.iter().find(|p|p.id==*label).unwrap().models[0].record_key.clone()).collect();
- let gateway=velune_gateway::GatewayConfig{id:"default".into(),name:"fixture".into(),providers,routes:vec![ModelRoute {record_key:"pool".into(),name:"fixture".into(),members}],failover:velune_gateway::FailoverPolicy{mode:velune_gateway::FailoverMode::Disabled}};
- Runner::start_with_analytics(gateway,velune_application::authentication_resolver::ProviderResolver::capture(&full,options),BTreeMap::new(),Some(SINK.get_or_init(||Arc::new(Sink::default())).clone()),RouteHealth::default()).unwrap()
+ let gateway=velune_gateway::GatewayConfig{id:"default".into(),name:"fixture".into(),providers,routes:vec![ModelRoute {record_key:"pool".into(),name:"fixture".into(),members,strategy:velune_gateway::RoutingStrategy::Order,sticky:false,weights:BTreeMap::new()}]};
+ Runner::start_with_analytics(gateway,velune_application::authentication_resolver::ProviderResolver::capture(&full,options),BTreeMap::new(),Some(SINK.get_or_init(||Arc::new(Sink::default())).clone()),SchedulingState::default()).unwrap()
 }
 fn main(){
  let args:Vec<String>=std::env::args().collect();let home=PathBuf::from(&args[1]);let endpoint=&args[2];
  fs::create_dir_all(home.join("resources")).unwrap();
  let options=Options {home_directory:home.clone(),resources_directory:home.join("resources")};
  let mut app=Application::open(options.clone()).unwrap();
- for label in ["rate","good","recover","denied","concurrent","midstream","transient","cancelled","redirect302","redirect307","nonsse","mixedmime","missingmime","missingempty","missinghtml","missingincomplete","emptymime"] {
-  let draft:ProviderDraft=serde_json::from_value(json!({"id":label,"name":label,"protocol":"responsesV1","endpoint":endpoint,"models":[{"recordKey":"","providerModelId":"fixture-model","nickname":"fixture","icon":null,"contextWindow":8192,"maxOutputTokens":256,"reasoningLevels":null}]})).unwrap();
+ for label in ["rate","good","recover","denied","concurrent","midstream","transient","cancelled","redirect302","redirect307","nonsse","mixedmime","missingmime","missingempty","missinghtml","missingincomplete","emptymime","quota-invalid"] {
+  let draft:ProviderDraft=serde_json::from_value(json!({"id":label,"name":label,"protocol":"responsesV1","endpoint":endpoint,"quotaLimits":[],"models":[{"recordKey":"","providerModelId":"fixture-model","nickname":"fixture","icon":null,"contextWindow":8192,"maxOutputTokens":256,"reasoningLevels":null,"piProjection":null}]})).unwrap();
   app.save_provider("default".into(),draft,AuthenticationEdit::SetCodexSubscription).unwrap();
  }
- let standard:ProviderDraft=serde_json::from_value(json!({"id":"standardmissing","name":"standardmissing","protocol":"responsesV1","endpoint":endpoint,"models":[{"recordKey":"","providerModelId":"fixture-model","nickname":"fixture","icon":null,"contextWindow":8192,"maxOutputTokens":256,"reasoningLevels":null}]})).unwrap();
+ let standard:ProviderDraft=serde_json::from_value(json!({"id":"standardmissing","name":"standardmissing","protocol":"responsesV1","endpoint":endpoint,"quotaLimits":[],"models":[{"recordKey":"","providerModelId":"fixture-model","nickname":"fixture","icon":null,"contextWindow":8192,"maxOutputTokens":256,"reasoningLevels":null,"piProjection":null}]})).unwrap();
  app.save_provider("default".into(),standard,AuthenticationEdit::SetApiKey{value:"fixture-standardmissing".into()}).unwrap();
- for label in ["rate","good","recover","denied","concurrent","midstream","transient","cancelled","redirect302","redirect307","nonsse","mixedmime","missingmime","missingempty","missinghtml","missingincomplete","emptymime"] {login(&mut app,label);}
+ for label in ["rate","good","recover","denied","concurrent","midstream","transient","cancelled","redirect302","redirect307","nonsse","mixedmime","missingmime","missingempty","missinghtml","missingincomplete","emptymime","quota-invalid"] {login(&mut app,label);}
  app.close().unwrap();drop(app);
  let mut app=Application::open(options.clone()).unwrap();
- for label in ["rate","good","recover","denied","concurrent","midstream","transient","cancelled","redirect302","redirect307","nonsse","mixedmime","missingmime","missingempty","missinghtml","missingincomplete","emptymime"] {assert!(app.authentication_inspect("default".into(),label.into()).unwrap().configured,"reopen lost login");}
+ for label in ["rate","good","recover","denied","concurrent","midstream","transient","cancelled","redirect302","redirect307","nonsse","mixedmime","missingmime","missingempty","missinghtml","missingincomplete","emptymime","quota-invalid"] {assert!(app.authentication_inspect("default".into(),label.into()).unwrap().configured,"reopen lost login");}
  let public=serde_json::to_string(&app.list().unwrap()).unwrap();
  let mut labels=std::collections::BTreeSet::new();
  for label in ["rate","good"] {
@@ -283,6 +314,19 @@ fn main(){
   for field in ["access_token","refresh_token","id_token","account_id"] {assert!(!public.contains(session[field].as_str().unwrap()),"private authentication exposed in public summary");}
  }
  assert_eq!(labels.len(),2,"account labels cannot distinguish subscriptions");
+ // Public configuration and quota collection stay provider-owned and survive reopening.
+ let saved=config(&home);let rate=saved.providers.iter().find(|p|p.id=="rate").unwrap();let good=saved.providers.iter().find(|p|p.id=="good").unwrap();
+ let rate_key=rate.models[0].record_key.clone();let good_key=good.models[0].record_key.clone();
+ app.save_provider("default".into(),ProviderDraft{id:rate.id.clone(),name:rate.name.clone(),protocol:rate.protocol.clone(),endpoint:rate.endpoint.clone(),models:rate.models.clone(),quota_limits:vec![velune_application::config::QuotaLimit{window_id:"window:18000".into(),max_used_percent:75}]},AuthenticationEdit::Keep).unwrap();
+ for strategy in [velune_application::config::RoutingStrategy::Smart,velune_application::config::RoutingStrategy::Order,velune_application::config::RoutingStrategy::Rotate,velune_application::config::RoutingStrategy::Weight]{
+  let weights=if strategy==velune_application::config::RoutingStrategy::Weight{BTreeMap::from([(rate_key.clone(),1),(good_key.clone(),3)])}else{BTreeMap::new()};
+  app.save_model_route("default".into(),velune_application::config::ModelRoute{record_key:String::new(),name:format!("Fixture {strategy:?}"),members:vec![rate_key.clone(),good_key.clone()],strategy,sticky:true,weights}).unwrap();
+ }
+ let sample=app.refresh_provider_quota("default".into(),"rate".into()).unwrap();assert!(sample.refreshing);
+ let deadline=Instant::now()+Duration::from_secs(5);loop{let sample=app.provider_quota("default".into(),"rate".into()).unwrap();if !sample.refreshing{assert!(matches!(sample.freshness,velune_application::QuotaFreshness::Fresh));assert_eq!(sample.windows.len(),1);assert_eq!(sample.windows[0].id,"window:18000");assert_eq!(sample.windows[0].used_percent,37.5);break;}assert!(Instant::now()<deadline,"quota collection timeout");std::thread::sleep(Duration::from_millis(10));}
+ app.refresh_provider_quota("default".into(),"quota-invalid".into()).unwrap();let deadline=Instant::now()+Duration::from_secs(5);loop{let sample=app.provider_quota("default".into(),"quota-invalid".into()).unwrap();if !sample.refreshing{assert!(matches!(sample.freshness,velune_application::QuotaFreshness::Unknown));assert!(sample.windows.is_empty()&&sample.problem.is_some(),"invalid supplier percentage became fresh");break;}assert!(Instant::now()<deadline);std::thread::sleep(Duration::from_millis(10));}
+ app.close().unwrap();drop(app);let mut app=Application::open(options.clone()).unwrap();let snapshot=app.list().unwrap();assert_eq!(snapshot.gateways[0].routes.len(),4);assert!(snapshot.gateways[0].routes.iter().all(|r|r.sticky));assert_eq!(snapshot.gateways[0].providers.iter().find(|p|p.id=="rate").unwrap().quota_limits[0].max_used_percent,75);
+ assert_eq!(load(&home)["schemaVersion"],9,"configuration schema boundary");
  let before=fs::read(home.join("generic-config.json")).unwrap();
  let old_session=session_path(&home,"good");
  let old_bytes=fs::read(&old_session).unwrap();
@@ -342,11 +386,21 @@ fn main(){
  for label in ["missingempty","missinghtml","missingincomplete","standardmissing","emptymime"]{assert!(records.iter().any(|r|r.provider_id==label&&r.outcome==velune_gateway::AnalyticsOutcome::Failed),"missing/invalid MIME produced false completion");}
  drop(records);
  let mut app=Application::open(options.clone()).unwrap();
+ let control=reqwest::blocking::Client::builder().no_proxy().build().unwrap();let quota_base=endpoint.trim_end_matches("/backend-api/codex");
+ control.get(format!("{quota_base}/quota-control?mode=hold")).send().unwrap();app.refresh_provider_quota("default".into(),"rate".into()).unwrap();let deadline=Instant::now()+Duration::from_secs(5);loop{let status:Value=control.get(format!("{quota_base}/quota-control")).send().unwrap().json().unwrap();if status["entered"]==true{break;}assert!(Instant::now()<deadline);std::thread::sleep(Duration::from_millis(10));}
+ let old=config(&home).providers.into_iter().find(|p|p.id=="rate").unwrap();app.save_provider("default".into(),ProviderDraft{id:old.id,name:old.name,protocol:old.protocol,endpoint:old.endpoint,models:old.models,quota_limits:old.quota_limits},AuthenticationEdit::SetCodexSubscription).unwrap();control.get(format!("{quota_base}/quota-control?mode=release")).send().unwrap();std::thread::sleep(Duration::from_millis(150));let replaced=app.provider_quota("default".into(),"rate".into()).unwrap();assert!(matches!(replaced.freshness,velune_application::QuotaFreshness::Unknown)&&replaced.windows.is_empty(),"old-account quota returned after authentication replacement");
  let denied=app.authentication_inspect("default".into(),"denied".into()).unwrap();assert!(!denied.configured&&denied.account_label.is_some(),"invalidated account public state");
  assert!(app.authentication_inspect("default".into(),"transient".into()).unwrap().configured,"temporary failure public state");app.close().unwrap();drop(app);
  monitor_done.store(true,Ordering::SeqCst);assert!(monitor.join().unwrap()>0,"no atomic write observations");
  #[cfg(unix)]{use std::os::unix::fs::PermissionsExt;assert_eq!(fs::metadata(&concurrent).unwrap().permissions().mode()&0o777,0o600,"credential permissions");}
- println!("{}",json!({"cases":["PKCE 回调与错误 state 拒绝","独立订阅登录、持久化与重开","并发续期与原子持久化","凭据目标约束","429 切换与冷却","401 最多恢复一次","401 失效与切换","聚合拒绝账户状态引用","流式提交边界","暂时续期失败后恢复","调用方取消后完成凭据轮换","重新登录写失败保留旧认证","交互登录互斥","重定向目标隔离","公开认证描述脱敏与账户区分","非 SSE 200 映射为 502 且不切换","SSE MIME 大小写与空白规范化","Codex 缺 MIME 有效流完成并补下游 MIME","缺 MIME 空流 HTML 无终态均失败且不切换","Standard 缺 MIME 与显式空 MIME 保持拒绝"]}));
+ {
+  use velune_bindings::*;
+  let binding_home=home.join("binding-config");let bound=VeluneApplication::open(BindingOptions{home_directory:binding_home.to_string_lossy().into_owned(),resources_directory:options.resources_directory.to_string_lossy().into_owned()}).unwrap();
+  let mut keys=Vec::new();for id in ["binding-a","binding-b"]{let draft:BindingProviderDraft=serde_json::from_value(json!({"id":id,"name":id,"protocol":"responsesV1","endpoint":endpoint,"quotaLimits":[{"windowId":"window:18000","maxUsedPercent":75}],"models":[{"recordKey":"","providerModelId":"fixture-model","nickname":"fixture","icon":null,"contextWindow":null,"maxOutputTokens":null,"reasoningLevels":null,"piProjection":null}]})).unwrap();let update=bound.save_provider("default".into(),draft,BindingAuthenticationEdit::SetApiKey{value:"fixture-key".into()}).unwrap();keys.push(update.gateways[0].providers.iter().find(|p|p.id==id).unwrap().models[0].record_key.clone());}
+  bound.save_model_route("default".into(),BindingModelRoute{record_key:String::new(),name:"Weighted".into(),members:keys.clone(),strategy:BindingRoutingStrategy::Weight,sticky:true,weights:std::collections::HashMap::from([(keys[0].clone(),1),(keys[1].clone(),3)])}).unwrap();assert!(matches!(bound.provider_quota("default".into(),"binding-a".into()).unwrap().freshness,BindingQuotaFreshness::Unsupported));bound.shutdown().unwrap();drop(bound);
+  let bound=VeluneApplication::open(BindingOptions{home_directory:binding_home.to_string_lossy().into_owned(),resources_directory:options.resources_directory.to_string_lossy().into_owned()}).unwrap();let snapshot=bound.list().unwrap();assert_eq!(snapshot.gateways[0].routes[0].weights[&keys[1]],3);assert!(snapshot.gateways[0].routes[0].sticky);bound.shutdown().unwrap();
+ }
+ println!("{}",json!({"cases":["PKCE 回调与错误 state 拒绝","独立订阅登录、持久化与重开","并发续期与原子持久化","凭据目标约束","429 切换与冷却","401 最多恢复一次","401 失效与切换","聚合拒绝账户状态引用","流式提交边界","暂时续期失败后恢复","调用方取消后完成凭据轮换","重新登录写失败保留旧认证","交互登录互斥","重定向目标隔离","公开认证描述脱敏与账户区分","非 SSE 200 映射为 502 且不切换","SSE MIME 大小写与空白规范化","Codex 缺 MIME 有效流完成并补下游 MIME","缺 MIME 空流 HTML 无终态均失败且不切换","Standard 缺 MIME 与显式空 MIME 保持拒绝","四策略 cap 配置保存重开","公开额度采集与非法窗口拒绝","账户替换拒绝旧额度回写","bindings 类型门面保存重开"]}));
 }
 '''
 
@@ -366,6 +420,7 @@ def main():
         endpoint = base + '/backend-api/codex'
         try:
             rewrite(copy / 'packages/application/src/subscription_auth.rs', 'https://auth.openai.com', base)
+            rewrite(copy / 'packages/application/src/subscription_auth.rs', 'https://chatgpt.com/backend-api/wham/usage', base + '/usage')
             rewrite(copy / 'packages/application/src/provider_authentication.rs', 'https://chatgpt.com/backend-api/codex', endpoint)
             # Keep every target check, substituting only this synthetic target's identity.
             rewrite(copy / 'packages/application/src/subscription_auth.rs', 'https://chatgpt.com/backend-api/codex', endpoint)
@@ -378,7 +433,7 @@ def main():
             harness = temporary / 'harness'
             (harness / 'src').mkdir(parents=True)
             (harness / 'src/main.rs').write_text(PROGRAM)
-            dependencies = '\n'.join('%s={path="%s"}' % (name, copy / 'packages' / folder) for name, folder in [('velune-application', 'application'), ('velune-gateway', 'gateway')])
+            dependencies = '\n'.join('%s={path="%s"}' % (name, copy / 'packages' / folder) for name, folder in [('velune-application', 'application'), ('velune-gateway', 'gateway'), ('velune-bindings', 'bindings')])
             (harness / 'Cargo.toml').write_text('[package]\nname="manual-codex-subscriptions"\nversion="0.0.0"\nedition="2024"\n[workspace]\n[dependencies]\n' + dependencies + '\nreqwest={version="0.13",default-features=false,features=["json","blocking"]}\ntokio={version="1",features=["macros","rt","sync"]}\nserde_json="1"\nurl="2"\n')
             environment = dict(os.environ)
             # An accidentally unrewritten remote URL must fail through a dead proxy.
@@ -402,7 +457,7 @@ def main():
             check(COUNTS.get('request:rate') == 1, '429 cooldown')
             check(COUNTS.get('request:good') == 3, 'stateful or committed stream unexpectedly reached fallback')
             check(COUNTS.get('request:midstream') == 1, 'midstream fixture unused')
-            check(all(COUNTS.get('login:' + label) == 1 for label in ('rate','recover','denied','concurrent','midstream','transient','cancelled','redirect302','redirect307','nonsse','mixedmime','missingmime','missingempty','missinghtml','missingincomplete','emptymime')), 'independent login count')
+            check(all(COUNTS.get('login:' + label) == 1 for label in ('rate','recover','denied','concurrent','midstream','transient','cancelled','redirect302','redirect307','nonsse','mixedmime','missingmime','missingempty','missinghtml','missingincomplete','emptymime','quota-invalid')), 'independent login count')
             check(COUNTS.get('login:good') == 2, 'failed relogin fixture not exercised')
             check(COUNTS.get('refresh:transient') == 2 and COUNTS.get('refresh:cancelled') == 1, 'temporary refresh and cancellation rotation')
             check(COUNTS.get('request:nonsse') == 1 and COUNTS.get('request:mixedmime') == 1, 'MIME boundary fixtures not exercised')

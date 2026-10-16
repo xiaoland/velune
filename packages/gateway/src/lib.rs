@@ -6,6 +6,7 @@
 pub mod analytics;
 pub mod config;
 pub mod runtime;
+pub mod scheduling;
 pub use analytics::{
     AnalyticsOutcome, AnalyticsProtocol, AnalyticsRecord, AnalyticsSink, SharedAnalyticsSink,
     TokenUsage,
@@ -13,7 +14,10 @@ pub use analytics::{
 pub use config::*;
 pub use runtime::{
     CredentialProfile, CredentialResolutionError, CredentialResolver, CredentialTarget,
-    GatewayError, ResolvedCredential, RouteHealth, Runner,
+    GatewayError, ResolvedCredential, Runner,
+};
+pub use scheduling::{
+    QuotaSnapshot, QuotaSource, QuotaWindow, SchedulingState, SessionIdentity, UnknownQuotaSource,
 };
 
 mod observation;

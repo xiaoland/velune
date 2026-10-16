@@ -13,6 +13,8 @@ mod credential_helper;
 mod provider_authentication;
 #[cfg(feature = "local-runtime")]
 mod subscription_auth;
+#[cfg(feature = "local-runtime")]
+mod subscription_quota;
 pub use provider_authentication::{
     AuthenticationEdit, AuthenticationMethod, AuthenticationProvenance,
     ProviderAuthenticationDescription, SubscriptionDisclosure,

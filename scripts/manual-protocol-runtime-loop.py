@@ -111,7 +111,7 @@ def main():
                 model = b.BindingProviderModel(record_key='', provider_model_id='synthetic-' + case, nickname=case, icon=None,
                     context_window=32768, max_output_tokens=4096, reasoning_levels=None, adapter_metadata_json=None)
                 endpoint = 'http://127.0.0.1:%d' % server.server_port + ('' if protocol == b.BindingGatewayProtocol.MESSAGES_V1 else '/v1')
-                app.save_provider('default', b.BindingProviderDraft(id=case, name=case, protocol=protocol, endpoint=endpoint, models=[model]),
+                app.save_provider('default', b.BindingProviderDraft(id=case, name=case, protocol=protocol, endpoint=endpoint, models=[model], quota_limits=[]),
                     b.BindingAuthenticationEdit.SET_API_KEY(value='synthetic-only'))
                 key = next(p.models[0].record_key for g in app.list().gateways for p in g.providers if p.id == case)
                 conversation_id = app.create_conversation(case, str(root / 'project'), key).snapshot.conversation.id
@@ -174,9 +174,9 @@ fn main()->Result<(),Box<dyn std::error::Error>> {
                 '-o', str(binary)], env=environment, check=True)
             config = root / 'gateway.json'
             config.write_text(json.dumps({'id': 'synthetic', 'name': 'synthetic', 'providers': [{'id': 'pi-chat', 'name': 'pi-chat',
-                'protocol': 'chatCompletionsV1', 'endpoint': 'http://127.0.0.1:%d/v1' % server.server_port, 'credentialRef': 'synthetic',
+                'protocol': 'chatCompletionsV1', 'endpoint': 'http://127.0.0.1:%d/v1' % server.server_port, 'credentialRef': 'synthetic', 'quotaLimits': [],
                 'models': [{'recordKey': 'pi-chat', 'providerModelId': 'synthetic-pi', 'nickname': 'synthetic', 'maxOutputTokens': 128}]}],
-                'routes': [], 'failover': {'mode': 'disabled'}}))
+                'routes': []}))
             # Locate only the selected external installation's public SDK exports.
             resolved = subprocess.run([str(args.node), '--input-type=module', '-e',
                 'import {pathToFileURL} from "node:url"; const {resolvePiInstallation}=await import(pathToFileURL(process.argv[1])); console.log(resolvePiInstallation(process.argv[2]).cli);',

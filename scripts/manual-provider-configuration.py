@@ -65,7 +65,7 @@ def main():
 
             def draft(identity='a', models=None, endpoint='https://synthetic.invalid/v1'):
                 return b.BindingProviderDraft(id=identity, name=identity, protocol=protocol,
-                    endpoint=endpoint, models=models or [model()])
+                    endpoint=endpoint, models=models or [model()], quota_limits=[])
 
             def rejected(operation):
                 before = config.read_bytes()

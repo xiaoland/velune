@@ -4,7 +4,7 @@
 默认仅编译；--run --switcher-credentials 才由 Rust 只读现有 accounts.json，
 只提取两份 ChatGPT access_token/account_id 到短生命周期内存。不提取或刷新
 refresh token，不写原认证、Codex 文件或新应用认证目录；401 时停止并要求原来源续期。
-provider/gateway 冻结源码及可选两文件修复 overlay 会记录提交与 SHA256，真实目标不变。
+启动时解析 --source-ref（默认 HEAD）并冻结完整提交，报告完整 SHA，真实目标不变。
 
 默认 text-a-route 做两次推理：A 返回合成 nonce，再将真实 A 文本投影历史经本地
 合成 429 切给真实 B；B 的新问题不含 nonce，答案必须精确匹配。该路径仅验证普通
@@ -14,7 +14,6 @@ discover-models 仅查询两份模型目录；diagnose-a 做一次 A 文本诊�
 """
 import argparse
 import io
-import hashlib
 import json
 from pathlib import Path
 import os
@@ -23,8 +22,7 @@ import tarfile
 import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
-SOURCE = 'dd5683d'
-RESPONSE_FIX_FILES = ('packages/ai-provider/src/responses.rs', 'packages/gateway/src/runtime.rs')
+
 
 
 
@@ -93,10 +91,10 @@ impl CredentialResolver for InjectedResolver {
  fn invalidate(&self,reference:String,target:CredentialTarget,rejected:String)->velune_ai::OperationFuture<()> {self.real.invalidate(reference,target,rejected)}
 }
 fn runner(real:Arc<dyn CredentialResolver>,model:&str,ids:&[&str],injection:Option<&str>,sink:Arc<Sink>)->Result<Runner>{
- let providers:Vec<_>=ids.iter().map(|id|ProviderDefinition{id:(*id).into(),name:(*id).into(),protocol:GatewayProtocol::ResponsesV1,endpoint:if *id=="account-a"{injection.unwrap_or(ENDPOINT).into()}else{ENDPOINT.into()},credential_ref:Some(if *id=="account-a"&&injection.is_some(){"local-injected-a".into()}else{(*id).into()}),models:vec![ProviderModel{record_key:(*id).into(),provider_model_id:model.into(),nickname:"合成验收".into(),icon:None,context_window:None,max_output_tokens:None,reasoning_levels:None}]}).collect();
- let routes=if ids.len()>1{vec![ModelRoute{record_key:"live-pool".into(),name:"验收订阅池".into(),members:providers.iter().map(|p|p.models[0].record_key.clone()).collect()}]}else{Vec::new()};
+ let providers:Vec<_>=ids.iter().map(|id|ProviderDefinition{id:(*id).into(),name:(*id).into(),protocol:GatewayProtocol::ResponsesV1,endpoint:if *id=="account-a"{injection.unwrap_or(ENDPOINT).into()}else{ENDPOINT.into()},credential_ref:Some(if *id=="account-a"&&injection.is_some(){"local-injected-a".into()}else{(*id).into()}),quota_limits:vec![],models:vec![ProviderModel{record_key:(*id).into(),provider_model_id:model.into(),nickname:"合成验收".into(),icon:None,context_window:None,max_output_tokens:None,reasoning_levels:None}]}).collect();
+ let routes=if ids.len()>1{vec![ModelRoute{record_key:"live-pool".into(),name:"验收订阅池".into(),members:providers.iter().map(|p|p.models[0].record_key.clone()).collect(),strategy:RoutingStrategy::Order,sticky:false,weights:BTreeMap::new()}]}else{Vec::new()};
  let resolver:Arc<dyn CredentialResolver>=if let Some(endpoint)=injection{Arc::new(InjectedResolver{real,endpoint:endpoint.into()})}else{real};
- Runner::start_with_analytics(GatewayConfig{id:"default".into(),name:"隔离验收".into(),providers,routes,failover:FailoverPolicy{mode:FailoverMode::Disabled}},resolver,BTreeMap::new(),Some(sink),RouteHealth::default()).map_err(|_|fail("启动隔离网关失败"))
+ Runner::start_with_analytics(GatewayConfig{id:"default".into(),name:"隔离验收".into(),providers,routes},resolver,BTreeMap::new(),Some(sink),SchedulingState::default()).map_err(|_|fail("启动隔离网关失败"))
 }
 async fn diagnostic(response:&mut reqwest::Response)->Value {
  let mut bytes=Vec::new();while let Ok(Some(chunk))=response.chunk().await{if bytes.len()+chunk.len()>16384{return json!({"structured_error":"too_large"});}bytes.extend_from_slice(&chunk);}
@@ -242,7 +240,7 @@ fn main(){if let Err(stage)=run(){emit(json!({"state":"failed","stage":stage}));
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--overlay-response-fix', action='store_true', help='仅覆盖owner指定两个provider/gateway修复源码文件，并记录SHA256')
+    parser.add_argument('--source-ref', default='HEAD', help='解析并冻结的完整 Git 提交；默认 HEAD')
     parser.add_argument('--run', action='store_true', help='执行所选用例；默认两次普通文本历史/切换推理，不登录或续期')
     parser.add_argument('--switcher-credentials', action='store_true', help='只读现有两份 access credential，不作为产品集成')
     parser.add_argument('--case', choices=['diagnose-a','basic-b-route','discover-models','text-a-route'], default='text-a-route', help='discover-models不推理；text-a-route两请求验证文本历史与切换；其他为诊断入口')
@@ -252,20 +250,15 @@ def main():
         parser.error('--run 需要明确指定 --switcher-credentials')
     if args.run and args.case != 'discover-models' and not args.model:
         parser.error('推理 case 必须显式 --model，先用 discover-models 获取共同目录')
+    source_commit = subprocess.run(['git','rev-parse','--verify',args.source_ref + '^{commit}'],cwd=ROOT,capture_output=True,text=True,check=True).stdout.strip()
     credential_source = Path.home() / '.codex-switcher/accounts.json'
     with tempfile.TemporaryDirectory(prefix='velune-subscriptions-live-') as directory:
         temporary = Path(directory)
         source = temporary / 'source'
         source.mkdir()
-        archive = subprocess.run(['git', 'archive', SOURCE, 'Cargo.toml', 'Cargo.lock', 'packages', 'app/host'], cwd=ROOT, capture_output=True, check=True).stdout
+        archive = subprocess.run(['git', 'archive', source_commit, 'Cargo.toml', 'Cargo.lock', 'packages', 'app/host'], cwd=ROOT, capture_output=True, check=True).stdout
         with tarfile.open(fileobj=io.BytesIO(archive)) as stream:
             stream.extractall(source, filter='data')
-        overlay_sha = {}
-        if args.overlay_response_fix:
-            for name in RESPONSE_FIX_FILES:
-                content = (ROOT / name).read_bytes()
-                (source / name).write_bytes(content)
-                overlay_sha[name] = hashlib.sha256(content).hexdigest()
         harness = temporary / 'harness'
         (harness / 'src').mkdir(parents=True)
         (harness / 'src/main.rs').write_text(PROGRAM)
@@ -280,7 +273,7 @@ def main():
             raise RuntimeError('本地 SSE 解析自检失败（未读取凭据/调用模型）')
         print(parser_check.stdout.strip(),flush=True)
         request_count = {'diagnose-a':1,'basic-b-route':2,'discover-models':0,'text-a-route':2}[args.case]
-        print(json.dumps({'state':'prepared','source_commit':SOURCE,'real_endpoint_unchanged':True,'source_overlay_sha256':overlay_sha,'logical_requests':request_count,'maximum_inference_http_attempts':request_count,'case':args.case,'metadata_requests':2 if args.case == 'discover-models' else 0,'refresh_enabled':False,'mode':'read_only_existing_source'},ensure_ascii=False),flush=True)
+        print(json.dumps({'state':'prepared','source_commit':source_commit,'real_endpoint_unchanged':True,'logical_requests':request_count,'maximum_inference_http_attempts':request_count,'case':args.case,'metadata_requests':2 if args.case == 'discover-models' else 0,'refresh_enabled':False,'mode':'read_only_existing_source'},ensure_ascii=False),flush=True)
         if not args.run:
             return
         from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer

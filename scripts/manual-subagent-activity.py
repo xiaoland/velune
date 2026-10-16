@@ -157,7 +157,7 @@ def main():
                 id='responses', name='responses', protocol=b.BindingGatewayProtocol.RESPONSES_V1, endpoint=endpoint,
                 models=[b.BindingProviderModel(record_key='', provider_model_id='synthetic-gateway', nickname='gateway',
                                                icon=None, context_window=32768, max_output_tokens=1024,
-                                               reasoning_levels=None, adapter_metadata_json=None)]),
+                                               reasoning_levels=None, adapter_metadata_json=None)], quota_limits=[]),
                 b.BindingAuthenticationEdit.SET_API_KEY(value='SYNTHETIC_ONLY'))
             gateway_key = next(p for p in app.list().gateways[0].providers if p.id == 'responses').models[0].record_key
             selections = {'native': b.BindingModelSelection.NATIVE(provider_id='synthetic', model_id='synthetic-model'),

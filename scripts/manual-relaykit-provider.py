@@ -244,7 +244,7 @@ def main():
         config = {'id': 'live-probe', 'name': 'Live probe', 'providers': [{'id': 'provider', 'name': args.provider,
                   'protocol': PROTOCOLS[args.upstream], 'endpoint': 'http://127.0.0.1:' + str(server.server_port) + '/v1',
                   'credentialRef': 'synthetic', 'models': [{'recordKey': 'fixture', 'providerModelId': args.model,
-                  'nickname': 'fixture', 'contextWindow': 32768, 'maxOutputTokens': 2048}]}], 'failover': {'mode': 'disabled'}}
+                  'nickname': 'fixture', 'contextWindow': 32768, 'maxOutputTokens': 2048}]}]}
         (root / 'gateway.json').write_text(json.dumps(config))
         runner = subprocess.Popen([str(binary), str(root / 'gateway.json')], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                   stderr=subprocess.PIPE, text=True)

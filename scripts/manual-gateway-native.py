@@ -149,11 +149,11 @@ def main():
             pairs = [('chat', 'chatCompletionsV1'), ('responses', 'responsesV1')]
             config = {'id': 'fixture', 'name': 'fixture',
                 'providers': [{'id': protocol, 'name': protocol, 'protocol': protocol,
-                    'endpoint': f'http://127.0.0.1:{server.server_port}/v1', 'credentialRef': reference,
+                    'endpoint': f'http://127.0.0.1:{server.server_port}/v1', 'credentialRef': reference, 'quotaLimits': [],
                     'models': [{'recordKey': model, 'providerModelId': 'external-' + model,
                                 'nickname': model}]}
                     for model, protocol in pairs],
-                'failover': {'mode': 'disabled'}}
+                'routes': []}
             path = root / f'config-{len(processes)}.json'
             path.write_text(json.dumps(config))
             log_path = root / f'log-{len(processes)}.jsonl'

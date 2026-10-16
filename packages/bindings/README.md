@@ -35,7 +35,7 @@ Swift 生成模块名为 `VeluneBindings`，FFI 模块名为 `VeluneBindingsFFI`
 
 模型条目的 `recordKey` 自动生成并隐藏；`providerModelId` 是提供商规定的可编辑 API 标识。运行时选择与 snapshot 引用稳定 `modelRecordKey`，导入选择只包含 `candidateKeys`。能力中的 `None` 表示未知，空推理等级列表表示明确不支持。`BindingModelTemplate` 复制填写参数，不形成调用依赖。旧全局模型、关联映射和中央认证接口已删除，不保留兼容入口。
 
-运行时描述携带 `family_id`、精确 variant ID 与 `version_regex`，以及能力标志 `launch_options`（`acp_launch`／`upsert_acp_runtime`）、`agent_info`（`acp_runtime_info`）、`session_options`（`acp_session_config`，原生模型目录属于会话）、`remote_resources`（SSH 执行需要 `remote_resources_directory`）；平台据此展示对应界面，不按类型 ID 分支；schema 8 配置通过应用用例持久化。当前 variant 为 Pi 1.0.2、Codex 0.159.3、Claude Code 2.1.286 与 DSH 0.2.0-rc.2，绑定不根据 family 自行选择协议。`BindingRuntimeInteraction` 与 `BindingRuntimeInteractionReply` 表达审批选项、问题／答案和取消；回复关联当前交互 ID，不通过字符串命令或隐式批准。原生 snapshot 历史由 huihua／Harness adapter 投影，绑定不暴露来源 JSON 或实现会话存储。
+运行时描述携带 `family_id`、精确 variant ID 与 `version_regex`，以及能力标志 `launch_options`（`acp_launch`／`upsert_acp_runtime`）、`agent_info`（`acp_runtime_info`）、`session_options`（`acp_session_config`，原生模型目录属于会话）、`remote_resources`（SSH 执行需要 `remote_resources_directory`）；平台据此展示对应界面，不按类型 ID 分支；schema 9 配置通过应用用例持久化。当前 variant 为 Pi 1.0.2、Codex 0.159.3、Claude Code 2.1.286 与 DSH 0.2.0-rc.2，绑定不根据 family 自行选择协议。`BindingRuntimeInteraction` 与 `BindingRuntimeInteractionReply` 表达审批选项、问题／答案和取消；回复关联当前交互 ID，不通过字符串命令或隐式批准。原生 snapshot 历史由 huihua／Harness adapter 投影，绑定不暴露来源 JSON 或实现会话存储。
 
 运行时 descriptor 的 `supported_protocols` 为具名协议枚举列表；平台按精确 variant 消费，不按 family 自行维护协议矩阵。协议能力仍由精确 adapter 声明，与会话模型选择分开。
 
@@ -60,3 +60,8 @@ Swift 生成模块名为 `VeluneBindings`，FFI 模块名为 `VeluneBindingsFFI`
 **待实现**：平台的通用 ACP 命令编辑、能力状态与外部认证提示、默认模型选项、会话配置编辑，以及对无历史恢复能力的清晰展示；本轮只交付 Rust／UniFFI 入口。
 
 资源库：`list/read/save/delete_resource_template`、`resource_sync_status`、`unmanaged_runtime_resources`、`import_runtime_resource`、`adopt_runtime_resource`、`apply_resource_template`、`resolve_resource_binding`、`resource_native_import`、`resource_drift` 以具名类型暴露（`BindingResourceTemplate*`、`BindingResourceSyncState`、`BindingTemplateApply*`、`BindingResolution`、`BindingResourceDriftFile`）；资源内容的 Debug 不含秘密。Mac 的“资源库”窗口是当前唯一消费者。
+
+
+智能调度的前端配置：`BindingProviderDraft.quota_limits`／公开提供商的同名字段保存 `BindingQuotaLimit { window_id, max_used_percent }`；窗口 ID 来自额度状态，不让用户维护另一份模型 ID。`BindingModelRoute` 必填 `strategy`（Order／Smart／Rotate／Weight）、`sticky` 和 `weights`；新建前端默认 `sticky=true`，仅 Weight 按所有成员记录键填写正整数权重，其余策略传空 map。资格与额度限制始终优先于策略与黏性。旧 `BindingFailoverMode/Policy` 和 `failover` 字段已删除，配置 schema 为 9；更低普通 schema 按 hard-cutoff 初始化并原子覆盖，不迁移或备份，原 Harness 文件及私有秘密文件不重置。
+
+`provider_quota(gateway_id, provider_id)` 和 `refresh_provider_quota` 返回 `BindingProviderQuotaStatus`，都是立即返回的有界入口；后者请求一次异步采样，重复请求合并；全服务 4 个槽位已满时本次不启动、不排队，返回 `refreshing=false`，调用方需后续 query／refresh 重试，不能把它当成已经获得新额度。平台轮询 `refreshing` 与 `freshness`（Fresh／Stale／Unknown／Unsupported），显示窗口百分比、观测／过期／重置 Unix 毫秒、可选模型范围及 `available`。Stale 仅供展示，不表示仍可用于阈值准入；`available=false` 独立于窗口百分比，可表示供应商明确暂停。首次有阈值但额度仍未知时请求会暂停，前端应允许先刷新并等 Fresh，不能自行把 Unknown 当作零使用量。查询和模型使用才触发到期刷新，应用不为闲置账户持续轮询；关闭或换绑取消采样。认证、额度和调度均由 Rust 协调，前端不调用 usage HTTP、推导刷新结果或保存第二份可写额度缓存。

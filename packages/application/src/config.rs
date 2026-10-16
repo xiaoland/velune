@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 #[cfg(feature = "local-runtime")]
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
+pub use velune_gateway::{QuotaLimit, RoutingStrategy};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -51,18 +52,7 @@ pub struct ProviderDefinition {
     pub endpoint: String,
     pub(crate) authentication: crate::provider_authentication::ProviderAuthentication,
     pub models: Vec<ProviderModel>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub enum FailoverMode {
-    Disabled,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct FailoverPolicy {
-    pub mode: FailoverMode,
+    pub quota_limits: Vec<QuotaLimit>,
 }
 
 /// An ordered set of provider models chosen like a model; the gateway fails
@@ -74,6 +64,9 @@ pub struct ModelRoute {
     pub name: String,
     /// Provider model record keys, in priority order.
     pub members: Vec<String>,
+    pub strategy: RoutingStrategy,
+    pub weights: BTreeMap<String, u32>,
+    pub sticky: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -84,7 +77,6 @@ pub struct GatewayConfig {
     pub providers: Vec<ProviderDefinition>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub routes: Vec<ModelRoute>,
-    pub failover: FailoverPolicy,
 }
 
 /// The provider and model are resolved together so callers cannot repeat the
@@ -318,6 +310,7 @@ impl GatewayConfig {
             .collect::<std::collections::BTreeSet<_>>();
         for route in &mut self.routes {
             route.members.retain(|key| models.contains(key));
+            route.weights.retain(|key, _| route.members.contains(key));
         }
         self.routes.retain(|route| !route.members.is_empty());
     }
@@ -485,6 +478,7 @@ impl GatewayConfig {
                         },
                         endpoint: p.endpoint.clone(),
                         credential_ref: Some(p.id.clone()),
+                        quota_limits: p.quota_limits.clone(),
                         models: p
                             .models
                             .iter()
@@ -508,11 +502,11 @@ impl GatewayConfig {
                     record_key: route.record_key.clone(),
                     name: route.name.clone(),
                     members: route.members.clone(),
+                    strategy: route.strategy,
+                    weights: route.weights.clone(),
+                    sticky: route.sticky,
                 })
                 .collect(),
-            failover: velune_gateway::FailoverPolicy {
-                mode: velune_gateway::FailoverMode::Disabled,
-            },
         })
     }
 }

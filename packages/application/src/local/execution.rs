@@ -21,16 +21,30 @@ impl CoreRuntime {
             .find(|item| item.id == runtime.gateway_id)
             .cloned()
             .ok_or_else(|| RuntimeError::invalid("gateway id"))?;
+        for key in gateway.members(model_record_key) {
+            if let Ok(member) = gateway.resolve_dispatch(&key) {
+                let _ = self
+                    .subscription_quota
+                    .query(&gateway.id, &member.provider().id, false);
+            }
+        }
         if runtime.type_id != "pi-1.0.2" {
             self.shutdown_active()?;
             let runtime_projection = self.execution_context(&runtime)?.projection;
             let lane = self.lane_projection(&runtime_projection);
-            let runner = Runner::start_with_analytics(
+            let runner = Runner::start_with_scheduling(
                 gateway.to_gateway_config()?,
                 crate::authentication_resolver::ProviderResolver::capture(&gateway, &self.options),
                 self.native_aliases(&runtime, model_record_key)?,
                 Some(self.analytics.clone()),
-                self.route_health.clone(),
+                self.scheduling_state.clone(),
+                self.subscription_quota.source(&gateway.id),
+                self.session
+                    .conversation_id()
+                    .map(|id| velune_gateway::SessionIdentity {
+                        namespace: "velune.conversation".into(),
+                        id: id.into(),
+                    }),
             )
             .map_err(|error| RuntimeError::context("gateway startup", error))?;
             self.session.gateway_runner = Some(runner);
@@ -74,12 +88,19 @@ impl CoreRuntime {
             })
             .collect::<Result<BTreeMap<_, _>, _>>()?;
         self.shutdown_active()?;
-        let runner = Runner::start_with_analytics(
+        let runner = Runner::start_with_scheduling(
             gateway.to_gateway_config()?,
             crate::authentication_resolver::ProviderResolver::capture(&gateway, &self.options),
             route_aliases,
             Some(self.analytics.clone()),
-            self.route_health.clone(),
+            self.scheduling_state.clone(),
+            self.subscription_quota.source(&gateway.id),
+            self.session
+                .conversation_id()
+                .map(|id| velune_gateway::SessionIdentity {
+                    namespace: "velune.conversation".into(),
+                    id: id.into(),
+                }),
         )
         .map_err(|error| RuntimeError::context("gateway startup", error))?;
         let context = self.prepare_execution_context(&runtime)?;

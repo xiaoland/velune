@@ -73,6 +73,9 @@ class Upstream(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header('Content-Type', 'text/event-stream')
         self.send_header('Connection', 'close')
+        if status == 'mid':
+            # Declared bytes are deliberately missing: a transport error, not clean EOF.
+            self.send_header('Content-Length', '100000')
         self.end_headers()
         if status == 'mid':
             # Headers and one event reach the caller, then the stream breaks.
@@ -96,10 +99,10 @@ impl CredentialResolver for Resolver {
 #[derive(Default)] struct Sink(Mutex<Vec<AnalyticsRecord>>);
 impl AnalyticsSink for Sink { fn record(&self,record:AnalyticsRecord){self.0.lock().unwrap().push(record);} }
 fn provider(id:&str,endpoint:&str)->ProviderDefinition {
- ProviderDefinition{id:id.into(),name:id.into(),protocol:GatewayProtocol::ResponsesV1,endpoint:endpoint.into(),credential_ref:Some(id.into()),
+ ProviderDefinition{id:id.into(),name:id.into(),protocol:GatewayProtocol::ResponsesV1,endpoint:endpoint.into(),credential_ref:Some(id.into()),quota_limits:vec![],
   models:vec![ProviderModel{record_key:id.into(),provider_model_id:"synthetic-model".into(),nickname:String::new(),icon:None,context_window:None,max_output_tokens:Some(256),reasoning_levels:None}]}
 }
-fn route(key:&str,members:&[&str])->ModelRoute { ModelRoute{record_key:key.into(),name:key.into(),members:members.iter().map(|m|m.to_string()).collect()} }
+fn route(key:&str,members:&[&str])->ModelRoute { ModelRoute{record_key:key.into(),name:key.into(),members:members.iter().map(|m|m.to_string()).collect(),strategy:RoutingStrategy::Order,sticky:false,weights:BTreeMap::new()} }
 async fn call(client:&reqwest::Client,runner:&Runner,ingress:&str,model:&str,extra:serde_json::Value)->(u16,Result<String,String>) {
  let mut body=if ingress=="chat/completions" {serde_json::json!({"model":format!("velune/model/{model}"),"messages":[{"role":"user","content":"hi"}],"stream":true})}
   else {serde_json::json!({"model":format!("velune/model/{model}"),"input":"hi","stream":true,"store":false})};
@@ -117,7 +120,7 @@ async fn main(){
  let config=GatewayConfig{id:"g".into(),name:"g".into(),providers,routes:vec![
   route("rate",&["429-a","ok-b"]),route("server",&["503-c","ok-d"]),route("refused",&["401-e","ok-f"]),route("connect",&["dead-g","ok-h"]),
   route("midstream",&["mid-i","ok-j"]),route("stateful",&["429-k","ok-l"]),route("exhausted",&["503-m","503-n"]),route("credential",&["credfail","ok-o"]),
-  route("converted",&["429-p","ok-q"])],failover:FailoverPolicy{mode:FailoverMode::Disabled}};
+  route("converted",&["429-p","ok-q"])]};
  let mut mixed=config.clone();
  mixed.providers.push(ProviderDefinition{protocol:GatewayProtocol::ChatCompletionsV1,..provider("chat-x",up)});
  mixed.routes.push(route("mixed",&["ok-b","chat-x"]));
@@ -125,13 +128,13 @@ async fn main(){
  let mut duplicate=config.clone(); duplicate.routes.push(route("ok-b",&["ok-d"]));
  assert!(duplicate.validate().is_err(),"route key colliding with a model key");
  let sink=Arc::new(Sink::default());
- let runner=Runner::start_with_analytics(config,Arc::new(Resolver),BTreeMap::new(),Some(sink.clone()),RouteHealth::default()).unwrap();
+ let runner=Runner::start_with_analytics(config,Arc::new(Resolver),BTreeMap::new(),Some(sink.clone()),SchedulingState::default()).unwrap();
  let client=reqwest::Client::builder().no_proxy().build().unwrap();
  let mut report=serde_json::Map::new();
  for (name,ingress,model,extra) in [
   ("rate","responses","rate",serde_json::json!({})),("rate_again","responses","rate",serde_json::json!({})),
   ("server","responses","server",serde_json::json!({})),("refused","responses","refused",serde_json::json!({})),
-  ("connect","responses","connect",serde_json::json!({})),("midstream","responses","midstream",serde_json::json!({})),
+  ("connect","responses","connect",serde_json::json!({})),("midstream","responses","midstream",serde_json::json!({})),("midstream_again","responses","mid-i",serde_json::json!({})),
   ("stateful","responses","stateful",serde_json::json!({"previous_response_id":"resp-elsewhere"})),
   ("direct","responses","503-c",serde_json::json!({})),("exhausted","responses","exhausted",serde_json::json!({})),
   ("credential","responses","credential",serde_json::json!({})),("converted","chat/completions","converted",serde_json::json!({}))] {
@@ -169,8 +172,9 @@ def gateway_phase(upstream, dead):
     check(report['refused']['status'] == 401 and 'ok-f' not in HITS, 'refused account stops')
     check('SERVED_BY:ok-h' in served('connect'), 'failed connection fails over')
     check(report['midstream']['status'] == 200 and 'SERVED_BY' not in (report['midstream']['body'] or '') and 'ok-j' not in HITS, 'started stream is not switched: %s' % report['midstream'])
+    check(report['midstream_again']['status'] == 429 and HITS.get('mid-i') == 1, 'post-commit transport failure cools later direct requests')
     check(report['stateful']['status'] == 400 and '429-k' not in HITS and 'ok-l' not in HITS, 'stateful aggregate request is rejected before upstream')
-    check(report['direct']['status'] == 503 and HITS.get('503-c') == 2, 'direct model does not fail over')
+    check(report['direct']['status'] == 429 and HITS.get('503-c') == 1, 'direct model respects shared transient-failure cooldown')
     check(report['exhausted']['status'] == 503 and HITS.get('503-m') == 1 and HITS.get('503-n') == 1, 'last failure returned')
     check('SERVED_BY:ok-o' in served('credential'), 'unresolved credential fails over')
     check('SERVED_BY:ok-q' in served('converted') and 'chat.completion' in served('converted'), 'converted request fails over: %s' % report['converted'])
@@ -203,7 +207,7 @@ def application_phase(args, endpoint):
             def provider(identifier, protocol, key):
                 app.save_provider('default', b.BindingProviderDraft(id=identifier, name=identifier, protocol=protocol, endpoint=endpoint,
                     models=[b.BindingProviderModel(record_key='', provider_model_id='synthetic-model', nickname='Synthetic', icon=None,
-                        context_window=32768, max_output_tokens=1024, reasoning_levels=None, adapter_metadata_json=None)]),
+                        context_window=32768, max_output_tokens=1024, reasoning_levels=None, adapter_metadata_json=None)], quota_limits=[]),
                     b.BindingAuthenticationEdit.SET_API_KEY(value=key))
                 return next(p for p in app.list().gateways[0].providers if p.id == identifier).models[0].record_key
 
@@ -211,11 +215,11 @@ def application_phase(args, endpoint):
             second = provider('account-b', b.BindingGatewayProtocol.RESPONSES_V1, 'ok-account-b')
             chat = provider('chat', b.BindingGatewayProtocol.CHAT_COMPLETIONS_V1, 'ok-chat')
             try:
-                app.save_model_route('default', b.BindingModelRoute(record_key='', name='Mixed', members=[first, chat]))
+                app.save_model_route('default', b.BindingModelRoute(record_key='', name='Mixed', members=[first, chat], strategy=b.BindingRoutingStrategy.ORDER, sticky=False, weights={}))
                 check(False, 'mixed-protocol route accepted')
             except b.BindingError as error:
                 check('同一协议' in str(error), 'mixed-protocol message: %s' % error)
-            update = app.save_model_route('default', b.BindingModelRoute(record_key='', name='订阅池', members=[first, second]))
+            update = app.save_model_route('default', b.BindingModelRoute(record_key='', name='订阅池', members=[first, second], strategy=b.BindingRoutingStrategy.ORDER, sticky=False, weights={}))
             route = update.gateways[0].routes[0]
             check(route.name == '订阅池' and route.members == [first, second], 'saved route')
             for runtime in ('codex', 'pi'):
@@ -248,7 +252,7 @@ def application_phase(args, endpoint):
             app.delete_provider('default', 'account-a')
             check(app.list().gateways[0].routes == [], 'a route without members is removed')
             saved = json.loads((root / 'velune' / 'generic-config.json').read_text())
-            check(saved['schemaVersion'] == 8 and 'routes' not in saved['gateways'][0], 'empty routes are not written')
+            check(saved['schemaVersion'] == 9 and 'routes' not in saved['gateways'][0], 'empty routes are not written')
             return {'replies': replies, 'upstreamHits': dict(HITS)}
         finally:
             app.shutdown()

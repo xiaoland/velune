@@ -4,10 +4,14 @@
 use crate::{
     analytics::{
         AnalyticsOutcome, AnalyticsProtocol, AnalyticsRecord, RequestAnalytics,
-        SharedAnalyticsSink, SharedTracker, TokenUsage, now_ms,
+        SharedAnalyticsSink, SharedTracker, TokenUsage, Tracker, now_ms,
     },
-    config::{GatewayConfig, GatewayProtocol},
+    config::{GatewayConfig, GatewayProtocol, QuotaLimit, RoutingStrategy},
     observation::Observation,
+    scheduling::{
+        Candidate, QuotaSource, ScheduleUnavailable, SchedulingState, SessionIdentity,
+        UnknownQuotaSource,
+    },
 };
 use axum::{
     Router,
@@ -27,7 +31,7 @@ use std::{
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
     thread::{self, JoinHandle},
-    time::{Duration, Instant},
+    time::Duration,
 };
 use tokio::sync::{mpsc, oneshot};
 use tracing::{Instrument, instrument::WithSubscriber};
@@ -106,6 +110,11 @@ impl std::error::Error for GatewayError {}
 #[derive(Clone)]
 struct RouteTarget {
     aggregate: bool,
+    route_key: String,
+    strategy: RoutingStrategy,
+    sticky: bool,
+    weight: u32,
+    quota_limits: Vec<QuotaLimit>,
     max_output_tokens: Option<u32>,
     provider_slot: usize,
     model_slot: usize,
@@ -131,13 +140,12 @@ struct Ingress {
     next_request: AtomicU64,
     stopping: Arc<AtomicBool>,
     analytics: Option<SharedAnalyticsSink>,
-    health: RouteHealth,
+    health: SchedulingState,
+    gateway_id: String,
+    provider_epochs: BTreeMap<String, u64>,
+    quotas: Arc<dyn QuotaSource>,
+    session: Option<SessionIdentity>,
 }
-
-/// Providers that answered 429, and until when; routes try them last. The
-/// caller keeps one across runners so a rate limit outlives a single turn.
-#[derive(Clone, Default)]
-pub struct RouteHealth(Arc<std::sync::Mutex<BTreeMap<String, Instant>>>);
 
 pub struct Runner {
     config: GatewayConfig,
@@ -172,7 +180,7 @@ impl Runner {
             credential_resolver,
             aliases,
             None,
-            RouteHealth::default(),
+            SchedulingState::default(),
         )
     }
     pub fn start_with_analytics(
@@ -180,8 +188,35 @@ impl Runner {
         credential_resolver: Arc<dyn CredentialResolver>,
         aliases: BTreeMap<String, String>,
         analytics: Option<SharedAnalyticsSink>,
-        health: RouteHealth,
+        health: SchedulingState,
     ) -> Result<Self, Box<dyn std::error::Error>> {
+        Self::start_with_scheduling(
+            config,
+            credential_resolver,
+            aliases,
+            analytics,
+            health,
+            Arc::new(UnknownQuotaSource),
+            None,
+        )
+    }
+    #[allow(clippy::too_many_arguments)]
+    pub fn start_with_scheduling(
+        config: GatewayConfig,
+        credential_resolver: Arc<dyn CredentialResolver>,
+        aliases: BTreeMap<String, String>,
+        analytics: Option<SharedAnalyticsSink>,
+        health: SchedulingState,
+        quotas: Arc<dyn QuotaSource>,
+        session: Option<SessionIdentity>,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        if session.as_ref().is_some_and(|session| {
+            session.namespace.trim().is_empty() || session.id.trim().is_empty()
+        }) {
+            return Err(Box::new(GatewayError(
+                "session namespace and identity must be nonempty",
+            )));
+        }
         config.validate().map_err(GatewayError)?;
         let routes = Arc::new(RwLock::new(build_routes(&config, &aliases)?));
         let listener = TcpListener::bind("127.0.0.1:0")?;
@@ -213,7 +248,15 @@ impl Runner {
             next_request: AtomicU64::new(1),
             stopping: stopping.clone(),
             analytics,
+            provider_epochs: config
+                .providers
+                .iter()
+                .map(|provider| (provider.id.clone(), health.epoch(&config.id, &provider.id)))
+                .collect(),
+            gateway_id: config.id.clone(),
             health,
+            quotas,
+            session,
         });
         let (stop, stopped) = oneshot::channel();
         let dispatcher = tracing::dispatcher::get_default(Clone::clone);
@@ -300,6 +343,11 @@ fn build_routes(
                 entry.record_key.clone(),
                 RouteTarget {
                     aggregate: false,
+                    route_key: entry.record_key.clone(),
+                    strategy: RoutingStrategy::Order,
+                    sticky: false,
+                    weight: 1,
+                    quota_limits: provider.quota_limits.clone(),
                     max_output_tokens: entry.max_output_tokens,
                     provider_slot: provider_slot + 1,
                     model_slot: model_slot + 1,
@@ -330,6 +378,10 @@ fn build_routes(
             .map(|key| {
                 let mut target = targets.get(key).cloned().expect("validated route member");
                 target.aggregate = true;
+                target.route_key = route.record_key.clone();
+                target.strategy = route.strategy;
+                target.sticky = route.sticky;
+                target.weight = route.weights.get(key).copied().unwrap_or(1);
                 target
             })
             .collect::<Route>();
@@ -570,7 +622,10 @@ async fn ingress_observed(
         headers
     };
     tracing::Span::current().record("stream", stream);
-    let candidates = state.candidates(&route);
+    let candidates = match state.candidates(&route) {
+        Ok(candidates) => candidates,
+        Err(unavailable) => return scheduling_rejected(observation, unavailable),
+    };
     let (sender, mut receiver) = mpsc::channel(1);
     let request_span = tracing::Span::current();
     let dispatcher = tracing::dispatcher::get_default(Clone::clone);
@@ -690,6 +745,33 @@ fn rejected(mut observation: Observation, status: StatusCode, message: &str) -> 
     );
     error_response(status, message)
 }
+fn scheduling_rejected(
+    observation: Observation,
+    unavailable: ScheduleUnavailable,
+) -> Response<Body> {
+    let mut response = rejected(
+        observation,
+        if unavailable.retry_after.is_some() {
+            StatusCode::TOO_MANY_REQUESTS
+        } else {
+            StatusCode::SERVICE_UNAVAILABLE
+        },
+        "no eligible provider: quota or health observations do not permit a request",
+    );
+    if let Some(delay) = unavailable.retry_after {
+        response.headers_mut().insert(
+            "retry-after",
+            HeaderValue::from_str(&retry_seconds(delay).to_string()).expect("numeric retry delay"),
+        );
+    }
+    response
+}
+fn retry_seconds(delay: Duration) -> u64 {
+    delay
+        .as_secs()
+        .saturating_add(u64::from(delay.subsec_nanos() > 0))
+        .max(1)
+}
 fn error_response(status: StatusCode, message: &str) -> Response<Body> {
     response(
         ResponseMeta {
@@ -702,10 +784,12 @@ fn error_response(status: StatusCode, message: &str) -> Response<Body> {
         Body::from(json!({"error":{"message":message}}).to_string()),
     )
 }
-pub(super) async fn send_json(sender: &mpsc::Sender<WireEvent>, value: ResponseBody) {
-    if sender.send(WireEvent::Headers(value.meta)).await.is_ok() {
-        let _ = sender.send(WireEvent::Body(value.body.into_inner())).await;
-    }
+pub(super) async fn send_json(sender: &mpsc::Sender<WireEvent>, value: ResponseBody) -> bool {
+    sender.send(WireEvent::Headers(value.meta)).await.is_ok()
+        && sender
+            .send(WireEvent::Body(value.body.into_inner()))
+            .await
+            .is_ok()
 }
 async fn send_failure(
     sender: &mpsc::Sender<WireEvent>,
@@ -767,7 +851,9 @@ async fn send_failure(
 /// settles the request; a failure before delivery is held back so the
 /// request may continue with the next candidate.
 enum AttemptEnd {
+    Completed,
     Settled,
+    Interrupted { cooldown: Option<Duration> },
     Failed(PendingFailure),
 }
 struct PendingFailure {
@@ -806,6 +892,7 @@ const MAX_COOLDOWN: Duration = Duration::from_secs(24 * 60 * 60);
 fn next_candidate(
     rate_limited: bool,
     cancelled: bool,
+    transport_failure: bool,
     status: Option<u16>,
     headers: &[Header],
 ) -> NextCandidate {
@@ -826,9 +913,13 @@ fn next_candidate(
         // No response: the connection failed or timed out before headers.
         // A model request has no effect beyond the call, so trying another
         // target is allowed even if this one may have started generating.
-        None => NextCandidate::Allowed { cooldown: None },
-        Some(status) if status >= 500 => NextCandidate::Allowed { cooldown: None },
-        Some(_) => NextCandidate::Stop,
+        None if transport_failure => NextCandidate::Allowed {
+            cooldown: Some(Duration::from_secs(5)),
+        },
+        Some(status) if status >= 500 => NextCandidate::Allowed {
+            cooldown: Some(Duration::from_secs(5)),
+        },
+        _ => NextCandidate::Stop,
     }
 }
 
@@ -857,26 +948,43 @@ fn has_upstream_state(body: &Value) -> bool {
 }
 
 impl Ingress {
-    /// The route's targets in the order this request tries them: providers
-    /// cooling down after a quota failure go last. Stateful requests have
-    /// already been rejected for aggregate routes before translation.
-    fn candidates(&self, route: &Route) -> Vec<RouteTarget> {
-        let now = Instant::now();
-        let mut cooldowns = self.health.0.lock().expect("gateway cooldowns");
-        cooldowns.retain(|_, until| *until > now);
-        let (mut ready, cooling): (Vec<_>, Vec<_>) = route
-            .iter()
-            .cloned()
-            .partition(|target| !cooldowns.contains_key(&target.provider_id));
-        ready.extend(cooling);
-        ready
+    fn candidate<'a>(&self, target: &'a RouteTarget) -> Candidate<'a> {
+        Candidate {
+            provider: &target.provider_id,
+            model: &target.model_record_key,
+            model_id: target.model.as_str(),
+            epoch: self.provider_epochs[&target.provider_id],
+            limits: &target.quota_limits,
+            weight: target.weight,
+        }
     }
-    fn cool(&self, provider_id: &str, duration: Duration) {
+    fn candidates(&self, route: &Route) -> Result<Vec<RouteTarget>, ScheduleUnavailable> {
+        let first = &route[0];
+        let candidates: Vec<_> = route.iter().map(|target| self.candidate(target)).collect();
         self.health
-            .0
-            .lock()
-            .expect("gateway cooldowns")
-            .insert(provider_id.to_owned(), Instant::now() + duration);
+            .rank(
+                &self.gateway_id,
+                &first.route_key,
+                first.strategy,
+                first.sticky,
+                self.session.as_ref(),
+                &candidates,
+                self.quotas.as_ref(),
+            )
+            .map(|indices| {
+                let mut selected: Vec<_> =
+                    indices.iter().map(|index| route[*index].clone()).collect();
+                // Keep paused members for a later eligibility recheck. Admission
+                // still rejects them until their quota/health facts permit use.
+                selected.extend(
+                    route
+                        .iter()
+                        .enumerate()
+                        .filter(|(index, _)| !indices.contains(index))
+                        .map(|(_, target)| target.clone()),
+                );
+                selected
+            })
     }
     fn analytics(
         &self,
@@ -971,8 +1079,24 @@ async fn attempts(
     stream: bool,
     sender: mpsc::Sender<WireEvent>,
 ) {
-    let count = candidates.len();
+    let retry_targets = candidates.clone();
+    let mut last_failure = None;
+    let mut unavailable = ScheduleUnavailable { retry_after: None };
     for (index, target) in candidates.into_iter().enumerate() {
+        let permit = match state.health.acquire(
+            &state.gateway_id,
+            &state.candidate(&target),
+            state.quotas.as_ref(),
+        ) {
+            Ok(permit) => permit,
+            Err(blocked) => {
+                if let Some(delay) = blocked.retry_after {
+                    unavailable.retry_after =
+                        Some(unavailable.retry_after.map_or(delay, |old| old.min(delay)));
+                }
+                continue;
+            }
+        };
         let attempt = index + 1;
         let attempt_span = tracing::info_span!("gateway_attempt", attempt);
         let mut observation = Observation::new(
@@ -987,16 +1111,22 @@ async fn attempts(
                 model_slot = target.model_slot
             )
         });
-        // Each attempt is its own record; later ones extend the request's ID.
         let analytics = if attempt == 1 {
             state.analytics(request_id.clone(), started_at_ms, &target)
         } else {
             state.analytics(format!("{request_id}/{attempt}"), now_ms(), &target)
         };
-        let provider_id = target.provider_id.clone();
+        // Health and sticky success have identical semantics with or without a sink.
+        let tracker = analytics
+            .as_ref()
+            .map(|guard| guard.tracker.clone())
+            .unwrap_or_else(|| Tracker::new(crate::translation::protocol(&target.protocol)));
+        let route_key = target.route_key.clone();
+        let model_key = target.model_record_key.clone();
+        let sticky = target.sticky;
         let end = dispatch_observed(
             state.clone(),
-            analytics.as_ref().map(|guard| guard.tracker.clone()),
+            Some(tracker.clone()),
             target,
             body.clone(),
             headers.clone(),
@@ -1006,22 +1136,77 @@ async fn attempts(
         )
         .instrument(attempt_span.clone())
         .await;
+        if matches!(&end, AttemptEnd::Completed)
+            || tracker.lock().expect("owned analytics tracker").completed()
+        {
+            permit.completed(
+                &route_key,
+                &model_key,
+                if sticky { state.session.as_ref() } else { None },
+            );
+        }
         drop(analytics);
-        let AttemptEnd::Failed(failure) = end else {
-            return;
-        };
-        if let NextCandidate::Allowed { cooldown } = &failure.next {
-            if let Some(cooldown) = cooldown {
-                state.cool(&provider_id, *cooldown);
+        let failure = match end {
+            AttemptEnd::Failed(failure) => failure,
+            AttemptEnd::Interrupted { cooldown } => {
+                if let Some(duration) = cooldown {
+                    permit.cool(duration);
+                }
+                return;
             }
-            if attempt < count {
+            AttemptEnd::Completed | AttemptEnd::Settled => return,
+        };
+        match &failure.next {
+            NextCandidate::Allowed { cooldown } => {
+                if let Some(duration) = cooldown {
+                    permit.cool(*duration);
+                    unavailable.retry_after = Some(
+                        unavailable
+                            .retry_after
+                            .map_or(*duration, |old| old.min(*duration)),
+                    );
+                }
                 attempt_span.in_scope(|| {
                     tracing::info!(event = "gateway_failover", http_status = failure.status)
                 });
-                continue;
+                last_failure = Some(failure);
+            }
+            NextCandidate::Stop => {
+                drop(observation);
+                send_failure(
+                    &sender,
+                    failure.meta,
+                    failure.body,
+                    failure.status,
+                    failure.message,
+                )
+                .await;
+                return;
             }
         }
-        drop(observation);
+    }
+    if let Some(mut failure) = last_failure {
+        let candidates: Vec<_> = retry_targets
+            .iter()
+            .map(|target| state.candidate(target))
+            .collect();
+        if unavailable.retry_after.is_some()
+            && let Some(delay) =
+                state
+                    .health
+                    .next_retry(&state.gateway_id, &candidates, state.quotas.as_ref())
+        {
+            let meta = failure.meta.get_or_insert(ResponseMeta {
+                status: failure.status,
+                headers: Vec::new(),
+            });
+            meta.headers
+                .retain(|header| !header.name.eq_ignore_ascii_case("retry-after"));
+            meta.headers.push(Header {
+                name: "retry-after".into(),
+                value: retry_seconds(delay).to_string(),
+            });
+        }
         send_failure(
             &sender,
             failure.meta,
@@ -1030,7 +1215,28 @@ async fn attempts(
             failure.message,
         )
         .await;
-        return;
+    } else {
+        let status = if unavailable.retry_after.is_some() {
+            429
+        } else {
+            503
+        };
+        let headers = unavailable
+            .retry_after
+            .into_iter()
+            .map(|delay| Header {
+                name: "retry-after".into(),
+                value: retry_seconds(delay).to_string(),
+            })
+            .collect();
+        send_failure(
+            &sender,
+            Some(ResponseMeta { status, headers }),
+            None,
+            status,
+            "no eligible provider: quota or health observations do not permit a request",
+        )
+        .await;
     }
 }
 
@@ -1282,7 +1488,15 @@ async fn dispatch_credential(
                             .expect("owned analytics tracker")
                             .json(body.meta.status, body.body.get());
                     }
-                    send_json(&sender, body).await;
+                    if !send_json(&sender, body).await {
+                        if let Some(tracker) = &tracker {
+                            tracker
+                                .lock()
+                                .expect("owned analytics tracker")
+                                .finish(AnalyticsOutcome::Cancelled);
+                        }
+                        observation.finish("downstream_closed");
+                    }
                     AttemptEnd::Settled
                 }
                 Ok(ChatCompletionsOutput::Stream(_)) => AttemptEnd::Settled,
@@ -1313,9 +1527,18 @@ async fn dispatch_credential(
                     }
                     if headers_sent {
                         let _ = sender.send(WireEvent::Failed).await;
-                        AttemptEnd::Settled
+                        AttemptEnd::Interrupted {
+                            cooldown: matches!(
+                                error.kind,
+                                ChatCompletionsErrorKind::Transport
+                                    | ChatCompletionsErrorKind::Timeout
+                            )
+                            .then_some(Duration::from_secs(5)),
+                        }
                     } else {
                         let status = match error.kind {
+                            ChatCompletionsErrorKind::InvalidInput => 400,
+                            ChatCompletionsErrorKind::Unsupported => 422,
                             ChatCompletionsErrorKind::Authentication => 401,
                             ChatCompletionsErrorKind::Permission => 403,
                             ChatCompletionsErrorKind::RateLimited => 429,
@@ -1325,6 +1548,13 @@ async fn dispatch_credential(
                         let next = next_candidate(
                             matches!(error.kind, ChatCompletionsErrorKind::RateLimited),
                             matches!(error.kind, ChatCompletionsErrorKind::Cancelled),
+                            matches!(
+                                error.kind,
+                                ChatCompletionsErrorKind::Transport
+                                    | ChatCompletionsErrorKind::Timeout
+                            ) || (matches!(error.kind, ChatCompletionsErrorKind::ProviderFailure)
+                                && error.submitted
+                                && error.response.is_none()),
                             error.response.as_ref().map(|meta| meta.status),
                             error.response.as_ref().map_or(&[], |meta| &meta.headers),
                         );
@@ -1428,7 +1658,7 @@ async fn dispatch_credential(
                 Err(_) => "upstream_failed",
             });
             match completion.result {
-                Ok(ResponsesOutput::Json(body, _)) => {
+                Ok(ResponsesOutput::Json(body, terminal)) => {
                     tracing::info!(
                         event = "gateway_upstream_headers",
                         http_status = body.meta.status
@@ -1439,8 +1669,24 @@ async fn dispatch_credential(
                             .expect("owned analytics tracker")
                             .json(body.meta.status, body.body.get());
                     }
-                    send_json(&sender, body).await;
-                    AttemptEnd::Settled
+                    let delivered = send_json(&sender, body).await;
+                    if !delivered {
+                        if let Some(tracker) = &tracker {
+                            tracker
+                                .lock()
+                                .expect("owned analytics tracker")
+                                .finish(AnalyticsOutcome::Cancelled);
+                        }
+                        observation.finish("downstream_closed");
+                    }
+                    if delivered && terminal == ResponsesTerminal::Completed {
+                        AttemptEnd::Completed
+                    } else {
+                        AttemptEnd::Settled
+                    }
+                }
+                Ok(ResponsesOutput::Stream(_, ResponsesTerminal::Completed)) => {
+                    AttemptEnd::Completed
                 }
                 Ok(ResponsesOutput::Stream(..)) => AttemptEnd::Settled,
                 Err(error) => {
@@ -1467,7 +1713,13 @@ async fn dispatch_credential(
                     }
                     if sent.load(std::sync::atomic::Ordering::Acquire) {
                         let _ = sender.send(WireEvent::Failed).await;
-                        AttemptEnd::Settled
+                        AttemptEnd::Interrupted {
+                            cooldown: matches!(
+                                error.kind,
+                                ResponsesErrorKind::Transport | ResponsesErrorKind::Timeout
+                            )
+                            .then_some(Duration::from_secs(5)),
+                        }
                     } else {
                         let next = next_candidate(
                             matches!(error.kind, ResponsesErrorKind::RateLimited)
@@ -1476,10 +1728,16 @@ async fn dispatch_credential(
                                         error.body.as_ref().map(Payload::get),
                                     )),
                             matches!(error.kind, ResponsesErrorKind::Cancelled),
+                            matches!(
+                                error.kind,
+                                ResponsesErrorKind::Transport | ResponsesErrorKind::Timeout
+                            ),
                             error.status,
                             &error.headers,
                         );
                         let upstream_status = error.status.unwrap_or(match error.kind {
+                            ResponsesErrorKind::InvalidInput => 400,
+                            ResponsesErrorKind::Unsupported => 422,
                             ResponsesErrorKind::Authentication => 401,
                             ResponsesErrorKind::Permission => 403,
                             ResponsesErrorKind::RateLimited => 429,
@@ -1606,7 +1864,15 @@ async fn dispatch_credential(
                             .expect("owned analytics tracker")
                             .json(body.meta.status, body.body.get());
                     }
-                    send_json(&sender, body).await;
+                    if !send_json(&sender, body).await {
+                        if let Some(tracker) = &tracker {
+                            tracker
+                                .lock()
+                                .expect("owned analytics tracker")
+                                .finish(AnalyticsOutcome::Cancelled);
+                        }
+                        observation.finish("downstream_closed");
+                    }
                     AttemptEnd::Settled
                 }
                 Ok(MessagesOutput::Stream(_)) => AttemptEnd::Settled,
@@ -1637,10 +1903,17 @@ async fn dispatch_credential(
                     }
                     if headers_sent {
                         let _ = sender.send(WireEvent::Failed).await;
-                        AttemptEnd::Settled
+                        AttemptEnd::Interrupted {
+                            cooldown: matches!(
+                                error.kind,
+                                MessagesErrorKind::Transport | MessagesErrorKind::Timeout
+                            )
+                            .then_some(Duration::from_secs(5)),
+                        }
                     } else {
                         let status = match error.kind {
                             MessagesErrorKind::InvalidInput => 400,
+                            MessagesErrorKind::Unsupported => 422,
                             MessagesErrorKind::Authentication => 401,
                             MessagesErrorKind::Permission => 403,
                             MessagesErrorKind::RateLimited => 429,
@@ -1650,6 +1923,12 @@ async fn dispatch_credential(
                         let next = next_candidate(
                             matches!(error.kind, MessagesErrorKind::RateLimited),
                             matches!(error.kind, MessagesErrorKind::Cancelled),
+                            matches!(
+                                error.kind,
+                                MessagesErrorKind::Transport | MessagesErrorKind::Timeout
+                            ) || (matches!(error.kind, MessagesErrorKind::ProviderFailure)
+                                && error.submitted
+                                && error.response.is_none()),
                             error.response.as_ref().map(|meta| meta.status),
                             error.response.as_ref().map_or(&[], |meta| &meta.headers),
                         );

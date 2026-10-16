@@ -54,7 +54,7 @@ application 私有保存 API key 或 OAuth 来源定位，并向 gateway 注入�
 
 提供商模型条目保存稳定 `recordKey`、精确 `providerModelId`、显示字段及可选能力。application 为新条目生成内部记录键；用户可以编辑 API ID，运行时选择仍引用原记录。网关自动派生 `velune/model/<recordKey>`，不接受裸记录键作为 wire model，不再要求单目标另建 Route。导入按来源提供商建立条目，不按名称合并跨提供商记录。官方业务资料见 [模型业务研究](../../tasks/ai-gateway-audit/model-business-research.md)；其中早期两层实体建议已被参数模板方向替代。
 
-配置只接受 schema 8（2026-10-10 大纲设置改名时由 7 升级）。旧普通配置原子重置为空配置，不转换字段、不保留旧文件或备份；未来 schema、损坏 JSON 与当前版本的未知字段明确拒绝。原 Harness 文件、会话和既有平台秘密不属于重置对象。
+配置只接受 schema 9（2026-10-17 智能调度契约升级）。旧普通配置原子重置为空配置，不转换字段、不保留旧文件或备份；未来 schema、损坏 JSON 与当前版本的未知字段明确拒绝。原 Harness 文件、会话和既有平台秘密不属于重置对象。
 
 未知能力保持未知，空推理等级列表明确表示不支持，不全局强制输出上限或统一 effort。目录能力与每次请求参数分开，原生透传不静默补参数。缺少描述性规格不阻止原生调用，某个 Harness 必需的字段只在对应 adapter 准备边界检查。模板可以复制规格、昵称、图标和建议 API ID，但不能由另一提供商的规格证明实际支持，也不能承诺原生历史可互换。
 
@@ -93,6 +93,8 @@ flowchart LR
 
 ## 路由、fail-over 与生命周期
 
+2026-10-17 用户确认的智能调度已接入 Rust lib。一个订阅对应一个提供商实例；application 拥有实例认证、额度采集与唯一快照，gateway 只通过中立只读契约取得额度事实并维护运行期共享调度状态。提供商使用上限独立于路由，直接调用同样受约束；路由拥有策略、成员权重和黏性选择。会话身份由装配方显式提供，gateway 不依赖 Agent runtime、不根据正文猜测身份。详细产品行为归 [PRD](../prd/index.md#ai-网关与-agent-运行时配置)，额度与调度接口见 [gateway unit](../../packages/gateway/README.md) 和 [bindings unit](../../packages/bindings/README.md)，验证记录归 [模型路由任务](../../tasks/model-routing/packet.md)。
+
 路由捕获一次请求的配置版本、提供商／模型目标和认证引用；热编辑不能改变正在执行的尝试。持久配置、已装配运行配置与正在执行的快照必须有明确的版本和生效规则。Harness 的历史兼容身份由运行时 adapter 管理，不把 Pi 物理绑定 ID 作为通用路由模型；请求中的来源身份约束仍应参与目标资格判断。
 
 fail-over 由 AI 网关单独决策，provider 执行一次尝试，不隐藏再次请求。相同协议只是一项资格条件，不足以证明历史、文件、缓存、加密推理或服务端状态引用可交给另一提供商／账户／模型。目标必须能接受相同请求及其已有状态，不能为了切换而改变请求含义。
@@ -119,7 +121,7 @@ huihua package 的只读会话 projection、ACP／app-server 的 resume、用户
 
 ChatCompletions、Responses 与 Messages 已改为独立原生操作，LLM Gateway 不再经过 SamplingInput／SamplingDelta，也不使用 MiniMax 映射器。gateway 根据路由绑定写入精确 providerModelId，再构造原生协议输入；provider 不再维护逻辑模型映射，保留其它请求字段；原生 JSON／SSE、HTTP 状态及安全响应头经过同一保真边界。原生事件 sink 可等待，下游通过容量为 1 的通道施加背压；取消关闭派发 Future。业务 Usage／Quantity 归 sampling 数据，observation 可以消费它们；原有单操作 `AiService` 改名为 `SamplingService`，不代表整个 AI 模块。
 
-HTTP ingress 使用 Axum，application 的提供商认证解析器在每次请求前校验捕获的目标并异步解析，provider 使用本次捕获的认证和共享 HTTP client 执行一次请求。平台与来源 helper 由 application 装配；Unix helper 的进程组在超时、取消和网关关闭时终止，Windows 对应 helper 尚未开放。请求生命周期、配置快照与平台限制见 [gateway unit](../../packages/gateway/README.md)。当前按提供商模型条目作静态目标解析，fail-over Disabled，未实现无中断热配置。
+HTTP ingress 使用 Axum，application 的提供商认证解析器在每次请求前校验捕获的目标并异步解析，provider 使用本次捕获的认证和共享 HTTP client 执行一次请求。平台与来源 helper 由 application 装配；Unix helper 的进程组在超时、取消和网关关闭时终止，Windows 对应 helper 尚未开放。请求生命周期、配置快照与平台限制见 [gateway unit](../../packages/gateway/README.md)。直接提供商模型只解析单一目标；显式模型路由的候选选择与提交前 fail-over 见上文。未实现无中断热配置。
 
 [原审计](../../tasks/ai-gateway-audit/audit.md)和[失败验收](../../tasks/pi-mac-first-loop/deepseek-import-acceptance.md)保留重构前基线，不能作为当前源码状态。此次重构的静态、人工端到端与安装证据继续归 [当前任务](../../tasks/ai-gateway-audit/packet.md)。MiniMax 的固定端点、模型与 replay 仅是历史 sampling 用例，不定义通用协议执行。
 

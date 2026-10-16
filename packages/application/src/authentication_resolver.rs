@@ -216,9 +216,6 @@ pub(crate) fn read_api_key(
                 name: "lookup".into(),
                 providers: vec![provider.clone()],
                 routes: Vec::new(),
-                failover: crate::config::FailoverPolicy {
-                    mode: crate::config::FailoverMode::Disabled,
-                },
             };
             let protocol = match provider.protocol {
                 crate::config::GatewayProtocol::ChatCompletionsV1 => {

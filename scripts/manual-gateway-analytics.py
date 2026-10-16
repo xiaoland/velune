@@ -92,19 +92,20 @@ impl CredentialResolver for Auth {
  Box::pin(async { Ok(ResolvedCredential { token:"SYNTHETIC".into(), explicit_output_cap:None, subscription:false, profile:velune_gateway::CredentialProfile::Standard }) }) }
 }
 fn provider(protocol:GatewayProtocol,cases:&[&str],endpoint:&str)->ProviderDefinition {
- ProviderDefinition { id:format!("{protocol:?}"),name:format!("Synthetic {protocol:?}"),protocol,endpoint:endpoint.into(),credential_ref:Some("synthetic".into()),models:cases.iter().map(|case|ProviderModel{record_key:case.to_string(),provider_model_id:case.to_string(),nickname:String::new(),icon:None,context_window:None,max_output_tokens:Some(100),reasoning_levels:None}).collect() }
+ ProviderDefinition { id:format!("{protocol:?}"),name:format!("Synthetic {protocol:?}"),protocol,endpoint:endpoint.into(),credential_ref:Some("synthetic".into()),quota_limits:vec![],models:cases.iter().map(|case|ProviderModel{record_key:case.to_string(),provider_model_id:case.to_string(),nickname:String::new(),icon:None,context_window:None,max_output_tokens:Some(100),reasoning_levels:None}).collect() }
 }
 #[tokio::main(flavor="current_thread")]
 async fn main(){
  let args:Vec<String>=std::env::args().collect();let home=Path::new(&args[2]);
  let store=Arc::new(storage::AnalyticsStore::open(home).unwrap());
- let gateway=Runner::start_with_analytics(GatewayConfig{id:"g".into(),name:"Synthetic".into(),providers:vec![
+ let config=GatewayConfig{id:"g".into(),name:"Synthetic".into(),providers:vec![
  provider(GatewayProtocol::ChatCompletionsV1,&["chat-json","chat-sse","chat-missing","chat-truncated","chat-error","chat-cancel","translate-unknown"],&args[1]),
  provider(GatewayProtocol::ResponsesV1,&["responses-json","responses-sse"],&args[1]),
- provider(GatewayProtocol::MessagesV1,&["messages-json","messages-sse","translate-messages","messages-uncached-json","messages-zero-json"],&args[1])],routes:vec![],failover:FailoverPolicy{mode:FailoverMode::Disabled}},Arc::new(Auth),BTreeMap::new(),Some(store.clone()),RouteHealth::default()).unwrap();
+ provider(GatewayProtocol::MessagesV1,&["messages-json","messages-sse","translate-messages","messages-uncached-json","messages-zero-json"],&args[1])],routes:vec![]};
  let client=reqwest::Client::new();
  let cases=["chat-json","chat-sse","chat-missing","chat-truncated","chat-error","chat-cancel","responses-json","responses-sse","messages-json","messages-sse","translate-unknown","translate-messages","messages-uncached-json","messages-zero-json"];
  for case in cases {
+  let gateway=Runner::start_with_analytics(config.clone(),Arc::new(Auth),BTreeMap::new(),Some(store.clone()),SchedulingState::default()).unwrap();
   let ingress=if case.starts_with("messages") || case=="translate-unknown" {"messages"} else if case.starts_with("responses") {"responses"} else {"chat/completions"};
   let streaming=case.ends_with("sse") || case.ends_with("truncated") || case.ends_with("cancel");
   let body=if ingress=="responses" {serde_json::json!({"model":format!("velune/model/{case}"),"input":"Synthetic","stream":streaming})} else {serde_json::json!({"model":format!("velune/model/{case}"),"messages":[{"role":"user","content":"Synthetic"}],"max_tokens":100,"stream":streaming})};
@@ -112,8 +113,8 @@ async fn main(){
   assert_eq!(response.status().as_u16(),if case=="chat-error"{429}else{200},"{case}");
   if case=="chat-cancel" {let mut stream=response.bytes_stream();let mut seen=Vec::new();while let Some(Ok(chunk))=stream.next().await {seen.extend(chunk);if String::from_utf8_lossy(&seen).contains("completion_tokens") && seen.ends_with(b"\r\n\r\n") {break;}}drop(stream);tokio::time::sleep(std::time::Duration::from_millis(30)).await;}
   else {std::fs::write(home.join(format!("wire-{case}")),response.bytes().await.unwrap()).unwrap();}
+  drop(gateway);
  }
- drop(gateway);
  let store=Arc::try_unwrap(store).ok().expect("gateway leaked analytics sink");drop(store);
  let reopened=storage::AnalyticsStore::open(home).unwrap();
  let mut rows=Vec::new(); reopened.visit(0,i64::MAX,None,None,|row|{rows.push(row);Ok(())}).unwrap();assert_eq!(rows.len(),14);

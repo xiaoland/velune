@@ -36,11 +36,11 @@ Agent 运行时可配置多个实例，每个实例选择精确版本类型及�
 
 Velune 向 Harness 注入本机网关提供商配置，Velune 管理的提供商 key 不随该注入传给 Harness；这不禁止 Harness 使用其原有提供商与认证。application 管理提供商私有认证，gateway 只接收中立异步解析接口，AI provider 使用当前解析出的短生命周期认证。API key 可查看编辑，OAuth 状态与登录放在原提供商上下文，运行时名称仅作为来源说明。来源型 OAuth adapter 保留原 SDK 的登录与刷新，不复制 refresh credential；独立 Codex 订阅由 application 管理自己的登录和轮换令牌。修改来源绑定的目标时明确更换认证或清除，不能继续沿用旧目标授权。更换认证或模型执行配置后，受影响执行准备失效，历史视图保留，下一次发送重新准备；真实登录与调用由用户验收。
 
-提供商字段与 API key 一次原子保存，认证编辑明确区分保留、设置新 key 和清除；读取失败或取消草稿不会清空旧值。API key 不建立第二份凭据文件或 Keychain 补偿事务；独立 Codex 订阅的轮换凭据保存在 application 专属私有文件，不写回 Harness 或 Switcher。配置只接受 schema 8，旧 schema 普通配置打开时原子重置为空当前配置，不迁移、不保留旧文件或备份；原 Harness、会话及已有平台秘密不删除。未来 schema 或损坏 JSON 明确报错。模板只是填写快照，不包含认证、服务地址或 Pi 投影，模板更新／删除不改变已有模型。
+提供商字段与 API key 一次原子保存，认证编辑明确区分保留、设置新 key 和清除；读取失败或取消草稿不会清空旧值。API key 不建立第二份凭据文件或 Keychain 补偿事务；独立 Codex 订阅的轮换凭据保存在 application 专属私有文件，不写回 Harness 或 Switcher。配置只接受 schema 9，旧 schema 普通配置打开时原子重置为空当前配置，不迁移、不保留旧文件或备份；原 Harness、会话及已有平台秘密不删除。未来 schema 或损坏 JSON 明确报错。模板只是填写快照，不包含认证、服务地址或 Pi 投影，模板更新／删除不改变已有模型。
 
 AI 提供商页的“从运行时导入…”是完整配置导入入口。选择已配置的 Agent 运行时实例后读取预览，复用该实例的目录与 Node 配置，再选择提供商模型导入；模型能力归导入的提供商条目。原提供商与认证文件保留；导入应用时集中保存静态 API key 到提供商私有配置，OAuth 保留来源刷新。重复项默认跳过，明确替换才更新已导入提供商；当前会话模型不自动改变。运行时实例、来源或目标配置在预览后变化时，须重新读取。读取配置不要求执行准备，也不要求当前会话已有模型或路由。仅支持当前网关能够保留语义的配置；不支持项及原因在预览中显示，动态命令不执行。
 
-schema 8 采用 hard-cutoff，旧普通配置打开时直接重置，之后重新配置运行时与提供商；原 Harness 会话和认证保留。活动网关发生导入变更后使执行准备失效，重复跳过保持现有执行状态。提供商编辑器证据见 [AI 网关任务](../tasks/ai-gateway-audit/packet.md)，本轮多运行时构建、隔离验证与最终安装状态见 [多运行时任务](../tasks/multi-runtime/packet.md)。
+schema 9 采用 hard-cutoff，旧普通配置打开时直接重置，之后重新配置运行时与提供商；原 Harness 会话和认证保留。活动网关发生导入变更后使执行准备失效，重复跳过保持现有执行状态。提供商编辑器证据见 [AI 网关任务](../tasks/ai-gateway-audit/packet.md)，本轮多运行时构建、隔离验证与最终安装状态见 [多运行时任务](../tasks/multi-runtime/packet.md)。
 
 隔离视觉预览使用 `--preview`（合成多轮会话）或 `--preview-empty`；Apple app 不设置独立深色验收入口。预览 Store 无 Transport，不打开 Application、不访问真实配置、Keychain 或会话、不调用模型。dyld 加载惰性的库文件不等于打开运行时，预览不能证明真实循环完成。
 
@@ -312,9 +312,17 @@ Mac 的“问题”窗口集中显示操作失败与当前读取问题，主界�
 
 聚合路由只接受完整必要历史，不接受 `previous_response_id` 或 `conversation` 等上游状态引用；这类请求会明确拒绝，不静默删字段或改发其他账户。加密 reasoning、文件引用等仍可能属于原账户，实际跨账户重放须由用户真实验收。完整协议边界与恢复策略见 [gateway unit](../packages/gateway/README.md)。
 
-一次性真实验收入口为 `scripts/manual-codex-subscriptions-live.py`，默认只编译、不读取认证或发请求。用户明确授权现有 Switcher 来源后，可运行 `python3 scripts/manual-codex-subscriptions-live.py --run --switcher-credentials --overlay-response-fix --case text-a-route --model <两个账户均支持的真实 model ID>`。脚本冻结 `dd5683d` 基线并覆盖当前 Responses／gateway 两个修复文件，输出源码 SHA256，原 HTTPS 目标不改写；仅在进程内解析 access token/account_id，禁用刷新、重定向及隐式重试，不修改原认证。短合成输入先由真实 A 回复，再将首候选替换为只接受合成凭据的本地 429，真实 B 接续 A 的普通文本历史。验收要求精确回复标记、明确 completed 事件及生产 analytics Completed，不能以 HTTP 200 或 EOF 代替完成。2026-10-16 使用共同模型 `gpt-6.1-sol` 通过此链路；这不是供应商自然限流、真实 OAuth／续期或任意历史可移植性的证明。
+一次性真实验收入口为 `scripts/manual-codex-subscriptions-live.py`，默认只编译、不读取认证或发请求。用户明确授权现有 Switcher 来源后，可运行 `python3 scripts/manual-codex-subscriptions-live.py --run --switcher-credentials --case text-a-route --model <两个账户均支持的真实 model ID>`。脚本在启动时冻结完整 Git revision（默认 HEAD，可用 `--source-ref` 指定），输出完整提交哈希，原 HTTPS 目标不改写；仅在进程内解析 access token/account_id，禁用刷新、重定向及隐式重试，不修改原认证。短合成输入先由真实 A 回复，再将首候选替换为只接受合成凭据的本地 429，真实 B 接续 A 的普通文本历史。验收要求精确回复标记、明确 completed 事件及生产 analytics Completed，不能以 HTTP 200 或 EOF 代替完成。2026-10-16 使用共同模型 `gpt-6.1-sol` 通过此链路；这不是供应商自然限流、真实 OAuth／续期或任意历史可移植性的证明。
 
 ## 模型路由
+
+2026-10-17 的 Rust lib 增量提供 Smart、Order、Rotate、Weight 四种策略，均支持默认开启的会话粘性；一个订阅始终对应一个提供商实例。提供商配置持有额度窗口使用上限，路由配置持有策略、成员权重和粘性。额度上限与冷却在直接调用及所有路由间共享；只有完整成功的请求才建立或更新粘性，粘性不能越过上限或冷却。具体契约见 [gateway unit](../packages/gateway/README.md)，平台额度查询与刷新入口见 [bindings unit](../packages/bindings/README.md)。本增量仅修改 Rust lib，既有前端尚未接入这些字段与操作。
+
+ChatGPT 额度按查询或使用异步采集，运行准备阶段提前触发候选提供商采样。首次读取可能尚无结果；配置使用上限的提供商需要新鲜且适用的额度观测才可调用，平台可读取状态并等待刷新。窗口重置后重新观测，不推断额度已恢复。使用百分比是供应商观测，不能保证并发请求或其他客户端不会越过配置上限。
+
+人工调度验收运行 `python3 scripts/manual-smart-routing.py`，通过实际 HTTP 网关和合成额度观察检查策略分配、上限、冷却探测与会话粘性；application 额度采集、认证更换与配置重开由 `python3 scripts/manual-codex-subscriptions.py` 验证。两者仅使用隔离配置和回环服务，不接入 CI。
+
+应用配置 schema 更新为 9，按项目 hard-cutoff 规则，旧普通应用配置在加载时重置为当前默认配置并原子覆盖，不作迁移或备份；原 Harness 文件与认证秘密不在重置范围。本轮隔离验收不加载用户现有应用配置。
 
 设置的“模型路由”页列出路由：名称和按顺序排列的提供商模型。路由与提供商模型一样出现在模型菜单的 Velune 提供商一节，名称附“模型路由”；运行时得到第一个成员的协议、上下文窗口与 reasoning effort，任一成员是订阅认证时整个路由按订阅约束发送。删除提供商或其模型会从路由中移除对应成员，没有成员的路由随之删除。fail-over 规则与观测见 [gateway unit](../packages/gateway/README.md)，策略已由用户确认，Rust 多订阅接入实施及验证状态见 [模型路由任务](../tasks/model-routing/packet.md)。
 

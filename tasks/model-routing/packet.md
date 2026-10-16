@@ -9,7 +9,7 @@
 - 当前路线为 Velune 独立管理 Codex 订阅认证及 AI 网关聚合；正式 SIWC 留作未来申请后的独立接入。用户已知悉规则冲突并要求产品披露。
 - Codex Switcher 只是两个验收订阅的来源，不做产品集成。用户最新明确授权直接使用既存两份认证：只在一次性验收进程内读取 access token/account_id，不读取 refresh token 值、不刷新或改写原文件。此前重新登录建议已被用户纠正。
 - implementation owner：codex_source 负责 application 认证生命周期与 bindings API；subscription_transport 负责 ai-provider 与 gateway；subscription_manual 负责新隔离合成脚本；主执行者负责跨模块整合、既有脚本与权威文档及静态验收。其他并行任务改动不纳入提交。
-- Rust 支持已提交 `dd5683d`；真实 provider/gateway 双订阅链路已通过：A Completed → 本地注入 429 → 真实 B Completed，普通文本历史标记精确一致。真实诊断发现的 MIME／错误状态问题已修正，20 项合成人工验收、静态检查与 Rust bindings 构建均通过。Rust 范围完成，前端仍不在范围内。
+- 基础订阅支持与真实双订阅验收已在 `dd5683d`、`2d852b9` 完成。2026-10-17 用户确认继续智能调度方案，Rust lib 已实现四策略、主动额度、使用上限、冷却单探测与会话黏性；前端仍不在范围内。
 
 ## 既有模型路由实现（历史基线）
 
@@ -122,3 +122,40 @@
 验收边界：这证明真实双订阅在故障注入下可切换及普通文本历史可接续，不证明自然额度耗尽、加密推理、工具历史、文件或服务端状态跨账户可移植；application 真实 OAuth／续期未运行。产品无 Switcher 导入或后台共享刷新能力。
 
 最终合成人工矩阵 20 项通过，新增 Codex 缺 MIME 的有效 SSE、空流／HTML／缺终态失败且不切换、普通 profile 缺 MIME 与 Codex 显式空 MIME 拒绝；live parser 5 项本地自检及 usage 白名单自检通过。真实响应出现新的 usage.attribution 对象，验收 runner 已改为仅输出五个固定 token 数值字段，不传播未知对象或上游消息 ID。未再为日志收口重复真实请求。
+
+## 智能调度接续（2026-10-16，方案阶段）
+
+用户要求增加智能调度、主动额度感知、使用上限、冷却降序与会话黏性，并核对一个订阅对应一个提供商实例。该实例归属与原实现一致，已归位 PRD；继续限定 Rust lib。沿用用户先确认方案的要求，本轮调查及编辑文档，不修改产品源码或读取真实凭据。advisor subscription_path 负责审议五项能力的选择顺序、额度未知、硬限制与黏性冲突，以及中立额度／会话身份契约。
+
+当前证据：gateway 只有有序 ModelRoute 和按provider记录的429内存冷却，没有额度快照和会话黏性。公开Magpie固定源码9b04c4e的subscription_usage.go展示Codex额度窗口采集，但Velune尚未真实验证该来源。候选方案以资格过滤→黏性→策略排序→有界失败切换为一条流水线，避免多个机制各自决定候选。具体默认值及未知额度行为待方案收口。
+
+待用户确认的具体方案：一个订阅仍对应一个 provider 实例，模型条目可多个；实例统一拥有认证、配额快照和各窗口百分比使用上限，所有路由与直接调用共享限制。路由提供 order/smart/rotate/weight，smart 在资格和冷却过滤后优先合格会话绑定，否则按适用窗口 min((cap-used)/cap) 降序，配置顺序破同分。该分数不等于不同订阅绝对token容量。advisor建议仅order/smart；主执行者保留rotate/weight作为用户所请求更丰富调度中明确可解释的均摊与比例分配能力，不引入pace预测或单独least-used重复策略。
+
+application按需启动有界刷新周期采集Codex窗口，用中立只读契约供gateway消费，显式区分未知/过期/不支持；不将本地tokens统计冒充供应商额度。配置上限而无法获得新鲜观测时暂停该实例；无上限未知实例降序候选。到重置时间仅触发重新观测。冷却期不供普通尝试穿透，全部冷却返回最早重试时间，期满单请求探测，恢复正常排序，不附加永久沉底状态。会话绑定采用调用方显式不透明ID，跨Runner共享；没有ID不猜测，首版运行期有效，替补成功后重绑，健康/上限优先。沿用现流提交闸门。上限是依据观测暂停新请求的阈值，不能承诺外部并发和在途请求精确不越线。尚未实施，等待本方案确认；不涉及Mac前端。
+
+## 已授权智能调度实施（2026-10-17）
+
+用户回复“确认”，上一节方案转为实施依据。PRD及跨单元设计已更新。transport owner负责gateway配置、额度只读契约、共享调度状态和派发；codex_source负责application额度生命周期/配置/session装配及bindings；manual owner负责人工脚本与app/host必要契约适配；主执行者负责跨模块整合、长期文档、整工作区静态构建和交付。advisor只处理关键跨单元判断。均不修改Mac或生成Swift。
+
+验收应从实际HTTP网关与application配置边界证明四策略的分布和资格、阈值覆盖直接调用和所有路由、未知/过期及reset行为、额度并发更新与旧账户结果失效、全冷返回重试时间、半开单探测和取消释放、跨Runner会话黏性及替补成功重绑。使用临时合成服务，不新增自动测试/CI。既有真实来源只读授权保留，但本阶段优先隔离验收，不消耗真实额度制造限流。最终执行fmt/check/clippy、bindings构建与configuration-only检查。
+
+
+实施收口事实：额度来源采用按查询／使用触发的一次异步采样，provider single-flight、服务最多 4 个采样任务；槽位满时立即返回现状，调用方后续查询重试，不建立持续轮询或后台队列。窗口 ID 采用供应商窗口秒数，显式保留 allowed=false；缺失百分比不填零。普通 token 续期保留身份 generation，重新登录或更换认证使旧 quota 视图、在途结果与会话绑定失效。重复订阅登录按 subject 与 workspace/account 组合拒绝，避免同一订阅拆实例绕过限制。
+
+人工配置重开验收发现保存路径仍写旧 schema 8、加载路径已要求 9，导致刚保存的配置重开被重置；已改为 repository::CURRENT_SCHEMA_VERSION 单一常量供读写共同使用。该缺陷由隔离 HOME 的实际保存／重开暴露，静态检查无法证明持久化行为。当前工作未读取或重置用户现有配置。
+
+
+最终 Rust 静态与构建检查：`cargo fmt --check`、`cargo check --locked --offline --workspace --all-features`、`cargo clippy --locked --offline --workspace --all-targets --all-features -- -D warnings`、`cargo build --locked --offline -p velune-bindings`、application／bindings 的 `--no-default-features` check 均通过。未运行自动化测试、真实额度接口或模型请求，未修改前端、生成 Swift 或安装应用。长期文档相对文件链接及标题锚点已检查，无缺失目标。
+
+
+合成人工验收结果：`python3 scripts/manual-codex-subscriptions.py` 的 application／bindings 24 组通过，覆盖独立认证与原有流式边界、新额度 Fresh／非法负值拒绝、阻塞的旧额度请求换认证后不回写、四策略与上限保存重开，以及 bindings 门面的保存／重开与 Unsupported。`python3 scripts/manual-gateway-analytics.py` 的 14 组及原始字节保真通过；原模型路由 gateway 矩阵 12 场景通过，新增真实截断上游响应后的后续直接调用冷却。仅编写临时合成 runner，不新增测试框架或 CI。
+
+真实验收脚本已删除历史双文件 overlay，改为启动时解析 `--source-ref`（默认 HEAD）并冻结完整提交；默认只编译和运行本地 SSE parser 自检，不读取认证或调用网络。旧真实结果仍对应前文已记录的历史提交与文件摘要，不借用作新额度能力的真实证明。
+
+
+`python3 scripts/manual-smart-routing.py` 的最终基础矩阵 12 组通过，覆盖四策略跨 Runner 的 128 次分配、归一化余量、直接调用／多路由共享阈值、未知／过期／重置、显式 namespace 与路由范围粘性、失败或未完成不绑且无 analytics sink 同样成立、成功替补重绑、12 并发单探测、取消释放、认证 epoch 失效及全冷最早 Retry-After。最早时间场景让候选分别冷却 5 秒和 60 秒，确认返回较早机会且没有提前调用冷却中的候选。
+
+
+补充同窗口 ID 的全局与模型专属观测回归后，智能调度矩阵共 13 组全通过：全局已用 10%、模型 A 专属已用 99%、使用上限 50% 时，A 不得发出上游请求；只适用全局窗口的 B 正常完成。gateway 对所有适用的同 ID 窗口逐个检查，不能由第一个低使用窗口掩盖另一个窗口。修后 gateway fmt/check/clippy 与完整 bindings 构建再次通过。历史人工脚本仅同步新必填 quota_limits／路由构造字段，未声称重新验收全部外部 Harness 场景。
+
+本阶段 Rust 实现与隔离验收完成。额度观测尚未对真实 ChatGPT 端点验收；上限仍是观测驱动的请求准入，不能保证在途或外部并发不越线。前端继续由用户另行安排，需按 bindings unit 新契约接入。

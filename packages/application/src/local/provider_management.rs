@@ -2,6 +2,22 @@
 use super::*;
 impl CoreRuntime {
     pub(super) fn provider_action(&mut self, payload: &Value) -> Result<Value, RuntimeError> {
+        if matches!(
+            payload["operation"].as_str(),
+            Some("quota" | "refreshQuota")
+        ) {
+            let gateway_id = payload["gatewayID"]
+                .as_str()
+                .ok_or_else(|| RuntimeError::invalid("gateway id"))?;
+            let provider_id = payload["providerID"]
+                .as_str()
+                .ok_or_else(|| RuntimeError::invalid("provider id"))?;
+            return Ok(serde_json::to_value(self.subscription_quota.query(
+                gateway_id,
+                provider_id,
+                payload["operation"] == "refreshQuota",
+            )?)?);
+        }
         if payload["operation"] == "readApiKey" {
             let gateway = self
                 .gateways
@@ -38,6 +54,7 @@ impl CoreRuntime {
             self.runtime_instances = previous_runtimes;
             return Err(error);
         }
+        self.sync_scheduling(&previous);
         let mut cleanup_failed = false;
         for old in previous.iter().flat_map(|g| &g.providers) {
             if let crate::provider_authentication::AuthenticationMaterial::CodexSubscription { credential_id, .. } = &old.authentication.material

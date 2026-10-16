@@ -12,9 +12,19 @@ Axum 负责 HTTP framing，当前只监听随机 loopback 端口并提供三条 
 
 提供商模型条目使用稳定 `recordKey` 和精确 `providerModelId`。入口自动派生为 `velune/model/<recordKey>`，运行时注入的别名另外传入；内部记录键本身不是 wire model 入口。网关完成目标解析后才传递 `ProviderModelId`，协议执行不再次映射。上下文／输出能力与协议推理声明均可未知，同协议网关不要求或补充请求 token 限制，也不以默认规格覆盖提供商实际能力。
 
-模型路由（`ModelRoute`）以自己的 `recordKey` 与提供商模型同列，入口同为 `velune/model/<recordKey>`，别名也可指向它；成员是按优先顺序排列的提供商模型记录键，须同协议，校验拒绝空成员、重复成员与和模型冲突的键。一次请求按顺序捕获成员；在 429 后的冷却期内（Retry-After，缺省 60 秒、至多 24 小时）该提供商排到末尾，全部冷却时仍按顺序尝试。模型路由请求携带非空 `previous_response_id` 或 `conversation` 时在转换和派发前拒绝，要求调用方提供完整历史；直接选择提供商模型仍保留原有状态引用契约。冷却状态是调用方持有的 `RouteHealth`，传给 `Runner::start_with_analytics`，使限流跨 Runner 生效；`Runner::start` 使用独立的空状态。
+模型路由（`ModelRoute`）以自己的 `recordKey` 与提供商模型同列，入口同为 `velune/model/<recordKey>`，别名也可指向它。成员是提供商模型记录键，须同协议；校验拒绝空成员、重复成员与和模型冲突的键。`strategy` 有 `smart`、`order`、`rotate`、`weight` 四种，`sticky` 控制是否保持会话绑定。`weight` 必须为每个成员配置正整数权重，其它策略的 weights 必须为空。旧的、实际未参与派发的 `FailoverMode`／`FailoverPolicy`／GatewayConfig.failover 已删除，不保留兼容字段；平台配置和 bindings 消费方须采用新契约。
 
-fail-over 只在尚未向调用方转发任何响应时发生：认证解析失败、提供商配置无效、尚未收到响应的连接／传输失败或超时、429、结构化额度错误（402 且 error.code/type 为 `insufficient_quota`、`usage_limit_reached` 或 `quota_exceeded`）与 5xx 改用下一个成员；403、其它请求类 4xx、取消，以及已开始转发后的中断都结束请求。成功 HTTP headers 一经交付即提交响应；200 SSE 内后续出现的额度错误或业务失败也不切换。普通认证的 401 仍结束；`CodexSubscription` 的 401 在提交响应前调用 resolver.refresh 一次，只有相同 account_id 的凭据可重发。永久认证失效或重发仍为 401 时调用 invalidate，并允许下一个成员；续期暂不可用也可尝试下一成员，但不标记会话永久失效。所有成员失败时返回最后一个失败。provider 每次调用只执行一次尝试；401 恢复由 gateway 显式组织。恢复后的同一成员只形成一条最终 exchange 的 analytics 记录，初次 401 由无正文 tracing 保留；异协议请求的所有尝试进入同一个转换。每次尝试各有一条 analytics 记录，第二次起的 `request_id` 为 `<请求>/<序号>`；tracing 在 attempt 中记录 `gateway_route_selected` 与 `gateway_failover`。直接选择的提供商模型只有一个目标，不 fail-over。
+资格检查先于策略和会话黏性，也适用于直接选择的模型。提供商的 `quota_limits` 指定额度窗口与允许使用百分比上限；观测达到上限即暂停。它是基于新鲜观察的准入阈值，不预估单次消费或预留预算；并发请求和采集间隔可能使供应商实际使用越过阈值。中立只读 `QuotaSource` 返回 `Known`、`Unknown`、`Stale` 或 `Unsupported`，已知／过期状态可保留窗口和显式可用性。窗口包含适用的提供商模型 ID、实际使用百分比、重置时间、观察时间和有效期。gateway 不采集网络额度、不持久化、不修改来源；source 的 snapshot 必须是非阻塞读取。窗口只约束其声明适用的模型。已过有效期或重置时间的观察不能据此推断额度恢复；有上限却缺少新鲜适用窗口时暂停，无上限的未知额度成员作为 smart 后备。显式 `available=false` 也暂停，不能伪造为 100% 使用。
+
+`smart` 在健康／额度资格过滤后，优先已绑定且仍合格的会话成员，再按最紧窗口的归一化余量 `min((cap-used)/cap)` 降序排列；未配置 cap 的新鲜窗口按 100% 计算，相同余量保留成员顺序，未知额度排在已知成员之后。`order` 使用配置顺序；`rotate` 轮询；`weight` 使用平滑加权轮询。轮询和权重在新会话或关闭黏性时分配，已有合格会话不会推进分配计数。成员或权重变化会重置轮询／权重状态，不迁移旧余额。
+
+调用方用 `SessionIdentity { namespace, id }` 显式注入会话身份，路由记录键与 gateway ID 由当前目标补足。没有会话 ID 时不从 prompt、HTTP headers 或 Harness 私有内容猜测。只有显式业务 Completed 且传输成功后才绑定，替补成功后更新绑定；失败、incomplete、取消和断流不建立绑定。此判定不依赖是否注入 analytics sink。绑定只在运行期的共享 `SchedulingState` 内保存。直接模型仍受健康与额度检查，但不建立路由黏性。模型路由请求携带非空 `previous_response_id` 或 `conversation` 时在转换和派发前拒绝，要求调用方提供完整历史；直接选择提供商模型仍保留协议原有状态引用契约。
+
+fail-over 只在尚未转发任何响应时发生。429 与结构化 402 额度错误（error.code/type 为 `insufficient_quota`、`usage_limit_reached` 或 `quota_exceeded`）按 Retry-After 冷却，缺省 60 秒、至多 24 小时；5xx、连接／传输失败与超时采用 5 秒健康冷却；提交后发生传输故障只冷却后续请求，不切换当前流。HTTP 错误没有可靠窗口作用域，因此该冷却按提供商实例生效，区别于额度快照按模型过滤窗口。冷却期间所有路由和直接调用都不穿透；没有合格成员时返回 429 与最早 Retry-After，纯粹缺少必要额度事实时返回 503。重置到期只允许重新读取新鲜观察，不视为满额。冷却期满仅放行一个探测，RAII permit 在取消、失败和正常退出时释放，真正 Completed 后恢复正常排序；探测遭遇相同临时故障会重新冷却。
+
+403、请求类 4xx、取消与已开始转发后的中断结束请求。成功 HTTP headers 一经交付即提交；200 SSE 内后续出现的额度错误或业务失败也不切换。普通认证的 401 结束；`CodexSubscription` 的 401 在提交前调用 resolver.refresh 一次，只有相同 account_id 的凭据可重发。永久认证失效或重发仍为 401 时调用 invalidate，允许下一个成员；临时续期失败可尝试下一成员，但不标记会话永久失效。provider 每次调用只执行一次尝试，401 恢复由 gateway 显式组织。所有候选尝试失败时保留最后一个上游状态和正文，有健康／额度等待事实时附加当前候选最早 Retry-After。该时间表示重新检查的机会，不保证来源已刷新或额度已恢复。每个成员尝试各有一条 analytics，401 恢复保留该成员最终 exchange；tracing 记录首次 401 与切换，日志没有正文和认证值。
+
+`Runner::start_with_scheduling` 注入共享 `SchedulingState`、只读 source 和可选会话身份；现有 start／start_with_analytics 是无额度来源、无会话身份的便捷入口，使用同一调度实现。应用应跨 Runner 持有状态。健康状态按 gateway ID 与 provider ID 隔离；配置的认证身份变化、换号或退出登录时，调用 `invalidate_provider` 清旧冷却与绑定并递增 epoch，普通 token refresh 不调用。Runner 捕获启动时的 epoch，旧 Runner 和迟到结果不能准入或改写新身份状态；额度来源也必须由应用按同一 gateway／认证绑定隔离。
 
 Codex／DSH 原生运行时的装配方可额外注册其执行模型字符串为 alias，并映射到已选的提供商模型记录；gateway 不据模型名推断提供商，不解析 app-server／ACP，也不读取 huihua 历史。执行模式由 application 与 adapter 负责注入网关入口和临时本地 token；是否同时保留其它运行时入口由调用方决定。审批、回答、取消 turn 与原生会话恢复不属于本 unit。
 

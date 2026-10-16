@@ -275,9 +275,6 @@ impl CoreRuntime {
             name: "默认网关".into(),
             providers: Vec::new(),
             routes: Vec::new(),
-            failover: crate::config::FailoverPolicy {
-                mode: crate::config::FailoverMode::Disabled,
-            },
         };
         let existing = self.gateways.iter().position(|item| item.id == gateway_id);
         if existing.is_none() && gateway_id != "default" {
@@ -337,6 +334,7 @@ impl CoreRuntime {
                     }
                     return Err(error);
                 }
+                self.sync_scheduling(std::slice::from_ref(&previous));
                 if execution_invalidated {
                     self.for_each_session(Self::invalidate_execution)?;
                 }
@@ -392,9 +390,6 @@ impl CoreRuntime {
                         name: "默认网关".into(),
                         providers: Vec::new(),
                         routes: Vec::new(),
-                        failover: crate::config::FailoverPolicy {
-                            mode: crate::config::FailoverMode::Disabled,
-                        },
                     });
                 }
                 self.runtime_instances.retain(|item| item.id != runtime.id);
@@ -495,7 +490,7 @@ impl CoreRuntime {
 
     pub(super) fn persist(&self) -> Result<(), RuntimeError> {
         self.repository.store(&crate::repository::PersistedConfig {
-            schema_version: 8,
+            schema_version: crate::repository::CURRENT_SCHEMA_VERSION,
             model_templates: self.model_templates.clone(),
             gateways: self.gateways.clone(),
             runtime_instances: self.runtime_instances.clone(),

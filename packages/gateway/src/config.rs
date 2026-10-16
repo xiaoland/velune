@@ -35,23 +35,27 @@ pub struct ProviderDefinition {
     pub endpoint: String,
     pub credential_ref: Option<String>,
     pub models: Vec<ProviderModel>,
+    pub quota_limits: Vec<QuotaLimit>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub enum FailoverMode {
-    Disabled,
+pub struct QuotaLimit {
+    pub window_id: String,
+    pub max_used_percent: u8,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct FailoverPolicy {
-    pub mode: FailoverMode,
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum RoutingStrategy {
+    Smart,
+    Order,
+    Rotate,
+    Weight,
 }
 
-/// An ordered set of provider models selected under one record key. The
-/// gateway tries members in order and fails over before anything reaches the
-/// caller; a provider model selected directly never fails over.
+/// Provider models selected by one routing strategy and optional session binding.
+/// Fail-over happens before delivery; directly selected models never fail over.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ModelRoute {
@@ -59,6 +63,11 @@ pub struct ModelRoute {
     pub name: String,
     /// Provider model record keys, in priority order.
     pub members: Vec<String>,
+    pub strategy: RoutingStrategy,
+    /// Keep an eligible successful member for the caller's explicit session.
+    pub sticky: bool,
+    /// Positive weights keyed by member record key; empty for other strategies.
+    pub weights: BTreeMap<String, u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -68,7 +77,6 @@ pub struct GatewayConfig {
     pub name: String,
     pub providers: Vec<ProviderDefinition>,
     pub routes: Vec<ModelRoute>,
-    pub failover: FailoverPolicy,
 }
 
 impl GatewayConfig {
@@ -89,6 +97,14 @@ impl GatewayConfig {
                 || providers.insert(&provider.id, provider).is_some()
             {
                 return Err("provider is unsupported or duplicated");
+            }
+            let mut windows = BTreeSet::new();
+            if provider.quota_limits.iter().any(|limit| {
+                limit.window_id.is_empty()
+                    || limit.max_used_percent > 100
+                    || !windows.insert(&limit.window_id)
+            }) {
+                return Err("invalid provider quota limits");
             }
             for binding in &provider.models {
                 if binding.record_key.is_empty()
@@ -116,6 +132,18 @@ impl GatewayConfig {
             }
             if route.name.trim().is_empty() || route.members.is_empty() {
                 return Err("model route needs a name and members");
+            }
+            if route.strategy == RoutingStrategy::Weight {
+                if route.weights.len() != route.members.len()
+                    || route
+                        .members
+                        .iter()
+                        .any(|key| route.weights.get(key).is_none_or(|value| *value == 0))
+                {
+                    return Err("weighted route requires a positive weight for every member");
+                }
+            } else if !route.weights.is_empty() {
+                return Err("weights only apply to weighted routes");
             }
             let mut members = BTreeSet::new();
             let mut protocol = None;

@@ -13,6 +13,26 @@ impl CoreRuntime {
                 .iter()
                 .any(|event| event["type"] == "result" && event["ok"] == true)
         }) {
+            let staged_id = self
+                .subscription_login
+                .as_ref()
+                .ok_or_else(|| RuntimeError::invalid("subscription login missing"))?
+                .credential_id();
+            let owner = self
+                .authentication_provider
+                .as_ref()
+                .ok_or_else(|| RuntimeError::invalid("login provider missing"))?;
+            let duplicate = self.gateways.iter().any(|gateway| gateway.providers.iter().any(|provider| {
+                if gateway.id == owner.0 && provider.id == owner.1 { return false; }
+                matches!(&provider.authentication.material, AuthenticationMaterial::CodexSubscription { credential_id, .. } if crate::subscription_auth::same_subscription(&self.options.home_directory, staged_id, credential_id))
+            }));
+            if duplicate {
+                self.subscription_login = None;
+                self.authentication_provider = None;
+                return Err(RuntimeError::invalid(
+                    "此订阅已绑定另一个提供商；请使用该提供商的模型或登录其他订阅。",
+                ));
+            }
             let previous = self.gateways.clone();
             let (gateway_id, provider_id) = self
                 .authentication_provider
@@ -51,6 +71,7 @@ impl CoreRuntime {
                 self.subscription_login = None;
                 return Err(error);
             }
+            self.sync_scheduling(&previous);
             if let Some(login) = self.subscription_login.as_mut() {
                 login.commit();
             }
@@ -199,6 +220,7 @@ impl CoreRuntime {
                     "来源已完成登录，但提供商配置保存失败；请检查配置目录后重试。",
                 ));
             }
+            self.sync_scheduling(&previous);
             self.for_each_session(Self::invalidate_execution)?;
             data["gateways"] = serde_json::to_value(self.public_gateways())?;
             data["executionInvalidated"] = Value::Bool(true);

@@ -68,6 +68,24 @@ pub(crate) struct Tracker {
     transport_outcome: Option<AnalyticsOutcome>,
 }
 impl Tracker {
+    pub(crate) fn new(protocol: velune_ai_provider::translation::LlmProtocol) -> SharedTracker {
+        Arc::new(Mutex::new(Self {
+            protocol,
+            metrics: ResponseMetrics::new(protocol),
+            started: None,
+            first_output_ms: None,
+            terminal_elapsed_ms: None,
+            status: None,
+            transport_outcome: None,
+        }))
+    }
+    pub(crate) fn completed(&self) -> bool {
+        self.transport_outcome == Some(AnalyticsOutcome::Completed)
+            && self.metrics.terminal == Some(ModelTerminal::Completed)
+            && self
+                .status
+                .is_some_and(|status| (200..300).contains(&status))
+    }
     pub(crate) fn begin(&mut self) {
         // A rejected authentication attempt has no model output. Its recovery
         // records the final exchange without reusing a closed SSE parser.
@@ -137,15 +155,7 @@ impl RequestAnalytics {
             sink,
             record,
             stopping,
-            tracker: Arc::new(Mutex::new(Tracker {
-                protocol,
-                metrics: ResponseMetrics::new(protocol),
-                started: None,
-                first_output_ms: None,
-                terminal_elapsed_ms: None,
-                status: None,
-                transport_outcome: None,
-            })),
+            tracker: Tracker::new(protocol),
         }
     }
 }

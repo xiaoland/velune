@@ -19,9 +19,6 @@ pub(crate) fn edit_provider(
                 name: "默认网关".into(),
                 providers: Vec::new(),
                 routes: Vec::new(),
-                failover: FailoverPolicy {
-                    mode: FailoverMode::Disabled,
-                },
             });
             gateways.len() - 1
         }
@@ -82,6 +79,7 @@ pub(crate) fn edit_provider(
                 endpoint: draft.endpoint,
                 authentication,
                 models: draft.models,
+                quota_limits: draft.quota_limits,
             };
             gateway.providers.retain(|p| p.id != draft.id);
             gateway.providers.push(provider);

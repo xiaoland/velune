@@ -142,8 +142,9 @@ pub struct CoreRuntime {
     turn_failures:
         std::cell::RefCell<BTreeMap<PathBuf, (velune_agent_runtime::activity::Signature, bool)>>,
     analytics: Arc<crate::analytics::AnalyticsStore>,
-    /// Rate-limited providers, kept across the gateway runners of turns.
-    route_health: velune_gateway::RouteHealth,
+    /// Shared admission, recovery and session affinity across gateway runners.
+    scheduling_state: velune_gateway::SchedulingState,
+    subscription_quota: Arc<crate::subscription_quota::SubscriptionQuota>,
     repository: crate::repository::Repository,
 }
 
@@ -185,6 +186,10 @@ impl CoreRuntime {
         let composer_drafts = repository.load_composer_drafts()?;
         let organization = repository.load_conversation_organization()?;
         let (resource_templates, resource_bindings) = repository.load_resource_library()?;
+        let subscription_quota = crate::subscription_quota::SubscriptionQuota::new(
+            options.home_directory.clone(),
+            &persisted.gateways,
+        );
         Ok(Self {
             options,
             collaboration: Default::default(),
@@ -224,10 +229,31 @@ impl CoreRuntime {
             sub_agent_failures: Default::default(),
             turn_failures: Default::default(),
             analytics,
-            route_health: Default::default(),
+            scheduling_state: Default::default(),
+            subscription_quota,
         })
     }
 
+    fn sync_scheduling(&self, previous: &[GatewayConfig]) {
+        for gateway in previous {
+            for provider in &gateway.providers {
+                let current = self
+                    .gateways
+                    .iter()
+                    .find(|g| g.id == gateway.id)
+                    .and_then(|g| g.providers.iter().find(|p| p.id == provider.id));
+                if current.is_none_or(|p| {
+                    p.authentication != provider.authentication
+                        || p.endpoint != provider.endpoint
+                        || p.protocol != provider.protocol
+                }) {
+                    self.scheduling_state
+                        .invalidate_provider(&gateway.id, &provider.id);
+                }
+            }
+        }
+        self.subscription_quota.configure(&self.gateways);
+    }
     fn turn_running(&self) -> bool {
         self.session.turn_running()
     }
@@ -403,6 +429,7 @@ impl CoreRuntime {
         {
             return Err(RuntimeError::invalid("runtime is busy"));
         }
+        self.subscription_quota.stop();
         self.collaboration.shutdown();
         let result = self.for_each_session(Self::shutdown_active);
         self.parked.clear();
