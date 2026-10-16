@@ -540,8 +540,19 @@ struct TranscriptTable: NSViewRepresentable {
         }
     }
 
+    /// A row as wide as the layout it shows, moved by `columnShift`.
     private func rowRect(_ index: Int) -> NSRect {
-        NSRect(x: 0, y: offsets[index], width: document?.bounds.width ?? width, height: heights[index])
+        NSRect(x: columnShift, y: offsets[index], width: width, height: heights[index])
+    }
+
+    /// Between reflows (see `clipFrameChanged`) rows keep the layout of
+    /// `width`; its column stays centred in the list as wide as it is now,
+    /// so a sliding sidebar or a dragged divider moves the text with it
+    /// instead of leaving it in place until the next reflow.
+    private var columnShift: CGFloat {
+        guard let shown = document?.bounds.width, shown != width else { return 0 }
+        let column = TranscriptRowLayout.column(for: width)
+        return floor((shown - column.width) / 2) - column.x
     }
 
     /// The row containing `y`, clamped to the list.
@@ -676,8 +687,9 @@ struct TranscriptTable: NSViewRepresentable {
         // A width that keeps changing (a divider or the window being dragged,
         // a sidebar sliding) reflows the text at most every `reflowInterval`:
         // laying text out again at each frame, in every pane, is what drops
-        // frames. In between, rows keep their layout. Once the width settles,
-        // the rest of the list is measured at it.
+        // frames. In between, rows keep their layout, centred anew
+        // (`columnShift`). Once the width settles, the rest of the list is
+        // measured at it.
         scheduleSettle()
         let elapsed = CACurrentMediaTime() - lastReflow
         guard elapsed >= Self.reflowInterval else {
