@@ -219,7 +219,7 @@ impl CoreRuntime {
         let ActiveState::Native(native) = &session.active_state else {
             return false;
         };
-        !native.running_sub_agents().is_empty()
+        !native.work().is_empty()
             || native.snapshot().is_some_and(|view| {
                 view.messages
                     .iter()
@@ -341,15 +341,23 @@ impl CoreRuntime {
                 });
             }
             if let ActiveState::Native(native) = &session.active_state {
-                active.extend(native.running_sub_agents().into_iter().map(|sub_agent| {
-                    crate::ActiveConversation {
-                        context_runtime_id: view.conversation.runtime_id.clone(),
-                        conversation_id: sub_agent,
-                        run_state: crate::conversation::RunState::Running,
-                        pending_interactions: 0,
-                        parent_conversation_id: Some(id.into()),
-                    }
-                }));
+                active.extend(
+                    native
+                        .work()
+                        .into_iter()
+                        .map(|task| crate::ActiveConversation {
+                            context_runtime_id: view.conversation.runtime_id.clone(),
+                            conversation_id: task.conversation_id,
+                            run_state: match task.state {
+                                velune_agent_runtime::work::BackgroundState::Stopping => {
+                                    RunState::Stopping
+                                }
+                                _ => RunState::Running,
+                            },
+                            pending_interactions: 0,
+                            parent_conversation_id: Some(id.into()),
+                        }),
+                );
             }
         }
         for mut item in self.elsewhere_conversations() {

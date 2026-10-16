@@ -460,7 +460,9 @@ impl NativeSession {
                 .as_ref()
                 .map(|snapshot| snapshot.conversation.runtime_id.clone())
                 .unwrap_or_default();
-            let sub_agent = self.sub_agents.contains(&format!("{runtime_id}:{thread}"));
+            self.codex_track_thread(thread, method, params);
+            let sub_agent = self.codex_threads.contains_key(thread)
+                || self.sub_agents.contains(&format!("{runtime_id}:{thread}"));
             match record.get("id") {
                 Some(_) if sub_agent && record.get("method").is_some() => {
                     return self.codex_request(&record, true);
@@ -584,6 +586,62 @@ impl NativeSession {
             }
             "error" => self.notice("Codex 返回执行诊断；原始错误内容不写入日志。"),
             _ => {}
+        }
+        Ok(())
+    }
+    /// Follows another thread of this app-server: a native sub-agent the
+    /// conversation started, or one of theirs, works while its status is
+    /// active. Tracking every thread, not only those the spawning item
+    /// names, does not depend on which of their events arrives first.
+    fn codex_track_thread(&mut self, thread: &str, method: &str, params: &Value) {
+        match method {
+            "thread/status/changed" => {
+                let status = &params["status"];
+                if status["type"] != "active" {
+                    self.codex_threads.remove(thread);
+                    return;
+                }
+                let flags = status["activeFlags"].as_array();
+                let flagged = |flag: &str| flags.is_some_and(|f| f.iter().any(|v| v == flag));
+                let entry = self.codex_threads.entry(thread.into()).or_default();
+                if entry.state != BackgroundState::Stopping {
+                    entry.state = if flagged("waitingOnApproval") {
+                        BackgroundState::AwaitingApproval
+                    } else if flagged("waitingOnUserInput") {
+                        BackgroundState::AwaitingInput
+                    } else {
+                        BackgroundState::Running
+                    };
+                }
+            }
+            "turn/started" => {
+                self.codex_threads.entry(thread.into()).or_default().turn =
+                    params["turn"]["id"].as_str().map(str::to_owned);
+            }
+            "turn/completed" => {
+                if let Some(entry) = self.codex_threads.get_mut(thread) {
+                    entry.turn = None;
+                }
+            }
+            _ => {}
+        }
+    }
+    /// Interrupts each sub-agent thread's turn; interrupting the
+    /// conversation's own turn does not stop them. They end when their
+    /// status turns idle.
+    pub(super) fn codex_stop_background(&mut self) -> Result<()> {
+        let turns = self
+            .codex_threads
+            .iter()
+            .filter(|(_, entry)| entry.state != BackgroundState::Stopping)
+            .filter_map(|(thread, entry)| Some((thread.clone(), entry.turn.clone()?)))
+            .collect::<Vec<_>>();
+        for (thread, turn) in turns {
+            self.rpc
+                .request("turn/interrupt", &json!({"threadId":thread,"turnId":turn}))?;
+            if let Some(entry) = self.codex_threads.get_mut(&thread) {
+                entry.state = BackgroundState::Stopping;
+            }
         }
         Ok(())
     }
@@ -1013,4 +1071,19 @@ fn codex_input(input: &crate::TurnInput) -> Vec<Value> {
                 .map(|image| json!({"type":"localImage", "path":image.path})),
         )
         .collect()
+}
+
+/// Another thread of the conversation's app-server while it works.
+pub(super) struct CodexThread {
+    pub(super) state: BackgroundState,
+    /// Its running turn, which stopping it interrupts.
+    turn: Option<String>,
+}
+impl Default for CodexThread {
+    fn default() -> Self {
+        Self {
+            state: BackgroundState::Running,
+            turn: None,
+        }
+    }
 }

@@ -1,5 +1,6 @@
 //! Native control protocols. Historical evidence is acquired separately through huihua.
 use crate::conversation::*;
+use crate::work::{BackgroundState, BackgroundTask};
 use serde_json::{Value, json};
 use std::{
     collections::BTreeMap,
@@ -146,6 +147,9 @@ pub struct NativeSession {
     /// Conversations of the native sub-agents this conversation's tool
     /// calls started; their later events belong to this conversation.
     sub_agents: std::collections::BTreeSet<String>,
+    /// Codex threads of this app-server besides the conversation's own,
+    /// by thread id, while they work.
+    codex_threads: BTreeMap<String, codex::CodexThread>,
     claude_requires_action: bool,
     claude_stream_id: Option<String>,
     /// The model and context tokens of the turn's latest reply.
@@ -238,6 +242,7 @@ impl NativeSession {
             claude_result: None,
             claude_tasks: std::collections::BTreeSet::new(),
             sub_agents: std::collections::BTreeSet::new(),
+            codex_threads: BTreeMap::new(),
             claude_requires_action: false,
             claude_stream_id: None,
             claude_context: None,
@@ -519,6 +524,7 @@ impl NativeSession {
             gateway.endpoint = tunnel.endpoint().to_owned();
             self.tunnel = Some(tunnel);
         }
+        self.codex_threads.clear();
         self.rpc = Self::spawn_rpc(
             &active,
             self.native_selection.as_ref(),
@@ -587,6 +593,7 @@ impl NativeSession {
 
     fn fail_connection(&mut self) {
         self.rpc.shutdown();
+        self.codex_threads.clear();
         self.failed = true;
         self.settle(RunState::Failed);
         self.notice("运行时控制连接已终止，请重新连接；已有消息仍保留。");
@@ -595,12 +602,44 @@ impl NativeSession {
     pub fn snapshot(&self) -> Option<&ConversationSnapshot> {
         self.snapshot.as_ref()
     }
-    /// Native sub-agents running now, as this session's events tell; Codex's
-    /// are known from their threads' writer locks instead.
-    pub fn running_sub_agents(&self) -> Vec<String> {
+    /// The work this session's runtime process does besides the turn, as
+    /// its events tell: the sub-agents Codex runs as other threads of the
+    /// app-server, Claude Code's unfinished tasks.
+    pub fn work(&self) -> Vec<BackgroundTask> {
         match self.config.kind {
-            NativeKind::ClaudeCode => self.claude_running_sub_agents(),
-            NativeKind::Codex | NativeKind::DeepSeek => Vec::new(),
+            NativeKind::Codex => {
+                let Some(runtime_id) = self
+                    .snapshot
+                    .as_ref()
+                    .map(|snapshot| &snapshot.conversation.runtime_id)
+                else {
+                    return Vec::new();
+                };
+                self.codex_threads
+                    .iter()
+                    .map(|(thread, entry)| BackgroundTask {
+                        conversation_id: format!("{runtime_id}:{thread}"),
+                        state: entry.state,
+                    })
+                    .collect()
+            }
+            NativeKind::ClaudeCode => self
+                .claude_running_sub_agents()
+                .into_iter()
+                .map(|conversation_id| BackgroundTask {
+                    conversation_id,
+                    state: BackgroundState::Running,
+                })
+                .collect(),
+            NativeKind::DeepSeek => Vec::new(),
+        }
+    }
+    /// Ask the work besides the turn to stop. Claude Code's tasks belong to
+    /// its turn, which stays running until they end; stopping the turn stops them.
+    pub fn stop_background(&mut self) -> Result<()> {
+        match self.config.kind {
+            NativeKind::Codex => self.codex_stop_background(),
+            NativeKind::ClaudeCode | NativeKind::DeepSeek => Ok(()),
         }
     }
     pub fn busy(&self) -> bool {
@@ -630,6 +669,7 @@ impl NativeSession {
     }
     pub fn shutdown(&mut self) -> Result<()> {
         self.rpc.shutdown();
+        self.codex_threads.clear();
         self.interactions.clear();
         self.pending_rpc.clear();
         self.settle(RunState::Idle);
@@ -748,6 +788,7 @@ impl NativeSession {
     fn settle(&mut self, state: RunState) {
         if self.gateway_turn || self.config.kind == NativeKind::ClaudeCode {
             self.rpc.finish();
+            self.codex_threads.clear();
             self.tunnel = None;
             self.restart_required = true;
             self.gateway_turn = false;

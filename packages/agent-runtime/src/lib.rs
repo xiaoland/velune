@@ -20,6 +20,7 @@ pub mod management;
 pub mod mcp;
 pub mod native;
 pub mod version;
+pub mod work;
 
 pub mod transcript;
 
