@@ -261,3 +261,5 @@ HOME 修复已覆盖 application 登录/状态/退出/额度与 ai-provider 执�
 - 未为订阅模板预填模型：core 尚无订阅模型发现，模型仍由用户添加或从模型模板选取。
 
 验证：cargo fmt --check、workspace check、clippy（-D warnings）与 application／bindings `--no-default-features` check 无警告；`build-macos.sh --build-only` 成功。临时 Python 绑定脚本在隔离 home 中验证三项模板的组合与披露，Codex 模板以 Keep 保存为未登录 OAuth，Claude 模板空路径被拒、填入绝对路径后保存，API 模板以 key 保存。临时离屏渲染检查模板选择、三种新建编辑器、已有 Claude 提供商与提供商列表；临时代码与截图不提交。真实添加流程与登录交由用户验收。
+
+安装：变基到 main `10fb7ce` 后提交 63954c8，快进本地 main（共享检出当时位于其他分支，直接快进 main 引用），在独立工作树构建并安装到 `/Applications/Velune.app`（0.1 beta.1）；安装时没有运行中的 Velune。codesign 严格校验通过，构建清单 source_commit 与该提交一致、dirty 为 false。
