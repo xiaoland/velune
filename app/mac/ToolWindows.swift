@@ -710,11 +710,23 @@ extension ConversationWindowModel {
         }
     }
 
+    /// Whether showing or hiding a tool can act. The sub-agents in their own
+    /// place pop over from a toolbar button offered only while the focused
+    /// conversation has some.
+    func canToggle(_ kind: ToolWindowKind) -> Bool {
+        kind != .subAgents || tools[.subAgents].place != .builtIn || subAgentsPopover || !focused.store.subAgents.isEmpty
+    }
+
     /// Show a tool, or hide it when it shows. The outline in its own place
-    /// pops over or collapses the focused pane in place; the sub-agents pop over.
+    /// pops over or collapses the focused pane in place; the sub-agents pop
+    /// over, or, with their button customized out of the toolbar or the
+    /// toolbar hidden, move to a floating panel, since nothing would pop over.
     func toggle(_ kind: ToolWindowKind) {
         if kind == .subAgents, tools[.subAgents].place == .builtIn {
-            subAgentsPopover.toggle()
+            if subAgentsPopover { subAgentsPopover = false }
+            else if focused.store.subAgents.isEmpty { return }
+            else if hasToolbarItem("sub-agents") { subAgentsPopover = true }
+            else { tools.move(.subAgents, to: .floating); detached.bringForward(.subAgents) }
             return
         }
         if kind == .outline, tools[.outline].place == .builtIn {
@@ -725,6 +737,12 @@ extension ConversationWindowModel {
             return
         }
         if tools.isOpen(kind) { tools.hide(kind) } else { tools.show(kind); detached.bringForward(kind) }
+    }
+
+    /// The window's toolbar shows the item, as customized.
+    private func hasToolbarItem(_ id: String) -> Bool {
+        guard let toolbar = window?.toolbar, toolbar.isVisible else { return false }
+        return toolbar.items.contains { $0.itemIdentifier.rawValue == id }
     }
 
     /// A tool's places as a submenu, for AppKit menus.

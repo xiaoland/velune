@@ -12,9 +12,10 @@ struct DockAreaView: View {
         let kinds = window.tools.tools(in: side)
         let flexible = side == .bottom ? kinds : kinds.filter { $0 != .composer }
         VStack(spacing: 0) {
-            if flexible.count == 1, let kind = flexible.first {
-                tool(kind, titled: kinds.count > 1)
-            } else if !flexible.isEmpty {
+            // One split for any number of tools, so a tool keeps its identity as
+            // others come and go: the sidebar's list would otherwise be made anew,
+            // and the window toolbar drops the items it gave the old one.
+            if !flexible.isEmpty {
                 WeightedSplit(axis: side == .bottom ? .horizontal : .vertical, ids: flexible,
                               weights: flexible.map { window.tools[$0].weight },
                               commit: { weights in window.tools.setWeights(Dictionary(uniqueKeysWithValues: zip(flexible, weights))) }) { kind in
