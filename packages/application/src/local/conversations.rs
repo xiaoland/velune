@@ -440,8 +440,14 @@ impl CoreRuntime {
             .strip_prefix(&format!("{runtime_id}:"))
             .filter(|id| !id.is_empty())
             .ok_or_else(|| RuntimeError::invalid("conversation id"))?;
+        if runtime.type_id == "claude-code-2.1" && native_id.contains('/') {
+            return Err(RuntimeError::invalid(
+                "Claude Code 子 Agent 会话没有自己的名称",
+            ));
+        }
         // Re-resolve within the configured instance before invoking a native mutation.
-        let listed = self.conversation_summary(&runtime, id)?.is_some();
+        let listed_summary = self.conversation_summary(&runtime, id)?;
+        let listed = listed_summary.is_some();
         if !listed
             && runtime.type_id == "pi-1.0"
             && matches!(self.session.active_state, ActiveState::Pi)
@@ -523,6 +529,27 @@ impl CoreRuntime {
             )
             .map_err(|error| {
                 RuntimeError::context("Pi 原生会话修改失败；请检查来源目录与文件权限后重试", error)
+            })?;
+        } else if runtime.type_id == "claude-code-2.1" {
+            let summary = listed_summary.expect("listed conversation");
+            let cwd = summary
+                .cwd
+                .ok_or_else(|| RuntimeError::invalid("Claude Code 会话没有工作目录，无法重命名"))?;
+            let context = self.execution_context(&runtime)?;
+            velune_agent_runtime::native::rename_claude_session_at(
+                &setting_path(&runtime, "binary")?,
+                &context.agent_dir,
+                native_id,
+                Path::new(&cwd),
+                title.expect("Claude Code deletes no sessions"),
+                &context.target,
+                context.os_home.as_deref(),
+            )
+            .map_err(|error| {
+                RuntimeError::context(
+                    "Claude Code 会话重命名失败；请检查运行时版本与目录后重试",
+                    error,
+                )
             })?;
         } else {
             let context = self.execution_context(&runtime)?;

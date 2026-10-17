@@ -99,7 +99,7 @@ Node 与用户配置的 Pi／Codex／DSH 安装均为外部依赖。huihua 固�
 
 历史与实时事件归一为同一 conversation 契约，区分正文、推理、工具和系统通知；工具调用／结果按原生关联 ID 聚合，不能在调用出现时标成已完成。来源标题与时间在适配边界保留含义，文件名不充当显示标题。Codex 注入上下文与真实用户记录通过原生来源 metadata 区分，不使用正文字符串启发式。Pi 常规轮询只消费事件，在加载、已处理扩展命令、settled、取消和压缩边界重新同步权威上下文，处理原生分支整体替换；这些行为不新增会话存储。
 
-版本描述声明原生会话重命名／删除能力。Pi 管理通过固定 SDK 和来源范围内的原会话文件完成；Codex 使用独立 app-server 的 thread/name/set 与 thread/delete，不准备 AI 网关。Codex 名称与消息历史都由原生 thread API 提供。DSH 当前 ACP adapter 不开放会话管理，不把归档、本地隐藏或改标题投影代替持久操作。
+版本描述声明原生会话重命名／删除能力。Pi 管理通过固定 SDK 和来源范围内的原会话文件完成；Codex 使用独立 app-server 的 thread/name/set 与 thread/delete，不准备 AI 网关。Codex 名称与消息历史都由原生 thread API 提供。Claude Code 只能重命名：在会话的项目目录以 print 模式 `--resume` 启动独立子进程，发送 SDK 的 `rename_session`（`source=host`，带会话 ID），由 Claude Code 自己写入 `custom-title`；不发送轮次、不准备网关，子 Agent 会话不可重命名，也不提供删除。DSH 当前 ACP adapter 不开放会话管理，不把归档、本地隐藏或改标题投影代替持久操作。
 
 消息列表的可替换投影由 `transcript` 模块统一处理。它顺序消费权威消息替换、身份确认和执行状态，输出有序展示项、工作范围、大纲锚点及稳定展示身份；不保存正文副本或第二份会话日志。工作范围完整覆盖用户消息到下一用户消息前的响应，不因某条正文完成而截断；只有范围末条纯正文外露，工具、混合内容或系统通知末条也归入工作过程。运行与耗时只依据Harness生命周期。live→native 身份确认更新 canonical 引用，不改变展示身份。forward-only 允许后来的替换修订、删除和重排先前消息。本机观察到的执行起止可提供工作时长，纯历史读取不虚构结束时间。平台消费完整 typed 展示快照，只负责渲染、折叠、outline 可见性与滚动。
 

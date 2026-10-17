@@ -59,22 +59,11 @@ impl NativeSession {
     /// for the app's own HOME, where the user's own `claude` login lives. A
     /// managed or other HOME keeps its explicit, separately keyed directory.
     pub(super) fn claude_default_config(config: &NativeConfig) -> bool {
-        let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else {
-            return false;
-        };
-        let same = |left: &Path, right: &Path| {
-            left == right
-                || matches!(
-                    (std::fs::canonicalize(left), std::fs::canonicalize(right)),
-                    (Ok(left), Ok(right)) if left == right
-                )
-        };
-        config.execution.is_local()
-            && config
-                .os_home
-                .as_deref()
-                .is_none_or(|os_home| same(os_home, &home))
-            && same(&config.agent_dir, &home.join(".claude"))
+        claude_default_directory(
+            &config.agent_dir,
+            &config.execution,
+            config.os_home.as_deref(),
+        )
     }
     pub(super) fn claude_command(
         config: &NativeConfig,
@@ -903,6 +892,78 @@ fn claude_context(usage: &Value) -> Option<u64> {
     let read = usage["cache_read_input_tokens"].as_u64().unwrap_or(0);
     let write = usage["cache_creation_input_tokens"].as_u64().unwrap_or(0);
     Some(usage["input_tokens"].as_u64()? + read + write + usage["output_tokens"].as_u64()?)
+}
+
+/// `NativeSession::claude_default_config` for a directory, HOME and machine.
+fn claude_default_directory(
+    agent_dir: &Path,
+    execution: &crate::execution::ExecutionTarget,
+    os_home: Option<&Path>,
+) -> bool {
+    let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else {
+        return false;
+    };
+    let same = |left: &Path, right: &Path| {
+        left == right
+            || matches!(
+                (std::fs::canonicalize(left), std::fs::canonicalize(right)),
+                (Ok(left), Ok(right)) if left == right
+            )
+    };
+    execution.is_local()
+        && os_home.is_none_or(|os_home| same(os_home, &home))
+        && same(agent_dir, &home.join(".claude"))
+}
+
+/// Name a Claude Code session as the user would with `/rename`: a print-mode
+/// child resumes it in `cwd`, the folder Claude Code keeps it under, and
+/// takes the SDK's `rename_session` from the host. No turn is sent, so no
+/// model is asked; a process that has the session open reads the name from
+/// the transcript.
+pub fn rename_claude_session_at(
+    binary: &Path,
+    home: &Path,
+    id: &str,
+    cwd: &Path,
+    title: &str,
+    execution: &crate::execution::ExecutionTarget,
+    os_home: Option<&Path>,
+) -> Result<()> {
+    if !binary.is_absolute() || !home.is_absolute() || !cwd.is_absolute() {
+        return Err(Error::new("Claude Code 会话配置必须使用绝对路径"));
+    }
+    crate::version::check_version_at("claude-code-2.1", binary, None, execution, os_home)?;
+    let mut command = Command::new(binary);
+    command
+        .args([
+            "--print",
+            "--input-format",
+            "stream-json",
+            "--output-format",
+            "stream-json",
+            "--verbose",
+            "--resume",
+            id,
+        ])
+        .current_dir(cwd)
+        .env_remove("CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST")
+        .env_remove("VELUNE_GATEWAY_TOKEN");
+    // As for a turn: set even to the default, the variable hides the user's login.
+    if claude_default_directory(home, execution, os_home) {
+        command.env_remove("CLAUDE_CONFIG_DIR");
+    } else {
+        command.env("CLAUDE_CONFIG_DIR", home);
+    }
+    let mut rpc = rpc::RpcClient::spawn_at(command, execution, os_home)?;
+    let result = rpc
+        .claude_control(json!({"subtype":"initialize","hooks":{}}))
+        .and_then(|_| {
+            rpc.claude_control(
+                json!({"subtype":"rename_session","title":title,"source":"host","session_id":id}),
+            )
+        });
+    rpc.shutdown();
+    result.map(|_| ())
 }
 
 /// A new random (version 4) UUID, the form Claude Code names sessions by.

@@ -156,7 +156,7 @@ const VARIANTS: &[RuntimeVariant] = &[
             minimum: "2.1.286",
             below: "2.2.0",
         },
-        can_rename_conversations: false,
+        can_rename_conversations: true,
         can_delete_conversations: false,
         can_archive_conversations: false,
         projectless_directories: &[],
