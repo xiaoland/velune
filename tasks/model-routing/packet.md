@@ -240,3 +240,5 @@ HOME 修复已覆盖 application 登录/状态/退出/额度与 ai-provider 执�
 - 网关运行期冷却／探测状态没有 bindings 读取入口，页面不显示“冷却中”或逐次切换原因；切换记录在“分析”窗口。是否新增该入口待需求出现再定。
 
 验证：cargo fmt --check、cargo check --locked --workspace --all-features、clippy（-D warnings）与 application／bindings `--no-default-features` check 通过；`build-macos.sh --build-only` 零警告。临时 Python 绑定脚本在隔离 home 中验证：导出返回 Responses v1、Codex 地址与披露；订阅提供商保存为未登录 OAuth、带披露与“登录…”；错误地址被拒；API key 提供商额度 Unsupported；权重路由与 `window:18000` 80% 上限重开后保留。临时离屏渲染（仅 `.prohibited` 激活策略、隔离 home、不显示窗口）检查路由页、编辑 sheet、提供商编辑器、额度页与合成额度行，修正了脚注右对齐、权重不易辨认为可编辑和重复的未登录提示；临时代码与截图不提交。未进行真实登录、额度读取或模型请求，交由用户验收。
+
+安装：变基到 main `7fc9b31` 并改用组合选择订阅后，提交 cf6dc9e 快进合入本地 main，在独立工作树构建并安装到 `/Applications/Velune.app`（0.1 beta.1）；安装时没有运行中的 Velune。codesign 严格校验通过，构建清单 source_commit 与该提交一致、dirty 为 false。合并后复跑临时绑定脚本：导出组合为 Http／CodexResponses／CodexOAuth／CodexUsage，以 Keep 保存的订阅提供商为未登录 OAuth 并带披露，错误地址被拒，权重路由与上限重开后保留。设置窗口实际交互、真实订阅登录与额度显示待用户验收。
