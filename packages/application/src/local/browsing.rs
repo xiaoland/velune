@@ -616,7 +616,6 @@ impl CoreRuntime {
             let physical = gateway
                 .pi_binding_id(key, gateway.authentication_revision(key))
                 .map_err(RuntimeError::invalid)?;
-            let subscription = gateway.subscription(key);
             let session = if is_new {
                 None
             } else {
@@ -633,7 +632,6 @@ impl CoreRuntime {
                 session.map(Path::new),
                 Some(key),
                 Some(&physical),
-                subscription,
             )?;
             if is_new {
                 self.session

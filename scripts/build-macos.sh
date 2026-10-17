@@ -65,7 +65,7 @@ cat > "$app/Contents/Info.plist" <<'PLIST'
 </dict></plist>
 PLIST
 python3 - "$app/Contents/Resources/build-manifest.json" <<'PY'
-import hashlib,json,platform,plistlib,subprocess,sys
+import hashlib,json,platform,plistlib,re,subprocess,sys
 from pathlib import Path
 def cmd(*args): return subprocess.check_output(args,text=True).strip()
 version=Path('VERSION').read_text().strip()
@@ -74,7 +74,8 @@ plist=plistlib.loads(plist_path.read_bytes())
 plist['VeluneDisplayVersion']=version
 plist['CFBundleGetInfoString']=version
 plist_path.write_bytes(plistlib.dumps(plist))
-manifest={'source_commit':cmd('git','rev-parse','HEAD'),'dirty':bool(cmd('git','status','--porcelain')),'lock_sha256':hashlib.sha256(Path('Cargo.lock').read_bytes()).hexdigest(),'bindings_version':'0.1.0','uniffi_version':'0.32.2','ui_version':version,'simulation':False,'control_transport':'uniffi','language_contract':'typed','config_schema_version':8,'supported_modes':['conversation_projection','llm_gateway','runtime_instances','synthetic_preview'],'native_verified':False,'rust':cmd('rustc','--version'),'swift':cmd('xcrun','swiftc','--version'),'xcode':cmd('xcodebuild','-version'),'architecture':platform.machine(),'macos':platform.mac_ver()[0],'build_command':'bash scripts/build-macos.sh'}
+schema=int(re.search(r'const CURRENT_SCHEMA_VERSION: u32 = (\d+);', Path('packages/application/src/repository.rs').read_text()).group(1))
+manifest={'source_commit':cmd('git','rev-parse','HEAD'),'dirty':bool(cmd('git','status','--porcelain')),'lock_sha256':hashlib.sha256(Path('Cargo.lock').read_bytes()).hexdigest(),'bindings_version':'0.1.0','uniffi_version':'0.32.2','ui_version':version,'simulation':False,'control_transport':'uniffi','language_contract':'typed','config_schema_version':schema,'supported_modes':['conversation_projection','llm_gateway','runtime_instances','synthetic_preview'],'native_verified':False,'rust':cmd('rustc','--version'),'swift':cmd('xcrun','swiftc','--version'),'xcode':cmd('xcodebuild','-version'),'architecture':platform.machine(),'macos':platform.mac_ver()[0],'build_command':'bash scripts/build-macos.sh'}
 manifest['go']=cmd('go','version')
 manifest['relaykit_go_mod_sha256']=hashlib.sha256(Path('packages/ai-provider/relaykit-bridge/go.mod').read_bytes()).hexdigest()
 manifest['relaykit_go_sum_sha256']=hashlib.sha256(Path('packages/ai-provider/relaykit-bridge/go.sum').read_bytes()).hexdigest()

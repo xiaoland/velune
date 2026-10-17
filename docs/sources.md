@@ -326,6 +326,8 @@ S17 实施授权：用户决定全面切换 UniFFI，并要求现在开始拆分
 
 2026-10-17 用户认可继续解耦，要求先研究 Magpie 的 subscription 特性，下一步计划接入 Claude Code 订阅；实现路径尚待研究结果确认。
 
+用户随后明确回复：“同意。开始按这个方案进行解耦。我确认接受 Claude 订阅依赖本机 Claude Code，并纳入进程、会话和工具桥接。”据此授权 Rust 组合解耦与 Claude 执行后端实现，保持网关拥有聚合决策。
+
 ## S31
 
 2026-10-16 诊断一个 Codex 会话未读无法消除时（原因是标已读进行中保护未释放；该会话当时在 Codex 桌面端带子 Agent 运行），用户提出：“我们的 sub-agent / a2a 系列功能不完整，我建议优先补齐 UI 上的短板（未来还需要允许 agent runtime 互调用）”。用户从开发方列出的短板中选定第一批：子 Agent 概览、侧栏状态汇总、子会话导航，并一并解决父轮次结束后到达的子 Agent 审批。随后提醒：“虽然我认为一切都是 A2A，但是现在很多 agent runtime 的实践还有一套并行的 sub-agent 机制”。产品归 [PRD](prd/index.md#ai-网关与-agent-运行时配置)，实施归 [Agent 间协作任务](../tasks/agent-collaboration/packet.md)。

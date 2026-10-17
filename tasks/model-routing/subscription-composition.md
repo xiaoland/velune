@@ -32,3 +32,7 @@ Claude CLI若被接受，聚合、额度准入、冷却及候选选择仍在Velu
 
 
 工具执行边界的源码核对：Magpie 的 [CLI 参数构造](https://github.com/yetone/magpie/blob/dccfefdf722ea25f5cf2be1798d5686e43b89fbd/internal/gateway/claude_subscription.go#L1900-L1916) 关闭普通原生工具、使用指定MCP，并按请求开放 WebSearch；普通调用方工具挂起等待外部结果，不是任意执行 Bash。仍有可执行搜索及CLI自身认证／会话状态变化，因此已有HTTP提交闸门不能证明重试不会重复执行。Velune若接受桥接，应显式约束工具执行所有权并建立后端提交／取消契约，而非照搬Magpie的权限参数。
+
+## 已选方案与实施状态
+
+2026-10-17 用户明确接受本机 Claude Code 依赖、进程、会话和工具桥接，上述候选组合已作为 Rust lib 实施依据。品牌贯穿判断改为显式能力装配；Claude CLI 作为 gateway 的成员后端，独立于 Agent runtime。当前实现、合成人工证据与真实验证缺口归 [任务 packet](packet.md#组合解耦与-claude-后端实施2026-10-17)，跨单元契约归 [AI service 设计](../../docs/design/ai-service.md#订阅能力组合与执行后端)。研究表格是改动前证据，不代表当前仍有相同耦合。

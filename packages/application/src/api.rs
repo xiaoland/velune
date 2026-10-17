@@ -38,6 +38,10 @@ pub struct ProviderSummary {
     pub name: String,
     pub protocol: GatewayProtocol,
     pub endpoint: String,
+    pub execution_backend: ExecutionBackend,
+    pub request_profile: RequestProfile,
+    pub authentication_source: crate::ProviderAuthenticationSource,
+    pub quota_source: ProviderQuotaSource,
     pub authentication: crate::ProviderAuthenticationDescription,
     pub quota_limits: Vec<crate::config::QuotaLimit>,
     pub models: Vec<ProviderModel>,
@@ -63,6 +67,10 @@ impl From<&GatewayConfig> for GatewaySummary {
                     name: p.name.clone(),
                     protocol: p.protocol.clone(),
                     endpoint: p.endpoint.clone(),
+                    execution_backend: p.execution_backend.clone(),
+                    request_profile: p.request_profile,
+                    authentication_source: p.authentication.source(),
+                    quota_source: p.quota_source,
                     authentication: p.authentication.description(),
                     quota_limits: p.quota_limits.clone(),
                     models: p.models.clone(),
@@ -79,6 +87,10 @@ pub struct ProviderDraft {
     pub name: String,
     pub protocol: GatewayProtocol,
     pub endpoint: String,
+    pub execution_backend: ExecutionBackend,
+    pub request_profile: RequestProfile,
+    pub authentication_source: crate::ProviderAuthenticationSource,
+    pub quota_source: ProviderQuotaSource,
     pub models: Vec<ProviderModel>,
     pub quota_limits: Vec<crate::config::QuotaLimit>,
 }
@@ -1576,6 +1588,17 @@ impl Application {
         self.execute(
             "authentication",
             json!({"operation":"start","gatewayID":gateway_id,"providerID":provider_id}),
+            None,
+        )
+    }
+    pub fn authentication_logout(
+        &mut self,
+        gateway_id: String,
+        provider_id: String,
+    ) -> Result<GatewayUpdate, Error> {
+        self.execute(
+            "authentication",
+            json!({"operation":"logout","gatewayID":gateway_id,"providerID":provider_id}),
             None,
         )
     }

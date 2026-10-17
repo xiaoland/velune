@@ -186,7 +186,6 @@ pub(super) fn write_selection_file(
     config: &PiConfig,
     model_record_key: &str,
     physical_model_id: &str,
-    subscription_capability: bool,
 ) -> Result<(), RuntimeError> {
     let path = config
         .selection_file
@@ -195,8 +194,7 @@ pub(super) fn write_selection_file(
     let bytes = serde_json::to_vec(&json!({
         "provider": "velune-gateway",
         "modelRecordKey": model_record_key,
-        "physicalModelId": physical_model_id,
-        "subscriptionCapability": subscription_capability
+        "physicalModelId": physical_model_id
     }))?;
     config
         .execution

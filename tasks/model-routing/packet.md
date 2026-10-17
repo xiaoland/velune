@@ -172,3 +172,46 @@ transport owner 固定公开 Magpie 源码研究认证、请求、额度与品�
 
 
 研究结论与证据归 [订阅组合研究](subscription-composition.md)。Magpie 当前固定 HEAD `dccfefdf` 的 Claude 订阅执行、认证和额度均依赖 Claude Code CLI，不能作为直接订阅HTTP路径的证据。advisor确认聚合仍可归gateway，但CLI成员是实质执行后端扩展；候选为先解耦现有HTTP路径，或显式纳入CLI会话／工具桥。尚待用户选择Claude执行路径；未改产品源码或做真实调用。
+
+
+## 组合解耦与 Claude 后端实施（2026-10-17）
+
+用户明确确认实施并接受本机 Claude Code、进程、会话和工具桥。由于共享主工作区有其他任务正在修改runtime/application，本轮在附加的 subscription-composition worktree 从 deec45d 开始，不能覆盖或混入另一任务。transport负责gateway及既有ai-provider协议/认证恢复；claude_backend负责独立Claude执行与工具桥模块；codex_source负责application/bindings配置、CLI认证与额度；manual负责合成端到端验收；主执行者负责文档、跨边界整合与最终验证。advisor处理执行提交/取消与能力组合契约。
+
+验收边界：一订阅一provider；协议、backend、requestprofile、认证、额度由有效组合装配。Codex旧能力不退化；Claude使用独立配置目录和显式会话身份，CLI持有秘密与刷新，不读取用户现有登录。工具仅返回调用方执行，下一请求工具结果恢复，取消释放挂起与子进程；旧绑定结果无效，可能已执行的CLI请求不得透明重放。通过隔离HOME下合成CLI、回环HTTP/MCP与保存重开验证，不新建自动tests、不调用真实CLI/认证/模型，不修改Mac。最终fmt/check/clippy/build/configuration-only检查；当前用户工作区并行改动另行保留。
+
+实施已贯通 ai-provider、gateway、application 和 bindings。配置 schema 10 使用同一常量读写，构建 manifest 从此常量提取；旧普通配置按既有 hard-cutoff 重置。Pi 原先按路由中任意订阅整体剥离参数的 hook 已删除，请求限制由实际选中成员的 profile 拥有。Claude CLI 使用独立运行时维持跨 Runner 会话，工具只通过私有 MCP 交给调用方；取消与绑定失效终止进程，显式新用户轮可恢复，取消的旧调用 ID 仍拒绝。
+
+合成人工结果：新组合先完成 17 组，再补取消恢复 1 组，共 18 组通过。取消补验覆盖 pending 时不能开启新轮、原 PID/MCP 退出、新轮新 PID 成功、迟到旧工具结果返回 409 且 CLI/HTTP fallback 计数均不增加。Codex/application 24 组、智能调度 13 组、analytics 14 组与原字节保真回归通过。59 份人工脚本及合成 CLI 的 Python AST 通过。没有真实 Claude CLI、登录、模型或额度调用；真实版本兼容和订阅资格仍待真实验收，不将合成结果等同供应商支持。
+
+全工作区 `cargo fmt --check`、`cargo check --locked --offline --workspace --all-features`、`cargo clippy --locked --offline --workspace --all-targets --all-features -- -D warnings`、`cargo build --locked --offline -p velune-bindings` 通过；application/bindings 的 no-default-features 检查通过。更改 Markdown 相对文件链接、build-macos shell 语法与 diff 检查通过。仅调整构建 manifest 的 schema 来源，没有构建或安装 Mac app。
+
+补充边界：外层 Harness 真正结束时调用 `finish_user_turn`，终止仍运行或挂起工具的交互，保留 Completed idle 进程；不把普通运行时准备当作结束。登录 worker 在取消、未提交丢弃或配置提交失败时有界执行官方 logout，再删除暂存目录；结果已经送达但尚未提交时取消也立即触发清理。两组清理合成验收通过，证明原配置与原目录保留、暂存 logout/删除发生且取消不依赖应用对象销毁。最终生命周期修复后全工作区 fmt/check/clippy 和 bindings build 再次通过。
+
+最终新增组合证据共 22 组：先前 17 组、最后 `--case cancel` 的取消/迟到结果与 finish Pending/Completed 共 3 组、`--case auth-cleanup` 2 组。Pending 结束后原 PID 退出且新轮成功，Completed 结束后跨 Runner 仍复用同 PID。清理 case 仅在临时源码副本插入发送结果后的观测 marker，以精确复现“成功已到但尚未提交”，不改变产品分支。最终脚本 AST 与 diff 检查通过。
+
+实现提交 `57bf2ce6454fad2313f6cfa46468e16c9989ffce` 后执行默认 compile-only 的 `manual-codex-subscriptions-live.py`：完整冻结该提交并成功编译 runner，本地 SSE parser 5 例和 usage 白名单检查通过，退出码 0、real_requests=0；未读取认证、刷新或发起真实调用。实现留在 `feat/subscription-composition` 独立工作树，未合并共享主工作区的其他任务、未 push 或创建 PR。
+
+## Claude Code 真实接入推进（2026-10-17）
+
+用户要求继续推进订阅接入。本轮沿独立组合分支核对本机官方 CLI、准备 application 登录与 gateway 端到端人工 runner，使用新隔离配置目录，不读取或复制既有登录令牌。只进行有界文本/工具往返及一次额度观测；登录由用户在官方浏览器完成。主工作区目前 main 已有其他提交，不将旧分支覆盖主工作区。现有合成验收不能代替真实协议兼容证据。
+
+本机空 HOME 下探测 CLI 版本为 2.1.292；auth login/status 的本机 help 与当前官方 CLI reference 一致。状态 JSON 只白名单输出登录状态、认证方式、目录一致性与字段名，不输出账户内容。
+
+真实接入 runner 已冻结 `da991c2b1942f9ec35e89ecf2cf849fcea0c2783` 编译，通过 3 个本地 SSE 解析自检。通过 application 启动官方 CLI 登录，模型请求为 0；等待用户完成浏览器授权。脚本只输出白名单阶段、退出状态与计量，不输出原始 CLI 内容或账户信息。登录不等于推理、工具或额度已验收。
+
+首次真实登录：用户完成浏览器授权，但报告找不到钥匙串 unknown，application 返回 LOGIN_NOT_COMPLETED，模型请求为 0。环境判别仅调用 `/usr/bin/security default-keychain -d user` 查询路径元数据：真实 HOME exit=0 且有路径；临时 HOME 在保留 USER/LOGNAME 时仍 exit=1，无路径。未读取钥匙串条目或秘密。本机 2.1.292 发布二进制显示 Keychain service 随 CLAUDE_CONFIG_DIR 的 SHA256 前八位区分，账号名取 USER 或 os.userInfo().username；不能套用旧版 unknown 账号 fallback 报告。修正方向为保留系统 HOME/身份、只隔离 Claude 配置目录，并对认证失败增加安全阶段诊断。此结果证明伪 HOME 破坏默认钥匙串发现，登录恢复仍需真实复验。
+
+HOME 修复已覆盖 application 登录/状态/退出/额度与 ai-provider 执行，保持环境白名单、配置目录和工作目录独立。新增固定 phase/reason/exit_code 诊断，未扩展 UniFFI 类型。合成 cancel/finish 3 组及新增认证诊断 3 组通过；每个 CLI 子命令验证父 HOME/USER/LOGNAME 保留及独立配置/cwd，故障输出含 sentinel 仍不泄露。新增组合累计 25 组。live runner 的 9 项解析/诊断与 2 项失败输出自检通过。fmt、workspace check/clippy、bindings build 与 no-default-features check 均通过。
+
+修复提交 `aca0a8e938c3a0fe78183f48b4f276a6ce6bde91` 冻结后第二次真实官方登录成功：application 返回 login_complete/configured=true，模型请求 0，未读取或复制 token。由此补足真实登录证据；下一步独立执行文本、工具、额度阶段。
+
+同一冻结提交的真实文本阶段只发送 1 次网关请求：CLI 结构化 rate_limit 映射为 HTTP 429，analytics=Failed、用量未报告，没有自动重试。随后独立 quota 阶段仅触发 1 次观测，Fresh，5 小时窗口已用 100%、周窗口已用 53%，problem=false；未发送工具验收请求。此证据支持登录与当前 CLI 额度输出解析成功，以及限流错误传播，不证明正常文本或工具往返成功。
+
+用户明确选择保留登录，额度恢复后继续。本轮停止真实请求，不退出该订阅、不删除验收配置。待完成：用相同专用验收目录先执行 live runner `--run --stage text`，成功后执行 `--run --stage tool`，不重新登录、不自动重放失败请求；仍不扩展前端或合并主工作区。本轮模型网关请求共 1 次（429）、显式额度采样 1 次；CLI 内部网络次数未计量。
+
+## 合并回 main（2026-10-17）
+
+用户明确授权将订阅组合 worktree 合并回主工作区 main。合并前 main=`f10565c`、订阅分支=`008c67e`，主工作区干净。三处文本冲突按双方契约解决：普通配置 schema 10 与主分支 organization schema 2 共存；保留运行时 compatible_versions 文档并更新普通 schema；人工 Swift fixture 保留主分支 pi-1.0 ID 并补齐四个 provider 组合参数。未改 Mac UI、生成 Swift 或安装应用，未触发真实认证/模型/额度请求；保留已登录订阅，真实文本/工具验收继续等待额度恢复。
+
+合并树验证通过：cargo fmt --check、workspace all-features check、workspace all-targets/all-features clippy -D warnings、bindings build；合成订阅组合默认 20 组全通过（real_cli_executed=false），61 份人工脚本 AST 通过。未重复已经通过且未受冲突影响的真实调用或其他回归。

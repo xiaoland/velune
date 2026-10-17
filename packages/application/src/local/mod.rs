@@ -75,7 +75,6 @@ struct PiState {
     busy: bool,
     turn_started: bool,
     physical_model_id: Option<String>,
-    subscription_capability: bool,
 }
 #[derive(Default)]
 enum ActiveState {
@@ -125,7 +124,7 @@ pub struct CoreRuntime {
     /// A resource save could not reach its runtimes because one was busy; retried once idle.
     resource_sync_due: bool,
     conversation_browser_preferences: crate::config::ConversationBrowserPreferences,
-    subscription_login: Option<crate::subscription_auth::Login>,
+    subscription_login: Option<crate::provider_login::Login>,
     authentication_provider: Option<(String, String)>,
     runtime_instances: Vec<RuntimeInstance>,
     next_turn_runtime_id: Option<String>,
@@ -146,6 +145,7 @@ pub struct CoreRuntime {
     analytics: Arc<crate::analytics::AnalyticsStore>,
     /// Shared admission, recovery and session affinity across gateway runners.
     scheduling_state: velune_gateway::SchedulingState,
+    execution_backends: velune_gateway::ExecutionBackends,
     subscription_quota: Arc<crate::subscription_quota::SubscriptionQuota>,
     repository: crate::repository::Repository,
 }
@@ -234,6 +234,7 @@ impl CoreRuntime {
             turn_failures: Default::default(),
             analytics,
             scheduling_state: Default::default(),
+            execution_backends: Default::default(),
             subscription_quota,
         })
     }
@@ -250,7 +251,11 @@ impl CoreRuntime {
                     p.authentication != provider.authentication
                         || p.endpoint != provider.endpoint
                         || p.protocol != provider.protocol
+                        || p.execution_backend != provider.execution_backend
+                        || p.request_profile != provider.request_profile
                 }) {
+                    self.execution_backends
+                        .invalidate_provider(&gateway.id, &provider.id);
                     self.scheduling_state
                         .invalidate_provider(&gateway.id, &provider.id);
                 }
@@ -377,6 +382,10 @@ impl CoreRuntime {
     }
 
     fn finish_managed_turn(&mut self) -> Result<(), RuntimeError> {
+        if let Some((gateway_id, session)) = self.backend_session_identity() {
+            self.execution_backends
+                .finish_user_turn(&gateway_id, &session);
+        }
         // Pi confirms durable message identities only during the settled RPC resync.
         let synchronized =
             if matches!(self.session.active_state, ActiveState::Pi) && !self.session.pi.busy {
@@ -422,7 +431,7 @@ impl CoreRuntime {
             || self
                 .subscription_login
                 .as_ref()
-                .is_some_and(crate::subscription_auth::Login::is_running)
+                .is_some_and(crate::provider_login::Login::is_running)
         {
             return Err(RuntimeError::invalid("runtime is busy"));
         }
@@ -434,6 +443,7 @@ impl CoreRuntime {
             return Err(RuntimeError::invalid("runtime is busy"));
         }
         self.subscription_quota.stop();
+        self.execution_backends.shutdown();
         self.collaboration.shutdown();
         let result = self.for_each_session(Self::shutdown_active);
         self.parked.clear();
@@ -508,7 +518,7 @@ impl CoreRuntime {
             || self
                 .subscription_login
                 .as_ref()
-                .is_some_and(crate::subscription_auth::Login::is_running))
+                .is_some_and(crate::provider_login::Login::is_running))
             && !matches!(
                 action,
                 "authentication"
@@ -645,3 +655,10 @@ impl CoreRuntime {
 }
 
 use velune_agent_runtime::authentication;
+
+impl Drop for CoreRuntime {
+    fn drop(&mut self) {
+        self.subscription_quota.stop();
+        self.execution_backends.shutdown();
+    }
+}

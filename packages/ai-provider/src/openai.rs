@@ -2,7 +2,10 @@
 //!
 //! This adapter accepts an already assembled client and credential. It does not
 //! read provider configuration, resolve credentials, retry, or choose a model.
-use crate::config::{ProtocolConfig, ProviderConfig, ResolvedCredential, Transport};
+use crate::config::{
+    CredentialMaterial, HttpAuthorization, ProtocolConfig, ProviderConfig, ResolvedCredential,
+    Transport,
+};
 use reqwest::{Client, Response, header::HeaderValue};
 use serde_json::Value;
 use std::sync::Arc;
@@ -26,6 +29,7 @@ async fn bounded_body(response: Response) -> Result<Vec<u8>, ()> {
 pub struct ChatCompletions {
     config: ProviderConfig,
     client: Client,
+    explicit_output_cap: Option<bool>,
     credential: Arc<dyn Fn() -> Option<String> + Send + Sync>,
 }
 
@@ -50,6 +54,7 @@ impl ChatCompletions {
         Ok(Self {
             config,
             client,
+            explicit_output_cap: None,
             credential: Arc::new(move || Some(value.clone())),
         })
     }
@@ -67,21 +72,22 @@ impl ChatCompletions {
         ) {
             return Err(InvalidContract("unsupported provider transport"));
         }
-        if !matches!(
-            credential.profile,
-            crate::config::CredentialProfile::Standard
-        ) {
+        let CredentialMaterial::Http {
+            authorization: HttpAuthorization::Bearer(token),
+            ..
+        } = credential.material
+        else {
             return Err(InvalidContract(
-                "Codex subscription requires Responses backend",
+                "Chat Completions requires HTTP bearer authentication",
             ));
-        }
-        if credential.token.is_empty() {
+        };
+        if token.is_empty() {
             return Err(InvalidContract("provider credential is empty"));
         }
-        let token = credential.token;
         Ok(Self {
             config,
             client,
+            explicit_output_cap: credential.request_capabilities.explicit_output_cap,
             credential: Arc::new(move || Some(token.clone())),
         })
     }
@@ -123,6 +129,22 @@ impl ChatCompletionsProvider for ChatCompletions {
         request: ChatCompletionsRequest,
         mut events: ChatCompletionsSink,
     ) -> OperationFuture<ChatCompletionsCompletion> {
+        if self.explicit_output_cap == Some(false)
+            && ["max_tokens", "max_completion_tokens"]
+                .iter()
+                .any(|field| request.body.get().get(*field).is_some())
+        {
+            return Box::pin(async {
+                ChatCompletionsCompletion {
+                    result: Err(ChatCompletionsFailure {
+                        kind: ChatCompletionsErrorKind::Unsupported,
+                        response: None,
+                        body: None,
+                        submitted: false,
+                    }),
+                }
+            });
+        }
         let body = match Self::native_request_json(request.body.get(), request.model.as_str()) {
             Ok(body) => body,
             Err(_) => {

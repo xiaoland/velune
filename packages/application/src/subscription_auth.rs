@@ -173,12 +173,14 @@ fn merge(
 }
 fn credential(session: Session) -> ResolvedCredential {
     ResolvedCredential {
-        token: session.access_token,
-        explicit_output_cap: Some(false),
-        subscription: true,
-        profile: velune_gateway::CredentialProfile::CodexSubscription {
-            account_id: session.account_id,
+        material: velune_gateway::CredentialMaterial::Http {
+            authorization: velune_gateway::HttpAuthorization::Bearer(session.access_token),
+            account_id: Some(session.account_id.clone()),
         },
+        recovery: velune_gateway::CredentialRecovery::Refreshable {
+            identity: format!("{}:{}", session.generation, session.account_id),
+        },
+        request_capabilities: Default::default(),
     }
 }
 async fn exchange(form: &[(&str, &str)]) -> Result<Tokens, CredentialResolutionError> {
@@ -579,12 +581,16 @@ pub(crate) async fn read_usage(
         .map_err(|_| failure())?;
     let mut auth = resolve(home.clone(), id.clone(), generation, None).await?;
     for attempt in 0..2 {
-        let velune_gateway::CredentialProfile::CodexSubscription { account_id } = &auth.profile
+        let velune_gateway::CredentialMaterial::Http {
+            authorization,
+            account_id: Some(account_id),
+        } = &auth.material
         else {
             return Err(CredentialResolutionError::UnauthorizedTarget);
         };
-        let mut bearer = reqwest::header::HeaderValue::from_str(&format!("Bearer {}", auth.token))
-            .map_err(|_| CredentialResolutionError::InvalidContract)?;
+        let mut bearer =
+            reqwest::header::HeaderValue::from_str(&format!("Bearer {}", authorization.secret()))
+                .map_err(|_| CredentialResolutionError::InvalidContract)?;
         bearer.set_sensitive(true);
         let mut response = client
             .get(USAGE_ENDPOINT)
@@ -597,10 +603,28 @@ pub(crate) async fn read_usage(
             .map_err(|_| failure())?;
         if response.status() == reqwest::StatusCode::UNAUTHORIZED {
             if attempt == 0 {
-                auth = resolve(home.clone(), id.clone(), generation, Some(auth.token)).await?;
+                auth = resolve(
+                    home.clone(),
+                    id.clone(),
+                    generation,
+                    Some(
+                        auth.token()
+                            .ok_or(CredentialResolutionError::InvalidContract)?
+                            .to_owned(),
+                    ),
+                )
+                .await?;
                 continue;
             }
-            invalidate(home, id, generation, auth.token).await;
+            invalidate(
+                home,
+                id,
+                generation,
+                auth.token()
+                    .ok_or(CredentialResolutionError::InvalidContract)?
+                    .to_owned(),
+            )
+            .await;
             return Err(CredentialResolutionError::AuthenticationExpired);
         }
         if !response.status().is_success() {

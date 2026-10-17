@@ -5,6 +5,7 @@
 //! the platform composition root.
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
+pub use velune_ai_provider::config::RequestProfile;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -28,10 +29,19 @@ pub enum GatewayProtocol {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub enum ExecutionBackend {
+    Http,
+    ClaudeCli { binary: String },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ProviderDefinition {
     pub id: String,
     pub name: String,
     pub protocol: GatewayProtocol,
+    pub execution_backend: ExecutionBackend,
+    pub request_profile: RequestProfile,
     pub endpoint: String,
     pub credential_ref: Option<String>,
     pub models: Vec<ProviderModel>,
@@ -89,7 +99,6 @@ impl GatewayConfig {
         for provider in &self.providers {
             if provider.id.is_empty()
                 || provider.name.is_empty()
-                || provider.endpoint.is_empty()
                 || provider
                     .credential_ref
                     .as_deref()
@@ -97,6 +106,39 @@ impl GatewayConfig {
                 || providers.insert(&provider.id, provider).is_some()
             {
                 return Err("provider is unsupported or duplicated");
+            }
+            match &provider.execution_backend {
+                ExecutionBackend::Http if provider.endpoint.is_empty() => {
+                    return Err("HTTP backend requires an endpoint");
+                }
+                ExecutionBackend::ClaudeCli { binary }
+                    if binary.trim().is_empty()
+                        || binary.chars().any(char::is_control)
+                        || !provider.endpoint.is_empty()
+                        || provider.protocol != GatewayProtocol::MessagesV1
+                        || provider.request_profile != RequestProfile::Native =>
+                {
+                    return Err(
+                        "Claude CLI requires a binary, Messages, native profile and no HTTP endpoint",
+                    );
+                }
+                _ => {}
+            }
+            if provider.request_profile == RequestProfile::CodexResponses {
+                let endpoint = reqwest::Url::parse(&provider.endpoint)
+                    .map_err(|_| "invalid profile endpoint")?;
+                if provider.protocol != GatewayProtocol::ResponsesV1
+                    || endpoint.scheme() != "https"
+                    || endpoint.host_str() != Some("chatgpt.com")
+                    || endpoint.port_or_known_default() != Some(443)
+                    || endpoint.path().trim_end_matches('/') != "/backend-api/codex"
+                    || endpoint.query().is_some()
+                    || endpoint.fragment().is_some()
+                    || !endpoint.username().is_empty()
+                    || endpoint.password().is_some()
+                {
+                    return Err("Codex request profile requires its bound Responses endpoint");
+                }
             }
             let mut windows = BTreeSet::new();
             if provider.quota_limits.iter().any(|limit| {

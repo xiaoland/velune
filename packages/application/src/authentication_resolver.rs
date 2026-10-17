@@ -45,17 +45,23 @@ impl CredentialResolver for ProviderResolver {
                     crate::config::GatewayProtocol::MessagesV1
                 }
             };
-            if resource.protocol != protocol || resource.endpoint != target.endpoint {
+            if resource.protocol != protocol
+                || resource.endpoint != target.endpoint
+                || resource.execution_backend != target.execution_backend
+                || resource.request_profile != target.request_profile
+            {
                 return Err(CredentialResolutionError::UnauthorizedTarget);
             }
             let command = match &resource.authentication.material {
                 AuthenticationMaterial::None => return Err(CredentialResolutionError::Unavailable),
                 AuthenticationMaterial::ApiKey { value } => {
                     return Ok(ResolvedCredential {
-                        token: value.clone(),
-                        explicit_output_cap: None,
-                        subscription: false,
-                        profile: velune_gateway::CredentialProfile::Standard,
+                        material: velune_gateway::CredentialMaterial::Http {
+                            authorization: http_authorization(&protocol, value.clone(), false),
+                            account_id: None,
+                        },
+                        recovery: velune_gateway::CredentialRecovery::None,
+                        request_capabilities: Default::default(),
                     });
                 }
                 AuthenticationMaterial::CodexSubscription { credential_id, .. } => {
@@ -69,6 +75,32 @@ impl CredentialResolver for ProviderResolver {
                         None,
                     )
                     .await;
+                }
+                AuthenticationMaterial::ClaudeCli {
+                    credential_id,
+                    configured,
+                    ..
+                } => {
+                    if !configured
+                        || !matches!(
+                            resource.execution_backend,
+                            crate::config::ExecutionBackend::ClaudeCli { .. }
+                        )
+                    {
+                        return Err(CredentialResolutionError::Unavailable);
+                    }
+                    return Ok(ResolvedCredential {
+                        material: velune_gateway::CredentialMaterial::LocalSession {
+                            config_dir: crate::claude_cli::directory(
+                                &options.home_directory,
+                                credential_id,
+                            )
+                            .to_string_lossy()
+                            .into_owned(),
+                        },
+                        recovery: velune_gateway::CredentialRecovery::None,
+                        request_capabilities: Default::default(),
+                    });
                 }
                 AuthenticationMaterial::RuntimeProvider { source, .. } => {
                     let node = source
@@ -85,6 +117,7 @@ impl CredentialResolver for ProviderResolver {
                     };
                     let mut command = tokio::process::Command::new(node);
                     command
+                        .env_clear()
                         .arg(options.resources_directory.join(helper))
                         .arg("--operation")
                         .arg("resolve")
@@ -100,6 +133,10 @@ impl CredentialResolver for ProviderResolver {
                 .await
                 .map_err(|error| match error {
                     crate::credential_helper::CredentialError::Unavailable => {
+                        CredentialResolutionError::Unavailable
+                    }
+                    #[cfg(unix)]
+                    crate::credential_helper::CredentialError::Exit { .. } => {
                         CredentialResolutionError::Unavailable
                     }
                     #[cfg(unix)]
@@ -130,10 +167,24 @@ impl CredentialResolver for ProviderResolver {
                 .ok_or(CredentialResolutionError::InvalidContract)?
                 .to_owned();
             Ok(ResolvedCredential {
-                token,
-                explicit_output_cap: value["capabilities"]["explicitOutputCap"].as_bool(),
-                subscription: value["capabilities"]["authentication"] == "subscription",
-                profile: velune_gateway::CredentialProfile::Standard,
+                material: velune_gateway::CredentialMaterial::Http {
+                    authorization: http_authorization(
+                        &protocol,
+                        token,
+                        !matches!(
+                            &resource.authentication.material,
+                            AuthenticationMaterial::RuntimeProvider {
+                                method: AuthenticationMethod::ApiKey,
+                                ..
+                            }
+                        ),
+                    ),
+                    account_id: None,
+                },
+                recovery: velune_gateway::CredentialRecovery::None,
+                request_capabilities: velune_gateway::RequestCapabilities {
+                    explicit_output_cap: value["capabilities"]["explicitOutputCap"].as_bool(),
+                },
             })
         })
     }
@@ -148,7 +199,9 @@ impl CredentialResolver for ProviderResolver {
         let home = self.options.home_directory.clone();
         Box::pin(async move {
             let resource = resource.ok_or(CredentialResolutionError::Unavailable)?;
-            if resource.endpoint != target.endpoint
+            if resource.execution_backend != target.execution_backend
+                || resource.request_profile != target.request_profile
+                || resource.endpoint != target.endpoint
                 || !matches!(
                     target.protocol,
                     velune_gateway::GatewayProtocol::ResponsesV1
@@ -237,13 +290,30 @@ pub(crate) fn read_api_key(
                     CredentialTarget {
                         protocol,
                         endpoint: provider.endpoint.clone(),
+                        execution_backend: provider.execution_backend.clone(),
+                        request_profile: provider.request_profile,
                     },
                 ))
                 .map_err(|_| {
                     crate::Error::invalid("无法读取此提供商的 API key；请检查来源配置。")
                 })?;
-            Ok(result.token)
+            result
+                .token()
+                .map(str::to_owned)
+                .ok_or_else(|| crate::Error::invalid("来源未返回 HTTP 认证"))
         }
         _ => Err(crate::Error::invalid("此提供商没有可编辑的 API key")),
+    }
+}
+
+fn http_authorization(
+    protocol: &crate::config::GatewayProtocol,
+    value: String,
+    bearer: bool,
+) -> velune_gateway::HttpAuthorization {
+    if !bearer && *protocol == crate::config::GatewayProtocol::MessagesV1 {
+        velune_gateway::HttpAuthorization::ApiKey(value)
+    } else {
+        velune_gateway::HttpAuthorization::Bearer(value)
     }
 }

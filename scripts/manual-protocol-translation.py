@@ -19,8 +19,8 @@ PROBE = r'''
 use std::{collections::BTreeMap,io::{BufRead,Write},sync::Arc};
 struct Resolver;
 impl velune_gateway::CredentialResolver for Resolver {
- fn resolve(&self,_:String,_:velune_gateway::CredentialTarget)->velune_ai::OperationFuture<Result<velune_gateway::ResolvedCredential,velune_gateway::CredentialResolutionError>> {
-  Box::pin(async {Ok(velune_gateway::ResolvedCredential {token:"synthetic-only".into(),explicit_output_cap:None,subscription:false,profile:velune_gateway::CredentialProfile::Standard})})
+ fn resolve(&self,_:String,target:velune_gateway::CredentialTarget)->velune_ai::OperationFuture<Result<velune_gateway::ResolvedCredential,velune_gateway::CredentialResolutionError>> {
+  Box::pin(async move {Ok(velune_gateway::ResolvedCredential{material:velune_gateway::CredentialMaterial::Http{authorization:if matches!(target.protocol,velune_gateway::GatewayProtocol::MessagesV1){velune_gateway::HttpAuthorization::ApiKey("synthetic-only".into())}else{velune_gateway::HttpAuthorization::Bearer("synthetic-only".into())},account_id:None},recovery:velune_gateway::CredentialRecovery::None,request_capabilities:velune_gateway::RequestCapabilities::default()})})
  }
 }
 fn main()->Result<(),Box<dyn std::error::Error>> {
@@ -334,7 +334,7 @@ def main():
             protocol = {"chat": "chatCompletionsV1", "responses": "responsesV1", "messages": "messagesV1"}[target]
             providers.append({"id": target, "name": target, "protocol": protocol,
                               "endpoint": f"http://127.0.0.1:{server.server_port}/v1",
-                              "credentialRef": "synthetic", "quotaLimits": [], "models": ([{"recordKey": target, "providerModelId": "fixture-" + target, "nickname": target, "maxOutputTokens": 128}, {"recordKey": "messages-nocap", "providerModelId": "fixture-messages-nocap", "nickname": "messages-nocap"}] if target == "messages" else [{"recordKey": target, "providerModelId": "fixture-" + target, "nickname": target}])})
+                              "credentialRef": "synthetic", "quotaLimits": [], "executionBackend": "http", "requestProfile": "native", "models": ([{"recordKey": target, "providerModelId": "fixture-" + target, "nickname": target, "maxOutputTokens": 128}, {"recordKey": "messages-nocap", "providerModelId": "fixture-messages-nocap", "nickname": "messages-nocap"}] if target == "messages" else [{"recordKey": target, "providerModelId": "fixture-" + target, "nickname": target}])})
         config.write_text(json.dumps({"id": "translation", "name": "translation", "providers": providers, "routes": []}))
         build = subprocess.run(["cargo", "build", "--locked", "-p", "velune-gateway", "--message-format=json"], capture_output=True, text=True, check=True)
         artifacts = {}

@@ -9,7 +9,7 @@ use std::{
     io::Write,
     path::{Path, PathBuf},
 };
-pub(crate) const CURRENT_SCHEMA_VERSION: u32 = 9;
+pub(crate) const CURRENT_SCHEMA_VERSION: u32 = 10;
 /// 2: projects with folders replace per-folder names.
 const ORGANIZATION_SCHEMA_VERSION: u64 = 2;
 

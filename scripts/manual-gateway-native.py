@@ -22,7 +22,7 @@ struct Resolver;
 impl velune_gateway::CredentialResolver for Resolver {
  fn resolve(&self,_reference:String,_target:velune_gateway::CredentialTarget)
  ->velune_ai::OperationFuture<Result<velune_gateway::ResolvedCredential,velune_gateway::CredentialResolutionError>> {
-  Box::pin(async {Ok(velune_gateway::ResolvedCredential {token:"synthetic-only".into(),explicit_output_cap:None,subscription:false,profile:velune_gateway::CredentialProfile::Standard})})
+  Box::pin(async move {Ok(velune_gateway::ResolvedCredential{material:velune_gateway::CredentialMaterial::Http{authorization:if matches!(target.protocol,velune_gateway::GatewayProtocol::MessagesV1){velune_gateway::HttpAuthorization::ApiKey("synthetic-only".into())}else{velune_gateway::HttpAuthorization::Bearer("synthetic-only".into())},account_id:None},recovery:velune_gateway::CredentialRecovery::None,request_capabilities:velune_gateway::RequestCapabilities::default()})})
  }
 }
 fn main()->Result<(),Box<dyn std::error::Error>> {
@@ -149,7 +149,7 @@ def main():
             pairs = [('chat', 'chatCompletionsV1'), ('responses', 'responsesV1')]
             config = {'id': 'fixture', 'name': 'fixture',
                 'providers': [{'id': protocol, 'name': protocol, 'protocol': protocol,
-                    'endpoint': f'http://127.0.0.1:{server.server_port}/v1', 'credentialRef': reference, 'quotaLimits': [],
+                    'endpoint': f'http://127.0.0.1:{server.server_port}/v1', 'credentialRef': reference, 'quotaLimits': [], 'executionBackend': 'http', 'requestProfile': 'native',
                     'models': [{'recordKey': model, 'providerModelId': 'external-' + model,
                                 'nickname': model}]}
                     for model, protocol in pairs],

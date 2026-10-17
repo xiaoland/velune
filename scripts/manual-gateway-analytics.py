@@ -88,11 +88,11 @@ use velune_application::Error;
 #[path="STORE_SOURCE"] mod storage;
 struct Auth;
 impl CredentialResolver for Auth {
- fn resolve(&self,_:String,_:CredentialTarget)->velune_ai::OperationFuture<Result<ResolvedCredential,CredentialResolutionError>> {
- Box::pin(async { Ok(ResolvedCredential { token:"SYNTHETIC".into(), explicit_output_cap:None, subscription:false, profile:velune_gateway::CredentialProfile::Standard }) }) }
+ fn resolve(&self,_:String,target:CredentialTarget)->velune_ai::OperationFuture<Result<ResolvedCredential,CredentialResolutionError>> {
+ Box::pin(async move { Ok(ResolvedCredential{material:velune_gateway::CredentialMaterial::Http{authorization:if matches!(target.protocol,velune_gateway::GatewayProtocol::MessagesV1){velune_gateway::HttpAuthorization::ApiKey("SYNTHETIC".into())}else{velune_gateway::HttpAuthorization::Bearer("SYNTHETIC".into())},account_id:None},recovery:velune_gateway::CredentialRecovery::None,request_capabilities:velune_gateway::RequestCapabilities::default()}) }) }
 }
 fn provider(protocol:GatewayProtocol,cases:&[&str],endpoint:&str)->ProviderDefinition {
- ProviderDefinition { id:format!("{protocol:?}"),name:format!("Synthetic {protocol:?}"),protocol,endpoint:endpoint.into(),credential_ref:Some("synthetic".into()),quota_limits:vec![],models:cases.iter().map(|case|ProviderModel{record_key:case.to_string(),provider_model_id:case.to_string(),nickname:String::new(),icon:None,context_window:None,max_output_tokens:Some(100),reasoning_levels:None}).collect() }
+ ProviderDefinition {execution_backend:velune_gateway::ExecutionBackend::Http,request_profile:velune_gateway::RequestProfile::Native, id:format!("{protocol:?}"),name:format!("Synthetic {protocol:?}"),protocol,endpoint:endpoint.into(),credential_ref:Some("synthetic".into()),quota_limits:vec![],models:cases.iter().map(|case|ProviderModel{record_key:case.to_string(),provider_model_id:case.to_string(),nickname:String::new(),icon:None,context_window:None,max_output_tokens:Some(100),reasoning_levels:None}).collect() }
 }
 #[tokio::main(flavor="current_thread")]
 async fn main(){

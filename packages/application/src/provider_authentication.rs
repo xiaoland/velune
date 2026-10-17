@@ -3,6 +3,15 @@ use crate::config::GatewayProtocol;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum ProviderAuthenticationSource {
+    None,
+    ApiKey,
+    CodexOAuth,
+    RuntimeProvider,
+    ClaudeCli,
+}
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum AuthenticationMethod {
@@ -58,6 +67,12 @@ pub(crate) enum AuthenticationMaterial {
         credential_id: String,
         configured: bool,
     },
+    ClaudeCli {
+        credential_id: String,
+        configured: bool,
+        account_label: Option<String>,
+        identity: Option<String>,
+    },
     RuntimeProvider {
         source: AuthenticationSource,
         method: AuthenticationMethod,
@@ -80,6 +95,19 @@ impl std::fmt::Debug for ProviderAuthentication {
     }
 }
 impl ProviderAuthentication {
+    pub(crate) fn source(&self) -> ProviderAuthenticationSource {
+        match self.material {
+            AuthenticationMaterial::None => ProviderAuthenticationSource::None,
+            AuthenticationMaterial::ApiKey { .. } => ProviderAuthenticationSource::ApiKey,
+            AuthenticationMaterial::CodexSubscription { .. } => {
+                ProviderAuthenticationSource::CodexOAuth
+            }
+            AuthenticationMaterial::RuntimeProvider { .. } => {
+                ProviderAuthenticationSource::RuntimeProvider
+            }
+            AuthenticationMaterial::ClaudeCli { .. } => ProviderAuthenticationSource::ClaudeCli,
+        }
+    }
     pub(crate) fn description(&self) -> ProviderAuthenticationDescription {
         let (method, configured, provenance, actions) = match &self.material {
             AuthenticationMaterial::None => {
@@ -105,6 +133,23 @@ impl ProviderAuthentication {
                         "登录…".into()
                     },
                 }],
+            ),
+            AuthenticationMaterial::ClaudeCli { configured, .. } => (
+                AuthenticationMethod::OAuth,
+                *configured,
+                Some(AuthenticationProvenance {
+                    display_name: "Claude Code CLI".into(),
+                }),
+                vec![
+                    crate::conversation::SettingAction {
+                        id: "login".into(),
+                        label: "登录…".into(),
+                    },
+                    crate::conversation::SettingAction {
+                        id: "logout".into(),
+                        label: "退出登录".into(),
+                    },
+                ],
             ),
             AuthenticationMaterial::RuntimeProvider {
                 source,
@@ -147,20 +192,9 @@ impl ProviderAuthentication {
             configured,
             provenance,
             actions,
-            account_label: None,
-            disclosure: matches!(&self.material, AuthenticationMaterial::CodexSubscription { .. }).then(|| SubscriptionDisclosure { title: "Codex 订阅协议接入".into(), detail: "当前借用 Codex 客户端协议，非正式 SIWC 接入。多订阅自动轮换与用量池化和 SIWC 禁止规则冲突，不代表供应商认可。使用者应自行决定，并承担账户受限或接入失效的风险。".into() }),
+            account_label: match &self.material { AuthenticationMaterial::ClaudeCli { account_label, .. } => account_label.clone(), _ => None },
+            disclosure: matches!(&self.material, AuthenticationMaterial::CodexSubscription { .. }).then(|| SubscriptionDisclosure { title: "Codex 订阅协议接入".into(), detail: "当前借用 Codex 客户端协议，非正式 SIWC 接入。多订阅自动轮换与用量池化和 SIWC 禁止规则冲突，不代表供应商认可。使用者应自行决定，并承担账户受限或接入失效的风险。".into() }).or_else(|| matches!(&self.material, AuthenticationMaterial::ClaudeCli { .. }).then(|| SubscriptionDisclosure { title: "Claude Code CLI 订阅接入".into(), detail: "使用未修改的官方 Claude Code CLI 登录和执行，由 CLI 保存并刷新认证。订阅用量与供应商规则仍适用；此组合及自动路由不代表供应商认可，不承诺额度无限或跨工具任意使用。".into() })),
         }
-    }
-    #[cfg(feature = "local-runtime")]
-    pub(crate) fn subscription(&self) -> bool {
-        matches!(
-            &self.material,
-            AuthenticationMaterial::CodexSubscription { .. }
-                | AuthenticationMaterial::RuntimeProvider {
-                    method: AuthenticationMethod::OAuth,
-                    ..
-                }
-        )
     }
     pub(crate) fn validate_target(
         &self,
@@ -192,6 +226,5 @@ impl ProviderAuthentication {
 pub enum AuthenticationEdit {
     Keep,
     SetApiKey { value: String },
-    SetCodexSubscription,
     Clear,
 }

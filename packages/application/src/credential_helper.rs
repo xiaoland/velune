@@ -13,17 +13,28 @@ const RESOLVE_TIMEOUT: Duration = Duration::from_secs(30);
 pub(super) enum CredentialError {
     Unavailable,
     #[cfg(unix)]
+    Exit {
+        code: Option<i32>,
+    },
+    #[cfg(unix)]
     Timeout,
     #[cfg(unix)]
     InvalidOutput,
 }
 
 #[cfg(unix)]
-pub(super) async fn execute(mut command: Command) -> Result<String, CredentialError> {
+pub(super) async fn execute(command: Command) -> Result<String, CredentialError> {
+    execute_timeout(command, RESOLVE_TIMEOUT).await
+}
+
+#[cfg(unix)]
+pub(super) async fn execute_timeout(
+    mut command: Command,
+    timeout: Duration,
+) -> Result<String, CredentialError> {
     use std::os::unix::process::CommandExt;
     command.as_std_mut().process_group(0);
     let mut child = command
-        .env_clear()
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -56,11 +67,13 @@ pub(super) async fn execute(mut command: Command) -> Result<String, CredentialEr
             .await
             .map_err(|_| CredentialError::Unavailable)?;
         if !status.success() {
-            return Err(CredentialError::Unavailable);
+            return Err(CredentialError::Exit {
+                code: status.code(),
+            });
         }
         String::from_utf8(bytes).map_err(|_| CredentialError::InvalidOutput)
     };
-    let result = match tokio::time::timeout(RESOLVE_TIMEOUT, operation).await {
+    let result = match tokio::time::timeout(timeout, operation).await {
         Ok(result) => result,
         Err(_) => Err(CredentialError::Timeout),
     };
@@ -93,5 +106,13 @@ impl Drop for HelperGroup {
 // Reject instead of advertising cancellation that kills only the parent process.
 #[cfg(not(unix))]
 pub(super) async fn execute(_command: tokio::process::Command) -> Result<String, CredentialError> {
+    Err(CredentialError::Unavailable)
+}
+
+#[cfg(not(unix))]
+pub(super) async fn execute_timeout(
+    _command: tokio::process::Command,
+    _timeout: std::time::Duration,
+) -> Result<String, CredentialError> {
     Err(CredentialError::Unavailable)
 }

@@ -136,7 +136,7 @@ def main():
             def provider(identity, protocol, model_id):
                 draft = bindings.BindingProviderDraft(id=identity, name=identity,
                     protocol=protocol, endpoint=endpoint,
-                    models=[model(protocol, model_id)], quota_limits=[])
+                    models=[model(protocol, model_id)], quota_limits=[], execution_backend=bindings.BindingExecutionBackend.HTTP(), request_profile=bindings.BindingRequestProfile.NATIVE, authentication_source=bindings.BindingProviderAuthenticationSource.API_KEY, quota_source=bindings.BindingProviderQuotaSource.NONE)
                 application.save_provider("default", draft,
                     bindings.BindingAuthenticationEdit.SET_API_KEY(value="synthetic-only"))
                 return next(p for gateway in application.list().gateways
