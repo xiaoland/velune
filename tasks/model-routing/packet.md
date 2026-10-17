@@ -189,3 +189,5 @@ transport owner 固定公开 Magpie 源码研究认证、请求、额度与品�
 补充边界：外层 Harness 真正结束时调用 `finish_user_turn`，终止仍运行或挂起工具的交互，保留 Completed idle 进程；不把普通运行时准备当作结束。登录 worker 在取消、未提交丢弃或配置提交失败时有界执行官方 logout，再删除暂存目录；结果已经送达但尚未提交时取消也立即触发清理。两组清理合成验收通过，证明原配置与原目录保留、暂存 logout/删除发生且取消不依赖应用对象销毁。最终生命周期修复后全工作区 fmt/check/clippy 和 bindings build 再次通过。
 
 最终新增组合证据共 22 组：先前 17 组、最后 `--case cancel` 的取消/迟到结果与 finish Pending/Completed 共 3 组、`--case auth-cleanup` 2 组。Pending 结束后原 PID 退出且新轮成功，Completed 结束后跨 Runner 仍复用同 PID。清理 case 仅在临时源码副本插入发送结果后的观测 marker，以精确复现“成功已到但尚未提交”，不改变产品分支。最终脚本 AST 与 diff 检查通过。
+
+实现提交 `57bf2ce6454fad2313f6cfa46468e16c9989ffce` 后执行默认 compile-only 的 `manual-codex-subscriptions-live.py`：完整冻结该提交并成功编译 runner，本地 SSE parser 5 例和 usage 白名单检查通过，退出码 0、real_requests=0；未读取认证、刷新或发起真实调用。实现留在 `feat/subscription-composition` 独立工作树，未合并共享主工作区的其他任务、未 push 或创建 PR。
