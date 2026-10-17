@@ -1047,14 +1047,25 @@ pub struct BindingSubscriptionDisclosure {
 }
 #[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct BindingSubscriptionTarget {
+pub struct BindingProviderTemplate {
+    pub id: String,
+    pub kind: BindingProviderTemplateKind,
+    pub name: String,
+    pub summary: String,
     pub protocol: BindingGatewayProtocol,
     pub endpoint: String,
     pub execution_backend: BindingExecutionBackend,
     pub request_profile: BindingRequestProfile,
     pub authentication_source: BindingProviderAuthenticationSource,
     pub quota_source: BindingProviderQuotaSource,
-    pub disclosure: BindingSubscriptionDisclosure,
+    pub executable_command: Option<String>,
+    pub disclosure: Option<BindingSubscriptionDisclosure>,
+}
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, uniffi::Enum)]
+#[serde(rename_all = "camelCase")]
+pub enum BindingProviderTemplateKind {
+    Subscription,
+    Api,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]

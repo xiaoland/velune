@@ -167,7 +167,12 @@ impl CoreRuntime {
                 .filter(|s| !s.deleted)
                 .all(|s| self.segment_available(s) && capability(&s.runtime_instance_id, true));
         } else {
-            summary.can_rename = capability(&summary.runtime_id, false);
+            // A Claude Code sub-agent's transcript has no name of its own.
+            let claude_sub_agent = summary.parent_conversation_id.is_some()
+                && self
+                    .runtime_instance(&summary.runtime_id)
+                    .is_ok_and(|runtime| runtime.type_id == "claude-code-2.1");
+            summary.can_rename = !claude_sub_agent && capability(&summary.runtime_id, false);
             summary.can_delete = capability(&summary.runtime_id, true);
         }
     }

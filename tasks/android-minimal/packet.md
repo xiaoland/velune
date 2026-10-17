@@ -34,3 +34,7 @@ Android remote-only 原生库已完成 release、严格 clippy 与 JVM／Applica
 主执行者已完成新工作区的全 workspace locked check、fmt、文档链接／锚点与 Python 语法检查，严格 clippy 全部通过。当前先提交稳定源码并完成必要 Mac release 构建安装；Android 业务验收仍等待设备解锁。未将已安装、进程存活或独立 host 的成功解释为真机业务通过。
 
 最终 APK 已重新安装并启动，SHA-256 `51667f5ac72e7174eb3e197bbe4aeb307a6ff2b0eb83339037ea9fa7c68e61e5`，没有观察到 AndroidRuntime／JNA／UniFFI 错误；设备仍安全锁屏。文件写入暂缓期间由 verification owner 保留该观察，待 Mac 构建清单生成后归入验收记录。
+
+独立分支已开始集成固定 main `3f01f9b`（该提交也在当前已安装 Mac 的公开清单中），以保留并行任务已交付的 Claude／目录／窗口与提供商模板修复；不改变原目录或 main。ProviderTemplate/provider_templates 迁入中立 API，旧订阅工厂删除，remote-only 依赖边界保留。packages 全特性与 remote-only check/clippy、Mac Swift parse 已通过；合并完成后须重新冻结 host／Android 产物并重建 APK／Mac，旧 SHA 不套用新产物。
+
+源235b62b的干净 Mac 产物已完成全新合成 HOME 真界面回归：自动创建 remote0700／identity0600、独立可访问停止按钮、一次邀请生成、停止接入后合成会话仍可发送并收到 ACP_ANSWER；隔离实例已退出。该观察明确限定版本，最终 main 集成产物仍需构建验证。

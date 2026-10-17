@@ -205,6 +205,38 @@ final class TabDragSource: @unchecked Sendable {
     }
 }
 
+/// A conversation dragged from the list and let go outside every window
+/// opens in a window of its own there, as a tab dragged off its bar does.
+/// The list's drag is the table's and tells nothing of where it ended, so
+/// from its start the mouse button is watched until it is let go.
+@MainActor final class ListDragWatch {
+    static let shared = ListDragWatch()
+    private var timer: Timer?
+    /// The first conversation of the drag, and the window it left.
+    private var dragged: (window: ConversationWindowModel, conversationID: String)?
+
+    func begin(_ conversationID: String, from window: ConversationWindowModel) {
+        guard NSEvent.pressedMouseButtons & 1 != 0 else { return }
+        if dragged == nil { dragged = (window, conversationID) }
+        guard timer == nil else { return }
+        // In the common modes, so it fires while the drag tracks the mouse.
+        let timer = Timer(timeInterval: 0.05, repeats: true) { _ in MainActor.assumeIsolated { ListDragWatch.shared.poll() } }
+        RunLoop.main.add(timer, forMode: .common)
+        self.timer = timer
+    }
+
+    private func poll() {
+        guard NSEvent.pressedMouseButtons & 1 == 0 else { return }
+        timer?.invalidate()
+        timer = nil
+        guard let (window, conversationID) = dragged else { return }
+        dragged = nil
+        let point = NSEvent.mouseLocation
+        guard !NSApp.windows.contains(where: { $0.isVisible && $0.isOnActiveSpace && $0.styleMask.contains(.titled) && $0.frame.contains(point) }) else { return }
+        window.openInNewWindow(conversationID, at: point)
+    }
+}
+
 /// How a window's panes are arranged: a pane, or panes side by side
 /// (horizontal) or stacked (vertical), each taking a fraction of the room.
 indirect enum PaneLayout: Codable, Equatable {
@@ -695,11 +727,11 @@ struct WindowSeed: Codable, Hashable {
     }
 
     /// Open a conversation in a conversation window of its own; a tab of this
-    /// window showing it moves there.
-    func openInNewWindow(_ conversationID: String) {
-        if let (_, tab) = tab(showing: conversationID) { return moveToNewWindow(tab.id) }
+    /// window showing it moves there. At `point`, the window's top left is there.
+    func openInNewWindow(_ conversationID: String, at point: NSPoint? = nil) {
+        if let (_, tab) = tab(showing: conversationID) { return moveToNewWindow(tab.id, at: point) }
         guard let openWindow else { return }
-        let frame = newWindowFrame(size: nil, at: nil)
+        let frame = newWindowFrame(size: nil, at: point)
         let existing = Set(NSApp.windows.map(\.windowNumber))
         openWindow(WindowSeed(conversationID: conversationID, editorOnly: true))
         if let frame { Self.place(windowNotIn: existing, frame: frame, attempts: 20) }

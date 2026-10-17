@@ -8,7 +8,7 @@ use std::{
     process::Command,
 };
 mod claude;
-pub use claude::CLAUDE_EFFORT_LEVELS;
+pub use claude::{CLAUDE_EFFORT_LEVELS, rename_claude_session_at};
 mod codex;
 pub use codex::{ThreadChange, manage_thread, manage_thread_at};
 mod codex_history;
@@ -290,7 +290,13 @@ impl NativeSession {
             NativeKind::DeepSeek => "DSH_HOME",
             NativeKind::ClaudeCode => "CLAUDE_CONFIG_DIR",
         };
-        command.env(home_key, &config.agent_dir);
+        if config.kind == NativeKind::ClaudeCode && Self::claude_default_config(config) {
+            // Setting CLAUDE_CONFIG_DIR at all, even to its default, makes the CLI
+            // suffix its macOS Keychain service name, hiding the user's own login.
+            command.env_remove(home_key);
+        } else {
+            command.env(home_key, &config.agent_dir);
+        }
         crate::mcp::set_environment(&mut command, &config.mcp_servers);
         if let Some(gateway) = &config.gateway {
             command.env("VELUNE_GATEWAY_TOKEN", &gateway.token);

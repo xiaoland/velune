@@ -52,44 +52,6 @@ impl SubscriptionDisclosure {
         }
     }
 }
-/// The whole composition a provider saves to use a subscription, and what
-/// choosing it means, for presenting before the provider exists.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SubscriptionTarget {
-    pub protocol: GatewayProtocol,
-    pub endpoint: String,
-    pub execution_backend: crate::config::ExecutionBackend,
-    pub request_profile: crate::config::RequestProfile,
-    pub authentication_source: ProviderAuthenticationSource,
-    pub quota_source: crate::config::ProviderQuotaSource,
-    pub disclosure: SubscriptionDisclosure,
-}
-impl SubscriptionTarget {
-    pub fn codex() -> Self {
-        Self {
-            protocol: CODEX_SUBSCRIPTION_PROTOCOL,
-            endpoint: CODEX_SUBSCRIPTION_ENDPOINT.into(),
-            execution_backend: crate::config::ExecutionBackend::Http,
-            request_profile: crate::config::RequestProfile::CodexResponses,
-            authentication_source: ProviderAuthenticationSource::CodexOAuth,
-            quota_source: crate::config::ProviderQuotaSource::CodexUsage,
-            disclosure: SubscriptionDisclosure::codex_subscription(),
-        }
-    }
-    /// Claude Code runs as the official CLI at `binary`; saving checks the path is absolute.
-    pub fn claude_cli(binary: String) -> Self {
-        Self {
-            protocol: GatewayProtocol::MessagesV1,
-            endpoint: String::new(),
-            execution_backend: crate::config::ExecutionBackend::ClaudeCli { binary },
-            request_profile: crate::config::RequestProfile::Native,
-            authentication_source: ProviderAuthenticationSource::ClaudeCli,
-            quota_source: crate::config::ProviderQuotaSource::ClaudeCliUsage,
-            disclosure: SubscriptionDisclosure::claude_cli(),
-        }
-    }
-}
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderAuthenticationDescription {

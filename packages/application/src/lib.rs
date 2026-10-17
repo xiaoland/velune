@@ -25,8 +25,9 @@ mod subscription_quota;
 pub use provider_authentication::{
     AuthenticationEdit, AuthenticationMethod, AuthenticationProvenance,
     CODEX_SUBSCRIPTION_ENDPOINT, CODEX_SUBSCRIPTION_PROTOCOL, ProviderAuthenticationDescription,
-    ProviderAuthenticationSource, SubscriptionDisclosure, SubscriptionTarget,
+    ProviderAuthenticationSource, SubscriptionDisclosure,
 };
+pub use velune_application_api::{ProviderTemplate, ProviderTemplateKind, provider_templates};
 pub mod config;
 #[cfg(feature = "local-runtime")]
 mod local;

@@ -59,6 +59,11 @@ cat > "$app/Contents/Info.plist" <<'PLIST'
 <key>CFBundleShortVersionString</key><string>0.1</string>
 <key>NSHighResolutionCapable</key><true/>
 <key>NSLocalNetworkUsageDescription</key><string>允许你的其他设备连接本机 Velune，继续会话和处理审批。</string>
+<key>UTExportedTypeDeclarations</key><array><dict>
+<key>UTTypeIdentifier</key><string>local.velune.conversation-link</string>
+<key>UTTypeDescription</key><string>Velune conversation link</string>
+<key>UTTypeConformsTo</key><array><string>public.data</string></array>
+</dict></array>
 <key>CFBundleURLTypes</key><array><dict>
 <key>CFBundleURLName</key><string>local.velune.conversation</string>
 <key>CFBundleURLSchemes</key><array><string>velune</string></array>

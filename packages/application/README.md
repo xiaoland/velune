@@ -40,7 +40,7 @@ Codex 订阅由 application 自身管理，与 Harness 登录独立。保存提�
 
 关闭 `local-runtime` 后，提供商、API key、模型模板和运行时配置的加载与修改仍可使用；本机连接、会话执行、来源导入以及需要 adapter 的认证操作明确返回不支持错误。本构建不链接 Agent runtime；当前配置校验仍依赖 gateway 的配置类型与 AI-provider，不能将其称为完全排除本机 AI 依赖的产物。它不启动网关，也不携带 SSH 子进程执行能力；本机与 SSH 运行时都需要 `local-runtime`。
 
-公开 API 和结果记录定义在 `api.rs`，没有平台 JSON dispatcher。内部用例仍有 JSON 投影转换，不构成跨语言契约。隐藏稳定 `recordKey` 用于模型选择引用；`providerModelId` 是可编辑的精确上游标识，修改它不改变内部身份。能力可以未知，只有具体运行时准备边界检查必需字段。模板不复制内部键、认证、服务地址或 Pi 执行元数据。
+公开 DTO、`Command`／`Response` 与静态提供商模板目录定义在 `application-api`，`api.rs` 实现类型化的本地用例方法，没有平台 JSON dispatcher。内部用例仍有 JSON 投影转换，不构成跨语言契约。隐藏稳定 `recordKey` 用于模型选择引用；`providerModelId` 是可编辑的精确上游标识，修改它不改变内部身份。能力可以未知，只有具体运行时准备边界检查必需字段。模板不复制内部键、认证、服务地址或 Pi 执行元数据。
 
 只接受 schema 10。更低版本的普通配置原子覆盖为空配置，不备份、不迁移、不操作原 Harness 会话、认证或既有平台秘密；未来版本、损坏 JSON 和当前版本中的未知字段明确报错。
 
@@ -103,6 +103,8 @@ ACP 的列表能力缺失与空列表不同；汇总列表通过 `history_failur
 `working_changes`、`working_branch` 与 `file_diff` 仅要求本地执行位置和实际会话工作目录，不要求 Harness 原生配置目录；通用 ACP 的 managed HOME 与无 agentDir 配置同样适用。`working_changes` 与 `file_diff` 以本机 `git` CLI 只读会话工作目录（取自打开的会话或最近列表）所在仓库：状态解析为新增、修改、删除、重命名、未跟踪与冲突，相对 HEAD 的增删行数（二进制与未跟踪文件无行数），单文件差异解析为 hunk、上下文、增删与说明行，超过 1 MiB 截断；未跟踪文件以新文件显示。文件路径只接受仓库内相对路径；执行时设 `GIT_OPTIONAL_LOCKS=0`，不刷新索引、不与 Harness 的 git 操作争锁。远端运行时的会话暂不支持。[变更审阅手动验收](../../scripts/manual-working-changes.py) 以临时仓库检查各类变更、差异行、仓库根解析与路径拒绝。
 
 ## 提供商能力组合与 Claude CLI
+
+`provider_templates()` 重导出中立 API 中的添加目录，保留每种订阅的固定业务组合与 API 模板的可编辑协议／地址。模板只提供命令名称，不读取 PATH；CLI 的实际绝对路径由执行设备一侧定位或用户填写，控制设备路径不作为远程执行路径。
 
 `ProviderDraft` 明确保存 `execution_backend`（`Http` 或 `ClaudeCli { binary }`）、`request_profile`（`Native` 或 `CodexResponses`）、`authentication_source` 与 `quota_source`。认证来源为 `None`、`ApiKey`、`CodexOAuth`、已导入的 `RuntimeProvider` 或 `ClaudeCli`；额度来源为 `None`、`CodexUsage` 或 `ClaudeCliUsage`。公开摘要返回同一组字段；私有认证材料持有来源与 generation，不另建账户注册表。新建普通 HTTP 提供商应选择 `Http`、`Native` 和 `None` 额度来源。`AuthenticationEdit` 仅保留 `Keep`、`SetApiKey` 与 `Clear`：切换来源或清除会初始化所选来源的空认证，保存原登录使用 `Keep`。运行时来源只能由导入建立。
 

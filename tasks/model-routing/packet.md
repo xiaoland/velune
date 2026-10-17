@@ -253,3 +253,13 @@ HOME 修复已覆盖 application 登录/状态/退出/额度与 ai-provider 执�
 验证：cargo fmt --check、workspace check、clippy（-D warnings）与 application `--no-default-features` check 无警告；`build-macos.sh --build-only` 成功。临时 Python 绑定脚本在隔离 home 中验证导出组合与披露、相对路径被拒、以不存在路径保存的 CLI 提供商为未登录 OAuth 并带披露与 login／logout 动作、额度 Unknown。临时离屏渲染检查 Claude 提供商编辑器与新提供商的两个订阅入口，修正了按钮中英文间距；临时代码与截图不提交。未进行真实 CLI 登录、退出或额度读取，交由用户验收。
 
 安装：补充提交 597a524 快进合入本地 main，在独立工作树构建并安装到 `/Applications/Velune.app`（0.1 beta.1）；安装前正常退出了运行中的 Velune。codesign 严格校验通过，构建清单 source_commit 与该提交一致、dirty 为 false。Claude Code 订阅的实际创建、CLI 登录／退出与额度显示待用户验收。
+
+提供商模板（2026-10-17）：用户指出编辑器中逐个罗列“使用某订阅…”的入口无法随订阅增加扩展，并提出订阅锁定协议与地址，可理解为提供商模板；结论已归 PRD 与 ai-service 设计。
+
+- application 新增 `provider_templates()` 有序目录（Codex 订阅、Claude Code 订阅、API 提供商），每项含种类、名称、简介、完整组合、本机命令与披露；删除 `SubscriptionTarget` 及 `codex_subscription_target`／`claude_cli_subscription_target` 导出（hard-cutoff）。
+- Mac “＋”打开模板选择（订阅／API／从 Agent 运行时导入），选中订阅显示披露，“继续”在同一 sheet 进入编辑器；原底部“从运行时导入…”并入此选择。订阅提供商协议与地址以只读值显示，移除换用订阅的按钮、确认弹窗与换用 API key 入口；新提供商不显示“清除认证”。可执行文件命令取自模板。
+- 未为订阅模板预填模型：core 尚无订阅模型发现，模型仍由用户添加或从模型模板选取。
+
+验证：cargo fmt --check、workspace check、clippy（-D warnings）与 application／bindings `--no-default-features` check 无警告；`build-macos.sh --build-only` 成功。临时 Python 绑定脚本在隔离 home 中验证三项模板的组合与披露，Codex 模板以 Keep 保存为未登录 OAuth，Claude 模板空路径被拒、填入绝对路径后保存，API 模板以 key 保存。临时离屏渲染检查模板选择、三种新建编辑器、已有 Claude 提供商与提供商列表；临时代码与截图不提交。真实添加流程与登录交由用户验收。
+
+安装：变基到 main `10fb7ce` 后提交 63954c8，快进本地 main（共享检出当时位于其他分支，直接快进 main 引用），在独立工作树构建并安装到 `/Applications/Velune.app`（0.1 beta.1）；安装时没有运行中的 Velune。codesign 严格校验通过，构建清单 source_commit 与该提交一致、dirty 为 false。

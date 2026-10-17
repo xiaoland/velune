@@ -347,28 +347,20 @@ struct SubscriptionDisclosure: Codable, Sendable, Equatable {
     var title: String
     var detail: String
 }
-/// What a provider saves to use a subscription, with what choosing it means.
-struct SubscriptionTarget: Sendable, Equatable {
+/// What a new provider starts from, from the core's catalog. A subscription
+/// fixes its protocol, address and composition; an API template stays editable.
+struct ProviderTemplate: Sendable, Identifiable, Equatable {
+    enum Kind: Sendable, Equatable { case subscription, api }
+    var id: String
+    var kind: Kind
+    var name: String
+    var summary: String
     var protocolID: ProviderProtocol
     var endpoint: String
     var composition: ProviderComposition
-    var disclosure: SubscriptionDisclosure
-}
-/// A subscription a provider can sign in to instead of using an API key.
-enum SubscriptionChoice: Sendable, CaseIterable, Identifiable {
-    case codex, claudeCode
-    var id: Self { self }
-    var name: String { switch self { case .codex: "Codex 订阅"; case .claudeCode: "Claude Code 订阅" } }
-    /// What saving the choice fixes and how signing in proceeds, after the disclosure.
-    var explanation: String {
-        let aggregation = "一个订阅对应一个提供商，聚合多个订阅请为每个账户分别添加提供商，再组成模型路由。"
-        switch self {
-        case .codex: return "提供商将固定使用 OpenAI Responses 协议与 ChatGPT 订阅地址；保存后在浏览器中登录一个 ChatGPT 账户。" + aggregation
-        case .claudeCode: return "提供商将固定使用 Anthropic Messages 协议，由本机官方 Claude Code CLI 执行请求，认证保存在该提供商独立的 CLI 配置中；保存后由 CLI 在浏览器中登录一个 Claude 账户。" + aggregation
-        }
-    }
-    /// What signing in after saving does.
-    var signInHint: String { switch self { case .codex: "保存后在浏览器中登录 ChatGPT 账户。"; case .claudeCode: "保存后由 Claude Code CLI 在浏览器中登录 Claude 账户。" } }
+    /// A local command to locate and fill into the composition's executable.
+    var executableCommand: String?
+    var disclosure: SubscriptionDisclosure?
 }
 enum AuthenticationEdit: Sendable { case keep, setAPIKey(String), clear }
 struct AIProvider: Sendable, Identifiable, Equatable {
@@ -395,6 +387,14 @@ struct ProviderComposition: Sendable, Equatable {
         switch authenticationSource {
         case .codexOAuth: return "Codex 订阅"
         case .claudeCli: return "Claude Code 订阅"
+        case .none, .apiKey, .runtimeProvider: return nil
+        }
+    }
+    /// How signing in proceeds once a new subscription provider is saved.
+    var signInHint: String? {
+        switch authenticationSource {
+        case .codexOAuth: return "保存后在浏览器中登录一个 ChatGPT 账户。"
+        case .claudeCli: return "保存后由 Claude Code CLI 在浏览器中登录一个 Claude 账户。"
         case .none, .apiKey, .runtimeProvider: return nil
         }
     }

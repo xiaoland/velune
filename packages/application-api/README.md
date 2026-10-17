@@ -8,6 +8,8 @@
 
 `Failure` 的分类、`code` 和 `phase` 保留 I/O、契约、历史、提供商来源、原生资源、陈旧审批和执行生命周期差别；传输失败与执行结果未知不伪装为业务失败。命令和回复不实现 `Debug`，含密钥、环境、资源内容和附件的结构继续遮蔽内容；普通提供商摘要不带认证材料。运行时摘要省略 ACP 启动参数与环境，显式 `AcpLaunch` 编辑读取仍可返回这些值。API 模型不包含内部 Pi projection，模板快填仍是独立快照。
 
+`provider_templates()` 是不需要执行实例的静态添加目录，按 Codex 订阅、Claude Code 订阅、API 提供商排序。`ProviderTemplate` 统一携带显示内容、订阅／API 种类、协议／地址、执行／请求／认证／额度组合、可选的执行命令和规则披露；每种订阅是一份固定组合，API 模板保持协议与地址可编辑。Claude CLI 模板的 binary 留空，平台须填入执行设备上的绝对路径。application 重导出这份定义，remote-only bindings 直接使用本 unit，不引入本地执行依赖。
+
 `ClientViewId` 是宿主分配的视图标识。远程入口须先用认证设备身份限定它；不能让两个设备自报的相同视图名共享选择或草稿。已配对设备拥有完整业务权限，查看 API key、认证交互、完整资源和附件仍通过具名显式操作；这些内容不自动进入发现或配置摘要。
 
 附件通过 `UploadAttachment { name, bytes }` 提交内容并取得 `AttachmentReference.reference`。远程 `ComposedTurn.attachments` 只接受当前视图取得的引用；本地调用仍接受执行机器绝对路径。`ReadAttachment` 只按会话、消息与块序号读取真实投影中的图片或文件，不接受任意路径。图片投影经远程传递时转换为内容；大图片先返回 `Deferred`，再通过 `MessagePayloads` 取得完整内容。二进制字段在 JSON 中采用 base64，原生语言 API 保持 `Vec<u8>`。上传及内容读取上限为 20 MiB，资源条目另遵守 adapter 自己的边界。

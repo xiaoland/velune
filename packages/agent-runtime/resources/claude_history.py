@@ -19,12 +19,16 @@ def timestamp(value):
 
 
 def blocks(content, agent=None):
-    """`agent` is the Velune conversation of the sub-agent a tool result started."""
+    """`agent` is the Velune conversation of the sub-agent a tool result started.
+    Blank text and thinking show nothing: Claude Code records omitted thinking
+    as an empty block beside its signature."""
     if isinstance(content, str):
-        return [{"kind": "text", "text": content}]
+        return [{"kind": "text", "text": content}] if content.strip() else []
     result = []
     for block in content if isinstance(content, list) else []:
         kind = block.get("type")
+        if kind in ("text", "thinking") and not (block.get(kind) or "").strip():
+            continue
         if kind == "text":
             result.append({"kind": "text", "text": block.get("text", "")})
         elif kind == "image" and (block.get("source") or {}).get("type") == "base64":
@@ -191,7 +195,8 @@ def history(path, native_id, runtime_id, sidechain=False):
         title = title.strip() or None
     if first_user is not None:
         first_user = " ".join(first_user.split())[:80] or None
-    cwd = next((r.get("cwd") for r in reversed(records) if isinstance(r.get("cwd"), str)), None)
+    folder = os.path.dirname(os.path.dirname(agents)) if sidechain else os.path.dirname(path)
+    cwd = session_cwd(records, os.path.basename(folder))
     dates = [value for r in records if (value := timestamp(r.get("timestamp"))) is not None]
     return {"nativeId": native_id, "title": ({"source":"native", "text":title} if title else {"source":"firstMessage", "text":first_user} if first_user else {"source":"untitled"}), "cwd": cwd,
             "messages": messages, "createdAtUnixMs": min(dates) if dates else None, "updatedAtUnixMs": max(dates) if dates else None}
@@ -243,8 +248,18 @@ def subagents(path):
     return found
 
 
+def session_cwd(records, folder):
+    """The working directory Claude Code keeps the session under: the one its
+    project folder is named after, where it resumes. The records' own cwd
+    follows the agent into subfolders, so the latest one would not do; a
+    folder name Claude Code shortened falls back to the first cwd."""
+    cwds = [r["cwd"] for r in records if isinstance(r.get("cwd"), str)]
+    return next((cwd for cwd in reversed(cwds) if re.sub(r"[^A-Za-z0-9]", "-", cwd) == folder), cwds[0] if cwds else None)
+
+
 def first_cwd(path):
-    """The working directory a session started in, from its first records."""
+    """The session's working directory from its first records, as `session_cwd`."""
+    records = []
     try:
         with open(path, encoding="utf-8") as file:
             for count, line in enumerate(file):
@@ -254,11 +269,11 @@ def first_cwd(path):
                     record = json.loads(line)
                 except ValueError:
                     continue
-                if isinstance(record, dict) and isinstance(record.get("cwd"), str):
-                    return record["cwd"]
+                if isinstance(record, dict):
+                    records.append(record)
     except OSError:
         pass
-    return None
+    return session_cwd(records, os.path.basename(os.path.dirname(path)))
 
 
 def continued_in(path):
