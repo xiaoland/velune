@@ -3,7 +3,8 @@ import AppKit
 import VeluneBindings
 
 /// The conversation window's toolbar. The list's column and the panes add
-/// their items to it, and the user's arrangement is kept under this name.
+/// their items to it; where it is customizable (macOS 26), the user's
+/// arrangement is kept under this name.
 enum ConversationToolbar {
     static let id = "conversation"
 }
@@ -36,59 +37,7 @@ struct VeluneRootView: View {
             DockAreaView(window: window, side: .left)
                 .navigationSplitViewColumnWidth(min: 190, ideal: 240, max: 600)
         } detail: {
-            GeometryReader { geometry in
-                VStack(spacing: 0) {
-                    PaneLayoutView(window: window, layout: window.layout, path: [], previewEmpty: previewEmpty)
-                    if !window.tools.tools(in: .bottom).isEmpty { BottomAreaView(window: window, available: geometry.size.height) }
-                }
-            }
-            // The window keeps the title for the Window menu and Mission Control; the tab bar shows it.
-            .navigationTitle(previewEmpty ? "新会话" : focused.selectedConversationTitle ?? "Velune")
-            .toolbar(removing: .title)
-            // Customizable, so the toolbar's own menu offers display modes and Customize Toolbar…
-            .toolbar(id: ConversationToolbar.id) {
-                ToolbarItem(id: "back", placement: .navigation) {
-                    Button { tab.goBack() } label: { Label("后退", systemImage: "chevron.backward") }
-                        .help("回到之前查看的会话（⌃⌘←）").disabled(focused.backHistory.isEmpty)
-                }
-                ToolbarItem(id: "forward", placement: .navigation) {
-                    Button { tab.goForward() } label: { Label("前进", systemImage: "chevron.forward") }
-                        .help("前往后退前的会话（⌃⌘→）").disabled(focused.forwardHistory.isEmpty)
-                }
-                // Without the title nothing holds the buttons to the trailing end.
-                ToolbarItem(id: "trailing-space") { Spacer() }
-                ToolbarItem(id: "reload") {
-                    Button { focused.reloadFromRuntimes() } label: { Label("重新读取", systemImage: "arrow.clockwise") }
-                        .keyboardShortcut("r").disabled(!focused.canReloadFromRuntimes)
-                        .help("从 Agent 运行时重新读取会话列表和当前会话（⌘ R）；用于补上自动跟随遗漏的变化")
-                }
-                ToolbarItem(id: "outline") { outlineButton }
-                if window.tools[.subAgents].place != .builtIn || !focused.subAgents.isEmpty {
-                    ToolbarItem(id: "sub-agents") { subAgentsButton }
-                }
-                // A window of the editor area alone is often one to keep in view.
-                if !window.hasToolWindows || window.pinned {
-                    ToolbarItem(id: "pin") {
-                        Toggle(isOn: $window.pinned) { Label("保持在最前面", systemImage: window.pinned ? "pin.fill" : "pin") }
-                            .help(window.pinned ? "不再保持在其他应用的窗口前面" : "保持在其他应用的窗口前面")
-                    }
-                }
-                ToolbarItem(id: "split") {
-                    // As in Xcode: Option-click divides downward.
-                    Button { window.split(NSEvent.modifierFlags.contains(.option) ? .vertical : .horizontal) } label: { Label("拆分", systemImage: "rectangle.split.2x1") }
-                        .help("在右侧拆分出新面板（⌘ D）；按住 Option 点按则向下拆分（⇧⌘ D）")
-                }
-                if Self.changeReviewEnabled {
-                    ToolbarItem(id: "changes") {
-                        Toggle(isOn: $showsChanges) { Label("变更", systemImage: "plusminus") }
-                            .help("工作目录的 git 变更").keyboardShortcut("d", modifiers: [.command, .option])
-                            .disabled(focused.loadedConversationWorkingDirectory == nil && !showsChanges)
-                    }
-                }
-                if !store.problems.isEmpty {
-                    ToolbarItem(id: "problems") { ProblemsButton(store: store) }
-                }
-            }
+            withToolbar(panes)
             // One inspector column: the right dock area, or change review while that is open.
             .inspector(isPresented: Binding(get: { showsChanges || !window.tools.tools(in: .right).isEmpty },
                                             set: { shown in
@@ -110,6 +59,101 @@ struct VeluneRootView: View {
         .onChange(of: store.outlinePresentation) { _, _ in window.outlinePopover = false }
         .focusedSceneValue(\.conversationCommands, ConversationCommandTarget(store: focused, send: tab.send, window: window))
         .task { if previewSettings { openSettings() } }
+    }
+
+    private var panes: some View {
+        GeometryReader { geometry in
+            VStack(spacing: 0) {
+                PaneLayoutView(window: window, layout: window.layout, path: [], previewEmpty: previewEmpty)
+                if !window.tools.tools(in: .bottom).isEmpty { BottomAreaView(window: window, available: geometry.size.height) }
+            }
+        }
+        // The window keeps the title for the Window menu and Mission Control; the tab bar shows it.
+        .navigationTitle(previewEmpty ? "新会话" : focused.selectedConversationTitle ?? "Velune")
+        .toolbar(removing: .title)
+    }
+
+    /// Customizable, so the toolbar's own menu offers display modes and
+    /// Customize Toolbar…, from macOS 26. Before it the trailing buttons
+    /// need a `Spacer()` item, and in a customizable toolbar SwiftUI removes
+    /// and inserts that flexible space again, saving the arrangement to user
+    /// defaults, on every layout of the window: each step of scrolling the
+    /// conversation list took about 50 ms instead of 2 ms on macOS 15.
+    @ViewBuilder private func withToolbar(_ content: some View) -> some View {
+        if #available(macOS 26, *) {
+            content.toolbar(id: ConversationToolbar.id) { customizableToolbarItems }
+        } else {
+            content.toolbar { toolbarItems }
+        }
+    }
+
+    @available(macOS 26, *)
+    @ToolbarContentBuilder private var customizableToolbarItems: some CustomizableToolbarContent {
+        ToolbarItem(id: "back", placement: .navigation) { backButton }
+        ToolbarItem(id: "forward", placement: .navigation) { forwardButton }
+        // Without the title nothing holds the buttons to the trailing end.
+        ToolbarSpacer(.flexible)
+        ToolbarItem(id: "reload") { reloadButton }
+        ToolbarItem(id: "outline") { outlineButton }
+        if showsSubAgentsItem { ToolbarItem(id: "sub-agents") { subAgentsButton } }
+        if showsPinItem { ToolbarItem(id: "pin") { pinToggle } }
+        ToolbarItem(id: "split") { splitButton }
+        if Self.changeReviewEnabled { ToolbarItem(id: "changes") { changesToggle } }
+        if !store.problems.isEmpty { ToolbarItem(id: "problems") { ProblemsButton(store: store) } }
+    }
+
+    @ToolbarContentBuilder private var toolbarItems: some ToolbarContent {
+        ToolbarItemGroup(placement: .navigation) {
+            backButton
+            forwardButton
+        }
+        ToolbarItem { Spacer() }
+        ToolbarItemGroup {
+            reloadButton
+            outlineButton
+            if showsSubAgentsItem { subAgentsButton }
+            if showsPinItem { pinToggle }
+            splitButton
+            if Self.changeReviewEnabled { changesToggle }
+            if !store.problems.isEmpty { ProblemsButton(store: store) }
+        }
+    }
+
+    private var showsSubAgentsItem: Bool { window.tools[.subAgents].place != .builtIn || !focused.subAgents.isEmpty }
+    /// A window of the editor area alone is often one to keep in view.
+    private var showsPinItem: Bool { !window.hasToolWindows || window.pinned }
+
+    private var backButton: some View {
+        Button { tab.goBack() } label: { Label("后退", systemImage: "chevron.backward") }
+            .help("回到之前查看的会话（⌃⌘←）").disabled(focused.backHistory.isEmpty)
+    }
+
+    private var forwardButton: some View {
+        Button { tab.goForward() } label: { Label("前进", systemImage: "chevron.forward") }
+            .help("前往后退前的会话（⌃⌘→）").disabled(focused.forwardHistory.isEmpty)
+    }
+
+    private var reloadButton: some View {
+        Button { focused.reloadFromRuntimes() } label: { Label("重新读取", systemImage: "arrow.clockwise") }
+            .keyboardShortcut("r").disabled(!focused.canReloadFromRuntimes)
+            .help("从 Agent 运行时重新读取会话列表和当前会话（⌘ R）；用于补上自动跟随遗漏的变化")
+    }
+
+    private var pinToggle: some View {
+        Toggle(isOn: $window.pinned) { Label("保持在最前面", systemImage: window.pinned ? "pin.fill" : "pin") }
+            .help(window.pinned ? "不再保持在其他应用的窗口前面" : "保持在其他应用的窗口前面")
+    }
+
+    private var splitButton: some View {
+        // As in Xcode: Option-click divides downward.
+        Button { window.split(NSEvent.modifierFlags.contains(.option) ? .vertical : .horizontal) } label: { Label("拆分", systemImage: "rectangle.split.2x1") }
+            .help("在右侧拆分出新面板（⌘ D）；按住 Option 点按则向下拆分（⇧⌘ D）")
+    }
+
+    private var changesToggle: some View {
+        Toggle(isOn: $showsChanges) { Label("变更", systemImage: "plusminus") }
+            .help("工作目录的 git 变更").keyboardShortcut("d", modifiers: [.command, .option])
+            .disabled(focused.loadedConversationWorkingDirectory == nil && !showsChanges)
     }
 
     /// The outline as a tool window is shown and hidden by the button.

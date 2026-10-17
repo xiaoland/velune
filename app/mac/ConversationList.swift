@@ -27,13 +27,9 @@ struct ConversationListView: View {
         Group {
             switch placement {
             case .sidebar:
-                list
+                withSidebarToolbar(list
                     .searchable(text: $window.listSearch, placement: .sidebar, prompt: "搜索会话")
-                    .navigationTitle("会话")
-                    .toolbar(id: ConversationToolbar.id) {
-                        ToolbarItem(id: "list-filter") { browserMenu }
-                        ToolbarItem(id: "new-conversation") { newConversationButton }
-                    }
+                    .navigationTitle("会话"))
             case .panel:
                 VStack(spacing: 0) {
                     HStack(spacing: 8) {
@@ -66,6 +62,23 @@ struct ConversationListView: View {
             Button("删除", role: .destructive) { store.deleteConversations(deleteTargets); deleteTargets = [] }
         } message: {
             Text("将永久删除所选 \(deleteTargets.count) 个会话，以及它们在各 Agent 运行时中的关联会话数据。此操作无法撤销。")
+        }
+    }
+
+    /// Customizable where the window's toolbar is (see `VeluneRootView.withToolbar`).
+    @ViewBuilder private func withSidebarToolbar(_ content: some View) -> some View {
+        if #available(macOS 26, *) {
+            content.toolbar(id: ConversationToolbar.id) {
+                ToolbarItem(id: "list-filter") { browserMenu }
+                ToolbarItem(id: "new-conversation") { newConversationButton }
+            }
+        } else {
+            content.toolbar {
+                ToolbarItemGroup {
+                    browserMenu
+                    newConversationButton
+                }
+            }
         }
     }
 
