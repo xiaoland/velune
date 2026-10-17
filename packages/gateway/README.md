@@ -4,7 +4,7 @@
 
 调用方通过 `GatewayConfig` 提供具有模型条目的提供商、模型路由及策略，通过 `Runner::start` 提供入口模型别名。提供商配置在启动时形成不可变快照；直接调用方修改配置后须重建 Runner；application 会使执行失效并在下次发送时自动准备，用户不需要手动连接。运行时模型选择可显式替换入口 alias 到稳定模型记录的绑定，不修改在途派发已捕获的目标。此 unit 不理解 Harness 的模型目录、思考级别转换、配置实例或认证文件。模型元数据不成为原生请求参数的默认值。仅异协议转换到 Messages、原请求无输出上限时，使用所选模型的配置上限；两者都缺失时返回必要配置错误。旧 `chatCompletionsOutputLimitField` 已从新契约删除，不提供兼容入口。
 
-提供商认证配置只有不透明 `credential_ref`。应用通过 `Runner::start(config, resolver, aliases)` 注入真正的异步 `CredentialResolver`；每次解析将资源引用与已捕获的协议／endpoint 一同传入，只返回瞬时 `ResolvedCredential`。解析器的私有认证配置、目标校验、来源 adapter、helper 与进程生命周期均归调用方。网关不接收来源 JSON、目录、CLI 路径或认证文件，不解释引用，不读取全局配置，不持久化秘密。取消派发会丢弃正在等待的解析 future；调用方必须提供符合取消合同的实现。
+提供商认证配置只有不透明 `credential_ref`。应用通过 `Runner::start(config, resolver, aliases)` 注入真正的异步 `CredentialResolver`；每次解析将资源引用与已捕获的协议、执行后端、request profile 和 endpoint 一同传入，只返回瞬时 `ResolvedCredential`。解析器的私有认证配置、目标校验、来源 adapter、helper 与进程生命周期均归调用方。网关不接收来源 JSON 或认证文件，不读取它们；CLI 可执行路径来自结构化后端配置，隔离目录由解析后的本机会话材料提供。网关不解释引用，不读取全局配置，不持久化秘密。取消派发会丢弃正在等待的解析 future；调用方必须提供符合取消合同的实现。
 
 Axum 负责 HTTP framing，当前只监听随机 loopback 端口并提供三条 POST 创建端点。请求 body 不设 gateway 自身的大小上限，读取期限为 15 秒；入口不设置固定并发拒绝门禁。流式输出采用容量为 1 的异步通道保持背压，丢弃响应 body 会取消派发。HTTP client 禁用自动重试与重定向，连接期限为 15 秒，不设置固定读取空闲期限。`Runner` 退出停止入口并取消在途任务，不等待长流完成。取消与资源限制由调用方和上游 HTTP 客户端共同决定。
 
@@ -22,15 +22,15 @@ Axum 负责 HTTP framing，当前只监听随机 loopback 端口并提供三条 
 
 fail-over 只在尚未转发任何响应时发生。429 与结构化 402 额度错误（error.code/type 为 `insufficient_quota`、`usage_limit_reached` 或 `quota_exceeded`）按 Retry-After 冷却，缺省 60 秒、至多 24 小时；5xx、连接／传输失败与超时采用 5 秒健康冷却；提交后发生传输故障只冷却后续请求，不切换当前流。HTTP 错误没有可靠窗口作用域，因此该冷却按提供商实例生效，区别于额度快照按模型过滤窗口。冷却期间所有路由和直接调用都不穿透；没有合格成员时返回 429 与最早 Retry-After，纯粹缺少必要额度事实时返回 503。重置到期只允许重新读取新鲜观察，不视为满额。冷却期满仅放行一个探测，RAII permit 在取消、失败和正常退出时释放，真正 Completed 后恢复正常排序；探测遭遇相同临时故障会重新冷却。
 
-403、请求类 4xx、取消与已开始转发后的中断结束请求。成功 HTTP headers 一经交付即提交；200 SSE 内后续出现的额度错误或业务失败也不切换。普通认证的 401 结束；`CodexSubscription` 的 401 在提交前调用 resolver.refresh 一次，只有相同 account_id 的凭据可重发。永久认证失效或重发仍为 401 时调用 invalidate，允许下一个成员；临时续期失败可尝试下一成员，但不标记会话永久失效。provider 每次调用只执行一次尝试，401 恢复由 gateway 显式组织。所有候选尝试失败时保留最后一个上游状态和正文，有健康／额度等待事实时附加当前候选最早 Retry-After。该时间表示重新检查的机会，不保证来源已刷新或额度已恢复。每个成员尝试各有一条 analytics，401 恢复保留该成员最终 exchange；tracing 记录首次 401 与切换，日志没有正文和认证值。
+403、请求类 4xx、取消与已开始转发后的中断结束请求。成功 HTTP headers 一经交付即提交；200 SSE 内后续出现的额度错误或业务失败也不切换。没有恢复能力的 HTTP 认证收到 401 时结束；声明 `CredentialRecovery::Refreshable` 的 HTTP 认证在提交前调用 resolver.refresh 一次，只有相同恢复身份和 account_id 的凭据可重发。永久认证失效或重发仍为 401 时调用 invalidate，允许下一个成员；临时续期失败可尝试下一成员，但不标记会话永久失效。provider 每次调用只执行一次尝试，401 恢复由 gateway 显式组织。所有候选尝试失败时保留最后一个上游状态和正文，有健康／额度等待事实时附加当前候选最早 Retry-After。该时间表示重新检查的机会，不保证来源已刷新或额度已恢复。每个成员尝试各有一条 analytics，401 恢复保留该成员最终 exchange；tracing 记录首次 401 与切换，日志没有正文和认证值。
 
-`Runner::start_with_scheduling` 注入共享 `SchedulingState`、只读 source 和可选会话身份；现有 start／start_with_analytics 是无额度来源、无会话身份的便捷入口，使用同一调度实现。应用应跨 Runner 持有状态。健康状态按 gateway ID 与 provider ID 隔离；配置的认证身份变化、换号或退出登录时，调用 `invalidate_provider` 清旧冷却与绑定并递增 epoch，普通 token refresh 不调用。Runner 捕获启动时的 epoch，旧 Runner 和迟到结果不能准入或改写新身份状态；额度来源也必须由应用按同一 gateway／认证绑定隔离。
+`Runner::start_with_scheduling` 注入共享 `SchedulingState`、只读 source、可选会话身份与共享 `ExecutionBackends`；现有 start／start_with_analytics 是无额度来源、无会话身份的便捷入口，使用同一调度实现。应用应跨 Runner 持有状态。健康状态按 gateway ID 与 provider ID 隔离；配置的认证身份变化、换号或退出登录时，调用 `invalidate_provider` 清旧冷却与绑定并递增 epoch，普通 token refresh 不调用。Runner 捕获启动时的 epoch，旧 Runner 和迟到结果不能准入或改写新身份状态；额度来源也必须由应用按同一 gateway／认证绑定隔离。
 
 Codex／DSH 原生运行时的装配方可额外注册其执行模型字符串为 alias，并映射到已选的提供商模型记录；gateway 不据模型名推断提供商，不解析 app-server／ACP，也不读取 huihua 历史。执行模式由 application 与 adapter 负责注入网关入口和临时本地 token；是否同时保留其它运行时入口由调用方决定。审批、回答、取消 turn 与原生会话恢复不属于本 unit。
 
 网关只发出元数据 tracing 事件，subscriber 由消费方装配。request／attempt 关联贯穿响应 body 与取消 future 的丢弃；目标使用当前快照中的序号，日志不包含模型 ID、alias、endpoint、请求正文或凭据。传输完成与模型业务成功分开，调用方断开与 Runner 关闭也有独立归因。具体字段与人工验收见 [本地诊断](../../docs/development.md#本地诊断)。
 
-Messages 保留调用方的 `anthropic-version`／beta 请求头与原生 JSON／SSE，缺少版本在派发前拒绝；API key 使用 `x-api-key`，未确认的 subscription 认证不适用于此协议。提供商 baseURL 追加 `/v1/messages`，运行时 SDK 的网关注入使用 origin。
+Messages 保留调用方的 `anthropic-version`／beta 请求头与原生 JSON／SSE，缺少版本在派发前拒绝；HTTP API key 使用 `x-api-key`，Bearer 使用 `Authorization`。提供商 baseURL 追加 `/v1/messages`，运行时 SDK 的网关注入使用 origin。
 
 异协议转换复用 `eventsource-stream` 解析 SSE 分帧，支持任意网络分块。转换后的响应去除过期的长度、编码与完整性 headers；Messages 合成请求使用 API 版本 `2023-06-01`，同协议仍保留调用方的版本。输出沿用容量为 1 的通道与取消合同；具体资源预算由调用方和上游传输负责，不添加协议无关的正文总量门禁。转换无法保留的字段只记录静态 field/code，不记录正文；真实上游 HTTP 错误保留状态和正文，未出现有效业务终态的断流不会补造完成。人工端到端验证入口见 [开发说明](../../docs/development.md)。
 
@@ -38,6 +38,12 @@ Messages 保留调用方的 `anthropic-version`／beta 请求头与原生 JSON�
 
 调用方可通过 `Runner::start_with_analytics` 注入非阻塞 `AnalyticsSink`，在上游原生响应、协议转换之前接收实际提供商／模型与用量、时间、结果记录。接收器负责持久化；gateway 不读取存储路径，也不从 tracing 重建用量。已有 `Runner::start` 可不采集统计。
 
-`ResolvedCredential.profile` 将普通 API／已有来源认证（`Standard`）与 Codex backend 订阅（`CodexSubscription { account_id }`）分开。profile 不改变网关路由协议；后者只允许精确的 HTTPS ChatGPT Codex Responses 目标，协议 adapter 再次校验。resolver 的 refresh／invalidate 默认分别返回不可用／无操作，现有来源不必实现续期。rejected_token 仅用于识别被拒的会话，不能写入日志。认证的创建、保存、刷新串行化与并发换号保护属于 application。
+`ProviderDefinition.execution_backend` 显式选择 `Http` 或 `ClaudeCli { binary }`，`request_profile` 独立选择 `Native` 或 `CodexResponses`。HTTP 必须提供 endpoint；CLI 必须使用 Messages、Native profile 和空 endpoint，binary 是可执行文件路径而非 shell 命令。Codex profile 只允许精确的 HTTPS ChatGPT Codex Responses 目标，协议 adapter 再次校验。认证来源不决定这些选择。`ResolvedCredential` 的材料、恢复身份和请求能力彼此独立，resolver 的 refresh／invalidate 默认分别返回不可用／无操作，rejected_token 不写日志。认证的创建、保存、刷新串行化与并发换号保护属于 application。
+
+`ExecutionBackends` 由应用跨 Runner 持有，与 `SchedulingState` 配合。它维护 Claude Code 共享 pool 与唯一 binding 编码；认证身份或后端配置变化时，应用同时调用两者的 `invalidate_provider(gateway_id, provider_id)`，普通 token refresh 不调用。应用退出才 shutdown 共享后端。CLI 的 stream／nonstream 以及三个入口协议使用既有 Messages 转换路径；没有会话 ID 时不复用 CLI 会话。
+
+Claude CLI 的执行提交早于 HTTP 响应提交。成功启动进程后或向已存在进程写入本次输入前，后端标记 submitted；之后即使尚未返回 headers，也禁止透明切换。CLI 退出码不伪装成 HTTP 401，也不触发认证刷新；只有明确的限流、超时或传输事实更新相应健康冷却。工具执行只由调用方承担：CLI 后端转交 tool_use 并等待真实 tool_result。
+
+有挂起工具调用的显式会话，必须使用后端登记的原 provider 与认证 epoch。这是执行归属，先于策略和软黏性；其成员被移除、换绑、会话失效或额度／健康不合格时，返回明确的不可接续错误，不切到另一实例。普通文本也不能绕过尚未完成的工具归属，不从请求正文或 tool_use_id 猜测会话。外层 Harness 回合结束时调用 `ExecutionBackends::finish_user_turn`，清理仍在执行或等待工具的交互，保留已完成的空闲会话供复用。应用在用户取消时调用 `ExecutionBackends::cancel_session`，在显式新用户轮入口调用 `begin_user_turn`；后者拒绝仍运行或挂起的交互，仅解除已终止交互的失效限制，不在每次 HTTP 请求或运行时准备时重置。后端保留已失效工具 ID，网关在选择任何候选前校验本次请求尾部的工具结果，拒绝迟到结果；完整历史中的旧结果不会阻止新轮。
 
 上游 HTTP 2xx 仍可能在响应提交前因协议契约不满足而失败，例如流请求收到非 SSE 类型。此时网关返回 502 合成 JSON 错误，不复用成功响应的正文或实体 headers；analytics 保留实际上游状态。这个下游状态规范化不参与 fail-over 分类，不能把上游协议错误当作上游 5xx。已提交响应后的错误仍按原有中断处理。

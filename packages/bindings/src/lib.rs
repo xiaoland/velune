@@ -1043,6 +1043,15 @@ impl VeluneApplication {
         })?)
     }
 
+    pub fn authentication_logout(
+        &self,
+        gateway_id: String,
+        provider_id: String,
+    ) -> Result<BindingGatewayUpdate, BindingError> {
+        convert(self.with("authentication_logout", |app| {
+            app.authentication_logout(gateway_id, provider_id)
+        })?)
+    }
     pub fn authentication_poll(&self) -> Result<BindingAuthenticationProgress, BindingError> {
         convert(self.with("authentication_poll", |application| {
             application.authentication_poll()

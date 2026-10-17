@@ -9,7 +9,7 @@ use std::{
     io::Write,
     path::{Path, PathBuf},
 };
-pub(crate) const CURRENT_SCHEMA_VERSION: u32 = 9;
+pub(crate) const CURRENT_SCHEMA_VERSION: u32 = 10;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]

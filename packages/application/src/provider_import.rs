@@ -575,6 +575,9 @@ pub(crate) fn apply(
             name: provider.name,
             protocol: protocol_kind,
             endpoint,
+            execution_backend: crate::config::ExecutionBackend::Http,
+            request_profile: crate::config::RequestProfile::Native,
+            quota_source: crate::config::ProviderQuotaSource::None,
             authentication,
             models: bindings,
             quota_limits: gateway

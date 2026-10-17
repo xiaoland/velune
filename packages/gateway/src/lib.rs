@@ -13,8 +13,9 @@ pub use analytics::{
 };
 pub use config::*;
 pub use runtime::{
-    CredentialProfile, CredentialResolutionError, CredentialResolver, CredentialTarget,
-    GatewayError, ResolvedCredential, Runner,
+    CredentialMaterial, CredentialRecovery, CredentialResolutionError, CredentialResolver,
+    CredentialTarget, ExecutionBackends, GatewayError, HttpAuthorization, RequestCapabilities,
+    RequestProfile, ResolvedCredential, Runner,
 };
 pub use scheduling::{
     QuotaSnapshot, QuotaSource, QuotaWindow, SchedulingState, SessionIdentity, UnknownQuotaSource,

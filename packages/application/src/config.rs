@@ -7,7 +7,15 @@ use serde::{Deserialize, Serialize};
 #[cfg(feature = "local-runtime")]
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
-pub use velune_gateway::{QuotaLimit, RoutingStrategy};
+pub use velune_gateway::{ExecutionBackend, QuotaLimit, RequestProfile, RoutingStrategy};
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum ProviderQuotaSource {
+    None,
+    CodexUsage,
+    ClaudeCliUsage,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -50,6 +58,9 @@ pub struct ProviderDefinition {
     pub name: String,
     pub protocol: GatewayProtocol,
     pub endpoint: String,
+    pub execution_backend: ExecutionBackend,
+    pub request_profile: RequestProfile,
+    pub quota_source: ProviderQuotaSource,
     pub(crate) authentication: crate::provider_authentication::ProviderAuthentication,
     pub models: Vec<ProviderModel>,
     pub quota_limits: Vec<QuotaLimit>,
@@ -248,6 +259,13 @@ impl GatewayConfig {
             provider
                 .authentication
                 .validate_target(&provider.protocol, &provider.endpoint)?;
+            provider.validate_composition()?;
+            if matches!(
+                provider.execution_backend,
+                ExecutionBackend::ClaudeCli { .. }
+            ) {
+                continue;
+            }
             let endpoint = url::Url::parse(&provider.endpoint).map_err(|_| "提供商服务地址无效")?;
             if !matches!(endpoint.scheme(), "http" | "https")
                 || endpoint.host_str().is_none()
@@ -268,17 +286,6 @@ impl GatewayConfig {
     pub(crate) fn authentication_revision(&self, key: &str) -> u64 {
         self.resolve_dispatch(key)
             .map_or(0, |resolved| resolved.provider.authentication.generation)
-    }
-    /// A route's requests must suit every member, so one subscription member
-    /// makes the whole route follow the subscription contract.
-    #[cfg(feature = "local-runtime")]
-    pub(crate) fn subscription(&self, key: &str) -> bool {
-        self.members(key).iter().any(|member| {
-            self.providers
-                .iter()
-                .find(|p| p.models.iter().any(|m| &m.record_key == member))
-                .is_some_and(|p| p.authentication.subscription())
-        })
     }
     /// The provider models a selection key dispatches to: a route's members,
     /// or the provider model itself.
@@ -346,6 +353,8 @@ impl GatewayConfig {
             model_record_key,
             provider_id: provider.id.as_str(),
             protocol: provider.protocol.identity_name(),
+            execution_backend: &provider.execution_backend,
+            request_profile: provider.request_profile,
             endpoint: provider.endpoint.as_str(),
             provider_model_id: binding.provider_model_id.as_str(),
             pi_projection: binding.pi_projection.as_ref(),
@@ -390,6 +399,8 @@ struct PiBindingIdentity<'a> {
     model_record_key: &'a str,
     provider_id: &'a str,
     protocol: &'static str,
+    execution_backend: &'a ExecutionBackend,
+    request_profile: RequestProfile,
     endpoint: &'a str,
     provider_model_id: &'a str,
     pi_projection: Option<&'a PiModelProjection>,
@@ -477,6 +488,8 @@ impl GatewayConfig {
                             }
                         },
                         endpoint: p.endpoint.clone(),
+                        execution_backend: p.execution_backend.clone(),
+                        request_profile: p.request_profile,
                         credential_ref: Some(p.id.clone()),
                         quota_limits: p.quota_limits.clone(),
                         models: p
@@ -659,4 +672,63 @@ pub enum ConversationBrowserProject {
     Path {
         path: String,
     },
+}
+
+impl ProviderDefinition {
+    pub(crate) fn validate_composition(&self) -> Result<(), &'static str> {
+        use crate::provider_authentication::ProviderAuthenticationSource as Auth;
+        let source = self.authentication.source();
+        if let crate::provider_authentication::AuthenticationMaterial::ClaudeCli {
+            credential_id,
+            ..
+        } = &self.authentication.material
+            && (credential_id.is_empty()
+                || credential_id.len() > 128
+                || !credential_id
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_'))
+        {
+            return Err("CLI 认证引用无效");
+        }
+        match &self.execution_backend {
+            ExecutionBackend::Http => {
+                if source == Auth::ClaudeCli {
+                    return Err("Claude CLI 认证必须由 Claude CLI 执行后端消费");
+                }
+                if source == Auth::CodexOAuth
+                    && self.request_profile != RequestProfile::CodexResponses
+                {
+                    return Err("Codex OAuth 必须显式选择 Codex Responses 请求配置");
+                }
+                if self.request_profile == RequestProfile::CodexResponses
+                    && source != Auth::CodexOAuth
+                {
+                    return Err("Codex Responses 请求配置需要 Codex OAuth 认证");
+                }
+            }
+            ExecutionBackend::ClaudeCli { binary } => {
+                if !std::path::Path::new(binary).is_absolute() || binary.contains('\0') {
+                    return Err("Claude CLI 可执行文件必须是绝对路径");
+                }
+                if source != Auth::ClaudeCli
+                    || self.protocol != GatewayProtocol::MessagesV1
+                    || self.request_profile != RequestProfile::Native
+                    || !self.endpoint.is_empty()
+                {
+                    return Err(
+                        "Claude CLI 必须组合 Messages、Native、Claude CLI 认证和空 HTTP 地址",
+                    );
+                }
+            }
+        }
+        match self.quota_source {
+            ProviderQuotaSource::CodexUsage if source != Auth::CodexOAuth => {
+                Err("Codex 额度来源需要 Codex OAuth 认证")
+            }
+            ProviderQuotaSource::ClaudeCliUsage if source != Auth::ClaudeCli => {
+                Err("Claude CLI 额度来源需要 Claude CLI 认证")
+            }
+            _ => Ok(()),
+        }
+    }
 }

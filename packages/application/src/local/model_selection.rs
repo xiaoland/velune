@@ -285,7 +285,7 @@ impl CoreRuntime {
                         .ok_or_else(|| RuntimeError::invalid("conversation id"))
                 })
                 .transpose()?;
-            self.start_pi_for_session(cwd, native_id.map(Path::new), None, None, false)?;
+            self.start_pi_for_session(cwd, native_id.map(Path::new), None, None)?;
             if is_new {
                 self.session
                     .pi

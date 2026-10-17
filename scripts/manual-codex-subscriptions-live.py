@@ -52,7 +52,7 @@ fn emit(value:Value){println!("{value}");let _=io::stdout().flush();}
 struct SourceCredentials{credentials:BTreeMap<String,ResolvedCredential>}
 impl CredentialResolver for SourceCredentials {
  fn resolve(&self,reference:String,target:CredentialTarget)->velune_ai::OperationFuture<std::result::Result<ResolvedCredential,CredentialResolutionError>> {
-  let value=if target.endpoint!=ENDPOINT||!matches!(target.protocol,GatewayProtocol::ResponsesV1){Err(CredentialResolutionError::UnauthorizedTarget)}else{self.credentials.get(&reference).map(|c|ResolvedCredential{token:c.token.clone(),explicit_output_cap:c.explicit_output_cap,subscription:c.subscription,profile:match &c.profile{CredentialProfile::Standard=>CredentialProfile::Standard,CredentialProfile::CodexSubscription{account_id}=>CredentialProfile::CodexSubscription{account_id:account_id.clone()}}}).ok_or(CredentialResolutionError::Unavailable)};
+  let value=if target.endpoint!=ENDPOINT||!matches!(target.protocol,GatewayProtocol::ResponsesV1)||target.execution_backend!=ExecutionBackend::Http||target.request_profile!=RequestProfile::CodexResponses{Err(CredentialResolutionError::UnauthorizedTarget)}else{self.credentials.get(&reference).cloned().ok_or(CredentialResolutionError::Unavailable)};
   Box::pin(async move{value})
  }
  // Default refresh/invalidate do not mutate or renew this external source.
@@ -72,7 +72,7 @@ fn load(path:&Path)->Result<Arc<dyn CredentialResolver>>{
   let bytes=URL_SAFE_NO_PAD.decode(encoded).map_err(|_|fail("现有 access credential 格式不支持"))?;
   let claims:Value=serde_json::from_slice(&bytes).map_err(|_|fail("现有 access credential 格式不支持"))?;
   if claims["exp"].as_u64().is_none_or(|exp|exp<=now){return Err(fail("现有 access credential 已过期；请先在原来源正常刷新，本脚本不续期"));}
-  credentials.insert(id.into(),ResolvedCredential{token,explicit_output_cap:Some(false),subscription:true,profile:CredentialProfile::CodexSubscription{account_id}});
+  credentials.insert(id.into(),ResolvedCredential{material:CredentialMaterial::Http{authorization:HttpAuthorization::Bearer(token),account_id:Some(account_id)},recovery:CredentialRecovery::None,request_capabilities:RequestCapabilities{explicit_output_cap:Some(false)}});
  }
  emit(json!({"state":"source_loaded_read_only","account_count":2,"authentication_types":["chat_g_p_t","chat_g_p_t"],"refresh_enabled":false}));
  Ok(Arc::new(SourceCredentials{credentials}))
@@ -84,14 +84,14 @@ impl CredentialResolver for InjectedResolver {
  fn resolve(&self,reference:String,target:CredentialTarget)->velune_ai::OperationFuture<std::result::Result<ResolvedCredential,CredentialResolutionError>> {
   if reference=="local-injected-a" {
    let allowed=target.endpoint==self.endpoint && matches!(target.protocol,GatewayProtocol::ResponsesV1);
-   return Box::pin(async move{if !allowed{Err(CredentialResolutionError::UnauthorizedTarget)}else{Ok(ResolvedCredential{token:"fixture-local-429-only".into(),explicit_output_cap:None,subscription:false,profile:CredentialProfile::Standard})}});
+   return Box::pin(async move{if !allowed{Err(CredentialResolutionError::UnauthorizedTarget)}else{Ok(ResolvedCredential{material:velune_gateway::CredentialMaterial::Http{authorization:velune_gateway::HttpAuthorization::Bearer("fixture-local-429-only".into()),account_id:None},recovery:velune_gateway::CredentialRecovery::None,request_capabilities:velune_gateway::RequestCapabilities::default()})}});
   }self.real.resolve(reference,target)
  }
  fn refresh(&self,reference:String,target:CredentialTarget,rejected:String)->velune_ai::OperationFuture<std::result::Result<ResolvedCredential,CredentialResolutionError>> {self.real.refresh(reference,target,rejected)}
  fn invalidate(&self,reference:String,target:CredentialTarget,rejected:String)->velune_ai::OperationFuture<()> {self.real.invalidate(reference,target,rejected)}
 }
 fn runner(real:Arc<dyn CredentialResolver>,model:&str,ids:&[&str],injection:Option<&str>,sink:Arc<Sink>)->Result<Runner>{
- let providers:Vec<_>=ids.iter().map(|id|ProviderDefinition{id:(*id).into(),name:(*id).into(),protocol:GatewayProtocol::ResponsesV1,endpoint:if *id=="account-a"{injection.unwrap_or(ENDPOINT).into()}else{ENDPOINT.into()},credential_ref:Some(if *id=="account-a"&&injection.is_some(){"local-injected-a".into()}else{(*id).into()}),quota_limits:vec![],models:vec![ProviderModel{record_key:(*id).into(),provider_model_id:model.into(),nickname:"合成验收".into(),icon:None,context_window:None,max_output_tokens:None,reasoning_levels:None}]}).collect();
+ let providers:Vec<_>=ids.iter().map(|id|ProviderDefinition{execution_backend:velune_gateway::ExecutionBackend::Http,request_profile:if *id=="account-a"&&injection.is_some(){RequestProfile::Native}else{RequestProfile::CodexResponses},id:(*id).into(),name:(*id).into(),protocol:GatewayProtocol::ResponsesV1,endpoint:if *id=="account-a"{injection.unwrap_or(ENDPOINT).into()}else{ENDPOINT.into()},credential_ref:Some(if *id=="account-a"&&injection.is_some(){"local-injected-a".into()}else{(*id).into()}),quota_limits:vec![],models:vec![ProviderModel{record_key:(*id).into(),provider_model_id:model.into(),nickname:"合成验收".into(),icon:None,context_window:None,max_output_tokens:None,reasoning_levels:None}]}).collect();
  let routes=if ids.len()>1{vec![ModelRoute{record_key:"live-pool".into(),name:"验收订阅池".into(),members:providers.iter().map(|p|p.models[0].record_key.clone()).collect(),strategy:RoutingStrategy::Order,sticky:false,weights:BTreeMap::new()}]}else{Vec::new()};
  let resolver:Arc<dyn CredentialResolver>=if let Some(endpoint)=injection{Arc::new(InjectedResolver{real,endpoint:endpoint.into()})}else{real};
  Runner::start_with_analytics(GatewayConfig{id:"default".into(),name:"隔离验收".into(),providers,routes},resolver,BTreeMap::new(),Some(sink),SchedulingState::default()).map_err(|_|fail("启动隔离网关失败"))
@@ -169,8 +169,8 @@ async fn discover(credentials:[ResolvedCredential;2])->Result<Value>{
  let client=reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()).retry(reqwest::retry::never()).timeout(Duration::from_secs(60)).build().map_err(|_|fail("创建目录客户端失败"))?;
  let mut catalogs=Vec::new();
  for (index,credential) in credentials.into_iter().enumerate(){
-  let CredentialProfile::CodexSubscription{account_id}=credential.profile else{return Err(fail("模型目录要求订阅认证"));};
-  let mut response=client.get(format!("{ENDPOINT}/models?client_version=0.162.0")).bearer_auth(credential.token).header("chatgpt-account-id",account_id).header("originator","codex_cli_rs").header("user-agent","codex_cli_rs/0.162.0 Velune/0.1").header("version","0.162.0").send().await.map_err(|_|fail("模型目录请求失败"))?;
+  let CredentialMaterial::Http{authorization:HttpAuthorization::Bearer(token),account_id:Some(account_id)}=credential.material else{return Err(fail("模型目录要求订阅认证"));};
+  let mut response=client.get(format!("{ENDPOINT}/models?client_version=0.162.0")).bearer_auth(token).header("chatgpt-account-id",account_id).header("originator","codex_cli_rs").header("user-agent","codex_cli_rs/0.162.0 Velune/0.1").header("version","0.162.0").send().await.map_err(|_|fail("模型目录请求失败"))?;
   let status=response.status().as_u16();emit(json!({"state":"model_directory_headers","account":if index==0{"account-a"}else{"account-b"},"status":status}));
   if status!=200{let error=diagnostic(&mut response).await;emit(json!({"state":"model_directory_error","status":status,"error":error}));return Err(fail("真实模型目录不可用；停止，不猜模型"));}
   let mut bytes=Vec::new();while let Some(chunk)=response.chunk().await.map_err(|_|fail("模型目录流中断"))?{if bytes.len()+chunk.len()>1024*1024{return Err(fail("模型目录超过 1 MiB"));}bytes.extend_from_slice(&chunk);}
@@ -188,9 +188,9 @@ async fn discover(credentials:[ResolvedCredential;2])->Result<Value>{
  Ok(json!({"case":"discover-models","logical_requests":0,"metadata_requests":2,"different_accounts":true,"common_models":common}))
 }
 async fn live(real:Arc<dyn CredentialResolver>,model:&str,fixture:&str,nonce:&str,case:&str)->Result<Value>{
- let target=||CredentialTarget{protocol:GatewayProtocol::ResponsesV1,endpoint:ENDPOINT.into()};
+ let target=||CredentialTarget{protocol:GatewayProtocol::ResponsesV1,endpoint:ENDPOINT.into(),execution_backend:ExecutionBackend::Http,request_profile:RequestProfile::CodexResponses};
  let a=real.resolve("account-a".into(),target()).await.map_err(|_|fail("A 凭据不可用"))?;let b=real.resolve("account-b".into(),target()).await.map_err(|_|fail("B 凭据不可用"))?;
- let different=matches!((&a.profile,&b.profile),(CredentialProfile::CodexSubscription{account_id:a},CredentialProfile::CodexSubscription{account_id:b}) if a!=b);
+ let different=matches!((&a.material,&b.material),(CredentialMaterial::Http{account_id:Some(a),..},CredentialMaterial::Http{account_id:Some(b),..}) if a!=b);
  if !different{return Err(fail("两个登录属于同一账户，停止调用"));}emit(json!({"state":"distinct_accounts_verified","different_accounts":true}));
  if case=="discover-models"{return discover([a,b]).await;}drop(a);drop(b);
  let client=reqwest::Client::builder().no_proxy().redirect(reqwest::redirect::Policy::none()).retry(reqwest::retry::never()).timeout(Duration::from_secs(60)).build().map_err(|_|fail("创建验收客户端失败"))?;

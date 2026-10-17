@@ -85,24 +85,6 @@ export default function (pi) {
   pi.on("model_select", (event) => {
     if (event.model?.provider === "velune" && event.model.id === "auto") appendSelection();
   });
-  // Velune's gateway decides subscription capabilities. Pi's generic
-  // Responses adapter otherwise adds API-key-oriented generation and cache
-  // fields based on local catalog metadata.
-  pi.on("before_provider_request", (event, ctx) => {
-    if (ctx.model?.provider !== "velune" || ctx.model.id !== "auto") return event.payload;
-    if (!event.payload || typeof event.payload !== "object") return event.payload;
-    const chosen = selection();
-    if (chosen.subscriptionCapability !== true) return event.payload;
-    const payload = { ...event.payload };
-    for (const key of [
-      "max_output_tokens",
-      "temperature",
-      "prompt_cache_retention",
-      "prompt_cache_options",
-      "prompt_cache_key",
-    ]) delete payload[key];
-    return payload;
-  });
   pi.registerVirtualModel({
     provider: "velune",
     id: "auto",

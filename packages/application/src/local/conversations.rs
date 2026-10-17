@@ -601,6 +601,11 @@ impl CoreRuntime {
                 .ok_or_else(|| RuntimeError::invalid("请选择此会话的模型"))?;
             self.prepare_with_selection(snapshot, &selection, false)?;
         }
+        if let Some((gateway_id, session)) = self.backend_session_identity() {
+            self.execution_backends
+                .begin_user_turn(&gateway_id, &session)
+                .map_err(|error| RuntimeError::context("CLI 新轮准备", error))?;
+        }
         let input = pi::TurnInput {
             text: text.into(),
             effort: self.requested_effort(request)?,
@@ -692,9 +697,28 @@ impl CoreRuntime {
         Ok(())
     }
 
+    pub(super) fn backend_session_identity(
+        &self,
+    ) -> Option<(String, velune_gateway::SessionIdentity)> {
+        let runtime = self.runtime_instances.iter().find(|runtime| {
+            Some(runtime.id.as_str()) == self.session.execution_runtime_id.as_deref()
+        })?;
+        Some((
+            runtime.gateway_id.clone(),
+            velune_gateway::SessionIdentity {
+                namespace: "velune.conversation".into(),
+                id: self.session.conversation_id()?.into(),
+            },
+        ))
+    }
+
     pub(super) fn cancel_action(&mut self, request: &Value) -> Result<Value, RuntimeError> {
         self.ensure_active(request)?;
         self.session.cancel_requested = true;
+        if let Some((gateway_id, session)) = self.backend_session_identity() {
+            self.execution_backends
+                .cancel_session(&gateway_id, &session);
+        }
         if let ActiveState::Acp(session) = &mut self.session.active_state {
             session
                 .cancel()

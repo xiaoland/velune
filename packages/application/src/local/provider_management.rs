@@ -40,7 +40,7 @@ impl CoreRuntime {
             || self
                 .subscription_login
                 .as_ref()
-                .is_some_and(crate::subscription_auth::Login::is_running)
+                .is_some_and(crate::provider_login::Login::is_running)
         {
             return Err(RuntimeError::invalid("runtime or login is busy"));
         }
@@ -60,6 +60,16 @@ impl CoreRuntime {
             if let crate::provider_authentication::AuthenticationMaterial::CodexSubscription { credential_id, .. } = &old.authentication.material
                 && !self.gateways.iter().flat_map(|g| &g.providers).any(|p| matches!(&p.authentication.material, crate::provider_authentication::AuthenticationMaterial::CodexSubscription { credential_id: current, .. } if current == credential_id))
             { cleanup_failed |= crate::subscription_auth::remove(&self.options.home_directory, credential_id).is_err(); }
+        }
+        for old in previous.iter().flat_map(|g| &g.providers) {
+            if let crate::provider_authentication::AuthenticationMaterial::ClaudeCli { credential_id, configured, .. } = &old.authentication.material
+                && !self.gateways.iter().flat_map(|g| &g.providers).any(|p| matches!(&p.authentication.material, crate::provider_authentication::AuthenticationMaterial::ClaudeCli { credential_id: current, .. } if current == credential_id)) {
+                if *configured && let crate::config::ExecutionBackend::ClaudeCli { binary } = &old.execution_backend {
+                    let runtime=tokio::runtime::Builder::new_current_thread().enable_all().build()?;
+                    cleanup_failed |= runtime.block_on(crate::claude_cli::logout(binary,&crate::claude_cli::directory(&self.options.home_directory,credential_id))).is_err();
+                }
+                cleanup_failed |= crate::claude_cli::remove(&self.options.home_directory,credential_id).is_err();
+            }
         }
         let reconnect = self.next_turn_runtime_id.as_ref().is_some_and(|id| {
             let before = previous_runtimes.iter().find(|runtime| &runtime.id == id);

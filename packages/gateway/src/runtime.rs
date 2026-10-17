@@ -6,7 +6,7 @@ use crate::{
         AnalyticsOutcome, AnalyticsProtocol, AnalyticsRecord, RequestAnalytics,
         SharedAnalyticsSink, SharedTracker, TokenUsage, Tracker, now_ms,
     },
-    config::{GatewayConfig, GatewayProtocol, QuotaLimit, RoutingStrategy},
+    config::{ExecutionBackend, GatewayConfig, GatewayProtocol, QuotaLimit, RoutingStrategy},
     observation::Observation,
     scheduling::{
         Candidate, QuotaSource, ScheduleUnavailable, SchedulingState, SessionIdentity,
@@ -43,12 +43,18 @@ use velune_ai::{
     messages::*,
     responses::*,
 };
-pub use velune_ai_provider::config::{CredentialProfile, ResolvedCredential};
+use velune_ai_provider::claude_code::{ClaudeCode, ClaudeCodeConfig, ClaudeCodePool, Continuation};
+pub use velune_ai_provider::config::{
+    CredentialMaterial, CredentialRecovery, HttpAuthorization, RequestCapabilities, RequestProfile,
+    ResolvedCredential,
+};
 
 #[derive(Debug, Clone)]
 pub struct CredentialTarget {
     pub protocol: GatewayProtocol,
     pub endpoint: String,
+    pub execution_backend: ExecutionBackend,
+    pub request_profile: RequestProfile,
 }
 #[derive(Debug, Clone, Copy)]
 pub enum CredentialResolutionError {
@@ -121,7 +127,10 @@ struct RouteTarget {
     model: ProviderModelId,
     protocol: GatewayProtocol,
     endpoint: String,
-    config: ProviderConfig,
+    config: Option<ProviderConfig>,
+    execution_backend: ExecutionBackend,
+    request_profile: RequestProfile,
+    continuation_required: bool,
     reference: String,
     provider_id: String,
     provider_name: String,
@@ -145,6 +154,64 @@ struct Ingress {
     provider_epochs: BTreeMap<String, u64>,
     quotas: Arc<dyn QuotaSource>,
     session: Option<SessionIdentity>,
+    backends: ExecutionBackends,
+    backend_bindings: BTreeMap<String, String>,
+}
+
+/// Shared execution resources, independently owned from any individual Runner.
+#[derive(Clone, Default)]
+pub struct ExecutionBackends {
+    pub claude_code: Arc<ClaudeCodePool>,
+    bindings: Arc<std::sync::Mutex<BTreeMap<(String, String), String>>>,
+}
+impl ExecutionBackends {
+    fn session_key(gateway_id: &str, session: &SessionIdentity) -> String {
+        serde_json::to_string(&(gateway_id, &session.namespace, &session.id))
+            .expect("session tuple")
+    }
+    /// Begin an explicitly new user turn; pending or running work must be cancelled first.
+    pub fn begin_user_turn(
+        &self,
+        gateway_id: &str,
+        session: &SessionIdentity,
+    ) -> Result<(), velune_ai::InvalidContract> {
+        self.claude_code
+            .begin_user_turn(&Self::session_key(gateway_id, session))
+    }
+    /// Cancel session execution, including tools waiting after the HTTP response ended.
+    pub fn cancel_session(&self, gateway_id: &str, session: &SessionIdentity) {
+        self.claude_code
+            .cancel_session(&Self::session_key(gateway_id, session));
+    }
+    /// Settle an outer turn, cancelling unfinished execution while preserving idle sessions.
+    pub fn finish_user_turn(&self, gateway_id: &str, session: &SessionIdentity) {
+        self.claude_code
+            .finish_user_turn(&Self::session_key(gateway_id, session));
+    }
+    pub fn invalidate_provider(&self, gateway_id: &str, provider_id: &str) {
+        if let Some(binding) = self
+            .bindings
+            .lock()
+            .expect("backend bindings")
+            .remove(&(gateway_id.into(), provider_id.into()))
+        {
+            self.claude_code.invalidate(&binding);
+        }
+    }
+    pub fn shutdown(&self) {
+        self.claude_code.shutdown();
+        self.bindings.lock().expect("backend bindings").clear();
+    }
+    fn register(&self, gateway: &str, provider: &str, epoch: u64) -> String {
+        let binding = serde_json::to_string(&(gateway, provider, epoch)).expect("binding tuple");
+        let mut bindings = self.bindings.lock().expect("backend bindings");
+        if let Some(previous) = bindings.insert((gateway.into(), provider.into()), binding.clone())
+            && previous != binding
+        {
+            self.claude_code.invalidate(&previous);
+        }
+        binding
+    }
 }
 
 pub struct Runner {
@@ -198,6 +265,7 @@ impl Runner {
             health,
             Arc::new(UnknownQuotaSource),
             None,
+            ExecutionBackends::default(),
         )
     }
     #[allow(clippy::too_many_arguments)]
@@ -209,6 +277,7 @@ impl Runner {
         health: SchedulingState,
         quotas: Arc<dyn QuotaSource>,
         session: Option<SessionIdentity>,
+        backends: ExecutionBackends,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         if session.as_ref().is_some_and(|session| {
             session.namespace.trim().is_empty() || session.id.trim().is_empty()
@@ -238,6 +307,27 @@ impl Runner {
         let mut epoch = [0u8; 8];
         getrandom::fill(&mut epoch).map_err(|_| GatewayError("gateway request identity"))?;
         let stopping = Arc::new(AtomicBool::new(false));
+        let provider_epochs: BTreeMap<_, _> = config
+            .providers
+            .iter()
+            .map(|provider| (provider.id.clone(), health.epoch(&config.id, &provider.id)))
+            .collect();
+        let backend_bindings = config
+            .providers
+            .iter()
+            .filter(|provider| {
+                matches!(
+                    provider.execution_backend,
+                    ExecutionBackend::ClaudeCli { .. }
+                )
+            })
+            .map(|provider| {
+                (
+                    provider.id.clone(),
+                    backends.register(&config.id, &provider.id, provider_epochs[&provider.id]),
+                )
+            })
+            .collect();
         let state = Arc::new(Ingress {
             routes: routes.clone(),
             token: token.clone(),
@@ -248,11 +338,9 @@ impl Runner {
             next_request: AtomicU64::new(1),
             stopping: stopping.clone(),
             analytics,
-            provider_epochs: config
-                .providers
-                .iter()
-                .map(|provider| (provider.id.clone(), health.epoch(&config.id, &provider.id)))
-                .collect(),
+            provider_epochs,
+            backend_bindings,
+            backends,
             gateway_id: config.id.clone(),
             health,
             quotas,
@@ -315,30 +403,35 @@ fn build_routes(
     for (provider_slot, configured_provider) in config.providers.iter().enumerate() {
         for (model_slot, entry) in configured_provider.models.iter().enumerate() {
             let provider = configured_provider;
-            let endpoint = parse_endpoint(&provider.endpoint)?;
-            let protocol = match provider.protocol {
-                GatewayProtocol::ChatCompletionsV1 => {
-                    ProtocolConfig::ChatCompletions(ChatCompletionsConfig { endpoint })
-                }
-                GatewayProtocol::ResponsesV1 => {
-                    ProtocolConfig::Responses(ResponsesConfig { endpoint })
-                }
-                GatewayProtocol::MessagesV1 => {
-                    ProtocolConfig::Messages(MessagesConfig { endpoint })
-                }
+            let provider_config = if matches!(provider.execution_backend, ExecutionBackend::Http) {
+                let endpoint = parse_endpoint(&provider.endpoint)?;
+                let protocol = match provider.protocol {
+                    GatewayProtocol::ChatCompletionsV1 => {
+                        ProtocolConfig::ChatCompletions(ChatCompletionsConfig { endpoint })
+                    }
+                    GatewayProtocol::ResponsesV1 => {
+                        ProtocolConfig::Responses(ResponsesConfig { endpoint })
+                    }
+                    GatewayProtocol::MessagesV1 => {
+                        ProtocolConfig::Messages(MessagesConfig { endpoint })
+                    }
+                };
+                Some(ProviderConfig::new(
+                    ProviderId::new(provider.id.clone())?,
+                    ConfigRevision::new(1)?,
+                    protocol,
+                    CredentialRef::new(
+                        provider
+                            .credential_ref
+                            .clone()
+                            .unwrap_or_else(|| provider.id.clone()),
+                    )?,
+                    provider.request_profile,
+                )?)
+            } else {
+                None
             };
             let model = ProviderModelId::new(entry.provider_model_id.clone())?;
-            let provider_config = ProviderConfig::new(
-                ProviderId::new(provider.id.clone())?,
-                ConfigRevision::new(1)?,
-                protocol,
-                CredentialRef::new(
-                    provider
-                        .credential_ref
-                        .clone()
-                        .unwrap_or_else(|| provider.id.clone()),
-                )?,
-            )?;
             routes.insert(
                 entry.record_key.clone(),
                 RouteTarget {
@@ -355,6 +448,9 @@ fn build_routes(
                     protocol: provider.protocol.clone(),
                     endpoint: provider.endpoint.clone(),
                     config: provider_config,
+                    execution_backend: provider.execution_backend.clone(),
+                    request_profile: provider.request_profile,
+                    continuation_required: false,
                     reference: provider
                         .credential_ref
                         .clone()
@@ -574,6 +670,29 @@ async fn ingress_observed(
             "model routes require full history; previous_response_id and conversation are unsupported",
         );
     }
+    if let Some(session) = state.backend_session()
+        && state
+            .backends
+            .claude_code
+            .validate_result_ids(&session, &tail_tool_result_ids(&protocol, &body))
+            .is_err()
+    {
+        return rejected(
+            observation,
+            StatusCode::CONFLICT,
+            "tool results belong to a cancelled or invalidated Claude interaction",
+        );
+    }
+    let route = match state.continuation_route(&route) {
+        Ok(route) => route,
+        Err(()) => {
+            return rejected(
+                observation,
+                StatusCode::CONFLICT,
+                "Claude tool continuation is unavailable for this session and provider binding",
+            );
+        }
+    };
     // Members share a protocol; the first one stands for the route here.
     let target = &route[0];
     let stream = match body.get("stream") {
@@ -864,9 +983,8 @@ struct PendingFailure {
     next: NextCandidate,
 }
 enum NextCandidate {
-    /// The failure says nothing about the other candidates: the request
-    /// itself was refused, the account was refused, or delivery was cancelled.
-    Stop,
+    /// Replay is forbidden, independently of any provider health observation.
+    Stop { cooldown: Option<Duration> },
     /// This target could not serve the request; another one may.
     Allowed { cooldown: Option<Duration> },
 }
@@ -897,7 +1015,7 @@ fn next_candidate(
     headers: &[Header],
 ) -> NextCandidate {
     if cancelled {
-        return NextCandidate::Stop;
+        return NextCandidate::Stop { cooldown: None };
     }
     match status {
         _ if rate_limited || status == Some(429) => NextCandidate::Allowed {
@@ -911,15 +1029,15 @@ fn next_candidate(
             ),
         },
         // No response: the connection failed or timed out before headers.
-        // A model request has no effect beyond the call, so trying another
-        // target is allowed even if this one may have started generating.
+        // HTTP generation may be retried before downstream delivery. Execution
+        // backends with side effects apply their stricter submitted gate later.
         None if transport_failure => NextCandidate::Allowed {
             cooldown: Some(Duration::from_secs(5)),
         },
         Some(status) if status >= 500 => NextCandidate::Allowed {
             cooldown: Some(Duration::from_secs(5)),
         },
-        _ => NextCandidate::Stop,
+        _ => NextCandidate::Stop { cooldown: None },
     }
 }
 
@@ -947,7 +1065,71 @@ fn has_upstream_state(body: &Value) -> bool {
         .any(|field| body.get(*field).is_some_and(|value| !value.is_null()))
 }
 
+// Only the request tail introduces results for this exchange. Older results in
+// full conversation history must not resurrect cancelled execution ownership.
+fn tail_tool_result_ids(protocol: &GatewayProtocol, body: &Value) -> Vec<String> {
+    match protocol {
+        GatewayProtocol::MessagesV1 => body["messages"]
+            .as_array()
+            .and_then(|messages| messages.last())
+            .filter(|message| message["role"] == "user")
+            .and_then(|message| message["content"].as_array())
+            .into_iter()
+            .flatten()
+            .filter(|block| block["type"] == "tool_result")
+            .filter_map(|block| block["tool_use_id"].as_str().map(str::to_owned))
+            .collect(),
+        GatewayProtocol::ChatCompletionsV1 => body["messages"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .rev()
+            .take_while(|message| message["role"] == "tool")
+            .filter_map(|message| message["tool_call_id"].as_str().map(str::to_owned))
+            .collect(),
+        GatewayProtocol::ResponsesV1 => body["input"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .rev()
+            .take_while(|item| {
+                matches!(
+                    item["type"].as_str(),
+                    Some("function_call_output" | "custom_tool_call_output")
+                )
+            })
+            .filter_map(|item| item["call_id"].as_str().map(str::to_owned))
+            .collect(),
+    }
+}
+
 impl Ingress {
+    fn backend_session(&self) -> Option<String> {
+        self.session
+            .as_ref()
+            .map(|session| ExecutionBackends::session_key(&self.gateway_id, session))
+    }
+    fn continuation_route(&self, route: &Route) -> Result<Route, ()> {
+        let Some(session) = self.backend_session() else {
+            return Ok(route.clone());
+        };
+        match self.backends.claude_code.continuation(&session) {
+            Continuation::None => Ok(route.clone()),
+            Continuation::Invalidated => Err(()),
+            Continuation::Pinned { binding } => {
+                let mut target = route
+                    .iter()
+                    .find(|target| {
+                        matches!(target.execution_backend, ExecutionBackend::ClaudeCli { .. })
+                            && self.backend_bindings.get(&target.provider_id) == Some(&binding)
+                    })
+                    .cloned()
+                    .ok_or(())?;
+                target.continuation_required = true;
+                Ok(Route::from([target]))
+            }
+        }
+    }
     fn candidate<'a>(&self, target: &'a RouteTarget) -> Candidate<'a> {
         Candidate {
             provider: &target.provider_id,
@@ -960,6 +1142,9 @@ impl Ingress {
     }
     fn candidates(&self, route: &Route) -> Result<Vec<RouteTarget>, ScheduleUnavailable> {
         let first = &route[0];
+        if first.continuation_required {
+            return Ok(route.to_vec());
+        }
         let candidates: Vec<_> = route.iter().map(|target| self.candidate(target)).collect();
         self.health
             .rank(
@@ -1090,6 +1275,19 @@ async fn attempts(
         ) {
             Ok(permit) => permit,
             Err(blocked) => {
+                if target.continuation_required {
+                    let headers = blocked
+                        .retry_after
+                        .into_iter()
+                        .map(|delay| Header {
+                            name: "retry-after".into(),
+                            value: retry_seconds(delay).to_string(),
+                        })
+                        .collect();
+                    send_failure(&sender,Some(ResponseMeta { status:409,headers }),None,409,
+                        "Claude tool continuation is paused by quota, health or an invalidated provider binding").await;
+                    return;
+                }
                 if let Some(delay) = blocked.retry_after {
                     unavailable.retry_after =
                         Some(unavailable.retry_after.map_or(delay, |old| old.min(delay)));
@@ -1171,7 +1369,10 @@ async fn attempts(
                 });
                 last_failure = Some(failure);
             }
-            NextCandidate::Stop => {
+            NextCandidate::Stop { cooldown } => {
+                if let Some(duration) = cooldown {
+                    permit.cool(*duration);
+                }
                 drop(observation);
                 send_failure(
                     &sender,
@@ -1261,6 +1462,8 @@ async fn dispatch_observed(
             CredentialTarget {
                 protocol: target.protocol.clone(),
                 endpoint: target.endpoint.clone(),
+                execution_backend: target.execution_backend.clone(),
+                request_profile: target.request_profile,
             },
         )
         .await
@@ -1283,10 +1486,15 @@ async fn dispatch_observed(
             ));
         }
     };
-    if !matches!(
-        credential.profile,
-        CredentialProfile::CodexSubscription { .. }
-    ) {
+    let recovery = credential.recovery.clone();
+    let account = match &credential.material {
+        CredentialMaterial::Http { account_id, .. } => account_id.clone(),
+        _ => None,
+    };
+    let Some(rejected_token) = credential.token().map(str::to_owned).filter(|_| {
+        matches!(target.execution_backend, ExecutionBackend::Http)
+            && matches!(recovery, CredentialRecovery::Refreshable { .. })
+    }) else {
         return dispatch_credential(
             state,
             tracker,
@@ -1299,12 +1507,12 @@ async fn dispatch_observed(
             credential,
         )
         .await;
-    }
-    let profile = credential.profile.clone();
-    let rejected_token = credential.token.clone();
+    };
     let destination = CredentialTarget {
         protocol: target.protocol.clone(),
         endpoint: target.endpoint.clone(),
+        execution_backend: target.execution_backend.clone(),
+        request_profile: target.request_profile,
     };
     let result = dispatch_credential(
         state.clone(),
@@ -1331,7 +1539,12 @@ async fn dispatch_observed(
         )
         .await;
     let credential = match recovered {
-        Ok(credential) if credential.profile == profile => credential,
+        Ok(credential)
+            if credential.recovery == recovery
+                && matches!(&credential.material, CredentialMaterial::Http { account_id, .. } if account_id == &account) =>
+        {
+            credential
+        }
         Err(CredentialResolutionError::AuthenticationExpired) => {
             state
                 .resolver
@@ -1341,7 +1554,10 @@ async fn dispatch_observed(
         }
         _ => return allow_auth_failover(result),
     };
-    let rejected_token = credential.token.clone();
+    let rejected_token = credential
+        .token()
+        .expect("recovered HTTP credential")
+        .to_owned();
     let result = dispatch_credential(
         state.clone(),
         tracker,
@@ -1389,7 +1605,7 @@ async fn dispatch_credential(
     match target.protocol {
         GatewayProtocol::ChatCompletionsV1 => {
             let adapter = match ChatCompletions::with_resolved_credential(
-                target.config,
+                target.config.expect("validated HTTP target"),
                 state.client.clone(),
                 credential,
             ) {
@@ -1571,7 +1787,7 @@ async fn dispatch_credential(
         }
         GatewayProtocol::ResponsesV1 => {
             let adapter = match OpenAiResponses::with_resolved_credential(
-                target.config,
+                target.config.expect("validated HTTP target"),
                 state.responses_client.clone(),
                 credential,
             ) {
@@ -1764,11 +1980,32 @@ async fn dispatch_credential(
             }
         }
         GatewayProtocol::MessagesV1 => {
-            let adapter = match Messages::with_resolved_credential(
-                target.config,
-                state.client.clone(),
-                credential,
-            ) {
+            let is_cli = matches!(target.execution_backend, ExecutionBackend::ClaudeCli { .. });
+            let adapter: Result<Box<dyn MessagesProvider>, velune_ai::InvalidContract> =
+                match &target.execution_backend {
+                    ExecutionBackend::Http => Messages::with_resolved_credential(
+                        target.config.clone().expect("validated HTTP target"),
+                        state.client.clone(),
+                        credential,
+                    )
+                    .map(|adapter| Box::new(adapter) as Box<dyn MessagesProvider>),
+                    ExecutionBackend::ClaudeCli { binary } => match credential.material {
+                        CredentialMaterial::LocalSession { config_dir } => ClaudeCode::new(
+                            state.backends.claude_code.clone(),
+                            ClaudeCodeConfig {
+                                executable: binary.into(),
+                                config_dir: config_dir.into(),
+                                session: state.backend_session(),
+                                binding: state.backend_bindings[&target.provider_id].clone(),
+                            },
+                        )
+                        .map(|adapter| Box::new(adapter) as Box<dyn MessagesProvider>),
+                        _ => Err(velune_ai::InvalidContract(
+                            "Claude CLI requires a local session source",
+                        )),
+                    },
+                };
+            let adapter = match adapter {
                 Ok(value) => value,
                 Err(_) => {
                     if let Some(tracker) = &tracker {
@@ -1920,18 +2157,26 @@ async fn dispatch_credential(
                             MessagesErrorKind::Timeout => 504,
                             _ => 502,
                         };
-                        let next = next_candidate(
+                        let mut next = next_candidate(
                             matches!(error.kind, MessagesErrorKind::RateLimited),
                             matches!(error.kind, MessagesErrorKind::Cancelled),
                             matches!(
                                 error.kind,
                                 MessagesErrorKind::Transport | MessagesErrorKind::Timeout
-                            ) || (matches!(error.kind, MessagesErrorKind::ProviderFailure)
+                            ) || (!is_cli
+                                && matches!(error.kind, MessagesErrorKind::ProviderFailure)
                                 && error.submitted
                                 && error.response.is_none()),
                             error.response.as_ref().map(|meta| meta.status),
                             error.response.as_ref().map_or(&[], |meta| &meta.headers),
                         );
+                        if is_cli && error.submitted {
+                            let cooldown = match next {
+                                NextCandidate::Allowed { cooldown }
+                                | NextCandidate::Stop { cooldown } => cooldown,
+                            };
+                            next = NextCandidate::Stop { cooldown };
+                        }
                         AttemptEnd::Failed(PendingFailure {
                             meta: error.response,
                             body: error.body,

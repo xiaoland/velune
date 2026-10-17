@@ -45,6 +45,7 @@ impl CoreRuntime {
                         namespace: "velune.conversation".into(),
                         id: id.into(),
                     }),
+                self.execution_backends.clone(),
             )
             .map_err(|error| RuntimeError::context("gateway startup", error))?;
             self.session.gateway_runner = Some(runner);
@@ -101,6 +102,7 @@ impl CoreRuntime {
                     namespace: "velune.conversation".into(),
                     id: id.into(),
                 }),
+            self.execution_backends.clone(),
         )
         .map_err(|error| RuntimeError::context("gateway startup", error))?;
         let context = self.prepare_execution_context(&runtime)?;
@@ -151,13 +153,7 @@ impl CoreRuntime {
             drop(runner);
             return Err(error);
         }
-        let subscription_capability = gateway.subscription(model_record_key);
-        write_selection_file(
-            &config,
-            model_record_key,
-            &physical_model_id,
-            subscription_capability,
-        )?;
+        write_selection_file(&config, model_record_key, &physical_model_id)?;
         self.session.gateway_runner = Some(runner);
         self.session.gateway_tunnel = Some(tunnel);
         self.session.pi.config = Some(config);
@@ -165,7 +161,6 @@ impl CoreRuntime {
         self.session.execution_runtime_id = Some(runtime_id.into());
         self.session.pi.physical_model_id = None;
         self.session.model_record_key = None;
-        self.session.pi.subscription_capability = false;
         Ok(())
     }
 
@@ -175,7 +170,6 @@ impl CoreRuntime {
         session: Option<&Path>,
         model_record_key: Option<&str>,
         physical_model_id: Option<&str>,
-        subscription_capability: bool,
     ) -> Result<(), RuntimeError> {
         let runtime = self
             .session
@@ -217,7 +211,7 @@ impl CoreRuntime {
         config.session = session.map(Path::to_owned);
         config.name = None;
         if let (Some(logical), Some(physical)) = (model_record_key, physical_model_id) {
-            write_selection_file(&config, logical, physical, subscription_capability)?;
+            write_selection_file(&config, logical, physical)?;
         }
         let mut client = pi::Client::spawn(config.clone())
             .map_err(|error| runtime_start_error("startup", error))?;
@@ -253,7 +247,6 @@ impl CoreRuntime {
         self.session.pi.projection = Some(projection);
         self.session.model_record_key = model_record_key.map(str::to_owned);
         self.session.pi.physical_model_id = physical_model_id.map(str::to_owned);
-        self.session.pi.subscription_capability = subscription_capability;
         self.drain_runtime()?;
         Ok(())
     }
@@ -269,7 +262,6 @@ impl CoreRuntime {
         self.session.pi.projection = None;
         self.session.pi.physical_model_id = None;
         self.session.model_record_key = None;
-        self.session.pi.subscription_capability = false;
         if let Some(config) = self.session.pi.config.as_mut() {
             config.working_dir = None;
             config.session = None;

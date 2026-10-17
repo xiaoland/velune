@@ -368,6 +368,7 @@ async fn live(case: &str, source: &str) -> Result<()> {
             ))?,
         }),
         checked(CredentialRef::new("MINIMAX_API_KEY"))?,
+        RequestProfile::Native,
     ))?;
     let records = Arc::new(Mutex::new(Vec::new()));
     let sink = Arc::clone(&records);

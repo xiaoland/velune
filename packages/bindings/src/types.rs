@@ -358,6 +358,35 @@ pub enum BindingGatewayProtocol {
     MessagesV1,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Enum)]
+#[serde(rename_all = "camelCase")]
+pub enum BindingExecutionBackend {
+    Http,
+    ClaudeCli { binary: String },
+}
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, uniffi::Enum)]
+#[serde(rename_all = "camelCase")]
+pub enum BindingRequestProfile {
+    Native,
+    CodexResponses,
+}
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, uniffi::Enum)]
+#[serde(rename_all = "camelCase")]
+pub enum BindingProviderAuthenticationSource {
+    None,
+    ApiKey,
+    CodexOAuth,
+    RuntimeProvider,
+    ClaudeCli,
+}
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, uniffi::Enum)]
+#[serde(rename_all = "camelCase")]
+pub enum BindingProviderQuotaSource {
+    None,
+    CodexUsage,
+    ClaudeCliUsage,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct BindingProviderDefinition {
@@ -365,6 +394,10 @@ pub struct BindingProviderDefinition {
     pub name: String,
     pub protocol: BindingGatewayProtocol,
     pub endpoint: String,
+    pub execution_backend: BindingExecutionBackend,
+    pub request_profile: BindingRequestProfile,
+    pub authentication_source: BindingProviderAuthenticationSource,
+    pub quota_source: BindingProviderQuotaSource,
     pub authentication: BindingProviderAuthentication,
     pub models: Vec<BindingProviderModel>,
     pub quota_limits: Vec<BindingQuotaLimit>,
@@ -377,6 +410,10 @@ pub struct BindingProviderDraft {
     pub name: String,
     pub protocol: BindingGatewayProtocol,
     pub endpoint: String,
+    pub execution_backend: BindingExecutionBackend,
+    pub request_profile: BindingRequestProfile,
+    pub authentication_source: BindingProviderAuthenticationSource,
+    pub quota_source: BindingProviderQuotaSource,
     pub models: Vec<BindingProviderModel>,
     pub quota_limits: Vec<BindingQuotaLimit>,
 }
@@ -1048,7 +1085,6 @@ pub struct BindingProviderAuthentication {
 pub enum BindingAuthenticationEdit {
     Keep,
     SetApiKey { value: String },
-    SetCodexSubscription,
     Clear,
 }
 

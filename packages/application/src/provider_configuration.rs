@@ -35,37 +35,48 @@ pub(crate) fn edit_provider(
             let mut authentication = previous
                 .map(|p| p.authentication.clone())
                 .unwrap_or_default();
-            match serde_json::from_value::<AuthenticationEdit>(
-                payload["authenticationEdit"].clone(),
-            )? {
-                AuthenticationEdit::Keep => {}
-                AuthenticationEdit::SetApiKey { value } => {
-                    if value.trim().is_empty() || value.chars().any(char::is_control) {
-                        return Err(Error::invalid("API key 不能为空或含控制字符"));
+            let edit: AuthenticationEdit =
+                serde_json::from_value(payload["authenticationEdit"].clone())?;
+            let source_changed = authentication.source() != draft.authentication_source;
+            let reset = source_changed || matches!(edit, AuthenticationEdit::Clear);
+            if reset {
+                authentication.material = match draft.authentication_source {
+                    ProviderAuthenticationSource::None => AuthenticationMaterial::None,
+                    ProviderAuthenticationSource::ApiKey => AuthenticationMaterial::ApiKey {
+                        value: String::new(),
+                    },
+                    ProviderAuthenticationSource::CodexOAuth => {
+                        AuthenticationMaterial::CodexSubscription {
+                            credential_id: crate::new_record_key(),
+                            configured: false,
+                        }
                     }
-                    authentication.material = AuthenticationMaterial::ApiKey { value };
-                    authentication.generation = authentication
-                        .generation
-                        .checked_add(1)
-                        .ok_or_else(|| Error::invalid("authentication revision overflow"))?;
-                }
-                AuthenticationEdit::SetCodexSubscription => {
-                    authentication.material = AuthenticationMaterial::CodexSubscription {
+                    ProviderAuthenticationSource::ClaudeCli => AuthenticationMaterial::ClaudeCli {
                         credential_id: crate::new_record_key(),
                         configured: false,
-                    };
-                    authentication.generation = authentication
-                        .generation
-                        .checked_add(1)
-                        .ok_or_else(|| Error::invalid("authentication revision overflow"))?;
+                        account_label: None,
+                        identity: None,
+                    },
+                    ProviderAuthenticationSource::RuntimeProvider => {
+                        return Err(Error::invalid("运行时认证来源只能由提供商导入建立"));
+                    }
+                };
+            }
+            let changed = reset || matches!(edit, AuthenticationEdit::SetApiKey { .. });
+            if let AuthenticationEdit::SetApiKey { value } = edit {
+                if draft.authentication_source != ProviderAuthenticationSource::ApiKey
+                    || value.trim().is_empty()
+                    || value.chars().any(char::is_control)
+                {
+                    return Err(Error::invalid("API key 来源或内容无效"));
                 }
-                AuthenticationEdit::Clear => {
-                    authentication.material = AuthenticationMaterial::None;
-                    authentication.generation = authentication
-                        .generation
-                        .checked_add(1)
-                        .ok_or_else(|| Error::invalid("authentication revision overflow"))?;
-                }
+                authentication.material = AuthenticationMaterial::ApiKey { value };
+            }
+            if changed {
+                authentication.generation = authentication
+                    .generation
+                    .checked_add(1)
+                    .ok_or_else(|| Error::invalid("authentication revision overflow"))?;
             }
             if previous.is_some_and(|p| p.protocol != draft.protocol) {
                 for model in &mut draft.models {
@@ -77,6 +88,9 @@ pub(crate) fn edit_provider(
                 name: draft.name,
                 protocol: draft.protocol,
                 endpoint: draft.endpoint,
+                execution_backend: draft.execution_backend,
+                request_profile: draft.request_profile,
+                quota_source: draft.quota_source,
                 authentication,
                 models: draft.models,
                 quota_limits: draft.quota_limits,

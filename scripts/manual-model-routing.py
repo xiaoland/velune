@@ -92,14 +92,14 @@ use std::{collections::BTreeMap, sync::{Arc, Mutex}};
 use velune_gateway::*;
 struct Resolver;
 impl CredentialResolver for Resolver {
- fn resolve(&self,reference:String,_:CredentialTarget)->velune_ai::OperationFuture<Result<ResolvedCredential,CredentialResolutionError>> {
-  Box::pin(async move { if reference=="credfail" {Err(CredentialResolutionError::Unavailable)} else {Ok(ResolvedCredential{token:reference,explicit_output_cap:None,subscription:false,profile:velune_gateway::CredentialProfile::Standard})} })
+ fn resolve(&self,reference:String,target:CredentialTarget)->velune_ai::OperationFuture<Result<ResolvedCredential,CredentialResolutionError>> {
+  Box::pin(async move { if reference=="credfail" {Err(CredentialResolutionError::Unavailable)} else {Ok(ResolvedCredential{material:velune_gateway::CredentialMaterial::Http{authorization:if matches!(target.protocol,velune_gateway::GatewayProtocol::MessagesV1){velune_gateway::HttpAuthorization::ApiKey(reference)}else{velune_gateway::HttpAuthorization::Bearer(reference)},account_id:None},recovery:velune_gateway::CredentialRecovery::None,request_capabilities:velune_gateway::RequestCapabilities::default()})} })
  }
 }
 #[derive(Default)] struct Sink(Mutex<Vec<AnalyticsRecord>>);
 impl AnalyticsSink for Sink { fn record(&self,record:AnalyticsRecord){self.0.lock().unwrap().push(record);} }
 fn provider(id:&str,endpoint:&str)->ProviderDefinition {
- ProviderDefinition{id:id.into(),name:id.into(),protocol:GatewayProtocol::ResponsesV1,endpoint:endpoint.into(),credential_ref:Some(id.into()),quota_limits:vec![],
+ ProviderDefinition{execution_backend:velune_gateway::ExecutionBackend::Http,request_profile:velune_gateway::RequestProfile::Native,id:id.into(),name:id.into(),protocol:GatewayProtocol::ResponsesV1,endpoint:endpoint.into(),credential_ref:Some(id.into()),quota_limits:vec![],
   models:vec![ProviderModel{record_key:id.into(),provider_model_id:"synthetic-model".into(),nickname:String::new(),icon:None,context_window:None,max_output_tokens:Some(256),reasoning_levels:None}]}
 }
 fn route(key:&str,members:&[&str])->ModelRoute { ModelRoute{record_key:key.into(),name:key.into(),members:members.iter().map(|m|m.to_string()).collect(),strategy:RoutingStrategy::Order,sticky:false,weights:BTreeMap::new()} }
@@ -207,7 +207,7 @@ def application_phase(args, endpoint):
             def provider(identifier, protocol, key):
                 app.save_provider('default', b.BindingProviderDraft(id=identifier, name=identifier, protocol=protocol, endpoint=endpoint,
                     models=[b.BindingProviderModel(record_key='', provider_model_id='synthetic-model', nickname='Synthetic', icon=None,
-                        context_window=32768, max_output_tokens=1024, reasoning_levels=None, adapter_metadata_json=None)], quota_limits=[]),
+                        context_window=32768, max_output_tokens=1024, reasoning_levels=None, adapter_metadata_json=None)], quota_limits=[], execution_backend=b.BindingExecutionBackend.HTTP(), request_profile=b.BindingRequestProfile.NATIVE, authentication_source=b.BindingProviderAuthenticationSource.API_KEY, quota_source=b.BindingProviderQuotaSource.NONE),
                     b.BindingAuthenticationEdit.SET_API_KEY(value=key))
                 return next(p for p in app.list().gateways[0].providers if p.id == identifier).models[0].record_key
 
@@ -252,7 +252,7 @@ def application_phase(args, endpoint):
             app.delete_provider('default', 'account-a')
             check(app.list().gateways[0].routes == [], 'a route without members is removed')
             saved = json.loads((root / 'velune' / 'generic-config.json').read_text())
-            check(saved['schemaVersion'] == 9 and 'routes' not in saved['gateways'][0], 'empty routes are not written')
+            check(saved['schemaVersion'] == 10 and 'routes' not in saved['gateways'][0], 'empty routes are not written')
             return {'replies': replies, 'upstreamHits': dict(HITS)}
         finally:
             app.shutdown()

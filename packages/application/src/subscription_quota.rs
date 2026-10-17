@@ -15,6 +15,8 @@ type Key = (String, String);
 struct Binding {
     id: String,
     generation: u64,
+    source: crate::config::ProviderQuotaSource,
+    binary: Option<String>,
 }
 struct Entry {
     binding: Option<Binding>,
@@ -74,11 +76,31 @@ impl SubscriptionQuota {
             .iter()
             .flat_map(|g| {
                 g.providers.iter().map(|p| {
-                    let binding = match &p.authentication.material {
-                        AuthenticationMaterial::CodexSubscription { credential_id, .. } => {
+                    let binding = match (&p.authentication.material, p.quota_source) {
+                        (
+                            AuthenticationMaterial::CodexSubscription { credential_id, .. },
+                            crate::config::ProviderQuotaSource::CodexUsage,
+                        ) => Some(Binding {
+                            id: credential_id.clone(),
+                            generation: p.authentication.generation,
+                            source: p.quota_source,
+                            binary: None,
+                        }),
+                        (
+                            AuthenticationMaterial::ClaudeCli { credential_id, .. },
+                            crate::config::ProviderQuotaSource::ClaudeCliUsage,
+                        ) => {
+                            let binary = match &p.execution_backend {
+                                crate::config::ExecutionBackend::ClaudeCli { binary } => {
+                                    Some(binary.clone())
+                                }
+                                _ => None,
+                            };
                             Some(Binding {
                                 id: credential_id.clone(),
                                 generation: p.authentication.generation,
+                                source: p.quota_source,
+                                binary,
                             })
                         }
                         _ => None,
@@ -311,7 +333,13 @@ fn collect(
     runtime.block_on(async {
         if *cancel.borrow() { return Err(()); }
         tokio::select! {
-            result = crate::subscription_auth::read_usage(home, binding.id.clone(), binding.generation) => result.map_err(|_| ()).and_then(|value| parse_windows(&value, ttl_ms)),
+            result = async {
+                match binding.source {
+                    crate::config::ProviderQuotaSource::CodexUsage => crate::subscription_auth::read_usage(home, binding.id.clone(), binding.generation).await.map_err(|_| ()).and_then(|value| parse_windows(&value,ttl_ms)),
+                    crate::config::ProviderQuotaSource::ClaudeCliUsage => { let text=crate::claude_cli::usage(binding.binary.as_deref().ok_or(())?,&crate::claude_cli::directory(&home,&binding.id)).await?; parse_claude_windows(&text,ttl_ms) },
+                    crate::config::ProviderQuotaSource::None => Err(()),
+                }
+            } => result,
             _ = cancel.changed() => Err(()),
         }
     })
@@ -396,4 +424,51 @@ fn parse_windows(
         .min()
         .unwrap_or(observed + ttl_ms);
     Ok((windows, available, observed, expires))
+}
+
+fn parse_claude_windows(
+    text: &str,
+    ttl_ms: i64,
+) -> Result<(Vec<QuotaWindow>, Option<bool>, i64, i64), ()> {
+    let observed = now_ms();
+    if observed <= 0 {
+        return Err(());
+    }
+    let mut windows = Vec::new();
+    for line in text.lines().map(str::trim) {
+        let (id, body) = if let Some(body) = line.strip_prefix("Current session:") {
+            ("window:18000", body)
+        } else if let Some(body) = line
+            .strip_prefix("Current week (all models):")
+            .or_else(|| line.strip_prefix("Current week:"))
+        {
+            ("window:604800", body)
+        } else {
+            continue;
+        };
+        let (used, tail) = body.trim().split_once("% used").ok_or(())?;
+        if !tail.is_empty() && !tail.trim_start().starts_with('·') {
+            return Err(());
+        }
+        let used = used.parse::<f64>().map_err(|_| ())?;
+        if !used.is_finite()
+            || !(0.0..=100.0).contains(&used)
+            || windows.iter().any(|w: &QuotaWindow| w.id == id)
+        {
+            return Err(());
+        }
+        // Human reset strings are not a stable timestamp contract. TTL requires re-observation; never infer replenishment.
+        windows.push(QuotaWindow {
+            id: id.into(),
+            model_ids: None,
+            used_percent: used,
+            reset_at_ms: None,
+            observed_at_ms: observed,
+            expires_at_ms: observed + ttl_ms,
+        });
+    }
+    if windows.is_empty() {
+        return Err(());
+    }
+    Ok((windows, None, observed, observed + ttl_ms))
 }

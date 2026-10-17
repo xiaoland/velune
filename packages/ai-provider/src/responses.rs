@@ -3,7 +3,8 @@
 //! Standard profile preserves native requests and response bytes. The explicit
 //! Codex subscription profile adapts the backend's stateless streaming contract.
 use crate::config::{
-    CredentialProfile, ProtocolConfig, ProviderConfig, ResolvedCredential, Transport,
+    CredentialMaterial, HttpAuthorization, ProtocolConfig, ProviderConfig, RequestProfile,
+    ResolvedCredential, Transport,
 };
 use reqwest::{Client, ClientBuilder, Response, header::HeaderValue};
 use serde_json::Value;
@@ -39,7 +40,7 @@ impl ResponsesClient {
 pub struct OpenAiResponses {
     config: ProviderConfig,
     client: ResponsesClient,
-    credential: Arc<dyn Fn() -> Option<ResolvedCredential> + Send + Sync>,
+    credential: Arc<ResolvedCredential>,
 }
 
 impl OpenAiResponses {
@@ -57,32 +58,31 @@ impl OpenAiResponses {
         ) {
             return Err(InvalidContract("unsupported provider transport"));
         }
-        if let CredentialProfile::CodexSubscription { account_id } = &credential.profile
-            && (protocol.endpoint.transport() != Transport::Https
-                || protocol.endpoint.host() != "chatgpt.com"
-                || protocol.endpoint.port().get() != 443
-                || protocol.endpoint.base_path().trim_end_matches('/') != "/backend-api/codex"
-                || account_id.is_empty()
-                || HeaderValue::from_str(account_id).is_err())
+        let CredentialMaterial::Http {
+            authorization: HttpAuthorization::Bearer(token),
+            account_id,
+        } = &credential.material
+        else {
+            return Err(InvalidContract(
+                "Responses requires HTTP bearer authentication",
+            ));
+        };
+        if token.is_empty() {
+            return Err(InvalidContract("provider credential is empty"));
+        }
+        if config.request_profile() == RequestProfile::CodexResponses
+            && account_id
+                .as_ref()
+                .is_none_or(|value| value.is_empty() || HeaderValue::from_str(value).is_err())
         {
             return Err(InvalidContract(
-                "invalid Codex subscription target or account",
+                "Codex request profile requires an account identity",
             ));
-        }
-        if credential.token.is_empty() {
-            return Err(InvalidContract("provider credential is empty"));
         }
         Ok(Self {
             config,
             client,
-            credential: Arc::new(move || {
-                Some(ResolvedCredential {
-                    profile: credential.profile.clone(),
-                    token: credential.token.clone(),
-                    explicit_output_cap: credential.explicit_output_cap,
-                    subscription: credential.subscription,
-                })
-            }),
+            credential: Arc::new(credential),
         })
     }
 
@@ -261,34 +261,9 @@ fn codex_request(body: &mut Value) -> Result<(), InvalidContract> {
     Ok(())
 }
 
-fn unsupported_subscription_field(body: &Value, credential: &ResolvedCredential) -> bool {
-    if credential.explicit_output_cap != Some(false) {
-        return false;
-    }
-    [
-        "max_output_tokens",
-        "temperature",
-        "prompt_cache_retention",
-        "prompt_cache_options",
-        "prompt_cache_key",
-        "options",
-    ]
-    .iter()
-    .any(|field| body.get(*field).is_some())
-}
-
-fn violates_subscription_contract(
-    body: &Value,
-    stream: bool,
-    credential: &ResolvedCredential,
-) -> bool {
-    if !credential.subscription {
-        return false;
-    }
-    !stream
-        || body.get("stream") != Some(&Value::Bool(true))
-        || body.get("store") != Some(&Value::Bool(false))
-        || body.get("previous_response_id").is_some()
+fn unsupported_output_cap(body: &Value, credential: &ResolvedCredential) -> bool {
+    credential.request_capabilities.explicit_output_cap == Some(false)
+        && body.get("max_output_tokens").is_some()
 }
 
 fn terminal_from_event(event: Option<&str>, value: &Value) -> Option<ResponsesTerminal> {
@@ -352,26 +327,22 @@ impl ResponsesProvider for OpenAiResponses {
         let endpoint = protocol.endpoint.url("/responses");
         let client = self.client.0.clone();
         let credential = Arc::clone(&self.credential);
+        let profile = self.config.request_profile();
         let headers = request.headers;
         let stream = request.stream;
         Box::pin(async move {
-            let Some(credential) = credential() else {
-                return Self::failure(ResponsesErrorKind::Authentication, None, None, false);
-            };
-            let codex = matches!(
-                credential.profile,
-                CredentialProfile::CodexSubscription { .. }
-            );
+            let codex = profile == RequestProfile::CodexResponses;
             if codex {
                 if !stream || codex_request(&mut body).is_err() {
                     return Self::failure(ResponsesErrorKind::Unsupported, Some(422), None, false);
                 }
-            } else if violates_subscription_contract(&body, stream, &credential)
-                || unsupported_subscription_field(&body, &credential)
-            {
+            } else if unsupported_output_cap(&body, &credential) {
                 return Self::failure(ResponsesErrorKind::Unsupported, Some(422), None, false);
             }
-            let mut auth = match HeaderValue::from_str(&format!("Bearer {}", credential.token)) {
+            let mut auth = match HeaderValue::from_str(&format!(
+                "Bearer {}",
+                credential.token().expect("validated HTTP credential")
+            )) {
                 Ok(value) => value,
                 Err(_) => {
                     return Self::failure(ResponsesErrorKind::InvalidInput, None, None, false);
@@ -415,7 +386,14 @@ impl ResponsesProvider for OpenAiResponses {
                 };
                 builder = builder.header(&header.name, value);
             }
-            if let CredentialProfile::CodexSubscription { account_id } = &credential.profile {
+            if codex {
+                let CredentialMaterial::Http {
+                    account_id: Some(account_id),
+                    ..
+                } = &credential.material
+                else {
+                    unreachable!("validated Codex credential")
+                };
                 let mut account =
                     HeaderValue::from_str(account_id).expect("validated account header");
                 account.set_sensitive(true);

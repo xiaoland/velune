@@ -74,7 +74,7 @@ def main():
                       for name in ('synthetic-gateway', 'synthetic-gateway-2')]
             app.save_provider('default', b.BindingProviderDraft(
                 id='responses', name='responses', protocol=b.BindingGatewayProtocol.RESPONSES_V1, endpoint=endpoint,
-                models=models), b.BindingAuthenticationEdit.SET_API_KEY(value='SYNTHETIC_ONLY'))
+                models=models, execution_backend=b.BindingExecutionBackend.HTTP(), request_profile=b.BindingRequestProfile.NATIVE, authentication_source=b.BindingProviderAuthenticationSource.API_KEY, quota_source=b.BindingProviderQuotaSource.NONE), b.BindingAuthenticationEdit.SET_API_KEY(value='SYNTHETIC_ONLY'))
             keys = [model.record_key for model in next(p for p in app.list().gateways[0].providers if p.id == 'responses').models]
             first, second = (b.BindingModelSelection.MANAGED(model_record_key=key) for key in keys)
 

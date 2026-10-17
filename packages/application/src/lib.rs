@@ -9,15 +9,19 @@ mod api;
 #[cfg(feature = "local-runtime")]
 mod authentication_resolver;
 #[cfg(feature = "local-runtime")]
+mod claude_cli;
+#[cfg(feature = "local-runtime")]
 mod credential_helper;
 mod provider_authentication;
+#[cfg(feature = "local-runtime")]
+mod provider_login;
 #[cfg(feature = "local-runtime")]
 mod subscription_auth;
 #[cfg(feature = "local-runtime")]
 mod subscription_quota;
 pub use provider_authentication::{
     AuthenticationEdit, AuthenticationMethod, AuthenticationProvenance,
-    ProviderAuthenticationDescription, SubscriptionDisclosure,
+    ProviderAuthenticationDescription, ProviderAuthenticationSource, SubscriptionDisclosure,
 };
 pub mod config;
 #[cfg(feature = "local-runtime")]

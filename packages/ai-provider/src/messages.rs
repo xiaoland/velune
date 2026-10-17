@@ -4,7 +4,10 @@
 //! read provider configuration, resolve credentials, retry, or choose a model.
 //! Request version/beta headers and all native JSON/SSE fields remain caller-owned;
 //! the resolved API key replaces caller authentication using x-api-key.
-use crate::config::{ProtocolConfig, ProviderConfig, ResolvedCredential, Transport};
+use crate::config::{
+    CredentialMaterial, HttpAuthorization, ProtocolConfig, ProviderConfig, ResolvedCredential,
+    Transport,
+};
 use reqwest::{Client, Response, header::HeaderValue};
 use serde_json::Value;
 use std::sync::Arc;
@@ -28,7 +31,8 @@ async fn bounded_body(response: Response) -> Result<Vec<u8>, ()> {
 pub struct Messages {
     config: ProviderConfig,
     client: Client,
-    credential: Arc<dyn Fn() -> Option<String> + Send + Sync>,
+    explicit_output_cap: Option<bool>,
+    credential: Arc<dyn Fn() -> Option<HttpAuthorization> + Send + Sync>,
 }
 
 impl Messages {
@@ -52,7 +56,8 @@ impl Messages {
         Ok(Self {
             config,
             client,
-            credential: Arc::new(move || Some(value.clone())),
+            explicit_output_cap: None,
+            credential: Arc::new(move || Some(HttpAuthorization::ApiKey(value.clone()))),
         })
     }
     pub fn with_resolved_credential(
@@ -69,27 +74,19 @@ impl Messages {
         ) {
             return Err(InvalidContract("unsupported provider transport"));
         }
-        if credential.subscription {
+        let CredentialMaterial::Http { authorization, .. } = credential.material else {
             return Err(InvalidContract(
-                "subscription credential does not support Messages",
+                "Messages HTTP requires HTTP authentication",
             ));
-        }
-        if !matches!(
-            credential.profile,
-            crate::config::CredentialProfile::Standard
-        ) {
-            return Err(InvalidContract(
-                "Codex subscription requires Responses backend",
-            ));
-        }
-        if credential.token.is_empty() {
+        };
+        if authorization.secret().is_empty() {
             return Err(InvalidContract("provider credential is empty"));
         }
-        let token = credential.token;
         Ok(Self {
             config,
             client,
-            credential: Arc::new(move || Some(token.clone())),
+            explicit_output_cap: credential.request_capabilities.explicit_output_cap,
+            credential: Arc::new(move || Some(authorization.clone())),
         })
     }
 
@@ -135,6 +132,19 @@ impl MessagesProvider for Messages {
                 && !header.value.trim().is_empty()
                 && HeaderValue::from_str(&header.value).is_ok()
         });
+        if self.explicit_output_cap == Some(false) && request.body.get().get("max_tokens").is_some()
+        {
+            return Box::pin(async {
+                MessagesCompletion {
+                    result: Err(MessagesFailure {
+                        kind: MessagesErrorKind::Unsupported,
+                        response: None,
+                        body: None,
+                        submitted: false,
+                    }),
+                }
+            });
+        }
         let body = match Self::native_request_json(request.body.get(), request.model.as_str())
             .and_then(|body| {
                 if has_version {
@@ -188,7 +198,11 @@ impl MessagesProvider for Messages {
                     }),
                 };
             };
-            let mut auth = match HeaderValue::from_str(&credential) {
+            let (auth_header, value) = match credential {
+                HttpAuthorization::ApiKey(value) => ("x-api-key", value),
+                HttpAuthorization::Bearer(value) => ("authorization", format!("Bearer {value}")),
+            };
+            let mut auth = match HeaderValue::from_str(&value) {
                 Ok(value) => value,
                 Err(_) => {
                     return MessagesCompletion {
@@ -204,7 +218,7 @@ impl MessagesProvider for Messages {
             auth.set_sensitive(true);
             let mut builder = client
                 .post(endpoint)
-                .header("x-api-key", auth)
+                .header(auth_header, auth)
                 .header(
                     "accept",
                     if stream_requested {

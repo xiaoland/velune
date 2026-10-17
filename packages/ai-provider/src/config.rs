@@ -143,32 +143,63 @@ pub struct ProviderConfig {
     revision: ConfigRevision,
     protocol: ProtocolConfig,
     credential: CredentialRef,
+    request_profile: RequestProfile,
 }
 
-/// Authentication protocol selected by the application, independent of the
-/// caller's runtime. Account identity is redacted from Debug output.
-#[derive(Clone, PartialEq, Eq)]
-pub enum CredentialProfile {
-    Standard,
-    CodexSubscription { account_id: String },
+/// Request behavior selected independently of the authentication source.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum RequestProfile {
+    Native,
+    CodexResponses,
 }
-impl fmt::Debug for CredentialProfile {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self {
-            Self::Standard => "Standard",
-            Self::CodexSubscription { .. } => "CodexSubscription([redacted])",
-        })
+
+#[derive(Clone)]
+pub enum HttpAuthorization {
+    Bearer(String),
+    ApiKey(String),
+}
+impl HttpAuthorization {
+    pub fn secret(&self) -> &str {
+        match self {
+            Self::Bearer(value) | Self::ApiKey(value) => value,
+        }
     }
 }
-
-/// Short-lived material supplied per dispatch, never read from global config.
-/// The credential deliberately has no Debug implementation.
-pub struct ResolvedCredential {
-    pub profile: CredentialProfile,
-    pub token: String,
+#[derive(Clone)]
+pub enum CredentialMaterial {
+    Http {
+        authorization: HttpAuthorization,
+        account_id: Option<String>,
+    },
+    LocalSession {
+        config_dir: String,
+    },
+}
+/// A stable opaque identity for refresh recovery, not a vendor or a token.
+#[derive(Clone, PartialEq, Eq)]
+pub enum CredentialRecovery {
+    None,
+    Refreshable { identity: String },
+}
+#[derive(Clone, Default)]
+pub struct RequestCapabilities {
     pub explicit_output_cap: Option<bool>,
-    /// Protocol restrictions associated with a subscription credential.
-    pub subscription: bool,
+}
+/// Short-lived material supplied per dispatch; no Debug implementation exposes secrets.
+#[derive(Clone)]
+pub struct ResolvedCredential {
+    pub material: CredentialMaterial,
+    pub recovery: CredentialRecovery,
+    pub request_capabilities: RequestCapabilities,
+}
+impl ResolvedCredential {
+    pub fn token(&self) -> Option<&str> {
+        match &self.material {
+            CredentialMaterial::Http { authorization, .. } => Some(authorization.secret()),
+            _ => None,
+        }
+    }
 }
 
 impl ProviderConfig {
@@ -177,12 +208,26 @@ impl ProviderConfig {
         revision: ConfigRevision,
         protocol: ProtocolConfig,
         credential: CredentialRef,
+        request_profile: RequestProfile,
     ) -> Result<Self, InvalidContract> {
+        if request_profile == RequestProfile::CodexResponses {
+            let ProtocolConfig::Responses(config) = &protocol else {
+                return Err(InvalidContract("Codex request profile requires Responses"));
+            };
+            if config.endpoint.transport() != Transport::Https
+                || config.endpoint.host() != "chatgpt.com"
+                || config.endpoint.port().get() != 443
+                || config.endpoint.base_path().trim_end_matches('/') != "/backend-api/codex"
+            {
+                return Err(InvalidContract("invalid Codex request profile destination"));
+            }
+        }
         Ok(Self {
             id,
             revision,
             protocol,
             credential,
+            request_profile,
         })
     }
     pub fn id(&self) -> &ProviderId {
@@ -193,6 +238,9 @@ impl ProviderConfig {
     }
     pub fn protocol(&self) -> &ProtocolConfig {
         &self.protocol
+    }
+    pub fn request_profile(&self) -> RequestProfile {
+        self.request_profile
     }
     pub fn credential(&self) -> &CredentialRef {
         &self.credential
