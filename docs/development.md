@@ -211,7 +211,7 @@ python3 scripts/manual-relaykit-provider.py replay \
 
 根 Cargo.toml 是虚拟工作区，不再输出 velune-core 产品库。共享单位的职责、接口和依赖在 [packages 各 README](../README.md) 与 [架构](design/architecture.md#独立-package-与平台装配) 中说明。Mac 构建会生成 Swift 源及 FFI modulemap，分别编译 Rust 绑定库与 Swift 语言模块，再链接原生 app；生成文件只放在 target 下。
 
-2026-10-17 远控 SDK 新增具名错误及结果未知请求身份，并移除公开模型的 Pi 私有元数据。Mac 的模型映射、编辑草稿和 [`Transport.swift`](../app/mac/Transport.swift) 的穷尽错误分支随契约同步，人工脚本也删除旧参数；不为旧调用方恢复兼容字段。本轮不新增远控界面，实际 Mac 编译安装与 Rust 静态证据分别归 [远控任务](../tasks/remote-control/packet.md)。
+2026-10-17 远控 SDK 新增具名错误及结果未知请求身份，并移除公开模型的 Pi 私有元数据。Mac 的模型映射、编辑草稿和 [`Transport.swift`](../app/mac/Transport.swift) 的穷尽错误分支随契约同步，人工脚本也删除旧参数；不为旧调用方恢复兼容字段。本轮不新增远控界面，已从干净源码提交 `15399d1` 完成 arm64 release 构建、签名校验和 `/Applications/Velune.app` 安装，版本仍为 `0.1 beta.1`。详细构建及隔离观察归 [远控验收](../tasks/remote-control/verification.md)。
 
 ```sh
 cargo fmt --all --check

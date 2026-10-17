@@ -4,7 +4,7 @@
 
 ## 当前阶段与权限
 
-Rust packages 与隔离端到端验收已完成，正在构建安装必要调整后的 Mac 调用方。已确认产品承诺归 [PRD](../../docs/prd/index.md#后续扩展分布式能力)，跨单元契约归 [架构](../../docs/design/architecture.md#远控契约与唯一执行-owner2026-10-17)。新增 `application-api`、`remote`，调整 application／bindings，不新增远控界面、不部署或发布。新契约删除公开 Pi 元数据后，现有 Mac 绑定映射和人工脚本会直接失效，必要调用方迁移由 root 贯通，并按仓库规范重建安装；初始“不构建 Mac”是工作切片设定，不是用户禁止修复必要调用方。
+本轮已完成：Rust packages、隔离端到端验收、必要 Mac 调用方迁移及构建安装。已确认产品承诺归 [PRD](../../docs/prd/index.md#后续扩展分布式能力)，跨单元契约归 [架构](../../docs/design/architecture.md#远控契约与唯一执行-owner2026-10-17)。新增 `application-api`、`remote`，调整 application／bindings，不新增远控界面、不部署或发布。新契约删除公开 Pi 元数据后，现有 Mac 绑定映射和人工脚本会直接失效，必要调用方迁移由 root 贯通，并按仓库规范重建安装；初始“不构建 Mac”是工作切片设定，不是用户禁止修复必要调用方。
 
 沿用同进程 Rust lib、平台原生 app、UniFFI 和 Harness 持有原生会话的边界。现有 SSH runtime transport 是执行位置，不等同于远程 Velune 控制客户端。不读取真实配置、凭据或会话，不部署、不发布、不调用真实模型；不新增或运行自动化测试。实现阶段采用静态检查、构建和隔离人工端到端验收。
 
@@ -42,4 +42,6 @@ Rust packages 与隔离端到端验收已完成，正在构建安装必要调整
 
 已通过 `cargo fmt --all --check`、workspace 全 target／feature 的 locked check 和严格 clippy，以及 bindings 的 remote-only／无 feature 严格 clippy。已构建 debug bindings、release remote 并生成 Swift／Kotlin／Python；Kotlin 仅生成，未编译。所有人工脚本通过 Python 语法解析。
 
-剩余工作为本地提交、Mac release 构建与安装、核对已安装签名及构建来源，再记录交付。没有读取真实配置、秘密或会话，没有调用真实模型，没有新增或运行自动化测试。跨 NAT、真实切网、严格代理、移动后台和正式公网设施仍需现场或运营验收，本次不部署这些服务。
+源码已本地提交为 `15399d1`，从干净工作区构建 Mac arm64 release，原子安装至 `/Applications/Velune.app`。正常退出请求未完成后按既有授权结束经 bundle 身份确认的旧 Velune；安装器及安装后签名校验均通过，清单 source_commit 对应该提交且 dirty=false，版本 `0.1 beta.1`。已安装二进制与构建产物 SHA-256 一致，没有启动应用或读取真实资料。
+
+没有读取真实配置、秘密或会话，没有调用真实模型，没有新增或运行自动化测试。未 push、创建 PR 或部署。跨 NAT、真实切网、严格代理、移动后台和正式公网设施仍需现场或运营验收，本次不部署这些服务；平台远控 UI 与这些现场条件不是本轮 SDK 完成证据。

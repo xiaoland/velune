@@ -26,7 +26,7 @@
 
 ## 执行记录
 
-构建基线为 `6b1a543` 加本任务工作区改动；传输依赖固定 iroh `1.3.0`。环境为 rustc `1.99.0 (b940084d7 2026-09-28)`、Python `3.12.10`。入口及生成 ACP fixture 已通过 Python 语法检查，`--help` 可用。
+隔离验收时的构建基线为 `6b1a543` 加本任务工作区改动，最终源码提交为 `15399d1`；传输依赖固定 iroh `1.3.0`。环境为 rustc `1.99.0 (b940084d7 2026-09-28)`、Python `3.12.10`。入口及生成 ACP fixture 已通过 Python 语法检查，`--help` 可用。
 
 主执行者统一构建并冻结动态库和 Python bindings 后，正式入口执行到 generic ACP 会话的 `working_changes` 时失败：`Invalid / 此运行时没有原生配置目录`。使用 managed HOME、合法 generic ACP、无原生 agentDir 的合成会话可以创建，但变更查询不应把 Harness 原生配置目录当作工作区事实。application owner 已将 `conversation_directory` 的执行位置判别从要求原生 agentDir 的 `execution_context` 改为 `runtime_location`，共用此入口的 working_changes／working_branch／file_diff 同时修复；静态检查通过，新冻结动态库正式全量执行通过。脚本保留 managed HOME、无 agentDir 的原判据，已同时读取真实 git 变更与具名 diff，并拒绝 `../outside` 路径。
 
@@ -52,6 +52,14 @@ python3 scripts/manual-remote-control.py \
 ## 已复用的独立证据
 
 主执行者使用同一冻结 debug 产物、临时伪 bundle、空 Resources 和合成 HOME 执行 `scripts/manual-provider-configuration.py` 并报告通过，覆盖提供商保存／编辑、Key 显式读取修改和重开、秘密不入摘要日志、模型模板、无效配置不变、私有文件 0600 及 hard-cutoff。该脚本此前仍使用旧 schema 9／future 10，已对齐当前 10／future 11；Clear 后按既有 `read_api_key` 契约断言空字符串且 configured=false，未把旧脚本的“应抛错”判据变成产品改动。
+
+## 静态检查与 Mac 安装
+
+以下检查均通过：`cargo fmt --all --check`，`cargo check --locked --workspace --all-targets --all-features`，`cargo clippy --locked --workspace --all-targets --all-features -- -D warnings`，以及 bindings 的无默认 feature、remote-only 严格 clippy。remote-only 正常依赖树只含 bindings、application-api、conversation 与 remote，排除 application、agent-runtime、gateway 和 ai-provider。debug 产物已生成 Swift／Kotlin／Python 绑定；Kotlin 仅生成，未编译。修改文档的 401 个相对链接／锚点检查、全部 Python 人工脚本语法解析及 Git diff 空白检查通过。
+
+`bash scripts/build-macos.sh --build-only` 从干净提交 `15399d1fcefde512cc0cda5b9944dfe423b9f4b5` 完成 Rust release、生成绑定和原生 Swift release 构建，arm64。已按既有授权退出旧 Velune，经 `scripts/install-macos.py` 原子安装至 `/Applications/Velune.app`。构建及安装后 `codesign --verify --deep --strict` 均通过，公开清单 source_commit 对应该提交、dirty=false，显示版本为 `0.1 beta.1`，配置 schema 10。安装后未启动应用，没有读取真实配置或会话。
+
+安装二进制与构建产物 SHA-256 一致：Mac 可执行文件 `b0a74a172c1565e346a62d81b2b58b0bd34a0145ccce114af24d479c346bc4e5`，release 绑定动态库 `eefea8e03e349efbbb282675c19a65ed12dea32d87f3b51fa43bde1847415605`。上述 release 构建验证必要 Mac 调用方与新契约完整衔接；22 项业务观察使用前文单独冻结的 debug 产物，不能混称在安装后的 GUI 上完成验收。
 
 ## 未覆盖
 

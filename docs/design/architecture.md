@@ -99,7 +99,7 @@ iroh 的默认自动选路与 QUIC 多流承担传输；路径快照、事件和
 
 ### 控制面
 
-原生 UI → 生成的 UniFFI 类型接口 → 同进程 CoreRuntime → Harness Adapter → 外部 Harness 进程。AI 服务网关也由库管理，供 Harness 发起模型请求；该 loopback HTTP 数据路径不是 App 与 core 的 IPC。后续远程设备接入需要另验认证传输，不改变每个平台嵌入共享核心的边界。
+本地原生 UI → 生成的 UniFFI 类型接口 → 同进程 ApplicationService／CoreRuntime → Harness Adapter → 外部 Harness 进程。远程 UI 经同一业务契约、iroh 与 bindings 装配的 Handler 进入执行设备的同一 ApplicationService。AI 服务网关也由库管理，供 Harness 发起模型请求；该 loopback HTTP 数据路径不是 App 与 core 的 IPC。远程入口的设备信任与传输已完成隔离验收，公网可达性及切网仍须现场验证。
 
 - **Task Service**：目标、父子关系、依赖、验收、状态、工作区和产物归属
 - **Session Supervisor**：启动、连接、恢复、单写控制租约、取消、权限转交、断线核对
