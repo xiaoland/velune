@@ -116,3 +116,4 @@
 - 子 Agent 面板为空的疑问：`manual-native-subagents.py` 以 Codex 0.159.3、Claude Code 2.1.292 合成运行全部通过，读回原生历史后快照 `sub_agents` 仍含已结束的子 Agent；面板为空是该会话没有原生子 Agent。Claude Code 子 Agent 不在会话列表时标题回退为工具名“Agent”，待改进。
 - 用户另报：`.claude/worktrees/<名>` 中的 Claude Code 会话（例如后台任务）按 cwd 末段成为独立项目，并见到 UUID 名的项目／会话。它们是独立原生会话，不是子 Agent。worktree 是否归入所属仓库为待用户决定；UUID 条目的路径待用户提供。
 - 已安装 f21fc1a：manifest 指向该提交且非 dirty。弹出与浮动回退的实际菜单操作由用户验收。
+- 用户报告（2026-10-17）：底部面板被压得很小且无法调整高度。原因是上一条把停靠区的单个工具也放进 `WeightedSplit`：它以 `GeometryReader` 只分配给定的空间，没有自身高度，而底部只有输入区时 `BottomAreaView` 按内容 `fixedSize` 取高，结果只剩一条细缝，拖动只改 `composerHeight` 也撑不开。改为底部只有输入区时直接放置输入区，其余情况仍走同一分栏（侧栏列表的身份不变）。开发版（复制的工具布局、合成 home、后台启动、窗口内截图）核对：未修复时底部为细缝；修复后按保存的 composerHeight 433 与改为 150 分别显示。此时 main 因订阅合并后 `BindingProviderDraft` 新增必填字段而 Swift 未同步、不能构建，核对时用未提交的临时占位通过编译；因此尚未安装，待 main 可构建后重建安装。
