@@ -739,10 +739,11 @@ extension ConversationWindowModel {
         if tools.isOpen(kind) { tools.hide(kind) } else { tools.show(kind); detached.bringForward(kind) }
     }
 
-    /// The window's toolbar shows the item, as customized.
+    /// The window's toolbar shows the item: as the user arranged it where
+    /// the toolbar is customizable (macOS 26), else whenever it is visible.
     private func hasToolbarItem(_ id: String) -> Bool {
         guard let toolbar = window?.toolbar, toolbar.isVisible else { return false }
-        return toolbar.items.contains { $0.itemIdentifier.rawValue == id }
+        return !toolbar.allowsUserCustomization || toolbar.items.contains { $0.itemIdentifier.rawValue == id }
     }
 
     /// A tool's places as a submenu, for AppKit menus.
