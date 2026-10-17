@@ -82,7 +82,7 @@ pub enum BindingApplicationCommand {
     DiscoverRuntimes {
         probes: Vec<BindingRuntimeDiscoveryProbe>,
     },
-    List,
+    ListConfiguration,
     SetOutlinePresentation {
         presentation: BindingOutlinePresentation,
     },
@@ -493,7 +493,7 @@ impl TryFrom<BindingApplicationCommand> for Command {
             BindingApplicationCommand::DiscoverRuntimes { probes } => Self::DiscoverRuntimes {
                 probes: convert(probes)?,
             },
-            BindingApplicationCommand::List => Self::List,
+            BindingApplicationCommand::ListConfiguration => Self::List,
             BindingApplicationCommand::SetOutlinePresentation { presentation } => {
                 Self::SetOutlinePresentation {
                     presentation: convert(presentation)?,

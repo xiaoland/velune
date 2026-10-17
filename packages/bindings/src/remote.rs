@@ -393,7 +393,7 @@ impl VeluneRemoteEndpoint {
         self.endpoint.revoke(&device_id).map_err(Into::into)
     }
     /// Closing ingress disconnects controllers; it does not close the local application owner.
-    pub fn close(&self) {
+    pub fn shutdown(&self) {
         self.runtime.block_on(self.endpoint.close());
     }
 }

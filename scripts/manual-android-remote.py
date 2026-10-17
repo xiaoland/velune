@@ -102,7 +102,7 @@ def main():
         pass
     finally:
         if server is not None:
-            server.close()
+            server.shutdown()
         application.shutdown()
 
 

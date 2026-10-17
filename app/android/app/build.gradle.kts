@@ -7,6 +7,7 @@ plugins {
 android {
     namespace = "app.velune.android"
     compileSdk = 36
+    ndkVersion = "30.0.14904198"
     defaultConfig {
         applicationId = "app.velune.android"
         minSdk = 28
@@ -20,13 +21,14 @@ android {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
-    kotlinOptions { jvmTarget = "17" }
     sourceSets["main"].apply {
         java.srcDir("../../../target/android-bindings")
         jniLibs.srcDir("../../../target/android-native")
     }
     packaging { jniLibs.useLegacyPackaging = false }
 }
+
+kotlin { compilerOptions { jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17) } }
 
 dependencies {
     implementation(platform("androidx.compose:compose-bom:2025.10.01"))

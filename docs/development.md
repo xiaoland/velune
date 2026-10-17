@@ -408,3 +408,11 @@ Velune 执行的每个会话都获得 application 注入的 `velune` MCP 服务�
 订阅组合人工验收入口为 `python3 scripts/manual-subscription-composition.py`，使用隔离配置目录、合成 Claude CLI 与回环 MCP/HTTP，不读取真实登录。默认场景覆盖 20 组组合、工具往返、跨 Runner 会话与取消/结束恢复；`--case auth-cleanup` 另外覆盖 2 组暂存认证清理。Claude Code 2.1.292 的真实登录、`/usage` 额度读取、文本完成及跨 Runner 工具往返已验证；固定 `/usage` 命令不重写为普通模型提示，无法解析的额度保持未知。
 
 真实 Claude 订阅验收入口为 [manual-claude-subscription-live.py](../scripts/manual-claude-subscription-live.py)，默认只冻结 `--source-ref`（缺省 HEAD）编译并执行本地解析自检。使用仓库外专用 `--home` 和官方 CLI 的 `--claude` 绝对路径，`--login` 通过 application 启动官方浏览器登录；成功后用 `--run --stage text|tool|quota` 分阶段验证。text 最多一次网关请求，tool 最多两次且工具只执行内存合成函数，quota 只采样一次；失败不自动重放。该目录是应用验收配置根，不能替换操作系统 HOME；CLI 保留系统身份以访问 macOS Keychain，订阅配置由独立 CLAUDE_CONFIG_DIR 隔离。日志仅包含固定阶段、退出码和计量，不输出凭据或响应正文。
+
+## 最小 Android 控制端
+
+[Android unit](../app/android/README.md) 拥有 Compose 工程、已固定的工具链组合与接入生命周期。仓库根目录的 `scripts/build-android.sh` 先构建 remote-only Rust so／匹配 Kotlin，再生成 debug APK 并执行 Android lint；`--skip-native` 仅用于已有匹配产物时的 UI 迭代。当前产物面向 API28+／arm64-v8a。JNI context、系统 TLS verifier AAR 与 Android Cleaner 生成配置都是实际运行前置，不能以仅生成 Kotlin 替代平台编译。
+
+Mac 设置的“远程接入”显式开启现有执行核心的网络入口，并生成限期一次邀请；Android 显式粘贴后配对。开发设施默认与正式服务承诺分开，实际路径由 iroh 返回。设备身份／信任与未决请求保存在 Android 私有且不备份的目录；进入后台不停止执行设备。
+
+人工设备验证使用 [合成宿主脚本](../scripts/manual-android-remote.py)，传入匹配的绝对 `--library`／`--bindings`／`--resources` 和独立 `--root`；`--prepare-only` 准备合成配置后释放 owner，可交隔离 Mac 独占打开。前台宿主与 Mac 不得共开同一配置根。adb 仅操作本轮 Velune 和合成内容；设备解锁由用户完成，不读取个人资料或真实会话。具体安装、签名、路径及未覆盖项归 [本轮验收](../tasks/android-minimal/verification.md)。

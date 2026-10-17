@@ -129,14 +129,20 @@ struct RemoteAccessSettingsView: View {
     var body: some View {
         Form {
             Section {
-                LabeledContent("状态") {
-                    HStack {
-                        if model.isWorking { ProgressView().controlSize(.small) }
-                        Text(model.isEnabled ? "已启用" : "未启用")
-                        if model.isEnabled { Button("停止接入") { model.stop() } }
-                        else { Button("启用远程接入") { model.enable() } }
+                // LabeledContent can merge the action into its status accessibility text.
+                HStack {
+                    Text("状态")
+                    Spacer()
+                    if model.isWorking { ProgressView().controlSize(.small) }
+                    Text(model.isEnabled ? "已启用" : "未启用")
+                    if model.isEnabled {
+                        Button("停止接入") { model.stop() }
+                            .accessibilityLabel("停止远程接入")
+                    } else {
+                        Button("启用远程接入") { model.enable() }
+                            .accessibilityLabel("启用远程接入")
                     }
-                }
+                }.accessibilityElement(children: .contain)
                 if let descriptor = model.state.descriptor {
                     LabeledContent("本设备", value: descriptor.name)
                     LabeledContent("设备 ID") {

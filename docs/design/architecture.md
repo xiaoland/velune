@@ -120,7 +120,7 @@ iroh 的默认自动选路与 QUIC 多流承担传输；路径快照、事件和
 
 首循环由 CoreRuntime 原子保存应用配置，不打开旧模拟 SQLite，也不保存另一套 Pi 会话历史。未来协作数据库如需 SQLite，仍由共享核心管理其事务；不能用文件同步制造跨设备共享主库。历史存储研究见[证据](../../tasks/harness-routing-feasibility/evidence.md#原生客户端与-rust-边界)。
 
-**当前跨语言接入**：bindings unit 以 UniFFI 0.32.2 生成 Swift／Kotlin 接口，Mac 通过具名方法、record／enum 和结构化错误操作 application。单个绑定对象拥有应用实例并串行执行同步操作；Mac 在后台队列调用，按快照轮询投影。关闭忙时拒绝并保留对象，执行取消为独立操作；释放平台包装并不等同于发出用户取消。输入与返回值的内存所有权由生成绑定管理，不再保留手写 `velune_core_*` 产品入口。配置 schema 仍为 2，生成接口由 UniFFI 校验契约。C# 第三方工具需独立验证兼容性，不宣称已有 Windows app。进程内接入保持，不另加本机 App↔core IPC。
+**当前跨语言接入**：bindings unit 以 UniFFI 0.32.2 生成 Swift／Kotlin 接口，Mac 通过具名方法、record／enum 和结构化错误操作 application。单个绑定对象拥有应用实例并串行执行同步操作；Mac 在后台队列调用，按快照轮询投影。关闭忙时拒绝并保留对象，执行取消为独立操作；释放平台包装并不等同于发出用户取消。输入与返回值的内存所有权由生成绑定管理，不再保留手写 `velune_core_*` 产品入口。配置 schema 与绑定接口独立演进，生成接口由 UniFFI 校验契约。C# 第三方工具需独立验证兼容性，不宣称已有 Windows app。进程内接入保持，不另加本机 App↔core IPC。
 
 **Rust 主核心不要求重写上游 Harness SDK**。Codex 直接接 app-server；Pi 以固定 SDK 与 RPC 子进程管理会话，adapter 注入 AI 网关和私有模型投影；模型请求由 AI 网关路由并经 AI-provider 执行；Claude 优先保留官方 SDK 的薄桥进程以正确处理其生命周期。桥只做编解码、关联 ID、流和原生权限回调，领域状态、路由、预算、协作与持久化留在 Rust。Node／TypeScript 若存在仅为原生 Harness／SDK 依赖与桥，不重新成为产品主核心；不得因改 Rust 而把 Claude 私有控制 envelope 当稳定公开协议重写。
 
@@ -128,8 +128,10 @@ iroh 的默认自动选路与 QUIC 多流承担传输；路径快照、事件和
 
 - **Apple 当前落点**：Mac 使用 SwiftUI／AppKit 的原生窗口、菜单与设置，嵌入 Rust dylib；iOS／iPadOS 的 UIKit 方向不等于已实现或能运行桌面 Harness。watchOS／tvOS／visionOS 不在本轮承诺内
 - **Windows 等桌面平台**：通过同一核心 ABI 复用行为，各自采用平台原生 UI 与秘密设施；当前没有已实现的 Windows app
-- **Android**：Kotlin＋Jetpack Compose 原生 UI，后续经平台桥嵌入同一核心；系统权限、Keystore／通知和生命周期由平台层承担
+- **Android**：Kotlin＋Jetpack Compose 原生控制端，嵌入 remote-only UniFFI／JNA 产物，不携带 Harness 或 AI 执行栈。启动时显式装配 Application JNI context 与系统 TLS verifier，身份、信任和未决请求在应用私有目录保存并排除备份。前台观察与远端执行寿命分开，进程重建先查询未决请求，不自动重发。工具链与界面责任归 [Android unit](../../app/android/README.md)，实际平台验证归 [任务](../../tasks/android-minimal/packet.md)
 - **移动端能力**：远端 Harness 接入和后台能力仍需单独验证。嵌入核心不代表手机能常驻桌面 Harness，也不把离线输入显示为远端已启动的任务
+
+Mac 的远控入口由 Transport 持有，复用已经打开的唯一 VeluneApplication；设置只控制启停、一次性邀请与设备撤销。停止入口不关闭执行核心，窗口释放不结束接入，应用退出统一管理两者寿命。身份文件父目录由宿主创建，SDK 不隐式选择或创建应用目录。
 
 Mac 当前交付安装到 Applications，产品显示版本、ABI、配置 schema 与源码提交分开记录。签名／公证／商店分发和 sandbox 权限仍有后续边界，不因本地 ad-hoc 构建通过而声称已完成。先完成桌面首循环与共享核心基础，再实施远程客户端，不用 Web 过渡替代原生方向。
 

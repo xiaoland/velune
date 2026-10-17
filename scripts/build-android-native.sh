@@ -34,12 +34,13 @@ cargo build --locked --release --target-dir target -p velune-bindings --lib \
 bindings="$PWD/target/android-bindings"
 native="$PWD/target/android-native/arm64-v8a"
 mkdir -p "$bindings" "$native"
-cargo run --locked --target-dir target -p velune-bindings --no-default-features --features cli \
+cargo run --locked --target-dir target/android-bindgen -p velune-bindings --no-default-features --features cli \
   --bin velune-bindgen -- generate \
   --library target/aarch64-linux-android/release/libvelune_bindings.so \
   --language kotlin --out-dir "$bindings" --no-format
-cp target/aarch64-linux-android/release/libvelune_bindings.so "$native/"
-"$toolchain/llvm-strip" --strip-unneeded "$native/libvelune_bindings.so"
+cp target/aarch64-linux-android/release/libvelune_bindings.so "$native/libvelune_bindings.so.pending"
+"$toolchain/llvm-strip" --strip-unneeded "$native/libvelune_bindings.so.pending"
+mv "$native/libvelune_bindings.so.pending" "$native/libvelune_bindings.so"
 
 # The Kotlin verifier must match Cargo.lock; its official Maven artifact is hash-pinned.
 verifier_version=$(awk '/name = "rustls-platform-verifier-android"/ { getline; gsub(/"/, "", $3); print $3 }' Cargo.lock)

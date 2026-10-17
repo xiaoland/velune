@@ -25,6 +25,12 @@
 
 先闭合 Android API28 的原生装载、Kotlin/JNA 编译、设备可达路径与执行端邀请。随后在临时 HOME／合成 ACP 宿主中通过真机界面完成配对、会话、发送、审批和断线接续，观察实际 Direct／Relay。至少检查应用重开后的可信重连、后台不取消任务以及结果未知的防重复行为。记录能力未覆盖项及现场边界；构建成功不代替 UI 业务验收。
 
-原生库交叉编译已进入 iroh／bindings，发现 Android DNS 需要 Application JNI context、系统 TLS verifier 需要 JVM 初始化与 companion AAR；由 native owner 完整接线，不把编译成功当运行成功。独立合成 LAN 宿主和供 Mac 独占打开的合成配置已分别准备，没有共开配置根；仅有公开开发 relay／discovery 网络，不含真实模型或资料。
+Android remote-only 原生库已完成 release、严格 clippy 与 JVM／Application JNI、DNS、系统 TLS verifier companion AAR 的装配；不把编译成功当网络运行成功。独立合成 LAN 宿主和供 Mac 独占打开的合成配置已分别准备，没有共开配置根；仅有公开开发 relay／discovery 网络，不含真实模型或资料。
 
-用户随后要求将进行中的工作迁到独立工作区，并将原目录切回 main。所有源码 owner 已暂停，合成宿主已正常关闭，Android 尚未产出 APK 或操作真机 UI。当前提交仅为迁移检查点，不表示 Android 交付或验收完成；原生 Android so／生成绑定及人工宿主资源一并保留后在新工作区继续。Mac 本轮完整构建已完成，但尚未进行隔离界面验收或安装。
+用户随后要求将进行中的工作迁到独立工作区，并将原目录切回 main，现已完成。进行中源码保存于迁移检查点 `3b8bed7`，本对话所附 `android-minimal` worktree 持有 `feat/android-minimal`；原目录已切回其当前 main 且工作区干净，未覆盖其他任务更新。原生 Android so、生成绑定、交叉缓存、Gradle 中间产物及人工宿主资源均已复制，必要动态库摘要一致；仅删除了原目录已逐文件验证迁移成功的 Android 生成文件。合成宿主已关闭，恢复时只在新工作区继续。迁移检查点时尚未产出 APK；迁移后 Kotlin／Compose／JNA 编译和 APK 打包已完成。首版已通过 adb 安装及进程启动，但设备安全锁屏阻挡业务界面，已请求用户手动解锁，不能代替本人认证。Mac 本轮已有完整构建，最终修复版仍待干净构建安装。
+
+真实 Kotlin 编译发现 UniFFI 的 Endpoint.close 与自动 Disposable.close 冲突，以及 BindingApplicationCommand.List 遮蔽 Kotlin List 泛型，已从源契约 hard-cutoff 改为 shutdown／ListConfiguration 并同步调用方。lint 又发现默认 JVM Cleaner 需要 API33，已采用上游 android=true 生成配置，使低 API 使用 JNA Cleaner；不 patch 生成文件。新配置已实际完成 Kotlin／DEX 编译，最终 clean／assembleDebug／lintDebug 全部通过（0 errors，7 条版本／ABI 范围提示）。Mac 合成界面启用失败的根因是宿主未创建私有 remote 父目录，源码已修复；补齐相同目录前置后旧隔离 binary 已成功启用，最终新 binary 仍须从全新 HOME 回归。状态行的停止按钮 AX 分组也已修复，待最终构建验证。
+
+主执行者已完成新工作区的全 workspace locked check、fmt、文档链接／锚点与 Python 语法检查，严格 clippy 全部通过。当前先提交稳定源码并完成必要 Mac release 构建安装；Android 业务验收仍等待设备解锁。未将已安装、进程存活或独立 host 的成功解释为真机业务通过。
+
+最终 APK 已重新安装并启动，SHA-256 `51667f5ac72e7174eb3e197bbe4aeb307a6ff2b0eb83339037ea9fa7c68e61e5`，没有观察到 AndroidRuntime／JNA／UniFFI 错误；设备仍安全锁屏。文件写入暂缓期间由 verification owner 保留该观察，待 Mac 构建清单生成后归入验收记录。

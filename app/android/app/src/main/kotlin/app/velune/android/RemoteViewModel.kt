@@ -38,6 +38,7 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
     val state = mutable.asStateFlow()
     private val store = DeviceStore(application.noBackupFilesDir)
     private var saved = SavedDevices()
+    private var pendingAccepted: (() -> Unit)? = null
     private var endpoint: VeluneRemoteEndpoint? = null
     private var client: VeluneApplication? = null
     private var foreground = false
@@ -73,6 +74,8 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
                     )
                 }
                 connectivity.registerDefaultNetworkCallback(networkCallback)
+            } catch (_: LinkageError) {
+                mutable.update { it.copy(error = "远控绑定与原生库不匹配，请重新安装完整 APK。") }
             } catch (error: Exception) {
                 showError(error)
             } finally {
@@ -98,17 +101,17 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
 
     private suspend fun adopt(result: VeluneApplication) {
         val descriptor = withContext(Dispatchers.IO) { result.remoteDescriptor() }
+        persist(saved.copy(devices = saved.devices.filterNot { it.endpointId == descriptor.endpointId } + descriptor))
         val previous = client
         generation += 1
         client = result
-        saved = saved.copy(devices = saved.devices.filterNot { it.endpointId == descriptor.endpointId } + descriptor)
-        withContext(Dispatchers.IO) { store.save(saved); previous?.shutdown() }
         mutable.update {
             it.copy(connected = descriptor, devices = saved.devices, snapshot = null,
                 configuration = null, connection = "正在检查路径", error = null)
         }
-        refresh(result)
         startPolling()
+        withContext(Dispatchers.IO) { previous?.shutdown() }
+        refresh(result)
     }
 
     fun disconnect() = action {
@@ -122,8 +125,7 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
 
     fun forget(descriptor: BindingRemoteEndpointDescriptor) = action {
         check(saved.pending?.endpointId != descriptor.endpointId) { "请先处理这台设备的待确认操作。" }
-        saved = saved.copy(devices = saved.devices.filterNot { it.endpointId == descriptor.endpointId })
-        withContext(Dispatchers.IO) { store.save(saved) }
+        persist(saved.copy(devices = saved.devices.filterNot { it.endpointId == descriptor.endpointId }))
         mutable.update { it.copy(devices = saved.devices) }
     }
 
@@ -214,13 +216,13 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
         val device = mutable.value.connected ?: error("请先连接执行设备。")
         val requestId = withContext(Dispatchers.IO) { current.nextRequestId() }
         val pending = PendingOperation(device.endpointId, requestId, label, runtime, conversation)
-        saved = saved.copy(pending = pending)
         // Persist before submission: process death must never turn an uncertain write into an automatic retry.
-        withContext(Dispatchers.IO) { store.save(saved) }
+        persist(saved.copy(pending = pending))
+        pendingAccepted = accepted
         mutable.update { it.copy(pending = pending, pendingStatus = "等待执行端确认") }
         try {
             val status = withContext(Dispatchers.IO) { current.submitRequest(requestId, command) }
-            handleStatus(status, current, accepted)
+            handleStatus(status, current)
         } catch (error: Exception) {
             mutable.update { it.copy(pendingStatus = "连接中断或结果未知，请查询原请求。") }
             throw error
@@ -235,14 +237,14 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
         handleStatus(status, current)
     }
 
-    private suspend fun handleStatus(status: BindingRemoteRequestStatus, current: VeluneApplication, accepted: () -> Unit = {}) {
+    private suspend fun handleStatus(status: BindingRemoteRequestStatus, current: VeluneApplication) {
         when (status) {
             is BindingRemoteRequestStatus.Completed -> {
                 val response = status.response
                 if (response is BindingApplicationResponse.SnapshotResult && current === client) {
                     response.value.snapshot?.let { snapshot -> mutable.update { it.copy(snapshot = snapshot) } }
                 }
-                accepted()
+                pendingAccepted?.invoke()
                 finishPending()
                 mutable.update { it.copy(info = "操作已确认。") }
             }
@@ -250,7 +252,11 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
                 finishPending()
                 mutable.update { it.copy(error = status.failure.detail) }
             }
-            BindingRemoteRequestStatus.Running -> mutable.update { it.copy(pendingStatus = "执行端已接纳，结果尚未返回。") }
+            BindingRemoteRequestStatus.Running -> {
+                pendingAccepted?.invoke()
+                pendingAccepted = null
+                mutable.update { it.copy(pendingStatus = "执行端已接纳，结果尚未返回。") }
+            }
             BindingRemoteRequestStatus.Unknown -> mutable.update { it.copy(pendingStatus = "执行端没有此请求的接纳证据。请检查会话后决定是否结束跟踪，不会自动重发。") }
             BindingRemoteRequestStatus.ResultExpired -> mutable.update { it.copy(pendingStatus = "回执已不可查询；请检查执行结果，不会自动重发。") }
             is BindingRemoteRequestStatus.TransportFailed -> mutable.update { it.copy(pendingStatus = "无法查询：${status.detail}") }
@@ -263,9 +269,14 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     private suspend fun finishPending() {
-        saved = saved.copy(pending = null)
-        withContext(Dispatchers.IO) { store.save(saved) }
+        persist(saved.copy(pending = null))
+        pendingAccepted = null
         mutable.update { it.copy(pending = null, pendingStatus = "") }
+    }
+
+    private suspend fun persist(next: SavedDevices) {
+        withContext(Dispatchers.IO) { store.save(next) }
+        saved = next
     }
 
     fun foreground(active: Boolean) {
@@ -355,7 +366,7 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
         val local = endpoint
         client = null
         endpoint = null
-        CoroutineScope(Dispatchers.IO).launch { try { local?.close() } catch (_: Exception) { } }
+        CoroutineScope(Dispatchers.IO).launch { try { local?.shutdown() } catch (_: Exception) { } }
         super.onCleared()
     }
 }

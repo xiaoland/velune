@@ -20,10 +20,17 @@ python3 scripts/manual-android-remote.py \
 
 宿主显式采用 DevelopmentPublic relay／discovery 和 `0.0.0.0:0`；不代表产品已部署公共服务。普通消息得到合成 `ACP_ANSWER`，`PERMIT` 请求真实 ACP 审批，`CANCEL` 持续执行至取消，`GATE` 在私有临时 `hold` 文件存在时等待，释放后完成。开发宿主不请求真实模型或读取既有 Harness 文件。
 
-冻结 host 动态库 SHA-256 为 `b57fad02bc813288a6b020c80e48da7f175000ed7cb035602c2679377f09b29b`，Python bindings SHA-256 为 `195689ad23e46ca0a8d899115c162c723e90b9c4cae15ebeffbc8442d2f11770`。本轮 Android 平台初始化未改变业务 UniFFI 契约。
+最终配对使用的冻结 host 动态库 SHA-256 为 `3df87b7e3f87c543b102e5cf78eb90b1ef87cf665a0d050370cb56feea079142`，Python bindings SHA-256 为 `df8c3f22beb625743b735188dcd304ba8248e07a7bc7cce6f6e7392b7448bbaf`。首轮真实 Kotlin 编译发现 UniFFI 生成的 `close`／`List` 命名冲突，公开入口已改名为 `shutdown`／`ListConfiguration`；宿主已用匹配绑定重启。
+
+Android arm64 native so SHA-256 为 `42a227f5be358d262fbcee2a82ad9a240d2a59f2b51da1170da998ab452299d9`。native owner 已完成目标平台 check／clippy／release，并确认 JNI 导出；实际设备装载另行观察。
+
+首版 APK SHA-256 为 `6e1d2a6ff87f521669204d6cb06c82bd70a587feab0ac43dc2718705fa7b5a44`。解包确认只含 arm64-v8a native libs，并包含 Rust so 与 JNA `libjnidispatch.so`；APK 内 Rust so SHA 与上述产物一致。设备 package metadata 确认为 minSdk 28、targetSdk 36、primaryCpuAbi arm64-v8a、版本 `0.1 beta.1`。
 
 ## 当前观察
 
 - `--prepare-only` 已实际运行：创建并完成合成会话，退出时关闭唯一 ApplicationService。
 - 独立 Wi-Fi iroh 宿主已启动，一次性邀请只写入权限 0600 的私有文件。
-- Android APK、界面流程和实际 Direct／Relay 路径尚待真机执行；不得将上述宿主准备列为 Android 通过。
+- APK 已通过 `adb install -r` 安装，`am start -n app.velune.android/.MainActivity` 后进程存在，限定本 app PID 的 E 级日志未见错误。设备系统锁屏 `secure=true`，普通唤醒／上滑后仍未解锁；未读取通知、未截图锁屏、未尝试个人凭据。界面与业务结论必须等待用户本人解锁后取得。
+- Android 界面流程和实际 Direct／Relay 路径尚待真机执行；不得将上述宿主准备或进程存在列为 Android 业务通过。
+
+最终 APK 正在纳入 UniFFI Kotlin `android = true` 的 Android Cleaner 配置修复；以上首版 SHA／安装观察不作为修复后产物的装载或业务证据。最终 APK 需重新安装并记录 SHA。

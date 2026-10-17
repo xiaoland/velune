@@ -521,7 +521,7 @@ def main():
                 rejected(unauthorized, b.BindingError)
                 report.append('unpaired_device_refused')
             finally:
-                rogue.close()
+                rogue.shutdown()
             for name in ('first', 'second'):
                 endpoints[name] = endpoint(name)
                 invitation = server.create_invitation(120)
@@ -532,7 +532,7 @@ def main():
                     try:
                         rejected(lambda: replay.pair(invitation.encoded, 'replay-view'), b.BindingError)
                     finally:
-                        replay.close()
+                        replay.shutdown()
             assert len(server.trusted_devices()) == 2
             report.append('single_use_pairing_and_two_trusted_devices')
             first, second = clients['first'], clients['second']
@@ -556,7 +556,7 @@ def main():
                     client.shutdown()
                 clients.clear()
                 for control_endpoint in endpoints.values():
-                    control_endpoint.close()
+                    control_endpoint.shutdown()
                 endpoints.clear()
             def reconnect(name):
                 endpoints[name] = endpoint(name)
@@ -585,9 +585,9 @@ def main():
                 except Exception:
                     pass
             for control_endpoint in endpoints.values():
-                control_endpoint.close()
+                control_endpoint.shutdown()
             if server is not None:
-                server.close()
+                server.shutdown()
             if application is not None:
                 application.shutdown_stopping_work()
             os.environ.clear()

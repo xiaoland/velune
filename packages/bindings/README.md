@@ -2,6 +2,8 @@
 
 `velune-bindings` 是本地 application 与远程客户端共用的 UniFFI 接入层。Swift、Kotlin 和 Python 使用同一份 Rust 元数据生成接口。领域 package 不依赖 UniFFI；此处的 `Binding*` records 与 enums 将领域契约转换为语言绑定能够表达的类型。Mac 在应用进程内加载此 unit 的动态库，不通过 Host 或 socket 调用 Rust。
 
+Kotlin 生成目标为 Android，`uniffi.toml` 固定 `bindings.kotlin.android=true`，生成物依赖 Android API 与 AndroidX 注解。UniFFI 在 API 34 及以上使用 Android `SystemCleaner`，较低 API 使用 JNA Cleaner，以支持当前 Android 端的 API 28 下限。
+
 原生资源通过 `runtime_resource_catalog`／`read_runtime_resource`／`write_runtime_resource`／`delete_runtime_resource` 管理。`BindingRuntimeResourceKind`、scope、key、state、access 和 revision 均为具名类型；资源内容用 bytes 保留原生文件或单条 MCP JSON，Rust Debug 隐去正文。写入传 Missing 或此前的 Match revision，冲突保留为 `BindingFailureKind::RuntimeManagement`、`phase=runtime_management`、`code=conflict`，不退化为普通字符串错误。原生 Agent 定义不是活动会话。**待实现**：平台资源管理与冲突处理界面；资源保存不自动重启会话。
 
 Agent 间协作没有专门的 bindings API：参与方是普通会话，平台用现有会话、消息与交互接口呈现；MCP 工具、票据与收件箱归 application（见其 README）。
@@ -21,7 +23,7 @@ Codex 订阅的前端接入复用 `authentication_start`／`authentication_poll`
 
 执行端调用 `create_invitation(lifetime_seconds)` 生成最多 10 分钟的一次性邀请，将返回的 `encoded` 经用户明确选择的渠道交给另一设备。控制端调用 `pair(encoded, view_id)` 完成配对并得到远程 `VeluneApplication`；后续用 `descriptor()` 与 `connect(descriptor, view_id)` 重新连接。公开 descriptor 是拨号信息，不是授权凭据；邀请包含秘密，不写日志或自动同步。`trusted_devices` 列举本设备信任，`revoke(device_id)` 先保存撤销并切断该设备既有连接。设备身份与信任文件重开后保留。每个窗口或独立视图使用稳定且互不相同的 `view_id`，浏览状态按已认证设备与该 ID 隔离；窗口不再需要保留时可显式 `release_view()`，断网不会隐式释放视图或停止执行。
 
-远程对象的 `shutdown` 与 `shutdown_stopping_work` 都只关闭控制连接；停止 Agent 使用明确的 `cancel`／`stop_sub_agents`。`VeluneRemoteEndpoint.close()` 关闭本设备远控入口和连接，仍不关闭执行应用。执行核心由本地对象管理，原有忙时拒绝关闭的语义保留。远程对象的 `reconnect(descriptor)` 显式重连并保留请求编号与编辑基线，不会自动重发业务操作。`remote_descriptor` 限定当前操作属于哪台执行设备；目标 cwd 与变更路径始终属于该设备。`connection_status` 返回原生 Direct／Relay／Other 路径、当前选中状态及安全计数器，允许平台观察连接是否转为直连，不暴露应用正文或传输凭据。平台收到网络切换或前台恢复通知时可调用 endpoint 的 `network_change()`，由 iroh 重新检查路径；本 unit 不替平台订阅系统通知。
+远程对象的 `shutdown` 与 `shutdown_stopping_work` 都只关闭控制连接；停止 Agent 使用明确的 `cancel`／`stop_sub_agents`。`VeluneRemoteEndpoint.shutdown()` 关闭本设备远控入口和连接，仍不关闭执行应用。执行核心由本地对象管理，原有忙时拒绝关闭的语义保留。远程对象的 `reconnect(descriptor)` 显式重连并保留请求编号与编辑基线，不会自动重发业务操作。`remote_descriptor` 限定当前操作属于哪台执行设备；目标 cwd 与变更路径始终属于该设备。`connection_status` 返回原生 Direct／Relay／Other 路径、当前选中状态及安全计数器，允许平台观察连接是否转为直连，不暴露应用正文或传输凭据。平台收到网络切换或前台恢复通知时可调用 endpoint 的 `network_change()`，由 iroh 重新检查路径；本 unit 不替平台订阅系统通知。
 
 配置编辑使用乐观版本：连接构造先读取配置并设置初始编辑基线；表单打开时调用 `list_with_revision()`，保留一起返回的配置与 revision，提交前用 `expect_revision(revision)` 指定该表单的依据，再调用原具名写入 API。`observed_revision()` 只用于连接状态展示；它可能被其它读取更新，不能代替表单对应的版本。其他读取与消息轮询只更新观测版本，不替换编辑基线；成功的自身修改推进基线。冲突保留 `BindingFailureKind::Conflict`，调用方重读配置并让用户合并，不能换版本后自动重发旧编辑。显式 `submit_request`／`query_request` 仅更新观测版本，后续编辑由平台明确采用哪个版本。
 

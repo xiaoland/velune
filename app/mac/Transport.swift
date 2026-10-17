@@ -167,6 +167,8 @@ final class Transport: @unchecked Sendable {
         try withApplication("enableRemoteAccess") { application in
             if remoteEndpoint == nil {
                 let directory = stateDirectory.appendingPathComponent("remote", isDirectory: true)
+                try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true,
+                                                        attributes: [.posixPermissions: 0o700])
                 let options = BindingRemoteOptions(identityFile: directory.appendingPathComponent("identity.json").path,
                                                    trustFile: directory.appendingPathComponent("trusted-devices.json").path,
                                                    deviceName: Host.current().localizedName ?? "Mac",
@@ -219,7 +221,7 @@ final class Transport: @unchecked Sendable {
     private func stopRemoteAccessLocked() {
         remoteNetworkMonitor?.cancel()
         remoteNetworkMonitor = nil
-        remoteEndpoint?.close()
+        remoteEndpoint?.shutdown()
         remoteEndpoint = nil
     }
 
