@@ -203,3 +203,9 @@ transport owner 固定公开 Magpie 源码研究认证、请求、额度与品�
 首次真实登录：用户完成浏览器授权，但报告找不到钥匙串 unknown，application 返回 LOGIN_NOT_COMPLETED，模型请求为 0。环境判别仅调用 `/usr/bin/security default-keychain -d user` 查询路径元数据：真实 HOME exit=0 且有路径；临时 HOME 在保留 USER/LOGNAME 时仍 exit=1，无路径。未读取钥匙串条目或秘密。本机 2.1.292 发布二进制显示 Keychain service 随 CLAUDE_CONFIG_DIR 的 SHA256 前八位区分，账号名取 USER 或 os.userInfo().username；不能套用旧版 unknown 账号 fallback 报告。修正方向为保留系统 HOME/身份、只隔离 Claude 配置目录，并对认证失败增加安全阶段诊断。此结果证明伪 HOME 破坏默认钥匙串发现，登录恢复仍需真实复验。
 
 HOME 修复已覆盖 application 登录/状态/退出/额度与 ai-provider 执行，保持环境白名单、配置目录和工作目录独立。新增固定 phase/reason/exit_code 诊断，未扩展 UniFFI 类型。合成 cancel/finish 3 组及新增认证诊断 3 组通过；每个 CLI 子命令验证父 HOME/USER/LOGNAME 保留及独立配置/cwd，故障输出含 sentinel 仍不泄露。新增组合累计 25 组。live runner 的 9 项解析/诊断与 2 项失败输出自检通过。fmt、workspace check/clippy、bindings build 与 no-default-features check 均通过。
+
+修复提交 `aca0a8e938c3a0fe78183f48b4f276a6ce6bde91` 冻结后第二次真实官方登录成功：application 返回 login_complete/configured=true，模型请求 0，未读取或复制 token。由此补足真实登录证据；下一步独立执行文本、工具、额度阶段。
+
+同一冻结提交的真实文本阶段只发送 1 次网关请求：CLI 结构化 rate_limit 映射为 HTTP 429，analytics=Failed、用量未报告，没有自动重试。随后独立 quota 阶段仅触发 1 次观测，Fresh，5 小时窗口已用 100%、周窗口已用 53%，problem=false；未发送工具验收请求。此证据支持登录与当前 CLI 额度输出解析成功，以及限流错误传播，不证明正常文本或工具往返成功。
+
+用户明确选择保留登录，额度恢复后继续。本轮停止真实请求，不退出该订阅、不删除验收配置。待完成：用相同专用验收目录先执行 live runner `--run --stage text`，成功后执行 `--run --stage tool`，不重新登录、不自动重放失败请求；仍不扩展前端或合并主工作区。本轮模型网关请求共 1 次（429）、显式额度采样 1 次；CLI 内部网络次数未计量。

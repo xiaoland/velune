@@ -114,6 +114,6 @@ Claude 登录复用 `authentication_start`、`authentication_poll`、`authentica
 
 CLI 额度来源执行内置 `/usage`，关闭工具、外部 MCP、设置来源与会话持久化。仅解析可验证的 `Current session` 与 `Current week (all models)` 百分比，映射为 `window:18000` 和 `window:604800`。未知文本、缺失窗口、进程失败不产生满额快照；保留上次观测并给出未知或过期状态及安全错误。人类可读 reset 文本不被猜测为时间戳，按现有短 TTL 在下次查询或使用时重新观测；不会推断额度恢复。模型特定窗口没有稳定 model ID 映射时不伪装为全模型窗口。额度是按需观测，不是持续轮询。
 
-`/usage` 适配依据是当前官方命令语义与固定 Magpie 实现，CLI 的版本及输出变化可能使观测不可用。Velune 只执行固定命令，绝不在失败后退回普通 prompt 或换参数重试；输出校验只能判断返回是否符合额度格式，不能保证外部 CLI 内部实现或计量永远不变。本轮仅完成隔离合成验收，真实 CLI 登录、额度读取和订阅执行仍由用户验收。
+`/usage` 适配依据是当前官方命令语义与固定 Magpie 实现，CLI 的版本及输出变化可能使观测不可用。Velune 只执行固定命令，绝不在失败后退回普通 prompt 或换参数重试；输出校验只能判断返回是否符合额度格式，不能保证外部 CLI 内部实现或计量永远不变。Claude Code 2.1.292 的官方订阅登录和额度读取已通过真实验收；当前账户 5 小时窗口耗尽，真实文本请求返回限流，正常文本及工具往返尚待额度恢复后验收。证据归 [模型路由任务](../../tasks/model-routing/packet.md)。
 
 Claude 认证失败的公开 `AuthenticationEvent.error` 只包含固定阶段与原因，格式为 `Claude Code 认证未完成 [phase=<阶段>;reason=<固定原因>;exit_code=<整数或none>]`。阶段为 `login`、`status` 或 `worker`，用于区分 CLI 退出、超时、状态 JSON、目录绑定与身份校验失败；不含 CLI 的 stdout、stderr、账户信息或 URL。进程退出码来自操作系统，不按原始错误文案猜测供应商原因。
