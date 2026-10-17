@@ -18,7 +18,7 @@
 
 - Codex 0.159.3 app-server：同一连接内子线程有自己的 `thread/status/changed`（active→idle）与 `turn/started`／`turn/completed`，可据此判断子 Agent 运行，不必依赖写入锁。`turn/interrupt` 父轮次不停止子线程，子线程照常完成；停止子 Agent 需对其当前轮次单独中断。本版未观察到 `subAgentActivity` 条目。协议定义由 `codex app-server generate-json-schema` 生成核对：`ThreadStatus` 为 notLoaded／idle／systemError／active（activeFlags：waitingOnApproval、waitingOnUserInput）。
 - Claude Code 2.1.292（本机已自动更新，Velune 固定的 2.1.286 不在本机；结论需在 2.1.286 复核）：后台 Agent 运行时，父轮次 `result` 后会话状态保持 running，任务完成后 Claude 自动再跑一轮回应任务通知，之后才 `session_state_changed: idle`。因此 Velune 的 Claude 轮次在后台工作结束前一直忙，进程不会被提前结束。
-- 待查：ACP、DSH、Pi 是否有可观察的轮次外工作（目前无已知例子；Pi 的子 Agent 由扩展提供，尚未支持）。另：本机 Claude Code 已为 2.1.292，需确认 Velune 版本检查是否拒绝它。
+- 待查：ACP、DSH、Pi 是否有可观察的轮次外工作（目前无已知例子；Pi 的子 Agent 由扩展提供，尚未支持）。本机 Claude Code 2.1.292 已在 `claude-code-2.1` 兼容区间内（见 [adapter 兼容版本区间](../adapter-version-ranges/packet.md)）。
 
 ## 设计（2026-10-16，经 advisor 复核后采纳）
 
