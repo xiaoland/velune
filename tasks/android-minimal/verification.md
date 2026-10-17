@@ -51,3 +51,27 @@ Android arm64 native so SHA-256 为 `42a227f5be358d262fbcee2a82ad9a240d2a59f2b51
 - 停止按钮以独立 AX button 可达；生成五分钟有效的一次性邀请成功。邀请未进入日志、文档或提交。
 - 点击停止后回到未启用状态，界面清除邀请；关闭 Settings 后通过真实 Mac 聊天界面发送合成 `MAC_AFTER_ENDPOINT_STOP`，观察用户行及 `ACP_ANSWER`，证明停止远控入口未关闭唯一业务核心。
 - 通过 Cmd-Q 正常退出隔离 Mac。当前没有临时 Mac application owner 持有合成配置；后续 main 合并产物需以新 fixture 重做对应观察。
+
+## main 集成后的最终产物
+
+源码 `d3b039d` 整合固定 main 后重新生成、构建的 APK SHA-256 为 `3eacf0e86be715cd7dd0744d14978cc3b68c51dab64941fa65c2083c3deb75d4`，APK 内 Rust so SHA-256 为 `1dd2711ab094446d1a71cb9566a69b37ab3da14b2ad71aa4be15ceb082f66a3c`。已重新 `adb install -r` 成功，只停止本 app 旧进程后启动，PID 20964。限定此 PID 的 E 级日志仅见 Huawei AwareLog／MemoryLeakMonitor 缺文件消息，没有 AndroidRuntime、JNA 或 UniFFI 错误。该证据仍只支持安装／进程启动，未将锁屏后的运行情况等同于业务调用成功。
+
+匹配 host 动态库 SHA-256 为 `e84fc5b8fc43782e1109924f8f4c232a9b50bd185334b98c16404e8724917a25`，Python bindings SHA-256 为 `f07a5c7cbba659feabb25184c179b7f089644e7b0cb7f32413bd51fc033b90e4`。用此绑定创建全新隔离 Mac fixture，实际完成合成会话及回复后关闭 owner，再由主执行者启动最终 Mac clone 独占该配置根。独立 LAN 宿主使用另一个新 fixture，不与 Mac 共开。
+
+主执行者另以此 host freeze、临时伪 bundle 和隔离 HOME 显式运行 `manual-provider-configuration.py`，原判据全部通过：合成 API key、私有文件 0600、摘要／日志不含秘密、保存／重开／模板以及 hard-cutoff。未调用真实模型或读取真实配置。该观察归属 `d3b039d` 的集成回归，不替代 Android 界面验收。
+
+设备仍安全锁屏，配对／Direct 或 Relay／会话／消息／停止／审批／前后台接续／未决请求查询的 Android UI 证据均未取得。最终 Mac clone 的入口回归另行记录；公共网络与真实模型体验由用户验收。
+
+## 最终 Mac 入口回归与安装
+
+主执行者以 `d3b039d` 的 clean release clone、全新 final-mac fixture 进行真实 Mac 操作：配置根未预建 remote，经设置启用后显示“已启用”，独立 AX 停止按钮可达；生成五分钟有效的一次性邀请，拷贝入口可见但未复制邀请码；点击停止后回到未启用且邀请清除。实际目录／身份权限分别为 0700／0600，最后通过 Cmd-Q 正常退出隔离实例。
+
+安装前仅检查公开 build manifest，原安装为 `3f01f9b`、`dirty=false`，核实它是 `d3b039d` 的祖先，避免覆盖丢失 main 已有能力。正常退出已确认的 Velune 本体后完成原子安装，`codesign --deep --strict` 检查通过；安装 manifest 为 `d3b039d`、`dirty=false`、版本 `0.1 beta.1`，未启动真实 app。已安装 executable SHA-256 为 `2457b9b864532716d77d2fdfa1cf5e9978e480d375405a8d307233cc08a5fd6f`，dylib SHA-256 为 `391ba580dec7d4b09c785b78e27a068230cb62ea112b2c0b14d78f4151bb8886`，均与构建产物相同。
+
+主执行者完成全 workspace 的 locked check、严格 clippy 和 fmt；没有新增或执行自动化测试。
+
+## 交付状态与未完成前提
+
+最终 Android APK 已安装，未进入配对或业务界面；没有合成设备记录或未决操作需要清理，也没有真实用户数据访问。独立 final-host 已经 SIGINT 正常退出并关闭 endpoint／ApplicationService，合成资料保留，当前没有验收宿主运行。
+
+唯一阻止 Android 真机界面验收的当前前提是用户本人手动解锁设备并保持亮屏。解锁后仍需实际完成邀请配对、确认 Direct／Relay 路径、会话创建与发送／停止／审批、断线与后台接续、可信重连及未决请求查询；这些项目当前均未取得证据，未宣称通过。跨公网、真实切网、移动后台长期行为及真实模型体验也未验证。

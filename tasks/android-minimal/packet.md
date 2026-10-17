@@ -1,40 +1,31 @@
 # 最小 Android 远控端
 
-2026-10-17 用户要求实现最小 Android 端，建议 Kotlin／Jetpack Compose，并授权使用已连接 adb 真机验收、实验。从远控 SDK 分支的 `b4e5b2d` 开始，在 `feat/android-minimal` 实施；本轮不 push、创建 PR 或部署公网服务。
+2026-10-17 用户授权 Kotlin／Jetpack Compose 最小 Android 端，并允许使用已连接 adb 真机验收、实验。实现、静态检查、两端构建安装及 Mac 入口回归已完成；Android 真机业务验收等待用户手动解锁设备，尚未完成。
 
-## 目标与边界
+## 工作区与权限
 
-交付可安装的原生 Compose 控制端，经现有 remote-only UniFFI／iroh 操作执行设备，不携带 Harness 或 AI 执行栈。最小闭环包括显式邀请配对、可信设备重连、会话列表与阅读、已有运行时／模型选择及消息收发、执行状态与审批；不以网络回声或纯只读演示代替。完整远控的长期业务范围不变，本轮不复制桌面所有配置界面。
+用户随后要求迁移进行中的工作并将原目录恢复 main，已完成。本对话附属 `android-minimal` worktree 持有 `feat/android-minimal`；原目录当前为 main 且干净，没有覆盖其他任务更新。迁移检查点为 `3b8bed7`，功能提交为 `235b62b`；为保留当前已安装的并行修复，只在独立分支合入固定 main `3f01f9b`，最终源码为 `d3b039d`。原生库、生成绑定、交叉缓存和验收资源均已迁移，关键文件摘要核对一致。
 
-执行端共用既有唯一 ApplicationService；advisor 已推荐补齐 Mac 的最小远控设置入口，因为独立诊断宿主不能替代用户可以开启的产品执行端。Mac owner 正在贯通启用／关闭、邀请和设备撤销，默认显式选择公共开发设施并说明性质。合成隔离宿主用于开发验收，不替代产品执行端。控制设备后台／断开不停止执行端；结果未知不自动重发。
+本轮不 push、创建 PR 或部署公网服务，不读取真实配置、凭据、个人资料或会话，不调用真实模型；没有新增或运行自动化测试。adb 只操作本次 Velune、公开设备能力和合成资料。设备认证由本人完成，不尝试密码或绕过系统锁屏。
 
-不得读取真实配置、认证、个人文件或会话，不调用真实模型。adb 只操作本次安装的 Velune、公开设备能力与本任务合成内容；不清理其他应用或数据。使用静态检查、构建、人工脚本与真机操作，不新增或运行自动化测试。必要 Mac 改动按规范重建安装，用户已授权退出旧 Velune。
+## 实施边界与当前证据
 
-## 当前事实与责任
+Android 是 remote-only UniFFI／iroh 原生控制端，不携带 application、Harness 或 AI 执行栈。最小界面包含显式配对／可信重连、路径状态、会话列表／历史、新建及运行时／模型选择、收发／取消、审批与问题回答。长期完整业务 SDK 范围不变，本轮不复制所有桌面配置界面、附件操作或复杂变更审阅。
 
-工作区开始干净。已连接单台 Android 设备，API 28、支持 arm64-v8a，1080×2340；同 Wi‑Fi 可提供本地真实网络证据，不推定公网直连稳定性。开发机有 Android SDK／NDK、Android Studio JBR 和 JDK17，目前没有 Gradle 命令或 Android Rust target。
+Mac 设置提供同进程接入启停、五分钟一次邀请和设备撤销，复用已打开的唯一 ApplicationService。控制端后台／断开与远端执行寿命分开。Android 的未决写入先持久保存请求 ID，结果未知时查询原编号，不盲目重发；身份与信任放私有且不备份的目录。
 
-- android_app owner：`app/android` 工程、Compose、Gradle 与 APK 构建；负责自身编译修复。
-- android_native owner：remote-only Android so／Kotlin 生成与 `scripts/build-android-native.sh`，必要 Rust 平台修复。
-- advisor：最小产品执行端接线和生命周期判断，不作 reviewer。
-- android_mac_host owner：Mac 同进程远控入口与原生设置。
-- android_verification owner：合成宿主及 adb 真机验收、当前独占设备 UI 操作。
-- 主执行者：根文档／忽略规则、集成、隔离 Mac UI 验收、必要 Mac 安装和本地提交。
+- Android API28／arm64 的 native release、JNI／DNS／TLS verifier、实际 Kotlin／Compose／JNA 编译与 DEX 打包已完成；clean／assembleDebug／lintDebug 通过，lint 0 errors、7 条版本／ABI 范围提示。真实编译发现的 UniFFI close／List 命名冲突及低 API Cleaner 问题均从源契约／生成配置修复，没有 patch 生成代码。
+- 全 workspace locked check／严格 clippy、fmt、Android target strict clippy、文档链接／锚点及人工脚本语法检查通过。remote-only 依赖树只含 bindings／application-api／conversation／remote。main 的 ProviderTemplate 归入中立 API，保留全部新字段，不恢复 Pi 私有公开元数据。
+- 最终 Android APK 源码为 `d3b039d`，SHA-256 `3eacf0e86be715cd7dd0744d14978cc3b68c51dab64941fa65c2083c3deb75d4`，已 adb 安装并启动进程；限定 PID 日志未见 AndroidRuntime／JNA／UniFFI 错误。该观察不证明配对或业务成功。
+- 同一源码 Mac release 从干净工作区构建，已完成全新合成 HOME 的真实入口启停／邀请／独立 AX 按钮和权限回归，安装至 `/Applications/Velune.app`。安装前核实原公开清单 `3f01f9b` 是构建祖先；签名、二进制摘要及清单 `d3b039d`／dirty=false 通过，版本 `0.1 beta.1`。未启动真实 app。
+- 匹配 host／Python 的隔离提供商配置脚本通过，合成资料和显式秘密边界保持。各版本、命令、摘要和现场缺口归 [验收记录](verification.md)，不要把旧产物观察套用到新版本。
 
-## 验收与下一步
+## 当前唯一前提与接续
 
-先闭合 Android API28 的原生装载、Kotlin/JNA 编译、设备可达路径与执行端邀请。随后在临时 HOME／合成 ACP 宿主中通过真机界面完成配对、会话、发送、审批和断线接续，观察实际 Direct／Relay。至少检查应用重开后的可信重连、后台不取消任务以及结果未知的防重复行为。记录能力未覆盖项及现场边界；构建成功不代替 UI 业务验收。
+真机是 API28／arm64、同 Wi‑Fi，但仍处于本人认证锁屏；已请求用户手动解锁并保持亮屏。未读取通知、截图锁屏或修改系统锁定设置。配对、实际 Direct／Relay、消息、审批、后台／断线接续及未知结果恢复的 Android UI 证据均未取得。
 
-Android remote-only 原生库已完成 release、严格 clippy 与 JVM／Application JNI、DNS、系统 TLS verifier companion AAR 的装配；不把编译成功当网络运行成功。独立合成 LAN 宿主和供 Mac 独占打开的合成配置已分别准备，没有共开配置根；仅有公开开发 relay／discovery 网络，不含真实模型或资料。
+所有临时执行宿主和隔离 Mac 已正常退出，合成资料保留；手机没有配对或未决操作需要清理。用户解锁后，由原 verification owner 在独立工作区启动匹配最终产物的合成宿主、刷新邀请，继续真机闭环；必要问题交原源码 owner 修复。不能将本轮同 Wi‑Fi 实验当公网 NAT、真实切网或长期移动后台保证。
 
-用户随后要求将进行中的工作迁到独立工作区，并将原目录切回 main，现已完成。进行中源码保存于迁移检查点 `3b8bed7`，本对话所附 `android-minimal` worktree 持有 `feat/android-minimal`；原目录已切回其当前 main 且工作区干净，未覆盖其他任务更新。原生 Android so、生成绑定、交叉缓存、Gradle 中间产物及人工宿主资源均已复制，必要动态库摘要一致；仅删除了原目录已逐文件验证迁移成功的 Android 生成文件。合成宿主已关闭，恢复时只在新工作区继续。迁移检查点时尚未产出 APK；迁移后 Kotlin／Compose／JNA 编译和 APK 打包已完成。首版已通过 adb 安装及进程启动，但设备安全锁屏阻挡业务界面，已请求用户手动解锁，不能代替本人认证。Mac 本轮已有完整构建，最终修复版仍待干净构建安装。
+## 责任
 
-真实 Kotlin 编译发现 UniFFI 的 Endpoint.close 与自动 Disposable.close 冲突，以及 BindingApplicationCommand.List 遮蔽 Kotlin List 泛型，已从源契约 hard-cutoff 改为 shutdown／ListConfiguration 并同步调用方。lint 又发现默认 JVM Cleaner 需要 API33，已采用上游 android=true 生成配置，使低 API 使用 JNA Cleaner；不 patch 生成文件。新配置已实际完成 Kotlin／DEX 编译，最终 clean／assembleDebug／lintDebug 全部通过（0 errors，7 条版本／ABI 范围提示）。Mac 合成界面启用失败的根因是宿主未创建私有 remote 父目录，源码已修复；补齐相同目录前置后旧隔离 binary 已成功启用，最终新 binary 仍须从全新 HOME 回归。状态行的停止按钮 AX 分组也已修复，待最终构建验证。
-
-主执行者已完成新工作区的全 workspace locked check、fmt、文档链接／锚点与 Python 语法检查，严格 clippy 全部通过。当前先提交稳定源码并完成必要 Mac release 构建安装；Android 业务验收仍等待设备解锁。未将已安装、进程存活或独立 host 的成功解释为真机业务通过。
-
-最终 APK 已重新安装并启动，SHA-256 `51667f5ac72e7174eb3e197bbe4aeb307a6ff2b0eb83339037ea9fa7c68e61e5`，没有观察到 AndroidRuntime／JNA／UniFFI 错误；设备仍安全锁屏。文件写入暂缓期间由 verification owner 保留该观察，待 Mac 构建清单生成后归入验收记录。
-
-独立分支已开始集成固定 main `3f01f9b`（该提交也在当前已安装 Mac 的公开清单中），以保留并行任务已交付的 Claude／目录／窗口与提供商模板修复；不改变原目录或 main。ProviderTemplate/provider_templates 迁入中立 API，旧订阅工厂删除，remote-only 依赖边界保留。packages 全特性与 remote-only check/clippy、Mac Swift parse 已通过；合并完成后须重新冻结 host／Android 产物并重建 APK／Mac，旧 SHA 不套用新产物。
-
-源235b62b的干净 Mac 产物已完成全新合成 HOME 真界面回归：自动创建 remote0700／identity0600、独立可访问停止按钮、一次邀请生成、停止接入后合成会话仍可发送并收到 ACP_ANSWER；隔离实例已退出。该观察明确限定版本，最终 main 集成产物仍需构建验证。
+android_app 拥有 `app/android` 与 APK；android_native 拥有 Android 原生构建／平台装配；android_mac_host 拥有 Mac 接入；remote_application 负责中立 API／application／bindings 的基线集成；android_verification 负责合成宿主及真机验收。主执行者维护根文档、分支与集成、隔离 Mac 验收安装和本地提交。各 owner 保持后续修复责任，原目录 main 不再用于本任务修改。
