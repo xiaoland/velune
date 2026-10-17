@@ -261,6 +261,37 @@ def first_cwd(path):
     return None
 
 
+def continued_in(path):
+    """The session this one went on in, when Claude Code handed it over (to
+    a background job, which copies its history) and nothing was said here
+    since. The hand-over is recorded near the end, so only the tail is read."""
+    try:
+        with open(path, "rb") as file:
+            size = file.seek(0, os.SEEK_END)
+            file.seek(max(0, size - 65536))
+            tail = file.read()
+    except OSError:
+        return None
+    if b'"continued-in"' not in tail:
+        return None
+    lines = tail.split(b"\n")
+    if size > len(tail):
+        lines = lines[1:]
+    target = None
+    for line in lines:
+        try:
+            record = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(record, dict):
+            continue
+        if record.get("type") == "continued-in" and isinstance(record.get("continuedInSessionId"), str):
+            target = record["continuedInSessionId"]
+        elif record.get("type") in ("user", "assistant"):
+            target = None
+    return target
+
+
 def sessions(roots, only=None):
     """Every main session file under the roots, by file name; with `only`,
     just that session's."""
@@ -311,8 +342,11 @@ def main():
     if operation == "index":
         # File state only: which sessions exist, when their files changed,
         # and each project folder's working directory from its newest session.
+        # A session continued in another lists as that one alone.
         entries, cwds = [], {}
         for name, path in found.items():
+            if (continued_in(path) or "") + ".jsonl" in found:
+                continue
             try:
                 status = os.stat(path)
             except OSError:
