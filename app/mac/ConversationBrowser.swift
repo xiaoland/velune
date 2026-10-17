@@ -1,4 +1,5 @@
 import Foundation
+import UniformTypeIdentifiers
 import VeluneBindings
 
 /// Browsing choices only shape the sidebar. They never select an execution
@@ -83,5 +84,35 @@ enum ConversationLink {
               let runtime = items.first(where: { $0.name == "runtime" })?.value, !runtime.isEmpty,
               let id = items.first(where: { $0.name == "id" })?.value, !id.isEmpty else { return nil }
         return (runtime, id)
+    }
+
+    /// What a drag from the list carries: Velune's own type (declared in the
+    /// app's Info.plist) and no URL, since the desktop would keep a URL as an
+    /// internet location file, and another app as a link or text.
+    static let dragType = UTType(exportedAs: "local.velune.conversation-link")
+    /// What a pane or tab bar takes: the list's drag, or a tab's link.
+    static let dropTypes: [UTType] = [dragType, .url]
+
+    static func itemProvider(runtimeID: String, conversationID: String) -> NSItemProvider {
+        let data = url(runtimeID: runtimeID, conversationID: conversationID).dataRepresentation
+        let provider = NSItemProvider()
+        provider.registerDataRepresentation(forTypeIdentifier: dragType.identifier, visibility: .ownProcess) { done in
+            done(data, nil)
+            return nil
+        }
+        return provider
+    }
+
+    /// The link a dropped item carries, as `dropTypes` take it.
+    static func load(_ provider: NSItemProvider, then handle: @escaping @Sendable (URL) -> Void) {
+        if provider.hasItemConformingToTypeIdentifier(dragType.identifier) {
+            _ = provider.loadDataRepresentation(forTypeIdentifier: dragType.identifier) { data, _ in
+                if let data, let url = URL(dataRepresentation: data, relativeTo: nil) { handle(url) }
+            }
+        } else {
+            _ = provider.loadObject(ofClass: NSURL.self) { object, _ in
+                if let url = object as? URL { handle(url) }
+            }
+        }
     }
 }

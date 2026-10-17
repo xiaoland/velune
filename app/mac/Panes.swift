@@ -100,7 +100,7 @@ struct PaneView: View {
         }
         .background(PaneAnchor { [window, id = pane.id] in window.register(id, anchor: $0) })
         .onGeometryChange(for: CGSize.self) { $0.size } action: { size = $0 }
-        .onDrop(of: [.url], delegate: PaneDropDelegate(window: window, pane: pane.id, size: size, zone: $dropZone))
+        .onDrop(of: ConversationLink.dropTypes, delegate: PaneDropDelegate(window: window, pane: pane.id, size: size, zone: $dropZone))
         .overlay { if let dropZone { PaneDropHighlight(zone: dropZone) } }
     }
 }
@@ -207,14 +207,14 @@ private struct PaneTabBar: View {
                             // The sliding tab follows the pointer; the others move aside.
                             .animation(slides ? nil : motion, value: target)
                             .zIndex(slides ? 1 : 0)
-                            .onDrop(of: [.url], delegate: TabDropDelegate(window: window, pane: pane.id, index: index, width: width, insertion: $insertion))
+                            .onDrop(of: ConversationLink.dropTypes, delegate: TabDropDelegate(window: window, pane: pane.id, index: index, width: width, insertion: $insertion))
                     }
                 }
                 .animation(motion, value: pane.tabs.map(\.id))
             }
             NewTabButton { window.focus(pane.id); window.openInNewTab() }
                 .frame(width: Self.height, height: Self.height)
-                .onDrop(of: [.url], delegate: TabDropDelegate(window: window, pane: pane.id, index: pane.tabs.count, width: 0, insertion: $insertion))
+                .onDrop(of: ConversationLink.dropTypes, delegate: TabDropDelegate(window: window, pane: pane.id, index: pane.tabs.count, width: 0, insertion: $insertion))
         }
         .frame(height: Self.height)
         .background(Color(nsColor: .windowBackgroundColor))
@@ -646,7 +646,7 @@ private struct TabDropDelegate: DropDelegate {
     let width: CGFloat
     @Binding var insertion: Int?
 
-    func validateDrop(info: DropInfo) -> Bool { info.hasItemsConforming(to: [.url]) }
+    func validateDrop(info: DropInfo) -> Bool { info.hasItemsConforming(to: ConversationLink.dropTypes) }
 
     func dropUpdated(info: DropInfo) -> DropProposal? {
         let at = width > 0 && info.location.x > width / 2 ? index + 1 : index
@@ -657,10 +657,9 @@ private struct TabDropDelegate: DropDelegate {
     func dropExited(info: DropInfo) { insertion = nil }
 
     func performDrop(info: DropInfo) -> Bool {
-        guard let at = insertion, let provider = info.itemProviders(for: [.url]).first else { insertion = nil; return false }
+        guard let at = insertion, let provider = info.itemProviders(for: ConversationLink.dropTypes).first else { insertion = nil; return false }
         insertion = nil
-        _ = provider.loadObject(ofClass: NSURL.self) { [window, pane] object, _ in
-            guard let url = object as? URL else { return }
+        ConversationLink.load(provider) { [window, pane] url in
             Task { @MainActor in window.drop(url, on: pane, zone: .center, at: at) }
         }
         return true
@@ -675,7 +674,7 @@ private struct PaneDropDelegate: DropDelegate {
     let size: CGSize
     @Binding var zone: PaneDropZone?
 
-    func validateDrop(info: DropInfo) -> Bool { info.hasItemsConforming(to: [.url]) }
+    func validateDrop(info: DropInfo) -> Bool { info.hasItemsConforming(to: ConversationLink.dropTypes) }
 
     func dropUpdated(info: DropInfo) -> DropProposal? {
         let x = info.location.x / max(size.width, 1), y = info.location.y / max(size.height, 1)
@@ -688,10 +687,9 @@ private struct PaneDropDelegate: DropDelegate {
     func dropExited(info: DropInfo) { zone = nil }
 
     func performDrop(info: DropInfo) -> Bool {
-        guard let zone, let provider = info.itemProviders(for: [.url]).first else { zone = nil; return false }
+        guard let zone, let provider = info.itemProviders(for: ConversationLink.dropTypes).first else { zone = nil; return false }
         self.zone = nil
-        _ = provider.loadObject(ofClass: NSURL.self) { [window, pane] object, _ in
-            guard let url = object as? URL else { return }
+        ConversationLink.load(provider) { [window, pane] url in
             Task { @MainActor in window.drop(url, on: pane, zone: zone) }
         }
         return true
