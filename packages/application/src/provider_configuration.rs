@@ -1,9 +1,12 @@
 //! Pure provider/template edits shared by local and configuration-only composition.
 use crate::{Error, api::ProviderDraft, config::*, provider_authentication::*};
 use serde_json::Value;
+/// `link` resolves a referenced Claude Code login to its `CLAUDE_CONFIG_DIR`
+/// (`None` for the user's default); only a local composition can.
 pub(crate) fn edit_provider(
     gateways: &mut Vec<GatewayConfig>,
     payload: &Value,
+    link: &dyn Fn(&LinkedClaudeLogin) -> Result<Option<String>, Error>,
 ) -> Result<(), Error> {
     let gateway_id = payload["gatewayID"]
         .as_str()
@@ -62,7 +65,25 @@ pub(crate) fn edit_provider(
                     }
                 };
             }
-            let changed = reset || matches!(edit, AuthenticationEdit::SetApiKey { .. });
+            let changed = reset
+                || matches!(
+                    edit,
+                    AuthenticationEdit::SetApiKey { .. }
+                        | AuthenticationEdit::UseClaudeCodeLogin { .. }
+                );
+            if let AuthenticationEdit::UseClaudeCodeLogin { login } = &edit {
+                if draft.authentication_source != ProviderAuthenticationSource::ClaudeCli {
+                    return Err(Error::invalid("只有 Claude Code 订阅可以沿用既有登录"));
+                }
+                // Signed in by the CLI later; the local composition checks the status.
+                authentication.material = AuthenticationMaterial::ClaudeCliLinked {
+                    config_dir: link(login)?,
+                    login: login.clone(),
+                    configured: false,
+                    account_label: None,
+                    identity: None,
+                };
+            }
             if let AuthenticationEdit::SetApiKey { value } = edit {
                 if draft.authentication_source != ProviderAuthenticationSource::ApiKey
                     || value.trim().is_empty()

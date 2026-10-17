@@ -894,6 +894,19 @@ fn claude_context(usage: &Value) -> Option<u64> {
     Some(usage["input_tokens"].as_u64()? + read + write + usage["output_tokens"].as_u64()?)
 }
 
+/// The user's own default Claude Code configuration directory on this machine.
+pub fn claude_user_config_directory() -> Option<PathBuf> {
+    std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".claude"))
+}
+
+/// The `CLAUDE_CONFIG_DIR` a local Claude Code login kept at `agent_dir` runs
+/// with: `None` for the user's own default directory, whose login the
+/// variable would hide even when set to that directory.
+pub fn claude_login_directory(agent_dir: &Path) -> Option<PathBuf> {
+    (!claude_default_directory(agent_dir, &crate::execution::ExecutionTarget::Local, None))
+        .then(|| agent_dir.to_path_buf())
+}
+
 /// `NativeSession::claude_default_config` for a directory, HOME and machine.
 fn claude_default_directory(
     agent_dir: &Path,

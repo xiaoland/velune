@@ -62,6 +62,23 @@ pub struct ProviderAuthenticationDescription {
     pub provenance: Option<AuthenticationProvenance>,
     pub actions: Vec<crate::conversation::SettingAction>,
     pub disclosure: Option<SubscriptionDisclosure>,
+    /// The existing Claude Code login the provider references, if it does.
+    pub linked_login: Option<LinkedClaudeLogin>,
+}
+/// A Claude Code login the user already has, referenced rather than copied:
+/// the official CLI keeps saving and renewing it, and Velune never signs it out.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum LinkedClaudeLogin {
+    /// The user's own default login on this machine.
+    UserDefault,
+    /// The login of a local Claude Code runtime instance.
+    Runtime { instance_id: String },
 }
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -91,6 +108,15 @@ pub(crate) enum AuthenticationMaterial {
     },
     ClaudeCli {
         credential_id: String,
+        configured: bool,
+        account_label: Option<String>,
+        identity: Option<String>,
+    },
+    /// `config_dir` is resolved from `login` when linked or inspected; `None`
+    /// is the user's default login, run without `CLAUDE_CONFIG_DIR`.
+    ClaudeCliLinked {
+        login: LinkedClaudeLogin,
+        config_dir: Option<String>,
         configured: bool,
         account_label: Option<String>,
         identity: Option<String>,
@@ -127,7 +153,10 @@ impl ProviderAuthentication {
             AuthenticationMaterial::RuntimeProvider { .. } => {
                 ProviderAuthenticationSource::RuntimeProvider
             }
-            AuthenticationMaterial::ClaudeCli { .. } => ProviderAuthenticationSource::ClaudeCli,
+            AuthenticationMaterial::ClaudeCli { .. }
+            | AuthenticationMaterial::ClaudeCliLinked { .. } => {
+                ProviderAuthenticationSource::ClaudeCli
+            }
         }
     }
     pub(crate) fn description(&self) -> ProviderAuthenticationDescription {
@@ -173,6 +202,22 @@ impl ProviderAuthentication {
                     },
                 ],
             ),
+            AuthenticationMaterial::ClaudeCliLinked {
+                login, configured, ..
+            } => (
+                AuthenticationMethod::OAuth,
+                *configured,
+                Some(AuthenticationProvenance {
+                    display_name: match login {
+                        LinkedClaudeLogin::UserDefault => "本机 Claude Code 登录".into(),
+                        LinkedClaudeLogin::Runtime { .. } => "Claude Code 运行时的登录".into(),
+                    },
+                }),
+                vec![crate::conversation::SettingAction {
+                    id: "inspect".into(),
+                    label: "检查登录状态".into(),
+                }],
+            ),
             AuthenticationMaterial::RuntimeProvider {
                 source,
                 method,
@@ -215,10 +260,17 @@ impl ProviderAuthentication {
             provenance,
             actions,
             account_label: match &self.material {
-                AuthenticationMaterial::ClaudeCli { account_label, .. } => account_label.clone(),
+                AuthenticationMaterial::ClaudeCli { account_label, .. }
+                | AuthenticationMaterial::ClaudeCliLinked { account_label, .. } => {
+                    account_label.clone()
+                }
                 _ => None,
             },
             disclosure: SubscriptionDisclosure::for_source(self.source()),
+            linked_login: match &self.material {
+                AuthenticationMaterial::ClaudeCliLinked { login, .. } => Some(login.clone()),
+                _ => None,
+            },
         }
     }
     pub(crate) fn validate_target(
@@ -250,6 +302,12 @@ impl ProviderAuthentication {
 #[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
 pub enum AuthenticationEdit {
     Keep,
-    SetApiKey { value: String },
+    SetApiKey {
+        value: String,
+    },
     Clear,
+    /// Reference an existing Claude Code login instead of signing in anew.
+    UseClaudeCodeLogin {
+        login: LinkedClaudeLogin,
+    },
 }

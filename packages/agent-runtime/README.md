@@ -119,6 +119,10 @@ Claude Code 的每轮执行使用独立 `--print --input-format stream-json --ou
 
 协议依据于 2026-10-10 复核：[Claude Code CLI](https://code.claude.com/docs/en/cli-reference)、[环境变量与 host-managed provider](https://code.claude.com/docs/en/env-vars)、[官方 SDK 控制协议](https://github.com/anthropics/claude-agent-sdk-python/blob/main/src/claude_agent_sdk/_internal/query.py)、[OpenSSH 转发与控制连接](https://man.openbsd.org/ssh.1)。固定版本与隔离实验范围见当前 [任务记录](../../tasks/runtime-provider-ssh/packet.md)。composer 的来源模型选择、SSH/HOME 编辑入口属于 app，明确待实现；本 unit 只提供可消费契约。
 
+## 提供商清单
+
+`provider_inventory` 为提供商导入读取 Harness 自身的配置文件，不启动 Harness：`codex(codex_home)` 读取 `config.toml` 的自定义 `model_providers`（缺 `base_url`、非 `responses` 的 `wire_api` 或 `requires_openai_auth` 的条目只给出警告），模型来自所选提供商的顶层 `model` 与指向它的 profiles；`claude_code(config_dir)` 总是给出该目录的 Claude Code 登录（模型为 CLI 别名），`settings.json` 的 `env` 设有地址或密钥时另给出 Messages API。字面 key 包在不打印、不序列化的 `Secret` 中；环境变量、`apiKeyHelper` 只记录来源种类。Codex 的 `auth.json` 永不打开。指纹覆盖所读文件内容，用于预览失效。`claude_login_directory` 给出实例登录所用的配置目录（用户默认登录时为 None），`claude_user_config_directory` 是用户默认的 `~/.claude`。
+
 ## 原生资源管理
 
 `management` 在目标机器上管理固定版本的原生来源文件，不维护第二份资源库，也不计算 Harness 的合并配置。`Config` 只接受版本、`ExecutionTarget`、显式 `agent_dir` 与可选 `cwd`；User 使用配置根，Project 使用项目根。managed HOME 中的资源仍归原生 Harness。读取不启动 Harness、不初始化 HOME；配置目录缺失与能力不支持分别表达。

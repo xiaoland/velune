@@ -101,6 +101,10 @@ application 持有认证生命周期、额度采集与跨 Runner 的执行后端
 
 Claude Code 后端使用显式独立 `CLAUDE_CONFIG_DIR`，登录、秘密和续期归 Claude Code，Velune 不解析或复制其 token。子进程保留真实系统 HOME 与用户身份，使 macOS Keychain 正常定位；不能用配置目录替换 HOME。调用方工具通过桥接返回调用方执行，不能让后端原生工具代为操作；执行会话按提供商绑定和显式会话身份隔离，跨网关 Runner 保留。执行取消、换号、删除和应用关闭释放对应进程与挂起工具，普通 Runner 结束不能误杀其他会话。取消只终止当前交互；application 在下一次真实用户发送时显式开启新轮，不能在普通运行时准备时重置。挂起的工具结果固定归原绑定，已取消的调用 ID 在本次应用生命周期内保持无效，网关在选择候选前拒绝迟到结果；历史中的工具记录不等于当前续接。外层 Harness 结束时显式结束用户轮，清理仍执行或等待工具的交互；已正常完成的空闲进程可继续复用。
 
+2026-10-17 用户决定：Claude Code 订阅提供商除在 Velune 中登录独立账户外，可沿用已有登录——本机用户的默认登录，或本机 Claude Code 运行时实例的登录。沿用只记录引用和保存时解析的配置目录：默认登录不设置 `CLAUDE_CONFIG_DIR`（macOS 上只要设置该变量，即使指向 `~/.claude`，CLI 也看不到用户自己的登录），运行时登录使用实例的 `agentDir`。官方 CLI 继续保存和续期该登录；Velune 不复制凭据，不为它提供登录或退出，只经 `claude auth status` 检查状态。同一 Claude 账户无论独立登录还是沿用，只能绑定一个提供商。Codex 订阅仍只在 Velune 中按账户登录，不导入或粘贴 `auth.json`。
+
+运行时提供商导入由两个兄弟 unit 协同：agent-runtime 的 `provider_inventory` 读取 Harness 自身配置——Codex `config.toml` 的自定义 `model_providers`，Claude Code `settings.json` 的 `env` API 与其登录——只携带脱敏的字面 key；application 将 API 映射为 HTTP 提供商，将 Claude Code 登录映射为沿用该运行时登录的 Claude CLI 提供商。字面 key 在导入时复制（与 Pi 导入一致）；`env_key`、`apiKeyHelper` 不解析，导入后在 Velune 填写。Codex 的 OpenAI／ChatGPT 登录与 `auth.json` 不读取；远端与 managed HOME 实例不支持导入；ACP 暂不导入。Velune 以 `x-api-key` 发送 Messages key，来源以 Bearer 发送时在预览中提示。
+
 HTTP 继续使用响应提交闸门。Claude 子进程成功启动后，或向已有进程写入本次输入前，保守进入不可自动重放状态；之后的退出、超时和解析错误不能因为下游尚无响应头而切换账户重做。CLI 故障不伪装成 HTTP 401。实际协议、会话接续和验收记录见 [模型路由任务](../../tasks/model-routing/packet.md)。
 
 ## 路由、fail-over 与生命周期

@@ -8,7 +8,10 @@ use std::{
     process::Command,
 };
 mod claude;
-pub use claude::{CLAUDE_EFFORT_LEVELS, rename_claude_session_at};
+pub use claude::{
+    CLAUDE_EFFORT_LEVELS, claude_login_directory, claude_user_config_directory,
+    rename_claude_session_at,
+};
 mod codex;
 pub use codex::{ThreadChange, manage_thread, manage_thread_at};
 mod codex_history;

@@ -30,6 +30,8 @@ pub mod config;
 #[cfg(feature = "local-runtime")]
 mod local;
 pub mod model_catalog;
+#[cfg(feature = "local-runtime")]
+mod native_provider_import;
 #[cfg(not(feature = "local-runtime"))]
 mod portable;
 mod provider_configuration;

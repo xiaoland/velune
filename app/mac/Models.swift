@@ -339,6 +339,8 @@ struct ProviderAuthentication: Codable, Sendable, Equatable {
     /// Present for subscription authentication, whose terms the user should see.
     var disclosure: SubscriptionDisclosure? = nil
     var actions: [SettingAction] = []
+    /// The existing Claude Code login this provider references, if it does.
+    var linkedLogin: LinkedClaudeLogin? = nil
     /// Signing in, for the sources that offer it.
     var loginAction: SettingAction? { actions.first { $0.id == "login" } }
     /// A login method that has not signed in, or whose login lapsed.
@@ -363,7 +365,9 @@ struct ProviderTemplate: Sendable, Identifiable, Equatable {
     var executableCommand: String?
     var disclosure: SubscriptionDisclosure?
 }
-enum AuthenticationEdit: Sendable { case keep, setAPIKey(String), clear }
+/// A Claude Code login the user already has; the official CLI keeps it, and Velune never signs it out.
+enum LinkedClaudeLogin: Codable, Sendable, Hashable { case userDefault, runtime(instanceID: String) }
+enum AuthenticationEdit: Sendable { case keep, setAPIKey(String), clear, useClaudeCodeLogin(LinkedClaudeLogin) }
 struct AIProvider: Sendable, Identifiable, Equatable {
     var id: String
     var name: String

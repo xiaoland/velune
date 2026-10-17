@@ -17,6 +17,21 @@ struct Binding {
     generation: u64,
     source: crate::config::ProviderQuotaSource,
     binary: Option<String>,
+    directory: LoginDirectory,
+}
+fn cli_binary(provider: &crate::config::ProviderDefinition) -> Option<String> {
+    match &provider.execution_backend {
+        crate::config::ExecutionBackend::ClaudeCli { binary } => Some(binary.clone()),
+        crate::config::ExecutionBackend::Http => None,
+    }
+}
+/// Where a Claude Code CLI reads usage from.
+#[derive(Clone, PartialEq, Eq)]
+enum LoginDirectory {
+    /// The application-owned directory of the binding's credential.
+    Owned,
+    /// A referenced login's `CLAUDE_CONFIG_DIR`; `None` is the user's default.
+    Linked(Option<String>),
 }
 struct Entry {
     binding: Option<Binding>,
@@ -85,24 +100,28 @@ impl SubscriptionQuota {
                             generation: p.authentication.generation,
                             source: p.quota_source,
                             binary: None,
+                            directory: LoginDirectory::Owned,
                         }),
                         (
                             AuthenticationMaterial::ClaudeCli { credential_id, .. },
                             crate::config::ProviderQuotaSource::ClaudeCliUsage,
-                        ) => {
-                            let binary = match &p.execution_backend {
-                                crate::config::ExecutionBackend::ClaudeCli { binary } => {
-                                    Some(binary.clone())
-                                }
-                                _ => None,
-                            };
-                            Some(Binding {
-                                id: credential_id.clone(),
-                                generation: p.authentication.generation,
-                                source: p.quota_source,
-                                binary,
-                            })
-                        }
+                        ) => Some(Binding {
+                            id: credential_id.clone(),
+                            generation: p.authentication.generation,
+                            source: p.quota_source,
+                            binary: cli_binary(p),
+                            directory: LoginDirectory::Owned,
+                        }),
+                        (
+                            AuthenticationMaterial::ClaudeCliLinked { config_dir, .. },
+                            crate::config::ProviderQuotaSource::ClaudeCliUsage,
+                        ) => Some(Binding {
+                            id: p.id.clone(),
+                            generation: p.authentication.generation,
+                            source: p.quota_source,
+                            binary: cli_binary(p),
+                            directory: LoginDirectory::Linked(config_dir.clone()),
+                        }),
                         _ => None,
                     };
                     ((g.id.clone(), p.id.clone()), binding)
@@ -336,7 +355,7 @@ fn collect(
             result = async {
                 match binding.source {
                     crate::config::ProviderQuotaSource::CodexUsage => crate::subscription_auth::read_usage(home, binding.id.clone(), binding.generation).await.map_err(|_| ()).and_then(|value| parse_windows(&value,ttl_ms)),
-                    crate::config::ProviderQuotaSource::ClaudeCliUsage => { let text=crate::claude_cli::usage(binding.binary.as_deref().ok_or(())?,&crate::claude_cli::directory(&home,&binding.id)).await?; parse_claude_windows(&text,ttl_ms) },
+                    crate::config::ProviderQuotaSource::ClaudeCliUsage => { let owned=crate::claude_cli::directory(&home,&binding.id); let dir=match &binding.directory { LoginDirectory::Owned=>Some(owned.as_path()), LoginDirectory::Linked(dir)=>dir.as_deref().map(std::path::Path::new) }; let text=crate::claude_cli::usage(binding.binary.as_deref().ok_or(())?,dir).await?; parse_claude_windows(&text,ttl_ms) },
                     crate::config::ProviderQuotaSource::None => Err(()),
                 }
             } => result,

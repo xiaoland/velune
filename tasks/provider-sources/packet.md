@@ -1,6 +1,6 @@
 # 提供商来源：既有登录与运行时导入
 
-状态：方案待用户决定（2026-10-17），未实施。
+状态：已实施（2026-10-18），待用户以真实 Claude Code／Codex 配置验收。
 
 ## 用户要求（2026-10-17）
 
@@ -47,8 +47,29 @@ Claude CLI 提供商的认证增加“沿用既有登录”：本人默认登录
 - ai-provider 只接收中立的执行配置（如 Claude 登录位置：默认或指定目录），不依赖 agent-runtime。
 - ACP：协议不导出提供商或凭据，按协议无法通用导入；只能对具体 ACP agent 编写其配置文件适配，按需另议。
 
-## 待用户决定
+## 用户决定（2026-10-17）
 
-1. Codex 方向：A／B／C（可多选）。
-2. Claude Code 沿用本机登录（含运行时实例目录）是否按上述“引用、不提供退出”的语义实施。
-3. 运行时导入首批范围：Claude Code 登录 ＋ Codex／Claude Code 已配置的 API 提供商，ACP 暂不做。
+1. Codex 选 A：维持 Velune 内逐账户登录，不实现 auth.json 导入／粘贴，不做 Codex 执行后端。
+2. Claude Code 按“引用本机或运行时登录、不提供退出登录”实施。
+3. 运行时导入首批：Claude Code 登录 ＋ Codex／Claude Code 已配置的 API 提供商；ACP 暂不做。
+
+结论已归 PRD（提供商模板之后的段落）。
+
+## 供应商资料复核（2026-10-17）
+
+- Claude Code（code.claude.com/docs settings、env-vars、model-config）：用户设置在配置目录的 `settings.json`，`CLAUDE_CONFIG_DIR` 改变该目录；`env` 中 `ANTHROPIC_BASE_URL` 覆盖端点，`ANTHROPIC_API_KEY` 以 `X-Api-Key` 发送，`ANTHROPIC_AUTH_TOKEN` 以 `Authorization: Bearer` 发送；`apiKeyHelper` 由命令取得密钥；`--model` 接受 `sonnet`／`opus`／`haiku` 等别名。
+- Codex（learn.chatgpt.com config-reference）：`config.toml` 位于 `CODEX_HOME`；`model_providers.<id>` 有 `name`、`base_url`、`env_key`、`wire_api`（仅 `"responses"`）、`experimental_bearer_token`、`http_headers`、`env_http_headers`、`query_params`、`requires_openai_auth`；顶层 `model`、`model_provider`。
+
+## 实施要点
+
+- Velune 的 Messages API key 一律以 `x-api-key` 发送；导入 `ANTHROPIC_AUTH_TOKEN` 时如实提示来源使用 Bearer。
+- 密钥只有字面值可在应用时复制为 Velune 的 API key（沿用 Pi 导入对 API key 的既有做法）；`env_key`、`apiKeyHelper` 等不解析，导入后提示在 Velune 填写。不打开 Codex `auth.json`。
+- 远端与 managed HOME 运行时不参与导入或沿用登录。
+
+## 实施与验证（2026-10-18）
+
+- 设计归 `docs/design/ai-service.md`（订阅组合段落之后），各 unit README 记录接口：agent-runtime `provider_inventory`，application `native_provider_import` 与 `UseClaudeCodeLogin`，bindings `BindingLinkedClaudeLogin`，ai-provider 的可选 `config_dir`，Mac 的“账户来源”。
+- 静态检查：`cargo fmt --check`、`cargo check --locked --workspace`、`cargo clippy --locked --workspace --all-targets --all-features -- -D warnings`、application／bindings `--no-default-features` 检查与 Mac `build-macos.sh` 构建均通过。
+- `scripts/manual-provider-sources.py`（临时 HOME、合成配置与假 `claude`）通过：Codex 导入（字面 bearer 复制、`env_key` 留空并提示、请求头提示、`wire_api=chat` 只警告）、Claude Code 导入（登录候选无地址、settings API 默认官方地址并复制 key）、预览不含 key、来源变化拒绝旧预览、沿用默认登录时状态命令不带 `CLAUDE_CONFIG_DIR`、同账户在另一登录下被拒、失效登录经检查转为未登录、删除时无 login／logout、不建 `claude-cli` 目录、来源文件不变、日志不含 key。
+- 离屏渲染（临时 `VELUNE_HOME`，不激活应用）核对新 Claude 订阅的“账户来源”选择、两种沿用登录的编辑器与提供商列表。渲染发现账户尾号重复“账户”字样（独立登录同样存在）：core 的 `account_label` 改为只返回尾 8 位，由平台加措辞；已保存的旧标签在下一次状态读取时更新。
+- 未验证：真实 Claude Code 的默认／运行时登录状态与执行、真实 Codex／Claude Code 配置文件的多样写法；需用户验收。

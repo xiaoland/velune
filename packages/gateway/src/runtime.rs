@@ -1994,7 +1994,7 @@ async fn dispatch_credential(
                             state.backends.claude_code.clone(),
                             ClaudeCodeConfig {
                                 executable: binary.into(),
-                                config_dir: config_dir.into(),
+                                config_dir: config_dir.map(Into::into),
                                 session: state.backend_session(),
                                 binding: state.backend_bindings[&target.provider_id].clone(),
                             },
