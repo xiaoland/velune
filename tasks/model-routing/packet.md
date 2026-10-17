@@ -162,3 +162,13 @@ application按需启动有界刷新周期采集Codex窗口，用中立只读契�
 
 
 实现提交为 `8616bd0`。提交后运行 `python3 scripts/manual-codex-subscriptions-live.py`，完整冻结 `8616bd0a95dabc9e11db1cf63203a497a2f38c57` 的 runner 编译成功，5 个本地 SSE fixture 与 usage 白名单自检通过，real_requests=0；未传 `--run`，未读取凭据或执行任何计划中的真实请求。
+
+
+## 订阅能力解耦研究（2026-10-17）
+
+用户确认推进协议组合解耦，并要求先弄清 subscription 特殊性、研究 Magpie，下一步拟接 Claude Code 订阅。本轮调查与方案收敛，不改产品源码、不读取凭据、不调用真实认证或模型。现状是 provider 和 LLM 协议通用、gateway QuotaSource 中立，但 application 额度绑定 CodexSubscription，Responses 内有专属目标/headers/MIME，gateway 的401恢复也识别专属profile；不能声称已经完全组合。
+
+transport owner 固定公开 Magpie 源码研究认证、请求、额度与品牌耦合；codex_source owner 研究 Claude Code 官方边界与本地认证/额度接缝；主执行者整理跨单元方案与独立判断。调查需回答：subscription究竟改变哪些协议、哪些能复用、哪些需专属adapter，以及能否用Codex和Claude两条路径验证组合边界。方案未确认前不扩大为动态插件系统或任意脚本化协议配置。
+
+
+研究结论与证据归 [订阅组合研究](subscription-composition.md)。Magpie 当前固定 HEAD `dccfefdf` 的 Claude 订阅执行、认证和额度均依赖 Claude Code CLI，不能作为直接订阅HTTP路径的证据。advisor确认聚合仍可归gateway，但CLI成员是实质执行后端扩展；候选为先解耦现有HTTP路径，或显式纳入CLI会话／工具桥。尚待用户选择Claude执行路径；未改产品源码或做真实调用。
