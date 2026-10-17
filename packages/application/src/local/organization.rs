@@ -39,6 +39,8 @@ pub(super) struct ListedSource {
 pub(super) struct ProjectlessPlaces {
     home: Option<PathBuf>,
     directories: Vec<PathBuf>,
+    /// Its working directories are on this Mac, where their files can be read.
+    on_this_mac: bool,
 }
 
 impl ProjectlessPlaces {
@@ -107,7 +109,17 @@ impl CoreRuntime {
                             .map(|directory| home.join(directory))
                             .collect()
                     });
-                (runtime.id.clone(), ProjectlessPlaces { home, directories })
+                let on_this_mac = self
+                    .runtime_location(runtime)
+                    .is_ok_and(|(target, _)| target.is_local());
+                (
+                    runtime.id.clone(),
+                    ProjectlessPlaces {
+                        home,
+                        directories,
+                        on_this_mac,
+                    },
+                )
             })
             .collect()
     }
@@ -144,7 +156,8 @@ impl CoreRuntime {
     }
 
     /// The project a conversation's working directory makes it part of.
-    fn working_project(
+    pub(super) fn working_project(
+        &self,
         summary: &ConversationSummary,
         places: &BTreeMap<String, ProjectlessPlaces>,
     ) -> Option<String> {
@@ -152,8 +165,22 @@ impl CoreRuntime {
         let places = places.get(&summary.runtime_id).unwrap_or(&unknown);
         summary
             .cwd
-            .clone()
+            .as_deref()
             .filter(|cwd| !places.contain(Path::new(cwd)))
+            .map(|cwd| self.folder_project(cwd, places.on_this_mac))
+    }
+
+    /// Where a conversation moved into the project holding `folder` is filed.
+    fn moved_project(
+        &self,
+        summary: &ConversationSummary,
+        folder: &str,
+        places: &BTreeMap<String, ProjectlessPlaces>,
+    ) -> String {
+        let on_this_mac = places
+            .get(&summary.runtime_id)
+            .is_some_and(|places| places.on_this_mac);
+        self.folder_project(folder, on_this_mac)
     }
 
     fn marks(&self, id: &str) -> Option<&ConversationMarks> {
@@ -163,12 +190,9 @@ impl CoreRuntime {
             .find(|marks| marks.conversation_id == id)
     }
 
-    fn alias(&self, path: &str) -> Option<String> {
-        self.organization
-            .project_aliases
-            .iter()
-            .find(|alias| alias.path == path)
-            .map(|alias| alias.alias.clone())
+    fn project_name(&self, path: &str) -> Option<String> {
+        self.project_record(path)
+            .and_then(|project| project.name.clone())
     }
 
     /// The runtime and identity it resumes the conversation by.
@@ -262,7 +286,7 @@ impl CoreRuntime {
             archived,
             moved: moved.is_some(),
             failed: false,
-            project: moved.or_else(|| Self::working_project(summary, places)),
+            project: moved.or_else(|| self.working_project(summary, places)),
             group: None,
         }
     }
@@ -326,13 +350,27 @@ impl CoreRuntime {
             .into_iter()
             .map(|source| (source.summary.id.clone(), source))
             .collect();
-        let mut projects = BTreeMap::<String, Option<i64>>::new();
+        // Each project's latest activity and the worktrees its conversations
+        // ran in: working directories it holds by their repository alone.
+        let mut projects = BTreeMap::<String, (Option<i64>, BTreeSet<String>)>::new();
+        for project in &self.organization.projects {
+            projects.entry(project.primary_folder.clone()).or_default();
+        }
         for item in all.iter().filter(|item| {
             item.conversation.parent_conversation_id.is_none() && item.archived == archived_view
         }) {
             if let Some(path) = &item.project {
-                let latest = projects.entry(path.clone()).or_default();
+                let (latest, worktrees) = projects.entry(path.clone()).or_default();
                 *latest = (*latest).max(item.conversation.updated_at_unix_ms);
+                if let Some(cwd) = item.conversation.cwd.as_ref().filter(|cwd| {
+                    !item.moved
+                        && *cwd != path
+                        && !self
+                            .project_record(path)
+                            .is_some_and(|project| project.folders.contains(cwd))
+                }) {
+                    worktrees.insert(cwd.clone());
+                }
             }
         }
         let needle = search.map(str::to_lowercase);
@@ -346,7 +384,7 @@ impl CoreRuntime {
             let contains = |text: &str| text.to_lowercase().contains(needle.as_str());
             contains(item.conversation.title.display_text())
                 || item.project.as_deref().is_some_and(|path| {
-                    contains(path) || self.alias(path).is_some_and(|alias| contains(&alias))
+                    contains(path) || self.project_name(path).is_some_and(|name| contains(&name))
                 })
                 || item.conversation.cwd.as_deref().is_some_and(contains)
                 || runtime_names
@@ -474,8 +512,8 @@ impl CoreRuntime {
                 conversations.push(item);
             }
             descriptors.push(ConversationGroup {
-                alias: match &key {
-                    ConversationGroupKey::Project { path: Some(path) } => self.alias(path),
+                name: match &key {
+                    ConversationGroupKey::Project { path: Some(path) } => self.project_name(path),
                     _ => None,
                 },
                 key,
@@ -502,10 +540,15 @@ impl CoreRuntime {
         }
         let mut projects: Vec<ConversationProject> = projects
             .into_iter()
-            .map(|(path, latest)| ConversationProject {
-                alias: self.alias(&path),
-                path,
-                latest_activity_unix_ms: latest,
+            .map(|(path, (latest, worktrees))| {
+                let record = self.project_record(&path);
+                ConversationProject {
+                    name: record.and_then(|project| project.name.clone()),
+                    folders: record.map_or_else(Vec::new, |project| project.folders.clone()),
+                    worktrees: worktrees.into_iter().collect(),
+                    path,
+                    latest_activity_unix_ms: latest,
+                }
             })
             .collect();
         projects.sort_by(|l, r| {
@@ -733,20 +776,19 @@ impl CoreRuntime {
                 }
                 ConversationOrganizationChange::MarkUnread => marks.marked_unread = true,
                 ConversationOrganizationChange::MoveToProject { path } => {
-                    marks.project = path
+                    let project = path
                         .as_ref()
-                        .filter(|path| {
-                            Some(path.as_str())
-                                != Self::working_project(summary, &places).as_deref()
-                        })
                         .map(|path| {
                             if Path::new(path).is_absolute() {
-                                Ok(path.clone())
+                                Ok(self.moved_project(summary, path, &places))
                             } else {
                                 Err(RuntimeError::invalid("项目路径必须是绝对路径"))
                             }
                         })
                         .transpose()?;
+                    marks.project = project.filter(|project| {
+                        Some(project) != self.working_project(summary, &places).as_ref()
+                    });
                 }
             }
         }
@@ -762,27 +804,6 @@ impl CoreRuntime {
             tracing::info!(target:"velune_application", event="conversation_organized", change=?change, conversation_id=%summary.id, runtime_id=%summary.runtime_id, marked_activity_unix_ms=?summary.updated_at_unix_ms, seen_activity_unix_ms=?self.marks(&summary.id).and_then(|marks| marks.seen_activity_unix_ms), listed_activity_unix_ms=?now.as_ref().and_then(|item| item.conversation.updated_at_unix_ms), unread=?now.as_ref().map(|item| item.unread));
         }
         Ok(listing)
-    }
-
-    pub(super) fn project_alias_action(&mut self, request: &Value) -> Result<Value, RuntimeError> {
-        let path = request["payload"]["path"]
-            .as_str()
-            .filter(|path| Path::new(path).is_absolute())
-            .ok_or_else(|| RuntimeError::invalid("项目路径必须是绝对路径"))?;
-        let alias = request["payload"]["alias"]
-            .as_str()
-            .map(str::trim)
-            .filter(|alias| !alias.is_empty());
-        let mut next = self.organization.clone();
-        next.project_aliases.retain(|entry| entry.path != path);
-        if let Some(alias) = alias {
-            next.project_aliases.push(crate::config::ProjectAlias {
-                path: path.into(),
-                alias: alias.into(),
-            });
-        }
-        self.store_organization(next)?;
-        self.list()
     }
 
     /// A deleted conversation keeps no organization.
@@ -825,7 +846,7 @@ impl CoreRuntime {
         }
     }
 
-    fn store_organization(
+    pub(super) fn store_organization(
         &mut self,
         next: crate::config::ConversationOrganization,
     ) -> Result<(), RuntimeError> {

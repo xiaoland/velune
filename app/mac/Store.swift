@@ -699,9 +699,10 @@ final class AppStore: ObservableObject {
         showsArchived = archived
         browse({ try transport.showArchivedConversations(archived) }, source: "切换已归档会话")
     }
-    func setProjectAlias(path: String, alias: String?) {
+    /// Shapes the project whose primary folder is `path`.
+    func setProject(path: String, primaryFolder: String, name: String?, folders: [String]) {
         guard let transport else { return }
-        browse({ try transport.setProjectAlias(path: path, alias: alias) }, source: "重命名项目")
+        browse({ try transport.setProject(path: path, primaryFolder: primaryFolder, name: name, folders: folders) }, source: "编辑项目")
     }
     /// Pins, read state, and moves are Velune's records; an archive the
     /// runtime keeps itself changes its sessions, so it waits for loading

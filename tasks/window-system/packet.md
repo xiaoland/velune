@@ -108,3 +108,11 @@
 用户问布局持久化是否没做。原因：布局只经 SceneStorage 随系统状态恢复，macOS 默认“退出 App 时关闭窗口”（本机未设置 `NSQuitAlwaysKeepsWindows`，也没有 Velune 的 Saved Application State），正常退出后系统丢弃窗口状态；此前只写“布局恢复留待用户验收”，未核对默认设置下能否触发。用户选择工具窗口布局总是记住、窗口与标签跟随系统。实现：`RememberedToolLayout`（`ToolWindows.swift`）记在 `VELUNE_HOME/mac-tool-layout.json`，窗口工具状态变化时稍候写入、退出前补写，新窗口以它开始，系统重开的窗口仍用自己的布局。侧栏与检查器宽度由系统分栏管理，不在此列。
 - 核对（隔离 home，后台启动开发版）：`--check-dock-areas` 后 `mac-tool-layout.json` 写入大纲左、列表右、输入区底；结束进程后不带参数重启（没有系统保存状态），窗口按该布局打开。
 - 已安装 4adf1cb（工具窗口布局记在 VELUNE_HOME）：签名校验通过，manifest 指向该提交且非 dirty。首次启动为默认布局，此后改动即记住。退出重开与新窗口沿用需用户验收。
+
+## 补充（2026-10-17，子 Agent 工具）
+
+- 用户报告：“显示 → 显示子 Agent”没有反应。默认位置为弹出，弹出层挂在工具栏按钮上，而按钮只在当前会话有子 Agent 时出现，没有锚点就什么也不显示，菜单标题还会变成“隐藏”。用户同意：弹出位置下没有子 Agent 时菜单不可用；按钮被自定移除或工具栏隐藏时改为浮动面板。工具栏项标识为 `ToolbarItem(id:)` 的原值（日志核对）。
+- 用户报告：子 Agent 停靠左侧后，侧栏工具栏的筛选与新建会话消失，隐藏子 Agent 后需折叠再打开侧栏才回来。开发版（合成 home、后台启动、按窗口截图）复现：NSToolbar 仍有两项，内容为空。原因是停靠区一个工具与多个工具走不同分支，列表被重建。改为同一分栏承载，三种状态截图均保留两项。
+- 子 Agent 面板为空的疑问：`manual-native-subagents.py` 以 Codex 0.159.3、Claude Code 2.1.292 合成运行全部通过，读回原生历史后快照 `sub_agents` 仍含已结束的子 Agent；面板为空是该会话没有原生子 Agent。Claude Code 子 Agent 不在会话列表时标题回退为工具名“Agent”，待改进。
+- 用户另报：`.claude/worktrees/<名>` 中的 Claude Code 会话（例如后台任务）按 cwd 末段成为独立项目，并见到 UUID 名的项目／会话。它们是独立原生会话，不是子 Agent。worktree 是否归入所属仓库为待用户决定；UUID 条目的路径待用户提供。
+- 已安装 f21fc1a：manifest 指向该提交且非 dirty。弹出与浮动回退的实际菜单操作由用户验收。

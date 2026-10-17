@@ -139,6 +139,8 @@ pub struct CoreRuntime {
     /// Whether each listed native sub-agent's latest turn failed.
     sub_agent_failures: std::cell::RefCell<BTreeMap<String, bool>>,
     /// Whether each session file's latest turn failed, as of its signature.
+    /// The repository each folder on this Mac is a linked worktree of, if any.
+    worktree_origins: std::cell::RefCell<BTreeMap<String, Option<String>>>,
     turn_failures:
         std::cell::RefCell<BTreeMap<PathBuf, (velune_agent_runtime::activity::Signature, bool)>>,
     analytics: Arc<crate::analytics::AnalyticsStore>,
@@ -165,6 +167,7 @@ mod model_selection;
 mod native_composition;
 mod organization;
 mod pi_composition;
+mod projects;
 mod provider_management;
 mod resource_library;
 mod runtime_execution;
@@ -227,6 +230,7 @@ impl CoreRuntime {
             prepared_remote_resources: Default::default(),
             remote_homes: Default::default(),
             sub_agent_failures: Default::default(),
+            worktree_origins: Default::default(),
             turn_failures: Default::default(),
             analytics,
             scheduling_state: Default::default(),
@@ -528,7 +532,7 @@ impl CoreRuntime {
             "conversationBrowserSettings" => self.set_conversation_browser_limits(request),
             "conversationBrowserWindow" => self.browser_window_action(request),
             "conversationOrganization" => self.organization_action(request),
-            "projectAlias" => self.project_alias_action(request),
+            "setProject" => self.set_project_action(request),
             "searchConversations" => self.search_conversations(request),
             "findConversation" => self.find_conversation(request),
             "discoverRuntimes" => self.discover_runtimes(request),

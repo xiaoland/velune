@@ -101,7 +101,7 @@ struct ConversationCommands: Commands {
             ForEach(Array(ToolWindowKind.allCases.enumerated()), id: \.element) { index, kind in
                 Button(toolTitle(kind)) { kind == .composer ? target?.window.focusComposer() : target?.window.toggle(kind) }
                     .keyboardShortcut(KeyEquivalent(Character("\(index + 1)")))
-                    .disabled(target == nil)
+                    .disabled(target?.window.canToggle(kind) != true)
             }
             Divider()
             ForEach(ToolWindowKind.allCases, id: \.self) { kind in

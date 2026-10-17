@@ -1276,7 +1276,8 @@ pub struct BindingListedConversation {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct BindingConversationGroup {
     pub key: BindingConversationGroupKey,
-    pub alias: Option<String>,
+    /// The user's name for a project group.
+    pub name: Option<String>,
     pub total: u32,
     /// The list holds the group's first `loaded` conversations.
     pub loaded: u32,
@@ -1286,8 +1287,14 @@ pub struct BindingConversationGroup {
 #[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct BindingConversationProject {
+    /// Its primary folder, which identifies it.
     pub path: String,
-    pub alias: Option<String>,
+    pub name: Option<String>,
+    /// Its other folders, as the user gave them.
+    pub folders: Vec<String>,
+    /// Git worktrees its listed conversations ran in, which belong to it by
+    /// their repository.
+    pub worktrees: Vec<String>,
     pub latest_activity_unix_ms: Option<i64>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]

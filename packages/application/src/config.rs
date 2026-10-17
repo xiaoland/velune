@@ -579,8 +579,9 @@ pub enum ConversationGroupKey {
         #[serde(rename = "runtimeID")]
         runtime_id: String,
     },
-    /// A conversation's project: its working directory unless moved; none
-    /// when the runtime recorded no directory.
+    /// A conversation's project by its primary folder: where it was moved,
+    /// else the project its working directory belongs to; none when the
+    /// runtime recorded no directory or started it without a project.
     Project {
         path: Option<String>,
     },
@@ -588,7 +589,7 @@ pub enum ConversationGroupKey {
 
 /// Velune's own organization of the conversation list, kept apart from the
 /// runtimes' sessions: what the user pinned, archived (where the runtime
-/// has no archive), read, or moved, and the names given to projects.
+/// has no archive), read, or moved, and the projects the user shaped.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ConversationOrganization {
@@ -596,7 +597,9 @@ pub struct ConversationOrganization {
     /// conversations that existed before read state was first recorded.
     pub read_baseline_unix_ms: i64,
     pub conversations: Vec<ConversationMarks>,
-    pub project_aliases: Vec<ProjectAlias>,
+    /// Projects with a name or more folders than their primary one; any
+    /// other working directory is a project of its own.
+    pub projects: Vec<ProjectRecord>,
 }
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -615,8 +618,8 @@ pub struct ConversationMarks {
     /// Marked unread by the user, whatever the activity.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub marked_unread: bool,
-    /// The project the user moved the conversation to; its working directory
-    /// is unchanged.
+    /// The project, by its primary folder, the user moved the conversation
+    /// to; its working directory is unchanged.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub project: Option<String>,
 }
@@ -631,9 +634,20 @@ impl ConversationMarks {
 }
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ProjectAlias {
-    pub path: String,
-    pub alias: String,
+pub struct ProjectRecord {
+    /// Identifies the project; new conversations in it are offered this folder.
+    pub primary_folder: String,
+    /// The user's name for it in the list; none shows the folder's name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// Its other folders, whose conversations belong to it as well.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub folders: Vec<String>,
+}
+impl ProjectRecord {
+    pub fn all_folders(&self) -> impl Iterator<Item = &str> {
+        std::iter::once(self.primary_folder.as_str()).chain(self.folders.iter().map(String::as_str))
+    }
 }
 #[derive(Debug, Default, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
