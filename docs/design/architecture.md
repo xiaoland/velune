@@ -77,6 +77,8 @@ conversation 定义审批、问题回答与取消的类型契约，bindings 生�
 
 iroh 的默认自动选路与 QUIC 多流承担传输；路径快照、事件和 network-change hook 供平台判别 Direct／Relay 与切网恢复。中继、地址发现和设备授权分别装配，正式开箱即用服务及自部署使用同一协议，本轮不部署服务。跨 NAT、切网和移动后台不能由本机 Direct 或受控公共 RelayOnly 探针证明。具体操作、内存边界与 SDK 生命周期分别归 [API](../../packages/application-api/README.md)、[remote](../../packages/remote/README.md)、[application](../../packages/application/README.md) 和 [bindings](../../packages/bindings/README.md)；现场及隔离证据归任务。
 
+后续产品复核已确认使用 iroh 公共设施可接受，用户可替换为自部署或兼容协议的公开 relay；局域网与公网共用同一设备与授权模型，并要求已建立连接在进入／离开 LAN 时自动优选和恢复。扫码确认、方向授权、可刷新寻址、多路径、设施切换及请求状态寿命的拟议契约由 [统一设备远控方案](remote-access.md) 维护。iroh 1.3.0 的热更新不是严格断开旧资源的事务，方案将调用账本与可替换网络端点分开；晚到 lookup 不直接触发活动连接探测，设计以本机地址变化和 QNT 为升级主线。默认 mDNS、扫码确认与 Android 自动恢复均未实现，不因产品方向已确认而宣称具备这些保证。
+
 ## 1. 已认可方向与收敛方案
 
 做一个**本地优先的任务控制服务**，掌握任务树、会话身份、路由策略、权限、消息和恢复；下挂三个原生 Harness Adapter。LLM 路由采用“统一决策、分协议执行”：Codex 接 Responses 路径，Claude Code 接 Messages 路径，Pi 优先接原生逐请求路由钩子。订阅身份保持独立，使用各供应商允许的原生或正式集成路径；API 资源可由协议网关选择上游。
