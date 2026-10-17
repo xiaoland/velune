@@ -19,12 +19,16 @@ def timestamp(value):
 
 
 def blocks(content, agent=None):
-    """`agent` is the Velune conversation of the sub-agent a tool result started."""
+    """`agent` is the Velune conversation of the sub-agent a tool result started.
+    Blank text and thinking show nothing: Claude Code records omitted thinking
+    as an empty block beside its signature."""
     if isinstance(content, str):
-        return [{"kind": "text", "text": content}]
+        return [{"kind": "text", "text": content}] if content.strip() else []
     result = []
     for block in content if isinstance(content, list) else []:
         kind = block.get("type")
+        if kind in ("text", "thinking") and not (block.get(kind) or "").strip():
+            continue
         if kind == "text":
             result.append({"kind": "text", "text": block.get("text", "")})
         elif kind == "image" and (block.get("source") or {}).get("type") == "base64":

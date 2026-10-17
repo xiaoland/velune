@@ -808,20 +808,27 @@ impl NativeSession {
     }
 }
 /// `agent` is the conversation of the sub-agent a tool result started.
+/// Blank text and thinking show nothing: Claude Code records omitted thinking
+/// as an empty block beside its signature.
 fn claude_blocks(content: &Value, agent: Option<String>) -> Vec<MessageBlock> {
-    if let Some(text) = content.as_str() {
-        return vec![MessageBlock::Text { text: text.into() }];
+    fn visible(text: &Value) -> Option<&str> {
+        text.as_str().filter(|text| !text.trim().is_empty())
+    }
+    if content.is_string() {
+        return visible(content)
+            .map(|text| MessageBlock::Text { text: text.into() })
+            .into_iter()
+            .collect();
     }
     content
         .as_array()
         .into_iter()
         .flatten()
         .filter_map(|block| match block["type"].as_str() {
-            Some("text") => block["text"]
-                .as_str()
-                .map(|text| MessageBlock::Text { text: text.into() }),
-            Some("thinking") => block["thinking"]
-                .as_str()
+            Some("text") => {
+                visible(&block["text"]).map(|text| MessageBlock::Text { text: text.into() })
+            }
+            Some("thinking") => visible(&block["thinking"])
                 .map(|text| MessageBlock::Reasoning { text: text.into() }),
             Some("tool_use") => Some(MessageBlock::Tool {
                 tool_id: block["id"].as_str().map(str::to_owned),
