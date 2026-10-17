@@ -47,6 +47,23 @@ def tag(text, name):
     return match.group(1).strip() if match else None
 
 
+def local_command(content):
+    """A slash command as Claude Code records it: ("input", "/name args") for
+    what the user typed, ("output", text or None) for a local command's output."""
+    if isinstance(content, list) and len(content) == 1 and isinstance(content[0], dict) and content[0].get("type") == "text":
+        content = content[0].get("text")
+    if not isinstance(content, str):
+        return None
+    text = content.lstrip()
+    for name in ("local-command-stdout", "local-command-stderr"):
+        if text.startswith("<%s>" % name):
+            return "output", tag(content, name) or None
+    if text.startswith("<command-name>") or text.startswith("<command-message>"):
+        name = tag(content, "command-name") or "/" + (tag(content, "command-message") or "")
+        return "input", " ".join(part for part in (name, tag(content, "command-args")) if part)
+    return None
+
+
 def notification(text, link):
     """A background task's completion, which Claude Code records as a user turn."""
     status = tag(text, "status")
@@ -106,6 +123,17 @@ def history(path, native_id, runtime_id, sidechain=False):
             messages.append({"id": entry["uuid"], "role": "tool", "completed": True,
                              "timestamp_unix_ms": timestamp(entry.get("timestamp")), "blocks": [notification(content, link)]})
             continue
+        # A slash command reads as Claude Code shows it, never as its markup,
+        # and names no conversation; a local command's output is a notice.
+        command = local_command(content) if role == "user" else None
+        if command is not None:
+            kind, text = command
+            if kind == "output":
+                if text:
+                    messages.append({"id": entry["uuid"], "role": "system", "completed": True,
+                                     "timestamp_unix_ms": timestamp(entry.get("timestamp")), "blocks": [{"kind": "notice", "text": text}]})
+                continue
+            content = text
         result = entry.get("toolUseResult")
         content = blocks(content, link(result.get("agentId")) if isinstance(result, dict) else None)
         if role == "user":
@@ -128,7 +156,7 @@ def history(path, native_id, runtime_id, sidechain=False):
             usages[entry["message"]["id"]] = usage
         if not content:
             continue
-        if role == "user" and first_user is None:
+        if role == "user" and first_user is None and command is None:
             first_user = next((b["text"] for b in content if b["kind"] == "text"), None)
         message = {"id": entry["uuid"], "role": "tool" if role == "user" and all(b["kind"] == "tool" for b in content) else role,
                    "completed": True, "timestamp_unix_ms": timestamp(entry.get("timestamp")), "blocks": content}
@@ -153,7 +181,10 @@ def history(path, native_id, runtime_id, sidechain=False):
     if prompt is not None and "turn_usage" in prompt and cost and cost.get("hasUnknownModelCost") is False \
             and isinstance(cost.get("totalCostUSD"), (int, float)) and cost["totalCostUSD"] > 0:
         prompt["turn_usage"]["sessionCostMicroUsd"] = round(cost["totalCostUSD"] * 1_000_000)
-    title = next((r.get("customTitle") for r in reversed(records) if r.get("type") == "custom-title" and isinstance(r.get("customTitle"), str)), None)
+    # The user's name for the session, else the one Claude Code gave it.
+    title = next((name.strip() for kind, key in (("custom-title", "customTitle"), ("ai-title", "aiTitle"))
+                  for name in (r.get(key) for r in reversed(records) if r.get("type") == kind)
+                  if isinstance(name, str) and name.strip()), None)
     if sidechain:
         title = meta_title(path)
     if title is not None:
