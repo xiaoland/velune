@@ -108,10 +108,12 @@ ACP 的列表能力缺失与空列表不同；汇总列表通过 `history_failur
 
 组合在保存边界校验。`CodexOAuth` 必须显式配合 HTTP、Responses、`CodexResponses` 及固定 Codex 地址；`CodexUsage` 仅接受该认证来源。`ClaudeCli` 执行必须配合 Messages、`Native`、空 HTTP 地址及 CLI 认证；`ClaudeCliUsage` 读取同一个 CLI 登录目录。HTTP credential 与本机 CLI session 是不同材料类型；gateway 仅依据中立 recovery capability 发起认证恢复。Pi 来源的输出上限限制保留为独立 request capability，不再附带禁用 temperature、cache 或强制 stream。
 
-Claude 登录复用 `authentication_start`、`authentication_poll`、`authentication_cancel` 和 `authentication_inspect`；`authentication_logout` 执行官方 CLI 退出并使绑定失效。应用运行未修改的 `claude auth login`，该命令默认订阅登录；完成后执行默认 JSON 的 `claude auth status`，只接受 `authMethod=claude.ai`。每个提供商拥有独立目录，显式传入 `HOME` 与 `CLAUDE_CONFIG_DIR`，仅继承可执行文件搜索路径；应用不读取 CLI 的凭据文件、Keychain 或 token。CLI 自己负责刷新。登录先暂存到新目录，配置提交成功后才替换旧绑定。取消、重复绑定、配置提交失败或丢弃未提交登录时，原有 worker 在子进程结束后通过有界官方 logout 清理暂存身份，再删除目录；清理错误记录固定诊断，不输出来源内容。状态摘要仅显示散列尾号；优先采用 CLI 给出的稳定主体标识，缺失时以规范化 email 与 orgId 的摘要尽力去重，不声称能严格证明订阅身份，且不保存 email。generation 才是本机绑定生命周期的依据。
+Claude 登录复用 `authentication_start`、`authentication_poll`、`authentication_cancel` 和 `authentication_inspect`；`authentication_logout` 执行官方 CLI 退出并使绑定失效。应用运行未修改的 `claude auth login`，该命令默认订阅登录；完成后执行默认 JSON 的 `claude auth status`，只接受 `authMethod=claude.ai`。每个提供商通过显式 `CLAUDE_CONFIG_DIR` 使用独立目录。命令从该目录运行，保留正常操作系统 `HOME`、`USER`、`LOGNAME` 与 `PATH`；macOS Keychain 依赖真实用户 HOME，不能用暂存目录替换。其他环境变量不继承；应用不读取 CLI 的凭据文件、Keychain 或 token。CLI 自己负责刷新。登录先暂存到新目录，配置提交成功后才替换旧绑定。取消、重复绑定、配置提交失败或丢弃未提交登录时，原有 worker 在子进程结束后通过有界官方 logout 清理暂存身份，再删除目录；清理错误记录固定诊断，不输出来源内容。状态摘要仅显示散列尾号；优先采用 CLI 给出的稳定主体标识，缺失时以规范化 email 与 orgId 的摘要尽力去重，不声称能严格证明订阅身份，且不保存 email。generation 才是本机绑定生命周期的依据。
 
 应用共享执行池，跨 Runner 保留进程内会话；网关显式传入会话身份。换绑、删除、退出或关闭停止旧绑定，取消停止当前交互。真实新用户轮才调用 `begin_user_turn`，Harness turn 结束调用 `finish_user_turn`，释放仍在执行或等待工具的交互，保留已完成的空闲进程；普通准备或 Runner 替换不清理会话。不承诺应用重启后恢复 CLI 会话。CLI 的工具请求由网关桥接，应用不让它直接执行项目工具。
 
 CLI 额度来源执行内置 `/usage`，关闭工具、外部 MCP、设置来源与会话持久化。仅解析可验证的 `Current session` 与 `Current week (all models)` 百分比，映射为 `window:18000` 和 `window:604800`。未知文本、缺失窗口、进程失败不产生满额快照；保留上次观测并给出未知或过期状态及安全错误。人类可读 reset 文本不被猜测为时间戳，按现有短 TTL 在下次查询或使用时重新观测；不会推断额度恢复。模型特定窗口没有稳定 model ID 映射时不伪装为全模型窗口。额度是按需观测，不是持续轮询。
 
 `/usage` 适配依据是当前官方命令语义与固定 Magpie 实现，CLI 的版本及输出变化可能使观测不可用。Velune 只执行固定命令，绝不在失败后退回普通 prompt 或换参数重试；输出校验只能判断返回是否符合额度格式，不能保证外部 CLI 内部实现或计量永远不变。本轮仅完成隔离合成验收，真实 CLI 登录、额度读取和订阅执行仍由用户验收。
+
+Claude 认证失败的公开 `AuthenticationEvent.error` 只包含固定阶段与原因，格式为 `Claude Code 认证未完成 [phase=<阶段>;reason=<固定原因>;exit_code=<整数或none>]`。阶段为 `login`、`status` 或 `worker`，用于区分 CLI 退出、超时、状态 JSON、目录绑定与身份校验失败；不含 CLI 的 stdout、stderr、账户信息或 URL。进程退出码来自操作系统，不按原始错误文案猜测供应商原因。

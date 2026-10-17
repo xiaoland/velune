@@ -191,3 +191,15 @@ transport owner 固定公开 Magpie 源码研究认证、请求、额度与品�
 最终新增组合证据共 22 组：先前 17 组、最后 `--case cancel` 的取消/迟到结果与 finish Pending/Completed 共 3 组、`--case auth-cleanup` 2 组。Pending 结束后原 PID 退出且新轮成功，Completed 结束后跨 Runner 仍复用同 PID。清理 case 仅在临时源码副本插入发送结果后的观测 marker，以精确复现“成功已到但尚未提交”，不改变产品分支。最终脚本 AST 与 diff 检查通过。
 
 实现提交 `57bf2ce6454fad2313f6cfa46468e16c9989ffce` 后执行默认 compile-only 的 `manual-codex-subscriptions-live.py`：完整冻结该提交并成功编译 runner，本地 SSE parser 5 例和 usage 白名单检查通过，退出码 0、real_requests=0；未读取认证、刷新或发起真实调用。实现留在 `feat/subscription-composition` 独立工作树，未合并共享主工作区的其他任务、未 push 或创建 PR。
+
+## Claude Code 真实接入推进（2026-10-17）
+
+用户要求继续推进订阅接入。本轮沿独立组合分支核对本机官方 CLI、准备 application 登录与 gateway 端到端人工 runner，使用新隔离配置目录，不读取或复制既有登录令牌。只进行有界文本/工具往返及一次额度观测；登录由用户在官方浏览器完成。主工作区目前 main 已有其他提交，不将旧分支覆盖主工作区。现有合成验收不能代替真实协议兼容证据。
+
+本机空 HOME 下探测 CLI 版本为 2.1.292；auth login/status 的本机 help 与当前官方 CLI reference 一致。状态 JSON 只白名单输出登录状态、认证方式、目录一致性与字段名，不输出账户内容。
+
+真实接入 runner 已冻结 `da991c2b1942f9ec35e89ecf2cf849fcea0c2783` 编译，通过 3 个本地 SSE 解析自检。通过 application 启动官方 CLI 登录，模型请求为 0；等待用户完成浏览器授权。脚本只输出白名单阶段、退出状态与计量，不输出原始 CLI 内容或账户信息。登录不等于推理、工具或额度已验收。
+
+首次真实登录：用户完成浏览器授权，但报告找不到钥匙串 unknown，application 返回 LOGIN_NOT_COMPLETED，模型请求为 0。环境判别仅调用 `/usr/bin/security default-keychain -d user` 查询路径元数据：真实 HOME exit=0 且有路径；临时 HOME 在保留 USER/LOGNAME 时仍 exit=1，无路径。未读取钥匙串条目或秘密。本机 2.1.292 发布二进制显示 Keychain service 随 CLAUDE_CONFIG_DIR 的 SHA256 前八位区分，账号名取 USER 或 os.userInfo().username；不能套用旧版 unknown 账号 fallback 报告。修正方向为保留系统 HOME/身份、只隔离 Claude 配置目录，并对认证失败增加安全阶段诊断。此结果证明伪 HOME 破坏默认钥匙串发现，登录恢复仍需真实复验。
+
+HOME 修复已覆盖 application 登录/状态/退出/额度与 ai-provider 执行，保持环境白名单、配置目录和工作目录独立。新增固定 phase/reason/exit_code 诊断，未扩展 UniFFI 类型。合成 cancel/finish 3 组及新增认证诊断 3 组通过；每个 CLI 子命令验证父 HOME/USER/LOGNAME 保留及独立配置/cwd，故障输出含 sentinel 仍不泄露。新增组合累计 25 组。live runner 的 9 项解析/诊断与 2 项失败输出自检通过。fmt、workspace check/clippy、bindings build 与 no-default-features check 均通过。

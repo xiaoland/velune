@@ -27,4 +27,6 @@ Responses 流响应按 MIME 规则忽略媒体类型大小写和两端空白。�
 
 `claude_code::ClaudeCode` 实现 MessagesProvider，输入为 Messages 请求，输出为 Messages SSE；网关负责其他入口协议及非流响应转换。`ClaudeCodePool` 由消费方跨 Runner 共享，拥有独立执行线程、CLI 进程和挂起的 MCP 工具请求。配置明确给出可执行文件、隔离 config_dir、binding 与可选 session；不通过 shell 拼接命令。后端禁用 Claude 原生工具与自主执行来源，只把调用方声明的工具转成 tool_use，等待调用方真实 tool_result。进程成功启动后或向已有进程写入本次输入前，失败的 `submitted` 即为 true，调用方不得透明重放到其他实例，即使还没有响应 headers。
 
+CLI 子进程清空继承环境后，仅保留系统用户身份所需的 `HOME`、`USER`、`LOGNAME`、命令查找所需的 `PATH`，以及 Windows 必要系统变量。真实 `HOME` 用于 macOS 用户钥匙串定位；订阅配置仍由显式独立的 `CLAUDE_CONFIG_DIR` 隔离，不把配置目录伪装成用户主目录。API key、OAuth token 和服务端点覆盖不从父进程环境继承。原生工具、hooks、额外 settings 与 MCP 自动发现的禁用约束保持有效。
+
 Pool 的 continuation 查询与实际工具等待状态同源，返回无约束、原 binding 归属或已失效。失效会终止对应进程并保留必要的会话失效事实；消费方负责将该约束与自己的模型资格、认证世代共同校验。`cancel_session` 也取消已返回 tool_use 后等待结果的交互；应用在明确的新用户轮调用 `begin_user_turn`，只有已终止交互可以解除失效，仍运行或 pending 时拒绝。已失效工具 ID 独立保留，`validate_result_ids` 只接收当前请求尾部结果，防止新轮错误接收迟到结果。关闭单个 HTTP Runner 不应 shutdown 共享 pool，应用生命周期结束时才显式 shutdown。

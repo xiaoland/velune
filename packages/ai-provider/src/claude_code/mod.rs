@@ -510,10 +510,12 @@ async fn launch_in(
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
         .kill_on_drop(true);
-    let path = std::env::var_os("PATH");
     command.env_clear();
-    if let Some(path) = path {
-        command.env("PATH", path);
+    // macOS resolves the user's keychain through the real login identity and home.
+    for key in ["PATH", "HOME", "USER", "LOGNAME"] {
+        if let Some(value) = std::env::var_os(key) {
+            command.env(key, value);
+        }
     }
     #[cfg(windows)]
     for key in ["SystemRoot", "WINDIR"] {
@@ -521,9 +523,7 @@ async fn launch_in(
             command.env(key, value);
         }
     }
-    command
-        .env("HOME", &config.config_dir)
-        .env("CLAUDE_CONFIG_DIR", &config.config_dir);
+    command.env("CLAUDE_CONFIG_DIR", &config.config_dir);
     if let Some(max) = body["max_tokens"].as_u64() {
         command.env("CLAUDE_CODE_MAX_OUTPUT_TOKENS", max.to_string());
     }

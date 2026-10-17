@@ -28,6 +28,7 @@ import json, os, pathlib, signal, sys, threading, time, urllib.request
 ROOT = pathlib.Path(FIXTURE_DIRECTORY)
 LOCK = threading.Lock()
 CONFIG = os.environ.get('CLAUDE_CONFIG_DIR', '')
+MODE = (ROOT / 'auth-mode').read_text() if (ROOT / 'auth-mode').exists() else ''
 def record(kind, **details):
     value = dict(kind=kind, pid=os.getpid(), config=CONFIG, **details)
     with (ROOT / 'cli-events.jsonl').open('a') as f:
@@ -40,8 +41,20 @@ def stop(*_):
     sys.exit(0)
 signal.signal(signal.SIGTERM, stop)
 args = sys.argv[1:]
+identity_preserved = os.environ.get('HOME') == str(ROOT / 'home') and os.environ.get('USER') == 'fixture-os-user' and os.environ.get('LOGNAME') == 'fixture-os-user'
+configuration_isolated = bool(CONFIG) and pathlib.Path(CONFIG).resolve().is_relative_to(ROOT.resolve()) and CONFIG != os.environ.get('HOME')
+current_directory_isolated = pathlib.Path.cwd().resolve() != pathlib.Path(os.environ['HOME']).resolve()
+record('environment', identity_preserved=identity_preserved, configuration_isolated=configuration_isolated, current_directory_isolated=current_directory_isolated)
+assert identity_preserved and configuration_isolated and current_directory_isolated, 'OS identity and CLI config isolation were not preserved'
+if args[:1] == ['auth'] or '/usage' in args:
+    assert pathlib.Path.cwd().resolve() == pathlib.Path(CONFIG).resolve(), 'authentication command did not use owned directory'
 record('start', argv=args)
 if args[:2] == ['auth', 'login']:
+    if MODE == 'exit7':
+        record('login')
+        print('fixture-secret-sentinel https://fixture.invalid/callback?code=fixture-sensitive')
+        print('fixture-secret-sentinel', file=sys.stderr)
+        sys.exit(7)
     pathlib.Path(CONFIG).mkdir(parents=True, exist_ok=True)
     (pathlib.Path(CONFIG) / 'fixture-signed-in').write_text('synthetic')
     record('login')
@@ -49,9 +62,16 @@ if args[:2] == ['auth', 'login']:
 if args[:2] == ['auth', 'status']:
     assert args == ['auth', 'status'], 'unsupported auth status flag'
     record('status')
-    print(json.dumps({'loggedIn': (pathlib.Path(CONFIG) / 'fixture-signed-in').exists(),
-                      'authMethod': 'claude.ai', 'subscriptionType': 'max', 'configDirectory': CONFIG,
-                      'email': 'fixture@example.invalid'}))
+    status = {'loggedIn': (pathlib.Path(CONFIG) / 'fixture-signed-in').exists(),
+              'authMethod': 'claude.ai', 'subscriptionType': 'max', 'configDirectory': CONFIG,
+              'untrusted_metadata': 'fixture-secret-sentinel https://fixture.invalid/callback?code=fixture-sensitive'}
+    if MODE == 'directory-mismatch':
+        other = ROOT / 'other-configuration'
+        other.mkdir(exist_ok=True)
+        status['configDirectory'] = str(other)
+    if MODE != 'identity-missing':
+        status['email'] = 'fixture@example.invalid'
+    print(json.dumps(status))
     sys.exit(0)
 if args[:2] == ['auth', 'logout']:
     (pathlib.Path(CONFIG) / 'fixture-signed-in').unlink(missing_ok=True)
@@ -191,6 +211,9 @@ fn authentication_cleanup_cases(root:&Path)->Vec<&'static str>{use velune_applic
  let logins=count(root,"login");app.authentication_start("default".into(),"claude".into()).unwrap();let rejected=wait_staging(root,logins);assert_ne!(old,rejected);std::fs::create_dir(home.join("generic-config.json.tmp")).unwrap();assert!(app.authentication_poll().is_err(),"blocked configuration persistence falsely succeeded");std::fs::remove_dir(home.join("generic-config.json.tmp")).unwrap();wait_staging_cleanup(root,&rejected);assert_eq!(std::fs::read(home.join("generic-config.json")).unwrap(),before);assert!(old.exists(),"failed relogin removed old CLI login directory");assert!(app.authentication_inspect("default".into(),"claude".into()).unwrap().configured);
  let logins=count(root,"login");app.authentication_start("default".into(),"claude".into()).unwrap();let cancelled=wait_staging(root,logins);assert_ne!(old,cancelled);let progress=app.authentication_cancel().unwrap();assert!(!progress.running);assert!(progress.events.iter().any(|e|e.cancelled==Some(true)&&e.ok==Some(false)),"already delivered success was committed despite cancellation");wait_staging_cleanup(root,&cancelled);assert_eq!(std::fs::read(home.join("generic-config.json")).unwrap(),before);assert!(old.exists());assert!(app.authentication_inspect("default".into(),"claude".into()).unwrap().configured);app.close().unwrap();vec!["failed CLI login persistence logs out/removes staging while retaining old binding", "cancel after delivered success cleans staging before Application drop and never commits"]}
 
+
+fn authentication_diagnostic_cases(root:&Path)->Vec<&'static str>{use velune_application::{Application,Options,ProviderDraft,AuthenticationEdit};let home=root.join("diagnostic-application");let resources=root.join("resources");std::fs::create_dir_all(&resources).unwrap();let mut app=Application::open(Options{home_directory:home,resources_directory:resources}).unwrap();let draft:ProviderDraft=serde_json::from_value(json!({"id":"claude","name":"Synthetic Claude","protocol":"messagesV1","endpoint":"","executionBackend":{"claudeCli":{"binary":root.join("claude-fixture")}},"requestProfile":"native","authenticationSource":"claudeCli","quotaSource":"none","quotaLimits":[],"models":[{"recordKey":"","providerModelId":"fixture-model","nickname":"fixture","icon":null,"contextWindow":8192,"maxOutputTokens":32,"reasoningLevels":null,"piProjection":null}]})).unwrap();app.save_provider("default".into(),draft,AuthenticationEdit::Keep).unwrap();let mut passed=Vec::new();for (mode,phase,reason,code,label) in [("exit7","login","process_exit","7","CLI nonzero login reports safe phase and exit code"),("directory-mismatch","status","config_directory_mismatch","none","CLI reported config directory mismatch is diagnosed"),("identity-missing","status","identity_missing","none","CLI missing stable identity is diagnosed without leaking output")]{std::fs::write(root.join("auth-mode"),mode).unwrap();let mut progress=app.authentication_start("default".into(),"claude".into()).unwrap();let deadline=Instant::now()+Duration::from_secs(5);while progress.running{assert!(Instant::now()<deadline);std::thread::sleep(Duration::from_millis(10));progress=app.authentication_poll().unwrap();}assert!(!progress.events.iter().any(|e|e.ok==Some(true)));let expected=format!("Claude Code 认证未完成 [phase={phase};reason={reason};exit_code={code}]");assert!(progress.events.iter().any(|e|e.error.as_deref()==Some(expected.as_str())),"safe CLI diagnostic did not match observed failure");let public=serde_json::to_string(&progress).unwrap();assert!(!public.contains("fixture-secret-sentinel")&&!public.contains("fixture.invalid/callback"),"raw CLI sentinel leaked through authentication progress");let dir=PathBuf::from(log(root).iter().rev().find(|v|v["kind"]=="login").unwrap()["config"].as_str().unwrap());wait_staging_cleanup(root,&dir);passed.push(label);}std::fs::remove_file(root.join("auth-mode")).unwrap();app.close().unwrap();passed}
+
 fn application_cases(root:&Path)->Vec<&'static str>{use velune_application::{Application,Options,ProviderDraft,AuthenticationEdit};let mut passed=Vec::new();let home=root.join("application");let resources=root.join("resources");std::fs::create_dir_all(&resources).unwrap();let options=Options{home_directory:home.clone(),resources_directory:resources};let mut app=Application::open(options.clone()).unwrap();let value=json!({"id":"claude","name":"Synthetic Claude","protocol":"messagesV1","endpoint":"","executionBackend":{"claudeCli":{"binary":root.join("claude-fixture")}},"requestProfile":"native","authenticationSource":"claudeCli","quotaSource":"claudeCliUsage","quotaLimits":[],"models":[{"recordKey":"","providerModelId":"fixture-model","nickname":"fixture","icon":null,"contextWindow":8192,"maxOutputTokens":32,"reasoningLevels":null,"piProjection":null}]});let draft:ProviderDraft=serde_json::from_value(value.clone()).unwrap();app.save_provider("default".into(),draft,AuthenticationEdit::Keep).unwrap();let before=std::fs::read(home.join("generic-config.json")).unwrap();for (field,invalid) in [("endpoint",json!("https://example.invalid")),("requestProfile",json!("codexResponses")),("authenticationSource",json!("apiKey")),("quotaSource",json!("codexUsage"))]{let mut rejected=value.clone();rejected[field]=invalid;let draft:ProviderDraft=serde_json::from_value(rejected).unwrap();assert!(app.save_provider("default".into(),draft,AuthenticationEdit::Keep).is_err());assert_eq!(std::fs::read(home.join("generic-config.json")).unwrap(),before,"invalid composition mutated saved state");}passed.push("Application rejects invalid combinations without changing persisted configuration");
  assert!(!app.authentication_inspect("default".into(),"claude".into()).unwrap().configured);let mut progress=app.authentication_start("default".into(),"claude".into()).unwrap();let deadline=Instant::now()+Duration::from_secs(5);while progress.running {assert!(Instant::now()<deadline);std::thread::sleep(Duration::from_millis(10));progress=app.authentication_poll().unwrap();}assert!(progress.events.iter().any(|event|event.type_id=="result"&&event.ok==Some(true)));assert!(app.authentication_inspect("default".into(),"claude".into()).unwrap().configured);assert!(count(root,"login")>0&&count(root,"status")>0);passed.push("Application login and status delegate to CLI in isolated account directory");
  app.refresh_provider_quota("default".into(),"claude".into()).unwrap();let deadline=Instant::now()+Duration::from_secs(5);let quota=loop{let q=app.provider_quota("default".into(),"claude".into()).unwrap();if !q.refreshing&&matches!(q.freshness,velune_application::QuotaFreshness::Fresh){break q;}assert!(Instant::now()<deadline,"CLI quota never became fresh");std::thread::sleep(Duration::from_millis(10));};assert!(quota.windows.iter().any(|w|w.id=="window:18000"&&w.used_percent==25.));assert!(quota.windows.iter().any(|w|w.id=="window:604800"&&w.used_percent==40.));assert!(count(root,"quota")>0);passed.push("CLI usage command publishes independently observed quota windows");
@@ -198,7 +221,7 @@ fn application_cases(root:&Path)->Vec<&'static str>{use velune_application::{App
 }
 
 #[tokio::main(flavor="current_thread")]
-async fn main(){let root=PathBuf::from(std::env::args().nth(1).unwrap());let selected=std::env::args().nth(2).unwrap();let endpoint=std::env::args().nth(3).unwrap();if selected=="auth-cleanup"{let r=root.clone();let passed=std::thread::spawn(move||authentication_cleanup_cases(&r)).join().unwrap();println!("{}",json!({"passed":passed,"real_cli_executed":false,"temporary_observation_patch":true}));return;}if selected=="cancel"{let mut passed=cancellation_cases(&root,&endpoint).await;passed.extend(finishing_cases(&root).await);println!("{}",json!({"passed":passed,"real_cli_executed":false}));return;}let pool=Arc::new(ClaudeCodePool::new());let mut passed=Vec::new();
+async fn main(){let root=PathBuf::from(std::env::args().nth(1).unwrap());let selected=std::env::args().nth(2).unwrap();let endpoint=std::env::args().nth(3).unwrap();if selected=="auth-diagnostics"{let r=root.clone();let passed=std::thread::spawn(move||authentication_diagnostic_cases(&r)).join().unwrap();println!("{}",json!({"passed":passed,"real_cli_executed":false}));return;}if selected=="auth-cleanup"{let r=root.clone();let passed=std::thread::spawn(move||authentication_cleanup_cases(&r)).join().unwrap();println!("{}",json!({"passed":passed,"real_cli_executed":false,"temporary_observation_patch":true}));return;}if selected=="cancel"{let mut passed=cancellation_cases(&root,&endpoint).await;passed.extend(finishing_cases(&root).await);println!("{}",json!({"passed":passed,"real_cli_executed":false}));return;}let pool=Arc::new(ClaudeCodePool::new());let mut passed=Vec::new();
  let partial=provider(pool.clone(),&root,"namespace/partial","provider/epoch-a");let marker=root.join("partial-observed");let result=tokio::time::timeout(Duration::from_secs(5),partial.messages(request(vec![user("fixture-partial")],false),Box::new(move|event|{if let MessagesEvent::Body(bytes)=event{if String::from_utf8_lossy(bytes.get()).contains("incremental-visible"){std::fs::write(&marker,"observed before terminal").unwrap();}}Box::pin(async{Ok(())})}))).await.unwrap();assert!(result.result.is_ok());passed.push("stream delta reaches caller before CLI terminal is released");
  let a=provider(pool.clone(),&root,"namespace/session-a","provider/epoch-a");let first=call(&a,vec![user("fixture-text")],false).await;success(&first,"fixture-completed");let before=count(&root,"start");
  let history=vec![user("fixture-text"),text_blocks("fixture-completed"),user("fixture-next")];success(&call(&a,history,false).await,"fixture-completed");assert_eq!(count(&root,"start"),before,"same session restarted");passed.push("stream completion and same-session process reuse");
@@ -214,7 +237,7 @@ async fn main(){let root=PathBuf::from(std::env::args().nth(1).unwrap());let sel
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--case', choices=['all', 'cancel', 'auth-cleanup'], default='all')
+    parser.add_argument('--case', choices=['all', 'cancel', 'auth-cleanup', 'auth-diagnostics'], default='all')
     args = parser.parse_args()
     with tempfile.TemporaryDirectory(prefix='velune-composition-') as directory:
         temporary = Path(directory)
@@ -242,7 +265,7 @@ def main():
         subprocess.run(['cargo', 'build', '--quiet', '--offline', '--manifest-path', str(temporary / 'Cargo.toml'), '--target-dir', str(target)], cwd=ROOT, check=True)
         home = temporary / 'home'
         home.mkdir()
-        environment = dict(os.environ, HOME=str(home), HTTP_PROXY='http://127.0.0.1:1', HTTPS_PROXY='http://127.0.0.1:1', ALL_PROXY='http://127.0.0.1:1', NO_PROXY='127.0.0.1,localhost', no_proxy='127.0.0.1,localhost')
+        environment = dict(os.environ, HOME=str(home), USER='fixture-os-user', LOGNAME='fixture-os-user', HTTP_PROXY='http://127.0.0.1:1', HTTPS_PROXY='http://127.0.0.1:1', ALL_PROXY='http://127.0.0.1:1', NO_PROXY='127.0.0.1,localhost', no_proxy='127.0.0.1,localhost')
         class HttpFallback(BaseHTTPRequestHandler):
             def log_message(self, *_):
                 pass

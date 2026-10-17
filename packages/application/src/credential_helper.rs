@@ -13,6 +13,10 @@ const RESOLVE_TIMEOUT: Duration = Duration::from_secs(30);
 pub(super) enum CredentialError {
     Unavailable,
     #[cfg(unix)]
+    Exit {
+        code: Option<i32>,
+    },
+    #[cfg(unix)]
     Timeout,
     #[cfg(unix)]
     InvalidOutput,
@@ -63,7 +67,9 @@ pub(super) async fn execute_timeout(
             .await
             .map_err(|_| CredentialError::Unavailable)?;
         if !status.success() {
-            return Err(CredentialError::Unavailable);
+            return Err(CredentialError::Exit {
+                code: status.code(),
+            });
         }
         String::from_utf8(bytes).map_err(|_| CredentialError::InvalidOutput)
     };
