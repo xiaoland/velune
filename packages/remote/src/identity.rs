@@ -280,7 +280,16 @@ fn create_identity_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
         let mut file = private_options().create_new(true).open(&temporary)?;
         file.write_all(bytes)?;
         file.sync_all()?;
-        // Linking publishes a complete file atomically and cannot replace a concurrent identity.
+        // Android sandboxes deny hard links; NOREPLACE keeps publication atomic without replacement.
+        #[cfg(target_os = "android")]
+        rustix::fs::renameat_with(
+            rustix::fs::CWD,
+            &temporary,
+            rustix::fs::CWD,
+            path,
+            rustix::fs::RenameFlags::NOREPLACE,
+        )?;
+        #[cfg(not(target_os = "android"))]
         fs::hard_link(&temporary, path)?;
         #[cfg(unix)]
         fs::File::open(parent)?.sync_all()?;
@@ -289,6 +298,7 @@ fn create_identity_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     let _ = fs::remove_file(&temporary);
     result
 }
+
 fn atomic_write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     let suffix = random_id().map_err(|_| std::io::ErrorKind::Other)?;
     let parent = path
