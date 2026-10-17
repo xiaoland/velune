@@ -172,6 +172,17 @@ struct ToolWindowLayout: Codable, Equatable {
         editorOnly = open
     }
 
+    /// The tools of a window opened for one conversation: its sub-agents on
+    /// the left in the list's place; the list stays one command away.
+    func forSingleConversation() -> ToolWindowLayout {
+        var layout = self
+        layout[.list].shown = false
+        layout[.subAgents].place = .docked(.left)
+        layout[.subAgents].shown = true
+        layout.collapsed.remove(.left)
+        return layout
+    }
+
     /// The tools' shares of an area, after its dividers moved.
     mutating func setWeights(_ weights: [ToolWindowKind: Double]) {
         for (kind, weight) in weights { self[kind].weight = weight }
