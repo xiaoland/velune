@@ -251,3 +251,5 @@ HOME 修复已覆盖 application 登录/状态/退出/额度与 ai-provider 执�
 - `ORGANIZATION_SCHEMA_VERSION` 仅由 local-runtime 使用，按该 feature 编译，消除 `--no-default-features` 警告。
 
 验证：cargo fmt --check、workspace check、clippy（-D warnings）与 application `--no-default-features` check 无警告；`build-macos.sh --build-only` 成功。临时 Python 绑定脚本在隔离 home 中验证导出组合与披露、相对路径被拒、以不存在路径保存的 CLI 提供商为未登录 OAuth 并带披露与 login／logout 动作、额度 Unknown。临时离屏渲染检查 Claude 提供商编辑器与新提供商的两个订阅入口，修正了按钮中英文间距；临时代码与截图不提交。未进行真实 CLI 登录、退出或额度读取，交由用户验收。
+
+安装：补充提交 597a524 快进合入本地 main，在独立工作树构建并安装到 `/Applications/Velune.app`（0.1 beta.1）；安装前正常退出了运行中的 Velune。codesign 严格校验通过，构建清单 source_commit 与该提交一致、dirty 为 false。Claude Code 订阅的实际创建、CLI 登录／退出与额度显示待用户验收。
