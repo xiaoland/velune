@@ -116,6 +116,31 @@ pub fn list_codex_history_at(
         .collect()
 }
 
+/// One thread as the runtime describes it, and whether it is archived, for a
+/// thread no listing in use holds: a native sub-agent Codex archived once it
+/// ended. Codex keeps archived rollouts in its `archived_sessions` folder.
+pub fn read_codex_summary_at(
+    binary: &Path,
+    home: &Path,
+    runtime_id: &str,
+    id: &str,
+    execution: &crate::execution::ExecutionTarget,
+    os_home: Option<&Path>,
+) -> Result<(ConversationSummary, bool)> {
+    let mut rpc = codex::history_client_at(binary, home, execution, os_home)?;
+    let metadata = rpc.request("thread/read", &json!({"threadId":id,"includeTurns":false}))?;
+    let thread = &metadata["thread"];
+    if thread["id"].as_str() != Some(id) {
+        return Err(Error::new("Codex 返回不同的原生会话"));
+    }
+    let archived = thread["path"].as_str().is_some_and(|path| {
+        Path::new(path)
+            .components()
+            .any(|component| component.as_os_str() == "archived_sessions")
+    });
+    Ok((summary(thread, runtime_id)?, archived))
+}
+
 pub fn read_codex_history(
     binary: &Path,
     home: &Path,

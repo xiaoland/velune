@@ -14,6 +14,7 @@ pub use codex::{ThreadChange, manage_thread, manage_thread_at};
 mod codex_history;
 pub use codex_history::{
     list_codex_history, list_codex_history_at, read_codex_history, read_codex_history_at,
+    read_codex_summary_at,
 };
 mod deepseek;
 pub(crate) mod rpc;

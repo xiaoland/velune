@@ -636,14 +636,14 @@ impl CoreRuntime {
             .iter()
             .find(|r| r.enabled && id.starts_with(&format!("{}:", r.id)));
         let found = match owner {
-            Some(runtime) if !linked => {
-                self.conversation_summary(runtime, id)?
-                    .map(|summary| ListedSource {
-                        summary,
-                        archived_natively: false,
-                        provisional: false,
-                    })
-            }
+            Some(runtime) if !linked => self
+                .conversation_summary(runtime, id)?
+                .map(|summary| ListedSource {
+                    summary,
+                    archived_natively: false,
+                    provisional: false,
+                })
+                .or_else(|| self.reach(runtime, id)),
             _ => None,
         }
         .or_else(|| {
@@ -651,20 +651,38 @@ impl CoreRuntime {
             sources
                 .into_iter()
                 .find(|source| source.summary.id == id && !source.provisional)
-        })
-        .or_else(|| {
-            self.natively_archived()
-                .into_iter()
-                .find(|summary| summary.id == id)
-                .map(|summary| ListedSource {
-                    summary,
-                    archived_natively: true,
-                    provisional: false,
-                })
         });
         Ok(serde_json::to_value(found.as_ref().map(|source| {
             self.listed(source, &self.projectless_places())
         }))?)
+    }
+
+    /// A conversation its runtime describes by identity, outside every
+    /// listing in use, kept so that opening it finds it: reading one thread
+    /// rather than the runtime's whole archive.
+    fn reach(&self, runtime: &RuntimeInstance, id: &str) -> Option<ListedSource> {
+        let native_id = id.strip_prefix(&format!("{}:", runtime.id))?;
+        let read = self
+            .history_config(runtime)
+            .and_then(|config| Ok(history::read_summary(&config, &runtime.id, native_id)?));
+        match read {
+            Ok(Some((summary, archived_natively))) => {
+                let source = ListedSource {
+                    summary,
+                    archived_natively,
+                    provisional: false,
+                };
+                self.reached
+                    .borrow_mut()
+                    .insert(id.to_owned(), source.clone());
+                Some(source)
+            }
+            Ok(None) => None,
+            Err(error) => {
+                tracing::warn!(target:"velune_application",event="runtime_history_read_failed",phase="reach",runtime_id=%runtime.id,runtime_type_id=%runtime.type_id,detail=%error);
+                None
+            }
+        }
     }
 
     pub(super) fn browser_window_action(&mut self, request: &Value) -> Result<Value, RuntimeError> {

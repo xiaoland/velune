@@ -317,6 +317,27 @@ pub fn list_archived(
     )
     .map_err(|error| native_history_error(error, "native_list"))
 }
+/// One conversation its runtime describes by identity, with whether the
+/// runtime archived it; only Codex can, for others there is none.
+pub fn read_summary(
+    config: &HistoryConfig,
+    runtime_id: &str,
+    native_id: &str,
+) -> Result<Option<(ConversationSummary, bool)>, HistoryError> {
+    if config.provider != "codex" {
+        return Ok(None);
+    }
+    crate::native::read_codex_summary_at(
+        &config.binary,
+        &config.home,
+        runtime_id,
+        native_id,
+        &config.execution,
+        config.os_home.as_deref(),
+    )
+    .map(Some)
+    .map_err(|error| native_history_error(error, "native_summary"))
+}
 pub fn read(
     config: &HistoryConfig,
     runtime_id: &str,
