@@ -17,7 +17,7 @@ struct ConversationListView: View {
     @State private var browser = ConversationBrowser()
     @State private var renameTarget: Conversation?
     @State private var deleteTargets: [Conversation] = []
-    @State private var aliasTarget: ProjectAliasTarget?
+    @State private var projectTarget: ProjectEditorTarget?
     private var conversationSections: [ConversationBrowser.Section] {
         if let results = store.searchResults { return ConversationBrowser.sections(conversations: results.conversations, groups: results.groups) }
         return ConversationBrowser.sections(conversations: store.conversations, groups: store.conversationGroups)
@@ -60,8 +60,7 @@ struct ConversationListView: View {
             if store.conversationBrowserPreferences != nil { store.setConversationBrowserPreferences(value) }
         }
         .sheet(item: $renameTarget) { ConversationRenameView(store: store, conversation: $0) }
-        .sheet(item: $aliasTarget) { ProjectAliasView(store: store, target: $0) }
-        .alert(deleteTargets.count == 1 ? "删除会话？" : "删除 \(deleteTargets.count) 个会话？", isPresented: Binding(get: { !deleteTargets.isEmpty }, set: { if !$0 { deleteTargets = [] } })) {
+        .sheet(item: $projectTarget) { ProjectEditorView(store: store, target: $0) }        .alert(deleteTargets.count == 1 ? "删除会话？" : "删除 \(deleteTargets.count) 个会话？", isPresented: Binding(get: { !deleteTargets.isEmpty }, set: { if !$0 { deleteTargets = [] } })) {
             Button("取消", role: .cancel) { deleteTargets = [] }
             Button("删除", role: .destructive) { store.deleteConversations(deleteTargets); deleteTargets = [] }
         } message: {
@@ -151,11 +150,16 @@ struct ConversationListView: View {
         }
         .help(path.map { (($0 as NSString).abbreviatingWithTildeInPath) } ?? title)
         .contentShape(Rectangle())
-        .onTapGesture(count: 2) { if let path { aliasTarget = ProjectAliasTarget(path: path) } }
+        .onTapGesture(count: 2) { if let path { projectTarget = ProjectEditorTarget(path: path) } }
         .contextMenu {
             if let path {
-                Button("重命名项目…") { aliasTarget = ProjectAliasTarget(path: path) }
-                if section.group.alias != nil { Button("恢复文件夹名称") { store.setProjectAlias(path: path, alias: nil) } }
+                Button("编辑项目…") { projectTarget = ProjectEditorTarget(path: path) }
+                if section.group.name != nil {
+                    Button("恢复文件夹名称") {
+                        let folders = store.conversationProjects.first { $0.path == path }?.folders ?? []
+                        store.setProject(path: path, primaryFolder: path, name: nil, folders: folders)
+                    }
+                }
                 Button("在 Finder 中显示") { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)]) }
                     .disabled(store.location(of: section.conversations.first?.runtimeID) != .local)
                 Divider()

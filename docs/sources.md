@@ -341,3 +341,7 @@ S17 实施授权：用户决定全面切换 UniFFI，并要求现在开始拆分
 ## S34
 
 2026-10-17 本机 Claude Code 自动更新到 2.1.292 后被 Velune 的版本检查拒绝。用户问：“理论上，我们的 adapter 应该是兼容一段版本才正常的；所以真的是 protocol 变了还是仅仅只是 adapter 自己伪宣称自己只能支持 2.1.286”。开发方核对：精确锁定来自架构规则与 `^2\.1\.286$`，没有协议变化的证据；临时放宽后 2.1.292 通过 9 个实际 CLI 脚本。就开发方的提问，用户选择“按兼容区间”：adapter 声明已验证的兼容区间（如 Claude Code ≥2.1.286、<2.2；Codex、Pi、DSH 同理），区间内照常使用，出现破坏性变化才另建 adapter；类型 ID 不含补丁号，按 hard-cutoff 重新添加运行时实例。实施见 [版本区间任务](../tasks/adapter-version-ranges/packet.md)。
+
+## S35
+
+2026-10-17 用户发现 Claude Code 在 worktree 中的会话（如 `mac-sub-agents-panel`）各自成为独立项目。就开发方“worktree 是否归入所属仓库”的提问，用户答复：“是的，worktree 归到原项目下面；其实正好，我计划让 project 和特定的文件夹解耦，一个 project 可以有多个 folder，有一个 primary folder”。产品归 [PRD](prd/index.md#会话内容展示)，实施归 [多文件夹项目任务](../tasks/project-folders/packet.md)。

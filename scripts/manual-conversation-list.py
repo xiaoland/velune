@@ -294,8 +294,8 @@ def main():
         assert not find(back, 'alpha 0').moved
         results['move'] = 'ok'
 
-        aliased = application.set_project_alias(str(root / 'alpha'), '  Alpha 项目  ')
-        assert next(p for p in aliased.conversation_projects if p.path == str(root / 'alpha')).alias == 'Alpha 项目'
+        aliased = application.set_project(str(root / 'alpha'), str(root / 'alpha'), '  Alpha 项目  ', [])
+        assert next(p for p in aliased.conversation_projects if p.path == str(root / 'alpha')).name == 'Alpha 项目'
         found = application.search_conversations('alpha 项目')
         assert sorted(c.conversation.title for c in found.conversations) == ['alpha %d' % i for i in range(7)]
         assert sorted(c.conversation.title for c in application.search_conversations('BETA 3').conversations) == ['beta 3']
@@ -432,7 +432,7 @@ def main():
         application.shutdown()
         application = open_application()
         reopened = application.list()
-        assert next(p for p in reopened.conversation_projects if p.path == str(root / 'alpha')).alias == 'Alpha 项目'
+        assert next(p for p in reopened.conversation_projects if p.path == str(root / 'alpha')).name == 'Alpha 项目'
         assert titles(reopened, K.PINNED()) == ['gamma 0']
         assert next(c for c in reopened.conversations if c.native_id == paths[0]).unread
         assert reopened.conversation_browser_limits.page == 3 and reopened.conversation_browser_limits.total == 100

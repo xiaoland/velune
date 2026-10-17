@@ -42,7 +42,7 @@ struct AppProblem: Identifiable, Sendable, Equatable {
         case "setComposerDraft": return "保存草稿"
         case "setConversationBrowserLimits": return "保存会话列表设置"
         case "organizeConversations": return "整理会话"
-        case "setProjectAlias": return "重命名项目"
+        case "setProject": return "编辑项目"
         case "loadMoreConversations": return "加载会话"
         case "showArchivedConversations": return "切换已归档会话"
         case "searchConversations": return "搜索会话"

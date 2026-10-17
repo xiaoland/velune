@@ -219,39 +219,112 @@ struct ConversationRenameView: View {
     private func rename() { store.renameConversation(conversation, title: title) { dismiss() } }
 }
 
-struct ProjectAliasTarget: Identifiable {
+struct ProjectEditorTarget: Identifiable {
+    /// The project's primary folder.
     let path: String
     var id: String { path }
 }
 
-/// A project's name in the list; empty restores the folder's name.
-struct ProjectAliasView: View {
+/// A project's name and folders in Velune's list. Conversations whose
+/// working directory is any of its folders belong to it; the folders and
+/// the conversations' working directories are unchanged.
+struct ProjectEditorView: View {
     @ObservedObject var store: AppStore
-    let target: ProjectAliasTarget
+    let target: ProjectEditorTarget
     @Environment(\.dismiss) private var dismiss
-    @State private var alias: String
+    @State private var name: String
+    @State private var primary: String
+    /// Every folder, the primary one first as it was opened.
+    @State private var folders: [String]
+    @State private var selection: String?
     @FocusState private var focused: Bool
-    init(store: AppStore, target: ProjectAliasTarget) {
+    private let worktrees: [String]
+    init(store: AppStore, target: ProjectEditorTarget) {
         self.store = store; self.target = target
-        _alias = State(initialValue: store.conversationProjects.first { $0.path == target.path }?.alias ?? URL(fileURLWithPath: target.path).lastPathComponent)
+        let project = store.conversationProjects.first { $0.path == target.path }
+        _name = State(initialValue: project?.name ?? "")
+        _primary = State(initialValue: target.path)
+        _folders = State(initialValue: [target.path] + (project?.folders ?? []))
+        worktrees = project?.worktrees ?? []
     }
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Text("重命名项目").font(.headline)
-            TextField("项目名称", text: $alias).focused($focused).onSubmit(save)
-            Text((target.path as NSString).abbreviatingWithTildeInPath).font(.callout).foregroundStyle(.secondary)
-                .lineLimit(2).truncationMode(.middle).textSelection(.enabled)
-            Text("名称只用于 Velune 的会话列表，不改变文件夹。留空则显示文件夹名称。").font(.caption).foregroundStyle(.secondary)
+        VStack(alignment: .leading, spacing: 12) {
+            Text("编辑项目").font(.headline)
+            TextField("项目名称", text: $name, prompt: Text(Self.folderName(primary))).focused($focused)
+            Text("名称只用于 Velune 的会话列表；留空则显示主文件夹的名称。").font(.caption).foregroundStyle(.secondary)
+            Text("文件夹").font(.subheadline.weight(.semibold)).padding(.top, 4)
+            VStack(spacing: 0) {
+                List(selection: $selection) {
+                    ForEach(folders, id: \.self) { folder in
+                        HStack {
+                            Text(Self.abbreviated(folder)).lineLimit(1).truncationMode(.middle).help(folder)
+                            Spacer(minLength: 8)
+                            if folder == primary { Text("主文件夹").foregroundStyle(.secondary) }
+                        }
+                        .tag(folder)
+                    }
+                }
+                .contextMenu(forSelectionType: String.self) { selected in
+                    if let folder = selected.first {
+                        Button("设为主文件夹") { primary = folder }.disabled(folder == primary)
+                        Button("在 Finder 中显示") { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: folder)]) }
+                        Divider()
+                        Button("移除") { remove(folder) }.disabled(folder == primary)
+                    }
+                }
+                .listStyle(.bordered(alternatesRowBackgrounds: false))
+                .frame(height: 120)
+                HStack(spacing: 0) {
+                    Button(action: add) { Image(systemName: "plus").frame(width: 22, height: 20) }
+                        .help("添加文件夹").accessibilityLabel("添加文件夹")
+                    Button { if let selection { remove(selection) } } label: { Image(systemName: "minus").frame(width: 22, height: 20) }
+                        .disabled(selection == nil || selection == primary)
+                        .help("移除所选文件夹").accessibilityLabel("移除所选文件夹")
+                    Spacer()
+                    Button("设为主文件夹") { if let selection { primary = selection } }
+                        .disabled(selection == nil || selection == primary)
+                }
+                .buttonStyle(.borderless).controlSize(.small).padding(.top, 4)
+            }
+            Text("工作目录在任一文件夹中的会话都归入此项目；新会话的工作目录建议使用主文件夹。项目不改变文件夹或会话的工作目录。")
+                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            if !worktrees.isEmpty {
+                Text("Git worktree").font(.subheadline.weight(.semibold)).padding(.top, 4)
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 4) {
+                        ForEach(worktrees, id: \.self) { folder in
+                            Text(Self.abbreviated(folder)).lineLimit(1).truncationMode(.middle).help(folder).textSelection(.enabled)
+                        }
+                    }.frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .frame(maxHeight: 72).foregroundStyle(.secondary)
+                Text("这些 worktree 中的会话按所属仓库自动归入此项目。").font(.caption).foregroundStyle(.secondary)
+            }
             HStack {
                 Spacer()
                 Button("取消") { dismiss() }.keyboardShortcut(.cancelAction)
-                Button("重命名", action: save).keyboardShortcut(.defaultAction)
-            }
-        }.padding(20).frame(width: 360).onAppear { focused = true }
+                Button("存储", action: save).keyboardShortcut(.defaultAction)
+            }.padding(.top, 4)
+        }.padding(20).frame(width: 440).onAppear { focused = true }
+    }
+    private static func folderName(_ path: String) -> String { URL(fileURLWithPath: path).lastPathComponent }
+    private static func abbreviated(_ path: String) -> String { (path as NSString).abbreviatingWithTildeInPath }
+    private func add() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false; panel.canChooseDirectories = true; panel.allowsMultipleSelection = true
+        panel.prompt = "添加到项目"
+        guard panel.runModal() == .OK else { return }
+        for url in panel.urls where !folders.contains(url.path) { folders.append(url.path) }
+    }
+    private func remove(_ folder: String) {
+        guard folder != primary else { return }
+        folders.removeAll { $0 == folder }
+        if selection == folder { selection = nil }
     }
     private func save() {
-        let name = alias.trimmingCharacters(in: .whitespacesAndNewlines)
-        store.setProjectAlias(path: target.path, alias: name.isEmpty || name == URL(fileURLWithPath: target.path).lastPathComponent ? nil : name)
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        store.setProject(path: target.path, primaryFolder: primary, name: trimmed.isEmpty || trimmed == Self.folderName(primary) ? nil : trimmed,
+                         folders: folders.filter { $0 != primary })
         dismiss()
     }
 }

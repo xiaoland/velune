@@ -446,14 +446,17 @@ impl VeluneApplication {
             app.organize_conversations(conversations, change)
         })?)
     }
-    /// Names a project in the list; none removes the name.
-    pub fn set_project_alias(
+    /// Shapes the project whose primary folder is `path`: its name (none
+    /// shows the folder's), primary folder, and other folders.
+    pub fn set_project(
         &self,
         path: String,
-        alias: Option<String>,
+        primary_folder: String,
+        name: Option<String>,
+        folders: Vec<String>,
     ) -> Result<BindingConfigurationSnapshot, BindingError> {
-        convert(self.with("set_project_alias", |app| {
-            app.set_project_alias(path, alias)
+        convert(self.with("set_project", |app| {
+            app.set_project(path, primary_folder, name, folders)
         })?)
     }
     pub fn load_more_conversations(

@@ -56,13 +56,13 @@ struct ConversationBrowser {
         return groups.map { Section(group: $0, conversations: rows[$0.key] ?? []) }
     }
 
-    /// A project's name in the list: the user's alias, else its folder's
+    /// A project's name in the list: the user's, else its primary folder's
     /// name, with the enclosing folder when another project shares the name.
     static func projectName(_ path: String, projects: [BindingConversationProject]) -> String {
-        if let alias = projects.first(where: { $0.path == path })?.alias { return alias }
+        if let name = projects.first(where: { $0.path == path })?.name { return name }
         let url = URL(fileURLWithPath: path)
         let name = url.lastPathComponent
-        let shared = projects.contains { $0.path != path && $0.alias == nil && URL(fileURLWithPath: $0.path).lastPathComponent == name }
+        let shared = projects.contains { $0.path != path && $0.name == nil && URL(fileURLWithPath: $0.path).lastPathComponent == name }
         return shared ? "\(name)（\(url.deletingLastPathComponent().lastPathComponent)）" : name
     }
 }

@@ -122,8 +122,10 @@ pub struct ListedConversation {
     pub pinned: bool,
     pub unread: bool,
     pub archived: bool,
-    /// The project it is listed under: where it was moved, else its working
-    /// directory, unless its runtime started it there without a project.
+    /// The project it is listed under, by its primary folder: where it was
+    /// moved, else the project its working directory belongs to (a Git
+    /// worktree's is its repository's), unless its runtime started it there
+    /// without a project.
     pub project: Option<String>,
     /// Moved by the user away from its working directory's project.
     pub moved: bool,
@@ -138,7 +140,7 @@ pub struct ListedConversation {
 pub struct ConversationGroup {
     pub key: ConversationGroupKey,
     /// The user's name for a project group.
-    pub alias: Option<String>,
+    pub name: Option<String>,
     /// Conversations in the group; the list holds the first `loaded`.
     pub total: u32,
     pub loaded: u32,
@@ -148,8 +150,14 @@ pub struct ConversationGroup {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ConversationProject {
+    /// Its primary folder, which identifies it.
     pub path: String,
-    pub alias: Option<String>,
+    pub name: Option<String>,
+    /// Its other folders, as the user gave them.
+    pub folders: Vec<String>,
+    /// Git worktrees its listed conversations ran in, which belong to it by
+    /// their repository.
+    pub worktrees: Vec<String>,
     pub latest_activity_unix_ms: Option<i64>,
 }
 /// Matching conversations, grouped like the list.
@@ -984,13 +992,21 @@ impl Application {
             None,
         )
     }
-    /// Names a project in the list; none removes the name.
-    pub fn set_project_alias(
+    /// Shapes the project whose primary folder is `path`: its name (none
+    /// shows the folder's), primary folder, and other folders. Moves, the
+    /// project filter, and folded groups follow a new primary folder.
+    pub fn set_project(
         &mut self,
         path: String,
-        alias: Option<String>,
+        primary_folder: String,
+        name: Option<String>,
+        folders: Vec<String>,
     ) -> Result<ConfigurationSnapshot, Error> {
-        self.execute("projectAlias", json!({"path":path,"alias":alias}), None)
+        self.execute(
+            "setProject",
+            json!({"path":path,"primaryFolder":primary_folder,"name":name,"folders":folders}),
+            None,
+        )
     }
     /// Loads the next page of one group of the list.
     pub fn load_more_conversations(

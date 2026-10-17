@@ -10,6 +10,8 @@ use std::{
     path::{Path, PathBuf},
 };
 pub(crate) const CURRENT_SCHEMA_VERSION: u32 = 9;
+/// 2: projects with folders replace per-folder names.
+const ORGANIZATION_SCHEMA_VERSION: u64 = 2;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -274,37 +276,52 @@ impl Repository {
         )
     }
 
-    /// Velune's list organization; a missing file starts read state now.
+    /// Velune's list organization; a missing file, or one of an older
+    /// schema, starts afresh with read state from now.
     #[cfg(feature = "local-runtime")]
     pub(crate) fn load_conversation_organization(
         &self,
     ) -> Result<crate::config::ConversationOrganization, RuntimeError> {
+        let fresh = || crate::config::ConversationOrganization {
+            read_baseline_unix_ms: crate::local::unix_ms_now(),
+            ..Default::default()
+        };
         let bytes = match fs::read(self.home.join("conversation-organization.json")) {
             Ok(bytes) => bytes,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                return Ok(crate::config::ConversationOrganization {
-                    read_baseline_unix_ms: crate::local::unix_ms_now(),
-                    ..Default::default()
-                });
-            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(fresh()),
             Err(error) => return Err(error.into()),
         };
         let value: serde_json::Value = serde_json::from_slice(&bytes)?;
-        if value["schemaVersion"].as_u64() != Some(1) {
-            return Err(RuntimeError::invalid(
-                "conversation organization schema version",
-            ));
+        match value["schemaVersion"].as_u64() {
+            Some(ORGANIZATION_SCHEMA_VERSION) => {}
+            Some(version) if version < ORGANIZATION_SCHEMA_VERSION => {
+                let organization = fresh();
+                self.store_conversation_organization(&organization)?;
+                return Ok(organization);
+            }
+            _ => {
+                return Err(RuntimeError::invalid(
+                    "conversation organization schema version",
+                ));
+            }
         }
         let organization: crate::config::ConversationOrganization =
             serde_json::from_value(value["organization"].clone())?;
         let mut ids = std::collections::BTreeSet::new();
-        let mut paths = std::collections::BTreeSet::new();
+        let mut folders = std::collections::BTreeSet::new();
         if organization.conversations.iter().any(|marks| {
             marks.conversation_id.is_empty()
                 || marks.is_empty()
                 || !ids.insert(&marks.conversation_id)
-        }) || organization.project_aliases.iter().any(|alias| {
-            alias.path.is_empty() || alias.alias.trim().is_empty() || !paths.insert(&alias.path)
+        }) || organization.projects.iter().any(|project| {
+            (project.name.is_none() && project.folders.is_empty())
+                || project
+                    .name
+                    .as_ref()
+                    .is_some_and(|name| name.trim().is_empty())
+                || project
+                    .all_folders()
+                    .any(|folder| !Path::new(folder).is_absolute() || !folders.insert(folder))
         }) {
             return Err(RuntimeError::invalid("会话组织记录的会话或项目身份无效"));
         }
@@ -316,7 +333,7 @@ impl Repository {
         &self,
         organization: &crate::config::ConversationOrganization,
     ) -> Result<(), RuntimeError> {
-        let value = serde_json::json!({"schemaVersion":1,"organization":organization});
+        let value = serde_json::json!({"schemaVersion":ORGANIZATION_SCHEMA_VERSION,"organization":organization});
         commit(
             &self.home.join("conversation-organization.json"),
             &serde_json::to_vec_pretty(&value)?,
