@@ -161,16 +161,27 @@ enum BindingMapping {
     static func provider(_ value: BindingProviderDefinition) -> AIProvider {
         let method: AuthenticationMethod
         switch value.authentication.method { case .apiKey: method = .apiKey; case .oAuth: method = .oauth; case .unconfigured: method = .unconfigured }
-        return AIProvider(id: value.id, name: value.name, protocolID: protocolID(value.`protocol`), endpoint: value.endpoint, authentication: ProviderAuthentication(method: method, configured: value.authentication.configured, provenance: value.authentication.provenance?.displayName, actions: value.authentication.actions.map(settingAction)), models: value.models.map(model))
+        return AIProvider(id: value.id, name: value.name, protocolID: protocolID(value.`protocol`), endpoint: value.endpoint, authentication: ProviderAuthentication(method: method, configured: value.authentication.configured, provenance: value.authentication.provenance?.displayName, actions: value.authentication.actions.map(settingAction)), models: value.models.map(model),
+                          quotaLimits: value.quotaLimits.map { QuotaLimit(windowID: $0.windowId, maxUsedPercent: $0.maxUsedPercent) })
     }
     static func gateway(_ value: BindingGatewayConfig) -> GatewayConfig {
-        GatewayConfig(id: value.id, name: value.name, providers: value.providers.map(provider), routes: value.routes.map { ModelRoute(recordKey: $0.recordKey, name: $0.name, members: $0.members) }, failover: FailoverPolicy(mode: .disabled))
+        GatewayConfig(id: value.id, name: value.name, providers: value.providers.map(provider), routes: value.routes.map(route), failover: FailoverPolicy(mode: .disabled))
+    }
+    static func route(_ value: BindingModelRoute) -> ModelRoute {
+        ModelRoute(recordKey: value.recordKey, name: value.name, members: value.members, strategy: routingStrategy(value.strategy), weights: value.weights, sticky: value.sticky)
     }
     static func bindingRoute(_ value: ModelRoute) -> BindingModelRoute {
-        BindingModelRoute(recordKey: value.recordKey, name: value.name, members: value.members)
+        BindingModelRoute(recordKey: value.recordKey, name: value.name, members: value.members, strategy: bindingRoutingStrategy(value.strategy), weights: value.weights, sticky: value.sticky)
+    }
+    static func routingStrategy(_ value: BindingRoutingStrategy) -> RoutingStrategy {
+        switch value { case .smart: return .smart; case .order: return .order; case .rotate: return .rotate; case .weight: return .weight }
+    }
+    static func bindingRoutingStrategy(_ value: RoutingStrategy) -> BindingRoutingStrategy {
+        switch value { case .smart: return .smart; case .order: return .order; case .rotate: return .rotate; case .weight: return .weight }
     }
     static func bindingProvider(_ value: AIProvider) -> BindingProviderDraft {
-        BindingProviderDraft(id: value.id, name: value.name, protocol: bindingProtocol(value.protocolID), endpoint: value.endpoint, models: value.models.map(bindingModel))
+        BindingProviderDraft(id: value.id, name: value.name, protocol: bindingProtocol(value.protocolID), endpoint: value.endpoint, models: value.models.map(bindingModel),
+                             quotaLimits: value.quotaLimits.map { BindingQuotaLimit(windowId: $0.windowID, maxUsedPercent: $0.maxUsedPercent) })
     }
     static func bindingAuthenticationEdit(_ value: AuthenticationEdit) -> BindingAuthenticationEdit {
         switch value { case .keep: return .keep; case .setAPIKey(let value): return .setApiKey(value: value); case .clear: return .clear }

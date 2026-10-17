@@ -125,6 +125,8 @@ private struct ModelRouteEditor: View {
     }
     private func remove(_ key: String) { members.removeAll { $0 == key }; if selection == key { selection = nil } }
     private func commit() {
-        store.saveModelRoute(ModelRoute(recordKey: route?.recordKey ?? "", name: name.trimmingCharacters(in: .whitespacesAndNewlines), members: members)) { dismiss() }
+        // Editing keeps what this sheet does not show: the strategy, its weights and stickiness.
+        let edited = (route ?? ModelRoute(recordKey: "", name: "", members: [])).with(name: name.trimmingCharacters(in: .whitespacesAndNewlines), members: members)
+        store.saveModelRoute(edited) { dismiss() }
     }
 }

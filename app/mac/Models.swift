@@ -344,6 +344,14 @@ struct AIProvider: Codable, Sendable, Identifiable, Equatable {
     var endpoint: String
     var authentication: ProviderAuthentication = ProviderAuthentication()
     var models: [ProviderModel]
+    /// Used-percent ceilings per quota window, which smart scheduling admits a request under.
+    var quotaLimits: [QuotaLimit] = []
+}
+
+struct QuotaLimit: Codable, Sendable, Equatable {
+    /// A window ID reported by the provider's quota status.
+    var windowID: String
+    var maxUsedPercent: UInt8
 }
 
 enum FailoverMode: String, Codable, Sendable { case disabled }
@@ -354,8 +362,23 @@ struct ModelRoute: Codable, Sendable, Identifiable, Equatable {
     var name: String
     /// Provider model record keys, in priority order.
     var members: [String]
+    var strategy: RoutingStrategy = .order
+    /// A weight per member, for the weight strategy alone.
+    var weights: [String: UInt32] = [:]
+    var sticky = true
     var id: String { recordKey }
+
+    /// The route with `members`, its weights following them.
+    func with(name: String, members: [String]) -> ModelRoute {
+        var route = self
+        route.name = name
+        route.members = members
+        route.weights = strategy == .weight ? Dictionary(uniqueKeysWithValues: members.map { ($0, weights[$0] ?? 1) }) : [:]
+        return route
+    }
 }
+
+enum RoutingStrategy: String, Codable, Sendable { case smart, order, rotate, weight }
 struct GatewayConfig: Codable, Sendable, Equatable {
     var id: String = "default"
     var name: String = "默认网关"
