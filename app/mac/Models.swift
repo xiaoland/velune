@@ -333,8 +333,27 @@ enum AuthenticationMethod: String, Codable, Sendable {
 struct ProviderAuthentication: Codable, Sendable, Equatable {
     var method: AuthenticationMethod = .unconfigured
     var configured: Bool = false
+    /// The tail of the bound account ID, which tells several logins apart; kept after the login lapses.
+    var accountLabel: String? = nil
     var provenance: String? = nil
+    /// Present for subscription authentication, whose terms the user should see.
+    var disclosure: SubscriptionDisclosure? = nil
     var actions: [SettingAction] = []
+    /// Signing in, for the sources that offer it.
+    var loginAction: SettingAction? { actions.first { $0.id == "login" } }
+    /// A login method that has not signed in, or whose login lapsed.
+    var awaitsSignIn: Bool { method == .oauth && !configured }
+}
+struct SubscriptionDisclosure: Codable, Sendable, Equatable {
+    var title: String
+    var detail: String
+}
+/// What a provider saves to use a subscription, with what choosing it means.
+struct SubscriptionTarget: Sendable, Equatable {
+    var protocolID: ProviderProtocol
+    var endpoint: String
+    var composition: ProviderComposition
+    var disclosure: SubscriptionDisclosure
 }
 enum AuthenticationEdit: Sendable { case keep, setAPIKey(String), clear }
 struct AIProvider: Sendable, Identifiable, Equatable {
@@ -349,13 +368,21 @@ struct AIProvider: Sendable, Identifiable, Equatable {
     var composition = ProviderComposition()
 }
 
-/// How core reaches the provider. The editor offers none of it yet, so a saved
-/// provider keeps its own and a new one is a plain HTTP provider with an API key.
+/// How core reaches the provider. The editor offers a plain HTTP provider and
+/// the Codex subscription composition; a saved provider keeps any other it has.
 struct ProviderComposition: Sendable, Equatable {
     var executionBackend: BindingExecutionBackend = .http
     var requestProfile: BindingRequestProfile = .native
     var authenticationSource: BindingProviderAuthenticationSource = .apiKey
     var quotaSource: BindingProviderQuotaSource = .none
+    /// The subscription the provider signs in to, by name; `nil` for other sources.
+    var subscriptionName: String? {
+        switch authenticationSource {
+        case .codexOAuth: return "Codex 订阅"
+        case .claudeCli: return "Claude Code 订阅"
+        case .none, .apiKey, .runtimeProvider: return nil
+        }
+    }
 }
 
 struct QuotaLimit: Codable, Sendable, Equatable {
@@ -364,31 +391,67 @@ struct QuotaLimit: Codable, Sendable, Equatable {
     var maxUsedPercent: UInt8
 }
 
+enum QuotaFreshness: Sendable, Equatable { case fresh, stale, unknown, unsupported }
+/// One usage window as the provider last reported it.
+struct QuotaWindow: Sendable, Equatable {
+    var id: String
+    /// The provider model IDs the window applies to; `nil` for all of the provider's models.
+    var modelIDs: [String]?
+    var usedPercent: Double
+    var resetsAt: Date?
+    var observedAt: Date
+    func applies(to providerModelID: String) -> Bool { modelIDs?.contains(providerModelID) ?? true }
+    /// A readable name for a window ID; Codex names its windows `window:<seconds>`.
+    static func name(_ id: String) -> String {
+        guard id.hasPrefix("window:"), let seconds = Int(id.dropFirst("window:".count)), seconds > 0 else { return id }
+        if seconds % 86_400 == 0 { return "\(seconds / 86_400) 天" }
+        if seconds % 3_600 == 0 { return "\(seconds / 3_600) 小时" }
+        return "\(max(1, seconds / 60)) 分钟"
+    }
+}
+/// A provider's usage as the core last observed it. The core owns sampling;
+/// this is a read-only copy for display.
+struct ProviderQuota: Sendable, Equatable {
+    var freshness: QuotaFreshness
+    var windows: [QuotaWindow]
+    /// `false` when the provider says the account may not be used now, whatever the percentages.
+    var available: Bool?
+    var refreshing: Bool
+    var problem: String?
+    var observedAt: Date? { windows.map(\.observedAt).max() }
+}
+
 enum FailoverMode: String, Codable, Sendable { case disabled }
 struct FailoverPolicy: Codable, Sendable, Equatable { var mode: FailoverMode = .disabled }
-/// Provider models chosen together; the gateway fails over between them in order.
+/// Provider models chosen together as one model; the gateway picks among
+/// them by the strategy and fails over before a response starts.
 struct ModelRoute: Codable, Sendable, Identifiable, Equatable {
     var recordKey: String
     var name: String
-    /// Provider model record keys, in priority order.
+    /// Provider model record keys; the order breaks ties and is the order strategy itself.
     var members: [String]
-    var strategy: RoutingStrategy = .order
+    var strategy: RoutingStrategy = .smart
     /// A weight per member, for the weight strategy alone.
     var weights: [String: UInt32] = [:]
     var sticky = true
     var id: String { recordKey }
-
-    /// The route with `members`, its weights following them.
-    func with(name: String, members: [String]) -> ModelRoute {
-        var route = self
-        route.name = name
-        route.members = members
-        route.weights = strategy == .weight ? Dictionary(uniqueKeysWithValues: members.map { ($0, weights[$0] ?? 1) }) : [:]
-        return route
-    }
 }
 
-enum RoutingStrategy: String, Codable, Sendable { case smart, order, rotate, weight }
+enum RoutingStrategy: String, Codable, Sendable, CaseIterable, Identifiable {
+    case smart, order, rotate, weight
+    var id: String { rawValue }
+    var label: String {
+        switch self { case .smart: return "智能"; case .order: return "顺序"; case .rotate: return "轮询"; case .weight: return "权重" }
+    }
+    var explanation: String {
+        switch self {
+        case .smart: return "优先使用离使用上限最远的模型：比较各提供商最紧的额度窗口还剩的比例；额度未知的排在后面，相同时按列表顺序。"
+        case .order: return "按列表顺序使用，前面的模型不可用时才用后面的。"
+        case .rotate: return "在模型之间轮流分配。"
+        case .weight: return "按权重比例分配，权重越大分到越多。"
+        }
+    }
+}
 struct GatewayConfig: Sendable, Equatable {
     var id: String = "default"
     var name: String = "默认网关"

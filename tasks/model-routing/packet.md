@@ -227,3 +227,16 @@ HOME 修复已覆盖 application 登录/状态/退出/额度与 ai-provider 执�
 计量修复完成：按原生消息 ID 与可信 stream delta 建立当前 CLI turn 账本，工具响应扣除已交付部分，最终累计同样扣除；新普通输入重置账本，未知、下降、溢出与 conversation_reset 不伪造数值。`manual-subscription-composition.py --case usage` 的 8 组合成验收通过，同时检查原生 HTTP usage 和 gateway analytics：可信输出差额、占位未知、多工具去重、新轮归零、缺字段、累计低于已交付、低于已观察、重置未知。仅临时源码副本插入唯一消费完成 ack 消除 CLI stdout/MCP 调度竞态，产品不保留验收 hook。
 
 最终 fmt、workspace all-features check、全 targets/all-features clippy -D warnings、bindings build、脚本 AST、文档相对链接与 diff 检查通过。真实文本/工具成功证据对应修复前冻结提交；计量修复由上述合成契约验收，没有再次调用真实模型。本轮仅提交 ai-provider 计量、人工脚本和相关文档，其他并行 Mac 改动由原任务管理。Claude 单订阅接入的登录、额度、真实文本和跨 Runner 工具往返已全部取得证据；未做多个真实 Claude 订阅之间的 fail-over，登录继续保留。
+
+## Mac 设置重写（2026-10-17）
+
+用户指出“模型路由”设置页仍是有序 fail-over 时期的早期版本，要求按当前路由与订阅聚合能力重写。此前该页只编辑名称与成员顺序，策略、权重、会话保持和提供商额度上限仅被透传；Mac 也没有 Codex 订阅认证、账户尾号、额度或披露的入口。
+
+- 路由页改为左列表、右现状：策略与会话保持的含义；各成员的认证方式、账户尾号、登录状态、适用其模型 ID 的额度窗口（已用比例、上限、重置、过期）与路由不会使用它的原因；行内登录、双击编辑其提供商；成员含订阅时显示核心披露。编辑 sheet 增加策略、会话保持与权重（含所占比例），＋ 菜单按提供商分组并禁用其他协议的模型。新路由默认智能策略、开启会话保持（实现默认，可由用户改）。
+- 提供商编辑器：“使用 Codex 订阅…”先确认披露，固定协议与地址；“保存并登录…”保存后留在编辑器并开始登录，登录 URL 自动打开浏览器。新增“额度与使用上限”页，按窗口选择上限。列表副标题区分订阅账户与登录状态。
+- 披露与固定目标原只在已保存认证上可得；bindings 新增静态 `codex_subscription_target()`，由 application 的 `SubscriptionTarget::codex()` 给出协议、地址、四项组合字段（含 `CodexUsage` 额度来源）与披露，`CODEX_SUBSCRIPTION_PROTOCOL／ENDPOINT` 常量统一校验、请求与导出，Mac 不硬编码。
+- 合并时 main 已改为组合选择订阅（删除 `SetCodexSubscription`，新增 Claude CLI 组合）：编辑器持有组合状态，选订阅即采用该组合并以 `Keep` 保存，“使用 API key…”回到 HTTP／Native／ApiKey／None；订阅名称按认证来源显示（Codex／Claude Code）；非 HTTP 后端不显示、不校验地址；登录按钮取 `login` 动作。编辑器尚不提供新建 Claude CLI 组合与退出登录，留待该功能的前端任务。
+- 额度只读 core 观测：视图显示时在请求队列读取，不占 `isLoading`；采样仍由 core 决定。未登录提供商不读取：核对 `read_usage` 在凭据解析处失败、不发 HTTP，但会给出泛化“额度暂不可用”，与“需要登录”重复。
+- 网关运行期冷却／探测状态没有 bindings 读取入口，页面不显示“冷却中”或逐次切换原因；切换记录在“分析”窗口。是否新增该入口待需求出现再定。
+
+验证：cargo fmt --check、cargo check --locked --workspace --all-features、clippy（-D warnings）与 application／bindings `--no-default-features` check 通过；`build-macos.sh --build-only` 零警告。临时 Python 绑定脚本在隔离 home 中验证：导出返回 Responses v1、Codex 地址与披露；订阅提供商保存为未登录 OAuth、带披露与“登录…”；错误地址被拒；API key 提供商额度 Unsupported；权重路由与 `window:18000` 80% 上限重开后保留。临时离屏渲染（仅 `.prohibited` 激活策略、隔离 home、不显示窗口）检查路由页、编辑 sheet、提供商编辑器、额度页与合成额度行，修正了脚注右对齐、权重不易辨认为可编辑和重复的未登录提示；临时代码与截图不提交。未进行真实登录、额度读取或模型请求，交由用户验收。

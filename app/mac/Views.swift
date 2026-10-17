@@ -494,7 +494,7 @@ struct ProviderSettingsView: View {
                 ForEach(store.providers) { provider in
                     VStack(alignment: .leading, spacing: 3) {
                         Text(provider.name)
-                        Text("\(provider.models.count) 个模型 · \(provider.endpoint)").font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                        Text(providerSummary(provider)).font(.caption).foregroundStyle(.secondary).lineLimit(1)
                     }.tag(provider.id)
                 }
             }.contextMenu(forSelectionType: String.self) { ids in
@@ -518,6 +518,12 @@ struct ProviderSettingsView: View {
         .alert("删除 AI 提供商？", isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } }), presenting: deleting) { provider in
             Button("删除", role: .destructive) { store.deleteProvider(id: provider.id); deleting = nil }; Button("取消", role: .cancel) { deleting = nil }
         } message: { provider in Text("删除「\(provider.name)」及其模型配置。使用这些模型的运行时需要重新选择模型；原运行时文件与会话保留。") }
+    }
+    /// A subscription is told apart by its account and login; others by their address.
+    private func providerSummary(_ provider: AIProvider) -> String {
+        let authentication = provider.authentication
+        guard let subscription = provider.composition.subscriptionName else { return "\(provider.models.count) 个模型 · \(provider.endpoint)" }
+        return (["\(provider.models.count) 个模型", subscription] + (authentication.accountLabel.map { ["账户 …\($0)"] } ?? []) + [authentication.configured ? "已登录" : "需要登录"]).joined(separator: " · ")
     }
 }
 
@@ -578,7 +584,7 @@ private struct ProviderModelFields: View {
     }
 }
 
-private enum ProviderEditorSelection: Hashable { case connection, model(UUID) }
+private enum ProviderEditorSelection: Hashable { case connection, quota, model(UUID) }
 
 struct ProviderEditor: View {
     @ObservedObject var store: AppStore
@@ -588,6 +594,8 @@ struct ProviderEditor: View {
     @State private var protocolID: ProviderProtocol = .chatCompletionsV1
     @State private var endpoint = ""
     @State private var models: [ProviderModelDraft] = []
+    @State private var quotaLimits: [QuotaLimit] = []
+    @State private var composition = ProviderComposition()
     @State private var selection: ProviderEditorSelection? = .connection
     @State private var apiKey = ""
     @State private var originalAPIKey: String?
@@ -595,13 +603,23 @@ struct ProviderEditor: View {
     @State private var showKey = false
     @State private var editingAPIKey = false
     @State private var clearAuthentication = false
+    /// The Codex subscription composition is chosen; saving starts its empty login.
+    @State private var choosingSubscription = false
+    @State private var confirmingSubscription = false
+    /// A new provider saved to sign in keeps being edited under this ID.
+    @State private var savedID: String?
     @State private var templateDraft: ModelTemplate?
     @State private var choosingTemplates = false
     @FocusState private var providerNameFocused: Bool
     @FocusState private var modelIDFocused: Bool
-    private var authentication: ProviderAuthentication { store.providers.first { $0.id == provider?.id }?.authentication ?? provider?.authentication ?? ProviderAuthentication() }
+    private var providerID: String? { provider?.id ?? savedID }
+    private var authentication: ProviderAuthentication { store.providers.first { $0.id == providerID }?.authentication ?? provider?.authentication ?? ProviderAuthentication() }
+    /// A subscription composition fixes the protocol and how the provider is reached.
+    private var usesSubscription: Bool { composition.subscriptionName != nil }
+    private var usesHTTP: Bool { if case .http = composition.executionBackend { return true }; return false }
+    private var showsQuota: Bool { usesSubscription || !quotaLimits.isEmpty || (providerID.flatMap { store.providerQuotas[$0] }.map { $0.freshness != .unsupported } ?? false) }
     private var modelIndex: Int? { guard case .model(let id) = selection else { return nil }; return models.firstIndex { $0.id == id } }
-    private var valid: Bool { !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && URL(string: endpoint)?.host != nil && models.allSatisfy(\.valid) && (!editingAPIKey || (!apiKey.isEmpty && (originalAPIKey != nil || authentication.method != .apiKey || clearAuthentication))) }
+    private var valid: Bool { !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && (!usesHTTP || URL(string: endpoint)?.host != nil) && models.allSatisfy(\.valid) && (!editingAPIKey || (!apiKey.isEmpty && (originalAPIKey != nil || authentication.method != .apiKey || clearAuthentication))) }
     var body: some View {
         VStack(spacing: 0) {
             Text(provider == nil ? "添加 AI 提供商" : "编辑 AI 提供商").font(.headline).frame(maxWidth: .infinity, alignment: .leading).padding(20)
@@ -610,6 +628,7 @@ struct ProviderEditor: View {
                 VStack(spacing: 0) {
                     List(selection: $selection) {
                         Label("连接与认证", systemImage: "network").tag(ProviderEditorSelection.connection)
+                        if showsQuota { Label("额度与使用上限", systemImage: "gauge.with.dots.needle.50percent").tag(ProviderEditorSelection.quota) }
                         Section("模型") {
                             ForEach(models) { model in VStack(alignment: .leading, spacing: 3) { Text(model.displayName).lineLimit(1); if !model.providerModelID.isEmpty { Text(model.providerModelID).font(.caption).foregroundStyle(.secondary).lineLimit(1) } }.tag(ProviderEditorSelection.model(model.id)) }
                         }
@@ -632,6 +651,8 @@ struct ProviderEditor: View {
                             ProviderModelFields(draft: $models[index], modelIDFocused: $modelIDFocused)
                             Section { Button("保存为模型模板…") { let model = models[index].definition; templateDraft = ModelTemplate(name: model.displayName, suggestedProviderModelID: model.providerModelID, nickname: model.nickname, icon: model.icon, contextWindow: model.contextWindow, maxOutputTokens: model.maxOutputTokens, reasoningLevels: model.reasoningLevels) } }
                         }
+                    } else if selection == .quota && showsQuota {
+                        ProviderQuotaForm(store: store, providerID: providerID, limits: $quotaLimits)
                     } else { connectionForm }
                 }.formStyle(.grouped).frame(minWidth: 360, maxWidth: .infinity, maxHeight: .infinity)
             }
@@ -639,15 +660,25 @@ struct ProviderEditor: View {
 
             HStack { Spacer(); Button("取消") { dismiss() }.keyboardShortcut(.cancelAction); Button("保存") { commit() }.keyboardShortcut(.defaultAction).disabled(!valid || store.isBusy) }.padding(16)
         }.frame(width: 650, height: 510)
-        .onAppear { name = provider?.name ?? ""; protocolID = provider?.protocolID ?? .chatCompletionsV1; endpoint = provider?.endpoint ?? ""; models = (provider?.models ?? []).map(ProviderModelDraft.init); editingAPIKey = authentication.method == .unconfigured; readAPIKeyIfNeeded() }
+        .onAppear {
+            name = provider?.name ?? ""; protocolID = provider?.protocolID ?? .chatCompletionsV1; endpoint = provider?.endpoint ?? ""; models = (provider?.models ?? []).map(ProviderModelDraft.init); quotaLimits = provider?.quotaLimits ?? []; composition = provider?.composition ?? ProviderComposition()
+            editingAPIKey = authentication.method == .unconfigured; readAPIKeyIfNeeded()
+            if let providerID { store.readProviderQuotas([providerID]) }
+        }
         .onChange(of: selection) { _, value in if value == .connection { readAPIKeyIfNeeded() } }
         .sheet(isPresented: $choosingTemplates) { ModelTemplatePicker(templates: store.modelTemplates) { values in for template in values { addModel(ProviderModelDraft(template.model)) } } }
         .sheet(item: $templateDraft) { value in ModelTemplateEditor(store: store, template: value) }
         .sheet(isPresented: $store.showsAuthentication) { AuthenticationView(store: store) }
+        .alert(store.codexSubscriptionTarget?.disclosure.title ?? "Codex 订阅", isPresented: $confirmingSubscription) {
+            Button("使用 Codex 订阅") { chooseSubscription() }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text((store.codexSubscriptionTarget.map { $0.disclosure.detail + "\n\n" } ?? "") + "提供商将固定使用 OpenAI Responses 协议与 ChatGPT 订阅地址；保存后在浏览器中登录一个 ChatGPT 账户。一个订阅对应一个提供商，聚合多个订阅请为每个账户分别添加提供商，再组成模型路由。")
+        }
     }
     private var connectionForm: some View {
         Form {
-            Section("连接") {
+            Section {
                 TextField("名称", text: $name)
                     .focused($providerNameFocused)
                 Picker("协议", selection: Binding(get: { protocolID }, set: { value in
@@ -655,13 +686,22 @@ struct ProviderEditor: View {
                     for index in models.indices { models[index].adapterMetadataJSON = nil }
                     protocolID = value
                 })) { ForEach(store.protocols.filter(\.supported)) { Text($0.name).tag($0.id) } }
-                Text("切换协议后采用默认适配参数；模型 ID 与已填写的能力保留。")
-                    .font(.caption).foregroundStyle(.secondary)
-                TextField("服务地址", text: $endpoint, prompt: Text(protocolID == .messagesV1 ? "https://…" : "https://…/v1"))
-                    .help(protocolID == .messagesV1 ? "Anthropic Messages 协议基础 URL；请求路径为 /v1/messages。" : "提供商的协议服务基础 URL。")
+                    .disabled(usesSubscription)
+                if usesHTTP {
+                    TextField("服务地址", text: $endpoint, prompt: Text(protocolID == .messagesV1 ? "https://…" : "https://…/v1"))
+                        .help(protocolID == .messagesV1 ? "Anthropic Messages 协议基础 URL；请求路径为 /v1/messages。" : "提供商的协议服务基础 URL。")
+                        .disabled(usesSubscription)
+                } else {
+                    LabeledContent("执行", value: "本机 Claude Code CLI")
+                }
+            } header: {
+                Text("连接")
+            } footer: {
+                Text(composition.subscriptionName.map { "\($0)固定使用此协议与连接方式；换用 API key 后才能修改。" } ?? "切换协议后采用默认适配参数；模型 ID 与已填写的能力保留。")
+                    .formFooterStyle()
             }
             Section("认证") {
-                LabeledContent("方式", value: editingAPIKey ? "API key" : clearAuthentication ? "尚未配置" : authentication.method.label)
+                LabeledContent("方式", value: methodLabel)
                 if editingAPIKey {
                     HStack {
                         if showKey { TextField("API key", text: $apiKey) } else { SecureField("API key", text: $apiKey) }
@@ -670,38 +710,72 @@ struct ProviderEditor: View {
                     if authentication.method == .apiKey && originalAPIKey == nil && !clearAuthentication {
                         Button("读取 API key") { attemptedKeyRead = false; readAPIKeyIfNeeded() }.disabled(store.isLoading)
                     }
+                } else if choosingSubscription {
+                    Text("保存后在浏览器中登录 ChatGPT 账户。").foregroundStyle(.secondary)
+                    Button("保存并登录…") { commit(signingIn: true) }.disabled(!valid || store.isBusy)
                 } else {
-                    if authentication.method == .oauth { Text(authentication.configured ? "已登录" : "需要登录").foregroundStyle(.secondary) }
-                    if let provider, !clearAuthentication, !authentication.actions.isEmpty { Button("登录…") { store.startAuthentication(provider.id) }.disabled(store.isBusy) }
-                    Button("使用 API key…") { editingAPIKey = true; clearAuthentication = true; apiKey = "" }
+                    if authentication.method == .oauth && !clearAuthentication {
+                        LabeledContent("状态", value: authentication.configured ? "已登录" : "需要登录")
+                        if let label = authentication.accountLabel { LabeledContent("账户", value: "…\(label)") }
+                    }
+                    if let providerID, !clearAuthentication, let action = authentication.loginAction { Button(action.label) { store.startAuthentication(providerID) }.disabled(store.isBusy) }
                 }
-                if authentication.configured || editingAPIKey {
-                    Button("清除认证", role: .destructive) { clearAuthentication = true; editingAPIKey = false; apiKey = ""; originalAPIKey = nil }
+                if !editingAPIKey { Button("使用 API key…") { editingAPIKey = true; clearAuthentication = true; choosingSubscription = false; composition = ProviderComposition(); apiKey = "" } }
+                if !usesSubscription && store.codexSubscriptionTarget != nil { Button("使用 Codex 订阅…") { confirmingSubscription = true } }
+                if authentication.configured || usesSubscription || editingAPIKey {
+                    Button("清除认证", role: .destructive) { clearAuthentication = true; editingAPIKey = false; choosingSubscription = false; apiKey = ""; originalAPIKey = nil }
                 }
-                if let provenance = authentication.provenance {
+                if let disclosure = choosingSubscription ? store.codexSubscriptionTarget?.disclosure : usesSubscription ? authentication.disclosure : nil {
+                    SubscriptionDisclosureNote(disclosure: disclosure)
+                }
+                if let provenance = authentication.provenance, !choosingSubscription {
                     ImmediateDisclosureGroup("来源详情") { Text(provenance).font(.callout).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading).padding(.top, 8) }
                 }
             }
         }
+    }
+    private var methodLabel: String {
+        if editingAPIKey { return "API key" }
+        if let name = composition.subscriptionName { return choosingSubscription ? "\(name)（保存后生效）" : name }
+        if clearAuthentication { return "尚未配置" }
+        return authentication.method.label
+    }
+    private func chooseSubscription() {
+        guard let target = store.codexSubscriptionTarget else { return }
+        choosingSubscription = true; editingAPIKey = false; clearAuthentication = false; apiKey = ""
+        if protocolID != target.protocolID { for index in models.indices { models[index].adapterMetadataJSON = nil } }
+        protocolID = target.protocolID; endpoint = target.endpoint; composition = target.composition
     }
     private func editSelection(_ target: ProviderEditorSelection) {
         selection = target
         DispatchQueue.main.async {
             switch target {
             case .connection: modelIDFocused = false; providerNameFocused = true
+            case .quota: modelIDFocused = false; providerNameFocused = false
             case .model: providerNameFocused = false; modelIDFocused = true
             }
         }
     }
     private func addModel(_ draft: ProviderModelDraft) { models.append(draft); selection = .model(draft.id) }
     private func readAPIKeyIfNeeded() {
-        guard let provider, authentication.method == .apiKey, !attemptedKeyRead, !clearAuthentication else { return }
+        guard let providerID, authentication.method == .apiKey, !attemptedKeyRead, !clearAuthentication else { return }
         attemptedKeyRead = true
-        store.readProviderAPIKey(provider.id) { value in originalAPIKey = value; apiKey = value; editingAPIKey = true }
+        store.readProviderAPIKey(providerID) { value in originalAPIKey = value; apiKey = value; editingAPIKey = true }
     }
-    private func commit() {
-        let edit: AuthenticationEdit = editingAPIKey && apiKey != originalAPIKey ? .setAPIKey(apiKey) : clearAuthentication ? .clear : .keep
-        store.saveProvider(AIProvider(id: provider?.id ?? "", name: name.trimmingCharacters(in: .whitespacesAndNewlines), protocolID: protocolID, endpoint: endpoint.trimmingCharacters(in: .whitespacesAndNewlines), authentication: authentication, models: models.map(\.definition), quotaLimits: provider?.quotaLimits ?? [], composition: provider?.composition ?? ProviderComposition()), authenticationEdit: edit) { apiKey = ""; originalAPIKey = nil; dismiss() }
+    /// Saves; `signingIn` keeps the editor open on the saved provider and starts its login.
+    /// A changed authentication source starts that source empty, so choosing a
+    /// subscription saves with `keep`.
+    private func commit(signingIn: Bool = false) {
+        let edit: AuthenticationEdit = choosingSubscription ? .keep : editingAPIKey && apiKey != originalAPIKey ? .setAPIKey(apiKey) : clearAuthentication ? .clear : .keep
+        let existing = Set(store.providers.map(\.id))
+        store.saveProvider(AIProvider(id: providerID ?? "", name: name.trimmingCharacters(in: .whitespacesAndNewlines), protocolID: protocolID, endpoint: usesHTTP ? endpoint.trimmingCharacters(in: .whitespacesAndNewlines) : "", authentication: authentication, models: models.map(\.definition), quotaLimits: quotaLimits, composition: composition), authenticationEdit: edit) {
+            apiKey = ""; originalAPIKey = nil
+            guard signingIn, let saved = store.providers.first(where: { $0.id == providerID }) ?? store.providers.first(where: { !existing.contains($0.id) }) else { dismiss(); return }
+            // Later saves keep the new authentication and the models' assigned keys.
+            savedID = saved.id; choosingSubscription = false; clearAuthentication = false; editingAPIKey = false
+            models = saved.models.map(ProviderModelDraft.init); selection = .connection
+            store.startAuthentication(saved.id)
+        }
     }
 }
 

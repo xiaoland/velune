@@ -1072,6 +1072,17 @@ pub struct BindingSubscriptionDisclosure {
 }
 #[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BindingSubscriptionTarget {
+    pub protocol: BindingGatewayProtocol,
+    pub endpoint: String,
+    pub execution_backend: BindingExecutionBackend,
+    pub request_profile: BindingRequestProfile,
+    pub authentication_source: BindingProviderAuthenticationSource,
+    pub quota_source: BindingProviderQuotaSource,
+    pub disclosure: BindingSubscriptionDisclosure,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct BindingProviderAuthentication {
     pub method: BindingAuthenticationMethod,
     pub configured: bool,

@@ -21,7 +21,8 @@ mod subscription_auth;
 mod subscription_quota;
 pub use provider_authentication::{
     AuthenticationEdit, AuthenticationMethod, AuthenticationProvenance,
-    ProviderAuthenticationDescription, ProviderAuthenticationSource, SubscriptionDisclosure,
+    CODEX_SUBSCRIPTION_ENDPOINT, CODEX_SUBSCRIPTION_PROTOCOL, ProviderAuthenticationDescription,
+    ProviderAuthenticationSource, SubscriptionDisclosure, SubscriptionTarget,
 };
 pub mod config;
 #[cfg(feature = "local-runtime")]

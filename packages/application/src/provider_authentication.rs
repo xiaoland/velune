@@ -31,6 +31,41 @@ pub struct SubscriptionDisclosure {
     pub title: String,
     pub detail: String,
 }
+/// The protocol and endpoint a provider with Codex subscription authentication must use.
+pub const CODEX_SUBSCRIPTION_PROTOCOL: GatewayProtocol = GatewayProtocol::ResponsesV1;
+pub const CODEX_SUBSCRIPTION_ENDPOINT: &str = "https://chatgpt.com/backend-api/codex";
+impl SubscriptionDisclosure {
+    /// What choosing Codex subscription authentication means, shown before and after choosing it.
+    pub fn codex_subscription() -> Self {
+        Self { title: "Codex 订阅协议接入".into(), detail: "当前借用 Codex 客户端协议，非正式 SIWC 接入。多订阅自动轮换与用量池化和 SIWC 禁止规则冲突，不代表供应商认可。使用者应自行决定，并承担账户受限或接入失效的风险。".into() }
+    }
+}
+/// The whole composition a provider saves to use a subscription, and what
+/// choosing it means, for presenting before the provider exists.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SubscriptionTarget {
+    pub protocol: GatewayProtocol,
+    pub endpoint: String,
+    pub execution_backend: crate::config::ExecutionBackend,
+    pub request_profile: crate::config::RequestProfile,
+    pub authentication_source: ProviderAuthenticationSource,
+    pub quota_source: crate::config::ProviderQuotaSource,
+    pub disclosure: SubscriptionDisclosure,
+}
+impl SubscriptionTarget {
+    pub fn codex() -> Self {
+        Self {
+            protocol: CODEX_SUBSCRIPTION_PROTOCOL,
+            endpoint: CODEX_SUBSCRIPTION_ENDPOINT.into(),
+            execution_backend: crate::config::ExecutionBackend::Http,
+            request_profile: crate::config::RequestProfile::CodexResponses,
+            authentication_source: ProviderAuthenticationSource::CodexOAuth,
+            quota_source: crate::config::ProviderQuotaSource::CodexUsage,
+            disclosure: SubscriptionDisclosure::codex_subscription(),
+        }
+    }
+}
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderAuthenticationDescription {
@@ -193,7 +228,7 @@ impl ProviderAuthentication {
             provenance,
             actions,
             account_label: match &self.material { AuthenticationMaterial::ClaudeCli { account_label, .. } => account_label.clone(), _ => None },
-            disclosure: matches!(&self.material, AuthenticationMaterial::CodexSubscription { .. }).then(|| SubscriptionDisclosure { title: "Codex 订阅协议接入".into(), detail: "当前借用 Codex 客户端协议，非正式 SIWC 接入。多订阅自动轮换与用量池化和 SIWC 禁止规则冲突，不代表供应商认可。使用者应自行决定，并承担账户受限或接入失效的风险。".into() }).or_else(|| matches!(&self.material, AuthenticationMaterial::ClaudeCli { .. }).then(|| SubscriptionDisclosure { title: "Claude Code CLI 订阅接入".into(), detail: "使用未修改的官方 Claude Code CLI 登录和执行，由 CLI 保存并刷新认证。订阅用量与供应商规则仍适用；此组合及自动路由不代表供应商认可，不承诺额度无限或跨工具任意使用。".into() })),
+            disclosure: matches!(&self.material, AuthenticationMaterial::CodexSubscription { .. }).then(SubscriptionDisclosure::codex_subscription).or_else(|| matches!(&self.material, AuthenticationMaterial::ClaudeCli { .. }).then(|| SubscriptionDisclosure { title: "Claude Code CLI 订阅接入".into(), detail: "使用未修改的官方 Claude Code CLI 登录和执行，由 CLI 保存并刷新认证。订阅用量与供应商规则仍适用；此组合及自动路由不代表供应商认可，不承诺额度无限或跨工具任意使用。".into() })),
         }
     }
     pub(crate) fn validate_target(
@@ -204,8 +239,8 @@ impl ProviderAuthentication {
         if matches!(
             &self.material,
             AuthenticationMaterial::CodexSubscription { .. }
-        ) && (protocol != &GatewayProtocol::ResponsesV1
-            || endpoint != "https://chatgpt.com/backend-api/codex")
+        ) && (protocol != &CODEX_SUBSCRIPTION_PROTOCOL
+            || endpoint != CODEX_SUBSCRIPTION_ENDPOINT)
         {
             return Err("Codex 订阅认证仅用于原生订阅 Responses 地址；修改目标前请更换认证。");
         }

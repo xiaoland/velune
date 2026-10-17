@@ -16,7 +16,7 @@ use std::{
 };
 use velune_gateway::{CredentialResolutionError, ResolvedCredential};
 
-pub(crate) const ENDPOINT: &str = "https://chatgpt.com/backend-api/codex";
+pub(crate) const ENDPOINT: &str = crate::CODEX_SUBSCRIPTION_ENDPOINT;
 const ISSUER: &str = "https://auth.openai.com";
 const CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
 const CALLBACK: &str = "http://localhost:1455/auth/callback";

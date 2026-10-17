@@ -123,6 +123,13 @@ fn convert<I: Serialize, O: DeserializeOwned>(input: I) -> Result<O, BindingErro
     })
 }
 
+/// The composition a provider saves to use a Codex subscription and the
+/// disclosure it shows, for presenting before that provider exists.
+#[uniffi::export]
+pub fn codex_subscription_target() -> Result<BindingSubscriptionTarget, BindingError> {
+    convert(velune_application::SubscriptionTarget::codex())
+}
+
 #[derive(Clone, uniffi::Record)]
 pub struct BindingOptions {
     pub home_directory: String,

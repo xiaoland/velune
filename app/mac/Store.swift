@@ -89,6 +89,11 @@ final class AppStore: ObservableObject {
     @Published private(set) var authenticationNotifications: [AuthenticationNotification] = []
     @Published private(set) var authenticationResult: String?
     @Published var showsAuthentication = false
+    /// The core's quota observations by provider ID, as last read.
+    @Published private(set) var providerQuotas: [String: ProviderQuota] = [:]
+    private var quotaReadsPending: Set<String> = []
+    /// What a provider is fixed to once it uses Codex subscription authentication; static in the core.
+    private(set) lazy var codexSubscriptionTarget: SubscriptionTarget? = try? BindingMapping.subscriptionTarget(VeluneBindings.codexSubscriptionTarget())
     @Published private(set) var isLoading = false
     @Published private(set) var isShuttingDown = false
     @Published private(set) var activity: TranscriptActivity?
@@ -1131,6 +1136,32 @@ final class AppStore: ObservableObject {
             self?.applyGatewayUpdate(data); onSaved?()
         }
     }
+    /// Reads the providers' quota without holding up other work. Reading
+    /// samples a provider whose observation has expired; `refresh` asks for a
+    /// sample now. Either returns at once, so callers read again while
+    /// `refreshing` holds.
+    func readProviderQuotas(_ providerIDs: [String], refresh: Bool = false) {
+        let ids = providerIDs.filter { !quotaReadsPending.contains($0) }
+        guard !ids.isEmpty, !isPreview, !isShuttingDown, let transport else { return }
+        quotaReadsPending.formUnion(ids)
+        let gatewayID = gateway.id
+        queue.async { [weak self] in
+            let results = ids.map { id in (id, Result { try transport.providerQuota(gatewayID: gatewayID, providerID: id, refresh: refresh) }) }
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.quotaReadsPending.subtract(ids)
+                for (id, result) in results {
+                    switch result {
+                    case .success(let quota): self.providerQuotas[id] = quota; self.clearActivityProblem("quota:\(id)")
+                    case .failure(let failure):
+                        // A provider deleted meanwhile has no quota to report.
+                        guard self.providers.contains(where: { $0.id == id }) else { self.providerQuotas[id] = nil; continue }
+                        self.recordProblem(failure, source: "读取额度", activityKey: "quota:\(id)")
+                    }
+                }
+            }
+        }
+    }
     func readProviderAPIKey(_ providerID: String, completion: @escaping (String) -> Void) {
         guard !isPreview, let transport else { recordProblem("预览不会读取 API key"); return }
         enqueue({ try transport.readProviderAPIKey(gatewayID: self.gateway.id, providerID: providerID) }, apply: completion)
@@ -1233,10 +1264,14 @@ final class AppStore: ObservableObject {
             } else if event.type == "notify", let notification = event.notification {
                 if notification.kind == "prompt_cancelled" {
                     if authenticationPrompt?.id == notification.id { authenticationPrompt = nil }
-                } else { authenticationNotifications.append(notification) }
+                } else {
+                    authenticationNotifications.append(notification)
+                    // A sign-in page opens in the browser; the sheet keeps a link to open it again.
+                    if notification.kind == "url", let address = notification.url, let url = URL(string: address), url.scheme == "https" { NSWorkspace.shared.open(url) }
+                }
             } else if event.type == "result" {
                 authenticationPrompt = nil
-                authenticationResult = event.ok == true ? "登录完成，认证已保存在原来源。" : event.cancelled == true ? "登录已取消。" : nil
+                authenticationResult = event.ok == true ? "登录完成。" : event.cancelled == true ? "登录已取消。" : nil
                 if event.ok != true && event.cancelled != true { recordProblem(event.error ?? "登录未完成。", source: "登录") }
             }
         }

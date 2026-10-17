@@ -161,9 +161,26 @@ enum BindingMapping {
     static func provider(_ value: BindingProviderDefinition) -> AIProvider {
         let method: AuthenticationMethod
         switch value.authentication.method { case .apiKey: method = .apiKey; case .oAuth: method = .oauth; case .unconfigured: method = .unconfigured }
-        return AIProvider(id: value.id, name: value.name, protocolID: protocolID(value.`protocol`), endpoint: value.endpoint, authentication: ProviderAuthentication(method: method, configured: value.authentication.configured, provenance: value.authentication.provenance?.displayName, actions: value.authentication.actions.map(settingAction)), models: value.models.map(model),
+        let authentication = ProviderAuthentication(method: method, configured: value.authentication.configured, accountLabel: value.authentication.accountLabel, provenance: value.authentication.provenance?.displayName,
+                                                    disclosure: value.authentication.disclosure.map(disclosure), actions: value.authentication.actions.map(settingAction))
+        return AIProvider(id: value.id, name: value.name, protocolID: protocolID(value.`protocol`), endpoint: value.endpoint, authentication: authentication, models: value.models.map(model),
                           quotaLimits: value.quotaLimits.map { QuotaLimit(windowID: $0.windowId, maxUsedPercent: $0.maxUsedPercent) },
                           composition: ProviderComposition(executionBackend: value.executionBackend, requestProfile: value.requestProfile, authenticationSource: value.authenticationSource, quotaSource: value.quotaSource))
+    }
+    static func disclosure(_ value: BindingSubscriptionDisclosure) -> SubscriptionDisclosure {
+        SubscriptionDisclosure(title: value.title, detail: value.detail)
+    }
+    static func subscriptionTarget(_ value: BindingSubscriptionTarget) -> SubscriptionTarget {
+        SubscriptionTarget(protocolID: protocolID(value.`protocol`), endpoint: value.endpoint,
+                           composition: ProviderComposition(executionBackend: value.executionBackend, requestProfile: value.requestProfile, authenticationSource: value.authenticationSource, quotaSource: value.quotaSource),
+                           disclosure: disclosure(value.disclosure))
+    }
+    static func quota(_ value: BindingProviderQuotaStatus) -> ProviderQuota {
+        let freshness: QuotaFreshness
+        switch value.freshness { case .fresh: freshness = .fresh; case .stale: freshness = .stale; case .unknown: freshness = .unknown; case .unsupported: freshness = .unsupported }
+        func date(_ ms: Int64) -> Date { Date(timeIntervalSince1970: Double(ms) / 1000) }
+        return ProviderQuota(freshness: freshness, windows: value.windows.map { QuotaWindow(id: $0.id, modelIDs: $0.modelIds, usedPercent: $0.usedPercent, resetsAt: $0.resetAtMs.map(date), observedAt: date($0.observedAtMs)) },
+                             available: value.available, refreshing: value.refreshing, problem: value.problem)
     }
     static func gateway(_ value: BindingGatewayConfig) -> GatewayConfig {
         GatewayConfig(id: value.id, name: value.name, providers: value.providers.map(provider), routes: value.routes.map(route), failover: FailoverPolicy(mode: .disabled))
