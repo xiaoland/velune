@@ -138,7 +138,7 @@ def main():
             assert application.snapshot('fixture', item.id).snapshot.conversation.id == item.id
             model = b.BindingProviderModel(record_key='', provider_model_id='synthetic',
                 nickname='Synthetic', icon=None, context_window=8192, max_output_tokens=128,
-                reasoning_levels=None, adapter_metadata_json=None)
+                reasoning_levels=None)
             provider = b.BindingProviderDraft(id='fixture-provider', name='Synthetic',
                 protocol=b.BindingGatewayProtocol.CHAT_COMPLETIONS_V1,
                 endpoint='http://127.0.0.1:9/v1', models=[model], quota_limits=[], execution_backend=b.BindingExecutionBackend.HTTP(), request_profile=b.BindingRequestProfile.NATIVE, authentication_source=b.BindingProviderAuthenticationSource.API_KEY, quota_source=b.BindingProviderQuotaSource.NONE)

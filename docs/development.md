@@ -197,7 +197,7 @@ python3 scripts/manual-relaykit-provider.py replay \
 
 ## UniFFI 的临时端到端验收
 
-先构建动态库，并按 [bindings unit](../packages/bindings/README.md) 生成与其匹配的 Python 绑定。提供商配置验收使用 [提供商与模板脚本](../scripts/manual-provider-configuration.py)，传入绝对路径 `--bundle` 和 `--bindings`，验证本机文件 API key 显式读取／编辑／重开、公开描述与日志不含 key、模型 ID／协议／地址编辑、模板快照和 schema 7 hard-cutoff。使用临时 HOME 与合成 key，不读取真实资料。
+先构建动态库，并按 [bindings unit](../packages/bindings/README.md) 生成与其匹配的 Python 绑定。提供商配置验收使用 [提供商与模板脚本](../scripts/manual-provider-configuration.py)，传入绝对路径 `--bundle` 和 `--bindings`，验证本机文件 API key 显式读取／编辑／重开、公开描述与日志不含 key、模型 ID／协议／地址编辑、模板快照和当前 schema 的 hard-cutoff。使用临时 HOME 与合成 key，不读取真实资料。
 
 [安装包首循环脚本](../scripts/manual-pi-native-loop.py) 另传 `--node` 和外部 `--pi`，从配置运行时和导入开始，通过实际固定 Pi SDK 完成工具续写、下一轮消息、提供商 key／model ID／地址编辑后实际派发检查。上游为回环合成服务，不涉及真实 Keychain、模型服务或会话。原生 [HTTP 脚本](../scripts/manual-gateway-native.py) 检查 ChatCompletions／Responses JSON、SSE、状态及安全头的保真与取消。所有入口均为显式人工验收，不接入 CI 或自动化测试；实际 GUI／真实提供商由用户验收。
 
@@ -211,16 +211,21 @@ python3 scripts/manual-relaykit-provider.py replay \
 
 根 Cargo.toml 是虚拟工作区，不再输出 velune-core 产品库。共享单位的职责、接口和依赖在 [packages 各 README](../README.md) 与 [架构](design/architecture.md#独立-package-与平台装配) 中说明。Mac 构建会生成 Swift 源及 FFI modulemap，分别编译 Rust 绑定库与 Swift 语言模块，再链接原生 app；生成文件只放在 target 下。
 
+2026-10-17 远控 SDK 新增具名错误及结果未知请求身份，并移除公开模型的 Pi 私有元数据。Mac 的模型映射、编辑草稿和 [`Transport.swift`](../app/mac/Transport.swift) 的穷尽错误分支随契约同步，人工脚本也删除旧参数；不为旧调用方恢复兼容字段。本轮不新增远控界面，实际 Mac 编译安装与 Rust 静态证据分别归 [远控任务](../tasks/remote-control/packet.md)。
+
 ```sh
 cargo fmt --all --check
 cargo check --locked --workspace --all-targets --all-features
 cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
 cargo clippy --locked -p velune-bindings --no-default-features --all-targets -- -D warnings
-cargo tree --locked -p velune-bindings --no-default-features
+cargo clippy --locked -p velune-bindings --no-default-features --features remote --all-targets -- -D warnings
+cargo tree --locked -p velune-bindings --no-default-features --features remote
 bash scripts/build-macos.sh
 ```
 
-无默认 feature 的依赖树不含 agent-runtime；当前 application 配置校验仍通过 gateway，因而依赖树保留 gateway／AI-provider，不启动其执行能力。本地会话操作明确返回 Unsupported。该构建只证明运行时裁剪，不表示已支持远端操作或已完成 AI 执行依赖裁剪。Kotlin 生成物依赖 JNA 及 kotlinx-coroutines；生成成功之外还需编译检查。C# 工具为第三方，UniFFI 版本兼容性仍需后续 C# app 接入时验证。
+`bindings --no-default-features --features remote` 是纯控制端，依赖树不含 application、agent-runtime、gateway 或 ai-provider；完全禁用 feature 时没有本地或远程构造入口。application 自身禁用 `local-runtime` 仅裁掉 Harness，配置校验仍链接 gateway，不是纯远端客户端的装配路径。Kotlin 生成物依赖 JNA 及 kotlinx-coroutines；生成成功之外还需编译检查。C# 工具为第三方，UniFFI 版本兼容性仍需后续 C# app 接入时验证。
+
+[远控人工脚本](../scripts/manual-remote-control.py) 接受绝对路径 `--library`、`--bindings` 和 `--resources`，通过实际 iroh loopback、UniFFI 与合成 ACP 验证多设备业务、信任撤销、断线续跑、请求恢复、冲突及附件内容边界。动态库需包含默认的本地执行与 remote feature；资源目录可用已安装的 `target/runtime-support`。脚本只使用临时 HOME 与合成资料，不连接公共 relay 或真实模型。具体观察及公网验证缺口见 [本轮验收](../tasks/remote-control/verification.md)。
 
 ## 会话驱动准备的人工复验
 

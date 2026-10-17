@@ -11,6 +11,7 @@ use serde_json::{Value, json};
 pub(crate) struct CoreRuntime {
     repository: Repository,
     config: PersistedConfig,
+    client_baseline: Option<ClientState>,
 }
 impl CoreRuntime {
     pub(crate) fn open(
@@ -19,7 +20,11 @@ impl CoreRuntime {
     ) -> Result<Self, Error> {
         options.validate()?;
         let (repository, config) = Repository::open(&options.home_directory)?;
-        Ok(Self { repository, config })
+        Ok(Self {
+            repository,
+            config,
+            client_baseline: None,
+        })
     }
     pub(crate) fn close_if_idle(&mut self, _stop_work: bool) -> Result<(), Error> {
         self.repository.unlock()
@@ -50,7 +55,7 @@ impl CoreRuntime {
                 let mut next = self.config.clone();
                 next.outline_presentation =
                     serde_json::from_value(payload["presentation"].clone())?;
-                self.repository.store(&next)?;
+                self.persist_config(&next)?;
                 self.config = next;
                 Ok(json!(self.config.outline_presentation))
             }
@@ -59,7 +64,7 @@ impl CoreRuntime {
                 next.status_line = crate::config::canonical_status_line(serde_json::from_value(
                     payload["items"].clone(),
                 )?);
-                self.repository.store(&next)?;
+                self.persist_config(&next)?;
                 self.config = next;
                 Ok(json!(self.config.status_line))
             }
@@ -67,7 +72,7 @@ impl CoreRuntime {
                 let mut next = self.config.clone();
                 next.conversation_browser_preferences =
                     serde_json::from_value(payload["preferences"].clone())?;
-                self.repository.store(&next)?;
+                self.persist_config(&next)?;
                 self.config = next;
                 Ok(self.snapshot())
             }
@@ -80,7 +85,7 @@ impl CoreRuntime {
                 let mut next = self.config.clone();
                 next.conversation_browser_group_limit = limits.page;
                 next.conversation_browser_total_limit = limits.total;
-                self.repository.store(&next)?;
+                self.persist_config(&next)?;
                 self.config = next;
                 Ok(json!(limits))
             }
@@ -113,7 +118,7 @@ impl CoreRuntime {
                 }
                 let mut next = self.config.clone();
                 provider_configuration::edit_provider(&mut next.gateways, payload)?;
-                self.repository.store(&next)?;
+                self.persist_config(&next)?;
                 self.config = next;
                 Ok(
                     json!({"gateways":provider_configuration::summaries(&self.config.gateways),
@@ -123,7 +128,7 @@ impl CoreRuntime {
             Some("modelTemplates") => {
                 let mut next = self.config.clone();
                 provider_configuration::edit_template(&mut next.model_templates, payload)?;
-                self.repository.store(&next)?;
+                self.persist_config(&next)?;
                 self.config = next;
                 Ok(json!(self.config.model_templates))
             }
@@ -203,7 +208,7 @@ impl CoreRuntime {
                     }
                     _ => return Err(Error::invalid("runtime operation")),
                 }
-                self.repository.store(&next)?;
+                self.persist_config(&next)?;
                 self.config = next;
                 Ok(
                     json!({"runtimeInstances":self.config.runtime_instances, "runtimeTypes":[],
@@ -214,5 +219,76 @@ impl CoreRuntime {
                 "local-runtime capability is not linked".into(),
             )),
         }
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct ClientState {
+    preferences: crate::config::ConversationBrowserPreferences,
+    limits: crate::ConversationBrowserLimits,
+    outline: crate::config::OutlinePresentation,
+    status: Vec<crate::config::StatusLineItem>,
+}
+impl CoreRuntime {
+    pub(crate) fn retain_private_runtime_settings(&self, runtime: &mut RuntimeInstance) {
+        if !runtime.settings.contains_key("acpLaunch")
+            && let Some(launch) = self
+                .config
+                .runtime_instances
+                .iter()
+                .find(|stored| stored.id == runtime.id && stored.type_id == runtime.type_id)
+                .and_then(|stored| stored.settings.get("acpLaunch"))
+        {
+            runtime.settings.insert("acpLaunch".into(), launch.clone());
+        }
+    }
+    pub(crate) fn client_state(&self) -> ClientState {
+        ClientState {
+            preferences: self.config.conversation_browser_preferences.clone(),
+            limits: crate::ConversationBrowserLimits {
+                page: self.config.conversation_browser_group_limit,
+                total: self.config.conversation_browser_total_limit,
+            },
+            outline: self.config.outline_presentation,
+            status: self.config.status_line.clone(),
+        }
+    }
+    pub(crate) fn enter_client_state(&mut self, state: &mut ClientState, isolated: bool) {
+        self.client_baseline = isolated.then(|| self.client_state());
+        self.swap_client_state(state);
+    }
+    pub(crate) fn leave_client_state(&mut self, state: &mut ClientState) {
+        self.swap_client_state(state);
+        self.client_baseline = None;
+    }
+    fn persist_config(&self, config: &PersistedConfig) -> Result<(), Error> {
+        let mut stored = config.clone();
+        if let Some(baseline) = &self.client_baseline {
+            stored.conversation_browser_preferences = baseline.preferences.clone();
+            stored.conversation_browser_group_limit = baseline.limits.page;
+            stored.conversation_browser_total_limit = baseline.limits.total;
+            stored.outline_presentation = baseline.outline;
+            stored.status_line = baseline.status.clone();
+        }
+        self.repository.store(&stored)
+    }
+    fn swap_client_state(&mut self, state: &mut ClientState) {
+        std::mem::swap(
+            &mut self.config.conversation_browser_preferences,
+            &mut state.preferences,
+        );
+        std::mem::swap(
+            &mut self.config.conversation_browser_group_limit,
+            &mut state.limits.page,
+        );
+        std::mem::swap(
+            &mut self.config.conversation_browser_total_limit,
+            &mut state.limits.total,
+        );
+        std::mem::swap(&mut self.config.outline_presentation, &mut state.outline);
+        std::mem::swap(&mut self.config.status_line, &mut state.status);
+    }
+    pub(crate) fn advance(&mut self) -> Result<(), Error> {
+        Ok(())
     }
 }

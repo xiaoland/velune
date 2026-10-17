@@ -8,8 +8,9 @@ publish = false
 crate-type = ["rlib", "cdylib"]
 
 [features]
-default = ["local-runtime"]
-local-runtime = ["velune-application/local-runtime"]
+default = ["local-runtime", "remote"]
+local-runtime = ["dep:velune-application", "velune-application/local-runtime", "dep:tracing-subscriber", "dep:tracing-appender"]
+remote = ["dep:velune-remote", "dep:tokio"]
 cli = ["uniffi/cli"]
 
 [[bin]]
@@ -18,12 +19,15 @@ path = "src/bin.rs"
 required-features = ["cli"]
 
 [dependencies]
-velune-application = { path = "../application", default-features = false }
+velune-application = { path = "../application", default-features = false, optional = true }
+velune-application-api = { path = "../application-api" }
+velune-remote = { path = "../remote", optional = true }
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "time"], optional = true }
 uniffi = "=0.32.2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
 
 tracing = { version = "0.1", default-features = false, features = ["std"] }
-tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "json", "registry"] }
-tracing-appender = "0.2"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "json", "registry"], optional = true }
+tracing-appender = { version = "0.2", optional = true }

@@ -47,7 +47,7 @@ def main():
                 resources_directory=str(args.bundle / 'Contents/Resources'))
             application = b.VeluneApplication.open(options)
             reset = json.loads(config.read_text())
-            assert reset['schemaVersion'] == 9 and not reset['gateways']
+            assert reset['schemaVersion'] == 10 and not reset['gateways']
             assert not any('backup' in p.name or p.suffix == '.bak' for p in home.iterdir())
             runtime_home = root / 'synthetic-pi'
             runtime_home.mkdir()
@@ -58,10 +58,10 @@ def main():
             protocol = b.BindingGatewayProtocol.CHAT_COMPLETIONS_V1
 
 
-            def model(record='', identity='org/model:版本-1', adapter_metadata_json=None):
+            def model(record='', identity='org/model:版本-1'):
                 return b.BindingProviderModel(record_key=record, provider_model_id=identity,
                     nickname='Synthetic model', icon=None, context_window=None, max_output_tokens=None,
-                    reasoning_levels=None, adapter_metadata_json=adapter_metadata_json)
+                    reasoning_levels=None)
 
             def draft(identity='a', models=None, endpoint='https://synthetic.invalid/v1'):
                 return b.BindingProviderDraft(id=identity, name=identity, protocol=protocol,
@@ -78,26 +78,22 @@ def main():
 
             key_one = 'SYNTHETIC_KEY_ONE'
             key_two = 'SYNTHETIC_KEY_TWO'
-            projection = json.dumps({'reasoningEnabled': False, 'thinkingLevelMap': {},
-                                    'responsesCompat': None, 'input': ['text']})
-            application.save_provider('default', draft(models=[model(adapter_metadata_json=projection)]),
+            application.save_provider('default', draft(models=[model()]),
                 b.BindingAuthenticationEdit.SET_API_KEY(value=key_one))
             snapshot = application.list()
             provider = snapshot.gateways[0].providers[0]
             record = provider.models[0].record_key
             assert record and record != provider.models[0].provider_model_id
-            assert json.loads(provider.models[0].adapter_metadata_json) == json.loads(projection)
             assert key_one not in repr(snapshot)
             assert application.read_provider_api_key('default', 'a') == key_one
             assert stat.S_IMODE(config.stat().st_mode) == 0o600
             assert key_one in config.read_text()
-            edited = draft(models=[model(record, 'changed/model-id', projection)], endpoint='https://changed.invalid/v1')
+            edited = draft(models=[model(record, 'changed/model-id')], endpoint='https://changed.invalid/v1')
             application.save_provider('default', edited, b.BindingAuthenticationEdit.KEEP())
             assert application.read_provider_api_key('default', 'a') == key_one
             saved = application.list().gateways[0].providers[0]
             assert saved.endpoint == 'https://changed.invalid/v1'
             assert saved.models[0].record_key == record and saved.models[0].provider_model_id == 'changed/model-id'
-            assert json.loads(saved.models[0].adapter_metadata_json) == json.loads(projection)
             saved_model_capabilities = (saved.models[0].nickname, saved.models[0].icon,
                 saved.models[0].context_window, saved.models[0].max_output_tokens,
                 saved.models[0].reasoning_levels)
@@ -110,7 +106,6 @@ def main():
             assert (switched.models[0].nickname, switched.models[0].icon,
                     switched.models[0].context_window, switched.models[0].max_output_tokens,
                     switched.models[0].reasoning_levels) == saved_model_capabilities
-            assert switched.models[0].adapter_metadata_json is None
             rejected(lambda: application.save_provider('default', edited,
                 b.BindingAuthenticationEdit.SET_API_KEY(value='invalid\nkey')))
 
@@ -130,7 +125,6 @@ def main():
             second = next(item for item in application.list().gateways[0].providers if item.id == 'b')
             assert second.models[0].context_window == 32768
             assert second.models[0].record_key != record
-            assert second.models[0].adapter_metadata_json is None
             application.shutdown()
             application = b.VeluneApplication.open(options)
             assert application.read_provider_api_key('default', 'a') == key_two
@@ -138,13 +132,14 @@ def main():
             application.delete_model_template(template.id)
             assert next(item for item in application.list().gateways[0].providers if item.id == 'b').models
             application.save_provider('default', edited, b.BindingAuthenticationEdit.CLEAR())
-            rejected(lambda: application.read_provider_api_key('default', 'a'))
+            assert application.read_provider_api_key('default', 'a') == ''
+            assert not application.list().gateways[0].providers[0].authentication.configured
             application.delete_provider('default', 'b')
             assert len(application.list().gateways[0].providers) == 1
             application.shutdown()
             application = None
             assert original.read_text() == 'synthetic original unchanged'
-            for label, contents in [('future', json.dumps({'schemaVersion': 10})),
+            for label, contents in [('future', json.dumps({'schemaVersion': 11})),
                                     ('malformed', '{broken'),
                                     ('old-fields', json.dumps({**reset, 'authenticationBindings': []}))]:
                 invalid_home = root / label
@@ -163,11 +158,11 @@ def main():
                 if log.is_file():
                     text = log.read_text()
                     assert key_one not in text and key_two not in text
-            print(json.dumps({'acceptance': 'PASSED', 'schemaSevenHardCutoff': True,
+            print(json.dumps({'acceptance': 'PASSED', 'schemaHardCutoff': True,
                 'providerOwnedModelsAndAuthentication': True, 'runtimeCanPrecedeProvider': True, 'editableIdProtocolEndpoint': True,
                 'stableHiddenRecordKey': True, 'explicitKeyReadEditReopen': True,
                 'keyAbsentFromListAndLogs': True, 'filePermissions0600': True,
-                'templateCopiesDoNotPropagateOrCarryProjection': True,
+                'templateCopiesDoNotPropagate': True,
                 'noBackupOrOriginalHarnessMutation': True, 'invalidConfigLeavesFileUnchanged': True}))
         finally:
             if application:

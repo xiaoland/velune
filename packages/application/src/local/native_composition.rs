@@ -17,7 +17,7 @@ impl CoreRuntime {
             .map_err(RuntimeError::invalid)?;
         let provider = resolved.provider();
         let model = resolved.model();
-        let ingress = GatewayProtocol::runtime_ingress(&runtime.type_id, &provider.protocol)
+        let ingress = crate::config::runtime_ingress(&runtime.type_id, &provider.protocol)
             .ok_or_else(|| RuntimeError::invalid("不支持的运行时版本类型"))?;
         let protocol = match &ingress {
             GatewayProtocol::ChatCompletionsV1 => "openai-completions",

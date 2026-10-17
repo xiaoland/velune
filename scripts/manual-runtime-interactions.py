@@ -97,7 +97,7 @@ def main():
         try:
             spec=importlib.util.spec_from_file_location('velune_bindings',root/'bindings/velune_bindings.py');b=importlib.util.module_from_spec(spec);sys.modules[spec.name]=b;spec.loader.exec_module(b)
             application=b.VeluneApplication.open(b.BindingOptions(home_directory=str(root/'home'),resources_directory=str(args.bundle/'Contents/Resources')))
-            model=b.BindingProviderModel(record_key='',provider_model_id='synthetic',nickname='Synthetic',icon=None,context_window=None,max_output_tokens=None,reasoning_levels=None,adapter_metadata_json=None)
+            model=b.BindingProviderModel(record_key='',provider_model_id='synthetic',nickname='Synthetic',icon=None,context_window=None,max_output_tokens=None,reasoning_levels=None)
             provider=b.BindingProviderDraft(id='synthetic',name='Synthetic',protocol=b.BindingGatewayProtocol.RESPONSES_V1,endpoint='http://127.0.0.1:9/v1',models=[model], quota_limits=[], execution_backend=b.BindingExecutionBackend.HTTP(), request_profile=b.BindingRequestProfile.NATIVE, authentication_source=b.BindingProviderAuthenticationSource.API_KEY, quota_source=b.BindingProviderQuotaSource.NONE)
             application.save_provider('default',provider,b.BindingAuthenticationEdit.SET_API_KEY(value='SYNTHETIC_KEY'))
             record=application.list().gateways[0].providers[0].models[0].record_key

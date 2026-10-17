@@ -109,7 +109,7 @@ def main():
                 app.upsert_runtime(b.BindingRuntimeInstance(enabled=True, id=case, name=case, type_id='codex-0.159', gateway_id='default',
                     settings={'binary': str(args.codex), 'nodeBinary': str(args.node), 'agentDir': str(agent)}))
                 model = b.BindingProviderModel(record_key='', provider_model_id='synthetic-' + case, nickname=case, icon=None,
-                    context_window=32768, max_output_tokens=4096, reasoning_levels=None, adapter_metadata_json=None)
+                    context_window=32768, max_output_tokens=4096, reasoning_levels=None)
                 endpoint = 'http://127.0.0.1:%d' % server.server_port + ('' if protocol == b.BindingGatewayProtocol.MESSAGES_V1 else '/v1')
                 app.save_provider('default', b.BindingProviderDraft(id=case, name=case, protocol=protocol, endpoint=endpoint, models=[model], quota_limits=[], execution_backend=b.BindingExecutionBackend.HTTP(), request_profile=b.BindingRequestProfile.NATIVE, authentication_source=b.BindingProviderAuthenticationSource.API_KEY, quota_source=b.BindingProviderQuotaSource.NONE),
                     b.BindingAuthenticationEdit.SET_API_KEY(value='synthetic-only'))

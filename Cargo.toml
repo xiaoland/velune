@@ -2,6 +2,6 @@
 members = [
     "packages/ai", "packages/ai-provider", "packages/conversation",
     "packages/agent-runtime", "packages/gateway", "packages/application",
-    "packages/bindings", "app/host",
+    "packages/bindings", "packages/application-api", "packages/remote", "app/host",
 ]
 resolver = "3"

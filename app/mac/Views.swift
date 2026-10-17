@@ -537,13 +537,11 @@ private struct ProviderModelDraft: Identifiable {
     var maxOutputTokens = ""
     var declaresReasoning = false
     var reasoningLevels = ""
-    var adapterMetadataJSON: String?
     init() {}
     init(_ model: ProviderModel) {
         recordKey = model.recordKey; providerModelID = model.providerModelID; nickname = model.nickname; icon = model.icon ?? ""
         contextWindow = model.contextWindow.map(String.init) ?? ""; maxOutputTokens = model.maxOutputTokens.map(String.init) ?? ""
         declaresReasoning = model.reasoningLevels != nil; reasoningLevels = model.reasoningLevels?.joined(separator: ", ") ?? ""
-        adapterMetadataJSON = model.adapterMetadataJSON
     }
     var displayName: String { nickname.isEmpty ? (providerModelID.isEmpty ? "新模型" : providerModelID) : nickname }
     var valid: Bool { !providerModelID.isEmpty && validOptionalTokenCount(contextWindow) && validOptionalTokenCount(maxOutputTokens) && !(UInt32(maxOutputTokens).map { output in UInt32(contextWindow).map { output > $0 } ?? false } ?? false) }
@@ -552,7 +550,7 @@ private struct ProviderModelDraft: Identifiable {
         let effortsSummary = efforts.map { $0.isEmpty ? "不支持推理 effort" : "支持 effort：" + $0.joined(separator: "、") } ?? "推理 effort 未知"
         return effortsSummary + (contextWindow.isEmpty ? "" : " · 上下文 \(contextWindow)") + (maxOutputTokens.isEmpty ? "" : " · 输出 \(maxOutputTokens)")
     }
-    var definition: ProviderModel { ProviderModel(recordKey: recordKey, providerModelID: providerModelID, nickname: nickname, icon: icon.isEmpty ? nil : icon, contextWindow: UInt32(contextWindow), maxOutputTokens: UInt32(maxOutputTokens), reasoningLevels: efforts, adapterMetadataJSON: adapterMetadataJSON) }
+    var definition: ProviderModel { ProviderModel(recordKey: recordKey, providerModelID: providerModelID, nickname: nickname, icon: icon.isEmpty ? nil : icon, contextWindow: UInt32(contextWindow), maxOutputTokens: UInt32(maxOutputTokens), reasoningLevels: efforts) }
 }
 private func validOptionalTokenCount(_ value: String) -> Bool { value.isEmpty || (UInt32(value).map { $0 > 0 } ?? false) }
 
@@ -714,7 +712,6 @@ struct ProviderEditor: View {
                     .focused($providerNameFocused)
                 Picker("协议", selection: Binding(get: { protocolID }, set: { value in
                     guard value != protocolID else { return }
-                    for index in models.indices { models[index].adapterMetadataJSON = nil }
                     protocolID = value
                 })) { ForEach(store.protocols.filter(\.supported)) { Text($0.name).tag($0.id) } }
                     .disabled(usesSubscription)
@@ -779,7 +776,6 @@ struct ProviderEditor: View {
     private func chooseSubscription(_ choice: SubscriptionChoice) {
         guard let target = store.subscriptionTarget(choice) else { return }
         choosingSubscription = choice; editingAPIKey = false; clearAuthentication = false; apiKey = ""
-        if protocolID != target.protocolID { for index in models.indices { models[index].adapterMetadataJSON = nil } }
         protocolID = target.protocolID; endpoint = target.endpoint; composition = target.composition
         if composition.claudeBinary != nil { discoverClaude() }
     }

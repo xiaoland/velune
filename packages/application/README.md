@@ -1,6 +1,6 @@
 # 应用层
 
-`velune-application` 是平台 app 共用的应用用例 unit。公开入口 `Application` 提供类型化的配置、连接、会话、模型选择、提供商导入与认证操作。平台不自行协调文件提交、子进程状态与投影失败清理。
+`velune-application` 是平台 app 共用的应用用例 unit。公开 DTO 与具名 `Command`／`Response` 归 [application-api](../application-api/README.md)，本 unit 实现用例。`ApplicationService` 为平台和远控入口持有唯一执行 owner；原有 `Application` 类型化方法保留为同一用例实现。平台不自行协调文件提交、子进程状态与投影失败清理。
 
 多个会话可以同时执行。每个打开的会话有自己的执行、模型选择、投影与协作票据；以会话 ID 寻址的操作（打开、发送、取消、回复交互、重命名、删除、snapshot）作用于该会话，每次操作都推进所有会话。每个会话同一时刻最多一个 turn；`cancel` 与 `reply_runtime_interaction` 需要会话 ID。重开正在执行的会话返回其运行中的视图，结束后再打开才重读原生历史。执行中或有待处理交互的会话保持打开，空闲会话按最近使用保留 8 个。同一运行时的并发执行各用一个 lane 目录（`runtime-projections/<运行时>/lane-<n>`）存放网关模型与选择文件。`conversation_activity(since)` 列出执行中或待处理交互的会话，并返回游标之后结束的 Velune turn 及其结果（完成、失败、用户停止；Pi 以错误结束模型响应也算失败），最近 64 个可补读；可频繁轮询。运行时、提供商、导入与登录配置在任一会话执行时拒绝变更。[并行会话手动验收](../../scripts/manual-parallel-sessions.py) 用隔离 Pi 1.0.2 与本机 loopback 上游检查同时执行、独立结束、取消与配置门禁。
 
@@ -24,7 +24,7 @@
 
 **Agent 间协作（A2A）**：application 持有一个 loopback MCP 服务（服务名 `velune`），在 Velune 执行的每个会话启动时注入；每个会话一张随机票据，HTTP 层校验票据、Origin 与 Host，票据决定调用方会话，工具参数不能自报身份。工具为 `list_agents`、`list_conversations`、`start_conversation`、`send_message`、`get_conversation`、`wait_conversation` 与 `cancel_turn`。参与方都是普通会话：Agent 新建的会话发出首条消息后即出现在列表（原生历史写入前也列出），用户可打开、继续并处理其审批。消息以“[Velune 协作消息]”出处包装作为对方的下一轮提交，声明不是人类授权；对方执行中、待审批或在 Velune 外运行时拒绝，不排队。`start_conversation` 的工作目录缺省沿用调用方（同一执行机器时），模型缺省为对方会话已有的选择或运行时目录的第一项。`wait_conversation` 在对方进入调用方尚未读到的非运行状态时返回，单次最长 30 秒，超时不取消。不建立父子关系、不传播取消，也不设联系限制（PRD 决定）。
 
-MCP 线程不访问 application：工具调用进入收件箱，由下一次客户端请求在推进各会话后执行，并在结束后恢复原先寻址的会话；协作进度因此与会话事件一样依赖客户端轮询（Mac 每 0.6 秒读取活动），60 秒内未被处理的调用向 Agent 返回结果未知。服务启动失败、SSH 转发失败或 ACP stdio relay 不可用时，会话照常运行而不带协作工具；会话关闭即撤销其票据。没有专门的 bindings API，平台通过普通会话、消息与交互呈现。[A2A 手动验收](../../scripts/manual-collaboration.py)以两个合成 ACP 运行时检查新建与联系已有会话、审批留在对方会话、忙碌与未知票据被拒。
+MCP 线程不访问 application：工具调用进入收件箱，由执行 owner 推进各会话后处理，并在结束后恢复原先寻址的会话。`ApplicationService` 无客户端请求时也每约 40 ms 推进事件、队列、协作、资源补写与终态清理；耗时同步用例仍可能延后推进，60 秒内未被处理的协作调用向 Agent 返回结果未知。服务启动失败、SSH 转发失败或 ACP stdio relay 不可用时，会话照常运行而不带协作工具；会话关闭即撤销其票据。没有专门的 bindings API，平台通过普通会话、消息与交互呈现。[A2A 手动验收](../../scripts/manual-collaboration.py)以两个合成 ACP 运行时检查新建与联系已有会话、审批留在对方会话、忙碌与未知票据被拒。
 
 `config` 定义 schema 10 的应用配置；`repository` 是内部文件设施，负责锁、加载和原子提交。提供商拥有模型条目和私有认证，参数模板仅用于复制填写字段，不参与调用解析。API key 与普通配置在同一文件原子保存，文件创建权限为 0600；公开配置摘要不含 key，只有显式单提供商读取接口返回已保存的值。认证编辑区分保留、更新和清除，读取失败不清空原值。运行时来源 OAuth 保留原来源登录和刷新，来源定位不进入公开摘要。根目录与资源目录由平台通过 `Options` 显式传入。
 
@@ -98,9 +98,9 @@ ACP 的列表能力缺失与空列表不同；汇总列表通过 `history_failur
 
 同一公开身份的持久跨 Harness 接续要求 ACP 来源和目标都能加载原生历史。能力不足在关闭来源、创建目标或发送之前拒绝，原活动对话保持可用；这不限制普通 ACP 新建或发送。关联段保存真实 cwd 以定位无列表能力的 ACP 会话，仍不保存消息副本。专用 adapter 的 provider overlay 不推广到 ACP，通用 ACP 明确拒绝 managed 模型注入。
 
-资源库（2026-10-11，内部类型仍名 `ResourceTemplate`）：资源是 canonical 定义，保存于 `resource-templates.json`（0600，与普通配置分离、不随配置重置；列表摘要不含内容，`read_resource_template` 显式返回含秘密的内容，Debug 一律遮盖）；`resource-bindings.json` 记录资源在各运行时写入的条目及指纹。`save_resource_template` 保存后立即写入已启用且处于同步状态的运行时，原生被改／被删的运行时等待用户处置，运行中轮次存在时全部留作“待同步”。`resource_sync_status` 返回每个资源在每个运行时的状态（未启用、不支持、已同步、待同步、原生被改、原生被删）；`apply_resource_template` 启用或重试同步，同名非受管条目或另一份指令需显式 `overwrite`；`resolve_resource_binding` 覆盖、停止同步（保留原生）、删除原生，或以原生内容更新资源（`TakeNative`：读回原生条目替换资源内容，保留资源的身份与名称，该运行时按规范形式重写并以此为新基线，其他运行时随之按保存同步）；`resource_native_import` 先返回更新后的资源与无法带入的字段，不保存。`unmanaged_runtime_resources` 列出各运行时未被资源库管理的用户级条目，`import_runtime_resource` 尽力读回为未保存的资源并列出无法带入的字段，`adopt_runtime_resource` 将其加入资源库并启用于来源运行时（原生改写为规范形式）。`resource_drift` 返回原生被改／被删时逐文件的原生与资源库内容（MCP 为排版后的 JSON），供用户覆盖前比较。保存时若运行中轮次或协作 scope 使写入延后，核心记下待补写，在后续请求中发现运行时空闲后自动写入待同步的绑定。MCP 资源含可选工作目录与超时（秒），各运行时按原生字段渲染，无法表达的字段在写入报告中说明。子 Agent 的模型二选一（都不填则沿用父会话；两者都填或 Velune 模型不存在时拒绝保存）：`model` 是运行时提供商的 model ID，写入原生定义，经网关的轮次中，该运行时已启用的这类子 Agent 的 ID 作为该轮网关别名指向 Velune 中唯一具有此提供商 model ID 的模型（与该轮自身模型同名时让位）；`velune_model` 是 Velune 模型的记录键，此时不写入任何原生文件，启用记录没有条目仍算启用，只在经网关的轮次中由 `turn_subagents` 交给适配器（模型名为网关始终可路由的 `velune/model/<记录键>`），运行时用自己的提供商时看不到它。写操作遵守资源写入闸门；删除资源或运行时实例只丢弃启用记录，不触碰原生条目。手动验收见 `scripts/manual-resource-library.py`；真实 Harness 加载见 `scripts/manual-resource-library-native.py`。
+资源库（2026-10-11，内部类型仍名 `ResourceTemplate`）：资源是 canonical 定义，保存于 `resource-templates.json`（0600，与普通配置分离、不随配置重置；列表摘要不含内容，`read_resource_template` 显式返回含秘密的内容，Debug 一律遮盖）；`resource-bindings.json` 记录资源在各运行时写入的条目及指纹。`save_resource_template` 保存后立即写入已启用且处于同步状态的运行时，原生被改／被删的运行时等待用户处置，运行中轮次存在时全部留作“待同步”。`resource_sync_status` 返回每个资源在每个运行时的状态（未启用、不支持、已同步、待同步、原生被改、原生被删）；`apply_resource_template` 启用或重试同步，同名非受管条目或另一份指令需显式 `overwrite`；`resolve_resource_binding` 覆盖、停止同步（保留原生）、删除原生，或以原生内容更新资源（`TakeNative`：读回原生条目替换资源内容，保留资源的身份与名称，该运行时按规范形式重写并以此为新基线，其他运行时随之按保存同步）；`resource_native_import` 先返回更新后的资源与无法带入的字段，不保存。`unmanaged_runtime_resources` 列出各运行时未被资源库管理的用户级条目，`import_runtime_resource` 尽力读回为未保存的资源并列出无法带入的字段，`adopt_runtime_resource` 将其加入资源库并启用于来源运行时（原生改写为规范形式）。`resource_drift` 返回原生被改／被删时逐文件的原生与资源库内容（MCP 为排版后的 JSON），供用户覆盖前比较。保存时若运行中轮次或协作 scope 使写入延后，核心记下待补写，由执行 owner 主动推进或后续请求发现运行时空闲后写入待同步的绑定。MCP 资源含可选工作目录与超时（秒），各运行时按原生字段渲染，无法表达的字段在写入报告中说明。子 Agent 的模型二选一（都不填则沿用父会话；两者都填或 Velune 模型不存在时拒绝保存）：`model` 是运行时提供商的 model ID，写入原生定义，经网关的轮次中，该运行时已启用的这类子 Agent 的 ID 作为该轮网关别名指向 Velune 中唯一具有此提供商 model ID 的模型（与该轮自身模型同名时让位）；`velune_model` 是 Velune 模型的记录键，此时不写入任何原生文件，启用记录没有条目仍算启用，只在经网关的轮次中由 `turn_subagents` 交给适配器（模型名为网关始终可路由的 `velune/model/<记录键>`），运行时用自己的提供商时看不到它。写操作遵守资源写入闸门；删除资源或运行时实例只丢弃启用记录，不触碰原生条目。手动验收见 `scripts/manual-resource-library.py`；真实 Harness 加载见 `scripts/manual-resource-library-native.py`。
 
-`working_changes` 与 `file_diff` 以本机 `git` CLI 只读会话工作目录（取自打开的会话或最近列表）所在仓库：状态解析为新增、修改、删除、重命名、未跟踪与冲突，相对 HEAD 的增删行数（二进制与未跟踪文件无行数），单文件差异解析为 hunk、上下文、增删与说明行，超过 1 MiB 截断；未跟踪文件以新文件显示。文件路径只接受仓库内相对路径；执行时设 `GIT_OPTIONAL_LOCKS=0`，不刷新索引、不与 Harness 的 git 操作争锁。远端运行时的会话暂不支持。[变更审阅手动验收](../../scripts/manual-working-changes.py) 以临时仓库检查各类变更、差异行、仓库根解析与路径拒绝。
+`working_changes`、`working_branch` 与 `file_diff` 仅要求本地执行位置和实际会话工作目录，不要求 Harness 原生配置目录；通用 ACP 的 managed HOME 与无 agentDir 配置同样适用。`working_changes` 与 `file_diff` 以本机 `git` CLI 只读会话工作目录（取自打开的会话或最近列表）所在仓库：状态解析为新增、修改、删除、重命名、未跟踪与冲突，相对 HEAD 的增删行数（二进制与未跟踪文件无行数），单文件差异解析为 hunk、上下文、增删与说明行，超过 1 MiB 截断；未跟踪文件以新文件显示。文件路径只接受仓库内相对路径；执行时设 `GIT_OPTIONAL_LOCKS=0`，不刷新索引、不与 Harness 的 git 操作争锁。远端运行时的会话暂不支持。[变更审阅手动验收](../../scripts/manual-working-changes.py) 以临时仓库检查各类变更、差异行、仓库根解析与路径拒绝。
 
 ## 提供商能力组合与 Claude CLI
 
@@ -117,3 +117,18 @@ CLI 额度来源执行内置 `/usage`，关闭工具、外部 MCP、设置来源
 `/usage` 适配依据是当前官方命令语义与固定 Magpie 实现，CLI 的版本及输出变化可能使观测不可用。Velune 只执行固定命令，绝不在失败后退回普通 prompt 或换参数重试；输出校验只能判断返回是否符合额度格式，不能保证外部 CLI 内部实现或计量永远不变。Claude Code 2.1.292 的官方订阅登录和额度读取已通过真实验收；额度耗尽时限流传播已验证；额度恢复后，真实文本及调用方工具跨 Runner 往返均通过验收。证据归 [模型路由任务](../../tasks/model-routing/packet.md)。
 
 Claude 认证失败的公开 `AuthenticationEvent.error` 只包含固定阶段与原因，格式为 `Claude Code 认证未完成 [phase=<阶段>;reason=<固定原因>;exit_code=<整数或none>]`。阶段为 `login`、`status` 或 `worker`，用于区分 CLI 退出、超时、状态 JSON、目录绑定与身份校验失败；不含 CLI 的 stdout、stderr、账户信息或 URL。进程退出码来自操作系统，不按原始错误文案猜测供应商原因。
+
+
+## 多端执行 owner
+
+`ApplicationService::open(Options)` 在专属线程打开一次 `Application`，持有配置根锁、运行时、网关与协作生命周期。克隆 service handle 可供本地窗口和远程 Handler 共用；不是为每个客户端重新打开配置。GUI 和 headless 宿主采用相同装配。宿主必须在希望任务继续期间保留 service handle；控制连接仅持有观察和等待，不拥有运行时。`close(false)` 复用忙时保护，拒绝后仍可继续使用；`close(true)` 显式停止工作。执行机器睡眠、应用终止和机器断电不由远控库接管。
+
+本地使用 `execute(view, command)`；远程适配器用设备身份限定 `ClientViewId` 后调用 `execute_checked(view, context, command)`。两者进入同一串行队列。service 保留打开时的 tracing dispatcher，提交命令时携带调用方的 dispatcher 与 span，原生界面的对象专属诊断不因切换线程丢失。没有设置全局 subscriber。
+
+远程回复包含当前 `Revision`。配置修改、删除和消息替换要求 `expected_revision` 与当前值相同；配置之外的发送等共享写入也使旧版本失效。这个版本是进程内串行观察版本，不是 Harness 的持久会话版本，也不承诺跨崩溃 exactly-once。原生资源另有文件 revision。审批在派发前重新读取当前 pending interaction，另一端已经答复或运行时已撤回的审批返回 `StaleInteraction`。请求 ID、接受／结果查询与去重由 remote 唯一维护，application 不建立第二套命令记录。公开 `interaction.id` 已由 adapter 绑定真实待决请求的寿命：原生 Harness 统一经 [`NativeSession::add_interaction`](../agent-runtime/src/native/mod.rs) 生成随机会话 epoch 加跨 turn 单调序号，ACP 经 [`Client::next_id`](../agent-runtime/src/acp/projection.rs) 生成相同性质的公开 ID；私有映射才保存 Harness 原始请求 ID。答复成功后立即消费映射，取消、失效或结束时按真实请求清理；下一轮即使复用原始 ID，也获得新的公开 ID。两台设备观察同一待决请求时取得同一公开 ID，轮询不会换号。重建 adapter 生成新随机 epoch，旧 ID 不会恢复权限。不在应用投影处再发行第二套审批 token，也不用与审批无关的全局配置版本代替请求寿命。
+
+每个 view 分别保留所选会话、下一轮运行时、列表筛选／归档／分页、outline／状态栏和未发送草稿。远程这些呈现选择不写入执行设备的默认界面配置；会话、项目组织和实际配置仍共享。`ReleaseView` 释放临时状态，不取消会话、不删除历史或已上传文件；最多保留 128 个 view，超出时回收最久未访问者的临时状态，所以长期 headless 运行不因累计窗口耗尽视图。会话按自身运行／审批／队列与空闲保留规则管理，视图回收不会改变工作寿命。
+
+普通配置结果的运行时 `settings` 不包含 `acpLaunch`；只有显式 `acp_launch` 返回完整参数和环境。普通 upsert 未提供该字段时保留原启动配置，`upsert_acp_runtime` 才显式替换，包括清空。提供商模型公开记录去掉 Pi projection，内部存储仍保留它；保存公开编辑时只为实际 ID 和协议未改变的已有模型保留该私有元数据。资源文件的私有 byte-array 格式保持不变，跨边界 DTO 的 bytes 使用 base64，两者在 repository 与 adapter 边界显式转换。
+
+上传内容放在应用 home 的 `remote-attachments/<引用键>/<文件名>`，目录权限 0700，文件 0600；先写同目录暂存文件并同步，成功后原子发布。名称只接受单个普通文件名，单个上传和附件读取最多 20 MiB；读写、空间不足及超限明确返回错误。远程发送只接受当前 view 的上传引用，不能把控制机器的路径当作执行端文件；读取只定位实际会话消息图块。SSH Harness 的附件仍沿用其明确不支持边界。图片返回内容或延迟内容引用；图片文件已不可读、超限或来自当前不支持读取的 SSH 位置时，该块显示明确 Notice，保留其余消息；显式附件读取仍返回错误。其他文件继续由 Harness 按执行端绝对路径读取。文件可能被原生会话历史引用，因此连接断开、view 释放和应用退出均不删除已上传内容；当前没有自动清理或总磁盘配额，磁盘占用由真实上传累积，不伪装成临时连接缓存。

@@ -354,7 +354,6 @@ def main():
             current = application.list().gateways[0].providers[0]
             edited_model = next(item for item in current.models if item.record_key == binding.record_key)
             edited_model.provider_model_id = 'edited-api-model-id'
-            edited_model.adapter_metadata_json = None
             edited_model.reasoning_levels = []
             changed_endpoint = endpoint.replace('/v1', '/changed/v1')
             draft = bindings.BindingProviderDraft(id=current.id, name=current.name,

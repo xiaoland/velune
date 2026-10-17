@@ -15,6 +15,8 @@
 
 ## 当前工作
 
+- [远程控制](../tasks/remote-control/packet.md)：同一用户多设备、公网免 VPN、完整 Velune 业务能力；GUI／headless 共用核心，需求与架构收敛后实现 Rust packages
+
 - [通用 ACP Adapter](../tasks/acp-adapter/packet.md)：Rust 侧 stable v1 接入、能力协商与会话恢复；App 前端待实现
 
 - [Claude Code、原生模型与 SSH 运行时](../tasks/runtime-provider-ssh/packet.md)：Rust packages 的模型选择、单轮网关、远端执行与受管 HOME；前端明确待实现

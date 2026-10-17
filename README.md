@@ -61,7 +61,9 @@ Mac 构建默认安装到 `/Applications/Velune.app`，当前产品版本为 `0.
 
 共享品牌设计资源保存在 [assets/brand](assets/brand)，供各平台与项目材料使用。SVG 光学稿及其原始说明由 Git 跟踪；Mac 构建从此目录生成应用图标，平台产物不替代共享原稿。
 
-共享 unit 入口：[ai](packages/ai/README.md)、[ai-provider](packages/ai-provider/README.md)、[conversation](packages/conversation/README.md)、[agent-runtime](packages/agent-runtime/README.md)、[gateway](packages/gateway/README.md)、[application](packages/application/README.md)、[bindings](packages/bindings/README.md)。平台入口：[Mac](app/mac/README.md)；本次拆分与验证见 [任务](tasks/package-boundaries/packet.md)。
+共享 unit 入口：[ai](packages/ai/README.md)、[ai-provider](packages/ai-provider/README.md)、[conversation](packages/conversation/README.md)、[agent-runtime](packages/agent-runtime/README.md)、[gateway](packages/gateway/README.md)、[application-api](packages/application-api/README.md)、[remote](packages/remote/README.md)、[application](packages/application/README.md)、[bindings](packages/bindings/README.md)。平台入口：[Mac](app/mac/README.md)；拆分与验证见 [任务](tasks/package-boundaries/packet.md)。
+
+远程控制的 Rust 实现与隔离验收在 [远控任务](tasks/remote-control/packet.md) 推进：同一用户多设备经 iroh 操作执行设备上的唯一应用核心，GUI 与 headless 使用相同契约；远程客户端可不携带本地执行栈。最终公网开箱即用并允许自部署；当前不交付平台远控界面或部署公网服务，直连／中继的实际验证范围分别记录。
 
 2026-10-10 的 [运行时扩展](tasks/runtime-provider-ssh/packet.md) 仅推进 Rust packages：新增 Claude Code、运行时既有模型选择、单轮 Velune Gateway 覆盖、OpenSSH 执行和受管 HOME。composer 及 SSH／HOME 设置界面明确待实现，本轮没有重新构建或安装 Mac app。
 

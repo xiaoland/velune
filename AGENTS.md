@@ -90,7 +90,11 @@ core 是跨平台 Rust lib，通过 ABI 嵌入平台 app；产品不得另启常
 
 ## 独立 units 与跨语言接入
 
-2026-10-05 用户决定全面采用 UniFFI，并授权拆分。共享 units 为 packages/ai、ai-provider、conversation、agent-runtime、gateway、application、bindings；平台 app 是独立 unit。configuration 为 application 内部模块，不建立 persist 或空 remote package。领域包不依赖 UniFFI，bindings 暴露具名类型 API；不恢复手写 C ABI／JSON dispatcher 产品接口。Mac 继续同进程嵌入 Rust，修改后重建安装。任务见 tasks/package-boundaries/packet.md，各 unit 入口见其 README。
+2026-10-05 用户决定全面采用 UniFFI，并授权拆分。共享 units 为 packages/ai、ai-provider、conversation、agent-runtime、gateway、application、bindings；2026-10-17 远控工作新增 application-api 与 remote，前者拥有可独立消费的业务契约，后者拥有连接、设备授权与远程调用。平台 app 是独立 unit。configuration 为 application 内部模块，不建立 persist 或空占位 package。领域包不依赖 UniFFI，bindings 暴露具名类型 API；不恢复手写 C ABI／JSON dispatcher 产品接口。Mac 继续同进程嵌入 Rust，修改后重建安装。任务见 tasks/package-boundaries/packet.md 与 tasks/remote-control/packet.md，各 unit 入口见其 README。
+
+2026-10-17 远控当前任务实现 Rust packages，不新增平台远控界面、不部署公网服务。新契约删除公开 Pi 私有元数据并增加具名远控错误，必要调用方迁移包含 Mac 的模型／错误映射和人工脚本；按 Mac 改动规则重建安装。目标覆盖本人多设备、完整业务、公网免 VPN／端口转发、GUI／headless 共用核心；控制端断线后继续执行并保留审批，其他已配对设备可接续。最终公网开箱即用且允许自部署。已同意使用 iroh，并对照 ds-harness-remote 的 WebRTC／TURN 直连稳定性机制；连接路径与公网验证边界须有实际证据。远控入口复用唯一 Application owner，不能按连接另开同一配置根或让连接释放隐式取消业务。完整业务不意味着普通摘要、日志和 Debug 可以包含秘密；显式秘密查看／编辑保留。
+
+远控 SDK 的新错误枚举与模型字段必须同步所有直接调用方，不能为避免改调用方恢复兼容契约；也不要将 Rust 检查报告为 Mac 编译证据。实际编译安装证据归当前任务。
 
 
 ## 最新提供商配置体验复核

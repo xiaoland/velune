@@ -257,7 +257,6 @@ struct ProviderModel: Codable, Sendable, Identifiable, Equatable {
     var contextWindow: UInt32? = nil
     var maxOutputTokens: UInt32? = nil
     var reasoningLevels: [String]? = nil
-    var adapterMetadataJSON: String? = nil
     var displayName: String { nickname.isEmpty ? providerModelID : nickname }
 }
 /// What the next turn runs on: a model of the runtime's own providers, a

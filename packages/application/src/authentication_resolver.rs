@@ -47,8 +47,10 @@ impl CredentialResolver for ProviderResolver {
             };
             if resource.protocol != protocol
                 || resource.endpoint != target.endpoint
-                || resource.execution_backend != target.execution_backend
-                || resource.request_profile != target.request_profile
+                || crate::config::gateway_execution_backend(&resource.execution_backend)
+                    != target.execution_backend
+                || crate::config::gateway_request_profile(resource.request_profile)
+                    != target.request_profile
             {
                 return Err(CredentialResolutionError::UnauthorizedTarget);
             }
@@ -199,8 +201,10 @@ impl CredentialResolver for ProviderResolver {
         let home = self.options.home_directory.clone();
         Box::pin(async move {
             let resource = resource.ok_or(CredentialResolutionError::Unavailable)?;
-            if resource.execution_backend != target.execution_backend
-                || resource.request_profile != target.request_profile
+            if crate::config::gateway_execution_backend(&resource.execution_backend)
+                != target.execution_backend
+                || crate::config::gateway_request_profile(resource.request_profile)
+                    != target.request_profile
                 || resource.endpoint != target.endpoint
                 || !matches!(
                     target.protocol,
@@ -290,8 +294,12 @@ pub(crate) fn read_api_key(
                     CredentialTarget {
                         protocol,
                         endpoint: provider.endpoint.clone(),
-                        execution_backend: provider.execution_backend.clone(),
-                        request_profile: provider.request_profile,
+                        execution_backend: crate::config::gateway_execution_backend(
+                            &provider.execution_backend,
+                        ),
+                        request_profile: crate::config::gateway_request_profile(
+                            provider.request_profile,
+                        ),
                     },
                 ))
                 .map_err(|_| {

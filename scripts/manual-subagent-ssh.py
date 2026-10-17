@@ -69,8 +69,7 @@ def main():
                     home=b.BindingRuntimeHome.MANAGED(remote_root=args.remote_root + '/homes'),
                     remote_resources_directory=args.remote_root + '/resources'))
             models = [b.BindingProviderModel(record_key='', provider_model_id=name, nickname=name, icon=None,
-                                             context_window=32768, max_output_tokens=1024, reasoning_levels=None,
-                                             adapter_metadata_json=None)
+                                             context_window=32768, max_output_tokens=1024, reasoning_levels=None)
                       for name in ('synthetic-gateway', 'synthetic-gateway-2')]
             app.save_provider('default', b.BindingProviderDraft(
                 id='responses', name='responses', protocol=b.BindingGatewayProtocol.RESPONSES_V1, endpoint=endpoint,

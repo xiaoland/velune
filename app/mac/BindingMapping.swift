@@ -147,10 +147,10 @@ enum BindingMapping {
         switch value { case .chatCompletionsV1: return .chatCompletionsV1; case .responsesV1: return .responsesV1; case .messagesV1: return .messagesV1 }
     }
     static func model(_ value: BindingProviderModel) -> ProviderModel {
-        ProviderModel(recordKey: value.recordKey, providerModelID: value.providerModelId, nickname: value.nickname, icon: value.icon, contextWindow: value.contextWindow, maxOutputTokens: value.maxOutputTokens, reasoningLevels: value.reasoningLevels, adapterMetadataJSON: value.adapterMetadataJson)
+        ProviderModel(recordKey: value.recordKey, providerModelID: value.providerModelId, nickname: value.nickname, icon: value.icon, contextWindow: value.contextWindow, maxOutputTokens: value.maxOutputTokens, reasoningLevels: value.reasoningLevels)
     }
     static func bindingModel(_ value: ProviderModel) -> BindingProviderModel {
-        BindingProviderModel(recordKey: value.recordKey, providerModelId: value.providerModelID, nickname: value.nickname, icon: value.icon, contextWindow: value.contextWindow, maxOutputTokens: value.maxOutputTokens, reasoningLevels: value.reasoningLevels, adapterMetadataJson: value.adapterMetadataJSON)
+        BindingProviderModel(recordKey: value.recordKey, providerModelId: value.providerModelID, nickname: value.nickname, icon: value.icon, contextWindow: value.contextWindow, maxOutputTokens: value.maxOutputTokens, reasoningLevels: value.reasoningLevels)
     }
     static func template(_ value: BindingModelTemplate) -> ModelTemplate {
         ModelTemplate(id: value.id, name: value.name, suggestedProviderModelID: value.suggestedProviderModelId, nickname: value.nickname, icon: value.icon, contextWindow: value.contextWindow, maxOutputTokens: value.maxOutputTokens, reasoningLevels: value.reasoningLevels)

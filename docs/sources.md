@@ -347,3 +347,11 @@ S17 实施授权：用户决定全面切换 UniFFI，并要求现在开始拆分
 ## S35
 
 2026-10-17 用户发现 Claude Code 在 worktree 中的会话（如 `mac-sub-agents-panel`）各自成为独立项目。就开发方“worktree 是否归入所属仓库”的提问，用户答复：“是的，worktree 归到原项目下面；其实正好，我计划让 project 和特定的文件夹解耦，一个 project 可以有多个 folder，有一个 primary folder”。产品归 [PRD](prd/index.md#会话内容展示)，实施归 [多文件夹项目任务](../tasks/project-folders/packet.md)。
+
+## S36
+
+2026-10-17 用户要求参考 [liguobao/ds-harness-remote](https://github.com/liguobao/ds-harness-remote)，共同梳理远程控制需求、厘清架构后实现 Rust packages。随后明确有 GUI 与无 GUI 两种宿主都需要，应用装配相同共享核心，不能按第一批界面形态缩窄远控架构；公网使用不依赖预配 VPN 或端口转发。远控范围为完整 Velune 业务能力，信任对象为同一个人的多台设备。产品归 [PRD](prd/index.md#后续扩展分布式能力)，方案与证据归 [远控任务](../tasks/remote-control/packet.md)。
+
+用户随后选择“继续执行，其他已配对设备可接续操作”及“最终开箱即用，同时允许自部署”，确认控制端断线不终止执行、保留审批，以及公网服务的最终产品方向；本轮仍不部署服务。
+
+用户随后明确同意使用 iroh，并要求继续参考、对比 ds-harness-remote 的 WebRTC／TURN 思路，以尽可能在无需中继的情况下获得稳定远控；用户认为该项目的实际效果较好。该体验反馈不替代 Velune 的直连／跨网络验收，也不应以最小自部署 Server 的能力边界否定上游客户端 P2P 机制。

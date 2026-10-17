@@ -207,7 +207,7 @@ def application_phase(args, endpoint):
             def provider(identifier, protocol, key):
                 app.save_provider('default', b.BindingProviderDraft(id=identifier, name=identifier, protocol=protocol, endpoint=endpoint,
                     models=[b.BindingProviderModel(record_key='', provider_model_id='synthetic-model', nickname='Synthetic', icon=None,
-                        context_window=32768, max_output_tokens=1024, reasoning_levels=None, adapter_metadata_json=None)], quota_limits=[], execution_backend=b.BindingExecutionBackend.HTTP(), request_profile=b.BindingRequestProfile.NATIVE, authentication_source=b.BindingProviderAuthenticationSource.API_KEY, quota_source=b.BindingProviderQuotaSource.NONE),
+                        context_window=32768, max_output_tokens=1024, reasoning_levels=None)], quota_limits=[], execution_backend=b.BindingExecutionBackend.HTTP(), request_profile=b.BindingRequestProfile.NATIVE, authentication_source=b.BindingProviderAuthenticationSource.API_KEY, quota_source=b.BindingProviderQuotaSource.NONE),
                     b.BindingAuthenticationEdit.SET_API_KEY(value=key))
                 return next(p for p in app.list().gateways[0].providers if p.id == identifier).models[0].record_key
 

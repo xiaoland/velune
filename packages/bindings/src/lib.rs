@@ -1,17 +1,49 @@
 //! Typed foreign-language entry point for the shared application unit.
 //!
-//! Each object owns one application session. Explicit close refuses a busy
-//! runtime and leaves the object usable. Dropping a language wrapper is resource
-//! cleanup, not a user-facing request to cancel an Agent turn.
+//! Local objects retain one execution owner; remote objects retain only their
+//! connection. Closing a controller never ends the execution owner or its work.
 mod diagnostics;
+#[cfg(feature = "remote")]
+mod remote;
+#[cfg(feature = "remote")]
+mod remote_command;
+#[cfg(feature = "remote")]
+mod remote_response;
 mod types;
+#[cfg(feature = "remote")]
+pub use remote::*;
+#[cfg(feature = "remote")]
+pub use remote_command::*;
+#[cfg(feature = "remote")]
+pub use remote_response::*;
 pub use types::*;
 
 use serde::{Serialize, de::DeserializeOwned};
-use std::sync::{Arc, Mutex, MutexGuard};
-use velune_application::{Application, Error, Options};
+#[cfg(any(feature = "local-runtime", feature = "remote"))]
+use std::sync::Arc;
+use std::sync::{Mutex, MutexGuard};
+#[cfg(feature = "local-runtime")]
+use velune_application::{ApplicationService, Error, Options};
+#[cfg(any(feature = "local-runtime", feature = "remote"))]
+use velune_application_api::ClientViewId;
+use velune_application_api::{Command, Failure, Response};
 
 uniffi::setup_scaffolding!();
+
+macro_rules! request {
+    ($owner:ident, $name:literal, $variant:ident $( { $($field:ident),* } )?) => {
+        match $owner.request($name, Command::$variant $( { $($field),* } )?)? {
+            Response::$variant(value) => convert(value),
+            _ => Err(BindingError::Contract { detail: "应用返回了不匹配的具名结果".into() }),
+        }
+    };
+    ($owner:ident, $name:literal, $variant:ident $( { $($field:ident),* } )?; unit) => {
+        match $owner.request($name, Command::$variant $( { $($field),* } )?)? {
+            Response::$variant => Ok(()),
+            _ => Err(BindingError::Contract { detail: "应用返回了不匹配的具名结果".into() }),
+        }
+    };
+}
 
 #[derive(Debug, Clone, uniffi::Enum)]
 pub enum BindingFailureKind {
@@ -24,6 +56,10 @@ pub enum BindingFailureKind {
     Unavailable,
     ProviderImport,
     RuntimeManagement,
+    Conflict,
+    Unauthorized,
+    Connection,
+    OutcomeUnknown,
 }
 
 #[derive(Debug, thiserror::Error, uniffi::Error)]
@@ -44,73 +80,53 @@ pub enum BindingError {
     Io { detail: String },
     #[error("{detail}")]
     Contract { detail: String },
+    #[cfg(feature = "remote")]
+    #[error("{detail}")]
+    RemoteRequest {
+        kind: BindingFailureKind,
+        detail: String,
+        request_id: Option<BindingRemoteRequestId>,
+    },
     #[error("application has been closed")]
     Closed,
     #[error("application state is unavailable")]
     Unavailable,
 }
 
+#[cfg(feature = "local-runtime")]
 impl From<Error> for BindingError {
     fn from(error: Error) -> Self {
-        // The application error's typed variants are preserved at this boundary.
-        match error {
-            Error::Invalid(message) => Self::Invalid { detail: message },
-            Error::Unsupported(message) => Self::Unsupported { detail: message },
-            error @ Error::OutstandingWork => Self::Invalid {
-                detail: error.to_string(),
-            },
-            Error::Io(error) => Self::Io {
-                detail: error.to_string(),
-            },
-            #[cfg(feature = "local-runtime")]
-            Error::ProviderImport(error) => Self::Diagnostic {
-                kind: BindingFailureKind::ProviderImport,
-                detail: format!(
-                    "{}（阶段：{}，类别：{}{}{}）",
-                    error.message(),
-                    error.phase(),
-                    error.code(),
-                    error
-                        .exit_status()
-                        .map(|status| format!("，退出状态：{status}"))
-                        .unwrap_or_default(),
-                    if error.detail().is_empty() {
-                        String::new()
-                    } else {
-                        format!("，原因：{}", error.detail())
-                    }
-                ),
-                code: error.code().into(),
-                phase: error.phase().into(),
-                operation_id: String::new(),
-            },
-            #[cfg(feature = "local-runtime")]
-            Error::History(error) => Self::Diagnostic {
-                kind: BindingFailureKind::History,
-                detail: error.full_message(),
-                code: error.code().into(),
-                phase: error.phase().into(),
-                operation_id: String::new(),
-            },
-            #[cfg(feature = "local-runtime")]
-            Error::RuntimeManagement(error) => Self::Diagnostic {
-                kind: BindingFailureKind::RuntimeManagement,
-                detail: error.to_string(),
-                code: match error.code() {
-                    velune_application::RuntimeManagementErrorCode::Conflict => "conflict",
-                    velune_application::RuntimeManagementErrorCode::Missing => "missing",
-                    velune_application::RuntimeManagementErrorCode::Invalid => "invalid",
-                    velune_application::RuntimeManagementErrorCode::Unsupported => "unsupported",
-                    velune_application::RuntimeManagementErrorCode::Unavailable => "unavailable",
-                }
-                .into(),
-                phase: "runtime_management".into(),
-                operation_id: String::new(),
-            },
-            Error::Json(error) => Self::Contract {
-                detail: error.to_string(),
-            },
+        Failure::from(error).into()
+    }
+}
+
+impl From<Failure> for BindingError {
+    fn from(error: Failure) -> Self {
+        Self::Diagnostic {
+            kind: failure_kind(error.kind),
+            detail: error.message,
+            code: error.code,
+            phase: error.phase,
+            operation_id: String::new(),
         }
+    }
+}
+
+fn failure_kind(kind: velune_application_api::FailureKind) -> BindingFailureKind {
+    use velune_application_api::FailureKind;
+    match kind {
+        FailureKind::Invalid | FailureKind::StaleInteraction | FailureKind::OutstandingWork => {
+            BindingFailureKind::Invalid
+        }
+        FailureKind::Unsupported => BindingFailureKind::Unsupported,
+        FailureKind::Conflict => BindingFailureKind::Conflict,
+        FailureKind::Unavailable | FailureKind::Internal => BindingFailureKind::Unavailable,
+        FailureKind::History => BindingFailureKind::History,
+        FailureKind::ProviderImport => BindingFailureKind::ProviderImport,
+        FailureKind::RuntimeManagement => BindingFailureKind::RuntimeManagement,
+        FailureKind::Io => BindingFailureKind::Io,
+        FailureKind::Contract => BindingFailureKind::Contract,
+        FailureKind::Closed => BindingFailureKind::Closed,
     }
 }
 
@@ -127,7 +143,7 @@ fn convert<I: Serialize, O: DeserializeOwned>(input: I) -> Result<O, BindingErro
 /// disclosure it shows, for presenting before that provider exists.
 #[uniffi::export]
 pub fn codex_subscription_target() -> Result<BindingSubscriptionTarget, BindingError> {
-    convert(velune_application::SubscriptionTarget::codex())
+    convert(velune_application_api::SubscriptionTarget::codex())
 }
 
 /// The same for a Claude Code subscription executed by the official CLI at `binary`.
@@ -135,7 +151,9 @@ pub fn codex_subscription_target() -> Result<BindingSubscriptionTarget, BindingE
 pub fn claude_cli_subscription_target(
     binary: String,
 ) -> Result<BindingSubscriptionTarget, BindingError> {
-    convert(velune_application::SubscriptionTarget::claude_cli(binary))
+    convert(velune_application_api::SubscriptionTarget::claude_cli(
+        binary,
+    ))
 }
 
 #[derive(Clone, uniffi::Record)]
@@ -144,30 +162,69 @@ pub struct BindingOptions {
     pub resources_directory: String,
 }
 
+#[derive(Clone)]
+enum Backend {
+    #[cfg(feature = "local-runtime")]
+    Local(ApplicationService),
+    #[cfg(feature = "remote")]
+    Remote(Arc<remote::RemoteApplication>),
+}
+
 #[derive(uniffi::Object)]
 pub struct VeluneApplication {
-    application: Mutex<Option<Application>>,
+    application: Mutex<Option<Backend>>,
     diagnostics: diagnostics::Diagnostics,
 }
 
 impl VeluneApplication {
-    fn lock(&self) -> Result<MutexGuard<'_, Option<Application>>, BindingError> {
+    fn lock(&self) -> Result<MutexGuard<'_, Option<Backend>>, BindingError> {
         self.application
             .lock()
             .map_err(|_| BindingError::Unavailable)
     }
-    fn with<T>(
-        &self,
-        name: &'static str,
-        operation: impl FnOnce(&mut Application) -> Result<T, Error>,
-    ) -> Result<T, BindingError> {
+
+    fn request(&self, name: &'static str, command: Command) -> Result<Response, BindingError> {
         self.diagnostics.run(name, || {
+            #[cfg(any(feature = "local-runtime", feature = "remote"))]
+            {
+                let backend = self.lock()?.as_ref().ok_or(BindingError::Closed)?.clone();
+                match backend {
+                    #[cfg(feature = "local-runtime")]
+                    Backend::Local(service) => service
+                        .execute(ClientViewId("local".into()), command)
+                        .map_err(Into::into),
+                    #[cfg(feature = "remote")]
+                    Backend::Remote(remote) => remote.request(command),
+                }
+            }
+            #[cfg(not(any(feature = "local-runtime", feature = "remote")))]
+            {
+                let _ = command;
+                Err(BindingError::Unavailable)
+            }
+        })
+    }
+
+    fn close(&self, _stop_work: bool) -> Result<(), BindingError> {
+        self.diagnostics.run("shutdown", || {
             let mut state = self.lock()?;
-            operation(state.as_mut().ok_or(BindingError::Closed)?).map_err(Into::into)
+            if let Some(backend) = state.as_mut() {
+                match backend {
+                    #[cfg(feature = "local-runtime")]
+                    Backend::Local(service) => service.close(_stop_work)?,
+                    #[cfg(feature = "remote")]
+                    Backend::Remote(remote) => remote.close()?,
+                    #[cfg(not(any(feature = "local-runtime", feature = "remote")))]
+                    _ => {}
+                }
+                *state = None;
+            }
+            Ok(())
         })
     }
 }
 
+#[cfg(feature = "local-runtime")]
 #[uniffi::export]
 impl VeluneApplication {
     #[uniffi::constructor]
@@ -180,46 +237,39 @@ impl VeluneApplication {
         let diagnostics =
             diagnostics::Diagnostics::open(std::path::Path::new(&options.home_directory))?;
         let application = diagnostics.run("open", || {
-            Application::open(Options {
+            ApplicationService::open(Options {
                 home_directory: options.home_directory.into(),
                 resources_directory: options.resources_directory.into(),
             })
             .map_err(Into::into)
         })?;
         Ok(Arc::new(Self {
-            application: Mutex::new(Some(application)),
+            application: Mutex::new(Some(Backend::Local(application))),
             diagnostics,
         }))
     }
+}
 
-    /// Close only when the application allows it. A failed close retains all
-    /// resources and remains available for polling or an explicit Agent cancel.
-    /// Refused while a conversation's turn or its sub-agents run.
+#[uniffi::export]
+impl VeluneApplication {
+    /// Local shutdown retains a busy owner. A remote object only closes its connection.
     pub fn shutdown(&self) -> Result<(), BindingError> {
-        self.diagnostics.run("shutdown", || {
-            let mut state = self.lock()?;
-            if let Some(application) = state.as_mut() {
-                application.close()?;
-                *state = None;
-            }
-            Ok(())
-        })
+        self.close(false)
     }
 
-    /// Ends running turns and sub-agents with their runtime processes.
+    /// Local shutdown stops work. A remote object only closes its connection;
+    /// stopping a remote turn requires its explicit conversation cancellation API.
     pub fn shutdown_stopping_work(&self) -> Result<(), BindingError> {
-        self.diagnostics.run("shutdown_stopping_work", || {
-            let mut state = self.lock()?;
-            if let Some(application) = state.as_mut() {
-                application.close_stopping_work()?;
-                *state = None;
-            }
-            Ok(())
-        })
+        self.close(true)
+    }
+
+    /// Release only this presentation view; running conversations are retained.
+    pub fn release_view(&self) -> Result<(), BindingError> {
+        request!(self, "release_view", ReleaseView; unit)
     }
 
     pub fn list(&self) -> Result<BindingConfigurationSnapshot, BindingError> {
-        convert(self.with("list", |application| application.list())?)
+        request!(self, "list", List)
     }
     pub fn runtime_resource_catalog(
         &self,
@@ -230,9 +280,16 @@ impl VeluneApplication {
     ) -> Result<BindingRuntimeResourceCatalog, BindingError> {
         let kind = convert(kind)?;
         let scope = convert(scope)?;
-        convert(self.with("runtime_resource_catalog", |application| {
-            application.runtime_resource_catalog(runtime_id, cwd, kind, scope)
-        })?)
+        request!(
+            self,
+            "runtime_resource_catalog",
+            RuntimeResourceCatalog {
+                runtime_id,
+                cwd,
+                kind,
+                scope
+            }
+        )
     }
     pub fn read_runtime_resource(
         &self,
@@ -241,9 +298,15 @@ impl VeluneApplication {
         key: BindingRuntimeResourceKey,
     ) -> Result<BindingRuntimeResourceDocument, BindingError> {
         let key = convert(key)?;
-        convert(self.with("read_runtime_resource", |application| {
-            application.read_runtime_resource(runtime_id, cwd, key)
-        })?)
+        request!(
+            self,
+            "read_runtime_resource",
+            ReadRuntimeResource {
+                runtime_id,
+                cwd,
+                key
+            }
+        )
     }
     pub fn write_runtime_resource(
         &self,
@@ -256,9 +319,18 @@ impl VeluneApplication {
     ) -> Result<BindingRuntimeResourceDocument, BindingError> {
         let key = convert(key)?;
         let expected = convert(expected)?;
-        convert(self.with("write_runtime_resource", |application| {
-            application.write_runtime_resource(runtime_id, cwd, key, expected, bytes, executable)
-        })?)
+        request!(
+            self,
+            "write_runtime_resource",
+            WriteRuntimeResource {
+                runtime_id,
+                cwd,
+                key,
+                expected,
+                bytes,
+                executable
+            }
+        )
     }
     pub fn delete_runtime_resource(
         &self,
@@ -269,38 +341,36 @@ impl VeluneApplication {
     ) -> Result<(), BindingError> {
         let key = convert(key)?;
         let expected = convert(expected)?;
-        self.with("delete_runtime_resource", |application| {
-            application.delete_runtime_resource(runtime_id, cwd, key, expected)
-        })
+        request!(self, "delete_runtime_resource", DeleteRuntimeResource { runtime_id, cwd, key, expected }; unit)
     }
     pub fn list_resource_templates(
         &self,
     ) -> Result<Vec<BindingResourceTemplateSummary>, BindingError> {
-        convert(self.with("list_resource_templates", |application| {
-            application.list_resource_templates()
-        })?)
+        request!(self, "list_resource_templates", ListResourceTemplates)
     }
     pub fn read_resource_template(
         &self,
         template_id: String,
     ) -> Result<BindingResourceTemplate, BindingError> {
-        convert(self.with("read_resource_template", |application| {
-            application.read_resource_template(template_id)
-        })?)
+        request!(
+            self,
+            "read_resource_template",
+            ReadResourceTemplate { template_id }
+        )
     }
     pub fn save_resource_template(
         &self,
         template: BindingResourceTemplate,
     ) -> Result<BindingResourceSaveResult, BindingError> {
         let template = convert(template)?;
-        convert(self.with("save_resource_template", |application| {
-            application.save_resource_template(template)
-        })?)
+        request!(
+            self,
+            "save_resource_template",
+            SaveResourceTemplate { template }
+        )
     }
     pub fn delete_resource_template(&self, template_id: String) -> Result<(), BindingError> {
-        self.with("delete_resource_template", |application| {
-            application.delete_resource_template(template_id)
-        })
+        request!(self, "delete_resource_template", DeleteResourceTemplate { template_id }; unit)
     }
     pub fn import_runtime_resource(
         &self,
@@ -309,9 +379,15 @@ impl VeluneApplication {
         path: String,
     ) -> Result<BindingResourceTemplateImport, BindingError> {
         let kind = convert(kind)?;
-        convert(self.with("import_runtime_resource", |application| {
-            application.import_runtime_resource(runtime_id, kind, path)
-        })?)
+        request!(
+            self,
+            "import_runtime_resource",
+            ImportRuntimeResource {
+                runtime_id,
+                kind,
+                path
+            }
+        )
     }
     pub fn adopt_runtime_resource(
         &self,
@@ -320,32 +396,43 @@ impl VeluneApplication {
         path: String,
     ) -> Result<BindingResourceTemplateSummary, BindingError> {
         let kind = convert(kind)?;
-        convert(self.with("adopt_runtime_resource", |application| {
-            application.adopt_runtime_resource(runtime_id, kind, path)
-        })?)
+        request!(
+            self,
+            "adopt_runtime_resource",
+            AdoptRuntimeResource {
+                runtime_id,
+                kind,
+                path
+            }
+        )
     }
     pub fn resource_sync_status(&self) -> Result<Vec<BindingResourceSyncStatus>, BindingError> {
-        convert(self.with("resource_sync_status", |application| {
-            application.resource_sync_status()
-        })?)
+        request!(self, "resource_sync_status", ResourceSyncStatus)
     }
     pub fn resource_drift(
         &self,
         runtime_id: String,
         template_id: String,
     ) -> Result<Vec<BindingResourceDriftFile>, BindingError> {
-        convert(self.with("resource_drift", |application| {
-            application.resource_drift(runtime_id, template_id)
-        })?)
+        request!(
+            self,
+            "resource_drift",
+            ResourceDrift {
+                runtime_id,
+                template_id
+            }
+        )
     }
     pub fn unmanaged_runtime_resources(
         &self,
         kind: BindingRuntimeResourceKind,
     ) -> Result<Vec<BindingUnmanagedRuntimeResource>, BindingError> {
         let kind = convert(kind)?;
-        convert(self.with("unmanaged_runtime_resources", |application| {
-            application.unmanaged_runtime_resources(kind)
-        })?)
+        request!(
+            self,
+            "unmanaged_runtime_resources",
+            UnmanagedRuntimeResources { kind }
+        )
     }
     pub fn apply_resource_template(
         &self,
@@ -353,18 +440,28 @@ impl VeluneApplication {
         targets: Vec<BindingTemplateApplyTarget>,
     ) -> Result<Vec<BindingTemplateApplyReport>, BindingError> {
         let targets = convert(targets)?;
-        convert(self.with("apply_resource_template", |application| {
-            application.apply_resource_template(template_id, targets)
-        })?)
+        request!(
+            self,
+            "apply_resource_template",
+            ApplyResourceTemplate {
+                template_id,
+                targets
+            }
+        )
     }
     pub fn resource_native_import(
         &self,
         runtime_id: String,
         template_id: String,
     ) -> Result<BindingResourceTemplateImport, BindingError> {
-        convert(self.with("resource_native_import", |application| {
-            application.resource_native_import(runtime_id, template_id)
-        })?)
+        request!(
+            self,
+            "resource_native_import",
+            ResourceNativeImport {
+                runtime_id,
+                template_id
+            }
+        )
     }
     pub fn resolve_resource_binding(
         &self,
@@ -373,80 +470,86 @@ impl VeluneApplication {
         resolution: BindingResolution,
     ) -> Result<(), BindingError> {
         let resolution = convert(resolution)?;
-        self.with("resolve_resource_binding", |application| {
-            application.resolve_resource_binding(runtime_id, template_id, resolution)
-        })
+        request!(self, "resolve_resource_binding", ResolveResourceBinding { runtime_id, template_id, resolution }; unit)
     }
     pub fn analytics_query(
         &self,
         query: BindingAnalyticsQuery,
     ) -> Result<BindingAnalyticsReport, BindingError> {
         let query = convert(query)?;
-        convert(self.with("analytics_query", |application| {
-            application.analytics_query(query)
-        })?)
+        request!(self, "analytics_query", AnalyticsQuery { query })
     }
     pub fn runtime_discovery_hints(
         &self,
         user_home: String,
         overrides: std::collections::HashMap<String, String>,
     ) -> Result<Vec<BindingRuntimeDiscoveryHint>, BindingError> {
-        convert(self.with("runtime_discovery_hints", |app| {
-            app.runtime_discovery_hints(user_home, overrides.into_iter().collect())
-        })?)
+        let overrides = overrides.into_iter().collect();
+        request!(
+            self,
+            "runtime_discovery_hints",
+            RuntimeDiscoveryHints {
+                user_home,
+                overrides
+            }
+        )
     }
     pub fn discover_runtimes(
         &self,
         probes: Vec<BindingRuntimeDiscoveryProbe>,
     ) -> Result<Vec<BindingRuntimeDiscoveryCandidate>, BindingError> {
         let probes = convert(probes)?;
-        convert(self.with("discover_runtimes", |app| app.discover_runtimes(probes))?)
+        request!(self, "discover_runtimes", DiscoverRuntimes { probes })
     }
     pub fn set_outline_presentation(
         &self,
         presentation: BindingOutlinePresentation,
     ) -> Result<BindingOutlinePresentation, BindingError> {
         let presentation = convert(presentation)?;
-        convert(self.with("set_outline_presentation", |app| {
-            app.set_outline_presentation(presentation)
-        })?)
+        request!(
+            self,
+            "set_outline_presentation",
+            SetOutlinePresentation { presentation }
+        )
     }
     pub fn set_status_line(
         &self,
         items: Vec<BindingStatusLineItem>,
     ) -> Result<Vec<BindingStatusLineItem>, BindingError> {
         let items = convert(items)?;
-        convert(self.with("set_status_line", |app| app.set_status_line(items))?)
+        request!(self, "set_status_line", SetStatusLine { items })
     }
     pub fn set_conversation_browser_preferences(
         &self,
         preferences: BindingConversationBrowserPreferences,
     ) -> Result<BindingConfigurationSnapshot, BindingError> {
         let preferences = convert(preferences)?;
-        convert(self.with("set_conversation_browser_preferences", |app| {
-            app.set_conversation_browser_preferences(preferences)
-        })?)
+        request!(
+            self,
+            "set_conversation_browser_preferences",
+            SetConversationBrowserPreferences { preferences }
+        )
     }
     pub fn composer_drafts(&self) -> Result<Vec<BindingComposerDraft>, BindingError> {
-        convert(self.with("composer_drafts", |app| app.composer_drafts())?)
+        request!(self, "composer_drafts", ComposerDrafts)
     }
     pub fn set_composer_draft(
         &self,
         conversation_id: String,
         text: String,
     ) -> Result<(), BindingError> {
-        self.with("set_composer_draft", |app| {
-            app.set_composer_draft(conversation_id, text)
-        })
+        request!(self, "set_composer_draft", SetComposerDraft { conversation_id, text }; unit)
     }
     pub fn set_conversation_browser_limits(
         &self,
         limits: BindingConversationBrowserLimits,
     ) -> Result<BindingConversationBrowserLimits, BindingError> {
         let limits = convert(limits)?;
-        convert(self.with("set_conversation_browser_limits", |app| {
-            app.set_conversation_browser_limits(limits)
-        })?)
+        request!(
+            self,
+            "set_conversation_browser_limits",
+            SetConversationBrowserLimits { limits }
+        )
     }
     /// Changes Velune's organization of the conversations; the runtime's own
     /// archive is used where it has one.
@@ -457,9 +560,14 @@ impl VeluneApplication {
     ) -> Result<BindingConfigurationSnapshot, BindingError> {
         let conversations = convert(conversations)?;
         let change = convert(change)?;
-        convert(self.with("organize_conversations", |app| {
-            app.organize_conversations(conversations, change)
-        })?)
+        request!(
+            self,
+            "organize_conversations",
+            OrganizeConversations {
+                conversations,
+                change
+            }
+        )
     }
     /// Shapes the project whose primary folder is `path`: its name (none
     /// shows the folder's), primary folder, and other folders.
@@ -470,41 +578,54 @@ impl VeluneApplication {
         name: Option<String>,
         folders: Vec<String>,
     ) -> Result<BindingConfigurationSnapshot, BindingError> {
-        convert(self.with("set_project", |app| {
-            app.set_project(path, primary_folder, name, folders)
-        })?)
+        request!(
+            self,
+            "set_project",
+            SetProject {
+                path,
+                primary_folder,
+                name,
+                folders
+            }
+        )
     }
     pub fn load_more_conversations(
         &self,
         group: BindingConversationGroupKey,
     ) -> Result<BindingConfigurationSnapshot, BindingError> {
         let group = convert(group)?;
-        convert(self.with("load_more_conversations", |app| {
-            app.load_more_conversations(group)
-        })?)
+        request!(
+            self,
+            "load_more_conversations",
+            LoadMoreConversations { group }
+        )
     }
     pub fn show_archived_conversations(
         &self,
         archived: bool,
     ) -> Result<BindingConfigurationSnapshot, BindingError> {
-        convert(self.with("show_archived_conversations", |app| {
-            app.show_archived_conversations(archived)
-        })?)
+        request!(
+            self,
+            "show_archived_conversations",
+            ShowArchivedConversations { archived }
+        )
     }
     pub fn search_conversations(
         &self,
         text: String,
     ) -> Result<BindingConversationSearch, BindingError> {
-        convert(self.with("search_conversations", |app| app.search_conversations(text))?)
+        request!(self, "search_conversations", SearchConversations { text })
     }
     /// One conversation by identity, whether or not the list shows it.
     pub fn find_conversation(
         &self,
         conversation_id: String,
     ) -> Result<Option<BindingListedConversation>, BindingError> {
-        convert(self.with("find_conversation", |app| {
-            app.find_conversation(conversation_id)
-        })?)
+        request!(
+            self,
+            "find_conversation",
+            FindConversation { conversation_id }
+        )
     }
 
     pub fn provider_quota(
@@ -512,18 +633,28 @@ impl VeluneApplication {
         gateway_id: String,
         provider_id: String,
     ) -> Result<BindingProviderQuotaStatus, BindingError> {
-        convert(self.with("provider_quota", |app| {
-            app.provider_quota(gateway_id, provider_id)
-        })?)
+        request!(
+            self,
+            "provider_quota",
+            ProviderQuota {
+                gateway_id,
+                provider_id
+            }
+        )
     }
     pub fn refresh_provider_quota(
         &self,
         gateway_id: String,
         provider_id: String,
     ) -> Result<BindingProviderQuotaStatus, BindingError> {
-        convert(self.with("refresh_provider_quota", |app| {
-            app.refresh_provider_quota(gateway_id, provider_id)
-        })?)
+        request!(
+            self,
+            "refresh_provider_quota",
+            RefreshProviderQuota {
+                gateway_id,
+                provider_id
+            }
+        )
     }
     pub fn save_provider(
         &self,
@@ -533,18 +664,29 @@ impl VeluneApplication {
     ) -> Result<BindingGatewayUpdate, BindingError> {
         let provider = convert(provider)?;
         let authentication_edit = convert(authentication_edit)?;
-        convert(self.with("save_provider", |app| {
-            app.save_provider(gateway_id, provider, authentication_edit)
-        })?)
+        request!(
+            self,
+            "save_provider",
+            SaveProvider {
+                gateway_id,
+                provider,
+                authentication_edit
+            }
+        )
     }
     pub fn delete_provider(
         &self,
         gateway_id: String,
         provider_id: String,
     ) -> Result<BindingGatewayUpdate, BindingError> {
-        convert(self.with("delete_provider", |app| {
-            app.delete_provider(gateway_id, provider_id)
-        })?)
+        request!(
+            self,
+            "delete_provider",
+            DeleteProvider {
+                gateway_id,
+                provider_id
+            }
+        )
     }
     pub fn save_model_route(
         &self,
@@ -552,48 +694,56 @@ impl VeluneApplication {
         route: BindingModelRoute,
     ) -> Result<BindingGatewayUpdate, BindingError> {
         let route = convert(route)?;
-        convert(self.with("save_model_route", |app| {
-            app.save_model_route(gateway_id, route)
-        })?)
+        request!(
+            self,
+            "save_model_route",
+            SaveModelRoute { gateway_id, route }
+        )
     }
     pub fn delete_model_route(
         &self,
         gateway_id: String,
         route_record_key: String,
     ) -> Result<BindingGatewayUpdate, BindingError> {
-        convert(self.with("delete_model_route", |app| {
-            app.delete_model_route(gateway_id, route_record_key)
-        })?)
+        request!(
+            self,
+            "delete_model_route",
+            DeleteModelRoute {
+                gateway_id,
+                route_record_key
+            }
+        )
     }
     pub fn read_provider_api_key(
         &self,
         gateway_id: String,
         provider_id: String,
     ) -> Result<String, BindingError> {
-        self.with("read_provider_api_key", |app| {
-            app.read_provider_api_key(gateway_id, provider_id)
-        })
+        request!(
+            self,
+            "read_provider_api_key",
+            ReadProviderApiKey {
+                gateway_id,
+                provider_id
+            }
+        )
     }
     pub fn save_model_template(
         &self,
         template: BindingModelTemplate,
     ) -> Result<Vec<BindingModelTemplate>, BindingError> {
         let template = convert(template)?;
-        convert(self.with("save_model_template", |app| {
-            app.save_model_template(template)
-        })?)
+        request!(self, "save_model_template", SaveModelTemplate { template })
     }
     /// Explicit, credential-free retrieval; does not change application configuration.
     pub fn fetch_public_model_catalog(&self) -> Result<Vec<BindingCatalogModel>, BindingError> {
-        convert(self.with("fetch_public_model_catalog", |_app| {
-            velune_application::model_catalog::fetch_models_dev()
-        })?)
+        request!(self, "fetch_public_model_catalog", FetchPublicModelCatalog)
     }
     pub fn delete_model_template(
         &self,
         id: String,
     ) -> Result<Vec<BindingModelTemplate>, BindingError> {
-        convert(self.with("delete_model_template", |app| app.delete_model_template(id))?)
+        request!(self, "delete_model_template", DeleteModelTemplate { id })
     }
 
     pub fn upsert_runtime(
@@ -601,21 +751,15 @@ impl VeluneApplication {
         runtime: BindingRuntimeInstance,
     ) -> Result<BindingRuntimeUpdate, BindingError> {
         let runtime = convert(runtime)?;
-        convert(self.with("upsert_runtime", |application| {
-            application.upsert_runtime(runtime)
-        })?)
+        request!(self, "upsert_runtime", UpsertRuntime { runtime })
     }
 
     pub fn delete_runtime(&self, id: String) -> Result<BindingRuntimeUpdate, BindingError> {
-        convert(self.with("delete_runtime", |application| {
-            application.delete_runtime(id)
-        })?)
+        request!(self, "delete_runtime", DeleteRuntime { id })
     }
 
     pub fn select_runtime(&self, id: String) -> Result<BindingConfigurationSnapshot, BindingError> {
-        convert(self.with("select_runtime", |application| {
-            application.select_runtime(id)
-        })?)
+        request!(self, "select_runtime", SelectRuntime { id })
     }
 
     pub fn create_conversation(
@@ -624,9 +768,15 @@ impl VeluneApplication {
         cwd: Option<String>,
         model_record_key: String,
     ) -> Result<BindingSnapshotResult, BindingError> {
-        convert(self.with("create_conversation", |application| {
-            application.create_conversation(runtime_id, cwd, model_record_key)
-        })?)
+        request!(
+            self,
+            "create_conversation",
+            CreateConversation {
+                runtime_id,
+                cwd,
+                model_record_key
+            }
+        )
     }
 
     pub fn open_conversation(
@@ -634,18 +784,28 @@ impl VeluneApplication {
         runtime_id: String,
         conversation_id: String,
     ) -> Result<BindingSnapshotResult, BindingError> {
-        convert(self.with("open_conversation", |application| {
-            application.open_conversation(runtime_id, conversation_id)
-        })?)
+        request!(
+            self,
+            "open_conversation",
+            OpenConversation {
+                runtime_id,
+                conversation_id
+            }
+        )
     }
     pub fn read_conversation(
         &self,
         runtime_id: String,
         conversation_id: String,
     ) -> Result<BindingSnapshotResult, BindingError> {
-        convert(self.with("read_conversation", |application| {
-            application.read_conversation(runtime_id, conversation_id)
-        })?)
+        request!(
+            self,
+            "read_conversation",
+            ReadConversation {
+                runtime_id,
+                conversation_id
+            }
+        )
     }
 
     pub fn rename_conversation(
@@ -654,27 +814,43 @@ impl VeluneApplication {
         conversation_id: String,
         title: String,
     ) -> Result<BindingConfigurationSnapshot, BindingError> {
-        convert(self.with("rename_conversation", |application| {
-            application.rename_conversation(runtime_id, conversation_id, title)
-        })?)
+        request!(
+            self,
+            "rename_conversation",
+            RenameConversation {
+                runtime_id,
+                conversation_id,
+                title
+            }
+        )
     }
     pub fn delete_conversation(
         &self,
         runtime_id: String,
         conversation_id: String,
     ) -> Result<BindingConfigurationSnapshot, BindingError> {
-        convert(self.with("delete_conversation", |application| {
-            application.delete_conversation(runtime_id, conversation_id)
-        })?)
+        request!(
+            self,
+            "delete_conversation",
+            DeleteConversation {
+                runtime_id,
+                conversation_id
+            }
+        )
     }
     pub fn snapshot(
         &self,
         runtime_id: String,
         conversation_id: String,
     ) -> Result<BindingSnapshotResult, BindingError> {
-        convert(self.with("snapshot", |application| {
-            application.snapshot(runtime_id, conversation_id)
-        })?)
+        request!(
+            self,
+            "snapshot",
+            Snapshot {
+                runtime_id,
+                conversation_id
+            }
+        )
     }
     /// Poll a view relative to the cursor of its latest delivery.
     pub fn snapshot_update(
@@ -684,9 +860,15 @@ impl VeluneApplication {
         since: BindingTranscriptCursor,
     ) -> Result<BindingSnapshotUpdate, BindingError> {
         let since = convert(since)?;
-        convert(self.with("snapshot_update", |application| {
-            application.snapshot_update(runtime_id, conversation_id, since)
-        })?)
+        request!(
+            self,
+            "snapshot_update",
+            SnapshotUpdate {
+                runtime_id,
+                conversation_id,
+                since
+            }
+        )
     }
     /// Complete reasoning and tool output of delivered messages.
     pub fn message_payloads(
@@ -695,9 +877,15 @@ impl VeluneApplication {
         conversation_id: String,
         message_ids: Vec<String>,
     ) -> Result<Vec<BindingMessage>, BindingError> {
-        convert(self.with("message_payloads", |application| {
-            application.message_payloads(runtime_id, conversation_id, message_ids)
-        })?)
+        request!(
+            self,
+            "message_payloads",
+            MessagePayloads {
+                runtime_id,
+                conversation_id,
+                message_ids
+            }
+        )
     }
 
     pub fn send_turn(
@@ -708,15 +896,17 @@ impl VeluneApplication {
         model_record_key: String,
         text: String,
     ) -> Result<BindingSnapshotResult, BindingError> {
-        convert(self.with("send_turn", |application| {
-            application.send_turn(
+        request!(
+            self,
+            "send_turn",
+            SendTurn {
                 source_runtime_id,
                 conversation_id,
                 target_runtime_id,
                 model_record_key,
-                text,
-            )
-        })?)
+                text
+            }
+        )
     }
 
     pub fn upsert_runtime_with_execution(
@@ -726,9 +916,11 @@ impl VeluneApplication {
     ) -> Result<BindingRuntimeUpdate, BindingError> {
         let runtime = convert(runtime)?;
         let execution = convert(execution)?;
-        convert(self.with("upsert_runtime_with_execution", |application| {
-            application.upsert_runtime_with_execution(runtime, execution)
-        })?)
+        request!(
+            self,
+            "upsert_runtime_with_execution",
+            UpsertRuntimeWithExecution { runtime, execution }
+        )
     }
 
     pub fn upsert_acp_runtime(
@@ -740,22 +932,24 @@ impl VeluneApplication {
         let runtime = convert(runtime)?;
         let execution = convert(execution)?;
         let launch = convert(launch)?;
-        convert(self.with("upsert_acp_runtime", |application| {
-            application.upsert_acp_runtime(runtime, execution, launch)
-        })?)
+        request!(
+            self,
+            "upsert_acp_runtime",
+            UpsertAcpRuntime {
+                runtime,
+                execution,
+                launch
+            }
+        )
     }
     pub fn acp_launch(&self, runtime_id: String) -> Result<BindingAcpLaunch, BindingError> {
-        convert(self.with("acp_launch", |application| {
-            application.acp_launch(runtime_id)
-        })?)
+        request!(self, "acp_launch", AcpLaunch { runtime_id })
     }
     pub fn acp_runtime_info(
         &self,
         runtime_id: String,
     ) -> Result<BindingAcpRuntimeInfo, BindingError> {
-        convert(self.with("acp_runtime_info", |application| {
-            application.acp_runtime_info(runtime_id)
-        })?)
+        request!(self, "acp_runtime_info", AcpRuntimeInfo { runtime_id })
     }
     pub fn open_acp_conversation(
         &self,
@@ -763,18 +957,29 @@ impl VeluneApplication {
         native_session_id: String,
         cwd: String,
     ) -> Result<BindingSnapshotResult, BindingError> {
-        convert(self.with("open_acp_conversation", |application| {
-            application.open_acp_conversation(runtime_id, native_session_id, cwd)
-        })?)
+        request!(
+            self,
+            "open_acp_conversation",
+            OpenAcpConversation {
+                runtime_id,
+                native_session_id,
+                cwd
+            }
+        )
     }
     pub fn acp_session_config(
         &self,
         runtime_id: String,
         conversation_id: String,
     ) -> Result<Vec<BindingAcpConfigOption>, BindingError> {
-        convert(self.with("acp_session_config", |application| {
-            application.acp_session_config(runtime_id, conversation_id)
-        })?)
+        request!(
+            self,
+            "acp_session_config",
+            AcpSessionConfig {
+                runtime_id,
+                conversation_id
+            }
+        )
     }
     pub fn set_acp_session_config(
         &self,
@@ -784,27 +989,34 @@ impl VeluneApplication {
         value: BindingAcpConfigValue,
     ) -> Result<Vec<BindingAcpConfigOption>, BindingError> {
         let value = convert(value)?;
-        convert(self.with("set_acp_session_config", |application| {
-            application.set_acp_session_config(runtime_id, conversation_id, config_id, value)
-        })?)
+        request!(
+            self,
+            "set_acp_session_config",
+            SetAcpSessionConfig {
+                runtime_id,
+                conversation_id,
+                config_id,
+                value
+            }
+        )
     }
 
     pub fn runtime_execution(
         &self,
         runtime_id: String,
     ) -> Result<BindingRuntimeExecution, BindingError> {
-        convert(self.with("runtime_execution", |application| {
-            application.runtime_execution(runtime_id)
-        })?)
+        request!(self, "runtime_execution", RuntimeExecution { runtime_id })
     }
 
     pub fn runtime_home_directory(
         &self,
         runtime_id: String,
     ) -> Result<Option<String>, BindingError> {
-        self.with("runtime_home_directory", |application| {
-            application.runtime_home_directory(runtime_id)
-        })
+        request!(
+            self,
+            "runtime_home_directory",
+            RuntimeHomeDirectory { runtime_id }
+        )
     }
 
     pub fn configure_runtime_execution(
@@ -813,9 +1025,14 @@ impl VeluneApplication {
         execution: BindingRuntimeExecution,
     ) -> Result<BindingRuntimeUpdate, BindingError> {
         let execution = convert(execution)?;
-        convert(self.with("configure_runtime_execution", |application| {
-            application.configure_runtime_execution(runtime_id, execution)
-        })?)
+        request!(
+            self,
+            "configure_runtime_execution",
+            ConfigureRuntimeExecution {
+                runtime_id,
+                execution
+            }
+        )
     }
 
     pub fn create_conversation_with_selection(
@@ -825,10 +1042,14 @@ impl VeluneApplication {
         selection: BindingModelSelection,
     ) -> Result<BindingSnapshotResult, BindingError> {
         let selection = convert(selection)?;
-        convert(
-            self.with("create_conversation_with_selection", |application| {
-                application.create_conversation_with_selection(runtime_id, cwd, selection)
-            })?,
+        request!(
+            self,
+            "create_conversation_with_selection",
+            CreateConversationWithSelection {
+                runtime_id,
+                cwd,
+                selection
+            }
         )
     }
 
@@ -842,15 +1063,17 @@ impl VeluneApplication {
     ) -> Result<BindingSnapshotResult, BindingError> {
         let selection = convert(selection)?;
         let turn = convert(turn)?;
-        convert(self.with("send_turn_with_selection", |application| {
-            application.send_turn_with_selection(
+        request!(
+            self,
+            "send_turn_with_selection",
+            SendTurnWithSelection {
                 source_runtime_id,
                 conversation_id,
                 target_runtime_id,
                 selection,
-                turn,
-            )
-        })?)
+                turn
+            }
+        )
     }
 
     pub fn reasoning_efforts(
@@ -858,24 +1081,25 @@ impl VeluneApplication {
         runtime_id: String,
         model_record_key: String,
     ) -> Result<Vec<String>, BindingError> {
-        self.with("reasoning_efforts", |application| {
-            application.reasoning_efforts(runtime_id, model_record_key)
-        })
+        request!(
+            self,
+            "reasoning_efforts",
+            ReasoningEfforts {
+                runtime_id,
+                model_record_key
+            }
+        )
     }
 
     pub fn runtime_models(
         &self,
         runtime_id: String,
     ) -> Result<Vec<BindingRuntimeModel>, BindingError> {
-        convert(self.with("runtime_models", |application| {
-            application.runtime_models(runtime_id)
-        })?)
+        request!(self, "runtime_models", RuntimeModels { runtime_id })
     }
 
     pub fn next_turn_model_selection(&self) -> Result<Option<BindingModelSelection>, BindingError> {
-        convert(self.with("next_turn_model_selection", |application| {
-            application.next_turn_model_selection()
-        })?)
+        request!(self, "next_turn_model_selection", NextTurnModelSelection)
     }
 
     /// Change the conversation's send queue; one added to or resumed while
@@ -887,9 +1111,15 @@ impl VeluneApplication {
         operation: BindingSendQueueOperation,
     ) -> Result<BindingSnapshotResult, BindingError> {
         let operation = convert(operation)?;
-        convert(self.with("send_queue", |application| {
-            application.send_queue(runtime_id, conversation_id, operation)
-        })?)
+        request!(
+            self,
+            "send_queue",
+            SendQueue {
+                runtime_id,
+                conversation_id,
+                operation
+            }
+        )
     }
 
     /// Deliver a message into the running turn through the runtime's own
@@ -901,9 +1131,15 @@ impl VeluneApplication {
         turn: BindingComposedTurn,
     ) -> Result<BindingSnapshotResult, BindingError> {
         let turn = convert(turn)?;
-        convert(self.with("steer_turn", |application| {
-            application.steer_turn(runtime_id, conversation_id, turn)
-        })?)
+        request!(
+            self,
+            "steer_turn",
+            SteerTurn {
+                runtime_id,
+                conversation_id,
+                turn
+            }
+        )
     }
 
     /// Send `turn` in place of an editable user message; a fork answers
@@ -920,16 +1156,18 @@ impl VeluneApplication {
         let placement = convert(placement)?;
         let selection = convert(selection)?;
         let turn = convert(turn)?;
-        convert(self.with("edit_message", |application| {
-            application.edit_message(
+        request!(
+            self,
+            "edit_message",
+            EditMessage {
                 runtime_id,
                 conversation_id,
                 message_id,
                 placement,
                 selection,
-                turn,
-            )
-        })?)
+                turn
+            }
+        )
     }
 
     pub fn cancel(
@@ -937,9 +1175,14 @@ impl VeluneApplication {
         runtime_id: String,
         conversation_id: String,
     ) -> Result<BindingSnapshotResult, BindingError> {
-        convert(self.with("cancel", |application| {
-            application.cancel(runtime_id, conversation_id)
-        })?)
+        request!(
+            self,
+            "cancel",
+            Cancel {
+                runtime_id,
+                conversation_id
+            }
+        )
     }
 
     pub fn stop_sub_agents(
@@ -947,9 +1190,14 @@ impl VeluneApplication {
         runtime_id: String,
         conversation_id: String,
     ) -> Result<BindingSnapshotResult, BindingError> {
-        convert(self.with("stop_sub_agents", |application| {
-            application.stop_sub_agents(runtime_id, conversation_id)
-        })?)
+        request!(
+            self,
+            "stop_sub_agents",
+            StopSubAgents {
+                runtime_id,
+                conversation_id
+            }
+        )
     }
 
     /// Uncommitted changes in the conversation's working directory.
@@ -958,9 +1206,14 @@ impl VeluneApplication {
         runtime_id: String,
         conversation_id: String,
     ) -> Result<BindingWorkingChanges, BindingError> {
-        convert(self.with("working_changes", |application| {
-            application.working_changes(runtime_id, conversation_id)
-        })?)
+        request!(
+            self,
+            "working_changes",
+            WorkingChanges {
+                runtime_id,
+                conversation_id
+            }
+        )
     }
 
     /// The branch checked out in the conversation's working directory;
@@ -970,9 +1223,14 @@ impl VeluneApplication {
         runtime_id: String,
         conversation_id: String,
     ) -> Result<Option<String>, BindingError> {
-        self.with("working_branch", |application| {
-            application.working_branch(runtime_id, conversation_id)
-        })
+        request!(
+            self,
+            "working_branch",
+            WorkingBranch {
+                runtime_id,
+                conversation_id
+            }
+        )
     }
 
     /// The diff of one file listed by `working_changes`.
@@ -982,9 +1240,15 @@ impl VeluneApplication {
         conversation_id: String,
         path: String,
     ) -> Result<BindingFileDiff, BindingError> {
-        convert(self.with("file_diff", |application| {
-            application.file_diff(runtime_id, conversation_id, path)
-        })?)
+        request!(
+            self,
+            "file_diff",
+            FileDiff {
+                runtime_id,
+                conversation_id,
+                path
+            }
+        )
     }
 
     /// Conversations executing or waiting for the user across open
@@ -993,9 +1257,11 @@ impl VeluneApplication {
         &self,
         since: u64,
     ) -> Result<BindingConversationActivity, BindingError> {
-        convert(self.with("conversation_activity", |application| {
-            application.conversation_activity(since)
-        })?)
+        request!(
+            self,
+            "conversation_activity",
+            ConversationActivity { since }
+        )
     }
 
     pub fn reply_runtime_interaction(
@@ -1006,9 +1272,16 @@ impl VeluneApplication {
         reply: BindingRuntimeInteractionReply,
     ) -> Result<BindingSnapshotResult, BindingError> {
         let reply = convert(reply)?;
-        convert(self.with("reply_runtime_interaction", |app| {
-            app.reply_runtime_interaction(runtime_id, conversation_id, interaction_id, reply)
-        })?)
+        request!(
+            self,
+            "reply_runtime_interaction",
+            ReplyRuntimeInteraction {
+                runtime_id,
+                conversation_id,
+                interaction_id,
+                reply
+            }
+        )
     }
     pub fn preview_provider_import(
         &self,
@@ -1016,9 +1289,11 @@ impl VeluneApplication {
         source: BindingProviderImportSource,
     ) -> Result<BindingProviderImportPreview, BindingError> {
         let source = convert(source)?;
-        convert(self.with("preview_provider_import", |application| {
-            application.preview_provider_import(gateway_id, source)
-        })?)
+        request!(
+            self,
+            "preview_provider_import",
+            PreviewProviderImport { gateway_id, source }
+        )
     }
 
     pub fn apply_provider_import(
@@ -1031,15 +1306,17 @@ impl VeluneApplication {
     ) -> Result<BindingImportResult, BindingError> {
         let source = convert(source)?;
         let selections = convert(selections)?;
-        convert(self.with("apply_provider_import", |application| {
-            application.apply_provider_import(
+        request!(
+            self,
+            "apply_provider_import",
+            ApplyProviderImport {
                 gateway_id,
                 source,
                 preview_token,
                 selections,
-                replace_existing,
-            )
-        })?)
+                replace_existing
+            }
+        )
     }
 
     pub fn authentication_inspect(
@@ -1047,18 +1324,28 @@ impl VeluneApplication {
         gateway_id: String,
         provider_id: String,
     ) -> Result<BindingAuthenticationMetadata, BindingError> {
-        convert(self.with("authentication_inspect", |app| {
-            app.authentication_inspect(gateway_id, provider_id)
-        })?)
+        request!(
+            self,
+            "authentication_inspect",
+            AuthenticationInspect {
+                gateway_id,
+                provider_id
+            }
+        )
     }
     pub fn authentication_start(
         &self,
         gateway_id: String,
         provider_id: String,
     ) -> Result<BindingAuthenticationProgress, BindingError> {
-        convert(self.with("authentication_start", |app| {
-            app.authentication_start(gateway_id, provider_id)
-        })?)
+        request!(
+            self,
+            "authentication_start",
+            AuthenticationStart {
+                gateway_id,
+                provider_id
+            }
+        )
     }
 
     pub fn authentication_logout(
@@ -1066,14 +1353,17 @@ impl VeluneApplication {
         gateway_id: String,
         provider_id: String,
     ) -> Result<BindingGatewayUpdate, BindingError> {
-        convert(self.with("authentication_logout", |app| {
-            app.authentication_logout(gateway_id, provider_id)
-        })?)
+        request!(
+            self,
+            "authentication_logout",
+            AuthenticationLogout {
+                gateway_id,
+                provider_id
+            }
+        )
     }
     pub fn authentication_poll(&self) -> Result<BindingAuthenticationProgress, BindingError> {
-        convert(self.with("authentication_poll", |application| {
-            application.authentication_poll()
-        })?)
+        request!(self, "authentication_poll", AuthenticationPoll)
     }
 
     pub fn authentication_reply(
@@ -1081,15 +1371,43 @@ impl VeluneApplication {
         prompt_id: String,
         value: String,
     ) -> Result<BindingAuthenticationProgress, BindingError> {
-        convert(self.with("authentication_reply", |application| {
-            application.authentication_reply(prompt_id, value)
-        })?)
+        request!(
+            self,
+            "authentication_reply",
+            AuthenticationReply { prompt_id, value }
+        )
     }
 
     pub fn authentication_cancel(&self) -> Result<BindingAuthenticationProgress, BindingError> {
-        convert(self.with("authentication_cancel", |application| {
-            application.authentication_cancel()
-        })?)
+        request!(self, "authentication_cancel", AuthenticationCancel)
+    }
+    /// Upload content before using its reference in a remote composed turn.
+    pub fn upload_attachment(
+        &self,
+        name: String,
+        bytes: Vec<u8>,
+    ) -> Result<BindingAttachmentReference, BindingError> {
+        request!(self, "upload_attachment", UploadAttachment { name, bytes })
+    }
+
+    /// Only content attached to this delivered message can be retrieved.
+    pub fn read_attachment(
+        &self,
+        runtime_id: String,
+        conversation_id: String,
+        message_id: String,
+        block_index: u32,
+    ) -> Result<BindingAttachmentContent, BindingError> {
+        request!(
+            self,
+            "read_attachment",
+            ReadAttachment {
+                runtime_id,
+                conversation_id,
+                message_id,
+                block_index
+            }
+        )
     }
 }
 
@@ -1121,6 +1439,13 @@ impl BindingError {
                 BindingFailureKind::Contract,
                 "contract_failed".into(),
                 phase,
+                detail,
+            ),
+            #[cfg(feature = "remote")]
+            Self::RemoteRequest { kind, detail, .. } => (
+                kind,
+                "remote_request_failed".into(),
+                "remote".into(),
                 detail,
             ),
             Self::Closed => (

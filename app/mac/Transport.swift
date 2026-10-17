@@ -198,6 +198,7 @@ final class Transport: @unchecked Sendable {
         if let error = error as? BindingError {
             switch error {
             case .Diagnostic(let kind, _, _, _, _): return Self.kindName(kind)
+            case .RemoteRequest(let kind, _, _): return Self.kindName(kind)
             case .Invalid: return "invalid"
             case .Unsupported: return "unsupported"
             case .Io: return "io"
@@ -213,6 +214,9 @@ final class Transport: @unchecked Sendable {
         switch error {
         case .Diagnostic(let kind, let detail, let code, let phase, let operationID):
             return .diagnostic(kind: kindName(kind), detail: detail, code: code, phase: phase, operationID: operationID)
+        case .RemoteRequest(let kind, let detail, let requestID):
+            let operationID = requestID.map { "\($0.incarnation)/\($0.client)/\($0.sequence)" } ?? ""
+            return .diagnostic(kind: kindName(kind), detail: detail, code: kindName(kind), phase: "remote", operationID: operationID)
         case .Invalid(let detail): return .rejected("请求无效：\(detail)")
         case .Unsupported(let detail): return .rejected("当前版本不支持此操作：\(detail)")
         case .Io(let detail): return .rejected("本地读写失败：\(detail)")
@@ -233,6 +237,10 @@ final class Transport: @unchecked Sendable {
         case .unavailable: return "unavailable"
         case .providerImport: return "provider_import"
         case .runtimeManagement: return "runtime_management"
+        case .conflict: return "conflict"
+        case .unauthorized: return "unauthorized"
+        case .connection: return "connection"
+        case .outcomeUnknown: return "outcome_unknown"
         }
     }
 
@@ -240,6 +248,7 @@ final class Transport: @unchecked Sendable {
         if let error = error as? BindingError {
             switch error {
             case .Diagnostic(_, let detail, _, _, _), .Invalid(let detail), .Unsupported(let detail), .Io(let detail), .Contract(let detail): return detail
+            case .RemoteRequest(_, let detail, _): return detail
             case .Closed: return "本地核心已关闭"
             case .Unavailable: return "本地核心不可用"
             }

@@ -15,7 +15,7 @@ use std::cmp::Ordering;
 use std::collections::{BTreeSet, HashMap};
 
 /// What the list loads beyond its first pages; not persisted.
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub(super) struct BrowserWindow {
     /// Pages beyond the first that the user loaded, per group.
     extra_pages: BTreeMap<ConversationGroupKey, u32>,
