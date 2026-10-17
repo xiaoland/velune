@@ -113,12 +113,20 @@ struct ConversationListView: View {
                             // Always selectable, also while the conversation pressed on
                             // opens: the rows do not change under the press.
                             .contextMenu { conversationManagementMenu(store.selectedConversationIDs.contains(conversation.id) ? store.selectedConversationIDs : [conversation.id]) }
-                            // Dropped on a pane, it opens there or beside it. The list's
-                            // own drag (`itemProvider`), not a gesture on the row
-                            // (`onDrag`): the table then starts the drag on any motion,
-                            // where a gesture lost the press to the table's selection
-                            // dragging across rows.
-                            .itemProvider { NSItemProvider(object: ConversationLink.url(runtimeID: conversation.runtimeID, conversationID: conversation.id) as NSURL) }
+                            // Dropped on a pane, it opens there or beside it; outside
+                            // every window, in a window of its own. The list's own drag
+                            // (`itemProvider`), not a gesture on the row (`onDrag`): the
+                            // table then starts the drag on any motion, where a gesture
+                            // lost the press to the table's selection dragging across
+                            // rows. Its link is Velune's alone, as a tab's: the desktop
+                            // or another app would keep it as a file or text instead.
+                            .itemProvider { [window] in
+                                let provider = NSItemProvider()
+                                provider.registerObject(ConversationLink.url(runtimeID: conversation.runtimeID, conversationID: conversation.id) as NSURL, visibility: .ownProcess)
+                                let id = conversation.id
+                                DispatchQueue.main.async { ListDragWatch.shared.begin(id, from: window) }
+                                return provider
+                            }
                     }
                     if section.hasMore {
                         if store.searchResults == nil {
