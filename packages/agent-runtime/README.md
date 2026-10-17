@@ -111,7 +111,7 @@ SSH 启动请求通过 stdin 长度帧传入 argv、环境与 cwd，后续 stdin
 
 本机网关通过该运行时持有的 SSH master 创建动态远端 loopback 反向转发；启动后核对监听实际只在 loopback，释放 guard 时撤销转发。SSH 服务端若强制开放公网监听，或目标平台无法核对监听地址，则明确报错，不把受限隧道降级为开放端口。Pi 的 gateway／隧道由 application 持有，原生 `NativeSession` 持有自身一轮使用的隧道；caller 不得为同一 native injection 再包一层远端转发。
 
-`os_home` 只控制子进程和其工具看到的 `HOME`；`agent_dir` 分别映射 `PI_CODING_AGENT_DIR`、`CODEX_HOME`、`CLAUDE_CONFIG_DIR`、`DSH_HOME`。application 决定采用现有 HOME 还是创建 Velune managed HOME，并显式提供两种路径。本包不读取默认 HOME 推断另一份真实配置，也不复制来源认证。managed HOME 本身不代表已登录。
+`os_home` 只控制子进程和其工具看到的 `HOME`；`agent_dir` 分别映射 `PI_CODING_AGENT_DIR`、`CODEX_HOME`、`CLAUDE_CONFIG_DIR`、`DSH_HOME`。例外：本机 Claude Code 实例的 `os_home` 为空或等于应用自身 HOME，且 `agent_dir` 就是该 HOME 的 `.claude` 时，不设并移除 `CLAUDE_CONFIG_DIR`；Claude Code 2.1.292 只要该变量存在（即使取默认值）就给 macOS Keychain 服务名加目录哈希后缀，导致找不到用户在终端完成的登录。其他目录与 managed HOME 仍显式设置，保持按目录隔离。application 决定采用现有 HOME 还是创建 Velune managed HOME，并显式提供两种路径。本包不读取默认 HOME 推断另一份真实配置，也不复制来源认证。managed HOME 本身不代表已登录。
 
 Claude Code 的每轮执行使用独立 `--print --input-format stream-json --output-format stream-json` 控制进程，首轮 `--session-id`、后续 `--resume` 保留原生会话身份。工具权限通过 `can_use_tool` 转为 conversation 交互，由调用方明确答复。已有 provider 由 Claude 自己解析；managed 轮次设置 `CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST` 与临时 Messages 端点／token，清除该子进程的其它 provider 认证开关，避免来源 `settings.env` 覆盖本轮注入。没有修改、备份或恢复用户 provider 文件。
 

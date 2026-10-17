@@ -55,6 +55,27 @@ pub(super) enum ClaudeStart {
 }
 
 impl NativeSession {
+    /// Whether a local instance's configuration directory is the CLI default
+    /// for the app's own HOME, where the user's own `claude` login lives. A
+    /// managed or other HOME keeps its explicit, separately keyed directory.
+    pub(super) fn claude_default_config(config: &NativeConfig) -> bool {
+        let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else {
+            return false;
+        };
+        let same = |left: &Path, right: &Path| {
+            left == right
+                || matches!(
+                    (std::fs::canonicalize(left), std::fs::canonicalize(right)),
+                    (Ok(left), Ok(right)) if left == right
+                )
+        };
+        config.execution.is_local()
+            && config
+                .os_home
+                .as_deref()
+                .is_none_or(|os_home| same(os_home, &home))
+            && same(&config.agent_dir, &home.join(".claude"))
+    }
     pub(super) fn claude_command(
         config: &NativeConfig,
         selection: Option<&RuntimeModel>,
