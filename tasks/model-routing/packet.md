@@ -215,3 +215,15 @@ HOME 修复已覆盖 application 登录/状态/退出/额度与 ai-provider 执�
 用户明确授权将订阅组合 worktree 合并回主工作区 main。合并前 main=`f10565c`、订阅分支=`008c67e`，主工作区干净。三处文本冲突按双方契约解决：普通配置 schema 10 与主分支 organization schema 2 共存；保留运行时 compatible_versions 文档并更新普通 schema；人工 Swift fixture 保留主分支 pi-1.0 ID 并补齐四个 provider 组合参数。未改 Mac UI、生成 Swift 或安装应用，未触发真实认证/模型/额度请求；保留已登录订阅，真实文本/工具验收继续等待额度恢复。
 
 合并树验证通过：cargo fmt --check、workspace all-features check、workspace all-targets/all-features clippy -D warnings、bindings build；合成订阅组合默认 20 组全通过（real_cli_executed=false），61 份人工脚本 AST 通过。未重复已经通过且未受冲突影响的真实调用或其他回归。
+
+## 额度恢复后的真实验收（2026-10-17）
+
+用户告知额度恢复，沿用保留的独立登录，冻结 main `0d93989a172dd15800c7d72cfc3f0c72e54706e5`。额度一次采样返回 Fresh：5 小时已用 6%、周已用 54%，problem=false。文本单请求返回 200/SSE、有效完成终态，随机 nonce 核对通过。工具阶段两次网关请求均 200/SSE：caller 执行一个纯内存工具，重建 Runner 后回传结果，最终只存在于工具结果中的随机 marker 核对通过。没有重新登录、没有失败重放，CLI 内部网络次数未计量。
+
+真实计量暴露后续修复点：工具调用段 analytics input=3109/output=32，最终段 input=6332/output=87，后端将 CLI result 整轮累计 usage 直接作为最后一段用量，可能重复已交付部分。backend owner修复同CLI turn分段计量，manual owner补合成累计/多工具/未知边界，不增加真实模型请求。当前主工作区 app/mac/main.swift 与 ShotProbe.swift 为其他任务改动，不纳入本任务。
+
+计量契约依据复核：[Claude 官方 cost-tracking](https://code.claude.com/docs/en/agent-sdk/cost-tracking) 明确 streaming input 的 result.usage 仅当前用户轮累计；同 assistant message ID 需去重。assistant/message_start 的 output_tokens 是占位，真实分步输出计数来自 includePartialMessages 的 message_delta.usage，最终 result 为整轮累计。修复应避免占位覆盖真实值、重复事件累加和最终累计重复入账；缺失与不一致维持未知，不补零。
+
+计量修复完成：按原生消息 ID 与可信 stream delta 建立当前 CLI turn 账本，工具响应扣除已交付部分，最终累计同样扣除；新普通输入重置账本，未知、下降、溢出与 conversation_reset 不伪造数值。`manual-subscription-composition.py --case usage` 的 8 组合成验收通过，同时检查原生 HTTP usage 和 gateway analytics：可信输出差额、占位未知、多工具去重、新轮归零、缺字段、累计低于已交付、低于已观察、重置未知。仅临时源码副本插入唯一消费完成 ack 消除 CLI stdout/MCP 调度竞态，产品不保留验收 hook。
+
+最终 fmt、workspace all-features check、全 targets/all-features clippy -D warnings、bindings build、脚本 AST、文档相对链接与 diff 检查通过。真实文本/工具成功证据对应修复前冻结提交；计量修复由上述合成契约验收，没有再次调用真实模型。本轮仅提交 ai-provider 计量、人工脚本和相关文档，其他并行 Mac 改动由原任务管理。Claude 单订阅接入的登录、额度、真实文本和跨 Runner 工具往返已全部取得证据；未做多个真实 Claude 订阅之间的 fail-over，登录继续保留。

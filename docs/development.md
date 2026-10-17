@@ -400,6 +400,6 @@ Velune 执行的每个会话都获得 application 注入的 `velune` MCP 服务�
 
 手动 API 验收入口为 [manual-runtime-management-api.py](../scripts/manual-runtime-management-api.py)，真实 Claude／Pi 加载入口为 [manual-runtime-management.py](../scripts/manual-runtime-management.py)。后者要求 macOS sandbox、匹配的 CLI 和隔离安装的 Pi，使用 loopback 合成模型响应；运行参数、Codex／DSH 加载与 WSL 文件边界证据见 [固定版本验收](../tasks/runtime-management/native-evidence.md)。
 
-订阅组合人工验收入口为 `python3 scripts/manual-subscription-composition.py`，使用隔离配置目录、合成 Claude CLI 与回环 MCP/HTTP，不读取真实登录。默认场景覆盖 20 组组合、工具往返、跨 Runner 会话与取消/结束恢复；`--case auth-cleanup` 另外覆盖 2 组暂存认证清理。Claude Code 2.1.292 的真实登录及 `/usage` 额度读取已验证，模型成功返回和工具往返仍待额度恢复后验收；固定 `/usage` 命令不重写为普通模型提示，无法解析的额度保持未知。
+订阅组合人工验收入口为 `python3 scripts/manual-subscription-composition.py`，使用隔离配置目录、合成 Claude CLI 与回环 MCP/HTTP，不读取真实登录。默认场景覆盖 20 组组合、工具往返、跨 Runner 会话与取消/结束恢复；`--case auth-cleanup` 另外覆盖 2 组暂存认证清理。Claude Code 2.1.292 的真实登录、`/usage` 额度读取、文本完成及跨 Runner 工具往返已验证；固定 `/usage` 命令不重写为普通模型提示，无法解析的额度保持未知。
 
 真实 Claude 订阅验收入口为 [manual-claude-subscription-live.py](../scripts/manual-claude-subscription-live.py)，默认只冻结 `--source-ref`（缺省 HEAD）编译并执行本地解析自检。使用仓库外专用 `--home` 和官方 CLI 的 `--claude` 绝对路径，`--login` 通过 application 启动官方浏览器登录；成功后用 `--run --stage text|tool|quota` 分阶段验证。text 最多一次网关请求，tool 最多两次且工具只执行内存合成函数，quota 只采样一次；失败不自动重放。该目录是应用验收配置根，不能替换操作系统 HOME；CLI 保留系统身份以访问 macOS Keychain，订阅配置由独立 CLAUDE_CONFIG_DIR 隔离。日志仅包含固定阶段、退出码和计量，不输出凭据或响应正文。

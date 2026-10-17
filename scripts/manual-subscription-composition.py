@@ -6,6 +6,8 @@ stream-json 与 MCP HTTP 的公开消息边界，证据不代表真实订阅或 
 运行：python3 scripts/manual-subscription-composition.py；仅取消闭环：加 --case cancel。
 暂存登录清理：--case auth-cleanup；只在临时源码副本增加结果投递观测marker，
 不改产品分支或持久化决策，核对重写恰好命中一次。
+用量分段：--case usage；临时副本只加assistant处理后的握手标记，避免
+stdout/MCP并发队列竞态，不改变计量或执行分支。
 """
 import argparse
 import json
@@ -24,7 +26,7 @@ ROOT = Path(__file__).resolve().parents[1]
 # This executable is generated inside the isolated fixture directory. It records
 # only synthetic command classes/PIDs so process reuse is independently observable.
 CLI = r'''
-import json, os, pathlib, signal, sys, threading, time, urllib.request
+import json, os, pathlib, signal, sys, threading, time, urllib.request, re
 ROOT = pathlib.Path(FIXTURE_DIRECTORY)
 LOCK = threading.Lock()
 CONFIG = os.environ.get('CLAUDE_CONFIG_DIR', '')
@@ -122,6 +124,54 @@ def tool():
     except Exception:
         record('tool_failed')
         sys.exit(2)
+
+def usage_turn(mode):
+    try:
+        pathlib.Path(CONFIG).mkdir(parents=True, exist_ok=True)
+        ack = pathlib.Path(CONFIG) / 'fixture-usage-processed'
+        def step(duplicate=False):
+            ack.unlink(missing_ok=True)
+            # Valid partial tool response: start output is a placeholder, terminal
+            # message_delta output is the reliable count. Assistant repeats its ID.
+            message = {'id': 'usage-step-one', 'type': 'message', 'role': 'assistant',
+                       'model': 'fixture-model', 'content': [{'type': 'tool_use', 'id': 'cli-private-tool', 'name': 'mcp__velune__echo_fixture', 'input': {'value': 'synthetic-argument'}}],
+                       'usage': {'input_tokens': 100, 'output_tokens': 999, 'cache_read_input_tokens': 10, 'cache_creation_input_tokens': 5}}
+            if not duplicate and mode != 'placeholder':
+                start = dict(message, usage=dict(message['usage'], output_tokens=1))
+                emit({'type': 'stream_event', 'event': {'type': 'message_start', 'message': start}})
+                emit({'type': 'stream_event', 'event': {'type': 'content_block_start', 'index': 0, 'content_block': message['content'][0]}})
+                emit({'type': 'stream_event', 'event': {'type': 'content_block_stop', 'index': 0}})
+                emit({'type': 'stream_event', 'event': {'type': 'message_delta', 'delta': {'stop_reason': 'tool_use'}, 'usage': {'output_tokens': 40}}})
+                emit({'type': 'stream_event', 'event': {'type': 'message_stop'}})
+            emit({'type': 'assistant', 'parent_tool_use_id': 'subagent-only', 'message': dict(message, id='subagent-message', usage={'input_tokens': 9000, 'output_tokens': 9000, 'cache_read_input_tokens': 9000, 'cache_creation_input_tokens': 9000})})
+            emit({'type': 'assistant', 'message': message})
+            deadline = time.monotonic() + 5
+            while not ack.exists() or ack.read_text() != 'usage-step-one':
+                assert time.monotonic() < deadline, 'usage observation boundary timed out'
+                time.sleep(0.01)
+            result = rpc('tools/call', {'name': 'echo_fixture', 'arguments': {'value': 'synthetic-argument'}})
+            assert result['content'][0]['text'] == 'caller-only-result'
+        rpc('initialize', {'protocolVersion': '2024-11-05', 'capabilities': {}, 'clientInfo': {'name': 'usage-fixture', 'version': '1'}})
+        assert any(t['name'] == 'echo_fixture' for t in rpc('tools/list')['tools'])
+        step()
+        if mode == 'multi':
+            step(duplicate=True)
+        if mode == 'reset':
+            emit({'type': 'conversation_reset', 'session_id': 'synthetic-reset'})
+        emit({'type': 'assistant', 'message': {'id': 'usage-step-two', 'type': 'message', 'role': 'assistant', 'model': 'fixture-model', 'content': [{'type': 'text', 'text': 'usage-final'}], 'usage': {'input_tokens': 200, 'output_tokens': 999, 'cache_read_input_tokens': 20, 'cache_creation_input_tokens': 7}}})
+        cumulative = {'input_tokens': 300, 'output_tokens': 95, 'cache_read_input_tokens': 30, 'cache_creation_input_tokens': 12}
+        if mode == 'missing':
+            cumulative = {'output_tokens': 95, 'cache_read_input_tokens': 30}
+        elif mode == 'inconsistent':
+            cumulative['input_tokens'] = 250
+        elif mode == 'regressed':
+            cumulative = {'input_tokens': 90, 'output_tokens': 39, 'cache_read_input_tokens': 30, 'cache_creation_input_tokens': 2}
+        emit({'type': 'result', 'subtype': 'success', 'is_error': False, 'result': 'usage-final', 'usage': cumulative})
+        record('completed')
+    except Exception:
+        record('usage_fixture_failed')
+        os._exit(2)
+
 for line in sys.stdin:
     value = json.loads(line)
     if value.get('type') != 'user':
@@ -148,6 +198,13 @@ for line in sys.stdin:
         emit({'type': 'stream_event', 'event': {'type': 'content_block_stop', 'index': 0}})
         emit({'type': 'result', 'subtype': 'success', 'is_error': False, 'usage': {'input_tokens': 3, 'output_tokens': 2}})
         record('completed')
+    elif 'fixture-usage-next' in text:
+        emit({'type': 'assistant', 'message': {'id': 'usage-next-turn', 'type': 'message', 'role': 'assistant', 'model': 'fixture-model', 'content': [{'type': 'text', 'text': 'usage-next'}], 'usage': {'input_tokens': 7, 'output_tokens': 999, 'cache_read_input_tokens': 1, 'cache_creation_input_tokens': 0}}})
+        emit({'type': 'result', 'subtype': 'success', 'is_error': False, 'usage': {'input_tokens': 7, 'output_tokens': 3, 'cache_read_input_tokens': 1, 'cache_creation_input_tokens': 0}})
+        record('completed')
+    elif 'fixture-usage-' in text:
+        mode = re.search(r'fixture-usage-(reliable|placeholder|multi|missing|regressed|inconsistent|reset)', text).group(1)
+        threading.Thread(target=usage_turn, args=(mode,), daemon=True).start()
     elif 'fixture-tool' in text:
         threading.Thread(target=tool, daemon=True).start()
     else:
@@ -205,6 +262,20 @@ async fn cancellation_cases(root:&Path,endpoint:&str)->Vec<&'static str>{use vel
 async fn finishing_cases(root:&Path)->Vec<&'static str>{use velune_gateway::*;let backends=ExecutionBackends::default();let state=SchedulingState::default();let config=gateway_config(root);let client=reqwest::Client::builder().no_proxy().timeout(Duration::from_secs(5)).build().unwrap();let pending=SessionIdentity{namespace:"fixture".into(),id:"finish-pending".into()};let first=gateway(root,config.clone(),state.clone(),backends.clone(),&pending.id);let reply=http(&client,&first,vec![user("fixture-tool")],true).await;assert_eq!(reply.0,200);assert_eq!(tool_blocks(&reply.1).len(),1);drop(first);let pid=log(root).iter().rev().find(|v|v["kind"]=="tool_wait").unwrap()["pid"].as_u64().unwrap();backends.finish_user_turn("bridge",&pending);dead(pid).await;backends.begin_user_turn("bridge",&pending).unwrap();let next=gateway(root,config.clone(),state.clone(),backends.clone(),&pending.id);let starts=count(root,"start");let reply=http(&client,&next,vec![user("fixture-text")],false).await;assert_eq!(reply.0,200);assert!(reply.1.contains("fixture-completed"));assert_eq!(count(root,"start"),starts+1);drop(next);
  let completed=SessionIdentity{namespace:"fixture".into(),id:"finish-completed".into()};let first=gateway(root,config.clone(),state.clone(),backends.clone(),&completed.id);let reply=http(&client,&first,vec![user("fixture-text")],false).await;assert_eq!(reply.0,200);assert!(reply.1.contains("message_stop"));let starts=count(root,"start");let pid=log(root).iter().rev().find(|v|v["kind"]=="completed").unwrap()["pid"].as_u64().unwrap();drop(first);backends.finish_user_turn("bridge",&completed);assert!(alive(pid),"finish killed completed idle CLI session");backends.begin_user_turn("bridge",&completed).unwrap();let next=gateway(root,config,state,backends.clone(),&completed.id);let reply=http(&client,&next,vec![user("fixture-text"),text_blocks("fixture-completed"),user("fixture-next")],false).await;assert_eq!(reply.0,200);assert!(reply.1.contains("fixture-completed"));assert_eq!(count(root,"start"),starts,"completed idle CLI was restarted");assert!(alive(pid));drop(next);backends.shutdown();for event in log(root).iter().filter(|v|v["kind"]=="start"){dead(event["pid"].as_u64().unwrap()).await;}vec!["finish pending outer turn kills MCP child and permits explicit new turn", "finish completed outer turn preserves same PID across next Runner"]}
 
+
+#[derive(Default)]struct UsageSink(Mutex<Vec<velune_gateway::AnalyticsRecord>>);
+impl velune_gateway::AnalyticsSink for UsageSink{fn record(&self,r:velune_gateway::AnalyticsRecord){self.0.lock().unwrap().push(r);}}
+fn usage_runner(root:&Path,session:&str,state:velune_gateway::SchedulingState,backends:velune_gateway::ExecutionBackends,sink:Arc<UsageSink>)->velune_gateway::Runner{use velune_gateway::*;Runner::start_with_scheduling(gateway_config(root),Arc::new(Auth{root:root.to_owned()}),std::collections::BTreeMap::new(),Some(sink),state,Arc::new(UnknownQuotaSource),Some(SessionIdentity{namespace:"fixture".into(),id:session.into()}),backends).unwrap()}
+fn native_blocks(text:&str)->Vec<Value>{text.lines().filter_map(|l|l.strip_prefix("data: ")).filter_map(|s|serde_json::from_str::<Value>(s).ok()).filter_map(|v|v.get("content_block").cloned()).collect()}
+fn wire_usage(text:&str)->Value{text.lines().filter_map(|l|l.strip_prefix("data: ")).filter_map(|s|serde_json::from_str::<Value>(s).ok()).filter(|v|v["type"]=="message_delta").last().unwrap()["usage"].clone()}
+fn expected_usage(input:Option<u64>,output:Option<u64>,read:Option<u64>,create:Option<u64>)->Value{let mut map=serde_json::Map::new();for (key,value) in [("input_tokens",input),("output_tokens",output),("cache_read_input_tokens",read),("cache_creation_input_tokens",create)]{if let Some(value)=value{map.insert(key.into(),json!(value));}}Value::Object(map)}
+fn usage_record(sink:&UsageSink,expected:&Value){let records=sink.0.lock().unwrap();let record=records.last().unwrap();assert_eq!(record.outcome,velune_gateway::AnalyticsOutcome::Completed);assert_eq!(record.usage.uncached_input,expected["input_tokens"].as_u64());assert_eq!(record.usage.output,expected["output_tokens"].as_u64());assert_eq!(record.usage.cache_read_input,expected["cache_read_input_tokens"].as_u64());assert_eq!(record.usage.cache_creation_input,expected["cache_creation_input_tokens"].as_u64());let input=expected["input_tokens"].as_u64().zip(expected["cache_read_input_tokens"].as_u64()).zip(expected["cache_creation_input_tokens"].as_u64()).map(|((a,b),c)|a+b+c);assert_eq!(record.usage.input,input);}
+async fn usage_cases(root:&Path)->Vec<&'static str>{use velune_gateway::*;let mut passed=Vec::new();let client=reqwest::Client::builder().no_proxy().timeout(Duration::from_secs(8)).build().unwrap();for mode in ["reliable","placeholder","multi","missing","regressed","inconsistent","reset"]{let backends=ExecutionBackends::default();let state=SchedulingState::default();let sink=Arc::new(UsageSink::default());let session=format!("usage-{mode}");let mut history=vec![user(&format!("fixture-usage-{mode}"))];let starts=count(root,"start");let r=usage_runner(root,&session,state.clone(),backends.clone(),sink.clone());let first=http(&client,&r,history.clone(),true).await;assert_eq!(first.0,200);let expected=expected_usage(Some(100),if mode=="placeholder"{None}else{Some(40)},Some(10),Some(5));assert_eq!(wire_usage(&first.1),expected,"first tool segment counts are wrong");usage_record(&sink,&expected);let mut blocks=native_blocks(&first.1);assert_eq!(blocks.len(),1);assert_eq!(blocks[0]["type"],"tool_use");drop(r);
+ let mut final_reply=String::new();for index in 0..if mode=="multi"{2}else{1}{let id=blocks[0]["id"].clone();history.push(json!({"role":"assistant","content":blocks}));history.push(json!({"role":"user","content":[{"type":"tool_result","tool_use_id":id,"content":"caller-only-result"}]}));let r=usage_runner(root,&session,state.clone(),backends.clone(),sink.clone());let reply=http(&client,&r,history.clone(),true).await;assert_eq!(reply.0,200);if mode=="multi"&&index==0{let zero=expected_usage(Some(0),Some(0),Some(0),Some(0));assert_eq!(wire_usage(&reply.1),zero,"same assistant ID was counted twice");usage_record(&sink,&zero);blocks=native_blocks(&reply.1);assert_eq!(blocks.len(),1);assert_eq!(blocks[0]["type"],"tool_use");}else{final_reply=reply.1;}drop(r);}
+ let expected=match mode{"missing"=>expected_usage(None,Some(55),Some(20),None),"regressed"=>expected_usage(None,None,Some(20),None),"inconsistent"=>expected_usage(None,Some(55),Some(20),Some(7)),"reset"=>json!({}),"placeholder"=>expected_usage(Some(200),Some(95),Some(20),Some(7)),_=>expected_usage(Some(200),Some(55),Some(20),Some(7))};assert_eq!(wire_usage(&final_reply),expected,"final result did not preserve unknowns or subtract prior segments");usage_record(&sink,&expected);assert_eq!(count(root,"start"),starts+1,"usage ledger restarted CLI process");
+ if mode=="reliable"{history.push(json!({"role":"assistant","content":native_blocks(&final_reply)}));history.push(user("fixture-usage-next"));let r=usage_runner(root,&session,state.clone(),backends.clone(),sink.clone());let reply=http(&client,&r,history,true).await;assert_eq!(reply.0,200);let expected=expected_usage(Some(7),Some(3),Some(1),Some(0));assert_eq!(wire_usage(&reply.1),expected,"next stdin user turn retained prior usage ledger");usage_record(&sink,&expected);assert_eq!(count(root,"start"),starts+1);drop(r);passed.push("same PID next ordinary user turn starts a fresh usage ledger");}
+ passed.push(match mode{"reliable"=>"trusted stream output survives placeholder snapshots; cumulative result emits only remainder","placeholder"=>"assistant output placeholder stays unknown until authoritative result","multi"=>"multiple MCP callbacks sharing one assistant ID never duplicate counts","missing"=>"missing cumulative fields remain absent in wire and analytics","regressed"=>"regressed cumulative fields stay unknown while valid fields retain differences","inconsistent"=>"result below observed step total stays unknown even above previously delivered input",_=>"conversation reset leaves the remaining turn usage unknown"});backends.shutdown();}assert_eq!(count(root,"usage_fixture_failed"),0);passed}
+
 fn wait_staging(root:&Path,prior:usize)->PathBuf{let deadline=Instant::now()+Duration::from_secs(5);loop{let events=log(root);let logins:Vec<_>=events.iter().filter(|v|v["kind"]=="login").collect();if logins.len()>prior{let dir=PathBuf::from(logins.last().unwrap()["config"].as_str().unwrap());if std::fs::read(dir.join("fixture-result-delivered")).ok().as_deref()==Some(b"success"){return dir;}}assert!(Instant::now()<deadline,"successful staging result never reached receiver");std::thread::sleep(Duration::from_millis(10));}}
 fn wait_staging_cleanup(root:&Path,dir:&Path){let deadline=Instant::now()+Duration::from_secs(5);while dir.exists()||!log(root).iter().any(|v|v["kind"]=="logout"&&v["config"].as_str()==dir.to_str()){assert!(Instant::now()<deadline,"staging was not logged out and removed");std::thread::sleep(Duration::from_millis(10));}}
 fn authentication_cleanup_cases(root:&Path)->Vec<&'static str>{use velune_application::{Application,Options,ProviderDraft,AuthenticationEdit};let home=root.join("cleanup-application");let resources=root.join("resources");std::fs::create_dir_all(&resources).unwrap();let mut app=Application::open(Options{home_directory:home.clone(),resources_directory:resources}).unwrap();let draft:ProviderDraft=serde_json::from_value(json!({"id":"claude","name":"Synthetic Claude","protocol":"messagesV1","endpoint":"","executionBackend":{"claudeCli":{"binary":root.join("claude-fixture")}},"requestProfile":"native","authenticationSource":"claudeCli","quotaSource":"none","quotaLimits":[],"models":[{"recordKey":"","providerModelId":"fixture-model","nickname":"fixture","icon":null,"contextWindow":8192,"maxOutputTokens":32,"reasoningLevels":null,"piProjection":null}]})).unwrap();app.save_provider("default".into(),draft,AuthenticationEdit::Keep).unwrap();let logins=count(root,"login");let mut progress=app.authentication_start("default".into(),"claude".into()).unwrap();let old=wait_staging(root,logins);let deadline=Instant::now()+Duration::from_secs(5);while progress.running{assert!(Instant::now()<deadline);std::thread::sleep(Duration::from_millis(10));progress=app.authentication_poll().unwrap();}assert!(progress.events.iter().any(|e|e.ok==Some(true)));let before=std::fs::read(home.join("generic-config.json")).unwrap();assert!(old.exists());
@@ -221,7 +292,7 @@ fn application_cases(root:&Path)->Vec<&'static str>{use velune_application::{App
 }
 
 #[tokio::main(flavor="current_thread")]
-async fn main(){let root=PathBuf::from(std::env::args().nth(1).unwrap());let selected=std::env::args().nth(2).unwrap();let endpoint=std::env::args().nth(3).unwrap();if selected=="auth-diagnostics"{let r=root.clone();let passed=std::thread::spawn(move||authentication_diagnostic_cases(&r)).join().unwrap();println!("{}",json!({"passed":passed,"real_cli_executed":false}));return;}if selected=="auth-cleanup"{let r=root.clone();let passed=std::thread::spawn(move||authentication_cleanup_cases(&r)).join().unwrap();println!("{}",json!({"passed":passed,"real_cli_executed":false,"temporary_observation_patch":true}));return;}if selected=="cancel"{let mut passed=cancellation_cases(&root,&endpoint).await;passed.extend(finishing_cases(&root).await);println!("{}",json!({"passed":passed,"real_cli_executed":false}));return;}let pool=Arc::new(ClaudeCodePool::new());let mut passed=Vec::new();
+async fn main(){let root=PathBuf::from(std::env::args().nth(1).unwrap());let selected=std::env::args().nth(2).unwrap();let endpoint=std::env::args().nth(3).unwrap();if selected=="usage"{println!("{}",json!({"passed":usage_cases(&root).await,"real_cli_executed":false,"temporary_observation_patch":true}));return;}if selected=="auth-diagnostics"{let r=root.clone();let passed=std::thread::spawn(move||authentication_diagnostic_cases(&r)).join().unwrap();println!("{}",json!({"passed":passed,"real_cli_executed":false}));return;}if selected=="auth-cleanup"{let r=root.clone();let passed=std::thread::spawn(move||authentication_cleanup_cases(&r)).join().unwrap();println!("{}",json!({"passed":passed,"real_cli_executed":false,"temporary_observation_patch":true}));return;}if selected=="cancel"{let mut passed=cancellation_cases(&root,&endpoint).await;passed.extend(finishing_cases(&root).await);println!("{}",json!({"passed":passed,"real_cli_executed":false}));return;}let pool=Arc::new(ClaudeCodePool::new());let mut passed=Vec::new();
  let partial=provider(pool.clone(),&root,"namespace/partial","provider/epoch-a");let marker=root.join("partial-observed");let result=tokio::time::timeout(Duration::from_secs(5),partial.messages(request(vec![user("fixture-partial")],false),Box::new(move|event|{if let MessagesEvent::Body(bytes)=event{if String::from_utf8_lossy(bytes.get()).contains("incremental-visible"){std::fs::write(&marker,"observed before terminal").unwrap();}}Box::pin(async{Ok(())})}))).await.unwrap();assert!(result.result.is_ok());passed.push("stream delta reaches caller before CLI terminal is released");
  let a=provider(pool.clone(),&root,"namespace/session-a","provider/epoch-a");let first=call(&a,vec![user("fixture-text")],false).await;success(&first,"fixture-completed");let before=count(&root,"start");
  let history=vec![user("fixture-text"),text_blocks("fixture-completed"),user("fixture-next")];success(&call(&a,history,false).await,"fixture-completed");assert_eq!(count(&root,"start"),before,"same session restarted");passed.push("stream completion and same-session process reuse");
@@ -237,7 +308,7 @@ async fn main(){let root=PathBuf::from(std::env::args().nth(1).unwrap());let sel
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--case', choices=['all', 'cancel', 'auth-cleanup', 'auth-diagnostics'], default='all')
+    parser.add_argument('--case', choices=['all', 'cancel', 'auth-cleanup', 'auth-diagnostics', 'usage'], default='all')
     args = parser.parse_args()
     with tempfile.TemporaryDirectory(prefix='velune-composition-') as directory:
         temporary = Path(directory)
@@ -248,16 +319,24 @@ def main():
         (temporary / 'src').mkdir()
         (temporary / 'src/main.rs').write_text(PROGRAM)
         source = ROOT
-        if args.case == 'auth-cleanup':
+        if args.case in ('auth-cleanup', 'usage'):
             source = temporary / 'snapshot'
             for unit in ['ai', 'ai-provider', 'conversation', 'agent-runtime', 'gateway', 'application']:
                 shutil.copytree(ROOT / 'packages' / unit, source / 'packages' / unit, ignore=shutil.ignore_patterns('target'))
-            observed = source / 'packages/application/src/claude_cli.rs'
-            text = observed.read_text()
-            marker = r'let delivered\s*=\s*sender\.send\(outcome\)\.is_ok\(\);'
-            text, count = re.subn(marker, lambda match: match.group(0) + '\n            if successful && delivered { std::fs::write(dir.join("fixture-result-delivered"), b"success").unwrap(); }', text)
-            assert count == 1, 'staging observation boundary changed'
-            observed.write_text(text)
+            if args.case == 'auth-cleanup':
+                observed = source / 'packages/application/src/claude_cli.rs'
+                text = observed.read_text()
+                marker = r'let delivered\s*=\s*sender\.send\(outcome\)\.is_ok\(\);'
+                text, count = re.subn(marker, lambda match: match.group(0) + '\n            if successful && delivered { std::fs::write(dir.join("fixture-result-delivered"), b"success").unwrap(); }', text)
+                assert count == 1, 'staging observation boundary changed'
+                observed.write_text(text)
+            else:
+                observed = source / 'packages/ai-provider/src/claude_code/mod.rs'
+                text = observed.read_text()
+                marker = 'if !partial && let Some(blocks) = value["message"]["content"].as_array()'
+                assert text.count(marker) == 1, 'assistant observation boundary changed'
+                text = text.replace(marker, 'std::fs::write(config.config_dir.join("fixture-usage-processed"), value["message"]["id"].as_str().unwrap_or("")).unwrap();\n                            ' + marker)
+                observed.write_text(text)
         dependencies = '\n'.join('%s={path="%s"}' % (name, source / 'packages' / folder)
                                  for name, folder in [('velune-ai-provider', 'ai-provider'), ('velune-ai', 'ai'), ('velune-gateway', 'gateway'), ('velune-application', 'application')])
         (temporary / 'Cargo.toml').write_text('[package]\nname="manual-subscription-composition"\nversion="0.0.0"\nedition="2024"\n[workspace]\n[dependencies]\n' + dependencies + '\ntokio={version="1",features=["macros","rt","time","sync"]}\nserde_json="1"\nreqwest={version="0.13",default-features=false,features=["json"]}\n')

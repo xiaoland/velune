@@ -1,5 +1,6 @@
 //! Claude Code subprocess execution. Caller tools are served over a private loopback MCP server.
 mod stream;
+mod usage;
 use axum::{Json, Router, routing::post};
 use serde_json::{Value, json};
 use std::{
@@ -374,6 +375,7 @@ struct Run {
     history: Vec<Value>,
     pending: HashMap<String, oneshot::Sender<Value>>,
     touched: Instant,
+    usage: usage::TurnUsage,
 }
 impl Drop for Run {
     fn drop(&mut self) {
@@ -598,6 +600,7 @@ async fn launch_in(
         history: Vec::new(),
         pending: HashMap::new(),
         touched: Instant::now(),
+        usage: usage::TurnUsage::default(),
     })
 }
 fn token_id() -> String {
@@ -847,6 +850,7 @@ impl MessagesProvider for ClaudeCode {
                 if !results.is_empty() || since.is_empty() {
                     return fail(MessagesErrorKind::InvalidInput, true);
                 }
+                run.usage = usage::TurnUsage::default();
                 let input = json!({"type":"user","message":{"role":"user","content":prompt(since,initial)}});
                 let bytes = match serde_json::to_vec(&input) {
                     Ok(value) => value,
@@ -866,7 +870,6 @@ impl MessagesProvider for ClaudeCode {
             let mut segment = stream::Segment::new(request.stream, body["model"].clone());
             let mut partial = false;
             let mut indexes = HashMap::<u64, usize>::new();
-            let mut observed_usage = Value::Object(Default::default());
             let deadline = tokio::time::sleep(Duration::from_secs(1800));
             tokio::pin!(deadline);
             let mut outcome = loop {
@@ -894,7 +897,7 @@ impl MessagesProvider for ClaudeCode {
                         content.push(block);
                         run.pending.insert(call.id, call.reply);
                         slot.status.store(1, Ordering::Release);
-                        break message(&body, content, "tool_use", observed_usage);
+                        break message(&body, content, "tool_use", run.usage.tool_segment());
                     }
                     Some(Event::Cli(value)) => match value["type"].as_str() {
                         Some("stream_event") => {
@@ -903,8 +906,18 @@ impl MessagesProvider for ClaudeCode {
                                 Some("message_start") => {
                                     partial = false;
                                     indexes.clear();
-                                    if event["message"]["usage"].is_object() {
-                                        observed_usage = event["message"]["usage"].clone();
+                                    if value["parent_tool_use_id"].is_null() {
+                                        run.usage.message(&event["message"], true);
+                                    }
+                                }
+                                Some("message_delta") => {
+                                    if value["parent_tool_use_id"].is_null() {
+                                        run.usage.stream_delta(event);
+                                    }
+                                }
+                                Some("message_stop") => {
+                                    if value["parent_tool_use_id"].is_null() {
+                                        run.usage.stream_stop();
                                     }
                                 }
                                 Some("content_block_start") => {
@@ -980,22 +993,8 @@ impl MessagesProvider for ClaudeCode {
                                 };
                                 return fail(kind, true);
                             }
-                            if let Some(usage) = value["message"]["usage"].as_object() {
-                                observed_usage = Value::Object(
-                                    usage
-                                        .iter()
-                                        .filter(|(key, value)| {
-                                            matches!(
-                                                key.as_str(),
-                                                "input_tokens"
-                                                    | "output_tokens"
-                                                    | "cache_read_input_tokens"
-                                                    | "cache_creation_input_tokens"
-                                            ) && value.is_u64()
-                                        })
-                                        .map(|(key, value)| (key.clone(), value.clone()))
-                                        .collect(),
-                                );
+                            if value["parent_tool_use_id"].is_null() {
+                                run.usage.message(&value["message"], false);
                             }
                             if !partial && let Some(blocks) = value["message"]["content"].as_array()
                             {
@@ -1017,31 +1016,14 @@ impl MessagesProvider for ClaudeCode {
                             }
                             partial = false;
                         }
+                        Some("conversation_reset") => run.usage.reset_observed(),
                         Some("result") => {
                             if value["subtype"].as_str() != Some("success")
                                 || value["is_error"].as_bool() == Some(true)
                             {
                                 return fail(MessagesErrorKind::ProviderFailure, true);
                             }
-                            let usage = if let Some(usage) = value["usage"].as_object() {
-                                Value::Object(
-                                    usage
-                                        .iter()
-                                        .filter(|(key, value)| {
-                                            matches!(
-                                                key.as_str(),
-                                                "input_tokens"
-                                                    | "output_tokens"
-                                                    | "cache_read_input_tokens"
-                                                    | "cache_creation_input_tokens"
-                                            ) && value.is_u64()
-                                        })
-                                        .map(|(key, value)| (key.clone(), value.clone()))
-                                        .collect(),
-                                )
-                            } else {
-                                observed_usage
-                            };
+                            let usage = run.usage.final_segment(&value["usage"]);
                             break message(&body, content, "end_turn", usage);
                         }
                         _ => {}
