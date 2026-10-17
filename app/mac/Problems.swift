@@ -112,18 +112,18 @@ struct ProblemsView: View {
     private var selected: AppProblem? { store.problems.first { $0.id == selection } }
     var body: some View {
         HSplitView { problemList; problemDetail }
-        .toolbar {
-            ToolbarItem {
+        .toolbar(id: "problems") {
+            ToolbarItem(id: "copy") {
                 Button("复制诊断", systemImage: "doc.on.doc") {
                     guard let selected else { return }
                     NSPasteboard.general.clearContents()
                     NSPasteboard.general.setString(selected.diagnosticText, forType: .string)
                 }.disabled(selected == nil)
             }
-            ToolbarItem {
+            ToolbarItem(id: "clear-selected") {
                 Button("清除所选", systemImage: "trash") { if let selection { store.clearProblem(selection) } }.disabled(selected == nil)
             }
-            ToolbarItem { Button("全部清除") { store.clearProblems() }.disabled(store.problems.isEmpty) }
+            ToolbarItem(id: "clear-all") { Button("全部清除") { store.clearProblems() }.disabled(store.problems.isEmpty) }
         }
         .onChange(of: store.problems) { _, values in
             if let selection, !values.contains(where: { $0.id == selection }) { self.selection = nil }

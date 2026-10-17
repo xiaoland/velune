@@ -219,19 +219,19 @@ struct ResourceLibraryView: View {
             detail
         }
         .navigationTitle("资源库")
-        .toolbar {
-            ToolbarItem {
+        .toolbar(id: "resource-library") {
+            ToolbarItem(id: "runtime") {
                 Picker("运行时", selection: $navigator.runtimeID) {
                     Text("全部运行时").tag(String?.none)
                     ForEach(store.runtimeInstances) { Text($0.name).tag(Optional($0.id)) }
                 }.fixedSize().help("只看某个运行时的状态与其他内容")
             }
-            ToolbarItem {
+            ToolbarItem(id: "import") {
                 Button { importing = true } label: { Label("从运行时导入…", systemImage: "square.and.arrow.down") }
                     .help("从运行时导入：把某个运行时中不在资源库的内容一次加入资源库")
                     .disabled(store.runtimeInstances.isEmpty)
             }
-            ToolbarItem {
+            ToolbarItem(id: "new") {
                 Button { navigator.selection = .newResource(navigator.kind) } label: { Label("新建\(navigator.kind.templateTitle)", systemImage: "plus") }
                     .help("新建\(navigator.kind.templateTitle)")
             }

@@ -60,9 +60,9 @@ struct AnalyticsView: View {
             }
         }
         .navigationTitle("分析")
-        .toolbar {
-            ToolbarItem { Picker("时间范围", selection: $period) { ForEach(AnalyticsPeriod.allCases) { Text($0.title).tag($0) } }.labelsHidden().frame(width: 135).accessibilityLabel("时间范围") }
-            ToolbarItem {
+        .toolbar(id: "analytics") {
+            ToolbarItem(id: "period") { Picker("时间范围", selection: $period) { ForEach(AnalyticsPeriod.allCases) { Text($0.title).tag($0) } }.labelsHidden().frame(width: 135).accessibilityLabel("时间范围") }
+            ToolbarItem(id: "refresh") {
                 HStack(spacing: 8) {
                     if store.analyticsIsLoading { ProgressView().controlSize(.small).accessibilityLabel("正在刷新分析记录") }
                     Button("刷新", systemImage: "arrow.clockwise") { refresh() }.disabled(store.analyticsIsLoading)

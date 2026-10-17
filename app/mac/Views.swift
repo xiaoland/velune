@@ -2,6 +2,12 @@ import SwiftUI
 import AppKit
 import VeluneBindings
 
+/// The conversation window's toolbar. The list's column and the panes add
+/// their items to it, and the user's arrangement is kept under this name.
+enum ConversationToolbar {
+    static let id = "conversation"
+}
+
 /// A conversation window: the panes, with dock areas for tool windows at
 /// the left, right and bottom. The list has its own workspace and opens
 /// conversations in the focused pane, which the toolbar and commands act on.
@@ -39,34 +45,48 @@ struct VeluneRootView: View {
             // The window keeps the title for the Window menu and Mission Control; the tab bar shows it.
             .navigationTitle(previewEmpty ? "新会话" : focused.selectedConversationTitle ?? "Velune")
             .toolbar(removing: .title)
-            .toolbar {
-                ToolbarItemGroup(placement: .navigation) {
+            // Customizable, so the toolbar's own menu offers display modes and Customize Toolbar…
+            .toolbar(id: ConversationToolbar.id) {
+                ToolbarItem(id: "back", placement: .navigation) {
                     Button { tab.goBack() } label: { Label("后退", systemImage: "chevron.backward") }
                         .help("回到之前查看的会话（⌃⌘←）").disabled(focused.backHistory.isEmpty)
+                }
+                ToolbarItem(id: "forward", placement: .navigation) {
                     Button { tab.goForward() } label: { Label("前进", systemImage: "chevron.forward") }
                         .help("前往后退前的会话（⌃⌘→）").disabled(focused.forwardHistory.isEmpty)
                 }
                 // Without the title nothing holds the buttons to the trailing end.
-                ToolbarItem(placement: .automatic) { Spacer() }
-                ToolbarItemGroup(placement: .automatic) {
+                ToolbarItem(id: "trailing-space") { Spacer() }
+                ToolbarItem(id: "reload") {
                     Button { focused.reloadFromRuntimes() } label: { Label("重新读取", systemImage: "arrow.clockwise") }
                         .keyboardShortcut("r").disabled(!focused.canReloadFromRuntimes)
                         .help("从 Agent 运行时重新读取会话列表和当前会话（⌘ R）；用于补上自动跟随遗漏的变化")
-                    outlineButton
-                    subAgentsButton
-                    // A window of the editor area alone is often one to keep in view.
-                    if !window.hasToolWindows || window.pinned {
+                }
+                ToolbarItem(id: "outline") { outlineButton }
+                if window.tools[.subAgents].place != .builtIn || !focused.subAgents.isEmpty {
+                    ToolbarItem(id: "sub-agents") { subAgentsButton }
+                }
+                // A window of the editor area alone is often one to keep in view.
+                if !window.hasToolWindows || window.pinned {
+                    ToolbarItem(id: "pin") {
                         Toggle(isOn: $window.pinned) { Label("保持在最前面", systemImage: window.pinned ? "pin.fill" : "pin") }
                             .help(window.pinned ? "不再保持在其他应用的窗口前面" : "保持在其他应用的窗口前面")
                     }
+                }
+                ToolbarItem(id: "split") {
                     // As in Xcode: Option-click divides downward.
                     Button { window.split(NSEvent.modifierFlags.contains(.option) ? .vertical : .horizontal) } label: { Label("拆分", systemImage: "rectangle.split.2x1") }
                         .help("在右侧拆分出新面板（⌘ D）；按住 Option 点按则向下拆分（⇧⌘ D）")
-                    if Self.changeReviewEnabled {
+                }
+                if Self.changeReviewEnabled {
+                    ToolbarItem(id: "changes") {
                         Toggle(isOn: $showsChanges) { Label("变更", systemImage: "plusminus") }
                             .help("工作目录的 git 变更").keyboardShortcut("d", modifiers: [.command, .option])
                             .disabled(focused.loadedConversationWorkingDirectory == nil && !showsChanges)
                     }
+                }
+                if !store.problems.isEmpty {
+                    ToolbarItem(id: "problems") { ProblemsButton(store: store) }
                 }
             }
             // One inspector column: the right dock area, or change review while that is open.
@@ -88,7 +108,6 @@ struct VeluneRootView: View {
         .onChange(of: focused.pendingConversationID) { _, value in if value != nil { window.outlinePopover = false; window.subAgentsPopover = false } }
         .onChange(of: focused.loadedConversationID) { _, _ in window.outlinePopover = false; window.subAgentsPopover = false }
         .onChange(of: store.outlinePresentation) { _, _ in window.outlinePopover = false }
-        .toolbar { if !store.problems.isEmpty { ToolbarItem(placement: .automatic) { ProblemsButton(store: store) } } }
         .focusedSceneValue(\.conversationCommands, ConversationCommandTarget(store: focused, send: tab.send, window: window))
         .task { if previewSettings { openSettings() } }
     }
@@ -116,7 +135,7 @@ struct VeluneRootView: View {
         if window.tools[.subAgents].place != .builtIn {
             Toggle(isOn: Binding(get: { window.tools.isOpen(.subAgents) }, set: { _ in window.toggle(.subAgents) })) { Label("子 Agent", systemImage: "person.2") }
                 .help(window.tools.isOpen(.subAgents) ? "隐藏子 Agent（⌘ 4）" : "显示子 Agent（⌘ 4）")
-        } else if !agents.isEmpty {
+        } else {
             Button { window.subAgentsPopover.toggle() } label: { Label("子 Agent", systemImage: running > 0 ? "person.2.fill" : "person.2") }
                 .help("\(summary)（⌘ 4）")
                 .popover(isPresented: $window.subAgentsPopover, arrowEdge: .bottom) {

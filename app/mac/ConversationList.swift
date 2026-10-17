@@ -30,11 +30,9 @@ struct ConversationListView: View {
                 list
                     .searchable(text: $window.listSearch, placement: .sidebar, prompt: "搜索会话")
                     .navigationTitle("会话")
-                    .toolbar {
-                        ToolbarItemGroup(placement: .automatic) {
-                            browserMenu
-                            newConversationButton
-                        }
+                    .toolbar(id: ConversationToolbar.id) {
+                        ToolbarItem(id: "list-filter") { browserMenu }
+                        ToolbarItem(id: "new-conversation") { newConversationButton }
                     }
             case .panel:
                 VStack(spacing: 0) {
