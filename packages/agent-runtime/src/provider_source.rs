@@ -348,7 +348,9 @@ fn read_inner(source: &Source, resources_directory: &Path) -> Result<Snapshot, S
         SourceReadError::new(SourceDiagnosticCode::InvalidOutput, SourcePhase::Protocol)
             .with_detail(error.to_string())
     })?;
-    if snapshot.contract_version != 1 || snapshot.sdk_version != "1.0.2" {
+    if snapshot.contract_version != 1
+        || !crate::version::PI_VERSIONS.contains(&snapshot.sdk_version)
+    {
         return Err(SourceReadError::new(
             SourceDiagnosticCode::InvalidOutput,
             SourcePhase::Protocol,

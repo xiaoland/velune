@@ -106,7 +106,7 @@ def main():
                 case = protocol.name.lower() + '-' + tool_case
                 agent = root / case
                 agent.mkdir()
-                app.upsert_runtime(b.BindingRuntimeInstance(enabled=True, id=case, name=case, type_id='codex-0.159.3', gateway_id='default',
+                app.upsert_runtime(b.BindingRuntimeInstance(enabled=True, id=case, name=case, type_id='codex-0.159', gateway_id='default',
                     settings={'binary': str(args.codex), 'nodeBinary': str(args.node), 'agentDir': str(agent)}))
                 model = b.BindingProviderModel(record_key='', provider_model_id='synthetic-' + case, nickname=case, icon=None,
                     context_window=32768, max_output_tokens=4096, reasoning_levels=None, adapter_metadata_json=None)

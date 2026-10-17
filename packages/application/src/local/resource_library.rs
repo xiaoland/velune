@@ -377,7 +377,7 @@ impl CoreRuntime {
         }
         // Rendering against a variant that holds every kind checks the content itself.
         management::render(
-            "claude-code-2.1.286",
+            "claude-code-2.1",
             &template.name,
             &canonical(&template.content)?,
         )?;

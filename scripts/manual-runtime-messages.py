@@ -57,7 +57,7 @@ def main():
             spec=importlib.util.spec_from_file_location('velune_bindings',root/'bindings/velune_bindings.py');b=importlib.util.module_from_spec(spec);sys.modules[spec.name]=b;spec.loader.exec_module(b)
             app=b.VeluneApplication.open(b.BindingOptions(home_directory=str(root/'home'),resources_directory=str(resources)))
             endpoint=f'http://127.0.0.1:{server.server_port}'
-            runtimes=[b.BindingRuntimeInstance(enabled=True,id='pi',name='Synthetic Pi',type_id='pi-1.0.2',gateway_id='default',settings={'agentDir':str(root/'pi'),'nodeBinary':str(args.node),'binary':str(args.pi)}), b.BindingRuntimeInstance(enabled=True,id='dsh',name='Synthetic DSH',type_id='dsh-acp-0.2.0-rc.2',gateway_id='default',settings={'agentDir':str(root/'dsh'),'nodeBinary':str(args.node),'binary':str(args.dsh)})]
+            runtimes=[b.BindingRuntimeInstance(enabled=True,id='pi',name='Synthetic Pi',type_id='pi-1.0',gateway_id='default',settings={'agentDir':str(root/'pi'),'nodeBinary':str(args.node),'binary':str(args.pi)}), b.BindingRuntimeInstance(enabled=True,id='dsh',name='Synthetic DSH',type_id='dsh-acp-0.2',gateway_id='default',settings={'agentDir':str(root/'dsh'),'nodeBinary':str(args.node),'binary':str(args.dsh)})]
             for runtime in runtimes:app.upsert_runtime(runtime)
             model={'id':'synthetic-native-model','name':'Synthetic native','reasoning':False,'input':['text'],'contextWindow':32768,'maxTokens':1024,'compat':{'supportsStrictTools':False,'sendSessionAffinityHeaders':True}}
             original=json.dumps({'providers':{'synthetic-source':{'api':'anthropic-messages','baseUrl':endpoint,'apiKey':'synthetic-only','models':[model]}}}).encode()

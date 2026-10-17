@@ -142,7 +142,7 @@ def main():
                                                          resources_directory=str(args.bundle / 'Contents/Resources')))
         try:
             app.upsert_runtime_with_execution(b.BindingRuntimeInstance(
-                enabled=True, id='codex', name='Codex', type_id='codex-0.159.3', gateway_id='default',
+                enabled=True, id='codex', name='Codex', type_id='codex-0.159', gateway_id='default',
                 settings={'binary': str(args.codex.resolve()), 'nodeBinary': str(args.node)}),
                 b.BindingRuntimeExecution(transport=b.BindingRuntimeTransport.LOCAL(),
                                           home=b.BindingRuntimeHome.MANAGED(remote_root=None),

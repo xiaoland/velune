@@ -47,7 +47,7 @@ import VeluneBindings
         try await wait { !store.isLoading }
         try require(store.problems.isEmpty)
         let key = store.providers[0].models[0].recordKey
-        print("PHASE runtime"); store.saveRuntimeInstance(RuntimeInstance(id: "fixture", name: "Synthetic Pi", typeID: "pi-1.0.2", gatewayID: "default",
+        print("PHASE runtime"); store.saveRuntimeInstance(RuntimeInstance(id: "fixture", name: "Synthetic Pi", typeID: "pi-1.0", gatewayID: "default",
             settings: ["binary": args[4], "nodeBinary": args[3], "agentDir": root.appendingPathComponent("runtime").path]))
         try await wait { !store.isLoading }
         var created = false

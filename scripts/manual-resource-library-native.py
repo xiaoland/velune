@@ -125,7 +125,7 @@ def main():
         dirs = {'claude': root / 'home/.claude', 'codex': root / 'codex', 'pi': root / 'pi-agent'}
         app = b.VeluneApplication.open(b.BindingOptions(home_directory=str(root / 'app'), resources_directory=str(root / 'resources')))
         try:
-            for identity, variant in [('claude', 'claude-code-2.1.286'), ('codex', 'codex-0.159.3'), ('pi', 'pi-1.0.2')]:
+            for identity, variant in [('claude', 'claude-code-2.1'), ('codex', 'codex-0.159'), ('pi', 'pi-1.0')]:
                 app.upsert_runtime(b.BindingRuntimeInstance(enabled=False, id=identity, name=identity, type_id=variant,
                                    gateway_id='default', settings={'agentDir': str(dirs[identity])}))
             C, T = b.BindingResourceTemplateContent, b.BindingTemplateMcpTransport

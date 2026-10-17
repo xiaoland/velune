@@ -19,7 +19,7 @@ pub struct PermissionMode {
     pub label: &'static str,
     pub detail: &'static str,
 }
-/// Claude Code 2.1.286 `--permission-mode` choices, in its own cycle order.
+/// Claude Code 2.1 `--permission-mode` choices, in its own cycle order.
 pub(crate) const CLAUDE_PERMISSION_MODES: &[PermissionMode] = &[
     PermissionMode {
         id: "manual",
@@ -52,7 +52,7 @@ pub(crate) const CLAUDE_PERMISSION_MODES: &[PermissionMode] = &[
         detail: "跳过全部权限检查，请谨慎使用",
     },
 ];
-/// Codex 0.159.3 built-in permission presets and Auto-review, applied per
+/// Codex 0.159 built-in permission presets and Auto-review, applied per
 /// turn as approval policy, sandbox policy and approvals reviewer.
 pub(crate) const CODEX_PERMISSION_MODES: &[PermissionMode] = &[
     PermissionMode {
@@ -76,12 +76,49 @@ pub(crate) const CODEX_PERMISSION_MODES: &[PermissionMode] = &[
         detail: "无需批准即可编辑工作区外的文件和访问网络，请谨慎使用",
     },
 ];
+/// The versions an adapter carries.
+pub enum Versions {
+    /// A dedicated adapter's CLI versions: from the one verified with the
+    /// actual CLI up to, not including, the next version that may break it
+    /// (a semantic minor version; for 0.x the minor too). Prereleases of
+    /// `below` are outside.
+    Cli {
+        minimum: &'static str,
+        below: &'static str,
+    },
+    /// The protocol major version `acp-v1` negotiates.
+    AcpProtocol(u64),
+}
+impl Versions {
+    /// Whether a version the CLI reports is in the range.
+    pub fn contains(&self, version: &str) -> bool {
+        let Self::Cli { minimum, below } = self else {
+            return false;
+        };
+        let (Ok(version), Ok(minimum), Ok(below)) = (
+            semver::Version::parse(version),
+            semver::Version::parse(minimum),
+            semver::Version::parse(below),
+        ) else {
+            return false;
+        };
+        version >= minimum
+            && (version.major, version.minor, version.patch)
+                < (below.major, below.minor, below.patch)
+    }
+    /// The range as users read it.
+    pub fn describe(&self) -> String {
+        match self {
+            Self::Cli { minimum, below } => format!("≥{minimum}，<{below}"),
+            Self::AcpProtocol(major) => format!("协议 {major}"),
+        }
+    }
+}
 pub struct RuntimeVariant {
     pub id: &'static str,
     pub family_id: &'static str,
     pub name: &'static str,
-    /// CLI version for dedicated adapters; negotiated protocol major for `acp-v1`.
-    pub version_regex: &'static str,
+    pub versions: Versions,
     pub can_rename_conversations: bool,
     pub can_delete_conversations: bool,
     /// The runtime archives conversations itself; others are archived by Velune.
@@ -93,12 +130,17 @@ pub struct RuntimeVariant {
     /// Empty when the runtime offers no per-turn choice.
     pub permission_modes: &'static [PermissionMode],
 }
+/// Pi's range, shared with the Pi provider import.
+pub const PI_VERSIONS: Versions = Versions::Cli {
+    minimum: "1.0.2",
+    below: "1.1.0",
+};
 const VARIANTS: &[RuntimeVariant] = &[
     RuntimeVariant {
         id: "acp-v1",
         family_id: "acp",
         name: "ACP v1",
-        version_regex: r"^1$",
+        versions: Versions::AcpProtocol(1),
         can_rename_conversations: false,
         can_delete_conversations: false,
         can_archive_conversations: false,
@@ -107,10 +149,13 @@ const VARIANTS: &[RuntimeVariant] = &[
         permission_modes: &[],
     },
     RuntimeVariant {
-        id: "claude-code-2.1.286",
+        id: "claude-code-2.1",
         family_id: "claude-code",
-        name: "Claude Code 2.1.286",
-        version_regex: r"^2\.1\.286$",
+        name: "Claude Code 2.1",
+        versions: Versions::Cli {
+            minimum: "2.1.286",
+            below: "2.2.0",
+        },
         can_rename_conversations: false,
         can_delete_conversations: false,
         can_archive_conversations: false,
@@ -119,10 +164,10 @@ const VARIANTS: &[RuntimeVariant] = &[
         permission_modes: CLAUDE_PERMISSION_MODES,
     },
     RuntimeVariant {
-        id: "pi-1.0.2",
+        id: "pi-1.0",
         family_id: "pi",
-        name: "Pi Agent 1.0.2",
-        version_regex: r"^1\.0\.2$",
+        name: "Pi Agent 1.0",
+        versions: PI_VERSIONS,
         can_rename_conversations: true,
         can_delete_conversations: true,
         can_archive_conversations: false,
@@ -135,10 +180,13 @@ const VARIANTS: &[RuntimeVariant] = &[
         permission_modes: &[],
     },
     RuntimeVariant {
-        id: "codex-0.159.3",
+        id: "codex-0.159",
         family_id: "codex",
-        name: "Codex 0.159.3",
-        version_regex: r"^0\.159\.3$",
+        name: "Codex 0.159",
+        versions: Versions::Cli {
+            minimum: "0.159.3",
+            below: "0.160.0",
+        },
         can_rename_conversations: true,
         can_delete_conversations: true,
         can_archive_conversations: true,
@@ -148,10 +196,13 @@ const VARIANTS: &[RuntimeVariant] = &[
         permission_modes: CODEX_PERMISSION_MODES,
     },
     RuntimeVariant {
-        id: "dsh-acp-0.2.0-rc.2",
+        id: "dsh-acp-0.2",
         family_id: "deepseek-harness",
-        name: "DeepSeek Harness 0.2.0-rc.2",
-        version_regex: r"^0\.2\.0-rc\.2$",
+        name: "DeepSeek Harness 0.2",
+        versions: Versions::Cli {
+            minimum: "0.2.0-rc.2",
+            below: "0.3.0",
+        },
         can_rename_conversations: false,
         can_delete_conversations: false,
         can_archive_conversations: false,
@@ -188,13 +239,11 @@ pub fn check_version_at(
 ) -> Result<String> {
     let adapter = variant(type_id).ok_or_else(|| Error::new("运行时版本类型不受支持"))?;
     let version = probe_version_at(adapter.family_id, binary, node_binary, execution, os_home)?;
-    if !Regex::new(adapter.version_regex)
-        .map_err(|error| Error::new(format!("适配器版本规则无效：{error}")))?
-        .is_match(&version)
-    {
+    if !adapter.versions.contains(&version) {
         return Err(Error::new(format!(
-            "运行时版本 {version} 不属于所选类型 {}（{}）；请选择对应版本的运行时类型。",
-            adapter.name, adapter.version_regex
+            "运行时版本 {version} 不在 {} 的兼容范围（{}）内；请选择对应版本的运行时类型。",
+            adapter.name,
+            adapter.versions.describe()
         )));
     }
     Ok(version)
@@ -372,7 +421,7 @@ pub fn probe_version_at(
 }
 
 pub fn matching_variant(family_id: &str, version: &str) -> Option<&'static RuntimeVariant> {
-    VARIANTS.iter().find(|v| {
-        v.family_id == family_id && Regex::new(v.version_regex).is_ok_and(|r| r.is_match(version))
-    })
+    VARIANTS
+        .iter()
+        .find(|v| v.family_id == family_id && v.versions.contains(version))
 }

@@ -181,7 +181,7 @@ def main():
             application.shutdown();application=b.VeluneApplication.open(b.BindingOptions(home_directory=str(root/'application'),resources_directory=str(args.resources)))
             claude_peer=runpy.run_path(str(Path(__file__).with_name('manual-runtime-selection.py')))['PEER']
             claude=root/'claude-peer';claude.write_text(claude_peer.replace('__PYTHON__',sys.executable).replace('__LOG__',repr(str(root/'claude-events.jsonl'))));claude.chmod(0o700)
-            application.upsert_runtime(b.BindingRuntimeInstance(enabled=True,id='claude',name='Claude fixture',type_id='claude-code-2.1.286',gateway_id='default',settings={'binary':str(claude),'agentDir':str(root/'claude')}))
+            application.upsert_runtime(b.BindingRuntimeInstance(enabled=True,id='claude',name='Claude fixture',type_id='claude-code-2.1',gateway_id='default',settings={'binary':str(claude),'agentDir':str(root/'claude')}))
             source=application.create_conversation_with_selection('full',str(root/'project'),default).snapshot;identity=source.conversation.id
             application.send_turn_with_selection('full',identity,'full',default,b.BindingComposedTurn(text='ACP_ORIGIN', effort=None, attachments=[]));wait('full',identity)
             native=b.BindingModelSelection.NATIVE(provider_id=None,model_id='native-model')

@@ -86,8 +86,8 @@ def exercise(app, b, root, python):
         expected = revision.MISSING() if previous is None else revision.MATCH(previous)
         return app.write_runtime_resource(identity, cwd, resource, expected, data, executable)
 
-    variants = [('codex', 'codex-0.159.3'), ('claude', 'claude-code-2.1.286'),
-                ('pi', 'pi-1.0.2'), ('dsh', 'dsh-acp-0.2.0-rc.2'), ('generic', 'acp-v1')]
+    variants = [('codex', 'codex-0.159'), ('claude', 'claude-code-2.1'),
+                ('pi', 'pi-1.0'), ('dsh', 'dsh-acp-0.2'), ('generic', 'acp-v1')]
     for identity, variant in variants:
         # Disabled instances deliberately have no executable or Node path.
         settings = {} if identity == 'generic' else {'agentDir': str(root / identity)}
@@ -119,7 +119,7 @@ def exercise(app, b, root, python):
     print('PASS 停用实例、Missing／Unsupported、instructions CRUD、conflict 诊断保真', flush=True)
 
     app.upsert_runtime(b.BindingRuntimeInstance(
-        enabled=False, id='project-only', name='Project only', type_id='codex-0.159.3',
+        enabled=False, id='project-only', name='Project only', type_id='codex-0.159',
         gateway_id='default', settings={}))
     project = str(root / 'project')
     catalog = app.runtime_resource_catalog('project-only', project, kind.USER_INSTRUCTIONS, scope.PROJECT)
@@ -170,7 +170,7 @@ def exercise(app, b, root, python):
         transport=b.BindingRuntimeTransport.LOCAL(),
         home=b.BindingRuntimeHome.MANAGED(remote_root=None), remote_resources_directory=None)
     app.upsert_runtime_with_execution(b.BindingRuntimeInstance(
-        enabled=False, id='managed', name='Managed', type_id='claude-code-2.1.286',
+        enabled=False, id='managed', name='Managed', type_id='claude-code-2.1',
         gateway_id='default', settings={}), execution)
     managed = app.runtime_resource_catalog('managed', None, kind.USER_INSTRUCTIONS, scope.USER).entries[0]
     assert not Path(managed.absolute_path).parent.exists()

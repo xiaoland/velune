@@ -58,9 +58,9 @@ pub enum NativeKind {
 impl NativeKind {
     pub fn type_id(self) -> &'static str {
         match self {
-            Self::Codex => "codex-0.159.3",
-            Self::DeepSeek => "dsh-acp-0.2.0-rc.2",
-            Self::ClaudeCode => "claude-code-2.1.286",
+            Self::Codex => "codex-0.159",
+            Self::DeepSeek => "dsh-acp-0.2",
+            Self::ClaudeCode => "claude-code-2.1",
         }
     }
 }

@@ -113,7 +113,7 @@ manager.appendSessionInfo(title); console.log(manager.getSessionFile());
         spec.loader.exec_module(b)
         app = b.VeluneApplication.open(b.BindingOptions(home_directory=str(root / 'app'), resources_directory=str(root / 'resources')))
         try:
-            runtime = b.BindingRuntimeInstance(enabled=True, id='pi', name='Pi', type_id='pi-1.0.2', gateway_id='default',
+            runtime = b.BindingRuntimeInstance(enabled=True, id='pi', name='Pi', type_id='pi-1.0', gateway_id='default',
                                                settings={'binary': str(args.pi), 'nodeBinary': str(args.node), 'agentDir': str(root / 'runtime')})
             app.upsert_runtime(runtime)
             app.save_provider('default', b.BindingProviderDraft(

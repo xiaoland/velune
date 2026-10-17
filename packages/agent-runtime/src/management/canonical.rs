@@ -152,8 +152,8 @@ pub fn render(variant_id: &str, name: &str, canonical: &Canonical) -> Result<Ren
             reason: reason.into(),
         });
     }
-    let claude = variant_id == "claude-code-2.1.286";
-    let codex = variant_id == "codex-0.159.3";
+    let claude = variant_id == "claude-code-2.1";
+    let codex = variant_id == "codex-0.159";
     let key = |path: String| ResourceKey {
         kind,
         scope: ResourceScope::User,
@@ -298,8 +298,8 @@ fn mcp_object(
         )
     };
     let mut object = Map::new();
-    let claude = variant_id == "claude-code-2.1.286";
-    let codex = variant_id == "codex-0.159.3";
+    let claude = variant_id == "claude-code-2.1";
+    let codex = variant_id == "codex-0.159";
     match transport {
         McpTransport::Stdio {
             command,
@@ -501,8 +501,8 @@ pub fn parse(
                 }
                 map
             };
-            let claude = variant_id == "claude-code-2.1.286";
-            let codex = variant_id == "codex-0.159.3";
+            let claude = variant_id == "claude-code-2.1";
+            let codex = variant_id == "codex-0.159";
             let timeout_field = if codex { "tool_timeout_sec" } else { "timeout" };
             let timeout_seconds = match object.get(timeout_field).and_then(Value::as_u64) {
                 Some(value) if claude => u32::try_from(value.div_ceil(1000)).ok(),
@@ -552,7 +552,7 @@ pub fn parse(
                 return Err(invalid("子 Agent 应为单个文件"));
             };
             let source = text(file)?;
-            if variant_id == "codex-0.159.3" {
+            if variant_id == "codex-0.159" {
                 let document = source
                     .parse::<toml_edit::DocumentMut>()
                     .map_err(|_| invalid("子 Agent 定义不是有效的 TOML"))?;

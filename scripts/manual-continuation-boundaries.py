@@ -65,7 +65,7 @@ def main():
             binary = args.pi
             for identity in ("alpha", "beta"):
                 application.upsert_runtime(b.BindingRuntimeInstance(enabled=True, id=identity, name=identity,
-                    type_id="pi-1.0.2", gateway_id="default", settings={"binary": str(binary), "nodeBinary": str(args.node), "agentDir": str(root / identity)}))
+                    type_id="pi-1.0", gateway_id="default", settings={"binary": str(binary), "nodeBinary": str(args.node), "agentDir": str(root / identity)}))
 
             active_conversation_id = None
             def settle(identity, expected):
@@ -103,7 +103,7 @@ def main():
             unavailable_binary = root / "bad-runtime"
             unavailable_binary.write_text("#!/bin/sh\nprintf '99.0.0\\n'\n")
             unavailable_binary.chmod(0o700)
-            application.upsert_runtime(b.BindingRuntimeInstance(enabled=True, id="bad", name="bad", type_id="codex-0.159.3",
+            application.upsert_runtime(b.BindingRuntimeInstance(enabled=True, id="bad", name="bad", type_id="codex-0.159",
                 gateway_id="default", settings={"binary": str(unavailable_binary), "nodeBinary": str(args.node), "agentDir": str(root / "beta")}))
             # A ChatCompletions model cannot execute on Codex: reject before preparation.
             rejected(lambda: application.send_turn("alpha", source.conversation.id, "bad", key, "NEVER_SENT"))

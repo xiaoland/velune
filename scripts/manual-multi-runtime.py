@@ -49,18 +49,18 @@ def main():
             spec=importlib.util.spec_from_file_location('velune_bindings',root/'bindings/velune_bindings.py');b=importlib.util.module_from_spec(spec);sys.modules[spec.name]=b;spec.loader.exec_module(b)
             application=b.VeluneApplication.open(b.BindingOptions(home_directory=str(root/'home'),resources_directory=str(args.bundle/'Contents/Resources')))
             descriptor={d.id:d for d in application.list().runtime_types}
-            expected={'pi-1.0.2':('pi',r'^1\.0\.2$'),'codex-0.159.3':('codex',r'^0\.159\.3$'),'dsh-acp-0.2.0-rc.2':('deepseek-harness',r'^0\.2\.0-rc\.2$')}
-            for identity,(family,pattern) in expected.items():
-                assert descriptor[identity].family_id==family and descriptor[identity].version_regex==pattern
+            expected={'pi-1.0':('pi','≥1.0.2，<1.1.0'),'codex-0.159':('codex','≥0.159.3，<0.160.0'),'dsh-acp-0.2':('deepseek-harness','≥0.2.0-rc.2，<0.3.0')}
+            for identity,(family,versions) in expected.items():
+                assert descriptor[identity].family_id==family and descriptor[identity].compatible_versions==versions
             chat=b.BindingGatewayProtocol.CHAT_COMPLETIONS_V1;responses=b.BindingGatewayProtocol.RESPONSES_V1;messages=b.BindingGatewayProtocol.MESSAGES_V1
-            assert set(descriptor['pi-1.0.2'].supported_protocols)=={chat,responses,messages}
-            assert set(descriptor['codex-0.159.3'].supported_protocols)=={responses}
-            assert set(descriptor['dsh-acp-0.2.0-rc.2'].supported_protocols)=={chat,responses,messages}
+            assert set(descriptor['pi-1.0'].supported_protocols)=={chat,responses,messages}
+            assert set(descriptor['codex-0.159'].supported_protocols)=={responses}
+            assert set(descriptor['dsh-acp-0.2'].supported_protocols)=={chat,responses,messages}
             endpoint=f'http://127.0.0.1:{server.server_port}/v1'
             results={}
             for family,type_id,binary,protocol,api_id in [
-                ('codex','codex-0.159.3',args.codex,b.BindingGatewayProtocol.RESPONSES_V1,'synthetic-responses'),
-                ('deepseek','dsh-acp-0.2.0-rc.2',args.dsh,b.BindingGatewayProtocol.CHAT_COMPLETIONS_V1,'synthetic-chat')]:
+                ('codex','codex-0.159',args.codex,b.BindingGatewayProtocol.RESPONSES_V1,'synthetic-responses'),
+                ('deepseek','dsh-acp-0.2',args.dsh,b.BindingGatewayProtocol.CHAT_COMPLETIONS_V1,'synthetic-chat')]:
                 model=b.BindingProviderModel(record_key='',provider_model_id=api_id,nickname='Synthetic native',icon=None,context_window=32768,max_output_tokens=4096,reasoning_levels=None,adapter_metadata_json=None)
                 provider=b.BindingProviderDraft(id=family,name=family,protocol=protocol,endpoint=endpoint,models=[model], quota_limits=[])
                 application.save_provider('default',provider,b.BindingAuthenticationEdit.SET_API_KEY(value='synthetic-only'))
@@ -145,17 +145,17 @@ def main():
             bad_binary=root/'unsupported-runtime'
             bad_binary.write_text('#!/bin/sh\nprintf "99.0.0\\n"\n');bad_binary.chmod(0o700)
             bad_home=root/'unsupported-home';bad_home.mkdir()
-            bad=b.BindingRuntimeInstance(enabled=True, id='unsupported',name='Unsupported synthetic',type_id='codex-0.159.3',gateway_id='default',settings={'binary':str(bad_binary),'nodeBinary':str(args.node),'agentDir':str(bad_home)})
+            bad=b.BindingRuntimeInstance(enabled=True, id='unsupported',name='Unsupported synthetic',type_id='codex-0.159',gateway_id='default',settings={'binary':str(bad_binary),'nodeBinary':str(args.node),'agentDir':str(bad_home)})
             application.upsert_runtime(bad)
             try:application.create_conversation(bad.id,str(root/'project'),application.list().gateways[0].providers[0].models[0].record_key)
             except b.BindingError as error:
-                assert 'version' in str(error).lower() or '版本' in str(error),str(error)
+                assert '99.0.0' in str(error) and '≥0.159.3，<0.160.0' in str(error),str(error)
             else:raise AssertionError('runtime with incompatible actual version prepared')
             assert application.list().selected_runtime_instance_id=='deepseek','version rejection lost active runtime'
 
             assert not failures,failures
             application.shutdown();application=None
-            assert json.loads((root/'home/generic-config.json').read_text())['schemaVersion']==7
+            assert json.loads((root/'home/generic-config.json').read_text())['schemaVersion']==9
             logs=''.join(path.read_text() for path in (root/'home/logs').glob('*.jsonl'))
             for forbidden in ['synthetic-only','synthetic-alternate','SYNTHETIC_NATIVE_ANSWER','synthetic-responses','synthetic-chat',endpoint]:
                 assert forbidden not in logs,'business/configuration data entered diagnostic log'

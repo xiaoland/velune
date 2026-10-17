@@ -20,9 +20,9 @@ enum Branching {
 impl Branching {
     fn of(type_id: &str) -> Option<Self> {
         match type_id {
-            "codex-0.159.3" => Some(Self::Codex),
-            "claude-code-2.1.286" => Some(Self::Claude),
-            "pi-1.0.2" => Some(Self::Pi),
+            "codex-0.159" => Some(Self::Codex),
+            "claude-code-2.1" => Some(Self::Claude),
+            "pi-1.0" => Some(Self::Pi),
             _ => None,
         }
     }

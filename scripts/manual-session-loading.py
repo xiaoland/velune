@@ -27,8 +27,8 @@ import VeluneBindings
         let root = URL(fileURLWithPath: args[1]), resources = URL(fileURLWithPath: args[2])
         let ids = Array(args[3...6]), node = args[7], endpoint = args[8], pi = args[9]
         let application = try VeluneApplication.open(options: BindingOptions(homeDirectory: root.appendingPathComponent("application").path, resourcesDirectory: resources.path))
-        _ = try application.upsertRuntime(runtime: BindingRuntimeInstance(enabled: true, id: "fixture", name: "Synthetic", typeId: "pi-1.0.2", gatewayId: "default", settings: ["binary":pi,"nodeBinary":node,"agentDir":root.appendingPathComponent("runtime").path]))
-        _ = try application.upsertRuntime(runtime: BindingRuntimeInstance(enabled: true, id: "other", name: "Other", typeId: "pi-1.0.2", gatewayId: "default", settings: ["binary":pi,"nodeBinary":node,"agentDir":root.appendingPathComponent("runtime-other").path]))
+        _ = try application.upsertRuntime(runtime: BindingRuntimeInstance(enabled: true, id: "fixture", name: "Synthetic", typeId: "pi-1.0", gatewayId: "default", settings: ["binary":pi,"nodeBinary":node,"agentDir":root.appendingPathComponent("runtime").path]))
+        _ = try application.upsertRuntime(runtime: BindingRuntimeInstance(enabled: true, id: "other", name: "Other", typeId: "pi-1.0", gatewayId: "default", settings: ["binary":pi,"nodeBinary":node,"agentDir":root.appendingPathComponent("runtime-other").path]))
         _ = try application.saveProvider(gatewayId: "default", provider: BindingProviderDraft(id: "synthetic-provider", name: "Synthetic", protocol: .chatCompletionsV1, endpoint: endpoint, models: [BindingProviderModel(recordKey: "", providerModelId: "synthetic", nickname: "Synthetic", icon: nil, contextWindow: 8192, maxOutputTokens: 128, reasoningLevels: nil, adapterMetadataJson: nil)], quotaLimits: []), authenticationEdit: .setApiKey(value: "SYNTHETIC_ONLY"))
         _ = try application.selectRuntime(id: "fixture")
         try application.shutdown()

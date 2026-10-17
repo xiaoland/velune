@@ -904,7 +904,7 @@ pub(super) fn history_client_at(
     if !binary.is_absolute() || !home.is_absolute() {
         return Err(Error::new("Codex 历史配置必须使用绝对路径"));
     }
-    crate::version::check_version_at("codex-0.159.3", binary, None, execution, os_home)?;
+    crate::version::check_version_at("codex-0.159", binary, None, execution, os_home)?;
     let mut command = Command::new(binary);
     command.arg("app-server");
     command.env("CODEX_HOME", home);

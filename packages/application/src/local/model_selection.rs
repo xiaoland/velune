@@ -29,13 +29,13 @@ impl CoreRuntime {
         let declared = model.reasoning_levels.as_deref().unwrap_or_default();
         Ok(match runtime.type_id.as_str() {
             // Codex passes the level on as the Responses reasoning effort.
-            "codex-0.159.3" => declared.to_vec(),
-            "claude-code-2.1.286" => declared
+            "codex-0.159" => declared.to_vec(),
+            "claude-code-2.1" => declared
                 .iter()
                 .filter(|level| CLAUDE_EFFORT_LEVELS.contains(&level.as_str()))
                 .cloned()
                 .collect(),
-            "pi-1.0.2" => pi_declared_levels(model)
+            "pi-1.0" => pi_declared_levels(model)
                 .into_iter()
                 .filter(|level| pi::PI_THINKING_LEVELS.contains(&level.as_str()))
                 .collect(),
@@ -125,11 +125,9 @@ impl CoreRuntime {
                 .iter()
                 .any(|level| level == effort),
             ModelSelection::Native { .. } => match runtime.type_id.as_str() {
-                "codex-0.159.3" => {
-                    !effort.trim().is_empty() && !effort.chars().any(char::is_control)
-                }
-                "claude-code-2.1.286" => CLAUDE_EFFORT_LEVELS.contains(&effort),
-                "pi-1.0.2" => pi::PI_THINKING_LEVELS.contains(&effort),
+                "codex-0.159" => !effort.trim().is_empty() && !effort.chars().any(char::is_control),
+                "claude-code-2.1" => CLAUDE_EFFORT_LEVELS.contains(&effort),
+                "pi-1.0" => pi::PI_THINKING_LEVELS.contains(&effort),
                 _ => false,
             },
             ModelSelection::RuntimeDefault => false,
@@ -171,12 +169,12 @@ impl CoreRuntime {
                 {
                     return Err(RuntimeError::invalid("原生提供商或模型标识无效"));
                 }
-                if matches!(runtime.type_id.as_str(), "pi-1.0.2" | "dsh-acp-0.2.0-rc.2")
+                if matches!(runtime.type_id.as_str(), "pi-1.0" | "dsh-acp-0.2")
                     && provider_id.is_none()
                 {
                     return Err(RuntimeError::invalid("此运行时的原生模型必须指定提供商"));
                 }
-                if runtime.type_id == "claude-code-2.1.286" && provider_id.is_some() {
+                if runtime.type_id == "claude-code-2.1" && provider_id.is_some() {
                     return Err(RuntimeError::invalid(
                         "Claude Code 原生模型使用其既有单一提供商",
                     ));
@@ -266,7 +264,7 @@ impl CoreRuntime {
         .map_err(|error| RuntimeError::context("运行时版本检查", error))?;
         self.shutdown_active()?;
         self.session.execution_runtime_id = Some(runtime.id.clone());
-        if runtime.type_id == "pi-1.0.2" {
+        if runtime.type_id == "pi-1.0" {
             let servers = self.collaboration_servers();
             let mut config = self.pi_history_config(&runtime)?;
             config.mcp_servers = servers;
@@ -341,9 +339,9 @@ impl CoreRuntime {
     ) -> Result<NativeConfig, RuntimeError> {
         let context = self.prepare_execution_context(runtime)?;
         let kind = match runtime.type_id.as_str() {
-            "codex-0.159.3" => NativeKind::Codex,
-            "dsh-acp-0.2.0-rc.2" => NativeKind::DeepSeek,
-            "claude-code-2.1.286" => NativeKind::ClaudeCode,
+            "codex-0.159" => NativeKind::Codex,
+            "dsh-acp-0.2" => NativeKind::DeepSeek,
+            "claude-code-2.1" => NativeKind::ClaudeCode,
             _ => return Err(RuntimeError::invalid("native runtime type")),
         };
         Ok(NativeConfig {
@@ -396,7 +394,7 @@ impl CoreRuntime {
             return Ok(json!(models));
         }
         let mut models = Vec::new();
-        if runtime.type_id == "pi-1.0.2" {
+        if runtime.type_id == "pi-1.0" {
             let context = self.prepare_execution_context(&runtime)?;
             let mut config = self.pi_history_config(&runtime)?;
             config.rpc_entry = Some(context.resources.join("pi_rpc.mjs"));

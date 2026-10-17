@@ -87,7 +87,7 @@ def main():
             application = b.VeluneApplication.open(b.BindingOptions(
                 home_directory=str(root / 'home'), resources_directory=str(resources)))
             runtime = b.BindingRuntimeInstance(enabled=True, id='fixture', name='Synthetic Pi',
-                type_id='pi-1.0.2', gateway_id='default', settings={
+                type_id='pi-1.0', gateway_id='default', settings={
                 'binary': str(args.pi), 'nodeBinary': str(args.node),
                     'agentDir': str(root / 'runtime')})
             application.upsert_runtime(runtime)
@@ -103,7 +103,7 @@ def main():
             assert item.updated_at_unix_ms is not None and item.updated_at_unix_ms > 0
             assert item.created_at_unix_ms is not None and item.created_at_unix_ms > 0
             other = b.BindingRuntimeInstance(enabled=True, id='other', name='Other Pi',
-                type_id='pi-1.0.2', gateway_id='default', settings=dict(runtime.settings, agentDir=str(root / 'foreign')))
+                type_id='pi-1.0', gateway_id='default', settings=dict(runtime.settings, agentDir=str(root / 'foreign')))
             application.upsert_runtime(other)
             assert any(s.runtime_id == 'other' for s in [_row.conversation for _row in application.list().conversations])
             selected = application.select_runtime('fixture')
@@ -162,7 +162,7 @@ def main():
             assert current.actions.can_send
             assert current.messages == chosen.messages
             bad = b.BindingRuntimeInstance(enabled=True, id='unreadable', name='Synthetic broken source',
-                type_id='pi-1.0.2', gateway_id='default', settings={
+                type_id='pi-1.0', gateway_id='default', settings={
                     'binary': str(binary), 'nodeBinary': str(root / 'missing-node'),
                     'agentDir': str(root / 'foreign')})
             application.upsert_runtime(bad)
@@ -197,9 +197,9 @@ def main():
             assert named_history.read_bytes() == named_original
             assert placeholder_named_history.read_bytes() == placeholder_named_original
             config = json.loads((root / 'home/generic-config.json').read_text())
-            assert config['schemaVersion'] == 8
+            assert config['schemaVersion'] == 9
             assert all('modelRecordKey' not in runtime for runtime in config['runtimeInstances'])
-            print(json.dumps({'acceptance': 'PASSED', 'schema': 8,
+            print(json.dumps({'acceptance': 'PASSED', 'schema': 9,
                 'historyWithoutProvidersOrExistingCwd': True,
                 'nativeTitleAndFirstMessageFallback': True,
                 'typedRoleAndUnixMillis': True,

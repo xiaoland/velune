@@ -123,7 +123,7 @@ def main():
             application = bindings.VeluneApplication.open(bindings.BindingOptions(
                 home_directory=str(root / 'home'), resources_directory=str(resources)))
             runtime = bindings.BindingRuntimeInstance(enabled=True,
-                id='fixture-runtime', name='Synthetic Pi', type_id='pi-1.0.2', gateway_id='default',
+                id='fixture-runtime', name='Synthetic Pi', type_id='pi-1.0', gateway_id='default',
                 settings={'agentDir': str(root / 'source'), 'nodeBinary': str(args.node),
                           'binary': str(args.pi)})
             application.upsert_runtime(runtime)
@@ -169,7 +169,7 @@ def main():
             assert gateway.providers[0].authentication.method == bindings.BindingAuthenticationMethod.API_KEY
             assert application.read_provider_api_key('default', selected.id) == 'synthetic-only'
             saved = json.loads((root / 'home/generic-config.json').read_text())
-            assert saved['schemaVersion'] == 7 and 'authenticationBindings' not in saved
+            assert saved['schemaVersion'] == 9 and 'authenticationBindings' not in saved
             binding, = gateway.providers[0].models
             assert binding.provider_model_id == 'reasoning' and binding.record_key != 'reasoning'
             assert binding.context_window == candidate.context_window
@@ -267,7 +267,7 @@ def main():
             assert snapshot.conversation.title == 'SYNTHETIC_PERSISTED_DRAFT_TITLE' and renamed_path.exists()
             native_saved = json.loads(subprocess.check_output([str(args.node),str(resources / 'pi_sessions.mjs'),
                 '--agent-dir',str(root / 'source'),'--inspect-session',str(renamed_path),
-                '--cli',str(args.pi),'--runtime-type','pi-1.0.2'],text=True))
+                '--cli',str(args.pi),'--runtime-type','pi-1.0'],text=True))
             assert native_saved['name'] == 'SYNTHETIC_PERSISTED_DRAFT_TITLE'
             reopened_draft = application.open_conversation(runtime.id, renamed_draft.conversation.id).snapshot
             assert reopened_draft.conversation.title == 'SYNTHETIC_PERSISTED_DRAFT_TITLE'

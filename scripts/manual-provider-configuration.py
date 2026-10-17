@@ -47,12 +47,12 @@ def main():
                 resources_directory=str(args.bundle / 'Contents/Resources'))
             application = b.VeluneApplication.open(options)
             reset = json.loads(config.read_text())
-            assert reset['schemaVersion'] == 7 and not reset['gateways']
+            assert reset['schemaVersion'] == 9 and not reset['gateways']
             assert not any('backup' in p.name or p.suffix == '.bak' for p in home.iterdir())
             runtime_home = root / 'synthetic-pi'
             runtime_home.mkdir()
             application.upsert_runtime(b.BindingRuntimeInstance(enabled=True, id='inactive', name='Synthetic inactive runtime',
-                type_id='pi-1.0.2', gateway_id='default',
+                type_id='pi-1.0', gateway_id='default',
                 settings={'agentDir': str(runtime_home), 'nodeBinary': '/usr/bin/false', 'binary': '/usr/bin/false'}))
             assert application.list().gateways[0].id == 'default'
             protocol = b.BindingGatewayProtocol.CHAT_COMPLETIONS_V1
@@ -144,7 +144,7 @@ def main():
             application.shutdown()
             application = None
             assert original.read_text() == 'synthetic original unchanged'
-            for label, contents in [('future', json.dumps({'schemaVersion': 7})),
+            for label, contents in [('future', json.dumps({'schemaVersion': 10})),
                                     ('malformed', '{broken'),
                                     ('old-fields', json.dumps({**reset, 'authenticationBindings': []}))]:
                 invalid_home = root / label

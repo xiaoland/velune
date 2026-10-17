@@ -137,7 +137,7 @@ def main():
             spec.loader.exec_module(b)
             app = b.VeluneApplication.open(b.BindingOptions(home_directory=str(root / 'app'), resources_directory=str(root / 'resources')))
             try:
-                for identity, variant, path in [('claude', 'claude-code-2.1.286', root / 'home/.claude'), ('pi', 'pi-1.0.2', root / 'pi-agent')]:
+                for identity, variant, path in [('claude', 'claude-code-2.1', root / 'home/.claude'), ('pi', 'pi-1.0', root / 'pi-agent')]:
                     app.upsert_runtime(b.BindingRuntimeInstance(enabled=False, id=identity, name=identity,
                                        type_id=variant, gateway_id='default', settings={'agentDir': str(path)}))
                 K, S, R = b.BindingRuntimeResourceKind, b.BindingRuntimeResourceScope, b.BindingRuntimeResourceRevision

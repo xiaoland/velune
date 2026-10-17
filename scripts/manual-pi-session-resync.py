@@ -59,7 +59,7 @@ pi.registerCommand('manual-switch',{handler:async (_args,ctx)=>{await ctx.switch
         model=b.BindingProviderModel(record_key='',provider_model_id='synthetic',nickname='Synthetic',icon=None,context_window=8192,max_output_tokens=4096,reasoning_levels=None,adapter_metadata_json=None)
         draft=b.BindingProviderDraft(id='synthetic',name='Synthetic',protocol=b.BindingGatewayProtocol.CHAT_COMPLETIONS_V1,endpoint=f'http://127.0.0.1:{server.server_port}/v1',models=[model], quota_limits=[])
         saved=app.save_provider('default',draft,b.BindingAuthenticationEdit.SET_API_KEY(value='synthetic-only')).gateways[0].providers[0]
-        runtime=b.BindingRuntimeInstance(enabled=True, id='pi',name='Synthetic Pi',type_id='pi-1.0.2',gateway_id='default',settings={'binary':str(args.pi),'nodeBinary':str(args.node),'agentDir':str(root/'runtime')})
+        runtime=b.BindingRuntimeInstance(enabled=True, id='pi',name='Synthetic Pi',type_id='pi-1.0',gateway_id='default',settings={'binary':str(args.pi),'nodeBinary':str(args.node),'agentDir':str(root/'runtime')})
         app.upsert_runtime(runtime)
         session=next(item for item in [_row.conversation for _row in app.list().conversations] if item.id=='pi:'+paths['path'])
         before=app.open_conversation('pi',session.id).snapshot

@@ -95,7 +95,7 @@ manager.appendSessionInfo(title);
         app = b.VeluneApplication.open(b.BindingOptions(home_directory=str(root / 'app-home'), resources_directory=str(root / 'resources')))
         try:
             app.upsert_runtime(b.BindingRuntimeInstance(
-                enabled=True, id='pi', name='Pi', type_id='pi-1.0.2', gateway_id='default',
+                enabled=True, id='pi', name='Pi', type_id='pi-1.0', gateway_id='default',
                 settings={'binary': str(args.pi), 'nodeBinary': str(args.node), 'agentDir': str(root / 'runtime')}))
             ids = {c.title: c.id for c in [_row.conversation for _row in app.list().conversations]}
 

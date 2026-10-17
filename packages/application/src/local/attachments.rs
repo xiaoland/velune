@@ -51,7 +51,7 @@ impl CoreRuntime {
                 }
             }
         }
-        if !attachments.images.is_empty() && runtime.type_id == "dsh-acp-0.2.0-rc.2" {
+        if !attachments.images.is_empty() && runtime.type_id == "dsh-acp-0.2" {
             return Err(RuntimeError::invalid("DeepSeek 运行时不接受图片"));
         }
         Ok(attachments)

@@ -160,7 +160,7 @@ pub(crate) struct ConversationHandoff {
 pub struct RuntimeTypeDescriptor {
     pub id: String,
     pub family_id: String,
-    pub version_regex: String,
+    pub compatible_versions: String,
     pub can_rename_conversations: bool,
     pub can_delete_conversations: bool,
     /// Instances take launch arguments and environment (`acp_launch`,
@@ -203,7 +203,7 @@ impl RuntimeInstance {
     pub(crate) fn validate_execution_paths(&self) -> Result<(), &'static str> {
         if !matches!(
             self.type_id.as_str(),
-            "pi-1.0.2" | "codex-0.159.3" | "dsh-acp-0.2.0-rc.2" | "claude-code-2.1.286" | "acp-v1"
+            "pi-1.0" | "codex-0.159" | "dsh-acp-0.2" | "claude-code-2.1" | "acp-v1"
         ) {
             return Err("不支持的运行时版本类型");
         }
@@ -218,7 +218,7 @@ impl RuntimeInstance {
             if key == "agentDir" && matches!(execution.home, crate::RuntimeHome::Managed { .. }) {
                 continue;
             }
-            if key == "nodeBinary" && self.type_id == "claude-code-2.1.286" {
+            if key == "nodeBinary" && self.type_id == "claude-code-2.1" {
                 continue;
             }
             let value = self
@@ -231,7 +231,7 @@ impl RuntimeInstance {
             }
         }
         if let Some(value) = self.settings.get("sessionDir").filter(|v| !v.is_empty())
-            && (self.type_id != "pi-1.0.2"
+            && (self.type_id != "pi-1.0"
                 || !std::path::Path::new(value).is_absolute()
                 || value.contains('\0'))
         {

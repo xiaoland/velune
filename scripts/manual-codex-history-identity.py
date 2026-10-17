@@ -294,7 +294,7 @@ def main():
                     home_directory=str(root / "application-home"),
                     resources_directory=str(args.resources)))
                 application.upsert_runtime(binding.BindingRuntimeInstance(
-                    enabled=True, id="codex", name="Synthetic Codex", type_id="codex-0.159.3",
+                    enabled=True, id="codex", name="Synthetic Codex", type_id="codex-0.159",
                     gateway_id="default", settings={"binary": str(args.codex),
                     "nodeBinary": str(args.node), "agentDir": str(codex_home)}))
                 application_rows = [_row.conversation for _row in application.list().conversations]

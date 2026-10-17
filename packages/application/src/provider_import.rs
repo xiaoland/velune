@@ -25,9 +25,9 @@ struct Preview {
 
 pub(crate) fn descriptor() -> crate::config::RuntimeTypeDescriptor {
     crate::config::RuntimeTypeDescriptor {
-        id: "pi-1.0.2".into(),
+        id: "pi-1.0".into(),
         family_id: "pi".into(),
-        version_regex: r"^1\.0\.2$".into(),
+        compatible_versions: velune_agent_runtime::version::PI_VERSIONS.describe(),
         can_rename_conversations: true,
         can_delete_conversations: true,
         launch_options: false,
@@ -35,9 +35,9 @@ pub(crate) fn descriptor() -> crate::config::RuntimeTypeDescriptor {
         session_options: false,
         permission_modes: Vec::new(),
         remote_resources: true,
-        supported_protocols: GatewayProtocol::runtime_protocols("pi-1.0.2")
+        supported_protocols: GatewayProtocol::runtime_protocols("pi-1.0")
             .expect("registered Pi adapter"),
-        supported_provider_protocols: GatewayProtocol::runtime_provider_protocols("pi-1.0.2")
+        supported_provider_protocols: GatewayProtocol::runtime_provider_protocols("pi-1.0")
             .expect("registered Pi adapter"),
         name: "Pi Agent 提供商目录".into(),
         fields: Vec::new(),
@@ -81,7 +81,7 @@ fn configured_source(
             "提供商导入目前只支持使用既有本机 HOME 的运行时；远端与 managed HOME 可直接使用原生提供商",
         ));
     }
-    if runtime.type_id != "pi-1.0.2" || selection.harness_type_id != "pi" {
+    if runtime.type_id != "pi-1.0" || selection.harness_type_id != "pi" {
         return Err(RuntimeError::invalid("所选 Agent 运行时不支持提供商导入"));
     }
     let directory = runtime

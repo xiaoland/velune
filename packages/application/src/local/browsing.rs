@@ -62,7 +62,7 @@ pub(super) enum EntryState {
 }
 /// Runtimes whose sessions are files read one by one.
 fn reads_lazily(runtime: &RuntimeInstance) -> bool {
-    matches!(runtime.type_id.as_str(), "pi-1.0.2" | "claude-code-2.1.286")
+    matches!(runtime.type_id.as_str(), "pi-1.0" | "claude-code-2.1")
 }
 impl CoreRuntime {
     pub(super) fn runtime_instance(&self, id: &str) -> Result<&RuntimeInstance, RuntimeError> {
@@ -130,7 +130,7 @@ impl CoreRuntime {
         };
         let mut entries = match runtime.type_id.as_str() {
             "acp-v1" => read(self.acp_summaries(runtime)?),
-            "pi-1.0.2" => history::list_pi(&self.pi_history_config(runtime)?, &[])
+            "pi-1.0" => history::list_pi(&self.pi_history_config(runtime)?, &[])
                 .map_err(|error| {
                     RuntimeError::context("Pi 历史无法读取；请检查实例路径与 SDK 配置后重试", error)
                 })?
@@ -147,7 +147,7 @@ impl CoreRuntime {
                     state: EntryState::Unread,
                 })
                 .collect(),
-            "claude-code-2.1.286" => history::index(&self.history_config(runtime)?)
+            "claude-code-2.1" => history::index(&self.history_config(runtime)?)
                 .map_err(|error| self.history_failure(runtime, error))?
                 .into_iter()
                 .map(|entry| IndexedConversation {
@@ -235,7 +235,7 @@ impl CoreRuntime {
         let (summaries, identities): (
             BTreeMap<String, ConversationSummary>,
             BTreeMap<String, String>,
-        ) = if runtime.type_id == "pi-1.0.2" {
+        ) = if runtime.type_id == "pi-1.0" {
             let listing =
                 history::list_pi(&self.pi_history_config(runtime)?, &natives).map_err(|error| {
                     RuntimeError::context("Pi 历史无法读取；请检查实例路径与 SDK 配置后重试", error)
@@ -437,7 +437,7 @@ impl CoreRuntime {
                 .conversation_summary(runtime, id)
                 .map_err(|error| {
                     tracing::warn!(target: "velune_application", event="runtime_history_read_failed", phase="history_lookup", runtime_id=%runtime.id, runtime_name=%runtime.name, runtime_type_id=%runtime.type_id, binary=?runtime.settings.get("binary"), node_binary=?runtime.settings.get("nodeBinary"), agent_dir=?runtime.settings.get("agentDir"), detail=%error);
-                    if runtime.type_id == "pi-1.0.2" {
+                    if runtime.type_id == "pi-1.0" {
                         RuntimeError::context(&runtime_context(runtime), error)
                     } else {
                         error
@@ -475,7 +475,7 @@ impl CoreRuntime {
                 can_switch: true,
             },
         };
-        if runtime.type_id == "pi-1.0.2" {
+        if runtime.type_id == "pi-1.0" {
             let saved = pi_session_helper(
                 &self.pi_history_config(runtime)?,
                 Path::new(native_id),
@@ -594,13 +594,13 @@ impl CoreRuntime {
             context.os_home.as_deref(),
         )
         .map_err(|error| RuntimeError::Invalid(error.to_string()))?;
-        if runtime.type_id == "pi-1.0.2" {
+        if runtime.type_id == "pi-1.0" {
             runnable_pi_model(gateway, key)?;
         }
         gateway.to_gateway_config()?;
         let result = (|| {
             self.prepare_runtime(&runtime_id, key)?;
-            if runtime.type_id != "pi-1.0.2" {
+            if runtime.type_id != "pi-1.0" {
                 if is_new {
                     self.native_create(cwd.as_deref(), key)?;
                 } else {

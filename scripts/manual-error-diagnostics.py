@@ -37,7 +37,7 @@ def main():
             spec.loader.exec_module(module)
             app = module.VeluneApplication.open(module.BindingOptions(home_directory=str(home), resources_directory=str(resources)))
             app.upsert_runtime(module.BindingRuntimeInstance(
-                enabled=True, id="pi", name="Synthetic Pi", type_id="pi-1.0.2",
+                enabled=True, id="pi", name="Synthetic Pi", type_id="pi-1.0",
                 gateway_id="default", settings={"agentDir": str(agent), "nodeBinary": str(args.node), "binary": str(args.pi)}
             ))
             source = module.BindingProviderImportSource(kind="harness", harness_type_id="pi", source_instance_id="pi", provider_id=None, settings={})
@@ -88,7 +88,7 @@ else{process.stdout.write(JSON.stringify({contractVersion:2,files:[{path:SESSION
             print("PASS typed history turn keeps answer and trailing system status visible")
             # Real SDK entrypoint failures, not fabricated cause markers.
             app.upsert_runtime(module.BindingRuntimeInstance(
-                enabled=False, id="pi", name="Synthetic Pi", type_id="pi-1.0.2",
+                enabled=False, id="pi", name="Synthetic Pi", type_id="pi-1.0",
                 gateway_id="default", settings={"agentDir": str(agent), "nodeBinary": str(args.node), "binary": str(args.pi)}
             ))
             repository = Path(__file__).resolve().parents[1]
@@ -103,14 +103,14 @@ else{process.stdout.write(JSON.stringify({contractVersion:2,files:[{path:SESSION
                 runtime_agent.mkdir()
                 app.upsert_runtime(module.BindingRuntimeInstance(
                     enabled=True, id=runtime_id, name="Instance " + runtime_id,
-                    type_id="pi-1.0.2", gateway_id="default",
+                    type_id="pi-1.0", gateway_id="default",
                     settings={"agentDir": str(runtime_agent), "nodeBinary": str(args.node), "binary": str(binary)}
                 ))
             failures = {failure.runtime_id: failure.detail for failure in app.list().history_failures}
             assert set(failures) == {"missing-pi", "dangling-pi"}, failures
             for runtime_id, binary in (("missing-pi", missing), ("dangling-pi", launcher)):
                 detail = failures[runtime_id]
-                for expected in (runtime_id, "Instance " + runtime_id, "pi-1.0.2", str(binary), str(args.node), "ENOENT", "realpath"):
+                for expected in (runtime_id, "Instance " + runtime_id, "pi-1.0", str(binary), str(args.node), "ENOENT", "realpath"):
                     assert expected in detail, (expected, detail)
                 if runtime_id == "dangling-pi":
                     assert str(target) in detail and "parsedTarget=" in detail, detail
@@ -143,7 +143,7 @@ else{process.stdout.write(JSON.stringify({contractVersion:2,files:[{path:SESSION
             good_agent = root / "good-agent"
             good_agent.mkdir()
             app.upsert_runtime(module.BindingRuntimeInstance(
-                enabled=True, id="valid-pi", name="Valid Pi", type_id="pi-1.0.2",
+                enabled=True, id="valid-pi", name="Valid Pi", type_id="pi-1.0",
                 gateway_id="default", settings={"agentDir": str(good_agent), "nodeBinary": str(args.node), "binary": str(args.pi)}
             ))
             assert "valid-pi" not in {failure.runtime_id for failure in app.list().history_failures}

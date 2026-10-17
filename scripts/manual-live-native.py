@@ -140,10 +140,10 @@ def main():
                                                 home=b.BindingRuntimeHome.MANAGED(remote_root=None),
                                                 remote_resources_directory=None)
             app.upsert_runtime_with_execution(b.BindingRuntimeInstance(
-                enabled=True, id='codex', name='Codex', type_id='codex-0.159.3', gateway_id='default',
+                enabled=True, id='codex', name='Codex', type_id='codex-0.159', gateway_id='default',
                 settings={'binary': str(codex), 'nodeBinary': str(args.node)}), managed)
             app.upsert_runtime_with_execution(b.BindingRuntimeInstance(
-                enabled=True, id='claude', name='Claude Code', type_id='claude-code-2.1.286', gateway_id='default',
+                enabled=True, id='claude', name='Claude Code', type_id='claude-code-2.1', gateway_id='default',
                 settings={'binary': str(claude)}), managed)
             app.list()
             homes = {path.name: path for path in (root / 'velune/runtime-homes').iterdir()}

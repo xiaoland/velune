@@ -101,7 +101,7 @@ def main():
             provider=b.BindingProviderDraft(id='synthetic',name='Synthetic',protocol=b.BindingGatewayProtocol.RESPONSES_V1,endpoint='http://127.0.0.1:9/v1',models=[model], quota_limits=[])
             application.save_provider('default',provider,b.BindingAuthenticationEdit.SET_API_KEY(value='SYNTHETIC_KEY'))
             record=application.list().gateways[0].providers[0].models[0].record_key
-            runtime=b.BindingRuntimeInstance(enabled=True, id='fixture',name='Synthetic',type_id='codex-0.159.3',gateway_id='default',settings={'binary':str(binary),'nodeBinary':str(args.node),'agentDir':str(root/'runtime')})
+            runtime=b.BindingRuntimeInstance(enabled=True, id='fixture',name='Synthetic',type_id='codex-0.159',gateway_id='default',settings={'binary':str(binary),'nodeBinary':str(args.node),'agentDir':str(root/'runtime')})
             application.upsert_runtime(runtime);application.select_runtime('fixture')
             conversation_id=application.create_conversation('fixture',str(root/'project'),record).snapshot.conversation.id
             def wait(predicate, allow_error=False, runtime_id='fixture'):
@@ -145,7 +145,7 @@ def main():
             rejected(lambda: application.send_turn('fixture',conversation_id,'fixture',record,'cannot send on failed transport'))
             application.select_runtime('fixture');application.create_conversation('fixture',str(root/'project'),record);assert application.list().selected_runtime_instance_id=='fixture'
             claude_binary=root/'synthetic-claude';claude_binary.write_text('#!'+sys.executable+'\n'+CLAUDE_SERVER);claude_binary.chmod(0o700)
-            claude=b.BindingRuntimeInstance(enabled=True,id='claude',name='Synthetic Claude',type_id='claude-code-2.1.286',gateway_id='default',settings={'binary':str(claude_binary),'agentDir':str(root/'claude-runtime')})
+            claude=b.BindingRuntimeInstance(enabled=True,id='claude',name='Synthetic Claude',type_id='claude-code-2.1',gateway_id='default',settings={'binary':str(claude_binary),'agentDir':str(root/'claude-runtime')})
             application.upsert_runtime(claude)
             native=b.BindingModelSelection.NATIVE(provider_id=None,model_id='synthetic')
             conversation_id=application.create_conversation_with_selection('claude',str(root/'project'),native).snapshot.conversation.id

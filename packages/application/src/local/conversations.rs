@@ -131,7 +131,7 @@ impl CoreRuntime {
                 self.runtime_instance(&snapshot.conversation.runtime_id)?
                     .type_id
                     .as_str(),
-                "codex-0.159.3" | "claude-code-2.1.286" | "pi-1.0.2"
+                "codex-0.159" | "claude-code-2.1" | "pi-1.0"
             );
             let needs_new_target = supports_unpersisted_draft
                 && (snapshot.conversation.runtime_id != runtime_id
@@ -443,7 +443,7 @@ impl CoreRuntime {
         // Re-resolve within the configured instance before invoking a native mutation.
         let listed = self.conversation_summary(&runtime, id)?.is_some();
         if !listed
-            && runtime.type_id == "pi-1.0.2"
+            && runtime.type_id == "pi-1.0"
             && matches!(self.session.active_state, ActiveState::Pi)
             && self.session.execution_runtime_id.as_deref() == Some(runtime_id)
             && self
@@ -515,7 +515,7 @@ impl CoreRuntime {
         if current {
             self.invalidate_execution()?;
         }
-        if runtime.type_id == "pi-1.0.2" {
+        if runtime.type_id == "pi-1.0" {
             history::manage_pi(
                 &self.pi_history_config(&runtime)?,
                 Path::new(native_id),

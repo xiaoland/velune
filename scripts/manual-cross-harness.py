@@ -150,8 +150,8 @@ def main():
             types = {descriptor.id: descriptor for descriptor in application.list().runtime_types}
             binaries = {"pi": args.pi,
                         "codex": args.codex, "dsh": args.dsh}
-            runtime_types = {"pi": "pi-1.0.2", "codex": "codex-0.159.3",
-                             "dsh": "dsh-acp-0.2.0-rc.2"}
+            runtime_types = {"pi": "pi-1.0", "codex": "codex-0.159",
+                             "dsh": "dsh-acp-0.2"}
             for family in ("pi", "codex", "dsh"):
                 if runtime_types[family] not in types:
                     raise RuntimeError("runtime descriptor missing: " + runtime_types[family])

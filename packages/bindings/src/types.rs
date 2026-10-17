@@ -457,7 +457,7 @@ pub struct BindingRuntimeDiscoveryCandidate {
 pub struct BindingRuntimeTypeDescriptor {
     pub id: String,
     pub family_id: String,
-    pub version_regex: String,
+    pub compatible_versions: String,
     pub can_rename_conversations: bool,
     pub can_delete_conversations: bool,
     /// Instances take launch arguments and environment (`acp_launch`,

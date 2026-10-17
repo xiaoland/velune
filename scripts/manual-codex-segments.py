@@ -71,7 +71,7 @@ def main():
             spec.loader.exec_module(b)
             app = b.VeluneApplication.open(b.BindingOptions(home_directory=str(root / 'velune'),
                                                              resources_directory=str(args.bundle / 'Contents/Resources')))
-            app.upsert_runtime(b.BindingRuntimeInstance(enabled=True, id='codex', name='Synthetic Codex', type_id='codex-0.159.3',
+            app.upsert_runtime(b.BindingRuntimeInstance(enabled=True, id='codex', name='Synthetic Codex', type_id='codex-0.159',
                 gateway_id='default', settings={'binary': str(args.codex), 'nodeBinary': str(args.node), 'agentDir': str(codex_home)}))
             elsewhere = sorted(item.conversation_id for item in app.conversation_activity(0).active
                                if item.run_state == b.BindingRunState.ELSEWHERE)

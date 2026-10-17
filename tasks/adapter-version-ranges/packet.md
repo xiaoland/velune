@@ -17,10 +17,19 @@
 
 ## 方案
 
-- agent-runtime `RuntimeVariant` 以 `versions: VersionRange { minimum, below }`（语义化版本比较，含预发布）取代 `version_regex`；`check_version_at`、`matching_variant` 与公开描述随之改；错误信息给出兼容区间。ACP 保持协议主版本 `1`。
-- 新 ID：`pi-1.0`、`codex-0.159`、`dsh-acp-0.2`、`claude-code-2.1`；名称不含补丁号。代码与脚本中的旧 ID 一次性改名，不保留旧 ID 映射。
-- 公开描述的 `version_regex` 换为区间文字（bindings／Mac 同步）。
+## 已实施（2026-10-17）
 
-## 验证计划
+- agent-runtime `RuntimeVariant.versions: Versions`（`Cli { minimum, below }` 用 semver 比较，`below` 的预发布在区间外；`AcpProtocol(1)`）取代 `version_regex`；`check_version_at`、`matching_variant` 随之改，拒绝信息给出区间。
+- 新 ID：`pi-1.0`、`codex-0.159`、`dsh-acp-0.2`、`claude-code-2.1`；代码、脚本、文档中的旧 ID 一次性改名，无映射。
+- 公开描述 `version_regex` 改为区间文字 `compatible_versions`（如“≥0.159.3，<0.160.0”）；Mac 不读取该字段，无需改动。
+- Pi 的区间 `PI_VERSIONS` 同时用于 SDK helper（`pi_sdk.mjs` 按同一区间核对安装包）与提供商导入快照；OAuth 来源仍保存精确 SDK 版本，安装变化须重新绑定（既有规则）。
+- 可执行文件发现只给下限，未改：发现到区间外的新版本时，执行准备给出区间提示。
 
-fmt／check／clippy；Mac 构建（待 8616bd0 的 Mac 映射修复）；以本机 Claude Code 2.1.292、Codex 0.159.3、Pi 1.0.2 运行受影响的人工脚本。安装前先就 schema 9 的配置初始化告知用户。
+## 验证（2026-10-17）
+
+fmt／check／clippy 通过。Mac 构建仍因 8616bd0 的映射缺口失败，脚本改用临时组装的 bundle（release 动态库＋当前 helper 资源）：multi-runtime（Codex 0.159.3、DSH 0.2.0-rc.2，99.0.0 被拒且信息含区间）、native-subagents（Codex 0.159.3、Claude Code 2.1.292）、pi-native-loop（Pi 1.0.2，含导入）、provider-configuration、session-browser 全部 PASSED。其中 4 个脚本的 schema 常量随 schema 9 更新（未来 schema 用 10）。
+
+## 未完成
+
+- 安装：等 Mac 映射修复，并先告知用户 schema 9 会初始化整个配置。`build-macos.sh` 的 manifest 仍写 `config_schema_version: 8`，归 8616bd0 的任务。
+- Claude Code 2.1.286 本身未在本机复核（已自动更新）。

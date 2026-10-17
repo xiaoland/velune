@@ -43,7 +43,7 @@ import VeluneBindings
         store.refreshConversations(); try await wait { !store.isLoading }
         try require(store.problems == [failure], "successful read erased retained operation diagnostic")
         store.clearProblem(failure.id); try require(store.problems.isEmpty)
-        let runtime = RuntimeInstance(id: "fixture", name: "Synthetic runtime", typeID: "pi-1.0.2", gatewayID: "default",
+        let runtime = RuntimeInstance(id: "fixture", name: "Synthetic runtime", typeID: "pi-1.0", gatewayID: "default",
             settings: ["binary": args[4], "nodeBinary": args[3], "agentDir": root.appendingPathComponent("runtime").path])
         store.saveRuntimeInstance(runtime)
         try await wait { !store.isLoading }

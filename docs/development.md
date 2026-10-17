@@ -32,7 +32,7 @@ Settings 以 AI 提供商和 Agent 运行时为主。提供商编辑器左侧选
 
 双击进入编辑是全局交互范式，适用于设置中的可编辑列表和会话标题；使用系统 List 主操作，单击选择与平台多选保留。双击会话仍写入运行时的原生标题，不建立本地覆盖。
 
-Agent 运行时可配置多个实例，每个实例选择精确版本类型及独立配置目录；工作目录属于具体会话。Rust packages 当前提供 Pi 1.0.2、Codex 0.159.3、Claude Code 2.1.286 和 DeepSeek Harness 0.2.0-rc.2，保持一个活跃执行 runner，空闲时切换会话；读取历史不进入执行。Pi 模型能力可以未知，由 SDK 处理缺省；未知规格不阻止准备或原生请求。添加实例后即可读取会话列表和详情，不需要连接或模型。新建表单选择实例与模型，目录留空使用运行时默认；Mac首次发送时自动准备并创建原生会话；历史模型选择与发送按会话进行。Pi 恢复可验证的原生选择记录，Codex／DSH 继续前明确选择，不按同名推断提供商。发送时自动准备／恢复，可观察工具结果、回答原生交互与取消。用户消息为右侧气泡，LLM 与工具左侧左对齐，只有系统／Harness 通知居中，不显示作者头像或昵称。历史由各 Harness 持有，Mac 只投影。
+Agent 运行时可配置多个实例，每个实例选择版本类型及独立配置目录；工作目录属于具体会话。Rust packages 当前提供 Pi 1.0、Codex 0.159、Claude Code 2.1 和 DeepSeek Harness 0.2 类型，各接受已验证的兼容区间（见 [agent-runtime](../packages/agent-runtime/README.md#版本与原生控制)），保持一个活跃执行 runner，空闲时切换会话；读取历史不进入执行。Pi 模型能力可以未知，由 SDK 处理缺省；未知规格不阻止准备或原生请求。添加实例后即可读取会话列表和详情，不需要连接或模型。新建表单选择实例与模型，目录留空使用运行时默认；Mac首次发送时自动准备并创建原生会话；历史模型选择与发送按会话进行。Pi 恢复可验证的原生选择记录，Codex／DSH 继续前明确选择，不按同名推断提供商。发送时自动准备／恢复，可观察工具结果、回答原生交互与取消。用户消息为右侧气泡，LLM 与工具左侧左对齐，只有系统／Harness 通知居中，不显示作者头像或昵称。历史由各 Harness 持有，Mac 只投影。
 
 Velune 向 Harness 注入本机网关提供商配置，Velune 管理的提供商 key 不随该注入传给 Harness；这不禁止 Harness 使用其原有提供商与认证。application 管理提供商私有认证，gateway 只接收中立异步解析接口，AI provider 使用当前解析出的短生命周期认证。API key 可查看编辑，OAuth 状态与登录放在原提供商上下文，运行时名称仅作为来源说明。来源型 OAuth adapter 保留原 SDK 的登录与刷新，不复制 refresh credential；独立 Codex 订阅由 application 管理自己的登录和轮换令牌。修改来源绑定的目标时明确更换认证或清除，不能继续沿用旧目标授权。更换认证或模型执行配置后，受影响执行准备失效，历史视图保留，下一次发送重新准备；真实登录与调用由用户验收。
 
@@ -120,10 +120,10 @@ fixture 为 [review.json](../fixtures/review.json)，仅 `2 + 3 = 5`。Codex 会
 
 | variant ID | family | 版本 regex | 控制与历史 |
 | --- | --- | --- | --- |
-| `pi-1.0.2` | `pi` | `^1\.0\.2$` | Pi RPC、SessionManager SDK 分支历史 |
-| `codex-0.159.3` | `codex` | `^0\.159\.3$` | Codex app-server thread／turn 与原生分页历史 |
-| `dsh-acp-0.2.0-rc.2` | `deepseek-harness` | `^0\.2\.0-rc\.2$` | DSH ACP v1 session 控制、huihua DeepSeek provider |
-| `claude-code-2.1.286` | `claude-code` | `^2\.1\.286$` | Claude stream-json 控制、原生 projects 历史 |
+| `pi-1.0` | `pi` | `^1\.0\.2$` | Pi RPC、SessionManager SDK 分支历史 |
+| `codex-0.159` | `codex` | `^0\.159\.3$` | Codex app-server thread／turn 与原生分页历史 |
+| `dsh-acp-0.2` | `deepseek-harness` | `^0\.2\.0-rc\.2$` | DSH ACP v1 session 控制、huihua DeepSeek provider |
+| `claude-code-2.1` | `claude-code` | `^2\.1\.286$` | Claude stream-json 控制、原生 projects 历史 |
 
 Node 本体不随 Mac bundle，Pi／Codex／DSH 当前配置记录需要 Node 22.19+ 的绝对路径，其中 Pi／DSH 实际执行 Node helper；Codex 历史直接调用 app-server 原生 thread API。Claude 历史使用 Python 3 执行 Rust 内嵌的只读 helper。各 Harness 可执行文件由用户安装，实例保存绝对路径，不依赖 Finder 的 PATH。Codex 启动 app-server；DSH 当前版本通过配置的 Node 执行其 CLI JavaScript 入口并在 managed turn 传 `--profile acp --patch <实例投影文件>`。CLI 版本不是 ACP 握手中的插件版本。
 

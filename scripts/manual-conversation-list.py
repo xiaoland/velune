@@ -205,9 +205,9 @@ def main():
         # A small window before the runtimes join: only what it shows is read.
         application.set_conversation_browser_limits(b.BindingConversationBrowserLimits(page=3, total=5))
         application.set_conversation_browser_preferences(preferences(grouping=b.BindingConversationBrowserGrouping.PROJECT))
-        application.upsert_runtime(b.BindingRuntimeInstance(enabled=True, id='pi', name='Synthetic Pi', type_id='pi-1.0.2',
+        application.upsert_runtime(b.BindingRuntimeInstance(enabled=True, id='pi', name='Synthetic Pi', type_id='pi-1.0',
             gateway_id='default', settings={'binary': str(args.pi), 'nodeBinary': str(node), 'agentDir': str(root / 'pi')}))
-        application.upsert_runtime(b.BindingRuntimeInstance(enabled=True, id='codex', name='Synthetic Codex', type_id='codex-0.159.3',
+        application.upsert_runtime(b.BindingRuntimeInstance(enabled=True, id='codex', name='Synthetic Codex', type_id='codex-0.159',
             gateway_id='default', settings={'binary': str(args.codex), 'nodeBinary': str(args.node), 'agentDir': str(root / 'codex')}))
         lazy = application.list()
         loads = [(g.key, g.loaded, g.total) for g in lazy.conversation_groups]
@@ -350,7 +350,7 @@ def main():
             os.utime(file, (base + 900 if index == 0 else at, base + 900 if index == 0 else at))
         read_requests()
         application.set_conversation_browser_limits(b.BindingConversationBrowserLimits(page=2, total=2))
-        application.upsert_runtime(b.BindingRuntimeInstance(enabled=True, id='claude', name='Synthetic Claude', type_id='claude-code-2.1.286',
+        application.upsert_runtime(b.BindingRuntimeInstance(enabled=True, id='claude', name='Synthetic Claude', type_id='claude-code-2.1',
             gateway_id='default', settings={'binary': str(args.claude), 'agentDir': str(root / 'claude')}))
         window = application.set_conversation_browser_preferences(preferences(runtime_id='claude'))
         assert [c.conversation.title for c in shown(window)] == ['delta 5', 'delta 4'], [c.conversation.title for c in shown(window)]

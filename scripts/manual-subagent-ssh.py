@@ -62,7 +62,7 @@ def main():
                                                          resources_directory=str(args.bundle / 'Contents/Resources')))
         try:
             app.upsert_runtime_with_execution(b.BindingRuntimeInstance(
-                enabled=True, id='codex', name='Codex', type_id='codex-0.159.3', gateway_id='default',
+                enabled=True, id='codex', name='Codex', type_id='codex-0.159', gateway_id='default',
                 settings={'binary': args.remote_codex, 'nodeBinary': '/usr/bin/node'}),
                 b.BindingRuntimeExecution(
                     transport=b.BindingRuntimeTransport.SSH(binary='/usr/bin/ssh', destination=args.ssh_destination, port=None),

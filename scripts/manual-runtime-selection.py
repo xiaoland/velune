@@ -103,7 +103,7 @@ def main():
                 settings = {'binary':str(peer)}
                 if identity == 'first':
                     settings['agentDir'] = str(root / 'existing-agent')
-                runtime = b.BindingRuntimeInstance(enabled=True, id=identity, name=identity, type_id='claude-code-2.1.286', gateway_id='default', settings=settings)
+                runtime = b.BindingRuntimeInstance(enabled=True, id=identity, name=identity, type_id='claude-code-2.1', gateway_id='default', settings=settings)
                 if identity == 'first':
                     application.upsert_runtime(runtime)
                 else:

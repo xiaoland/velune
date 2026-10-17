@@ -84,12 +84,12 @@ def main() -> None:
             application = binding.VeluneApplication.open(binding.BindingOptions(
                 home_directory=str(root / "app-home"), resources_directory=str(root)))
             runtime = binding.BindingRuntimeInstance(
-                enabled=True, id="synthetic", name="Synthetic", type_id="dsh-acp-0.2.0-rc.2",
+                enabled=True, id="synthetic", name="Synthetic", type_id="dsh-acp-0.2",
                 gateway_id="default", settings={"binary": str(args.node), "nodeBinary": str(args.node), "agentDir": str(root / "runtime")})
             (root / "runtime" / "sessions").mkdir(parents=True)
             application.upsert_runtime(runtime)
             pi_runtime = binding.BindingRuntimeInstance(
-                enabled=True, id="pi", name="Synthetic Pi", type_id="pi-1.0.2",
+                enabled=True, id="pi", name="Synthetic Pi", type_id="pi-1.0",
                 gateway_id="default", settings={"binary": str(args.node), "nodeBinary": str(args.node), "agentDir": str(root / "pi-runtime")})
             (root / "pi-runtime").mkdir()
             application.upsert_runtime(pi_runtime)

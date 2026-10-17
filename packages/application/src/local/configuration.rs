@@ -363,11 +363,7 @@ impl CoreRuntime {
                     || runtime.name.is_empty()
                     || !matches!(
                         runtime.type_id.as_str(),
-                        "pi-1.0.2"
-                            | "codex-0.159.3"
-                            | "dsh-acp-0.2.0-rc.2"
-                            | "claude-code-2.1.286"
-                            | "acp-v1"
+                        "pi-1.0" | "codex-0.159" | "dsh-acp-0.2" | "claude-code-2.1" | "acp-v1"
                     )
                     || (runtime.gateway_id != "default"
                         && !self

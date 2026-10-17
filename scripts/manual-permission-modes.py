@@ -108,16 +108,16 @@ def main():
                                                 home=b.BindingRuntimeHome.MANAGED(remote_root=None),
                                                 remote_resources_directory=None)
             app.upsert_runtime_with_execution(b.BindingRuntimeInstance(
-                enabled=True, id='codex', name='Codex', type_id='codex-0.159.3', gateway_id='default',
+                enabled=True, id='codex', name='Codex', type_id='codex-0.159', gateway_id='default',
                 settings={'binary': str(args.codex.resolve()), 'nodeBinary': str(args.node)}), managed)
             app.upsert_runtime_with_execution(b.BindingRuntimeInstance(
-                enabled=True, id='claude', name='Claude Code', type_id='claude-code-2.1.286', gateway_id='default',
+                enabled=True, id='claude', name='Claude Code', type_id='claude-code-2.1', gateway_id='default',
                 settings={'binary': str(args.claude.resolve())}), managed)
 
             declared = {t.id: [m.id for m in t.permission_modes] for t in app.list().runtime_types}
-            assert declared['codex-0.159.3'] == ['read-only', 'workspace', 'auto-review', 'full-access'], declared
-            assert declared['claude-code-2.1.286'] == ['manual', 'acceptEdits', 'plan', 'auto', 'dontAsk', 'bypassPermissions'], declared
-            assert declared['acp-v1'] == [] and declared['pi-1.0.2'] == [], declared
+            assert declared['codex-0.159'] == ['read-only', 'workspace', 'auto-review', 'full-access'], declared
+            assert declared['claude-code-2.1'] == ['manual', 'acceptEdits', 'plan', 'auto', 'dontAsk', 'bypassPermissions'], declared
+            assert declared['acp-v1'] == [] and declared['pi-1.0'] == [], declared
             print('PASS runtime types declare their own permission modes; ACP and Pi declare none', flush=True)
 
             def provider(identifier, protocol):

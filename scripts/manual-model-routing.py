@@ -199,9 +199,9 @@ def application_phase(args, endpoint):
         app = b.VeluneApplication.open(b.BindingOptions(home_directory=str(root / 'velune'), resources_directory=str(args.bundle / 'Contents/Resources')))
         try:
             managed = b.BindingRuntimeExecution(transport=b.BindingRuntimeTransport.LOCAL(), home=b.BindingRuntimeHome.MANAGED(remote_root=None), remote_resources_directory=None)
-            app.upsert_runtime_with_execution(b.BindingRuntimeInstance(enabled=True, id='codex', name='Codex', type_id='codex-0.159.3', gateway_id='default',
+            app.upsert_runtime_with_execution(b.BindingRuntimeInstance(enabled=True, id='codex', name='Codex', type_id='codex-0.159', gateway_id='default',
                 settings={'binary': str(args.codex.resolve()), 'nodeBinary': str(args.node)}), managed)
-            app.upsert_runtime(b.BindingRuntimeInstance(enabled=True, id='pi', name='Pi', type_id='pi-1.0.2', gateway_id='default',
+            app.upsert_runtime(b.BindingRuntimeInstance(enabled=True, id='pi', name='Pi', type_id='pi-1.0', gateway_id='default',
                 settings={'binary': str(args.pi), 'nodeBinary': str(args.node), 'agentDir': str(root / 'pi')}))
 
             def provider(identifier, protocol, key):

@@ -111,10 +111,10 @@ impl CoreRuntime {
             RuntimeHome::Managed { .. }
         ) {
             let directory = match runtime.type_id.as_str() {
-                "pi-1.0.2" => ".pi/agent",
-                "codex-0.159.3" => ".codex",
-                "claude-code-2.1.286" => ".claude",
-                "dsh-acp-0.2.0-rc.2" => ".dsh",
+                "pi-1.0" => ".pi/agent",
+                "codex-0.159" => ".codex",
+                "claude-code-2.1" => ".claude",
+                "dsh-acp-0.2" => ".dsh",
                 _ => return Err(RuntimeError::invalid("不支持的运行时版本类型")),
             };
             Ok(Some(

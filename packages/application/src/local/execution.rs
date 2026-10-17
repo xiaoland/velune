@@ -28,7 +28,7 @@ impl CoreRuntime {
                     .query(&gateway.id, &member.provider().id, false);
             }
         }
-        if runtime.type_id != "pi-1.0.2" {
+        if runtime.type_id != "pi-1.0" {
             self.shutdown_active()?;
             let runtime_projection = self.execution_context(&runtime)?.projection;
             let lane = self.lane_projection(&runtime_projection);

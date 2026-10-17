@@ -69,8 +69,8 @@ def exercise(app, b, root):
     outcome = b.BindingTemplateApplyOutcome
     state = b.BindingResourceSyncState
 
-    for identity, variant in [('claude', 'claude-code-2.1.286'), ('codex', 'codex-0.159.3'),
-                              ('pi', 'pi-1.0.2')]:
+    for identity, variant in [('claude', 'claude-code-2.1'), ('codex', 'codex-0.159'),
+                              ('pi', 'pi-1.0')]:
         app.upsert_runtime(b.BindingRuntimeInstance(
             enabled=False, id=identity, name=identity, type_id=variant,
             gateway_id='default', settings={'agentDir': str(root / identity)}))
@@ -248,7 +248,7 @@ def exercise(app, b, root):
     assert ('codex', 'AGENTS.md') in unmanaged(kind.USER_INSTRUCTIONS)
     app.delete_runtime('codex')
     app.upsert_runtime(b.BindingRuntimeInstance(
-        enabled=False, id='codex', name='codex', type_id='codex-0.159.3',
+        enabled=False, id='codex', name='codex', type_id='codex-0.159',
         gateway_id='default', settings={'agentDir': str(root / 'codex')}))
     assert isinstance(states(docs.id)['codex'], state.NOT_ENABLED), '删除运行时应清理启用记录'
     app.apply_resource_template(docs.id, [target('codex')])

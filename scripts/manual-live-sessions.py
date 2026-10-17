@@ -147,7 +147,7 @@ console.log(manager.getSessionFile());
         app = b.VeluneApplication.open(b.BindingOptions(home_directory=str(root / 'app'), resources_directory=str(root / 'resources')))
         try:
             app.upsert_runtime(b.BindingRuntimeInstance(
-                enabled=True, id='pi', name='Pi', type_id='pi-1.0.2', gateway_id='default',
+                enabled=True, id='pi', name='Pi', type_id='pi-1.0', gateway_id='default',
                 settings={'binary': str(args.pi), 'nodeBinary': str(args.node), 'agentDir': str(root / 'runtime')}))
             app.save_provider('default', b.BindingProviderDraft(
                 id='synthetic', name='Synthetic', protocol=b.BindingGatewayProtocol.CHAT_COMPLETIONS_V1,

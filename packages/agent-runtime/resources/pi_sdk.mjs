@@ -5,8 +5,19 @@ import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
 
 const adapters = {
-  "pi-1.0.2": {packageName:"@earendil-works/pi-coding-agent",version:/^1\.0\.2$/,aiPackage:"@earendil-works/pi-ai"},
+  "pi-1.0": {packageName:"@earendil-works/pi-coding-agent",minimum:[1,0,2],below:[1,1,0],aiPackage:"@earendil-works/pi-ai"},
 };
+
+// The adapter's range as version.rs declares it: from `minimum` (no
+// prerelease) up to, not including, `below` and its prereleases.
+function inRange(version, {minimum, below}) {
+  const match = /^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$/.exec(version);
+  if (!match) return false;
+  const core = match.slice(1, 4).map(Number);
+  const compare = (a, b) => a[0] - b[0] || a[1] - b[1] || a[2] - b[2];
+  const low = compare(core, minimum);
+  return (low > 0 || (low === 0 && !match[4])) && compare(core, below) < 0;
+}
 
 const packageNames = new Set(["@earendil-works/pi-coding-agent", "@badlogic/pi-coding-agent"]);
 function fail(code, context, cause) {
@@ -86,8 +97,8 @@ export function resolvePiSdk({binary, runtimeTypeId, sdkVersion}) {
   const {cli, packageDirectory:directory, manifest} = resolvePiInstallation(binary);
   if (manifest.name !== adapter.packageName) fail("sdk_source_version_mismatch", `configuredBinary=${binary}; expectedPackage=${adapter.packageName}; actualPackage=${manifest.name}`);
   const entry = manifest.exports?.["."]?.import;
-  if (!adapter.version.test(manifest.version) || (sdkVersion && manifest.version !== sdkVersion)
-    || typeof entry !== "string") fail("sdk_source_version_mismatch", `configuredBinary=${binary}; actualVersion=${manifest.version}; supportedVersion=${adapter.version}; requiredSdkVersion=${sdkVersion ?? "unspecified"}; entry=${entry}`);
+  if (!inRange(manifest.version, adapter) || (sdkVersion && manifest.version !== sdkVersion)
+    || typeof entry !== "string") fail("sdk_source_version_mismatch", `configuredBinary=${binary}; actualVersion=${manifest.version}; supportedVersions=>=${adapter.minimum.join(".")},<${adapter.below.join(".")}; requiredSdkVersion=${sdkVersion ?? "unspecified"}; entry=${entry}`);
   return {
     cli, packageDirectory:directory, version:manifest.version,
     importSdk:() => import(pathToFileURL(resolve(directory,entry)).href),
