@@ -9,6 +9,14 @@
 /.build/
 /.swiftpm/
 
+# Android local configuration and generated outputs.
+/app/android/.gradle/
+/app/android/.kotlin/
+/app/android/**/build/
+/app/android/local.properties
+/app/android/**/*.jks
+/app/android/**/*.keystore
+
 # Local state and secrets.
 *.sqlite*
 .env

@@ -1,6 +1,7 @@
 import Foundation
 import OSLog
 import Combine
+import Network
 import VeluneBindings
 
 enum TransportError: LocalizedError {
@@ -34,6 +35,9 @@ final class Transport: @unchecked Sendable {
     private let lock = NSLock()
     private static let logger = Logger(subsystem: "local.velune", category: "transport")
     private var application: VeluneApplication?
+    private var remoteEndpoint: VeluneRemoteEndpoint?
+    private var remoteNetworkMonitor: NWPathMonitor?
+    private let remoteNetworkQueue = DispatchQueue(label: "local.velune.remote-network", qos: .utility)
     private var isClosed = false
 
     init(stateDirectory: URL, resourcesDirectory: URL) {
@@ -158,12 +162,79 @@ final class Transport: @unchecked Sendable {
     func authenticationCancel() throws -> BindingAuthenticationProgress { try withApplication("authenticationCancel") { try $0.authenticationCancel() } }
     func authenticationLogout(gatewayID: String, providerID: String) throws -> BindingGatewayUpdate { try withApplication("authenticationLogout", changesConfiguration: true) { try $0.authenticationLogout(gatewayId: gatewayID, providerId: providerID) } }
 
+    /// Serves the same owner used by every local window, with host-owned private files.
+    func enableRemoteAccess(network: RemoteAccessNetwork) throws -> RemoteAccessState {
+        try withApplication("enableRemoteAccess") { application in
+            if remoteEndpoint == nil {
+                let directory = stateDirectory.appendingPathComponent("remote", isDirectory: true)
+                let options = BindingRemoteOptions(identityFile: directory.appendingPathComponent("identity.json").path,
+                                                   trustFile: directory.appendingPathComponent("trusted-devices.json").path,
+                                                   deviceName: Host.current().localizedName ?? "Mac",
+                                                   relay: network == .development ? .developmentPublic : .disabled,
+                                                   discovery: network == .development ? .developmentPublic : .none,
+                                                   pathPolicy: .automatic, bindAddresses: [], requestTimeoutMs: 30_000)
+                remoteEndpoint = try VeluneRemoteEndpoint.open(options: options, application: application)
+                let monitor = NWPathMonitor()
+                monitor.pathUpdateHandler = { [weak self] _ in self?.remoteNetworkChanged() }
+                remoteNetworkMonitor = monitor
+                monitor.start(queue: remoteNetworkQueue)
+            }
+            return try remoteAccessStateLocked()
+        }
+    }
+
+    func remoteAccessState() throws -> RemoteAccessState {
+        lock.lock(); defer { lock.unlock() }
+        do { return try remoteAccessStateLocked() }
+        catch { throw TransportError.operation("remoteAccessState", map(error)) }
+    }
+
+    private func remoteAccessStateLocked() throws -> RemoteAccessState {
+        guard let remoteEndpoint else { return RemoteAccessState() }
+        return RemoteAccessState(descriptor: remoteEndpoint.descriptor(), devices: try remoteEndpoint.trustedDevices())
+    }
+
+    func createRemoteInvitation() throws -> BindingRemoteInvitation {
+        lock.lock(); defer { lock.unlock() }
+        guard let remoteEndpoint else { throw TransportError.rejected("请先启用远程接入。") }
+        do { return try remoteEndpoint.createInvitation(lifetimeSeconds: 300) }
+        catch { throw TransportError.operation("createRemoteInvitation", map(error)) }
+    }
+
+    func revokeRemoteDevice(_ id: String) throws -> RemoteAccessState {
+        lock.lock(); defer { lock.unlock() }
+        guard let remoteEndpoint else { throw TransportError.rejected("请先启用远程接入。") }
+        do {
+            try remoteEndpoint.revoke(deviceId: id)
+            return try remoteAccessStateLocked()
+        } catch { throw TransportError.operation("revokeRemoteDevice", map(error)) }
+    }
+
+    /// Stops only ingress. Accepted work and pending approvals stay with the application.
+    func stopRemoteAccess() {
+        lock.lock(); defer { lock.unlock() }
+        stopRemoteAccessLocked()
+    }
+
+    private func stopRemoteAccessLocked() {
+        remoteNetworkMonitor?.cancel()
+        remoteNetworkMonitor = nil
+        remoteEndpoint?.close()
+        remoteEndpoint = nil
+    }
+
+    func remoteNetworkChanged() {
+        lock.lock(); defer { lock.unlock() }
+        remoteEndpoint?.networkChange()
+    }
+
     /// `stoppingWork` ends running turns and sub-agents; otherwise they refuse it.
     func close(stoppingWork: Bool = false) throws {
         lock.lock(); defer { lock.unlock() }
         guard let application else { isClosed = true; return }
         do {
             if stoppingWork { try application.shutdownStoppingWork() } else { try application.shutdown() }
+            stopRemoteAccessLocked()
             self.application = nil
             isClosed = true
         } catch { logFailure(operation: "shutdown", localCorrelation: nil, error: error); throw TransportError.operation("shutdown", map(error)) }

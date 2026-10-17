@@ -15,6 +15,8 @@
 
 ## 当前工作
 
+- [最小 Android 远控端](../tasks/android-minimal/packet.md)：Kotlin／Jetpack Compose、remote-only UniFFI、Mac 邀请入口与 adb 真机隔离验收
+
 - [远程控制](../tasks/remote-control/packet.md)：同一用户多设备、公网免 VPN、完整 Velune 业务能力；GUI／headless 共用核心，需求与架构收敛后实现 Rust packages
 
 - [通用 ACP Adapter](../tasks/acp-adapter/packet.md)：Rust 侧 stable v1 接入、能力协商与会话恢复；App 前端待实现

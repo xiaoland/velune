@@ -106,6 +106,9 @@ final class AppStore: ObservableObject {
     @Published private var snapshot: ConversationSnapshot?
 
     private let transport: Transport?
+    private(set) lazy var remoteAccess = RemoteAccessModel(transport: transport) { [weak self] error in
+        self?.recordProblem(error, source: "远程接入", activityKey: "remote-access")
+    }
     /// Native runtime resources are edited from settings with their own loading state.
     var resourceTransport: Transport? { transport }
     /// The tool windows as last arranged, for windows without a layout of their own; the application's alone.

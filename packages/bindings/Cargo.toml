@@ -10,7 +10,7 @@ crate-type = ["rlib", "cdylib"]
 [features]
 default = ["local-runtime", "remote"]
 local-runtime = ["dep:velune-application", "velune-application/local-runtime", "dep:tracing-subscriber", "dep:tracing-appender"]
-remote = ["dep:velune-remote", "dep:tokio"]
+remote = ["dep:velune-remote", "dep:tokio", "dep:jni", "dep:rustls-platform-verifier"]
 cli = ["uniffi/cli"]
 
 [[bin]]
@@ -31,3 +31,7 @@ thiserror = "2"
 tracing = { version = "0.1", default-features = false, features = ["std"] }
 tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "json", "registry"], optional = true }
 tracing-appender = { version = "0.2", optional = true }
+
+[target.'cfg(target_os = "android")'.dependencies]
+jni = { version = "=0.22.4", optional = true }
+rustls-platform-verifier = { version = "=0.7.1", optional = true }

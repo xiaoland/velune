@@ -12,6 +12,8 @@ mod wire;
 pub use endpoint::{CallError, CallFailure, Handler, HandlerFuture, RemoteClient, RemoteEndpoint};
 pub use error::{RemoteError, Result};
 pub use identity::{DeviceIdentity, DeviceTrust, FileTrustStore, MemoryTrustStore, TrustedDevice};
+#[cfg(target_os = "android")]
+pub use iroh::dns::install_android_jni_context;
 pub use paths::{ConnectionPath, ConnectionStatus, PathKind, PathObserver};
 pub use protocol::{
     ClientSession, DiscoveryConfig, EndpointConfig, EndpointDescriptor, Invitation,

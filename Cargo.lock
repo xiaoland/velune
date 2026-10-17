@@ -4329,6 +4329,8 @@ dependencies = [
 name = "velune-bindings"
 version = "0.1.0"
 dependencies = [
+ "jni 0.22.4",
+ "rustls-platform-verifier",
  "serde",
  "serde_json",
  "thiserror 2.0.21",

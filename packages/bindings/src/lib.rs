@@ -2,6 +2,8 @@
 //!
 //! Local objects retain one execution owner; remote objects retain only their
 //! connection. Closing a controller never ends the execution owner or its work.
+#[cfg(all(target_os = "android", feature = "remote"))]
+mod android;
 mod diagnostics;
 #[cfg(feature = "remote")]
 mod remote;

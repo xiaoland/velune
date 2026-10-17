@@ -409,7 +409,7 @@ extension ImmediateDisclosureGroup where Label == Text {
     }
 }
 
-enum SettingsTab: Hashable { case providers, routes, conversation, runtimes }
+enum SettingsTab: Hashable { case providers, routes, conversation, runtimes, remote }
 
 /// The settings tab that is showing. Entry points elsewhere in the app set it
 /// before opening the window, so settings open where the task needs them.
@@ -437,6 +437,7 @@ struct SettingsView: View {
             ModelRouteSettingsView(store: store).tabItem { Label("模型路由", systemImage: "arrow.triangle.branch") }.tag(SettingsTab.routes)
             ConversationSettingsView(store: store).tabItem { Label("会话", systemImage: "bubble.left.and.bubble.right") }.tag(SettingsTab.conversation)
             RuntimeSettingsView(store: store).tabItem { Label("Agent 运行时", systemImage: "terminal") }.tag(SettingsTab.runtimes)
+            RemoteAccessSettingsView(store: store, model: store.remoteAccess).tabItem { Label("远程接入", systemImage: "laptopcomputer.and.iphone") }.tag(SettingsTab.remote)
         }
         // Settings are compact forms of one fixed size, so switching tabs never resizes the window.
         .frame(width: 690, height: 560)
