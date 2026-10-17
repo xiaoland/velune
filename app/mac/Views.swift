@@ -701,7 +701,7 @@ struct ProviderEditor: View {
     }
     private func commit() {
         let edit: AuthenticationEdit = editingAPIKey && apiKey != originalAPIKey ? .setAPIKey(apiKey) : clearAuthentication ? .clear : .keep
-        store.saveProvider(AIProvider(id: provider?.id ?? "", name: name.trimmingCharacters(in: .whitespacesAndNewlines), protocolID: protocolID, endpoint: endpoint.trimmingCharacters(in: .whitespacesAndNewlines), authentication: authentication, models: models.map(\.definition), quotaLimits: provider?.quotaLimits ?? []), authenticationEdit: edit) { apiKey = ""; originalAPIKey = nil; dismiss() }
+        store.saveProvider(AIProvider(id: provider?.id ?? "", name: name.trimmingCharacters(in: .whitespacesAndNewlines), protocolID: protocolID, endpoint: endpoint.trimmingCharacters(in: .whitespacesAndNewlines), authentication: authentication, models: models.map(\.definition), quotaLimits: provider?.quotaLimits ?? [], composition: provider?.composition ?? ProviderComposition()), authenticationEdit: edit) { apiKey = ""; originalAPIKey = nil; dismiss() }
     }
 }
 

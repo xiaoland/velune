@@ -337,7 +337,7 @@ struct ProviderAuthentication: Codable, Sendable, Equatable {
     var actions: [SettingAction] = []
 }
 enum AuthenticationEdit: Sendable { case keep, setAPIKey(String), clear }
-struct AIProvider: Codable, Sendable, Identifiable, Equatable {
+struct AIProvider: Sendable, Identifiable, Equatable {
     var id: String
     var name: String
     var protocolID: ProviderProtocol
@@ -346,6 +346,16 @@ struct AIProvider: Codable, Sendable, Identifiable, Equatable {
     var models: [ProviderModel]
     /// Used-percent ceilings per quota window, which smart scheduling admits a request under.
     var quotaLimits: [QuotaLimit] = []
+    var composition = ProviderComposition()
+}
+
+/// How core reaches the provider. The editor offers none of it yet, so a saved
+/// provider keeps its own and a new one is a plain HTTP provider with an API key.
+struct ProviderComposition: Sendable, Equatable {
+    var executionBackend: BindingExecutionBackend = .http
+    var requestProfile: BindingRequestProfile = .native
+    var authenticationSource: BindingProviderAuthenticationSource = .apiKey
+    var quotaSource: BindingProviderQuotaSource = .none
 }
 
 struct QuotaLimit: Codable, Sendable, Equatable {
@@ -379,7 +389,7 @@ struct ModelRoute: Codable, Sendable, Identifiable, Equatable {
 }
 
 enum RoutingStrategy: String, Codable, Sendable { case smart, order, rotate, weight }
-struct GatewayConfig: Codable, Sendable, Equatable {
+struct GatewayConfig: Sendable, Equatable {
     var id: String = "default"
     var name: String = "默认网关"
     var providers: [AIProvider] = []
@@ -494,7 +504,7 @@ struct AuthenticationPromptBody: Decodable, Sendable {
     var text: String
     var options: [SettingOption]?
 }
-struct AuthenticationData: Decodable, Sendable {
+struct AuthenticationData: Sendable {
     var running: Bool
     var events: [AuthenticationEvent]
     var gateways: [GatewayConfig]?

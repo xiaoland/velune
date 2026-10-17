@@ -40,7 +40,7 @@ struct ProviderImportSelection: Encodable, Sendable {
     var providerId: String
     var candidateKeys: [String]
 }
-struct ProviderImportResult: Decodable, Sendable {
+struct ProviderImportResult: Sendable {
     var gateways: [GatewayConfig]
     var executionInvalidated: Bool
     var importedProviderIds: [String]
