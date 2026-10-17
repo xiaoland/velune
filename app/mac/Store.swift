@@ -92,13 +92,8 @@ final class AppStore: ObservableObject {
     /// The core's quota observations by provider ID, as last read.
     @Published private(set) var providerQuotas: [String: ProviderQuota] = [:]
     private var quotaReadsPending: Set<String> = []
-    /// What a provider is fixed to once it uses Codex subscription authentication; static in the core.
-    private lazy var codexSubscriptionTarget: SubscriptionTarget? = try? BindingMapping.subscriptionTarget(VeluneBindings.codexSubscriptionTarget())
-    /// The executable is chosen in the editor; until then the path stays empty.
-    private lazy var claudeCodeSubscriptionTarget: SubscriptionTarget? = try? BindingMapping.subscriptionTarget(VeluneBindings.claudeCliSubscriptionTarget(binary: ""))
-    func subscriptionTarget(_ choice: SubscriptionChoice) -> SubscriptionTarget? {
-        switch choice { case .codex: codexSubscriptionTarget; case .claudeCode: claudeCodeSubscriptionTarget }
-    }
+    /// What a new provider starts from; a static catalog in the core.
+    private(set) lazy var providerTemplates: [ProviderTemplate] = (try? VeluneBindings.providerTemplates().map(BindingMapping.providerTemplate)) ?? []
     @Published private(set) var isLoading = false
     @Published private(set) var isShuttingDown = false
     @Published private(set) var activity: TranscriptActivity?

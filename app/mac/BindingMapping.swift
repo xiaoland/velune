@@ -170,10 +170,12 @@ enum BindingMapping {
     static func disclosure(_ value: BindingSubscriptionDisclosure) -> SubscriptionDisclosure {
         SubscriptionDisclosure(title: value.title, detail: value.detail)
     }
-    static func subscriptionTarget(_ value: BindingSubscriptionTarget) -> SubscriptionTarget {
-        SubscriptionTarget(protocolID: protocolID(value.`protocol`), endpoint: value.endpoint,
-                           composition: ProviderComposition(executionBackend: value.executionBackend, requestProfile: value.requestProfile, authenticationSource: value.authenticationSource, quotaSource: value.quotaSource),
-                           disclosure: disclosure(value.disclosure))
+    static func providerTemplate(_ value: BindingProviderTemplate) -> ProviderTemplate {
+        let kind: ProviderTemplate.Kind
+        switch value.kind { case .subscription: kind = .subscription; case .api: kind = .api }
+        return ProviderTemplate(id: value.id, kind: kind, name: value.name, summary: value.summary, protocolID: protocolID(value.`protocol`), endpoint: value.endpoint,
+                                composition: ProviderComposition(executionBackend: value.executionBackend, requestProfile: value.requestProfile, authenticationSource: value.authenticationSource, quotaSource: value.quotaSource),
+                                executableCommand: value.executableCommand, disclosure: value.disclosure.map(disclosure))
     }
     static func quota(_ value: BindingProviderQuotaStatus) -> ProviderQuota {
         let freshness: QuotaFreshness

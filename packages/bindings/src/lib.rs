@@ -123,19 +123,11 @@ fn convert<I: Serialize, O: DeserializeOwned>(input: I) -> Result<O, BindingErro
     })
 }
 
-/// The composition a provider saves to use a Codex subscription and the
-/// disclosure it shows, for presenting before that provider exists.
+/// What a new provider starts from: each subscription, then an API provider.
+/// Present them before the provider exists, with each template's disclosure.
 #[uniffi::export]
-pub fn codex_subscription_target() -> Result<BindingSubscriptionTarget, BindingError> {
-    convert(velune_application::SubscriptionTarget::codex())
-}
-
-/// The same for a Claude Code subscription executed by the official CLI at `binary`.
-#[uniffi::export]
-pub fn claude_cli_subscription_target(
-    binary: String,
-) -> Result<BindingSubscriptionTarget, BindingError> {
-    convert(velune_application::SubscriptionTarget::claude_cli(binary))
+pub fn provider_templates() -> Result<Vec<BindingProviderTemplate>, BindingError> {
+    convert(velune_application::provider_templates())
 }
 
 #[derive(Clone, uniffi::Record)]
