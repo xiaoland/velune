@@ -11,6 +11,7 @@ use std::{
 };
 pub(crate) const CURRENT_SCHEMA_VERSION: u32 = 10;
 /// 2: projects with folders replace per-folder names.
+#[cfg(feature = "local-runtime")]
 const ORGANIZATION_SCHEMA_VERSION: u64 = 2;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

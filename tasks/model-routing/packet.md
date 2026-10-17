@@ -235,10 +235,19 @@ HOME 修复已覆盖 application 登录/状态/退出/额度与 ai-provider 执�
 - 路由页改为左列表、右现状：策略与会话保持的含义；各成员的认证方式、账户尾号、登录状态、适用其模型 ID 的额度窗口（已用比例、上限、重置、过期）与路由不会使用它的原因；行内登录、双击编辑其提供商；成员含订阅时显示核心披露。编辑 sheet 增加策略、会话保持与权重（含所占比例），＋ 菜单按提供商分组并禁用其他协议的模型。新路由默认智能策略、开启会话保持（实现默认，可由用户改）。
 - 提供商编辑器：“使用 Codex 订阅…”先确认披露，固定协议与地址；“保存并登录…”保存后留在编辑器并开始登录，登录 URL 自动打开浏览器。新增“额度与使用上限”页，按窗口选择上限。列表副标题区分订阅账户与登录状态。
 - 披露与固定目标原只在已保存认证上可得；bindings 新增静态 `codex_subscription_target()`，由 application 的 `SubscriptionTarget::codex()` 给出协议、地址、四项组合字段（含 `CodexUsage` 额度来源）与披露，`CODEX_SUBSCRIPTION_PROTOCOL／ENDPOINT` 常量统一校验、请求与导出，Mac 不硬编码。
-- 合并时 main 已改为组合选择订阅（删除 `SetCodexSubscription`，新增 Claude CLI 组合）：编辑器持有组合状态，选订阅即采用该组合并以 `Keep` 保存，“使用 API key…”回到 HTTP／Native／ApiKey／None；订阅名称按认证来源显示（Codex／Claude Code）；非 HTTP 后端不显示、不校验地址；登录按钮取 `login` 动作。编辑器尚不提供新建 Claude CLI 组合与退出登录，留待该功能的前端任务。
+- 合并时 main 已改为组合选择订阅（删除 `SetCodexSubscription`，新增 Claude CLI 组合）：编辑器持有组合状态，选订阅即采用该组合并以 `Keep` 保存，“使用 API key…”回到 HTTP／Native／ApiKey／None；订阅名称按认证来源显示（Codex／Claude Code）；非 HTTP 后端不显示、不校验地址；登录按钮取 `login` 动作。新建 Claude CLI 组合与退出登录见下方补充。
 - 额度只读 core 观测：视图显示时在请求队列读取，不占 `isLoading`；采样仍由 core 决定。未登录提供商不读取：核对 `read_usage` 在凭据解析处失败、不发 HTTP，但会给出泛化“额度暂不可用”，与“需要登录”重复。
 - 网关运行期冷却／探测状态没有 bindings 读取入口，页面不显示“冷却中”或逐次切换原因；切换记录在“分析”窗口。是否新增该入口待需求出现再定。
 
 验证：cargo fmt --check、cargo check --locked --workspace --all-features、clippy（-D warnings）与 application／bindings `--no-default-features` check 通过；`build-macos.sh --build-only` 零警告。临时 Python 绑定脚本在隔离 home 中验证：导出返回 Responses v1、Codex 地址与披露；订阅提供商保存为未登录 OAuth、带披露与“登录…”；错误地址被拒；API key 提供商额度 Unsupported；权重路由与 `window:18000` 80% 上限重开后保留。临时离屏渲染（仅 `.prohibited` 激活策略、隔离 home、不显示窗口）检查路由页、编辑 sheet、提供商编辑器、额度页与合成额度行，修正了脚注右对齐、权重不易辨认为可编辑和重复的未登录提示；临时代码与截图不提交。未进行真实登录、额度读取或模型请求，交由用户验收。
 
 安装：变基到 main `7fc9b31` 并改用组合选择订阅后，提交 cf6dc9e 快进合入本地 main，在独立工作树构建并安装到 `/Applications/Velune.app`（0.1 beta.1）；安装时没有运行中的 Velune。codesign 严格校验通过，构建清单 source_commit 与该提交一致、dirty 为 false。合并后复跑临时绑定脚本：导出组合为 Http／CodexResponses／CodexOAuth／CodexUsage，以 Keep 保存的订阅提供商为未登录 OAuth 并带披露，错误地址被拒，权重路由与上限重开后保留。设置窗口实际交互、真实订阅登录与额度显示待用户验收。
+
+补充（2026-10-17）：用户要求在 main 上补齐剩余缺口。
+
+- 提供商编辑器新增“使用 Claude Code 订阅…”，与 Codex 共用确认披露、以 `Keep` 保存并“保存并登录…”的流程；bindings 新增静态 `claude_cli_subscription_target(binary)`，由 application 的 `SubscriptionTarget::claude_cli` 给出 Messages／空地址／`ClaudeCli` 后端／Native／`ClaudeCli` 认证／`ClaudeCliUsage` 与披露。披露文字统一归 `SubscriptionDisclosure::for_source`，已保存认证与选择前呈现同一来源。
+- Claude Code 组合以可执行文件字段替代服务地址：自动填入本机发现的第一个 `claude`，可从“已发现”或“选择…”更换，保存前要求绝对路径；已有 CLI 提供商可改路径。
+- 已登录且带 `logout` 动作时显示“退出登录…”，确认后调用 `authentication_logout`；只退出该提供商独立的 CLI 配置目录，运行中或登录中由 core 拒绝。
+- `ORGANIZATION_SCHEMA_VERSION` 仅由 local-runtime 使用，按该 feature 编译，消除 `--no-default-features` 警告。
+
+验证：cargo fmt --check、workspace check、clippy（-D warnings）与 application `--no-default-features` check 无警告；`build-macos.sh --build-only` 成功。临时 Python 绑定脚本在隔离 home 中验证导出组合与披露、相对路径被拒、以不存在路径保存的 CLI 提供商为未登录 OAuth 并带披露与 login／logout 动作、额度 Unknown。临时离屏渲染检查 Claude 提供商编辑器与新提供商的两个订阅入口，修正了按钮中英文间距；临时代码与截图不提交。未进行真实 CLI 登录、退出或额度读取，交由用户验收。

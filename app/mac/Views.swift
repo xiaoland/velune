@@ -603,9 +603,12 @@ struct ProviderEditor: View {
     @State private var showKey = false
     @State private var editingAPIKey = false
     @State private var clearAuthentication = false
-    /// The Codex subscription composition is chosen; saving starts its empty login.
-    @State private var choosingSubscription = false
-    @State private var confirmingSubscription = false
+    /// A subscription composition is chosen; saving starts its empty login.
+    @State private var choosingSubscription: SubscriptionChoice?
+    @State private var confirmingSubscription: SubscriptionChoice?
+    @State private var confirmingLogout = false
+    /// `claude` executables found on this Mac, for a Claude Code CLI provider.
+    @State private var claudeCandidates: [String] = []
     /// A new provider saved to sign in keeps being edited under this ID.
     @State private var savedID: String?
     @State private var templateDraft: ModelTemplate?
@@ -619,7 +622,8 @@ struct ProviderEditor: View {
     private var usesHTTP: Bool { if case .http = composition.executionBackend { return true }; return false }
     private var showsQuota: Bool { usesSubscription || !quotaLimits.isEmpty || (providerID.flatMap { store.providerQuotas[$0] }.map { $0.freshness != .unsupported } ?? false) }
     private var modelIndex: Int? { guard case .model(let id) = selection else { return nil }; return models.firstIndex { $0.id == id } }
-    private var valid: Bool { !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && (!usesHTTP || URL(string: endpoint)?.host != nil) && models.allSatisfy(\.valid) && (!editingAPIKey || (!apiKey.isEmpty && (originalAPIKey != nil || authentication.method != .apiKey || clearAuthentication))) }
+    private var claudeBinary: String? { composition.claudeBinary?.trimmingCharacters(in: .whitespacesAndNewlines) }
+    private var valid: Bool { !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && (!usesHTTP || URL(string: endpoint)?.host != nil) && (claudeBinary.map { ($0 as NSString).isAbsolutePath } ?? true) && models.allSatisfy(\.valid) && (!editingAPIKey || (!apiKey.isEmpty && (originalAPIKey != nil || authentication.method != .apiKey || clearAuthentication))) }
     var body: some View {
         VStack(spacing: 0) {
             Text(provider == nil ? "添加 AI 提供商" : "编辑 AI 提供商").font(.headline).frame(maxWidth: .infinity, alignment: .leading).padding(20)
@@ -664,16 +668,43 @@ struct ProviderEditor: View {
             name = provider?.name ?? ""; protocolID = provider?.protocolID ?? .chatCompletionsV1; endpoint = provider?.endpoint ?? ""; models = (provider?.models ?? []).map(ProviderModelDraft.init); quotaLimits = provider?.quotaLimits ?? []; composition = provider?.composition ?? ProviderComposition()
             editingAPIKey = authentication.method == .unconfigured; readAPIKeyIfNeeded()
             if let providerID { store.readProviderQuotas([providerID]) }
+            if composition.claudeBinary != nil { discoverClaude() }
         }
         .onChange(of: selection) { _, value in if value == .connection { readAPIKeyIfNeeded() } }
         .sheet(isPresented: $choosingTemplates) { ModelTemplatePicker(templates: store.modelTemplates) { values in for template in values { addModel(ProviderModelDraft(template.model)) } } }
         .sheet(item: $templateDraft) { value in ModelTemplateEditor(store: store, template: value) }
         .sheet(isPresented: $store.showsAuthentication) { AuthenticationView(store: store) }
-        .alert(store.codexSubscriptionTarget?.disclosure.title ?? "Codex 订阅", isPresented: $confirmingSubscription) {
-            Button("使用 Codex 订阅") { chooseSubscription() }
+        .alert(confirmingSubscription.flatMap { store.subscriptionTarget($0)?.disclosure.title } ?? confirmingSubscription?.name ?? "", isPresented: Binding(get: { confirmingSubscription != nil }, set: { if !$0 { confirmingSubscription = nil } }), presenting: confirmingSubscription) { choice in
+            Button("使用 \(choice.name)") { chooseSubscription(choice) }
             Button("取消", role: .cancel) {}
+        } message: { choice in
+            Text((store.subscriptionTarget(choice).map { $0.disclosure.detail + "\n\n" } ?? "") + choice.explanation)
+        }
+        .confirmationDialog("退出“\(name)”的登录？", isPresented: $confirmingLogout) {
+            Button("退出登录", role: .destructive) { if let providerID { store.logoutAuthentication(providerID) } }
         } message: {
-            Text((store.codexSubscriptionTarget.map { $0.disclosure.detail + "\n\n" } ?? "") + "提供商将固定使用 OpenAI Responses 协议与 ChatGPT 订阅地址；保存后在浏览器中登录一个 ChatGPT 账户。一个订阅对应一个提供商，聚合多个订阅请为每个账户分别添加提供商，再组成模型路由。")
+            Text("只退出此提供商独立的 CLI 登录，重新登录前路由不会使用它；终端中的 Claude Code 登录与其他提供商不受影响。")
+        }
+    }
+    private var claudeBinaryField: some View {
+        LabeledContent("Claude Code") {
+            HStack {
+                TextField("Claude Code", text: Binding(get: { composition.claudeBinary ?? "" }, set: { composition.claudeBinary = $0 }), prompt: Text("claude 可执行文件的绝对路径"))
+                    .labelsHidden()
+                if claudeCandidates.count > 1 || (claudeCandidates.count == 1 && claudeCandidates[0] != claudeBinary) {
+                    Menu("已发现") { ForEach(claudeCandidates, id: \.self) { path in Button(path) { composition.claudeBinary = path } } }.fixedSize()
+                }
+                Button("选择…") {
+                    let panel = NSOpenPanel(); panel.canChooseFiles = true; panel.canChooseDirectories = false; panel.allowsMultipleSelection = false
+                    if panel.runModal() == .OK, let url = panel.url { composition.claudeBinary = url.path }
+                }
+            }
+        }
+    }
+    private func discoverClaude() {
+        MacExecutableDiscovery.candidates(command: "claude") { paths in
+            claudeCandidates = paths
+            if claudeBinary?.isEmpty == true, let first = paths.first { composition.claudeBinary = first }
         }
     }
     private var connectionForm: some View {
@@ -692,12 +723,12 @@ struct ProviderEditor: View {
                         .help(protocolID == .messagesV1 ? "Anthropic Messages 协议基础 URL；请求路径为 /v1/messages。" : "提供商的协议服务基础 URL。")
                         .disabled(usesSubscription)
                 } else {
-                    LabeledContent("执行", value: "本机 Claude Code CLI")
+                    claudeBinaryField
                 }
             } header: {
                 Text("连接")
             } footer: {
-                Text(composition.subscriptionName.map { "\($0)固定使用此协议与连接方式；换用 API key 后才能修改。" } ?? "切换协议后采用默认适配参数；模型 ID 与已填写的能力保留。")
+                Text(composition.claudeBinary != nil ? "由本机官方 Claude Code CLI 执行请求，不使用 HTTP 服务地址；协议固定为 Anthropic Messages，换用 API key 后才能修改。" : composition.subscriptionName.map { "\($0)固定使用此协议与连接方式；换用 API key 后才能修改。" } ?? "切换协议后采用默认适配参数；模型 ID 与已填写的能力保留。")
                     .formFooterStyle()
             }
             Section("认证") {
@@ -710,8 +741,8 @@ struct ProviderEditor: View {
                     if authentication.method == .apiKey && originalAPIKey == nil && !clearAuthentication {
                         Button("读取 API key") { attemptedKeyRead = false; readAPIKeyIfNeeded() }.disabled(store.isLoading)
                     }
-                } else if choosingSubscription {
-                    Text("保存后在浏览器中登录 ChatGPT 账户。").foregroundStyle(.secondary)
+                } else if let choosingSubscription {
+                    Text(choosingSubscription.signInHint).foregroundStyle(.secondary)
                     Button("保存并登录…") { commit(signingIn: true) }.disabled(!valid || store.isBusy)
                 } else {
                     if authentication.method == .oauth && !clearAuthentication {
@@ -719,16 +750,21 @@ struct ProviderEditor: View {
                         if let label = authentication.accountLabel { LabeledContent("账户", value: "…\(label)") }
                     }
                     if let providerID, !clearAuthentication, let action = authentication.loginAction { Button(action.label) { store.startAuthentication(providerID) }.disabled(store.isBusy) }
+                    if providerID != nil, !clearAuthentication, authentication.configured, authentication.actions.contains(where: { $0.id == "logout" }) {
+                        Button("退出登录…") { confirmingLogout = true }.disabled(store.isBusy || store.isGenerating)
+                    }
                 }
-                if !editingAPIKey { Button("使用 API key…") { editingAPIKey = true; clearAuthentication = true; choosingSubscription = false; composition = ProviderComposition(); apiKey = "" } }
-                if !usesSubscription && store.codexSubscriptionTarget != nil { Button("使用 Codex 订阅…") { confirmingSubscription = true } }
+                if !editingAPIKey { Button("使用 API key…") { editingAPIKey = true; clearAuthentication = true; choosingSubscription = nil; composition = ProviderComposition(); apiKey = "" } }
+                if !usesSubscription {
+                    ForEach(SubscriptionChoice.allCases.filter { store.subscriptionTarget($0) != nil }) { choice in Button("使用 \(choice.name)…") { confirmingSubscription = choice } }
+                }
                 if authentication.configured || usesSubscription || editingAPIKey {
-                    Button("清除认证", role: .destructive) { clearAuthentication = true; editingAPIKey = false; choosingSubscription = false; apiKey = ""; originalAPIKey = nil }
+                    Button("清除认证", role: .destructive) { clearAuthentication = true; editingAPIKey = false; choosingSubscription = nil; apiKey = ""; originalAPIKey = nil }
                 }
-                if let disclosure = choosingSubscription ? store.codexSubscriptionTarget?.disclosure : usesSubscription ? authentication.disclosure : nil {
+                if let disclosure = choosingSubscription.map({ store.subscriptionTarget($0)?.disclosure }) ?? (usesSubscription ? authentication.disclosure : nil) {
                     SubscriptionDisclosureNote(disclosure: disclosure)
                 }
-                if let provenance = authentication.provenance, !choosingSubscription {
+                if let provenance = authentication.provenance, choosingSubscription == nil {
                     ImmediateDisclosureGroup("来源详情") { Text(provenance).font(.callout).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading).padding(.top, 8) }
                 }
             }
@@ -736,15 +772,16 @@ struct ProviderEditor: View {
     }
     private var methodLabel: String {
         if editingAPIKey { return "API key" }
-        if let name = composition.subscriptionName { return choosingSubscription ? "\(name)（保存后生效）" : name }
+        if let name = composition.subscriptionName { return choosingSubscription != nil ? "\(name)（保存后生效）" : name }
         if clearAuthentication { return "尚未配置" }
         return authentication.method.label
     }
-    private func chooseSubscription() {
-        guard let target = store.codexSubscriptionTarget else { return }
-        choosingSubscription = true; editingAPIKey = false; clearAuthentication = false; apiKey = ""
+    private func chooseSubscription(_ choice: SubscriptionChoice) {
+        guard let target = store.subscriptionTarget(choice) else { return }
+        choosingSubscription = choice; editingAPIKey = false; clearAuthentication = false; apiKey = ""
         if protocolID != target.protocolID { for index in models.indices { models[index].adapterMetadataJSON = nil } }
         protocolID = target.protocolID; endpoint = target.endpoint; composition = target.composition
+        if composition.claudeBinary != nil { discoverClaude() }
     }
     private func editSelection(_ target: ProviderEditorSelection) {
         selection = target
@@ -766,13 +803,14 @@ struct ProviderEditor: View {
     /// A changed authentication source starts that source empty, so choosing a
     /// subscription saves with `keep`.
     private func commit(signingIn: Bool = false) {
-        let edit: AuthenticationEdit = choosingSubscription ? .keep : editingAPIKey && apiKey != originalAPIKey ? .setAPIKey(apiKey) : clearAuthentication ? .clear : .keep
+        let edit: AuthenticationEdit = choosingSubscription != nil ? .keep : editingAPIKey && apiKey != originalAPIKey ? .setAPIKey(apiKey) : clearAuthentication ? .clear : .keep
         let existing = Set(store.providers.map(\.id))
-        store.saveProvider(AIProvider(id: providerID ?? "", name: name.trimmingCharacters(in: .whitespacesAndNewlines), protocolID: protocolID, endpoint: usesHTTP ? endpoint.trimmingCharacters(in: .whitespacesAndNewlines) : "", authentication: authentication, models: models.map(\.definition), quotaLimits: quotaLimits, composition: composition), authenticationEdit: edit) {
+        var saving = composition; if let claudeBinary { saving.claudeBinary = claudeBinary }
+        store.saveProvider(AIProvider(id: providerID ?? "", name: name.trimmingCharacters(in: .whitespacesAndNewlines), protocolID: protocolID, endpoint: usesHTTP ? endpoint.trimmingCharacters(in: .whitespacesAndNewlines) : "", authentication: authentication, models: models.map(\.definition), quotaLimits: quotaLimits, composition: saving), authenticationEdit: edit) {
             apiKey = ""; originalAPIKey = nil
             guard signingIn, let saved = store.providers.first(where: { $0.id == providerID }) ?? store.providers.first(where: { !existing.contains($0.id) }) else { dismiss(); return }
             // Later saves keep the new authentication and the models' assigned keys.
-            savedID = saved.id; choosingSubscription = false; clearAuthentication = false; editingAPIKey = false
+            savedID = saved.id; choosingSubscription = nil; clearAuthentication = false; editingAPIKey = false; composition = saved.composition
             models = saved.models.map(ProviderModelDraft.init); selection = .connection
             store.startAuthentication(saved.id)
         }

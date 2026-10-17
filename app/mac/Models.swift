@@ -355,6 +355,22 @@ struct SubscriptionTarget: Sendable, Equatable {
     var composition: ProviderComposition
     var disclosure: SubscriptionDisclosure
 }
+/// A subscription a provider can sign in to instead of using an API key.
+enum SubscriptionChoice: Sendable, CaseIterable, Identifiable {
+    case codex, claudeCode
+    var id: Self { self }
+    var name: String { switch self { case .codex: "Codex 订阅"; case .claudeCode: "Claude Code 订阅" } }
+    /// What saving the choice fixes and how signing in proceeds, after the disclosure.
+    var explanation: String {
+        let aggregation = "一个订阅对应一个提供商，聚合多个订阅请为每个账户分别添加提供商，再组成模型路由。"
+        switch self {
+        case .codex: return "提供商将固定使用 OpenAI Responses 协议与 ChatGPT 订阅地址；保存后在浏览器中登录一个 ChatGPT 账户。" + aggregation
+        case .claudeCode: return "提供商将固定使用 Anthropic Messages 协议，由本机官方 Claude Code CLI 执行请求，认证保存在该提供商独立的 CLI 配置中；保存后由 CLI 在浏览器中登录一个 Claude 账户。" + aggregation
+        }
+    }
+    /// What signing in after saving does.
+    var signInHint: String { switch self { case .codex: "保存后在浏览器中登录 ChatGPT 账户。"; case .claudeCode: "保存后由 Claude Code CLI 在浏览器中登录 Claude 账户。" } }
+}
 enum AuthenticationEdit: Sendable { case keep, setAPIKey(String), clear }
 struct AIProvider: Sendable, Identifiable, Equatable {
     var id: String
@@ -382,6 +398,11 @@ struct ProviderComposition: Sendable, Equatable {
         case .claudeCli: return "Claude Code 订阅"
         case .none, .apiKey, .runtimeProvider: return nil
         }
+    }
+    /// The Claude Code CLI executable, when the CLI executes the provider's requests.
+    var claudeBinary: String? {
+        get { if case .claudeCli(let binary) = executionBackend { return binary }; return nil }
+        set { if let newValue { executionBackend = .claudeCli(binary: newValue) } }
     }
 }
 

@@ -156,6 +156,7 @@ final class Transport: @unchecked Sendable {
     func authenticationPoll() throws -> BindingAuthenticationProgress { try withApplication("authenticationPoll") { try $0.authenticationPoll() } }
     func authenticationReply(promptID: String, value: String) throws -> BindingAuthenticationProgress { try withApplication("authenticationReply") { try $0.authenticationReply(promptId: promptID, value: value) } }
     func authenticationCancel() throws -> BindingAuthenticationProgress { try withApplication("authenticationCancel") { try $0.authenticationCancel() } }
+    func authenticationLogout(gatewayID: String, providerID: String) throws -> BindingGatewayUpdate { try withApplication("authenticationLogout", changesConfiguration: true) { try $0.authenticationLogout(gatewayId: gatewayID, providerId: providerID) } }
 
     /// `stoppingWork` ends running turns and sub-agents; otherwise they refuse it.
     func close(stoppingWork: Bool = false) throws {

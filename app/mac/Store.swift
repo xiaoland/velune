@@ -93,7 +93,12 @@ final class AppStore: ObservableObject {
     @Published private(set) var providerQuotas: [String: ProviderQuota] = [:]
     private var quotaReadsPending: Set<String> = []
     /// What a provider is fixed to once it uses Codex subscription authentication; static in the core.
-    private(set) lazy var codexSubscriptionTarget: SubscriptionTarget? = try? BindingMapping.subscriptionTarget(VeluneBindings.codexSubscriptionTarget())
+    private lazy var codexSubscriptionTarget: SubscriptionTarget? = try? BindingMapping.subscriptionTarget(VeluneBindings.codexSubscriptionTarget())
+    /// The executable is chosen in the editor; until then the path stays empty.
+    private lazy var claudeCodeSubscriptionTarget: SubscriptionTarget? = try? BindingMapping.subscriptionTarget(VeluneBindings.claudeCliSubscriptionTarget(binary: ""))
+    func subscriptionTarget(_ choice: SubscriptionChoice) -> SubscriptionTarget? {
+        switch choice { case .codex: codexSubscriptionTarget; case .claudeCode: claudeCodeSubscriptionTarget }
+    }
     @Published private(set) var isLoading = false
     @Published private(set) var isShuttingDown = false
     @Published private(set) var activity: TranscriptActivity?
@@ -1237,6 +1242,14 @@ final class AppStore: ObservableObject {
         if let sharedApplication { sharedApplication.cancelAuthentication(); return }
         guard let transport else { recordProblem("本地核心未配置"); return }
         enqueue({ try transport.authenticationCancel() }) { [weak self] in self?.applyAuthentication(BindingMapping.authenticationProgress($0)) }
+    }
+    /// Signs the provider's source out, e.g. Claude Code CLI's own login.
+    func logoutAuthentication(_ providerID: String) {
+        guard !isPreview else { recordProblem("预览不会退出登录"); return }
+        guard let transport else { recordProblem("本地核心未配置"); return }
+        enqueue({ try transport.authenticationLogout(gatewayID: self.gateway.id, providerID: providerID) }) { [weak self] in
+            self?.applyGatewayUpdate($0); self?.providerQuotas[providerID] = nil
+        }
     }
     private func pollAuthentication() {
         guard authenticationRunning, !authenticationPollPending, !isShuttingDown, let transport else { return }

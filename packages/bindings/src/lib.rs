@@ -130,6 +130,14 @@ pub fn codex_subscription_target() -> Result<BindingSubscriptionTarget, BindingE
     convert(velune_application::SubscriptionTarget::codex())
 }
 
+/// The same for a Claude Code subscription executed by the official CLI at `binary`.
+#[uniffi::export]
+pub fn claude_cli_subscription_target(
+    binary: String,
+) -> Result<BindingSubscriptionTarget, BindingError> {
+    convert(velune_application::SubscriptionTarget::claude_cli(binary))
+}
+
 #[derive(Clone, uniffi::Record)]
 pub struct BindingOptions {
     pub home_directory: String,
