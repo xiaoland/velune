@@ -131,6 +131,11 @@ struct VeluneRootView: View {
         }
     }
 
+    /// Lets the window tell a right click on this tool's button (see `showsToolbarPlaceMenu`).
+    private func toolbarButtonAnchor(_ kind: ToolWindowKind) -> some View {
+        PaneAnchor { [window] in window.registerToolbarButton(kind, anchor: $0) }
+    }
+
     private var showsAgentsItem: Bool { window.tools[.agents].place != .builtIn || focused.hasLinkedAgents }
     /// A window of the editor area alone is often one to keep in view.
     private var showsPinItem: Bool { !window.hasToolWindows || window.pinned }
@@ -176,6 +181,7 @@ struct VeluneRootView: View {
         if window.tools[.outline].place != .builtIn {
             Toggle(isOn: Binding(get: { window.tools.isOpen(.outline) }, set: { _ in window.toggle(.outline) })) { Label("会话大纲", systemImage: "list.bullet") }
                 .help(shortcuts.help(window.tools.isOpen(.outline) ? "隐藏会话大纲" : "显示会话大纲", .showOutline))
+                .background(toolbarButtonAnchor(.outline))
         } else {
             settingOutlineButton(unavailable: unavailable)
         }
@@ -189,9 +195,11 @@ struct VeluneRootView: View {
         if window.tools[.agents].place != .builtIn {
             Toggle(isOn: Binding(get: { window.tools.isOpen(.agents) }, set: { _ in window.toggle(.agents) })) { Label("关联 Agent", systemImage: "person.2") }
                 .help(shortcuts.help(window.tools.isOpen(.agents) ? "隐藏关联 Agent" : "显示关联 Agent", .showAgents))
+                .background(toolbarButtonAnchor(.agents))
         } else {
             Button { window.agentsPopover.toggle() } label: { Label("关联 Agent", systemImage: running ? "person.2.fill" : "person.2") }
                 .help(shortcuts.help(LinkedAgent.summary(of: focused), .showAgents))
+                .background(toolbarButtonAnchor(.agents))
                 .popover(isPresented: $window.agentsPopover, arrowEdge: .bottom) {
                     LinkedAgentsView(store: focused, layout: window) { id, opening in
                         window.agentsPopover = false
@@ -206,6 +214,7 @@ struct VeluneRootView: View {
         case .popover:
             Button { window.outlinePopover.toggle() } label: { Label("会话大纲", systemImage: "list.bullet") }
                 .help(shortcuts.help("会话大纲", .showOutline)).disabled(unavailable)
+                .background(toolbarButtonAnchor(.outline))
                 .popover(isPresented: Binding(get: { window.outlinePopover && !unavailable }, set: { window.outlinePopover = $0 }), arrowEdge: .bottom) {
                     TranscriptOutlineView(model: focused.transcript, layout: window, editMessage: { [focused, tab] id in
                         focused.editability(of: id) == nil ? nil : { window.outlinePopover = false; tab.edit(messageID: id) }
@@ -218,6 +227,7 @@ struct VeluneRootView: View {
         case .inPlace:
             Toggle(isOn: $tab.outlineCollapsed) { Label("会话大纲", systemImage: "list.bullet") }
                 .help(shortcuts.help(tab.outlineCollapsed ? "展开完整会话" : "折叠为用户消息大纲", .showOutline))
+                .background(toolbarButtonAnchor(.outline))
                 .disabled(unavailable && !tab.outlineCollapsed)
         }
     }

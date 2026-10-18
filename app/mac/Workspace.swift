@@ -895,32 +895,29 @@ struct WindowSeed: Codable, Hashable {
         }
     }
 
+    /// The tools' toolbar buttons by tool, for telling which one a right click lands on.
+    private var toolbarAnchors: [ToolWindowKind: () -> NSView?] = [:]
+
+    func registerToolbarButton(_ kind: ToolWindowKind, anchor: @escaping () -> NSView?) { toolbarAnchors[kind] = anchor }
+
     /// A right click on the outline's or the linked agents' toolbar button
     /// offers where that tool is, which SwiftUI's own context menu does not
-    /// on a toolbar button. Whether the click is on one is read from the
-    /// accessibility label the button's title gives.
+    /// on a toolbar button.
     private func showsToolbarPlaceMenu(for event: NSEvent) -> Bool {
-        guard let window, event.window === window, let frame = window.contentView?.superview,
-              event.locationInWindow.y > window.contentLayoutRect.maxY,
-              let hit = frame.hitTest(event.locationInWindow) else { return false }
-        let screen = window.convertPoint(toScreen: event.locationInWindow)
-        var labels: [String] = []
-        if let element = hit.accessibilityHitTest(screen) as? NSObjectProtocol {
-            labels.append((element as? NSAccessibilityProtocol)?.accessibilityLabel() ?? "")
+        for (kind, anchor) in toolbarAnchors {
+            guard let view = anchor(), let window = view.window, window === event.window,
+                  view.bounds.contains(view.convert(event.locationInWindow, from: nil)) else { continue }
+            let menu = NSMenu()
+            let current = choice(for: kind)
+            for (choice, title) in ToolChoice.all(for: kind) {
+                let entry = ClosureMenuItem(title) { [weak self] in self?.choose(choice, for: kind) }
+                entry.state = choice == current ? .on : .off
+                menu.addItem(entry)
+            }
+            NSMenu.popUpContextMenu(menu, with: event, for: view)
+            return true
         }
-        var view: NSView? = hit
-        while let current = view { labels.append(current.accessibilityLabel() ?? ""); view = current.superview }
-        let kind: ToolWindowKind
-        if labels.contains("会话大纲") { kind = .outline } else if labels.contains("关联 Agent") { kind = .agents } else { return false }
-        let menu = NSMenu()
-        let current = choice(for: kind)
-        for (choice, title) in ToolChoice.all(for: kind) {
-            let entry = ClosureMenuItem(title) { [weak self] in self?.choose(choice, for: kind) }
-            entry.state = choice == current ? .on : .off
-            menu.addItem(entry)
-        }
-        NSMenu.popUpContextMenu(menu, with: event, for: hit)
-        return true
+        return false
     }
 
     /// A click in a pane focuses it, wherever in the pane it lands.
