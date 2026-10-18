@@ -28,6 +28,8 @@ VELUNE_HOME=/absolute/path/to/isolated-home /Applications/Velune.app/Contents/Ma
 
 构建脚本默认将验证签名后的 bundle 安装到 `/Applications/Velune.app`；仅构建可用 `bash scripts/build-macos.sh --build-only`。修改后退出应用再重建安装，安装器不会覆盖尚未退出的应用。用户已授权开发方随时直接退出 Velune；先正常退出，若应用拒绝退出，可终止已确认的 Velune 应用进程后安装，无需要求用户手动退出。产品显示版本来自仓库 `VERSION`，当前为 `0.1 beta.1`，原生“关于 Velune”面板读取同一版本。manifest 保存源码提交、UniFFI 版本、类型接口和配置 schema。
 
+签名默认为 ad-hoc：macOS 隐私权限（如“可移除宗卷上的文件”）按签名记住，ad-hoc 签名每次构建都不同，系统因此在每次重装后重新询问，回答之前访问对应位置的读取一直阻塞（会话列表读取项目文件夹的 `.git` 时即如此）。设置 `VELUNE_CODESIGN_IDENTITY` 为钥匙串中的代码签名身份（如 Apple Development 证书，`security find-identity -v -p codesigning` 列出名称或 SHA-1）则以它签名，签名身份跨构建不变，授权保留；改用它后的第一次启动仍会询问一次。这只是本机签名，不是公证或分发签名。
+
 Settings 以 AI 提供商和 Agent 运行时为主。提供商编辑器左侧选择“连接与认证”或某个模型，右侧显示当前内容；可以修改枚举协议、服务地址及 API key，模型 ID、名称／图标和可选能力在该模型内容中直接编辑。模型可手动添加或由模板快填，模板管理是提供商页上下文入口，没有先建全局模型／认证资源／模型路由的步骤。单目标调用直接选择提供商下的模型。协议首先支持原生 ChatCompletions v1 与 Responses v1，不翻译协议（此限制已由三协议互转修订）。“模型路由”页可把同协议的提供商模型按顺序组成一个可选择的路由，见下文[模型路由](#模型路由)。
 
 双击进入编辑是全局交互范式，适用于设置中的可编辑列表和会话标题；使用系统 List 主操作，单击选择与平台多选保留。双击会话仍写入运行时的原生标题，不建立本地覆盖。

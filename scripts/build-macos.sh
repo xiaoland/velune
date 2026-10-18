@@ -86,9 +86,13 @@ manifest['relaykit_go_mod_sha256']=hashlib.sha256(Path('packages/ai-provider/rel
 manifest['relaykit_go_sum_sha256']=hashlib.sha256(Path('packages/ai-provider/relaykit-bridge/go.sum').read_bytes()).hexdigest()
 Path(sys.argv[1]).write_text(json.dumps(manifest,ensure_ascii=False,indent=2))
 PY
-# Ad-hoc local debug signing only. No identity/keychain selection, certificate, or notarization.
-codesign --force --sign - "$app/Contents/Frameworks/libvelune_bindings.dylib"
-codesign --force --sign - "$app"
+# Local signing, not notarization. VELUNE_CODESIGN_IDENTITY names a code
+# signing identity in the keychain (e.g. an Apple Development certificate):
+# its signature stays the same app to macOS privacy permissions across
+# builds. Unset, the build is signed ad hoc, a new app to them each build.
+identity="${VELUNE_CODESIGN_IDENTITY:--}"
+codesign --force --sign "$identity" "$app/Contents/Frameworks/libvelune_bindings.dylib"
+codesign --force --sign "$identity" "$app"
 codesign --verify --deep --strict "$app"
 shasum -a 256 "$app/Contents/MacOS/Velune" "$app/Contents/Frameworks/libvelune_bindings.dylib" > target/macos/binary-sha256.txt
 printf '已构建：%s\n' "$app"
