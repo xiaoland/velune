@@ -84,7 +84,19 @@ Network.bindSocket 的 FileDescriptor 接口与 NDK `android_setsocknetwork` 在
 
 mDNS 0.6.0 声明 iroh／iroh-base `1.0.0` 范围，具备与锁定 1.3.0 统一解析的元数据条件；本轮未编译或验证平台多播。[固定清单](https://github.com/n0-computer/iroh-address-lookups/blob/c64aec6e2afb0d0b3563858a58e70a00b8bfa94e/iroh-mdns-address-lookup/Cargo.toml)。
 
-2026-10-18 S1 选型更新：官方 [修复提交](https://github.com/n0-computer/iroh-address-lookups/commit/6f103e7a92ddbd2007383527ab5024c983e3c1c6) `6f103e7a92ddbd2007383527ab5024c983e3c1c6` 将缓存改为 AddressLookupItem、比较实际 EndpointInfo 并覆盖插入；同一公钥地址更新后的 resolve 可取新值，重复时间戳不当作内容变化，过期仍删除。包版本仍为 0.6.0，iroh 依赖范围未变，选此固定 git rev，不 vendor 或等待后续发版；保持默认发现周期。该结论来自源码与清单，编译及合成 A→B／过期判别交由 S1 集成，尚不能据此宣称已通过。早前发布版本的缓存风险不能套用为该修复提交仍有同一缺陷。
+2026-10-18 S1 选型更新：官方 [修复提交](https://github.com/n0-computer/iroh-address-lookups/commit/6f103e7a92ddbd2007383527ab5024c983e3c1c6) `6f103e7a92ddbd2007383527ab5024c983e3c1c6` 将缓存改为 AddressLookupItem、比较实际 EndpointInfo 并覆盖插入；同一公钥地址更新后的 resolve 可取新值，重复时间戳不当作内容变化，过期仍删除。包版本仍为 0.6.0，iroh 依赖范围未变，当前固定该 git rev、保持默认发现周期。host／Android 编译、独立同 peer A→B／过期及 Host UniFFI 判别已通过，手机发现尚未通过，实际产物与边界归 [verification](verification.md)。早前发布版本的缓存风险不能套用为该修复提交仍有同一缺陷。
+
+## mDNS 出口与寿命判别
+
+2026-10-18，手机仅 ID 初连失败，但 mDNS enable 已成功。新版诊断观测手机 publish 收到 1 个 direct 地址、host 收到 2 个，随后仍未发现或连接；计数只证明 EndpointData 进入服务，不证明报文发出或收到。Mac 只读路由显示到手机的单播走 LAN，而 `224.0.0.251` 默认路由走既有 utun。本轮没有配置或修改隧道，不能宣称系统无 VPN，也不能由路由表单独认定报文路径。
+
+已排除 late-add 漏发假设：iroh 1.3.0 `address_lookup.rs:495–512` 的 `add_boxed` 向新服务补发 `last_data`；Mac immediate／warm 两个临时实际调用均在 add 返回前观察一次非空 publish，并由独立 mDNS fresh resolve 取得地址。这个对照只覆盖 Mac，不能代替手机发现。
+
+锁定 `swarm-discovery 0.6.4` 的 `socket.rs` 在没有显式 IPv4 接口时使用默认多播路由；已有逐接口 join／发送及动态 add/remove，但上层 mDNS wrapper 未暴露接口装配。同协议、同公钥和同载荷的“默认→默认＋显式 LAN”手机对照已取得：默认阶段新进程 12.290 秒失败、echo 为零；只增加 LAN 接口后新进程按 ID fresh resolve 并完成至少 18 次 Direct IPv4 marker。该差异支持接口装配缺口，不是仅看路由表的推断。原默认 receiver／membership 与自动 IPv6 仍保留，不能将其签为“仅 LAN”或严格退出，也没有改进程或系统路由。随后手机 A→B／过期与完整结果归 verification，不能以临时 fixture 本机自检替代。
+
+advisor 对源码的寿命复核发现：`guardian.rs:119` 移除接口只丢 receiver 的 ActoRef，`receiver.rs:20` 仍持 socket 并等待接收；该返回不能证明资源已退出。条件性推荐是在稳定 mDNS lookup 内按实际 LAN 接口集合整体重建 discovery，空集合停用而非回退默认路由；保留 Endpoint、业务连接和外部订阅，并以代际排除旧 callback。实际接口退出仍需运行证据，DropGuard 发出 abort 不能替代关闭屏障。
+
+显式 LAN 正对照已经触发官方 mDNS 单 crate 的最小本地补丁：保留固定来源／双许可、wire format 和缓存修复，不另造内部 discovery、不修改 iroh 传输栈。此前不 vendor 是官方修复已足够时的工程选择；新增接口证据改变此前提，改为可审计单 crate vendor，不引入上游整个 workspace、测试或 CI。当前补丁进入实施，尚未验收；IPv4 对照不能证明 IPv6 接口语义。用户已确认当前设备没有蜂窝、仅 Wi-Fi，真实 WAN→LAN 与非默认 Wi-Fi／蜂窝暂记环境阻塞。
 
 ## 配对 exporter 样例与关闭屏障
 
