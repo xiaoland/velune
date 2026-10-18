@@ -22,7 +22,7 @@
 
 [资源 API 手动验收](../../scripts/manual-runtime-management-api.py) 接收本次构建的动态库与 Python 绑定目录，在隔离 HOME 中检查 typed CRUD、revision 冲突和会话生命周期门禁；默认只需空资源目录。它内置合成 ACP peer，不代替原生 Harness 的实际资源加载验收。
 
-**Agent 间协作（A2A）**：application 持有一个 loopback MCP 服务（服务名 `velune`），在 Velune 执行的每个会话启动时注入；每个会话一张随机票据，HTTP 层校验票据、Origin 与 Host，票据决定调用方会话，工具参数不能自报身份。工具为 `list_agents`、`list_conversations`、`start_conversation`、`send_message`、`get_conversation`、`wait_conversation` 与 `cancel_turn`。参与方都是普通会话：Agent 新建的会话发出首条消息后即出现在列表（原生历史写入前也列出），用户可打开、继续并处理其审批。消息以“[Velune 协作消息]”出处包装作为对方的下一轮提交，声明不是人类授权；对方执行中、待审批或在 Velune 外运行时拒绝，不排队。`start_conversation` 的工作目录缺省沿用调用方（同一执行机器时），模型缺省为对方会话已有的选择或运行时目录的第一项。`wait_conversation` 在对方进入调用方尚未读到的非运行状态时返回，单次最长 30 秒，超时不取消。不建立父子关系、不传播取消，也不设联系限制（PRD 决定）。
+**Agent 间协作（A2A）**：application 持有一个 loopback MCP 服务（服务名 `velune`），在 Velune 执行的每个会话启动时注入；每个会话一张随机票据，HTTP 层校验票据、Origin 与 Host，票据决定调用方会话，工具参数不能自报身份。工具为 `list_agents`、`list_conversations`、`start_conversation`、`send_message`、`get_conversation`、`wait_conversation` 与 `cancel_turn`。参与方都是普通会话：Agent 新建的会话发出首条消息后即出现在列表（原生历史写入前也列出），用户可打开、继续并处理其审批。消息以“[Velune 协作消息]”出处包装作为对方的下一轮提交，声明不是人类授权；对方执行中、待审批或在 Velune 外运行时拒绝，不排队。`start_conversation` 的工作目录缺省沿用调用方（同一执行机器时），模型缺省为对方会话已有的选择或运行时目录的第一项。`wait_conversation` 在对方进入调用方尚未读到的非运行状态时返回，单次最长 30 秒，超时不取消。不建立父子关系、不传播取消，也不设联系限制（PRD 决定）。会话快照的 `collaborators` 按转录列出参与方：协作工具结果中的会话为本会话联系了它，收到的协作消息的来源为它联系了本会话，供平台与原生子 Agent 一并呈现。
 
 MCP 线程不访问 application：工具调用进入收件箱，由下一次客户端请求在推进各会话后执行，并在结束后恢复原先寻址的会话；协作进度因此与会话事件一样依赖客户端轮询（Mac 每 0.6 秒读取活动），60 秒内未被处理的调用向 Agent 返回结果未知。服务启动失败、SSH 转发失败或 ACP stdio relay 不可用时，会话照常运行而不带协作工具；会话关闭即撤销其票据。没有专门的 bindings API，平台通过普通会话、消息与交互呈现。[A2A 手动验收](../../scripts/manual-collaboration.py)以两个合成 ACP 运行时检查新建与联系已有会话、审批留在对方会话、忙碌与未知票据被拒。
 

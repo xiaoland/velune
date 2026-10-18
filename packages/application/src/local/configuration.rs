@@ -45,6 +45,20 @@ impl CoreRuntime {
         Ok(json!(presentation))
     }
 
+    pub(super) fn set_linked_conversation_opening(
+        &mut self,
+        request: &Value,
+    ) -> Result<Value, RuntimeError> {
+        let opening = serde_json::from_value(request["payload"]["opening"].clone())?;
+        let previous = self.linked_conversation_opening;
+        self.linked_conversation_opening = opening;
+        if let Err(error) = self.persist() {
+            self.linked_conversation_opening = previous;
+            return Err(error);
+        }
+        Ok(json!(opening))
+    }
+
     pub(super) fn set_status_line(&mut self, request: &Value) -> Result<Value, RuntimeError> {
         let items = crate::config::canonical_status_line(serde_json::from_value(
             request["payload"]["items"].clone(),
@@ -245,6 +259,7 @@ impl CoreRuntime {
             "modelTemplates":self.model_templates,
             "conversationBrowserLimits":self.conversation_browser_limits,
             "outlinePresentation":self.outline_presentation,
+            "linkedConversationOpening":self.linked_conversation_opening,
             "statusLine":self.status_line,
             "conversationBrowserPreferences":self.conversation_browser_preferences,
             "providerImportTypes": std::iter::once(provider_import::descriptor()).chain(runtime_types().into_iter().filter(|kind| crate::native_provider_import::TYPES.contains(&kind.id.as_str()))).collect::<Vec<_>>(),
@@ -493,6 +508,7 @@ impl CoreRuntime {
             conversation_browser_group_limit: self.conversation_browser_limits.page,
             conversation_browser_total_limit: self.conversation_browser_limits.total,
             outline_presentation: self.outline_presentation,
+            linked_conversation_opening: self.linked_conversation_opening,
             conversation_browser_preferences: self.conversation_browser_preferences.clone(),
             status_line: self.status_line.clone(),
         })

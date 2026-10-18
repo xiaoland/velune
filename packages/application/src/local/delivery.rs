@@ -166,6 +166,7 @@ impl View {
             actions: header.actions.clone(),
             follow_up: header.follow_up.clone(),
             sub_agents: header.sub_agents.clone(),
+            collaborators: header.collaborators.clone(),
         }
     }
 }
@@ -267,7 +268,7 @@ fn delivered_block(
 
 /// The conversation a collaboration tool reported on: its result is a status
 /// object naming the conversation and its state.
-fn collaboration_conversation(output: &str) -> Option<String> {
+pub(super) fn collaboration_conversation(output: &str) -> Option<String> {
     let value: serde_json::Value = serde_json::from_str(output.trim()).ok()?;
     value["state"].as_str()?;
     value["runtime_id"].as_str()?;

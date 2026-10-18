@@ -34,6 +34,7 @@ impl CoreRuntime {
             "conversationBrowserLimits":{"page":self.config.conversation_browser_group_limit,
                 "total":self.config.conversation_browser_total_limit},
             "outlinePresentation":self.config.outline_presentation,
+            "linkedConversationOpening":self.config.linked_conversation_opening,
             "statusLine":self.config.status_line,
             "conversationBrowserPreferences":self.config.conversation_browser_preferences,
             "protocols":[{"id":"chatCompletionsV1","name":"OpenAI Chat Completions v1","supported":true},
@@ -53,6 +54,14 @@ impl CoreRuntime {
                 self.repository.store(&next)?;
                 self.config = next;
                 Ok(json!(self.config.outline_presentation))
+            }
+            Some("linkedConversationOpening") => {
+                let mut next = self.config.clone();
+                next.linked_conversation_opening =
+                    serde_json::from_value(payload["opening"].clone())?;
+                self.repository.store(&next)?;
+                self.config = next;
+                Ok(json!(self.config.linked_conversation_opening))
             }
             Some("statusLine") => {
                 let mut next = self.config.clone();

@@ -391,7 +391,10 @@ struct WindowSeed: Codable, Hashable {
     @Published var dockHint: DockSide?
     /// The outline popover from the toolbar button.
     @Published var outlinePopover = false
-    @Published var subAgentsPopover = false
+    @Published var agentsPopover = false
+    /// A conversation opened over the window from one linked to it, and the sheet's size.
+    @Published private(set) var sheetTab: ConversationTab?
+    private(set) var sheetSize = CGSize(width: 760, height: 640)
     /// The list's search text, shared by the sidebar and a floating list.
     @Published var listSearch = ""
     /// Opens a conversation window; set by the window's view, which has the action.
@@ -529,6 +532,60 @@ struct WindowSeed: Codable, Hashable {
         let index = pane.tabs.firstIndex { $0.id == pane.selectedID }.map { $0 + 1 }
         pane.insert(makeTab(opening: conversationID), at: index)
         focused.store.noteFocused()
+    }
+
+    /// Open a conversation linked from `tab`'s (the one that started it, a
+    /// sub-agent's, a collaborator's) where `opening` says, else where the
+    /// setting does. From the sheet, a sheet is the sheet itself, and a tab
+    /// or window takes its place.
+    func openLinked(_ conversationID: String, from tab: ConversationTab, opening: BindingLinkedConversationOpening? = nil) {
+        let opening = opening ?? application.linkedConversationOpening
+        if tab === sheetTab {
+            if opening == .currentTab || opening == .sheet { return tab.store.openLinkedConversation(id: conversationID) }
+            closeSheet()
+        }
+        switch opening {
+        case .currentTab: tab.store.openLinkedConversation(id: conversationID)
+        case .newTab: openInNewTab(conversationID)
+        case .sheet: openInSheet(conversationID)
+        case .newWindow: openInNewWindow(conversationID)
+        }
+    }
+
+    /// Open a conversation in a sheet over the window; one a tab of this
+    /// window shows is selected there instead.
+    func openInSheet(_ conversationID: String) {
+        if select(showing: conversationID) { return }
+        closeSheet()
+        if let content = window?.contentLayoutRect.size {
+            sheetSize = CGSize(width: min(max(content.width * 0.8, 560), max(content.width - 40, 560)),
+                               height: min(max(content.height * 0.85, 480), max(content.height - 40, 480)))
+        }
+        let tab = makeTab(opening: conversationID)
+        tab.activate()
+        sheetTab = tab
+    }
+
+    func closeSheet() {
+        guard let tab = sheetTab else { return }
+        sheetTab = nil
+        tab.store.shutdown { _ in }
+    }
+
+    /// The sheet's conversation, as it stands, in a new tab after the focused pane's shown tab.
+    func moveSheetToTab() {
+        guard let tab = sheetTab else { return }
+        sheetTab = nil
+        let pane = focusedPane
+        pane.insert(tab, at: pane.tabs.firstIndex { $0.id == pane.selectedID }.map { $0 + 1 })
+        tab.store.noteFocused()
+    }
+
+    /// The sheet's conversation, as it stands, in a conversation window of its own.
+    func moveSheetToNewWindow() {
+        guard let tab = sheetTab, openWindow != nil else { return }
+        sheetTab = nil
+        hand(tab, toNewWindowIn: newWindowFrame(size: sheetSize, at: nil))
     }
 
     /// Show in a new tab a conversation the core has just opened, such as an
@@ -734,9 +791,15 @@ struct WindowSeed: Codable, Hashable {
     /// Move a tab to a conversation window of its own, as large as its pane,
     /// at `point` (screen coordinates, its top left; nil sets it off from this window).
     func moveToNewWindow(_ id: UUID, at point: NSPoint? = nil) {
-        guard canMoveTabToNewWindow, let openWindow, let pane = pane(holding: id) else { return }
+        guard canMoveTabToNewWindow, openWindow != nil, let pane = pane(holding: id) else { return }
         let frame = newWindowFrame(size: view(of: pane.id)?.bounds.size, at: point)
         guard let tab = detach(id, emptying: .leave) else { return }
+        hand(tab, toNewWindowIn: frame)
+    }
+
+    /// A tab no window holds, in a conversation window opened for it.
+    private func hand(_ tab: ConversationTab, toNewWindowIn frame: NSRect?) {
+        guard let openWindow else { return }
         Self.handoff[tab.id] = tab
         let existing = Set(NSApp.windows.map(\.windowNumber))
         openWindow(.single, WindowSeed(tab: tab.id))

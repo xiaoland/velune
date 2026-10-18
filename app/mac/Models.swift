@@ -223,6 +223,19 @@ struct SubAgent: Codable, Sendable, Equatable, Identifiable {
     var failed: Bool
 }
 
+/// A conversation that took part with this one in Velune's agent-to-agent
+/// collaboration: an ordinary conversation, opened and continued as any other.
+struct Collaborator: Codable, Sendable, Equatable, Identifiable {
+    var id: String
+    /// Empty when it is neither listed nor named by its message.
+    var title: String
+    var runtimeName: String?
+    /// This conversation's agent started or addressed it.
+    var contacted: Bool
+    /// Its agent sent this conversation a message.
+    var contactedBy: Bool
+}
+
 struct ConversationSnapshot: Codable, Sendable, Equatable {
     /// Nil for local drafts and previews, which the core has not delivered.
     var cursor: TranscriptCursor? = nil
@@ -243,6 +256,8 @@ struct ConversationSnapshot: Codable, Sendable, Equatable {
     var followUp = FollowUp()
     /// Native sub-agents; whether one runs is conversation activity.
     var subAgents: [SubAgent] = []
+    /// Conversations of Velune's agent-to-agent collaboration, either way.
+    var collaborators: [Collaborator] = []
     enum CodingKeys: String, CodingKey { case revision, conversation, runState, messages, transcriptTurns, transcriptItems, transcriptOutline, transcriptMessageIdentities, messageIdentityConfirmations, pendingInteractions, actions; case modelRecordKey = "modelRecordKey", contextRuntimeID = "contextRuntimeId" }
 }
 

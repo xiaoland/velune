@@ -120,6 +120,7 @@ pub struct DeliveredSnapshot {
     pub actions: ConversationActions,
     pub follow_up: velune_conversation::FollowUp,
     pub sub_agents: Vec<velune_conversation::SubAgent>,
+    pub collaborators: Vec<velune_conversation::Collaborator>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -361,6 +361,7 @@ impl Client {
             pending_interactions: Vec::new(),
             follow_up: Default::default(),
             sub_agents: Vec::new(),
+            collaborators: Vec::new(),
             actions: ConversationActions {
                 can_send: true,
                 can_cancel: false,

@@ -114,6 +114,7 @@ pub struct ConfigurationSnapshot {
     pub model_templates: Vec<ModelTemplate>,
     pub conversation_browser_limits: ConversationBrowserLimits,
     pub outline_presentation: OutlinePresentation,
+    pub linked_conversation_opening: LinkedConversationOpening,
     pub conversation_browser_preferences: ConversationBrowserPreferences,
     pub status_line: Vec<StatusLineItem>,
     pub provider_import_types: Vec<RuntimeTypeDescriptor>,
@@ -946,6 +947,16 @@ impl Application {
         self.execute(
             "outlinePresentation",
             json!({"presentation": presentation}),
+            None,
+        )
+    }
+    pub fn set_linked_conversation_opening(
+        &mut self,
+        opening: LinkedConversationOpening,
+    ) -> Result<LinkedConversationOpening, Error> {
+        self.execute(
+            "linkedConversationOpening",
+            json!({"opening": opening}),
             None,
         )
     }

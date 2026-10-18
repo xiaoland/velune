@@ -535,6 +535,20 @@ pub enum OutlinePresentation {
     InPlace,
 }
 
+/// Where a conversation linked from another opens: a native sub-agent's, or
+/// one an agent contacted or was contacted by through Velune.
+#[derive(Debug, Default, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum LinkedConversationOpening {
+    /// In place of the conversation it is linked from.
+    #[default]
+    CurrentTab,
+    NewTab,
+    /// In a sheet over the window, from which it may move to a tab or window.
+    Sheet,
+    NewWindow,
+}
+
 /// What the composer's status line shows; the context usage alone unless the
 /// user pins more. The line keeps this order whatever order they were chosen in.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]

@@ -225,8 +225,8 @@ struct ToolContent: View {
             ToolOutline(window: window, tab: tab, store: tab.store, inSidebar: side == .left).id(tab.id)
         case .composer:
             ToolComposer(window: window, tab: tab, store: tab.store, contentHeight: contentHeight).id(tab.id)
-        case .subAgents:
-            ToolSubAgents(window: window, tab: tab, store: tab.store, inSidebar: side == .left).id(tab.id)
+        case .agents:
+            ToolAgents(window: window, tab: tab, store: tab.store, inSidebar: side == .left).id(tab.id)
         }
     }
 }
@@ -272,14 +272,14 @@ struct ToolOutline: View {
     }
 }
 
-private struct ToolSubAgents: View {
+private struct ToolAgents: View {
     let window: ConversationWindowModel
     let tab: ConversationTab
     @ObservedObject var store: AppStore
     let inSidebar: Bool
 
     var body: some View {
-        SubAgentsView(store: store, inPopover: false, inSidebar: inSidebar, layout: window) { store.openLinkedConversation(id: $0) }
+        LinkedAgentsView(store: store, inPopover: false, inSidebar: inSidebar, layout: window) { window.openLinked($0, from: tab, opening: $1) }
     }
 }
 

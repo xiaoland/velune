@@ -12,6 +12,8 @@ final class AppStore: ObservableObject {
     /// the application's copy still carry the choices before them.
     private var browserPreferencesSaving = 0
     @Published private(set) var outlinePresentation: BindingOutlinePresentation = .popover
+    /// Where a conversation linked from another opens.
+    @Published private(set) var linkedConversationOpening: BindingLinkedConversationOpening = .currentTab
     /// What the composer's status line shows, in display order.
     @Published private(set) var statusLine: [BindingStatusLineItem] = [.contextUsage]
     @Published private(set) var conversationBrowserLimits = BindingConversationBrowserLimits(page: 20, total: 200)
@@ -202,6 +204,7 @@ final class AppStore: ObservableObject {
         if conversationProjects != application.conversationProjects { conversationProjects = application.conversationProjects }
         if showsArchived != application.showsArchived { showsArchived = application.showsArchived }
         if outlinePresentation != application.outlinePresentation { outlinePresentation = application.outlinePresentation }
+        if linkedConversationOpening != application.linkedConversationOpening { linkedConversationOpening = application.linkedConversationOpening }
         if statusLine != application.statusLine { statusLine = application.statusLine }
         var sharedConversations = application.conversations
         if let loadedConversationID, application.deletedConversationIDs.contains(loadedConversationID) { resetProjection() }
@@ -262,7 +265,12 @@ final class AppStore: ObservableObject {
     var followUp: FollowUp { snapshot?.followUp ?? FollowUp() }
     /// The loaded conversation's native sub-agents.
     var subAgents: [SubAgent] { pendingConversationID == nil ? snapshot?.subAgents ?? [] : [] }
-    func isSubAgentRunning(_ id: String) -> Bool { runningConversationIDs.contains(id) || elsewhereConversationIDs.contains(id) }
+    /// The conversations the loaded one took part with in agent-to-agent collaboration.
+    var collaborators: [Collaborator] { pendingConversationID == nil ? snapshot?.collaborators ?? [] : [] }
+    /// The loaded conversation has a parent, sub-agents or collaborators to list.
+    var hasLinkedAgents: Bool { pendingConversationID == nil && (loadedParentConversationID != nil || !subAgents.isEmpty || !collaborators.isEmpty) }
+    /// A conversation runs here or elsewhere, by identity, listed or not.
+    func isConversationRunning(_ id: String) -> Bool { runningConversationIDs.contains(id) || elsewhereConversationIDs.contains(id) }
     /// While a turn runs, a sent message waits in the conversation's queue.
     var canQueue: Bool { !isPreview && isGenerating && !isLoading && !isShuttingDown && !authenticationRunning && nextTurnModel != nil && loadedConversationID != nil && snapshot?.conversation.parentConversationID == nil }
     /// Asking to continue sends this, as the user's own message.
@@ -622,6 +630,11 @@ final class AppStore: ObservableObject {
         if isPreview { outlinePresentation = presentation; return }
         guard let transport else { recordProblem("本地核心未配置"); return }
         enqueue({ try transport.setOutlinePresentation(presentation) }) { [weak self] in self?.outlinePresentation = $0 }
+    }
+    func setLinkedConversationOpening(_ opening: BindingLinkedConversationOpening) {
+        if isPreview { linkedConversationOpening = opening; return }
+        guard let transport else { recordProblem("本地核心未配置"); return }
+        enqueue({ try transport.setLinkedConversationOpening(opening) }) { [weak self] in self?.linkedConversationOpening = $0 }
     }
     func draft(for conversationID: String) -> String {
         if let sharedApplication { return sharedApplication.draft(for: conversationID) }
@@ -1573,6 +1586,7 @@ final class AppStore: ObservableObject {
             conversationBrowserPreferences = data.conversationBrowserPreferences
         }
         outlinePresentation = data.outlinePresentation
+        linkedConversationOpening = data.linkedConversationOpening
         statusLine = data.statusLine
         conversationBrowserLimits = data.conversationBrowserLimits
         conversations = mapped.conversations

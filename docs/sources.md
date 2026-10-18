@@ -347,3 +347,7 @@ S17 实施授权：用户决定全面切换 UniFFI，并要求现在开始拆分
 ## S35
 
 2026-10-17 用户发现 Claude Code 在 worktree 中的会话（如 `mac-sub-agents-panel`）各自成为独立项目。就开发方“worktree 是否归入所属仓库”的提问，用户答复：“是的，worktree 归到原项目下面；其实正好，我计划让 project 和特定的文件夹解耦，一个 project 可以有多个 folder，有一个 primary folder”。产品归 [PRD](prd/index.md#会话内容展示)，实施归 [多文件夹项目任务](../tasks/project-folders/packet.md)。
+
+## S36
+
+2026-10-18 用户要求：“我现在还希望 sub-agent 有更多的打开方式（新 Tab / 当前 tab / Sheet / 新窗口），并且同样可以配置；此外，我们之前说 sub-agent 本质上也就是 A2A，这一点怎么体现，我没想好，现在我想到一点：让‘子 Agent 面板’升级为‘与其它 Agent 面板’（不一定叫这个名字）”。开发方定名“关联 Agent”（沿用 PRD 已有的中立“关联会话”组织），列出父会话、子 Agent 与 A2A 参与方；打开方式为一项应用设置，同样用于消息列表中的会话链接。产品归 [PRD](prd/index.md#ai-网关与-agent-运行时配置)，实施归 [Agent 间协作任务](../tasks/agent-collaboration/packet.md)。

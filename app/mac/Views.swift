@@ -53,9 +53,12 @@ struct VeluneRootView: View {
         .background(WindowLevelSetter(pinned: window.pinned))
         .overlay { if let side = window.dockHint { DockZoneHighlight(side: side) } }
         .onChange(of: activeState, initial: true) { _, value in if value == .key { focused.noteFocused() } }
-        .onChange(of: tab.id) { _, _ in window.outlinePopover = false; window.subAgentsPopover = false }
-        .onChange(of: focused.pendingConversationID) { _, value in if value != nil { window.outlinePopover = false; window.subAgentsPopover = false } }
-        .onChange(of: focused.loadedConversationID) { _, _ in window.outlinePopover = false; window.subAgentsPopover = false }
+        .onChange(of: tab.id) { _, _ in window.outlinePopover = false; window.agentsPopover = false }
+        .onChange(of: focused.pendingConversationID) { _, value in if value != nil { window.outlinePopover = false; window.agentsPopover = false } }
+        .onChange(of: focused.loadedConversationID) { _, _ in window.outlinePopover = false; window.agentsPopover = false }
+        .sheet(item: Binding(get: { window.sheetTab }, set: { if $0 == nil { window.closeSheet() } })) { sheet in
+            LinkedConversationSheet(window: window, tab: sheet, store: sheet.store, size: window.sheetSize)
+        }
         .onChange(of: store.outlinePresentation) { _, _ in window.outlinePopover = false }
         .focusedSceneValue(\.conversationCommands, ConversationCommandTarget(store: focused, send: tab.send, window: window))
         .task { if previewSettings { openSettings() } }
@@ -95,7 +98,7 @@ struct VeluneRootView: View {
         ToolbarSpacer(.flexible)
         ToolbarItem(id: "reload") { reloadButton }
         ToolbarItem(id: "outline") { outlineButton }
-        if showsSubAgentsItem { ToolbarItem(id: "sub-agents") { subAgentsButton } }
+        if showsAgentsItem { ToolbarItem(id: "sub-agents") { agentsButton } }
         if showsPinItem { ToolbarItem(id: "pin") { pinToggle } }
         ToolbarItem(id: "split") { splitButton }
         if Self.changeReviewEnabled { ToolbarItem(id: "changes") { changesToggle } }
@@ -111,7 +114,7 @@ struct VeluneRootView: View {
         ToolbarItemGroup {
             reloadButton
             outlineButton
-            if showsSubAgentsItem { subAgentsButton }
+            if showsAgentsItem { agentsButton }
             if showsPinItem { pinToggle }
             splitButton
             if Self.changeReviewEnabled { changesToggle }
@@ -119,7 +122,7 @@ struct VeluneRootView: View {
         }
     }
 
-    private var showsSubAgentsItem: Bool { window.tools[.subAgents].place != .builtIn || !focused.subAgents.isEmpty }
+    private var showsAgentsItem: Bool { window.tools[.agents].place != .builtIn || focused.hasLinkedAgents }
     /// A window of the editor area alone is often one to keep in view.
     private var showsPinItem: Bool { !window.hasToolWindows || window.pinned }
 
@@ -169,23 +172,21 @@ struct VeluneRootView: View {
         }
     }
 
-    /// The sub-agents as a tool window are shown and hidden by the button; in
-    /// their own place they pop over from it, offered only when the focused
-    /// conversation has any.
-    @ViewBuilder private var subAgentsButton: some View {
-        let agents = focused.subAgents
-        let running = agents.filter { focused.isSubAgentRunning($0.id) }.count
-        let summary = running > 0 ? "\(agents.count) 个子 Agent，\(running) 个正在运行" : "\(agents.count) 个子 Agent"
-        if window.tools[.subAgents].place != .builtIn {
-            Toggle(isOn: Binding(get: { window.tools.isOpen(.subAgents) }, set: { _ in window.toggle(.subAgents) })) { Label("子 Agent", systemImage: "person.2") }
-                .help(window.tools.isOpen(.subAgents) ? "隐藏子 Agent（⌘ 4）" : "显示子 Agent（⌘ 4）")
+    /// The linked agents as a tool window are shown and hidden by the
+    /// button; in their own place they pop over from it, offered only when
+    /// the focused conversation has any.
+    @ViewBuilder private var agentsButton: some View {
+        let running = LinkedAgent.all(of: focused).contains { focused.isConversationRunning($0.id) }
+        if window.tools[.agents].place != .builtIn {
+            Toggle(isOn: Binding(get: { window.tools.isOpen(.agents) }, set: { _ in window.toggle(.agents) })) { Label("关联 Agent", systemImage: "person.2") }
+                .help(window.tools.isOpen(.agents) ? "隐藏关联 Agent（⌘ 4）" : "显示关联 Agent（⌘ 4）")
         } else {
-            Button { window.subAgentsPopover.toggle() } label: { Label("子 Agent", systemImage: running > 0 ? "person.2.fill" : "person.2") }
-                .help("\(summary)（⌘ 4）")
-                .popover(isPresented: $window.subAgentsPopover, arrowEdge: .bottom) {
-                    SubAgentsView(store: focused, layout: window) { id in
-                        window.subAgentsPopover = false
-                        focused.openLinkedConversation(id: id)
+            Button { window.agentsPopover.toggle() } label: { Label("关联 Agent", systemImage: running ? "person.2.fill" : "person.2") }
+                .help("\(LinkedAgent.summary(of: focused))（⌘ 4）")
+                .popover(isPresented: $window.agentsPopover, arrowEdge: .bottom) {
+                    LinkedAgentsView(store: focused, layout: window) { id, opening in
+                        window.agentsPopover = false
+                        window.openLinked(id, from: tab, opening: opening)
                     }
                 }
         }
@@ -459,6 +460,15 @@ private struct ConversationSettingsView: View {
                     Text("就地折叠").tag(BindingOutlinePresentation.inPlace)
                 }.disabled(store.isLoading || store.isShuttingDown)
                 Text("大纲以用户消息为条目。弹出面板在按钮处列出大纲；就地折叠把消息列表缩起为只剩用户消息，点击其中一条即恢复完整会话并停在该处。").font(.caption).foregroundStyle(.secondary)
+            }
+            Section("关联 Agent") {
+                Picker("打开方式", selection: Binding(get: { store.linkedConversationOpening }, set: { store.setLinkedConversationOpening($0) })) {
+                    Text("当前标签页").tag(BindingLinkedConversationOpening.currentTab)
+                    Text("新标签页").tag(BindingLinkedConversationOpening.newTab)
+                    Text("浮层").tag(BindingLinkedConversationOpening.sheet)
+                    Text("新窗口").tag(BindingLinkedConversationOpening.newWindow)
+                }.disabled(store.isLoading || store.isShuttingDown)
+                Text("关联 Agent 是会话的父会话、子 Agent 和经 Velune 协作的会话。在关联 Agent 面板中双击一项，或点按消息列表中的“打开会话”、来源与“打开父会话”时，在这里选择的位置打开；面板的右键菜单可选其他位置。浮层盖在窗口上，可从中转到标签页或独立窗口。").font(.caption).foregroundStyle(.secondary)
             }
             Section("状态栏") {
                 ForEach(Self.statusLineItems, id: \.item) { entry in

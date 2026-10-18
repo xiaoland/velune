@@ -183,6 +183,23 @@ pub struct BindingConversationSnapshot {
     pub follow_up: BindingFollowUp,
     /// The conversation's native sub-agents; whether one runs is conversation activity.
     pub sub_agents: Vec<BindingSubAgent>,
+    /// The conversations its agent contacted through Velune, or whose agents contacted it.
+    pub collaborators: Vec<BindingCollaborator>,
+}
+
+/// A conversation that took part with this one in Velune's agent-to-agent
+/// collaboration: an ordinary conversation, listed and continued as any other.
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BindingCollaborator {
+    pub conversation_id: String,
+    /// As listed, else as its message named it; empty when neither is known.
+    pub title: String,
+    pub runtime_name: Option<String>,
+    /// This conversation's agent started or addressed it.
+    pub contacted: bool,
+    /// Its agent sent this conversation a message.
+    pub contacted_by: bool,
 }
 
 /// A native sub-agent of a conversation, linked from its transcript or listed
@@ -542,6 +559,7 @@ pub struct BindingConfigurationSnapshot {
     pub model_templates: Vec<BindingModelTemplate>,
     pub conversation_browser_limits: BindingConversationBrowserLimits,
     pub outline_presentation: BindingOutlinePresentation,
+    pub linked_conversation_opening: BindingLinkedConversationOpening,
     pub conversation_browser_preferences: BindingConversationBrowserPreferences,
     /// What the composer's status line shows, in display order.
     pub status_line: Vec<BindingStatusLineItem>,
@@ -1215,6 +1233,16 @@ pub struct BindingComposerDraft {
 pub enum BindingOutlinePresentation {
     Popover,
     InPlace,
+}
+
+/// Where a conversation linked from another opens.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, uniffi::Enum)]
+#[serde(rename_all = "camelCase")]
+pub enum BindingLinkedConversationOpening {
+    CurrentTab,
+    NewTab,
+    Sheet,
+    NewWindow,
 }
 
 /// An item the composer's status line can show.

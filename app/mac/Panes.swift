@@ -106,11 +106,13 @@ struct PaneView: View {
 }
 
 /// A tab's conversation: its transcript above its composer.
-private struct TabContentView: View {
+struct TabContentView: View {
     @ObservedObject var window: ConversationWindowModel
     @ObservedObject var tab: ConversationTab
     @ObservedObject var store: AppStore
     let previewEmpty: Bool
+    /// Over the window, where a composer the window shares does not reach.
+    var inSheet = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -139,12 +141,12 @@ private struct TabContentView: View {
                 HStack(spacing: 8) {
                     Text("这是原生 sub-agent 的会话，由启动它的会话继续。").foregroundStyle(.secondary)
                     Spacer(minLength: 0)
-                    Button("打开父会话") { store.openLinkedConversation(id: parent) }
+                    Button("打开父会话") { window.openLinked(parent, from: tab) }
                 }
                 .padding(.horizontal, 16).padding(.vertical, 10)
             }
             .background(.bar)
-        } else if !window.tools.sharesComposer {
+        } else if inSheet || !window.tools.sharesComposer {
             ComposerView(store: store, model: tab.composer, layout: window, send: tab.send)
         }
     }
@@ -163,7 +165,7 @@ private struct TabContentView: View {
         TranscriptView(model: store.transcript, reading: tab.reading, conversationID: store.loadedConversationID, scrollRequest: tab.scrollRequest,
                        cwd: store.loadedConversationWorkingDirectory, remoteHost: store.loadedConversationLocation.host, outlineCollapsed: $tab.outlineCollapsed, navigation: tab.outlineNavigation,
                        activity: store.activity, loadPayloads: { [store] ids in store.loadPayloads(messageIDs: ids) },
-                       openConversation: { [store] id in store.openLinkedConversation(id: id) },
+                       openConversation: { [window, tab] id in window.openLinked(id, from: tab) },
                        editMessage: { [store, tab] id in store.editability(of: id) == nil ? nil : { tab.edit(messageID: id) } },
                        describeSettings: { [store] in store.describe($0) })
     }

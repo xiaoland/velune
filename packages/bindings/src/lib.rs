@@ -403,6 +403,15 @@ impl VeluneApplication {
             app.set_outline_presentation(presentation)
         })?)
     }
+    pub fn set_linked_conversation_opening(
+        &self,
+        opening: BindingLinkedConversationOpening,
+    ) -> Result<BindingLinkedConversationOpening, BindingError> {
+        let opening = convert(opening)?;
+        convert(self.with("set_linked_conversation_opening", |app| {
+            app.set_linked_conversation_opening(opening)
+        })?)
+    }
     pub fn set_status_line(
         &self,
         items: Vec<BindingStatusLineItem>,

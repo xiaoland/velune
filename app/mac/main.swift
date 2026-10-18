@@ -129,7 +129,7 @@ struct ConversationCommands: Commands {
         let shown = switch kind {
         case .outline where window.tools[.outline].place == .builtIn:
             window.application.outlinePresentation == .popover ? window.outlinePopover : window.focused.outlineCollapsed
-        case .subAgents where window.tools[.subAgents].place == .builtIn: window.subAgentsPopover
+        case .agents where window.tools[.agents].place == .builtIn: window.agentsPopover
         default: window.tools.isOpen(kind)
         }
         return (shown ? "隐藏" : "显示") + kind.title

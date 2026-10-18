@@ -189,6 +189,12 @@ def main():
             assert isinstance(body, b.BindingMessageBlock.TEXT) and body.text == 'PERMIT', body
             title = next(c.title for c in [_row.conversation for _row in app.list().conversations] if c.id == beta)
             assert 'Velune' not in str(title), title
+            # Each lists the other as its collaborator, with who contacted whom, by its listed title.
+            listed_titles = {c.id: c.title for c in [_row.conversation for _row in app.list().conversations]}
+            met = [(c.conversation_id, c.runtime_name, c.contacted, c.contacted_by, c.title) for c in app.snapshot('alpha', alpha).snapshot.collaborators]
+            assert met == [(beta, 'Beta', True, False, str(listed_titles[beta]))], met
+            met = [(c.conversation_id, c.runtime_name, c.contacted, c.contacted_by, c.title) for c in app.snapshot('beta', beta).snapshot.collaborators]
+            assert met == [(alpha, 'Alpha', False, True, str(listed_titles[alpha]))], met
             if seeding:
                 # Both conversations stay for the Mac app; Alpha's composer offers the next step.
                 app.set_composer_draft(alpha, 'ASK hello')

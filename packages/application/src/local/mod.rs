@@ -120,6 +120,7 @@ pub struct CoreRuntime {
     /// sub-agent its runtime archived), as last described, for opening them.
     reached: std::cell::RefCell<BTreeMap<String, organization::ListedSource>>,
     outline_presentation: crate::config::OutlinePresentation,
+    linked_conversation_opening: crate::config::LinkedConversationOpening,
     status_line: Vec<crate::config::StatusLineItem>,
     composer_drafts: BTreeMap<String, String>,
     resource_templates: Vec<crate::ResourceTemplate>,
@@ -165,6 +166,7 @@ mod editing;
 mod execution;
 mod follow_up;
 use crate::SendQueueOperation;
+mod collaborators;
 mod live;
 mod model_selection;
 mod native_composition;
@@ -217,6 +219,7 @@ impl CoreRuntime {
             archived_listing: Default::default(),
             reached: Default::default(),
             outline_presentation: persisted.outline_presentation,
+            linked_conversation_opening: persisted.linked_conversation_opening,
             status_line: crate::config::canonical_status_line(persisted.status_line),
             composer_drafts,
             resource_templates,
@@ -308,6 +311,7 @@ impl CoreRuntime {
             self.session.transcript_projection.message_identities();
         snapshot.follow_up = self.follow_up(&snapshot);
         snapshot.sub_agents = self.sub_agents(&snapshot);
+        snapshot.collaborators = self.collaborators(&snapshot);
         Some(snapshot)
     }
     fn snapshot_result(&mut self) -> Result<Value, RuntimeError> {
@@ -540,6 +544,7 @@ impl CoreRuntime {
         match action {
             "list" => self.list(),
             "outlinePresentation" => self.set_outline_presentation(request),
+            "linkedConversationOpening" => self.set_linked_conversation_opening(request),
             "statusLine" => self.set_status_line(request),
             "composerDrafts" => self.composer_drafts_action(request),
             "conversationBrowserPreferences" => self.set_conversation_browser_preferences(request),

@@ -364,6 +364,25 @@ pub struct ConversationSnapshot {
     /// leave it empty.
     #[serde(default)]
     pub sub_agents: Vec<SubAgent>,
+    /// The conversations its agent contacted through Velune, or whose agents
+    /// contacted it; Velune's decoration, adapters leave it empty.
+    #[serde(default)]
+    pub collaborators: Vec<Collaborator>,
+}
+
+/// A conversation that took part with another in Velune's agent-to-agent
+/// collaboration, as the other's transcript shows: an ordinary conversation.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct Collaborator {
+    pub conversation_id: String,
+    /// As listed, else as its message named it; empty when neither is known.
+    pub title: String,
+    pub runtime_name: Option<String>,
+    /// The other conversation's agent started or addressed it.
+    pub contacted: bool,
+    /// Its agent sent the other conversation a message.
+    pub contacted_by: bool,
 }
 
 /// A native sub-agent of a conversation: linked from its transcript, or

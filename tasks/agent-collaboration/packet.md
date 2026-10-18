@@ -103,3 +103,12 @@
 - 验证：fmt／check／clippy、Mac 构建通过。新增 [manual-subagent-activity.py](../../scripts/manual-subagent-activity.py)：原生轮次四项通过（快照列出子 Agent；活动中父会话下运行；空闲父会话收到“子 Agent：”审批并答复；命令执行、子 Agent 结束且未失败），两次运行结果一致。开发版隔离 HOME 截图确认工具栏出现后退／前进与“子 Agent”按钮；弹出内容、侧栏运行指示、后退恢复位置未在 App 中操作（AX 点按可能使开发版成为前台），留待用户验收。
 - 已知缺口：经网关的 Codex 轮次结束时 `settle` 结束 app-server，仍在运行的子 Agent 被终止（脚本观察：父轮次后无运行中的子 Agent，上游连接被断开，无审批到达）。修复需要改变经网关轮次的进程生命周期，未在本轮处理。Claude Code 子会话的失败状态无法从原生记录取得，显示为结束。在 Velune 之外运行（如 Codex 桌面端）的子 Agent 无法在 Velune 中审批。
 - 安装：54ae58c 已构建安装至 `/Applications/Velune.app`。
+
+## 2026-10-18：关联 Agent 与打开方式
+
+产品意图见 [PRD](../../docs/prd/index.md#ai-网关与-agent-运行时配置)（[S36](../../docs/sources.md#s36)）。名称“关联 Agent”由开发方选定，用户说明名称不限。
+
+- 核心：`ConversationSnapshot.collaborators`（`local/collaborators.rs`）按首次出现列出 A2A 参与方：协作工具结果中的会话（与交付层的工具链接同一解析）为本会话联系了它，收到的协作消息的来源为它联系了本会话；在列表中的取列表标题与其运行时名称，否则取来源行的标题与运行时。不按运行时或工具名分支。配置增加 `linkedConversationOpening`（currentTab、newTab、sheet、newWindow，默认 currentTab），与大纲设置同样持久化和导出。
+- Mac：“子 Agent”工具窗口改为“关联 Agent”（`LinkedAgents.swift`，⌘4，工具栏按钮在会话有父会话、子 Agent 或协作会话时出现），分“父会话”“子 Agent”“协作”三组；协作行副标题为运行时与方向（本会话联系了它／它联系了本会话／互相联系）。布局保存键仍为 `subAgents`，已保存的布局不失效。“设置 → 会话 → 关联 Agent”选择打开方式；面板双击／回车、消息列表的“打开会话”与来源链接、“打开父会话”都按它打开（`ConversationWindowModel.openLinked`），面板右键菜单列出四种方式。浮层是窗口的 sheet，内容是一个普通标签页（自带输入区），“在标签页中打开”“在新窗口中打开”把这个标签页原样移过去，不重新读取。浮层中的链接在浮层内打开（设置为当前标签页或浮层时），否则关闭浮层后按设置打开。
+- 取舍：浮层打开时 macOS 不接受退出（AppKit 在应用委托之前取消，与其他 sheet 相同），需先关闭浮层（Esc 或“完成”）。
+- 验证：fmt／check／clippy／no-default-features、Mac `--build-only` 通过。`manual-collaboration.py` 增加双方 `collaborators` 断言（Alpha 列出 Beta 为本会话联系、Beta 列出 Alpha 为联系了本会话，标题均为列表标题），通过。开发版副本（独立 bundle id、`--seed` 的隔离 HOME、后台启动，临时钩子不提交）截图：Alpha 的面板在“协作”下列出 Beta（“Beta · 本会话联系了它”）；按浮层打开时 Beta 盖在窗口上，带来源链接与输入区；新标签页打开后 Beta 的面板列出 Alpha（“它联系了本会话”）；新窗口打开为会话窗口；浮层转到标签页（标签数加一、焦点在该会话）与转到新窗口（新窗口显示完整会话与输入区）均按预期。父会话分组与子 Agent 行未在 App 中核对（需要实际运行时的子 Agent），其数据与此前相同。

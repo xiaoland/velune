@@ -3,16 +3,17 @@ import SwiftUI
 import VeluneBindings
 
 /// The parts of a conversation window that can leave their place: the list,
-/// the outline, the composer and the sub-agents. Everything else stays where it is.
+/// the outline, the composer and the linked agents. Everything else stays where it is.
 enum ToolWindowKind: String, Codable, CodingKeyRepresentable, CaseIterable {
-    case list, outline, composer, subAgents
+    /// The linked agents keep the name saved layouts know them by, from when they listed sub-agents alone.
+    case list, outline, composer, agents = "subAgents"
 
     var title: String {
         switch self {
         case .list: "会话列表"
         case .outline: "会话大纲"
         case .composer: "输入区"
-        case .subAgents: "子 Agent"
+        case .agents: "关联 Agent"
         }
     }
 }
@@ -42,7 +43,7 @@ enum DockSide: String, Codable, CaseIterable {
 
 /// Where a tool window is.
 enum ToolPlace: Codable, Hashable {
-    /// The tool's own place: the outline and the sub-agents from their
+    /// The tool's own place: the outline and the linked agents from their
     /// toolbar buttons, the composer in each pane. The list has none.
     case builtIn
     case docked(DockSide)
@@ -83,7 +84,7 @@ enum ToolChoice: Hashable {
         case .list: docked + detached
         case .outline: [(.outline(.popover), "弹出"), (.outline(.inPlace), "就地折叠")] + docked + detached
         case .composer: [(.place(.builtIn), "在每个面板中")] + docked + detached
-        case .subAgents: [(.place(.builtIn), "弹出")] + docked + detached
+        case .agents: [(.place(.builtIn), "弹出")] + docked + detached
         }
     }
 }
@@ -172,13 +173,13 @@ struct ToolWindowLayout: Codable, Equatable {
         editorOnly = open
     }
 
-    /// The tools of a window opened for one conversation: its sub-agents on
-    /// the left in the list's place; the list stays one command away.
+    /// The tools of a window opened for one conversation: its linked agents
+    /// on the left in the list's place; the list stays one command away.
     func forSingleConversation() -> ToolWindowLayout {
         var layout = self
         layout[.list].shown = false
-        layout[.subAgents].place = .docked(.left)
-        layout[.subAgents].shown = true
+        layout[.agents].place = .docked(.left)
+        layout[.agents].shown = true
         layout.collapsed.remove(.left)
         return layout
     }
@@ -300,7 +301,7 @@ struct ToolFrame: Codable, Equatable {
         // Inside, it leaves the window's title bar uncovered.
         case .list: window.minX - width >= screen.minX ? NSRect(x: window.minX - width, y: window.minY, width: width, height: window.height)
             : NSRect(x: window.minX, y: window.minY, width: width, height: window.height - 52)
-        case .outline, .subAgents: window.maxX + width <= screen.maxX ? NSRect(x: window.maxX, y: window.minY, width: width, height: window.height)
+        case .outline, .agents: window.maxX + width <= screen.maxX ? NSRect(x: window.maxX, y: window.minY, width: width, height: window.height)
             : NSRect(x: window.maxX - width, y: window.minY, width: width, height: window.height - 52)
         case .composer: NSRect(x: window.midX - 320, y: window.minY + 24, width: 640, height: 120)
         }
@@ -721,23 +722,23 @@ extension ConversationWindowModel {
         }
     }
 
-    /// Whether showing or hiding a tool can act. The sub-agents in their own
-    /// place pop over from a toolbar button offered only while the focused
-    /// conversation has some.
+    /// Whether showing or hiding a tool can act. The linked agents in their
+    /// own place pop over from a toolbar button offered only while the
+    /// focused conversation has some.
     func canToggle(_ kind: ToolWindowKind) -> Bool {
-        kind != .subAgents || tools[.subAgents].place != .builtIn || subAgentsPopover || !focused.store.subAgents.isEmpty
+        kind != .agents || tools[.agents].place != .builtIn || agentsPopover || focused.store.hasLinkedAgents
     }
 
     /// Show a tool, or hide it when it shows. The outline in its own place
-    /// pops over or collapses the focused pane in place; the sub-agents pop
-    /// over, or, with their button customized out of the toolbar or the
+    /// pops over or collapses the focused pane in place; the linked agents
+    /// pop over, or, with their button customized out of the toolbar or the
     /// toolbar hidden, move to a floating panel, since nothing would pop over.
     func toggle(_ kind: ToolWindowKind) {
-        if kind == .subAgents, tools[.subAgents].place == .builtIn {
-            if subAgentsPopover { subAgentsPopover = false }
-            else if focused.store.subAgents.isEmpty { return }
-            else if hasToolbarItem("sub-agents") { subAgentsPopover = true }
-            else { tools.move(.subAgents, to: .floating); detached.bringForward(.subAgents) }
+        if kind == .agents, tools[.agents].place == .builtIn {
+            if agentsPopover { agentsPopover = false }
+            else if !focused.store.hasLinkedAgents { return }
+            else if hasToolbarItem("sub-agents") { agentsPopover = true }
+            else { tools.move(.agents, to: .floating); detached.bringForward(.agents) }
             return
         }
         if kind == .outline, tools[.outline].place == .builtIn {
