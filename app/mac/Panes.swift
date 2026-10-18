@@ -186,7 +186,7 @@ private struct PaneTabBar: View {
     /// The tab sliding along the bar, and how far from its place.
     @State private var sliding: (id: UUID, distance: CGFloat)?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    static let height: CGFloat = 28
+    static let height = PaneChrome.barHeight
 
     var body: some View {
         let active = !window.isSplit || window.focusedPaneID == pane.id
@@ -218,10 +218,7 @@ private struct PaneTabBar: View {
                 .frame(width: Self.height, height: Self.height)
                 .onDrop(of: ConversationLink.dropTypes, delegate: TabDropDelegate(window: window, pane: pane.id, index: pane.tabs.count, width: 0, insertion: $insertion))
         }
-        .frame(height: Self.height)
-        .background(Color(nsColor: .windowBackgroundColor))
-        .overlay(alignment: .bottom) { TabShade.line.frame(height: 1) }
-        .padding(.bottom, 1)
+        .paneBar()
         .accessibilityElement(children: .contain)
         .accessibilityLabel(window.focusedPaneID == pane.id ? "聚焦面板的标签页" : "标签页")
     }
@@ -301,9 +298,27 @@ enum TabSlide {
     case left
 }
 
+/// What the bars along the top of the panes and of the docked tools share:
+/// side by side under the window's toolbar they must read as one bar, so
+/// the height, the rule under it and the room below the rule are set here
+/// and not by each bar's content.
+enum PaneChrome {
+    static let barHeight: CGFloat = 28
+}
+
+extension View {
+    /// A bar of `PaneChrome.barHeight` in the window's colour with the rule under it.
+    func paneBar() -> some View {
+        frame(height: PaneChrome.barHeight)
+            .background(Color(nsColor: .windowBackgroundColor))
+            .overlay(alignment: .bottom) { TabShade.line.frame(height: 1) }
+            .padding(.bottom, 1)
+    }
+}
+
 /// The system tab bar's shades over the window's colour: tabs not shown are
 /// darker with a soft shadow under the bar's top edge, and lines part them.
-private enum TabShade {
+enum TabShade {
     static let line = Color.black.opacity(0.16)
 
     static var unselected: some View {

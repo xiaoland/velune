@@ -61,10 +61,10 @@ private struct ToolHeader: View {
                 .buttonStyle(.borderless).controlSize(.small)
                 .help(kind == .composer ? "放回各个面板" : "隐藏\(kind.title)").accessibilityLabel("隐藏\(kind.title)")
         }
-        .padding(.leading, 12).padding(.trailing, 8).frame(height: 26)
+        .padding(.leading, 12).padding(.trailing, 8)
+        .paneBar()
         .contentShape(Rectangle())
         .contextMenu { ToolPlaceMenu(window: window, kind: kind) }
-        .overlay(alignment: .bottom) { Divider() }
     }
 }
 

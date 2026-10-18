@@ -172,6 +172,8 @@ struct TranscriptTable: NSViewRepresentable {
     private var following = true
     private var programmatic = 0
     private var lastOrigin: CGFloat = 0
+    /// The viewport's height at the last frame change.
+    private var clipHeight: CGFloat = 0
     private var lastBottomRequest: UInt64?
     private var lastJumpToken: UInt64?
     /// When the text last reflowed to a new width, and the pending reflow and
@@ -712,6 +714,13 @@ struct TranscriptTable: NSViewRepresentable {
         let clipWidth = scroll.contentView.bounds.width
         guard clipWidth > 0 else { return }
         if clipWidth != width { finishTransition() }
+        // A panel opening or the composer growing takes room from the
+        // viewport's bottom edge: reading at the end keeps the end in view.
+        let height = scroll.contentView.bounds.height
+        if height != clipHeight {
+            clipHeight = height
+            if following { scrollToBottom() }
+        }
         if document.frame.width != clipWidth { programmatically { document.setFrameSize(NSSize(width: clipWidth, height: offsets.last ?? 0)) } }
         guard clipWidth != width else { materializeVisibleRows(); return }
         // A width that keeps changing (a divider or the window being dragged,

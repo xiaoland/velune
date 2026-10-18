@@ -7,6 +7,13 @@ import VeluneBindings
 /// arrangement is kept under this name.
 enum ConversationToolbar {
     static let id = "conversation"
+    /// The user default that turns customizing on before macOS 26, where it
+    /// is off for the cost described at `VeluneRootView.withToolbar`.
+    static let customizationKey = "customizableToolbar"
+
+    static func isCustomizable(_ enabledBeforeTahoe: Bool) -> Bool {
+        if #available(macOS 26, *) { true } else { enabledBeforeTahoe }
+    }
 }
 
 /// A conversation window: the panes, with dock areas for tool windows at
@@ -26,6 +33,7 @@ struct VeluneRootView: View {
     @Environment(\.openSettings) private var openSettings
     @Environment(\.openWindow) private var openWindow
     @Environment(\.controlActiveState) private var activeState
+    @AppStorage(ConversationToolbar.customizationKey) private var customizesToolbar = false
     @State private var showsChanges = false
     /// Change review is implemented but not yet part of the product
     /// (2026-10-11 decision); this keeps its entry closed.
@@ -82,13 +90,29 @@ struct VeluneRootView: View {
     /// need a `Spacer()` item, and in a customizable toolbar SwiftUI removes
     /// and inserts that flexible space again, saving the arrangement to user
     /// defaults, on every layout of the window: each step of scrolling the
-    /// conversation list took about 50 ms instead of 2 ms on macOS 15.
+    /// conversation list took about 50 ms instead of 2 ms on macOS 15. So
+    /// there it is off unless the user turns it on in the settings, and then
+    /// the buttons are placed at the trailing end without a spacer.
     @ViewBuilder private func withToolbar(_ content: some View) -> some View {
         if #available(macOS 26, *) {
             content.toolbar(id: ConversationToolbar.id) { customizableToolbarItems }
+        } else if customizesToolbar {
+            content.toolbar(id: ConversationToolbar.id) { trailingCustomizableToolbarItems }
         } else {
             content.toolbar { toolbarItems }
         }
+    }
+
+    @ToolbarContentBuilder private var trailingCustomizableToolbarItems: some CustomizableToolbarContent {
+        ToolbarItem(id: "back", placement: .navigation) { backButton }
+        ToolbarItem(id: "forward", placement: .navigation) { forwardButton }
+        ToolbarItem(id: "reload", placement: .primaryAction) { reloadButton }
+        ToolbarItem(id: "outline", placement: .primaryAction) { outlineButton }
+        if showsAgentsItem { ToolbarItem(id: "sub-agents", placement: .primaryAction) { agentsButton } }
+        if showsPinItem { ToolbarItem(id: "pin", placement: .primaryAction) { pinToggle } }
+        ToolbarItem(id: "split", placement: .primaryAction) { splitButton }
+        if Self.changeReviewEnabled { ToolbarItem(id: "changes", placement: .primaryAction) { changesToggle } }
+        if !store.problems.isEmpty { ToolbarItem(id: "problems", placement: .primaryAction) { ProblemsButton(store: store) } }
     }
 
     @available(macOS 26, *)
@@ -450,6 +474,7 @@ private struct GeneralSettingsView: View {
     @ObservedObject var store: AppStore
     @State private var limit = 20
     @State private var totalLimit = 200
+    @AppStorage(ConversationToolbar.customizationKey) private var customizesToolbar = false
     private static let statusLineItems: [(item: BindingStatusLineItem, title: String)] = [
         (.contextUsage, "上下文用量"), (.sessionTokens, "本会话累计 token"), (.workingDirectory, "工作目录与 Git 分支"),
         (.rateLimits, "账户用量限额（Codex）"), (.sessionCost, "费用估算"),
@@ -493,6 +518,12 @@ private struct GeneralSettingsView: View {
                 Text("列表最多先读取总数上限个会话，按组依次分给各组，每组每次加载若干个；折叠的组不读取。之后可在各组中加载更多。").font(.caption).foregroundStyle(.secondary)
                 Button("保存") { store.setConversationBrowserLimits(BindingConversationBrowserLimits(page: UInt32(limit), total: UInt32(totalLimit))) }
                     .disabled(limit < 1 || totalLimit < 1 || (limit == Int(store.conversationBrowserLimits.page) && totalLimit == Int(store.conversationBrowserLimits.total)) || store.isShuttingDown)
+            }
+            if #unavailable(macOS 26) {
+                Section("工具栏") {
+                    Toggle("允许自定义工具栏", isOn: $customizesToolbar)
+                    Text("开启后，工具栏的右键菜单提供“自定义工具栏…”，可增删、重排按钮并更改显示方式。在 macOS 15 上这会让消息列表的滚动变慢，所以默认关闭；改动后工具栏会重新建立。").font(.caption).foregroundStyle(.secondary)
+                }
             }
             ShortcutSettingsSections()
         }.formStyle(.grouped).onAppear { limit = Int(store.conversationBrowserLimits.page); totalLimit = Int(store.conversationBrowserLimits.total) }
