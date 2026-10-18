@@ -72,7 +72,7 @@ final class Transport: @unchecked Sendable {
         return URL(fileURLWithPath: configured, isDirectory: true).standardizedFileURL
     }
 
-    func setConversationBrowserPreferences(_ preferences: BindingConversationBrowserPreferences) throws -> BindingConfigurationSnapshot { try withApplication("setConversationBrowserPreferences", .changesConfiguration) { try $0.setConversationBrowserPreferences(preferences: preferences) } }
+    func setConversationBrowserPreferences(_ preferences: BindingConversationBrowserPreferences) throws -> BindingConfigurationSnapshot { try withApplication("setConversationBrowserPreferences", .writes) { try $0.setConversationBrowserPreferences(preferences: preferences) } }
     func setStatusLine(_ items: [BindingStatusLineItem]) throws -> [BindingStatusLineItem] { try withApplication("setStatusLine", .changesConfiguration) { try $0.setStatusLine(items: items) } }
     func setOutlinePresentation(_ presentation: BindingOutlinePresentation) throws -> BindingOutlinePresentation { try withApplication("setOutlinePresentation", .changesConfiguration) { try $0.setOutlinePresentation(presentation: presentation) } }
     func setLinkedConversationOpening(_ opening: BindingLinkedConversationOpening) throws -> BindingLinkedConversationOpening { try withApplication("setLinkedConversationOpening", .changesConfiguration) { try $0.setLinkedConversationOpening(opening: opening) } }

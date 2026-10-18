@@ -45,3 +45,7 @@ Codex 0.159.3／DSH 0.2.0-rc.2 实际运行时原生created／updated非空隔�
 root从安装Rust dylib重新生成Python绑定，安装包以下手工入口均通过：session-browser（全部启用实例、created/updated、disabled不读来源、schema7默认不重置）；session-loading（实际AppStore/Transport跨实例、完整cwd分组、时间排序、慢读取+迟到poll、加载中原生rename/delete接受、删除目标不返回、失败loaded保留）；session-management（Pi/Codex真改名删除／持久性／source scope）；multi-runtime（实际Codex/DSH新建、延迟首轮、open/continue创建时间、五次loopback）；pi-native-loop（草稿与工具／后续轮，六次loopback）；provider-configuration及runtime-interactions（配置与审批／busy保护）。全部临时HOME、合成原生会话、本机loopback，无真实凭据、会话、配置读取和真实模型请求。不运行或新增自动化测试。
 
 开发方实现、静态、构建、安装与隔离验收完成。图形菜单呈现、分组及筛选的原生体验留给用户GUI验收。自定义label/section只是已厘清的未来组织记录方向，本轮没有标签CRUD；DSH当前ACP原生管理能力仍明确不可用。
+
+## 2026-10-18：折叠后再展开显示“加载更多（0/N）”
+
+用户反馈：项目组折叠后再展开，出现“加载（0/6）”，会话出现一会又消失。日志（只看操作名与耗时）显示每次切换都是保存偏好与一次整表 `list` 交替执行，各约 0.75 秒：保存浏览偏好被标为改变配置，应用 store 因此再读一次列表；先发出的折叠保存及这些读取的结果晚于展开到达，把折叠时的分组（该组 loaded 0）套到已展开的组上。修正：保存偏好按写入处理（结果本身是完整列表，经共享 store 同步到各工作区），不再触发整表刷新；列表工作区在保存在途时不从共享 store 采用分组与会话；先发出的保存成功时不应用其列表，最后一次保存失败时重读列表。验证：临时让核心列表慢 0.7 秒、临时钩子先折叠 1.2 秒后展开并每 0.1 秒采样该组：修正前展开后 0.8 秒为 0/6、0 行，修正后始终 6/6；每次切换只剩一次保存操作。

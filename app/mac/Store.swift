@@ -205,13 +205,18 @@ final class AppStore: ObservableObject {
         if browserPreferencesSaving == 0, conversationBrowserPreferences != application.conversationBrowserPreferences { conversationBrowserPreferences = application.conversationBrowserPreferences }
         savedBrowserPreferences = application.savedBrowserPreferences
         if conversationBrowserLimits != application.conversationBrowserLimits { conversationBrowserLimits = application.conversationBrowserLimits }
-        if conversationGroups != application.conversationGroups { conversationGroups = application.conversationGroups }
-        if conversationProjects != application.conversationProjects { conversationProjects = application.conversationProjects }
+        // While this workspace's browser preferences are being saved, the list
+        // it shows waits for their result: one the application read before
+        // would show groups as folded or unfolded as they were.
+        if browserPreferencesSaving == 0 {
+            if conversationGroups != application.conversationGroups { conversationGroups = application.conversationGroups }
+            if conversationProjects != application.conversationProjects { conversationProjects = application.conversationProjects }
+        }
         if showsArchived != application.showsArchived { showsArchived = application.showsArchived }
         if outlinePresentation != application.outlinePresentation { outlinePresentation = application.outlinePresentation }
         if linkedConversationOpening != application.linkedConversationOpening { linkedConversationOpening = application.linkedConversationOpening }
         if statusLine != application.statusLine { statusLine = application.statusLine }
-        var sharedConversations = application.conversations
+        var sharedConversations = browserPreferencesSaving == 0 ? application.conversations : conversations
         if let loadedConversationID, application.deletedConversationIDs.contains(loadedConversationID) { resetProjection() }
         if var current = snapshot?.conversation, !isDraft, !sharedConversations.contains(where: { $0.id == current.id }) { current.group = nil; sharedConversations.insert(current, at: 0) }
         if conversations != sharedConversations { conversations = sharedConversations }
@@ -613,16 +618,22 @@ final class AppStore: ObservableObject {
             DispatchQueue.main.async {
                 guard let self else { return }
                 self.browserPreferencesSaving -= 1
+                // A later choice still being saved brings its own list; this
+                // one's would show the groups folded or unfolded as before it.
+                let latest = revision == self.browserPreferencesGeneration
                 switch result {
                 case .success(let data):
-                    let saved = data.conversationBrowserPreferences
-                    self.savedBrowserPreferences = saved
-                    if revision == self.browserPreferencesGeneration { self.conversationBrowserPreferences = saved }
+                    self.savedBrowserPreferences = data.conversationBrowserPreferences
+                    guard latest else { return }
+                    self.conversationBrowserPreferences = data.conversationBrowserPreferences
                     self.applyList(data)
                     self.refreshSearch()
                 case .failure(let failure):
                     self.recordProblem(failure)
-                    if revision == self.browserPreferencesGeneration { self.conversationBrowserPreferences = self.savedBrowserPreferences }
+                    guard latest else { return }
+                    self.conversationBrowserPreferences = self.savedBrowserPreferences
+                    // An earlier choice may have been saved, its list left out.
+                    self.refreshConversations()
                 }
             }
         }
