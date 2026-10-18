@@ -307,10 +307,12 @@ enum PaneChrome {
 }
 
 extension View {
-    /// A bar of `PaneChrome.barHeight` in the window's colour with the rule under it.
-    func paneBar() -> some View {
+    /// A bar of `PaneChrome.barHeight` with the rule under it, in the
+    /// window's colour unless it is `translucent`, as the docked areas'
+    /// material is, and shows through.
+    func paneBar(translucent: Bool = false) -> some View {
         frame(height: PaneChrome.barHeight)
-            .background(Color(nsColor: .windowBackgroundColor))
+            .background { if !translucent { Color(nsColor: .windowBackgroundColor) } }
             .overlay(alignment: .bottom) { TabShade.line.frame(height: 1) }
             .padding(.bottom, 1)
     }

@@ -62,7 +62,7 @@ private struct ToolHeader: View {
                 .help(kind == .composer ? "放回各个面板" : "隐藏\(kind.title)").accessibilityLabel("隐藏\(kind.title)")
         }
         .padding(.leading, 12).padding(.trailing, 8)
-        .paneBar()
+        .paneBar(translucent: true)
         .contentShape(Rectangle())
         .contextMenu { ToolPlaceMenu(window: window, kind: kind) }
     }
