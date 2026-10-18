@@ -18,6 +18,14 @@ extension FocusedValues {
     }
 }
 
+/// Menu items that follow `object`. A Commands body observes no object, so
+/// an item it disabled stays as it was when the body last ran, shortcut too.
+private struct Observing<Object: ObservableObject, Content: View>: View {
+    @ObservedObject var object: Object
+    @ViewBuilder let content: () -> Content
+    var body: some View { content() }
+}
+
 @MainActor
 struct ConversationCommands: Commands {
     @FocusedValue(\.conversationCommands) private var focusedTarget
@@ -28,11 +36,26 @@ struct ConversationCommands: Commands {
             ConversationCommandTarget(store: window.focused.store, send: window.focused.send, window: window)
         }
     }
+    /// Items as `object` stands, or as they are without it.
+    @ViewBuilder private func following<Object: ObservableObject, Content: View>(_ object: Object?, @ViewBuilder _ content: @escaping () -> Content) -> some View {
+        if let object { Observing(object: object, content: content) } else { content() }
+    }
+    /// Items as the key window, its focused pane and that pane's tab stand.
+    @ViewBuilder private func followingFocus<Content: View>(@ViewBuilder _ content: @escaping () -> Content) -> some View {
+        following(target?.window) { following(target?.window.focusedPane) { following(target?.window.focused, content) } }
+    }
+    /// Items as the focused tab's conversation stands as well.
+    @ViewBuilder private func followingConversation<Content: View>(@ViewBuilder _ content: @escaping () -> Content) -> some View {
+        followingFocus { following(target?.window.focused.store, content) }
+    }
+
     var body: some Commands {
         CommandGroup(replacing: .newItem) {
-            Button("新建会话") { target?.store.createConversation() }
-                .keyboardShortcut("n")
-                .disabled(target == nil || target?.store.isLoading == true)
+            followingConversation {
+                Button("新建会话") { target?.store.createConversation() }
+                    .keyboardShortcut("n")
+                    .disabled(target == nil || target?.store.isLoading == true)
+            }
             Button("新建标签页") { target?.window.openInNewTab() }
                 .keyboardShortcut("t")
                 .disabled(target == nil)
@@ -51,53 +74,62 @@ struct ConversationCommands: Commands {
                 .keyboardShortcut("w", modifiers: [.command, .shift])
         }
         CommandMenu("会话") {
-            Button("发送消息") { target?.send() }
-                .keyboardShortcut(.return, modifiers: .command)
-                .disabled(target?.store.canSend != true)
-            Button("停止生成") { target?.store.cancel() }
-                .keyboardShortcut(.escape, modifiers: [])
-                .disabled(target?.store.canCancel != true)
-            Button("停止子 Agent") { target?.store.stopSubAgents() }
-                .disabled(target?.store.followUp.canStopSubAgents != true)
+            followingConversation {
+                Button("发送消息") { target?.send() }
+                    .keyboardShortcut(.return, modifiers: .command)
+                    .disabled(target?.store.canSend != true)
+                Button("停止生成") { target?.store.cancel() }
+                    .keyboardShortcut(.escape, modifiers: [])
+                    .disabled(target?.store.canCancel != true)
+                Button("停止子 Agent") { target?.store.stopSubAgents() }
+                    .disabled(target?.store.followUp.canStopSubAgents != true)
+            }
         }
         CommandGroup(before: .windowArrangement) {
-            Button("向右拆分") { target?.window.split(.horizontal) }
-                .keyboardShortcut("d")
-                .disabled(target == nil)
-            Button("向下拆分") { target?.window.split(.vertical) }
-                .keyboardShortcut("d", modifiers: [.command, .shift])
-                .disabled(target == nil)
-            Button("关闭分屏") { if let window = target?.window { window.closePane(window.focusedPaneID) } }
-                .disabled(target?.window.isSplit != true)
-            // Control-brackets, not Option-arrows: those move by word in the composer.
-            Button("后退") { target?.window.focused.goBack() }
-                .keyboardShortcut("[", modifiers: .control)
-                .disabled(target?.store.backHistory.isEmpty != false)
-            Button("前进") { target?.window.focused.goForward() }
-                .keyboardShortcut("]", modifiers: .control)
-                .disabled(target?.store.forwardHistory.isEmpty != false)
+            following(target?.window) {
+                Button("向右拆分") { target?.window.split(.horizontal) }
+                    .keyboardShortcut("d")
+                    .disabled(target == nil)
+                Button("向下拆分") { target?.window.split(.vertical) }
+                    .keyboardShortcut("d", modifiers: [.command, .shift])
+                    .disabled(target == nil)
+                Button("关闭分屏") { if let window = target?.window { window.closePane(window.focusedPaneID) } }
+                    .disabled(target?.window.isSplit != true)
+            }
+            followingConversation {
+                // Control-brackets, not Option-arrows: those move by word in the composer.
+                Button("后退") { target?.window.focused.goBack() }
+                    .keyboardShortcut("[", modifiers: .control)
+                    .disabled(target?.store.backHistory.isEmpty != false)
+                Button("前进") { target?.window.focused.goForward() }
+                    .keyboardShortcut("]", modifiers: .control)
+                    .disabled(target?.store.forwardHistory.isEmpty != false)
+            }
             Divider()
-            Button("下一个分屏") { target?.window.focusNeighbour(forward: true) }
-                .keyboardShortcut("]")
-                .disabled(target?.window.isSplit != true)
-            Button("上一个分屏") { target?.window.focusNeighbour(forward: false) }
-                .keyboardShortcut("[")
-                .disabled(target?.window.isSplit != true)
-            Divider()
-            Button("下一个标签页") { target?.window.selectNeighbourTab(forward: true) }
-                .keyboardShortcut(.rightArrow, modifiers: [.command, .control])
-                .disabled((target?.window.focusedPane.tabs.count ?? 0) < 2)
-            Button("上一个标签页") { target?.window.selectNeighbourTab(forward: false) }
-                .keyboardShortcut(.leftArrow, modifiers: [.command, .control])
-                .disabled((target?.window.focusedPane.tabs.count ?? 0) < 2)
-            Button("将标签页移到新窗口") { if let window = target?.window { window.moveToNewWindow(window.focused.id) } }
-                .disabled(target?.window.canMoveTabToNewWindow != true)
+            followingFocus {
+                Button("下一个分屏") { target?.window.focusNeighbour(forward: true) }
+                    .keyboardShortcut("]")
+                    .disabled(target?.window.isSplit != true)
+                Button("上一个分屏") { target?.window.focusNeighbour(forward: false) }
+                    .keyboardShortcut("[")
+                    .disabled(target?.window.isSplit != true)
+                Divider()
+                // As in Chrome.
+                Button("下一个标签页") { target?.window.selectNeighbourTab(forward: true) }
+                    .keyboardShortcut(.rightArrow, modifiers: [.command, .option])
+                    .disabled((target?.window.focusedPane.tabs.count ?? 0) < 2)
+                Button("上一个标签页") { target?.window.selectNeighbourTab(forward: false) }
+                    .keyboardShortcut(.leftArrow, modifiers: [.command, .option])
+                    .disabled((target?.window.focusedPane.tabs.count ?? 0) < 2)
+                Button("将标签页移到新窗口") { if let window = target?.window { window.moveToNewWindow(window.focused.id) } }
+                    .disabled(target?.window.canMoveTabToNewWindow != true)
+            }
             Divider()
             Toggle("保持在最前面", isOn: Binding(get: { pinning.keyWindowPinned }, set: { _ in pinning.toggle() }))
                 .disabled(!pinning.canPin)
             Divider()
         }
-        CommandGroup(before: .sidebar) {
+        CommandGroup(before: .sidebar) { followingFocus {
             ForEach(Array(ToolWindowKind.allCases.enumerated()), id: \.element) { index, kind in
                 Button(toolTitle(kind)) { kind == .composer ? target?.window.focusComposer() : target?.window.toggle(kind) }
                     .keyboardShortcut(KeyEquivalent(Character("\(index + 1)")))
@@ -123,7 +155,7 @@ struct ConversationCommands: Commands {
                 .keyboardShortcut(.return, modifiers: [.command, .shift])
                 .disabled(target == nil)
             Divider()
-        }
+        } }
     }
 
     /// The list and outline show and hide; the composer, always somewhere, takes the keyboard.
