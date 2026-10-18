@@ -532,7 +532,7 @@ struct ComposerView: View {
     private var statusRow: some View {
         HStack(spacing: 8) {
             Spacer(minLength: 8)
-            if store.needsModelSelection { Text(store.isUnsentConversation ? "请选择模型" : "此会话的模型不可用").font(.callout).foregroundStyle(.secondary).lineLimit(1) }
+            if store.chosenModelUnavailable { Text("所选模型已不可用").font(.callout).foregroundStyle(.secondary).lineLimit(1) }
             else { ComposerStatusLine(store: store).layoutPriority(-1).padding(.trailing, 4) }
             sendButton
         }
@@ -606,6 +606,8 @@ struct ComposerView: View {
         let model = store.selectedModelName ?? "选择模型"
         // Levels show as the runtime receives them.
         let effort = store.reasoningEffortOptions.isEmpty ? nil : store.nextTurnEffort ?? store.currentEffort
+        // An unchosen level follows the conversation's, or is the runtime's own.
+        let unchosen = store.nextTurnHasCurrent ? "沿用当前" : "运行时默认"
         let title = ([runtime, model] + (effort.map { [$0] } ?? [])).joined(separator: " · ")
         return Menu {
             Menu("运行时：\(runtime)") {
@@ -623,10 +625,10 @@ struct ComposerView: View {
                 SettingsTabLink(tab: .providers, title: "AI 提供商设置…")
             }
             if !store.reasoningEffortOptions.isEmpty {
-                Menu("推理强度：\(effort ?? "沿用当前")") {
+                Menu("推理强度：\(effort ?? unchosen)") {
                     Picker("推理强度", selection: Binding(get: { store.nextTurnEffort }, set: { store.selectEffort($0) })) {
-                        Text(store.currentEffort.map { "沿用当前（\($0)）" } ?? "沿用当前").tag(String?.none)
-                            .help("不更改：沿用会话当前的推理强度，新会话由运行时决定")
+                        Text(store.currentEffort.map { "沿用当前（\($0)）" } ?? unchosen).tag(String?.none)
+                            .help(store.nextTurnHasCurrent ? "不更改：沿用会话当前的推理强度" : "不指定：由运行时自己决定")
                         ForEach(store.reasoningEffortOptions, id: \.self) { level in Text(level).tag(Optional(level)) }
                     }.pickerStyle(.inline).labelsHidden()
                 }
@@ -637,28 +639,31 @@ struct ComposerView: View {
                 .lineLimit(1).truncationMode(.middle).frame(maxWidth: 360, alignment: .leading)
         }
         .fixedSize()
-        .accessibilityLabel("下一轮：运行时 \(runtime)，模型 \(model)，推理强度 \(effort ?? "沿用当前")")
-        .help(store.needsModelSelection ? "此会话的模型当前不可用，请选择已配置的模型" : "下一轮：\(runtime) · \(model) · 推理强度 \(effort ?? "沿用当前")")
+        .accessibilityLabel("下一轮：运行时 \(runtime)，模型 \(model)，推理强度 \(effort ?? unchosen)")
+        .help(store.chosenModelUnavailable ? "所选模型已不可用，下一轮改用\(model)" : "下一轮：\(runtime) · \(model) · 推理强度 \(effort ?? unchosen)")
         .disabled(store.isShuttingDown)
     }
 
-    /// The runtime's own models (and its default, when it has one) come
-    /// before the models Velune's providers serve through the gateway.
+    /// No choice first (the conversation's current model, or the runtime's
+    /// default), then the runtime's own models, before the models Velune's
+    /// providers serve through the gateway.
     @ViewBuilder private var modelMenuContent: some View {
         let choices = store.modelChoices
         let runtimeChoices = choices.filter { if case .managed = $0.selection { false } else { true } }
         let managedChoices = choices.filter { if case .managed = $0.selection { true } else { false } }
-        let selection = Binding(get: { store.nextTurnModel }, set: { if let value = $0 { store.selectModel(value) } })
+        let selection = Binding(get: { store.chosenModel }, set: { store.selectModel($0) })
         switch store.modelCatalog {
         case .loading: Text("正在读取运行时的模型…")
         case .failed(let detail): Text("无法读取运行时的模型：\(detail)")
         case .ready, nil: EmptyView()
         }
-        if !runtimeChoices.isEmpty {
-            Picker("运行时模型", selection: selection) {
-                ForEach(runtimeChoices) { model in Text(model.displayName).tag(Optional(model.selection)) }
-            }.pickerStyle(.inline).disabled(!store.canSwitchModel)
-        }
+        Picker("运行时模型", selection: selection) {
+            Group {
+                if store.nextTurnHasCurrent, store.nextTurnModel != nil { Text("沿用当前（\(store.selectedModelName ?? "")）") } else { Text("运行时默认") }
+            }.tag(ModelSelection?.none)
+                .help(store.nextTurnHasCurrent ? "不更改：沿用会话当前的模型" : "不指定：由运行时使用自己的默认模型")
+            ForEach(runtimeChoices) { model in Text(model.displayName).tag(Optional(model.selection)) }
+        }.pickerStyle(.inline).disabled(!store.canSwitchModel)
         if !managedChoices.isEmpty {
             Picker("Velune 提供商", selection: selection) {
                 ForEach(managedChoices) { model in Text(model.displayName).tag(Optional(model.selection)) }
@@ -703,12 +708,12 @@ struct ComposerView: View {
         let mode = store.effectivePermissionMode
         let current = store.currentPermissionMode
         let hasModes = !store.permissionModeOptions.isEmpty
-        let title = hasModes ? (mode ?? current)?.label ?? "默认权限" : "会话选项"
+        let title = hasModes ? (mode ?? current)?.label ?? "运行时默认权限" : "会话选项"
         return Menu {
             if hasModes {
                 Picker("权限模式", selection: Binding(get: { mode?.id }, set: { store.selectPermissionMode($0) })) {
-                    Text(current.map { "沿用当前（\($0.label)）" } ?? "沿用当前").tag(String?.none)
-                        .help("不更改：沿用会话当前的权限模式，新会话为运行时自己的默认")
+                    Text(current.map { "沿用当前（\($0.label)）" } ?? (store.nextTurnHasCurrent ? "沿用当前" : "运行时默认")).tag(String?.none)
+                        .help(store.nextTurnHasCurrent ? "不更改：沿用会话当前的权限模式" : "不指定：由运行时使用自己的默认模式")
                     ForEach(store.permissionModeOptions) { option in Text(option.label).tag(Optional(option.id)).help(option.detail) }
                 }.pickerStyle(.inline)
             }
@@ -723,7 +728,7 @@ struct ComposerView: View {
         }
         .fixedSize()
         .accessibilityLabel(hasModes ? "下一轮权限模式：\(title)" : "会话选项")
-        .help(hasModes ? (mode.map { "权限模式：\($0.label)。\($0.detail)" } ?? "权限模式：沿用会话当前的模式\(current.map { "（\($0.label)）" } ?? "")") : "此会话由 Agent 提供的选项，修改立即生效")
+        .help(hasModes ? (mode.map { "权限模式：\($0.label)。\($0.detail)" } ?? (store.nextTurnHasCurrent ? "权限模式：沿用会话当前的模式\(current.map { "（\($0.label)）" } ?? "")" : "权限模式：由运行时使用自己的默认模式")) : "此会话由 Agent 提供的选项，修改立即生效")
         .disabled(store.isShuttingDown)
     }
 

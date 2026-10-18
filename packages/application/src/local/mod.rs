@@ -126,6 +126,8 @@ pub struct CoreRuntime {
     usage_display: crate::config::UsageDisplay,
     status_line: Vec<crate::config::StatusLineItem>,
     composer_drafts: BTreeMap<String, String>,
+    composer_choices: crate::config::ComposerChoices,
+    turn_requests: TurnRequests,
     resource_templates: Vec<crate::ResourceTemplate>,
     resource_bindings: Vec<crate::ResourceBinding>,
     /// A resource save could not reach its runtimes because one was busy; retried once idle.
@@ -163,6 +165,8 @@ pub(crate) use client_state::ClientState;
 mod authentication_coordination;
 mod browsing;
 mod collaboration;
+mod composer_choices;
+pub(crate) use composer_choices::{TurnKey, TurnRequests};
 mod configuration;
 mod continuation;
 mod conversations;
@@ -197,6 +201,8 @@ impl CoreRuntime {
         let (repository, persisted) = crate::repository::Repository::open(&options.home_directory)?;
         let conversation_links = repository.load_conversation_links()?;
         let composer_drafts = repository.load_composer_drafts()?;
+        let composer_choices = repository.load_composer_choices()?;
+        let turn_requests = repository.load_turn_requests()?;
         let organization = repository.load_conversation_organization()?;
         let (resource_templates, resource_bindings) = repository.load_resource_library()?;
         let subscription_quota = crate::subscription_quota::SubscriptionQuota::new(
@@ -230,6 +236,8 @@ impl CoreRuntime {
             usage_display: persisted.usage_display,
             status_line: crate::config::canonical_status_line(persisted.status_line),
             composer_drafts,
+            composer_choices,
+            turn_requests,
             resource_templates,
             resource_sync_due: !resource_bindings.is_empty(),
             resource_bindings,
@@ -308,9 +316,15 @@ impl CoreRuntime {
         self.session
             .transcript_projection
             .apply(TranscriptEvent::ReplaceMessages(&snapshot.messages));
+        composer_choices::recall_turn_requests(
+            &self.turn_requests,
+            &mut self.session.transcript_projection,
+            &snapshot,
+        );
         self.session
             .transcript_projection
             .apply(TranscriptEvent::ExecutionState(snapshot.run_state.clone()));
+        self.keep_turn_requests(&snapshot);
         snapshot.transcript_turns = self.session.transcript_projection.turns();
         self.name_turn_models(&mut snapshot.transcript_turns);
         snapshot.transcript_items = self.session.transcript_projection.items();
@@ -616,6 +630,7 @@ impl CoreRuntime {
                     &None
                 })?)
             }
+            "composerChoices" => self.composer_choices_action(request),
             "create" => self.create_conversation(request),
             "open" => self.open_conversation(request),
             "readConversation" => self.read_conversation(request),
@@ -624,6 +639,7 @@ impl CoreRuntime {
                 let result = self.manage_conversation(request, true)?;
                 if let Some(id) = request["payload"]["conversationID"].as_str() {
                     self.discard_composer_draft(id);
+                    self.discard_conversation_choices(id);
                 }
                 Ok(result)
             }

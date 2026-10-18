@@ -103,6 +103,13 @@ pub enum BindingApplicationCommand {
         conversation_id: String,
         text: String,
     },
+    ComposerChoices,
+    SetNextTurnIntent {
+        intent: BindingNextTurnIntent,
+    },
+    SetRuntimeComposerChoices {
+        choices: BindingRuntimeComposerChoices,
+    },
     SetConversationBrowserLimits {
         limits: BindingConversationBrowserLimits,
     },
@@ -185,7 +192,7 @@ pub enum BindingApplicationCommand {
     CreateConversationWithSelection {
         runtime_id: String,
         cwd: Option<String>,
-        selection: BindingModelSelection,
+        selection: Option<BindingModelSelection>,
     },
     RuntimeModels {
         runtime_id: String,
@@ -233,7 +240,7 @@ pub enum BindingApplicationCommand {
         source_runtime_id: String,
         conversation_id: String,
         target_runtime_id: String,
-        selection: BindingModelSelection,
+        selection: Option<BindingModelSelection>,
         turn: BindingComposedTurn,
     },
     ReasoningEfforts {
@@ -255,7 +262,7 @@ pub enum BindingApplicationCommand {
         conversation_id: String,
         message_id: String,
         placement: BindingEditPlacement,
-        selection: BindingModelSelection,
+        selection: Option<BindingModelSelection>,
         turn: BindingComposedTurn,
     },
     Cancel {
@@ -522,6 +529,15 @@ impl TryFrom<BindingApplicationCommand> for Command {
                 }
             }
             BindingApplicationCommand::ComposerDrafts => Self::ComposerDrafts,
+            BindingApplicationCommand::ComposerChoices => Self::ComposerChoices,
+            BindingApplicationCommand::SetNextTurnIntent { intent } => Self::SetNextTurnIntent {
+                intent: convert(intent)?,
+            },
+            BindingApplicationCommand::SetRuntimeComposerChoices { choices } => {
+                Self::SetRuntimeComposerChoices {
+                    choices: convert(choices)?,
+                }
+            }
             BindingApplicationCommand::SetComposerDraft {
                 conversation_id,
                 text,

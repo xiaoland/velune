@@ -200,6 +200,8 @@ struct TurnSettings: Codable, Sendable, Equatable {
     var effort: String?
     /// An ID the runtime type declares, or the record's own value.
     var permissionMode: String?
+    /// The model Velune sent the turn with, when it sent it and named one.
+    var modelSelection: ModelSelection?
 }
 
 enum TranscriptItem: Codable, Sendable, Equatable {
@@ -272,15 +274,29 @@ struct ProviderModel: Codable, Sendable, Identifiable, Equatable {
     var contextWindow: UInt32? = nil
     var maxOutputTokens: UInt32? = nil
     var reasoningLevels: [String]? = nil
-    var adapterMetadataJSON: String? = nil
     var displayName: String { nickname.isEmpty ? providerModelID : nickname }
 }
-/// What the next turn runs on: a model of the runtime's own providers, a
-/// Velune-managed model, or (generic ACP) the Agent's current choice.
-enum ModelSelection: Hashable, Sendable {
-    case runtimeDefault
+/// What the next turn runs on: a model of the runtime's own providers or a
+/// Velune-managed model. No selection (`nil`) is the runtime's own default;
+/// Velune never names a default of its own.
+enum ModelSelection: Hashable, Sendable, Codable {
     case managed(recordKey: String)
     case native(providerID: String?, modelID: String)
+}
+/// What the user chose for a turn on one runtime. Each `nil` part follows the
+/// conversation's current one, and where there is none (a conversation not
+/// yet sent on the runtime) is the runtime's own default.
+struct TurnChoice: Hashable, Sendable {
+    var model: ModelSelection?
+    var effort: String?
+    var permissionMode: String?
+}
+/// What a runtime instance's new conversations start with.
+enum NewConversationChoice: Hashable, Sendable {
+    /// The user's last choice on the runtime.
+    case lastChosen
+    /// These; a `nil` part is the runtime's own default.
+    case chosen(TurnChoice)
 }
 /// A model the next turn can use, with the reasoning levels the runtime
 /// accepts for it.

@@ -140,9 +140,9 @@ impl CoreRuntime {
         if text.trim().is_empty() && attachments.images.is_empty() {
             return Err(RuntimeError::invalid("message text"));
         }
-        self.validate_model_selection(&runtime, &selection)?;
+        self.validate_model_selection(&runtime, selection.as_ref())?;
         if let Some(effort) = payload["effort"].as_str() {
-            self.validate_effort(&runtime, &selection, effort)?;
+            self.validate_effort(&runtime, selection.as_ref(), effort)?;
         }
         if let Some(mode) = payload["permissionMode"].as_str() {
             self.validate_permission_mode(&runtime, mode)?;
@@ -193,7 +193,7 @@ impl CoreRuntime {
             if placement == EditPlacement::InPlace {
                 self.invalidate_execution()?;
             }
-            self.prepare_with_selection(fresh.clone(), &selection, false)?;
+            self.prepare_with_selection(fresh.clone(), selection.as_ref(), false)?;
             match &mut self.session.active_state {
                 ActiveState::Native(session) => {
                     let id = session

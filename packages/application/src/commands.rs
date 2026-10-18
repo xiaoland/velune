@@ -190,6 +190,15 @@ impl Application {
                 application.set_composer_draft(conversation_id, text)?;
                 Response::SetComposerDraft
             }
+            Command::ComposerChoices => Response::ComposerChoices(application.composer_choices()?),
+            Command::SetNextTurnIntent { intent } => {
+                application.set_next_turn_intent(intent)?;
+                Response::SetNextTurnIntent
+            }
+            Command::SetRuntimeComposerChoices { choices } => {
+                application.set_runtime_composer_choices(choices)?;
+                Response::SetRuntimeComposerChoices
+            }
             Command::SetConversationBrowserLimits { limits } => {
                 Response::SetConversationBrowserLimits(
                     application.set_conversation_browser_limits(limits)?,

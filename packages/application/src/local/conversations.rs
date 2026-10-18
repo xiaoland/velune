@@ -111,9 +111,13 @@ impl CoreRuntime {
         if !snapshot.pending_interactions.is_empty() {
             return Err(RuntimeError::invalid("请先处理当前运行时请求"));
         }
-        self.validate_model_selection(self.runtime_instance(runtime_id)?, &selection)?;
+        self.validate_model_selection(self.runtime_instance(runtime_id)?, selection.as_ref())?;
         if let Some(effort) = effort {
-            self.validate_effort(self.runtime_instance(runtime_id)?, &selection, effort)?;
+            self.validate_effort(
+                self.runtime_instance(runtime_id)?,
+                selection.as_ref(),
+                effort,
+            )?;
         }
         if let Some(mode) = permission_mode {
             self.validate_permission_mode(self.runtime_instance(runtime_id)?, mode)?;
@@ -138,7 +142,7 @@ impl CoreRuntime {
                     || matches!(self.session.active_state, ActiveState::History(_))
                     || self.session.model_selection.as_ref() != Some(&selection));
             if needs_new_target {
-                self.replace_unsubmitted_target(runtime_id, &selection)?;
+                self.replace_unsubmitted_target(runtime_id, selection.as_ref())?;
             }
             self.commit_unsubmitted_alias()?;
             if needs_new_target {
@@ -150,7 +154,7 @@ impl CoreRuntime {
         if snapshot.conversation.runtime_id != runtime_id {
             return self.continue_in_runtime(
                 runtime_id,
-                &selection,
+                selection.as_ref(),
                 text,
                 effort,
                 permission_mode,
@@ -160,7 +164,7 @@ impl CoreRuntime {
         if matches!(self.session.active_state, ActiveState::History(_))
             || self.session.model_selection.as_ref() != Some(&selection)
         {
-            self.prepare_with_selection(snapshot, &selection, false)?;
+            self.prepare_with_selection(snapshot, selection.as_ref(), false)?;
         }
         self.send_action(
             &json!({"payload":{"runtimeInstanceID":runtime_id,"text":text,"effort":effort,"permissionMode":permission_mode,"images":images}}),
@@ -183,7 +187,7 @@ impl CoreRuntime {
         if let Some(cwd) = &cwd {
             self.validate_runtime_cwd(&runtime, cwd)?;
         }
-        self.validate_model_selection(&runtime, &selection)?;
+        self.validate_model_selection(&runtime, selection.as_ref())?;
         let snapshot = PiProjection::new(ConversationSummary {
             can_rename: false,
             can_delete: false,
@@ -197,7 +201,7 @@ impl CoreRuntime {
         })
         .snapshot
         .expect("new projection");
-        self.prepare_with_selection(snapshot, &selection, true)?;
+        self.prepare_with_selection(snapshot, selection.as_ref(), true)?;
         self.session.logical_projection = None;
         let native = self
             .native_snapshot()
@@ -242,7 +246,7 @@ impl CoreRuntime {
         self.session.model_selection = snapshot
             .model_record_key
             .clone()
-            .map(|model_record_key| crate::ModelSelection::Managed { model_record_key });
+            .map(|model_record_key| Some(crate::ModelSelection::Managed { model_record_key }));
         self.session.active_state = ActiveState::History(Box::new(snapshot));
         // Follow the native file from this read on.
         self.session.source = None;
@@ -338,6 +342,11 @@ impl CoreRuntime {
             &snapshot.message_identity_confirmations,
         ));
         transcript.apply(TranscriptEvent::ReplaceMessages(&snapshot.messages));
+        super::composer_choices::recall_turn_requests(
+            &self.turn_requests,
+            &mut transcript,
+            &snapshot,
+        );
         transcript.apply(TranscriptEvent::ExecutionState(snapshot.run_state.clone()));
         snapshot.transcript_turns = transcript.turns();
         self.name_turn_models(&mut snapshot.transcript_turns);
@@ -627,7 +636,7 @@ impl CoreRuntime {
                 .model_selection
                 .clone()
                 .ok_or_else(|| RuntimeError::invalid("请选择此会话的模型"))?;
-            self.prepare_with_selection(snapshot, &selection, false)?;
+            self.prepare_with_selection(snapshot, selection.as_ref(), false)?;
         }
         if let Some((gateway_id, session)) = self.backend_session_identity() {
             self.execution_backends
@@ -667,7 +676,7 @@ impl CoreRuntime {
         }
         if matches!(
             self.session.model_selection,
-            Some(crate::ModelSelection::Managed { .. })
+            Some(Some(crate::ModelSelection::Managed { .. }))
         ) {
             self.bind_gateway_model()?;
         }
@@ -912,9 +921,8 @@ impl CoreRuntime {
         let runtime_id = request["payload"]["runtimeInstanceID"]
             .as_str()
             .ok_or_else(|| RuntimeError::invalid("runtime instance id"))?;
-        let model = self
-            .session
-            .model_selection
+        let selection = self.session.model_selection.clone().flatten();
+        let model = selection
             .as_ref()
             .and_then(|selection| self.turn_model_name(runtime_id, selection));
         let settings = crate::conversation::TurnSettings {
@@ -922,6 +930,7 @@ impl CoreRuntime {
             model,
             effort: input.effort.clone(),
             permission_mode: input.permission_mode.clone(),
+            model_selection: selection,
         };
         let _ = self.current_snapshot();
         self.session.transcript_projection.request(settings);

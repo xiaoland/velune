@@ -409,7 +409,7 @@ impl CoreRuntime {
     pub(super) fn replace_unsubmitted_target(
         &mut self,
         runtime_id: &str,
-        selection: &crate::ModelSelection,
+        selection: Option<&crate::ModelSelection>,
     ) -> Result<(), RuntimeError> {
         self.validate_acp_handoff_target(self.runtime_instance(runtime_id)?)?;
         let draft = self
@@ -498,7 +498,7 @@ impl CoreRuntime {
     pub(super) fn continue_in_runtime(
         &mut self,
         runtime_id: &str,
-        model: &crate::ModelSelection,
+        model: Option<&crate::ModelSelection>,
         text: &str,
         effort: Option<&str>,
         permission_mode: Option<&str>,

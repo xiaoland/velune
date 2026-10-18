@@ -244,6 +244,90 @@ impl Repository {
         )
     }
 
+    /// Next-turn and new-conversation choices live beside the drafts, for the
+    /// same reasons; a file of another schema starts afresh.
+    #[cfg(feature = "local-runtime")]
+    pub(crate) fn load_composer_choices(
+        &self,
+    ) -> Result<crate::config::ComposerChoices, RuntimeError> {
+        let value = match self.read_versioned("composer-choices.json")? {
+            Some(value) => value,
+            None => return Ok(Default::default()),
+        };
+        Ok(serde_json::from_value(value["choices"].clone())?)
+    }
+
+    #[cfg(feature = "local-runtime")]
+    pub(crate) fn store_composer_choices(
+        &self,
+        choices: &crate::config::ComposerChoices,
+    ) -> Result<(), RuntimeError> {
+        let value = serde_json::json!({"schemaVersion":1,"choices":choices});
+        commit(
+            &self.home.join("composer-choices.json"),
+            &serde_json::to_vec_pretty(&value)?,
+        )
+    }
+
+    /// What Velune sent each turn with, by conversation; see `TurnKey`.
+    #[cfg(feature = "local-runtime")]
+    pub(crate) fn load_turn_requests(&self) -> Result<crate::local::TurnRequests, RuntimeError> {
+        let value = match self.read_versioned("turn-requests.json")? {
+            Some(value) => value,
+            None => return Ok(Default::default()),
+        };
+        let conversations: Vec<StoredTurnRequests> =
+            serde_json::from_value(value["conversations"].clone())?;
+        Ok(conversations
+            .into_iter()
+            .map(|stored| {
+                let turns = stored
+                    .turns
+                    .into_iter()
+                    .map(|turn| (turn.key, turn.settings))
+                    .collect();
+                (stored.conversation_id, turns)
+            })
+            .collect())
+    }
+
+    #[cfg(feature = "local-runtime")]
+    pub(crate) fn store_turn_requests(
+        &self,
+        requests: &crate::local::TurnRequests,
+    ) -> Result<(), RuntimeError> {
+        let conversations: Vec<_> = requests
+            .iter()
+            .map(|(id, turns)| StoredTurnRequests {
+                conversation_id: id.clone(),
+                turns: turns
+                    .iter()
+                    .map(|(key, settings)| StoredTurnRequest {
+                        key: key.clone(),
+                        settings: settings.clone(),
+                    })
+                    .collect(),
+            })
+            .collect();
+        let value = serde_json::json!({"schemaVersion":1,"conversations":conversations});
+        commit(
+            &self.home.join("turn-requests.json"),
+            &serde_json::to_vec_pretty(&value)?,
+        )
+    }
+
+    /// A schema 1 file's value; none when it is missing or of another schema.
+    #[cfg(feature = "local-runtime")]
+    fn read_versioned(&self, name: &str) -> Result<Option<serde_json::Value>, RuntimeError> {
+        let bytes = match fs::read(self.home.join(name)) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error.into()),
+        };
+        let value: serde_json::Value = serde_json::from_slice(&bytes)?;
+        Ok((value["schemaVersion"].as_u64() == Some(1)).then_some(value))
+    }
+
     /// Reusable resource templates (with their secrets) and the managed bindings
     /// to runtimes are application files of their own, not part of the configuration.
     #[cfg(feature = "local-runtime")]
@@ -511,4 +595,22 @@ fn resource_bytes_to_storage(templates: &mut serde_json::Value) -> Result<(), Ru
         }
     }
     Ok(())
+}
+
+#[cfg(feature = "local-runtime")]
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct StoredTurnRequests {
+    #[serde(rename = "conversationID")]
+    conversation_id: String,
+    turns: Vec<StoredTurnRequest>,
+}
+
+#[cfg(feature = "local-runtime")]
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct StoredTurnRequest {
+    #[serde(flatten)]
+    key: crate::local::TurnKey,
+    settings: crate::conversation::TurnSettings,
 }

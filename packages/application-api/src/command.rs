@@ -75,6 +75,9 @@ pub enum CommandKind {
     SetConversationBrowserPreferences,
     ComposerDrafts,
     SetComposerDraft,
+    ComposerChoices,
+    SetNextTurnIntent,
+    SetRuntimeComposerChoices,
     SetConversationBrowserLimits,
     OrganizeConversations,
     SetProject,
@@ -249,6 +252,14 @@ pub enum Command {
         conversation_id: String,
         text: String,
     },
+    ComposerChoices,
+    /// An intent without choices or runtime removes the conversation's.
+    SetNextTurnIntent {
+        intent: crate::config::NextTurnIntent,
+    },
+    SetRuntimeComposerChoices {
+        choices: crate::config::RuntimeComposerChoices,
+    },
     SetConversationBrowserLimits {
         limits: ConversationBrowserLimits,
     },
@@ -331,7 +342,7 @@ pub enum Command {
     CreateConversationWithSelection {
         runtime_id: String,
         cwd: Option<String>,
-        selection: ModelSelection,
+        selection: Option<ModelSelection>,
     },
     RuntimeModels {
         runtime_id: String,
@@ -379,7 +390,7 @@ pub enum Command {
         source_runtime_id: String,
         conversation_id: String,
         target_runtime_id: String,
-        selection: ModelSelection,
+        selection: Option<ModelSelection>,
         turn: ComposedTurn,
     },
     ReasoningEfforts {
@@ -401,7 +412,7 @@ pub enum Command {
         conversation_id: String,
         message_id: String,
         placement: crate::conversation::EditPlacement,
-        selection: ModelSelection,
+        selection: Option<ModelSelection>,
         turn: ComposedTurn,
     },
     Cancel {
@@ -543,6 +554,9 @@ pub enum Response {
     SetConversationBrowserPreferences(ConfigurationSnapshot),
     ComposerDrafts(Vec<crate::config::ComposerDraft>),
     SetComposerDraft,
+    ComposerChoices(crate::config::ComposerChoices),
+    SetNextTurnIntent,
+    SetRuntimeComposerChoices,
     SetConversationBrowserLimits(ConversationBrowserLimits),
     OrganizeConversations(ConfigurationSnapshot),
     SetProject(ConfigurationSnapshot),
@@ -627,6 +641,7 @@ impl Command {
             | Self::DiscoverRuntimes { .. }
             | Self::List
             | Self::ComposerDrafts
+            | Self::ComposerChoices
             | Self::SearchConversations { .. }
             | Self::FindConversation { .. }
             | Self::AcpLaunch { .. }
@@ -664,6 +679,8 @@ impl Command {
             | Self::SetStatusLine { .. }
             | Self::SetConversationBrowserPreferences { .. }
             | Self::SetComposerDraft { .. }
+            | Self::SetNextTurnIntent { .. }
+            | Self::SetRuntimeComposerChoices { .. }
             | Self::SetConversationBrowserLimits { .. }
             | Self::OrganizeConversations { .. }
             | Self::SetProject { .. }
@@ -739,6 +756,9 @@ impl Command {
             }
             Self::ComposerDrafts => CommandKind::ComposerDrafts,
             Self::SetComposerDraft { .. } => CommandKind::SetComposerDraft,
+            Self::ComposerChoices => CommandKind::ComposerChoices,
+            Self::SetNextTurnIntent { .. } => CommandKind::SetNextTurnIntent,
+            Self::SetRuntimeComposerChoices { .. } => CommandKind::SetRuntimeComposerChoices,
             Self::SetConversationBrowserLimits { .. } => CommandKind::SetConversationBrowserLimits,
             Self::OrganizeConversations { .. } => CommandKind::OrganizeConversations,
             Self::SetProject { .. } => CommandKind::SetProject,

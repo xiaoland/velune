@@ -89,6 +89,9 @@ def history(path, native_id, runtime_id, sidechain=False):
         return "%s:%s/agent-%s" % (runtime_id, session, agent_id)
 
     records = []
+    # The permission mode each prompt was written under: Claude Code records
+    # a change of mode, and each launch's mode, before the prompts it covers.
+    modes, mode = {}, None
     with open(path, encoding="utf-8") as file:
         for line in file:
             if line.strip():
@@ -101,6 +104,10 @@ def history(path, native_id, runtime_id, sidechain=False):
                     raise
                 if isinstance(record, dict):
                     records.append(record)
+                    if record.get("type") == "permission-mode" and isinstance(record.get("permissionMode"), str):
+                        mode = record["permissionMode"]
+                    elif record.get("type") == "user" and isinstance(record.get("uuid"), str):
+                        modes[record["uuid"]] = mode
     entries = {entry["uuid"]: entry for entry in records if isinstance(entry.get("uuid"), str) and bool(entry.get("isSidechain")) == sidechain}
     leaf = next((entry["uuid"] for entry in reversed(records) if entry.get("uuid") in entries and entry.get("type") in ("user", "assistant")), None)
     chain, seen = [], set()
@@ -172,8 +179,10 @@ def history(path, native_id, runtime_id, sidechain=False):
                 parent = entries.get(parent.get("parentUuid"))
             if parent is not None:
                 message["branch_point"] = parent["uuid"]
-            # Claude Code records the permission mode on the prompt that starts a turn.
+            # Claude Code records the permission mode on the prompt that
+            # starts a turn, or else as the session's mode before it.
             mode = entry.get("permissionMode")
+            mode = mode if isinstance(mode, str) else modes.get(entry["uuid"])
             turn = message["turn_settings"] = {"permissionMode": mode} if isinstance(mode, str) else {}
             close_turn(prompt, usages)
             prompt, usages = message, {}

@@ -50,7 +50,7 @@ struct MessageEditorSheet: View {
                 Text("原消息中的 \(embeddedImages) 张内嵌图片没有文件，编辑后的消息不包含它们。").font(.callout).foregroundStyle(.secondary)
             }
             if !store.canSend {
-                Text(store.nextTurnModel == nil ? "选择下一轮模型后才能发送。" : "当前不能发送。").font(.callout).foregroundStyle(.secondary)
+                Text("当前不能发送。").font(.callout).foregroundStyle(.secondary)
             }
             HStack {
                 Spacer()

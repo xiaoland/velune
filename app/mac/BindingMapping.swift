@@ -7,7 +7,6 @@ import VeluneBindings
 enum BindingMapping {
     static func selection(_ value: BindingModelSelection) -> ModelSelection {
         switch value {
-        case .runtimeDefault: .runtimeDefault
         case .managed(let key): .managed(recordKey: key)
         case .native(let provider, let model): .native(providerID: provider, modelID: model)
         }
@@ -39,9 +38,26 @@ enum BindingMapping {
     }
     static func bindingSelection(_ value: ModelSelection) -> BindingModelSelection {
         switch value {
-        case .runtimeDefault: .runtimeDefault
         case .managed(let key): .managed(modelRecordKey: key)
         case .native(let provider, let model): .native(providerId: provider, modelId: model)
+        }
+    }
+    static func choice(_ value: BindingTurnChoice) -> TurnChoice {
+        TurnChoice(model: value.model.map(selection), effort: value.effort, permissionMode: value.permissionMode)
+    }
+    static func bindingChoice(_ value: TurnChoice) -> BindingTurnChoice {
+        BindingTurnChoice(model: value.model.map(bindingSelection), effort: value.effort, permissionMode: value.permissionMode)
+    }
+    static func newConversation(_ value: BindingNewConversationChoice) -> NewConversationChoice {
+        switch value {
+        case .lastChosen: .lastChosen
+        case .chosen(let value): .chosen(choice(value))
+        }
+    }
+    static func bindingNewConversation(_ value: NewConversationChoice) -> BindingNewConversationChoice {
+        switch value {
+        case .lastChosen: .lastChosen
+        case .chosen(let value): .chosen(choice: bindingChoice(value))
         }
     }
     static func conversation(_ value: BindingConversationSummary) -> Conversation {
@@ -69,7 +85,7 @@ enum BindingMapping {
     static func snapshotHeader(_ value: BindingConversationSnapshot) -> ConversationSnapshot {
         ConversationSnapshot(cursor: cursor(value.cursor), revision: value.revision, conversation: conversation(value.conversation), contextRuntimeID: value.contextRuntimeId,
                              modelRecordKey: value.modelRecordKey, runState: runState(value.runState),
-                             messages: [], transcriptTurns: value.transcriptTurns.map { TranscriptTurn(id: $0.id, userMessageID: $0.userMessageId, workMessageIDs: $0.workMessageIds, lastMessageID: $0.lastMessageId, replyStartBlock: Int($0.replyStartBlock), durationMs: $0.durationMs, isRunning: $0.isRunning, settings: $0.settings.map { TurnSettings(runtimeID: $0.runtimeId, model: $0.model, effort: $0.effort, permissionMode: $0.permissionMode) }, usage: $0.usage.map { TurnUsage(inputTokens: $0.inputTokens, cacheReadTokens: $0.cacheReadTokens, cacheWriteTokens: $0.cacheWriteTokens, outputTokens: $0.outputTokens, reasoningTokens: $0.reasoningTokens, contextTokens: $0.contextTokens, contextWindow: $0.contextWindow, sessionCostMicroUSD: $0.sessionCostMicroUsd, rateLimits: $0.rateLimits.map { RateLimit(windowMinutes: $0.windowMinutes, usedPercent: $0.usedPercent, resetsAtUnixMs: $0.resetsAtUnixMs) }) }) }, transcriptItems: value.transcriptItems.map { switch $0 { case .message(let id, let messageID): return .message(id: id, messageID: messageID); case .work(let turnID): return .work(turnID: turnID) } }, transcriptOutline: value.transcriptOutline.map { TranscriptOutlineEntry(id: $0.id, messageID: $0.messageId) }, transcriptMessageIdentities: value.transcriptMessageIdentities.map { TranscriptMessageIdentity(id: $0.id, messageID: $0.messageId) }, messageIdentityConfirmations: value.messageIdentityConfirmations.map { MessageIdentityConfirmation(previousID: $0.previousId, currentID: $0.currentId) }, pendingInteractions: value.pendingInteractions.map(interaction), actions: actions(value.actions), followUp: followUp(value.followUp),
+                             messages: [], transcriptTurns: value.transcriptTurns.map { TranscriptTurn(id: $0.id, userMessageID: $0.userMessageId, workMessageIDs: $0.workMessageIds, lastMessageID: $0.lastMessageId, replyStartBlock: Int($0.replyStartBlock), durationMs: $0.durationMs, isRunning: $0.isRunning, settings: $0.settings.map { TurnSettings(runtimeID: $0.runtimeId, model: $0.model, effort: $0.effort, permissionMode: $0.permissionMode, modelSelection: $0.modelSelection.map(selection)) }, usage: $0.usage.map { TurnUsage(inputTokens: $0.inputTokens, cacheReadTokens: $0.cacheReadTokens, cacheWriteTokens: $0.cacheWriteTokens, outputTokens: $0.outputTokens, reasoningTokens: $0.reasoningTokens, contextTokens: $0.contextTokens, contextWindow: $0.contextWindow, sessionCostMicroUSD: $0.sessionCostMicroUsd, rateLimits: $0.rateLimits.map { RateLimit(windowMinutes: $0.windowMinutes, usedPercent: $0.usedPercent, resetsAtUnixMs: $0.resetsAtUnixMs) }) }) }, transcriptItems: value.transcriptItems.map { switch $0 { case .message(let id, let messageID): return .message(id: id, messageID: messageID); case .work(let turnID): return .work(turnID: turnID) } }, transcriptOutline: value.transcriptOutline.map { TranscriptOutlineEntry(id: $0.id, messageID: $0.messageId) }, transcriptMessageIdentities: value.transcriptMessageIdentities.map { TranscriptMessageIdentity(id: $0.id, messageID: $0.messageId) }, messageIdentityConfirmations: value.messageIdentityConfirmations.map { MessageIdentityConfirmation(previousID: $0.previousId, currentID: $0.currentId) }, pendingInteractions: value.pendingInteractions.map(interaction), actions: actions(value.actions), followUp: followUp(value.followUp),
                              subAgents: value.subAgents.map { SubAgent(id: $0.conversationId, title: $0.title, failed: $0.failed) },
                              collaborators: value.collaborators.map { Collaborator(id: $0.conversationId, title: $0.title, runtimeName: $0.runtimeName, contacted: $0.contacted, contactedBy: $0.contactedBy) })
     }
@@ -148,10 +164,10 @@ enum BindingMapping {
         switch value { case .chatCompletionsV1: return .chatCompletionsV1; case .responsesV1: return .responsesV1; case .messagesV1: return .messagesV1 }
     }
     static func model(_ value: BindingProviderModel) -> ProviderModel {
-        ProviderModel(recordKey: value.recordKey, providerModelID: value.providerModelId, nickname: value.nickname, icon: value.icon, contextWindow: value.contextWindow, maxOutputTokens: value.maxOutputTokens, reasoningLevels: value.reasoningLevels, adapterMetadataJSON: value.adapterMetadataJson)
+        ProviderModel(recordKey: value.recordKey, providerModelID: value.providerModelId, nickname: value.nickname, icon: value.icon, contextWindow: value.contextWindow, maxOutputTokens: value.maxOutputTokens, reasoningLevels: value.reasoningLevels)
     }
     static func bindingModel(_ value: ProviderModel) -> BindingProviderModel {
-        BindingProviderModel(recordKey: value.recordKey, providerModelId: value.providerModelID, nickname: value.nickname, icon: value.icon, contextWindow: value.contextWindow, maxOutputTokens: value.maxOutputTokens, reasoningLevels: value.reasoningLevels, adapterMetadataJson: value.adapterMetadataJSON)
+        BindingProviderModel(recordKey: value.recordKey, providerModelId: value.providerModelID, nickname: value.nickname, icon: value.icon, contextWindow: value.contextWindow, maxOutputTokens: value.maxOutputTokens, reasoningLevels: value.reasoningLevels)
     }
     static func template(_ value: BindingModelTemplate) -> ModelTemplate {
         ModelTemplate(id: value.id, name: value.name, suggestedProviderModelID: value.suggestedProviderModelId, nickname: value.nickname, icon: value.icon, contextWindow: value.contextWindow, maxOutputTokens: value.maxOutputTokens, reasoningLevels: value.reasoningLevels)

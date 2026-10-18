@@ -4,7 +4,8 @@ use crate::conversation::{ConversationSnapshot, TurnSettings};
 use crate::{ModelSelection, RuntimeModel};
 use velune_agent_runtime::native::CLAUDE_EFFORT_LEVELS;
 
-pub(super) fn requested_selection(request: &Value) -> Result<ModelSelection, RuntimeError> {
+/// The request's model; none is the runtime's own default.
+pub(super) fn requested_selection(request: &Value) -> Result<Option<ModelSelection>, RuntimeError> {
     Ok(serde_json::from_value(
         request["payload"]["modelSelection"].clone(),
     )?)
@@ -60,13 +61,16 @@ impl CoreRuntime {
             .clone()
             .ok_or_else(|| RuntimeError::invalid("请选择此会话的模型"))?;
         if let Some(effort) = request["payload"]["effort"].as_str() {
-            self.validate_effort(&runtime, &selection, effort)?;
+            self.validate_effort(&runtime, selection.as_ref(), effort)?;
             return Ok(Some(effort.into()));
         }
         let current = self
             .current_turn_settings(&runtime)
             .and_then(|settings| settings.effort);
-        Ok(current.filter(|effort| self.validate_effort(&runtime, &selection, effort).is_ok()))
+        Ok(current.filter(|effort| {
+            self.validate_effort(&runtime, selection.as_ref(), effort)
+                .is_ok()
+        }))
     }
 
     /// Settings of the conversation's last turn when it ran on `runtime`.
@@ -113,24 +117,25 @@ impl CoreRuntime {
             .ok_or_else(|| RuntimeError::invalid("此运行时不提供该权限模式"))
     }
 
+    /// A managed model takes the levels it declares; the runtime's own
+    /// models, and its default, any level the harness's channel accepts.
     pub(super) fn validate_effort(
         &self,
         runtime: &RuntimeInstance,
-        selection: &ModelSelection,
+        selection: Option<&ModelSelection>,
         effort: &str,
     ) -> Result<(), RuntimeError> {
         let accepted = match selection {
-            ModelSelection::Managed { model_record_key } => self
+            Some(ModelSelection::Managed { model_record_key }) => self
                 .reasoning_efforts(runtime, model_record_key)?
                 .iter()
                 .any(|level| level == effort),
-            ModelSelection::Native { .. } => match runtime.type_id.as_str() {
+            Some(ModelSelection::Native { .. }) | None => match runtime.type_id.as_str() {
                 "codex-0.159" => !effort.trim().is_empty() && !effort.chars().any(char::is_control),
                 "claude-code-2.1" => CLAUDE_EFFORT_LEVELS.contains(&effort),
                 "pi-1.0" => pi::PI_THINKING_LEVELS.contains(&effort),
                 _ => false,
             },
-            ModelSelection::RuntimeDefault => false,
         };
         if !accepted {
             return Err(RuntimeError::invalid("所选模型或运行时不支持此推理强度"));
@@ -138,22 +143,23 @@ impl CoreRuntime {
         Ok(())
     }
 
+    /// No selection leaves the model to the runtime, which every runtime type
+    /// has a default for.
     pub(super) fn validate_model_selection(
         &self,
         runtime: &RuntimeInstance,
-        selection: &ModelSelection,
+        selection: Option<&ModelSelection>,
     ) -> Result<(), RuntimeError> {
+        let Some(selection) = selection else {
+            return Ok(());
+        };
         if runtime.type_id == "acp-v1" {
             return match selection {
-                ModelSelection::RuntimeDefault => Ok(()),
                 ModelSelection::Native { provider_id: None, model_id } if !model_id.is_empty() && !model_id.chars().any(char::is_control) => Ok(()),
                 _ => Err(RuntimeError::Unsupported("通用 ACP 只接受 Agent 默认模型或其会话中的原生模型选项，不支持 managed provider 注入".into())),
             };
         }
         match selection {
-            ModelSelection::RuntimeDefault => Err(RuntimeError::Unsupported(
-                "默认模型选择当前只适用于通用 ACP".into(),
-            )),
             ModelSelection::Managed { model_record_key } => {
                 self.validate_session_model(runtime, model_record_key)
             }
@@ -187,7 +193,7 @@ impl CoreRuntime {
     pub(super) fn prepare_with_selection(
         &mut self,
         snapshot: ConversationSnapshot,
-        selection: &ModelSelection,
+        selection: Option<&ModelSelection>,
         is_new: bool,
     ) -> Result<(), RuntimeError> {
         self.ensure_work_ended()?;
@@ -197,50 +203,46 @@ impl CoreRuntime {
             == "acp-v1"
         {
             self.prepare_acp_snapshot(&snapshot, selection, is_new)?;
-            self.session.model_selection = Some(selection.clone());
+            self.session.model_selection = Some(selection.cloned());
             self.session.model_record_key = None;
             return Ok(());
         }
-        match selection {
-            ModelSelection::RuntimeDefault => {
-                return Err(RuntimeError::Unsupported(
-                    "默认模型选择当前只适用于通用 ACP".into(),
-                ));
-            }
-            ModelSelection::Managed { model_record_key } => {
-                self.prepare_snapshot(snapshot, model_record_key, is_new)?
-            }
-            ModelSelection::Native {
-                provider_id,
-                model_id,
-            } => {
-                let previous = self.native_snapshot();
-                let previous_selection = self.session.model_selection.clone();
-                let result =
-                    self.prepare_native_snapshot(&snapshot, provider_id.clone(), model_id, is_new);
-                if let Err(error) = result {
-                    let _ = self.shutdown_active();
-                    if let Some(snapshot) = previous {
-                        self.session.active_state = ActiveState::History(Box::new(snapshot));
-                    }
-                    self.session.model_selection = previous_selection;
-                    return Err(error);
+        if let Some(ModelSelection::Managed { model_record_key }) = selection {
+            self.prepare_snapshot(snapshot, model_record_key, is_new)?;
+        } else {
+            let native = match selection {
+                Some(ModelSelection::Native {
+                    provider_id,
+                    model_id,
+                }) => Some((provider_id.clone(), model_id.as_str())),
+                _ => None,
+            };
+            let previous = self.native_snapshot();
+            let previous_selection = self.session.model_selection.clone();
+            let result = self.prepare_native_snapshot(&snapshot, native, is_new);
+            if let Err(error) = result {
+                let _ = self.shutdown_active();
+                if let Some(snapshot) = previous {
+                    self.session.active_state = ActiveState::History(Box::new(snapshot));
                 }
+                self.session.model_selection = previous_selection;
+                return Err(error);
             }
         }
-        self.session.model_selection = Some(selection.clone());
+        self.session.model_selection = Some(selection.cloned());
         self.session.model_record_key = match selection {
-            ModelSelection::Managed { model_record_key } => Some(model_record_key.clone()),
-            ModelSelection::Native { .. } | ModelSelection::RuntimeDefault => None,
+            Some(ModelSelection::Managed { model_record_key }) => Some(model_record_key.clone()),
+            _ => None,
         };
         Ok(())
     }
 
+    /// Prepares the runtime on its own provider: with `native`'s provider
+    /// and model, or else with its own default.
     fn prepare_native_snapshot(
         &mut self,
         snapshot: &ConversationSnapshot,
-        provider_id: Option<String>,
-        model_id: &str,
+        native: Option<(Option<String>, &str)>,
         is_new: bool,
     ) -> Result<(), RuntimeError> {
         let runtime = self
@@ -268,8 +270,8 @@ impl CoreRuntime {
             let servers = self.collaboration_servers();
             let mut config = self.pi_history_config(&runtime)?;
             config.mcp_servers = servers;
-            config.provider = provider_id;
-            config.model = Some(model_id.into());
+            config.provider = native.as_ref().and_then(|(provider, _)| provider.clone());
+            config.model = native.as_ref().map(|(_, model)| (*model).to_owned());
             config.rpc_entry = Some(context.resources.join("pi_rpc.mjs"));
             config.extension = Some(context.resources.join("pi_virtual_model.mjs"));
             self.session.pi.config = Some(config);
@@ -300,8 +302,10 @@ impl CoreRuntime {
                     .expect("started Pi")
                     .set_conversation(snapshot.conversation.clone());
             }
-            self.session.pi.client.as_mut().expect("started Pi").request(json!({"type":"set_model","provider":self.session.pi.config.as_ref().and_then(|config| config.provider.as_ref()),"modelId":model_id}))
-                .map_err(|error| RuntimeError::context("原生模型选择", error))?;
+            if let Some((_, model_id)) = native {
+                self.session.pi.client.as_mut().expect("started Pi").request(json!({"type":"set_model","provider":self.session.pi.config.as_ref().and_then(|config| config.provider.as_ref()),"modelId":model_id}))
+                    .map_err(|error| RuntimeError::context("原生模型选择", error))?;
+            }
             self.sync_projection()?;
         } else {
             let servers = self.collaboration_servers();
@@ -309,9 +313,11 @@ impl CoreRuntime {
             config.mcp_servers = servers;
             let mut session = NativeSession::connect(config)
                 .map_err(|error| RuntimeError::context("原生运行时连接", error))?;
-            session
-                .select_native_model(provider_id, model_id.into())
-                .map_err(|error| RuntimeError::context("原生模型选择", error))?;
+            if let Some((provider_id, model_id)) = native {
+                session
+                    .select_native_model(provider_id, model_id.into())
+                    .map_err(|error| RuntimeError::context("原生模型选择", error))?;
+            }
             if is_new {
                 session
                     .create(cwd, &runtime.id)
@@ -368,13 +374,9 @@ impl CoreRuntime {
             return Err(RuntimeError::invalid("此运行时已停用"));
         }
         if runtime.type_id == "acp-v1" {
-            // The Agent's own default is always offered; its native catalog
-            // belongs to a live ACP session and is listed only while one runs.
-            let mut models = vec![RuntimeModel {
-                selection: ModelSelection::RuntimeDefault,
-                name: "Agent 默认模型".into(),
-                reasoning_efforts: Vec::new(),
-            }];
+            // The native catalog belongs to a live ACP session and is listed
+            // only while one runs; the Agent's own default is no selection.
+            let mut models = Vec::new();
             if let ActiveState::Acp(session) = &self.session.active_state
                 && self.session.execution_runtime_id.as_deref() == Some(&runtime.id)
                 && session.snapshot().is_some()
@@ -497,7 +499,6 @@ impl CoreRuntime {
                 })
             }
             ModelSelection::Native { model_id, .. } => Some(model_id.clone()),
-            ModelSelection::RuntimeDefault => None,
         }
     }
 

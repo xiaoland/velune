@@ -8,10 +8,14 @@ asked for (runtime, Velune's name for the model, reasoning level, permission
 mode), bound to that turn and not to the one before; a turn without a level
 or mode keeps the conversation's current one, and Velune sends it again.
 Each turn shows the tokens the harness reports for it, reasoning included
-where the harness counts it apart. After a restart, reading the history
-again shows what each harness recorded: Codex's model, level, permission
-preset and usage from its rollout, Claude Code's model, level, permission
-mode and usage, Pi's model and usage. Each turn also shows the context its last
+where the harness counts it apart. Velune's requests are kept: after a
+restart each turn still shows the model chosen for it. The composer's
+choices are kept too: a conversation's next-turn choices on each runtime,
+each runtime's last choice and what its new conversations start with, and
+deleting a conversation drops its choices and requests. Without the kept
+requests, reading the history again shows what each harness recorded:
+Codex's model, level, permission preset and usage from its rollout, Claude
+Code's model, level, permission mode and usage, Pi's model and usage. Each turn also shows the context its last
 request left and the model's window (the managed model's configured window,
 else the harness's report), which the composer's status line reads; the
 branch of the working directory and the status line's chosen items, kept in
@@ -30,6 +34,7 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+NAMES = {'codex': 'responses · responses', 'claude': 'messages · messages', 'pi': 'responses · responses'}
 REPLY = 'SYNTHETIC_REPLY'
 # What the upstream reports for every request, in each protocol's own terms.
 RESPONSES_USAGE = {'input_tokens': 100, 'input_tokens_details': {'cached_tokens': 40}, 'output_tokens': 30,
@@ -118,6 +123,7 @@ def main():
         options = b.BindingOptions(home_directory=str(root / 'velune'), resources_directory=str(args.bundle / 'Contents/Resources'))
         app = b.VeluneApplication.open(options)
         keys, sent = {}, {}
+        nothing = b.BindingTurnChoice(model=None, effort=None, permission_mode=None)
         ordered = [b.BindingStatusLineItem.CONTEXT_USAGE, b.BindingStatusLineItem.WORKING_DIRECTORY, b.BindingStatusLineItem.SESSION_COST]
         try:
             managed = b.BindingRuntimeExecution(transport=b.BindingRuntimeTransport.LOCAL(),
@@ -146,6 +152,9 @@ def main():
             messages = provider('messages', b.BindingGatewayProtocol.MESSAGES_V1, ['low', 'medium', 'high', 'max'])
             keys = {'codex': responses, 'claude': messages, 'pi': responses}
 
+            def managed_model(runtime):
+                return b.BindingModelSelection.MANAGED(model_record_key=keys[runtime])
+
             requests = {}
 
             def turn(runtime, conversation, text, effort, mode):
@@ -173,6 +182,12 @@ def main():
                 assert len(found) == 1, (text, found)
                 value = found[0]
                 return value and (value.runtime_id, value.model, value.effort, value.permission_mode)
+
+            def chosen(snapshot, text):
+                """The model Velune asked for on the turn whose user message says `text`."""
+                users = {message.id for message in snapshot.messages if message.role == b.BindingMessageRole.USER
+                         and any(isinstance(block, b.BindingMessageBlock.TEXT) and block.text == text for block in message.blocks)}
+                return next(t.settings for t in snapshot.transcript_turns if t.user_message_id in users).model_selection
 
             def usage(snapshot, text):
                 """The usage of the turn whose user message says `text`."""
@@ -213,13 +228,23 @@ def main():
                 body = [c for c in requests[text] if text in json.dumps(c)][-1]
                 return (body.get('reasoning') or {}).get('effort') if runtime != 'claude' else (body.get('output_config') or {}).get('effort') or (body.get('thinking') or {}).get('type')
 
+            # Choices are kept in order of runtime ID; one with nothing chosen is kept too.
+            intent = b.BindingNextTurnIntent(conversation_id='', runtime_id='codex', choices=[
+                b.BindingRuntimeTurnChoice(runtime_id='claude', choice=b.BindingTurnChoice(
+                    model=b.BindingModelSelection.NATIVE(provider_id=None, model_id='claude-synthetic-20990101'), effort='max', permission_mode='plan')),
+                b.BindingRuntimeTurnChoice(runtime_id='codex', choice=nothing)])
+            runtime_choices = [
+                b.BindingRuntimeComposerChoices(runtime_id='codex', last_chosen=b.BindingTurnChoice(model=None, effort='low', permission_mode='read-only'),
+                                                new_conversation=b.BindingNewConversationChoice.LAST_CHOSEN()),
+                b.BindingRuntimeComposerChoices(runtime_id='pi', last_chosen=b.BindingTurnChoice(model=managed_model('pi'), effort='high', permission_mode=None),
+                                                new_conversation=b.BindingNewConversationChoice.CHOSEN(choice=nothing))]
             for runtime, first, second in (('codex', ('high', 'read-only'), (None, None)),
                                            ('claude', ('high', 'plan'), (None, None)),
                                            ('pi', ('high', None), (None, None))):
                 conversation = app.create_conversation(runtime, str(root / 'project'), keys[runtime]).snapshot.conversation.id
                 conversation, _ = turn(runtime, conversation, runtime.upper() + '_FIRST', *first)
                 conversation, snapshot = turn(runtime, conversation, runtime.upper() + '_SECOND', *second)
-                name = {'codex': 'responses · responses', 'claude': 'messages · messages', 'pi': 'responses · responses'}[runtime]
+                name = NAMES[runtime]
                 got = settings(snapshot, runtime.upper() + '_FIRST')
                 assert got[0] == runtime and got[1] == name and got[2] == first[0], got
                 assert first[1] is None or got[3] == first[1], got
@@ -227,6 +252,7 @@ def main():
                 # Without a choice the turn keeps the conversation's level and mode, and says so.
                 assert got[0] == runtime and got[1] == name and got[2] == first[0], ('a turn without a level keeps the current one', got)
                 assert got[3] == first[1], ('a turn without a mode keeps the current one', got)
+                assert chosen(snapshot, runtime.upper() + '_SECOND') == managed_model(runtime), chosen(snapshot, runtime.upper() + '_SECOND')
                 if runtime != 'claude':
                     assert effort_sent(runtime, runtime.upper() + '_SECOND') == first[0], (runtime, effort_sent(runtime, runtime.upper() + '_SECOND'))
                 for text in (runtime.upper() + '_FIRST', runtime.upper() + '_SECOND'):
@@ -235,6 +261,7 @@ def main():
                     # The managed model's window, not the harness's guess at a model it does not know.
                     assert (tokens, window) == (expected_context(runtime), 32768), (runtime, text, tokens, window)
                 sent[runtime] = conversation
+            intent = b.BindingNextTurnIntent(conversation_id=sent['claude'], runtime_id=intent.runtime_id, choices=intent.choices)
             print('PASS live: each turn shows the runtime, model name, level and mode Velune sent for it, and its usage; '
                   'a turn without a level or mode keeps the current one', flush=True)
             print('PASS live context: each turn shows its last request\'s context against the managed model\'s window', flush=True)
@@ -244,10 +271,53 @@ def main():
             assert app.list().status_line == [b.BindingStatusLineItem.CONTEXT_USAGE], app.list().status_line
             assert app.set_status_line(items) == ordered, app.list().status_line
             print('PASS status line: the working branch is read; the items default to context usage and are kept once each, in display order', flush=True)
+
+            dropped = app.create_conversation('codex', str(root / 'project'), keys['codex']).snapshot.conversation.id
+            dropped, _ = turn('codex', dropped, 'CODEX_DROPPED', None, None)
+            app.set_next_turn_intent(intent)
+            app.set_next_turn_intent(b.BindingNextTurnIntent(conversation_id=dropped, runtime_id=None, choices=[
+                b.BindingRuntimeTurnChoice(runtime_id='codex', choice=b.BindingTurnChoice(model=None, effort='low', permission_mode=None))]))
+            for value in runtime_choices:
+                app.set_runtime_composer_choices(value)
+            try:
+                app.set_runtime_composer_choices(b.BindingRuntimeComposerChoices(
+                    runtime_id='missing', last_chosen=nothing, new_conversation=b.BindingNewConversationChoice.LAST_CHOSEN()))
+                raise AssertionError('choices for an unknown runtime are refused')
+            except b.BindingError:
+                pass
         finally:
             app.shutdown()
 
-        # A fresh application has no requests of its own; what remains is the native record.
+        # Velune's requests and the composer's choices are kept across a restart.
+        app = b.VeluneApplication.open(options)
+        try:
+            history = {runtime: app.read_conversation(runtime, conversation).snapshot for runtime, conversation in sent.items()}
+            for runtime, snapshot in history.items():
+                for text in (runtime.upper() + '_FIRST', runtime.upper() + '_SECOND'):
+                    assert chosen(snapshot, text) == managed_model(runtime), (runtime, text, chosen(snapshot, text))
+                    assert settings(snapshot, text)[1] == NAMES[runtime], (runtime, text, settings(snapshot, text))
+            print('PASS kept requests: after a restart each turn still shows the model Velune asked for, by its Velune name', flush=True)
+            kept = app.composer_choices()
+            assert [c.conversation_id for c in kept.conversations] == sorted([sent['claude'], dropped]), kept.conversations
+            assert next(c for c in kept.conversations if c.conversation_id == sent['claude']) == intent, kept.conversations
+            assert kept.runtimes == runtime_choices, kept.runtimes
+            # Nothing left to keep is no record.
+            app.set_runtime_composer_choices(b.BindingRuntimeComposerChoices(
+                runtime_id='codex', last_chosen=nothing, new_conversation=b.BindingNewConversationChoice.LAST_CHOSEN()))
+            assert app.composer_choices().runtimes == runtime_choices[1:], app.composer_choices().runtimes
+            print('PASS composer choices: next-turn choices, last choices and new-conversation choices are kept across a restart; '
+                  'nothing chosen is no record, an unknown runtime is refused', flush=True)
+            stored = root / 'velune' / 'turn-requests.json'
+            assert dropped in stored.read_text(), 'the dropped conversation\'s requests are kept'
+            app.delete_conversation('codex', dropped)
+            assert [c.conversation_id for c in app.composer_choices().conversations] == [sent['claude']], app.composer_choices().conversations
+            assert dropped not in stored.read_text(), 'deleting a conversation drops its requests'
+            print('PASS deleting: a deleted conversation\'s choices and requests go with it', flush=True)
+        finally:
+            app.shutdown()
+
+        # Without the kept requests, what remains is the native record.
+        stored.unlink()
         app = b.VeluneApplication.open(options)
         try:
             history = {runtime: app.read_conversation(runtime, conversation).snapshot for runtime, conversation in sent.items()}

@@ -155,9 +155,9 @@ struct TabContentView: View {
         ContentUnavailableView {
             Label { Text("新会话") } icon: { VeluneLogo(size: 48) }
         } description: {
-            Text(store.needsModelSelection ? "选择下一轮模型后即可发送。" : store.canSend ? "输入消息，开始工作。" : "先在设置中配置AI提供商、模型与Agent 运行时。")
+            Text(store.canSend ? "输入消息，开始工作。" : "先在设置中配置AI提供商、模型与Agent 运行时。")
         } actions: {
-            if !store.canSend && !store.needsModelSelection { SettingsTabLink(tab: store.enabledRuntimeInstances.isEmpty ? .runtimes : .providers, title: "打开设置") }
+            if !store.canSend { SettingsTabLink(tab: store.enabledRuntimeInstances.isEmpty ? .runtimes : .providers, title: "打开设置") }
         }
     }
 

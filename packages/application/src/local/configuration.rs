@@ -437,6 +437,7 @@ impl CoreRuntime {
                     return Err(error);
                 }
                 self.discard_runtime_bindings(id);
+                self.discard_runtime_choices(id);
             }
             "list" => {}
             _ => return Err(RuntimeError::invalid("runtime operation")),

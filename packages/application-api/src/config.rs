@@ -232,6 +232,73 @@ pub struct ComposerDraft {
     pub text: String,
 }
 
+/// What the user chose for a turn on one runtime. Each part that is absent
+/// follows the conversation's current one, and without one the runtime's own
+/// default; Velune never names a default of its own.
+#[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TurnChoice {
+    pub model: Option<crate::ModelSelection>,
+    pub effort: Option<String>,
+    pub permission_mode: Option<String>,
+}
+impl TurnChoice {
+    pub fn is_empty(&self) -> bool {
+        self == &Self::default()
+    }
+}
+
+/// One runtime's choice in a conversation.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RuntimeTurnChoice {
+    #[serde(rename = "runtimeID")]
+    pub runtime_id: String,
+    pub choice: TurnChoice,
+}
+
+/// A conversation's choices for its next turn, kept until it is deleted:
+/// each runtime keeps its own, and an unsent conversation also the runtime
+/// chosen for it.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct NextTurnIntent {
+    #[serde(rename = "conversationID")]
+    pub conversation_id: String,
+    #[serde(rename = "runtimeID")]
+    pub runtime_id: Option<String>,
+    pub choices: Vec<RuntimeTurnChoice>,
+}
+
+/// What a runtime instance's new conversations start with.
+#[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
+pub enum NewConversationChoice {
+    /// The user's last choice on the runtime.
+    #[default]
+    LastChosen,
+    /// These; an absent part is the runtime's own default.
+    Chosen { choice: TurnChoice },
+}
+
+/// A runtime instance's composer choices across conversations.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RuntimeComposerChoices {
+    #[serde(rename = "runtimeID")]
+    pub runtime_id: String,
+    /// The user's last choice of each part on the runtime.
+    pub last_chosen: TurnChoice,
+    pub new_conversation: NewConversationChoice,
+}
+
+#[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ComposerChoices {
+    pub conversations: Vec<NextTurnIntent>,
+    pub runtimes: Vec<RuntimeComposerChoices>,
+}
+
 /// Application-owned sidebar choices; these never select an execution runtime.
 #[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]

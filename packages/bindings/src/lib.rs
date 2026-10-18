@@ -577,6 +577,21 @@ impl VeluneApplication {
             SetConversationBrowserPreferences { preferences }
         )
     }
+    pub fn composer_choices(&self) -> Result<BindingComposerChoices, BindingError> {
+        request!(self, "composer_choices", ComposerChoices)
+    }
+    /// An intent without choices or runtime removes the conversation's.
+    pub fn set_next_turn_intent(&self, intent: BindingNextTurnIntent) -> Result<(), BindingError> {
+        let intent = convert(intent)?;
+        request!(self, "set_next_turn_intent", SetNextTurnIntent { intent }; unit)
+    }
+    pub fn set_runtime_composer_choices(
+        &self,
+        choices: BindingRuntimeComposerChoices,
+    ) -> Result<(), BindingError> {
+        let choices = convert(choices)?;
+        request!(self, "set_runtime_composer_choices", SetRuntimeComposerChoices { choices }; unit)
+    }
     pub fn composer_drafts(&self) -> Result<Vec<BindingComposerDraft>, BindingError> {
         request!(self, "composer_drafts", ComposerDrafts)
     }
@@ -1086,7 +1101,7 @@ impl VeluneApplication {
         &self,
         runtime_id: String,
         cwd: Option<String>,
-        selection: BindingModelSelection,
+        selection: Option<BindingModelSelection>,
     ) -> Result<BindingSnapshotResult, BindingError> {
         let selection = convert(selection)?;
         request!(
@@ -1105,7 +1120,7 @@ impl VeluneApplication {
         source_runtime_id: String,
         conversation_id: String,
         target_runtime_id: String,
-        selection: BindingModelSelection,
+        selection: Option<BindingModelSelection>,
         turn: BindingComposedTurn,
     ) -> Result<BindingSnapshotResult, BindingError> {
         let selection = convert(selection)?;
@@ -1197,7 +1212,7 @@ impl VeluneApplication {
         conversation_id: String,
         message_id: String,
         placement: BindingEditPlacement,
-        selection: BindingModelSelection,
+        selection: Option<BindingModelSelection>,
         turn: BindingComposedTurn,
     ) -> Result<BindingSnapshotResult, BindingError> {
         let placement = convert(placement)?;

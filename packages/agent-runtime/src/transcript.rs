@@ -157,6 +157,19 @@ impl TranscriptProjection {
         self.pending_request = None;
     }
 
+    /// What Velune asked for, by user message, for turns it sent.
+    pub fn requested(&self) -> &BTreeMap<String, TurnSettings> {
+        &self.requested
+    }
+
+    /// What Velune recorded asking for a turn it sent before this
+    /// projection; a request made here stays.
+    pub fn recall_request(&mut self, user_message_id: &str, settings: TurnSettings) {
+        self.requested
+            .entry(user_message_id.to_owned())
+            .or_insert(settings);
+    }
+
     fn user_messages(&self) -> impl Iterator<Item = &MessageAnchor> {
         self.messages
             .iter()
@@ -206,6 +219,7 @@ impl TranscriptProjection {
                 native.and_then(|n| n.permission_mode.as_ref()),
                 requested.and_then(|r| r.permission_mode.as_ref()),
             ),
+            model_selection: requested.and_then(|r| r.model_selection.clone()),
         })
     }
 

@@ -135,7 +135,7 @@ impl CoreRuntime {
     pub(super) fn prepare_acp_snapshot(
         &mut self,
         snapshot: &ConversationSnapshot,
-        selection: &crate::ModelSelection,
+        selection: Option<&crate::ModelSelection>,
         is_new: bool,
     ) -> Result<(), RuntimeError> {
         let runtime = self
@@ -159,7 +159,7 @@ impl CoreRuntime {
                 .snapshot()
                 .is_some_and(|active| active.conversation.id == snapshot.conversation.id)
         {
-            if let crate::ModelSelection::Native { model_id, .. } = selection {
+            if let Some(crate::ModelSelection::Native { model_id, .. }) = selection {
                 session
                     .select_model(model_id)
                     .map_err(|error| RuntimeError::context("ACP 模型选择", error))?;
@@ -186,7 +186,7 @@ impl CoreRuntime {
             session.create(cwd, &runtime.id)
         }
         .map_err(|error| RuntimeError::context("ACP 会话准备", error))?;
-        if let crate::ModelSelection::Native { model_id, .. } = selection {
+        if let Some(crate::ModelSelection::Native { model_id, .. }) = selection {
             session
                 .select_model(model_id)
                 .map_err(|error| RuntimeError::context("ACP 模型选择", error))?;
@@ -230,7 +230,7 @@ impl CoreRuntime {
         self.session.logical_projection = None;
         self.session.unsubmitted_draft = None;
         self.session.execution_runtime_id = Some(runtime.id);
-        self.session.model_selection = Some(crate::ModelSelection::RuntimeDefault);
+        self.session.model_selection = Some(None);
         self.session.active_state = ActiveState::Acp(Box::new(session));
         self.snapshot_result()
     }
@@ -261,7 +261,7 @@ impl CoreRuntime {
             session
                 .set_config_option(config_id, value)
                 .map_err(|error| RuntimeError::context("ACP 配置选择", error))?;
-            self.session.model_selection = Some(crate::ModelSelection::RuntimeDefault);
+            self.session.model_selection = Some(None);
         }
         Ok(serde_json::to_value(session.config_options())?)
     }

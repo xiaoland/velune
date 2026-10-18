@@ -211,19 +211,7 @@ pub struct RuntimeUpdate {
 
 /// The selected model belongs either to Velune's gateway or to the target runtime.
 /// Native identifiers are never resolved through the gateway catalog.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub enum ModelSelection {
-    /// Keep the ACP Agent's own session default; no model identifier is invented.
-    RuntimeDefault,
-    Managed {
-        model_record_key: String,
-    },
-    Native {
-        provider_id: Option<String>,
-        model_id: String,
-    },
-}
+pub use velune_conversation::ModelSelection;
 
 /// What the user composed for one turn.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -610,7 +598,7 @@ pub enum SendQueueOperation {
     Add {
         source_runtime_id: String,
         target_runtime_id: String,
-        selection: crate::ModelSelection,
+        selection: Option<crate::ModelSelection>,
         turn: crate::ComposedTurn,
     },
     Edit {

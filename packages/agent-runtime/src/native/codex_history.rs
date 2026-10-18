@@ -279,6 +279,7 @@ pub(super) fn rollout_turns(path: &Path) -> HashMap<String, RolloutTurn> {
                         text(&payload["collaboration_mode"]["settings"]["reasoning_effort"])
                     }),
                     permission_mode: permission_mode(payload),
+                    model_selection: None,
                 };
             }
             // Each record carries the turn's total so far; the last one counts.

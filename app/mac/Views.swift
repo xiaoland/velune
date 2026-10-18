@@ -553,13 +553,11 @@ private struct ProviderModelDraft: Identifiable {
     var maxOutputTokens = ""
     var declaresReasoning = false
     var reasoningLevels = ""
-    var adapterMetadataJSON: String?
     init() {}
     init(_ model: ProviderModel) {
         recordKey = model.recordKey; providerModelID = model.providerModelID; nickname = model.nickname; icon = model.icon ?? ""
         contextWindow = model.contextWindow.map(String.init) ?? ""; maxOutputTokens = model.maxOutputTokens.map(String.init) ?? ""
         declaresReasoning = model.reasoningLevels != nil; reasoningLevels = model.reasoningLevels?.joined(separator: ", ") ?? ""
-        adapterMetadataJSON = model.adapterMetadataJSON
     }
     var displayName: String { nickname.isEmpty ? (providerModelID.isEmpty ? "新模型" : providerModelID) : nickname }
     var valid: Bool { !providerModelID.isEmpty && validOptionalTokenCount(contextWindow) && validOptionalTokenCount(maxOutputTokens) && !(UInt32(maxOutputTokens).map { output in UInt32(contextWindow).map { output > $0 } ?? false } ?? false) }
@@ -568,7 +566,7 @@ private struct ProviderModelDraft: Identifiable {
         let effortsSummary = efforts.map { $0.isEmpty ? "不支持推理 effort" : "支持 effort：" + $0.joined(separator: "、") } ?? "推理 effort 未知"
         return effortsSummary + (contextWindow.isEmpty ? "" : " · 上下文 \(contextWindow)") + (maxOutputTokens.isEmpty ? "" : " · 输出 \(maxOutputTokens)")
     }
-    var definition: ProviderModel { ProviderModel(recordKey: recordKey, providerModelID: providerModelID, nickname: nickname, icon: icon.isEmpty ? nil : icon, contextWindow: UInt32(contextWindow), maxOutputTokens: UInt32(maxOutputTokens), reasoningLevels: efforts, adapterMetadataJSON: adapterMetadataJSON) }
+    var definition: ProviderModel { ProviderModel(recordKey: recordKey, providerModelID: providerModelID, nickname: nickname, icon: icon.isEmpty ? nil : icon, contextWindow: UInt32(contextWindow), maxOutputTokens: UInt32(maxOutputTokens), reasoningLevels: efforts) }
 }
 private func validOptionalTokenCount(_ value: String) -> Bool { value.isEmpty || (UInt32(value).map { $0 > 0 } ?? false) }
 
@@ -751,7 +749,6 @@ struct ProviderEditor: View {
                 } else {
                     Picker("协议", selection: Binding(get: { protocolID }, set: { value in
                         guard value != protocolID else { return }
-                        for index in models.indices { models[index].adapterMetadataJSON = nil }
                         protocolID = value
                     })) { ForEach(store.protocols.filter(\.supported)) { Text($0.name).tag($0.id) } }
                     if usesHTTP {
@@ -1033,6 +1030,12 @@ struct RuntimeEditor: View {
     @State private var launchArguments: [LaunchArgument] = []
     @State private var environment: [EnvironmentEntry] = []
     @State private var agent: AgentLoad?
+    @State private var newConversationMode: NewConversationMode = .lastChosen
+    @State private var newConversationChoice = TurnChoice()
+    @State private var newConversationModels: RuntimeModelCatalog?
+    /// How new conversations on the instance start; the runtime's default is
+    /// a choice of nothing.
+    private enum NewConversationMode: Hashable { case lastChosen, runtimeDefault, chosen }
     private struct LaunchArgument: Identifiable { let id = UUID(); var value = "" }
     private struct EnvironmentEntry: Identifiable { let id = UUID(); var name = ""; var value = "" }
     private enum AgentLoad { case loading, failed(String), ready(BindingAcpRuntimeInfo) }
@@ -1150,6 +1153,7 @@ struct RuntimeEditor: View {
                 }
                 if descriptor?.launchOptions == true, case .ready = execution { launchSections }
                 if descriptor?.agentInfo == true, let instance { agentSection(instance) }
+                if let instance { newConversationSection(instance) }
             }.formStyle(.grouped)
             HStack {
                 if let instance {
@@ -1163,6 +1167,13 @@ struct RuntimeEditor: View {
         .onAppear {
             name = instance?.name ?? ""
             enabled = instance?.enabled ?? true
+            if let instance {
+                switch store.newConversationChoice(for: instance.id) {
+                case .lastChosen: newConversationMode = .lastChosen
+                case .chosen(let choice) where choice == TurnChoice(): newConversationMode = .runtimeDefault
+                case .chosen(let choice): newConversationMode = .chosen; newConversationChoice = choice; loadNewConversationModels(instance)
+                }
+            }
             typeID = instance?.typeID ?? types.first?.id ?? ""
             if instance == nil { execution = .ready } else { loadExecution() }
             settings = instance?.settings ?? [:]
@@ -1259,6 +1270,88 @@ struct RuntimeEditor: View {
 
     /// Reading starts the saved Agent once; it reports the saved settings,
     /// not unsaved edits in this form.
+    /// What the instance's new conversations start with: the user's last
+    /// choice on it, its own defaults, or the choices set here.
+    @ViewBuilder private func newConversationSection(_ instance: RuntimeInstance) -> some View {
+        Section {
+            Picker("新会话使用", selection: Binding(get: { newConversationMode }, set: { mode in
+                newConversationMode = mode
+                if mode == .chosen, newConversationModels == nil { loadNewConversationModels(instance) }
+            })) {
+                Text("上次的选择").tag(NewConversationMode.lastChosen)
+                Text("运行时默认").tag(NewConversationMode.runtimeDefault)
+                Text("指定").tag(NewConversationMode.chosen)
+            }
+            if newConversationMode == .chosen { newConversationPickers }
+        } header: { Text("新会话") } footer: {
+            Text(newConversationFooter).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+        }
+    }
+    private var newConversationFooter: String {
+        switch newConversationMode {
+        case .lastChosen: "新会话沿用你上次在此运行时上选择的模型、推理强度与权限模式；没有选过的项由运行时决定。"
+        case .runtimeDefault: "新会话不指定模型、推理强度与权限模式，都由运行时使用自己的默认值。"
+        case .chosen: "新会话从这里的选择开始；“运行时默认”的项由运行时决定。在会话中仍可随时更改。"
+        }
+    }
+    @ViewBuilder private var newConversationPickers: some View {
+        let models: [ModelChoice] = if case .ready(let choices) = newConversationModels { choices } else { [] }
+        let chosen = newConversationChoice.model
+        // A model kept here that the catalog no longer lists still shows.
+        let listed = chosen.map { model in models.contains { $0.selection == model } } ?? true
+        Picker("模型", selection: $newConversationChoice.model) {
+            Text("运行时默认").tag(ModelSelection?.none)
+            if !listed, let chosen { Text(Self.modelName(chosen)).tag(Optional(chosen)) }
+            ForEach(models) { model in Text(model.displayName).tag(Optional(model.selection)) }
+        }
+        switch newConversationModels {
+        case .loading?: HStack { ProgressView().controlSize(.small); Text("正在读取运行时的模型…").foregroundStyle(.secondary) }
+        case .failed(let detail)?: Text("无法读取运行时的模型：\(detail)").font(.caption).foregroundStyle(.secondary)
+        case .ready?, nil: EmptyView()
+        }
+        let levels = newConversationEfforts(models)
+        if !levels.isEmpty || newConversationChoice.effort != nil {
+            Picker("推理强度", selection: $newConversationChoice.effort) {
+                Text("运行时默认").tag(String?.none)
+                if let effort = newConversationChoice.effort, !levels.contains(effort) { Text(effort).tag(Optional(effort)) }
+                ForEach(levels, id: \.self) { level in Text(level).tag(Optional(level)) }
+            }
+        }
+        if let modes = descriptor?.permissionModes, !modes.isEmpty {
+            Picker("权限模式", selection: $newConversationChoice.permissionMode) {
+                Text("运行时默认").tag(String?.none)
+                ForEach(modes) { mode in Text(mode.label).tag(Optional(mode.id)).help(mode.detail) }
+            }
+        }
+    }
+    /// The chosen model's levels; for the runtime's default model, those its
+    /// own models take, unless its sessions offer them.
+    private func newConversationEfforts(_ models: [ModelChoice]) -> [String] {
+        if let model = newConversationChoice.model { return models.first { $0.selection == model }?.reasoningEfforts ?? [] }
+        guard descriptor?.sessionOptions != true else { return [] }
+        var levels: [String] = []
+        for choice in models { if case .native = choice.selection { for level in choice.reasoningEfforts where !levels.contains(level) { levels.append(level) } } }
+        return levels
+    }
+    private static func modelName(_ selection: ModelSelection) -> String {
+        switch selection {
+        case .managed(let key): "Velune 模型 \(key)"
+        case .native(_, let id): id
+        }
+    }
+    private func loadNewConversationModels(_ instance: RuntimeInstance) {
+        newConversationModels = .loading
+        store.readModelCatalog(runtimeID: instance.id) { newConversationModels = $0 }
+    }
+    private func saveNewConversationChoice(_ instance: RuntimeInstance) {
+        let choice: NewConversationChoice = switch newConversationMode {
+        case .lastChosen: .lastChosen
+        case .runtimeDefault: .chosen(TurnChoice())
+        case .chosen: .chosen(newConversationChoice)
+        }
+        store.setNewConversationChoice(choice, for: instance.id)
+    }
+
     @ViewBuilder private func agentSection(_ instance: RuntimeInstance) -> some View {
         Section {
             switch agent {
@@ -1376,7 +1469,10 @@ struct RuntimeEditor: View {
         }
         store.saveRuntimeInstance(RuntimeInstance(enabled: enabled, id: instance?.id ?? draftID, name: name.trimmingCharacters(in: .whitespacesAndNewlines), typeID: typeID, gatewayID: instance?.gatewayID ?? gatewayID, settings: values),
                                   execution: BindingRuntimeExecution(transport: transport, home: homeExecution, remoteResourcesDirectory: remoteResources),
-                                  launch: descriptor.launchOptions ? launch : nil) { dismiss() }
+                                  launch: descriptor.launchOptions ? launch : nil) { [instance] in
+            if let instance { saveNewConversationChoice(instance) }
+            dismiss()
+        }
     }
 }
 

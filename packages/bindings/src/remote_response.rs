@@ -67,6 +67,9 @@ pub enum BindingApplicationResponse {
     ComposerDraftList {
         value: Vec<BindingComposerDraft>,
     },
+    ComposerChoices {
+        value: BindingComposerChoices,
+    },
     ConversationBrowserLimits {
         value: BindingConversationBrowserLimits,
     },
@@ -164,7 +167,9 @@ impl TryFrom<Response> for BindingApplicationResponse {
             | Response::DeleteRuntimeResource
             | Response::DeleteResourceTemplate
             | Response::ResolveResourceBinding
-            | Response::SetComposerDraft => Self::Empty,
+            | Response::SetComposerDraft
+            | Response::SetNextTurnIntent
+            | Response::SetRuntimeComposerChoices => Self::Empty,
             Response::RuntimeResourceCatalog(value) => Self::RuntimeResourceCatalog {
                 value: convert(value)?,
             },
@@ -235,6 +240,9 @@ impl TryFrom<Response> for BindingApplicationResponse {
                 value: convert(value)?,
             },
             Response::ComposerDrafts(value) => Self::ComposerDraftList {
+                value: convert(value)?,
+            },
+            Response::ComposerChoices(value) => Self::ComposerChoices {
                 value: convert(value)?,
             },
             Response::SetConversationBrowserLimits(value) => Self::ConversationBrowserLimits {

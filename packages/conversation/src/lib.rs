@@ -190,6 +190,26 @@ pub struct TurnSettings {
     pub effort: Option<String>,
     /// Permission mode ID, in the runtime type's own vocabulary where it has one.
     pub permission_mode: Option<String>,
+    /// The model Velune sent the turn with, when Velune sent it and named
+    /// one; a native record alone cannot tell Velune's gateway from the
+    /// runtime's own provider.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_selection: Option<ModelSelection>,
+}
+
+/// A model chosen for a turn: Velune's own (through its gateway) or one the
+/// runtime offers. No selection at all is the runtime's own default; Velune
+/// never names a default of its own.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub enum ModelSelection {
+    Managed {
+        model_record_key: String,
+    },
+    Native {
+        provider_id: Option<String>,
+        model_id: String,
+    },
 }
 
 /// Tokens a turn used, summed over its model requests as the harness

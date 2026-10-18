@@ -497,52 +497,48 @@ impl CoreRuntime {
     }
 
     /// The model a turn an agent sends uses: the one named, else the
-    /// addressed conversation's own, else the runtime's first offered model.
+    /// addressed conversation's own, else the runtime's own default.
     fn collaboration_selection(
         &mut self,
         runtime_id: &str,
         named: Option<&str>,
-    ) -> Result<crate::ModelSelection, RuntimeError> {
-        if named.is_none()
-            && let Some(selection) = self.session.model_selection.clone().or_else(|| {
-                self.session
-                    .model_record_key
-                    .clone()
-                    .map(|key| crate::ModelSelection::Managed {
-                        model_record_key: key,
-                    })
-            })
-        {
-            return Ok(selection);
-        }
+    ) -> Result<Option<crate::ModelSelection>, RuntimeError> {
+        let Some(named) = named else {
+            if let Some(selection) = self.session.model_selection.clone() {
+                return Ok(selection);
+            }
+            return Ok(self.session.model_record_key.clone().map(|key| {
+                crate::ModelSelection::Managed {
+                    model_record_key: key,
+                }
+            }));
+        };
         let models: Vec<crate::RuntimeModel> = serde_json::from_value(
             self.runtime_models_action(&json!({"payload":{"runtimeInstanceID":runtime_id}}))?,
         )?;
-        let chosen = match named {
-            None => models.into_iter().next(),
-            Some(named) => models.into_iter().find(|model| {
+        models
+            .into_iter()
+            .find(|model| {
                 model.name == named
                     || match &model.selection {
                         crate::ModelSelection::Native { model_id, .. } => model_id == named,
                         crate::ModelSelection::Managed { model_record_key } => {
                             model_record_key == named
                         }
-                        crate::ModelSelection::RuntimeDefault => false,
                     }
-            }),
-        };
-        chosen
-            .map(|model| model.selection)
+            })
+            .map(|model| Some(model.selection))
             .ok_or_else(|| RuntimeError::invalid("此运行时没有该模型；不指定 model 即使用默认模型"))
     }
 
     /// Send `message` from `caller` as the addressed conversation's next
-    /// turn, with `selection` or the conversation's own model.
+    /// turn, with `selection` (`None` for the runtime's default) or, without
+    /// one, the conversation's own model.
     fn deliver(
         &mut self,
         caller: &Caller,
         message: &str,
-        selection: Option<crate::ModelSelection>,
+        selection: Option<Option<crate::ModelSelection>>,
     ) -> Result<(), RuntimeError> {
         let view = self
             .session

@@ -26,7 +26,9 @@ pub(super) struct Session {
     pub(super) gateway_runner: Option<Runner>,
     pub(super) execution_runtime_id: Option<String>,
     pub(super) model_record_key: Option<String>,
-    pub(super) model_selection: Option<crate::ModelSelection>,
+    /// The model the session's turns are sent with, once known; `Some(None)`
+    /// is the runtime's own default.
+    pub(super) model_selection: Option<Option<crate::ModelSelection>>,
     pub(super) unsubmitted_draft: Option<UnsubmittedDraft>,
     pub(super) gateway_tunnel: Option<velune_agent_runtime::execution::LoopbackTunnel>,
     /// Private execution files of this session's runtime; see `CoreRuntime::lane`.

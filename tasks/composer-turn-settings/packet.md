@@ -128,6 +128,46 @@
 - 下拉的三角由系统绘制、紧贴标题。给标题加 padding 不生效；隐藏系统三角、在 label 里自绘也不行，因为菜单按钮只取 label 的文字和图标，自绘的图标被放到了标题前。最后在标题末尾加一个不换行空格，三角仍由系统绘制。开发版截图确认间距变宽。
 - 第一个下拉的菜单只保留三个子菜单（运行时、模型、推理强度），标题带当前选择。资源库与运行时设置放在“运行时”子菜单，重新读取模型与提供商设置放在“模型”子菜单。为避免开发版窗口被带到前台，菜单展开后的样子未截图，需用户验收。
 
+## 会话当前、持久化与新会话默认（2026-10-18，[S42](../../docs/sources.md#s42)）
+
+- 起因：Claude Code 会话的模型显示为目录第一项（“default”），推理强度为 medium。核对后：
+  - `claude_history.py` 早已读出模型、推理强度与权限模式。之前对用户说的“完全不读 Claude 的原生设置”是错的，已更正。
+  - 实际原因：原生记录里是完整模型 ID（如带日期的 ID），目录里是别名，两者对不上，Mac 于是回落到目录第一项。
+  - 另一个原因：下一轮的选择只存在内存里，而且按标签页各存一份。
+- 用户决定：
+  - composer 的选择持久化，重启后保留。
+  - 新会话默认用上次的选择，可在运行时实例中改为运行时默认或指定值。
+  - “默认值”在 Velune 内部就是 null。
+  - 其余按开发方建议：每项分会话当前与下一轮的选择两层，未知时不发送；模型同样如此；对不上目录的原生 ID 作为“会话当前”项原样发送；Velune 的发送记录持久化；选择在核心按会话保存、各标签页共享；推理强度保持单一维度。
+- 核心：
+  - `ModelSelection::RuntimeDefault` 删除，各处的选择改为 `Option<ModelSelection>`（bindings 与远控协议同步）。
+  - `TurnSettings.model_selection` 是 Velune 请求的模型选择。
+  - `composer_choices`／`set_next_turn_intent`／`set_runtime_composer_choices` 持久化到 `composer-choices.json`：各会话的下一轮运行时与各运行时的 `TurnChoice`，以及各运行时的上次选择与 `NewConversationChoice`。全空的记录不保存；未知运行时拒绝；删除会话或运行时实例时一并删除。
+  - 发送请求按（用户消息序号，正文 sha256 前 16 位）存于 `turn-requests.json`：实时 ID 是临时的，原生 ID 要重读后才有，这两种 ID 都不能跨重读使用。打开与只读读取（`read_conversation`）都会找回这些记录；读历史时以历史中仍有的轮次为准重建。
+  - Claude 历史另读 `permission-mode` 记录，补齐用户记录里没有 `permissionMode` 的轮次。
+- Mac：
+  - 未选的模型沿用当前；当前未知时为“运行时默认”（nil，不发送），不取目录第一项。
+  - 发送不再要求先选模型。
+  - 选择存于应用级 store，各标签页共享，经核心持久化。
+  - 运行时实例设置新增“新会话”一节：上次的选择／运行时默认／指定，指定时每项也可为运行时默认。
+  - 新会话设定只作为种子，不记成会话的选择。否则若持久化的选择在草稿建立后才读到，草稿会停在空选择上（开发版截图发现）。
+- 顺带修复：main 合入远控库后 Mac 版无法编译。`adapterMetadataJson` 已从 bindings 删除，`BindingError.RemoteRequest` 与新的 `BindingFailureKind` 缺分支；Mac 已同步。
+- 验证：
+  - fmt／check（含 `--no-default-features --features remote`、workspace all-targets）与 Mac `--build-only` 通过。
+  - `manual-turn-settings.py` 10 项 PASS，新增三项：
+    - 重启后各轮仍显示 Velune 请求的模型（`model_selection` 与 Velune 名称）。
+    - composer 选择跨重启保留；全空即无记录；未知运行时被拒绝。
+    - 删除会话时连同其选择与请求记录一起删除。
+  - 删除 `turn-requests.json` 后，原生记录的原有检查照旧通过。
+  - 回归 PASS：`manual-reasoning-effort`、`manual-permission-modes`、`manual-edit-message`、`manual-send-queue`、`manual-runtime-selection`。
+  - 开发版（临时 VELUNE_HOME、后台启动）：Pi 的新会话设为“指定：推理强度 low，模型运行时默认”后，空 composer 显示“Pi · 运行时默认 · low”。
+  - 开发版副本访问外置卷上的 Pi CLI 时历史辅助进程超时（副本没有该卷的访问授权）。改用内置盘上的 Pi 副本后正常。
+- 运行时默认的发送（选择为 None）不经网关，会走 Harness 自己的真实提供商，因此未做实测。代码上 None 不调用 `select_native_model`／`set_model`，不改原生配置。
+- 留待用户验收：
+  - 运行时设置中“新会话”一节的外观。
+  - 带日期模型 ID 的 Claude 会话显示“沿用当前（ID）”。
+  - 重启后各会话恢复的选择。
+
 ## 安装
 
 - 18f38dd 已构建安装至 `/Applications/Velune.app`（签名校验通过，manifest 对应该提交且无未提交改动），重新打开后无崩溃报告。

@@ -79,6 +79,9 @@ final class Transport: @unchecked Sendable {
     func setUsageDisplay(_ display: BindingUsageDisplay) throws -> BindingUsageDisplay { try withApplication("setUsageDisplay", .changesConfiguration) { try $0.setUsageDisplay(display: display) } }
     func composerDrafts() throws -> [BindingComposerDraft] { try withApplication("composerDrafts", .reads) { try $0.composerDrafts() } }
     func setComposerDraft(conversationID: String, text: String) throws { try withApplication("setComposerDraft", .writes) { try $0.setComposerDraft(conversationId: conversationID, text: text) } }
+    func composerChoices() throws -> BindingComposerChoices { try withApplication("composerChoices", .reads) { try $0.composerChoices() } }
+    func setNextTurnIntent(_ intent: BindingNextTurnIntent) throws { try withApplication("setNextTurnIntent", .writes) { try $0.setNextTurnIntent(intent: intent) } }
+    func setRuntimeComposerChoices(_ choices: BindingRuntimeComposerChoices) throws { try withApplication("setRuntimeComposerChoices", .writes) { try $0.setRuntimeComposerChoices(choices: choices) } }
     func setConversationBrowserLimits(_ limits: BindingConversationBrowserLimits) throws -> BindingConversationBrowserLimits { try withApplication("setConversationBrowserLimits", .changesConfiguration) { try $0.setConversationBrowserLimits(limits: limits) } }
     func organizeConversations(_ conversations: [BindingConversationReference], _ change: BindingConversationOrganizationChange) throws -> BindingConfigurationSnapshot { try withApplication("organizeConversations", .writes) { try $0.organizeConversations(conversations: conversations, change: change) } }
     func setProject(path: String, primaryFolder: String, name: String?, folders: [String]) throws -> BindingConfigurationSnapshot { try withApplication("setProject", .writes) { try $0.setProject(path: path, primaryFolder: primaryFolder, name: name, folders: folders) } }
@@ -138,8 +141,8 @@ final class Transport: @unchecked Sendable {
     func selectRuntime(id: String) throws -> BindingConfigurationSnapshot { try withApplication("selectRuntime", .writes) { try $0.selectRuntime(id: id) } }
     /// Keep first creation and dispatch under the same shared application lock.
     /// Report the native identity before dispatch so failure never recreates a draft.
-    func createAndSend(runtimeID: String, cwd: String?, selection: ModelSelection, turn: BindingComposedTurn, onCreated: (BindingSnapshotResult) -> Void) throws -> BindingSnapshotResult {
-        let selection = BindingMapping.bindingSelection(selection)
+    func createAndSend(runtimeID: String, cwd: String?, selection: ModelSelection?, turn: BindingComposedTurn, onCreated: (BindingSnapshotResult) -> Void) throws -> BindingSnapshotResult {
+        let selection = selection.map(BindingMapping.bindingSelection)
         return try withApplication("sendTurn", .writes) { application in
             let created = try application.createConversationWithSelection(runtimeId: runtimeID, cwd: cwd, selection: selection)
             onCreated(created)
@@ -153,13 +156,13 @@ final class Transport: @unchecked Sendable {
     func snapshot(runtimeID: String, conversationID: String) throws -> BindingSnapshotResult { try withApplication("snapshot", .reads) { try $0.snapshot(runtimeId: runtimeID, conversationId: conversationID) } }
     func snapshotUpdate(runtimeID: String, conversationID: String, since: TranscriptCursor) throws -> BindingSnapshotUpdate { try withApplication("snapshotUpdate", .reads) { try $0.snapshotUpdate(runtimeId: runtimeID, conversationId: conversationID, since: BindingMapping.bindingCursor(since)) } }
     func messagePayloads(runtimeID: String, conversationID: String, messageIDs: [String]) throws -> [BindingMessage] { try withApplication("messagePayloads", .reads) { try $0.messagePayloads(runtimeId: runtimeID, conversationId: conversationID, messageIds: messageIDs) } }
-    func sendTurn(sourceRuntimeID: String, conversationID: String, targetRuntimeID: String, selection: ModelSelection, turn: BindingComposedTurn) throws -> BindingSnapshotResult { try withApplication("sendTurn", .writes) { try $0.sendTurnWithSelection(sourceRuntimeId: sourceRuntimeID, conversationId: conversationID, targetRuntimeId: targetRuntimeID, selection: BindingMapping.bindingSelection(selection), turn: turn) } }
+    func sendTurn(sourceRuntimeID: String, conversationID: String, targetRuntimeID: String, selection: ModelSelection?, turn: BindingComposedTurn) throws -> BindingSnapshotResult { try withApplication("sendTurn", .writes) { try $0.sendTurnWithSelection(sourceRuntimeId: sourceRuntimeID, conversationId: conversationID, targetRuntimeId: targetRuntimeID, selection: selection.map(BindingMapping.bindingSelection), turn: turn) } }
     /// The runtime's own models first, then the managed models; every entry
     /// carries the levels the runtime accepts for it.
     func runtimeModels(runtimeID: String) throws -> [BindingRuntimeModel] { try withApplication("runtimeModels", .reads) { try $0.runtimeModels(runtimeId: runtimeID) } }
     func steerTurn(runtimeID: String, conversationID: String, turn: BindingComposedTurn) throws -> BindingSnapshotResult { try withApplication("steerTurn", .writes) { try $0.steerTurn(runtimeId: runtimeID, conversationId: conversationID, turn: turn) } }
     func sendQueue(runtimeID: String, conversationID: String, operation: BindingSendQueueOperation) throws -> BindingSnapshotResult { try withApplication("sendQueue", .writes) { try $0.sendQueue(runtimeId: runtimeID, conversationId: conversationID, operation: operation) } }
-    func editMessage(runtimeID: String, conversationID: String, messageID: String, placement: BindingEditPlacement, selection: ModelSelection, turn: BindingComposedTurn) throws -> BindingSnapshotResult { try withApplication("editMessage", .writes) { try $0.editMessage(runtimeId: runtimeID, conversationId: conversationID, messageId: messageID, placement: placement, selection: BindingMapping.bindingSelection(selection), turn: turn) } }
+    func editMessage(runtimeID: String, conversationID: String, messageID: String, placement: BindingEditPlacement, selection: ModelSelection?, turn: BindingComposedTurn) throws -> BindingSnapshotResult { try withApplication("editMessage", .writes) { try $0.editMessage(runtimeId: runtimeID, conversationId: conversationID, messageId: messageID, placement: placement, selection: selection.map(BindingMapping.bindingSelection), turn: turn) } }
     func cancel(runtimeID: String, conversationID: String) throws -> BindingSnapshotResult { try withApplication("cancel", .writes) { try $0.cancel(runtimeId: runtimeID, conversationId: conversationID) } }
     func stopSubAgents(runtimeID: String, conversationID: String) throws -> BindingSnapshotResult { try withApplication("stopSubAgents", .writes) { try $0.stopSubAgents(runtimeId: runtimeID, conversationId: conversationID) } }
     func workingBranch(runtimeID: String, conversationID: String) throws -> String? { try withApplication("workingBranch", .reads) { try $0.workingBranch(runtimeId: runtimeID, conversationId: conversationID) } }
@@ -222,7 +225,7 @@ final class Transport: @unchecked Sendable {
     private func category(for error: Error) -> String {
         if let error = error as? BindingError {
             switch error {
-            case .Diagnostic(let kind, _, _, _, _): return Self.kindName(kind)
+            case .Diagnostic(let kind, _, _, _, _), .RemoteRequest(let kind, _, _, _): return Self.kindName(kind)
             case .Invalid: return "invalid"
             case .Unsupported: return "unsupported"
             case .Io: return "io"
@@ -238,6 +241,8 @@ final class Transport: @unchecked Sendable {
         switch error {
         case .Diagnostic(let kind, let detail, let code, let phase, let operationID):
             return .diagnostic(kind: kindName(kind), detail: detail, code: code, phase: phase, operationID: operationID)
+        case .RemoteRequest(let kind, let detail, let code, _):
+            return .diagnostic(kind: kindName(kind), detail: detail, code: code, phase: "remote", operationID: "")
         case .Invalid(let detail): return .rejected("请求无效：\(detail)")
         case .Unsupported(let detail): return .rejected("当前版本不支持此操作：\(detail)")
         case .Io(let detail): return .rejected("本地读写失败：\(detail)")
@@ -258,13 +263,17 @@ final class Transport: @unchecked Sendable {
         case .unavailable: return "unavailable"
         case .providerImport: return "provider_import"
         case .runtimeManagement: return "runtime_management"
+        case .conflict: return "conflict"
+        case .unauthorized: return "unauthorized"
+        case .connection: return "connection"
+        case .outcomeUnknown: return "outcome_unknown"
         }
     }
 
     private static func fullFailureDetail(_ error: Error) -> String {
         if let error = error as? BindingError {
             switch error {
-            case .Diagnostic(_, let detail, _, _, _), .Invalid(let detail), .Unsupported(let detail), .Io(let detail), .Contract(let detail): return detail
+            case .Diagnostic(_, let detail, _, _, _), .RemoteRequest(_, let detail, _, _), .Invalid(let detail), .Unsupported(let detail), .Io(let detail), .Contract(let detail): return detail
             case .Closed: return "本地核心已关闭"
             case .Unavailable: return "本地核心不可用"
             }

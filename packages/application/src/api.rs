@@ -415,6 +415,30 @@ impl Application {
             None,
         )
     }
+    pub fn composer_choices(&mut self) -> Result<crate::config::ComposerChoices, Error> {
+        self.execute("composerChoices", json!({"operation":"list"}), None)
+    }
+    /// An intent without choices or runtime removes the conversation's.
+    pub fn set_next_turn_intent(
+        &mut self,
+        intent: crate::config::NextTurnIntent,
+    ) -> Result<(), Error> {
+        self.execute(
+            "composerChoices",
+            json!({"operation":"setIntent","intent":intent}),
+            None,
+        )
+    }
+    pub fn set_runtime_composer_choices(
+        &mut self,
+        choices: crate::config::RuntimeComposerChoices,
+    ) -> Result<(), Error> {
+        self.execute(
+            "composerChoices",
+            json!({"operation":"setRuntime","choices":choices}),
+            None,
+        )
+    }
     pub fn composer_drafts(&mut self) -> Result<Vec<crate::config::ComposerDraft>, Error> {
         self.execute("composerDrafts", json!({"operation":"list"}), None)
     }
@@ -616,14 +640,14 @@ impl Application {
         self.create_conversation_with_selection(
             runtime_id,
             cwd,
-            ModelSelection::Managed { model_record_key },
+            Some(ModelSelection::Managed { model_record_key }),
         )
     }
     pub fn create_conversation_with_selection(
         &mut self,
         runtime_id: String,
         cwd: Option<String>,
-        selection: ModelSelection,
+        selection: Option<ModelSelection>,
     ) -> Result<SnapshotResult, Error> {
         self.execute(
             "create",
@@ -743,7 +767,7 @@ impl Application {
             source_runtime_id,
             conversation_id,
             target_runtime_id,
-            ModelSelection::Managed { model_record_key },
+            Some(ModelSelection::Managed { model_record_key }),
             ComposedTurn {
                 text,
                 effort: None,
@@ -757,7 +781,7 @@ impl Application {
         source_runtime_id: String,
         conversation_id: String,
         target_runtime_id: String,
-        selection: ModelSelection,
+        selection: Option<ModelSelection>,
         turn: ComposedTurn,
     ) -> Result<SnapshotResult, Error> {
         self.execute("sendTurn", json!({"sourceRuntimeID":source_runtime_id,"conversationID":conversation_id,"modelSelection":selection,"text":turn.text,"effort":turn.effort,"permissionMode":turn.permission_mode,"attachments":turn.attachments}), Some(&target_runtime_id))
@@ -813,7 +837,7 @@ impl Application {
         conversation_id: String,
         message_id: String,
         placement: crate::conversation::EditPlacement,
-        selection: ModelSelection,
+        selection: Option<ModelSelection>,
         turn: ComposedTurn,
     ) -> Result<SnapshotResult, Error> {
         self.execute("editMessage", json!({"conversationID":conversation_id,"messageID":message_id,"placement":placement,"modelSelection":selection,"text":turn.text,"effort":turn.effort,"permissionMode":turn.permission_mode,"attachments":turn.attachments}), Some(&runtime_id))

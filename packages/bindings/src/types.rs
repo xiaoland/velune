@@ -285,7 +285,7 @@ pub enum BindingSendQueueOperation {
     Add {
         source_runtime_id: String,
         target_runtime_id: String,
-        selection: BindingModelSelection,
+        selection: Option<BindingModelSelection>,
         turn: BindingComposedTurn,
     },
     Edit {
@@ -602,10 +602,10 @@ pub struct BindingComposedTurn {
     pub attachments: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Enum)]
+/// A turn's model; no selection at all is the runtime's own default.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, uniffi::Enum)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub enum BindingModelSelection {
-    RuntimeDefault,
     Managed {
         model_record_key: String,
     },
@@ -1204,6 +1204,60 @@ pub struct BindingComposerDraft {
     pub text: String,
 }
 
+/// What the user chose for a turn on one runtime; each absent part follows
+/// the conversation's current one, and without one the runtime's default.
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize, uniffi::Record)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BindingTurnChoice {
+    pub model: Option<BindingModelSelection>,
+    pub effort: Option<String>,
+    pub permission_mode: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, uniffi::Record)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BindingRuntimeTurnChoice {
+    #[serde(rename = "runtimeID")]
+    pub runtime_id: String,
+    pub choice: BindingTurnChoice,
+}
+
+/// A conversation's next-turn choices, by runtime, and the runtime an
+/// unsent conversation was given.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, uniffi::Record)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BindingNextTurnIntent {
+    #[serde(rename = "conversationID")]
+    pub conversation_id: String,
+    #[serde(rename = "runtimeID")]
+    pub runtime_id: Option<String>,
+    pub choices: Vec<BindingRuntimeTurnChoice>,
+}
+
+/// What a runtime instance's new conversations start with.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, uniffi::Enum)]
+#[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
+pub enum BindingNewConversationChoice {
+    LastChosen,
+    Chosen { choice: BindingTurnChoice },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, uniffi::Record)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BindingRuntimeComposerChoices {
+    #[serde(rename = "runtimeID")]
+    pub runtime_id: String,
+    pub last_chosen: BindingTurnChoice,
+    pub new_conversation: BindingNewConversationChoice,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, uniffi::Record)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BindingComposerChoices {
+    pub conversations: Vec<BindingNextTurnIntent>,
+    pub runtimes: Vec<BindingRuntimeComposerChoices>,
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, uniffi::Enum)]
 #[serde(rename_all = "camelCase")]
 pub enum BindingOutlinePresentation {
@@ -1269,6 +1323,10 @@ pub struct BindingTurnSettings {
     pub model: Option<String>,
     pub effort: Option<String>,
     pub permission_mode: Option<String>,
+    /// The model Velune sent the turn with, when it sent it and named one.
+    #[serde(default)]
+    #[uniffi(default = None)]
+    pub model_selection: Option<BindingModelSelection>,
 }
 
 /// Token counts summed over a turn's model requests. Input includes cache
