@@ -18,6 +18,12 @@ struct ConversationBrowser {
         var title: String { self == .updated ? "最近更新" : "创建时间" }
         func timestamp(_ conversation: Conversation) -> Int64? { self == .updated ? conversation.updatedAtUnixMs : conversation.createdAtUnixMs }
     }
+    /// How groups follow each other; `Sort` orders the rows within them.
+    enum GroupSort: String, CaseIterable, Identifiable {
+        case activity, manual
+        var id: Self { self }
+        var title: String { self == .activity ? "最近活动" : "手动" }
+    }
     enum ProjectFilter: Hashable {
         case all, unspecified, path(String)
     }
@@ -33,12 +39,14 @@ struct ConversationBrowser {
     var runtimeID: String?
     var project = ProjectFilter.all
     var collapsed: [BindingConversationGroupKey] = []
-    /// Groups in the order the user put them, each grouping's own.
+    var groupSort = GroupSort.activity
+    /// Groups in the order the user put them, each grouping's own; kept while
+    /// they follow recent activity.
     var groupOrder: [BindingConversationGroupKey] = []
     var preferences: BindingConversationBrowserPreferences {
         let value: BindingConversationBrowserProject
         switch project { case .all: value = .all; case .unspecified: value = .unspecified; case .path(let path): value = .path(path: path) }
-        return BindingConversationBrowserPreferences(grouping: grouping == .none ? .none : grouping == .runtime ? .runtime : .project, sort: sort == .updated ? .updated : .created, oldestFirst: oldestFirst, runtimeId: runtimeID, project: value, collapsed: collapsed, groupOrder: groupOrder)
+        return BindingConversationBrowserPreferences(grouping: grouping == .none ? .none : grouping == .runtime ? .runtime : .project, sort: sort == .updated ? .updated : .created, oldestFirst: oldestFirst, runtimeId: runtimeID, project: value, collapsed: collapsed, groupSort: groupSort == .manual ? .manual : .activity, groupOrder: groupOrder)
     }
     mutating func restore(_ value: BindingConversationBrowserPreferences) {
         grouping = value.grouping == .none ? .none : value.grouping == .runtime ? .runtime : .project
@@ -46,6 +54,7 @@ struct ConversationBrowser {
         oldestFirst = value.oldestFirst; runtimeID = value.runtimeId
         switch value.project { case .all: project = .all; case .unspecified: project = .unspecified; case .path(let path): project = .path(path) }
         collapsed = value.collapsed
+        groupSort = value.groupSort == .manual ? .manual : .activity
         groupOrder = value.groupOrder
     }
     var hasFilters: Bool { runtimeID != nil || project != .all }
@@ -56,34 +65,32 @@ struct ConversationBrowser {
 
     /// Groups the user may put in order: the pinned one stays first.
     static func orderable(_ key: BindingConversationGroupKey) -> Bool { key != .pinned && key != .all }
-    /// The shown groups follow the order the user gave them, not recent activity.
-    func isOrderedByHand(_ shown: [BindingConversationGroupKey]) -> Bool {
-        shown.contains { Self.orderable($0) && groupOrder.contains($0) }
+    /// Turning to the user's order keeps the one given before and holds the
+    /// shown groups not in it where they are, after it.
+    mutating func setGroupSort(_ value: GroupSort, shown: [BindingConversationGroupKey]) {
+        if value == .manual { groupOrder += shown.filter { Self.orderable($0) && !groupOrder.contains($0) } }
+        groupSort = value
     }
 
     /// Put `key` before `target` (last when nil) among `shown`, the groups as
-    /// the list shows them. Groups not shown now, filtered out or of another
-    /// grouping, keep their places.
+    /// the list shows them, and keep the groups in the user's order. Groups
+    /// not shown now, filtered out or of another grouping, keep their places.
     mutating func move(_ key: BindingConversationGroupKey, before target: BindingConversationGroupKey?, shown: [BindingConversationGroupKey]) {
         let shown = shown.filter(Self.orderable)
         guard shown.contains(key), key != target else { return }
         var moved = shown.filter { $0 != key }
         moved.insert(key, at: target.flatMap { moved.firstIndex(of: $0) } ?? moved.count)
         guard moved != shown else { return }
-        // The list shows groups not in the order yet first, as at its head.
-        let order = shown.filter { !groupOrder.contains($0) } + groupOrder
-        var next = moved.makeIterator()
-        groupOrder = order.map { shown.contains($0) ? next.next()! : $0 }
-    }
-
-    /// The groups of the grouping shown follow recent activity again.
-    mutating func orderByActivity() {
-        groupOrder.removeAll { key in
-            switch (grouping, key) {
-            case (.project, .project), (.runtime, .runtime): true
-            default: false
-            }
+        if groupSort == .manual {
+            // The list shows groups new since after the ordered ones.
+            let order = groupOrder + shown.filter { !groupOrder.contains($0) }
+            var next = moved.makeIterator()
+            groupOrder = order.map { shown.contains($0) ? next.next()! : $0 }
+        } else {
+            // Out of recent activity the order starts from the list as shown.
+            groupOrder = moved + groupOrder.filter { !shown.contains($0) }
         }
+        groupSort = .manual
     }
 
     /// The core's groups in its order, each with the rows it loaded.

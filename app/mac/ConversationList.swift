@@ -225,7 +225,6 @@ struct ConversationListView: View {
                     .disabled(index == shown.count - 1)
                 Button("移到最前") { browser.move(section.id, before: shown.first, shown: shown) }.disabled(index == 0)
                 Button("移到最后") { browser.move(section.id, before: nil, shown: shown) }.disabled(index == shown.count - 1)
-                if browser.isOrderedByHand(shown) { Button("按最近活动排列组") { browser.orderByActivity() } }
             }
         }
     }
@@ -344,7 +343,12 @@ struct ConversationListView: View {
     private var browserMenu: some View {
         Menu {
             Picker("分组", selection: $browser.grouping) { ForEach(ConversationBrowser.Grouping.allCases) { Text($0.title).tag($0) } }
-            Picker("排序", selection: $browser.sort) { ForEach(ConversationBrowser.Sort.allCases) { Text($0.title).tag($0) } }
+            if browser.grouping != .none {
+                Picker("组排序", selection: Binding(get: { browser.groupSort }, set: { browser.setGroupSort($0, shown: orderableGroups) })) {
+                    ForEach(ConversationBrowser.GroupSort.allCases) { Text($0.title).tag($0) }
+                }
+            }
+            Picker("会话排序", selection: $browser.sort) { ForEach(ConversationBrowser.Sort.allCases) { Text($0.title).tag($0) } }
             Toggle("从旧到新", isOn: $browser.oldestFirst)
             Divider()
             Picker("Agent 运行时", selection: $browser.runtimeID) {

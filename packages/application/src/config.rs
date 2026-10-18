@@ -593,8 +593,11 @@ pub struct ConversationBrowserPreferences {
     /// Groups the user folded; remembered with the other choices.
     #[serde(default)]
     pub collapsed: Vec<ConversationGroupKey>,
-    /// Groups in the order the user put them, each grouping's own; none of
-    /// the shown groups here: they follow recent activity.
+    /// How groups follow each other; `sort` orders the rows within them.
+    #[serde(default)]
+    pub group_sort: ConversationGroupSort,
+    /// Groups in the order the user put them, each grouping's own; kept
+    /// while groups follow recent activity, for when they no longer do.
     #[serde(default)]
     pub group_order: Vec<ConversationGroupKey>,
 }
@@ -694,6 +697,15 @@ pub enum ConversationBrowserSort {
     #[default]
     Updated,
     Created,
+}
+#[derive(Debug, Default, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum ConversationGroupSort {
+    /// The group with the latest activity first.
+    #[default]
+    Activity,
+    /// In `group_order`, which no time moves.
+    Manual,
 }
 #[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]

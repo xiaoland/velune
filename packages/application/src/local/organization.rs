@@ -9,7 +9,7 @@ use crate::api::{
 };
 use crate::config::{
     ConversationBrowserGrouping, ConversationBrowserProject, ConversationBrowserSort,
-    ConversationGroupKey, ConversationMarks,
+    ConversationGroupKey, ConversationGroupSort, ConversationMarks,
 };
 use std::cmp::Ordering;
 use std::collections::{BTreeSet, HashMap};
@@ -476,21 +476,21 @@ impl CoreRuntime {
                 })
                 .then_with(|| lk.cmp(rk))
         });
-        // Once the user put the groups in order they follow it, after any
-        // group new since, which keeps the order above; pinned stays first.
-        let position = |key: &ConversationGroupKey| {
-            preferences
-                .group_order
-                .iter()
-                .position(|ordered| ordered == key)
-        };
-        if groups
-            .iter()
-            .any(|(key, ..)| *key != ConversationGroupKey::Pinned && position(key).is_some())
-        {
-            groups.sort_by_key(|(key, ..)| match key {
-                ConversationGroupKey::Pinned => (0, 0),
-                key => position(key).map_or((1, 0), |at| (2, at)),
+        // In the user's order no activity moves a group: pinned stays first,
+        // and groups new since follow the ordered ones by key.
+        if preferences.group_sort == ConversationGroupSort::Manual {
+            let position = |key: &ConversationGroupKey| {
+                preferences
+                    .group_order
+                    .iter()
+                    .position(|ordered| ordered == key)
+            };
+            groups.sort_by(|(lk, ..), (rk, ..)| {
+                let place = |key: &ConversationGroupKey| match key {
+                    ConversationGroupKey::Pinned => (0, 0),
+                    key => position(key).map_or((2, 0), |at| (1, at)),
+                };
+                place(lk).cmp(&place(rk)).then_with(|| lk.cmp(rk))
             });
         }
         let page = self.conversation_browser_limits.page as usize;

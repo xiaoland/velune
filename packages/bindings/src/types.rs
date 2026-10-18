@@ -1337,8 +1337,11 @@ pub struct BindingConversationBrowserPreferences {
     #[serde(default)]
     #[uniffi(default = [])]
     pub collapsed: Vec<BindingConversationGroupKey>,
-    /// Groups in the order the user put them, each grouping's own; when none
-    /// of the shown groups is here they follow recent activity.
+    /// How groups follow each other; `sort` orders the rows within them.
+    #[serde(default)]
+    pub group_sort: BindingConversationGroupSort,
+    /// Groups in the order the user put them, each grouping's own; kept
+    /// while groups follow recent activity.
     #[serde(default)]
     #[uniffi(default = [])]
     pub group_order: Vec<BindingConversationGroupKey>,
@@ -1451,6 +1454,15 @@ pub enum BindingConversationBrowserSort {
     #[default]
     Updated,
     Created,
+}
+#[derive(Debug, Default, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, uniffi::Enum)]
+#[serde(rename_all = "camelCase")]
+pub enum BindingConversationGroupSort {
+    /// The group with the latest activity first.
+    #[default]
+    Activity,
+    /// In the user's order, which no time moves.
+    Manual,
 }
 #[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq, uniffi::Enum)]
 #[serde(rename_all = "camelCase")]
