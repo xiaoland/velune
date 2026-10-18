@@ -115,6 +115,7 @@ pub struct ConfigurationSnapshot {
     pub conversation_browser_limits: ConversationBrowserLimits,
     pub outline_presentation: OutlinePresentation,
     pub linked_conversation_opening: LinkedConversationOpening,
+    pub usage_display: UsageDisplay,
     pub conversation_browser_preferences: ConversationBrowserPreferences,
     pub status_line: Vec<StatusLineItem>,
     pub provider_import_types: Vec<RuntimeTypeDescriptor>,
@@ -959,6 +960,9 @@ impl Application {
             json!({"opening": opening}),
             None,
         )
+    }
+    pub fn set_usage_display(&mut self, display: UsageDisplay) -> Result<UsageDisplay, Error> {
+        self.execute("usageDisplay", json!({"display": display}), None)
     }
     /// Stores what the composer's status line shows, returning it in display order.
     pub fn set_status_line(

@@ -58,7 +58,7 @@ struct ComposerStatusLine: View {
                 .help(summary(items, status))
                 .accessibilityLabel("会话状态")
                 .accessibilityValue(summary(items, status))
-                .popover(isPresented: $showsDetails, arrowEdge: .top) { StatusDetails(status: status, branch: branch) }
+                .popover(isPresented: $showsDetails, arrowEdge: .top) { StatusDetails(status: status, branch: branch, display: store.usageDisplay) }
             }
         }
         // The branch can change with any turn; reading it is one git call.
@@ -72,7 +72,7 @@ struct ComposerStatusLine: View {
         switch item {
         case .contextUsage:
             if let fraction = status.contextFraction {
-                HStack(spacing: 4) { ContextRing(fraction: fraction); Text(StatusFormat.percent(fraction)) }
+                HStack(spacing: 4) { ContextRing(fraction: fraction, display: store.usageDisplay); Text(StatusFormat.context(fraction, store.usageDisplay)) }
             } else if let tokens = status.contextTokens {
                 Text("上下文 \(StatusFormat.short(tokens))")
             }
@@ -86,7 +86,7 @@ struct ComposerStatusLine: View {
                 }.truncationMode(.middle)
             }
         case .rateLimits:
-            Label(status.rateLimits.map { "\(StatusFormat.window($0.windowMinutes, short: true)) \($0.usedPercent)%" }.joined(separator: " · "),
+            Label(status.rateLimits.map { "\(StatusFormat.window($0.windowMinutes, short: true)) \(StatusFormat.limit($0.usedPercent, store.usageDisplay, short: true))" }.joined(separator: " · "),
                   systemImage: "gauge.with.dots.needle.33percent")
         case .sessionCost:
             if let cost = status.costMicroUSD { Text(StatusFormat.cost(cost)) }
@@ -99,10 +99,11 @@ struct ComposerStatusLine: View {
             case .contextUsage:
                 guard let tokens = status.contextTokens else { return nil }
                 guard let window = status.contextWindow, let fraction = status.contextFraction else { return "上下文：已用 \(tokens.formatted()) tokens，模型窗口未知" }
+                if store.usageDisplay == .remaining { return "上下文：剩余 \(window.subtractingClamped(tokens).formatted()) / \(window.formatted()) tokens（\(StatusFormat.percent(1 - fraction))）" }
                 return "上下文：已用 \(tokens.formatted()) / \(window.formatted()) tokens（\(StatusFormat.percent(fraction))）"
             case .sessionTokens: return status.sessionTokens.map { "本会话累计：\($0.formatted()) tokens" }
             case .workingDirectory: return status.directory.map { "工作目录：\($0)" + (branch.map { "（\($0)）" } ?? "") }
-            case .rateLimits: return "账户限额：" + status.rateLimits.map { "\(StatusFormat.window($0.windowMinutes, short: false))已用 \($0.usedPercent)%" }.joined(separator: "，")
+            case .rateLimits: return "账户限额：" + status.rateLimits.map { "\(StatusFormat.window($0.windowMinutes, short: false))\(StatusFormat.limit($0.usedPercent, store.usageDisplay, short: false))" }.joined(separator: "，")
             case .sessionCost: return status.costMicroUSD.map { "费用估算：\(StatusFormat.cost($0))" }
             }
         }
@@ -110,14 +111,16 @@ struct ComposerStatusLine: View {
     }
 }
 
-/// How full the context is: a thin ring in the secondary colour that turns
-/// orange, then red, as it nears the window.
+/// How full the context is: a thin ring in the secondary colour, filling
+/// with use or emptying as it is used up, that turns orange, then red, as it
+/// nears the window.
 private struct ContextRing: View {
     let fraction: Double
+    let display: BindingUsageDisplay
     var body: some View {
         ZStack {
             Circle().stroke(.quaternary, lineWidth: 2)
-            Circle().trim(from: 0, to: fraction)
+            Circle().trim(from: 0, to: display == .remaining ? 1 - fraction : fraction)
                 .stroke(fraction >= 0.9 ? Color.red : fraction >= 0.75 ? Color.orange : Color.secondary,
                         style: StrokeStyle(lineWidth: 2, lineCap: .round))
                 .rotationEffect(.degrees(-90))
@@ -131,19 +134,24 @@ private struct ContextRing: View {
 private struct StatusDetails: View {
     let status: ConversationStatus
     let branch: String?
+    let display: BindingUsageDisplay
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text("会话状态").font(.headline)
             Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 6) {
                 if let tokens = status.contextTokens {
                     heading("上下文")
-                    row("已用", status.contextWindow.map { "\(tokens.formatted()) / \($0.formatted()) tokens" } ?? "\(tokens.formatted()) tokens（模型窗口未知）")
+                    if display == .remaining, let window = status.contextWindow {
+                        row("剩余", "\(window.subtractingClamped(tokens).formatted()) / \(window.formatted()) tokens")
+                    } else {
+                        row("已用", status.contextWindow.map { "\(tokens.formatted()) / \($0.formatted()) tokens" } ?? "\(tokens.formatted()) tokens（模型窗口未知）")
+                    }
                     if let fraction = status.contextFraction {
                         GridRow {
                             Color.clear.gridCellUnsizedAxes([.horizontal, .vertical])
                             HStack {
-                                ProgressView(value: fraction).tint(fraction >= 0.9 ? .red : fraction >= 0.75 ? .orange : nil)
-                                Text(StatusFormat.percent(fraction)).foregroundStyle(.secondary).monospacedDigit()
+                                ProgressView(value: display == .remaining ? 1 - fraction : fraction).tint(fraction >= 0.9 ? .red : fraction >= 0.75 ? .orange : nil)
+                                Text(StatusFormat.context(fraction, display)).foregroundStyle(.secondary).monospacedDigit()
                             }
                         }
                     }
@@ -165,7 +173,7 @@ private struct StatusDetails: View {
                     heading("账户限额")
                     ForEach(Array(status.rateLimits.enumerated()), id: \.offset) { _, limit in
                         row(StatusFormat.window(limit.windowMinutes, short: false),
-                            "已用 \(limit.usedPercent)%" + (limit.resetsAtUnixMs.map { "，\(Date(timeIntervalSince1970: Double($0) / 1000).formatted(.relative(presentation: .named)))重置" } ?? ""))
+                            StatusFormat.limit(limit.usedPercent, display, short: false) + (limit.resetsAtUnixMs.map { "，\(Date(timeIntervalSince1970: Double($0) / 1000).formatted(.relative(presentation: .named)))重置" } ?? ""))
                     }
                 }
                 if let cost = status.costMicroUSD {
@@ -175,7 +183,7 @@ private struct StatusDetails: View {
             }
             Text("取自运行时的原生记录；累计为已记录各轮之和，输入含缓存，输出含推理；费用为运行时按其价目的估算，不代表实际账单。")
                 .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-            SettingsTabLink(tab: .conversation, title: "自定义状态栏…")
+            SettingsTabLink(tab: .general, title: "自定义状态栏…")
         }
         .padding(14).frame(width: 320, alignment: .leading)
     }
@@ -195,6 +203,22 @@ enum StatusFormat {
     static func percent(_ fraction: Double) -> String {
         fraction > 0 && fraction < 0.01 ? "<1%" : fraction.formatted(.percent.precision(.fractionLength(0)))
     }
+    /// The context as the user reads it, from the used fraction; the used
+    /// share stays bare, as it always read.
+    static func context(_ used: Double, _ display: BindingUsageDisplay) -> String {
+        guard display == .remaining else { return percent(used) }
+        // Barely used still reads as not all remaining.
+        let remaining = used > 0 && used < 0.01 ? ">99%" : percent(1 - used)
+        return "剩余 \(remaining)"
+    }
+    /// A rate limit's window, used or remaining.
+    static func limit(_ usedPercent: UInt32, _ display: BindingUsageDisplay, short: Bool) -> String {
+        let used = min(usedPercent, 100)
+        switch display {
+        case .used: return short ? "\(used)%" : "已用 \(used)%"
+        case .remaining: return "剩余 \(100 - used)%"
+        }
+    }
     static func short(_ tokens: UInt64) -> String { tokens.formatted(.number.notation(.compactName)) }
     static func cost(_ microUSD: UInt64) -> String {
         (Double(microUSD) / 1_000_000).formatted(.currency(code: "USD").precision(.fractionLength(microUSD < 10_000 ? 4 : 2)))
@@ -206,4 +230,9 @@ enum StatusFormat {
         if minutes % 60 == 0 { return short ? "\(minutes / 60)h" : "\(minutes / 60) 小时窗口" }
         return short ? "\(minutes)m" : "\(minutes) 分钟窗口"
     }
+}
+
+extension UInt64 {
+    /// What is left of this many after `used`, never below zero.
+    func subtractingClamped(_ used: UInt64) -> UInt64 { used >= self ? 0 : self - used }
 }

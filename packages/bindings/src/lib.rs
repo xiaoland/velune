@@ -412,6 +412,13 @@ impl VeluneApplication {
             app.set_linked_conversation_opening(opening)
         })?)
     }
+    pub fn set_usage_display(
+        &self,
+        display: BindingUsageDisplay,
+    ) -> Result<BindingUsageDisplay, BindingError> {
+        let display = convert(display)?;
+        convert(self.with("set_usage_display", |app| app.set_usage_display(display))?)
+    }
     pub fn set_status_line(
         &self,
         items: Vec<BindingStatusLineItem>,

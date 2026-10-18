@@ -1,4 +1,5 @@
 import SwiftUI
+import VeluneBindings
 
 /// One quota window's usage against the provider's ceiling for it.
 struct QuotaWindowRow: View {
@@ -6,24 +7,44 @@ struct QuotaWindowRow: View {
     let limit: UInt8?
     /// An expired observation is shown for reference only.
     let fresh: Bool
+    let display: BindingUsageDisplay
     var showsModels = false
     private var reached: Bool { fresh && limit.map { window.usedPercent >= Double($0) } ?? false }
+    private var used: Double { min(max(window.usedPercent, 0), 100) }
+    /// The share the row shows, used or remaining as the user chose.
+    private var shown: Double { display == .remaining ? 100 - used : used }
     var body: some View {
         VStack(alignment: .leading, spacing: 3) {
             HStack(spacing: 8) {
                 Text("\(QuotaWindow.name(window.id))窗口").frame(minWidth: 70, alignment: .leading)
-                ProgressView(value: min(max(window.usedPercent, 0), 100), total: 100).tint(reached ? Color.orange : nil)
-                Text("\(Int(window.usedPercent.rounded()))%").monospacedDigit().foregroundStyle(fresh ? .primary : .secondary).frame(width: 40, alignment: .trailing)
+                ProgressView(value: shown, total: 100).tint(reached ? Color.orange : nil)
+                Text(UsageFormat.label(Int(shown.rounded()), display)).monospacedDigit().foregroundStyle(fresh ? .primary : .secondary).frame(width: 64, alignment: .trailing)
             }
             if !detail.isEmpty { Text(detail).font(.caption).foregroundStyle(reached ? .orange : .secondary) }
         }
     }
     private var detail: String {
         var parts: [String] = []
-        if reached, let limit { parts.append("已达上限 \(limit)%，暂停新请求") } else if let limit { parts.append("上限 \(limit)%") }
+        if let limit { parts.append(UsageFormat.ceiling(limit, display, reached: reached)) }
         if let reset = window.resetsAt, reset > Date() { parts.append("\(reset.formatted(.relative(presentation: .named)))重置") }
         if showsModels, let models = window.modelIDs { parts.append("仅 " + models.joined(separator: "、")) }
         return parts.joined(separator: " · ")
+    }
+}
+
+/// Usage as the user reads it: the used share, or what remains of it.
+enum UsageFormat {
+    static func label(_ usedOrRemaining: Int, _ display: BindingUsageDisplay) -> String {
+        display == .remaining ? "剩余 \(usedOrRemaining)%" : "已用 \(usedOrRemaining)%"
+    }
+    /// A used-percent ceiling; read as remaining, it is the share kept back.
+    static func ceiling(_ limit: UInt8, _ display: BindingUsageDisplay, reached: Bool) -> String {
+        switch (display, reached) {
+        case (.used, false): "上限 \(limit)%"
+        case (.used, true): "已达上限 \(limit)%，暂停新请求"
+        case (.remaining, false): "保留 \(100 - Int(limit))%"
+        case (.remaining, true): "剩余已不足保留的 \(100 - Int(limit))%，暂停新请求"
+        }
     }
 }
 
@@ -111,7 +132,7 @@ struct ProviderQuotaForm: View {
                         Label("提供商表示此账户当前不可用，暂停新请求。", systemImage: "pause.circle").foregroundStyle(.orange)
                     }
                     ForEach(Array((quota?.windows ?? []).enumerated()), id: \.offset) { _, window in
-                        QuotaWindowRow(window: window, limit: limit(window.id), fresh: quota?.freshness == .fresh, showsModels: true)
+                        QuotaWindowRow(window: window, limit: limit(window.id), fresh: quota?.freshness == .fresh, display: store.usageDisplay, showsModels: true)
                     }
                     QuotaStatusText(quota: quota)
                 }
@@ -131,7 +152,7 @@ struct ProviderQuotaForm: View {
                     ForEach(windowIDs, id: \.self) { id in
                         Picker(selection: limitBinding(id)) {
                             Text("不限制").tag(UInt8?.none)
-                            ForEach(choices(id), id: \.self) { Text("\($0)%").tag(UInt8?.some($0)) }
+                            ForEach(choices(id), id: \.self) { Text(store.usageDisplay == .remaining ? "保留 \(100 - Int($0))%" : "已用 \($0)%").tag(UInt8?.some($0)) }
                         } label: {
                             Text("\(QuotaWindow.name(id))窗口")
                             if quota?.windows.contains(where: { $0.id == id }) != true { Text("当前未报告此窗口") }
@@ -141,7 +162,7 @@ struct ProviderQuotaForm: View {
             } header: {
                 Text("使用上限")
             } footer: {
-                Text("任一窗口的已用比例达到上限时，暂停向此提供商发送新请求，直到额度降回上限以下；对所有模型路由和直接选择它的模型都生效。设了上限却取不到最新额度时也会暂停。上限依据定期观测，已开始的请求和其他工具的使用仍可能越过它。")
+                Text((store.usageDisplay == .remaining ? "任一窗口的剩余额度低于保留比例时，暂停向此提供商发送新请求，直到剩余回到保留比例以上" : "任一窗口的已用比例达到上限时，暂停向此提供商发送新请求，直到额度降回上限以下") + "；对所有模型路由和直接选择它的模型都生效。设了上限却取不到最新额度时也会暂停。上限依据定期观测，已开始的请求和其他工具的使用仍可能越过它。")
                     .formFooterStyle()
             }
         }

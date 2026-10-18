@@ -560,6 +560,7 @@ pub struct BindingConfigurationSnapshot {
     pub conversation_browser_limits: BindingConversationBrowserLimits,
     pub outline_presentation: BindingOutlinePresentation,
     pub linked_conversation_opening: BindingLinkedConversationOpening,
+    pub usage_display: BindingUsageDisplay,
     pub conversation_browser_preferences: BindingConversationBrowserPreferences,
     /// What the composer's status line shows, in display order.
     pub status_line: Vec<BindingStatusLineItem>,
@@ -1233,6 +1234,14 @@ pub struct BindingComposerDraft {
 pub enum BindingOutlinePresentation {
     Popover,
     InPlace,
+}
+
+/// Whether quota and context usage read as used or remaining.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, uniffi::Enum)]
+#[serde(rename_all = "camelCase")]
+pub enum BindingUsageDisplay {
+    Used,
+    Remaining,
 }
 
 /// Where a conversation linked from another opens.

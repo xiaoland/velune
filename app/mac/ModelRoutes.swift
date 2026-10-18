@@ -167,7 +167,7 @@ private struct RouteMemberStatus: View {
             Group {
                 if let notice { Label(notice, systemImage: "pause.circle").font(.caption).foregroundStyle(.orange) }
                 ForEach(Array(windows.enumerated()), id: \.offset) { _, window in
-                    QuotaWindowRow(window: window, limit: member.provider.quotaLimits.first { $0.windowID == window.id }?.maxUsedPercent, fresh: quota?.freshness == .fresh)
+                    QuotaWindowRow(window: window, limit: member.provider.quotaLimits.first { $0.windowID == window.id }?.maxUsedPercent, fresh: quota?.freshness == .fresh, display: store.usageDisplay)
                 }
                 if !needsSignIn, let quota, quota.freshness != .unsupported, quota.freshness != .fresh || windows.isEmpty { QuotaStatusText(quota: quota) }
             }.padding(.leading, 24)

@@ -39,6 +39,7 @@ struct AppProblem: Identifiable, Sendable, Equatable {
         case "setOutlinePresentation": return "保存大纲设置"
         case "setStatusLine": return "保存状态栏设置"
         case "setLinkedConversationOpening": return "保存关联 Agent 设置"
+        case "setUsageDisplay": return "保存用量显示设置"
         case "composerDrafts": return "读取草稿"
         case "setComposerDraft": return "保存草稿"
         case "setConversationBrowserLimits": return "保存会话列表设置"

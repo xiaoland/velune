@@ -22,6 +22,8 @@ Mac 最低支持macOS15，由根目录 [Package.swift](../../Package.swift) 定�
 
 额度只读 core 观测（`provider_quota`／`refresh_provider_quota`，`ProviderQuota.swift`）：视图显示期间在请求队列上读取，不占用 `isLoading`；读取中或尚无结果时每 2 秒、否则每 30 秒再读，由 core 决定是否采样；未登录的提供商不读取。添加提供商先在同一 sheet 中选择 core `provider_templates()` 给出的模板（`ProviderTemplates.swift`，按订阅／API 分组，另有“从 Agent 运行时导入”），选中订阅时显示其披露，“继续”后以模板组合打开编辑器。订阅提供商的协议与地址以只读值呈现，不提供换用 API key 或其他订阅的入口；新订阅提供商“保存并登录…”保存后留在编辑器并开始登录（Codex 登录 URL 自动在浏览器打开，Claude Code CLI 自行打开浏览器）。Claude Code 组合以本机 `claude` 可执行文件替代服务地址：自动填入发现的第一个路径，可从“已发现”菜单或“选择…”更换，须为绝对路径。已登录且认证带 `logout` 动作时显示“退出登录…”，确认后调用 `authentication_logout`。Claude Code 组合的“账户来源”选择在 Velune 中登录新账户、本机 Claude Code 登录，或本机 Claude Code 运行时的登录；改变来源后在保存时提交 `useClaudeCodeLogin`（改回新账户为 `clear`）。沿用的登录只显示状态、账户尾号与“检查登录状态”（`authentication_inspect` 后重读配置），没有登录、退出或“清除认证”。“从 Agent 运行时导入”列出 core `providerImportTypes` 中的运行时，含 Codex 与 Claude Code；没有服务地址的候选（Claude Code 登录）不显示地址行。订阅或报告额度的提供商有“额度与使用上限”页，按窗口选择已用比例上限，对所有路由和直接调用共同生效。
 
+设置窗口依次为“通用”“AI提供商”“模型路由”“Agent 运行时”，⌘, 打开时默认在“通用”。“通用”是一个分组 Form：用量显示、大纲、关联 Agent、状态栏、会话列表，随后是快捷键（`ShortcutSettingsSections`，按菜单分节）。用量显示（core 的 `usage_display`，`set_usage_display`）选择已用或剩余：`QuotaWindowRow`、状态栏的上下文与账户限额及其详情按此显示比例与进度；额度上限仍是已用比例，显示剩余时写作“保留 N%”（`UsageFormat`），上下文颜色仍按已用程度变化。每轮记录的“结束时上下文”是 token 计数，不随此切换。
+
 所有可编辑列表采用原生双击主操作：提供商、运行时、模型模板、模型路由打开编辑，提供商内模型聚焦对应详情，会话打开原生标题重命名。单击选择与 ⌘／Shift 多选保持有效；只读目录或导入候选不伪造编辑操作。
 
 “问题”是共享 AppStore 的原生窗口，可从主窗口有问题时的状态入口、编辑／导入 sheet 标题行或菜单“问题…”打开（⌘⇧M）。操作失败保留结构化诊断，不在 composer／设置底部或会话列表重复展示；活动读取问题按来源合并，恢复时移除。记录在当前进程内最多保留100项，不作为第二套日志或持久化数据。具体验收和安装状态见 [问题展示任务](../../tasks/problems-surface/packet.md)。
