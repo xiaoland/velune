@@ -217,11 +217,9 @@ struct ConversationListView: View {
             browser.move(dragged, before: from < to ? (to + 1 < shown.count ? shown[to + 1] : nil) : section.id, shown: shown)
             return true
         }
-        .background {
-            if groupDropTarget == section.id, draggedGroup != section.id {
-                RoundedRectangle(cornerRadius: 4).fill(Color.accentColor.opacity(0.2))
-            }
-        }
+        // An insertion line, not a highlight of the header: where the dragged group would land.
+        .overlay(alignment: .top) { if groupLanding?.before == section.id { insertionLine } }
+        .overlay(alignment: .bottom) { if let landing = groupLanding, landing.before == nil, landing.target == section.id { insertionLine } }
         .contextMenu {
             if let path {
                 Button("编辑项目…") { projectTarget = ProjectEditorTarget(path: path) }
@@ -249,6 +247,20 @@ struct ConversationListView: View {
                 Button("移到最后") { browser.move(section.id, before: nil, shown: shown) }.disabled(index == shown.count - 1)
             }
         }
+    }
+
+    private var insertionLine: some View {
+        Capsule().fill(Color.accentColor).frame(height: 2).padding(.horizontal, 2).allowsHitTesting(false)
+    }
+
+    /// While a group is dragged over another: the group it would go in front of
+    /// (nil: the end), as the drop puts it, and the group it is over.
+    private var groupLanding: (before: BindingConversationGroupKey?, target: BindingConversationGroupKey)? {
+        guard let dragged = draggedGroup, let target = groupDropTarget, dragged != target else { return nil }
+        let shown = orderableGroups
+        guard let from = shown.firstIndex(of: dragged), let to = shown.firstIndex(of: target) else { return nil }
+        if from > to { return (target, target) }
+        return (to + 1 < shown.count ? shown[to + 1] : nil, target)
     }
 
     /// The shown groups the user may put in order, as the list shows them.
