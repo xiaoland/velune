@@ -112,7 +112,9 @@ import VeluneBindings
         return ConversationLink.url(runtimeID: runtime, conversationID: id)
     }
 
-    var title: String { store.selectedConversationTitle ?? "新会话" }
+    var title: String {
+        store.selectedConversationTitle ?? store.reachingConversationID.map { store.conversation(id: $0)?.title ?? "正在打开…" } ?? "新会话"
+    }
 }
 
 /// A leaf of a window's split: its tabs and the one it shows.

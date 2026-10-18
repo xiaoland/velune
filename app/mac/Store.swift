@@ -39,6 +39,11 @@ final class AppStore: ObservableObject {
     @Published private(set) var selectedConversationIDs: Set<String> = []
     @Published private(set) var selectedConversationID: String?
     @Published private(set) var pendingConversationID: String?
+    /// A conversation on its way to opening before its loading starts: while
+    /// a new workspace reads the list first, or one off the list is looked up.
+    @Published private(set) var reachingConversationID: String?
+    /// The conversation is being opened, as loading shows.
+    var isOpeningConversation: Bool { pendingConversationID != nil || reachingConversationID != nil }
     @Published private(set) var conversationManagementStatus: String?
     @Published private(set) var projectionRuntimeID: String?
     /// Conversations executing in this application, across windows; polled by
@@ -514,7 +519,8 @@ final class AppStore: ObservableObject {
         guard !isPreview, let transport else { return }
         if sharedApplication == nil { notifier = ConversationNotifier(application: self) }
         if sharedApplication == nil { loadDrafts(transport) }
-        enqueue({ try transport.list() }) { [weak self] data in
+        reachingConversationID = conversationID
+        enqueue({ try transport.list() }, onFailure: { [weak self] _ in self?.reachingConversationID = nil }) { [weak self] data in
             guard let self else { return }
             applyList(data)
             schedulePolling()
@@ -815,11 +821,13 @@ final class AppStore: ObservableObject {
     /// back to; an agent may have started it after the list was last read.
     func openLinkedConversation(id: String, move: NavigationMove = .new) {
         if conversation(id: id) != nil { selectConversation(id: id, move: move); return }
-        guard !isPreview, !isShuttingDown, let transport else { return }
+        guard !isPreview, !isShuttingDown, let transport else { reachingConversationID = nil; return }
+        reachingConversationID = id
         queue.async { [weak self] in
             let result = Result { try transport.findConversation(id) }
             DispatchQueue.main.async {
                 guard let self else { return }
+                if self.reachingConversationID == id { self.reachingConversationID = nil }
                 switch result {
                 case .success(let found?):
                     let reached = BindingMapping.listed(found)
@@ -833,10 +841,11 @@ final class AppStore: ObservableObject {
         }
     }
     func selectConversation(id: String, move: NavigationMove = .new) {
-        guard let conversation = conversation(id: id) else { return }
+        guard let conversation = conversation(id: id) else { reachingConversationID = nil; return }
         // Chosen while another operation runs, it opens once that is done; the latest choice wins.
         guard !isLoading, !executionStarting else { deferredSelection = (id, move); return }
         deferredSelection = nil
+        reachingConversationID = nil
         selectedConversationIDs = [id]
         if isPreview { projectionRuntimeID = conversation.runtimeID; apply(previewSnapshots[id]); return }
         guard let transport else { recordProblem("本地核心未配置"); return }
@@ -1574,7 +1583,7 @@ final class AppStore: ObservableObject {
             } else { resetProjection() }
         }
     }
-    private func resetProjection() { intentConversationID = nil; loadedPayloads.removeAll(); isDraft = false; problems.removeAll { $0.activityKey?.hasPrefix("poll:") == true }; generation += 1; snapshot = nil; projectionRuntimeID = nil; selectedConversationID = nil; pendingConversationID = nil; transcript.reset(); endPendingSend(); activity = nil; sessionOptions = nil; sessionOptionsKey = nil }
+    private func resetProjection() { intentConversationID = nil; loadedPayloads.removeAll(); isDraft = false; problems.removeAll { $0.activityKey?.hasPrefix("poll:") == true }; generation += 1; snapshot = nil; projectionRuntimeID = nil; selectedConversationID = nil; pendingConversationID = nil; reachingConversationID = nil; transcript.reset(); endPendingSend(); activity = nil; sessionOptions = nil; sessionOptionsKey = nil }
     private func applyList(_ data: BindingConfigurationSnapshot) {
         // The application owns the conversation list and configuration that
         // workspaces copy; a workspace's result must reach it, or the stale

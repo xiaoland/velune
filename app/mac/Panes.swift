@@ -117,7 +117,7 @@ struct TabContentView: View {
     var body: some View {
         VStack(spacing: 0) {
             Group {
-                if store.pendingConversationID != nil { ProgressView(store.conversationManagementStatus ?? "正在加载会话…") }
+                if store.isOpeningConversation { ProgressView(store.conversationManagementStatus ?? "正在加载会话…") }
                 else if previewEmpty || store.transcript.rows.isEmpty { emptyState }
                 else { transcript }
             }
