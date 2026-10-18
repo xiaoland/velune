@@ -352,8 +352,6 @@ pub struct BindingProviderModel {
     pub context_window: Option<u32>,
     pub max_output_tokens: Option<u32>,
     pub reasoning_levels: Option<Vec<String>>,
-    #[serde(rename = "piProjection", with = "adapter_metadata")]
-    pub adapter_metadata_json: Option<String>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -1037,29 +1035,6 @@ pub struct BindingAuthenticationNotification {
     pub verification_uri: Option<String>,
 }
 
-mod adapter_metadata {
-    use serde::{Deserialize, Deserializer, Serialize, Serializer};
-    pub fn serialize<S: Serializer>(
-        value: &Option<String>,
-        serializer: S,
-    ) -> Result<S::Ok, S::Error> {
-        let parsed = value
-            .as_ref()
-            .map(|text| {
-                serde_json::from_str::<serde_json::Value>(text).map_err(serde::ser::Error::custom)
-            })
-            .transpose()?;
-        parsed.serialize(serializer)
-    }
-    pub fn deserialize<'de, D: Deserializer<'de>>(
-        deserializer: D,
-    ) -> Result<Option<String>, D::Error> {
-        Option::<serde_json::Value>::deserialize(deserializer)?
-            .map(|value| serde_json::to_string(&value).map_err(serde::de::Error::custom))
-            .transpose()
-    }
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, uniffi::Enum)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub enum BindingSettingKind {
@@ -1216,7 +1191,7 @@ pub struct BindingHistoryFailure {
 fn display_conversation_title<'de, D: serde::Deserializer<'de>>(
     deserializer: D,
 ) -> Result<String, D::Error> {
-    let title = velune_application::conversation::ConversationTitle::deserialize(deserializer)?;
+    let title = velune_application_api::conversation::ConversationTitle::deserialize(deserializer)?;
     Ok(title.display_text().into())
 }
 
@@ -1600,6 +1575,7 @@ pub struct BindingRuntimeResourceCatalog {
 pub struct BindingRuntimeResourceDocument {
     pub entry: BindingRuntimeResourceEntry,
     /// Only the requested file, or one MCP server's native JSON object.
+    #[serde(with = "velune_application_api::bytes")]
     pub bytes: Vec<u8>,
     pub executable: bool,
 }
@@ -1625,6 +1601,7 @@ pub enum BindingRuntimeResourceRevision {
 #[serde(rename_all = "camelCase")]
 pub struct BindingTemplateSkillFile {
     pub path: String,
+    #[serde(with = "velune_application_api::bytes")]
     pub bytes: Vec<u8>,
     pub executable: bool,
 }
@@ -1851,4 +1828,21 @@ pub struct BindingProviderQuotaStatus {
     pub available: Option<bool>,
     pub refreshing: bool,
     pub problem: Option<String>,
+}
+
+/// Controller-uploaded content is addressed by this execution-owner reference.
+#[derive(Clone, Serialize, Deserialize, uniffi::Record)]
+#[serde(rename_all = "camelCase")]
+pub struct BindingAttachmentReference {
+    pub reference: String,
+    pub name: String,
+    pub bytes: u64,
+}
+
+#[derive(Clone, Serialize, Deserialize, uniffi::Record)]
+#[serde(rename_all = "camelCase")]
+pub struct BindingAttachmentContent {
+    pub media_type: Option<String>,
+    #[serde(with = "velune_application_api::bytes")]
+    pub bytes: Vec<u8>,
 }

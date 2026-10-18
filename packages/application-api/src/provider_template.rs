@@ -1,14 +1,14 @@
 //! Templates a new provider starts from. A subscription fixes the protocol,
 //! address and how requests run, so it is offered as a template rather than as
 //! an authentication option on an arbitrary provider.
-use crate::config::{ExecutionBackend, GatewayProtocol, ProviderQuotaSource, RequestProfile};
-use crate::provider_authentication::{
+use crate::authentication::{
     CODEX_SUBSCRIPTION_ENDPOINT, CODEX_SUBSCRIPTION_PROTOCOL, ProviderAuthenticationSource,
     SubscriptionDisclosure,
 };
-use serde::Serialize;
+use crate::config::{ExecutionBackend, GatewayProtocol, ProviderQuotaSource, RequestProfile};
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum ProviderTemplateKind {
     /// Signs in to one subscription account; the composition stays fixed.
@@ -18,7 +18,7 @@ pub enum ProviderTemplateKind {
 }
 
 /// The whole composition a new provider saves, with what choosing it means.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderTemplate {
     pub id: String,
@@ -31,8 +31,8 @@ pub struct ProviderTemplate {
     pub request_profile: RequestProfile,
     pub authentication_source: ProviderAuthenticationSource,
     pub quota_source: ProviderQuotaSource,
-    /// A local command the platform locates and fills into a CLI backend's
-    /// empty executable path; saving requires an absolute path.
+    /// The execution machine's command, located by its platform or supplied by the user.
+    /// Fill the CLI backend's empty binary with an absolute path before saving.
     pub executable_command: Option<String>,
     pub disclosure: Option<SubscriptionDisclosure>,
 }

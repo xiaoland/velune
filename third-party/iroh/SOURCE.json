@@ -1,0 +1,19 @@
+{
+  "crate": "iroh",
+  "version": "1.3.0",
+  "archive_url": "https://static.crates.io/crates/iroh/iroh-1.3.0.crate",
+  "archive_sha256": "885787b892b5e2507c701f132ecbd45d2bad4bbb75157a19427087c16dadb833",
+  "upstream_commit": "0072d7d84b233f9e7185eb676f049beaf557ac03",
+  "upstream_path": "iroh",
+  "rustfmt": "rustfmt 1.10.0-stable (b940084d7e 2026-09-28)",
+  "licenses": {
+    "LICENSE-MIT": {
+      "url": "https://raw.githubusercontent.com/n0-computer/iroh/0072d7d84b233f9e7185eb676f049beaf557ac03/LICENSE-MIT",
+      "sha256": "f169adb8124d3b005416d8485d00777c9a7bdd9099982c52a4493f9732e6d050"
+    },
+    "LICENSE-APACHE": {
+      "url": "https://raw.githubusercontent.com/n0-computer/iroh/0072d7d84b233f9e7185eb676f049beaf557ac03/LICENSE-APACHE",
+      "sha256": "903131e2786f073a942fbf8fae122d9e576e4dad758c6da7f9f2ba58fd8611ab"
+    }
+  }
+}

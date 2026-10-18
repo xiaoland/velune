@@ -1,20 +1,10 @@
 //! Explicit public-directory retrieval. Entries remain scoped to their source
 //! provider and are suggestions for editable templates, never configured models.
 use crate::Error;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use std::{collections::BTreeMap, time::Duration};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CatalogModel {
-    pub source_provider_id: String,
-    pub source_provider_name: String,
-    pub model_id: String,
-    pub name: String,
-    pub context_window: Option<u32>,
-    pub max_output_tokens: Option<u32>,
-    pub reasoning_levels: Option<Vec<String>>,
-}
+pub use velune_application_api::CatalogModel;
 
 /// Read the models.dev provider-scoped API format. Missing and zero limits mean
 /// unknown. A reasoning boolean does not define supported reasoning levels.

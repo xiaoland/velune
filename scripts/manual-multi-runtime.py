@@ -61,7 +61,7 @@ def main():
             for family,type_id,binary,protocol,api_id in [
                 ('codex','codex-0.159',args.codex,b.BindingGatewayProtocol.RESPONSES_V1,'synthetic-responses'),
                 ('deepseek','dsh-acp-0.2',args.dsh,b.BindingGatewayProtocol.CHAT_COMPLETIONS_V1,'synthetic-chat')]:
-                model=b.BindingProviderModel(record_key='',provider_model_id=api_id,nickname='Synthetic native',icon=None,context_window=32768,max_output_tokens=4096,reasoning_levels=None,adapter_metadata_json=None)
+                model=b.BindingProviderModel(record_key='',provider_model_id=api_id,nickname='Synthetic native',icon=None,context_window=32768,max_output_tokens=4096,reasoning_levels=None)
                 provider=b.BindingProviderDraft(id=family,name=family,protocol=protocol,endpoint=endpoint,models=[model], quota_limits=[], execution_backend=b.BindingExecutionBackend.HTTP(), request_profile=b.BindingRequestProfile.NATIVE, authentication_source=b.BindingProviderAuthenticationSource.API_KEY, quota_source=b.BindingProviderQuotaSource.NONE)
                 application.save_provider('default',provider,b.BindingAuthenticationEdit.SET_API_KEY(value='synthetic-only'))
                 saved=next(p for p in application.list().gateways[0].providers if p.id==family)
@@ -70,7 +70,7 @@ def main():
                 alternate_saved=next(p for p in application.list().gateways[0].providers if p.id==alternate.id)
                 agent_home=root/family;agent_home.mkdir()
                 if family == 'deepseek':
-                    switched_model=b.BindingProviderModel(record_key='',provider_model_id=api_id,nickname='Synthetic responses',icon=None,context_window=None,max_output_tokens=None,reasoning_levels=None,adapter_metadata_json=None)
+                    switched_model=b.BindingProviderModel(record_key='',provider_model_id=api_id,nickname='Synthetic responses',icon=None,context_window=None,max_output_tokens=None,reasoning_levels=None)
                     switched=b.BindingProviderDraft(id='protocol-switch',name='Synthetic protocol switch',protocol=responses,endpoint=endpoint+'/alternate/v1',models=[switched_model], quota_limits=[], execution_backend=b.BindingExecutionBackend.HTTP(), request_profile=b.BindingRequestProfile.NATIVE, authentication_source=b.BindingProviderAuthenticationSource.API_KEY, quota_source=b.BindingProviderQuotaSource.NONE)
                     switched_saved=next(p for g in application.save_provider('default',switched,b.BindingAuthenticationEdit.SET_API_KEY(value='synthetic-alternate')).gateways for p in g.providers if p.id=='protocol-switch')
                 runtime=b.BindingRuntimeInstance(enabled=True, id=family,name=family,type_id=type_id,gateway_id='default',settings={'binary':str(binary),'nodeBinary':str(args.node),'agentDir':str(agent_home)})
@@ -155,7 +155,7 @@ def main():
 
             assert not failures,failures
             application.shutdown();application=None
-            assert json.loads((root/'home/generic-config.json').read_text())['schemaVersion']==9
+            assert json.loads((root/'home/generic-config.json').read_text())['schemaVersion']==10
             logs=''.join(path.read_text() for path in (root/'home/logs').glob('*.jsonl'))
             for forbidden in ['synthetic-only','synthetic-alternate','SYNTHETIC_NATIVE_ANSWER','synthetic-responses','synthetic-chat',endpoint]:
                 assert forbidden not in logs,'business/configuration data entered diagnostic log'

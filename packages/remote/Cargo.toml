@@ -1,0 +1,29 @@
+[package]
+name = "velune-remote"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[features]
+# Synthetic transport marker protocol, excluded from normal product assembly.
+diagnostics = []
+
+[dependencies]
+velune-application-api = { path = "../application-api" }
+iroh = { version = "=1.3.0", default-features = false, features = ["tls-ring"] }
+# Fixed upstream cache replacement with a local interface-lifecycle patch.
+iroh-mdns-address-lookup = { path = "../../third-party/iroh-mdns-address-lookup" }
+tokio = { version = "1", features = ["rt", "sync", "time", "io-util"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+getrandom = "0.4"
+sha2 = "=0.10.9"
+n0-watcher = "=1.0.0"
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+
+[target.'cfg(target_os = "android")'.dependencies]
+rustix = { version = "=1.1.5", features = ["fs"] }
+
+[target.'cfg(not(target_os = "android"))'.dependencies]
+netdev = { version = "=0.46.3", default-features = false }

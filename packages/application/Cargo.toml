@@ -9,6 +9,7 @@ default = ["local-runtime"]
 local-runtime = ["dep:velune-agent-runtime", "dep:sha2", "dep:rustix", "dep:rmcp", "dep:axum", "dep:getrandom", "tokio/process", "tokio/io-util", "tokio/net", "tokio/sync"]
 
 [dependencies]
+velune-application-api = { path = "../application-api" }
 base64 = "0.23"
 url = "2"
 serde = { version = "1", features = ["derive"] }

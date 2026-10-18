@@ -68,6 +68,19 @@ fn user_key(kind: RuntimeResourceKind, path: &str) -> management::ResourceKey {
 }
 
 fn canonical(content: &ResourceTemplateContent) -> Result<management::Canonical, RuntimeError> {
+    if let ResourceTemplateContent::Skill { files } = content {
+        return Ok(management::Canonical::Skill {
+            files: files
+                .iter()
+                .map(|file| management::SkillFile {
+                    path: file.path.clone(),
+                    bytes: file.bytes.clone(),
+                    executable: file.executable,
+                })
+                .collect(),
+        });
+    }
+
     if let ResourceTemplateContent::Subagent {
         description,
         instructions,
@@ -96,6 +109,18 @@ fn canonical(content: &ResourceTemplateContent) -> Result<management::Canonical,
 fn template_content(
     content: management::Canonical,
 ) -> Result<ResourceTemplateContent, RuntimeError> {
+    if let management::Canonical::Skill { files } = content {
+        return Ok(ResourceTemplateContent::Skill {
+            files: files
+                .into_iter()
+                .map(|file| crate::TemplateSkillFile {
+                    path: file.path,
+                    bytes: file.bytes,
+                    executable: file.executable,
+                })
+                .collect(),
+        });
+    }
     if let management::Canonical::Subagent {
         description,
         instructions,

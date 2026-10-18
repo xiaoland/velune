@@ -25,11 +25,11 @@ impl CoreRuntime {
                 serde_json::from_value(payload["kind"].clone())?,
                 serde_json::from_value(payload["scope"].clone())?,
             )?)?),
-            "readRuntimeResource" => Ok(serde_json::to_value(management::read(
+            "readRuntimeResource" => Ok(public_document(management::read(
                 &config,
                 &serde_json::from_value(payload["key"].clone())?,
             )?)?),
-            "writeRuntimeResource" => Ok(serde_json::to_value(management::write(
+            "writeRuntimeResource" => Ok(public_document(management::write(
                 &config,
                 &serde_json::from_value(payload["key"].clone())?,
                 &serde_json::from_value(payload["expected"].clone())?,
@@ -63,4 +63,11 @@ impl CoreRuntime {
             cwd: None,
         })
     }
+}
+
+fn public_document(document: management::Document) -> Result<Value, RuntimeError> {
+    use base64::Engine;
+    let mut value = serde_json::to_value(&document)?;
+    value["bytes"] = json!(base64::engine::general_purpose::STANDARD.encode(document.bytes));
+    Ok(value)
 }

@@ -61,7 +61,9 @@ Mac 构建默认安装到 `/Applications/Velune.app`，当前产品版本为 `0.
 
 共享品牌设计资源保存在 [assets/brand](assets/brand)，供各平台与项目材料使用。SVG 光学稿及其原始说明由 Git 跟踪；Mac 构建从此目录生成应用图标，平台产物不替代共享原稿。
 
-共享 unit 入口：[ai](packages/ai/README.md)、[ai-provider](packages/ai-provider/README.md)、[conversation](packages/conversation/README.md)、[agent-runtime](packages/agent-runtime/README.md)、[gateway](packages/gateway/README.md)、[application](packages/application/README.md)、[bindings](packages/bindings/README.md)。平台入口：[Mac](app/mac/README.md)；本次拆分与验证见 [任务](tasks/package-boundaries/packet.md)。
+共享 unit 入口：[ai](packages/ai/README.md)、[ai-provider](packages/ai-provider/README.md)、[conversation](packages/conversation/README.md)、[agent-runtime](packages/agent-runtime/README.md)、[gateway](packages/gateway/README.md)、[application-api](packages/application-api/README.md)、[remote](packages/remote/README.md)、[application](packages/application/README.md)、[bindings](packages/bindings/README.md)。平台入口：[Mac](app/mac/README.md)；拆分与验证见 [任务](tasks/package-boundaries/packet.md)。
+
+远程控制通过 iroh 操作执行设备上的唯一应用核心，GUI 与 headless 使用相同 Rust 契约；remote-only UniFFI 控制端不携带 Harness／AI 执行栈。当前 [远控库任务](tasks/android-minimal/packet.md) 只交付 Rust Library、生成绑定和库级证据，已实现方向配对、稳定服务、统一寻址、自动恢复与设施设置。平台 App 尚未适配新契约，不能把本分支当作匹配产品安装；真实公网迁移与非默认双网仍未验证。完整契约归 [统一设备远控](docs/design/remote-access.md)，早期证据留在 [初版远控任务](tasks/remote-control/packet.md)。
 
 2026-10-10 的 [运行时扩展](tasks/runtime-provider-ssh/packet.md) 仅推进 Rust packages：新增 Claude Code、运行时既有模型选择、单轮 Velune Gateway 覆盖、OpenSSH 执行和受管 HOME。composer 及 SSH／HOME 设置界面明确待实现，本轮没有重新构建或安装 Mac app。
 

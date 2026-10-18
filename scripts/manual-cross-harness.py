@@ -131,7 +131,7 @@ def main():
             def model(protocol, model_id):
                 return bindings.BindingProviderModel(record_key="", provider_model_id=model_id,
                     nickname="Synthetic %s" % model_id, icon=None, context_window=32768,
-                    max_output_tokens=4096, reasoning_levels=None, adapter_metadata_json=None)
+                    max_output_tokens=4096, reasoning_levels=None)
 
             def provider(identity, protocol, model_id):
                 draft = bindings.BindingProviderDraft(id=identity, name=identity,

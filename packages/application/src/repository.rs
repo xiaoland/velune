@@ -35,6 +35,29 @@ pub(crate) struct PersistedConfig {
     pub(crate) status_line: Vec<crate::config::StatusLineItem>,
 }
 
+/// The presentation defaults actually committed by a local view. It excludes execution state.
+pub(crate) struct PresentationDefaults {
+    pub(crate) preferences: crate::config::ConversationBrowserPreferences,
+    pub(crate) limits: crate::ConversationBrowserLimits,
+    pub(crate) outline: crate::config::OutlinePresentation,
+    pub(crate) linked_opening: crate::config::LinkedConversationOpening,
+    pub(crate) status: Vec<crate::config::StatusLineItem>,
+}
+impl PersistedConfig {
+    pub(crate) fn presentation_defaults(&self) -> PresentationDefaults {
+        PresentationDefaults {
+            preferences: self.conversation_browser_preferences.clone(),
+            limits: crate::ConversationBrowserLimits {
+                page: self.conversation_browser_group_limit,
+                total: self.conversation_browser_total_limit,
+            },
+            outline: self.outline_presentation,
+            linked_opening: self.linked_conversation_opening,
+            status: self.status_line.clone(),
+        }
+    }
+}
+
 pub(crate) fn default_conversation_browser_group_limit() -> u32 {
     20
 }
@@ -236,8 +259,9 @@ impl Repository {
             }
             Ok(value[field].clone())
         };
-        let templates: Vec<crate::ResourceTemplate> =
-            serde_json::from_value(read("resource-templates.json", "templates")?)?;
+        let mut stored_templates = read("resource-templates.json", "templates")?;
+        resource_bytes_to_api(&mut stored_templates)?;
+        let templates: Vec<crate::ResourceTemplate> = serde_json::from_value(stored_templates)?;
         let bindings: Vec<crate::ResourceBinding> =
             serde_json::from_value(read("resource-bindings.json", "bindings")?)?;
         let mut ids = std::collections::BTreeSet::new();
@@ -261,7 +285,9 @@ impl Repository {
         &self,
         templates: &[crate::ResourceTemplate],
     ) -> Result<(), RuntimeError> {
-        let value = serde_json::json!({"schemaVersion":1,"templates":templates});
+        let mut stored_templates = serde_json::to_value(templates)?;
+        resource_bytes_to_storage(&mut stored_templates)?;
+        let value = serde_json::json!({"schemaVersion":1,"templates":stored_templates});
         commit(
             &self.home.join("resource-templates.json"),
             &serde_json::to_vec_pretty(&value)?,
@@ -435,5 +461,49 @@ pub(crate) fn commit(path: &Path, bytes: &[u8]) -> Result<(), RuntimeError> {
     file.sync_all()?;
     drop(file);
     fs::rename(temporary, path)?;
+    Ok(())
+}
+
+// The application-owned resource file keeps byte arrays; only presentation transport uses base64.
+#[cfg(feature = "local-runtime")]
+fn resource_bytes_to_api(templates: &mut serde_json::Value) -> Result<(), RuntimeError> {
+    use base64::Engine;
+    for template in templates
+        .as_array_mut()
+        .ok_or_else(|| RuntimeError::invalid("resource library templates"))?
+    {
+        if template["content"]["kind"] == "skill"
+            && let Some(files) = template["content"]["files"].as_array_mut()
+        {
+            for file in files {
+                let bytes: Vec<u8> = serde_json::from_value(file["bytes"].clone())?;
+                file["bytes"] =
+                    serde_json::json!(base64::engine::general_purpose::STANDARD.encode(bytes));
+            }
+        }
+    }
+    Ok(())
+}
+#[cfg(feature = "local-runtime")]
+fn resource_bytes_to_storage(templates: &mut serde_json::Value) -> Result<(), RuntimeError> {
+    use base64::Engine;
+    for template in templates
+        .as_array_mut()
+        .ok_or_else(|| RuntimeError::invalid("resource library templates"))?
+    {
+        if template["content"]["kind"] == "skill"
+            && let Some(files) = template["content"]["files"].as_array_mut()
+        {
+            for file in files {
+                let encoded = file["bytes"]
+                    .as_str()
+                    .ok_or_else(|| RuntimeError::invalid("resource library bytes"))?;
+                let bytes = base64::engine::general_purpose::STANDARD
+                    .decode(encoded)
+                    .map_err(|_| RuntimeError::invalid("resource library bytes"))?;
+                file["bytes"] = serde_json::json!(bytes);
+            }
+        }
+    }
     Ok(())
 }

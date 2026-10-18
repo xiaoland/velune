@@ -5,6 +5,9 @@ pub use acp::{
     AcpLaunch, AcpRuntimeInfo,
 };
 mod analytics;
+mod commands;
+mod service;
+pub use service::ApplicationService;
 mod api;
 #[cfg(feature = "local-runtime")]
 mod authentication_resolver;
@@ -21,11 +24,10 @@ mod subscription_auth;
 mod subscription_quota;
 pub use provider_authentication::{
     AuthenticationEdit, AuthenticationMethod, AuthenticationProvenance,
-    CODEX_SUBSCRIPTION_ENDPOINT, CODEX_SUBSCRIPTION_PROTOCOL, ProviderAuthenticationDescription,
-    ProviderAuthenticationSource, SubscriptionDisclosure,
+    CODEX_SUBSCRIPTION_ENDPOINT, CODEX_SUBSCRIPTION_PROTOCOL, LinkedClaudeLogin,
+    ProviderAuthenticationDescription, ProviderAuthenticationSource, SubscriptionDisclosure,
 };
-mod provider_template;
-pub use provider_template::{ProviderTemplate, ProviderTemplateKind, provider_templates};
+pub use velune_application_api::{ProviderTemplate, ProviderTemplateKind, provider_templates};
 pub mod config;
 #[cfg(feature = "local-runtime")]
 mod local;
@@ -59,6 +61,10 @@ pub use velune_agent_runtime::management::ErrorCode as RuntimeManagementErrorCod
 #[cfg(feature = "local-runtime")]
 mod runtime_discovery;
 pub use api::*;
+pub use velune_application_api::{
+    ApplicationReply, AttachmentContent, AttachmentReference, ClientViewId, Command,
+    ExecutionContext, Failure, FailureKind, Response, Revision,
+};
 mod transcript_delivery;
 #[cfg(feature = "local-runtime")]
 use local as implementation;
@@ -97,6 +103,8 @@ impl Options {
 }
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    #[error("{0}")]
+    Contract(#[from] velune_application_api::Failure),
     #[cfg(feature = "local-runtime")]
     #[error("{0}")]
     ProviderImport(#[from] velune_agent_runtime::provider_source::SourceReadError),
@@ -134,6 +142,8 @@ impl Error {
 pub struct Application {
     runtime: implementation::CoreRuntime,
     analytics: std::sync::Arc<analytics::AnalyticsStore>,
+    attachment_directory: PathBuf,
+    uploaded_attachments: std::collections::BTreeMap<String, (ClientViewId, PathBuf)>,
 }
 impl Application {
     pub fn open(options: Options) -> Result<Self, Error> {
@@ -143,7 +153,10 @@ impl Application {
                 analytics::AnalyticsStore::unavailable(&options.home_directory, error)
             }),
         );
+        let attachment_directory = options.home_directory.join("remote-attachments");
         Ok(Self {
+            attachment_directory,
+            uploaded_attachments: Default::default(),
             runtime: implementation::CoreRuntime::open(options, analytics.clone())?,
             analytics,
         })
@@ -173,4 +186,59 @@ fn new_record_key() -> String {
         "model_record_{time:x}_{:x}",
         SEQUENCE.fetch_add(1, Ordering::Relaxed)
     )
+}
+
+impl From<Error> for Failure {
+    fn from(error: Error) -> Self {
+        use FailureKind as Kind;
+        let mut failure = match error {
+            Error::Contract(failure) => return failure,
+            Error::Invalid(message) => Failure::new(Kind::Invalid, message),
+            Error::Unsupported(message) => Failure::new(Kind::Unsupported, message),
+            Error::OutstandingWork => Failure::new(
+                Kind::OutstandingWork,
+                "子 Agent 仍在运行；请等待其结束，或先停止子 Agent",
+            ),
+            Error::Io(error) => Failure::new(Kind::Io, error.to_string()),
+            Error::Json(error) => Failure::new(Kind::Contract, error.to_string()),
+            #[cfg(feature = "local-runtime")]
+            Error::History(error) => {
+                let mut f = Failure::new(Kind::History, error.full_message());
+                f.code = error.code().into();
+                f.phase = error.phase().into();
+                return f;
+            }
+            #[cfg(feature = "local-runtime")]
+            Error::ProviderImport(error) => {
+                let mut f = Failure::new(Kind::ProviderImport, error.to_string());
+                f.code = error.code().into();
+                f.phase = error.phase().into();
+                return f;
+            }
+            #[cfg(feature = "local-runtime")]
+            Error::RuntimeManagement(error) => {
+                let mut f = Failure::new(Kind::RuntimeManagement, error.to_string());
+                f.code = match error.code() {
+                    RuntimeManagementErrorCode::Conflict => "conflict",
+                    RuntimeManagementErrorCode::Missing => "missing",
+                    RuntimeManagementErrorCode::Invalid => "invalid",
+                    RuntimeManagementErrorCode::Unsupported => "unsupported",
+                    RuntimeManagementErrorCode::Unavailable => "unavailable",
+                }
+                .into();
+                f.phase = "runtime_management".into();
+                return f;
+            }
+        };
+        failure.code = match failure.kind {
+            Kind::Invalid => "invalid",
+            Kind::Unsupported => "unsupported",
+            Kind::OutstandingWork => "outstanding_work",
+            Kind::Io => "io",
+            Kind::Contract => "contract",
+            _ => "application_failed",
+        }
+        .into();
+        failure
+    }
 }

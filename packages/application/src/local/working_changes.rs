@@ -40,7 +40,7 @@ impl CoreRuntime {
     /// runtime's latest listing.
     fn conversation_directory(&self, runtime_id: &str, id: &str) -> Result<PathBuf, RuntimeError> {
         let runtime = self.runtime_instance(runtime_id)?;
-        if !self.execution_context(runtime)?.target.is_local() {
+        if !self.runtime_location(runtime)?.0.is_local() {
             return Err(RuntimeError::invalid("远端运行时的会话暂不支持查看变更"));
         }
         std::iter::once(&self.session)

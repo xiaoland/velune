@@ -1,11 +1,13 @@
 //! Per-application subscriber assembly. Domain units emit events without owning sinks.
 use crate::{BindingError, BindingFailureKind};
+#[cfg(feature = "local-runtime")]
+use std::path::Path;
 use std::{
-    path::Path,
     sync::atomic::{AtomicU64, Ordering},
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
 use tracing::Dispatch;
+#[cfg(feature = "local-runtime")]
 use tracing_subscriber::{Layer, filter::filter_fn, layer::SubscriberExt};
 
 pub(crate) struct Diagnostics {
@@ -13,6 +15,14 @@ pub(crate) struct Diagnostics {
 }
 
 impl Diagnostics {
+    #[cfg(feature = "remote")]
+    pub(crate) fn silent() -> Self {
+        Self {
+            dispatch: Dispatch::none(),
+        }
+    }
+
+    #[cfg(feature = "local-runtime")]
     pub(crate) fn open(home: &Path) -> Result<Self, BindingError> {
         let directory = home.join("logs");
         std::fs::create_dir_all(&directory).map_err(|error| BindingError::Io {
@@ -85,12 +95,19 @@ impl Diagnostics {
                     Ok(value)
                 }
                 Err(error) => {
+                    #[cfg(feature = "remote")]
+                    if matches!(error, BindingError::RemoteRequest { .. }) {
+                        tracing::error!(
+                            event = "remote_request_failed",
+                            elapsed_ms = started.elapsed().as_millis() as u64
+                        );
+                        return Err(error);
+                    }
                     let (kind, code, phase, detail) = error.diagnostic_parts();
                     tracing::error!(
                         event = "operation_failed",
                         code,
                         phase,
-                        detail = detail.as_str(),
                         failure_kind = kind.as_str(),
                         elapsed_ms = started.elapsed().as_millis() as u64
                     );
@@ -119,6 +136,10 @@ impl BindingFailureKind {
             Self::ProviderImport => "provider_import",
             Self::History => "history",
             Self::RuntimeManagement => "runtime_management",
+            Self::Conflict => "conflict",
+            Self::Unauthorized => "unauthorized",
+            Self::Connection => "connection",
+            Self::OutcomeUnknown => "outcome_unknown",
         }
     }
 }
