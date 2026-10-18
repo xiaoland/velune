@@ -16,21 +16,21 @@ struct ConversationListView: View {
     /// Sharing its area with other tools, the search is a button over a popover.
     var compact = false
     @FocusState private var searchFocused: Bool
-    @State private var searchPopover = false
     @State private var searchFocusRequest = 0
     @Environment(\.controlActiveState) private var activeState
     @ObservedObject private var toolbarSettings = ToolbarSettings.shared
-    @State private var browser = ConversationBrowser()
+    /// The window's, so the title bar's filter menu and the list share it.
+    private var browser: ConversationBrowser {
+        get { window.listBrowser }
+        nonmutating set { window.listBrowser = newValue }
+    }
     @State private var renameTarget: Conversation?
     @State private var deleteTargets: [Conversation] = []
     @State private var projectTarget: ProjectEditorTarget?
     /// The group whose header is being dragged, and the one it is over.
     @State private var draggedGroup: BindingConversationGroupKey?
     @State private var groupDropTarget: BindingConversationGroupKey?
-    private var conversationSections: [ConversationBrowser.Section] {
-        if let results = store.searchResults { return ConversationBrowser.sections(conversations: results.conversations, groups: results.groups) }
-        return ConversationBrowser.sections(conversations: store.conversations, groups: store.conversationGroups)
-    }
+    private var conversationSections: [ConversationBrowser.Section] { store.conversationSections }
 
     var body: some View {
         Group {
@@ -42,15 +42,17 @@ struct ConversationListView: View {
                     .navigationTitle("会话"))
             case .panel:
                 VStack(spacing: 0) {
-                    HStack(spacing: 8) {
-                        if compact { searchButton; Spacer(minLength: 0) }
-                        else { SearchField(text: $window.listSearch, prompt: "搜索会话", focusRequest: searchFocusRequest) }
-                        browserMenu.menuStyle(.borderlessButton).fixedSize()
-                        newConversationButton.buttonStyle(.borderless)
+                    // A block has its search, filter and new conversation in its title bar.
+                    if !compact {
+                        HStack(spacing: 8) {
+                            SearchField(text: $window.listSearch, prompt: "搜索会话", focusRequest: searchFocusRequest)
+                            ConversationFilterMenu(window: window, store: store).menuStyle(.borderlessButton).fixedSize()
+                            NewConversationButton(focused: focused).buttonStyle(.borderless)
+                        }
+                        .labelStyle(.iconOnly)
+                        .padding(.horizontal, 10).padding(.vertical, 8)
+                        Divider()
                     }
-                    .labelStyle(.iconOnly)
-                    .padding(.horizontal, 10).padding(.vertical, 8)
-                    Divider()
                     list
                 }
             }
@@ -59,7 +61,7 @@ struct ConversationListView: View {
         .onChange(of: window.listSearchRequest) { _, _ in
             switch placement {
             case .sidebar: searchFocused = true
-            case .panel: if compact { searchPopover = true } else { searchFocusRequest += 1 }
+            case .panel: if !compact { searchFocusRequest += 1 }
             }
         }
         .task(id: window.listSearch) {
@@ -82,29 +84,20 @@ struct ConversationListView: View {
         }
     }
 
-    /// Marked while a search filters the list.
-    private var searchButton: some View {
-        Button { searchPopover.toggle() } label: { Image(systemName: window.listSearch.isEmpty ? "magnifyingglass" : "magnifyingglass.circle.fill") }
-            .buttonStyle(.borderless).help("搜索会话").accessibilityLabel("搜索会话")
-            .popover(isPresented: $searchPopover, arrowEdge: .bottom) {
-                SearchField(text: $window.listSearch, prompt: "搜索会话", focusRequest: 1).frame(width: 240).padding(10)
-            }
-    }
-
     /// Customizable where the window's toolbar is (see `VeluneRootView.withToolbar`).
     @ViewBuilder private func withSidebarToolbar(_ content: some View) -> some View {
         if #available(macOS 26, *) {
             content.toolbar(id: ConversationToolbar.id) {
-                ToolbarItem(id: "list-filter") { browserMenu }
-                ToolbarItem(id: "new-conversation") { newConversationButton }
+                ToolbarItem(id: "list-filter") { ConversationFilterMenu(window: window, store: store) }
+                ToolbarItem(id: "new-conversation") { NewConversationButton(focused: focused) }
             }
         } else {
             content.toolbar {
                 ToolbarItemGroup {
                     ForEach(toolbarSettings.shown(in: .sidebar)) { button in
                         switch button {
-                        case .listFilter: browserMenu
-                        case .newConversation: newConversationButton
+                        case .listFilter: ConversationFilterMenu(window: window, store: store)
+                        case .newConversation: NewConversationButton(focused: focused)
                         default: EmptyView()
                         }
                     }
@@ -363,51 +356,6 @@ struct ConversationListView: View {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(text, forType: .string)
     }
-
-    private var newConversationButton: some View {
-        Button { focused.createConversation() } label: { Label("新建会话", systemImage: "square.and.pencil") }
-            .help(KeyboardShortcutSettings.shared.help("新建会话", .newConversation)).disabled(focused.isLoading || focused.enabledRuntimeInstances.isEmpty)
-    }
-
-    private var browserMenu: some View {
-        Menu {
-            Picker("分组", selection: $browser.grouping) { ForEach(ConversationBrowser.Grouping.allCases) { Text($0.title).tag($0) } }
-            if browser.grouping != .none {
-                Picker("组排序", selection: Binding(get: { browser.groupSort }, set: { browser.setGroupSort($0, shown: orderableGroups) })) {
-                    ForEach(ConversationBrowser.GroupSort.allCases) { Text($0.title).tag($0) }
-                }
-            }
-            Picker("会话排序", selection: $browser.sort) { ForEach(ConversationBrowser.Sort.allCases) { Text($0.title).tag($0) } }
-            Toggle("从旧到新", isOn: $browser.oldestFirst)
-            Divider()
-            Picker("Agent 运行时", selection: $browser.runtimeID) {
-                Text("所有运行时").tag(Optional<String>.none)
-                ForEach(store.enabledRuntimeInstances) { Text($0.name).tag(Optional($0.id)) }
-                if let id = browser.runtimeID, !store.enabledRuntimeInstances.contains(where: { $0.id == id }) {
-                    Text("当前筛选的运行时不可用").tag(Optional(id))
-                }
-            }
-            Picker("项目", selection: $browser.project) {
-                Text("所有项目").tag(ConversationBrowser.ProjectFilter.all)
-                Text("无项目").tag(ConversationBrowser.ProjectFilter.unspecified)
-                ForEach(store.conversationProjects, id: \.path) { project in
-                    Text(ConversationBrowser.projectName(project.path, projects: store.conversationProjects)).tag(ConversationBrowser.ProjectFilter.path(project.path))
-                }
-                if case .path(let path) = browser.project, !store.conversationProjects.contains(where: { $0.path == path }) {
-                    Text(ConversationBrowser.projectName(path, projects: store.conversationProjects)).tag(ConversationBrowser.ProjectFilter.path(path))
-                }
-            }
-            if browser.hasFilters { Divider(); Button("清除筛选") { browser.runtimeID = nil; browser.project = .all } }
-            Divider()
-            Toggle("显示已归档的会话", isOn: Binding(get: { store.showsArchived }, set: { store.setShowsArchived($0) }))
-            Divider()
-            // Where the list itself is; the rest of the window's layout is in a tab's menu.
-            Menu("布局") { ToolPlaceMenu(window: window, kind: .list) }
-        } label: { Label("显示", systemImage: browser.hasFilters || store.showsArchived ? "line.3.horizontal.decrease.circle.fill" : "line.3.horizontal.decrease") }
-        .help("会话分组、筛选、排序、已归档会话与列表的位置")
-        .accessibilityLabel("显示")
-        .disabled(store.conversationBrowserPreferences == nil)
-    }
 }
 
 /// Outside Velune a conversation dragged from the list is taken by nothing,
@@ -480,6 +428,120 @@ struct SearchField: NSViewRepresentable {
         init(text: Binding<String>) { self.text = text }
         func controlTextDidChange(_ notification: Notification) {
             if let field = notification.object as? NSSearchField { text.wrappedValue = field.stringValue }
+        }
+    }
+}
+
+/// The conversation list's grouping, filtering and sorting, in the window's
+/// toolbar or the list's title bar.
+struct ConversationFilterMenu: View {
+    @ObservedObject var window: ConversationWindowModel
+    /// The list's workspace.
+    @ObservedObject var store: AppStore
+
+    var body: some View {
+        Menu {
+            Picker("分组", selection: $window.listBrowser.grouping) { ForEach(ConversationBrowser.Grouping.allCases) { Text($0.title).tag($0) } }
+            if window.listBrowser.grouping != .none {
+                Picker("组排序", selection: Binding(get: { window.listBrowser.groupSort }, set: { window.listBrowser.setGroupSort($0, shown: store.conversationSections.map(\.id).filter(ConversationBrowser.orderable)) })) {
+                    ForEach(ConversationBrowser.GroupSort.allCases) { Text($0.title).tag($0) }
+                }
+            }
+            Picker("会话排序", selection: $window.listBrowser.sort) { ForEach(ConversationBrowser.Sort.allCases) { Text($0.title).tag($0) } }
+            Toggle("从旧到新", isOn: $window.listBrowser.oldestFirst)
+            Divider()
+            Picker("Agent 运行时", selection: $window.listBrowser.runtimeID) {
+                Text("所有运行时").tag(Optional<String>.none)
+                ForEach(store.enabledRuntimeInstances) { Text($0.name).tag(Optional($0.id)) }
+                if let id = window.listBrowser.runtimeID, !store.enabledRuntimeInstances.contains(where: { $0.id == id }) {
+                    Text("当前筛选的运行时不可用").tag(Optional(id))
+                }
+            }
+            Picker("项目", selection: $window.listBrowser.project) {
+                Text("所有项目").tag(ConversationBrowser.ProjectFilter.all)
+                Text("无项目").tag(ConversationBrowser.ProjectFilter.unspecified)
+                ForEach(store.conversationProjects, id: \.path) { project in
+                    Text(ConversationBrowser.projectName(project.path, projects: store.conversationProjects)).tag(ConversationBrowser.ProjectFilter.path(project.path))
+                }
+                if case .path(let path) = window.listBrowser.project, !store.conversationProjects.contains(where: { $0.path == path }) {
+                    Text(ConversationBrowser.projectName(path, projects: store.conversationProjects)).tag(ConversationBrowser.ProjectFilter.path(path))
+                }
+            }
+            if window.listBrowser.hasFilters { Divider(); Button("清除筛选") { window.listBrowser.runtimeID = nil; window.listBrowser.project = .all } }
+            Divider()
+            Toggle("显示已归档的会话", isOn: Binding(get: { store.showsArchived }, set: { store.setShowsArchived($0) }))
+            Divider()
+            // Where the list itself is; the rest of the window's layout is in a tab's menu.
+            Menu("布局") { ToolPlaceMenu(window: window, kind: .list) }
+        } label: { Label("显示", systemImage: window.listBrowser.hasFilters || store.showsArchived ? "line.3.horizontal.decrease.circle.fill" : "line.3.horizontal.decrease") }
+        .help("会话分组、筛选、排序、已归档会话与列表的位置")
+        .accessibilityLabel("显示")
+        .disabled(store.conversationBrowserPreferences == nil)
+    }
+}
+
+struct NewConversationButton: View {
+    @ObservedObject var focused: AppStore
+
+    var body: some View {
+        Button { focused.createConversation() } label: { Label("新建会话", systemImage: "square.and.pencil") }
+            .help(KeyboardShortcutSettings.shared.help("新建会话", .newConversation)).disabled(focused.isLoading || focused.enabledRuntimeInstances.isEmpty)
+    }
+}
+
+/// Search over a popover, for the list's title bar. Marked while a search filters the list.
+struct ConversationSearchButton: View {
+    @ObservedObject var window: ConversationWindowModel
+
+    var body: some View {
+        Button { window.listSearchPopover.toggle() } label: { Image(systemName: window.listSearch.isEmpty ? "magnifyingglass" : "magnifyingglass.circle.fill") }
+            .buttonStyle(.borderless).help("搜索会话").accessibilityLabel("搜索会话")
+            .popover(isPresented: $window.listSearchPopover, arrowEdge: .bottom) {
+                SearchField(text: $window.listSearch, prompt: "搜索会话", focusRequest: 1).frame(width: 240).padding(10)
+            }
+    }
+}
+
+/// What the list adds to its title bar when it is a block among other tools:
+/// search and filter, and, where the window's toolbar is not beside it, a new conversation.
+struct ConversationListHeaderActions: View {
+    @ObservedObject var window: ConversationWindowModel
+    let side: DockSide?
+
+    var body: some View {
+        ConversationSearchButton(window: window)
+        ConversationFilterMenu(window: window, store: window.list).menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize().labelStyle(.iconOnly)
+        if side != .left { NewConversationButton(focused: window.focused.store).buttonStyle(.borderless).labelStyle(.iconOnly) }
+    }
+}
+
+extension AppStore {
+    /// The list's groups as shown, searching or not.
+    var conversationSections: [ConversationBrowser.Section] {
+        if let results = searchResults { return ConversationBrowser.sections(conversations: results.conversations, groups: results.groups) }
+        return ConversationBrowser.sections(conversations: conversations, groups: conversationGroups)
+    }
+}
+
+/// The window toolbar's new-conversation button at the top of a sidebar that
+/// holds the list as a block among other tools, where the list's own
+/// toolbar is not there to carry it.
+struct ListBlockToolbar: ViewModifier {
+    @ObservedObject var window: ConversationWindowModel
+    @ObservedObject var focused: AppStore
+    @ObservedObject private var toolbarSettings = ToolbarSettings.shared
+
+    @ViewBuilder func body(content: Content) -> some View {
+        if window.listIsBlock, window.tools[.list].place.side == .left {
+            if #available(macOS 26, *) {
+                content.toolbar(id: ConversationToolbar.id) { ToolbarItem(id: "new-conversation") { NewConversationButton(focused: focused) } }
+            } else if toolbarSettings.isShown(.newConversation) {
+                content.toolbar { ToolbarItem { NewConversationButton(focused: focused) } }
+            } else {
+                content
+            }
+        } else {
+            content
         }
     }
 }

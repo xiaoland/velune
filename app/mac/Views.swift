@@ -38,6 +38,7 @@ struct VeluneRootView: View {
                                                       set: { $0 == .detailOnly ? window.tools.collapse(.left) : window.tools.showArea(.left) })) {
             DockAreaView(window: window, side: .left)
                 .navigationSplitViewColumnWidth(min: 190, ideal: 240, max: 600)
+                .modifier(ListBlockToolbar(window: window, focused: focused))
         } detail: {
             withToolbar(panes)
             // One inspector column: the right dock area, or change review while that is open.

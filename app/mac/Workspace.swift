@@ -907,10 +907,19 @@ struct WindowSeed: Codable, Hashable {
     /// conversation's messages. Only the list searches so far; the outline
     /// and linked agents would join `findAreas`.
     func find() {
-        if focusIsIn(findAreas[.list]) { listSearchRequest &+= 1 } else { focused.beginFind() }
+        if focusIsIn(findAreas[.list]) { if listIsBlock { listSearchPopover = true } else { listSearchRequest &+= 1 } } else { focused.beginFind() }
     }
 
     @Published private(set) var listSearchRequest = 0
+    /// The list's grouping, filtering and sorting.
+    @Published var listBrowser = ConversationBrowser()
+    /// The search popover of the list's title bar.
+    @Published var listSearchPopover = false
+    /// The list shares its area with other tools, so it is a block with a title bar.
+    var listIsBlock: Bool {
+        guard let side = tools[.list].place.side else { return false }
+        return tools.tools(in: side).count > 1
+    }
     private var findAreas: [ToolWindowKind: () -> NSView?] = [:]
 
     func registerFindArea(_ kind: ToolWindowKind, anchor: @escaping () -> NSView?) { findAreas[kind] = anchor }

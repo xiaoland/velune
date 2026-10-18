@@ -36,7 +36,7 @@ struct DockAreaView: View {
 
     private func tool(_ kind: ToolWindowKind, titled: Bool) -> some View {
         VStack(spacing: 0) {
-            if titled { ToolHeader(window: window, kind: kind) }
+            if titled { ToolHeader(window: window, kind: kind, side: side) }
             ToolContent(kind: kind, window: window, side: side)
                 // A composer under other tools keeps its own height; elsewhere it sits at the bottom of its room.
                 .frame(maxWidth: .infinity, maxHeight: kind == .composer && side != .bottom && window.tools.tools(in: side).count > 1 ? nil : .infinity,
@@ -49,11 +49,13 @@ struct DockAreaView: View {
 private struct ToolHeader: View {
     @ObservedObject var window: ConversationWindowModel
     let kind: ToolWindowKind
+    let side: DockSide
 
     var body: some View {
         HStack(spacing: 4) {
             Text(kind.title).font(.subheadline.weight(.semibold)).foregroundStyle(.secondary).lineLimit(1)
             Spacer(minLength: 0)
+            if kind == .list { ConversationListHeaderActions(window: window, side: side) }
             Menu { ToolPlaceMenu(window: window, kind: kind) } label: { Image(systemName: "ellipsis") }
                 .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
                 .help("移到其他位置").accessibilityLabel("\(kind.title)的位置")
