@@ -69,12 +69,12 @@ struct ConversationCommands: Commands {
                 .disabled(target == nil)
             Button("关闭分屏") { if let window = target?.window { window.closePane(window.focusedPaneID) } }
                 .disabled(target?.window.isSplit != true)
-            // As in Xcode; Command-brackets switch panes.
+            // Control-brackets, not Option-arrows: those move by word in the composer.
             Button("后退") { target?.window.focused.goBack() }
-                .keyboardShortcut(.leftArrow, modifiers: [.command, .control])
+                .keyboardShortcut("[", modifiers: .control)
                 .disabled(target?.store.backHistory.isEmpty != false)
             Button("前进") { target?.window.focused.goForward() }
-                .keyboardShortcut(.rightArrow, modifiers: [.command, .control])
+                .keyboardShortcut("]", modifiers: .control)
                 .disabled(target?.store.forwardHistory.isEmpty != false)
             Divider()
             Button("下一个分屏") { target?.window.focusNeighbour(forward: true) }
@@ -85,10 +85,10 @@ struct ConversationCommands: Commands {
                 .disabled(target?.window.isSplit != true)
             Divider()
             Button("下一个标签页") { target?.window.selectNeighbourTab(forward: true) }
-                .keyboardShortcut("]", modifiers: [.command, .shift])
+                .keyboardShortcut(.rightArrow, modifiers: [.command, .control])
                 .disabled((target?.window.focusedPane.tabs.count ?? 0) < 2)
             Button("上一个标签页") { target?.window.selectNeighbourTab(forward: false) }
-                .keyboardShortcut("[", modifiers: [.command, .shift])
+                .keyboardShortcut(.leftArrow, modifiers: [.command, .control])
                 .disabled((target?.window.focusedPane.tabs.count ?? 0) < 2)
             Button("将标签页移到新窗口") { if let window = target?.window { window.moveToNewWindow(window.focused.id) } }
                 .disabled(target?.window.canMoveTabToNewWindow != true)
@@ -112,8 +112,12 @@ struct ConversationCommands: Commands {
                 .disabled(target == nil)
             }
             Divider()
+            // As in VS Code; the left area keeps the system's Show Sidebar.
+            Button(target?.window.tools.tools(in: .right).isEmpty == false ? "隐藏右侧区域" : "显示右侧区域") { target?.window.tools.toggleArea(.right) }
+                .keyboardShortcut("b", modifiers: [.command, .option])
+                .disabled(target == nil)
             Button(target?.window.tools.tools(in: .bottom).isEmpty == false ? "隐藏底部区域" : "显示底部区域") { target?.window.tools.toggleArea(.bottom) }
-                .keyboardShortcut("y", modifiers: [.command, .shift])
+                .keyboardShortcut("j")
                 .disabled(target == nil)
             Button(target?.window.tools.isEditorOnly == true ? "恢复停靠区域" : "只显示编辑区") { target?.window.tools.toggleEditorOnly() }
                 .keyboardShortcut(.return, modifiers: [.command, .shift])
@@ -255,7 +259,6 @@ struct VeluneApp: App {
                 }
             }
             ConversationCommands()
-            InspectorCommands()
             CommandGroup(after: .sidebar) {
                 AnalyticsMenuItem()
                 ResourceLibraryMenuItem()

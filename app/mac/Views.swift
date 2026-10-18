@@ -128,12 +128,12 @@ struct VeluneRootView: View {
 
     private var backButton: some View {
         Button { tab.goBack() } label: { Label("后退", systemImage: "chevron.backward") }
-            .help("回到之前查看的会话（⌃⌘←）").disabled(focused.backHistory.isEmpty)
+            .help("回到之前查看的会话（⌃[）").disabled(focused.backHistory.isEmpty)
     }
 
     private var forwardButton: some View {
         Button { tab.goForward() } label: { Label("前进", systemImage: "chevron.forward") }
-            .help("前往后退前的会话（⌃⌘→）").disabled(focused.forwardHistory.isEmpty)
+            .help("前往后退前的会话（⌃]）").disabled(focused.forwardHistory.isEmpty)
     }
 
     private var reloadButton: some View {
