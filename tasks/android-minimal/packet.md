@@ -31,3 +31,7 @@ E2 WAN→LAN→WAN、真实 NAT／UDP 故障回落、E3 蜂窝默认且 Wi-Fi LA
 最终库级静态检查、host/Python ABI、Android API28 arm64 remote-only release、Swift／Kotlin 生成源编译通过；229 份 Rust／Cargo 输入与冻结摘要匹配。完整证据和未注入的故障分支见 verification 的 main 整合章节。`app/`、Mac 构建脚本、`.gitignore` 与 `.gitattributes` 保持 main 基线，早期平台实现只留在功能分支历史；未 push、PR 或部署。此结果保存为隔离分支的 `01f03e1` 合并检查点，随后整合 `b5248fe`；不改写历史，未提前更新 main。
 
 最终整合 `b5248fe` 的 UsageDisplay 第六项呈现状态，贯通中立 DTO、92 项 typed 命令、pending 及两装配的六字段隔离／成功快照，默认 Used 与 schema 10 保持。七组实际新 ABI、两装配各六字段与六次失败写入、七项静态检查、Android API28 release、Swift／Kotlin 严格编译均通过；229 份源码匹配独立冻结清单，旧证据原样保留。App 按最新 main 原样保留，未构建／安装 App、push、PR 或部署。
+
+## 工作区与分支清理
+
+用户于 2026-10-18 授权清理本任务 worktree 和 branch。库整合已在 main `85e7f89`；本任务三个分支的提交均可从 main 到达。八组必要冻结产物／平台补丁已原样移至主目录忽略的 `target/remote-task-artifacts/85e7f89`，`cleanup-manifest.json` 保存原路径映射与摘要；冻结清单中的旧绝对路径仍表示原始证据来源，不改写清单。构建缓存与 Android 构建残留不保留。托管 worktree 已归档，其目录及 Git worktree 注册已移除；`feat/remote-control`、`feat/android-minimal` 与 `integrate/remote-rust` 三个本地分支均以 `git branch -d` 安全删除。已复核冻结清单及最终八个库／绑定产物摘要，其他三个任务 worktree 与所有无关分支保留；不涉及远端分支或 push。
