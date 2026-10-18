@@ -11,6 +11,18 @@ import SwiftUI
     @Published var focusRequest = 0
 }
 
+/// Shows the bar while the tab is searching; its own view, since the tab
+/// does not publish the search's state.
+struct TranscriptFindHost: View {
+    @ObservedObject var find: TranscriptFind
+    @ObservedObject var model: TranscriptModel
+    let jump: (String) -> Void
+
+    var body: some View {
+        if find.isShown { TranscriptFindBar(find: find, model: model, jump: jump).padding(8) }
+    }
+}
+
 /// The find bar over the top of the messages. It looks through the
 /// messages the list shows as messages (the user's and each turn's reply);
 /// what is folded into a turn's work is not searched. Return goes to the
