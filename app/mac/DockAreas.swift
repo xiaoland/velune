@@ -267,7 +267,9 @@ struct ToolOutline: View {
             ContentUnavailableView("没有用户消息", systemImage: "list.bullet", description: Text("会话有了用户消息后，在这里列出并可跳转。"))
         } else {
             TranscriptOutlineView(model: store.transcript, inPopover: false, inSidebar: inSidebar, layout: window,
-                                  editMessage: { [store, tab] id in store.editability(of: id) == nil ? nil : { tab.edit(messageID: id) } }) { tab.navigate(to: $0) }
+                                  editMessage: { [store, tab] id in store.editability(of: id) == nil ? nil : { tab.edit(messageID: id) } },
+                                  isRunning: store.loadedConversationID.map(store.isConversationRunning) ?? false,
+                                  goToBottom: { [tab] in tab.scrollRequest &+= 1 }) { tab.navigate(to: $0) }
         }
     }
 }

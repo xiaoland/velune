@@ -412,6 +412,11 @@ struct WindowSeed: Codable, Hashable {
     /// Tabs on their way to a window being opened for them.
     private static var handoff: [UUID: ConversationTab] = [:]
 
+    static var openWindows: [ConversationWindowModel] {
+        all.removeAll { $0.model == nil }
+        return all.compactMap(\.model)
+    }
+
     static func isConversationWindow(_ window: NSWindow) -> Bool {
         all.contains { $0.model?.window === window }
     }
@@ -890,11 +895,41 @@ struct WindowSeed: Codable, Hashable {
         }
     }
 
+    /// A right click on the outline's or the linked agents' toolbar button
+    /// offers where that tool is, which SwiftUI's own context menu does not
+    /// on a toolbar button. Whether the click is on one is read from the
+    /// accessibility label the button's title gives.
+    private func showsToolbarPlaceMenu(for event: NSEvent) -> Bool {
+        guard let window, event.window === window, let frame = window.contentView?.superview,
+              event.locationInWindow.y > window.contentLayoutRect.maxY,
+              let hit = frame.hitTest(event.locationInWindow) else { return false }
+        let screen = window.convertPoint(toScreen: event.locationInWindow)
+        var labels: [String] = []
+        if let element = hit.accessibilityHitTest(screen) as? NSObjectProtocol {
+            labels.append((element as? NSAccessibilityProtocol)?.accessibilityLabel() ?? "")
+        }
+        var view: NSView? = hit
+        while let current = view { labels.append(current.accessibilityLabel() ?? ""); view = current.superview }
+        let kind: ToolWindowKind
+        if labels.contains("会话大纲") { kind = .outline } else if labels.contains("关联 Agent") { kind = .agents } else { return false }
+        let menu = NSMenu()
+        let current = choice(for: kind)
+        for (choice, title) in ToolChoice.all(for: kind) {
+            let entry = ClosureMenuItem(title) { [weak self] in self?.choose(choice, for: kind) }
+            entry.state = choice == current ? .on : .off
+            menu.addItem(entry)
+        }
+        NSMenu.popUpContextMenu(menu, with: event, for: hit)
+        return true
+    }
+
     /// A click in a pane focuses it, wherever in the pane it lands.
     private func installMouseMonitor() {
         guard mouseMonitor == nil else { return }
         mouseMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown]) { [weak self] event in
-            guard let self, self.isSplit else { return event }
+            guard let self else { return event }
+            if event.type == .rightMouseDown, self.showsToolbarPlaceMenu(for: event) { return nil }
+            guard self.isSplit else { return event }
             for (id, anchor) in self.anchors {
                 guard let view = anchor(), let window = view.window, window === event.window else { continue }
                 if view.bounds.contains(view.convert(event.locationInWindow, from: nil)) {

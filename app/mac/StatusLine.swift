@@ -183,7 +183,7 @@ private struct StatusDetails: View {
             }
             Text("取自运行时的原生记录；累计为已记录各轮之和，输入含缓存，输出含推理；费用为运行时按其价目的估算，不代表实际账单。")
                 .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-            SettingsTabLink(tab: .general, title: "自定义状态栏…")
+            SettingsTabLink(tab: .conversation, title: "自定义状态栏…")
         }
         .padding(14).frame(width: 320, alignment: .leading)
     }

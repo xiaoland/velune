@@ -13,6 +13,10 @@ struct TranscriptOutlineView: View {
     var layout: ConversationWindowModel?
     /// Edits the user message of this ID, when it may be edited now.
     var editMessage: (String) -> (() -> Void)? = { _ in nil }
+    /// The conversation is still running: the last message's answer is
+    /// being written below it, so going to it means going to the end.
+    var isRunning = false
+    var goToBottom: () -> Void = {}
     let navigate: (String) -> Void
     @State private var selectedID: String?
     var body: some View {
@@ -31,25 +35,40 @@ struct TranscriptOutlineView: View {
             if let selectedID, !model.userRows.contains(where: { $0.id == selectedID }) { self.selectedID = nil }
         }
     }
+    /// Opens at the end, where the conversation is.
     private var list: some View {
-        List(selection: $selectedID) {
-            ForEach(model.userRows) { row in
-                Text(row.message.text.isEmpty ? "用户消息" : row.message.text)
-                    .lineLimit(3).frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 3).tag(row.id)
+        ScrollViewReader { proxy in
+            List(selection: $selectedID) {
+                ForEach(model.userRows) { row in
+                    Text(row.message.text.isEmpty ? "用户消息" : row.message.text)
+                        .lineLimit(3).frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 3).tag(row.id)
+                }
             }
+            .onAppear { scrollToEnd(proxy) }
+            .onChange(of: model.userRows.count) { _, _ in scrollToEnd(proxy) }
+            .accessibilityLabel("会话大纲")
+            .contextMenu(forSelectionType: String.self) { ids in menu(ids) } primaryAction: { ids in if let id = ids.first { go(to: id) } }
         }
-        .accessibilityLabel("会话大纲")
-        .contextMenu(forSelectionType: String.self) { ids in
+    }
+
+    private func scrollToEnd(_ proxy: ScrollViewProxy) {
+        guard let last = model.userRows.last?.id else { return }
+        DispatchQueue.main.async { proxy.scrollTo(last, anchor: .bottom) }
+    }
+
+    @ViewBuilder private func menu(_ ids: Set<String>) -> some View {
+        Group {
             if let id = ids.first {
                 Button("前往消息") { go(to: id) }
                 if let edit = model.userRows.first(where: { $0.id == id }).flatMap({ editMessage($0.message.id) }) { Button("编辑消息…", action: edit) }
             } else if let layout {
                 ToolPlaceSection(window: layout, kind: .outline)
             }
-        } primaryAction: { ids in if let id = ids.first { go(to: id) } }
+        }
     }
+
     private func go(to id: String) {
         guard model.userRows.contains(where: { $0.id == id }) else { return }
-        navigate(id)
+        if isRunning, id == model.userRows.last?.id { goToBottom() } else { navigate(id) }
     }
 }

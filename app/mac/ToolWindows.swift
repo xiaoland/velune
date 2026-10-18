@@ -708,7 +708,31 @@ final class ToolWindow: NSWindow, DetachedTool {
     }
 }
 
+/// How the settings put the outline: from the toolbar button, which pops
+/// it over or collapses the messages in place, or listed in a panel of its own.
+enum OutlineForm: Hashable {
+    case popover, inPlace, listed
+}
+
 extension ConversationWindowModel {
+    static func outlineForm(application: AppStore) -> OutlineForm {
+        if application.rememberedToolLayout.layout[.outline].place != .builtIn { return .listed }
+        return application.outlinePresentation == .popover ? .popover : .inPlace
+    }
+
+    /// Applies the form to every open window; listed, the outline docks at
+    /// the right unless a window has it somewhere else than the button.
+    static func setOutlineForm(_ form: OutlineForm, application: AppStore) {
+        let presentation: BindingOutlinePresentation = form == .inPlace ? .inPlace : .popover
+        if form != .listed, application.outlinePresentation != presentation { application.setOutlinePresentation(presentation) }
+        for window in openWindows {
+            switch form {
+            case .listed: if window.tools[.outline].place == .builtIn { window.tools.move(.outline, to: .docked(.right)) }
+            case .popover, .inPlace: window.tools.move(.outline, to: .builtIn)
+            }
+        }
+    }
+
     /// The choice a tool's menus show as made.
     func choice(for kind: ToolWindowKind) -> ToolChoice {
         let place = tools[kind].place

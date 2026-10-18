@@ -209,7 +209,8 @@ struct VeluneRootView: View {
                 .popover(isPresented: Binding(get: { window.outlinePopover && !unavailable }, set: { window.outlinePopover = $0 }), arrowEdge: .bottom) {
                     TranscriptOutlineView(model: focused.transcript, layout: window, editMessage: { [focused, tab] id in
                         focused.editability(of: id) == nil ? nil : { window.outlinePopover = false; tab.edit(messageID: id) }
-                    }) { id in
+                    }, isRunning: focused.loadedConversationID.map(focused.isConversationRunning) ?? false,
+                    goToBottom: { [tab] in window.outlinePopover = false; tab.scrollRequest &+= 1 }) { id in
                         window.outlinePopover = false
                         tab.navigate(to: id)
                     }
@@ -419,7 +420,7 @@ extension ImmediateDisclosureGroup where Label == Text {
     }
 }
 
-enum SettingsTab: Hashable { case general, providers, routes, runtimes }
+enum SettingsTab: Hashable { case general, conversation, shortcuts, providers, routes, runtimes }
 
 /// The settings tab that is showing. Entry points elsewhere in the app set it
 /// before opening the window, so settings open where the task needs them.
@@ -444,6 +445,8 @@ struct SettingsView: View {
     var body: some View {
         TabView(selection: $navigator.tab) {
             GeneralSettingsView(store: store).tabItem { Label("通用", systemImage: "gearshape") }.tag(SettingsTab.general)
+            ConversationSettingsView(store: store).tabItem { Label("会话", systemImage: "bubble.left.and.text.bubble.right") }.tag(SettingsTab.conversation)
+            ShortcutSettingsView().tabItem { Label("快捷键", systemImage: "keyboard") }.tag(SettingsTab.shortcuts)
             ProviderSettingsView(store: store).tabItem { Label("AI提供商", systemImage: "network") }.tag(SettingsTab.providers)
             ModelRouteSettingsView(store: store).tabItem { Label("模型路由", systemImage: "arrow.triangle.branch") }.tag(SettingsTab.routes)
             RuntimeSettingsView(store: store).tabItem { Label("Agent 运行时", systemImage: "terminal") }.tag(SettingsTab.runtimes)
@@ -453,15 +456,12 @@ struct SettingsView: View {
     }
 }
 
-/// Settings for how Velune reads and behaves: usage, conversations and shortcuts.
+/// Settings for how Velune reads and behaves: usage, the conversation list
+/// and, before macOS 26, the toolbars.
 private struct GeneralSettingsView: View {
     @ObservedObject var store: AppStore
     @State private var limit = 20
     @State private var totalLimit = 200
-    private static let statusLineItems: [(item: BindingStatusLineItem, title: String)] = [
-        (.contextUsage, "上下文用量"), (.sessionTokens, "本会话累计 token"), (.workingDirectory, "工作目录与 Git 分支"),
-        (.rateLimits, "账户用量限额（Codex）"), (.sessionCost, "费用估算"),
-    ]
     var body: some View {
         Form {
             Section("用量显示") {
@@ -471,12 +471,35 @@ private struct GeneralSettingsView: View {
                 }.pickerStyle(.segmented).disabled(store.isLoading || store.isShuttingDown)
                 Text("提供商额度窗口、账户用量限额与会话上下文显示已用或剩余的比例。额度的使用上限仍按已用比例生效，显示剩余时表现为至少保留的比例。").font(.caption).foregroundStyle(.secondary)
             }
+            Section("会话列表") {
+                LabeledContent("每次加载") { TextField("数量", value: $limit, format: .number).frame(width: 70); Text("个会话") }
+                LabeledContent("列表总数上限") { TextField("数量", value: $totalLimit, format: .number).frame(width: 70); Text("个会话") }
+                Text("列表最多先读取总数上限个会话，按组依次分给各组，每组每次加载若干个；折叠的组不读取。之后可在各组中加载更多。").font(.caption).foregroundStyle(.secondary)
+                Button("保存") { store.setConversationBrowserLimits(BindingConversationBrowserLimits(page: UInt32(limit), total: UInt32(totalLimit))) }
+                    .disabled(limit < 1 || totalLimit < 1 || (limit == Int(store.conversationBrowserLimits.page) && totalLimit == Int(store.conversationBrowserLimits.total)) || store.isShuttingDown)
+            }
+            if #unavailable(macOS 26) { ToolbarSettingsSection() }
+        }.formStyle(.grouped).onAppear { limit = Int(store.conversationBrowserLimits.page); totalLimit = Int(store.conversationBrowserLimits.total) }
+    }
+}
+
+/// Settings for how a conversation reads: its outline, linked agents and status line.
+private struct ConversationSettingsView: View {
+    @ObservedObject var store: AppStore
+    @State private var outlineForm = OutlineForm.popover
+    private static let statusLineItems: [(item: BindingStatusLineItem, title: String)] = [
+        (.contextUsage, "上下文用量"), (.sessionTokens, "本会话累计 token"), (.workingDirectory, "工作目录与 Git 分支"),
+        (.rateLimits, "账户用量限额（Codex）"), (.sessionCost, "费用估算"),
+    ]
+    var body: some View {
+        Form {
             Section("大纲") {
-                Picker("大纲按钮", selection: Binding(get: { store.outlinePresentation }, set: { store.setOutlinePresentation($0) })) {
-                    Text("弹出面板").tag(BindingOutlinePresentation.popover)
-                    Text("就地折叠").tag(BindingOutlinePresentation.inPlace)
+                Picker("大纲", selection: Binding(get: { outlineForm }, set: { outlineForm = $0; ConversationWindowModel.setOutlineForm($0, application: store) })) {
+                    Text("弹出面板").tag(OutlineForm.popover)
+                    Text("就地折叠").tag(OutlineForm.inPlace)
+                    Text("单独列出").tag(OutlineForm.listed)
                 }.disabled(store.isLoading || store.isShuttingDown)
-                Text("大纲以用户消息为条目。弹出面板在按钮处列出大纲；就地折叠把消息列表缩起为只剩用户消息，点击其中一条即恢复完整会话并停在该处。").font(.caption).foregroundStyle(.secondary)
+                Text("大纲以用户消息为条目，打开时停在最末一条；会话还在运行时，点击最末一条即前往会话末尾。弹出面板在工具栏按钮处列出大纲；就地折叠把消息列表缩起为只剩用户消息，点击其中一条即恢复完整会话并停在该处；单独列出把大纲停靠在窗口右侧的面板中（位置可在大纲的右键菜单中另选）。").font(.caption).foregroundStyle(.secondary)
             }
             Section("关联 Agent") {
                 Picker("打开方式", selection: Binding(get: { store.linkedConversationOpening }, set: { store.setLinkedConversationOpening($0) })) {
@@ -495,16 +518,13 @@ private struct GeneralSettingsView: View {
                 }.disabled(store.isLoading || store.isShuttingDown)
                 Text("状态栏位于输入框下方、发送按钮左侧，只显示运行时原生记录中已有的项；点按它可查看全部项。费用为运行时按其价目的估算。").font(.caption).foregroundStyle(.secondary)
             }
-            Section("会话列表") {
-                LabeledContent("每次加载") { TextField("数量", value: $limit, format: .number).frame(width: 70); Text("个会话") }
-                LabeledContent("列表总数上限") { TextField("数量", value: $totalLimit, format: .number).frame(width: 70); Text("个会话") }
-                Text("列表最多先读取总数上限个会话，按组依次分给各组，每组每次加载若干个；折叠的组不读取。之后可在各组中加载更多。").font(.caption).foregroundStyle(.secondary)
-                Button("保存") { store.setConversationBrowserLimits(BindingConversationBrowserLimits(page: UInt32(limit), total: UInt32(totalLimit))) }
-                    .disabled(limit < 1 || totalLimit < 1 || (limit == Int(store.conversationBrowserLimits.page) && totalLimit == Int(store.conversationBrowserLimits.total)) || store.isShuttingDown)
-            }
-            if #unavailable(macOS 26) { ToolbarSettingsSection() }
-            ShortcutSettingsSections()
-        }.formStyle(.grouped).onAppear { limit = Int(store.conversationBrowserLimits.page); totalLimit = Int(store.conversationBrowserLimits.total) }
+        }.formStyle(.grouped).onAppear { outlineForm = ConversationWindowModel.outlineForm(application: store) }
+    }
+}
+
+private struct ShortcutSettingsView: View {
+    var body: some View {
+        Form { ShortcutSettingsSections() }.formStyle(.grouped)
     }
 }
 
