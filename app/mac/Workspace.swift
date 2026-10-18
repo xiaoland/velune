@@ -989,16 +989,23 @@ struct WindowSeed: Codable, Hashable {
     }
 }
 
-/// Reports the hosting view of a pane, so a click can be matched to it.
+/// Reports the view that marks a place (a pane, a tool, a toolbar button) so
+/// a click can be matched to it. Only a view in a window reports itself: SwiftUI
+/// may make views it then discards, and the one reported last must be a live one.
 struct PaneAnchor: NSViewRepresentable {
     let register: (@escaping () -> NSView?) -> Void
     func makeNSView(context: Context) -> NSView {
         let view = PassthroughView()
-        register { [weak view] in view }
+        view.register = register
         return view
     }
     func updateNSView(_ view: NSView, context: Context) {}
     private final class PassthroughView: NSView {
+        var register: ((@escaping () -> NSView?) -> Void)?
         override func hitTest(_ point: NSPoint) -> NSView? { nil }
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            if window != nil { register? { [weak self] in self } }
+        }
     }
 }

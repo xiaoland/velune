@@ -89,6 +89,13 @@ private struct ArrowCursorArea: NSViewRepresentable {
     final class CursorView: NSView {
         override func resetCursorRects() { addCursorRect(bounds, cursor: .arrow) }
         override func hitTest(_ point: NSPoint) -> NSView? { nil }
+        // The messages' text views take the cursor with tracking areas of their own, not only cursor rects.
+        override func updateTrackingAreas() {
+            super.updateTrackingAreas()
+            for area in trackingAreas { removeTrackingArea(area) }
+            addTrackingArea(NSTrackingArea(rect: .zero, options: [.cursorUpdate, .activeAlways, .inVisibleRect], owner: self))
+        }
+        override func cursorUpdate(with event: NSEvent) { NSCursor.arrow.set() }
     }
     func makeNSView(context: Context) -> CursorView { CursorView() }
     func updateNSView(_ view: CursorView, context: Context) { view.window?.invalidateCursorRects(for: view) }
