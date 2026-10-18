@@ -1,6 +1,6 @@
 # 统一远控人工验收方案
 
-状态：2026-10-18 已收敛的验收方案，用户已恢复实施授权，当前进入 S1。本文件定义取证方式，不记录新通过项。技术契约以 [统一设备远控](../../docs/design/remote-access.md) 为准，执行次序归 [线性计划](plan.md)；锁定依赖的源码事实和临时实验见 [研究记录](transport-research.md)，已经发生的观察见 [verification](verification.md) 与 [Rust 远控验收](../remote-control/verification.md)。
+状态：2026-10-18 已收敛的验收方案，用户已恢复实施授权，当前进度归任务与验收记录。本文件定义取证方式，不记录新通过项。技术契约以 [统一设备远控](../../docs/design/remote-access.md) 为准，执行次序归 [线性计划](plan.md)；锁定依赖的源码事实和临时实验见 [研究记录](transport-research.md)，已经发生的观察见 [verification](verification.md) 与 [Rust 远控验收](../remote-control/verification.md)。
 
 ## 判据、环境与证据
 
@@ -9,7 +9,7 @@
 | 环境 | 前置条件与可以支持的结论 | 不能替代的证据 |
 | --- | --- | --- |
 | E0 隔离核心 | 临时私有 HOME、合成身份／Harness、可控制的存储失败与接纳／完成 gate；两执行端各有独立 owner | 平台相机、真实网络和后台行为 |
-| E1 同 Wi-Fi 真机 | 隔离 Mac app 与已解锁 Android；真实 UniFFI／iroh；无 adb reverse／forward、VPN 或端口转发 | 公网打洞、CGNAT、蜂窝和跨运营商恢复 |
+| E1 同 Wi-Fi 真机 | 隔离 Mac app 与已解锁 Android；真实 UniFFI／iroh；不借助 adb reverse／forward、VPN 或端口转发，记录既有隧道及实际路由条件 | 公网打洞、CGNAT、蜂窝和跨运营商恢复 |
 | E2 受控异网 | 两端分别处于独立公网出口；记录 IPv4／IPv6、NAT／防火墙条件、可达 relay；可控 AP／路由器用于变更与 UDP 阻断 | 未记录拓扑的“公网成功率”；真实 NAT 结论不能只由模拟路由取得 |
 | E3 Android 多网络 | Wi-Fi LAN 与蜂窝同时存在，能确认默认 Network、各接口可达性；网络切换获准且流量有界 | 默认网络 callback 或接口枚举不能证明非默认 Wi-Fi socket 真正可用 |
 | E4 可替换设施 | 两套可控 relay／lookup、可观察的访问日志和可选 Bearer 认证；可阻断旧设施及全部公共预设 | 本机修改 map 成功、公共 relay 可用不证明自部署闭环 |

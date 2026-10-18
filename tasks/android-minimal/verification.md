@@ -2,15 +2,17 @@
 
 ## 当前结论
 
-2026-10-18，用户已授权按[线性计划](plan.md)恢复实施，目前仅进入 S1 平台传输判别。下面主矩阵保留前一轮产品观察，不能当作新方案或 S1 已通过；S1 当前事实单列于下方。Android 身份发布修复已提交 `0004d53`。没有将安装、进程存在或临时原生 probe 当作业务通过。
+2026-10-18，用户已授权按[线性计划](plan.md)恢复实施，S1 已完成当前设备条件下的同网判别，当前进入 S2；E2／E3 继续环境阻塞。下面主矩阵保留前一轮产品观察，不能当作新方案或 S1 已通过；S1 当前事实单列于下方。Android 身份发布修复已提交 `0004d53`。没有将安装、进程存在或临时原生 probe 当作业务通过。
+
+当前 S1 最终接口源码为 `f0df0ca`，真机 APK 为 `8d9f649e…`／so `62bb93ac…`，匹配 host 为 `3b55ead8…`／Python `94570f95…`；完整摘要及版本边界见下方接口补丁小节。三轮正式生命周期已收口，E2／E3 仍缺环境。
 
 | S1 当前边界 | 结果 | 仍缺少的证据 |
 | --- | --- | --- |
 | 同网显式地址、无公共设施 | 冻结包 159／159 marker；单 Direct／IPv4 连接，missed 与 native dropped 各为 0 | 公网及真实接口迁移 |
 | 同网短后台恢复／停止 | 同连接恢复后继续 80.708 秒；UI 停止与 host 正常退出 | 长后台、进程重启、业务恢复 |
-| Android mDNS-only 初连与缓存 | 默认失败；隔离发布器加入显式 LAN 后仅 ID 初连、同 peer A→B 与过期通过 | 最终产品接口生命周期补丁重验；此对照不等于接口迁移 |
+| Android mDNS-only 初连与缓存 | 最终接口补丁正常 host 仅 ID 初连通过；三次独立 Wi-Fi 生命周期均合格，FD／锁／host 正常关闭 | 公网、Ethernet、IPv6 路由及业务层尚未覆盖 |
 | Host Probe→UniFFI mDNS 缓存 | 同公钥 A→B、Expired、过期后无旧地址 | 不代表手机网络栈或 QUIC 连通 |
-| E2／E3 | 用户确认当前只有 Wi-Fi，未改手机网络 | 受控异网／双网环境缺失 |
+| E2／E3 | 用户确认当前只有 Wi-Fi；仅切换既有 Wi-Fi 并恢复原开态 | 受控异网／双网环境缺失 |
 
 下表仅保存前轮产品 UI 的历史范围，不作为 S1 验收结果。
 
@@ -89,7 +91,7 @@
 
 手机 Published 为 directCount=1／relayCount=0，host 为 direct_count=2／relay_count=0；这些计数只证明 mDNS service 收到 EndpointData，不证明多播发送或对端收到。5 次显式 resolve 以 OUTCOME_UNKNOWN 结束，最终 probe_failure 为 stage=connect、errorKind=binding_diagnostic、bindingFailureKind=CONNECTION；本轮 11,438ms 内没有发现、连接或 marker，未采到白名单 WARN／ERROR。真实截图显示“mDNS 已启用，但连接未建立”；锁释放及 shutdownComplete／evidenceComplete 均为 true。事件文件 SHA 为 `b334d15e1ecf2d0107477d1428af0664ca21c0344180ac6bd8284ab9d001ffb5`。缺事件本身不证明底层没有错误。
 
-本轮未配置或依赖 VPN；只读路由观察发现既有 utun 与 LAN 接口共存，mDNS 多播目的地的默认 route 指向 utun，手机 unicast route 指向 LAN。route 不能单独证明实际报文路径，因此本轮不能表述为无隧道基线。下一项用同一临时公钥、同广告内容和同 marker 协议，仅在隔离 publisher 内增添显式 LAN 多播接口，比较手机 fresh resolve／仅 ID 初连；不改系统路由、VPN 或手机网络。
+本轮未配置或依赖 VPN；只读路由观察发现既有 utun 与 LAN 接口共存，mDNS 多播目的地的默认 route 指向 utun，手机 unicast route 指向 LAN。route 不能单独证明实际报文路径，因此本轮不能表述为无隧道基线。随后用同一临时公钥、同广告内容和同 marker 协议，仅在隔离 publisher 内增添显式 LAN 多播接口，比较手机 fresh resolve／仅 ID 初连；不改系统路由、VPN 或手机网络。
 
 ### 手机默认与显式 LAN 发布器对照
 
@@ -105,7 +107,39 @@
 
 所有 selected remote 始终为 A，同一 connection 未重拨，因此 A→B 是发现缓存更新而非 QUIC 路径迁移。102 个往返样本中位 9.2835ms、最大 168.031ms；PathObserver missed 与 native dropped 各为 0，未出现 mDNS ring Dropped。没有将这些观测外推为公网预算通过，也不以 ring 零丢失证明上游订阅无丢失。成功 Direct 页面已留实际截图。
 
-默认 case 事件 SHA 为 `39e64805cb455c16cd646de688d25b38f6be83fa3879ad8d27ae8171ebbb3705`；显式 LAN case 为 `55f2fa83ee6602e1e6eb7f1f5f12a76147bd3bef9121d50e12254780c36465ae`。原始地址、公钥和接口只在任务私有 case；报告与摘要只给布尔／计数。该对照支持后续 S1 窄补丁的判别方向，最终产品实现仍须新匹配包验证接口集合驱动的 discovery 生命周期，不能直接沿用辅助 fixture 的通过。
+默认 case 事件 SHA 为 `39e64805cb455c16cd646de688d25b38f6be83fa3879ad8d27ae8171ebbb3705`；显式 LAN case 为 `55f2fa83ee6602e1e6eb7f1f5f12a76147bd3bef9121d50e12254780c36465ae`。原始地址、公钥和接口只在任务私有 case；报告与摘要只给布尔／计数。该对照支持 S1 窄补丁的判别方向；产品实现的接口集合生命周期由下述新匹配包另行复验，没有沿用辅助 fixture 的通过。
+
+### 接口补丁与正式 Wi-Fi 生命周期
+
+最终冻结源码保存为 `f0df0ca`，没有因保存提交改变已构建内容。APK `8d9f649e349ca51f9591444519b12738f01e394d3e5038e400692c79deb6037f`、包内 so `62bb93acf4eeeca536281e4b643a6862b5ce59e8133045dc07b79eaa770de31a`、Kotlin `df0699a44af830121c36e2bbaabaae5f6e3e86e3517ce4192882c53d907520a4`；host dylib `3b55ead8dc8772d4291b118f360a0dc82891dae601ea43a06a60fc18e528d345`、Python `94570f9509160c316caeed46dbcd108c5cf54141ca84e8dc0e0bf1711e6da2ce`。实际文件摘要核对一致，assemble／lint 通过归 app owner。主执行者核对 vendor patch 能从固定上游逐字重放，双 LICENSE 一致；Cargo.lock 仅改变 mDNS 来源与 remote 对既有 netdev 的引用，没有版本升级；vendor 定向检查、workspace 与 Android 静态检查通过。
+
+正常 host 自动获取接口，不再使用 EXPLICIT 辅助 publisher。首个探索窗口验证仅 ID 初连、Wi-Fi off/on 的接口集合 1→0→1，App 实际 PID 的 5353 socket 2→0→2→0（最后为真实 UI 停止），同 QUIC 的 path 0→1，恢复 IPv4 回调后首回执 930ms。断网前基线不足 60 秒，因此不计正式三轮。之后一个独立进程纯稳定观察到原 300 秒窗口结束、300／300 回复，没有网络转换，也不计正式轮数。
+
+正式每轮新 host／App 进程，原始 target 仅 ID，公网设施关闭；在 window_started 后先观察至少 60 秒，才关闭当前 saved Wi-Fi，确认空接口集合后恢复开态，再从首个恢复回复起观察至少 60 秒，均在原 300 秒窗口内真实点击停止。USB 保持；没有读取 Wi-Fi 密码、改变 VPN／route／蜂窝。手机时钟是本轮 runId 下的 elapsedRealtime，不从两个设备的单调原点相减。
+
+FD 取证只读取实际 app PID 的 socket inode，与该 PID 的 udp／udp6 表中 5353 端口作内存交集，私有文件仅保存计数与采样时间；没有持久化 namespace 表中其他行。InterfacesApplied 只说明 actor 接受集合，不承担 FD 退出证明；本地接口代际产生的 Expired 也不解释为宿主离线。
+
+| 正式轮 | 断网前基线／恢复后观察 | marker 回复／断网失败 | 资源与范围 |
+| --- | --- | --- | --- |
+| 1 | 69.455s／99.108s；181.416s 窗内停止 | 171 回复＋5 超时＝176 次，结果唯一且载荷匹配 | 一次 dial／同 connection；5353 2→0→2→0；UI stop 完整／host exit 0 |
+| 2 | 65.727s／63.067s；141.434s 窗内停止 | 132 回复＋4 超时＝136 次，结果完整且载荷匹配 | 一次 dial／同 connection；5353 2→0→2→0；UI stop 完整／host exit 0 |
+| 3 | 65.372s／69.882s；147.152s 窗内停止 | 133 回复＋5 超时＝138 次，结果完整且载荷匹配 | 一次 dial／同 connection；5353 2→0→2→0；UI stop 完整／host exit 0 |
+
+轮 1 的 IPv4 callback→首回复为 803ms；新 selected path 的观察可能早于该事实回调，因此不硬算一个正向 selected 延迟。所有回复／超时按序号分别保留，没有将无副作用 echo 的不重复提升为业务 exactly-once。轮 1 事件 SHA 为 `f13a6f8257e4630260425d2ba8803e4766fed6980e78d261007558b1a7aafffa`；轮 2 为 `187076c91f66e6b307fa502f0edfdd56a503b1ead2414dc15054f9c32c371f38`。轮 2 IPv4 callback→新 selected 观察 249ms／首回复 439ms。 轮 3 为 548ms／98ms。三轮首个恢复回复之后 marker_failed 均为 0，断网相关超时分别为 5／4／5；payload 错配、重复结果均为 0，native dropped／PathObserver missed 各为 0，未见本地 mDNS ring Dropped。三轮 app PID、runId 不同，每轮独立启动 host，结束均 exit 0；最终各自冻结 dylib 没有仍被加载的宿主进程。
+
+三轮的实际起止按手机同一 elapsedRealtime 域保存，单位 ms：
+
+| 正式轮 | window_started | 真实 user_stop |
+| --- | --- | --- |
+| 1 | 8421299515 | 8421480931 |
+| 2 | 8421941330 | 8422082764 |
+| 3 | 8422095982 | 8422243134 |
+
+轮 3 在恢复后完整 60 秒观察之外，另经 Home 进入后台 3,895ms，随后返回同 task／同连接，33ms 后得到回复。锁释放事件位于 background 记录前 2ms，后台最后状态为 held=false，回前台后 held=true；后台接口集合没有被伪造成空，mDNS FD 仍为 2，真实停止后为 0。背景暂停 marker 的行为与断网超时分别记录。正式轮 3 文件 SHA 为 `53098967ba30144decba070f0282685375da2039a3901442fa5497881de8e212`，实际 Direct 页面截图留在私有 case。
+
+这些正式轮只证明现有 Wi-Fi 拓扑下的本地接口消失／恢复、同 QUIC 恢复和资源生命周期，不冒充 WAN→LAN→WAN、UDP 阻断、已知 backup 故障预算、Ethernet 或 IPv6 路由通过。用户确认没有蜂窝，E2／E3 的环境缺口仍在。没有追加自动化测试或真实业务／模型调用。
+
+临时单轮 driver 曾在启动异步阶段读到上一 runId 的已完成窗口：该次采集作废，finally 恢复 Wi-Fi 并关闭本轮 host；它不是产品失败。随后改为先记录旧 runId，等待新 run_open 并固定本轮 runId，才允许网络动作和计时；所有 terminal／marker 同样过滤该 ID。另一次准备阶段因已 force-stop 而读取 PID 失败，未进入网络操作，亦不计正式轮数。临时脚本只执行显式人工协议，不接入自动测试或 CI。
 
 ## 环境与验收判据
 
@@ -142,6 +176,8 @@ native owner 据此采用 Android 专属 rustix NOREPLACE 发布，不使用会�
 主执行者以 main 集成后的 host freeze、临时伪 bundle 和隔离 HOME 显式运行 `manual-provider-configuration.py`，原判据全部通过：合成 API key、私有文件 0600、摘要／日志无秘密、保存／重开／模板和 hard-cutoff。全 workspace locked check、严格 clippy、fmt 通过；没有新增或运行自动化测试。
 
 主执行者另在 `09039d29335bcc98cd38aa4d0c7f7ef1e4b3dbd0` 完成正常 Mac feature 的 build-only 回归：manifest dirty=true（当时根文档与诊断 feature 源码在改）、版本 0.1 beta.1、UniFFI 0.32.2、schema 10。Rust 与 41 个 Swift 源文件构建、codesign deep／strict 通过，nm 未包含 velunetransportprobe。executable SHA 为 `df3d665cc016bea971c60e650ea706f9de3ff54182a9406bab9f1abbe27685e1`、dylib `bab3521bffc671cd5d361c8a6e237cda205561e490ce1ba9ed2c8c5491ae5c25`、生成 Swift `e44122f2b35f577163bd445768dac8e185bdc73ef361d2427ad416293c33570d`。仅构建回归，没有安装或启动真实 Mac app，也不是 clean 交付包。
+
+最新正常 Mac 配套 build-only manifest 为 `fffb1e637e81ca5d366cd2fe83380de47a5a584c`、dirty=true；构建内容随后保存为 `f0df0ca`，不改写原 manifest。版本 0.1 beta.1／UniFFI 0.32.2／schema 10，正常 Rust＋Swift／签名通过，生成 Swift 含 ethernet／vpn，nm 无 probe exports。executable SHA 为 `be1655856891ef4d1f8edfb0bdf58cce2eb62e1cc385e2da0fba4fd70a44d761`、dylib `40fe576cd5147686713965a4a048b156b0047c23b3f1a4e2ef2a92e1348f41a0`、Swift `5f531cb0ea437ab451ca7991afdd3de46fdc09a62ab651b9e7c6f8036e8bf622`。这是当前 DTO 回归证据；未安装或启动真实 Mac app，前述 09039 构建仅留作历史。
 
 ## 历史观察与剩余范围
 
