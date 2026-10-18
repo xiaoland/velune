@@ -30,6 +30,8 @@ MCP 线程不访问 application：工具调用进入收件箱，由执行 owner 
 
 提供商导入选择已保存的 Agent 运行时实例，应用从其配置确定目录及 Node 路径；调用方不能另填来源配置。预览不解析秘密，应用导入时将静态 API key 保存到提供商私有配置，OAuth 仍委托来源刷新。实例、源目录元数据或目标配置变化使预览失效。读取不要求执行准备或当前会话选择模型。来源文件与 Harness 会话保留，Velune 不新建会话数据库。保存首个使用默认网关的运行时会建立空的默认网关，便于先配置运行时再导入。
 
+Codex 与 Claude Code 实例的导入由 `native_provider_import` 读取 agent-runtime 的 `provider_inventory`：Codex 列出自定义 `model_providers`（Responses），Claude Code 列出其登录与 `settings.json` 指向的 Messages API。只有本机、使用既有 HOME 且 `agentDir` 为绝对路径的实例可以导入。字面 key 在导入时复制，环境变量或 helper 取得的 key 留空待填；Claude Code 登录导入为沿用该运行时登录的 Claude CLI 提供商，需要实例配置 `claude` 的绝对路径。候选模型只来自配置中写明的模型 ID（Claude Code 登录为 sonnet／opus／haiku 别名），没有模型的候选不能导入。预览令牌绑定所读文件内容与目标配置。
+
 Codex 订阅由 application 自身管理，与 Harness 登录独立。保存提供商时使用 `ProviderDraft.authentication_source=CodexOAuth` 与 `AuthenticationEdit::Keep`，协议须为 Responses，地址须为 `https://chatgpt.com/backend-api/codex`；普通字段与模型仍由原有提供商 API 管理。调用 `authentication_start(gateway_id, provider_id)` 开始登录，`authentication_poll` 获取打开浏览器的 URL 通知与最终结果，`authentication_cancel` 请求取消；任何时刻只允许一项交互式认证，取消完成后才释放回调端口。`authentication_inspect.configured` 和公开提供商摘要反映私有会话是否可续期，而非保证上游接受请求。`ProviderAuthenticationDescription.account_label` 与检查结果的同名字段仅含已知账户 ID 尾 8 位，便于区分订阅；失效后仍可显示绑定，但不代表认证有效。`ProviderAuthenticationDescription.disclosure` 是必须向用户呈现的接入身份与规则冲突说明。
 
 浏览器登录使用 Codex 原生 OAuth 客户端、PKCE 和 state，以及固定 `localhost:1455/auth/callback`；端口占用时明确失败，不结束其他程序。每次登录写独立临时会话，配置成功提交新的引用后才清理旧会话，失败或取消保留原认证。秘密保存在应用 HOME 的 `subscription-auth/` 私有目录（0700），文件权限为 0600；提供商配置只保存内部引用。每个会话的锁覆盖重读、刷新和原子替换，等待锁有 35 秒上限；已经发出的刷新由独立工作线程负责保存结果，turn 取消不会撤销它。客户端禁止重定向与 HTTP 隐式重试。请求前临近过期时刷新，Codex 专用 401 恢复由 gateway 有界触发；轮换 token、账户 ID 和有效期一起更新。明确永久拒绝与再次 401 标记需要重新登录，临时网络或服务错误保留原认证；无效状态写入失败只记录固定、无秘密事件。删除提供商或更换认证后清理旧秘密；若清理失败，错误明确说明配置已经保存，不伪造回滚。进程直接退出或机器掉电仍可能打断尚未收到并保存的轮换响应。
@@ -46,7 +48,7 @@ Codex 订阅由 application 自身管理，与 Harness 登录独立。保存提�
 
 运行时描述包含 familyId、versioned variant ID 与兼容版本区间文字（compatibleVersions），配置实例引用 variant。专用适配器支持 `pi-1.0`、`codex-0.159`、`claude-code-2.1` 与 `dsh-acp-0.2`；通用 `acp-v1` 表示协商的协议版本，不限定 Agent 品牌或 CLI 版本。family 不参与控制协议派发。应用协调 Codex app-server／DSH ACP 与 huihua 历史读取，原生 ID 与 runtimeId 共同形成公开会话身份；读取成功不等于原生恢复成功。运行时添加后直接可读历史，不要求模型或执行准备。新建显式给出会话模型并自动准备；历史视图选择模型后，在发送时按需恢复执行。Pi 历史中的 Velune 模型标记只恢复 managed 引用；原生目录提供的模型通过显式 native 选择发送，不另存会话状态。
 
-原生审批、问题回答及取消通过 RuntimeInteraction／RuntimeInteractionReply 完成，配置变更、执行和失败清理由应用协调。提供商导入和订阅来源认证仍只支持 Pi 适配器，增加 Codex／DSH 执行不自动增加其提供商导入。DSH 模型能力注入只使用已知字段，reasoning wire 映射未实现，不将能力列表解释为请求参数。
+原生审批、问题回答及取消通过 RuntimeInteraction／RuntimeInteractionReply 完成，配置变更、执行和失败清理由应用协调。提供商导入支持 Pi、Codex 与 Claude Code 运行时；DSH 与通用 ACP 尚无提供商导入，增加执行 adapter 不自动增加导入。DSH 模型能力注入只使用已知字段，reasoning wire 映射未实现，不将能力列表解释为请求参数。
 
 公开模型目录的获取和来源解析归本 unit。当前支持用户显式读取 models.dev 的 provider-scoped API，以具名候选记录返回来源提供商、实际模型 ID 和已声明能力，供模板快填；候选不进入配置，用户保存时仍走现有模板用例。同步获取由平台工作队列调用，单次请求的 executor 随调用结束释放，不建立常驻 Host 或全局 subscriber。目录获取不使用提供商凭据，不读取本机运行时配置、不自动刷新或改变协议／地址；未知规格保持未知。
 
@@ -106,11 +108,13 @@ ACP 的列表能力缺失与空列表不同；汇总列表通过 `history_failur
 
 `provider_templates()` 重导出中立 API 中的添加目录，保留每种订阅的固定业务组合与 API 模板的可编辑协议／地址。模板只提供命令名称，不读取 PATH；CLI 的实际绝对路径由执行设备一侧定位或用户填写，控制设备路径不作为远程执行路径。
 
-`ProviderDraft` 明确保存 `execution_backend`（`Http` 或 `ClaudeCli { binary }`）、`request_profile`（`Native` 或 `CodexResponses`）、`authentication_source` 与 `quota_source`。认证来源为 `None`、`ApiKey`、`CodexOAuth`、已导入的 `RuntimeProvider` 或 `ClaudeCli`；额度来源为 `None`、`CodexUsage` 或 `ClaudeCliUsage`。公开摘要返回同一组字段；私有认证材料持有来源与 generation，不另建账户注册表。新建普通 HTTP 提供商应选择 `Http`、`Native` 和 `None` 额度来源。`AuthenticationEdit` 仅保留 `Keep`、`SetApiKey` 与 `Clear`：切换来源或清除会初始化所选来源的空认证，保存原登录使用 `Keep`。运行时来源只能由导入建立。
+`ProviderDraft` 明确保存 `execution_backend`（`Http` 或 `ClaudeCli { binary }`）、`request_profile`（`Native` 或 `CodexResponses`）、`authentication_source` 与 `quota_source`。认证来源为 `None`、`ApiKey`、`CodexOAuth`、已导入的 `RuntimeProvider` 或 `ClaudeCli`；额度来源为 `None`、`CodexUsage` 或 `ClaudeCliUsage`。公开摘要返回同一组字段；私有认证材料持有来源与 generation，不另建账户注册表。新建普通 HTTP 提供商应选择 `Http`、`Native` 和 `None` 额度来源。`AuthenticationEdit` 区分 `Keep`、`SetApiKey`、`Clear` 与 `UseClaudeCodeLogin`：切换来源或清除会初始化所选来源的空认证，保存原登录使用 `Keep`。运行时来源只能由导入建立。
 
 组合在保存边界校验。`CodexOAuth` 必须显式配合 HTTP、Responses、`CodexResponses` 及固定 Codex 地址；`CodexUsage` 仅接受该认证来源。`ClaudeCli` 执行必须配合 Messages、`Native`、空 HTTP 地址及 CLI 认证；`ClaudeCliUsage` 读取同一个 CLI 登录目录。HTTP credential 与本机 CLI session 是不同材料类型；gateway 仅依据中立 recovery capability 发起认证恢复。Pi 来源的输出上限限制保留为独立 request capability，不再附带禁用 temperature、cache 或强制 stream。
 
 Claude 登录复用 `authentication_start`、`authentication_poll`、`authentication_cancel` 和 `authentication_inspect`；`authentication_logout` 执行官方 CLI 退出并使绑定失效。应用运行未修改的 `claude auth login`，该命令默认订阅登录；完成后执行默认 JSON 的 `claude auth status`，只接受 `authMethod=claude.ai`。每个提供商通过显式 `CLAUDE_CONFIG_DIR` 使用独立目录。命令从该目录运行，保留正常操作系统 `HOME`、`USER`、`LOGNAME` 与 `PATH`；macOS Keychain 依赖真实用户 HOME，不能用暂存目录替换。其他环境变量不继承；应用不读取 CLI 的凭据文件、Keychain 或 token。CLI 自己负责刷新。登录先暂存到新目录，配置提交成功后才替换旧绑定。取消、重复绑定、配置提交失败或丢弃未提交登录时，原有 worker 在子进程结束后通过有界官方 logout 清理暂存身份，再删除目录；清理错误记录固定诊断，不输出来源内容。状态摘要仅显示散列尾号；优先采用 CLI 给出的稳定主体标识，缺失时以规范化 email 与 orgId 的摘要尽力去重，不声称能严格证明订阅身份，且不保存 email。generation 才是本机绑定生命周期的依据。
+
+Claude CLI 提供商也可沿用既有登录：`AuthenticationEdit::UseClaudeCodeLogin { login }` 引用 `LinkedClaudeLogin::UserDefault`（不设置 `CLAUDE_CONFIG_DIR`）或 `Runtime { instance_id }`（本机、既有 HOME 的 `claude-code-2.1` 实例的 `agentDir`）。目录在保存、导入与检查时解析并记录在私有材料中，执行时不再查询运行时。`authentication_inspect` 重新解析并读取状态；沿用的登录没有 start／logout，删除提供商或改用独立登录（`Clear`）都不会退出它，也不创建 `claude-cli` 目录。`account_label` 是账户摘要尾 8 位，平台自行加措辞。同一账户在保存、导入或检查时若已绑定另一提供商（独立或沿用），操作被拒绝。
 
 应用共享执行池，跨 Runner 保留进程内会话；网关显式传入会话身份。换绑、删除、退出或关闭停止旧绑定，取消停止当前交互。真实新用户轮才调用 `begin_user_turn`，Harness turn 结束调用 `finish_user_turn`，释放仍在执行或等待工具的交互，保留已完成的空闲进程；普通准备或 Runner 替换不清理会话。不承诺应用重启后恢复 CLI 会话。CLI 的工具请求由网关桥接，应用不让它直接执行项目工具。
 

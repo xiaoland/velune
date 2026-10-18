@@ -135,7 +135,7 @@ Codex 历史人工验收入口为 [`manual-codex-history-identity.py`](../script
 
 原生历史只读浏览不建立网关或执行进程；Codex／DSH 缺少提供商身份的模型记录不自动匹配，继续前明确选择。DSH 切换模型先关闭会话，重启注入目录，再恢复同一原生 ID 并选择 upstream 公布的模型选项；不构造替代 opaque option。reasoningEfforts 需要实际 wire 映射，当前能力等级列表不足以证明映射，保持 SDK 默认，不推测支持。
 
-审批与问题回答是类型化 pending interaction，用户选择、回答或取消后由 adapter 编码原生回复；不自动批准。取消执行与取消一个交互不同，执行终态按各协议观察。DSH 只暴露 ACP committed semantic 更新，不宣称原始 provider token delta、DSH 专有展示或历史 replay。提供商导入／订阅登录仍限 Pi 来源，新增执行 adapter 不等于新增导入能力。
+审批与问题回答是类型化 pending interaction，用户选择、回答或取消后由 adapter 编码原生回复；不自动批准。取消执行与取消一个交互不同，执行终态按各协议观察。DSH 只暴露 ACP committed semantic 更新，不宣称原始 provider token delta、DSH 专有展示或历史 replay。提供商导入支持 Pi、Codex 与 Claude Code 来源，DSH／ACP 尚无导入；新增执行 adapter 不等于新增导入能力。
 
 DSH 的 Velune 执行 overlay 为 llm-pi-ai 追加网关目录，不改 ACP 原生默认选择，也不禁用 settings 或原生提供商。DSH 历史 header 记录最后使用的 provider／model，因此 app 私有 overlay 保留恢复历史所需的无凭据模型 metadata；native 轮次将该条目的地址设为 loopback 端口 0，先显式选择既有模型再发送。上游 CLI 准备 ACP profile 的行为仍存在，不能声称原目录完全无写入。真实来源、认证与会话禁止用于开发验证；隔离循环只使用临时目录、合成输入与 loopback 上游。当前安装与用户验收状态由 [任务 packet](../tasks/multi-runtime/packet.md) 记录。
 
@@ -197,7 +197,7 @@ python3 scripts/manual-relaykit-provider.py replay \
 
 ## UniFFI 的临时端到端验收
 
-先构建动态库，并按 [bindings unit](../packages/bindings/README.md) 生成与其匹配的 Python 绑定。提供商配置验收使用 [提供商与模板脚本](../scripts/manual-provider-configuration.py)，传入绝对路径 `--bundle` 和 `--bindings`，验证本机文件 API key 显式读取／编辑／重开、公开描述与日志不含 key、模型 ID／协议／地址编辑、模板快照和当前 schema 的 hard-cutoff。使用临时 HOME 与合成 key，不读取真实资料。
+先构建动态库，并按 [bindings unit](../packages/bindings/README.md) 生成与其匹配的 Python 绑定。提供商配置验收使用 [提供商与模板脚本](../scripts/manual-provider-configuration.py)，传入绝对路径 `--bundle` 和 `--bindings`，验证本机文件 API key 显式读取／编辑／重开、公开描述与日志不含 key、模型 ID／协议／地址编辑、模板快照和当前 schema 的 hard-cutoff。使用临时 HOME 与合成 key，不读取真实资料。[提供商来源脚本](../scripts/manual-provider-sources.py) 参数相同，以合成 Codex `config.toml`、Claude Code `settings.json` 和按账户文件回答 `auth status` 的假 `claude`，检查 Codex／Claude Code 运行时导入（字面 key 复制、预览不含 key、来源变化使预览失效）、沿用默认与运行时 Claude Code 登录、同账户拒绝、失效登录经检查转为未登录，以及删除时不执行 login／logout、不改来源文件、日志不含 key；不证明真实 CLI 行为。
 
 [安装包首循环脚本](../scripts/manual-pi-native-loop.py) 另传 `--node` 和外部 `--pi`，从配置运行时和导入开始，通过实际固定 Pi SDK 完成工具续写、下一轮消息、提供商 key／model ID／地址编辑后实际派发检查。上游为回环合成服务，不涉及真实 Keychain、模型服务或会话。原生 [HTTP 脚本](../scripts/manual-gateway-native.py) 检查 ChatCompletions／Responses JSON、SSE、状态及安全头的保真与取消。所有入口均为显式人工验收，不接入 CI 或自动化测试；实际 GUI／真实提供商由用户验收。
 
@@ -359,7 +359,7 @@ SSH 依赖本机 OpenSSH，以及远端 POSIX 环境和 Python 3；各 Harness �
 
 managed 请求通过远端 loopback 反向转发访问本机网关，释放执行资源时关闭隧道。远端监听核对使用 Linux proc 网络表，或 macOS／BSD 的 `lsof`；无法证明仅 loopback 时返回明确错误。断连清理所属进程组，不自动重发不确定结果。历史、版本、模型发现及 cwd 检查都在执行机器完成。跨机器接续目前沿用来源 cwd，目标必须存在同一路径；尚无目录映射或重定位入口。
 
-Pi 提供商导入／OAuth 来源操作仍限定默认本机 execution，SSH 或显式 HOME 配置返回不支持；原生 provider 的直接执行不受此限制。Claude、Codex、DSH 的 provider 导入与订阅登录没有因为增加运行控制而自动实现。
+Pi 提供商导入／OAuth 来源操作仍限定默认本机 execution，SSH 或显式 HOME 配置返回不支持；原生 provider 的直接执行不受此限制。Codex 与 Claude Code 的 provider 导入同样只接受默认本机 execution；DSH 的 provider 导入没有因为增加运行控制而自动实现。
 
 人工验收可构建 Rust 动态库并生成相同版本 Python bindings，再运行 [选择与 HOME 脚本](../scripts/manual-runtime-selection.py)，传入 `--library`、`--bindings`、`--resources` 的绝对路径。该脚本只使用临时 HOME 和合成控制 peer，覆盖原生／managed 模型、终态／失败／取消清理、跨实例接续、原子执行配置和来源文件不变。实际 Claude CLI、真实 OpenSSH 本机隔离连接及旧运行时回归的适用条件归 [本轮 packet](../tasks/runtime-provider-ssh/packet.md)，不把合成 peer 当成真实外部 SSH 主机或真实提供商验收。
 

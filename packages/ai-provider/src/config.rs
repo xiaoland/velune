@@ -172,9 +172,8 @@ pub enum CredentialMaterial {
         authorization: HttpAuthorization,
         account_id: Option<String>,
     },
-    LocalSession {
-        config_dir: String,
-    },
+    /// A local CLI's own login; `None` is the user's default login.
+    LocalSession { config_dir: Option<String> },
 }
 /// A stable opaque identity for refresh recovery, not a vendor or a token.
 #[derive(Clone, PartialEq, Eq)]

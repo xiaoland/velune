@@ -162,7 +162,8 @@ enum BindingMapping {
         let method: AuthenticationMethod
         switch value.authentication.method { case .apiKey: method = .apiKey; case .oAuth: method = .oauth; case .unconfigured: method = .unconfigured }
         let authentication = ProviderAuthentication(method: method, configured: value.authentication.configured, accountLabel: value.authentication.accountLabel, provenance: value.authentication.provenance?.displayName,
-                                                    disclosure: value.authentication.disclosure.map(disclosure), actions: value.authentication.actions.map(settingAction))
+                                                    disclosure: value.authentication.disclosure.map(disclosure), actions: value.authentication.actions.map(settingAction),
+                                                    linkedLogin: value.authentication.linkedLogin.map(linkedLogin))
         return AIProvider(id: value.id, name: value.name, protocolID: protocolID(value.`protocol`), endpoint: value.endpoint, authentication: authentication, models: value.models.map(model),
                           quotaLimits: value.quotaLimits.map { QuotaLimit(windowID: $0.windowId, maxUsedPercent: $0.maxUsedPercent) },
                           composition: ProviderComposition(executionBackend: value.executionBackend, requestProfile: value.requestProfile, authenticationSource: value.authenticationSource, quotaSource: value.quotaSource))
@@ -205,7 +206,18 @@ enum BindingMapping {
                              quotaLimits: value.quotaLimits.map { BindingQuotaLimit(windowId: $0.windowID, maxUsedPercent: $0.maxUsedPercent) })
     }
     static func bindingAuthenticationEdit(_ value: AuthenticationEdit) -> BindingAuthenticationEdit {
-        switch value { case .keep: return .keep; case .setAPIKey(let value): return .setApiKey(value: value); case .clear: return .clear }
+        switch value {
+        case .keep: return .keep
+        case .setAPIKey(let value): return .setApiKey(value: value)
+        case .clear: return .clear
+        case .useClaudeCodeLogin(let login): return .useClaudeCodeLogin(login: bindingLinkedLogin(login))
+        }
+    }
+    static func linkedLogin(_ value: BindingLinkedClaudeLogin) -> LinkedClaudeLogin {
+        switch value { case .userDefault: return .userDefault; case .runtime(let id): return .runtime(instanceID: id) }
+    }
+    static func bindingLinkedLogin(_ value: LinkedClaudeLogin) -> BindingLinkedClaudeLogin {
+        switch value { case .userDefault: return .userDefault; case .runtime(let id): return .runtime(instanceId: id) }
     }
     static func bindingProtocol(_ value: ProviderProtocol) -> BindingGatewayProtocol {
         switch value { case .chatCompletionsV1: return .chatCompletionsV1; case .responsesV1: return .responsesV1; case .messagesV1: return .messagesV1 }

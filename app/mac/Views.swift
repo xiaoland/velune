@@ -602,6 +602,8 @@ struct ProviderEditor: View {
     @State private var editingAPIKey = false
     @State private var clearAuthentication = false
     @State private var confirmingLogout = false
+    /// Whose Claude Code login a CLI-executed provider uses; `nil` signs a new account in to Velune.
+    @State private var linkedLogin: LinkedClaudeLogin?
     /// Executables found on this Mac for a CLI-executed provider.
     @State private var executableCandidates: [String] = []
     /// A new provider saved to sign in keeps being edited under this ID.
@@ -614,8 +616,18 @@ struct ProviderEditor: View {
     private var authentication: ProviderAuthentication { store.providers.first { $0.id == providerID }?.authentication ?? provider?.authentication ?? ProviderAuthentication() }
     /// A subscription composition fixes the protocol and how the provider is reached.
     private var usesSubscription: Bool { composition.subscriptionName != nil }
-    /// A new subscription provider signs in once saved.
-    private var awaitsFirstSave: Bool { providerID == nil && usesSubscription }
+    /// A new subscription provider signs in once saved, unless it uses an existing login.
+    private var awaitsFirstSave: Bool { providerID == nil && usesSubscription && linkedLogin == nil }
+    private var usesClaudeCLI: Bool { composition.claudeBinary != nil }
+    /// The account source differs from the saved one; the saved status no longer applies.
+    private var linkedLoginChanged: Bool { usesClaudeCLI && linkedLogin != authentication.linkedLogin }
+    /// Local Claude Code runtimes whose own login a provider can use.
+    private var claudeLoginRuntimes: [RuntimeInstance] {
+        store.runtimeInstances.filter { instance in
+            instance.typeID == "claude-code-2.1" && store.location(of: instance.id) == .local && (instance.settings["agentDir"].map { ($0 as NSString).isAbsolutePath } ?? false)
+                || linkedLogin == .runtime(instanceID: instance.id)
+        }
+    }
     /// The command a CLI backend runs, from the template the composition comes from.
     private var executableCommand: String? { template?.executableCommand ?? store.providerTemplates.first { $0.composition.authenticationSource == composition.authenticationSource }?.executableCommand }
     private var usesHTTP: Bool { if case .http = composition.executionBackend { return true }; return false }
@@ -670,6 +682,7 @@ struct ProviderEditor: View {
                 // A subscription is named after it until told apart; an API provider by its service.
                 name = template.kind == .subscription ? template.name : ""; protocolID = template.protocolID; endpoint = template.endpoint; composition = template.composition
             }
+            linkedLogin = provider?.authentication.linkedLogin
             editingAPIKey = !usesSubscription && authentication.method == .unconfigured; readAPIKeyIfNeeded()
             if let providerID { store.readProviderQuotas([providerID]) }
             if composition.claudeBinary != nil { discoverExecutables() }
@@ -734,6 +747,13 @@ struct ProviderEditor: View {
             }
             Section("认证") {
                 LabeledContent("方式", value: methodLabel)
+                if usesClaudeCLI && !clearAuthentication {
+                    Picker("账户来源", selection: $linkedLogin) {
+                        Text("在 Velune 中登录新账户").tag(LinkedClaudeLogin?.none)
+                        Text("本机 Claude Code 登录").tag(LinkedClaudeLogin?.some(.userDefault))
+                        ForEach(claudeLoginRuntimes) { instance in Text("运行时“\(instance.name)”的登录").tag(LinkedClaudeLogin?.some(.runtime(instanceID: instance.id))) }
+                    }
+                }
                 if editingAPIKey {
                     HStack {
                         if showKey { TextField("API key", text: $apiKey) } else { SecureField("API key", text: $apiKey) }
@@ -745,18 +765,23 @@ struct ProviderEditor: View {
                 } else if awaitsFirstSave {
                     if let hint = composition.signInHint { Text(hint).foregroundStyle(.secondary) }
                     Button("保存并登录…") { commit(signingIn: true) }.disabled(!valid || store.isBusy)
+                } else if linkedLoginChanged {
+                    Text(linkedLoginNote).foregroundStyle(.secondary)
                 } else {
                     if authentication.method == .oauth && !clearAuthentication {
                         LabeledContent("状态", value: authentication.configured ? "已登录" : "需要登录")
                         if let label = authentication.accountLabel { LabeledContent("账户", value: "…\(label)") }
                     }
                     if let providerID, !clearAuthentication, let action = authentication.loginAction { Button(action.label) { store.startAuthentication(providerID) }.disabled(store.isBusy) }
+                    if let providerID, !clearAuthentication, let action = authentication.actions.first(where: { $0.id == "inspect" }) {
+                        Button(action.label) { store.inspectAuthentication(providerID) }.disabled(store.isBusy)
+                    }
                     if providerID != nil, !clearAuthentication, authentication.configured, authentication.actions.contains(where: { $0.id == "logout" }) {
                         Button("退出登录…") { confirmingLogout = true }.disabled(store.isBusy || store.isGenerating)
                     }
                 }
                 if !editingAPIKey && !usesSubscription { Button("使用 API key…") { editingAPIKey = true; clearAuthentication = true; composition = ProviderComposition(); apiKey = "" } }
-                if providerID != nil && (authentication.configured || editingAPIKey) {
+                if providerID != nil && authentication.linkedLogin == nil && !linkedLoginChanged && (authentication.configured || editingAPIKey) {
                     Button("清除认证", role: .destructive) { clearAuthentication = true; editingAPIKey = false; apiKey = ""; originalAPIKey = nil }
                 }
                 if usesSubscription, let disclosure = authentication.disclosure ?? template?.disclosure {
@@ -767,6 +792,11 @@ struct ProviderEditor: View {
                 }
             }
         }
+    }
+    private var linkedLoginNote: String {
+        guard linkedLogin != nil else { return "保存后在 Velune 中登录新的 Claude 账户。" }
+        let source = "保存后沿用该登录：官方 Claude Code 保存并续期它，Velune 不复制凭据，也不会退出它；请先在 Claude Code 中登录。"
+        return authentication.linkedLogin == nil && authentication.configured ? source + "此提供商在 Velune 中独立的登录将退出。" : source
     }
     private var methodLabel: String {
         if editingAPIKey { return "API key" }
@@ -793,14 +823,15 @@ struct ProviderEditor: View {
     /// Saves; `signingIn` keeps the editor open on the saved provider and starts its login.
     /// A new subscription provider starts its source's authentication empty, so it saves with `keep`.
     private func commit(signingIn: Bool = false) {
-        let edit: AuthenticationEdit = editingAPIKey && apiKey != originalAPIKey ? .setAPIKey(apiKey) : clearAuthentication ? .clear : .keep
+        let edit: AuthenticationEdit = editingAPIKey && apiKey != originalAPIKey ? .setAPIKey(apiKey) : clearAuthentication ? .clear
+            : linkedLoginChanged ? linkedLogin.map(AuthenticationEdit.useClaudeCodeLogin) ?? .clear : .keep
         let existing = Set(store.providers.map(\.id))
         var saving = composition; if let claudeBinary { saving.claudeBinary = claudeBinary }
         store.saveProvider(AIProvider(id: providerID ?? "", name: name.trimmingCharacters(in: .whitespacesAndNewlines), protocolID: protocolID, endpoint: usesHTTP ? endpoint.trimmingCharacters(in: .whitespacesAndNewlines) : "", authentication: authentication, models: models.map(\.definition), quotaLimits: quotaLimits, composition: saving), authenticationEdit: edit) {
             apiKey = ""; originalAPIKey = nil
             guard signingIn, let saved = store.providers.first(where: { $0.id == providerID }) ?? store.providers.first(where: { !existing.contains($0.id) }) else { dismiss(); return }
             // Later saves keep the new authentication and the models' assigned keys.
-            savedID = saved.id; clearAuthentication = false; editingAPIKey = false; composition = saved.composition
+            savedID = saved.id; clearAuthentication = false; editingAPIKey = false; composition = saved.composition; linkedLogin = saved.authentication.linkedLogin
             models = saved.models.map(ProviderModelDraft.init); selection = .connection
             store.startAuthentication(saved.id)
         }

@@ -250,7 +250,7 @@ impl CoreRuntime {
             "outlinePresentation":self.outline_presentation,
             "statusLine":self.status_line,
             "conversationBrowserPreferences":self.conversation_browser_preferences,
-            "providerImportTypes": [provider_import::descriptor()],
+            "providerImportTypes": std::iter::once(provider_import::descriptor()).chain(runtime_types().into_iter().filter(|kind| crate::native_provider_import::TYPES.contains(&kind.id.as_str()))).collect::<Vec<_>>(),
             "protocols": [
                 {"id":"chatCompletionsV1","name":"OpenAI Chat Completions v1","supported":true},
                 {"id":"responsesV1","name":"OpenAI Responses v1","supported":true},

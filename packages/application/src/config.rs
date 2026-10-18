@@ -450,6 +450,18 @@ impl ProviderDefinition {
         {
             return Err("CLI 认证引用无效");
         }
+        if let crate::provider_authentication::AuthenticationMaterial::ClaudeCliLinked {
+            login,
+            config_dir,
+            ..
+        } = &self.authentication.material
+            && (config_dir
+                .as_deref()
+                .is_some_and(|dir| !std::path::Path::new(dir).is_absolute() || dir.contains('\0'))
+                || matches!(login, crate::provider_authentication::LinkedClaudeLogin::Runtime { instance_id } if instance_id.is_empty()))
+        {
+            return Err("沿用的 Claude Code 登录位置无效");
+        }
         match &self.execution_backend {
             ExecutionBackend::Http => {
                 if source == Auth::ClaudeCli {

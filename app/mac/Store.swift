@@ -1242,6 +1242,14 @@ final class AppStore: ObservableObject {
         enqueue({ try transport.authenticationCancel() }) { [weak self] in self?.applyAuthentication(BindingMapping.authenticationProgress($0)) }
     }
     /// Signs the provider's source out, e.g. Claude Code CLI's own login.
+    /// Reads again the status of a login the provider references, which its own CLI keeps.
+    func inspectAuthentication(_ providerID: String) {
+        guard !isPreview else { recordProblem("预览不会检查登录"); return }
+        guard let transport else { recordProblem("本地核心未配置"); return }
+        enqueue({ _ = try transport.authenticationInspect(gatewayID: self.gateway.id, providerID: providerID); return try transport.list() }) { [weak self] in
+            self?.applyList($0); self?.readProviderQuotas([providerID], refresh: true)
+        }
+    }
     func logoutAuthentication(_ providerID: String) {
         guard !isPreview else { recordProblem("预览不会退出登录"); return }
         guard let transport else { recordProblem("本地核心未配置"); return }

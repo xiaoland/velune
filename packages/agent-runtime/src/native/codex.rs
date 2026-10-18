@@ -477,6 +477,14 @@ impl NativeSession {
                         .map(|nested| format!("{runtime_id}:{nested}"));
                     self.sub_agents.extend(nested);
                 }
+                None if sub_agent
+                    && params["item"]["type"] == "subAgentActivity"
+                    && params["item"]["kind"] == "started" =>
+                {
+                    if let Some(nested) = params["item"]["agentThreadId"].as_str() {
+                        self.sub_agents.insert(format!("{runtime_id}:{nested}"));
+                    }
+                }
                 None => {}
             }
             return Ok(());
@@ -1056,6 +1064,26 @@ pub(super) fn project_item(item: &Value, runtime_id: &str) -> Option<Message> {
                             .map(|thread| format!("{runtime_id}:{thread}")),
                         _ => None,
                     },
+                }],
+            )
+        }
+        // Codex 0.159 records a native sub-agent's life in its parent's history
+        // instead of a call: its start is the conversation's link to it, named
+        // by the last segment of its agent path; the rest shows in its own.
+        "subAgentActivity" if item["kind"] == "started" => {
+            let thread = item["agentThreadId"].as_str()?;
+            (
+                MessageRole::Tool,
+                vec![MessageBlock::Tool {
+                    tool_id: Some(id.into()),
+                    title: item["agentPath"]
+                        .as_str()
+                        .and_then(|path| path.rsplit('/').find(|segment| !segment.is_empty()))
+                        .unwrap_or("sub-agent")
+                        .into(),
+                    state: ToolState::Completed,
+                    output: None,
+                    conversation_id: Some(format!("{runtime_id}:{thread}")),
                 }],
             )
         }

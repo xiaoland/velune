@@ -28,7 +28,9 @@ const IDLE: Duration = Duration::from_secs(600);
 #[derive(Clone)]
 pub struct ClaudeCodeConfig {
     pub executable: PathBuf,
-    pub config_dir: PathBuf,
+    /// The CLI login to use; `None` runs on the user's own default login, which
+    /// setting `CLAUDE_CONFIG_DIR` (even to the default directory) would hide.
+    pub config_dir: Option<PathBuf>,
     /// Explicit caller namespace and session ID, encoded by the composition root.
     pub session: Option<String>,
     /// Provider identity plus authentication binding epoch; never a credential.
@@ -342,7 +344,10 @@ impl ClaudeCode {
         config: ClaudeCodeConfig,
     ) -> Result<Self, InvalidContract> {
         if config.executable.as_os_str().is_empty()
-            || config.config_dir.as_os_str().is_empty()
+            || config
+                .config_dir
+                .as_ref()
+                .is_some_and(|dir| dir.as_os_str().is_empty())
             || config.binding.is_empty()
             || config.session.as_ref().is_some_and(|s| s.is_empty())
         {
@@ -525,7 +530,9 @@ async fn launch_in(
             command.env(key, value);
         }
     }
-    command.env("CLAUDE_CONFIG_DIR", &config.config_dir);
+    if let Some(dir) = &config.config_dir {
+        command.env("CLAUDE_CONFIG_DIR", dir);
+    }
     if let Some(max) = body["max_tokens"].as_u64() {
         command.env("CLAUDE_CODE_MAX_OUTPUT_TOKENS", max.to_string());
     }

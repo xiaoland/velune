@@ -324,6 +324,8 @@ struct SavedWindowLayout: Codable, Equatable {
     var tools: ToolWindowLayout
     /// Kept in front of other apps' windows.
     var pinned: Bool
+    /// A window opened for one conversation (see `ConversationWindowModel.isSingleConversation`); nil for another.
+    var singleConversation: Bool?
 
     /// Every pane and tab named once, the focused pane among them.
     var isWhole: Bool {
@@ -373,7 +375,7 @@ struct WindowSeed: Codable, Hashable {
         didSet {
             guard tools != oldValue else { return }
             detached.sync()
-            application.rememberedToolLayout.remember(tools)
+            if !isSingleConversation { application.rememberedToolLayout.remember(tools) }
         }
     }
     /// The area a panel dragged now would dock into, for the window to show where.
@@ -387,6 +389,11 @@ struct WindowSeed: Codable, Hashable {
     var openWindow: ((WindowSeed) -> Void)?
     /// Kept in front of other apps' windows.
     @Published var pinned = false
+    /// Opened for one conversation, by a tab or a list row dragged out or
+    /// "open in new window": its left area holds that conversation's
+    /// sub-agents rather than the list, and how its tools are arranged is
+    /// its own, not what the next window starts with.
+    private(set) var isSingleConversation = false
     private(set) lazy var detached = DetachedTools(model: self)
 
     /// Windows by the panes they hold, for moving a tab between them.
@@ -439,7 +446,8 @@ struct WindowSeed: Codable, Hashable {
         _ = tabsRevision
         return SavedWindowLayout(layout: layout,
                                  panes: panes.mapValues { SavedWindowLayout.SavedPane(tabs: $0.tabs.map(\.id), selected: $0.selectedID) },
-                                 conversations: tabConversations, focused: focusedPaneID, tools: tools, pinned: pinned)
+                                 conversations: tabConversations, focused: focusedPaneID, tools: tools, pinned: pinned,
+                                 singleConversation: isSingleConversation ? true : nil)
     }
 
     /// Restore a saved arrangement, take a handed-over tab, or open `seed`'s
@@ -450,7 +458,8 @@ struct WindowSeed: Codable, Hashable {
         started = true
         list.start(loadFirstConversation: false)
         // A layout the system restores below replaces this one.
-        tools = application.rememberedToolLayout.layout
+        isSingleConversation = seed?.editorOnly == true || saved?.singleConversation == true
+        tools = isSingleConversation ? application.rememberedToolLayout.layout.forSingleConversation() : application.rememberedToolLayout.layout
         if seed?.editorOnly == true { tools.toggleEditorOnly() }
         if let id = seed?.tab, let tab = Self.handoff.removeValue(forKey: id) {
             replacePanes(with: [Pane(tabs: [tab])], layout: nil)

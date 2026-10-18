@@ -34,6 +34,15 @@ pub(crate) enum AuthenticationMaterial {
         account_label: Option<String>,
         identity: Option<String>,
     },
+    /// `config_dir` is resolved from `login` when linked or inspected; `None`
+    /// is the user's default login, run without `CLAUDE_CONFIG_DIR`.
+    ClaudeCliLinked {
+        login: LinkedClaudeLogin,
+        config_dir: Option<String>,
+        configured: bool,
+        account_label: Option<String>,
+        identity: Option<String>,
+    },
     RuntimeProvider {
         source: AuthenticationSource,
         method: AuthenticationMethod,
@@ -66,7 +75,10 @@ impl ProviderAuthentication {
             AuthenticationMaterial::RuntimeProvider { .. } => {
                 ProviderAuthenticationSource::RuntimeProvider
             }
-            AuthenticationMaterial::ClaudeCli { .. } => ProviderAuthenticationSource::ClaudeCli,
+            AuthenticationMaterial::ClaudeCli { .. }
+            | AuthenticationMaterial::ClaudeCliLinked { .. } => {
+                ProviderAuthenticationSource::ClaudeCli
+            }
         }
     }
     pub(crate) fn description(&self) -> ProviderAuthenticationDescription {
@@ -112,6 +124,22 @@ impl ProviderAuthentication {
                     },
                 ],
             ),
+            AuthenticationMaterial::ClaudeCliLinked {
+                login, configured, ..
+            } => (
+                AuthenticationMethod::OAuth,
+                *configured,
+                Some(AuthenticationProvenance {
+                    display_name: match login {
+                        LinkedClaudeLogin::UserDefault => "本机 Claude Code 登录".into(),
+                        LinkedClaudeLogin::Runtime { .. } => "Claude Code 运行时的登录".into(),
+                    },
+                }),
+                vec![crate::conversation::SettingAction {
+                    id: "inspect".into(),
+                    label: "检查登录状态".into(),
+                }],
+            ),
             AuthenticationMaterial::RuntimeProvider {
                 source,
                 method,
@@ -154,10 +182,17 @@ impl ProviderAuthentication {
             provenance,
             actions,
             account_label: match &self.material {
-                AuthenticationMaterial::ClaudeCli { account_label, .. } => account_label.clone(),
+                AuthenticationMaterial::ClaudeCli { account_label, .. }
+                | AuthenticationMaterial::ClaudeCliLinked { account_label, .. } => {
+                    account_label.clone()
+                }
                 _ => None,
             },
             disclosure: SubscriptionDisclosure::for_source(self.source()),
+            linked_login: match &self.material {
+                AuthenticationMaterial::ClaudeCliLinked { login, .. } => Some(login.clone()),
+                _ => None,
+            },
         }
     }
     pub(crate) fn validate_target(

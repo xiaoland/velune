@@ -93,12 +93,35 @@ impl CredentialResolver for ProviderResolver {
                     }
                     return Ok(ResolvedCredential {
                         material: velune_gateway::CredentialMaterial::LocalSession {
-                            config_dir: crate::claude_cli::directory(
-                                &options.home_directory,
-                                credential_id,
-                            )
-                            .to_string_lossy()
-                            .into_owned(),
+                            config_dir: Some(
+                                crate::claude_cli::directory(
+                                    &options.home_directory,
+                                    credential_id,
+                                )
+                                .to_string_lossy()
+                                .into_owned(),
+                            ),
+                        },
+                        recovery: velune_gateway::CredentialRecovery::None,
+                        request_capabilities: Default::default(),
+                    });
+                }
+                AuthenticationMaterial::ClaudeCliLinked {
+                    config_dir,
+                    configured,
+                    ..
+                } => {
+                    if !configured
+                        || !matches!(
+                            resource.execution_backend,
+                            crate::config::ExecutionBackend::ClaudeCli { .. }
+                        )
+                    {
+                        return Err(CredentialResolutionError::Unavailable);
+                    }
+                    return Ok(ResolvedCredential {
+                        material: velune_gateway::CredentialMaterial::LocalSession {
+                            config_dir: config_dir.clone(),
                         },
                         recovery: velune_gateway::CredentialRecovery::None,
                         request_capabilities: Default::default(),

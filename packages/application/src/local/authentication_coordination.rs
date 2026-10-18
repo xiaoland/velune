@@ -2,6 +2,59 @@
 use super::*;
 use crate::provider_authentication::*;
 impl CoreRuntime {
+    /// Re-reads a referenced Claude Code login, which may have been signed in,
+    /// switched or moved with its runtime since, and saves what changed.
+    fn inspect_linked_claude(
+        &mut self,
+        gateway_id: &str,
+        provider_id: &str,
+    ) -> Result<Value, RuntimeError> {
+        let previous = self.gateways.clone();
+        let runtimes = self.runtime_instances.clone();
+        let mut pending = previous.clone();
+        let provider = pending
+            .iter_mut()
+            .find(|g| g.id == gateway_id)
+            .and_then(|g| g.providers.iter_mut().find(|p| p.id == provider_id))
+            .ok_or_else(|| RuntimeError::invalid("provider id"))?;
+        let crate::config::ExecutionBackend::ClaudeCli { binary } = &provider.execution_backend
+        else {
+            return Err(RuntimeError::invalid("CLI backend missing"));
+        };
+        let binary = binary.clone();
+        if let AuthenticationMaterial::ClaudeCliLinked {
+            login, config_dir, ..
+        } = &mut provider.authentication.material
+        {
+            *config_dir = crate::claude_cli::linked_directory(login, &runtimes)?;
+        }
+        crate::claude_cli::refresh_linked(&mut provider.authentication.material, &binary)?;
+        let unchanged = previous
+            .iter()
+            .flat_map(|g| &g.providers)
+            .any(|p| p.id == provider_id && p.authentication == provider.authentication);
+        if !unchanged {
+            provider.authentication.generation = provider
+                .authentication
+                .generation
+                .checked_add(1)
+                .ok_or_else(|| RuntimeError::invalid("authentication revision overflow"))?;
+        }
+        let description = provider.authentication.description();
+        let capabilities = json!({"protocol":provider.protocol,"endpoint":provider.endpoint,"explicitOutputCap":true,"temperature":true});
+        if !unchanged {
+            crate::claude_cli::reject_duplicate_account(&pending, provider_id)?;
+            self.gateways = pending;
+            if let Err(error) = self.persist() {
+                self.gateways = previous;
+                return Err(error);
+            }
+            self.sync_scheduling(&previous);
+        }
+        Ok(
+            json!({"metadata":{"configured":description.configured,"accountLabel":description.account_label,"capabilities":capabilities,"actions":description.actions}}),
+        )
+    }
     fn poll_subscription_login(&mut self) -> Result<Value, RuntimeError> {
         let mut data = self
             .subscription_login
@@ -42,6 +95,10 @@ impl CoreRuntime {
                         }
                         (
                             AuthenticationMaterial::ClaudeCli {
+                                identity: Some(identity),
+                                ..
+                            }
+                            | AuthenticationMaterial::ClaudeCliLinked {
                                 identity: Some(identity),
                                 ..
                             },
@@ -309,10 +366,10 @@ impl CoreRuntime {
                             .build()?;
                         let status = runtime.block_on(crate::claude_cli::status(
                             binary,
-                            &crate::claude_cli::directory(
+                            Some(&crate::claude_cli::directory(
                                 &self.options.home_directory,
                                 credential_id,
-                            ),
+                            )),
                         ));
                         return Ok(
                             json!({"metadata":{"configured":status.as_ref().is_ok_and(|v| v.configured),"accountLabel":status.ok().and_then(|v| v.label),"capabilities":{"protocol":provider.protocol,"endpoint":provider.endpoint,"explicitOutputCap":true,"temperature":true},"actions":[{"id":"login","label":"登录…"},{"id":"logout","label":"退出登录"}]}}),
@@ -326,6 +383,14 @@ impl CoreRuntime {
                     ));
                     self.authentication_provider = Some((gateway_id.into(), provider_id.into()));
                     return self.poll_subscription_login();
+                }
+                AuthenticationMaterial::ClaudeCliLinked { .. } => {
+                    if operation == "start" {
+                        return Err(RuntimeError::invalid(
+                            "此提供商沿用既有的 Claude Code 登录；请在 Claude Code 中登录，再检查登录状态。",
+                        ));
+                    }
+                    return self.inspect_linked_claude(gateway_id, provider_id);
                 }
                 AuthenticationMaterial::RuntimeProvider { source, .. } => {
                     request["source"] = Value::String(serde_json::to_string(source)?);

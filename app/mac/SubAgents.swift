@@ -17,6 +17,7 @@ struct SubAgentsView: View {
         VStack(spacing: 0) {
             if agents.isEmpty {
                 ContentUnavailableView("没有子 Agent", systemImage: "person.2", description: Text("会话的 Agent 启动原生子 Agent 后，在这里列出并可打开。"))
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 if inSidebar { list(agents).listStyle(.sidebar) } else { list(agents).listStyle(.inset) }
                 Divider()

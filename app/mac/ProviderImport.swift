@@ -215,9 +215,12 @@ struct ProviderImportView: View {
                 GridRow { Text("名称").foregroundStyle(.secondary); Text(provider.name) }
                 GridRow { Text("协议").foregroundStyle(.secondary); Text(store.protocols.first { $0.id.rawValue == provider.protocol }?.name ?? provider.protocol) }
             }
-            VStack(alignment: .leading, spacing: 4) {
-                Text("服务地址").foregroundStyle(.secondary)
-                Text(provider.endpoint).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+            // A login run by a local CLI has no address of its own.
+            if !provider.endpoint.isEmpty {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("服务地址").foregroundStyle(.secondary)
+                    Text(provider.endpoint).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+                }
             }
             Text(provider.credentialStatus).foregroundStyle(.secondary)
             issueList(provider.issues)

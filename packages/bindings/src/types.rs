@@ -1076,6 +1076,19 @@ pub struct BindingProviderAuthentication {
     pub provenance: Option<BindingAuthenticationProvenance>,
     pub disclosure: Option<BindingSubscriptionDisclosure>,
     pub actions: Vec<BindingSettingAction>,
+    pub linked_login: Option<BindingLinkedClaudeLogin>,
+}
+/// An existing Claude Code login a provider references instead of copying.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, uniffi::Enum)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum BindingLinkedClaudeLogin {
+    UserDefault,
+    Runtime { instance_id: String },
 }
 #[derive(Clone, Serialize, Deserialize, uniffi::Enum)]
 #[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
@@ -1083,6 +1096,7 @@ pub enum BindingAuthenticationEdit {
     Keep,
     SetApiKey { value: String },
     Clear,
+    UseClaudeCodeLogin { login: BindingLinkedClaudeLogin },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]

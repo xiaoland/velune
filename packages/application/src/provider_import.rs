@@ -53,6 +53,30 @@ fn source(payload: &Value) -> Result<Source, RuntimeError> {
     };
     serde_json::from_value(value).map_err(|_| RuntimeError::invalid("provider import source"))
 }
+/// The selected Codex or Claude Code instance, whose files the agent runtime
+/// reads directly; Pi goes through its SDK adapter instead.
+fn native_runtime<'a>(
+    payload: &Value,
+    runtimes: &'a [RuntimeInstance],
+) -> Result<Option<&'a RuntimeInstance>, RuntimeError> {
+    let selection = source(payload)?;
+    let Some(runtime) = runtimes.iter().find(|runtime| {
+        Some(runtime.id.as_str()) == selection.source_instance_id.as_deref()
+            && crate::native_provider_import::TYPES.contains(&runtime.type_id.as_str())
+    }) else {
+        return Ok(None);
+    };
+    if selection.kind != "harness"
+        || !selection.settings.is_empty()
+        || selection.provider_id.is_some()
+        || selection.harness_type_id != crate::native_provider_import::family(runtime)
+    {
+        return Err(RuntimeError::invalid(
+            "提供商导入只接受已配置运行时的选择，不能覆盖其来源配置",
+        ));
+    }
+    Ok(Some(runtime))
+}
 /// A selection references persisted application configuration; callers cannot supply source paths.
 fn configured_source(
     payload: &Value,
@@ -191,7 +215,7 @@ fn protocol(value: &str) -> Option<GatewayProtocol> {
         _ => None,
     }
 }
-fn protocol_name(value: &GatewayProtocol) -> &'static str {
+pub(crate) fn protocol_name(value: &GatewayProtocol) -> &'static str {
     match value {
         GatewayProtocol::ChatCompletionsV1 => "chatCompletionsV1",
         GatewayProtocol::ResponsesV1 => "responsesV1",
@@ -205,6 +229,9 @@ pub(crate) fn preview(
     options: &RuntimeOptions,
     runtimes: &[RuntimeInstance],
 ) -> Result<Value, RuntimeError> {
+    if let Some(runtime) = native_runtime(source_value, runtimes)? {
+        return crate::native_provider_import::preview(runtime, gateway);
+    }
     let (source, runtime_fingerprint) = configured_source(source_value, runtimes)?;
     let snapshot = run_helper(&source, options)?;
     let source_fingerprint = combined_source_fingerprint(&snapshot, &runtime_fingerprint);
@@ -264,6 +291,9 @@ pub(crate) fn apply(
     options: &RuntimeOptions,
     runtimes: &[RuntimeInstance],
 ) -> Result<Value, RuntimeError> {
+    if let Some(runtime) = native_runtime(source_value, runtimes)? {
+        return crate::native_provider_import::apply(source_value, runtime, gateway, runtimes);
+    }
     let (source, runtime_fingerprint) = configured_source(source_value, runtimes)?;
     let snapshot = run_helper(&source, options)?;
     let source_fingerprint = combined_source_fingerprint(&snapshot, &runtime_fingerprint);

@@ -393,6 +393,13 @@ impl CoreRuntime {
                     .find(|summary| summary.id == id && summary.runtime_id == runtime.id)
                     .cloned()
             })
+            .or_else(|| {
+                self.reached
+                    .borrow()
+                    .get(id)
+                    .filter(|source| source.summary.runtime_id == runtime.id)
+                    .map(|source| source.summary.clone())
+            })
     }
     pub(super) fn validate_session_model(
         &self,

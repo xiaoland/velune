@@ -141,6 +141,7 @@ struct ConversationListView: View {
             renameTarget = target
         }
         .listStyle(.sidebar)
+        .background(ListDragLimit())
         .disabled(store.authenticationRunning || store.isShuttingDown)
     }
 
@@ -326,6 +327,42 @@ struct ConversationListView: View {
         .accessibilityLabel("显示")
         .disabled(store.conversationBrowserPreferences == nil)
     }
+}
+
+/// Outside Velune a conversation dragged from the list is taken by nothing,
+/// as a tab is: the desktop would keep whatever it carries as a file. The
+/// list's drag is its table's, so the table beside this view is told so.
+private struct ListDragLimit: NSViewRepresentable {
+    final class Finder: NSView {
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            // The table is made with the list, after this view joins the window.
+            DispatchQueue.main.async { [weak self] in self?.limit() }
+        }
+
+        private weak var table: NSTableView?
+
+        func limit() {
+            if table == nil {
+                var ancestor = superview
+                for _ in 0..<4 {
+                    guard let view = ancestor else { break }
+                    if let found = Self.table(in: view) { table = found; break }
+                    ancestor = view.superview
+                }
+            }
+            table?.setDraggingSourceOperationMask([], forLocal: false)
+        }
+
+        private static func table(in view: NSView) -> NSTableView? {
+            if let table = view as? NSTableView { return table }
+            for child in view.subviews { if let table = table(in: child) { return table } }
+            return nil
+        }
+    }
+
+    func makeNSView(context: Context) -> Finder { Finder() }
+    func updateNSView(_ view: Finder, context: Context) { view.limit() }
 }
 
 /// The system search field, for a list outside a window's toolbar.

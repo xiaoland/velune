@@ -24,14 +24,16 @@ mod subscription_auth;
 mod subscription_quota;
 pub use provider_authentication::{
     AuthenticationEdit, AuthenticationMethod, AuthenticationProvenance,
-    CODEX_SUBSCRIPTION_ENDPOINT, CODEX_SUBSCRIPTION_PROTOCOL, ProviderAuthenticationDescription,
-    ProviderAuthenticationSource, SubscriptionDisclosure,
+    CODEX_SUBSCRIPTION_ENDPOINT, CODEX_SUBSCRIPTION_PROTOCOL, LinkedClaudeLogin,
+    ProviderAuthenticationDescription, ProviderAuthenticationSource, SubscriptionDisclosure,
 };
 pub use velune_application_api::{ProviderTemplate, ProviderTemplateKind, provider_templates};
 pub mod config;
 #[cfg(feature = "local-runtime")]
 mod local;
 pub mod model_catalog;
+#[cfg(feature = "local-runtime")]
+mod native_provider_import;
 #[cfg(not(feature = "local-runtime"))]
 mod portable;
 mod provider_configuration;

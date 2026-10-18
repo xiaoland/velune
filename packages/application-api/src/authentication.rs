@@ -1,4 +1,4 @@
-//! Provider-owned private authentication and non-secret UI descriptions.
+//! Provider-owned authentication edits and non-secret UI descriptions.
 use crate::config::GatewayProtocol;
 use serde::{Deserialize, Serialize};
 
@@ -61,11 +61,34 @@ pub struct ProviderAuthenticationDescription {
     pub provenance: Option<AuthenticationProvenance>,
     pub actions: Vec<crate::conversation::SettingAction>,
     pub disclosure: Option<SubscriptionDisclosure>,
+    /// The existing Claude Code login the provider references, if it does.
+    pub linked_login: Option<LinkedClaudeLogin>,
+}
+/// An existing Claude Code login referenced by its owner, without credentials or local paths.
+/// The official CLI keeps saving and renewing it; Velune never signs out this login.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum LinkedClaudeLogin {
+    /// The execution machine user's own default login.
+    UserDefault,
+    /// The login of a local Claude Code runtime on the execution machine.
+    Runtime { instance_id: String },
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
 pub enum AuthenticationEdit {
     Keep,
-    SetApiKey { value: String },
+    SetApiKey {
+        value: String,
+    },
     Clear,
+    /// Reference an existing Claude Code login instead of signing in anew.
+    UseClaudeCodeLogin {
+        login: LinkedClaudeLogin,
+    },
 }

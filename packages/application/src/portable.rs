@@ -117,7 +117,9 @@ impl CoreRuntime {
                     };
                 }
                 let mut next = self.config.clone();
-                provider_configuration::edit_provider(&mut next.gateways, payload)?;
+                provider_configuration::edit_provider(&mut next.gateways, payload, &|_| {
+                    Err(Error::invalid("沿用 Claude Code 登录需要本机运行环境"))
+                })?;
                 self.persist_config(&next)?;
                 self.config = next;
                 Ok(

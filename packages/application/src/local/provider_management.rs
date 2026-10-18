@@ -47,7 +47,11 @@ impl CoreRuntime {
         let previous = self.gateways.clone();
         let previous_runtimes = self.runtime_instances.clone();
         let mut pending = previous.clone();
-        crate::provider_configuration::edit_provider(&mut pending, payload)?;
+        let runtimes = self.runtime_instances.clone();
+        crate::provider_configuration::edit_provider(&mut pending, payload, &|login| {
+            crate::claude_cli::linked_directory(login, &runtimes)
+        })?;
+        link_claude_logins(&previous, &mut pending)?;
         self.gateways = pending;
         if let Err(error) = self.persist() {
             self.gateways = previous;
@@ -110,4 +114,35 @@ impl CoreRuntime {
         }
         Ok(serde_json::to_value(&self.model_templates)?)
     }
+}
+
+/// Reads the status of each newly referenced Claude Code login, and keeps one
+/// Claude account bound to one provider whether signed in here or referenced.
+fn link_claude_logins(
+    previous: &[crate::config::GatewayConfig],
+    pending: &mut [crate::config::GatewayConfig],
+) -> Result<(), RuntimeError> {
+    use crate::provider_authentication::AuthenticationMaterial;
+    let mut linked = Vec::new();
+    for provider in pending.iter_mut().flat_map(|g| g.providers.iter_mut()) {
+        let unchanged = previous.iter().flat_map(|g| &g.providers).any(|p| {
+            p.id == provider.id && p.authentication.material == provider.authentication.material
+        });
+        if !unchanged
+            && matches!(
+                provider.authentication.material,
+                AuthenticationMaterial::ClaudeCliLinked { .. }
+            )
+            && let crate::config::ExecutionBackend::ClaudeCli { binary } =
+                &provider.execution_backend
+        {
+            let binary = binary.clone();
+            crate::claude_cli::refresh_linked(&mut provider.authentication.material, &binary)?;
+            linked.push(provider.id.clone());
+        }
+    }
+    for id in &linked {
+        crate::claude_cli::reject_duplicate_account(pending, id)?;
+    }
+    Ok(())
 }
