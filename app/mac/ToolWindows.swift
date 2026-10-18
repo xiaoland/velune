@@ -758,7 +758,8 @@ extension ConversationWindowModel {
     /// the toolbar is customizable (macOS 26), else whenever it is visible.
     private func hasToolbarItem(_ id: String) -> Bool {
         guard let toolbar = window?.toolbar, toolbar.isVisible else { return false }
-        return !toolbar.allowsUserCustomization || toolbar.items.contains { $0.itemIdentifier.rawValue == id }
+        if !toolbar.allowsUserCustomization { return ToolbarSettings.shared.isShown(.subAgents) }
+        return toolbar.items.contains { $0.itemIdentifier.rawValue == id }
     }
 
     /// A tool's places as a submenu, for AppKit menus.

@@ -14,7 +14,7 @@ struct ConversationListView: View {
     @ObservedObject var focused: AppStore
     let placement: Placement
     @Environment(\.controlActiveState) private var activeState
-    @AppStorage(ConversationToolbar.customizationKey) private var customizesToolbar = false
+    @ObservedObject private var toolbarSettings = ToolbarSettings.shared
     @State private var browser = ConversationBrowser()
     @State private var renameTarget: Conversation?
     @State private var deleteTargets: [Conversation] = []
@@ -70,7 +70,7 @@ struct ConversationListView: View {
 
     /// Customizable where the window's toolbar is (see `VeluneRootView.withToolbar`).
     @ViewBuilder private func withSidebarToolbar(_ content: some View) -> some View {
-        if ConversationToolbar.isCustomizable(customizesToolbar) {
+        if #available(macOS 26, *) {
             content.toolbar(id: ConversationToolbar.id) {
                 ToolbarItem(id: "list-filter") { browserMenu }
                 ToolbarItem(id: "new-conversation") { newConversationButton }
@@ -78,8 +78,13 @@ struct ConversationListView: View {
         } else {
             content.toolbar {
                 ToolbarItemGroup {
-                    browserMenu
-                    newConversationButton
+                    ForEach(toolbarSettings.shown(in: .sidebar)) { button in
+                        switch button {
+                        case .listFilter: browserMenu
+                        case .newConversation: newConversationButton
+                        default: EmptyView()
+                        }
+                    }
                 }
             }
         }
