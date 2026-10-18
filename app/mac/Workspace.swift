@@ -903,11 +903,18 @@ struct WindowSeed: Codable, Hashable {
         }
     }
 
+    private func noteClick(_ event: NSEvent) {
+        clickedFindArea = findAreas.first { _, anchor in
+            guard let view = anchor(), view.window === event.window else { return false }
+            return view.bounds.contains(view.convert(event.locationInWindow, from: nil))
+        }?.key
+    }
+
     /// ⌘F: the find of the tool window that has the focus, else the shown
     /// conversation's messages. Only the list searches so far; the outline
     /// and linked agents would join `findAreas`.
     func find() {
-        if focusIsIn(findAreas[.list]) { if listIsBlock { listSearchPopover = true } else { listSearchRequest &+= 1 } } else { focused.beginFind() }
+        if focusIsIn(findAreas[.list]) || clickedFindArea == .list { if listIsBlock { listSearchPopover = true } else { listSearchRequest &+= 1 } } else { focused.beginFind() }
     }
 
     @Published private(set) var listSearchRequest = 0
@@ -921,13 +928,19 @@ struct WindowSeed: Codable, Hashable {
         return tools.tools(in: side).count > 1
     }
     private var findAreas: [ToolWindowKind: () -> NSView?] = [:]
+    /// The tool window last clicked in, if the last click was in one: clicking a
+    /// conversation in the list moves the focus on to the composer, but the
+    /// user is still working in the list.
+    private var clickedFindArea: ToolWindowKind?
 
     func registerFindArea(_ kind: ToolWindowKind, anchor: @escaping () -> NSView?) { findAreas[kind] = anchor }
 
     /// The first responder is in the view the anchor marks.
     private func focusIsIn(_ anchor: (() -> NSView?)?) -> Bool {
         guard let area = anchor?(), let window = area.window, let responder = window.firstResponder as? NSView else { return false }
-        let middle = responder.convert(NSPoint(x: responder.bounds.midX, y: responder.bounds.midY), to: nil)
+        // The middle of what shows: a table's bounds reach over all its rows.
+        let shown = responder.visibleRect
+        let middle = responder.convert(NSPoint(x: shown.midX, y: shown.midY), to: nil)
         return area.bounds.contains(area.convert(middle, from: nil))
     }
 
@@ -961,6 +974,7 @@ struct WindowSeed: Codable, Hashable {
         guard mouseMonitor == nil else { return }
         mouseMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown]) { [weak self] event in
             guard let self else { return event }
+            if event.type == .leftMouseDown { self.noteClick(event) }
             if event.type == .rightMouseDown, self.showsToolbarPlaceMenu(for: event) { return nil }
             guard self.isSplit else { return event }
             for (id, anchor) in self.anchors {

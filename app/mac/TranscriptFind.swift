@@ -60,6 +60,7 @@ struct TranscriptFindBar: View {
         .buttonStyle(.borderless)
         .padding(.horizontal, 10).padding(.vertical, 6)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
+        .background(ArrowCursorArea())
         .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(.separator))
         .onExitCommand { find.isShown = false }
         .task(id: find.focusRequest) { focused = true }
@@ -80,4 +81,15 @@ struct TranscriptFindBar: View {
         find.index = (min(find.index, matches.count - 1) + direction + matches.count) % matches.count
         jump(matches[find.index])
     }
+}
+
+/// The arrow over its bounds. A bar laid over the list would otherwise keep
+/// the text cursor of the messages beneath it until clicked.
+private struct ArrowCursorArea: NSViewRepresentable {
+    final class CursorView: NSView {
+        override func resetCursorRects() { addCursorRect(bounds, cursor: .arrow) }
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
+    }
+    func makeNSView(context: Context) -> CursorView { CursorView() }
+    func updateNSView(_ view: CursorView, context: Context) { view.window?.invalidateCursorRects(for: view) }
 }
