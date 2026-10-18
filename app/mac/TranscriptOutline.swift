@@ -44,16 +44,24 @@ struct TranscriptOutlineView: View {
                         .lineLimit(3).frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 3).tag(row.id)
                 }
             }
-            .onAppear { scrollToEnd(proxy) }
-            .onChange(of: model.userRows.count) { _, _ in scrollToEnd(proxy) }
+            // On appearing, and whenever the list is another conversation's or has a new last entry:
+            // a docked outline stays in the window as the conversation behind it changes.
+            .task(id: EndKey(model: ObjectIdentifier(model), last: model.userRows.last?.id)) { await scrollToEnd(proxy) }
             .accessibilityLabel("会话大纲")
             .contextMenu(forSelectionType: String.self) { ids in menu(ids) } primaryAction: { ids in if let id = ids.first { go(to: id) } }
         }
     }
 
-    private func scrollToEnd(_ proxy: ScrollViewProxy) {
+    private struct EndKey: Equatable {
+        let model: ObjectIdentifier
+        let last: String?
+    }
+
+    /// After the list has laid out the rows.
+    private func scrollToEnd(_ proxy: ScrollViewProxy) async {
         guard let last = model.userRows.last?.id else { return }
-        DispatchQueue.main.async { proxy.scrollTo(last, anchor: .bottom) }
+        try? await Task.sleep(for: .milliseconds(30))
+        proxy.scrollTo(last, anchor: .bottom)
     }
 
     @ViewBuilder private func menu(_ ids: Set<String>) -> some View {
