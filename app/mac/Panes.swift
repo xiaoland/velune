@@ -146,7 +146,7 @@ struct TabContentView: View {
                 .padding(.horizontal, 16).padding(.vertical, 10)
             }
             .background(.bar)
-        } else if inSheet || !window.tools.sharesComposer {
+        } else if inSheet || window.tools.panesHaveComposer {
             ComposerView(store: store, model: tab.composer, layout: window, send: tab.send)
         }
     }
@@ -276,7 +276,7 @@ private struct NewTabButton: View {
         }
         .buttonStyle(Style(hovering: hovering))
         .onHover { hovering = $0 }
-        .help("新建标签页（⌘ T）").accessibilityLabel("新建标签页")
+        .help(KeyboardShortcutSettings.shared.help("新建标签页", .newTab)).accessibilityLabel("新建标签页")
     }
 
     private struct Style: ButtonStyle {

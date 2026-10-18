@@ -101,9 +101,10 @@ struct ProblemsButton: View {
 
 struct ProblemsMenuItem: View {
     @ObservedObject var store: AppStore
+    @ObservedObject private var shortcuts = KeyboardShortcutSettings.shared
     @Environment(\.openWindow) private var openWindow
     var body: some View {
-        Button("问题…") { openWindow(id: "problems") }.keyboardShortcut("m", modifiers: [.command, .shift])
+        Button("问题…") { openWindow(id: "problems") }.keyboardShortcut(shortcuts[.problems])
     }
 }
 

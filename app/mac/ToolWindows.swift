@@ -125,8 +125,11 @@ struct ToolWindowLayout: Codable, Equatable {
         ToolWindowKind.allCases.filter { self[$0].place == .docked(side) }
     }
 
-    /// The window's one composer is showing; otherwise each pane has its own.
+    /// The window's one composer is showing.
     var sharesComposer: Bool { isOpen(.composer) }
+    /// Each pane has its own composer while the window's has no place of its
+    /// own; docked in a collapsed area it is put away with the area.
+    var panesHaveComposer: Bool { self[.composer].place == .builtIn }
     var isEditorOnly: Bool { editorOnly != nil }
 
     mutating func move(_ kind: ToolWindowKind, to place: ToolPlace) {
@@ -790,7 +793,9 @@ extension ConversationWindowModel {
 
     /// The keyboard goes to the composer the focused pane sends with.
     func focusComposer() {
+        // Put away with its area, it comes back with it.
+        if !tools.panesHaveComposer, !tools.isOpen(.composer) { tools.show(.composer) }
         if tools.sharesComposer { detached.bringForward(.composer) }
-        focused.composer.focus()
+        focused.composer.focusWhenShown()
     }
 }

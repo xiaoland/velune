@@ -22,6 +22,7 @@ struct VeluneRootView: View {
     @ObservedObject var focused: AppStore
     let previewEmpty: Bool
     let previewSettings: Bool
+    @ObservedObject private var shortcuts = KeyboardShortcutSettings.shared
     @Environment(\.openSettings) private var openSettings
     @Environment(\.openWindow) private var openWindow
     @Environment(\.controlActiveState) private var activeState
@@ -128,18 +129,18 @@ struct VeluneRootView: View {
 
     private var backButton: some View {
         Button { tab.goBack() } label: { Label("后退", systemImage: "chevron.backward") }
-            .help("回到之前查看的会话（⌃[）").disabled(focused.backHistory.isEmpty)
+            .help(shortcuts.help("回到之前查看的会话", .back)).disabled(focused.backHistory.isEmpty)
     }
 
     private var forwardButton: some View {
         Button { tab.goForward() } label: { Label("前进", systemImage: "chevron.forward") }
-            .help("前往后退前的会话（⌃]）").disabled(focused.forwardHistory.isEmpty)
+            .help(shortcuts.help("前往后退前的会话", .forward)).disabled(focused.forwardHistory.isEmpty)
     }
 
     private var reloadButton: some View {
         Button { focused.reloadFromRuntimes() } label: { Label("重新读取", systemImage: "arrow.clockwise") }
-            .keyboardShortcut("r").disabled(!focused.canReloadFromRuntimes)
-            .help("从 Agent 运行时重新读取会话列表和当前会话（⌘ R）；用于补上自动跟随遗漏的变化")
+            .keyboardShortcut(shortcuts[.reload]).disabled(!focused.canReloadFromRuntimes)
+            .help(shortcuts.help("从 Agent 运行时重新读取会话列表和当前会话", .reload) + "；用于补上自动跟随遗漏的变化")
     }
 
     private var pinToggle: some View {
@@ -150,7 +151,7 @@ struct VeluneRootView: View {
     private var splitButton: some View {
         // As in Xcode: Option-click divides downward.
         Button { window.split(NSEvent.modifierFlags.contains(.option) ? .vertical : .horizontal) } label: { Label("拆分", systemImage: "rectangle.split.2x1") }
-            .help("在右侧拆分出新面板（⌘ D）；按住 Option 点按则向下拆分（⇧⌘ D）")
+            .help(shortcuts.help("在右侧拆分出新面板", .splitRight) + "；" + shortcuts.help("按住 Option 点按则向下拆分", .splitDown))
     }
 
     private var changesToggle: some View {
@@ -166,7 +167,7 @@ struct VeluneRootView: View {
         let unavailable = focused.pendingConversationID != nil || focused.transcript.userRows.isEmpty
         if window.tools[.outline].place != .builtIn {
             Toggle(isOn: Binding(get: { window.tools.isOpen(.outline) }, set: { _ in window.toggle(.outline) })) { Label("会话大纲", systemImage: "list.bullet") }
-                .help(window.tools.isOpen(.outline) ? "隐藏会话大纲（⌘ 2）" : "显示会话大纲（⌘ 2）")
+                .help(shortcuts.help(window.tools.isOpen(.outline) ? "隐藏会话大纲" : "显示会话大纲", .showOutline))
         } else {
             settingOutlineButton(unavailable: unavailable)
         }
@@ -179,10 +180,10 @@ struct VeluneRootView: View {
         let running = LinkedAgent.all(of: focused).contains { focused.isConversationRunning($0.id) }
         if window.tools[.agents].place != .builtIn {
             Toggle(isOn: Binding(get: { window.tools.isOpen(.agents) }, set: { _ in window.toggle(.agents) })) { Label("关联 Agent", systemImage: "person.2") }
-                .help(window.tools.isOpen(.agents) ? "隐藏关联 Agent（⌘ 4）" : "显示关联 Agent（⌘ 4）")
+                .help(shortcuts.help(window.tools.isOpen(.agents) ? "隐藏关联 Agent" : "显示关联 Agent", .showAgents))
         } else {
             Button { window.agentsPopover.toggle() } label: { Label("关联 Agent", systemImage: running ? "person.2.fill" : "person.2") }
-                .help("\(LinkedAgent.summary(of: focused))（⌘ 4）")
+                .help(shortcuts.help(LinkedAgent.summary(of: focused), .showAgents))
                 .popover(isPresented: $window.agentsPopover, arrowEdge: .bottom) {
                     LinkedAgentsView(store: focused, layout: window) { id, opening in
                         window.agentsPopover = false
@@ -196,7 +197,7 @@ struct VeluneRootView: View {
         switch store.outlinePresentation {
         case .popover:
             Button { window.outlinePopover.toggle() } label: { Label("会话大纲", systemImage: "list.bullet") }
-                .help("会话大纲（⌘ 2）").disabled(unavailable)
+                .help(shortcuts.help("会话大纲", .showOutline)).disabled(unavailable)
                 .popover(isPresented: Binding(get: { window.outlinePopover && !unavailable }, set: { window.outlinePopover = $0 }), arrowEdge: .bottom) {
                     TranscriptOutlineView(model: focused.transcript, layout: window, editMessage: { [focused, tab] id in
                         focused.editability(of: id) == nil ? nil : { window.outlinePopover = false; tab.edit(messageID: id) }
@@ -207,7 +208,7 @@ struct VeluneRootView: View {
                 }
         case .inPlace:
             Toggle(isOn: $tab.outlineCollapsed) { Label("会话大纲", systemImage: "list.bullet") }
-                .help(tab.outlineCollapsed ? "展开完整会话（⌘ 2）" : "折叠为用户消息大纲（⌘ 2）")
+                .help(shortcuts.help(tab.outlineCollapsed ? "展开完整会话" : "折叠为用户消息大纲", .showOutline))
                 .disabled(unavailable && !tab.outlineCollapsed)
         }
     }
@@ -410,7 +411,7 @@ extension ImmediateDisclosureGroup where Label == Text {
     }
 }
 
-enum SettingsTab: Hashable { case providers, routes, conversation, runtimes }
+enum SettingsTab: Hashable { case providers, routes, conversation, runtimes, shortcuts }
 
 /// The settings tab that is showing. Entry points elsewhere in the app set it
 /// before opening the window, so settings open where the task needs them.
@@ -438,6 +439,7 @@ struct SettingsView: View {
             ModelRouteSettingsView(store: store).tabItem { Label("模型路由", systemImage: "arrow.triangle.branch") }.tag(SettingsTab.routes)
             ConversationSettingsView(store: store).tabItem { Label("会话", systemImage: "bubble.left.and.bubble.right") }.tag(SettingsTab.conversation)
             RuntimeSettingsView(store: store).tabItem { Label("Agent 运行时", systemImage: "terminal") }.tag(SettingsTab.runtimes)
+            ShortcutSettingsView().tabItem { Label("快捷键", systemImage: "keyboard") }.tag(SettingsTab.shortcuts)
         }
         // Settings are compact forms of one fixed size, so switching tabs never resizes the window.
         .frame(width: 690, height: 560)

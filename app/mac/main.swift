@@ -30,6 +30,7 @@ private struct Observing<Object: ObservableObject, Content: View>: View {
 struct ConversationCommands: Commands {
     @FocusedValue(\.conversationCommands) private var focusedTarget
     @ObservedObject private var pinning = WindowPinning.shared
+    @ObservedObject private var shortcuts = KeyboardShortcutSettings.shared
     /// A floating panel or tool window is no scene: while one is key, its window is the target.
     private var target: ConversationCommandTarget? {
         focusedTarget ?? ConversationWindowModel.owning(detached: NSApp.keyWindow).map { window in
@@ -53,25 +54,28 @@ struct ConversationCommands: Commands {
         CommandGroup(replacing: .newItem) {
             followingConversation {
                 Button("新建会话") { target?.store.createConversation() }
-                    .keyboardShortcut("n")
+                    .keyboardShortcut(shortcuts[.newConversation])
                     .disabled(target == nil || target?.store.isLoading == true)
             }
             Button("新建标签页") { target?.window.openInNewTab() }
-                .keyboardShortcut("t")
+                .keyboardShortcut(shortcuts[.newTab])
                 .disabled(target == nil)
             Button("新建窗口") { target?.window.openWindow?(.workspace, WindowSeed()) }
-                .keyboardShortcut("n", modifiers: [.command, .option])
+                .keyboardShortcut(shortcuts[.newWindow])
                 .disabled(target?.window.openWindow == nil)
         }
-        CommandGroup(replacing: .saveItem) {
+        // Not in place of the save items: an app without documents shows none of that group.
+        // Above the system's Close, which keeps ⌘W too, so the menu takes these first.
+        CommandGroup(after: .newItem) {
+            Divider()
             // A conversation window closes its shown tab; the last one closes the window. Any other window closes.
             Button("关闭标签页") {
                 if let window = ConversationWindowModel.owning(window: NSApp.keyWindow) { window.closeTab(window.focused.id) }
                 else { NSApp.keyWindow?.performClose(nil) }
             }
-            .keyboardShortcut("w")
+            .keyboardShortcut(shortcuts[.closeTab])
             Button("关闭窗口") { NSApp.keyWindow?.performClose(nil) }
-                .keyboardShortcut("w", modifiers: [.command, .shift])
+                .keyboardShortcut(shortcuts[.closeWindow])
         }
         CommandMenu("会话") {
             followingConversation {
@@ -79,60 +83,62 @@ struct ConversationCommands: Commands {
                     .keyboardShortcut(.return, modifiers: .command)
                     .disabled(target?.store.canSend != true)
                 Button("停止生成") { target?.store.cancel() }
-                    .keyboardShortcut(.escape, modifiers: [])
+                    .keyboardShortcut(shortcuts[.stop])
                     .disabled(target?.store.canCancel != true)
                 Button("停止子 Agent") { target?.store.stopSubAgents() }
+                    .keyboardShortcut(shortcuts[.stopSubAgents])
                     .disabled(target?.store.followUp.canStopSubAgents != true)
             }
         }
         CommandGroup(before: .windowArrangement) {
             following(target?.window) {
                 Button("向右拆分") { target?.window.split(.horizontal) }
-                    .keyboardShortcut("d")
+                    .keyboardShortcut(shortcuts[.splitRight])
                     .disabled(target == nil)
                 Button("向下拆分") { target?.window.split(.vertical) }
-                    .keyboardShortcut("d", modifiers: [.command, .shift])
+                    .keyboardShortcut(shortcuts[.splitDown])
                     .disabled(target == nil)
                 Button("关闭分屏") { if let window = target?.window { window.closePane(window.focusedPaneID) } }
+                    .keyboardShortcut(shortcuts[.closeSplit])
                     .disabled(target?.window.isSplit != true)
             }
             followingConversation {
-                // Control-brackets, not Option-arrows: those move by word in the composer.
                 Button("后退") { target?.window.focused.goBack() }
-                    .keyboardShortcut("[", modifiers: .control)
+                    .keyboardShortcut(shortcuts[.back])
                     .disabled(target?.store.backHistory.isEmpty != false)
                 Button("前进") { target?.window.focused.goForward() }
-                    .keyboardShortcut("]", modifiers: .control)
+                    .keyboardShortcut(shortcuts[.forward])
                     .disabled(target?.store.forwardHistory.isEmpty != false)
             }
             Divider()
             followingFocus {
                 Button("下一个分屏") { target?.window.focusNeighbour(forward: true) }
-                    .keyboardShortcut("]")
+                    .keyboardShortcut(shortcuts[.nextPane])
                     .disabled(target?.window.isSplit != true)
                 Button("上一个分屏") { target?.window.focusNeighbour(forward: false) }
-                    .keyboardShortcut("[")
+                    .keyboardShortcut(shortcuts[.previousPane])
                     .disabled(target?.window.isSplit != true)
                 Divider()
-                // As in Chrome.
                 Button("下一个标签页") { target?.window.selectNeighbourTab(forward: true) }
-                    .keyboardShortcut(.rightArrow, modifiers: [.command, .option])
+                    .keyboardShortcut(shortcuts[.nextTab])
                     .disabled((target?.window.focusedPane.tabs.count ?? 0) < 2)
                 Button("上一个标签页") { target?.window.selectNeighbourTab(forward: false) }
-                    .keyboardShortcut(.leftArrow, modifiers: [.command, .option])
+                    .keyboardShortcut(shortcuts[.previousTab])
                     .disabled((target?.window.focusedPane.tabs.count ?? 0) < 2)
                 Button("将标签页移到新窗口") { if let window = target?.window { window.moveToNewWindow(window.focused.id) } }
+                    .keyboardShortcut(shortcuts[.moveTabToNewWindow])
                     .disabled(target?.window.canMoveTabToNewWindow != true)
             }
             Divider()
             Toggle("保持在最前面", isOn: Binding(get: { pinning.keyWindowPinned }, set: { _ in pinning.toggle() }))
+                .keyboardShortcut(shortcuts[.keepInFront])
                 .disabled(!pinning.canPin)
             Divider()
         }
         CommandGroup(before: .sidebar) { followingFocus {
-            ForEach(Array(ToolWindowKind.allCases.enumerated()), id: \.element) { index, kind in
+            ForEach(ToolWindowKind.allCases, id: \.self) { kind in
                 Button(toolTitle(kind)) { kind == .composer ? target?.window.focusComposer() : target?.window.toggle(kind) }
-                    .keyboardShortcut(KeyEquivalent(Character("\(index + 1)")))
+                    .keyboardShortcut(shortcuts[ShortcutCommand.tool(kind)])
                     .disabled(target?.window.canToggle(kind) != true)
             }
             Divider()
@@ -144,15 +150,14 @@ struct ConversationCommands: Commands {
                 .disabled(target == nil)
             }
             Divider()
-            // As in VS Code; the left area keeps the system's Show Sidebar.
             Button(target?.window.tools.tools(in: .right).isEmpty == false ? "隐藏右侧区域" : "显示右侧区域") { target?.window.tools.toggleArea(.right) }
-                .keyboardShortcut("b", modifiers: [.command, .option])
+                .keyboardShortcut(shortcuts[.rightArea])
                 .disabled(target == nil)
             Button(target?.window.tools.tools(in: .bottom).isEmpty == false ? "隐藏底部区域" : "显示底部区域") { target?.window.tools.toggleArea(.bottom) }
-                .keyboardShortcut("j")
+                .keyboardShortcut(shortcuts[.bottomArea])
                 .disabled(target == nil)
             Button(target?.window.tools.isEditorOnly == true ? "恢复停靠区域" : "只显示编辑区") { target?.window.tools.toggleEditorOnly() }
-                .keyboardShortcut(.return, modifiers: [.command, .shift])
+                .keyboardShortcut(shortcuts[.editorOnly])
                 .disabled(target == nil)
             Divider()
         } }
@@ -267,6 +272,9 @@ struct VeluneApp: App {
         previewEmpty = CommandLine.arguments.contains("--preview-empty")
         previewSettings = CommandLine.arguments.contains("--preview-settings")
         appDelegate.store = applicationStore
+        KeyboardShortcutSettings.shared.load(home: applicationStore.resourceTransport?.stateDirectory) { [weak applicationStore] in
+            applicationStore?.recordProblem($0, source: "保存快捷键")
+        }
         // Tabs live in each pane; the system's window tabs would stack a second, look-alike bar above them.
         NSWindow.allowsAutomaticWindowTabbing = false
     }

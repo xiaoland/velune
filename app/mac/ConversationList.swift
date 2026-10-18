@@ -337,7 +337,7 @@ struct ConversationListView: View {
 
     private var newConversationButton: some View {
         Button { focused.createConversation() } label: { Label("新建会话", systemImage: "square.and.pencil") }
-            .help("新建会话（⌘ N）").disabled(focused.isLoading || focused.enabledRuntimeInstances.isEmpty)
+            .help(KeyboardShortcutSettings.shared.help("新建会话", .newConversation)).disabled(focused.isLoading || focused.enabledRuntimeInstances.isEmpty)
     }
 
     private var browserMenu: some View {
