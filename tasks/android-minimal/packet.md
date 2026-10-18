@@ -1,69 +1,51 @@
 # 最小 Android 远控端
 
-2026-10-17 用户授权 Kotlin／Jetpack Compose 最小 Android 端，并允许使用已连接 adb 真机验收、实验。用户随后要求暂停实现与验收，重新讨论公共设施及配对体验；现已确认可用 iroh 公共设施、兼容 relay 可替换，以及扫码确认和统一局域网／公网体验。用户进一步授权继续深入方案设计，要求核实实际技术复杂度；产品实现与真机验收仍暂停。
+2026-10-18，用户在[技术方案](../../docs/design/remote-access.md)、[人工验收方案](acceptance.md)和[线性计划](plan.md)收敛后明确“好的，开始实现”。当前实施 S1 平台传输判别，S2—S6 尚未开始。只有当前切片达到出口才推进下一切片；实际观察归 [verification](verification.md)，锁定依赖与机制实验归 [transport-research](transport-research.md)。
 
-2026-10-18 用户要求继续直到技术方案、验收方案及线性化实现计划收敛。本轮交付 [技术方案](../../docs/design/remote-access.md)、[人工验收方案](acceptance.md) 与 [唯一线性计划](plan.md)；三者描述待实施契约和判据，不把设计收敛作为恢复产品实现或真机操作的授权。
+## 目标与范围
 
-随后用户明确“好的，开始实现”，已解除上述暂停，按计划进入 S1。android_native 负责 S1 源码／依赖／静态检查和匹配产物，android_verification 独占 adb／合成宿主及现场验收；主执行者维护集成与文档。S2—S6 仍未开始，不跨越 S1 出口推进。
+Android 使用 Kotlin／Jetpack Compose，经 UniFFI 嵌入 remote-only Rust SDK，不携带 application、Harness 或 AI 执行栈。公网与局域网使用同一设备、配对和连接体验；公网进入同 LAN 后自动选择可用的更优路径，离开后恢复，不能用主动反复重连掩盖路径迁移。这里的多路径指候选、主备和自动选路，不要求带宽聚合。
 
-## 工作区与权限
+扫码后由执行端本地确认，身份 pin 与方向授权分开；联系人、配对事务、未决请求和恢复循环归 Rust。业务 owner、调用世代、账本和运行任务独立于 Endpoint／网络代际。以上是已收敛的待实施契约，不能视为当前源码已具备的保证。
 
-用户随后要求迁移进行中的工作并将原目录恢复 main，已完成。本对话附属 `android-minimal` worktree 持有 `feat/android-minimal`；原目录当前为 main 且干净，没有覆盖其他任务更新。迁移检查点为 `3b8bed7`，功能提交为 `235b62b`；为保留当前已安装的并行修复，只在独立分支合入固定 main `3f01f9b`，main 集成源码为 `d3b039d`。原生库、生成绑定、交叉缓存和验收资源均已迁移，关键文件摘要核对一致。
+完整业务能力通过共享 SDK 覆盖；最小 Android 界面先完成设备连接、会话列表／历史、新建及运行时／模型选择、收发／取消、审批和问题回答，不复制全部桌面配置界面。主核心在平台 app 内同进程运行，不另建常驻 Host。
 
-本轮不 push、创建 PR 或部署公网服务，不读取真实配置、凭据、个人资料或会话，不调用真实模型；没有新增或运行自动化测试。adb 只操作本次 Velune、公开设备能力和合成资料。设备认证由本人完成，不尝试密码或绕过系统锁屏。
+## 工作区与授权
 
-## 实施边界与当前证据
+用户要求把工作迁到独立工作区并恢复原目录 main，已完成。本对话附属 `android-minimal` worktree 持有 `feat/android-minimal`；原目录保持干净 main，不用于本任务修改。迁移检查点 `3b8bed7`、早期功能 `235b62b`、旧 main 集成 `d3b039d`、Android 身份发布修复 `0004d53`、设计及计划 `7487a8d`、S1 源码检查点 `7f552cc` 均为本地提交。
 
-Android 是 remote-only UniFFI／iroh 原生控制端，不携带 application、Harness 或 AI 执行栈。最小界面包含显式配对／可信重连、路径状态、会话列表／历史、新建及运行时／模型选择、收发／取消、审批与问题回答。长期完整业务 SDK 范围不变，本轮不复制所有桌面配置界面、附件操作或复杂变更审阅。
+允许本任务源码、文档、构建、隔离实验、已连接 adb 真机验收与本地提交；不 push、创建 PR、部署公网服务、读取真实配置／凭据／个人资料／会话或调用真实模型。没有新增或运行自动化测试；以类型检查、静态检查、构建和有界人工合成实验验收。设备认证由本人完成，不绕过系统锁屏。
 
-Mac 设置提供同进程接入启停、五分钟一次邀请和设备撤销，复用已打开的唯一 ApplicationService。控制端后台／断开与远端执行寿命分开。Android 的未决写入先持久保存请求 ID，结果未知时查询原编号，不盲目重发；身份与信任放私有且不备份的目录。
+当前 Mac 安装公开 manifest 为 main `03149ef`、dirty=false、schema10。S1 源码保存后，已在独立分支合入该固定基线，集成提交为 `09039d2`，保留新提供商来源及子 Agent 功能；新公开认证类型继续归中立 application-api，不让 Android remote-only 依赖执行栈。当前只做合成宿主和 build-only Mac 构建，不用旧 bundle 覆盖现有安装。
 
-- Android API28／arm64 的 native release、JNI／DNS／TLS verifier、实际 Kotlin／Compose／JNA 编译与 DEX 打包已完成；clean／assembleDebug／lintDebug 通过，lint 0 errors、7 条版本／ABI 范围提示。真实编译发现的 UniFFI close／List 命名冲突及低 API Cleaner 问题均从源契约／生成配置修复，没有 patch 生成代码。
-- 全 workspace locked check／严格 clippy、fmt、Android target strict clippy、文档链接／锚点及人工脚本语法检查通过。remote-only 依赖树只含 bindings／application-api／conversation／remote。main 的 ProviderTemplate 归入中立 API，保留全部新字段，不恢复 Pi 私有公开元数据。
-- main 集成时 Android APK 源码为 `d3b039d`，SHA-256 `3eacf0e86be715cd7dd0744d14978cc3b68c51dab64941fa65c2083c3deb75d4`，已 adb 安装并启动进程；限定 PID 日志未见 AndroidRuntime／JNA／UniFFI 错误。该历史观察不证明后续身份初始化、配对或业务成功。
-- 同一源码 Mac release 从干净工作区构建，已完成全新合成 HOME 的真实入口启停／邀请／独立 AX 按钮和权限回归，安装至 `/Applications/Velune.app`。安装前核实原公开清单 `3f01f9b` 是构建祖先；签名、二进制摘要及清单 `d3b039d`／dirty=false 通过，版本 `0.1 beta.1`。未启动真实 app。
-- 匹配 host／Python 的隔离提供商配置脚本通过，合成资料和显式秘密边界保持。各版本、命令、摘要和现场缺口归 [验收记录](verification.md)，不要把旧产物观察套用到新版本。
+## S1 当前状态
 
-## 当前真机边界与接续
+S1 已实现最薄观察通路：Android 默认网络、可用 Wi-Fi、链路属性和能力变化进入 Rust；路径观察带连接／path 临时 ID、selected、安全统计及原生事件落后计数。可选诊断 feature 提供低流量 marker 探针与私有白名单事件采集；普通产品构建不包含探针。路径探针禁止自动重拨。
 
-暂停时，独立合成 host 已正常关闭 endpoint／ApplicationService，隔离 Mac 实例已退出，手机尚未配对成功且数据保留。Android 安装产物为 `33cb77b`（已加入邀请显示／隐藏与禁用自动纠正）；对应 UI 与合成宿主源码改动尚未提交，验收状态已在文档归位。最小身份发布修复已本地提交为 `0004d53`，未 push。外部设施和统一交互决定已归 [PRD](../../docs/prd/index.md#后续扩展分布式能力)，拟议接入调整归 [架构](../../docs/design/architecture.md#远控契约与唯一执行-owner2026-10-17)；扫码后的执行端确认、可刷新的设备地址及设施切换仍未实现。
+mDNS 使用官方固定提交 `6f103e7a92ddbd2007383527ab5024c983e3c1c6`，修正相同 peer 的地址缓存更新和过期；没有 vendor。Android debug 探针按生命周期持有多播锁。它用于发现和重连，不把晚 lookup 缓存等同于活动连接已经新增路径。
 
-真机是 API28／arm64、同 Wi‑Fi，用户现已手动解锁。首次真实 UI 显示身份存储错误；合成 marker 判别观察确认私有目录可创建0600文件，但同目录 hard_link 被拒绝。Android 专用 rustix `renameat2(RENAME_NOREPLACE)` 已实施，保留完整发布、不同写入者不覆盖与 fsync；marker 的无目标／既有目标／并发单赢家／重开完整检查通过，最终 so 无 API30 renameat2 动态符号依赖。
+| 已有证据 | 可以支持的结论 |
+| --- | --- |
+| 最新诊断源码的 workspace check／全 feature 严格 clippy、normal remote-only 和 Android diagnostics 目标严格 clippy、fmt、API28 native release／生成 Kotlin／Python、Android debug assemble／lint | 中立 API 与 remote-only 边界保持；新包已交真机复验。release 源集隔离不等于已用 normal so 打包 release APK |
+| `09039d2` normal feature 的 Rust／Swift／Mac build-only、签名与探针导出隔离通过 | 保留主线后的正常构建边界；manifest dirty=true，仅作回归，不是干净交付包，没有覆盖安装 |
+| 最终 missed_events 接口包同网 159／159 marker 匹配、同 connection／path Direct IPv4，后台再返回沿用原连接；missed 与 native dropped 均为零，手机与宿主正常停止 | 该同网产物的直连和短时前台恢复；不能外推公网、换网或完整业务 |
+| 真实原生路径队列溢出仍返回 missed_events 与当前快照，原连接继续往返 | 观察落后能够显式报告，不把快照当作完整历史 |
+| 实际编译 Kotlin 对 scoped IPv6 的规范化，经 UniFFI／Rust 接收 | 网络事实边界接受规范化 IP，保留 Network／接口归属；不证明 IPv6 路由 |
+| 独立 mDNS 实验的同 peer A→B 更新、fresh resolve 及过期判别 | 固定依赖的缓存机制；Android 实际多播与资源管理另验 |
 
-修复 APK `bd4c918` 已覆盖安装，身份文件实际发布为0600。随后“重开仍错”的观察已撤回：验收驱动误将 uiautomator busy 后遗留的旧 XML 当作新结果，现已改为先删旧文件并验证新 dump 成功。临时诊断已删除，最终 so 恢复为与该修复包逐字节一致；新鲜快照确认初始化成功。`run-as` 实验仍不替代实际应用进程证据。配对等后续 UI 证据仍待取得；该轮 workspace fmt、locked check／严格 clippy、Android target check／严格 clippy／release，以及 APK assemble／lint 均通过。
+Android mDNS 仅 ID 初连的首轮失败，没有公共设施回落；私有事件已确认 enable 成功后 lookup／dial 失败，多播锁及 endpoint 正常关闭。阶段／有界错误种类和真实 publish 计数已补齐、编译通过；`ef8143ff` debug APK 与 `0a058498` so 配套，正在复验。发布计数仅证明 service 收到 EndpointData，WARN／ERROR 采集只读固定源码位置，不格式化任意上游原文。手机同 peer 更新与过期尚未通过。
 
-源码与本机实验已确认部分 relay／lookup 可热更新，但严格移除旧服务、改变 transport 或 token 可能需要网络端点重建。网络路径变化不改变设备信任、会话和审批，也不触发业务重发。当前不继续设备操作；不能将同 Wi‑Fi 实验当公网 NAT、真实切网或长期移动后台保证。
+新的宿主路由观察显示，到手机的单播走 LAN，而 `224.0.0.251` 组播默认路由指向既有 utun。当前只作为可检验原因，不能由 route 查询推断报文已走该接口；native 正用同协议、显式 LAN 接口的临时发布器作对照。没有更改隧道或系统路由。此前“无 VPN”应理解为本轮未配置／依赖 VPN，不能宣称宿主不存在隧道；本轮同网结果需保留这个共存条件。
 
-## 责任
+真机为 USB 连接的 API28／arm64，用户已手动解锁，目前只确认同 Wi-Fi 条件。尚未改变手机网络。是否有可用于本次少量合成流量的蜂窝数据已向用户询问，答复前不依赖该条件、不切网。E2 真实 WAN→LAN→WAN 和 E3“蜂窝默认、Wi-Fi LAN 保留”尚缺现场条件；同网前后台恢复不能替代它们。S1 出口仍未通过，不进入 S2。
 
-android_app 拥有 `app/android` 与 APK；android_native 拥有 Android 原生构建／平台装配；android_mac_host 拥有 Mac 接入；remote_application 负责中立 API／application／bindings 的基线集成；android_verification 负责合成宿主及真机验收。主执行者维护根文档、分支与集成、隔离 Mac 验收安装和本地提交。各 owner 保持后续修复责任，原目录 main 不再用于本任务修改。
+工程预算固定为可达 LAN 升级 ≤10 秒、已有可达备份下故障恢复 ≤15 秒、前台／重拨后新鲜业务响应和原请求查询 ≤30 秒。180 秒只作诊断窗口，超预算后最终恢复仍记失败；原始传输 marker 也不能替代后续业务验收。
 
-## 当前设计复核
+## 接续与责任
 
-native、Mac、Android、advisor 与 verification 的研究已整合为 [工程方案](../../docs/design/remote-access.md)，锁定 SDK 源码、本机判别实验和平台约束归 [研究证据](transport-research.md)。2026-10-18 的收敛工作仅只读核查与文档编辑，没有恢复产品源码改造、构建安装或设备操作。
+- remote_application 负责固定 main 基线合并、中立 API 与全部相关调用方；不读取真实提供商来源。
+- android_native 负责 S1 Rust／依赖／原生构建和匹配绑定；android_app 消费冻结契约并构建 Kotlin／Compose。
+- android_verification 独占 adb、手机安装操作、合成宿主及 verification.md；其他 owner 不并行操纵设备。
+- 主执行者维护集成、当前 packet、长期知识归属、本地提交、全 workspace 静态检查与 Mac build-only。
 
-关键拟议调整为：调用世代／有界账本／异步 runtime 与唯一业务 owner 同寿命；设备 pin 与入站 grant 分开；短时邀请仅开放候选请求，由执行端核对连接绑定数字再原子授权；联系人与 locator 分开；局域网和公网 lookup 同时装配，严格设施移除采用网络代际切换。源代码尚未实现这些保证。
-
-方案已固定核对码的角色／字节上下文和确认提交顺序；独立 loopback 实验验证 exporter 双端一致、同连接稳定及新连接改变绑定，不证明完整配对安全。旧四切片顺序由六切片线性计划替代：平台传输判别前置，然后稳定服务、v2 契约同切、统一连接／设置、完整 UI、正式验收。Android 默认网络变化可能被 netwatch 采样去重，无 Internet Wi-Fi＋蜂窝并存的真实路由仍需 S1 判别；整套 lookup 撤离后的离线端需带外更新 locator，不重新建立控制授权。
-
-用户新增已建立连接的多路径自动优选要求：公网进入同 LAN 后自动发现更优路径，离开后恢复。native owner 的锁定源码与 loopback 对照确认：晚 lookup 只入缓存，QNT 广告相同候选才打开原连接新路径；默认 IP 优先、RTT／迟滞选择，不持续综合丢包或带宽，且可能关闭冗余 IP 路径。advisor 建议活动升级沿本机地址变化／QNT 主线，mDNS 补初连重连，不先建立第二条业务连接；仅当平台验收出现可复现遗漏时评估上游探测接口。研究已收敛，剩余判据为真实 Android／Mac 进入与离开 LAN、非默认 Wi-Fi／蜂窝路由，以及路径与业务连续性。
-
-已重新核对本地 APK `33cb77b` 确含 Rust so `2529e914`，构建脚本采用 remote-only UniFFI；无需重装或读取设备数据证明这一装配事实。产品源码、构建安装和真机验收继续暂停；六个新实现切片均未开始。
-
-本轮收敛补充：入站控制启停不误停出站控制；runtime 与服务同寿命；Rust 唯一持久化联系人／配对／未决请求并拥有恢复循环；副作用交付分类与共享修订分类分离；旧普通 schema 重置保留身份且明确提示原业务可能仍在运行。首版按可用直连优先和原生 RTT／迟滞选路，10／15／30 秒工程验收预算在首次实验前固定，不把事后恢复补签为通过。
-
-当前收敛已不依赖新的产品偏好；Android socket 钩子、QNT 通知链、mDNS 窄修复及相机表现按 S1／S5 的有界分支解决。实施仍需实际异网、非默认 Wi-Fi／蜂窝与可控 relay／lookup 环境；现有同 Wi-Fi 手机不证明这些前提已具备。恢复实施时从 S1 顺序执行，出现架构前提被推翻或外部条件缺失则按计划记录具体阻塞。
-
-收敛检查：六份变更文档的 165 个本地链接／标题锚点通过，git diff／cached diff whitespace 检查通过；原目录 main 干净，本轮未修改产品源码或运行产品构建。只提交本轮文档，保留暂停前的 Android UI／合成宿主未提交改动；没有新增或运行自动化测试。
-
-## S1 实施中
-
-用户恢复授权后，已把 S1 源码与产物交给 android_native、设备／合成宿主验收交给 android_verification。USB 单台 API28／arm64 设备在线且未锁屏，旧进程存在不作为通过证据；当前尚未切换网络。是否有可用于本轮的蜂窝数据已向用户询问，未得到答复前不依赖该条件，也不改手机网络。
-
-安装基线已通过公开 manifest 更新：当前 Mac 为 main `03149ef`、dirty=false、schema10，不能再沿用早前 `d3b039d` 安装状态。main 后续增量集中于提供商来源与子 Agent；S1 不在并行源码修改时合并主线，不安装旧分支 bundle 覆盖新版。最终安装前由主执行者完成必要集成和版本检查；当前只用合成宿主／隔离产物。
-
-只读 merge-tree 已定位主线集成的四处文本冲突：开发说明、application portable／provider_authentication、bindings README。主线新增 LinkedClaudeLogin 等公开认证描述须继续归中立 API，不能让 remote-only 重新依赖执行栈；实际合并放在 S1 源码形成检查点后，避免并行改动覆盖。
-
-S1 源码已形成冻结检查点：普通 remote 与诊断 feature 检查、host／Android 目标严格 clippy、API28 release 库与 Kotlin 生成通过；Android debug assemble／lint、release Kotlin 编译及调试组件隔离检查通过。首批同网探针 89 次 marker 全匹配且实际 Direct IPv4 字节增长，仅归该产物的探索；最终 missed_events 接口包和 mDNS 真机观察由验收 owner 接续。
-
-独立机制证据已采纳：真实原生路径队列溢出保留 missed_events 且原连接仍可用；真实编译 Kotlin 的 scoped IPv6 规范化经 UniFFI／Rust 接收；官方固定 mDNS 的 A→B 新查询和过期判别通过。它们不证明 WAN→LAN 或非默认 Wi-Fi 路由。当前等待蜂窝条件答复，S1 尚未放行；先提交源码检查点并完成必要主线基线集成，不进入 S2。
+接下来完成基线集成、同批构建、Android mDNS／同网观察及资源释放，关闭所有合成宿主。若实际异网和非默认 Wi-Fi 拓扑仍缺失，记录具体环境阻塞，保留当前切片；不删验收要求、不以 loopback 或“最终连上”放行。S2 以后仅按[唯一线性计划](plan.md)继续。

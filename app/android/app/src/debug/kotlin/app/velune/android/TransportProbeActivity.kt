@@ -99,8 +99,10 @@ class TransportProbeViewModel(application: Application) : AndroidViewModel(appli
 
     init {
         startup = scope.launch(start = CoroutineStart.LAZY) {
+            var stage = ProbeStage.PLATFORM_INITIALIZATION
             try {
                 check((application as VeluneAndroid).initializationFailure == null)
+                stage = ProbeStage.EVIDENCE_OPEN
                 val evidence = withContext(Dispatchers.IO) { ProbeEvidence(application.filesDir) }
                 writer = scope.launch(Dispatchers.IO) {
                     try {
@@ -109,10 +111,14 @@ class TransportProbeViewModel(application: Application) : AndroidViewModel(appli
                         withContext(Dispatchers.Main) { failEvidence() }
                     }
                 }
-                val target = withContext(Dispatchers.IO) { ProbeTarget.parse(evidence.readTarget()) }
+                stage = ProbeStage.TARGET_READ
+                val targetText = withContext(Dispatchers.IO) { evidence.readTarget() }
+                stage = ProbeStage.TARGET_PARSE
+                val target = withContext(Dispatchers.IO) { ProbeTarget.parse(JSONObject(targetText)) }
                 if (stopped) return@launch
                 mdnsEnabled = target.mdns
                 event("run_open", JSONObject().put("windowLimitMs", WINDOW_MS).put("publicInfrastructure", target.publicInfrastructure).put("mdns", target.mdns))
+                stage = ProbeStage.ENDPOINT_OPEN
                 probe = withContext(Dispatchers.IO) {
                     VeluneTransportProbe.open(BindingTransportProbeOptions(
                         relay = if (target.publicInfrastructure) BindingRelayConfig.DevelopmentPublic else BindingRelayConfig.Disabled,
@@ -123,6 +129,7 @@ class TransportProbeViewModel(application: Application) : AndroidViewModel(appli
                 }
                 if (stopped) return@launch
                 val local = checkNotNull(probe)
+                stage = ProbeStage.NETWORK_MONITOR
                 monitor = NetworkMonitor(application,
                     report = { networks.trySend(it) },
                     observed = { event("network_callback", it.evidence(), it.elapsedRealtimeMs.toLong()) },
@@ -146,6 +153,7 @@ class TransportProbeViewModel(application: Application) : AndroidViewModel(appli
                     while (!active.value && !stopped) lifecycleSignals.receive()
                     if (stopped || !setMulticastHeld(true, "mdns_start")) return@launch
                     event("mdns_enable_started")
+                    stage = ProbeStage.MDNS_ENABLE
                     withContext(Dispatchers.IO) { local.enableMdns() }
                     event("mdns_enabled")
                     mdnsObservation = scope.launch {
@@ -155,6 +163,7 @@ class TransportProbeViewModel(application: Application) : AndroidViewModel(appli
                     }
                 }
                 event("connect_started")
+                stage = ProbeStage.CONNECT
                 // The only dial in this ViewModel; timeout and path failure never return here.
                 connection = withContext(Dispatchers.IO) { local.connect(target.remote) }
                 if (stopped) return@launch
@@ -183,12 +192,9 @@ class TransportProbeViewModel(application: Application) : AndroidViewModel(appli
                         }
                     }
                 }
-            } catch (_: LinkageError) {
-                finish("binding_failed", "探针绑定与原生库不匹配")
-            } catch (_: Exception) {
-                if (mdnsEnabled) finish("mdns_initialization_failed", "mDNS 探针无法启动；未尝试公共设施")
-                else finish("initialization_failed", "探针无法启动；请检查本轮合成目标与原生构建")
-            }
+            } catch (cancelled: CancellationException) { throw cancelled }
+            catch (error: LinkageError) { startupFailed(stage, error) }
+            catch (error: Exception) { startupFailed(stage, error) }
         }
         startup.start()
     }
@@ -205,6 +211,12 @@ class TransportProbeViewModel(application: Application) : AndroidViewModel(appli
 
     fun stop() = finish("user_stop", "探针已停止")
 
+    private fun startupFailed(stage: ProbeStage, error: Throwable) {
+        val failure = ProbeFailure.from(error)
+        event("probe_failure", failure.evidence(stage))
+        finish("${stage.code}_failed", failure.message(stage, mdnsEnabled))
+    }
+
     private fun windowExpired(): Boolean {
         if (windowDeadlineMs?.let { SystemClock.elapsedRealtime() >= it } != true) return false
         finish("window_complete", "观察窗口已结束")
@@ -218,10 +230,11 @@ class TransportProbeViewModel(application: Application) : AndroidViewModel(appli
             event("multicast_lock", JSONObject().put("reason", reason).put("held", actual))
             check(actual == held)
             return true
-        } catch (_: Exception) {
+        } catch (error: Exception) {
             evidenceFailed = true
-            event("multicast_lock_failed", JSONObject().put("reason", reason).put("requestedHeld", held))
-            finish("mdns_environment_failed", "mDNS 多播锁不可用；未尝试公共设施")
+            val failure = ProbeFailure.from(error)
+            event("multicast_lock_failed", failure.evidence(ProbeStage.MULTICAST_LOCK).put("reason", reason).put("requestedHeld", held))
+            finish("mdns_environment_failed", failure.message(ProbeStage.MULTICAST_LOCK, mdnsEnabled))
             return false
         }
     }
@@ -347,6 +360,10 @@ class TransportProbeViewModel(application: Application) : AndroidViewModel(appli
                                 .put("endpointId", entry.endpointId).put("directAddresses", JSONArray(entry.directAddresses)))
                             if (resolutions.trySend("expired").isFailure) failEvidence()
                         }
+                        is BindingProbeMdnsEvent.Published -> {
+                            event("mdns_published", JSONObject().put("sampledAtMicros", entry.sampledAtMicros.toString())
+                                .put("directCount", entry.directCount.toString()).put("relayCount", entry.relayCount.toString()))
+                        }
                         is BindingProbeMdnsEvent.Dropped -> {
                             event("mdns_dropped", JSONObject().put("count", entry.count.toString()))
                             failEvidence()
@@ -367,7 +384,7 @@ class TransportProbeViewModel(application: Application) : AndroidViewModel(appli
             event("mdns_resolved", JSONObject().put("trigger", trigger).put("endpointId", resolved.endpointId)
                 .put("directAddresses", JSONArray(resolved.directAddresses)).put("relayUrls", JSONArray(resolved.relayUrls)))
         } catch (cancelled: CancellationException) { throw cancelled }
-        catch (_: Exception) { event("mdns_resolve_failed", JSONObject().put("trigger", trigger)) }
+        catch (error: Exception) { event("mdns_resolve_failed", ProbeFailure.from(error).evidence(ProbeStage.MDNS_RESOLVE).put("trigger", trigger)) }
     }
 
     private fun showPath(status: BindingConnectionStatus) {

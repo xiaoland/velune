@@ -62,6 +62,12 @@ pub struct BindingConnectionDiagnostics {
 /// Private mDNS evidence. Dropped counts ring loss since the previous drain, not upstream loss.
 #[derive(Clone, uniffi::Enum)]
 pub enum BindingProbeMdnsEvent {
+    /// Endpoint data reached the service; this does not prove multicast transmission or receipt.
+    Published {
+        sampled_at_micros: u64,
+        direct_count: u64,
+        relay_count: u64,
+    },
     Discovered {
         sampled_at_micros: u64,
         endpoint_id: String,
@@ -79,6 +85,15 @@ pub enum BindingProbeMdnsEvent {
 impl From<velune_remote::ProbeMdnsEvent> for BindingProbeMdnsEvent {
     fn from(event: velune_remote::ProbeMdnsEvent) -> Self {
         match event {
+            velune_remote::ProbeMdnsEvent::Published {
+                sampled_at_micros,
+                direct_count,
+                relay_count,
+            } => Self::Published {
+                sampled_at_micros,
+                direct_count,
+                relay_count,
+            },
             velune_remote::ProbeMdnsEvent::Discovered {
                 sampled_at_micros,
                 endpoint_id,

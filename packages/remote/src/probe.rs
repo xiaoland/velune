@@ -7,7 +7,10 @@ use crate::{
     paths::ObservedConnection,
 };
 use futures_util::StreamExt;
-use iroh::{Endpoint, EndpointAddr, EndpointId, SecretKey, address_lookup::AddressLookup};
+use iroh::{
+    Endpoint, EndpointAddr, EndpointId, SecretKey,
+    address_lookup::{AddressLookup, EndpointData},
+};
 use iroh_mdns_address_lookup::{DiscoveryEvent, MdnsAddressLookup};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -74,6 +77,12 @@ pub struct ProbeReply {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "camelCase")]
 pub enum ProbeMdnsEvent {
+    /// The service received endpoint data; this does not prove a multicast send or receipt.
+    Published {
+        sampled_at_micros: u64,
+        direct_count: u64,
+        relay_count: u64,
+    },
     Discovered {
         sampled_at_micros: u64,
         endpoint_id: String,
@@ -104,6 +113,40 @@ impl MdnsEvents {
 struct EnabledMdns {
     service: MdnsAddressLookup,
     subscription: JoinHandle<()>,
+}
+struct ObservedMdns {
+    service: MdnsAddressLookup,
+    events: Arc<Mutex<MdnsEvents>>,
+}
+impl std::fmt::Debug for ObservedMdns {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("ObservedMdns")
+    }
+}
+impl AddressLookup for ObservedMdns {
+    fn publish(&self, data: &EndpointData) {
+        self.events
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .record(ProbeMdnsEvent::Published {
+                sampled_at_micros: crate::monotonic_microseconds(),
+                direct_count: data.ip_addrs().count() as u64,
+                relay_count: data.relay_urls().count() as u64,
+            });
+        self.service.publish(data);
+    }
+
+    fn resolve(
+        &self,
+        endpoint_id: EndpointId,
+    ) -> Option<
+        futures_util::stream::BoxStream<
+            'static,
+            std::result::Result<iroh::address_lookup::Item, iroh::address_lookup::Error>,
+        >,
+    > {
+        self.service.resolve(endpoint_id)
+    }
 }
 
 struct State {
@@ -265,7 +308,10 @@ impl TransportProbe {
                     .record(event);
             }
         });
-        registry.add(service.clone());
+        registry.add(ObservedMdns {
+            service: service.clone(),
+            events: self.mdns_events.clone(),
+        });
         *self
             .mdns
             .lock()

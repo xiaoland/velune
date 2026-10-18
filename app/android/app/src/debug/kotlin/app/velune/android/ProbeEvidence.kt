@@ -23,10 +23,10 @@ internal class ProbeEvidence(filesDirectory: File) {
         Os.chmod(events.absolutePath, OsConstants.S_IRUSR or OsConstants.S_IWUSR)
     }
 
-    fun readTarget(): JSONObject {
+    fun readTarget(): String {
         val target = File(directory, "target.json")
         check(target.isFile && target.length() in 1..65_536) { "probe_target_unavailable" }
-        return JSONObject(target.readText(Charsets.UTF_8))
+        return target.readText(Charsets.UTF_8)
     }
 
     @Synchronized

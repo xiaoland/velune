@@ -35,7 +35,7 @@ UI 状态由 ViewModel 管理，FFI／网络调用运行于 IO 调度器。进�
 
 ## S1 合成传输探针
 
-`TransportProbeActivity` 仅在 debug 源集注册，使用 `remote-diagnostics` 原生能力、独立 echo ALPN 和临时密钥；它不加载产品身份、可信设备、邀请或业务 Handler。原生构建必须包含该 feature 后才能构建 debug APK。正常产品界面不引用探针 API，release 源集不包含此 Activity。
+`TransportProbeActivity` 仅在 debug 源集注册，使用 `remote-diagnostics` 原生能力、独立 echo ALPN 和临时密钥；它不加载产品身份、可信设备、邀请或业务 Handler。原生构建必须包含该 feature 后才能构建 debug APK。正常产品界面不引用探针 API，release 源集不包含此 Activity、多播权限或平台辅助类。Gradle main 仍读取共享 `target/android-bindings`／`target/android-native`；使用诊断产物进行 release Kotlin 编译仅证明源码隔离，不证明实际 release APK 已剥离诊断 native exports。本轮交付 debug S1 探针包。
 
 验收 owner 将本轮合成目标写入应用私有 `files/s1-probe/target.json`，再显式启动 `app.velune.android/.TransportProbeActivity`。目标结构为：
 
@@ -55,8 +55,10 @@ UI 状态由 ViewModel 管理，FFI／网络调用运行于 IO 调度器。进�
 
 独立 mDNS case 使用 `mdns=true`、`publicInfrastructure=false`，且 `relayUrls` 和 `directAddresses` 均为空，仅给受控端点 ID。此分支先持有非引用计数的 `WifiManager.MulticastLock` 再显式启用 mDNS；debug manifest 声明 normal 级 `CHANGE_WIFI_MULTICAST_STATE` 权限，不弹运行时授权。锁仅在前台持有，后台／结束释放，回前台重新持有同一 probe 的锁，不重新拨号；取得或释放失败有独立失败状态与私有记录。[Android 官方说明](https://developer.android.com/reference/android/net/wifi/WifiManager.MulticastLock)指出多播锁允许 Wi-Fi 接收多播包，使用完应释放，且不影响其他应用持有的锁。
 
-mDNS 事件每 500 毫秒排空一次，只把当前受控目标 ID 的 Discovered／Expired 和本 ring 的 Dropped 计数落盘。`Dropped.count` 为自上次 drain 以来新增的丢弃数，随本次读取消费，不是累计值，不需要历史去重。连接成功后显式查询一次当前 mDNS cache，前台期间另每 2 秒查询，并在目标 Discovered／Expired 后查询；这些查询不创建连接。查询结果地址只进入私有证据，未发现通知不能代替查询结果，未收到通知也不推断未更新。上游订阅队列没有完整漏事件信号，本地 Dropped 只说明本地 ring 溢出；不能把它为零当作完整上游事件历史证明。此模式用于独立发现／缓存判别，不用于补强默认 QNT case。
+mDNS 事件每 500 毫秒排空一次，只把当前受控目标 ID 的 Discovered／Expired、本端 Published 的地址数量和本 ring 的 Dropped 计数落盘。Published 仅证明 mDNS service 收到 EndpointData，不证明数据已发出、Android 权限正确或对端已收到。`Dropped.count` 为自上次 drain 以来新增的丢弃数，随本次读取消费，不是累计值，不需要历史去重。连接成功后显式查询一次当前 mDNS cache，前台期间另每 2 秒查询，并在目标 Discovered／Expired 后查询；这些查询不创建连接。查询结果地址只进入私有证据，未发现通知不能代替查询结果，未收到通知也不推断未更新。上游订阅队列没有完整漏事件信号，本地 Dropped 只说明本地 ring 溢出；不能把它为零当作完整上游事件历史证明。此模式用于独立发现／缓存判别，不用于补强默认 QNT case。
 
 每个 ViewModel 只调用一次 `connect`。网络变化、marker 超时、后台恢复和路径丢失均不会拨第二条连接；旋转保留该 ViewModel。后台暂停 marker 与路径／原生事件读取，前台沿用原连接；窗口从连接成功起最多 300 秒，或由“停止探针”结束，结束时关闭本轮资源。重开已销毁的 Activity 才开始新的独立运行，不能把它算作原连接迁移。
 
 `files/s1-probe/events.jsonl` 以私有权限记录原始 Android 回调时刻、合并通知回执、marker 序号／校验结果／时延、具名连接／路径统计、受控路径地址及原生白名单事件。每行包含独立运行 ID、事件序号、Android 单调时间；原生采样时间保留原字段，不能直接当作 Android 时间原点。`path_observed` 保存原生 `missedEvents`；非零表示当前快照已补齐，但之前的路径事件历史有缺口，探针停止并标为证据不完整。原生白名单事件每 500 毫秒读取，丢弃计数或落盘失败也停止并标为证据不完整。日志写入在 IO 调度器经有界队列进行，地址、目标、载荷和事件内容均不进入 Logcat 或页面。探针结束只代表观察窗口完成；10／15 秒预算、路径证据和真实网络条件仍按任务验收方案分别判断。
+
+诊断文件可写时，启动失败以 `probe_failure` 记录固定 `stage` 和 `errorKind`，mDNS 查询／多播锁失败也携带这两个字段。目标读取、JSON／目标解析、端点创建、mDNS 启用与 connect 分开；connect 失败不再称为 mDNS 初始化失败。错误种类只取穷尽的 UniFFI variant、受限平台异常类型及有界 `BindingFailureKind` 枚举，其余为 `unknown`。不解析或保存异常 message、detail、动态 code／phase、cause 或 stack；只有实际超时异常类型才标为 `timeout`，`Diagnostic(CONNECTION)` 不能据耗时推断为超时。界面根据实际阶段使用固定操作提示。

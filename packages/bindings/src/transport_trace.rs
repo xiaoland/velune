@@ -17,6 +17,19 @@ const TARGETS: &[&str] = &[
     "iroh::_events::path::selected",
     "iroh::_events::path::abandoned",
 ];
+const MDNS_METADATA_TARGETS: &[&str] = &[
+    "iroh_mdns_address_lookup",
+    "swarm_discovery::socket",
+    "swarm_discovery::guardian",
+    "swarm_discovery::receiver",
+    "swarm_discovery::sender",
+];
+
+fn enabled(metadata: &tracing::Metadata<'_>) -> bool {
+    TARGETS.contains(&metadata.target())
+        || (MDNS_METADATA_TARGETS.contains(&metadata.target())
+            && *metadata.level() <= tracing::Level::WARN)
+}
 
 #[derive(Clone, uniffi::Record)]
 pub struct BindingNativeTransportField {
@@ -62,11 +75,36 @@ impl Visit for Fields {
 }
 impl<S: Subscriber> Layer<S> for Collector {
     fn on_event(&self, event: &Event<'_>, _: tracing_subscriber::layer::Context<'_, S>) {
-        if !TARGETS.contains(&event.metadata().target()) {
+        let metadata = event.metadata();
+        if !enabled(metadata) {
             return;
         }
-        let mut fields = Fields(Vec::new());
-        event.record(&mut fields);
+        let fields = if MDNS_METADATA_TARGETS.contains(&metadata.target()) {
+            // Dependency warnings can format arbitrary peer TXT data. Inspect only
+            // callsite metadata, never their message, fields, errors or span values.
+            vec![
+                BindingNativeTransportField {
+                    name: "sourceFile".into(),
+                    value: metadata
+                        .file()
+                        .and_then(|file| file.rsplit('/').next())
+                        .unwrap_or("unknown")
+                        .into(),
+                },
+                BindingNativeTransportField {
+                    name: "sourceLine".into(),
+                    value: metadata.line().unwrap_or(0).to_string(),
+                },
+                BindingNativeTransportField {
+                    name: "level".into(),
+                    value: metadata.level().to_string(),
+                },
+            ]
+        } else {
+            let mut fields = Fields(Vec::new());
+            event.record(&mut fields);
+            fields.0
+        };
         if let Ok(mut events) = self.0.lock() {
             events.next += 1;
             if events.records.len() == CAPACITY {
@@ -77,7 +115,7 @@ impl<S: Subscriber> Layer<S> for Collector {
                 sequence: events.next,
                 sampled_at_micros: velune_remote::monotonic_microseconds(),
                 target: event.metadata().target().into(),
-                fields: fields.0,
+                fields,
                 dropped_before: events.dropped,
             };
             events.records.push_back(record);
@@ -88,9 +126,8 @@ impl<S: Subscriber> Layer<S> for Collector {
 pub(crate) fn install() -> Result<(), BindingError> {
     let installed = *INSTALLED.get_or_init(|| {
         let events = EVENTS.get_or_init(|| Arc::new(Mutex::new(Events::default())));
-        let collector = Collector(events.clone()).with_filter(
-            tracing_subscriber::filter::filter_fn(|metadata| TARGETS.contains(&metadata.target())),
-        );
+        let collector =
+            Collector(events.clone()).with_filter(tracing_subscriber::filter::filter_fn(enabled));
         tracing::subscriber::set_global_default(tracing_subscriber::registry().with(collector))
             .is_ok()
     });

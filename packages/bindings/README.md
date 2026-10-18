@@ -27,7 +27,7 @@ Codex 订阅的前端接入复用 `authentication_start`／`authentication_poll`
 
 配置编辑使用乐观版本：连接构造先读取配置并设置初始编辑基线；表单打开时调用 `list_with_revision()`，保留一起返回的配置与 revision，提交前用 `expect_revision(revision)` 指定该表单的依据，再调用原具名写入 API。`observed_revision()` 只用于连接状态展示；它可能被其它读取更新，不能代替表单对应的版本。其他读取与消息轮询只更新观测版本，不替换编辑基线；成功的自身修改推进基线。冲突保留 `BindingFailureKind::Conflict`，调用方重读配置并让用户合并，不能换版本后自动重发旧编辑。显式 `submit_request`／`query_request` 仅更新观测版本，后续编辑由平台明确采用哪个版本。
 
-显式 `remote-diagnostics` feature 额外暴露 `VeluneTransportProbe`，只用于 debug 合成 marker 验收。它不链接本地执行栈、不加载产品身份，也不提供业务授权入口。`native_events()` 排空最多 512 条原生 QNT／路径事件，记录显式丢弃计数；collector 独占诊断进程的全局 tracing subscriber，只允许固定的 transport 事件，不输出到常规日志。`diagnostics()` 与这些原生事件可能含地址，平台只能保存到应用私有诊断文件。普通 `remote` feature 不包含探针或 collector；诊断绑定和动态库必须匹配生成。
+显式 `remote-diagnostics` feature 额外暴露 `VeluneTransportProbe`，只用于 debug 合成 marker 验收。它不链接本地执行栈、不加载产品身份，也不提供业务授权入口。`native_events()` 排空最多 512 条原生 QNT／路径事件，记录显式丢弃计数；collector 独占诊断进程的全局 tracing subscriber，只允许固定的 transport 事件，以及固定 mDNS／swarm WARN／ERROR 的文件名、行号和级别；后者不格式化任意 message、fields、error 或 span 内容。所有记录只经私有接口排空，不输出到常规日志。`diagnostics()` 与这些原生事件可能含地址，平台只能保存到应用私有诊断文件。普通 `remote` feature 不包含探针或 collector；诊断绑定和动态库必须匹配生成。
 
 远控接口是有界同步调用，平台放在工作队列执行，避免阻塞界面。普通具名 API 等待有界结果；传输不确定时 `BindingError::RemoteRequest` 保留可选的具名 `BindingRemoteRequestId`、安全分类与说明。`next_request_id()` 允许平台在发送前保存编号，`submit_request(id, BindingApplicationCommand)` 提交封闭的具名命令集合，`Running` 用相同编号 `query_request(id)` 查询；`Completed` 带版本与 `BindingApplicationResponse`，保留创建会话等操作的真实返回值。查询可通过同设备的新授权连接恢复，不会重执行。`Unknown` 表示本 incarnation 未接纳，`ResultExpired` 表示该旧编号不能再执行且结果无可用证据：可能是回执已淘汰，也可能是编号跳过形成的未提交空隙；执行端重启则旧结果未知，这些状态不能被解释为执行失败并盲目重发。结果可能包含用户显式读取的 key 或资源正文，因此命令、回执和邀请不实现 Debug，不写入诊断日志。
 

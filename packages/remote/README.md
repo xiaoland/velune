@@ -20,7 +20,7 @@
 
 `ConnectionDiagnostics` 显式包含受控本地／远端地址，只能存入私有验收资料。该 feature 用于复验平台发现与传输边界；正式产品装配不启用它，不能把 marker 成功作为业务授权与恢复闭环的验收证据。
 
-`enable_mdns()` 只在没有其它 lookup 的独立探针上显式启用；默认探针仍不含 mDNS，以免混淆平台地址变化／QNT 的判别。诊断依赖固定为 `iroh-mdns-address-lookup` 0.6.0 的官方提交 `6f103e7a92ddbd2007383527ab5024c983e3c1c6`，其缓存覆盖修复允许同一 peer 更新后再次 resolve 取到新地址；保持默认发现周期。`mdns_resolve` 最多八个并发调用，等待上限十五秒，只查询此服务，不建立连接。`mdns_events` 排空本地有界事件队列；Dropped 仅计自上次排空后本地溢出或超限项，不代表上游二十项 subscription 队列没有丢失。存在 active resolve 时，上游可能只发送 resolver 更新而不发被动 Discovered，缓存更新必须以再次 resolve 核对。关闭探针清空 lookup registry、释放自持 service 并停止订阅任务。
+`enable_mdns()` 只在没有其它 lookup 的独立探针上显式启用；默认探针仍不含 mDNS，以免混淆平台地址变化／QNT 的判别。诊断依赖固定为 `iroh-mdns-address-lookup` 0.6.0 的官方提交 `6f103e7a92ddbd2007383527ab5024c983e3c1c6`，其缓存覆盖修复允许同一 peer 更新后再次 resolve 取到新地址；保持默认发现周期。`mdns_resolve` 最多八个并发调用，等待上限十五秒，只查询此服务，不建立连接。`mdns_events` 排空本地有界事件队列。Published 记录服务实际收到 EndpointData 的时间及 IP／relay 数量，透明转发原数据；它不证明报文已发出或对端已收到。Dropped 仅计自上次排空后本地溢出或超限项，不代表上游二十项 subscription 队列没有丢失。存在 active resolve 时，上游可能只发送 resolver 更新而不发被动 Discovered，缓存更新必须以再次 resolve 核对。关闭探针清空 lookup registry、释放自持 service 并停止订阅任务。
 
 ## 配对、持久信任与撤销
 
