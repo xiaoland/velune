@@ -52,7 +52,7 @@ struct RemoteAccessState: Sendable {
     }
 
     func stop() {
-        run({ transport in transport.stopRemoteAccess(); return RemoteAccessState() }) { state in
+        run({ transport in try transport.stopRemoteAccess(); return RemoteAccessState() }) { state in
             self.state = state
             self.clearInvitation()
         }

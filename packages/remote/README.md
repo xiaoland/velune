@@ -6,7 +6,13 @@
 
 ## 连接与公网设施
 
-`RemoteEndpoint::bind` 创建端点；`descriptor()` 返回公开拨号信息，不能据此取得业务权限。默认不启用公共 relay 或地址发现。`RelayConfig::Custom` 接受自部署 relay 地址；`DiscoveryConfig::CustomPkarr` 使用自部署 pkarr 服务发布、查询设备地址。持有最新 descriptor 时也可以不启用发现；设备换网或 relay 地址改变后，长期保存的拨号信息需要地址发现服务更新。
+`RemoteAccessService::bind` 装配稳定服务并创建首个网络代际；也可先 `new`，再调用 `replace_network`。`descriptor()` 返回当前网络的公开拨号信息，没有已应用的网络时返回错误，不能据此取得业务权限。默认不启用公共 relay 或地址发现。`RelayConfig::Custom` 接受自部署 relay 地址；`DiscoveryConfig::CustomPkarr` 使用自部署 pkarr 服务发布、查询设备地址。持有最新 descriptor 时也可以不启用发现；设备换网或 relay 地址改变后，长期保存的拨号信息需要地址发现服务更新。
+
+服务持有唯一业务 Handler、incarnation、接纳账本与完成任务，宿主保持同一 Tokio runtime 直到 `close().await` 完成。`set_control_ingress(false)` 串行封闭新入站接纳、清除邀请并关闭入站连接，保留本服务已有与新建的出站控制连接。再次开启入口不改变 incarnation 或账本。`replace_network(config).await` 先校验配置，然后封闭旧代、关闭并等待全部旧网络任务与临时 IO 引用，释放旧 Endpoint 后才绑定下一代；此屏障与最终关闭由同一锁串行执行，同身份不会并行发布两份网络。替换失败留下无网络状态，调用方可明确重试新配置。
+
+`RemoteClient` 仅弱引用网络代际；它和路径 observer 共享可撤回的原生连接槽。替换或关闭会清空槽中的原生引用，旧 client／observer 包装对象继续存活也不保留旧 socket；observer 返回关闭快照后结束。已接纳执行任务只引用稳定服务，不引用 Endpoint。`close().await` 是最终服务关闭屏障：停止网络并等待已接纳任务写回账本，不调用 application shutdown。释放对象时的非等待清理只负责请求退出，不能代替这个屏障。进程崩溃与业务 owner 真正重启仍使用下述新 incarnation 语义。
+
+完整替换或关闭事务的任务句柄保存在服务中；调用 Future 取消后，后续生命周期调用仍先等待同一事务，不能跳过退休过程或业务完成记录。宿主在此期间继续保活 runtime。事务正常失败允许下一次显式重试；内部任务异常退出则返回 `Unavailable` 并禁止再绑定，不能把未完成的屏障报告为成功。
 
 `DevelopmentPublic` 是对 n0 公共开发设施的显式选择，不是 Velune 正式服务承诺。正式产品可由宿主装配开箱即用的服务地址，同时允许用户替换为自部署设施；本包不部署服务。地址不接受用户名、密码、query 或 fragment，避免把认证材料混入公开拨号信息。生产服务应使用 HTTPS。
 
@@ -42,7 +48,7 @@ Android 身份文件通过内核 `renameat2(RENAME_NOREPLACE)` 发布，避免�
 
 结果保留在有界内存中。缓存回收后仍保留已接纳集合与退休水位，返回 `ResultExpired`，不会重新执行旧请求；这表示结果已不可用，也可能是窗口以外的未提交空隙，不应宣称一定完成过。`Unknown` 表示此 incarnation 尚无接纳证据。执行端重启后，可信设备可以连接到同一公钥的新 incarnation 并发起新业务；查询或重发旧 incarnation 的标识返回 `ServerRestarted`，不承诺跨崩溃 exactly-once。
 
-客户端退出、掉线或端点关闭只结束网络访问；接纳后的处理任务独立持有业务 owner。持续推进 Harness、审批、发送队列和协作由 application owner 保证，本包不调用应用 shutdown。
+客户端退出、掉线、停用入口或网络替换只结束相应网络访问；接纳后的处理任务独立持有业务 owner。持续推进 Harness、审批、发送队列和协作由 application owner 保证，本包不调用应用 shutdown。撤销信任先持久化并关闭对应设备连接；先前已接纳任务继续完成，撤销不会隐式取消业务工作。
 
 ## 当前边界与验证
 

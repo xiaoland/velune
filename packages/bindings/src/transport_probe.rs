@@ -1,5 +1,8 @@
 //! Explicit diagnostic-only marker transport; never opens an application or identity file.
-use crate::{remote::parse_addresses, *};
+use crate::{
+    remote::{RemoteRuntime, parse_addresses},
+    *,
+};
 use std::{sync::Arc, time::Duration};
 use velune_remote::{EndpointConfig, ProbeConnection, ProbeTarget, TransportProbe};
 
@@ -144,7 +147,7 @@ impl From<velune_remote::ProbeMdnsEvent> for BindingProbeMdnsEvent {
 #[derive(uniffi::Object)]
 pub struct VeluneTransportProbe {
     probe: TransportProbe,
-    runtime: Arc<tokio::runtime::Runtime>,
+    runtime: Arc<RemoteRuntime>,
 }
 #[uniffi::export]
 impl VeluneTransportProbe {
@@ -175,13 +178,7 @@ impl VeluneTransportProbe {
             bind_addresses: parse_addresses(options.bind_addresses)?,
             request_timeout: Duration::from_secs(30),
         };
-        let runtime = Arc::new(
-            tokio::runtime::Builder::new_multi_thread()
-                .worker_threads(2)
-                .enable_all()
-                .build()
-                .map_err(|_| BindingError::Unavailable)?,
-        );
+        let runtime = RemoteRuntime::new()?;
         let probe = runtime.block_on(TransportProbe::bind(config))?;
         Ok(Arc::new(Self { runtime, probe }))
     }
@@ -250,7 +247,7 @@ impl VeluneTransportProbe {
 #[derive(uniffi::Object)]
 pub struct VeluneTransportProbeConnection {
     connection: ProbeConnection,
-    runtime: Arc<tokio::runtime::Runtime>,
+    runtime: Arc<RemoteRuntime>,
 }
 #[uniffi::export]
 impl VeluneTransportProbeConnection {

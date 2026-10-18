@@ -1,6 +1,6 @@
 # 统一远控的线性实现计划
 
-2026-10-18，技术方案、人工验收方案和本计划收敛后，用户明确恢复实施。S1 源码与现有设备的三轮同网判别已收口，E2／E3 因环境继续阻塞；当前进入 S2，S3—S6 尚未开始。产品意图归 [PRD](../../docs/prd/index.md#后续扩展分布式能力)，技术契约归 [remote-access](../../docs/design/remote-access.md)，判据归 [acceptance](acceptance.md)，已有结果归 [verification](verification.md)。计划收敛表示执行路径、责任和失败分支明确，不表示真实网络已经验证。
+2026-10-18，技术方案、人工验收方案和本计划收敛后，用户明确恢复实施。S1 源码与现有设备的三轮同网判别已收口，E2／E3 因环境继续阻塞；S2 出口已完成，当前进入 S3，S4—S6 尚未开始。产品意图归 [PRD](../../docs/prd/index.md#后续扩展分布式能力)，技术契约归 [remote-access](../../docs/design/remote-access.md)，判据归 [acceptance](acceptance.md)，已有结果归 [verification](verification.md)。计划收敛表示执行路径、责任和失败分支明确，不表示真实网络已经验证。
 
 实施继续使用当前独立 worktree 的 `feat/android-minimal`，不在原 main 目录工作，不 push、创建 PR 或部署公网服务。开始前核对分支、源码与现有产物；保留尚未提交的 Android 邀请 UI／合成宿主改动，由所属 owner 在相关切片吸收或按新契约替换，不混入无关修改。若 main 已前进，先评估与本任务的实际交集，再在独立分支完成必要集成；不按旧 bundle 清单覆盖更新的安装。
 

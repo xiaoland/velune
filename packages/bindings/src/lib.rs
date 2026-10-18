@@ -95,6 +95,7 @@ pub enum BindingError {
     RemoteRequest {
         kind: BindingFailureKind,
         detail: String,
+        code: String,
         request_id: Option<BindingRemoteRequestId>,
     },
     #[error("application has been closed")]
@@ -174,6 +175,8 @@ enum Backend {
 pub struct VeluneApplication {
     application: Mutex<Option<Backend>>,
     diagnostics: diagnostics::Diagnostics,
+    #[cfg(all(feature = "local-runtime", feature = "remote"))]
+    remote_service: Mutex<Option<Arc<remote::ServiceOwner>>>,
 }
 
 impl VeluneApplication {
@@ -218,6 +221,15 @@ impl VeluneApplication {
                     _ => {}
                 }
                 *state = None;
+                #[cfg(all(feature = "local-runtime", feature = "remote"))]
+                if let Some(owner) = self
+                    .remote_service
+                    .lock()
+                    .map_err(|_| BindingError::Unavailable)?
+                    .take()
+                {
+                    owner.close()?;
+                }
             }
             Ok(())
         })
@@ -246,6 +258,8 @@ impl VeluneApplication {
         Ok(Arc::new(Self {
             application: Mutex::new(Some(Backend::Local(application))),
             diagnostics,
+            #[cfg(feature = "remote")]
+            remote_service: Mutex::new(None),
         }))
     }
 }
@@ -1442,12 +1456,9 @@ impl BindingError {
                 detail,
             ),
             #[cfg(feature = "remote")]
-            Self::RemoteRequest { kind, detail, .. } => (
-                kind,
-                "remote_request_failed".into(),
-                "remote".into(),
-                detail,
-            ),
+            Self::RemoteRequest {
+                kind, detail, code, ..
+            } => (kind, code, "remote".into(), detail),
             Self::Closed => (
                 BindingFailureKind::Closed,
                 "application_closed".into(),

@@ -3,8 +3,8 @@ use crate::*;
 use std::{path::Path, sync::Arc, time::Duration};
 use velune_application_api::{ApplicationReply, ExecutionContext, Revision};
 use velune_remote::{
-    DeviceIdentity, EndpointConfig, EndpointDescriptor, FileTrustStore, RemoteClient,
-    RemoteEndpoint, RequestId, RequestStatus,
+    DeviceIdentity, EndpointConfig, EndpointDescriptor, FileTrustStore, RemoteAccessService,
+    RemoteClient, RequestId, RequestStatus,
 };
 
 #[derive(Clone, uniffi::Enum)]
@@ -95,12 +95,12 @@ pub struct BindingPathObservation {
 /// An observer retains transport evidence, but disposing it does not close business work.
 #[derive(uniffi::Object)]
 pub struct VelunePathObserver {
-    runtime: Arc<tokio::runtime::Runtime>,
+    runtime: Arc<RemoteRuntime>,
     observer: tokio::sync::Mutex<velune_remote::PathObserver>,
 }
 impl VelunePathObserver {
     pub(crate) fn new(
-        runtime: Arc<tokio::runtime::Runtime>,
+        runtime: Arc<RemoteRuntime>,
         observer: velune_remote::PathObserver,
     ) -> Arc<Self> {
         Arc::new(Self {
@@ -335,15 +335,51 @@ impl From<velune_remote::RemoteError> for BindingError {
         Self::Diagnostic {
             kind: remote_failure_kind(error),
             detail: error.to_string(),
-            code: "remote_failed".into(),
+            code: error.code().into(),
             phase: "remote".into(),
             operation_id: String::new(),
         }
     }
 }
 
+/// Runtime leases can finish on a Tokio worker; the final release must not block that worker.
+pub(crate) struct RemoteRuntime {
+    runtime: Option<tokio::runtime::Runtime>,
+}
+impl RemoteRuntime {
+    pub(crate) fn new() -> Result<Arc<Self>, BindingError> {
+        Ok(Arc::new(Self {
+            runtime: Some(
+                tokio::runtime::Builder::new_multi_thread()
+                    .worker_threads(2)
+                    .enable_all()
+                    .build()
+                    .map_err(|_| BindingError::Unavailable)?,
+            ),
+        }))
+    }
+}
+impl std::ops::Deref for RemoteRuntime {
+    type Target = tokio::runtime::Runtime;
+    fn deref(&self) -> &Self::Target {
+        self.runtime
+            .as_ref()
+            .expect("runtime remains present until its final drop")
+    }
+}
+impl Drop for RemoteRuntime {
+    fn drop(&mut self) {
+        if let Some(runtime) = self.runtime.take() {
+            runtime.shutdown_background();
+        }
+    }
+}
+
 #[cfg(feature = "local-runtime")]
-struct ApplicationHandler(ApplicationService);
+struct ApplicationHandler {
+    application: ApplicationService,
+    _runtime: Arc<RemoteRuntime>,
+}
 #[cfg(feature = "local-runtime")]
 impl velune_remote::Handler for ApplicationHandler {
     fn execute(
@@ -351,7 +387,7 @@ impl velune_remote::Handler for ApplicationHandler {
         context: velune_remote::RequestContext,
         command: Command,
     ) -> velune_remote::HandlerFuture<'_> {
-        let application = self.0.clone();
+        let application = self.application.clone();
         Box::pin(async move {
             let view = ClientViewId(format!("{}:{}", context.peer_id, context.view.0));
             tokio::task::spawn_blocking(move || {
@@ -368,14 +404,131 @@ impl velune_remote::Handler for ApplicationHandler {
     }
 }
 
+#[derive(Clone, uniffi::Record)]
+pub struct BindingRemoteNetworkOptions {
+    pub relay: BindingRelayConfig,
+    pub discovery: BindingDiscoveryConfig,
+    pub path_policy: BindingRemotePathPolicy,
+    pub bind_addresses: Vec<String>,
+    pub request_timeout_ms: u64,
+}
+impl From<&BindingRemoteOptions> for BindingRemoteNetworkOptions {
+    fn from(options: &BindingRemoteOptions) -> Self {
+        Self {
+            relay: options.relay.clone(),
+            discovery: options.discovery.clone(),
+            path_policy: options.path_policy.clone(),
+            bind_addresses: options.bind_addresses.clone(),
+            request_timeout_ms: options.request_timeout_ms,
+        }
+    }
+}
+impl BindingRemoteNetworkOptions {
+    fn config(self) -> Result<EndpointConfig, BindingError> {
+        Ok(EndpointConfig {
+            relay: match self.relay {
+                BindingRelayConfig::Disabled => velune_remote::RelayConfig::Disabled,
+                BindingRelayConfig::DevelopmentPublic => {
+                    velune_remote::RelayConfig::DevelopmentPublic
+                }
+                BindingRelayConfig::Custom { urls } => velune_remote::RelayConfig::Custom { urls },
+            },
+            discovery: match self.discovery {
+                BindingDiscoveryConfig::None => velune_remote::DiscoveryConfig::None,
+                BindingDiscoveryConfig::DevelopmentPublic => {
+                    velune_remote::DiscoveryConfig::DevelopmentPublic
+                }
+                BindingDiscoveryConfig::CustomPkarr { url } => {
+                    velune_remote::DiscoveryConfig::CustomPkarr { url }
+                }
+            },
+            path_policy: match self.path_policy {
+                BindingRemotePathPolicy::Automatic => velune_remote::PathPolicy::Automatic,
+                BindingRemotePathPolicy::RelayOnly => velune_remote::PathPolicy::RelayOnly,
+            },
+            bind_addresses: parse_addresses(self.bind_addresses)?,
+            request_timeout: Duration::from_millis(self.request_timeout_ms),
+        })
+    }
+}
+pub(crate) struct ServiceOwner {
+    service: Arc<RemoteAccessService>,
+    runtime: Arc<RemoteRuntime>,
+    #[cfg(feature = "local-runtime")]
+    identity_file: String,
+    #[cfg(feature = "local-runtime")]
+    trust_file: String,
+    #[cfg(feature = "local-runtime")]
+    device_name: String,
+    config: Mutex<Option<EndpointConfig>>,
+}
+impl ServiceOwner {
+    fn bind(
+        options: BindingRemoteOptions,
+        runtime: Arc<RemoteRuntime>,
+        handler: Option<Arc<dyn velune_remote::Handler>>,
+    ) -> Result<Arc<Self>, BindingError> {
+        let config = BindingRemoteNetworkOptions::from(&options).config()?;
+        let identity = DeviceIdentity::load_or_create(
+            Path::new(&options.identity_file),
+            options.device_name.clone(),
+        )?;
+        let trust = Arc::new(FileTrustStore::open(Path::new(&options.trust_file))?);
+        let service = Arc::new(runtime.block_on(RemoteAccessService::bind(
+            identity,
+            config.clone(),
+            trust,
+            handler,
+        ))?);
+        Ok(Arc::new(Self {
+            runtime,
+            service,
+            #[cfg(feature = "local-runtime")]
+            identity_file: options.identity_file,
+            #[cfg(feature = "local-runtime")]
+            trust_file: options.trust_file,
+            #[cfg(feature = "local-runtime")]
+            device_name: options.device_name,
+            config: Mutex::new(Some(config)),
+        }))
+    }
+    #[cfg(feature = "local-runtime")]
+    fn reuse(&self, options: &BindingRemoteOptions) -> Result<(), BindingError> {
+        if self.identity_file != options.identity_file
+            || self.trust_file != options.trust_file
+            || self.device_name != options.device_name
+        {
+            return Err(BindingError::Invalid {
+                detail: "同一应用执行核心只能装配一份设备身份与可信设备存储".into(),
+            });
+        }
+        self.apply_config(BindingRemoteNetworkOptions::from(options).config()?)
+    }
+    fn apply_config(&self, config: EndpointConfig) -> Result<(), BindingError> {
+        let mut applied = self.config.lock().map_err(|_| BindingError::Unavailable)?;
+        if applied.as_ref() == Some(&config) && self.service.descriptor().is_ok() {
+            return Ok(());
+        }
+        *applied = None;
+        self.runtime
+            .block_on(self.service.replace_network(config.clone()))?;
+        *applied = Some(config);
+        Ok(())
+    }
+    pub(crate) fn close(&self) -> Result<(), BindingError> {
+        self.runtime
+            .block_on(self.service.close())
+            .map_err(Into::into)
+    }
+}
+
 #[derive(uniffi::Object)]
 pub struct VeluneRemoteEndpoint {
-    runtime: Arc<tokio::runtime::Runtime>,
-    endpoint: Arc<RemoteEndpoint>,
+    owner: Arc<ServiceOwner>,
 }
 #[uniffi::export]
 impl VeluneRemoteEndpoint {
-    /// Supplying a local application serves that same execution owner; None creates a controller.
+    /// Local applications cache one service/runtime for their actual business owner, not a window.
     #[uniffi::constructor]
     pub fn open(
         options: BindingRemoteOptions,
@@ -388,82 +541,71 @@ impl VeluneRemoteEndpoint {
                 });
             }
         }
-        let identity =
-            DeviceIdentity::load_or_create(Path::new(&options.identity_file), options.device_name)?;
-        let trust = Arc::new(FileTrustStore::open(Path::new(&options.trust_file))?);
-        let handler: Option<Arc<dyn velune_remote::Handler>> = match application {
-            None => None,
-            Some(application) => {
-                let state = application.lock()?;
-                match state.as_ref().ok_or(BindingError::Closed)? {
-                    #[cfg(feature = "local-runtime")]
-                    Backend::Local(service) => Some(Arc::new(ApplicationHandler(service.clone()))),
-                    _ => {
-                        return Err(BindingError::Unsupported {
-                            detail: "远控入口需要本设备的执行核心".into(),
-                        });
-                    }
+        #[cfg(feature = "local-runtime")]
+        if let Some(application) = application.as_ref() {
+            let local = match application.lock()?.as_ref().ok_or(BindingError::Closed)? {
+                Backend::Local(service) => service.clone(),
+                _ => {
+                    return Err(BindingError::Unsupported {
+                        detail: "远控入口需要本设备的执行核心".into(),
+                    });
                 }
+            };
+            let mut cached = application
+                .remote_service
+                .lock()
+                .map_err(|_| BindingError::Unavailable)?;
+            if let Some(owner) = cached.as_ref() {
+                owner.reuse(&options)?;
+                return Ok(Arc::new(Self {
+                    owner: owner.clone(),
+                }));
             }
-        };
-        let config = EndpointConfig {
-            relay: match options.relay {
-                BindingRelayConfig::Disabled => velune_remote::RelayConfig::Disabled,
-                BindingRelayConfig::DevelopmentPublic => {
-                    velune_remote::RelayConfig::DevelopmentPublic
-                }
-                BindingRelayConfig::Custom { urls } => velune_remote::RelayConfig::Custom { urls },
-            },
-            discovery: match options.discovery {
-                BindingDiscoveryConfig::None => velune_remote::DiscoveryConfig::None,
-                BindingDiscoveryConfig::DevelopmentPublic => {
-                    velune_remote::DiscoveryConfig::DevelopmentPublic
-                }
-                BindingDiscoveryConfig::CustomPkarr { url } => {
-                    velune_remote::DiscoveryConfig::CustomPkarr { url }
-                }
-            },
-            path_policy: match options.path_policy {
-                BindingRemotePathPolicy::Automatic => velune_remote::PathPolicy::Automatic,
-                BindingRemotePathPolicy::RelayOnly => velune_remote::PathPolicy::RelayOnly,
-            },
-            bind_addresses: parse_addresses(options.bind_addresses)?,
-            request_timeout: Duration::from_millis(options.request_timeout_ms),
-        };
-        let runtime = Arc::new(
-            tokio::runtime::Builder::new_multi_thread()
-                .worker_threads(2)
-                .enable_all()
-                .build()
-                .map_err(|_| BindingError::Unavailable)?,
-        );
-        let endpoint =
-            Arc::new(runtime.block_on(RemoteEndpoint::bind(identity, config, trust, handler))?);
-        Ok(Arc::new(Self { runtime, endpoint }))
+            let runtime = RemoteRuntime::new()?;
+            let handler = Arc::new(ApplicationHandler {
+                application: local,
+                _runtime: runtime.clone(),
+            });
+            let owner = ServiceOwner::bind(options, runtime, Some(handler))?;
+            *cached = Some(owner.clone());
+            return Ok(Arc::new(Self { owner }));
+        }
+        if application.is_some() {
+            return Err(BindingError::Unsupported {
+                detail: "此构建未链接本机执行核心".into(),
+            });
+        }
+        let owner = ServiceOwner::bind(options, RemoteRuntime::new()?, None)?;
+        Ok(Arc::new(Self { owner }))
     }
     /// Platform network and foreground notifications can prompt native path recovery.
     pub fn network_change(&self) {
-        self.runtime.block_on(self.endpoint.network_change());
+        self.owner
+            .runtime
+            .block_on(self.owner.service.network_change());
     }
     /// A returned sequence confirms notification only, not successful path recovery.
     pub fn report_network_change(
         &self,
         snapshot: BindingPlatformNetworkSnapshot,
     ) -> Result<u64, BindingError> {
-        Ok(self
-            .runtime
-            .block_on(self.endpoint.report_network_change(snapshot.try_into()?))?)
+        Ok(self.owner.runtime.block_on(
+            self.owner
+                .service
+                .report_network_change(snapshot.try_into()?),
+        )?)
     }
 
-    pub fn descriptor(&self) -> BindingRemoteEndpointDescriptor {
-        self.endpoint.descriptor().into()
+    pub fn descriptor(&self) -> Result<BindingRemoteEndpointDescriptor, BindingError> {
+        Ok(self.owner.service.descriptor()?.into())
     }
     pub fn create_invitation(
         &self,
         lifetime_seconds: u64,
     ) -> Result<BindingRemoteInvitation, BindingError> {
         let invitation = self
-            .endpoint
+            .owner
+            .service
             .create_invitation(Duration::from_secs(lifetime_seconds))?;
         Ok(BindingRemoteInvitation {
             encoded: invitation.encode()?,
@@ -477,8 +619,11 @@ impl VeluneRemoteEndpoint {
         view_id: String,
     ) -> Result<Arc<VeluneApplication>, BindingError> {
         let invitation = velune_remote::Invitation::decode(&invitation)?;
-        let client = self.runtime.block_on(self.endpoint.pair(&invitation))?;
-        self.application(client, invitation.endpoint, view_id)
+        let client = self
+            .owner
+            .runtime
+            .block_on(self.owner.service.pair(&invitation))?;
+        self.application(client, view_id)
     }
     pub fn connect(
         &self,
@@ -486,12 +631,16 @@ impl VeluneRemoteEndpoint {
         view_id: String,
     ) -> Result<Arc<VeluneApplication>, BindingError> {
         let descriptor = descriptor.try_into()?;
-        let client = self.runtime.block_on(self.endpoint.connect(&descriptor))?;
-        self.application(client, descriptor, view_id)
+        let client = self
+            .owner
+            .runtime
+            .block_on(self.owner.service.connect(&descriptor))?;
+        self.application(client, view_id)
     }
     pub fn trusted_devices(&self) -> Result<Vec<BindingTrustedDevice>, BindingError> {
         Ok(self
-            .endpoint
+            .owner
+            .service
             .trusted_devices()?
             .into_iter()
             .map(|device| BindingTrustedDevice {
@@ -501,18 +650,31 @@ impl VeluneRemoteEndpoint {
             .collect())
     }
     pub fn revoke(&self, device_id: String) -> Result<(), BindingError> {
-        self.endpoint.revoke(&device_id).map_err(Into::into)
+        self.owner.service.revoke(&device_id).map_err(Into::into)
     }
-    /// Closing ingress disconnects controllers; it does not close the local application owner.
-    pub fn shutdown(&self) {
-        self.runtime.block_on(self.endpoint.close());
+    /// Stop being controlled without closing outgoing control or replacing the business incarnation.
+    pub fn set_control_ingress(&self, enabled: bool) -> Result<(), BindingError> {
+        self.owner
+            .service
+            .set_control_ingress(enabled)
+            .map_err(Into::into)
+    }
+    /// Fully retire one network generation before binding the next, preserving accepted requests.
+    pub fn replace_network(
+        &self,
+        options: BindingRemoteNetworkOptions,
+    ) -> Result<(), BindingError> {
+        self.owner.apply_config(options.config()?)
+    }
+    /// Final service shutdown waits for accepted completion bookkeeping; ingress uses its own toggle.
+    pub fn shutdown(&self) -> Result<(), BindingError> {
+        self.owner.close()
     }
 }
 impl VeluneRemoteEndpoint {
     fn application(
         &self,
         client: RemoteClient,
-        descriptor: EndpointDescriptor,
         view_id: String,
     ) -> Result<Arc<VeluneApplication>, BindingError> {
         if view_id.trim().is_empty() || view_id.len() > 128 {
@@ -521,9 +683,9 @@ impl VeluneRemoteEndpoint {
                 detail: "客户端视图标识必须为 1 至 128 字节".into(),
             });
         }
+        let descriptor = client.descriptor().clone();
         let remote = Arc::new(RemoteApplication {
-            runtime: self.runtime.clone(),
-            endpoint: self.endpoint.clone(),
+            owner: self.owner.clone(),
             view: ClientViewId(view_id),
             state: Mutex::new(RemoteState {
                 client: Arc::new(client),
@@ -540,13 +702,14 @@ impl VeluneRemoteEndpoint {
         Ok(Arc::new(VeluneApplication {
             application: Mutex::new(Some(Backend::Remote(remote))),
             diagnostics: diagnostics::Diagnostics::silent(),
+            #[cfg(feature = "local-runtime")]
+            remote_service: Mutex::new(None),
         }))
     }
 }
 
 pub(crate) struct RemoteApplication {
-    runtime: Arc<tokio::runtime::Runtime>,
-    endpoint: Arc<RemoteEndpoint>,
+    owner: Arc<ServiceOwner>,
     view: ClientViewId,
     state: Mutex<RemoteState>,
 }
@@ -610,7 +773,7 @@ impl RemoteApplication {
     fn request_reply(&self, command: Command) -> Result<ApplicationReply, BindingError> {
         let mutation = command.changes_shared_state();
         let context = self.context()?;
-        match self.runtime.block_on(context.client.call(
+        match self.owner.runtime.block_on(context.client.call(
             self.view.clone(),
             context.execution.clone(),
             command,
@@ -630,12 +793,14 @@ impl RemoteApplication {
                     Err(BindingError::RemoteRequest {
                         kind: remote_failure_kind(failure),
                         detail: failure.to_string(),
+                        code: failure.code().into(),
                         request_id: error.request_id.map(Into::into),
                     })
                 }
                 velune_remote::CallFailure::ResultUnavailable => Err(BindingError::RemoteRequest {
                     kind: BindingFailureKind::OutcomeUnknown,
                     detail: "请求结果已不可用；不得自动重发".into(),
+                    code: "result_unavailable".into(),
                     request_id: error.request_id.map(Into::into),
                 }),
             },
@@ -699,7 +864,7 @@ impl VeluneApplication {
     pub fn observe_paths(&self) -> Result<Arc<VelunePathObserver>, BindingError> {
         let remote = self.remote_backend()?;
         Ok(VelunePathObserver::new(
-            remote.runtime.clone(),
+            remote.owner.runtime.clone(),
             remote.context()?.client.observe_paths(),
         ))
     }
@@ -723,11 +888,13 @@ impl VeluneApplication {
                 detail: "重连不能更换执行设备，请建立独立连接".into(),
             });
         }
-        let client = remote.runtime.block_on(
+        let client = remote.owner.runtime.block_on(
             remote
-                .endpoint
+                .owner
+                .service
                 .connect_with_session(&descriptor, context.client.session()),
         )?;
+        let descriptor = client.descriptor().clone();
         let mut state = remote.state()?;
         if state.closed {
             client.close();
@@ -765,7 +932,7 @@ impl VeluneApplication {
     ) -> Result<BindingRemoteRequestStatus, BindingError> {
         let remote = self.remote_backend()?;
         let context = remote.context()?;
-        let status = remote.runtime.block_on(context.client.submit(
+        let status = remote.owner.runtime.block_on(context.client.submit(
             request_id.into(),
             remote.view.clone(),
             context.execution.clone(),
@@ -784,6 +951,7 @@ impl VeluneApplication {
         let remote = self.remote_backend()?;
         let context = remote.context()?;
         let status = remote
+            .owner
             .runtime
             .block_on(context.client.query(request_id.into()))?;
         if let RequestStatus::Completed(Ok(reply)) = &status {

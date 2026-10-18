@@ -2,6 +2,7 @@
 //!
 //! Hosts supply identity paths, trust storage, relay/discovery choices, and the single business
 //! handler. Dropping clients or stopping this network endpoint never shuts down that handler.
+mod client;
 mod endpoint;
 mod error;
 mod identity;
@@ -11,8 +12,9 @@ mod paths;
 #[cfg(feature = "diagnostics")]
 mod probe;
 mod protocol;
+mod service;
 mod wire;
-pub use endpoint::{CallError, CallFailure, Handler, HandlerFuture, RemoteClient, RemoteEndpoint};
+pub use client::{CallError, CallFailure, RemoteClient};
 pub use error::{RemoteError, Result};
 pub use identity::{DeviceIdentity, DeviceTrust, FileTrustStore, MemoryTrustStore, TrustedDevice};
 #[cfg(target_os = "android")]
@@ -31,3 +33,4 @@ pub use protocol::{
     MAX_FRAME_BYTES, PROTOCOL_VERSION, PathPolicy, RelayConfig, RequestContext, RequestId,
     RequestStatus,
 };
+pub use service::{Handler, HandlerFuture, RemoteAccessService};

@@ -8,7 +8,7 @@ pub const PROTOCOL_VERSION: u16 = 1;
 pub const MAX_FRAME_BYTES: usize = 32 * 1024 * 1024;
 pub(crate) const ALPN: &[u8] = b"velune/remote/1";
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub enum RelayConfig {
     #[default]
     Disabled,
@@ -18,7 +18,7 @@ pub enum RelayConfig {
         urls: Vec<String>,
     },
 }
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub enum DiscoveryConfig {
     #[default]
     None,
@@ -28,14 +28,14 @@ pub enum DiscoveryConfig {
     /// Publish and resolve addresses using n0's public DNS/pkarr services.
     DevelopmentPublic,
 }
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum PathPolicy {
     #[default]
     Automatic,
     /// Controlled diagnostics only: disables direct IP transports.
     RelayOnly,
 }
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EndpointConfig {
     pub relay: RelayConfig,
     pub path_policy: PathPolicy,

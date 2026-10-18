@@ -43,3 +43,29 @@ pub enum RemoteError {
 }
 
 pub type Result<T> = std::result::Result<T, RemoteError>;
+
+impl RemoteError {
+    /// Safe machine-readable cause, without request or infrastructure details.
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::Configuration => "configuration",
+            Self::IdentityStorage => "identity_storage",
+            Self::TrustStorage => "trust_storage",
+            Self::Randomness => "randomness",
+            Self::InvalidInvitation => "invalid_invitation",
+            Self::ExpiredInvitation => "expired_invitation",
+            Self::Unauthorized => "unauthorized",
+            Self::Unavailable => "unavailable",
+            Self::Timeout => "timeout",
+            Self::Protocol => "protocol",
+            Self::IncompatibleVersion => "incompatible_version",
+            Self::ServerRestarted => "server_restarted",
+            Self::InvalidRequestId => "invalid_request_id",
+            Self::RequestIdConflict => "request_id_conflict",
+            Self::Capacity => "capacity",
+            Self::FrameTooLarge => "frame_too_large",
+            Self::Closed => "closed",
+            Self::NoHandler => "no_handler",
+        }
+    }
+}

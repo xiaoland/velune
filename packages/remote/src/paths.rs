@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use std::{
     ops::Deref,
     sync::{
-        OnceLock,
+        Arc, Mutex, OnceLock,
         atomic::{AtomicU64, Ordering},
     },
     time::Instant,
@@ -87,35 +87,119 @@ impl Deref for ObservedConnection {
     }
 }
 
-/// Subscribes before the initial snapshot so changes cannot be lost between them.
+struct ConnectionValue {
+    native: Option<ObservedConnection>,
+    status: ConnectionStatus,
+}
+
+/// A generation can withdraw its native connection even when clients and observers survive it.
+pub(crate) struct ConnectionSlot {
+    value: Mutex<ConnectionValue>,
+    closed: tokio::sync::watch::Sender<bool>,
+}
+impl ConnectionSlot {
+    pub(crate) fn new(native: ObservedConnection) -> Arc<Self> {
+        Arc::new(Self {
+            value: Mutex::new(ConnectionValue {
+                status: snapshot(&native),
+                native: Some(native),
+            }),
+            closed: tokio::sync::watch::channel(false).0,
+        })
+    }
+    pub(crate) fn native(&self) -> Option<ObservedConnection> {
+        self.value
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .native
+            .clone()
+    }
+    pub(crate) fn status(&self) -> ConnectionStatus {
+        let mut value = self
+            .value
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        if let Some(native) = &value.native {
+            value.status = snapshot(native);
+        }
+        value.status.clone()
+    }
+    pub(crate) fn close(&self, reason: &'static [u8]) {
+        let mut value = self
+            .value
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        if let Some(native) = value.native.take() {
+            native.close(0u8.into(), reason);
+            value.status = snapshot(&native);
+            value.status.closed = true;
+        }
+        self.closed.send_replace(true);
+    }
+}
+
+/// Subscribes before sampling. An observer owns no native connection outside its revocable slot.
 pub struct PathObserver {
-    connection: ObservedConnection,
-    events: PathEventStream,
+    connection: Arc<ConnectionSlot>,
+    events: Option<PathEventStream>,
+    closed: tokio::sync::watch::Receiver<bool>,
     initial: bool,
+    ended: bool,
 }
 impl PathObserver {
+    #[cfg(feature = "diagnostics")]
     pub(crate) fn new(connection: ObservedConnection) -> Self {
-        let events = connection.path_events();
+        Self::from_slot(ConnectionSlot::new(connection))
+    }
+    pub(crate) fn from_slot(connection: Arc<ConnectionSlot>) -> Self {
+        let events = connection.native().map(|native| native.path_events());
+        let closed = connection.closed.subscribe();
         Self {
             connection,
             events,
+            closed,
             initial: true,
+            ended: false,
         }
     }
-    /// Returns the initial snapshot, then the current snapshot on each native path event.
-    /// A lagged native event still returns the complete current snapshot.
+    /// Returns the initial snapshot, then native path changes; Lagged retains its original count.
+    /// A withdrawn generation yields one final closed snapshot and releases native resources.
     pub async fn next(&mut self) -> Option<PathObservation> {
+        if self.ended {
+            return None;
+        }
         let missed_events = if self.initial {
             self.initial = false;
             0
+        } else if *self.closed.borrow() {
+            self.ended = true;
+            0
         } else {
-            match self.events.next().await? {
-                PathEvent::Lagged { missed, .. } => missed,
-                _ => 0,
+            let event = match &mut self.events {
+                Some(events) => tokio::select! {
+                    event = events.next() => event,
+                    _ = self.closed.changed() => None,
+                },
+                None => None,
+            };
+            match event {
+                Some(PathEvent::Lagged { missed, .. }) => missed,
+                Some(_) => 0,
+                None => {
+                    self.ended = true;
+                    0
+                }
             }
         };
+        let mut status = self.connection.status();
+        if self.ended || status.closed {
+            self.ended = true;
+            status.closed = true;
+            self.connection.close(b"observation ended");
+            self.events = None;
+        }
         Some(PathObservation {
-            status: snapshot(&self.connection),
+            status,
             missed_events,
         })
     }

@@ -1,6 +1,6 @@
 # 统一设备远控：配对、寻址与恢复
 
-状态：2026-10-18 已收敛并获用户授权实施的工程方案，S1 同网源码与判别已收口，E2／E3 环境阻塞，当前进入 S2；本文件描述目标契约，不等同已实现或用户已验收。产品约束归 [PRD](../prd/index.md#后续扩展分布式能力)，共享核心与包边界归 [架构入口](architecture.md#远控契约与唯一执行-owner2026-10-17)。本方案基于锁定的 iroh 1.3.0；源码核查和本机实验归 [研究记录](../../tasks/android-minimal/transport-research.md)，执行次序归 [线性计划](../../tasks/android-minimal/plan.md)，通过条件归 [验收方案](../../tasks/android-minimal/acceptance.md)。实际实现与验收状态以 [任务](../../tasks/android-minimal/packet.md) 为准。
+状态：2026-10-18 已收敛并获用户授权实施的工程方案，S1 同网源码与判别已收口，E2／E3 环境阻塞，S2 出口已完成，当前进入 S3；本文件描述目标契约，不等同已实现或用户已验收。产品约束归 [PRD](../prd/index.md#后续扩展分布式能力)，共享核心与包边界归 [架构入口](architecture.md#远控契约与唯一执行-owner2026-10-17)。本方案基于锁定的 iroh 1.3.0；源码核查和本机实验归 [研究记录](../../tasks/android-minimal/transport-research.md)，执行次序归 [线性计划](../../tasks/android-minimal/plan.md)，通过条件归 [验收方案](../../tasks/android-minimal/acceptance.md)。实际实现与验收状态以 [任务](../../tasks/android-minimal/packet.md) 为准。
 
 ## 设备与状态归属
 
@@ -35,8 +35,10 @@ bindings 持有这份稳定服务，显式区分停止本机被控入口、替�
 | `controller(peer_id)`、活动事实、`disconnect`／`resume` | 每个目的公钥一份恢复状态；窗口／视图共享，平台只报告选中、活动与网络事实。主动断开持久暂停，前台事件不能自动撤销用户选择 |
 | `decode_offer`、`begin_pairing`、`cancel_pairing`、事务查询 | 有界离线解析后才建连；准备完成由 Rust 在原子保存后发送。重复相机帧或 Activity 重建不重复兑换邀请 |
 | 本地邀请、批准／拒绝、`revoke_control` | 仅执行端本地可信管理入口可用，不进入远程业务 Command。取消与批准竞争时返回实际已提交状态，不伪造撤销 |
-| `application_for_device(peer_id, view_id)`、未决请求观察／确认 | 保留完整业务 SDK；副作用命令统一经过写前记录。确认只结束本机跟踪，不取消远端任务、不删除服务端去重信息 |
+| `application_for_device(peer_id, view_id)`、`prepare_remote_operation`、未决请求观察／确认 | 保留完整业务 SDK；远程副作用通过一次操作作用域准确关联请求 ID，统一经过写前记录。确认只结束本机跟踪，不取消远端任务、不删除服务端去重信息 |
 | `apply_network`、连接资料更新 | 语法校验和持久化后串行应用网络代际；返回保存／应用状态。带外更新 locator 必须匹配已有固定公钥 |
+
+远程具名方法保留现有 payload 形状，由 `prepare_remote_operation()` 返回的 `RemoteOperation` 提供准确关联：预分配固定目的公钥、调用世代和完整请求 ID，`operation.application()` 返回共享原连接、视图和修订状态的具名业务代理。每份作用域最多接纳一个副作用；准备但未调用不落 pending，真正调用时先原子记录。平台处理该方法的结果或错误后，才通过原 operation 确认准确 ID；不能使用全局 last ID、批量确认或成功返回即自动清理。普通远程代理可直接观察，未提供作用域的副作用在发送前拒绝。本地 SDK 不改；释放或关闭作用域代理不关闭共享连接或视图，显式 `submit_request` 同样经过 Rust 写前门禁。
 
 Rust 是身份、联系人 pin、入站 grant、配对事务、未决请求、网络设置及主动暂停意图的唯一权威。复用 remote 内现有原子文件适配，平台显式传应用私有目录，不读取全局应用配置。Kotlin 只保存选中设备、阅读位置等 UI 偏好，删除 `DeviceStore` 对 descriptor 和 pending 的重复持久化；邀请、相机帧和显示码不进入 Bundle、SavedStateHandle 或备份。
 

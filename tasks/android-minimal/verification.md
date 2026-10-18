@@ -2,7 +2,7 @@
 
 ## 当前结论
 
-2026-10-18，用户已授权按[线性计划](plan.md)恢复实施，S1 已完成当前设备条件下的同网判别，当前进入 S2；E2／E3 继续环境阻塞。下面主矩阵保留前一轮产品观察，不能当作新方案或 S1 已通过；S1 当前事实单列于下方。Android 身份发布修复已提交 `0004d53`。没有将安装、进程存在或临时原生 probe 当作业务通过。
+2026-10-18，用户已授权按[线性计划](plan.md)恢复实施，S1 已完成当前设备条件下的同网判别；S2 冻结源码的 core／bindings 人工驱动均通过，当前处于匹配构建收尾。E2／E3 继续环境阻塞。下面主矩阵保留前一轮产品观察，不能当作新方案或 S1 已通过；S1 当前事实单列于下方。Android 身份发布修复已提交 `0004d53`。没有将安装、进程存在或临时原生 probe 当作业务通过。
 
 当前 S1 最终接口源码为 `f0df0ca`，真机 APK 为 `8d9f649e…`／so `62bb93ac…`，匹配 host 为 `3b55ead8…`／Python `94570f95…`；完整摘要及版本边界见下方接口补丁小节。三轮正式生命周期已收口，E2／E3 仍缺环境。
 
@@ -29,6 +29,39 @@
 暂停时安装 APK SHA-256 为 `33cb77b3827b4ce870acfc284180fbb605b2203ca08fc72d2c46bcd309eebee8`，包含默认隐藏／可显式显示邀请及禁用自动纠正，不包含临时 native 诊断。其 so SHA-256 为 `2529e9142589abddf980c5c9da44876fcef8d369513337a827b7efb0cd32ba00`，与首次修复版字节完全一致。assemble／lint 通过，安装保留 app data；完整冷启、空数据首次创建与业务验收尚未完成。诊断 APK `ecab486` 仅用于先前定位，不能当成交付包或完整业务证据。
 
 宿主使用匹配 main 集成契约的冻结动态库 SHA-256 `e84fc5b8fc43782e1109924f8f4c232a9b50bd185334b98c16404e8724917a25`，Python bindings SHA-256 `f07a5c7cbba659feabb25184c179b7f089644e7b0cb7f32413bd51fc033b90e4`。
+
+## S2 稳定服务人工证据
+
+2026-10-18，采用 remote_application owner 的最后取消安全源码与匹配构建结果。core 驱动使用真实 ApplicationService＋合成 ACP；bindings 驱动直接调用公开 VeluneApplication／VeluneRemoteEndpoint／BindingApplicationCommand，穿过实际 ApplicationHandler 与缓存 ServiceOwner。全程仅 loopback、临时身份／home／会话，没有真实认证、模型或 adb 操作，也未增加或运行自动化测试。
+
+| 人工边界 | 实际操作与结果 | 可据此判断的范围 |
+| --- | --- | --- |
+| 丢回执与延迟写入 | raw QUIC 写完 Submit 后立即 recv.stop，未读取回执；真实 CreateConversationWithSelection 进入 ACP initialize gate，session/new 与会话文件均为 0 | 不再用“收到回执后主动不用”替代接收方向丢回执，也不依赖可被 QNT 绕过的 UDP forwarder |
+| 完整网络替换后原请求完成 | gate 保持关闭时停入站、替换网络，incarnation 不变；旧 UDP 可重新绑定，即使旧出站 RemoteClient 与未消费 PathObserver 仍被保留。放 gate 后先观察 session/new 与文件各为 1，再按原 ID 查到 Completed；重复同 ID 不增写、不同 body 精确 RequestIdConflict | 账本／已接纳真实任务独立于网络代际；受测 UDP 已释放，不宣称全进程 FD 或内核状态归零 |
+| 同 service 停入站而保留出站 | A 同时承载 Handler 与出站；停 A 入站后，已有和新建 C→A 均拒绝。A 已有和新建 A→B 各完成一个真实 Create，总新增 2 | 使用同一 A service，未另开纯 controller endpoint 冒充出站仍可用 |
+| 真正 owner 重启 | 同步结束第一份 RemoteAccessService、ApplicationService、Tokio Runtime，并确认最后 UDP 可绑定，才构造第二 Runtime／相同合成 identity、home 的 owner；新 incarnation，旧 ID query／submit 均精确 ServerRestarted，原写入数不增，新 ID 可实际写入并 Completed | 与网络替换区分；不承诺跨 owner 崩溃 exactly-once 或在途任务继续 |
+| replace／close 竞争 | Barrier 同时放行；replace 只允许成功或 Closed，最终 descriptor 为关闭，旧端口与竞态拟绑定的新端口均可重新绑定 | 通过最终关闭／受测 socket 释放判断，不只观察 Closed 枚举 |
+| close caller 取消与唯一完成屏障 | 真实 Create 在 gate 中且副作用为 0；首个 close caller 令外部 client 观察到 closed 后被 abort，JoinError 为 cancelled。第二 close 在 gate 继续关闭 150ms 时仍未完成；放 gate 后 10 秒内成功，写入为 1、旧 UDP 可绑定、descriptor 关闭 | caller future 取消不丢弃关闭事务，第二 caller 没有跳过真实业务完成屏障；150ms／10 秒是本轮判别窗口，不是产品 SLA |
+| bindings 装配寿命 | pair 自带 List 后才用 SLOW_ARM 开 gate；drop 原 Endpoint wrapper，保留 local App／remote client，再从同 local App open，incarnation 相同、原 ID 为 Running。放 gate 后 Completed，重复 ID 仍只写一次 | 覆盖实际 ApplicationHandler 与 local owner/runtime cache，不是仅构造状态枚举 |
+
+最终 core／bindings 临时驱动编译均 exit 0、输出为空，运行均 exit 0、stderr 为空。编译配方为 `core-compile-command.json` 与 `bindings-compile-command.json`，从本次 compiler-artifact 清单选择实际 rlib：application 开启 local-runtime，remote 开启 diagnostics，bindings 开启 default／local-runtime／remote／remote-diagnostics，build-finished=true、profile.test=false。静态 fmt／locked check／严格 clippy 全通过归对应源码 owner；此处不重跑构建，也不把 Rust rlib 行为当成 Kotlin／Swift 编译或平台安装证据。
+
+取消安全的最终结果保存在本轮临时 `cancel-safe-final/` 与 `bindings-cancel-safe-final/`，并汇总为 `result.txt`／`bindings-result.txt`。结果文件 SHA-256 分别为 `aebe15e1451dd5aac33272c352706dcc178c079a849eff5bb424a6b1194e7637`、`bbc7068594f6b29528a18915f8330407dfe60bc1c387bff2217c74503bf6447c`，归档说明 `evidence.md` 为 `2acb77000decf57e3504536150b3599c2665358cbb8372cabc00bafd5d18931b`。配方、compiler-artifact 清单和合成资料继续保留在任务私有临时目录，不复制机器路径或原始会话正文入仓库。
+
+replace future 的中途取消未作行为覆盖：公开边界没有能自然保持 replace pending 的可靠 gate，真实业务 gate 不阻塞 replace，取消可能已经完成的 future 无法提供有效证据。该路径与 close 共用持有 pending 事务的实现，但不把实现共用写成已观察的取消安全；没有为验收新增产品 hook。公网／NAT、Android 真机、Swift／Kotlin 生成层与安装体验仍不在这些 loopback 驱动覆盖内。S2 构建摘要如下；上述 S1 已安装包及三轮设备证据保持原版本边界。
+
+S2 原生冻结清单 source 为 `01971ee51bcf8b9017b0e67b8114ab0e70cceb7e`、dirty=true；169 份源码摘要在构建前后保持不变，不将 dirty 改写为 clean。Android 使用 API28／arm64-v8a、Rust 1.99.0、NDK 30.0.14904198、UniFFI 0.32.2，release／no-default-features／remote-diagnostics 构建 exit 0，未链接 local-runtime；JNI initializer 存在，未动态引用 renameat2。生成沿 android=true 配置，使用冻结库生成 Python 后真实 ABI import 通过。
+
+| S2 冻结产物 | SHA-256 | 实际覆盖 |
+| --- | --- | --- |
+| Android so | `e675c9495921639bc04522dfa86ce723a8888813b171d50162a54217dbe14e4a` | API28 原生 release 构建／符号边界 |
+| Kotlin 绑定 | `36e1a95a8f81721856ddabcb0960ddbb7a7ae82dfda5604c790e9b59b17ed752` | UniFFI 生成；应用编译结果另列 |
+| Host dylib | `f6d960f0ba17ab51d90485bcdbd435d1a7eb5a5ce15d7117d8473c2f4925b133` | 采用本次 source owner 成功构建并冻结 copy |
+| Python 绑定 | `c1faea6c82714bb8b2c0adb062b954ed511817449f431b8f04ffbdf2eb52c21e` | 匹配 host 的真实 ABI import |
+
+主执行者 `bash scripts/build-macos.sh --build-only` exit 0，Rust／Swift／签名通过。精确 manifest source 为同一 `01971ee51bcf8b9017b0e67b8114ab0e70cceb7e`、dirty=true、版本 0.1 beta.1／UniFFI 0.32.2／schema 10。executable SHA 为 `50ed7e88467d2ed2bfe743641bdf6951c4dadaa469177a801da131d20f020ff7`、Mac dylib `03aaf2890d419c55777afbefd76729b9b7179d5336475ea8f10d4ec886ae7c66`、生成 Swift `f1259291e2a32afb86d5189937f3e40c296b2fd3c89bd4e81f03c4f646a1c8c3`；nm 无 probe exports。没有安装或启动真实 Mac app，不把 build-only 当作 UI／安装验收。
+
+Android app owner 的 assembleDebug＋lintDebug 成功，0 error／7 条既有 warning；APK SHA 为 `431af265b40e4f8b6be3d2377bd9a8030457995e7c3c6cdb32115f4dfaa1785a`。实际包内 so 与冻结／消费路径逐字节相同，SHA 为上表的 `e675c949…`；Kotlin 与冻结文件也逐字节一致。本轮同时编译了“断开成功后才显示未连接”的 UI 修复，没有将编译当成该行为已真机通过。未操作 adb、安装或重做设备实验；当前手机仍保留 S1 版本边界。额外 :app:compileReleaseKotlin／:app:processReleaseMainManifest 均 exit 0，merged release manifest 没有 TransportProbeActivity／CHANGE_WIFI_MULTICAST_STATE，release app classes 没有 Probe helpers。这仅证明平台源码隔离，没有生成 normal release APK，也不证明诊断 native exports 已剥离。
 
 ## S1 当前环境与采集边界
 

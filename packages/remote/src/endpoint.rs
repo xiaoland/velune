@@ -1,70 +1,59 @@
-use crate::wire::{read_frame, write_frame};
 use crate::{
-    identity::{random_bytes, random_id, validate_name},
-    ledger::Ledger,
-    protocol::{ALPN, Envelope, Reply, Request},
+    paths::{ConnectionSlot, ObservedConnection},
+    protocol::{ALPN, Envelope},
+    service::{RemoteAccessService, ServiceState},
+    wire::{read_frame, write_frame},
     *,
 };
 use iroh::{
     Endpoint, RelayMode,
     endpoint::{Connection, presets},
 };
-use sha2::{Digest, Sha256};
 use std::{
     collections::HashMap,
-    future::Future,
-    pin::Pin,
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    time::Duration,
 };
-use tokio::{sync::Semaphore, task::JoinHandle};
-use velune_application_api::{ApplicationReply, ClientViewId, Command, ExecutionContext, Failure};
+use tokio::{
+    sync::{OwnedRwLockReadGuard, RwLock, Semaphore},
+    task::JoinHandle,
+};
 
-pub type HandlerFuture<'a> =
-    Pin<Box<dyn Future<Output = std::result::Result<ApplicationReply, Failure>> + Send + 'a>>;
-/// Implemented by the execution host's single application owner.
-pub trait Handler: Send + Sync {
-    fn execute(&self, context: RequestContext, command: Command) -> HandlerFuture<'_>;
-}
-
-struct PendingInvitation {
-    token: [u8; 32],
-    deadline: Instant,
-}
-#[derive(Default)]
-struct Access {
-    invitations: Vec<PendingInvitation>,
-    connections: HashMap<u64, Connection>,
-    ledger: Ledger,
-}
-struct State {
-    endpoint: Endpoint,
-    name: String,
-    incarnation: String,
-    trust: Arc<dyn DeviceTrust>,
-    handler: Option<Arc<dyn Handler>>,
-    access: Mutex<Access>,
-    requests: Semaphore,
-    closed: AtomicBool,
-    next_connection: AtomicU64,
-    timeout: Duration,
-}
-
-/// Shared native transport assembly; protocol authorization remains with each caller.
-pub(crate) async fn bind_transport(
-    key: iroh::SecretKey,
-    config: EndpointConfig,
-    alpn: &[u8],
-) -> Result<Endpoint> {
+pub(crate) fn validate_config(config: &EndpointConfig) -> Result<()> {
     if config.request_timeout.is_zero()
         || config.request_timeout > Duration::from_secs(300)
         || config.bind_addresses.len() > 16
     {
         return Err(RemoteError::Configuration);
     }
+    if let RelayConfig::Custom { urls } = &config.relay {
+        if urls.is_empty() || urls.len() > 16 {
+            return Err(RemoteError::Configuration);
+        }
+        for url in urls {
+            validate_relay_url(url)?;
+        }
+    }
+    if let DiscoveryConfig::CustomPkarr { url } = &config.discovery {
+        validate_relay_url(url)?;
+    }
+    if matches!(config.path_policy, PathPolicy::RelayOnly)
+        && (matches!(config.relay, RelayConfig::Disabled) || !config.bind_addresses.is_empty())
+    {
+        return Err(RemoteError::Configuration);
+    }
+    Ok(())
+}
+/// Shared native transport assembly; protocol authorization remains with each caller.
+pub(crate) async fn bind_transport(
+    key: iroh::SecretKey,
+    config: EndpointConfig,
+    alpn: &[u8],
+) -> Result<Endpoint> {
+    validate_config(&config)?;
     let relay = match config.relay {
         RelayConfig::Disabled => RelayMode::Disabled,
         RelayConfig::DevelopmentPublic => RelayMode::Default,
@@ -129,123 +118,214 @@ pub(crate) async fn bind_transport(
     Ok(endpoint)
 }
 
-/// Network lifecycle is independent of the business application lifecycle.
-pub struct RemoteEndpoint {
-    state: Arc<State>,
-    accept_task: Mutex<Option<JoinHandle<()>>>,
+struct RegisteredConnection {
+    incoming: bool,
+    slot: Arc<ConnectionSlot>,
 }
-impl RemoteEndpoint {
-    pub async fn bind(
-        identity: DeviceIdentity,
+/// Only this generation and its tracked IO own native endpoint/connection references.
+pub(crate) struct NetworkGeneration {
+    endpoint: Mutex<Option<Endpoint>>,
+    pub(crate) service: Arc<ServiceState>,
+    pub(crate) id: u64,
+    pub(crate) timeout: Duration,
+    closed: AtomicBool,
+    cancelled: tokio::sync::watch::Sender<bool>,
+    operations: Arc<RwLock<()>>,
+    connections: Mutex<HashMap<u64, RegisteredConnection>>,
+    next_connection: AtomicU64,
+    tasks: Mutex<Vec<JoinHandle<()>>>,
+    requests: Semaphore,
+}
+impl NetworkGeneration {
+    pub(crate) async fn bind(
+        service: Arc<ServiceState>,
+        id: u64,
         config: EndpointConfig,
-        trust: Arc<dyn DeviceTrust>,
-        handler: Option<Arc<dyn Handler>>,
-    ) -> Result<Self> {
-        let endpoint = bind_transport(identity.key, config.clone(), ALPN).await?;
-        let state = Arc::new(State {
-            endpoint,
-            name: identity.name,
-            incarnation: random_id()?,
-            trust,
-            handler,
-            access: Mutex::new(Access::default()),
-            requests: Semaphore::new(8),
-            closed: AtomicBool::new(false),
-            next_connection: AtomicU64::new(1),
+    ) -> Result<Arc<Self>> {
+        let endpoint = bind_transport(service.identity.key.clone(), config.clone(), ALPN).await?;
+        Ok(Arc::new(Self {
+            endpoint: Mutex::new(Some(endpoint)),
+            service,
+            id,
             timeout: config.request_timeout,
-        });
-        let accept_task = tokio::spawn(accept_loop(state.clone()));
-        Ok(Self {
-            state,
-            accept_task: Mutex::new(Some(accept_task)),
+            closed: AtomicBool::new(false),
+            cancelled: tokio::sync::watch::channel(false).0,
+            operations: Arc::new(RwLock::new(())),
+            connections: Mutex::new(HashMap::new()),
+            next_connection: AtomicU64::new(1),
+            tasks: Mutex::new(Vec::new()),
+            requests: Semaphore::new(8),
+        }))
+    }
+    pub(crate) fn start(self: &Arc<Self>) {
+        let owner = self.clone();
+        self.track(tokio::spawn(async move {
+            accept_loop(owner).await;
+        }));
+    }
+    pub(crate) fn endpoint(&self) -> Result<Endpoint> {
+        self.endpoint
+            .lock()
+            .map_err(|_| RemoteError::Unavailable)?
+            .clone()
+            .ok_or(RemoteError::Closed)
+    }
+    pub(crate) fn descriptor(&self) -> Result<EndpointDescriptor> {
+        let endpoint = self.endpoint.lock().map_err(|_| RemoteError::Unavailable)?;
+        let addr = endpoint.as_ref().ok_or(RemoteError::Closed)?.addr();
+        Ok(EndpointDescriptor {
+            version: PROTOCOL_VERSION,
+            endpoint_id: addr.id.to_string(),
+            name: self.service.identity.name.clone(),
+            incarnation: self.service.incarnation.clone(),
+            relay_urls: addr.relay_urls().map(ToString::to_string).collect(),
+            direct_addresses: addr.ip_addrs().copied().collect(),
         })
     }
-
-    pub fn descriptor(&self) -> EndpointDescriptor {
-        self.state.descriptor()
-    }
-    pub async fn network_change(&self) {
-        self.state.endpoint.network_change().await;
-    }
-    /// Acknowledges validated platform facts and requests native network reevaluation.
-    /// This does not acknowledge discovery, socket rebinding, or path recovery.
-    pub async fn report_network_change(&self, snapshot: PlatformNetworkSnapshot) -> Result<u64> {
-        snapshot.validate()?;
-        if self.state.closed.load(Ordering::Acquire) {
+    pub(crate) async fn operation(&self) -> Result<OwnedRwLockReadGuard<()>> {
+        let guard = self.operations.clone().read_owned().await;
+        if self.closed.load(Ordering::Acquire) {
             return Err(RemoteError::Closed);
         }
-        self.state.endpoint.network_change().await;
-        Ok(snapshot.sequence)
+        Ok(guard)
     }
-    pub fn trusted_devices(&self) -> Result<Vec<TrustedDevice>> {
-        self.state.trust.devices()
-    }
-    pub fn create_invitation(&self, lifetime: Duration) -> Result<Invitation> {
-        if lifetime.is_zero() || lifetime > Duration::from_secs(600) {
-            return Err(RemoteError::Configuration);
+    pub(crate) async fn cancelled(&self) {
+        let mut cancelled = self.cancelled.subscribe();
+        if !*cancelled.borrow() {
+            let _ = cancelled.changed().await;
         }
-        if self.state.closed.load(Ordering::Acquire) {
+    }
+    pub(crate) async fn network_change(&self) -> Result<()> {
+        let _operation = self.operation().await?;
+        let endpoint = self.endpoint()?;
+        tokio::select! {
+            biased;
+            _=self.cancelled()=>Err(RemoteError::Closed),
+            _=endpoint.network_change()=>Ok(()),
+        }
+    }
+    pub(crate) fn register(
+        &self,
+        connection: Connection,
+        incoming: bool,
+    ) -> Result<(u64, Arc<ConnectionSlot>)> {
+        let access = self.service.access()?;
+        ServiceState::check_generation(&access, self.id)?;
+        if self.closed.load(Ordering::Acquire) || (incoming && !access.ingress) {
+            connection.close(0u8.into(), b"ingress closed");
             return Err(RemoteError::Closed);
         }
-        let now = Instant::now();
-        let mut access = self
-            .state
-            .access
+        let mut connections = self
+            .connections
             .lock()
             .map_err(|_| RemoteError::Unavailable)?;
-        access
-            .invitations
-            .retain(|invitation| invitation.deadline > now);
-        if access.invitations.len() >= 16 {
+        if connections.len() >= 128 {
+            connection.close(2u8.into(), b"capacity");
             return Err(RemoteError::Capacity);
         }
-        let token = random_bytes()?;
-        access.invitations.push(PendingInvitation {
-            token,
-            deadline: now + lifetime,
-        });
-        let expires_at_unix_seconds = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_err(|_| RemoteError::Unavailable)?
-            .as_secs()
-            + lifetime.as_secs();
-        Ok(Invitation {
-            endpoint: self.descriptor(),
-            expires_at_unix_seconds,
-            token,
-        })
+        let id = self.next_connection.fetch_add(1, Ordering::Relaxed);
+        let slot = ConnectionSlot::new(ObservedConnection::new(connection));
+        connections.insert(
+            id,
+            RegisteredConnection {
+                incoming,
+                slot: slot.clone(),
+            },
+        );
+        Ok((id, slot))
     }
-    /// Persistence succeeds before existing access is revoked. Already accepted business work continues.
-    pub fn revoke(&self, id: &str) -> Result<()> {
-        id.parse::<iroh::EndpointId>()
-            .map_err(|_| RemoteError::Configuration)?;
-        let access = self
-            .state
-            .access
-            .lock()
-            .map_err(|_| RemoteError::Unavailable)?;
-        self.state.trust.revoke(id)?;
-        for connection in access
-            .connections
-            .values()
-            .filter(|connection| connection.remote_id().to_string() == id)
-        {
-            connection.close(1u8.into(), b"authorization revoked");
+    pub(crate) fn remove(&self, id: u64) {
+        if let Ok(mut connections) = self.connections.lock() {
+            connections.remove(&id);
         }
-        Ok(())
     }
+    pub(crate) fn close_incoming(&self) {
+        if let Ok(connections) = self.connections.lock() {
+            for connection in connections.values().filter(|value| value.incoming) {
+                connection.slot.close(b"ingress closed");
+            }
+        }
+    }
+    pub(crate) fn revoke(&self, peer: &str) {
+        if let Ok(connections) = self.connections.lock() {
+            for connection in connections
+                .values()
+                .filter(|value| value.slot.status().peer_id == peer)
+            {
+                connection.slot.close(b"authorization revoked");
+            }
+        }
+    }
+    fn track(&self, task: JoinHandle<()>) {
+        let mut tasks = self
+            .tasks
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        tasks.retain(|task| !task.is_finished());
+        if self.closed.load(Ordering::Acquire) {
+            task.abort();
+        }
+        // Even cancelled tasks are retained until the unique close joins their resource destructors.
+        tasks.push(task);
+    }
+    pub(crate) fn stop(&self) -> Option<Endpoint> {
+        self.closed.store(true, Ordering::Release);
+        self.cancelled.send_replace(true);
+        if let Ok(connections) = self.connections.lock() {
+            for connection in connections.values() {
+                connection.slot.close(b"network generation closed");
+            }
+        }
+        if let Ok(tasks) = self.tasks.lock() {
+            for task in tasks.iter() {
+                task.abort();
+            }
+        }
+        self.endpoint
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .take()
+    }
+    pub(crate) async fn close(&self) {
+        let endpoint = self.stop();
+        if let Some(endpoint) = &endpoint {
+            endpoint.close().await;
+        }
+        loop {
+            let tasks = std::mem::take(
+                &mut *self
+                    .tasks
+                    .lock()
+                    .unwrap_or_else(|poison| poison.into_inner()),
+            );
+            if tasks.is_empty() {
+                break;
+            }
+            for task in tasks {
+                let _ = task.await;
+            }
+        }
+        let _drained = self.operations.write().await;
+        self.connections
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .clear();
+        drop(endpoint);
+    }
+}
+impl RemoteAccessService {
     pub async fn pair(&self, invitation: &Invitation) -> Result<RemoteClient> {
         let mut client = self
             .dial(&invitation.endpoint, ClientSession::new()?, false)
             .await?;
         let reply = client
-            .rpc(Request::Pair {
+            .rpc(crate::protocol::Request::Pair {
                 token: invitation.token,
-                name: self.state.name.clone(),
+                name: self.state.identity.name.clone(),
                 incarnation: invitation.endpoint.incarnation.clone(),
             })
             .await?;
-        if !matches!(reply, Reply::Paired) {
+        if !matches!(reply, crate::protocol::Reply::Paired) {
             return Err(RemoteError::Protocol);
         }
         self.state.trust.trust(TrustedDevice {
@@ -265,11 +345,9 @@ impl RemoteEndpoint {
         session: ClientSession,
     ) -> Result<RemoteClient> {
         let mut client = self.dial(descriptor, session, true).await?;
-        match client.rpc(Request::Hello).await? {
-            Reply::Hello(current) => {
-                // Authentication pins the device key; a new host incarnation allows fresh work,
-                // while old request IDs still return ServerRestarted instead of executing again.
-                client.incarnation = current.incarnation;
+        match client.rpc(crate::protocol::Request::Hello).await? {
+            crate::protocol::Reply::Hello(current) => {
+                client.descriptor = current;
                 Ok(client)
             }
             _ => Err(RemoteError::Protocol),
@@ -281,301 +359,72 @@ impl RemoteEndpoint {
         session: ClientSession,
         authorized: bool,
     ) -> Result<RemoteClient> {
-        if self.state.closed.load(Ordering::Acquire) {
-            return Err(RemoteError::Closed);
-        }
         if authorized && !self.state.trust.is_trusted(&descriptor.endpoint_id)? {
             return Err(RemoteError::Unauthorized);
         }
         let address = descriptor.address()?;
-        let connection = tokio::time::timeout(
-            self.state.timeout,
-            self.state.endpoint.connect(address, ALPN),
-        )
-        .await
-        .map_err(|_| RemoteError::Timeout)?
-        .map_err(|_| RemoteError::Unavailable)?;
-        let registration = register_connection(&self.state, connection.clone())?;
+        let network = self.network()?;
+        let _operation = network.operation().await?;
+        let endpoint = network.endpoint()?;
+        let connection = tokio::select! {
+            biased;
+            _=network.cancelled()=>return Err(RemoteError::Closed),
+            result=tokio::time::timeout(network.timeout,endpoint.connect(address,ALPN))=>result.map_err(|_|RemoteError::Timeout)?.map_err(|_|RemoteError::Unavailable)?,
+        };
+        let (registration, connection) = network.register(connection, false)?;
         Ok(RemoteClient {
-            connection: crate::paths::ObservedConnection::new(connection),
-            state: self.state.clone(),
+            connection,
+            network: Arc::downgrade(&network),
+            service: self.state.clone(),
             registration,
-            incarnation: descriptor.incarnation.clone(),
+            descriptor: descriptor.clone(),
             session,
             authorized,
+            timeout: network.timeout,
         })
     }
-    pub async fn close(&self) {
-        self.stop();
-        self.state.endpoint.close().await;
-        let task = self
-            .accept_task
-            .lock()
-            .ok()
-            .and_then(|mut task| task.take());
-        if let Some(task) = task {
-            let _ = task.await;
-        }
-    }
-    fn stop(&self) {
-        self.state.closed.store(true, Ordering::Release);
-        if let Ok(mut access) = self.state.access.lock() {
-            access.invitations.clear();
-            for connection in access.connections.values() {
-                connection.close(0u8.into(), b"endpoint closed");
-            }
-        }
-        if let Ok(task) = self.accept_task.lock()
-            && let Some(task) = task.as_ref()
-        {
-            task.abort();
-        }
-    }
 }
-impl Drop for RemoteEndpoint {
-    fn drop(&mut self) {
-        self.stop();
-    }
-}
-impl State {
-    fn descriptor(&self) -> EndpointDescriptor {
-        let addr = self.endpoint.addr();
-        EndpointDescriptor {
-            version: PROTOCOL_VERSION,
-            endpoint_id: addr.id.to_string(),
-            name: self.name.clone(),
-            incarnation: self.incarnation.clone(),
-            relay_urls: addr.relay_urls().map(ToString::to_string).collect(),
-            direct_addresses: addr.ip_addrs().copied().collect(),
-        }
-    }
-}
-
-pub struct RemoteClient {
-    connection: crate::paths::ObservedConnection,
-    state: Arc<State>,
-    registration: u64,
-    incarnation: String,
-    session: ClientSession,
-    authorized: bool,
-}
-impl RemoteClient {
-    pub fn peer_id(&self) -> String {
-        self.connection.remote_id().to_string()
-    }
-    pub fn session(&self) -> ClientSession {
-        self.session.clone()
-    }
-    pub fn connection_status(&self) -> ConnectionStatus {
-        crate::paths::snapshot(&self.connection)
-    }
-    pub fn observe_paths(&self) -> PathObserver {
-        PathObserver::new(self.connection.clone())
-    }
-    /// Allocate before transmitting so a lost reply can be reconciled by ID.
-    pub fn next_request_id(&self) -> Result<RequestId> {
-        let sequence = self
-            .session
-            .next
-            .try_update(Ordering::AcqRel, Ordering::Acquire, |sequence| {
-                sequence.checked_add(1)
-            })
-            .map_err(|_| RemoteError::Capacity)?;
-        Ok(RequestId {
-            incarnation: self.incarnation.clone(),
-            client: self.session.id.clone(),
-            sequence,
-        })
-    }
-    /// A bounded sequence window permits concurrent streams; no operation is retried implicitly.
-    pub async fn submit(
-        &self,
-        id: RequestId,
-        view: ClientViewId,
-        execution: ExecutionContext,
-        command: Command,
-    ) -> Result<RequestStatus> {
-        id.validate(&self.incarnation)?;
-        match self
-            .rpc(Request::Submit {
-                id,
-                view,
-                execution,
-                command: Box::new(command),
-            })
-            .await?
-        {
-            Reply::Status(status) => Ok(status),
-            _ => Err(RemoteError::Protocol),
-        }
-    }
-    pub async fn query(&self, id: RequestId) -> Result<RequestStatus> {
-        match self.rpc(Request::Query { id }).await? {
-            Reply::Status(status) => Ok(status),
-            _ => Err(RemoteError::Protocol),
-        }
-    }
-    pub async fn call(
-        &self,
-        view: ClientViewId,
-        execution: ExecutionContext,
-        command: Command,
-    ) -> std::result::Result<ApplicationReply, CallError> {
-        let id = self.next_request_id().map_err(|error| CallError {
-            request_id: None,
-            failure: CallFailure::Transport(error),
-        })?;
-        let result = async {
-            let mut status = self
-                .submit(id.clone(), view, execution, command)
-                .await
-                .map_err(CallFailure::Transport)?;
-            let deadline = Instant::now() + self.state.timeout;
-            loop {
-                match status {
-                    RequestStatus::Completed(result) => {
-                        return result
-                            .map(|reply| *reply)
-                            .map_err(|failure| CallFailure::Business(Box::new(failure)));
-                    }
-                    RequestStatus::Failed(error) => return Err(CallFailure::Transport(error)),
-                    RequestStatus::Unknown | RequestStatus::ResultExpired => {
-                        return Err(CallFailure::ResultUnavailable);
-                    }
-                    RequestStatus::Running => {}
-                }
-                if Instant::now() >= deadline {
-                    return Err(CallFailure::Transport(RemoteError::Timeout));
-                }
-                tokio::time::sleep(Duration::from_millis(25)).await;
-                status = self
-                    .query(id.clone())
-                    .await
-                    .map_err(CallFailure::Transport)?;
-            }
-        }
-        .await;
-        result.map_err(|failure| CallError {
-            request_id: Some(id),
-            failure,
-        })
-    }
-    pub fn close(&self) {
-        self.connection.close(0u8.into(), b"client closed");
-    }
-    async fn rpc(&self, request: Request) -> Result<Reply> {
-        if self.state.closed.load(Ordering::Acquire) {
-            return Err(RemoteError::Closed);
-        }
-        if self.authorized && !self.state.trust.is_trusted(&self.peer_id())? {
-            return Err(RemoteError::Unauthorized);
-        }
-        tokio::time::timeout(self.state.timeout, async {
-            let (mut send, mut recv) = self
-                .connection
-                .open_bi()
-                .await
-                .map_err(|_| RemoteError::Unavailable)?;
-            write_frame(
-                &mut send,
-                Envelope {
-                    version: PROTOCOL_VERSION,
-                    body: request,
-                },
-            )
-            .await?;
-            let reply: Envelope<Reply> = read_frame(&mut recv, MAX_FRAME_BYTES).await?;
-            if reply.version != PROTOCOL_VERSION {
-                return Err(RemoteError::IncompatibleVersion);
-            }
-            match reply.body {
-                Reply::Error(error) => Err(error),
-                reply => Ok(reply),
-            }
-        })
-        .await
-        .map_err(|_| RemoteError::Timeout)?
-    }
-}
-impl Drop for RemoteClient {
-    fn drop(&mut self) {
-        self.close();
-        if let Ok(mut access) = self.state.access.lock() {
-            access.connections.remove(&self.registration);
-        }
-    }
-}
-
-pub enum CallFailure {
-    Transport(RemoteError),
-    Business(Box<Failure>),
-    ResultUnavailable,
-}
-/// The request ID is retained on uncertain outcomes; callers query it instead of resending a mutation.
-pub struct CallError {
-    pub request_id: Option<RequestId>,
-    pub failure: CallFailure,
-}
-impl std::fmt::Debug for CallError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("CallError")
-            .field("request_id", &self.request_id)
-            .finish_non_exhaustive()
-    }
-}
-impl std::fmt::Display for CallError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match &self.failure {
-            CallFailure::Transport(error) => error.fmt(f),
-            CallFailure::Business(_) => f.write_str("远程业务请求未成功"),
-            CallFailure::ResultUnavailable => f.write_str("请求结果已不可用；不得自动重新提交"),
-        }
-    }
-}
-impl std::error::Error for CallError {}
-
-fn register_connection(state: &State, connection: Connection) -> Result<u64> {
-    let mut access = state.access.lock().map_err(|_| RemoteError::Unavailable)?;
-    if state.closed.load(Ordering::Acquire) {
-        return Err(RemoteError::Closed);
-    }
-    if access.connections.len() >= 128 {
-        connection.close(2u8.into(), b"capacity");
-        return Err(RemoteError::Capacity);
-    }
-    let id = state.next_connection.fetch_add(1, Ordering::Relaxed);
-    access.connections.insert(id, connection);
-    Ok(id)
-}
-async fn accept_loop(state: Arc<State>) {
+async fn accept_loop(network: Arc<NetworkGeneration>) {
+    let Ok(endpoint) = network.endpoint() else {
+        return;
+    };
     let permits = Arc::new(Semaphore::new(64));
-    while let Some(incoming) = state.endpoint.accept().await {
+    while let Some(incoming) = endpoint.accept().await {
+        let allowed = network.service.access().is_ok_and(|access| {
+            access.ingress && access.generation == Some(network.id) && !access.closed
+        });
+        if !allowed {
+            incoming.refuse();
+            continue;
+        }
         let Ok(permit) = permits.clone().try_acquire_owned() else {
             incoming.refuse();
             continue;
         };
-        let state = state.clone();
-        tokio::spawn(async move {
+        let owner = network.clone();
+        let task = tokio::spawn(async move {
             let _permit = permit;
-            let Ok(Ok(connection)) = tokio::time::timeout(state.timeout, incoming).await else {
+            let Ok(Ok(connection)) = tokio::time::timeout(owner.timeout, incoming).await else {
                 return;
             };
-            let Ok(registration) = register_connection(&state, connection.clone()) else {
+            let Ok((registration, connection)) = owner.register(connection, true) else {
                 return;
             };
-            serve_connection(state.clone(), connection).await;
-            if let Ok(mut access) = state.access.lock() {
-                access.connections.remove(&registration);
-            }
+            serve_connection(owner.clone(), connection).await;
+            owner.remove(registration);
         });
+        network.track(task);
     }
 }
-async fn serve_connection(state: Arc<State>, connection: Connection) {
+async fn serve_connection(network: Arc<NetworkGeneration>, slot: Arc<ConnectionSlot>) {
+    let Some(connection) = slot.native() else {
+        return;
+    };
     let permits = Arc::new(Semaphore::new(8));
     loop {
         let streams = tokio::time::timeout(Duration::from_secs(300), connection.accept_bi()).await;
         let Ok(Ok((mut send, mut recv))) = streams else {
-            connection.close(0u8.into(), b"idle or closed");
+            slot.close(b"idle or closed");
             break;
         };
         let Ok(permit) = permits.clone().try_acquire_owned() else {
@@ -583,35 +432,37 @@ async fn serve_connection(state: Arc<State>, connection: Connection) {
             let _ = recv.stop(2u8.into());
             continue;
         };
-        let state = state.clone();
-        let connection = connection.clone();
-        tokio::spawn(async move {
+        let owner = network.clone();
+        let peer = connection.remote_id().to_string();
+        let task = tokio::spawn(async move {
             let _permit = permit;
-            let result = tokio::time::timeout(state.timeout, async {
-                let _request_permit = state
+            let result = tokio::time::timeout(owner.timeout, async {
+                let _request = owner
                     .requests
                     .acquire()
                     .await
                     .map_err(|_| RemoteError::Closed)?;
-                let limit = if state
-                    .trust
-                    .is_trusted(&connection.remote_id().to_string())?
-                {
+                let limit = if owner.service.trust.is_trusted(&peer)? {
                     MAX_FRAME_BYTES
                 } else {
                     16 * 1024
                 };
-                let request = read_frame::<Envelope<Request>>(&mut recv, limit).await;
-                let reply = match request {
+                let envelope =
+                    read_frame::<Envelope<crate::protocol::Request>>(&mut recv, limit).await;
+                let reply = match envelope {
                     Ok(envelope) if envelope.version == PROTOCOL_VERSION => {
-                        let owner = state.clone();
-                        let peer = connection.remote_id().to_string();
-                        tokio::task::spawn_blocking(move || dispatch(&owner, peer, envelope.body))
-                            .await
-                            .map_err(|_| RemoteError::Unavailable)?
+                        // Blocking authorization/storage only retains stable service state, never this generation.
+                        let service = owner.service.clone();
+                        let generation = owner.id;
+                        let descriptor = owner.descriptor()?;
+                        tokio::task::spawn_blocking(move || {
+                            service.dispatch(generation, peer, descriptor, envelope.body)
+                        })
+                        .await
+                        .map_err(|_| RemoteError::Unavailable)?
                     }
-                    Ok(_) => Reply::Error(RemoteError::IncompatibleVersion),
-                    Err(error) => Reply::Error(error),
+                    Ok(_) => crate::protocol::Reply::Error(RemoteError::IncompatibleVersion),
+                    Err(error) => crate::protocol::Reply::Error(error),
                 };
                 write_frame(
                     &mut send,
@@ -628,6 +479,7 @@ async fn serve_connection(state: Arc<State>, connection: Connection) {
                 let _ = recv.stop(1u8.into());
             }
         });
+        network.track(task);
     }
 }
 pub(crate) fn validate_relay_url(value: &str) -> Result<iroh::RelayUrl> {
@@ -642,104 +494,4 @@ pub(crate) fn validate_relay_url(value: &str) -> Result<iroh::RelayUrl> {
         return Err(RemoteError::Configuration);
     }
     Ok(url)
-}
-fn dispatch(state: &Arc<State>, peer: String, request: Request) -> Reply {
-    match try_dispatch(state, peer, request) {
-        Ok(reply) => reply,
-        Err(error) => Reply::Error(error),
-    }
-}
-fn try_dispatch(state: &Arc<State>, peer: String, request: Request) -> Result<Reply> {
-    let mut access = state.access.lock().map_err(|_| RemoteError::Unavailable)?;
-    if state.closed.load(Ordering::Acquire) {
-        return Err(RemoteError::Closed);
-    }
-    if let Request::Pair {
-        token,
-        name,
-        incarnation,
-    } = request
-    {
-        validate_name(&name)?;
-        if incarnation != state.incarnation {
-            return Err(RemoteError::ServerRestarted);
-        }
-        let now = Instant::now();
-        let index = access
-            .invitations
-            .iter()
-            .position(|invitation| {
-                invitation
-                    .token
-                    .iter()
-                    .zip(token)
-                    .fold(0u8, |difference, (left, right)| difference | (left ^ right))
-                    == 0
-            })
-            .ok_or(RemoteError::InvalidInvitation)?;
-        if access.invitations[index].deadline <= now {
-            access.invitations.remove(index);
-            return Err(RemoteError::ExpiredInvitation);
-        }
-        state.trust.trust(TrustedDevice { id: peer, name })?;
-        access.invitations.remove(index);
-        return Ok(Reply::Paired);
-    }
-    if !state.trust.is_trusted(&peer)? {
-        return Err(RemoteError::Unauthorized);
-    }
-    match request {
-        Request::Hello => Ok(Reply::Hello(state.descriptor())),
-        Request::Query { id } => {
-            id.validate(&state.incarnation)?;
-            Ok(Reply::Status(access.ledger.status(&peer, &id)?))
-        }
-        Request::Submit {
-            id,
-            view,
-            execution,
-            command,
-        } => {
-            id.validate(&state.incarnation)?;
-            if view.0.is_empty() || view.0.len() > 128 || view.0.chars().any(char::is_control) {
-                return Err(RemoteError::Configuration);
-            }
-            let handler = state.handler.clone().ok_or(RemoteError::NoHandler)?;
-            let fingerprint: [u8; 32] = Sha256::digest(
-                serde_json::to_vec(&(&view, &execution, &command))
-                    .map_err(|_| RemoteError::Protocol)?,
-            )
-            .into();
-            if access.ledger.accept(&peer, &id, fingerprint)? {
-                let state = state.clone();
-                let task_peer = peer.clone();
-                let ledger_peer = peer.clone();
-                let task_id = id.clone();
-                tokio::spawn(async move {
-                    // The accepted command survives connection shutdown. Panics become a bounded failure.
-                    let task = tokio::spawn(async move {
-                        handler
-                            .execute(
-                                RequestContext {
-                                    peer_id: task_peer,
-                                    view,
-                                    execution,
-                                },
-                                *command,
-                            )
-                            .await
-                    });
-                    let status = match task.await {
-                        Ok(result) => RequestStatus::Completed(result.map(Box::new)),
-                        Err(_) => RequestStatus::Failed(RemoteError::Unavailable),
-                    };
-                    if let Ok(mut access) = state.access.lock() {
-                        access.ledger.complete(ledger_peer, task_id, status);
-                    }
-                });
-            }
-            Ok(Reply::Status(access.ledger.status(&peer, &id)?))
-        }
-        Request::Pair { .. } => Err(RemoteError::Protocol),
-    }
 }

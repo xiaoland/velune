@@ -1,6 +1,6 @@
 # 最小 Android 远控端
 
-2026-10-18，用户在[技术方案](../../docs/design/remote-access.md)、[人工验收方案](acceptance.md)和[线性计划](plan.md)收敛后明确“好的，开始实现”。S1 已完成当前设备条件下的源码与三轮同网生命周期判别，保留 E2／E3 环境阻塞；当前进入 S2 稳定服务，S3—S6 尚未开始。用户随后确认设备只有 Wi-Fi，已按技术依赖修订执行门槛：完成现有环境可做的 S1 后进入独立 S2／S3，E2／E3 继续阻塞 S4 出口与最终交付，不标 S1 全部通过。实际观察归 [verification](verification.md)，锁定依赖与机制实验归 [transport-research](transport-research.md)。
+2026-10-18，用户在[技术方案](../../docs/design/remote-access.md)、[人工验收方案](acceptance.md)和[线性计划](plan.md)收敛后明确“好的，开始实现”。S1 已完成当前设备条件下的源码与三轮同网生命周期判别，保留 E2／E3 环境阻塞；S2 稳定服务出口已完成，当前进入 S3，S4—S6 尚未开始。用户随后确认设备只有 Wi-Fi，已按技术依赖修订执行门槛：完成现有环境可做的 S1 后进入独立 S2／S3，E2／E3 继续阻塞 S4 出口与最终交付，不标 S1 全部通过。实际观察归 [verification](verification.md)，锁定依赖与机制实验归 [transport-research](transport-research.md)。
 
 ## 目标与范围
 
@@ -41,6 +41,20 @@ Android mDNS 仅 ID 初连的首轮失败，没有公共设施回落；私有事
 
 工程预算固定为可达 LAN 升级 ≤10 秒、已有可达备份下故障恢复 ≤15 秒、前台／重拨后新鲜业务响应和原请求查询 ≤30 秒。180 秒只作诊断窗口，超预算后最终恢复仍记失败；原始传输 marker 也不能替代后续业务验收。
 
+## S2 已完成边界
+
+源码核对确认：原 remote State 同持 Endpoint、调用世代与 Ledger，已接纳任务又持整个 State；每次 bind 因而更换世代并保活旧网络。bindings 每次 open 新建 runtime，Mac 停止接入后将远控对象置空。S2 由唯一源码 owner 将这些寿命拆开，并在本地唯一业务 owner 上保留服务，避免只靠窗口缓存维持账本。关闭入站、完整替换网络与最终关闭服务分别表达；Android 释放 ViewModel 的整体关闭语义在本切片保持。
+
+S2 源码／API 已静态冻结：fmt、workspace locked check／全 feature 严格 clippy、remote-only 依赖树／严格 clippy与 Android diagnostics 目标严格 clippy通过，两平台匹配产物已构建通过。core 硬切为 RemoteAccessService，FFI 保留对象名与 open／pair／connect，新增入站启停与网络替换；descriptor／shutdown 返回结果，RemoteRequest 保留独立安全 code。Mac 停用错误向调用方传播，成功后才更改 UI 状态。
+
+local bindings 包装强持缓存 ServiceOwner，Handler 仅持 ApplicationService sender 与 runtime lease，不回指包装对象；已接纳任务持稳定状态直到完成记账。客户端持弱网络代际和可撤回连接槽；原生路径事件流经锁定源码确认不保活 socket。关代取消并等待在途 IO 许可排空，在唯一 lifecycle 锁内完整 close／join／drop 后才新 bind。服务持有生命周期事务 JoinHandle，调用者取消等待不丢屏障；无法证明关闭成功时返回错误。runtime 最终析构使用 shutdown_background 避免 worker 内阻塞，不能把它当作网络关闭屏障。
+
+出口仍需真实 Handler 的延迟写入／丢回执／释放旧网络后原 ID 查询，以及真正 owner 重启拒绝旧 ID。现有脚本只断控制端、收到 receipt 后丢弃，Harness turn 的 GATE 也不延迟 Handler，均不能覆盖 S2；改用 slow ACP 初始化门禁上的真实建会话及副作用计数，隔离阻断网络回执，另以同一服务的双角色场景验证停入站后出站仍可用。关闭返回还需结合旧 FD／端口退出与新 bind 顺序。首轮 core 实验已走真实 ApplicationService＋合成 ACP，bindings 实验已走产品 ApplicationHandler／缓存 ServiceOwner：旧包装释放并 reopen 后同世代查询仍为 Running，放行后 Completed且副作用一次。旧客户端与观察器保留时受测 UDP 端口可重新绑定，只支持该受测端口释放，不能宣称全部 FD 归零。最新版驱动均 exit0：独立 runtime 销毁后旧 ID 精确返回 ServerRestarted，写入数不变；首个 close caller 取消后第二 close 仍等待 gate 中的真实任务完成记账。replace 中途取消缺少自然可控 gate，未作行为覆盖，与 close 共享服务持有事务实现；未为取证增加产品 hook。Mac build-only／签名、Android API28 原生库与匹配 Kotlin／debug APK／lint、host Python ABI 均通过；产物摘要归 verification。没有安装 S2 包或启动真实 Mac，手机仍为 S1 包。
+
+## S3 当前接续
+
+S3 一次硬切 v2 协议、方向授权、配对事务、普通状态与 Rust pending；不动独立 identity schema1。具名 SDK 的副作用采用 RemoteOperation 作用域关联准确 ID，保持 payload 形状，不生成逐响应类型的 receipt，不留 last ID 或自动确认旁路；权威契约已归技术方案。90 个现有 Command 逐项区分观察与副作用，不能复用修订分类或只看名称；认证 Inspect／Poll 等实际持久化动作须纳入，未保存的 import preview 仍可观察。普通全量快照与 pending 文件不携带消息、秘密或完整 Completed 正文。
+
 ## 接续与责任
 
 - remote_application 作为 S2 唯一源码 owner，负责 remote 稳定服务、bindings runtime／业务 owner 装配、Mac 接入生命周期及直接调用方；不读取真实提供商来源。基线集成已完成。
@@ -48,4 +62,4 @@ Android mDNS 仅 ID 初连的首轮失败，没有公共设施回落；私有事
 - android_verification 独占 adb、手机安装操作、合成宿主及 verification.md；其他 owner 不并行操纵设备。
 - 主执行者维护集成、当前 packet、长期知识归属、本地提交、全 workspace 静态检查与 Mac build-only。
 
-基线集成、匹配构建与三轮同网观察／资源释放已完成，当前进入 S2，继续使用[唯一线性计划](plan.md)。S2 必须独立完成延迟 Handler 写入、丢回执、Endpoint 替换后原 ID 查询，以及真实 owner 重启拒绝旧 ID；不把编译成功代替业务寿命验证。若发现稳定服务不得不依赖尚未证明的连接结构，则停止相关改造并重审边界。E2／E3 不删判据、不以 loopback 或“最终连上”放行。
+基线集成、三轮同网观察及 S2 稳定服务出口已完成，当前进入 S3，继续使用[唯一线性计划](plan.md)。S2 已独立完成延迟 Handler 写入、丢回执、Endpoint 替换后原 ID 查询与真实 owner 重启判别；证据只覆盖记录的同版同条件。若发现稳定服务不得不依赖尚未证明的连接结构，则停止相关改造并重审边界。E2／E3 不删判据、不以 loopback 或“最终连上”放行。
