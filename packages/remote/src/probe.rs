@@ -169,12 +169,17 @@ struct State {
 pub struct TransportProbe {
     state: Arc<State>,
     accept_task: Mutex<Option<JoinHandle<()>>>,
-    shutdown_gate: tokio::sync::Mutex<()>,
-    shutdown_complete: AtomicBool,
+    shutdown_gate: tokio::sync::Mutex<ProbeShutdown>,
     mdns: Mutex<Option<EnabledMdns>>,
     mdns_events: Arc<Mutex<MdnsEvents>>,
     mdns_resolves: Semaphore,
     platform_interfaces: Mutex<Option<BTreeSet<Ipv4Addr>>>,
+}
+enum ProbeShutdown {
+    Open,
+    Closing(JoinHandle<Result<()>>),
+    Closed,
+    Failed,
 }
 impl TransportProbe {
     pub async fn bind(config: EndpointConfig) -> Result<Self> {
@@ -193,8 +198,7 @@ impl TransportProbe {
         Ok(Self {
             state,
             accept_task: Mutex::new(Some(accept_task)),
-            shutdown_gate: tokio::sync::Mutex::new(()),
-            shutdown_complete: AtomicBool::new(false),
+            shutdown_gate: tokio::sync::Mutex::new(ProbeShutdown::Open),
             mdns: Mutex::new(None),
             mdns_events: Arc::new(Mutex::new(MdnsEvents::default())),
             mdns_resolves: Semaphore::new(MAX_MDNS_RESOLVES),
@@ -300,9 +304,12 @@ impl TransportProbe {
             .ipv4_interfaces(interfaces.clone())
             .build(self.state.endpoint.id())
             .map_err(|_| RemoteError::Unavailable)?;
-        let mut events = service.subscribe().await;
         let ring = self.mdns_events.clone();
+        let subscriber = service.clone();
+        let (ready, subscribed) = tokio::sync::oneshot::channel();
         let subscription = tokio::spawn(async move {
+            let mut events = subscriber.subscribe().await;
+            let _ = ready.send(());
             while let Some(event) = events.next().await {
                 let sampled_at_micros = crate::monotonic_microseconds();
                 let event = match event {
@@ -349,6 +356,9 @@ impl TransportProbe {
             generation: 0,
         });
         self.record_interfaces(0, interfaces);
+        // Ownership and registration are complete before the first post-build await.
+        // A cancelled caller cannot orphan a private I/O runtime or permit a second publisher.
+        subscribed.await.map_err(|_| RemoteError::Unavailable)?;
         Ok(())
     }
 
@@ -503,43 +513,64 @@ impl TransportProbe {
         Ok(target)
     }
 
-    pub async fn close(&self) {
-        let _guard = self.shutdown_gate.lock().await;
-        if self.shutdown_complete.load(Ordering::Acquire) {
-            return;
-        }
-        let mdns_subscription = self.stop();
-        self.state.endpoint.close().await;
-        if let Some(task) = mdns_subscription {
-            let _ = task.await;
-        }
-        let accept = self
-            .accept_task
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner())
-            .take();
-        if let Some(task) = accept {
-            let _ = task.await;
-        }
-        let tasks = std::mem::take(
-            &mut *self
-                .state
-                .tasks
+    /// Retire all diagnostic I/O. Cancelling a caller leaves the one close task available to join.
+    pub async fn close(&self) -> Result<()> {
+        let mut shutdown = self.shutdown_gate.lock().await;
+        if matches!(*shutdown, ProbeShutdown::Open) {
+            let mdns = self.stop();
+            let state = self.state.clone();
+            let accept = self
+                .accept_task
                 .lock()
-                .unwrap_or_else(|poison| poison.into_inner()),
-        );
-        for task in tasks {
-            let _ = task.await;
+                .unwrap_or_else(|poison| poison.into_inner())
+                .take();
+            *shutdown = ProbeShutdown::Closing(tokio::spawn(async move {
+                state.endpoint.close().await;
+                let result = if let Some(enabled) = mdns {
+                    let result = enabled
+                        .service
+                        .close()
+                        .await
+                        .map_err(|_| RemoteError::Unavailable);
+                    let _ = enabled.subscription.await;
+                    result
+                } else {
+                    Ok(())
+                };
+                if let Some(task) = accept {
+                    let _ = task.await;
+                }
+                let tasks = std::mem::take(
+                    &mut *state
+                        .tasks
+                        .lock()
+                        .unwrap_or_else(|poison| poison.into_inner()),
+                );
+                for task in tasks {
+                    let _ = task.await;
+                }
+                state
+                    .connections
+                    .lock()
+                    .unwrap_or_else(|poison| poison.into_inner())
+                    .clear();
+                result
+            }));
         }
-        self.state
-            .connections
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner())
-            .clear();
-        self.shutdown_complete.store(true, Ordering::Release);
+        if let ProbeShutdown::Closing(task) = &mut *shutdown {
+            *shutdown = match task.await {
+                Ok(Ok(())) => ProbeShutdown::Closed,
+                _ => ProbeShutdown::Failed,
+            };
+        }
+        match *shutdown {
+            ProbeShutdown::Closed => Ok(()),
+            ProbeShutdown::Failed => Err(RemoteError::Unavailable),
+            _ => unreachable!(),
+        }
     }
 
-    fn stop(&self) -> Option<JoinHandle<()>> {
+    fn stop(&self) -> Option<EnabledMdns> {
         self.state.closed.store(true, Ordering::Release);
         if let Ok(registry) = self.state.endpoint.address_lookup() {
             registry.clear();
@@ -549,11 +580,9 @@ impl TransportProbe {
             .lock()
             .unwrap_or_else(|poison| poison.into_inner())
             .take();
-        let mdns_subscription = mdns.map(|enabled| {
+        if let Some(enabled) = &mdns {
             enabled.subscription.abort();
-            drop(enabled.service);
-            enabled.subscription
-        });
+        }
         if let Some(task) = self
             .accept_task
             .lock()
@@ -580,7 +609,7 @@ impl TransportProbe {
         {
             connection.close(0u8.into(), b"probe closed");
         }
-        mdns_subscription
+        mdns
     }
 }
 impl Drop for TransportProbe {

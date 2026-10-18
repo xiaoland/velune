@@ -20,14 +20,17 @@ const MAX_STATE_BYTES: usize = 1024 * 1024;
 pub struct DeviceLocator {
     pub relay_urls: Vec<String>,
     pub direct_addresses: Vec<std::net::SocketAddr>,
-    pub lookup_url: Option<String>,
+    pub lookup_urls: Vec<String>,
 }
 impl DeviceLocator {
     pub(crate) fn validate(&self) -> Result<()> {
-        if self.relay_urls.len() > 16 || self.direct_addresses.len() > 32 {
+        if self.relay_urls.len() > 16
+            || self.direct_addresses.len() > 32
+            || self.lookup_urls.len() > 4
+        {
             return Err(RemoteError::Configuration);
         }
-        for url in self.relay_urls.iter().chain(self.lookup_url.iter()) {
+        for url in self.relay_urls.iter().chain(self.lookup_urls.iter()) {
             crate::endpoint::validate_relay_url(url)?;
         }
         Ok(())
@@ -51,6 +54,19 @@ pub enum ContactConfirmation {
     Pending { attempt_id: String },
     Confirmed { attempt_id: String },
 }
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum LocatorSource {
+    PairingOffer,
+    AuthenticatedPeer,
+    ExplicitImport,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LocatorUpdate {
+    pub peer_id: String,
+    pub locator: DeviceLocator,
+}
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DeviceContact {
@@ -59,6 +75,7 @@ pub struct DeviceContact {
     pub locator: DeviceLocator,
     pub confirmation: ContactConfirmation,
     pub paused: bool,
+    pub locator_source: LocatorSource,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -111,7 +128,7 @@ struct StoredState {
 impl Default for StoredState {
     fn default() -> Self {
         Self {
-            version: 2,
+            version: 3,
             contacts: BTreeMap::new(),
             grants: BTreeMap::new(),
             pending: Vec::new(),
@@ -129,6 +146,7 @@ pub struct DeviceStoreSnapshot {
 }
 /// A service shares one store instance. It never stores command bodies or completed response payloads.
 pub struct DeviceStore {
+    pub(crate) network_settings: crate::settings::SettingsStore,
     path: Option<PathBuf>,
     state: Mutex<StoredState>,
     changed: tokio::sync::watch::Sender<u64>,
@@ -136,6 +154,7 @@ pub struct DeviceStore {
 impl DeviceStore {
     pub fn memory() -> Self {
         Self {
+            network_settings: crate::settings::SettingsStore::memory(),
             path: None,
             state: Mutex::new(StoredState::default()),
             changed: tokio::sync::watch::channel(1).0,
@@ -146,7 +165,11 @@ impl DeviceStore {
             Ok(bytes) => {
                 let json: serde_json::Value =
                     serde_json::from_slice(&bytes).map_err(|_| RemoteError::StateStorage)?;
-                if json.get("version").and_then(serde_json::Value::as_u64) != Some(2) {
+                // An independent identity is never an obsolete ordinary-state schema.
+                if json.get("secret_key").is_some() {
+                    return Err(RemoteError::StateStorage);
+                }
+                if json.get("version").and_then(serde_json::Value::as_u64) != Some(3) {
                     (
                         StoredState {
                             reset_notice: Some(ConfigurationResetNotice { id: random_id()? }),
@@ -169,6 +192,7 @@ impl DeviceStore {
         };
         validate_state(&state)?;
         let store = Self {
+            network_settings: crate::settings::SettingsStore::open(path)?,
             path: Some(path.to_owned()),
             state: Mutex::new(state),
             changed: tokio::sync::watch::channel(1).0,
@@ -275,6 +299,16 @@ impl DeviceStore {
         name: String,
         locator: DeviceLocator,
     ) -> Result<()> {
+        self.update_locator_from(peer, name, locator, LocatorSource::AuthenticatedPeer)
+    }
+    pub(crate) fn update_locator_from(
+        &self,
+        peer: &str,
+        name: String,
+        locator: DeviceLocator,
+        source: LocatorSource,
+    ) -> Result<()> {
+        locator.validate()?;
         self.change(|state| {
             let contact = state
                 .contacts
@@ -282,6 +316,7 @@ impl DeviceStore {
                 .ok_or(RemoteError::Unauthorized)?;
             contact.name = name;
             contact.locator = locator;
+            contact.locator_source = source;
             Ok(())
         })
     }

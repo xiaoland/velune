@@ -155,6 +155,8 @@ impl VeluneTransportProbe {
     pub fn open(options: BindingTransportProbeOptions) -> Result<Arc<Self>, BindingError> {
         crate::transport_trace::install()?;
         let config = EndpointConfig {
+            local_discovery: false,
+            relay_credentials: Vec::new(),
             relay: match options.relay {
                 BindingRelayConfig::Disabled => velune_remote::RelayConfig::Disabled,
                 BindingRelayConfig::DevelopmentPublic => {
@@ -167,8 +169,8 @@ impl VeluneTransportProbe {
                 BindingDiscoveryConfig::DevelopmentPublic => {
                     velune_remote::DiscoveryConfig::DevelopmentPublic
                 }
-                BindingDiscoveryConfig::CustomPkarr { url } => {
-                    velune_remote::DiscoveryConfig::CustomPkarr { url }
+                BindingDiscoveryConfig::CustomPkarr { urls } => {
+                    velune_remote::DiscoveryConfig::CustomPkarr { urls }
                 }
             },
             path_policy: match options.path_policy {
@@ -239,7 +241,7 @@ impl VeluneTransportProbe {
         Ok(target.into())
     }
     pub fn shutdown(&self) -> Result<(), BindingError> {
-        self.runtime.block_on(self.probe.close());
+        self.runtime.block_on(self.probe.close())?;
         Ok(())
     }
 }

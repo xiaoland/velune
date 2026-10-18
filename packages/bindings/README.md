@@ -19,11 +19,11 @@ Codex 订阅的前端接入复用 `authentication_start`／`authentication_poll`
 
 默认启用 `local-runtime` 与 `remote`。`local-runtime` 提供 `VeluneApplication.open(BindingOptions)` 并链接本地 application、Harness、gateway 与提供商执行；本机和 SSH Harness 都需要它。纯控制端使用 `--no-default-features --features remote`，只依赖契约、远控和 UniFFI，不链接 application、agent-runtime、gateway、ai-provider 或 Node 执行资源。领域类型中的执行位置只是业务配置，不代表控制设备执行它。
 
-`VeluneRemoteEndpoint` 是稳定远控服务的外语对象，`open(options, application)` 显式传身份文件、普通 `state_file`、设备名称和网络装配。提供本地 `VeluneApplication` 时缓存一份 ServiceOwner/runtime，Handler 只引用 ApplicationService 和 runtime 租约，不回指外语对象；控制端传 None，不链接本地执行栈。重复 open 复用 incarnation 与账本，同配置不重建网络。`set_control_ingress(false)` 仅停止被控入口，保留出站；`replace_network` 完整等待旧代际屏障，已接纳工作继续。`shutdown` 是最终服务关闭，返回成功才表示网络和任务完成记录已退出；平台放工作队列，不承诺固定关闭期限。最终 runtime 的 shutdown_background 只是安全析构，不是该屏障。
+`VeluneRemoteEndpoint` 是稳定远控服务的外语对象，`open(options, application)` 显式传身份文件、普通 `state_file`、设备名称和网络装配。提供本地 `VeluneApplication` 时缓存一份 ServiceOwner/runtime，Handler 只引用 ApplicationService 和 runtime 租约，不回指外语对象；控制端传 None，不链接本地执行栈。重复 open 复用 incarnation 与账本；构造网络参数只初始化首次配置，已有保存目标优先。`set_control_ingress(false)` 仅停止被控入口，保留出站；`apply_network`／`retry_network` 完整等待旧代际屏障，已接纳工作继续；旧的 URL-only `replace_network` 入口已删除，避免隐式丢失私有资格或绕开设置修订。`shutdown` 是最终服务关闭，返回成功才表示网络和任务完成记录已退出；平台放工作队列，不承诺固定关闭期限。最终 runtime 的 shutdown_background 只是安全析构，不是该屏障。
 
-v2 硬切邀请、wire、ALPN 与普通状态，身份文件仍为 schema 1。`decode_remote_offer(encoded)` 无需服务即可离线解析最多 1024 字节的邀请；`begin_pairing` 由 Rust 固定公钥、派生八位码、原子保存 pin/attempt，再发送 Ready。`BindingPairingStatus` 投影 AwaitingReady、AwaitingApproval、Granted、Rejected、Expired、Disconnected；代码是 String，保留前导零。执行端本地 `approve_pairing(attempt_id, expected_peer_id)`／`reject_pairing` 只处理这个不可变候选，不接受网络业务批准。Granted 才调用 `connect(peer_id, view_id)` 取得完整业务代理。`pairing_status(peer_id)` 查询原事务，最终回执丢失或冷启仍可恢复；名称不是身份，入站 grant 不由联系人 pin 推导。
+邀请、wire 与 ALPN 为 v2，普通状态为 schema 3，身份文件仍为 schema 1；不保留旧契约兼容。`decode_remote_offer(encoded)` 无需服务即可离线解析最多 1024 字节的邀请；`begin_pairing` 由 Rust 固定公钥、派生八位码、原子保存 pin/attempt，再发送 Ready。`BindingPairingStatus` 投影 AwaitingReady、AwaitingApproval、Granted、Rejected、Expired、Disconnected；代码是 String，保留前导零。执行端本地 `approve_pairing(attempt_id, expected_peer_id)`／`reject_pairing` 只处理这个不可变候选，不接受网络业务批准。Granted 才调用 `connect(peer_id, view_id)` 取得完整业务代理。`pairing_status(peer_id)` 查询原事务，最终回执丢失或冷启仍可恢复；名称不是身份，入站 grant 不由联系人 pin 推导。
 
-`read_state`／`observe_state().next(timeout_ms)` 提供 contacts、incoming_grants、incoming/outgoing_pairings、多个 pending 与 reset_notice 的版本化安全快照。观察等待为 1–5000 毫秒，落后读取完整投影，不把快照当全部事件。联系人不保存 incarnation；pending 的完整请求 ID 固定原 incarnation，但不保存业务正文或 Completed payload。旧 schema 初始化为空 v2 并留下跨冷启可确认的通知；Android 清理旧 devices.json/.new/.bak 前先调用 `record_legacy_state_reset`，成功后才移除旧普通文件，不触碰 identity。`acknowledge_reset(notice_id)` 只确认指定通知。
+`read_state`／`observe_state().next(timeout_ms)` 提供 contacts、incoming_grants、incoming/outgoing_pairings、controllers、network、多个 pending 与 reset_notice 的版本化安全快照。观察等待为 1–5000 毫秒，落后读取完整投影，不把快照当全部事件。联系人不保存 incarnation；pending 的完整请求 ID 固定原 incarnation，但不保存业务正文或 Completed payload。旧普通 schema 初始化为空 schema 3 并留下跨冷启可确认的通知；Android 清理旧 devices.json/.new/.bak 前先调用 `record_legacy_state_reset`，成功后才移除旧普通文件，不触碰 identity。`acknowledge_reset(notice_id)` 只确认指定通知。
 
 远程观察可直接调用原有具名方法；副作用使用一次操作作用域，完整 payload 与方法返回类型保持：
 
@@ -38,7 +38,13 @@ operation.acknowledge()
 
 Running、Unknown、ResultExpired、ServerRestarted 与传输不明保留 pending，不在 finally 清除。平台处理明确完成／业务失败后按该 operation 确认；用户明确结束跟踪也只确认该准确 ID，不取消执行端工作。冷启没有旧 operation 对象时，使用服务 `query_request(peer_id, id)` 和 `acknowledge_request(peer_id, id)`。查询只返回原结果，不重发；完整结果可能含显式读取的秘密，只通过加密连接及内存返回。普通 snapshot 和持久 pending 只有具名安全状态。`forget_device` 只删除目的 pin，有 pending 时拒绝；`revoke_control` 只撤销本机授予对端的控制，旧配对事务不能复活 grant。
 
-`connection_status` 与 `observe_paths` 保留 S2 的原生路径快照、连接/path 标识及 missed_events 语义，不包含原始地址或正文；平台网络事实通过 `report_network_change(snapshot)` 输入，返回序号仅代表通知收到。网络替换撤回旧 client/observer 的原生引用，明确重新连接后使用同一 Controller。S3 没有自动恢复循环，平台也不自行重发业务；自动调度归 S4。
+`connection_status` 与 `observe_paths` 保留 S2 的原生路径快照、连接/path 标识及 missed_events 语义，不包含原始地址或正文；平台网络事实通过 `report_network_change(snapshot)` 输入，返回序号仅代表通知收到。网络替换撤回旧 client/observer 的原生引用，Rust 的同一 Controller 恢复连接并只查询原 pending。`set_controller_activity(peer_id, selected, foreground)` 报告选中／前后台，`controller_status` 返回 Disconnected、Suspended、Discovering、Connecting、Connected、Recovering、Blocked 及准确 epoch／安全错误码。活动事实不解除用户 pause 或 Blocked；显式 `connect` 才恢复。调用方按 epoch 刷新业务投影，不另建重连器或重发写操作。
+
+`network_state()` 区分保存目标、网络代际已应用与实际观察的设施可达性；Unknown 不表示可达，lookup 注册也不是发布证明。`apply_network(BindingNetworkSettingsUpdate)` 接受 `expected_revision`、`network` 参数、完整 credentials 编辑表和 `restore_lookup_urls`。凭据用 Keep／Set／Remove，普通摘要只给 URL 和 configured。保存失败或冲突返回错误并保留现网；保存成功、应用失败返回 Failed 状态与已保存目标，`retry_network` 重试同一修订，不回退旧设施。启动时保存目标动态不可应用也保留可读、可修正的稳定对象。
+
+`BindingRemoteNetworkOptions.local_discovery` 控制生产 mDNS，公网预设与自定义 lookup 并行；`refresh_local_discovery` 供宿主重采本地接口，Android 事实仍由库输入接收，不在本轮修改 App。`lookup_url` 已改为有界 `lookup_urls`；联系人投影增加来源。`update_contact_locator(expected_peer_id, update)` 只替换相同已固定公钥的线索，不授予任何新权限。被明确撤除的 lookup 跨冷启动保留禁用，Hello／导入不能恢复，必须显式重新配置或 restore。
+
+网络配置与 Bearer 保存在普通 state 文件名加 `.network-private.json` 的独立私有文件，公开状态、邀请、Debug 与 pending 文件不含 token。独立资格表不扩大本机 home relay 候选；非 literal loopback 的明文 HTTP Bearer 在保存前拒绝，3xx 不跟随，lookup 不附带 relay token。identity、state 与派生配置在 open 前检查路径冲突。具体网络与资源寿命见 [remote README](../remote/README.md)。
 
 配置编辑使用乐观版本：连接构造先读取配置并设置初始编辑基线；表单打开时调用 `list_with_revision()`，保留一起返回的配置与 revision，提交前用 `expect_revision(revision)` 指定该表单的依据，再调用原具名写入 API。`observed_revision()` 只用于连接状态展示；它可能被其它读取更新，不能代替表单对应的版本。其他读取与消息轮询只更新观测版本，不替换编辑基线；成功的自身修改推进基线。冲突保留 `BindingFailureKind::Conflict`，调用方重读配置并让用户合并，不能换版本后自动重发旧编辑。显式 `submit_request`／`query_request` 仅更新观测版本，后续编辑由平台明确采用哪个版本。
 
@@ -101,4 +107,4 @@ Swift 生成模块名为 `VeluneBindings`，FFI 模块名为 `VeluneBindingsFFI`
 
 Claude CLI 登录沿用 start/poll/cancel/inspect，CLI 自己打开浏览器并管理秘密，可能没有 URL notification；平台持续 poll 获取最终 result。`authentication_logout(gateway_id, provider_id)` 返回 `BindingGatewayUpdate`，退出后刷新配置视图。公开账号摘要只用于辨别绑定，不保证订阅身份或当前可调用；CLI 状态不可用不能显示为登录有效。quota API 不变，未知、过期与 problem 必须按实际呈现；窗口值不是剩余 token 或费用预算。CLI backend 保留应用运行期间的会话，应用关闭或认证变更会终止旧绑定，不承诺重启恢复。
 
-`BindingPlatformNetwork` 以 `wifi`、`cellular`、`ethernet`、`vpn` 表达实际 transport，不以默认网络或 Internet 状态替代这些事实。诊断探针用 Wi-Fi／Ethernet 非 VPN 的 numeric IPv4 装配 mDNS；正常业务仍只把网络报告作为 transport 提示。`BindingProbeMdnsEvent.InterfacesApplied` 包含私有接口地址、采样时间和 generation，表示配置应用与旧任务退出请求，不表示旧 FD 已关闭。`refresh_mdns_interfaces()` 供桌面合成宿主周期采样；Android 使用最近报告的网络事实。接口代际切换产生的 Expired 表示旧接口 scope 失效，不能解释为远端离线。生产 mDNS 装配与恢复属于后续切片。
+`BindingPlatformNetwork` 以 `wifi`、`cellular`、`ethernet`、`vpn` 表达实际 transport，不以默认网络或 Internet 状态替代这些事实。诊断探针用 Wi-Fi／Ethernet 非 VPN 的 numeric IPv4 装配 mDNS；正常业务仍只把网络报告作为 transport 提示。`BindingProbeMdnsEvent.InterfacesApplied` 包含私有接口地址、采样时间和 generation，表示配置应用与旧任务退出请求，不表示旧 FD 已关闭。`refresh_mdns_interfaces()` 供桌面合成宿主周期采样；Android 使用最近报告的网络事实。接口代际切换产生的 Expired 表示旧接口 scope 失效，不能解释为远端离线。生产 mDNS 与 Rust Controller 恢复已在库内装配；平台界面、权限与真实换网仍未接入／验证。

@@ -33,6 +33,8 @@ pub(crate) struct ServiceState {
     pub(crate) store: Arc<DeviceStore>,
     pub(crate) outgoing: Mutex<std::collections::BTreeMap<String, crate::pairing::OutgoingPairing>>,
     handler: Option<Arc<dyn Handler>>,
+    pub(crate) network_facts: Mutex<Option<PlatformNetworkSnapshot>>,
+    pub(crate) network_application: Mutex<crate::settings::NetworkApplication>,
     pub(crate) access: Mutex<Access>,
     tasks: Mutex<Vec<JoinHandle<()>>>,
 }
@@ -141,7 +143,7 @@ pub struct RemoteAccessService {
     network: Arc<Mutex<Option<Arc<NetworkGeneration>>>>,
     lifecycle: tokio::sync::Mutex<Lifecycle>,
     pub(crate) pairing_begin: tokio::sync::Mutex<()>,
-    pub(crate) controllers: Mutex<std::collections::BTreeMap<String, Arc<Controller>>>,
+    pub(crate) controllers: Arc<Mutex<std::collections::BTreeMap<String, Arc<Controller>>>>,
 }
 #[derive(Default)]
 struct Lifecycle {
@@ -177,7 +179,16 @@ impl RemoteAccessService {
         handler: Option<Arc<dyn Handler>>,
     ) -> Result<Self> {
         let service = Self::new(identity, store, handler)?;
-        service.replace_network(config).await?;
+        let config = service
+            .state
+            .store
+            .network_settings
+            .get()?
+            .map(|stored| stored.config)
+            .unwrap_or(config);
+        service
+            .replace_network_expected(config, None, Vec::new())
+            .await?;
         Ok(service)
     }
     pub fn new(
@@ -193,6 +204,8 @@ impl RemoteAccessService {
                 store,
                 outgoing: Mutex::new(std::collections::BTreeMap::new()),
                 handler,
+                network_facts: Mutex::new(None),
+                network_application: Mutex::new(crate::settings::NetworkApplication::default()),
                 access: Mutex::new(Access {
                     generation: None,
                     ingress,
@@ -205,7 +218,7 @@ impl RemoteAccessService {
             network: Arc::new(Mutex::new(None)),
             lifecycle: tokio::sync::Mutex::new(Lifecycle::default()),
             pairing_begin: tokio::sync::Mutex::new(()),
-            controllers: Mutex::new(std::collections::BTreeMap::new()),
+            controllers: Arc::new(Mutex::new(std::collections::BTreeMap::new())),
         })
     }
     pub(crate) fn network(&self) -> Result<Arc<NetworkGeneration>> {
@@ -221,10 +234,50 @@ impl RemoteAccessService {
     /// Seal and fully retire the old network before binding its replacement. Failure leaves no old fallback.
     /// Once queued, the complete transaction survives caller cancellation; the next lifecycle call joins it.
     pub async fn replace_network(&self, config: EndpointConfig) -> Result<()> {
+        let outcome = self
+            .replace_network_expected(config, None, Vec::new())
+            .await?;
+        if outcome.phase == NetworkApplicationPhase::Applied {
+            Ok(())
+        } else {
+            Err(self
+                .state
+                .network_application
+                .lock()
+                .map_err(|_| RemoteError::Unavailable)?
+                .error
+                .unwrap_or(RemoteError::Unavailable))
+        }
+    }
+    pub(crate) async fn replace_network_expected(
+        &self,
+        config: EndpointConfig,
+        expected: Option<u64>,
+        restore_lookup_urls: Vec<String>,
+    ) -> Result<NetworkState> {
         // Reject invalid input before withdrawing the currently usable network.
-        crate::endpoint::validate_config(&config)?;
+        let config = crate::settings::normalize_config(config)?;
         let mut lifecycle = self.lifecycle.lock().await;
         let _previous = lifecycle.finish_pending().await?;
+        if self.state.access()?.closed {
+            return Err(RemoteError::Closed);
+        }
+        let saved = self.state.store.network_settings.save(
+            config.clone(),
+            expected,
+            &restore_lookup_urls,
+        )?;
+        *self
+            .state
+            .network_application
+            .lock()
+            .map_err(|_| RemoteError::Unavailable)? = crate::settings::NetworkApplication {
+            phase: NetworkApplicationPhase::Applying,
+            revision: None,
+            generation: None,
+            error: None,
+        };
+        self.state.store.touch();
         lifecycle.next_generation = lifecycle
             .next_generation
             .checked_add(1)
@@ -232,47 +285,91 @@ impl RemoteAccessService {
         let generation = lifecycle.next_generation;
         let state = self.state.clone();
         let network_owner = self.network.clone();
+        let controllers = self.controllers.clone();
         lifecycle.pending = Some(tokio::spawn(async move {
-            let old = {
-                let mut access = state.access()?;
-                if access.closed {
+            let outcome = async {
+                let old = {
+                    let mut access = state.access()?;
+                    if access.closed {
+                        return Err(RemoteError::Closed);
+                    }
+                    access.generation = None;
+                    wake_controllers(&controllers);
+                    access.pairing.invalidate(PairingPhase::Disconnected);
+                    state.store.touch();
+                    network_owner
+                        .lock()
+                        .map_err(|_| RemoteError::Unavailable)?
+                        .take()
+                };
+                if let Some(old) = old {
+                    old.close().await?;
+                    drop(old);
+                }
+                let network = NetworkGeneration::bind(state.clone(), generation, config).await?;
+                let installed = {
+                    let mut access = state.access()?;
+                    if access.closed {
+                        false
+                    } else {
+                        access.generation = Some(generation);
+                        *network_owner.lock().map_err(|_| RemoteError::Unavailable)? =
+                            Some(network.clone());
+                        true
+                    }
+                };
+                if !installed {
+                    network.close().await?;
                     return Err(RemoteError::Closed);
                 }
-                access.generation = None;
-                access.pairing.invalidate(PairingPhase::Disconnected);
-                state.store.touch();
-                network_owner
+                network.start();
+                wake_controllers(&controllers);
+                *state
+                    .network_application
                     .lock()
-                    .map_err(|_| RemoteError::Unavailable)?
-                    .take()
-            };
-            if let Some(old) = old {
-                old.close().await;
-                drop(old);
+                    .map_err(|_| RemoteError::Unavailable)? = crate::settings::NetworkApplication {
+                    phase: NetworkApplicationPhase::Applied,
+                    revision: Some(saved.revision),
+                    generation: Some(generation),
+                    error: None,
+                };
+                state.store.touch();
+                Ok(())
             }
-            let network = NetworkGeneration::bind(state.clone(), generation, config).await?;
-            let installed = {
-                let mut access = state.access()?;
-                if access.closed {
-                    false
-                } else {
-                    access.generation = Some(generation);
-                    *network_owner.lock().map_err(|_| RemoteError::Unavailable)? =
-                        Some(network.clone());
-                    true
-                }
-            };
-            if !installed {
-                network.close().await;
-                return Err(RemoteError::Closed);
+            .await;
+            if let Err(error) = outcome {
+                *state
+                    .network_application
+                    .lock()
+                    .map_err(|_| RemoteError::Unavailable)? = crate::settings::NetworkApplication {
+                    phase: NetworkApplicationPhase::Failed,
+                    revision: None,
+                    generation: None,
+                    error: Some(error),
+                };
+                state.store.touch();
             }
-            network.start();
-            Ok(())
+            outcome
         }));
-        lifecycle
-            .finish_pending()
-            .await?
-            .ok_or(RemoteError::Unavailable)?
+        let outcome = lifecycle.finish_pending().await;
+        match outcome {
+            Ok(Some(_)) => self.network_state(),
+            Ok(None) => Err(RemoteError::Unavailable),
+            Err(error) => {
+                *self
+                    .state
+                    .network_application
+                    .lock()
+                    .map_err(|_| RemoteError::Unavailable)? = crate::settings::NetworkApplication {
+                    phase: NetworkApplicationPhase::Failed,
+                    revision: None,
+                    generation: None,
+                    error: Some(error),
+                };
+                self.state.store.touch();
+                Err(error)
+            }
+        }
     }
     /// Ingress policy only: existing and newly dialed outgoing control remain usable.
     pub fn set_control_ingress(&self, enabled: bool) -> Result<()> {
@@ -303,13 +400,37 @@ impl RemoteAccessService {
     }
     pub async fn network_change(&self) {
         if let Ok(network) = self.network() {
+            let _ = network.refresh_local_discovery().await;
             let _ = network.network_change().await;
         }
+        wake_controllers(&self.controllers);
     }
     pub async fn report_network_change(&self, snapshot: PlatformNetworkSnapshot) -> Result<u64> {
         snapshot.validate()?;
-        self.network()?.network_change().await?;
-        Ok(snapshot.sequence)
+        let sequence = snapshot.sequence;
+        {
+            let mut facts = self
+                .state
+                .network_facts
+                .lock()
+                .map_err(|_| RemoteError::Unavailable)?;
+            if facts
+                .as_ref()
+                .is_some_and(|previous| previous.sequence >= sequence)
+            {
+                return Ok(sequence);
+            }
+            *facts = Some(snapshot);
+        }
+        let network = self.network()?;
+        network.refresh_local_discovery().await?;
+        network.network_change().await?;
+        wake_controllers(&self.controllers);
+        Ok(sequence)
+    }
+    /// Resample host LAN interfaces or apply the most recent supplied platform facts.
+    pub async fn refresh_local_discovery(&self) -> Result<u64> {
+        self.network()?.refresh_local_discovery().await
     }
     /// End the service, wait for its one network close and all already accepted completion bookkeeping.
     /// This does not close the business owner or implicitly cancel its work.
@@ -319,6 +440,7 @@ impl RemoteAccessService {
         let _previous = lifecycle.finish_pending().await?;
         let state = self.state.clone();
         let network_owner = self.network.clone();
+        let controllers = self.controllers.clone();
         lifecycle.pending = Some(tokio::spawn(async move {
             let old = {
                 let mut access = state
@@ -327,6 +449,12 @@ impl RemoteAccessService {
                     .unwrap_or_else(|poison| poison.into_inner());
                 access.closed = true;
                 access.generation = None;
+                *state
+                    .network_application
+                    .lock()
+                    .unwrap_or_else(|poison| poison.into_inner()) =
+                    crate::settings::NetworkApplication::default();
+                wake_controllers(&controllers);
                 access.pairing.invalidate(PairingPhase::Disconnected);
                 state.store.touch();
                 network_owner
@@ -335,7 +463,7 @@ impl RemoteAccessService {
                     .take()
             };
             if let Some(old) = old {
-                old.close().await;
+                old.close().await?;
             }
             let tasks = std::mem::take(
                 &mut *state
@@ -365,6 +493,14 @@ impl Drop for RemoteAccessService {
             && let Some(network) = network.take()
         {
             let _ = network.stop();
+        }
+    }
+}
+
+fn wake_controllers(controllers: &Mutex<std::collections::BTreeMap<String, Arc<Controller>>>) {
+    if let Ok(controllers) = controllers.lock() {
+        for controller in controllers.values() {
+            controller.network_changed();
         }
     }
 }

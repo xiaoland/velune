@@ -1,5 +1,7 @@
-//! Stable per-peer control and one shared write-before-send gate. Recovery scheduling is separate.
+//! One per-peer connection intent, recovery task and write-before-send gate.
 use crate::*;
+mod recovery;
+pub use recovery::{ControllerPhase, ControllerStatus};
 use serde::Serialize;
 use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, Instant};
@@ -13,6 +15,7 @@ pub struct Controller {
     session: ClientSession,
     connection: Mutex<ControllerConnection>,
     dial: tokio::sync::Mutex<()>,
+    recovery: recovery::Recovery,
 }
 struct ControllerConnection {
     client: Option<Arc<RemoteClient>>,
@@ -29,51 +32,6 @@ impl Controller {
     }
     pub fn peer_id(&self) -> &str {
         &self.peer
-    }
-    pub async fn connect(&self) -> Result<()> {
-        let _dial = self.dial.lock().await;
-        if self
-            .connection
-            .lock()
-            .map_err(|_| RemoteError::Unavailable)?
-            .client
-            .as_ref()
-            .is_some_and(|client| !client.connection_status().closed)
-        {
-            return Ok(());
-        }
-        let service = self.owner()?;
-        let client = Arc::new(
-            service
-                .connect_client(&self.peer, self.session.clone())
-                .await?,
-        );
-        {
-            let _access = service.state.access()?;
-            service.state.store.pause(&self.peer, false)?;
-        }
-        let mut connection = self
-            .connection
-            .lock()
-            .map_err(|_| RemoteError::Unavailable)?;
-        connection.client = Some(client);
-        connection.epoch = connection.epoch.wrapping_add(1);
-        Ok(())
-    }
-    pub fn disconnect(&self) -> Result<()> {
-        let service = self.owner()?;
-        let _access = service.state.access()?;
-        service.state.store.pause(&self.peer, true)?;
-        if let Some(client) = self
-            .connection
-            .lock()
-            .map_err(|_| RemoteError::Unavailable)?
-            .client
-            .take()
-        {
-            client.close();
-        }
-        Ok(())
     }
     pub(crate) fn client(&self) -> Result<Arc<RemoteClient>> {
         self.connection
@@ -324,6 +282,8 @@ pub struct RemoteServiceSnapshot {
     pub incoming_pairings: Vec<PairingStatus>,
     pub outgoing_pairings: Vec<PairingStatus>,
     pub pending: Vec<PendingOperation>,
+    pub controllers: Vec<ControllerStatus>,
+    pub network: NetworkState,
     pub reset_notice: Option<ConfigurationResetNotice>,
 }
 pub struct RemoteStateObserver {
@@ -355,6 +315,10 @@ impl RemoteStateObserver {
 }
 impl RemoteAccessService {
     pub fn controller(self: &Arc<Self>, peer: &str) -> Result<Arc<Controller>> {
+        let access = self.state.access()?;
+        if access.closed {
+            return Err(RemoteError::Closed);
+        }
         self.state.store.contact(peer)?;
         let mut controllers = self
             .controllers
@@ -372,6 +336,7 @@ impl RemoteAccessService {
                 epoch: 0,
             }),
             dial: tokio::sync::Mutex::new(()),
+            recovery: recovery::Recovery::new(self.state.store.contact(peer)?.paused),
         });
         controllers.insert(peer.into(), controller.clone());
         Ok(controller)
@@ -383,8 +348,10 @@ impl RemoteAccessService {
             self.state.store.touch();
         }
         let stored = self.state.store.snapshot()?;
+        let network = self.network_state()?;
         Ok(RemoteServiceSnapshot {
             version: self.state.store.version(),
+            network,
             device_id: self.state.identity.id(),
             control_ingress: access.ingress && !access.closed,
             descriptor: self.descriptor().ok(),
@@ -400,6 +367,13 @@ impl RemoteAccessService {
                 .map(|pairing| pairing.status.clone())
                 .collect(),
             pending: stored.pending,
+            controllers: self
+                .controllers
+                .lock()
+                .map_err(|_| RemoteError::Unavailable)?
+                .values()
+                .map(|controller| controller.status())
+                .collect::<Result<_>>()?,
             reset_notice: stored.reset_notice,
         })
     }
@@ -430,6 +404,30 @@ impl RemoteAccessService {
     pub fn acknowledge_request(&self, peer: &str, id: &RequestId) -> Result<()> {
         let _access = self.state.access()?;
         self.state.store.acknowledge(peer, id)
+    }
+    /// Replace routing hints for the already pinned public key without changing either grant.
+    pub fn update_contact_locator(&self, expected_peer: &str, update: LocatorUpdate) -> Result<()> {
+        crate::store::parse_peer(expected_peer)?;
+        if expected_peer != update.peer_id {
+            return Err(RemoteError::Unauthorized);
+        }
+        let _access = self.state.access()?;
+        let contact = self.state.store.contact(expected_peer)?;
+        self.state.store.update_locator_from(
+            expected_peer,
+            contact.name,
+            update.locator,
+            LocatorSource::ExplicitImport,
+        )?;
+        if let Some(controller) = self
+            .controllers
+            .lock()
+            .map_err(|_| RemoteError::Unavailable)?
+            .get(expected_peer)
+        {
+            controller.network_changed();
+        }
+        Ok(())
     }
     pub fn forget_device(&self, peer: &str) -> Result<()> {
         let _access = self.state.access()?;

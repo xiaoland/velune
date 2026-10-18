@@ -104,6 +104,36 @@ bindings 另验证 ack 文件发布失败保留 pending；普通 typed Create �
 
 库级 `manual-remote-control.py` 已迁移 v2，使用上述匹配 host Python／dylib、真实 iroh loopback、唯一 ApplicationService／ApplicationHandler 与合成 ACP，完整入口取得 22 项观察，exit 0、stderr 为空。覆盖本地批准、未批准方向拒绝、资源／配置／审批、17MiB 附件、并发、断控制连接后执行及显式去重；脚本的已收到后丢弃回执不证明 wire 丢回执或 Endpoint 替换，后者由前述专门驱动支持。结果及执行／源码摘要保留在私有 `velune-s3-manual-remote-{result,command}.json`；没有调用真实模型或改动 Rust 冻结源码。
 
+## S4 Rust 库最终证据
+
+2026-10-18，采用 `target/s4-library-freeze/manifest.json` 与私有 `release-final-evidence.md`。清单 HEAD 为 `4821ddf`，构建使用其后未提交的 S4 源码，不能称为 clean 提交产物；228 份 Rust／Cargo 文件与最后构建的摘要相同。没有 App、adb、真实配置、模型或公网部署，没有自动化测试入口。
+
+| 库级边界 | 实际观察与限定 |
+| --- | --- |
+| LAN 独立于公网设施 | 正式 Service 配置已确认不可达的 loopback relay／lookup，只经正式网络事实和生产 mDNS，在零 IP 邀请下配对、本地批准并完成一次 Effect。Applied 不冒充 Reachable；仅本机真实接口，不推导跨设备／WAN |
+| 恢复与状态寿命 | 换代保留 incarnation／原 pending，唯一循环自动 query 得 Completed，副作用总数不增；主动 pause 跨前后台与网络事实保持，显式 connect 才恢复。真实延迟 Hello 不能覆盖新意图，旧 UDP 可重绑 |
+| 联系人 lookup | mDNS 关闭、全局 lookup 故障时，peer 专属 URL 获取受控签名记录并完成业务；认证 Hello 学到 old/new，old HTTP 真退出、endpoint cache 冷启后 new 仍可用。同公钥带外更新不增加授权；fixture 直连记录不证明默认生产 publisher 发布 IP |
+| 设置与撤除 | Set／Keep／轮换／Remove 串行换代，原业务只执行一次；保存失败／revision 冲突不换网络。动态 bind 失败返回 Ok(Failed)，同 revision retry 可恢复，新进程仍可读取并修正 Failed；冷启旧 hint 不恢复已撤 lookup，显式 restore 才恢复，容量与路径碰撞拒绝不覆盖身份 |
+| Blocked | 真实方向授权拒绝、v1 TLS ALPN、v2 错公钥分别停止恢复。错 key 保持 A 的 pin／grant、指向真实 B；目标无应用流、Handler 进入零次，前后台／网络事实不解除 Blocked |
+| 受限 relay 正式闭环 | 独立资格 B、home 仅 A，经真实 loopback 受限 B relay 配对、本地批准、scoped Effect，计数恰一、pending 准确确认，路径全 Relay／Direct 0，home 未扩大。原生另证错误资格、未知 URL、五类 3xx、不泄漏 token及旧连接退出后轮换；不证明公网／TLS／运营 SLA |
+| 公共入口一致性 | prod／staging 分别核对唯一实际 URL、publisher／resolver 装配、邀请与认证 Hello；global None 的控制端可学习该联系人入口。这是实际装配／握手证据，不是公共服务可达率 |
+| mDNS 完整关闭 | 私有 IO runtime 析构被公开 AddrFilter 的 Drop Gate 阻塞时，close 不完成；取消首 caller，第二 caller 仍等待同一保存的任务，放行才返回。clone 不能复活 actor。所有 swarm 后代归属由固定源码接线保证；生产实际 FD 为 0→6→0，只是辅助观察 |
+| 诊断库联动 | 只 poll 一次 Probe enable 后取消仍保留 owner，重复 enable 被拒绝；取消 close 再重入等待完整屏障，立即 FD 0→3→0。最终 Python open→enable_mdns→shutdown 两次通过；失败不伪报 complete，普通 Drop 仅 best effort |
+| 实际 ABI／业务 | 最终 host Python／dylib 的完整 22 项走真实 ApplicationService、iroh 和合成 ACP；六项新增设置 API 及 Probe 关闭通过。前六生产驱动用安全计数 Handler，不将其冒充 ApplicationService。六驱动构建与最终 host 仅差诊断 Probe 修复，生产源码一致；诊断改动由最终 Probe／ABI 证据覆盖 |
+
+fmt、locked workspace check、全 feature 严格 clippy、remote-only 依赖／严格 clippy、Android diagnostics 目标严格 clippy和两 vendor 以 primary package 定向 clippy 均 exit 0。Android API28／arm64 原生 release 使用 remote-only，无本地执行栈或 diagnostics，JNI initializer 存在、无 renameat2 动态符号；Swift／Kotlin 仅生成并编译到 target，没有 App 构建或设备验收。两 vendor 的 runtime.patch 均可从固定基线重放。
+
+| 最终冻结项 | SHA-256 |
+| --- | --- |
+| 源码摘要清单 | `281ec7858b22019fc47932c749724a9957e5653697720ce7e021050ff704cd7b` |
+| Host dylib | `b23433469eb528bfa80a1ed74a582255fe9de2f883dbc471c35a263569365356` |
+| Python | `49daba589511f6e2dc7d1779bde6b83678d6b255601eca1f91332273032eb5e7` |
+| Swift | `111f94414448e5b82e732a1350ab5af689610752adf7677d58d27bef1e743f9a` |
+| Android so | `b011f52054dffd856d262b1e64149fd09a26deebaa45a0724518f82ccf7e4296` |
+| Kotlin | `41dbb89adbe3046c652c41b4d4855bd1a7f44407aecafc0e840b96234c59ece0` |
+
+冻结 manifest SHA 为 `6c973a19df747bb480df9330983df684130f687b034b559a1c9249ae80fd5653`。完整命令、退出码和各驱动／供应重放摘要在 manifest 指向的私有证据中，不复制 token、地址、ID 或完整正文到仓库。真实 E2／E3、IPv6-only mDNS、长期后台与完整 App 流程仍未验证；非空接口仍有上游 wildcard 接收／发送回落，接口应用确认不等于旧 scope socket 已退出。
+
 ## S1 当前环境与采集边界
 
 2026-10-18 恢复时，公开 adb inventory 确认单台 USB 设备在线，API28／arm64-v8a，系统公共锁定状态为未显示锁屏，原任务 app 进程存在；随后已安装首批 S1 探针并完成下面的 E1 探索；该首批尚未带 PathObserver missed 计数，不作为最终 S1 出口。设备编号只在私有操作记录使用，不写入本报告。未读取账户、通知、SIM／手机号或真实配置／会话，未更改手机网络。

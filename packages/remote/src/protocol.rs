@@ -7,7 +7,7 @@ pub const PROTOCOL_VERSION: u16 = 2;
 pub const MAX_FRAME_BYTES: usize = 32 * 1024 * 1024;
 pub(crate) const ALPN: &[u8] = b"velune/remote/2";
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RelayConfig {
     #[default]
     Disabled,
@@ -17,26 +17,28 @@ pub enum RelayConfig {
         urls: Vec<String>,
     },
 }
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DiscoveryConfig {
     #[default]
     None,
     CustomPkarr {
-        url: String,
+        urls: Vec<String>,
     },
     /// Publish and resolve addresses using n0's public DNS/pkarr services.
     DevelopmentPublic,
 }
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PathPolicy {
     #[default]
     Automatic,
     /// Controlled diagnostics only: disables direct IP transports.
     RelayOnly,
 }
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EndpointConfig {
     pub relay: RelayConfig,
+    pub relay_credentials: Vec<crate::RelayCredential>,
+    pub local_discovery: bool,
     pub path_policy: PathPolicy,
     pub discovery: DiscoveryConfig,
     /// Empty uses iroh's normal interfaces; loopback addresses support isolated checks.
@@ -46,9 +48,11 @@ pub struct EndpointConfig {
 impl Default for EndpointConfig {
     fn default() -> Self {
         Self {
-            relay: RelayConfig::Disabled,
+            relay: RelayConfig::DevelopmentPublic,
+            relay_credentials: Vec::new(),
+            local_discovery: true,
             path_policy: PathPolicy::Automatic,
-            discovery: DiscoveryConfig::None,
+            discovery: DiscoveryConfig::DevelopmentPublic,
             bind_addresses: Vec::new(),
             request_timeout: Duration::from_secs(30),
         }
@@ -65,7 +69,7 @@ pub struct EndpointDescriptor {
     pub incarnation: String,
     pub relay_urls: Vec<String>,
     pub direct_addresses: Vec<SocketAddr>,
-    pub lookup_url: Option<String>,
+    pub lookup_urls: Vec<String>,
 }
 impl EndpointDescriptor {
     pub(crate) fn validate(&self, peer: &str) -> Result<()> {
@@ -80,7 +84,7 @@ impl EndpointDescriptor {
         crate::DeviceLocator {
             relay_urls: self.relay_urls.clone(),
             direct_addresses: self.direct_addresses.clone(),
-            lookup_url: self.lookup_url.clone(),
+            lookup_urls: self.lookup_urls.clone(),
         }
         .validate()
     }
@@ -186,4 +190,16 @@ pub(crate) fn validate_id(id: &str) -> Result<()> {
         return Err(RemoteError::InvalidRequestId);
     }
     Ok(())
+}
+
+impl std::fmt::Debug for EndpointConfig {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("EndpointConfig")
+            .field("relay", &self.relay)
+            .field("discovery", &self.discovery)
+            .field("local_discovery", &self.local_discovery)
+            .field("credential_count", &self.relay_credentials.len())
+            .finish_non_exhaustive()
+    }
 }

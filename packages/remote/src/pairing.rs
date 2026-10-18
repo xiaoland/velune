@@ -409,7 +409,7 @@ impl RemoteAccessService {
             locator: DeviceLocator {
                 relay_urls: endpoint.relay_urls.into_iter().take(1).collect(),
                 direct_addresses: endpoint.direct_addresses.into_iter().take(2).collect(),
-                lookup_url: endpoint.lookup_url,
+                lookup_urls: endpoint.lookup_urls.into_iter().take(1).collect(),
             },
         };
         offer.encode()?;
@@ -582,6 +582,7 @@ impl RemoteAccessService {
                     attempt_id: challenge.attempt_id.clone(),
                 },
                 paused: false,
+                locator_source: LocatorSource::PairingOffer,
             })?;
             self.state
                 .outgoing

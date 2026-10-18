@@ -1,6 +1,6 @@
 # Rust 远控库的线性实现计划
 
-2026-10-18 用户明确本轮仅限 Rust Library。完整产品目标保留在 [技术方案](../../docs/design/remote-access.md)；本计划只安排库实现、UniFFI 契约和库级验证。Mac／Android 页面、扫码、系统权限交互及 App 安装退出当前范围。已有结果见 [verification](verification.md)，完整产品判据继续保留在 [acceptance](acceptance.md)，不会因范围收回而变成已通过。
+2026-10-18 用户明确本轮仅限 Rust Library。完整产品目标保留在 [技术方案](../../docs/design/remote-access.md)；本计划只安排库实现、UniFFI 契约和库级验证。Mac／Android 页面、扫码、系统权限交互及 App 安装退出当前范围。库内切片和本轮交付检查已完成，真实网络能力仍按外部条件保持未验证。已有结果见 [verification](verification.md)，完整产品判据继续保留在 [acceptance](acceptance.md)，不会因范围收回而变成已通过。
 
 ## 顺序与责任
 
@@ -18,7 +18,7 @@
 
 ## S3：保存库检查点
 
-一次硬切邀请、ALPN、wire envelope 与普通状态 schema 至 v2，独立身份 schema 保持。pin 与入站 grant 分离；本地批准只接受 Ready 的准确 peer／attempt，不能由远端自批或旧事务复活授权。原子失败不得发布成功状态。
+S3 将邀请、ALPN 与 wire envelope 硬切为 v2，普通状态当时为 schema 2；S4 因 locator／设置形状改为 schema 3，独立身份始终为 schema 1。pin 与入站 grant 分离；本地批准只接受 Ready 的准确 peer／attempt，不能由远端自批或旧事务复活授权。原子失败不得发布成功状态。
 
 穷尽分类 Command 的观察与 Effect，副作用发送前保存准确 ID 和安全摘要；每个 RemoteOperation 只执行一次 Effect，结果由调用方处理后准确确认。未知、过期或 owner 重启只查询，不自动重发。保存普通状态不含消息、秘密或完整结果。
 
@@ -32,7 +32,7 @@
 
 每个目的设备由同一 Rust Controller 管理选择、前后台、主动暂停和配置代际，平台只报告事实。保持一个有界退避循环，网络变化唤醒；旧异步结果不安装到新意图。无效身份、撤销或协议不兼容进入 Blocked；前台不撤销主动断开。
 
-实现公共默认与兼容自定义 relay／lookup、规范目的地的短生命周期认证、设施保存／应用／可达状态。严格移除、换 token 或启用未装配 transport 使用唯一串行关闭屏障后重建网络。移除后不得偷偷回落公共预设；离线端缺新 locator 时明确要求带外更新同一公钥的联系资料，不重新授信。
+实现公共默认与兼容自定义 relay／lookup、按规范目的地装配的每网络代际私有认证、设施保存／应用／可达状态。严格移除、换 token 或启用未装配 transport 使用唯一串行关闭屏障后重建网络。移除后不得偷偷回落公共预设；离线端缺新 locator 时明确要求带外更新同一公钥的联系资料，不重新授信。
 
 库内判别使用合成身份、真实 iroh、真实 Handler 和可控本地设施，覆盖陈旧地址、恢复意图、旧结果竞争、主动断开、设施交接、原请求连续性及资源退出。不能用 map 修改返回或缓存候选代替业务往返。
 

@@ -10,12 +10,16 @@
 
 `DropGuard::drop` 只调用 guardian task 的 `abort`；Acto 的 `ActoCell::drop` 随后 abort supervised children。代际确认不等于取消已完成、socket 已关闭或网络广告已撤回。本地有界人工实验可以观察自有进程的 5353 FD 最终归零，但这个观察不是同步 API 保证。
 
+完整服务关闭使用不同的屏障。每个 `MdnsAddressLookup` 拥有一份单 worker Tokio I/O runtime，所有 clone 共享；actor、Swarm guardian、子任务、定时器与 callback 都在这份 runtime 的 `enter`／Handle 内创建，内部任务只持 Handle，不持 runtime owner。`close().await` 必须由外部 Tokio runtime 调用，不能从自定义 AddrFilter 回调在私有 runtime 内启动。它主动取走 runtime，在调用方 runtime 的 blocking pool 完整析构并等待，因此不受 registry 或外部 service clone 的存活影响。关闭任务句柄在等待前保存，取消一个 close Future 后另一调用仍会等待同一屏障；关闭失败保持失败。它不承诺远端缓存已撤销。未显式 close 的 Drop 仅 `shutdown_background`，属于非等待清理。
+
+Velune 在完整网络代际替换时等待此 close 后才绑定新 Endpoint。业务、账本和已接纳任务继续使用稳定服务的原 runtime；mDNS 私有 runtime 只承载局域网 I/O，每个活动网络代际最多一份，不按联系人或窗口创建。接口 scope 更新仍沿用上述异步取消语义，不重建 worker。Swarm 在 socket 和名称检查完成前不 spawn 任务，因此构造失败不存在已启动 publisher；构造成功后的其他装配失败必须显式等待 close。
+
 Swarm 0.6.4 的 `Sockets::new` 即使传入非空接口集合，也会建立 wildcard IPv4 接收 socket；接口发送 socket 创建失败只记 warning，全部失败时可能使用主 socket 发送。因此，此补丁不声称非空模式是严格网络接口隔离。显式空集合直接跳过 `Discoverer::spawn`，不会触发这些默认行为。
 
 ## 重现与撤回
 
 从固定提交取出 `iroh-mdns-address-lookup/src/lib.rs`，在第一个 `\n#[cfg(test)]\nmod tests {` 处分割，保留前半段、去除末尾空白并追加一个换行；随后在独立目录用 `patch -p1 < runtime.patch` 应用本目录的 [runtime.patch](runtime.patch)。该 patch 只记录生产 runtime 的变化，不包含被移除的测试正文。
 
-Cargo 元数据来自同提交的 package `Cargo.toml`：去掉指向上游 CI 的注释与 `[lints] workspace = true`，删除整个 `[dev-dependencies]` 区块，在 dependencies 前加入 `[lib] doctest = false`；其余 package、runtime dependencies、docs.rs 元数据保持原样。两份 LICENSE 从上游仓库根目录逐字复制。主仓库只通过 package path 使用此副本，不为其建立独立 workspace 或 lock。
+Cargo 元数据来自同提交的 package `Cargo.toml`：去掉指向上游 CI 的注释与 `[lints] workspace = true`，删除整个 `[dev-dependencies]` 区块，在 dependencies 前加入 `[lib] doctest = false`；Tokio 明确启用 `rt-multi-thread`、`net`、`time`、`sync` 以承载私有 I/O runtime，其余 package、runtime dependencies、docs.rs 元数据保持原样。两份 LICENSE 从上游仓库根目录逐字复制。主仓库只通过 package path 使用此副本，不为其建立独立 workspace 或 lock。
 
-当官方稳定版本同时提供显式空集合暂停、IPv4 接口重建、旧 callback 代际隔离与明确缓存失效语义，并在 Velune 的 Android／Mac 人工验收中满足同样判据后，移除此目录及 path 装配，恢复官方依赖。上游仅提供动态地址移除或发送停止，不足以证明 discoverer task 与 socket 生命周期满足这些要求。
+当官方稳定版本同时提供显式空集合暂停、IPv4 接口重建、旧 callback 代际隔离、明确缓存失效及可等待的完整关闭，并在库级人工验收中满足同样判据后，移除此目录及 path 装配，恢复官方依赖。上游仅提供动态地址移除或发送停止，不足以证明 discoverer task 与 socket 生命周期满足这些要求。

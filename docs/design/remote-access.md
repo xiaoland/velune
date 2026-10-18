@@ -1,6 +1,6 @@
 # 统一设备远控：配对、寻址与恢复
 
-状态：2026-10-18 用户明确本轮实施边界仅限 Rust Library，包括 UniFFI 契约和库级合成验证，不包含 Mac／Android App 接入、界面、安装或产品验收。S1 已有同网证据，S2 稳定服务与 S3 v2 库级出口已完成；S4 尚待实施，E2／E3 网络能力仍未验证。本文件描述完整目标契约，不等同整项产品已实现或用户已验收。产品约束归 [PRD](../prd/index.md#后续扩展分布式能力)，共享核心与包边界归 [架构入口](architecture.md#远控契约与唯一执行-owner2026-10-17)。本方案基于锁定的 iroh 1.3.0；源码核查和本机实验归 [研究记录](../../tasks/android-minimal/transport-research.md)，执行次序归 [线性计划](../../tasks/android-minimal/plan.md)，通过条件归 [验收方案](../../tasks/android-minimal/acceptance.md)。实际实现与验收状态以 [任务](../../tasks/android-minimal/packet.md) 为准。
+状态：2026-10-18 用户明确本轮实施边界仅限 Rust Library，包括 UniFFI 契约和库级合成验证，不包含 Mac／Android App 接入、界面、安装或产品验收。S1 已有同网证据，S2 稳定服务与 S3 v2 库级出口已完成；S4 库实现、静态检查、目标库与隔离证据已完成，E2／E3 网络能力仍未验证。本文件描述完整目标契约，不等同整项产品已实现或用户已验收。产品约束归 [PRD](../prd/index.md#后续扩展分布式能力)，共享核心与包边界归 [架构入口](architecture.md#远控契约与唯一执行-owner2026-10-17)。本方案基于锁定的 iroh 1.3.0；源码核查和本机实验归 [研究记录](../../tasks/android-minimal/transport-research.md)，执行次序归 [线性计划](../../tasks/android-minimal/plan.md)，通过条件归 [验收方案](../../tasks/android-minimal/acceptance.md)。实际实现与验收状态以 [任务](../../tasks/android-minimal/packet.md) 为准。
 
 ## 设备与状态归属
 
@@ -18,7 +18,7 @@
 
 “记住这是我的 Mac”与“允许这个 Mac 控制本机”分别表达。手机扫码 Mac 时，手机保存 Mac 的身份，Mac 明确授权手机控制自己；不隐式授权反向控制。两台执行设备也沿用同一添加流程，每个方向由被控制设备确认，不引入账户或角色权限框架。
 
-`RemoteAccessService` 继续放在 `remote` 包，通过 Handler 引用唯一业务 owner，不依赖 application 实现、不建立新进程或请求数据库。服务根保有有界账本、执行世代和已接纳任务；bindings 装配的同一份异步 runtime 与服务同寿命，不为每代 Endpoint 新建 runtime。已接纳任务只持服务状态与 Handler，完成记账不依赖旧网络对象。controller-only 装配没有 Handler，同样持有设备身份、联系人及连接生命周期，不因此链接执行栈。
+`RemoteAccessService` 继续放在 `remote` 包，通过 Handler 引用唯一业务 owner，不依赖 application 实现、不建立新进程或请求数据库。服务根保有有界账本、执行世代和已接纳任务；bindings 装配的业务异步 runtime 与稳定服务同寿命，不因 Endpoint 换代而重建。已接纳任务只持服务状态与 Handler，完成记账不依赖旧网络对象。mDNS 另有每网络代际最多一份的单 worker 私有 IO runtime，所有 Controller 共享；它仅容纳 lookup actor、swarm 与其孙任务，不承载业务。这个额外 worker 是完整关闭发现资源的代价：锁定 swarm 的 DropGuard 及 acto 只发出 abort，没有保留可等待的全部子句柄，外层 actor join 不能证明退出。controller-only 装配没有 Handler，同样持有设备身份、联系人及连接生命周期，不因此链接执行栈。
 
 bindings 持有这份稳定服务，显式区分停止本机被控入口、替换网络资源与关闭整个服务。“停止接入”关闭本机作为执行端的邀请、未确认候选及入站控制，不能误关本机正在控制其他设备的出站连接，也不能释放记账 runtime。没有出站需求时可以释放网络资源；宿主按已有退出规则真正结束时才关闭服务。设施替换串行进行，同一身份保持一个主动发布的网络代际，避免两个独立 Endpoint 用同一密钥竞争发布位置。
 
@@ -36,7 +36,7 @@ bindings 持有这份稳定服务，显式区分停止本机被控入口、替�
 | `decode_offer`、`begin_pairing`、`cancel_pairing`、事务查询 | 有界离线解析后才建连；准备完成由 Rust 在原子保存后发送。重复相机帧或 Activity 重建不重复兑换邀请 |
 | 本地邀请、批准／拒绝、`revoke_control` | 仅执行端本地可信管理入口可用，不进入远程业务 Command。取消与批准竞争时返回实际已提交状态，不伪造撤销 |
 | `application_for_device(peer_id, view_id)`、`prepare_remote_operation`、未决请求观察／确认 | 保留完整业务 SDK；远程副作用通过一次操作作用域准确关联请求 ID，统一经过写前记录。确认只结束本机跟踪，不取消远端任务、不删除服务端去重信息 |
-| `apply_network`、连接资料更新 | 语法校验和持久化后串行应用网络代际；返回保存／应用状态。带外更新 locator 必须匹配已有固定公钥 |
+| `apply_network`／`retry_network`、连接资料更新 | 语法校验和持久化后串行应用网络代际；装配失败返回保留已保存目标的 Failed 状态，语法／持久化／冲突失败才返回调用错误。带外更新 locator 必须匹配已有固定公钥 |
 
 远程具名方法保留现有 payload 形状，由 `prepare_remote_operation()` 返回的 `RemoteOperation` 提供准确关联：预分配固定目的公钥、调用世代和完整请求 ID，`operation.application()` 返回共享原连接、视图和修订状态的具名业务代理。每份作用域最多接纳一个副作用；准备但未调用不落 pending，真正调用时先原子记录。平台处理该方法的结果或错误后，才通过原 operation 确认准确 ID；不能使用全局 last ID、批量确认或成功返回即自动清理。普通远程代理可直接观察，未提供作用域的副作用在发送前拒绝。本地 SDK 不改；释放或关闭作用域代理不关闭共享连接或视图，显式 `submit_request` 同样经过 Rust 写前门禁。
 
@@ -46,7 +46,7 @@ Rust 是身份、联系人 pin、入站 grant、配对事务、未决请求、�
 
 未决记录保留至平台处理结果并明确确认；确认落盘失败则保留。网络或控制进程恢复只查询原 ID；新进程可为新操作使用新 ClientSession，但旧记录的世代、client 和 sequence 不改。Unknown、ResultExpired、ServerRestarted 均不触发自动重发，先刷新业务快照；安全的观察请求可以重新发起。执行世代只采用认证 Hello 返回值，不使用联系人缓存中的 incarnation。
 
-普通接入状态按 hard-cutoff 使用新 schema，识别旧 schema 后原子初始化当前空状态，不迁移旧双向 trust 或旧 pending，也不保留旧文件备份。独立身份文件继续原版本，损坏时阻止启动，不重新生成私钥。重置产生可确认且跨冷启保留的通知：“远控配置已更新，请重新添加设备。此前任务或结果未知的操作仍可能在执行，请检查会话；应用不会自动重发。”这项重置不作用于 Harness 文件、真实会话或平台秘密。
+普通接入状态按 hard-cutoff 使用 schema 3，识别旧 schema 后原子初始化当前空状态，不迁移旧双向 trust 或旧 pending，也不保留旧文件备份。identity 继续 schema 1，wire／邀请继续 v2，三者不是同一个版本号。网络设置及每代凭据存于独立原子私有文件，普通状态只保留安全摘要；公开快照不返回 token。独立身份损坏时阻止启动，不重新生成私钥；打开文件前检查身份、普通状态和派生网络私有文件的路径冲突，含身份秘密标记的文件不能当作旧普通 schema 重置。重置产生可确认且跨冷启保留的通知：“远控配置已更新，请重新添加设备。此前任务或结果未知的操作仍可能在执行，请检查会话；应用不会自动重发。”这项重置不作用于 Harness 文件、真实会话或平台秘密。
 
 ## 寻址与统一连接
 
@@ -56,11 +56,11 @@ Rust 是身份、联系人 pin、入站 grant、配对事务、未决请求、�
 
 拟同时装配局域网地址查找与公共／自定义地址查找。mDNS 用于寻找已知身份的当前局域网地址，不自动建立信任，也不要求增加“附近设备”主流程。锁定版本的 Minimal 和 N0 都不含 mDNS，需单独适配。其作用是让公网设施不可用时，仍有局域网寻址渠道；同 Wi-Fi 的隔离策略、多播和平台路由仍可能阻断通信，不能仅靠配置宣称可达。
 
-公共 Pkarr 默认只发布 relay 地址。当前 `Disabled + Pkarr` 并未实现“按 ID 找到直接 IP”；本方案不将私有局域网地址默认发布到公共 DNS 来弥补这个缺口。DNS、Pkarr 返回的是候选位置，最终身份由 QUIC 公钥认证确定；签名和 TTL 都不等于记录必然最新或地址必然可达。
+公共 Pkarr 默认只发布 relay 地址。DevelopmentPublic 按 iroh 实际选择的 prod 或 staging 入口同时装配 publisher、resolver 和 descriptor，邀请与认证 Hello 携带同一条入口，不因控制端的全局 lookup 设置不同而丢失联系人线索。当前 `Disabled + Pkarr` 并未实现“按 ID 找到直接 IP”；本方案不将私有局域网地址默认发布到公共 DNS 来弥补这个缺口。DNS、Pkarr 返回的是候选位置，最终身份由 QUIC 公钥认证确定；签名和 TTL 都不等于记录必然最新或地址必然可达。
 
 relay 配置表达本设备的 home relay 候选和该服务的访问凭据，不是全局出站白名单。连接另一设备时，iroh 可能接入对端公布的 relay，即使它不在本设备候选列表。双方使用不同 relay 不要求两个服务器互联；需要认证的 relay 则要求连接方持有自己的有效访问资格，邀请和公开地址不得携带 bearer token。
 
-受限 relay 的原生 Bearer 认证由应用私有配置按规范服务地址显式装配，不能拼进 URL、联系人或二维码，也不向 lookup 返回的任意 URL 附带默认 token；当前 URL-only SDK 尚未支持该项。若二维码的唯一可达启动路径依赖受限 relay，控制设备必须先取得有效访问资格，否则提示处理连接设置，不误报配对失败。不同运营方的准入／令牌签发不是统一 relay 协议自动解决的能力，本方案不为此增加账户系统。
+受限 relay 的原生 Bearer 认证由调用方私有配置按规范服务地址显式装配，不能拼进 URL、联系人或二维码，也不向 lookup 返回的任意 URL 附带默认 token。访问资格与本机 home relay 候选分别配置；每网络代际使用不可变的私有凭据快照，轮换先完成旧代关闭屏障，不承诺 token 回调刷新。iroh 1.3 原生将凭据与 home 候选放在同一 RelayMap，缺少独立出站资格入口；固定单 crate 的[窄接线补丁](../../third-party/iroh/README.md)已完成，原生及正式 Service 在 loopback 受限 relay 上的往返、隔离和轮换证据见任务；这些结果不证明公网／TLS 设施与运营 SLA。若二维码的唯一可达启动路径依赖受限 relay，控制设备必须先取得有效访问资格，否则提示处理连接设置，不误报配对失败。不同运营方的准入／令牌签发不是统一 relay 协议自动解决的能力，本方案不为此增加账户系统。
 
 因此，“自定义 relay”与“完全只使用自部署设施”不能混为一个保证。普通设置可保留默认地址查找并替换 relay；完整自部署需要两端的 relay、地址查找与访问资格都可用，不暗中回退到已被替换的公共预设。设置应能说明当前使用的设施，而不要求用户选择“局域网远控”或“公网远控”。
 
@@ -143,9 +143,11 @@ sequenceDiagram
 
 “设置已保存”“网络代际已应用”“目的设备已连接”分别表示。新配置通过语法、协议和凭据格式校验后才进入切换；已应用表示资源与生效策略对应新代际、旧资源已退出，不表示所有公网设施或离线设备都可达。relay／公网 lookup 离线不能阻止仍可用的 LAN 路径。失败须说明未应用或具体连接设施不可用，不把保存成功当成连通成功，也不静默选择用户未配置的公共服务。允许短暂断线，恢复后继续使用原设备与请求账本。
 
-旧代际关闭后若新装配失败，保留已保存的目标配置并显示未应用及原因，不自动重新启用已明确移除的旧设施。配置修正或显式重试沿同一串行入口进行，设备身份、授权和未决请求保持。
+旧代际关闭后若新装配失败，`apply_network`／`retry_network` 返回保留新目标与安全错误码的 Failed 状态，不自动重新启用已明确移除的旧设施。启动时读到合法但动态装配失败的目标，也保留稳定服务与 Failed 状态，使调用方仍能读取和修正设置。语法、持久化或修订冲突在切换前返回错误；低层 `replace_network` 保持直接返回装配结果的语义。配置修正或显式重试沿同一串行入口进行，设备身份、授权和未决请求保持。
 
-严格退出由一个 owner 封闭旧代际新操作，取消该代际的观察／发现任务，完整等待一次 Endpoint.close，然后释放外部 publisher、查询流、旧客户端及 Endpoint 引用。内置 close 会清 lookup registry，但独立 publisher clone 可继续保活任务，UDP 最终释放也取决于全部引用；重复并发 close 的返回不作为完成屏障。该边界约束退出后的新请求，不撤回在途包或删除已发布记录。
+撤除 lookup 时，同次持久保存有界的已撤除 URL 集合，后续联系人旧线索、Hello 或普通 locator 导入不能重新激活它；重新配置或明确恢复该 URL 才解除。未撤除的 peer 专属 lookup 仍可使用，本机发布列表不是全局出站允许集合。home relay 候选、独立 relay 访问资格与 lookup 撤除分别表达，不能用一个配置列表混淆三种行为。
+
+严格退出由一个 owner 封闭旧代际新操作，取消该代际的观察／发现任务，完整等待一次 Endpoint.close，并在主 runtime 的外部 blocking pool 完整 drop mDNS 私有 IO runtime、等待其 worker 与全部异步孙任务退出，再释放外部 publisher、查询流、旧客户端及 Endpoint 引用。mdns actor／swarm 创建和回调必须进入该私有 runtime；仅发送 abort、等待外层 actor 或调用 shutdown_background 都不是屏障。该关闭仍由稳定服务持有的生命周期事务保活，调用者取消不能丢失等待；无法证明退出时禁止同一服务继续绑定。普通 Drop 只作 best effort，接口 scope 的应用确认仍不证明旧 socket 已退出。内置 Endpoint.close 清 lookup registry 本身不足以等待独立 publisher；重复并发 close 的返回也不作为完成证据。该边界约束退出后的新请求，不撤回在途包或删除已发布记录。
 
 更换 relay 而保留 lookup 时，向仍被对端使用的 lookup 发布新地址。更换整套地址发现设施则需要交接：先传播并保留新旧入口，再根据可观察的发布与已配对端确认收敛；不能把库的 `add` 返回或 DNS TTL 到期当成所有离线设备已更新。无需无限保留旧服务；若旧入口已全部撤除，离线设备又从未收到新入口，必须给原联系人带外更新连通信息。该更新保留已固定公钥，不自动授予权限或替换为另一设备。
 

@@ -6,6 +6,8 @@ use serde::{Deserialize, Serialize};
 pub enum RemoteError {
     #[error("远控配置无效")]
     Configuration,
+    #[error("连接设置已被另一调用修改，请重新读取")]
+    ConfigurationConflict,
     #[error("无法读取或安全保存设备身份")]
     IdentityStorage,
     #[error("无法读取或原子保存远控状态")]
@@ -57,6 +59,7 @@ impl RemoteError {
     pub const fn code(self) -> &'static str {
         match self {
             Self::Configuration => "configuration",
+            Self::ConfigurationConflict => "configuration_conflict",
             Self::IdentityStorage => "identity_storage",
             Self::StateStorage => "state_storage",
             Self::PairingUnavailable => "pairing_unavailable",

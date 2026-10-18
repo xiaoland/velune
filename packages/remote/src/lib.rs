@@ -8,6 +8,7 @@ mod endpoint;
 mod error;
 mod identity;
 mod ledger;
+mod lookup;
 mod network;
 mod pairing;
 mod paths;
@@ -15,13 +16,14 @@ mod paths;
 mod probe;
 mod protocol;
 mod service;
+mod settings;
 mod store;
 mod wire;
 pub(crate) use client::RemoteClient;
 pub use client::{CallError, CallFailure};
 pub use controller::*;
 pub use error::{RemoteError, Result};
-pub use identity::DeviceIdentity;
+pub use identity::{DeviceIdentity, validate_device_storage_paths};
 #[cfg(target_os = "android")]
 pub use iroh::dns::install_android_jni_context;
 pub use network::{NetworkChangeReason, PlatformNetwork, PlatformNetworkSnapshot};
@@ -39,4 +41,5 @@ pub use protocol::{
     PROTOCOL_VERSION, PathPolicy, RelayConfig, RequestContext, RequestId, RequestStatus,
 };
 pub use service::{Handler, HandlerFuture, RemoteAccessService};
+pub use settings::*;
 pub use store::*;

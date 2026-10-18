@@ -29,16 +29,49 @@ pub(crate) fn validate_config(config: &EndpointConfig) -> Result<()> {
     {
         return Err(RemoteError::Configuration);
     }
+    if config.relay_credentials.len() > 64 {
+        return Err(RemoteError::Configuration);
+    }
+    let mut credential_urls = std::collections::BTreeSet::new();
+    for credential in &config.relay_credentials {
+        let url = crate::settings::canonical_relay_url(&credential.url)?;
+        let loopback = url
+            .host_str()
+            .and_then(|host| {
+                host.trim_matches(['[', ']'])
+                    .parse::<std::net::IpAddr>()
+                    .ok()
+            })
+            .is_some_and(|ip| ip.is_loopback());
+        if url.scheme() != "https" && !loopback {
+            return Err(RemoteError::Configuration);
+        }
+        if !credential_urls.insert(url)
+            || credential.bearer_token.is_empty()
+            || credential.bearer_token.len() > 8192
+            || !credential
+                .bearer_token
+                .bytes()
+                .all(|byte| byte.is_ascii_graphic())
+        {
+            return Err(RemoteError::Configuration);
+        }
+    }
     if let RelayConfig::Custom { urls } = &config.relay {
         if urls.is_empty() || urls.len() > 16 {
             return Err(RemoteError::Configuration);
         }
         for url in urls {
-            validate_relay_url(url)?;
+            crate::settings::canonical_relay_url(url)?;
         }
     }
-    if let DiscoveryConfig::CustomPkarr { url } = &config.discovery {
-        validate_relay_url(url)?;
+    if let DiscoveryConfig::CustomPkarr { urls } = &config.discovery {
+        if urls.is_empty() || urls.len() > 4 {
+            return Err(RemoteError::Configuration);
+        }
+        for url in urls {
+            validate_relay_url(url)?;
+        }
     }
     if matches!(config.path_policy, PathPolicy::RelayOnly)
         && (matches!(config.relay, RelayConfig::Disabled) || !config.bind_addresses.is_empty())
@@ -48,11 +81,31 @@ pub(crate) fn validate_config(config: &EndpointConfig) -> Result<()> {
     Ok(())
 }
 /// Shared native transport assembly; protocol authorization remains with each caller.
+#[cfg(feature = "diagnostics")]
 pub(crate) async fn bind_transport(
     key: iroh::SecretKey,
     config: EndpointConfig,
     alpn: &[u8],
 ) -> Result<Endpoint> {
+    Ok(bind_transport_observed(
+        key,
+        config,
+        alpn,
+        crate::lookup::LookupObservations::default(),
+    )
+    .await?
+    .endpoint)
+}
+struct BoundTransport {
+    endpoint: Endpoint,
+    lookup_urls: Vec<String>,
+}
+async fn bind_transport_observed(
+    key: iroh::SecretKey,
+    config: EndpointConfig,
+    alpn: &[u8],
+    observations: crate::lookup::LookupObservations,
+) -> Result<BoundTransport> {
     validate_config(&config)?;
     let relay = match config.relay {
         RelayConfig::Disabled => RelayMode::Disabled,
@@ -77,22 +130,52 @@ pub(crate) async fn bind_transport(
     let mut builder = Endpoint::builder(presets::Minimal)
         .secret_key(key)
         .alpns(vec![alpn.to_vec()])
-        .relay_mode(relay);
+        .relay_mode(relay)
+        .relay_auth_tokens(
+            config
+                .relay_credentials
+                .into_iter()
+                .map(|credential| {
+                    Ok((
+                        crate::settings::canonical_relay_url(&credential.url)?,
+                        credential.bearer_token,
+                    ))
+                })
+                .collect::<Result<Vec<_>>>()?,
+        );
+    let mut lookup_urls = Vec::new();
     match config.discovery {
         DiscoveryConfig::None => {}
         DiscoveryConfig::DevelopmentPublic => {
-            use iroh::address_lookup::{DnsAddressLookup, PkarrPublisher, PkarrResolver};
+            use iroh::address_lookup::{DnsAddressLookup, PkarrPublisher};
+            let url = if iroh::endpoint::force_staging_infra() {
+                iroh::address_lookup::pkarr::N0_DNS_PKARR_RELAY_STAGING
+            } else {
+                iroh::address_lookup::pkarr::N0_DNS_PKARR_RELAY_PROD
+            };
+            lookup_urls.push(url.into());
             builder = builder
-                .address_lookup(PkarrPublisher::n0_dns())
-                .address_lookup(PkarrResolver::n0_dns())
+                .address_lookup(PkarrPublisher::builder(
+                    url.parse().expect("static lookup URL"),
+                ))
+                .address_lookup(crate::lookup::ObservedResolverBuilder {
+                    url: url.into(),
+                    observations: observations.clone(),
+                })
                 .address_lookup(DnsAddressLookup::n0_dns());
         }
-        DiscoveryConfig::CustomPkarr { url } => {
-            use iroh::address_lookup::{PkarrPublisher, PkarrResolver};
-            let url = validate_relay_url(&url)?;
-            builder = builder
-                .address_lookup(PkarrPublisher::builder(url.clone().into()))
-                .address_lookup(PkarrResolver::builder(url.into()));
+        DiscoveryConfig::CustomPkarr { urls } => {
+            use iroh::address_lookup::PkarrPublisher;
+            for url in urls {
+                let url = validate_relay_url(&url)?;
+                lookup_urls.push(url.to_string());
+                builder = builder
+                    .address_lookup(PkarrPublisher::builder(url.clone().into()))
+                    .address_lookup(crate::lookup::ObservedResolverBuilder {
+                        url: url.to_string(),
+                        observations: observations.clone(),
+                    });
+            }
         }
     }
     if matches!(config.path_policy, PathPolicy::RelayOnly) {
@@ -106,16 +189,12 @@ pub(crate) async fn bind_transport(
                 .map_err(|_| RemoteError::Configuration)?;
         }
     }
-    let endpoint = builder.bind().await.map_err(|_| RemoteError::Unavailable)?;
-    if relay_enabled
-        && tokio::time::timeout(config.request_timeout, endpoint.online())
-            .await
-            .is_err()
-    {
-        endpoint.close().await;
-        return Err(RemoteError::Timeout);
-    }
-    Ok(endpoint)
+    // Binding local transports is independent of remote infrastructure reachability.
+    // Waiting for a home relay here would destroy a usable LAN endpoint during a WAN outage.
+    Ok(BoundTransport {
+        endpoint: builder.bind().await.map_err(|_| RemoteError::Unavailable)?,
+        lookup_urls,
+    })
 }
 
 struct RegisteredConnection {
@@ -128,7 +207,13 @@ pub(crate) struct NetworkGeneration {
     pub(crate) service: Arc<ServiceState>,
     pub(crate) id: u64,
     pub(crate) timeout: Duration,
-    lookup_url: Option<String>,
+    lookup_urls: Vec<String>,
+    withdrawn_lookup_urls: std::collections::BTreeSet<String>,
+    peer_lookup: crate::lookup::PeerLookup,
+    lookup_observations: crate::lookup::LookupObservations,
+    last_facility_status: Mutex<Vec<FacilityStatus>>,
+    mdns: Mutex<Option<iroh_mdns_address_lookup::MdnsAddressLookup>>,
+    mdns_updates: tokio::sync::Mutex<()>,
     closed: AtomicBool,
     cancelled: tokio::sync::watch::Sender<bool>,
     operations: Arc<RwLock<()>>,
@@ -143,16 +228,69 @@ impl NetworkGeneration {
         id: u64,
         config: EndpointConfig,
     ) -> Result<Arc<Self>> {
-        let endpoint = bind_transport(service.identity.key.clone(), config.clone(), ALPN).await?;
+        let interfaces = service
+            .network_facts
+            .lock()
+            .map_err(|_| RemoteError::Unavailable)?
+            .as_ref()
+            .map(crate::network::mdns_ipv4_interfaces)
+            .transpose()?
+            .unwrap_or_else(crate::network::host_mdns_interfaces);
+        let withdrawn_lookup_urls = service
+            .store
+            .network_settings
+            .get()?
+            .map(|settings| settings.withdrawn_lookup_urls)
+            .unwrap_or_default();
+        let lookup_observations = crate::lookup::LookupObservations::default();
+        let BoundTransport {
+            endpoint,
+            lookup_urls,
+        } = bind_transport_observed(
+            service.identity.key.clone(),
+            config.clone(),
+            ALPN,
+            lookup_observations.clone(),
+        )
+        .await?;
+        let registry = match endpoint.address_lookup() {
+            Ok(registry) => registry,
+            Err(_) => {
+                endpoint.close().await;
+                return Err(RemoteError::Unavailable);
+            }
+        };
+        let peer_lookup = crate::lookup::PeerLookup::default();
+        registry.add(peer_lookup.clone());
+        let mdns = if config.local_discovery {
+            let service = match iroh_mdns_address_lookup::MdnsAddressLookup::builder()
+                .ipv4_interfaces(interfaces)
+                .build(endpoint.id())
+            {
+                Ok(service) => service,
+                Err(_) => {
+                    registry.clear();
+                    endpoint.close().await;
+                    return Err(RemoteError::Unavailable);
+                }
+            };
+            registry.add(service.clone());
+            Some(service)
+        } else {
+            None
+        };
         Ok(Arc::new(Self {
             endpoint: Mutex::new(Some(endpoint)),
             service,
             id,
             timeout: config.request_timeout,
-            lookup_url: match &config.discovery {
-                DiscoveryConfig::CustomPkarr { url } => Some(url.clone()),
-                _ => None,
-            },
+            withdrawn_lookup_urls,
+            lookup_urls,
+            peer_lookup,
+            lookup_observations,
+            last_facility_status: Mutex::new(Vec::new()),
+            mdns: Mutex::new(mdns),
+            mdns_updates: tokio::sync::Mutex::new(()),
             closed: AtomicBool::new(false),
             cancelled: tokio::sync::watch::channel(false).0,
             operations: Arc::new(RwLock::new(())),
@@ -175,6 +313,36 @@ impl NetworkGeneration {
             .clone()
             .ok_or(RemoteError::Closed)
     }
+    pub(crate) fn facility_status(&self) -> Result<Vec<FacilityStatus>> {
+        use n0_watcher::Watcher;
+        let endpoint = self.endpoint()?;
+        let mut facilities = self.lookup_observations.statuses()?;
+        for status in endpoint.home_relay_status().get() {
+            let reachability = if status.is_connected() {
+                FacilityReachability::Reachable
+            } else if status.auth_denied_reason().is_some() {
+                FacilityReachability::AuthenticationDenied
+            } else if status.last_error().is_some() {
+                FacilityReachability::Unavailable
+            } else {
+                FacilityReachability::Connecting
+            };
+            facilities.push(FacilityStatus {
+                kind: FacilityKind::HomeRelay,
+                url: status.url().to_string(),
+                reachability,
+            });
+        }
+        let mut previous = self
+            .last_facility_status
+            .lock()
+            .map_err(|_| RemoteError::Unavailable)?;
+        if *previous != facilities {
+            *previous = facilities.clone();
+            self.service.store.touch();
+        }
+        Ok(facilities)
+    }
     pub(crate) fn descriptor(&self) -> Result<EndpointDescriptor> {
         let endpoint = self.endpoint.lock().map_err(|_| RemoteError::Unavailable)?;
         let addr = endpoint.as_ref().ok_or(RemoteError::Closed)?.addr();
@@ -185,7 +353,7 @@ impl NetworkGeneration {
             incarnation: self.service.incarnation.clone(),
             relay_urls: addr.relay_urls().map(ToString::to_string).collect(),
             direct_addresses: addr.ip_addrs().copied().collect(),
-            lookup_url: self.lookup_url.clone(),
+            lookup_urls: self.lookup_urls.clone(),
         })
     }
     pub(crate) async fn operation(&self) -> Result<OwnedRwLockReadGuard<()>> {
@@ -208,6 +376,33 @@ impl NetworkGeneration {
             biased;
             _=self.cancelled()=>Err(RemoteError::Closed),
             _=endpoint.network_change()=>Ok(()),
+        }
+    }
+    pub(crate) async fn refresh_local_discovery(&self) -> Result<u64> {
+        let _serial = self.mdns_updates.lock().await;
+        let _operation = self.operation().await?;
+        let interfaces = self
+            .service
+            .network_facts
+            .lock()
+            .map_err(|_| RemoteError::Unavailable)?
+            .as_ref()
+            .map(crate::network::mdns_ipv4_interfaces)
+            .transpose()?
+            .unwrap_or_else(crate::network::host_mdns_interfaces);
+        let service = self
+            .mdns
+            .lock()
+            .map_err(|_| RemoteError::Unavailable)?
+            .as_ref()
+            .cloned();
+        let Some(service) = service else {
+            return Ok(0);
+        };
+        tokio::select! {
+            biased;
+            _=self.cancelled()=>Err(RemoteError::Closed),
+            generation=service.set_ipv4_interfaces(interfaces)=>generation.map_err(|_|RemoteError::Unavailable),
         }
     }
     pub(crate) fn register(
@@ -274,7 +469,12 @@ impl NetworkGeneration {
         // Even cancelled tasks are retained until the unique close joins their resource destructors.
         tasks.push(task);
     }
-    pub(crate) fn stop(&self) -> Option<Endpoint> {
+    pub(crate) fn stop(
+        &self,
+    ) -> (
+        Option<Endpoint>,
+        Option<iroh_mdns_address_lookup::MdnsAddressLookup>,
+    ) {
         self.closed.store(true, Ordering::Release);
         self.cancelled.send_replace(true);
         if let Ok(connections) = self.connections.lock() {
@@ -287,16 +487,34 @@ impl NetworkGeneration {
                 task.abort();
             }
         }
-        self.endpoint
+        if let Ok(endpoint) = self.endpoint()
+            && let Ok(registry) = endpoint.address_lookup()
+        {
+            registry.clear();
+        }
+        self.peer_lookup.clear();
+        let mdns = self
+            .mdns
             .lock()
             .unwrap_or_else(|poison| poison.into_inner())
-            .take()
+            .take();
+        let endpoint = self
+            .endpoint
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .take();
+        (endpoint, mdns)
     }
-    pub(crate) async fn close(&self) {
-        let endpoint = self.stop();
+    pub(crate) async fn close(&self) -> Result<()> {
+        let (endpoint, mdns) = self.stop();
         if let Some(endpoint) = &endpoint {
             endpoint.close().await;
         }
+        let mdns_result = if let Some(mdns) = mdns {
+            mdns.close().await.map_err(|_| RemoteError::Unavailable)
+        } else {
+            Ok(())
+        };
         loop {
             let tasks = std::mem::take(
                 &mut *self
@@ -317,6 +535,11 @@ impl NetworkGeneration {
             .unwrap_or_else(|poison| poison.into_inner())
             .clear();
         drop(endpoint);
+        if mdns_result.is_err() {
+            // A failed retirement barrier must never permit a replacement publisher to bind.
+            self.service.access()?.closed = true;
+        }
+        mdns_result
     }
 }
 impl RemoteAccessService {
@@ -335,18 +558,6 @@ impl RemoteAccessService {
         match client.rpc(Request::Hello).await? {
             Reply::Hello(current) => {
                 current.validate(peer)?;
-                {
-                    let _access = self.state.access()?;
-                    self.state.store.update_locator(
-                        peer,
-                        current.name.clone(),
-                        DeviceLocator {
-                            relay_urls: current.relay_urls.clone(),
-                            direct_addresses: current.direct_addresses.clone(),
-                            lookup_url: current.lookup_url.clone(),
-                        },
-                    )?;
-                }
                 client.descriptor = current;
                 Ok(client)
             }
@@ -368,10 +579,17 @@ impl RemoteAccessService {
         let network = self.network()?;
         let _operation = network.operation().await?;
         let endpoint = network.endpoint()?;
+        network.peer_lookup.configure(
+            peer,
+            locator,
+            &endpoint,
+            &network.lookup_observations,
+            &network.withdrawn_lookup_urls,
+        )?;
         let connection = tokio::select! {
             biased;
             _=network.cancelled()=>return Err(RemoteError::Closed),
-            result=tokio::time::timeout(network.timeout,endpoint.connect(address,ALPN))=>result.map_err(|_|RemoteError::Timeout)?.map_err(|_|RemoteError::Unavailable)?,
+            result=tokio::time::timeout(network.timeout,endpoint.connect(address,ALPN))=>result.map_err(|_|RemoteError::Timeout)?.map_err(classify_connect_error)?,
         };
         let (registration, connection) = network.register(connection, false)?;
         Ok(RemoteClient {
@@ -386,7 +604,7 @@ impl RemoteAccessService {
                 incarnation: String::new(),
                 relay_urls: locator.relay_urls.clone(),
                 direct_addresses: locator.direct_addresses.clone(),
-                lookup_url: locator.lookup_url.clone(),
+                lookup_urls: locator.lookup_urls.clone(),
             },
             session,
             authorized,
@@ -523,4 +741,32 @@ pub(crate) fn validate_relay_url(value: &str) -> Result<iroh::RelayUrl> {
         return Err(RemoteError::Configuration);
     }
     Ok(url)
+}
+
+/// Classify authenticated protocol/identity failures without formatting remote error text.
+fn classify_connect_error(error: iroh::endpoint::ConnectError) -> RemoteError {
+    use iroh::endpoint::{ConnectError, ConnectingError, ConnectionError};
+    fn connection(error: &ConnectionError) -> RemoteError {
+        let code = match error {
+            ConnectionError::VersionMismatch => return RemoteError::IncompatibleVersion,
+            ConnectionError::TransportError(error) => Some(u64::from(error.code)),
+            ConnectionError::ConnectionClosed(error) => Some(u64::from(error.error_code)),
+            _ => None,
+        };
+        match code {
+            // TLS no_application_protocol (120), carried as a QUIC crypto error.
+            Some(0x178) => RemoteError::IncompatibleVersion,
+            Some(0x100..=0x1ff) => RemoteError::Unauthorized,
+            _ => RemoteError::Unavailable,
+        }
+    }
+    match error {
+        ConnectError::Connection { source, .. } => connection(&source),
+        ConnectError::Connecting { source, .. } => match source {
+            ConnectingError::ConnectionError { source, .. } => connection(&source),
+            ConnectingError::HandshakeFailure { .. } => RemoteError::Unauthorized,
+            _ => RemoteError::Unavailable,
+        },
+        _ => RemoteError::Unavailable,
+    }
 }

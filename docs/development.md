@@ -225,7 +225,7 @@ bash scripts/build-macos.sh
 
 `bindings --no-default-features --features remote` 是纯控制端，依赖树不含 application、agent-runtime、gateway 或 ai-provider；完全禁用 feature 时没有本地或远程构造入口。application 自身禁用 `local-runtime` 仅裁掉 Harness，配置校验仍链接 gateway，不是纯远端客户端的装配路径。Kotlin 生成物依赖 JNA 及 kotlinx-coroutines；生成成功之外还需编译检查。C# 工具为第三方，UniFFI 版本兼容性仍需后续 C# app 接入时验证。
 
-[远控人工脚本](../scripts/manual-remote-control.py) 接受绝对路径 `--library`、`--bindings` 和 `--resources`，动态库与 Python 绑定须来自同一次 v2 构建。脚本通过实际 iroh loopback、UniFFI 与合成 ACP 核对双方派生码，再由夹具显式调用执行端本地批准 API；随后使用一次 Effect 作用域和准确 ID 确认，验证多设备业务、方向授权撤销、断线续跑、请求查询、冲突及附件内容边界。脚本中的已收到后丢弃回执不作为丢 wire 回执或执行端网络替换的证据。动态库需包含默认的本地执行与 remote feature；资源目录可用构建后的 `target/runtime-support`。脚本只使用临时 HOME 与合成资料，不连接公共 relay 或真实模型。早期观察见 [远控验收](../tasks/remote-control/verification.md)，v2 与生命周期判别归 [Android 最小端验收](../tasks/android-minimal/verification.md)。
+[远控人工脚本](../scripts/manual-remote-control.py) 接受绝对路径 `--library`、`--bindings` 和 `--resources`，动态库与 Python 绑定须来自同一次 v2 构建。脚本通过实际 iroh loopback、UniFFI 与合成 ACP 核对双方派生码，再由夹具显式调用执行端本地批准 API；随后使用一次 Effect 作用域和准确 ID 确认，验证多设备业务、方向授权撤销、断线续跑、请求查询、冲突及附件内容边界。脚本中的已收到后丢弃回执不作为丢 wire 回执或执行端网络替换的证据。动态库需包含默认的本地执行与 remote feature；资源目录可用构建后的 `target/runtime-support`。脚本只使用临时 HOME 与合成资料，不连接公共 relay 或真实模型。早期观察见 [远控验收](../tasks/remote-control/verification.md)，v2 与生命周期判别归 [远控库验证](../tasks/android-minimal/verification.md)。
 
 ## 会话驱动准备的人工复验
 
@@ -416,3 +416,5 @@ Velune 执行的每个会话都获得 application 注入的 `velune` MCP 服务�
 当前远控改造仅交付 v2 Rust Library／UniFFI，平台 App 未在本任务同步适配，不能将此分支当作匹配产品安装。库提供离线邀请解析、核对与执行端本地批准、Rust 联系人／pending 和准确 ID 查询；本地批准由隔离合成宿主调用即可验证，不要求 Mac 设置界面。平台接入需独立消费[新契约](design/remote-access.md)，不恢复旧接口兼容层。
 
 历史 [Android 合成宿主脚本](../scripts/manual-android-remote.py) 与旧平台调用方暂未迁移 v2，不能搭配新库执行；当前库级人工入口是上文的 `manual-remote-control.py`。本任务不再操作 adb 或启动平台 App，已有安装及停止事实归 [本轮验收](../tasks/android-minimal/verification.md)。
+
+后续接入受影响的直接消费者是 [Mac Transport](../app/mac/Transport.swift)、[Mac 远控页](../app/mac/RemoteAccess.swift)、[Android RemoteViewModel](../app/android/app/src/main/kotlin/app/velune/android/RemoteViewModel.kt)、[Android 页面](../app/android/app/src/main/kotlin/app/velune/android/MainActivity.kt) 与旧 `DeviceStore`。迁移须使用 `state_file`、Rust 状态快照和配对事务，按 peer 连接，并由独立 operation 关联副作用与准确 ID 确认；不能继续调用已删除的自动 pair／trusted_devices／旧 revoke 或自行持久化第二份 pending。接口细节归 [bindings README](../packages/bindings/README.md)，此处不维护另一份契约。

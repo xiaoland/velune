@@ -369,3 +369,5 @@ S17 实施授权：用户决定全面切换 UniFFI，并要求现在开始拆分
 2026-10-18 用户要求“继续直到技术方案，验收方案，以及线性化实现计划收敛”。该轮继续设计与计划，产品实现／真机操作的暂停尚未解除；产出分别归 [技术方案](design/remote-access.md)、[验收方案](../tasks/android-minimal/acceptance.md) 和 [线性计划](../tasks/android-minimal/plan.md)。
 
 上述方案收敛后，用户明确“好的，开始实现”，恢复按线性计划进行必要源码修改、构建和既有范围内的合成设备实验；无真实模型／个人资料访问、公网部署或远端发布的新增授权。
+
+2026-10-18 用户明确纠正：“你的边界应该仅限于 Rust Library，怎么会延伸到 Mac App 呢。”当前任务因而收回平台接入和界面验收，只继续 Rust Library／UniFFI 与库级合成验证；该纠正不等于取消 Android 产品目标，也不授权为库验收继续修改或启动 Mac App。范围归 [PRD](prd/index.md#后续扩展分布式能力)，实施与收回记录归 [当前任务](../tasks/android-minimal/packet.md)。

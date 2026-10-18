@@ -71,6 +71,55 @@ impl DeviceIdentity {
     }
 }
 
+/// Validate these three host-owned files before creating an identity or resetting ordinary state.
+/// Resolving existing parents prevents aliases such as a symlinked configuration directory.
+pub fn validate_device_storage_paths(identity: &Path, state: &Path) -> Result<()> {
+    fn target(path: &Path) -> Result<std::path::PathBuf> {
+        if !path.is_absolute() {
+            return Err(RemoteError::Configuration);
+        }
+        if let Ok(metadata) = fs::symlink_metadata(path)
+            && metadata.file_type().is_symlink()
+        {
+            return Err(RemoteError::Configuration);
+        }
+        match path.canonicalize() {
+            Ok(path) => Ok(path),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                let parent = path
+                    .parent()
+                    .ok_or(RemoteError::Configuration)?
+                    .canonicalize()
+                    .map_err(|_| RemoteError::Configuration)?;
+                Ok(parent.join(path.file_name().ok_or(RemoteError::Configuration)?))
+            }
+            Err(_) => Err(RemoteError::Configuration),
+        }
+    }
+    let paths = [
+        target(identity)?,
+        target(state)?,
+        target(&crate::settings::private_settings_path(state)?)?,
+    ];
+    for (index, path) in paths.iter().enumerate() {
+        for other in &paths[index + 1..] {
+            if path == other
+                || (path.parent() == other.parent()
+                    && path
+                        .file_name()
+                        .zip(other.file_name())
+                        .is_some_and(|(one, two)| {
+                            one.to_string_lossy()
+                                .eq_ignore_ascii_case(&two.to_string_lossy())
+                        }))
+            {
+                return Err(RemoteError::Configuration);
+            }
+        }
+    }
+    Ok(())
+}
+
 pub(crate) fn validate_name(name: &str) -> Result<()> {
     if name.trim().is_empty() || name.len() > 128 || name.chars().any(char::is_control) {
         return Err(RemoteError::Configuration);

@@ -7,7 +7,7 @@ use velune_remote::{
     RemoteAccessService, RemoteOperation, RequestId, RequestStatus,
 };
 
-#[derive(Clone, uniffi::Enum)]
+#[derive(Clone, serde::Serialize, serde::Deserialize, uniffi::Enum)]
 pub enum BindingRelayConfig {
     Disabled,
     /// Development infrastructure is an explicit opt-in, without a production SLA.
@@ -16,13 +16,13 @@ pub enum BindingRelayConfig {
         urls: Vec<String>,
     },
 }
-#[derive(Clone, uniffi::Enum)]
+#[derive(Clone, serde::Serialize, serde::Deserialize, uniffi::Enum)]
 pub enum BindingDiscoveryConfig {
     None,
     DevelopmentPublic,
-    CustomPkarr { url: String },
+    CustomPkarr { urls: Vec<String> },
 }
-#[derive(Clone, uniffi::Enum)]
+#[derive(Clone, serde::Serialize, serde::Deserialize, uniffi::Enum)]
 pub enum BindingRemotePathPolicy {
     Automatic,
     RelayOnly,
@@ -168,7 +168,7 @@ pub struct BindingRemoteEndpointDescriptor {
     pub incarnation: String,
     pub relay_urls: Vec<String>,
     pub direct_addresses: Vec<String>,
-    pub lookup_url: Option<String>,
+    pub lookup_urls: Vec<String>,
 }
 impl From<EndpointDescriptor> for BindingRemoteEndpointDescriptor {
     fn from(value: EndpointDescriptor) -> Self {
@@ -178,7 +178,7 @@ impl From<EndpointDescriptor> for BindingRemoteEndpointDescriptor {
             name: value.name,
             incarnation: value.incarnation,
             relay_urls: value.relay_urls,
-            lookup_url: value.lookup_url,
+            lookup_urls: value.lookup_urls,
             direct_addresses: value
                 .direct_addresses
                 .into_iter()
@@ -299,6 +299,7 @@ fn remote_failure_kind(error: velune_remote::RemoteError) -> BindingFailureKind 
     use velune_remote::RemoteError;
     match error {
         RemoteError::Unauthorized => BindingFailureKind::Unauthorized,
+        RemoteError::ConfigurationConflict => BindingFailureKind::Conflict,
         RemoteError::Timeout | RemoteError::ServerRestarted => BindingFailureKind::OutcomeUnknown,
         RemoteError::PairingUnavailable
         | RemoteError::PendingRequests
@@ -396,6 +397,7 @@ impl velune_remote::Handler for ApplicationHandler {
 
 #[derive(Clone, uniffi::Record)]
 pub struct BindingRemoteNetworkOptions {
+    pub local_discovery: bool,
     pub relay: BindingRelayConfig,
     pub discovery: BindingDiscoveryConfig,
     pub path_policy: BindingRemotePathPolicy,
@@ -405,6 +407,7 @@ pub struct BindingRemoteNetworkOptions {
 impl From<&BindingRemoteOptions> for BindingRemoteNetworkOptions {
     fn from(options: &BindingRemoteOptions) -> Self {
         Self {
+            local_discovery: true,
             relay: options.relay.clone(),
             discovery: options.discovery.clone(),
             path_policy: options.path_policy.clone(),
@@ -416,6 +419,8 @@ impl From<&BindingRemoteOptions> for BindingRemoteNetworkOptions {
 impl BindingRemoteNetworkOptions {
     fn config(self) -> Result<EndpointConfig, BindingError> {
         Ok(EndpointConfig {
+            local_discovery: self.local_discovery,
+            relay_credentials: Vec::new(),
             relay: match self.relay {
                 BindingRelayConfig::Disabled => velune_remote::RelayConfig::Disabled,
                 BindingRelayConfig::DevelopmentPublic => {
@@ -428,8 +433,8 @@ impl BindingRemoteNetworkOptions {
                 BindingDiscoveryConfig::DevelopmentPublic => {
                     velune_remote::DiscoveryConfig::DevelopmentPublic
                 }
-                BindingDiscoveryConfig::CustomPkarr { url } => {
-                    velune_remote::DiscoveryConfig::CustomPkarr { url }
+                BindingDiscoveryConfig::CustomPkarr { urls } => {
+                    velune_remote::DiscoveryConfig::CustomPkarr { urls }
                 }
             },
             path_policy: match self.path_policy {
@@ -450,7 +455,6 @@ pub(crate) struct ServiceOwner {
     state_file: String,
     #[cfg(feature = "local-runtime")]
     device_name: String,
-    config: Mutex<Option<EndpointConfig>>,
 }
 impl ServiceOwner {
     fn bind(
@@ -479,7 +483,6 @@ impl ServiceOwner {
             state_file: options.state_file,
             #[cfg(feature = "local-runtime")]
             device_name: options.device_name,
-            config: Mutex::new(Some(config)),
         }))
     }
     #[cfg(feature = "local-runtime")]
@@ -492,17 +495,9 @@ impl ServiceOwner {
                 detail: "同一应用执行核心只能装配一份设备身份与远控状态存储".into(),
             });
         }
-        self.apply_config(BindingRemoteNetworkOptions::from(options).config()?)
-    }
-    fn apply_config(&self, config: EndpointConfig) -> Result<(), BindingError> {
-        let mut applied = self.config.lock().map_err(|_| BindingError::Unavailable)?;
-        if applied.as_ref() == Some(&config) && self.service.descriptor().is_ok() {
-            return Ok(());
+        if self.service.descriptor().is_err() {
+            self.runtime.block_on(self.service.retry_network())?;
         }
-        *applied = None;
-        self.runtime
-            .block_on(self.service.replace_network(config.clone()))?;
-        *applied = Some(config);
         Ok(())
     }
     pub(crate) fn close(&self) -> Result<(), BindingError> {
@@ -524,6 +519,10 @@ impl VeluneRemoteEndpoint {
         options: BindingRemoteOptions,
         application: Option<Arc<VeluneApplication>>,
     ) -> Result<Arc<Self>, BindingError> {
+        velune_remote::validate_device_storage_paths(
+            Path::new(&options.identity_file),
+            Path::new(&options.state_file),
+        )?;
         for path in [&options.identity_file, &options.state_file] {
             if !Path::new(path).is_absolute() {
                 return Err(BindingError::Invalid {
@@ -656,6 +655,30 @@ impl VeluneRemoteEndpoint {
         self.owner.runtime.block_on(controller.connect())?;
         self.application(controller, view_id)
     }
+    pub fn set_controller_activity(
+        &self,
+        peer_id: String,
+        selected: bool,
+        foreground: bool,
+    ) -> Result<(), BindingError> {
+        self.owner
+            .service
+            .controller(&peer_id)?
+            .set_activity(selected, foreground)
+            .map_err(Into::into)
+    }
+    pub fn controller_status(
+        &self,
+        peer_id: String,
+    ) -> Result<BindingControllerStatus, BindingError> {
+        convert(self.owner.service.controller(&peer_id)?.status()?)
+    }
+    pub fn refresh_local_discovery(&self) -> Result<u64, BindingError> {
+        Ok(self
+            .owner
+            .runtime
+            .block_on(self.owner.service.refresh_local_discovery())?)
+    }
     pub fn read_state(&self) -> Result<BindingRemoteServiceSnapshot, BindingError> {
         convert(self.owner.service.read_state()?)
     }
@@ -702,6 +725,23 @@ impl VeluneRemoteEndpoint {
             .acknowledge_request(&peer_id, &request_id.into())
             .map_err(Into::into)
     }
+    pub fn update_contact_locator(
+        &self,
+        expected_peer_id: String,
+        update: BindingLocatorUpdate,
+    ) -> Result<(), BindingError> {
+        let locator: velune_remote::DeviceLocator = convert(update.locator)?;
+        self.owner
+            .service
+            .update_contact_locator(
+                &expected_peer_id,
+                velune_remote::LocatorUpdate {
+                    peer_id: update.peer_id,
+                    locator,
+                },
+            )
+            .map_err(Into::into)
+    }
     pub fn forget_device(&self, peer_id: String) -> Result<(), BindingError> {
         self.owner
             .service
@@ -728,12 +768,31 @@ impl VeluneRemoteEndpoint {
             .set_control_ingress(enabled)
             .map_err(Into::into)
     }
-    /// Fully retire one network generation before binding the next, preserving accepted requests.
-    pub fn replace_network(
+    pub fn network_state(&self) -> Result<BindingNetworkState, BindingError> {
+        convert(self.owner.service.network_state()?)
+    }
+    pub fn apply_network(
         &self,
-        options: BindingRemoteNetworkOptions,
-    ) -> Result<(), BindingError> {
-        self.owner.apply_config(options.config()?)
+        update: BindingNetworkSettingsUpdate,
+    ) -> Result<BindingNetworkState, BindingError> {
+        let update = velune_remote::NetworkSettingsUpdate {
+            expected_revision: update.expected_revision,
+            config: update.network.config()?,
+            credentials: convert(update.credentials)?,
+            restore_lookup_urls: update.restore_lookup_urls,
+        };
+        convert(
+            self.owner
+                .runtime
+                .block_on(self.owner.service.apply_network(update))?,
+        )
+    }
+    pub fn retry_network(&self) -> Result<BindingNetworkState, BindingError> {
+        convert(
+            self.owner
+                .runtime
+                .block_on(self.owner.service.retry_network())?,
+        )
     }
     /// Final service shutdown waits for accepted completion bookkeeping; ingress uses its own toggle.
     pub fn shutdown(&self) -> Result<(), BindingError> {

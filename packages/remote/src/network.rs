@@ -87,7 +87,6 @@ fn valid_label(value: &str) -> bool {
 }
 
 /// IPv4 multicast candidates from actual LAN networks, independent of Internet/default status.
-#[cfg(feature = "diagnostics")]
 pub(crate) fn mdns_ipv4_interfaces(
     snapshot: &PlatformNetworkSnapshot,
 ) -> Result<std::collections::BTreeSet<std::net::Ipv4Addr>> {
@@ -110,7 +109,24 @@ pub(crate) fn mdns_ipv4_interfaces(
     Ok(addresses)
 }
 
-#[cfg(feature = "diagnostics")]
 pub(crate) fn usable_mdns_ipv4(ip: std::net::Ipv4Addr) -> bool {
     !ip.is_unspecified() && !ip.is_loopback() && !ip.is_multicast() && !ip.is_broadcast()
+}
+
+/// Host discovery uses actual multicast-capable LAN interfaces; Android supplies platform facts.
+pub(crate) fn host_mdns_interfaces() -> std::collections::BTreeSet<std::net::Ipv4Addr> {
+    #[cfg(target_os = "android")]
+    return std::collections::BTreeSet::new();
+    #[cfg(not(target_os = "android"))]
+    netdev::get_interfaces()
+        .into_iter()
+        .filter(|interface| {
+            interface.is_up()
+                && interface.is_multicast()
+                && !interface.is_loopback()
+                && !interface.is_point_to_point()
+        })
+        .flat_map(|interface| interface.ipv4.into_iter().map(|network| network.addr()))
+        .filter(|ip| usable_mdns_ipv4(*ip))
+        .collect()
 }

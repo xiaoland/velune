@@ -63,7 +63,7 @@ Mac 构建默认安装到 `/Applications/Velune.app`，当前产品版本为 `0.
 
 共享 unit 入口：[ai](packages/ai/README.md)、[ai-provider](packages/ai-provider/README.md)、[conversation](packages/conversation/README.md)、[agent-runtime](packages/agent-runtime/README.md)、[gateway](packages/gateway/README.md)、[application-api](packages/application-api/README.md)、[remote](packages/remote/README.md)、[application](packages/application/README.md)、[bindings](packages/bindings/README.md)。平台入口：[Mac](app/mac/README.md)、[Android](app/android/README.md)；拆分与验证见 [任务](tasks/package-boundaries/packet.md)。
 
-远程控制的 Rust 实现与隔离验收在 [远控任务](tasks/remote-control/packet.md) 推进：同一用户多设备经 iroh 操作执行设备上的唯一应用核心，GUI 与 headless 使用相同契约；远程客户端可不携带本地执行栈。最终公网开箱即用并允许自部署；当前不部署公网服务，直连／中继的实际验证范围分别记录。最小 [Android 端](tasks/android-minimal/packet.md) 采用 Kotlin／Jetpack Compose，经 remote-only UniFFI 接入；Mac 设置提供同进程远控启停、一次性邀请与设备撤销，具体构建及设备验收状态归该任务。
+远程控制通过 iroh 操作执行设备上的唯一应用核心，GUI 与 headless 使用相同 Rust 契约；remote-only UniFFI 控制端不携带 Harness／AI 执行栈。当前 [远控库任务](tasks/android-minimal/packet.md) 只交付 Rust Library、生成绑定和库级证据，已实现方向配对、稳定服务、统一寻址、自动恢复与设施设置。平台 App 尚未适配新契约，不能把本分支当作匹配产品安装；真实公网迁移与非默认双网仍未验证。完整契约归 [统一设备远控](docs/design/remote-access.md)，早期证据留在 [初版远控任务](tasks/remote-control/packet.md)。
 
 2026-10-10 的 [运行时扩展](tasks/runtime-provider-ssh/packet.md) 仅推进 Rust packages：新增 Claude Code、运行时既有模型选择、单轮 Velune Gateway 覆盖、OpenSSH 执行和受管 HOME。composer 及 SSH／HOME 设置界面明确待实现，本轮没有重新构建或安装 Mac app。
 

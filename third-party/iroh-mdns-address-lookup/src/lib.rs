@@ -106,10 +106,66 @@ const RELAY_URL_ATTRIBUTE: &str = "relay";
 pub struct MdnsAddressLookup {
     #[allow(dead_code)]
     handle: Arc<AbortOnDropHandle<()>>,
+    runtime: Arc<PrivateRuntime>,
     sender: mpsc::Sender<Message>,
     advertise: bool,
     /// When `local_addrs` changes, we re-publish our info.
     local_addrs: Watchable<Option<EndpointData>>,
+}
+
+/// Swarm's guard aborts tasks without retaining every descendant join handle.
+/// Isolating all of them in one runtime gives explicit close a complete resource barrier.
+#[derive(Debug)]
+struct PrivateRuntime(tokio::sync::Mutex<RuntimeState>);
+
+#[derive(Debug)]
+enum RuntimeState {
+    Open(tokio::runtime::Runtime),
+    Closing(tokio::task::JoinHandle<()>),
+    Closed,
+    Failed,
+}
+
+impl PrivateRuntime {
+    async fn close(&self) -> Result<(), AddressLookupBuilderError> {
+        let mut state = self.0.lock().await;
+        if matches!(*state, RuntimeState::Open(_)) {
+            let RuntimeState::Open(runtime) = std::mem::replace(&mut *state, RuntimeState::Closed)
+            else {
+                unreachable!()
+            };
+            // This is the caller's blocking pool, never the private runtime being destroyed.
+            // Save the handle before awaiting: cancelling close cannot lose its join barrier.
+            *state = RuntimeState::Closing(tokio::task::spawn_blocking(move || drop(runtime)));
+        }
+        if let RuntimeState::Closing(task) = &mut *state {
+            if task.await.is_err() {
+                *state = RuntimeState::Failed;
+                return Err(MdnsAddressLookup::control_error(
+                    "mDNS runtime shutdown failed",
+                ));
+            }
+            *state = RuntimeState::Closed;
+        }
+        match *state {
+            RuntimeState::Closed => Ok(()),
+            RuntimeState::Failed => Err(MdnsAddressLookup::control_error(
+                "mDNS runtime shutdown failed",
+            )),
+            _ => unreachable!(),
+        }
+    }
+}
+
+impl Drop for PrivateRuntime {
+    fn drop(&mut self) {
+        if let RuntimeState::Open(runtime) =
+            std::mem::replace(self.0.get_mut(), RuntimeState::Closed)
+        {
+            // Drop cannot await. Only explicit close establishes the resource barrier.
+            runtime.shutdown_background();
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -248,10 +304,8 @@ impl MdnsAddressLookupBuilder {
     /// Builds an [`MdnsAddressLookup`] instance with the configured settings.
     ///
     /// # Errors
-    /// Returns an error if the network does not allow ipv4 OR ipv6.
-    ///
-    /// # Panics
-    /// This relies on [`tokio::runtime::Handle::current`] and will panic if called outside of the context of a tokio runtime.
+    /// Returns an error if the private I/O runtime cannot be created or the network does not
+    /// allow the requested address family. One worker is shared by this lookup's clones.
     pub fn build(
         self,
         endpoint_id: EndpointId,
@@ -321,10 +375,7 @@ impl MdnsAddressLookup {
     /// and receives addresses from other endpoints in your local network.
     ///
     /// # Errors
-    /// Returns an error if the network does not allow ipv4 OR ipv6.
-    ///
-    /// # Panics
-    /// This relies on [`tokio::runtime::Handle::current`] and will panic if called outside of the context of a tokio runtime.
+    /// Returns an error if the private I/O runtime or discoverer cannot be created.
     fn new(
         endpoint_id: EndpointId,
         advertise: bool,
@@ -337,7 +388,14 @@ impl MdnsAddressLookup {
         let lookup_duration = lookup_duration(cadence);
         let (send, mut recv) = mpsc::channel(64);
         let task_sender = send.clone();
-        let rt = tokio::runtime::Handle::current();
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .thread_name("iroh-mdns-io")
+            .enable_all()
+            .build()
+            .map_err(|error| AddressLookupBuilderError::from_err("mdns", error))?;
+        let entered = runtime.enter();
+        let rt = runtime.handle().clone();
         let config = DiscovererConfig {
             endpoint_id,
             advertise,
@@ -345,14 +403,23 @@ impl MdnsAddressLookup {
             cadence,
         };
         let mut generation = 0;
-        let mut address_lookup = Self::spawn_discoverer(
+        let address_lookup = Self::spawn_discoverer(
             &config,
             task_sender.clone(),
             generation,
             ipv4_interfaces.as_ref(),
             None,
             &rt,
-        )?;
+        );
+        let mut address_lookup = match address_lookup {
+            Ok(discoverer) => discoverer,
+            Err(error) => {
+                // Swarm validates sockets/names before spawning any task. No publisher exists yet.
+                drop(entered);
+                runtime.shutdown_background();
+                return Err(error);
+            }
+        };
 
         let local_addrs: Watchable<Option<EndpointData>> = Watchable::default();
         let mut addrs_change = local_addrs.watch();
@@ -541,12 +608,24 @@ impl MdnsAddressLookup {
         };
         let handle =
             task::spawn(address_lookup_fut.instrument(info_span!("swarm-discovery.actor")));
+        drop(entered);
         Ok(Self {
             handle: Arc::new(AbortOnDropHandle::new(handle)),
+            runtime: Arc::new(PrivateRuntime(tokio::sync::Mutex::new(RuntimeState::Open(
+                runtime,
+            )))),
             sender: send,
             advertise,
             local_addrs,
         })
+    }
+
+    /// Stop this lookup instance and wait until its private I/O runtime has destroyed all tasks.
+    /// This closes every clone, including clones still registered with an endpoint. It does not
+    /// promise that remote peers have removed previously advertised records. Concurrent calls
+    /// share the same cancellation-safe barrier. Dropping without calling close is best effort.
+    pub async fn close(&self) -> Result<(), AddressLookupBuilderError> {
+        self.runtime.close().await
     }
 
     /// Subscribe to discovered endpoints.
