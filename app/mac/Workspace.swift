@@ -324,8 +324,6 @@ struct SavedWindowLayout: Codable, Equatable {
     var tools: ToolWindowLayout
     /// Kept in front of other apps' windows.
     var pinned: Bool
-    /// A window opened for one conversation (see `ConversationWindowModel.isSingleConversation`); nil for another.
-    var singleConversation: Bool?
 
     /// Every pane and tab named once, the focused pane among them.
     var isWhole: Bool {
@@ -337,17 +335,28 @@ struct SavedWindowLayout: Codable, Equatable {
     }
 }
 
+/// The kinds of conversation window, each its own scene, so the system
+/// keeps each kind's window frames apart and restores a window as its kind.
+enum ConversationWindowKind: String {
+    /// The list with the panes it opens conversations in.
+    case workspace = "conversation"
+    /// Opened for one conversation, by a tab or a list row dragged out or
+    /// "open in new window": the editor area alone at first, its left area
+    /// holding that conversation's sub-agents rather than the list, and how
+    /// its tools are arranged its own, not what the next window starts with.
+    case single = "single-conversation"
+
+    var sceneID: String { rawValue }
+}
+
 /// What a new window starts with.
 struct WindowSeed: Codable, Hashable {
-    static let sceneID = "conversation"
     /// Each seed opens its own window; an equal value would bring an existing one forward.
     var id = UUID()
     /// The conversation to open in its pane.
     var conversationID: String?
     /// A tab another window hands over, with its state.
     var tab: UUID?
-    /// A conversation window: the editor area alone, its dock areas collapsed until asked for.
-    var editorOnly = false
 }
 
 /// A conversation window: the list with its own workspace, and the panes
@@ -375,7 +384,7 @@ struct WindowSeed: Codable, Hashable {
         didSet {
             guard tools != oldValue else { return }
             detached.sync()
-            if !isSingleConversation { application.rememberedToolLayout.remember(tools) }
+            if kind == .workspace { application.rememberedToolLayout.remember(tools) }
         }
     }
     /// The area a panel dragged now would dock into, for the window to show where.
@@ -386,14 +395,10 @@ struct WindowSeed: Codable, Hashable {
     /// The list's search text, shared by the sidebar and a floating list.
     @Published var listSearch = ""
     /// Opens a conversation window; set by the window's view, which has the action.
-    var openWindow: ((WindowSeed) -> Void)?
+    var openWindow: ((ConversationWindowKind, WindowSeed) -> Void)?
     /// Kept in front of other apps' windows.
     @Published var pinned = false
-    /// Opened for one conversation, by a tab or a list row dragged out or
-    /// "open in new window": its left area holds that conversation's
-    /// sub-agents rather than the list, and how its tools are arranged is
-    /// its own, not what the next window starts with.
-    private(set) var isSingleConversation = false
+    let kind: ConversationWindowKind
     private(set) lazy var detached = DetachedTools(model: self)
 
     /// Windows by the panes they hold, for moving a tab between them.
@@ -422,8 +427,9 @@ struct WindowSeed: Codable, Hashable {
         return all.lazy.compactMap(\.model).first { $0.pane(holding: tab) != nil }
     }
 
-    init(application: AppStore) {
+    init(application: AppStore, kind: ConversationWindowKind) {
         self.application = application
+        self.kind = kind
         list = application.makeWorkspace()
         let store = application.makeWorkspace()
         let first = Pane(tabs: [ConversationTab(store: store, start: { store.start() })])
@@ -446,8 +452,7 @@ struct WindowSeed: Codable, Hashable {
         _ = tabsRevision
         return SavedWindowLayout(layout: layout,
                                  panes: panes.mapValues { SavedWindowLayout.SavedPane(tabs: $0.tabs.map(\.id), selected: $0.selectedID) },
-                                 conversations: tabConversations, focused: focusedPaneID, tools: tools, pinned: pinned,
-                                 singleConversation: isSingleConversation ? true : nil)
+                                 conversations: tabConversations, focused: focusedPaneID, tools: tools, pinned: pinned)
     }
 
     /// Restore a saved arrangement, take a handed-over tab, or open `seed`'s
@@ -458,9 +463,12 @@ struct WindowSeed: Codable, Hashable {
         started = true
         list.start(loadFirstConversation: false)
         // A layout the system restores below replaces this one.
-        isSingleConversation = seed?.editorOnly == true || saved?.singleConversation == true
-        tools = isSingleConversation ? application.rememberedToolLayout.layout.forSingleConversation() : application.rememberedToolLayout.layout
-        if seed?.editorOnly == true { tools.toggleEditorOnly() }
+        switch kind {
+        case .workspace: tools = application.rememberedToolLayout.layout
+        case .single:
+            tools = application.rememberedToolLayout.layout.forSingleConversation()
+            tools.toggleEditorOnly()
+        }
         if let id = seed?.tab, let tab = Self.handoff.removeValue(forKey: id) {
             replacePanes(with: [Pane(tabs: [tab])], layout: nil)
             tab.activate()
@@ -731,7 +739,7 @@ struct WindowSeed: Codable, Hashable {
         guard let tab = detach(id, emptying: .leave) else { return }
         Self.handoff[tab.id] = tab
         let existing = Set(NSApp.windows.map(\.windowNumber))
-        openWindow(WindowSeed(tab: tab.id, editorOnly: true))
+        openWindow(.single, WindowSeed(tab: tab.id))
         if let frame { Self.place(windowNotIn: existing, frame: frame, attempts: 20) }
     }
 
@@ -742,7 +750,7 @@ struct WindowSeed: Codable, Hashable {
         guard let openWindow else { return }
         let frame = newWindowFrame(size: nil, at: point)
         let existing = Set(NSApp.windows.map(\.windowNumber))
-        openWindow(WindowSeed(conversationID: conversationID, editorOnly: true))
+        openWindow(.single, WindowSeed(conversationID: conversationID))
         if let frame { Self.place(windowNotIn: existing, frame: frame, attempts: 20) }
     }
 

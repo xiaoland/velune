@@ -36,7 +36,7 @@ struct ConversationCommands: Commands {
             Button("新建标签页") { target?.window.openInNewTab() }
                 .keyboardShortcut("t")
                 .disabled(target == nil)
-            Button("新建窗口") { target?.window.openWindow?(WindowSeed()) }
+            Button("新建窗口") { target?.window.openWindow?(.workspace, WindowSeed()) }
                 .keyboardShortcut("n", modifiers: [.command, .option])
                 .disabled(target?.window.openWindow == nil)
         }
@@ -145,8 +145,8 @@ struct ConversationWindow: View {
     @Environment(\.openWindow) private var openWindow
     let previewEmpty: Bool
     let previewSettings: Bool
-    init(application: AppStore, seed: WindowSeed?, previewEmpty: Bool, previewSettings: Bool) {
-        _window = StateObject(wrappedValue: ConversationWindowModel(application: application))
+    init(application: AppStore, kind: ConversationWindowKind, seed: WindowSeed?, previewEmpty: Bool, previewSettings: Bool) {
+        _window = StateObject(wrappedValue: ConversationWindowModel(application: application, kind: kind))
         self.seed = seed
         self.previewEmpty = previewEmpty
         self.previewSettings = previewSettings
@@ -155,7 +155,7 @@ struct ConversationWindow: View {
         VeluneRootView(window: window, store: window.list, tab: window.focused, focused: window.focused.store,
                        previewEmpty: previewEmpty, previewSettings: previewSettings)
             .onAppear {
-                window.openWindow = { [openWindow] in openWindow(id: WindowSeed.sceneID, value: $0) }
+                window.openWindow = { [openWindow] in openWindow(id: $0.sceneID, value: $1) }
                 let saved = savedLayout.data(using: .utf8).flatMap { try? JSONDecoder().decode(SavedWindowLayout.self, from: $0) }
                 window.start(restoring: saved, seed: seed)
                 // Development check of split panes without driving the interface.
@@ -236,8 +236,8 @@ struct VeluneApp: App {
     }
 
     var body: some Scene {
-        WindowGroup("Velune", id: WindowSeed.sceneID, for: WindowSeed.self) { $seed in
-            ConversationWindow(application: store, seed: seed, previewEmpty: previewEmpty, previewSettings: previewSettings)
+        WindowGroup("Velune", id: ConversationWindowKind.workspace.sceneID, for: WindowSeed.self) { $seed in
+            ConversationWindow(application: store, kind: .workspace, seed: seed, previewEmpty: previewEmpty, previewSettings: previewSettings)
                 .frame(minWidth: 520, minHeight: 420)
         }
         .defaultSize(width: 1060, height: 760)
@@ -263,6 +263,14 @@ struct VeluneApp: App {
             }
 
         }
+        // Its own scene: its windows' frames are not the next workspace
+        // window's, and a window restores as one opened for a conversation.
+        WindowGroup("Velune", id: ConversationWindowKind.single.sceneID, for: WindowSeed.self) { $seed in
+            ConversationWindow(application: store, kind: .single, seed: seed, previewEmpty: previewEmpty, previewSettings: previewSettings)
+                .frame(minWidth: 520, minHeight: 420)
+        }
+        .defaultSize(width: 720, height: 760)
+        .defaultLaunchBehavior(.suppressed)
         Window("问题", id: "problems") {
             ProblemsView(store: store).frame(minWidth: 600, minHeight: 320)
         }.defaultSize(width: 760, height: 480)

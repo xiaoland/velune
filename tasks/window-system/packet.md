@@ -117,3 +117,9 @@
 - 用户另报：`.claude/worktrees/<名>` 中的 Claude Code 会话（例如后台任务）按 cwd 末段成为独立项目，并见到 UUID 名的项目／会话。它们是独立原生会话，不是子 Agent。worktree 是否归入所属仓库为待用户决定；UUID 条目的路径待用户提供。
 - 已安装 f21fc1a：manifest 指向该提交且非 dirty。弹出与浮动回退的实际菜单操作由用户验收。
 - 用户报告（2026-10-17）：底部面板被压得很小且无法调整高度。原因是上一条把停靠区的单个工具也放进 `WeightedSplit`：它以 `GeometryReader` 只分配给定的空间，没有自身高度，而底部只有输入区时 `BottomAreaView` 按内容 `fixedSize` 取高，结果只剩一条细缝，拖动只改 `composerHeight` 也撑不开。改为底部只有输入区时直接放置输入区，其余情况仍走同一分栏（侧栏列表的身份不变）。开发版（复制的工具布局、合成 home、后台启动、窗口内截图）核对：未修复时底部为细缝；修复后按保存的 composerHeight 433 与改为 150 分别显示。此时 main 因订阅合并后 `BindingProviderDraft` 新增必填字段而 Swift 未同步、不能构建，核对时用未提交的临时占位通过编译；因此尚未安装，待 main 可构建后重建安装。
+
+## 补充（2026-10-18，会话窗口的场景）
+
+- 用户报告：会话窗口开着时退出，重启后会话窗口没有恢复，主窗口却成了会话窗口的尺寸；并提醒平台已有的能力应复用。核对：SwiftUI 按场景记住窗口框架（defaults 中 `NSWindow Frame <场景 id>-AppWindow-<n>`），会话窗口与工作区窗口同属 `conversation` 场景，彼此写同一组键，下一个工作区窗口因而取到会话窗口的大小。会话窗口是否重开按已确认的 [S33](../../docs/sources.md#s33) 跟随系统“退出 App 时关闭窗口”设置（本机未设置 `NSQuitAlwaysKeepsWindows`，默认关闭），不是缺陷。
+- 改为两个场景（`ConversationWindowKind`）：会话窗口有自己的 `WindowGroup`，框架与恢复身份由系统按场景管理，删去自建的 `SavedWindowLayout.singleConversation` 与 `WindowSeed.editorOnly`；会话窗口场景不在启动时打开。拖出窗口的松开位置仍由 AppKit 设置：`defaultWindowPlacement` 只相对默认显示器定位，放不到其他屏幕上的松开处。
+- 核对（开发版复制件改用独立 bundle id，与已安装版不共享 defaults 与系统保存状态；合成 home、后台启动，临时钩子打开会话窗口，不提交）：两类窗口的框架分别存为 `conversation-AppWindow-1`（1060×760）与 `single-conversation-AppWindow-1`（720×760）；正常退出后重启只有工作区窗口，仍为 1060×760；为该 bundle 设置退出时保留窗口后，两个窗口各以原尺寸重开，截图中会话窗口只显示编辑区、工作区窗口有会话列表。
