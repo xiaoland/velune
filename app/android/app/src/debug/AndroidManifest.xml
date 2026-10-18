@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
+    <application>
+        <activity
+            android:name=".TransportProbeActivity"
+            android:exported="true"
+            android:label="Velune S1 transport probe" />
+    </application>
+</manifest>

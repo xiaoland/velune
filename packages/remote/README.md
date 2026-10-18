@@ -10,9 +10,17 @@
 
 `DevelopmentPublic` 是对 n0 公共开发设施的显式选择，不是 Velune 正式服务承诺。正式产品可由宿主装配开箱即用的服务地址，同时允许用户替换为自部署设施；本包不部署服务。地址不接受用户名、密码、query 或 fragment，避免把认证材料混入公开拨号信息。生产服务应使用 HTTPS。
 
-默认 `PathPolicy::Automatic` 保留 iroh 的 IPv4／IPv6、relay 协助建连、直连探测与路径选择。relay 不是固定的数据路径；建立直连后由 iroh 选择实际发送路径。`RelayOnly` 清除直接 IP 传输，只用于受控诊断。`network_change().await` 转发原生网络变更通知，供平台前后台和切网事件使用，不另建网络监控器。
+默认 `PathPolicy::Automatic` 保留 iroh 的 IPv4／IPv6、relay 协助建连、直连探测与路径选择。relay 不是固定的数据路径；建立直连后由 iroh 选择实际发送路径。`RelayOnly` 清除直接 IP 传输，只用于受控诊断。`report_network_change(snapshot).await` 校验平台网络事实并转发原生网络变更通知，返回输入序号只表示通知已接收，不证明发现新地址、重绑 socket 或恢复路径。平台负责订阅默认网络与仍可用的 Wi-Fi，保留原始事件时间。`network_change().await` 仍可用于不携带事实的原生通知。
 
-`RemoteClient::connection_status()` 返回当前路径及选中状态；`observe_paths().next().await` 先返回快照，随后按原生路径事件更新。事件积压时重新读取完整快照。统计只包含路径类别、RTT、字节数、丢包及公开设备身份，不包含网络地址或业务正文。每条业务请求使用独立 QUIC 双向流；大附件读取不会占住同一连接唯一的业务流。
+`RemoteClient::connection_status()` 返回当前路径及选中状态；`observe_paths().next().await` 先返回快照，随后按原生路径事件更新。事件积压时重新读取完整快照。快照包含进程内连接编号、连接内 path 编号、单调采样时间、地址族、路径类别、RTT、字节数、丢包及公开设备身份，不包含网络地址或业务正文。原生接口不提供候选来源，因此 source 为 Unknown；Direct 不等于 LAN。每次新拨号分配新连接编号，observer 保留原编号。每条业务请求使用独立 QUIC 双向流；大附件读取不会占住同一连接唯一的业务流。
+
+## 隔离传输诊断
+
+显式 `diagnostics` feature 提供 `TransportProbe`，使用独立 `velune/transport-probe/1` ALPN、进程内临时密钥和最多 1024 字节的合成 marker。它不接业务 Handler、不打开身份／信任文件，也不自动重拨。探针最多保留 16 条连接，每连接最多 8 个 marker 流；每次回执核对序号与完整 payload，路径统计另计实际传输字节。
+
+`ConnectionDiagnostics` 显式包含受控本地／远端地址，只能存入私有验收资料。该 feature 用于复验平台发现与传输边界；正式产品装配不启用它，不能把 marker 成功作为业务授权与恢复闭环的验收证据。
+
+`enable_mdns()` 只在没有其它 lookup 的独立探针上显式启用；默认探针仍不含 mDNS，以免混淆平台地址变化／QNT 的判别。诊断依赖固定为 `iroh-mdns-address-lookup` 0.6.0 的官方提交 `6f103e7a92ddbd2007383527ab5024c983e3c1c6`，其缓存覆盖修复允许同一 peer 更新后再次 resolve 取到新地址；保持默认发现周期。`mdns_resolve` 最多八个并发调用，等待上限十五秒，只查询此服务，不建立连接。`mdns_events` 排空本地有界事件队列；Dropped 仅计自上次排空后本地溢出或超限项，不代表上游二十项 subscription 队列没有丢失。存在 active resolve 时，上游可能只发送 resolver 更新而不发被动 Discovered，缓存更新必须以再次 resolve 核对。关闭探针清空 lookup registry、释放自持 service 并停止订阅任务。
 
 ## 配对、持久信任与撤销
 

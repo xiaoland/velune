@@ -1,7 +1,13 @@
 #!/bin/bash
 set -euo pipefail
 cd "$(dirname "$0")/.."
-[[ $# -eq 0 ]] || { echo '用法：scripts/build-android-native.sh' >&2; exit 1; }
+features=remote
+case "${1:-}" in
+  '') ;;
+  --diagnostics) features=remote-diagnostics; shift ;;
+  *) echo '用法：scripts/build-android-native.sh [--diagnostics]' >&2; exit 1 ;;
+esac
+[[ $# -eq 0 ]] || { echo '用法：scripts/build-android-native.sh [--diagnostics]' >&2; exit 1; }
 
 sdk="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-}}"
 if [[ -z "$sdk" ]]; then
@@ -29,7 +35,7 @@ export CC_aarch64_linux_android="$compiler"
 export AR_aarch64_linux_android="$toolchain/llvm-ar"
 export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$compiler"
 cargo build --locked --release --target-dir target -p velune-bindings --lib \
-  --target aarch64-linux-android --no-default-features --features remote
+  --target aarch64-linux-android --no-default-features --features "$features"
 
 bindings="$PWD/target/android-bindings"
 native="$PWD/target/android-native/arm64-v8a"

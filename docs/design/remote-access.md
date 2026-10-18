@@ -1,6 +1,6 @@
 # 统一设备远控：配对、寻址与恢复
 
-状态：2026-10-18 收敛的工程方案，尚未实现，不等同用户已验收或恢复实现授权。产品约束归 [PRD](../prd/index.md#后续扩展分布式能力)，共享核心与包边界归 [架构入口](architecture.md#远控契约与唯一执行-owner2026-10-17)。本方案基于锁定的 iroh 1.3.0；源码核查和本机实验归 [研究记录](../../tasks/android-minimal/transport-research.md)，执行次序归 [线性计划](../../tasks/android-minimal/plan.md)，通过条件归 [验收方案](../../tasks/android-minimal/acceptance.md)。产品实现与真机验收仍暂停。
+状态：2026-10-18 已收敛并获用户授权实施的工程方案，S1 进行中；本文件描述目标契约，不等同已实现或用户已验收。产品约束归 [PRD](../prd/index.md#后续扩展分布式能力)，共享核心与包边界归 [架构入口](architecture.md#远控契约与唯一执行-owner2026-10-17)。本方案基于锁定的 iroh 1.3.0；源码核查和本机实验归 [研究记录](../../tasks/android-minimal/transport-research.md)，执行次序归 [线性计划](../../tasks/android-minimal/plan.md)，通过条件归 [验收方案](../../tasks/android-minimal/acceptance.md)。实际实现与验收状态以 [任务](../../tasks/android-minimal/packet.md) 为准。
 
 ## 设备与状态归属
 
@@ -173,7 +173,7 @@ Android 默认网络回调不覆盖所有可用接口。无 Internet Wi-Fi 与�
 
 第一项实施判别先保留现有传输与 selector，仅补网络事件和路径观察，验证平台地址变化／QNT。随后分别比较非默认 Wi-Fi 上普通 UDP 与显式 Network 绑定：普通可达则不增加适配；只有显式绑定可达时，才在 UDP 创建及每次 rebind 贯通 Network 生命周期。iroh 1.3 没有内置 UDP FD 绑定回调，该分支需要经固定版本验证的窄补丁或上游扩展，不采用不稳定 custom transport 另造 IP 栈。两种 UDP 都不可达时先修实验环境，不推断库缺陷。
 
-mDNS 单独验证初连、地址更新和过期。优先采用经源码确认修复缓存覆盖问题的兼容上游版本；否则固定最小补丁并记录来源／许可证，不等待上游无限期响应。subscribe→MemoryLookup 不能替代遗漏的更新或活动连接探测。仅当真实平台多播约束成立时再选择平台发现适配，不能将 Android NSD 未经协议核对直接替换该实现。
+mDNS 单独验证初连、地址更新和过期。S1 已选择官方修复提交 `6f103e7a92ddbd2007383527ab5024c983e3c1c6`（包版本 0.6.0），覆盖插入缓存；实际编译和地址变化／过期仍须判别，见研究记录。不 vendor，保持上游默认发现周期。subscribe→MemoryLookup 不能替代遗漏的更新或活动连接探测。仅当真实平台多播约束成立时再选择平台发现适配，不能将 Android NSD 未经协议核对直接替换该实现。
 
 | 单元 | 拟议改动 |
 | --- | --- |

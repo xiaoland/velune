@@ -4,6 +4,8 @@
 
 2026-10-18 用户要求继续直到技术方案、验收方案及线性化实现计划收敛。本轮交付 [技术方案](../../docs/design/remote-access.md)、[人工验收方案](acceptance.md) 与 [唯一线性计划](plan.md)；三者描述待实施契约和判据，不把设计收敛作为恢复产品实现或真机操作的授权。
 
+随后用户明确“好的，开始实现”，已解除上述暂停，按计划进入 S1。android_native 负责 S1 源码／依赖／静态检查和匹配产物，android_verification 独占 adb／合成宿主及现场验收；主执行者维护集成与文档。S2—S6 仍未开始，不跨越 S1 出口推进。
+
 ## 工作区与权限
 
 用户随后要求迁移进行中的工作并将原目录恢复 main，已完成。本对话附属 `android-minimal` worktree 持有 `feat/android-minimal`；原目录当前为 main 且干净，没有覆盖其他任务更新。迁移检查点为 `3b8bed7`，功能提交为 `235b62b`；为保留当前已安装的并行修复，只在独立分支合入固定 main `3f01f9b`，main 集成源码为 `d3b039d`。原生库、生成绑定、交叉缓存和验收资源均已迁移，关键文件摘要核对一致。
@@ -53,3 +55,15 @@ native、Mac、Android、advisor 与 verification 的研究已整合为 [工程�
 当前收敛已不依赖新的产品偏好；Android socket 钩子、QNT 通知链、mDNS 窄修复及相机表现按 S1／S5 的有界分支解决。实施仍需实际异网、非默认 Wi-Fi／蜂窝与可控 relay／lookup 环境；现有同 Wi-Fi 手机不证明这些前提已具备。恢复实施时从 S1 顺序执行，出现架构前提被推翻或外部条件缺失则按计划记录具体阻塞。
 
 收敛检查：六份变更文档的 165 个本地链接／标题锚点通过，git diff／cached diff whitespace 检查通过；原目录 main 干净，本轮未修改产品源码或运行产品构建。只提交本轮文档，保留暂停前的 Android UI／合成宿主未提交改动；没有新增或运行自动化测试。
+
+## S1 实施中
+
+用户恢复授权后，已把 S1 源码与产物交给 android_native、设备／合成宿主验收交给 android_verification。USB 单台 API28／arm64 设备在线且未锁屏，旧进程存在不作为通过证据；当前尚未切换网络。是否有可用于本轮的蜂窝数据已向用户询问，未得到答复前不依赖该条件，也不改手机网络。
+
+安装基线已通过公开 manifest 更新：当前 Mac 为 main `03149ef`、dirty=false、schema10，不能再沿用早前 `d3b039d` 安装状态。main 后续增量集中于提供商来源与子 Agent；S1 不在并行源码修改时合并主线，不安装旧分支 bundle 覆盖新版。最终安装前由主执行者完成必要集成和版本检查；当前只用合成宿主／隔离产物。
+
+只读 merge-tree 已定位主线集成的四处文本冲突：开发说明、application portable／provider_authentication、bindings README。主线新增 LinkedClaudeLogin 等公开认证描述须继续归中立 API，不能让 remote-only 重新依赖执行栈；实际合并放在 S1 源码形成检查点后，避免并行改动覆盖。
+
+S1 源码已形成冻结检查点：普通 remote 与诊断 feature 检查、host／Android 目标严格 clippy、API28 release 库与 Kotlin 生成通过；Android debug assemble／lint、release Kotlin 编译及调试组件隔离检查通过。首批同网探针 89 次 marker 全匹配且实际 Direct IPv4 字节增长，仅归该产物的探索；最终 missed_events 接口包和 mDNS 真机观察由验收 owner 接续。
+
+独立机制证据已采纳：真实原生路径队列溢出保留 missed_events 且原连接仍可用；真实编译 Kotlin 的 scoped IPv6 规范化经 UniFFI／Rust 接收；官方固定 mDNS 的 A→B 新查询和过期判别通过。它们不证明 WAN→LAN 或非默认 Wi-Fi 路由。当前等待蜂窝条件答复，S1 尚未放行；先提交源码检查点并完成必要主线基线集成，不进入 S2。

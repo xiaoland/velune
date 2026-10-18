@@ -84,6 +84,8 @@ Network.bindSocket 的 FileDescriptor 接口与 NDK `android_setsocknetwork` 在
 
 mDNS 0.6.0 声明 iroh／iroh-base `1.0.0` 范围，具备与锁定 1.3.0 统一解析的元数据条件；本轮未编译或验证平台多播。[固定清单](https://github.com/n0-computer/iroh-address-lookups/blob/c64aec6e2afb0d0b3563858a58e70a00b8bfa94e/iroh-mdns-address-lookup/Cargo.toml)。
 
+2026-10-18 S1 选型更新：官方 [修复提交](https://github.com/n0-computer/iroh-address-lookups/commit/6f103e7a92ddbd2007383527ab5024c983e3c1c6) `6f103e7a92ddbd2007383527ab5024c983e3c1c6` 将缓存改为 AddressLookupItem、比较实际 EndpointInfo 并覆盖插入；同一公钥地址更新后的 resolve 可取新值，重复时间戳不当作内容变化，过期仍删除。包版本仍为 0.6.0，iroh 依赖范围未变，选此固定 git rev，不 vendor 或等待后续发版；保持默认发现周期。该结论来自源码与清单，编译及合成 A→B／过期判别交由 S1 集成，尚不能据此宣称已通过。早前发布版本的缓存风险不能套用为该修复提交仍有同一缺陷。
+
 ## 配对 exporter 样例与关闭屏障
 
 第二个临时 Rust 程序仅绑定 loopback、禁用 relay／lookup，核验双方 Connection.remote_id 后构造同一 131 字节 context。label 为 `EXPORTER-Velune-Pairing-v2`（26 个 ASCII 字节，无 NUL）；context 编码与方案一致。输出仅布尔值和长度，不输出密钥、token、binding 或核对码。

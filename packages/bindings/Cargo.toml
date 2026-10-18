@@ -11,6 +11,7 @@ crate-type = ["rlib", "cdylib"]
 default = ["local-runtime", "remote"]
 local-runtime = ["dep:velune-application", "velune-application/local-runtime", "dep:tracing-subscriber", "dep:tracing-appender"]
 remote = ["dep:velune-remote", "dep:tokio", "dep:jni", "dep:rustls-platform-verifier"]
+remote-diagnostics = ["remote", "velune-remote/diagnostics", "dep:tracing-subscriber"]
 cli = ["uniffi/cli"]
 
 [[bin]]

@@ -1,6 +1,6 @@
 # 统一远控人工验收方案
 
-状态：2026-10-18 已收敛的待执行方案。本文件定义将来如何取得验收证据，不记录新通过项，也不恢复设备操作、构建或产品实现。技术契约以 [统一设备远控](../../docs/design/remote-access.md) 为准，执行次序归 [线性计划](plan.md)；锁定依赖的源码事实和临时实验见 [研究记录](transport-research.md)，已经发生的观察见 [verification](verification.md) 与 [Rust 远控验收](../remote-control/verification.md)。
+状态：2026-10-18 已收敛的验收方案，用户已恢复实施授权，当前进入 S1。本文件定义取证方式，不记录新通过项。技术契约以 [统一设备远控](../../docs/design/remote-access.md) 为准，执行次序归 [线性计划](plan.md)；锁定依赖的源码事实和临时实验见 [研究记录](transport-research.md)，已经发生的观察见 [verification](verification.md) 与 [Rust 远控验收](../remote-control/verification.md)。
 
 ## 判据、环境与证据
 

@@ -25,7 +25,7 @@ if [[ -z "${ANDROID_HOME:-}" ]]; then
 fi
 [[ -d "${ANDROID_HOME:-}" ]] || { echo '请设置 ANDROID_HOME 指向 Android SDK。' >&2; exit 1; }
 if [[ "$skip_native" == false ]]; then
-  bash scripts/build-android-native.sh
+  bash scripts/build-android-native.sh --diagnostics
 fi
 for artifact in target/android-bindings/app/velune/bindings/velune_bindings.kt target/android-native/arm64-v8a/libvelune_bindings.so target/android-native/rustls-platform-verifier-0.2.0.aar; do
   [[ -f "$artifact" ]] || { echo "缺少构建产物：$artifact；请先运行 scripts/build-android-native.sh。" >&2; exit 1; }

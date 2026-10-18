@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -24,6 +25,8 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.text.input.KeyboardCapitalization
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
@@ -140,6 +143,7 @@ private fun PendingCard(pending: PendingOperation, status: String, canQuery: Boo
 @Composable
 private fun DevicesScreen(state: RemoteUiState, model: RemoteViewModel) {
     var invitation by remember { mutableStateOf("") }
+    var invitationVisible by remember { mutableStateOf(false) }
     val clipboard = LocalClipboardManager.current
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
         item {
@@ -149,11 +153,18 @@ private fun DevicesScreen(state: RemoteUiState, model: RemoteViewModel) {
         item {
             OutlinedTextField(
                 invitation, { invitation = it }, Modifier.fillMaxWidth(), label = { Text("一次性邀请") },
-                minLines = 2, maxLines = 4, visualTransformation = PasswordVisualTransformation(),
+                minLines = 2, maxLines = 4,
+                visualTransformation = if (invitationVisible) VisualTransformation.None else PasswordVisualTransformation(),
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, capitalization = KeyboardCapitalization.None, autoCorrectEnabled = false),
+                trailingIcon = {
+                    TextButton(onClick = { invitationVisible = !invitationVisible }) {
+                        Text(if (invitationVisible) "隐藏邀请" else "显示邀请")
+                    }
+                },
             )
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedButton(onClick = { invitation = clipboard.getText()?.text.orEmpty() }, enabled = !state.busy) { Text("粘贴邀请") }
-                Button(onClick = { model.pair(invitation) { invitation = "" } }, enabled = !state.starting && !state.busy && invitation.isNotBlank()) { Text("配对并连接") }
+                Button(onClick = { model.pair(invitation) { invitation = ""; invitationVisible = false } }, enabled = !state.starting && !state.busy && invitation.isNotBlank()) { Text("配对并连接") }
             }
             Text("当前使用 iroh 公共开发连接服务；这不是已运营的 Velune 公网服务。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }

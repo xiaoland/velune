@@ -1,13 +1,12 @@
 package app.velune.android
 
 import android.app.Application
-import android.net.ConnectivityManager
-import android.net.Network
 import android.os.Build
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import app.velune.bindings.*
 import kotlinx.coroutines.*
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
@@ -44,11 +43,9 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
     private var foreground = false
     private var poll: Job? = null
     private var generation = 0L
-    private val connectivity = application.getSystemService(ConnectivityManager::class.java)
-    private val networkCallback = object : ConnectivityManager.NetworkCallback() {
-        override fun onAvailable(network: Network) = networkChanged()
-        override fun onLost(network: Network) = networkChanged()
-    }
+    private var networkMonitor: NetworkMonitor? = null
+    private val networkSnapshots = Channel<BindingPlatformNetworkSnapshot>(Channel.CONFLATED)
+    private var pathObservation: Job? = null
 
     init {
         viewModelScope.launch {
@@ -73,7 +70,16 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
                         null,
                     )
                 }
-                connectivity.registerDefaultNetworkCallback(networkCallback)
+                networkMonitor = NetworkMonitor(application, report = { snapshot -> networkSnapshots.trySend(snapshot) })
+                networkMonitor?.start()
+                if (foreground) networkMonitor?.foreground()
+                viewModelScope.launch {
+                    for (snapshot in networkSnapshots) {
+                        try { withContext(Dispatchers.IO) { endpoint?.reportNetworkChange(snapshot) } }
+                        catch (cancelled: CancellationException) { throw cancelled }
+                        catch (_: Exception) { mutable.update { it.copy(connection = "网络变化通知未完成，连接状态待重新观察。") } }
+                    }
+                }
             } catch (_: LinkageError) {
                 mutable.update { it.copy(error = "远控绑定与原生库不匹配，请重新安装完整 APK。") }
             } catch (error: Exception) {
@@ -110,6 +116,7 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
                 configuration = null, connection = "正在检查路径", error = null)
         }
         startPolling()
+        startPathObservation()
         withContext(Dispatchers.IO) { previous?.shutdown() }
         refresh(result)
     }
@@ -117,6 +124,7 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
     fun disconnect() = action {
         generation += 1
         poll?.cancel()
+        pathObservation?.cancel()
         val previous = client
         client = null
         mutable.update { it.copy(connected = null, configuration = null, snapshot = null, models = emptyList(), connection = "未连接") }
@@ -140,7 +148,6 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
             ?: enabled.firstOrNull()?.id
         mutable.update { it.copy(configuration = configuration, runtimeId = runtime) }
         if (runtime != null) loadModels(current, runtime)
-        updatePath(current)
     }
 
     fun selectRuntime(runtimeId: String) = action {
@@ -282,18 +289,14 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
     fun foreground(active: Boolean) {
         foreground = active
         if (active) {
-            networkChanged()
+            networkMonitor?.foreground()
             startPolling()
+            startPathObservation()
         } else {
             poll?.cancel()
             poll = null
-        }
-    }
-
-    private fun networkChanged() {
-        viewModelScope.launch {
-            try { withContext(Dispatchers.IO) { endpoint?.networkChange() } }
-            catch (_: Exception) { /* The foreground refresh reports any connection failure. */ }
+            pathObservation?.cancel()
+            pathObservation = null
         }
     }
 
@@ -315,7 +318,6 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
                         val configuration = withContext(Dispatchers.IO) { current.list() }
                         if (current === client) mutable.update { it.copy(configuration = configuration) }
                     }
-                    updatePath(current)
                 } catch (cancelled: CancellationException) { throw cancelled }
                 catch (_: Exception) { mutable.update { it.copy(connection = "连接暂不可用，可断开后重新连接；执行端任务会继续。") } }
                 delay(1_000)
@@ -323,8 +325,30 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
-    private suspend fun updatePath(current: VeluneApplication) {
-        val status = withContext(Dispatchers.IO) { current.connectionStatus() }
+    private fun startPathObservation() {
+        if (!foreground) return
+        val current = client ?: return
+        pathObservation?.cancel()
+        pathObservation = viewModelScope.launch {
+            try {
+                val observer = withContext(Dispatchers.IO) { current.observePaths() }
+                try {
+                    updatePath(current, withContext(Dispatchers.IO) { current.connectionStatus() })
+                    while (isActive && current === client) {
+                        val observation = withContext(Dispatchers.IO) { observer.next(1_000uL) } ?: continue
+                        val status = observation.status
+                        updatePath(current, status)
+                        if (status.closed) break
+                    }
+                } finally { withContext(NonCancellable + Dispatchers.IO) { observer.close() } }
+            } catch (cancelled: CancellationException) { throw cancelled }
+            catch (_: Exception) {
+                if (current === client) mutable.update { it.copy(connection = "路径观察暂不可用。") }
+            }
+        }
+    }
+
+    private fun updatePath(current: VeluneApplication, status: BindingConnectionStatus) {
         if (current !== client) return
         val selected = status.paths.firstOrNull { it.selected }
         val path = when (selected?.kind) {
@@ -333,7 +357,10 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
             BindingConnectionPathKind.OTHER -> "其他路径"
             null -> "正在选择路径"
         }
-        mutable.update { it.copy(connection = if (status.closed) "连接已关闭，请重新连接" else path) }
+        val detail = selected?.let { " · 路径 ${it.pathId}" }.orEmpty()
+        mutable.update {
+            it.copy(connection = if (status.closed) "连接已关闭，请重新连接" else "$path · 连接 ${status.connectionId}$detail")
+        }
     }
 
     private fun requireClient() = client ?: error("请先连接执行设备。")
@@ -362,7 +389,10 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
 
     override fun onCleared() {
         poll?.cancel()
-        try { connectivity.unregisterNetworkCallback(networkCallback) } catch (_: IllegalArgumentException) { }
+        pathObservation?.cancel()
+        networkMonitor?.close()
+        networkMonitor = null
+        networkSnapshots.close()
         val local = endpoint
         client = null
         endpoint = null

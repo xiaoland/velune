@@ -34,8 +34,104 @@ pub enum BindingConnectionPathKind {
     Relay,
     Other,
 }
+#[derive(Clone, serde::Deserialize, uniffi::Enum)]
+#[serde(rename_all = "camelCase")]
+pub enum BindingPathAddressFamily {
+    Ipv4,
+    Ipv6,
+    Other,
+}
+#[derive(Clone, serde::Deserialize, uniffi::Enum)]
+#[serde(rename_all = "camelCase")]
+pub enum BindingPathSource {
+    Unknown,
+}
+
+#[derive(Clone, Serialize, serde::Deserialize, uniffi::Enum)]
+#[serde(rename_all = "camelCase")]
+pub enum BindingNetworkChangeReason {
+    Available,
+    Lost,
+    LinkProperties,
+    Capabilities,
+    Foreground,
+}
+#[derive(Clone, Serialize, uniffi::Record)]
+pub struct BindingPlatformNetworkSnapshot {
+    pub sequence: u64,
+    pub elapsed_realtime_ms: u64,
+    pub reason: BindingNetworkChangeReason,
+    pub default_network_id: Option<String>,
+    pub networks: Vec<BindingPlatformNetwork>,
+}
+#[derive(Clone, Serialize, uniffi::Record)]
+pub struct BindingPlatformNetwork {
+    pub id: String,
+    pub wifi: bool,
+    pub cellular: bool,
+    pub internet: bool,
+    pub validated: bool,
+    pub interface_name: Option<String>,
+    pub addresses: Vec<String>,
+    pub dns_servers: Vec<String>,
+}
+impl TryFrom<BindingPlatformNetworkSnapshot> for velune_remote::PlatformNetworkSnapshot {
+    type Error = BindingError;
+    fn try_from(value: BindingPlatformNetworkSnapshot) -> Result<Self, Self::Error> {
+        let snapshot: Self = convert(value)?;
+        snapshot.validate()?;
+        Ok(snapshot)
+    }
+}
+
+#[derive(Clone, serde::Deserialize, uniffi::Record)]
+pub struct BindingPathObservation {
+    pub status: BindingConnectionStatus,
+    pub missed_events: u64,
+}
+
+/// An observer retains transport evidence, but disposing it does not close business work.
+#[derive(uniffi::Object)]
+pub struct VelunePathObserver {
+    runtime: Arc<tokio::runtime::Runtime>,
+    observer: tokio::sync::Mutex<velune_remote::PathObserver>,
+}
+impl VelunePathObserver {
+    pub(crate) fn new(
+        runtime: Arc<tokio::runtime::Runtime>,
+        observer: velune_remote::PathObserver,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            runtime,
+            observer: tokio::sync::Mutex::new(observer),
+        })
+    }
+}
+#[uniffi::export]
+impl VelunePathObserver {
+    /// Null means no event within the bounded wait, or the stream ended; check status.closed.
+    pub fn next(&self, timeout_ms: u64) -> Result<Option<BindingPathObservation>, BindingError> {
+        if timeout_ms == 0 || timeout_ms > 5_000 {
+            return Err(BindingError::Invalid {
+                detail: "路径观察等待必须为 1–5000 毫秒".into(),
+            });
+        }
+        let status = self.runtime.block_on(async {
+            tokio::time::timeout(Duration::from_millis(timeout_ms), async {
+                self.observer.lock().await.next().await
+            })
+            .await
+            .ok()
+            .flatten()
+        });
+        status.map(convert).transpose()
+    }
+}
 #[derive(Clone, serde::Deserialize, uniffi::Record)]
 pub struct BindingConnectionPath {
+    pub path_id: u64,
+    pub address_family: BindingPathAddressFamily,
+    pub source: BindingPathSource,
     pub kind: BindingConnectionPathKind,
     pub selected: bool,
     pub rtt_microseconds: u64,
@@ -45,6 +141,8 @@ pub struct BindingConnectionPath {
 }
 #[derive(Clone, serde::Deserialize, uniffi::Record)]
 pub struct BindingConnectionStatus {
+    pub connection_id: u64,
+    pub sampled_at_micros: u64,
     pub peer_id: String,
     pub closed: bool,
     pub paths: Vec<BindingConnectionPath>,
@@ -197,7 +295,9 @@ impl TryFrom<RequestStatus> for BindingRemoteRequestStatus {
     }
 }
 
-fn parse_addresses(addresses: Vec<String>) -> Result<Vec<std::net::SocketAddr>, BindingError> {
+pub(crate) fn parse_addresses(
+    addresses: Vec<String>,
+) -> Result<Vec<std::net::SocketAddr>, BindingError> {
     addresses
         .into_iter()
         .map(|address| {
@@ -342,6 +442,15 @@ impl VeluneRemoteEndpoint {
     /// Platform network and foreground notifications can prompt native path recovery.
     pub fn network_change(&self) {
         self.runtime.block_on(self.endpoint.network_change());
+    }
+    /// A returned sequence confirms notification only, not successful path recovery.
+    pub fn report_network_change(
+        &self,
+        snapshot: BindingPlatformNetworkSnapshot,
+    ) -> Result<u64, BindingError> {
+        Ok(self
+            .runtime
+            .block_on(self.endpoint.report_network_change(snapshot.try_into()?))?)
     }
 
     pub fn descriptor(&self) -> BindingRemoteEndpointDescriptor {
@@ -584,6 +693,13 @@ impl VeluneApplication {
         state.expected = Some(Revision(revision));
         state.user_epoch = state.user_epoch.wrapping_add(1);
         Ok(())
+    }
+    pub fn observe_paths(&self) -> Result<Arc<VelunePathObserver>, BindingError> {
+        let remote = self.remote_backend()?;
+        Ok(VelunePathObserver::new(
+            remote.runtime.clone(),
+            remote.context()?.client.observe_paths(),
+        ))
     }
     pub fn connection_status(&self) -> Result<BindingConnectionStatus, BindingError> {
         let remote = self.remote_backend()?;

@@ -53,6 +53,82 @@ struct State {
     timeout: Duration,
 }
 
+/// Shared native transport assembly; protocol authorization remains with each caller.
+pub(crate) async fn bind_transport(
+    key: iroh::SecretKey,
+    config: EndpointConfig,
+    alpn: &[u8],
+) -> Result<Endpoint> {
+    if config.request_timeout.is_zero()
+        || config.request_timeout > Duration::from_secs(300)
+        || config.bind_addresses.len() > 16
+    {
+        return Err(RemoteError::Configuration);
+    }
+    let relay = match config.relay {
+        RelayConfig::Disabled => RelayMode::Disabled,
+        RelayConfig::DevelopmentPublic => RelayMode::Default,
+        RelayConfig::Custom { urls } => {
+            if urls.is_empty() || urls.len() > 16 {
+                return Err(RemoteError::Configuration);
+            }
+            let urls: Vec<iroh::RelayUrl> = urls
+                .into_iter()
+                .map(|url| validate_relay_url(&url))
+                .collect::<Result<_>>()?;
+            RelayMode::custom(urls)
+        }
+    };
+    let relay_enabled = !matches!(relay, RelayMode::Disabled);
+    if matches!(config.path_policy, PathPolicy::RelayOnly)
+        && (!relay_enabled || !config.bind_addresses.is_empty())
+    {
+        return Err(RemoteError::Configuration);
+    }
+    let mut builder = Endpoint::builder(presets::Minimal)
+        .secret_key(key)
+        .alpns(vec![alpn.to_vec()])
+        .relay_mode(relay);
+    match config.discovery {
+        DiscoveryConfig::None => {}
+        DiscoveryConfig::DevelopmentPublic => {
+            use iroh::address_lookup::{DnsAddressLookup, PkarrPublisher, PkarrResolver};
+            builder = builder
+                .address_lookup(PkarrPublisher::n0_dns())
+                .address_lookup(PkarrResolver::n0_dns())
+                .address_lookup(DnsAddressLookup::n0_dns());
+        }
+        DiscoveryConfig::CustomPkarr { url } => {
+            use iroh::address_lookup::{PkarrPublisher, PkarrResolver};
+            let url = validate_relay_url(&url)?;
+            builder = builder
+                .address_lookup(PkarrPublisher::builder(url.clone().into()))
+                .address_lookup(PkarrResolver::builder(url.into()));
+        }
+    }
+    if matches!(config.path_policy, PathPolicy::RelayOnly) {
+        builder = builder.clear_ip_transports();
+    }
+    if !config.bind_addresses.is_empty() {
+        builder = builder.clear_ip_transports();
+        for address in config.bind_addresses {
+            builder = builder
+                .bind_addr(address)
+                .map_err(|_| RemoteError::Configuration)?;
+        }
+    }
+    let endpoint = builder.bind().await.map_err(|_| RemoteError::Unavailable)?;
+    if relay_enabled
+        && tokio::time::timeout(config.request_timeout, endpoint.online())
+            .await
+            .is_err()
+    {
+        endpoint.close().await;
+        return Err(RemoteError::Timeout);
+    }
+    Ok(endpoint)
+}
+
 /// Network lifecycle is independent of the business application lifecycle.
 pub struct RemoteEndpoint {
     state: Arc<State>,
@@ -65,73 +141,7 @@ impl RemoteEndpoint {
         trust: Arc<dyn DeviceTrust>,
         handler: Option<Arc<dyn Handler>>,
     ) -> Result<Self> {
-        if config.request_timeout.is_zero()
-            || config.request_timeout > Duration::from_secs(300)
-            || config.bind_addresses.len() > 16
-        {
-            return Err(RemoteError::Configuration);
-        }
-        let relay = match config.relay {
-            RelayConfig::Disabled => RelayMode::Disabled,
-            RelayConfig::DevelopmentPublic => RelayMode::Default,
-            RelayConfig::Custom { urls } => {
-                if urls.is_empty() || urls.len() > 16 {
-                    return Err(RemoteError::Configuration);
-                }
-                let urls: Vec<iroh::RelayUrl> = urls
-                    .into_iter()
-                    .map(|url| validate_relay_url(&url))
-                    .collect::<Result<_>>()?;
-                RelayMode::custom(urls)
-            }
-        };
-        let relay_enabled = !matches!(relay, RelayMode::Disabled);
-        if matches!(config.path_policy, PathPolicy::RelayOnly)
-            && (!relay_enabled || !config.bind_addresses.is_empty())
-        {
-            return Err(RemoteError::Configuration);
-        }
-        let mut builder = Endpoint::builder(presets::Minimal)
-            .secret_key(identity.key)
-            .alpns(vec![ALPN.to_vec()])
-            .relay_mode(relay);
-        match config.discovery {
-            DiscoveryConfig::None => {}
-            DiscoveryConfig::DevelopmentPublic => {
-                use iroh::address_lookup::{DnsAddressLookup, PkarrPublisher, PkarrResolver};
-                builder = builder
-                    .address_lookup(PkarrPublisher::n0_dns())
-                    .address_lookup(PkarrResolver::n0_dns())
-                    .address_lookup(DnsAddressLookup::n0_dns());
-            }
-            DiscoveryConfig::CustomPkarr { url } => {
-                use iroh::address_lookup::{PkarrPublisher, PkarrResolver};
-                let url = validate_relay_url(&url)?;
-                builder = builder
-                    .address_lookup(PkarrPublisher::builder(url.clone().into()))
-                    .address_lookup(PkarrResolver::builder(url.into()));
-            }
-        }
-        if matches!(config.path_policy, PathPolicy::RelayOnly) {
-            builder = builder.clear_ip_transports();
-        }
-        if !config.bind_addresses.is_empty() {
-            builder = builder.clear_ip_transports();
-            for address in config.bind_addresses {
-                builder = builder
-                    .bind_addr(address)
-                    .map_err(|_| RemoteError::Configuration)?;
-            }
-        }
-        let endpoint = builder.bind().await.map_err(|_| RemoteError::Unavailable)?;
-        if relay_enabled
-            && tokio::time::timeout(config.request_timeout, endpoint.online())
-                .await
-                .is_err()
-        {
-            endpoint.close().await;
-            return Err(RemoteError::Timeout);
-        }
+        let endpoint = bind_transport(identity.key, config.clone(), ALPN).await?;
         let state = Arc::new(State {
             endpoint,
             name: identity.name,
@@ -156,6 +166,16 @@ impl RemoteEndpoint {
     }
     pub async fn network_change(&self) {
         self.state.endpoint.network_change().await;
+    }
+    /// Acknowledges validated platform facts and requests native network reevaluation.
+    /// This does not acknowledge discovery, socket rebinding, or path recovery.
+    pub async fn report_network_change(&self, snapshot: PlatformNetworkSnapshot) -> Result<u64> {
+        snapshot.validate()?;
+        if self.state.closed.load(Ordering::Acquire) {
+            return Err(RemoteError::Closed);
+        }
+        self.state.endpoint.network_change().await;
+        Ok(snapshot.sequence)
     }
     pub fn trusted_devices(&self) -> Result<Vec<TrustedDevice>> {
         self.state.trust.devices()
@@ -277,7 +297,7 @@ impl RemoteEndpoint {
         .map_err(|_| RemoteError::Unavailable)?;
         let registration = register_connection(&self.state, connection.clone())?;
         Ok(RemoteClient {
-            connection,
+            connection: crate::paths::ObservedConnection::new(connection),
             state: self.state.clone(),
             registration,
             incarnation: descriptor.incarnation.clone(),
@@ -332,7 +352,7 @@ impl State {
 }
 
 pub struct RemoteClient {
-    connection: Connection,
+    connection: crate::paths::ObservedConnection,
     state: Arc<State>,
     registration: u64,
     incarnation: String,
@@ -610,7 +630,7 @@ async fn serve_connection(state: Arc<State>, connection: Connection) {
         });
     }
 }
-fn validate_relay_url(value: &str) -> Result<iroh::RelayUrl> {
+pub(crate) fn validate_relay_url(value: &str) -> Result<iroh::RelayUrl> {
     let url: iroh::RelayUrl = value.parse().map_err(|_| RemoteError::Configuration)?;
     if !matches!(url.scheme(), "https" | "http")
         || url.host_str().is_none()

@@ -11,6 +11,10 @@ mod remote;
 mod remote_command;
 #[cfg(feature = "remote")]
 mod remote_response;
+#[cfg(feature = "remote-diagnostics")]
+mod transport_probe;
+#[cfg(feature = "remote-diagnostics")]
+mod transport_trace;
 mod types;
 #[cfg(feature = "remote")]
 pub use remote::*;
@@ -18,6 +22,10 @@ pub use remote::*;
 pub use remote_command::*;
 #[cfg(feature = "remote")]
 pub use remote_response::*;
+#[cfg(feature = "remote-diagnostics")]
+pub use transport_probe::*;
+#[cfg(feature = "remote-diagnostics")]
+pub use transport_trace::*;
 pub use types::*;
 
 use serde::{Serialize, de::DeserializeOwned};
