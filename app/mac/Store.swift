@@ -415,6 +415,8 @@ final class AppStore: ObservableObject {
         saveDrafts()
         isShuttingDown = true
         timer?.invalidate(); timer = nil
+        // Reads queued in any window give way; the changes queued before this still land.
+        transport.beginClosing()
         queue.async { [weak self] in
             let result = Result { try transport.close(stoppingWork: stoppingWork) }
             DispatchQueue.main.async {
@@ -1590,6 +1592,7 @@ final class AppStore: ObservableObject {
         reconcileNextTurnIntent()
     }
     func recordProblem(_ error: Error, source: String = "操作", activityKey: String? = nil) {
+        if case .operation(_, .quitting) = error as? TransportError { return }
         if let sharedApplication { sharedApplication.recordProblem(error, source: source, activityKey: activityKey); return }
         let value = AppProblem.failure(error, source: source, activityKey: activityKey)
         if let activityKey, problems.contains(where: { $0.activityKey == activityKey && $0.detail == value.detail && $0.code == value.code && $0.phase == value.phase }) { return }
