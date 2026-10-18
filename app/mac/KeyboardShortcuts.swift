@@ -76,6 +76,7 @@ struct Shortcut: Codable, Hashable {
 /// come with. Sending keeps Command-Return: the composer takes it itself.
 enum ShortcutCommand: String, CaseIterable, Identifiable {
     case newConversation, newTab, newWindow, closeTab, closeWindow
+    case find
     case stop, stopSubAgents, reload
     case splitRight, splitDown, closeSplit, back, forward, nextPane, previousPane, nextTab, previousTab, moveTabToNewWindow, keepInFront
     case showList, showOutline, focusComposer, showAgents, rightArea, bottomArea, editorOnly, problems
@@ -84,13 +85,14 @@ enum ShortcutCommand: String, CaseIterable, Identifiable {
 
     /// The menu it is in, which the settings group it by.
     enum Menu: String, CaseIterable, Identifiable {
-        case file = "文件", conversation = "会话", window = "窗口", view = "显示"
+        case file = "文件", edit = "编辑", conversation = "会话", window = "窗口", view = "显示"
         var id: Self { self }
     }
 
     var menu: Menu {
         switch self {
         case .newConversation, .newTab, .newWindow, .closeTab, .closeWindow: .file
+        case .find: .edit
         case .stop, .stopSubAgents, .reload: .conversation
         case .splitRight, .splitDown, .closeSplit, .back, .forward, .nextPane, .previousPane, .nextTab, .previousTab, .moveTabToNewWindow, .keepInFront: .window
         case .showList, .showOutline, .focusComposer, .showAgents, .rightArea, .bottomArea, .editorOnly, .problems: .view
@@ -104,6 +106,7 @@ enum ShortcutCommand: String, CaseIterable, Identifiable {
         case .newWindow: "新建窗口"
         case .closeTab: "关闭标签页"
         case .closeWindow: "关闭窗口"
+        case .find: "查找…"
         case .stop: "停止生成"
         case .stopSubAgents: "停止子 Agent"
         case .reload: "重新读取"
@@ -136,6 +139,7 @@ enum ShortcutCommand: String, CaseIterable, Identifiable {
         case .newWindow: Shortcut("n", [.command, .option])
         case .closeTab: Shortcut("w")
         case .closeWindow: Shortcut("w", [.command, .shift])
+        case .find: Shortcut("f")
         case .stop: Shortcut("escape", [])
         case .reload: Shortcut("r")
         case .splitRight: Shortcut("d")

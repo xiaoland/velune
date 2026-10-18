@@ -13,6 +13,11 @@ struct ConversationListView: View {
     /// The focused pane's workspace.
     @ObservedObject var focused: AppStore
     let placement: Placement
+    /// Sharing its area with other tools, the search is a button over a popover.
+    var compact = false
+    @FocusState private var searchFocused: Bool
+    @State private var searchPopover = false
+    @State private var searchFocusRequest = 0
     @Environment(\.controlActiveState) private var activeState
     @ObservedObject private var toolbarSettings = ToolbarSettings.shared
     @State private var browser = ConversationBrowser()
@@ -33,11 +38,13 @@ struct ConversationListView: View {
             case .sidebar:
                 withSidebarToolbar(list
                     .searchable(text: $window.listSearch, placement: .sidebar, prompt: "搜索会话")
+                    .searchFocused($searchFocused)
                     .navigationTitle("会话"))
             case .panel:
                 VStack(spacing: 0) {
                     HStack(spacing: 8) {
-                        SearchField(text: $window.listSearch, prompt: "搜索会话")
+                        if compact { searchButton; Spacer(minLength: 0) }
+                        else { SearchField(text: $window.listSearch, prompt: "搜索会话", focusRequest: searchFocusRequest) }
                         browserMenu.menuStyle(.borderlessButton).fixedSize()
                         newConversationButton.buttonStyle(.borderless)
                     }
@@ -46,6 +53,13 @@ struct ConversationListView: View {
                     Divider()
                     list
                 }
+            }
+        }
+        .background(PaneAnchor { [window] in window.registerFindArea(.list, anchor: $0) })
+        .onChange(of: window.listSearchRequest) { _, _ in
+            switch placement {
+            case .sidebar: searchFocused = true
+            case .panel: if compact { searchPopover = true } else { searchFocusRequest += 1 }
             }
         }
         .task(id: window.listSearch) {
@@ -66,6 +80,15 @@ struct ConversationListView: View {
         } message: {
             Text("将永久删除所选 \(deleteTargets.count) 个会话，以及它们在各 Agent 运行时中的关联会话数据。此操作无法撤销。")
         }
+    }
+
+    /// Marked while a search filters the list.
+    private var searchButton: some View {
+        Button { searchPopover.toggle() } label: { Image(systemName: window.listSearch.isEmpty ? "magnifyingglass" : "magnifyingglass.circle.fill") }
+            .buttonStyle(.borderless).help("搜索会话").accessibilityLabel("搜索会话")
+            .popover(isPresented: $searchPopover, arrowEdge: .bottom) {
+                SearchField(text: $window.listSearch, prompt: "搜索会话", focusRequest: 1).frame(width: 240).padding(10)
+            }
     }
 
     /// Customizable where the window's toolbar is (see `VeluneRootView.withToolbar`).
@@ -427,24 +450,33 @@ private struct ListDragLimit: NSViewRepresentable {
 struct SearchField: NSViewRepresentable {
     @Binding var text: String
     let prompt: String
+    /// The field takes the focus when this changes, and when it first appears if not 0.
+    var focusRequest = 0
 
     func makeNSView(context: Context) -> NSSearchField {
         let field = NSSearchField()
         field.placeholderString = prompt
         field.delegate = context.coordinator
         field.controlSize = .regular
+        if focusRequest != 0 { DispatchQueue.main.async { field.window?.makeFirstResponder(field) } }
+        context.coordinator.focusRequest = focusRequest
         return field
     }
 
     func updateNSView(_ field: NSSearchField, context: Context) {
         context.coordinator.text = $text
         if field.stringValue != text { field.stringValue = text }
+        if context.coordinator.focusRequest != focusRequest {
+            context.coordinator.focusRequest = focusRequest
+            DispatchQueue.main.async { field.window?.makeFirstResponder(field) }
+        }
     }
 
     func makeCoordinator() -> Coordinator { Coordinator(text: $text) }
 
     final class Coordinator: NSObject, NSSearchFieldDelegate {
         var text: Binding<String>
+        var focusRequest = 0
         init(text: Binding<String>) { self.text = text }
         func controlTextDidChange(_ notification: Notification) {
             if let field = notification.object as? NSSearchField { text.wrappedValue = field.stringValue }

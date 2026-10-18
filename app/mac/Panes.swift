@@ -122,6 +122,9 @@ struct TabContentView: View {
                 else { transcript }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .overlay(alignment: .top) {
+                if tab.find.isShown { TranscriptFindBar(find: tab.find, model: store.transcript, jump: tab.navigate(to:)).padding(8) }
+            }
             footer
         }
         .sheet(item: Binding(get: { store.pendingInteractions.first }, set: { _ in })) { RuntimeInteractionView(store: store, interaction: $0) }

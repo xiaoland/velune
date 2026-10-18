@@ -218,9 +218,12 @@ struct ToolContent: View {
         let tab = window.focused
         switch kind {
         case .list:
-            // The sidebar's own search field and toolbar serve the list at its top.
+            // The sidebar's own search field and toolbar serve the list at its top, unless
+            // other tools share the area: then it is a block with a title bar, and its search a button.
+            let shared = side.map { window.tools.tools(in: $0).count > 1 } ?? false
             ConversationListView(window: window, store: window.list, focused: tab.store,
-                                 placement: side == .left && window.tools.tools(in: .left).first == .list ? .sidebar : .panel)
+                                 placement: side == .left && window.tools.tools(in: .left).first == .list && !shared ? .sidebar : .panel,
+                                 compact: shared)
         case .outline:
             ToolOutline(window: window, tab: tab, store: tab.store, inSidebar: side == .left).id(tab.id)
         case .composer:

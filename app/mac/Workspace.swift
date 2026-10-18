@@ -15,6 +15,8 @@ import VeluneBindings
     /// The list shows only user messages (in-place outline).
     @Published var outlineCollapsed = false
     @Published var outlineNavigation: TranscriptJump?
+    /// Searching the conversation's messages (see `TranscriptFindBar`).
+    let find = TranscriptFind()
     /// The user message being edited, in a sheet over the tab.
     @Published var editing: MessageEditRequest?
     /// Kept while the tab is behind another, with the scroll position.
@@ -93,6 +95,12 @@ import VeluneBindings
     func goForward() {
         reading.table.restoring = store.forwardHistory.last
         store.goForward()
+    }
+
+    /// Opens the find bar on the shown conversation, or brings its field forward.
+    func beginFind() {
+        find.isShown = true
+        find.focusRequest &+= 1
     }
 
     func navigate(to id: String) {
@@ -893,6 +901,25 @@ struct WindowSeed: Codable, Hashable {
             guard let self else { return }
             if self.tabConversations[tab.id] != id { self.tabConversations[tab.id] = id }
         }
+    }
+
+    /// ⌘F: the find of the tool window that has the focus, else the shown
+    /// conversation's messages. Only the list searches so far; the outline
+    /// and linked agents would join `findAreas`.
+    func find() {
+        if focusIsIn(findAreas[.list]) { listSearchRequest &+= 1 } else { focused.beginFind() }
+    }
+
+    @Published private(set) var listSearchRequest = 0
+    private var findAreas: [ToolWindowKind: () -> NSView?] = [:]
+
+    func registerFindArea(_ kind: ToolWindowKind, anchor: @escaping () -> NSView?) { findAreas[kind] = anchor }
+
+    /// The first responder is in the view the anchor marks.
+    private func focusIsIn(_ anchor: (() -> NSView?)?) -> Bool {
+        guard let area = anchor?(), let window = area.window, let responder = window.firstResponder as? NSView else { return false }
+        let middle = responder.convert(NSPoint(x: responder.bounds.midX, y: responder.bounds.midY), to: nil)
+        return area.bounds.contains(area.convert(middle, from: nil))
     }
 
     /// The tools' toolbar buttons by tool, for telling which one a right click lands on.

@@ -77,6 +77,15 @@ struct ConversationCommands: Commands {
             Button("关闭窗口") { NSApp.keyWindow?.performClose(nil) }
                 .keyboardShortcut(shortcuts[.closeWindow])
         }
+        // The system's Find items stay below: nothing here is a text view with a find bar.
+        CommandGroup(before: .textEditing) {
+            followingFocus {
+                Button("查找…") { target?.window.find() }
+                    .keyboardShortcut(shortcuts[.find])
+                    .disabled(target == nil)
+            }
+            Divider()
+        }
         CommandMenu("会话") {
             followingConversation {
                 Button("发送消息") { target?.send() }
