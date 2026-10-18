@@ -1,0 +1,249 @@
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -58 +58 @@
+-    net::{IpAddr, SocketAddr},
++    net::{IpAddr, Ipv4Addr, SocketAddr},
+@@ -79 +79,4 @@
+-use tokio::sync::mpsc::{self, error::TrySendError};
++use tokio::sync::{
++    mpsc::{self, error::TrySendError},
++    oneshot,
++};
+@@ -114 +117,9 @@
+-    Discovered(String, Peer),
++    Discovered {
++        generation: u64,
++        endpoint_id: String,
++        peer: Peer,
++    },
++    SetIpv4Interfaces {
++        interfaces: BTreeSet<Ipv4Addr>,
++        applied: oneshot::Sender<Result<u64, AddressLookupBuilderError>>,
++    },
+@@ -165,0 +177 @@
++    ipv4_interfaces: Option<BTreeSet<Ipv4Addr>>,
+@@ -175,0 +188 @@
++            ipv4_interfaces: None,
+@@ -183,0 +197,8 @@
++        self
++    }
++
++    /// Configure explicit IPv4 multicast interfaces with IPv4-only discovery.
++    /// An empty set starts the actor without a discoverer or multicast sockets.
++    /// Without this option the upstream automatic interface policy is retained.
++    pub fn ipv4_interfaces(mut self, interfaces: BTreeSet<Ipv4Addr>) -> Self {
++        self.ipv4_interfaces = Some(interfaces);
+@@ -243,0 +265 @@
++            self.ipv4_interfaces,
+@@ -275 +297,2 @@
+-    /// unavailable.
++    /// unavailable. This also includes invalidation of the service's previous
++    /// interface scope; it does not establish that the remote device went offline.
+@@ -279,0 +303,7 @@
++}
++
++struct DiscovererConfig {
++    endpoint_id: EndpointId,
++    advertise: bool,
++    service_name: String,
++    cadence: Duration,
+@@ -303,0 +334 @@
++        mut ipv4_interfaces: Option<BTreeSet<Ipv4Addr>>,
+@@ -310 +341 @@
+-        let address_lookup = MdnsAddressLookup::spawn_discoverer(
++        let config = DiscovererConfig {
+@@ -313,2 +343,0 @@
+-            task_sender.clone(),
+-            BTreeSet::new(),
+@@ -316,0 +346,8 @@
++        };
++        let mut generation = 0;
++        let mut address_lookup = Self::spawn_discoverer(
++            &config,
++            task_sender.clone(),
++            generation,
++            ipv4_interfaces.as_ref(),
++            None,
+@@ -323,0 +361 @@
++            let mut published_data: Option<EndpointData> = None;
+@@ -339,3 +376,0 @@
+-                        address_lookup.remove_all();
+-
+-                        // apply user-supplied filter
+@@ -343,15 +378,4 @@
+-
+-
+-                        let addrs =
+-                            MdnsAddressLookup::socketaddrs_to_addrs(data.ip_addrs());
+-                        for addr in addrs {
+-                            address_lookup.add(addr.0, addr.1)
+-                        }
+-                        if let Some(relay) = data.relay_urls().next()
+-                            && let Err(err) = address_lookup.set_txt_attribute(RELAY_URL_ATTRIBUTE.to_string(), Some(relay.to_string()))  {
+-                                warn!("Failed to set the relay url in mDNS: {err:?}");
+-                        }
+-                        if let Some(user_data) = data.user_data()
+-                            && let Err(err) = address_lookup.set_txt_attribute(USER_DATA_ATTRIBUTE.to_string(), Some(user_data.to_string())) {
+-                                warn!("Failed to set the user-defined data in mDNS: {err:?}");
+-                        }
++                        if let Some(discoverer) = &address_lookup {
++                            Self::publish_data(discoverer, &data);
++                        }
++                        published_data = Some(data);
+@@ -366 +390 @@
+-                        address_lookup.remove_all();
++                        drop(address_lookup.take());
+@@ -372 +396,44 @@
+-                    Message::Discovered(discovered_endpoint_id, peer_info) => {
++                    Message::SetIpv4Interfaces {
++                        interfaces,
++                        applied,
++                    } => {
++                        let same = ipv4_interfaces.as_ref() == Some(&interfaces);
++                        if same && (interfaces.is_empty() || address_lookup.is_some()) {
++                            let _ = applied.send(Ok(generation));
++                            continue;
++                        }
++                        let Some(next_generation) = generation.checked_add(1) else {
++                            let _ =
++                                applied.send(Err(Self::control_error("mDNS generation exhausted")));
++                            continue;
++                        };
++                        // Drop aborts the old guardian. Its callbacks remain queued but are fenced below.
++                        drop(address_lookup.take());
++                        generation = next_generation;
++                        ipv4_interfaces = Some(interfaces);
++                        // Records from the old interface scope have no remaining expiry source.
++                        for (endpoint_id, _) in endpoint_addrs.drain() {
++                            subscribers.send(DiscoveryEvent::Expired { endpoint_id });
++                        }
++                        let result = Self::spawn_discoverer(
++                            &config,
++                            task_sender.clone(),
++                            generation,
++                            ipv4_interfaces.as_ref(),
++                            published_data.as_ref(),
++                            &rt,
++                        )
++                        .map(|discoverer| {
++                            address_lookup = discoverer;
++                            generation
++                        });
++                        let _ = applied.send(result);
++                    }
++                    Message::Discovered {
++                        generation: observed_generation,
++                        endpoint_id: discovered_endpoint_id,
++                        peer: peer_info,
++                    } => {
++                        if observed_generation != generation {
++                            continue;
++                        }
+@@ -495,0 +563,29 @@
++    /// Apply a new exact IPv4 multicast scope without replacing this lookup actor or subscriptions.
++    /// The initial generation is zero. A successfully applied identical set is a no-op.
++    /// Empty pauses discovery; changes invalidate old cached records and emit `Expired`.
++    /// Pending resolve windows keep their original deadlines and can receive fresh records.
++    ///
++    /// Reconfiguration drops the entire old discoverer guard and rejects its queued callbacks.
++    /// This requests asynchronous cancellation, not a join or proof that its sockets have closed.
++    /// If spawn fails, the old scope stays stopped with no fallback; the same set can be retried.
++    pub async fn set_ipv4_interfaces(
++        &self,
++        interfaces: BTreeSet<Ipv4Addr>,
++    ) -> Result<u64, AddressLookupBuilderError> {
++        let (applied, result) = oneshot::channel();
++        self.sender
++            .send(Message::SetIpv4Interfaces {
++                interfaces,
++                applied,
++            })
++            .await
++            .map_err(|_| Self::control_error("mDNS actor stopped"))?;
++        result
++            .await
++            .map_err(|_| Self::control_error("mDNS actor stopped"))?
++    }
++
++    fn control_error(message: &'static str) -> AddressLookupBuilderError {
++        AddressLookupBuilderError::from_err("mdns", std::io::Error::other(message))
++    }
++
+@@ -497,2 +593 @@
+-        endpoint_id: PublicKey,
+-        advertise: bool,
++        config: &DiscovererConfig,
+@@ -500,3 +595,3 @@
+-        socketaddrs: BTreeSet<SocketAddr>,
+-        service_name: String,
+-        cadence: Duration,
++        generation: u64,
++        interfaces: Option<&BTreeSet<Ipv4Addr>>,
++        data: Option<&EndpointData>,
+@@ -504 +599,4 @@
+-    ) -> Result<DropGuard, AddressLookupBuilderError> {
++    ) -> Result<Option<DropGuard>, AddressLookupBuilderError> {
++        if interfaces.is_some_and(BTreeSet::is_empty) {
++            return Ok(None);
++        }
+@@ -507,2 +604,0 @@
+-            trace!(endpoint_id, ?peer, "Received peer information from Mdns");
+-
+@@ -514 +610,5 @@
+-                    .send(Message::Discovered(endpoint_id, peer))
++                    .send(Message::Discovered {
++                        generation,
++                        endpoint_id,
++                        peer,
++                    })
+@@ -520 +620 @@
+-            .encode(endpoint_id.as_bytes())
++            .encode(config.endpoint_id.as_bytes())
+@@ -522,11 +622,11 @@
+-        let mut discoverer = Discoverer::new_interactive(service_name, endpoint_id_str)
+-            .with_cadence(cadence)
+-            .with_callback(callback)
+-            .with_ip_class(IpClass::Auto);
+-        if advertise {
+-            let addrs = MdnsAddressLookup::socketaddrs_to_addrs(socketaddrs.iter());
+-            for addr in addrs {
+-                discoverer = discoverer.with_addrs(addr.0, addr.1);
+-            }
+-        }
+-        discoverer
++        let mut discoverer =
++            Discoverer::new_interactive(config.service_name.clone(), endpoint_id_str)
++                .with_cadence(config.cadence)
++                .with_callback(callback);
++        discoverer = match interfaces {
++            Some(interfaces) => discoverer
++                .with_ip_class(IpClass::V4Only)
++                .with_multicast_interfaces_v4(interfaces.iter().copied().collect()),
++            None => discoverer.with_ip_class(IpClass::Auto),
++        };
++        let discoverer = discoverer
+@@ -534 +634,23 @@
+-            .map_err(|e| AddressLookupBuilderError::from_err("mdns", e))
++            .map_err(|error| AddressLookupBuilderError::from_err("mdns", error))?;
++        if config.advertise
++            && let Some(data) = data
++        {
++            Self::publish_data(&discoverer, data);
++        }
++        Ok(Some(discoverer))
++    }
++
++    fn publish_data(discoverer: &DropGuard, data: &EndpointData) {
++        discoverer.remove_all();
++        for (port, addresses) in Self::socketaddrs_to_addrs(data.ip_addrs()) {
++            discoverer.add(port, addresses);
++        }
++        let relay = data.relay_urls().next().map(ToString::to_string);
++        if let Err(error) = discoverer.set_txt_attribute(RELAY_URL_ATTRIBUTE.to_string(), relay) {
++            warn!("Failed to set the relay url in mDNS: {error:?}");
++        }
++        let user_data = data.user_data().map(ToString::to_string);
++        if let Err(error) = discoverer.set_txt_attribute(USER_DATA_ATTRIBUTE.to_string(), user_data)
++        {
++            warn!("Failed to set the user-defined data in mDNS: {error:?}");
++        }

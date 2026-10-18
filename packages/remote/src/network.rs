@@ -27,6 +27,8 @@ pub struct PlatformNetwork {
     pub id: String,
     pub wifi: bool,
     pub cellular: bool,
+    pub ethernet: bool,
+    pub vpn: bool,
     pub internet: bool,
     pub validated: bool,
     pub interface_name: Option<String>,
@@ -82,4 +84,33 @@ impl PlatformNetworkSnapshot {
 
 fn valid_label(value: &str) -> bool {
     !value.is_empty() && value.len() <= 64 && !value.chars().any(char::is_control)
+}
+
+/// IPv4 multicast candidates from actual LAN networks, independent of Internet/default status.
+#[cfg(feature = "diagnostics")]
+pub(crate) fn mdns_ipv4_interfaces(
+    snapshot: &PlatformNetworkSnapshot,
+) -> Result<std::collections::BTreeSet<std::net::Ipv4Addr>> {
+    let mut addresses = std::collections::BTreeSet::new();
+    for network in snapshot
+        .networks
+        .iter()
+        .filter(|network| (network.wifi || network.ethernet) && !network.vpn)
+    {
+        for address in &network.addresses {
+            let (ip, _) = address.split_once('/').ok_or(RemoteError::Configuration)?;
+            let ip: IpAddr = ip.parse().map_err(|_| RemoteError::Configuration)?;
+            if let IpAddr::V4(ip) = ip
+                && usable_mdns_ipv4(ip)
+            {
+                addresses.insert(ip);
+            }
+        }
+    }
+    Ok(addresses)
+}
+
+#[cfg(feature = "diagnostics")]
+pub(crate) fn usable_mdns_ipv4(ip: std::net::Ipv4Addr) -> bool {
+    !ip.is_unspecified() && !ip.is_loopback() && !ip.is_multicast() && !ip.is_broadcast()
 }

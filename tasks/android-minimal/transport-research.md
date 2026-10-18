@@ -98,6 +98,8 @@ advisor 对源码的寿命复核发现：`guardian.rs:119` 移除接口只丢 re
 
 显式 LAN 正对照已经触发官方 mDNS 单 crate 的最小本地补丁：保留固定来源／双许可、wire format 和缓存修复，不另造内部 discovery、不修改 iroh 传输栈。此前不 vendor 是官方修复已足够时的工程选择；新增接口证据改变此前提，改为可审计单 crate vendor，不引入上游整个 workspace、测试或 CI。当前补丁进入实施，尚未验收；IPv4 对照不能证明 IPv6 接口语义。用户已确认当前设备没有蜂窝、仅 Wi-Fi，真实 WAN→LAN 与非默认 Wi-Fi／蜂窝暂记环境阻塞。
 
+vendor 临时进程的 empty→LAN→empty→LAN→drop 已观察到 5353 FD 数量 0→2→0→2→0，配置 ack 与实际关闭分别采样，只覆盖这份库生命周期。新增源码边界为：swarm 保留 wildcard socket 的默认接收 membership；非空显式 sender 全部创建失败时仍可默认发送。工程决定保留该回落和单 crate 范围：它提供 LAN 可达性装配，不提供接口流量隔离；禁止回落也不能修好创建失败的 LAN sender。空集合仍严格不 spawn discovery，创建失败诊断可见，配置代际不等于可达性证明。不增加第二份 swarm vendor 或无竞态保证的 preflight。
+
 ## 配对 exporter 样例与关闭屏障
 
 第二个临时 Rust 程序仅绑定 loopback、禁用 relay／lookup，核验双方 Connection.remote_id 后构造同一 131 字节 context。label 为 `EXPORTER-Velune-Pairing-v2`（26 个 ASCII 字节，无 NUL）；context 编码与方案一致。输出仅布尔值和长度，不输出密钥、token、binding 或核对码。

@@ -76,6 +76,13 @@ def serve_transport_probe(b, args):
         with os.fdopen(descriptor, 'a') as output:
             announced = False
             while True:
+                mdns_refresh = None
+                if args.mdns:
+                    try:
+                        mdns_refresh = {'generation': probe.refresh_mdns_interfaces()}
+                    except b.BindingError.Diagnostic as error:
+                        mdns_refresh = {'error_kind': 'binding_diagnostic',
+                            'binding_failure_kind': error.kind.name}
                 target = probe.target()
                 expected = {'endpointId': target.endpoint_id, 'relayUrls': target.relay_urls,
                     'directAddresses': target.direct_addresses}
@@ -92,6 +99,7 @@ def serve_transport_probe(b, args):
                     'connections': diagnostic_value(probe.connections()),
                     'native_events': diagnostic_value(probe.native_events())}
                 if args.mdns:
+                    sample['mdns_refresh'] = mdns_refresh
                     controlled = {connection.status.peer_id for connection in probe.connections()}
                     mdns = probe.mdns_events()
                     sample['mdns_events'] = diagnostic_value([entry for entry in mdns

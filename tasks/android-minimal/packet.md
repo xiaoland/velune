@@ -22,18 +22,18 @@ Android 使用 Kotlin／Jetpack Compose，经 UniFFI 嵌入 remote-only Rust SDK
 
 S1 已实现最薄观察通路：Android 默认网络、可用 Wi-Fi、链路属性和能力变化进入 Rust；路径观察带连接／path 临时 ID、selected、安全统计及原生事件落后计数。可选诊断 feature 提供低流量 marker 探针与私有白名单事件采集；普通产品构建不包含探针。路径探针禁止自动重拨。
 
-mDNS 以官方固定提交 `6f103e7a92ddbd2007383527ab5024c983e3c1c6` 的缓存修复为基础。真实手机正对照已触发接口装配窄补丁，决定只 vendor 该单 crate，保留来源／双许可，不复制成新的发现实现。接口变化仅重建内部 discovery、空集合停用、旧 callback 隔离，Endpoint 与业务连接保持；具体源码和生命周期由 native owner 贯通。Android debug 探针按生命周期持有多播锁。mDNS 用于发现和重连，晚 lookup 缓存不等于活动连接已经新增路径。
+mDNS 以官方固定提交 `6f103e7a92ddbd2007383527ab5024c983e3c1c6` 的缓存修复为基础。真实手机正对照已触发接口装配窄补丁，决定只 vendor 该单 crate，保留来源／双许可，不复制成新的发现实现。接口变化仅重建内部 discovery、空集合停用、旧 callback 隔离，Endpoint 与业务连接保持；非空集合保留上游默认接收和 sender 全失败时的默认发送回落，配置事件不证明 LAN 已就绪，不扩到第二份 swarm 补丁。具体源码和生命周期由 native owner 贯通。Android debug 探针按生命周期持有多播锁。mDNS 用于发现和重连，晚 lookup 缓存不等于活动连接已经新增路径。
 
 | 已有证据 | 可以支持的结论 |
 | --- | --- |
-| 最新诊断源码的 workspace check／全 feature 严格 clippy、normal remote-only 和 Android diagnostics 目标严格 clippy、fmt、API28 native release／生成 Kotlin／Python、Android debug assemble／lint | 中立 API 与 remote-only 边界保持；新包已交真机复验。release 源集隔离不等于已用 normal so 打包 release APK |
+| 接口补丁的 workspace check／全 feature 严格 clippy、normal remote-only 和 Android diagnostics 目标严格 clippy、fmt、vendor 独立 rustfmt／clippy-driver、API28 native release／生成 Kotlin／Python、Android debug assemble／lint | 中立 API 与 remote-only 边界保持；新包已交真机复验。release 源集隔离不等于已用 normal so 打包 release APK |
 | `09039d2` normal feature 的 Rust／Swift／Mac build-only、签名与探针导出隔离通过 | 保留主线后的正常构建边界；manifest dirty=true，仅作回归，不是干净交付包，没有覆盖安装 |
 | 最终 missed_events 接口包同网 159／159 marker 匹配、同 connection／path Direct IPv4，后台再返回沿用原连接；missed 与 native dropped 均为零，手机与宿主正常停止 | 该同网产物的直连和短时前台恢复；不能外推公网、换网或完整业务 |
 | 真实原生路径队列溢出仍返回 missed_events 与当前快照，原连接继续往返 | 观察落后能够显式报告，不把快照当作完整历史 |
 | 实际编译 Kotlin 对 scoped IPv6 的规范化，经 UniFFI／Rust 接收 | 网络事实边界接受规范化 IP，保留 Network／接口归属；不证明 IPv6 路由 |
 | 独立 mDNS 实验的同 peer A→B 更新、fresh resolve 及过期判别 | 固定依赖的缓存机制；Android 实际多播与资源管理另验 |
 
-Android mDNS 仅 ID 初连的首轮失败，没有公共设施回落；私有事件已确认 enable 成功后 lookup／dial 失败，多播锁及 endpoint 正常关闭。阶段／有界错误种类和真实 publish 计数已补齐、编译通过；`ef8143ff` debug APK 与 `0a058498` so 配套，正在复验。发布计数仅证明 service 收到 EndpointData，WARN／ERROR 采集只读固定源码位置，不格式化任意上游原文。手机同 peer 更新与过期尚未通过。
+Android mDNS 仅 ID 初连的首轮失败，没有公共设施回落；私有事件已确认 enable 成功后 lookup／dial 失败。阶段／有界错误种类和真实 publish 计数已补齐；发布计数仅证明 service 收到 EndpointData，WARN／ERROR 采集只读固定源码位置，不格式化任意上游原文。后续对照已闭合同 peer 更新与过期。最新接口补丁包为 `8d9f649e`、so `62bb93ac`，正常合成 host 自动采样 LAN 后已仅 ID 连接成功；手机真实 Wi-Fi off/on 探索观察到接口 1→0→1、5353 socket 2→0→2、同一连接 path0→path1 并继续往返。该探索前基线不足 60 秒，不计正式通过，正补三次完整独立窗口。
 
 新的宿主路由观察显示，到手机的单播走 LAN，而 `224.0.0.251` 组播默认路由指向既有 utun。仅 route 查询不足以断定报文路径；同公钥／同广告的临时发布器实测 default 连接失败、加入显式 LAN 接口后仅 ID fresh resolve 与 102／102 marker 成功，触发上述局部修补。手机随后 9 次查询仅返回 B、去掉 A；DROP 后观察 Expired，25 次查询没有旧成功结果，49 次 marker 仍回复。selected 始终 A，缓存更新不等于 QUIC 路径迁移。对照仍保留默认 membership，不能签为仅 LAN 或已退出旧接口；补丁资源寿命尚待验收。全部临时资源已关闭，没有更改隧道或系统路由。此前“无 VPN”只表示本轮未配置／依赖 VPN，不能宣称宿主不存在隧道。
 

@@ -14,8 +14,8 @@ use iroh::{
 use iroh_mdns_address_lookup::{DiscoveryEvent, MdnsAddressLookup};
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{HashMap, VecDeque},
-    net::SocketAddr,
+    collections::{BTreeSet, HashMap, VecDeque},
+    net::{Ipv4Addr, SocketAddr},
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
@@ -77,6 +77,12 @@ pub struct ProbeReply {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "camelCase")]
 pub enum ProbeMdnsEvent {
+    /// Applied interface scope; old guard abort was requested, not synchronously joined.
+    InterfacesApplied {
+        sampled_at_micros: u64,
+        generation: u64,
+        ipv4_addresses: Vec<Ipv4Addr>,
+    },
     /// The service received endpoint data; this does not prove a multicast send or receipt.
     Published {
         sampled_at_micros: u64,
@@ -113,6 +119,8 @@ impl MdnsEvents {
 struct EnabledMdns {
     service: MdnsAddressLookup,
     subscription: JoinHandle<()>,
+    interfaces: BTreeSet<Ipv4Addr>,
+    generation: u64,
 }
 struct ObservedMdns {
     service: MdnsAddressLookup,
@@ -166,6 +174,7 @@ pub struct TransportProbe {
     mdns: Mutex<Option<EnabledMdns>>,
     mdns_events: Arc<Mutex<MdnsEvents>>,
     mdns_resolves: Semaphore,
+    platform_interfaces: Mutex<Option<BTreeSet<Ipv4Addr>>>,
 }
 impl TransportProbe {
     pub async fn bind(config: EndpointConfig) -> Result<Self> {
@@ -189,6 +198,7 @@ impl TransportProbe {
             mdns: Mutex::new(None),
             mdns_events: Arc::new(Mutex::new(MdnsEvents::default())),
             mdns_resolves: Semaphore::new(MAX_MDNS_RESOLVES),
+            platform_interfaces: Mutex::new(None),
         })
     }
 
@@ -232,10 +242,25 @@ impl TransportProbe {
     /// An acknowledged platform sequence is not evidence that paths or sockets changed.
     pub async fn report_network_change(&self, snapshot: PlatformNetworkSnapshot) -> Result<u64> {
         snapshot.validate()?;
+        let interfaces = crate::network::mdns_ipv4_interfaces(&snapshot)?;
+        let _guard = self.shutdown_gate.lock().await;
         if self.state.closed.load(Ordering::Acquire) {
             return Err(RemoteError::Closed);
         }
+        *self
+            .platform_interfaces
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner()) = Some(interfaces.clone());
+        // The transport hint remains independent of discovery reconfiguration success.
         self.state.endpoint.network_change().await;
+        if self
+            .mdns
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .is_some()
+        {
+            self.apply_mdns_interfaces(interfaces).await?;
+        }
         Ok(snapshot.sequence)
     }
 
@@ -270,7 +295,9 @@ impl TransportProbe {
         {
             return Err(RemoteError::Configuration);
         }
+        let interfaces = self.current_mdns_interfaces();
         let service = MdnsAddressLookup::builder()
+            .ipv4_interfaces(interfaces.clone())
             .build(self.state.endpoint.id())
             .map_err(|_| RemoteError::Unavailable)?;
         let mut events = service.subscribe().await;
@@ -318,8 +345,91 @@ impl TransportProbe {
             .unwrap_or_else(|poison| poison.into_inner()) = Some(EnabledMdns {
             service,
             subscription,
+            interfaces: interfaces.clone(),
+            generation: 0,
         });
+        self.record_interfaces(0, interfaces);
         Ok(())
+    }
+
+    /// Resample host LAN interfaces. Android uses its latest reported platform snapshot.
+    /// The returned generation acknowledges actor configuration, not completed socket teardown.
+    pub async fn refresh_mdns_interfaces(&self) -> Result<u64> {
+        let _guard = self.shutdown_gate.lock().await;
+        if self.state.closed.load(Ordering::Acquire) {
+            return Err(RemoteError::Closed);
+        }
+        self.apply_mdns_interfaces(self.current_mdns_interfaces())
+            .await
+    }
+
+    fn current_mdns_interfaces(&self) -> BTreeSet<Ipv4Addr> {
+        if let Some(interfaces) = self
+            .platform_interfaces
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .as_ref()
+        {
+            return interfaces.clone();
+        }
+        // Android facts come from ConnectivityManager; native enumeration cannot express its
+        // default-network policy. Before the first snapshot discovery stays disabled.
+        #[cfg(target_os = "android")]
+        return BTreeSet::new();
+        #[cfg(not(target_os = "android"))]
+        netdev::get_interfaces()
+            .into_iter()
+            .filter(|interface| {
+                interface.is_up()
+                    && interface.is_multicast()
+                    && !interface.is_loopback()
+                    && !interface.is_point_to_point()
+            })
+            .flat_map(|interface| interface.ipv4.into_iter().map(|network| network.addr()))
+            .filter(|ip| crate::network::usable_mdns_ipv4(*ip))
+            .collect()
+    }
+
+    // Caller holds shutdown_gate, so close cannot drop the service across this await.
+    async fn apply_mdns_interfaces(&self, interfaces: BTreeSet<Ipv4Addr>) -> Result<u64> {
+        let (service, previous, previous_generation) = {
+            let enabled = self
+                .mdns
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner());
+            let enabled = enabled.as_ref().ok_or(RemoteError::Configuration)?;
+            (
+                enabled.service.clone(),
+                enabled.interfaces.clone(),
+                enabled.generation,
+            )
+        };
+        let generation = service
+            .set_ipv4_interfaces(interfaces.clone())
+            .await
+            .map_err(|_| RemoteError::Unavailable)?;
+        if interfaces != previous || generation != previous_generation {
+            let mut enabled = self
+                .mdns
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner());
+            let enabled = enabled.as_mut().ok_or(RemoteError::Closed)?;
+            enabled.interfaces = interfaces.clone();
+            enabled.generation = generation;
+            self.record_interfaces(generation, interfaces);
+        }
+        Ok(generation)
+    }
+
+    fn record_interfaces(&self, generation: u64, interfaces: BTreeSet<Ipv4Addr>) {
+        self.mdns_events
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .record(ProbeMdnsEvent::InterfacesApplied {
+                sampled_at_micros: crate::monotonic_microseconds(),
+                generation,
+                ipv4_addresses: interfaces.into_iter().collect(),
+            });
     }
 
     /// Drain the bounded ring. Dropped counts loss since the previous drain, not upstream loss.

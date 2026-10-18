@@ -93,6 +93,7 @@ class TransportProbeViewModel(application: Application) : AndroidViewModel(appli
     private var windowDeadlineMs: Long? = null
     private var mdnsEnabled = false
     private var multicastLock: ProbeMulticastLock? = null
+    private var networkSnapshot: BindingPlatformNetworkSnapshot? = null
     private val startup: Job
 
     private data class EvidenceEvent(val kind: String, val fields: JSONObject, val elapsedMs: Long)
@@ -132,7 +133,11 @@ class TransportProbeViewModel(application: Application) : AndroidViewModel(appli
                 stage = ProbeStage.NETWORK_MONITOR
                 monitor = NetworkMonitor(application,
                     report = { networks.trySend(it) },
-                    observed = { event("network_callback", it.evidence(), it.elapsedRealtimeMs.toLong()) },
+                    observed = { snapshot ->
+                        networkSnapshot = snapshot
+                        event("network_callback", snapshot.evidence(), snapshot.elapsedRealtimeMs.toLong())
+                        if (mdnsEnabled && !stopped) updateMulticastLock("network_snapshot")
+                    },
                 ).also { it.start() }
                 networkReporter = scope.launch {
                     for (snapshot in networks) {
@@ -151,7 +156,7 @@ class TransportProbeViewModel(application: Application) : AndroidViewModel(appli
                 }
                 if (target.mdns) {
                     while (!active.value && !stopped) lifecycleSignals.receive()
-                    if (stopped || !setMulticastHeld(true, "mdns_start")) return@launch
+                    if (stopped || !updateMulticastLock("mdns_start")) return@launch
                     event("mdns_enable_started")
                     stage = ProbeStage.MDNS_ENABLE
                     withContext(Dispatchers.IO) { local.enableMdns() }
@@ -202,7 +207,7 @@ class TransportProbeViewModel(application: Application) : AndroidViewModel(appli
     fun foreground(value: Boolean) {
         if (stopped) return
         if (windowExpired()) return
-        if (mdnsEnabled && !setMulticastHeld(value, if (value) "foreground" else "background")) return
+        if (mdnsEnabled && !updateMulticastLock(if (value) "foreground" else "background", value)) return
         active.value = value
         lifecycleSignals.trySend(Unit)
         event(if (value) "foreground" else "background")
@@ -227,7 +232,7 @@ class TransportProbeViewModel(application: Application) : AndroidViewModel(appli
         try {
             if (held && multicastLock == null) multicastLock = ProbeMulticastLock(getApplication())
             val actual = multicastLock?.setHeld(held) ?: false
-            event("multicast_lock", JSONObject().put("reason", reason).put("held", actual))
+            event("multicast_lock", JSONObject().put("reason", reason).put("held", actual).put("requestedHeld", held))
             check(actual == held)
             return true
         } catch (error: Exception) {
@@ -237,6 +242,17 @@ class TransportProbeViewModel(application: Application) : AndroidViewModel(appli
             finish("mdns_environment_failed", failure.message(ProbeStage.MULTICAST_LOCK, mdnsEnabled))
             return false
         }
+    }
+
+    private fun updateMulticastLock(reason: String, foreground: Boolean = active.value): Boolean {
+        // NetworkMonitor emits numeric IPs; this check never performs DNS or changes network facts.
+        val wifiIpv4 = networkSnapshot?.networks?.any { network ->
+            network.wifi && !network.vpn && network.addresses.any { address ->
+                val ip = address.substringBefore('/')
+                '.' in ip && ':' !in ip
+            }
+        } == true
+        return setMulticastHeld(foreground && mdnsEnabled && wifiIpv4, reason)
     }
 
     private suspend fun markers(current: VeluneTransportProbeConnection, target: ProbeTarget) {
@@ -363,6 +379,10 @@ class TransportProbeViewModel(application: Application) : AndroidViewModel(appli
                         is BindingProbeMdnsEvent.Published -> {
                             event("mdns_published", JSONObject().put("sampledAtMicros", entry.sampledAtMicros.toString())
                                 .put("directCount", entry.directCount.toString()).put("relayCount", entry.relayCount.toString()))
+                        }
+                        is BindingProbeMdnsEvent.InterfacesApplied -> {
+                            event("mdns_interfaces_applied", JSONObject().put("sampledAtMicros", entry.sampledAtMicros.toString())
+                                .put("generation", entry.generation.toString()).put("ipv4Addresses", JSONArray(entry.ipv4Addresses)))
                         }
                         is BindingProbeMdnsEvent.Dropped -> {
                             event("mdns_dropped", JSONObject().put("count", entry.count.toString()))
@@ -493,6 +513,7 @@ private fun BindingPlatformNetworkSnapshot.evidence(): JSONObject = JSONObject()
     .put("defaultNetworkId", defaultNetworkId ?: JSONObject.NULL)
     .put("networks", JSONArray(networks.map { network -> JSONObject()
         .put("id", network.id).put("wifi", network.wifi).put("cellular", network.cellular)
+        .put("ethernet", network.ethernet).put("vpn", network.vpn)
         .put("internet", network.internet).put("validated", network.validated)
         .put("interfaceName", network.interfaceName ?: JSONObject.NULL)
         .put("addresses", JSONArray(network.addresses)).put("dnsServers", JSONArray(network.dnsServers)) }))

@@ -62,6 +62,12 @@ pub struct BindingConnectionDiagnostics {
 /// Private mDNS evidence. Dropped counts ring loss since the previous drain, not upstream loss.
 #[derive(Clone, uniffi::Enum)]
 pub enum BindingProbeMdnsEvent {
+    /// Actor configuration acknowledgement, not proof that old socket tasks have exited.
+    InterfacesApplied {
+        sampled_at_micros: u64,
+        generation: u64,
+        ipv4_addresses: Vec<String>,
+    },
     /// Endpoint data reached the service; this does not prove multicast transmission or receipt.
     Published {
         sampled_at_micros: u64,
@@ -85,6 +91,18 @@ pub enum BindingProbeMdnsEvent {
 impl From<velune_remote::ProbeMdnsEvent> for BindingProbeMdnsEvent {
     fn from(event: velune_remote::ProbeMdnsEvent) -> Self {
         match event {
+            velune_remote::ProbeMdnsEvent::InterfacesApplied {
+                sampled_at_micros,
+                generation,
+                ipv4_addresses,
+            } => Self::InterfacesApplied {
+                sampled_at_micros,
+                generation,
+                ipv4_addresses: ipv4_addresses
+                    .into_iter()
+                    .map(|ip| ip.to_string())
+                    .collect(),
+            },
             velune_remote::ProbeMdnsEvent::Published {
                 sampled_at_micros,
                 direct_count,
@@ -196,6 +214,11 @@ impl VeluneTransportProbe {
     pub fn enable_mdns(&self) -> Result<(), BindingError> {
         self.runtime
             .block_on(self.probe.enable_mdns())
+            .map_err(Into::into)
+    }
+    pub fn refresh_mdns_interfaces(&self) -> Result<u64, BindingError> {
+        self.runtime
+            .block_on(self.probe.refresh_mdns_interfaces())
             .map_err(Into::into)
     }
     /// Drain this probe's shared event queue, including loss since the previous drain.

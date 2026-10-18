@@ -4,4 +4,5 @@ members = [
     "packages/agent-runtime", "packages/gateway", "packages/application",
     "packages/bindings", "packages/application-api", "packages/remote", "app/host",
 ]
+exclude = ["third-party/iroh-mdns-address-lookup"]
 resolver = "3"

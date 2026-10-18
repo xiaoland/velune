@@ -20,7 +20,7 @@
 
 `ConnectionDiagnostics` 显式包含受控本地／远端地址，只能存入私有验收资料。该 feature 用于复验平台发现与传输边界；正式产品装配不启用它，不能把 marker 成功作为业务授权与恢复闭环的验收证据。
 
-`enable_mdns()` 只在没有其它 lookup 的独立探针上显式启用；默认探针仍不含 mDNS，以免混淆平台地址变化／QNT 的判别。诊断依赖固定为 `iroh-mdns-address-lookup` 0.6.0 的官方提交 `6f103e7a92ddbd2007383527ab5024c983e3c1c6`，其缓存覆盖修复允许同一 peer 更新后再次 resolve 取到新地址；保持默认发现周期。`mdns_resolve` 最多八个并发调用，等待上限十五秒，只查询此服务，不建立连接。`mdns_events` 排空本地有界事件队列。Published 记录服务实际收到 EndpointData 的时间及 IP／relay 数量，透明转发原数据；它不证明报文已发出或对端已收到。Dropped 仅计自上次排空后本地溢出或超限项，不代表上游二十项 subscription 队列没有丢失。存在 active resolve 时，上游可能只发送 resolver 更新而不发被动 Discovered，缓存更新必须以再次 resolve 核对。关闭探针清空 lookup registry、释放自持 service 并停止订阅任务。
+`enable_mdns()` 只在没有其它 lookup 的独立探针上显式启用；默认探针仍不含 mDNS，以免混淆平台地址变化／QNT 的判别。诊断依赖采用 [本地单 crate](../../third-party/iroh-mdns-address-lookup/README.md)，基于 `iroh-mdns-address-lookup` 0.6.0 官方提交 `6f103e7a92ddbd2007383527ab5024c983e3c1c6`，保留同 peer 缓存覆盖修复与默认发现周期。接口集合变化会替换内部 discoverer，并用代际拒绝旧 callback；Endpoint、服务与订阅保持稳定。IPv4 接口为空时不创建 discoverer，显式 IPv4 模式不启用 IPv6。当前只装配诊断探针，尚未装配生产远控服务。`mdns_resolve` 最多八个并发调用，等待上限十五秒，只查询此服务，不建立连接。`mdns_events` 排空本地有界事件队列。Published 记录服务实际收到 EndpointData 的时间及 IP／relay 数量，透明转发原数据；它不证明报文已发出或对端已收到。Dropped 仅计自上次排空后本地溢出或超限项，不代表上游二十项 subscription 队列没有丢失。存在 active resolve 时，上游可能只发送 resolver 更新而不发被动 Discovered，缓存更新必须以再次 resolve 核对。关闭探针清空 lookup registry、释放自持 service 并停止订阅任务。
 
 ## 配对、持久信任与撤销
 
@@ -60,3 +60,7 @@ Android 身份文件通过内核 `renameat2(RENAME_NOREPLACE)` 发布，避免�
 调用、帧、版本、邀请、存储与授权错误使用无正文的 `RemoteError`；显式业务错误仍由 application 契约返回。完整业务写入冲突、陈旧审批、附件内容边界与每设备独立视图由执行 owner 负责，不由传输 mutex 代替。
 
 2026-10-17 已使用合成身份和处理器，经真实 iroh loopback 连接验证选中 Direct、配对、断连后继续执行、重连查询、同标识去重、冲突与撤销；显式公共开发 relay 的受控 RelayOnly 连接验证选中 Relay 并通过相同闭环。两者都不是跨 NAT 直连、真实切网或移动后台寿命的证明。静态检查与完整应用闭环见[任务验证记录](../../tasks/remote-control/verification.md)。本包没有自动化测试或 CI 测试入口。
+
+诊断探针的 Android 接口集合来自最新 `PlatformNetworkSnapshot`：选择真实 Wi-Fi／Ethernet 且非 VPN 网络的 IPv4，不要求它是默认网络或具有 Internet／VALIDATED。首次事实到达前保持空集合。`ethernet` 与 `vpn` 是平台事实，与现有 Wi-Fi／cellular 字段并列。桌面合成宿主通过 `refresh_mdns_interfaces()` 重新枚举 UP、支持 multicast、非 loopback、非 point-to-point 接口的 IPv4；调用方负责有界周期采样，不按路由或接口名字推测 LAN。
+
+InterfacesApplied 的私有地址、时间及 generation 只证明 actor 已接受集合并请求旧 discoverer 退出，不证明其 FD 已关闭。接口代际变化会清除旧 scope 的 peer 缓存并发 Expired，不能据此断定远端离线。已有 resolve 保持其期限，可收到新代际结果；已有 QUIC 连接不随缓存清除而关闭。实际旧资源退出和 IPv4 恢复须单独观察。底层 swarm 仍有 wildcard 接收与接口发送失败行为，接口集合不是流量白名单；边界见 vendored README。IPv6-only mDNS 不在当前修补覆盖内，QUIC 的 IPv6 路径能力不因此改变。

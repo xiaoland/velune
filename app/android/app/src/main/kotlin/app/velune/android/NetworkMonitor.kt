@@ -35,13 +35,15 @@ class NetworkMonitor(
         snapshot?.let(report)
     }
     private val defaultCallback = callback(default = true)
-    private val wifiCallback = callback(default = false)
+    private val lanCallback = callback(default = false)
 
     private data class Facts(
         var defaultObserved: Boolean = false,
-        var wifiObserved: Boolean = false,
+        var lanObserved: Boolean = false,
         var wifi: Boolean = false,
         var cellular: Boolean = false,
+        var ethernet: Boolean = false,
+        var vpn: Boolean = false,
         var internet: Boolean = false,
         var validated: Boolean = false,
         var interfaceName: String? = null,
@@ -55,11 +57,13 @@ class NetworkMonitor(
         started = true
         try {
             manager.registerDefaultNetworkCallback(defaultCallback, handler)
-            // A LAN-only Wi-Fi must remain observable while cellular is the default network.
+            // Transports are alternatives. Observe LAN without requiring Internet or validation,
+            // including a non-default Ethernet underneath the current VPN/default network.
             val request = NetworkRequest.Builder()
                 .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
+                .addTransportType(NetworkCapabilities.TRANSPORT_ETHERNET)
                 .build()
-            manager.registerNetworkCallback(request, wifiCallback, handler)
+            manager.registerNetworkCallback(request, lanCallback, handler)
         } catch (error: Exception) {
             close()
             throw error
@@ -79,14 +83,13 @@ class NetworkMonitor(
                 defaultNetwork?.takeIf { it != network }?.let { previous ->
                     networks[previous]?.let { old ->
                         old.defaultObserved = false
-                        if (!old.wifiObserved) networks.remove(previous)
+                        if (!old.lanObserved) networks.remove(previous)
                     }
                 }
                 defaultNetwork = network
                 facts.defaultObserved = true
             } else {
-                facts.wifiObserved = true
-                facts.wifi = true
+                facts.lanObserved = true
             }
             changed(BindingNetworkChangeReason.AVAILABLE)
         }
@@ -98,9 +101,9 @@ class NetworkMonitor(
                     facts.defaultObserved = false
                     if (defaultNetwork == network) defaultNetwork = null
                 } else {
-                    facts.wifiObserved = false
+                    facts.lanObserved = false
                 }
-                if (!facts.defaultObserved && !facts.wifiObserved) networks.remove(network)
+                if (!facts.defaultObserved && !facts.lanObserved) networks.remove(network)
             }
             changed(BindingNetworkChangeReason.LOST)
         }
@@ -110,6 +113,8 @@ class NetworkMonitor(
             val facts = networks[network] ?: return
             facts.wifi = capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)
             facts.cellular = capabilities.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR)
+            facts.ethernet = capabilities.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET)
+            facts.vpn = capabilities.hasTransport(NetworkCapabilities.TRANSPORT_VPN)
             facts.internet = capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
             facts.validated = capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
             changed(BindingNetworkChangeReason.CAPABILITIES)
@@ -139,6 +144,8 @@ class NetworkMonitor(
                     id = network.identifier(),
                     wifi = facts.wifi,
                     cellular = facts.cellular,
+                    ethernet = facts.ethernet,
+                    vpn = facts.vpn,
                     internet = facts.internet,
                     validated = facts.validated,
                     interfaceName = facts.interfaceName,
@@ -149,6 +156,7 @@ class NetworkMonitor(
         )
         // Private probe evidence retains the original callback time before notification coalescing.
         observed?.invoke(snapshot)
+        if (!started) return
         pending = snapshot
         if (!flushScheduled) {
             flushScheduled = true
@@ -164,7 +172,7 @@ class NetworkMonitor(
         pending = null
         flushScheduled = false
         try { manager.unregisterNetworkCallback(defaultCallback) } catch (_: IllegalArgumentException) { }
-        try { manager.unregisterNetworkCallback(wifiCallback) } catch (_: IllegalArgumentException) { }
+        try { manager.unregisterNetworkCallback(lanCallback) } catch (_: IllegalArgumentException) { }
         networks.clear()
         defaultNetwork = null
     }

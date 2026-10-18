@@ -69,6 +69,8 @@ pub struct BindingPlatformNetwork {
     pub id: String,
     pub wifi: bool,
     pub cellular: bool,
+    pub ethernet: bool,
+    pub vpn: bool,
     pub internet: bool,
     pub validated: bool,
     pub interface_name: Option<String>,
