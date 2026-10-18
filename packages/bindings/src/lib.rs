@@ -8,6 +8,10 @@ mod diagnostics;
 #[cfg(feature = "remote")]
 mod remote;
 #[cfg(feature = "remote")]
+mod remote_state;
+#[cfg(feature = "remote")]
+pub use remote_state::*;
+#[cfg(feature = "remote")]
 mod remote_command;
 #[cfg(feature = "remote")]
 mod remote_response;
@@ -169,6 +173,11 @@ enum Backend {
     Local(ApplicationService),
     #[cfg(feature = "remote")]
     Remote(Arc<remote::RemoteApplication>),
+    #[cfg(feature = "remote")]
+    ScopedRemote {
+        remote: Arc<remote::RemoteApplication>,
+        operation: Arc<velune_remote::RemoteOperation>,
+    },
 }
 
 #[derive(uniffi::Object)]
@@ -197,7 +206,11 @@ impl VeluneApplication {
                         .execute(ClientViewId("local".into()), command)
                         .map_err(Into::into),
                     #[cfg(feature = "remote")]
-                    Backend::Remote(remote) => remote.request(command),
+                    Backend::Remote(remote) => remote.request(command, None),
+                    #[cfg(feature = "remote")]
+                    Backend::ScopedRemote { remote, operation } => {
+                        remote.request(command, Some(&operation))
+                    }
                 }
             }
             #[cfg(not(any(feature = "local-runtime", feature = "remote")))]
@@ -217,6 +230,8 @@ impl VeluneApplication {
                     Backend::Local(service) => service.close(_stop_work)?,
                     #[cfg(feature = "remote")]
                     Backend::Remote(remote) => remote.close()?,
+                    #[cfg(feature = "remote")]
+                    Backend::ScopedRemote { .. } => {}
                     #[cfg(not(any(feature = "local-runtime", feature = "remote")))]
                     _ => {}
                 }

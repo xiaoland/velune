@@ -1,6 +1,6 @@
 use crate::{
     paths::{ConnectionSlot, ObservedConnection},
-    protocol::{ALPN, Envelope},
+    protocol::{ALPN, Envelope, Reply, Request},
     service::{RemoteAccessService, ServiceState},
     wire::{read_frame, write_frame},
     *,
@@ -128,6 +128,7 @@ pub(crate) struct NetworkGeneration {
     pub(crate) service: Arc<ServiceState>,
     pub(crate) id: u64,
     pub(crate) timeout: Duration,
+    lookup_url: Option<String>,
     closed: AtomicBool,
     cancelled: tokio::sync::watch::Sender<bool>,
     operations: Arc<RwLock<()>>,
@@ -148,6 +149,10 @@ impl NetworkGeneration {
             service,
             id,
             timeout: config.request_timeout,
+            lookup_url: match &config.discovery {
+                DiscoveryConfig::CustomPkarr { url } => Some(url.clone()),
+                _ => None,
+            },
             closed: AtomicBool::new(false),
             cancelled: tokio::sync::watch::channel(false).0,
             operations: Arc::new(RwLock::new(())),
@@ -180,6 +185,7 @@ impl NetworkGeneration {
             incarnation: self.service.incarnation.clone(),
             relay_urls: addr.relay_urls().map(ToString::to_string).collect(),
             direct_addresses: addr.ip_addrs().copied().collect(),
+            lookup_url: self.lookup_url.clone(),
         })
     }
     pub(crate) async fn operation(&self) -> Result<OwnedRwLockReadGuard<()>> {
@@ -250,7 +256,7 @@ impl NetworkGeneration {
         if let Ok(connections) = self.connections.lock() {
             for connection in connections
                 .values()
-                .filter(|value| value.slot.status().peer_id == peer)
+                .filter(|value| value.incoming && value.slot.status().peer_id == peer)
             {
                 connection.slot.close(b"authorization revoked");
             }
@@ -314,55 +320,51 @@ impl NetworkGeneration {
     }
 }
 impl RemoteAccessService {
-    pub async fn pair(&self, invitation: &Invitation) -> Result<RemoteClient> {
-        let mut client = self
-            .dial(&invitation.endpoint, ClientSession::new()?, false)
-            .await?;
-        let reply = client
-            .rpc(crate::protocol::Request::Pair {
-                token: invitation.token,
-                name: self.state.identity.name.clone(),
-                incarnation: invitation.endpoint.incarnation.clone(),
-            })
-            .await?;
-        if !matches!(reply, crate::protocol::Reply::Paired) {
-            return Err(RemoteError::Protocol);
-        }
-        self.state.trust.trust(TrustedDevice {
-            id: invitation.endpoint.endpoint_id.clone(),
-            name: invitation.endpoint.name.clone(),
-        })?;
-        client.authorized = true;
-        Ok(client)
-    }
-    pub async fn connect(&self, descriptor: &EndpointDescriptor) -> Result<RemoteClient> {
-        self.connect_with_session(descriptor, ClientSession::new()?)
-            .await
-    }
-    pub async fn connect_with_session(
+    pub(crate) async fn connect_client(
         &self,
-        descriptor: &EndpointDescriptor,
+        peer: &str,
         session: ClientSession,
     ) -> Result<RemoteClient> {
-        let mut client = self.dial(descriptor, session, true).await?;
-        match client.rpc(crate::protocol::Request::Hello).await? {
-            crate::protocol::Reply::Hello(current) => {
+        let contact = self.state.store.contact(peer)?;
+        if !matches!(contact.confirmation, ContactConfirmation::Confirmed { .. }) {
+            return Err(RemoteError::Unauthorized);
+        }
+        let mut client = self
+            .dial_locator(peer, contact.name, &contact.locator, session, true)
+            .await?;
+        match client.rpc(Request::Hello).await? {
+            Reply::Hello(current) => {
+                current.validate(peer)?;
+                {
+                    let _access = self.state.access()?;
+                    self.state.store.update_locator(
+                        peer,
+                        current.name.clone(),
+                        DeviceLocator {
+                            relay_urls: current.relay_urls.clone(),
+                            direct_addresses: current.direct_addresses.clone(),
+                            lookup_url: current.lookup_url.clone(),
+                        },
+                    )?;
+                }
                 client.descriptor = current;
                 Ok(client)
             }
             _ => Err(RemoteError::Protocol),
         }
     }
-    async fn dial(
+    pub(crate) async fn dial_locator(
         &self,
-        descriptor: &EndpointDescriptor,
+        peer: &str,
+        name: String,
+        locator: &DeviceLocator,
         session: ClientSession,
         authorized: bool,
     ) -> Result<RemoteClient> {
-        if authorized && !self.state.trust.is_trusted(&descriptor.endpoint_id)? {
+        if authorized && !self.state.store.is_pinned(peer)? {
             return Err(RemoteError::Unauthorized);
         }
-        let address = descriptor.address()?;
+        let address = locator.address(peer)?;
         let network = self.network()?;
         let _operation = network.operation().await?;
         let endpoint = network.endpoint()?;
@@ -375,9 +377,17 @@ impl RemoteAccessService {
         Ok(RemoteClient {
             connection,
             network: Arc::downgrade(&network),
-            service: self.state.clone(),
+            store: self.state.store.clone(),
             registration,
-            descriptor: descriptor.clone(),
+            descriptor: EndpointDescriptor {
+                version: PROTOCOL_VERSION,
+                endpoint_id: peer.into(),
+                name,
+                incarnation: String::new(),
+                relay_urls: locator.relay_urls.clone(),
+                direct_addresses: locator.direct_addresses.clone(),
+                lookup_url: locator.lookup_url.clone(),
+            },
             session,
             authorized,
             timeout: network.timeout,
@@ -410,7 +420,9 @@ async fn accept_loop(network: Arc<NetworkGeneration>) {
             let Ok((registration, connection)) = owner.register(connection, true) else {
                 return;
             };
+            let connection_id = connection.status().connection_id;
             serve_connection(owner.clone(), connection).await;
+            owner.service.pairing_disconnected(connection_id);
             owner.remove(registration);
         });
         network.track(task);
@@ -433,6 +445,7 @@ async fn serve_connection(network: Arc<NetworkGeneration>, slot: Arc<ConnectionS
             continue;
         };
         let owner = network.clone();
+        let request_slot = slot.clone();
         let peer = connection.remote_id().to_string();
         let task = tokio::spawn(async move {
             let _permit = permit;
@@ -442,7 +455,7 @@ async fn serve_connection(network: Arc<NetworkGeneration>, slot: Arc<ConnectionS
                     .acquire()
                     .await
                     .map_err(|_| RemoteError::Closed)?;
-                let limit = if owner.service.trust.is_trusted(&peer)? {
+                let limit = if owner.service.store.grant(&peer)?.is_some() {
                     MAX_FRAME_BYTES
                 } else {
                     16 * 1024
@@ -451,15 +464,31 @@ async fn serve_connection(network: Arc<NetworkGeneration>, slot: Arc<ConnectionS
                     read_frame::<Envelope<crate::protocol::Request>>(&mut recv, limit).await;
                 let reply = match envelope {
                     Ok(envelope) if envelope.version == PROTOCOL_VERSION => {
-                        // Blocking authorization/storage only retains stable service state, never this generation.
-                        let service = owner.service.clone();
-                        let generation = owner.id;
-                        let descriptor = owner.descriptor()?;
-                        tokio::task::spawn_blocking(move || {
-                            service.dispatch(generation, peer, descriptor, envelope.body)
-                        })
-                        .await
-                        .map_err(|_| RemoteError::Unavailable)?
+                        if matches!(
+                            envelope.body,
+                            Request::PairBegin { .. }
+                                | Request::PairReady { .. }
+                                | Request::PairStatus { .. }
+                                | Request::PairCancel { .. }
+                        ) {
+                            let native = request_slot.native().ok_or(RemoteError::Closed)?;
+                            owner.service.dispatch_pairing(
+                                owner.id,
+                                &native,
+                                &request_slot,
+                                envelope.body,
+                            )
+                        } else {
+                            // Blocking authorization/storage only retains stable service state, never this generation.
+                            let service = owner.service.clone();
+                            let generation = owner.id;
+                            let descriptor = owner.descriptor()?;
+                            tokio::task::spawn_blocking(move || {
+                                service.dispatch(generation, peer, descriptor, envelope.body)
+                            })
+                            .await
+                            .map_err(|_| RemoteError::Unavailable)?
+                        }
                     }
                     Ok(_) => crate::protocol::Reply::Error(RemoteError::IncompatibleVersion),
                     Err(error) => crate::protocol::Reply::Error(error),

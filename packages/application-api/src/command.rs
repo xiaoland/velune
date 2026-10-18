@@ -35,6 +35,110 @@ pub struct AttachmentContent {
     pub bytes: Vec<u8>,
 }
 
+/// Delivery safety is separate from configuration conflict/revision semantics.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum DeliveryClass {
+    Observation,
+    Effect,
+}
+
+/// Safe operation identity; it contains no command body, attachment, or authentication material.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum CommandKind {
+    ReleaseView,
+    RuntimeResourceCatalog,
+    ReadRuntimeResource,
+    WriteRuntimeResource,
+    DeleteRuntimeResource,
+    ListResourceTemplates,
+    ReadResourceTemplate,
+    SaveResourceTemplate,
+    DeleteResourceTemplate,
+    ImportRuntimeResource,
+    AdoptRuntimeResource,
+    ResourceSyncStatus,
+    ResourceDrift,
+    UnmanagedRuntimeResources,
+    ApplyResourceTemplate,
+    ResourceNativeImport,
+    ResolveResourceBinding,
+    AnalyticsQuery,
+    RuntimeDiscoveryHints,
+    DiscoverRuntimes,
+    List,
+    SetOutlinePresentation,
+    SetStatusLine,
+    SetConversationBrowserPreferences,
+    ComposerDrafts,
+    SetComposerDraft,
+    SetConversationBrowserLimits,
+    OrganizeConversations,
+    SetProject,
+    LoadMoreConversations,
+    ShowArchivedConversations,
+    SearchConversations,
+    FindConversation,
+    UpsertRuntime,
+    UpsertRuntimeWithExecution,
+    UpsertAcpRuntime,
+    AcpLaunch,
+    AcpRuntimeInfo,
+    OpenAcpConversation,
+    AcpSessionConfig,
+    SetAcpSessionConfig,
+    DeleteRuntime,
+    SelectRuntime,
+    RuntimeExecution,
+    RuntimeHomeDirectory,
+    ConfigureRuntimeExecution,
+    CreateConversation,
+    CreateConversationWithSelection,
+    RuntimeModels,
+    NextTurnModelSelection,
+    OpenConversation,
+    ReadConversation,
+    RenameConversation,
+    DeleteConversation,
+    Snapshot,
+    SnapshotUpdate,
+    MessagePayloads,
+    SendTurn,
+    SendTurnWithSelection,
+    ReasoningEfforts,
+    SendQueue,
+    SteerTurn,
+    EditMessage,
+    Cancel,
+    StopSubAgents,
+    ConversationActivity,
+    WorkingChanges,
+    WorkingBranch,
+    FileDiff,
+    PreviewProviderImport,
+    ApplyProviderImport,
+    ProviderQuota,
+    RefreshProviderQuota,
+    SaveProvider,
+    DeleteProvider,
+    SaveModelRoute,
+    DeleteModelRoute,
+    ReadProviderApiKey,
+    SaveModelTemplate,
+    DeleteModelTemplate,
+    ReplyRuntimeInteraction,
+    AuthenticationInspect,
+    AuthenticationStart,
+    AuthenticationLogout,
+    AuthenticationPoll,
+    AuthenticationReply,
+    AuthenticationCancel,
+    FetchPublicModelCatalog,
+    UploadAttachment,
+    ReadAttachment,
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(
     tag = "command",
@@ -496,6 +600,199 @@ pub enum Response {
 }
 
 impl Command {
+    /// Exhaustive classification: new commands must declare whether an uncertain delivery may be reissued.
+    pub fn delivery_class(&self) -> DeliveryClass {
+        match self {
+            Self::RuntimeResourceCatalog { .. }
+            | Self::ReadRuntimeResource { .. }
+            | Self::ListResourceTemplates
+            | Self::ReadResourceTemplate { .. }
+            | Self::ImportRuntimeResource { .. }
+            | Self::ResourceSyncStatus
+            | Self::ResourceDrift { .. }
+            | Self::UnmanagedRuntimeResources { .. }
+            | Self::ResourceNativeImport { .. }
+            | Self::AnalyticsQuery { .. }
+            | Self::RuntimeDiscoveryHints { .. }
+            | Self::DiscoverRuntimes { .. }
+            | Self::List
+            | Self::ComposerDrafts
+            | Self::SearchConversations { .. }
+            | Self::FindConversation { .. }
+            | Self::AcpLaunch { .. }
+            | Self::AcpRuntimeInfo { .. }
+            | Self::AcpSessionConfig { .. }
+            | Self::RuntimeExecution { .. }
+            | Self::RuntimeHomeDirectory { .. }
+            | Self::RuntimeModels { .. }
+            | Self::NextTurnModelSelection
+            | Self::ReadConversation { .. }
+            | Self::Snapshot { .. }
+            | Self::SnapshotUpdate { .. }
+            | Self::MessagePayloads { .. }
+            | Self::ReasoningEfforts { .. }
+            | Self::ConversationActivity { .. }
+            | Self::WorkingChanges { .. }
+            | Self::WorkingBranch { .. }
+            | Self::FileDiff { .. }
+            | Self::PreviewProviderImport { .. }
+            | Self::ProviderQuota { .. }
+            | Self::ReadProviderApiKey { .. }
+            | Self::FetchPublicModelCatalog
+            | Self::ReadAttachment { .. } => DeliveryClass::Observation,
+            Self::ReleaseView
+            | Self::WriteRuntimeResource { .. }
+            | Self::DeleteRuntimeResource { .. }
+            | Self::SaveResourceTemplate { .. }
+            | Self::DeleteResourceTemplate { .. }
+            | Self::AdoptRuntimeResource { .. }
+            | Self::ApplyResourceTemplate { .. }
+            | Self::ResolveResourceBinding { .. }
+            | Self::SetOutlinePresentation { .. }
+            | Self::SetStatusLine { .. }
+            | Self::SetConversationBrowserPreferences { .. }
+            | Self::SetComposerDraft { .. }
+            | Self::SetConversationBrowserLimits { .. }
+            | Self::OrganizeConversations { .. }
+            | Self::SetProject { .. }
+            | Self::LoadMoreConversations { .. }
+            | Self::ShowArchivedConversations { .. }
+            | Self::UpsertRuntime { .. }
+            | Self::UpsertRuntimeWithExecution { .. }
+            | Self::UpsertAcpRuntime { .. }
+            | Self::OpenAcpConversation { .. }
+            | Self::SetAcpSessionConfig { .. }
+            | Self::DeleteRuntime { .. }
+            | Self::SelectRuntime { .. }
+            | Self::ConfigureRuntimeExecution { .. }
+            | Self::CreateConversation { .. }
+            | Self::CreateConversationWithSelection { .. }
+            | Self::OpenConversation { .. }
+            | Self::RenameConversation { .. }
+            | Self::DeleteConversation { .. }
+            | Self::SendTurn { .. }
+            | Self::SendTurnWithSelection { .. }
+            | Self::SendQueue { .. }
+            | Self::SteerTurn { .. }
+            | Self::EditMessage { .. }
+            | Self::Cancel { .. }
+            | Self::StopSubAgents { .. }
+            | Self::ApplyProviderImport { .. }
+            | Self::RefreshProviderQuota { .. }
+            | Self::SaveProvider { .. }
+            | Self::DeleteProvider { .. }
+            | Self::SaveModelRoute { .. }
+            | Self::DeleteModelRoute { .. }
+            | Self::SaveModelTemplate { .. }
+            | Self::DeleteModelTemplate { .. }
+            | Self::ReplyRuntimeInteraction { .. }
+            | Self::AuthenticationInspect { .. }
+            | Self::AuthenticationStart { .. }
+            | Self::AuthenticationLogout { .. }
+            | Self::AuthenticationPoll
+            | Self::AuthenticationReply { .. }
+            | Self::AuthenticationCancel
+            | Self::UploadAttachment { .. } => DeliveryClass::Effect,
+        }
+    }
+    pub fn kind(&self) -> CommandKind {
+        match self {
+            Self::ReleaseView => CommandKind::ReleaseView,
+            Self::RuntimeResourceCatalog { .. } => CommandKind::RuntimeResourceCatalog,
+            Self::ReadRuntimeResource { .. } => CommandKind::ReadRuntimeResource,
+            Self::WriteRuntimeResource { .. } => CommandKind::WriteRuntimeResource,
+            Self::DeleteRuntimeResource { .. } => CommandKind::DeleteRuntimeResource,
+            Self::ListResourceTemplates => CommandKind::ListResourceTemplates,
+            Self::ReadResourceTemplate { .. } => CommandKind::ReadResourceTemplate,
+            Self::SaveResourceTemplate { .. } => CommandKind::SaveResourceTemplate,
+            Self::DeleteResourceTemplate { .. } => CommandKind::DeleteResourceTemplate,
+            Self::ImportRuntimeResource { .. } => CommandKind::ImportRuntimeResource,
+            Self::AdoptRuntimeResource { .. } => CommandKind::AdoptRuntimeResource,
+            Self::ResourceSyncStatus => CommandKind::ResourceSyncStatus,
+            Self::ResourceDrift { .. } => CommandKind::ResourceDrift,
+            Self::UnmanagedRuntimeResources { .. } => CommandKind::UnmanagedRuntimeResources,
+            Self::ApplyResourceTemplate { .. } => CommandKind::ApplyResourceTemplate,
+            Self::ResourceNativeImport { .. } => CommandKind::ResourceNativeImport,
+            Self::ResolveResourceBinding { .. } => CommandKind::ResolveResourceBinding,
+            Self::AnalyticsQuery { .. } => CommandKind::AnalyticsQuery,
+            Self::RuntimeDiscoveryHints { .. } => CommandKind::RuntimeDiscoveryHints,
+            Self::DiscoverRuntimes { .. } => CommandKind::DiscoverRuntimes,
+            Self::List => CommandKind::List,
+            Self::SetOutlinePresentation { .. } => CommandKind::SetOutlinePresentation,
+            Self::SetStatusLine { .. } => CommandKind::SetStatusLine,
+            Self::SetConversationBrowserPreferences { .. } => {
+                CommandKind::SetConversationBrowserPreferences
+            }
+            Self::ComposerDrafts => CommandKind::ComposerDrafts,
+            Self::SetComposerDraft { .. } => CommandKind::SetComposerDraft,
+            Self::SetConversationBrowserLimits { .. } => CommandKind::SetConversationBrowserLimits,
+            Self::OrganizeConversations { .. } => CommandKind::OrganizeConversations,
+            Self::SetProject { .. } => CommandKind::SetProject,
+            Self::LoadMoreConversations { .. } => CommandKind::LoadMoreConversations,
+            Self::ShowArchivedConversations { .. } => CommandKind::ShowArchivedConversations,
+            Self::SearchConversations { .. } => CommandKind::SearchConversations,
+            Self::FindConversation { .. } => CommandKind::FindConversation,
+            Self::UpsertRuntime { .. } => CommandKind::UpsertRuntime,
+            Self::UpsertRuntimeWithExecution { .. } => CommandKind::UpsertRuntimeWithExecution,
+            Self::UpsertAcpRuntime { .. } => CommandKind::UpsertAcpRuntime,
+            Self::AcpLaunch { .. } => CommandKind::AcpLaunch,
+            Self::AcpRuntimeInfo { .. } => CommandKind::AcpRuntimeInfo,
+            Self::OpenAcpConversation { .. } => CommandKind::OpenAcpConversation,
+            Self::AcpSessionConfig { .. } => CommandKind::AcpSessionConfig,
+            Self::SetAcpSessionConfig { .. } => CommandKind::SetAcpSessionConfig,
+            Self::DeleteRuntime { .. } => CommandKind::DeleteRuntime,
+            Self::SelectRuntime { .. } => CommandKind::SelectRuntime,
+            Self::RuntimeExecution { .. } => CommandKind::RuntimeExecution,
+            Self::RuntimeHomeDirectory { .. } => CommandKind::RuntimeHomeDirectory,
+            Self::ConfigureRuntimeExecution { .. } => CommandKind::ConfigureRuntimeExecution,
+            Self::CreateConversation { .. } => CommandKind::CreateConversation,
+            Self::CreateConversationWithSelection { .. } => {
+                CommandKind::CreateConversationWithSelection
+            }
+            Self::RuntimeModels { .. } => CommandKind::RuntimeModels,
+            Self::NextTurnModelSelection => CommandKind::NextTurnModelSelection,
+            Self::OpenConversation { .. } => CommandKind::OpenConversation,
+            Self::ReadConversation { .. } => CommandKind::ReadConversation,
+            Self::RenameConversation { .. } => CommandKind::RenameConversation,
+            Self::DeleteConversation { .. } => CommandKind::DeleteConversation,
+            Self::Snapshot { .. } => CommandKind::Snapshot,
+            Self::SnapshotUpdate { .. } => CommandKind::SnapshotUpdate,
+            Self::MessagePayloads { .. } => CommandKind::MessagePayloads,
+            Self::SendTurn { .. } => CommandKind::SendTurn,
+            Self::SendTurnWithSelection { .. } => CommandKind::SendTurnWithSelection,
+            Self::ReasoningEfforts { .. } => CommandKind::ReasoningEfforts,
+            Self::SendQueue { .. } => CommandKind::SendQueue,
+            Self::SteerTurn { .. } => CommandKind::SteerTurn,
+            Self::EditMessage { .. } => CommandKind::EditMessage,
+            Self::Cancel { .. } => CommandKind::Cancel,
+            Self::StopSubAgents { .. } => CommandKind::StopSubAgents,
+            Self::ConversationActivity { .. } => CommandKind::ConversationActivity,
+            Self::WorkingChanges { .. } => CommandKind::WorkingChanges,
+            Self::WorkingBranch { .. } => CommandKind::WorkingBranch,
+            Self::FileDiff { .. } => CommandKind::FileDiff,
+            Self::PreviewProviderImport { .. } => CommandKind::PreviewProviderImport,
+            Self::ApplyProviderImport { .. } => CommandKind::ApplyProviderImport,
+            Self::ProviderQuota { .. } => CommandKind::ProviderQuota,
+            Self::RefreshProviderQuota { .. } => CommandKind::RefreshProviderQuota,
+            Self::SaveProvider { .. } => CommandKind::SaveProvider,
+            Self::DeleteProvider { .. } => CommandKind::DeleteProvider,
+            Self::SaveModelRoute { .. } => CommandKind::SaveModelRoute,
+            Self::DeleteModelRoute { .. } => CommandKind::DeleteModelRoute,
+            Self::ReadProviderApiKey { .. } => CommandKind::ReadProviderApiKey,
+            Self::SaveModelTemplate { .. } => CommandKind::SaveModelTemplate,
+            Self::DeleteModelTemplate { .. } => CommandKind::DeleteModelTemplate,
+            Self::ReplyRuntimeInteraction { .. } => CommandKind::ReplyRuntimeInteraction,
+            Self::AuthenticationInspect { .. } => CommandKind::AuthenticationInspect,
+            Self::AuthenticationStart { .. } => CommandKind::AuthenticationStart,
+            Self::AuthenticationLogout { .. } => CommandKind::AuthenticationLogout,
+            Self::AuthenticationPoll => CommandKind::AuthenticationPoll,
+            Self::AuthenticationReply { .. } => CommandKind::AuthenticationReply,
+            Self::AuthenticationCancel => CommandKind::AuthenticationCancel,
+            Self::FetchPublicModelCatalog => CommandKind::FetchPublicModelCatalog,
+            Self::UploadAttachment { .. } => CommandKind::UploadAttachment,
+            Self::ReadAttachment { .. } => CommandKind::ReadAttachment,
+        }
+    }
     /// Mutations whose stale input could replace or remove another device's work.
     pub fn requires_revision(&self) -> bool {
         matches!(

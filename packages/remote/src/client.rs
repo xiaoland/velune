@@ -2,7 +2,6 @@ use crate::{
     endpoint::NetworkGeneration,
     paths::ConnectionSlot,
     protocol::{Envelope, Reply, Request},
-    service::ServiceState,
     wire::{read_frame, write_frame},
     *,
 };
@@ -12,10 +11,10 @@ use std::{
 };
 use velune_application_api::{ApplicationReply, ClientViewId, Command, ExecutionContext, Failure};
 
-pub struct RemoteClient {
+pub(crate) struct RemoteClient {
     pub(crate) connection: Arc<ConnectionSlot>,
     pub(crate) network: Weak<NetworkGeneration>,
-    pub(crate) service: Arc<ServiceState>,
+    pub(crate) store: Arc<DeviceStore>,
     pub(crate) registration: u64,
     pub(crate) descriptor: EndpointDescriptor,
     pub(crate) session: ClientSession,
@@ -28,9 +27,6 @@ impl RemoteClient {
     }
     pub fn peer_id(&self) -> String {
         self.connection.status().peer_id
-    }
-    pub fn session(&self) -> ClientSession {
-        self.session.clone()
     }
     pub fn connection_status(&self) -> ConnectionStatus {
         self.connection.status()
@@ -130,7 +126,7 @@ impl RemoteClient {
         self.connection.close(b"client closed");
     }
     pub(crate) async fn rpc(&self, request: Request) -> Result<Reply> {
-        if self.authorized && !self.service.trust.is_trusted(&self.peer_id())? {
+        if self.authorized && !self.store.is_pinned(&self.peer_id())? {
             return Err(RemoteError::Unauthorized);
         }
         let network = self.network.upgrade().ok_or(RemoteError::Closed)?;

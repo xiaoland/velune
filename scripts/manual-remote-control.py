@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """显式隔离验收远控；只使用临时 HOME、合成 ACP peers 与本机 iroh。
 
-这不是自动化测试或 CI 入口。请显式提供本轮构建的动态库、Python bindings 和
-resources；不读取用户的 Velune 配置、Harness 认证或真实会话。
+这不是自动化测试或 CI 入口。请显式提供同一次 v2 构建的动态库、Python bindings
+和 resources；不读取用户的 Velune 配置、Harness 认证或真实会话。夹具在核对双方
+派生码后显式调用执行端本地批准 API，不代表产品自动授信。
 """
 import argparse
+from contextlib import contextmanager
 import hashlib
 import importlib.util
 import json
@@ -35,6 +37,13 @@ def rejected(operation, error_type):
     except error_type as error:
         return error
     raise AssertionError('应拒绝的操作成功了')
+
+@contextmanager
+def remote_operation(client):
+    """显式处理完本次 typed 结果后确认；异常退出保留准确 pending ID。"""
+    operation = client.prepare_remote_operation()
+    yield operation.application()
+    operation.acknowledge()
 
 
 def texts(b, snapshot):
@@ -120,7 +129,8 @@ def exercise_business(b, local, first, second, root, report):
         request_profile=b.BindingRequestProfile.NATIVE,
         authentication_source=b.BindingProviderAuthenticationSource.API_KEY,
         quota_source=b.BindingProviderQuotaSource.NONE)
-    first.save_provider('default', provider, b.BindingAuthenticationEdit.SET_API_KEY(value='SYNTHETIC_REMOTE_SECRET'))
+    with remote_operation(first) as scoped:
+        scoped.save_provider('default', provider, b.BindingAuthenticationEdit.SET_API_KEY(value='SYNTHETIC_REMOTE_SECRET'))
     assert first.read_provider_api_key('default', 'synthetic') == 'SYNTHETIC_REMOTE_SECRET'
     assert local.read_provider_api_key('default', 'synthetic') == 'SYNTHETIC_REMOTE_SECRET'
     # The typed configuration deliberately exposes metadata and presence, not key contents.
@@ -135,23 +145,28 @@ def exercise_business(b, local, first, second, root, report):
     launch = first.acp_launch('alpha')
     assert launch.environment['PRIVATE_MARKER'] == 'SYNTHETIC_ACP_ENV_SECRET'
     alpha_runtime.name = 'Alpha edited'
-    first.upsert_runtime(alpha_runtime)
+    with remote_operation(first) as scoped:
+        scoped.upsert_runtime(alpha_runtime)
     assert first.acp_launch('alpha').environment == launch.environment
     assert first.acp_launch('alpha').args == launch.args
     report.append('acp_environment_explicit_only_and_runtime_edit_preserves_launch')
 
-    first.upsert_runtime(b.BindingRuntimeInstance(enabled=False, id='resources', name='Resources',
-        type_id='claude-code-2.1', gateway_id='default', settings={'agentDir':str(root / 'resource-agent')}))
+    with remote_operation(first) as scoped:
+        scoped.upsert_runtime(b.BindingRuntimeInstance(enabled=False, id='resources', name='Resources',
+            type_id='claude-code-2.1', gateway_id='default', settings={'agentDir':str(root / 'resource-agent')}))
     kind, scope = b.BindingRuntimeResourceKind, b.BindingRuntimeResourceScope
     catalog = first.runtime_resource_catalog('resources', None, kind.USER_INSTRUCTIONS, scope.USER)
     resource = catalog.entries[0].key
     revision = b.BindingRuntimeResourceRevision
-    created = first.write_runtime_resource('resources', None, resource, revision.MISSING(), b'FIRST\n', None)
+    with remote_operation(first) as scoped:
+        created = scoped.write_runtime_resource('resources', None, resource, revision.MISSING(), b'FIRST\n', None)
     other = second.read_runtime_resource('resources', None, resource)
     assert other.bytes == b'FIRST\n' and other.entry.revision == created.entry.revision
-    changed = first.write_runtime_resource('resources', None, resource, revision.MATCH(created.entry.revision), b'SECOND\n', None)
-    rejected(lambda: second.write_runtime_resource('resources', None, resource,
-        revision.MATCH(other.entry.revision), b'STALE\n', None), b.BindingError)
+    with remote_operation(first) as scoped:
+        changed = scoped.write_runtime_resource('resources', None, resource, revision.MATCH(created.entry.revision), b'SECOND\n', None)
+    with remote_operation(second) as scoped:
+        rejected(lambda: scoped.write_runtime_resource('resources', None, resource,
+            revision.MATCH(other.entry.revision), b'STALE\n', None), b.BindingError.Diagnostic)
     assert first.read_runtime_resource('resources', None, resource).bytes == b'SECOND\n'
     assert local.read_runtime_resource('resources', None, resource).entry.revision == changed.entry.revision
     report.append('remote_resource_read_write_and_stale_revision')
@@ -159,12 +174,14 @@ def exercise_business(b, local, first, second, root, report):
     manifest = b'---\nname: fixture\ndescription: Synthetic fixture\n---\nFixture.\n'
     for path, data in (('fixture/SKILL.md', manifest), ('fixture/assets/data.bin', b'\x00\xff\x80')):
         key = b.BindingRuntimeResourceKey(kind=kind.SKILLS, scope=scope.USER, path=path)
-        first.write_runtime_resource('resources', None, key, revision.MISSING(), data, None)
+        with remote_operation(first) as scoped:
+            scoped.write_runtime_resource('resources', None, key, revision.MISSING(), data, None)
         assert second.read_runtime_resource('resources', None, key).bytes == data
     imported = first.import_runtime_resource('resources', kind.SKILLS, 'fixture')
     assert next(file.bytes for file in imported.template.content.files if file.path == 'assets/data.bin') == b'\x00\xff\x80'
     first.expect_revision(first.observed_revision())
-    saved_template = first.save_resource_template(imported.template)
+    with remote_operation(first) as scoped:
+        saved_template = scoped.save_resource_template(imported.template)
     recovered = second.read_resource_template(saved_template.summary.id)
     assert next(file.bytes for file in recovered.content.files if file.path == 'assets/data.bin') == b'\x00\xff\x80'
     stored = json.loads((root / 'application' / 'resource-templates.json').read_text())
@@ -173,32 +190,35 @@ def exercise_business(b, local, first, second, root, report):
     report.append('binary_skill_asset_native_and_template_storage_round_trip')
 
     default = b.BindingModelSelection.RUNTIME_DEFAULT()
-    created = first.create_conversation_with_selection('beta', str(project), default).snapshot
+    with remote_operation(first) as scoped:
+        created = scoped.create_conversation_with_selection('beta', str(project), default).snapshot
     identity = created.conversation.id
     assert second.snapshot('beta', identity).snapshot.conversation.id == identity
     changes = first.working_changes('beta', identity)
     assert changes.repository == str(project) and any(file.path == 'file.txt' for file in changes.files)
     diff = second.file_diff('beta', identity, 'file.txt')
     assert (b.BindingDiffLineKind.ADDED, 'after') in [(line.kind, line.text) for line in diff.lines]
-    rejected(lambda: first.file_diff('beta', identity, '../outside'), b.BindingError)
+    rejected(lambda: first.file_diff('beta', identity, '../outside'), b.BindingError.Diagnostic)
     report.append('remote_conversation_and_working_changes')
 
     def snapshot(client=first):
         return client.snapshot('beta', identity).snapshot
-    first.send_turn_with_selection('beta', identity, 'beta', default,
-        b.BindingComposedTurn(text='PERMIT', effort=None, attachments=[]))
+    with remote_operation(first) as scoped:
+        scoped.send_turn_with_selection('beta', identity, 'beta', default,
+            b.BindingComposedTurn(text='PERMIT', effort=None, attachments=[]))
     approval = wait_for(lambda: snapshot().pending_interactions, '远端审批出现')[0]
     assert second.snapshot('beta', identity).snapshot.pending_interactions[0].id == approval.id
     replies = []
     start = threading.Barrier(2)
     def answer(client):
         start.wait()
-        try:
-            client.reply_runtime_interaction('beta', identity, approval.id,
-                b.BindingRuntimeInteractionReply.DECISION(option_id='allow'))
-            replies.append('accepted')
-        except b.BindingError:
-            replies.append('rejected')
+        with remote_operation(client) as scoped:
+            try:
+                scoped.reply_runtime_interaction('beta', identity, approval.id,
+                    b.BindingRuntimeInteractionReply.DECISION(option_id='allow'))
+                replies.append('accepted')
+            except b.BindingError.Diagnostic:
+                replies.append('rejected')
     workers = [threading.Thread(target=answer, args=(client,)) for client in (first, second)]
     for worker in workers:
         worker.start()
@@ -211,16 +231,19 @@ def exercise_business(b, local, first, second, root, report):
     assert 'ACP_PERMISSION' in texts(b, settled)
     report.append('two_remote_clients_compete_for_one_actual_approval')
 
-    first.send_turn_with_selection('beta', identity, 'beta', default,
-        b.BindingComposedTurn(text='PERMIT', effort=None, attachments=[]))
+    with remote_operation(first) as scoped:
+        scoped.send_turn_with_selection('beta', identity, 'beta', default,
+            b.BindingComposedTurn(text='PERMIT', effort=None, attachments=[]))
     next_approval = wait_for(lambda: snapshot().pending_interactions, '原生审批 ID 复用的新 turn')[0]
     assert next_approval.id != approval.id
     assert second.snapshot('beta', identity).snapshot.pending_interactions[0].id == next_approval.id
-    rejected(lambda: second.reply_runtime_interaction('beta', identity, approval.id,
-        b.BindingRuntimeInteractionReply.DECISION(option_id='allow')), b.BindingError)
+    with remote_operation(second) as scoped:
+        rejected(lambda: scoped.reply_runtime_interaction('beta', identity, approval.id,
+            b.BindingRuntimeInteractionReply.DECISION(option_id='allow')), b.BindingError.Diagnostic)
     assert snapshot().pending_interactions[0].id == next_approval.id
-    first.reply_runtime_interaction('beta', identity, next_approval.id,
-        b.BindingRuntimeInteractionReply.DECISION(option_id='allow'))
+    with remote_operation(first) as scoped:
+        scoped.reply_runtime_interaction('beta', identity, next_approval.id,
+            b.BindingRuntimeInteractionReply.DECISION(option_id='allow'))
     wait_for(lambda: snapshot().actions.can_send, '新 turn 的有效审批完成')
     report.append('reused_native_approval_id_gets_distinct_public_id_and_old_reply_cannot_answer_new_turn')
     return identity, default
@@ -230,11 +253,13 @@ def exercise_disconnected_work(b, first, second, identity, default, root, discon
     """断线窗口只观察合成 peer 文件；不请求本地或远程 snapshot 驱动核心。"""
     gate = root / 'beta-state' / 'hold'
     gate.write_text('hold')
-    first.send_turn_with_selection('beta', identity, 'beta', default,
-        b.BindingComposedTurn(text='GATE', effort=None, attachments=[]))
-    first.send_queue('beta', identity, b.BindingSendQueueOperation.ADD(
-        source_runtime_id='beta', target_runtime_id='beta', selection=default,
-        turn=b.BindingComposedTurn(text='QUEUED_WHILE_OFFLINE', effort=None, attachments=[])))
+    with remote_operation(first) as scoped:
+        scoped.send_turn_with_selection('beta', identity, 'beta', default,
+            b.BindingComposedTurn(text='GATE', effort=None, attachments=[]))
+    with remote_operation(first) as scoped:
+        scoped.send_queue('beta', identity, b.BindingSendQueueOperation.ADD(
+            source_runtime_id='beta', target_runtime_id='beta', selection=default,
+            turn=b.BindingComposedTurn(text='QUEUED_WHILE_OFFLINE', effort=None, attachments=[])))
     log = root / 'beta-state' / 'events.jsonl'
     def events():
         return [json.loads(line) for line in log.read_text().splitlines()]
@@ -250,22 +275,26 @@ def exercise_disconnected_work(b, first, second, identity, default, root, discon
     assert any(row.get('text') == 'QUEUED_WHILE_OFFLINE' for row in events())
     report.append('all_control_clients_disconnected_turn_and_queue_continue')
 
-    second.send_turn_with_selection('beta', identity, 'beta', default,
-        b.BindingComposedTurn(text='PERMIT', effort=None, attachments=[]))
+    with remote_operation(second) as scoped:
+        scoped.send_turn_with_selection('beta', identity, 'beta', default,
+            b.BindingComposedTurn(text='PERMIT', effort=None, attachments=[]))
     pending = wait_for(lambda: second.snapshot('beta', identity).snapshot.pending_interactions,
         '断线前实际待决审批')[0]
     disconnect_all()
     second = reconnect('second')
     restored = second.snapshot('beta', identity).snapshot
     assert restored.pending_interactions[0].id == pending.id
-    second.reply_runtime_interaction('beta', identity, pending.id,
-        b.BindingRuntimeInteractionReply.DECISION(option_id='allow'))
+    with remote_operation(second) as scoped:
+        scoped.reply_runtime_interaction('beta', identity, pending.id,
+            b.BindingRuntimeInteractionReply.DECISION(option_id='allow'))
     wait_for(lambda: second.snapshot('beta', identity).snapshot.actions.can_send, '恢复审批完成')
     report.append('paired_device_resumes_actual_pending_approval')
 
-    alpha = second.create_conversation_with_selection('alpha', str(root / 'project'), default).snapshot.conversation.id
-    second.send_turn_with_selection('alpha', alpha, 'alpha', default,
-        b.BindingComposedTurn(text='START Beta offline-collaboration', effort=None, attachments=[]))
+    with remote_operation(second) as scoped:
+        alpha = scoped.create_conversation_with_selection('alpha', str(root / 'project'), default).snapshot.conversation.id
+    with remote_operation(second) as scoped:
+        scoped.send_turn_with_selection('alpha', alpha, 'alpha', default,
+            b.BindingComposedTurn(text='START Beta offline-collaboration', effort=None, attachments=[]))
     disconnect_all()
     def collaboration_finished():
         for path in (root / 'alpha-state').glob('*.json'):
@@ -288,14 +317,19 @@ def exercise_disconnected_work(b, first, second, identity, default, root, discon
 
 
 def exercise_views_and_attachments(b, local, first, second, identity, default, root, report):
-    first.show_archived_conversations(False)
-    second.show_archived_conversations(True)
+    with remote_operation(first) as scoped:
+        scoped.show_archived_conversations(False)
+    with remote_operation(second) as scoped:
+        scoped.show_archived_conversations(True)
     assert not first.list().shows_archived and second.list().shows_archived
-    first.select_runtime('alpha')
-    second.select_runtime('beta')
+    with remote_operation(first) as scoped:
+        scoped.select_runtime('alpha')
+    with remote_operation(second) as scoped:
+        scoped.select_runtime('beta')
     assert first.list().selected_runtime_instance_id == 'alpha'
     assert second.list().selected_runtime_instance_id == 'beta'
-    second.show_archived_conversations(False)
+    with remote_operation(second) as scoped:
+        scoped.show_archived_conversations(False)
     report.append('independent_remote_archive_and_runtime_views')
 
     controller = root / 'controller-files'
@@ -304,15 +338,18 @@ def exercise_views_and_attachments(b, local, first, second, identity, default, r
     payload = b'SYNTHETIC_REMOTE_ATTACHMENT_CONTENT\n'
     notes.write_bytes(payload)
     before = second.snapshot('beta', identity).snapshot
-    rejected(lambda: second.send_turn_with_selection('beta', identity, 'beta', default,
-        b.BindingComposedTurn(text='UNSAFE_PATH', effort=None, attachments=[str(notes)])), b.BindingError)
+    with remote_operation(second) as scoped:
+        rejected(lambda: scoped.send_turn_with_selection('beta', identity, 'beta', default,
+            b.BindingComposedTurn(text='UNSAFE_PATH', effort=None, attachments=[str(notes)])), b.BindingError.Diagnostic)
     assert len(second.snapshot('beta', identity).snapshot.messages) == len(before.messages)
-    uploaded = second.upload_attachment(notes.name, notes.read_bytes())
+    with remote_operation(second) as scoped:
+        uploaded = scoped.upload_attachment(notes.name, notes.read_bytes())
     assert uploaded.name == notes.name and uploaded.bytes == len(payload)
     assert uploaded.reference != str(notes)
     notes.unlink()
-    second.send_turn_with_selection('beta', identity, 'beta', default,
-        b.BindingComposedTurn(text='UPLOADED_ATTACHMENT', effort=None, attachments=[uploaded.reference]))
+    with remote_operation(second) as scoped:
+        scoped.send_turn_with_selection('beta', identity, 'beta', default,
+            b.BindingComposedTurn(text='UPLOADED_ATTACHMENT', effort=None, attachments=[uploaded.reference]))
     settled = wait_for(lambda: (value if value.actions.can_send else None)
         if (value := second.snapshot('beta', identity).snapshot) else None, '受控上传附件完成')
     user = next(message for message in reversed(settled.messages)
@@ -332,10 +369,12 @@ def exercise_configuration_conflict(b, first, second, report):
     runtime = next(runtime for runtime in editor.configuration.runtime_instances if runtime.id == 'resources')
     runtime.name = 'Resources updated'
     first.expect_revision(previous)
-    first.upsert_runtime(runtime)
+    with remote_operation(first) as scoped:
+        scoped.upsert_runtime(runtime)
     runtime.name = 'Stale name'
     second.expect_revision(previous)
-    rejected(lambda: second.upsert_runtime(runtime), b.BindingError)
+    with remote_operation(second) as scoped:
+        rejected(lambda: scoped.upsert_runtime(runtime), b.BindingError.Diagnostic)
     assert next(runtime.name for runtime in first.list().runtime_instances if runtime.id == 'resources') == 'Resources updated'
     report.append('stale_configuration_revision_refused')
 
@@ -344,9 +383,11 @@ def exercise_configuration_conflict(b, first, second, report):
 def exercise_large_image(b, client, identity, default, root, report):
     # 17 MiB, valid PNG signature: this isolates transport/attachment limits, not an image decoder.
     payload = b'\x89PNG\r\n\x1a\n' + bytes(17 * 1024 * 1024 - 8)
-    uploaded = client.upload_attachment('large.png', payload)
-    client.send_turn_with_selection('beta', identity, 'beta', default,
-        b.BindingComposedTurn(text='LARGE_IMAGE', effort=None, attachments=[uploaded.reference]))
+    with remote_operation(client) as scoped:
+        uploaded = scoped.upload_attachment('large.png', payload)
+    with remote_operation(client) as scoped:
+        scoped.send_turn_with_selection('beta', identity, 'beta', default,
+            b.BindingComposedTurn(text='LARGE_IMAGE', effort=None, attachments=[uploaded.reference]))
     settled = wait_for(lambda: (value if value.actions.can_send else None)
         if (value := client.snapshot('beta', identity).snapshot) else None, '17 MiB 图片发送完成', timeout=45)
     user = next(message for message in reversed(settled.messages)
@@ -359,19 +400,20 @@ def exercise_large_image(b, client, identity, default, root, report):
     delivered = next(row for row in reversed(events) if row.get('text') == 'LARGE_IMAGE')
     assert delivered['images'] == [{'media_type':'image/png', 'bytes':len(payload), 'sha256':hashlib.sha256(payload).hexdigest()}]
     before = sorted(str(path) for path in (root / 'application').rglob('*') if path.is_file())
-    rejected(lambda: client.upload_attachment('oversized.png', b'\x89PNG\r\n\x1a\n' + bytes(20 * 1024 * 1024 - 7)), b.BindingError)
+    with remote_operation(client) as scoped:
+        rejected(lambda: scoped.upload_attachment('oversized.png', b'\x89PNG\r\n\x1a\n' + bytes(20 * 1024 * 1024 - 7)), b.BindingError.Diagnostic)
     assert sorted(str(path) for path in (root / 'application').rglob('*') if path.is_file()) == before
     assert client.list().gateways, '预算拒绝后连接仍应可用'
     report.append('17_mib_image_upload_send_and_read_content_identical_over_budget_refused')
 
 
-def exercise_request_reconciliation(b, client, root, disconnect_all, reconnect, report):
+def exercise_request_reconciliation(b, client, root, disconnect_all, reconnect, acknowledge, report):
     payload = b'SYNTHETIC_ACCEPTED_RECEIPT_DISCARDED\n'
     original_revision = client.observed_revision()
     client.expect_revision(original_revision)
     request = client.next_request_id()
     command = b.BindingApplicationCommand.UPLOAD_ATTACHMENT(name='receipt.txt', bytes=payload)
-    # Intentionally discard the submit receipt and disconnect before looking up any business result.
+    # This is received-then-discarded, not a lost wire receipt or an Endpoint replacement proof.
     client.submit_request(request, command)
     disconnect_all()
     def saved():
@@ -388,10 +430,11 @@ def exercise_request_reconciliation(b, client, root, disconnect_all, reconnect, 
     assert isinstance(duplicate, b.BindingRemoteRequestStatus.COMPLETED)
     assert duplicate.response.value.reference == reference and len(saved()) == 1
     rejected(lambda: client.submit_request(request,
-        b.BindingApplicationCommand.UPLOAD_ATTACHMENT(name='different.txt', bytes=b'DIFFERENT')), b.BindingError)
+        b.BindingApplicationCommand.UPLOAD_ATTACHMENT(name='different.txt', bytes=b'DIFFERENT')), b.BindingError.Diagnostic)
     assert len(saved()) == 1
     unknown = client.next_request_id()
     assert isinstance(client.query_request(unknown), b.BindingRemoteRequestStatus.UNKNOWN)
+    acknowledge(request)
     report.append('discarded_receipt_reconciled_same_request_id_does_not_repeat_side_effect_unknown_explicit')
     return client
 
@@ -406,13 +449,14 @@ def exercise_same_object_concurrency(b, client, root, report):
     slow_peer = root / 'slow.py'
     slow_peer.write_text(source)
     client.expect_revision(client.list_with_revision().revision)
-    client.upsert_acp_runtime(b.BindingRuntimeInstance(enabled=True, id='slow', name='Slow',
-        type_id='acp-v1', gateway_id='default', settings={'binary':sys.executable}),
-        b.BindingRuntimeExecution(transport=b.BindingRuntimeTransport.LOCAL(),
-            home=b.BindingRuntimeHome.MANAGED(remote_root=None), remote_resources_directory=None),
-        b.BindingAcpLaunch(args=[str(slow_peer), 'literal ; $(not-a-shell)'],
-            environment={'ACP_MODE':'full', 'ACP_STATE':str(root / 'slow-state'),
-                'SLOW_GATE':str(gate), 'SLOW_READY':str(ready)}))
+    with remote_operation(client) as scoped:
+        scoped.upsert_acp_runtime(b.BindingRuntimeInstance(enabled=True, id='slow', name='Slow',
+            type_id='acp-v1', gateway_id='default', settings={'binary':sys.executable}),
+            b.BindingRuntimeExecution(transport=b.BindingRuntimeTransport.LOCAL(),
+                home=b.BindingRuntimeHome.MANAGED(remote_root=None), remote_resources_directory=None),
+            b.BindingAcpLaunch(args=[str(slow_peer), 'literal ; $(not-a-shell)'],
+                environment={'ACP_MODE':'full', 'ACP_STATE':str(root / 'slow-state'),
+                    'SLOW_GATE':str(gate), 'SLOW_READY':str(ready)}))
     allocated = client.next_request_id()
     unknown = b.BindingRemoteRequestId(incarnation=allocated.incarnation,
         client=allocated.client, sequence=allocated.sequence + 1000)
@@ -453,13 +497,15 @@ def exercise_stale_message_edit(b, first, second, identity, default, report):
     snapshot = first.snapshot('beta', identity).snapshot
     original = next(message for message in snapshot.messages if message.role == b.BindingMessageRole.USER)
     revision = first.observed_revision()
-    second.send_turn_with_selection('beta', identity, 'beta', default,
-        b.BindingComposedTurn(text='MESSAGE_STATE_CHANGED', effort=None, attachments=[]))
+    with remote_operation(second) as scoped:
+        scoped.send_turn_with_selection('beta', identity, 'beta', default,
+            b.BindingComposedTurn(text='MESSAGE_STATE_CHANGED', effort=None, attachments=[]))
     wait_for(lambda: second.snapshot('beta', identity).snapshot.actions.can_send, '另一端改变会话后新 turn 完成')
     first.expect_revision(revision)
-    failure = rejected(lambda: first.edit_message('beta', identity, original.id,
-        b.BindingEditPlacement.IN_PLACE, default,
-        b.BindingComposedTurn(text='STALE_MESSAGE_EDIT', effort=None, attachments=[])), b.BindingError)
+    with remote_operation(first) as scoped:
+        failure = rejected(lambda: scoped.edit_message('beta', identity, original.id,
+            b.BindingEditPlacement.IN_PLACE, default,
+            b.BindingComposedTurn(text='STALE_MESSAGE_EDIT', effort=None, attachments=[])), b.BindingError.Diagnostic)
     assert failure.kind == b.BindingFailureKind.CONFLICT
     current = second.snapshot('beta', identity).snapshot
     assert not any('STALE_MESSAGE_EDIT' in text for text in texts(b, current))
@@ -498,7 +544,7 @@ def main():
                 directory = root / 'devices' / name
                 directory.mkdir(parents=True, exist_ok=True)
                 return b.VeluneRemoteEndpoint.open(b.BindingRemoteOptions(
-                    identity_file=str(directory / 'identity.json'), trust_file=str(directory / 'trust.json'),
+                    identity_file=str(directory / 'identity.json'), state_file=str(directory / 'state.json'),
                     device_name=name, relay=b.BindingRelayConfig.DISABLED(),
                     discovery=b.BindingDiscoveryConfig.NONE(), bind_addresses=['127.0.0.1:0'],
                     request_timeout_ms=30000, path_policy=b.BindingRemotePathPolicy.AUTOMATIC), owner)
@@ -506,35 +552,37 @@ def main():
             descriptor = server.descriptor()
             assert not descriptor.relay_urls and descriptor.direct_addresses
             assert all(address.startswith('127.0.0.1:') for address in descriptor.direct_addresses)
-            # Only the caller trusts the execution identity; the execution endpoint has never approved it.
-            rogue_directory = root / 'devices' / 'unpaired'
-            rogue_directory.mkdir(parents=True)
-            rogue_trust = rogue_directory / 'trust.json'
-            rogue_trust.write_text(json.dumps({'version':1, 'devices':[
-                {'id':descriptor.endpoint_id, 'name':descriptor.name}]}))
-            rogue_trust.chmod(0o600)
+            # A durable outgoing pin alone does not grant control of the execution device.
             rogue = endpoint('unpaired')
             try:
-                def unauthorized():
-                    candidate = rogue.connect(descriptor, 'unpaired-view')
-                    candidate.list()
-                rejected(unauthorized, b.BindingError)
-                report.append('unpaired_device_refused')
+                candidate = rogue.begin_pairing(server.create_invitation(120).encoded)
+                assert candidate.phase == b.BindingPairingPhase.AWAITING_APPROVAL
+                assert len(rogue.read_state().contacts) == 1
+                rejected(lambda: rogue.connect(descriptor.endpoint_id, 'unpaired-view'), b.BindingError.Diagnostic)
+                server.reject_pairing(candidate.attempt_id, rogue.descriptor().endpoint_id)
+                report.append('pinned_but_unapproved_device_refused')
             finally:
                 rogue.shutdown()
             for name in ('first', 'second'):
                 endpoints[name] = endpoint(name)
                 invitation = server.create_invitation(120)
-                clients[name] = endpoints[name].pair(invitation.encoded, name + '-view')
-                clients[name].list()
+                candidate = endpoints[name].begin_pairing(invitation.encoded)
+                assert candidate.phase == b.BindingPairingPhase.AWAITING_APPROVAL
+                incoming = next(value for value in server.read_state().incoming_pairings
+                    if value.attempt_id == candidate.attempt_id)
+                assert incoming.peer_id == endpoints[name].descriptor().endpoint_id
+                assert incoming.verification_code == candidate.verification_code
+                assert len(candidate.verification_code) == 8 and candidate.verification_code.isdigit()
                 if name == 'first':
-                    replay = endpoint('replayed-invitation')
-                    try:
-                        rejected(lambda: replay.pair(invitation.encoded, 'replay-view'), b.BindingError)
-                    finally:
-                        replay.shutdown()
-            assert len(server.trusted_devices()) == 2
-            report.append('single_use_pairing_and_two_trusted_devices')
+                    assert endpoints[name].begin_pairing(invitation.encoded).attempt_id == candidate.attempt_id
+                approved = server.approve_pairing(candidate.attempt_id, incoming.peer_id)
+                assert approved.phase == b.BindingPairingPhase.GRANTED
+                assert endpoints[name].pairing_status(descriptor.endpoint_id).phase == b.BindingPairingPhase.GRANTED
+                clients[name] = endpoints[name].connect(descriptor.endpoint_id, name + '-view')
+                clients[name].list()
+            assert len(server.read_state().incoming_grants) == 2
+            assert not server.read_state().contacts
+            report.append('v2_local_code_approval_and_two_directional_grants')
             first, second = clients['first'], clients['second']
             path_status = first.connection_status()
             assert not path_status.closed
@@ -560,15 +608,18 @@ def main():
                 endpoints.clear()
             def reconnect(name):
                 endpoints[name] = endpoint(name)
-                clients[name] = endpoints[name].connect(descriptor, name + '-view')
+                clients[name] = endpoints[name].connect(descriptor.endpoint_id, name + '-view')
                 return clients[name]
-            first = exercise_request_reconciliation(b, first, root, disconnect_all, reconnect, report)
+            def acknowledge(request):
+                endpoints['first'].acknowledge_request(descriptor.endpoint_id, request)
+            first = exercise_request_reconciliation(b, first, root, disconnect_all, reconnect, acknowledge, report)
             second = reconnect('second')
             second = exercise_disconnected_work(b, first, second, identity, default, root,
                 disconnect_all, reconnect, report)
-            server.revoke(endpoints['second'].descriptor().endpoint_id)
+            server.revoke_control(endpoints['second'].descriptor().endpoint_id)
+            # Revocation closes this native connection; its in-flight read can fail at transport.
             rejected(second.list, b.BindingError)
-            rejected(lambda: endpoints['second'].connect(descriptor, 'revoked-view').list(), b.BindingError)
+            rejected(lambda: endpoints['second'].connect(descriptor.endpoint_id, 'revoked-view').list(), b.BindingError.Diagnostic)
             report.append('revoke_blocks_existing_and_new_business_connections')
             for path in (root / 'application').rglob('*.jsonl'):
                 content = path.read_text()

@@ -1,6 +1,6 @@
 # 统一设备远控：配对、寻址与恢复
 
-状态：2026-10-18 已收敛并获用户授权实施的工程方案，S1 同网源码与判别已收口，E2／E3 环境阻塞，S2 出口已完成，当前进入 S3；本文件描述目标契约，不等同已实现或用户已验收。产品约束归 [PRD](../prd/index.md#后续扩展分布式能力)，共享核心与包边界归 [架构入口](architecture.md#远控契约与唯一执行-owner2026-10-17)。本方案基于锁定的 iroh 1.3.0；源码核查和本机实验归 [研究记录](../../tasks/android-minimal/transport-research.md)，执行次序归 [线性计划](../../tasks/android-minimal/plan.md)，通过条件归 [验收方案](../../tasks/android-minimal/acceptance.md)。实际实现与验收状态以 [任务](../../tasks/android-minimal/packet.md) 为准。
+状态：2026-10-18 用户明确本轮实施边界仅限 Rust Library，包括 UniFFI 契约和库级合成验证，不包含 Mac／Android App 接入、界面、安装或产品验收。S1 已有同网证据，S2 稳定服务与 S3 v2 库级出口已完成；S4 尚待实施，E2／E3 网络能力仍未验证。本文件描述完整目标契约，不等同整项产品已实现或用户已验收。产品约束归 [PRD](../prd/index.md#后续扩展分布式能力)，共享核心与包边界归 [架构入口](architecture.md#远控契约与唯一执行-owner2026-10-17)。本方案基于锁定的 iroh 1.3.0；源码核查和本机实验归 [研究记录](../../tasks/android-minimal/transport-research.md)，执行次序归 [线性计划](../../tasks/android-minimal/plan.md)，通过条件归 [验收方案](../../tasks/android-minimal/acceptance.md)。实际实现与验收状态以 [任务](../../tasks/android-minimal/packet.md) 为准。
 
 ## 设备与状态归属
 
@@ -165,6 +165,8 @@ sequenceDiagram
 
 ## 平台与实施边界
 
+下述平台行为规定库的消费者如何接入，不授权本轮修改平台 App。Rust 提供本地批准 API、网络事实输入、活动意图和具名状态；本地可信调用方可由合成宿主验证，不以实际 Mac 设置页作为库出口。相机、二维码显示、系统权限页面与 App 生命周期接线由后续平台接入承担。
+
 Android 已实现的装配为 Kotlin／Compose → UniFFI 生成的 Kotlin／JNA API → `libvelune_bindings.so` → Rust remote／iroh。构建仅启用 bindings 的 `remote` feature，不携带本地 application、Harness 或 AI 执行栈。平台初始化的少量 JNI 只提供 Android context，业务仍经 UniFFI 类型接口；新配对、恢复和路径策略继续归 Rust，Kotlin 提供界面、平台网络通知及相机生命周期。
 
 Android 使用独立的联系人／待确认记录和入站授权概念，不能继续把完整 descriptor 当作永久设备记录。控制端只需恢复原请求 ID，不持久化消息正文来重发。扫码采用 CameraX 生命周期组件与 ZXing core 的离线解码路径，不强依赖 Google Play Services；候选版本及构建仍需实施时固定。相机仅在扫码界面持有；每帧关闭 ImageProxy、只处理最新帧，识别成功就停止分析。权限拒绝或不可用时，可用系统文件选择器选一张二维码图片，或显式粘贴邀请内容，全部进入同一解析和确认流程，不索取全盘媒体权限。
@@ -192,4 +194,4 @@ subscribe→MemoryLookup 不能替代遗漏的更新或活动连接探测。当�
 
 协议、ALPN、邀请及普通存储 schema 一次切到 v2，不维护旧远控协议；设备私钥格式保持不变。UniFFI 改动与 Mac／Android 直接调用方在同一编译切片完成，保留生成器已验证的 shutdown／ListConfiguration 命名及 Android 初始化，不手改生成代码。每个切片都形成两端可编译检查点，切片完成不表示已完成整项产品验收。
 
-实施按 [唯一线性计划](../../tasks/android-minimal/plan.md) 推进：先有界验证平台传输，再稳定服务与账本，随后同切 v2 契约、完成寻址与恢复、接完整扫码界面，最后按既定矩阵验收。Android socket 接入点、QNT 通知遗漏、mDNS 修复方式与相机表现是计划中的判别分支，不再泛化为重新选择传输协议。出现需重造传输栈或降低产品目标的证据才重开架构决定；尚未实现的状态机和真实 NAT／移动网络表现不因方案收敛而视为通过。
+库实施按 [唯一线性计划](../../tasks/android-minimal/plan.md) 推进：有界传输判别、稳定服务与账本、v2 契约、寻址与恢复，最后形成库交付清单。完整扫码界面及两端产品接入在当前范围之外。Android socket 接入点、QNT 通知遗漏与 mDNS 修复方式仍须以证据判别；真实 NAT、跨公网迁移和非默认移动网络行为不能由 loopback 或库构建推导。出现需重造传输栈或降低产品目标的证据才重开架构决定。

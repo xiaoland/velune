@@ -36,7 +36,6 @@ final class Transport: @unchecked Sendable {
     private static let logger = Logger(subsystem: "local.velune", category: "transport")
     private var application: VeluneApplication?
     private var remoteEndpoint: VeluneRemoteEndpoint?
-    private var remoteIngressEnabled = false
     private var remoteNetworkMonitor: NWPathMonitor?
     private let remoteNetworkQueue = DispatchQueue(label: "local.velune.remote-network", qos: .utility)
     private var isClosed = false
@@ -166,24 +165,22 @@ final class Transport: @unchecked Sendable {
     /// Serves the same owner used by every local window, with host-owned private files.
     func enableRemoteAccess(network: RemoteAccessNetwork) throws -> RemoteAccessState {
         try withApplication("enableRemoteAccess") { application in
-            let directory = stateDirectory.appendingPathComponent("remote", isDirectory: true)
-            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true,
-                                                    attributes: [.posixPermissions: 0o700])
-            let options = BindingRemoteOptions(identityFile: directory.appendingPathComponent("identity.json").path,
-                                               trustFile: directory.appendingPathComponent("trusted-devices.json").path,
-                                               deviceName: Host.current().localizedName ?? "Mac",
-                                               relay: network == .development ? .developmentPublic : .disabled,
-                                               discovery: network == .development ? .developmentPublic : .none,
-                                               pathPolicy: .automatic, bindAddresses: [], requestTimeoutMs: 30_000)
-            remoteEndpoint = try VeluneRemoteEndpoint.open(options: options, application: application)
-            if remoteNetworkMonitor == nil {
+            if remoteEndpoint == nil {
+                let directory = stateDirectory.appendingPathComponent("remote", isDirectory: true)
+                try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true,
+                                                        attributes: [.posixPermissions: 0o700])
+                let options = BindingRemoteOptions(identityFile: directory.appendingPathComponent("identity.json").path,
+                                                   trustFile: directory.appendingPathComponent("trusted-devices.json").path,
+                                                   deviceName: Host.current().localizedName ?? "Mac",
+                                                   relay: network == .development ? .developmentPublic : .disabled,
+                                                   discovery: network == .development ? .developmentPublic : .none,
+                                                   pathPolicy: .automatic, bindAddresses: [], requestTimeoutMs: 30_000)
+                remoteEndpoint = try VeluneRemoteEndpoint.open(options: options, application: application)
                 let monitor = NWPathMonitor()
                 monitor.pathUpdateHandler = { [weak self] _ in self?.remoteNetworkChanged() }
                 remoteNetworkMonitor = monitor
                 monitor.start(queue: remoteNetworkQueue)
             }
-            try remoteEndpoint?.setControlIngress(enabled: true)
-            remoteIngressEnabled = true
             return try remoteAccessStateLocked()
         }
     }
@@ -195,8 +192,8 @@ final class Transport: @unchecked Sendable {
     }
 
     private func remoteAccessStateLocked() throws -> RemoteAccessState {
-        guard remoteIngressEnabled, let remoteEndpoint else { return RemoteAccessState() }
-        return RemoteAccessState(descriptor: try remoteEndpoint.descriptor(), devices: try remoteEndpoint.trustedDevices())
+        guard let remoteEndpoint else { return RemoteAccessState() }
+        return RemoteAccessState(descriptor: remoteEndpoint.descriptor(), devices: try remoteEndpoint.trustedDevices())
     }
 
     func createRemoteInvitation() throws -> BindingRemoteInvitation {
@@ -216,14 +213,16 @@ final class Transport: @unchecked Sendable {
     }
 
     /// Stops only ingress. Accepted work and pending approvals stay with the application.
-    func stopRemoteAccess() throws {
+    func stopRemoteAccess() {
         lock.lock(); defer { lock.unlock() }
-        try stopRemoteAccessLocked()
+        stopRemoteAccessLocked()
     }
 
-    private func stopRemoteAccessLocked() throws {
-        try remoteEndpoint?.setControlIngress(enabled: false)
-        remoteIngressEnabled = false
+    private func stopRemoteAccessLocked() {
+        remoteNetworkMonitor?.cancel()
+        remoteNetworkMonitor = nil
+        remoteEndpoint?.shutdown()
+        remoteEndpoint = nil
     }
 
     func remoteNetworkChanged() {
@@ -237,12 +236,7 @@ final class Transport: @unchecked Sendable {
         guard let application else { isClosed = true; return }
         do {
             if stoppingWork { try application.shutdownStoppingWork() } else { try application.shutdown() }
-            // The local binding has already closed its cached remote service successfully.
-            remoteIngressEnabled = false
-            try remoteEndpoint?.shutdown()
-            remoteEndpoint = nil
-            remoteNetworkMonitor?.cancel()
-            remoteNetworkMonitor = nil
+            stopRemoteAccessLocked()
             self.application = nil
             isClosed = true
         } catch { logFailure(operation: "shutdown", localCorrelation: nil, error: error); throw TransportError.operation("shutdown", map(error)) }
@@ -277,7 +271,7 @@ final class Transport: @unchecked Sendable {
         if let error = error as? BindingError {
             switch error {
             case .Diagnostic(let kind, _, _, _, _): return Self.kindName(kind)
-            case .RemoteRequest(let kind, _, _, _): return Self.kindName(kind)
+            case .RemoteRequest(let kind, _, _): return Self.kindName(kind)
             case .Invalid: return "invalid"
             case .Unsupported: return "unsupported"
             case .Io: return "io"
@@ -293,9 +287,9 @@ final class Transport: @unchecked Sendable {
         switch error {
         case .Diagnostic(let kind, let detail, let code, let phase, let operationID):
             return .diagnostic(kind: kindName(kind), detail: detail, code: code, phase: phase, operationID: operationID)
-        case .RemoteRequest(let kind, let detail, let code, let requestID):
+        case .RemoteRequest(let kind, let detail, let requestID):
             let operationID = requestID.map { "\($0.incarnation)/\($0.client)/\($0.sequence)" } ?? ""
-            return .diagnostic(kind: kindName(kind), detail: detail, code: code, phase: "remote", operationID: operationID)
+            return .diagnostic(kind: kindName(kind), detail: detail, code: kindName(kind), phase: "remote", operationID: operationID)
         case .Invalid(let detail): return .rejected("请求无效：\(detail)")
         case .Unsupported(let detail): return .rejected("当前版本不支持此操作：\(detail)")
         case .Io(let detail): return .rejected("本地读写失败：\(detail)")
@@ -327,7 +321,7 @@ final class Transport: @unchecked Sendable {
         if let error = error as? BindingError {
             switch error {
             case .Diagnostic(_, let detail, _, _, _), .Invalid(let detail), .Unsupported(let detail), .Io(let detail), .Contract(let detail): return detail
-            case .RemoteRequest(_, let detail, _, _): return detail
+            case .RemoteRequest(_, let detail, _): return detail
             case .Closed: return "本地核心已关闭"
             case .Unavailable: return "本地核心不可用"
             }

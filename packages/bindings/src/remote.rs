@@ -3,8 +3,8 @@ use crate::*;
 use std::{path::Path, sync::Arc, time::Duration};
 use velune_application_api::{ApplicationReply, ExecutionContext, Revision};
 use velune_remote::{
-    DeviceIdentity, EndpointConfig, EndpointDescriptor, FileTrustStore, RemoteAccessService,
-    RemoteClient, RequestId, RequestStatus,
+    Controller, DeviceIdentity, DeviceStore, EndpointConfig, EndpointDescriptor,
+    RemoteAccessService, RemoteOperation, RequestId, RequestStatus,
 };
 
 #[derive(Clone, uniffi::Enum)]
@@ -152,7 +152,7 @@ pub struct BindingConnectionStatus {
 #[derive(Clone, uniffi::Record)]
 pub struct BindingRemoteOptions {
     pub identity_file: String,
-    pub trust_file: String,
+    pub state_file: String,
     pub device_name: String,
     pub relay: BindingRelayConfig,
     pub discovery: BindingDiscoveryConfig,
@@ -160,7 +160,7 @@ pub struct BindingRemoteOptions {
     pub bind_addresses: Vec<String>,
     pub request_timeout_ms: u64,
 }
-#[derive(Clone, uniffi::Record)]
+#[derive(Clone, serde::Deserialize, uniffi::Record)]
 pub struct BindingRemoteEndpointDescriptor {
     pub version: u16,
     pub endpoint_id: String,
@@ -168,6 +168,7 @@ pub struct BindingRemoteEndpointDescriptor {
     pub incarnation: String,
     pub relay_urls: Vec<String>,
     pub direct_addresses: Vec<String>,
+    pub lookup_url: Option<String>,
 }
 impl From<EndpointDescriptor> for BindingRemoteEndpointDescriptor {
     fn from(value: EndpointDescriptor) -> Self {
@@ -177,6 +178,7 @@ impl From<EndpointDescriptor> for BindingRemoteEndpointDescriptor {
             name: value.name,
             incarnation: value.incarnation,
             relay_urls: value.relay_urls,
+            lookup_url: value.lookup_url,
             direct_addresses: value
                 .direct_addresses
                 .into_iter()
@@ -185,32 +187,14 @@ impl From<EndpointDescriptor> for BindingRemoteEndpointDescriptor {
         }
     }
 }
-impl TryFrom<BindingRemoteEndpointDescriptor> for EndpointDescriptor {
-    type Error = BindingError;
-    fn try_from(value: BindingRemoteEndpointDescriptor) -> Result<Self, Self::Error> {
-        Ok(Self {
-            version: value.version,
-            endpoint_id: value.endpoint_id,
-            name: value.name,
-            incarnation: value.incarnation,
-            relay_urls: value.relay_urls,
-            direct_addresses: parse_addresses(value.direct_addresses)?,
-        })
-    }
-}
 /// A one-time pairing credential, exposed only for the user's explicit transfer.
 #[derive(Clone, uniffi::Record)]
 pub struct BindingRemoteInvitation {
     pub encoded: String,
     pub expires_at_unix_seconds: u64,
-    pub endpoint: BindingRemoteEndpointDescriptor,
+    pub issuer: String,
 }
-#[derive(Clone, uniffi::Record)]
-pub struct BindingTrustedDevice {
-    pub id: String,
-    pub name: String,
-}
-#[derive(Debug, Clone, uniffi::Record)]
+#[derive(Debug, Clone, serde::Deserialize, uniffi::Record)]
 pub struct BindingRemoteRequestId {
     pub incarnation: String,
     pub client: String,
@@ -273,6 +257,7 @@ pub enum BindingRemoteRequestStatus {
     TransportFailed {
         kind: BindingFailureKind,
         detail: String,
+        code: String,
     },
 }
 impl TryFrom<RequestStatus> for BindingRemoteRequestStatus {
@@ -292,6 +277,7 @@ impl TryFrom<RequestStatus> for BindingRemoteRequestStatus {
             RequestStatus::Failed(error) => Self::TransportFailed {
                 kind: remote_failure_kind(error),
                 detail: error.to_string(),
+                code: error.code().into(),
             },
         })
     }
@@ -314,12 +300,16 @@ fn remote_failure_kind(error: velune_remote::RemoteError) -> BindingFailureKind 
     match error {
         RemoteError::Unauthorized => BindingFailureKind::Unauthorized,
         RemoteError::Timeout | RemoteError::ServerRestarted => BindingFailureKind::OutcomeUnknown,
-        RemoteError::Configuration
+        RemoteError::PairingUnavailable
+        | RemoteError::PendingRequests
+        | RemoteError::OperationRequired
+        | RemoteError::OperationUsed
+        | RemoteError::Configuration
         | RemoteError::InvalidInvitation
         | RemoteError::ExpiredInvitation
         | RemoteError::InvalidRequestId
         | RemoteError::RequestIdConflict => BindingFailureKind::Invalid,
-        RemoteError::IdentityStorage | RemoteError::TrustStorage => BindingFailureKind::Io,
+        RemoteError::IdentityStorage | RemoteError::StateStorage => BindingFailureKind::Io,
         RemoteError::Closed => BindingFailureKind::Closed,
         RemoteError::Protocol | RemoteError::IncompatibleVersion | RemoteError::FrameTooLarge => {
             BindingFailureKind::Contract
@@ -457,7 +447,7 @@ pub(crate) struct ServiceOwner {
     #[cfg(feature = "local-runtime")]
     identity_file: String,
     #[cfg(feature = "local-runtime")]
-    trust_file: String,
+    state_file: String,
     #[cfg(feature = "local-runtime")]
     device_name: String,
     config: Mutex<Option<EndpointConfig>>,
@@ -473,11 +463,11 @@ impl ServiceOwner {
             Path::new(&options.identity_file),
             options.device_name.clone(),
         )?;
-        let trust = Arc::new(FileTrustStore::open(Path::new(&options.trust_file))?);
+        let store = Arc::new(DeviceStore::open(Path::new(&options.state_file))?);
         let service = Arc::new(runtime.block_on(RemoteAccessService::bind(
             identity,
             config.clone(),
-            trust,
+            store,
             handler,
         ))?);
         Ok(Arc::new(Self {
@@ -486,7 +476,7 @@ impl ServiceOwner {
             #[cfg(feature = "local-runtime")]
             identity_file: options.identity_file,
             #[cfg(feature = "local-runtime")]
-            trust_file: options.trust_file,
+            state_file: options.state_file,
             #[cfg(feature = "local-runtime")]
             device_name: options.device_name,
             config: Mutex::new(Some(config)),
@@ -495,11 +485,11 @@ impl ServiceOwner {
     #[cfg(feature = "local-runtime")]
     fn reuse(&self, options: &BindingRemoteOptions) -> Result<(), BindingError> {
         if self.identity_file != options.identity_file
-            || self.trust_file != options.trust_file
+            || self.state_file != options.state_file
             || self.device_name != options.device_name
         {
             return Err(BindingError::Invalid {
-                detail: "同一应用执行核心只能装配一份设备身份与可信设备存储".into(),
+                detail: "同一应用执行核心只能装配一份设备身份与远控状态存储".into(),
             });
         }
         self.apply_config(BindingRemoteNetworkOptions::from(options).config()?)
@@ -534,10 +524,10 @@ impl VeluneRemoteEndpoint {
         options: BindingRemoteOptions,
         application: Option<Arc<VeluneApplication>>,
     ) -> Result<Arc<Self>, BindingError> {
-        for path in [&options.identity_file, &options.trust_file] {
+        for path in [&options.identity_file, &options.state_file] {
             if !Path::new(path).is_absolute() {
                 return Err(BindingError::Invalid {
-                    detail: "设备身份和可信设备文件必须使用绝对路径".into(),
+                    detail: "设备身份和远控状态文件必须使用绝对路径".into(),
                 });
             }
         }
@@ -610,47 +600,126 @@ impl VeluneRemoteEndpoint {
         Ok(BindingRemoteInvitation {
             encoded: invitation.encode()?,
             expires_at_unix_seconds: invitation.expires_at_unix_seconds,
-            endpoint: invitation.endpoint.into(),
+            issuer: invitation.issuer,
         })
     }
-    pub fn pair(
+    pub fn begin_pairing(&self, encoded: String) -> Result<BindingPairingStatus, BindingError> {
+        let offer = velune_remote::PairingOffer::decode(&encoded)?;
+        convert(
+            self.owner
+                .runtime
+                .block_on(self.owner.service.begin_pairing(&offer))?,
+        )
+    }
+    pub fn pairing_status(&self, peer_id: String) -> Result<BindingPairingStatus, BindingError> {
+        convert(
+            self.owner
+                .runtime
+                .block_on(self.owner.service.pairing_status(&peer_id))?,
+        )
+    }
+    pub fn cancel_pairing(&self, peer_id: String) -> Result<BindingPairingStatus, BindingError> {
+        convert(
+            self.owner
+                .runtime
+                .block_on(self.owner.service.cancel_pairing(&peer_id))?,
+        )
+    }
+    pub fn approve_pairing(
         &self,
-        invitation: String,
-        view_id: String,
-    ) -> Result<Arc<VeluneApplication>, BindingError> {
-        let invitation = velune_remote::Invitation::decode(&invitation)?;
-        let client = self
-            .owner
-            .runtime
-            .block_on(self.owner.service.pair(&invitation))?;
-        self.application(client, view_id)
+        attempt_id: String,
+        expected_peer_id: String,
+    ) -> Result<BindingPairingStatus, BindingError> {
+        convert(
+            self.owner
+                .service
+                .approve_pairing(&attempt_id, &expected_peer_id)?,
+        )
+    }
+    pub fn reject_pairing(
+        &self,
+        attempt_id: String,
+        expected_peer_id: String,
+    ) -> Result<BindingPairingStatus, BindingError> {
+        convert(
+            self.owner
+                .service
+                .reject_pairing(&attempt_id, &expected_peer_id)?,
+        )
     }
     pub fn connect(
         &self,
-        descriptor: BindingRemoteEndpointDescriptor,
+        peer_id: String,
         view_id: String,
     ) -> Result<Arc<VeluneApplication>, BindingError> {
-        let descriptor = descriptor.try_into()?;
-        let client = self
-            .owner
-            .runtime
-            .block_on(self.owner.service.connect(&descriptor))?;
-        self.application(client, view_id)
+        let controller = self.owner.service.controller(&peer_id)?;
+        self.owner.runtime.block_on(controller.connect())?;
+        self.application(controller, view_id)
     }
-    pub fn trusted_devices(&self) -> Result<Vec<BindingTrustedDevice>, BindingError> {
-        Ok(self
-            .owner
+    pub fn read_state(&self) -> Result<BindingRemoteServiceSnapshot, BindingError> {
+        convert(self.owner.service.read_state()?)
+    }
+    pub fn observe_state(&self) -> Arc<VeluneRemoteStateObserver> {
+        Arc::new(VeluneRemoteStateObserver {
+            runtime: self.owner.runtime.clone(),
+            observer: tokio::sync::Mutex::new(self.owner.service.observe_state()),
+        })
+    }
+    /// Persist reset notification before the platform removes its obsolete ordinary-state files.
+    pub fn record_legacy_state_reset(&self) -> Result<(), BindingError> {
+        self.owner
             .service
-            .trusted_devices()?
-            .into_iter()
-            .map(|device| BindingTrustedDevice {
-                id: device.id,
-                name: device.name,
-            })
-            .collect())
+            .record_legacy_state_reset()
+            .map_err(Into::into)
     }
-    pub fn revoke(&self, device_id: String) -> Result<(), BindingError> {
-        self.owner.service.revoke(&device_id).map_err(Into::into)
+    pub fn acknowledge_reset(&self, notice_id: String) -> Result<(), BindingError> {
+        self.owner
+            .service
+            .acknowledge_reset(&notice_id)
+            .map_err(Into::into)
+    }
+    pub fn query_request(
+        &self,
+        peer_id: String,
+        request_id: BindingRemoteRequestId,
+    ) -> Result<BindingRemoteRequestStatus, BindingError> {
+        self.owner
+            .runtime
+            .block_on(
+                self.owner
+                    .service
+                    .query_request(&peer_id, request_id.into()),
+            )?
+            .try_into()
+    }
+    pub fn acknowledge_request(
+        &self,
+        peer_id: String,
+        request_id: BindingRemoteRequestId,
+    ) -> Result<(), BindingError> {
+        self.owner
+            .service
+            .acknowledge_request(&peer_id, &request_id.into())
+            .map_err(Into::into)
+    }
+    pub fn forget_device(&self, peer_id: String) -> Result<(), BindingError> {
+        self.owner
+            .service
+            .forget_device(&peer_id)
+            .map_err(Into::into)
+    }
+    pub fn disconnect(&self, peer_id: String) -> Result<(), BindingError> {
+        self.owner
+            .service
+            .controller(&peer_id)?
+            .disconnect()
+            .map_err(Into::into)
+    }
+    pub fn revoke_control(&self, peer_id: String) -> Result<(), BindingError> {
+        self.owner
+            .service
+            .revoke_control(&peer_id)
+            .map_err(Into::into)
     }
     /// Stop being controlled without closing outgoing control or replacing the business incarnation.
     pub fn set_control_ingress(&self, enabled: bool) -> Result<(), BindingError> {
@@ -674,47 +743,89 @@ impl VeluneRemoteEndpoint {
 impl VeluneRemoteEndpoint {
     fn application(
         &self,
-        client: RemoteClient,
+        controller: Arc<Controller>,
         view_id: String,
     ) -> Result<Arc<VeluneApplication>, BindingError> {
         if view_id.trim().is_empty() || view_id.len() > 128 {
-            client.close();
             return Err(BindingError::Invalid {
                 detail: "客户端视图标识必须为 1 至 128 字节".into(),
             });
         }
-        let descriptor = client.descriptor().clone();
+        let info = controller.connection_info()?;
         let remote = Arc::new(RemoteApplication {
             owner: self.owner.clone(),
+            controller,
             view: ClientViewId(view_id),
             state: Mutex::new(RemoteState {
-                client: Arc::new(client),
-                descriptor,
+                descriptor: info.descriptor,
                 expected: None,
                 observed: None,
                 user_epoch: 0,
-                connection_epoch: 0,
+                connection_epoch: info.epoch,
                 closed: false,
             }),
         });
-        let initial = remote.request_reply(Command::List)?;
+        let initial = remote.request_reply(Command::List, None)?;
         remote.state()?.expected = Some(initial.revision);
-        Ok(Arc::new(VeluneApplication {
-            application: Mutex::new(Some(Backend::Remote(remote))),
-            diagnostics: diagnostics::Diagnostics::silent(),
-            #[cfg(feature = "local-runtime")]
-            remote_service: Mutex::new(None),
-        }))
+        Ok(remote_proxy(Backend::Remote(remote)))
+    }
+}
+fn remote_proxy(backend: Backend) -> Arc<VeluneApplication> {
+    Arc::new(VeluneApplication {
+        application: Mutex::new(Some(backend)),
+        diagnostics: diagnostics::Diagnostics::silent(),
+        #[cfg(feature = "local-runtime")]
+        remote_service: Mutex::new(None),
+    })
+}
+#[derive(uniffi::Object)]
+pub struct VeluneRemoteStateObserver {
+    runtime: Arc<RemoteRuntime>,
+    observer: tokio::sync::Mutex<velune_remote::RemoteStateObserver>,
+}
+#[uniffi::export]
+impl VeluneRemoteStateObserver {
+    pub fn next(
+        &self,
+        timeout_ms: u64,
+    ) -> Result<Option<BindingRemoteServiceSnapshot>, BindingError> {
+        self.runtime
+            .block_on(async {
+                self.observer
+                    .lock()
+                    .await
+                    .next(Duration::from_millis(timeout_ms))
+                    .await
+            })?
+            .map(convert)
+            .transpose()
+    }
+}
+#[derive(uniffi::Object)]
+pub struct VeluneRemoteOperation {
+    operation: Arc<RemoteOperation>,
+    application: Arc<VeluneApplication>,
+}
+#[uniffi::export]
+impl VeluneRemoteOperation {
+    pub fn request_id(&self) -> BindingRemoteRequestId {
+        self.operation.request_id().into()
+    }
+    pub fn application(&self) -> Arc<VeluneApplication> {
+        self.application.clone()
+    }
+    pub fn acknowledge(&self) -> Result<(), BindingError> {
+        self.operation.acknowledge().map_err(Into::into)
     }
 }
 
 pub(crate) struct RemoteApplication {
     owner: Arc<ServiceOwner>,
     view: ClientViewId,
+    controller: Arc<Controller>,
     state: Mutex<RemoteState>,
 }
 struct RemoteState {
-    client: Arc<RemoteClient>,
     descriptor: EndpointDescriptor,
     expected: Option<Revision>,
     observed: Option<Revision>,
@@ -724,7 +835,6 @@ struct RemoteState {
     closed: bool,
 }
 struct RequestContext {
-    client: Arc<RemoteClient>,
     execution: ExecutionContext,
     user_epoch: u64,
     connection_epoch: u64,
@@ -734,17 +844,23 @@ impl RemoteApplication {
         self.state.lock().map_err(|_| BindingError::Unavailable)
     }
     fn context(&self) -> Result<RequestContext, BindingError> {
-        let state = self.state()?;
+        let info = self.controller.connection_info()?;
+        let mut state = self.state()?;
         if state.closed {
             return Err(BindingError::Closed);
         }
+        if state.descriptor.incarnation != info.descriptor.incarnation {
+            state.expected = None;
+            state.user_epoch = state.user_epoch.wrapping_add(1);
+        }
+        state.descriptor = info.descriptor;
+        state.connection_epoch = info.epoch;
         Ok(RequestContext {
-            client: state.client.clone(),
             execution: ExecutionContext {
                 expected_revision: state.expected,
             },
             user_epoch: state.user_epoch,
-            connection_epoch: state.connection_epoch,
+            connection_epoch: info.epoch,
         })
     }
     fn observe(
@@ -753,8 +869,16 @@ impl RemoteApplication {
         revision: Revision,
         mutation: bool,
     ) -> Result<(), BindingError> {
+        let current_epoch = self
+            .controller
+            .connection_info()
+            .ok()
+            .map(|info| info.epoch);
         let mut state = self.state()?;
-        if !state.closed && state.connection_epoch == context.connection_epoch {
+        if !state.closed
+            && current_epoch == Some(context.connection_epoch)
+            && state.connection_epoch == context.connection_epoch
+        {
             if state.observed.is_none_or(|current| revision.0 > current.0) {
                 state.observed = Some(revision);
             }
@@ -767,17 +891,36 @@ impl RemoteApplication {
         }
         Ok(())
     }
-    pub(crate) fn request(&self, command: Command) -> Result<Response, BindingError> {
-        self.request_reply(command).map(|reply| reply.response)
+    pub(crate) fn request(
+        &self,
+        command: Command,
+        operation: Option<&RemoteOperation>,
+    ) -> Result<Response, BindingError> {
+        self.request_reply(command, operation)
+            .map(|reply| reply.response)
     }
-    fn request_reply(&self, command: Command) -> Result<ApplicationReply, BindingError> {
+    fn request_reply(
+        &self,
+        command: Command,
+        operation: Option<&RemoteOperation>,
+    ) -> Result<ApplicationReply, BindingError> {
         let mutation = command.changes_shared_state();
         let context = self.context()?;
-        match self.owner.runtime.block_on(context.client.call(
-            self.view.clone(),
-            context.execution.clone(),
-            command,
-        )) {
+        let result = self.owner.runtime.block_on(async {
+            match operation {
+                Some(operation) => {
+                    operation
+                        .execute(self.view.clone(), context.execution.clone(), command)
+                        .await
+                }
+                None => {
+                    self.controller
+                        .observe(self.view.clone(), context.execution.clone(), command)
+                        .await
+                }
+            }
+        });
+        match result {
             Ok(reply) => {
                 self.observe(&context, reply.revision, mutation)?;
                 Ok(reply)
@@ -807,9 +950,7 @@ impl RemoteApplication {
         }
     }
     pub(crate) fn close(&self) -> Result<(), BindingError> {
-        let mut state = self.state()?;
-        state.closed = true;
-        state.client.close();
+        self.state()?.closed = true;
         Ok(())
     }
 }
@@ -817,7 +958,7 @@ impl VeluneApplication {
     fn remote_backend(&self) -> Result<Arc<RemoteApplication>, BindingError> {
         let state = self.lock()?;
         match state.as_ref().ok_or(BindingError::Closed)? {
-            Backend::Remote(remote) => Ok(remote.clone()),
+            Backend::Remote(remote) | Backend::ScopedRemote { remote, .. } => Ok(remote.clone()),
             #[cfg(feature = "local-runtime")]
             Backend::Local(_) => Err(BindingError::Unsupported {
                 detail: "此操作需要远控连接".into(),
@@ -830,7 +971,7 @@ impl VeluneApplication {
 impl VeluneApplication {
     /// A form must retain the revision of the same configuration it displays.
     pub fn list_with_revision(&self) -> Result<BindingVersionedConfiguration, BindingError> {
-        let reply = self.remote_backend()?.request_reply(Command::List)?;
+        let reply = self.remote_backend()?.request_reply(Command::List, None)?;
         let Response::List(configuration) = reply.response else {
             return Err(BindingError::Contract {
                 detail: "应用返回了不匹配的配置结果".into(),
@@ -845,7 +986,9 @@ impl VeluneApplication {
     pub fn observed_revision(&self) -> Result<Option<u64>, BindingError> {
         let state = self.lock()?;
         match state.as_ref().ok_or(BindingError::Closed)? {
-            Backend::Remote(remote) => Ok(remote.state()?.observed.map(|revision| revision.0)),
+            Backend::Remote(remote) | Backend::ScopedRemote { remote, .. } => {
+                Ok(remote.state()?.observed.map(|revision| revision.0))
+            }
             #[cfg(feature = "local-runtime")]
             Backend::Local(_) => Ok(None),
         }
@@ -865,64 +1008,38 @@ impl VeluneApplication {
         let remote = self.remote_backend()?;
         Ok(VelunePathObserver::new(
             remote.owner.runtime.clone(),
-            remote.context()?.client.observe_paths(),
+            remote.controller.observe_paths()?,
         ))
     }
     pub fn connection_status(&self) -> Result<BindingConnectionStatus, BindingError> {
         let remote = self.remote_backend()?;
-        convert(remote.context()?.client.connection_status())
+        convert(remote.controller.connection_status()?)
     }
     pub fn remote_descriptor(&self) -> Result<BindingRemoteEndpointDescriptor, BindingError> {
         Ok(self.remote_backend()?.state()?.descriptor.clone().into())
     }
-    /// Reconnection preserves numbering and cannot replace the execution device or resurrect a closed object.
-    pub fn reconnect(
-        &self,
-        descriptor: BindingRemoteEndpointDescriptor,
-    ) -> Result<(), BindingError> {
+    /// Reconnect only to the saved pin and locator; the authenticated Hello supplies the incarnation.
+    pub fn reconnect(&self) -> Result<(), BindingError> {
         let remote = self.remote_backend()?;
-        let descriptor: EndpointDescriptor = descriptor.try_into()?;
-        let context = remote.context()?;
-        if descriptor.endpoint_id != remote.state()?.descriptor.endpoint_id {
-            return Err(BindingError::Invalid {
-                detail: "重连不能更换执行设备，请建立独立连接".into(),
-            });
-        }
-        let client = remote.owner.runtime.block_on(
-            remote
-                .owner
-                .service
-                .connect_with_session(&descriptor, context.client.session()),
-        )?;
-        let descriptor = client.descriptor().clone();
-        let mut state = remote.state()?;
-        if state.closed {
-            client.close();
-            return Err(BindingError::Closed);
-        }
-        if state.connection_epoch != context.connection_epoch {
-            client.close();
-            return Err(BindingError::Unavailable);
-        }
-        if descriptor.incarnation != state.descriptor.incarnation {
-            state.expected = None;
-            state.user_epoch = state.user_epoch.wrapping_add(1);
-        }
-        state.client.close();
-        state.client = Arc::new(client);
-        state.descriptor = descriptor;
-        state.observed = None;
-        state.connection_epoch = state.connection_epoch.wrapping_add(1);
+        remote.owner.runtime.block_on(remote.controller.connect())?;
+        remote.context()?;
         Ok(())
+    }
+    pub fn prepare_remote_operation(&self) -> Result<Arc<VeluneRemoteOperation>, BindingError> {
+        let remote = self.remote_backend()?;
+        let operation = remote.controller.prepare_operation()?;
+        let application = remote_proxy(Backend::ScopedRemote {
+            remote,
+            operation: operation.clone(),
+        });
+        Ok(Arc::new(VeluneRemoteOperation {
+            operation,
+            application,
+        }))
     }
     /// Allocate before submission so the ID survives a lost reply.
     pub fn next_request_id(&self) -> Result<BindingRemoteRequestId, BindingError> {
-        Ok(self
-            .remote_backend()?
-            .context()?
-            .client
-            .next_request_id()?
-            .into())
+        Ok(self.remote_backend()?.controller.next_request_id()?.into())
     }
     /// A Running response is queried with the same ID; submission never holds the application lock over I/O.
     pub fn submit_request(
@@ -932,12 +1049,32 @@ impl VeluneApplication {
     ) -> Result<BindingRemoteRequestStatus, BindingError> {
         let remote = self.remote_backend()?;
         let context = remote.context()?;
-        let status = remote.owner.runtime.block_on(context.client.submit(
-            request_id.into(),
-            remote.view.clone(),
-            context.execution.clone(),
-            command.try_into()?,
-        ))?;
+        let scoped = match self.lock()?.as_ref().ok_or(BindingError::Closed)? {
+            Backend::ScopedRemote { operation, .. } => Some(operation.clone()),
+            _ => None,
+        };
+        let request_id: RequestId = request_id.into();
+        let command: Command = command.try_into()?;
+        let status = remote.owner.runtime.block_on(async {
+            if let Some(operation) = scoped {
+                if operation.request_id() != request_id {
+                    return Err(velune_remote::RemoteError::InvalidRequestId);
+                }
+                operation
+                    .submit(remote.view.clone(), context.execution.clone(), command)
+                    .await
+            } else {
+                remote
+                    .controller
+                    .submit(
+                        request_id,
+                        remote.view.clone(),
+                        context.execution.clone(),
+                        command,
+                    )
+                    .await
+            }
+        })?;
         if let RequestStatus::Completed(Ok(reply)) = &status {
             remote.observe(&context, reply.revision, false)?;
         }
@@ -953,7 +1090,7 @@ impl VeluneApplication {
         let status = remote
             .owner
             .runtime
-            .block_on(context.client.query(request_id.into()))?;
+            .block_on(remote.controller.query(request_id.into()))?;
         if let RequestStatus::Completed(Ok(reply)) = &status {
             remote.observe(&context, reply.revision, false)?;
         }

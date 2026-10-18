@@ -122,13 +122,13 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun disconnect() = action {
-        val previous = client
-        withContext(Dispatchers.IO) { previous?.shutdown() }
         generation += 1
         poll?.cancel()
         pathObservation?.cancel()
+        val previous = client
         client = null
         mutable.update { it.copy(connected = null, configuration = null, snapshot = null, models = emptyList(), connection = "未连接") }
+        withContext(Dispatchers.IO) { previous?.shutdown() }
     }
 
     fun forget(descriptor: BindingRemoteEndpointDescriptor) = action {

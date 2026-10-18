@@ -8,8 +8,16 @@ pub enum RemoteError {
     Configuration,
     #[error("无法读取或安全保存设备身份")]
     IdentityStorage,
-    #[error("无法读取或保存可信设备")]
-    TrustStorage,
+    #[error("无法读取或原子保存远控状态")]
+    StateStorage,
+    #[error("配对事务未授权、已失效或不可查询")]
+    PairingUnavailable,
+    #[error("请先处理此设备的未决请求")]
+    PendingRequests,
+    #[error("远程副作用必须使用一次操作作用域")]
+    OperationRequired,
+    #[error("本次操作作用域已经使用；请查询原请求")]
+    OperationUsed,
     #[error("无法生成设备随机材料")]
     Randomness,
     #[error("配对邀请无效或已使用")]
@@ -50,7 +58,11 @@ impl RemoteError {
         match self {
             Self::Configuration => "configuration",
             Self::IdentityStorage => "identity_storage",
-            Self::TrustStorage => "trust_storage",
+            Self::StateStorage => "state_storage",
+            Self::PairingUnavailable => "pairing_unavailable",
+            Self::PendingRequests => "pending_requests",
+            Self::OperationRequired => "operation_required",
+            Self::OperationUsed => "operation_used",
             Self::Randomness => "randomness",
             Self::InvalidInvitation => "invalid_invitation",
             Self::ExpiredInvitation => "expired_invitation",

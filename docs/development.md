@@ -225,7 +225,7 @@ bash scripts/build-macos.sh
 
 `bindings --no-default-features --features remote` 是纯控制端，依赖树不含 application、agent-runtime、gateway 或 ai-provider；完全禁用 feature 时没有本地或远程构造入口。application 自身禁用 `local-runtime` 仅裁掉 Harness，配置校验仍链接 gateway，不是纯远端客户端的装配路径。Kotlin 生成物依赖 JNA 及 kotlinx-coroutines；生成成功之外还需编译检查。C# 工具为第三方，UniFFI 版本兼容性仍需后续 C# app 接入时验证。
 
-[远控人工脚本](../scripts/manual-remote-control.py) 接受绝对路径 `--library`、`--bindings` 和 `--resources`，通过实际 iroh loopback、UniFFI 与合成 ACP 验证多设备业务、信任撤销、断线续跑、请求恢复、冲突及附件内容边界。动态库需包含默认的本地执行与 remote feature；资源目录可用已安装的 `target/runtime-support`。脚本只使用临时 HOME 与合成资料，不连接公共 relay 或真实模型。具体观察及公网验证缺口见 [本轮验收](../tasks/remote-control/verification.md)。
+[远控人工脚本](../scripts/manual-remote-control.py) 接受绝对路径 `--library`、`--bindings` 和 `--resources`，动态库与 Python 绑定须来自同一次 v2 构建。脚本通过实际 iroh loopback、UniFFI 与合成 ACP 核对双方派生码，再由夹具显式调用执行端本地批准 API；随后使用一次 Effect 作用域和准确 ID 确认，验证多设备业务、方向授权撤销、断线续跑、请求查询、冲突及附件内容边界。脚本中的已收到后丢弃回执不作为丢 wire 回执或执行端网络替换的证据。动态库需包含默认的本地执行与 remote feature；资源目录可用构建后的 `target/runtime-support`。脚本只使用临时 HOME 与合成资料，不连接公共 relay 或真实模型。早期观察见 [远控验收](../tasks/remote-control/verification.md)，v2 与生命周期判别归 [Android 最小端验收](../tasks/android-minimal/verification.md)。
 
 ## 会话驱动准备的人工复验
 
@@ -413,6 +413,6 @@ Velune 执行的每个会话都获得 application 注入的 `velune` MCP 服务�
 
 [Android unit](../app/android/README.md) 拥有 Compose 工程、已固定的工具链组合与接入生命周期。仓库根目录的 `scripts/build-android.sh` 先构建 remote-only Rust so／匹配 Kotlin，再生成 debug APK 并执行 Android lint；`--skip-native` 仅用于已有匹配产物时的 UI 迭代。当前产物面向 API28+／arm64-v8a。JNI context、系统 TLS verifier AAR 与 Android Cleaner 生成配置都是实际运行前置，不能以仅生成 Kotlin 替代平台编译。
 
-Mac 设置的“远程接入”显式开启现有执行核心的网络入口，并生成限期一次邀请；Android 显式粘贴后配对。开发设施默认与正式服务承诺分开，实际路径由 iroh 返回。设备身份／信任与未决请求保存在 Android 私有且不备份的目录；进入后台不停止执行设备。
+当前远控改造仅交付 v2 Rust Library／UniFFI，平台 App 未在本任务同步适配，不能将此分支当作匹配产品安装。库提供离线邀请解析、核对与执行端本地批准、Rust 联系人／pending 和准确 ID 查询；本地批准由隔离合成宿主调用即可验证，不要求 Mac 设置界面。平台接入需独立消费[新契约](design/remote-access.md)，不恢复旧接口兼容层。
 
-人工设备验证使用 [合成宿主脚本](../scripts/manual-android-remote.py)，传入匹配的绝对 `--library`／`--bindings`／`--resources` 和独立 `--root`；`--prepare-only` 准备合成配置后释放 owner，可交隔离 Mac 独占打开。前台宿主与 Mac 不得共开同一配置根。adb 仅操作本轮 Velune 和合成内容；设备解锁由用户完成，不读取个人资料或真实会话。具体安装、签名、路径及未覆盖项归 [本轮验收](../tasks/android-minimal/verification.md)。
+历史 [Android 合成宿主脚本](../scripts/manual-android-remote.py) 与旧平台调用方暂未迁移 v2，不能搭配新库执行；当前库级人工入口是上文的 `manual-remote-control.py`。本任务不再操作 adb 或启动平台 App，已有安装及停止事实归 [本轮验收](../tasks/android-minimal/verification.md)。

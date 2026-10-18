@@ -1,6 +1,6 @@
 use crate::{
     endpoint::NetworkGeneration,
-    identity::{random_bytes, random_id, validate_name},
+    identity::random_id,
     ledger::Ledger,
     protocol::{Reply, Request},
     *,
@@ -10,7 +10,6 @@ use std::{
     future::Future,
     pin::Pin,
     sync::{Arc, Mutex, MutexGuard},
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use tokio::task::JoinHandle;
 use velune_application_api::{ApplicationReply, Command, Failure};
@@ -21,21 +20,18 @@ pub type HandlerFuture<'a> =
 pub trait Handler: Send + Sync {
     fn execute(&self, context: RequestContext, command: Command) -> HandlerFuture<'_>;
 }
-struct PendingInvitation {
-    token: [u8; 32],
-    deadline: Instant,
-}
 pub(crate) struct Access {
     pub(crate) generation: Option<u64>,
     pub(crate) ingress: bool,
     pub(crate) closed: bool,
-    invitations: Vec<PendingInvitation>,
+    pub(crate) pairing: crate::pairing::PairingRegistry,
     ledger: Ledger,
 }
 pub(crate) struct ServiceState {
     pub(crate) identity: DeviceIdentity,
     pub(crate) incarnation: String,
-    pub(crate) trust: Arc<dyn DeviceTrust>,
+    pub(crate) store: Arc<DeviceStore>,
+    pub(crate) outgoing: Mutex<std::collections::BTreeMap<String, crate::pairing::OutgoingPairing>>,
     handler: Option<Arc<dyn Handler>>,
     pub(crate) access: Mutex<Access>,
     tasks: Mutex<Vec<JoinHandle<()>>>,
@@ -72,38 +68,7 @@ impl ServiceState {
         if !access.ingress {
             return Err(RemoteError::Closed);
         }
-        if let Request::Pair {
-            token,
-            name,
-            incarnation,
-        } = request
-        {
-            validate_name(&name)?;
-            if incarnation != self.incarnation {
-                return Err(RemoteError::ServerRestarted);
-            }
-            let now = Instant::now();
-            let index = access
-                .invitations
-                .iter()
-                .position(|invitation| {
-                    invitation
-                        .token
-                        .iter()
-                        .zip(token)
-                        .fold(0u8, |difference, (left, right)| difference | (left ^ right))
-                        == 0
-                })
-                .ok_or(RemoteError::InvalidInvitation)?;
-            if access.invitations[index].deadline <= now {
-                access.invitations.remove(index);
-                return Err(RemoteError::ExpiredInvitation);
-            }
-            self.trust.trust(TrustedDevice { id: peer, name })?;
-            access.invitations.remove(index);
-            return Ok(Reply::Paired);
-        }
-        if !self.trust.is_trusted(&peer)? {
+        if self.store.grant(&peer)?.is_none() {
             return Err(RemoteError::Unauthorized);
         }
         match request {
@@ -161,7 +126,10 @@ impl ServiceState {
                 }
                 Ok(Reply::Status(access.ledger.status(&peer, &id)?))
             }
-            Request::Pair { .. } => Err(RemoteError::Protocol),
+            Request::PairBegin { .. }
+            | Request::PairReady { .. }
+            | Request::PairStatus { .. }
+            | Request::PairCancel { .. } => Err(RemoteError::Protocol),
         }
     }
 }
@@ -172,6 +140,8 @@ pub struct RemoteAccessService {
     pub(crate) state: Arc<ServiceState>,
     network: Arc<Mutex<Option<Arc<NetworkGeneration>>>>,
     lifecycle: tokio::sync::Mutex<Lifecycle>,
+    pub(crate) pairing_begin: tokio::sync::Mutex<()>,
+    pub(crate) controllers: Mutex<std::collections::BTreeMap<String, Arc<Controller>>>,
 }
 #[derive(Default)]
 struct Lifecycle {
@@ -203,16 +173,16 @@ impl RemoteAccessService {
     pub async fn bind(
         identity: DeviceIdentity,
         config: EndpointConfig,
-        trust: Arc<dyn DeviceTrust>,
+        store: Arc<DeviceStore>,
         handler: Option<Arc<dyn Handler>>,
     ) -> Result<Self> {
-        let service = Self::new(identity, trust, handler)?;
+        let service = Self::new(identity, store, handler)?;
         service.replace_network(config).await?;
         Ok(service)
     }
     pub fn new(
         identity: DeviceIdentity,
-        trust: Arc<dyn DeviceTrust>,
+        store: Arc<DeviceStore>,
         handler: Option<Arc<dyn Handler>>,
     ) -> Result<Self> {
         let ingress = handler.is_some();
@@ -220,19 +190,22 @@ impl RemoteAccessService {
             state: Arc::new(ServiceState {
                 identity,
                 incarnation: random_id()?,
-                trust,
+                store,
+                outgoing: Mutex::new(std::collections::BTreeMap::new()),
                 handler,
                 access: Mutex::new(Access {
                     generation: None,
                     ingress,
                     closed: false,
-                    invitations: Vec::new(),
+                    pairing: crate::pairing::PairingRegistry::default(),
                     ledger: Ledger::default(),
                 }),
                 tasks: Mutex::new(Vec::new()),
             }),
             network: Arc::new(Mutex::new(None)),
             lifecycle: tokio::sync::Mutex::new(Lifecycle::default()),
+            pairing_begin: tokio::sync::Mutex::new(()),
+            controllers: Mutex::new(std::collections::BTreeMap::new()),
         })
     }
     pub(crate) fn network(&self) -> Result<Arc<NetworkGeneration>> {
@@ -266,7 +239,8 @@ impl RemoteAccessService {
                     return Err(RemoteError::Closed);
                 }
                 access.generation = None;
-                access.invitations.clear();
+                access.pairing.invalidate(PairingPhase::Disconnected);
+                state.store.touch();
                 network_owner
                     .lock()
                     .map_err(|_| RemoteError::Unavailable)?
@@ -307,54 +281,21 @@ impl RemoteAccessService {
             return Err(RemoteError::Closed);
         }
         access.ingress = enabled;
+        self.state.store.touch();
         if !enabled {
-            access.invitations.clear();
+            access.pairing.invalidate(PairingPhase::Disconnected);
+            self.state.store.touch();
             if let Ok(network) = self.network() {
                 network.close_incoming();
             }
         }
         Ok(())
     }
-    pub fn trusted_devices(&self) -> Result<Vec<TrustedDevice>> {
-        self.state.trust.devices()
-    }
-    pub fn create_invitation(&self, lifetime: Duration) -> Result<Invitation> {
-        if lifetime.is_zero() || lifetime > Duration::from_secs(600) {
-            return Err(RemoteError::Configuration);
-        }
+    pub fn revoke_control(&self, id: &str) -> Result<()> {
+        crate::store::parse_peer(id)?;
         let mut access = self.state.access()?;
-        if access.closed || !access.ingress {
-            return Err(RemoteError::Closed);
-        }
-        let endpoint = self.descriptor()?;
-        let now = Instant::now();
-        access
-            .invitations
-            .retain(|invitation| invitation.deadline > now);
-        if access.invitations.len() >= 16 {
-            return Err(RemoteError::Capacity);
-        }
-        let token = random_bytes()?;
-        access.invitations.push(PendingInvitation {
-            token,
-            deadline: now + lifetime,
-        });
-        let expires_at_unix_seconds = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_err(|_| RemoteError::Unavailable)?
-            .as_secs()
-            + lifetime.as_secs();
-        Ok(Invitation {
-            endpoint,
-            expires_at_unix_seconds,
-            token,
-        })
-    }
-    pub fn revoke(&self, id: &str) -> Result<()> {
-        id.parse::<iroh::EndpointId>()
-            .map_err(|_| RemoteError::Configuration)?;
-        let _access = self.state.access()?;
-        self.state.trust.revoke(id)?;
+        self.state.store.revoke_grant(id)?;
+        access.pairing.revoke(id);
         if let Ok(network) = self.network() {
             network.revoke(id);
         }
@@ -386,7 +327,8 @@ impl RemoteAccessService {
                     .unwrap_or_else(|poison| poison.into_inner());
                 access.closed = true;
                 access.generation = None;
-                access.invitations.clear();
+                access.pairing.invalidate(PairingPhase::Disconnected);
+                state.store.touch();
                 network_owner
                     .lock()
                     .unwrap_or_else(|poison| poison.into_inner())
@@ -417,7 +359,7 @@ impl Drop for RemoteAccessService {
         if let Ok(mut access) = self.state.access.lock() {
             access.closed = true;
             access.generation = None;
-            access.invitations.clear();
+            access.pairing.invalidate(PairingPhase::Disconnected);
         }
         if let Ok(mut network) = self.network.lock()
             && let Some(network) = network.take()

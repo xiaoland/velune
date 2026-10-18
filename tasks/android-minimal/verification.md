@@ -2,7 +2,11 @@
 
 ## 当前结论
 
-2026-10-18，用户已授权按[线性计划](plan.md)恢复实施，S1 已完成当前设备条件下的同网判别；S2 冻结源码的 core／bindings 人工驱动均通过，当前处于匹配构建收尾。E2／E3 继续环境阻塞。下面主矩阵保留前一轮产品观察，不能当作新方案或 S1 已通过；S1 当前事实单列于下方。Android 身份发布修复已提交 `0004d53`。没有将安装、进程存在或临时原生 probe 当作业务通过。
+2026-10-18 后续用户将本轮范围纠正为仅 Rust Library，平台准备／验收立即停止，未完成配对、未批准授权、未发送远程业务。手机实际已覆盖安装 S3 APK `04c105e061edbedc8bdb07d7642c1dd00b2c43ff8dc0044a913ef4ed8d321102`，曾启动到正常设备欢迎页；停止时仅对确认的本轮 app PID 执行 force-stop，没有清应用数据、删除 identity 或读取私钥。下文“手机仍为 S1”属于这次安装之前的归档时点，不能作为当前安装状态。
+
+Mac 曾以私有 HOME／VELUNE_HOME 启动冻结 bundle，但随后原 PID 已不在，CUA getApp 后出现另一个同冻结路径实例；未能确认后者继承私有环境，因此不能声明其配置隔离已验证，也不再探查用户配置补证。没有生成邀请、批准或开展业务；CUA 正常退出动作被版本保护挡下，随后仅终止已确认的该冻结路径实例。收尾只读进程检查为 0 个冻结 Mac 实例，本轮 Android 已停止；没有启动或修改 /Applications 下真实 App。唯一 bundle ID clone 未获批准且未创建。新私有合成 Application／ACP 夹具保留，prepare-only 已正常退出，create-gate 未启用，未提交其 gated Create；没有继续配对或新增平台实验。
+
+S1 已完成当前设备条件下的同网判别，S2 稳定服务证据已归档，S3 Rust／UniFFI 三组人工驱动、完整 v2 Python ABI 合成入口及静态／目标库检查通过。平台工作收回后，S3 库出口不再依赖 Mac 批准页面或 Android 欢迎页；这些界面没有通过业务验收。E2／E3 继续环境阻塞。下面主矩阵保留旧版产品观察，只支持原记录的版本与条件。
 
 当前 S1 最终接口源码为 `f0df0ca`，真机 APK 为 `8d9f649e…`／so `62bb93ac…`，匹配 host 为 `3b55ead8…`／Python `94570f95…`；完整摘要及版本边界见下方接口补丁小节。三轮正式生命周期已收口，E2／E3 仍缺环境。
 
@@ -50,7 +54,7 @@
 
 replace future 的中途取消未作行为覆盖：公开边界没有能自然保持 replace pending 的可靠 gate，真实业务 gate 不阻塞 replace，取消可能已经完成的 future 无法提供有效证据。该路径与 close 共用持有 pending 事务的实现，但不把实现共用写成已观察的取消安全；没有为验收新增产品 hook。公网／NAT、Android 真机、Swift／Kotlin 生成层与安装体验仍不在这些 loopback 驱动覆盖内。S2 构建摘要如下；上述 S1 已安装包及三轮设备证据保持原版本边界。
 
-S2 原生冻结清单 source 为 `01971ee51bcf8b9017b0e67b8114ab0e70cceb7e`、dirty=true；169 份源码摘要在构建前后保持不变，不将 dirty 改写为 clean。Android 使用 API28／arm64-v8a、Rust 1.99.0、NDK 30.0.14904198、UniFFI 0.32.2，release／no-default-features／remote-diagnostics 构建 exit 0，未链接 local-runtime；JNI initializer 存在，未动态引用 renameat2。生成沿 android=true 配置，使用冻结库生成 Python 后真实 ABI import 通过。
+S2 原生冻结清单 source 为 `01971ee51bcf8b9017b0e67b8114ab0e70cceb7e`、dirty=true；169 份源码摘要在构建前后保持不变，不将 dirty 改写为 clean。Android 使用 API28／arm64-v8a、Rust 1.99.0、NDK 30.0.14904198、UniFFI 0.32.2，release／no-default-features／remote-diagnostics 构建 exit 0，未链接 local-runtime；JNI initializer 存在，未动态引用 renameat2。生成沿 android=true 配置，使用冻结库生成 Python 后真实 ABI import 通过。 原始 release so 与冻结打包 so 的字节差异来自 copy 后的 NDK llvm-strip --strip-unneeded；Kotlin 从原始库元数据生成，APK 使用冻结 strip 库，逐字节匹配只针对冻结库与 APK。
 
 | S2 冻结产物 | SHA-256 | 实际覆盖 |
 | --- | --- | --- |
@@ -62,6 +66,43 @@ S2 原生冻结清单 source 为 `01971ee51bcf8b9017b0e67b8114ab0e70cceb7e`、di
 主执行者 `bash scripts/build-macos.sh --build-only` exit 0，Rust／Swift／签名通过。精确 manifest source 为同一 `01971ee51bcf8b9017b0e67b8114ab0e70cceb7e`、dirty=true、版本 0.1 beta.1／UniFFI 0.32.2／schema 10。executable SHA 为 `50ed7e88467d2ed2bfe743641bdf6951c4dadaa469177a801da131d20f020ff7`、Mac dylib `03aaf2890d419c55777afbefd76729b9b7179d5336475ea8f10d4ec886ae7c66`、生成 Swift `f1259291e2a32afb86d5189937f3e40c296b2fd3c89bd4e81f03c4f646a1c8c3`；nm 无 probe exports。没有安装或启动真实 Mac app，不把 build-only 当作 UI／安装验收。
 
 Android app owner 的 assembleDebug＋lintDebug 成功，0 error／7 条既有 warning；APK SHA 为 `431af265b40e4f8b6be3d2377bd9a8030457995e7c3c6cdb32115f4dfaa1785a`。实际包内 so 与冻结／消费路径逐字节相同，SHA 为上表的 `e675c949…`；Kotlin 与冻结文件也逐字节一致。本轮同时编译了“断开成功后才显示未连接”的 UI 修复，没有将编译当成该行为已真机通过。未操作 adb、安装或重做设备实验；当前手机仍保留 S1 版本边界。额外 :app:compileReleaseKotlin／:app:processReleaseMainManifest 均 exit 0，merged release manifest 没有 TransportProbeActivity／CHANGE_WIFI_MULTICAST_STATE，release app classes 没有 Probe helpers。这仅证明平台源码隔离，没有生成 normal release APK，也不证明诊断 native exports 已剥离。
+
+## S3 v2 契约人工证据
+
+2026-10-18，采用 remote_application owner 的最终 Rust API seed，包含 lookup_url 与离线 offer 解码 API。`core.rs`、`extra.rs`、`bindings.rs` 从最终 compiler-artifact 清单选择匹配依赖后重新编译、执行，三者均 exit 0，compile／stderr 均为空；额外驱动明确使用 sha2 0.10.9，未混用同时存在的另一个版本。这些是人工显式调用的临时驱动，不接入测试或 CI；没有真实认证／模型、adb 或平台应用操作。最终资料为 `core-final-1/`、`extra-final-1/`、`bindings-final-1/`，不是首轮结果。
+
+| core／extra 边界 | 实际操作与观察 | 限定 |
+| --- | --- | --- |
+| pin 与方向授权 | 两个各带合成计数 Handler 的真实服务：A 保存 B outgoing pin 不给 A→B 入站权；A 本地批准 B 后，B→A effect 成功，未批准 A→B 精确 Unauthorized、B effect 为 0；B 另行批准后 A→B 才成功 | 不是依据手机缺少 Handler 推断单向权限 |
+| 核对与 Ready 门禁 | 131 字节 exporter context 在本地计算，两端八位核对码一致，incoming peer 与实际 TLS EndpointId 匹配；AwaitingReady 无法 approve，同连接重复 PairBegin 返回同 attempt | 不接收对端自报验证码作为批准依据 |
+| 挑战并发预算 | core 第六个挑战精确 Capacity；extra 六条已建立且独立的 native TLS 连接经 Barrier 同时 PairBegin，结果五个不同挑战＋一个 Capacity | 五条候选是实际连接／并发观察，不只枚举容量常量 |
+| 提交后丢回执、撤销 | issuer commit grant 后，raw PairStatus 写完立即 recv.stop、未读回执；新连接以原 attempt 查到 Granted。Ready 连接已被观测 Disconnected 后不能批准；close／approve Barrier 竞争中持久 grant 与批准结果一致；竞争后 revoke，旧 attempt 无法恢复 grant | 没有强制竞态必须由哪方获胜；QUIC 接收 reset 不依赖 UDP proxy |
+| pin／grant 原子发布失败 | pin 发布失败返回 StateStorage，issuer 只到 AwaitingReady 或连接释放后的 Disconnected，无法 approve、无 grant；grant 发布失败保持 AwaitingApproval 且无 grant，修复文件后原 attempt 可批准 | “pin 失败不发送 Ready”由 save_pin→PairReady 源码顺序与候选观察共同支持，没有 packet capture |
+| pending 发送门禁与确认失败 | pending 文件发布失败时真实 effect 计数不增；恢复文件后 scope 可执行。ack 发布失败保留原 pending，修复后精确 ack 成功。普通非 scoped effect 得 OperationRequired，同 scope 第二 effect 得 OperationUsed，两次拒绝均不增 effect | 观察了无远端副作用，未将其扩大为抓包证明零网络包 |
+| 并行 scope | 两个真实 scope 的慢成功由 gate 阻塞，立即业务失败实际先完成；只 ack 失败 ID，成功 ID 仍持久 pending，成功后 drop scope 不自动 ack、不关共享连接 | core 并行 Handler 直接证明实际完成反序 |
+| 控制端真正 cold-start | 两个新的真实控制端子进程加载同一合成 identity／state。前者持久 pending 后提交慢 effect 并退出；issuer 保持原 incarnation，放 gate 后 effect 加 1。后者无旧 scope，恢复原 ID，只 query 得 Completed 并更新 pending，计数仍只加 1 | 没有用进程仍在或新 scope 重新提交替代 cold 恢复 |
+| issuer 真正 cold-start | 两个新的 issuer 进程：前者提交 grant、丢 PairStatus 回执后完整关闭 service／runtime 并退出；后者同 identity／state、EndpointId 相同但 incarnation 改变，原 attempt 仍可查 Granted | 授权事务持久结果与业务请求调用世代分别处理 |
+| 旧网络资源 | 保留未批准 incoming candidate、outgoing attempt、出站 path watcher 与 service state watcher 后 replace；旧 candidate 成为 Disconnected、无法 approve，旧 loopback UDP 可重新绑定 | 证明受测旧端口释放，不声称所有 FD／内核缓存归零 |
+| schema reset 与 v1 截断 | 合成 schema 1 trust 原子初始化为空 schema 2，contacts／grants／pending 为空；同 ID reset notice 跨重开保留，ack 落盘后重开消失，独立 identity SHA 不变。v1 ALPN 连接失败，v2 上 envelope v1 和 v1 offer 解码均精确 IncompatibleVersion，业务计数为 0 | 持久内容实际核对；不是将旧 trust 自动转为新 grant，也不迁移旧 pending |
+
+实际 bindings 驱动直接调用公开 VeluneApplication／VeluneRemoteEndpoint／VeluneRemoteOperation，穿过真实 ApplicationService／ApplicationHandler 和合成 ACP PEER。pair／connect 自带 List 完成后才 SLOW_ARM：第一 scope 的 Create 进入 initialize gate，第二 scope 对不存在的 runtime Create；gate 未放时两者均 Running，session/new／会话文件为 0。关闭、drop 第一 scoped facade／scope 及 base proxy 后，独立 sibling proxy 仍可用同一共享 controller，两个 pending 均保留。放 gate 后先读第二 ID 的业务 Failed 并只 ack 第二 ID，第一 pending 仍在；随后第一 Completed，精确 ack 后 pending 才为空。drop scope 不自动确认，session/new／文件各为 1。
+
+bindings 另验证 ack 文件发布失败保留 pending；普通 typed Create 被 operation_required 拒绝，scoped typed Create 首次执行、第二次被 operation_used 拒绝。额外门禁场景只新增一个 session，最终合计为 2。ApplicationService owner 串行业务，bindings 只证明读取／ack 终态顺序可反转，不能把它写成 Actor 并行完成反序；后者只由上表 core Handler 场景支持。
+
+三份 `*-compile-command.json` 保存完整配方，清单为本次 S3 compiler-artifact 元数据；application=local-runtime，remote=diagnostics，bindings=default／local-runtime／remote／remote-diagnostics，build-finished=true、profile.test=false。Rust 最终静态检查通过归 core owner。最终结果 SHA-256：core `c73759f5778276d9e90178b81df387c03be27b853b44df052a5c159188370f5c`、extra `cfa984d485e22b402ef68550c17af0009e6263b772e148e20d3545ef3b96a0e3`、bindings `7dc5095e1fb3f9ea778e6bdd4ec99af2eb3f07dd6eadbe699bfaa66bd9852db2`；说明 `evidence.md` 为 `9c60552ee43b20b21857f296bf966d46dd3baf60f5421e3122cf5310269f6176`。临时合成资料和编译配方保留在本轮私有目录，不复制会话正文／秘密到仓库。
+
+以上限 Rust core 与 Rust 直接消费 bindings 的 loopback 行为，没有覆盖公网／NAT、Android 真机、正常扫码或安装体验。native owner 随后提供最终原生产物：最终 173 份 Rust／Cargo 文件（包括未跟踪源码）与成功 seed 的集合和每项 SHA 均相同，source-hashes 清单 SHA 为 `7b59e50690a29564694e486bb2336aa37280b2722dea5df81470f1d2e59d6dd2`，因此采用原成功构建而未重编。该冻结清单 source 为 `3f366139258044af35cd139f63050d1821082eaa`、dirty=true，product_acceptance=false，不把 seed 采用等同平台行为验收。
+
+| S3 最终原生冻结项 | SHA-256 | 边界 |
+| --- | --- | --- |
+| Android strip so | `17cc165d057ede381117d877defdcea1b5c8cf9f36fb0b6a4f8801bcff6f508a` | API28／arm64，remote＋remote-diagnostics，无 local-runtime；JNI／Android Cleaner／rename 动态符号边界通过 |
+| Kotlin | `5c5e867f9e4cf3f4a7baeb89ca902e2b1a8570d500ed77b1cc30e56bb6a8bff6` | 从未 strip 库元数据生成；APK 打包另以 strip 冻结库核对 |
+| Host dylib | `b9ba7aa642bc30807e91dc6a71d48a73bf2c4a7eeff3245cc2a424abce1dc2b6` | 默认 local-runtime＋remote＋remote-diagnostics，成功 source-owner 构建的冻结 copy |
+| Python | `e590ef46a50e77f8fc5f06d0cf74679601ad4ca8da47e4cdd26946931b2d9bb0` | 真实 ABI import、v2 具名导出核对、合成 malformed offer 离线拒绝通过 |
+
+范围纠正前，两端曾完成匹配的消费者构建：Android 最终 APK `04c105e061edbedc8bdb07d7642c1dd00b2c43ff8dc0044a913ef4ed8d321102`，Mac build-only executable `b8b7033196831b85ccdfed321fcdfa68d7427000a803774bdcb96b2d4f963875`。这些仅属于撤回前的源码快照，不能套用于当前已恢复旧调用方的工作区，不能当作正常扫码或配对业务通过。平台差异已单独保存，当前 App 源码未适配 v2；本轮不交付匹配产品安装包。
+
+库级 `manual-remote-control.py` 已迁移 v2，使用上述匹配 host Python／dylib、真实 iroh loopback、唯一 ApplicationService／ApplicationHandler 与合成 ACP，完整入口取得 22 项观察，exit 0、stderr 为空。覆盖本地批准、未批准方向拒绝、资源／配置／审批、17MiB 附件、并发、断控制连接后执行及显式去重；脚本的已收到后丢弃回执不证明 wire 丢回执或 Endpoint 替换，后者由前述专门驱动支持。结果及执行／源码摘要保留在私有 `velune-s3-manual-remote-{result,command}.json`；没有调用真实模型或改动 Rust 冻结源码。
 
 ## S1 当前环境与采集边界
 

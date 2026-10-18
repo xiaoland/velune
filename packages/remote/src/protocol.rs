@@ -1,12 +1,11 @@
 use crate::{RemoteError, Result, identity::random_id};
-use iroh::{EndpointAddr, EndpointId};
 use serde::{Deserialize, Serialize};
 use std::{net::SocketAddr, time::Duration};
 use velune_application_api::{ApplicationReply, ClientViewId, Command, ExecutionContext, Failure};
 
-pub const PROTOCOL_VERSION: u16 = 1;
+pub const PROTOCOL_VERSION: u16 = 2;
 pub const MAX_FRAME_BYTES: usize = 32 * 1024 * 1024;
-pub(crate) const ALPN: &[u8] = b"velune/remote/1";
+pub(crate) const ALPN: &[u8] = b"velune/remote/2";
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub enum RelayConfig {
@@ -66,52 +65,24 @@ pub struct EndpointDescriptor {
     pub incarnation: String,
     pub relay_urls: Vec<String>,
     pub direct_addresses: Vec<SocketAddr>,
+    pub lookup_url: Option<String>,
 }
 impl EndpointDescriptor {
-    pub(crate) fn address(&self) -> Result<EndpointAddr> {
+    pub(crate) fn validate(&self, peer: &str) -> Result<()> {
         if self.version != PROTOCOL_VERSION {
             return Err(RemoteError::IncompatibleVersion);
         }
+        if self.endpoint_id != peer {
+            return Err(RemoteError::Protocol);
+        }
         crate::identity::validate_name(&self.name)?;
         validate_id(&self.incarnation)?;
-        if self.relay_urls.len() > 16 || self.direct_addresses.len() > 32 {
-            return Err(RemoteError::Configuration);
+        crate::DeviceLocator {
+            relay_urls: self.relay_urls.clone(),
+            direct_addresses: self.direct_addresses.clone(),
+            lookup_url: self.lookup_url.clone(),
         }
-        let id = self
-            .endpoint_id
-            .parse::<EndpointId>()
-            .map_err(|_| RemoteError::Configuration)?;
-        let mut addr = EndpointAddr::new(id);
-        for url in &self.relay_urls {
-            addr = addr.with_relay_url(url.parse().map_err(|_| RemoteError::Configuration)?);
-        }
-        for ip in &self.direct_addresses {
-            addr = addr.with_ip_addr(*ip);
-        }
-        Ok(addr)
-    }
-}
-
-/// This value contains a one-time secret. Only explicit encode exposes it for pairing.
-#[derive(Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Invitation {
-    pub endpoint: EndpointDescriptor,
-    pub expires_at_unix_seconds: u64,
-    pub(crate) token: [u8; 32],
-}
-impl Invitation {
-    pub fn encode(&self) -> Result<String> {
-        serde_json::to_string(self).map_err(|_| RemoteError::InvalidInvitation)
-    }
-    pub fn decode(value: &str) -> Result<Self> {
-        if value.len() > 16 * 1024 {
-            return Err(RemoteError::InvalidInvitation);
-        }
-        let invitation: Self =
-            serde_json::from_str(value).map_err(|_| RemoteError::InvalidInvitation)?;
-        invitation.endpoint.address()?;
-        Ok(invitation)
+        .validate()
     }
 }
 
@@ -177,10 +148,19 @@ pub(crate) struct Envelope<T> {
 #[serde(tag = "operation", rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) enum Request {
     Hello,
-    Pair {
+    PairBegin {
+        invite_id: String,
         token: [u8; 32],
         name: String,
-        incarnation: String,
+    },
+    PairReady {
+        attempt_id: String,
+    },
+    PairStatus {
+        attempt_id: String,
+    },
+    PairCancel {
+        attempt_id: String,
     },
     Submit {
         id: RequestId,
@@ -196,7 +176,7 @@ pub(crate) enum Request {
 #[serde(tag = "reply", content = "value", rename_all = "camelCase")]
 pub(crate) enum Reply {
     Hello(EndpointDescriptor),
-    Paired,
+    Pairing(crate::pairing::PairingWireState),
     Status(RequestStatus),
     Error(RemoteError),
 }
