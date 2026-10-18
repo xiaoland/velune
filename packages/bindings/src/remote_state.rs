@@ -140,6 +140,7 @@ pub enum BindingRemoteOperationKind {
     ListConfiguration,
     SetOutlinePresentation,
     SetLinkedConversationOpening,
+    SetUsageDisplay,
     SetStatusLine,
     SetConversationBrowserPreferences,
     ComposerDrafts,
@@ -236,6 +237,7 @@ impl From<velune_application_api::CommandKind> for BindingRemoteOperationKind {
             CommandKind::List => Self::ListConfiguration,
             CommandKind::SetOutlinePresentation => Self::SetOutlinePresentation,
             CommandKind::SetLinkedConversationOpening => Self::SetLinkedConversationOpening,
+            CommandKind::SetUsageDisplay => Self::SetUsageDisplay,
             CommandKind::SetStatusLine => Self::SetStatusLine,
             CommandKind::SetConversationBrowserPreferences => {
                 Self::SetConversationBrowserPreferences

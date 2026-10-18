@@ -305,3 +305,13 @@ native owner 据此采用 Android 专属 rustix NOREPLACE 发布，不使用会�
 
 
 上述 `8f7769e` 整合检查点的唯一清单为 `target/main-remote-integration-freeze/manifest.json`，SHA256 `0ef5d615b36253e17faf7731164f9d9878fecb5e7bb6a3629b481fbb3df4b306`。host SHA 为 `087e43bbc4b5c9ac3336082e9659c1af816ac91ea4206bd145456bfd834d3be7`，Android API28 remote-only SHA 为 `9f8e8483e5007a0099de9a33cbc72cd84644a78fc01044ba5a785c2422fc369c`；Swift warnings-as-errors 与匹配 Kotlin `-Werror` 编译通过。root 另核对 229 份源码逐项匹配、33 份 Python 脚本语法、shell 语法及 487 处文档链接。该清单不覆盖后续并发 main `b5248fe` 的新剩余值显示设置；新基线须使用独立产物与复核记录。
+
+## 并发 main 更新的整合（b5248fe）
+
+`01f03e1` 保存上述已验证检查点，再合入 main 的 `b5248fe`。该提交新增 UsageDisplay 设置，需将其作为第六项呈现状态贯通中立契约、pending、具名恢复与两种 application 装配；92 项业务命令的源码、产物和六字段观察以独立冻结清单为准。`app/` 与 Mac 构建脚本按 `b5248fe` 保留，不是本任务的平台修改。新配置保持 schema 10、默认 Used，wire／remote／private／identity 版本不变。
+
+`/tmp/velune-b524-contract-abi/evidence.md` 与 `manifest.json` 记录独立的最终 host/Python ABI 七组观察，全部 exit 0；覆盖 UsageDisplay 默认值、setter／冷开、scope 门禁、typed recovery、safe pending kind／准确 ack，及关联 Agent 与排序回归。公开 Service 的 local-runtime／portable 驱动各覆盖六项呈现状态与六次实际失败写入，合计 12 次；新旧视图、磁盘保护、失败后新视图与冷开均通过。保存成功后的响应失败仍只核对源码边界，未注入。
+
+本次 229 份源码摘要 SHA256 为 `33eeeb35baf935fc88c447367d2ac8f8b917c97c65b9104dad84068ec66f685c`，root 逐项匹配通过；host SHA256 为 `e05d3244b48b493d11b359066de32a0809b20f6f53b7073c841a084b58c00768`。七项静态检查和新 Swift warnings-as-errors 编译通过，Android 最终产物及 Kotlin 编译结果归下面的冻结清单。
+
+最终清单为 `target/b524-remote-integration-freeze/manifest.json`，SHA256 `9d75d595772dde1d4ed0f326701ad6651abe32a6b8682decb30a2a398536f1db`。最终 Android API28 arm64 remote-only 库 SHA256 为 `c2507f2b4f0865abbadc9df9a8061eb69e52b0ca054563262931092a1740dc3a`，由该 so 生成的 Kotlin `-Werror` 编译通过；Android 初始化符号存在，未引入 renameat2。root 复核所有冻结产物摘要、229 份源码、489 处文档链接及平台范围；Git whitespace 检查通过。最新 main 的平台源码保持原样，整合与本地 main 更新不包含 push、PR 或安装。

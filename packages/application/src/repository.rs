@@ -30,6 +30,8 @@ pub(crate) struct PersistedConfig {
     #[serde(default)]
     pub(crate) linked_conversation_opening: crate::config::LinkedConversationOpening,
     #[serde(default)]
+    pub(crate) usage_display: crate::config::UsageDisplay,
+    #[serde(default)]
     pub(crate) conversation_browser_preferences: crate::config::ConversationBrowserPreferences,
     #[serde(default = "crate::config::default_status_line")]
     pub(crate) status_line: Vec<crate::config::StatusLineItem>,
@@ -41,6 +43,7 @@ pub(crate) struct PresentationDefaults {
     pub(crate) limits: crate::ConversationBrowserLimits,
     pub(crate) outline: crate::config::OutlinePresentation,
     pub(crate) linked_opening: crate::config::LinkedConversationOpening,
+    pub(crate) usage_display: crate::config::UsageDisplay,
     pub(crate) status: Vec<crate::config::StatusLineItem>,
 }
 impl PersistedConfig {
@@ -53,6 +56,7 @@ impl PersistedConfig {
             },
             outline: self.outline_presentation,
             linked_opening: self.linked_conversation_opening,
+            usage_display: self.usage_display,
             status: self.status_line.clone(),
         }
     }
@@ -76,6 +80,7 @@ impl Default for PersistedConfig {
             conversation_browser_total_limit: default_conversation_browser_total_limit(),
             outline_presentation: Default::default(),
             linked_conversation_opening: Default::default(),
+            usage_display: Default::default(),
             conversation_browser_preferences: Default::default(),
             status_line: crate::config::default_status_line(),
         }

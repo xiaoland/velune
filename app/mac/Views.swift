@@ -411,13 +411,13 @@ extension ImmediateDisclosureGroup where Label == Text {
     }
 }
 
-enum SettingsTab: Hashable { case providers, routes, conversation, runtimes, shortcuts }
+enum SettingsTab: Hashable { case general, providers, routes, runtimes }
 
 /// The settings tab that is showing. Entry points elsewhere in the app set it
 /// before opening the window, so settings open where the task needs them.
 @MainActor final class SettingsNavigator: ObservableObject {
     static let shared = SettingsNavigator()
-    @Published var tab: SettingsTab = .providers
+    @Published var tab: SettingsTab = .general
 }
 
 /// Opens settings on a specific tab.
@@ -435,18 +435,18 @@ struct SettingsView: View {
     @ObservedObject private var navigator = SettingsNavigator.shared
     var body: some View {
         TabView(selection: $navigator.tab) {
+            GeneralSettingsView(store: store).tabItem { Label("通用", systemImage: "gearshape") }.tag(SettingsTab.general)
             ProviderSettingsView(store: store).tabItem { Label("AI提供商", systemImage: "network") }.tag(SettingsTab.providers)
             ModelRouteSettingsView(store: store).tabItem { Label("模型路由", systemImage: "arrow.triangle.branch") }.tag(SettingsTab.routes)
-            ConversationSettingsView(store: store).tabItem { Label("会话", systemImage: "bubble.left.and.bubble.right") }.tag(SettingsTab.conversation)
             RuntimeSettingsView(store: store).tabItem { Label("Agent 运行时", systemImage: "terminal") }.tag(SettingsTab.runtimes)
-            ShortcutSettingsView().tabItem { Label("快捷键", systemImage: "keyboard") }.tag(SettingsTab.shortcuts)
         }
         // Settings are compact forms of one fixed size, so switching tabs never resizes the window.
         .frame(width: 690, height: 560)
     }
 }
 
-private struct ConversationSettingsView: View {
+/// Settings for how Velune reads and behaves: usage, conversations and shortcuts.
+private struct GeneralSettingsView: View {
     @ObservedObject var store: AppStore
     @State private var limit = 20
     @State private var totalLimit = 200
@@ -456,6 +456,13 @@ private struct ConversationSettingsView: View {
     ]
     var body: some View {
         Form {
+            Section("用量显示") {
+                Picker("额度与上下文", selection: Binding(get: { store.usageDisplay }, set: { store.setUsageDisplay($0) })) {
+                    Text("已用").tag(BindingUsageDisplay.used)
+                    Text("剩余").tag(BindingUsageDisplay.remaining)
+                }.pickerStyle(.segmented).disabled(store.isLoading || store.isShuttingDown)
+                Text("提供商额度窗口、账户用量限额与会话上下文显示已用或剩余的比例。额度的使用上限仍按已用比例生效，显示剩余时表现为至少保留的比例。").font(.caption).foregroundStyle(.secondary)
+            }
             Section("大纲") {
                 Picker("大纲按钮", selection: Binding(get: { store.outlinePresentation }, set: { store.setOutlinePresentation($0) })) {
                     Text("弹出面板").tag(BindingOutlinePresentation.popover)
@@ -487,7 +494,7 @@ private struct ConversationSettingsView: View {
                 Button("保存") { store.setConversationBrowserLimits(BindingConversationBrowserLimits(page: UInt32(limit), total: UInt32(totalLimit))) }
                     .disabled(limit < 1 || totalLimit < 1 || (limit == Int(store.conversationBrowserLimits.page) && totalLimit == Int(store.conversationBrowserLimits.total)) || store.isShuttingDown)
             }
-
+            ShortcutSettingsSections()
         }.formStyle(.grouped).onAppear { limit = Int(store.conversationBrowserLimits.page); totalLimit = Int(store.conversationBrowserLimits.total) }
     }
 }

@@ -254,16 +254,16 @@ enum ShortcutCommand: String, CaseIterable, Identifiable {
     }
 }
 
-/// The settings page listing the commands with their shortcuts.
-struct ShortcutSettingsView: View {
+/// The general settings' sections listing the commands with their shortcuts.
+struct ShortcutSettingsSections: View {
     @ObservedObject private var shortcuts = KeyboardShortcutSettings.shared
     @State private var recording: ShortcutCommand?
     /// Why the last press did not record, shown under the row recording it.
     @State private var refusal: Refusal?
 
     var body: some View {
-        Form {
-            Section {
+        Group {
+            Section("快捷键") {
                 HStack {
                     Text("点按快捷键后按下新的组合，按 ⌫ 移除，再点按一次取消。发送消息固定为 ⌘Return。")
                         .foregroundStyle(.secondary).font(.callout)
@@ -272,7 +272,7 @@ struct ShortcutSettingsView: View {
                 }
             }
             ForEach(ShortcutCommand.Menu.allCases) { menu in
-                Section(menu.rawValue) {
+                Section("\(menu.rawValue)菜单") {
                     ForEach(ShortcutCommand.allCases.filter { $0.menu == menu }) { command in
                         LabeledContent {
                             HStack(spacing: 6) {
@@ -290,7 +290,6 @@ struct ShortcutSettingsView: View {
                 }
             }
         }
-        .formStyle(.grouped)
         .onDisappear { recording = nil }
     }
 }

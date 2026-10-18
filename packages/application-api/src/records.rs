@@ -89,6 +89,7 @@ pub struct ConfigurationSnapshot {
     pub conversation_browser_limits: ConversationBrowserLimits,
     pub outline_presentation: OutlinePresentation,
     pub linked_conversation_opening: LinkedConversationOpening,
+    pub usage_display: UsageDisplay,
     pub conversation_browser_preferences: ConversationBrowserPreferences,
     pub status_line: Vec<StatusLineItem>,
     pub provider_import_types: Vec<RuntimeTypeDescriptor>,

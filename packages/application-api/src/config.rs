@@ -176,6 +176,16 @@ pub enum OutlinePresentation {
     InPlace,
 }
 
+/// Whether quota windows and the context window read as used or remaining.
+/// This only changes presentation; quota ceilings remain used-percent limits.
+#[derive(Debug, Default, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum UsageDisplay {
+    #[default]
+    Used,
+    Remaining,
+}
+
 /// Where a conversation linked from another opens: a native sub-agent's, or
 /// one an agent contacted or was contacted by through Velune.
 #[derive(Debug, Default, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]

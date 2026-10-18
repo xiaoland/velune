@@ -14,6 +14,8 @@ final class AppStore: ObservableObject {
     @Published private(set) var outlinePresentation: BindingOutlinePresentation = .popover
     /// Where a conversation linked from another opens.
     @Published private(set) var linkedConversationOpening: BindingLinkedConversationOpening = .currentTab
+    /// Whether quota and context usage read as used or remaining.
+    @Published private(set) var usageDisplay: BindingUsageDisplay = .used
     /// What the composer's status line shows, in display order.
     @Published private(set) var statusLine: [BindingStatusLineItem] = [.contextUsage]
     @Published private(set) var conversationBrowserLimits = BindingConversationBrowserLimits(page: 20, total: 200)
@@ -215,6 +217,7 @@ final class AppStore: ObservableObject {
         if showsArchived != application.showsArchived { showsArchived = application.showsArchived }
         if outlinePresentation != application.outlinePresentation { outlinePresentation = application.outlinePresentation }
         if linkedConversationOpening != application.linkedConversationOpening { linkedConversationOpening = application.linkedConversationOpening }
+        if usageDisplay != application.usageDisplay { usageDisplay = application.usageDisplay }
         if statusLine != application.statusLine { statusLine = application.statusLine }
         var sharedConversations = browserPreferencesSaving == 0 ? application.conversations : conversations
         if let loadedConversationID, application.deletedConversationIDs.contains(loadedConversationID) { resetProjection() }
@@ -652,6 +655,11 @@ final class AppStore: ObservableObject {
         if isPreview { linkedConversationOpening = opening; return }
         guard let transport else { recordProblem("本地核心未配置"); return }
         enqueue({ try transport.setLinkedConversationOpening(opening) }) { [weak self] in self?.linkedConversationOpening = $0 }
+    }
+    func setUsageDisplay(_ display: BindingUsageDisplay) {
+        if isPreview { usageDisplay = display; return }
+        guard let transport else { recordProblem("本地核心未配置"); return }
+        enqueue({ try transport.setUsageDisplay(display) }) { [weak self] in self?.usageDisplay = $0 }
     }
     func draft(for conversationID: String) -> String {
         if let sharedApplication { return sharedApplication.draft(for: conversationID) }
@@ -1607,6 +1615,7 @@ final class AppStore: ObservableObject {
         }
         outlinePresentation = data.outlinePresentation
         linkedConversationOpening = data.linkedConversationOpening
+        usageDisplay = data.usageDisplay
         statusLine = data.statusLine
         conversationBrowserLimits = data.conversationBrowserLimits
         conversations = mapped.conversations

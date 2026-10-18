@@ -9,6 +9,7 @@ pub(crate) struct ClientState {
     pub(super) limits: crate::ConversationBrowserLimits,
     pub(super) outline: crate::config::OutlinePresentation,
     pub(super) linked_opening: crate::config::LinkedConversationOpening,
+    pub(super) usage_display: crate::config::UsageDisplay,
     pub(super) status: Vec<crate::config::StatusLineItem>,
     drafts: BTreeMap<String, String>,
     runtime: Option<String>,
@@ -36,6 +37,7 @@ impl CoreRuntime {
             limits: self.conversation_browser_limits,
             outline: self.outline_presentation,
             linked_opening: self.linked_conversation_opening,
+            usage_display: self.usage_display,
             status: self.status_line.clone(),
             drafts: self.composer_drafts.clone(),
             runtime: None,
@@ -63,6 +65,7 @@ impl CoreRuntime {
             self.conversation_browser_limits = committed.limits;
             self.outline_presentation = committed.outline;
             self.linked_conversation_opening = committed.linked_opening;
+            self.usage_display = committed.usage_display;
             self.status_line = committed.status;
         }
         self.client_baseline = None;
@@ -79,6 +82,7 @@ impl CoreRuntime {
             &mut self.linked_conversation_opening,
             &mut state.linked_opening,
         );
+        std::mem::swap(&mut self.usage_display, &mut state.usage_display);
         std::mem::swap(&mut self.status_line, &mut state.status);
         std::mem::swap(&mut self.composer_drafts, &mut state.drafts);
         std::mem::swap(&mut self.next_turn_runtime_id, &mut state.runtime);

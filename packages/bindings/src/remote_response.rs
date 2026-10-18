@@ -58,6 +58,9 @@ pub enum BindingApplicationResponse {
     LinkedConversationOpening {
         value: BindingLinkedConversationOpening,
     },
+    UsageDisplay {
+        value: BindingUsageDisplay,
+    },
     StatusLineItemList {
         value: Vec<BindingStatusLineItem>,
     },
@@ -223,6 +226,9 @@ impl TryFrom<Response> for BindingApplicationResponse {
                 value: convert(value)?,
             },
             Response::SetLinkedConversationOpening(value) => Self::LinkedConversationOpening {
+                value: convert(value)?,
+            },
+            Response::SetUsageDisplay(value) => Self::UsageDisplay {
                 value: convert(value)?,
             },
             Response::SetStatusLine(value) => Self::StatusLineItemList {

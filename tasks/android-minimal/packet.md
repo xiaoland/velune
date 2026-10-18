@@ -1,12 +1,12 @@
 # Rust 远控库
 
-2026-10-18，基于 main `8f7769e` 的 Rust Library 整合已通过库级检查、目标库、生成语言编译与合成验收；最终核对发现 main 并发前进到 `b5248fe`，须保留并贯通其新增剩余值显示契约后再更新 main。用户最新明确边界仅限 Rust Library；Mac／Android App 接入、界面与安装不属于本轮交付，完整产品和真实网络能力仍未验收。契约归 [remote-access](../../docs/design/remote-access.md)，计划归 [plan](plan.md)，证据归 [verification](verification.md)，传输研究归 [transport-research](transport-research.md)。
+2026-10-18，Rust Library 与最新 main `b5248fe` 的整合复核已完成，库级静态检查、目标库、生成语言编译与合成验收通过。用户最新明确边界仅限 Rust Library；Mac／Android App 接入、界面与安装不属于本轮交付，完整产品和真实网络能力仍未验收。契约归 [remote-access](../../docs/design/remote-access.md)，计划归 [plan](plan.md)，证据归 [verification](verification.md)，传输研究归 [transport-research](transport-research.md)。
 
 ## 范围与授权
 
 Rust 提供同一设备身份、方向配对、持久联系人／pending、稳定业务服务、LAN／公网寻址、Controller 恢复和设施代际，经 UniFFI 暴露具名 API。唯一 ApplicationService／Harness 拥有业务；断连接或替换网络不取消已接纳任务，未知写入只查询原 ID，不自动重发。
 
-本轮只交付共享 Rust packages、必要依赖接线、生成绑定／目标库、库级人工驱动和文档。允许本地提交，不 push、创建 PR、部署公网服务、读取真实凭据／配置／会话或调用真实模型；没有新增或运行自动化测试。功能检查点为 `feat/android-minimal` 的 `2b874b3`；在同一独立 worktree 的 `integrate/remote-rust` 分支与 main `8f7769e` 整合，保留 main 新业务，排除功能分支所有平台 App 改动和 App 构建／验收脚本，不改写历史。静态检查与必要的库级合成调用通过后更新 main。
+本轮只交付共享 Rust packages、必要依赖接线、生成绑定／目标库、库级人工驱动和文档。允许本地提交，不 push、创建 PR、部署公网服务、读取真实凭据／配置／会话或调用真实模型；没有新增或运行自动化测试。功能检查点为 `feat/android-minimal` 的 `2b874b3`；在同一独立 worktree 的 `integrate/remote-rust` 分支与 main `8f7769e` 整合，保留 main 新业务，排除功能分支所有平台 App 改动和 App 构建／验收脚本，不改写历史。所有必要检查已通过，以本地合并提交纳入 main。
 
 本轮 S2／S3 的八项平台文件差异先保存于忽略的 `target/platform-scope-freeze`，再恢复到 S2 前 `01971ee`，其余早期平台实现保留在功能分支历史中；整合 main 时排除所有这些平台差异，main 不包含 Android 工程、Mac 远控页或 `manual-android-remote.py`。main 现有 Mac 调用方也尚未适配库契约，不能当作匹配产品构建。平台操作已停止：S3 APK 曾安装并打开欢迎页，现已停止；未输入邀请、配对、批准或发远程业务，未清身份／数据。隔离 Mac 进程已关闭，未覆盖正式安装；CUA 重启实例的私有环境未获验证，具体事实归 verification。
 
@@ -28,4 +28,6 @@ E2 WAN→LAN→WAN、真实 NAT／UDP 故障回落、E3 蜂窝默认且 Wi-Fi LA
 
 以 `8f7769e` 为 main 基线，保留关联 Agent 投影、关联会话打开方式与手动分组顺序，贯通中立 API／91 项命令／UniFFI。补齐 pending 的新操作类型，并修正 local-runtime／portable 成功持久化后的呈现默认值；同 owner 的新旧 view、远端保存磁盘保护与失败保存判别均通过。配置仍为 schema 10。
 
-最终库级静态检查、host/Python ABI、Android API28 arm64 remote-only release、Swift／Kotlin 生成源编译通过；229 份 Rust／Cargo 输入与冻结摘要匹配。完整证据和未注入的故障分支见 verification 的 main 整合章节。`app/`、Mac 构建脚本、`.gitignore` 与 `.gitattributes` 保持 main 基线，早期平台实现只留在功能分支历史；未 push、PR 或部署。此结果先保存为隔离分支的本地合并检查点，随后整合 `b5248fe`；不改写历史，未提前更新 main。
+最终库级静态检查、host/Python ABI、Android API28 arm64 remote-only release、Swift／Kotlin 生成源编译通过；229 份 Rust／Cargo 输入与冻结摘要匹配。完整证据和未注入的故障分支见 verification 的 main 整合章节。`app/`、Mac 构建脚本、`.gitignore` 与 `.gitattributes` 保持 main 基线，早期平台实现只留在功能分支历史；未 push、PR 或部署。此结果保存为隔离分支的 `01f03e1` 合并检查点，随后整合 `b5248fe`；不改写历史，未提前更新 main。
+
+最终整合 `b5248fe` 的 UsageDisplay 第六项呈现状态，贯通中立 DTO、92 项 typed 命令、pending 及两装配的六字段隔离／成功快照，默认 Used 与 schema 10 保持。七组实际新 ABI、两装配各六字段与六次失败写入、七项静态检查、Android API28 release、Swift／Kotlin 严格编译均通过；229 份源码匹配独立冻结清单，旧证据原样保留。App 按最新 main 原样保留，未构建／安装 App、push、PR 或部署。

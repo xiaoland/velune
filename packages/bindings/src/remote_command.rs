@@ -89,6 +89,9 @@ pub enum BindingApplicationCommand {
     SetLinkedConversationOpening {
         opening: BindingLinkedConversationOpening,
     },
+    SetUsageDisplay {
+        display: BindingUsageDisplay,
+    },
     SetStatusLine {
         items: Vec<BindingStatusLineItem>,
     },
@@ -507,6 +510,9 @@ impl TryFrom<BindingApplicationCommand> for Command {
                     opening: crate::convert(opening)?,
                 }
             }
+            BindingApplicationCommand::SetUsageDisplay { display } => Self::SetUsageDisplay {
+                display: convert(display)?,
+            },
             BindingApplicationCommand::SetStatusLine { items } => Self::SetStatusLine {
                 items: convert(items)?,
             },

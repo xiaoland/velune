@@ -171,6 +171,9 @@ impl Application {
                     application.set_linked_conversation_opening(opening)?,
                 )
             }
+            Command::SetUsageDisplay { display } => {
+                Response::SetUsageDisplay(application.set_usage_display(display)?)
+            }
             Command::SetStatusLine { items } => {
                 Response::SetStatusLine(application.set_status_line(items)?)
             }
