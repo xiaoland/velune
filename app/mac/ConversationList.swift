@@ -18,6 +18,9 @@ struct ConversationListView: View {
     @State private var renameTarget: Conversation?
     @State private var deleteTargets: [Conversation] = []
     @State private var projectTarget: ProjectEditorTarget?
+    /// The group whose header is being dragged, and the one it is over.
+    @State private var draggedGroup: BindingConversationGroupKey?
+    @State private var groupDropTarget: BindingConversationGroupKey?
     private var conversationSections: [ConversationBrowser.Section] {
         if let results = store.searchResults { return ConversationBrowser.sections(conversations: results.conversations, groups: results.groups) }
         return ConversationBrowser.sections(conversations: store.conversations, groups: store.conversationGroups)
@@ -170,6 +173,33 @@ struct ConversationListView: View {
         .help(path.map { (($0 as NSString).abbreviatingWithTildeInPath) } ?? title)
         .contentShape(Rectangle())
         .onTapGesture(count: 2) { if let path { projectTarget = ProjectEditorTarget(path: path) } }
+        // Dragged onto another group's header, a group takes its place.
+        .onDrag {
+            draggedGroup = canOrder(section.id) ? section.id : nil
+            let provider = NSItemProvider()
+            if draggedGroup != nil {
+                provider.registerDataRepresentation(forTypeIdentifier: ConversationLink.groupDragType.identifier, visibility: .ownProcess) { done in
+                    done(Data(), nil)
+                    return nil
+                }
+            }
+            return provider
+        }
+        .onDrop(of: [ConversationLink.groupDragType], isTargeted: Binding(
+            get: { groupDropTarget == section.id },
+            set: { over in if over { groupDropTarget = section.id } else if groupDropTarget == section.id { groupDropTarget = nil } })) { _ in
+            defer { draggedGroup = nil; groupDropTarget = nil }
+            guard let dragged = draggedGroup, dragged != section.id, canOrder(section.id) else { return false }
+            let shown = orderableGroups
+            guard let from = shown.firstIndex(of: dragged), let to = shown.firstIndex(of: section.id) else { return false }
+            browser.move(dragged, before: from < to ? (to + 1 < shown.count ? shown[to + 1] : nil) : section.id, shown: shown)
+            return true
+        }
+        .background {
+            if groupDropTarget == section.id, draggedGroup != section.id {
+                RoundedRectangle(cornerRadius: 4).fill(Color.accentColor.opacity(0.2))
+            }
+        }
         .contextMenu {
             if let path {
                 Button("编辑项目…") { projectTarget = ProjectEditorTarget(path: path) }
@@ -186,7 +216,25 @@ struct ConversationListView: View {
             if store.searchResults == nil {
                 Button(browser.isCollapsed(section.id) ? "展开" : "折叠") { browser.setCollapsed(section.id, !browser.isCollapsed(section.id)) }
             }
+            if canOrder(section.id) {
+                let shown = orderableGroups
+                let index = shown.firstIndex(of: section.id) ?? 0
+                Divider()
+                Button("上移") { browser.move(section.id, before: shown[index - 1], shown: shown) }.disabled(index == 0)
+                Button("下移") { browser.move(section.id, before: index + 2 < shown.count ? shown[index + 2] : nil, shown: shown) }
+                    .disabled(index == shown.count - 1)
+                Button("移到最前") { browser.move(section.id, before: shown.first, shown: shown) }.disabled(index == 0)
+                Button("移到最后") { browser.move(section.id, before: nil, shown: shown) }.disabled(index == shown.count - 1)
+                if browser.isOrderedByHand(shown) { Button("按最近活动排列组") { browser.orderByActivity() } }
+            }
         }
+    }
+
+    /// The shown groups the user may put in order, as the list shows them.
+    private var orderableGroups: [BindingConversationGroupKey] { conversationSections.map(\.id).filter(ConversationBrowser.orderable) }
+    /// Groups are put in order outside a search, among at least two.
+    private func canOrder(_ key: BindingConversationGroupKey) -> Bool {
+        store.searchResults == nil && ConversationBrowser.orderable(key) && orderableGroups.count > 1
     }
 
     private func conversationRow(_ conversation: Conversation) -> some View {

@@ -1337,6 +1337,11 @@ pub struct BindingConversationBrowserPreferences {
     #[serde(default)]
     #[uniffi(default = [])]
     pub collapsed: Vec<BindingConversationGroupKey>,
+    /// Groups in the order the user put them, each grouping's own; when none
+    /// of the shown groups is here they follow recent activity.
+    #[serde(default)]
+    #[uniffi(default = [])]
+    pub group_order: Vec<BindingConversationGroupKey>,
 }
 /// One group of the conversation list.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash, uniffi::Enum)]

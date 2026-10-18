@@ -128,13 +128,22 @@ impl CoreRuntime {
         if let ConversationBrowserProject::Path { path } = &mut preferences.project {
             follow(path);
         }
-        for key in &mut preferences.collapsed {
+        for key in preferences
+            .collapsed
+            .iter_mut()
+            .chain(preferences.group_order.iter_mut())
+        {
             if let ConversationGroupKey::Project { path: Some(path) } = key {
                 follow(path);
             }
         }
         let mut seen = BTreeSet::new();
         preferences.collapsed.retain(|key| seen.insert(key.clone()));
+        // A joined project keeps the place of the first of its folders.
+        let mut seen = BTreeSet::new();
+        preferences
+            .group_order
+            .retain(|key| seen.insert(key.clone()));
         if preferences != self.conversation_browser_preferences {
             let previous =
                 std::mem::replace(&mut self.conversation_browser_preferences, preferences);

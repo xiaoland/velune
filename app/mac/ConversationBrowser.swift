@@ -33,10 +33,12 @@ struct ConversationBrowser {
     var runtimeID: String?
     var project = ProjectFilter.all
     var collapsed: [BindingConversationGroupKey] = []
+    /// Groups in the order the user put them, each grouping's own.
+    var groupOrder: [BindingConversationGroupKey] = []
     var preferences: BindingConversationBrowserPreferences {
         let value: BindingConversationBrowserProject
         switch project { case .all: value = .all; case .unspecified: value = .unspecified; case .path(let path): value = .path(path: path) }
-        return BindingConversationBrowserPreferences(grouping: grouping == .none ? .none : grouping == .runtime ? .runtime : .project, sort: sort == .updated ? .updated : .created, oldestFirst: oldestFirst, runtimeId: runtimeID, project: value, collapsed: collapsed)
+        return BindingConversationBrowserPreferences(grouping: grouping == .none ? .none : grouping == .runtime ? .runtime : .project, sort: sort == .updated ? .updated : .created, oldestFirst: oldestFirst, runtimeId: runtimeID, project: value, collapsed: collapsed, groupOrder: groupOrder)
     }
     mutating func restore(_ value: BindingConversationBrowserPreferences) {
         grouping = value.grouping == .none ? .none : value.grouping == .runtime ? .runtime : .project
@@ -44,11 +46,44 @@ struct ConversationBrowser {
         oldestFirst = value.oldestFirst; runtimeID = value.runtimeId
         switch value.project { case .all: project = .all; case .unspecified: project = .unspecified; case .path(let path): project = .path(path) }
         collapsed = value.collapsed
+        groupOrder = value.groupOrder
     }
     var hasFilters: Bool { runtimeID != nil || project != .all }
     func isCollapsed(_ key: BindingConversationGroupKey) -> Bool { collapsed.contains(key) }
     mutating func setCollapsed(_ key: BindingConversationGroupKey, _ value: Bool) {
         if value { if !collapsed.contains(key) { collapsed.append(key) } } else { collapsed.removeAll { $0 == key } }
+    }
+
+    /// Groups the user may put in order: the pinned one stays first.
+    static func orderable(_ key: BindingConversationGroupKey) -> Bool { key != .pinned && key != .all }
+    /// The shown groups follow the order the user gave them, not recent activity.
+    func isOrderedByHand(_ shown: [BindingConversationGroupKey]) -> Bool {
+        shown.contains { Self.orderable($0) && groupOrder.contains($0) }
+    }
+
+    /// Put `key` before `target` (last when nil) among `shown`, the groups as
+    /// the list shows them. Groups not shown now, filtered out or of another
+    /// grouping, keep their places.
+    mutating func move(_ key: BindingConversationGroupKey, before target: BindingConversationGroupKey?, shown: [BindingConversationGroupKey]) {
+        let shown = shown.filter(Self.orderable)
+        guard shown.contains(key), key != target else { return }
+        var moved = shown.filter { $0 != key }
+        moved.insert(key, at: target.flatMap { moved.firstIndex(of: $0) } ?? moved.count)
+        guard moved != shown else { return }
+        // The list shows groups not in the order yet first, as at its head.
+        let order = shown.filter { !groupOrder.contains($0) } + groupOrder
+        var next = moved.makeIterator()
+        groupOrder = order.map { shown.contains($0) ? next.next()! : $0 }
+    }
+
+    /// The groups of the grouping shown follow recent activity again.
+    mutating func orderByActivity() {
+        groupOrder.removeAll { key in
+            switch (grouping, key) {
+            case (.project, .project), (.runtime, .runtime): true
+            default: false
+            }
+        }
     }
 
     /// The core's groups in its order, each with the rows it loaded.
@@ -90,6 +125,9 @@ enum ConversationLink {
     /// app's Info.plist) and no URL, since the desktop would keep a URL as an
     /// internet location file, and another app as a link or text.
     static let dragType = UTType(exportedAs: "local.velune.conversation-link")
+    /// A group header dragged within the list, to put the group elsewhere;
+    /// only this process takes it (declared in the app's Info.plist).
+    static let groupDragType = UTType(exportedAs: "local.velune.conversation-group")
     /// What a pane or tab bar takes: the list's drag, or a tab's link.
     static let dropTypes: [UTType] = [dragType, .url]
 

@@ -62,6 +62,10 @@ cat > "$app/Contents/Info.plist" <<'PLIST'
 <key>UTTypeIdentifier</key><string>local.velune.conversation-link</string>
 <key>UTTypeDescription</key><string>Velune conversation link</string>
 <key>UTTypeConformsTo</key><array><string>public.data</string></array>
+</dict><dict>
+<key>UTTypeIdentifier</key><string>local.velune.conversation-group</string>
+<key>UTTypeDescription</key><string>Velune conversation list group</string>
+<key>UTTypeConformsTo</key><array><string>public.data</string></array>
 </dict></array>
 <key>CFBundleURLTypes</key><array><dict>
 <key>CFBundleURLName</key><string>local.velune.conversation</string>

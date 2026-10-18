@@ -476,6 +476,23 @@ impl CoreRuntime {
                 })
                 .then_with(|| lk.cmp(rk))
         });
+        // Once the user put the groups in order they follow it, after any
+        // group new since, which keeps the order above; pinned stays first.
+        let position = |key: &ConversationGroupKey| {
+            preferences
+                .group_order
+                .iter()
+                .position(|ordered| ordered == key)
+        };
+        if groups
+            .iter()
+            .any(|(key, ..)| *key != ConversationGroupKey::Pinned && position(key).is_some())
+        {
+            groups.sort_by_key(|(key, ..)| match key {
+                ConversationGroupKey::Pinned => (0, 0),
+                key => position(key).map_or((1, 0), |at| (2, at)),
+            });
+        }
         let page = self.conversation_browser_limits.page as usize;
         let mut remaining = self.conversation_browser_limits.total as usize;
         let mut conversations = Vec::new();

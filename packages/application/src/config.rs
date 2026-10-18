@@ -593,6 +593,10 @@ pub struct ConversationBrowserPreferences {
     /// Groups the user folded; remembered with the other choices.
     #[serde(default)]
     pub collapsed: Vec<ConversationGroupKey>,
+    /// Groups in the order the user put them, each grouping's own; none of
+    /// the shown groups here: they follow recent activity.
+    #[serde(default)]
+    pub group_order: Vec<ConversationGroupKey>,
 }
 /// One group of the conversation list. Keys of other groupings may stay in
 /// the folded set; they apply again when that grouping returns.
