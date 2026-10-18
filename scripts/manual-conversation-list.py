@@ -198,7 +198,7 @@ def main():
 
         def preferences(**changes):
             value = dict(grouping=b.BindingConversationBrowserGrouping.NONE, sort=b.BindingConversationBrowserSort.UPDATED,
-                         oldest_first=False, runtime_id=None, project=b.BindingConversationBrowserProject.ALL(), collapsed=[])
+                         oldest_first=False, runtime_id=None, project=b.BindingConversationBrowserProject.ALL(), collapsed=[], group_sort=b.BindingConversationGroupSort.ACTIVITY, group_order=[])
             value.update(changes)
             return b.BindingConversationBrowserPreferences(**value)
 

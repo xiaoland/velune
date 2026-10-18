@@ -415,7 +415,7 @@ impl CoreRuntime {
             .resolve_dispatch(key)
             .map_err(|_| RuntimeError::invalid("所选会话模型已不存在，请重新选择"))?
             .provider();
-        let protocols = GatewayProtocol::runtime_provider_protocols(&runtime.type_id)
+        let protocols = crate::config::runtime_provider_protocols(&runtime.type_id)
             .ok_or_else(|| RuntimeError::invalid("runtime type"))?;
         if !protocols.contains(&provider.protocol) {
             return Err(RuntimeError::invalid("所选模型协议不适用于此运行时版本"));

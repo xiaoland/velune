@@ -35,9 +35,9 @@ pub(crate) fn descriptor() -> crate::config::RuntimeTypeDescriptor {
         session_options: false,
         permission_modes: Vec::new(),
         remote_resources: true,
-        supported_protocols: GatewayProtocol::runtime_protocols("pi-1.0")
+        supported_protocols: crate::config::runtime_protocols("pi-1.0")
             .expect("registered Pi adapter"),
-        supported_provider_protocols: GatewayProtocol::runtime_provider_protocols("pi-1.0")
+        supported_provider_protocols: crate::config::runtime_provider_protocols("pi-1.0")
             .expect("registered Pi adapter"),
         name: "Pi Agent 提供商目录".into(),
         fields: Vec::new(),

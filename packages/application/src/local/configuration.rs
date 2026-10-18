@@ -112,7 +112,9 @@ impl CoreRuntime {
                     next.insert(id.to_owned(), text.to_owned());
                 }
                 if next != self.composer_drafts {
-                    self.repository.store_composer_drafts(&next)?;
+                    if self.client_baseline.is_none() {
+                        self.repository.store_composer_drafts(&next)?;
+                    }
                     self.composer_drafts = next;
                 }
                 Ok(Value::Null)
@@ -124,7 +126,8 @@ impl CoreRuntime {
     /// The conversation is already deleted; a failed write only leaves a stale
     /// entry on disk, which the next successful draft write drops.
     pub(super) fn discard_composer_draft(&mut self, conversation_id: &str) {
-        if self.composer_drafts.remove(conversation_id).is_some() {
+        if self.composer_drafts.remove(conversation_id).is_some() && self.client_baseline.is_none()
+        {
             let _ = self.repository.store_composer_drafts(&self.composer_drafts);
         }
     }
@@ -512,18 +515,48 @@ impl CoreRuntime {
     }
 
     pub(super) fn persist(&self) -> Result<(), RuntimeError> {
-        self.repository.store(&crate::repository::PersistedConfig {
+        let config = crate::repository::PersistedConfig {
             schema_version: crate::repository::CURRENT_SCHEMA_VERSION,
             model_templates: self.model_templates.clone(),
             gateways: self.gateways.clone(),
             runtime_instances: self.runtime_instances.clone(),
-            conversation_browser_group_limit: self.conversation_browser_limits.page,
-            conversation_browser_total_limit: self.conversation_browser_limits.total,
-            outline_presentation: self.outline_presentation,
-            linked_conversation_opening: self.linked_conversation_opening,
-            usage_display: self.usage_display,
-            conversation_browser_preferences: self.conversation_browser_preferences.clone(),
-            status_line: self.status_line.clone(),
-        })
+            conversation_browser_group_limit: self
+                .client_baseline
+                .as_ref()
+                .map_or(self.conversation_browser_limits.page, |view| {
+                    view.limits.page
+                }),
+            conversation_browser_total_limit: self
+                .client_baseline
+                .as_ref()
+                .map_or(self.conversation_browser_limits.total, |view| {
+                    view.limits.total
+                }),
+            outline_presentation: self
+                .client_baseline
+                .as_ref()
+                .map_or(self.outline_presentation, |view| view.outline),
+            linked_conversation_opening: self
+                .client_baseline
+                .as_ref()
+                .map_or(self.linked_conversation_opening, |view| view.linked_opening),
+            usage_display: self
+                .client_baseline
+                .as_ref()
+                .map_or(self.usage_display, |view| view.usage_display),
+            conversation_browser_preferences: self.client_baseline.as_ref().map_or_else(
+                || self.conversation_browser_preferences.clone(),
+                |view| view.preferences.clone(),
+            ),
+            status_line: self
+                .client_baseline
+                .as_ref()
+                .map_or_else(|| self.status_line.clone(), |view| view.status.clone()),
+        };
+        self.repository.store(&config)?;
+        if self.client_baseline.is_none() {
+            *self.local_presentation_commit.borrow_mut() = Some(config.presentation_defaults());
+        }
+        Ok(())
     }
 }

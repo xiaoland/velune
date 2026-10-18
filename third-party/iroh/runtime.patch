@@ -1,0 +1,83 @@
+--- a/src/endpoint.rs
++++ b/src/endpoint.rs
+@@ -14 +14,7 @@
+-use std::{collections::BTreeSet, net::SocketAddr, pin::Pin, sync::Arc};
++use std::{
++    collections::{BTreeMap, BTreeSet},
++    fmt,
++    net::SocketAddr,
++    pin::Pin,
++    sync::Arc,
++};
+@@ -123,0 +130,16 @@
++/// Credentials are kept separately from relay selection and never formatted.
++#[derive(Clone, Default)]
++pub(crate) struct RelayAuthTokens(BTreeMap<RelayUrl, String>);
++
++impl fmt::Debug for RelayAuthTokens {
++    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
++        f.write_str("RelayAuthTokens([REDACTED])")
++    }
++}
++
++impl RelayAuthTokens {
++    pub(crate) fn get(&self, url: &RelayUrl) -> Option<&String> {
++        self.0.get(url)
++    }
++}
++
+@@ -145,0 +168 @@
++    relay_auth_tokens: RelayAuthTokens,
+@@ -214,0 +238 @@
++            relay_auth_tokens: Default::default(),
+@@ -274,0 +299 @@
++            relay_auth_tokens: self.relay_auth_tokens,
+@@ -586,0 +612,14 @@
++        self
++    }
++
++    /// Sets authentication tokens for exact relay URLs, independently of relay selection.
++    ///
++    /// This replaces the token table without adding any home relay candidates. The last
++    /// entry for a duplicate URL wins. Entries override [`RelayConfig::auth_token`] for
++    /// the same URL; URLs absent from this table retain the relay configuration's token.
++    /// Tokens are fixed for this endpoint's lifetime and are excluded from its debug output.
++    pub fn relay_auth_tokens(
++        mut self,
++        tokens: impl IntoIterator<Item = (RelayUrl, String)>,
++    ) -> Self {
++        self.relay_auth_tokens = RelayAuthTokens(tokens.into_iter().collect());
+--- a/src/socket/transports/relay/actor.rs
++++ b/src/socket/transports/relay/actor.rs
+@@ -124 +124 @@
+-#[derive(Debug)]
++#[derive(derive_more::Debug)]
+@@ -139,0 +140 @@
++    #[debug(skip)]
+@@ -199 +200 @@
+-#[derive(Debug, Clone)]
++#[derive(derive_more::Debug, Clone)]
+@@ -206,0 +208 @@
++    #[debug(skip)]
+@@ -912,0 +915 @@
++    pub relay_auth_tokens: crate::endpoint::RelayAuthTokens,
+@@ -1310 +1313 @@
+-            .relay_map
++            .relay_auth_tokens
+@@ -1312 +1315,7 @@
+-            .and_then(|cfg| cfg.auth_token.clone());
++            .cloned()
++            .or_else(|| {
++                self.config
++                    .relay_map
++                    .get(&url)
++                    .and_then(|cfg| cfg.auth_token.clone())
++            });
+--- a/src/socket.rs
++++ b/src/socket.rs
+@@ -164,0 +165 @@
++    pub(crate) relay_auth_tokens: crate::endpoint::RelayAuthTokens,
+@@ -876,0 +878 @@
++            relay_auth_tokens,
+@@ -929,0 +932 @@
++            relay_auth_tokens,

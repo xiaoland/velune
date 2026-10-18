@@ -34,7 +34,11 @@ conversation 定义审批、问题回答与取消的类型契约，bindings 生�
 
 ## 独立 package 与平台装配
 
-2026-10-05 用户决定全面采用 UniFFI，并授权按独立 package 拆分。实施采用 ai、ai-provider、conversation、agent-runtime、gateway、application、bindings；配置持久化保留在 application 内部。2026-10-10 SSH 运行时扩展沿用 agent-runtime 的进程边界，不建立 remote 空包；移动端及独立远端控制服务仍未实现。
+2026-10-05 用户决定全面采用 UniFFI，并授权按独立 package 拆分。基础 units 为 ai、ai-provider、conversation、agent-runtime、gateway、application、bindings；配置持久化保留在 application 内部。2026-10-10 SSH 切片沿用 agent-runtime 的进程边界，没有建立 remote 空包。2026-10-17 的实际远控工作新增 application-api 与 remote，平台远控界面仍待接入。
+
+2026-10-17 远控目标进一步明确：同一个人的多台设备，通过公网完整使用 Velune，不要求预配 VPN 或端口转发；共享核心同时由 GUI 或 headless 应用装配，不按界面形态分叉远控契约。headless 是拥有核心生命周期的应用宿主，不是要求桌面 App 改回 App↔Host 双进程；既有同进程嵌入边界继续适用。远控操作进入执行端唯一的应用用例 owner，不另开同一配置根或绕过用例直接控制 Harness。实现和证据范围见 [远控任务](../../tasks/remote-control/packet.md)。
+
+用户已同意以 iroh 承载远控连接，同时要求对比 ds-harness-remote 的 WebRTC／TURN 直连与稳定性机制。连接策略应允许直连与路径升级，并可核实实际直连／中继路径；不为强制中继写另一套业务协议，也不将同机直连视为跨公网 NAT 穿透的证据。具体机制与未验证边界归任务研究和隔离验收。
 
 每个 package 和每个平台 app 都是一个 unit，具有明确的契约、依赖和知识维护归属。下表列职责，不要求每一行成为 package。内部模块可以形成清楚的边界而不成为独立 unit；代码目录、unit、ABI 产物不能默认一一对应。
 
@@ -51,7 +55,7 @@ conversation 定义审批、问题回答与取消的类型契约，bindings 生�
 | AI service 与 provider packages | 独立操作契约及具体协议执行。AI 领域不限 LLM，不依赖 Harness、全局配置或存储。 |
 | 本地 Agent 运行时 | Harness 子进程、原生事件解析和本地会话接入。接收装配后的网关接入信息，不选择 AI 提供商或拥有网关策略。 |
 | 会话契约 | 列表、消息块、快照和操作／能力。PiProjection 归 Pi adapter；契约不依赖 Pi envelope、具体 AI 协议或本地文件访问。 |
-| 未来 Remote client | 尚未实现。将来映射远端控制协议时，状态权威在远端；远端 cwd 不默认是手机可访问的路径。 |
+| Remote client | `remote` 经具名应用契约操作执行设备，状态权威在远端；远端 cwd 不默认是手机可访问的路径。平台界面尚未接入。 |
 | 应用配置内部模块 | 文件锁、加载、原子提交和存储版本处理。暂留在共享应用用例所在 unit 内，不单独建立 package；领域拥有自己的配置类型，应用层负责聚合及跨领域引用校验。当前不建立通用 persist 框架或第二份 Harness 会话历史。 |
 | 应用用例与平台绑定装配 | 组合独立能力、协调完整操作及失败清理。UI 不按底层步骤自行启动网关、注入配置、启动 Harness 或补偿跨包事务。 |
 
@@ -59,7 +63,23 @@ conversation 定义审批、问题回答与取消的类型契约，bindings 生�
 
 当前配置仓库只有聚合应用配置这一项直接消费者；多个平台共同消费应用 SDK，不等于它有多个独立消费者。内部模块已能隔离文件机制，单独建包反而需要额外公开契约和维护责任。只有出现独立应用用例需要直接消费它，或具体依赖／平台编译边界无法通过内部模块解决，再复核提取；增加平台、切换 SQLite 或代码变长都不是单独建包的充分依据。秘密存取保持平台归属。
 
-当前本地装配由 application 的 `local-runtime` feature 选择；禁用后不链接 agent-runtime，保留普通配置用例，本地执行明确返回 Unsupported。当前配置校验仍依赖 gateway 的配置类型，连带保留 AI-provider 依赖；完全裁掉 AI 执行依赖仍需在远端平台装配前整理这一边界。此裁剪不代表已实现远端会话。源码证据与验证缺口见 [实施任务](../../tasks/package-boundaries/packet.md)。
+当前本地装配由 application 的 `local-runtime` feature 选择；禁用后不链接 agent-runtime，保留普通配置用例，本地执行明确返回 Unsupported。application 的配置校验仍依赖 gateway 的配置类型，连带保留 AI-provider 依赖；纯远程客户端通过下述独立契约与传输路径裁掉执行依赖，不使用这个 application feature 变体。早期拆分证据见 [实施任务](../../tasks/package-boundaries/packet.md)。
+
+### 远控契约与唯一执行 owner（2026-10-17）
+
+远程客户端不再依赖上述裁剪后的 application。`application-api` 拥有公开业务输入、结果、错误及消息投影，只依赖 conversation 等中立类型；application 消费这些契约执行用例，remote 消费同一契约实现 iroh 网络入口和客户端。bindings 在装配层将网络 Handler 接到已有 `ApplicationService`，不让 remote 反向依赖执行实现。`bindings --no-default-features --features remote` 排除 application、agent-runtime、gateway 与 ai-provider；配置持久化和私有适配元数据没有搬入契约包。
+
+`ApplicationService` 用单个 owner 线程串行接纳业务，并独立推进所有会话、发送队列、协作和终态清理。网络连接只拥有观察与请求等待，断开、后台或关闭远控入口不调用 application shutdown。GUI 与 headless 宿主均持有同一类服务；宿主退出和机器电源状态仍决定执行是否继续。Harness 保留原生会话权威，不建立跨设备会话副本或共享主库。
+
+设备以固定端点公钥识别，经用户显式一次性邀请配对并保存信任；撤销先持久化，再关闭既有连接，后续请求仍校验授权。可信设备拥有完整业务能力，但 API key、认证交互、资源正文和附件只经显式操作传递，普通摘要与日志不携带秘密。运行时摘要省略 ACP 启动参数／环境，普通编辑保留私有值；内部 Pi projection 也不属于公开模型编辑字段。
+
+多端按已认证设备及视图 ID 隔离浏览、选择与草稿。修改配置或替换内容使用明确修订依据，不能用轮询更新替换用户打开表单时的基线；审批继续使用适配器已有的随机执行世代和单调 ID 映射，答复后消费原生请求。网络接纳账本通过 incarnation、客户端 namespace、序号窗口和退休水位去重；结果有界缓存，重连可查询，结果过期或执行端重启不承诺可以安全重发。
+
+iroh 的默认自动选路与 QUIC 多流承担传输；路径快照、事件和 network-change hook 供平台判别 Direct／Relay 与切网恢复。中继、地址发现和设备授权分别装配，正式开箱即用服务及自部署使用同一协议，本轮不部署服务。跨 NAT、切网和移动后台不能由本机 Direct 或受控公共 RelayOnly 探针证明。具体操作、内存边界与 SDK 生命周期分别归 [API](../../packages/application-api/README.md)、[remote](../../packages/remote/README.md)、[application](../../packages/application/README.md) 和 [bindings](../../packages/bindings/README.md)；现场及隔离证据归任务。
+
+后续产品复核已确认使用 iroh 公共设施可接受，用户可替换为自部署或兼容协议的公开 relay；局域网与公网共用同一设备与授权模型，并要求已建立连接在进入／离开 LAN 时自动优选和恢复。方向授权、配对事务、可刷新寻址、连接恢复、设施代际及请求寿命的契约由 [统一设备远控方案](remote-access.md) 维护。iroh 1.3.0 的热更新不承担严格退出事务，Rust 稳定服务独立保留账本与已接纳任务，网络代际串行关闭和重建；mDNS 使用可完整关闭的私有 IO runtime，业务主 runtime 不变。晚到 lookup 不直接触发活动连接探测，活动路径仍沿原生地址变化和 QNT 机制升级，不能据库构建宣称跨公网自动选优已经通过。
+
+2026-10-18 用户明确当前实施只限 Rust Library／UniFFI，平台 App 接入、界面及安装已收回。稳定服务、v2 契约、生产 mDNS、Controller 恢复与设施设置已完成库级实现和隔离验证；现有 App 尚未同步新契约，真实公网迁移、非默认双网和完整扫码仍未验收。具体产物、证据和外部验收缺口归方案链接的任务，当前库交付不代表产品已完成。
 
 ## 1. 已认可方向与收敛方案
 
@@ -83,7 +103,7 @@ conversation 定义审批、问题回答与取消的类型契约，bindings 生�
 
 ### 控制面
 
-原生 UI → 生成的 UniFFI 类型接口 → 同进程 CoreRuntime → Harness Adapter → 外部 Harness 进程。AI 服务网关也由库管理，供 Harness 发起模型请求；该 loopback HTTP 数据路径不是 App 与 core 的 IPC。后续远程设备接入需要另验认证传输，不改变每个平台嵌入共享核心的边界。
+本地原生 UI → 生成的 UniFFI 类型接口 → 同进程 ApplicationService／CoreRuntime → Harness Adapter → 外部 Harness 进程。远程 UI 经同一业务契约、iroh 与 bindings 装配的 Handler 进入执行设备的同一 ApplicationService。AI 服务网关也由库管理，供 Harness 发起模型请求；该 loopback HTTP 数据路径不是 App 与 core 的 IPC。远程入口的设备信任与传输已完成隔离验收，公网可达性及切网仍须现场验证。
 
 - **Task Service**：目标、父子关系、依赖、验收、状态、工作区和产物归属
 - **Session Supervisor**：启动、连接、恢复、单写控制租约、取消、权限转交、断线核对
@@ -104,7 +124,7 @@ conversation 定义审批、问题回答与取消的类型契约，bindings 生�
 
 首循环由 CoreRuntime 原子保存应用配置，不打开旧模拟 SQLite，也不保存另一套 Pi 会话历史。未来协作数据库如需 SQLite，仍由共享核心管理其事务；不能用文件同步制造跨设备共享主库。历史存储研究见[证据](../../tasks/harness-routing-feasibility/evidence.md#原生客户端与-rust-边界)。
 
-**当前跨语言接入**：bindings unit 以 UniFFI 0.32.2 生成 Swift／Kotlin 接口，Mac 通过具名方法、record／enum 和结构化错误操作 application。单个绑定对象拥有应用实例并串行执行同步操作；Mac 在后台队列调用，按快照轮询投影。关闭忙时拒绝并保留对象，执行取消为独立操作；释放平台包装并不等同于发出用户取消。输入与返回值的内存所有权由生成绑定管理，不再保留手写 `velune_core_*` 产品入口。配置 schema 仍为 2，生成接口由 UniFFI 校验契约。C# 第三方工具需独立验证兼容性，不宣称已有 Windows app。进程内接入保持，不另加本机 App↔core IPC。
+**当前跨语言接入**：bindings unit 以 UniFFI 0.32.2 生成 Swift／Kotlin 接口，Mac 通过具名方法、record／enum 和结构化错误操作 application。单个绑定对象拥有应用实例并串行执行同步操作；Mac 在后台队列调用，按快照轮询投影。关闭忙时拒绝并保留对象，执行取消为独立操作；释放平台包装并不等同于发出用户取消。输入与返回值的内存所有权由生成绑定管理，不再保留手写 `velune_core_*` 产品入口。配置 schema 与绑定接口独立演进，生成接口由 UniFFI 校验契约。C# 第三方工具需独立验证兼容性，不宣称已有 Windows app。进程内接入保持，不另加本机 App↔core IPC。
 
 **Rust 主核心不要求重写上游 Harness SDK**。Codex 直接接 app-server；Pi 以固定 SDK 与 RPC 子进程管理会话，adapter 注入 AI 网关和私有模型投影；模型请求由 AI 网关路由并经 AI-provider 执行；Claude 优先保留官方 SDK 的薄桥进程以正确处理其生命周期。桥只做编解码、关联 ID、流和原生权限回调，领域状态、路由、预算、协作与持久化留在 Rust。Node／TypeScript 若存在仅为原生 Harness／SDK 依赖与桥，不重新成为产品主核心；不得因改 Rust 而把 Claude 私有控制 envelope 当稳定公开协议重写。
 
@@ -112,7 +132,7 @@ conversation 定义审批、问题回答与取消的类型契约，bindings 生�
 
 - **Apple 当前落点**：Mac 使用 SwiftUI／AppKit 的原生窗口、菜单与设置，嵌入 Rust dylib；iOS／iPadOS 的 UIKit 方向不等于已实现或能运行桌面 Harness。watchOS／tvOS／visionOS 不在本轮承诺内
 - **Windows 等桌面平台**：通过同一核心 ABI 复用行为，各自采用平台原生 UI 与秘密设施；当前没有已实现的 Windows app
-- **Android**：Kotlin＋Jetpack Compose 原生 UI，后续经平台桥嵌入同一核心；系统权限、Keystore／通知和生命周期由平台层承担
+- **Android 目标**：Kotlin＋Jetpack Compose 原生控制端，经 remote-only UniFFI／JNA 嵌入 Rust，不携带 Harness 或 AI 执行栈。库已提供 Application JNI context 与系统 TLS verifier 的装配入口；应用私有存储、备份排除与生命周期接入由后续平台工作承担。当前 main 不包含早期 Android App，库产物与历史平台观察见 [任务](../../tasks/android-minimal/packet.md)
 - **移动端能力**：远端 Harness 接入和后台能力仍需单独验证。嵌入核心不代表手机能常驻桌面 Harness，也不把离线输入显示为远端已启动的任务
 
 Mac 当前交付安装到 Applications，产品显示版本、ABI、配置 schema 与源码提交分开记录。签名／公证／商店分发和 sandbox 权限仍有后续边界，不因本地 ad-hoc 或开发证书签名的构建通过而声称已完成。先完成桌面首循环与共享核心基础，再实施远程客户端，不用 Web 过渡替代原生方向。

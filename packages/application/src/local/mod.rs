@@ -63,7 +63,7 @@ fn runtime_types() -> Vec<crate::config::RuntimeTypeDescriptor> {
         let mut fields=vec![binary,runtime_node,field("agentDir","运行时目录","directoryPath",true,String::new(),match variant.id {"claude-code-2.1"=>"该实例的 CLAUDE_CONFIG_DIR；配置与原生会话目录，不是任务工作目录。","codex-0.159"=>"该实例的 CODEX_HOME；配置与会话根目录，不是任务工作目录。","dsh-acp-0.2"=>"该实例的 DeepSeek Harness 配置与会话根目录，不是任务工作目录。",_=>"该实例的 Pi 配置与状态根目录，不是任务工作目录。"})];
         if variant.id=="acp-v1" {fields.retain(|field| field.key=="binary");}
         if variant.id=="pi-1.0" {fields.push(field("sessionDir","会话存储目录","directoryPath",false,String::new(),"覆盖 Pi 默认的会话存储位置；留空采用运行时目录的 sessions，此项不是任务工作目录。"));}
-        crate::config::RuntimeTypeDescriptor{id:variant.id.into(),family_id:variant.family_id.into(),compatible_versions:variant.versions.describe(),can_rename_conversations:variant.can_rename_conversations,can_delete_conversations:variant.can_delete_conversations,launch_options:variant.id=="acp-v1",agent_info:variant.id=="acp-v1",session_options:variant.id=="acp-v1",remote_resources:variant.id!="acp-v1",supported_protocols:GatewayProtocol::runtime_protocols(variant.id).expect("registered runtime adapter"),supported_provider_protocols:GatewayProtocol::runtime_provider_protocols(variant.id).expect("registered runtime adapter"),name:variant.name.into(),fields,permission_modes:variant.permission_modes.iter().map(|mode| crate::config::PermissionMode{id:mode.id.into(),label:mode.label.into(),detail:mode.detail.into()}).collect()}
+        crate::config::RuntimeTypeDescriptor{id:variant.id.into(),family_id:variant.family_id.into(),compatible_versions:variant.versions.describe(),can_rename_conversations:variant.can_rename_conversations,can_delete_conversations:variant.can_delete_conversations,launch_options:variant.id=="acp-v1",agent_info:variant.id=="acp-v1",session_options:variant.id=="acp-v1",remote_resources:variant.id!="acp-v1",supported_protocols:crate::config::runtime_protocols(variant.id).expect("registered runtime adapter"),supported_provider_protocols:crate::config::runtime_provider_protocols(variant.id).expect("registered runtime adapter"),name:variant.name.into(),fields,permission_modes:variant.permission_modes.iter().map(|mode| crate::config::PermissionMode{id:mode.id.into(),label:mode.label.into(),detail:mode.detail.into()}).collect()}
     }).collect()
 }
 
@@ -95,6 +95,8 @@ struct UnsubmittedDraft {
 
 pub struct CoreRuntime {
     options: RuntimeOptions,
+    client_baseline: Option<Box<ClientState>>,
+    local_presentation_commit: std::cell::RefCell<Option<crate::repository::PresentationDefaults>>,
     // Fields drop in declaration order: stop the collaboration service and
     // execution owners before releasing the repository's exclusive
     // application-home lock.
@@ -156,6 +158,8 @@ pub struct CoreRuntime {
 }
 
 mod attachments;
+mod client_state;
+pub(crate) use client_state::ClientState;
 mod authentication_coordination;
 mod browsing;
 mod collaboration;
@@ -216,6 +220,8 @@ impl CoreRuntime {
             },
             organization,
             browser_window: Default::default(),
+            client_baseline: None,
+            local_presentation_commit: std::cell::RefCell::new(None),
             last_listed: Default::default(),
             archived_listing: Default::default(),
             reached: Default::default(),

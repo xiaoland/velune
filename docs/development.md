@@ -199,7 +199,7 @@ python3 scripts/manual-relaykit-provider.py replay \
 
 ## UniFFI 的临时端到端验收
 
-先构建动态库，并按 [bindings unit](../packages/bindings/README.md) 生成与其匹配的 Python 绑定。提供商配置验收使用 [提供商与模板脚本](../scripts/manual-provider-configuration.py)，传入绝对路径 `--bundle` 和 `--bindings`，验证本机文件 API key 显式读取／编辑／重开、公开描述与日志不含 key、模型 ID／协议／地址编辑、模板快照和 schema 7 hard-cutoff。使用临时 HOME 与合成 key，不读取真实资料。[提供商来源脚本](../scripts/manual-provider-sources.py) 参数相同，以合成 Codex `config.toml`、Claude Code `settings.json` 和按账户文件回答 `auth status` 的假 `claude`，检查 Codex／Claude Code 运行时导入（字面 key 复制、预览不含 key、来源变化使预览失效）、沿用默认与运行时 Claude Code 登录、同账户拒绝、失效登录经检查转为未登录，以及删除时不执行 login／logout、不改来源文件、日志不含 key；不证明真实 CLI 行为。
+先构建动态库，并按 [bindings unit](../packages/bindings/README.md) 生成与其匹配的 Python 绑定。提供商配置验收使用 [提供商与模板脚本](../scripts/manual-provider-configuration.py)，传入绝对路径 `--bundle` 和 `--bindings`，验证本机文件 API key 显式读取／编辑／重开、公开描述与日志不含 key、模型 ID／协议／地址编辑、模板快照和当前 schema 的 hard-cutoff。使用临时 HOME 与合成 key，不读取真实资料。[提供商来源脚本](../scripts/manual-provider-sources.py) 参数相同，以合成 Codex `config.toml`、Claude Code `settings.json` 和按账户文件回答 `auth status` 的假 `claude`，检查 Codex／Claude Code 运行时导入（字面 key 复制、预览不含 key、来源变化使预览失效）、沿用默认与运行时 Claude Code 登录、同账户拒绝、失效登录经检查转为未登录，以及删除时不执行 login／logout、不改来源文件、日志不含 key；不证明真实 CLI 行为。
 
 [安装包首循环脚本](../scripts/manual-pi-native-loop.py) 另传 `--node` 和外部 `--pi`，从配置运行时和导入开始，通过实际固定 Pi SDK 完成工具续写、下一轮消息、提供商 key／model ID／地址编辑后实际派发检查。上游为回环合成服务，不涉及真实 Keychain、模型服务或会话。原生 [HTTP 脚本](../scripts/manual-gateway-native.py) 检查 ChatCompletions／Responses JSON、SSE、状态及安全头的保真与取消。所有入口均为显式人工验收，不接入 CI 或自动化测试；实际 GUI／真实提供商由用户验收。
 
@@ -213,16 +213,20 @@ python3 scripts/manual-relaykit-provider.py replay \
 
 根 Cargo.toml 是虚拟工作区，不再输出 velune-core 产品库。共享单位的职责、接口和依赖在 [packages 各 README](../README.md) 与 [架构](design/architecture.md#独立-package-与平台装配) 中说明。Mac 构建会生成 Swift 源及 FFI modulemap，分别编译 Rust 绑定库与 Swift 语言模块，再链接原生 app；生成文件只放在 target 下。
 
+当前 Rust SDK 新增具名远控错误并移除公开模型的 Pi 私有元数据；main 整合保留现有平台 App 源码，未在此任务同步适配或构建 App。更新 SDK 后，平台调用方须单独迁移穷尽错误分支、模型映射和编辑草稿；本节库检查不代表 Mac 构建通过。历史平台构建事实归 [早期远控验收](../tasks/remote-control/verification.md)。
+
 ```sh
 cargo fmt --all --check
 cargo check --locked --workspace --all-targets --all-features
 cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
 cargo clippy --locked -p velune-bindings --no-default-features --all-targets -- -D warnings
-cargo tree --locked -p velune-bindings --no-default-features
-bash scripts/build-macos.sh
+cargo clippy --locked -p velune-bindings --no-default-features --features remote --all-targets -- -D warnings
+cargo tree --locked -p velune-bindings --no-default-features --features remote
 ```
 
-无默认 feature 的依赖树不含 agent-runtime；当前 application 配置校验仍通过 gateway，因而依赖树保留 gateway／AI-provider，不启动其执行能力。本地会话操作明确返回 Unsupported。该构建只证明运行时裁剪，不表示已支持远端操作或已完成 AI 执行依赖裁剪。Kotlin 生成物依赖 JNA 及 kotlinx-coroutines；生成成功之外还需编译检查。C# 工具为第三方，UniFFI 版本兼容性仍需后续 C# app 接入时验证。
+`bindings --no-default-features --features remote` 是纯控制端，依赖树不含 application、agent-runtime、gateway 或 ai-provider；完全禁用 feature 时没有本地或远程构造入口。application 自身禁用 `local-runtime` 仅裁掉 Harness，配置校验仍链接 gateway，不是纯远端客户端的装配路径。Kotlin 生成物依赖 JNA 及 kotlinx-coroutines；生成成功之外还需编译检查。C# 工具为第三方，UniFFI 版本兼容性仍需后续 C# app 接入时验证。
+
+[远控人工脚本](../scripts/manual-remote-control.py) 接受绝对路径 `--library`、`--bindings` 和 `--resources`，动态库与 Python 绑定须来自同一次 v2 构建。脚本通过实际 iroh loopback、UniFFI 与合成 ACP 核对双方派生码，再由夹具显式调用执行端本地批准 API；随后使用一次 Effect 作用域和准确 ID 确认，验证多设备业务、方向授权撤销、断线续跑、请求查询、冲突及附件内容边界。脚本中的已收到后丢弃回执不作为丢 wire 回执或执行端网络替换的证据。动态库需包含默认的本地执行与 remote feature；资源目录可用构建后的 `target/runtime-support`。脚本只使用临时 HOME 与合成资料，不连接公共 relay 或真实模型。早期观察见 [远控验收](../tasks/remote-control/verification.md)，v2 与生命周期判别归 [远控库验证](../tasks/android-minimal/verification.md)。
 
 ## 会话驱动准备的人工复验
 
@@ -405,3 +409,11 @@ Velune 执行的每个会话都获得 application 注入的 `velune` MCP 服务�
 订阅组合人工验收入口为 `python3 scripts/manual-subscription-composition.py`，使用隔离配置目录、合成 Claude CLI 与回环 MCP/HTTP，不读取真实登录。默认场景覆盖 20 组组合、工具往返、跨 Runner 会话与取消/结束恢复；`--case auth-cleanup` 另外覆盖 2 组暂存认证清理。Claude Code 2.1.292 的真实登录、`/usage` 额度读取、文本完成及跨 Runner 工具往返已验证；固定 `/usage` 命令不重写为普通模型提示，无法解析的额度保持未知。
 
 真实 Claude 订阅验收入口为 [manual-claude-subscription-live.py](../scripts/manual-claude-subscription-live.py)，默认只冻结 `--source-ref`（缺省 HEAD）编译并执行本地解析自检。使用仓库外专用 `--home` 和官方 CLI 的 `--claude` 绝对路径，`--login` 通过 application 启动官方浏览器登录；成功后用 `--run --stage text|tool|quota` 分阶段验证。text 最多一次网关请求，tool 最多两次且工具只执行内存合成函数，quota 只采样一次；失败不自动重放。该目录是应用验收配置根，不能替换操作系统 HOME；CLI 保留系统身份以访问 macOS Keychain，订阅配置由独立 CLAUDE_CONFIG_DIR 隔离。日志仅包含固定阶段、退出码和计量，不输出凭据或响应正文。
+
+## Android 目标库
+
+运行 `scripts/build-android-native.sh` 构建 API28+／arm64-v8a remote-only Rust so、匹配的 Kotlin 与固定摘要的 rustls verifier AAR；`--diagnostics` 另含传输诊断入口。产物在 `target/android-native` 与 `target/android-bindings`，该脚本不构建或安装 App。JNI context、系统 TLS verifier 与 Android Cleaner 生成配置属于平台后续接入前置，不能以生成 Kotlin 替代真实平台验收。
+
+本轮仅交付 v2 Rust Library／UniFFI。main 不包含早期 Android 工程、Mac 远控页或 App 合成宿主脚本；历史分支的观察仍留在 [本轮验收](../tasks/android-minimal/verification.md)，不作为 main 的可执行步骤。库级人工入口为上文的 `manual-remote-control.py`，只使用临时资料与合成宿主，不操作 adb 或启动平台 App。
+
+平台远控消费者须独立消费 [新契约](design/remote-access.md)：使用 `state_file`、Rust 状态快照和配对事务，按 peer 连接，由独立 operation 关联副作用与准确 ID 确认。接口细节归 [bindings README](../packages/bindings/README.md)，不恢复旧接口兼容层。

@@ -15,6 +15,10 @@
 
 ## 当前工作
 
+- [Rust 远控库](../tasks/android-minimal/packet.md)：稳定服务、方向配对、统一寻址、恢复与 remote-only UniFFI；平台 App 接入另行实施
+
+- [远程控制](../tasks/remote-control/packet.md)：同一用户多设备、公网免 VPN、完整 Velune 业务能力；GUI／headless 共用核心，需求与架构收敛后实现 Rust packages
+
 - [通用 ACP Adapter](../tasks/acp-adapter/packet.md)：Rust 侧 stable v1 接入、能力协商与会话恢复；App 前端待实现
 
 - [Claude Code、原生模型与 SSH 运行时](../tasks/runtime-provider-ssh/packet.md)：Rust packages 的模型选择、单轮网关、远端执行与受管 HOME；前端明确待实现

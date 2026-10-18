@@ -99,11 +99,24 @@ pub(crate) fn edit_provider(
                     .checked_add(1)
                     .ok_or_else(|| Error::invalid("authentication revision overflow"))?;
             }
-            if previous.is_some_and(|p| p.protocol != draft.protocol) {
-                for model in &mut draft.models {
-                    model.pi_projection = None;
-                }
-            }
+            let models = draft
+                .models
+                .into_iter()
+                .map(|model| {
+                    let projection = previous
+                        .filter(|p| p.protocol == draft.protocol)
+                        .and_then(|p| {
+                            p.models.iter().find(|old| {
+                                old.record_key == model.record_key
+                                    && old.provider_model_id == model.provider_model_id
+                            })
+                        })
+                        .and_then(|old| old.pi_projection.clone());
+                    let mut stored: ProviderModel = model.into();
+                    stored.pi_projection = projection;
+                    stored
+                })
+                .collect();
             let provider = ProviderDefinition {
                 id: draft.id.clone(),
                 name: draft.name,
@@ -113,7 +126,7 @@ pub(crate) fn edit_provider(
                 request_profile: draft.request_profile,
                 quota_source: draft.quota_source,
                 authentication,
-                models: draft.models,
+                models,
                 quota_limits: draft.quota_limits,
             };
             gateway.providers.retain(|p| p.id != draft.id);

@@ -169,7 +169,7 @@ def main():
             assert gateway.providers[0].authentication.method == bindings.BindingAuthenticationMethod.API_KEY
             assert application.read_provider_api_key('default', selected.id) == 'synthetic-only'
             saved = json.loads((root / 'home/generic-config.json').read_text())
-            assert saved['schemaVersion'] == 9 and 'authenticationBindings' not in saved
+            assert saved['schemaVersion'] == 10 and 'authenticationBindings' not in saved
             binding, = gateway.providers[0].models
             assert binding.provider_model_id == 'reasoning' and binding.record_key != 'reasoning'
             assert binding.context_window == candidate.context_window
@@ -354,7 +354,6 @@ def main():
             current = application.list().gateways[0].providers[0]
             edited_model = next(item for item in current.models if item.record_key == binding.record_key)
             edited_model.provider_model_id = 'edited-api-model-id'
-            edited_model.adapter_metadata_json = None
             edited_model.reasoning_levels = []
             changed_endpoint = endpoint.replace('/v1', '/changed/v1')
             draft = bindings.BindingProviderDraft(id=current.id, name=current.name,

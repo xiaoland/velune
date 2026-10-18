@@ -90,7 +90,9 @@ core 是跨平台 Rust lib，通过 ABI 嵌入平台 app；产品不得另启常
 
 ## 独立 units 与跨语言接入
 
-2026-10-05 用户决定全面采用 UniFFI，并授权拆分。共享 units 为 packages/ai、ai-provider、conversation、agent-runtime、gateway、application、bindings；平台 app 是独立 unit。configuration 为 application 内部模块，不建立 persist 或空 remote package。领域包不依赖 UniFFI，bindings 暴露具名类型 API；不恢复手写 C ABI／JSON dispatcher 产品接口。Mac 继续同进程嵌入 Rust，修改后重建安装。任务见 tasks/package-boundaries/packet.md，各 unit 入口见其 README。
+2026-10-05 用户决定全面采用 UniFFI，并授权拆分。共享 units 为 packages/ai、ai-provider、conversation、agent-runtime、gateway、application、bindings；2026-10-17 远控工作新增 application-api 与 remote，前者拥有可独立消费的业务契约，后者拥有连接、设备授权与远程调用。平台 app 是独立 unit。configuration 为 application 内部模块，不建立 persist 或空占位 package。领域包不依赖 UniFFI，bindings 暴露具名类型 API；不恢复手写 C ABI／JSON dispatcher 产品接口。Mac 继续同进程嵌入 Rust，修改后重建安装。任务见 tasks/package-boundaries/packet.md 与 tasks/remote-control/packet.md，各 unit 入口见其 README。
+
+2026-10-18 用户明确当前远控任务仅交付 Rust Library／UniFFI、目标库、库级合成验证与文档，不修改、构建或安装平台 App。随后授权将库整合 main；主干现有 App 源码保留，功能分支早期平台改动不进入 main。平台尚未适配新契约，不能把 Rust 检查作为产品构建或整机网络验收证据。产品约束归 docs/prd/index.md，契约归 docs/design/remote-access.md，实施与验收缺口归 tasks/android-minimal/packet.md。
 
 
 ## 最新提供商配置体验复核
