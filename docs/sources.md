@@ -393,3 +393,9 @@ S17 实施授权：用户决定全面切换 UniFFI，并要求现在开始拆分
 2026-10-18 用户明确纠正：“你的边界应该仅限于 Rust Library，怎么会延伸到 Mac App 呢。”当前任务因而收回平台接入和界面验收，只继续 Rust Library／UniFFI 与库级合成验证；该纠正不等于取消 Android 产品目标，也不授权为库验收继续修改或启动 Mac App。范围归 [PRD](prd/index.md#后续扩展分布式能力)，实施与收回记录归 [当前任务](../tasks/android-minimal/packet.md)。
 
 2026-10-18 用户授权将已完成的 Rust Library 工作整合 main；保留 main 现有业务，不包含功能分支中的平台 App 改动，不包含远端发布。整合记录归上述当前任务。
+
+## S43
+
+2026-10-19 用户要求实现远程控制系列能力的 MVP：Windows 端（可在 win-ws.localhost 验收）；Android 端保持既有技术栈并彻底重写，现有实现只是测试原型；“Android 端不是对等的端（未来的 iPad, web 也是），它只有‘控制’能力，实际的 agent runtime 并不在该端上运行；但是任何一端，都具备控制其它端的能力”；“ssh agent-runtime 和我们这里的‘远程控制’不是一个能力”。
+
+开发方核对后指出 MyGO 自绘界面与纯 Go 无 cgo 的取舍。用户答复：MyGO 看起来不太合适，可以看看别的选择（例如 GPUI），也可以先试 MyGO；“Windows MVP 需要包含在 windows 上运行 agents；接受 MyGO 的 native UI 作为例外（GPUI 也是），因为 windows 的 .net, winUI 等开发体验太糟糕了”；Go 桥“坚守 purego”；认可“one interface, switch the target device”架构；Mac 同时作为被控端与控制端纳入 MVP；MVP 先做会话日常闭环，并说明“providers, resources 等是要跨端同步的”；接受使用 iroh 公共 relay；remote 库可以继续修改，甚至进一步拆分；授权完全控制已连接本机的 Android 手机，并使用 win-ws.localhost 等设备。产品归 [PRD](prd/index.md#后续扩展分布式能力)，实施归 [远控 MVP 任务](../tasks/remote-control-mvp/packet.md)。

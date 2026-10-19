@@ -9,7 +9,7 @@
 - Android 不是对等端（将来的 iPad、Web 同理）：只有控制能力，不运行 agent runtime。任何一端都能控制其他端。
 - SSH agent-runtime 与远程控制是两项不同能力。
 
-用户要求先收敛产品与技术方案并核对，然后再实施。本 packet 当前只记录事实、候选方案和待决问题，尚未获得实施授权。
+2026-10-19 方案核对后用户授权实施，决定见 [PRD](../../docs/prd/index.md#后续扩展分布式能力) 与 [S43](../../docs/sources.md#s43)。授权范围记于 AGENTS 的“独立 units 与跨语言接入”。
 
 ## 已核实事实（2026-10-19，main `1bc5a11`）
 
@@ -19,9 +19,11 @@
 - MyGO（[egoist/mygo](https://github.com/egoist/mygo)，站点显示 v0.5.5，MIT 许可）是纯 Go、无 cgo 的桌面框架。原生 UI 由框架在 GPU 上自绘，不使用 Win32／WinUI 控件；另有 webview 模式。
 - 唯一的 Go UniFFI 生成器 [uniffi-bindgen-go](https://github.com/NordSecurity/uniffi-bindgen-go) 只支持到 uniffi 0.31，并依赖 cgo；0.32 支持仍是开放 issue。
 - 核心中约 108 处 Unix 专属代码（进程组、权限、fs 等），Windows 专属分支只有 1 处。Windows 要作为执行端，必须先移植。
-- `win-ws.localhost` 本次探测 SSH 22 端口时返回 No route to host，Windows 工具链尚未核实。
+- `win-ws.localhost`（重试后 SSH 可用）：Windows 10 22H2 x64、Ryzen 5 3600、32 GB、RTX 2070 SUPER；已装 VS Build Tools 2022、Git、Node（nvm4w）、Python 3.14、winget、Codex（原生 exe）、Claude Code 与 Pi（pnpm 全局）；未装 Rust 与 Go。SSH 默认 shell 为 cmd，脚本经 `powershell -Command -` 从 stdin 传入可避免转义问题。
+- Android 真机 JKM-AL00a，Android 9，arm64-v8a，1080×2340；本机 JDK 17、SDK、NDK 30.0.14904198，Rust 已装 aarch64-linux-android 与 x86_64-pc-windows-gnu target。
+- GPUI：Zed Windows 版已稳定（DirectX 11＋DirectWrite）；Longbridge `gpui-kit`／`gpui-component` 0.7.x 在 crates.io 提供组件集。GPUI 与核心同为 Rust，可同进程直接链接 bindings 的 Rust API，无需 FFI 生成器。
 
-## 候选方案（待用户确认）
+## 方案（用户已认可主体，Windows 框架待 spike）
 
 1. **端角色**：Mac 与 Windows 都是完整端，持有 ApplicationService 和 Harness，也能控制其他端。Android 是 controller-only 装配（remote-only bindings）。所有端使用同一套设备列表和配对流程。
 2. **同一界面，切换目标设备**：本机与远端都通过同一个 `VeluneApplication` API 访问。会话、转录和 composer 界面只编写一份，由设备切换决定目标。
@@ -30,6 +32,17 @@
 5. **Mac 接入**：作为执行端时提供接入开关、邀请二维码、核对码批准和撤销；作为控制端时提供设备切换。
 6. **Android 重写**：采用单 Activity Compose 加 Navigation，每个页面一个 ViewModel，由仓库层包装 UniFFI。提供扫码配对（CameraX＋ZXing）、设备列表、会话列表与转录、composer、停止和审批，并适配平板布局。
 
-## 待用户决定
+## 用户决定（2026-10-19）
 
-见本轮回复中的问题。用户作出决定后，先更新 PRD 和 remote-access，再更新本 packet。
+- 认可“同一界面，切换目标设备”。Windows MVP 必须在本机运行 agents。
+- Windows UI：MyGO 看来不太合适，可评估 GPUI 等替代，也可先试 MyGO；两者的自绘 UI 都作为原生视觉原则的例外接受。若用 Go，则坚持 purego。
+- Mac 同时作为被控端与控制端。MVP 先做会话日常闭环；提供商、资源等配置要跨端同步，同步方案另行收敛后再与用户核对。
+- 使用 iroh 公共 relay。remote 库可继续修改或拆分。可完全控制已连接的 Android 手机与 win-ws。
+
+## 执行次序
+
+1. Windows 框架 spike（GPUI 与 MyGO 各做一个最小样例：窗口、虚拟列表、多行输入与中文输入法、文本渲染），比较后定案。
+2. 核心 Windows 移植，与 Mac 接入并行。
+3. Android 重写，以 Mac 为执行端完成真机闭环。
+4. Windows 应用。
+5. 配置跨端同步方案，与用户核对后实施。

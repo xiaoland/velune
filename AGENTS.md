@@ -28,7 +28,7 @@
 - MCP 暴露协作工具、ACP 可替换接入已获认可；持久化是协作支撑，不代替发现、注入、委派、结果与失败协调机制
 - Apple 具体平台覆盖、Mac Catalyst／AppKit、FFI 与运行宿主等尚有技术边界，不能把 native UI 当手机可以常驻运行桌面 Harness 的证明
 - 应用配置使用文件系统持久化，根目录为 `VELUNE_HOME`，默认 `~/.velune`；AI provider 与 Harness 配置由平台装配／Host 管理，独立 AI lib 不自行读取全局环境；API key 可保存在本机应用配置，但开发工具不得读取、输出或提交真实秘密
-- 各平台尽可能采用所属平台的原生视觉与交互习惯；品牌及软件特点仅在图标、内容与少量细节中体现，不建立覆盖系统风格的统一皮肤。原生框架本身不等于原生体验；布局、控件、窗口、字体、材质、颜色和系统行为都应遵守该原则
+- 各平台尽可能采用所属平台的原生视觉与交互习惯；品牌及软件特点仅在图标、内容与少量细节中体现，不建立覆盖系统风格的统一皮肤。原生框架本身不等于原生体验；布局、控件、窗口、字体、材质、颜色和系统行为都应遵守该原则。Windows 例外：用户接受自绘 UI 框架（MyGO 或 GPUI），不采用 .NET／WinUI，仍尽量遵循 Windows 的交互习惯
 - 双击进入编辑是项目级 UI/UX 范式：可编辑列表项默认支持平台原生双击主操作，保留单击选择、多选与菜单入口；会话双击编辑真实原生标题。只读内容不伪造编辑操作。
 - Apple app 使用原生组件与系统语义样式，不设独立深色模式开发配置或验收项；系统负责常规明暗适配，自定义内容仅针对具体显示问题检查和修复
 - 不把聊天中的示例、助手提议或未核实的技术说法提升为已批准架构
@@ -92,7 +92,7 @@ core 是跨平台 Rust lib，通过 ABI 嵌入平台 app；产品不得另启常
 
 2026-10-05 用户决定全面采用 UniFFI，并授权拆分。共享 units 为 packages/ai、ai-provider、conversation、agent-runtime、gateway、application、bindings；2026-10-17 远控工作新增 application-api 与 remote，前者拥有可独立消费的业务契约，后者拥有连接、设备授权与远程调用。平台 app 是独立 unit。configuration 为 application 内部模块，不建立 persist 或空占位 package。领域包不依赖 UniFFI，bindings 暴露具名类型 API；不恢复手写 C ABI／JSON dispatcher 产品接口。Mac 继续同进程嵌入 Rust，修改后重建安装。任务见 tasks/package-boundaries/packet.md 与 tasks/remote-control/packet.md，各 unit 入口见其 README。
 
-2026-10-18 用户明确当前远控任务仅交付 Rust Library／UniFFI、目标库、库级合成验证与文档，不修改、构建或安装平台 App。随后授权将库整合 main；主干现有 App 源码保留，功能分支早期平台改动不进入 main。平台尚未适配新契约，不能把 Rust 检查作为产品构建或整机网络验收证据。产品约束归 docs/prd/index.md，契约归 docs/design/remote-access.md，实施与验收缺口归 tasks/android-minimal/packet.md。
+2026-10-19 用户发起远控 MVP，取代此前“仅 Rust Library”的边界：Mac、Windows 为完整端（运行 agents 并可控制其他端），Android 为控制端；各端一套界面经同一业务接口切换目标设备。授权修改及拆分 remote 等 Rust units、实现 Mac 接入、重写 Android（Kotlin／Compose），在 Windows 上运行 agents 并开发 Windows 端；可完全控制本机已连接的 Android 手机及 `win-ws.localhost`（含安装开发工具链），使用 iroh 公共 relay。push、PR、部署和真实模型调用仍需单独授权。产品约束归 docs/prd/index.md，契约归 docs/design/remote-access.md，实施归 tasks/remote-control-mvp/packet.md。
 
 
 ## 最新提供商配置体验复核
