@@ -1,10 +1,7 @@
 //! Versioned adapter identities. A family is a grouping, never a dispatch key.
 use crate::native::{Error, Result};
 use regex::Regex;
-use std::{
-    path::{Path, PathBuf},
-    process::Command,
-};
+use std::path::{Path, PathBuf};
 /// Protocols this versioned adapter can carry through the injected LLM gateway.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RuntimeProtocol {
@@ -280,7 +277,7 @@ try {
 }
 "#
     );
-    let mut command = Command::new(node);
+    let mut command = crate::process_tree::command(node);
     command
         .args(["--input-type=module", "--eval", script])
         .arg(binary);
@@ -377,9 +374,9 @@ pub fn probe_version_at(
         binary
     };
     let mut command = if matches!(family_id, "codex" | "claude-code") {
-        Command::new(binary)
+        crate::process_tree::command(binary)
     } else if let Some(node) = node_binary {
-        let mut command = Command::new(node);
+        let mut command = crate::process_tree::command(node);
         command.arg(binary);
         command
     } else {

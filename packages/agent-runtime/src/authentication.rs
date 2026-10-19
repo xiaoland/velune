@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 use std::{
     io::{BufRead, BufReader, Read, Write},
     path::Path,
-    process::{Child, ChildStderr, ChildStdin, Command, Stdio},
+    process::{Child, ChildStderr, ChildStdin, Stdio},
     sync::{
         Arc, Mutex,
         mpsc::{self, Receiver},
@@ -63,7 +63,7 @@ impl Login {
             return Err("authentication source adapter is unavailable".into());
         }
         let device_id = device_id(home)?;
-        let mut child = Command::new(node)
+        let mut child = crate::process_tree::command(node)
             .arg(helper)
             .arg("--operation")
             .arg("login")
@@ -293,7 +293,7 @@ pub fn handle(
             } else {
                 resources.join("pi_auth.mjs")
             };
-            let output = Command::new(node)
+            let output = crate::process_tree::command(node)
                 .arg(helper)
                 .arg("--operation")
                 .arg("inspect")

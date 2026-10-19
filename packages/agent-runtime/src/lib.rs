@@ -4,6 +4,7 @@ pub use velune_conversation as conversation;
 
 mod client;
 pub mod model_projection;
+mod process_tree;
 mod projection;
 
 pub use client::*;

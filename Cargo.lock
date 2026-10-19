@@ -4392,6 +4392,7 @@ dependencies = [
  "toml_edit",
  "tracing",
  "velune-conversation",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

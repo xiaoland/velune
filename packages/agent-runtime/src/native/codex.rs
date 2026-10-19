@@ -913,7 +913,7 @@ pub(super) fn history_client_at(
         return Err(Error::new("Codex 历史配置必须使用绝对路径"));
     }
     crate::version::check_version_at("codex-0.159", binary, None, execution, os_home)?;
-    let mut command = Command::new(binary);
+    let mut command = crate::process_tree::command(binary);
     command.arg("app-server");
     command.env("CODEX_HOME", home);
     let mut rpc = rpc::RpcClient::spawn_at(command, execution, os_home)?;

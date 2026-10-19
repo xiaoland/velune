@@ -46,6 +46,12 @@ schema 10 采用 hard-cutoff，旧普通配置打开时直接重置，之后重�
 
 隔离视觉预览使用 `--preview`（合成多轮会话）或 `--preview-empty`；Apple app 不设置独立深色验收入口。预览 Store 无 Transport，不打开 Application、不访问真实配置、Keychain 或会话、不调用模型。dyld 加载惰性的库文件不等于打开运行时，预览不能证明真实循环完成。
 
+## Windows 构建
+
+Windows 使用 MSVC 目标（`x86_64-pc-windows-msvc`，工具链版本同 `rust-toolchain.toml`），需要 Visual Studio Build Tools、Go 和 [llvm-mingw](https://github.com/mstorsjo/llvm-mingw)。RelayKit 桥依赖 cgo；MinGW 静态库无法可靠链接进 MSVC 产物，所以 Windows 把它构建为 `velune_relaykit.dll`，Rust 以 `raw-dylib` 绑定，无需导入库。构建脚本把 DLL 复制到 `target/<profile>/`，应用分发时须放在可执行文件旁。cgo 编译器默认为 `<arch>-w64-mingw32-clang`，可由 `VELUNE_RELAYKIT_CC` 指定绝对路径；当 PATH 没有传递给 build script 时，同时用 `GO` 指定 Go 的绝对路径。
+
+子进程统一经 agent-runtime 的 `process_tree` 创建：Unix 使用独立进程组，Windows 使用 kill-on-close 的 Job Object，并加 `CREATE_NO_WINDOW`，避免 GUI 宿主为每个 Harness 弹出控制台。SSH 运行时依赖 OpenSSH ControlMaster 与 Unix socket，Windows 宿主暂不支持。
+
 ## 会话内容的隔离复验
 
 内部角色、类型内容和 Unix 毫秒通过生成绑定消费；Mac 的稳定展示行不是持久化记录。标题在列表、只读打开和准备执行间保持同一含义，来源文件名不作为显示标题。`scripts/manual-session-browser.py` 使用固定 Pi SDK 在临时 HOME 创建带标题、无标题、正文、推理和工具调用／结果的合成历史，验证可读标题、类型角色和时间，以及已完成工具输出；同时保留无模型浏览与准备失败保留视图的验收。必须传入匹配的 bundle、Python bindings、Node 与外部 Pi CLI 绝对路径，不读取既有会话。

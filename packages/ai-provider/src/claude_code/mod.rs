@@ -419,15 +419,14 @@ async fn launch(config: &ClaudeCodeConfig, body: &Value) -> Result<Run, Messages
     let token = token().map_err(|_| MessagesErrorKind::Transport)?;
     // The directory is visible in argv; its nonce must not reveal the MCP capability.
     let directory = std::env::temp_dir().join(format!("velune-claude-{directory_nonce}"));
-    let mut builder = std::fs::DirBuilder::new();
     #[cfg(unix)]
-    {
+    let created = {
         use std::os::unix::fs::DirBuilderExt;
-        builder.mode(0o700);
-    }
-    builder
-        .create(&directory)
-        .map_err(|_| MessagesErrorKind::Transport)?;
+        std::fs::DirBuilder::new().mode(0o700).create(&directory)
+    };
+    #[cfg(not(unix))]
+    let created = std::fs::DirBuilder::new().create(&directory);
+    created.map_err(|_| MessagesErrorKind::Transport)?;
     let result = launch_in(config, body, directory.clone(), token).await;
     if result.is_err() {
         let _ = std::fs::remove_dir_all(directory);

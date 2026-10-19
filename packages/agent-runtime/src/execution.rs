@@ -212,7 +212,7 @@ impl ExecutionTarget {
 impl SshTarget {
     fn command(&self) -> Result<Command> {
         ExecutionTarget::Ssh(self.clone()).validate()?;
-        let mut command = Command::new(&self.binary);
+        let mut command = crate::process_tree::command(&self.binary);
         command.args([
             "-T",
             "-a",
@@ -398,7 +398,7 @@ impl LoopbackTunnel {
             }
             thread::sleep(Duration::from_millis(20));
         }
-        let mut forward = Command::new(&ssh.binary);
+        let mut forward = crate::process_tree::command(&ssh.binary);
         forward.args(["-F", "none"]);
         forward
             .arg("-S")
@@ -470,13 +470,13 @@ fn temporary_directory() -> Result<PathBuf> {
     #[cfg(not(unix))]
     let root = std::env::temp_dir();
     let directory = root.join(format!("velune-ssh-{}", unique_name()?));
-    let mut builder = fs::DirBuilder::new();
     #[cfg(unix)]
     {
         use std::os::unix::fs::DirBuilderExt;
-        builder.mode(0o700);
+        fs::DirBuilder::new().mode(0o700).create(&directory)?;
     }
-    builder.create(&directory)?;
+    #[cfg(not(unix))]
+    fs::DirBuilder::new().create(&directory)?;
     Ok(directory)
 }
 

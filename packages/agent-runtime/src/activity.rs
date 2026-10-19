@@ -11,7 +11,7 @@ use std::{
     fs::{self, File},
     io::{BufRead, BufReader, Read, Seek, SeekFrom},
     path::{Path, PathBuf},
-    process::{Command, Stdio},
+    process::Stdio,
     time::{Duration, SystemTime},
 };
 
@@ -401,7 +401,7 @@ fn is_pi(command: &str) -> bool {
 }
 
 fn read_processes() -> Vec<Process> {
-    let Ok(output) = Command::new("ps")
+    let Ok(output) = crate::process_tree::command("ps")
         .args(["axww", "-o", "pid=,ppid=,etime=,lstart=,command="])
         .env("TZ", "UTC")
         .env("LC_ALL", "C")
@@ -451,7 +451,7 @@ fn working_directories(pids: impl Iterator<Item = u32>) -> HashMap<u32, PathBuf>
     if pids.is_empty() {
         return HashMap::new();
     }
-    let Ok(output) = Command::new("lsof")
+    let Ok(output) = crate::process_tree::command("lsof")
         .args(["-a", "-d", "cwd", "-Fn", "-p", &pids.join(",")])
         .stdin(Stdio::null())
         .stderr(Stdio::null())

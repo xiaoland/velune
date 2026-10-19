@@ -7,6 +7,8 @@ use std::{
     ffi::{CStr, c_char},
     marker::PhantomData,
 };
+// Windows loads the bridge as a MinGW-built DLL; raw-dylib needs no MSVC import library.
+#[cfg_attr(windows, link(name = "velune_relaykit", kind = "raw-dylib"))]
 unsafe extern "C" {
     fn velune_relaykit_call(handle: usize, data: *const c_char, size: usize) -> *mut c_char;
     fn velune_relaykit_release(handle: usize);

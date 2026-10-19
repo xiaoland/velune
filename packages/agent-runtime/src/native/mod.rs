@@ -204,7 +204,9 @@ impl NativeSession {
         } else if let Some(home) = &config.os_home {
             home.clone()
         } else {
-            let bytes = config.execution.output(Command::new("pwd"), None, None)?;
+            let bytes = config
+                .execution
+                .output(crate::process_tree::command("pwd"), None, None)?;
             let cwd = std::str::from_utf8(&bytes)
                 .map_err(|_| Error::new("远端工作目录不是有效文本"))?
                 .trim_end_matches(['\r', '\n']);
@@ -280,7 +282,7 @@ impl NativeSession {
     ) -> Result<rpc::RpcClient> {
         let mut command = match config.kind {
             NativeKind::Codex => {
-                let mut command = Command::new(&config.binary);
+                let mut command = crate::process_tree::command(&config.binary);
                 command.arg("app-server");
                 command
             }

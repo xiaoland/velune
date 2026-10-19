@@ -82,11 +82,11 @@ impl NativeSession {
             if !node.is_absolute() {
                 return Err(Error::new("Node 可执行文件必须为绝对路径"));
             }
-            let mut command = Command::new(node);
+            let mut command = crate::process_tree::command(node);
             command.arg(&config.binary);
             command
         } else {
-            Command::new(&config.binary)
+            crate::process_tree::command(&config.binary)
         };
         command.args(["--profile", "acp"]);
         if let Some(path) = path {

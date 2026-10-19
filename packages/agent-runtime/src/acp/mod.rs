@@ -7,7 +7,6 @@ use serde_json::{Value, json};
 use std::{
     collections::BTreeMap,
     path::{Path, PathBuf},
-    process::Command,
     time::{Duration, Instant},
 };
 mod config;
@@ -107,7 +106,7 @@ impl Client {
             &config.execution,
             config.os_home.as_deref(),
         )?;
-        let mut command = Command::new(&config.binary);
+        let mut command = crate::process_tree::command(&config.binary);
         command.args(&config.args).envs(&config.environment);
         let rpc = RpcClient::spawn_at(command, &config.execution, config.os_home.as_deref())?;
         let mut bytes = [0; 8];

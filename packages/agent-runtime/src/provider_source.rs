@@ -2,7 +2,7 @@
 use crate::model_projection::PiModelProjection;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::{collections::BTreeMap, path::Path, process::Command};
+use std::{collections::BTreeMap, path::Path};
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Source {
@@ -312,7 +312,7 @@ fn read_inner(source: &Source, resources_directory: &Path) -> Result<Snapshot, S
         )
         .with_detail(format!("helper 路径：{}", helper.display())));
     }
-    let output = Command::new(node)
+    let output = crate::process_tree::command(node)
         .arg(&helper)
         .arg("--source-json")
         .arg(serde_json::to_string(source).map_err(|error| {

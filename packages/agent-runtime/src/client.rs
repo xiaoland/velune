@@ -11,7 +11,7 @@ use std::{
     collections::VecDeque,
     io::{BufRead, BufReader, Write},
     path::{Path, PathBuf},
-    process::{Child, ChildStdin, Command, Stdio},
+    process::{ChildStdin, Stdio},
     sync::{
         Arc, Condvar, Mutex,
         mpsc::{self, Receiver, RecvTimeoutError},
@@ -165,7 +165,7 @@ pub const PI_THINKING_LEVELS: [&str; 7] =
 /// One long-lived Pi RPC subprocess. Records are retained until the host asks
 /// for them, so the UI can poll without losing fast stream events.
 pub struct Client {
-    child: Child,
+    child: crate::process_tree::ProcessTree,
     stdin: Option<ChildStdin>,
     incoming: Receiver<Incoming>,
     pending: VecDeque<Value>,
@@ -187,7 +187,7 @@ impl Config {
             .rpc_entry
             .as_ref()
             .ok_or_else(|| Error::Sdk("SDK 入口不可用".into()))?;
-        let mut output = Command::new(node);
+        let mut output = crate::process_tree::command(node);
         output
             .arg(entry)
             .arg("--cli")
@@ -221,7 +221,7 @@ impl Client {
             .rpc_entry
             .as_ref()
             .ok_or_else(|| Error::Sdk("SDK 入口不可用".into()))?;
-        let mut command = Command::new(node);
+        let mut command = crate::process_tree::command(node);
         command
             .arg(entry)
             .arg("--cli")
@@ -274,16 +274,11 @@ impl Client {
             .execution
             .prepare(command, config.os_home.as_deref())?;
         let mut command = prepared.command;
-        #[cfg(unix)]
-        {
-            use std::os::unix::process::CommandExt;
-            command.process_group(0);
-        }
-        let mut child = command
+        command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()?;
+            .stderr(Stdio::piped());
+        let mut child = crate::process_tree::ProcessTree::spawn(&mut command)?;
         let mut stdin = child.stdin.take().ok_or(Error::ChildExited)?;
         stdin.write_all(&prepared.input_prefix)?;
         let stdout = child.stdout.take().ok_or(Error::ChildExited)?;
@@ -732,7 +727,7 @@ impl Client {
             }
             thread::sleep(Duration::from_millis(50));
         }
-        crate::native::rpc::stop(&mut self.child);
+        self.child.stop();
         Ok(())
     }
 }

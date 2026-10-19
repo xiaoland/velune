@@ -2,7 +2,7 @@ use super::{Access, EntryState, Error, ErrorCode, ExpectedRevision, Node, Result
 use crate::execution::ExecutionTarget;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
-use std::{path::Path, process::Command};
+use std::path::Path;
 
 const MAX_BYTES: usize = 16 * 1024 * 1024;
 const MAX_DEPTH: usize = 64;
@@ -51,7 +51,7 @@ fn remote<T: DeserializeOwned>(
         .ok_or_else(|| invalid("远程资源根目录必须是有效 UTF-8 路径"))?;
     request["root"] = json!(root);
     request["path"] = json!(path);
-    let mut command = Command::new("python3");
+    let mut command = crate::process_tree::command("python3");
     command.args(["-c", REMOTE]);
     let bytes = serde_json::to_vec(&request).map_err(|_| invalid("资源请求无法编码"))?;
     let result = target

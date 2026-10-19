@@ -72,7 +72,7 @@ impl NativeSession {
         effort: Option<&str>,
         permission_mode: Option<&str>,
     ) -> Result<Command> {
-        let mut command = Command::new(&config.binary);
+        let mut command = crate::process_tree::command(&config.binary);
         command.env("CLAUDE_CODE_SDK_READS_SESSION_STATE", "1");
         command.args([
             "--print",
@@ -946,7 +946,7 @@ pub fn rename_claude_session_at(
         return Err(Error::new("Claude Code 会话配置必须使用绝对路径"));
     }
     crate::version::check_version_at("claude-code-2.1", binary, None, execution, os_home)?;
-    let mut command = Command::new(binary);
+    let mut command = crate::process_tree::command(binary);
     command
         .args([
             "--print",

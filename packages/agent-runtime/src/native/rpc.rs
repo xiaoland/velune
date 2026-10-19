@@ -1,10 +1,11 @@
 //! Bounded stdio JSON-RPC transport. Native protocols remain in their adapters.
 use super::{Error, Result};
+use crate::process_tree::ProcessTree;
 use serde_json::{Value, json};
 use std::{
     collections::VecDeque,
     io::{BufRead, BufReader, Read, Write},
-    process::{Child, ChildStdin, Command, Stdio},
+    process::{ChildStdin, Command, Stdio},
     sync::{
         Arc, Mutex,
         mpsc::{self, Receiver, TryRecvError},
@@ -15,35 +16,13 @@ use std::{
 const MAX_STDERR_BYTES: usize = 1024 * 1024;
 const TIMEOUT: Duration = Duration::from_secs(15);
 pub(crate) struct RpcClient {
-    child: Child,
+    child: ProcessTree,
     input: Option<ChildStdin>,
     records: Receiver<Result<Value>>,
     queued: VecDeque<Value>,
     next: u64,
     failed: Option<Error>,
     stderr: Arc<Mutex<Vec<u8>>>,
-}
-fn prepare(command: &mut Command) {
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt;
-        command.process_group(0);
-    }
-}
-pub(crate) fn stop(child: &mut Child) {
-    // A reaped child's process group id may already belong to another process.
-    if matches!(child.try_wait(), Ok(Some(_))) {
-        return;
-    }
-    #[cfg(unix)]
-    {
-        // Each child is placed in its own process group before exec. Close inherited pipes and tools too.
-        unsafe {
-            libc::kill(-(child.id() as i32), libc::SIGKILL);
-        }
-    }
-    let _ = child.kill();
-    let _ = child.wait();
 }
 /// Run a short-lived helper. `stderr_limit` only bounds retained diagnostics;
 /// stdout is a business payload and is read to EOF without an adapter limit.
@@ -52,16 +31,15 @@ pub(crate) fn bounded_process(
     input: Option<Vec<u8>>,
     stderr_limit: usize,
 ) -> Result<Vec<u8>> {
-    prepare(&mut command);
-    let mut child = command
+    command
         .stdin(if input.is_some() {
             Stdio::piped()
         } else {
             Stdio::null()
         })
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
+        .stderr(Stdio::piped());
+    let mut child = ProcessTree::spawn(&mut command)
         .map_err(|error| Error::with_code(format!("运行时辅助进程无法启动：{error}"), "spawn"))?;
     if let Some(bytes) = input {
         let mut stdin = child
@@ -111,7 +89,7 @@ pub(crate) fn bounded_process(
             Ok(Some(status)) => break status,
             Ok(None) => {}
             Err(error) => {
-                stop(&mut child);
+                child.stop();
                 return Err(Error::with_code(
                     format!("运行时辅助进程状态不可用：{error}"),
                     "transport",
@@ -119,7 +97,7 @@ pub(crate) fn bounded_process(
             }
         }
         if Instant::now() >= deadline {
-            stop(&mut child);
+            child.stop();
             let detail = stderr_rx
                 .try_recv()
                 .ok()
@@ -145,7 +123,7 @@ pub(crate) fn bounded_process(
         }
         thread::sleep(Duration::from_millis(20));
     };
-    stop(&mut child);
+    child.stop();
     let bytes = rx
         .recv_timeout(Duration::from_secs(1))
         .map_err(|error| {
@@ -191,12 +169,11 @@ impl RpcClient {
     ) -> Result<Self> {
         let prepared = execution.prepare(command, os_home)?;
         let mut command = prepared.command;
-        prepare(&mut command);
-        let mut child = command
+        command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
+            .stderr(Stdio::piped());
+        let mut child = ProcessTree::spawn(&mut command)
             .map_err(|error| Error::new(format!("运行时进程无法启动：{error}")))?;
         let mut input = child
             .stdin
@@ -417,7 +394,7 @@ impl RpcClient {
         self.shutdown();
     }
     pub(crate) fn shutdown(&mut self) {
-        stop(&mut self.child);
+        self.child.stop();
     }
 }
 impl Drop for RpcClient {

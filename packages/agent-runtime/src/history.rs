@@ -5,7 +5,7 @@ use crate::{
 };
 use serde::Deserialize;
 use serde_json::json;
-use std::{path::PathBuf, process::Command};
+use std::path::PathBuf;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HistoryFailureKind {
@@ -172,11 +172,11 @@ fn execute(
             .with_detail(error.to_string())
     })?;
     let mut command = if config.provider == "claude-code" {
-        let mut command = Command::new("python3");
+        let mut command = crate::process_tree::command("python3");
         command.args(["-c", include_str!("../resources/claude_history.py")]);
         command
     } else {
-        let mut command = Command::new(&config.node_binary);
+        let mut command = crate::process_tree::command(&config.node_binary);
         command.arg(config.resources_directory.join("huihua_sessions.mjs"));
         command
     };
@@ -485,7 +485,7 @@ fn execute_pi(
         .as_ref()
         .filter(|p| p.is_absolute())
         .ok_or_else(|| Error::new("Pi 历史 SDK helper 路径无效"))?;
-    let mut command = Command::new(node);
+    let mut command = crate::process_tree::command(node);
     let agent_dir = config
         .agent_dir
         .as_ref()
