@@ -104,7 +104,7 @@
 - 在 JKM-AL00a（Android 9）上，以合成 Python 完整端（ACP fixture、iroh 公共 relay，同一 LAN）走真实 App 验收。邀请经临时 hook 写入应用私有目录，hook 未入库。已验证：配对（核对码 9992 8401 双方一致，批准后由 Rust 跟进确认、自动进入设备）、已连接状态、会话列表、转写左右布局、发送、审批卡“Allow”后回合完成、新建 Beta 会话并发送、停止请求被受理（运行状态离开 Running）。由于测试中放开了 fixture，这次没有区分停止后的终态。
 - 修正 remote 库缺陷：`set_controller_activity` 可能启动恢复任务，但未进入 Tokio runtime，于是持锁时 `tokio::spawn` panic，锁被毒化，此后每次 `connect` 都返回 Unavailable。Mac 先 connect 后报告活动，所以没有触发；Android 先选设备才触发。bindings 现在调用前进入 runtime。
 - 未验证：扫码（手机相机对不准 Mac 屏幕，只确认了相机预览启动）、跨网 NAT、后台恢复和长时间运行。
-- 手机上仍留有旧原型的身份文件（`no_backup/remote/identity`、`trust.json`、`files/s1-probe`），新 App 不读取它们，清除应用数据即可删除。
+- 2026-10-19 夜，验收结束后清除了手机上的应用数据（测试配对与旧原型的 `identity`、`trust.json`、`files/s1-probe`），并安装了 `1949ad8` 的 APK，用户真实配对从空状态开始。
 
 ## Android 控制 Mac 真机证据（2026-10-19 夜）
 
