@@ -1,5 +1,5 @@
 use crate::{MAX_FRAME_BYTES, RemoteError, Result};
-use iroh::endpoint::{RecvStream, SendStream};
+use iroh::endpoint::{ReadToEndError, RecvStream, SendStream};
 use serde::{Serialize, de::DeserializeOwned};
 use std::io::Write;
 
@@ -61,7 +61,12 @@ pub(crate) async fn read_frame<T: DeserializeOwned + Send + 'static>(
     let bytes = recv
         .read_to_end(limit)
         .await
-        .map_err(|_| RemoteError::Protocol)?;
+        // Only bytes the peer sent can violate the protocol; a reset stream or
+        // lost connection is a transport failure the caller may retry.
+        .map_err(|error| match error {
+            ReadToEndError::TooLong => RemoteError::FrameTooLarge,
+            ReadToEndError::Read(_) => RemoteError::Unavailable,
+        })?;
     tokio::task::spawn_blocking(move || {
         serde_json::from_slice(&bytes).map_err(|_| RemoteError::Protocol)
     })

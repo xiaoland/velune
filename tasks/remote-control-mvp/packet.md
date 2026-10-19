@@ -103,7 +103,7 @@
 - 按新契约重写 `app/android`：保留构建脚手架、`NativePlatform` 初始化和 `NetworkMonitor`，其余全部新写。界面包括设备列表、扫码或粘贴配对与核对码、按设备切换的会话列表、新建会话（选择运行时与项目）、转写、审批与提问、模型选择、发送和停止。只读写 `noBackupFilesDir/remote`。
 - 在 JKM-AL00a（Android 9）上，以合成 Python 完整端（ACP fixture、iroh 公共 relay，同一 LAN）走真实 App 验收。邀请经临时 hook 写入应用私有目录，hook 未入库。已验证：配对（核对码 9992 8401 双方一致，批准后由 Rust 跟进确认、自动进入设备）、已连接状态、会话列表、转写左右布局、发送、审批卡“Allow”后回合完成、新建 Beta 会话并发送、停止请求被受理（运行状态离开 Running）。由于测试中放开了 fixture，这次没有区分停止后的终态。
 - 修正 remote 库缺陷：`set_controller_activity` 可能启动恢复任务，但未进入 Tokio runtime，于是持锁时 `tokio::spawn` panic，锁被毒化，此后每次 `connect` 都返回 Unavailable。Mac 先 connect 后报告活动，所以没有触发；Android 先选设备才触发。bindings 现在调用前进入 runtime。
-- 未验证：扫码（手机相机对不准 Mac 屏幕，只确认了相机预览启动）、跨网 NAT、后台恢复和长时间运行。
+- 未验证：扫码（手机相机对不准 Mac 屏幕，只确认了相机预览启动）、后台恢复和长时间运行。跨网见下节。
 - 2026-10-19 夜，验收结束后清除了手机上的应用数据（测试配对与旧原型的 `identity`、`trust.json`、`files/s1-probe`），并安装了 `1949ad8` 的 APK，用户真实配对从空状态开始。
 
 ## Android 控制 Mac 真机证据（2026-10-19 夜）
@@ -114,7 +114,17 @@
 - 手机上：Mac 会话列表与转写；发送；Mac 运行时的审批在手机上允许后回合完成；停止后显示“本轮已取消。”；新建会话（选择 Mac 上的运行时与项目）并发送，回答正常。
 - Mac 窗口同步显示手机发起的回合。Mac 退出重启后，手机短暂显示“远控入口已关闭”与“正在重新连接”，随后自动恢复为“已连接”，无需重新配对。
 - 修正：手机新建并很快完成的会话不进 Mac 侧栏。Mac 只在活动轮询看到“未列出且仍在运行”的会话时重读列表，回合在两次轮询（0.6 秒）之间结束就被漏掉。现在轮询返回的已结束回合属于未列出的会话时，也重读列表。复验时，Mac 应用在后台，手机新建的会话随即出现在侧栏中。
-- 待用户验收：已安装的 `/Applications/Velune.app` 与手机 App 用真实运行时配对并使用；扫码配对；跨网络（手机走移动数据）。
+- 待用户验收：已安装的 `/Applications/Velune.app` 与手机 App 用真实运行时配对并使用；扫码配对。
+
+### 跨网络（2026-10-19 夜）
+
+用户让手机（Wi-Fi 10.33.56.0/24）与 Mac mini（172.16.249.154，出网经本机代理 TUN）处于不同网络，手机 ping 不到 Mac。同样的开发副本与 hook 下：
+
+- 配对（核对码 8742 1569）、会话列表、转写、发送、审批允许、停止均走通。邀请里没有 relay URL（hook 在启动后立即生成，home relay 尚未就绪），手机靠 pkarr（dns.iroh.link）找到 Mac。
+- 路径：Mac 的 home relay 是 `usw1-1.relay.n0.iroh.link`；连上后业务流量主要走 iroh 的 UDP socket（20 秒空闲采样中 UDP 约 43 KB 出、relay TCP 约 4 KB），即打洞直连。手机到该 relay 的 RTT 190–450 ms、丢包 25–33%，所以冷启动“正在连接”约 20 秒，连上后请求即时。缩短首连需要就近或自建 relay，属于部署决定，未做。
+- 修正：Mac 重启后手机停在“无法连接（protocol）”，不再重试。原因是 remote 的 `read_frame` 把任何流读取失败（对端 reset、连接丢失）都报为 `Protocol`，而控制端恢复循环把 `Protocol` 当作不可恢复（Blocked），Android 又没有显式重连入口。现在只有对端发来的字节无法解码才算 `Protocol`；流被 reset 或连接丢失为可重试的 `Unavailable`，超长为 `FrameTooLarge`。复验：Mac 重启后手机约一分钟内自动恢复“已连接”，错误提示随下次轮询消失，发送正常。
+- 观察（与网络无关）：Mac 重启后 fixture 会话按 ACP 回放重建，被取消回合的用户消息与下一条用户消息合并显示为一条（“CANCELPERMIT”），待查是 fixture 回放还是投影合并规则。
+- 未做：邀请生成时若 home relay 未就绪则不含 relay URL，只靠 pkarr；正常经设置界面生成时 relay 一般已就绪。
 
 ## 配置跨端同步方案（候选，待用户核对）
 
