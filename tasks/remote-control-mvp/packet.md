@@ -71,6 +71,14 @@
   - 邀请输入框的宽度改为正常显示。
 - 待用户验收：真实两台设备之间的配对；在设备窗口中发送消息；批准弹窗的位置（应用位于后台时，它只在激活应用后才可见，Dock 会提醒）。
 
+## Android 证据（2026-10-19）
+
+- 按新契约重写 `app/android`：保留构建脚手架、`NativePlatform` 初始化和 `NetworkMonitor`，其余全部新写。界面包括设备列表、扫码或粘贴配对与核对码、按设备切换的会话列表、新建会话（选择运行时与项目）、转写、审批与提问、模型选择、发送和停止。只读写 `noBackupFilesDir/remote`。
+- 在 JKM-AL00a（Android 9）上，以合成 Python 完整端（ACP fixture、iroh 公共 relay，同一 LAN）走真实 App 验收。邀请经临时 hook 写入应用私有目录，hook 未入库。已验证：配对（核对码 9992 8401 双方一致，批准后由 Rust 跟进确认、自动进入设备）、已连接状态、会话列表、转写左右布局、发送、审批卡“Allow”后回合完成、新建 Beta 会话并发送、停止请求被受理（运行状态离开 Running）。由于测试中放开了 fixture，这次没有区分停止后的终态。
+- 修正 remote 库缺陷：`set_controller_activity` 可能启动恢复任务，但未进入 Tokio runtime，于是持锁时 `tokio::spawn` panic，锁被毒化，此后每次 `connect` 都返回 Unavailable。Mac 先 connect 后报告活动，所以没有触发；Android 先选设备才触发。bindings 现在调用前进入 runtime。
+- 未验证：扫码（手机相机对不准 Mac 屏幕，只确认了相机预览启动）、跨网 NAT、后台恢复和长时间运行。
+- 手机上仍留有旧原型的身份文件（`no_backup/remote/identity`、`trust.json`、`files/s1-probe`），新 App 不读取它们，清除应用数据即可删除。
+
 ## 配置跨端同步方案（候选，待用户核对）
 
 依据：配置由 `application` 持有，见 `repository.rs` 中的 `PersistedConfig`、`resource-templates.json` 与 `resource-bindings.json`。只有完整端（Mac、Windows）持有配置；Android 只是控制端，直接读写被控端的配置，不参与同步。

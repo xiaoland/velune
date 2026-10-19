@@ -13,3 +13,10 @@
 *.sqlite*
 .env
 __pycache__/
+
+# Android Gradle outputs.
+/app/android/.gradle/
+/app/android/build/
+/app/android/app/build/
+/app/android/local.properties
+/app/android/.kotlin/

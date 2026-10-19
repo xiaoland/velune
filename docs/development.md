@@ -416,10 +416,10 @@ Velune 执行的每个会话都获得 application 注入的 `velune` MCP 服务�
 
 真实 Claude 订阅验收入口为 [manual-claude-subscription-live.py](../scripts/manual-claude-subscription-live.py)，默认只冻结 `--source-ref`（缺省 HEAD）编译并执行本地解析自检。使用仓库外专用 `--home` 和官方 CLI 的 `--claude` 绝对路径，`--login` 通过 application 启动官方浏览器登录；成功后用 `--run --stage text|tool|quota` 分阶段验证。text 最多一次网关请求，tool 最多两次且工具只执行内存合成函数，quota 只采样一次；失败不自动重放。该目录是应用验收配置根，不能替换操作系统 HOME；CLI 保留系统身份以访问 macOS Keychain，订阅配置由独立 CLAUDE_CONFIG_DIR 隔离。日志仅包含固定阶段、退出码和计量，不输出凭据或响应正文。
 
-## Android 目标库
+## Android 控制端
 
-运行 `scripts/build-android-native.sh` 构建 API28+／arm64-v8a remote-only Rust so、匹配的 Kotlin 与固定摘要的 rustls verifier AAR；`--diagnostics` 另含传输诊断入口。产物在 `target/android-native` 与 `target/android-bindings`，该脚本不构建或安装 App。JNI context、系统 TLS verifier 与 Android Cleaner 生成配置属于平台后续接入前置，不能以生成 Kotlin 替代真实平台验收。
+运行 `scripts/build-android-native.sh` 构建 API28+／arm64-v8a remote-only Rust so、匹配的 Kotlin 与固定摘要的 rustls verifier AAR，产物在 `target/android-native` 与 `target/android-bindings`。`scripts/build-android.sh` 先执行原生构建，再构建 debug APK 并运行 Android lint；Kotlin 警告视为错误。只改 Kotlin 时可加 `--skip-native`，此时绑定必须与已有 so 配套。安装与运行步骤见 [Android README](../app/android/README.md)。
 
-本轮仅交付 v2 Rust Library／UniFFI。main 不包含早期 Android 工程、Mac 远控页或 App 合成宿主脚本；历史分支的观察仍留在 [本轮验收](../tasks/android-minimal/verification.md)，不作为 main 的可执行步骤。库级人工入口为上文的 `manual-remote-control.py`，只使用临时资料与合成宿主，不操作 adb 或启动平台 App。
+隔离验收用合成完整端：Python UniFFI 打开临时 application、ACP fixture 运行时与 iroh 公共 relay，生成邀请并在核对后批准。手机侧走真实 App。邀请可以扫码或粘贴；用 adb 驱动时，可以临时把邀请写入应用私有目录，但这类 hook 不入库。2026-10-19 在 JKM-AL00a（Android 9）上验证了以下流程：配对（双方核对码一致，批准后由 Rust 跟进自动确认）、会话列表、转写、发送、新建会话、审批“允许”后完成回合、停止请求被受理。
 
 平台远控消费者须独立消费 [新契约](design/remote-access.md)：使用 `state_file`、Rust 状态快照和配对事务，按 peer 连接，由独立 operation 关联副作用与准确 ID 确认。接口细节归 [bindings README](../packages/bindings/README.md)，不恢复旧接口兼容层。
