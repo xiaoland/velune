@@ -643,7 +643,12 @@ final class AppStore: ObservableObject {
                     // listed under its parent instead.
                     let subAgents = Set(active.filter { $0.parentConversationId != nil }.map(\.conversationId))
                     let unlisted = elsewhere.union(running).subtracting(subAgents).filter { id in !self.conversations.contains { $0.id == id } }
-                    if !unlisted.isSubset(of: self.unlistedElsewhereIDs) { self.refreshConversations() }
+                    // So does one started and finished between two polls (a quick
+                    // turn sent from a paired device).
+                    let finishedUnlisted = activity.finished.contains { turn in
+                        !subAgents.contains(turn.conversationId) && !self.conversations.contains { $0.id == turn.conversationId }
+                    }
+                    if finishedUnlisted || !unlisted.isSubset(of: self.unlistedElsewhereIDs) { self.refreshConversations() }
                     self.unlistedElsewhereIDs = unlisted
                     self.notifier?.observe(activity)
                 case .failure(let failure): self.recordProblem(failure, source: "读取运行状态", activityKey: "active-conversations")
