@@ -55,6 +55,16 @@ pub struct PreparedCommand {
 }
 
 impl ExecutionTarget {
+    /// A Python 3 command for helpers run on this target. Windows names the
+    /// interpreter `python`; its `python3` may be a Store install stub.
+    pub(crate) fn python(&self) -> Command {
+        if cfg!(windows) && self.is_local() {
+            crate::process_tree::command("python")
+        } else {
+            crate::process_tree::command("python3")
+        }
+    }
+
     pub fn is_local(&self) -> bool {
         matches!(self, Self::Local)
     }

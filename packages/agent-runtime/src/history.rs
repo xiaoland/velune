@@ -172,7 +172,7 @@ fn execute(
             .with_detail(error.to_string())
     })?;
     let mut command = if config.provider == "claude-code" {
-        let mut command = crate::process_tree::command("python3");
+        let mut command = config.execution.python();
         command.args(["-c", include_str!("../resources/claude_history.py")]);
         command
     } else {

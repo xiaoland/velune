@@ -52,6 +52,14 @@
 
 结论：选 GPUI。决定性因素是同语言接入，不需要 FFI 生成器；内存也明显更低。purego 约束随之不再适用。中文输入法尚未验证，样例保留在 win-ws 的 `velune-spikes\gpui-spike\target\release\gpui-spike.exe`，可请用户试用。代价是 GPUI API 变化较快，需要固定 gpui-kit 版本，且 Windows 本机构建较慢。
 
+## Windows 核心移植证据（2026-10-19）
+
+- 工作区在 win-ws 的 MSVC 目标上通过 `cargo clippy --locked --workspace --all-targets --all-features -- -D warnings`。RelayKit 改为 llvm-mingw 构建的 DLL，以 raw-dylib 绑定；子进程经 `process_tree`（Job Object、无控制台窗口）创建；Python 辅助程序在本地 Windows 目标上使用 `python`。
+- 隔离冒烟（临时 HOME、回环合成上游、Python UniFFI 绑定、不调用真实服务）：Codex 0.159.3（原生 exe，Responses）、Claude Code 2.1.286（原生 exe，Messages）、Pi 1.0.2（node＋cli.js，ChatCompletions）均完成创建、发送、经网关收到合成回答、列表出现与重新打开历史；关闭后不残留 codex.exe。脚本在 job 临时目录，未入库。
+- 测试用 Harness 安装在 win-ws 的 `velune-spikes\harness`，用 npm overrides 将 Pi 的同族包固定为 1.0.2；不固定时 `^1.0.2` 会解析到 1.3.0，导致 Pi 启动失败。
+- 用户在 win-ws 全局安装的版本不在支持区间：Codex 0.155.0（需 0.159.x）、Claude Code 2.0.76（需 2.1.x）。实际使用前需要升级，或在应用中指向受支持的安装。
+- 尚未验证：轮次进行中停止时，Job Object 是否连带结束 node 孙进程；SSH 运行时（依赖 ControlMaster），Windows 宿主不支持；凭据助手（`credential_helper`）在非 Unix 上仍返回 Unavailable，因此 Pi 来源型 OAuth 解析在 Windows 不可用。
+
 ## 执行次序
 
 1. Windows 框架 spike（GPUI 与 MyGO 各做一个最小样例：窗口、虚拟列表、多行输入与中文输入法、文本渲染），比较后定案。

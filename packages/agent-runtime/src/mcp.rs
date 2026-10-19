@@ -153,7 +153,7 @@ struct Relay {
 
 impl Relay {
     fn install(target: &ExecutionTarget, os_home: Option<&std::path::Path>) -> Result<Self> {
-        let mut command = crate::process_tree::command("python3");
+        let mut command = target.python();
         command.args(["-c", "import json,sys,tempfile; print(json.dumps({'python':sys.executable,'directory':tempfile.mkdtemp(prefix='velune-mcp-')}))"]);
         let bytes = target.output(command, None, os_home).map_err(|_| {
             Error::new("仅支持 stdio MCP 的 ACP Agent 需要目标机器上可用的 Python 3")

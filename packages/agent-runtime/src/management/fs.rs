@@ -51,7 +51,7 @@ fn remote<T: DeserializeOwned>(
         .ok_or_else(|| invalid("远程资源根目录必须是有效 UTF-8 路径"))?;
     request["root"] = json!(root);
     request["path"] = json!(path);
-    let mut command = crate::process_tree::command("python3");
+    let mut command = target.python();
     command.args(["-c", REMOTE]);
     let bytes = serde_json::to_vec(&request).map_err(|_| invalid("资源请求无法编码"))?;
     let result = target
