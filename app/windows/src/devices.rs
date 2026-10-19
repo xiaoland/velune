@@ -174,6 +174,7 @@ impl Devices {
                     .child(
                         v_flex()
                             .flex_1()
+                            .min_w_0()
                             .gap_2()
                             .child(muted("邀请五分钟内有效，只能使用一次。", cx))
                             .child(

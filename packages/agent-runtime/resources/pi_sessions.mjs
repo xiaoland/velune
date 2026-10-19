@@ -68,7 +68,7 @@ if (inspectPath) {
   // sessions. Only the files the caller names are parsed, by Pi's own
   // metadata reader through a private directory of links, so Pi stays
   // authoritative for every listed field.
-  const { readdir, stat, mkdtemp, symlink, rm, open } = await import("node:fs/promises");
+  const { readdir, stat, mkdtemp, symlink, link, copyFile, rm, open } = await import("node:fs/promises");
   const { join, resolve } = await import("node:path");
   const { tmpdir } = await import("node:os");
   let input = "";
@@ -116,8 +116,18 @@ if (inspectPath) {
   if (wanted.length) {
     const { SessionManager } = await sessionManager();
     const links = await mkdtemp(join(tmpdir(), "velune-pi-list-"));
+    // Windows grants symlinks only to administrators or in Developer Mode; a hard link
+    // (same volume) or, failing that, a copy is read the same way.
+    const stage = async (source, target) => {
+      try {
+        await symlink(source, target);
+      } catch (error) {
+        if (error?.code !== "EPERM") throw error;
+        await link(source, target).catch(() => copyFile(source, target));
+      }
+    };
     try {
-      await Promise.all(wanted.map((file, index) => symlink(file.path, join(links, `${index}.jsonl`))));
+      await Promise.all(wanted.map((file, index) => stage(file.path, join(links, `${index}.jsonl`))));
       sessions = (await SessionManager.listAll(links)).map((session) => {
         const index = Number(session.path.slice(links.length + 1, -".jsonl".length));
         return {

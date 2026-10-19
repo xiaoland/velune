@@ -16,8 +16,9 @@ use gpui_kit::component::{
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use velune_bindings::{
-    BindingActiveConversation, BindingConfigurationSnapshot, BindingListedConversation,
-    BindingPairingPhase, BindingPairingStatus, BindingRunState, BindingRuntimeInstance,
+    BindingActiveConversation, BindingConfigurationSnapshot, BindingConversationOrganizationChange,
+    BindingConversationReference, BindingListedConversation, BindingPairingPhase,
+    BindingPairingStatus, BindingRunState, BindingRuntimeInstance,
 };
 
 use crate::{
@@ -88,6 +89,8 @@ pub struct Workspace {
     prompted: HashSet<String>,
     settings: Option<WindowHandle<Root>>,
     renaming: Option<Renaming>,
+    /// Conversations whose read mark is on its way; the next listing may still show them unread.
+    marking_read: HashSet<String>,
     foreground: bool,
     _listing: Task<()>,
     _subscriptions: Vec<Subscription>,
@@ -104,6 +107,7 @@ impl Workspace {
                 this.hub
                     .read(cx)
                     .set_activity(&this.device, &this.device, this.foreground);
+                this.note_seen(cx);
             }),
         ];
         let mut workspace = Self {
@@ -114,6 +118,7 @@ impl Workspace {
             prompted: HashSet::new(),
             settings: None,
             renaming: None,
+            marking_read: HashSet::new(),
             foreground: true,
             _listing: Task::ready(()),
             _subscriptions: subscriptions,
@@ -237,6 +242,7 @@ impl Workspace {
                         Ok((list, activity)) => {
                             cursor = activity.cursor;
                             this.listing = Listing::new(list, activity.active);
+                            this.note_seen(cx);
                         }
                         Err(error) => {
                             this.listing.loaded = true;
@@ -274,7 +280,64 @@ impl Workspace {
         let device = self.device.clone();
         self.conversation =
             Some(cx.new(|cx| ConversationView::new(core, device, target, window, cx)));
+        self.note_seen(cx);
         cx.notify();
+    }
+
+    /// The open conversation is read once it shows in the active window.
+    fn note_seen(&mut self, cx: &mut Context<Self>) {
+        if !self.foreground {
+            return;
+        }
+        let Some(id) = self
+            .conversation
+            .as_ref()
+            .and_then(|view| view.read(cx).target.conversation_id().map(str::to_owned))
+        else {
+            return;
+        };
+        let Some(listed) = self
+            .listing
+            .conversations
+            .iter()
+            .find(|listed| listed.conversation.id == id && listed.unread)
+        else {
+            return;
+        };
+        if !self.marking_read.insert(id.clone()) {
+            return;
+        }
+        let reference = BindingConversationReference {
+            runtime_id: listed.conversation.runtime_id.clone(),
+            conversation_id: id.clone(),
+        };
+        let core = self.hub.read(cx).core.clone();
+        let device = self.device.clone();
+        run(
+            cx,
+            move || {
+                core.application(&device)?.organize_conversations(
+                    vec![reference],
+                    BindingConversationOrganizationChange::MarkRead,
+                )
+            },
+            move |this: &mut Workspace, result, _| {
+                this.marking_read.remove(&id);
+                match result {
+                    Ok(_) => {
+                        if let Some(listed) = this
+                            .listing
+                            .conversations
+                            .iter_mut()
+                            .find(|listed| listed.conversation.id == id)
+                        {
+                            listed.unread = false;
+                        }
+                    }
+                    Err(error) => this.listing.failure = Some(describe(&error)),
+                }
+            },
+        );
     }
 
     fn open_settings(&mut self, cx: &mut Context<Self>) {
@@ -508,9 +571,20 @@ impl Workspace {
                     .flex_1()
                     .min_w_0()
                     .child(match &self.renaming {
-                        Some(renaming) if renaming.conversation_id == conversation.id => {
-                            Input::new(&renaming.title).small().into_any_element()
-                        }
+                        // GPUI keeps focus when a click lands on something unfocusable, so
+                        // a click anywhere else, or Esc, cancels explicitly.
+                        Some(renaming) if renaming.conversation_id == conversation.id => div()
+                            .on_mouse_down_out(
+                                cx.listener(|this, _, _, cx| this.finish_rename(None, cx)),
+                            )
+                            .capture_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
+                                if event.keystroke.key == "escape" {
+                                    cx.stop_propagation();
+                                    this.finish_rename(None, cx);
+                                }
+                            }))
+                            .child(Input::new(&renaming.title).small())
+                            .into_any_element(),
                         _ => div()
                             .truncate()
                             .child(conversation.title.clone())
@@ -556,6 +630,7 @@ impl Render for Workspace {
             .collect::<Vec<_>>();
         let sidebar = v_flex()
             .w(px(300.))
+            .flex_none()
             .h_full()
             .bg(theme.sidebar)
             .border_r_1()
@@ -635,10 +710,13 @@ impl Render for Workspace {
                         v_flex().gap_1().children(rows).into_any_element()
                     }),
             );
+        // A long unbroken line (a failure with a path, say) wraps instead of widening the pane.
         let main = match &self.conversation {
             Some(view) => div()
                 .flex_1()
+                .min_w_0()
                 .h_full()
+                .overflow_hidden()
                 .child(view.clone())
                 .into_any_element(),
             None => div()
