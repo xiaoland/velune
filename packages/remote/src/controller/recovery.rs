@@ -138,6 +138,7 @@ impl Controller {
         Ok(())
     }
     /// Report one device's connection intent. Repeated facts do not create another recovery loop.
+    /// Needs a Tokio runtime context: it may start the recovery task.
     pub fn set_activity(self: &Arc<Self>, selected: bool, foreground: bool) -> Result<()> {
         let owner = self.owner()?;
         let access = owner.state.access()?;

@@ -664,6 +664,8 @@ impl VeluneRemoteEndpoint {
         selected: bool,
         foreground: bool,
     ) -> Result<(), BindingError> {
+        // Activity can start the device's recovery task, which needs the runtime.
+        let _context = self.owner.runtime.enter();
         self.owner
             .service
             .controller(&peer_id)?
