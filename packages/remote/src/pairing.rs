@@ -15,6 +15,8 @@ use std::{
 
 const EXPORTER_LABEL: &[u8] = b"EXPORTER-Velune-Pairing-v2";
 const OFFER_LIMIT: usize = 1024;
+const FOLLOW_INTERVAL: Duration = Duration::from_secs(2);
+const FOLLOW_LIMIT: Duration = Duration::from_secs(600);
 
 /// Only explicit encode exposes the single-use invitation secret. This value must not be logged.
 #[derive(Clone, Serialize, Deserialize)]
@@ -511,7 +513,61 @@ impl RemoteAccessService {
         self.state.store.touch();
         Ok(candidate.status.clone())
     }
-    pub async fn begin_pairing(&self, offer: &PairingOffer) -> Result<PairingStatus> {
+    /// Begins pairing with the device that issued `offer`, then follows the
+    /// attempt until that device answers (see `follow_pairing`).
+    pub async fn begin_pairing(self: &Arc<Self>, offer: &PairingOffer) -> Result<PairingStatus> {
+        let status = self.begin_pairing_attempt(offer).await?;
+        if matches!(
+            status.phase,
+            PairingPhase::AwaitingReady | PairingPhase::AwaitingApproval
+        ) {
+            self.follow_pairing(status.peer_id.clone());
+        }
+        Ok(status)
+    }
+    /// The issuing device answers on its own screen and never calls back, so
+    /// the pairing device asks until the answer arrives, which confirms the
+    /// contact for state observers, or until the attempt cannot be used. Only a
+    /// weak reference is held between attempts, so closing the service ends it.
+    /// Needs a Tokio runtime context.
+    pub fn follow_pairing(self: &Arc<Self>, peer: String) {
+        let service = Arc::downgrade(self);
+        tokio::spawn(async move {
+            let deadline = Instant::now() + FOLLOW_LIMIT;
+            while Instant::now() < deadline {
+                tokio::time::sleep(FOLLOW_INTERVAL).await;
+                let Some(service) = service.upgrade() else {
+                    return;
+                };
+                match service.pairing_status(&peer).await {
+                    Ok(status)
+                        if matches!(
+                            status.phase,
+                            PairingPhase::AwaitingReady | PairingPhase::AwaitingApproval
+                        ) => {}
+                    Ok(_)
+                    | Err(
+                        RemoteError::Closed
+                        | RemoteError::PairingUnavailable
+                        | RemoteError::Unauthorized,
+                    ) => return,
+                    // The device may be briefly unreachable; ask again.
+                    Err(_) => {}
+                }
+            }
+        });
+    }
+    /// Resumes following the pairings this device began and has not seen
+    /// answered, as after a restart. Needs a Tokio runtime context.
+    pub fn follow_unanswered_pairings(self: &Arc<Self>) -> Result<()> {
+        for contact in self.state.store.snapshot()?.contacts {
+            if matches!(contact.confirmation, ContactConfirmation::Pending { .. }) {
+                self.follow_pairing(contact.peer_id);
+            }
+        }
+        Ok(())
+    }
+    async fn begin_pairing_attempt(&self, offer: &PairingOffer) -> Result<PairingStatus> {
         let _begin = self.pairing_begin.lock().await;
         let offer = PairingOffer::decode(&offer.encode()?)?;
         if offer.issuer == self.state.identity.id() {

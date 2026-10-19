@@ -33,7 +33,7 @@ bindings 持有这份稳定服务，显式区分停止本机被控入口、替�
 | `open_service`、`set_control_ingress`、服务关闭 | 平台进程持有稳定服务；执行端附加现有唯一 Handler，控制端为 None。关闭服务只归应用最终生命周期，不作为界面断开操作 |
 | `read_state`、`observe_state` | 返回带递增版本的完整快照；取消观察不关闭服务，事件落后重读快照。回调不在状态锁内调用平台代码 |
 | `controller(peer_id)`、活动事实、`disconnect`／`resume` | 每个目的公钥一份恢复状态；窗口／视图共享，平台只报告选中、活动与网络事实。主动断开持久暂停，前台事件不能自动撤销用户选择 |
-| `decode_offer`、`begin_pairing`、`cancel_pairing`、事务查询 | 有界离线解析后才建连；准备完成由 Rust 在原子保存后发送。重复相机帧或 Activity 重建不重复兑换邀请 |
+| `decode_offer`、`begin_pairing`、`cancel_pairing`、事务查询 | 有界离线解析后才建连；准备完成由 Rust 在原子保存后发送。重复相机帧或 Activity 重建不重复兑换邀请。执行端不回调，控制端 Rust 在发起后及冷启时跟进未确认事务（每 2 秒，最长 10 分钟），结果经状态观察送达 |
 | 本地邀请、批准／拒绝、`revoke_control` | 仅执行端本地可信管理入口可用，不进入远程业务 Command。取消与批准竞争时返回实际已提交状态，不伪造撤销 |
 | `application_for_device(peer_id, view_id)`、`prepare_remote_operation`、未决请求观察／确认 | 保留完整业务 SDK，平台界面与本地使用同一组方法；远程副作用统一经过写前记录，结果确定后自动确认。确认只结束本机跟踪，不取消远端任务、不删除服务端去重信息 |
 | `apply_network`／`retry_network`、连接资料更新 | 语法校验和持久化后串行应用网络代际；装配失败返回保留已保存目标的 Failed 状态，语法／持久化／冲突失败才返回调用错误。带外更新 locator 必须匹配已有固定公钥 |

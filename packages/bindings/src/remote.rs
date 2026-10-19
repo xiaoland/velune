@@ -473,6 +473,10 @@ impl ServiceOwner {
             store,
             handler,
         ))?);
+        {
+            let _context = runtime.enter();
+            service.follow_unanswered_pairings()?;
+        }
         Ok(Arc::new(Self {
             runtime,
             service,
