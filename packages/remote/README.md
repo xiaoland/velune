@@ -52,7 +52,7 @@ relay／lookup 地址拒绝用户名、密码、query 和 fragment；relay 凭�
 
 ## 请求交付与操作作用域
 
-`Command::delivery_class` 穷尽分类全部命令，独立于业务修订检查。观察可以重新发起，Effect 必须通过 `RemoteOperation` 或 Controller 的显式 submit，进入唯一写前门禁。`prepare_operation` 固定目的公钥、认证 incarnation 与完整 RequestId；实际调用固定 view/execution 后先原子保存安全元数据，成功才发送。未调用的准备不落 pending；每个作用域只允许一次 Effect。普通未绑定作用域的远程具名 Effect 在发送前拒绝，本地业务 SDK 不受此限制。
+`Command::delivery_class` 穷尽分类全部命令，独立于业务修订检查。观察可以重新发起，Effect 经过唯一写前门禁：Controller 的 `request` 为未带作用域的调用自动分配 ID，结果确定后自动确认，结果不明时保留 pending；`RemoteOperation` 与显式 submit 供需要预先得知 ID 的调用方使用。`prepare_operation` 固定目的公钥、认证 incarnation 与完整 RequestId；实际调用固定 view/execution 后先原子保存安全元数据，成功才发送。未调用的准备不落 pending；每个作用域只允许一次 Effect。
 
 pending 最多 256 条，文件与普通 snapshot 只含 ID、CommandKind、view/execution、必要 runtime/conversation 定位和具名查询状态，不保存消息、附件、认证材料或可重放 Command。完整 Completed payload 只由显式查询从执行端有界内存返回，不落盘。状态写入或容量检查失败时不发送；确认落盘成功后才移除准确 ID。作用域 drop、普通方法返回、窗口关闭都不自动确认。控制进程冷启重新连接后只查询原 ID，不自动重发。
 

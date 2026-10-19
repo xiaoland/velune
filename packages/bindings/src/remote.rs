@@ -303,7 +303,6 @@ fn remote_failure_kind(error: velune_remote::RemoteError) -> BindingFailureKind 
         RemoteError::Timeout | RemoteError::ServerRestarted => BindingFailureKind::OutcomeUnknown,
         RemoteError::PairingUnavailable
         | RemoteError::PendingRequests
-        | RemoteError::OperationRequired
         | RemoteError::OperationUsed
         | RemoteError::Configuration
         | RemoteError::InvalidInvitation
@@ -974,7 +973,7 @@ impl RemoteApplication {
                 }
                 None => {
                     self.controller
-                        .observe(self.view.clone(), context.execution.clone(), command)
+                        .request(self.view.clone(), context.execution.clone(), command)
                         .await
                 }
             }

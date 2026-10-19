@@ -35,10 +35,10 @@ bindings 持有这份稳定服务，显式区分停止本机被控入口、替�
 | `controller(peer_id)`、活动事实、`disconnect`／`resume` | 每个目的公钥一份恢复状态；窗口／视图共享，平台只报告选中、活动与网络事实。主动断开持久暂停，前台事件不能自动撤销用户选择 |
 | `decode_offer`、`begin_pairing`、`cancel_pairing`、事务查询 | 有界离线解析后才建连；准备完成由 Rust 在原子保存后发送。重复相机帧或 Activity 重建不重复兑换邀请 |
 | 本地邀请、批准／拒绝、`revoke_control` | 仅执行端本地可信管理入口可用，不进入远程业务 Command。取消与批准竞争时返回实际已提交状态，不伪造撤销 |
-| `application_for_device(peer_id, view_id)`、`prepare_remote_operation`、未决请求观察／确认 | 保留完整业务 SDK；远程副作用通过一次操作作用域准确关联请求 ID，统一经过写前记录。确认只结束本机跟踪，不取消远端任务、不删除服务端去重信息 |
+| `application_for_device(peer_id, view_id)`、`prepare_remote_operation`、未决请求观察／确认 | 保留完整业务 SDK，平台界面与本地使用同一组方法；远程副作用统一经过写前记录，结果确定后自动确认。确认只结束本机跟踪，不取消远端任务、不删除服务端去重信息 |
 | `apply_network`／`retry_network`、连接资料更新 | 语法校验和持久化后串行应用网络代际；装配失败返回保留已保存目标的 Failed 状态，语法／持久化／冲突失败才返回调用错误。带外更新 locator 必须匹配已有固定公钥 |
 
-远程具名方法保留现有 payload 形状，由 `prepare_remote_operation()` 返回的 `RemoteOperation` 提供准确关联：预分配固定目的公钥、调用世代和完整请求 ID，`operation.application()` 返回共享原连接、视图和修订状态的具名业务代理。每份作用域最多接纳一个副作用；准备但未调用不落 pending，真正调用时先原子记录。平台处理该方法的结果或错误后，才通过原 operation 确认准确 ID；不能使用全局 last ID、批量确认或成功返回即自动清理。普通远程代理可直接观察，未提供作用域的副作用在发送前拒绝。本地 SDK 不改；释放或关闭作用域代理不关闭共享连接或视图，显式 `submit_request` 同样经过 Rust 写前门禁。
+2026-10-19 为使各平台只编写一份界面，普通远程代理直接调用具名方法即可执行副作用：Rust 自动分配完整请求 ID，原子记录 pending 后才发送；方法返回成功或确定的业务失败时自动确认，传输中断、结果不明、过期或执行端重启时保留 pending，由界面显示为未解决，不自动重发。`prepare_remote_operation()` 返回的作用域仍可用于需要预先得知准确 ID 的调用方：每份作用域最多接纳一个副作用，由调用方显式确认。释放或关闭代理不关闭共享连接或视图，显式 `submit_request` 同样经过 Rust 写前门禁。
 
 Rust 是身份、联系人 pin、入站 grant、配对事务、未决请求、网络设置及主动暂停意图的唯一权威。复用 remote 内现有原子文件适配，平台显式传应用私有目录，不读取全局应用配置。Kotlin 只保存选中设备、阅读位置等 UI 偏好，删除 `DeviceStore` 对 descriptor 和 pending 的重复持久化；邀请、相机帧和显示码不进入 Bundle、SavedStateHandle 或备份。
 

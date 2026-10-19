@@ -76,16 +76,39 @@ impl Controller {
             used: Mutex::new(false),
         }))
     }
-    /// Observation has no pending record. Effects must enter through a scope or explicit submit.
-    pub async fn observe(
+    /// The entry for a command without an explicit scope. An effect is recorded
+    /// before it is sent and acknowledged once its outcome is definite; an
+    /// unknown outcome stays pending for the user and is never resent.
+    pub async fn request(
         &self,
         view: ClientViewId,
         execution: ExecutionContext,
         command: Command,
     ) -> std::result::Result<ApplicationReply, CallError> {
-        if command.delivery_class() != DeliveryClass::Observation {
-            return Err(call_error(None, RemoteError::OperationRequired));
+        if command.delivery_class() == DeliveryClass::Observation {
+            return self.observe(view, execution, command).await;
         }
+        let id = self
+            .next_request_id()
+            .map_err(|error| call_error(None, error))?;
+        let result = self.call(id.clone(), view, execution, command).await;
+        let definite = match &result {
+            Ok(_) => true,
+            Err(error) => matches!(error.failure, CallFailure::Business(_)),
+        };
+        if definite {
+            // A failed acknowledgement leaves the record pending, shown as
+            // unresolved; the caller still receives the outcome.
+            let _ = self.acknowledge(&id);
+        }
+        result
+    }
+    async fn observe(
+        &self,
+        view: ClientViewId,
+        execution: ExecutionContext,
+        command: Command,
+    ) -> std::result::Result<ApplicationReply, CallError> {
         self.client()
             .map_err(|error| call_error(None, error))?
             .call(view, execution, command)

@@ -150,6 +150,11 @@ def exercise_business(b, local, first, second, root, report):
     assert first.acp_launch('alpha').environment == launch.environment
     assert first.acp_launch('alpha').args == launch.args
     report.append('acp_environment_explicit_only_and_runtime_edit_preserves_launch')
+    # The same named method works without a scope; a definite outcome is acknowledged by Rust.
+    alpha_runtime.name = 'Alpha unscoped'
+    first.upsert_runtime(alpha_runtime)
+    assert next(r for r in local.list().runtime_instances if r.id == 'alpha').name == 'Alpha unscoped'
+    report.append('unscoped_effect_records_then_acknowledges')
 
     with remote_operation(first) as scoped:
         scoped.upsert_runtime(b.BindingRuntimeInstance(enabled=False, id='resources', name='Resources',
@@ -189,7 +194,7 @@ def exercise_business(b, local, first, second, root, report):
     assert next(file['bytes'] for file in stored_skill['content']['files'] if file['path'] == 'assets/data.bin') == [0,255,128]
     report.append('binary_skill_asset_native_and_template_storage_round_trip')
 
-    default = b.BindingModelSelection.RUNTIME_DEFAULT()
+    default = None  # No choice: the runtime uses its own default.
     with remote_operation(first) as scoped:
         created = scoped.create_conversation_with_selection('beta', str(project), default).snapshot
     identity = created.conversation.id
@@ -593,6 +598,7 @@ def main():
                 for path in path_status.paths]
             report.append('actual_selected_iroh_path_is_direct')
             identity, default = exercise_business(b, application, first, second, root, report)
+            assert not endpoints['first'].read_state().pending, 'definite outcomes left pending records'
             exercise_stale_message_edit(b, first, second, identity, default, report)
             exercise_configuration_conflict(b, first, second, report)
             exercise_views_and_attachments(b, application, first, second, identity, default, root, report)

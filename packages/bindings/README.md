@@ -25,7 +25,7 @@ Codex 订阅的前端接入复用 `authentication_start`／`authentication_poll`
 
 `read_state`／`observe_state().next(timeout_ms)` 提供 contacts、incoming_grants、incoming/outgoing_pairings、controllers、network、多个 pending 与 reset_notice 的版本化安全快照。观察等待为 1–5000 毫秒，落后读取完整投影，不把快照当全部事件。联系人不保存 incarnation；pending 的完整请求 ID 固定原 incarnation，但不保存业务正文或 Completed payload。旧普通 schema 初始化为空 schema 3 并留下跨冷启可确认的通知；Android 清理旧 devices.json/.new/.bak 前先调用 `record_legacy_state_reset`，成功后才移除旧普通文件，不触碰 identity。`acknowledge_reset(notice_id)` 只确认指定通知。
 
-远程观察可直接调用原有具名方法；副作用使用一次操作作用域，完整 payload 与方法返回类型保持：
+远程代理与本地应用使用同一组具名方法，平台界面不区分本地和远端。普通方法调用 Effect 时，Rust 自动分配请求 ID，在发送前保存 peer、完整 ID、view、execution、CommandKind 及安全定位；保存失败或容量已满时零发送。结果确定（成功或业务失败）后自动确认，结果不明时保留 pending，不自动重发。需要在调用前得知准确 ID 的调用方，仍可使用一次操作作用域：
 
 ```text
 operation = application.prepare_remote_operation()
@@ -34,7 +34,7 @@ result = operation.application().send_turn_with_selection(...)
 operation.acknowledge()
 ```
 
-作用域在调用前提供准确 `request_id()`，只允许一次 Effect；并发操作分别持有自己的对象。Rust 在发送前保存 peer、完整 ID、view、execution、CommandKind 及安全定位；保存失败或容量已满时零发送。普通未绑定作用域的 Effect 被拒绝，显式 `next_request_id`／`submit_request` 也走相同门禁。作用域 drop、facade shutdown 或普通方法返回都不自动 ack，不关闭共享 Controller／view。base proxy shutdown 只关闭该 view，用户主动断开用服务 `disconnect(peer_id)`；它先保存暂停意图，随后关闭该设备共享连接。停止执行仍使用具名 cancel／stop_sub_agents。
+作用域只允许一次 Effect，drop、facade shutdown 或方法返回都不自动确认；显式 `next_request_id`／`submit_request` 走同一写前门禁。这些都不关闭共享 Controller／view。base proxy shutdown 只关闭该 view，用户主动断开用服务 `disconnect(peer_id)`；它先保存暂停意图，随后关闭该设备共享连接。停止执行仍使用具名 cancel／stop_sub_agents。
 
 Running、Unknown、ResultExpired、ServerRestarted 与传输不明保留 pending，不在 finally 清除。平台处理明确完成／业务失败后按该 operation 确认；用户明确结束跟踪也只确认该准确 ID，不取消执行端工作。冷启没有旧 operation 对象时，使用服务 `query_request(peer_id, id)` 和 `acknowledge_request(peer_id, id)`。查询只返回原结果，不重发；完整结果可能含显式读取的秘密，只通过加密连接及内存返回。普通 snapshot 和持久 pending 只有具名安全状态。`forget_device` 只删除目的 pin，有 pending 时拒绝；`revoke_control` 只撤销本机授予对端的控制，旧配对事务不能复活 grant。
 
