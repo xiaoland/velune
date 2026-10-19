@@ -367,6 +367,8 @@ struct WindowSeed: Codable, Hashable {
     var conversationID: String?
     /// A tab another window hands over, with its state.
     var tab: UUID?
+    /// The paired device whose core the window shows; nil for this Mac.
+    var device: String?
 }
 
 /// A conversation window: the list with its own workspace, and the panes
@@ -374,6 +376,8 @@ struct WindowSeed: Codable, Hashable {
 /// focused pane's tab; the window's toolbar and commands act on it.
 @MainActor final class ConversationWindowModel: ObservableObject {
     let application: AppStore
+    /// The paired device the window shows; nil for this Mac.
+    let device: String?
     /// The list's workspace: list, search and selection; it opens no conversation.
     let list: AppStore
     @Published private(set) var layout: PaneLayout
@@ -445,9 +449,10 @@ struct WindowSeed: Codable, Hashable {
         return all.lazy.compactMap(\.model).first { $0.pane(holding: tab) != nil }
     }
 
-    init(application: AppStore, kind: ConversationWindowKind) {
+    init(application: AppStore, kind: ConversationWindowKind, device: String? = nil) {
         self.application = application
         self.kind = kind
+        self.device = device
         list = application.makeWorkspace()
         let store = application.makeWorkspace()
         let first = Pane(tabs: [ConversationTab(store: store, start: { store.start() })])

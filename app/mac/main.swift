@@ -196,7 +196,9 @@ struct ConversationWindow: View {
     let previewEmpty: Bool
     let previewSettings: Bool
     init(application: AppStore, kind: ConversationWindowKind, seed: WindowSeed?, previewEmpty: Bool, previewSettings: Bool) {
-        _window = StateObject(wrappedValue: ConversationWindowModel(application: application, kind: kind))
+        // A paired device's window shows that device's core through the same interface.
+        let target = seed?.device.flatMap { DeviceHub.shared?.store(for: $0) } ?? application
+        _window = StateObject(wrappedValue: ConversationWindowModel(application: target, kind: kind, device: seed?.device))
         self.seed = seed
         self.previewEmpty = previewEmpty
         self.previewSettings = previewSettings
@@ -281,6 +283,9 @@ struct VeluneApp: App {
         previewEmpty = CommandLine.arguments.contains("--preview-empty")
         previewSettings = CommandLine.arguments.contains("--preview-settings")
         appDelegate.store = applicationStore
+        if !preview, let transport = applicationStore.resourceTransport {
+            DeviceHub(local: transport).start()
+        }
         KeyboardShortcutSettings.shared.load(home: applicationStore.resourceTransport?.stateDirectory) { [weak applicationStore] in
             applicationStore?.recordProblem($0, source: "保存快捷键")
         }

@@ -75,7 +75,7 @@ struct VeluneRootView: View {
             }
         }
         // The window keeps the title for the Window menu and Mission Control; the tab bar shows it.
-        .navigationTitle(previewEmpty ? "新会话" : focused.selectedConversationTitle ?? "Velune")
+        .navigationTitle([previewEmpty ? "新会话" : focused.selectedConversationTitle ?? "Velune", deviceName].compactMap { $0 }.joined(separator: " — "))
         .toolbar(removing: .title)
     }
 
@@ -97,8 +97,11 @@ struct VeluneRootView: View {
 
     @available(macOS 26, *)
     @ToolbarContentBuilder private var customizableToolbarItems: some CustomizableToolbarContent {
-        ToolbarItem(id: "back", placement: .navigation) { backButton }
-        ToolbarItem(id: "forward", placement: .navigation) { forwardButton }
+        Group {
+            ToolbarItem(id: "back", placement: .navigation) { backButton }
+            ToolbarItem(id: "forward", placement: .navigation) { forwardButton }
+            if let deviceName { ToolbarItem(id: "device", placement: .navigation) { deviceLabel(deviceName) } }
+        }
         // Without the title nothing holds the buttons to the trailing end.
         ToolbarSpacer(.flexible)
         ToolbarItem(id: "reload") { reloadButton }
@@ -114,6 +117,7 @@ struct VeluneRootView: View {
         ToolbarItemGroup(placement: .navigation) {
             backButton
             forwardButton
+            if let deviceName { deviceLabel(deviceName) }
         }
         ToolbarItem { Spacer() }
         ToolbarItemGroup {
@@ -130,6 +134,16 @@ struct VeluneRootView: View {
             }
             if Self.changeReviewEnabled { changesToggle }
         }
+    }
+
+    /// The paired device a window shows, which every conversation in it runs on.
+    private var deviceName: String? {
+        window.device.map { DeviceHub.shared?.name(of: $0) ?? "远程设备" }
+    }
+
+    private func deviceLabel(_ name: String) -> some View {
+        Label(name, systemImage: "desktopcomputer").labelStyle(.titleAndIcon).foregroundStyle(.secondary)
+            .help("此窗口中的会话运行在“\(name)”上")
     }
 
     /// Lets the window tell a right click on this tool's button (see `showsToolbarPlaceMenu`).
@@ -431,7 +445,7 @@ extension ImmediateDisclosureGroup where Label == Text {
     }
 }
 
-enum SettingsTab: Hashable { case general, conversation, shortcuts, providers, routes, runtimes }
+enum SettingsTab: Hashable { case general, conversation, shortcuts, providers, routes, runtimes, devices }
 
 /// The settings tab that is showing. Entry points elsewhere in the app set it
 /// before opening the window, so settings open where the task needs them.
@@ -461,6 +475,9 @@ struct SettingsView: View {
             ProviderSettingsView(store: store).tabItem { Label("AI提供商", systemImage: "network") }.tag(SettingsTab.providers)
             ModelRouteSettingsView(store: store).tabItem { Label("模型路由", systemImage: "arrow.triangle.branch") }.tag(SettingsTab.routes)
             RuntimeSettingsView(store: store).tabItem { Label("Agent 运行时", systemImage: "terminal") }.tag(SettingsTab.runtimes)
+            if let hub = DeviceHub.shared {
+                DeviceSettingsView(hub: hub).tabItem { Label("设备", systemImage: "laptopcomputer.and.iphone") }.tag(SettingsTab.devices)
+            }
         }
         // Settings are compact forms of one fixed size, so switching tabs never resizes the window.
         .frame(width: 690, height: 560)

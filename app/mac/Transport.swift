@@ -41,8 +41,10 @@ enum OperationEffect {
 /// payload dictionary; generated records and methods are the ABI contract.
 final class Transport: @unchecked Sendable {
     let configurationChanged = PassthroughSubject<Void, Never>()
+    /// This Mac's Velune home; a remote device's transport keeps its interface state here too.
     let stateDirectory: URL
-    private let resourcesDirectory: URL
+    /// Opens the application this transport talks to: this Mac's core, or a paired device.
+    private let open: () throws -> VeluneApplication
     private let lock = NSLock()
     private static let logger = Logger(subsystem: "local.velune", category: "transport")
     private var application: VeluneApplication?
@@ -54,7 +56,20 @@ final class Transport: @unchecked Sendable {
 
     init(stateDirectory: URL, resourcesDirectory: URL) {
         self.stateDirectory = stateDirectory
-        self.resourcesDirectory = resourcesDirectory
+        open = {
+            try VeluneApplication.open(options: BindingOptions(homeDirectory: stateDirectory.path, resourcesDirectory: resourcesDirectory.path))
+        }
+    }
+
+    /// A paired device's application; the same named methods reach its core.
+    init(stateDirectory: URL, remote: @escaping () throws -> VeluneApplication) {
+        self.stateDirectory = stateDirectory
+        open = remote
+    }
+
+    /// The remote service of this Mac's own core, opened with it.
+    func openRemoteEndpoint(_ options: BindingRemoteOptions) throws -> VeluneRemoteEndpoint {
+        try withApplication("openRemoteEndpoint", .reads) { try VeluneRemoteEndpoint.open(options: options, application: $0) }
     }
 
     static func applicationDefault() throws -> Transport {
@@ -203,9 +218,7 @@ final class Transport: @unchecked Sendable {
         guard !isClosed else { throw TransportError.operation(operation, .closed) }
         guard effect != .reads || !isClosing else { throw TransportError.operation(operation, .quitting) }
         if application == nil {
-            let options = BindingOptions(homeDirectory: stateDirectory.path,
-                                         resourcesDirectory: resourcesDirectory.path)
-            do { application = try VeluneApplication.open(options: options) }
+            do { application = try open() }
             catch { logFailure(operation: operation, localCorrelation: correlation, error: error, categoryOverride: "open_failed"); throw TransportError.operation(operation, map(error)) }
         }
         do {
