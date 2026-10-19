@@ -79,7 +79,7 @@ iroh 的默认自动选路与 QUIC 多流承担传输；路径快照、事件和
 
 后续产品复核已确认使用 iroh 公共设施可接受，用户可替换为自部署或兼容协议的公开 relay；局域网与公网共用同一设备与授权模型，并要求已建立连接在进入／离开 LAN 时自动优选和恢复。方向授权、配对事务、可刷新寻址、连接恢复、设施代际及请求寿命的契约由 [统一设备远控方案](remote-access.md) 维护。iroh 1.3.0 的热更新不承担严格退出事务，Rust 稳定服务独立保留账本与已接纳任务，网络代际串行关闭和重建；mDNS 使用可完整关闭的私有 IO runtime，业务主 runtime 不变。晚到 lookup 不直接触发活动连接探测，活动路径仍沿原生地址变化和 QNT 机制升级，不能据库构建宣称跨公网自动选优已经通过。
 
-2026-10-18 用户明确当前实施只限 Rust Library／UniFFI，平台 App 接入、界面及安装已收回。稳定服务、v2 契约、生产 mDNS、Controller 恢复与设施设置已完成库级实现和隔离验证；现有 App 尚未同步新契约，真实公网迁移、非默认双网和完整扫码仍未验收。具体产物、证据和外部验收缺口归方案链接的任务，当前库交付不代表产品已完成。
+2026-10-18 的库交付完成了稳定服务、v2 契约、生产 mDNS、Controller 恢复与设施设置的库级实现和隔离验证。2026-10-19 起远控 MVP 接入平台：完整端（Mac、Windows）装配本地 ApplicationService 与远控服务，控制端（Android）只装配 remote-only 绑定。各端界面只编写一份，经同一 `VeluneApplication` 业务接口操作本机或 `application_for_device` 返回的远端代理，由设备选择决定目标。实施与验收见 [远控 MVP 任务](../../tasks/remote-control-mvp/packet.md)；真实公网迁移和非默认双网仍未验收。
 
 ## 1. 已认可方向与收敛方案
 
@@ -131,7 +131,7 @@ iroh 的默认自动选路与 QUIC 多流承担传输；路径快照、事件和
 ### Apple 与 Android 宿主
 
 - **Apple 当前落点**：Mac 使用 SwiftUI／AppKit 的原生窗口、菜单与设置，嵌入 Rust dylib；iOS／iPadOS 的 UIKit 方向不等于已实现或能运行桌面 Harness。watchOS／tvOS／visionOS 不在本轮承诺内
-- **Windows 等桌面平台**：通过同一核心 ABI 复用行为，各自采用平台原生 UI 与秘密设施；当前没有已实现的 Windows app
+- **Windows**：完整端，本机运行 agents 并可控制其他端。2026-10-19 spike 后选定 GPUI（`gpui-kit` 0.7.3，DirectX 11＋DirectWrite 自绘）作为用户接受的视觉例外。GPUI 与核心同为 Rust，Windows app 同进程直接调用 bindings 的 Rust API，不经 UniFFI 生成语言、purego 或 IPC。对比 MyGO 的证据见 [任务](../../tasks/remote-control-mvp/packet.md)。当前尚未实现
 - **Android 目标**：Kotlin＋Jetpack Compose 原生控制端，经 remote-only UniFFI／JNA 嵌入 Rust，不携带 Harness 或 AI 执行栈。库已提供 Application JNI context 与系统 TLS verifier 的装配入口；应用私有存储、备份排除与生命周期接入由后续平台工作承担。当前 main 不包含早期 Android App，库产物与历史平台观察见 [任务](../../tasks/android-minimal/packet.md)
 - **移动端能力**：远端 Harness 接入和后台能力仍需单独验证。嵌入核心不代表手机能常驻桌面 Harness，也不把离线输入显示为远端已启动的任务
 

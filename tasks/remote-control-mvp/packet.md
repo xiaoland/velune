@@ -39,6 +39,19 @@
 - Mac 同时作为被控端与控制端。MVP 先做会话日常闭环；提供商、资源等配置要跨端同步，同步方案另行收敛后再与用户核对。
 - 使用 iroh 公共 relay。remote 库可继续修改或拆分。可完全控制已连接的 Android 手机与 win-ws。
 
+## Windows UI 框架 spike（2026-10-19）
+
+两份样例实现同一场景：10k 行会话列表、800 条可变高度 Markdown 转录（含代码块、表格、中英混排）、多行输入与发送。均在 win-ws 的 RDP 交互会话中运行并截图。
+
+| | GPUI（gpui-kit 0.7.3，Rust 1.99.0 MSVC） | MyGO v0.5.5（Go 1.26，CGO_ENABLED=0） |
+| --- | --- | --- |
+| 构建 | Windows 本机 release 首次 4 分 03 秒，exe 23.8 MB | Mac 交叉编译 8 秒，exe 15.3 MB |
+| 运行内存（工作集） | 约 64 MB | 约 295 MB |
+| 渲染 | 中英文、Markdown 标题／列表／代码块／表格清晰，标准 Windows 标题栏按钮 | Markdown 质量好（含语法高亮与 Copy），但按示例写法的侧栏与输入区未显示，FollowEnd 未停在末尾；可能是样例用法问题，未深究 |
+| 接入核心 | 同语言，直接链接 bindings 的 Rust API | 需自建 purego UniFFI 生成器，覆盖约 240 个类型 |
+
+结论：选 GPUI。决定性因素是同语言接入，不需要 FFI 生成器；内存也明显更低。purego 约束随之不再适用。中文输入法尚未验证，样例保留在 win-ws 的 `velune-spikes\gpui-spike\target\release\gpui-spike.exe`，可请用户试用。代价是 GPUI API 变化较快，需要固定 gpui-kit 版本，且 Windows 本机构建较慢。
+
 ## 执行次序
 
 1. Windows 框架 spike（GPUI 与 MyGO 各做一个最小样例：窗口、虚拟列表、多行输入与中文输入法、文本渲染），比较后定案。
