@@ -53,11 +53,8 @@ impl LoginFailure {
         use crate::credential_helper::CredentialError;
         match error {
             CredentialError::Unavailable => Self::new(phase, "process_unavailable"),
-            #[cfg(unix)]
             CredentialError::Timeout => Self::new(phase, "timeout"),
-            #[cfg(unix)]
             CredentialError::InvalidOutput => Self::new(phase, "output_invalid"),
-            #[cfg(unix)]
             CredentialError::Exit { code } => Self {
                 phase,
                 reason: "process_exit",

@@ -1,0 +1,15 @@
+[package]
+name = "velune-windows"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[[bin]]
+name = "velune"
+path = "src/main.rs"
+
+[dependencies]
+velune-bindings = { path = "../../packages/bindings" }
+gpui-kit = "=0.7.3"
+qrcode = { version = "0.14", default-features = false }
+uuid = { version = "1", features = ["v4"] }

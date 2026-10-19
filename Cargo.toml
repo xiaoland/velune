@@ -3,6 +3,7 @@ members = [
     "packages/ai", "packages/ai-provider", "packages/conversation",
     "packages/agent-runtime", "packages/gateway", "packages/application",
     "packages/bindings", "packages/application-api", "packages/remote", "app/host",
+    "app/windows",
 ]
 exclude = ["third-party/iroh-mdns-address-lookup", "third-party/iroh"]
 resolver = "3"

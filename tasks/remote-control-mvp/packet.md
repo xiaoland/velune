@@ -58,7 +58,18 @@
 - 隔离冒烟（临时 HOME、回环合成上游、Python UniFFI 绑定、不调用真实服务）：Codex 0.159.3（原生 exe，Responses）、Claude Code 2.1.286（原生 exe，Messages）、Pi 1.0.2（node＋cli.js，ChatCompletions）均完成创建、发送、经网关收到合成回答、列表出现与重新打开历史；关闭后不残留 codex.exe。脚本在 job 临时目录，未入库。
 - 测试用 Harness 安装在 win-ws 的 `velune-spikes\harness`，用 npm overrides 将 Pi 的同族包固定为 1.0.2；不固定时 `^1.0.2` 会解析到 1.3.0，导致 Pi 启动失败。
 - 用户在 win-ws 全局安装的版本不在支持区间：Codex 0.155.0（需 0.159.x）、Claude Code 2.0.76（需 2.1.x）。实际使用前需要升级，或在应用中指向受支持的安装。
-- 尚未验证：轮次进行中停止时，Job Object 是否连带结束 node 孙进程；SSH 运行时（依赖 ControlMaster），Windows 宿主不支持；凭据助手（`credential_helper`）在非 Unix 上仍返回 Unavailable，因此 Pi 来源型 OAuth 解析在 Windows 不可用。
+- Job Object 硬退出：Python 宿主在 Pi 回合进行中 `os._exit`，Pi 的 node.exe 随之结束（临时脚本，未入库）。尚未用真实工具调用验证更深一层的孙进程。
+- 凭据助手（`credential_helper`）已改为 Unix 进程组与 Windows Job Object 共用同一套超时、输出上限和进程树清理，Windows 上不再直接返回 Unavailable。目前只经静态检查：运行验证需要真实的 Pi 来源认证，开发方不读取。
+- SSH 运行时依赖 ControlMaster，Windows 宿主不支持。
+
+## Windows 应用证据（2026-10-19）
+
+- `app/windows`（GPUI，gpui-kit `=0.7.3`）直接链接 bindings，入口见 [Windows README](../../app/windows/README.md)。`scripts/build-windows.ps1` 在 win-ws 上完成 release 构建，组装出可移动的应用目录。
+- 在 win-ws 的交互会话中以隔离 `VELUNE_HOME` 运行，用临时脚本模拟点击（未入库），已验证：启动与设置窗口；远控服务就绪，接入开关打开；运行时发现列出用户全局安装的 pi 0.80.3、codex 0.155.0、claude 2.0.76，并标为不受支持；手动添加 Pi 1.0.2 运行时；添加合成回环提供商（Chat Completions，`127.0.0.1:18080`，非真实 key）。
+- 发现 gpui-component 对话框内的输入框在 Windows 上收不到点击，点击落到遮罩上、对话框随之关闭。新会话与重命名因此改为就地编辑。
+- 首次冷启动时，Pi 的版本探测超过 15 秒超时，疑为 Defender 扫描；重试成功。
+- 事故：一次界面脚本运行时，Velune 窗口不存在，而用户正在 win-ws 上使用 Codex 应用，脚本按绝对坐标点击并输入，把测试路径输入了用户 Codex 的输入框（未发送）。此前的粘贴步骤也两次覆盖了用户剪贴板。之后脚本增加两道保护：用户空闲不足 10 分钟即中止，目标窗口不在前台时不发送任何输入。
+- 未验证：在界面中发送消息并完成回合、审批、就地重命名、二维码显示，以及与 Android／Mac 的配对和批准对话框。
 
 ## Mac 接入证据（2026-10-19）
 

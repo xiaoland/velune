@@ -160,15 +160,12 @@ impl CredentialResolver for ProviderResolver {
                     crate::credential_helper::CredentialError::Unavailable => {
                         CredentialResolutionError::Unavailable
                     }
-                    #[cfg(unix)]
                     crate::credential_helper::CredentialError::Exit { .. } => {
                         CredentialResolutionError::Unavailable
                     }
-                    #[cfg(unix)]
                     crate::credential_helper::CredentialError::Timeout => {
                         CredentialResolutionError::Timeout
                     }
-                    #[cfg(unix)]
                     crate::credential_helper::CredentialError::InvalidOutput => {
                         CredentialResolutionError::InvalidContract
                     }
