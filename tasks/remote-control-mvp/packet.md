@@ -125,6 +125,7 @@
 - 修正：Mac 重启后手机停在“无法连接（protocol）”，不再重试。原因是 remote 的 `read_frame` 把任何流读取失败（对端 reset、连接丢失）都报为 `Protocol`，而控制端恢复循环把 `Protocol` 当作不可恢复（Blocked），Android 又没有显式重连入口。现在只有对端发来的字节无法解码才算 `Protocol`；流被 reset 或连接丢失为可重试的 `Unavailable`，超长为 `FrameTooLarge`。复验：Mac 重启后手机约一分钟内自动恢复“已连接”，错误提示随下次轮询消失，发送正常。
 - 观察（与网络无关）：Mac 重启后 fixture 会话按 ACP 回放重建，被取消回合的用户消息与下一条用户消息合并显示为一条（“CANCELPERMIT”），待查是 fixture 回放还是投影合并规则。
 - 未做：邀请生成时若 home relay 未就绪则不含 relay URL，只靠 pkarr；正常经设置界面生成时 relay 一般已就绪。
+- 结束后安装了 `1f51260` 的 Mac 应用（manifest `dirty: false`）与 APK，并再次清除手机应用数据，用户真实配对从空状态开始。
 
 ## 配置跨端同步方案（候选，待用户核对）
 
