@@ -263,3 +263,23 @@ HOME 修复已覆盖 application 登录/状态/退出/额度与 ai-provider 执�
 验证：cargo fmt --check、workspace check、clippy（-D warnings）与 application／bindings `--no-default-features` check 无警告；`build-macos.sh --build-only` 成功。临时 Python 绑定脚本在隔离 home 中验证三项模板的组合与披露，Codex 模板以 Keep 保存为未登录 OAuth，Claude 模板空路径被拒、填入绝对路径后保存，API 模板以 key 保存。临时离屏渲染检查模板选择、三种新建编辑器、已有 Claude 提供商与提供商列表；临时代码与截图不提交。真实添加流程与登录交由用户验收。
 
 安装：变基到 main `10fb7ce` 后提交 63954c8，快进本地 main（共享检出当时位于其他分支，直接快进 main 引用），在独立工作树构建并安装到 `/Applications/Velune.app`（0.1 beta.1）；安装时没有运行中的 Velune。codesign 严格校验通过，构建清单 source_commit 与该提交一致、dirty 为 false。
+
+## Kimi Coding Plan 可行性研究（2026-10-19）
+
+用户要求先看能否增加 Kimi Coding Plan。本轮仅调查和建议，不改产品源码、不读取凭据、不发起认证/模型/额度请求。基线 main `9c00ef8`，初始工作区干净；root负责协议与现有组合差距，codex_source负责第一方额度实现/账号边界，advisor负责最小接入范围判断。
+
+已核对 [官方概览](https://www.kimi.com/help/kimi-code/membership-guide) 与 Context7 的官方文档索引：Coding Plan 可在控制台创建独立 API Key，OpenAI base 为 `https://api.kimi.com/coding/v1`（海外 `.ai`），支持 Chat Completions 与 Responses；Messages base 为 `https://api.kimi.com/coding/`，实际 `/coding/v1/messages`。它与 Moonshot 按量开放平台的地址/key不同，不需要依赖本机 Kimi CLI。当前 Http/Native/ApiKey 组合可作为请求路径基础，新的提供商模板只装配能力，不创建贯穿调度的 Kimi 供应商类型。是否实际兼容仍须后续受控真实验收。
+
+[官方错误参考](https://www.kimi.com/code/docs/kimi-code/error-reference.html) 显示套餐能力不足也可能401；5小时/老套餐周/月额度耗尽及账号并发限制均可能403；429对应瞬时频控与引擎过载。现gateway通用403停止，结构化quota code仅识别三个通用值，因此不能声称填地址/key就完成套餐耗尽fail-over。需在请求适配边界归一化可验证错误事实，不能把所有403改成可切换。思考工具续接需要保留reasoning_content等上游协议字段，现best-effort转换不等同已验证兼容。
+
+[官方社区倡议](https://www.kimi.com/help/kimi-code/community-guidelines) 允许个人交互式第三方编程工具，要求真实客户端身份，不允许伪造User-Agent、转售或非个人交互批处理。方案使用Velune真实身份，不照抄伪装Kimi CLI的社区header。额度采集可行性、窗口/账号归属及最小范围建议继续归本节，不将未确认提案写入PRD。
+
+固定第一方实现为 [MoonshotAI/kimi-code 5710c5496a213742ca0687f69dd8eeb5bde52dbf](https://github.com/MoonshotAI/kimi-code/tree/5710c5496a213742ca0687f69dd8eeb5bde52dbf)；旧 kimi-cli 已归档，不作为当前实现基线。`packages/oauth/src/managed-usage.ts` 使用 GET `/coding/v1/usages`，Bearer + Accept JSON；payload.usages 包含可选 `limit_5h`、`limit_7d`、`limit_month_total`、`limit_month_code`（used_ratio、reset_time），boosterWallet包含余额/剩余额度及月支出限制。`managed-userinfo.ts` GET `/coding/v1/me` 有 user_id与区域信息；接口本身未给稳定subscription id。当前调用链先 ensureFresh OAuth，未取得普通 Coding API Key 对这两个接口的真实权限证据。只能把它们称作官方公开实现内部接口，不能承诺 key-only 额度/身份可用，更不能为此新增 daemon 依赖或冒用内部 OAuth 客户端身份。
+
+[官方会员权益](https://www.kimi.com/help/kimi-code/benefits) 明确所有设备/API Key共享额度，新套餐5小时+会员月总额、旧套餐另有周窗口；不能固定假设所有订阅都存在周窗口。同账户多个Key不能当多个独立订阅；没有稳定账户证据时，key哈希不构成订阅身份。开启加油包后，额度耗尽可自动使用充值余额且不返回quota错误，因此普通模型调用成功也不能证明仍在订阅额度内；不由Velune替用户打开该选项。
+
+建议产品范围：增加一个Kimi Coding Plan模板，复用Http/标准协议/ApiKey，一订阅一个provider；主动额度来源在确认key权限后装配，失败保Unknown/Unsupported。完整聚合接入同时补服务边界错误语义，向gateway输出中立分类，不把品牌贯穿调度，不把所有403都改成可切换，不把401套餐权限误报成Key失效。优先原生上游协议完成文本/思考工具往返、计量和额度边界，再验证已有异协议转换。当前可行性结论与范围建议已形成，未进入源码实施、未进行真实调用。
+
+2026-10-20 用户认可Kimi模板/额度/错误语义方向，并授权以指定Coding Key验证第一方查询接口、继续收敛；权限变更已归PRD与sources。实际私有文件位于所指项目的隐藏secrets目录，仅程序内提取专用Coding key/base，未读取其他变量值或保存响应。正常TLS、无重定向、真实Velune身份，共两次GET，无模型/登录/重试。`/coding/v1/usages` 与 `/coding/v1/me` 均HTTP200；前者实际返回5h/week数值比例及reset字段，月窗口/wallet缺失；后者有user_id/global_id，仅输出存在性。由此否定“普通Coding Key必然不能查额度”的假设，但不推广为所有套餐/区域都支持。
+
+技术收敛、脱敏证据、验收判据与线性顺序已合并到 [Kimi Coding Plan接入收敛](kimi-coding-plan.md)。建议复用request profile新增KimiCoding而非另增ErrorPolicy配置轴，KimiUsage独立来源，Messages为首版原生上游。凭据generation控制旧任务，经过/me验证的owner控制订阅归属；同owner换key不清阈值/冷却，不按keyhash复制订阅。当前阶段结果已形成，产品源码未改、未发模型请求；后续实施及推理验收仍为待完成事项。
