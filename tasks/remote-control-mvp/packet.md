@@ -61,6 +61,12 @@
 - Job Object 硬退出：Python 宿主在 Pi 回合进行中 `os._exit`，Pi 的 node.exe 随之结束（临时脚本，未入库）。尚未用真实工具调用验证更深一层的孙进程。
 - 凭据助手（`credential_helper`）已改为 Unix 进程组与 Windows Job Object 共用同一套超时、输出上限和进程树清理，Windows 上不再直接返回 Unavailable。目前只经静态检查：运行验证需要真实的 Pi 来源认证，开发方不读取。
 - SSH 运行时依赖 ControlMaster，Windows 宿主不支持。
+- 2026-10-19 用户建议分治：Agent 运行时的控制能力由 Rust lib 在 Windows 上直接验证，不经 GUI。临时 Rust probe 放在 win-ws 的仓库之外，以路径依赖直接驱动 `velune-agent-runtime`，未入库。
+  - 单独构建暴露了打包缺陷：agent-runtime（及新的凭据助手）声明的 `windows-sys` features 不全，缺 `Win32_Security` 与 `Win32_System_Threading`。工作区构建能通过，只是因为 GPUI 的依赖启用了它们。已补齐，并在 win-ws 上逐包 `cargo check -p` 了 agent-runtime、application、remote 与 bindings。
+  - Pi 1.0.2（隔离 agent dir，回环脚本上游；win-ws 上的 Pi 没有登录）：1.6 秒就绪，回合完成；bash 工具经 Git Bash 运行 ping 时停止，ping 结束、工具标为失败；同样情形下宿主硬退出，node、bash、ping 及 conhost 全部随 Job 结束；关闭后无残留。
+  - Codex 0.159.3（用户已登录的 `~\.codex`，用户授权的真实额度，选最小的 gpt-5.6-luna、low）：模型目录；单词回复（约 1.6 万输入 token，用量与周额度回报正常）；read-only 下的命令审批（经 pwsh 建文件，允许后完成）；运行 ping 时停止，ping 结束；硬退出时 codex、node_repl、code-mode-host、pwsh、ping 全部结束；历史的列出与读取含 Windows 路径的 cwd 和逐轮设置。Codex 应用自带 0.163.0-alpha，0.159.3 较旧，不会前向迁移用户的状态库。测试线程随后按 scratch cwd 删除，用户其他线程未动。
+  - 修正 Codex 适配器（各平台通用）：停止后，被中止命令的工具块原本一直显示运行中，因为 Codex 不为它发送 `item/completed`；现在轮次以 interrupted／failed 结束时标为失败。win-ws 复验通过。
+  - 观察：Codex 的新线程在首轮之前没有 rollout，此时更换原生模型会触发重启和 resume，而 resume 失败。application 先选模型再 create，因此不受影响。
 
 ## Windows 应用证据（2026-10-19）
 

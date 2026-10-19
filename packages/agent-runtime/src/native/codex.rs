@@ -536,6 +536,9 @@ impl NativeSession {
             "turn/completed" => {
                 if params["turn"]["id"].as_str() == self.turn_id.as_deref() {
                     let status = params["turn"]["status"].as_str();
+                    if matches!(status, Some("interrupted" | "failed")) {
+                        self.codex_fail_open_tools();
+                    }
                     self.finish_turn(if status == Some("failed") {
                         RunState::Failed
                     } else {
@@ -642,6 +645,27 @@ impl NativeSession {
     /// would look for the gateway when resumed later. Once that process has
     /// ended, a short-lived app-server resumes each on the runtime's own
     /// provider: one that already has a thread loaded keeps its provider.
+    /// Codex sends no `item/completed` for the tool calls a stopped or failed
+    /// turn aborted, nor keeps them in its history; they did not finish.
+    fn codex_fail_open_tools(&mut self) {
+        let Some(snapshot) = &mut self.snapshot else {
+            return;
+        };
+        let turn_start = snapshot
+            .messages
+            .iter()
+            .rposition(|message| message.role == MessageRole::User)
+            .unwrap_or(0);
+        for message in &mut snapshot.messages[turn_start..] {
+            for block in &mut message.blocks {
+                if let MessageBlock::Tool { state, .. } = block
+                    && matches!(state, ToolState::Pending | ToolState::Running)
+                {
+                    *state = ToolState::Failed;
+                }
+            }
+        }
+    }
     pub(super) fn codex_restore_provider(&mut self) -> Result<()> {
         let threads = self
             .native_id
