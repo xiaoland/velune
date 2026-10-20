@@ -9,8 +9,9 @@
 1. [AGENTS.md](AGENTS.md)：协作边界与文档更新规则
 2. [产品定义](docs/prd/index.md)：已确认的目标、优先级、范围和术语
 3. [架构方案](docs/design/architecture.md)：已认可的核心设计及 Rust／原生客户端细化建议
-4. [当前 Task Packet](tasks/pi-mac-first-loop/packet.md)：Pi／Mac 实现状态、网关与配置修订、用户验收边界
-5. [来源索引](docs/sources.md)：关键用户决定的消息 ID；不复制完整聊天
+4. [界面与交互](DESIGN.md)：跨平台的界面原则与交互模式
+5. [当前 Task Packet](tasks/pi-mac-first-loop/packet.md)：Pi／Mac 实现状态、网关与配置修订、用户验收边界
+6. [来源索引](docs/sources.md)：关键用户决定的消息 ID；不复制完整聊天
 
 完整导航见 [docs/index.md](docs/index.md)。
 
@@ -57,7 +58,7 @@ Mac 构建默认安装到 `/Applications/Velune.app`，当前产品版本为 `0.
 
 跨 Harness 接续创建目标原生会话并交接可携带的文本上下文，Velune 只持久化原生引用和切换位置，消息仍由各 Harness 保存；统一逻辑会话可在重启后重新投影。不会重放工具执行或审批状态。当前能力与安装证据见 [接续任务](tasks/cross-harness-continuation/packet.md)。
 
-各平台遵循所属平台的原生视觉与交互习惯；品牌在图标和少量细节中体现。Mac 使用系统侧栏、工具栏和独立设置窗口，具体原则见 [产品定义](docs/prd/index.md#已确认的产品结构与质量方向)。
+各平台遵循所属框架与平台的视觉与交互习惯；品牌在图标和少量细节中体现，完整端之间以 Mac 为交互基准。Mac 使用系统侧栏、工具栏和独立设置窗口，原则与模式见 [界面与交互](DESIGN.md)。
 
 共享品牌设计资源保存在 [assets/brand](assets/brand)，供各平台与项目材料使用。SVG 光学稿及其原始说明由 Git 跟踪；Mac 构建从此目录生成应用图标，平台产物不替代共享原稿。
 
