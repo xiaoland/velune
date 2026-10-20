@@ -134,6 +134,7 @@
 - “StandaloneCoroutine was cancelled”：离开或切换界面时轮询协程被取消，`catch (Exception)` 把 `CancellationException` 当作失败显示，直到下次轮询成功才消失。Android 各协程 catch 现在先重抛取消。
 - 有时数分钟停在“正在连接”。用临时构建（未入库）在两端把 iroh 事件写入文件后定位：Mac 出网经 sing-box TUN，QAD 观察到的“公网地址”其实是代理的 UDP 映射（198.20.155.137），并随 Hello 写进手机保存的 locator。手机首包同时发往 relay 与该地址；经代理回到 Mac 的那份被改写成 relay QAD 端口来源（`Ip(198.18.0.204:7842)`），若先到，Mac 把连接绑在这个地址，随后同一连接 ID 的 relay 副本也并入，握手应答永远发错地方，30 秒超时后重试，形成竞态。修正：设备描述只携带本机网卡地址，QAD 映射交给连上后的打洞验证（与设计文档“只广告本机实际持有或已验证映射的地址”一致）。复验：Mac 换到 euc1 relay 后，手机经 pkarr 找到并在约 16 秒内连上。
 - 慢：手机设备标题现在显示所选路径与 RTT。实测“已连接 · 中继 1145 ms”。手机网络是对称 NAT（QAD 地址随目的变化），Mac 的 UDP 全部经代理出境，没有可打洞的真实公网地址，所以始终走 relay；而 Mac 的 home relay 按代理出口延迟选择（先后为 usw1、aps1、euc1），每次请求都要往返境外两段。打开会话需要多次请求，所以很慢。
+- 对照 liguobao/ds-harness-remote（`docs/network.md`、`docs/server.md`，2026-10-20 查阅）：自部署 Remote Server 负责 signaling、短期 TURN 与 WSS Relay，数据面用 WebRTC ICE，按 LAN → P2P → TURN → Relay 降级。与 iroh 的打洞（QAD≈STUN）加 relay 是同一类方案，不是“无 relay”；其低延迟来自打洞成功或自部署的就近服务器。该项目文档自述 Android 真机跨网 P2P/TURN 与代理环境仍待验证。本机条件下（Mac 无全局 IPv6，IPv4 与 IPv6 都经 sing-box TUN 出网；手机对称 NAT），WebRTC 同样只能拿到代理映射，打洞失败后同样依赖中继。
 - 代码无法单独消除这段延迟。可选：用户让 sing-box 对 Velune 直连（进程规则），使 Mac 用真实宽带地址打洞、按真实延迟选 relay；或自建就近 iroh relay（核心已支持 `RelayConfig::Custom`，应用目前固定公共 relay），属部署决定，待用户决定。
 
 ## 配置跨端同步方案（候选，待用户核对）
