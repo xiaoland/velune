@@ -6,6 +6,7 @@ pub enum ProviderQuotaSource {
     None,
     CodexUsage,
     ClaudeCliUsage,
+    KimiUsage,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -399,4 +400,5 @@ pub enum RoutingStrategy {
 pub enum RequestProfile {
     Native,
     CodexResponses,
+    KimiCoding,
 }

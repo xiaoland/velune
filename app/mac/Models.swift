@@ -411,15 +411,15 @@ struct AIProvider: Sendable, Identifiable, Equatable {
     var composition = ProviderComposition()
 }
 
-/// How core reaches the provider. The editor offers a plain HTTP provider and
-/// the Codex subscription composition; a saved provider keeps any other it has.
+/// How core reaches the provider; template kind does not determine its authentication method.
 struct ProviderComposition: Sendable, Equatable {
     var executionBackend: BindingExecutionBackend = .http
     var requestProfile: BindingRequestProfile = .native
     var authenticationSource: BindingProviderAuthenticationSource = .apiKey
     var quotaSource: BindingProviderQuotaSource = .none
-    /// The subscription the provider signs in to, by name; `nil` for other sources.
+    /// The subscription composition's display name, independently of how it authenticates.
     var subscriptionName: String? {
+        if requestProfile == .kimiCoding { return "Kimi Coding Plan" }
         switch authenticationSource {
         case .codexOAuth: return "Codex 订阅"
         case .claudeCli: return "Claude Code 订阅"
@@ -459,6 +459,13 @@ struct QuotaWindow: Sendable, Equatable {
     func applies(to providerModelID: String) -> Bool { modelIDs?.contains(providerModelID) ?? true }
     /// A readable name for a window ID; Codex names its windows `window:<seconds>`.
     static func name(_ id: String) -> String {
+        switch id {
+        case "kimi:limit_5h": return "5 小时"
+        case "kimi:limit_7d": return "7 天"
+        case "kimi:limit_month_total": return "会员月度总额度"
+        case "kimi:limit_month_code": return "月度编程额度"
+        default: break
+        }
         guard id.hasPrefix("window:"), let seconds = Int(id.dropFirst("window:".count)), seconds > 0 else { return id }
         if seconds % 86_400 == 0 { return "\(seconds / 86_400) 天" }
         if seconds % 3_600 == 0 { return "\(seconds / 3_600) 小时" }

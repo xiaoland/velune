@@ -462,6 +462,20 @@ impl ProviderDefinition {
         {
             return Err("沿用的 Claude Code 登录位置无效");
         }
+        let kimi = self.request_profile == RequestProfile::KimiCoding
+            || self.quota_source == ProviderQuotaSource::KimiUsage;
+        if kimi
+            && (self.execution_backend != ExecutionBackend::Http
+                || self.protocol != GatewayProtocol::MessagesV1
+                || source != Auth::ApiKey
+                || self.request_profile != RequestProfile::KimiCoding
+                || self.quota_source != ProviderQuotaSource::KimiUsage
+                || kimi_region(&self.endpoint).is_none())
+        {
+            return Err(
+                "Kimi Coding Plan 必须组合 HTTP、Messages、API key、KimiCoding、KimiUsage 与官方 Coding 地址",
+            );
+        }
         match &self.execution_backend {
             ExecutionBackend::Http => {
                 if source == Auth::ClaudeCli {
@@ -546,6 +560,7 @@ pub(crate) fn gateway_request_profile(value: RequestProfile) -> velune_gateway::
     match value {
         RequestProfile::Native => velune_gateway::RequestProfile::Native,
         RequestProfile::CodexResponses => velune_gateway::RequestProfile::CodexResponses,
+        RequestProfile::KimiCoding => velune_gateway::RequestProfile::KimiCoding,
     }
 }
 fn gateway_routing_strategy(value: RoutingStrategy) -> velune_gateway::RoutingStrategy {
@@ -554,5 +569,14 @@ fn gateway_routing_strategy(value: RoutingStrategy) -> velune_gateway::RoutingSt
         RoutingStrategy::Order => velune_gateway::RoutingStrategy::Order,
         RoutingStrategy::Rotate => velune_gateway::RoutingStrategy::Rotate,
         RoutingStrategy::Weight => velune_gateway::RoutingStrategy::Weight,
+    }
+}
+
+/// Only first-party Coding targets authorize the subscription metadata requests.
+pub(crate) fn kimi_region(endpoint: &str) -> Option<&'static str> {
+    match endpoint {
+        "https://api.kimi.com/coding/" | "https://api.kimi.com/coding" => Some("mainland-cn"),
+        "https://api.kimi.ai/coding/" | "https://api.kimi.ai/coding" => Some("global"),
+        _ => None,
     }
 }

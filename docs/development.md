@@ -332,6 +332,16 @@ Claude 订阅通过本机 Claude Code 执行后端接入。提供商需要配置
 
 Claude 后端只暴露调用方声明的工具，工具操作由调用方执行。尚未完成的工具交互绑定原提供商与显式会话：额度／冷却不允许继续时明确失败，不改投其他成员。取消、换绑或进程失败后，旧工具结果不能启动新会话重做。无待完成工具时，普通请求仍可使用既有路由策略。CLI 已开始执行的尝试不会因尚未输出响应头而自动重试。
 
+## Kimi Coding Plan
+
+添加提供商时选择 core 模板 `kimiCodingPlan`，填写 Coding API Key 和模型 ID。模板组合为 HTTP、Messages、API Key、KimiCoding 请求适配与 KimiUsage 额度来源，不需要 Kimi CLI 或 OAuth 登录。默认地址 `https://api.kimi.com/coding/`；海外区域为 `https://api.kimi.ai/coding/`。Mac 使用已有订阅编辑器，Windows 使用已有 API key 表单的模板选择。两者均保留订阅固定组合；其他 Harness 入口协议沿用网关的 best-effort 转换。
+
+新 Key 在模型派发前经固定 `/coding/v1/me` 验证账户，提供商认证摘要只显示账户散列短尾。一个区域内的同一 `user_id` 只能归属一个可用提供商，检查覆盖所有网关；重启后重新验证。同账户换 Key 保留使用上限、冷却与会话绑定，旧请求和旧额度采样不能在换 Key 后回写。确认换账户时才清除旧账户状态。
+
+额度通过 `provider_quota`／`refresh_provider_quota` 按需读取 `/coding/v1/usages`，窗口 ID 为 `kimi:limit_5h`、`kimi:limit_7d`、`kimi:limit_month_total`、`kimi:limit_month_code`。只显示实际返回的有效窗口；缺失或读取失败为未知，不补零。已验证账户且没有配置使用上限时，额度未知仍可使用；配置了上限却缺少相应新鲜窗口时暂停。明确的额度耗尽响应触发重取，可在尚未交付响应时尝试其他成员；权限、风控和禁用错误停止，不靠更换账户重放。
+
+合成人工入口为 `python3 scripts/manual-kimi-coding.py`：临时源码副本仅把固定目标改为回环服务，使用隔离配置与合成 Key，覆盖身份、额度、换 Key、调度错误及提交边界，不接入自动测试或 CI。普通 Coding Key 的真实 `/me`、`/usages` 读取已在实现前各验证一次；真实模型、工具往返与海外区域尚未验收。额度接口不是稳定外部 API 承诺；服务端加油包可能继续扣充值余额，窗口上限不等于硬性费用保证。
+
 ## 模型路由
 
 2026-10-17 的 Rust lib 增量提供 Smart、Order、Rotate、Weight 四种策略，均支持默认开启的会话粘性；一个订阅始终对应一个提供商实例。提供商配置持有额度窗口使用上限，路由配置持有策略、成员权重和粘性。额度上限与冷却在直接调用及所有路由间共享；只有完整成功的请求才建立或更新粘性，粘性不能越过上限或冷却。具体契约见 [gateway unit](../packages/gateway/README.md)，平台额度查询与刷新入口见 [bindings unit](../packages/bindings/README.md)。本增量仅修改 Rust lib，既有前端尚未接入这些字段与操作。

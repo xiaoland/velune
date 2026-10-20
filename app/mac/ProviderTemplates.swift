@@ -41,7 +41,7 @@ struct ProviderCreationView: View {
                 Divider()
                 VStack(alignment: .leading, spacing: 8) {
                     if let disclosure = template.disclosure { SubscriptionDisclosureNote(disclosure: disclosure) }
-                    Text("一个提供商登录一个订阅账户。聚合多个账户时分别添加，再在“模型路由”中组合。").font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    Text("一个提供商关联一个订阅账户。聚合多个账户时分别添加，再在“模型路由”中组合。").font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 }.frame(maxWidth: .infinity, alignment: .leading).padding(16)
             }
             Divider()

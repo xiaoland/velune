@@ -152,6 +152,7 @@ pub struct ProviderConfig {
 pub enum RequestProfile {
     Native,
     CodexResponses,
+    KimiCoding,
 }
 
 #[derive(Clone)]
@@ -219,6 +220,20 @@ impl ProviderConfig {
                 || config.endpoint.base_path().trim_end_matches('/') != "/backend-api/codex"
             {
                 return Err(InvalidContract("invalid Codex request profile destination"));
+            }
+        }
+        if request_profile == RequestProfile::KimiCoding {
+            let (endpoint, path) = match &protocol {
+                ProtocolConfig::Messages(config) => (&config.endpoint, "/coding"),
+                ProtocolConfig::ChatCompletions(config) => (&config.endpoint, "/coding/v1"),
+                ProtocolConfig::Responses(config) => (&config.endpoint, "/coding/v1"),
+            };
+            if endpoint.transport() != Transport::Https
+                || !matches!(endpoint.host(), "api.kimi.com" | "api.kimi.ai")
+                || endpoint.port().get() != 443
+                || endpoint.base_path().trim_end_matches('/') != path
+            {
+                return Err(InvalidContract("invalid Kimi Coding destination"));
             }
         }
         Ok(Self {

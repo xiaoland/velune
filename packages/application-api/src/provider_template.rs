@@ -71,6 +71,16 @@ pub fn provider_templates() -> Vec<ProviderTemplate> {
             disclosure: SubscriptionDisclosure::for_source(ProviderAuthenticationSource::ClaudeCli),
         },
         ProviderTemplate {
+            id: "kimiCodingPlan".into(), kind: ProviderTemplateKind::Subscription,
+            name: "Kimi Coding Plan".into(),
+            summary: "使用 Kimi Coding API key，按账户验证订阅归属并读取实际额度窗口。".into(),
+            protocol: GatewayProtocol::MessagesV1, endpoint: "https://api.kimi.com/coding/".into(),
+            execution_backend: ExecutionBackend::Http, request_profile: RequestProfile::KimiCoding,
+            authentication_source: ProviderAuthenticationSource::ApiKey, quota_source: ProviderQuotaSource::KimiUsage,
+            executable_command: None,
+            disclosure: Some(SubscriptionDisclosure::kimi_coding_plan()),
+        },
+        ProviderTemplate {
             id: "api".into(),
             kind: ProviderTemplateKind::Api,
             name: "API 提供商".into(),

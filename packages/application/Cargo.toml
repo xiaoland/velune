@@ -11,6 +11,7 @@ local-runtime = ["dep:velune-agent-runtime", "dep:sha2", "dep:rustix", "dep:rmcp
 [dependencies]
 velune-application-api = { path = "../application-api" }
 base64 = "0.23"
+chrono = { version = "0.4", default-features = false, features = ["std"] }
 url = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

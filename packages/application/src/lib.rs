@@ -15,6 +15,8 @@ mod authentication_resolver;
 mod claude_cli;
 #[cfg(feature = "local-runtime")]
 mod credential_helper;
+#[cfg(feature = "local-runtime")]
+mod kimi_quota;
 mod provider_authentication;
 #[cfg(feature = "local-runtime")]
 mod provider_login;

@@ -7,13 +7,31 @@ use velune_gateway::{
 pub(crate) struct ProviderResolver {
     providers: std::collections::BTreeMap<String, crate::config::ProviderDefinition>,
     options: Options,
+    gateway_id: String,
+    quota: Option<Arc<crate::subscription_quota::SubscriptionQuota>>,
 }
 impl ProviderResolver {
     pub(crate) fn capture(
         gateway: &crate::config::GatewayConfig,
         options: &Options,
     ) -> Arc<dyn CredentialResolver> {
+        Self::capture_inner(gateway, options, None)
+    }
+    pub(crate) fn capture_for_dispatch(
+        gateway: &crate::config::GatewayConfig,
+        options: &Options,
+        quota: Arc<crate::subscription_quota::SubscriptionQuota>,
+    ) -> Arc<dyn CredentialResolver> {
+        Self::capture_inner(gateway, options, Some(quota))
+    }
+    fn capture_inner(
+        gateway: &crate::config::GatewayConfig,
+        options: &Options,
+        quota: Option<Arc<crate::subscription_quota::SubscriptionQuota>>,
+    ) -> Arc<dyn CredentialResolver> {
         Arc::new(Self {
+            gateway_id: gateway.id.clone(),
+            quota,
             providers: gateway
                 .providers
                 .iter()
@@ -32,6 +50,8 @@ impl CredentialResolver for ProviderResolver {
     {
         let resource = self.providers.get(&id).cloned();
         let options = self.options.clone();
+        let quota = self.quota.clone();
+        let gateway_id = self.gateway_id.clone();
         Box::pin(async move {
             let resource = resource.ok_or(CredentialResolutionError::Unavailable)?;
             let protocol = match target.protocol {
@@ -57,6 +77,17 @@ impl CredentialResolver for ProviderResolver {
             let command = match &resource.authentication.material {
                 AuthenticationMaterial::None => return Err(CredentialResolutionError::Unavailable),
                 AuthenticationMaterial::ApiKey { value } => {
+                    if resource.request_profile == crate::config::RequestProfile::KimiCoding {
+                        quota
+                            .as_ref()
+                            .ok_or(CredentialResolutionError::Unavailable)?
+                            .authorize(
+                                &gateway_id,
+                                &resource.id,
+                                resource.authentication.generation,
+                            )
+                            .await?;
+                    }
                     return Ok(ResolvedCredential {
                         material: velune_gateway::CredentialMaterial::Http {
                             authorization: http_authorization(&protocol, value.clone(), false),

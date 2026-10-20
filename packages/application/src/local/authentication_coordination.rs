@@ -324,8 +324,18 @@ impl CoreRuntime {
                     if operation == "start" {
                         return Err(RuntimeError::invalid("此提供商没有交互式登录流程"));
                     }
+                    let (configured, account_label) =
+                        if provider.request_profile == crate::config::RequestProfile::KimiCoding {
+                            let _ = self
+                                .subscription_quota
+                                .query(gateway_id, provider_id, false);
+                            self.subscription_quota
+                                .identity_status(gateway_id, provider_id)
+                        } else {
+                            (provider.authentication.description().configured, None)
+                        };
                     return Ok(
-                        json!({"metadata":{"configured":provider.authentication.description().configured,"capabilities":{"protocol":provider.protocol,"endpoint":provider.endpoint,"explicitOutputCap":true,"temperature":true},"actions":[]}}),
+                        json!({"metadata":{"configured":configured,"accountLabel":account_label,"capabilities":{"protocol":provider.protocol,"endpoint":provider.endpoint,"explicitOutputCap":true,"temperature":true},"actions":[]}}),
                     );
                 }
                 AuthenticationMaterial::CodexSubscription { credential_id, .. } => {

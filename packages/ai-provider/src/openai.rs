@@ -2,11 +2,12 @@
 //!
 //! This adapter accepts an already assembled client and credential. It does not
 //! read provider configuration, resolve credentials, retry, or choose a model.
+use crate::HttpClient;
 use crate::config::{
     CredentialMaterial, HttpAuthorization, ProtocolConfig, ProviderConfig, ResolvedCredential,
     Transport,
 };
-use reqwest::{Client, Response, header::HeaderValue};
+use reqwest::{Response, header::HeaderValue};
 use serde_json::Value;
 use std::sync::Arc;
 use velune_ai::{InvalidContract, OperationFuture, Payload};
@@ -28,7 +29,7 @@ async fn bounded_body(response: Response) -> Result<Vec<u8>, ()> {
 
 pub struct ChatCompletions {
     config: ProviderConfig,
-    client: Client,
+    client: HttpClient,
     explicit_output_cap: Option<bool>,
     credential: Arc<dyn Fn() -> Option<String> + Send + Sync>,
 }
@@ -36,7 +37,7 @@ pub struct ChatCompletions {
 impl ChatCompletions {
     pub fn new(
         config: ProviderConfig,
-        client: Client,
+        client: HttpClient,
         credential: Payload<String>,
     ) -> Result<Self, InvalidContract> {
         let ProtocolConfig::ChatCompletions(protocol) = config.protocol() else {
@@ -60,7 +61,7 @@ impl ChatCompletions {
     }
     pub fn with_resolved_credential(
         config: ProviderConfig,
-        client: Client,
+        client: HttpClient,
         credential: ResolvedCredential,
     ) -> Result<Self, InvalidContract> {
         let ProtocolConfig::ChatCompletions(protocol) = config.protocol() else {
@@ -176,7 +177,8 @@ impl ChatCompletionsProvider for ChatCompletions {
             });
         };
         let endpoint = protocol.endpoint.url("/chat/completions");
-        let client = self.client.clone();
+        let request_profile = self.config.request_profile();
+        let client = self.client.inner.clone();
         let credential = Arc::clone(&self.credential);
         let headers = request.headers;
         let stream_requested = request.stream;
@@ -219,6 +221,11 @@ impl ChatCompletionsProvider for ChatCompletions {
                 .header("connection", "close");
             for header in &headers {
                 let name = header.name.to_ascii_lowercase();
+                if request_profile == crate::config::RequestProfile::KimiCoding
+                    && name == "user-agent"
+                {
+                    continue;
+                }
                 if matches!(
                     name.as_str(),
                     "authorization" | "host" | "content-length" | "connection"
@@ -229,6 +236,10 @@ impl ChatCompletionsProvider for ChatCompletions {
                     continue;
                 };
                 builder = builder.header(&header.name, value);
+            }
+            if request_profile == crate::config::RequestProfile::KimiCoding {
+                // Set a single genuine client identity, never impersonate an allowed agent.
+                builder = builder.header("user-agent", crate::service_error::USER_AGENT);
             }
             let request = match builder.json(&body).build() {
                 Ok(request) => request,
@@ -266,11 +277,32 @@ impl ChatCompletionsProvider for ChatCompletions {
                 let body = bounded_body(response).await.ok();
                 return ChatCompletionsCompletion {
                     result: Err(ChatCompletionsFailure {
-                        kind: match status {
-                            401 => ChatCompletionsErrorKind::Authentication,
-                            403 => ChatCompletionsErrorKind::Permission,
-                            429 => ChatCompletionsErrorKind::RateLimited,
-                            _ => ChatCompletionsErrorKind::ProviderFailure,
+                        kind: match crate::service_error::classify(
+                            request_profile,
+                            status,
+                            body.as_deref(),
+                        ) {
+                            Some(crate::service_error::ServiceError::Authentication) => {
+                                ChatCompletionsErrorKind::Authentication
+                            }
+                            Some(crate::service_error::ServiceError::Permission) => {
+                                ChatCompletionsErrorKind::Permission
+                            }
+                            Some(crate::service_error::ServiceError::QuotaExhausted) => {
+                                ChatCompletionsErrorKind::QuotaExhausted
+                            }
+                            Some(crate::service_error::ServiceError::RateLimited) => {
+                                ChatCompletionsErrorKind::RateLimited
+                            }
+                            Some(crate::service_error::ServiceError::Overloaded) => {
+                                ChatCompletionsErrorKind::Overloaded
+                            }
+                            None => match status {
+                                401 => ChatCompletionsErrorKind::Authentication,
+                                403 => ChatCompletionsErrorKind::Permission,
+                                429 => ChatCompletionsErrorKind::RateLimited,
+                                _ => ChatCompletionsErrorKind::ProviderFailure,
+                            },
                         },
                         response: Some(meta),
                         body: body.map(Payload::new),

@@ -205,9 +205,11 @@ impl CoreRuntime {
         let turn_requests = repository.load_turn_requests()?;
         let organization = repository.load_conversation_organization()?;
         let (resource_templates, resource_bindings) = repository.load_resource_library()?;
+        let scheduling_state = velune_gateway::SchedulingState::default();
         let subscription_quota = crate::subscription_quota::SubscriptionQuota::new(
             options.home_directory.clone(),
             &persisted.gateways,
+            scheduling_state.clone(),
         );
         Ok(Self {
             options,
@@ -256,7 +258,7 @@ impl CoreRuntime {
             worktree_origins: Default::default(),
             turn_failures: Default::default(),
             analytics,
-            scheduling_state: Default::default(),
+            scheduling_state,
             execution_backends: Default::default(),
             subscription_quota,
         })
@@ -270,6 +272,28 @@ impl CoreRuntime {
                     .iter()
                     .find(|g| g.id == gateway.id)
                     .and_then(|g| g.providers.iter().find(|p| p.id == provider.id));
+                if current.is_some_and(|p| {
+                    p.request_profile == crate::config::RequestProfile::KimiCoding
+                        && provider.request_profile == crate::config::RequestProfile::KimiCoding
+                        && p.endpoint == provider.endpoint
+                        && p.protocol == provider.protocol
+                        && p.execution_backend == provider.execution_backend
+                        && p.quota_source == provider.quota_source
+                        && matches!(
+                            p.authentication.material,
+                            crate::provider_authentication::AuthenticationMaterial::ApiKey { .. }
+                        )
+                        && matches!(
+                            provider.authentication.material,
+                            crate::provider_authentication::AuthenticationMaterial::ApiKey { .. }
+                        )
+                }) {
+                    if current.is_some_and(|p| p.authentication != provider.authentication) {
+                        self.scheduling_state
+                            .invalidate_credentials(&gateway.id, &provider.id);
+                    }
+                    continue;
+                }
                 if current.is_none_or(|p| {
                     p.authentication != provider.authentication
                         || p.endpoint != provider.endpoint
@@ -444,6 +468,15 @@ impl CoreRuntime {
         let mut summaries = crate::provider_configuration::summaries(&self.gateways);
         for gateway in &mut summaries {
             for provider in &mut gateway.providers {
+                if provider.request_profile == crate::config::RequestProfile::KimiCoding {
+                    (
+                        provider.authentication.configured,
+                        provider.authentication.account_label,
+                    ) = self
+                        .subscription_quota
+                        .identity_status(&gateway.id, &provider.id);
+                }
+
                 if let Some(source) = self.gateways.iter().find(|g| g.id == gateway.id).and_then(|g| g.providers.iter().find(|p| p.id == provider.id))
                     && let crate::provider_authentication::AuthenticationMaterial::CodexSubscription { credential_id, .. } = &source.authentication.material
                 { (provider.authentication.configured, provider.authentication.account_label) = crate::subscription_auth::status(&self.options.home_directory, credential_id, source.authentication.generation); }

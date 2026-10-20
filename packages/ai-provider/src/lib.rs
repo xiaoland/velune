@@ -3,9 +3,12 @@
 #![deny(unsafe_code)]
 pub mod claude_code;
 pub mod config;
+mod http_client;
+pub use http_client::HttpClient;
 pub mod messages;
 pub mod metrics;
 pub mod minimax;
 pub mod openai;
 pub mod responses;
+mod service_error;
 pub mod translation;

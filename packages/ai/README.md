@@ -8,4 +8,6 @@
 
 `ProviderModelId` 明确表示提供商原生协议标识，保留完整字符串；它不承载应用记录主键或网关选择别名。原生请求与 provider allowlist 使用同一提供商身份，不提供旧 `ModelId` 别名。
 
-Messages 保留调用方的 `anthropic-version`／beta 请求头与原生 JSON／SSE，缺少版本在派发前拒绝；API key 使用 `x-api-key`，未确认的 subscription 认证不适用于此协议。提供商 baseURL 追加 `/v1/messages`，运行时 SDK 的网关注入使用 origin。
+Messages 保留调用方的 `anthropic-version`／beta 请求头与原生 JSON／SSE，缺少版本在派发前拒绝；HTTP API key 使用 `x-api-key`，Bearer 使用 `Authorization`；具体认证材料由调用方解析。提供商 baseURL 追加 `/v1/messages`，运行时 SDK 的网关注入使用 origin。
+
+失败 kind 表达提供商边界已确认的事实，独立于 HTTP 状态：`Authentication` 是认证失败，`Permission` 是请求／账户权限限制，`QuotaExhausted` 是明确的用量耗尽，`Overloaded` 是服务容量暂时不足。原始 HTTP 状态与正文仍保存在 failure envelope 中；消费方决定重试与切换，不从 kind 伪造上游状态。

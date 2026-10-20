@@ -93,13 +93,14 @@ pub trait CredentialResolver: Send + Sync {
 }
 
 use velune_ai_provider::{
+    HttpClient,
     config::{
         ChatCompletionsConfig, CredentialRef, HttpEndpoint, MessagesConfig, ProtocolConfig,
         ProviderConfig, ResponsesConfig, Transport,
     },
     messages::Messages,
     openai::ChatCompletions,
-    responses::{OpenAiResponses, ResponsesClient},
+    responses::OpenAiResponses,
 };
 
 const REQUEST_READ_TIMEOUT: Duration = Duration::from_secs(15);
@@ -143,8 +144,7 @@ struct Ingress {
     routes: Arc<RwLock<BTreeMap<String, Route>>>,
     token: String,
     resolver: Arc<dyn CredentialResolver>,
-    client: Client,
-    responses_client: ResponsesClient,
+    client: HttpClient,
     request_epoch: u64,
     next_request: AtomicU64,
     stopping: Arc<AtomicBool>,
@@ -297,13 +297,7 @@ impl Runner {
             .iter()
             .map(|value| format!("{value:02x}"))
             .collect::<String>();
-        let client = Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .retry(reqwest::retry::never())
-            .connect_timeout(Duration::from_secs(15))
-            .build()?;
-        let responses_client =
-            ResponsesClient::new(Client::builder().connect_timeout(Duration::from_secs(15)))?;
+        let client = HttpClient::new(Client::builder().connect_timeout(Duration::from_secs(15)))?;
         let mut epoch = [0u8; 8];
         getrandom::fill(&mut epoch).map_err(|_| GatewayError("gateway request identity"))?;
         let stopping = Arc::new(AtomicBool::new(false));
@@ -333,7 +327,6 @@ impl Runner {
             token: token.clone(),
             resolver: credential_resolver,
             client,
-            responses_client,
             request_epoch: u64::from_le_bytes(epoch),
             next_request: AtomicU64::new(1),
             stopping: stopping.clone(),
@@ -981,6 +974,7 @@ struct PendingFailure {
     status: u16,
     message: &'static str,
     next: NextCandidate,
+    authentication: bool,
 }
 enum NextCandidate {
     /// Replay is forbidden, independently of any provider health observation.
@@ -996,6 +990,7 @@ impl PendingFailure {
             status,
             message,
             next,
+            authentication: false,
         }
     }
 }
@@ -1526,7 +1521,7 @@ async fn dispatch_observed(
         credential,
     )
     .await;
-    if !matches!(&result, AttemptEnd::Failed(failure) if failure.status == 401) {
+    if !matches!(&result, AttemptEnd::Failed(failure) if failure.authentication) {
         return result;
     }
     tracing::info!(event = "gateway_credential_recovery");
@@ -1570,7 +1565,7 @@ async fn dispatch_observed(
         credential,
     )
     .await;
-    if matches!(&result, AttemptEnd::Failed(failure) if failure.status == 401) {
+    if matches!(&result, AttemptEnd::Failed(failure) if failure.authentication) {
         state
             .resolver
             .invalidate(target.reference.clone(), destination, rejected_token)
@@ -1599,6 +1594,24 @@ async fn dispatch_credential(
     observation: &mut Observation,
     credential: ResolvedCredential,
 ) -> AttemptEnd {
+    // Resolution can await owner verification; never dispatch newly resolved
+    // material under a Runner whose captured binding was invalidated meanwhile.
+    if state.health.epoch(&state.gateway_id, &target.provider_id)
+        != state.provider_epochs[&target.provider_id]
+    {
+        if let Some(tracker) = &tracker {
+            tracker
+                .lock()
+                .expect("owned analytics tracker")
+                .finish(AnalyticsOutcome::Failed);
+        }
+        observation.finish("credential_stale");
+        return AttemptEnd::Failed(PendingFailure::new(
+            503,
+            "provider credentials changed while resolving; prepare a new Runner",
+            NextCandidate::Allowed { cooldown: None },
+        ));
+    }
     if let Some(tracker) = &tracker {
         tracker.lock().expect("owned analytics tracker").begin();
     }
@@ -1741,6 +1754,9 @@ async fn dispatch_credential(
                             http_status = meta.status
                         );
                     }
+                    if matches!(error.kind, ChatCompletionsErrorKind::QuotaExhausted) {
+                        state.quotas.quota_exhausted(&target.provider_id);
+                    }
                     if headers_sent {
                         let _ = sender.send(WireEvent::Failed).await;
                         AttemptEnd::Interrupted {
@@ -1761,25 +1777,40 @@ async fn dispatch_credential(
                             ChatCompletionsErrorKind::Timeout => 504,
                             _ => 502,
                         };
-                        let next = next_candidate(
-                            matches!(error.kind, ChatCompletionsErrorKind::RateLimited),
-                            matches!(error.kind, ChatCompletionsErrorKind::Cancelled),
-                            matches!(
-                                error.kind,
-                                ChatCompletionsErrorKind::Transport
-                                    | ChatCompletionsErrorKind::Timeout
-                            ) || (matches!(error.kind, ChatCompletionsErrorKind::ProviderFailure)
-                                && error.submitted
-                                && error.response.is_none()),
-                            error.response.as_ref().map(|meta| meta.status),
-                            error.response.as_ref().map_or(&[], |meta| &meta.headers),
-                        );
+                        let next = if matches!(error.kind, ChatCompletionsErrorKind::Permission) {
+                            NextCandidate::Stop { cooldown: None }
+                        } else {
+                            next_candidate(
+                                matches!(
+                                    error.kind,
+                                    ChatCompletionsErrorKind::RateLimited
+                                        | ChatCompletionsErrorKind::QuotaExhausted
+                                        | ChatCompletionsErrorKind::Overloaded
+                                ),
+                                matches!(error.kind, ChatCompletionsErrorKind::Cancelled),
+                                matches!(
+                                    error.kind,
+                                    ChatCompletionsErrorKind::Transport
+                                        | ChatCompletionsErrorKind::Timeout
+                                ) || (matches!(
+                                    error.kind,
+                                    ChatCompletionsErrorKind::ProviderFailure
+                                ) && error.submitted
+                                    && error.response.is_none()),
+                                error.response.as_ref().map(|meta| meta.status),
+                                error.response.as_ref().map_or(&[], |meta| &meta.headers),
+                            )
+                        };
                         AttemptEnd::Failed(PendingFailure {
                             meta: error.response,
                             body: error.body,
                             status,
                             message: "upstream request failed",
                             next,
+                            authentication: matches!(
+                                error.kind,
+                                ChatCompletionsErrorKind::Authentication
+                            ),
                         })
                     }
                 }
@@ -1788,7 +1819,7 @@ async fn dispatch_credential(
         GatewayProtocol::ResponsesV1 => {
             let adapter = match OpenAiResponses::with_resolved_credential(
                 target.config.expect("validated HTTP target"),
-                state.responses_client.clone(),
+                state.client.clone(),
                 credential,
             ) {
                 Ok(value) => value,
@@ -1927,6 +1958,9 @@ async fn dispatch_credential(
                     if let Some(status) = error.status {
                         tracing::info!(event = "gateway_upstream_headers", http_status = status);
                     }
+                    if matches!(error.kind, ResponsesErrorKind::QuotaExhausted) {
+                        state.quotas.quota_exhausted(&target.provider_id);
+                    }
                     if sent.load(std::sync::atomic::Ordering::Acquire) {
                         let _ = sender.send(WireEvent::Failed).await;
                         AttemptEnd::Interrupted {
@@ -1937,20 +1971,28 @@ async fn dispatch_credential(
                             .then_some(Duration::from_secs(5)),
                         }
                     } else {
-                        let next = next_candidate(
-                            matches!(error.kind, ResponsesErrorKind::RateLimited)
-                                || (error.status == Some(402)
+                        let next = if matches!(error.kind, ResponsesErrorKind::Permission) {
+                            NextCandidate::Stop { cooldown: None }
+                        } else {
+                            next_candidate(
+                                matches!(
+                                    error.kind,
+                                    ResponsesErrorKind::RateLimited
+                                        | ResponsesErrorKind::QuotaExhausted
+                                        | ResponsesErrorKind::Overloaded
+                                ) || (error.status == Some(402)
                                     && structured_quota_error(
                                         error.body.as_ref().map(Payload::get),
                                     )),
-                            matches!(error.kind, ResponsesErrorKind::Cancelled),
-                            matches!(
-                                error.kind,
-                                ResponsesErrorKind::Transport | ResponsesErrorKind::Timeout
-                            ),
-                            error.status,
-                            &error.headers,
-                        );
+                                matches!(error.kind, ResponsesErrorKind::Cancelled),
+                                matches!(
+                                    error.kind,
+                                    ResponsesErrorKind::Transport | ResponsesErrorKind::Timeout
+                                ),
+                                error.status,
+                                &error.headers,
+                            )
+                        };
                         let upstream_status = error.status.unwrap_or(match error.kind {
                             ResponsesErrorKind::InvalidInput => 400,
                             ResponsesErrorKind::Unsupported => 422,
@@ -1974,6 +2016,10 @@ async fn dispatch_credential(
                             status,
                             message: "upstream request failed",
                             next,
+                            authentication: matches!(
+                                error.kind,
+                                ResponsesErrorKind::Authentication
+                            ),
                         })
                     }
                 }
@@ -2138,6 +2184,9 @@ async fn dispatch_credential(
                             http_status = meta.status
                         );
                     }
+                    if matches!(error.kind, MessagesErrorKind::QuotaExhausted) {
+                        state.quotas.quota_exhausted(&target.provider_id);
+                    }
                     if headers_sent {
                         let _ = sender.send(WireEvent::Failed).await;
                         AttemptEnd::Interrupted {
@@ -2157,19 +2206,28 @@ async fn dispatch_credential(
                             MessagesErrorKind::Timeout => 504,
                             _ => 502,
                         };
-                        let mut next = next_candidate(
-                            matches!(error.kind, MessagesErrorKind::RateLimited),
-                            matches!(error.kind, MessagesErrorKind::Cancelled),
-                            matches!(
-                                error.kind,
-                                MessagesErrorKind::Transport | MessagesErrorKind::Timeout
-                            ) || (!is_cli
-                                && matches!(error.kind, MessagesErrorKind::ProviderFailure)
-                                && error.submitted
-                                && error.response.is_none()),
-                            error.response.as_ref().map(|meta| meta.status),
-                            error.response.as_ref().map_or(&[], |meta| &meta.headers),
-                        );
+                        let mut next = if matches!(error.kind, MessagesErrorKind::Permission) {
+                            NextCandidate::Stop { cooldown: None }
+                        } else {
+                            next_candidate(
+                                matches!(
+                                    error.kind,
+                                    MessagesErrorKind::RateLimited
+                                        | MessagesErrorKind::QuotaExhausted
+                                        | MessagesErrorKind::Overloaded
+                                ),
+                                matches!(error.kind, MessagesErrorKind::Cancelled),
+                                matches!(
+                                    error.kind,
+                                    MessagesErrorKind::Transport | MessagesErrorKind::Timeout
+                                ) || (!is_cli
+                                    && matches!(error.kind, MessagesErrorKind::ProviderFailure)
+                                    && error.submitted
+                                    && error.response.is_none()),
+                                error.response.as_ref().map(|meta| meta.status),
+                                error.response.as_ref().map_or(&[], |meta| &meta.headers),
+                            )
+                        };
                         if is_cli && error.submitted {
                             let cooldown = match next {
                                 NextCandidate::Allowed { cooldown }
@@ -2183,6 +2241,7 @@ async fn dispatch_credential(
                             status,
                             message: "upstream request failed",
                             next,
+                            authentication: matches!(error.kind, MessagesErrorKind::Authentication),
                         })
                     }
                 }

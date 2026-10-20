@@ -16,9 +16,9 @@ Cargo 构建会调用 Go，以同进程库链接。Mac 使用 c-archive；Androi
 
 `metrics::ResponseMetrics` 从原生 JSON／SSE 提取用量、语义输出和业务终态，仅观察、不改写正文。独立未知字段和 Messages 缓存组成保留原始含义；协议转换占位不是其计量来源。统计关联与持久化分别由 gateway 和 application 承担。
 
-`ProviderConfig.request_profile` 显式选择 `Native` 或 `CodexResponses`，不从认证来源推断协议行为。`ResolvedCredential` 分别携带 `CredentialMaterial`、`CredentialRecovery` 和 `RequestCapabilities`：HTTP 材料区分 Bearer／API key 与可选 account ID，本机会话材料只指定隔离的配置目录；恢复身份与是否允许显式输出上限也是独立事实。所有秘密材料不实现 Debug。`explicit_output_cap=false` 仅拒绝相应协议的输出上限字段，不隐含采样或缓存限制。
+`ProviderConfig.request_profile` 显式选择 `Native`、`CodexResponses` 或 `KimiCoding`，不从认证来源推断协议行为。`ResolvedCredential` 分别携带 `CredentialMaterial`、`CredentialRecovery` 和 `RequestCapabilities`：HTTP 材料区分 Bearer／API key 与可选 account ID，本机会话材料只指定隔离的配置目录；恢复身份与是否允许显式输出上限也是独立事实。所有秘密材料不实现 Debug。`explicit_output_cap=false` 仅拒绝相应协议的输出上限字段，不隐含采样或缓存限制。
 
-Codex request profile 仅用于 Responses HTTP adapter，目标必须是 `https://chatgpt.com:443/backend-api/codex`，并提供 Bearer 和 account ID；其他协议或目的地址在发送前拒绝。Responses 构造必须使用 `ResponsesClient::new(ClientBuilder)`；该类型在构造末尾强制禁用重定向和自动重试，不接受已构建的任意 Client。gateway 启动时构造并复用，独立消费方可在 builder 注入代理、DNS 或证书信任但不能覆盖这两项策略，避免自定义 account header 被重定向发送到其他目标。请求使用敏感的 `chatgpt-account-id`，附加 Codex backend 所需的 beta、originator 和客户端标识；这是非正式 Codex 接入，不是 Velune 的正式 SIWC 客户端身份。
+Codex request profile 仅用于 Responses HTTP adapter，目标必须是 `https://chatgpt.com:443/backend-api/codex`，并提供 Bearer 和 account ID；其他协议或目的地址在发送前拒绝。三个 HTTP adapter 的构造必须使用 `HttpClient::new(ClientBuilder)`；该类型在构造末尾强制禁用重定向和自动重试，不接受已构建的任意 Client。gateway 启动时构造并复用，独立消费方可在 builder 注入代理、DNS 或证书信任但不能覆盖这两项策略，避免自定义 account header 被重定向发送到其他目标。请求使用敏感的 `chatgpt-account-id`，附加 Codex backend 所需的 beta、originator 和客户端标识；这是非正式 Codex 接入，不是 Velune 的正式 SIWC 客户端身份。
 
 Codex backend 只接受流请求。adapter 设置 stream=true、store=false，缺少 instructions 时传空字符串，保留调用方已有 instructions、完整输入及工具调用／结果。字符串输入转换为用户消息数组，system 角色映射为 developer，历史项的上游 id 被移除；状态引用与 item_reference 在发送前明确拒绝，不能据此补造历史。不支持的采样／输出限制／显式缓存字段和不支持的 service_tier 省略，并发出只含固定字段名的 tracing 诊断。它不注入 Codex 系统指令，不合成孤儿工具结果。Native Responses profile 保持原生字段与显式请求能力限制，Codex 的适配不影响它。当前 backend 用户代理约定依据 Magpie `9b04c4e20ff8bf10c745a53f562f5007b82d007d`，上游变更需单独复核。
 
@@ -32,3 +32,8 @@ CLI 子进程清空继承环境后，仅保留系统用户身份所需的 `HOME`
 Pool 的 continuation 查询与实际工具等待状态同源，返回无约束、原 binding 归属或已失效。失效会终止对应进程并保留必要的会话失效事实；消费方负责将该约束与自己的模型资格、认证世代共同校验。`cancel_session` 也取消已返回 tool_use 后等待结果的交互；应用在明确的新用户轮调用 `begin_user_turn`，只有已终止交互可以解除失效，仍运行或 pending 时拒绝。已失效工具 ID 独立保留，`validate_result_ids` 只接收当前请求尾部结果，防止新轮错误接收迟到结果。关闭单个 HTTP Runner 不应 shutdown 共享 pool，应用生命周期结束时才显式 shutdown。
 
 Claude Code 的同一用户轮可被 caller tools 分成多个 HTTP 响应；`Run` 内的用量账本跨这些响应保留，只有发送新的用户输入才清空。按照 [官方 SDK 用量约定](https://code.claude.com/docs/en/agent-sdk/cost-tracking)，assistant／message_start 的输入与缓存计数按原生 message ID 去重，其 output_tokens 是占位值；输出只采信关联该 ID 且已结束的 message_delta 流计数或最终 result。每个工具段报告当前可信累计减去已交付数量，最终 result.usage 是该用户轮主循环累计，也扣除已交付部分；同一 assistant 的多个工具不会重复计入统计。只映射 input_tokens、output_tokens、cache_read_input_tokens、cache_creation_input_tokens，其他 CLI 用量维度不推测转换。缺失、无效、溢出、累计下降或当前轮发生 conversation_reset 时，相应不可确定的字段省略并保留固定字段名诊断；不补零、不生成负数。未知 output 的工具段保持未知，最终结果可报告此前尚未分配的可信输出。
+
+
+`KimiCoding` 是 HTTP request profile，支持官方 `api.kimi.com` 和 `api.kimi.ai` 的 HTTPS 443 目标。Messages 的 base path 必须是 `/coding`，ChatCompletions／Responses 是 `/coding/v1`，再由原生 adapter 追加操作路径；末尾斜杠可省略。认证使用普通 API key 来源，按协议选择 Bearer 或 x-api-key；不会假造 OAuth 或刷新能力。该 profile 固定发送真实 `Velune/<crate version>` User-Agent，忽略调用方的 User-Agent，不冒充获准客户端。上游是否接受客户端身份仍由服务决定。
+
+Kimi 错误分类只解析不超过 64 KiB 的 JSON，读取根级 message 或 error.message，按[第一方错误参考](https://www.kimi.com/code/docs/kimi-code/error-reference.html)的固定前缀与对应状态识别服务事实（2026-10-20 核对）。没有真实模型错误 JSON 样本支撑机器 code/type，因此不猜测这些字段。明确的五小时、周和月额度错误映射为 QuotaExhausted；套餐权限及已知账号停用映射为 Permission，即使原始状态是 401 或 500。429 引擎过载映射为 Overloaded；未知结构、过大 JSON 或未知文案保持原生状态分类，不做全局 quota 子串匹配。响应状态、正文和 headers 不因分类而改写。此适配不修改思考或工具历史字段；跨协议仍受现有 best-effort 转换边界约束。

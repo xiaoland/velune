@@ -2,11 +2,12 @@
 //!
 //! Standard profile preserves native requests and response bytes. The explicit
 //! Codex subscription profile adapts the backend's stateless streaming contract.
+use crate::HttpClient;
 use crate::config::{
     CredentialMaterial, HttpAuthorization, ProtocolConfig, ProviderConfig, RequestProfile,
     ResolvedCredential, Transport,
 };
-use reqwest::{Client, ClientBuilder, Response, header::HeaderValue};
+use reqwest::{Response, header::HeaderValue};
 use serde_json::Value;
 use std::sync::Arc;
 use velune_ai::http::{Header, ResponseBody, ResponseMeta};
@@ -23,30 +24,16 @@ async fn bounded_body(response: Response) -> Result<Vec<u8>, ()> {
     Ok(body)
 }
 
-/// A Responses transport that never redirects credentials or repeats a request
-/// behind the gateway's explicit recovery policy.
-#[derive(Clone)]
-pub struct ResponsesClient(Client);
-impl ResponsesClient {
-    pub fn new(builder: ClientBuilder) -> Result<Self, reqwest::Error> {
-        builder
-            .redirect(reqwest::redirect::Policy::none())
-            .retry(reqwest::retry::never())
-            .build()
-            .map(Self)
-    }
-}
-
 pub struct OpenAiResponses {
     config: ProviderConfig,
-    client: ResponsesClient,
+    client: HttpClient,
     credential: Arc<ResolvedCredential>,
 }
 
 impl OpenAiResponses {
     pub fn with_resolved_credential(
         config: ProviderConfig,
-        client: ResponsesClient,
+        client: HttpClient,
         credential: ResolvedCredential,
     ) -> Result<Self, InvalidContract> {
         let ProtocolConfig::Responses(protocol) = config.protocol() else {
@@ -325,7 +312,8 @@ impl ResponsesProvider for OpenAiResponses {
             });
         };
         let endpoint = protocol.endpoint.url("/responses");
-        let client = self.client.0.clone();
+        let request_profile = self.config.request_profile();
+        let client = self.client.inner.clone();
         let credential = Arc::clone(&self.credential);
         let profile = self.config.request_profile();
         let headers = request.headers;
@@ -363,6 +351,11 @@ impl ResponsesProvider for OpenAiResponses {
                 .header("connection", "close");
             for header in &headers {
                 let name = header.name.to_ascii_lowercase();
+                if request_profile == crate::config::RequestProfile::KimiCoding
+                    && name == "user-agent"
+                {
+                    continue;
+                }
                 if matches!(
                     name.as_str(),
                     "authorization" | "host" | "content-length" | "connection"
@@ -411,6 +404,10 @@ impl ResponsesProvider for OpenAiResponses {
                         .header("thread-id", value);
                 }
             }
+            if request_profile == crate::config::RequestProfile::KimiCoding {
+                // Set a single genuine client identity, never impersonate an allowed agent.
+                builder = builder.header("user-agent", crate::service_error::USER_AGENT);
+            }
             let request = match builder.json(&body).build() {
                 Ok(request) => request,
                 Err(_) => {
@@ -443,11 +440,28 @@ impl ResponsesProvider for OpenAiResponses {
             if !(200..300).contains(&status) {
                 let body = bounded_body(response).await.ok();
                 return failure_with_meta(
-                    match status {
-                        401 => ResponsesErrorKind::Authentication,
-                        403 => ResponsesErrorKind::Permission,
-                        429 => ResponsesErrorKind::RateLimited,
-                        _ => ResponsesErrorKind::ProviderFailure,
+                    match crate::service_error::classify(request_profile, status, body.as_deref()) {
+                        Some(crate::service_error::ServiceError::Authentication) => {
+                            ResponsesErrorKind::Authentication
+                        }
+                        Some(crate::service_error::ServiceError::Permission) => {
+                            ResponsesErrorKind::Permission
+                        }
+                        Some(crate::service_error::ServiceError::QuotaExhausted) => {
+                            ResponsesErrorKind::QuotaExhausted
+                        }
+                        Some(crate::service_error::ServiceError::RateLimited) => {
+                            ResponsesErrorKind::RateLimited
+                        }
+                        Some(crate::service_error::ServiceError::Overloaded) => {
+                            ResponsesErrorKind::Overloaded
+                        }
+                        None => match status {
+                            401 => ResponsesErrorKind::Authentication,
+                            403 => ResponsesErrorKind::Permission,
+                            429 => ResponsesErrorKind::RateLimited,
+                            _ => ResponsesErrorKind::ProviderFailure,
+                        },
                     },
                     meta,
                     body,

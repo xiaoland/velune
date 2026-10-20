@@ -4,11 +4,12 @@
 //! read provider configuration, resolve credentials, retry, or choose a model.
 //! Request version/beta headers and all native JSON/SSE fields remain caller-owned;
 //! the resolved API key replaces caller authentication using x-api-key.
+use crate::HttpClient;
 use crate::config::{
     CredentialMaterial, HttpAuthorization, ProtocolConfig, ProviderConfig, ResolvedCredential,
     Transport,
 };
-use reqwest::{Client, Response, header::HeaderValue};
+use reqwest::{Response, header::HeaderValue};
 use serde_json::Value;
 use std::sync::Arc;
 use velune_ai::{InvalidContract, OperationFuture, Payload};
@@ -30,7 +31,7 @@ async fn bounded_body(response: Response) -> Result<Vec<u8>, ()> {
 
 pub struct Messages {
     config: ProviderConfig,
-    client: Client,
+    client: HttpClient,
     explicit_output_cap: Option<bool>,
     credential: Arc<dyn Fn() -> Option<HttpAuthorization> + Send + Sync>,
 }
@@ -38,7 +39,7 @@ pub struct Messages {
 impl Messages {
     pub fn new(
         config: ProviderConfig,
-        client: Client,
+        client: HttpClient,
         credential: Payload<String>,
     ) -> Result<Self, InvalidContract> {
         let ProtocolConfig::Messages(protocol) = config.protocol() else {
@@ -62,7 +63,7 @@ impl Messages {
     }
     pub fn with_resolved_credential(
         config: ProviderConfig,
-        client: Client,
+        client: HttpClient,
         credential: ResolvedCredential,
     ) -> Result<Self, InvalidContract> {
         let ProtocolConfig::Messages(protocol) = config.protocol() else {
@@ -183,7 +184,8 @@ impl MessagesProvider for Messages {
             });
         };
         let endpoint = protocol.endpoint.url("/v1/messages");
-        let client = self.client.clone();
+        let request_profile = self.config.request_profile();
+        let client = self.client.inner.clone();
         let credential = Arc::clone(&self.credential);
         let headers = request.headers;
         let stream_requested = request.stream;
@@ -230,6 +232,11 @@ impl MessagesProvider for Messages {
                 .header("connection", "close");
             for header in &headers {
                 let name = header.name.to_ascii_lowercase();
+                if request_profile == crate::config::RequestProfile::KimiCoding
+                    && name == "user-agent"
+                {
+                    continue;
+                }
                 if matches!(
                     name.as_str(),
                     "authorization" | "x-api-key" | "host" | "content-length" | "connection"
@@ -240,6 +247,10 @@ impl MessagesProvider for Messages {
                     continue;
                 };
                 builder = builder.header(&header.name, value);
+            }
+            if request_profile == crate::config::RequestProfile::KimiCoding {
+                // Set a single genuine client identity, never impersonate an allowed agent.
+                builder = builder.header("user-agent", crate::service_error::USER_AGENT);
             }
             let request = match builder.json(&body).build() {
                 Ok(request) => request,
@@ -277,11 +288,32 @@ impl MessagesProvider for Messages {
                 let body = bounded_body(response).await.ok();
                 return MessagesCompletion {
                     result: Err(MessagesFailure {
-                        kind: match status {
-                            401 => MessagesErrorKind::Authentication,
-                            403 => MessagesErrorKind::Permission,
-                            429 => MessagesErrorKind::RateLimited,
-                            _ => MessagesErrorKind::ProviderFailure,
+                        kind: match crate::service_error::classify(
+                            request_profile,
+                            status,
+                            body.as_deref(),
+                        ) {
+                            Some(crate::service_error::ServiceError::Authentication) => {
+                                MessagesErrorKind::Authentication
+                            }
+                            Some(crate::service_error::ServiceError::Permission) => {
+                                MessagesErrorKind::Permission
+                            }
+                            Some(crate::service_error::ServiceError::QuotaExhausted) => {
+                                MessagesErrorKind::QuotaExhausted
+                            }
+                            Some(crate::service_error::ServiceError::RateLimited) => {
+                                MessagesErrorKind::RateLimited
+                            }
+                            Some(crate::service_error::ServiceError::Overloaded) => {
+                                MessagesErrorKind::Overloaded
+                            }
+                            None => match status {
+                                401 => MessagesErrorKind::Authentication,
+                                403 => MessagesErrorKind::Permission,
+                                429 => MessagesErrorKind::RateLimited,
+                                _ => MessagesErrorKind::ProviderFailure,
+                            },
                         },
                         response: Some(meta),
                         body: body.map(Payload::new),

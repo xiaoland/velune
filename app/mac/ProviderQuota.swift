@@ -124,9 +124,9 @@ struct ProviderQuotaForm: View {
         Form {
             Section {
                 if providerID == nil {
-                    Text("保存提供商并登录后读取额度。").foregroundStyle(.secondary)
+                    Text("保存提供商并配置认证后读取额度。").foregroundStyle(.secondary)
                 } else if signedOut {
-                    Text("登录后读取额度。").foregroundStyle(.secondary)
+                    Text("配置认证后读取额度。").foregroundStyle(.secondary)
                 } else {
                     if let quota, quota.available == false {
                         Label("提供商表示此账户当前不可用，暂停新请求。", systemImage: "pause.circle").foregroundStyle(.orange)

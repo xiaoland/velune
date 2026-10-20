@@ -4,7 +4,9 @@
 
 ## 当前接续与凭据边界
 
-2026-10-16 用户已确认下文具体方案，授权开始，仅实现 Rust lib，前端另行安排。不改 Mac 源码、生成 Swift 或构建安装 app；Rust UniFFI API 与文档须足以供前端接入。
+当前为 2026-10-20 Kimi Coding Plan 实施，范围与状态见[末节](#kimi-coding-plan-实施2026-10-20)及 [Kimi 接入记录](kimi-coding-plan.md)。包括 Rust 支持、已有平台模板消费者和必要绑定重建；不含真实模型调用。
+
+2026-10-16 首轮仅授权 Rust lib，前端另行安排，当时不改 Mac 源码或构建安装 app；后续 Mac 设置工作及本次 Kimi 最小消费者接入已有各自授权。
 
 - 当前路线为 Velune 独立管理 Codex 订阅认证及 AI 网关聚合；正式 SIWC 留作未来申请后的独立接入。用户已知悉规则冲突并要求产品披露。
 - Codex Switcher 只是两个验收订阅的来源，不做产品集成。用户最新明确授权直接使用既存两份认证：只在一次性验收进程内读取 access token/account_id，不读取 refresh token 值、不刷新或改写原文件。此前重新登录建议已被用户纠正。
@@ -283,3 +285,9 @@ HOME 修复已覆盖 application 登录/状态/退出/额度与 ai-provider 执�
 2026-10-20 用户认可Kimi模板/额度/错误语义方向，并授权以指定Coding Key验证第一方查询接口、继续收敛；权限变更已归PRD与sources。实际私有文件位于所指项目的隐藏secrets目录，仅程序内提取专用Coding key/base，未读取其他变量值或保存响应。正常TLS、无重定向、真实Velune身份，共两次GET，无模型/登录/重试。`/coding/v1/usages` 与 `/coding/v1/me` 均HTTP200；前者实际返回5h/week数值比例及reset字段，月窗口/wallet缺失；后者有user_id/global_id，仅输出存在性。由此否定“普通Coding Key必然不能查额度”的假设，但不推广为所有套餐/区域都支持。
 
 技术收敛、脱敏证据、验收判据与线性顺序已合并到 [Kimi Coding Plan接入收敛](kimi-coding-plan.md)。建议复用request profile新增KimiCoding而非另增ErrorPolicy配置轴，KimiUsage独立来源，Messages为首版原生上游。凭据generation控制旧任务，经过/me验证的owner控制订阅归属；同owner换key不清阈值/冷却，不按keyhash复制订阅。当前阶段结果已形成，产品源码未改、未发模型请求；后续实施及推理验收仍为待完成事项。
+
+## Kimi Coding Plan 实施（2026-10-20）
+
+用户明确开始实施。已更新PRD、AI service契约及 [Kimi收敛/实施记录](kimi-coding-plan.md)。main ea7362b初始干净；主执行者负责整合/文档/最终验证，transport负责ai/gateway，source负责app/API/bindings，platform负责最小平台消费者，manual负责回环合成验收。无真实模型/凭据读取，复用此前两个HTTP200证据；不新增自动测试/CI，不push。Mac修改后按既有要求构建安装，Android不增不存在的配置入口。
+
+接入已实现：Kimi模板组合固定HTTP/Messages/API key/KimiCoding/KimiUsage；账户验证和去重、主动额度、使用上限及服务错误语义接入既有调度。三HTTP协议改用共享安全HttpClient。Mac既有编辑器支持订阅API key，Windows既有表单增加core模板选择；Android为新增枚举重建JNI/Kotlin/APK并保数据覆盖安装。Kimi 44组、Codex24组、Claude取消3组及原生Messages8次HTTP的合成人工证据通过；Rust静态/构建、Mac完整构建和Android build/lint通过，详细边界与安装证据归上述Kimi记录。真实推理、工具往返及海外区域尚未验收。

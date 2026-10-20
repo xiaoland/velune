@@ -140,6 +140,26 @@ impl GatewayConfig {
                     return Err("Codex request profile requires its bound Responses endpoint");
                 }
             }
+            if provider.request_profile == RequestProfile::KimiCoding {
+                let endpoint = reqwest::Url::parse(&provider.endpoint)
+                    .map_err(|_| "invalid Kimi Coding endpoint")?;
+                let path = match provider.protocol {
+                    GatewayProtocol::MessagesV1 => "/coding",
+                    _ => "/coding/v1",
+                };
+                if !matches!(provider.execution_backend, ExecutionBackend::Http)
+                    || endpoint.scheme() != "https"
+                    || !matches!(endpoint.host_str(), Some("api.kimi.com" | "api.kimi.ai"))
+                    || endpoint.port_or_known_default() != Some(443)
+                    || endpoint.path().trim_end_matches('/') != path
+                    || endpoint.query().is_some()
+                    || endpoint.fragment().is_some()
+                    || !endpoint.username().is_empty()
+                    || endpoint.password().is_some()
+                {
+                    return Err("Kimi Coding profile requires its bound HTTP endpoint");
+                }
+            }
             let mut windows = BTreeSet::new();
             if provider.quota_limits.iter().any(|limit| {
                 limit.window_id.is_empty()

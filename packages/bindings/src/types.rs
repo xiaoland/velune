@@ -384,6 +384,7 @@ pub enum BindingExecutionBackend {
 pub enum BindingRequestProfile {
     Native,
     CodexResponses,
+    KimiCoding,
 }
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, uniffi::Enum)]
 #[serde(rename_all = "camelCase")]
@@ -400,6 +401,7 @@ pub enum BindingProviderQuotaSource {
     None,
     CodexUsage,
     ClaudeCliUsage,
+    KimiUsage,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]

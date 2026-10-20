@@ -56,7 +56,8 @@ async fn main(){
  let port: u16=endpoint.rsplit(':').next().unwrap().parse().unwrap();
  let client=reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()).retry(reqwest::retry::never()).build().unwrap();
  let config=ProviderConfig::new(ProviderId::new("native").unwrap(),ConfigRevision::new(1).unwrap(),ProtocolConfig::Messages(MessagesConfig{endpoint:HttpEndpoint::new(Transport::Http,"127.0.0.1",port,"/").unwrap()}),CredentialRef::new("native-key").unwrap(),velune_gateway::RequestProfile::Native).unwrap();
- let adapter=Messages::with_resolved_credential(config.clone(),client.clone(),ResolvedCredential{material:velune_gateway::CredentialMaterial::Http{authorization:velune_gateway::HttpAuthorization::ApiKey("SYNTHETIC_UPSTREAM_KEY".into()),account_id:None},recovery:velune_gateway::CredentialRecovery::None,request_capabilities:velune_gateway::RequestCapabilities::default()}).unwrap();
+ let adapter_client=velune_ai_provider::HttpClient::new(reqwest::Client::builder()).unwrap();
+ let adapter=Messages::with_resolved_credential(config.clone(),adapter_client.clone(),ResolvedCredential{material:velune_gateway::CredentialMaterial::Http{authorization:velune_gateway::HttpAuthorization::ApiKey("SYNTHETIC_UPSTREAM_KEY".into()),account_id:None},recovery:velune_gateway::CredentialRecovery::None,request_capabilities:velune_gateway::RequestCapabilities::default()}).unwrap();
  let service=DirectMessagesService::new(Arc::new(MessagesBinding::new(ProviderId::new("native").unwrap(),vec![ProviderModelId::new("actual-api-model").unwrap()],Arc::new(adapter)).unwrap()));
  for (case,stream) in [("json",false),("stream",true),("error",false),("stream-error",true)] {
   let wire=Arc::new(Mutex::new(Vec::new()));let sink=wire.clone();
@@ -65,7 +66,7 @@ async fn main(){
  }
  let bad=service.messages(MessagesRequest{model:ProviderModelId::new("actual-api-model").unwrap(),body:Payload::new(body("actual-api-model","json",false)),headers:vec![],stream:false},Box::new(|_|Box::pin(async{Ok(())}))).await;
  assert!(matches!(bad.result,Err(MessagesFailure{kind:MessagesErrorKind::InvalidInput,submitted:false,..})));
- assert!(Messages::with_resolved_credential(config,client.clone(),ResolvedCredential{material:velune_gateway::CredentialMaterial::LocalSession{config_dir:"/synthetic".into()},recovery:velune_gateway::CredentialRecovery::None,request_capabilities:velune_gateway::RequestCapabilities::default()}).is_err());
+ assert!(Messages::with_resolved_credential(config,adapter_client,ResolvedCredential{material:velune_gateway::CredentialMaterial::LocalSession{config_dir:Some("/synthetic".into())},recovery:velune_gateway::CredentialRecovery::None,request_capabilities:velune_gateway::RequestCapabilities::default()}).is_err());
  let gateway=Runner::start(GatewayConfig{id:"g".into(),name:"g".into(),providers:vec![ProviderDefinition{execution_backend:velune_gateway::ExecutionBackend::Http,request_profile:velune_gateway::RequestProfile::Native,id:"p".into(),name:"p".into(),protocol:GatewayProtocol::MessagesV1,endpoint: endpoint.clone(),credential_ref:Some("key".into()),quota_limits:vec![],models:vec![ProviderModel{record_key:"record".into(),provider_model_id:"actual-api-model".into(),nickname:"".into(),icon:None,context_window:None,max_output_tokens:None,reasoning_levels:None}]}],routes:vec![]},Arc::new(Auth),BTreeMap::from([("velune/auto".into(),"record".into())])).unwrap();
  for (case,stream) in [("json",false),("stream",true),("stream-error",true),("error",false)] {
   let response=client.post(format!("{}/messages",gateway.endpoint())).header("x-api-key",gateway.token()).header("anthropic-version","2099-01-01").header("anthropic-beta","synthetic-beta").json(&body("velune/auto",case,stream)).send().await.unwrap();

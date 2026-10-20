@@ -34,7 +34,11 @@ impl CoreRuntime {
             let lane = self.lane_projection(&runtime_projection);
             let runner = Runner::start_with_scheduling(
                 gateway.to_gateway_config()?,
-                crate::authentication_resolver::ProviderResolver::capture(&gateway, &self.options),
+                crate::authentication_resolver::ProviderResolver::capture_for_dispatch(
+                    &gateway,
+                    &self.options,
+                    self.subscription_quota.clone(),
+                ),
                 self.native_aliases(&runtime, model_record_key)?,
                 Some(self.analytics.clone()),
                 self.scheduling_state.clone(),
@@ -91,7 +95,11 @@ impl CoreRuntime {
         self.shutdown_active()?;
         let runner = Runner::start_with_scheduling(
             gateway.to_gateway_config()?,
-            crate::authentication_resolver::ProviderResolver::capture(&gateway, &self.options),
+            crate::authentication_resolver::ProviderResolver::capture_for_dispatch(
+                &gateway,
+                &self.options,
+                self.subscription_quota.clone(),
+            ),
             route_aliases,
             Some(self.analytics.clone()),
             self.scheduling_state.clone(),

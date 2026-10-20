@@ -282,7 +282,7 @@ async fn call(client:&reqwest::Client,runner:&Runner,extra:Value)->(u16,String,r
 }
 fn runner(home:&Path,options:&Options,labels:&[&str])->Runner {
  let full=config(home);
- let providers:Vec<_>=full.providers.iter().filter(|p|labels.contains(&p.id.as_str())).map(|p|velune_gateway::ProviderDefinition {execution_backend:velune_gateway::ExecutionBackend::Http,request_profile:p.request_profile,
+ let providers:Vec<_>=full.providers.iter().filter(|p|labels.contains(&p.id.as_str())).map(|p|velune_gateway::ProviderDefinition {execution_backend:velune_gateway::ExecutionBackend::Http,request_profile:match p.request_profile{velune_application::config::RequestProfile::Native=>velune_gateway::RequestProfile::Native,velune_application::config::RequestProfile::CodexResponses=>velune_gateway::RequestProfile::CodexResponses,velune_application::config::RequestProfile::KimiCoding=>velune_gateway::RequestProfile::KimiCoding},
   id:p.id.clone(),name:p.name.clone(),protocol:GatewayProtocol::ResponsesV1,endpoint:p.endpoint.clone(),credential_ref:Some(p.id.clone()),quota_limits:vec![],
   models:p.models.iter().map(|m|velune_gateway::ProviderModel {record_key:m.record_key.clone(),provider_model_id:m.provider_model_id.clone(),nickname:m.nickname.clone(),icon:None,context_window:None,max_output_tokens:Some(256),reasoning_levels:None}).collect()
  }).collect();
@@ -317,7 +317,7 @@ fn main(){
  // Public configuration and quota collection stay provider-owned and survive reopening.
  let saved=config(&home);let rate=saved.providers.iter().find(|p|p.id=="rate").unwrap();let good=saved.providers.iter().find(|p|p.id=="good").unwrap();
  let rate_key=rate.models[0].record_key.clone();let good_key=good.models[0].record_key.clone();
- app.save_provider("default".into(),ProviderDraft{execution_backend:rate.execution_backend.clone(),request_profile:rate.request_profile,authentication_source:velune_application::ProviderAuthenticationSource::CodexOAuth,quota_source:rate.quota_source,id:rate.id.clone(),name:rate.name.clone(),protocol:rate.protocol.clone(),endpoint:rate.endpoint.clone(),models:rate.models.clone(),quota_limits:vec![velune_application::config::QuotaLimit{window_id:"window:18000".into(),max_used_percent:75}]},AuthenticationEdit::Keep).unwrap();
+ app.save_provider("default".into(),ProviderDraft{execution_backend:rate.execution_backend.clone(),request_profile:rate.request_profile,authentication_source:velune_application::ProviderAuthenticationSource::CodexOAuth,quota_source:rate.quota_source,id:rate.id.clone(),name:rate.name.clone(),protocol:rate.protocol.clone(),endpoint:rate.endpoint.clone(),models:rate.models.iter().map(Into::into).collect(),quota_limits:vec![velune_application::config::QuotaLimit{window_id:"window:18000".into(),max_used_percent:75}]},AuthenticationEdit::Keep).unwrap();
  for strategy in [velune_application::config::RoutingStrategy::Smart,velune_application::config::RoutingStrategy::Order,velune_application::config::RoutingStrategy::Rotate,velune_application::config::RoutingStrategy::Weight]{
   let weights=if strategy==velune_application::config::RoutingStrategy::Weight{BTreeMap::from([(rate_key.clone(),1),(good_key.clone(),3)])}else{BTreeMap::new()};
   app.save_model_route("default".into(),velune_application::config::ModelRoute{record_key:String::new(),name:format!("Fixture {strategy:?}"),members:vec![rate_key.clone(),good_key.clone()],strategy,sticky:true,weights}).unwrap();
@@ -388,7 +388,7 @@ fn main(){
  let mut app=Application::open(options.clone()).unwrap();
  let control=reqwest::blocking::Client::builder().no_proxy().build().unwrap();let quota_base=endpoint.trim_end_matches("/backend-api/codex");
  control.get(format!("{quota_base}/quota-control?mode=hold")).send().unwrap();app.refresh_provider_quota("default".into(),"rate".into()).unwrap();let deadline=Instant::now()+Duration::from_secs(5);loop{let status:Value=control.get(format!("{quota_base}/quota-control")).send().unwrap().json().unwrap();if status["entered"]==true{break;}assert!(Instant::now()<deadline);std::thread::sleep(Duration::from_millis(10));}
- let old=config(&home).providers.into_iter().find(|p|p.id=="rate").unwrap();app.save_provider("default".into(),ProviderDraft{execution_backend:old.execution_backend.clone(),request_profile:old.request_profile,authentication_source:velune_application::ProviderAuthenticationSource::CodexOAuth,quota_source:old.quota_source,id:old.id,name:old.name,protocol:old.protocol,endpoint:old.endpoint,models:old.models,quota_limits:old.quota_limits},AuthenticationEdit::Clear).unwrap();control.get(format!("{quota_base}/quota-control?mode=release")).send().unwrap();std::thread::sleep(Duration::from_millis(150));let replaced=app.provider_quota("default".into(),"rate".into()).unwrap();assert!(matches!(replaced.freshness,velune_application::QuotaFreshness::Unknown)&&replaced.windows.is_empty(),"old-account quota returned after authentication replacement");
+ let old=config(&home).providers.into_iter().find(|p|p.id=="rate").unwrap();app.save_provider("default".into(),ProviderDraft{execution_backend:old.execution_backend.clone(),request_profile:old.request_profile,authentication_source:velune_application::ProviderAuthenticationSource::CodexOAuth,quota_source:old.quota_source,id:old.id,name:old.name,protocol:old.protocol,endpoint:old.endpoint,models:old.models.iter().map(Into::into).collect(),quota_limits:old.quota_limits},AuthenticationEdit::Clear).unwrap();control.get(format!("{quota_base}/quota-control?mode=release")).send().unwrap();std::thread::sleep(Duration::from_millis(150));let replaced=app.provider_quota("default".into(),"rate".into()).unwrap();assert!(matches!(replaced.freshness,velune_application::QuotaFreshness::Unknown)&&replaced.windows.is_empty(),"old-account quota returned after authentication replacement");
  let denied=app.authentication_inspect("default".into(),"denied".into()).unwrap();assert!(!denied.configured&&denied.account_label.is_some(),"invalidated account public state");
  assert!(app.authentication_inspect("default".into(),"transient".into()).unwrap().configured,"temporary failure public state");app.close().unwrap();drop(app);
  monitor_done.store(true,Ordering::SeqCst);assert!(monitor.join().unwrap()>0,"no atomic write observations");
@@ -411,6 +411,7 @@ def main():
         copy = temporary / 'source'
         copy.mkdir()
         shutil.copytree(ROOT / 'packages', copy / 'packages')
+        shutil.copytree(ROOT / 'third-party', copy / 'third-party')
         shutil.copytree(ROOT / 'app/host', copy / 'app/host')
         for name in ('Cargo.toml', 'Cargo.lock'):
             shutil.copy2(ROOT / name, copy / name)
@@ -421,15 +422,20 @@ def main():
         try:
             rewrite(copy / 'packages/application/src/subscription_auth.rs', 'https://auth.openai.com', base)
             rewrite(copy / 'packages/application/src/subscription_auth.rs', 'https://chatgpt.com/backend-api/wham/usage', base + '/usage')
-            rewrite(copy / 'packages/application/src/provider_authentication.rs', 'https://chatgpt.com/backend-api/codex', endpoint)
+            rewrite(copy / 'packages/application-api/src/authentication.rs', 'https://chatgpt.com/backend-api/codex', endpoint)
             # Keep every target check, substituting only this synthetic target's identity.
-            rewrite(copy / 'packages/application/src/subscription_auth.rs', 'https://chatgpt.com/backend-api/codex', endpoint)
             rewrite(copy / 'packages/ai-provider/src/config.rs',
                     'config.endpoint.transport() != Transport::Https\n                || config.endpoint.host() != "chatgpt.com"\n                || config.endpoint.port().get() != 443',
                     'config.endpoint.transport() != Transport::Http\n                || config.endpoint.host() != "127.0.0.1"\n                || config.endpoint.port().get() != %d' % server.server_port)
-            rewrite(copy / 'packages/gateway/src/config.rs', 'endpoint.scheme() != "https"', 'endpoint.scheme() != "http"')
-            rewrite(copy / 'packages/gateway/src/config.rs', 'endpoint.host_str() != Some("chatgpt.com")', 'endpoint.host_str() != Some("127.0.0.1")')
-            rewrite(copy / 'packages/gateway/src/config.rs', 'endpoint.port_or_known_default() != Some(443)', 'endpoint.port_or_known_default() != Some(%d)' % server.server_port)
+            config_path = copy / 'packages/gateway/src/config.rs'
+            config_source = config_path.read_text()
+            start = config_source.index('if provider.request_profile == RequestProfile::CodexResponses {')
+            end = config_source.index('if provider.request_profile == RequestProfile::KimiCoding {', start)
+            block = config_source[start:end]
+            for old, new in [('endpoint.scheme() != "https"', 'endpoint.scheme() != "http"'), ('endpoint.host_str() != Some("chatgpt.com")', 'endpoint.host_str() != Some("127.0.0.1")'), ('endpoint.port_or_known_default() != Some(443)', 'endpoint.port_or_known_default() != Some(%d)' % server.server_port)]:
+                check(block.count(old) == 1, 'Codex target rewrite count changed')
+                block = block.replace(old, new)
+            config_path.write_text(config_source[:start] + block + config_source[end:])
             rewrite(copy / 'packages/application/src/lib.rs', 'mod authentication_resolver;', 'pub mod authentication_resolver;')
             rewrite(copy / 'packages/application/src/authentication_resolver.rs', 'pub(crate) struct ProviderResolver', 'pub struct ProviderResolver')
             rewrite(copy / 'packages/application/src/authentication_resolver.rs', 'pub(crate) fn capture(', 'pub fn capture(')
@@ -437,6 +443,7 @@ def main():
             (harness / 'src').mkdir(parents=True)
             (harness / 'src/main.rs').write_text(PROGRAM)
             dependencies = '\n'.join('%s={path="%s"}' % (name, copy / 'packages' / folder) for name, folder in [('velune-application', 'application'), ('velune-gateway', 'gateway'), ('velune-bindings', 'bindings')])
+            dependencies = dependencies.replace('velune-bindings={path="', 'velune-bindings={default-features=false,features=["local-runtime"],path="')
             (harness / 'Cargo.toml').write_text('[package]\nname="manual-codex-subscriptions"\nversion="0.0.0"\nedition="2024"\n[workspace]\n[dependencies]\n' + dependencies + '\nreqwest={version="0.13",default-features=false,features=["json","blocking"]}\ntokio={version="1",features=["macros","rt","sync"]}\nserde_json="1"\nurl="2"\n')
             environment = dict(os.environ)
             # An accidentally unrewritten remote URL must fail through a dead proxy.

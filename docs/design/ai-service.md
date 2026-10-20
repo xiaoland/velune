@@ -107,9 +107,9 @@ Claude Code 后端使用显式独立 `CLAUDE_CONFIG_DIR`，登录、秘密和续
 
 HTTP 继续使用响应提交闸门。Claude 子进程成功启动后，或向已有进程写入本次输入前，保守进入不可自动重放状态；之后的退出、超时和解析错误不能因为下游尚无响应头而切换账户重做。CLI 故障不伪装成 HTTP 401。实际协议、会话接续和验收记录见 [模型路由任务](../../tasks/model-routing/packet.md)。
 
-2026-10-20 Kimi Coding Plan 技术候选（继续收敛，尚未实施）：组合采用 HTTP、Messages 原生上游、API Key、KimiCoding 请求适配与 KimiUsage 额度来源；其它入口协议保留既有 best-effort 转换。服务地址、请求约束与错误语义由同一请求适配拥有，不新增可任意拼接的 ErrorPolicy 配置轴。ai-provider 输出中立的认证、权限、配额耗尽、短暂限流等失败事实并保留原 HTTP 状态；gateway 不增加 Kimi 品牌分支，继续按提交边界决定停止、冷却和切换。
+2026-10-20 Kimi Coding Plan 的实现契约：组合采用 HTTP、Messages 原生上游、API Key、KimiCoding 请求适配与 KimiUsage 额度来源；其它入口协议保留既有 best-effort 转换。服务地址、请求约束与错误语义由同一请求适配拥有，不新增可任意拼接的 ErrorPolicy 配置轴。三种 HTTP 协议共用从 builder 构造的 HttpClient，在构造末尾禁用重定向与底层自动重试；独立消费方的代理、TLS 和超时仍可配置，不能注入已构建的任意 Client 绕过凭据目标边界。ai-provider 输出中立的认证、权限、配额耗尽、短暂限流等失败事实并保留原 HTTP 状态；gateway 不增加 Kimi 品牌分支，继续按提交边界决定停止、冷却和切换。
 
-application 对固定服务目标分别解析账户与额度，不能把 `/me`、`/usages` 伪装成模型请求的认证目标。凭据版本用于取消旧任务并阻止旧结果回写；已验证账户由服务区域与 `user_id` 标识，`global_id` 不用于未经验证的跨区域合并。轮换 Key 期间新凭据尚未验证，旧账户摘要不是它的有效证明；同账户确认后保留使用阈值与账户冷却，不凭换 Key 清零或解除限制。额度窗口按实际返回解析，月额度和钱包缺失维持未知，不猜套餐类型。候选的详细范围、实测条件和验收判据归 [Kimi 接入收敛](../../tasks/model-routing/kimi-coding-plan.md)。
+application 对固定服务目标分别解析账户与额度，不能把 `/me`、`/usages` 伪装成模型请求的认证目标。凭据版本用于取消旧任务并阻止旧结果回写；已验证账户由服务区域与 `user_id` 标识，`global_id` 不用于未经验证的跨区域合并。轮换 Key 期间新凭据尚未验证，旧账户摘要不是它的有效证明；同账户确认后保留使用阈值与账户冷却，不凭换 Key 清零或解除限制。额度窗口按实际返回解析，月额度和钱包缺失维持未知，不猜套餐类型。接入范围、实测条件和验收判据归 [Kimi 接入收敛](../../tasks/model-routing/kimi-coding-plan.md)。
 
 ## 路由、fail-over 与生命周期
 

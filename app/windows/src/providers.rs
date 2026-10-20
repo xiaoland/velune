@@ -1,5 +1,5 @@
-//! This PC's gateway providers. Only API-key providers are added here; the
-//! key stays in the application's private configuration.
+//! This PC's gateway providers. HTTP templates retain their composition while
+//! API keys stay in the application's private configuration.
 use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, Sizable as _,
     button::{Button, ButtonVariants as _},
@@ -13,7 +13,8 @@ use gpui_kit::*;
 use velune_bindings::{
     BindingAuthenticationEdit, BindingExecutionBackend, BindingGatewayConfig,
     BindingGatewayProtocol, BindingProtocolDescriptor, BindingProviderAuthenticationSource,
-    BindingProviderDraft, BindingProviderModel, BindingProviderQuotaSource, BindingRequestProfile,
+    BindingProviderDraft, BindingProviderModel, BindingProviderQuotaSource,
+    BindingProviderTemplate, BindingProviderTemplateKind, BindingRequestProfile,
 };
 
 use crate::{
@@ -25,6 +26,7 @@ use crate::{
 const GATEWAY: &str = "default";
 
 struct Draft {
+    template: Option<String>,
     name: Entity<InputState>,
     protocol: Option<BindingGatewayProtocol>,
     endpoint: Entity<InputState>,
@@ -36,6 +38,7 @@ pub struct Providers {
     core: Core,
     gateway: Option<BindingGatewayConfig>,
     protocols: Vec<BindingProtocolDescriptor>,
+    templates: Vec<BindingProviderTemplate>,
     draft: Draft,
     busy: bool,
     failure: Option<String>,
@@ -54,6 +57,7 @@ impl Providers {
             })
         };
         let draft = Draft {
+            template: None,
             name: input("名称，例如 DeepSeek", false, window, cx),
             protocol: None,
             endpoint: input(
@@ -69,6 +73,7 @@ impl Providers {
             core,
             gateway: None,
             protocols: Vec::new(),
+            templates: Vec::new(),
             draft,
             busy: false,
             failure: None,
@@ -81,9 +86,24 @@ impl Providers {
         let core = self.core.clone();
         run(
             cx,
-            move || core.application(&Device::Local)?.list(),
+            move || {
+                Ok((
+                    core.application(&Device::Local)?.list()?,
+                    velune_bindings::provider_templates()?,
+                ))
+            },
             |this, list, _| match list {
-                Ok(list) => {
+                Ok((list, templates)) => {
+                    this.templates = templates
+                        .into_iter()
+                        .filter(|template| {
+                            matches!(template.execution_backend, BindingExecutionBackend::Http)
+                                && matches!(
+                                    template.authentication_source,
+                                    BindingProviderAuthenticationSource::ApiKey
+                                )
+                        })
+                        .collect();
                     this.gateway = list
                         .gateways
                         .into_iter()
@@ -125,15 +145,24 @@ impl Providers {
             cx.notify();
             return;
         }
+        let template = self.selected_template();
         let draft = BindingProviderDraft {
             id: String::new(),
             name,
             protocol,
             endpoint,
-            execution_backend: BindingExecutionBackend::Http,
-            request_profile: BindingRequestProfile::Native,
-            authentication_source: BindingProviderAuthenticationSource::ApiKey,
-            quota_source: BindingProviderQuotaSource::None,
+            execution_backend: template
+                .map(|value| value.execution_backend.clone())
+                .unwrap_or(BindingExecutionBackend::Http),
+            request_profile: template
+                .map(|value| value.request_profile)
+                .unwrap_or(BindingRequestProfile::Native),
+            authentication_source: template
+                .map(|value| value.authentication_source)
+                .unwrap_or(BindingProviderAuthenticationSource::ApiKey),
+            quota_source: template
+                .map(|value| value.quota_source)
+                .unwrap_or(BindingProviderQuotaSource::None),
             models: models
                 .into_iter()
                 .map(|model| BindingProviderModel {
@@ -179,6 +208,9 @@ impl Providers {
                         for input in &inputs {
                             input.update(cx, |input, cx| input.set_value("", window, cx));
                         }
+                        if this.draft.template.is_some() {
+                            this.choose_template(this.draft.template.clone(), window, cx);
+                        }
                     }
                     Err(error) => this.failure = Some(describe(&error)),
                 }
@@ -213,6 +245,40 @@ impl Providers {
         );
     }
 
+    fn selected_template(&self) -> Option<&BindingProviderTemplate> {
+        self.templates
+            .iter()
+            .find(|template| Some(&template.id) == self.draft.template.as_ref())
+    }
+    fn choose_template(&mut self, id: Option<String>, window: &mut Window, cx: &mut Context<Self>) {
+        self.draft.template = id;
+        let template = self.selected_template().cloned();
+        self.draft.protocol = template
+            .as_ref()
+            .map(|value| value.protocol.clone())
+            .or_else(|| self.protocols.first().map(|value| value.id.clone()));
+        self.draft.name.update(cx, |input, cx| {
+            input.set_value(
+                template
+                    .as_ref()
+                    .map(|value| value.name.clone())
+                    .unwrap_or_default(),
+                window,
+                cx,
+            )
+        });
+        self.draft.endpoint.update(cx, |input, cx| {
+            input.set_value(
+                template.map(|value| value.endpoint).unwrap_or_default(),
+                window,
+                cx,
+            )
+        });
+        self.draft
+            .key
+            .update(cx, |input, cx| input.set_value("", window, cx));
+        cx.notify();
+    }
     fn protocol_name(&self, protocol: &BindingGatewayProtocol) -> String {
         self.protocols
             .iter()
@@ -232,6 +298,13 @@ impl Render for Providers {
         let view = cx.entity().downgrade();
         let protocols = self.protocols.clone();
         let current = self.draft.protocol.clone();
+        let templates = self.templates.clone();
+        let selected = self.selected_template().cloned();
+        let fixed = selected
+            .as_ref()
+            .is_some_and(|value| matches!(value.kind, BindingProviderTemplateKind::Subscription));
+        let template_view = cx.entity().downgrade();
+        let selected_id = self.draft.template.clone();
         let label = |text: &'static str| div().w(px(96.)).flex_none().child(text);
         v_flex()
             .pb_4()
@@ -286,7 +359,57 @@ impl Render for Providers {
                     })),
             )
             .child(
-                section("添加 API 提供商", cx)
+                section("添加提供商", cx)
+                    .child(
+                        h_flex().gap_2().child(label("模板")).child(
+                            Button::new("provider-template")
+                                .outline()
+                                .label(
+                                    selected
+                                        .as_ref()
+                                        .map(|value| value.name.clone())
+                                        .unwrap_or_else(|| "自定义 API".into()),
+                                )
+                                .dropdown_caret(true)
+                                .dropdown_menu(move |mut menu, _, _| {
+                                    let view = template_view.clone();
+                                    menu = menu.item(
+                                        PopupMenuItem::new("自定义 API")
+                                            .checked(selected_id.is_none())
+                                            .on_click(move |_, window, cx| {
+                                                let _ = view.update(cx, |this, cx| {
+                                                    this.choose_template(None, window, cx)
+                                                });
+                                            }),
+                                    );
+                                    for template in &templates {
+                                        let view = template_view.clone();
+                                        let id = template.id.clone();
+                                        menu = menu.item(
+                                            PopupMenuItem::new(template.name.clone())
+                                                .checked(selected_id.as_ref() == Some(&id))
+                                                .on_click(move |_, window, cx| {
+                                                    let _ = view.update(cx, |this, cx| {
+                                                        this.choose_template(
+                                                            Some(id.clone()),
+                                                            window,
+                                                            cx,
+                                                        )
+                                                    });
+                                                }),
+                                        );
+                                    }
+                                    menu
+                                }),
+                        ),
+                    )
+                    .when_some(
+                        selected
+                            .as_ref()
+                            .and_then(|value| value.disclosure.as_ref())
+                            .map(|value| format!("{}：{}", value.title, value.detail)),
+                        |column, note| column.child(muted(note, cx)),
+                    )
                     .child(
                         h_flex()
                             .gap_2()
@@ -297,6 +420,7 @@ impl Render for Providers {
                         h_flex().gap_2().child(label("协议")).child(
                             Button::new("protocol")
                                 .outline()
+                                .disabled(fixed)
                                 .label(
                                     current
                                         .as_ref()
@@ -327,10 +451,20 @@ impl Render for Providers {
                         ),
                     )
                     .child(
-                        h_flex()
-                            .gap_2()
-                            .child(label("接口地址"))
-                            .child(div().flex_1().child(Input::new(&self.draft.endpoint))),
+                        h_flex().gap_2().child(label("接口地址")).child(
+                            div()
+                                .flex_1()
+                                .when(fixed, |view| {
+                                    view.child(muted(
+                                        selected
+                                            .as_ref()
+                                            .map(|value| value.endpoint.clone())
+                                            .unwrap_or_default(),
+                                        cx,
+                                    ))
+                                })
+                                .when(!fixed, |view| view.child(Input::new(&self.draft.endpoint))),
+                        ),
                     )
                     .child(
                         h_flex().gap_2().child(label("API key")).child(

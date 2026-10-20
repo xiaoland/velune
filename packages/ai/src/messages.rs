@@ -40,6 +40,10 @@ pub enum MessagesErrorKind {
     Authentication,
     Permission,
     RateLimited,
+    /// Explicit account usage exhaustion, independent of its HTTP status.
+    QuotaExhausted,
+    /// Temporary service capacity exhaustion.
+    Overloaded,
     Timeout,
     Transport,
     ProviderFailure,

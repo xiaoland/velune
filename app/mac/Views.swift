@@ -596,7 +596,8 @@ struct ProviderSettingsView: View {
     private func providerSummary(_ provider: AIProvider) -> String {
         let authentication = provider.authentication
         guard let subscription = provider.composition.subscriptionName else { return "\(provider.models.count) 个模型 · \(provider.endpoint)" }
-        return (["\(provider.models.count) 个模型", subscription] + (authentication.accountLabel.map { ["账户 …\($0)"] } ?? []) + [authentication.configured ? "已登录" : "需要登录"]).joined(separator: " · ")
+        let status = authentication.method == .oauth ? (authentication.configured ? "已登录" : "需要登录") : (authentication.configured ? "已配置" : "需要配置认证")
+        return (["\(provider.models.count) 个模型", subscription] + (authentication.accountLabel.map { ["账户 …\($0)"] } ?? []) + [status]).joined(separator: " · ")
     }
 }
 
@@ -691,8 +692,9 @@ struct ProviderEditor: View {
     private var authentication: ProviderAuthentication { store.providers.first { $0.id == providerID }?.authentication ?? provider?.authentication ?? ProviderAuthentication() }
     /// A subscription composition fixes the protocol and how the provider is reached.
     private var usesSubscription: Bool { composition.subscriptionName != nil }
-    /// A new subscription provider signs in once saved, unless it uses an existing login.
-    private var awaitsFirstSave: Bool { providerID == nil && usesSubscription && linkedLogin == nil }
+    /// OAuth subscriptions sign in once saved, unless they use an existing login.
+    private var awaitsFirstSave: Bool { providerID == nil && composition.signInHint != nil && linkedLogin == nil }
+    private var usesAPIKey: Bool { composition.authenticationSource == .apiKey }
     private var usesClaudeCLI: Bool { composition.claudeBinary != nil }
     /// The account source differs from the saved one; the saved status no longer applies.
     private var linkedLoginChanged: Bool { usesClaudeCLI && linkedLogin != authentication.linkedLogin }
@@ -758,7 +760,7 @@ struct ProviderEditor: View {
                 name = template.kind == .subscription ? template.name : ""; protocolID = template.protocolID; endpoint = template.endpoint; composition = template.composition
             }
             linkedLogin = provider?.authentication.linkedLogin
-            editingAPIKey = !usesSubscription && authentication.method == .unconfigured; readAPIKeyIfNeeded()
+            editingAPIKey = (!usesSubscription || usesAPIKey) && authentication.method == .unconfigured; readAPIKeyIfNeeded()
             if let providerID { store.readProviderQuotas([providerID]) }
             if composition.claudeBinary != nil { discoverExecutables() }
         }
@@ -817,7 +819,7 @@ struct ProviderEditor: View {
             } header: {
                 Text("连接")
             } footer: {
-                Text(composition.subscriptionName.map { "\($0)固定协议与连接方式\(composition.claudeBinary != nil ? "，由本机官方 Claude Code CLI 执行请求" : "")。使用 API key 请另外添加 API 提供商。" } ?? "切换协议后采用默认适配参数；模型 ID 与已填写的能力保留。")
+                Text(composition.subscriptionName.map { "\($0)固定协议与连接方式\(composition.claudeBinary != nil ? "，由本机官方 Claude Code CLI 执行请求" : "")。" + (usesAPIKey ? "填写此订阅的专属 API key。" : "使用 API key 请另外添加 API 提供商。") } ?? "切换协议后采用默认适配参数；模型 ID 与已填写的能力保留。")
                     .formFooterStyle()
             }
             Section("认证") {
@@ -855,7 +857,7 @@ struct ProviderEditor: View {
                         Button("退出登录…") { confirmingLogout = true }.disabled(store.isBusy || store.isGenerating)
                     }
                 }
-                if !editingAPIKey && !usesSubscription { Button("使用 API key…") { editingAPIKey = true; clearAuthentication = true; composition = ProviderComposition(); apiKey = "" } }
+                if !editingAPIKey && (!usesSubscription || usesAPIKey) { Button("使用 API key…") { editingAPIKey = true; clearAuthentication = true; if !usesAPIKey { composition = ProviderComposition() }; apiKey = "" } }
                 if providerID != nil && authentication.linkedLogin == nil && !linkedLoginChanged && (authentication.configured || editingAPIKey) {
                     Button("清除认证", role: .destructive) { clearAuthentication = true; editingAPIKey = false; apiKey = ""; originalAPIKey = nil }
                 }
@@ -874,7 +876,7 @@ struct ProviderEditor: View {
         return authentication.linkedLogin == nil && authentication.configured ? source + "此提供商在 Velune 中独立的登录将退出。" : source
     }
     private var methodLabel: String {
-        if editingAPIKey { return "API key" }
+        if editingAPIKey || usesAPIKey { return "API key" }
         if let name = composition.subscriptionName { return name }
         if clearAuthentication { return "尚未配置" }
         return authentication.method.label
@@ -896,7 +898,7 @@ struct ProviderEditor: View {
         store.readProviderAPIKey(providerID) { value in originalAPIKey = value; apiKey = value; editingAPIKey = true }
     }
     /// Saves; `signingIn` keeps the editor open on the saved provider and starts its login.
-    /// A new subscription provider starts its source's authentication empty, so it saves with `keep`.
+    /// API-key subscriptions save the entered key without changing their protocol composition.
     private func commit(signingIn: Bool = false) {
         let edit: AuthenticationEdit = editingAPIKey && apiKey != originalAPIKey ? .setAPIKey(apiKey) : clearAuthentication ? .clear
             : linkedLoginChanged ? linkedLogin.map(AuthenticationEdit.useClaudeCodeLogin) ?? .clear : .keep

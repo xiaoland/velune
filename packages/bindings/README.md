@@ -110,3 +110,5 @@ Swift 生成模块名为 `VeluneBindings`，FFI 模块名为 `VeluneBindingsFFI`
 Claude CLI 登录沿用 start/poll/cancel/inspect，CLI 自己打开浏览器并管理秘密，可能没有 URL notification；平台持续 poll 获取最终 result。`authentication_logout(gateway_id, provider_id)` 返回 `BindingGatewayUpdate`，退出后刷新配置视图。公开账号摘要只用于辨别绑定，不保证订阅身份或当前可调用；CLI 状态不可用不能显示为登录有效。quota API 不变，未知、过期与 problem 必须按实际呈现；窗口值不是剩余 token 或费用预算。CLI backend 保留应用运行期间的会话，应用关闭或认证变更会终止旧绑定，不承诺重启恢复。
 
 `BindingPlatformNetwork` 以 `wifi`、`cellular`、`ethernet`、`vpn` 表达实际 transport，不以默认网络或 Internet 状态替代这些事实。诊断探针用 Wi-Fi／Ethernet 非 VPN 的 numeric IPv4 装配 mDNS；正常业务仍只把网络报告作为 transport 提示。`BindingProbeMdnsEvent.InterfacesApplied` 包含私有接口地址、采样时间和 generation，表示配置应用与旧任务退出请求，不表示旧 FD 已关闭。`refresh_mdns_interfaces()` 供桌面合成宿主周期采样；Android 使用最近报告的网络事实。接口代际切换产生的 Expired 表示旧接口 scope 失效，不能解释为远端离线。生产 mDNS 与 Rust Controller 恢复已在库内装配；平台界面、权限与真实换网仍未接入／验证。
+
+Kimi 模板由同一 `provider_templates` 目录返回，ID 为 `kimiCodingPlan`，使用新增 `BindingRequestProfile::KimiCoding` 与 `BindingProviderQuotaSource::KimiUsage`。仍通过 `ApiKey` 编辑 Key，不展示 OAuth 按钮。平台按模板组合保存，不推测地址、模型 ID 或账户归属；公开认证的 `configured` 表示当前 Key 已通过账户验证，额度状态和安全 `problem` 由现有 quota API 返回。账户摘要与披露文案沿现有具名字段呈现；未知窗口和缺失钱包信息不显示为满额或免费保证。

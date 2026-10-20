@@ -33,6 +33,8 @@ pub enum QuotaSnapshot {
 /// collection work, but must not perform network I/O while serving this call.
 pub trait QuotaSource: Send + Sync {
     fn snapshot(&self, provider_id: &str) -> QuotaSnapshot;
+    /// Enqueue fresh observations after an explicit exhausted-quota response.
+    fn quota_exhausted(&self, _provider_id: &str) {}
 }
 pub struct UnknownQuotaSource;
 impl QuotaSource for UnknownQuotaSource {
@@ -110,6 +112,27 @@ impl SchedulingState {
         state.sessions.retain(|(gateway, _, _, _), binding| {
             gateway != gateway_id || binding.provider != provider_id
         });
+    }
+    /// Retire captured credentials while preserving a verified owner's health and affinity.
+    /// The caller must separately invalidate the provider if owner verification changes.
+    pub fn invalidate_credentials(&self, gateway_id: &str, provider_id: &str) {
+        let mut state = self.0.lock().expect("scheduling state");
+        let provider = state
+            .providers
+            .entry((gateway_id.into(), provider_id.into()))
+            .or_default();
+        provider.epoch = provider.epoch.wrapping_add(1);
+        let epoch = provider.epoch;
+        // A cancelled old probe cannot release a new probe's lease.
+        provider.cooldown_generation = provider.cooldown_generation.wrapping_add(1);
+        if let Some(cooldown) = &mut provider.cooldown {
+            cooldown.probing = false;
+        }
+        for ((gateway, _, _, _), binding) in &mut state.sessions {
+            if gateway == gateway_id && binding.provider == provider_id {
+                binding.epoch = epoch;
+            }
+        }
     }
     pub(crate) fn epoch(&self, gateway: &str, provider: &str) -> u64 {
         self.0

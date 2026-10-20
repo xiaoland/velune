@@ -11,6 +11,8 @@ use std::{
 use velune_gateway::{QuotaSnapshot, QuotaSource, QuotaWindow};
 
 type Key = (String, String);
+type Observation = (Vec<QuotaWindow>, Option<bool>, i64, i64);
+type ObservationResult = Result<Observation, ()>;
 #[derive(Clone, PartialEq, Eq)]
 struct Binding {
     id: String,
@@ -18,6 +20,7 @@ struct Binding {
     source: crate::config::ProviderQuotaSource,
     binary: Option<String>,
     directory: LoginDirectory,
+    kimi: Option<crate::kimi_quota::Capture>,
 }
 fn cli_binary(provider: &crate::config::ProviderDefinition) -> Option<String> {
     match &provider.execution_backend {
@@ -33,8 +36,18 @@ enum LoginDirectory {
     /// A referenced login's `CLAUDE_CONFIG_DIR`; `None` is the user's default.
     Linked(Option<String>),
 }
-struct Entry {
+#[derive(Clone)]
+struct ViewBinding {
     binding: Option<Binding>,
+    incarnation: String,
+}
+struct Entry {
+    // Recreating a deleted provider can reuse its ID, key and credential generation.
+    incarnation: String,
+    binding: Option<Binding>,
+    owner: Option<crate::kimi_quota::Owner>,
+    reservation: Option<crate::kimi_quota::Owner>,
+    identity_rejected: bool,
     windows: Vec<QuotaWindow>,
     available: Option<bool>,
     observed_at_ms: i64,
@@ -52,12 +65,13 @@ struct State {
 }
 pub(crate) struct SubscriptionQuota {
     home: PathBuf,
+    scheduling: velune_gateway::SchedulingState,
     state: Mutex<State>,
 }
 struct GatewayView {
     service: Arc<SubscriptionQuota>,
     gateway_id: String,
-    bindings: BTreeMap<String, Option<Binding>>,
+    bindings: BTreeMap<String, ViewBinding>,
 }
 
 fn now_ms() -> i64 {
@@ -78,9 +92,14 @@ fn fresh(entry: &Entry) -> bool {
             .all(|w| w.reset_at_ms.is_none_or(|reset| reset > now))
 }
 impl SubscriptionQuota {
-    pub(crate) fn new(home: PathBuf, gateways: &[GatewayConfig]) -> Arc<Self> {
+    pub(crate) fn new(
+        home: PathBuf,
+        gateways: &[GatewayConfig],
+        scheduling: velune_gateway::SchedulingState,
+    ) -> Arc<Self> {
         let service = Arc::new(Self {
             home,
+            scheduling,
             state: Mutex::new(State::default()),
         });
         service.configure(gateways);
@@ -101,6 +120,7 @@ impl SubscriptionQuota {
                             source: p.quota_source,
                             binary: None,
                             directory: LoginDirectory::Owned,
+                            kimi: None,
                         }),
                         (
                             AuthenticationMaterial::ClaudeCli { credential_id, .. },
@@ -111,6 +131,7 @@ impl SubscriptionQuota {
                             source: p.quota_source,
                             binary: cli_binary(p),
                             directory: LoginDirectory::Owned,
+                            kimi: None,
                         }),
                         (
                             AuthenticationMaterial::ClaudeCliLinked { config_dir, .. },
@@ -121,6 +142,21 @@ impl SubscriptionQuota {
                             source: p.quota_source,
                             binary: cli_binary(p),
                             directory: LoginDirectory::Linked(config_dir.clone()),
+                            kimi: None,
+                        }),
+                        (
+                            AuthenticationMaterial::ApiKey { value },
+                            crate::config::ProviderQuotaSource::KimiUsage,
+                        ) => crate::config::kimi_region(&p.endpoint).map(|region| Binding {
+                            id: p.id.clone(),
+                            generation: p.authentication.generation,
+                            source: p.quota_source,
+                            binary: None,
+                            directory: LoginDirectory::Owned,
+                            kimi: Some(crate::kimi_quota::Capture {
+                                region,
+                                key: value.clone(),
+                            }),
                         }),
                         _ => None,
                     };
@@ -130,15 +166,32 @@ impl SubscriptionQuota {
             .collect();
         let mut state = self.state.lock().expect("quota state");
         state.entries.retain(|key, entry| {
-            let keep = desired.get(key) == Some(&entry.binding);
-            if !keep {
-                let _ = entry.cancel.send(true);
+            if desired.get(key) == Some(&entry.binding) {
+                return true;
             }
-            keep
+            let _ = entry.cancel.send(true);
+            if let Some(binding) = desired.get(key)
+                && binding.as_ref().is_some_and(|b| b.kimi.is_some())
+                && entry.binding.as_ref().is_some_and(|b| b.kimi.is_some())
+            {
+                entry.reservation = entry.owner.take().or(entry.reservation.take());
+                entry.binding = binding.clone();
+                entry.running = false;
+                entry.identity_rejected = false;
+                entry.cancel = tokio::sync::watch::channel(false).0;
+                entry.retry_at = Instant::now();
+                entry.problem = None;
+                return true;
+            }
+            false
         });
         for (key, binding) in desired {
             state.entries.entry(key).or_insert_with(|| Entry {
+                incarnation: crate::new_record_key(),
                 binding,
+                owner: None,
+                reservation: None,
+                identity_rejected: false,
                 windows: Vec::new(),
                 available: None,
                 observed_at_ms: 0,
@@ -149,6 +202,60 @@ impl SubscriptionQuota {
                 cancel: tokio::sync::watch::channel(false).0,
             });
         }
+    }
+    pub(crate) async fn authorize(
+        self: &Arc<Self>,
+        gateway: &str,
+        provider: &str,
+        generation: u64,
+    ) -> Result<(), velune_gateway::CredentialResolutionError> {
+        use velune_gateway::CredentialResolutionError as Error;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+        loop {
+            let _ = self
+                .query(gateway, provider, false)
+                .map_err(|_| Error::Unavailable)?;
+            {
+                let state = self.state.lock().expect("quota state");
+                let entry = state
+                    .entries
+                    .get(&(gateway.to_owned(), provider.to_owned()))
+                    .ok_or(Error::StaleBinding)?;
+                if state.stopped
+                    || entry.binding.as_ref().is_none_or(|binding| {
+                        binding.generation != generation || binding.kimi.is_none()
+                    })
+                {
+                    return Err(Error::StaleBinding);
+                }
+                if entry.owner.is_some() {
+                    return Ok(());
+                }
+                if entry.identity_rejected || !entry.running {
+                    return Err(Error::Unavailable);
+                }
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Err(Error::Timeout);
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    }
+    pub(crate) fn identity_status(&self, gateway: &str, provider: &str) -> (bool, Option<String>) {
+        let state = self.state.lock().expect("quota state");
+        state
+            .entries
+            .get(&(gateway.to_owned(), provider.to_owned()))
+            .map_or((false, None), |entry| {
+                (
+                    entry.owner.is_some(),
+                    entry
+                        .owner
+                        .as_ref()
+                        .or(entry.reservation.as_ref())
+                        .map(crate::kimi_quota::Owner::label),
+                )
+            })
     }
     pub(crate) fn source(self: &Arc<Self>, gateway_id: &str) -> Arc<dyn QuotaSource> {
         Arc::new(GatewayView {
@@ -161,7 +268,15 @@ impl SubscriptionQuota {
                 .entries
                 .iter()
                 .filter(|(key, _)| key.0 == gateway_id)
-                .map(|(key, entry)| (key.1.clone(), entry.binding.clone()))
+                .map(|(key, entry)| {
+                    (
+                        key.1.clone(),
+                        ViewBinding {
+                            binding: entry.binding.clone(),
+                            incarnation: entry.incarnation.clone(),
+                        },
+                    )
+                })
                 .collect(),
         })
     }
@@ -185,7 +300,7 @@ impl SubscriptionQuota {
         gateway_id: &str,
         provider_id: &str,
         force: bool,
-        expected: Option<&Option<Binding>>,
+        expected: Option<&ViewBinding>,
     ) -> Result<ProviderQuotaStatus, crate::Error> {
         let key = (gateway_id.to_owned(), provider_id.to_owned());
         let mut state = self.state.lock().expect("quota state");
@@ -194,18 +309,27 @@ impl SubscriptionQuota {
             .entries
             .get_mut(&key)
             .ok_or_else(|| crate::Error::invalid("provider id"))?;
-        if expected.is_some_and(|binding| binding != &entry.binding) {
+        if expected.is_some_and(|view| {
+            view.binding != entry.binding || view.incarnation != entry.incarnation
+        }) {
             return Err(crate::Error::invalid("quota binding changed"));
         }
         let start = may_start
             && entry.binding.is_some()
             && !entry.running
-            && (force || (!fresh(entry) && entry.retry_at <= Instant::now()));
+            && (force
+                || ((!fresh(entry)
+                    || (entry.binding.as_ref().is_some_and(|b| b.kimi.is_some())
+                        && entry.owner.is_none()))
+                    && entry.retry_at <= Instant::now()));
         if start {
             entry.running = true;
             entry.problem = None;
             let binding = entry.binding.clone().expect("native subscription");
+            let incarnation = entry.incarnation.clone();
             let cancel = entry.cancel.subscribe();
+            let verified_owner = entry.owner.clone();
+            entry.identity_rejected = false;
             let weak = Arc::downgrade(self);
             let home = self.home.clone();
             let worker_key = key.clone();
@@ -219,7 +343,11 @@ impl SubscriptionQuota {
             let spawned = std::thread::Builder::new()
                 .name("velune-subscription-quota".into())
                 .spawn(move || {
-                    let result = collect(home, &binding, cancel, refresh_ms);
+                    let (candidate_owner, result) = if let Some(kimi) = &binding.kimi {
+                        collect_kimi(kimi, verified_owner, cancel, refresh_ms)
+                    } else {
+                        (None, collect(home, &binding, cancel, refresh_ms))
+                    };
                     let Some(service) = weak.upgrade() else {
                         return;
                     };
@@ -228,14 +356,55 @@ impl SubscriptionQuota {
                     if state.stopped {
                         return;
                     }
-                    let Some(entry) = state
-                        .entries
-                        .get_mut(&worker_key)
-                        .filter(|entry| entry.binding.as_ref() == Some(&binding))
-                    else {
+                    if state.entries.get(&worker_key).is_none_or(|entry| {
+                        entry.binding.as_ref() != Some(&binding) || entry.incarnation != incarnation
+                    }) {
+                        return;
+                    }
+                    let duplicate = candidate_owner.as_ref().is_some_and(|owner| {
+                        state.entries.iter().any(|(key, entry)| {
+                            key != &worker_key
+                                && entry.owner.as_ref().or(entry.reservation.as_ref())
+                                    == Some(owner)
+                        })
+                    });
+                    let Some(entry) = state.entries.get_mut(&worker_key).filter(|entry| {
+                        entry.binding.as_ref() == Some(&binding) && entry.incarnation == incarnation
+                    }) else {
                         return;
                     };
                     entry.running = false;
+                    if binding.kimi.is_some() {
+                        if duplicate || candidate_owner.is_none() {
+                            entry.identity_rejected = true;
+                            entry.problem = Some(
+                                if duplicate {
+                                    "此 Kimi 账户已绑定另一个提供商。"
+                                } else {
+                                    "Kimi 账户归属未验证；不会派发模型请求。"
+                                }
+                                .into(),
+                            );
+                            entry.retry_at = Instant::now() + Duration::from_secs(50 + jitter);
+                            return;
+                        }
+                        let owner = candidate_owner.expect("verified Kimi owner");
+                        if entry
+                            .reservation
+                            .as_ref()
+                            .is_some_and(|previous| previous != &owner)
+                        {
+                            service
+                                .scheduling
+                                .invalidate_provider(&worker_key.0, &worker_key.1);
+                            entry.windows.clear();
+                            entry.available = None;
+                            entry.observed_at_ms = 0;
+                            entry.expires_at_ms = 0;
+                        }
+                        entry.owner = Some(owner);
+                        entry.reservation = None;
+                    }
                     entry.retry_at = Instant::now() + Duration::from_secs(50 + jitter);
                     match result {
                         Ok((windows, available, observed, expires)) => {
@@ -272,6 +441,10 @@ impl SubscriptionQuota {
             provider_id: provider_id.into(),
             freshness: if entry.binding.is_none() {
                 QuotaFreshness::Unsupported
+            } else if entry.binding.as_ref().is_some_and(|b| b.kimi.is_some())
+                && entry.owner.is_none()
+            {
+                QuotaFreshness::Unknown
             } else if fresh(entry) {
                 QuotaFreshness::Fresh
             } else if entry.observed_at_ms == 0 {
@@ -303,6 +476,30 @@ impl Drop for SubscriptionQuota {
     }
 }
 impl QuotaSource for GatewayView {
+    fn quota_exhausted(&self, provider_id: &str) {
+        if let Some(binding) = self.bindings.get(provider_id) {
+            {
+                let mut state = self.service.state.lock().expect("quota state");
+                let Some(entry) = state
+                    .entries
+                    .get_mut(&(self.gateway_id.clone(), provider_id.to_owned()))
+                    .filter(|entry| {
+                        entry.binding == binding.binding && entry.incarnation == binding.incarnation
+                    })
+                else {
+                    return;
+                };
+                let expired = now_ms();
+                entry.expires_at_ms = entry.expires_at_ms.min(expired);
+                for window in &mut entry.windows {
+                    window.expires_at_ms = window.expires_at_ms.min(expired);
+                }
+            }
+            let _ = self
+                .service
+                .query_binding(&self.gateway_id, provider_id, true, Some(binding));
+        }
+    }
     fn snapshot(&self, provider_id: &str) -> QuotaSnapshot {
         let Some(binding) = self.bindings.get(provider_id) else {
             return QuotaSnapshot::Unknown;
@@ -344,7 +541,7 @@ fn collect(
     binding: &Binding,
     mut cancel: tokio::sync::watch::Receiver<bool>,
     ttl_ms: i64,
-) -> Result<(Vec<QuotaWindow>, Option<bool>, i64, i64), ()> {
+) -> ObservationResult {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -356,7 +553,7 @@ fn collect(
                 match binding.source {
                     crate::config::ProviderQuotaSource::CodexUsage => crate::subscription_auth::read_usage(home, binding.id.clone(), binding.generation).await.map_err(|_| ()).and_then(|value| parse_windows(&value,ttl_ms)),
                     crate::config::ProviderQuotaSource::ClaudeCliUsage => { let owned=crate::claude_cli::directory(&home,&binding.id); let dir=match &binding.directory { LoginDirectory::Owned=>Some(owned.as_path()), LoginDirectory::Linked(dir)=>dir.as_deref().map(std::path::Path::new) }; let text=crate::claude_cli::usage(binding.binary.as_deref().ok_or(())?,dir).await?; parse_claude_windows(&text,ttl_ms) },
-                    crate::config::ProviderQuotaSource::None => Err(()),
+                    crate::config::ProviderQuotaSource::None | crate::config::ProviderQuotaSource::KimiUsage => Err(()),
                 }
             } => result,
             _ = cancel.changed() => Err(()),
@@ -364,10 +561,7 @@ fn collect(
     })
 }
 
-fn parse_windows(
-    value: &Value,
-    ttl_ms: i64,
-) -> Result<(Vec<QuotaWindow>, Option<bool>, i64, i64), ()> {
+fn parse_windows(value: &Value, ttl_ms: i64) -> ObservationResult {
     let rate = value
         .get("rate_limit")
         .filter(|v| v.is_object())
@@ -445,10 +639,7 @@ fn parse_windows(
     Ok((windows, available, observed, expires))
 }
 
-fn parse_claude_windows(
-    text: &str,
-    ttl_ms: i64,
-) -> Result<(Vec<QuotaWindow>, Option<bool>, i64, i64), ()> {
+fn parse_claude_windows(text: &str, ttl_ms: i64) -> ObservationResult {
     let observed = now_ms();
     if observed <= 0 {
         return Err(());
@@ -490,4 +681,26 @@ fn parse_claude_windows(
         return Err(());
     }
     Ok((windows, None, observed, observed + ttl_ms))
+}
+
+fn collect_kimi(
+    capture: &crate::kimi_quota::Capture,
+    verified: Option<crate::kimi_quota::Owner>,
+    mut cancel: tokio::sync::watch::Receiver<bool>,
+    ttl: i64,
+) -> (Option<crate::kimi_quota::Owner>, ObservationResult) {
+    let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    else {
+        return (None, Err(()));
+    };
+    runtime.block_on(async {
+        if *cancel.borrow() { return (None,Err(())); }
+        let owner=tokio::select! { result=async { match verified { Some(owner)=>Ok(owner),None=>capture.owner().await } }=>result.ok(), _=cancel.changed()=>None };
+        let Some(owner)=owner else { return (None,Err(())); };
+        let observed=now_ms();
+        let result=tokio::select! { result=capture.windows(observed,ttl)=>result.map(|windows| { let expires=windows.iter().map(|w|w.expires_at_ms).min().expect("nonempty windows"); (windows,None,observed,expires) }), _=cancel.changed()=>Err(()) };
+        (Some(owner),result)
+    })
 }

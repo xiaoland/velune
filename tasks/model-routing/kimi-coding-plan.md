@@ -1,6 +1,6 @@
 # Kimi Coding Plan：接入收敛
 
-2026-10-20，用户认可模板、额度适配和服务错误语义适配方向，要求验证普通 Coding Key 的查询权限并继续收敛。本文件是技术与验收候选，不表示已经实施。产品决定归 [PRD](../../docs/prd/index.md#ai-网关与-agent-运行时配置)，跨单元边界归 [AI service 设计](../../docs/design/ai-service.md#订阅能力组合与执行后端)。
+2026-10-20，用户认可模板、额度适配和服务错误语义适配方向，要求验证普通 Coding Key 的查询权限并继续收敛。用户随后明确“好的，开始实现”，本文件转为当前实施与验收依据；完成状态见下文。产品决定归 [PRD](../../docs/prd/index.md#ai-网关与-agent-运行时配置)，跨单元边界归 [AI service 设计](../../docs/design/ai-service.md#订阅能力组合与执行后端)。
 
 ## 已完成的只读验证
 
@@ -17,7 +17,7 @@
 
 第一方实现固定为 [kimi-code 5710c549](https://github.com/MoonshotAI/kimi-code/tree/5710c5496a213742ca0687f69dd8eeb5bde52dbf)：[managed-usage.ts](https://github.com/MoonshotAI/kimi-code/blob/5710c5496a213742ca0687f69dd8eeb5bde52dbf/packages/oauth/src/managed-usage.ts)、[managed-userinfo.ts](https://github.com/MoonshotAI/kimi-code/blob/5710c5496a213742ca0687f69dd8eeb5bde52dbf/packages/oauth/src/managed-userinfo.ts)。这些云接口有官方实现和本次实测依据，仍不是供应商承诺稳定的外部额度 API。
 
-## 建议的首版契约
+## 已授权的首版契约
 
 **组合与请求。** 新增 Kimi Coding Plan 模板，组合为 HTTP、Messages、API Key、KimiCoding profile、KimiUsage source；上游基址为 `https://api.kimi.com/coding/`，最终 Messages 路径为 `/coding/v1/messages`。不创建供应商类别、CLI 后端、OAuth 流程或内部账户池。模型 ID 继续由提供商模型配置拥有。上层 Chat/Responses 入口使用现有 best-effort 转换，不能宣称思考与工具历史无损互换。
 
@@ -50,4 +50,30 @@
 4. 同步 application-api、bindings、平台模板消费者及必要说明。最小接入沿模板目录展示，保留平台原有编辑结构；需要平台源码时在实施范围中明确，不默认扩张为独立界面重做。
 5. 运行规定的 fmt/check/clippy/build 与有界合成人工脚本。真实文本、思考工具往返和跨协议请求尚未获本轮授权；实施后须明确调用范围再进行。当前两次只读 GET 只证明账户与额度接口权限，不充当推理验收。
 
-本轮未实施上述步骤，也未修改或复制原凭据。
+## 当前实施
+
+2026-10-20 从 main `ea7362b` 干净工作区开始。transport owner负责 ai/ai-provider/gateway 的profile、语义分类和派发；source owner负责 application-api/application/bindings 的模板、身份、额度与绑定；platform owner负责Mac既有编辑器与Windows既有API表单的最小模板接通，Android没有提供商配置入口不扩展；manual owner负责合成人工脚本，主执行者负责整合、权威文档、最终静态/构建与Mac安装。
+
+本轮实现和合成HTTP/应用验收已授权，不读取真实秘密或调用真实模型；此前只读接口成功结果作为外部权限证据复用。未更改配置结构前不因新增模板名机械提升schema，不为短期身份cache引入账户注册表。平台已有模板消费者需要的最小改动属于接入，不重做界面。
+
+实施中确认的必要收口：现 ResponsesClient 只保护 Responses，Chat/Messages 的独立消费者可传入允许重定向的裸 Client。将现有包装提升为三协议共享 HttpClient，合并 gateway 双池，构造末尾强制禁用 redirect/retry，不保留旧类型 alias；目标校验仍归 profile。该变化保护独立 lib 的实际凭据目标，不增加另一套 Kimi 构造。
+
+Android 虽无提供商配置页面，完整业务快照携带 profile/quota 枚举，旧 JNI 会在 Kotlin 接收前反序列化失败。因此需重建常规 Android native/生成绑定与 APK，不新增 Android 界面。
+
+## 实现与验证结果
+
+模板、公共枚举、固定目标校验、身份与额度采集、错误分类和平台消费者已实现。身份声明、去重与发布在同一状态锁内完成；credential generation 阻止换 Key 前的请求和结果继续生效，运行期实例标识另阻止删除后以相同 ID、Key 和 generation 重建时接收旧采样。公开账户标签使用区域与 user_id 的散列短尾，不暴露账户标识。上述身份约束属于显式 Kimi 订阅组合；通用 Native API 提供商仍允许用户配置服务地址，不按 URL 推断品牌。
+
+2026-10-20 合成人工验收结果：
+
+| 范围 | 结果与证据边界 |
+| --- | --- |
+| Kimi HTTP 与 application 主矩阵 | 38 组通过：三协议目标、原状态透传与服务错误分类、冷却/切换、重定向第二跳零命中、隐式重试零重放、取消与提交闸门、跨网关账户去重、换 Key 后 cap/cooldown/sticky、换账户失效、旧任务与删除重建、窗口解析、保存重开 |
+| Kimi 读取失败补验 | 6 组通过：`/me` 401/403 时保留 Key、未验证且零模型请求；`/me` 成功而 `/usages` 401/403 时账户已验证、额度 Unknown，无 cap 可用、有 cap 暂停。复用主矩阵已编译的隔离库，仅重编临时 runner；相同场景已纳入主脚本 |
+| 原生 Messages 回归 | 8 次回环 HTTP 请求通过，覆盖 JSON、SSE、工具、思考、错误与 headers，直接消费方已改用共享 HttpClient |
+| Claude 工具生命周期回归 | `manual-subscription-composition.py --case cancel` 3 组通过，覆盖挂起工具的取消/结束、新轮恢复、迟到结果拒绝及已完成会话跨 Runner 复用 |
+| Codex 订阅回归 | `manual-codex-subscriptions.py` 24 组通过，覆盖认证、续期、额度、限额/路由和 bindings 门面的保存重开；修正人工脚本对公共 API 拆包后类型及临时源码依赖的引用 |
+
+最终 Rust fmt、全工作区 all-features check、全 targets/all-features clippy（`-D warnings`）、bindings debug/release build 与 application/bindings 无默认 feature 检查通过。Mac 已通过完整 Rust/生成 Swift 绑定/SwiftPM 构建及严格签名校验。Android 已执行完整 native/Kotlin 绑定重建、`assembleDebug` 和 `lintDebug`，并覆盖安装到已连接手机，未清除数据；APK SHA-256 为 `e5ea84aeda514347b4c5a690c37c40c387c281ffbbe7116787b9d900272d43a9`。Windows 表单源码在 Mac 宿主 check/clippy 通过，尚无 Windows 原生构建和运行证据。
+
+本轮真实模型请求、登录与秘密读取均为零。实现前的两个只读 GET 不替代真实文本、思考工具往返、跨协议或海外区域验收；本轮也未制造真实额度耗尽。

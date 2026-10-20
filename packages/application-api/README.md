@@ -21,3 +21,5 @@
 附件通过 `UploadAttachment { name, bytes }` 提交内容并取得 `AttachmentReference.reference`。远程 `ComposedTurn.attachments` 只接受当前视图取得的引用；本地调用仍接受执行机器绝对路径。`ReadAttachment` 只按会话、消息与块序号读取真实投影中的图片或文件，不接受任意路径。图片投影经远程传递时转换为内容；大图片先返回 `Deferred`，再通过 `MessagePayloads` 取得完整内容。二进制字段在 JSON 中采用 base64，原生语言 API 保持 `Vec<u8>`。上传及内容读取上限为 20 MiB，资源条目另遵守 adapter 自己的边界。
 
 本 unit 不拥有请求 ID、设备授权、连接、持久会话或跨崩溃去重记录；远程库管理请求接纳与结果查询，执行端应用拥有业务状态。断线后缺失回执需要查询实际接纳状态，不能由序列化契约推断可以安全重发。
+
+Kimi Coding Plan 模板 `kimiCodingPlan` 组合为 `Http`、`MessagesV1`、`ApiKey`、`RequestProfile::KimiCoding` 与 `ProviderQuotaSource::KimiUsage`。模板及保存后提供商摘要包含共享账户额度、个人交互式使用和加油包费用说明。窗口 ID 为 `kimi:limit_5h`、`kimi:limit_7d`、`kimi:limit_month_total`、`kimi:limit_month_code`，缺失项不生成；前端按实际观测项提供 cap 编辑。`configured` 表示当前 key 的账户归属已验证，`account_label` 可在重新验证期间保留稳定摘要短尾，不能以摘要代表有效认证。固定目标、并发去重与生命周期由 application 实现。

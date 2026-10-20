@@ -218,7 +218,7 @@ use serde_json::{Value,json};
 use velune_ai::{Payload,messages::*,ids::ProviderModelId};
 use velune_ai_provider::claude_code::*;
 fn provider(pool:Arc<ClaudeCodePool>,root:&Path,session:&str,binding:&str)->ClaudeCode{
- ClaudeCode::new(pool,ClaudeCodeConfig{executable:root.join("claude-fixture"),config_dir:root.join("account"),session:Some(session.into()),binding:binding.into()}).unwrap()
+ ClaudeCode::new(pool,ClaudeCodeConfig{executable:root.join("claude-fixture"),config_dir:Some(root.join("account")),session:Some(session.into()),binding:binding.into()}).unwrap()
 }
 fn request(messages:Vec<Value>,tools:bool)->MessagesRequest{
  let mut body=json!({"model":"fixture-model","max_tokens":32,"stream":true,"messages":messages});
@@ -240,7 +240,7 @@ fn alive(pid:u64)->bool{std::process::Command::new("/bin/kill").args(["-0",&pid.
 async fn dead(pid:u64){let deadline=Instant::now()+Duration::from_secs(3);while alive(pid){assert!(Instant::now()<deadline,"synthetic child leaked");tokio::time::sleep(Duration::from_millis(10)).await;}}
 
 struct Auth{root:PathBuf}
-impl velune_gateway::CredentialResolver for Auth{fn resolve(&self,id:String,target:velune_gateway::CredentialTarget)->velune_ai::OperationFuture<Result<velune_gateway::ResolvedCredential,velune_gateway::CredentialResolutionError>>{let root=self.root.clone();Box::pin(async move{if matches!(target.execution_backend,velune_gateway::ExecutionBackend::Http){return Ok(velune_gateway::ResolvedCredential{material:velune_gateway::CredentialMaterial::Http{authorization:velune_gateway::HttpAuthorization::Bearer("synthetic-http".into()),account_id:None},recovery:velune_gateway::CredentialRecovery::None,request_capabilities:Default::default()});}Ok(velune_gateway::ResolvedCredential{material:velune_gateway::CredentialMaterial::LocalSession{config_dir:root.join(format!("account-{id}")).to_string_lossy().into_owned()},recovery:velune_gateway::CredentialRecovery::None,request_capabilities:velune_gateway::RequestCapabilities::default()})})}}
+impl velune_gateway::CredentialResolver for Auth{fn resolve(&self,id:String,target:velune_gateway::CredentialTarget)->velune_ai::OperationFuture<Result<velune_gateway::ResolvedCredential,velune_gateway::CredentialResolutionError>>{let root=self.root.clone();Box::pin(async move{if matches!(target.execution_backend,velune_gateway::ExecutionBackend::Http){return Ok(velune_gateway::ResolvedCredential{material:velune_gateway::CredentialMaterial::Http{authorization:velune_gateway::HttpAuthorization::Bearer("synthetic-http".into()),account_id:None},recovery:velune_gateway::CredentialRecovery::None,request_capabilities:Default::default()});}Ok(velune_gateway::ResolvedCredential{material:velune_gateway::CredentialMaterial::LocalSession{config_dir:Some(root.join(format!("account-{id}")).to_string_lossy().into_owned())},recovery:velune_gateway::CredentialRecovery::None,request_capabilities:velune_gateway::RequestCapabilities::default()})})}}
 fn gateway_config(root:&Path)->velune_gateway::GatewayConfig{use velune_gateway::*;GatewayConfig{id:"bridge".into(),name:"bridge".into(),providers:["cli-a","cli-b"].into_iter().map(|id|ProviderDefinition{id:id.into(),name:id.into(),protocol:GatewayProtocol::MessagesV1,execution_backend:ExecutionBackend::ClaudeCli{binary:root.join("claude-fixture").to_string_lossy().into_owned()},request_profile:RequestProfile::Native,endpoint:String::new(),credential_ref:Some(id.into()),quota_limits:vec![],models:vec![ProviderModel{record_key:id.into(),provider_model_id:"fixture-model".into(),nickname:id.into(),icon:None,context_window:None,max_output_tokens:Some(32),reasoning_levels:None}]}).collect(),routes:vec![ModelRoute{record_key:"bridge-pool".into(),name:"bridge-pool".into(),members:vec!["cli-a".into(),"cli-b".into()],strategy:RoutingStrategy::Order,sticky:true,weights:std::collections::BTreeMap::new()}]}}
 fn gateway(root:&Path,config:velune_gateway::GatewayConfig,state:velune_gateway::SchedulingState,backends:velune_gateway::ExecutionBackends,session:&str)->velune_gateway::Runner{velune_gateway::Runner::start_with_scheduling(config,Arc::new(Auth{root:root.to_owned()}),std::collections::BTreeMap::new(),None,state,Arc::new(velune_gateway::UnknownQuotaSource),Some(velune_gateway::SessionIdentity{namespace:"fixture".into(),id:session.into()}),backends).unwrap()}
 async fn http(client:&reqwest::Client,gateway:&velune_gateway::Runner,messages:Vec<Value>,tools:bool)->(u16,String){let mut body=request(messages,tools).body.into_inner();body["model"]=json!("velune/model/bridge-pool");let response=client.post(format!("{}/messages",gateway.endpoint())).bearer_auth(gateway.token()).header("anthropic-version","2023-06-01").json(&body).send().await.unwrap();let status=response.status().as_u16();(status,response.text().await.unwrap_or_default())}
@@ -321,8 +321,10 @@ def main():
         source = ROOT
         if args.case in ('auth-cleanup', 'usage'):
             source = temporary / 'snapshot'
-            for unit in ['ai', 'ai-provider', 'conversation', 'agent-runtime', 'gateway', 'application']:
-                shutil.copytree(ROOT / 'packages' / unit, source / 'packages' / unit, ignore=shutil.ignore_patterns('target'))
+            shutil.copytree(ROOT / 'packages', source / 'packages', ignore=shutil.ignore_patterns('target'))
+            shutil.copytree(ROOT / 'third-party', source / 'third-party')
+            shutil.copy2(ROOT / 'Cargo.toml', source / 'Cargo.toml')
+            shutil.copy2(ROOT / 'Cargo.lock', source / 'Cargo.lock')
             if args.case == 'auth-cleanup':
                 observed = source / 'packages/application/src/claude_cli.rs'
                 text = observed.read_text()
@@ -335,7 +337,7 @@ def main():
                 text = observed.read_text()
                 marker = 'if !partial && let Some(blocks) = value["message"]["content"].as_array()'
                 assert text.count(marker) == 1, 'assistant observation boundary changed'
-                text = text.replace(marker, 'std::fs::write(config.config_dir.join("fixture-usage-processed"), value["message"]["id"].as_str().unwrap_or("")).unwrap();\n                            ' + marker)
+                text = text.replace(marker, 'std::fs::write(config.config_dir.as_ref().unwrap().join("fixture-usage-processed"), value["message"]["id"].as_str().unwrap_or("")).unwrap();\n                            ' + marker)
                 observed.write_text(text)
         dependencies = '\n'.join('%s={path="%s"}' % (name, source / 'packages' / folder)
                                  for name, folder in [('velune-ai-provider', 'ai-provider'), ('velune-ai', 'ai'), ('velune-gateway', 'gateway'), ('velune-application', 'application')])

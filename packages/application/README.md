@@ -140,3 +140,9 @@ Claude 认证失败的公开 `AuthenticationEvent.error` 只包含固定阶段�
 普通配置结果的运行时 `settings` 不包含 `acpLaunch`；只有显式 `acp_launch` 返回完整参数和环境。普通 upsert 未提供该字段时保留原启动配置，`upsert_acp_runtime` 才显式替换，包括清空。提供商模型公开记录去掉 Pi projection，内部存储仍保留它；保存公开编辑时只为实际 ID 和协议未改变的已有模型保留该私有元数据。资源文件的私有 byte-array 格式保持不变，跨边界 DTO 的 bytes 使用 base64，两者在 repository 与 adapter 边界显式转换。
 
 上传内容放在应用 home 的 `remote-attachments/<引用键>/<文件名>`，目录权限 0700，文件 0600；先写同目录暂存文件并同步，成功后原子发布。名称只接受单个普通文件名，单个上传和附件读取最多 20 MiB；读写、空间不足及超限明确返回错误。远程发送只接受当前 view 的上传引用，不能把控制机器的路径当作执行端文件；读取只定位实际会话消息图块。SSH Harness 的附件仍沿用其明确不支持边界。图片返回内容或延迟内容引用；图片文件已不可读、超限或来自当前不支持读取的 SSH 位置时，该块显示明确 Notice，保留其余消息；显式附件读取仍返回错误。其他文件继续由 Harness 按执行端绝对路径读取。文件可能被原生会话历史引用，因此连接断开、view 释放和应用退出均不删除已上传内容；当前没有自动清理或总磁盘配额，磁盘占用由真实上传累积，不伪装成临时连接缓存。
+
+Kimi Coding Plan 模板 `kimiCodingPlan` 固定组合为 `Http`、`MessagesV1`、`ApiKey`、`KimiCoding` 与 `KimiUsage`，地址为官方 `https://api.kimi.com/coding/`（海外区域 `https://api.kimi.ai/coding/`）。保存拒绝不匹配组合和其他地址；模型 ID 仍由提供商模型拥有。公开模板和提供商认证描述携带个人交互式使用、共享额度及加油包可能继续计费的说明。
+
+身份门禁、账户去重与订阅使用上限由显式 `KimiCoding`＋`KimiUsage` 组合提供；通用 `Native` API 配置不会仅凭地址被自动识别为订阅。Kimi 身份与额度由 application 读取固定 `/coding/v1/me` 和 `/coding/v1/usages`，不扩大模型凭据目标。每次新 Key revision 都先验证区域与 `user_id`；未验证或重复账户不返回模型凭据，所有网关的 provider 在同一服务锁内声明归属。公开 `configured` 只在当前 Key 已验证后为 true，`account_label` 仅显示已知账户稳定摘要的短尾；重启重新验证，不保存账户注册表。换 Key 取消旧采集并拒绝旧结果，同账户保留阈值、冷却与会话绑定，确认换账户才清除旧账户状态。
+
+额度 API 沿用 `provider_quota`／`refresh_provider_quota`。Kimi 窗口 ID 为 `kimi:limit_5h`、`kimi:limit_7d`、`kimi:limit_month_total`、`kimi:limit_month_code`，仅生成实际上游返回的有效项；`used_ratio` 支持有限 0–1 数字及数字字符串，`reset_time` 必须是有效未来 RFC3339 时间。缺失、非法或读取失败不补零，月窗口不伪造固定天数，钱包缺失不证明不会扣充值余额。`/me` 成功但额度失败时，无 cap 的候选仍可使用；有 cap 且缺少相应 fresh 窗口时暂停。显式额度耗尽事件触发按需重取，不重放已交付响应。

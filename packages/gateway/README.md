@@ -38,7 +38,7 @@ Messages 保留调用方的 `anthropic-version`／beta 请求头与原生 JSON�
 
 调用方可通过 `Runner::start_with_analytics` 注入非阻塞 `AnalyticsSink`，在上游原生响应、协议转换之前接收实际提供商／模型与用量、时间、结果记录。接收器负责持久化；gateway 不读取存储路径，也不从 tracing 重建用量。已有 `Runner::start` 可不采集统计。
 
-`ProviderDefinition.execution_backend` 显式选择 `Http` 或 `ClaudeCli { binary }`，`request_profile` 独立选择 `Native` 或 `CodexResponses`。HTTP 必须提供 endpoint；CLI 必须使用 Messages、Native profile 和空 endpoint，binary 是可执行文件路径而非 shell 命令。Codex profile 只允许精确的 HTTPS ChatGPT Codex Responses 目标，协议 adapter 再次校验。认证来源不决定这些选择。`ResolvedCredential` 的材料、恢复身份和请求能力彼此独立，resolver 的 refresh／invalidate 默认分别返回不可用／无操作，rejected_token 不写日志。认证的创建、保存、刷新串行化与并发换号保护属于 application。
+`ProviderDefinition.execution_backend` 显式选择 `Http` 或 `ClaudeCli { binary }`，`request_profile` 独立选择 `Native`、`CodexResponses` 或 `KimiCoding`。HTTP 必须提供 endpoint；CLI 必须使用 Messages、Native profile 和空 endpoint，binary 是可执行文件路径而非 shell 命令。Codex profile 只允许精确的 HTTPS ChatGPT Codex Responses 目标，协议 adapter 再次校验。认证来源不决定这些选择。`ResolvedCredential` 的材料、恢复身份和请求能力彼此独立，resolver 的 refresh／invalidate 默认分别返回不可用／无操作，rejected_token 不写日志。认证的创建、保存、刷新串行化与并发换号保护属于 application。
 
 `ExecutionBackends` 由应用跨 Runner 持有，与 `SchedulingState` 配合。它维护 Claude Code 共享 pool 与唯一 binding 编码；认证身份或后端配置变化时，应用同时调用两者的 `invalidate_provider(gateway_id, provider_id)`，普通 token refresh 不调用。应用退出才 shutdown 共享后端。CLI 的 stream／nonstream 以及三个入口协议使用既有 Messages 转换路径；没有会话 ID 时不复用 CLI 会话。
 
@@ -47,3 +47,8 @@ Claude CLI 的执行提交早于 HTTP 响应提交。成功启动进程后或向
 有挂起工具调用的显式会话，必须使用后端登记的原 provider 与认证 epoch。这是执行归属，先于策略和软黏性；其成员被移除、换绑、会话失效或额度／健康不合格时，返回明确的不可接续错误，不切到另一实例。普通文本也不能绕过尚未完成的工具归属，不从请求正文或 tool_use_id 猜测会话。外层 Harness 回合结束时调用 `ExecutionBackends::finish_user_turn`，清理仍在执行或等待工具的交互，保留已完成的空闲会话供复用。应用在用户取消时调用 `ExecutionBackends::cancel_session`，在显式新用户轮入口调用 `begin_user_turn`；后者拒绝仍运行或挂起的交互，仅解除已终止交互的失效限制，不在每次 HTTP 请求或运行时准备时重置。后端保留已失效工具 ID，网关在选择任何候选前校验本次请求尾部的工具结果，拒绝迟到结果；完整历史中的旧结果不会阻止新轮。
 
 上游 HTTP 2xx 仍可能在响应提交前因协议契约不满足而失败，例如流请求收到非 SSE 类型。此时网关返回 502 合成 JSON 错误，不复用成功响应的正文或实体 headers；analytics 保留实际上游状态。这个下游状态规范化不参与 fail-over 分类，不能把上游协议错误当作上游 5xx。已提交响应后的错误仍按原有中断处理。
+
+
+网关消费中立失败事实而不读取供应商文案。Permission 即使伴随 401／500 也停止，不触发认证恢复或通用 5xx 切换；只有 Authentication 才进入已声明的恢复能力。QuotaExhausted 在提交前按限额冷却并允许下一成员，同时调用非阻塞 `QuotaSource::quota_exhausted(provider_id)`，由 application 按需重取，不能在网关推测重置或修改额度缓存。Overloaded 沿用限流冷却。原始状态与正文继续透传；已提交响应、取消和 CLI 执行提交边界保持不变。
+
+应用轮换 Key 时可调用 `SchedulingState::invalidate_credentials` 使捕获旧凭据的 Runner 和迟到结果失效，保留已验证账户的冷却及黏性；该方法同时迁移当前绑定的 epoch，不让旧请求回写新世代。新 Key 重新验证前必须由来源层阻止借用旧 owner 准入。验证为不同 owner 时再调用完整 `invalidate_provider` 清除账户事实。

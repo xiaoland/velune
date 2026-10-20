@@ -21,7 +21,14 @@ impl From<&GatewayConfig> for GatewaySummary {
                     request_profile: p.request_profile,
                     authentication_source: p.authentication.source(),
                     quota_source: p.quota_source,
-                    authentication: p.authentication.description(),
+                    authentication: {
+                        let mut description = p.authentication.description();
+                        if p.request_profile == crate::config::RequestProfile::KimiCoding {
+                            description.disclosure =
+                                Some(crate::SubscriptionDisclosure::kimi_coding_plan());
+                        }
+                        description
+                    },
                     quota_limits: p.quota_limits.clone(),
                     models: p.models.iter().map(Into::into).collect(),
                 })
