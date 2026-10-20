@@ -492,6 +492,9 @@ pub struct BindingRuntimeDiscoveryHint {
     pub command: String,
     pub agent_directory: String,
     pub directory_exists: bool,
+    /// The command where its vendor's installer, desktop app or editor
+    /// extension put it, outside PATH; existing files only.
+    pub bundled_binaries: Vec<String>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 #[serde(rename_all = "camelCase")]

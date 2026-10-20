@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 
 	"github.com/egoist/mygo"
@@ -109,7 +110,8 @@ func discoverRuntimes(application *bindings.VeluneApplication) ([]bindings.Bindi
 		return nil, errors.New("没有找到 Node（node.exe），请先安装 Node 或手动添加运行时")
 	}
 	overrides := map[string]string{}
-	for _, key := range []string{"PI_CODING_AGENT_DIR", "CODEX_HOME", "CLAUDE_CONFIG_DIR", "DSH_HOME"} {
+	// Where the agents keep their state, and where vendors' apps install them.
+	for _, key := range []string{"PI_CODING_AGENT_DIR", "CODEX_HOME", "CLAUDE_CONFIG_DIR", "DSH_HOME", "LOCALAPPDATA", "APPDATA"} {
 		if value, ok := os.LookupEnv(key); ok {
 			overrides[key] = value
 		}
@@ -120,7 +122,14 @@ func discoverRuntimes(application *bindings.VeluneApplication) ([]bindings.Bindi
 	}
 	var probes []bindings.BindingRuntimeDiscoveryProbe
 	for _, hint := range hints {
-		for _, binary := range commandCandidates(hint.FamilyId, hint.Command) {
+		// PATH first, then where the vendor's own installer, app or editor extension put it.
+		binaries := commandCandidates(hint.FamilyId, hint.Command)
+		for _, bundled := range hint.BundledBinaries {
+			if !slices.Contains(binaries, bundled) {
+				binaries = append(binaries, bundled)
+			}
+		}
+		for _, binary := range binaries {
 			probes = append(probes, bindings.BindingRuntimeDiscoveryProbe{FamilyId: hint.FamilyId, Binary: binary, NodeBinary: node, AgentDirectory: hint.AgentDirectory})
 		}
 	}
@@ -225,7 +234,7 @@ func (p *runtimesPane) instancesView(c *ui.Context) {
 
 func (p *runtimesPane) discoveryView(c *ui.Context) {
 	section(c, "发现已安装的运行时", func() {
-		muted(c, "在 PATH 与 npm／pnpm 全局目录中查找 Pi、Codex 与 Claude Code，只读取公开版本，不导入登录信息。")
+		muted(c, "在 PATH、npm／pnpm 全局目录，以及 Codex、Claude 桌面应用与编辑器扩展的安装位置中查找 Pi、Codex 与 Claude Code，只读取公开版本，不导入登录信息。")
 		ui.Row(c).Gap(12).AlignItems(ui.Center).Children(func() {
 			if ui.Button(c, "发现").Disabled(p.busy).Clicked() {
 				p.discover()

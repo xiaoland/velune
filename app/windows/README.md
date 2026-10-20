@@ -32,7 +32,7 @@ Go 部分可在 macOS 上交叉编译（`GOOS=windows GOARCH=amd64 CGO_ENABLED=0
 
 应用数据位于 `VELUNE_HOME`，缺省为 `%USERPROFILE%\.velune`；远控身份与状态在其中的 `remote` 目录，设备名取自 `COMPUTERNAME`。
 
-Harness 原生运行于 Windows，不经 WSL 或 SSH runtime。npm／pnpm 为每个命令生成 `.cmd`、`.ps1` 和无扩展名的 `sh` 脚本三种启动器。Pi 的安装解析只读取 `sh` 脚本里的目标路径，所以发现时使用这一个；Codex 与 Claude Code 直接启动二进制，优先 `.exe`，否则用 `.cmd`。Pi 需要 Node 的绝对路径，发现时取 PATH 上第一个 `node.exe`。核心把子进程放在 kill-on-close 的 Job Object 中，应用退出（包括被强制结束）时，Harness 及其子进程随之结束。
+Harness 原生运行于 Windows，不经 WSL 或 SSH runtime。npm／pnpm 为每个命令生成 `.cmd`、`.ps1` 和无扩展名的 `sh` 脚本三种启动器。Pi 的安装解析只读取 `sh` 脚本里的目标路径，所以发现时使用这一个；Codex 与 Claude Code 直接启动二进制，优先 `.exe`，否则用 `.cmd`。Pi 需要 Node 的绝对路径，发现时取 PATH 上第一个 `node.exe`。PATH 之外，核心还列出厂商自己安装的位置：Codex 桌面应用（`%LOCALAPPDATA%\OpenAI\Codex\bin`）、OpenAI 独立安装器（Codex home 下的 `packages\standalone\releases`）、Claude 桌面应用（`%APPDATA%\Claude\claude-code`），以及 VS Code、VS Code Insiders 与 Cursor 中 Codex、Claude Code 扩展自带的可执行文件；隐藏的扩展暂存目录不算。是否可导入仍按适配器支持的版本判断。核心把子进程放在 kill-on-close 的 Job Object 中，应用退出（包括被强制结束）时，Harness 及其子进程随之结束。
 
 首次冷启动时，Windows Defender 扫描可能使 Pi 的版本探测超过 15 秒而失败，重试即可。
 

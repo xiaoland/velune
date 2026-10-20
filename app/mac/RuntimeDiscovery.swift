@@ -82,7 +82,9 @@ struct RuntimeDiscoveryView: View {
         }
         MacExecutableDiscovery.candidates(command: hint.command) { installed in
             guard active else { return }
-            let next = installed.map { BindingRuntimeDiscoveryProbe(familyId: hint.familyId, binary: $0, nodeBinary: node, agentDirectory: hint.agentDirectory) }
+            // PATH first, then where the vendor's own installer, app or editor extension put it.
+            let binaries = installed + hint.bundledBinaries.filter { !installed.contains($0) }
+            let next = binaries.map { BindingRuntimeDiscoveryProbe(familyId: hint.familyId, binary: $0, nodeBinary: node, agentDirectory: hint.agentDirectory) }
             gather(hints.dropFirst(), node: node, probes: probes + next)
         }
     }
