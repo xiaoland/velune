@@ -1,6 +1,8 @@
 package main
 
 import (
+	"cmp"
+	_ "embed"
 	"fmt"
 	"path/filepath"
 	"slices"
@@ -13,12 +15,20 @@ import (
 	"velune/bindings"
 )
 
+//go:embed icons/square-pen.svg
+var squarePenSVG []byte
+
+//go:embed icons/settings.svg
+var settingsSVG []byte
+
+var (
+	newConversationIcon = ui.MustParseSVG(squarePenSVG)
+	settingsIcon        = ui.MustParseSVG(settingsSVG)
+)
+
 type listing struct {
 	conversations []bindings.BindingListedConversation
-	runtimes      []bindings.BindingRuntimeInstance
-	// projects are the working directories of the device's conversations, for
-	// starting another in one.
-	projects []string
+	configuration configuration
 	// active holds the running or waiting conversations by ID.
 	active  map[string]bindings.BindingActiveConversation
 	loaded  bool
@@ -27,9 +37,14 @@ type listing struct {
 
 func newListing(list bindings.BindingConfigurationSnapshot, active []bindings.BindingActiveConversation) listing {
 	l := listing{active: map[string]bindings.BindingActiveConversation{}, loaded: true}
-	for _, project := range list.ConversationProjects {
-		if !slices.Contains(l.projects, project.Path) {
-			l.projects = append(l.projects, project.Path)
+	l.configuration.types = list.RuntimeTypes
+	latest := slices.Clone(list.Conversations)
+	slices.SortStableFunc(latest, func(a, b bindings.BindingListedConversation) int {
+		return cmp.Compare(updated(b), updated(a))
+	})
+	for _, listed := range latest {
+		if listed.Project != nil && !slices.Contains(l.configuration.projects, *listed.Project) {
+			l.configuration.projects = append(l.configuration.projects, *listed.Project)
 		}
 	}
 	for _, listed := range list.Conversations {
@@ -39,13 +54,20 @@ func newListing(list bindings.BindingConfigurationSnapshot, active []bindings.Bi
 	}
 	for _, runtime := range list.RuntimeInstances {
 		if runtime.Enabled {
-			l.runtimes = append(l.runtimes, runtime)
+			l.configuration.runtimes = append(l.configuration.runtimes, runtime)
 		}
 	}
 	for _, a := range active {
 		l.active[a.ConversationId] = a
 	}
 	return l
+}
+
+func updated(listed bindings.BindingListedConversation) int64 {
+	if listed.Conversation.UpdatedAtUnixMs == nil {
+		return 0
+	}
+	return *listed.Conversation.UpdatedAtUnixMs
 }
 
 // renaming is a conversation title being edited in the list.
@@ -204,6 +226,9 @@ func (w *workspace) pollListing() {
 					return
 				}
 				w.listing = newListing(result.list, result.activity.Active)
+				if w.conversation != nil {
+					w.conversation.configuration = w.listing.configuration
+				}
 				w.noteSeen()
 			})
 			delay := 5 * time.Second
@@ -236,13 +261,17 @@ func (w *workspace) closeConversation() {
 
 func (w *workspace) open(t target) {
 	w.closeConversation()
-	w.conversation = newConversation(w.core, w.win, w.device, t)
+	w.conversation = newConversation(w.core, w.win, w.device, t, w.listing.configuration, w.openSettings)
 	w.noteSeen()
 }
 
+// startConversation opens an empty conversation; its first message starts it.
 func (w *workspace) startConversation() {
+	if len(w.listing.configuration.runtimes) == 0 {
+		return
+	}
 	w.closeConversation()
-	w.conversation = newDraft(w.core, w.win, w.device, w.listing.runtimes, w.listing.projects)
+	w.conversation = newConversation(w.core, w.win, w.device, target{}, w.listing.configuration, w.openSettings)
 }
 
 func (w *workspace) openID() string {
@@ -336,6 +365,12 @@ func (w *workspace) view(c *ui.Context) {
 		w.title = title
 		w.win.SetTitle(title)
 	}
+	if c.Shortcut(ui.Ctrl, ui.KeyN) {
+		w.startConversation()
+	}
+	if c.Shortcut(ui.Ctrl, ui.KeyComma) {
+		w.openSettings(keepTab)
+	}
 	if c.Shortcut(0, ui.KeyF2) && w.renaming == nil {
 		for _, listed := range w.listing.conversations {
 			if listed.Conversation.Id == w.openID() {
@@ -362,16 +397,19 @@ func (w *workspace) view(c *ui.Context) {
 
 func (w *workspace) sidebar(c *ui.Context) {
 	t := c.Theme()
-	ui.Row(c).Padding(8).Gap(4).Children(func() {
+	ui.Row(c).Padding(8).Gap(4).AlignItems(ui.Center).Children(func() {
 		w.deviceSwitcher(c)
-		if ui.Button(c, "设置").Clicked() {
-			w.openSettings(keepTab)
-		}
-	})
-	ui.Row(c).Padding(0, 8, 8, 8).Children(func() {
-		if ui.Button(c, "＋ 新会话").Disabled(len(w.listing.runtimes) == 0).Grow(1).Clicked() {
-			w.startConversation()
-		}
+		ui.Toolbar(c, func() {
+			icon := func(svg *ui.SVG, label string) ui.Element {
+				return ui.Button(c, "").Children(func() { ui.Icon(c, svg) }).Label(label).Tooltip(label)
+			}
+			if icon(newConversationIcon, "新会话（Ctrl+N）").Disabled(len(w.listing.configuration.runtimes) == 0).Clicked() {
+				w.startConversation()
+			}
+			if icon(settingsIcon, "设置（Ctrl+,）").Clicked() {
+				w.openSettings(keepTab)
+			}
+		}).Label("会话").Shrink(0)
 	})
 	for _, failure := range []string{w.hub.failure, w.listing.failure} {
 		if failure != "" {
@@ -383,7 +421,7 @@ func (w *workspace) sidebar(c *ui.Context) {
 		ui.Column(c).Padding(16).Children(func() { ui.Spinner(c) })
 	case len(w.listing.conversations) == 0:
 		empty := "这台设备上还没有会话。"
-		if len(w.listing.runtimes) == 0 {
+		if len(w.listing.configuration.runtimes) == 0 {
 			empty = "这台设备还没有可用的运行时。"
 		}
 		ui.Text(c, empty).FontSize(13).TextColor(t.TextMuted).Padding(16)
@@ -418,7 +456,7 @@ func (w *workspace) row(c *ui.Context, i int) {
 	listed := w.listing.conversations[i]
 	conversation := listed.Conversation
 	var detail []string
-	for _, runtime := range w.listing.runtimes {
+	for _, runtime := range w.listing.configuration.runtimes {
 		if runtime.Id == conversation.RuntimeId {
 			detail = append(detail, runtime.Name)
 		}

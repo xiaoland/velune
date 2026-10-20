@@ -24,16 +24,6 @@ type target struct {
 	title          string
 }
 
-// draft is a conversation not yet started: where it will run, chosen above
-// the composer.
-type draft struct {
-	runtimes []bindings.BindingRuntimeInstance
-	projects []string
-	cwd      string
-	// local devices can pick a folder; a remote device's path is typed.
-	local bool
-}
-
 // conversation is one open conversation on a device: transcript, pending
 // interaction and composer. Its fields change on the main thread only.
 type conversation struct {
@@ -41,22 +31,38 @@ type conversation struct {
 	win    *mygo.Window
 	device device
 	target target
-	draft  *draft
+	// configuration is the device's, kept current by the workspace.
+	configuration configuration
+	openSettings  func(tab int)
 
 	snapshot *bindings.BindingConversationSnapshot
 	messages []bindings.BindingMessage
 	// payloads are deferred contents read on request, by message ID.
 	payloads map[string]bindings.BindingMessage
 	expanded map[string]bool
-	models   []bindings.BindingRuntimeModel
-	// selection is nil for the runtime's own default model.
-	selection bindings.BindingModelSelection
-	busy      bool
-	loading   bool
-	failure   string
-	list      ui.ListState
-	md        markdown.Options
-	composer  string
+
+	// next is the runtime the next turn runs on, which may differ from the
+	// conversation's; it follows the conversation's current one until the
+	// user picks another. intent holds this conversation's choices by
+	// runtime, runtimeChoices what each runtime's new conversations start with.
+	next           string
+	nextChosen     bool
+	intentRuntime  *string
+	intent         map[string]bindings.BindingTurnChoice
+	runtimeChoices map[string]bindings.BindingRuntimeComposerChoices
+	catalogs       map[string]*catalog
+	// cwd is where an unsent conversation will work; empty is the runtime's
+	// default. A remote device's directory is typed, not browsed.
+	cwd         string
+	enteringCwd bool
+	cwdInput    string
+
+	busy     bool
+	loading  bool
+	failure  string
+	list     ui.ListState
+	md       markdown.Options
+	composer string
 
 	// answers and chosen hold the replies to the interaction shown, by question ID.
 	answering string
@@ -75,35 +81,36 @@ type polledConversation struct {
 	running                   bool
 }
 
-func newConversation(core *core, win *mygo.Window, d device, t target) *conversation {
+// newConversation opens t; one without a conversation ID is an empty
+// conversation that its first message starts.
+func newConversation(core *core, win *mygo.Window, d device, t target, config configuration, openSettings func(int)) *conversation {
+	if t.conversationID == "" && t.runtimeID == "" && len(config.runtimes) > 0 {
+		t.runtimeID = config.runtimes[0].Id
+	}
 	v := &conversation{
 		core: core, win: win, device: d, target: t,
-		payloads: map[string]bindings.BindingMessage{},
-		expanded: map[string]bool{},
-		answers:  map[string]string{},
-		chosen:   map[string]string{},
-		loading:  t.conversationID != "",
+		configuration: config, openSettings: openSettings,
+		next:           t.runtimeID,
+		intent:         map[string]bindings.BindingTurnChoice{},
+		runtimeChoices: map[string]bindings.BindingRuntimeComposerChoices{},
+		catalogs:       map[string]*catalog{},
+		payloads:       map[string]bindings.BindingMessage{},
+		expanded:       map[string]bool{},
+		answers:        map[string]string{},
+		chosen:         map[string]string{},
+		loading:        t.conversationID != "",
 	}
 	v.list.Key = func(i int) any { return v.messages[i].Id }
 	v.list.FollowEnd = true
+	v.loadChoices()
+	v.loadCatalog(v.next, false)
 	v.load()
 	go v.poll()
 	return v
 }
 
-// newDraft starts a conversation on one of runtimes with its first message.
-func newDraft(core *core, win *mygo.Window, d device, runtimes []bindings.BindingRuntimeInstance, projects []string) *conversation {
-	t := target{}
-	if len(runtimes) > 0 {
-		t.runtimeID = runtimes[0].Id
-	}
-	v := newConversation(core, win, d, t)
-	v.draft = &draft{runtimes: runtimes, projects: projects, local: d == localDevice}
-	if len(projects) > 0 {
-		v.draft.cwd = projects[0]
-	}
-	return v
-}
+// unsent tells whether the conversation is still to be started.
+func (v *conversation) unsent() bool { return v.target.conversationID == "" }
 
 // close stops the view's polling; the conversation itself goes on.
 func (v *conversation) close() { v.closed.Store(true) }
@@ -124,20 +131,7 @@ func (v *conversation) running() bool {
 }
 
 func (v *conversation) load() {
-	runtimeID := v.target.runtimeID
-	run(v.win, func() []bindings.BindingRuntimeModel {
-		application, err := v.core.application(v.device)
-		if err != nil {
-			return nil
-		}
-		models, _ := application.RuntimeModels(runtimeID)
-		return models
-	}, func(models []bindings.BindingRuntimeModel) {
-		if v.target.runtimeID == runtimeID {
-			v.models = models
-		}
-	})
-	if v.target.conversationID == "" {
+	if v.unsent() {
 		return
 	}
 	t := v.target
@@ -251,11 +245,11 @@ func (v *conversation) merge(snapshot bindings.BindingConversationSnapshot) {
 		}
 	}
 	v.messages = messages
-	if v.selection == nil && snapshot.ModelRecordKey != nil {
-		v.selection = bindings.BindingModelSelectionManaged{ModelRecordKey: *snapshot.ModelRecordKey}
-	}
 	v.target = target{runtimeID: snapshot.ContextRuntimeId, conversationID: snapshot.Conversation.Id, title: snapshot.Conversation.Title}
 	v.snapshot = &snapshot
+	if !v.nextChosen {
+		v.followCurrentRuntime()
+	}
 	v.pollMu.Lock()
 	v.polled = &polledConversation{runtimeID: snapshot.ContextRuntimeId, conversationID: snapshot.Conversation.Id, cursor: snapshot.Cursor, running: v.running()}
 	v.pollMu.Unlock()
@@ -287,18 +281,20 @@ func (v *conversation) send() {
 		return
 	}
 	v.composer = ""
-	turn := bindings.BindingComposedTurn{Text: text}
-	selection := v.selection
+	// Without a level or mode the core keeps the conversation's current one.
+	turn := bindings.BindingComposedTurn{Text: text, Effort: v.effort()}
+	if mode := v.permissionMode(v.choice().PermissionMode); mode != nil {
+		turn.PermissionMode = &mode.Id
+	}
+	selection := v.nextModel()
 	var existing *target
 	if v.snapshot != nil {
 		existing = &target{runtimeID: v.snapshot.ContextRuntimeId, conversationID: v.snapshot.Conversation.Id}
 	}
-	runtimeID := v.target.runtimeID
+	runtimeID := v.next
 	var cwd *string
-	if v.draft != nil {
-		if path := strings.TrimSpace(v.draft.cwd); path != "" {
-			cwd = &path
-		}
+	if path := strings.TrimSpace(v.cwd); v.unsent() && path != "" {
+		cwd = &path
 	}
 	v.busy, v.failure = true, ""
 	type sent struct {
@@ -323,7 +319,7 @@ func (v *conversation) send() {
 			created = result.Snapshot
 			existing = &target{runtimeID: created.ContextRuntimeId, conversationID: created.Conversation.Id}
 		}
-		done, err := application.SendTurnWithSelection(existing.runtimeID, existing.conversationID, existing.runtimeID, selection, turn)
+		done, err := application.SendTurnWithSelection(existing.runtimeID, existing.conversationID, runtimeID, selection, turn)
 		return sent{created: created, sent: result{snapshot: done.Snapshot, err: err}}
 	}, func(s sent) {
 		v.busy = false
@@ -332,8 +328,9 @@ func (v *conversation) send() {
 			return
 		}
 		if s.created != nil {
-			v.draft = nil
 			v.merge(*s.created)
+			// The choices made before the first message are the created conversation's.
+			v.saveIntent()
 		}
 		if s.sent.err != nil {
 			v.composer = text
@@ -383,23 +380,28 @@ func (v *conversation) loadPayload(messageID string) {
 	})
 }
 
-func (v *conversation) chooseRuntime(runtimeID string) {
-	v.target = target{runtimeID: runtimeID}
-	v.models, v.selection = nil, nil
-	v.load()
+// followCurrentRuntime points the next turn at the runtime the conversation
+// last ran on.
+func (v *conversation) followCurrentRuntime() {
+	next := v.snapshot.ContextRuntimeId
+	if turns := v.snapshot.TranscriptTurns; len(turns) > 0 {
+		if settings := turns[len(turns)-1].Settings; settings != nil && settings.RuntimeId != nil && v.configuration.runtime(*settings.RuntimeId) != nil {
+			next = *settings.RuntimeId
+		}
+	}
+	if next != v.next {
+		v.next = next
+		v.loadCatalog(next, false)
+	}
 }
 
 func (v *conversation) browse() {
 	go func() {
-		paths, err := mygo.Dialog.Open(mygo.OpenDialogOptions{Parent: v.win, Title: "选择项目目录", Directory: true})
+		paths, err := mygo.Dialog.Open(mygo.OpenDialogOptions{Parent: v.win, Title: "选择新会话的工作目录", Directory: true})
 		if err != nil || len(paths) == 0 {
 			return
 		}
-		v.win.Update(func() {
-			if v.draft != nil {
-				v.draft.cwd = paths[0]
-			}
-		})
+		v.win.Update(func() { v.cwd = paths[0] })
 	}()
 }
 
@@ -411,9 +413,6 @@ func (v *conversation) view(c *ui.Context) {
 	}
 	v.prepareAnswers(interaction)
 	ui.Column(c).Fill().Children(func() {
-		if v.draft != nil && v.snapshot == nil {
-			v.draftHeader(c)
-		}
 		switch {
 		case v.loading:
 			ui.Column(c).Grow(1).Center().Children(func() { ui.Spinner(c) })
@@ -434,6 +433,7 @@ func (v *conversation) view(c *ui.Context) {
 		}
 		v.composerView(c)
 	})
+	v.cwdDialog(c)
 }
 
 // message lays out the user's messages on the right, the model's on the
@@ -621,88 +621,6 @@ func (v *conversation) questions(c *ui.Context, interactionID string, questions 
 		}
 		if ui.Button(c, "取消").Disabled(v.busy).Clicked() {
 			v.reply(interactionID, bindings.BindingRuntimeInteractionReplyCancel{})
-		}
-	})
-}
-
-// draftHeader chooses where a new conversation runs: its runtime and working
-// directory.
-func (v *conversation) draftHeader(c *ui.Context) {
-	t := c.Theme()
-	d := v.draft
-	runtimeName := "选择运行时"
-	for _, runtime := range d.runtimes {
-		if runtime.Id == v.target.runtimeID {
-			runtimeName = runtime.Name
-		}
-	}
-	ui.Row(c).Gap(8).Padding(8, 16).AlignItems(ui.Center).BorderWidth(0, 0, 1, 0).BorderColor(t.Border).Children(func() {
-		ui.MenuButton(c, runtimeName, func(m *ui.Menu) {
-			for _, runtime := range d.runtimes {
-				if m.Item(runtime.Name).Checked(runtime.Id == v.target.runtimeID).Chosen() {
-					v.chooseRuntime(runtime.Id)
-				}
-			}
-		})
-		ui.TextInput(c.Key("cwd"), &d.cwd).Placeholder("项目目录（留空使用运行时默认目录）").Grow(1)
-		if len(d.projects) > 0 {
-			ui.MenuButton(c, "最近的项目", func(m *ui.Menu) {
-				for _, project := range d.projects {
-					if m.Item(project).Chosen() {
-						d.cwd = project
-					}
-				}
-			})
-		}
-		if d.local && ui.Button(c, "浏览…").Clicked() {
-			v.browse()
-		}
-	})
-}
-
-func (v *conversation) composerView(c *ui.Context) {
-	t := c.Theme()
-	canCancel := v.running() && v.snapshot.Actions.CanCancel
-	ui.Column(c).Gap(8).Padding(12, 16).BorderWidth(1, 0, 0, 0).BorderColor(t.Border).Children(func() {
-		area := ui.TextArea(c.Key("composer"), &v.composer).Lines(2, 10).Placeholder("输入消息，Ctrl+Enter 发送").AutoFocus()
-		if area.Shortcut(ui.Ctrl, ui.KeyEnter) {
-			v.send()
-		}
-		ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
-			if len(v.models) > 0 {
-				v.modelMenu(c)
-			}
-			if v.running() {
-				ui.Spinner(c)
-				ui.Text(c, "正在运行").FontSize(13).TextColor(t.TextMuted)
-			}
-			ui.Spacer(c)
-			if canCancel {
-				if ui.Button(c, "停止").Disabled(v.busy).Clicked() {
-					v.stop()
-				}
-			} else if ui.PrimaryButton(c, "发送").Disabled(v.busy).Clicked() {
-				v.send()
-			}
-		})
-	})
-}
-
-func (v *conversation) modelMenu(c *ui.Context) {
-	name := "运行时默认模型"
-	for _, model := range v.models {
-		if sameSelection(model.Selection, v.selection) {
-			name = model.Name
-		}
-	}
-	ui.MenuButton(c, name, func(m *ui.Menu) {
-		if m.Item("运行时默认模型").Checked(v.selection == nil).Chosen() {
-			v.selection = nil
-		}
-		for _, model := range v.models {
-			if m.Item(model.Name).Checked(sameSelection(model.Selection, v.selection)).Chosen() {
-				v.selection = model.Selection
-			}
 		}
 	})
 }

@@ -30,4 +30,6 @@ Copy-Item -Recurse packages\agent-runtime\runtime-support\licenses "$resources\T
 Copy-Item packages\agent-runtime\runtime-support\package-lock.json "$resources\ThirdParty\runtime-support-package-lock.json"
 Copy-Item -Recurse app\mac\Licenses\RelayKit "$resources\ThirdParty\RelayKit"
 Copy-Item packages\ai-provider\relaykit-bridge\go.mod, packages\ai-provider\relaykit-bridge\go.sum "$resources\ThirdParty\RelayKit"
+New-Item -ItemType Directory -Force "$resources\ThirdParty\Lucide" | Out-Null
+Copy-Item app\windows\icons\LICENSE "$resources\ThirdParty\Lucide"
 Write-Output "Built $((Resolve-Path $app).Path)"
