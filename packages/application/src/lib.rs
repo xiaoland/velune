@@ -10,6 +10,8 @@ mod service;
 pub use service::ApplicationService;
 mod api;
 #[cfg(feature = "local-runtime")]
+mod ark_quota;
+#[cfg(feature = "local-runtime")]
 mod authentication_resolver;
 #[cfg(feature = "local-runtime")]
 mod claude_cli;
@@ -20,6 +22,7 @@ mod kimi_quota;
 mod provider_authentication;
 #[cfg(feature = "local-runtime")]
 mod provider_login;
+mod quota_authentication;
 #[cfg(feature = "local-runtime")]
 mod subscription_auth;
 #[cfg(feature = "local-runtime")]
@@ -27,7 +30,8 @@ mod subscription_quota;
 pub use provider_authentication::{
     AuthenticationEdit, AuthenticationMethod, AuthenticationProvenance,
     CODEX_SUBSCRIPTION_ENDPOINT, CODEX_SUBSCRIPTION_PROTOCOL, LinkedClaudeLogin,
-    ProviderAuthenticationDescription, ProviderAuthenticationSource, SubscriptionDisclosure,
+    ProviderAuthenticationDescription, ProviderAuthenticationSource,
+    QuotaAuthenticationDescription, QuotaAuthenticationEdit, SubscriptionDisclosure,
 };
 pub use velune_application_api::{ProviderTemplate, ProviderTemplateKind, provider_templates};
 pub mod config;

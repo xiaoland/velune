@@ -153,6 +153,7 @@ pub enum RequestProfile {
     Native,
     CodexResponses,
     KimiCoding,
+    ArkCoding,
 }
 
 #[derive(Clone)]
@@ -220,6 +221,27 @@ impl ProviderConfig {
                 || config.endpoint.base_path().trim_end_matches('/') != "/backend-api/codex"
             {
                 return Err(InvalidContract("invalid Codex request profile destination"));
+            }
+        }
+        if request_profile == RequestProfile::ArkCoding {
+            let endpoint = match &protocol {
+                ProtocolConfig::ChatCompletions(p) => &p.endpoint,
+                ProtocolConfig::Responses(p) => &p.endpoint,
+                ProtocolConfig::Messages(p) => &p.endpoint,
+            };
+            let path = if matches!(protocol, ProtocolConfig::Messages(_)) {
+                "/api/coding"
+            } else {
+                "/api/coding/v3"
+            };
+            if endpoint.transport() != Transport::Https
+                || endpoint.host() != "ark.cn-beijing.volces.com"
+                || endpoint.port().get() != 443
+                || endpoint.base_path().trim_end_matches('/') != path
+            {
+                return Err(InvalidContract(
+                    "ARK Coding requires its official Coding endpoint",
+                ));
             }
         }
         if request_profile == RequestProfile::KimiCoding {

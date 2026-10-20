@@ -6,6 +6,7 @@ use gpui_kit::component::{
     h_flex,
     input::{Input, InputState},
     menu::{DropdownMenu as _, PopupMenuItem},
+    switch::Switch,
     v_flex,
 };
 use gpui_kit::prelude::FluentBuilder as _;
@@ -14,7 +15,8 @@ use velune_bindings::{
     BindingAuthenticationEdit, BindingExecutionBackend, BindingGatewayConfig,
     BindingGatewayProtocol, BindingProtocolDescriptor, BindingProviderAuthenticationSource,
     BindingProviderDraft, BindingProviderModel, BindingProviderQuotaSource,
-    BindingProviderTemplate, BindingProviderTemplateKind, BindingRequestProfile,
+    BindingProviderTemplate, BindingProviderTemplateKind, BindingQuotaAuthenticationEdit,
+    BindingRequestProfile,
 };
 
 use crate::{
@@ -32,6 +34,9 @@ struct Draft {
     endpoint: Entity<InputState>,
     key: Entity<InputState>,
     models: Entity<InputState>,
+    quota_ak: Entity<InputState>,
+    quota_sk: Entity<InputState>,
+    quota_confirmed: bool,
 }
 
 pub struct Providers {
@@ -68,6 +73,9 @@ impl Providers {
             ),
             key: input("API key", true, window, cx),
             models: input("模型 ID，多个以逗号分隔", false, window, cx),
+            quota_ak: input("额度查询 AccessKey ID", false, window, cx),
+            quota_sk: input("额度查询 SecretAccessKey", true, window, cx),
+            quota_confirmed: false,
         };
         let mut providers = Self {
             core,
@@ -147,6 +155,27 @@ impl Providers {
         }
         let template = self.selected_template();
         let draft = BindingProviderDraft {
+            quota_authentication_edit: if template.is_some_and(|t| {
+                matches!(t.quota_source, BindingProviderQuotaSource::ArkCodingUsage)
+            }) {
+                let ak = self.draft.quota_ak.read(cx).value().to_string();
+                let sk = self.draft.quota_sk.read(cx).value().to_string();
+                if ak.is_empty() && sk.is_empty() {
+                    None
+                } else if ak.is_empty() || sk.is_empty() {
+                    self.failure = Some("额度查询需要完整 AK/SK".into());
+                    cx.notify();
+                    return;
+                } else {
+                    Some(BindingQuotaAuthenticationEdit::SetAccessKey {
+                        access_key_id: ak,
+                        secret_access_key: sk,
+                        confirmed: self.draft.quota_confirmed,
+                    })
+                }
+            } else {
+                None
+            },
             id: String::new(),
             name,
             protocol,
@@ -185,6 +214,8 @@ impl Providers {
             self.draft.endpoint.clone(),
             self.draft.key.clone(),
             self.draft.models.clone(),
+            self.draft.quota_ak.clone(),
+            self.draft.quota_sk.clone(),
         ];
         cx.spawn_in(window, async move |this, cx| {
             let result = cx
@@ -252,6 +283,10 @@ impl Providers {
     }
     fn choose_template(&mut self, id: Option<String>, window: &mut Window, cx: &mut Context<Self>) {
         self.draft.template = id;
+        self.draft.quota_confirmed = false;
+        for field in [&self.draft.quota_ak, &self.draft.quota_sk] {
+            field.update(cx, |input, cx| input.set_value("", window, cx));
+        }
         let template = self.selected_template().cloned();
         self.draft.protocol = template
             .as_ref()
@@ -478,6 +513,32 @@ impl Render for Providers {
                             .gap_2()
                             .child(label("模型"))
                             .child(div().flex_1().child(Input::new(&self.draft.models))),
+                    )
+                    .when(
+                        selected.as_ref().is_some_and(|t| {
+                            matches!(t.quota_source, BindingProviderQuotaSource::ArkCodingUsage)
+                        }),
+                        |column| {
+                            column
+                                .child(muted("额度来源由用户关联，账户归属未自动核验。", cx))
+                                .child(Input::new(&self.draft.quota_ak))
+                                .child(Input::new(&self.draft.quota_sk).mask_toggle())
+                                .child(
+                                    h_flex()
+                                        .gap_2()
+                                        .child("确认此来源对应当前模型 Key 的个人 Coding Plan")
+                                        .child(
+                                            Switch::new("quota-confirmed")
+                                                .checked(self.draft.quota_confirmed)
+                                                .on_click(cx.listener(
+                                                    |this, checked: &bool, _, cx| {
+                                                        this.draft.quota_confirmed = *checked;
+                                                        cx.notify();
+                                                    },
+                                                )),
+                                        ),
+                                )
+                        },
                     )
                     .child(
                         h_flex().justify_end().child(

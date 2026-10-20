@@ -21,11 +21,18 @@ impl From<&GatewayConfig> for GatewaySummary {
                     request_profile: p.request_profile,
                     authentication_source: p.authentication.source(),
                     quota_source: p.quota_source,
+                    quota_authentication: p
+                        .quota_authentication
+                        .description(p.authentication.generation),
                     authentication: {
                         let mut description = p.authentication.description();
                         if p.request_profile == crate::config::RequestProfile::KimiCoding {
                             description.disclosure =
                                 Some(crate::SubscriptionDisclosure::kimi_coding_plan());
+                        }
+                        if p.request_profile == crate::config::RequestProfile::ArkCoding {
+                            description.disclosure =
+                                Some(crate::SubscriptionDisclosure::ark_coding_plan());
                         }
                         description
                     },

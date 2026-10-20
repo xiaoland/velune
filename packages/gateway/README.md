@@ -38,7 +38,7 @@ Messages 保留调用方的 `anthropic-version`／beta 请求头与原生 JSON�
 
 调用方可通过 `Runner::start_with_analytics` 注入非阻塞 `AnalyticsSink`，在上游原生响应、协议转换之前接收实际提供商／模型与用量、时间、结果记录。接收器负责持久化；gateway 不读取存储路径，也不从 tracing 重建用量。已有 `Runner::start` 可不采集统计。
 
-`ProviderDefinition.execution_backend` 显式选择 `Http` 或 `ClaudeCli { binary }`，`request_profile` 独立选择 `Native`、`CodexResponses` 或 `KimiCoding`。HTTP 必须提供 endpoint；CLI 必须使用 Messages、Native profile 和空 endpoint，binary 是可执行文件路径而非 shell 命令。Codex profile 只允许精确的 HTTPS ChatGPT Codex Responses 目标，协议 adapter 再次校验。认证来源不决定这些选择。`ResolvedCredential` 的材料、恢复身份和请求能力彼此独立，resolver 的 refresh／invalidate 默认分别返回不可用／无操作，rejected_token 不写日志。认证的创建、保存、刷新串行化与并发换号保护属于 application。
+`ProviderDefinition.execution_backend` 显式选择 `Http` 或 `ClaudeCli { binary }`，`request_profile` 独立选择 `Native`、`CodexResponses`、`KimiCoding` 或 `ArkCoding`。HTTP 必须提供 endpoint；CLI 必须使用 Messages、Native profile 和空 endpoint，binary 是可执行文件路径而非 shell 命令。订阅 profile 只允许各自的固定 HTTPS 目标，协议 adapter 再次校验；ArkCoding 拒绝普通按量 API 地址。认证来源不决定这些选择。`ResolvedCredential` 的材料、恢复身份和请求能力彼此独立，resolver 的 refresh／invalidate 默认分别返回不可用／无操作，rejected_token 不写日志。认证的创建、保存、刷新串行化与并发换号保护属于 application；独立额度查询认证不进入网关的模型凭据。
 
 `ExecutionBackends` 由应用跨 Runner 持有，与 `SchedulingState` 配合。它维护 Claude Code 共享 pool 与唯一 binding 编码；认证身份或后端配置变化时，应用同时调用两者的 `invalidate_provider(gateway_id, provider_id)`，普通 token refresh 不调用。应用退出才 shutdown 共享后端。CLI 的 stream／nonstream 以及三个入口协议使用既有 Messages 转换路径；没有会话 ID 时不复用 CLI 会话。
 

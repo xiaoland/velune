@@ -111,6 +111,8 @@ HTTP 继续使用响应提交闸门。Claude 子进程成功启动后，或向�
 
 application 对固定服务目标分别解析账户与额度，不能把 `/me`、`/usages` 伪装成模型请求的认证目标。凭据版本用于取消旧任务并阻止旧结果回写；已验证账户由服务区域与 `user_id` 标识，`global_id` 不用于未经验证的跨区域合并。轮换 Key 期间新凭据尚未验证，旧账户摘要不是它的有效证明；同账户确认后保留使用阈值与账户冷却，不凭换 Key 清零或解除限制。额度窗口按实际返回解析，月额度和钱包缺失维持未知，不猜套餐类型。接入范围、实测条件和验收判据归 [Kimi 接入收敛](../../tasks/model-routing/kimi-coding-plan.md)。
 
+ARK Coding Plan 的额度认证由提供商内部单独持有，仅 application 的固定控制面适配使用 AK/SK，不进入模型 CredentialMaterial 或 Harness。用户在保存时明确关联当前模型认证；更换模型认证、额度认证或套餐目标会撤销旧关联并使旧采样失效。已确认来源的窗口可参与已有调度，未确认来源对调度仍为 Unknown；有上限时暂停，无上限保持既有未知策略。该关联不等于自动账户核验，不以 AK 哈希宣称不同订阅，不枚举账号其他模型 Key。Coding 专用目标不自动转为 Agent Plan 或按量地址。
+
 ## 路由、fail-over 与生命周期
 
 2026-10-17 用户确认的智能调度已接入 Rust lib。一个订阅对应一个提供商实例；application 拥有实例认证、额度采集与唯一快照，gateway 只通过中立只读契约取得额度事实并维护运行期共享调度状态。提供商使用上限独立于路由，直接调用同样受约束；路由拥有策略、成员权重和黏性选择。会话身份由装配方显式提供，gateway 不依赖 Agent runtime、不根据正文猜测身份。详细产品行为归 [PRD](../prd/index.md#ai-网关与-agent-运行时配置)，额度与调度接口见 [gateway unit](../../packages/gateway/README.md) 和 [bindings unit](../../packages/bindings/README.md)，验证记录归 [模型路由任务](../../tasks/model-routing/packet.md)。

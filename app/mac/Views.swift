@@ -677,6 +677,10 @@ struct ProviderEditor: View {
     @State private var showKey = false
     @State private var editingAPIKey = false
     @State private var clearAuthentication = false
+    @State private var quotaAccessKeyID = ""
+    @State private var quotaSecret = ""
+    @State private var quotaConfirmed = false
+    @State private var clearingQuotaAuthentication = false
     @State private var confirmingLogout = false
     /// Whose Claude Code login a CLI-executed provider uses; `nil` signs a new account in to Velune.
     @State private var linkedLogin: LinkedClaudeLogin?
@@ -711,7 +715,9 @@ struct ProviderEditor: View {
     private var showsQuota: Bool { usesSubscription || !quotaLimits.isEmpty || (providerID.flatMap { store.providerQuotas[$0] }.map { $0.freshness != .unsupported } ?? false) }
     private var modelIndex: Int? { guard case .model(let id) = selection else { return nil }; return models.firstIndex { $0.id == id } }
     private var claudeBinary: String? { composition.claudeBinary?.trimmingCharacters(in: .whitespacesAndNewlines) }
-    private var valid: Bool { !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && (!usesHTTP || URL(string: endpoint)?.host != nil) && (claudeBinary.map { ($0 as NSString).isAbsolutePath } ?? true) && models.allSatisfy(\.valid) && (!editingAPIKey || (!apiKey.isEmpty && (originalAPIKey != nil || authentication.method != .apiKey || clearAuthentication))) }
+    private var valid: Bool { !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && (!usesHTTP || URL(string: endpoint)?.host != nil) && (claudeBinary.map { ($0 as NSString).isAbsolutePath } ?? true) && quotaCredentialsValid && models.allSatisfy(\.valid) && (!editingAPIKey || (!apiKey.isEmpty && (originalAPIKey != nil || authentication.method != .apiKey || clearAuthentication))) }
+    private var quotaCredentialsValid: Bool { (quotaAccessKeyID.isEmpty && quotaSecret.isEmpty) || (!quotaAccessKeyID.isEmpty && !quotaSecret.isEmpty) }
+    private var quotaAuthentication: AIProvider? { store.providers.first { $0.id == providerID } ?? provider }
     var body: some View {
         VStack(spacing: 0) {
             Text(provider == nil ? "添加 \(template?.name ?? "AI 提供商")" : "编辑 AI 提供商").font(.headline).frame(maxWidth: .infinity, alignment: .leading).padding(20)
@@ -819,10 +825,22 @@ struct ProviderEditor: View {
             } header: {
                 Text("连接")
             } footer: {
-                Text(composition.subscriptionName.map { "\($0)固定协议与连接方式\(composition.claudeBinary != nil ? "，由本机官方 Claude Code CLI 执行请求" : "")。" + (usesAPIKey ? "填写此订阅的专属 API key。" : "使用 API key 请另外添加 API 提供商。") } ?? "切换协议后采用默认适配参数；模型 ID 与已填写的能力保留。")
+                Text(composition.subscriptionName.map { "\($0)固定协议与连接方式\(composition.claudeBinary != nil ? "，由本机官方 Claude Code CLI 执行请求" : "")。" + (usesAPIKey ? "填写此订阅使用的 API key。" : "使用 API key 请另外添加 API 提供商。") } ?? "切换协议后采用默认适配参数；模型 ID 与已填写的能力保留。")
                     .formFooterStyle()
             }
-            Section("认证") {
+            if composition.quotaSource == .arkCodingUsage {
+                Section {
+                    Text("模型 API key 与此处 AK/SK 分别用于模型和额度查询。账户归属未自动核验。")
+                    LabeledContent("状态", value: clearingQuotaAuthentication ? "保存后清除" : quotaAuthentication?.quotaAuthenticationConfigured == true ? (quotaAuthentication?.quotaBindingConfirmed == true ? "已由用户确认关联" : "需要重新确认关联") : "尚未配置")
+                    TextField("AccessKey ID", text: $quotaAccessKeyID).privacySensitive()
+                    SecureField("SecretAccessKey", text: $quotaSecret).privacySensitive()
+                    Toggle("此次保存时确认此来源对应当前模型 Key 的个人 Coding Plan", isOn: $quotaConfirmed)
+                    if quotaAuthentication?.quotaAuthenticationConfigured == true {
+                        Button("清除额度查询认证", role: .destructive) { clearingQuotaAuthentication = true; quotaAccessKeyID = ""; quotaSecret = ""; quotaConfirmed = false }
+                    }
+                } header: { Text("额度查询认证") } footer: { Text("输入完整 AK/SK 替换；留空保留。改模型 Key 后需再次确认，有上限且未确认时暂停派发。上限按此来源观测执行，不是计费硬预算。") }
+            }
+            Section(composition.quotaSource == .arkCodingUsage ? "模型认证" : "认证") {
                 LabeledContent("方式", value: methodLabel)
                 if usesClaudeCLI && !clearAuthentication {
                     Picker("账户来源", selection: $linkedLogin) {
@@ -902,10 +920,11 @@ struct ProviderEditor: View {
     private func commit(signingIn: Bool = false) {
         let edit: AuthenticationEdit = editingAPIKey && apiKey != originalAPIKey ? .setAPIKey(apiKey) : clearAuthentication ? .clear
             : linkedLoginChanged ? linkedLogin.map(AuthenticationEdit.useClaudeCodeLogin) ?? .clear : .keep
+        let quotaEdit: BindingQuotaAuthenticationEdit? = clearingQuotaAuthentication ? .clear : !quotaAccessKeyID.isEmpty && !quotaSecret.isEmpty ? .setAccessKey(accessKeyId: quotaAccessKeyID, secretAccessKey: quotaSecret, confirmed: quotaConfirmed) : quotaConfirmed ? .confirmBinding : nil
         let existing = Set(store.providers.map(\.id))
         var saving = composition; if let claudeBinary { saving.claudeBinary = claudeBinary }
-        store.saveProvider(AIProvider(id: providerID ?? "", name: name.trimmingCharacters(in: .whitespacesAndNewlines), protocolID: protocolID, endpoint: usesHTTP ? endpoint.trimmingCharacters(in: .whitespacesAndNewlines) : "", authentication: authentication, models: models.map(\.definition), quotaLimits: quotaLimits, composition: saving), authenticationEdit: edit) {
-            apiKey = ""; originalAPIKey = nil
+        store.saveProvider(AIProvider(id: providerID ?? "", name: name.trimmingCharacters(in: .whitespacesAndNewlines), protocolID: protocolID, endpoint: usesHTTP ? endpoint.trimmingCharacters(in: .whitespacesAndNewlines) : "", authentication: authentication, models: models.map(\.definition), quotaLimits: quotaLimits, composition: saving), authenticationEdit: edit, quotaAuthenticationEdit: quotaEdit) {
+            apiKey = ""; originalAPIKey = nil; quotaAccessKeyID = ""; quotaSecret = ""
             guard signingIn, let saved = store.providers.first(where: { $0.id == providerID }) ?? store.providers.first(where: { !existing.contains($0.id) }) else { dismiss(); return }
             // Later saves keep the new authentication and the models' assigned keys.
             savedID = saved.id; clearAuthentication = false; editingAPIKey = false; composition = saved.composition; linkedLogin = saved.authentication.linkedLogin

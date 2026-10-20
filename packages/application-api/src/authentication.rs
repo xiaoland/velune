@@ -41,6 +41,9 @@ impl SubscriptionDisclosure {
     pub fn kimi_coding_plan() -> Self {
         Self { title: "Kimi Coding Plan 接入".into(), detail: "使用个人 Coding API key；同一账户的多个 key 共用额度。仅限个人交互式使用，不伪造客户端身份。加油包开启后，服务可能在订阅额度耗尽时继续扣充值余额；额度准入不保证账单硬上限。".into() }
     }
+    pub fn ark_coding_plan() -> Self {
+        Self { title: "ARK Coding Plan 接入".into(), detail: "仅用于个人交互式编程。模型 API key 与额度查询 AK/SK 分别配置；额度来源由用户确认关联，未自动核验同账户。一订阅只关联一个提供商。Coding 额度耗尽后不自动转为按量计费地址。".into() }
+    }
     pub fn claude_cli() -> Self {
         Self { title: "Claude Code CLI 订阅接入".into(), detail: "使用未修改的官方 Claude Code CLI 登录和执行，由 CLI 保存并刷新认证。订阅用量与供应商规则仍适用；此组合及自动路由不代表供应商认可，不承诺额度无限或跨工具任意使用。".into() }
     }
@@ -94,4 +97,34 @@ pub enum AuthenticationEdit {
     UseClaudeCodeLogin {
         login: LinkedClaudeLogin,
     },
+}
+
+/// Credentials used only for the provider's fixed quota query, never model requests.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum QuotaAuthenticationEdit {
+    SetAccessKey {
+        access_key_id: String,
+        secret_access_key: String,
+        confirmed: bool,
+    },
+    ConfirmBinding,
+    Clear,
+}
+impl std::fmt::Debug for QuotaAuthenticationEdit {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("QuotaAuthenticationEdit([redacted])")
+    }
+}
+/// Confirmation is a user assertion, not server verification of model-key ownership.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QuotaAuthenticationDescription {
+    pub configured: bool,
+    pub binding_confirmed: bool,
 }

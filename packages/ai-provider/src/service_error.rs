@@ -16,7 +16,10 @@ pub(crate) fn classify(
     status: u16,
     body: Option<&[u8]>,
 ) -> Option<ServiceError> {
-    if profile != RequestProfile::KimiCoding {
+    if !matches!(
+        profile,
+        RequestProfile::KimiCoding | RequestProfile::ArkCoding
+    ) {
         return None;
     }
     let bytes = body.filter(|bytes| bytes.len() <= 64 * 1024)?;
@@ -26,6 +29,28 @@ pub(crate) fn classify(
         .and_then(|error| error.get("message"))
         .or_else(|| value.get("message"))?
         .as_str()?;
+    if profile == RequestProfile::ArkCoding {
+        let code = value.get("error").unwrap_or(&value).get("code")?.as_str()?;
+        return match (status, code) {
+            (401, "AuthenticationError") => Some(ServiceError::Authentication),
+            (400, "InvalidSubscription") | (404, "UnsupportedModel") => {
+                Some(ServiceError::Permission)
+            }
+            (429, "QuotaExceeded" | "AccountQuotaExceeded")
+                if [
+                    "You have exceeded the 5-hour usage quota.",
+                    "You have exceeded the weekly usage quota.",
+                    "You have exceeded the monthly usage quota.",
+                ]
+                .iter()
+                .any(|prefix| message.starts_with(prefix)) =>
+            {
+                Some(ServiceError::QuotaExhausted)
+            }
+            (429, "ServerOverloaded" | "RequestBurstTooFast") => Some(ServiceError::Overloaded),
+            _ => None,
+        };
+    }
     let starts = |prefix: &str| message.starts_with(prefix);
     match status {
         401 if starts("The API Key appears to be invalid or may have expired")

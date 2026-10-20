@@ -120,8 +120,8 @@ final class Transport: @unchecked Sendable {
     func resourceNativeImport(runtimeID: String, templateID: String) throws -> BindingResourceTemplateImport { try withApplication("resourceNativeImport", .writes) { try $0.resourceNativeImport(runtimeId: runtimeID, templateId: templateID) } }
     func resolveResourceBinding(runtimeID: String, templateID: String, resolution: BindingResolution) throws { try withApplication("resolveResourceBinding", .writes) { try $0.resolveResourceBinding(runtimeId: runtimeID, templateId: templateID, resolution: resolution) } }
     func list() throws -> BindingConfigurationSnapshot { try withApplication("list", .reads) { try $0.list() } }
-    func saveProvider(gatewayID: String, provider: AIProvider, authenticationEdit: AuthenticationEdit) throws -> BindingGatewayUpdate {
-        try withApplication("saveProvider", .changesConfiguration) { try $0.saveProvider(gatewayId: gatewayID, provider: BindingMapping.bindingProvider(provider), authenticationEdit: BindingMapping.bindingAuthenticationEdit(authenticationEdit)) }
+    func saveProvider(gatewayID: String, provider: AIProvider, authenticationEdit: AuthenticationEdit, quotaAuthenticationEdit: BindingQuotaAuthenticationEdit? = nil) throws -> BindingGatewayUpdate {
+        try withApplication("saveProvider", .changesConfiguration) { try $0.saveProvider(gatewayId: gatewayID, provider: BindingMapping.bindingProvider(provider, quotaAuthenticationEdit: quotaAuthenticationEdit), authenticationEdit: BindingMapping.bindingAuthenticationEdit(authenticationEdit)) }
     }
     func deleteProvider(gatewayID: String, providerID: String) throws -> BindingGatewayUpdate { try withApplication("deleteProvider", .changesConfiguration) { try $0.deleteProvider(gatewayId: gatewayID, providerId: providerID) } }
     func saveModelRoute(gatewayID: String, route: ModelRoute) throws -> BindingGatewayUpdate { try withApplication("saveModelRoute", .changesConfiguration) { try $0.saveModelRoute(gatewayId: gatewayID, route: BindingMapping.bindingRoute(route)) } }

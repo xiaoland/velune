@@ -258,6 +258,7 @@ pub(crate) fn apply(
                 endpoint,
                 key,
             } => ProviderDefinition {
+                quota_authentication: Default::default(),
                 id: id.clone(),
                 name: source.name.clone(),
                 protocol: protocol(*kind),
@@ -287,6 +288,7 @@ pub(crate) fn apply(
                     instance_id: runtime.id.clone(),
                 };
                 ProviderDefinition {
+                    quota_authentication: Default::default(),
                     id: id.clone(),
                     name: format!("{} · {}", source.name, runtime.name),
                     protocol: GatewayProtocol::MessagesV1,

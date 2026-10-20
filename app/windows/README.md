@@ -38,3 +38,5 @@ Harness 原生运行于 Windows，不经 WSL 或 SSH runtime。npm／pnpm 为每
 - gpui-component 0.7.3 在 Windows 上，对话框内的输入框收不到点击：点击落到遮罩上，对话框随之关闭。因此新会话与重命名改为就地编辑，对话框只用于按钮确认。
 - SSH 运行时依赖 OpenSSH ControlMaster 与 Unix socket，Windows 宿主不支持。
 - 中文输入法组字中途切换到另一个输入框时，未上屏的拼音会留在原输入框，组字继续在新输入框进行。GPUI 所有输入框共用一个原生窗口，输入法感知不到焦点变化。
+
+ARK Coding Plan 模板的添加表单另有 AK/SK 与本次关联确认，和模型 API key 一起原子保存；无查询认证可先使用无上限模型调用。该确认由用户负责，未自动核验账户，仍无独立额度页或提供商编辑页。

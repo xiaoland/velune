@@ -1313,11 +1313,11 @@ final class AppStore: ObservableObject {
         guard let transport else { recordProblem("本地核心未配置"); onFailure?(); return }
         enqueue({ try transport.sendQueue(runtimeID: runtimeID, conversationID: conversationID, operation: operation) }, onFailure: { _ in onFailure?() }) { [weak self] in self?.applySnapshotResult($0) }
     }
-    func saveProvider(_ value: AIProvider, authenticationEdit: AuthenticationEdit, onSaved: (() -> Void)? = nil) {
+    func saveProvider(_ value: AIProvider, authenticationEdit: AuthenticationEdit, quotaAuthenticationEdit: BindingQuotaAuthenticationEdit? = nil, onSaved: (() -> Void)? = nil) {
         guard !authenticationRunning, !isGenerating else { recordProblem("请先停止当前任务或完成登录"); return }
         if isPreview { var saved = value; if saved.id.isEmpty { saved.id = UUID().uuidString }; for index in saved.models.indices where saved.models[index].recordKey.isEmpty { saved.models[index].recordKey = UUID().uuidString }; gateway.providers.removeAll { $0.id == saved.id }; gateway.providers.append(saved); hasGateway = true; onSaved?(); return }
         guard let transport else { recordProblem("本地核心未配置"); return }
-        enqueue({ try transport.saveProvider(gatewayID: self.gateway.id, provider: value, authenticationEdit: authenticationEdit) }) { [weak self] data in
+        enqueue({ try transport.saveProvider(gatewayID: self.gateway.id, provider: value, authenticationEdit: authenticationEdit, quotaAuthenticationEdit: quotaAuthenticationEdit) }) { [weak self] data in
             self?.applyGatewayUpdate(data); onSaved?()
         }
     }

@@ -122,6 +122,9 @@ struct ProviderQuotaForm: View {
     }
     var body: some View {
         Form {
+            if let id = providerID, let provider = store.providers.first(where: { $0.id == id }), provider.composition.quotaSource == .arkCodingUsage {
+                Section { Text(provider.quotaBindingConfirmed ? "额度来源由用户关联，账户归属未自动核验。" : "额度来源尚未确认关联；有使用上限时暂停派发。请在连接页配置或重新确认。") }
+            }
             Section {
                 if providerID == nil {
                     Text("保存提供商并配置认证后读取额度。").foregroundStyle(.secondary)

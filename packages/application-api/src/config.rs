@@ -7,6 +7,7 @@ pub enum ProviderQuotaSource {
     CodexUsage,
     ClaudeCliUsage,
     KimiUsage,
+    ArkCodingUsage,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -401,4 +402,5 @@ pub enum RequestProfile {
     Native,
     CodexResponses,
     KimiCoding,
+    ArkCoding,
 }

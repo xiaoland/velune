@@ -112,3 +112,5 @@ Claude CLI 登录沿用 start/poll/cancel/inspect，CLI 自己打开浏览器并
 `BindingPlatformNetwork` 以 `wifi`、`cellular`、`ethernet`、`vpn` 表达实际 transport，不以默认网络或 Internet 状态替代这些事实。诊断探针用 Wi-Fi／Ethernet 非 VPN 的 numeric IPv4 装配 mDNS；正常业务仍只把网络报告作为 transport 提示。`BindingProbeMdnsEvent.InterfacesApplied` 包含私有接口地址、采样时间和 generation，表示配置应用与旧任务退出请求，不表示旧 FD 已关闭。`refresh_mdns_interfaces()` 供桌面合成宿主周期采样；Android 使用最近报告的网络事实。接口代际切换产生的 Expired 表示旧接口 scope 失效，不能解释为远端离线。生产 mDNS 与 Rust Controller 恢复已在库内装配；平台界面、权限与真实换网仍未接入／验证。
 
 Kimi 模板由同一 `provider_templates` 目录返回，ID 为 `kimiCodingPlan`，使用新增 `BindingRequestProfile::KimiCoding` 与 `BindingProviderQuotaSource::KimiUsage`。仍通过 `ApiKey` 编辑 Key，不展示 OAuth 按钮。平台按模板组合保存，不推测地址、模型 ID 或账户归属；公开认证的 `configured` 表示当前 Key 已通过账户验证，额度状态和安全 `problem` 由现有 quota API 返回。账户摘要与披露文案沿现有具名字段呈现；未知窗口和缺失钱包信息不显示为满额或免费保证。
+
+ARK 查询认证通过 BindingProviderDraft.quota_authentication_edit 随 save_provider 原子保存，独立于 BindingAuthenticationEdit。SetAccessKey 完整替换 AK/SK，可同时确认当前模型关联；ConfirmBinding 重新确认，Clear 清除。公开提供商 quota_authentication 仅含 configured/binding_confirmed；平台须将其说明为用户关联，不能显示已自动核验同账户。

@@ -81,6 +81,14 @@ pub fn provider_templates() -> Vec<ProviderTemplate> {
             disclosure: Some(SubscriptionDisclosure::kimi_coding_plan()),
         },
         ProviderTemplate {
+            id: "arkCodingPlan".into(), kind: ProviderTemplateKind::Subscription,
+            name: "ARK Coding Plan".into(), summary: "个人 Coding Plan，模型 API key 与额度查询认证分别配置。".into(),
+            protocol: GatewayProtocol::ResponsesV1, endpoint: "https://ark.cn-beijing.volces.com/api/coding/v3".into(),
+            execution_backend: ExecutionBackend::Http, request_profile: RequestProfile::ArkCoding,
+            authentication_source: ProviderAuthenticationSource::ApiKey, quota_source: ProviderQuotaSource::ArkCodingUsage,
+            executable_command: None, disclosure: Some(SubscriptionDisclosure::ark_coding_plan()),
+        },
+        ProviderTemplate {
             id: "api".into(),
             kind: ProviderTemplateKind::Api,
             name: "API 提供商".into(),

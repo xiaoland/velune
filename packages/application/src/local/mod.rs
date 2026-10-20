@@ -273,8 +273,11 @@ impl CoreRuntime {
                     .find(|g| g.id == gateway.id)
                     .and_then(|g| g.providers.iter().find(|p| p.id == provider.id));
                 if current.is_some_and(|p| {
-                    p.request_profile == crate::config::RequestProfile::KimiCoding
-                        && provider.request_profile == crate::config::RequestProfile::KimiCoding
+                    matches!(
+                        p.request_profile,
+                        crate::config::RequestProfile::KimiCoding
+                            | crate::config::RequestProfile::ArkCoding
+                    ) && provider.request_profile == p.request_profile
                         && p.endpoint == provider.endpoint
                         && p.protocol == provider.protocol
                         && p.execution_backend == provider.execution_backend
@@ -288,7 +291,10 @@ impl CoreRuntime {
                             crate::provider_authentication::AuthenticationMaterial::ApiKey { .. }
                         )
                 }) {
-                    if current.is_some_and(|p| p.authentication != provider.authentication) {
+                    if current.is_some_and(|p| {
+                        p.authentication != provider.authentication
+                            || p.quota_authentication != provider.quota_authentication
+                    }) {
                         self.scheduling_state
                             .invalidate_credentials(&gateway.id, &provider.id);
                     }

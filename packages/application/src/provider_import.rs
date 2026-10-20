@@ -601,6 +601,7 @@ pub(crate) fn apply(
             },
         };
         let mut provider_def = ProviderDefinition {
+            quota_authentication: Default::default(),
             id: provider_id.clone(),
             name: provider.name,
             protocol: protocol_kind,

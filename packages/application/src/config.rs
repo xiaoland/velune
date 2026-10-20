@@ -31,6 +31,8 @@ pub struct ProviderDefinition {
     pub request_profile: RequestProfile,
     pub quota_source: ProviderQuotaSource,
     pub(crate) authentication: crate::provider_authentication::ProviderAuthentication,
+    #[serde(default)]
+    pub(crate) quota_authentication: crate::quota_authentication::QuotaAuthentication,
     pub models: Vec<ProviderModel>,
     pub quota_limits: Vec<QuotaLimit>,
 }
@@ -437,6 +439,17 @@ impl ProjectRecord {
 impl ProviderDefinition {
     pub(crate) fn validate_composition(&self) -> Result<(), &'static str> {
         use crate::provider_authentication::ProviderAuthenticationSource as Auth;
+        if !self
+            .quota_authentication
+            .valid(self.authentication.generation)
+        {
+            return Err("额度查询认证配置无效");
+        }
+        if self.quota_source != ProviderQuotaSource::ArkCodingUsage
+            && self.quota_authentication.access_key.is_some()
+        {
+            return Err("此额度来源不接受独立 AK/SK");
+        }
         let source = self.authentication.source();
         if let crate::provider_authentication::AuthenticationMaterial::ClaudeCli {
             credential_id,
@@ -474,6 +487,18 @@ impl ProviderDefinition {
         {
             return Err(
                 "Kimi Coding Plan 必须组合 HTTP、Messages、API key、KimiCoding、KimiUsage 与官方 Coding 地址",
+            );
+        }
+        if (self.request_profile == RequestProfile::ArkCoding
+            || self.quota_source == ProviderQuotaSource::ArkCodingUsage)
+            && (self.execution_backend != ExecutionBackend::Http
+                || source != Auth::ApiKey
+                || self.request_profile != RequestProfile::ArkCoding
+                || self.quota_source != ProviderQuotaSource::ArkCodingUsage
+                || !ark_endpoint(&self.endpoint, &self.protocol))
+        {
+            return Err(
+                "ARK Coding Plan 必须组合 HTTP、API key、ArkCoding、ArkCodingUsage 与官方 Coding 地址",
             );
         }
         match &self.execution_backend {
@@ -561,6 +586,7 @@ pub(crate) fn gateway_request_profile(value: RequestProfile) -> velune_gateway::
         RequestProfile::Native => velune_gateway::RequestProfile::Native,
         RequestProfile::CodexResponses => velune_gateway::RequestProfile::CodexResponses,
         RequestProfile::KimiCoding => velune_gateway::RequestProfile::KimiCoding,
+        RequestProfile::ArkCoding => velune_gateway::RequestProfile::ArkCoding,
     }
 }
 fn gateway_routing_strategy(value: RoutingStrategy) -> velune_gateway::RoutingStrategy {
@@ -579,4 +605,12 @@ pub(crate) fn kimi_region(endpoint: &str) -> Option<&'static str> {
         "https://api.kimi.ai/coding/" | "https://api.kimi.ai/coding" => Some("global"),
         _ => None,
     }
+}
+
+pub(crate) fn ark_endpoint(endpoint: &str, protocol: &GatewayProtocol) -> bool {
+    endpoint.trim_end_matches('/')
+        == match protocol {
+            GatewayProtocol::MessagesV1 => "https://ark.cn-beijing.volces.com/api/coding",
+            _ => "https://ark.cn-beijing.volces.com/api/coding/v3",
+        }
 }

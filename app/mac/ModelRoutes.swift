@@ -188,6 +188,7 @@ private struct RouteMemberStatus: View {
         if quota?.available == false { return "提供商表示此账户当前不可用" }
         let limits = member.provider.quotaLimits
         guard !limits.isEmpty else { return nil }
+        if member.provider.composition.quotaSource == .arkCodingUsage && !member.provider.quotaBindingConfirmed { return "额度来源未确认关联，暂停派发" }
         if quota?.freshness != .fresh { return "设有使用上限，取得最新额度前暂停" }
         return nil
     }

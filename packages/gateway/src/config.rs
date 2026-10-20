@@ -140,6 +140,27 @@ impl GatewayConfig {
                     return Err("Codex request profile requires its bound Responses endpoint");
                 }
             }
+            if provider.request_profile == RequestProfile::ArkCoding {
+                let endpoint = reqwest::Url::parse(&provider.endpoint)
+                    .map_err(|_| "invalid ARK Coding endpoint")?;
+                let path = if provider.protocol == GatewayProtocol::MessagesV1 {
+                    "/api/coding"
+                } else {
+                    "/api/coding/v3"
+                };
+                if !matches!(provider.execution_backend, ExecutionBackend::Http)
+                    || endpoint.scheme() != "https"
+                    || endpoint.host_str() != Some("ark.cn-beijing.volces.com")
+                    || endpoint.port_or_known_default() != Some(443)
+                    || endpoint.path().trim_end_matches('/') != path
+                    || endpoint.query().is_some()
+                    || endpoint.fragment().is_some()
+                    || !endpoint.username().is_empty()
+                    || endpoint.password().is_some()
+                {
+                    return Err("ARK Coding requires its bound Coding endpoint");
+                }
+            }
             if provider.request_profile == RequestProfile::KimiCoding {
                 let endpoint = reqwest::Url::parse(&provider.endpoint)
                     .map_err(|_| "invalid Kimi Coding endpoint")?;

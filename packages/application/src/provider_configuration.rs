@@ -99,6 +99,22 @@ pub(crate) fn edit_provider(
                     .checked_add(1)
                     .ok_or_else(|| Error::invalid("authentication revision overflow"))?;
             }
+            let mut quota_authentication = previous
+                .map(|p| p.quota_authentication.clone())
+                .unwrap_or_default();
+            let target_changed = previous.is_some_and(|p| {
+                p.endpoint != draft.endpoint
+                    || p.protocol != draft.protocol
+                    || p.request_profile != draft.request_profile
+                    || p.quota_source != draft.quota_source
+            });
+            if draft.quota_source == ProviderQuotaSource::ArkCodingUsage {
+                quota_authentication.apply(draft.quota_authentication_edit, authentication.generation, matches!(&authentication.material, AuthenticationMaterial::ApiKey { value } if !value.is_empty()), target_changed)?;
+            } else if draft.quota_authentication_edit.is_some() {
+                return Err(Error::invalid("此提供商不使用独立额度查询认证"));
+            } else {
+                quota_authentication = Default::default();
+            }
             let models = draft
                 .models
                 .into_iter()
@@ -126,6 +142,7 @@ pub(crate) fn edit_provider(
                 request_profile: draft.request_profile,
                 quota_source: draft.quota_source,
                 authentication,
+                quota_authentication,
                 models,
                 quota_limits: draft.quota_limits,
             };
@@ -183,6 +200,31 @@ pub(crate) fn edit_provider(
             gateway.routes.retain(|r| r.record_key != key);
         }
         _ => return Err(Error::invalid("provider operation")),
+    }
+    validate_ark_bindings(gateways)?;
+    Ok(())
+}
+fn validate_ark_bindings(gateways: &[GatewayConfig]) -> Result<(), Error> {
+    let mut keys = std::collections::BTreeSet::new();
+    let mut query_keys = std::collections::BTreeSet::new();
+    for provider in gateways
+        .iter()
+        .flat_map(|g| &g.providers)
+        .filter(|p| p.request_profile == RequestProfile::ArkCoding)
+    {
+        if let AuthenticationMaterial::ApiKey { value } = &provider.authentication.material
+            && !value.is_empty()
+            && !keys.insert(value.as_str())
+        {
+            return Err(Error::invalid("相同的 ARK 模型 Key 已配置到另一个提供商"));
+        }
+        if let Some(key) = &provider.quota_authentication.access_key
+            && !query_keys.insert(key.id.as_str())
+        {
+            return Err(Error::invalid(
+                "相同的 ARK 查询凭据已关联另一个提供商；同一订阅只配置一个实例",
+            ));
+        }
     }
     Ok(())
 }

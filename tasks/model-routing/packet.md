@@ -4,7 +4,7 @@
 
 ## 当前接续与凭据边界
 
-当前为 2026-10-20 Kimi Coding Plan 实施，范围与状态见[末节](#kimi-coding-plan-实施2026-10-20)及 [Kimi 接入记录](kimi-coding-plan.md)。包括 Rust 支持、已有平台模板消费者和必要绑定重建；不含真实模型调用。
+当前为 2026-10-20 ARK Coding Plan 实施，用户已确认提供商内部独立额度查询认证并要求开始修改；范围与证据见 [ARK 接入记录](ark-coding-plan.md)。不含真实凭据读取或真实调用。已完成的 Kimi 实施与安装见[对应节](#kimi-coding-plan-实施2026-10-20)及 [Kimi 接入记录](kimi-coding-plan.md)。
 
 2026-10-16 首轮仅授权 Rust lib，前端另行安排，当时不改 Mac 源码或构建安装 app；后续 Mac 设置工作及本次 Kimi 最小消费者接入已有各自授权。
 
@@ -293,3 +293,9 @@ HOME 修复已覆盖 application 登录/状态/退出/额度与 ai-provider 执�
 接入已实现：Kimi模板组合固定HTTP/Messages/API key/KimiCoding/KimiUsage；账户验证和去重、主动额度、使用上限及服务错误语义接入既有调度。三HTTP协议改用共享安全HttpClient。Mac既有编辑器支持订阅API key，Windows既有表单增加core模板选择；Android为新增枚举重建JNI/Kotlin/APK并保数据覆盖安装。Kimi 44组、Codex24组、Claude取消3组及原生Messages8次HTTP的合成人工证据通过；Rust静态/构建、Mac完整构建和Android build/lint通过，详细边界与安装证据归上述Kimi记录。真实推理、工具往返及海外区域尚未验收。
 
 交付提交main `1444d56`，已从干净提交重建并安装Mac `0.1 beta.1`；manifest对应实现提交且dirty=false，配置schema仍10，安装二进制哈希与产物匹配。Android同步版本已保数据安装，Windows只取得Mac宿主静态证据。未push/PR，未进行真实模型调用；后续真实验收须另明确调用范围。
+
+## ARK Coding Plan 研究（2026-10-20）
+
+用户要求“还看看 ARK Coding Plan”。研究阶段已核对官方套餐/工具/错误文档、固定版本官方Ark CLI公开文档与Magpie额度源码，记录于 [ARK接入研究](ark-coding-plan.md)；当时未改产品源码或调用真实服务。现有HTTP三协议可承接请求；完整智能聚合的新缺口是额度独立认证与模型Key归属绑定，不能只加模板或按AK哈希宣称去重。advisor提出过原生请求与被动fail-over的较小首版，未替用户缩减既有验收目标；用户随后选择下述独立额度认证方案。
+
+用户随后确认提供商内部独立额度查询认证并授权修改。现已实现 ArkCoding/ArkCodingUsage 模板、独立 AK/SK、用户明确关联、V4 查询及既有调度接入；模型与查询认证原子保存，旧采样/旧 Runner 随绑定失效，查询换 Key 保留模型冷却/粘性。Mac 和 Windows 既有表单接入，Android 重建绑定并保数据安装；schema 保持10，缺省查询字段不清空配置。ARK37组、Kimi44组、Codex24组合成验收及 Rust 静态检查通过，Mac完整构建和Android build/lint通过。真实认证/额度/模型调用仍未进行；归属是用户声明，未宣称跨AK自动核验。详见上述实施记录。

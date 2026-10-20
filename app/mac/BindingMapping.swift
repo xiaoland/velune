@@ -183,7 +183,7 @@ enum BindingMapping {
                                                     linkedLogin: value.authentication.linkedLogin.map(linkedLogin))
         return AIProvider(id: value.id, name: value.name, protocolID: protocolID(value.`protocol`), endpoint: value.endpoint, authentication: authentication, models: value.models.map(model),
                           quotaLimits: value.quotaLimits.map { QuotaLimit(windowID: $0.windowId, maxUsedPercent: $0.maxUsedPercent) },
-                          composition: ProviderComposition(executionBackend: value.executionBackend, requestProfile: value.requestProfile, authenticationSource: value.authenticationSource, quotaSource: value.quotaSource))
+                          composition: ProviderComposition(executionBackend: value.executionBackend, requestProfile: value.requestProfile, authenticationSource: value.authenticationSource, quotaSource: value.quotaSource), quotaAuthenticationConfigured: value.quotaAuthentication.configured, quotaBindingConfirmed: value.quotaAuthentication.bindingConfirmed)
     }
     static func disclosure(_ value: BindingSubscriptionDisclosure) -> SubscriptionDisclosure {
         SubscriptionDisclosure(title: value.title, detail: value.detail)
@@ -217,10 +217,10 @@ enum BindingMapping {
     static func bindingRoutingStrategy(_ value: RoutingStrategy) -> BindingRoutingStrategy {
         switch value { case .smart: return .smart; case .order: return .order; case .rotate: return .rotate; case .weight: return .weight }
     }
-    static func bindingProvider(_ value: AIProvider) -> BindingProviderDraft {
+    static func bindingProvider(_ value: AIProvider, quotaAuthenticationEdit: BindingQuotaAuthenticationEdit? = nil) -> BindingProviderDraft {
         BindingProviderDraft(id: value.id, name: value.name, protocol: bindingProtocol(value.protocolID), endpoint: value.endpoint,
                              executionBackend: value.composition.executionBackend, requestProfile: value.composition.requestProfile, authenticationSource: value.composition.authenticationSource, quotaSource: value.composition.quotaSource, models: value.models.map(bindingModel),
-                             quotaLimits: value.quotaLimits.map { BindingQuotaLimit(windowId: $0.windowID, maxUsedPercent: $0.maxUsedPercent) })
+                             quotaLimits: value.quotaLimits.map { BindingQuotaLimit(windowId: $0.windowID, maxUsedPercent: $0.maxUsedPercent) }, quotaAuthenticationEdit: quotaAuthenticationEdit)
     }
     static func bindingAuthenticationEdit(_ value: AuthenticationEdit) -> BindingAuthenticationEdit {
         switch value {

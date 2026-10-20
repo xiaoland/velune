@@ -351,8 +351,11 @@ impl ResponsesProvider for OpenAiResponses {
                 .header("connection", "close");
             for header in &headers {
                 let name = header.name.to_ascii_lowercase();
-                if request_profile == crate::config::RequestProfile::KimiCoding
-                    && name == "user-agent"
+                if matches!(
+                    request_profile,
+                    crate::config::RequestProfile::KimiCoding
+                        | crate::config::RequestProfile::ArkCoding
+                ) && name == "user-agent"
                 {
                     continue;
                 }
@@ -404,7 +407,11 @@ impl ResponsesProvider for OpenAiResponses {
                         .header("thread-id", value);
                 }
             }
-            if request_profile == crate::config::RequestProfile::KimiCoding {
+            if matches!(
+                request_profile,
+                crate::config::RequestProfile::KimiCoding
+                    | crate::config::RequestProfile::ArkCoding
+            ) {
                 // Set a single genuine client identity, never impersonate an allowed agent.
                 builder = builder.header("user-agent", crate::service_error::USER_AGENT);
             }

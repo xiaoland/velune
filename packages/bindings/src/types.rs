@@ -385,6 +385,7 @@ pub enum BindingRequestProfile {
     Native,
     CodexResponses,
     KimiCoding,
+    ArkCoding,
 }
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, uniffi::Enum)]
 #[serde(rename_all = "camelCase")]
@@ -402,6 +403,7 @@ pub enum BindingProviderQuotaSource {
     CodexUsage,
     ClaudeCliUsage,
     KimiUsage,
+    ArkCodingUsage,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
@@ -416,6 +418,7 @@ pub struct BindingProviderDefinition {
     pub authentication_source: BindingProviderAuthenticationSource,
     pub quota_source: BindingProviderQuotaSource,
     pub authentication: BindingProviderAuthentication,
+    pub quota_authentication: BindingQuotaAuthenticationDescription,
     pub models: Vec<BindingProviderModel>,
     pub quota_limits: Vec<BindingQuotaLimit>,
 }
@@ -433,6 +436,8 @@ pub struct BindingProviderDraft {
     pub quota_source: BindingProviderQuotaSource,
     pub models: Vec<BindingProviderModel>,
     pub quota_limits: Vec<BindingQuotaLimit>,
+    #[serde(default)]
+    pub quota_authentication_edit: Option<BindingQuotaAuthenticationEdit>,
 }
 
 /// Provider models chosen together; the gateway fails over between them in order.
@@ -1914,4 +1919,32 @@ pub struct BindingAttachmentContent {
     pub media_type: Option<String>,
     #[serde(with = "velune_application_api::bytes")]
     pub bytes: Vec<u8>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+#[serde(rename_all = "camelCase")]
+pub struct BindingQuotaAuthenticationDescription {
+    pub configured: bool,
+    pub binding_confirmed: bool,
+}
+#[derive(Clone, Serialize, Deserialize, uniffi::Enum)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum BindingQuotaAuthenticationEdit {
+    SetAccessKey {
+        access_key_id: String,
+        secret_access_key: String,
+        confirmed: bool,
+    },
+    ConfirmBinding,
+    Clear,
+}
+impl std::fmt::Debug for BindingQuotaAuthenticationEdit {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("BindingQuotaAuthenticationEdit([redacted])")
+    }
 }

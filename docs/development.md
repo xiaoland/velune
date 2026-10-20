@@ -342,6 +342,16 @@ Claude 后端只暴露调用方声明的工具，工具操作由调用方执行�
 
 合成人工入口为 `python3 scripts/manual-kimi-coding.py`：临时源码副本仅把固定目标改为回环服务，使用隔离配置与合成 Key，覆盖身份、额度、换 Key、调度错误及提交边界，不接入自动测试或 CI。普通 Coding Key 的真实 `/me`、`/usages` 读取已在实现前各验证一次；真实模型、工具往返与海外区域尚未验收。额度接口不是稳定外部 API 承诺；服务端加油包可能继续扣充值余额，窗口上限不等于硬性费用保证。
 
+## ARK Coding Plan
+
+添加模板 `arkCodingPlan`，填写国内个人 Coding Plan 的模型 API key 和模型 ID。模板默认 Responses，固定地址 `https://ark.cn-beijing.volces.com/api/coding/v3`；库也支持该目标的 Chat Completions，以及 `https://ark.cn-beijing.volces.com/api/coding` 的 Messages。模型请求无需 Ark CLI。不会自动改用 Agent Plan 或普通 `/api/v3` 按量目标。
+
+提供商内的“额度查询认证”单独保存 AccessKey ID 和 SecretAccessKey，采用 V4 签名调用固定 `GetCodingPlanUsage`。保存时确认该查询来源对应当前模型 Key 的个人套餐；这是用户确认关联，不是自动同账户核验。模型 Key、查询凭据或套餐目标变更后重新确认。公开状态只有 configured 和 bindingConfirmed，日志与普通快照不包含 AK/SK；更换时填写完整一对，留空保留，清除只移除查询认证。模型认证与额度认证在一次提供商保存中原子提交。
+
+窗口 ID 为 `ark:session`、`ark:weekly`、`ark:monthly`，Percent 是 0–100 的已用百分比，不再乘 100；ResetTimestamp 按秒读取，未开始周期的空值/非正值不伪造重置时间。未知字段不生成窗口，非法或重复窗口使观测不可用。查询失败保留旧值但标记过期；未确认来源对调度为 Unknown。配置上限而无相应新鲜观测时暂停，无上限仍可使用模型。相同模型 Key 或相同 AK 绑定重复配置被拒绝，不声称不同 AK 就一定是不同订阅。
+
+显式窗口耗尽触发额度重取并可在交付前切换；普通 429、过载、套餐过期和权限问题分别处理，不把所有 QuotaExceeded 当成套餐耗尽。已在采集中的旧观测也不能覆盖后发的额度耗尽事实。人工入口 `python3 scripts/manual-ark-coding.py` 使用隔离目录、合成凭据、Python 独立复算签名与回环服务，不读取真实认证或调用真实模型，不接入 CI。真实 ARK 权限、响应格式和工具往返仍需单独验收。
+
 ## 模型路由
 
 2026-10-17 的 Rust lib 增量提供 Smart、Order、Rotate、Weight 四种策略，均支持默认开启的会话粘性；一个订阅始终对应一个提供商实例。提供商配置持有额度窗口使用上限，路由配置持有策略、成员权重和粘性。额度上限与冷却在直接调用及所有路由间共享；只有完整成功的请求才建立或更新粘性，粘性不能越过上限或冷却。具体契约见 [gateway unit](../packages/gateway/README.md)，平台额度查询与刷新入口见 [bindings unit](../packages/bindings/README.md)。本增量仅修改 Rust lib，既有前端尚未接入这些字段与操作。

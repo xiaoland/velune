@@ -409,6 +409,8 @@ struct AIProvider: Sendable, Identifiable, Equatable {
     /// Used-percent ceilings per quota window, which smart scheduling admits a request under.
     var quotaLimits: [QuotaLimit] = []
     var composition = ProviderComposition()
+    var quotaAuthenticationConfigured = false
+    var quotaBindingConfirmed = false
 }
 
 /// How core reaches the provider; template kind does not determine its authentication method.
@@ -420,6 +422,7 @@ struct ProviderComposition: Sendable, Equatable {
     /// The subscription composition's display name, independently of how it authenticates.
     var subscriptionName: String? {
         if requestProfile == .kimiCoding { return "Kimi Coding Plan" }
+        if requestProfile == .arkCoding { return "ARK Coding Plan" }
         switch authenticationSource {
         case .codexOAuth: return "Codex 订阅"
         case .claudeCli: return "Claude Code 订阅"
@@ -460,6 +463,9 @@ struct QuotaWindow: Sendable, Equatable {
     /// A readable name for a window ID; Codex names its windows `window:<seconds>`.
     static func name(_ id: String) -> String {
         switch id {
+        case "ark:session": return "5 小时"
+        case "ark:weekly": return "周"
+        case "ark:monthly": return "订阅月"
         case "kimi:limit_5h": return "5 小时"
         case "kimi:limit_7d": return "7 天"
         case "kimi:limit_month_total": return "会员月度总额度"

@@ -21,6 +21,7 @@ struct Binding {
     binary: Option<String>,
     directory: LoginDirectory,
     kimi: Option<crate::kimi_quota::Capture>,
+    ark: Option<crate::ark_quota::Capture>,
 }
 fn cli_binary(provider: &crate::config::ProviderDefinition) -> Option<String> {
     match &provider.execution_backend {
@@ -53,6 +54,7 @@ struct Entry {
     observed_at_ms: i64,
     expires_at_ms: i64,
     running: bool,
+    resample: bool,
     retry_at: Instant,
     problem: Option<String>,
     cancel: tokio::sync::watch::Sender<bool>,
@@ -121,6 +123,7 @@ impl SubscriptionQuota {
                             binary: None,
                             directory: LoginDirectory::Owned,
                             kimi: None,
+                            ark: None,
                         }),
                         (
                             AuthenticationMaterial::ClaudeCli { credential_id, .. },
@@ -132,6 +135,7 @@ impl SubscriptionQuota {
                             binary: cli_binary(p),
                             directory: LoginDirectory::Owned,
                             kimi: None,
+                            ark: None,
                         }),
                         (
                             AuthenticationMaterial::ClaudeCliLinked { config_dir, .. },
@@ -143,6 +147,7 @@ impl SubscriptionQuota {
                             binary: cli_binary(p),
                             directory: LoginDirectory::Linked(config_dir.clone()),
                             kimi: None,
+                            ark: None,
                         }),
                         (
                             AuthenticationMaterial::ApiKey { value },
@@ -153,9 +158,31 @@ impl SubscriptionQuota {
                             source: p.quota_source,
                             binary: None,
                             directory: LoginDirectory::Owned,
+                            ark: None,
                             kimi: Some(crate::kimi_quota::Capture {
                                 region,
                                 key: value.clone(),
+                            }),
+                        }),
+                        (
+                            AuthenticationMaterial::ApiKey { .. },
+                            crate::config::ProviderQuotaSource::ArkCodingUsage,
+                        ) => Some(Binding {
+                            id: p.id.clone(),
+                            generation: p.authentication.generation,
+                            source: p.quota_source,
+                            binary: None,
+                            directory: LoginDirectory::Owned,
+                            kimi: None,
+                            ark: p.quota_authentication.access_key.as_ref().map(|key| {
+                                crate::ark_quota::Capture {
+                                    key: key.clone(),
+                                    generation: p.quota_authentication.generation,
+                                    confirmed: p
+                                        .quota_authentication
+                                        .description(p.authentication.generation)
+                                        .binding_confirmed,
+                                }
                             }),
                         }),
                         _ => None,
@@ -197,6 +224,7 @@ impl SubscriptionQuota {
                 observed_at_ms: 0,
                 expires_at_ms: 0,
                 running: false,
+                resample: false,
                 retry_at: Instant::now(),
                 problem: None,
                 cancel: tokio::sync::watch::channel(false).0,
@@ -315,7 +343,9 @@ impl SubscriptionQuota {
             return Err(crate::Error::invalid("quota binding changed"));
         }
         let start = may_start
-            && entry.binding.is_some()
+            && entry.binding.as_ref().is_some_and(|b| {
+                b.source != crate::config::ProviderQuotaSource::ArkCodingUsage || b.ark.is_some()
+            })
             && !entry.running
             && (force
                 || ((!fresh(entry)
@@ -324,6 +354,7 @@ impl SubscriptionQuota {
                     && entry.retry_at <= Instant::now()));
         if start {
             entry.running = true;
+            entry.resample = false;
             entry.problem = None;
             let binding = entry.binding.clone().expect("native subscription");
             let incarnation = entry.incarnation.clone();
@@ -374,6 +405,10 @@ impl SubscriptionQuota {
                         return;
                     };
                     entry.running = false;
+                    if entry.resample {
+                        entry.retry_at = Instant::now();
+                        return;
+                    }
                     if binding.kimi.is_some() {
                         if duplicate || candidate_owner.is_none() {
                             entry.identity_rejected = true;
@@ -421,6 +456,11 @@ impl SubscriptionQuota {
                             }
                         }
                         Err(()) => {
+                            let expired = now_ms();
+                            entry.expires_at_ms = entry.expires_at_ms.min(expired);
+                            for window in &mut entry.windows {
+                                window.expires_at_ms = window.expires_at_ms.min(expired);
+                            }
                             entry.problem =
                                 Some("额度暂不可用；保留上次观测，稍后可重新读取。".into())
                         }
@@ -466,7 +506,16 @@ impl SubscriptionQuota {
                 .collect(),
             available: entry.available,
             refreshing: entry.running,
-            problem: entry.problem.clone(),
+            problem: entry.problem.clone().or_else(|| {
+                entry
+                    .binding
+                    .as_ref()
+                    .filter(|b| {
+                        b.source == crate::config::ProviderQuotaSource::ArkCodingUsage
+                            && b.ark.is_none()
+                    })
+                    .map(|_| "尚未配置额度查询认证。".into())
+            }),
         })
     }
 }
@@ -489,6 +538,7 @@ impl QuotaSource for GatewayView {
                 else {
                     return;
                 };
+                entry.resample = entry.running;
                 let expired = now_ms();
                 entry.expires_at_ms = entry.expires_at_ms.min(expired);
                 for window in &mut entry.windows {
@@ -510,6 +560,12 @@ impl QuotaSource for GatewayView {
         else {
             return QuotaSnapshot::Unknown;
         };
+        if binding.binding.as_ref().is_some_and(|b| {
+            b.source == crate::config::ProviderQuotaSource::ArkCodingUsage
+                && b.ark.as_ref().is_none_or(|a| !a.confirmed)
+        }) {
+            return QuotaSnapshot::Unknown;
+        }
         let windows = status
             .windows
             .into_iter()
@@ -553,6 +609,7 @@ fn collect(
                 match binding.source {
                     crate::config::ProviderQuotaSource::CodexUsage => crate::subscription_auth::read_usage(home, binding.id.clone(), binding.generation).await.map_err(|_| ()).and_then(|value| parse_windows(&value,ttl_ms)),
                     crate::config::ProviderQuotaSource::ClaudeCliUsage => { let owned=crate::claude_cli::directory(&home,&binding.id); let dir=match &binding.directory { LoginDirectory::Owned=>Some(owned.as_path()), LoginDirectory::Linked(dir)=>dir.as_deref().map(std::path::Path::new) }; let text=crate::claude_cli::usage(binding.binary.as_deref().ok_or(())?,dir).await?; parse_claude_windows(&text,ttl_ms) },
+                    crate::config::ProviderQuotaSource::ArkCodingUsage => { let observed=now_ms(); let windows=binding.ark.as_ref().ok_or(())?.windows(observed,ttl_ms).await?; let expires=windows.iter().map(|w|w.expires_at_ms).min().ok_or(())?; Ok((windows,None,observed,expires)) },
                     crate::config::ProviderQuotaSource::None | crate::config::ProviderQuotaSource::KimiUsage => Err(()),
                 }
             } => result,

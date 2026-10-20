@@ -6,7 +6,7 @@ publish = false
 
 [features]
 default = ["local-runtime"]
-local-runtime = ["dep:velune-agent-runtime", "dep:sha2", "dep:rustix", "dep:rmcp", "dep:axum", "dep:getrandom", "tokio/process", "tokio/io-util", "tokio/net", "tokio/sync"]
+local-runtime = ["dep:velune-agent-runtime", "dep:sha2", "dep:hmac", "dep:rustix", "dep:rmcp", "dep:axum", "dep:getrandom", "tokio/process", "tokio/io-util", "tokio/net", "tokio/sync"]
 
 [dependencies]
 velune-application-api = { path = "../application-api" }
@@ -20,6 +20,7 @@ tracing = { version = "0.1", default-features = false, features = ["std"] }
 rmcp = { version = "=3.5.1", optional = true, default-features = false, features = ["server", "transport-streamable-http-server"] }
 axum = { version = "0.8", optional = true, default-features = false, features = ["http1", "tokio"] }
 getrandom = { version = "0.4", optional = true }
+hmac = { version = "0.12", optional = true }
 sha2 = { version = "=0.10.9", optional = true }
 velune-conversation = { path = "../conversation" }
 velune-agent-runtime = { path = "../agent-runtime", optional = true }

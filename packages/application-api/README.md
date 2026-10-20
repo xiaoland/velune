@@ -23,3 +23,5 @@
 本 unit 不拥有请求 ID、设备授权、连接、持久会话或跨崩溃去重记录；远程库管理请求接纳与结果查询，执行端应用拥有业务状态。断线后缺失回执需要查询实际接纳状态，不能由序列化契约推断可以安全重发。
 
 Kimi Coding Plan 模板 `kimiCodingPlan` 组合为 `Http`、`MessagesV1`、`ApiKey`、`RequestProfile::KimiCoding` 与 `ProviderQuotaSource::KimiUsage`。模板及保存后提供商摘要包含共享账户额度、个人交互式使用和加油包费用说明。窗口 ID 为 `kimi:limit_5h`、`kimi:limit_7d`、`kimi:limit_month_total`、`kimi:limit_month_code`，缺失项不生成；前端按实际观测项提供 cap 编辑。`configured` 表示当前 key 的账户归属已验证，`account_label` 可在重新验证期间保留稳定摘要短尾，不能以摘要代表有效认证。固定目标、并发去重与生命周期由 application 实现。
+
+`ProviderDraft.quota_authentication_edit` 是可选的提供商内查询认证编辑，与模型认证原子保存。QuotaAuthenticationEdit 的 SetAccessKey、ConfirmBinding、Clear 不改变模型认证；公开 QuotaAuthenticationDescription 仅反映配置及用户关联确认，不证明同账户。ARK Coding Plan 模板与 ArkCoding/ArkCodingUsage 由既有组合契约表达。
