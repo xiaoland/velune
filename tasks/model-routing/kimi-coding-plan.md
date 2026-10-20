@@ -77,3 +77,5 @@ Android 虽无提供商配置页面，完整业务快照携带 profile/quota 枚
 最终 Rust fmt、全工作区 all-features check、全 targets/all-features clippy（`-D warnings`）、bindings debug/release build 与 application/bindings 无默认 feature 检查通过。Mac 已通过完整 Rust/生成 Swift 绑定/SwiftPM 构建及严格签名校验。Android 已执行完整 native/Kotlin 绑定重建、`assembleDebug` 和 `lintDebug`，并覆盖安装到已连接手机，未清除数据；APK SHA-256 为 `e5ea84aeda514347b4c5a690c37c40c387c281ffbbe7116787b9d900272d43a9`。Windows 表单源码在 Mac 宿主 check/clippy 通过，尚无 Windows 原生构建和运行证据。
 
 本轮真实模型请求、登录与秘密读取均为零。实现前的两个只读 GET 不替代真实文本、思考工具往返、跨协议或海外区域验收；本轮也未制造真实额度耗尽。
+
+交付：实现提交为本地 main `1444d56c871038ffaf0f4ba0d2e67baaae8ad4b3`。从该干净提交重新构建 Mac 并安装至 `/Applications/Velune.app`（`0.1 beta.1`）；构建清单 source_commit 与该提交一致、dirty=false、配置 schema 仍为 10。严格签名校验通过，安装后的可执行文件和 Rust 动态库 SHA-256 与构建产物逐一匹配。安装时无运行中的 Velune，不读取应用配置或真实会话；不推送或发布。额度 403 的原始 body bytes、status 和合成错误 header 另以已编译隔离库复验通过，主脚本保留相同断言。

@@ -291,3 +291,5 @@ HOME 修复已覆盖 application 登录/状态/退出/额度与 ai-provider 执�
 用户明确开始实施。已更新PRD、AI service契约及 [Kimi收敛/实施记录](kimi-coding-plan.md)。main ea7362b初始干净；主执行者负责整合/文档/最终验证，transport负责ai/gateway，source负责app/API/bindings，platform负责最小平台消费者，manual负责回环合成验收。无真实模型/凭据读取，复用此前两个HTTP200证据；不新增自动测试/CI，不push。Mac修改后按既有要求构建安装，Android不增不存在的配置入口。
 
 接入已实现：Kimi模板组合固定HTTP/Messages/API key/KimiCoding/KimiUsage；账户验证和去重、主动额度、使用上限及服务错误语义接入既有调度。三HTTP协议改用共享安全HttpClient。Mac既有编辑器支持订阅API key，Windows既有表单增加core模板选择；Android为新增枚举重建JNI/Kotlin/APK并保数据覆盖安装。Kimi 44组、Codex24组、Claude取消3组及原生Messages8次HTTP的合成人工证据通过；Rust静态/构建、Mac完整构建和Android build/lint通过，详细边界与安装证据归上述Kimi记录。真实推理、工具往返及海外区域尚未验收。
+
+交付提交main `1444d56`，已从干净提交重建并安装Mac `0.1 beta.1`；manifest对应实现提交且dirty=false，配置schema仍10，安装二进制哈希与产物匹配。Android同步版本已保数据安装，Windows只取得Mac宿主静态证据。未push/PR，未进行真实模型调用；后续真实验收须另明确调用范围。
