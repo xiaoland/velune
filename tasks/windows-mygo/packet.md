@@ -14,11 +14,17 @@
 
 ## 方案
 
-1. **Go 生成器**：在 bindings 的生成器入口加 Go 输出，读取 cdylib 中的 UniFFI 元数据（library mode），生成一个 Go 包：每种类型的 lift／lower／read／write、object 句柄与 `Close`、错误类型。生成代码不入库，与 Swift／Kotlin 相同。
-2. **Go 运行时**：RustBuffer、RustCallStatus 与调用助手。Windows 上 purego 的调用就是 `syscall.SyscallN`，只传整数寄存器，所以按 Windows x64 约定手动处理：24 字节的 RustBuffer 按值参数传指向副本的指针，按值返回由调用方在首个参数传入隐藏返回指针。先只支持 windows/amd64。
+1. **Go 生成器**：`velune-gobindgen <library> <out-dir>`（bindings 的 `cli` feature）读取库中的 UniFFI 元数据，输出 `velune/bindings` Go module 到 `target/bindings/go`。生成代码不入库，与 Swift／Kotlin 相同。（已完成，见下）
+2. **Go 运行时**：RustBuffer、RustCallStatus、对象句柄与调用助手。（已完成，见下）
 3. **冒烟**：在 win-ws 上用 Go 程序打开隔离 `VELUNE_HOME`，列出运行时与会话，并用 ACP fixture 发送一轮。
 4. **MyGO 应用**：会话列表与转录、composer、停止、审批，然后是设备切换、配对（二维码、核对码批准）与设置。界面遵循 Windows 交互习惯与项目 UI 规则（双击就地编辑、消息左右布局、不显示头像与昵称）。
 5. 达到会话日常闭环后删除 GPUI 版，更新 README 与架构。
+
+## 进展（2026-10-20）
+
+- purego v0.11.2 的 `RegisterFunc` 已按各平台 C 约定处理按值 struct 参数与返回（Windows x64：1／2／4／8 字节以外的 struct 经隐藏指针返回、按引用传参；源码 `struct_amd64.go`）。因此生成代码直接声明带 `rustBuffer` 的 Go 函数类型，不手写调用约定；同一包也能在 macOS 加载 dylib。Windows 用 `syscall.LoadDLL` 取地址（purego 在 Windows 无 Dlopen）。
+- 生成器遇到 async、callback interface、trait interface、带方法的 record／enum、flat error 时直接报错，不静默丢弃。类型映射：record→struct，无字段 enum→`int32` 常量，带字段 enum→interface＋变体 struct（error 额外实现 `error`，消息取 `Detail` 字段），Option→指针（object 与带字段 enum 用 nil），object→带句柄的指针并提供 `Destroy`，每次调用克隆句柄。
+- Mac 冒烟（临时 home、dylib 复制到内部磁盘）：`Load` 校验 contract 与全部 checksum 通过；`ProviderTemplates`、`DecodeRemoteOffer` 的类型化错误、`VeluneApplicationOpen` 与 `List` 快照正常。Windows 侧尚待 win-ws 实测。
 
 ## 风险与待验证
 

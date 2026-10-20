@@ -12,11 +12,16 @@ default = ["local-runtime", "remote"]
 local-runtime = ["dep:velune-application", "velune-application/local-runtime", "dep:tracing-subscriber", "dep:tracing-appender"]
 remote = ["dep:velune-remote", "dep:tokio", "dep:jni", "dep:rustls-platform-verifier"]
 remote-diagnostics = ["remote", "velune-remote/diagnostics", "dep:tracing-subscriber"]
-cli = ["uniffi/cli"]
+cli = ["uniffi/cli", "dep:uniffi_bindgen", "dep:camino"]
 
 [[bin]]
 name = "velune-bindgen"
 path = "src/bin.rs"
+required-features = ["cli"]
+
+[[bin]]
+name = "velune-gobindgen"
+path = "src/gobindgen/main.rs"
 required-features = ["cli"]
 
 [dependencies]
@@ -25,6 +30,9 @@ velune-application-api = { path = "../application-api" }
 velune-remote = { path = "../remote", optional = true }
 tokio = { version = "1", features = ["rt-multi-thread", "sync", "time"], optional = true }
 uniffi = "=0.32.2"
+# Go output for the Windows app; the stock CLI covers Swift and Kotlin.
+uniffi_bindgen = { version = "=0.32.2", optional = true }
+camino = { version = "1", optional = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
