@@ -31,6 +31,15 @@ GPUI 版已按 hard-cutoff 删除，MyGO 版移入 `app/windows`，构建脚本�
 - 设置窗口（设备配对与二维码、运行时发现与手动添加、提供商）已从 GPUI 版迁移，二维码用纯 Go 的 `rsc.io/qr`。构建脚本（当时为 `scripts/build-windows-mygo.ps1`）在 win-ws 上完整构建通过（约 160 秒，`velune.exe` 约 16 MB）。headless 检查（临时 home、合成远控状态，阻塞调用在无窗口时同步执行）在 Mac 与 win-ws 上覆盖：复制与收回邀请、无效邀请的错误、发现运行时（win-ws 实际找到 Pi、Codex、Claude Code，后两者版本过旧无适配器）、手动添加的必填校验与保存、提供商的校验、保存（全角逗号分隔模型）与删除。复制走 `ui.Context.WriteClipboard`，Tester 截获而不碰系统剪贴板。
 - win-ws 真机启动（交互会话的计划任务，用户空闲超过 10 分钟才启动，不发送输入，临时 `VELUNE_HOME`）：首次启动即崩溃，因为 MyGO 在 `NewWindow` 内构建首帧，早于保存窗口引用，`SetTitle` 收到空窗口；修复后窗口正常显示（标题、设备切换、设置按钮、空状态），远控服务启动，前台且响应，工作集约 72 MB、私有内存约 150 MB，35 秒内稳定（spike 时约 295 MB）；正常关闭，无残留进程。
 
+## 以 Mac 为基准对齐（2026-10-20）
+
+用户确认 Windows 贴近 MyGO 自身风格、交互结构以 Mac 为基准，Android 推后单独处理（原则沉淀在 [DESIGN.md](../../DESIGN.md)）。
+
+- 主窗口：输入区操作行与 Mac 同构，含“运行时 · 模型 · 推理强度”三子菜单、权限模式、未发送会话的工作目录，下一轮可换运行时。选择经核心 `ComposerChoices` 按“会话 × 运行时”保存；新会话改为空会话。侧栏新增 Lucide 图标按钮，Ctrl+N／Ctrl+, 生效。会话选项、附件、队列、状态栏不在本轮。
+- 设置：分类与顺序同 Mac（AI提供商、Agent 运行时、设备）。前两项改为列表，带＋／−、“编辑…”、双击编辑、右键菜单与删除确认；表单用 MyGO 的 Form／Field。提供商新增编辑：保留模型记录，key 留空不变，“显示”读出已保存的 key。设备页按 Mac 分为两组，“打开”在主窗口切换到该设备。
+- 自动发现：核心为每个 Harness 列出厂商安装位置（Codex 桌面应用与独立安装器、Claude 桌面应用、VS Code／Insiders／Cursor 扩展），Mac 与 Windows 都在 PATH 之后探测。win-ws 上已找到：Codex 0.155（独立安装器与 Programs 链接）、0.163-alpha（桌面应用）、0.130-alpha；Claude Code 2.1.295（VS Code 扩展）、2.1.8（Claude 桌面应用）。Codex 均不在现有 0.159 适配器范围内，需要新适配器才能导入，由用户决定。Claude Code 全局版本已按用户要求升级到 2.1.304。
+- 验证：两份临时 headless 检查（未入库，真实 application、合成 ACP 运行时与远控状态），在 Mac 与 win-ws 上覆盖菜单内容、选择持久化、新会话起点、工作目录、快捷键、设置各页的增删改、删除确认（Enter 落在“取消”）、key 保留与读取、设备打开与移除，均通过。跨运行时发送被 fixture 以“不提供历史加载”拒绝，需真实 Harness 验收。双击依赖系统点击次数，仍需真机验收。
+
 ## 风险与待验证
 
 - MyGO 尚在快速变动，需要固定版本；内存占用与 spike 的布局问题需在实际界面中复核。

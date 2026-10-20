@@ -11,11 +11,14 @@ import (
 	"velune/bindings"
 )
 
-// devicesPane pairs devices and lists those on either side of control.
+// devicesPane is this PC's side of remote control, and the devices it
+// controls, as Mac's device settings are.
 type devicesPane struct {
-	core       *core
-	hub        *hub
-	win        *mygo.Window
+	core *core
+	hub  *hub
+	win  *mygo.Window
+	// open shows a paired device in the main window.
+	open       func(device)
 	invitation *bindings.BindingRemoteInvitation
 	code       *qr.Code
 	copied     bool
@@ -92,95 +95,67 @@ func (p *devicesPane) connect() {
 	}, nil)
 }
 
+func (p *devicesPane) forget(peer string, pending bool) {
+	p.core.forgetConnection(peer)
+	p.perform(func(endpoint *bindings.VeluneRemoteEndpoint) error {
+		if pending {
+			if _, err := endpoint.CancelPairing(peer); err != nil {
+				return err
+			}
+		}
+		return endpoint.ForgetDevice(peer)
+	}, nil)
+}
+
 func (p *devicesPane) view(c *ui.Context) {
 	if p.invitation != nil && expired(p.invitation.ExpiresAtUnixSeconds) {
 		p.invitation = nil
 	}
+	p.thisPC(c)
+	p.others(c)
 	failure := p.failure
 	if failure == "" {
 		failure = p.hub.failure
 	}
 	failureText(c, failure)
-	p.thisPC(c)
-	p.invitationView(c)
-	p.grants(c)
-	p.connectView(c)
-	p.contacts(c)
 }
 
 func (p *devicesPane) thisPC(c *ui.Context) {
 	state := p.hub.state
 	section(c, "这台电脑", func() {
 		settingsRow(c, func() {
-			ui.Text(c, "设备名称").Grow(1)
-			muted(c, p.hub.deviceName(localDevice))
-		})
-		settingsRow(c, func() {
-			ui.Column(c).Grow(1).Gap(2).Children(func() {
-				ui.Text(c, "允许其他设备控制这台电脑")
-				muted(c, "关闭后，已配对的设备暂时无法连接。")
-			})
+			ui.Text(c, "允许其他设备控制这台电脑").Grow(1)
 			ingress := state != nil && state.ControlIngress
-			if ui.Switch(c, &ingress).Disabled(state == nil || p.busy).Changed() {
+			if ui.Switch(c, &ingress).Label("允许其他设备控制这台电脑").Disabled(state == nil || p.busy).Changed() {
 				p.perform(func(endpoint *bindings.VeluneRemoteEndpoint) error {
 					return endpoint.SetControlIngress(ingress)
 				}, nil)
 			}
 		})
-	})
-}
-
-func (p *devicesPane) invitationView(c *ui.Context) {
-	section(c, "添加控制设备", func() {
-		muted(c, "在 Android 手机或另一台电脑上扫描二维码或粘贴邀请。对方连接后，这里会请你核对并允许。")
-		if p.invitation == nil {
+		settingsRow(c, func() {
+			ui.Text(c, "设备名称").Grow(1)
+			muted(c, p.hub.deviceName(localDevice))
+		})
+		if p.invitation != nil {
+			p.invitationView(c, *p.invitation)
+		} else {
 			ui.Row(c).Children(func() {
-				if ui.Button(c, "创建邀请").Disabled(p.hub.state == nil || p.busy).Clicked() {
+				if ui.Button(c, "添加控制设备…").Disabled(state == nil || p.busy).Clicked() {
 					p.createInvitation()
 				}
 			})
+			muted(c, "在另一台设备上扫描二维码或粘贴邀请，两台设备显示的核对码一致时，在这台电脑上允许。")
+		}
+		if state == nil {
 			return
 		}
-		invitation := *p.invitation
-		ui.Row(c).Gap(16).AlignItems(ui.Start).Children(func() {
-			if p.code != nil {
-				qrView(c, p.code, 4)
-			}
-			ui.Column(c).Grow(1).MinWidth(0).Gap(8).Children(func() {
-				muted(c, "邀请五分钟内有效，只能使用一次。")
-				ui.Text(c, invitation.Encoded).Font(monoFamily()).FontSize(11).Wrap().MaxLines(4).Ellipsis("…").Selectable()
-				ui.Row(c).Gap(8).Children(func() {
-					label := "复制邀请"
-					if p.copied {
-						label = "已复制"
-					}
-					if ui.Button(c, label).Clicked() {
-						c.WriteClipboard(invitation.Encoded)
-						p.copied = true
-					}
-					ui.Spacer(c)
-					if ui.Button(c, "收回").Clicked() {
-						p.invitation = nil
-					}
-				})
-			})
-		})
-	})
-}
-
-func (p *devicesPane) grants(c *ui.Context) {
-	var grants []bindings.BindingIncomingControlGrant
-	if p.hub.state != nil {
-		grants = p.hub.state.IncomingGrants
-	}
-	section(c, "可以控制这台电脑的设备", func() {
-		if len(grants) == 0 {
-			muted(c, "没有。")
-		}
-		for _, grant := range grants {
+		for _, grant := range state.IncomingGrants {
 			ui.Column(c.Key(grant.PeerId)).Children(func() {
 				settingsRow(c, func() {
-					ui.Text(c, grant.Name).Grow(1)
+					ui.Column(c).Grow(1).Gap(2).Children(func() {
+						ui.Text(c, grant.Name)
+						muted(c, "可以控制这台电脑")
+					})
 					if ui.Button(c, "撤销").Disabled(p.busy).Clicked() {
 						peer := grant.PeerId
 						p.perform(func(endpoint *bindings.VeluneRemoteEndpoint) error {
@@ -193,101 +168,112 @@ func (p *devicesPane) grants(c *ui.Context) {
 	})
 }
 
-func (p *devicesPane) connectView(c *ui.Context) {
-	section(c, "控制另一台设备", func() {
-		muted(c, "在另一台电脑的“设置 › 设备”中创建邀请，然后粘贴到这里。")
-		ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
-			input := ui.TextInput(c, &p.invite).Placeholder("粘贴另一台设备的邀请").Grow(1)
-			ready := !p.busy && p.hub.state != nil
-			if ui.Button(c, "连接").Disabled(!ready).Clicked() || (input.Submitted() && ready) {
-				p.connect()
-			}
+func (p *devicesPane) invitationView(c *ui.Context, invitation bindings.BindingRemoteInvitation) {
+	settingsRow(c, func() {
+		if p.code != nil {
+			qrView(c, p.code, 4)
+		}
+		ui.Column(c).Grow(1).MinWidth(0).Gap(8).Children(func() {
+			ui.Text(c, "在另一台设备上扫描二维码，或复制邀请粘贴到那台设备。")
+			muted(c, "到期："+time.Unix(int64(invitation.ExpiresAtUnixSeconds), 0).Format("15:04"))
+			ui.Row(c).Gap(8).Children(func() {
+				label := "复制邀请"
+				if p.copied {
+					label = "已复制"
+				}
+				if ui.Button(c, label).Clicked() {
+					c.WriteClipboard(invitation.Encoded)
+					p.copied = true
+				}
+				if ui.Button(c, "完成").Clicked() {
+					p.invitation = nil
+				}
+			})
 		})
-	})
+	}).AlignItems(ui.Start)
 }
 
-func (p *devicesPane) contacts(c *ui.Context) {
+func (p *devicesPane) others(c *ui.Context) {
 	state := p.hub.state
 	if state == nil {
 		state = &bindings.BindingRemoteServiceSnapshot{}
 	}
-	section(c, "这台电脑可以控制的设备", func() {
-		if len(state.Contacts) == 0 && len(state.OutgoingPairings) == 0 {
-			muted(c, "没有。")
-		}
+	section(c, "控制其他设备", func() {
 		for _, contact := range state.Contacts {
-			_, pending := contact.Confirmation.(bindings.BindingContactConfirmationPending)
-			status := contactStatus(state, contact.PeerId, pending)
+			_, confirmed := contact.Confirmation.(bindings.BindingContactConfirmationConfirmed)
+			status := contactStatus(state, contact.PeerId)
 			ui.Column(c.Key(contact.PeerId)).Children(func() {
 				settingsRow(c, func() {
 					ui.Column(c).Grow(1).Gap(2).Children(func() {
 						ui.Text(c, contact.Name)
 						muted(c, status)
 					})
-					label := "移除"
-					if pending {
-						label = "取消"
+					if confirmed {
+						if ui.Button(c, "打开").Clicked() {
+							p.open(device(contact.PeerId))
+						}
+					} else if ui.Button(c, "取消").Disabled(p.busy).Clicked() {
+						p.forget(contact.PeerId, true)
 					}
-					if ui.Button(c, label).Disabled(p.busy).Clicked() {
-						peer := contact.PeerId
-						p.core.forgetConnection(peer)
-						p.perform(func(endpoint *bindings.VeluneRemoteEndpoint) error {
-							if pending {
-								if _, err := endpoint.CancelPairing(peer); err != nil {
-									return err
-								}
-							}
-							return endpoint.ForgetDevice(peer)
-						}, nil)
+				}).ContextMenu(func(m *ui.Menu) {
+					if m.Item("移除此设备").Disabled(p.busy).Chosen() {
+						p.forget(contact.PeerId, !confirmed)
 					}
 				})
 			})
 		}
+		ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
+			input := ui.TextInput(c, &p.invite).Placeholder("粘贴另一台设备的邀请").Label("邀请").Grow(1)
+			ready := !p.busy && p.hub.state != nil && strings.TrimSpace(p.invite) != ""
+			if ui.Button(c, "连接").Disabled(!ready).Clicked() || (input.Submitted() && ready) {
+				p.connect()
+			}
+		})
+		muted(c, "在要控制的设备上选择添加控制设备，把它显示的邀请粘贴到这里。连接后核对两台设备的核对码，并在那台设备上允许。")
 	})
 }
 
 // contactStatus is where pairing with a device stands, or its connection once
-// paired.
-func contactStatus(state *bindings.BindingRemoteServiceSnapshot, peer string, pending bool) string {
-	if pending {
-		for _, pairing := range state.OutgoingPairings {
-			if pairing.PeerId != peer {
-				continue
-			}
-			switch {
-			case pairing.Phase == bindings.BindingPairingPhaseAwaitingApproval && pairing.VerificationCode != nil:
-				return fmt.Sprintf("核对码 %s，等待对方允许", formatCode(*pairing.VerificationCode))
-			case pairing.Phase == bindings.BindingPairingPhaseRejected:
-				return "对方已拒绝"
-			case pairing.Phase == bindings.BindingPairingPhaseExpired:
-				return "邀请已过期"
-			default:
-				return "正在连接…"
-			}
+// paired, in Mac's words.
+func contactStatus(state *bindings.BindingRemoteServiceSnapshot, peer string) string {
+	for _, pairing := range state.OutgoingPairings {
+		if pairing.PeerId != peer || pairing.Phase == bindings.BindingPairingPhaseGranted {
+			continue
 		}
-		return "等待对方允许"
+		switch pairing.Phase {
+		case bindings.BindingPairingPhaseRejected:
+			return "对方已拒绝"
+		case bindings.BindingPairingPhaseExpired:
+			return "邀请已过期"
+		case bindings.BindingPairingPhaseDisconnected:
+			return "配对时连接中断"
+		default:
+			code := ""
+			if pairing.VerificationCode != nil {
+				code = formatCode(*pairing.VerificationCode)
+			}
+			return "等待对方允许 · 核对码 " + code
+		}
 	}
 	for _, controller := range state.Controllers {
-		if controller.PeerId == peer {
-			return phaseName(controller.Phase)
+		if controller.PeerId != peer {
+			continue
+		}
+		switch controller.Phase {
+		case bindings.BindingControllerPhaseConnected:
+			return "已连接"
+		case bindings.BindingControllerPhaseConnecting, bindings.BindingControllerPhaseDiscovering:
+			return "正在连接"
+		case bindings.BindingControllerPhaseRecovering:
+			return "正在重新连接"
+		case bindings.BindingControllerPhaseBlocked:
+			if controller.ErrorCode != nil {
+				return fmt.Sprintf("无法连接（%s）", *controller.ErrorCode)
+			}
+			return "无法连接"
 		}
 	}
-	return "已配对"
-}
-
-func phaseName(phase bindings.BindingControllerPhase) string {
-	switch phase {
-	case bindings.BindingControllerPhaseConnected:
-		return "已连接"
-	case bindings.BindingControllerPhaseConnecting, bindings.BindingControllerPhaseDiscovering:
-		return "正在连接"
-	case bindings.BindingControllerPhaseRecovering:
-		return "正在恢复连接"
-	case bindings.BindingControllerPhaseBlocked:
-		return "无法连接"
-	default:
-		return "未连接"
-	}
+	return "未连接"
 }
 
 func expired(expiresAtUnixSeconds uint64) bool {

@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"slices"
 	"strings"
@@ -13,26 +14,44 @@ import (
 	"velune/bindings"
 )
 
-// runtimeDraft is a runtime being added by hand: its type, name and the
-// type's settings.
-type runtimeDraft struct {
-	kind   bindings.BindingRuntimeTypeDescriptor
-	name   string
-	values map[string]string
+// runtimeEditor adds a runtime instance by hand or edits one: its name,
+// whether it runs, its type and the type's settings.
+type runtimeEditor struct {
+	open bool
+	// existing is the instance edited; nil adds one.
+	existing *bindings.BindingRuntimeInstance
+	kind     bindings.BindingRuntimeTypeDescriptor
+	name     string
+	enabled  bool
+	values   map[string]string
+	checked  bool
 }
 
-// runtimesPane holds this PC's Agent runtimes: discovery of installed ones,
-// and manual setup.
+// runtimesPane holds this PC's Agent runtime instances: a list to add,
+// import, edit and delete them.
 type runtimesPane struct {
-	core       *core
-	win        *mygo.Window
-	instances  []bindings.BindingRuntimeInstance
-	kinds      []bindings.BindingRuntimeTypeDescriptor
+	core      *core
+	win       *mygo.Window
+	instances []bindings.BindingRuntimeInstance
+	kinds     []bindings.BindingRuntimeTypeDescriptor
+	selected  int
+	list      ui.ListState
+	editor    runtimeEditor
+	deleting  bool
+	// importing shows what discovery found.
+	importing  bool
 	candidates []bindings.BindingRuntimeDiscoveryCandidate
-	draft      *runtimeDraft
 	busy       bool
 	status     string
 	failure    string
+}
+
+func newRuntimesPane(core *core) *runtimesPane {
+	p := &runtimesPane{core: core, selected: -1}
+	p.list.Key = func(i int) any { return p.instances[i].Id }
+	p.list.Label = func(i int) string { return p.instances[i].Name }
+	p.list.Selected = &p.selected
+	return p
 }
 
 func (p *runtimesPane) reload() {
@@ -44,8 +63,23 @@ func (p *runtimesPane) reload() {
 			p.failure = describe(r.err)
 			return
 		}
-		p.instances, p.kinds = r.value.RuntimeInstances, r.value.RuntimeTypes
+		p.setInstances(r.value.RuntimeInstances)
+		p.kinds = r.value.RuntimeTypes
 	})
+}
+
+func (p *runtimesPane) setInstances(instances []bindings.BindingRuntimeInstance) {
+	p.instances = instances
+	if p.selected >= len(instances) {
+		p.selected = len(instances) - 1
+	}
+}
+
+func (p *runtimesPane) chosen() *bindings.BindingRuntimeInstance {
+	if p.selected < 0 || p.selected >= len(p.instances) {
+		return nil
+	}
+	return &p.instances[p.selected]
 }
 
 // write runs one change against this PC's core, then shows the runtimes it
@@ -64,7 +98,7 @@ func (p *runtimesPane) write(work func(*bindings.VeluneApplication) (bindings.Bi
 			p.failure = describe(r.err)
 			return
 		}
-		p.instances = r.value.RuntimeInstances
+		p.setInstances(r.value.RuntimeInstances)
 		if done != nil {
 			done()
 		}
@@ -75,6 +109,12 @@ func (p *runtimesPane) upsert(runtime bindings.BindingRuntimeInstance, done func
 	p.write(func(application *bindings.VeluneApplication) (bindings.BindingRuntimeUpdate, error) {
 		return application.UpsertRuntime(runtime)
 	}, done)
+}
+
+func (p *runtimesPane) remove(id string) {
+	p.write(func(application *bindings.VeluneApplication) (bindings.BindingRuntimeUpdate, error) {
+		return application.DeleteRuntime(id)
+	}, nil)
 }
 
 func (p *runtimesPane) discover() {
@@ -88,7 +128,7 @@ func (p *runtimesPane) discover() {
 	}, func(r outcome[[]bindings.BindingRuntimeDiscoveryCandidate]) {
 		p.busy = false
 		if r.err != nil {
-			p.status, p.failure = "", describe(r.err)
+			p.status = describe(r.err)
 			return
 		}
 		p.candidates = r.value
@@ -136,33 +176,91 @@ func discoverRuntimes(application *bindings.VeluneApplication) ([]bindings.Bindi
 	return application.DiscoverRuntimes(probes)
 }
 
+// addable are the types set up here; an ACP Agent's launch arguments and
+// environment are not edited here.
+func (p *runtimesPane) addable() []bindings.BindingRuntimeTypeDescriptor {
+	var kinds []bindings.BindingRuntimeTypeDescriptor
+	for _, kind := range p.kinds {
+		if !kind.LaunchOptions {
+			kinds = append(kinds, kind)
+		}
+	}
+	return kinds
+}
+
+func (p *runtimesPane) kind(id string) *bindings.BindingRuntimeTypeDescriptor {
+	for i := range p.kinds {
+		if p.kinds[i].Id == id {
+			return &p.kinds[i]
+		}
+	}
+	return nil
+}
+
+func (p *runtimesPane) add() {
+	kinds := p.addable()
+	if len(kinds) == 0 {
+		return
+	}
+	p.editor, p.failure = runtimeEditor{open: true, enabled: true}, ""
+	p.chooseKind(kinds[0])
+}
+
+func (p *runtimesPane) edit(runtime bindings.BindingRuntimeInstance) {
+	kind := p.kind(runtime.TypeId)
+	if kind == nil {
+		p.failure = "这个运行时的类型已不受支持"
+		return
+	}
+	values := maps.Clone(runtime.Settings)
+	p.editor, p.failure = runtimeEditor{open: true, existing: &runtime, kind: *kind, name: runtime.Name, enabled: runtime.Enabled, values: values}, ""
+}
+
 func (p *runtimesPane) chooseKind(kind bindings.BindingRuntimeTypeDescriptor) {
 	values := map[string]string{}
 	for _, field := range kind.Fields {
 		values[field.Key] = field.Value
 	}
-	p.draft = &runtimeDraft{kind: kind, name: kind.Name, values: values}
+	p.editor.kind, p.editor.name, p.editor.values, p.editor.checked = kind, kind.Name, values, false
 }
 
-func (p *runtimesPane) saveDraft() {
-	draft := p.draft
-	settings := map[string]string{}
-	for _, field := range draft.kind.Fields {
-		value := strings.TrimSpace(draft.values[field.Key])
-		if field.Required && value == "" {
-			p.failure = fmt.Sprintf("请填写“%s”", field.Label)
-			return
-		}
-		if value != "" {
-			settings[field.Key] = value
+// missing is the first required field left empty; a stopped runtime needs none.
+func (e *runtimeEditor) missing() *bindings.BindingSettingField {
+	if !e.enabled {
+		return nil
+	}
+	for i, field := range e.kind.Fields {
+		if field.Required && strings.TrimSpace(e.values[field.Key]) == "" {
+			return &e.kind.Fields[i]
 		}
 	}
-	name := strings.TrimSpace(draft.name)
-	if name == "" {
-		name = draft.kind.Name
+	return nil
+}
+
+func (p *runtimesPane) saveEditor() {
+	e := &p.editor
+	e.checked = true
+	if e.missing() != nil {
+		return
 	}
-	runtime := bindings.BindingRuntimeInstance{Enabled: true, Id: newUUID(), Name: name, TypeId: draft.kind.Id, GatewayId: "default", Settings: settings}
-	p.upsert(runtime, func() { p.draft = nil })
+	runtime := bindings.BindingRuntimeInstance{Id: newUUID(), TypeId: e.kind.Id, GatewayId: defaultGateway, Settings: map[string]string{}}
+	if e.existing != nil {
+		// The instance's other settings stay as they are.
+		runtime = *e.existing
+		runtime.Settings = maps.Clone(runtime.Settings)
+	}
+	for _, field := range e.kind.Fields {
+		if value := strings.TrimSpace(e.values[field.Key]); value != "" {
+			runtime.Settings[field.Key] = value
+		} else {
+			delete(runtime.Settings, field.Key)
+		}
+	}
+	runtime.Name, runtime.Enabled = strings.TrimSpace(e.name), e.enabled
+	if runtime.Name == "" {
+		runtime.Name = e.kind.Name
+	}
+	p.upsert(runtime, func() { p.editor.open = false })
 }
 
 func (p *runtimesPane) browse(key string, directory bool) {
@@ -175,74 +273,180 @@ func (p *runtimesPane) browse(key string, directory bool) {
 		if err != nil || len(paths) == 0 {
 			return
 		}
-		p.win.Update(func() {
-			if p.draft != nil {
-				p.draft.values[key] = paths[0]
-			}
-		})
+		p.win.Update(func() { p.editor.values[key] = paths[0] })
 	}()
 }
 
-func (p *runtimesPane) view(c *ui.Context) {
-	failureText(c, p.failure)
-	p.instancesView(c)
-	p.discoveryView(c)
-	p.manualView(c)
+// pageFailure is what failed, shown on the page unless a sheet shows it.
+func (p *runtimesPane) pageFailure() string {
+	if p.editor.open || p.importing {
+		return ""
+	}
+	return p.failure
 }
 
-func (p *runtimesPane) kindName(id string) string {
-	for _, kind := range p.kinds {
-		if kind.Id == id {
-			return kind.Name
+func (p *runtimesPane) summary(runtime bindings.BindingRuntimeInstance) string {
+	parts := []string{runtime.TypeId}
+	if kind := p.kind(runtime.TypeId); kind != nil {
+		parts[0] = kind.Name
+	}
+	if !runtime.Enabled {
+		parts = append(parts, "已停用")
+	}
+	return strings.Join(parts, " · ")
+}
+
+func (p *runtimesPane) view(c *ui.Context) {
+	selected := p.chosen()
+	listPage(c, p.pageFailure(), func() {
+		list := ui.List(c, &p.list, len(p.instances), func(i int) {
+			runtime := p.instances[i]
+			listItem(c, runtime.Name, p.summary(runtime), i == p.selected).ContextMenu(func(m *ui.Menu) {
+				if m.Item("编辑…").Chosen() {
+					p.edit(runtime)
+				}
+				label := "停用"
+				if !runtime.Enabled {
+					label = "启用"
+				}
+				if m.Item(label).Disabled(p.busy).Chosen() {
+					runtime.Enabled = !runtime.Enabled
+					p.upsert(runtime, nil)
+				}
+				if m.Item("删除…").Chosen() {
+					p.selected, p.deleting = i, true
+				}
+			})
+		}).Grow(1)
+		list.Children(func() {
+			if len(p.instances) == 0 {
+				muted(c, "还没有 Agent 运行时。用＋手动添加，或快速导入已安装的。").Padding(12)
+			}
+		})
+		if list.Submitted() && selected != nil {
+			p.edit(*selected)
+		}
+	}, func() {
+		if iconButton(c, addIcon, "添加 Agent 运行时实例").Disabled(len(p.addable()) == 0).Clicked() {
+			p.add()
+		}
+		if ui.Button(c, "快速导入…").Disabled(p.busy).Clicked() {
+			p.importing = true
+			p.discover()
+		}
+		if iconButton(c, removeIcon, "删除运行时实例").Disabled(selected == nil || p.busy).Clicked() {
+			p.deleting = true
+		}
+		ui.Spacer(c)
+		if ui.Button(c, "编辑…").Disabled(selected == nil).Clicked() {
+			p.edit(*selected)
+		}
+	})
+	if p.editor.open {
+		p.editorView(c)
+	}
+	if p.importing {
+		p.importView(c)
+	}
+	if p.deleting {
+		if ui.AlertDialog(c, &p.deleting, "删除运行时实例？", "只删除此配置实例；Agent 运行时自己的会话、资源和配置文件不会被删除。", "删除", "取消") == 0 && selected != nil {
+			p.remove(selected.Id)
 		}
 	}
-	return id
 }
 
-func (p *runtimesPane) instancesView(c *ui.Context) {
-	section(c, "已配置的运行时", func() {
-		if len(p.instances) == 0 {
-			muted(c, "还没有运行时。")
-		}
-		for _, runtime := range p.instances {
-			ui.Column(c.Key(runtime.Id)).Children(func() {
-				settingsRow(c, func() {
-					ui.Column(c).Grow(1).MinWidth(0).Gap(2).Children(func() {
-						ui.Text(c, runtime.Name)
-						muted(c, p.kindName(runtime.TypeId))
-						if binary := runtime.Settings["binary"]; binary != "" {
-							muted(c, binary).SingleLine()
+func (p *runtimesPane) editorView(c *ui.Context) {
+	e := &p.editor
+	title := "添加 Agent 运行时"
+	if e.existing != nil {
+		title = "编辑 Agent 运行时"
+	}
+	missing := e.missing()
+	sheet(c, &e.open, title, p.failure, func() {
+		ui.Form(c, func() {
+			ui.Field(c, "实例名称", func() { ui.TextInput(c.Key("name"), &e.name).Grow(1) })
+			ui.Field(c, "启用此运行时", func() { ui.Switch(c, &e.enabled) }).
+				Description("停用后不读取其历史，也不创建或执行新任务；原生会话数据保留。")
+			ui.Field(c, "类型", func() {
+				if e.existing != nil {
+					ui.Text(c, e.kind.Name)
+					return
+				}
+				ui.MenuButton(c, e.kind.Name, func(m *ui.Menu) {
+					for _, kind := range p.addable() {
+						if m.Item(kind.Name).Checked(kind.Id == e.kind.Id).Chosen() {
+							p.chooseKind(kind)
 						}
-					})
-					enabled := runtime.Enabled
-					if ui.Switch(c, &enabled).Disabled(p.busy).Changed() {
-						toggled := runtime
-						toggled.Enabled = enabled
-						p.upsert(toggled, nil)
-					}
-					if ui.Button(c, "删除").Disabled(p.busy).Clicked() {
-						id := runtime.Id
-						p.write(func(application *bindings.VeluneApplication) (bindings.BindingRuntimeUpdate, error) {
-							return application.DeleteRuntime(id)
-						}, nil)
 					}
 				})
 			})
+			if len(e.kind.Fields) > 0 {
+				ui.Fieldset(c, "实例配置", func() {
+					for _, field := range e.kind.Fields {
+						p.fieldView(c, field, e.checked && missing != nil && missing.Key == field.Key)
+					}
+				})
+			}
+		})
+		if e.kind.LaunchOptions {
+			muted(c, "启动参数与环境请在 Mac 上编辑。")
+		}
+	}, func() {
+		if ui.Button(c, "取消").Clicked() {
+			e.open = false
+		}
+		if ui.PrimaryButton(c, "保存").Disabled(p.busy).Clicked() {
+			p.saveEditor()
 		}
 	})
 }
 
-func (p *runtimesPane) discoveryView(c *ui.Context) {
-	section(c, "发现已安装的运行时", func() {
-		muted(c, "在 PATH、npm／pnpm 全局目录，以及 Codex、Claude 桌面应用与编辑器扩展的安装位置中查找 Pi、Codex 与 Claude Code，只读取公开版本，不导入登录信息。")
-		ui.Row(c).Gap(12).AlignItems(ui.Center).Children(func() {
-			if ui.Button(c, "发现").Disabled(p.busy).Clicked() {
-				p.discover()
+func (p *runtimesPane) fieldView(c *ui.Context, field bindings.BindingSettingField, missing bool) {
+	e := &p.editor
+	key := c.Key(field.Key)
+	invalid := ""
+	if missing {
+		invalid = "请填写“" + field.Label + "”"
+	}
+	help := ""
+	if field.Help != nil {
+		help = *field.Help
+	}
+	ui.Field(key, field.Label, func() {
+		value := e.values[field.Key]
+		if field.Kind == bindings.BindingSettingKindChoice {
+			chosen := "选择"
+			for _, option := range field.Options {
+				if option.Id == value {
+					chosen = option.Label
+				}
 			}
-			if p.status != "" {
-				muted(c, p.status)
+			ui.MenuButton(c, chosen, func(m *ui.Menu) {
+				for _, option := range field.Options {
+					if m.Item(option.Label).Checked(option.Id == value).Chosen() {
+						e.values[field.Key] = option.Id
+					}
+				}
+			})
+			return
+		}
+		ui.Row(c).Gap(8).Grow(1).AlignItems(ui.Center).Children(func() {
+			ui.TextInput(c, &value).Grow(1)
+			e.values[field.Key] = value
+			if field.Kind != bindings.BindingSettingKindText && ui.Button(c, "浏览…").Clicked() {
+				p.browse(field.Key, field.Kind == bindings.BindingSettingKindDirectoryPath)
 			}
 		})
+	}).Description(help).Error(invalid)
+}
+
+// importView lists the runtimes discovery found, to add them one by one.
+func (p *runtimesPane) importView(c *ui.Context) {
+	sheet(c, &p.importing, "快速导入 Agent 运行时", p.failure, func() {
+		muted(c, "在 PATH、npm／pnpm 全局目录，以及 Codex、Claude 桌面应用与编辑器扩展的安装位置中查找 Pi、Codex 与 Claude Code，只读取公开版本，不导入登录信息。")
+		if p.status != "" {
+			ui.Text(c, p.status).FontSize(13)
+		}
 		for i, candidate := range p.candidates {
 			ui.Column(c.Key(i)).Children(func() {
 				settingsRow(c, func() {
@@ -253,7 +457,6 @@ func (p *runtimesPane) discoveryView(c *ui.Context) {
 						}
 						ui.Text(c, title)
 						muted(c, candidate.Runtime.Settings["binary"]).SingleLine()
-						muted(c, candidate.Runtime.Settings["agentDir"]).SingleLine()
 						if !candidate.Supported {
 							muted(c, candidate.Detail)
 						}
@@ -270,82 +473,13 @@ func (p *runtimesPane) discoveryView(c *ui.Context) {
 				})
 			})
 		}
-	})
-}
-
-func (p *runtimesPane) manualView(c *ui.Context) {
-	section(c, "手动添加", func() {
-		label := "选择运行时类型"
-		if p.draft != nil {
-			label = p.draft.kind.Name
+	}, func() {
+		if ui.Button(c, "重新发现").Disabled(p.busy).Clicked() {
+			p.discover()
 		}
-		ui.Row(c).Children(func() {
-			ui.MenuButton(c, label, func(m *ui.Menu) {
-				// Launch arguments and environment of ACP runtimes are not edited here.
-				for _, kind := range p.kinds {
-					if !kind.LaunchOptions && m.Item(kind.Name).Chosen() {
-						p.chooseKind(kind)
-					}
-				}
-			})
-		})
-		draft := p.draft
-		if draft == nil {
-			return
+		if ui.PrimaryButton(c, "完成").Clicked() {
+			p.importing = false
 		}
-		labeled(c, "名称", 140, func() {
-			ui.TextInput(c.Key("name"), &draft.name).Grow(1)
-		})
-		for _, field := range draft.kind.Fields {
-			if field.Kind == bindings.BindingSettingKindChoice {
-				continue
-			}
-			text := field.Label
-			if field.Required {
-				text += " *"
-			}
-			labeled(c, text, 140, func() {
-				value := draft.values[field.Key]
-				input := ui.TextInput(c.Key(field.Key), &value).Grow(1)
-				if field.Help != nil {
-					input.Placeholder(*field.Help)
-				}
-				draft.values[field.Key] = value
-				if field.Kind != bindings.BindingSettingKindText && ui.Button(c.Key("browse-"+field.Key), "浏览…").Clicked() {
-					p.browse(field.Key, field.Kind == bindings.BindingSettingKindDirectoryPath)
-				}
-			})
-		}
-		for _, field := range draft.kind.Fields {
-			if field.Kind != bindings.BindingSettingKindChoice {
-				continue
-			}
-			current := draft.values[field.Key]
-			chosen := "选择"
-			for _, option := range field.Options {
-				if option.Id == current {
-					chosen = option.Label
-				}
-			}
-			labeled(c, field.Label, 140, func() {
-				ui.MenuButton(c.Key("choice-"+field.Key), chosen, func(m *ui.Menu) {
-					for _, option := range field.Options {
-						if m.Item(option.Label).Checked(option.Id == current).Chosen() {
-							draft.values[field.Key] = option.Id
-						}
-					}
-				})
-			})
-		}
-		ui.Row(c).Gap(8).Children(func() {
-			ui.Spacer(c)
-			if ui.Button(c, "取消").Clicked() {
-				p.draft = nil
-			}
-			if ui.Button(c, "添加").Disabled(p.busy).Clicked() {
-				p.saveDraft()
-			}
-		})
 	})
 }
 

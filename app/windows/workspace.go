@@ -2,7 +2,6 @@ package main
 
 import (
 	"cmp"
-	_ "embed"
 	"fmt"
 	"path/filepath"
 	"slices"
@@ -13,17 +12,6 @@ import (
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
 	"velune/bindings"
-)
-
-//go:embed icons/square-pen.svg
-var squarePenSVG []byte
-
-//go:embed icons/settings.svg
-var settingsSVG []byte
-
-var (
-	newConversationIcon = ui.MustParseSVG(squarePenSVG)
-	settingsIcon        = ui.MustParseSVG(settingsSVG)
 )
 
 type listing struct {
@@ -153,7 +141,12 @@ func (w *workspace) openSettings(tab int) {
 		w.settings.show(tab)
 		return
 	}
-	s := openSettings(w.core, w.hub, tab)
+	// Opening a device shows it in the main window.
+	s := openSettings(w.core, w.hub, tab, func(d device) {
+		w.switchTo(d)
+		w.win.Invalidate()
+		w.win.Focus()
+	})
 	s.win.OnClosed(func() {
 		if w.settings == s {
 			w.settings = nil
@@ -400,13 +393,10 @@ func (w *workspace) sidebar(c *ui.Context) {
 	ui.Row(c).Padding(8).Gap(4).AlignItems(ui.Center).Children(func() {
 		w.deviceSwitcher(c)
 		ui.Toolbar(c, func() {
-			icon := func(svg *ui.SVG, label string) ui.Element {
-				return ui.Button(c, "").Children(func() { ui.Icon(c, svg) }).Label(label).Tooltip(label)
-			}
-			if icon(newConversationIcon, "新会话（Ctrl+N）").Disabled(len(w.listing.configuration.runtimes) == 0).Clicked() {
+			if iconButton(c, newConversationIcon, "新会话（Ctrl+N）").Disabled(len(w.listing.configuration.runtimes) == 0).Clicked() {
 				w.startConversation()
 			}
-			if icon(settingsIcon, "设置（Ctrl+,）").Clicked() {
+			if iconButton(c, settingsIcon, "设置（Ctrl+,）").Clicked() {
 				w.openSettings(keepTab)
 			}
 		}).Label("会话").Shrink(0)

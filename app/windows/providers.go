@@ -5,6 +5,7 @@ package main
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/egoist/mygo"
@@ -14,11 +15,18 @@ import (
 
 const defaultGateway = "default"
 
-// providerDraft is the provider being added; template is "" for a custom API.
-type providerDraft struct {
+// providerEditor adds a provider or edits one; template is "" for a custom
+// API, and only chosen when adding.
+type providerEditor struct {
+	open bool
+	// existing is the provider edited; nil adds one.
+	existing                    *bindings.BindingProviderDefinition
 	template                    string
 	name, endpoint, key, models string
 	protocol                    *bindings.BindingGatewayProtocol
+	// shown is whether the key field shows its text, as once the saved key is read.
+	shown   bool
+	checked bool
 }
 
 type providersPane struct {
@@ -27,9 +35,20 @@ type providersPane struct {
 	gateway   *bindings.BindingGatewayConfig
 	protocols []bindings.BindingProtocolDescriptor
 	templates []bindings.BindingProviderTemplate
-	draft     providerDraft
+	selected  int
+	list      ui.ListState
+	editor    providerEditor
+	deleting  bool
 	busy      bool
 	failure   string
+}
+
+func newProvidersPane(core *core) *providersPane {
+	p := &providersPane{core: core, selected: -1}
+	p.list.Key = func(i int) any { return p.providers()[i].Id }
+	p.list.Label = func(i int) string { return p.providers()[i].Name }
+	p.list.Selected = &p.selected
+	return p
 }
 
 type providerListing struct {
@@ -64,9 +83,6 @@ func (p *providersPane) reload() {
 				p.protocols = append(p.protocols, protocol)
 			}
 		}
-		if p.draft.protocol == nil {
-			p.draft.protocol = p.firstProtocol()
-		}
 	})
 }
 
@@ -77,6 +93,24 @@ func (p *providersPane) setGateway(gateways []bindings.BindingGatewayConfig) {
 			p.gateway = &gateway
 		}
 	}
+	if n := len(p.providers()); p.selected >= n {
+		p.selected = n - 1
+	}
+}
+
+func (p *providersPane) providers() []bindings.BindingProviderDefinition {
+	if p.gateway == nil {
+		return nil
+	}
+	return p.gateway.Providers
+}
+
+func (p *providersPane) chosen() *bindings.BindingProviderDefinition {
+	providers := p.providers()
+	if p.selected < 0 || p.selected >= len(providers) {
+		return nil
+	}
+	return &providers[p.selected]
 }
 
 func (p *providersPane) firstProtocol() *bindings.BindingGatewayProtocol {
@@ -89,21 +123,45 @@ func (p *providersPane) firstProtocol() *bindings.BindingGatewayProtocol {
 
 func (p *providersPane) selectedTemplate() *bindings.BindingProviderTemplate {
 	for i := range p.templates {
-		if p.templates[i].Id == p.draft.template {
+		if p.templates[i].Id == p.editor.template {
 			return &p.templates[i]
 		}
 	}
 	return nil
 }
 
+// pageFailure is what failed, shown on the page unless the editor shows it.
+func (p *providersPane) pageFailure() string {
+	if p.editor.open {
+		return ""
+	}
+	return p.failure
+}
+
+func (p *providersPane) add() {
+	p.editor, p.failure = providerEditor{open: true}, ""
+	p.chooseTemplate("")
+}
+
+func (p *providersPane) edit(provider bindings.BindingProviderDefinition) {
+	var models []string
+	for _, model := range provider.Models {
+		models = append(models, model.ProviderModelId)
+	}
+	protocol := provider.Protocol
+	p.failure = ""
+	p.editor = providerEditor{open: true, existing: &provider, name: provider.Name, endpoint: provider.Endpoint, models: strings.Join(models, ", "), protocol: &protocol}
+}
+
 func (p *providersPane) chooseTemplate(id string) {
-	p.draft = providerDraft{template: id, models: p.draft.models}
+	e := &p.editor
+	e.template = id
 	if template := p.selectedTemplate(); template != nil {
 		protocol := template.Protocol
-		p.draft.protocol = &protocol
-		p.draft.name, p.draft.endpoint = template.Name, template.Endpoint
+		e.protocol = &protocol
+		e.name, e.endpoint = template.Name, template.Endpoint
 	} else {
-		p.draft.protocol = p.firstProtocol()
+		e.protocol, e.name, e.endpoint = p.firstProtocol(), "", ""
 	}
 }
 
@@ -116,35 +174,80 @@ func (p *providersPane) protocolName(protocol bindings.BindingGatewayProtocol) s
 	return fmt.Sprintf("协议 %d", protocol)
 }
 
+// apiKey tells whether the provider authenticates with an API key kept here.
+func (e *providerEditor) apiKey() bool {
+	return e.existing == nil || e.existing.AuthenticationSource == bindings.BindingProviderAuthenticationSourceApiKey
+}
+
+// keySaved tells whether an edited provider has a key that an empty field keeps.
+func (e *providerEditor) keySaved() bool {
+	return e.existing != nil && e.existing.Authentication.Configured
+}
+
+func (e *providerEditor) modelIDs() []string {
+	return strings.FieldsFunc(e.models, func(r rune) bool { return r == ',' || r == '，' || r == ' ' })
+}
+
+// revealKey reads the saved key into the field to show and edit it.
+func (p *providersPane) revealKey() {
+	id := p.editor.existing.Id
+	run(p.win, func() outcome[string] {
+		key, err := p.core.local.ReadProviderApiKey(defaultGateway, id)
+		return outcome[string]{key, err}
+	}, func(r outcome[string]) {
+		if r.err != nil {
+			p.failure = describe(r.err)
+			return
+		}
+		if p.editor.existing != nil && p.editor.existing.Id == id {
+			p.editor.key, p.editor.shown = r.value, true
+		}
+	})
+}
+
 func (p *providersPane) save() {
-	if p.busy || p.draft.protocol == nil {
-		return
-	}
-	name, endpoint, key := strings.TrimSpace(p.draft.name), strings.TrimSpace(p.draft.endpoint), strings.TrimSpace(p.draft.key)
-	models := strings.FieldsFunc(p.draft.models, func(r rune) bool { return r == ',' || r == '，' || r == ' ' })
-	if name == "" || endpoint == "" || key == "" || len(models) == 0 {
-		p.failure = "请填写名称、接口地址、API key 与至少一个模型 ID"
+	e := &p.editor
+	e.checked = true
+	name, endpoint, key := strings.TrimSpace(e.name), strings.TrimSpace(e.endpoint), strings.TrimSpace(e.key)
+	ids := e.modelIDs()
+	if p.busy || e.protocol == nil || name == "" || endpoint == "" || len(ids) == 0 || (e.apiKey() && key == "" && !e.keySaved()) {
 		return
 	}
 	draft := bindings.BindingProviderDraft{
 		Name:                 name,
-		Protocol:             *p.draft.protocol,
+		Protocol:             *e.protocol,
 		Endpoint:             endpoint,
 		ExecutionBackend:     bindings.BindingExecutionBackendHttp{},
 		RequestProfile:       bindings.BindingRequestProfileNative,
 		AuthenticationSource: bindings.BindingProviderAuthenticationSourceApiKey,
 		QuotaSource:          bindings.BindingProviderQuotaSourceNone,
 	}
-	if template := p.selectedTemplate(); template != nil {
+	var kept []bindings.BindingProviderModel
+	if existing := e.existing; existing != nil {
+		draft.Id, draft.QuotaLimits = existing.Id, existing.QuotaLimits
+		draft.ExecutionBackend, draft.RequestProfile = existing.ExecutionBackend, existing.RequestProfile
+		draft.AuthenticationSource, draft.QuotaSource = existing.AuthenticationSource, existing.QuotaSource
+		kept = existing.Models
+	} else if template := p.selectedTemplate(); template != nil {
 		draft.ExecutionBackend, draft.RequestProfile = template.ExecutionBackend, template.RequestProfile
 		draft.AuthenticationSource, draft.QuotaSource = template.AuthenticationSource, template.QuotaSource
 	}
-	for _, model := range models {
-		draft.Models = append(draft.Models, bindings.BindingProviderModel{ProviderModelId: model, Nickname: model})
+	// A model kept by its ID keeps its record, which routes and choices name.
+	for _, id := range ids {
+		index := slices.IndexFunc(kept, func(m bindings.BindingProviderModel) bool { return m.ProviderModelId == id })
+		if index >= 0 {
+			draft.Models = append(draft.Models, kept[index])
+		} else {
+			draft.Models = append(draft.Models, bindings.BindingProviderModel{ProviderModelId: id, Nickname: id})
+		}
+	}
+	var authentication bindings.BindingAuthenticationEdit = bindings.BindingAuthenticationEditKeep{}
+	if e.apiKey() && key != "" {
+		authentication = bindings.BindingAuthenticationEditSetApiKey{Value: key}
 	}
 	p.busy, p.failure = true, ""
 	run(p.win, func() outcome[bindings.BindingGatewayUpdate] {
-		update, err := p.core.local.SaveProvider(defaultGateway, draft, bindings.BindingAuthenticationEditSetApiKey{Value: key})
+		update, err := p.core.local.SaveProvider(defaultGateway, draft, authentication)
 		return outcome[bindings.BindingGatewayUpdate]{update, err}
 	}, func(r outcome[bindings.BindingGatewayUpdate]) {
 		p.busy = false
@@ -153,8 +256,7 @@ func (p *providersPane) save() {
 			return
 		}
 		p.setGateway(r.value.Gateways)
-		p.draft.models = ""
-		p.chooseTemplate(p.draft.template)
+		p.editor = providerEditor{}
 	})
 }
 
@@ -177,99 +279,152 @@ func (p *providersPane) delete(id string) {
 }
 
 func (p *providersPane) view(c *ui.Context) {
-	failureText(c, p.failure)
-	p.providersView(c)
-	p.draftView(c)
-}
-
-func (p *providersPane) providersView(c *ui.Context) {
-	var providers []bindings.BindingProviderDefinition
-	if p.gateway != nil {
-		providers = p.gateway.Providers
-	}
-	section(c, "提供商", func() {
-		if len(providers) == 0 {
-			muted(c, "还没有提供商。")
-		}
-		for _, provider := range providers {
-			var models []string
-			for _, model := range provider.Models {
-				models = append(models, model.ProviderModelId)
-			}
-			ui.Column(c.Key(provider.Id)).Children(func() {
-				settingsRow(c, func() {
-					ui.Column(c).Grow(1).MinWidth(0).Gap(2).Children(func() {
-						ui.Text(c, provider.Name)
-						muted(c, p.protocolName(provider.Protocol)+" · "+provider.Endpoint).SingleLine()
-						muted(c, strings.Join(models, "、")).SingleLine()
-					})
-					if ui.Button(c, "删除").Disabled(p.busy).Clicked() {
-						p.delete(provider.Id)
-					}
-				})
+	providers := p.providers()
+	selected := p.chosen()
+	listPage(c, p.pageFailure(), func() {
+		list := ui.List(c, &p.list, len(providers), func(i int) {
+			provider := providers[i]
+			summary := fmt.Sprintf("%d 个模型 · %s", len(provider.Models), provider.Endpoint)
+			listItem(c, provider.Name, summary, i == p.selected).ContextMenu(func(m *ui.Menu) {
+				if m.Item("编辑…").Chosen() {
+					p.edit(provider)
+				}
+				if m.Item("删除…").Chosen() {
+					p.selected, p.deleting = i, true
+				}
 			})
+		}).Grow(1)
+		list.Children(func() {
+			if len(providers) == 0 {
+				muted(c, "还没有 AI 提供商。用＋添加。").Padding(12)
+			}
+		})
+		if list.Submitted() && selected != nil {
+			p.edit(*selected)
+		}
+	}, func() {
+		if iconButton(c, addIcon, "添加 AI 提供商").Clicked() {
+			p.add()
+		}
+		if iconButton(c, removeIcon, "删除 AI 提供商").Disabled(selected == nil || p.busy).Clicked() {
+			p.deleting = true
+		}
+		ui.Spacer(c)
+		if ui.Button(c, "编辑…").Disabled(selected == nil).Clicked() {
+			p.edit(*selected)
 		}
 	})
+	if p.editor.open {
+		p.editorView(c)
+	}
+	if p.deleting && selected != nil {
+		message := "删除「" + selected.Name + "」及其模型配置。使用这些模型的运行时需要重新选择模型；原运行时文件与会话保留。"
+		if ui.AlertDialog(c, &p.deleting, "删除 AI 提供商？", message, "删除", "取消") == 0 {
+			p.delete(selected.Id)
+		}
+	}
 }
 
-func (p *providersPane) draftView(c *ui.Context) {
+func (p *providersPane) editorView(c *ui.Context) {
+	e := &p.editor
 	selected := p.selectedTemplate()
 	fixed := selected != nil && selected.Kind == bindings.BindingProviderTemplateKindSubscription
-	section(c, "添加提供商", func() {
-		labeled(c, "模板", 96, func() {
-			label := "自定义 API"
-			if selected != nil {
-				label = selected.Name
-			}
-			ui.MenuButton(c, label, func(m *ui.Menu) {
-				if m.Item("自定义 API").Checked(selected == nil).Chosen() {
-					p.chooseTemplate("")
-				}
-				for _, template := range p.templates {
-					if m.Item(template.Name).Checked(template.Id == p.draft.template).Chosen() {
-						p.chooseTemplate(template.Id)
+	required := func(value, label string) string {
+		if e.checked && strings.TrimSpace(value) == "" {
+			return "请填写" + label
+		}
+		return ""
+	}
+	title := "添加 AI 提供商"
+	if e.existing != nil {
+		title = "编辑 AI 提供商"
+	}
+	sheet(c, &e.open, title, p.failure, func() {
+		ui.Form(c, func() {
+			if e.existing == nil {
+				ui.Field(c, "模板", func() {
+					label := "自定义 API"
+					if selected != nil {
+						label = selected.Name
 					}
+					ui.MenuButton(c, label, func(m *ui.Menu) {
+						if m.Item("自定义 API").Checked(selected == nil).Chosen() {
+							p.chooseTemplate("")
+						}
+						for _, template := range p.templates {
+							if m.Item(template.Name).Checked(template.Id == e.template).Chosen() {
+								p.chooseTemplate(template.Id)
+							}
+						}
+					})
+				})
+			}
+			ui.Field(c, "名称", func() {
+				ui.TextInput(c.Key("name"), &e.name).Placeholder("例如 DeepSeek").Grow(1)
+			}).Error(required(e.name, "名称"))
+			ui.Field(c, "协议", func() {
+				label := "选择协议"
+				if e.protocol != nil {
+					label = p.protocolName(*e.protocol)
 				}
+				ui.MenuButton(c, label, func(m *ui.Menu) {
+					for _, protocol := range p.protocols {
+						if m.Item(protocol.Name).Checked(e.protocol != nil && *e.protocol == protocol.Id).Chosen() {
+							id := protocol.Id
+							e.protocol = &id
+						}
+					}
+				}).Disabled(fixed)
 			})
+			ui.Field(c, "接口地址", func() {
+				if fixed {
+					ui.Text(c, selected.Endpoint)
+					return
+				}
+				ui.TextInput(c.Key("endpoint"), &e.endpoint).Placeholder("例如 https://api.example.com/v1").Grow(1)
+			}).Error(required(e.endpoint, "接口地址"))
+			if e.apiKey() {
+				p.keyField(c)
+			} else {
+				ui.Field(c, "认证", func() { muted(c, "此提供商的认证请在 Mac 上管理。") })
+			}
+			ui.Field(c, "模型 ID", func() {
+				ui.TextInput(c.Key("models"), &e.models).Placeholder("提供商 API 规定的标识，多个以逗号分隔").Grow(1)
+			}).Error(required(e.models, "至少一个模型 ID"))
 		})
 		if selected != nil && selected.Disclosure != nil {
 			muted(c, selected.Disclosure.Title+"："+selected.Disclosure.Detail)
 		}
-		labeled(c, "名称", 96, func() {
-			ui.TextInput(c.Key("name"), &p.draft.name).Placeholder("名称，例如 DeepSeek").Grow(1)
-		})
-		labeled(c, "协议", 96, func() {
-			label := "选择协议"
-			if p.draft.protocol != nil {
-				label = p.protocolName(*p.draft.protocol)
-			}
-			ui.MenuButton(c, label, func(m *ui.Menu) {
-				for _, protocol := range p.protocols {
-					if m.Item(protocol.Name).Checked(p.draft.protocol != nil && *p.draft.protocol == protocol.Id).Chosen() {
-						id := protocol.Id
-						p.draft.protocol = &id
-					}
-				}
-			}).Disabled(fixed)
-		})
-		labeled(c, "接口地址", 96, func() {
-			if fixed {
-				muted(c, selected.Endpoint).Grow(1)
-				return
-			}
-			ui.TextInput(c.Key("endpoint"), &p.draft.endpoint).Placeholder("接口地址，例如 https://api.example.com/v1").Grow(1)
-		})
-		labeled(c, "API key", 96, func() {
-			ui.TextInput(c.Key("key"), &p.draft.key).Placeholder("API key").Password().Grow(1)
-		})
-		labeled(c, "模型", 96, func() {
-			ui.TextInput(c.Key("models"), &p.draft.models).Placeholder("模型 ID，多个以逗号分隔").Grow(1)
-		})
-		ui.Row(c).Children(func() {
-			ui.Spacer(c)
-			if ui.Button(c, "添加").Disabled(p.busy).Clicked() {
-				p.save()
-			}
-		})
+	}, func() {
+		if ui.Button(c, "取消").Clicked() {
+			e.open = false
+		}
+		if ui.PrimaryButton(c, "保存").Disabled(p.busy).Clicked() {
+			p.save()
+		}
 	})
+}
+
+// keyField takes a new API key; an edited provider's saved key stays unless
+// replaced, and can be read to view it.
+func (p *providersPane) keyField(c *ui.Context) {
+	e := &p.editor
+	invalid := ""
+	if e.checked && strings.TrimSpace(e.key) == "" && !e.keySaved() {
+		invalid = "请填写 API key"
+	}
+	ui.Field(c, "API key", func() {
+		ui.Row(c).Gap(8).Grow(1).AlignItems(ui.Center).Children(func() {
+			input := ui.TextInput(c.Key("key"), &e.key).Grow(1)
+			if !e.shown {
+				input.Password()
+			}
+			if e.keySaved() {
+				input.Placeholder("已保存；留空保持不变")
+				if !e.shown && ui.Button(c, "显示").Clicked() {
+					p.revealKey()
+				}
+			}
+		})
+	}).Description("保存在这台电脑的应用私有配置中。").Error(invalid)
 }
