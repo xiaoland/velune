@@ -70,7 +70,7 @@
 
 ## Windows 应用证据（2026-10-19）
 
-- `app/windows`（GPUI，gpui-kit `=0.7.3`）直接链接 bindings，入口见 [Windows README](../../app/windows/README.md)。`scripts/build-windows.ps1` 在 win-ws 上完成 release 构建，组装出可移动的应用目录。
+- `app/windows`（GPUI，gpui-kit `=0.7.3`）直接链接 bindings。2026-10-20 用户改用 MyGO 后，GPUI 版已删除，现由 MyGO 版占用同一路径，见 [Windows MyGO 任务](../windows-mygo/packet.md)。`scripts/build-windows.ps1` 在 win-ws 上完成 release 构建，组装出可移动的应用目录。
 - 在 win-ws 的交互会话中以隔离 `VELUNE_HOME` 运行，用临时脚本模拟点击（未入库），已验证：启动与设置窗口；远控服务就绪，接入开关打开；运行时发现列出用户全局安装的 pi 0.80.3、codex 0.155.0、claude 2.0.76，并标为不受支持；手动添加 Pi 1.0.2 运行时；添加合成回环提供商（Chat Completions，`127.0.0.1:18080`，非真实 key）。
 - 发现 gpui-component 对话框内的输入框在 Windows 上收不到点击，点击落到遮罩上、对话框随之关闭。新会话与重命名因此改为就地编辑。
 - 首次冷启动时，Pi 的版本探测超过 15 秒超时，疑为 Defender 扫描；重试成功。

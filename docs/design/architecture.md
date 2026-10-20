@@ -131,7 +131,7 @@ iroh 的默认自动选路与 QUIC 多流承担传输；路径快照、事件和
 ### Apple 与 Android 宿主
 
 - **Apple 当前落点**：Mac 使用 SwiftUI／AppKit 的原生窗口、菜单与设置，嵌入 Rust dylib；iOS／iPadOS 的 UIKit 方向不等于已实现或能运行桌面 Harness。watchOS／tvOS／visionOS 不在本轮承诺内
-- **Windows**：完整端，本机运行 agents 并可控制其他端。2026-10-20 用户改定 [MyGO](https://github.com/egoist/mygo)（纯 Go 自绘原生 UI）作为接受的视觉例外，取代 10-19 spike 选定的 GPUI；GPUI 版在 MyGO 版达到会话日常闭环前保留，之后删除。Go 经自建的 UniFFI Go 生成器调用 bindings：运行时用 purego 加载 DLL，不用 cgo，不另启 Host 进程。生成器只覆盖 bindings 实际用到的同步函数、record、enum、object、error 与集合。待验证，进度见 [任务](../../tasks/windows-mygo/packet.md)。
+- **Windows**：完整端，本机运行 agents 并可控制其他端。2026-10-20 用户改定 [MyGO](https://github.com/egoist/mygo)（纯 Go 自绘原生 UI）作为接受的视觉例外，取代 10-19 spike 选定的 GPUI；GPUI 版已删除。Go 经自建的 UniFFI Go 生成器调用 bindings：运行时用 purego 加载 DLL，不用 cgo，不另启 Host 进程。生成器只覆盖 bindings 实际用到的同步函数、record、enum、object、error 与集合。待验证，进度见 [任务](../../tasks/windows-mygo/packet.md)。
 - **Android 目标**：Kotlin＋Jetpack Compose 原生控制端，经 remote-only UniFFI／JNA 嵌入 Rust，不携带 Harness 或 AI 执行栈。库已提供 Application JNI context 与系统 TLS verifier 的装配入口；应用私有存储、备份排除与生命周期接入由后续平台工作承担。当前 main 不包含早期 Android App，库产物与历史平台观察见 [任务](../../tasks/android-minimal/packet.md)
 - **移动端能力**：远端 Harness 接入和后台能力仍需单独验证。嵌入核心不代表手机能常驻桌面 Harness，也不把离线输入显示为远端已启动的任务
 
