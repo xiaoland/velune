@@ -414,3 +414,7 @@ S17 实施授权：用户决定全面切换 UniFFI，并要求现在开始拆分
 ## ARK Coding Plan 接入决定（2026-10-20）
 
 用户先要求“还看看 ARK Coding Plan”，随后明确“采用‘在提供商内部独立配置额度查询认证’的方案，开始修改”。此授权涵盖独立查询认证、套餐接入及必要消费者与合成验收，不包含真实凭据读取、登录、额度/模型请求或远端发布。产品归 PRD，固定接口证据及实现范围归 [ARK 接入记录](../tasks/model-routing/ark-coding-plan.md)。
+
+## S44
+
+2026-10-21 Windows 上 ChatGPT 桌面应用带的 Codex 为 0.163.0-alpha.10.2，超出 `codex-0.159` 的区间。用户问：“codex需要新的适配器？为什么？0.155不必支持了呀？还是说 0.163 又太新了”，随后决定：“先进行实测，如果真的不支持，再增加新的 adapter type；并且可以支持 alpha, beta ，这是无所谓的。”即先以实际 CLI 验证，确有破坏性变化才另建 adapter；预发布版本按其正式版计入区间。实测与区间调整见 [版本区间任务](../tasks/adapter-version-ranges/packet.md)。

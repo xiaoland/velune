@@ -112,6 +112,16 @@ impl Bundled<'_> {
                     found.extend(each(&bin, "", &[&codex]));
                     found.extend(file(bin.join(&codex)));
                 }
+                if cfg!(target_os = "macos") {
+                    // The ChatGPT desktop app carries a Codex CLI.
+                    for applications in
+                        [Path::new("/Applications"), &self.home.join("Applications")]
+                    {
+                        found.extend(file(
+                            applications.join("ChatGPT.app/Contents/Resources/codex-cli/bin/codex"),
+                        ));
+                    }
+                }
             }
             "claude-code" => {
                 let claude = executable("claude");

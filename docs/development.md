@@ -126,14 +126,14 @@ fixture 为 [review.json](../fixtures/review.json)，仅 `2 + 3 = 5`。Codex 会
 
 ## 原生运行时与历史读取
 
-运行时配置引用精确 versioned variant，family 只负责分组；不同 breaking-change 版本通过独立 variant 与 adapter 支持，不把版本校验退化为接受新版本的提示。启动时从所选可执行文件的 `--version` 输出提取唯一版本，再按该 variant 的 regex 校验；协议握手另检查能力。
+运行时配置引用精确 versioned variant，family 只负责分组；不同 breaking-change 版本通过独立 variant 与 adapter 支持，不把版本校验退化为接受新版本的提示。启动时从所选可执行文件的 `--version` 输出提取唯一版本，再按该 variant 的兼容区间（[agent-runtime](../packages/agent-runtime/README.md)）校验，预发布版本按其正式版计入；协议握手另检查能力。
 
-| variant ID | family | 版本 regex | 控制与历史 |
+| variant ID | family | 兼容区间 | 控制与历史 |
 | --- | --- | --- | --- |
-| `pi-1.0` | `pi` | `^1\.0\.2$` | Pi RPC、SessionManager SDK 分支历史 |
-| `codex-0.159` | `codex` | `^0\.159\.3$` | Codex app-server thread／turn 与原生分页历史 |
-| `dsh-acp-0.2` | `deepseek-harness` | `^0\.2\.0-rc\.2$` | DSH ACP v1 session 控制、huihua DeepSeek provider |
-| `claude-code-2.1` | `claude-code` | `^2\.1\.286$` | Claude stream-json 控制、原生 projects 历史 |
+| `pi-1.0` | `pi` | ≥1.0.2，<1.1.0 | Pi RPC、SessionManager SDK 分支历史 |
+| `codex-0.159` | `codex` | ≥0.159.3，<0.164.0 | Codex app-server thread／turn 与原生分页历史 |
+| `dsh-acp-0.2` | `deepseek-harness` | ≥0.2.0-rc.2，<0.3.0 | DSH ACP v1 session 控制、huihua DeepSeek provider |
+| `claude-code-2.1` | `claude-code` | ≥2.1.286，<2.2.0 | Claude stream-json 控制、原生 projects 历史 |
 
 Node 本体不随 Mac bundle，Pi／Codex／DSH 当前配置记录需要 Node 22.19+ 的绝对路径，其中 Pi／DSH 实际执行 Node helper；Codex 历史直接调用 app-server 原生 thread API。Claude 历史使用 Python 3 执行 Rust 内嵌的只读 helper。各 Harness 可执行文件由用户安装，实例保存绝对路径，不依赖 Finder 的 PATH。Codex 启动 app-server；DSH 当前版本通过配置的 Node 执行其 CLI JavaScript 入口并在 managed turn 传 `--profile acp --patch <实例投影文件>`。CLI 版本不是 ACP 握手中的插件版本。
 

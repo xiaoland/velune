@@ -26,7 +26,7 @@ Velune 的产品身份是 control surface：UI、AI 服务网关与协调层服�
 
 ## 当前版本化运行时接入
 
-实例引用 variant ID；family 是展示分组，不是 dispatch key。2026-10-17 用户决定（[S34](../sources.md#s34)）adapter 声明兼容版本区间，不锁定单一补丁版本：下限是经实际 CLI 验证的版本，上限是下一个可能带来破坏性变化的版本（语义化版本的次版本；0.x 按次版本），区间内照常使用；出现破坏性变化才增设独立 adapter 与 variant，允许并存。variant ID 不含补丁号：`pi-1.0`（≥1.0.2、<1.1）、`codex-0.159`（≥0.159.3、<0.160）、`dsh-acp-0.2`（≥0.2.0-rc.2、<0.3）、`claude-code-2.1`（≥2.1.286、<2.2）。区间外的版本明确拒绝，不猜测兼容。配置版本重置不触及原 Harness 文件。
+实例引用 variant ID；family 是展示分组，不是 dispatch key。2026-10-17 用户决定（[S34](../sources.md#s34)）adapter 声明兼容版本区间，不锁定单一补丁版本：下限是经实际 CLI 验证的版本，上限是下一个可能带来破坏性变化的版本（语义化版本的次版本；0.x 按次版本），区间内照常使用；出现破坏性变化才增设独立 adapter 与 variant，允许并存。较新的 CLI 经实际验证没有破坏性变化时提高上限，不另建 variant；2026-10-21 用户决定（[S44](../sources.md#s44)）预发布版本按其正式版计入区间（比较 major.minor.patch）。variant ID 不含补丁号，取其 adapter 首个验证的版本：`pi-1.0`（≥1.0.2、<1.1）、`codex-0.159`（≥0.159.3、<0.164，0.163.0-alpha.10.2 已验证）、`dsh-acp-0.2`（≥0.2.0-rc.2、<0.3）、`claude-code-2.1`（≥2.1.286、<2.2）。区间外的版本明确拒绝，不猜测兼容。配置版本重置不触及原 Harness 文件。
 
 agent-runtime 拥有 Codex app-server 与 DSH ACP 控制和原生事件转换；Codex 原生 thread API 提供逻辑历史的列表与分页详情，处理 revert 的多个 rollout 与继承前缀；huihua `0.2.0` package 提供 DSH 只读历史 snapshot，不替代 resume。Pi 保留固定 SDK 的分支历史语义。application 显式传入 home、roots、资源与 Node 路径；Node 是外部依赖，huihua 依赖及许可证由 Mac 打包，Codex／DSH CLI 由用户安装。没有第二份会话 DB，也不引入 Obelisk 索引服务。
 

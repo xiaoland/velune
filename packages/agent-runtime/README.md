@@ -41,7 +41,7 @@ Pi 固定版本及协议边界见 [开发说明](../../docs/development.md)。SD
 
 ## 版本与原生控制
 
-运行时类型是 versioned variant，family 仅用于展示分组，不作为派发键。四个专用 variant 为 `pi-1.0`（family `pi`）、`codex-0.159`（family `codex`）、`dsh-acp-0.2`（family `deepseek-harness`）、`claude-code-2.1`（family `claude-code`）。各自声明已验证的兼容区间（`Versions::Cli`，语义化版本比较）：≥1.0.2 <1.1.0、≥0.159.3 <0.160.0、≥0.2.0-rc.2 <0.3.0、≥2.1.286 <2.2.0；下限是以实际 CLI 验证过的版本，上限不含，且其预发布版本也在区间外。专用适配器启动前探测配置的 CLI 版本；协议握手继续检查所需能力。区间内的版本照常使用；出现破坏性变化才增加独立 variant 与 adapter，未经实际 CLI 验证不扩大区间；多个 variant 与同 variant 的多个实例可并存。
+运行时类型是 versioned variant，family 仅用于展示分组，不作为派发键。四个专用 variant 为 `pi-1.0`（family `pi`）、`codex-0.159`（family `codex`）、`dsh-acp-0.2`（family `deepseek-harness`）、`claude-code-2.1`（family `claude-code`）。各自声明已验证的兼容区间（`Versions::Cli`，语义化版本比较）：≥1.0.2 <1.1.0、≥0.159.3 <0.164.0、≥0.2.0-rc.2 <0.3.0、≥2.1.286 <2.2.0；下限是以实际 CLI 验证过的版本，上限不含。比较只看 major.minor.patch，alpha、beta 等预发布版本按其正式版计入。较新的 CLI 经实际验证没有破坏性变化时提高上限（Codex 0.163.0-alpha.10.2 已于 2026-10-21 验证）。专用适配器启动前探测配置的 CLI 版本；协议握手继续检查所需能力。区间内的版本照常使用；出现破坏性变化才增加独立 variant 与 adapter，未经实际 CLI 验证不扩大区间；多个 variant 与同 variant 的多个实例可并存。
 
 通用 `acp-v1`（family `acp`）声明协议主版本 `1`（`Versions::AcpProtocol`），描述为“协议 1”。它通过 `acp::Client::connect` 的 `initialize` 协商，既不执行未知程序的 `--version`，也不根据 `agentInfo` 名称或版本筛选 Harness。公开 CLI 版本探测 API 对此 family 明确返回 `unsupported`，调用方应使用协议握手。
 

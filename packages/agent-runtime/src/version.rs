@@ -77,8 +77,9 @@ pub(crate) const CODEX_PERMISSION_MODES: &[PermissionMode] = &[
 pub enum Versions {
     /// A dedicated adapter's CLI versions: from the one verified with the
     /// actual CLI up to, not including, the next version that may break it
-    /// (a semantic minor version; for 0.x the minor too). Prereleases of
-    /// `below` are outside.
+    /// (a semantic minor version; for 0.x the minor too), raised once a
+    /// newer CLI is verified. Versions compare by major.minor.patch, so an
+    /// alpha or beta counts as its release.
     Cli {
         minimum: &'static str,
         below: &'static str,
@@ -99,9 +100,8 @@ impl Versions {
         ) else {
             return false;
         };
-        version >= minimum
-            && (version.major, version.minor, version.patch)
-                < (below.major, below.minor, below.patch)
+        let core = |v: &semver::Version| (v.major, v.minor, v.patch);
+        core(&version) >= core(&minimum) && core(&version) < core(&below)
     }
     /// The range as users read it.
     pub fn describe(&self) -> String {
@@ -182,7 +182,7 @@ const VARIANTS: &[RuntimeVariant] = &[
         name: "Codex 0.159",
         versions: Versions::Cli {
             minimum: "0.159.3",
-            below: "0.160.0",
+            below: "0.164.0",
         },
         can_rename_conversations: true,
         can_delete_conversations: true,

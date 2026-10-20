@@ -49,7 +49,7 @@ def main():
             spec=importlib.util.spec_from_file_location('velune_bindings',root/'bindings/velune_bindings.py');b=importlib.util.module_from_spec(spec);sys.modules[spec.name]=b;spec.loader.exec_module(b)
             application=b.VeluneApplication.open(b.BindingOptions(home_directory=str(root/'home'),resources_directory=str(args.bundle/'Contents/Resources')))
             descriptor={d.id:d for d in application.list().runtime_types}
-            expected={'pi-1.0':('pi','≥1.0.2，<1.1.0'),'codex-0.159':('codex','≥0.159.3，<0.160.0'),'dsh-acp-0.2':('deepseek-harness','≥0.2.0-rc.2，<0.3.0')}
+            expected={'pi-1.0':('pi','≥1.0.2，<1.1.0'),'codex-0.159':('codex','≥0.159.3，<0.164.0'),'dsh-acp-0.2':('deepseek-harness','≥0.2.0-rc.2，<0.3.0')}
             for identity,(family,versions) in expected.items():
                 assert descriptor[identity].family_id==family and descriptor[identity].compatible_versions==versions
             chat=b.BindingGatewayProtocol.CHAT_COMPLETIONS_V1;responses=b.BindingGatewayProtocol.RESPONSES_V1;messages=b.BindingGatewayProtocol.MESSAGES_V1
@@ -62,16 +62,16 @@ def main():
                 ('codex','codex-0.159',args.codex,b.BindingGatewayProtocol.RESPONSES_V1,'synthetic-responses'),
                 ('deepseek','dsh-acp-0.2',args.dsh,b.BindingGatewayProtocol.CHAT_COMPLETIONS_V1,'synthetic-chat')]:
                 model=b.BindingProviderModel(record_key='',provider_model_id=api_id,nickname='Synthetic native',icon=None,context_window=32768,max_output_tokens=4096,reasoning_levels=None)
-                provider=b.BindingProviderDraft(id=family,name=family,protocol=protocol,endpoint=endpoint,models=[model], quota_limits=[], execution_backend=b.BindingExecutionBackend.HTTP(), request_profile=b.BindingRequestProfile.NATIVE, authentication_source=b.BindingProviderAuthenticationSource.API_KEY, quota_source=b.BindingProviderQuotaSource.NONE)
+                provider=b.BindingProviderDraft(id=family,name=family,protocol=protocol,endpoint=endpoint,models=[model], quota_limits=[], execution_backend=b.BindingExecutionBackend.HTTP(), request_profile=b.BindingRequestProfile.NATIVE, authentication_source=b.BindingProviderAuthenticationSource.API_KEY, quota_source=b.BindingProviderQuotaSource.NONE, quota_authentication_edit=None)
                 application.save_provider('default',provider,b.BindingAuthenticationEdit.SET_API_KEY(value='synthetic-only'))
                 saved=next(p for p in application.list().gateways[0].providers if p.id==family)
-                alternate=b.BindingProviderDraft(id=family+'-alternate',name='Synthetic alternate',protocol=protocol,endpoint=endpoint.replace('/v1','/alternate/v1'),models=[model], quota_limits=[], execution_backend=b.BindingExecutionBackend.HTTP(), request_profile=b.BindingRequestProfile.NATIVE, authentication_source=b.BindingProviderAuthenticationSource.API_KEY, quota_source=b.BindingProviderQuotaSource.NONE)
+                alternate=b.BindingProviderDraft(id=family+'-alternate',name='Synthetic alternate',protocol=protocol,endpoint=endpoint.replace('/v1','/alternate/v1'),models=[model], quota_limits=[], execution_backend=b.BindingExecutionBackend.HTTP(), request_profile=b.BindingRequestProfile.NATIVE, authentication_source=b.BindingProviderAuthenticationSource.API_KEY, quota_source=b.BindingProviderQuotaSource.NONE, quota_authentication_edit=None)
                 application.save_provider('default',alternate,b.BindingAuthenticationEdit.SET_API_KEY(value='synthetic-alternate'))
                 alternate_saved=next(p for p in application.list().gateways[0].providers if p.id==alternate.id)
                 agent_home=root/family;agent_home.mkdir()
                 if family == 'deepseek':
                     switched_model=b.BindingProviderModel(record_key='',provider_model_id=api_id,nickname='Synthetic responses',icon=None,context_window=None,max_output_tokens=None,reasoning_levels=None)
-                    switched=b.BindingProviderDraft(id='protocol-switch',name='Synthetic protocol switch',protocol=responses,endpoint=endpoint+'/alternate/v1',models=[switched_model], quota_limits=[], execution_backend=b.BindingExecutionBackend.HTTP(), request_profile=b.BindingRequestProfile.NATIVE, authentication_source=b.BindingProviderAuthenticationSource.API_KEY, quota_source=b.BindingProviderQuotaSource.NONE)
+                    switched=b.BindingProviderDraft(id='protocol-switch',name='Synthetic protocol switch',protocol=responses,endpoint=endpoint+'/alternate/v1',models=[switched_model], quota_limits=[], execution_backend=b.BindingExecutionBackend.HTTP(), request_profile=b.BindingRequestProfile.NATIVE, authentication_source=b.BindingProviderAuthenticationSource.API_KEY, quota_source=b.BindingProviderQuotaSource.NONE, quota_authentication_edit=None)
                     switched_saved=next(p for g in application.save_provider('default',switched,b.BindingAuthenticationEdit.SET_API_KEY(value='synthetic-alternate')).gateways for p in g.providers if p.id=='protocol-switch')
                 runtime=b.BindingRuntimeInstance(enabled=True, id=family,name=family,type_id=type_id,gateway_id='default',settings={'binary':str(binary),'nodeBinary':str(args.node),'agentDir':str(agent_home)})
                 application.upsert_runtime(runtime);application.select_runtime(family)
@@ -149,7 +149,7 @@ def main():
             application.upsert_runtime(bad)
             try:application.create_conversation(bad.id,str(root/'project'),application.list().gateways[0].providers[0].models[0].record_key)
             except b.BindingError as error:
-                assert '99.0.0' in str(error) and '≥0.159.3，<0.160.0' in str(error),str(error)
+                assert '99.0.0' in str(error) and '≥0.159.3，<0.164.0' in str(error),str(error)
             else:raise AssertionError('runtime with incompatible actual version prepared')
             assert application.list().selected_runtime_instance_id=='deepseek','version rejection lost active runtime'
 
