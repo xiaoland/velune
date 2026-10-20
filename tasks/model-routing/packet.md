@@ -4,7 +4,7 @@
 
 ## 当前接续与凭据边界
 
-当前为 2026-10-20 ARK Coding Plan 实施，用户已确认提供商内部独立额度查询认证并要求开始修改；范围与证据见 [ARK 接入记录](ark-coding-plan.md)。不含真实凭据读取或真实调用。已完成的 Kimi 实施与安装见[对应节](#kimi-coding-plan-实施2026-10-20)及 [Kimi 接入记录](kimi-coding-plan.md)。
+2026-10-20 ARK Coding Plan 独立额度认证实现与本地交付已完成，范围与证据见 [ARK 接入记录](ark-coding-plan.md)。真实凭据读取和真实调用不在本轮授权内，尚未验收。已完成的 Kimi 实施与安装见[对应节](#kimi-coding-plan-实施2026-10-20)及 [Kimi 接入记录](kimi-coding-plan.md)。
 
 2026-10-16 首轮仅授权 Rust lib，前端另行安排，当时不改 Mac 源码或构建安装 app；后续 Mac 设置工作及本次 Kimi 最小消费者接入已有各自授权。
 
@@ -299,3 +299,5 @@ HOME 修复已覆盖 application 登录/状态/退出/额度与 ai-provider 执�
 用户要求“还看看 ARK Coding Plan”。研究阶段已核对官方套餐/工具/错误文档、固定版本官方Ark CLI公开文档与Magpie额度源码，记录于 [ARK接入研究](ark-coding-plan.md)；当时未改产品源码或调用真实服务。现有HTTP三协议可承接请求；完整智能聚合的新缺口是额度独立认证与模型Key归属绑定，不能只加模板或按AK哈希宣称去重。advisor提出过原生请求与被动fail-over的较小首版，未替用户缩减既有验收目标；用户随后选择下述独立额度认证方案。
 
 用户随后确认提供商内部独立额度查询认证并授权修改。现已实现 ArkCoding/ArkCodingUsage 模板、独立 AK/SK、用户明确关联、V4 查询及既有调度接入；模型与查询认证原子保存，旧采样/旧 Runner 随绑定失效，查询换 Key 保留模型冷却/粘性。Mac 和 Windows 既有表单接入，Android 重建绑定并保数据安装；schema 保持10，缺省查询字段不清空配置。ARK37组、Kimi44组、Codex24组合成验收及 Rust 静态检查通过，Mac完整构建和Android build/lint通过。真实认证/额度/模型调用仍未进行；归属是用户声明，未宣称跨AK自动核验。详见上述实施记录。
+
+实现提交 main `7adc650`。从干净提交完整重建并安装 Mac `0.1 beta.1`，manifest 对应实现提交、dirty=false、schema10；安装后 codesign 严格校验通过，执行文件与 Rust 动态库 SHA-256 均与构建产物一致。安装前已正常退出 Velune。未 push/PR；Windows 未做原生运行验收。

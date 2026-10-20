@@ -68,3 +68,12 @@ Magpie 固定于 `2374ffe161439b02a8e7f23b793461b39a635bf8`，其 [volcengine_us
 所有行为请求只发往回环夹具，生产源码没有测试目标开关，也没有新增自动化测试或 CI。真实 AK/SK 权限、ARK 返回格式与文本/工具、真实耗尽尚未验收；本版关联由用户声明维护，不能检测不同 AK 下是否重复同一订阅。
 
 Android APK 已保数据覆盖安装，SHA-256 为 `46604acfa94737bd6f143ecce1a49110d8c0bc2d0d12e0bfc7b11741a222d53a`。
+
+## 本地交付
+
+实现提交 main `7adc6505122bd48d22eae1872aeb62058d6dc0b4`。从干净提交执行完整 Mac 构建，正常退出运行中的 Velune 后安装 `0.1 beta.1`。安装包的 build-manifest 对应该实现提交、dirty=false、配置 schema10；安装后 codesign 严格校验通过，以下 SHA-256 与构建产物一致：
+
+- Mac 执行文件：`1c1954a2946b1cefbeec4c670cc1fbb3c745f81628e24d7f9ba41c02cd69cb43`。
+- Rust 动态库：`7196d586411d094c73856e8f5501000ad90f86793c1de425113771fa9763ed30`。
+
+没有启动真实账户操作、推理或额度读取；未 push、PR 或部署。Windows 仅有宿主静态检查，实际配置交互和真实订阅验收仍待用户进行。
