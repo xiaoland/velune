@@ -144,7 +144,7 @@ def main():
                     id=identifier, name=identifier, protocol=protocol, endpoint=endpoint,
                     models=[b.BindingProviderModel(record_key='', provider_model_id='synthetic-' + identifier, nickname=identifier,
                                                    icon=None, context_window=32768, max_output_tokens=1024,
-                                                   reasoning_levels=levels)], quota_limits=[], execution_backend=b.BindingExecutionBackend.HTTP(), request_profile=b.BindingRequestProfile.NATIVE, authentication_source=b.BindingProviderAuthenticationSource.API_KEY, quota_source=b.BindingProviderQuotaSource.NONE),
+                                                   reasoning_levels=levels)], quota_limits=[], execution_backend=b.BindingExecutionBackend.HTTP(), request_profile=b.BindingRequestProfile.NATIVE, authentication_source=b.BindingProviderAuthenticationSource.API_KEY, quota_source=b.BindingProviderQuotaSource.NONE, quota_authentication_edit=None),
                     b.BindingAuthenticationEdit.SET_API_KEY(value='SYNTHETIC_ONLY'))
                 return next(p for p in app.list().gateways[0].providers if p.id == identifier).models[0].record_key
 
@@ -325,8 +325,12 @@ def main():
             for runtime, snapshot in history.items():
                 for text in (runtime.upper() + '_FIRST', runtime.upper() + '_SECOND'):
                     tokens, window = context(snapshot, text)
-                    assert (tokens, window) == (expected_context(runtime), 32768), (runtime, text, tokens, window)
-            print('PASS history context: each turn\'s context comes from the native record, against the managed model\'s window', flush=True)
+                    # Codex records its own window; the provider model ID
+                    # only fills in one the record leaves out.
+                    assert tokens == expected_context(runtime), (runtime, text, tokens)
+                    assert window > 0 if runtime == 'codex' else window == 32768, (runtime, text, window)
+            print('PASS history context: each turn\'s context comes from the native record, against the window it records '
+                  'or else the managed model\'s', flush=True)
             got = settings(history['codex'], 'CODEX_FIRST')
             assert got == ('codex', 'synthetic-responses', 'high', 'read-only'), got
             # A turn without a mode keeps the session's: the record says so.

@@ -128,7 +128,7 @@ def exercise_business(b, local, first, second, root, report):
         quota_limits=[], execution_backend=b.BindingExecutionBackend.HTTP(),
         request_profile=b.BindingRequestProfile.NATIVE,
         authentication_source=b.BindingProviderAuthenticationSource.API_KEY,
-        quota_source=b.BindingProviderQuotaSource.NONE)
+        quota_source=b.BindingProviderQuotaSource.NONE, quota_authentication_edit=None)
     with remote_operation(first) as scoped:
         scoped.save_provider('default', provider, b.BindingAuthenticationEdit.SET_API_KEY(value='SYNTHETIC_REMOTE_SECRET'))
     assert first.read_provider_api_key('default', 'synthetic') == 'SYNTHETIC_REMOTE_SECRET'
