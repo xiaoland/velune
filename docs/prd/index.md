@@ -44,7 +44,7 @@ Velune 是新的独立产品，已经停止继续推进 Factory26。Beluna 是�
 
 2026-10-18 用户将当前实施责任明确限定为 Rust Library，包括 UniFFI 契约与库级验证；Mac／Android App 接入、界面与安装由独立平台工作承担。此边界不撤销统一远控和最小 Android 的产品目标，也不能用库验证替代整机网络或界面验收。来源见 [S41](../sources.md#s41)。
 
-2026-10-19 用户发起远控 MVP，并解除上一条“仅 Rust Library”的实施边界。设备分两类：完整端（Mac、Windows）运行 agent runtime，也能控制其他端；控制端（Android，将来的 iPad、Web）只有控制能力，不运行 agent runtime。任何一端都能控制其他端。各端界面只编写一份，本机与远端设备经同一业务接口访问，由用户选择目标设备。远程控制与 SSH 运行时是两项独立能力：前者是另一台 Velune 设备的界面操作本机，后者是本机核心在远端机器上执行 Harness。MVP 先交付会话日常闭环（会话列表与转录、发送、停止、审批／问题）。提供商、资源等配置的目标是跨端同步，而不只是远程编辑；同步语义与秘密边界仍待方案收敛。MVP 使用 iroh 公共 relay。Windows 端须在本机运行 agents。Windows 端例外接受自绘 UI 框架，2026-10-20 定为 MyGO 而非 GPUI（[S43](../sources.md#s43)），不采用 .NET／WinUI；若用 Go，则坚持 purego、不用 cgo。Android 保持 Kotlin／Jetpack Compose 并彻底重写原型。来源见 [S43](../sources.md#s43)。
+2026-10-19 用户发起远控 MVP，并解除上一条“仅 Rust Library”的实施边界。设备分两类：完整端（Mac、Windows）运行 agent runtime，也能控制其他端；控制端（Android，将来的 iPad、Web）只有控制能力，不运行 agent runtime。任何一端都能控制其他端。各端界面只编写一份，本机与远端设备经同一业务接口访问，由用户选择目标设备。远程控制与 SSH 运行时是两项独立能力：前者是另一台 Velune 设备的界面操作本机，后者是本机核心在远端机器上执行 Harness。MVP 先交付会话日常闭环（会话列表与转录、发送、停止、审批／问题）。提供商、资源等配置的目标是跨端同步，而不只是远程编辑；同步语义与秘密边界仍待方案收敛。MVP 使用 iroh 公共 relay。Windows 端须在本机运行 agents。Windows 端例外接受自绘 UI 框架，2026-10-20 定为 MyGO 而非 GPUI（[S43](../sources.md#s43)），不采用 .NET／WinUI；Windows 界面贴近 MyGO 自身的组件与风格，不另做一套 Windows 外观。完整端之间的交互结构尽可能一致：Windows 以 Mac 为基准，设置分类与命名、布局分区、模型菜单的结构与选项相同，各用所属框架的控件呈现；Android 按屏幕尺寸与操作方式合理调整，不照搬完整端。若用 Go，则坚持 purego、不用 cgo。Android 保持 Kotlin／Jetpack Compose 并彻底重写原型。来源见 [S43](../sources.md#s43)。
 
 ## 已确认的产品结构与质量方向
 
