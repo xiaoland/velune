@@ -535,7 +535,8 @@ impl CoreRuntime {
             // the managed model's configuration describes the actual upstream.
             if let (Some(settings), Some(usage)) = (&turn.settings, turn.usage.as_mut())
                 && usage.context_tokens.is_some()
-                && let Some(window) = self.managed_context_window(settings)
+                && let Some(window) =
+                    self.managed_context_window(settings, usage.context_window.is_some())
             {
                 usage.context_window = Some(window);
             }
@@ -544,8 +545,20 @@ impl CoreRuntime {
 
     /// The window Velune gave the runtime for a turn's managed model: the
     /// model Velune named, or the only one with the provider model ID the
-    /// runtime recorded.
-    fn managed_context_window(&self, settings: &crate::conversation::TurnSettings) -> Option<u64> {
+    /// runtime recorded. The runtime's own provider may serve a model under
+    /// the same ID, so that match only fills in a window the runtime did not
+    /// report; a turn Velune sent with a native model is never managed.
+    fn managed_context_window(
+        &self,
+        settings: &crate::conversation::TurnSettings,
+        reported: bool,
+    ) -> Option<u64> {
+        if matches!(
+            settings.model_selection,
+            Some(ModelSelection::Native { .. })
+        ) {
+            return None;
+        }
         let (runtime_id, model) = (settings.runtime_id.as_ref()?, settings.model.as_ref()?);
         let runtime = self.runtime_instance(runtime_id).ok()?;
         let gateway = self
@@ -568,6 +581,9 @@ impl CoreRuntime {
                 == Some(model)
         });
         let found = named.copied().or_else(|| {
+            if reported {
+                return None;
+            }
             let mut by_id = models
                 .iter()
                 .filter(|candidate| &candidate.provider_model_id == model);
