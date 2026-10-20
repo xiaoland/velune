@@ -331,7 +331,8 @@ func (w *workspace) view(c *ui.Context) {
 	if w.conversation != nil {
 		title = w.conversation.title()
 	}
-	if title = title + " — " + w.hub.deviceName(w.device); title != w.title {
+	// The first frame is built while the window is created, before attach.
+	if title = title + " — " + w.hub.deviceName(w.device); title != w.title && w.win != nil {
 		w.title = title
 		w.win.SetTitle(title)
 	}
