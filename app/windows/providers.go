@@ -27,6 +27,10 @@ type providerEditor struct {
 	// shown is whether the key field shows its text, as once the saved key is read.
 	shown   bool
 	checked bool
+	// The ARK Coding Plan's usage query credentials, apart from the model
+	// key: a full pair replaces them, none keeps them.
+	quotaID, quotaSecret          string
+	quotaConfirmed, clearingQuota bool
 }
 
 type providersPane struct {
@@ -156,6 +160,7 @@ func (p *providersPane) edit(provider bindings.BindingProviderDefinition) {
 func (p *providersPane) chooseTemplate(id string) {
 	e := &p.editor
 	e.template = id
+	e.quotaID, e.quotaSecret, e.quotaConfirmed, e.clearingQuota = "", "", false, false
 	if template := p.selectedTemplate(); template != nil {
 		protocol := template.Protocol
 		e.protocol = &protocol
@@ -184,6 +189,37 @@ func (e *providerEditor) keySaved() bool {
 	return e.existing != nil && e.existing.Authentication.Configured
 }
 
+// quotaSource is where the provider's usage is read: the edited one's, or
+// the chosen template's.
+func (p *providersPane) quotaSource() bindings.BindingProviderQuotaSource {
+	if e := p.editor; e.existing != nil {
+		return e.existing.QuotaSource
+	}
+	if template := p.selectedTemplate(); template != nil {
+		return template.QuotaSource
+	}
+	return bindings.BindingProviderQuotaSourceNone
+}
+
+// quotaEdit is what saving does to the usage query credentials; nil keeps them.
+func (e *providerEditor) quotaEdit() bindings.BindingQuotaAuthenticationEdit {
+	id, secret := strings.TrimSpace(e.quotaID), strings.TrimSpace(e.quotaSecret)
+	switch {
+	case e.clearingQuota:
+		return bindings.BindingQuotaAuthenticationEditClear{}
+	case id != "" && secret != "":
+		return bindings.BindingQuotaAuthenticationEditSetAccessKey{AccessKeyId: id, SecretAccessKey: secret, Confirmed: e.quotaConfirmed}
+	case e.quotaConfirmed:
+		return bindings.BindingQuotaAuthenticationEditConfirmBinding{}
+	}
+	return nil
+}
+
+// quotaPairIncomplete tells whether only one of the access key's two parts is filled.
+func (e *providerEditor) quotaPairIncomplete() bool {
+	return (strings.TrimSpace(e.quotaID) == "") != (strings.TrimSpace(e.quotaSecret) == "")
+}
+
 func (e *providerEditor) modelIDs() []string {
 	return strings.FieldsFunc(e.models, func(r rune) bool { return r == ',' || r == '，' || r == ' ' })
 }
@@ -210,7 +246,7 @@ func (p *providersPane) save() {
 	e.checked = true
 	name, endpoint, key := strings.TrimSpace(e.name), strings.TrimSpace(e.endpoint), strings.TrimSpace(e.key)
 	ids := e.modelIDs()
-	if p.busy || e.protocol == nil || name == "" || endpoint == "" || len(ids) == 0 || (e.apiKey() && key == "" && !e.keySaved()) {
+	if p.busy || e.protocol == nil || name == "" || endpoint == "" || len(ids) == 0 || (e.apiKey() && key == "" && !e.keySaved()) || e.quotaPairIncomplete() {
 		return
 	}
 	draft := bindings.BindingProviderDraft{
@@ -244,6 +280,10 @@ func (p *providersPane) save() {
 	var authentication bindings.BindingAuthenticationEdit = bindings.BindingAuthenticationEditKeep{}
 	if e.apiKey() && key != "" {
 		authentication = bindings.BindingAuthenticationEditSetApiKey{Value: key}
+	}
+	// The model key and the usage credentials are saved together.
+	if p.quotaSource() == bindings.BindingProviderQuotaSourceArkCodingUsage {
+		draft.QuotaAuthenticationEdit = e.quotaEdit()
 	}
 	p.busy, p.failure = true, ""
 	run(p.win, func() outcome[bindings.BindingGatewayUpdate] {
@@ -391,6 +431,9 @@ func (p *providersPane) editorView(c *ui.Context) {
 			ui.Field(c, "模型 ID", func() {
 				ui.TextInput(c.Key("models"), &e.models).Placeholder("提供商 API 规定的标识，多个以逗号分隔").Grow(1)
 			}).Error(required(e.models, "至少一个模型 ID"))
+			if p.quotaSource() == bindings.BindingProviderQuotaSourceArkCodingUsage {
+				p.quotaFields(c)
+			}
 		})
 		if selected != nil && selected.Disclosure != nil {
 			muted(c, selected.Disclosure.Title+"："+selected.Disclosure.Detail)
@@ -427,4 +470,44 @@ func (p *providersPane) keyField(c *ui.Context) {
 			}
 		})
 	}).Description("保存在这台电脑的应用私有配置中。").Error(invalid)
+}
+
+// quotaFields are the ARK Coding Plan's usage query credentials, which the
+// user links to the model key; the account is not checked.
+func (p *providersPane) quotaFields(c *ui.Context) {
+	e := &p.editor
+	var described bindings.BindingQuotaAuthenticationDescription
+	if e.existing != nil {
+		described = e.existing.QuotaAuthentication
+	}
+	status := "尚未配置"
+	switch {
+	case e.clearingQuota:
+		status = "保存后清除"
+	case described.Configured && described.BindingConfirmed:
+		status = "已由用户确认关联"
+	case described.Configured:
+		status = "需要重新确认关联"
+	}
+	incomplete := ""
+	if e.checked && e.quotaPairIncomplete() {
+		incomplete = "额度查询需要完整 AK/SK"
+	}
+	ui.Fieldset(c, "额度查询认证", func() {
+		ui.Field(c, "状态", func() { ui.Text(c, status) }).
+			Description("模型 API key 与此处 AK/SK 分别用于模型和额度查询。账户归属未自动核验。")
+		ui.Field(c, "AccessKey ID", func() { ui.TextInput(c.Key("quota-id"), &e.quotaID).Grow(1) })
+		ui.Field(c, "SecretAccessKey", func() { ui.TextInput(c.Key("quota-secret"), &e.quotaSecret).Password().Grow(1) }).
+			Description("输入完整 AK/SK 替换；留空保留。改模型 Key 后需再次确认，有上限且未确认时暂停派发。上限按此来源观测执行，不是计费硬预算。").
+			Error(incomplete)
+		ui.Field(c, "确认关联", func() { ui.Switch(c, &e.quotaConfirmed) }).
+			Description("此次保存时确认此来源对应当前模型 Key 的个人 Coding Plan")
+		if described.Configured && !e.clearingQuota {
+			ui.Field(c, "", func() {
+				if ui.Button(c, "清除额度查询认证").Clicked() {
+					e.quotaID, e.quotaSecret, e.quotaConfirmed, e.clearingQuota = "", "", false, true
+				}
+			})
+		}
+	})
 }
