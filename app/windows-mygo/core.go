@@ -166,6 +166,14 @@ func (c *core) application(d device) (*bindings.VeluneApplication, error) {
 	return connection, nil
 }
 
+// forgetConnection drops a removed device's connection; the remote service
+// closes it with the device.
+func (c *core) forgetConnection(peer string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	delete(c.connections, peer)
+}
+
 // shutdown closes connections and the remote service; running conversations
 // stay with their owner.
 func (c *core) shutdown() {
@@ -198,6 +206,12 @@ func describe(err error) string {
 	default:
 		return err.Error()
 	}
+}
+
+// outcome is a blocking call's value or failure, carried to the main thread.
+type outcome[T any] struct {
+	value T
+	err   error
 }
 
 // run does blocking work off the main thread, then applies its result there.

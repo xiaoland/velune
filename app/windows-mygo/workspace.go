@@ -74,6 +74,7 @@ type workspace struct {
 	markingRead map[string]bool
 	foreground  bool
 	title       string
+	settings    *settings
 	// listing polls for one device at a time; a switch starts another round.
 	round atomic.Int64
 	list  ui.ListState
@@ -118,6 +119,25 @@ func (w *workspace) hubChanged() {
 	if w.approving == nil {
 		w.nextApproval()
 	}
+	if w.settings != nil {
+		w.settings.hubChanged()
+	}
+}
+
+// openSettings shows the settings window at tab, reusing an open one;
+// keepTab leaves an open window's tab as it is.
+func (w *workspace) openSettings(tab int) {
+	if w.settings != nil {
+		w.settings.show(tab)
+		return
+	}
+	s := openSettings(w.core, w.hub, tab)
+	s.win.OnClosed(func() {
+		if w.settings == s {
+			w.settings = nil
+		}
+	})
+	w.settings = s
 }
 
 // nextApproval asks about the next pairing waiting for this PC's answer.
@@ -341,7 +361,12 @@ func (w *workspace) view(c *ui.Context) {
 
 func (w *workspace) sidebar(c *ui.Context) {
 	t := c.Theme()
-	ui.Row(c).Padding(8).Children(func() { w.deviceSwitcher(c) })
+	ui.Row(c).Padding(8).Gap(4).Children(func() {
+		w.deviceSwitcher(c)
+		if ui.Button(c, "设置").Clicked() {
+			w.openSettings(keepTab)
+		}
+	})
 	ui.Row(c).Padding(0, 8, 8, 8).Children(func() {
 		if ui.Button(c, "＋ 新会话").Disabled(len(w.listing.runtimes) == 0).Grow(1).Clicked() {
 			w.startConversation()
@@ -379,6 +404,10 @@ func (w *workspace) deviceSwitcher(c *ui.Context) {
 			if m.Item(contact.Name).Checked(w.device == device(contact.PeerId)).Chosen() {
 				w.switchTo(device(contact.PeerId))
 			}
+		}
+		m.Separator()
+		if m.Item("添加设备…").Chosen() {
+			w.openSettings(devicesTab)
 		}
 	}).Grow(1)
 }

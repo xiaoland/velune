@@ -28,6 +28,7 @@
 - win-ws 冒烟（MSVC release DLL 约 4 分钟；Go 程序在 Mac 交叉编译，`CGO_ENABLED=0`）：同上各项一致；另用最小合成 ACP agent（Python）跑通一轮完整会话：发送、`snapshot_update` 增量合并、权限请求选择允许、运行中取消、`List`、`Shutdown`，结束后无残留子进程。Mac 结果相同。`velune_relaykit.dll` 须与 exe 同目录，Windows 按 exe 目录解析 DLL 依赖。
 
 - 会话日常闭环已写入 `app/windows-mygo`（会话列表、设备切换、新会话、转录、审批／提问、发送与停止、就地重命名、已读标记、控制请求对话框），设置尚未迁移。用 MyGO 的 headless Tester 以临时程序（未入库）验证：真实 application＋合成 ACP 会话的渲染在 Mac 与 win-ws 上一致，中文回落字体正常；控制请求对话框起初把焦点给“拒绝”，Enter 即拒绝，现改为焦点落在核对码上，Enter 与 Esc 均不作答。Tester 的公开点击不带系统点击次数，双击重命名无法 headless 验证。
+- 设置窗口（设备配对与二维码、运行时发现与手动添加、提供商）已从 GPUI 版迁移，二维码用纯 Go 的 `rsc.io/qr`。`scripts/build-windows-mygo.ps1` 在 win-ws 上完整构建通过（约 160 秒，`velune.exe` 约 16 MB）。headless 检查（临时 home、合成远控状态，阻塞调用在无窗口时同步执行）在 Mac 与 win-ws 上覆盖：复制与收回邀请、无效邀请的错误、发现运行时（win-ws 实际找到 Pi、Codex、Claude Code，后两者版本过旧无适配器）、手动添加的必填校验与保存、提供商的校验、保存（全角逗号分隔模型）与删除。复制走 `ui.Context.WriteClipboard`，Tester 截获而不碰系统剪贴板。
 
 ## 风险与待验证
 
