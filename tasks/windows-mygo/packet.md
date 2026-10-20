@@ -24,7 +24,10 @@
 
 - purego v0.11.2 的 `RegisterFunc` 已按各平台 C 约定处理按值 struct 参数与返回（Windows x64：1／2／4／8 字节以外的 struct 经隐藏指针返回、按引用传参；源码 `struct_amd64.go`）。因此生成代码直接声明带 `rustBuffer` 的 Go 函数类型，不手写调用约定；同一包也能在 macOS 加载 dylib。Windows 用 `syscall.LoadDLL` 取地址（purego 在 Windows 无 Dlopen）。
 - 生成器遇到 async、callback interface、trait interface、带方法的 record／enum、flat error 时直接报错，不静默丢弃。类型映射：record→struct，无字段 enum→`int32` 常量，带字段 enum→interface＋变体 struct（error 额外实现 `error`，消息取 `Detail` 字段），Option→指针（object 与带字段 enum 用 nil），object→带句柄的指针并提供 `Destroy`，每次调用克隆句柄。
-- Mac 冒烟（临时 home、dylib 复制到内部磁盘）：`Load` 校验 contract 与全部 checksum 通过；`ProviderTemplates`、`DecodeRemoteOffer` 的类型化错误、`VeluneApplicationOpen` 与 `List` 快照正常。Windows 侧尚待 win-ws 实测。
+- Mac 冒烟（临时 home、dylib 复制到内部磁盘）：`Load` 校验 contract 与全部 checksum 通过；`ProviderTemplates`、`DecodeRemoteOffer` 的类型化错误、`VeluneApplicationOpen` 与 `List` 快照正常。
+- win-ws 冒烟（MSVC release DLL 约 4 分钟；Go 程序在 Mac 交叉编译，`CGO_ENABLED=0`）：同上各项一致；另用最小合成 ACP agent（Python）跑通一轮完整会话：发送、`snapshot_update` 增量合并、权限请求选择允许、运行中取消、`List`、`Shutdown`，结束后无残留子进程。Mac 结果相同。`velune_relaykit.dll` 须与 exe 同目录，Windows 按 exe 目录解析 DLL 依赖。
+
+- 会话日常闭环已写入 `app/windows-mygo`（会话列表、设备切换、新会话、转录、审批／提问、发送与停止、就地重命名、已读标记、控制请求对话框），设置尚未迁移。用 MyGO 的 headless Tester 以临时程序（未入库）验证：真实 application＋合成 ACP 会话的渲染在 Mac 与 win-ws 上一致，中文回落字体正常；控制请求对话框起初把焦点给“拒绝”，Enter 即拒绝，现改为焦点落在核对码上，Enter 与 Esc 均不作答。Tester 的公开点击不带系统点击次数，双击重命名无法 headless 验证。
 
 ## 风险与待验证
 

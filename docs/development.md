@@ -52,7 +52,7 @@ Windows 使用 MSVC 目标（`x86_64-pc-windows-msvc`，工具链版本同 `rust
 
 子进程统一经 agent-runtime 的 `process_tree` 创建：Unix 使用独立进程组，Windows 使用 kill-on-close 的 Job Object，并加 `CREATE_NO_WINDOW`，避免 GUI 宿主为每个 Harness 弹出控制台。application 的凭据助手（Pi 来源认证、Claude CLI 登录）以同样方式管理进程树，并为清空环境的子进程保留 `SystemRoot` 与 `windir`。SSH 运行时依赖 OpenSSH ControlMaster 与 Unix socket，Windows 宿主暂不支持。
 
-应用由 `scripts/build-windows.ps1` 构建，界面、运行与已知限制见 [Windows README](../app/windows/README.md)。
+应用由 `scripts/build-windows.ps1` 构建，界面、运行与已知限制见 [Windows README](../app/windows/README.md)。取代它的 MyGO 版由 `scripts/build-windows-mygo.ps1` 构建，Go 绑定由 `velune-gobindgen` 从刚构建的 DLL 生成，见 [MyGO 版 README](../app/windows-mygo/README.md)。
 
 ## 会话内容的隔离复验
 
