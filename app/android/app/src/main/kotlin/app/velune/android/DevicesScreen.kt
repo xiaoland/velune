@@ -105,7 +105,7 @@ private fun DeviceRow(contact: BindingDeviceContact, status: String, open: () ->
     }
 }
 
-fun deviceStatus(state: BindingRemoteServiceSnapshot, contact: BindingDeviceContact): String {
+fun deviceStatus(state: BindingRemoteServiceSnapshot, contact: BindingDeviceContact, path: String? = null): String {
     state.outgoingPairings.firstOrNull { it.peerId == contact.peerId }?.takeIf { it.phase != BindingPairingPhase.GRANTED }?.let {
         return when (it.phase) {
             BindingPairingPhase.AWAITING_READY, BindingPairingPhase.AWAITING_APPROVAL -> "等待对方允许 · 核对码 ${grouped(it.verificationCode.orEmpty())}"
@@ -118,7 +118,7 @@ fun deviceStatus(state: BindingRemoteServiceSnapshot, contact: BindingDeviceCont
     if (contact.confirmation is BindingContactConfirmation.Pending) return "等待对方允许"
     val controller = state.controllers.firstOrNull { it.peerId == contact.peerId } ?: return "未连接"
     return when (controller.phase) {
-        BindingControllerPhase.CONNECTED -> "已连接"
+        BindingControllerPhase.CONNECTED -> listOfNotNull("已连接", path).joinToString(" · ")
         BindingControllerPhase.CONNECTING, BindingControllerPhase.DISCOVERING -> "正在连接"
         BindingControllerPhase.RECOVERING -> "正在重新连接"
         BindingControllerPhase.SUSPENDED, BindingControllerPhase.DISCONNECTED -> "未连接"

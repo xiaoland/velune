@@ -46,6 +46,7 @@ import androidx.core.content.ContextCompat
 import app.velune.bindings.BindingContactConfirmation
 import app.velune.bindings.BindingPairingOfferInfo
 import app.velune.bindings.BindingPairingPhase
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 
 /** Pairing: read the other device's invitation, compare codes, and wait for it to allow this phone. */
@@ -115,6 +116,8 @@ fun AddDeviceScreen(hub: DeviceHub, back: () -> Unit, paired: (String) -> Unit) 
                                     try {
                                         peer = hub.beginPairing(checkNotNull(encoded)).peerId
                                         encoded = null
+                                    } catch (error: CancellationException) {
+                                        throw error
                                     } catch (error: Exception) {
                                         failure = "无法连接：${error.describe()}"
                                     } finally {

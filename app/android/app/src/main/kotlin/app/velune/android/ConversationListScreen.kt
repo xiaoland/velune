@@ -72,7 +72,7 @@ fun ConversationListScreen(
                             Column {
                                 Text(contact?.name ?: "设备", maxLines = 1, overflow = TextOverflow.Ellipsis)
                                 if (state != null && contact != null) {
-                                    Text(deviceStatus(state!!, contact), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    Text(deviceStatus(state!!, contact, listing.path), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                 }
                             }
                             Icon(Icons.Filled.ArrowDropDown, contentDescription = "切换设备")

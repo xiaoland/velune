@@ -10,6 +10,7 @@ import app.velune.bindings.BindingRuntimeModel
 import app.velune.bindings.BindingSnapshotResult
 import app.velune.bindings.BindingSnapshotUpdate
 import app.velune.bindings.VeluneApplication
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -66,6 +67,8 @@ class ConversationModel(
         if (opening != null) scope.launch {
             try {
                 apply(io { it.readConversation(opening.runtimeId, opening.conversationId) })
+            } catch (error: CancellationException) {
+                throw error
             } catch (error: Exception) {
                 _state.update { it.copy(failure = error.describe()) }
             } finally {
@@ -106,6 +109,8 @@ class ConversationModel(
                 BindingSnapshotUpdate.Absent -> apply(io { it.readConversation(runtime, id) })
             }
             _state.update { it.copy(failure = null) }
+        } catch (error: CancellationException) {
+            throw error
         } catch (error: Exception) {
             _state.update { it.copy(failure = error.describe()) }
         }
@@ -163,6 +168,8 @@ class ConversationModel(
         try {
             val loaded = io { it.messagePayloads(snapshot.contextRuntimeId, snapshot.conversation.id, listOf(messageId)) }
             _state.update { state -> state.copy(payloads = state.payloads + loaded.associateBy { it.id }) }
+        } catch (error: CancellationException) {
+            throw error
         } catch (error: Exception) {
             _state.update { it.copy(failure = error.describe()) }
         }
@@ -174,6 +181,8 @@ class ConversationModel(
         scope.launch {
             try {
                 body()
+            } catch (error: CancellationException) {
+                throw error
             } catch (error: Exception) {
                 _state.update { it.copy(failure = error.describe()) }
             } finally {

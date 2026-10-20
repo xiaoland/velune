@@ -130,3 +130,31 @@ pub(crate) fn host_mdns_interfaces() -> std::collections::BTreeSet<std::net::Ipv
         .filter(|ip| usable_mdns_ipv4(*ip))
         .collect()
 }
+
+/// The addresses of this host's own interfaces, or `None` where only the platform knows them.
+///
+/// A direct address outside this set was observed from outside (QAD or a port mapping).
+/// Behind a proxy that forwards UDP it can lead a peer's first packet back to this host
+/// stamped with the proxy's address, so the handshake answers the proxy and never completes.
+pub(crate) fn host_interface_ips() -> Option<std::collections::BTreeSet<IpAddr>> {
+    #[cfg(target_os = "android")]
+    return None;
+    #[cfg(not(target_os = "android"))]
+    Some(
+        netdev::get_interfaces()
+            .into_iter()
+            .filter(|interface| interface.is_up())
+            .flat_map(|interface| {
+                let v4 = interface
+                    .ipv4
+                    .into_iter()
+                    .map(|network| IpAddr::V4(network.addr()));
+                let v6 = interface
+                    .ipv6
+                    .into_iter()
+                    .map(|network| IpAddr::V6(network.addr()));
+                v4.chain(v6)
+            })
+            .collect(),
+    )
+}

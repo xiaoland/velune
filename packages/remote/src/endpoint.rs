@@ -346,13 +346,24 @@ impl NetworkGeneration {
     pub(crate) fn descriptor(&self) -> Result<EndpointDescriptor> {
         let endpoint = self.endpoint.lock().map_err(|_| RemoteError::Unavailable)?;
         let addr = endpoint.as_ref().ok_or(RemoteError::Closed)?.addr();
+        // Peers learn only addresses bound here; they reach the rest through the relay,
+        // after which hole punching validates each path before using it.
+        let interfaces = crate::network::host_interface_ips();
         Ok(EndpointDescriptor {
             version: PROTOCOL_VERSION,
             endpoint_id: addr.id.to_string(),
             name: self.service.identity.name.clone(),
             incarnation: self.service.incarnation.clone(),
             relay_urls: addr.relay_urls().map(ToString::to_string).collect(),
-            direct_addresses: addr.ip_addrs().copied().collect(),
+            direct_addresses: addr
+                .ip_addrs()
+                .filter(|address| {
+                    interfaces
+                        .as_ref()
+                        .is_none_or(|ips| ips.contains(&address.ip()))
+                })
+                .copied()
+                .collect(),
             lookup_urls: self.lookup_urls.clone(),
         })
     }
