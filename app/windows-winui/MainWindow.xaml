@@ -1,0 +1,124 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Window
+    x:Class="Velune.MainWindow"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    Title="Velune">
+    <Grid x:Name="Root">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+        <Grid.KeyboardAccelerators>
+            <KeyboardAccelerator x:Name="NewAccelerator" Key="N" Modifiers="Control" />
+            <KeyboardAccelerator x:Name="RenameAccelerator" Key="F2" />
+        </Grid.KeyboardAccelerators>
+
+        <TitleBar
+            x:Name="AppTitleBar"
+            Title="Velune"
+            IsBackButtonVisible="False"
+            IsPaneToggleButtonVisible="True">
+            <TitleBar.IconSource>
+                <ImageIconSource x:Name="TitleIcon" />
+            </TitleBar.IconSource>
+        </TitleBar>
+
+        <NavigationView
+            x:Name="Navigation"
+            Grid.Row="1"
+            IsBackButtonVisible="Collapsed"
+            IsPaneToggleButtonVisible="False"
+            IsSettingsVisible="True"
+            IsTitleBarAutoPaddingEnabled="False"
+            OpenPaneLength="280"
+            PaneDisplayMode="Left"
+            SelectionFollowsFocus="Disabled">
+            <NavigationView.PaneHeader>
+                <Grid Margin="12,4,8,4" ColumnSpacing="4">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <DropDownButton x:Name="DeviceButton" HorizontalAlignment="Stretch" HorizontalContentAlignment="Left" ToolTipService.ToolTip="切换设备">
+                        <DropDownButton.Flyout>
+                            <MenuFlyout x:Name="DeviceMenu" Placement="BottomEdgeAlignedLeft" />
+                        </DropDownButton.Flyout>
+                    </DropDownButton>
+                    <Button
+                        x:Name="NewButton"
+                        Grid.Column="1"
+                        ToolTipService.ToolTip="新会话（Ctrl+N）"
+                        AutomationProperties.Name="新会话">
+                        <FontIcon FontSize="16" Glyph="&#xE710;" />
+                    </Button>
+                </Grid>
+            </NavigationView.PaneHeader>
+            <NavigationView.PaneCustomContent>
+                <StackPanel Margin="16,0,16,0" Spacing="8">
+                    <TextBlock
+                        x:Name="ListFailure"
+                        FontSize="12"
+                        Foreground="{ThemeResource SystemFillColorCriticalBrush}"
+                        TextWrapping="Wrap"
+                        Visibility="Collapsed" />
+                    <ProgressRing
+                        x:Name="ListSpinner"
+                        Width="20"
+                        Height="20"
+                        HorizontalAlignment="Left"
+                        IsActive="False" />
+                    <TextBlock
+                        x:Name="ListEmpty"
+                        Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                        TextWrapping="Wrap"
+                        Visibility="Collapsed" />
+                </StackPanel>
+            </NavigationView.PaneCustomContent>
+
+            <Grid>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="*" />
+                </Grid.RowDefinitions>
+                <TextBlock
+                    x:Name="PageTitle"
+                    Margin="24,12,24,4"
+                    Style="{ThemeResource SubtitleTextBlockStyle}"
+                    TextTrimming="CharacterEllipsis" />
+                <ContentControl
+                    x:Name="Page"
+                    Grid.Row="1"
+                    HorizontalContentAlignment="Stretch"
+                    VerticalContentAlignment="Stretch" />
+                <StackPanel
+                    x:Name="Welcome"
+                    Grid.Row="1"
+                    HorizontalAlignment="Center"
+                    VerticalAlignment="Center"
+                    Spacing="12">
+                    <Image
+                        x:Name="WelcomeMark"
+                        Width="72"
+                        Height="72"
+                        HorizontalAlignment="Center" />
+                    <TextBlock
+                        x:Name="WelcomeTitle"
+                        HorizontalAlignment="Center"
+                        Style="{ThemeResource SubtitleTextBlockStyle}" />
+                    <TextBlock
+                        x:Name="WelcomeDetail"
+                        HorizontalAlignment="Center"
+                        Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                        TextAlignment="Center"
+                        TextWrapping="Wrap" />
+                    <Button
+                        x:Name="WelcomeButton"
+                        Margin="0,8,0,0"
+                        HorizontalAlignment="Center"
+                        Style="{ThemeResource AccentButtonStyle}" />
+                </StackPanel>
+            </Grid>
+        </NavigationView>
+    </Grid>
+</Window>

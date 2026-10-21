@@ -1,0 +1,63 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Velune for Windows: an unpackaged, self-contained WinUI 3 app over the
+       Rust core's UniFFI C# bindings. scripts\build-windows.ps1 builds the
+       bindings library and generates its C# before this project builds. -->
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows10.0.26100.0</TargetFramework>
+    <TargetPlatformMinVersion>10.0.19041.0</TargetPlatformMinVersion>
+    <RootNamespace>Velune</RootNamespace>
+    <AssemblyName>Velune</AssemblyName>
+    <Product>Velune</Product>
+    <Version>0.1.0</Version>
+    <InformationalVersion>0.1 beta.1</InformationalVersion>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <Platforms>x64</Platforms>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <UseWinUI>true</UseWinUI>
+    <WindowsPackageType>None</WindowsPackageType>
+    <WindowsAppSDKSelfContained>true</WindowsAppSDKSelfContained>
+    <SelfContained>true</SelfContained>
+    <SatelliteResourceLanguages>en;zh-Hans</SatelliteResourceLanguages>    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <!-- The generated bindings pass buffers by pointer. -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <!-- The generated bindings are not ours to tidy. -->
+    <NoWarn>$(NoWarn);CS8618;CS8625;CS8600;CS8601;CS8602;CS8603;CS8604;CS0108;CS0114;CS1591;CS0169;CS0649;CS0219</NoWarn>
+    <Repository>$([System.IO.Path]::GetFullPath('$(MSBuildProjectDirectory)\..\..'))</Repository>
+    <Bindings>$(Repository)\target\bindings\cs\velune_bindings.cs</Bindings>
+    <AppIcon>$(BaseIntermediateOutputPath)Velune.ico</AppIcon>
+    <ApplicationIcon>$(AppIcon)</ApplicationIcon>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Windows App SDK 2.5.1's UI components, without its AI and ML packages. -->
+    <PackageReference Include="Microsoft.WindowsAppSDK.WinUI" Version="2.3.9" />
+    <PackageReference Include="Microsoft.WindowsAppSDK.Foundation" Version="2.3.12" />
+    <PackageReference Include="Microsoft.WindowsAppSDK.InteractiveExperiences" Version="2.1.9" />
+    <PackageReference Include="Microsoft.Windows.SDK.BuildTools" Version="10.0.28000.2705" />
+    <PackageReference Include="Markdig" Version="1.4.2" />
+    <PackageReference Include="QRCoder" Version="1.8.1" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Include="$(Bindings)" Link="Bindings\velune_bindings.cs" />
+    <!-- Velune's mark, in the colorways for light and dark backgrounds. -->
+    <Content Include="$(Repository)\assets\brand\*.svg" Link="Assets\Brand\%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="$(AppIcon)" Link="Assets\Velune.ico" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <!-- The icon is drawn from the logo pack's optical masters, as Mac's is. -->
+  <Target Name="RenderIcon" BeforeTargets="PrepareForBuild" Inputs="$(Repository)\scripts\render-windows-icon.ps1;@(BrandSource)" Outputs="$(AppIcon)">
+    <MakeDir Directories="$(BaseIntermediateOutputPath)" />
+    <Exec Command="powershell -NoProfile -ExecutionPolicy Bypass -File &quot;$(Repository)\scripts\render-windows-icon.ps1&quot; &quot;$(Repository)\assets\brand&quot; &quot;$(AppIcon)&quot;" />
+  </Target>
+  <ItemGroup>
+    <BrandSource Include="$(Repository)\assets\brand\*.svg" />
+  </ItemGroup>
+
+  <Target Name="RequireBindings" BeforeTargets="PrepareForBuild">
+    <Error Condition="!Exists('$(Bindings)')" Text="Missing $(Bindings); run scripts\build-windows.ps1, which generates it." />
+  </Target>
+</Project>
