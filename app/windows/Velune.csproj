@@ -16,9 +16,12 @@
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
     <UseWinUI>true</UseWinUI>
     <WindowsPackageType>None</WindowsPackageType>
+    <!-- Builds Velune.pri, which holds the compiled XAML, also when unpackaged. -->
+    <EnableMsixTooling>true</EnableMsixTooling>
     <WindowsAppSDKSelfContained>true</WindowsAppSDKSelfContained>
     <SelfContained>true</SelfContained>
-    <SatelliteResourceLanguages>en;zh-Hans</SatelliteResourceLanguages>    <Nullable>enable</Nullable>
+    <SatelliteResourceLanguages>en;zh-Hans</SatelliteResourceLanguages>
+    <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <!-- The generated bindings pass buffers by pointer. -->
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
