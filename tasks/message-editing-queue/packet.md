@@ -1,6 +1,6 @@
 # 消息编辑、发送队列与继续
 
-2026-10-15 用户要求编辑用户消息、发送队列与 steering、停止后继续。决定见 [S27](../../docs/sources.md#s27)，产品归 [PRD](../../docs/prd/index.md#消息编辑发送队列与继续)。
+2026-10-15 用户要求编辑用户消息、发送队列与 steering、停止后继续。决定见 [S27](../../docs/sources.md#s27)，产品归 [PRD](../../docs/prd/composer.md)。
 
 ## 已确认的产品意图
 

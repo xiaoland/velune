@@ -167,7 +167,7 @@ S17 实施授权：用户决定全面切换 UniFFI，并要求现在开始拆分
 2026-10-05 用户后续纠正：ID 与 reasoning effort 藏在提供商页暴露参数归属问题；要求先厘清模型／提供商配置，认为独立模型页与统一凭据管理无必要，提供商协议／地址必须可修改，API key 允许查看和编辑。取代此前强制 Keychain 与独立认证页的产品决定；当前安装源码尚未据此重构。
 
 
-2026-10-05 用户进一步解释：“模型可跨提供商存在”是现实，对 Velune 的意义是避免反复填写模型参数、快速填入模板。已确认的是模板复用价值；配置快照与模板更新不自动传播是助手建议，尚未成为用户决定。归属为 [PRD](prd/index.md#ai-网关与-agent-运行时配置)。
+2026-10-05 用户进一步解释：“模型可跨提供商存在”是现实，对 Velune 的意义是避免反复填写模型参数、快速填入模板。已确认的是模板复用价值；配置快照与模板更新不自动传播是助手建议，尚未成为用户决定。归属为 [PRD](prd/ai-providers.md)。
 
 
 2026-10-05 用户复核认可提供商／模型能力／调用参数的归属模型并授权开工；特别要求随提供商表单复杂化，重新整理功能内容需求并重新设计原生界面。实施采用模板快填形成独立配置快照、不自动传播更新作为最小技术选择，不新增模板同步能力。
@@ -213,10 +213,10 @@ S17 实施授权：用户决定全面切换 UniFFI，并要求现在开始拆分
 
 2026-10-06 用户反馈问题窗口原因不完整，要求核对是否存在安全／隐私过滤，并确认纯本地、用户完全控制的应用不应以此删减诊断。用户同时授权 turn 工作过程折叠、两种用户消息 outline、底部图标入口与设置偏好，并建议 canonical 契约及顺序事件投影归 agent-runtime。包归属与精确折叠边界的建议已提出，当前按用户问题／最终结果可见及轻量契约保留的建议实施，尚不把建议记成用户确认。实施与验收归 [本轮任务](../tasks/transcript-turns-outline/packet.md)。
 
-2026-10-07 用户授权增加“分析”，参考 [Magpie](https://github.com/yetone/magpie)、[ccusage](https://ccusage.com/guide/all-reports)、[sub2api dashboard API](https://github.com/Wei-Shaw/sub2api/blob/main/frontend/src/api/admin/dashboard.ts)，理解 token 消耗与性能。参考分别体现网关调用、运行时历史及服务端聚合数据，不能假定它们具有相同统计覆盖或直接混算。产品意图归 [PRD](prd/index.md#分析)，数据口径归 AI 服务设计，当前范围与证据归 [分析任务](../tasks/usage-analytics/packet.md)。
+2026-10-07 用户授权增加“分析”，参考 [Magpie](https://github.com/yetone/magpie)、[ccusage](https://ccusage.com/guide/all-reports)、[sub2api dashboard API](https://github.com/Wei-Shaw/sub2api/blob/main/frontend/src/api/admin/dashboard.ts)，理解 token 消耗与性能。参考分别体现网关调用、运行时历史及服务端聚合数据，不能假定它们具有相同统计覆盖或直接混算。产品意图归 [PRD](prd/analytics.md)，数据口径归 AI 服务设计，当前范围与证据归 [分析任务](../tasks/usage-analytics/packet.md)。
 
 
-2026-10-08 用户纠正网关的排他假设：Velune 注册网关提供商使不同 Harness 共享模型、聚合订阅与提供商，从未要求只能使用该网关；授权自查并删除无需求依据的门禁。现行产品归 [PRD](prd/index.md#ai-网关与-agent-运行时配置)，门禁判别和实施证据归 [当前清单](../tasks/composer-pi-send/gate-audit.md)。
+2026-10-08 用户纠正网关的排他假设：Velune 注册网关提供商使不同 Harness 共享模型、聚合订阅与提供商，从未要求只能使用该网关；授权自查并删除无需求依据的门禁。现行产品归 [PRD](prd/ai-providers.md)，门禁判别和实施证据归 [当前清单](../tasks/composer-pi-send/gate-audit.md)。
 
 2026-10-08 用户进一步要求边界、校验、门禁尽可能由类型检查与 lint 等静态检查表达。内部关系优先通过类型和编译器维持，外部动态输入仍在接入边界解析；实施约定归 [开发说明](development.md)，当前切片归 [任务](../tasks/composer-pi-send/packet.md)。
 
@@ -228,13 +228,13 @@ S17 实施授权：用户决定全面切换 UniFFI，并要求现在开始拆分
 
 2026-10-09 用户反馈快速上滑仍跳动甚至卡住，授权重写整个消息列表渲染实现（含必要的 agent runtime UI 事件投影）、自由本地提交，并允许更换 Markdown 渲染框架（举例 Textual）；有余力时继续优化列表与交互体验。实现选择与判别归[会话体验任务](../tasks/mac-conversation-usability/packet.md)。
 
-2026-10-10 用户要求推进 Rust packages：Claude Code、运行时既有提供商模型选择、每 turn 临时 Velune Gateway 与结束恢复、SSH 远程运行时及 Velune 管理 HOME。用户明确排除本轮 app／前端实施，要求把相关交互标记待实现并沉淀文档。产品行为归 [PRD](prd/index.md#ai-网关与-agent-运行时配置)，实现与证据归 [运行时扩展任务](../tasks/runtime-provider-ssh/packet.md)。
+2026-10-10 用户要求推进 Rust packages：Claude Code、运行时既有提供商模型选择、每 turn 临时 Velune Gateway 与结束恢复、SSH 远程运行时及 Velune 管理 HOME。用户明确排除本轮 app／前端实施，要求把相关交互标记待实现并沉淀文档。产品行为归 [PRD](prd/agent-runtimes.md)，实现与证据归 [运行时扩展任务](../tasks/runtime-provider-ssh/packet.md)。
 
 2026-10-10 用户授权继续实现 ACP Adapter，随后更正参考项目为 [lexoliu/acpsub](https://github.com/lexoliu/acpsub)。本轮沿用 Rust packages 范围，App 仍待实现；产品归 PRD，协议与参考证据归 [ACP 任务](../tasks/acp-adapter/packet.md)。
 
 同轮用户补充：技术提议未必正确，应理解背后动机；本次目标是尽可能支持更多 Agent Harness，而不逐个适配。通用 ACP 方案必须以接入成本和真实能力覆盖判断，不以协议名称本身作为完成依据。
 
-2026-10-11 用户进一步指出 acpsub 的重点是让不同 runtime 成为另一 runtime 的 sub-agent，并明确这是 Harness 互联互通的关键功能。此要求将工作从通用 ACP 接入扩展到实际跨 Harness 委派与结果闭环，仍沿用 Rust packages 和前端待实现边界。产品要求归 [PRD](prd/index.md#ai-网关与-agent-运行时配置)，实施归 [Harness 协作任务](../tasks/harness-interoperation/packet.md)。
+2026-10-11 用户进一步指出 acpsub 的重点是让不同 runtime 成为另一 runtime 的 sub-agent，并明确这是 Harness 互联互通的关键功能。此要求将工作从通用 ACP 接入扩展到实际跨 Harness 委派与结果闭环，仍沿用 Rust packages 和前端待实现边界。产品要求归 [PRD](prd/collaboration.md)，实施归 [Harness 协作任务](../tasks/harness-interoperation/packet.md)。
 
 2026-10-11 用户提出复用 New API 的 RelayKit，以参与生态并减少重复维护协议转换；明确授权持续推进至接入完成或获得无法接入的具体证据，允许自主提交，并可考虑相邻 Factory26 的真实提供商或重放入口。技术归属及接入边界归 [AI service](design/ai-service.md)，版本、许可调查与验证归 [RelayKit 任务](../tasks/new-api-reuse/packet.md)。此授权不等于公开发布或替整个项目选择许可证。
 
@@ -244,25 +244,25 @@ S17 实施授权：用户决定全面切换 UniFFI，并要求现在开始拆分
 
 ## S18
 
-2026-10-12 用户检查开发中的协作界面后指出：子 Agent（sub-agent）与跨 Harness 协作（A2A）不同，二者本质是否一样不是 Velune 这个 shell 要考虑的；2026-10-11 的 PRD 表述由另一会话编撰，可能有误。用户确认：A2A 参与方是普通会话（出现在会话列表、可单独打开，Agent 可联系已有会话）；联系授权若需要则归运行时设置，但倾向不做任何限制；原生 sub-agent 属于会话体验，暂时只需在消息列表中看到并可单独打开其会话。用户另提示 composer 之后需要简化（已有三个弹出按钮）。产品归 [PRD](prd/index.md#ai-网关与-agent-运行时配置)，实施归 [Agent 间协作任务](../tasks/agent-collaboration/packet.md)。
+2026-10-12 用户检查开发中的协作界面后指出：子 Agent（sub-agent）与跨 Harness 协作（A2A）不同，二者本质是否一样不是 Velune 这个 shell 要考虑的；2026-10-11 的 PRD 表述由另一会话编撰，可能有误。用户确认：A2A 参与方是普通会话（出现在会话列表、可单独打开，Agent 可联系已有会话）；联系授权若需要则归运行时设置，但倾向不做任何限制；原生 sub-agent 属于会话体验，暂时只需在消息列表中看到并可单独打开其会话。用户另提示 composer 之后需要简化（已有三个弹出按钮）。产品归 [PRD](prd/collaboration.md)，实施归 [Agent 间协作任务](../tasks/agent-collaboration/packet.md)。
 
 ## S19
 
-2026-10-13 用户在原生 sub-agent 切片之后要求继续解决已报告的缺口，并确认收到的协作消息放在用户侧，标出来源会话即可。同条消息指出 composer 还缺少权限模式选择器。产品归 [PRD](prd/index.md#ai-网关与-agent-运行时配置)，实施归 [Agent 间协作任务](../tasks/agent-collaboration/packet.md)。
+2026-10-13 用户在原生 sub-agent 切片之后要求继续解决已报告的缺口，并确认收到的协作消息放在用户侧，标出来源会话即可。同条消息指出 composer 还缺少权限模式选择器。产品归 [PRD](prd/collaboration.md)，实施归 [Agent 间协作任务](../tasks/agent-collaboration/packet.md)。
 
 ## S20
 
-2026-10-13 用户要求继续改进 composer 的运行时、模型、推理、权限选择器（并指出它们在深色模式下没有跟随系统外观），发送后立即在消息列表中显示用户消息与“发送中”之类的状态，以及可以查阅各 turn（含当前 turn）使用的配置。用户选择“两个下拉”的组织方式，并选择在工作过程行右侧显示轮次配置，同时要求再收拢：悬停时展开，或保留一个 plain 图标按钮。同日用户验收新样式后指出下拉的三角离标题太近，且“运行时 · 模型 · 推理强度”下拉的选项太长、太复杂，建议考虑二级菜单等方案。产品归 [PRD](prd/index.md#ai-网关与-agent-运行时配置)，实施归 [composer 与轮次配置任务](../tasks/composer-turn-settings/packet.md)。
+2026-10-13 用户要求继续改进 composer 的运行时、模型、推理、权限选择器（并指出它们在深色模式下没有跟随系统外观），发送后立即在消息列表中显示用户消息与“发送中”之类的状态，以及可以查阅各 turn（含当前 turn）使用的配置。用户选择“两个下拉”的组织方式，并选择在工作过程行右侧显示轮次配置，同时要求再收拢：悬停时展开，或保留一个 plain 图标按钮。同日用户验收新样式后指出下拉的三角离标题太近，且“运行时 · 模型 · 推理强度”下拉的选项太长、太复杂，建议考虑二级菜单等方案。产品归 [PRD](prd/composer.md)，实施归 [composer 与轮次配置任务](../tasks/composer-turn-settings/packet.md)。
 
 同日实测 Claude Code 2.1.286 恢复会话时沿用上次的权限模式（CLI 没有“回到默认”的取值），Codex 的轮次覆盖在 Velune 的托管路径下不会保留。用户据此选择“沿用会话当前模式”，不读取 Harness 配置来回到默认。
 
 ## S21
 
-2026-10-13 用户验收 composer 子菜单后提出下一批改进：composer 的选择进一步按运行时保存，切换运行时而未发送时回到当前／上一轮使用的运行时；推理强度不做本地化，按实际发给运行时的值显示；询问推理强度的“默认”是否真的发送 `default`；轮次配置悬停时只显示运行时与模型，详情增加该轮 usage（特别要包含 reasoning tokens）；此前认为资源库不需要把原生改动回填到资源，实际使用后认为需要。助手说明“默认”不发送任何值、三种 Harness 结果不一致后，用户选择推理强度与权限模式一样“沿用会话当前”，并补充模型也应默认跟随当前／上一轮；对“未发送的选择离开会话后是否保留”，用户选择只有运行时回到最近一轮，各运行时的选择（含配置）按运行时保存。产品归 [PRD](prd/index.md#ai-网关与-agent-运行时配置) 与资源库段落，实施归 [composer 与轮次配置任务](../tasks/composer-turn-settings/packet.md)。
+2026-10-13 用户验收 composer 子菜单后提出下一批改进：composer 的选择进一步按运行时保存，切换运行时而未发送时回到当前／上一轮使用的运行时；推理强度不做本地化，按实际发给运行时的值显示；询问推理强度的“默认”是否真的发送 `default`；轮次配置悬停时只显示运行时与模型，详情增加该轮 usage（特别要包含 reasoning tokens）；此前认为资源库不需要把原生改动回填到资源，实际使用后认为需要。助手说明“默认”不发送任何值、三种 Harness 结果不一致后，用户选择推理强度与权限模式一样“沿用会话当前”，并补充模型也应默认跟随当前／上一轮；对“未发送的选择离开会话后是否保留”，用户选择只有运行时回到最近一轮，各运行时的选择（含配置）按运行时保存。产品归 [PRD](prd/composer.md) 与资源库段落，实施归 [composer 与轮次配置任务](../tasks/composer-turn-settings/packet.md)。
 
 ## S22
 
-2026-10-14 用户验收 S21 各项后，要求在 composer（会话详情视图）中增加 status line，出发点是显示上下文用量，可按需扩展。三种位置方案（composer 下方状态行、操作行右侧紧凑显示、窗口底部状态栏）中用户偏好操作行右侧的紧凑方式，依据是避免信息过载、保持界面干净，同时不损害信息披露，并表示三种都不完全满意。其余候选（本会话累计 token、工作目录与 git 分支、Codex 账户额度、Harness 报告的费用）都可以有，但建议默认不放入 status line，由用户在会话设置中自定义；重点是位置与呈现方式。产品归 [PRD](prd/index.md#ai-网关与-agent-运行时配置)，实施归 [status line 任务](../tasks/composer-status-line/packet.md)。
+2026-10-14 用户验收 S21 各项后，要求在 composer（会话详情视图）中增加 status line，出发点是显示上下文用量，可按需扩展。三种位置方案（composer 下方状态行、操作行右侧紧凑显示、窗口底部状态栏）中用户偏好操作行右侧的紧凑方式，依据是避免信息过载、保持界面干净，同时不损害信息披露，并表示三种都不完全满意。其余候选（本会话累计 token、工作目录与 git 分支、Codex 账户额度、Harness 报告的费用）都可以有，但建议默认不放入 status line，由用户在会话设置中自定义；重点是位置与呈现方式。产品归 [PRD](prd/composer.md)，实施归 [status line 任务](../tasks/composer-status-line/packet.md)。
 
 ## S23
 
@@ -272,15 +272,15 @@ S17 实施授权：用户决定全面切换 UniFFI，并要求现在开始拆分
 
 ## S24
 
-2026-10-14 用户验收子 Agent 字段后，要求进一步改进会话管理：会话列表的分组体验、分页加载、总数限制、项目名称显示，以及会话归档。就助手的提问，用户选择：分组可折叠并记住折叠状态，组按最近活动排序；整个列表设总数上限，每组条数改为按需展开，没有“显示全部”，可以有“加载更多”；有的运行时可能有额外的项目注册信息，这样就不必读出全部原生会话也能按项目分组，并按需读取前 N 个会话；项目名称可自定义别名；归档原生优先，其余由 Velune 记录（Codex 用原生归档，Claude Code、Pi 等不改原生会话，已归档默认隐藏、可切换查看）。随后补充遗漏的四项：会话已读／未读、移动项目、复制深链／ID、置顶（Pin）。安装后用户指出 Codex 支持不指定工作目录的模式，本质是在 Codex 管理的位置（如 `~/Documents/Codex`）创建会话，建议将这些会话归为 Chats 或 No Project 组，其他 Agent 运行时有类似情况也这样处理。随后用户要求组旁不显示会话数量，并指出会话“运行中”时不应出现“未读”：未读本质上应定义为一个 turn 结束，不论正常还是异常，建议异常显示为感叹号标。产品归 [PRD](prd/index.md#会话内容展示) 会话浏览段落，实施归 [会话列表管理任务](../tasks/conversation-list-management/packet.md)。
+2026-10-14 用户验收子 Agent 字段后，要求进一步改进会话管理：会话列表的分组体验、分页加载、总数限制、项目名称显示，以及会话归档。就助手的提问，用户选择：分组可折叠并记住折叠状态，组按最近活动排序；整个列表设总数上限，每组条数改为按需展开，没有“显示全部”，可以有“加载更多”；有的运行时可能有额外的项目注册信息，这样就不必读出全部原生会话也能按项目分组，并按需读取前 N 个会话；项目名称可自定义别名；归档原生优先，其余由 Velune 记录（Codex 用原生归档，Claude Code、Pi 等不改原生会话，已归档默认隐藏、可切换查看）。随后补充遗漏的四项：会话已读／未读、移动项目、复制深链／ID、置顶（Pin）。安装后用户指出 Codex 支持不指定工作目录的模式，本质是在 Codex 管理的位置（如 `~/Documents/Codex`）创建会话，建议将这些会话归为 Chats 或 No Project 组，其他 Agent 运行时有类似情况也这样处理。随后用户要求组旁不显示会话数量，并指出会话“运行中”时不应出现“未读”：未读本质上应定义为一个 turn 结束，不论正常还是异常，建议异常显示为感叹号标。产品归 [PRD](prd/conversations.md) 会话浏览段落，实施归 [会话列表管理任务](../tasks/conversation-list-management/packet.md)。
 
 ## S25
 
-2026-10-14 用户要求改进窗口系统：引入多窗口、窗口平铺、多窗口模式（悬浮、停靠、吸附等），目标是让用户能由浅入深地使用 Velune 高效开展工作，像 JetBrains 的 IDE 及许多专业软件那样，让界面能承担高工作负载、高信息负载。就助手的提问，用户选择：先做窗口内分屏会话（每个面板有自己的会话与输入区，可拖出成独立窗口也可拖回）；工具窗口为会话列表、会话大纲，composer 也可以（不一定 UX 就好，只是这确实是个很神奇的设计）；变更审阅挺好但还没想好呈现，暂缓；跨会话活动面板没必要，后面会引入“任务”层级；不赞成让任意信息都变为可停靠、组合的面板／窗口，那样就不“由浅入深”了，自定义度不是越高越好，做好最常用的 80% 可能反而有 150% 的效果；“吸附”指浮动面板贴边吸附；布局只自动恢复。产品归 [PRD](prd/index.md#多窗口与-tab)，实施归 [窗口系统任务](../tasks/window-system/packet.md)。
+2026-10-14 用户要求改进窗口系统：引入多窗口、窗口平铺、多窗口模式（悬浮、停靠、吸附等），目标是让用户能由浅入深地使用 Velune 高效开展工作，像 JetBrains 的 IDE 及许多专业软件那样，让界面能承担高工作负载、高信息负载。就助手的提问，用户选择：先做窗口内分屏会话（每个面板有自己的会话与输入区，可拖出成独立窗口也可拖回）；工具窗口为会话列表、会话大纲，composer 也可以（不一定 UX 就好，只是这确实是个很神奇的设计）；变更审阅挺好但还没想好呈现，暂缓；跨会话活动面板没必要，后面会引入“任务”层级；不赞成让任意信息都变为可停靠、组合的面板／窗口，那样就不“由浅入深”了，自定义度不是越高越好，做好最常用的 80% 可能反而有 150% 的效果；“吸附”指浮动面板贴边吸附；布局只自动恢复。产品归 [PRD](prd/workspace-layout.md)，实施归 [窗口系统任务](../tasks/window-system/packet.md)。
 
 ## S26
 
-2026-10-15 用户验收窗口系统首轮后认为距离“类似 IDE／专业软件那样专业化、高自定义度、服务高负载工作的界面（布局机制）”还差很远，但说不出具体差在哪，怀疑是热衷于模仿“表面”；报告浮动面板拖动／调整尺寸时主窗口工具栏标题左右跳动，并提出既然可以悬浮也应可作为独立窗口。就助手的诊断（缺统一布局模型、快速开关与聚焦、编辑区标签组、键盘可达）与提问，用户选择按统一布局模型重建；同意引入面板标签组，但应尽可能复用 macOS 自有机制，并指出分屏似乎没有处理好系统自带的 Tab Bar（View → Show Tab Bar）；模式选独立窗口，其余入口与模式（边缘工具条、快捷键、自动隐藏）“没见过”，留给开发方选择。此前同日用户要求保留大纲弹出模式，并选择在菜单中把弹出列为显式选项。产品归 [PRD](prd/index.md#多窗口与-tab)，实施归 [窗口系统任务](../tasks/window-system/packet.md)。
+2026-10-15 用户验收窗口系统首轮后认为距离“类似 IDE／专业软件那样专业化、高自定义度、服务高负载工作的界面（布局机制）”还差很远，但说不出具体差在哪，怀疑是热衷于模仿“表面”；报告浮动面板拖动／调整尺寸时主窗口工具栏标题左右跳动，并提出既然可以悬浮也应可作为独立窗口。就助手的诊断（缺统一布局模型、快速开关与聚焦、编辑区标签组、键盘可达）与提问，用户选择按统一布局模型重建；同意引入面板标签组，但应尽可能复用 macOS 自有机制，并指出分屏似乎没有处理好系统自带的 Tab Bar（View → Show Tab Bar）；模式选独立窗口，其余入口与模式（边缘工具条、快捷键、自动隐藏）“没见过”，留给开发方选择。此前同日用户要求保留大纲弹出模式，并选择在菜单中把弹出列为显式选项。产品归 [PRD](prd/workspace-layout.md)，实施归 [窗口系统任务](../tasks/window-system/packet.md)。
 
 追问（同日）：助手以纯 AppKit 对照说明全高侧栏旁系统 Tab Bar 只覆盖右侧内容属平台行为。用户澄清 Tab Bar 本身没有 UI 问题，只是与分屏角色重复：有分屏就不需要窗口 Tab Bar，或者让每个分屏内有自己的标签栏（类似 VS Code 的 editor）；并选择“窗口 Tab＝工作区，面板内标签”。
 
@@ -288,11 +288,11 @@ S17 实施授权：用户决定全面切换 UniFFI，并要求现在开始拆分
 
 ## S27
 
-2026-10-15 用户确认窗口系统的标签修复后要求实现：编辑用户消息——可以编辑任意一条用户消息，但编辑上一条之外的用户消息会询问是 fork 会话继续还是原地继续；支持消息发送队列、steering；支持 interrupt／continue session。就助手的提问，用户对“interrupt／continue session”选择“只要‘继续’”（中断沿用停止生成，只增加停止或失败后的“继续”）；对队列与 steering 的呈现选择“默认排队，可改 steer”。产品归 [PRD](prd/index.md#消息编辑发送队列与继续)，实施归 [消息编辑与发送队列任务](../tasks/message-editing-queue/packet.md)。
+2026-10-15 用户确认窗口系统的标签修复后要求实现：编辑用户消息——可以编辑任意一条用户消息，但编辑上一条之外的用户消息会询问是 fork 会话继续还是原地继续；支持消息发送队列、steering；支持 interrupt／continue session。就助手的提问，用户对“interrupt／continue session”选择“只要‘继续’”（中断沿用停止生成，只增加停止或失败后的“继续”）；对队列与 steering 的呈现选择“默认排队，可改 steer”。产品归 [PRD](prd/composer.md)，实施归 [消息编辑与发送队列任务](../tasks/message-editing-queue/packet.md)。
 
 ## S28
 
-2026-10-16 用户试用窗口系统后要求：会话也支持独立窗口；支持拖拽式创建窗口（或者右键进入 context menu 操作，而不至于在 View 菜单中操作）；面板大小可调整（面板完全参考 VS Code 就挺好）；窗口可 pin to top。助手核对后说明分屏与底部区域的分隔条实际只有分隔线本身可拖，单标签时没有标签栏可拖或右键。就助手的提问，用户选择会话独立窗口为“只含会话的窗口”（仿 VS Code 的移到新窗口：只有编辑区，没有会话列表等停靠区，标签可拖进拖出，必要时恢复停靠区）；标签栏始终显示，外观与系统默认的 Tab Bar 保持一致，不需要蓝色的激活条。产品归 [PRD](prd/index.md#多窗口与-tab)，实施归 [窗口系统任务](../tasks/window-system/packet.md)。
+2026-10-16 用户试用窗口系统后要求：会话也支持独立窗口；支持拖拽式创建窗口（或者右键进入 context menu 操作，而不至于在 View 菜单中操作）；面板大小可调整（面板完全参考 VS Code 就挺好）；窗口可 pin to top。助手核对后说明分屏与底部区域的分隔条实际只有分隔线本身可拖，单标签时没有标签栏可拖或右键。就助手的提问，用户选择会话独立窗口为“只含会话的窗口”（仿 VS Code 的移到新窗口：只有编辑区，没有会话列表等停靠区，标签可拖进拖出，必要时恢复停靠区）；标签栏始终显示，外观与系统默认的 Tab Bar 保持一致，不需要蓝色的激活条。产品归 [PRD](prd/workspace-layout.md)，实施归 [窗口系统任务](../tasks/window-system/packet.md)。
 
 追问（同日）：用户指出既然默认有标签栏、上面有标题，工具栏就没必要显示会话标题。
 
@@ -302,13 +302,13 @@ S17 实施授权：用户决定全面切换 UniFFI，并要求现在开始拆分
 
 ## S29
 
-2026-10-16 用户要求会话列表：点击项目名称也可以展开／收起组；条目不再显示最后更新日期和 Agent 运行时信息，只显示会话标题与状态。实现过程中，用户随即取消了“点击名称展开／收起组”，组标题保持原有行为。产品归 [PRD](prd/index.md#会话内容展示)，实施记录在 [会话列表管理任务](../tasks/conversation-list-management/packet.md)。
+2026-10-16 用户要求会话列表：点击项目名称也可以展开／收起组；条目不再显示最后更新日期和 Agent 运行时信息，只显示会话标题与状态。实现过程中，用户随即取消了“点击名称展开／收起组”，组标题保持原有行为。产品归 [PRD](prd/conversations.md)，实施记录在 [会话列表管理任务](../tasks/conversation-list-management/packet.md)。
 
 ## S30
 
 2026-10-16 用户要求：“接下来我们来实现模型路由；验证场景就通过聚合两个 ChatGPT subscription，自动 fail-over（在 ~/.codex-switcher 下面有两个 subscription 的认证文件，你可以用）”。随后再次明确目标是该目录下已有的两个订阅组成 fail-over。此前开发方因真实目录探查被权限分类器拒绝，提出改用 Pi 登录；这不构成用户接受替代验收，也不能推导为禁止开发产品来源适配。
 
-产品归 [PRD](prd/index.md#ai-网关与-agent-运行时配置)，公开格式调查、来源接入与凭据访问边界归 [模型路由任务](../tasks/model-routing/packet.md)。
+产品归 [PRD](prd/model-routing.md)，公开格式调查、来源接入与凭据访问边界归 [模型路由任务](../tasks/model-routing/packet.md)。
 
 同日进一步澄清：用户明确“不必将 codex-switcher 变为产品级别的支持，我只是告诉你那里有两个订阅的凭据，可以用来完成验收”。因此不实施专用 Switcher 集成；模型路由与通用订阅认证方案须先确认，验收来源不提升为产品契约。
 
@@ -330,15 +330,15 @@ S17 实施授权：用户决定全面切换 UniFFI，并要求现在开始拆分
 
 ## S31
 
-2026-10-16 诊断一个 Codex 会话未读无法消除时（原因是标已读进行中保护未释放；该会话当时在 Codex 桌面端带子 Agent 运行），用户提出：“我们的 sub-agent / a2a 系列功能不完整，我建议优先补齐 UI 上的短板（未来还需要允许 agent runtime 互调用）”。用户从开发方列出的短板中选定第一批：子 Agent 概览、侧栏状态汇总、子会话导航，并一并解决父轮次结束后到达的子 Agent 审批。随后提醒：“虽然我认为一切都是 A2A，但是现在很多 agent runtime 的实践还有一套并行的 sub-agent 机制”。产品归 [PRD](prd/index.md#ai-网关与-agent-运行时配置)，实施归 [Agent 间协作任务](../tasks/agent-collaboration/packet.md)。
+2026-10-16 诊断一个 Codex 会话未读无法消除时（原因是标已读进行中保护未释放；该会话当时在 Codex 桌面端带子 Agent 运行），用户提出：“我们的 sub-agent / a2a 系列功能不完整，我建议优先补齐 UI 上的短板（未来还需要允许 agent runtime 互调用）”。用户从开发方列出的短板中选定第一批：子 Agent 概览、侧栏状态汇总、子会话导航，并一并解决父轮次结束后到达的子 Agent 审批。随后提醒：“虽然我认为一切都是 A2A，但是现在很多 agent runtime 的实践还有一套并行的 sub-agent 机制”。产品归 [PRD](prd/collaboration.md)，实施归 [Agent 间协作任务](../tasks/agent-collaboration/packet.md)。
 
 ## S32
 
-2026-10-16 子 Agent 界面补齐的验收发现，经网关的 Codex 轮次结束时 Velune 结束运行时进程，后台子 Agent 随之终止。用户：“是的，需要修复这一点，估计这个问题是普遍存在的，不只是 codex 这个 agent runtime 的，而且应该会对 Velune 的 Agent Runtime lib 的架构有较大改变。”随后从开发方的选项中确认：临时覆盖与进程持续到该轮工作（含子 Agent）全部结束；子 Agent 运行时需要重启的下一轮先等待或经确认停止子 Agent；父会话的停止同时停止其子 Agent。产品归 [PRD](prd/index.md#ai-网关与-agent-运行时配置)，实施归 [运行时工作生命周期任务](../tasks/runtime-work-lifetime/packet.md)。
+2026-10-16 子 Agent 界面补齐的验收发现，经网关的 Codex 轮次结束时 Velune 结束运行时进程，后台子 Agent 随之终止。用户：“是的，需要修复这一点，估计这个问题是普遍存在的，不只是 codex 这个 agent runtime 的，而且应该会对 Velune 的 Agent Runtime lib 的架构有较大改变。”随后从开发方的选项中确认：临时覆盖与进程持续到该轮工作（含子 Agent）全部结束；子 Agent 运行时需要重启的下一轮先等待或经确认停止子 Agent；父会话的停止同时停止其子 Agent。产品归 [PRD](prd/agent-runtimes.md)，实施归 [运行时工作生命周期任务](../tasks/runtime-work-lifetime/packet.md)。
 
 ## S33
 
-2026-10-16 用户问“布局持久化是不是没做？”。开发方核对：布局只经 SceneStorage 随系统状态恢复保存，而 macOS 默认“退出 App 时关闭窗口”，正常退出后系统丢弃窗口状态，布局因此不恢复；⌥⌘N 新窗口也总是默认布局。就开发方的提问，用户选择“布局总记住，窗口跟随系统”：工具窗口的位置、停靠区与尺寸总是记住，新窗口沿用；重开哪些窗口、分屏、标签与会话按系统设置决定。产品归 [PRD](prd/index.md#多窗口与-tab)，实施归 [窗口系统任务](../tasks/window-system/packet.md)。
+2026-10-16 用户问“布局持久化是不是没做？”。开发方核对：布局只经 SceneStorage 随系统状态恢复保存，而 macOS 默认“退出 App 时关闭窗口”，正常退出后系统丢弃窗口状态，布局因此不恢复；⌥⌘N 新窗口也总是默认布局。就开发方的提问，用户选择“布局总记住，窗口跟随系统”：工具窗口的位置、停靠区与尺寸总是记住，新窗口沿用；重开哪些窗口、分屏、标签与会话按系统设置决定。产品归 [PRD](prd/workspace-layout.md)，实施归 [窗口系统任务](../tasks/window-system/packet.md)。
 
 ## S34
 
@@ -346,15 +346,15 @@ S17 实施授权：用户决定全面切换 UniFFI，并要求现在开始拆分
 
 ## S35
 
-2026-10-17 用户发现 Claude Code 在 worktree 中的会话（如 `mac-sub-agents-panel`）各自成为独立项目。就开发方“worktree 是否归入所属仓库”的提问，用户答复：“是的，worktree 归到原项目下面；其实正好，我计划让 project 和特定的文件夹解耦，一个 project 可以有多个 folder，有一个 primary folder”。产品归 [PRD](prd/index.md#会话内容展示)，实施归 [多文件夹项目任务](../tasks/project-folders/packet.md)。
+2026-10-17 用户发现 Claude Code 在 worktree 中的会话（如 `mac-sub-agents-panel`）各自成为独立项目。就开发方“worktree 是否归入所属仓库”的提问，用户答复：“是的，worktree 归到原项目下面；其实正好，我计划让 project 和特定的文件夹解耦，一个 project 可以有多个 folder，有一个 primary folder”。产品归 [PRD](prd/conversations.md)，实施归 [多文件夹项目任务](../tasks/project-folders/packet.md)。
 
 ## S36
 
-2026-10-18 用户要求：“我现在还希望 sub-agent 有更多的打开方式（新 Tab / 当前 tab / Sheet / 新窗口），并且同样可以配置；此外，我们之前说 sub-agent 本质上也就是 A2A，这一点怎么体现，我没想好，现在我想到一点：让‘子 Agent 面板’升级为‘与其它 Agent 面板’（不一定叫这个名字）”。开发方定名“关联 Agent”（沿用 PRD 已有的中立“关联会话”组织），列出父会话、子 Agent 与 A2A 参与方；打开方式为一项应用设置，同样用于消息列表中的会话链接。产品归 [PRD](prd/index.md#ai-网关与-agent-运行时配置)，实施归 [Agent 间协作任务](../tasks/agent-collaboration/packet.md)。
+2026-10-18 用户要求：“我现在还希望 sub-agent 有更多的打开方式（新 Tab / 当前 tab / Sheet / 新窗口），并且同样可以配置；此外，我们之前说 sub-agent 本质上也就是 A2A，这一点怎么体现，我没想好，现在我想到一点：让‘子 Agent 面板’升级为‘与其它 Agent 面板’（不一定叫这个名字）”。开发方定名“关联 Agent”（沿用 PRD 已有的中立“关联会话”组织），列出父会话、子 Agent 与 A2A 参与方；打开方式为一项应用设置，同样用于消息列表中的会话链接。产品归 [PRD](prd/collaboration.md)，实施归 [Agent 间协作任务](../tasks/agent-collaboration/packet.md)。
 
 ## S37
 
-2026-10-18 用户要求：“使会话列表支持手动排序‘组’”。开发方的做法：拖动组标题或在组的右键菜单中移动，顺序随浏览偏好保存，项目与运行时分组各自一份；置顶组固定在最前，新出现的组排在已排序组之前，可恢复按最近活动排序。用户试用后确认可拖拽排序，并建议：“将这个作为一个显示的排序模式，从而不再依赖创建时间/更新时间，避免排序发生跳动”；据此改为显式的组排序方式（最近活动／手动），手动时新出现的组排在末尾。产品归 [PRD](prd/index.md#会话内容展示)，实施归 [统一浏览任务](../tasks/conversation-browser/packet.md)。
+2026-10-18 用户要求：“使会话列表支持手动排序‘组’”。开发方的做法：拖动组标题或在组的右键菜单中移动，顺序随浏览偏好保存，项目与运行时分组各自一份；置顶组固定在最前，新出现的组排在已排序组之前，可恢复按最近活动排序。用户试用后确认可拖拽排序，并建议：“将这个作为一个显示的排序模式，从而不再依赖创建时间/更新时间，避免排序发生跳动”；据此改为显式的组排序方式（最近活动／手动），手动时新出现的组排在末尾。产品归 [PRD](prd/conversations.md)，实施归 [统一浏览任务](../tasks/conversation-browser/packet.md)。
 
 ## S38
 
@@ -362,15 +362,15 @@ S17 实施授权：用户决定全面切换 UniFFI，并要求现在开始拆分
 
 ## S39
 
-2026-10-18 用户要求：“让额度可以显示为‘剩余多少’（目前是‘使用了多少’），对于 context window 也是一样；我建议这放到‘通用’或者‘外观’（目前还没有）设置 Tab 中（我还建议将会话、快捷键都合入该 Tab 中）”。开发方以一项“已用／剩余”设置同时作用于额度与上下文，新建“通用”页并将会话、快捷键并入。产品归 [PRD](prd/index.md#会话内容展示)。
+2026-10-18 用户要求：“让额度可以显示为‘剩余多少’（目前是‘使用了多少’），对于 context window 也是一样；我建议这放到‘通用’或者‘外观’（目前还没有）设置 Tab 中（我还建议将会话、快捷键都合入该 Tab 中）”。开发方以一项“已用／剩余”设置同时作用于额度与上下文，新建“通用”页并将会话、快捷键并入。产品归 [PRD](prd/composer.md)。
 
 ## S42
 
-2026-10-18 用户指出：“claude code 的 session 中，模型的“沿用”似乎不太行（我这边看到推理仍然是 medium，但是模型是 default）；不过其实，我一直都没有太具体地管理 runtime, model, thinking, permission 的行为，我们现在来讨论、整理一下”。开发方核对：Claude 历史已读出模型、推理强度与权限模式；模型显示不对，是因为记录中的完整模型 ID 与目录里的别名对不上，Mac 于是改用目录第一项；下一轮的选择也只在内存中按标签页保存。开发方提议各项分“会话当前”与“下一轮的选择”两层、未知时不发送，并就持久化与新会话默认提问。用户答复：“composer 的状态是持久化的，也就是说，重启之后，下一轮的选择要保留”；“新会话的默认值，默认使用上次选择的，但是也可以在运行时实例中设置”；“我同意你的建议，按照你的建议处理就好”。实施中用户补充：“运行时实例中，还可以选择让新会话的默认值使用运行时的默认值；并且我认为所谓的“默认值”，其在 velune 内部应该是 null（避免用"unknown","native"）”。产品归 [PRD](prd/index.md#会话内容展示)，实施归 [composer 轮次配置任务](../tasks/composer-turn-settings/packet.md)。
+2026-10-18 用户指出：“claude code 的 session 中，模型的“沿用”似乎不太行（我这边看到推理仍然是 medium，但是模型是 default）；不过其实，我一直都没有太具体地管理 runtime, model, thinking, permission 的行为，我们现在来讨论、整理一下”。开发方核对：Claude 历史已读出模型、推理强度与权限模式；模型显示不对，是因为记录中的完整模型 ID 与目录里的别名对不上，Mac 于是改用目录第一项；下一轮的选择也只在内存中按标签页保存。开发方提议各项分“会话当前”与“下一轮的选择”两层、未知时不发送，并就持久化与新会话默认提问。用户答复：“composer 的状态是持久化的，也就是说，重启之后，下一轮的选择要保留”；“新会话的默认值，默认使用上次选择的，但是也可以在运行时实例中设置”；“我同意你的建议，按照你的建议处理就好”。实施中用户补充：“运行时实例中，还可以选择让新会话的默认值使用运行时的默认值；并且我认为所谓的“默认值”，其在 velune 内部应该是 null（避免用"unknown","native"）”。产品归 [PRD](prd/composer.md)，实施归 [composer 轮次配置任务](../tasks/composer-turn-settings/packet.md)。
 
 ## S40
 
-2026-10-17 用户要求参考 [liguobao/ds-harness-remote](https://github.com/liguobao/ds-harness-remote)，共同梳理远程控制需求、厘清架构后实现 Rust packages。随后明确有 GUI 与无 GUI 两种宿主都需要，应用装配相同共享核心，不能按第一批界面形态缩窄远控架构；公网使用不依赖预配 VPN 或端口转发。远控范围为完整 Velune 业务能力，信任对象为同一个人的多台设备。产品归 [PRD](prd/index.md#后续扩展分布式能力)，方案与证据归 [远控任务](../tasks/remote-control/packet.md)。
+2026-10-17 用户要求参考 [liguobao/ds-harness-remote](https://github.com/liguobao/ds-harness-remote)，共同梳理远程控制需求、厘清架构后实现 Rust packages。随后明确有 GUI 与无 GUI 两种宿主都需要，应用装配相同共享核心，不能按第一批界面形态缩窄远控架构；公网使用不依赖预配 VPN 或端口转发。远控范围为完整 Velune 业务能力，信任对象为同一个人的多台设备。产品归 [PRD](prd/remote-access.md)，方案与证据归 [远控任务](../tasks/remote-control/packet.md)。
 
 用户随后选择“继续执行，其他已配对设备可接续操作”及“最终开箱即用，同时允许自部署”，确认控制端断线不终止执行、保留审批，以及公网服务的最终产品方向；本轮仍不部署服务。
 
@@ -382,7 +382,7 @@ S17 实施授权：用户决定全面切换 UniFFI，并要求现在开始拆分
 
 ## S41
 
-2026-10-17 用户在远控 Rust SDK 交付后要求：“那么我们现在来实现一个最小的安卓端？（我建议基于 kotlin, jet compose）”，并说明 adb 已连接同一 Wi‑Fi 内的设备，可用于验收、实验。产品归 [PRD](prd/index.md#后续扩展分布式能力)，实现与真机证据归 [Android 任务](../tasks/android-minimal/packet.md)。该授权包含最小原生端的必要实现和设备实验，不包含真实模型调用、读取个人资料或公网服务部署。
+2026-10-17 用户在远控 Rust SDK 交付后要求：“那么我们现在来实现一个最小的安卓端？（我建议基于 kotlin, jet compose）”，并说明 adb 已连接同一 Wi‑Fi 内的设备，可用于验收、实验。产品归 [PRD](prd/remote-access.md)，实现与真机证据归 [Android 任务](../tasks/android-minimal/packet.md)。该授权包含最小原生端的必要实现和设备实验，不包含真实模型调用、读取个人资料或公网服务部署。
 
 暂停后的讨论中，用户认可“手机扫 Mac 二维码 → Mac 确认新设备 → 此后记住设备并自动重连”。该答复确认配对交互方向，没有回答是否必须支持无法操作执行设备的异地首次添加，也没有授权引入账户系统。
 
@@ -390,7 +390,7 @@ S17 实施授权：用户决定全面切换 UniFFI，并要求现在开始拆分
 
 上述方案收敛后，用户明确“好的，开始实现”，恢复按线性计划进行必要源码修改、构建和既有范围内的合成设备实验；无真实模型／个人资料访问、公网部署或远端发布的新增授权。
 
-2026-10-18 用户明确纠正：“你的边界应该仅限于 Rust Library，怎么会延伸到 Mac App 呢。”当前任务因而收回平台接入和界面验收，只继续 Rust Library／UniFFI 与库级合成验证；该纠正不等于取消 Android 产品目标，也不授权为库验收继续修改或启动 Mac App。范围归 [PRD](prd/index.md#后续扩展分布式能力)，实施与收回记录归 [当前任务](../tasks/android-minimal/packet.md)。
+2026-10-18 用户明确纠正：“你的边界应该仅限于 Rust Library，怎么会延伸到 Mac App 呢。”当前任务因而收回平台接入和界面验收，只继续 Rust Library／UniFFI 与库级合成验证；该纠正不等于取消 Android 产品目标，也不授权为库验收继续修改或启动 Mac App。范围归 [PRD](prd/remote-access.md)，实施与收回记录归 [当前任务](../tasks/android-minimal/packet.md)。
 
 2026-10-18 用户授权将已完成的 Rust Library 工作整合 main；保留 main 现有业务，不包含功能分支中的平台 App 改动，不包含远端发布。整合记录归上述当前任务。
 
@@ -398,16 +398,16 @@ S17 实施授权：用户决定全面切换 UniFFI，并要求现在开始拆分
 
 2026-10-19 用户要求实现远程控制系列能力的 MVP：Windows 端（可在 win-ws.localhost 验收）；Android 端保持既有技术栈并彻底重写，现有实现只是测试原型；“Android 端不是对等的端（未来的 iPad, web 也是），它只有‘控制’能力，实际的 agent runtime 并不在该端上运行；但是任何一端，都具备控制其它端的能力”；“ssh agent-runtime 和我们这里的‘远程控制’不是一个能力”。
 
-开发方核对后指出 MyGO 自绘界面与纯 Go 无 cgo 的取舍。用户答复：MyGO 看起来不太合适，可以看看别的选择（例如 GPUI），也可以先试 MyGO；“Windows MVP 需要包含在 windows 上运行 agents；接受 MyGO 的 native UI 作为例外（GPUI 也是），因为 windows 的 .net, winUI 等开发体验太糟糕了”；Go 桥“坚守 purego”；认可“one interface, switch the target device”架构；Mac 同时作为被控端与控制端纳入 MVP；MVP 先做会话日常闭环，并说明“providers, resources 等是要跨端同步的”；接受使用 iroh 公共 relay；remote 库可以继续修改，甚至进一步拆分；授权完全控制已连接本机的 Android 手机，并使用 win-ws.localhost 等设备。产品归 [PRD](prd/index.md#后续扩展分布式能力)，实施归 [远控 MVP 任务](../tasks/remote-control-mvp/packet.md)。
+开发方核对后指出 MyGO 自绘界面与纯 Go 无 cgo 的取舍。用户答复：MyGO 看起来不太合适，可以看看别的选择（例如 GPUI），也可以先试 MyGO；“Windows MVP 需要包含在 windows 上运行 agents；接受 MyGO 的 native UI 作为例外（GPUI 也是），因为 windows 的 .net, winUI 等开发体验太糟糕了”；Go 桥“坚守 purego”；认可“one interface, switch the target device”架构；Mac 同时作为被控端与控制端纳入 MVP；MVP 先做会话日常闭环，并说明“providers, resources 等是要跨端同步的”；接受使用 iroh 公共 relay；remote 库可以继续修改，甚至进一步拆分；授权完全控制已连接本机的 Android 手机，并使用 win-ws.localhost 等设备。产品归 [PRD](prd/platforms.md)，实施归 [远控 MVP 任务](../tasks/remote-control-mvp/packet.md)。
 
 
 2026-10-20 用户在 GPUI 版 Windows 应用跨端验收后改定：“现在我们来转移一下阵线：MyGO Windows（我还是希望能使用 MyGO 而不是 GPUI）”。此前 spike 选 GPUI 的结论由此取代；Go 桥仍按上文坚持 purego、不用 cgo。实施归 [Windows MyGO 任务](../tasks/windows-mygo/packet.md)。
 
-2026-10-20 开发方指出 MyGO 版界面仍是照 GPUI 版逐行移植、未用 MyGO 高层组件，且设置分类、模型菜单与布局和 Mac 不一致。用户答复：希望“尽可能贴合框架、平台的体验”，并“希望跨端的交互体验能尽可能一致（比如设置项目、布局系统、模型菜单选项）”；随后说明“贴近框架/平台”指贴近 MyGO 的风格即可，不必另做 Windows 外观；“安卓的差异很多时候是合理的，因为其屏幕尺寸、设备操作方式就存在巨大差距，也不应该照搬”；并确认“windows以mac为参考基准”。产品归 [PRD](prd/index.md#后续扩展分布式能力)。
+2026-10-20 开发方指出 MyGO 版界面仍是照 GPUI 版逐行移植、未用 MyGO 高层组件，且设置分类、模型菜单与布局和 Mac 不一致。用户答复：希望“尽可能贴合框架、平台的体验”，并“希望跨端的交互体验能尽可能一致（比如设置项目、布局系统、模型菜单选项）”；随后说明“贴近框架/平台”指贴近 MyGO 的风格即可，不必另做 Windows 外观；“安卓的差异很多时候是合理的，因为其屏幕尺寸、设备操作方式就存在巨大差距，也不应该照搬”；并确认“windows以mac为参考基准”。产品归 [PRD](prd/platforms.md)。
 
 ## Kimi Coding Plan 接入决定（2026-10-20）
 
-用户在可行性研究后答复：“普通coding api key应该无法查询额度，但既然有第一方实现，你可以验证一下”，并指定相邻 Factory26 的模型凭据文件；随后表示“我同意这个方案，你继续收敛”。此授权覆盖所指 Coding Key 对第一方账户/额度接口的有界只读验证与方案收敛，不自动包含模型调用、读取其他凭据、产品实现或发布。产品方向归 [PRD](prd/index.md#ai-网关与-agent-运行时配置)，脱敏结果与技术候选归 [模型路由任务](../tasks/model-routing/packet.md)。
+用户在可行性研究后答复：“普通coding api key应该无法查询额度，但既然有第一方实现，你可以验证一下”，并指定相邻 Factory26 的模型凭据文件；随后表示“我同意这个方案，你继续收敛”。此授权覆盖所指 Coding Key 对第一方账户/额度接口的有界只读验证与方案收敛，不自动包含模型调用、读取其他凭据、产品实现或发布。产品方向归 [PRD](prd/model-routing.md)，脱敏结果与技术候选归 [模型路由任务](../tasks/model-routing/packet.md)。
 
 2026-10-20 完成上述只读验证与方案收敛后，用户明确答复“好的，开始实现”，授权按已收敛方案进行必要源码、类型消费者、合成验收与构建工作；真实模型调用仍不在该答复的授权范围。实施状态见上述模型路由任务。
 

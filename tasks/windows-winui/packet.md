@@ -4,6 +4,24 @@
 
 2026-10-21 用户在 MyGO 版观感不佳后授权开发方自选 Windows 技术栈，除非找到积极维护的 GPUI 组件库，否则不再选 GPUI（[S45](../../docs/sources.md#s45)）。开发方选定 C#＋WinUI 3（Windows App SDK）。目标与 MyGO 版相同，即完整端：本机运行 agents，也能控制其他已配对设备。交互结构以 Mac 为基准，控件与主题用 WinUI 的 Fluent 控件。产品约束见 [PRD](../../docs/prd/index.md)，跨单元方案见 [架构](../../docs/design/architecture.md)，界面与构建见 [Windows README](../../app/windows/README.md)。用户随后要求继续，并使用 Velune 的标志包。
 
+2026-10-21 用户要求把 Windows 端从 PoC 推进到 MVP，功能与 Mac 一致，指出至少缺工作过程折叠、与 Mac 类似的布局系统、完整的提供商功能（订阅导入、运行时导入、模板）、模型路由与大纲。产品行为从 durable docs 理解，不从 Mac 源码反推；PRD 因此按能力拆成分册，核心与 app 的分工写入 [Product TDD](../../docs/product-tdd/index.md)，WinUI 的易错点写入 [app/windows/AGENTS.md](../../app/windows/AGENTS.md)。结构名称（设置分类、菜单、布局分区）以 [Mac README](../../app/mac/README.md) 为基准，行为以 PRD 为准。
+
+## MVP 差距与顺序
+
+按 PRD 分册列出 Windows 尚缺的能力，括号内为核心已提供的接口；核心都已具备，缺的是 Windows 的呈现。按顺序推进，每步在 win-ws 构建并以 fixture home 验证后提交。
+
+1. **消息展示**（[分册](../../docs/prd/conversation-view.md)；`TranscriptTurns`、`TranscriptOutline`）：“用户消息 – 工作过程 – 回复”折叠与时长，运行中默认展开，思考块以摘要为标题、无摘要不显示；工作过程行的轮次配置（悬停运行时与模型，点按完整配置与用量）；发送后本地行“发送中”；大纲（弹出面板／就地折叠）；回到底部；链接交给系统打开、相对路径按会话目录；附件缩略图；协作与子 Agent 的“打开会话”、来源会话标注、子 Agent 只读。
+2. **设置“通用”**（[输入区](../../docs/prd/composer.md)；`set_usage_display`、`set_status_line`、`set_outline_presentation`、`set_linked_conversation_opening`、`set_conversation_browser_limits`）：用量显示、状态栏项、大纲按钮、关联会话打开方式、列表加载条数与总数上限；按 [S39](../../docs/sources.md#s39) 会话与快捷键并入通用（Mac README 仍分列，以 PRD 为准）。
+3. **提供商**（[分册](../../docs/prd/ai-providers.md)；`provider_templates`、`authentication_*`、`preview_provider_import`／`apply_provider_import`、`save_model_template`、`fetch_public_model_catalog`、`provider_quota`）：按订阅／API 分组的模板与“从 Agent 运行时导入”、订阅披露、订阅登录与 Claude Code 账户来源、导入预览、提供商内模型的 model ID 与参数、模型模板与公开目录快填、额度与使用上限。
+4. **模型路由**（[分册](../../docs/prd/model-routing.md)；`save_model_route`、`delete_model_route`）：设置页列出路由与成员现状，编辑名称、策略、会话保持、成员顺序与权重。
+5. **输入区**（[分册](../../docs/prd/composer.md)；`composer_drafts`、`set_composer_draft`、`upload_attachment`、`send_queue`、`steer_turn`、`edit_message`、`acp_session_config`）：草稿持久化、附件、状态栏、发送队列与插入本轮、继续、编辑消息与 fork、ACP 会话选项。
+6. **会话列表管理**（[分册](../../docs/prd/conversations.md)；`organize_conversations`、`set_project`、`search_conversations`、`delete_conversation`、`show_archived_conversations`）：“显示”菜单的分组、筛选、组排序（含手动）、会话排序，搜索，置顶、已读／未读、移到项目、归档、拷贝 ID 与链接，项目编辑，删除，多选，重新读取。
+7. **布局系统**（[分册](../../docs/prd/workspace-layout.md)）：分屏标签组、左／右／底停靠区与工具窗口（会话列表、大纲、输入区、关联 Agent）、浮动与独立窗口、布局恢复、保持在最前面、快捷键。布局是 app 自有状态（Product TDD），动手前先写 Windows 的 Unit TDD。
+8. **协作**（[分册](../../docs/prd/collaboration.md)；`collaborators`、`stop_sub_agents`）：关联 Agent 面板与打开方式。
+9. **问题与通知**（[分册](../../docs/prd/diagnostics.md)）：集中的问题窗口；轮次结束与待确认的系统通知。
+10. **运行时设置补全**（[分册](../../docs/prd/agent-runtimes.md)；`configure_runtime_execution`、`runtime_home_directory`、`upsert_acp_runtime`、`acp_runtime_info`）：HOME 归属、ACP 启动参数与 Agent 信息、新会话默认。SSH 运行位置在 Windows 宿主上不支持，列为已知限制。
+11. **资源库与分析**（[资源库](../../docs/prd/resource-library.md)、[分析](../../docs/prd/analytics.md)）。
+
 ## 选型依据（2026-10-21 核实）
 
 - win-ws 为 Windows 10 22H2（build 19045）。MyGO v0.5.5 的 Vibrancy（Mica）需要 Windows 11 22H2 以上，在这台机器上不可用。MyGO 的默认主题是它自己的跨平台风格，不是 Fluent。官方示例在 headless 下渲染出的观感与本应用一致。所以 MyGO 的问题不在用法，非原生的上限改不了。
@@ -35,7 +53,8 @@
 - 修正后：窗口在前台且响应，标题栏与欢迎页显示标志包，分组可折叠，会话转录与操作行、设置三页（提供商、运行时、设备）渲染正常；依次关闭设置与主窗口，退出码 0，无残留进程。工作集约 182 MB，打开设置后约 217 MB。
 - 顺带修正：内置的设置项跟随系统显示语言（win-ws 为英文），侧栏其余部分是应用自己的中文，所以设为“设置”（内容与自动化名称）；设备页说明文字原被截断，改为换行。
 - 用户随后报告频繁崩溃：打开设置几秒后窗口消失（三次，均在点“快速导入”前后）。退出监视（Silent Process Exit）记录为 WER 服务以 0xC000027B 结束进程，且应用日志没有 Application Error 事件。临时 home 复现得到 `crash.log`：设备页在设置窗口创建时就建好，每次重绘（15 秒计时器或远控状态变化）把同一个邀请输入框移入新行，依赖 `Parent` 先摘除；第二次重绘时摘除未生效，`UIElementCollection.Add` 抛 0x800F1000（元素已有父元素），在计时器回调里成为 fail-fast。与“快速导入”只是时间上重合；核心的发现在无界面、无控制台及交互会话中各跑一次均正常。上面的启动检查只看了各页的首次渲染，没有覆盖重绘，结论过宽。现在邀请卡片只建一次，重绘只把它重新加入已清空的页面；计时器只在设备页显示时运行。修正后复现：快速导入 30 秒、设备页 35 秒（至少两次重绘）均正常，退出码 0，无 `crash.log`。
-- 用户反馈快速导入中各 Claude Code 2.1 都报“运行时目录不存在”。核实（win-ws）：发现按 `CLAUDE_CONFIG_DIR`，否则 `~\.claude`，与 Claude Code 的约定一致；这台机器没有 `~\.claude`（只有 2026-08 的 `~\.claude.json`；`AppData\Roaming\Claude` 是桌面应用自己的目录），所以搜寻本身没有缺陷。但核对时发现 Windows 上 Claude Code 历史完全读不出：历史 helper 是 Python，std 的 PATH 解析把引号当作带引号条目的开头，机器 PATH 里一条 `C:\Program Files\PowerShell\7"` 让其后所有条目（含用户的 Python）都找不到，helper 从未启动；`run_prepared` 又丢掉了传输错误码，失败只显示为 “history helper: Transport”。现按 Windows 的方式（每个 `;` 切分、忽略引号）找 `python.exe`，并保留错误码；修正后已存在与尚不存在的目录都能列出（0 条失败）。所以发现要求目录已存在比核心需要的更严，待用户决定是否放宽。快速导入里有适配器但未能导入的候选现提供“手动添加…”，关闭导入对话框后打开预填类型、名称、入口与目录的添加表单。
+- 用户反馈快速导入中各 Claude Code 2.1 都报“运行时目录不存在”。核实（win-ws）：发现按 `CLAUDE_CONFIG_DIR`，否则 `~\.claude`，与 Claude Code 的约定一致；这台机器没有 `~\.claude`（只有 2026-08 的 `~\.claude.json`；`AppData\Roaming\Claude` 是桌面应用自己的目录），所以搜寻本身没有缺陷。但核对时发现 Windows 上 Claude Code 历史完全读不出：历史 helper 是 Python，std 的 PATH 解析把引号当作带引号条目的开头，机器 PATH 里一条 `C:\Program Files\PowerShell\7"` 让其后所有条目（含用户的 Python）都找不到，helper 从未启动；`run_prepared` 又丢掉了传输错误码，失败只显示为 “history helper: Transport”。现按 Windows 的方式（每个 `;` 切分、忽略引号）找 `python.exe`，并保留错误码；修正后已存在与尚不存在的目录都能列出（0 条失败）。所以发现要求目录已存在比核心需要的更严；用户同意后已放宽：目录只须是绝对路径，已配置判断在目录不存在时按原路径比较。快速导入里有适配器但未能导入的候选现提供“手动添加…”，关闭导入对话框后打开预填类型、名称、入口与目录的添加表单。
+- 用户报告深色模式显示错色、标题栏按钮与标题栏高度不一致。原因：代码从 `Application.Current.Resources` 取的画刷固定为启动时的主题；窗口要求 Tall 标题栏按钮（48 px），WinUI `TitleBar` 默认约 32 px。颜色改为 `App.xaml` 中带 `{ThemeResource}` setter 的样式，`TitleBar` 设为 48 px。深色复验（fixture home）：欢迎页、会话、设置三页颜色正确，按钮与标题栏同高，退出码 0。
 - 侧栏的会话标题来自 Harness 列表（fixture 为“Synthetic ACP”），打开后的标题来自快照，两者不同是 fixture 数据所致，不是界面问题。
 
 ## 待验证

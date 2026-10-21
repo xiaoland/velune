@@ -9,7 +9,7 @@
 - Android 不是对等端（将来的 iPad、Web 同理）：只有控制能力，不运行 agent runtime。任何一端都能控制其他端。
 - SSH agent-runtime 与远程控制是两项不同能力。
 
-2026-10-19 方案核对后用户授权实施，决定见 [PRD](../../docs/prd/index.md#后续扩展分布式能力) 与 [S43](../../docs/sources.md#s43)。授权范围记于 AGENTS 的“独立 units 与跨语言接入”。
+2026-10-19 方案核对后用户授权实施，决定见 [PRD](../../docs/prd/remote-access.md) 与 [S43](../../docs/sources.md#s43)。授权范围记于 AGENTS 的“独立 units 与跨语言接入”。
 
 ## 已核实事实（2026-10-19，main `1bc5a11`）
 

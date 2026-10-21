@@ -5,18 +5,18 @@
 ## 先读什么
 
 1. `README.md`：入口与当前阶段
-2. `docs/prd/index.md`：已确认的产品意图
+2. `docs/prd/index.md`：已确认的产品意图；各能力的行为在同目录分册，从入口的“能力”一节进入
 3. `tasks/pi-mac-first-loop/packet.md`：当前任务、反馈修订和验收边界；Harness 研究证据留在 `tasks/harness-routing-feasibility/`
-4. `docs/design/architecture.md`：已认可方向与具体技术推荐，区分已确认和待验证；不等于已授权实现
+4. `docs/product-tdd/index.md`：核心与平台 app 的分工及跨 unit 契约入口；`docs/design/architecture.md`：已认可方向与具体技术推荐，区分已确认和待验证；不等于已授权实现
 5. 需要核对决定出处时读 `docs/sources.md`
 6. 做界面或交互改动前读 `DESIGN.md`
 
 ## 知识归属
 
-- `docs/prd/index.md` 是产品目的、优先级、范围和稳定术语的唯一权威入口
+- `docs/prd/` 是产品目的、优先级、范围和稳定术语的唯一权威：`index.md` 为入口，能力分册拥有各能力的行为与规则；平台 app 按分册实现，不从另一端源码反推产品行为
 - `docs/sources.md` 只保存来源定位和精简释义，不复制整段聊天或重复维护需求
 - `tasks/` 保存易变的 Task Packet；问题、证据、假设、工作计划先留在任务里
-- `docs/design/architecture.md` 归属跨单元方案与拟议契约，显式标记复核状态；证据快照与试验缺口仍留在 Task Packet
+- `docs/product-tdd/index.md` 归属核心与平台 app 的分工；`docs/design/` 归属跨单元方案与拟议契约，显式标记复核状态；证据快照与试验缺口仍留在 Task Packet
 - `DESIGN.md` 归属跨平台的界面原则与交互模式；产品决定仍以 PRD 为准，平台细节写在各端 README
 - 已有无凭据核心原型；实际运行说明归属 docs/development.md，不建立空的部署章节
 - 将来出现独立知识归属与真实使用者，再依 SVC Corpus 引入相应规范；附近的 `AGENTS.md` 只补充本子树规则
@@ -90,7 +90,7 @@ core 是跨平台 Rust lib，通过 ABI 嵌入平台 app；产品不得另启常
 
 2026-10-05 用户决定全面采用 UniFFI，并授权拆分。共享 units 为 packages/ai、ai-provider、conversation、agent-runtime、gateway、application、bindings；2026-10-17 远控工作新增 application-api 与 remote，前者拥有可独立消费的业务契约，后者拥有连接、设备授权与远程调用。平台 app 是独立 unit。configuration 为 application 内部模块，不建立 persist 或空占位 package。领域包不依赖 UniFFI，bindings 暴露具名类型 API；不恢复手写 C ABI／JSON dispatcher 产品接口。Mac 继续同进程嵌入 Rust，修改后重建安装。任务见 tasks/package-boundaries/packet.md 与 tasks/remote-control/packet.md，各 unit 入口见其 README。
 
-2026-10-19 用户发起远控 MVP，取代此前“仅 Rust Library”的边界：Mac、Windows 为完整端（运行 agents 并可控制其他端），Android 为控制端；各端一套界面经同一业务接口切换目标设备。授权修改及拆分 remote 等 Rust units、实现 Mac 接入、重写 Android（Kotlin／Compose），在 Windows 上运行 agents 并开发 Windows 端；可完全控制本机已连接的 Android 手机及 `win-ws.localhost`（含安装开发工具链），使用 iroh 公共 relay。push、PR、部署和真实模型调用仍需单独授权。产品约束归 docs/prd/index.md，契约归 docs/design/remote-access.md，实施归 tasks/remote-control-mvp/packet.md。
+2026-10-19 用户发起远控 MVP，取代此前“仅 Rust Library”的边界：Mac、Windows 为完整端（运行 agents 并可控制其他端），Android 为控制端；各端一套界面经同一业务接口切换目标设备。授权修改及拆分 remote 等 Rust units、实现 Mac 接入、重写 Android（Kotlin／Compose），在 Windows 上运行 agents 并开发 Windows 端；可完全控制本机已连接的 Android 手机及 `win-ws.localhost`（含安装开发工具链），使用 iroh 公共 relay。push、PR、部署和真实模型调用仍需单独授权。产品约束归 docs/prd/remote-access.md，契约归 docs/design/remote-access.md，实施归 tasks/remote-control-mvp/packet.md。
 
 
 ## 最新提供商配置体验复核

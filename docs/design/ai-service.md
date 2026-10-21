@@ -1,6 +1,6 @@
 # AI 服务与 LLM Gateway：职责、契约与实现复核
 
-状态：2026-10-06 三协议 best-effort 转换实施中；此前已于 2026-10-05 重新整理需求并审计实现。产品边界以 [PRD](../prd/index.md#ai-网关与-agent-运行时配置) 为准；本页区分已确认要求、审计后的技术建议与当前代码，不能由设计描述推定能力已交付。具体证据和迁移切片归 [AI 网关审计任务](../../tasks/ai-gateway-audit/packet.md)。
+状态：2026-10-06 三协议 best-effort 转换实施中；此前已于 2026-10-05 重新整理需求并审计实现。产品边界以 [PRD](../prd/ai-providers.md) 为准；本页区分已确认要求、审计后的技术建议与当前代码，不能由设计描述推定能力已交付。具体证据和迁移切片归 [AI 网关审计任务](../../tasks/ai-gateway-audit/packet.md)。
 
 ## 当前配置契约
 
@@ -115,7 +115,7 @@ ARK Coding Plan 的额度认证由提供商内部单独持有，仅 application 
 
 ## 路由、fail-over 与生命周期
 
-2026-10-17 用户确认的智能调度已接入 Rust lib。一个订阅对应一个提供商实例；application 拥有实例认证、额度采集与唯一快照，gateway 只通过中立只读契约取得额度事实并维护运行期共享调度状态。提供商使用上限独立于路由，直接调用同样受约束；路由拥有策略、成员权重和黏性选择。会话身份由装配方显式提供，gateway 不依赖 Agent runtime、不根据正文猜测身份。详细产品行为归 [PRD](../prd/index.md#ai-网关与-agent-运行时配置)，额度与调度接口见 [gateway unit](../../packages/gateway/README.md) 和 [bindings unit](../../packages/bindings/README.md)，验证记录归 [模型路由任务](../../tasks/model-routing/packet.md)。
+2026-10-17 用户确认的智能调度已接入 Rust lib。一个订阅对应一个提供商实例；application 拥有实例认证、额度采集与唯一快照，gateway 只通过中立只读契约取得额度事实并维护运行期共享调度状态。提供商使用上限独立于路由，直接调用同样受约束；路由拥有策略、成员权重和黏性选择。会话身份由装配方显式提供，gateway 不依赖 Agent runtime、不根据正文猜测身份。详细产品行为归 [PRD](../prd/model-routing.md)，额度与调度接口见 [gateway unit](../../packages/gateway/README.md) 和 [bindings unit](../../packages/bindings/README.md)，验证记录归 [模型路由任务](../../tasks/model-routing/packet.md)。
 
 路由捕获一次请求的配置版本、提供商／模型目标和认证引用；热编辑不能改变正在执行的尝试。持久配置、已装配运行配置与正在执行的快照必须有明确的版本和生效规则。Harness 的历史兼容身份由运行时 adapter 管理，不把 Pi 物理绑定 ID 作为通用路由模型；请求中的来源身份约束仍应参与目标资格判断。
 

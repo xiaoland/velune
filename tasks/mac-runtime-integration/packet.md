@@ -1,6 +1,6 @@
 # Mac 接入运行时与 AI 服务更新
 
-2026-10-12 开始。用户指出 Mac App 还没有接入 PRD 中标记为“前端待实现”的 AI 服务与 Agent 运行时更新，因此无法实际发送（见 [PRD](../../docs/prd/index.md#ai-网关与-agent-运行时配置)）。核心契约均已存在（UniFFI：`runtime_models`、`create_conversation_with_selection`／`send_turn_with_selection`、ACP launch／info／session config、`upsert_runtime_with_execution` 的 SSH、协作父会话与子任务，后被 A2A 取代）；本任务是平台接入，必要时补核心契约。沿用 AGENTS.md 的验证与安装规则，真实提供商与产品体验由用户验收。
+2026-10-12 开始。用户指出 Mac App 还没有接入 PRD 中标记为“前端待实现”的 AI 服务与 Agent 运行时更新，因此无法实际发送（见 [PRD](../../docs/prd/agent-runtimes.md)）。核心契约均已存在（UniFFI：`runtime_models`、`create_conversation_with_selection`／`send_turn_with_selection`、ACP launch／info／session config、`upsert_runtime_with_execution` 的 SSH、协作父会话与子任务，后被 A2A 取代）；本任务是平台接入，必要时补核心契约。沿用 AGENTS.md 的验证与安装规则，真实提供商与产品体验由用户验收。
 
 ## 切片与顺序
 

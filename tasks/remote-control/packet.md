@@ -4,7 +4,7 @@
 
 ## 当前阶段与权限
 
-本轮已完成：Rust packages、隔离端到端验收、必要 Mac 调用方迁移及构建安装。已确认产品承诺归 [PRD](../../docs/prd/index.md#后续扩展分布式能力)，跨单元契约归 [架构](../../docs/design/architecture.md#远控契约与唯一执行-owner2026-10-17)。新增 `application-api`、`remote`，调整 application／bindings，不新增远控界面、不部署或发布。新契约删除公开 Pi 元数据后，现有 Mac 绑定映射和人工脚本会直接失效，必要调用方迁移由 root 贯通，并按仓库规范重建安装；初始“不构建 Mac”是工作切片设定，不是用户禁止修复必要调用方。
+本轮已完成：Rust packages、隔离端到端验收、必要 Mac 调用方迁移及构建安装。已确认产品承诺归 [PRD](../../docs/prd/remote-access.md)，跨单元契约归 [架构](../../docs/design/architecture.md#远控契约与唯一执行-owner2026-10-17)。新增 `application-api`、`remote`，调整 application／bindings，不新增远控界面、不部署或发布。新契约删除公开 Pi 元数据后，现有 Mac 绑定映射和人工脚本会直接失效，必要调用方迁移由 root 贯通，并按仓库规范重建安装；初始“不构建 Mac”是工作切片设定，不是用户禁止修复必要调用方。
 
 沿用同进程 Rust lib、平台原生 app、UniFFI 和 Harness 持有原生会话的边界。现有 SSH runtime transport 是执行位置，不等同于远程 Velune 控制客户端。不读取真实配置、凭据或会话，不部署、不发布、不调用真实模型；不新增或运行自动化测试。实现阶段采用静态检查、构建和隔离人工端到端验收。
 

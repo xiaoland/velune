@@ -1,6 +1,6 @@
 # Agent 间协作（A2A）与原生 sub-agent 展示
 
-2026-10-12 开始。用户检查 Mac 接入任务切片 4（父子委派界面）的开发版后指出：原生 sub-agent 与跨 Harness 协作（A2A）是不同关系，2026-10-11 由另一会话编撰的 PRD 把后者写成了“把另一 runtime 当作 sub-agent”。产品意图已改写到 [PRD](../../docs/prd/index.md#ai-网关与-agent-运行时配置)，来源 [S18](../../docs/sources.md#s18)。沿用 AGENTS.md 的验证与安装规则；本地提交已授权，不 push。
+2026-10-12 开始。用户检查 Mac 接入任务切片 4（父子委派界面）的开发版后指出：原生 sub-agent 与跨 Harness 协作（A2A）是不同关系，2026-10-11 由另一会话编撰的 PRD 把后者写成了“把另一 runtime 当作 sub-agent”。产品意图已改写到 [PRD](../../docs/prd/collaboration.md)，来源 [S18](../../docs/sources.md#s18)。沿用 AGENTS.md 的验证与安装规则；本地提交已授权，不 push。
 
 ## 已确认（用户，2026-10-12）
 
@@ -76,7 +76,7 @@
 
 ## 2026-10-16：子 Agent 界面补齐
 
-产品意图见 [PRD](../../docs/prd/index.md#ai-网关与-agent-运行时配置)（[S31](../../docs/sources.md#s31)）。范围：子 Agent 概览、侧栏状态汇总、子会话导航、父轮次结束后到达的子 Agent 审批。不改 A2A 呈现，不做运行时互调用。
+产品意图见 [PRD](../../docs/prd/collaboration.md)（[S31](../../docs/sources.md#s31)）。范围：子 Agent 概览、侧栏状态汇总、子会话导航、父轮次结束后到达的子 Agent 审批。不改 A2A 呈现，不做运行时互调用。
 
 ### 已核对的现状（代码，2026-10-16）
 
@@ -106,7 +106,7 @@
 
 ## 2026-10-18：关联 Agent 与打开方式
 
-产品意图见 [PRD](../../docs/prd/index.md#ai-网关与-agent-运行时配置)（[S36](../../docs/sources.md#s36)）。名称“关联 Agent”由开发方选定，用户说明名称不限。
+产品意图见 [PRD](../../docs/prd/collaboration.md)（[S36](../../docs/sources.md#s36)）。名称“关联 Agent”由开发方选定，用户说明名称不限。
 
 - 核心：`ConversationSnapshot.collaborators`（`local/collaborators.rs`）按首次出现列出 A2A 参与方：协作工具结果中的会话（与交付层的工具链接同一解析）为本会话联系了它，收到的协作消息的来源为它联系了本会话；在列表中的取列表标题与其运行时名称，否则取来源行的标题与运行时。不按运行时或工具名分支。配置增加 `linkedConversationOpening`（currentTab、newTab、sheet、newWindow，默认 currentTab），与大纲设置同样持久化和导出。
 - Mac：“子 Agent”工具窗口改为“关联 Agent”（`LinkedAgents.swift`，⌘4，工具栏按钮在会话有父会话、子 Agent 或协作会话时出现），分“父会话”“子 Agent”“协作”三组；协作行副标题为运行时与方向（本会话联系了它／它联系了本会话／互相联系）。布局保存键仍为 `subAgents`，已保存的布局不失效。“设置 → 会话 → 关联 Agent”选择打开方式；面板双击／回车、消息列表的“打开会话”与来源链接、“打开父会话”都按它打开（`ConversationWindowModel.openLinked`），面板右键菜单列出四种方式。浮层是窗口的 sheet，内容是一个普通标签页（自带输入区），“在标签页中打开”“在新窗口中打开”把这个标签页原样移过去，不重新读取。浮层中的链接在浮层内打开（设置为当前标签页或浮层时），否则关闭浮层后按设置打开。

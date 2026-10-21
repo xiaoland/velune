@@ -1,6 +1,6 @@
 # 跨 Harness 会话接续
 
-2026-10-06 用户接受“目标原生会话＋上下文交接＋只持久化关联元数据”，授权从上一轮三状态分离继续实现。产品边界归 [PRD](../../docs/prd/index.md#会话内容展示)，跨单元方案归 [架构](../../docs/design/architecture.md#历史来源下一轮选择与实际执行)。此前状态及安装证据见 [配置与协议任务](../settings-protocol-refinement/packet.md)。
+2026-10-06 用户接受“目标原生会话＋上下文交接＋只持久化关联元数据”，授权从上一轮三状态分离继续实现。产品边界归 [PRD](../../docs/prd/collaboration.md)，跨单元方案归 [架构](../../docs/design/architecture.md#历史来源下一轮选择与实际执行)。此前状态及安装证据见 [配置与协议任务](../settings-protocol-refinement/packet.md)。
 
 保留原生会话，在目标运行时创建原生会话，由 adapter 交接可携带上下文，不重放工具执行或审批状态。Velune 只保存原生引用和切换位置，不保存消息副本；重启后通过原生来源重新投影同一逻辑会话。下一轮意图、历史来源与当前执行者保持独立。
 

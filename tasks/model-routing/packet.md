@@ -1,6 +1,6 @@
 # 模型路由与自动 fail-over
 
-2026-10-16 用户要求实现模型路由，验证场景为聚合两个 ChatGPT 订阅并自动 fail-over（[S30](../../docs/sources.md#s30)）。产品归 [PRD](../../docs/prd/index.md#ai-网关与-agent-运行时配置)，网关契约归 [AI 服务设计](../../docs/design/ai-service.md#路由fail-over-与生命周期)。
+2026-10-16 用户要求实现模型路由，验证场景为聚合两个 ChatGPT 订阅并自动 fail-over（[S30](../../docs/sources.md#s30)）。产品归 [PRD](../../docs/prd/model-routing.md)，网关契约归 [AI 服务设计](../../docs/design/ai-service.md#路由fail-over-与生命周期)。
 
 ## 当前接续与凭据边界
 

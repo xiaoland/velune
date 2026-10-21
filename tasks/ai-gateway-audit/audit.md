@@ -1,6 +1,6 @@
 # AI 网关与 AI 服务：需求复核及实现审计
 
-审计日期为 2026-10-05。源码基线为 f7d4b0d，产品实现等同其前序 7345ba8；本轮只修改文档，不修改产品源码。AI 网关、应用装配和 AI／provider 分别由独立 owner 调查，advisor 负责目标职责判断，主执行者整合并纠正未经证实的推论。需求权威归 [PRD](../../docs/prd/index.md#ai-网关与-agent-运行时配置)，目标职责归 [AI 服务设计](../../docs/design/ai-service.md)，本文件只保存基线审计与迁移依据。
+审计日期为 2026-10-05。源码基线为 f7d4b0d，产品实现等同其前序 7345ba8；本轮只修改文档，不修改产品源码。AI 网关、应用装配和 AI／provider 分别由独立 owner 调查，advisor 负责目标职责判断，主执行者整合并纠正未经证实的推论。需求权威归 [PRD](../../docs/prd/ai-providers.md)，目标职责归 [AI 服务设计](../../docs/design/ai-service.md)，本文件只保存基线审计与迁移依据。
 
 结论：需要重划执行职责，不能只补 DeepSeek 参数。当前 ChatCompletions 是有损的 sampling 协议桥；Responses 只有部分原生保真；应用装配仍以一个 Pi 首循环的生命周期组织 AI 网关。现有独立 packages 可以保留，不需要重新创建巨大 core 或万能 provider 框架。
 

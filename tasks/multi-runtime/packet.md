@@ -2,7 +2,7 @@
 
 ## 授权与目标
 
-2026-10-06 用户授权支持 Codex app-server 与 deepseek-harness，直接依赖 huihua 发行包读取会话，不复制解析器源码，打包许可证与声明。不同 breaking-change 版本属于独立运行时类型，而非同一适配器的错误提示；familyId 归类、typeId 选择适配器、versionRegex 校验实际发行版本。用户次日执行 GUI 与真实服务验收。稳定产品意图归 [PRD](../../docs/prd/index.md#ai-网关与-agent-运行时配置)。
+2026-10-06 用户授权支持 Codex app-server 与 deepseek-harness，直接依赖 huihua 发行包读取会话，不复制解析器源码，打包许可证与声明。不同 breaking-change 版本属于独立运行时类型，而非同一适配器的错误提示；familyId 归类、typeId 选择适配器、versionRegex 校验实际发行版本。用户次日执行 GUI 与真实服务验收。稳定产品意图归 [PRD](../../docs/prd/agent-runtimes.md)。
 
 ## 实施与边界
 

@@ -4,11 +4,13 @@
 
 ## 长期知识
 
-- [产品定义](prd/index.md)：为什么做、核心优先级、已确认边界与术语
+- [产品定义](prd/index.md)：为什么做、核心优先级、已确认边界与术语；各能力的行为见其“能力”一节列出的分册
 - [来源索引](sources.md)：关键用户决定和 SVC 文档方法来源
 - [界面与交互](../DESIGN.md)：跨平台的界面原则与交互模式
 
 ## 架构设计
+
+- [Product TDD](product-tdd/index.md)：核心与平台 app 的分工，跨 unit 契约文档入口
 
 - [多 Harness 路由与协作架构](design/architecture.md)：已认可产品方向及 Rust／SQLite／原生 UI 基线；具体协作机制、宿主／桥接推荐与验证边界
 

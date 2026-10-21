@@ -1,6 +1,6 @@
 # Claude Code、原生模型与 SSH 运行时
 
-2026-10-10 开始。用户授权在 Rust packages 实现 Claude Code、既有 provider 模型选择、每 turn 临时 Velune Gateway、SSH 远程运行时与 Velune 管理 HOME。产品权威归 [PRD](../../docs/prd/index.md#ai-网关与-agent-运行时配置)，跨单元契约归 [架构](../../docs/design/architecture.md#原生模型单轮网关与-ssh-执行)，调用与环境要求归 [开发说明](../../docs/development.md#rust-运行时的模型来源ssh-与-home)。前端需求明确标为待实现。
+2026-10-10 开始。用户授权在 Rust packages 实现 Claude Code、既有 provider 模型选择、每 turn 临时 Velune Gateway、SSH 远程运行时与 Velune 管理 HOME。产品权威归 [PRD](../../docs/prd/agent-runtimes.md)，跨单元契约归 [架构](../../docs/design/architecture.md#原生模型单轮网关与-ssh-执行)，调用与环境要求归 [开发说明](../../docs/development.md#rust-运行时的模型来源ssh-与-home)。前端需求明确标为待实现。
 
 ## 边界与状态
 

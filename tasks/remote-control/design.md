@@ -1,6 +1,6 @@
 # 远程控制架构讨论稿
 
-2026-10-17。本文保留实施前的方案推导，以下“建议”与待验证项描述当时状态；当前实现契约归 [架构](../../docs/design/architecture.md#远控契约与唯一执行-owner2026-10-17) 及各 unit README，完成状态与证据归 [packet](packet.md) 和 [验收记录](verification.md)。产品承诺以 [PRD](../../docs/prd/index.md#后续扩展分布式能力) 为准。
+2026-10-17。本文保留实施前的方案推导，以下“建议”与待验证项描述当时状态；当前实现契约归 [架构](../../docs/design/architecture.md#远控契约与唯一执行-owner2026-10-17) 及各 unit README，完成状态与证据归 [packet](packet.md) 和 [验收记录](verification.md)。产品承诺以 [PRD](../../docs/prd/remote-access.md) 为准。
 
 ## 已确认的目标
 
