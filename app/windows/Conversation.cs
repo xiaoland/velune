@@ -51,6 +51,13 @@ sealed class Conversation
     public string Cwd { get; set; } = "";
 
     public bool Busy { get; private set; }
+    // Sending is the text of a message sent but not yet in the transcript;
+    // Accepted tells the runtime took it.
+    public string? Sending { get; private set; }
+    public bool Accepted { get; private set; }
+    int usersBeforeSending;
+    // Attached images read for showing, by message and block.
+    readonly Dictionary<string, Task<BindingAttachmentContent>> attachments = [];
     public bool Loading { get; private set; }
     public string Failure { get; private set; } = "";
     bool closed;
@@ -95,6 +102,15 @@ sealed class Conversation
     public bool Running => Snapshot is { RunState: BindingRunState.Running or BindingRunState.Stopping };
 
     public bool CanCancel => Running && Snapshot!.Actions.CanCancel;
+
+    // Working includes a turn the runtime runs for another client: running is
+    // what matters, not where it started.
+    public bool Working => Running || Snapshot is { RunState: BindingRunState.Elsewhere };
+
+    // A native sub-agent's conversation continues from the one that started it.
+    public string? ParentID => Snapshot?.Conversation.ParentConversationId;
+
+    int UserMessages() => Messages.Count(message => message.Role == BindingMessageRole.User);
 
     public BindingRuntimeInteraction? Interaction => Snapshot?.PendingInteractions.FirstOrDefault();
 
@@ -188,6 +204,11 @@ sealed class Conversation
         Messages = messages;
         Target = new Target(snapshot.ContextRuntimeId, snapshot.Conversation.Id, snapshot.Conversation.Title);
         Snapshot = snapshot;
+        // The sent message shows until the transcript has it, or its turn ends without it.
+        if (Sending != null && Accepted && (UserMessages() > usersBeforeSending || !Working))
+        {
+            Sending = null;
+        }
         if (!nextChosen)
         {
             FollowCurrentRuntime();
@@ -233,6 +254,9 @@ sealed class Conversation
         var cwd = Target.Unsent && Cwd.Trim().Length > 0 ? Cwd.Trim() : null;
         Busy = true;
         Failure = "";
+        Sending = text;
+        Accepted = false;
+        usersBeforeSending = UserMessages();
         Notify();
         BindingConversationSnapshot? created = null;
         try
@@ -254,11 +278,13 @@ sealed class Conversation
                 // The choices made before the first message are the created conversation's.
                 SaveIntent();
             }
+            Accepted = true;
             Apply(sent.Snapshot);
             return true;
         }
         catch (Exception failure)
         {
+            Sending = null;
             if (created != null)
             {
                 Merge(created);
@@ -300,6 +326,19 @@ sealed class Conversation
             Failure = Core.Describe(failure);
         }
         Notify();
+    }
+
+    // ReadAttachment reads an attached image of a message, once.
+    public Task<BindingAttachmentContent> ReadAttachment(string messageID, int block)
+    {
+        var key = $"{messageID}/{block}";
+        if (!attachments.TryGetValue(key, out var reading) || reading.IsFaulted)
+        {
+            var (runtimeID, id) = (Snapshot!.ContextRuntimeId, Snapshot.Conversation.Id);
+            reading = Call(application => application.ReadAttachment(runtimeID, id, messageID, (uint)block));
+            attachments[key] = reading;
+        }
+        return reading;
     }
 
     // FollowCurrentRuntime points the next turn at the runtime the

@@ -12,6 +12,12 @@ sealed record Configuration(
 {
     public static readonly Configuration Empty = new([], [], []);
 
+    // How the device's settings say conversations show.
+    public BindingOutlinePresentation Outline { get; init; } = BindingOutlinePresentation.Popover;
+    public BindingLinkedConversationOpening LinkedOpening { get; init; } = BindingLinkedConversationOpening.CurrentTab;
+    public BindingUsageDisplay Usage { get; init; } = BindingUsageDisplay.Used;
+    public IReadOnlyList<BindingStatusLineItem> StatusLine { get; init; } = [BindingStatusLineItem.ContextUsage];
+
     public BindingRuntimeInstance? Runtime(string id) => Runtimes.FirstOrDefault(runtime => runtime.Id == id);
 
     public BindingRuntimeTypeDescriptor? RuntimeType(string runtimeId) =>
@@ -49,7 +55,13 @@ sealed class Listing
             Conversations = [.. list.Conversations.Where(listed => !listed.Archived && listed.Conversation.ParentConversationId == null)],
             Groups = list.ConversationGroups,
             Preferences = list.ConversationBrowserPreferences,
-            Configuration = new Configuration([.. list.RuntimeInstances.Where(runtime => runtime.Enabled)], list.RuntimeTypes, projects),
+            Configuration = new Configuration([.. list.RuntimeInstances.Where(runtime => runtime.Enabled)], list.RuntimeTypes, projects)
+            {
+                Outline = list.OutlinePresentation,
+                LinkedOpening = list.LinkedConversationOpening,
+                Usage = list.UsageDisplay,
+                StatusLine = list.StatusLine,
+            },
             Active = active.ToDictionary(conversation => conversation.ConversationId),
         };
     }

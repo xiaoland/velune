@@ -1,4 +1,3 @@
-using System.Collections.ObjectModel;
 using Microsoft.UI.Input;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
@@ -16,23 +15,24 @@ public sealed partial class ConversationView : UserControl
 {
     internal Conversation Model { get; }
     readonly MainWindow window;
-    readonly ObservableCollection<UIElement> items = [];
-    // Rendered messages by ID, kept while their content stays the same.
-    readonly Dictionary<string, (ulong Stamp, bool Payload, UIElement Element)> rendered = [];
-    // Which reasoning and tool outputs the user unfolded, by block.
-    readonly HashSet<string> expanded = [];
     // The interaction shown, and the replies typed or chosen for it by question ID.
     (string Id, bool Busy)? shownInteraction;
     readonly Dictionary<string, string> answers = [];
     readonly Dictionary<string, string> chosen = [];
-    bool scrolled;
 
     internal ConversationView(Conversation model, MainWindow window)
     {
         InitializeComponent();
         Model = model;
         this.window = window;
-        Transcript.ItemsSource = items;
+        AttachTranscript();
+        ParentButton.Click += (_, _) =>
+        {
+            if (Model.ParentID is { } parent)
+            {
+                window.OpenLinked(parent);
+            }
+        };
         Input.PreviewKeyDown += InputKeyDown;
         SendButton.Click += (_, _) => Send();
         StopButton.Click += (_, _) => Model.Stop();
@@ -64,6 +64,12 @@ public sealed partial class ConversationView : UserControl
             return;
         }
         Input.Text = "";
+        // Sending shows the whole list again, at its end.
+        if (outlineFolded)
+        {
+            SetOutlineFolded(false, null);
+        }
+        ScrollToEnd();
         if (!await Model.Send(text) && Input.Text.Length == 0)
         {
             Input.Text = text;
@@ -72,6 +78,17 @@ public sealed partial class ConversationView : UserControl
 
     void Render()
     {
+        TitleText.Text = Model.Title;
+        OutlineButton.IsEnabled = Model.Snapshot is { TranscriptOutline.Length: > 0 };
+        // A change of the setting meanwhile turns the folded outline back.
+        if (outlineFolded && Model.Configuration.Outline != BindingOutlinePresentation.InPlace)
+        {
+            outlineFolded = false;
+            OutlineButton.IsChecked = false;
+        }
+        var subAgent = Model.ParentID != null;
+        SubAgentBar.Visibility = Visible(subAgent);
+        ComposerPanel.Visibility = Visible(!subAgent);
         Spinner.IsActive = Model.Loading;
         Empty.Text = Model.Loading || Model.Messages.Count > 0 ? "" : Model.Snapshot == null ? "输入第一条消息开始会话。" : "还没有消息。";
         RenderTranscript();
@@ -87,7 +104,6 @@ public sealed partial class ConversationView : UserControl
         CwdButton.Visibility = Visible(Model.Target.Unsent);
         CwdButton.Content = Model.Cwd.Length > 0 ? Listing.LastPart(Model.Cwd) : "工作目录";
         ToolTipService.SetToolTip(CwdButton, Model.Cwd.Length > 0 ? Model.Cwd : "工作目录：留空时使用运行时的默认目录");
-        RunningState.Visibility = Visible(Model.Running);
         StopButton.Visibility = Visible(Model.CanCancel);
         StopButton.IsEnabled = !Model.Busy;
         SendButton.Visibility = Visible(!Model.CanCancel);
@@ -95,166 +111,6 @@ public sealed partial class ConversationView : UserControl
     }
 
     static Visibility Visible(bool visible) => visible ? Visibility.Visible : Visibility.Collapsed;
-
-    void RenderTranscript()
-    {
-        var elements = new List<UIElement>(Model.Messages.Count);
-        var ids = new HashSet<string>();
-        foreach (var listed in Model.Messages)
-        {
-            var hasPayload = Model.Payloads.TryGetValue(listed.Id, out var loaded);
-            var message = hasPayload ? loaded! : listed;
-            ids.Add(listed.Id);
-            if (!rendered.TryGetValue(listed.Id, out var known) || known.Stamp != listed.Stamp || known.Payload != hasPayload)
-            {
-                known = (listed.Stamp, hasPayload, Message(message));
-                rendered[listed.Id] = known;
-            }
-            elements.Add(known.Element);
-        }
-        foreach (var gone in rendered.Keys.Where(id => !ids.Contains(id)).ToList())
-        {
-            rendered.Remove(gone);
-        }
-        // Only the rows that changed are replaced, so the list keeps its place.
-        for (var i = 0; i < elements.Count; i++)
-        {
-            if (i >= items.Count)
-            {
-                items.Add(elements[i]);
-            }
-            else if (!ReferenceEquals(items[i], elements[i]))
-            {
-                // An element has one parent: one moving up leaves its old row first.
-                var at = items.IndexOf(elements[i]);
-                if (at > i)
-                {
-                    items.RemoveAt(at);
-                }
-                items[i] = elements[i];
-            }
-        }
-        while (items.Count > elements.Count)
-        {
-            items.RemoveAt(items.Count - 1);
-        }
-        if (!scrolled && items.Count > 0)
-        {
-            scrolled = true;
-            Transcript.ScrollIntoView(items[^1], ScrollIntoViewAlignment.Leading);
-        }
-    }
-
-    // Message lays out the user's messages on the right, the model's on the
-    // left, and the system's and the Harness's in the middle.
-    UIElement Message(BindingMessage message)
-    {
-        var blocks = new StackPanel { Spacing = 8 };
-        for (var position = 0; position < message.Blocks.Length; position++)
-        {
-            blocks.Children.Add(Block(message, position, message.Blocks[position]));
-        }
-        switch (message.Role)
-        {
-            case BindingMessageRole.User:
-                return new Border
-                {
-                    HorizontalAlignment = HorizontalAlignment.Right,
-                    MaxWidth = 560,
-                    Padding = new Thickness(12, 8, 12, 8),
-                    CornerRadius = new CornerRadius(8),
-                    Style = Ui.Style("CardStyle"),
-                    Child = blocks,
-                };
-            case BindingMessageRole.Assistant:
-                blocks.MaxWidth = 820;
-                blocks.HorizontalAlignment = HorizontalAlignment.Left;
-                return blocks;
-            default:
-                blocks.MaxWidth = 820;
-                blocks.Spacing = 4;
-                blocks.HorizontalAlignment = HorizontalAlignment.Stretch;
-                return blocks;
-        }
-    }
-
-    UIElement Block(BindingMessage message, int position, BindingMessageBlock block)
-    {
-        var key = $"{message.Id}/{position}";
-        switch (block)
-        {
-            case BindingMessageBlock.Text text when message.Role == BindingMessageRole.User:
-                return new TextBlock { Text = text.TextValue, IsTextSelectionEnabled = true, TextWrapping = TextWrapping.Wrap };
-            case BindingMessageBlock.Text text:
-                return Markdown.View(text.TextValue);
-            case BindingMessageBlock.Notice notice:
-                var centered = Muted(notice.TextValue);
-                centered.HorizontalAlignment = HorizontalAlignment.Center;
-                centered.TextAlignment = TextAlignment.Center;
-                return centered;
-            case BindingMessageBlock.Reasoning reasoning:
-                var summary = reasoning.Summary.Trim();
-                return Disclosure(message.Id, key, summary.Length == 0 ? "思考" : summary, reasoning.TextValue);
-            case BindingMessageBlock.Tool tool:
-                var suffix = tool.State switch
-                {
-                    BindingToolState.Pending => " · 等待",
-                    BindingToolState.Running => " · 运行中",
-                    BindingToolState.Failed => " · 失败",
-                    _ => "",
-                };
-                return Disclosure(message.Id, key, tool.Title + suffix, tool.Output);
-            case BindingMessageBlock.Image:
-                return Muted("［图片］");
-            case BindingMessageBlock.File file:
-                return Muted("［文件］" + Listing.LastPart(file.Path));
-            case BindingMessageBlock.AgentSender sender:
-                return Muted($"来自 {sender.RuntimeName} · {sender.Title}");
-            default:
-                return new StackPanel();
-        }
-    }
-
-    static TextBlock Muted(string text) => new()
-    {
-        Text = text,
-        FontSize = 13,
-        IsTextSelectionEnabled = true,
-        TextWrapping = TextWrapping.Wrap,
-        Style = Ui.Style("SecondaryTextStyle"),
-    };
-
-    // Disclosure keeps reasoning and tool output folded; large ones are read
-    // when unfolded.
-    UIElement Disclosure(string messageID, string key, string title, BindingMessagePayload? payload)
-    {
-        if (payload == null)
-        {
-            return Muted(title);
-        }
-        var expander = new Expander
-        {
-            Header = new TextBlock { Text = title, FontSize = 13, TextTrimming = TextTrimming.CharacterEllipsis },
-            HorizontalAlignment = HorizontalAlignment.Stretch,
-            HorizontalContentAlignment = HorizontalAlignment.Stretch,
-            IsExpanded = expanded.Contains(key),
-            Content = payload switch
-            {
-                BindingMessagePayload.Inline inline => Markdown.Code(inline.Text, 12),
-                _ => new ProgressRing { IsActive = true, Width = 20, Height = 20 },
-            },
-        };
-        expander.Expanding += (_, _) =>
-        {
-            expanded.Add(key);
-            if (payload is BindingMessagePayload.Deferred)
-            {
-                Model.LoadPayload(messageID);
-            }
-        };
-        expander.Collapsed += (_, _) => expanded.Remove(key);
-        return expander;
-    }
 
     void RenderInteraction()
     {

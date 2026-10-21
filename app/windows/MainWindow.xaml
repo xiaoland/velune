@@ -79,23 +79,12 @@
             </NavigationView.PaneCustomContent>
 
             <Grid>
-                <Grid.RowDefinitions>
-                    <RowDefinition Height="Auto" />
-                    <RowDefinition Height="*" />
-                </Grid.RowDefinitions>
-                <TextBlock
-                    x:Name="PageTitle"
-                    Margin="24,12,24,4"
-                    Style="{ThemeResource SubtitleTextBlockStyle}"
-                    TextTrimming="CharacterEllipsis" />
                 <ContentControl
                     x:Name="Page"
-                    Grid.Row="1"
                     HorizontalContentAlignment="Stretch"
                     VerticalContentAlignment="Stretch" />
                 <StackPanel
                     x:Name="Welcome"
-                    Grid.Row="1"
                     HorizontalAlignment="Center"
                     VerticalAlignment="Center"
                     Spacing="12">

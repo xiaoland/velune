@@ -38,6 +38,8 @@ public sealed partial class MainWindow : Window
     // RenamingID is the conversation whose title is edited in the list.
     string? renamingID;
     readonly SemaphoreSlim dialogs = new(1, 1);
+    // The conversations opened before the shown one, for the title bar's back button.
+    readonly Stack<Target> back = [];
 
     internal MainWindow(Core core)
     {
@@ -61,6 +63,13 @@ public sealed partial class MainWindow : Window
         Size(this, 1180, 780, 720, 480);
 
         AppTitleBar.PaneToggleRequested += (_, _) => Navigation.IsPaneOpen = !Navigation.IsPaneOpen;
+        AppTitleBar.BackRequested += (_, _) =>
+        {
+            if (back.TryPop(out var previous))
+            {
+                Open(previous, false);
+            }
+        };
         // The built-in item follows the system language; the sidebar is ours.
         Navigation.Loaded += (_, _) =>
         {
@@ -315,6 +324,7 @@ public sealed partial class MainWindow : Window
         }
         Hub.SetActivity(device, next, foreground);
         device = next;
+        back.Clear();
         CloseConversation();
         listing = Listing.Loading;
         renamingID = null;
@@ -332,14 +342,47 @@ public sealed partial class MainWindow : Window
         Page.Content = null;
     }
 
-    void Open(Target target)
+    // Open shows a conversation; one opened from another can go back to it.
+    void Open(Target target, bool remember = true)
     {
+        if (remember && conversation?.Model.Target is { Unsent: false } shown && shown.ConversationID != target.ConversationID)
+        {
+            back.Push(shown);
+        }
         CloseConversation();
         conversation = new ConversationView(new Conversation(core, device, target, listing.Configuration), this);
         conversation.Model.Changed += Render;
         Page.Content = conversation;
         NoteSeen();
         Render();
+    }
+
+    // OpenLinked opens a conversation a transcript links to: a collaborator,
+    // a native sub-agent or its parent, which the list may not show.
+    internal async void OpenLinked(string conversationID)
+    {
+        var target = device;
+        BindingListedConversation? found;
+        try
+        {
+            found = await Task.Run(() => core.Application(target).FindConversation(conversationID));
+        }
+        catch (Exception failure)
+        {
+            found = null;
+            listing.Failure = Core.Describe(failure);
+        }
+        if (closed || target != device)
+        {
+            return;
+        }
+        if (found == null)
+        {
+            listing.Failure = listing.Failure.Length > 0 ? listing.Failure : "这台设备上找不到该会话。";
+            Render();
+            return;
+        }
+        Open(new Target(found.Conversation.RuntimeId, found.Conversation.Id, found.Conversation.Title));
     }
 
     // StartConversation opens an empty conversation; its first message starts it.
@@ -548,8 +591,7 @@ public sealed partial class MainWindow : Window
         AppTitleBar.Subtitle = deviceName;
         var title = conversation?.Model.Title;
         Title = title == null ? $"Velune — {deviceName}" : $"{title} — {deviceName} — Velune";
-        PageTitle.Text = title ?? "";
-        PageTitle.Visibility = title == null ? Visibility.Collapsed : Visibility.Visible;
+        AppTitleBar.IsBackButtonVisible = back.Count > 0;
         NewButton.IsEnabled = listing.Configuration.Runtimes.Count > 0;
 
         var failures = new[] { Hub.Failure, listing.Failure }.Where(failure => failure.Length > 0).ToList();
@@ -606,7 +648,7 @@ public sealed partial class MainWindow : Window
                 more.Content = $"加载更多（{group.Loaded} / {group.Total}）";
                 children.Add(more);
             }
-            Reconcile(groupItem.MenuItems, children);
+            Ui.Reconcile(groupItem.MenuItems, children);
             groups.Add(groupItem);
         }
         foreach (var gone in groupItems.Keys.Where(id => !shownGroups.Contains(id)).ToList())
@@ -617,36 +659,8 @@ public sealed partial class MainWindow : Window
         {
             conversationItems.Remove(gone);
         }
-        Reconcile(Navigation.MenuItems, groups);
+        Ui.Reconcile(Navigation.MenuItems, groups);
         ShowSelection();
-    }
-
-    static void Reconcile(IList<object> items, List<object> wanted)
-    {
-        for (var i = 0; i < wanted.Count; i++)
-        {
-            if (i < items.Count && ReferenceEquals(items[i], wanted[i]))
-            {
-                continue;
-            }
-            var at = items.IndexOf(wanted[i]);
-            if (at > i)
-            {
-                items.RemoveAt(at);
-            }
-            if (i < items.Count)
-            {
-                items.Insert(i, wanted[i]);
-            }
-            else
-            {
-                items.Add(wanted[i]);
-            }
-        }
-        while (items.Count > wanted.Count)
-        {
-            items.RemoveAt(items.Count - 1);
-        }
     }
 
     // ConversationItem is one conversation: a dot while unread, its title,

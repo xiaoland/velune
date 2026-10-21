@@ -7,12 +7,13 @@ using Microsoft.UI.Xaml.Media.Imaging;
 
 namespace Velune;
 
-enum SettingsPage { Providers, Runtimes, Devices, Keep }
+enum SettingsPage { General, Providers, Runtimes, Devices, Keep }
 
-// The settings window: this PC's providers and runtimes, and devices. There
+// The settings window: this PC's general settings, providers and runtimes, and devices. There
 // is one; opening it again brings the open one back.
 public sealed partial class SettingsWindow : Window
 {
+    readonly GeneralPage general;
     readonly ProvidersPage providers;
     readonly RuntimesPage runtimes;
     readonly DevicesPage devices;
@@ -37,6 +38,7 @@ public sealed partial class SettingsWindow : Window
         ShowMark();
         Root.ActualThemeChanged += (_, _) => ShowMark();
 
+        general = new GeneralPage(core);
         providers = new ProvidersPage(core, this);
         runtimes = new RuntimesPage(core, this);
         devices = new DevicesPage(core, hub, this, open);
@@ -44,6 +46,7 @@ public sealed partial class SettingsWindow : Window
         {
             Page.Content = (e.SelectedItemContainer?.Tag as string) switch
             {
+                "general" => general,
                 "providers" => providers,
                 "runtimes" => runtimes,
                 _ => devices,

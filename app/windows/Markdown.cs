@@ -26,14 +26,47 @@ static class Markdown
         .UseAutoLinks()
         .Build();
 
-    public static UIElement View(string text)
+    // The view's handler for the links of the text being drawn; View runs on
+    // the UI thread and sets it for one call.
+    static Action<string>? open;
+
+    // View draws text; a link hands its target to open, which decides how,
+    // since a file link is relative to the conversation's directory.
+    public static UIElement View(string text, Action<string>? open = null)
     {
-        var panel = new StackPanel { Spacing = 8 };
-        foreach (var block in Markdig.Markdown.Parse(text, pipeline))
+        Markdown.open = open;
+        try
         {
-            panel.Children.Add(Block(block));
+            var panel = new StackPanel { Spacing = 8 };
+            foreach (var block in Markdig.Markdown.Parse(text, pipeline))
+            {
+                panel.Children.Add(Block(block));
+            }
+            return panel;
         }
-        return panel;
+        finally
+        {
+            Markdown.open = null;
+        }
+    }
+
+    static Hyperlink Link(string? url)
+    {
+        var hyperlink = new Hyperlink();
+        if (string.IsNullOrEmpty(url))
+        {
+            return hyperlink;
+        }
+        if (open is { } handler)
+        {
+            hyperlink.Click += (_, _) => handler(url);
+            ToolTipService.SetToolTip(hyperlink, url);
+        }
+        else if (Uri.TryCreate(url, UriKind.Absolute, out var uri) && (uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps))
+        {
+            hyperlink.NavigateUri = uri;
+        }
+        return hyperlink;
     }
 
     static UIElement Block(MdBlock block) => block switch
@@ -135,11 +168,7 @@ static class Markdown
             case LinkInline { IsImage: true } image:
                 return new Run { Text = image.FirstChild is LiteralInline alt ? alt.Content.ToString() : image.Url ?? "" };
             case LinkInline link:
-                var hyperlink = new Hyperlink();
-                if (Uri.TryCreate(link.Url, UriKind.Absolute, out var uri) && (uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps))
-                {
-                    hyperlink.NavigateUri = uri;
-                }
+                var hyperlink = Link(link.Url);
                 Inlines(link, hyperlink.Inlines);
                 if (hyperlink.Inlines.Count == 0)
                 {
@@ -147,11 +176,7 @@ static class Markdown
                 }
                 return hyperlink;
             case AutolinkInline autolink:
-                var auto = new Hyperlink();
-                if (Uri.TryCreate(autolink.Url, UriKind.Absolute, out var target))
-                {
-                    auto.NavigateUri = target;
-                }
+                var auto = Link(autolink.IsEmail ? "mailto:" + autolink.Url : autolink.Url);
                 auto.Inlines.Add(new Run { Text = autolink.Url });
                 return auto;
             case HtmlInline html:

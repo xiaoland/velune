@@ -38,6 +38,9 @@ static class Discovery
         return application.DiscoverRuntimes([.. probes]);
     }
 
+    // Installed are the installations of a family's command on PATH, in order.
+    public static List<string> Installed(string family, string command) => CommandCandidates(family, command);
+
     static List<string> SearchPath()
     {
         var directories = (Environment.GetEnvironmentVariable("PATH") ?? "").Split(Path.PathSeparator).ToList();

@@ -1,10 +1,11 @@
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Controls.Primitives;
+using Microsoft.UI.Xaml.Media;
 
 namespace Velune;
 
-// The pieces the settings pages share.
+// The pieces the windows and pages share.
 static class Ui
 {
     public static Style Style(string key) => (Style)Application.Current.Resources[key];
@@ -208,5 +209,53 @@ static class Ui
             menu.Items.Add(item);
         }
         return menu;
+    }
+
+    // Reconcile makes items hold wanted, in order, moving rather than
+    // re-adding the ones it has: an element has one parent at a time.
+    public static void Reconcile<T>(IList<T> items, List<T> wanted) where T : class
+    {
+        for (var i = 0; i < wanted.Count; i++)
+        {
+            if (i < items.Count && ReferenceEquals(items[i], wanted[i]))
+            {
+                continue;
+            }
+            var at = items.IndexOf(wanted[i]);
+            if (at > i)
+            {
+                items.RemoveAt(at);
+            }
+            if (i < items.Count)
+            {
+                items.Insert(i, wanted[i]);
+            }
+            else
+            {
+                items.Add(wanted[i]);
+            }
+        }
+        while (items.Count > wanted.Count)
+        {
+            items.RemoveAt(items.Count - 1);
+        }
+    }
+
+    // Descendant finds the first element of a type in a control's template.
+    public static T? Descendant<T>(DependencyObject root) where T : DependencyObject
+    {
+        for (var i = 0; i < VisualTreeHelper.GetChildrenCount(root); i++)
+        {
+            var child = VisualTreeHelper.GetChild(root, i);
+            if (child is T found)
+            {
+                return found;
+            }
+            if (Descendant<T>(child) is { } deeper)
+            {
+                return deeper;
+            }
+        }
+        return null;
     }
 }

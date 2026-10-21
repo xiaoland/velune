@@ -26,6 +26,11 @@
             OpenPaneLength="200"
             PaneDisplayMode="Left">
             <NavigationView.MenuItems>
+                <NavigationViewItem Content="通用" Tag="general">
+                    <NavigationViewItem.Icon>
+                        <FontIcon Glyph="&#xE713;" />
+                    </NavigationViewItem.Icon>
+                </NavigationViewItem>
                 <NavigationViewItem Content="AI提供商" Tag="providers">
                     <NavigationViewItem.Icon>
                         <FontIcon Glyph="&#xE950;" />

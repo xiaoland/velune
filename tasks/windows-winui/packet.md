@@ -22,6 +22,13 @@
 10. **运行时设置补全**（[分册](../../docs/prd/agent-runtimes.md)；`configure_runtime_execution`、`runtime_home_directory`、`upsert_acp_runtime`、`acp_runtime_info`）：HOME 归属、ACP 启动参数与 Agent 信息、新会话默认。SSH 运行位置在 Windows 宿主上不支持，列为已知限制。
 11. **资源库与分析**（[资源库](../../docs/prd/resource-library.md)、[分析](../../docs/prd/analytics.md)）。
 
+## MVP 进度
+
+- 1–3 已实现，win-ws 构建零警告；呈现见 [Windows README](../../app/windows/README.md)。
+  - **尚未截图验证**：fixture 的驱动只在用户空闲 10 分钟以上且 Velune 在前台时操作。这三次运行时 RDP 画面未显示，前台是外壳窗口（无主窗口的句柄），新启动的窗口拿不到前台，`SetForegroundWindow`（借 `AttachThreadInput`）也被拒绝，所以只验证了启动与退出（退出码 0）。
+- 第 2 步的“关联会话打开方式”留到第 7 步：Windows 还没有标签页、浮层与多窗口，只能在当前视图打开（标题栏返回可回到上一个会话）。现在加入这项设置，所选的方式不会生效。
+- 额度窗口的显示名由 Windows 按核心的窗口 ID 拼出（`window:<秒>`、`ark:*`、`kimi:*`）。各端都需要这套名称，候选做法是由核心随观测给出显示名（属 Product TDD 的“选项目录”）；改动涉及 bindings 与 Mac，未做。
+
 ## 选型依据（2026-10-21 核实）
 
 - win-ws 为 Windows 10 22H2（build 19045）。MyGO v0.5.5 的 Vibrancy（Mica）需要 Windows 11 22H2 以上，在这台机器上不可用。MyGO 的默认主题是它自己的跨平台风格，不是 Fluent。官方示例在 headless 下渲染出的观感与本应用一致。所以 MyGO 的问题不在用法，非原生的上限改不了。
