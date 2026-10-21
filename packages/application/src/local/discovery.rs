@@ -41,9 +41,10 @@ impl CoreRuntime {
                 }
                 Err(error) => (None, None, format!("无法读取公开版本：{error}")),
             };
+            // The runtime's own directory: a runtime installed but not yet run
+            // has not created it, and creates it on its first run.
             let directory_valid = Path::new(&probe.agent_directory).is_absolute()
-                && !probe.agent_directory.contains('\0')
-                && Path::new(&probe.agent_directory).is_dir();
+                && !probe.agent_directory.contains('\0');
             let runtime = RuntimeInstance {
                 enabled: true,
                 id: crate::new_record_key(),
@@ -63,11 +64,11 @@ impl CoreRuntime {
                             && !matches!(execution.home, crate::RuntimeHome::Managed { .. })
                     })
                     && ["binary", "agentDir"].iter().all(|key| {
-                        let existing = r.settings.get(*key).and_then(|p| fs::canonicalize(p).ok());
-                        let candidate = runtime
-                            .settings
-                            .get(*key)
-                            .and_then(|p| fs::canonicalize(p).ok());
+                        // A directory not created yet compares as written.
+                        let resolve =
+                            |p: &String| fs::canonicalize(p).unwrap_or_else(|_| PathBuf::from(p));
+                        let existing = r.settings.get(*key).map(resolve);
+                        let candidate = runtime.settings.get(*key).map(resolve);
                         matches!((existing, candidate), (Some(a), Some(b)) if a == b)
                     })
             });
@@ -79,7 +80,7 @@ impl CoreRuntime {
                 detail: if directory_valid || adapter.is_none() {
                     detail
                 } else {
-                    "运行时目录不存在，请在手动添加中配置".into()
+                    "运行时目录无效，请在手动添加中配置".into()
                 },
             });
         }

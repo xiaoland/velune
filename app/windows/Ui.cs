@@ -18,15 +18,12 @@ static class Ui
 
     public static TextBlock Muted(string text)
     {
-        var muted = Text(text, "CaptionTextBlockStyle");
-        muted.Foreground = Markdown.Brush("TextFillColorSecondaryBrush");
-        return muted;
+        return Text(text, "MutedTextStyle");
     }
 
     public static TextBlock Error() => new()
     {
-        Style = Style("CaptionTextBlockStyle"),
-        Foreground = Markdown.Brush("SystemFillColorCriticalBrush"),
+        Style = Style("ErrorTextStyle"),
         TextWrapping = TextWrapping.Wrap,
         Visibility = Visibility.Collapsed,
     };
@@ -81,9 +78,7 @@ static class Ui
             Padding = new Thickness(16, 12, 16, 12),
             MinHeight = 64,
             CornerRadius = new CornerRadius(4),
-            Background = Markdown.Brush("CardBackgroundFillColorDefaultBrush"),
-            BorderBrush = Markdown.Brush("CardStrokeColorDefaultBrush"),
-            BorderThickness = new Thickness(1),
+            Style = Style("CardStyle"),
             Child = row,
         };
     }
@@ -144,9 +139,7 @@ static class Ui
         var frame = new Border
         {
             CornerRadius = new CornerRadius(8),
-            Background = Markdown.Brush("CardBackgroundFillColorDefaultBrush"),
-            BorderBrush = Markdown.Brush("CardStrokeColorDefaultBrush"),
-            BorderThickness = new Thickness(1),
+            Style = Style("CardStyle"),
             Padding = new Thickness(0, 4, 0, 4),
             Child = list,
         };
@@ -202,7 +195,7 @@ static class Ui
         {
             Text = text,
             Margin = new Thickness(16, 12, 16, 12),
-            Foreground = Markdown.Brush("TextFillColorSecondaryBrush"),
+            Style = Style("SecondaryTextStyle"),
             TextWrapping = TextWrapping.Wrap,
         } : null;
     }

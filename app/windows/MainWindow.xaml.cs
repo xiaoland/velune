@@ -56,7 +56,7 @@ public sealed partial class MainWindow : Window
         }
         else
         {
-            Root.Background = Markdown.Brush("SolidBackgroundFillColorBaseBrush");
+            Root.Style = Ui.Style("WindowBackgroundStyle");
         }
         Size(this, 1180, 780, 720, 480);
 
@@ -694,7 +694,7 @@ public sealed partial class MainWindow : Window
         FrameworkElement? state = null;
         if (active is { PendingInteractions: > 0 })
         {
-            state = StateIcon("\uE7BA", "SystemFillColorCautionBrush", "等待你处理");
+            state = StateIcon("\uE7BA", "CautionIconStyle", "等待你处理");
         }
         else if (running)
         {
@@ -703,7 +703,7 @@ public sealed partial class MainWindow : Window
         }
         else if (unread && listed.Failed)
         {
-            state = StateIcon("\uEA39", "SystemFillColorCriticalBrush", "上一轮失败");
+            state = StateIcon("\uEA39", "CriticalIconStyle", "上一轮失败");
         }
         if (state != null)
         {
@@ -715,9 +715,9 @@ public sealed partial class MainWindow : Window
         return item;
     }
 
-    static FontIcon StateIcon(string glyph, string brush, string label)
+    static FontIcon StateIcon(string glyph, string style, string label)
     {
-        var icon = new FontIcon { Glyph = glyph, FontSize = 14, Foreground = Markdown.Brush(brush) };
+        var icon = new FontIcon { Glyph = glyph, FontSize = 14, Style = Ui.Style(style) };
         ToolTipService.SetToolTip(icon, label);
         Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(icon, label);
         return icon;

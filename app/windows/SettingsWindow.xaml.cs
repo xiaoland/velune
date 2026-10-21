@@ -31,7 +31,7 @@ public sealed partial class SettingsWindow : Window
         }
         else
         {
-            Root.Background = Markdown.Brush("SolidBackgroundFillColorBaseBrush");
+            Root.Style = Ui.Style("WindowBackgroundStyle");
         }
         MainWindow.Size(this, 820, 640, 600, 440);
         ShowMark();

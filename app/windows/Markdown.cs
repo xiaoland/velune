@@ -48,7 +48,7 @@ static class Markdown
         FencedCodeBlock or CodeBlock => Code(((LeafBlock)block).Lines.ToString()),
         QuoteBlock quote => Quote(quote),
         ListBlock list => List(list),
-        ThematicBreakBlock => new Border { Height = 1, Margin = new Thickness(0, 4, 0, 4), Background = Brush("DividerStrokeColorDefaultBrush") },
+        ThematicBreakBlock => new Border { Height = 1, Margin = new Thickness(0, 4, 0, 4), Style = Ui.Style("DividerStyle") },
         Table table => Table(table),
         HtmlBlock html => Prose(Plain(html.Lines.ToString())),
         ContainerBlock container => Container(container),
@@ -169,14 +169,10 @@ static class Markdown
 
     public static FontFamily Mono() => (FontFamily)Application.Current.Resources["MonoFont"];
 
-    public static Brush Brush(string key) => (Brush)Application.Current.Resources[key];
-
     // Code is preformatted text on a card, scrolled sideways rather than wrapped.
     public static UIElement Code(string text, double size = 13) => new Border
     {
-        Background = Brush("CardBackgroundFillColorSecondaryBrush"),
-        BorderBrush = Brush("CardStrokeColorDefaultBrush"),
-        BorderThickness = new Thickness(1),
+        Style = Ui.Style("CodeStyle"),
         CornerRadius = new CornerRadius(6),
         Child = new ScrollViewer
         {
@@ -197,7 +193,7 @@ static class Markdown
 
     static UIElement Quote(QuoteBlock quote) => new Border
     {
-        BorderBrush = Brush("AccentFillColorDefaultBrush"),
+        Style = Ui.Style("QuoteStyle"),
         BorderThickness = new Thickness(3, 0, 0, 0),
         Padding = new Thickness(12, 0, 0, 0),
         Child = Container(quote),
@@ -230,7 +226,7 @@ static class Markdown
 
     static UIElement Table(Table table)
     {
-        var grid = new Grid { BorderBrush = Brush("CardStrokeColorDefaultBrush"), BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(6) };
+        var grid = new Grid { Style = Ui.Style("TableStyle"), BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(6) };
         var columns = table.OfType<TableRow>().Select(row => row.Count).DefaultIfEmpty(0).Max();
         for (var column = 0; column < columns; column++)
         {
@@ -247,7 +243,7 @@ static class Markdown
                 var border = new Border
                 {
                     Padding = new Thickness(8, 4, 8, 4),
-                    BorderBrush = Brush("DividerStrokeColorDefaultBrush"),
+                    Style = Ui.Style("TableCellStyle"),
                     BorderThickness = new Thickness(0, index == 0 ? 0 : 1, column == 0 ? 0 : 1, 0),
                     Child = text,
                 };

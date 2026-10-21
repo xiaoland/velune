@@ -163,9 +163,7 @@ public sealed partial class ConversationView : UserControl
                     MaxWidth = 560,
                     Padding = new Thickness(12, 8, 12, 8),
                     CornerRadius = new CornerRadius(8),
-                    Background = Markdown.Brush("CardBackgroundFillColorDefaultBrush"),
-                    BorderBrush = Markdown.Brush("CardStrokeColorDefaultBrush"),
-                    BorderThickness = new Thickness(1),
+                    Style = Ui.Style("CardStyle"),
                     Child = blocks,
                 };
             case BindingMessageRole.Assistant:
@@ -223,7 +221,7 @@ public sealed partial class ConversationView : UserControl
         FontSize = 13,
         IsTextSelectionEnabled = true,
         TextWrapping = TextWrapping.Wrap,
-        Foreground = Markdown.Brush("TextFillColorSecondaryBrush"),
+        Style = Ui.Style("SecondaryTextStyle"),
     };
 
     // Disclosure keeps reasoning and tool output folded; large ones are read

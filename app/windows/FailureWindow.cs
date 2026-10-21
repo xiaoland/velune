@@ -12,7 +12,7 @@ sealed class FailureWindow : Window
         Content = new Grid
         {
             Padding = new Thickness(24),
-            Background = Markdown.Brush("SolidBackgroundFillColorBaseBrush"),
+            Style = Ui.Style("WindowBackgroundStyle"),
             Children =
             {
                 new TextBlock

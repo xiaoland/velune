@@ -9,7 +9,8 @@
             <RowDefinition Height="Auto" />
             <RowDefinition Height="*" />
         </Grid.RowDefinitions>
-        <TitleBar x:Name="SettingsTitleBar" Title="设置">
+        <!-- As tall as the Tall caption buttons the window asks for. -->
+        <TitleBar x:Name="SettingsTitleBar" Height="48" Title="设置">
             <TitleBar.IconSource>
                 <ImageIconSource x:Name="TitleIcon" />
             </TitleBar.IconSource>

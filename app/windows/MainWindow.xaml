@@ -14,8 +14,10 @@
             <KeyboardAccelerator x:Name="RenameAccelerator" Key="F2" />
         </Grid.KeyboardAccelerators>
 
+        <!-- As tall as the Tall caption buttons the window asks for. -->
         <TitleBar
             x:Name="AppTitleBar"
+            Height="48"
             Title="Velune"
             IsBackButtonVisible="False"
             IsPaneToggleButtonVisible="True">
