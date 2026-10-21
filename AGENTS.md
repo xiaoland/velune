@@ -30,7 +30,7 @@
 - MCP 暴露协作工具、ACP 可替换接入已获认可；持久化是协作支撑，不代替发现、注入、委派、结果与失败协调机制
 - Apple 具体平台覆盖、Mac Catalyst／AppKit、FFI 与运行宿主等尚有技术边界，不能把 native UI 当手机可以常驻运行桌面 Harness 的证明
 - 应用配置使用文件系统持久化，根目录为 `VELUNE_HOME`，默认 `~/.velune`；AI provider 与 Harness 配置由平台装配／Host 管理，独立 AI lib 不自行读取全局环境；API key 可保存在本机应用配置，但开发工具不得读取、输出或提交真实秘密
-- 界面遵循 `DESIGN.md`：贴合所属框架与平台，不建立覆盖系统风格的统一皮肤；完整端以 Mac 为交互基准，Android 按设备形态调整。Windows 例外接受自绘 UI，2026-10-20 定为 MyGO（不用 GPUI），不采用 .NET／WinUI
+- 界面遵循 `DESIGN.md`：贴合所属框架与平台，不建立覆盖系统风格的统一皮肤；完整端以 Mac 为交互基准，Android 按设备形态调整。Windows 2026-10-21 经用户授权由开发方改定 C#／.NET＋WinUI 3（Fluent 控件，经 UniFFI C# 绑定调用核心），取代 MyGO；不选 GPUI
 - 不把聊天中的示例、助手提议或未核实的技术说法提升为已批准架构
 - HAPI、Lody 只作说明性参考；Claude Code 订阅认证可研究其方案，但不意味着已允许复用凭据或认可可行性
 - 不承诺订阅可以无限使用、免 token 计费、跨任意工具互通或规避供应商限制

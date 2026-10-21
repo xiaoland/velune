@@ -418,3 +418,9 @@ S17 实施授权：用户决定全面切换 UniFFI，并要求现在开始拆分
 ## S44
 
 2026-10-21 Windows 上 ChatGPT 桌面应用带的 Codex 为 0.163.0-alpha.10.2，超出 `codex-0.159` 的区间。用户问：“codex需要新的适配器？为什么？0.155不必支持了呀？还是说 0.163 又太新了”，随后决定：“先进行实测，如果真的不支持，再增加新的 adapter type；并且可以支持 alpha, beta ，这是无所谓的。”即先以实际 CLI 验证，确有破坏性变化才另建 adapter；预发布版本按其正式版计入区间。实测与区间调整见 [版本区间任务](../tasks/adapter-version-ranges/packet.md)。
+
+## S45
+
+2026-10-21 用户看过 MyGO 版主窗口后问：“这真的是 MyGO 重写的，并且使用了 MyGO Native UI 以及相关组件之后的效果吗？为什么和它们的官方 demo 还有我在推特上看到的别人的分享效果差这么远？是因为它对 windows 的支持不佳，还是你对它的了解不够（有 agent skill 的话建议安装）。如果这两个问题任何一个都无法改善，那我就放手交给你去选择了（不能再选 GPUI，除非你有找到一个还不错的有在积极维护的 GPUI 组件库），用你自己喜欢的不论是 C# 也好、.Net 也好。”
+
+开发方核对：win-ws 为 Windows 10 22H2，MyGO 的 Vibrancy（Mica）需 Windows 11 22H2 以上；MyGO 的主题是其跨平台自有风格而非 Fluent，官方示例 headless 渲染与本应用观感一致，网上分享多为 macOS 的毛玻璃效果；已安装其 `mygo-maintenance` skill，内容只涉及生命周期与测试，不涉及视觉。界面用法已按高层组件改进，但非原生的上限不变。据此开发方在用户授权内选定 C#／.NET 8＋WinUI 3（Windows App SDK），经 UniFFI 的 C# 绑定调用 Rust 核心；本条取代 [S43](#s43) 中“不采用 .NET／WinUI”与 MyGO 的选择，Go／purego 约束随 MyGO 版一并失效。MyGO 版保留至 WinUI 版达到同等功能后删除。实施归 [Windows WinUI 任务](../tasks/windows-winui/packet.md)。

@@ -1,5 +1,7 @@
 # Windows MyGO 应用
 
+2026-10-21 起 Windows 端改用 WinUI 3（[S45](../../docs/sources.md#s45)，[Windows WinUI 任务](../windows-winui/packet.md)）。本版只保留到 WinUI 版功能相同，期间只修阻塞问题。
+
 ## 当前任务
 
 2026-10-20 用户改定 Windows 端使用 MyGO 而非 GPUI（[S43](../../docs/sources.md#s43)）。目标与 GPUI 版相同：完整端，本机运行 agents，并可控制其他已配对设备；先交付会话日常闭环（会话列表与转录、发送、停止、审批／问题），再补设备配对与设置。Go 桥坚持 purego、不用 cgo。产品约束见 [PRD](../../docs/prd/index.md)，跨单元方案见 [架构](../../docs/design/architecture.md)，远控契约见 [远程访问设计](../../docs/design/remote-access.md)。

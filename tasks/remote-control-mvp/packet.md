@@ -4,7 +4,7 @@
 
 2026-10-19 用户目标：实现远程控制系列能力的 MVP。
 
-- Windows 端基于 MyGO 开发，可在 `win-ws.localhost` 验收。
+- Windows 端基于 WinUI 3（C#）开发（2026-10-21 取代 MyGO，见 [Windows WinUI 任务](../windows-winui/packet.md)），可在 `win-ws.localhost` 验收。
 - Android 端保持既有技术栈（Kotlin／Jetpack Compose），彻底重写；现有实现只是远控基础能力的测试原型。
 - Android 不是对等端（将来的 iPad、Web 同理）：只有控制能力，不运行 agent runtime。任何一端都能控制其他端。
 - SSH agent-runtime 与远程控制是两项不同能力。
