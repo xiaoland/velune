@@ -131,7 +131,7 @@ iroh 的默认自动选路与 QUIC 多流承担传输；路径快照、事件和
 ### Apple 与 Android 宿主
 
 - **Apple 当前落点**：Mac 使用 SwiftUI／AppKit 的原生窗口、菜单与设置，嵌入 Rust dylib；iOS／iPadOS 的 UIKit 方向不等于已实现或能运行桌面 Harness。watchOS／tvOS／visionOS 不在本轮承诺内
-- **Windows**：完整端，本机运行 agents 并可控制其他端。2026-10-21 由用户交开发方选择，定为 C#／.NET 8＋WinUI 3（Windows App SDK，Fluent 控件），取代 10-20 的 [MyGO](https://github.com/egoist/mygo) 版（[S45](../sources.md#s45)）。C# 经 UniFFI 的 C# 绑定以 P/Invoke 调用 `velune_bindings.dll`，与核心同进程，不另启 Host 进程；C# 绑定的生成方式待定。MyGO 版（自建 Go 生成器、purego）在 WinUI 版达到同等功能前保留，之后与 Go 生成器一并删除。待验证，进度见 [任务](../../tasks/windows-winui/packet.md)。
+- **Windows**：完整端，本机运行 agents 并可控制其他端。2026-10-21 由用户交开发方选择，定为 C#／.NET 10＋WinUI 3（Windows App SDK 2.5，非打包、自包含，Fluent 控件），取代 10-20 的 [MyGO](https://github.com/egoist/mygo) 版（[S45](../sources.md#s45)）；MyGO 版与自建的 Go 生成器已删除。C# 经 `uniffi-bindgen-cs`（固定在支持 UniFFI 0.32 的提交）生成的绑定以 P/Invoke 调用 `velune_bindings.dll`，与核心同进程，不另启 Host 进程；C# 中与同级变体同名的变体字段由 `uniffi.toml` 改名，不改 Rust API。待验证，进度见 [任务](../../tasks/windows-winui/packet.md)。
 - **Android 目标**：Kotlin＋Jetpack Compose 原生控制端，经 remote-only UniFFI／JNA 嵌入 Rust，不携带 Harness 或 AI 执行栈。库已提供 Application JNI context 与系统 TLS verifier 的装配入口；应用私有存储、备份排除与生命周期接入由后续平台工作承担。当前 main 不包含早期 Android App，库产物与历史平台观察见 [任务](../../tasks/android-minimal/packet.md)
 - **移动端能力**：远端 Harness 接入和后台能力仍需单独验证。嵌入核心不代表手机能常驻桌面 Harness，也不把离线输入显示为远端已启动的任务
 

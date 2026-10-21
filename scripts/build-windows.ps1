@@ -27,7 +27,7 @@ if ($LASTEXITCODE -ne 0) { throw 'uniffi-bindgen-cs failed' }
 
 $app = 'target\windows\Velune'
 Remove-Item -Recurse -Force $app -ErrorAction SilentlyContinue
-dotnet publish app\windows-winui\Velune.csproj --configuration Release --output $app
+dotnet publish app\windows\Velune.csproj --configuration Release --output $app
 if ($LASTEXITCODE -ne 0) { throw 'dotnet publish failed' }
 Copy-Item target\release\velune_bindings.dll, target\release\velune_relaykit.dll $app
 

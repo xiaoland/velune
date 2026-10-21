@@ -2,7 +2,7 @@
 
 `velune-bindings` 是本地 application 与远程客户端共用的 UniFFI 接入层。Swift、Kotlin 和 Python 使用同一份 Rust 元数据生成接口。领域 package 不依赖 UniFFI；此处的 `Binding*` records 与 enums 将领域契约转换为语言绑定能够表达的类型。Mac 在应用进程内加载此 unit 的动态库，不通过 Host 或 socket 调用 Rust。
 
-Go 绑定供 Windows MyGO 应用使用，由本 unit 的 `velune-gobindgen <library> <out-dir>`（`cli` feature）从同一份元数据生成，输出不入库的 `velune/bindings` module。运行时经 purego 加载动态库，不用 cgo；purego 按平台 C 约定传递按值 struct，所以同一包也能在 macOS 加载 dylib 做本机冒烟。生成器只翻译当前接口用到的同步函数、record、enum、object、error 与集合，遇到 async、callback 等未覆盖特性直接失败。
+C# 绑定供 Windows WinUI 应用使用，由 NordSecurity 的 `uniffi-bindgen-cs`（固定在支持 UniFFI 0.32 的 PR #176 提交，构建脚本把它安装到 `target\tools`）从同一份元数据生成，输出不入库，编入应用程序集。`uniffi.toml` 的 `bindings.csharp` 设定命名空间 `Velune.Bindings`，并把三个与同级变体同名的变体字段改名为 `TextValue`／`InstructionsValue`（C# 中变体是嵌套类，同名字段会与继承来的嵌套类型冲突；后缀沿用生成器自己的 `Value` 约定），只影响 C# 名称，不改 Rust API。生成器在 cargo 之外运行时需要 `CARGO` 指向 cargo 的绝对路径。
 
 Kotlin 生成目标为 Android，`uniffi.toml` 固定 `bindings.kotlin.android=true`，生成物依赖 Android API 与 AndroidX 注解。UniFFI 在 API 34 及以上使用 Android `SystemCleaner`，较低 API 使用 JNA Cleaner，以支持当前 Android 端的 API 28 下限。
 

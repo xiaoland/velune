@@ -1,6 +1,6 @@
 # Windows MyGO 应用
 
-2026-10-21 起 Windows 端改用 WinUI 3（[S45](../../docs/sources.md#s45)，[Windows WinUI 任务](../windows-winui/packet.md)）。本版只保留到 WinUI 版功能相同，期间只修阻塞问题。
+已关闭：2026-10-21 起 Windows 端改用 WinUI 3（[S45](../../docs/sources.md#s45)，[Windows WinUI 任务](../windows-winui/packet.md)），MyGO 版与 Go 生成器已删除，代码在版本历史中。以下为历史记录；删除本 packet 待用户同意。
 
 ## 当前任务
 

@@ -4470,7 +4470,6 @@ dependencies = [
 name = "velune-bindings"
 version = "0.1.0"
 dependencies = [
- "camino",
  "jni 0.22.4",
  "rustls-platform-verifier",
  "serde",
@@ -4481,7 +4480,6 @@ dependencies = [
  "tracing-appender",
  "tracing-subscriber",
  "uniffi",
- "uniffi_bindgen",
  "velune-application",
  "velune-application-api",
  "velune-remote",
