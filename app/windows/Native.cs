@@ -26,4 +26,11 @@ static partial class Native
         picker.FileTypeFilter.Add("*");
         return (await picker.PickSingleFileAsync())?.Path;
     }
+
+    public static async Task<string[]> PickFiles(Window window)
+    {
+        var picker = new FileOpenPicker(window.AppWindow.Id);
+        picker.FileTypeFilter.Add("*");
+        return [.. (await picker.PickMultipleFilesAsync()).Select(file => file.Path)];
+    }
 }

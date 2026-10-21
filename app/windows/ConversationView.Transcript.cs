@@ -299,6 +299,11 @@ public sealed partial class ConversationView
                 Child = bubble,
             });
         }
+        // What the message allows changes as the conversation goes on, so
+        // the menu is filled when it opens.
+        var menu = new MenuFlyout();
+        menu.Opening += (_, _) => FillMessageMenu(menu, message);
+        panel.ContextFlyout = menu;
         return panel;
     }
 

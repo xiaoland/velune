@@ -26,6 +26,7 @@ public sealed partial class ConversationView : UserControl
         Model = model;
         this.window = window;
         AttachTranscript();
+        AttachComposer();
         ParentButton.Click += (_, _) =>
         {
             if (Model.ParentID is { } parent)
@@ -44,10 +45,19 @@ public sealed partial class ConversationView : UserControl
         Render();
     }
 
-    public void Close() => Model.Close();
+    public void Close()
+    {
+        FlushDraft();
+        Model.Close();
+    }
 
     void InputKeyDown(object sender, KeyRoutedEventArgs e)
     {
+        if (ComposerKey(e))
+        {
+            e.Handled = true;
+            return;
+        }
         var control = InputKeyboardSource.GetKeyStateForCurrentThread(VirtualKey.Control).HasFlag(CoreVirtualKeyStates.Down);
         if (e.Key == VirtualKey.Enter && control)
         {
@@ -59,11 +69,11 @@ public sealed partial class ConversationView : UserControl
     async void Send()
     {
         var text = Input.Text;
-        if (string.IsNullOrWhiteSpace(text) || Model.Busy || Model.Next.Length == 0)
+        if ((string.IsNullOrWhiteSpace(text) && Model.Attached.Count == 0) || Model.Busy || Model.Next.Length == 0 || Model.Uploading > 0)
         {
             return;
         }
-        Input.Text = "";
+        SetInput("");
         // Sending shows the whole list again, at its end.
         if (outlineFolded)
         {
@@ -72,7 +82,7 @@ public sealed partial class ConversationView : UserControl
         ScrollToEnd();
         if (!await Model.Send(text) && Input.Text.Length == 0)
         {
-            Input.Text = text;
+            SetInput(text);
         }
     }
 
@@ -98,16 +108,13 @@ public sealed partial class ConversationView : UserControl
 
         AgentButton.Visibility = Visible(Model.Next.Length > 0);
         AgentButton.Content = AgentTitle();
-        PermissionButton.Visibility = Visible(Model.Next.Length > 0 && Model.PermissionModes().Length > 0);
+        PermissionButton.Visibility = Visible(Model.Next.Length > 0 && (Model.PermissionModes().Length > 0 || Model.SessionOptions.Length > 0));
         (PermissionButton.Content, var permissionTip) = PermissionTitle();
         ToolTipService.SetToolTip(PermissionButton, permissionTip);
         CwdButton.Visibility = Visible(Model.Target.Unsent);
         CwdButton.Content = Model.Cwd.Length > 0 ? Listing.LastPart(Model.Cwd) : "工作目录";
         ToolTipService.SetToolTip(CwdButton, Model.Cwd.Length > 0 ? Model.Cwd : "工作目录：留空时使用运行时的默认目录");
-        StopButton.Visibility = Visible(Model.CanCancel);
-        StopButton.IsEnabled = !Model.Busy;
-        SendButton.Visibility = Visible(!Model.CanCancel);
-        SendButton.IsEnabled = !Model.Busy && Model.Next.Length > 0;
+        RenderComposer();
     }
 
     static Visibility Visible(bool visible) => visible ? Visibility.Visible : Visibility.Collapsed;
@@ -228,6 +235,10 @@ public sealed partial class ConversationView : UserControl
 
     (string Title, string Tooltip) PermissionTitle()
     {
+        if (Model.PermissionModes().Length == 0)
+        {
+            return ("会话选项", "ACP Agent 为此会话提供的选项");
+        }
         var mode = Model.PermissionMode(Model.Choice().PermissionMode);
         var current = Model.PermissionMode(Model.CurrentSettings()?.PermissionMode);
         var title = (mode ?? current)?.Label ?? "运行时默认权限";
@@ -336,6 +347,15 @@ public sealed partial class ConversationView : UserControl
     void FillPermissionMenu()
     {
         PermissionMenu.Items.Clear();
+        if (Model.PermissionModes().Length > 0)
+        {
+            FillPermissionModes();
+        }
+        FillSessionOptions();
+    }
+
+    void FillPermissionModes()
+    {
         var mode = Model.PermissionMode(Model.Choice().PermissionMode);
         var current = Model.PermissionMode(Model.CurrentSettings()?.PermissionMode);
         var first = current != null ? "沿用当前（" + current.Label + "）" : Model.HasTurns(Model.Next) ? "沿用当前" : "运行时默认";

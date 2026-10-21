@@ -24,7 +24,7 @@ sealed record ModelChoice(BindingModelSelection Selection, string Name, string[]
 // One open conversation on a device: its transcript, pending interaction and
 // next turn's choices. It changes on the UI thread only; Changed tells the
 // view to show it again.
-sealed class Conversation
+sealed partial class Conversation
 {
     readonly Core core;
     public Device Device { get; }
@@ -238,16 +238,26 @@ sealed class Conversation
         Notify();
     }
 
-    // Send sends text as the next turn; false keeps it in the composer.
+    // Send sends text and the attachments as the next turn, or queues them
+    // while a turn runs; false keeps them in the composer.
     public async Task<bool> Send(string text)
     {
         text = text.Trim();
-        if (Busy || text.Length == 0 || Snapshot is { Actions.CanSend: false })
+        if (Busy || (text.Length == 0 && Attached.Count == 0) || Next.Length == 0)
         {
             return false;
         }
-        // Without a level or mode the core keeps the conversation's current one.
-        var turn = new BindingComposedTurn(text, Effort(), [], PermissionMode(Choice().PermissionMode)?.Id);
+        if (Running)
+        {
+            return await Queue(text);
+        }
+        if (Snapshot is { Actions.CanSend: false })
+        {
+            return false;
+        }
+        var turn = Turn(text);
+        var sentAttachments = Attached.ToList();
+        Attached.Clear();
         var selection = NextModel();
         var existing = Snapshot is { } snapshot ? (snapshot.ContextRuntimeId, snapshot.Conversation.Id) : default((string, string)?);
         var runtimeID = Next;
@@ -285,6 +295,8 @@ sealed class Conversation
         catch (Exception failure)
         {
             Sending = null;
+            // What was sent goes back to the composer, ahead of anything attached since.
+            Attached.InsertRange(0, sentAttachments);
             if (created != null)
             {
                 Merge(created);

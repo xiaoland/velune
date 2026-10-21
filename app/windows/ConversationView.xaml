@@ -120,10 +120,26 @@
         <Border
             x:Name="ComposerPanel"
             Grid.Row="4"
+            AllowDrop="True"
             Padding="16,12,16,12"
             BorderBrush="{ThemeResource DividerStrokeColorDefaultBrush}"
             BorderThickness="0,1,0,0">
             <StackPanel Spacing="8">
+                <!-- The send queue: messages sent while a turn runs, sent one by one after it. -->
+                <InfoBar
+                    x:Name="QueueBar"
+                    IsClosable="False"
+                    Severity="Informational" />
+                <StackPanel x:Name="QueuePanel" Spacing="4" />
+                <ScrollViewer
+                    x:Name="AttachmentScroller"
+                    HorizontalScrollBarVisibility="Auto"
+                    HorizontalScrollMode="Auto"
+                    VerticalScrollBarVisibility="Disabled"
+                    VerticalScrollMode="Disabled"
+                    Visibility="Collapsed">
+                    <StackPanel x:Name="AttachmentPanel" Orientation="Horizontal" Spacing="6" />
+                </ScrollViewer>
                 <TextBox
                     x:Name="Input"
                     MinHeight="64"
@@ -138,6 +154,13 @@
                         <ColumnDefinition Width="Auto" />
                     </Grid.ColumnDefinitions>
                     <StackPanel Orientation="Horizontal" Spacing="4">
+                        <Button
+                            x:Name="AttachButton"
+                            AutomationProperties.Name="附加文件"
+                            Padding="8,6,8,6"
+                            ToolTipService.ToolTip="附加文件或图片；也可拖入或粘贴图片">
+                            <FontIcon FontSize="14" Glyph="&#xE723;" />
+                        </Button>
                         <DropDownButton x:Name="AgentButton" ToolTipService.ToolTip="下一轮的运行时、模型与推理强度">
                             <DropDownButton.Flyout>
                                 <MenuFlyout x:Name="AgentMenu" Placement="TopEdgeAlignedLeft" />
@@ -154,16 +177,35 @@
                             </DropDownButton.Flyout>
                         </DropDownButton>
                     </StackPanel>
-                    <Button
-                        x:Name="SendButton"
+                    <StackPanel
                         Grid.Column="1"
-                        Content="发送"
-                        Style="{ThemeResource AccentButtonStyle}"
-                        ToolTipService.ToolTip="Ctrl+Enter" />
-                    <Button
-                        x:Name="StopButton"
-                        Grid.Column="1"
-                        Content="停止" />
+                        Orientation="Horizontal"
+                        Spacing="4">
+                        <!-- The status line: what the settings keep in sight; the button shows all. -->
+                        <Button
+                            x:Name="StatusButton"
+                            Padding="8,4,8,4"
+                            Background="Transparent"
+                            BorderThickness="0">
+                            <TextBlock
+                                x:Name="StatusText"
+                                Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                Style="{ThemeResource CaptionTextBlockStyle}" />
+                        </Button>
+                        <Button
+                            x:Name="ContinueButton"
+                            Content="继续"
+                            ToolTipService.ToolTip="让运行时接着做：作为一条用户消息发出，不重放此前的工具调用" />
+                        <Button
+                            x:Name="StopButton"
+                            Content="停止"
+                            ToolTipService.ToolTip="Esc" />
+                        <Button
+                            x:Name="SendButton"
+                            Content="发送"
+                            Style="{ThemeResource AccentButtonStyle}"
+                            ToolTipService.ToolTip="Ctrl+Enter" />
+                    </StackPanel>
                 </Grid>
             </StackPanel>
         </Border>
