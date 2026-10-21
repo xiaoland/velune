@@ -118,7 +118,7 @@ sealed partial class ProviderEditor
             {
                 row = AddWindow(window.Id);
             }
-            row.Detail.Text = WindowDetail(window, status.Freshness);
+            row.Detail.Text = Quota.Detail(window, status.Freshness, page.Usage);
         }
     }
 
@@ -142,53 +142,11 @@ sealed partial class ProviderEditor
         limit.ValueChanged += (_, _) => Changed();
         var detail = Ui.Muted("");
         var lines = new StackPanel { Spacing = 2 };
-        lines.Children.Add(Ui.Text(WindowName(id)));
+        lines.Children.Add(Ui.Text(Quota.Name(id)));
         lines.Children.Add(detail);
         quotaWindows.Children.Add(Ui.Card(lines, limit));
         windows[id] = (detail, limit);
         return windows[id];
-    }
-
-    string WindowDetail(BindingProviderQuotaWindow window, BindingQuotaFreshness freshness)
-    {
-        var used = Math.Clamp(window.UsedPercent, 0, 100);
-        var parts = new List<string>
-        {
-            page.Usage == BindingUsageDisplay.Remaining ? $"剩余 {100 - used:0.#}%" : $"已用 {used:0.#}%",
-        };
-        if (window.ResetAtMs is { } reset)
-        {
-            parts.Add("重置于 " + DateTimeOffset.FromUnixTimeMilliseconds(reset).ToLocalTime().ToString("M月d日 HH:mm"));
-        }
-        if (window.ModelIds is { Length: > 0 } scoped)
-        {
-            parts.Add("适用于 " + string.Join("、", scoped));
-        }
-        if (freshness == BindingQuotaFreshness.Stale || window.ExpiresAtMs < DateTimeOffset.UtcNow.ToUnixTimeMilliseconds())
-        {
-            parts.Add("观测已过期");
-        }
-        return string.Join(" · ", parts);
-    }
-
-    // WindowName names a quota window by the period its ID records.
-    static string WindowName(string id)
-    {
-        if (id.StartsWith("window:") && long.TryParse(id["window:".Length..], out var seconds) && seconds > 0)
-        {
-            return (seconds % 86400 == 0 ? $"{seconds / 86400} 天" : seconds % 3600 == 0 ? $"{seconds / 3600} 小时" : $"{seconds / 60} 分钟") + "窗口";
-        }
-        return id switch
-        {
-            "ark:session" => "会话额度",
-            "ark:weekly" => "每周额度",
-            "ark:monthly" => "每月额度",
-            "kimi:limit_5h" => "5 小时窗口",
-            "kimi:limit_7d" => "7 天窗口",
-            "kimi:limit_month_total" => "本月总额度",
-            "kimi:limit_month_code" => "本月编程额度",
-            _ => id,
-        };
     }
 
     // Limits are the saved limits with the shown windows' edits; a window

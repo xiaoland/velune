@@ -181,6 +181,28 @@ sealed class ProvidersPage : UserControl
         }
     }
 
+    // EditProvider opens a saved provider's editor unless one is open.
+    internal async void EditProvider(string providerID)
+    {
+        if (editor != null)
+        {
+            return;
+        }
+        try
+        {
+            var snapshot = await Task.Run(() => Core.Local.List());
+            if (SetGateway(snapshot.Gateways).FirstOrDefault(provider => provider.Id == providerID) is { } found && editor == null)
+            {
+                tabs.SelectedItem = tabs.Items[0];
+                Edit(found);
+            }
+        }
+        catch (Exception problem)
+        {
+            Ui.Show(failure, Core.Describe(problem));
+        }
+    }
+
     void Edit(BindingProviderDefinition? existing)
     {
         if (existing != null)

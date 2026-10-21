@@ -91,10 +91,11 @@ static class ProviderFlows
 
     // Login signs a saved provider in through the core's flow: it opens the
     // sign-in page, shows a device code, or asks what the flow asks. It
-    // returns the gateways once the flow saved them, else null.
-    public static async Task<BindingGatewayConfig[]?> Login(ProvidersPage page, string providerID, string name)
+    // returns the gateways as the core keeps them afterwards; a failure to
+    // cancel or read them is thrown to the caller.
+    public static async Task<BindingGatewayConfig[]> Login(Core core, SettingsWindow window, string providerID, string name)
     {
-        var application = page.Core.Local;
+        var application = core.Local;
         var status = Ui.Text("正在开始登录…");
         var progress = new ProgressRing { IsActive = true, Width = 20, Height = 20 };
         var statusRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 12 };
@@ -280,21 +281,13 @@ static class ProviderFlows
                 Finish(Core.Describe(problem), false);
             }
         };
-        await page.Window.ShowDialog(dialog);
+        await window.ShowDialog(dialog);
         timer.Stop();
         if (running)
         {
             // Closing the dialog while it runs cancels the sign-in.
             running = false;
-            try
-            {
-                var cancelled = await Task.Run(application.AuthenticationCancel);
-                saved = cancelled.Gateways ?? saved;
-            }
-            catch (Exception problem)
-            {
-                page.ShowFailure(Core.Describe(problem));
-            }
+            saved = (await Task.Run(application.AuthenticationCancel)).Gateways ?? saved;
         }
         return saved ?? (await Task.Run(() => application.List())).Gateways;
     }

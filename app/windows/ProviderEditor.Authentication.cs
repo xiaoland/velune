@@ -205,9 +205,13 @@ sealed partial class ProviderEditor
         {
             return;
         }
-        if (await ProviderFlows.Login(page, provider.Id, provider.Name) is { } gateways)
+        try
         {
-            Saved(gateways);
+            Saved(await ProviderFlows.Login(page.Core, page.Window, provider.Id, provider.Name));
+        }
+        catch (Exception problem)
+        {
+            Ui.Show(failure, Core.Describe(problem));
         }
     }
 

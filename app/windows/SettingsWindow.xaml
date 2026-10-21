@@ -36,6 +36,11 @@
                         <FontIcon Glyph="&#xE950;" />
                     </NavigationViewItem.Icon>
                 </NavigationViewItem>
+                <NavigationViewItem Content="模型路由" Tag="routes">
+                    <NavigationViewItem.Icon>
+                        <FontIcon Glyph="&#xE8AB;" />
+                    </NavigationViewItem.Icon>
+                </NavigationViewItem>
                 <NavigationViewItem Content="Agent 运行时" Tag="runtimes">
                     <NavigationViewItem.Icon>
                         <FontIcon Glyph="&#xE756;" />

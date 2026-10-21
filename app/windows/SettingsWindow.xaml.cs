@@ -7,14 +7,15 @@ using Microsoft.UI.Xaml.Media.Imaging;
 
 namespace Velune;
 
-enum SettingsPage { General, Providers, Runtimes, Devices, Keep }
+enum SettingsPage { General, Providers, Routes, Runtimes, Devices, Keep }
 
-// The settings window: this PC's general settings, providers and runtimes, and devices. There
-// is one; opening it again brings the open one back.
+// The settings window: this PC's general settings, providers, model routes and runtimes, and
+// devices. There is one; opening it again brings the open one back.
 public sealed partial class SettingsWindow : Window
 {
     readonly GeneralPage general;
     readonly ProvidersPage providers;
+    readonly RoutesPage routes;
     readonly RuntimesPage runtimes;
     readonly DevicesPage devices;
     readonly SemaphoreSlim dialogs = new(1, 1);
@@ -40,6 +41,7 @@ public sealed partial class SettingsWindow : Window
 
         general = new GeneralPage(core);
         providers = new ProvidersPage(core, this);
+        routes = new RoutesPage(core, this, EditProvider);
         runtimes = new RuntimesPage(core, this);
         devices = new DevicesPage(core, hub, this, open);
         Navigation.SelectionChanged += (_, e) =>
@@ -48,9 +50,19 @@ public sealed partial class SettingsWindow : Window
             {
                 "general" => general,
                 "providers" => providers,
+                "routes" => routes,
                 "runtimes" => runtimes,
                 _ => devices,
             };
+            // Routes name providers' models, which either page may have changed.
+            if (ReferenceEquals(Page.Content, routes))
+            {
+                routes.Reload();
+            }
+            else if (ReferenceEquals(Page.Content, providers))
+            {
+                providers.Reload();
+            }
         };
         Navigation.SelectedItem = Navigation.MenuItems[0];
     }
@@ -67,6 +79,13 @@ public sealed partial class SettingsWindow : Window
             Navigation.SelectedItem = Navigation.MenuItems[(int)page];
         }
         Activate();
+    }
+
+    // EditProvider opens a provider's editor, as a route member asks.
+    void EditProvider(string providerID)
+    {
+        Navigation.SelectedItem = Navigation.MenuItems[(int)SettingsPage.Providers];
+        providers.EditProvider(providerID);
     }
 
     // HubChanged shows the remote service's new state.
