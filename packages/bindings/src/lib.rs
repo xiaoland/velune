@@ -718,21 +718,28 @@ impl VeluneApplication {
             }
         )
     }
+    /// `quota_authentication_edit` edits a provider's own quota query
+    /// credentials, saved atomically with the model credentials; None keeps
+    /// them.
+    #[uniffi::method(default(quota_authentication_edit = None))]
     pub fn save_provider(
         &self,
         gateway_id: String,
         provider: BindingProviderDraft,
         authentication_edit: BindingAuthenticationEdit,
+        quota_authentication_edit: Option<BindingQuotaAuthenticationEdit>,
     ) -> Result<BindingGatewayUpdate, BindingError> {
         let provider = convert(provider)?;
         let authentication_edit = convert(authentication_edit)?;
+        let quota_authentication_edit = convert(quota_authentication_edit)?;
         request!(
             self,
             "save_provider",
             SaveProvider {
                 gateway_id,
                 provider,
-                authentication_edit
+                authentication_edit,
+                quota_authentication_edit
             }
         )
     }

@@ -119,7 +119,7 @@ manager.appendSessionInfo(title); console.log(manager.getSessionFile());
                 id='synthetic', name='Synthetic', protocol=b.BindingGatewayProtocol.CHAT_COMPLETIONS_V1,
                 endpoint=f'http://127.0.0.1:{server.server_port}/v1',
                 models=[b.BindingProviderModel(record_key='', provider_model_id='synthetic', nickname='Synthetic', icon=None,
-                                               context_window=8192, max_output_tokens=128, reasoning_levels=None)], quota_limits=[], execution_backend=b.BindingExecutionBackend.HTTP(), request_profile=b.BindingRequestProfile.NATIVE, authentication_source=b.BindingProviderAuthenticationSource.API_KEY, quota_source=b.BindingProviderQuotaSource.NONE, quota_authentication_edit=None),
+                                               context_window=8192, max_output_tokens=128, reasoning_levels=None)], quota_limits=[], execution_backend=b.BindingExecutionBackend.HTTP(), request_profile=b.BindingRequestProfile.NATIVE, authentication_source=b.BindingProviderAuthenticationSource.API_KEY, quota_source=b.BindingProviderQuotaSource.NONE),
                 b.BindingAuthenticationEdit.SET_API_KEY(value='SYNTHETIC_ONLY'))
             model = app.list().gateways[0].providers[0].models[0].record_key
             a = app.list().conversations[0].conversation.id

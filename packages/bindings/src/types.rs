@@ -436,8 +436,6 @@ pub struct BindingProviderDraft {
     pub quota_source: BindingProviderQuotaSource,
     pub models: Vec<BindingProviderModel>,
     pub quota_limits: Vec<BindingQuotaLimit>,
-    #[serde(default)]
-    pub quota_authentication_edit: Option<BindingQuotaAuthenticationEdit>,
 }
 
 /// Provider models chosen together; the gateway fails over between them in order.

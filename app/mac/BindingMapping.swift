@@ -217,10 +217,10 @@ enum BindingMapping {
     static func bindingRoutingStrategy(_ value: RoutingStrategy) -> BindingRoutingStrategy {
         switch value { case .smart: return .smart; case .order: return .order; case .rotate: return .rotate; case .weight: return .weight }
     }
-    static func bindingProvider(_ value: AIProvider, quotaAuthenticationEdit: BindingQuotaAuthenticationEdit? = nil) -> BindingProviderDraft {
+    static func bindingProvider(_ value: AIProvider) -> BindingProviderDraft {
         BindingProviderDraft(id: value.id, name: value.name, protocol: bindingProtocol(value.protocolID), endpoint: value.endpoint,
                              executionBackend: value.composition.executionBackend, requestProfile: value.composition.requestProfile, authenticationSource: value.composition.authenticationSource, quotaSource: value.composition.quotaSource, models: value.models.map(bindingModel),
-                             quotaLimits: value.quotaLimits.map { BindingQuotaLimit(windowId: $0.windowID, maxUsedPercent: $0.maxUsedPercent) }, quotaAuthenticationEdit: quotaAuthenticationEdit)
+                             quotaLimits: value.quotaLimits.map { BindingQuotaLimit(windowId: $0.windowID, maxUsedPercent: $0.maxUsedPercent) })
     }
     static func bindingAuthenticationEdit(_ value: AuthenticationEdit) -> BindingAuthenticationEdit {
         switch value {

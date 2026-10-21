@@ -204,7 +204,7 @@ def exercise(app, b, root):
     app.save_provider('default', b.BindingProviderDraft(
         id='p', name='p', protocol=b.BindingGatewayProtocol.RESPONSES_V1, endpoint='http://127.0.0.1:9/v1',
         models=[b.BindingProviderModel(record_key='', provider_model_id='m-v', nickname='v', icon=None, context_window=None,
-                                       max_output_tokens=None, reasoning_levels=None)], quota_limits=[], execution_backend=b.BindingExecutionBackend.HTTP(), request_profile=b.BindingRequestProfile.NATIVE, authentication_source=b.BindingProviderAuthenticationSource.API_KEY, quota_source=b.BindingProviderQuotaSource.NONE, quota_authentication_edit=None),
+                                       max_output_tokens=None, reasoning_levels=None)], quota_limits=[], execution_backend=b.BindingExecutionBackend.HTTP(), request_profile=b.BindingRequestProfile.NATIVE, authentication_source=b.BindingProviderAuthenticationSource.API_KEY, quota_source=b.BindingProviderQuotaSource.NONE),
         b.BindingAuthenticationEdit.SET_API_KEY(value='SYNTHETIC_ONLY'))
     velune_key = app.list().gateways[0].providers[0].models[0].record_key
 

@@ -40,5 +40,5 @@ fmt／check／clippy 通过。Mac 构建仍因 8616bd0 的映射缺口失败，�
 
 - 实测：以该 CLI、临时 HOME 与回环合成上游运行 live-native、codex-segments、permission-modes、native-subagents、subagent-activity、codex-history-identity、turn-settings、reasoning-effort、steer、edit-message、attachments、multi-runtime（含 DSH 0.2.0-rc.2）、cross-harness（含 Pi 1.0.2）全部通过，没有协议变化，所以不增设 adapter。
 - 实施：`Versions::contains` 两端只比较 major.minor.patch，预发布按正式版计入；`codex-0.159` 上限提高到 0.164.0，ID 不变（不触发配置重置）；核心发现补上 macOS ChatGPT.app 的 codex-cli。
-- 顺带修正：main 的 ARK 改动给 `BindingProviderDraft` 加了必填 `quota_authentication_edit`，28 个人工脚本补 `None`（保持）；55de83f 起 Codex 自报的窗口不再被同 ID 的 managed 模型覆盖，turn-settings 的历史窗口断言随之更新；multi-runtime 的区间文字更新。
+- 顺带修正：main 的 ARK 改动把查询认证编辑放进 `ProviderDraft`，使所有构造草稿的调用方都要处理它；已改为 `save_provider` 的可选参数（缺省保留），草稿只描述提供商（见 [ARK 记录](../model-routing/ark-coding-plan.md)）；55de83f 起 Codex 自报的窗口不再被同 ID 的 managed 模型覆盖，turn-settings 的历史窗口断言随之更新；multi-runtime 的区间文字更新。
 - 未单独验证 0.160–0.162；区间按两端已验证版本连续覆盖。

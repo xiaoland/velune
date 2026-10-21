@@ -59,7 +59,7 @@ def main():
             model = b.BindingProviderModel(record_key="", provider_model_id="synthetic", nickname="Synthetic", icon=None,
                                           context_window=32768, max_output_tokens=4096, reasoning_levels=None)
             draft = b.BindingProviderDraft(id="fixture", name="Fixture", protocol=b.BindingGatewayProtocol.CHAT_COMPLETIONS_V1,
-                                          endpoint=f"http://127.0.0.1:{server.server_port}/v1", models=[model], quota_limits=[], execution_backend=b.BindingExecutionBackend.HTTP(), request_profile=b.BindingRequestProfile.NATIVE, authentication_source=b.BindingProviderAuthenticationSource.API_KEY, quota_source=b.BindingProviderQuotaSource.NONE, quota_authentication_edit=None)
+                                          endpoint=f"http://127.0.0.1:{server.server_port}/v1", models=[model], quota_limits=[], execution_backend=b.BindingExecutionBackend.HTTP(), request_profile=b.BindingRequestProfile.NATIVE, authentication_source=b.BindingProviderAuthenticationSource.API_KEY, quota_source=b.BindingProviderQuotaSource.NONE)
             application.save_provider("default", draft, b.BindingAuthenticationEdit.SET_API_KEY(value="synthetic-only"))
             key = application.list().gateways[0].providers[0].models[0].record_key
             binary = args.pi

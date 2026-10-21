@@ -49,7 +49,7 @@ Magpie 固定于 `2374ffe161439b02a8e7f23b793461b39a635bf8`，其 [volcengine_us
 
 2026-10-20 用户授权实现独立额度认证。实现同时交付模板、固定 Coding 请求适配、V4 查询、窗口及绑定生命周期、公开 API/绑定、最小平台配置与手动合成验收。保留 schema 10，新增私有字段缺省为空，不清除既有配置。模型 Key/额度凭据的同订阅关联由保存动作明确确认，不显示自动核验；变更后重新确认。未知或未确认额度只影响有上限的准入，不阻止无上限模型调用。
 
-实现已完成。`ProviderDraft.quota_authentication_edit` 与模型认证同次原子保存；SetAccessKey 保存完整 AK/SK 和本次确认，ConfirmBinding 关联当前模型认证，Clear 单独清除查询认证，None 保留。公开 `quota_authentication` 只有 configured 和 binding_confirmed，私有结构及编辑动作的 Debug 隐去凭据。无查询认证不发控制面请求，也不会借模型 Key 查询。
+实现已完成。查询认证编辑是 `save_provider` 的可选参数 `quota_authentication_edit`（2026-10-21 从 `ProviderDraft` 移出，与模型认证编辑并列），与模型认证同次原子保存；SetAccessKey 保存完整 AK/SK 和本次确认，ConfirmBinding 关联当前模型认证，Clear 单独清除查询认证，None 保留。公开 `quota_authentication` 只有 configured 和 binding_confirmed，私有结构及编辑动作的 Debug 隐去凭据。无查询认证不发控制面请求，也不会借模型 Key 查询。
 
 额度使用固定 `GetCodingPlanUsage`、cn-beijing/ark 的 V4 签名，禁止重定向和自动重试，响应正文上限 256 KiB；200 中的业务错误也算读取失败。session/weekly/monthly 用实际 Percent 和秒级 ResetTimestamp，未知窗口省略、非法或重复窗口拒绝、不伪造月长度或绝对额度。关联确认随模型/查询版本与目标失效；旧版本及已删除实例的采样不能发布。查询凭据变更失效旧 Runner，但保留模型冷却和粘性。
 

@@ -147,6 +147,6 @@ Kimi Coding Plan 模板 `kimiCodingPlan` 固定组合为 `Http`、`MessagesV1`�
 
 额度 API 沿用 `provider_quota`／`refresh_provider_quota`。Kimi 窗口 ID 为 `kimi:limit_5h`、`kimi:limit_7d`、`kimi:limit_month_total`、`kimi:limit_month_code`，仅生成实际上游返回的有效项；`used_ratio` 支持有限 0–1 数字及数字字符串，`reset_time` 必须是有效未来 RFC3339 时间。缺失、非法或读取失败不补零，月窗口不伪造固定天数，钱包缺失不证明不会扣充值余额。`/me` 成功但额度失败时，无 cap 的候选仍可使用；有 cap 且缺少相应 fresh 窗口时暂停。显式额度耗尽事件触发按需重取，不重放已交付响应。
 
-ARK Coding Plan 模板 `arkCodingPlan` 组合 Http、ResponsesV1、ApiKey、ArkCoding 和 ArkCodingUsage；应用也接受另两种协议的官方 Coding 路径，不自动换成 Agent Plan 或按量 API。`ProviderDraft.quota_authentication_edit` 独立编辑查询凭据：None 保留，SetAccessKey 保存完整 AK/SK 及本次关联确认，ConfirmBinding 关联当前模型认证，Clear 清除查询认证。它与模型 AuthenticationEdit 同次原子提交；未配置查询认证不阻止无 cap 的模型请求。
+ARK Coding Plan 模板 `arkCodingPlan` 组合 Http、ResponsesV1、ApiKey、ArkCoding 和 ArkCodingUsage；应用也接受另两种协议的官方 Coding 路径，不自动换成 Agent Plan 或按量 API。`save_provider` 的 `quota_authentication_edit` 参数独立编辑查询凭据：None 保留，SetAccessKey 保存完整 AK/SK 及本次关联确认，ConfirmBinding 关联当前模型认证，Clear 清除查询认证。它与模型 AuthenticationEdit 同次原子提交；未配置查询认证不阻止无 cap 的模型请求。
 
 查询认证及其 generation 保存在提供商私有配置，公开 quota_authentication 只给 configured、binding_confirmed。关联是用户声明，不是服务器自动核验；更换模型认证、查询凭据或套餐目标会撤销旧关联并丢弃旧采样，查询换 Key 不清除模型冷却和会话绑定。相同模型 Key 或相同 AK 绑定不能重复保存，不推导跨 AK 的订阅唯一性。固定 GetCodingPlanUsage 使用独立 V4 签名，不读取 CLI 登录或枚举其他模型 Key；错误与超大响应不泄露正文。窗口 ark:session/weekly/monthly 以实际比例/重置为准，未确认来源供查看但调度为 Unknown；失败的主动刷新会让旧观测过期，不把旧值当新值，也不补零。

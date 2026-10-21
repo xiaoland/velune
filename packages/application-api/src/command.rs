@@ -462,6 +462,9 @@ pub enum Command {
         gateway_id: String,
         provider: ProviderDraft,
         authentication_edit: crate::AuthenticationEdit,
+        /// None keeps the provider's quota query credentials.
+        #[serde(default)]
+        quota_authentication_edit: Option<crate::QuotaAuthenticationEdit>,
     },
     DeleteProvider {
         gateway_id: String,

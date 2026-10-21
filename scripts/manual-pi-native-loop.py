@@ -321,7 +321,7 @@ def main():
             stale = application.preview_provider_import('default', source)
             current = application.list().gateways[0].providers[0]
             draft = bindings.BindingProviderDraft(id=current.id, name=current.name, protocol=current.protocol,
-                endpoint=current.endpoint, models=current.models, quota_limits=current.quota_limits, execution_backend=current.execution_backend, request_profile=current.request_profile, authentication_source=current.authentication_source, quota_source=current.quota_source, quota_authentication_edit=None)
+                endpoint=current.endpoint, models=current.models, quota_limits=current.quota_limits, execution_backend=current.execution_backend, request_profile=current.request_profile, authentication_source=current.authentication_source, quota_source=current.quota_source)
             application.save_provider('default', draft,
                 bindings.BindingAuthenticationEdit.SET_API_KEY(value='synthetic-replacement'))
             saved_after_replacement = (root / 'home/generic-config.json').read_bytes()
@@ -357,7 +357,7 @@ def main():
             edited_model.reasoning_levels = []
             changed_endpoint = endpoint.replace('/v1', '/changed/v1')
             draft = bindings.BindingProviderDraft(id=current.id, name=current.name,
-                protocol=current.protocol, endpoint=changed_endpoint, models=current.models, quota_limits=current.quota_limits, execution_backend=current.execution_backend, request_profile=current.request_profile, authentication_source=current.authentication_source, quota_source=current.quota_source, quota_authentication_edit=None)
+                protocol=current.protocol, endpoint=changed_endpoint, models=current.models, quota_limits=current.quota_limits, execution_backend=current.execution_backend, request_profile=current.request_profile, authentication_source=current.authentication_source, quota_source=current.quota_source)
             application.save_provider('default', draft, bindings.BindingAuthenticationEdit.KEEP())
             send_after_edit()
             assert captures[-1]['model'] == 'edited-api-model-id'

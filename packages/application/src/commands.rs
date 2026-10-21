@@ -488,10 +488,12 @@ impl Application {
                 gateway_id,
                 provider,
                 authentication_edit,
+                quota_authentication_edit,
             } => Response::SaveProvider(application.save_provider(
                 gateway_id,
                 provider,
                 authentication_edit,
+                quota_authentication_edit,
             )?),
             Command::DeleteProvider {
                 gateway_id,

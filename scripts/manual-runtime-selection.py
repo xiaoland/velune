@@ -113,7 +113,7 @@ def main():
             native = next(model.selection for model in models if isinstance(model.selection, b.BindingModelSelection.NATIVE))
             assert native.model_id == 'native-model' and native.provider_id is None
             model = b.BindingProviderModel(record_key='', provider_model_id='managed-model', nickname='Managed model', icon=None, context_window=32768, max_output_tokens=4096, reasoning_levels=None)
-            provider = b.BindingProviderDraft(id='managed', name='Managed', protocol=b.BindingGatewayProtocol.MESSAGES_V1, endpoint='http://127.0.0.1:9/v1', models=[model], quota_limits=[], execution_backend=b.BindingExecutionBackend.HTTP(), request_profile=b.BindingRequestProfile.NATIVE, authentication_source=b.BindingProviderAuthenticationSource.API_KEY, quota_source=b.BindingProviderQuotaSource.NONE, quota_authentication_edit=None)
+            provider = b.BindingProviderDraft(id='managed', name='Managed', protocol=b.BindingGatewayProtocol.MESSAGES_V1, endpoint='http://127.0.0.1:9/v1', models=[model], quota_limits=[], execution_backend=b.BindingExecutionBackend.HTTP(), request_profile=b.BindingRequestProfile.NATIVE, authentication_source=b.BindingProviderAuthenticationSource.API_KEY, quota_source=b.BindingProviderQuotaSource.NONE)
             saved = application.save_provider('default', provider, b.BindingAuthenticationEdit.SET_API_KEY(value='synthetic-only'))
             key = next(provider.models[0].record_key for gateway in saved.gateways for provider in gateway.providers if provider.id == 'managed')
             managed = b.BindingModelSelection.MANAGED(model_record_key=key)

@@ -57,7 +57,7 @@ pi.registerCommand('manual-switch',{handler:async (_args,ctx)=>{await ctx.switch
     app=b.VeluneApplication.open(b.BindingOptions(home_directory=str(root/'home/velune'),resources_directory=str(resources)))
     try:
         model=b.BindingProviderModel(record_key='',provider_model_id='synthetic',nickname='Synthetic',icon=None,context_window=8192,max_output_tokens=4096,reasoning_levels=None)
-        draft=b.BindingProviderDraft(id='synthetic',name='Synthetic',protocol=b.BindingGatewayProtocol.CHAT_COMPLETIONS_V1,endpoint=f'http://127.0.0.1:{server.server_port}/v1',models=[model], quota_limits=[], execution_backend=b.BindingExecutionBackend.HTTP(), request_profile=b.BindingRequestProfile.NATIVE, authentication_source=b.BindingProviderAuthenticationSource.API_KEY, quota_source=b.BindingProviderQuotaSource.NONE, quota_authentication_edit=None)
+        draft=b.BindingProviderDraft(id='synthetic',name='Synthetic',protocol=b.BindingGatewayProtocol.CHAT_COMPLETIONS_V1,endpoint=f'http://127.0.0.1:{server.server_port}/v1',models=[model], quota_limits=[], execution_backend=b.BindingExecutionBackend.HTTP(), request_profile=b.BindingRequestProfile.NATIVE, authentication_source=b.BindingProviderAuthenticationSource.API_KEY, quota_source=b.BindingProviderQuotaSource.NONE)
         saved=app.save_provider('default',draft,b.BindingAuthenticationEdit.SET_API_KEY(value='synthetic-only')).gateways[0].providers[0]
         runtime=b.BindingRuntimeInstance(enabled=True, id='pi',name='Synthetic Pi',type_id='pi-1.0',gateway_id='default',settings={'binary':str(args.pi),'nodeBinary':str(args.node),'agentDir':str(root/'runtime')})
         app.upsert_runtime(runtime)

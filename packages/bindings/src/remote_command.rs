@@ -312,6 +312,7 @@ pub enum BindingApplicationCommand {
         gateway_id: String,
         provider: BindingProviderDraft,
         authentication_edit: BindingAuthenticationEdit,
+        quota_authentication_edit: Option<BindingQuotaAuthenticationEdit>,
     },
     DeleteProvider {
         gateway_id: String,
@@ -878,10 +879,12 @@ impl TryFrom<BindingApplicationCommand> for Command {
                 gateway_id,
                 provider,
                 authentication_edit,
+                quota_authentication_edit,
             } => Self::SaveProvider {
                 gateway_id,
                 provider: convert(provider)?,
                 authentication_edit: convert(authentication_edit)?,
+                quota_authentication_edit: convert(quota_authentication_edit)?,
             },
             BindingApplicationCommand::DeleteProvider {
                 gateway_id,

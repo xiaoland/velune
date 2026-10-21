@@ -170,7 +170,7 @@ def main():
             # The user's default login, referenced from the Claude subscription composition.
             draft = b.BindingProviderDraft(id='', name='Default Claude', protocol=b.BindingGatewayProtocol.MESSAGES_V1, endpoint='',
                 execution_backend=b.BindingExecutionBackend.CLAUDE_CLI(binary=str(claude)), request_profile=b.BindingRequestProfile.NATIVE,
-                authentication_source=b.BindingProviderAuthenticationSource.CLAUDE_CLI, quota_source=b.BindingProviderQuotaSource.CLAUDE_CLI_USAGE, quota_authentication_edit=None,
+                authentication_source=b.BindingProviderAuthenticationSource.CLAUDE_CLI, quota_source=b.BindingProviderQuotaSource.CLAUDE_CLI_USAGE,
                 models=[b.BindingProviderModel(record_key='', provider_model_id='sonnet', nickname='', icon=None, context_window=None, max_output_tokens=None, reasoning_levels=None)], quota_limits=[])
             app.save_provider('default', draft, b.BindingAuthenticationEdit.USE_CLAUDE_CODE_LOGIN(login=b.BindingLinkedClaudeLogin.USER_DEFAULT()))
             default = providers()['Default Claude']

@@ -974,8 +974,9 @@ impl Application {
         gateway_id: String,
         provider: ProviderDraft,
         authentication_edit: crate::AuthenticationEdit,
+        quota_authentication_edit: Option<crate::QuotaAuthenticationEdit>,
     ) -> Result<GatewayUpdate, Error> {
-        self.execute("providers",json!({"operation":"save","gatewayID":gateway_id,"provider":provider,"authenticationEdit":authentication_edit}),None)
+        self.execute("providers",json!({"operation":"save","gatewayID":gateway_id,"provider":provider,"authenticationEdit":authentication_edit,"quotaAuthenticationEdit":quota_authentication_edit}),None)
     }
     pub fn delete_provider(
         &mut self,

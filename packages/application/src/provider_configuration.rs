@@ -40,6 +40,8 @@ pub(crate) fn edit_provider(
                 .unwrap_or_default();
             let edit: AuthenticationEdit =
                 serde_json::from_value(payload["authenticationEdit"].clone())?;
+            let quota_edit: Option<crate::QuotaAuthenticationEdit> =
+                serde_json::from_value(payload["quotaAuthenticationEdit"].clone())?;
             let source_changed = authentication.source() != draft.authentication_source;
             let reset = source_changed || matches!(edit, AuthenticationEdit::Clear);
             if reset {
@@ -109,8 +111,8 @@ pub(crate) fn edit_provider(
                     || p.quota_source != draft.quota_source
             });
             if draft.quota_source == ProviderQuotaSource::ArkCodingUsage {
-                quota_authentication.apply(draft.quota_authentication_edit, authentication.generation, matches!(&authentication.material, AuthenticationMaterial::ApiKey { value } if !value.is_empty()), target_changed)?;
-            } else if draft.quota_authentication_edit.is_some() {
+                quota_authentication.apply(quota_edit, authentication.generation, matches!(&authentication.material, AuthenticationMaterial::ApiKey { value } if !value.is_empty()), target_changed)?;
+            } else if quota_edit.is_some() {
                 return Err(Error::invalid("此提供商不使用独立额度查询认证"));
             } else {
                 quota_authentication = Default::default();

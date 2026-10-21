@@ -71,9 +71,6 @@ pub struct ProviderDraft {
     pub quota_source: ProviderQuotaSource,
     pub models: Vec<ProviderModel>,
     pub quota_limits: Vec<crate::config::QuotaLimit>,
-    /// None preserves the query credentials; model credential changes revoke confirmation.
-    #[serde(default)]
-    pub quota_authentication_edit: Option<crate::QuotaAuthenticationEdit>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

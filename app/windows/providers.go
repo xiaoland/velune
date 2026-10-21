@@ -282,12 +282,13 @@ func (p *providersPane) save() {
 		authentication = bindings.BindingAuthenticationEditSetApiKey{Value: key}
 	}
 	// The model key and the usage credentials are saved together.
+	var quota bindings.BindingQuotaAuthenticationEdit
 	if p.quotaSource() == bindings.BindingProviderQuotaSourceArkCodingUsage {
-		draft.QuotaAuthenticationEdit = e.quotaEdit()
+		quota = e.quotaEdit()
 	}
 	p.busy, p.failure = true, ""
 	run(p.win, func() outcome[bindings.BindingGatewayUpdate] {
-		update, err := p.core.local.SaveProvider(defaultGateway, draft, authentication)
+		update, err := p.core.local.SaveProvider(defaultGateway, draft, authentication, quota)
 		return outcome[bindings.BindingGatewayUpdate]{update, err}
 	}, func(r outcome[bindings.BindingGatewayUpdate]) {
 		p.busy = false
