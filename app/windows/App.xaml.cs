@@ -49,11 +49,8 @@ public partial class App : Application
         }
         window = new MainWindow(core);
         // Closing the main window quits; agents on this PC stop with the app.
-        window.Closed += (_, _) =>
-        {
-            core.Shutdown();
-            Exit();
-        };
+        // The process ends with its last window.
+        window.Closed += (_, _) => core.Shutdown();
         window.Activate();
     }
 }

@@ -26,8 +26,17 @@
 - win-ws 构建：`TreatWarningsAsErrors` 下零警告；完整 `scripts/build-windows.ps1` 增量约 30 秒。
 - MyGO 版、其 Lucide 图标与 MyGO skill，以及 bindings 的 `velune-gobindgen` 与仅它使用的依赖已删除。Rust 静态检查：`cargo fmt --check`、`cargo check --locked` 通过；clippy（`--all-features -D warnings`）在本机须以 `CARGO_HOME` 指向 registry 的真实目录运行（`~/.cargo/registry` 是链接，askama 经链接解析模板配置会失败，属本机环境），如此通过。
 
+## 真机启动检查（2026-10-21，win-ws）
+
+在交互会话里用计划任务启动，用户空闲 10 分钟以上才运行。用临时 home，内有合成 ACP 运行时与两个项目的三个会话。只用 UI Automation 的 Invoke／Select／WindowPattern 操作，不发送键鼠输入，每步截图。
+
+- 首次启动即退出（0xC000027B）：非打包构建没有生成 `Velune.pri`，编译后的 XAML 无法载入。WinUI 模板为非打包应用设 `EnableMsixTooling`，补上后正常。WER 在这台机器上不留报告，所以应用把未处理异常写入 `%TEMP%\Velune\crash.log`。
+- 关闭时同样崩溃。临时诊断构建记录 first-chance 异常后定位到：主窗口关闭后，远控状态更新与列表轮询仍调用 `Render`，设置已关闭窗口的 `Title`（`0x800710DD`，“The WinUI Desktop Window object has already been closed”）。CsWinRT 在 WinRT 边界把它转为 stowed exception，不经过 .NET 的未处理异常事件。现在主窗口关闭时停止轮询、退订 Hub、关闭会话与设置；先改为“不在 Closed 中调用 Exit”并不解决问题，已作为无效假设撤回。
+- 修正后：窗口在前台且响应，标题栏与欢迎页显示标志包，分组可折叠，会话转录与操作行、设置三页（提供商、运行时、设备）渲染正常；依次关闭设置与主窗口，退出码 0，无残留进程。工作集约 182 MB，打开设置后约 217 MB。
+- 顺带修正：内置的设置项跟随系统显示语言（win-ws 为英文），侧栏其余部分是应用自己的中文，所以设为“设置”（内容与自动化名称）；设备页说明文字原被截断，改为换行。
+- 侧栏的会话标题来自 Harness 列表（fixture 为“Synthetic ACP”），打开后的标题来自快照，两者不同是 fixture 数据所致，不是界面问题。
+
 ## 待验证
 
-- 真机界面：win-ws 的启动检查（临时 home、合成 ACP 运行时与两个项目的三个会话，只在用户空闲 10 分钟以上时以 UI Automation 打开会话与设置并截图，不发送键鼠输入）尚未执行，用户一直在使用这台机器。
-- 中文输入法、长转录的虚拟化与流式更新的性能、Windows 11 上的 Mica。
+- 中文输入法、双击与右键等真实指针操作、长转录的虚拟化与流式更新的性能、Windows 11 上的 Mica，需要用户真机验收。
 - 标志在任务栏与标题栏上的实际观感需用户确认。

@@ -30,6 +30,8 @@ public sealed partial class MainWindow : Window
     bool foreground = true;
     // The listing polls one device at a time; a switch starts another round.
     int round;
+    // A closed window throws on any further use; the core shuts down after it.
+    bool closed;
     // The sidebar's items: each group's, and each conversation's, by ID.
     readonly Dictionary<string, NavigationViewItem> groupItems = [];
     readonly Dictionary<string, NavigationViewItem> conversationItems = [];
@@ -59,6 +61,25 @@ public sealed partial class MainWindow : Window
         Size(this, 1180, 780, 720, 480);
 
         AppTitleBar.PaneToggleRequested += (_, _) => Navigation.IsPaneOpen = !Navigation.IsPaneOpen;
+        // The built-in item follows the system language; the sidebar is ours.
+        Navigation.Loaded += (_, _) =>
+        {
+            if (Navigation.SettingsItem is NavigationViewItem item)
+            {
+                item.Content = "设置";
+                Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(item, "设置");
+            }
+        };
+        // Closing the main window quits: stop everything that would update it,
+        // and close settings with it.
+        Closed += (_, _) =>
+        {
+            closed = true;
+            round++;
+            Hub.Changed -= HubChanged;
+            conversation?.Close();
+            settings?.Close();
+        };
         NewAccelerator.Invoked += (_, e) => { e.Handled = true; StartConversation(); };
         var settingsAccelerator = new KeyboardAccelerator { Key = (VirtualKey)188, Modifiers = VirtualKeyModifiers.Control };
         settingsAccelerator.Invoked += (_, e) => { e.Handled = true; OpenSettings(SettingsPage.Keep); };
@@ -518,6 +539,10 @@ public sealed partial class MainWindow : Window
 
     void Render()
     {
+        if (closed)
+        {
+            return;
+        }
         var deviceName = Hub.DeviceName(device) + (device.IsLocal ? "（本机）" : "");
         DeviceButton.Content = deviceName;
         AppTitleBar.Subtitle = deviceName;

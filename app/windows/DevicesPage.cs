@@ -196,7 +196,7 @@ sealed class DevicesPage : UserControl
         {
             var add = new Button { Content = "添加控制设备…", IsEnabled = state != null && !busy };
             add.Click += (_, _) => CreateInvitation();
-            panel.Children.Add(Ui.Card(Ui.TwoLines("添加控制设备", "在另一台设备上扫描二维码或粘贴邀请，两台设备显示的核对码一致时，在这台电脑上允许。"), add));
+            panel.Children.Add(Ui.Card(Ui.TwoLines("添加控制设备", "在另一台设备上扫描二维码或粘贴邀请，两台设备显示的核对码一致时，在这台电脑上允许。", wrap: true), add));
         }
         foreach (var grant in state?.IncomingGrants ?? [])
         {

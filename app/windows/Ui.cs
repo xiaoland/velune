@@ -88,15 +88,20 @@ static class Ui
         };
     }
 
-    public static StackPanel TwoLines(string title, string detail)
+    // TwoLines shows a title over a muted detail, trimmed to one line unless the
+    // detail explains rather than summarizes.
+    public static StackPanel TwoLines(string title, string detail, bool wrap = false)
     {
         var lines = new StackPanel { Spacing = 2 };
         lines.Children.Add(new TextBlock { Text = title, TextTrimming = TextTrimming.CharacterEllipsis });
         if (detail.Length > 0)
         {
             var muted = Muted(detail);
-            muted.TextWrapping = TextWrapping.NoWrap;
-            muted.TextTrimming = TextTrimming.CharacterEllipsis;
+            if (!wrap)
+            {
+                muted.TextWrapping = TextWrapping.NoWrap;
+                muted.TextTrimming = TextTrimming.CharacterEllipsis;
+            }
             lines.Children.Add(muted);
         }
         return lines;
