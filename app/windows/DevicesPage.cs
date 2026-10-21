@@ -20,6 +20,7 @@ sealed class DevicesPage : UserControl
     readonly InfoBar failure = Ui.FailureBar();
     readonly TextBox invite = new() { PlaceholderText = "粘贴另一台设备的邀请" };
     readonly Button connect = new() { Content = "连接" };
+    readonly Border inviteCard;
     BindingRemoteInvitation? invitation;
     BitmapImage? code;
     bool copied;
@@ -43,8 +44,9 @@ sealed class DevicesPage : UserControl
                 Connect();
             }
         };
+        inviteCard = InviteCard();
+        // Only while shown: the page exists from the settings window's start.
         expiry.Tick += (_, _) => Render();
-        expiry.Start();
         Content = new ScrollViewer { Content = panel };
         Unloaded += (_, _) => expiry.Stop();
         Loaded += (_, _) => expiry.Start();
@@ -268,20 +270,21 @@ sealed class DevicesPage : UserControl
             panel.Children.Add(card);
         }
         connect.IsEnabled = Ready;
+        panel.Children.Add(inviteCard);
+    }
+
+    // InviteCard holds the invite box and its button. It is built once and
+    // only ever a child of panel, which Render clears, so it keeps the box's
+    // text and focus without moving the box between parents.
+    Border InviteCard()
+    {
         var row = new Grid { ColumnSpacing = 8 };
         row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        foreach (var reused in new FrameworkElement[] { invite, connect })
-        {
-            if (reused.Parent is Panel previous)
-            {
-                previous.Children.Remove(reused);
-            }
-        }
         row.Children.Add(invite);
         Grid.SetColumn(connect, 1);
         row.Children.Add(connect);
-        panel.Children.Add(Ui.Card(Ui.Field(row, "在要控制的设备上选择添加控制设备，把它显示的邀请粘贴到这里。连接后核对两台设备的核对码，并在那台设备上允许。")));
+        return Ui.Card(Ui.Field(row, "在要控制的设备上选择添加控制设备，把它显示的邀请粘贴到这里。连接后核对两台设备的核对码，并在那台设备上允许。"));
     }
 
     // ContactStatus is where pairing with a device stands, or its connection
