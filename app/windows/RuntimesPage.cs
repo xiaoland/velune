@@ -163,17 +163,20 @@ sealed class RuntimesPage : UserControl
 
     // Edit adds a runtime instance by hand (existing is null) or edits one:
     // its name, whether it runs, its type and the type's settings.
-    async void Edit(BindingRuntimeInstance? existing)
+    // Edit edits an existing instance, or adds one, starting from template's
+    // type and settings when given.
+    async void Edit(BindingRuntimeInstance? existing, BindingRuntimeInstance? template = null)
     {
         var addable = Addable().ToList();
-        var kind = existing == null ? addable.FirstOrDefault() : Kind(existing.TypeId);
+        var kind = existing != null ? Kind(existing.TypeId)
+            : addable.FirstOrDefault(candidate => candidate.Id == template?.TypeId) ?? addable.FirstOrDefault();
         if (kind == null)
         {
             Ui.Show(failure, existing == null ? "" : "这个运行时的类型已不受支持");
             return;
         }
         var panel = new StackPanel { Spacing = 16, MinWidth = 440 };
-        var name = new TextBox { Header = "实例名称", Text = existing?.Name ?? kind.Name };
+        var name = new TextBox { Header = "实例名称", Text = existing?.Name ?? (template?.TypeId == kind.Id ? template.Name : kind.Name) };
         var enabled = new ToggleSwitch { Header = "启用此运行时", IsOn = existing?.Enabled ?? true };
         var fields = new StackPanel { Spacing = 12 };
         var formError = Ui.Error();
@@ -189,9 +192,11 @@ sealed class RuntimesPage : UserControl
             {
                 fields.Children.Add(Ui.Text("实例配置", "BodyStrongTextBlockStyle"));
             }
+            // A template fills only its own type's fields.
+            var source = existing ?? (template?.TypeId == shown.Id ? template : null);
             foreach (var field in shown.Fields)
             {
-                var value = existing?.Settings.GetValueOrDefault(field.Key) ?? field.Value;
+                var value = source?.Settings.GetValueOrDefault(field.Key) ?? field.Value;
                 errors[field.Key] = Ui.Error();
                 fields.Children.Add(Ui.Field(FieldControl(field, value, values), field.Help ?? "", errors[field.Key]));
             }
@@ -205,7 +210,7 @@ sealed class RuntimesPage : UserControl
             {
                 type.Items.Add(candidate.Name);
             }
-            type.SelectedIndex = 0;
+            type.SelectedIndex = addable.IndexOf(kind);
             type.SelectionChanged += (_, _) =>
             {
                 ShowFields(addable[type.SelectedIndex]);
@@ -338,7 +343,7 @@ sealed class RuntimesPage : UserControl
                 status.Text = candidates.Length == 0 ? "未发现运行时，可以手动添加。" : $"发现 {candidates.Length} 个运行时。";
                 foreach (var candidate in candidates)
                 {
-                    found.Children.Add(CandidateRow(candidate));
+                    found.Children.Add(CandidateRow(candidate, dialog));
                 }
             }
             catch (Exception problem)
@@ -356,7 +361,7 @@ sealed class RuntimesPage : UserControl
         await window.ShowDialog(dialog);
     }
 
-    Border CandidateRow(BindingRuntimeDiscoveryCandidate candidate)
+    Border CandidateRow(BindingRuntimeDiscoveryCandidate candidate, ContentDialog importing)
     {
         var lines = Ui.TwoLines(candidate.Runtime.Name + (candidate.Version is { } version ? " " + version : ""), candidate.Runtime.Settings.GetValueOrDefault("binary", ""));
         if (!candidate.Supported)
@@ -367,6 +372,19 @@ sealed class RuntimesPage : UserControl
         if (candidate.AlreadyConfigured)
         {
             action = Ui.Muted("已配置");
+        }
+        else if (!candidate.Supported && Addable().Any(kind => kind.Id == candidate.Runtime.TypeId))
+        {
+            // A known version that discovery could not complete, such as a
+            // runtime directory that does not exist yet: finish it by hand.
+            var manual = new Button { Content = "手动添加…" };
+            manual.Click += (_, _) =>
+            {
+                // One dialog at a time: the form opens once this one closes.
+                importing.Hide();
+                Edit(null, candidate.Runtime);
+            };
+            action = manual;
         }
         else
         {
