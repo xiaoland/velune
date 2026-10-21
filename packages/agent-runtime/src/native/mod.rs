@@ -49,7 +49,8 @@ impl Error {
 }
 impl From<crate::execution::Error> for Error {
     fn from(error: crate::execution::Error) -> Self {
-        Self::new(error.to_string())
+        let code = error.code();
+        Self::with_code(error.into_detail(), code)
     }
 }
 pub type Result<T> = std::result::Result<T, Error>;

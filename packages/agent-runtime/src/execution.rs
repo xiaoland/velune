@@ -16,13 +16,32 @@ use std::{
 const BOOTSTRAP: &str = include_str!("../resources/remote_bootstrap.py");
 const TIMEOUT: Duration = Duration::from_secs(15);
 
+/// What failed, with the process transport's code (`spawn`, `timeout`,
+/// `process_exit`, …) so callers can tell why; `internal` otherwise.
 #[derive(Debug, thiserror::Error)]
-#[error("{0}")]
-pub struct Error(String);
+#[error("{detail}")]
+pub struct Error {
+    detail: String,
+    code: &'static str,
+}
+impl Error {
+    fn new(detail: String) -> Self {
+        Self {
+            detail,
+            code: "internal",
+        }
+    }
+    pub(crate) fn code(&self) -> &'static str {
+        self.code
+    }
+    pub(crate) fn into_detail(self) -> String {
+        self.detail
+    }
+}
 pub type Result<T> = std::result::Result<T, Error>;
 impl From<std::io::Error> for Error {
     fn from(value: std::io::Error) -> Self {
-        Self(value.to_string())
+        Self::new(value.to_string())
     }
 }
 
@@ -59,7 +78,9 @@ impl ExecutionTarget {
     /// interpreter `python`; its `python3` may be a Store install stub.
     pub(crate) fn python(&self) -> Command {
         if cfg!(windows) && self.is_local() {
-            crate::process_tree::command("python")
+            crate::process_tree::command(
+                windows_search_path("python.exe").unwrap_or("python".into()),
+            )
         } else {
             crate::process_tree::command("python3")
         }
@@ -80,7 +101,7 @@ impl ExecutionTarget {
                     .any(|c| c.is_whitespace() || c.is_control())
                 || ssh.port == Some(0)
             {
-                return Err(Error("SSH 目标或端口无效".into()));
+                return Err(Error::new("SSH 目标或端口无效".into()));
             }
         }
         Ok(())
@@ -213,7 +234,7 @@ impl ExecutionTarget {
             },
             Self::Ssh(ssh) => {
                 serde_json::from_slice(&ssh.request(&json!({"operation":operation,"path":path}))?)
-                    .map_err(|_| Error("远程路径检查返回无效结果".into()))
+                    .map_err(|_| Error::new("远程路径检查返回无效结果".into()))
             }
         }
     }
@@ -249,7 +270,8 @@ impl SshTarget {
             .args(["-o", "ClearAllForwardings=yes"])
             .arg(&self.destination)
             .arg(format!("python3 -c {}", shell_quote(BOOTSTRAP)));
-        let request = serde_json::to_vec(request).map_err(|_| Error("远程请求编码失败".into()))?;
+        let request =
+            serde_json::to_vec(request).map_err(|_| Error::new("远程请求编码失败".into()))?;
         let mut input_prefix = format!("{}\n", request.len()).into_bytes();
         input_prefix.extend(request);
         Ok(PreparedCommand {
@@ -263,6 +285,20 @@ impl SshTarget {
     }
 }
 
+/// The first `name` in a directory on PATH, as Windows finds it: entries
+/// split at every `;`, each one's quotes ignored. std treats a quote as
+/// opening a quoted entry, so one malformed entry such as `C:\dir"` hides all
+/// the entries after it from `Command::new`.
+fn windows_search_path(name: &str) -> Option<PathBuf> {
+    std::env::var_os("PATH")?
+        .to_string_lossy()
+        .split(';')
+        .map(|entry| entry.trim().replace('"', ""))
+        .filter(|entry| !entry.is_empty())
+        .map(|entry| Path::new(&entry).join(name))
+        .find(|path| path.is_absolute() && path.is_file())
+}
+
 fn run_prepared(prepared: PreparedCommand, input: Option<Vec<u8>>) -> Result<Vec<u8>> {
     let mut bytes = prepared.input_prefix;
     if let Some(input) = input {
@@ -273,7 +309,10 @@ fn run_prepared(prepared: PreparedCommand, input: Option<Vec<u8>>) -> Result<Vec
         (!bytes.is_empty()).then_some(bytes),
         32768,
     )
-    .map_err(|error| Error(error.to_string()))
+    .map_err(|error| Error {
+        code: error.code(),
+        detail: error.to_string(),
+    })
 }
 
 /// Install only application helpers and their bundled parser dependencies.
@@ -303,7 +342,9 @@ pub fn install_resources(target: &ExecutionTarget, local: &Path, remote: &Path) 
             ssh.request(&json!({"operation":"write", "files":files}))?;
         }
         ExecutionTarget::Local => {
-            return Err(Error("本地运行时直接使用应用资源，无需远程安装".into()));
+            return Err(Error::new(
+                "本地运行时直接使用应用资源，无需远程安装".into(),
+            ));
         }
     }
     Ok(())
@@ -319,7 +360,7 @@ fn collect_resource(local: &Path, remote: &Path, files: &mut Vec<Value>) -> Resu
     } else if metadata.is_file() {
         files.push(json!({"path":remote, "content":hex(&fs::read(local)?)}));
     } else {
-        return Err(Error("运行时资源包必须仅包含普通文件与目录".into()));
+        return Err(Error::new("运行时资源包必须仅包含普通文件与目录".into()));
     }
     Ok(())
 }
@@ -417,12 +458,12 @@ impl LoopbackTunnel {
             .arg(format!("127.0.0.1:0:127.0.0.1:{port}"))
             .arg(&ssh.destination);
         let bytes = crate::native::rpc::bounded_process(forward, None, 32768)
-            .map_err(|error| Error(format!("SSH loopback 转发失败：{error}")))?;
+            .map_err(|error| Error::new(format!("SSH loopback 转发失败：{error}")))?;
         let remote_port = std::str::from_utf8(&bytes)
             .ok()
             .and_then(|value| value.trim().parse::<u16>().ok())
             .filter(|value| *value != 0)
-            .ok_or_else(|| Error("SSH 未返回有效的远程 loopback 端口".into()))?;
+            .ok_or_else(|| Error::new("SSH 未返回有效的远程 loopback 端口".into()))?;
         ssh.request(&json!({"operation":"verify_loopback", "port":remote_port}))?;
         tunnel.endpoint = format!("http://127.0.0.1:{remote_port}{suffix}");
         Ok(tunnel)
@@ -451,7 +492,7 @@ fn ssh_connection_error(message: &str, diagnostic: &Mutex<Vec<u8>>) -> Error {
         .ok()
         .map(|bytes| String::from_utf8_lossy(&bytes).trim().to_owned())
         .unwrap_or_default();
-    Error(if detail.is_empty() {
+    Error::new(if detail.is_empty() {
         message.into()
     } else {
         format!("{message}：{detail}")
@@ -461,7 +502,7 @@ fn ssh_connection_error(message: &str, diagnostic: &Mutex<Vec<u8>>) -> Error {
 fn loopback_address(endpoint: &str) -> Result<(u16, &str)> {
     let address = endpoint
         .strip_prefix("http://127.0.0.1:")
-        .ok_or_else(|| Error("运行时服务必须为 HTTP IPv4 loopback 地址".into()))?;
+        .ok_or_else(|| Error::new("运行时服务必须为 HTTP IPv4 loopback 地址".into()))?;
     let (port, suffix) = address
         .split_once('/')
         .map_or((address, ""), |(port, _)| (port, &address[port.len()..]));
@@ -469,7 +510,7 @@ fn loopback_address(endpoint: &str) -> Result<(u16, &str)> {
         .parse::<u16>()
         .ok()
         .filter(|port| *port != 0)
-        .ok_or_else(|| Error("运行时 loopback 服务端口无效".into()))?;
+        .ok_or_else(|| Error::new("运行时 loopback 服务端口无效".into()))?;
     Ok((port, suffix))
 }
 
@@ -493,7 +534,7 @@ fn temporary_directory() -> Result<PathBuf> {
 fn write_local(path: &Path, bytes: &[u8]) -> Result<()> {
     let parent = path
         .parent()
-        .ok_or_else(|| Error("写入路径缺少父目录".into()))?;
+        .ok_or_else(|| Error::new("写入路径缺少父目录".into()))?;
     ExecutionTarget::Local.create_dir_all(parent)?;
     let temporary = parent.join(format!(".velune-{}", unique_name()?));
     let result = (|| {
@@ -517,7 +558,7 @@ fn write_local(path: &Path, bytes: &[u8]) -> Result<()> {
 
 fn unique_name() -> Result<String> {
     let mut bytes = [0; 12];
-    getrandom::fill(&mut bytes).map_err(|_| Error("临时路径随机源不可用".into()))?;
+    getrandom::fill(&mut bytes).map_err(|_| Error::new("临时路径随机源不可用".into()))?;
     Ok(hex(&bytes))
 }
 fn hex(bytes: &[u8]) -> String {
@@ -533,13 +574,13 @@ fn absolute(path: &Path) -> Result<()> {
     if path.is_absolute() {
         Ok(())
     } else {
-        Err(Error("运行时路径必须为绝对路径".into()))
+        Err(Error::new("运行时路径必须为绝对路径".into()))
     }
 }
 fn utf8(value: &OsStr) -> Result<&str> {
     value
         .to_str()
-        .ok_or_else(|| Error("SSH 运行时参数必须为 UTF-8".into()))
+        .ok_or_else(|| Error::new("SSH 运行时参数必须为 UTF-8".into()))
 }
 fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
