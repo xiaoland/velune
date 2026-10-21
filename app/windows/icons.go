@@ -16,11 +16,24 @@ var (
 	plusSVG []byte
 	//go:embed icons/minus.svg
 	minusSVG []byte
+	//go:embed icons/circle-alert.svg
+	circleAlertSVG []byte
+	//go:embed icons/hand.svg
+	handSVG []byte
 
 	newConversationIcon = ui.MustParseSVG(squarePenSVG)
 	settingsIcon        = ui.MustParseSVG(settingsSVG)
 	addIcon             = ui.MustParseSVG(plusSVG)
 	removeIcon          = ui.MustParseSVG(minusSVG)
+	failedIcon          = ui.MustParseSVG(circleAlertSVG)
+	waitingIcon         = ui.MustParseSVG(handSVG)
+)
+
+// Marks before a conversation's title: a dot while it is unread, else an
+// empty one that keeps the titles in line.
+var (
+	unreadIcon = ui.MustParseSVG([]byte(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/></svg>`))
+	readIcon   = ui.MustParseSVG([]byte(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4" fill-opacity="0"/></svg>`))
 )
 
 // iconButton is a button showing only an icon, named by label.

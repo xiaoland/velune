@@ -12,6 +12,7 @@ import (
 	"sync"
 
 	"github.com/egoist/mygo"
+	"github.com/egoist/mygo/ui"
 	"velune/bindings"
 )
 
@@ -30,6 +31,8 @@ type core struct {
 	local *bindings.VeluneApplication
 	// view tells this app's windows apart on a controlled device; one per process.
 	view string
+	// marks are Velune's mark for light and dark backgrounds.
+	marks [2]*ui.SVG
 
 	mu          sync.Mutex
 	endpoint    *bindings.VeluneRemoteEndpoint
@@ -60,7 +63,22 @@ func openCore() (*core, error) {
 	}
 	view := make([]byte, 16)
 	_, _ = rand.Read(view)
-	return &core{home: home, local: local, view: "windows-" + hex.EncodeToString(view), connections: map[string]*bindings.VeluneApplication{}}, nil
+	c := &core{home: home, local: local, view: "windows-" + hex.EncodeToString(view), connections: map[string]*bindings.VeluneApplication{}}
+	// The brand's files ship in resources; without them the app shows no mark.
+	for i, colorway := range []string{"graphite", "dark"} {
+		if data, err := os.ReadFile(filepath.Join(resources, "Brand", "velune-medium-"+colorway+".svg")); err == nil {
+			c.marks[i], _ = ui.ParseSVG(data)
+		}
+	}
+	return c, nil
+}
+
+// brand is Velune's mark for a light or dark background, or nil.
+func (c *core) brand(dark bool) *ui.SVG {
+	if dark {
+		return c.marks[1]
+	}
+	return c.marks[0]
 }
 
 func libraryName() string {

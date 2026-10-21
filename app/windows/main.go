@@ -23,6 +23,8 @@ func main() {
 			return
 		}
 		w := newWorkspace(core, &hub{core: core})
+		// The view draws the title bar; the window keeps its buttons.
+		options.TitleBarStyle = mygo.TitleBarHidden
 		options.Content = ui.View(w.view)
 		win := mygo.NewWindow(options)
 		w.attach(win)

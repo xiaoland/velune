@@ -25,6 +25,7 @@ Copy-Item target\release\velune_bindings.dll, target\release\velune_relaykit.dll
 $scripts = 'pi_sdk', 'pi_sessions', 'pi_rpc', 'pi_virtual_model', 'pi_auth', 'pi_provider_import', 'huihua_sessions'
 foreach ($script in $scripts) { Copy-Item "packages\agent-runtime\resources\$script.mjs" $resources }
 Copy-Item -Recurse "$support\node_modules" "$resources\node_modules"
+Copy-Item -Recurse assets\brand "$resources\Brand"
 Copy-Item packages\agent-runtime\runtime-support\THIRD_PARTY_NOTICES.md "$resources\ThirdParty"
 Copy-Item -Recurse packages\agent-runtime\runtime-support\licenses "$resources\ThirdParty\licenses"
 Copy-Item packages\agent-runtime\runtime-support\package-lock.json "$resources\ThirdParty\runtime-support-package-lock.json"

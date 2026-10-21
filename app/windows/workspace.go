@@ -3,7 +3,6 @@ package main
 import (
 	"cmp"
 	"fmt"
-	"path/filepath"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -16,6 +15,9 @@ import (
 
 type listing struct {
 	conversations []bindings.BindingListedConversation
+	// The list's groups in order, and how the device's list is browsed.
+	groups        []bindings.BindingConversationGroup
+	preferences   bindings.BindingConversationBrowserPreferences
 	configuration configuration
 	// active holds the running or waiting conversations by ID.
 	active  map[string]bindings.BindingActiveConversation
@@ -24,7 +26,7 @@ type listing struct {
 }
 
 func newListing(list bindings.BindingConfigurationSnapshot, active []bindings.BindingActiveConversation) listing {
-	l := listing{active: map[string]bindings.BindingActiveConversation{}, loaded: true}
+	l := listing{active: map[string]bindings.BindingActiveConversation{}, loaded: true, groups: list.ConversationGroups, preferences: list.ConversationBrowserPreferences}
 	l.configuration.types = list.RuntimeTypes
 	latest := slices.Clone(list.Conversations)
 	slices.SortStableFunc(latest, func(a, b bindings.BindingListedConversation) int {
@@ -87,12 +89,14 @@ type workspace struct {
 	settings    *settings
 	// listing polls for one device at a time; a switch starts another round.
 	round atomic.Int64
-	list  ui.ListState
+	// chosen is the sidebar's choice; shownOpen the open conversation it
+	// last followed. sections holds whether each group is open, by its ID.
+	chosen, shownOpen string
+	sections          map[string]*bool
 }
 
 func newWorkspace(core *core, hub *hub) *workspace {
-	w := &workspace{core: core, hub: hub, prompted: map[string]bool{}, markingRead: map[string]bool{}, foreground: true}
-	w.list.Key = func(i int) any { return w.listing.conversations[i].Conversation.Id }
+	w := &workspace{core: core, hub: hub, prompted: map[string]bool{}, markingRead: map[string]bool{}, foreground: true, sections: map[string]*bool{}}
 	hub.changed = w.hubChanged
 	return w
 }
@@ -371,53 +375,62 @@ func (w *workspace) view(c *ui.Context) {
 			}
 		}
 	}
+	// The view draws the title bar under the window's buttons: the device
+	// and the list's actions over the list, the conversation's title over it.
+	bar := c.TitleBar()
+	height := max(bar.Height, 44)
 	ui.Row(c).Fill().AlignItems(ui.Stretch).Children(func() {
-		ui.Column(c).Width(300).Shrink(0).Background(t.Surface).BorderWidth(0, 1, 0, 0).BorderColor(t.Border).Children(func() {
+		ui.Column(c).Width(280).Shrink(0).Background(t.Surface).BorderWidth(0, 1, 0, 0).BorderColor(t.Border).Children(func() {
+			ui.Row(c).Height(height).Shrink(0).Padding(0, 8, 0, bar.Left+8).Gap(4).AlignItems(ui.Center).DragWindow().Children(func() {
+				w.deviceSwitcher(c)
+				ui.Toolbar(c, func() {
+					if iconButton(c, newConversationIcon, "新会话（Ctrl+N）").Disabled(len(w.listing.configuration.runtimes) == 0).Clicked() {
+						w.startConversation()
+					}
+					if iconButton(c, settingsIcon, "设置（Ctrl+,）").Clicked() {
+						w.openSettings(keepTab)
+					}
+				}).Label("会话").Shrink(0)
+			})
 			w.sidebar(c)
 		})
 		ui.Column(c).Grow(1).MinWidth(0).Children(func() {
+			ui.Row(c).Height(height).Shrink(0).Padding(0, bar.Right+12, 0, 20).AlignItems(ui.Center).DragWindow().Children(func() {
+				if w.conversation != nil {
+					ui.Text(c, w.conversation.title()).Bold().SingleLine()
+				}
+			})
 			if w.conversation != nil {
 				w.conversation.view(c)
 				return
 			}
-			ui.Column(c).Fill().Center().Children(func() {
-				ui.Text(c, "选择或新建一个会话").TextColor(t.TextMuted)
-			})
+			w.welcome(c)
 		})
 	})
 	w.approvalDialog(c)
 }
 
-func (w *workspace) sidebar(c *ui.Context) {
+// welcome fills the window while no conversation is open.
+func (w *workspace) welcome(c *ui.Context) {
 	t := c.Theme()
-	ui.Row(c).Padding(8).Gap(4).AlignItems(ui.Center).Children(func() {
-		w.deviceSwitcher(c)
-		ui.Toolbar(c, func() {
-			if iconButton(c, newConversationIcon, "新会话（Ctrl+N）").Disabled(len(w.listing.configuration.runtimes) == 0).Clicked() {
-				w.startConversation()
+	ui.Column(c).Grow(1).Center().Gap(16).Padding(24).Children(func() {
+		if mark := w.core.brand(t.Dark); mark != nil {
+			ui.Image(c, mark).Size(72, 72)
+		}
+		if len(w.listing.configuration.runtimes) == 0 && w.listing.loaded {
+			ui.Text(c, "先添加一个 Agent 运行时").FontSize(18).Bold()
+			ui.Text(c, "Velune 在这台设备上通过 Agent 运行时执行会话。").TextColor(t.TextMuted)
+			if ui.PrimaryButton(c, "添加 Agent 运行时…").Clicked() {
+				w.openSettings(runtimesTab)
 			}
-			if iconButton(c, settingsIcon, "设置（Ctrl+,）").Clicked() {
-				w.openSettings(keepTab)
-			}
-		}).Label("会话").Shrink(0)
+			return
+		}
+		ui.Text(c, "选择或新建一个会话").FontSize(18).Bold()
+		ui.Text(c, "左侧列出这台设备上的会话；新会话在发送第一条消息时开始。").TextColor(t.TextMuted)
+		if ui.PrimaryButton(c, "新会话").Tooltip("Ctrl+N").Clicked() {
+			w.startConversation()
+		}
 	})
-	for _, failure := range []string{w.hub.failure, w.listing.failure} {
-		if failure != "" {
-			ui.Text(c, failure).FontSize(12).TextColor(t.Danger).Padding(0, 12, 8, 12)
-		}
-	}
-	switch {
-	case !w.listing.loaded:
-		ui.Column(c).Padding(16).Children(func() { ui.Spinner(c) })
-	case len(w.listing.conversations) == 0:
-		empty := "这台设备上还没有会话。"
-		if len(w.listing.configuration.runtimes) == 0 {
-			empty = "这台设备还没有可用的运行时。"
-		}
-		ui.Text(c, empty).FontSize(13).TextColor(t.TextMuted).Padding(16)
-	default:
-		ui.List(c, &w.list, len(w.listing.conversations), func(i int) { w.row(c, i) }).Grow(1).Padding(0, 8).Gap(2)
-	}
 }
 
 func (w *workspace) deviceSwitcher(c *ui.Context) {
@@ -439,59 +452,6 @@ func (w *workspace) deviceSwitcher(c *ui.Context) {
 			w.openSettings(devicesTab)
 		}
 	}).Grow(1)
-}
-
-func (w *workspace) row(c *ui.Context, i int) {
-	t := c.Theme()
-	listed := w.listing.conversations[i]
-	conversation := listed.Conversation
-	var detail []string
-	for _, runtime := range w.listing.configuration.runtimes {
-		if runtime.Id == conversation.RuntimeId {
-			detail = append(detail, runtime.Name)
-		}
-	}
-	if conversation.UpdatedAtUnixMs != nil {
-		detail = append(detail, relativeTime(*conversation.UpdatedAtUnixMs))
-	}
-	if listed.Project != nil {
-		detail = append(detail, filepath.Base(strings.ReplaceAll(*listed.Project, `\`, "/")))
-	}
-	selected := conversation.Id == w.openID()
-	editing := w.renaming != nil && w.renaming.conversationID == conversation.Id
-	row := ui.Row(c.Key("row")).Padding(8, 12).Gap(8).Radius(6).AlignItems(ui.Center)
-	row.Children(func() {
-		ui.Column(c).Grow(1).MinWidth(0).Gap(2).Children(func() {
-			if editing {
-				w.renameInput(c)
-			} else {
-				ui.Text(c, conversation.Title).SingleLine()
-			}
-			ui.Text(c, strings.Join(detail, " · ")).FontSize(12).TextColor(t.TextMuted).SingleLine()
-		})
-		active, isActive := w.listing.active[conversation.Id]
-		switch {
-		case isActive && active.PendingInteractions > 0:
-			ui.Text(c, "等待回应").FontSize(12).TextColor(t.Accent)
-		case isActive && active.RunState == bindings.BindingRunStateRunning:
-			ui.Spinner(c)
-		case listed.Failed:
-			ui.Text(c, "失败").FontSize(12).TextColor(t.Danger)
-		case listed.Unread:
-			ui.Text(c, "●").FontSize(12).TextColor(t.Accent)
-		}
-	})
-	if selected || row.Hovered() {
-		row.Background(t.SurfaceHover)
-	}
-	if editing {
-		return
-	}
-	if row.DoubleClicked() {
-		w.rename(listed)
-	} else if row.Clicked() && !selected {
-		w.open(target{runtimeID: conversation.RuntimeId, conversationID: conversation.Id, title: conversation.Title})
-	}
 }
 
 // renameInput saves on Enter; Esc or a click elsewhere cancels.
