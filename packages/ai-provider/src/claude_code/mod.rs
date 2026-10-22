@@ -477,7 +477,7 @@ async fn launch_in(
     }));
     let config_path = directory.join("mcp.json");
     std::fs::write(&config_path,serde_json::to_vec(&json!({"mcpServers":{"velune":{"type":"http","url":format!("http://{address}/{token}")}}})).unwrap()).map_err(|_|MessagesErrorKind::Transport)?;
-    let mut command = Command::new(&config.executable);
+    let mut command = hidden_command(&config.executable);
     command
         .args([
             "-p",
@@ -1067,4 +1067,20 @@ impl MessagesProvider for ClaudeCode {
                 .unwrap_or_else(|_| fail(MessagesErrorKind::ProviderFailure, true))
         })
     }
+}
+
+/// The Claude CLI started without a console window: the host may be a GUI
+/// app on Windows, where a console program otherwise opens its own window.
+/// This crate does not depend on agent-runtime, whose helper does the same.
+fn hidden_command(program: impl AsRef<std::ffi::OsStr>) -> Command {
+    #[allow(clippy::disallowed_methods)]
+    let command = Command::new(program);
+    #[cfg(windows)]
+    let command = {
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        let mut command = command;
+        command.creation_flags(CREATE_NO_WINDOW);
+        command
+    };
+    command
 }

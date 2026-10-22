@@ -50,7 +50,7 @@ schema 10 采用 hard-cutoff，旧普通配置打开时直接重置，之后重�
 
 Windows 使用 MSVC 目标（`x86_64-pc-windows-msvc`，工具链版本同 `rust-toolchain.toml`），需要 Visual Studio Build Tools、.NET 10 SDK、Go 和 [llvm-mingw](https://github.com/mstorsjo/llvm-mingw)。RelayKit 桥依赖 cgo；MinGW 静态库无法可靠链接进 MSVC 产物，所以 Windows 把它构建为 `velune_relaykit.dll`，Rust 以 `raw-dylib` 绑定，无需导入库。构建脚本把 DLL 复制到 `target/<profile>/`，应用分发时须放在可执行文件旁。cgo 编译器默认为 `<arch>-w64-mingw32-clang`，可由 `VELUNE_RELAYKIT_CC` 指定绝对路径；当 PATH 没有传递给 build script 时，同时用 `GO` 指定 Go 的绝对路径。
 
-子进程统一经 agent-runtime 的 `process_tree` 创建：Unix 使用独立进程组，Windows 使用 kill-on-close 的 Job Object，并加 `CREATE_NO_WINDOW`，避免 GUI 宿主为每个 Harness 弹出控制台。application 的凭据助手（Pi 来源认证、Claude CLI 登录）以同样方式管理进程树，并为清空环境的子进程保留 `SystemRoot` 与 `windir`。SSH 运行时依赖 OpenSSH ControlMaster 与 Unix socket，Windows 宿主暂不支持。
+子进程统一经 agent-runtime 的 `process_tree` 创建：Unix 使用独立进程组，Windows 使用 kill-on-close 的 Job Object，并加 `CREATE_NO_WINDOW`，避免 GUI 宿主为每个 Harness 弹出控制台。application 的凭据助手（Pi 来源认证、Claude CLI 登录）以同样方式管理进程树，并为清空环境的子进程保留 `SystemRoot` 与 `windir`。其余一次性子进程（读取改动的 `git`、Claude CLI 等）经 `velune_agent_runtime::process::command` 创建，同样不弹控制台；ai-provider 不依赖 agent-runtime，以自己的 `hidden_command` 做同样的事。根目录 `clippy.toml` 禁止直接调用 `Command::new`，新的启动点因此不会漏掉。SSH 运行时依赖 OpenSSH ControlMaster 与 Unix socket，Windows 宿主暂不支持。
 
 应用（C#／.NET 10＋WinUI 3）由 `scripts/build-windows.ps1` 构建：先构建 `velune_bindings.dll`，再由固定提交的 `uniffi-bindgen-cs` 从中生成 C# 绑定，最后 `dotnet publish` 出自包含的 `Velune.exe`，需要 .NET 10 SDK。界面、运行与已知限制见 [Windows README](../app/windows/README.md)。
 

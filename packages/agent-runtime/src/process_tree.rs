@@ -12,13 +12,15 @@ use std::{
 };
 
 /// A command that does not open a console window when the host is a GUI app.
-pub(crate) fn command(program: impl AsRef<std::ffi::OsStr>) -> Command {
+/// Every child process starts here; clippy refuses `Command::new` elsewhere.
+pub fn command(program: impl AsRef<std::ffi::OsStr>) -> Command {
+    #[allow(clippy::disallowed_methods)]
     let mut command = Command::new(program);
     hide_console(&mut command);
     command
 }
 
-pub(crate) fn hide_console(command: &mut Command) {
+pub fn hide_console(command: &mut Command) {
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;

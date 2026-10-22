@@ -676,6 +676,7 @@ mod tests {
     /// A junction, as an unprivileged user can make one.
     #[cfg(windows)]
     fn link_directory(target: &Path, link: &Path) {
+        #[allow(clippy::disallowed_methods)] // a test, not the GUI host
         let status = std::process::Command::new("cmd")
             .args(["/C", "mklink", "/J"])
             .arg(link)

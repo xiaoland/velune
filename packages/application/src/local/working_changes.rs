@@ -4,13 +4,12 @@
 //! stages, commits or takes the repository's optional locks.
 use super::*;
 use crate::{ChangeKind, ChangedFile, DiffLine, DiffLineKind, FileDiff, WorkingChanges};
-use std::process::Command;
 
 /// Diff text beyond this many bytes is cut; the rest stays in git.
 const DIFF_LIMIT: usize = 1024 * 1024;
 
 fn git(directory: &Path, args: &[&str]) -> Result<std::process::Output, RuntimeError> {
-    Command::new("git")
+    velune_agent_runtime::process::command("git")
         .arg("-C")
         .arg(directory)
         .args(["-c", "core.quotePath=false", "-c", "color.ui=false"])

@@ -1,0 +1,4 @@
+disallowed-methods = [
+    { path = "std::process::Command::new", reason = "start child processes with velune_agent_runtime::process::command (ai-provider: its hidden_command), which keeps a GUI host from flashing a console window on Windows" },
+    { path = "tokio::process::Command::new", reason = "wrap velune_agent_runtime::process::command with tokio::process::Command::from (ai-provider: its hidden_command), which keeps a GUI host from flashing a console window on Windows" },
+]

@@ -139,7 +139,7 @@ impl CoreRuntime {
             .borrow_mut()
             .entry(key)
             .or_insert_with(|| {
-                let mut command = std::process::Command::new("printenv");
+                let mut command = velune_agent_runtime::process::command("printenv");
                 command.arg("HOME");
                 match target.output(command, None, None) {
                     Ok(bytes) => String::from_utf8(bytes)

@@ -46,6 +46,8 @@ fn main() {
         "windows" => ("-buildmode=c-shared", "velune_relaykit.dll"),
         _ => ("-buildmode=c-archive", "libvelune_relaykit.a"),
     };
+    // The build runs in a console, not in the GUI host.
+    #[allow(clippy::disallowed_methods)]
     let mut command = Command::new(env::var_os("GO").unwrap_or_else(|| "go".into()));
     if os == "windows" {
         // Cargo's CC may name MSVC; cgo needs a MinGW compiler.

@@ -171,7 +171,8 @@ impl CredentialResolver for ProviderResolver {
                     } else {
                         "pi_auth.mjs"
                     };
-                    let mut command = tokio::process::Command::new(node);
+                    let mut command =
+                        tokio::process::Command::from(velune_agent_runtime::process::command(node));
                     command
                         .env_clear()
                         .arg(options.resources_directory.join(helper))

@@ -18,7 +18,7 @@ pub(crate) fn directory(home: &Path, id: &str) -> PathBuf {
 /// `config_dir` is the login's `CLAUDE_CONFIG_DIR`; `None` runs on the user's
 /// own default login, which setting the variable would hide.
 pub(crate) fn command(binary: &str, config_dir: Option<&Path>) -> tokio::process::Command {
-    let mut command = tokio::process::Command::new(binary);
+    let mut command = tokio::process::Command::from(velune_agent_runtime::process::command(binary));
     command
         .current_dir(config_dir.map_or_else(std::env::temp_dir, Path::to_path_buf))
         .env_clear();

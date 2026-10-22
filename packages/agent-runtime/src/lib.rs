@@ -5,6 +5,10 @@ pub use velune_conversation as conversation;
 mod client;
 pub mod model_projection;
 mod process_tree;
+/// Child processes for a host that may be a GUI app without a console.
+pub mod process {
+    pub use crate::process_tree::{command, hide_console};
+}
 mod projection;
 
 pub use client::*;
