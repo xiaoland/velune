@@ -7,7 +7,7 @@ namespace Velune;
 // paired devices through the same interface.
 public partial class App : Application
 {
-    MainWindow? window;
+    Shell? shell;
 
     public App()
     {
@@ -47,10 +47,9 @@ public partial class App : Application
             new FailureWindow("Velune 无法启动：" + message).Activate();
             return;
         }
-        window = new MainWindow(core);
-        // Closing the main window quits; agents on this PC stop with the app.
-        // The process ends with its last window.
-        window.Closed += (_, _) => core.Shutdown();
-        window.Activate();
+        // Closing the last workspace window quits; agents on this PC stop
+        // with the app. The process ends with its last window.
+        shell = new Shell(core, Microsoft.UI.Dispatching.DispatcherQueue.GetForCurrentThread());
+        shell.Start();
     }
 }

@@ -14,13 +14,13 @@ namespace Velune;
 public sealed partial class ConversationView : UserControl
 {
     internal Conversation Model { get; }
-    readonly MainWindow window;
+    readonly WorkspaceWindow window;
     // The interaction shown, and the replies typed or chosen for it by question ID.
     (string Id, bool Busy)? shownInteraction;
     readonly Dictionary<string, string> answers = [];
     readonly Dictionary<string, string> chosen = [];
 
-    internal ConversationView(Conversation model, MainWindow window)
+    internal ConversationView(Conversation model, WorkspaceWindow window)
     {
         InitializeComponent();
         Model = model;
@@ -36,6 +36,7 @@ public sealed partial class ConversationView : UserControl
         };
         Input.PreviewKeyDown += InputKeyDown;
         SendButton.Click += (_, _) => Send();
+        RuntimeButton.Click += (_, _) => window.OpenSettings(SettingsPage.Runtimes);
         StopButton.Click += (_, _) => Model.Stop();
         AgentMenu.Opening += (_, _) => FillAgentMenu();
         PermissionMenu.Opening += (_, _) => FillPermissionMenu();
@@ -44,6 +45,26 @@ public sealed partial class ConversationView : UserControl
         Loaded += (_, _) => Input.Focus(FocusState.Programmatic);
         Render();
     }
+
+    // ComposerInPane puts the composer under the transcript, or takes it out
+    // for the composer's tool window, which shows the focused tab's.
+    internal void ComposerInPane(bool inPane)
+    {
+        if (ComposerArea.Parent is Border host)
+        {
+            host.Child = null;
+        }
+        if (inPane && !Body.Children.Contains(ComposerArea))
+        {
+            Body.Children.Add(ComposerArea);
+        }
+        else if (!inPane)
+        {
+            Body.Children.Remove(ComposerArea);
+        }
+    }
+
+    internal void FocusInput() => Input.Focus(FocusState.Programmatic);
 
     public void Close()
     {
@@ -88,19 +109,19 @@ public sealed partial class ConversationView : UserControl
 
     void Render()
     {
-        TitleText.Text = Model.Title;
-        OutlineButton.IsEnabled = Model.Snapshot is { TranscriptOutline.Length: > 0 };
         // A change of the setting meanwhile turns the folded outline back.
         if (outlineFolded && Model.Configuration.Outline != BindingOutlinePresentation.InPlace)
         {
             outlineFolded = false;
-            OutlineButton.IsChecked = false;
         }
         var subAgent = Model.ParentID != null;
         SubAgentBar.Visibility = Visible(subAgent);
         ComposerPanel.Visibility = Visible(!subAgent);
         Spinner.IsActive = Model.Loading;
-        Empty.Text = Model.Loading || Model.Messages.Count > 0 ? "" : Model.Snapshot == null ? "输入第一条消息开始会话。" : "还没有消息。";
+        var noRuntime = Model.Target.Unsent && window.Listing.Loaded && Model.Configuration.Runtimes.Count == 0;
+        Empty.Text = noRuntime ? "这台设备还没有可用的 Agent 运行时。Velune 通过 Agent 运行时执行会话。"
+            : Model.Loading || Model.Messages.Count > 0 ? "" : Model.Snapshot == null ? "输入第一条消息开始会话。" : "还没有消息。";
+        RuntimeButton.Visibility = Visible(noRuntime);
         RenderTranscript();
         FailureBar.Message = Model.Failure;
         FailureBar.IsOpen = Model.Failure.Length > 0;

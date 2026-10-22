@@ -53,7 +53,6 @@ public sealed partial class ConversationView
             }
         };
         BottomButton.Click += (_, _) => ScrollToEnd();
-        OutlineButton.Click += (_, _) => OutlineClicked();
     }
 
     bool AtBottom() => scroller == null || scroller.VerticalOffset >= scroller.ScrollableHeight - 8;
@@ -864,15 +863,46 @@ public sealed partial class ConversationView
         };
     }
 
-    void OutlineClicked()
+    internal bool HasOutline => Model.Snapshot is { TranscriptOutline.Length: > 0 };
+
+    internal bool OutlineFolded => outlineFolded;
+
+    // OutlineClicked does what the outline's button on the tab bar does, by
+    // the setting: fold the list in place, or list the messages at it.
+    internal void OutlineClicked(FrameworkElement button)
     {
         if (Model.Configuration.Outline == BindingOutlinePresentation.InPlace)
         {
-            SetOutlineFolded(OutlineButton.IsChecked == true, null);
+            SetOutlineFolded(!outlineFolded, null);
             return;
         }
-        OutlineButton.IsChecked = false;
-        ShowOutline();
+        window.ShowOutlineButtons();
+        ShowOutline(button);
+    }
+
+    // OutlineEntries are the user's messages, for the outline's tool window.
+    internal List<(string Id, string Text)> OutlineEntries()
+    {
+        var messages = Messages();
+        return [.. (Model.Snapshot?.TranscriptOutline ?? []).Select(entry =>
+            (entry.Id, messages.TryGetValue(entry.MessageId, out var message) ? FirstLine(message) : ""))];
+    }
+
+    // GoToEntry goes to a user's message; the last one while the conversation
+    // runs means its end.
+    internal void GoToEntry(string id)
+    {
+        if (outlineFolded)
+        {
+            SetOutlineFolded(false, id);
+            return;
+        }
+        if (Model.Working && Model.Snapshot?.TranscriptOutline is { Length: > 0 } entries && id == entries[^1].Id)
+        {
+            ScrollToEnd();
+            return;
+        }
+        GoTo(id);
     }
 
     // SetOutlineFolded folds the list to the user's messages, or back to all
@@ -881,7 +911,7 @@ public sealed partial class ConversationView
     {
         var anchor = at ?? VisibleUserMessage();
         outlineFolded = folded;
-        OutlineButton.IsChecked = folded;
+        window.ShowOutlineButtons();
         RenderTranscript();
         if (anchor != null)
         {
@@ -934,7 +964,7 @@ public sealed partial class ConversationView
 
     // ShowOutline lists the user's messages in a flyout at the button: one
     // click chooses, a double click or 前往 goes there.
-    void ShowOutline()
+    void ShowOutline(FrameworkElement button)
     {
         var entries = Model.Snapshot?.TranscriptOutline ?? [];
         var messages = Messages();
@@ -971,7 +1001,7 @@ public sealed partial class ConversationView
         list.SelectionChanged += (_, _) => go.IsEnabled = list.SelectedItem != null;
         list.DoubleTapped += (_, _) => Go();
         go.Click += (_, _) => Go();
-        flyout.ShowAt(OutlineButton);
+        flyout.ShowAt(button);
         if (list.Items.Count > 0)
         {
             list.SelectedIndex = list.Items.Count - 1;

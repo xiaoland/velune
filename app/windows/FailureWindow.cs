@@ -26,6 +26,6 @@ sealed class FailureWindow : Window
             },
         };
         AppWindow.SetIcon(Path.Combine(AppContext.BaseDirectory, "Assets", "Velune.ico"));
-        MainWindow.Size(this, 560, 240, 400, 200);
+        WorkspaceWindow.Size(this, 560, 240, 400, 200);
     }
 }

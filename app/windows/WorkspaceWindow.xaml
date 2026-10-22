@@ -1,0 +1,90 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Window
+    x:Class="Velune.WorkspaceWindow"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    Title="Velune">
+    <Grid x:Name="Root">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+
+        <!-- As tall as the Tall caption buttons the window asks for. The device
+             and the settings sit here, since the list may be anywhere or hidden. -->
+        <TitleBar
+            x:Name="AppTitleBar"
+            Height="48"
+            Title="Velune"
+            IsBackButtonVisible="False"
+            IsPaneToggleButtonVisible="True">
+            <TitleBar.IconSource>
+                <ImageIconSource x:Name="TitleIcon" />
+            </TitleBar.IconSource>
+            <TitleBar.Content>
+                <StackPanel Orientation="Horizontal" Spacing="4">
+                    <DropDownButton x:Name="DeviceButton" ToolTipService.ToolTip="切换设备">
+                        <DropDownButton.Flyout>
+                            <MenuFlyout x:Name="DeviceMenu" Placement="BottomEdgeAlignedLeft" />
+                        </DropDownButton.Flyout>
+                    </DropDownButton>
+                    <Button
+                        x:Name="NewButton"
+                        AutomationProperties.Name="新会话"
+                        ToolTipService.ToolTip="新会话（Ctrl+N）">
+                        <FontIcon FontSize="16" Glyph="&#xE710;" />
+                    </Button>
+                </StackPanel>
+            </TitleBar.Content>
+            <TitleBar.RightHeader>
+                <StackPanel Margin="0,0,4,0" Orientation="Horizontal" Spacing="2">
+                    <DropDownButton
+                        x:Name="LayoutButton"
+                        AutomationProperties.Name="布局"
+                        ToolTipService.ToolTip="布局">
+                        <FontIcon FontSize="14" Glyph="&#xF246;" />
+                        <DropDownButton.Flyout>
+                            <MenuFlyout x:Name="LayoutMenu" Placement="BottomEdgeAlignedRight" />
+                        </DropDownButton.Flyout>
+                    </DropDownButton>
+                    <Button
+                        x:Name="SettingsButton"
+                        AutomationProperties.Name="设置"
+                        ToolTipService.ToolTip="设置（Ctrl+,）">
+                        <FontIcon FontSize="16" Glyph="&#xE713;" />
+                    </Button>
+                </StackPanel>
+            </TitleBar.RightHeader>
+        </TitleBar>
+
+        <!-- The left and right areas either side of the editor, the bottom
+             area under it; the tools fill them from code. -->
+        <Grid x:Name="Body" Grid.Row="1">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition x:Name="LeftColumn" Width="0" />
+                <ColumnDefinition Width="*" MinWidth="240" />
+                <ColumnDefinition x:Name="RightColumn" Width="0" />
+            </Grid.ColumnDefinitions>
+            <Border x:Name="LeftArea" />
+            <Grid
+                x:Name="Center"
+                Grid.Column="1"
+                Background="{ThemeResource LayerFillColorDefaultBrush}"
+                BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                BorderThickness="1,1,1,0"
+                CornerRadius="8,8,0,0">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="*" MinHeight="160" />
+                    <RowDefinition x:Name="BottomRow" Height="0" />
+                </Grid.RowDefinitions>
+                <Border x:Name="EditorHost" />
+                <Border
+                    x:Name="BottomArea"
+                    Grid.Row="1"
+                    BorderBrush="{ThemeResource DividerStrokeColorDefaultBrush}"
+                    BorderThickness="0,1,0,0" />
+            </Grid>
+            <Border x:Name="RightArea" Grid.Column="2" />
+        </Grid>
+    </Grid>
+</Window>

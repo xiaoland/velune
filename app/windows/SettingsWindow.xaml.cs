@@ -35,7 +35,7 @@ public sealed partial class SettingsWindow : Window
         {
             Root.Style = Ui.Style("WindowBackgroundStyle");
         }
-        MainWindow.Size(this, 820, 640, 600, 440);
+        WorkspaceWindow.Size(this, 820, 640, 600, 440);
         ShowMark();
         Root.ActualThemeChanged += (_, _) => ShowMark();
 
