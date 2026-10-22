@@ -31,6 +31,7 @@ public sealed partial class WorkspaceWindow : Window
     readonly SemaphoreSlim dialogs = new(1, 1);
 
     internal Hub Hub => Shell.Hub;
+    internal bool IsClosed => closed;
     internal Listing Listing => Shell.Listings.Of(Device);
 
     internal WorkspaceWindow(Shell shell, WindowState state, Tab? adopted = null)
@@ -88,6 +89,7 @@ public sealed partial class WorkspaceWindow : Window
             if (!closed && (e.DidPositionChange || e.DidSizeChange || e.DidPresenterChange))
             {
                 Track();
+                Tools.OwnerMoved();
             }
         };
         // Closing stops everything that would update the window.
@@ -98,6 +100,7 @@ public sealed partial class WorkspaceWindow : Window
             Shell.Listings.Leave(Device, ListingChanged);
             Hub.SetActivity(Device, Device.Local, false);
             outline.Follow(null);
+            Tools.CloseAll();
             Editor.CloseAll();
         };
 

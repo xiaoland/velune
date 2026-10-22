@@ -1,4 +1,5 @@
 using Microsoft.UI.Xaml;
+using Windows.Graphics;
 using Microsoft.UI.Xaml.Controls;
 
 namespace Velune;
@@ -21,6 +22,8 @@ sealed class ToolWindows
     // tools' content can move.
     readonly List<Border> slots = [];
     readonly List<Sash> sashes = [];
+    // The tools floating or in windows of their own.
+    readonly Dictionary<Tool, ToolHost> outside = [];
     readonly Grid body;
     readonly Grid center;
 
@@ -75,6 +78,16 @@ sealed class ToolWindows
         {
             hosts[area].Child = null;
         }
+        // A tool leaving its window, or changing between floating and a
+        // window of its own, gets its content back first.
+        foreach (var (tool, host) in outside.ToList())
+        {
+            if (!Outside(tool) || host.Place != Layout.Tools[tool].Place || host.Closing)
+            {
+                outside.Remove(tool);
+                host.Replace();
+            }
+        }
         foreach (var area in Enum.GetValues<Area>())
         {
             var open = AreaOpen(area);
@@ -105,6 +118,131 @@ sealed class ToolWindows
                 AreaSash(area);
             }
         }
+        foreach (var tool in Enum.GetValues<Tool>().Where(tool => Outside(tool) && !outside.ContainsKey(tool)))
+        {
+            var state = Layout.Tools[tool];
+            var host = new ToolHost(window, tool, state.Place, state.Bounds, contents[tool]);
+            outside[tool] = host;
+            host.AppWindow.Show(false);
+        }
+    }
+
+    bool Outside(Tool tool) => Layout.Tools[tool] is { Shown: true, Place: Place.Floating or Place.Window };
+
+    // Released docks a floating tool let go of near an edge of its window,
+    // or snaps it to the window or another floating tool nearby; a window of
+    // its own only keeps where it is.
+    public void Released(ToolHost host)
+    {
+        var state = Layout.Tools[host.Tool];
+        state.Bounds = host.Bounds;
+        if (host.Place == Place.Floating)
+        {
+            var scale = Native.Scale(window);
+            var frame = Frame(window.AppWindow);
+            var cursor = Native.Cursor();
+            var reach = (int)(80 * scale);
+            var within = cursor.Y >= frame.Y && cursor.Y <= frame.Y + frame.Height + reach;
+            Area? dock = within && Math.Abs(cursor.X - frame.X) <= reach ? Area.Left
+                : within && Math.Abs(cursor.X - (frame.X + frame.Width)) <= reach ? Area.Right
+                : cursor.X >= frame.X && cursor.X <= frame.X + frame.Width && Math.Abs(cursor.Y - (frame.Y + frame.Height)) <= reach ? Area.Bottom
+                : null;
+            if (dock is { } area)
+            {
+                Move(host.Tool, Place.Dock, area);
+                return;
+            }
+            Snap(host, frame, (int)(14 * scale));
+            state.Bounds = host.Bounds;
+        }
+        Changed();
+    }
+
+    static RectInt32 Frame(Microsoft.UI.Windowing.AppWindow window) =>
+        new(window.Position.X, window.Position.Y, window.Size.Width, window.Size.Height);
+
+    // Snap aligns a floating tool's edges with its window's, inside or out,
+    // or with another snapped floating tool's, when they are close.
+    void Snap(ToolHost host, RectInt32 frame, int reach)
+    {
+        var tool = Frame(host.AppWindow);
+        int? x = null;
+        int? y = null;
+        void Near(ref int? at, int edge, int target, int place)
+        {
+            if (at == null && Math.Abs(edge - target) <= reach)
+            {
+                at = place;
+            }
+        }
+        var right = frame.X + frame.Width;
+        var bottom = frame.Y + frame.Height;
+        Near(ref x, tool.X + tool.Width, frame.X, frame.X - tool.Width);
+        Near(ref x, tool.X, right, right);
+        Near(ref x, tool.X, frame.X, frame.X);
+        Near(ref x, tool.X + tool.Width, right, right - tool.Width);
+        Near(ref y, tool.Y, frame.Y, frame.Y);
+        Near(ref y, tool.Y + tool.Height, bottom, bottom - tool.Height);
+        Near(ref y, tool.Y, bottom, bottom);
+        Near(ref y, tool.Y + tool.Height, frame.Y, frame.Y - tool.Height);
+        foreach (var other in outside.Values.Where(other => other != host && other.Place == Place.Floating && other.Snapped))
+        {
+            var them = Frame(other.AppWindow);
+            Near(ref x, tool.X, them.X + them.Width, them.X + them.Width);
+            Near(ref x, tool.X + tool.Width, them.X, them.X - tool.Width);
+            Near(ref y, tool.Y, them.Y, them.Y);
+            Near(ref y, tool.Y + tool.Height, them.Y + them.Height, them.Y + them.Height - tool.Height);
+        }
+        if (x != null || y != null)
+        {
+            host.Snap(frame, new PointInt32(x ?? tool.X, y ?? tool.Y));
+        }
+        else
+        {
+            host.Unsnap();
+        }
+    }
+
+    // OwnerMoved brings the snapped floating tools along with their window.
+    public void OwnerMoved()
+    {
+        var frame = Frame(window.AppWindow);
+        foreach (var host in outside.Values)
+        {
+            host.OwnerMoved(frame);
+        }
+    }
+
+    // HostClosed hides a tool whose window the user closed; the composer
+    // returns to each pane.
+    public void HostClosed(Tool tool, Bounds bounds)
+    {
+        outside.Remove(tool);
+        if (window.IsClosed)
+        {
+            return;
+        }
+        var state = Layout.Tools[tool];
+        state.Bounds = bounds;
+        if (tool == Tool.Composer)
+        {
+            state.Place = Place.InPane;
+        }
+        else
+        {
+            state.Shown = false;
+        }
+        Apply();
+    }
+
+    // CloseAll closes the tool windows with their window.
+    public void CloseAll()
+    {
+        foreach (var host in outside.Values.ToList())
+        {
+            host.Replace();
+        }
+        outside.Clear();
     }
 
     Grid Stack(Area area, List<Tool> tools)
@@ -346,14 +484,14 @@ sealed class ToolWindows
     public void SetShown(Tool tool, bool shown)
     {
         var state = Layout.Tools[tool];
-        if (state.Place != Place.Dock)
+        if (state.Place is Place.Button or Place.InPane)
         {
             // A button or the composer in each pane has nothing to hide; hiding
             // one docks it hidden where it was last docked.
             state.Place = Place.Dock;
         }
         state.Shown = shown;
-        if (shown)
+        if (shown && state.Place == Place.Dock)
         {
             Layout.Areas[state.Area].Collapsed = false;
             Layout.EditorOnly = null;
@@ -417,6 +555,10 @@ sealed class ToolWindows
         {
             SetShown(tool, !Layout.Visible(tool));
         }
+        else if (state.Place is Place.Floating or Place.Window)
+        {
+            SetShown(tool, !state.Shown);
+        }
         else if (tool == Tool.Outline)
         {
             window.Editor.OutlineClicked(window.Editor.Focused);
@@ -434,7 +576,7 @@ sealed class ToolWindows
         return menu;
     }
 
-    List<MenuFlyoutItemBase> PlaceItems(Tool tool)
+    public List<MenuFlyoutItemBase> PlaceItems(Tool tool)
     {
         var state = Layout.Tools[tool];
         var items = new List<MenuFlyoutItemBase>();
@@ -448,6 +590,8 @@ sealed class ToolWindows
         {
             items.Add(Radio("停靠在" + AreaName(area), state.Place == Place.Dock && state.Area == area && state.Shown, () => Move(tool, Place.Dock, area)));
         }
+        items.Add(Radio("浮动", state.Place == Place.Floating && state.Shown, () => Move(tool, Place.Floating, state.Area)));
+        items.Add(Radio("独立窗口", state.Place == Place.Window && state.Shown, () => Move(tool, Place.Window, state.Area)));
         if (tool == Tool.Outline)
         {
             items.Add(Radio("标签栏上的按钮", state.Place == Place.Button, () => Move(tool, Place.Button, state.Area)));
@@ -456,9 +600,9 @@ sealed class ToolWindows
         {
             items.Add(Radio("在每个面板中", state.Place == Place.InPane, () => Move(tool, Place.InPane, state.Area)));
         }
-        if (tool == Tool.List || state.Place == Place.Dock)
+        if (tool == Tool.List || state.Place is Place.Dock or Place.Floating or Place.Window)
         {
-            items.Add(Radio("隐藏", state.Place == Place.Dock && !state.Shown, () => SetShown(tool, false)));
+            items.Add(Radio("隐藏", !state.Shown, () => SetShown(tool, false)));
         }
         return items;
     }
