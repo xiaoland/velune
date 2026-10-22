@@ -20,7 +20,7 @@ public sealed partial class SettingsWindow : Window
     readonly DevicesPage devices;
     readonly SemaphoreSlim dialogs = new(1, 1);
 
-    internal SettingsWindow(Core core, Hub hub, Action<Device> open)
+    internal SettingsWindow(Core core, Hub hub, Commands commands, Action<Device> open)
     {
         InitializeComponent();
         ExtendsContentIntoTitleBar = true;
@@ -39,7 +39,7 @@ public sealed partial class SettingsWindow : Window
         ShowMark();
         Root.ActualThemeChanged += (_, _) => ShowMark();
 
-        general = new GeneralPage(core);
+        general = new GeneralPage(core, commands);
         providers = new ProvidersPage(core, this);
         routes = new RoutesPage(core, this, EditProvider);
         runtimes = new RuntimesPage(core, this);

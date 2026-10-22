@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Input;
 using Windows.System;
@@ -66,6 +67,10 @@ readonly record struct Shortcut(VirtualKeyModifiers Modifiers, VirtualKey Key)
     }
 }
 
+// The commands' shortcuts as the user set them, for every window. Only
+// changes are kept, in VELUNE_HOME/windows-shortcuts.json (schema 1, null
+// for a removed shortcut); another schema, or a file that does not read,
+// gives the defaults and the next change overwrites it.
 sealed class Commands
 {
     const VirtualKeyModifiers Ctrl = VirtualKeyModifiers.Control;
@@ -99,18 +104,128 @@ sealed class Commands
         [Command.Settings] = ("设置", new(Ctrl, (VirtualKey)188)),
     };
 
-    readonly Dictionary<Command, Shortcut?> bound = Table.ToDictionary(entry => entry.Key, entry => entry.Value.Default);
+    sealed record Keys(int Modifiers, int Key);
 
-    public string Shortcut(Command command) => bound[command]?.ToString() ?? "";
+    sealed class Saved
+    {
+        public int Schema { get; set; } = 1;
+        public Dictionary<Command, Keys?> Shortcuts { get; set; } = [];
+    }
+
+    readonly string path;
+    readonly Dictionary<Command, Shortcut?> changed = [];
+
+    // Changed runs after a shortcut changes, for the windows to take it.
+    public event Action? Changed;
+
+    public Commands(string home)
+    {
+        path = Path.Combine(home, "windows-shortcuts.json");
+        try
+        {
+            if (JsonSerializer.Deserialize<Saved>(File.ReadAllText(path), LayoutStore.Options) is { Schema: 1 } saved)
+            {
+                foreach (var (command, keys) in saved.Shortcuts.Where(entry => Table.ContainsKey(entry.Key)))
+                {
+                    changed[command] = keys is { } set ? new Shortcut((VirtualKeyModifiers)set.Modifiers, (VirtualKey)set.Key) : null;
+                }
+            }
+        }
+        catch (Exception failure) when (failure is IOException or UnauthorizedAccessException or JsonException or NotSupportedException)
+        {
+        }
+    }
+
+    public Shortcut? Bound(Command command) => changed.TryGetValue(command, out var shortcut) ? shortcut : Table[command].Default;
+
+    public bool IsChanged(Command command) => changed.ContainsKey(command);
+
+    public string Shortcut(Command command) => Bound(command)?.ToString() ?? "";
+
+    // Bind gives a command a shortcut, or none; it returns why it cannot.
+    public string? Bind(Command command, Shortcut? shortcut)
+    {
+        if (shortcut is { } keys)
+        {
+            var modified = keys.Modifiers.HasFlag(VirtualKeyModifiers.Control) || keys.Modifiers.HasFlag(VirtualKeyModifiers.Menu);
+            if (!modified && keys.Key is not (>= VirtualKey.F1 and <= VirtualKey.F12))
+            {
+                return "需要带 Ctrl 或 Alt，或使用 F1–F12。";
+            }
+            if (Reserved(keys) is { } owner)
+            {
+                return $"{keys} 已用于{owner}。";
+            }
+            if (Table.Keys.Where(other => other != command && Bound(other) == keys).Select(other => (Command?)other).FirstOrDefault() is { } taken)
+            {
+                return $"{keys} 已用于“{Table[taken].Name}”。";
+            }
+        }
+        if (shortcut == Table[command].Default)
+        {
+            changed.Remove(command);
+        }
+        else
+        {
+            changed[command] = shortcut;
+        }
+        Write();
+        return null;
+    }
+
+    // Reserved names what owns a shortcut Velune's commands cannot take:
+    // the composer's sending, text editing and Windows itself.
+    static string? Reserved(Shortcut keys)
+    {
+        const VirtualKeyModifiers control = VirtualKeyModifiers.Control;
+        return (keys.Modifiers, keys.Key) switch
+        {
+            (control, VirtualKey.Enter) => "输入框的发送",
+            (control | VirtualKeyModifiers.Shift, VirtualKey.Enter) => "输入框的插入本轮",
+            (control, VirtualKey.C or VirtualKey.V or VirtualKey.X or VirtualKey.A or VirtualKey.Z or VirtualKey.Y) => "文字编辑",
+            (VirtualKeyModifiers.Menu, VirtualKey.F4) => "Windows 关闭窗口",
+            (control, VirtualKey.F4) => "标签栏关闭标签",
+            _ => null,
+        };
+    }
+
+    public void Reset(Command command)
+    {
+        changed.Remove(command);
+        Write();
+    }
+
+    public void ResetAll()
+    {
+        changed.Clear();
+        Write();
+    }
+
+    void Write()
+    {
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+            var saved = new Saved { Shortcuts = changed.ToDictionary(entry => entry.Key, entry => entry.Value is { } keys ? new Keys((int)keys.Modifiers, (int)keys.Key) : null) };
+            var temporary = path + ".tmp";
+            File.WriteAllText(temporary, JsonSerializer.Serialize(saved, LayoutStore.Options));
+            File.Move(temporary, path, true);
+        }
+        catch (Exception failure) when (failure is IOException or UnauthorizedAccessException)
+        {
+            // The shortcut works until the app quits; the next change tries again.
+        }
+        Changed?.Invoke();
+    }
 
     // Install puts the commands' shortcuts on a window's root.
     public void Install(UIElement root, Action<Command> run)
     {
         root.KeyboardAcceleratorPlacementMode = KeyboardAcceleratorPlacementMode.Hidden;
         root.KeyboardAccelerators.Clear();
-        foreach (var (command, shortcut) in bound)
+        foreach (var command in Table.Keys)
         {
-            if (shortcut is not { } keys)
+            if (Bound(command) is not { } keys)
             {
                 continue;
             }

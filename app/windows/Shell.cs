@@ -13,6 +13,7 @@ sealed class Shell
     public Core Core { get; }
     public Hub Hub { get; }
     public Listings Listings { get; }
+    public Commands Commands { get; }
     readonly LayoutStore store;
     readonly SavedLayout saved;
     readonly List<WorkspaceWindow> windows = [];
@@ -29,6 +30,7 @@ sealed class Shell
         Core = core;
         Hub = new Hub(core, dispatcher);
         Listings = new Listings(core);
+        Commands = new Commands(core.Home);
         store = new LayoutStore(core.Home, dispatcher);
         saved = store.Read();
         Hub.Changed += HubChanged;
@@ -154,7 +156,7 @@ sealed class Shell
     {
         if (settings == null)
         {
-            settings = new SettingsWindow(Core, Hub, opened =>
+            settings = new SettingsWindow(Core, Hub, Commands, opened =>
             {
                 // Opening a device shows it in the window used last.
                 if (latest != null)

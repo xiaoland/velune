@@ -17,7 +17,6 @@ public sealed partial class WorkspaceWindow : Window
     internal Device Device { get; private set; }
     internal Editor Editor { get; private set; }
     internal ToolWindows Tools { get; }
-    internal Commands Commands { get; } = new();
     internal ConversationList List { get; }
     readonly OutlineTool outline = new();
     // The docked composer shows the focused tab's composer.
@@ -31,6 +30,7 @@ public sealed partial class WorkspaceWindow : Window
     readonly SemaphoreSlim dialogs = new(1, 1);
 
     internal Hub Hub => Shell.Hub;
+    internal Commands Commands => Shell.Commands;
     internal bool IsClosed => closed;
     internal Listing Listing => Shell.Listings.Of(Device);
 
@@ -70,7 +70,8 @@ public sealed partial class WorkspaceWindow : Window
 
         AppTitleBar.PaneToggleRequested += (_, _) => Tools.ToggleArea(Area.Left);
         AppTitleBar.BackRequested += (_, _) => Back(Editor.Focused.Selected, true);
-        Commands.Install(Root, Run);
+        InstallCommands();
+        Commands.Changed += InstallCommands;
         NewButton.Click += (_, _) => Open(new Target("", "", ""), Opening.CurrentTab);
         SettingsButton.Click += (_, _) => Shell.OpenSettings(SettingsPage.Keep);
         DeviceMenu.Opening += (_, _) => FillDeviceMenu();
@@ -97,6 +98,7 @@ public sealed partial class WorkspaceWindow : Window
         {
             closedState = Save();
             closed = true;
+            Commands.Changed -= InstallCommands;
             Shell.Listings.Leave(Device, ListingChanged);
             Hub.SetActivity(Device, Device.Local, false);
             outline.Follow(null);
@@ -115,6 +117,16 @@ public sealed partial class WorkspaceWindow : Window
             }
         }
         FocusChanged();
+    }
+
+    // InstallCommands puts the commands' shortcuts on the window, and in
+    // the tips that name them.
+    void InstallCommands()
+    {
+        Commands.Install(Root, Run);
+        string Tip(string name, Command command) => Commands.Shortcut(command) is { Length: > 0 } keys ? $"{name}（{keys}）" : name;
+        ToolTipService.SetToolTip(NewButton, Tip("新会话", Command.NewConversation));
+        ToolTipService.SetToolTip(SettingsButton, Tip("设置", Command.Settings));
     }
 
     // Size sizes a window in effective pixels and keeps it from shrinking past
@@ -506,10 +518,54 @@ public sealed partial class WorkspaceWindow : Window
             case BindingLinkedConversationOpening.NewWindow when Editor.Find(linked.ConversationID) == null:
                 Shell.OpenConversationWindow(Device, null, linked, null);
                 break;
+            case BindingLinkedConversationOpening.Sheet when Editor.Find(linked.ConversationID) == null:
+                ShowSheet(linked);
+                break;
             default:
                 Open(linked, Opening.NewTab);
                 break;
         }
+    }
+
+    // ShowSheet opens a linked conversation over the window, as a tab with
+    // its own composer; it can move on, as it is, to a tab or a window.
+    async void ShowSheet(Target target)
+    {
+        var view = new ConversationView(new Conversation(Shell.Core, Device, target, Listing.Configuration), this)
+        {
+            Width = Math.Max(Root.ActualWidth * 0.8, 480),
+            Height = Math.Max(Root.ActualHeight * 0.75, 360),
+        };
+        var dialog = new ContentDialog
+        {
+            Title = target.Title,
+            Content = view,
+            PrimaryButtonText = "转到标签页",
+            SecondaryButtonText = "在新窗口中打开",
+            CloseButtonText = "关闭",
+            DefaultButton = ContentDialogButton.None,
+        };
+        dialog.Resources["ContentDialogMaxWidth"] = 4000.0;
+        dialog.Resources["ContentDialogMaxHeight"] = 4000.0;
+        var result = await ShowDialog(dialog);
+        dialog.Content = null;
+        if (closed || result == ContentDialogResult.None)
+        {
+            view.Close();
+            return;
+        }
+        view.Width = double.NaN;
+        view.Height = double.NaN;
+        var tab = new Tab(view.Model.Target) { View = view };
+        tab.Item.Content = view;
+        if (result == ContentDialogResult.Secondary)
+        {
+            Shell.OpenConversationWindow(Device, tab, null, null);
+            return;
+        }
+        Follow(tab);
+        var pane = Editor.Focused;
+        Editor.Insert(pane, tab, pane.Selected is { } selected ? pane.View.TabItems.IndexOf(selected.Item) + 1 : pane.Count);
     }
 
     // SaveTitle renames a conversation in its runtime, showing the title at once.
