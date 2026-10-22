@@ -2,7 +2,7 @@
 
 Windows 的完整端：在本机运行 Agent、Harness 与网关，也能控制其他已配对的完整端。界面用 C#（.NET 10）与 WinUI 3（Windows App SDK 2.5，非打包、自包含），控件与主题都是 WinUI 自己的 Fluent 控件，随系统明暗、强调色、对比度与文字缩放；Windows 11 上窗口用 Mica 背景，Windows 10 上为纯色。C# 经 `uniffi-bindgen-cs` 生成的绑定以 P/Invoke 调用同目录的 `velune_bindings.dll`，与核心同进程，不启动常驻 Host 进程（见 [bindings](../../packages/bindings/README.md)）。
 
-2026-10-21 起取代 MyGO 版（[S45](../../docs/sources.md#s45)）；进度与验证记录见 [任务](../../tasks/windows-winui/packet.md)。
+2026-10-21 起取代 MyGO 版（[S45](../../docs/sources.md#s45)）；进度与验证记录见 [任务](../../tasks/windows-winui/packet.md)，各能力与 Mac 的差距见 [对齐表](PARITY.md)。
 
 ## 界面
 
@@ -78,7 +78,7 @@ Harness 原生运行于 Windows，不经 WSL 或 SSH runtime。npm／pnpm 为每
 
 - 中文输入法、长转录与长列表的性能尚未在真机上验收。
 - SSH 运行时依赖 OpenSSH ControlMaster 与 Unix socket，Windows 宿主不支持。
-- MVP 推进中（顺序见任务的“MVP 差距与顺序”）：资源库与分析只作用于本机核心，远端设备的资源库在该设备上管理；技能此轮只编辑 SKILL.md。核心管理原生资源文件的一层（`agent-runtime` 的 `management/fs.rs`）只实现于 Unix 类平台，Windows 上启用、同步、比较、加入资源库与列出运行时中的其他内容都由核心以“当前平台不支持受限资源文件与 Unix 权限管理”拒绝，界面照实显示；资源库本身的新建、编辑与保存可用。系统通知已向 Windows 注册并发出，横幅的显示与点按打开尚未在真机上目视验收。布局系统按 [TDD](TDD.md) 全部实现，尚未在真机上逐项操作验收；Windows 尚未注册 `velune://`，拷贝的链接要在 Mac 上打开。额度窗口名称由 Windows 按核心的窗口 ID 拼出，核心尚未提供显示名。模型目录读取中或失败时，模型菜单只说明状态，不像 Mac 那样先列出可达的 managed 模型。
+- MVP 推进中（顺序见任务的“MVP 差距与顺序”）：资源库与分析只作用于本机核心，远端设备的资源库在该设备上管理；技能此轮只编辑 SKILL.md。Windows 没有执行位，技能文件的执行属性不写入。系统通知已向 Windows 注册并发出，横幅的显示与点按打开尚未在真机上目视验收。布局系统按 [TDD](TDD.md) 全部实现，尚未在真机上逐项操作验收；Windows 尚未注册 `velune://`，拷贝的链接要在 Mac 上打开。额度窗口名称由 Windows 按核心的窗口 ID 拼出，核心尚未提供显示名。模型目录读取中或失败时，模型菜单只说明状态，不像 Mac 那样先列出可达的 managed 模型。
 
 ## 第三方组件
 
