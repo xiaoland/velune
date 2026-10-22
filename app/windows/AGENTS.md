@@ -6,6 +6,7 @@
 
 - 产品行为以 [PRD 分册](../../docs/prd/index.md#能力)为准，核心与 app 的分工见 [Product TDD](../../docs/product-tdd/index.md)；不从 Mac 源码反推产品行为。
 - 界面结构以 Mac 为基准、控件用 WinUI 自带的 Fluent 控件（[DESIGN.md](../../DESIGN.md)）。
+- 新功能与行为改变尽可能先在 Mac 落地，Windows 按同一 PRD 跟进；Mac 或 Windows 的相关改动后更新 [对齐表](PARITY.md)。
 
 ## Hazard and Tripwire
 
