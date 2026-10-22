@@ -7,8 +7,6 @@
 
 <h1 align="center">Velune</h1>
 
-<p align="center"><strong>把多个 Coding Agent 放进一个原生工作区。</strong></p>
-
 Velune 是面向 Codex、Claude Code、Pi 等 coding agent 的控制界面与协调层。它帮助你在同一应用中浏览和继续不同运行时的会话、配置 AI 提供商与模型，并让不同 Agent 之间交接上下文、协作处理工作。
 
 Velune 本身不是执行任务的 Agent，也不替代 Codex、Claude Code、Pi 等 Harness。它连接你安装和配置的运行时，由这些运行时执行代码、调用工具并保存各自的会话历史。
