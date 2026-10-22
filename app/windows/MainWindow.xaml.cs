@@ -103,6 +103,7 @@ public sealed partial class MainWindow : Window
         };
         NewButton.Click += (_, _) => StartConversation();
         DeviceMenu.Opening += (_, _) => FillDeviceMenu();
+        AttachBrowser();
         Navigation.ItemInvoked += ItemInvoked;
         Navigation.Expanding += (_, e) => Folded(e.ExpandingItemContainer, false);
         Navigation.Collapsed += (_, e) => Folded(e.CollapsedItemContainer, true);
@@ -281,6 +282,7 @@ public sealed partial class MainWindow : Window
         while (round == current)
         {
             var delay = 5_000;
+            var changes = written;
             try
             {
                 var (list, activity) = await Task.Run(() =>
@@ -291,6 +293,12 @@ public sealed partial class MainWindow : Window
                 if (round != current)
                 {
                     return;
+                }
+                if (writing > 0 || written != changes)
+                {
+                    // A change of the list was under way; the next read shows it.
+                    await Task.Delay(500);
+                    continue;
                 }
                 cursor = activity.Cursor;
                 listing = Listing.From(list, activity.Active);
@@ -313,6 +321,10 @@ public sealed partial class MainWindow : Window
                 listing = listing.Failed(Core.Describe(failure));
             }
             Render();
+            if (Searching)
+            {
+                Search();
+            }
             await Task.Delay(delay);
         }
     }
@@ -328,6 +340,7 @@ public sealed partial class MainWindow : Window
         CloseConversation();
         listing = Listing.Loading;
         renamingID = null;
+        ClearSearch();
         groupItems.Clear();
         conversationItems.Clear();
         Navigation.MenuItems.Clear();
@@ -398,7 +411,8 @@ public sealed partial class MainWindow : Window
     string? OpenID => conversation?.Model.Target is { Unsent: false } target ? target.ConversationID : null;
 
     BindingListedConversation? Listed(string id) =>
-        listing.Conversations.FirstOrDefault(listed => listed.Conversation.Id == id);
+        listing.Conversations.FirstOrDefault(listed => listed.Conversation.Id == id)
+        ?? (Searching ? search!.Conversations.FirstOrDefault(listed => listed.Conversation.Id == id) : null);
 
     // NoteSeen marks the open conversation read once it shows in the active window.
     async void NoteSeen()
@@ -599,9 +613,13 @@ public sealed partial class MainWindow : Window
         ListFailure.Visibility = failures.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
         ListSpinner.IsActive = !listing.Loaded;
         ListSpinner.Visibility = listing.Loaded ? Visibility.Collapsed : Visibility.Visible;
-        var empty = listing.Loaded && listing.Conversations.Count == 0;
+        var empty = listing.Loaded && Shown().Conversations.Count == 0;
         ListEmpty.Visibility = empty ? Visibility.Visible : Visibility.Collapsed;
-        ListEmpty.Text = listing.Configuration.Runtimes.Count == 0 ? "这台设备还没有可用的 Agent 运行时。" : "这台设备上还没有会话。";
+        ListEmpty.Text = Searching ? "没有匹配的会话。"
+            : listing.Configuration.Runtimes.Count == 0 ? "这台设备还没有可用的 Agent 运行时。"
+            : listing.ShowsArchived ? "没有已归档的会话。"
+            : listing.Preferences is { RuntimeId: not null } or { Project: not BindingConversationBrowserProject.All } ? "没有符合筛选的会话。"
+            : "这台设备上还没有会话。";
         RenderSidebar();
 
         Welcome.Visibility = conversation == null ? Visibility.Visible : Visibility.Collapsed;
@@ -620,23 +638,27 @@ public sealed partial class MainWindow : Window
         var groups = new List<object>();
         var shownGroups = new HashSet<string>();
         var shownConversations = new HashSet<string>();
-        foreach (var group in listing.Groups)
+        var (shownList, shownListed) = Shown();
+        foreach (var group in shownList)
         {
             var id = "group:" + Listing.GroupID(group.Key);
             shownGroups.Add(id);
             if (!groupItems.TryGetValue(id, out var groupItem))
             {
                 groupItem = new NavigationViewItem { Tag = id, SelectsOnInvoked = false, IsExpanded = !group.Collapsed };
+                var menu = new MenuFlyout();
+                menu.Opening += (_, _) => FillGroupMenu(menu, id);
+                groupItem.ContextFlyout = menu;
                 groupItems[id] = groupItem;
             }
             groupItem.Content = listing.GroupTitle(group);
             var children = new List<object>();
-            foreach (var listed in listing.Conversations.Where(listed => "group:" + Listing.GroupID(listed.Group) == id))
+            foreach (var listed in shownListed.Where(listed => "group:" + Listing.GroupID(listed.Group) == id))
             {
                 shownConversations.Add(listed.Conversation.Id);
                 children.Add(ConversationItem(listed));
             }
-            if (group.Loaded < group.Total)
+            if (!Searching && group.Loaded < group.Total)
             {
                 var moreID = "more:" + Listing.GroupID(group.Key);
                 if (!conversationItems.TryGetValue(moreID, out var more))
@@ -680,15 +702,7 @@ public sealed partial class MainWindow : Window
                 }
             };
             var menu = new MenuFlyout();
-            var rename = new MenuFlyoutItem { Text = "重命名…", KeyboardAcceleratorTextOverride = "F2" };
-            rename.Click += (_, _) =>
-            {
-                if (Listed(id) is { } current)
-                {
-                    Rename(current);
-                }
-            };
-            menu.Items.Add(rename);
+            menu.Opening += (_, _) => FillConversationMenu(menu, id);
             item.ContextFlyout = menu;
             conversationItems[id] = item;
         }

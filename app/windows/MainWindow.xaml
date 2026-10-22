@@ -37,11 +37,33 @@
             PaneDisplayMode="Left"
             SelectionFollowsFocus="Disabled">
             <NavigationView.PaneHeader>
-                <Grid Margin="12,4,8,4" ColumnSpacing="4">
+                <Grid Margin="12,4,8,4" ColumnSpacing="4" RowSpacing="6">
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="*" />
                         <ColumnDefinition Width="Auto" />
                     </Grid.ColumnDefinitions>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                    </Grid.RowDefinitions>
+                    <!-- Search matches the latest list; the display menu groups, filters and sorts it. -->
+                    <AutoSuggestBox
+                        x:Name="SearchBox"
+                        Grid.Row="1"
+                        PlaceholderText="搜索会话"
+                        QueryIcon="Find"
+                        AutomationProperties.Name="搜索会话" />
+                    <DropDownButton
+                        x:Name="DisplayButton"
+                        Grid.Row="1"
+                        Grid.Column="1"
+                        AutomationProperties.Name="显示"
+                        ToolTipService.ToolTip="分组、筛选与排序">
+                        <FontIcon FontSize="14" Glyph="&#xE71C;" />
+                        <DropDownButton.Flyout>
+                            <MenuFlyout x:Name="DisplayMenu" Placement="BottomEdgeAlignedRight" />
+                        </DropDownButton.Flyout>
+                    </DropDownButton>
                     <DropDownButton x:Name="DeviceButton" HorizontalAlignment="Stretch" HorizontalContentAlignment="Left" ToolTipService.ToolTip="切换设备">
                         <DropDownButton.Flyout>
                             <MenuFlyout x:Name="DeviceMenu" Placement="BottomEdgeAlignedLeft" />

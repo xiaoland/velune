@@ -34,6 +34,10 @@ sealed class Listing
     // The list's groups in order, and how the device's list is browsed.
     public BindingConversationGroup[] Groups { get; set; } = [];
     public BindingConversationBrowserPreferences? Preferences { get; set; }
+    // Every project of the listed conversations, for moving and editing.
+    public BindingConversationProject[] Projects { get; private init; } = [];
+    // The list shows archived conversations instead of the others.
+    public bool ShowsArchived { get; private init; }
     public Configuration Configuration { get; private init; } = Configuration.Empty;
     // The running or waiting conversations by ID.
     public Dictionary<string, BindingActiveConversation> Active { get; private init; } = [];
@@ -52,7 +56,9 @@ sealed class Listing
         }
         return new Listing
         {
-            Conversations = [.. list.Conversations.Where(listed => !listed.Archived && listed.Conversation.ParentConversationId == null)],
+            Conversations = [.. list.Conversations.Where(listed => listed.Archived == list.ShowsArchived && listed.Conversation.ParentConversationId == null)],
+            Projects = list.ConversationProjects,
+            ShowsArchived = list.ShowsArchived,
             Groups = list.ConversationGroups,
             Preferences = list.ConversationBrowserPreferences,
             Configuration = new Configuration([.. list.RuntimeInstances.Where(runtime => runtime.Enabled)], list.RuntimeTypes, projects)
@@ -72,6 +78,8 @@ sealed class Listing
         Conversations = Conversations,
         Groups = Groups,
         Preferences = Preferences,
+        Projects = Projects,
+        ShowsArchived = ShowsArchived,
         Configuration = Configuration,
         Active = Active,
         Failure = failure,

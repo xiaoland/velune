@@ -114,7 +114,8 @@ sealed partial class Conversation
 
     public BindingRuntimeInteraction? Interaction => Snapshot?.PendingInteractions.FirstOrDefault();
 
-    async void Load()
+    // Load reads the conversation; reading the list again reads it again too.
+    public async void Load()
     {
         if (Target.Unsent)
         {
