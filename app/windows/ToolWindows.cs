@@ -47,6 +47,7 @@ sealed class ToolWindows
     {
         Tool.List => "会话列表",
         Tool.Outline => "会话大纲",
+        Tool.Linked => "关联 Agent",
         _ => "输入区",
     };
 
@@ -563,6 +564,10 @@ sealed class ToolWindows
         {
             window.Editor.OutlineClicked(window.Editor.Focused);
         }
+        else if (tool == Tool.Linked)
+        {
+            window.ShowLinked(window.Editor.Focused);
+        }
     }
 
     // PlaceMenu is a tool's place, as a submenu.
@@ -592,7 +597,7 @@ sealed class ToolWindows
         }
         items.Add(Radio("浮动", state.Place == Place.Floating && state.Shown, () => Move(tool, Place.Floating, state.Area)));
         items.Add(Radio("独立窗口", state.Place == Place.Window && state.Shown, () => Move(tool, Place.Window, state.Area)));
-        if (tool == Tool.Outline)
+        if (tool is Tool.Outline or Tool.Linked)
         {
             items.Add(Radio("标签栏上的按钮", state.Place == Place.Button, () => Move(tool, Place.Button, state.Area)));
         }

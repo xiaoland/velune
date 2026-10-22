@@ -10,11 +10,11 @@ namespace Velune;
 
 enum Area { Left, Right, Bottom }
 
-enum Tool { List, Outline, Composer }
+enum Tool { List, Outline, Composer, Linked }
 
 // Where a tool window is: docked in an area, floating over its window, a
-// window of its own, or (the outline) a button on each pane's tab bar, or
-// (the composer) in each pane.
+// window of its own, or (the outline and 关联 Agent) a button on each pane's
+// tab bar, or (the composer) in each pane.
 enum Place { Dock, Floating, Window, Button, InPane }
 
 // Bounds are in physical pixels, as the window manager places windows.
@@ -54,6 +54,7 @@ sealed class ToolLayout
             [Tool.List] = new ToolState { Place = Place.Dock, Area = Area.Left },
             [Tool.Outline] = new ToolState { Place = Place.Button, Area = Area.Right },
             [Tool.Composer] = new ToolState { Place = Place.InPane, Area = Area.Bottom },
+            [Tool.Linked] = new ToolState { Place = Place.Button, Area = Area.Right },
         },
         Areas = new()
         {

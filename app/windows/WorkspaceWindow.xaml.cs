@@ -19,6 +19,7 @@ public sealed partial class WorkspaceWindow : Window
     internal ToolWindows Tools { get; }
     internal ConversationList List { get; }
     readonly OutlineTool outline = new();
+    readonly LinkedAgentsTool linked;
     // The docked composer shows the focused tab's composer.
     readonly Border composerHost = new();
     // A closed window throws on any further use; its last state stays.
@@ -56,10 +57,11 @@ public sealed partial class WorkspaceWindow : Window
         PlaceWindow(state);
 
         List = new ConversationList(this);
+        linked = new LinkedAgentsTool(this);
         Tools = new ToolWindows(this, state.Tools, Body, Center,
             new() { [Area.Left] = LeftArea, [Area.Right] = RightArea, [Area.Bottom] = BottomArea },
             LeftColumn, RightColumn, BottomRow,
-            new() { [Tool.List] = List, [Tool.Outline] = outline, [Tool.Composer] = composerHost });
+            new() { [Tool.List] = List, [Tool.Outline] = outline, [Tool.Composer] = composerHost, [Tool.Linked] = linked });
         Editor = adopted != null ? new Editor(this, EditorHost, adopted) : new Editor(this, EditorHost, state.Editor, state.Focus);
         if (adopted != null)
         {
@@ -102,6 +104,7 @@ public sealed partial class WorkspaceWindow : Window
             Shell.Listings.Leave(Device, ListingChanged);
             Hub.SetActivity(Device, Device.Local, false);
             outline.Follow(null);
+            linked.Follow(null);
             Tools.CloseAll();
             Editor.CloseAll();
         };
@@ -301,7 +304,7 @@ public sealed partial class WorkspaceWindow : Window
         {
             var view = new ConversationView(new Conversation(Shell.Core, Device, tab.Target, Listing.Configuration), this);
             tab.View = view;
-            tab.Item.Content = view;
+            tab.Host.Child = view;
             Follow(tab);
             PlaceComposers();
         }
@@ -373,6 +376,7 @@ public sealed partial class WorkspaceWindow : Window
             return;
         }
         outline.Follow(FocusedView);
+        linked.Follow(FocusedView);
         PlaceComposers();
         List.ShowSelection();
         ShowOutlineButtons();
@@ -385,10 +389,12 @@ public sealed partial class WorkspaceWindow : Window
     internal void ShowOutlineButtons()
     {
         var button = Tools.Layout.Tools[Tool.Outline].Place == Place.Button;
+        var linkedButton = Tools.Layout.Tools[Tool.Linked].Place == Place.Button;
         foreach (var pane in Editor.Panes())
         {
             pane.OutlineButton.Visibility = button ? Visibility.Visible : Visibility.Collapsed;
             var view = pane.Selected?.View;
+            pane.LinkedButton.Visibility = linkedButton && LinkedAgentsTool.Has(view) ? Visibility.Visible : Visibility.Collapsed;
             pane.OutlineButton.IsEnabled = view?.HasOutline == true;
             pane.OutlineButton.IsChecked = view?.OutlineFolded == true;
         }
@@ -463,7 +469,7 @@ public sealed partial class WorkspaceWindow : Window
         tab.Unfollow = null;
         tab.View?.Close();
         tab.View = null;
-        tab.Item.Content = null;
+        tab.Host.Child = null;
         tab.Target = target;
         Show(tab);
         FocusChanged();
@@ -486,7 +492,21 @@ public sealed partial class WorkspaceWindow : Window
 
     // OpenLinked opens a conversation a transcript links to: a collaborator,
     // a native sub-agent or its parent, which the list may not show.
-    internal async void OpenLinked(string conversationID)
+    // ShowLinked shows 关联 Agent at a pane's button, for its tab.
+    internal void ShowLinked(Pane pane)
+    {
+        if (pane.Selected?.View is not { } view || !LinkedAgentsTool.Has(view))
+        {
+            return;
+        }
+        var shown = new LinkedAgentsTool(this) { Width = 320, MaxHeight = 420 };
+        shown.Follow(view);
+        var flyout = new Flyout { Content = shown, Placement = Microsoft.UI.Xaml.Controls.Primitives.FlyoutPlacementMode.BottomEdgeAlignedRight };
+        flyout.Closed += (_, _) => shown.Follow(null);
+        flyout.ShowAt(pane.LinkedButton);
+    }
+
+    internal async void OpenLinked(string conversationID, BindingLinkedConversationOpening? how = null)
     {
         var target = Device;
         BindingListedConversation? found;
@@ -510,7 +530,7 @@ public sealed partial class WorkspaceWindow : Window
             return;
         }
         var linked = new Target(found.Conversation.RuntimeId, found.Conversation.Id, found.Conversation.Title);
-        switch (Listing.Configuration.LinkedOpening)
+        switch (how ?? Listing.Configuration.LinkedOpening)
         {
             case BindingLinkedConversationOpening.CurrentTab:
                 Open(linked, Opening.CurrentTab);
@@ -557,7 +577,7 @@ public sealed partial class WorkspaceWindow : Window
         view.Width = double.NaN;
         view.Height = double.NaN;
         var tab = new Tab(view.Model.Target) { View = view };
-        tab.Item.Content = view;
+        tab.Host.Child = view;
         if (result == ContentDialogResult.Secondary)
         {
             Shell.OpenConversationWindow(Device, tab, null, null);
@@ -770,6 +790,9 @@ public sealed partial class WorkspaceWindow : Window
                 break;
             case Command.ShowOutline:
                 Tools.ToggleTool(Tool.Outline);
+                break;
+            case Command.ShowLinked:
+                Tools.ToggleTool(Tool.Linked);
                 break;
             case Command.FocusComposer:
                 FocusComposer();

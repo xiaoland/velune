@@ -228,7 +228,7 @@ public sealed partial class ConversationView
 
     void RenderComposer()
     {
-        if (!sessionOptionsRead && Model.Snapshot != null)
+        if (!sessionOptionsRead && Model.Snapshot != null && Model.SessionOpen)
         {
             sessionOptionsRead = true;
             Model.LoadSessionOptions();

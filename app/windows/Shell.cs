@@ -83,6 +83,12 @@ sealed class Shell
             tools.Areas[area].Collapsed = true;
         }
         tools.EditorOnly = open;
+        // Its left area is the conversation's 关联 Agent rather than the list.
+        tools.Tools[Tool.Linked] = new ToolState { Place = Place.Dock, Area = Area.Left };
+        if (tools.Tools[Tool.List] is { Place: Place.Dock, Area: Area.Left } list)
+        {
+            list.Shown = false;
+        }
         var editor = new PaneState();
         if (target != null)
         {

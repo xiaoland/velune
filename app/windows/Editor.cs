@@ -15,6 +15,9 @@ sealed class Tab
     public Target Target { get; set; }
     public ConversationView? View { get; set; }
     public TabViewItem Item { get; }
+    // The tab's content. The tab bar shows a selected tab's content as it was
+    // when selected, so the view changes inside this host, not the item.
+    public Border Host { get; } = new();
     // The conversations this tab showed before and after, for 后退 and 前进.
     public Stack<Target> Back { get; } = [];
     public Stack<Target> Forward { get; } = [];
@@ -26,7 +29,7 @@ sealed class Tab
     public Tab(Target target)
     {
         Target = target;
-        Item = new TabViewItem { Tag = this };
+        Item = new TabViewItem { Tag = this, Content = Host };
     }
 
     public string Title => View?.Model.Title ?? (Target.Unsent ? "新会话" : Target.Title);
@@ -53,6 +56,8 @@ sealed class Pane : EditorNode
 {
     public TabView View { get; }
     public ToggleButton OutlineButton { get; }
+    // 关联 Agent's button, while it is one and the tab has linked conversations.
+    public Button LinkedButton { get; }
 
     public Pane(Editor editor)
     {
@@ -83,7 +88,29 @@ sealed class Pane : EditorNode
         ToolTipService.SetToolTip(OutlineButton, "大纲");
         Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(OutlineButton, "大纲");
         OutlineButton.Click += (_, _) => editor.OutlineClicked(this);
-        View.TabStripFooter = OutlineButton;
+        LinkedButton = new Button
+        {
+            Content = new FontIcon { Glyph = "\uE716", FontSize = 14 },
+            Padding = new Thickness(8, 6, 8, 6),
+            VerticalAlignment = VerticalAlignment.Center,
+            Background = new Microsoft.UI.Xaml.Media.SolidColorBrush(Microsoft.UI.Colors.Transparent),
+            BorderThickness = new Thickness(0),
+        };
+        ToolTipService.SetToolTip(LinkedButton, "关联 Agent");
+        Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(LinkedButton, "关联 Agent");
+        LinkedButton.Click += (_, _) =>
+        {
+            editor.Focus(this);
+            editor.Window.ShowLinked(this);
+        };
+        OutlineButton.Margin = new Thickness(0, 0, 8, 0);
+        View.TabStripFooter = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = 2,
+            Margin = new Thickness(4, 0, 0, 0),
+            Children = { LinkedButton, OutlineButton },
+        };
         View.AddTabButtonClick += (_, _) => editor.NewTab(this, null);
         View.TabCloseRequested += (_, e) =>
         {
@@ -109,7 +136,10 @@ sealed class Pane : EditorNode
 
     public IEnumerable<Tab> Tabs => View.TabItems.OfType<TabViewItem>().Select(item => (Tab)item.Tag);
 
-    public Tab? Selected => (View.SelectedItem as TabViewItem)?.Tag as Tab;
+    // SelectedItem follows SelectedIndex only once the tab bar is loaded, so
+    // a pane that is still being built reads its selection from the index.
+    public Tab? Selected =>
+        (View.SelectedItem ?? (View.SelectedIndex >= 0 && View.SelectedIndex < Count ? View.TabItems[View.SelectedIndex] : null)) is TabViewItem { Tag: Tab tab } ? tab : null;
 
     public int Count => View.TabItems.Count;
 }

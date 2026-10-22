@@ -23,7 +23,8 @@ sealed partial class ConversationList : UserControl
     readonly TextBlock empty = new() { Style = Ui.Style("SecondaryTextStyle"), TextWrapping = TextWrapping.Wrap, Visibility = Visibility.Collapsed, Margin = new Thickness(12, 4, 12, 4) };
     readonly ListView list = new() { SelectionMode = ListViewSelectionMode.Extended, Padding = new Thickness(0, 0, 0, 8), CanDragItems = true, AllowDrop = true };
     // The rows by tag: "group:…" for a group's title, "more:…" to load more
-    // of a group, else a conversation's ID.
+    // of a group, else a conversation's ID. Conversation IDs hold ':' too, so
+    // a row is a conversation's when its tag names a listed one.
     readonly Dictionary<string, ListViewItem> rows = [];
     // RenamingID is the conversation whose title is edited in the list.
     string? renamingID;
@@ -208,14 +209,16 @@ sealed partial class ConversationList : UserControl
             return row;
         }
         Listing.Active.TryGetValue(id, out var active);
-        var running = active?.RunState == BindingRunState.Running;
+        // A parent shows its native sub-agents still running or waiting.
+        var children = Listing.Active.Values.Where(child => child.ParentConversationId == id).ToList();
+        var running = active?.RunState == BindingRunState.Running || children.Any(child => child.RunState == BindingRunState.Running);
         var unread = listed.Unread && !running;
         var line = new Grid { ColumnSpacing = 8 };
         line.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         line.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         line.Children.Add(new TextBlock { Text = listed.Conversation.Title, TextTrimming = TextTrimming.CharacterEllipsis, VerticalAlignment = VerticalAlignment.Center });
         FrameworkElement? state = null;
-        if (active is { PendingInteractions: > 0 })
+        if (active is { PendingInteractions: > 0 } || children.Any(child => child.PendingInteractions > 0))
         {
             state = StateIcon("\uE7BA", "CautionIconStyle", "等待你处理");
         }
@@ -260,12 +263,12 @@ sealed partial class ConversationList : UserControl
     // Chosen are the selected conversations, in the list's order.
     List<BindingListedConversation> Chosen() =>
         [.. list.SelectedItems.OfType<ListViewItem>().Select(row => row.Tag as string).OfType<string>()
-            .Where(id => !id.Contains(':')).Select(Listed).OfType<BindingListedConversation>()];
+            .Select(Listed).OfType<BindingListedConversation>()];
 
     void SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
         // Titles and 加载更多 are rows to act on, not to choose.
-        foreach (var row in e.AddedItems.OfType<ListViewItem>().Where(row => row.Tag is string id && id.Contains(':')).ToList())
+        foreach (var row in e.AddedItems.OfType<ListViewItem>().Where(row => row.Tag is not string id || Listed(id) == null).ToList())
         {
             list.SelectedItems.Remove(row);
         }
@@ -393,7 +396,7 @@ sealed partial class ConversationList : UserControl
     {
         DragSource.Clear();
         var ids = e.Items.OfType<ListViewItem>().Select(row => row.Tag as string).OfType<string>().ToList();
-        if (ids is [var only] && only.StartsWith("group:", StringComparison.Ordinal))
+        if (ids is [var only] && Listed(only) == null && only.StartsWith("group:", StringComparison.Ordinal))
         {
             if (Searching || only == "group:pinned" || Listing.Preferences is not { Grouping: not BindingConversationBrowserGrouping.None })
             {
@@ -402,7 +405,7 @@ sealed partial class ConversationList : UserControl
             }
             DragSource.Group = (this, only);
         }
-        else if (ids.Where(id => !id.Contains(':')).Select(Listed).OfType<BindingListedConversation>().FirstOrDefault() is { } listed)
+        else if (ids.Select(Listed).OfType<BindingListedConversation>().FirstOrDefault() is { } listed)
         {
             DragSource.Conversation = (Device, Target(listed));
         }

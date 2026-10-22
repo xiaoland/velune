@@ -101,6 +101,13 @@ sealed partial class Conversation
 
     public bool Running => Snapshot is { RunState: BindingRunState.Running or BindingRunState.Stopping };
 
+    // SessionOpen tells the device holds this conversation's runtime session:
+    // it runs or waits, or this view sent to it. Reading a conversation
+    // opens none, and what only a session knows, such as an ACP Agent's
+    // options, waits for one.
+    public bool SessionOpen => sent || Running || Interaction != null;
+    bool sent;
+
     public bool CanCancel => Running && Snapshot!.Actions.CanCancel;
 
     // Working includes a turn the runtime runs for another client: running is
@@ -290,6 +297,7 @@ sealed partial class Conversation
                 SaveIntent();
             }
             Accepted = true;
+            this.sent = true;
             Apply(sent.Snapshot);
             return true;
         }
