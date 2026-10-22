@@ -1,6 +1,13 @@
-# Velune
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/brand/velune-large-dark.svg">
+    <img src="assets/brand/velune-large-graphite.svg" width="112" alt="Velune 标志">
+  </picture>
+</p>
 
-### 把多个 Coding Agent 放进一个原生工作区。
+<h1 align="center">Velune</h1>
+
+<p align="center"><strong>把多个 Coding Agent 放进一个原生工作区。</strong></p>
 
 Velune 是面向 Codex、Claude Code、Pi 等 coding agent 的控制界面与协调层。它帮助你在同一应用中浏览和继续不同运行时的会话、配置 AI 提供商与模型，并让不同 Agent 之间交接上下文、协作处理工作。
 
