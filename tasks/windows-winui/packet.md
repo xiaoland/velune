@@ -24,13 +24,14 @@
 
 ## MVP 进度
 
-- 1–9 已实现，win-ws 构建零警告；呈现见 [Windows README](../../app/windows/README.md)。
+- 1–10 已实现，win-ws 构建零警告；呈现见 [Windows README](../../app/windows/README.md)。
   - 第 4 步：设置窗口增加“模型路由”页，位于 AI提供商与 Agent 运行时之间（Mac 的顺序）。成员现状与编辑合在页内，不分详情和编辑两处：Windows 设置的二级页面就是这种模式，窗口宽度也放不下左右分栏。成员顺序用上移、下移调整，不用拖动：ListView 拖动重排要移动作为条目的元素本身，这正是 [AGENTS.md](../../app/windows/AGENTS.md) 中“单一父元素”的易错点。
   - 第 5 步：“继续”发出的文字是“继续”，PRD 只要求它是一条真实的用户消息；编辑消息只发出文字，因为核心按本次的 turn 组装附件，原消息的附件不会自动再附上。
   - 第 6 步：侧栏仍是 NavigationView，多选与拖动分组随第 7 步把列表重建为分组的原生列表（“会话列表”工具窗口，先写 Unit TDD）时加入；组的手动排序先用右键菜单的上移、下移。NavigationView 的条目不支持多选，在其上拼凑多选会在第 7 步整个丢弃。项目文件夹的增删以对话框完成，与 Mac 的项目编辑同一组字段（核心 `set_project`）。
   - 第 7 步：先写了 [Unit TDD](../../app/windows/TDD.md)（布局模型、WinUI 映射、保存与快捷键、交付顺序）。其第 1 项与第 2 项的列表部分已实现：工作区窗口、分屏与 `TabView` 标签、三个停靠区与三个工具窗口、布局保存与恢复、命令表的默认快捷键，以及以 `ListView` 重建的会话列表（多选、打开方式）。`MainWindow` 由 `Shell`（应用级共享）与 `WorkspaceWindow` 取代。第 3 项（拖放、会话窗口、多窗口）随后实现。第 4 项（浮动与独立的工具窗口、贴边与拖回停靠）与第 5 项（快捷键设置、“通用”中的关联会话打开方式及其浮层）随后实现，TDD 的交付顺序已全部完成。启动冒烟（fixture home，用户空闲时以 UIA 操作并截图）发现并修正了四处：恢复的标签不显示会话（`TabView` 的 `SelectedItem` 要到标签栏加载后才跟随 `SelectedIndex`，构建中按索引读取）；列表选中会话即被取消（会话 ID 形如 `运行时:原生 ID`，不能以 `:` 区分标题行，改为按是否为列出的会话）；在已选中的标签换会话仍显示旧视图（`TabView` 只在选中时取用标签内容，标签改为固定的宿主，视图在其中替换）；只读取而未打开执行会话的 ACP 会话报“runtime instance is not active”（核心只为已打开的执行会话提供 ACP 会话选项，视图改在运行、待处理或本视图发送后才读取）。修正后恢复、从列表打开、转录与输入区均正常显示；拖放、浮动窗口、快捷键等尚未逐项操作。
   - 第 8 步：关联 Agent 作为第四个工具窗口（默认是面板标签栏上的按钮，有关联会话时才出现），打开方式沿用第 5 项；`stop_sub_agents` 已在第 1 步的队列等待中接入。会话窗口左区放关联 Agent。
   - 第 9 步：应用级 `Problems`（内存、100 条、读取类按来源合并并在恢复时移除）与“问题”窗口，取代会话、列表与设置页的就地操作错误；对话框内的失败另就地说明（对话框盖住标题栏入口）。模型目录读取失败只在模型菜单说明：运行中的 ACP 会话会使目录暂时不可读，记为问题会长期残留。系统通知用 App SDK `AppNotificationManager`（未打包注册名称与图标）；`BadgeNotificationManager` 对未打包应用抛出“Not applicable for unpackaged applications”，角标改为后台时闪烁任务栏按钮。fixture 冒烟：缺失会话产生一条“读取会话”问题，标题栏“问题（1）”打开窗口并显示核心诊断；fixture 的慢速轮次在不查看该会话时结束，Windows 已登记 Velune 的通知设置，但 UIA 未找到横幅，显示与点按留待用户验收。冒烟中一次全屏截图拍到了桌面上其他应用的真实会话，已立即删除，此后只截 Velune 自己的窗口。
+  - 第 10 步：运行时编辑对话框加入“运行环境”（`runtime_execution`、`upsert_runtime_with_execution`、`runtime_home_directory`）、“启动参数”（`acp_launch`、`upsert_acp_runtime`）、“Agent 信息”（`acp_runtime_info`）与“新会话”（`composer_choices`、`set_runtime_composer_choices` 的 `new_conversation`），各为 Expander；由 Velune 管理 HOME 时按核心规则隐去并免填 `agentDir`。SSH 运行位置不在 Windows 上编辑，已有的 SSH 设置原样保留。fixture 冒烟：ACP 实例显示由 Velune 管理的 HOME 位置，读取到 Agent“Synthetic ACP（fixture 1）”，未改动保存经 `upsert_acp_runtime` 成功关闭对话框。
   - **尚未截图验证**：fixture 的驱动只在用户空闲 10 分钟以上且 Velune 在前台时操作。这三次运行时 RDP 画面未显示，前台是外壳窗口（无主窗口的句柄），新启动的窗口拿不到前台，`SetForegroundWindow`（借 `AttachThreadInput`）也被拒绝，所以只验证了启动与退出（退出码 0），提供商、路由与列表管理没有实际操作过。
 - 额度窗口的显示名由 Windows 按核心的窗口 ID 拼出（`window:<秒>`、`ark:*`、`kimi:*`）。各端都需要这套名称，候选做法是由核心随观测给出显示名（属 Product TDD 的“选项目录”）；改动涉及 bindings 与 Mac，未做。
 

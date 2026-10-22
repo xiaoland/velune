@@ -5,7 +5,7 @@ using Velune.Bindings;
 namespace Velune;
 
 // This PC's Agent runtime instances: a list to add, import, edit and delete them.
-sealed class RuntimesPage : UserControl
+sealed partial class RuntimesPage : UserControl
 {
     const string DefaultGateway = "default";
 
@@ -107,9 +107,8 @@ sealed class RuntimesPage : UserControl
 
     BindingRuntimeTypeDescriptor? Kind(string id) => kinds.FirstOrDefault(kind => kind.Id == id);
 
-    // Addable are the types set up here; an ACP Agent's launch arguments and
-    // environment are not edited here.
-    IEnumerable<BindingRuntimeTypeDescriptor> Addable() => kinds.Where(kind => !kind.LaunchOptions);
+    // Addable are the types an instance can be added of.
+    IEnumerable<BindingRuntimeTypeDescriptor> Addable() => kinds;
 
     // Write runs one change against this PC's core, then shows the runtimes
     // it reports; false keeps a dialog open with what failed.
@@ -159,10 +158,10 @@ sealed class RuntimesPage : UserControl
         }
     }
 
-    // Edit adds a runtime instance by hand (existing is null) or edits one:
-    // its name, whether it runs, its type and the type's settings.
-    // Edit edits an existing instance, or adds one, starting from template's
-    // type and settings when given.
+    // Edit adds a runtime instance by hand (existing is null), starting from
+    // template's type and settings when given, or edits one: its name,
+    // whether it runs, its type and the type's settings, its HOME, an ACP
+    // Agent's launch, and what its new conversations start with.
     async void Edit(BindingRuntimeInstance? existing, BindingRuntimeInstance? template = null)
     {
         var addable = Addable().ToList();
@@ -173,6 +172,13 @@ sealed class RuntimesPage : UserControl
             Ui.Show(failure, existing == null ? "" : "这个运行时的类型已不受支持");
             return;
         }
+        if (await ReadExtras(existing, kind) is not { } extras)
+        {
+            return;
+        }
+        var home = new HomeSection(window, extras.Execution, extras.ManagedHome);
+        var launch = new LaunchSection(extras.Launch);
+        var starts = new StartsSection(core, existing, kind, extras.Choices);
         var panel = new StackPanel { Spacing = 16, MinWidth = 440 };
         var name = new TextBox { Header = "实例名称", Text = existing?.Name ?? (template?.TypeId == kind.Id ? template.Name : kind.Name) };
         var enabled = new ToggleSwitch { Header = "启用此运行时", IsOn = existing?.Enabled ?? true };
@@ -180,12 +186,22 @@ sealed class RuntimesPage : UserControl
         var formError = Ui.Error();
         var values = new Dictionary<string, Func<string>>();
         var errors = new Dictionary<string, TextBlock>();
+        var views = new Dictionary<string, FrameworkElement>();
+        void ShowDirectory()
+        {
+            if (views.TryGetValue(RuntimeDirectoryKey, out var directory))
+            {
+                directory.Visibility = home.Managed ? Visibility.Collapsed : Visibility.Visible;
+            }
+        }
         void ShowFields(BindingRuntimeTypeDescriptor shown)
         {
             kind = shown;
             fields.Children.Clear();
             values.Clear();
             errors.Clear();
+            views.Clear();
+            launch.Element.Visibility = shown.LaunchOptions ? Visibility.Visible : Visibility.Collapsed;
             if (shown.Fields.Length > 0)
             {
                 fields.Children.Add(Ui.Text("实例配置", "BodyStrongTextBlockStyle"));
@@ -196,9 +212,13 @@ sealed class RuntimesPage : UserControl
             {
                 var value = source?.Settings.GetValueOrDefault(field.Key) ?? field.Value;
                 errors[field.Key] = Ui.Error();
-                fields.Children.Add(Ui.Field(FieldControl(field, value, values), field.Help ?? "", errors[field.Key]));
+                var view = Ui.Field(FieldControl(field, value, values), field.Help ?? "", errors[field.Key]);
+                views[field.Key] = view;
+                fields.Children.Add(view);
             }
+            ShowDirectory();
         }
+        home.Changed += ShowDirectory;
         panel.Children.Add(name);
         panel.Children.Add(Ui.Field(enabled, "停用后不读取其历史，也不创建或执行新任务；原生会话数据保留。"));
         if (existing == null)
@@ -213,6 +233,13 @@ sealed class RuntimesPage : UserControl
             {
                 ShowFields(addable[type.SelectedIndex]);
                 name.Text = addable[type.SelectedIndex].Name;
+                // Permission modes are the type's.
+                var at = panel.Children.IndexOf(starts.Element);
+                starts = new StartsSection(core, null, kind, null);
+                if (at >= 0)
+                {
+                    panel.Children[at] = starts.Element;
+                }
             };
             panel.Children.Add(type);
         }
@@ -222,6 +249,13 @@ sealed class RuntimesPage : UserControl
         }
         ShowFields(kind);
         panel.Children.Add(fields);
+        panel.Children.Add(home.Element);
+        panel.Children.Add(launch.Element);
+        if (existing != null && kind.AgentInfo)
+        {
+            panel.Children.Add(AgentInfo(existing));
+        }
+        panel.Children.Add(starts.Element);
         panel.Children.Add(formError);
 
         var dialog = new ContentDialog
@@ -236,20 +270,25 @@ sealed class RuntimesPage : UserControl
         dialog.PrimaryButtonClick += async (_, e) =>
         {
             var deferral = e.GetDeferral();
-            // A stopped runtime needs none of its required fields.
+            // A stopped runtime needs none of its required fields, nor one
+            // with a managed HOME its runtime directory.
             var missing = enabled.IsOn
-                ? kind.Fields.FirstOrDefault(field => field.Required && values[field.Key]().Trim().Length == 0)
+                ? kind.Fields.FirstOrDefault(field => field.Required && values[field.Key]().Trim().Length == 0 && !(field.Key == RuntimeDirectoryKey && home.Managed))
                 : null;
             foreach (var field in kind.Fields)
             {
                 Ui.Show(errors[field.Key], field == missing ? "请填写“" + field.Label + "”" : "");
             }
-            if (missing != null)
+            var execution = home.Read();
+            var launched = kind.LaunchOptions ? launch.Read() : null;
+            if (missing != null || execution == null || (kind.LaunchOptions && launched == null))
             {
                 e.Cancel = true;
                 deferral.Complete();
                 return;
             }
+            var started = starts.Read();
+            var lastChosen = extras.Choices?.LastChosen ?? new BindingTurnChoice(null, null, null);
             // An edited instance's other settings stay as they are.
             var settings = new Dictionary<string, string>(existing?.Settings ?? []);
             foreach (var field in kind.Fields)
@@ -268,7 +307,17 @@ sealed class RuntimesPage : UserControl
             var runtime = existing == null
                 ? new BindingRuntimeInstance(enabled.IsOn, Guid.NewGuid().ToString(), shownName.Length > 0 ? shownName : kind.Name, kind.Id, DefaultGateway, settings)
                 : existing with { Enabled = enabled.IsOn, Name = shownName.Length > 0 ? shownName : kind.Name, Settings = settings };
-            e.Cancel = !await Write("保存运行时「" + runtime.Name + "」", application => application.UpsertRuntime(runtime), formError);
+            e.Cancel = !await Write("保存运行时「" + runtime.Name + "」", application =>
+            {
+                var update = launched != null
+                    ? application.UpsertAcpRuntime(runtime, execution, launched)
+                    : application.UpsertRuntimeWithExecution(runtime, execution);
+                if (started != null)
+                {
+                    application.SetRuntimeComposerChoices(new BindingRuntimeComposerChoices(runtime.Id, lastChosen, started));
+                }
+                return update;
+            }, formError);
             deferral.Complete();
         };
         await window.ShowDialog(dialog);
