@@ -65,8 +65,15 @@ impl RuntimeExecution {
                 return Err(Error::invalid("远端辅助资源必须是绝对目录"));
             }
         }
+        // A local HOME is a path of the machine this core runs on, by its own
+        // rules (C:\… on Windows); an SSH target's is a Unix path.
+        let local_absolute =
+            |value: &str| std::path::Path::new(value).is_absolute() && !value.contains('\0');
         match (&self.transport, &self.home) {
-            (_, RuntimeHome::Existing { path }) if !absolute(path) => {
+            (RuntimeTransport::Local, RuntimeHome::Existing { path }) if !local_absolute(path) => {
+                return Err(Error::invalid("HOME 必须是执行机器上的绝对目录"));
+            }
+            (RuntimeTransport::Ssh { .. }, RuntimeHome::Existing { path }) if !absolute(path) => {
                 return Err(Error::invalid("HOME 必须是执行机器上的绝对目录"));
             }
             (RuntimeTransport::Ssh { .. }, RuntimeHome::Managed { remote_root })
