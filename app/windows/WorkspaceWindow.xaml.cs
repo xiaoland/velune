@@ -79,6 +79,7 @@ public sealed partial class WorkspaceWindow : Window
         // Failures go to 问题; its button shows while there are some.
         RightButtons.Children.Insert(0, new ProblemsButton(Shell.OpenProblems));
         DeviceMenu.Opening += (_, _) => FillDeviceMenu();
+        MoreMenu.Opening += (_, _) => FillMoreMenu();
         LayoutMenu.Opening += (_, _) =>
         {
             LayoutMenu.Items.Clear();
@@ -798,6 +799,9 @@ public sealed partial class WorkspaceWindow : Window
             case Command.Problems:
                 Shell.OpenProblems();
                 break;
+            case Command.Analytics:
+                Shell.OpenAnalytics();
+                break;
             case Command.ShowLinked:
                 Tools.ToggleTool(Tool.Linked);
                 break;
@@ -817,6 +821,21 @@ public sealed partial class WorkspaceWindow : Window
             case Command.Settings:
                 Shell.OpenSettings(SettingsPage.Keep);
                 break;
+        }
+    }
+
+    // FillMoreMenu lists the windows of this PC's own beside settings.
+    void FillMoreMenu()
+    {
+        MoreMenu.Items.Clear();
+        foreach (var (command, name) in new[] { (Command.Analytics, "分析…"), (Command.Problems, "问题…") })
+        {
+            var item = Ui.MenuItem(name, () => Run(command));
+            if (Commands.Bound(command) is { } keys)
+            {
+                item.KeyboardAcceleratorTextOverride = keys.ToString();
+            }
+            MoreMenu.Items.Add(item);
         }
     }
 

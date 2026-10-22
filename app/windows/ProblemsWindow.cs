@@ -1,5 +1,3 @@
-using Microsoft.UI.Composition.SystemBackdrops;
-using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Media;
@@ -23,33 +21,14 @@ sealed class ProblemsWindow : Window
 
     public ProblemsWindow()
     {
-        Title = "问题";
-        ExtendsContentIntoTitleBar = true;
-        AppWindow.TitleBar.PreferredHeightOption = TitleBarHeightOption.Tall;
-        AppWindow.SetIcon(Path.Combine(AppContext.BaseDirectory, "Assets", "Velune.ico"));
-        var root = new Grid();
-        if (MicaController.IsSupported())
-        {
-            SystemBackdrop = new MicaBackdrop();
-        }
-        else
-        {
-            root.Style = Ui.Style("WindowBackgroundStyle");
-        }
-        root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-        root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-        root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
-        var titleBar = new TitleBar { Title = "问题", Height = 48 };
-        root.Children.Add(titleBar);
-        SetTitleBar(titleBar);
+        var root = Ui.Chrome(this, "问题");
 
         var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, Margin = new Thickness(16, 0, 16, 12) };
         actions.Children.Add(copy);
         actions.Children.Add(remove);
         actions.Children.Add(copyAll);
         actions.Children.Add(clear);
-        Grid.SetRow(actions, 1);
-        root.Children.Add(actions);
+        Ui.Row(root, actions, GridLength.Auto);
 
         body.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(300) });
         body.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
@@ -60,12 +39,10 @@ sealed class ProblemsWindow : Window
         var reading = new ScrollViewer { Content = pane };
         Grid.SetColumn(reading, 1);
         body.Children.Add(reading);
-        var content = new Grid { BorderThickness = new Thickness(0, 1, 0, 0), BorderBrush = (Brush)Application.Current.Resources["DividerStrokeColorDefaultBrush"] };
+        var content = new Grid();
         content.Children.Add(body);
         content.Children.Add(empty);
-        Grid.SetRow(content, 2);
-        root.Children.Add(content);
-        Content = root;
+        Ui.Row(root, Ui.Divided(content), new GridLength(1, GridUnitType.Star));
         WorkspaceWindow.Size(this, 820, 520, 520, 320);
 
         list.SelectionChanged += (_, _) => ShowSelected();

@@ -21,6 +21,7 @@ sealed class Shell
     WorkspaceWindow? latest;
     SettingsWindow? settings;
     ProblemsWindow? problems;
+    AnalyticsWindow? analytics;
     readonly Notifier notifier;
     // The pairing attempts already put to the user.
     readonly HashSet<string> prompted = [];
@@ -128,6 +129,7 @@ sealed class Shell
         store.Flush();
         settings?.Close();
         problems?.Close();
+        analytics?.Close();
         Listings.Leave(Device.Local, KeepLocal);
         notifier.Stop();
         Core.Shutdown();
@@ -233,6 +235,17 @@ sealed class Shell
             problems.Closed += (_, _) => problems = null;
         }
         problems.Activate();
+    }
+
+    // OpenAnalytics shows the 分析 window, reusing an open one.
+    public void OpenAnalytics()
+    {
+        if (analytics == null)
+        {
+            analytics = new AnalyticsWindow(Core, OpenProblems);
+            analytics.Closed += (_, _) => analytics = null;
+        }
+        analytics.Activate();
     }
 
     void HubChanged()

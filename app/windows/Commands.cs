@@ -35,6 +35,7 @@ enum Command
     Rename,
     Settings,
     Problems,
+    Analytics,
 }
 
 readonly record struct Shortcut(VirtualKeyModifiers Modifiers, VirtualKey Key)
@@ -106,6 +107,7 @@ sealed class Commands
         [Command.Rename] = ("重命名会话", new(VirtualKeyModifiers.None, VirtualKey.F2)),
         [Command.Settings] = ("设置", new(Ctrl, (VirtualKey)188)),
         [Command.Problems] = ("问题", new(Ctrl | Shift, VirtualKey.M)),
+        [Command.Analytics] = ("分析", null),
     };
 
     sealed record Keys(int Modifiers, int Key);

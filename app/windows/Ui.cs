@@ -10,6 +10,48 @@ static class Ui
 {
     public static Style Style(string key) => (Style)Application.Current.Resources[key];
 
+    // Chrome dresses a window of its own: Velune's icon, a tall title bar
+    // and Mica where it is supported. The root's first row is the title
+    // bar; the caller adds the rows after it.
+    public static Grid Chrome(Window window, string title)
+    {
+        window.Title = title;
+        window.ExtendsContentIntoTitleBar = true;
+        window.AppWindow.TitleBar.PreferredHeightOption = Microsoft.UI.Windowing.TitleBarHeightOption.Tall;
+        window.AppWindow.SetIcon(System.IO.Path.Combine(AppContext.BaseDirectory, "Assets", "Velune.ico"));
+        var root = new Grid();
+        if (Microsoft.UI.Composition.SystemBackdrops.MicaController.IsSupported())
+        {
+            window.SystemBackdrop = new MicaBackdrop();
+        }
+        else
+        {
+            root.Style = Style("WindowBackgroundStyle");
+        }
+        root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        var titleBar = new TitleBar { Title = title, Height = 48 };
+        root.Children.Add(titleBar);
+        window.SetTitleBar(titleBar);
+        window.Content = root;
+        return root;
+    }
+
+    // Row adds a row to a grid and puts an element in it.
+    public static void Row(Grid grid, FrameworkElement element, GridLength height)
+    {
+        grid.RowDefinitions.Add(new RowDefinition { Height = height });
+        Grid.SetRow(element, grid.RowDefinitions.Count - 1);
+        grid.Children.Add(element);
+    }
+
+    // Divided puts a hairline above content, under a window's header.
+    public static Border Divided(UIElement content) => new()
+    {
+        BorderThickness = new Thickness(0, 1, 0, 0),
+        BorderBrush = (Brush)Application.Current.Resources["DividerStrokeColorDefaultBrush"],
+        Child = content,
+    };
+
     public static TextBlock Text(string text, string style = "BodyTextBlockStyle") => new()
     {
         Text = text,

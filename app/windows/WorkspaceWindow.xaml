@@ -51,6 +51,15 @@
                             <MenuFlyout x:Name="LayoutMenu" Placement="BottomEdgeAlignedRight" />
                         </DropDownButton.Flyout>
                     </DropDownButton>
+                    <DropDownButton
+                        x:Name="MoreButton"
+                        AutomationProperties.Name="更多"
+                        ToolTipService.ToolTip="更多">
+                        <FontIcon FontSize="14" Glyph="&#xE712;" />
+                        <DropDownButton.Flyout>
+                            <MenuFlyout x:Name="MoreMenu" Placement="BottomEdgeAlignedRight" />
+                        </DropDownButton.Flyout>
+                    </DropDownButton>
                     <Button
                         x:Name="SettingsButton"
                         AutomationProperties.Name="设置"
