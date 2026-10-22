@@ -315,7 +315,7 @@ def exercise(app, b, root):
         b.BindingRuntimeExecution(transport=b.BindingRuntimeTransport.LOCAL(),
                                   home=b.BindingRuntimeHome.INHERIT(), remote_resources_directory=None),
         b.BindingAcpLaunch(args=[str(root / 'peer.py')], environment={'FIXTURE_STATE': str(root / 'live')}))
-    default = b.BindingModelSelection.RUNTIME_DEFAULT()
+    default = None  # the runtime default
     conversation = app.create_conversation_with_selection('live', str(root / 'project'), default).snapshot.conversation.id
     app.send_turn_with_selection('live', conversation, 'live', default, b.BindingComposedTurn(text='CANCEL', effort=None, attachments=[]))
     saved = app.save_resource_template(resource('tuned', content.MCP(

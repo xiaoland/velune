@@ -100,7 +100,7 @@ def main():
             spec=importlib.util.spec_from_file_location('velune_bindings',root/'bindings/velune_bindings.py');b=importlib.util.module_from_spec(spec);sys.modules[spec.name]=b;spec.loader.exec_module(b)
             options=b.BindingOptions(home_directory=str(root/'application'),resources_directory=str(root/'empty-resources'))
             application=b.VeluneApplication.open(options)
-            default=b.BindingModelSelection.RUNTIME_DEFAULT()
+            default=None  # the runtime default
             execution=b.BindingRuntimeExecution(transport=b.BindingRuntimeTransport.LOCAL(),home=b.BindingRuntimeHome.MANAGED(remote_root=None),remote_resources_directory=None)
             for identity in ('full','listless','live'):
                 runtime=b.BindingRuntimeInstance(enabled=True,id=identity,name=identity,type_id='acp-v1',gateway_id='default',settings={'binary':sys.executable})

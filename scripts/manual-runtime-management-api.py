@@ -186,7 +186,7 @@ def exercise(app, b, root, python):
         enabled=True, id='live', name='Live', type_id='acp-v1', gateway_id='default',
         settings={'binary': str(python)}), execution,
         b.BindingAcpLaunch(args=[str(root / 'peer.py')], environment={'FIXTURE_STATE': str(root / 'live')}))
-    default = b.BindingModelSelection.RUNTIME_DEFAULT()
+    default = None  # the runtime default
     snapshot = app.create_conversation_with_selection('live', project, default).snapshot
     conversation = snapshot.conversation.id
     change = key(kind.USER_INSTRUCTIONS, 'AGENTS.md')

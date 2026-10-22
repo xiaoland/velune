@@ -142,7 +142,7 @@ def main():
     with tempfile.TemporaryDirectory(prefix='velune-collaboration-') as directory:
         root = args.seed.resolve() if seeding else Path(directory).resolve()
         app = b.VeluneApplication.open(b.BindingOptions(home_directory=str(root / 'velune'), resources_directory=str(args.resources)))
-        default = b.BindingModelSelection.RUNTIME_DEFAULT()
+        default = None  # the runtime default
 
         def turn(identity, text, expect, timeout=60, on_poll=None):
             """Send to Alpha and advance the application until Alpha's reply contains `expect`."""
