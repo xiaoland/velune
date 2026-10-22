@@ -18,14 +18,24 @@ sealed partial class RuntimesPage : UserControl
     readonly Button remove = Ui.IconButton("\uE738", "删除运行时实例");
     readonly Button import = new() { Content = "快速导入…" };
     readonly Button edit = new() { Content = "编辑…" };
+    // Offers the library's resources to a runtime just added.
+    readonly InfoBar offer = new() { Severity = InfoBarSeverity.Informational, IsClosable = true };
     BindingRuntimeInstance[] instances = [];
+    bool listed;
     BindingRuntimeTypeDescriptor[] kinds = [];
     bool busy;
 
-    internal RuntimesPage(Core core, SettingsWindow window)
+    internal RuntimesPage(Core core, SettingsWindow window, Action openLibrary)
     {
         this.core = core;
         this.window = window;
+        var library = new Button { Content = "打开资源库" };
+        library.Click += (_, _) =>
+        {
+            offer.IsOpen = false;
+            openLibrary();
+        };
+        offer.ActionButton = library;
         add.Click += (_, _) => Edit(null);
         remove.Click += (_, _) => Delete();
         import.Click += (_, _) => Import();
@@ -40,7 +50,7 @@ sealed partial class RuntimesPage : UserControl
                 Edit(Chosen());
             }
         };
-        Content = Ui.ListPage("Agent 运行时", failure, list, [add, import, remove], [edit]);
+        Content = Ui.ListPage("Agent 运行时", new StackPanel { Spacing = 8, Children = { failure, offer } }, list, [add, import, remove], [edit]);
         Reload();
     }
 
@@ -71,7 +81,13 @@ sealed partial class RuntimesPage : UserControl
     void SetInstances(BindingRuntimeInstance[] shown)
     {
         var selected = Chosen()?.Id;
+        var added = listed ? shown.Where(runtime => !instances.Any(known => known.Id == runtime.Id)).ToList() : [];
+        listed = true;
         instances = shown;
+        if (added.Count > 0)
+        {
+            Offer(added);
+        }
         list.Items.Clear();
         foreach (var runtime in instances)
         {
@@ -103,6 +119,25 @@ sealed partial class RuntimesPage : UserControl
             parts.Add("已停用");
         }
         return string.Join(" · ", parts);
+    }
+
+    // Offer tells, after runtimes are added, that the library's resources
+    // can be enabled on them.
+    async void Offer(List<BindingRuntimeInstance> added)
+    {
+        try
+        {
+            var count = (await Task.Run(core.Local.ListResourceTemplates)).Length;
+            if (count > 0)
+            {
+                offer.Message = $"资源库中有 {count} 份资源，可以启用于“{string.Join("”“", added.Select(runtime => runtime.Name))}”。";
+                offer.IsOpen = true;
+            }
+        }
+        catch (Exception problem)
+        {
+            Problems.Report("读取资源库", problem);
+        }
     }
 
     BindingRuntimeTypeDescriptor? Kind(string id) => kinds.FirstOrDefault(kind => kind.Id == id);

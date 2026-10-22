@@ -63,6 +63,7 @@ sealed class AnalyticsWindow : Window
     bool failed;
     string? reportedWarning;
     int asked;
+    bool closed;
 
     public AnalyticsWindow(Core core, Action openProblems)
     {
@@ -128,6 +129,7 @@ sealed class AnalyticsWindow : Window
         }
         trendMetric.SelectedItem = trendMetric.Items[0];
         trendMetric.SelectionChanged += (_, _) => ShowOverview();
+        Closed += (_, _) => closed = true;
         Load();
         ShowPage();
     }
@@ -156,7 +158,7 @@ sealed class AnalyticsWindow : Window
         try
         {
             var answer = await Task.Run(() => core.Local.AnalyticsQuery(query));
-            if (ask != asked)
+            if (ask != asked || closed)
             {
                 return;
             }
@@ -178,7 +180,7 @@ sealed class AnalyticsWindow : Window
         }
         catch (Exception failure)
         {
-            if (ask != asked)
+            if (ask != asked || closed)
             {
                 return;
             }
@@ -187,7 +189,7 @@ sealed class AnalyticsWindow : Window
         }
         finally
         {
-            if (ask == asked)
+            if (ask == asked && !closed)
             {
                 loading = false;
                 ShowState();
@@ -348,8 +350,8 @@ sealed class AnalyticsWindow : Window
             return trend;
         }
         const double height = 160;
-        var input = (Brush)Application.Current.Resources["AccentFillColorDefaultBrush"];
-        var output = (Brush)Application.Current.Resources["ControlStrongFillColorDefaultBrush"];
+        var input = Ui.Style("ChartInputStyle");
+        var output = Ui.Style("ChartOutputStyle");
         var largest = buckets.Max(bucket => speed
             ? bucket.Totals.OutputTokensPerSecond ?? 0
             : Math.Max(bucket.Totals.InputTokens ?? 0, bucket.Totals.OutputTokens ?? 0));
@@ -367,7 +369,7 @@ sealed class AnalyticsWindow : Window
             {
                 if (bucket.Totals.OutputTokensPerSecond is { } rate)
                 {
-                    bars.Children.Add(new Ellipse { Width = 8, Height = 8, Fill = input, Margin = new Thickness(0, 0, 0, Scale(rate) - 4) });
+                    bars.Children.Add(new Ellipse { Width = 8, Height = 8, Style = input, Margin = new Thickness(0, 0, 0, Scale(rate) - 4) });
                 }
             }
             else
@@ -376,7 +378,7 @@ sealed class AnalyticsWindow : Window
                 {
                     if (value is { } reported)
                     {
-                        bars.Children.Add(new Rectangle { Width = 8, Height = Scale(reported), Fill = fill, RadiusX = 2, RadiusY = 2, VerticalAlignment = VerticalAlignment.Bottom });
+                        bars.Children.Add(new Rectangle { Width = 8, Height = Scale(reported), Style = fill, RadiusX = 2, RadiusY = 2, VerticalAlignment = VerticalAlignment.Bottom });
                     }
                 }
             }
@@ -406,7 +408,7 @@ sealed class AnalyticsWindow : Window
             foreach (var (name, fill) in new[] { ("输入", input), ("输出", output) })
             {
                 var key = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
-                key.Children.Add(new Rectangle { Width = 10, Height = 10, Fill = fill, RadiusX = 2, RadiusY = 2, VerticalAlignment = VerticalAlignment.Center });
+                key.Children.Add(new Rectangle { Width = 10, Height = 10, Style = fill, RadiusX = 2, RadiusY = 2, VerticalAlignment = VerticalAlignment.Center });
                 key.Children.Add(new TextBlock { Text = name, Style = Ui.Style("CaptionTextBlockStyle") });
                 legend.Children.Add(key);
             }

@@ -303,6 +303,10 @@ public sealed partial class ConversationView : UserControl
             runtimes.Items.Add(Choice("runtime", runtime.Name, runtime.Id == Model.Next, () => Model.ChooseRuntime(runtime.Id)));
         }
         runtimes.Items.Add(new MenuFlyoutSeparator());
+        if (Model.Device.IsLocal)
+        {
+            runtimes.Items.Add(Item("资源库…", window.Shell.OpenLibrary));
+        }
         runtimes.Items.Add(Item("Agent 运行时设置…", () => window.OpenSettings(SettingsPage.Runtimes)));
         AgentMenu.Items.Add(runtimes);
 

@@ -20,7 +20,7 @@ public sealed partial class SettingsWindow : Window
     readonly DevicesPage devices;
     readonly SemaphoreSlim dialogs = new(1, 1);
 
-    internal SettingsWindow(Core core, Hub hub, Commands commands, Action openProblems, Action<Device> open)
+    internal SettingsWindow(Core core, Hub hub, Commands commands, Action openProblems, Action openLibrary, Action<Device> open)
     {
         InitializeComponent();
         // Settings' failures go to 问题, which the title bar opens.
@@ -44,7 +44,7 @@ public sealed partial class SettingsWindow : Window
         general = new GeneralPage(core, commands);
         providers = new ProvidersPage(core, this);
         routes = new RoutesPage(core, this, EditProvider);
-        runtimes = new RuntimesPage(core, this);
+        runtimes = new RuntimesPage(core, this, openLibrary);
         devices = new DevicesPage(core, hub, this, open);
         Navigation.SelectionChanged += (_, e) =>
         {

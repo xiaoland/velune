@@ -37,6 +37,17 @@
             <Style x:Key="DividerStyle" TargetType="Border">
                 <Setter Property="Background" Value="{ThemeResource DividerStrokeColorDefaultBrush}" />
             </Style>
+            <!-- A hairline between a window's header and content, or its columns. -->
+            <Style x:Key="DividedStyle" TargetType="Border">
+                <Setter Property="BorderBrush" Value="{ThemeResource DividerStrokeColorDefaultBrush}" />
+            </Style>
+            <!-- The two series of the analytics trend. -->
+            <Style x:Key="ChartInputStyle" TargetType="Shape">
+                <Setter Property="Fill" Value="{ThemeResource AccentFillColorDefaultBrush}" />
+            </Style>
+            <Style x:Key="ChartOutputStyle" TargetType="Shape">
+                <Setter Property="Fill" Value="{ThemeResource ControlStrongFillColorDefaultBrush}" />
+            </Style>
             <Style x:Key="QuoteStyle" TargetType="Border">
                 <Setter Property="BorderBrush" Value="{ThemeResource AccentFillColorDefaultBrush}" />
             </Style>

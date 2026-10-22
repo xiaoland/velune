@@ -741,7 +741,7 @@ public sealed partial class WorkspaceWindow : Window
                 Shell.NewWindow(Device);
                 break;
             case Command.CloseWindow:
-                Close();
+                Shell.RequestClose(this);
                 break;
             case Command.CloseTab:
                 if (tab != null)
@@ -802,6 +802,9 @@ public sealed partial class WorkspaceWindow : Window
             case Command.Analytics:
                 Shell.OpenAnalytics();
                 break;
+            case Command.Library:
+                Shell.OpenLibrary();
+                break;
             case Command.ShowLinked:
                 Tools.ToggleTool(Tool.Linked);
                 break;
@@ -824,11 +827,11 @@ public sealed partial class WorkspaceWindow : Window
         }
     }
 
-    // FillMoreMenu lists the windows of this PC's own beside settings.
+    // FillMoreMenu lists this PC's own windows besides settings.
     void FillMoreMenu()
     {
         MoreMenu.Items.Clear();
-        foreach (var (command, name) in new[] { (Command.Analytics, "分析…"), (Command.Problems, "问题…") })
+        foreach (var (command, name) in new[] { (Command.Library, "资源库…"), (Command.Analytics, "分析…"), (Command.Problems, "问题…") })
         {
             var item = Ui.MenuItem(name, () => Run(command));
             if (Commands.Bound(command) is { } keys)

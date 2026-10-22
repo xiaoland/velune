@@ -36,6 +36,7 @@ enum Command
     Settings,
     Problems,
     Analytics,
+    Library,
 }
 
 readonly record struct Shortcut(VirtualKeyModifiers Modifiers, VirtualKey Key)
@@ -108,6 +109,7 @@ sealed class Commands
         [Command.Settings] = ("设置", new(Ctrl, (VirtualKey)188)),
         [Command.Problems] = ("问题", new(Ctrl | Shift, VirtualKey.M)),
         [Command.Analytics] = ("分析", null),
+        [Command.Library] = ("资源库", null),
     };
 
     sealed record Keys(int Modifiers, int Key);

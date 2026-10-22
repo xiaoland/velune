@@ -22,6 +22,9 @@ sealed class Shell
     SettingsWindow? settings;
     ProblemsWindow? problems;
     AnalyticsWindow? analytics;
+    LibraryWindow? library;
+    // The user chose to quit with the library's edits unsaved.
+    bool discardDrafts;
     readonly Notifier notifier;
     // The pairing attempts already put to the user.
     readonly HashSet<string> prompted = [];
@@ -71,6 +74,13 @@ sealed class Shell
             {
                 latest = window;
                 notifier.Returned();
+            }
+        };
+        window.AppWindow.Closing += (_, e) =>
+        {
+            if (!MayClose(window))
+            {
+                e.Cancel = true;
             }
         };
         window.Closed += (_, _) => Closed(window);
@@ -130,6 +140,7 @@ sealed class Shell
         settings?.Close();
         problems?.Close();
         analytics?.Close();
+        library?.Close();
         Listings.Leave(Device.Local, KeepLocal);
         notifier.Stop();
         Core.Shutdown();
@@ -176,7 +187,7 @@ sealed class Shell
     {
         if (settings == null)
         {
-            settings = new SettingsWindow(Core, Hub, Commands, OpenProblems, opened =>
+            settings = new SettingsWindow(Core, Hub, Commands, OpenProblems, OpenLibrary, opened =>
             {
                 // Opening a device shows it in the window used last.
                 if (latest != null)
@@ -235,6 +246,63 @@ sealed class Shell
             problems.Closed += (_, _) => problems = null;
         }
         problems.Activate();
+    }
+
+    // OpenLibrary shows the 资源库 window, reusing an open one.
+    public void OpenLibrary()
+    {
+        if (library == null)
+        {
+            library = new LibraryWindow(Core);
+            library.Closed += (_, _) => library = null;
+        }
+        library.Activate();
+    }
+
+    // RequestClose closes a workspace window, unless it is the last and the
+    // user keeps the library's unsaved edits.
+    public void RequestClose(WorkspaceWindow window)
+    {
+        if (MayClose(window))
+        {
+            window.Close();
+        }
+    }
+
+    // MayClose tells whether a window can close now. Closing the last one
+    // quits, so with unsaved library edits it asks first and closes the
+    // window itself if the user discards them.
+    bool MayClose(WorkspaceWindow window)
+    {
+        if (discardDrafts || windows.Count > 1 || Library.Unsaved.Count == 0)
+        {
+            return true;
+        }
+        AskQuit(window);
+        return false;
+    }
+
+    async void AskQuit(WorkspaceWindow window)
+    {
+        var dialog = new ContentDialog
+        {
+            Title = "资源库中有未保存的修改",
+            Content = Ui.Text("未保存：" + string.Join("、", Library.Unsaved) + "。退出后这些修改将丢失。"),
+            PrimaryButtonText = "放弃修改并退出",
+            SecondaryButtonText = "打开资源库",
+            CloseButtonText = "取消",
+            DefaultButton = ContentDialogButton.Secondary,
+        };
+        switch (await window.ShowDialog(dialog))
+        {
+            case ContentDialogResult.Primary:
+                discardDrafts = true;
+                window.Close();
+                break;
+            case ContentDialogResult.Secondary:
+                OpenLibrary();
+                break;
+        }
     }
 
     // OpenAnalytics shows the 分析 window, reusing an open one.

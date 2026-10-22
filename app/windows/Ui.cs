@@ -48,7 +48,7 @@ static class Ui
     public static Border Divided(UIElement content) => new()
     {
         BorderThickness = new Thickness(0, 1, 0, 0),
-        BorderBrush = (Brush)Application.Current.Resources["DividerStrokeColorDefaultBrush"],
+        Style = Style("DividedStyle"),
         Child = content,
     };
 
@@ -169,7 +169,7 @@ static class Ui
 
     // ListPage is a settings page of one bordered list and, below it, its
     // actions: ＋ and − first, the others after.
-    public static Grid ListPage(string title, InfoBar? notice, ListView list, IEnumerable<UIElement> leading, IEnumerable<UIElement> trailing)
+    public static Grid ListPage(string title, FrameworkElement? notice, ListView list, IEnumerable<UIElement> leading, IEnumerable<UIElement> trailing)
     {
         var page = new Grid { Padding = new Thickness(24, 12, 24, 20), RowSpacing = 12 };
         page.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });

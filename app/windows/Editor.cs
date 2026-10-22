@@ -452,7 +452,7 @@ sealed class Editor
         // A conversation window closes with its last tab.
         if (last && (closeWindow || window.IsConversationWindow))
         {
-            window.Close();
+            window.Shell.RequestClose(window);
             return;
         }
         tab.View?.Close();
