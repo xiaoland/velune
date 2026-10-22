@@ -21,7 +21,6 @@ sealed partial class ProviderEditor : UserControl
     readonly bool subscription;
 
     readonly StackPanel body = new() { Spacing = 4, MaxWidth = 760, HorizontalAlignment = HorizontalAlignment.Stretch };
-    readonly InfoBar failure = Ui.FailureBar();
     readonly BreadcrumbBar trail = new();
     readonly TextBox name = new() { PlaceholderText = "例如 DeepSeek", MinWidth = 280 };
     readonly ComboBox protocol = new() { MinWidth = 280 };
@@ -53,7 +52,6 @@ sealed partial class ProviderEditor : UserControl
             }
         };
         body.Children.Add(trail);
-        body.Children.Add(failure);
         if ((existing?.Authentication.Disclosure ?? template?.Disclosure) is { } disclosure)
         {
             body.Children.Add(new InfoBar { Severity = InfoBarSeverity.Warning, IsOpen = true, IsClosable = false, Title = disclosure.Title, Message = disclosure.Detail });
@@ -250,13 +248,12 @@ sealed partial class ProviderEditor : UserControl
                 ? saved.FirstOrDefault(provider => !previous.Contains(provider.Id))
                 : saved.FirstOrDefault(provider => provider.Id == existing.Id);
             dirty = false;
-            Ui.Show(failure, "");
             Refresh();
             return existing != null;
         }
         catch (Exception problem)
         {
-            Ui.Show(failure, Core.Describe(problem));
+            Problems.Report("保存提供商「" + (existing?.Name ?? "新提供商") + "」", problem);
             return false;
         }
         finally

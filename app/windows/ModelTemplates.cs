@@ -10,7 +10,6 @@ sealed class ModelTemplatesList : UserControl
 {
     readonly ProvidersPage page;
     readonly ListView list = new() { SelectionMode = ListViewSelectionMode.Single, IsDoubleTapEnabled = true };
-    readonly InfoBar failure = Ui.FailureBar();
     readonly Button remove = Ui.IconButton("\uE738", "删除模型模板");
     readonly Button edit = new() { Content = "编辑…" };
     BindingModelTemplate[] templates = [];
@@ -32,7 +31,7 @@ sealed class ModelTemplatesList : UserControl
                 EditChosen();
             }
         };
-        Content = Ui.ListPage("模型模板", failure, list, [add, remove], [edit]);
+        Content = Ui.ListPage("模型模板", null, list, [add, remove], [edit]);
         ShowActions();
     }
 
@@ -95,11 +94,10 @@ sealed class ModelTemplatesList : UserControl
         try
         {
             page.SetModelTemplates(await Task.Run(() => page.Core.Local.DeleteModelTemplate(template.Id)));
-            Ui.Show(failure, "");
         }
         catch (Exception problem)
         {
-            Ui.Show(failure, Core.Describe(problem));
+            Problems.Report("删除模型模板「" + template.Name + "」", problem);
         }
     }
 
@@ -162,6 +160,7 @@ sealed class ModelTemplatesList : UserControl
             catch (Exception problem)
             {
                 Ui.Show(formError, Core.Describe(problem));
+                Problems.Report("保存模型模板", problem);
                 e.Cancel = true;
             }
             deferral.Complete();

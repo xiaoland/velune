@@ -127,7 +127,7 @@ static class Ui
 
     // ListPage is a settings page of one bordered list and, below it, its
     // actions: ＋ and − first, the others after.
-    public static Grid ListPage(string title, InfoBar failure, ListView list, IEnumerable<UIElement> leading, IEnumerable<UIElement> trailing)
+    public static Grid ListPage(string title, InfoBar? notice, ListView list, IEnumerable<UIElement> leading, IEnumerable<UIElement> trailing)
     {
         var page = new Grid { Padding = new Thickness(24, 12, 24, 20), RowSpacing = 12 };
         page.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
@@ -135,8 +135,11 @@ static class Ui
         page.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
         page.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         page.Children.Add(Text(title, "SubtitleTextBlockStyle"));
-        Grid.SetRow(failure, 1);
-        page.Children.Add(failure);
+        if (notice != null)
+        {
+            Grid.SetRow(notice, 1);
+            page.Children.Add(notice);
+        }
         var frame = new Border
         {
             CornerRadius = new CornerRadius(8),

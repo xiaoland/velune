@@ -42,8 +42,7 @@ sealed partial class Conversation
         }
         catch (Exception failure)
         {
-            Failure = Core.Describe(failure);
-            Notify();
+            Problems.Report("读取草稿", failure, Device);
             return "";
         }
     }
@@ -53,7 +52,7 @@ sealed partial class Conversation
         if (!Target.Unsent)
         {
             var id = Target.ConversationID;
-            Write(application => application.SetComposerDraft(id, text));
+            Write("保存草稿", application => application.SetComposerDraft(id, text));
         }
     }
 
@@ -69,7 +68,7 @@ sealed partial class Conversation
         }
         catch (Exception failure)
         {
-            Failure = Core.Describe(failure);
+            Problems.Report("上传附件「" + name + "」", failure, Device);
         }
         Uploading--;
         Notify();
@@ -90,7 +89,7 @@ sealed partial class Conversation
             return false;
         }
         var operation = new BindingSendQueueOperation.Add(snapshot.ContextRuntimeId, Next, NextModel(), Turn(text));
-        if (!await Change(application => application.SendQueue(snapshot.ContextRuntimeId, snapshot.Conversation.Id, operation)))
+        if (!await Change("更改发送队列", application => application.SendQueue(snapshot.ContextRuntimeId, snapshot.Conversation.Id, operation)))
         {
             return false;
         }
@@ -99,24 +98,24 @@ sealed partial class Conversation
         return true;
     }
 
-    public void EditQueued(string id, string text) => Act((application, runtimeID, conversation) =>
+    public void EditQueued(string id, string text) => Act("编辑排队的消息", (application, runtimeID, conversation) =>
         application.SendQueue(runtimeID, conversation, new BindingSendQueueOperation.Edit(id, text)));
 
-    public void RemoveQueued(string id) => Act((application, runtimeID, conversation) =>
+    public void RemoveQueued(string id) => Act("移除排队的消息", (application, runtimeID, conversation) =>
         application.SendQueue(runtimeID, conversation, new BindingSendQueueOperation.Remove(id)));
 
     // MoveQueued moves a message to index in the queue as it is without it.
-    public void MoveQueued(string id, int index) => Act((application, runtimeID, conversation) =>
+    public void MoveQueued(string id, int index) => Act("调整发送队列的顺序", (application, runtimeID, conversation) =>
         application.SendQueue(runtimeID, conversation, new BindingSendQueueOperation.Move(id, (uint)Math.Max(index, 0))));
 
-    public void SteerQueued(string id) => Act((application, runtimeID, conversation) =>
+    public void SteerQueued(string id) => Act("插入本轮", (application, runtimeID, conversation) =>
         application.SendQueue(runtimeID, conversation, new BindingSendQueueOperation.Steer(id)));
 
     // ResumeQueue sends the queue again after it paused.
-    public void ResumeQueue() => Act((application, runtimeID, conversation) =>
+    public void ResumeQueue() => Act("继续发送队列", (application, runtimeID, conversation) =>
         application.SendQueue(runtimeID, conversation, new BindingSendQueueOperation.Resume()));
 
-    public void StopSubAgents() => Act((application, runtimeID, conversation) => application.StopSubAgents(runtimeID, conversation));
+    public void StopSubAgents() => Act("停止子 Agent", (application, runtimeID, conversation) => application.StopSubAgents(runtimeID, conversation));
 
     // Steer delivers the message into the running turn through the
     // runtime's own channel; false keeps it in the composer.
@@ -128,7 +127,7 @@ sealed partial class Conversation
             return false;
         }
         var turn = Turn(text);
-        if (!await Change(application => application.SteerTurn(snapshot.ContextRuntimeId, snapshot.Conversation.Id, turn)))
+        if (!await Change("插入本轮", application => application.SteerTurn(snapshot.ContextRuntimeId, snapshot.Conversation.Id, turn)))
         {
             return false;
         }
@@ -153,7 +152,7 @@ sealed partial class Conversation
         var turn = new BindingComposedTurn(Text: text.Trim(), Effort: Effort(), Attachments: [], PermissionMode: PermissionMode(Choice().PermissionMode)?.Id);
         var selection = NextModel();
         BindingConversationSnapshot? result = null;
-        var done = await Change(application =>
+        var done = await Change("编辑消息", application =>
         {
             var edited = application.EditMessage(snapshot.ContextRuntimeId, snapshot.Conversation.Id, messageID, placement, selection, turn);
             result = edited.Snapshot;
@@ -172,14 +171,13 @@ sealed partial class Conversation
     public BindingEditableMessage? Editable(string messageID) => FollowUp?.Editable.FirstOrDefault(editable => editable.MessageId == messageID);
 
     // Change runs one write and takes the snapshot it returns; false shows its failure.
-    async Task<bool> Change(Func<VeluneApplication, BindingSnapshotResult> work)
+    async Task<bool> Change(string source, Func<VeluneApplication, BindingSnapshotResult> work)
     {
         if (Busy)
         {
             return false;
         }
         Busy = true;
-        Failure = "";
         Notify();
         try
         {
@@ -188,7 +186,7 @@ sealed partial class Conversation
         }
         catch (Exception failure)
         {
-            Failure = Core.Describe(failure);
+            Problems.Report(source, failure, Device);
             return false;
         }
         finally
@@ -213,7 +211,7 @@ sealed partial class Conversation
         catch (Exception failure)
         {
             SessionOptions = [];
-            Failure = Core.Describe(failure);
+            Problems.Report("读取 ACP 会话选项", failure, Device);
         }
         Notify();
     }
@@ -230,7 +228,7 @@ sealed partial class Conversation
         }
         catch (Exception failure)
         {
-            Failure = Core.Describe(failure);
+            Problems.Report("设置 ACP 会话选项", failure, Device);
         }
         Notify();
     }

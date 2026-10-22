@@ -37,7 +37,11 @@
                 </StackPanel>
             </TitleBar.Content>
             <TitleBar.RightHeader>
-                <StackPanel Margin="0,0,4,0" Orientation="Horizontal" Spacing="2">
+                <StackPanel
+                    x:Name="RightButtons"
+                    Margin="0,0,4,0"
+                    Orientation="Horizontal"
+                    Spacing="2">
                     <DropDownButton
                         x:Name="LayoutButton"
                         AutomationProperties.Name="布局"

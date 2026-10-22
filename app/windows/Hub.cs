@@ -34,6 +34,7 @@ sealed class Hub(Core core, DispatcherQueue dispatcher)
             dispatcher.TryEnqueue(() =>
             {
                 Failure = "远程控制服务无法启动：" + Core.Describe(failure);
+                Problems.Report("启动远程控制服务", failure);
                 Changed?.Invoke();
             });
             return;

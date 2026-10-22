@@ -20,9 +20,11 @@ public sealed partial class SettingsWindow : Window
     readonly DevicesPage devices;
     readonly SemaphoreSlim dialogs = new(1, 1);
 
-    internal SettingsWindow(Core core, Hub hub, Commands commands, Action<Device> open)
+    internal SettingsWindow(Core core, Hub hub, Commands commands, Action openProblems, Action<Device> open)
     {
         InitializeComponent();
+        // Settings' failures go to 问题, which the title bar opens.
+        SettingsTitleBar.RightHeader = new ProblemsButton(openProblems) { Margin = new Thickness(0, 0, 4, 0) };
         ExtendsContentIntoTitleBar = true;
         SetTitleBar(SettingsTitleBar);
         AppWindow.TitleBar.PreferredHeightOption = TitleBarHeightOption.Tall;

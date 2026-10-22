@@ -19,9 +19,17 @@ sealed class Listings(Core core)
         public int Written;
         // Conversations whose read mark is on its way.
         public readonly HashSet<string> MarkingRead = [];
+        // Where the device's ended turns were read to, across rounds, and
+        // whether the list was read yet.
+        public ulong Cursor;
+        public bool Read;
     }
 
     readonly Dictionary<Device, Feed> feeds = [];
+
+    // Polled tells each new list of a device with the turns that ended since
+    // the last, and whether it is the device's first list.
+    public event Action<Device, Listing, BindingFinishedTurn[], bool>? Polled;
 
     public Listing Of(Device device) => feeds.TryGetValue(device, out var feed) ? feed.Listing : Listing.Loading;
 
@@ -75,18 +83,13 @@ sealed class Listings(Core core)
         }
     }
 
-    public void Fail(Device device, Exception failure)
-    {
-        Of(device).Failure = Core.Describe(failure);
-        Notify(device);
-    }
 
     async void Poll(Device device, Feed feed)
     {
         var current = ++feed.Round;
-        ulong cursor = 0;
         while (feed.Round == current)
         {
+            (BindingFinishedTurn[] Turns, bool First)? ended = null;
             var delay = 5_000;
             var changes = feed.Written;
             try
@@ -94,7 +97,7 @@ sealed class Listings(Core core)
                 var (list, activity) = await Task.Run(() =>
                 {
                     var application = core.Application(device);
-                    return (application.List(), application.ConversationActivity(cursor));
+                    return (application.List(), application.ConversationActivity(feed.Cursor));
                 });
                 if (feed.Round != current)
                 {
@@ -106,8 +109,12 @@ sealed class Listings(Core core)
                     await Task.Delay(500);
                     continue;
                 }
-                cursor = activity.Cursor;
+                feed.Cursor = activity.Cursor;
                 feed.Listing = Listing.From(list, activity.Active);
+                Problems.Recovered(Problems.Key("list", device));
+                var first = !feed.Read;
+                feed.Read = true;
+                ended = (activity.Finished, first);
                 if (activity.Active.Length > 0)
                 {
                     delay = 2_000;
@@ -119,15 +126,21 @@ sealed class Listings(Core core)
                 {
                     return;
                 }
-                feed.Listing = feed.Listing.Failed(Core.Describe(failure));
+                feed.Listing = feed.Listing.Failed();
+                Problems.Failing(Problems.Key("list", device), "读取会话列表", failure, device);
             }
             Notify(device);
+            if (ended is var (turns, firstList))
+            {
+                Polled?.Invoke(device, feed.Listing, turns, firstList);
+            }
             await Task.Delay(delay);
         }
     }
 
-    // Change runs one change of the device's list and shows the list it returns.
-    public async void Change(Device device, Func<VeluneApplication, BindingConfigurationSnapshot> work)
+    // Change runs one change of the device's list and shows the list it
+    // returns; a failure goes to 问题 under source.
+    public async void Change(Device device, string source, Func<VeluneApplication, BindingConfigurationSnapshot> work)
     {
         if (!feeds.TryGetValue(device, out var feed))
         {
@@ -141,7 +154,7 @@ sealed class Listings(Core core)
         }
         catch (Exception failure)
         {
-            feed.Listing.Failure = Core.Describe(failure);
+            Problems.Report(source, failure, device);
         }
         feed.Writing--;
         feed.Written++;
@@ -150,7 +163,7 @@ sealed class Listings(Core core)
 
     // Write runs a change whose result the next read shows, such as the
     // list's preferences or a conversation's title.
-    public async void Write(Device device, Action<VeluneApplication> work)
+    public async void Write(Device device, string source, Action<VeluneApplication> work)
     {
         if (!feeds.TryGetValue(device, out var feed))
         {
@@ -163,8 +176,7 @@ sealed class Listings(Core core)
         }
         catch (Exception failure)
         {
-            feed.Listing.Failure = Core.Describe(failure);
-            Notify(device);
+            Problems.Report(source, failure, device);
         }
         feed.Writing--;
         feed.Written++;
@@ -190,7 +202,7 @@ sealed class Listings(Core core)
         }
         catch (Exception failure)
         {
-            feed.Listing.Failure = Core.Describe(failure);
+            Problems.Report("标为已读", failure, device);
         }
         feed.MarkingRead.Remove(id);
         Notify(device);

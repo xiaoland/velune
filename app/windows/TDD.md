@@ -62,6 +62,7 @@ Windows 桌面应用没有系统级的窗口内容恢复，所以 Velune 自己�
 | 会话列表、大纲、转到输入区、关联 Agent | Ctrl+1、Ctrl+2、Ctrl+3、Ctrl+4 |
 | 重命名 | F2 |
 | 设置 | Ctrl+, |
+| 问题 | Ctrl+Shift+M |
 
 ## 会话列表工具
 

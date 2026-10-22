@@ -20,6 +20,8 @@ sealed class Shell
     // The window the user worked in last, where requests from elsewhere show.
     WorkspaceWindow? latest;
     SettingsWindow? settings;
+    ProblemsWindow? problems;
+    readonly Notifier notifier;
     // The pairing attempts already put to the user.
     readonly HashSet<string> prompted = [];
     bool approving;
@@ -29,7 +31,10 @@ sealed class Shell
     {
         Core = core;
         Hub = new Hub(core, dispatcher);
+        Problems.Start(dispatcher, Hub.DeviceName);
+        notifier = new Notifier(this, dispatcher);
         Listings = new Listings(core);
+        Listings.Polled += notifier.Polled;
         Commands = new Commands(core.Home);
         store = new LayoutStore(core.Home, dispatcher);
         saved = store.Read();
@@ -40,6 +45,9 @@ sealed class Shell
     public void Start()
     {
         Hub.Start();
+        // This PC's conversations notify whichever device the windows show.
+        Listings.Follow(Device.Local, KeepLocal);
+        notifier.Start();
         var reopened = saved.Windows.ToList();
         if (reopened.Count == 0)
         {
@@ -61,6 +69,7 @@ sealed class Shell
             if (e.WindowActivationState != WindowActivationState.Deactivated)
             {
                 latest = window;
+                notifier.Returned();
             }
         };
         window.Closed += (_, _) => Closed(window);
@@ -118,6 +127,9 @@ sealed class Shell
         store.Save(() => new SavedLayout { Tools = saved.Tools, Windows = [last] });
         store.Flush();
         settings?.Close();
+        problems?.Close();
+        Listings.Leave(Device.Local, KeepLocal);
+        notifier.Stop();
         Core.Shutdown();
     }
 
@@ -162,7 +174,7 @@ sealed class Shell
     {
         if (settings == null)
         {
-            settings = new SettingsWindow(Core, Hub, Commands, opened =>
+            settings = new SettingsWindow(Core, Hub, Commands, OpenProblems, opened =>
             {
                 // Opening a device shows it in the window used last.
                 if (latest != null)
@@ -174,6 +186,53 @@ sealed class Shell
             settings.Closed += (_, _) => settings = null;
         }
         settings.Show(page);
+    }
+
+    static void KeepLocal()
+    {
+    }
+
+    // Flash asks for attention on the window used last.
+    public void Flash()
+    {
+        if ((latest ?? windows.LastOrDefault()) is { } window)
+        {
+            Native.Flash(window);
+        }
+    }
+
+    // InFront tells a workspace window is the one in front.
+    public bool InFront => windows.Any(window => window.Foreground);
+
+    // Viewing tells a conversation shows in front, so it needs no notification.
+    public bool Viewing(Device device, string conversationID) =>
+        windows.Any(window => window.Foreground && window.Device == device && window.ShownID == conversationID);
+
+    // OpenNotified shows a notification's conversation in the window used
+    // last, on the notification's device.
+    public void OpenNotified(Device device, Target target)
+    {
+        if ((latest ?? windows.LastOrDefault()) is not { } window)
+        {
+            return;
+        }
+        if (window.Device != device)
+        {
+            window.SwitchTo(device);
+        }
+        window.Open(target, Opening.NewTab);
+        window.Activate();
+    }
+
+    // OpenProblems shows the 问题 window, reusing an open one.
+    public void OpenProblems()
+    {
+        if (problems == null)
+        {
+            problems = new ProblemsWindow();
+            problems.Closed += (_, _) => problems = null;
+        }
+        problems.Activate();
     }
 
     void HubChanged()

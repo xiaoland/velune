@@ -76,6 +76,8 @@ public sealed partial class WorkspaceWindow : Window
         Commands.Changed += InstallCommands;
         NewButton.Click += (_, _) => Open(new Target("", "", ""), Opening.CurrentTab);
         SettingsButton.Click += (_, _) => Shell.OpenSettings(SettingsPage.Keep);
+        // Failures go to 问题; its button shows while there are some.
+        RightButtons.Children.Insert(0, new ProblemsButton(Shell.OpenProblems));
         DeviceMenu.Opening += (_, _) => FillDeviceMenu();
         LayoutMenu.Opening += (_, _) =>
         {
@@ -291,6 +293,9 @@ public sealed partial class WorkspaceWindow : Window
     internal Task<string?> PickFolder() => Native.PickFolder(this);
 
     internal void OpenSettings(SettingsPage page) => Shell.OpenSettings(page);
+
+    // Foreground tells the window is the one in front.
+    internal bool Foreground => foreground && !closed;
 
     // ShownID is the conversation the focused tab shows.
     internal string? ShownID => Editor.Focused.Selected?.Target is { Unsent: false } target ? target.ConversationID : null;
@@ -516,7 +521,7 @@ public sealed partial class WorkspaceWindow : Window
         }
         catch (Exception failure)
         {
-            Shell.Listings.Fail(target, failure);
+            Problems.Report("打开关联会话", failure, target);
             return;
         }
         if (closed || target != Device)
@@ -525,8 +530,7 @@ public sealed partial class WorkspaceWindow : Window
         }
         if (found == null)
         {
-            Listing.Failure = "这台设备上找不到该会话。";
-            List.Render();
+            Problems.Report("打开关联会话", "这台设备上找不到该会话。", target);
             return;
         }
         var linked = new Target(found.Conversation.RuntimeId, found.Conversation.Id, found.Conversation.Title);
@@ -597,7 +601,7 @@ public sealed partial class WorkspaceWindow : Window
             conversations[at] = listed with { Conversation = listed.Conversation with { Title = title } };
         }
         Shell.Listings.Notify(Device);
-        Shell.Listings.Write(Device, application => application.RenameConversation(listed.Conversation.RuntimeId, listed.Conversation.Id, title));
+        Shell.Listings.Write(Device, "重命名会话", application => application.RenameConversation(listed.Conversation.RuntimeId, listed.Conversation.Id, title));
     }
 
     // Reread reads the list and the open conversations again.
@@ -790,6 +794,9 @@ public sealed partial class WorkspaceWindow : Window
                 break;
             case Command.ShowOutline:
                 Tools.ToggleTool(Tool.Outline);
+                break;
+            case Command.Problems:
+                Shell.OpenProblems();
                 break;
             case Command.ShowLinked:
                 Tools.ToggleTool(Tool.Linked);

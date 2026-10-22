@@ -12,6 +12,7 @@ sealed class RuntimesPage : UserControl
     readonly Core core;
     readonly SettingsWindow window;
     readonly ListView list = new() { SelectionMode = ListViewSelectionMode.Single, IsDoubleTapEnabled = true };
+    // Tells a runtime's type is no longer supported; failures go to 问题.
     readonly InfoBar failure = Ui.FailureBar();
     readonly Button add = Ui.IconButton("\uE710", "添加 Agent 运行时实例");
     readonly Button remove = Ui.IconButton("\uE738", "删除运行时实例");
@@ -63,7 +64,7 @@ sealed class RuntimesPage : UserControl
         }
         catch (Exception problem)
         {
-            Ui.Show(failure, Core.Describe(problem));
+            Problems.Report("读取 Agent 运行时", problem);
         }
     }
 
@@ -112,7 +113,7 @@ sealed class RuntimesPage : UserControl
 
     // Write runs one change against this PC's core, then shows the runtimes
     // it reports; false keeps a dialog open with what failed.
-    async Task<bool> Write(Func<VeluneApplication, BindingRuntimeUpdate> work, TextBlock? shownIn = null)
+    async Task<bool> Write(string source, Func<VeluneApplication, BindingRuntimeUpdate> work, TextBlock? shownIn = null)
     {
         if (busy)
         {
@@ -125,19 +126,16 @@ sealed class RuntimesPage : UserControl
             var update = await Task.Run(() => work(core.Local));
             kinds = update.RuntimeTypes;
             SetInstances(update.RuntimeInstances);
-            Ui.Show(failure, "");
             return true;
         }
         catch (Exception problem)
         {
+            // A dialog covers the title bar's way to 问题, so it says why too.
             if (shownIn != null)
             {
                 Ui.Show(shownIn, Core.Describe(problem));
             }
-            else
-            {
-                Ui.Show(failure, Core.Describe(problem));
-            }
+            Problems.Report(source, problem);
             return false;
         }
         finally
@@ -147,7 +145,7 @@ sealed class RuntimesPage : UserControl
         }
     }
 
-    async void Upsert(BindingRuntimeInstance runtime) => await Write(application => application.UpsertRuntime(runtime));
+    async void Upsert(BindingRuntimeInstance runtime) => await Write("保存运行时「" + runtime.Name + "」", application => application.UpsertRuntime(runtime));
 
     async void Delete()
     {
@@ -157,7 +155,7 @@ sealed class RuntimesPage : UserControl
         }
         if (await Ui.Confirm(window, "删除运行时实例？", "只删除此配置实例；Agent 运行时自己的会话、资源和配置文件不会被删除。", "删除"))
         {
-            await Write(application => application.DeleteRuntime(runtime.Id));
+            await Write("删除运行时「" + runtime.Name + "」", application => application.DeleteRuntime(runtime.Id));
         }
     }
 
@@ -270,7 +268,7 @@ sealed class RuntimesPage : UserControl
             var runtime = existing == null
                 ? new BindingRuntimeInstance(enabled.IsOn, Guid.NewGuid().ToString(), shownName.Length > 0 ? shownName : kind.Name, kind.Id, DefaultGateway, settings)
                 : existing with { Enabled = enabled.IsOn, Name = shownName.Length > 0 ? shownName : kind.Name, Settings = settings };
-            e.Cancel = !await Write(application => application.UpsertRuntime(runtime), formError);
+            e.Cancel = !await Write("保存运行时「" + runtime.Name + "」", application => application.UpsertRuntime(runtime), formError);
             deferral.Complete();
         };
         await window.ShowDialog(dialog);
@@ -392,7 +390,7 @@ sealed class RuntimesPage : UserControl
             addButton.Click += async (_, _) =>
             {
                 addButton.IsEnabled = false;
-                if (await Write(application => application.UpsertRuntime(candidate.Runtime)))
+                if (await Write("导入运行时「" + candidate.Runtime.Name + "」", application => application.UpsertRuntime(candidate.Runtime)))
                 {
                     addButton.Content = "已添加";
                 }

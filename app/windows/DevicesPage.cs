@@ -17,6 +17,8 @@ sealed class DevicesPage : UserControl
     // Open shows a paired device in the main window.
     readonly Action<Device> open;
     readonly StackPanel panel = new() { Spacing = 8, Padding = new Thickness(24, 12, 24, 24), MaxWidth = 1000 };
+    // Tells what is wrong with a pasted invitation, or that the remote
+    // service is down; failed calls go to 问题.
     readonly InfoBar failure = Ui.FailureBar();
     readonly TextBox invite = new() { PlaceholderText = "粘贴另一台设备的邀请" };
     readonly Button connect = new() { Content = "连接" };
@@ -67,9 +69,9 @@ sealed class DevicesPage : UserControl
 
     static bool Expired(ulong expiresAtUnixSeconds) => (ulong)DateTimeOffset.UtcNow.ToUnixTimeSeconds() > expiresAtUnixSeconds;
 
-    // Perform runs one call on the remote service and shows its failure;
-    // done runs on the UI thread after work succeeds.
-    async void Perform(Action<VeluneRemoteEndpoint> work, Action? done = null)
+    // Perform runs one call on the remote service; a failure goes to 问题
+    // under source. done runs on the UI thread after work succeeds.
+    async void Perform(string source, Action<VeluneRemoteEndpoint> work, Action? done = null)
     {
         if (busy)
         {
@@ -85,7 +87,7 @@ sealed class DevicesPage : UserControl
         }
         catch (Exception problem)
         {
-            Ui.Show(failure, Core.Describe(problem));
+            Problems.Report(source, problem);
         }
         busy = false;
         Render();
@@ -115,7 +117,7 @@ sealed class DevicesPage : UserControl
         }
         catch (Exception problem)
         {
-            Ui.Show(failure, Core.Describe(problem));
+            Problems.Report("创建配对邀请", problem);
         }
         busy = false;
         Render();
@@ -138,13 +140,13 @@ sealed class DevicesPage : UserControl
             return;
         }
         invite.Text = "";
-        Perform(endpoint => endpoint.BeginPairing(encoded));
+        Perform("连接设备", endpoint => endpoint.BeginPairing(encoded));
     }
 
     void Forget(string peer, bool pending)
     {
         core.ForgetConnection(peer);
-        Perform(endpoint =>
+        Perform(pending ? "取消配对" : "移除设备", endpoint =>
         {
             if (pending)
             {
@@ -185,7 +187,7 @@ sealed class DevicesPage : UserControl
             if (ingress.IsOn != (hub.State?.ControlIngress ?? false))
             {
                 var enabled = ingress.IsOn;
-                Perform(endpoint => endpoint.SetControlIngress(enabled));
+                Perform(enabled ? "允许其他设备控制本机" : "停止允许其他设备控制本机", endpoint => endpoint.SetControlIngress(enabled));
             }
         };
         panel.Children.Add(Ui.Card(new TextBlock { Text = "允许其他设备控制这台电脑" }, ingress));
@@ -204,7 +206,7 @@ sealed class DevicesPage : UserControl
         {
             var revoke = new Button { Content = "撤销", IsEnabled = !busy };
             var peer = grant.PeerId;
-            revoke.Click += (_, _) => Perform(endpoint => endpoint.RevokeControl(peer));
+            revoke.Click += (_, _) => Perform("撤销控制授权", endpoint => endpoint.RevokeControl(peer));
             panel.Children.Add(Ui.Card(Ui.TwoLines(grant.Name, "可以控制这台电脑"), revoke));
         }
     }

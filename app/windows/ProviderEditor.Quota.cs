@@ -75,10 +75,12 @@ sealed partial class ProviderEditor
                 ? page.Core.Local.RefreshProviderQuota(ProvidersPage.DefaultGateway, provider.Id)
                 : page.Core.Local.ProviderQuota(ProvidersPage.DefaultGateway, provider.Id));
             ShowQuota(status);
+            Problems.Recovered(Problems.Key("quota", Device.Local, provider.Id));
         }
         catch (Exception problem)
         {
             quotaState.Text = Core.Describe(problem);
+            Problems.Failing(Problems.Key("quota", Device.Local, provider.Id), "读取提供商「" + provider.Name + "」的额度", problem);
         }
         reading = false;
         refreshQuota.IsEnabled = true;

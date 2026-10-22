@@ -71,13 +71,6 @@
                 Visibility="Collapsed" />
         </StackPanel>
 
-        <InfoBar
-            x:Name="FailureBar"
-            Grid.Row="1"
-            Margin="16,0,16,8"
-            IsClosable="False"
-            Severity="Error" />
-
         <Border
             x:Name="InteractionCard"
             Grid.Row="2"

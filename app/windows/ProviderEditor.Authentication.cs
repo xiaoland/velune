@@ -190,7 +190,7 @@ sealed partial class ProviderEditor
         }
         catch (Exception problem)
         {
-            Ui.Show(failure, Core.Describe(problem));
+            Problems.Report("读取提供商的 API key", problem);
         }
     }
 
@@ -211,7 +211,7 @@ sealed partial class ProviderEditor
         }
         catch (Exception problem)
         {
-            Ui.Show(failure, Core.Describe(problem));
+            Problems.Report("登录提供商", problem);
         }
     }
 
@@ -225,11 +225,10 @@ sealed partial class ProviderEditor
         try
         {
             Saved((await Task.Run(() => page.Core.Local.AuthenticationLogout(ProvidersPage.DefaultGateway, provider.Id))).Gateways);
-            Ui.Show(failure, "");
         }
         catch (Exception problem)
         {
-            Ui.Show(failure, Core.Describe(problem));
+            Problems.Report("退出提供商的登录", problem);
         }
     }
 
@@ -248,11 +247,10 @@ sealed partial class ProviderEditor
                 return page.Core.Local.List().Gateways;
             });
             Saved(gateways);
-            Ui.Show(failure, "");
         }
         catch (Exception problem)
         {
-            Ui.Show(failure, Core.Describe(problem));
+            Problems.Report("检查提供商的认证", problem);
         }
     }
 

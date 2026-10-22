@@ -34,6 +34,7 @@ enum Command
     FindConversation,
     Rename,
     Settings,
+    Problems,
 }
 
 readonly record struct Shortcut(VirtualKeyModifiers Modifiers, VirtualKey Key)
@@ -104,6 +105,7 @@ sealed class Commands
         [Command.FindConversation] = ("搜索会话", new(Ctrl, VirtualKey.F)),
         [Command.Rename] = ("重命名会话", new(VirtualKeyModifiers.None, VirtualKey.F2)),
         [Command.Settings] = ("设置", new(Ctrl, (VirtualKey)188)),
+        [Command.Problems] = ("问题", new(Ctrl | Shift, VirtualKey.M)),
     };
 
     sealed record Keys(int Modifiers, int Key);

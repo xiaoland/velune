@@ -123,11 +123,11 @@ public sealed partial class ConversationView : UserControl
         Spinner.IsActive = Model.Loading;
         var noRuntime = Model.Target.Unsent && window.Listing.Loaded && Model.Configuration.Runtimes.Count == 0;
         Empty.Text = noRuntime ? "这台设备还没有可用的 Agent 运行时。Velune 通过 Agent 运行时执行会话。"
-            : Model.Loading || Model.Messages.Count > 0 ? "" : Model.Snapshot == null ? "输入第一条消息开始会话。" : "还没有消息。";
+            : Model.Loading || Model.Messages.Count > 0 ? ""
+            : Model.Snapshot != null ? "还没有消息。"
+            : Model.Target.Unsent ? "输入第一条消息开始会话。" : "无法读取这个会话，详见“问题”。";
         RuntimeButton.Visibility = Visible(noRuntime);
         RenderTranscript();
-        FailureBar.Message = Model.Failure;
-        FailureBar.IsOpen = Model.Failure.Length > 0;
         RenderInteraction();
 
         AgentButton.Visibility = Visible(Model.Next.Length > 0);

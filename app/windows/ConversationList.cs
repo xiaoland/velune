@@ -18,7 +18,6 @@ sealed partial class ConversationList : UserControl
     readonly AutoSuggestBox searchBox = new() { PlaceholderText = "搜索会话", QueryIcon = new SymbolIcon(Symbol.Find) };
     readonly DropDownButton displayButton = new();
     readonly MenuFlyout displayMenu = new() { Placement = Microsoft.UI.Xaml.Controls.Primitives.FlyoutPlacementMode.BottomEdgeAlignedRight };
-    readonly TextBlock failure = new() { Style = Ui.Style("ErrorTextStyle"), TextWrapping = TextWrapping.Wrap, Visibility = Visibility.Collapsed, Margin = new Thickness(12, 0, 12, 4) };
     readonly ProgressRing spinner = new() { Width = 20, Height = 20, HorizontalAlignment = HorizontalAlignment.Left, Margin = new Thickness(12, 4, 12, 4) };
     readonly TextBlock empty = new() { Style = Ui.Style("SecondaryTextStyle"), TextWrapping = TextWrapping.Wrap, Visibility = Visibility.Collapsed, Margin = new Thickness(12, 4, 12, 4) };
     readonly ListView list = new() { SelectionMode = ListViewSelectionMode.Extended, Padding = new Thickness(0, 0, 0, 8), CanDragItems = true, AllowDrop = true };
@@ -50,7 +49,6 @@ sealed partial class ConversationList : UserControl
         Grid.SetColumn(displayButton, 1);
         header.Children.Add(displayButton);
         var status = new StackPanel();
-        status.Children.Add(failure);
         status.Children.Add(spinner);
         status.Children.Add(empty);
         var root = new Grid();
@@ -81,14 +79,12 @@ sealed partial class ConversationList : UserControl
     public void Render()
     {
         var listing = Listing;
-        var failures = new[] { window.Shell.Hub.Failure, listing.Failure }.Where(text => text.Length > 0).ToList();
-        failure.Text = string.Join("\n", failures);
-        failure.Visibility = Visible(failures.Count > 0);
         spinner.IsActive = !listing.Loaded;
         spinner.Visibility = Visible(!listing.Loaded);
         var (groups, conversations) = Shown();
         empty.Visibility = Visible(listing.Loaded && conversations.Count == 0);
         empty.Text = Searching ? "没有匹配的会话。"
+            : listing.ReadFailed && listing.Conversations.Count == 0 ? "无法读取会话列表，详见“问题”。"
             : listing.Configuration.Runtimes.Count == 0 ? "这台设备还没有可用的 Agent 运行时。"
             : listing.ShowsArchived ? "没有已归档的会话。"
             : listing.Preferences is { RuntimeId: not null } or { Project: not BindingConversationBrowserProject.All } ? "没有符合筛选的会话。"
@@ -330,7 +326,7 @@ sealed partial class ConversationList : UserControl
         listing.Preferences = preferences;
         listing.Groups = [.. listing.Groups.Select(shown => shown == group ? shown with { Collapsed = collapsed } : shown)];
         Listings.Notify(Device);
-        Listings.Write(Device, application => application.SetConversationBrowserPreferences(preferences));
+        Listings.Write(Device, "折叠分组", application => application.SetConversationBrowserPreferences(preferences));
     }
 
     async void LoadMore(BindingConversationGroupKey key)
@@ -343,7 +339,7 @@ sealed partial class ConversationList : UserControl
         }
         catch (Exception failure)
         {
-            Listings.Fail(target, failure);
+            Problems.Report("加载更多会话", failure, target);
         }
     }
 

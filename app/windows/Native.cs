@@ -36,6 +36,23 @@ static partial class Native
     [LibraryImport("user32.dll", EntryPoint = "SetWindowLongPtrW")]
     private static partial nint SetWindowLongPtr(nint window, int index, nint value);
 
+    [StructLayout(LayoutKind.Sequential)]
+    struct FlashInfo
+    {
+        public uint Size;
+        public nint Window;
+        public uint Flags;
+        public uint Count;
+        public uint Timeout;
+    }
+
+    [LibraryImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool FlashWindowEx(ref FlashInfo info);
+
+    // The taskbar button flashes until the window comes to the front.
+    const uint FlashTrayUntilForeground = 0x2 | 0xC;
+
     const uint ExitSizeMove = 0x0232;
     const int OwnerIndex = -8;
 
@@ -43,6 +60,14 @@ static partial class Native
     static readonly Dictionary<nint, Action> movedWindows = [];
 
     static nint Handle(Window window) => WinRT.Interop.WindowNative.GetWindowHandle(window);
+
+    // Flash asks for attention on the window's taskbar button until the
+    // user brings it to the front.
+    public static void Flash(Window window)
+    {
+        var info = new FlashInfo { Size = (uint)Marshal.SizeOf<FlashInfo>(), Window = Handle(window), Flags = FlashTrayUntilForeground };
+        FlashWindowEx(ref info);
+    }
 
     // SetOwner keeps a window above its owner, minimized with it and off the
     // taskbar, as a tool palette.

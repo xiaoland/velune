@@ -19,7 +19,8 @@ sealed class ProvidersPage : UserControl
     readonly Grid providerList;
     readonly ModelTemplatesList templateList;
     readonly ListView list = new() { SelectionMode = ListViewSelectionMode.Single, IsDoubleTapEnabled = true };
-    readonly InfoBar failure = Ui.FailureBar();
+    // Tells how an import went; failures go to 问题.
+    readonly InfoBar notice = new() { Severity = InfoBarSeverity.Informational, IsClosable = true };
     readonly Button remove = Ui.IconButton("\uE738", "删除 AI 提供商");
     readonly Button edit = new() { Content = "编辑…" };
     ProviderEditor? editor;
@@ -51,7 +52,7 @@ sealed class ProvidersPage : UserControl
                 Edit(Chosen());
             }
         };
-        providerList = Ui.ListPage("AI提供商", failure, list, [add, remove], [edit]);
+        providerList = Ui.ListPage("AI提供商", notice, list, [add, remove], [edit]);
         templateList = new ModelTemplatesList(this);
 
         tabs.Items.Add(new SelectorBarItem { Text = "提供商", IsSelected = true });
@@ -103,7 +104,7 @@ sealed class ProvidersPage : UserControl
         }
         catch (Exception problem)
         {
-            Ui.Show(failure, Core.Describe(problem));
+            Problems.Report("读取 AI 提供商", problem);
         }
     }
 
@@ -199,7 +200,7 @@ sealed class ProvidersPage : UserControl
         }
         catch (Exception problem)
         {
-            Ui.Show(failure, Core.Describe(problem));
+            Problems.Report("读取 AI 提供商", problem);
         }
     }
 
@@ -243,17 +244,16 @@ sealed class ProvidersPage : UserControl
         try
         {
             SetGateway((await Task.Run(() => Core.Local.DeleteProvider(DefaultGateway, provider.Id))).Gateways);
-            Ui.Show(failure, "");
         }
         catch (Exception problem)
         {
-            Ui.Show(failure, Core.Describe(problem));
+            Problems.Report("删除提供商「" + provider.Name + "」", problem);
         }
         Busy = false;
         ShowActions();
     }
 
-    internal void ShowFailure(string message) => Ui.Show(failure, message);
+    internal void ShowNotice(string message) => Ui.Show(notice, message);
 
     internal void SetModelTemplates(BindingModelTemplate[] saved)
     {

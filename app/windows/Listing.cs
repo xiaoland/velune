@@ -42,7 +42,8 @@ sealed class Listing
     // The running or waiting conversations by ID.
     public Dictionary<string, BindingActiveConversation> Active { get; private init; } = [];
     public bool Loaded { get; private init; } = true;
-    public string Failure { get; set; } = "";
+    // ReadFailed tells the list could not be read; 问题 tells why.
+    public bool ReadFailed { get; private init; }
 
     public static Listing From(BindingConfigurationSnapshot list, BindingActiveConversation[] active)
     {
@@ -73,7 +74,7 @@ sealed class Listing
     }
 
     // A failed read keeps what was shown, with the failure.
-    public Listing Failed(string failure) => new()
+    public Listing Failed() => new()
     {
         Conversations = Conversations,
         Groups = Groups,
@@ -82,7 +83,7 @@ sealed class Listing
         ShowsArchived = ShowsArchived,
         Configuration = Configuration,
         Active = Active,
-        Failure = failure,
+        ReadFailed = true,
     };
 
     // GroupID names a group of the list, as the key of its section.

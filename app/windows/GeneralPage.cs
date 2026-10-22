@@ -23,7 +23,6 @@ sealed class GeneralPage : UserControl
     ];
 
     readonly Core core;
-    readonly InfoBar failure = Ui.FailureBar();
     readonly ComboBox usage = new() { Items = { "已用", "剩余" }, MinWidth = 120 };
     readonly NumberBox page = new() { Minimum = 1, Maximum = 500, SpinButtonPlacementMode = NumberBoxSpinButtonPlacementMode.Compact, MinWidth = 120 };
     readonly NumberBox total = new() { Minimum = 1, Maximum = 5000, SpinButtonPlacementMode = NumberBoxSpinButtonPlacementMode.Compact, MinWidth = 120 };
@@ -49,7 +48,6 @@ sealed class GeneralPage : UserControl
         this.commands = commands;
         var panel = new StackPanel { Spacing = 4, Padding = new Thickness(24, 12, 24, 20), MaxWidth = 760, HorizontalAlignment = HorizontalAlignment.Left };
         panel.Children.Add(Ui.Text("通用", "SubtitleTextBlockStyle"));
-        panel.Children.Add(failure);
 
         panel.Children.Add(Ui.Heading("用量"));
         panel.Children.Add(Ui.Card(Ui.TwoLines("用量显示", "提供商额度、账户限额与会话上下文显示为已用或剩余。只改变显示，额度上限仍按已用比例生效。", true), usage));
@@ -115,7 +113,7 @@ sealed class GeneralPage : UserControl
         catch (Exception problem)
         {
             showing = false;
-            Ui.Show(failure, Core.Describe(problem));
+            Problems.Report("读取通用设置", problem);
         }
     }
 
@@ -268,11 +266,10 @@ sealed class GeneralPage : UserControl
         try
         {
             await Task.Run(() => change(core.Local));
-            Ui.Show(failure, "");
         }
         catch (Exception problem)
         {
-            Ui.Show(failure, Core.Describe(problem));
+            Problems.Report("保存通用设置", problem);
             Load();
         }
     }

@@ -241,6 +241,7 @@ static class ProviderFlows
                 }
                 catch (Exception problem)
                 {
+                    Problems.Report("登录提供商「" + name + "」", problem);
                     Finish(Core.Describe(problem), false);
                 }
             };
@@ -261,6 +262,7 @@ static class ProviderFlows
             }
             catch (Exception problem)
             {
+                Problems.Report("登录提供商「" + name + "」", problem);
                 Finish(Core.Describe(problem), false);
             }
             polling = false;
@@ -278,6 +280,7 @@ static class ProviderFlows
             }
             catch (Exception problem)
             {
+                Problems.Report("登录提供商「" + name + "」", problem);
                 Finish(Core.Describe(problem), false);
             }
         };
@@ -397,6 +400,7 @@ static class ProviderFlows
                 {
                     status.Text = "";
                     Ui.Show(outcome, Core.Describe(problem));
+                    Problems.Report("预览导入", problem);
                 }
             }
         }
@@ -514,13 +518,14 @@ static class ProviderFlows
             {
                 var result = await Task.Run(() => application.ApplyProviderImport(ProvidersPage.DefaultGateway, asked, shown.Token, selections, replacing));
                 page.SetGateway(result.Gateways);
-                page.ShowFailure(result.SkippedProviderIds.Length > 0
+                page.ShowNotice(result.SkippedProviderIds.Length > 0
                     ? $"已导入 {result.ImportedProviderIds.Length} 个提供商；{result.SkippedProviderIds.Length} 个已存在而未替换。"
                     : "");
             }
             catch (Exception problem)
             {
                 Ui.Show(outcome, Core.Describe(problem));
+                Problems.Report("导入提供商", problem);
                 e.Cancel = true;
             }
             deferral.Complete();
@@ -588,6 +593,7 @@ static class ProviderFlows
             catch (Exception problem)
             {
                 status.Text = Core.Describe(problem);
+                Problems.Report("读取公开模型目录", problem);
                 catalog.IsEnabled = true;
             }
         };

@@ -15,7 +15,6 @@ sealed class RouteEditor : UserControl
     readonly RoutesPage page;
     readonly string recordKey;
     readonly StackPanel body = new() { Spacing = 4, MaxWidth = 760, HorizontalAlignment = HorizontalAlignment.Stretch };
-    readonly InfoBar failure = Ui.FailureBar();
     readonly BreadcrumbBar trail = new();
     readonly StackPanel disclosures = new() { Spacing = 4 };
     readonly TextBox name = new() { MinWidth = 280, PlaceholderText = "例如 Codex 双订阅" };
@@ -49,7 +48,6 @@ sealed class RouteEditor : UserControl
             }
         };
         body.Children.Add(trail);
-        body.Children.Add(failure);
         body.Children.Add(disclosures);
 
         body.Children.Add(Ui.Heading("路由"));
@@ -264,12 +262,13 @@ sealed class RouteEditor : UserControl
             {
                 var status = await Task.Run(() => page.Core.Local.ProviderQuota(ProvidersPage.DefaultGateway, provider.Id));
                 quotas[provider.Id] = status;
+                Problems.Recovered(Problems.Key("quota", Device.Local, provider.Id));
                 soon |= status.Refreshing || status.Windows.Length == 0 && status.Freshness == BindingQuotaFreshness.Unknown;
             }
             catch (Exception problem)
             {
                 quotas.Remove(provider.Id);
-                Ui.Show(failure, Core.Describe(problem));
+                Problems.Failing(Problems.Key("quota", Device.Local, provider.Id), "读取提供商「" + provider.Name + "」的额度", problem);
             }
         }
         foreach (var card in cards)
@@ -293,7 +292,7 @@ sealed class RouteEditor : UserControl
         }
         catch (Exception problem)
         {
-            Ui.Show(failure, Core.Describe(problem));
+            Problems.Report("登录提供商「" + provider.Name + "」", problem);
         }
     }
 
@@ -329,7 +328,7 @@ sealed class RouteEditor : UserControl
         }
         catch (Exception problem)
         {
-            Ui.Show(failure, Core.Describe(problem));
+            Problems.Report("保存模型路由「" + shownName + "」", problem);
         }
         save.IsEnabled = true;
     }

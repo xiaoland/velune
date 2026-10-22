@@ -79,7 +79,7 @@ sealed partial class ConversationList
         }
         catch (Exception failure)
         {
-            Listings.Fail(target, failure);
+            Problems.Report("搜索会话", failure, target);
         }
     }
 
@@ -89,18 +89,18 @@ sealed partial class ConversationList
         search = null;
     }
 
-    void Change(Func<VeluneApplication, BindingConfigurationSnapshot> work) => Listings.Change(Device, work);
+    void Change(string source, Func<VeluneApplication, BindingConfigurationSnapshot> work) => Listings.Change(Device, source, work);
 
     void SavePreferences(BindingConversationBrowserPreferences preferences)
     {
         Listing.Preferences = preferences;
-        Change(application => application.SetConversationBrowserPreferences(preferences));
+        Change("更改会话列表的显示", application => application.SetConversationBrowserPreferences(preferences));
     }
 
     void Organize(List<BindingListedConversation> chosen, BindingConversationOrganizationChange change)
     {
         var references = chosen.Select(listed => new BindingConversationReference(listed.Conversation.RuntimeId, listed.Conversation.Id)).ToArray();
-        Change(application => application.OrganizeConversations(references, change));
+        Change("整理会话", application => application.OrganizeConversations(references, change));
     }
 
     static MenuFlyoutItem MenuItem(string text, Action chosen, bool enabled = true)
@@ -189,7 +189,7 @@ sealed partial class ConversationList
         displayMenu.Items.Add(new MenuFlyoutSeparator());
         var archived = new ToggleMenuFlyoutItem { Text = "显示已归档的会话", IsChecked = Listing.ShowsArchived };
         var showing = Listing.ShowsArchived;
-        archived.Click += (_, _) => Change(application => application.ShowArchivedConversations(!showing));
+        archived.Click += (_, _) => Change("显示已归档的会话", application => application.ShowArchivedConversations(!showing));
         displayMenu.Items.Add(archived);
     }
 
@@ -363,7 +363,7 @@ sealed partial class ConversationList
             window.Shell.Deleted(Device, listed.Conversation.Id);
             var runtimeID = listed.Conversation.RuntimeId;
             var id = listed.Conversation.Id;
-            Change(application => application.DeleteConversation(runtimeID, id));
+            Change("删除会话", application => application.DeleteConversation(runtimeID, id));
         }
     }
 
@@ -499,6 +499,6 @@ sealed partial class ConversationList
         var shownName = name.Text.Trim();
         var others = folders.Where(folder => folder != primary).ToArray();
         var chosenPrimary = primary;
-        Change(application => application.SetProject(path, chosenPrimary, shownName.Length > 0 ? shownName : null, others));
+        Change("保存项目", application => application.SetProject(path, chosenPrimary, shownName.Length > 0 ? shownName : null, others));
     }
 }

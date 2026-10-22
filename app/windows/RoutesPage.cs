@@ -16,7 +16,6 @@ sealed class RoutesPage : UserControl
     readonly ContentControl shown = new() { HorizontalContentAlignment = HorizontalAlignment.Stretch, VerticalContentAlignment = VerticalAlignment.Stretch };
     readonly Grid routeList;
     readonly ListView list = new() { SelectionMode = ListViewSelectionMode.Single, IsDoubleTapEnabled = true };
-    readonly InfoBar failure = Ui.FailureBar();
     readonly Button remove = Ui.IconButton("\uE738", "删除模型路由");
     readonly Button edit = new() { Content = "编辑…" };
     RouteEditor? editor;
@@ -43,7 +42,7 @@ sealed class RoutesPage : UserControl
                 Open(Chosen());
             }
         };
-        routeList = Ui.ListPage("模型路由", failure, list, [add, remove], [edit]);
+        routeList = Ui.ListPage("模型路由", null, list, [add, remove], [edit]);
         shown.Content = routeList;
         Content = shown;
         Reload();
@@ -69,7 +68,7 @@ sealed class RoutesPage : UserControl
         }
         catch (Exception problem)
         {
-            Ui.Show(failure, Core.Describe(problem));
+            Problems.Report("读取模型路由", problem);
         }
     }
 
@@ -154,11 +153,10 @@ sealed class RoutesPage : UserControl
         try
         {
             SetGateway((await Task.Run(() => Core.Local.DeleteModelRoute(ProvidersPage.DefaultGateway, route.RecordKey))).Gateways);
-            Ui.Show(failure, "");
         }
         catch (Exception problem)
         {
-            Ui.Show(failure, Core.Describe(problem));
+            Problems.Report("删除模型路由「" + route.Name + "」", problem);
         }
     }
 }

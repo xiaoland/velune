@@ -59,7 +59,8 @@ sealed partial class Conversation
     // Attached images read for showing, by message and block.
     readonly Dictionary<string, Task<BindingAttachmentContent>> attachments = [];
     public bool Loading { get; private set; }
-    public string Failure { get; private set; } = "";
+    // ReadKey names this conversation's read among the problems.
+    string ReadKey => Problems.Key("conversation", Device, Target.ConversationID);
     bool closed;
 
     public event Action? Changed;
@@ -133,10 +134,11 @@ sealed partial class Conversation
         {
             var read = await Call(application => application.ReadConversation(target.RuntimeID, target.ConversationID));
             Apply(read.Snapshot);
+            Problems.Recovered(ReadKey);
         }
         catch (Exception failure)
         {
-            Failure = Core.Describe(failure);
+            Problems.Failing(ReadKey, "读取会话「" + Title + "」", failure, Device);
         }
         Loading = false;
         Notify();
@@ -160,11 +162,11 @@ sealed partial class Conversation
                     Merge(update);
                     Notify();
                 }
+                Problems.Recovered(ReadKey);
             }
             catch (Exception failure)
             {
-                Failure = Core.Describe(failure);
-                Notify();
+                Problems.Failing(ReadKey, "读取会话「" + Title + "」", failure, Device);
             }
         }
     }
@@ -180,7 +182,6 @@ sealed partial class Conversation
 
     void Apply(BindingConversationSnapshot? snapshot)
     {
-        Failure = "";
         if (snapshot != null)
         {
             Merge(snapshot);
@@ -223,15 +224,14 @@ sealed partial class Conversation
         }
     }
 
-    // Act runs one write at a time and shows its failure.
-    async void Act(Func<VeluneApplication, string, string, BindingSnapshotResult> work)
+    // Act runs one write at a time; a failure goes to 问题 under source.
+    async void Act(string source, Func<VeluneApplication, string, string, BindingSnapshotResult> work)
     {
         if (Busy || Snapshot is not { } snapshot)
         {
             return;
         }
         Busy = true;
-        Failure = "";
         Notify();
         var (runtimeID, id) = (snapshot.ContextRuntimeId, snapshot.Conversation.Id);
         try
@@ -240,7 +240,7 @@ sealed partial class Conversation
         }
         catch (Exception failure)
         {
-            Failure = Core.Describe(failure);
+            Problems.Report(source, failure, Device);
         }
         Busy = false;
         Notify();
@@ -271,7 +271,6 @@ sealed partial class Conversation
         var runtimeID = Next;
         var cwd = Target.Unsent && Cwd.Trim().Length > 0 ? Cwd.Trim() : null;
         Busy = true;
-        Failure = "";
         Sending = text;
         Accepted = false;
         usersBeforeSending = UserMessages();
@@ -311,7 +310,7 @@ sealed partial class Conversation
                 Merge(created);
                 SaveIntent();
             }
-            Failure = Core.Describe(failure);
+            Problems.Report("发送消息", failure, Device);
             return false;
         }
         finally
@@ -321,10 +320,10 @@ sealed partial class Conversation
         }
     }
 
-    public void Stop() => Act((application, runtimeID, id) => application.Cancel(runtimeID, id));
+    public void Stop() => Act("停止", (application, runtimeID, id) => application.Cancel(runtimeID, id));
 
     public void Reply(string interaction, BindingRuntimeInteractionReply reply) =>
-        Act((application, runtimeID, id) => application.ReplyRuntimeInteraction(runtimeID, id, interaction, reply));
+        Act("回复运行时的请求", (application, runtimeID, id) => application.ReplyRuntimeInteraction(runtimeID, id, interaction, reply));
 
     // LoadPayload reads a message's whole content: large reasoning and tool
     // output arrive by size only.
@@ -344,7 +343,7 @@ sealed partial class Conversation
         }
         catch (Exception failure)
         {
-            Failure = Core.Describe(failure);
+            Problems.Report("读取消息内容", failure, Device);
         }
         Notify();
     }
@@ -546,7 +545,7 @@ sealed partial class Conversation
             : new BindingRuntimeComposerChoices(Next, new BindingTurnChoice(null, null, null), new BindingNewConversationChoice.LastChosen());
         choices = choices with { LastChosen = update(choices.LastChosen) };
         runtimeChoices[Next] = choices;
-        Write(application => application.SetRuntimeComposerChoices(choices));
+        Write("保存运行时的选择", application => application.SetRuntimeComposerChoices(choices));
         Notify();
     }
 
@@ -574,7 +573,7 @@ sealed partial class Conversation
         }
         var saved = new BindingNextTurnIntent(Target.ConversationID, intentRuntime,
             [.. intent.OrderBy(entry => entry.Key, StringComparer.Ordinal).Select(entry => new BindingRuntimeTurnChoice(entry.Key, entry.Value))]);
-        Write(application => application.SetNextTurnIntent(saved));
+        Write("保存下一轮的选择", application => application.SetNextTurnIntent(saved));
     }
 
     // LoadChoices reads what the device keeps of the composer's choices.
@@ -598,7 +597,7 @@ sealed partial class Conversation
         }
         catch (Exception failure)
         {
-            Failure = Core.Describe(failure);
+            Problems.Report("读取输入区的选择", failure, Device);
         }
         Notify();
     }
@@ -618,13 +617,15 @@ sealed partial class Conversation
         }
         catch (Exception failure)
         {
+            // The model menu says why it lists none and reads again on
+            // request; a catalog busy with a running turn is no problem.
             catalogs[runtimeID] = new Catalog([], false, Core.Describe(failure));
         }
         Notify();
     }
 
-    // Write saves a choice on the device and shows its failure.
-    async void Write(Action<VeluneApplication> work)
+    // Write saves a choice on the device; a failure goes to 问题 under source.
+    async void Write(string source, Action<VeluneApplication> work)
     {
         try
         {
@@ -636,8 +637,7 @@ sealed partial class Conversation
         }
         catch (Exception failure)
         {
-            Failure = Core.Describe(failure);
-            Notify();
+            Problems.Report(source, failure, Device);
         }
     }
 }

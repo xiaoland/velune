@@ -135,8 +135,7 @@ public sealed partial class ConversationView
         }
         catch (Exception problem) when (problem is IOException or UnauthorizedAccessException)
         {
-            FailureBar.Message = "无法读取「" + Path.GetFileName(path) + "」：" + problem.Message;
-            FailureBar.IsOpen = true;
+            Problems.Report("读取文件「" + Path.GetFileName(path) + "」", problem);
         }
     }
 
@@ -156,8 +155,7 @@ public sealed partial class ConversationView
         }
         catch (Exception problem)
         {
-            FailureBar.Message = Core.Describe(problem);
-            FailureBar.IsOpen = true;
+            Problems.Report("添加附件", problem);
         }
         deferral.Complete();
     }
@@ -193,8 +191,7 @@ public sealed partial class ConversationView
         }
         catch (Exception problem)
         {
-            FailureBar.Message = Core.Describe(problem);
-            FailureBar.IsOpen = true;
+            Problems.Report("添加附件", problem);
         }
     }
 
@@ -221,8 +218,7 @@ public sealed partial class ConversationView
         }
         catch (Exception problem)
         {
-            FailureBar.Message = "无法粘贴图片：" + Core.Describe(problem);
-            FailureBar.IsOpen = true;
+            Problems.Report("粘贴图片", problem);
         }
     }
 
