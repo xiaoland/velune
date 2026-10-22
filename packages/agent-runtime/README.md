@@ -144,7 +144,7 @@ Skill catalog 保留完整目录与附件，普通文件按字节读写；现有
 
 MCP 的 key 是 opaque 服务名，其 `Document.bytes` 仅为该服务的原生 JSON 对象。写入替换该条目，保留未知兄弟服务、provider 字段与其它根配置；Codex TOML 保留非目标注释，Claude／Pi JSON 会规范化排版。两者固定版本的这些配置入口使用严格 JSON，不接受 JSONC／JSON5。调用方应以显式读取的对象编辑，不能将展示用掩码作为真实字段保存；读取可能含该服务自己的 env／header 值，Debug、catalog 和解析诊断不包含正文。管理不连接 MCP、不解析环境引用、不执行脚本，也不改变会话级 `mcp::Server` 注入契约。
 
-资源上限为单文件 16 MiB、每次目录遍历 4096 节点、资源相对路径 64 层。symlink 与特殊节点可见但只读，不跟随读取；超过上限或访问失败有明确错误，不伪装为空目录。本机实现支持 Linux、Android、macOS、iOS、FreeBSD 的目录句柄操作，其它本机目标明确 Unsupported；SSH 使用目标端 Python 3 的 POSIX 文件接口。所有操作在实际目标执行。修改在同次目标操作内复核 revision，单文件替换原子发布；首次创建独占发布，已有文件更新仍是乐观并发控制，不能排除外部编辑器在复核后同时写入。revision 包含内容和权限，MCP revision 覆盖整个共享配置，因此兄弟条目变更也会要求重读。
+资源上限为单文件 16 MiB、每次目录遍历 4096 节点、资源相对路径 64 层。symlink 与特殊节点可见但只读，不跟随读取；超过上限或访问失败有明确错误，不伪装为空目录。本机实现经 cap-std 的目录句柄操作，Unix 类平台与 Windows 共用一套流程：逐级相对已打开目录打开下一段且不跟随链接（Windows 的符号链接与 junction 同样只读可见），平台差异只在权限位、写权限核查与目录落盘。Windows 没有权限位与执行位：只读属性代替写权限位进入 revision，执行位恒为否且写入时忽略，写权限只看只读属性（ACL 拒绝在实际写入时报错），目录不单独落盘。SSH 使用目标端 Python 3 的 POSIX 文件接口。所有操作在实际目标执行。修改在同次目标操作内复核 revision，单文件替换原子发布；首次创建独占发布，已有文件更新仍是乐观并发控制，不能排除外部编辑器在复核后同时写入。revision 包含内容和权限，MCP revision 覆盖整个共享配置，因此兄弟条目变更也会要求重读。这些文件语义（只覆盖读到的 revision、首次独占创建、不经根内链接写入、读取缺失根不建目录、递归列举与逐项删除）由 `management/fs/local.rs` 的测试守护，在 Mac 与 Windows 上各自以 `cargo test -p velune-agent-runtime --lib management::fs` 运行。
 
 `NativeConfig.session_agents` 是宿主只交给经网关轮次的子 Agent，不写入 Harness 自己的定义目录：Codex 在本执行 lane 的投影目录（执行机器上）写 role 文件，并在 thread 配置的 `agents.<名称>` 中以 `config_file` 引用；Claude Code 以 `--agents` JSON（指令为 `prompt`）启动该轮进程。两者只在有网关注入时生效，推理强度按各自接受的集合过滤。2026-10-14 用实际 CLI 验证：Codex 在 role 文件不在 agents 目录时仍按会话配置识别该 role；role 文件中的 `model_provider` 在托管轮次不生效，子 Agent 请求仍到网关。
 
