@@ -281,6 +281,7 @@ sealed partial class ConversationList
             menu.Items.Add(MenuItem("在新标签页中打开", () => window.Open(target, Opening.NewTab)));
             menu.Items.Add(MenuItem("在右侧拆分中打开", () => window.Open(target, Opening.SplitRight)));
             menu.Items.Add(MenuItem("在下方拆分中打开", () => window.Open(target, Opening.SplitDown)));
+            menu.Items.Add(MenuItem("在新窗口中打开", () => window.Shell.OpenConversationWindow(Device, null, target, null)));
             menu.Items.Add(new MenuFlyoutSeparator());
             var rename = MenuItem("重命名…", () => Rename(one), one.Conversation.CanRename);
             rename.KeyboardAcceleratorTextOverride = "F2";

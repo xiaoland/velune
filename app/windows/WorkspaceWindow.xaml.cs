@@ -33,11 +33,12 @@ public sealed partial class WorkspaceWindow : Window
     internal Hub Hub => Shell.Hub;
     internal Listing Listing => Shell.Listings.Of(Device);
 
-    internal WorkspaceWindow(Shell shell, WindowState state)
+    internal WorkspaceWindow(Shell shell, WindowState state, Tab? adopted = null)
     {
         InitializeComponent();
         Shell = shell;
         Device = new Device(state.Device);
+        IsConversationWindow = state.Conversation;
 
         ExtendsContentIntoTitleBar = true;
         SetTitleBar(AppTitleBar);
@@ -58,7 +59,11 @@ public sealed partial class WorkspaceWindow : Window
             new() { [Area.Left] = LeftArea, [Area.Right] = RightArea, [Area.Bottom] = BottomArea },
             LeftColumn, RightColumn, BottomRow,
             new() { [Tool.List] = List, [Tool.Outline] = outline, [Tool.Composer] = composerHost });
-        Editor = new Editor(this, EditorHost, state.Editor, state.Focus);
+        Editor = adopted != null ? new Editor(this, EditorHost, adopted) : new Editor(this, EditorHost, state.Editor, state.Focus);
+        if (adopted != null)
+        {
+            Adopt(adopted);
+        }
         Pinned = state.Pinned;
         Tools.Build();
 
@@ -159,6 +164,7 @@ public sealed partial class WorkspaceWindow : Window
         Editor = Editor.Save(),
         Focus = Editor.FocusIndex,
         Tools = Tools.Layout.Copy(),
+        Conversation = IsConversationWindow,
     };
 
     // Pinned keeps the window above other windows.
@@ -190,7 +196,12 @@ public sealed partial class WorkspaceWindow : Window
         {
             return;
         }
-        Shell.Remember(Tools.Layout);
+        // A conversation window's tools are its own.
+        if (!IsConversationWindow)
+        {
+            Shell.Remember(Tools.Layout);
+        }
+        LayoutChanged();
         ShowOutlineButtons();
     }
 
@@ -276,10 +287,22 @@ public sealed partial class WorkspaceWindow : Window
             var view = new ConversationView(new Conversation(Shell.Core, Device, tab.Target, Listing.Configuration), this);
             tab.View = view;
             tab.Item.Content = view;
-            view.Model.Changed += () => TabChanged(tab);
+            Follow(tab);
             PlaceComposers();
         }
         TabChanged(tab);
+    }
+
+    // Follow shows the changes of a tab's view on the tab.
+    void Follow(Tab tab)
+    {
+        if (tab.View is not { } view)
+        {
+            return;
+        }
+        void Changed() => TabChanged(tab);
+        view.Model.Changed += Changed;
+        tab.Unfollow = () => view.Model.Changed -= Changed;
     }
 
     // TabChanged shows a tab's title and state on its tab, and in the window
@@ -421,6 +444,8 @@ public sealed partial class WorkspaceWindow : Window
             tab.Back.Push(tab.Target);
             tab.Forward.Clear();
         }
+        tab.Unfollow?.Invoke();
+        tab.Unfollow = null;
         tab.View?.Close();
         tab.View = null;
         tab.Item.Content = null;
@@ -469,8 +494,19 @@ public sealed partial class WorkspaceWindow : Window
             List.Render();
             return;
         }
-        var opening = Listing.Configuration.LinkedOpening == BindingLinkedConversationOpening.CurrentTab ? Opening.CurrentTab : Opening.NewTab;
-        Open(new Target(found.Conversation.RuntimeId, found.Conversation.Id, found.Conversation.Title), opening);
+        var linked = new Target(found.Conversation.RuntimeId, found.Conversation.Id, found.Conversation.Title);
+        switch (Listing.Configuration.LinkedOpening)
+        {
+            case BindingLinkedConversationOpening.CurrentTab:
+                Open(linked, Opening.CurrentTab);
+                break;
+            case BindingLinkedConversationOpening.NewWindow when Editor.Find(linked.ConversationID) == null:
+                Shell.OpenConversationWindow(Device, null, linked, null);
+                break;
+            default:
+                Open(linked, Opening.NewTab);
+                break;
+        }
     }
 
     // SaveTitle renames a conversation in its runtime, showing the title at once.
@@ -577,6 +613,7 @@ public sealed partial class WorkspaceWindow : Window
             menu.Items.Add(Ui.MenuItem("向右拆分", () => Editor.SplitWith(pane, false, new Tab(new Target("", "", "")))));
             menu.Items.Add(Ui.MenuItem("向下拆分", () => Editor.SplitWith(pane, true, new Tab(new Target("", "", "")))));
         }
+        menu.Items.Add(Ui.MenuItem("移到新窗口", () => MoveToNewWindow(tab, null)));
         menu.Items.Add(new MenuFlyoutSeparator());
         var layout = new MenuFlyoutSubItem { Text = "布局" };
         foreach (var item in Tools.LayoutItems())
@@ -615,6 +652,12 @@ public sealed partial class WorkspaceWindow : Window
                 break;
             case Command.NewTab:
                 Editor.NewTab(Editor.Focused, null);
+                break;
+            case Command.NewWindow:
+                Shell.NewWindow(Device);
+                break;
+            case Command.CloseWindow:
+                Close();
                 break;
             case Command.CloseTab:
                 if (tab != null)

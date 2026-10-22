@@ -11,7 +11,9 @@ enum Command
 {
     NewConversation,
     NewTab,
+    NewWindow,
     CloseTab,
+    CloseWindow,
     SplitRight,
     SplitDown,
     PreviousPane,
@@ -74,7 +76,9 @@ sealed class Commands
     {
         [Command.NewConversation] = ("新建会话", new(Ctrl, VirtualKey.N)),
         [Command.NewTab] = ("新建标签页", new(Ctrl, VirtualKey.T)),
+        [Command.NewWindow] = ("新建窗口", new(Ctrl | Shift, VirtualKey.N)),
         [Command.CloseTab] = ("关闭标签页", new(Ctrl, VirtualKey.W)),
+        [Command.CloseWindow] = ("关闭窗口", new(Ctrl | Shift, VirtualKey.W)),
         [Command.SplitRight] = ("向右拆分", new(Ctrl, (VirtualKey)220)),
         [Command.SplitDown] = ("向下拆分", new(Ctrl | Shift, (VirtualKey)220)),
         [Command.PreviousPane] = ("上一个分屏", new(Ctrl, (VirtualKey)219)),

@@ -18,6 +18,8 @@ sealed class Tab
     // The conversations this tab showed before and after, for 后退 and 前进.
     public Stack<Target> Back { get; } = [];
     public Stack<Target> Forward { get; } = [];
+    // Stops the window showing the tab from following its view's changes.
+    public Action? Unfollow { get; set; }
     // What the tab's icon shows: waiting, running or nothing.
     public string State { get; set; } = "";
 
@@ -60,6 +62,11 @@ sealed class Pane : EditorNode
             CloseButtonOverlayMode = TabViewCloseButtonOverlayMode.OnPointerOver,
             IsAddTabButtonVisible = true,
             CanReorderTabs = true,
+            // Tabs drag to other panes and windows, and out of all of them
+            // to a window of their own.
+            CanDragTabs = true,
+            AllowDropTabs = true,
+            AllowDrop = true,
             VerticalAlignment = VerticalAlignment.Stretch,
         };
         // The outline's button, while the outline is one: on the tab bar, the
@@ -88,6 +95,13 @@ sealed class Pane : EditorNode
         View.SelectionChanged += (_, _) => editor.Selected(this);
         // Dragging a tab along the bar reorders it.
         View.TabItemsChanged += (_, _) => editor.Reordered();
+        View.TabDragStarting += (_, e) => editor.Window.TabDragStarting(e);
+        View.TabDroppedOutside += (_, e) => editor.Window.TabDroppedOutside(e);
+        View.TabDragCompleted += (_, _) => DragSource.Clear();
+        View.TabStripDragOver += (_, e) => editor.Window.DragOverPane(this, e, true);
+        View.TabStripDrop += (_, e) => editor.Window.DropOnPane(this, e, true);
+        View.DragOver += (_, e) => editor.Window.DragOverPane(this, e, false);
+        View.Drop += (_, e) => editor.Window.DropOnPane(this, e, false);
         // Any press in the pane focuses it, even one a control handles.
         View.AddHandler(UIElement.PointerPressedEvent, new PointerEventHandler((_, _) => editor.Focus(this)), true);
         View.GotFocus += (_, _) => editor.Focus(this);
@@ -110,6 +124,8 @@ sealed class Editor
     readonly WorkspaceWindow window;
     readonly Border host;
     EditorNode root;
+
+    public WorkspaceWindow Window => window;
     // The grids built for the splits, emptied before each rebuild so their
     // panes can move: an element has one parent at a time.
     readonly List<Grid> grids = [];
@@ -127,6 +143,20 @@ sealed class Editor
         root.Parent = null;
         var panes = Panes().ToList();
         Focused = focus >= 0 && focus < panes.Count ? panes[focus] : panes[0];
+        Build();
+        ready = true;
+    }
+
+    // An editor of one tab moved from another window, which keeps its view.
+    public Editor(WorkspaceWindow window, Border host, Tab adopted)
+    {
+        this.window = window;
+        this.host = host;
+        var pane = new Pane(this);
+        Add(pane, adopted, 0);
+        pane.View.SelectedIndex = 0;
+        root = pane;
+        Focused = pane;
         Build();
         ready = true;
     }
@@ -349,12 +379,10 @@ sealed class Editor
 
     void Add(Pane pane, Tab tab, int at)
     {
-        if (tab.Item.ContextFlyout == null)
-        {
-            var menu = new MenuFlyout();
-            menu.Opening += (_, _) => window.FillTabMenu(menu, tab);
-            tab.Item.ContextFlyout = menu;
-        }
+        // The menu acts in the window the tab is in now.
+        var menu = new MenuFlyout();
+        menu.Opening += (_, _) => window.FillTabMenu(menu, tab);
+        tab.Item.ContextFlyout = menu;
         // A restored tab shows its saved title until its view reads the conversation.
         tab.Item.Header ??= tab.Title;
         pane.View.TabItems.Insert(Math.Clamp(at, 0, pane.Count), tab.Item);
@@ -391,7 +419,8 @@ sealed class Editor
             return;
         }
         var last = pane.Count == 1 && root == pane;
-        if (last && closeWindow)
+        // A conversation window closes with its last tab.
+        if (last && (closeWindow || window.IsConversationWindow))
         {
             window.Close();
             return;
@@ -432,9 +461,49 @@ sealed class Editor
         return pane;
     }
 
+    // Release takes a tab out to put it in another pane or window. A pane
+    // left empty closes; an empty editor keeps a new tab, or a conversation
+    // window closes.
+    public void Release(Tab tab)
+    {
+        if (Detach(tab) is not { } pane)
+        {
+            return;
+        }
+        if (pane.Count == 0)
+        {
+            if (root != pane)
+            {
+                Remove(pane);
+            }
+            else if (window.IsConversationWindow)
+            {
+                window.Close();
+                return;
+            }
+            else
+            {
+                NewTab(pane, null);
+            }
+        }
+        window.FocusChanged();
+        window.LayoutChanged();
+    }
+
+    // Insert puts a tab in a pane at an index and shows it there.
+    public void Insert(Pane pane, Tab tab, int at)
+    {
+        Add(pane, tab, at);
+        pane.View.SelectedItem = tab.Item;
+        Focus(pane);
+        window.Show(tab);
+        window.FocusChanged();
+        window.LayoutChanged();
+    }
+
     // SplitWith puts a tab in a new pane beside a pane: after it, to the
-    // right or below.
-    public void SplitWith(Pane pane, bool vertical, Tab tab)
+    // right or below, or before it.
+    public void SplitWith(Pane pane, bool vertical, Tab tab, bool before = false)
     {
         var added = new Pane(this);
         Add(added, tab, 0);
@@ -444,15 +513,15 @@ sealed class Editor
             var at = parent.Children.IndexOf(pane);
             var half = parent.Ratios[at] / 2;
             parent.Ratios[at] = half;
-            parent.Children.Insert(at + 1, added);
-            parent.Ratios.Insert(at + 1, half);
+            parent.Children.Insert(before ? at : at + 1, added);
+            parent.Ratios.Insert(before ? at : at + 1, half);
             added.Parent = parent;
         }
         else
         {
             var split = new Split(vertical) { Parent = pane.Parent };
             Replace(pane, split);
-            split.Children.AddRange([pane, added]);
+            split.Children.AddRange(before ? [added, pane] : [pane, added]);
             split.Ratios.AddRange([1, 1]);
             pane.Parent = split;
             added.Parent = split;

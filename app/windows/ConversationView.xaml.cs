@@ -14,7 +14,8 @@ namespace Velune;
 public sealed partial class ConversationView : UserControl
 {
     internal Conversation Model { get; }
-    readonly WorkspaceWindow window;
+    // The window showing it; a tab moved to another window takes it along.
+    WorkspaceWindow window;
     // The interaction shown, and the replies typed or chosen for it by question ID.
     (string Id, bool Busy)? shownInteraction;
     readonly Dictionary<string, string> answers = [];
@@ -63,6 +64,8 @@ public sealed partial class ConversationView : UserControl
             Body.Children.Remove(ComposerArea);
         }
     }
+
+    internal void MoveTo(WorkspaceWindow next) => window = next;
 
     internal void FocusInput() => Input.Focus(FocusState.Programmatic);
 

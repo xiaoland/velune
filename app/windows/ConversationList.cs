@@ -21,7 +21,7 @@ sealed partial class ConversationList : UserControl
     readonly TextBlock failure = new() { Style = Ui.Style("ErrorTextStyle"), TextWrapping = TextWrapping.Wrap, Visibility = Visibility.Collapsed, Margin = new Thickness(12, 0, 12, 4) };
     readonly ProgressRing spinner = new() { Width = 20, Height = 20, HorizontalAlignment = HorizontalAlignment.Left, Margin = new Thickness(12, 4, 12, 4) };
     readonly TextBlock empty = new() { Style = Ui.Style("SecondaryTextStyle"), TextWrapping = TextWrapping.Wrap, Visibility = Visibility.Collapsed, Margin = new Thickness(12, 4, 12, 4) };
-    readonly ListView list = new() { SelectionMode = ListViewSelectionMode.Extended, Padding = new Thickness(0, 0, 0, 8) };
+    readonly ListView list = new() { SelectionMode = ListViewSelectionMode.Extended, Padding = new Thickness(0, 0, 0, 8), CanDragItems = true, AllowDrop = true };
     // The rows by tag: "group:…" for a group's title, "more:…" to load more
     // of a group, else a conversation's ID.
     readonly Dictionary<string, ListViewItem> rows = [];
@@ -65,6 +65,10 @@ sealed partial class ConversationList : UserControl
 
         list.SelectionChanged += SelectionChanged;
         list.KeyDown += ListKeyDown;
+        list.DragItemsStarting += DragStarting;
+        list.DragItemsCompleted += DragCompleted;
+        list.DragOver += GroupDragOver;
+        list.Drop += GroupDrop;
         AttachBrowser();
         Loaded += (_, _) => Render();
     }
@@ -381,6 +385,105 @@ sealed partial class ConversationList : UserControl
             input.Focus(FocusState.Programmatic);
             input.SelectAll();
         };
+    }
+
+    // DragStarting carries a conversation to a tab bar, a pane or out of
+    // every window, or a group to another place among the groups.
+    void DragStarting(object sender, DragItemsStartingEventArgs e)
+    {
+        DragSource.Clear();
+        var ids = e.Items.OfType<ListViewItem>().Select(row => row.Tag as string).OfType<string>().ToList();
+        if (ids is [var only] && only.StartsWith("group:", StringComparison.Ordinal))
+        {
+            if (Searching || only == "group:pinned" || Listing.Preferences is not { Grouping: not BindingConversationBrowserGrouping.None })
+            {
+                e.Cancel = true;
+                return;
+            }
+            DragSource.Group = (this, only);
+        }
+        else if (ids.Where(id => !id.Contains(':')).Select(Listed).OfType<BindingListedConversation>().FirstOrDefault() is { } listed)
+        {
+            DragSource.Conversation = (Device, Target(listed));
+        }
+        else
+        {
+            e.Cancel = true;
+            return;
+        }
+        DragSource.Carry(e.Data);
+    }
+
+    // DragCompleted opens a conversation dropped outside every window in a
+    // window of its own there.
+    void DragCompleted(ListViewBase sender, DragItemsCompletedEventArgs e)
+    {
+        if (DragSource.Conversation is var (device, target) && e.DropResult == Windows.ApplicationModel.DataTransfer.DataPackageOperation.None
+            && window.Shell.WindowAt(Native.Cursor()) == null)
+        {
+            var at = Native.Cursor();
+            var scale = Native.Scale(window);
+            window.Shell.OpenConversationWindow(device, null, target, new Bounds(at.X, at.Y, (int)(720 * scale), (int)(560 * scale)));
+        }
+        DragSource.Clear();
+    }
+
+    // GroupAt is the group of the row under a drag: a title's, or the group
+    // a conversation is in.
+    BindingConversationGroupKey? GroupAt(DragEventArgs e)
+    {
+        var point = e.GetPosition(list);
+        foreach (var row in list.Items.OfType<ListViewItem>())
+        {
+            if (row.ActualHeight <= 0 || row.Tag is not string id)
+            {
+                continue;
+            }
+            var top = row.TransformToVisual(list).TransformPoint(new Windows.Foundation.Point(0, 0)).Y;
+            if (point.Y < top || point.Y >= top + row.ActualHeight)
+            {
+                continue;
+            }
+            if (id.StartsWith("group:", StringComparison.Ordinal))
+            {
+                return Listing.Groups.FirstOrDefault(group => "group:" + Listing.GroupID(group.Key) == id)?.Key;
+            }
+            return Listed(id)?.Group;
+        }
+        return null;
+    }
+
+    void GroupDragOver(object sender, DragEventArgs e)
+    {
+        if (DragSource.Group is not var (source, _) || source != this || GroupAt(e) is null or BindingConversationGroupKey.Pinned)
+        {
+            return;
+        }
+        e.AcceptedOperation = Windows.ApplicationModel.DataTransfer.DataPackageOperation.Move;
+        e.DragUIOverride.Caption = "移到此处";
+        e.DragUIOverride.IsGlyphVisible = false;
+        e.Handled = true;
+    }
+
+    // GroupDrop puts the dragged group where the target group is, which
+    // orders the groups by hand from now on.
+    void GroupDrop(object sender, DragEventArgs e)
+    {
+        if (DragSource.Group is not var (source, groupID) || source != this || GroupAt(e) is not { } target || target is BindingConversationGroupKey.Pinned)
+        {
+            return;
+        }
+        e.Handled = true;
+        DragSource.Clear();
+        if (Listing.Groups.FirstOrDefault(group => "group:" + Listing.GroupID(group.Key) == groupID) is not { } dragged)
+        {
+            return;
+        }
+        var to = GroupOrder().FindIndex(key => Listing.GroupID(key) == Listing.GroupID(target));
+        if (to >= 0)
+        {
+            MoveGroup(dragged.Key, to);
+        }
     }
 
     // RenameShown renames the one chosen conversation, else the focused tab's.

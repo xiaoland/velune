@@ -129,6 +129,9 @@ sealed class WindowState
     // The focused pane, by its place among the panes in reading order.
     public int Focus { get; set; }
     public ToolLayout Tools { get; set; } = ToolLayout.Default();
+    // A conversation window: it starts with only the editor, closes with
+    // its last tab, and its changes of the tools are its own.
+    public bool Conversation { get; set; }
 }
 
 sealed class SavedLayout

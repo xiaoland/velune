@@ -49,9 +49,9 @@ sealed class Shell
         }
     }
 
-    public WorkspaceWindow Open(WindowState state)
+    public WorkspaceWindow Open(WindowState state, Tab? adopted = null)
     {
-        var window = new WorkspaceWindow(this, state);
+        var window = new WorkspaceWindow(this, state, adopted);
         windows.Add(window);
         latest ??= window;
         window.Activated += (_, e) =>
@@ -69,6 +69,28 @@ sealed class Shell
     // NewWindow opens a workspace with the latest tool layout.
     public WorkspaceWindow NewWindow(Device device) =>
         Open(new WindowState { Device = device.PeerId, Tools = saved.Tools.Copy() });
+
+    // OpenConversationWindow opens a window of only the editor for a moved
+    // tab or a conversation; its areas open again as the latest tools had them.
+    public void OpenConversationWindow(Device device, Tab? tab, Target? target, Bounds? bounds)
+    {
+        var tools = saved.Tools.Copy();
+        var open = Enum.GetValues<Area>().Where(area => !tools.Areas[area].Collapsed).ToList();
+        foreach (var area in open)
+        {
+            tools.Areas[area].Collapsed = true;
+        }
+        tools.EditorOnly = open;
+        var editor = new PaneState();
+        if (target != null)
+        {
+            editor.Tabs.Add(new TabState(target.RuntimeID, target.ConversationID, target.Title));
+        }
+        Open(new WindowState { Device = device.PeerId, Bounds = bounds, Tools = tools, Conversation = true, Editor = editor }, tab);
+    }
+
+    // WindowAt is the workspace window at a point of the screen, if any.
+    public WorkspaceWindow? WindowAt(Windows.Graphics.PointInt32 point) => windows.FirstOrDefault(window => window.Contains(point));
 
     void Closed(WorkspaceWindow window)
     {
