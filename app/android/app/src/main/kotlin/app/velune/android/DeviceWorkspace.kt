@@ -20,7 +20,12 @@ import kotlinx.coroutines.withContext
 
 data class DeviceListing(
     val conversations: List<BindingListedConversation> = emptyList(),
+    /** Enabled runtimes: the ones a new conversation can start on. */
     val runtimes: List<BindingRuntimeInstance> = emptyList(),
+    /** Every runtime instance by ID, disabled ones included, as the list labels them. */
+    val runtimeLabels: Map<String, RuntimeLabel> = emptyMap(),
+    /** Display names of projects that have one, by path. */
+    val projectNames: Map<String, String> = emptyMap(),
     /** Working directories of the device's conversations, for starting another in one. */
     val projects: List<String> = emptyList(),
     /** Running or waiting conversations by ID. */
@@ -81,6 +86,10 @@ class DeviceWorkspace(private val hub: DeviceHub, val peer: String, private val 
     private fun listing(list: BindingConfigurationSnapshot, active: List<BindingActiveConversation>) = DeviceListing(
         conversations = list.conversations.filter { !it.archived && it.conversation.parentConversationId == null },
         runtimes = list.runtimeInstances.filter { it.enabled },
+        runtimeLabels = list.runtimeTypes.associateBy { it.id }.let { types ->
+            list.runtimeInstances.associate { it.id to RuntimeLabel(it.name, types[it.typeId]?.familyId) }
+        },
+        projectNames = list.conversationProjects.mapNotNull { project -> project.name?.let { project.path to it } }.toMap(),
         projects = list.conversationProjects.map { it.path }.distinct(),
         active = active.associateBy { it.conversationId },
         loaded = true,

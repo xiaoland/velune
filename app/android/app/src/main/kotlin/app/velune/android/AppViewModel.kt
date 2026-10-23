@@ -11,6 +11,8 @@ import androidx.lifecycle.viewModelScope
 sealed interface Screen {
     data object Devices : Screen
     data object AddDevice : Screen
+    data object About : Screen
+    data class Legal(val document: LegalDocument) : Screen
     data class Device(val peer: String) : Screen
     class Conversation(val peer: String, val model: ConversationModel) : Screen
 }

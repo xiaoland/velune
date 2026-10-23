@@ -4,16 +4,27 @@ Android 是只控制、不执行的端。它不运行 Agent、Harness、网关�
 
 ## 界面
 
-- **设备**：列出已配对设备及连接状态。单击打开设备；长按可移除本机拨号记录，被控端授权需在那台设备上撤销。
-- **添加设备**：扫描完整端“设置 › 设备 › 添加控制设备”显示的二维码（CameraX＋ZXing，不依赖 Google Play 服务），也可以粘贴邀请。读到邀请后先显示设备名；连接后两端显示同一组八位核对码，由被控端允许。Rust 会跟进配对结果，确认后自动进入该设备。
-- **设备会话**：标题栏可切换到另一台已配对设备，界面不变，只换目标设备。列表显示运行时、更新时间、项目，以及运行中、等待回应、失败和未读状态。“新会话”需要选择运行时和项目。
-- **会话**：用户消息在右，LLM 在左，系统和 Harness 状态居中，不显示头像或昵称。正文可选择复制；思考和工具输出默认折叠，较大的内容在展开时读取。审批与提问显示在输入框上方；输入框支持选择模型（运行时提供时）、发送和停止。
+布局与交互参考同类开源移动客户端 HAPI、Lody 与 Happy（只借鉴可见的布局与交互，代码独立编写，见 [NOTICE](licenses/NOTICE.md)），用 Material 3 呈现：Android 12 起跟随系统动态色，更早的系统用由品牌色生成的配色。
+
+- **设备**：已配对设备以卡片列出，状态点表示已连接、连接中、未连接或出错。单击打开设备；“更多”菜单可移除本机拨号记录，被控端授权需在那台设备上撤销。没有设备时显示说明与“扫描二维码”。
+- **添加设备**：按步骤提示扫描完整端“设置 › 设备 › 添加控制设备”显示的二维码（CameraX＋ZXing，不依赖 Google Play 服务），也可以粘贴邀请。读到邀请后先显示设备名；连接后两端显示同一组八位核对码，由被控端允许。Rust 会跟进配对结果，确认后自动进入该设备。
+- **设备会话**：标题栏显示设备与连接状态，点按可切换到另一台已配对设备，界面不变，只换目标设备。会话按项目分组（置顶在前，分组可收起），行内为运行时缩写标识、标题、更新时间，以及运行中、等待回应、失败和未读状态；支持按标题或项目搜索、下拉刷新。“新会话”在底部面板中选择运行时和项目。
+- **会话**：用户消息在右侧气泡，LLM 回复全宽显示 Markdown（表格、代码块可横向滚动并复制），系统和 Harness 状态居中，不显示头像或昵称。每轮的思考与工具调用折叠为一行“工作过程 · N 个工具 · 用时”，运行时显示最新一步；展开后逐个显示工具卡片，较大的输出展开时才读取。离开底部时出现“回到最新”按钮。审批与提问显示在输入框上方；输入框为圆角容器，内含模型选择（运行时提供时）与发送／停止按钮，刚发送的消息在被控端确认前以“发送中”显示。
+- **关于**：版本、界面参考声明与随应用分发组件的许可全文。
 
 列表和会话只在可见且应用位于前台时轮询，回到后台即停止，被控端继续运行。附件、会话管理、提供商与资源配置不在此 MVP 内。
 
+界面层把状态与内容分开：各屏的 `…Content` 只接收数据与回调，`TranscriptEntries`、`ConversationSections` 等不依赖 Compose。debug 包另含 `GalleryActivity`，用虚构数据显示各屏，便于不配对设备也能在真机上检查布局：
+
+```sh
+adb shell am start -n app.velune.android/.GalleryActivity --es screen conversation
+```
+
+可选 `devices`、`no-devices`、`list`、`empty-list`、`conversation`、`running`、`new`。
+
 ## 构建与安装
 
-开发机需要 JDK 17、Android SDK 36、Build Tools 35.0.0、NDK `30.0.14904198`，以及 Rust 的 `aarch64-linux-android` target。Gradle wrapper 固定为 8.13，AGP 8.11.1，Kotlin 与 Compose compiler 2.2.21，Compose BOM 2025.10.01，CameraX 1.4.2，ZXing core 3.5.3。
+开发机需要 JDK 17、Android SDK 36、Build Tools 35.0.0、NDK `30.0.14904198`，以及 Rust 的 `aarch64-linux-android` target。Gradle wrapper 固定为 8.13，AGP 8.11.1，Kotlin 与 Compose compiler 2.2.21，Compose BOM 2025.10.01，CameraX 1.4.2，ZXing core 3.5.3，commonmark-java 0.24.0。
 
 ```sh
 rustup target add aarch64-linux-android
@@ -21,6 +32,8 @@ scripts/build-android.sh
 adb install -r app/android/app/build/outputs/apk/debug/app-debug.apk
 adb shell am start -n app.velune.android/.MainActivity
 ```
+
+`scripts/build-android-native.sh` 同时运行 `scripts/android-licenses.py`，按实际链接的 Rust crate 生成 `target/android-licenses/rust-licenses.txt`；它与 [licenses](licenses) 下的 NOTICE 和许可全文一起作为 assets 打包，在“关于”中显示。新增 Java／Kotlin 依赖时同步更新 NOTICE。
 
 `VeluneAndroid.onCreate` 先装载 so 并调用 `NativePlatform.initialize(applicationContext)`，为 iroh 提供 Android DNS 和系统证书验证所需的 JNI context；只靠 JNA 装载不够。生成的 Kotlin 绑定与 so 都是构建产物，不入库。
 

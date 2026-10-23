@@ -47,6 +47,8 @@ cargo run --locked --target-dir target/android-bindgen -p velune-bindings --no-d
 cp target/aarch64-linux-android/release/libvelune_bindings.so "$native/libvelune_bindings.so.pending"
 "$toolchain/llvm-strip" --strip-unneeded "$native/libvelune_bindings.so.pending"
 mv "$native/libvelune_bindings.so.pending" "$native/libvelune_bindings.so"
+# The APK shows the linked crates' licence notices, which their licences require to travel with it.
+python3 -I scripts/android-licenses.py "$features" target/android-licenses/rust-licenses.txt
 
 # The Kotlin verifier must match Cargo.lock; its official Maven artifact is hash-pinned.
 verifier_version=$(awk '/name = "rustls-platform-verifier-android"/ { getline; gsub(/"/, "", $3); print $3 }' Cargo.lock)

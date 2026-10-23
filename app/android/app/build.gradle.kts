@@ -24,6 +24,9 @@ android {
     sourceSets["main"].apply {
         java.srcDir("../../../target/android-bindings")
         jniLibs.srcDir("../../../target/android-native")
+        // NOTICE.md, the licence texts it cites, and the generated Rust crate notices, shown in “关于与开源许可”.
+        assets.srcDir("../licenses")
+        assets.srcDir("../../../target/android-licenses")
     }
     packaging { jniLibs.useLegacyPackaging = false }
 }
@@ -39,13 +42,17 @@ dependencies {
     implementation(platform("androidx.compose:compose-bom:2025.10.01"))
     implementation("androidx.activity:activity-compose:1.11.0")
     implementation("androidx.compose.material3:material3")
-    implementation("androidx.compose.material:material-icons-core")
+    implementation("androidx.compose.material:material-icons-extended")
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.9.4")
     implementation("androidx.lifecycle:lifecycle-viewmodel-ktx:2.9.4")
     implementation("androidx.camera:camera-camera2:1.4.2")
     implementation("androidx.camera:camera-lifecycle:1.4.2")
     implementation("androidx.camera:camera-view:1.4.2")
     implementation("com.google.zxing:core:3.5.3")
+    implementation("org.commonmark:commonmark:0.24.0")
+    implementation("org.commonmark:commonmark-ext-gfm-tables:0.24.0")
+    implementation("org.commonmark:commonmark-ext-gfm-strikethrough:0.24.0")
+    implementation("org.commonmark:commonmark-ext-autolink:0.24.0")
     implementation("net.java.dev.jna:jna:5.17.0@aar")
     implementation(files(rootProject.file("../../target/android-native/rustls-platform-verifier-0.2.0.aar")))
 }

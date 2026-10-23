@@ -2,9 +2,11 @@ package app.velune.android
 
 import app.velune.bindings.BindingComposedTurn
 import app.velune.bindings.BindingConversationSnapshot
+import app.velune.bindings.BindingConversationSummary
 import app.velune.bindings.BindingMessage
 import app.velune.bindings.BindingModelSelection
 import app.velune.bindings.BindingRunState
+import app.velune.bindings.BindingRuntimeInteraction
 import app.velune.bindings.BindingRuntimeInteractionReply
 import app.velune.bindings.BindingRuntimeModel
 import app.velune.bindings.BindingSnapshotResult
@@ -31,18 +33,22 @@ sealed interface ConversationTarget {
 }
 
 data class ConversationState(
-    val snapshot: BindingConversationSnapshot? = null,
-    val messages: List<BindingMessage> = emptyList(),
+    val conversation: BindingConversationSummary? = null,
+    val runState: BindingRunState = BindingRunState.IDLE,
+    val entries: List<TranscriptEntry> = emptyList(),
+    val interactions: List<BindingRuntimeInteraction> = emptyList(),
+    val canSend: Boolean = true,
+    val canCancel: Boolean = false,
     val models: List<BindingRuntimeModel> = emptyList(),
     /** None: the runtime's own default. */
     val selection: BindingModelSelection? = null,
     val busy: Boolean = false,
     val loading: Boolean = true,
     val failure: String? = null,
-    /** Deferred payloads read on request, by message ID. */
-    val payloads: Map<String, BindingMessage> = emptyMap(),
+    /** The text just sent, shown until the device's copy of it arrives. */
+    val sending: String? = null,
 ) {
-    val running: Boolean get() = snapshot?.runState == BindingRunState.RUNNING || snapshot?.runState == BindingRunState.STOPPING
+    val running: Boolean get() = runState == BindingRunState.RUNNING || runState == BindingRunState.STOPPING
 }
 
 /** One open conversation on a controlled device. */
@@ -57,6 +63,10 @@ class ConversationModel(
     private val _state = MutableStateFlow(ConversationState(loading = initial is ConversationTarget.Existing))
     val state: StateFlow<ConversationState> = _state.asStateFlow()
     private var polling: Job? = null
+    private var snapshot: BindingConversationSnapshot? = null
+    private var messages: Map<String, BindingMessage> = emptyMap()
+    /** Deferred payloads read on request, by message ID. */
+    private var payloads: Map<String, BindingMessage> = emptyMap()
 
     init {
         scope.launch {
@@ -98,7 +108,7 @@ class ConversationModel(
     }
 
     private suspend fun poll() {
-        val current = _state.value.snapshot ?: return
+        val current = snapshot ?: return
         val runtime = current.contextRuntimeId
         val id = current.conversation.id
         try {
@@ -121,25 +131,37 @@ class ConversationModel(
     }
 
     /** A snapshot with a base holds only changed messages; `messageIds` gives the whole order. */
-    private fun merge(snapshot: BindingConversationSnapshot) {
+    private fun merge(next: BindingConversationSnapshot) {
+        val fresh = next.messages.associateBy { it.id }
+        val order = next.messageIds.toSet()
+        messages = if (next.base == null) fresh else (messages + fresh).filterKeys { it in order }
+        // A loaded payload goes stale once its message changes again.
+        payloads = payloads.filter { (id, loaded) -> fresh[id]?.let { it.stamp == loaded.stamp } ?: (id in order) }
+        snapshot = next
         _state.update { state ->
-            val messages = if (snapshot.base == null) snapshot.messages else {
-                val known = state.messages.associateBy { it.id } + snapshot.messages.associateBy { it.id }
-                snapshot.messageIds.mapNotNull { known[it] }
-            }
-            val selection = state.selection ?: snapshot.modelRecordKey?.let { BindingModelSelection.Managed(it) }
-            state.copy(snapshot = snapshot, messages = messages, selection = selection)
+            state.copy(
+                conversation = next.conversation,
+                runState = next.runState,
+                entries = entries(next),
+                interactions = next.pendingInteractions,
+                canSend = next.actions.canSend,
+                canCancel = next.actions.canCancel,
+                selection = state.selection ?: next.modelRecordKey?.let { BindingModelSelection.Managed(it) },
+            )
         }
-        val conversation = snapshot.conversation
-        target = ConversationTarget.Existing(snapshot.contextRuntimeId, conversation.id, conversation.title)
+        val conversation = next.conversation
+        target = ConversationTarget.Existing(next.contextRuntimeId, conversation.id, conversation.title)
     }
+
+    private fun entries(of: BindingConversationSnapshot) =
+        transcriptEntries(of.transcriptItems, of.transcriptTurns) { id -> payloads[id] ?: messages[id] }
 
     fun select(selection: BindingModelSelection?) = _state.update { it.copy(selection = selection) }
 
-    fun send(text: String, onSent: () -> Unit) = act {
+    fun send(text: String, onSent: () -> Unit) = act(sending = text) {
         val turn = BindingComposedTurn(text = text, effort = null, permissionMode = null, attachments = emptyList())
         val selection = _state.value.selection
-        val existing = _state.value.snapshot
+        val existing = snapshot
         val result = if (existing == null) {
             val created = io { it.createConversationWithSelection(target.runtimeId, (target as? ConversationTarget.New)?.cwd, selection) }
             apply(created)
@@ -153,21 +175,22 @@ class ConversationModel(
     }
 
     fun stop() = act {
-        val snapshot = _state.value.snapshot ?: return@act
-        apply(io { it.cancel(snapshot.contextRuntimeId, snapshot.conversation.id) })
+        val current = snapshot ?: return@act
+        apply(io { it.cancel(current.contextRuntimeId, current.conversation.id) })
     }
 
     fun reply(interactionId: String, reply: BindingRuntimeInteractionReply) = act {
-        val snapshot = _state.value.snapshot ?: return@act
-        apply(io { it.replyRuntimeInteraction(snapshot.contextRuntimeId, snapshot.conversation.id, interactionId, reply) })
+        val current = snapshot ?: return@act
+        apply(io { it.replyRuntimeInteraction(current.contextRuntimeId, current.conversation.id, interactionId, reply) })
     }
 
     /** Large reasoning and tool output arrive by size; this reads one message's whole content. */
     fun loadPayload(messageId: String) = scope.launch {
-        val snapshot = _state.value.snapshot ?: return@launch
+        val current = snapshot ?: return@launch
         try {
-            val loaded = io { it.messagePayloads(snapshot.contextRuntimeId, snapshot.conversation.id, listOf(messageId)) }
-            _state.update { state -> state.copy(payloads = state.payloads + loaded.associateBy { it.id }) }
+            val loaded = io { it.messagePayloads(current.contextRuntimeId, current.conversation.id, listOf(messageId)) }
+            payloads = payloads + loaded.associateBy { it.id }
+            snapshot?.let { shown -> _state.update { it.copy(entries = entries(shown)) } }
         } catch (error: CancellationException) {
             throw error
         } catch (error: Exception) {
@@ -175,9 +198,9 @@ class ConversationModel(
         }
     }
 
-    private fun act(body: suspend () -> Unit) {
+    private fun act(sending: String? = null, body: suspend () -> Unit) {
         if (_state.value.busy) return
-        _state.update { it.copy(busy = true, failure = null) }
+        _state.update { it.copy(busy = true, failure = null, sending = sending) }
         scope.launch {
             try {
                 body()
@@ -186,7 +209,7 @@ class ConversationModel(
             } catch (error: Exception) {
                 _state.update { it.copy(failure = error.describe()) }
             } finally {
-                _state.update { it.copy(busy = false) }
+                _state.update { it.copy(busy = false, sending = null) }
             }
         }
     }

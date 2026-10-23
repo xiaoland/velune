@@ -6,6 +6,9 @@ import android.content.pm.PackageManager
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.aspectRatio
@@ -26,6 +29,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.Surface
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -93,7 +97,7 @@ fun AddDeviceScreen(hub: DeviceHub, back: () -> Unit, paired: (String) -> Unit) 
         ) {
             val current = offer
             if (current == null) {
-                Text("在要控制的 Mac 或 Windows 上打开“设置 › 设备”，选择“添加控制设备”，然后扫描显示的二维码。", style = MaterialTheme.typography.bodyMedium)
+                Steps(listOf("在要控制的 Mac 或 Windows 上打开“设置 › 设备”", "选择“添加控制设备”", "用这台手机扫描显示的二维码"))
                 if (camera) {
                     QrScanner(onCode = ::read, modifier = Modifier.fillMaxWidth().aspectRatio(1f).clip(RoundedCornerShape(16.dp)))
                 } else {
@@ -131,7 +135,7 @@ fun AddDeviceScreen(hub: DeviceHub, back: () -> Unit, paired: (String) -> Unit) 
                     }
                     pairing.phase == BindingPairingPhase.AWAITING_READY || pairing.phase == BindingPairingPhase.AWAITING_APPROVAL || pairing.phase == BindingPairingPhase.GRANTED -> {
                         Text("核对码", style = MaterialTheme.typography.labelLarge)
-                        Text(grouped(pairing.verificationCode.orEmpty()), fontFamily = FontFamily.Monospace, fontSize = 40.sp)
+                        VerificationCode(pairing.verificationCode.orEmpty())
                         Text("确认“${current.name}”上显示的核对码与此相同，然后在那台设备上选择“允许”。", style = MaterialTheme.typography.bodyMedium)
                         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                             CircularProgressIndicator(Modifier.padding(4.dp))
@@ -152,6 +156,32 @@ fun AddDeviceScreen(hub: DeviceHub, back: () -> Unit, paired: (String) -> Unit) 
                 }
             }
             failure?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+        }
+    }
+}
+
+@Composable
+private fun Steps(steps: List<String>) {
+    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        steps.forEachIndexed { index, step ->
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Surface(color = MaterialTheme.colorScheme.primaryContainer, contentColor = MaterialTheme.colorScheme.onPrimaryContainer, shape = CircleShape, modifier = Modifier.size(24.dp)) {
+                    Box(contentAlignment = Alignment.Center) { Text("${index + 1}", style = MaterialTheme.typography.labelMedium) }
+                }
+                Text(step, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(start = 12.dp))
+            }
+        }
+    }
+}
+
+/** The eight digits in two groups of four, large enough to compare with the other screen at a glance. */
+@Composable
+private fun VerificationCode(code: String) {
+    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        code.chunked(4).forEach { group ->
+            Surface(color = MaterialTheme.colorScheme.surfaceContainerHigh, shape = RoundedCornerShape(12.dp)) {
+                Text(group, fontFamily = FontFamily.Monospace, fontSize = 34.sp, letterSpacing = 4.sp, modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp))
+            }
         }
     }
 }
