@@ -6,7 +6,7 @@
 
 ## 完整端与控制端
 
-Windows 端 2026-10-21 由用户交开发方选择，定为 C#／.NET＋WinUI 3（[S45](../sources.md#s45)），取代此前的 MyGO（[S43](../sources.md#s43)），不选 GPUI；Windows 界面用 WinUI 的 Fluent 控件，不另做一套外观。完整端之间的交互结构尽可能一致：Windows 以 Mac 为基准，设置分类与命名、布局分区、模型菜单的结构与选项相同，各用所属框架的控件呈现；Android 按屏幕尺寸与操作方式合理调整，不照搬完整端。Android 保持 Kotlin／Jetpack Compose 并彻底重写原型。来源见 [S43](../sources.md#s43)。
+Windows 端 2026-10-21 由用户交开发方选择，定为 C#／.NET＋WinUI 3（[S45](../sources.md#s45)），取代此前的 MyGO（[S43](../sources.md#s43)），不选 GPUI；Windows 界面用 WinUI 的 Fluent 控件，不另做一套外观。完整端之间的交互结构尽可能一致：Windows 以 Mac 为基准，设置分类与命名、布局分区、模型菜单的结构与选项相同，各用所属框架的控件呈现；Android 按屏幕尺寸与操作方式合理调整，不照搬完整端。Android 保持 Kotlin／Jetpack Compose 并彻底重写原型。来源见 [S43](../sources.md#s43)。2026-10-23 用户要求 Android 界面先模仿 HAPI、Lody 等同类开源移动客户端的布局与交互，附参考声明并确保许可合规（[S46](../sources.md#s46)）；仍用 Material 3 呈现。
 
 ## Apple
 

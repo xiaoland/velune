@@ -80,6 +80,7 @@ Apple 平台的具体决定见[平台与界面](platforms.md)。
 ### 参考项目
 
 - HAPI、Lody 是帮助解释想法的例子，不要求复制功能或实现
+- 例外：Android 界面以 HAPI、Lody、Happy 等同类开源移动客户端为样板模仿布局与交互，附参考声明并遵守其许可，不复制 AGPL 源码（[S46](../sources.md#s46)）
 - 例外：可以研究它们处理 Claude Code 订阅认证的思路，仍须以官方限制和实际证据检验
 - 先前“原生 runtime＋官方登录＋隔离配置”的 Claude Code 方案只是待验证想法，没有成为已批准架构决定
 - 跨 harness 会话通信可以研究 [lexoliu/acpsub](https://github.com/lexoliu/acpsub)（2026-10-10 用户更正原 acphub 拼写），也允许提出其他方案；参考项目不构成强制技术依赖

@@ -424,3 +424,7 @@ S17 实施授权：用户决定全面切换 UniFFI，并要求现在开始拆分
 2026-10-21 用户看过 MyGO 版主窗口后问：“这真的是 MyGO 重写的，并且使用了 MyGO Native UI 以及相关组件之后的效果吗？为什么和它们的官方 demo 还有我在推特上看到的别人的分享效果差这么远？是因为它对 windows 的支持不佳，还是你对它的了解不够（有 agent skill 的话建议安装）。如果这两个问题任何一个都无法改善，那我就放手交给你去选择了（不能再选 GPUI，除非你有找到一个还不错的有在积极维护的 GPUI 组件库），用你自己喜欢的不论是 C# 也好、.Net 也好。”
 
 开发方核对：win-ws 为 Windows 10 22H2，MyGO 的 Vibrancy（Mica）需 Windows 11 22H2 以上；MyGO 的主题是其跨平台自有风格而非 Fluent，官方示例 headless 渲染与本应用观感一致，网上分享多为 macOS 的毛玻璃效果；已安装其 `mygo-maintenance` skill，内容只涉及生命周期与测试，不涉及视觉。界面用法已按高层组件改进，但非原生的上限不变。据此开发方在用户授权内选定 C#／.NET＋WinUI 3（实施时用 .NET 10 LTS，因 .NET 8 于 2026-11-10 停止支持）（Windows App SDK），经 UniFFI 的 C# 绑定调用 Rust 核心；本条取代 [S43](#s43) 中“不采用 .NET／WinUI”与 MyGO 的选择，Go／purego 约束随 MyGO 版一并失效。MyGO 版保留至 WinUI 版达到同等功能后删除。实施归 [Windows WinUI 任务](../tasks/windows-winui/packet.md)。
+
+## S46
+
+2026-10-23 用户：“本任务的核心目标是：改进 Android 端的使用体验（主要集中在 UI/UX 上）……目前安卓端的体验实在是远远低于平均线，所以请你先按照 lody/hapi 或者其它类似开源软件的安卓/iOS进行界面上的‘抄’（与此同时，即便没有直接使用它们的源代码，也需要增加相关的声明并确保我们的开源协议、法律条款等符合要求）”。即 Android 界面先以同类开源移动客户端为样板模仿其布局与交互，并附参考声明、核对许可义务；本条只就 Android 界面放宽 [S4](#s4) 的“不照搬”，不改变其他能力的参考边界。开发方核对许可后只借鉴布局与交互，不复制 AGPL 项目（HAPI、lody-ios）的源码。产品归 [平台](prd/platforms.md)，实施归 [Android 体验任务](../tasks/android-ux/packet.md)。
