@@ -261,7 +261,7 @@ impl CoreRuntime {
         found
     }
 
-    fn listed(
+    pub(super) fn listed(
         &self,
         source: &ListedSource,
         places: &BTreeMap<String, ProjectlessPlaces>,
@@ -279,6 +279,7 @@ impl CoreRuntime {
         ListedConversation {
             conversation: summary.clone(),
             native_id: self.native_segment(summary).1,
+            agents_uri: self.agents_uri(summary),
             pinned: !archived && marks.is_some_and(|m| m.pinned_at_unix_ms.is_some()),
             unread: !archived
                 && (marks.is_some_and(|m| m.marked_unread)

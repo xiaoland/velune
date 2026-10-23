@@ -75,7 +75,7 @@ private object Sample {
     private fun listed(id: String, title: String, runtime: String, minutesAgo: Long, project: String?, pinned: Boolean = false, unread: Boolean = false, failed: Boolean = false) =
         BindingListedConversation(
             BindingConversationSummary(id, title, now - minutesAgo * MINUTE, now - minutesAgo * MINUTE, runtime, project, true, true, null),
-            id, pinned, unread, false, project, false, failed, null,
+            id, "agents://$runtime/11111111-1111-4111-8111-111111111111", pinned, unread, false, project, false, failed, null,
         )
 
     val listing = DeviceListing(

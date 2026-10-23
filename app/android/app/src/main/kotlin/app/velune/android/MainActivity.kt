@@ -1,5 +1,7 @@
 package app.velune.android
 
+import android.content.Intent
+import android.net.Uri
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
@@ -12,11 +14,16 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.platform.UriHandler
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
@@ -27,11 +34,27 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        if (!model.launchIntentHandled) {
+            model.launchIntentHandled = true
+            openAgentUri(intent)
+        }
         enableEdgeToEdge()
         setContent {
             VeluneTheme {
                 Surface(Modifier.fillMaxSize()) { App(model) }
             }
+        }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        openAgentUri(intent)
+    }
+
+    private fun openAgentUri(intent: Intent) {
+        if (intent.action == Intent.ACTION_VIEW && intent.data?.scheme == "agents") {
+            model.openAgentUri(intent.data.toString())
         }
     }
 
@@ -68,9 +91,23 @@ private fun App(model: AppViewModel) {
             switchDevice = { model.switchDevice(it) },
             open = { model.openConversation(screen.peer, it) },
         )
+        is Screen.AgentUri -> key(screen) {
+            AgentUriScreen(hub, screen.address, screen.peer, back = { model.back() }, addDevice = { model.push(Screen.AddDevice) }, open = model::openResolvedAgentUri)
+        }
         is Screen.Conversation -> {
             val listing by model.workspace(screen.peer).listing.collectAsState()
-            ConversationScreen(hub, screen.peer, listing.runtimeLabels[screen.model.target.runtimeId], screen.model, back = { model.back() })
+            val fallback = LocalUriHandler.current
+            val links = remember(screen, fallback) {
+                object : UriHandler {
+                    override fun openUri(uri: String) {
+                        if (Uri.parse(uri).scheme == "agents") model.openAgentUri(uri, screen.peer)
+                        else fallback.openUri(uri)
+                    }
+                }
+            }
+            CompositionLocalProvider(LocalUriHandler provides links) {
+                ConversationScreen(hub, screen.peer, listing.runtimeLabels[screen.model.target.runtimeId], screen.model, back = { model.back() })
+            }
         }
     }
 }

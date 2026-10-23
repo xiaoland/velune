@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -114,4 +115,11 @@ fun rememberCopy(): (String) -> Unit {
     val clipboard = LocalClipboard.current
     val scope = rememberCoroutineScope()
     return { text -> scope.launch { clipboard.setClipEntry(ClipEntry(ClipData.newPlainText("Velune", text))) } }
+}
+
+@Composable
+fun Banner(text: String) {
+    Surface(color = MaterialTheme.colorScheme.errorContainer, contentColor = MaterialTheme.colorScheme.onErrorContainer, modifier = Modifier.fillMaxWidth()) {
+        Text(text, style = MaterialTheme.typography.labelMedium, modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp))
+    }
 }

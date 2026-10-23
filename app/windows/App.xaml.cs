@@ -1,4 +1,7 @@
 using Microsoft.UI.Xaml;
+using Microsoft.Windows.AppLifecycle;
+using System.Security.Cryptography;
+using System.Text;
 using Velune.Bindings;
 
 namespace Velune;
@@ -34,12 +37,31 @@ public partial class App : Application
         }
     }
 
-    protected override void OnLaunched(LaunchActivatedEventArgs args)
+    protected override async void OnLaunched(LaunchActivatedEventArgs args)
     {
-        Core core;
         try
         {
-            core = Core.Open();
+            var dispatcher = Microsoft.UI.Dispatching.DispatcherQueue.GetForCurrentThread();
+            var activation = AppInstance.GetCurrent().GetActivatedEventArgs();
+            var home = Path.GetFullPath(Core.ApplicationHome()).TrimEnd(Path.DirectorySeparatorChar).ToUpperInvariant();
+            var key = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(home)));
+            var instance = AppInstance.FindOrRegisterForKey("velune-" + key);
+            if (!instance.IsCurrent)
+            {
+                await instance.RedirectActivationToAsync(activation);
+                Exit();
+                return;
+            }
+            instance.Activated += (_, incoming) => dispatcher.TryEnqueue(() => Activate(incoming));
+            shell = new Shell(Core.Open(), dispatcher);
+            shell.Start();
+            // An isolated home must not replace the user's system URL handler.
+            if (string.IsNullOrEmpty(Environment.GetEnvironmentVariable("VELUNE_HOME")))
+            {
+                try { ActivationRegistrationManager.RegisterForProtocolActivation("agents", "", "Velune", Environment.ProcessPath!); }
+                catch (Exception failure) { Problems.Report("注册 xURL 地址", failure); }
+            }
+            Activate(activation);
         }
         catch (Exception failure)
         {
@@ -47,9 +69,11 @@ public partial class App : Application
             new FailureWindow("Velune 无法启动：" + message).Activate();
             return;
         }
-        // Closing the last workspace window quits; agents on this PC stop
-        // with the app. The process ends with its last window.
-        shell = new Shell(core, Microsoft.UI.Dispatching.DispatcherQueue.GetForCurrentThread());
-        shell.Start();
+    }
+
+    void Activate(AppActivationArguments activation)
+    {
+        try { shell?.Activate(activation); }
+        catch (Exception failure) { Problems.Report("打开外部请求", failure); }
     }
 }

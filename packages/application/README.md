@@ -24,6 +24,10 @@
 
 **Agent 间协作（A2A）**：application 持有一个 loopback MCP 服务（服务名 `velune`），在 Velune 执行的每个会话启动时注入；每个会话一张随机票据，HTTP 层校验票据、Origin 与 Host，票据决定调用方会话，工具参数不能自报身份。工具为 `list_agents`、`list_conversations`、`start_conversation`、`send_message`、`get_conversation`、`wait_conversation` 与 `cancel_turn`。参与方都是普通会话：Agent 新建的会话发出首条消息后即出现在列表（原生历史写入前也列出），用户可打开、继续并处理其审批。消息以“[Velune 协作消息]”出处包装作为对方的下一轮提交，声明不是人类授权；对方执行中、待审批或在 Velune 外运行时拒绝，不排队。`start_conversation` 的工作目录缺省沿用调用方（同一执行机器时），模型缺省为对方会话已有的选择或运行时目录的第一项。`wait_conversation` 在对方进入调用方尚未读到的非运行状态时返回，单次最长 30 秒，超时不取消。不建立父子关系、不传播取消，也不设联系限制（PRD 决定）。会话快照的 `collaborators` 按转录列出参与方：协作工具结果中的会话为本会话联系了它，收到的协作消息的来源为它联系了本会话，供平台与原生子 Agent 一并呈现。
 
+xURL 互通由 `local/agent_uri.rs` 与 `local/collaboration/xurl.rs` 负责。`resolve_agent_uri` 只查当前设备已启用的 Codex／Claude Code／Pi 实例，返回全部匹配和逐实例失败，不从 URI 推测实例或机器。原生 UUID 与 Pi 文件路径分开，Pi 索引从会话头部取得 UUID；Codex 精确定位同时检查原生归档。collection 地址接受按标题匹配的 `q` 和 1–100 的 `limit`；路径、角色与执行参数由官方 CLI 处理。
+
+MCP 新增 `xurl_instructions`、`resolve_agent_uri`、`read_conversation`；后者按 Unicode 字符分页，返回内容 revision，带 `expected_revision` 的后续页在历史变化时拒绝。发送、状态、等待与取消同时接受具体 URI 和可选 `runtime_id`，失败或歧义先消解再执行，原生子 Agent 仍只读。跨 Harness 逻辑会话不生成单一 URI，涉及多段的 URI 协作请求要求改用明确的 Velune ID。`list_agents` 在调用方和目标同机、目标为本机原生实例且 bundle 有 CLI 时返回官方 xurl 绝对路径及目标 HOME／配置根／binary 环境；SSH 和 Pi 自定义 sessionDir 不返回本机调用方式。官方 CLI 的 `-d` 直接使用原生执行，不进入 Velune 的执行 owner。指引在 [xurl.md](src/local/collaboration/xurl.md)，随包 CLI 的提交在安装脚本固定。
+
 MCP 线程不访问 application：工具调用进入收件箱，由执行 owner 推进各会话后处理，并在结束后恢复原先寻址的会话。`ApplicationService` 无客户端请求时也每约 40 ms 推进事件、队列、协作、资源补写与终态清理；耗时同步用例仍可能延后推进，60 秒内未被处理的协作调用向 Agent 返回结果未知。服务启动失败、SSH 转发失败或 ACP stdio relay 不可用时，会话照常运行而不带协作工具；会话关闭即撤销其票据。没有专门的 bindings API，平台通过普通会话、消息与交互呈现。[A2A 手动验收](../../scripts/manual-collaboration.py)以两个合成 ACP 运行时检查新建与联系已有会话、审批留在对方会话、忙碌与未知票据被拒。
 
 `config` 定义 schema 10 的应用配置；`repository` 是内部文件设施，负责锁、加载和原子提交。提供商拥有模型条目和私有认证，参数模板仅用于复制填写字段，不参与调用解析。API key 与普通配置在同一文件原子保存，文件创建权限为 0600；公开配置摘要不含 key，只有显式单提供商读取接口返回已保存的值。认证编辑区分保留、更新和清除，读取失败不清空原值。运行时来源 OAuth 保留原来源登录和刷新，来源定位不进入公开摘要。根目录与资源目录由平台通过 `Options` 显式传入。

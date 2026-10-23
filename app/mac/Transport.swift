@@ -103,6 +103,9 @@ final class Transport: @unchecked Sendable {
     func loadMoreConversations(group: BindingConversationGroupKey) throws -> BindingConfigurationSnapshot { try withApplication("loadMoreConversations", .reads) { try $0.loadMoreConversations(group: group) } }
     func showArchivedConversations(_ archived: Bool) throws -> BindingConfigurationSnapshot { try withApplication("showArchivedConversations", .writes) { try $0.showArchivedConversations(archived: archived) } }
     func searchConversations(_ text: String) throws -> BindingConversationSearch { try withApplication("searchConversations", .reads) { try $0.searchConversations(text: text) } }
+    func resolveAgentURI(_ uri: String, runtimeID: String? = nil) throws -> BindingAgentUriResolution {
+        try withApplication("resolveAgentUri", .reads) { try $0.resolveAgentUri(uri: uri, runtimeId: runtimeID) }
+    }
     func findConversation(_ id: String) throws -> BindingListedConversation? { try withApplication("findConversation", .reads) { try $0.findConversation(conversationId: id) } }
     func runtimeDiscoveryHints(userHome: String, overrides: [String: String]) throws -> [BindingRuntimeDiscoveryHint] { try withApplication("runtimeDiscoveryHints", .reads) { try $0.runtimeDiscoveryHints(userHome: userHome, overrides: overrides) } }
     func discoverRuntimes(_ probes: [BindingRuntimeDiscoveryProbe]) throws -> [BindingRuntimeDiscoveryCandidate] { try withApplication("discoverRuntimes", .reads) { try $0.discoverRuntimes(probes: probes) } }

@@ -76,6 +76,9 @@ pub enum BindingApplicationResponse {
     ConversationSearch {
         value: BindingConversationSearch,
     },
+    AgentUriResolution {
+        value: BindingAgentUriResolution,
+    },
     OptionalListedConversation {
         value: Option<BindingListedConversation>,
     },
@@ -249,6 +252,9 @@ impl TryFrom<Response> for BindingApplicationResponse {
                 value: convert(value)?,
             },
             Response::SearchConversations(value) => Self::ConversationSearch {
+                value: convert(value)?,
+            },
+            Response::ResolveAgentUri(value) => Self::AgentUriResolution {
                 value: convert(value)?,
             },
             Response::FindConversation(value) => Self::OptionalListedConversation {

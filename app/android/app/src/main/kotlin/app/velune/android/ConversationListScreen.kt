@@ -264,13 +264,6 @@ private fun ConversationRow(
     }
 }
 
-@Composable
-private fun Banner(text: String) {
-    Surface(color = MaterialTheme.colorScheme.errorContainer, contentColor = MaterialTheme.colorScheme.onErrorContainer, modifier = Modifier.fillMaxWidth()) {
-        Text(text, style = MaterialTheme.typography.labelMedium, modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp))
-    }
-}
-
 /** Where a new conversation runs: a runtime, and a project folder or the runtime's own default. */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable

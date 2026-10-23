@@ -162,6 +162,7 @@ pub struct CoreRuntime {
 mod attachments;
 mod client_state;
 pub(crate) use client_state::ClientState;
+mod agent_uri;
 mod authentication_coordination;
 mod browsing;
 mod collaboration;
@@ -594,6 +595,7 @@ impl CoreRuntime {
                     | "list"
                     | "searchConversations"
                     | "findConversation"
+                    | "resolveAgentUri"
                     | "getSnapshot"
                     | "getSnapshotUpdate"
                     | "messagePayloads"
@@ -616,6 +618,10 @@ impl CoreRuntime {
             "setProject" => self.set_project_action(request),
             "searchConversations" => self.search_conversations(request),
             "findConversation" => self.find_conversation(request),
+            "resolveAgentUri" => Ok(serde_json::to_value(self.resolve_agent_uri(
+                request["payload"]["uri"].as_str().unwrap_or_default(),
+                request["payload"]["runtimeID"].as_str(),
+            )?)?),
             "discoverRuntimes" => self.discover_runtimes(request),
             "providerImport" => self.provider_import_action(request),
             "providers" => self.provider_action(&request["payload"]),

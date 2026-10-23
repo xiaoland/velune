@@ -13,6 +13,7 @@ use std::collections::BTreeSet;
 use std::sync::{Mutex, mpsc};
 use std::time::{Duration, Instant};
 mod mcp;
+mod xurl;
 
 /// Longest single wait an agent may request.
 const MAX_WAIT: Duration = Duration::from_secs(30);
@@ -132,22 +133,28 @@ pub(super) struct StartConversation {
 #[serde(deny_unknown_fields)]
 pub(super) struct SendMessage {
     conversation_id: String,
+    runtime_id: Option<String>,
     message: String,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct ConversationRef {
     conversation_id: String,
+    runtime_id: Option<String>,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct WaitConversation {
     conversation_id: String,
+    runtime_id: Option<String>,
     timeout_ms: u64,
 }
 
 pub(super) enum Operation {
     ListAgents,
+    XurlInstructions,
+    ResolveUri(xurl::ResolveUri),
+    Read(xurl::ReadConversation),
     ListConversations(ListConversations),
     Start(StartConversation),
     Send(SendMessage),
@@ -353,6 +360,13 @@ impl CoreRuntime {
     fn collaborate(&mut self, ticket: &str, operation: Operation) -> Result<Served, RuntimeError> {
         let caller = self.caller(ticket)?;
         match operation {
+            Operation::XurlInstructions => {
+                Ok(Served::Now(json!({"instructions":include_str!("xurl.md")})))
+            }
+            Operation::ResolveUri(request) => Ok(Served::Now(serde_json::to_value(
+                self.resolve_agent_uri(&request.uri, request.runtime_id.as_deref())?,
+            )?)),
+            Operation::Read(request) => self.read_for_agent(request).map(Served::Now),
             Operation::ListAgents => Ok(Served::Now(self.collaboration_agents(&caller))),
             Operation::ListConversations(request) => Ok(Served::Now(
                 self.collaboration_conversations(&caller, request)?,
@@ -362,12 +376,16 @@ impl CoreRuntime {
             }
             Operation::Send(request) => {
                 validate_message(&request.message)?;
-                self.address_other(&caller, &request.conversation_id)?;
+                let id =
+                    self.agent_reference(&request.conversation_id, request.runtime_id.as_deref())?;
+                self.address_other(&caller, &id)?;
                 self.deliver(&caller, &request.message, None)?;
                 self.observed_status(&caller.ticket).map(Served::Now)
             }
             Operation::Get(request) => {
-                self.address(&request.conversation_id)?;
+                let id =
+                    self.agent_reference(&request.conversation_id, request.runtime_id.as_deref())?;
+                self.address(&id)?;
                 self.observed_status(&caller.ticket).map(Served::Now)
             }
             Operation::Wait(request) => {
@@ -375,7 +393,9 @@ impl CoreRuntime {
                 if timeout > MAX_WAIT {
                     return Err(RuntimeError::invalid("timeout_ms 不能超过 30000"));
                 }
-                self.address_other(&caller, &request.conversation_id)?;
+                let id =
+                    self.agent_reference(&request.conversation_id, request.runtime_id.as_deref())?;
+                self.address_other(&caller, &id)?;
                 let id = self.addressed_id();
                 match self.settled_status(&caller.ticket, &id, timeout.is_zero())? {
                     Some(status) => Ok(Served::Now(status)),
@@ -383,7 +403,9 @@ impl CoreRuntime {
                 }
             }
             Operation::Cancel(request) => {
-                self.address_other(&caller, &request.conversation_id)?;
+                let id =
+                    self.agent_reference(&request.conversation_id, request.runtime_id.as_deref())?;
+                self.address_other(&caller, &id)?;
                 if self.session.turn_running() {
                     let runtime_id = self.addressed_runtime()?;
                     let id = self.addressed_id();
@@ -409,6 +431,8 @@ impl CoreRuntime {
                     "type": types.iter().find(|t| t.id == runtime.type_id).map_or(runtime.type_id.as_str(), |t| t.name.as_str()),
                     "location": location(runtime),
                     "same_machine_as_you": here.is_some_and(|here| same_machine(here, runtime)),
+                    "agents_provider": super::agent_uri::provider(&runtime.type_id),
+                    "xurl": self.xurl_invocation(runtime, here),
                 })
             })
             .collect();
@@ -454,6 +478,7 @@ impl CoreRuntime {
                 };
                 json!({
                     "conversation_id": item.id,
+                    "agents_uri": self.agents_uri(item),
                     "runtime_id": item.runtime_id,
                     "runtime_name": names.get(item.runtime_id.as_str()),
                     "title": item.title.display_text(),
@@ -596,11 +621,12 @@ impl CoreRuntime {
         if self.focus_existing(id) {
             return Ok(());
         }
-        let listed = self.all_conversations()?;
-        let summary = listed
-            .into_iter()
-            .find(|item| item.id == id)
-            .ok_or_else(|| RuntimeError::invalid("没有这个会话；用 list_conversations 查找"))?;
+        let found: Option<crate::api::ListedConversation> = serde_json::from_value(
+            self.find_conversation(&json!({"payload":{"conversationID":id}}))?,
+        )?;
+        let summary = found
+            .ok_or_else(|| RuntimeError::invalid("没有这个会话；用 list_conversations 查找"))?
+            .conversation;
         self.focus_new();
         self.dispatch(&json!({"version":CONTRACT_VERSION,"action":"open","runtimeInstanceID":summary.runtime_id,
             "payload":{"runtimeInstanceID":summary.runtime_id,"conversationID":id}}))?;
@@ -661,6 +687,7 @@ impl CoreRuntime {
         );
         let status = json!({
             "conversation_id": self.addressed_id(),
+            "agents_uri": self.agents_uri(&view.conversation),
             "runtime_id": view.context_runtime_id,
             "runtime_name": self.runtime_instance(&view.context_runtime_id).ok().map(|runtime| runtime.name.clone()),
             "title": view.conversation.title.display_text(),

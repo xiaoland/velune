@@ -221,8 +221,10 @@ struct ConversationWindow: View {
                 if let data = try? JSONEncoder().encode(layout), let text = String(data: data, encoding: .utf8) { savedLayout = text }
             }
             // A conversation link opens in a window already showing Velune.
-            .handlesExternalEvents(preferring: [ConversationLink.scheme], allowing: [ConversationLink.scheme])
+            .handlesExternalEvents(preferring: [ConversationLink.scheme, "agents"], allowing: [ConversationLink.scheme, "agents"])
+            .sheet(isPresented: $window.showsAgentURI) { AgentURIView(window: window) }
             .onOpenURL { url in
+                if url.scheme == "agents" { window.openAgentURI(url.absoluteString); return }
                 guard let link = ConversationLink.conversation(in: url) else { return }
                 window.open(link.conversationID)
             }

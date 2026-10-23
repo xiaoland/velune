@@ -1,7 +1,6 @@
 using System.Security.Cryptography;
 using System.Text;
 using Microsoft.UI.Dispatching;
-using Microsoft.Windows.AppLifecycle;
 using Microsoft.Windows.AppNotifications;
 using Microsoft.Windows.AppNotifications.Builder;
 using Velune.Bindings;
@@ -26,7 +25,7 @@ sealed class Notifier(Shell shell, DispatcherQueue dispatcher)
     // How many conversations wanted the user at the last look.
     int wanting;
 
-    // Start takes notifications' clicks, also the one that launched Velune.
+    // Shell routes cold and redirected activation; this receives live clicks.
     public void Start()
     {
         try
@@ -45,10 +44,6 @@ sealed class Notifier(Shell shell, DispatcherQueue dispatcher)
                 AppNotificationManager.Default.Register();
             }
             registered = true;
-            if (AppInstance.GetCurrent().GetActivatedEventArgs() is { Kind: ExtendedActivationKind.AppNotification, Data: AppNotificationActivatedEventArgs launched })
-            {
-                dispatcher.TryEnqueue(() => Open(launched.Arguments));
-            }
         }
         catch (Exception failure) when (failure is System.Runtime.InteropServices.COMException or InvalidOperationException or UnauthorizedAccessException)
         {
@@ -149,7 +144,7 @@ sealed class Notifier(Shell shell, DispatcherQueue dispatcher)
         }
     }
 
-    void Open(IDictionary<string, string> arguments)
+    public void Open(IDictionary<string, string> arguments)
     {
         if (arguments.TryGetValue("conversation", out var id) && arguments.TryGetValue("runtime", out var runtimeID))
         {

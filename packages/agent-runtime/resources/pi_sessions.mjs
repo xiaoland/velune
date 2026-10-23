@@ -103,7 +103,7 @@ if (inspectPath) {
       const stats = await stat(path, { bigint: true });
       const start = await header(path);
       const created = typeof start?.timestamp === "string" ? Date.parse(start.timestamp) : NaN;
-      return { path, size: String(stats.size), mtimeNs: String(stats.mtimeNs),
+      return { path, sessionId: typeof start?.id === "string" ? start.id : null, size: String(stats.size), mtimeNs: String(stats.mtimeNs),
         modifiedAtUnixMs: Number(stats.mtimeMs),
         cwd: typeof start?.cwd === "string" && start.cwd ? start.cwd : null,
         createdAtUnixMs: Number.isFinite(created) ? created : null };

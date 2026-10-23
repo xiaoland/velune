@@ -479,6 +479,11 @@ public sealed partial class ConversationView
     // files relative to the conversation's directory.
     void OpenLink(string link)
     {
+        if (Uri.TryCreate(link, UriKind.Absolute, out var agentUri) && agentUri.Scheme == "agents")
+        {
+            window.OpenAgentUri(link, Model.Device);
+            return;
+        }
         if (Uri.TryCreate(link, UriKind.Absolute, out var uri) && uri.Scheme is "http" or "https" or "mailto")
         {
             Launch(uri.AbsoluteUri, link);

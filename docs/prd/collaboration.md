@@ -21,4 +21,6 @@
 
 ## 跨 Harness 接续
 
+2026-10-23 用户要求 Agent 能用 xURL 查询、读取和继续各 Harness 会话，同时吸纳有助于效率、稳定性与支持范围的实现思路（[S47](../sources.md#s47)）。Mac 与 Windows 随包提供固定版本的官方 CLI，Agent 通过现有 MCP 发现调用路径、目标实例环境与指引。Velune 的协作工具也接受支持的 `agents://` 地址，补充查询与分页历史读取，续聊仍遵守原有忙碌、审批和子会话限制。官方 CLI 的直接写入是独立原生执行，不承诺 Velune 的模型路由、审批与取消；不以其替换现有运行时适配器。当前应用地址入口支持 Codex、Claude Code 与 Pi，其他上游查询形式使用官方 CLI。
+
 用户已接受跨 Harness 接续采用“目标原生会话＋上下文交接＋只持久化关联元数据”：保留来源原生会话，在目标运行时创建原生会话，由 adapter 交接可携带的上下文，不重放旧工具执行或审批状态。Velune 保存原生会话引用与切换位置，使重启后仍能恢复同一条逻辑会话；消息持久化继续由各 Harness 拥有，不保存消息副本。这是对只做 projection 的关联元数据边界补充，不将不同运行时的 native session ID 视为可以互相 resume，也不承诺无损迁移。具体实现与隔离验收归 [跨 Harness 接续任务](../../tasks/cross-harness-continuation/packet.md)。

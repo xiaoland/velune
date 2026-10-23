@@ -44,6 +44,7 @@ struct TranscriptTable: NSViewRepresentable {
     let loadPayloads: ([String]) -> Void
     /// Show another conversation, from a collaboration link in this one.
     let openConversation: (String) -> Void
+    let openAgentURI: (String) -> Void
     /// Edits the user message of this ID, when it may be edited now.
     let editMessage: (String) -> (() -> Void)?
     /// Names a turn's settings and usage: runtime and permission names come from the configuration.
@@ -1012,6 +1013,10 @@ struct TranscriptTable: NSViewRepresentable {
         }
         let original: String
         if let url = link as? URL { original = url.absoluteString } else if let string = link as? String { original = string } else { return false }
+        if URL(string: original)?.scheme == "agents" {
+            parent?.openAgentURI(original)
+            return true
+        }
         if let destination = resolve(original), NSWorkspace.shared.open(destination) { return true }
         let alert = NSAlert()
         let remoteFile = parent?.remoteHost.flatMap { host in URL(string: original)?.scheme == nil || URL(string: original)?.isFileURL == true ? host : nil }

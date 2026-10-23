@@ -48,7 +48,7 @@ sealed class Core
     }
 
     // VELUNE_HOME, else %USERPROFILE%\.velune.
-    static string ApplicationHome()
+    internal static string ApplicationHome()
     {
         var configured = Environment.GetEnvironmentVariable("VELUNE_HOME");
         if (!string.IsNullOrEmpty(configured))

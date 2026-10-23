@@ -974,6 +974,13 @@ final class AppStore: ObservableObject {
         }
         if backHistory.count > Self.historyLimit { backHistory.removeFirst(backHistory.count - Self.historyLimit) }
     }
+    func resolveAgentURI(_ uri: String, completion: @escaping (Result<BindingAgentUriResolution, Error>) -> Void) {
+        guard let transport, !isShuttingDown else { completion(.failure(NSError(domain: "Velune", code: 1, userInfo: [NSLocalizedDescriptionKey: "核心尚未就绪"]))); return }
+        queue.async {
+            let result = Result { try transport.resolveAgentURI(uri) }
+            DispatchQueue.main.async { completion(result) }
+        }
+    }
     /// Open a conversation a link names, such as a sub-agent's, or one gone
     /// back to; an agent may have started it after the list was last read.
     func openLinkedConversation(id: String, move: NavigationMove = .new) {

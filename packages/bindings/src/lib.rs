@@ -679,6 +679,17 @@ impl VeluneApplication {
         request!(self, "search_conversations", SearchConversations { text })
     }
     /// One conversation by identity, whether or not the list shows it.
+    pub fn resolve_agent_uri(
+        &self,
+        uri: String,
+        runtime_id: Option<String>,
+    ) -> Result<BindingAgentUriResolution, BindingError> {
+        request!(
+            self,
+            "resolve_agent_uri",
+            ResolveAgentUri { uri, runtime_id }
+        )
+    }
     pub fn find_conversation(
         &self,
         conversation_id: String,

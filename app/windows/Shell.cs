@@ -1,6 +1,9 @@
 using Microsoft.UI.Dispatching;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.Windows.AppLifecycle;
+using Microsoft.Windows.AppNotifications;
+using Windows.ApplicationModel.Activation;
 using Velune.Bindings;
 
 namespace Velune;
@@ -216,6 +219,20 @@ sealed class Shell
 
     // InFront tells a workspace window is the one in front.
     public bool InFront => windows.Any(window => window.Foreground);
+
+    public void Activate(AppActivationArguments activation)
+    {
+        if (quitting || (latest ?? windows.LastOrDefault()) is not { } window) { return; }
+        window.Activate();
+        if (activation is { Kind: ExtendedActivationKind.Protocol, Data: IProtocolActivatedEventArgs protocol } && protocol.Uri.Scheme == "agents")
+        {
+            window.OpenAgentUri(protocol.Uri.OriginalString, Device.Local);
+        }
+        else if (activation is { Kind: ExtendedActivationKind.AppNotification, Data: AppNotificationActivatedEventArgs notification })
+        {
+            notifier.Open(notification.Arguments);
+        }
+    }
 
     // Viewing tells a conversation shows in front, so it needs no notification.
     public bool Viewing(Device device, string conversationID) =>

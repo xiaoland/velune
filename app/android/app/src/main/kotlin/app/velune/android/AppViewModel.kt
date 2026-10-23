@@ -14,6 +14,7 @@ sealed interface Screen {
     data object About : Screen
     data class Legal(val document: LegalDocument) : Screen
     data class Device(val peer: String) : Screen
+    class AgentUri(val address: String, val peer: String?) : Screen
     class Conversation(val peer: String, val model: ConversationModel) : Screen
 }
 
@@ -21,6 +22,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     val startupFailure = (application as VeluneAndroid).initializationFailure
     val hub: DeviceHub? = if (startupFailure == null) DeviceHub(application).also { it.start() } else null
     private val workspaces = mutableMapOf<String, DeviceWorkspace>()
+    // Retained across rotation; a recreated process must handle its launch URI again.
+    var launchIntentHandled = false
     var stack by mutableStateOf(listOf<Screen>(Screen.Devices))
         private set
     val screen: Screen get() = stack.last()
@@ -42,6 +45,17 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     fun openConversation(peer: String, target: ConversationTarget) =
         push(Screen.Conversation(peer, ConversationModel(checkNotNull(hub), peer, target, viewModelScope)))
 
+    fun openAgentUri(address: String, peer: String? = null) {
+        if (screen is Screen.AgentUri) back()
+        push(Screen.AgentUri(address, peer))
+    }
+
+    fun openResolvedAgentUri(peer: String, target: ConversationTarget) {
+        back()
+        if (screen !is Screen.Conversation && screen != Screen.Device(peer)) switchDevice(peer)
+        openConversation(peer, target)
+    }
+
     fun back(): Boolean {
         if (stack.size <= 1) return false
         (stack.last() as? Screen.Conversation)?.model?.pause()
@@ -52,7 +66,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     /** After pairing, the device opens in place of the pairing screen. */
     fun showPaired(peer: String) {
-        stack = listOf(Screen.Devices, Screen.Device(peer))
+        val address = stack.filterIsInstance<Screen.AgentUri>().lastOrNull()?.address
+        stack = if (address != null) listOf(Screen.Devices, Screen.AgentUri(address, peer))
+            else listOf(Screen.Devices, Screen.Device(peer))
         selectShownDevice()
     }
 
@@ -60,6 +76,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         val peer = when (val shown = screen) {
             is Screen.Device -> shown.peer
             is Screen.Conversation -> shown.peer
+            is Screen.AgentUri -> shown.peer
             else -> null
         }
         hub?.select(peer)

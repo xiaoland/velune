@@ -1419,6 +1419,7 @@ pub struct BindingListedConversation {
     /// The identity its runtime resumes it by.
     #[serde(rename = "nativeID")]
     pub native_id: String,
+    pub agents_uri: Option<String>,
     pub pinned: bool,
     pub unread: bool,
     pub archived: bool,
@@ -1948,4 +1949,11 @@ impl std::fmt::Debug for BindingQuotaAuthenticationEdit {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("BindingQuotaAuthenticationEdit([redacted])")
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BindingAgentUriResolution {
+    pub conversations: Vec<BindingListedConversation>,
+    pub failures: Vec<BindingHistoryFailure>,
 }

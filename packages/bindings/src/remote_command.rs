@@ -135,6 +135,10 @@ pub enum BindingApplicationCommand {
     FindConversation {
         conversation_id: String,
     },
+    ResolveAgentUri {
+        uri: String,
+        runtime_id: Option<String>,
+    },
     UpsertRuntime {
         runtime: BindingRuntimeInstance,
     },
@@ -581,6 +585,9 @@ impl TryFrom<BindingApplicationCommand> for Command {
             }
             BindingApplicationCommand::SearchConversations { text } => {
                 Self::SearchConversations { text }
+            }
+            BindingApplicationCommand::ResolveAgentUri { uri, runtime_id } => {
+                Self::ResolveAgentUri { uri, runtime_id }
             }
             BindingApplicationCommand::FindConversation { conversation_id } => {
                 Self::FindConversation {

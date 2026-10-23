@@ -29,6 +29,7 @@ struct TranscriptView: View {
     let activity: TranscriptActivity?
     let loadPayloads: ([String]) -> Void
     let openConversation: (String) -> Void
+    let openAgentURI: (String) -> Void
     /// Edits the user message of this ID, when it may be edited now.
     var editMessage: (String) -> (() -> Void)? = { _ in nil }
     let describeSettings: (TranscriptTurn) -> TurnSettingsSummary?
@@ -45,7 +46,7 @@ struct TranscriptView: View {
                                cwd: cwd, remoteHost: remoteHost, bottomRequest: reading.bottomRequest, jump: navigation,
                                followingChanged: { [reading] value in if reading.following != value { reading.following = value } },
                                outlineToggle: { [reading] id in reading.outlineAnchorID = id; outlineCollapsed = false }, loadPayloads: loadPayloads,
-                               openConversation: openConversation, editMessage: editMessage, describeSettings: describeSettings)
+                               openConversation: openConversation, openAgentURI: openAgentURI, editMessage: editMessage, describeSettings: describeSettings)
             .background(Color(nsColor: .windowBackgroundColor))
             .overlay(alignment: .bottomTrailing) {
                 if !reading.following {

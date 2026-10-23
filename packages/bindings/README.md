@@ -116,3 +116,5 @@ Claude CLI 登录沿用 start/poll/cancel/inspect，CLI 自己打开浏览器并
 Kimi 模板由同一 `provider_templates` 目录返回，ID 为 `kimiCodingPlan`，使用新增 `BindingRequestProfile::KimiCoding` 与 `BindingProviderQuotaSource::KimiUsage`。仍通过 `ApiKey` 编辑 Key，不展示 OAuth 按钮。平台按模板组合保存，不推测地址、模型 ID 或账户归属；公开认证的 `configured` 表示当前 Key 已通过账户验证，额度状态和安全 `problem` 由现有 quota API 返回。账户摘要与披露文案沿现有具名字段呈现；未知窗口和缺失钱包信息不显示为满额或免费保证。
 
 ARK 查询认证通过 save_provider 的可选参数 quota_authentication_edit（缺省 None，保留）与 BindingAuthenticationEdit 一起原子保存；BindingProviderDraft 不携带凭据编辑，不涉及查询认证的调用方无需传入。SetAccessKey 完整替换 AK/SK，可同时确认当前模型关联；ConfirmBinding 重新确认，Clear 清除。公开提供商 quota_authentication 仅含 configured/binding_confirmed；平台须将其说明为用户关联，不能显示已自动核验同账户。
+
+`resolve_agent_uri(uri, runtime_id)` 返回 `BindingAgentUriResolution`，含匹配的 `BindingListedConversation` 与逐实例失败；远控将同一命令交给所选设备。列表记录新增可选 `agents_uri`，平台直接消费，不自行拼接原生 ID 或 Pi 文件路径。多匹配须显式选择；有失败时不能把一个已找到的结果视为已确认唯一。

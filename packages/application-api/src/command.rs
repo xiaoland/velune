@@ -85,6 +85,7 @@ pub enum CommandKind {
     ShowArchivedConversations,
     SearchConversations,
     FindConversation,
+    ResolveAgentUri,
     UpsertRuntime,
     UpsertRuntimeWithExecution,
     UpsertAcpRuntime,
@@ -284,6 +285,10 @@ pub enum Command {
     },
     FindConversation {
         conversation_id: String,
+    },
+    ResolveAgentUri {
+        uri: String,
+        runtime_id: Option<String>,
     },
     UpsertRuntime {
         runtime: RuntimeInstance,
@@ -567,6 +572,7 @@ pub enum Response {
     ShowArchivedConversations(ConfigurationSnapshot),
     SearchConversations(ConversationSearch),
     FindConversation(Option<ListedConversation>),
+    ResolveAgentUri(AgentUriResolution),
     UpsertRuntime(RuntimeUpdate),
     UpsertRuntimeWithExecution(RuntimeUpdate),
     UpsertAcpRuntime(RuntimeUpdate),
@@ -647,6 +653,7 @@ impl Command {
             | Self::ComposerChoices
             | Self::SearchConversations { .. }
             | Self::FindConversation { .. }
+            | Self::ResolveAgentUri { .. }
             | Self::AcpLaunch { .. }
             | Self::AcpRuntimeInfo { .. }
             | Self::AcpSessionConfig { .. }
@@ -769,6 +776,7 @@ impl Command {
             Self::ShowArchivedConversations { .. } => CommandKind::ShowArchivedConversations,
             Self::SearchConversations { .. } => CommandKind::SearchConversations,
             Self::FindConversation { .. } => CommandKind::FindConversation,
+            Self::ResolveAgentUri { .. } => CommandKind::ResolveAgentUri,
             Self::UpsertRuntime { .. } => CommandKind::UpsertRuntime,
             Self::UpsertRuntimeWithExecution { .. } => CommandKind::UpsertRuntimeWithExecution,
             Self::UpsertAcpRuntime { .. } => CommandKind::UpsertAcpRuntime,

@@ -230,6 +230,9 @@ impl Application {
             Command::SearchConversations { text } => {
                 Response::SearchConversations(application.search_conversations(text)?)
             }
+            Command::ResolveAgentUri { uri, runtime_id } => {
+                Response::ResolveAgentUri(application.resolve_agent_uri(uri, runtime_id)?)
+            }
             Command::FindConversation { conversation_id } => {
                 Response::FindConversation(application.find_conversation(conversation_id)?)
             }

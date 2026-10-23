@@ -51,6 +51,12 @@ Windows 的完整端：在本机运行 Agent、Harness 与网关，也能控制�
   - **Agent 运行时**：列出本机的运行时实例（类型、是否停用）。＋按类型手动添加（路径字段可浏览），“快速导入…”在 PATH、npm／pnpm 与厂商安装位置中发现 Pi、Codex、Claude Code，只读取公开版本；编辑可改名称、启用与类型的配置项，其他设置保持不变；其下依次是可展开的几节（标题行带当前摘要）：“运行环境”选择 HOME（继承当前用户、指定目录或由 Velune 管理；由 Velune 管理时隐去“运行时目录”，由核心在该 HOME 中推出，已保存的实例显示核心解析的位置，可在资源管理器中显示，首次运行时创建）；ACP 类型的“启动参数”逐行填写参数与“名称=值”环境变量（不经 shell）；已保存的 ACP 实例可在“Agent 信息”中读取 Agent 的名称、版本、能力与登录方式；“新会话”选择会话尚未在此运行时上运行或选择时输入区从哪里开始：上次的选择、运行时默认，或指定的模型（读取该运行时的模型目录）、推理强度与权限。ACP 类型可手动添加。经 SSH 运行的实例在 Mac 上设置，Windows 上保持其运行位置不变。
   - **设备**：与 Mac 相同的两组，每项是一张设置卡片。“这台电脑”：允许其他设备控制的开关、设备名称、“添加控制设备…”（五分钟内有效、只能使用一次的邀请，以二维码与“复制邀请”给出，对方使用后或过期即收回），以及可以控制这台电脑的设备（撤销）。“控制其他设备”：已配对设备及其连接状态或核对码，“打开”在主窗口切换到该设备，配对中的可“取消”，右键菜单“移除此设备”；下方粘贴另一台设备的邀请并连接。
 
+## xURL
+
+点击 `agents://` 系统链接或会话正文链接会自动定位会话，唯一匹配且所有实例读取成功时直接打开。正文中的链接沿用当前会话设备；多匹配时显示选择列表，失败详情进入“问题”。不提供额外的地址输入、查找或复制菜单。
+
+默认 HOME 启动时注册 `agents://` 系统链接。相同 HOME 的后续启动会将链接或通知交给已有进程，再退出；不同 HOME 各自运行。外部 xURL 默认查询本机。设置 `VELUNE_HOME` 的隔离运行不覆盖系统协议注册。
+
 ## 品牌
 
 `assets/brand` 的标志包随构建复制到 `Assets\Brand`：标题栏用 small 光学母版，欢迎页用 medium，浅色主题用 graphite、深色用 dark 配色。exe 与窗口图标由 `scripts/render-windows-icon.ps1` 在构建时从同一标志包绘制：16–24 px 用 small、32–64 px 用 medium、256 px 用 large，均为 theme 配色、透明背景、无底板（Windows 图标不加底板，theme 色在浅色与深色任务栏上都可辨认），不改动路径几何。
@@ -60,11 +66,12 @@ Windows 的完整端：在本机运行 Agent、Harness 与网关，也能控制�
 需要 Rust（MSVC 目标）、Visual Studio Build Tools、.NET 10 SDK、Go 与 llvm-mingw（后两者用于 RelayKit），并先按 [开发说明](../../docs/development.md#windows-构建) 安装 runtime-support，然后执行：
 
 ```powershell
+powershell -ExecutionPolicy Bypass -File scripts\install-xurl.ps1
 powershell -ExecutionPolicy Bypass -File scripts\build-windows.ps1
 target\windows\Velune\Velune.exe
 ```
 
-脚本输出 `target\windows\Velune`：先构建 `velune_bindings.dll`，再用固定提交的 `uniffi-bindgen-cs`（安装在 `target\tools`）从中生成 C# 绑定到 `target\bindings\cs`（生成物不入库），最后 `dotnet publish` 出自包含的 `Velune.exe`。输出目录包括 .NET 与 Windows App SDK 运行时、两个 DLL，以及 Harness 辅助脚本、`node_modules` 和第三方许可组成的 `resources`，约 230 MB；整个目录可以移动，但各部分必须放在一起，Windows 从 exe 所在目录解析 DLL 依赖。生成绑定后也可以只用 `dotnet build app\windows\Velune.csproj` 编译。
+脚本输出 `target\windows\Velune`：先构建 `velune_bindings.dll`，再用固定提交的 `uniffi-bindgen-cs`（安装在 `target\tools`）从中生成 C# 绑定到 `target\bindings\cs`（生成物不入库），最后 `dotnet publish` 出自包含的 `Velune.exe`。输出目录包括 .NET 与 Windows App SDK 运行时、两个 DLL，以及 Harness 辅助脚本、`node_modules`、官方 `xurl/bin/xurl.exe` 和第三方许可组成的 `resources`；整个目录可以移动，但各部分必须放在一起，Windows 从 exe 所在目录解析 DLL 依赖。生成绑定后也可以只用 `dotnet build app\windows\Velune.csproj` 编译。
 
 ## 数据与 Harness
 

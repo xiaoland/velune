@@ -111,6 +111,8 @@ pub struct ListedConversation {
     /// that of its latest segment.
     #[serde(rename = "nativeID")]
     pub native_id: String,
+    /// xURL address of a single native conversation; no instance or device identity.
+    pub agents_uri: Option<String>,
     pub pinned: bool,
     pub unread: bool,
     pub archived: bool,
@@ -653,4 +655,12 @@ pub struct ProviderQuotaStatus {
     pub available: Option<bool>,
     pub refreshing: bool,
     pub problem: Option<String>,
+}
+
+/// Matches on the addressed device. Failures prevent assuming a unique match.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentUriResolution {
+    pub conversations: Vec<ListedConversation>,
+    pub failures: Vec<HistoryFailure>,
 }

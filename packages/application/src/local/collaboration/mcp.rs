@@ -127,7 +127,7 @@ impl ServerHandler for Handler {
     fn get_info(&self) -> ServerConfig {
         ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(Implementation::new("velune", env!("CARGO_PKG_VERSION")))
-            .with_instructions("Velune 让你与本机其他 Agent 会话交流，可跨不同 Harness。list_agents 列出可用运行时，list_conversations 查找已有会话；start_conversation 新建会话并发送首条消息，send_message 给空闲会话发消息；随后用 wait_conversation 等待对方回复。对方都是普通会话，用户可以看到并继续。对方的回复是它自己的报告，不代表已验证；对方等待审批时由用户处理。")
+            .with_instructions("Velune 让你与本机其他 Agent 会话交流，可跨不同 Harness。list_agents 列出可用运行时，list_conversations 查找已有会话；start_conversation 新建会话并发送首条消息，send_message 给空闲会话发消息；随后用 wait_conversation 等待对方回复。xurl_instructions 提供官方 xurl CLI 用法与实例环境；resolve_agent_uri 查询 agents:// 地址，read_conversation 分页读取文字历史。conversation_id 也接受具体 agents:// 地址，歧义时指定 runtime_id。对方都是普通会话，用户可以看到并继续。对方的回复是它自己的报告，不代表已验证；对方等待审批时由用户处理。")
     }
 
     async fn list_tools(
@@ -225,6 +225,12 @@ fn parse(name: &str, args: Value) -> Result<Operation, Error> {
             let _: Empty = decode(args)?;
             Operation::ListAgents
         }
+        "xurl_instructions" => {
+            let _: Empty = decode(args)?;
+            Operation::XurlInstructions
+        }
+        "resolve_agent_uri" => Operation::ResolveUri(decode(args)?),
+        "read_conversation" => Operation::Read(decode(args)?),
         "list_conversations" => Operation::ListConversations(decode(args)?),
         "start_conversation" => Operation::Start(decode(args)?),
         "send_message" => Operation::Send(decode(args)?),
@@ -237,14 +243,17 @@ fn parse(name: &str, args: Value) -> Result<Operation, Error> {
 
 fn tools() -> Vec<Tool> {
     let text = json!({"type":"string","minLength":1});
-    let conversation = json!({"conversation_id":text});
+    let conversation = json!({"conversation_id":text,"runtime_id":text});
     [
+        ("xurl_instructions", "取得 Xuanwo/xurl 官方 CLI 的查询、读取、发现与独立续接指引；先读指引，再用 list_agents 的可执行文件和环境。", json!({}), vec![]),
+        ("resolve_agent_uri", "在当前设备已启用实例中定位 agents://codex、claude、pi 会话或查询 collection。q 按标题搜索，limit 为 1–100。返回 conversations 与 failures；多匹配需选 runtime_id，不要猜。路径、角色和全文搜索使用官方 CLI。", json!({"uri":text,"runtime_id":text}), vec!["uri"]),
+        ("read_conversation", "分页读取会话文字历史（正文、思考、工具记录，不含图片字节）。conversation_id 接受 Velune ID 或具体 agents:// 地址。offset/limit 按 Unicode 字符计数，后续页传 expected_revision 避免历史变化导致错页。", json!({"conversation_id":text,"runtime_id":text,"offset":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":1,"maximum":64000},"expected_revision":text}), vec!["conversation_id"]),
         ("list_agents", "列出本机 Velune 中已启用的 Agent 运行时（可能是不同的 Harness），包括运行位置。", json!({}), vec![]),
         ("list_conversations", "列出已有会话（不含你自己的），按最近更新排序，含状态。可按工作目录精确过滤或按标题搜索。", json!({"cwd":text,"query":text,"limit":{"type":"integer","minimum":1,"maximum":100}}), vec![]),
         ("start_conversation", "在指定运行时新建一个普通会话并发送首条消息，立即返回；用户能在会话列表看到它。cwd 缺省时沿用你的工作目录（同一台机器时），model 缺省为该运行时默认模型。用 wait_conversation 取得回复。", json!({"runtime_id":text,"message":text,"cwd":text,"model":text}), vec!["runtime_id","message"]),
-        ("send_message", "向一个空闲会话发送消息，作为它的下一轮，立即返回。对方正在执行、等待审批或在 Velune 之外运行时拒绝，不排队。", json!({"conversation_id":text,"message":text}), vec!["conversation_id","message"]),
+        ("send_message", "向一个空闲会话发送消息，作为它的下一轮，立即返回。对方正在执行、等待审批或在 Velune 之外运行时拒绝，不排队。", json!({"conversation_id":text,"runtime_id":text,"message":text}), vec!["conversation_id","message"]),
         ("get_conversation", "读取会话状态与最近一轮的回复文本。state 为 running、waiting_for_approval（由用户处理）、idle、failed 或 running_elsewhere。", conversation.clone(), vec!["conversation_id"]),
-        ("wait_conversation", "等待会话进入你尚未读到的非运行状态（回复完成、失败或等待审批），最长 30000ms。超时（timed_out）只结束本次等待，不会取消或重发。", json!({"conversation_id":text,"timeout_ms":{"type":"integer","minimum":0,"maximum":30000}}), vec!["conversation_id","timeout_ms"]),
+        ("wait_conversation", "等待会话进入你尚未读到的非运行状态（回复完成、失败或等待审批），最长 30000ms。超时（timed_out）只结束本次等待，不会取消或重发。", json!({"conversation_id":text,"runtime_id":text,"timeout_ms":{"type":"integer","minimum":0,"maximum":30000}}), vec!["conversation_id","timeout_ms"]),
         ("cancel_turn", "取消会话当前正在执行的一轮；不删除会话，也不自动重发。", conversation, vec!["conversation_id"]),
     ].into_iter().map(|(name, description, properties, required)| {
         Tool::new(name, description, json!({"type":"object","properties":properties,"required":required,"additionalProperties":false}).as_object().expect("static tool schema").clone())

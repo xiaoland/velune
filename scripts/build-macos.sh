@@ -10,6 +10,10 @@ xcrun --find swiftc >/dev/null
   echo 'Runtime support is missing; run ./scripts/install-runtime-support.sh first.' >&2
   exit 1
 }
+[[ -x target/runtime-support/xurl/bin/xurl && -f target/runtime-support/xurl/LICENSE && -f target/runtime-support/xurl/REVISION ]] || {
+  echo 'xURL is missing; run bash scripts/install-xurl.sh first.' >&2
+  exit 1
+}
 cargo build --locked --release -p velune-bindings --lib
 bindings="$PWD/target/bindings/swift"
 mkdir -p "$bindings"
@@ -33,8 +37,21 @@ cp packages/agent-runtime/resources/pi_sdk.mjs packages/agent-runtime/resources/
 cp packages/agent-runtime/resources/huihua_sessions.mjs "$app/Contents/Resources/"
 mkdir -p "$app/Contents/Resources/node_modules"
 cp -R target/runtime-support/node_modules/. "$app/Contents/Resources/node_modules/"
+mkdir -p "$app/Contents/Resources/xurl/bin"
+cp target/runtime-support/xurl/bin/xurl "$app/Contents/Resources/xurl/bin/"
+cp target/runtime-support/xurl/LICENSE target/runtime-support/xurl/REVISION "$app/Contents/Resources/xurl/"
+mkdir -p "$app/Contents/Resources/ThirdParty/xurl"
+cp target/runtime-support/xurl/LICENSE target/runtime-support/xurl/REVISION "$app/Contents/Resources/ThirdParty/xurl/"
 mkdir -p "$app/Contents/Resources/ThirdParty"
 cp packages/agent-runtime/runtime-support/THIRD_PARTY_NOTICES.md "$app/Contents/Resources/ThirdParty/"
+cat >> "$app/Contents/Resources/ThirdParty/THIRD_PARTY_NOTICES.md" <<'NOTICE'
+
+## xURL
+
+本应用包含 Xuanwo 与贡献者开发的官方 xURL CLI，未修改其源码。
+来源：https://github.com/Xuanwo/xurl
+许可证：Apache-2.0。完整许可证与固定源码提交见 xurl/。
+NOTICE
 cp -R packages/agent-runtime/runtime-support/licenses "$app/Contents/Resources/ThirdParty/"
 cp packages/agent-runtime/runtime-support/package-lock.json "$app/Contents/Resources/ThirdParty/runtime-support-package-lock.json"
 mkdir -p "$app/Contents/Resources/ThirdParty/Swift"
@@ -69,7 +86,7 @@ cat > "$app/Contents/Info.plist" <<'PLIST'
 </dict></array>
 <key>CFBundleURLTypes</key><array><dict>
 <key>CFBundleURLName</key><string>local.velune.conversation</string>
-<key>CFBundleURLSchemes</key><array><string>velune</string></array>
+<key>CFBundleURLSchemes</key><array><string>velune</string><string>agents</string></array>
 </dict></array>
 </dict></plist>
 PLIST
@@ -86,6 +103,7 @@ plist_path.write_bytes(plistlib.dumps(plist))
 schema=int(re.search(r'const CURRENT_SCHEMA_VERSION: u32 = (\d+);', Path('packages/application/src/repository.rs').read_text()).group(1))
 manifest={'source_commit':cmd('git','rev-parse','HEAD'),'dirty':bool(cmd('git','status','--porcelain')),'lock_sha256':hashlib.sha256(Path('Cargo.lock').read_bytes()).hexdigest(),'bindings_version':'0.1.0','uniffi_version':'0.32.2','ui_version':version,'simulation':False,'control_transport':'uniffi','language_contract':'typed','config_schema_version':schema,'supported_modes':['conversation_projection','llm_gateway','runtime_instances','synthetic_preview'],'native_verified':False,'rust':cmd('rustc','--version'),'swift':cmd('xcrun','swiftc','--version'),'xcode':cmd('xcodebuild','-version'),'architecture':platform.machine(),'macos':platform.mac_ver()[0],'build_command':'bash scripts/build-macos.sh'}
 manifest['go']=cmd('go','version')
+manifest['xurl_revision']=Path('target/runtime-support/xurl/REVISION').read_text().strip()
 manifest['relaykit_go_mod_sha256']=hashlib.sha256(Path('packages/ai-provider/relaykit-bridge/go.mod').read_bytes()).hexdigest()
 manifest['relaykit_go_sum_sha256']=hashlib.sha256(Path('packages/ai-provider/relaykit-bridge/go.sum').read_bytes()).hexdigest()
 Path(sys.argv[1]).write_text(json.dumps(manifest,ensure_ascii=False,indent=2))
@@ -95,6 +113,7 @@ PY
 # its signature stays the same app to macOS privacy permissions across
 # builds. Unset, the build is signed ad hoc, a new app to them each build.
 identity="${VELUNE_CODESIGN_IDENTITY:--}"
+codesign --force --sign "$identity" "$app/Contents/Resources/xurl/bin/xurl"
 codesign --force --sign "$identity" "$app/Contents/Frameworks/libvelune_bindings.dylib"
 codesign --force --sign "$identity" "$app"
 codesign --verify --deep --strict "$app"

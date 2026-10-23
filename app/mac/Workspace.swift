@@ -375,6 +375,37 @@ struct WindowSeed: Codable, Hashable {
 /// whose tabs show conversations. The list opens conversations in the
 /// focused pane's tab; the window's toolbar and commands act on it.
 @MainActor final class ConversationWindowModel: ObservableObject {
+    @Published var showsAgentURI = false
+    @Published var agentURIMatches: [Conversation] = []
+    @Published var agentURIFailure: String?
+    private var agentURIRequest = UUID()
+
+    func openAgentURI(_ uri: String) {
+        let request = UUID()
+        agentURIRequest = request
+        showsAgentURI = false
+        list.resolveAgentURI(uri) { [weak self] result in
+            guard let self, agentURIRequest == request else { return }
+            agentURIMatches = []
+            agentURIFailure = nil
+            switch result {
+            case .success(let value):
+                agentURIMatches = value.conversations.map(BindingMapping.listed)
+                if agentURIMatches.count == 1 && value.failures.isEmpty, let match = agentURIMatches.first {
+                    open(match.id)
+                    return
+                }
+                for failure in value.failures { list.recordProblem(failure.detail, source: "打开会话 · " + failure.runtimeId) }
+                if !value.failures.isEmpty { agentURIFailure = "部分运行时无法读取，详见问题。" }
+                else if agentURIMatches.isEmpty { agentURIFailure = "当前设备的已配置实例中找不到该会话。" }
+            case .failure(let error):
+                list.recordProblem(error, source: "打开会话")
+                agentURIFailure = error.localizedDescription
+            }
+            showsAgentURI = true
+        }
+    }
+
     let application: AppStore
     /// The paired device the window shows; nil for this Mac.
     let device: String?

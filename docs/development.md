@@ -18,6 +18,7 @@ Mac 使用根目录 SwiftPM manifest 与 Package.resolved 锁定 swift-markdown 
 
 ```sh
 ./scripts/install-runtime-support.sh
+bash scripts/install-xurl.sh
 bash scripts/build-macos.sh
 open /Applications/Velune.app
 ```
@@ -56,7 +57,7 @@ Windows 使用 MSVC 目标（`x86_64-pc-windows-msvc`，工具链版本同 `rust
 
 子进程统一经 agent-runtime 的 `process_tree` 创建：Unix 使用独立进程组，Windows 使用 kill-on-close 的 Job Object，并加 `CREATE_NO_WINDOW`，避免 GUI 宿主为每个 Harness 弹出控制台。application 的凭据助手（Pi 来源认证、Claude CLI 登录）以同样方式管理进程树，并为清空环境的子进程保留 `SystemRoot` 与 `windir`。其余一次性子进程（读取改动的 `git`、Claude CLI 等）经 `velune_agent_runtime::process::command` 创建，同样不弹控制台；ai-provider 不依赖 agent-runtime，以自己的 `hidden_command` 做同样的事。根目录 `clippy.toml` 禁止直接调用 `Command::new`，新的启动点因此不会漏掉。SSH 运行时依赖 OpenSSH ControlMaster 与 Unix socket，Windows 宿主暂不支持。
 
-应用（C#／.NET 10＋WinUI 3）由 `scripts/build-windows.ps1` 构建：先构建 `velune_bindings.dll`，再由固定提交的 `uniffi-bindgen-cs` 从中生成 C# 绑定，最后 `dotnet publish` 出自包含的 `Velune.exe`，需要 .NET 10 SDK。界面、运行与已知限制见 [Windows README](../app/windows/README.md)。
+先安装 runtime-support，并执行 `powershell -ExecutionPolicy Bypass -File scripts\install-xurl.ps1` 准备官方 xURL CLI。应用（C#／.NET 10＋WinUI 3）由 `scripts/build-windows.ps1` 构建：先构建 `velune_bindings.dll`，再由固定提交的 `uniffi-bindgen-cs` 从中生成 C# 绑定，最后 `dotnet publish` 出自包含的 `Velune.exe`，需要 .NET 10 SDK。界面、运行与已知限制见 [Windows README](../app/windows/README.md)。
 
 ## 会话内容的隔离复验
 
@@ -106,6 +107,12 @@ fixture 为 [review.json](../fixtures/review.json)，仅 `2 + 3 = 5`。Codex 会
 | Pi | [v0.99.2 RPC](https://github.com/earendil-works/pi/blob/005af57d88ee23b33778f343a9595b32e67ff788/packages/coding-agent/docs/rpc.md) 行式命令；[固定 HEAD virtual-model route](https://github.com/earendil-works/pi/blob/e792ba131ed0495f3ff58a0eb13f20540e344d5c/packages/coding-agent/docs/virtual-models.md)；等待 settled | 固定文档复核；release 与 HEAD 不混用，未安装 |
 
 下一步先安装并锁定官方 binary／SDK，用无秘密假上游验证 P1／P2／P12，再在获准账号与预算下联调。不能因为本轮模拟成功就勾选三 Harness 的全请求覆盖或真实跨会话消费。
+
+## xURL 接入验证
+
+`bash scripts/install-xurl.sh` 从固定提交构建官方 CLI，保存许可证与 REVISION；Windows 使用 `scripts/install-xurl.ps1` 构建同一提交。两端构建复制 CLI、许可证和 REVISION，Mac 额外签名并在 manifest 中记录它。上游升级需同时复核 URI、配置根环境与读写行为，不能只替换版本号。若 Cargo registry 经符号链接放到其他卷，Askama 生成器可能计算出无效的模板相对路径；构建时将 `CARGO_HOME` 指向该缓存的真实目录可避免此工具链问题。
+
+[manual-xurl.py](../scripts/manual-xurl.py) 使用同源码 Python bindings、Mac bundle 的 Resources、实际官方 xurl 和已安装 Node／Pi CLI，参数为 `--bindings`、`--resources`、`--xurl`、`--node`、`--pi` 的绝对路径。脚本只使用临时 HOME 和合成 Harness，检查多实例歧义、Pi UUID、官方 CLI 读取三种历史、独立续聊调用、MCP 分页与 URI 发送、忙碌／审批／子会话限制；`--seed DIR` 保留 `DIR/velune` 供隔离 UI 检查。不接入 CI，不证明真实账户或外部会话已验收。
 
 ## 历史真实联调研究
 

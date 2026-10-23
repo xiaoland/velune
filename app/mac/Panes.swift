@@ -169,6 +169,7 @@ struct TabContentView: View {
                        cwd: store.loadedConversationWorkingDirectory, remoteHost: store.loadedConversationLocation.host, outlineCollapsed: $tab.outlineCollapsed, navigation: tab.outlineNavigation,
                        activity: store.activity, loadPayloads: { [store] ids in store.loadPayloads(messageIDs: ids) },
                        openConversation: { [window, tab] id in window.openLinked(id, from: tab) },
+                       openAgentURI: window.openAgentURI,
                        editMessage: { [store, tab] id in store.editability(of: id) == nil ? nil : { tab.edit(messageID: id) } },
                        describeSettings: { [store] in store.describe($0) })
     }

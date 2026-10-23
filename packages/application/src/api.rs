@@ -545,6 +545,18 @@ impl Application {
             None,
         )
     }
+    /// Resolve an xURL address only in enabled instances on this device.
+    pub fn resolve_agent_uri(
+        &mut self,
+        uri: String,
+        runtime_id: Option<String>,
+    ) -> Result<AgentUriResolution, Error> {
+        self.execute(
+            "resolveAgentUri",
+            json!({"uri":uri,"runtimeID":runtime_id}),
+            None,
+        )
+    }
     pub fn upsert_runtime(&mut self, mut runtime: RuntimeInstance) -> Result<RuntimeUpdate, Error> {
         self.runtime.retain_private_runtime_settings(&mut runtime);
         self.execute(

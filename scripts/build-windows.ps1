@@ -9,6 +9,9 @@ $support = 'target\runtime-support'
 if (-not (Test-Path "$support\node_modules\huihua") -or -not (Test-Path "$support\THIRD_PARTY_NOTICES.md")) {
     throw 'Runtime support is missing; install it as docs/development.md describes.'
 }
+foreach ($file in 'bin\xurl.exe', 'LICENSE', 'REVISION') {
+    if (-not (Test-Path "$support\xurl\$file")) { throw '缺少 xURL；请先运行 scripts\install-xurl.ps1。' }
+}
 cargo build --locked --release -p velune-bindings
 if ($LASTEXITCODE -ne 0) { throw 'cargo build failed' }
 
@@ -37,6 +40,18 @@ $scripts = 'pi_sdk', 'pi_sessions', 'pi_rpc', 'pi_virtual_model', 'pi_auth', 'pi
 foreach ($script in $scripts) { Copy-Item "packages\agent-runtime\resources\$script.mjs" $resources }
 Copy-Item -Recurse "$support\node_modules" "$resources\node_modules"
 Copy-Item packages\agent-runtime\runtime-support\THIRD_PARTY_NOTICES.md "$resources\ThirdParty"
+New-Item -ItemType Directory -Force "$resources\xurl\bin", "$resources\ThirdParty\xurl" | Out-Null
+Copy-Item "$support\xurl\bin\xurl.exe" "$resources\xurl\bin"
+Copy-Item "$support\xurl\LICENSE", "$support\xurl\REVISION" "$resources\xurl"
+Copy-Item "$support\xurl\LICENSE", "$support\xurl\REVISION" "$resources\ThirdParty\xurl"
+Add-Content -Encoding UTF8 "$resources\ThirdParty\THIRD_PARTY_NOTICES.md" @'
+
+## xURL
+
+本应用包含 Xuanwo 与贡献者开发的官方 xURL CLI，未修改其源码。
+来源：https://github.com/Xuanwo/xurl
+许可证：Apache-2.0。完整许可证与固定源码提交见 xurl/。
+'@
 Copy-Item -Recurse packages\agent-runtime\runtime-support\licenses "$resources\ThirdParty\licenses"
 Copy-Item packages\agent-runtime\runtime-support\package-lock.json "$resources\ThirdParty\runtime-support-package-lock.json"
 Copy-Item -Recurse app\mac\Licenses\RelayKit "$resources\ThirdParty\RelayKit"
