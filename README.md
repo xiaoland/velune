@@ -26,12 +26,13 @@ Velune 本身不是执行任务的 Agent，也不替代 Codex、Claude Code、Pi
 | macOS | 完整端，可在本机运行 Agent | 原生应用持续开发与验证中 |
 | Windows | 完整端，可在本机运行 Agent | WinUI 应用持续开发与验证中 |
 | Android | 远程控制端 | 连接 Mac 或 Windows 完整端；不在手机上运行 Agent |
+| iPad / iPhone | 远程控制端 | SwiftUI 通用应用，复用远控核心 |
 
 各平台都还在开发验证阶段，功能与操作细节会继续调整。
 
 ## 试用
 
-目前 [GitHub Releases](https://github.com/xiaoland/velune/releases) 尚无可下载的安装包。开发者可以按[开发说明](docs/development.md)从源码构建，平台细节见 [macOS](app/mac/README.md)、[Windows](app/windows/README.md) 和 [Android](app/android/README.md) 说明。
+目前 [GitHub Releases](https://github.com/xiaoland/velune/releases) 尚无可下载的安装包。开发者可以按[开发说明](docs/development.md)从源码构建，平台细节见 [macOS](app/mac/README.md)、[Windows](app/windows/README.md)、[Android](app/android/README.md) 和 [iPad / iPhone](app/ios/README.md) 说明。
 
 运行 Agent 前，需要先自行安装并配置对应的 Harness。Velune 不附带这些运行时；添加模型提供商时，也需要使用者自行配置可用的账户或 API 凭据。多账户路由不会合并额度或绕过供应商规则。
 

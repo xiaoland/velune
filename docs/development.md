@@ -51,6 +51,10 @@ schema 10 采用 hard-cutoff，旧普通配置打开时直接重置，之后重�
 
 隔离视觉预览使用 `--preview`（合成多轮会话）或 `--preview-empty`；Apple app 不设置独立深色验收入口。预览 Store 无 Transport，不打开 Application、不访问真实配置、Keychain 或会话、不调用模型。dyld 加载惰性的库文件不等于打开运行时，预览不能证明真实循环完成。
 
+## iPad 与 iPhone 构建
+
+运行 `scripts/build-ios.sh` 构建 arm64 模拟器，使用 `scripts/build-ios.sh iphoneos DEVELOPMENT_TEAM=<团队ID>` 构建设备版本。单一 Xcode target 支持 iPad 分栏与 iPhone 紧凑导航，只链接 remote-only 核心。工具链、签名、合成预览与边界见 [iOS 控制端](../app/ios/README.md)。
+
 ## Windows 构建
 
 Windows 使用 MSVC 目标（`x86_64-pc-windows-msvc`，工具链版本同 `rust-toolchain.toml`），需要 Visual Studio Build Tools、.NET 10 SDK、Go 和 [llvm-mingw](https://github.com/mstorsjo/llvm-mingw)。RelayKit 桥依赖 cgo；MinGW 静态库无法可靠链接进 MSVC 产物，所以 Windows 把它构建为 `velune_relaykit.dll`，Rust 以 `raw-dylib` 绑定，无需导入库。构建脚本把 DLL 复制到 `target/<profile>/`，应用分发时须放在可执行文件旁。cgo 编译器默认为 `<arch>-w64-mingw32-clang`，可由 `VELUNE_RELAYKIT_CC` 指定绝对路径；当 PATH 没有传递给 build script 时，同时用 `GO` 指定 Go 的绝对路径。

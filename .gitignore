@@ -20,3 +20,6 @@ __pycache__/
 /app/android/app/build/
 /app/android/local.properties
 /app/android/.kotlin/
+
+# Xcode per-user state.
+/app/ios/**/xcuserdata/

@@ -10,6 +10,8 @@ Windows 端 2026-10-21 由用户交开发方选择，定为 C#／.NET＋WinUI 3�
 
 ## Apple
 
+2026-10-23 用户授权最基础的 iPad 控制端，能力以 Android 为范围，并希望可直接构建 iPhone app，要求快速交付、避免过度实现与验证（[S48](../sources.md#s48)）。实现采用单一 SwiftUI 通用 iOS target，iPad 分栏、iPhone 紧凑导航，复用远控核心；具体能力与限制见 [iOS 说明](../../app/ios/README.md)。
+
 Apple app 使用 UIKit／AppKit／SwiftUI 的原生组件与真实系统视觉，采用系统语义颜色和样式，不模拟平台皮肤。原生控件的深色模式由系统适配，不设完整的独立深色验收流程；Core Graphics、自定义 logo、固定色位图、阴影、渐变和边框等自绘内容仍须按所在背景处理颜色与可见性。应用内 logo 浅色背景使用 graphite，暗色背景使用品牌素材提供的中性反色版本。此验收决定见 [S15](../sources.md#s15)。
 
 Mac 应用最低支持 macOS 15；2026-10-09 用户明确允许提高平台底线，以采用适合原生体验的组件。该决定不自动改变其它 Apple 平台的覆盖范围。

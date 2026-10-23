@@ -6,7 +6,7 @@ binary copies, so the APK carries this file and shows it under
 “关于与开源许可”. Reads `cargo metadata` for the same target and features as
 build-android-native.sh; workspace crates are Velune's own and are skipped.
 
-Usage: scripts/android-licenses.py <features> <output file>
+Usage: scripts/android-licenses.py <features> <output file> [Rust target]
 """
 import hashlib
 import json
@@ -14,7 +14,7 @@ import os
 import subprocess
 import sys
 
-TARGET = "aarch64-linux-android"
+TARGET = sys.argv[3] if len(sys.argv) > 3 else "aarch64-linux-android"
 LICENSE_PREFIXES = ("license", "licence", "copying", "notice", "unlicense")
 
 
@@ -66,7 +66,7 @@ def main() -> None:
     lines = [
         "Rust 组件许可",
         "",
-        f"Android 原生库 libvelune_bindings.so 链接了以下 {len(crates)} 个 Rust crate。",
+        f"{TARGET} 原生库链接了以下 {len(crates)} 个 Rust crate。",
         "每个 crate 后注明其声明的许可；下方附各 crate 随源码分发的许可全文（相同全文只列一次）。",
         "",
     ]
