@@ -513,9 +513,6 @@ impl NativeSession {
                         } else {
                             RunState::Idle
                         })?;
-                        if failed {
-                            self.notice("Claude Code 轮次未成功完成，请检查运行时诊断。");
-                        }
                     }
                 }
                 Some("task_started")
@@ -582,6 +579,12 @@ impl NativeSession {
                 // A sub-agent's own messages belong to its conversation, as
                 // in the native history, not to this transcript.
                 if record["parent_tool_use_id"].is_string() {
+                    return Ok(());
+                }
+                if record["type"] == "assistant"
+                    && (record["error"].is_string() || record["is_api_error_message"] == true)
+                {
+                    self.claude_error(claude_error_blocks(&record)?);
                     return Ok(());
                 }
                 let agent = record["tool_use_result"]["agentId"]
@@ -690,7 +693,15 @@ impl NativeSession {
                         .messages
                         .retain(|message| !message.id.starts_with(&prefix));
                 }
-                let failed = record["is_error"] == true || record["subtype"] != "success";
+                let interrupted = matches!(
+                    record["terminal_reason"].as_str(),
+                    Some("aborted_streaming" | "aborted_tools")
+                );
+                let failed =
+                    !interrupted && (record["is_error"] == true || record["subtype"] != "success");
+                if failed {
+                    self.claude_error(claude_error_blocks(&record)?);
+                }
                 self.claude_result = Some((failed, std::time::Instant::now()));
                 // The turn's usage over its requests, the context its last
                 // reply left with that model's window, and the session's cost
@@ -719,6 +730,36 @@ impl NativeSession {
             _ => {}
         }
         Ok(())
+    }
+    fn claude_error(&mut self, blocks: Vec<MessageBlock>) {
+        let Some(turn) = &self.turn_id else { return };
+        let id = format!("{turn}:error");
+        let mut message = self
+            .snapshot
+            .as_ref()
+            .and_then(|snapshot| snapshot.messages.iter().find(|message| message.id == id))
+            .cloned()
+            .unwrap_or(Message {
+                id,
+                role: MessageRole::System,
+                timestamp_unix_ms: None,
+                blocks: Vec::new(),
+                completed: true,
+                turn_settings: None,
+                turn_usage: None,
+                branch_point: None,
+            });
+        for block in blocks {
+            if !message.blocks.contains(&block) {
+                message.blocks.push(block);
+            }
+        }
+        if message.blocks.is_empty() {
+            message.blocks.push(MessageBlock::Notice {
+                text: "Claude Code 执行失败（上游未提供错误详情）。".into(),
+            });
+        }
+        self.message(message);
     }
     /// Complete the call a tool result answers, as one row like the native
     /// transcript shows it; false when the call is not in this projection.
@@ -832,6 +873,40 @@ impl NativeSession {
 /// `agent` is the conversation of the sub-agent a tool result started.
 /// Blank text and thinking show nothing: Claude Code records omitted thinking
 /// as an empty block beside its signature.
+fn claude_error_blocks(record: &Value) -> Result<Vec<MessageBlock>> {
+    let mut details = Vec::new();
+    if record["type"] == "assistant" {
+        for block in claude_blocks(&record["message"]["content"], None) {
+            if let MessageBlock::Text { text } = block {
+                details.push(text);
+            }
+        }
+        if let Some(code) = record["error"].as_str() {
+            details.push(format!("Claude Code 错误类型：{code}"));
+        }
+    } else {
+        if !record["errors"].is_null() {
+            let errors: Vec<String> = serde_json::from_value(record["errors"].clone())
+                .map_err(|error| Error::new(format!("Claude Code 错误列表无效：{error}")))?;
+            details.extend(errors);
+        }
+        if let Some(result) = record["result"].as_str() {
+            details.push(result.into());
+        }
+        if let Some(code) = record["subtype"].as_str().filter(|code| *code != "success") {
+            details.push(format!("Claude Code 错误类型：{code}"));
+        }
+        if let Some(status) = record["api_error_status"].as_u64() {
+            details.push(format!("HTTP {status}"));
+        }
+    }
+    Ok(details
+        .into_iter()
+        .filter(|text| !text.trim().is_empty())
+        .map(|text| MessageBlock::Notice { text })
+        .collect())
+}
+
 fn claude_blocks(content: &Value, agent: Option<String>) -> Vec<MessageBlock> {
     fn visible(text: &Value) -> Option<&str> {
         text.as_str().filter(|text| !text.trim().is_empty())
@@ -1010,4 +1085,38 @@ fn claude_session_id() -> Result<String> {
         &hex[16..20],
         &hex[20..]
     ))
+}
+
+#[cfg(test)]
+mod error_tests {
+    use super::*;
+
+    #[test]
+    fn result_and_assistant_errors_preserve_native_details() {
+        let assistant =
+            claude_error_blocks(&json!({"type":"assistant","error":"authentication_failed",
+            "message":{"content":[{"type":"text","text":"synthetic credential rejected"}]}}))
+            .unwrap();
+        assert!(assistant.contains(&MessageBlock::Notice {
+            text: "synthetic credential rejected".into()
+        }));
+        assert!(assistant.contains(&MessageBlock::Notice {
+            text: "Claude Code 错误类型：authentication_failed".into()
+        }));
+        let result =
+            claude_error_blocks(&json!({"type":"result","subtype":"success","is_error":true,
+            "api_error_status":401,"result":"synthetic credential rejected"}))
+            .unwrap();
+        assert!(result.contains(&assistant[0]));
+        assert!(result.contains(&MessageBlock::Notice {
+            text: "HTTP 401".into()
+        }));
+        let loop_error = claude_error_blocks(&json!({"type":"result","subtype":"error_max_turns",
+            "errors":["maximum turns reached"]}))
+        .unwrap();
+        assert!(loop_error.contains(&MessageBlock::Notice {
+            text: "maximum turns reached".into()
+        }));
+        assert!(claude_error_blocks(&json!({"type":"result","errors":[42]})).is_err());
+    }
 }

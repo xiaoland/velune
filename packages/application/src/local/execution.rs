@@ -266,7 +266,6 @@ impl CoreRuntime {
                 .map_err(|error| RuntimeError::context("runtime shutdown", error))?;
         }
         self.session.pi.busy = false;
-        self.session.pi.turn_started = false;
         self.session.pi.projection = None;
         self.session.pi.physical_model_id = None;
         self.session.model_record_key = None;

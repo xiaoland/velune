@@ -1041,6 +1041,16 @@ fn project_error(
             text.push_str(details);
         }
     }
+    if !error["codexErrorInfo"].is_null() {
+        let info = &error["codexErrorInfo"];
+        text.push_str("\nCodex 错误类型：");
+        text.push_str(
+            &info
+                .as_str()
+                .map(str::to_owned)
+                .unwrap_or_else(|| info.to_string()),
+        );
+    }
     if retrying {
         text.push_str("\nCodex 正在自动重试。");
     }
@@ -1312,7 +1322,7 @@ mod tests {
         };
         assert_eq!(
             text,
-            "Selected model is at capacity. Please try a different model.\nsynthetic request detail"
+            "Selected model is at capacity. Please try a different model.\nsynthetic request detail\nCodex 错误类型：serverOverloaded"
         );
         let MessageBlock::Notice { text } = &retry.blocks[0] else {
             panic!()

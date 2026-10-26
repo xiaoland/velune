@@ -418,10 +418,30 @@ impl NativeSession {
         if let Some(id) = record["id"].as_u64()
             && self.pending_rpc.remove(&id).as_deref() == Some("prompt")
         {
-            if record.get("error").is_some() {
-                self.notice("DeepSeek 执行请求失败");
+            if let Some(error) = record.get("error") {
+                let error: agent_client_protocol_schema::v1::Error =
+                    serde_json::from_value(error.clone()).map_err(|error| {
+                        Error::new(format!("DeepSeek ACP 错误响应无效：{error}"))
+                    })?;
+                self.notice(&format!(
+                    "DeepSeek 请求失败（{}）：{error}",
+                    i32::from(error.code)
+                ));
                 self.finish_turn(RunState::Failed)?;
             } else {
+                let response: agent_client_protocol_schema::v1::PromptResponse =
+                    serde_json::from_value(record["result"].clone()).map_err(|error| {
+                        Error::new(format!("DeepSeek prompt 响应无效：{error}"))
+                    })?;
+                use agent_client_protocol_schema::v1::StopReason;
+                match response.stop_reason {
+                    StopReason::EndTurn => {}
+                    StopReason::Cancelled => self.notice("DeepSeek 本轮已取消。"),
+                    StopReason::MaxTokens => self.notice("DeepSeek 达到本轮输出上限。"),
+                    StopReason::MaxTurnRequests => self.notice("DeepSeek 达到本轮请求次数上限。"),
+                    StopReason::Refusal => self.notice("DeepSeek 拒绝本轮请求。"),
+                    _ => return Err(Error::new("DeepSeek prompt 响应缺少可识别的结束原因")),
+                }
                 self.finish_turn(RunState::Idle)?;
             }
         }

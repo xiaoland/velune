@@ -706,7 +706,14 @@ impl CoreRuntime {
         self.session.cancel_requested = false;
         self.follow_started_turn();
         self.session.pi.busy = response["data"]["disposition"] != "handled";
-        if !self.session.pi.busy {
+        if self.session.pi.busy {
+            self.session
+                .pi
+                .projection
+                .as_mut()
+                .expect("accepted Pi prompt")
+                .begin_turn();
+        } else {
             self.session
                 .pi
                 .projection
@@ -714,7 +721,6 @@ impl CoreRuntime {
                 .expect("accepted Pi prompt")
                 .invalidate_history();
         }
-        self.session.pi.turn_started = false;
         if self.turn_running()
             && let Some(snapshot) = self
                 .session
@@ -835,7 +841,9 @@ impl CoreRuntime {
                 .pi
                 .projection
                 .as_ref()
-                .is_some_and(PiProjection::history_synchronized)
+                .is_some_and(|projection| {
+                    projection.history_synchronized() || !projection.can_sync_history()
+                })
         {
             return Ok(());
         }
@@ -884,8 +892,8 @@ impl CoreRuntime {
             projection.replace_history(&messages);
             if let Some(snapshot) = projection.snapshot.as_mut() {
                 snapshot.model_record_key = self.session.model_record_key.clone();
-                snapshot.actions.can_send = !self.session.pi.busy;
-                snapshot.actions.can_cancel = self.session.pi.busy;
+                snapshot.actions.can_send &= !self.session.pi.busy;
+                snapshot.actions.can_cancel &= self.session.pi.busy;
             }
         }
         self.drain_runtime()?;
@@ -901,21 +909,11 @@ impl CoreRuntime {
             .map(|client| client.poll())
             .unwrap_or_default();
         for event in events {
-            let is_settled = event["type"] == "agent_settled";
-            let matched_settled = is_settled && self.session.pi.turn_started;
-            // History and bootstrap message events do not begin an agent run.
-            // Only the SDK's run boundary can authorize its settled event.
-            if event["type"] == "agent_start" {
-                self.session.pi.turn_started = true;
-            }
-            if matched_settled {
-                self.session.pi.busy = false;
-                self.session.pi.turn_started = false;
-            }
-            if (!is_settled || matched_settled)
-                && let Some(projection) = self.session.pi.projection.as_mut()
-            {
+            if let Some(projection) = self.session.pi.projection.as_mut() {
                 projection.apply_event(&event);
+                if projection.turn_ended() {
+                    self.session.pi.busy = false;
+                }
             }
         }
     }

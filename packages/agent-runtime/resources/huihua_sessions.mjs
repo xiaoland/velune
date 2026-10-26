@@ -40,7 +40,11 @@ function message(event) {
     }
     case "tool_call": return {id,timestamp_unix_ms:timestamp(event.timestamp),role:"tool",blocks:[{kind:"tool",toolID:event.data.callId ?? null,title:event.data.toolName,state:"pending",output:null}]};
     case "tool_result": return {id,timestamp_unix_ms:timestamp(event.timestamp),role:"tool",blocks:[{kind:"tool",toolID:event.data.callId ?? null,title:event.data.toolName ?? "工具结果",state:event.data.isError ? "failed" : "completed",output:resultText(event.data.result)}]};
-    case "error": return {id,timestamp_unix_ms:timestamp(event.timestamp),role:"system",blocks:[{kind:"notice",text:event.data.message ?? "运行时记录了错误"}]};
+    case "error": {
+      const details = typeof event.data.details === "string" ? event.data.details : event.data.details == null ? "" : JSON.stringify(event.data.details, null, 2);
+      const text = [...new Set([event.data.message, details].filter(value => typeof value === "string" && value.trim()))].join("\n");
+      return {id,timestamp_unix_ms:timestamp(event.timestamp),role:"system",blocks:[{kind:"notice",text:text || "运行时记录了错误（未提供详情）"}]};
+    }
     case "file_change": return {id,timestamp_unix_ms:timestamp(event.timestamp),role:"tool",blocks:[{kind:"notice",text:`${event.data.operation}: ${event.data.path}`}]};
     case "command": return {id,timestamp_unix_ms:timestamp(event.timestamp),role:"tool",blocks:[{kind:"notice",text:"运行时执行了命令"}]};
     case "permission_request": return {id,timestamp_unix_ms:timestamp(event.timestamp),role:"system",blocks:[{kind:"notice",text:"历史权限请求"}]};

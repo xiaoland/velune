@@ -162,6 +162,13 @@ def history(path, native_id, runtime_id, sidechain=False):
         else:
             calls.update((b["tool_id"], b) for b in content if b["kind"] == "tool" and b["tool_id"])
         model = entry.get("message", {}).get("model")
+        api_error = role == "assistant" and entry.get("isApiErrorMessage") is True
+        if api_error:
+            content = [{"kind": "notice", "text": block["text"]} for block in content if block["kind"] == "text"]
+            if isinstance(entry.get("error"), str):
+                content.append({"kind": "notice", "text": "Claude Code 错误类型：" + entry["error"]})
+            if not content:
+                content.append({"kind": "notice", "text": "Claude Code 执行失败（上游未提供错误详情）。"})
         # The turn's model is the first its replies name; Claude Code marks
         # replies it wrote itself (errors and the like) with "<synthetic>".
         if role == "assistant" and turn is not None and "model" not in turn and isinstance(model, str) and not model.startswith("<"):
@@ -178,7 +185,7 @@ def history(path, native_id, runtime_id, sidechain=False):
             can_resume = False
         if role == "user" and first_user is None and command is None:
             first_user = next((b["text"] for b in content if b["kind"] == "text"), None)
-        message = {"id": entry["uuid"], "role": "tool" if role == "user" and all(b["kind"] == "tool" for b in content) else role,
+        message = {"id": entry["uuid"], "role": "system" if api_error else "tool" if role == "user" and all(b["kind"] == "tool" for b in content) else role,
                    "completed": True, "timestamp_unix_ms": timestamp(entry.get("timestamp")), "blocks": content}
         if message["role"] == "user":
             prompt_id = entry.get("promptId")

@@ -4,6 +4,15 @@ use crate::conversation::{
 };
 use serde_json::Value;
 
+#[derive(Debug, Default, PartialEq, Eq)]
+enum Lifecycle {
+    #[default]
+    Idle,
+    Running,
+    Ended,
+    Closed,
+}
+
 #[derive(Debug, Default)]
 pub struct PiProjection {
     pub snapshot: Option<ConversationSnapshot>,
@@ -14,6 +23,8 @@ pub struct PiProjection {
     history_synchronized: bool,
     /// The current or latest turn ended a model response with an error.
     turn_failed: bool,
+    lifecycle: Lifecycle,
+    failed_message_id: Option<String>,
 }
 
 impl PiProjection {
@@ -48,6 +59,8 @@ impl PiProjection {
             next_native_identity: None,
             history_synchronized: false,
             turn_failed: false,
+            lifecycle: Lifecycle::Idle,
+            failed_message_id: None,
         }
     }
 
@@ -55,6 +68,23 @@ impl PiProjection {
     /// the conversation usable; this tells such a turn from a completed one.
     pub fn turn_failed(&self) -> bool {
         self.turn_failed
+    }
+
+    /// An accepted prompt may still be waiting for the runtime to start.
+    pub fn begin_turn(&mut self) {
+        if !matches!(self.lifecycle, Lifecycle::Running | Lifecycle::Closed) {
+            self.lifecycle = Lifecycle::Idle;
+        }
+    }
+
+    /// Completion stays observable until the next accepted prompt.
+    pub fn turn_ended(&self) -> bool {
+        matches!(self.lifecycle, Lifecycle::Ended | Lifecycle::Closed)
+    }
+
+    /// A terminal transport failure leaves the current projection readable.
+    pub fn can_sync_history(&self) -> bool {
+        self.lifecycle != Lifecycle::Closed
     }
 
     pub fn invalidate_history(&mut self) {
@@ -66,6 +96,9 @@ impl PiProjection {
     }
 
     pub fn replace_history(&mut self, response: &Value) {
+        if self.lifecycle == Lifecycle::Closed {
+            return;
+        }
         let Some(mut snapshot) = self.snapshot.take() else {
             return;
         };
@@ -139,6 +172,11 @@ impl PiProjection {
         snapshot
             .message_identity_confirmations
             .retain(|confirmation| native_ids.contains(confirmation.current_id.as_str()));
+        retain_diagnostics(
+            &snapshot.messages,
+            &mut projected,
+            &snapshot.message_identity_confirmations,
+        );
         snapshot.messages = projected;
         refresh_title(&mut snapshot);
         snapshot.revision = snapshot.revision.saturating_add(1);
@@ -153,6 +191,9 @@ impl PiProjection {
     }
 
     pub fn apply_event(&mut self, event: &Value) {
+        if self.lifecycle == Lifecycle::Closed {
+            return;
+        }
         let Some(mut snapshot) = self.snapshot.take() else {
             return;
         };
@@ -160,6 +201,7 @@ impl PiProjection {
             "agent_start" | "turn_start" => {
                 if event["type"] == "agent_start" {
                     self.turn_failed = false;
+                    self.lifecycle = Lifecycle::Running;
                 }
                 snapshot.run_state = RunState::Running;
                 snapshot.actions.can_send = false;
@@ -221,6 +263,9 @@ impl PiProjection {
                             .unwrap_or_else(|| format!("message-{}", self.next_message_id))
                     };
                     if let Some(mut message) = message_from_pi(native, id.clone()) {
+                        if event["type"] == "message_end" && native["role"] == "assistant" {
+                            self.failed_message_id = self.turn_failed.then(|| id.clone());
+                        }
                         message.completed = event["type"] == "message_end"
                             || message.role != MessageRole::Assistant;
                         if let Some(existing) = snapshot.messages.iter_mut().find(|m| m.id == id) {
@@ -323,34 +368,93 @@ impl PiProjection {
                 self.history_synchronized = false;
             }
             "agent_settled" => {
+                if self.lifecycle != Lifecycle::Running {
+                    self.snapshot = Some(snapshot);
+                    return;
+                }
+                self.lifecycle = Lifecycle::Ended;
                 for message in &mut snapshot.messages {
                     message.completed = true;
                 }
                 self.history_synchronized = false;
-                snapshot.run_state = RunState::Idle;
+                snapshot.run_state = if self.turn_failed {
+                    RunState::Failed
+                } else {
+                    RunState::Idle
+                };
                 snapshot.actions.can_send = true;
                 snapshot.actions.can_cancel = false;
                 self.active_message_id = None;
                 self.active_native_message = None;
                 self.next_native_identity = None;
             }
-            "error" | "extension_error" | "velune_error" | "velune_closed" => {
-                snapshot.run_state = RunState::Failed;
-                snapshot.actions.can_send = false;
-                snapshot.actions.can_cancel = false;
-                snapshot.messages.push(Message {
+            "auto_retry_start" => {
+                if let Some(id) = self.failed_message_id.take() {
+                    snapshot.messages.retain(|message| message.id != id);
+                }
+                self.turn_failed = false;
+                let text = format!(
+                    "{}\nPi 正在自动重试（{}/{}）。",
+                    event["errorMessage"].as_str().unwrap_or("Pi 请求失败"),
+                    event["attempt"],
+                    event["maxAttempts"]
+                );
+                let message = Message {
+                    id: "pi-auto-retry".into(),
+                    role: MessageRole::System,
+                    timestamp_unix_ms: None,
+                    blocks: vec![MessageBlock::Notice { text }],
+                    completed: false,
                     turn_settings: None,
                     turn_usage: None,
                     branch_point: None,
-                    completed: true,
-                    id: format!("notice-{}", self.next_message_id),
-                    role: MessageRole::System,
-                    timestamp_unix_ms: None,
-                    blocks: vec![MessageBlock::Notice {
-                        text: "运行时发生错误".into(),
-                    }],
-                });
-                self.next_message_id += 1;
+                };
+                if let Some(old) = snapshot.messages.iter_mut().find(|m| m.id == message.id) {
+                    *old = message;
+                } else {
+                    snapshot.messages.push(message);
+                }
+            }
+            "auto_retry_end" => {
+                snapshot
+                    .messages
+                    .retain(|message| message.id != "pi-auto-retry");
+            }
+            "extension_error" => {
+                let text = format!(
+                    "Pi 扩展错误：{}\n{} · {}",
+                    event["error"].as_str().unwrap_or("上游未提供错误详情"),
+                    event["extensionPath"].as_str().unwrap_or_default(),
+                    event["event"].as_str().unwrap_or_default()
+                );
+                self.diagnostic(&mut snapshot, text);
+            }
+            "velune_error" | "velune_closed" => {
+                self.lifecycle = Lifecycle::Closed;
+                self.turn_failed = true;
+                snapshot.run_state = RunState::Failed;
+                snapshot.actions.can_send = false;
+                snapshot.actions.can_cancel = false;
+                snapshot
+                    .messages
+                    .retain(|message| message.id != "pi-auto-retry");
+                for message in &mut snapshot.messages {
+                    message.completed = true;
+                    for block in &mut message.blocks {
+                        if let MessageBlock::Tool { state, .. } = block
+                            && matches!(state, ToolState::Pending | ToolState::Running)
+                        {
+                            *state = ToolState::Failed;
+                        }
+                    }
+                }
+                self.diagnostic(
+                    &mut snapshot,
+                    event["error"]
+                        .as_str()
+                        .unwrap_or("Pi 控制连接已关闭，请重新连接。")
+                        .into(),
+                );
             }
             _ => {
                 self.snapshot = Some(snapshot);
@@ -361,6 +465,56 @@ impl PiProjection {
         snapshot.revision = snapshot.revision.saturating_add(1);
         self.snapshot = Some(snapshot);
     }
+
+    fn diagnostic(&mut self, snapshot: &mut ConversationSnapshot, text: String) {
+        snapshot.messages.push(Message {
+            id: format!("pi-diagnostic-{}", self.next_message_id),
+            role: MessageRole::System,
+            timestamp_unix_ms: None,
+            blocks: vec![MessageBlock::Notice { text }],
+            completed: true,
+            turn_settings: None,
+            turn_usage: None,
+            branch_point: None,
+        });
+        self.next_message_id += 1;
+    }
+}
+
+fn retain_diagnostics(
+    old: &[Message],
+    messages: &mut Vec<Message>,
+    confirmations: &[crate::conversation::MessageIdentityConfirmation],
+) {
+    use std::collections::HashMap;
+    let mut positions: HashMap<_, _> = messages
+        .iter()
+        .enumerate()
+        .map(|(index, message)| (message.id.as_str(), index + 1))
+        .collect();
+    for confirmation in confirmations {
+        if let Some(position) = positions.get(confirmation.current_id.as_str()).copied() {
+            positions.insert(confirmation.previous_id.as_str(), position);
+        }
+    }
+    let mut notices: HashMap<usize, Vec<Message>> = HashMap::new();
+    let mut anchor = Some(0);
+    for message in old {
+        if message.id.starts_with("pi-diagnostic-") {
+            if let Some(position) = anchor {
+                notices.entry(position).or_default().push(message.clone());
+            }
+        } else if message.id != "pi-auto-retry" {
+            anchor = positions.get(message.id.as_str()).copied();
+        }
+    }
+    let native = std::mem::take(messages);
+    let native_len = native.len();
+    for (index, message) in native.into_iter().enumerate() {
+        messages.extend(notices.remove(&index).unwrap_or_default());
+        messages.push(message);
+    }
+    messages.extend(notices.remove(&native_len).unwrap_or_default());
 }
 
 fn apply_assistant_delta(message: &mut Value, event: &Value) {
@@ -571,9 +725,13 @@ fn message_from_pi(message: &Value, fallback_id: String) -> Option<Message> {
     }
     if let Some(error) = message["errorMessage"]
         .as_str()
-        .filter(|error| !error.is_empty())
+        .filter(|error| !error.trim().is_empty())
     {
         blocks.push(MessageBlock::Notice { text: error.into() });
+    } else if message["role"] == "assistant" && message["stopReason"] == "error" {
+        blocks.push(MessageBlock::Notice {
+            text: "Pi 请求失败（上游未提供错误详情）。".into(),
+        });
     }
     (!blocks.is_empty()).then(|| Message {
         turn_settings: None,
@@ -605,5 +763,161 @@ fn pi_usage(usage: &Value) -> crate::conversation::TurnUsage {
         reasoning_tokens: usage["reasoning"].as_u64(),
         context_tokens: input.zip(output).map(|(input, output)| input + output),
         ..Default::default()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn projection() -> PiProjection {
+        PiProjection::new(ConversationSummary {
+            id: "pi:synthetic".into(),
+            runtime_id: "pi".into(),
+            title: crate::conversation::conversation_title(None, None),
+            cwd: None,
+            created_at_unix_ms: None,
+            updated_at_unix_ms: None,
+            can_rename: false,
+            can_delete: false,
+            parent_conversation_id: None,
+        })
+    }
+
+    fn message(projection: &mut PiProjection, value: Value) {
+        projection.apply_event(&json!({"type":"message_start","message":value}));
+        projection.apply_event(&json!({"type":"message_end","message":value}));
+    }
+
+    #[test]
+    fn extension_diagnostic_keeps_its_position_when_native_history_is_replaced() {
+        let mut p = projection();
+        p.begin_turn();
+        p.apply_event(&json!({"type":"agent_start"}));
+        let user = json!({"id":"prompt","role":"user","content":"question"});
+        let answer =
+            json!({"id":"answer","role":"assistant","stopReason":"stop","content":"answer"});
+        message(&mut p, user.clone());
+        p.apply_event(
+            &json!({"type":"extension_error","extensionPath":"synthetic.ts",
+            "event":"before_agent_start","error":"synthetic extension failure"}),
+        );
+        assert_eq!(p.snapshot.as_ref().unwrap().run_state, RunState::Running);
+        message(&mut p, answer.clone());
+        p.apply_event(&json!({"type":"agent_settled"}));
+        assert!(p.turn_ended());
+        assert!(!p.turn_failed());
+        let newer = json!({"id":"newer","role":"user","content":"next question"});
+        for _ in 0..2 {
+            p.replace_history(&json!({"messages":[user,answer,newer]}));
+            let snapshot = p.snapshot.as_ref().unwrap();
+            assert_eq!(snapshot.run_state, RunState::Idle);
+            assert!(snapshot.actions.can_send);
+            assert_eq!(snapshot.messages.len(), 4);
+            assert!(snapshot.messages[1].id.starts_with("pi-diagnostic-"));
+            let MessageBlock::Notice { text } = &snapshot.messages[1].blocks[0] else {
+                panic!()
+            };
+            assert!(text.contains("synthetic extension failure") && text.contains("synthetic.ts"));
+            assert_eq!(snapshot.messages[2].id, "answer");
+        }
+    }
+
+    #[test]
+    fn retry_outcome_comes_from_the_last_native_message_not_retry_end() {
+        for stop in ["stop", "error", "aborted"] {
+            let mut p = projection();
+            p.begin_turn();
+            p.apply_event(&json!({"type":"agent_start"}));
+            message(
+                &mut p,
+                json!({"id":"omitted","role":"assistant","stopReason":"error",
+                "errorMessage":"first failed attempt","content":[]}),
+            );
+            p.apply_event(
+                &json!({"type":"auto_retry_start","attempt":1,"maxAttempts":3,
+                "delayMs":10,"errorMessage":"first failed attempt"}),
+            );
+            assert!(!p.turn_ended());
+            assert!(
+                !p.snapshot
+                    .as_ref()
+                    .unwrap()
+                    .messages
+                    .iter()
+                    .any(|m| m.id == "omitted")
+            );
+            p.apply_event(&json!({"type":"agent_start"}));
+            let last = json!({"id":"last","role":"assistant","stopReason":stop,
+                "errorMessage":if stop=="error" {"final native failure"} else {""},
+                "content":[{"type":"text","text":"last response"}]});
+            message(&mut p, last.clone());
+            p.apply_event(&json!({"type":"auto_retry_end","success":stop=="stop","finalError":"Retry cancelled"}));
+            p.apply_event(&json!({"type":"agent_settled"}));
+            assert!(p.turn_ended());
+            assert_eq!(p.turn_failed(), stop == "error");
+            p.replace_history(&json!({"messages":[last]}));
+            let snapshot = p.snapshot.as_ref().unwrap();
+            assert_eq!(snapshot.messages.len(), 1);
+            assert_eq!(snapshot.messages[0].id, "last");
+            assert_eq!(
+                snapshot.run_state,
+                if stop == "error" {
+                    RunState::Failed
+                } else {
+                    RunState::Idle
+                }
+            );
+            assert!(snapshot.actions.can_send);
+        }
+    }
+
+    #[test]
+    fn terminal_connection_failure_survives_late_lifecycle_and_history_records() {
+        let mut p = projection();
+        p.apply_event(&json!({"type":"agent_settled"}));
+        assert!(!p.turn_ended());
+        p.begin_turn();
+        p.apply_event(&json!({"type":"velune_error","error":"invalid JSON; synthetic stderr"}));
+        for value in [
+            json!({"type":"agent_start"}),
+            json!({"type":"agent_settled"}),
+        ] {
+            p.apply_event(&value);
+        }
+        p.replace_history(&json!({"messages":[]}));
+        p.begin_turn();
+        let snapshot = p.snapshot.as_ref().unwrap();
+        assert!(p.turn_ended());
+        assert!(!p.can_sync_history());
+        assert_eq!(snapshot.run_state, RunState::Failed);
+        assert!(!snapshot.actions.can_send && !snapshot.actions.can_cancel);
+        assert_eq!(snapshot.messages.len(), 1);
+        let MessageBlock::Notice { text } = &snapshot.messages[0].blocks[0] else {
+            panic!()
+        };
+        assert_eq!(text, "invalid JSON; synthetic stderr");
+    }
+
+    #[test]
+    fn connection_failure_ends_a_visible_retry() {
+        let mut p = projection();
+        p.begin_turn();
+        p.apply_event(&json!({"type":"agent_start"}));
+        p.apply_event(
+            &json!({"type":"auto_retry_start","attempt":1,"maxAttempts":3,
+            "errorMessage":"temporary failure"}),
+        );
+        p.apply_event(&json!({"type":"velune_error","error":"synthetic connection lost"}));
+        assert!(
+            !p.snapshot
+                .as_ref()
+                .unwrap()
+                .messages
+                .iter()
+                .any(|m| m.id == "pi-auto-retry")
+        );
+        assert!(p.turn_ended() && !p.can_sync_history());
     }
 }

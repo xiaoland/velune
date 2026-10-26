@@ -73,7 +73,6 @@ struct PiState {
     config: Option<PiConfig>,
     projection: Option<PiProjection>,
     busy: bool,
-    turn_started: bool,
     physical_model_id: Option<String>,
 }
 #[derive(Default)]

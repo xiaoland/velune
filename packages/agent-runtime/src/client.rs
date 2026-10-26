@@ -171,6 +171,8 @@ pub struct Client {
     pending: VecDeque<Value>,
     next_id: u64,
     stderr: SharedStderr,
+    terminal_error: Option<String>,
+    terminal_reported: bool,
     pub config: Config,
     _mcp: crate::mcp::Prepared,
 }
@@ -360,15 +362,16 @@ impl Client {
                                         break;
                                     }
                                 }
-                                Err(_) => {
+                                Err(error) => {
                                     tracing::warn!(code="rpc_invalid_json","Pi RPC reader rejected invalid JSON");
-                                    let _ = sender.send(Incoming::Error("invalid Pi RPC JSON record".into()));
+                                    let _ = sender.send(Incoming::Error(format!("invalid Pi RPC JSON record: {error}")));
+                                    break;
                                 }
                             }
                         }
                         Err(error) => {
                             tracing::warn!(code="rpc_read_failed",io_kind=?error.kind(),"Pi RPC reader I/O failed");
-                            let _ = sender.send(Incoming::Error(format!("Pi RPC read failed: {:?}",error.kind())));
+                            let _ = sender.send(Incoming::Error(format!("Pi RPC read failed: {error}")));
                             break;
                         }
                     }
@@ -381,6 +384,8 @@ impl Client {
             pending: VecDeque::new(),
             next_id: 1,
             stderr,
+            terminal_error: None,
+            terminal_reported: false,
             config,
             _mcp: mcp,
         })
@@ -425,13 +430,19 @@ impl Client {
         }
     }
 
-    fn io_error_with_stderr(&self, context: &str, error: std::io::Error) -> Error {
-        let detail = self.stderr_detail(true);
-        if detail.is_empty() {
-            Error::Io(error)
-        } else {
-            Error::CommandFailed(format!("{context}：{error}；原始错误：{detail}"))
+    fn terminate(&mut self, cause: Option<String>) -> Error {
+        if let Some(error) = &self.terminal_error {
+            return Error::CommandFailed(error.clone());
         }
+        self.stdin.take();
+        self.child.stop();
+        let exit = match self.child_exit_error() {
+            Error::CommandFailed(detail) => detail,
+            error => error.to_string(),
+        };
+        let detail = cause.map_or_else(|| exit.clone(), |cause| format!("{cause}；{exit}"));
+        self.terminal_error = Some(detail.clone());
+        Error::CommandFailed(detail)
     }
 
     fn timeout_error(&mut self) -> Error {
@@ -451,6 +462,9 @@ impl Client {
     }
 
     fn write_command(&mut self, mut command: Value) -> Result<String> {
+        if let Some(error) = &self.terminal_error {
+            return Err(Error::CommandFailed(error.clone()));
+        }
         let object = command.as_object_mut().ok_or(Error::InvalidCommand)?;
         let command_type = object
             .get("type")
@@ -476,27 +490,23 @@ impl Client {
             let stdin = self.stdin.as_mut().expect("checked Pi RPC stdin");
             stdin.write_all(&bytes).and_then(|_| stdin.flush())
         };
-        result.map_err(|error| self.io_error_with_stderr("Pi RPC command send failed", error))?;
+        if let Err(error) = result {
+            return Err(self.terminate(Some(format!("Pi RPC command send failed: {error}"))));
+        }
         Ok(format!("{command_type}\0{id}"))
     }
 
     fn receive(&mut self, timeout: Duration) -> Result<Value> {
+        if let Some(error) = &self.terminal_error {
+            return Err(Error::CommandFailed(error.clone()));
+        }
         if let Some(value) = self.pending.pop_front() {
             return Ok(value);
         }
         match self.incoming.recv_timeout(timeout) {
             Ok(Incoming::Record(value)) => Ok(value),
-            Ok(Incoming::Error(error)) => {
-                let stderr = self.stderr_detail(false);
-                if stderr.is_empty() {
-                    Err(Error::CommandFailed(error))
-                } else {
-                    Err(Error::CommandFailed(format!("{error}；原始错误：{stderr}")))
-                }
-            }
-            Ok(Incoming::Closed) | Err(RecvTimeoutError::Disconnected) => {
-                Err(self.child_exit_error())
-            }
+            Ok(Incoming::Error(error)) => Err(self.terminate(Some(error))),
+            Ok(Incoming::Closed) | Err(RecvTimeoutError::Disconnected) => Err(self.terminate(None)),
             Err(RecvTimeoutError::Timeout) => Err(self.timeout_error()),
         }
     }
@@ -508,7 +518,14 @@ impl Client {
         let (_, id) = key.split_once('\0').expect("internal command key");
         let mut deferred = VecDeque::new();
         loop {
-            let value = self.receive(timeout)?;
+            let value = match self.receive(timeout) {
+                Ok(value) => value,
+                Err(error) => {
+                    deferred.append(&mut self.pending);
+                    self.pending = deferred;
+                    return Err(error);
+                }
+            };
             let matches = value.get("type").and_then(Value::as_str) == Some("response")
                 && value.get("id").and_then(Value::as_str) == Some(id);
             if matches {
@@ -637,17 +654,28 @@ impl Client {
     }
 
     pub fn poll(&mut self) -> Vec<Value> {
-        let mut records = Vec::new();
-        while let Some(record) = self.pending.pop_front() {
-            records.push(record);
+        let mut records: Vec<_> = self.pending.drain(..).collect();
+        if let Some(error) = &self.terminal_error {
+            if !std::mem::replace(&mut self.terminal_reported, true) {
+                records.push(json!({"type":"velune_error","error":error}));
+            }
+            return records;
         }
         while let Ok(item) = self.incoming.try_recv() {
             match item {
                 Incoming::Record(value) => records.push(value),
-                Incoming::Error(error) => records.push(json!({
-                    "type":"velune_error","error":error
-                })),
-                Incoming::Closed => records.push(json!({"type":"velune_closed"})),
+                Incoming::Error(error) => {
+                    let error = self.terminate(Some(error));
+                    self.terminal_reported = true;
+                    records.push(json!({"type":"velune_error","error":error.to_string()}));
+                    break;
+                }
+                Incoming::Closed => {
+                    let error = self.terminate(None);
+                    self.terminal_reported = true;
+                    records.push(json!({"type":"velune_error","error":error.to_string()}));
+                    break;
+                }
             }
         }
         records

@@ -858,11 +858,7 @@ fn rpc_error(error: &Value) -> Result<Error> {
         _ => "rpc",
     };
     Ok(Error::with_code(
-        format!(
-            "ACP 请求失败（{}）：{}",
-            i32::from(error.code),
-            error.message
-        ),
+        format!("ACP 请求失败（{}）：{error}", i32::from(error.code)),
         category,
     ))
 }
@@ -870,4 +866,26 @@ fn timestamp(value: &str) -> Option<i64> {
     time::OffsetDateTime::parse(value, &time::format_description::well_known::Rfc3339)
         .ok()
         .and_then(|time| i64::try_from(time.unix_timestamp_nanos() / 1_000_000).ok())
+}
+
+#[cfg(test)]
+mod error_tests {
+    use super::*;
+
+    #[test]
+    fn rpc_error_keeps_code_message_and_native_data() {
+        let error = rpc_error(&json!({"code":-32000,"message":"synthetic unavailable",
+            "data":{"upstreamCode":"server_overloaded","requestId":"synthetic"}}))
+        .unwrap();
+        let text = error.to_string();
+        for value in [
+            "-32000",
+            "synthetic unavailable",
+            "server_overloaded",
+            "requestId",
+        ] {
+            assert!(text.contains(value));
+        }
+        assert!(rpc_error(&json!({"code":"invalid","message":"bad"})).is_err());
+    }
 }

@@ -85,7 +85,7 @@ Codex 使用 app-server 的 thread／turn 控制；轮次以 interrupted 或 fai
 
 Codex 0.159.3 的 thread/revert 保留稳定 thread ID，同时创建新的 rollout 文件并更新当前历史；paginated 历史还可以引用旧文件的前缀。因此不能把 thread ID 当成物理文件唯一键，也不能按时间任选重复文件。列表使用原生 thread/list 的完整来源枚举与空提供商过滤；详情用 thread/read 核对身份，再按升序分页读取 thread/items/list 与 thread/turns/list。后者使用 notLoaded 的 itemsView，只补回合状态和错误。legacy 与 paginated 共用原生入口及实时消息的 item 投影，保留原生 item 时间，不自行解析 history_base 或扫描所有文件。短生命周期 app-server 与既有原生管理共用有界 RPC；原生读取失败明确诊断，不回退为文件选择。
 
-Codex 的实时 error 通知和 turn/completed 的最终错误使用同一回合消息身份，展示 message 与非空 additionalDetails，不把重复事件变成多条通知。willRetry 为 true 时标明正在自动重试，不提前结束执行；成功或中断后移除该临时通知。最终失败优先使用 turn.error，缺失时保留本轮最近的错误详情。历史读取和 thread/resume 都把原生回合错误投影为系统通知，放在该回合内容之后；没有 item 的失败回合也保留顺序。上游标记 failed 却没有详情时明确说明未提供原因。此展示不新增原始响应日志或 Velune 历史存储，上游未保存的错误无法在重新打开时恢复。
+Codex 的实时 error 通知和 turn/completed 的最终错误使用同一回合消息身份，展示 message、非空 additionalDetails 与原生 codexErrorInfo，不把重复事件变成多条通知。willRetry 为 true 时标明正在自动重试，不提前结束执行；成功或中断后移除该临时通知。最终失败优先使用 turn.error，缺失时保留本轮最近的错误详情。历史读取和 thread/resume 都把原生回合错误投影为系统通知，放在该回合内容之后；没有 item 的失败回合也保留顺序。上游标记 failed 却没有详情时明确说明未提供原因。此展示不新增原始响应日志或 Velune 历史存储，上游未保存的错误无法在重新打开时恢复。
 
 原生权限或回答请求映射为 conversation 的类型化交互，用户显式选择、回答或取消；adapter 不自动批准。执行模型选择区分运行时既有模型与 Velune managed 模型。`NativeConfig.gateway` 为空时保留原生 provider；`models` 返回运行时的模型身份，`select_native_model` 选择既有模型，`select_model` 只为下一轮提供网关注入。运行时配置不含 Velune 默认模型，不能凭 API model ID 猜测网关路由。Codex 从会话 cwd 的 `config/read` 捕获原有 provider，原生 resume 显式传入该 provider；DSH 原生选择必须显式包含 provider ID，严格匹配 ACP 公布的 provider/model 值，不能按同名模型猜测提供商或自行拼接未公布的 opaque option。DSH reasoningEfforts 需要实际 wire 映射，当前仅有能力等级列表，不猜测映射，保留 SDK 默认行为。
 
@@ -100,6 +100,22 @@ Node 与用户配置的 Pi／Codex／DSH 安装均为外部依赖。huihua 固�
 版本注册表同时声明中立 `RuntimeProtocol` 支持集合。application 将其转换成网关协议描述供界面使用，执行准备也检查同一集合；family 不参与协议资格判断。
 
 历史与实时事件归一为同一 conversation 契约，区分正文、推理、工具和系统通知；工具调用／结果按原生关联 ID 聚合，不能在调用出现时标成已完成。来源标题与时间在适配边界保留含义，文件名不充当显示标题。Codex 注入上下文与真实用户记录通过原生来源 metadata 区分，不使用正文字符串启发式。Pi 常规轮询只消费事件，在加载、已处理扩展命令、settled、取消和压缩边界重新同步权威上下文，处理原生分支整体替换；这些行为不新增会话存储。
+
+## 原生执行错误
+
+错误载荷、原生类别和生命周期由各 adapter 解析，向外只交付既有 Notice、执行状态及控制能力。application 不根据原生错误文案、错误码或重试事件推断轮次状态。连接与读取操作失败继续通过既有操作错误返回；一次工具失败也不会直接成为整个轮次失败。
+
+| Adapter | 执行期间与最终结果 | 原生历史与恢复 |
+| --- | --- | --- |
+| Codex | 合并 error 与 turn.error，保留原生类别和详情，并依据 willRetry 展示临时重试状态。 | 消费原生回合错误，保留空失败回合的位置。 |
+| Claude Code | 合并助手 API 错误与 result.errors／失败的 result 文本，保留原生类别与 HTTP 状态；result 的 subtype 为 success 时仍检查 is_error。原生 aborted_streaming／aborted_tools 表示中断，等待 idle 才结束执行。 | isApiErrorMessage 记录投影为系统通知，保留正文和 error 类别；未持久化的 result 详情无法在重开时恢复。 |
+| DSH | ACP prompt 错误保留 code、message 和 data；取消、输出／请求次数上限与拒绝分别展示原生结束原因。 | huihua 的 error 记录保留 message 和原生 details。 |
+| 通用 ACP | 保留原生 code、message 和 data；正常结束、取消、上限与拒绝按协议区分。 | 只消费 Agent 实际回放的内容；resume 不承诺回放历史。 |
+| Pi | 模型失败使用原生助手消息的 stopReason／errorMessage；extension_error 只展示诊断，不结束轮次。 | get_messages 是有效模型上下文的权威；仅保留当前投影内未持久化的扩展诊断，并将其锚定在原消息之后。 |
+
+Pi 1.0.2 的 auto_retry_start 会省略那次失败助手消息；adapter 同步移除它并显示临时重试通知，auto_retry_end 后移除临时通知。重试耗尽和取消都可能带 success=false，最终状态由剩余原生助手消息及 agent_settled 判断。错误不能因历史刷新而重新出现。扩展诊断随身份确认迁移到原生消息身份；分支或压缩移除其锚点时，该诊断随原上下文消失，不移到下一轮末尾。
+
+Pi 的无效 JSON、读取故障和 EOF 会终止控制连接，保留首个原因、可用的 stderr 与退出状态。迟到的 settled 或历史响应不能恢复该连接，也不能留下“正在自动重试”的提示。PiProjection 在 adapter 内匹配启动与结束事件；application 在 prompt 被接受后调用 begin_turn，消费 turn_ended 清除 busy，并尊重 can_sync_history 与发送能力。连接不可用时仍能返回现有失败快照，恢复依赖新的执行连接。
 
 版本描述声明原生会话重命名／删除能力。Pi 管理通过固定 SDK 和来源范围内的原会话文件完成；Codex 使用独立 app-server 的 thread/name/set 与 thread/delete，不准备 AI 网关。Codex 名称与消息历史都由原生 thread API 提供。Claude Code 只能重命名：在会话的项目目录以 print 模式 `--resume` 启动独立子进程，发送 SDK 的 `rename_session`（`source=host`，带会话 ID），由 Claude Code 自己写入 `custom-title`；不发送轮次、不准备网关，子 Agent 会话不可重命名，也不提供删除。DSH 当前 ACP adapter 不开放会话管理，不把归档、本地隐藏或改标题投影代替持久操作。
 
