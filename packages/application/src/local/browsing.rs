@@ -528,6 +528,7 @@ impl CoreRuntime {
             })?;
             snapshot.conversation.cwd = read.cwd;
             snapshot.messages = read.messages;
+            snapshot.follow_up.can_resume = read.can_resume;
         }
         // A history projection is send-capable once the UI supplies the next
         // turn's model. The source record may intentionally have no model

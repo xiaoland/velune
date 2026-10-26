@@ -64,6 +64,7 @@ struct FollowUp: Sendable, Equatable {
     var canStopSubAgents = false
     var canSteer = false
     var canContinue = false
+    var canResume = false
     /// User messages that may be edited now.
     var editable: [EditableMessage] = []
 }

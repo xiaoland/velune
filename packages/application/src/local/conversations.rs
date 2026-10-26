@@ -29,8 +29,6 @@ impl CoreRuntime {
         if self.turn_running() {
             return Err(RuntimeError::invalid("runtime is busy"));
         }
-        self.session.cancel_requested = false;
-        self.follow_started_turn();
         let source_runtime_id = request["payload"]["sourceRuntimeID"]
             .as_str()
             .ok_or_else(|| RuntimeError::invalid("source runtime instance id"))?;
@@ -626,7 +624,8 @@ impl CoreRuntime {
         }
         let text = request["payload"]["text"].as_str().unwrap_or_default();
         let images = super::attachments::turn_images(request)?;
-        if text.trim().is_empty() && images.is_empty() {
+        let resuming = request["action"] == "resumeTurn";
+        if !resuming && text.trim().is_empty() && images.is_empty() {
             return Err(RuntimeError::invalid("message text"));
         }
         if matches!(self.session.active_state, ActiveState::History(_)) {
@@ -649,25 +648,35 @@ impl CoreRuntime {
             permission_mode: self.requested_permission_mode(request)?,
             images,
         };
-        self.request_turn_settings(request, &input)?;
+        // Requests bind to the next user message; a native resume has none.
+        if !resuming {
+            self.request_turn_settings(request, &input)?;
+        }
         if let ActiveState::Acp(session) = &mut self.session.active_state {
             self.session.unsubmitted_draft = None;
             session
                 .send(text, &input.images)
                 .map_err(|error| RuntimeError::context("ACP message send", error))?;
+            self.session.cancel_requested = false;
+            self.follow_started_turn();
             self.drain_runtime()?;
             return self.snapshot_result();
         }
         if let ActiveState::Native(session) = &mut self.session.active_state {
             self.session.unsubmitted_draft = None;
-            let result = session
-                .send(&input)
-                .map_err(|error| RuntimeError::context("message send", error));
+            let result = if resuming {
+                session.resume(input.effort, input.permission_mode)
+            } else {
+                session.send(&input)
+            }
+            .map_err(|error| RuntimeError::context("message send", error));
             if result.is_err() && self.session.gateway_runner.is_some() && !self.session.executing()
             {
                 self.finish_managed_turn()?;
             }
             result?;
+            self.session.cancel_requested = false;
+            self.follow_started_turn();
             self.drain_runtime()?;
             if self.session.gateway_runner.is_some() && !self.session.executing() {
                 self.finish_managed_turn()?;
@@ -694,6 +703,8 @@ impl CoreRuntime {
             self.finish_managed_turn()?;
         }
         let response = response?;
+        self.session.cancel_requested = false;
+        self.follow_started_turn();
         self.session.pi.busy = response["data"]["disposition"] != "handled";
         if !self.session.pi.busy {
             self.session

@@ -96,7 +96,7 @@ enum BindingMapping {
                  paused: value.paused.map { switch $0 { case .turnStopped: .turnStopped; case .turnFailed: .turnFailed; case .sendFailed: .sendFailed } },
                  waitingForSubAgents: value.waiting.map { switch $0 { case .subAgents: true } } ?? false,
                  canStopSubAgents: value.canStopSubAgents,
-                 canSteer: value.canSteer, canContinue: value.canContinue,
+                 canSteer: value.canSteer, canContinue: value.canContinue, canResume: value.canResume,
                  editable: value.editable.map { EditableMessage(messageID: $0.messageId, inPlace: $0.inPlace) })
     }
 

@@ -621,7 +621,7 @@ struct ComposerView: View {
                     .help("停止此会话启动、仍在运行的子 Agent")
             }
             if store.followUp.canContinue && model.isEmpty && model.attachments.isEmpty {
-                Button("继续", action: store.continueTurn).disabled(!store.canSend).help("发送“\(AppStore.continueText)”，让运行时接着上一轮继续")
+                Button("继续", action: store.continueTurn).disabled(!store.canSend).help(store.continueHelp)
             }
             Button("发送", action: send).buttonStyle(.borderedProminent)
                 .disabled(!store.canSend || (model.isEmpty && model.attachments.isEmpty)).help("发送消息（\(shortcuts.sendMode.sendKey)）")

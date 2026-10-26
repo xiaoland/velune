@@ -21,3 +21,6 @@
 | [平台](../../docs/prd/platforms.md) | 未打包的 WinUI 3 应用 | xURL 深链主路径已在 Windows 与 Mac 验收；其他界面不据此扩大验收结论 |
 
 2026-10-26：通用设置拆分额度与上下文的占用／剩余显示，状态栏分别消费两个核心偏好。原生 Codex 项目按独立身份列出，可在编辑对话框直接修改原生名称、有序文件夹（含空列表）；目录建议使用 `PrimaryFolder`，不使用项目身份键。
+
+
+2026-10-26：Codex／Claude Code 无新消息恢复的接口与“继续”按钮分派已按 Mac 接入；本次 Windows 构建与浅／深色实际运行的验证状态见 [原生恢复任务](../../tasks/native-turn-resume/packet.md)。

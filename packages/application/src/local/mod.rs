@@ -545,6 +545,7 @@ impl CoreRuntime {
             (
                 "open"
                 | "sendTurn"
+                | "resumeTurn"
                 | "cancel"
                 | "stopSubAgents"
                 | "replyRuntimeInteraction"
@@ -726,6 +727,7 @@ impl CoreRuntime {
                 )?)
             }
             "sendTurn" => self.send_turn_action(request),
+            "resumeTurn" => self.resume_turn_action(request),
             "sendQueue" => self.send_queue_action(request),
             "steerTurn" => self.steer_turn_action(request),
             "editMessage" => self.edit_message_action(request),

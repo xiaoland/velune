@@ -421,6 +421,19 @@ impl Application {
                 conversation_id,
                 turn,
             } => Response::SteerTurn(application.steer_turn(runtime_id, conversation_id, turn)?),
+            Command::ResumeTurn {
+                runtime_id,
+                conversation_id,
+                selection,
+                effort,
+                permission_mode,
+            } => Response::ResumeTurn(application.resume_turn(
+                runtime_id,
+                conversation_id,
+                selection,
+                effort,
+                permission_mode,
+            )?),
             Command::EditMessage {
                 runtime_id,
                 conversation_id,
@@ -744,6 +757,7 @@ impl Application {
             | Response::SendTurnWithSelection(result)
             | Response::SendQueue(result)
             | Response::SteerTurn(result)
+            | Response::ResumeTurn(result)
             | Response::EditMessage(result)
             | Response::Cancel(result)
             | Response::StopSubAgents(result)

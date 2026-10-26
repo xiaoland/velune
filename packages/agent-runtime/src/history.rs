@@ -96,6 +96,9 @@ pub struct History {
     pub title: ConversationTitle,
     pub cwd: Option<String>,
     pub messages: Vec<Message>,
+    /// The native history ends with a stopped or failed input-free resumable turn.
+    #[serde(default)]
+    pub can_resume: bool,
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]

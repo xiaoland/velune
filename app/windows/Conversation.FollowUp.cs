@@ -136,9 +136,23 @@ sealed partial class Conversation
         return true;
     }
 
-    // Continue asks the runtime to go on after a stopped or failed turn, as
-    // a real user message; it replays nothing.
-    public Task<bool> Continue() => Send("继续");
+    public bool CanResume => FollowUp is { CanResume: true } && Next == Snapshot?.ContextRuntimeId;
+
+    public Task<bool> Continue()
+    {
+        if (Snapshot is not { } snapshot || FollowUp is not { CanContinue: true })
+        {
+            return Task.FromResult(false);
+        }
+        if (!CanResume)
+        {
+            return Send("继续");
+        }
+        var selection = NextModel();
+        var effort = Effort();
+        var mode = PermissionMode(Choice().PermissionMode)?.Id;
+        return Change("继续", application => application.ResumeTurn(snapshot.ContextRuntimeId, snapshot.Conversation.Id, selection, effort, mode));
+    }
 
     // Edit replaces a sent user message: in place, dropping it and all after
     // it, or in a new conversation from what precedes it. It returns the

@@ -329,26 +329,28 @@ impl NativeSession {
             self.epoch,
             self.snapshot.as_ref().map_or(0, |s| s.revision)
         ));
-        self.message(Message {
-            turn_settings: None,
-            turn_usage: None,
-            branch_point: None,
-            completed: true,
-            id: format!("{}:user", self.turn_id.as_deref().unwrap_or_default()),
-            role: MessageRole::User,
-            timestamp_unix_ms: None,
-            blocks: input
-                .images
-                .iter()
-                .map(|image| MessageBlock::Image {
-                    media_type: Some(image.kind.media_type().into()),
-                    source: crate::conversation::ImageSource::Path {
-                        path: image.path.to_string_lossy().into_owned(),
-                    },
-                })
-                .chain((!text.is_empty()).then(|| MessageBlock::Text { text: text.into() }))
-                .collect(),
-        });
+        if !content.is_empty() {
+            self.message(Message {
+                turn_settings: None,
+                turn_usage: None,
+                branch_point: None,
+                completed: true,
+                id: format!("{}:user", self.turn_id.as_deref().unwrap_or_default()),
+                role: MessageRole::User,
+                timestamp_unix_ms: None,
+                blocks: input
+                    .images
+                    .iter()
+                    .map(|image| MessageBlock::Image {
+                        media_type: Some(image.kind.media_type().into()),
+                        source: crate::conversation::ImageSource::Path {
+                            path: image.path.to_string_lossy().into_owned(),
+                        },
+                    })
+                    .chain((!text.is_empty()).then(|| MessageBlock::Text { text: text.into() }))
+                    .collect(),
+            });
+        }
         self.claude_start = ClaudeStart::Resume;
         self.running();
         Ok(())
@@ -588,11 +590,11 @@ impl NativeSession {
                 // What the latest reply's request held: where the context stands.
                 let reply = &record["message"];
                 if record["type"] == "assistant"
-                    && let (Some(model), Some(tokens)) =
+                    && let (Some(model), Some((input, output))) =
                         (reply["model"].as_str(), claude_context(&reply["usage"]))
                     && !model.starts_with('<')
                 {
-                    self.claude_context = Some((model.to_owned(), tokens));
+                    self.claude_context = Some((model.to_owned(), input, output));
                 }
                 let role = if record["type"] == "assistant" {
                     MessageRole::Assistant
@@ -627,6 +629,13 @@ impl NativeSession {
                 let event = &record["event"];
                 if event["type"] == "message_start" {
                     self.claude_stream_id = event["message"]["id"].as_str().map(str::to_owned);
+                }
+                if event["type"] == "message_delta"
+                    && !record["parent_tool_use_id"].is_string()
+                    && let Some(output) = event["usage"]["output_tokens"].as_u64()
+                    && let Some((_, _, tokens)) = &mut self.claude_context
+                {
+                    *tokens = output;
                 }
                 if event["type"] == "content_block_delta" {
                     let thought = event["delta"]["type"] == "thinking_delta";
@@ -689,8 +698,8 @@ impl NativeSession {
                 if record["usage"].is_object() {
                     let mut usage = claude_usage(&record["usage"]);
                     let models = record["modelUsage"].as_object();
-                    if let Some((model, tokens)) = self.claude_context.take() {
-                        usage.context_tokens = Some(tokens);
+                    if let Some((model, input, output)) = self.claude_context.take() {
+                        usage.context_tokens = Some(input + output);
                         usage.context_window = models
                             .and_then(|models| models.get(&model))
                             .and_then(|entry| entry["contextWindow"].as_u64());
@@ -701,7 +710,10 @@ impl NativeSession {
                         usage.session_cost_micro_usd =
                             record["total_cost_usd"].as_f64().and_then(micro_usd);
                     }
-                    self.turn_usage(|total| *total = Some(usage));
+                    self.turn_usage(|total| match total {
+                        Some(total) => total.add(&usage),
+                        None => *total = Some(usage),
+                    });
                 }
             }
             _ => {}
@@ -888,10 +900,13 @@ fn claude_usage(usage: &Value) -> TurnUsage {
 }
 
 /// What one reply's request held: its input, cache included, and its output.
-fn claude_context(usage: &Value) -> Option<u64> {
+fn claude_context(usage: &Value) -> Option<(u64, u64)> {
     let read = usage["cache_read_input_tokens"].as_u64().unwrap_or(0);
     let write = usage["cache_creation_input_tokens"].as_u64().unwrap_or(0);
-    Some(usage["input_tokens"].as_u64()? + read + write + usage["output_tokens"].as_u64()?)
+    Some((
+        usage["input_tokens"].as_u64()? + read + write,
+        usage["output_tokens"].as_u64()?,
+    ))
 }
 
 /// The user's own default Claude Code configuration directory on this machine.

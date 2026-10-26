@@ -285,6 +285,7 @@ impl TryFrom<Response> for BindingApplicationResponse {
             | Response::SendTurnWithSelection(value)
             | Response::SendQueue(value)
             | Response::SteerTurn(value)
+            | Response::ResumeTurn(value)
             | Response::EditMessage(value)
             | Response::Cancel(value)
             | Response::StopSubAgents(value)

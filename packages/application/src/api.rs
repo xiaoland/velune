@@ -819,6 +819,19 @@ impl Application {
     ) -> Result<SnapshotResult, Error> {
         self.execute("sendTurn", json!({"sourceRuntimeID":source_runtime_id,"conversationID":conversation_id,"modelSelection":selection,"text":turn.text,"effort":turn.effort,"permissionMode":turn.permission_mode,"attachments":turn.attachments}), Some(&target_runtime_id))
     }
+    /// Start a native turn after a stop or failure without adding a user
+    /// message (`FollowUp::can_resume`). The runtime must own the current
+    /// context. Queued messages remain paused; errors never send fallback text.
+    pub fn resume_turn(
+        &mut self,
+        runtime_id: String,
+        conversation_id: String,
+        selection: Option<ModelSelection>,
+        effort: Option<String>,
+        permission_mode: Option<String>,
+    ) -> Result<SnapshotResult, Error> {
+        self.execute("resumeTurn", json!({"conversationID":conversation_id,"modelSelection":selection,"effort":effort,"permissionMode":permission_mode}), Some(&runtime_id))
+    }
     /// Reasoning levels a turn may request for a managed model on a runtime,
     /// in the runtime's own vocabulary; empty when it offers no choice.
     pub fn reasoning_efforts(

@@ -56,6 +56,37 @@ fn queued_id() -> String {
 }
 
 impl CoreRuntime {
+    /// Resume only the addressed native context; no cross-runtime handoff or
+    /// text fallback can preserve the meaning of an input-free turn.
+    pub(super) fn resume_turn_action(&mut self, request: &Value) -> Result<Value, RuntimeError> {
+        self.ensure_active(request)?;
+        let snapshot = self
+            .current_snapshot()
+            .ok_or_else(|| RuntimeError::invalid("conversation is not active"))?;
+        if !snapshot.follow_up.can_resume {
+            return Err(RuntimeError::invalid("当前会话不能无新消息恢复"));
+        }
+        let runtime_id = snapshot.context_runtime_id;
+        let runtime = self.runtime_instance(&runtime_id)?.clone();
+        let selection = super::model_selection::requested_selection(request)?;
+        self.validate_model_selection(&runtime, selection.as_ref())?;
+        if let Some(effort) = request["payload"]["effort"].as_str() {
+            self.validate_effort(&runtime, selection.as_ref(), effort)?;
+        }
+        if let Some(mode) = request["payload"]["permissionMode"].as_str() {
+            self.validate_permission_mode(&runtime, mode)?;
+        }
+        if matches!(self.session.active_state, ActiveState::History(_))
+            || self.session.model_selection.as_ref() != Some(&selection)
+        {
+            let native = self.native_snapshot().expect("resumable context");
+            self.prepare_with_selection(native, selection.as_ref(), false)?;
+        }
+        let result = self.send_action(request)?;
+        self.restore_archived(&snapshot.conversation.id);
+        Ok(result)
+    }
+
     pub(super) fn send_queue_action(&mut self, request: &Value) -> Result<Value, RuntimeError> {
         let conversation_id = request["payload"]["conversationID"]
             .as_str()
@@ -270,6 +301,23 @@ impl CoreRuntime {
     ) -> FollowUp {
         let queue = &self.session.send_queue;
         let idle = !self.turn_running();
+        let native_resume = self
+            .runtime_instance(&snapshot.context_runtime_id)
+            .is_ok_and(|runtime| {
+                runtime.enabled
+                    && matches!(runtime.type_id.as_str(), "codex-0.159" | "claude-code-2.1")
+            });
+        let can_continue =
+            idle && snapshot.pending_interactions.is_empty()
+                && snapshot.actions.can_send
+                && (!native_resume
+                    || (self.session.work().is_empty()
+                        && snapshot.messages.iter().any(|message| {
+                            message.role == crate::conversation::MessageRole::User
+                        })))
+                && (queue.interrupted
+                    || snapshot.run_state == RunState::Failed
+                    || snapshot.follow_up.can_resume);
         FollowUp {
             queue: queue.turns.iter().map(QueuedTurn::public).collect(),
             paused: queue.paused.clone(),
@@ -280,10 +328,10 @@ impl CoreRuntime {
                 .iter()
                 .any(|task| task.state != velune_agent_runtime::work::BackgroundState::Stopping),
             can_steer: self.can_steer(),
-            can_continue: idle
-                && snapshot.pending_interactions.is_empty()
-                && snapshot.actions.can_send
-                && (queue.interrupted || snapshot.run_state == RunState::Failed),
+            can_continue,
+            can_resume: can_continue
+                && native_resume
+                && snapshot.conversation.parent_conversation_id.is_none(),
             editable: self.editable_messages(snapshot),
         }
     }

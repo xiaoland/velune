@@ -121,13 +121,20 @@ def history(path, native_id, runtime_id, sidechain=False):
     messages, first_user, calls, turn = [], None, {}, None
     # The current turn's prompt and the usage of each model response in it,
     # by message id: a response's records repeat it, the last one complete.
-    prompt, usages = None, {}
+    prompt, usages, prompt_id, can_resume = None, {}, None, False
     for entry in reversed(chain):
         role = entry.get("type")
         if role not in ("user", "assistant"):
             continue
         if role == "user" and entry.get("isMeta"):
             # Context the Harness injected, which its own transcript does not show.
+            continue
+        # SDK interruption records reuse the prompt's identity, without its
+        # source/position. A real user typing the same text keeps those fields.
+        if role == "user" and prompt_id and entry.get("promptId") == prompt_id \
+                and "promptSource" not in entry and "turnPosition" not in entry \
+                and entry.get("message", {}).get("content") == [{"type": "text", "text": "[Request interrupted by user]"}]:
+            can_resume = True
             continue
         content = entry.get("message", {}).get("content")
         if role == "user" and (entry.get("origin") or {}).get("kind") == "task-notification" and isinstance(content, str):
@@ -167,11 +174,15 @@ def history(path, native_id, runtime_id, sidechain=False):
             usages[entry["message"]["id"]] = usage
         if not content:
             continue
+        if role == "assistant" and isinstance(model, str) and not model.startswith("<"):
+            can_resume = False
         if role == "user" and first_user is None and command is None:
             first_user = next((b["text"] for b in content if b["kind"] == "text"), None)
         message = {"id": entry["uuid"], "role": "tool" if role == "user" and all(b["kind"] == "tool" for b in content) else role,
                    "completed": True, "timestamp_unix_ms": timestamp(entry.get("timestamp")), "blocks": content}
         if message["role"] == "user":
+            prompt_id = entry.get("promptId")
+            can_resume = False
             # A replacement resumes at the nearest message record before the
             # prompt (`--resume-session-at`); the first prompt has none.
             parent = entries.get(entry.get("parentUuid"))
@@ -208,7 +219,7 @@ def history(path, native_id, runtime_id, sidechain=False):
     cwd = session_cwd(records, os.path.basename(folder))
     dates = [value for r in records if (value := timestamp(r.get("timestamp"))) is not None]
     return {"nativeId": native_id, "title": ({"source":"native", "text":title} if title else {"source":"firstMessage", "text":first_user} if first_user else {"source":"untitled"}), "cwd": cwd,
-            "messages": messages, "createdAtUnixMs": min(dates) if dates else None, "updatedAtUnixMs": max(dates) if dates else None}
+            "messages": messages, "canResume": can_resume, "createdAtUnixMs": min(dates) if dates else None, "updatedAtUnixMs": max(dates) if dates else None}
 
 
 def close_turn(prompt, usages):

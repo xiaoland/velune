@@ -100,6 +100,9 @@ pub struct FollowUp {
     pub can_steer: bool,
     /// The last turn stopped or failed; the user may ask to continue.
     pub can_continue: bool,
+    /// The stopped or failed context can start a native turn without a user message.
+    #[serde(default)]
+    pub can_resume: bool,
     /// User messages that may be edited now, in conversation order; none
     /// while a turn runs.
     #[serde(default)]

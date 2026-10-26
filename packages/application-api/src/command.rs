@@ -116,6 +116,7 @@ pub enum CommandKind {
     ReasoningEfforts,
     SendQueue,
     SteerTurn,
+    ResumeTurn,
     EditMessage,
     Cancel,
     StopSubAgents,
@@ -416,6 +417,13 @@ pub enum Command {
         conversation_id: String,
         turn: ComposedTurn,
     },
+    ResumeTurn {
+        runtime_id: String,
+        conversation_id: String,
+        selection: Option<ModelSelection>,
+        effort: Option<String>,
+        permission_mode: Option<String>,
+    },
     EditMessage {
         runtime_id: String,
         conversation_id: String,
@@ -607,6 +615,7 @@ pub enum Response {
     ReasoningEfforts(Vec<String>),
     SendQueue(SnapshotResult),
     SteerTurn(SnapshotResult),
+    ResumeTurn(SnapshotResult),
     EditMessage(SnapshotResult),
     Cancel(SnapshotResult),
     StopSubAgents(SnapshotResult),
@@ -719,6 +728,7 @@ impl Command {
             | Self::SendTurnWithSelection { .. }
             | Self::SendQueue { .. }
             | Self::SteerTurn { .. }
+            | Self::ResumeTurn { .. }
             | Self::EditMessage { .. }
             | Self::Cancel { .. }
             | Self::StopSubAgents { .. }
@@ -815,6 +825,7 @@ impl Command {
             Self::ReasoningEfforts { .. } => CommandKind::ReasoningEfforts,
             Self::SendQueue { .. } => CommandKind::SendQueue,
             Self::SteerTurn { .. } => CommandKind::SteerTurn,
+            Self::ResumeTurn { .. } => CommandKind::ResumeTurn,
             Self::EditMessage { .. } => CommandKind::EditMessage,
             Self::Cancel { .. } => CommandKind::Cancel,
             Self::StopSubAgents { .. } => CommandKind::StopSubAgents,
@@ -886,6 +897,7 @@ impl Command {
                     | Self::SendTurnWithSelection { .. }
                     | Self::SendQueue { .. }
                     | Self::SteerTurn { .. }
+                    | Self::ResumeTurn { .. }
                     | Self::ReplyRuntimeInteraction { .. }
                     | Self::Cancel { .. }
                     | Self::StopSubAgents { .. }

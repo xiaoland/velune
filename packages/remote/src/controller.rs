@@ -520,6 +520,11 @@ fn operation_targets(command: &Command) -> (Option<String>, Option<String>) {
             conversation_id,
             ..
         }
+        | Command::ResumeTurn {
+            runtime_id,
+            conversation_id,
+            ..
+        }
         | Command::EditMessage {
             runtime_id,
             conversation_id,

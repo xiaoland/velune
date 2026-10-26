@@ -47,3 +47,6 @@
   - 与计划的差异：Codex 一轮只能整体回退，插入本轮的消息不单独提供编辑；Claude Code 第一条之前没有记录可续接，只能 fork（新建会话），即使它是最后一条也会询问。fork 后新会话的标题沿用原生规则（Pi 复制原会话名称时与原会话同名）。
   - 验证：`scripts/manual-edit-message.py`（实际 Codex 0.159.3、Claude Code 2.1.286、Pi 1.0.2＋回环上游）三者均通过：最后一条原地、第二条 fork（原会话不变）、第二条原地、第一条 fork、第一条原地（Claude Code 拒绝），每次检查发往模型的请求只含应保留的上文、会话显示，并在重新打开应用后从原生历史读回 9 个会话的用户消息。`manual-steer.py`、`manual-send-queue.py` 回归通过。开发版界面（临时 VELUNE_HOME，`--check-edit-message`，经辅助功能按钮动作）确认编辑表单、确认对话框与 fork 在新标签页打开、会话列表出现新会话。
 - 2026-10-15 安装：三个阶段（队列与继续、steer、编辑用户消息）随提交 2999a06 重建安装至 `/Applications/Velune.app`，codesign 严格校验通过，构建清单 source_commit 与 HEAD 一致且 dirty 为 false，后台启动后无新的崩溃报告。产品体验待用户验收。
+
+
+2026-10-26：本任务关于“Codex 无原生继续”的旧判断已被实际 app-server 实验推翻；Codex 0.159.3 在中断后接受 `turn/start input: []`，启动新轮次且不新增用户消息。新的产品修订、能力边界与实现归 [原生恢复任务](../native-turn-resume/packet.md)，旧段保留为当时的调查与实施记录。

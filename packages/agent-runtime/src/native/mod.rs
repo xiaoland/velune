@@ -165,8 +165,9 @@ pub struct NativeSession {
     codex_ran_threads: std::collections::BTreeSet<String>,
     claude_requires_action: bool,
     claude_stream_id: Option<String>,
-    /// The model and context tokens of the turn's latest reply.
-    claude_context: Option<(String, u64)>,
+    /// The model, input tokens (including cache), and final output tokens
+    /// of the latest reply; streaming output usage can arrive after the reply.
+    claude_context: Option<(String, u64, u64)>,
     restart_required: bool,
     /// The runtime process was ended on purpose; there is nothing to read.
     process_ended: bool,
@@ -383,8 +384,30 @@ impl NativeSession {
             .ok_or_else(|| Error::new("运行时未恢复会话"))
     }
     pub fn send(&mut self, input: &crate::TurnInput) -> Result<()> {
+        self.start_turn(input, false)
+    }
+    /// Starts a native turn from the existing context without a user message.
+    pub fn resume(
+        &mut self,
+        effort: Option<String>,
+        permission_mode: Option<String>,
+    ) -> Result<()> {
+        if self.config.kind == NativeKind::DeepSeek {
+            return Err(Error::new("此运行时不支持无新消息恢复"));
+        }
+        self.start_turn(
+            &crate::TurnInput {
+                text: String::new(),
+                effort,
+                permission_mode,
+                images: Vec::new(),
+            },
+            true,
+        )
+    }
+    fn start_turn(&mut self, input: &crate::TurnInput, resuming: bool) -> Result<()> {
         self.ensure_idle()?;
-        if input.text.trim().is_empty() && input.images.is_empty() {
+        if !resuming && input.text.trim().is_empty() && input.images.is_empty() {
             return Err(Error::new("消息内容为空"));
         }
         if self.native_id.is_none() {

@@ -264,6 +264,13 @@ pub enum BindingApplicationCommand {
         conversation_id: String,
         turn: BindingComposedTurn,
     },
+    ResumeTurn {
+        runtime_id: String,
+        conversation_id: String,
+        selection: Option<BindingModelSelection>,
+        effort: Option<String>,
+        permission_mode: Option<String>,
+    },
     EditMessage {
         runtime_id: String,
         conversation_id: String,
@@ -799,6 +806,19 @@ impl TryFrom<BindingApplicationCommand> for Command {
                 runtime_id,
                 conversation_id,
                 turn: convert(turn)?,
+            },
+            BindingApplicationCommand::ResumeTurn {
+                runtime_id,
+                conversation_id,
+                selection,
+                effort,
+                permission_mode,
+            } => Self::ResumeTurn {
+                runtime_id,
+                conversation_id,
+                selection: convert(selection)?,
+                effort,
+                permission_mode,
             },
             BindingApplicationCommand::EditMessage {
                 runtime_id,

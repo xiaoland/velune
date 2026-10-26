@@ -209,6 +209,11 @@ impl NativeSession {
             .or_else(|| cwd.map(Path::to_path_buf));
         self.replace_snapshot(id, resolved_cwd.as_deref(), runtime_id, history);
         if let Some(turns) = result["thread"]["turns"].as_array() {
+            if let Some(snapshot) = &mut self.snapshot {
+                snapshot.follow_up.can_resume = turns.last().is_some_and(|turn| {
+                    matches!(turn["status"].as_str(), Some("interrupted" | "failed"))
+                });
+            }
             // A resumed native snapshot owns current history, including compaction and rollback.
             if let Some(snapshot) = &mut self.snapshot {
                 snapshot.messages.clear();
@@ -231,12 +236,21 @@ impl NativeSession {
                     && let Some(snapshot) = &mut self.snapshot
                 {
                     let start = start.min(snapshot.messages.len());
+                    let has_user = snapshot.messages[start..]
+                        .iter()
+                        .any(|message| message.role == MessageRole::User);
                     for message in snapshot.messages[start..]
                         .iter_mut()
                         .filter(|message| message.role == MessageRole::User)
                     {
                         message.turn_settings = Some(record.settings.clone());
                         message.turn_usage = record.usage.clone();
+                    }
+                    if !has_user {
+                        super::codex_history::add_resumed_usage(
+                            &mut snapshot.messages[..start],
+                            record.usage.as_ref(),
+                        );
                     }
                 }
                 if let Some(message) = project_turn_error(turn)? {
@@ -284,6 +298,9 @@ impl NativeSession {
             .ok_or_else(|| Error::new("Codex 未返回轮次身份"))?;
         self.turn_id = Some(turn_id.into());
         self.codex_turn_error = None;
+        if let Some(snapshot) = &mut self.snapshot {
+            snapshot.follow_up.can_resume = false;
+        }
         self.running();
         Ok(())
     }
@@ -542,6 +559,10 @@ impl NativeSession {
                     && Some(turn) == self.turn_id.as_deref()
                 {
                     let status = params["turn"]["status"].as_str();
+                    if let Some(snapshot) = &mut self.snapshot {
+                        snapshot.follow_up.can_resume =
+                            matches!(status, Some("interrupted" | "failed"));
+                    }
                     if matches!(status, Some("interrupted" | "failed")) {
                         self.codex_fail_open_tools();
                     }

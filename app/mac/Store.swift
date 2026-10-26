@@ -297,8 +297,8 @@ final class AppStore: ObservableObject {
     func isConversationRunning(_ id: String) -> Bool { runningConversationIDs.contains(id) || elsewhereConversationIDs.contains(id) }
     /// While a turn runs, a sent message waits in the conversation's queue.
     var canQueue: Bool { !isPreview && isGenerating && !isLoading && !isShuttingDown && !authenticationRunning && loadedConversationID != nil && snapshot?.conversation.parentConversationID == nil }
-    /// Asking to continue sends this, as the user's own message.
-    static let continueText = "继续"
+    var canResume: Bool { followUp.canResume && nextTurnRuntimeID == snapshot?.contextRuntimeID }
+    var continueHelp: String { canResume ? "从现有上下文继续，不新增用户消息" : "发送“继续”，让运行时接着上一轮继续" }
     var canSwitchModel: Bool { nextTurnRuntimeID != nil && !isShuttingDown }
     var modelCatalog: RuntimeModelCatalog? { nextTurnRuntimeID.flatMap { modelCatalogs[$0] } }
     /// The model chosen for this runtime is no longer offered; the turn goes
@@ -1281,8 +1281,20 @@ final class AppStore: ObservableObject {
         changeQueue(.add(sourceRuntimeId: source, targetRuntimeId: target, selection: model.map(BindingMapping.bindingSelection), turn: turn), onFailure: onFailure)
         return true
     }
-    /// Continue after a turn that stopped or failed: a real message, not a replay.
-    func continueTurn() { send(text: Self.continueText) }
+    func continueTurn() {
+        guard followUp.canContinue, canSend else { return }
+        guard canResume else { send(text: "继续"); return }
+        guard let runtimeID = snapshot?.contextRuntimeID, let conversationID = loadedConversationID, let transport else { return }
+        let selection = nextTurnModel
+        let effort = nextTurnEffort.flatMap { reasoningEffortOptions.contains($0) ? $0 : nil }
+        let mode = effectivePermissionMode?.id
+        executionStarting = true
+        enqueue({ try transport.resumeTurn(runtimeID: runtimeID, conversationID: conversationID, selection: selection, effort: effort, permissionMode: mode) },
+                onFailure: { [weak self] _ in self?.executionStarting = false }) { [weak self] value in
+            self?.executionStarting = false
+            self?.applySnapshotResult(value)
+        }
+    }
     var canSteer: Bool { canQueue && followUp.canSteer }
     /// Into the running turn; the turn keeps its own choices.
     func steer(text: String, attachments: [String] = [], onFailure: (() -> Void)? = nil) {

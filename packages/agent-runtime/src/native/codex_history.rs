@@ -197,6 +197,9 @@ pub fn read_codex_history_at(
         title,
         cwd: thread["cwd"].as_str().map(str::to_owned),
         messages,
+        can_resume: native_turns
+            .last()
+            .is_some_and(|turn| matches!(turn["status"].as_str(), Some("interrupted" | "failed"))),
     })
 }
 
@@ -239,12 +242,103 @@ fn project_history(
         }
     }
     messages.extend(errors.remove(&items.len()).unwrap_or_default());
+    let mut last_user = None;
+    for turn in native_turns {
+        let Some(id) = turn["id"].as_str() else {
+            continue;
+        };
+        if let Some(index) = messages.iter().rposition(|message| {
+            message.role == MessageRole::User && message.branch_point.as_deref() == Some(id)
+        }) {
+            last_user = Some(index);
+        } else if let Some(index) = last_user {
+            add_resumed_usage(
+                &mut messages[..=index],
+                turns.get(id).and_then(|turn| turn.usage.as_ref()),
+            );
+        }
+    }
     Ok(messages)
+}
+
+/// Input-free turns belong to the preceding user message's visible segment,
+/// just as live token notifications do; its requested settings stay intact.
+pub(super) fn add_resumed_usage(messages: &mut [Message], usage: Option<&TurnUsage>) {
+    if let Some(usage) = usage
+        && let Some(message) = messages
+            .iter_mut()
+            .rev()
+            .find(|message| message.role == MessageRole::User)
+    {
+        match &mut message.turn_usage {
+            Some(total) => total.add(usage),
+            total => *total = Some(usage.clone()),
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn input_free_turn_usage_stays_with_preceding_user_without_changing_settings() {
+        let items = vec![
+            json!({"turnId":"first","item":{"id":"u1","type":"userMessage","content":[{"type":"text","text":"original"}]}}),
+            json!({"turnId":"resume","item":{"id":"a1","type":"agentMessage","text":"resumed"}}),
+            json!({"turnId":"next","item":{"id":"u2","type":"userMessage","content":[{"type":"text","text":"next"}]}}),
+        ];
+        let native = vec![
+            json!({"id":"first"}),
+            json!({"id":"resume"}),
+            json!({"id":"next"}),
+        ];
+        let records = [
+            ("first", 2, "original"),
+            ("resume", 3, "resumed"),
+            ("next", 7, "next"),
+        ]
+        .into_iter()
+        .map(|(id, tokens, model)| {
+            (
+                id.to_owned(),
+                RolloutTurn {
+                    settings: TurnSettings {
+                        model: Some(model.into()),
+                        ..Default::default()
+                    },
+                    usage: Some(TurnUsage {
+                        input_tokens: Some(tokens),
+                        context_tokens: Some(tokens),
+                        ..Default::default()
+                    }),
+                },
+            )
+        })
+        .collect();
+        let messages = project_history(&items, &native, &records, "runtime").unwrap();
+        assert_eq!(messages.len(), 3);
+        assert_eq!(
+            messages[0].turn_settings.as_ref().unwrap().model.as_deref(),
+            Some("original")
+        );
+        assert_eq!(
+            messages[0].turn_usage.as_ref().unwrap().input_tokens,
+            Some(5)
+        );
+        assert_eq!(
+            messages[0].turn_usage.as_ref().unwrap().context_tokens,
+            Some(3)
+        );
+        assert_eq!(
+            messages[2].turn_settings.as_ref().unwrap().model.as_deref(),
+            Some("next")
+        );
+        assert_eq!(
+            messages[2].turn_usage.as_ref().unwrap().input_tokens,
+            Some(7)
+        );
+    }
 
     #[test]
     fn history_keeps_failures_between_turns_even_without_visible_items() {

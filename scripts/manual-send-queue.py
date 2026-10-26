@@ -196,6 +196,7 @@ manager.appendSessionInfo(title); console.log(manager.getSessionFile());
             follow = snapshot().follow_up
             assert follow.paused == b.BindingQueuePause.TURN_STOPPED and [m.text for m in follow.queue] == ['Q_PAUSED'], follow
             assert follow.can_continue, 'continuing is offered after a stop'
+            assert not follow.can_resume, 'Pi does not promise input-free recovery'
             time.sleep(.5)
             assert 'Q_PAUSED' not in requests, 'a stopped turn pauses the queue'
             app.send_queue('pi', a, Q.RESUME())

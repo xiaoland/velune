@@ -1233,6 +1233,30 @@ impl VeluneApplication {
         )
     }
 
+    /// Start a native turn without a user message, only when `can_resume`
+    /// is true. Errors never send fallback text or resume the send queue.
+    pub fn resume_turn(
+        &self,
+        runtime_id: String,
+        conversation_id: String,
+        selection: Option<BindingModelSelection>,
+        effort: Option<String>,
+        permission_mode: Option<String>,
+    ) -> Result<BindingSnapshotResult, BindingError> {
+        let selection = convert(selection)?;
+        request!(
+            self,
+            "resume_turn",
+            ResumeTurn {
+                runtime_id,
+                conversation_id,
+                selection,
+                effort,
+                permission_mode
+            }
+        )
+    }
+
     /// Send `turn` in place of an editable user message; a fork answers
     /// with the new conversation's snapshot.
     pub fn edit_message(

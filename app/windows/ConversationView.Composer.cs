@@ -236,6 +236,7 @@ public sealed partial class ConversationView
         var running = Model.Running;
         ContinueButton.Visibility = Visible(followUp is { CanContinue: true } && !running && Model.Sending == null);
         ContinueButton.IsEnabled = !Model.Busy;
+        ToolTipService.SetToolTip(ContinueButton, Model.CanResume ? "从现有上下文继续，不新增用户消息" : "发送“继续”，让运行时接着上一轮继续");
         StopButton.Visibility = Visible(Model.CanCancel);
         StopButton.IsEnabled = !Model.Busy;
         SendButton.Content = running ? "加入队列" : "发送";

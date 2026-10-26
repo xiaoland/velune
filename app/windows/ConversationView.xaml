@@ -182,7 +182,7 @@
                             <Button
                                 x:Name="ContinueButton"
                                 Content="继续"
-                                ToolTipService.ToolTip="让运行时接着做：作为一条用户消息发出，不重放此前的工具调用" />
+                                ToolTipService.ToolTip="让运行时接着做" />
                             <Button
                                 x:Name="StopButton"
                                 Content="停止"

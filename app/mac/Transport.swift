@@ -180,6 +180,9 @@ final class Transport: @unchecked Sendable {
     /// carries the levels the runtime accepts for it.
     func runtimeModels(runtimeID: String) throws -> [BindingRuntimeModel] { try withApplication("runtimeModels", .reads) { try $0.runtimeModels(runtimeId: runtimeID) } }
     func steerTurn(runtimeID: String, conversationID: String, turn: BindingComposedTurn) throws -> BindingSnapshotResult { try withApplication("steerTurn", .writes) { try $0.steerTurn(runtimeId: runtimeID, conversationId: conversationID, turn: turn) } }
+    func resumeTurn(runtimeID: String, conversationID: String, selection: ModelSelection?, effort: String?, permissionMode: String?) throws -> BindingSnapshotResult {
+        try withApplication("resumeTurn", .writes) { try $0.resumeTurn(runtimeId: runtimeID, conversationId: conversationID, selection: selection.map(BindingMapping.bindingSelection), effort: effort, permissionMode: permissionMode) }
+    }
     func sendQueue(runtimeID: String, conversationID: String, operation: BindingSendQueueOperation) throws -> BindingSnapshotResult { try withApplication("sendQueue", .writes) { try $0.sendQueue(runtimeId: runtimeID, conversationId: conversationID, operation: operation) } }
     func editMessage(runtimeID: String, conversationID: String, messageID: String, placement: BindingEditPlacement, selection: ModelSelection?, turn: BindingComposedTurn) throws -> BindingSnapshotResult { try withApplication("editMessage", .writes) { try $0.editMessage(runtimeId: runtimeID, conversationId: conversationID, messageId: messageID, placement: placement, selection: selection.map(BindingMapping.bindingSelection), turn: turn) } }
     func cancel(runtimeID: String, conversationID: String) throws -> BindingSnapshotResult { try withApplication("cancel", .writes) { try $0.cancel(runtimeId: runtimeID, conversationId: conversationID) } }
