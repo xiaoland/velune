@@ -20,7 +20,9 @@ import QuickLookThumbnailing
     private var undoManagers: [String: UndoManager] = [:]
     private(set) weak var store: AppStore?
     /// The `/` command or `@` path list over the text (see `ComposerCompletion`).
-    @Published var completion: ComposerCompletion?
+    @Published var completion: ComposerCompletion? { didSet { if completion != oldValue { showCompletion() } } }
+    /// Where the list shows: a window of its own above the text.
+    private let completionPanel = ComposerCompletionPanel()
     /// The text Escape closed the list for; it stays closed until the text changes.
     var dismissedCompletionText: String?
     var escapeToken: UUID?
@@ -151,7 +153,15 @@ import QuickLookThumbnailing
         return manager
     }
 
-    fileprivate func focusChanged(_ value: Bool) { if isFocused != value { isFocused = value } }
+    fileprivate func focusChanged(_ value: Bool) {
+        if isFocused != value { isFocused = value }
+        // The list belongs to the text being typed; it closes when typing goes elsewhere.
+        if !value { setCompletion(nil) }
+    }
+
+    private func showCompletion() {
+        completionPanel.show(completion, anchor: textView?.enclosingScrollView) { [weak self] index in self?.acceptCompletion(at: index) }
+    }
 
     fileprivate func edited(_ value: String) {
         text = value
@@ -265,6 +275,8 @@ struct ComposerEditor: NSViewRepresentable {
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
+        // Out of its window (another tab shown), its list goes too.
+        if window == nil { coordinator?.model.setCompletion(nil) }
         coordinator?.model.shown(self)
     }
 
@@ -503,7 +515,6 @@ struct ComposerView: View {
             }
             if !store.followUp.queue.isEmpty || store.followUp.paused != nil { SendQueueView(store: store, composer: model) }
             if !model.attachments.isEmpty { attachmentRow }
-            if let completion = model.completion { ComposerCompletionList(completion: completion, choose: model.acceptCompletion(at:)) }
             ComposerEditor(model: model, placeholder: placeholder, submit: send, steer: steer,
                            placeMenu: { [layout] in layout.placeMenuItem(for: .composer) })
                 .frame(height: max(model.height, minimumTextHeight ?? 0))

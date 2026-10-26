@@ -212,6 +212,8 @@ struct ComposerCompletionList: View {
     let completion: ComposerCompletion
     let choose: (Int) -> Void
     private static let rowHeight: CGFloat = 24
+    /// Up to six rows, then it scrolls.
+    static func height(_ completion: ComposerCompletion) -> CGFloat { min(CGFloat(completion.items.count), 6) * rowHeight + 8 }
 
     var body: some View {
         ScrollViewReader { proxy in
@@ -238,11 +240,73 @@ struct ComposerCompletionList: View {
                     }
                 }.padding(4)
             }
-            .frame(height: min(CGFloat(completion.items.count), 6) * Self.rowHeight + 8)
+            .frame(height: Self.height(completion))
             .onChange(of: completion.selected) { _, value in if let item = completion.items[safe: value] { proxy.scrollTo(item.id) } }
         }
         .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: ComposerEditor.cornerRadius))
         .overlay(RoundedRectangle(cornerRadius: ComposerEditor.cornerRadius).strokeBorder(Color(nsColor: .separatorColor)))
         .accessibilityLabel(completion.kind == .command ? "命令" : "文件")
+    }
+}
+
+/// The `/` or `@` list in a borderless window of its own just above the
+/// composer's text: it covers what is above rather than making the
+/// composer's area taller, and never takes the keyboard from the text.
+@MainActor final class ComposerCompletionPanel {
+    private final class Panel: NSPanel {
+        override var canBecomeKey: Bool { false }
+        override var canBecomeMain: Bool { false }
+    }
+    /// A click on a row chooses it at once; the window is never key.
+    private final class Hosting: NSHostingView<ComposerCompletionList> {
+        override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+    }
+    private var panel: Panel?
+    private var hosting: Hosting?
+    private weak var anchor: NSView?
+    private var resizing: NSObjectProtocol?
+
+    func show(_ completion: ComposerCompletion?, anchor: NSView?, choose: @escaping (Int) -> Void) {
+        guard let completion, let anchor, let window = anchor.window, !anchor.isHiddenOrHasHiddenAncestor else { return hide() }
+        let list = ComposerCompletionList(completion: completion, choose: choose)
+        if let hosting {
+            hosting.rootView = list
+        } else {
+            let hosting = Hosting(rootView: list)
+            let panel = Panel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: true)
+            panel.isOpaque = false
+            panel.backgroundColor = .clear
+            panel.hasShadow = true
+            panel.contentView = hosting
+            self.hosting = hosting
+            self.panel = panel
+        }
+        guard let panel else { return }
+        self.anchor = anchor
+        if panel.parent !== window {
+            panel.parent?.removeChildWindow(panel)
+            window.addChildWindow(panel, ordered: .above)
+            if let resizing { NotificationCenter.default.removeObserver(resizing) }
+            resizing = NotificationCenter.default.addObserver(forName: NSWindow.didResizeNotification, object: window, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.place() }
+            }
+        }
+        place()
+        // Again once the composer's layout settles: a taller text moves its top.
+        DispatchQueue.main.async { [weak self] in self?.place() }
+    }
+
+    func hide() {
+        guard let panel else { return }
+        panel.parent?.removeChildWindow(panel)
+        panel.orderOut(nil)
+        if let resizing { NotificationCenter.default.removeObserver(resizing) }
+        resizing = nil
+    }
+
+    private func place() {
+        guard let panel, panel.parent != nil, let hosting, let anchor, let window = anchor.window else { return }
+        let field = window.convertToScreen(anchor.convert(anchor.bounds, to: nil))
+        panel.setFrame(NSRect(x: field.minX, y: field.maxY + 4, width: field.width, height: ComposerCompletionList.height(hosting.rootView.completion)), display: true)
     }
 }
