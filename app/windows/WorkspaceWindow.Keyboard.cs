@@ -9,13 +9,13 @@ public sealed partial class WorkspaceWindow
 {
     CommandPalette? palette;
 
-    static readonly (SettingsPage Page, string Name)[] settingsPages =
+    static readonly (SettingsPage Page, string Name, string English)[] settingsPages =
     [
-        (SettingsPage.General, "通用"),
-        (SettingsPage.Providers, "AI提供商"),
-        (SettingsPage.Routes, "模型路由"),
-        (SettingsPage.Runtimes, "Agent 运行时"),
-        (SettingsPage.Devices, "设备"),
+        (SettingsPage.General, "通用", "General"),
+        (SettingsPage.Providers, "AI提供商", "AI Providers"),
+        (SettingsPage.Routes, "模型路由", "Model Routes"),
+        (SettingsPage.Runtimes, "Agent 运行时", "Agent Runtimes"),
+        (SettingsPage.Devices, "设备", "Devices"),
     ];
 
     internal void RunCommand(Command command) => Run(command);
@@ -61,15 +61,15 @@ public sealed partial class WorkspaceWindow
                 var items = Commands.Table
                     .Where(entry => !Commands.IsGlobal(entry.Key) && entry.Key != Command.CommandPalette)
                     .Select(entry => new PaletteItem("command:" + entry.Key, entry.Value.Name, _ => Run(entry.Key),
-                        Shortcut: Commands.Shortcut(entry.Key), Enabled: CanRun(entry.Key)))
+                        Shortcut: Commands.Shortcut(entry.Key), Enabled: CanRun(entry.Key), Aliases: Commands.SearchTerms(entry.Key)))
                     .ToList();
-                foreach (var (page, name) in settingsPages)
+                foreach (var (page, name, english) in settingsPages)
                 {
-                    items.Add(new PaletteItem("settings:" + page, "设置：" + name, _ => Shell.OpenSettings(page), "设置"));
+                    items.Add(new PaletteItem("settings:" + page, "设置：" + name, _ => Shell.OpenSettings(page), "设置", Aliases: ["Settings: " + english, "preferences"]));
                 }
                 if (view?.HasQueued == true)
                 {
-                    items.Add(new PaletteItem("queue:last", "编辑最后一条排队消息", _ => view.TakeLastQueued(), "输入区", "Alt+↑"));
+                    items.Add(new PaletteItem("queue:last", "编辑最后一条排队消息", _ => view.TakeLastQueued(), "输入区", "Alt+↑", Aliases: ["Edit Last Queued Message", "queue"]));
                 }
                 return items;
             case PaletteMode.Conversations:

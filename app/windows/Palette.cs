@@ -13,11 +13,14 @@ namespace Velune;
 enum PaletteMode { Commands, Conversations, Runtime, Model, Effort, Permission }
 
 // One row of the palette. Run receives whether Ctrl+Enter chose it, which
-// opens a conversation in a new tab.
-sealed record PaletteItem(string Id, string Title, Action<bool> Run, string? Detail = null, string? Shortcut = null, bool Checked = false, bool Enabled = true);
+// opens a conversation in a new tab. Aliases are what it is also found by,
+// never shown (DESIGN.md, 检索别名).
+sealed record PaletteItem(string Id, string Title, Action<bool> Run, string? Detail = null, string? Shortcut = null, bool Checked = false, bool Enabled = true, string[]? Aliases = null);
 
 // Matching typed text against titles, in order but not necessarily
 // together: each word must match, and earlier, tighter matches rank higher.
+// Fields come title first, then aliases, then detail, so a title match
+// outranks the same match in an alias.
 static class FuzzyMatch
 {
     public static int? Score(string query, IEnumerable<string?> fields)
@@ -182,7 +185,7 @@ sealed class CommandPalette
     {
         var text = query.Text.Trim();
         shown = text.Length == 0 ? all : all
-            .Select((item, index) => (Item: item, Index: index, Score: FuzzyMatch.Score(text, [item.Title, item.Detail])))
+            .Select((item, index) => (Item: item, Index: index, Score: FuzzyMatch.Score(text, [item.Title, .. item.Aliases ?? [], item.Detail])))
             .Where(entry => entry.Score != null)
             .OrderByDescending(entry => entry.Score).ThenBy(entry => entry.Index)
             .Select(entry => entry.Item)

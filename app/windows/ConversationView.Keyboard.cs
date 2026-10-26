@@ -39,23 +39,6 @@ public sealed partial class ConversationView
     // The message each transcript row shows.
     readonly Dictionary<UIElement, BindingMessage> rowMessages = [];
 
-    // The Velune commands / offers, by prefix; other / text goes to the runtime as typed.
-    static readonly (string Name, Command Command)[] slashCommands =
-    [
-        ("model", Command.ChooseModel),
-        ("effort", Command.ChooseEffort),
-        ("permission", Command.ChoosePermission),
-        ("runtime", Command.ChooseRuntime),
-        ("new", Command.NewConversation),
-        ("continue", Command.Continue),
-        ("stop", Command.Stop),
-        ("attach", Command.Attach),
-        ("open", Command.OpenConversation),
-        ("find", Command.FindConversation),
-        ("commands", Command.CommandPalette),
-        ("keys", Command.ShortcutHelp),
-    ];
-
     void AttachKeyboard()
     {
         Input.TextCompositionStarted += (_, _) => imeComposing = true;
@@ -212,7 +195,13 @@ public sealed partial class ConversationView
             var commands = window.Shell.Commands;
             completingFiles = false;
             completionStart = 0;
-            ShowCompletions([.. slashCommands.Where(entry => entry.Name.StartsWith(query, StringComparison.Ordinal)).Select(entry =>
+            // The name first, then the title and the command's other names, so /模型 finds /model too.
+            var matched = query.Length == 0 ? Commands.Slash.ToList() : Commands.Slash
+                .Select((entry, index) => (Entry: entry, Index: index, Score: FuzzyMatch.Score(query, [entry.Name, Commands.Table[entry.Command].Name, .. Commands.SearchTerms(entry.Command)])))
+                .Where(match => match.Score != null)
+                .OrderByDescending(match => match.Score).ThenBy(match => match.Index)
+                .Select(match => match.Entry).ToList();
+            ShowCompletions([.. matched.Select(entry =>
                 new Completion(entry.Name, "/" + entry.Name, Commands.Table[entry.Command].Name, commands.Shortcut(entry.Command), window.CanRun(entry.Command)))]);
             return;
         }
@@ -323,7 +312,7 @@ public sealed partial class ConversationView
         }
         if (!completingFiles)
         {
-            var command = slashCommands.First(entry => entry.Name == completion.Id).Command;
+            var command = Commands.Slash.First(entry => entry.Name == completion.Id).Command;
             SetInput("");
             ShowCompletions([]);
             window.RunCommand(command);
@@ -341,36 +330,39 @@ public sealed partial class ConversationView
     internal List<PaletteItem> ChoiceItems(PaletteMode mode)
     {
         var items = new List<PaletteItem>();
-        void Add(string id, string title, bool chosen, Action choose, string? detail = null) =>
+        void Add(string id, string title, bool chosen, Action choose, string? detail = null, string[]? aliases = null) =>
             items.Add(new PaletteItem(id, title, _ =>
             {
                 choose();
                 FocusInput();
-            }, detail, Checked: chosen));
+            }, detail, Checked: chosen, Aliases: aliases));
+        // What “沿用当前” and “运行时默认” are also found by.
+        string[] unchosenAliases = ["current", "default", "keep", "none"];
         var unchosen = Model.HasTurns(Model.Next) ? "沿用当前" : "运行时默认";
         switch (mode)
         {
             case PaletteMode.Runtime:
                 foreach (var runtime in Model.Configuration.Runtimes)
                 {
-                    Add(runtime.Id, runtime.Name, runtime.Id == Model.Next, () => Model.ChooseRuntime(runtime.Id));
+                    Add(runtime.Id, runtime.Name, runtime.Id == Model.Next, () => Model.ChooseRuntime(runtime.Id), aliases: [runtime.TypeId]);
                 }
                 break;
             case PaletteMode.Model:
                 var chosenModel = Model.Choice().Model;
                 Add("", Model.HasTurns(Model.Next) && Model.NextModel() != null ? "沿用当前（" + Model.ModelName() + "）" : "运行时默认",
-                    chosenModel == null, () => Model.Choose(false, choice => choice with { Model = null }));
+                    chosenModel == null, () => Model.Choose(false, choice => choice with { Model = null }), aliases: unchosenAliases);
                 var index = 0;
                 foreach (var model in Model.ModelChoices().OrderBy(model => model.Managed))
                 {
                     Add(index++ + ":" + model.Name, model.Name, Equals(model.Selection, chosenModel),
-                        () => Model.Choose(true, choice => choice with { Model = model.Selection }), model.Managed ? "Velune 提供商" : null);
+                        () => Model.Choose(true, choice => choice with { Model = model.Selection }), model.Managed ? "Velune 提供商" : null,
+                        model.Selection is BindingModelSelection.Native native ? [native.ModelId] : null);
                 }
                 break;
             case PaletteMode.Effort:
                 var effort = Model.Effort();
                 Add("", Model.CurrentEffort() is { } current ? "沿用当前（" + current + "）" : unchosen, effort == null,
-                    () => Model.Choose(false, choice => choice with { Effort = null }));
+                    () => Model.Choose(false, choice => choice with { Effort = null }), aliases: unchosenAliases);
                 foreach (var level in Model.EffortOptions())
                 {
                     Add(level, level, effort == level, () => Model.Choose(true, choice => choice with { Effort = level }));
@@ -380,10 +372,10 @@ public sealed partial class ConversationView
                 var permission = Model.PermissionMode(Model.Choice().PermissionMode);
                 var running = Model.PermissionMode(Model.CurrentSettings()?.PermissionMode);
                 Add("", running != null ? "沿用当前（" + running.Label + "）" : unchosen, permission == null,
-                    () => Model.Choose(false, choice => choice with { PermissionMode = null }));
+                    () => Model.Choose(false, choice => choice with { PermissionMode = null }), aliases: unchosenAliases);
                 foreach (var option in Model.PermissionModes())
                 {
-                    Add(option.Id, option.Label, permission?.Id == option.Id, () => Model.Choose(true, choice => choice with { PermissionMode = option.Id }), option.Detail);
+                    Add(option.Id, option.Label, permission?.Id == option.Id, () => Model.Choose(true, choice => choice with { PermissionMode = option.Id }), option.Detail, [option.Id]);
                 }
                 break;
         }

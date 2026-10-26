@@ -133,7 +133,7 @@ sealed class GeneralPage : UserControl
     {
         var rows = new StackPanel { Spacing = 6 };
         var shows = new List<Action>();
-        foreach (var (command, (name, _)) in Commands.Table)
+        foreach (var (command, (name, _, _)) in Commands.Table)
         {
             var row = new Grid { ColumnSpacing = 8 };
             row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
