@@ -606,7 +606,7 @@ final class AppStore: ObservableObject {
     private var notifier: ConversationNotifier?
     /// The workspace whose window was key most recently; notifications open
     /// conversations there.
-    private weak var focusedWorkspace: AppStore?
+    private(set) weak var focusedWorkspace: AppStore?
     func noteFocused() { sharedApplication?.focusedWorkspace = self; noteSeen() }
     /// The user is looking at this conversation now.
     func isShowingConversation(_ id: String) -> Bool { NSApp.isActive && focusedWorkspace?.loadedConversationID == id }

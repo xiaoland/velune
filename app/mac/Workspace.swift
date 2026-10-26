@@ -19,11 +19,18 @@ import VeluneBindings
     let find = TranscriptFind()
     /// The user message being edited, in a sheet over the tab.
     @Published var editing: MessageEditRequest?
-    /// Bumped to move the keyboard to the transcript, or to the request waiting for an answer.
-    @Published private(set) var transcriptFocusRequest: UInt64 = 0
-    @Published private(set) var interactionFocusRequest: UInt64 = 0
-    func focusTranscript() { transcriptFocusRequest &+= 1 }
-    func focusInteraction() { interactionFocusRequest &+= 1 }
+    /// When the keyboard was asked to go to the request waiting for an
+    /// answer; its card takes it on showing, which may follow loading the
+    /// conversation. A request older than a few seconds has lapsed.
+    @Published private(set) var interactionFocusRequested: Date?
+    func focusTranscript() { reading.table.focusFromKeyboard() }
+    func focusInteraction() { interactionFocusRequested = Date() }
+    /// Whether the card showing now should take the keyboard; asking clears the request.
+    func takeInteractionFocusRequest() -> Bool {
+        guard let requested = interactionFocusRequested else { return false }
+        interactionFocusRequested = nil
+        return Date().timeIntervalSince(requested) < 5
+    }
     /// Kept while the tab is behind another, with the scroll position.
     let reading = TranscriptReading()
     /// Reading starts when the tab is first shown, so restored background tabs cost nothing.
@@ -997,6 +1004,24 @@ struct WindowSeed: Codable, Hashable {
     private var clickedFindArea: ToolWindowKind?
 
     func registerFindArea(_ kind: ToolWindowKind, anchor: @escaping () -> NSView?) { findAreas[kind] = anchor }
+
+    /// The conversation list's rows have the keyboard (not its search field).
+    var listHasKeyboard: Bool {
+        guard let responder = (findAreas[.list]?()?.window)?.firstResponder, !(responder is NSText) else { return false }
+        return focusIsIn(findAreas[.list])
+    }
+    /// The list's own keys while its rows have the keyboard; set by the list's view.
+    var listKeyHandler: ((NSEvent) -> Bool)?
+
+    /// Typing in the list goes on in its search field.
+    func searchListTyping(_ text: String) {
+        find()
+        // The field takes the keyboard on the next turns of the run loop.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+            guard let editor = NSApp.keyWindow?.firstResponder as? NSTextView, editor.isFieldEditor else { return }
+            editor.insertText(text, replacementRange: editor.selectedRange())
+        }
+    }
 
     /// The first responder is in the view the anchor marks.
     private func focusIsIn(_ anchor: (() -> NSView?)?) -> Bool {

@@ -27,6 +27,8 @@ struct Shortcut: Codable, Hashable {
         self.modifiers = modifiers
     }
 
+    static func code(named key: String) -> UInt16? { named[key]?.code }
+
     /// The combination a key press makes; nil for a lone modifier or a key
     /// with neither a character nor a name here.
     init?(event: NSEvent) {
@@ -332,6 +334,7 @@ enum ShortcutCommand: String, CaseIterable, Identifiable {
 /// The general settings' sections listing the commands with their shortcuts.
 struct ShortcutSettingsSections: View {
     @ObservedObject private var shortcuts = KeyboardShortcutSettings.shared
+    @ObservedObject private var hotKeys = GlobalHotKeys.shared
     @State private var recording: ShortcutCommand?
     /// Why the last press did not record, shown under the row recording it.
     @State private var refusal: Refusal?
@@ -367,6 +370,7 @@ struct ShortcutSettingsSections: View {
                         } label: {
                             Text(command.title)
                             if let refusal, refusal.command == command { Text(refusal.reason).foregroundStyle(.red) }
+                            else if hotKeys.failed.contains(command) { Text("系统或其他应用已占用这个组合，未生效。").foregroundStyle(.red) }
                         }
                     }
                 }

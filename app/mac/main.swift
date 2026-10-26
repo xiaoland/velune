@@ -324,6 +324,7 @@ struct VeluneApp: App {
         // Tabs live in each pane; the system's window tabs would stack a second, look-alike bar above them.
         NSWindow.allowsAutomaticWindowTabbing = false
         KeyRouter.install()
+        GlobalHotKeys.shared.start()
     }
 
     var body: some Scene {

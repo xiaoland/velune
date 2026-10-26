@@ -62,7 +62,11 @@ enum FuzzyMatch {
 extension ConversationWindowModel {
     func showPalette(_ mode: PaletteMode) {
         if palette == mode { return closePalette() }
-        if palette == nil { paletteReturnResponder = NSApp.keyWindow?.firstResponder }
+        if palette == nil {
+            // A field's editor stands in for the field, which is what takes the keyboard back.
+            let responder = (NSApp.keyWindow ?? window)?.firstResponder
+            paletteReturnResponder = (responder as? NSTextView).flatMap { $0.isFieldEditor ? $0.delegate as? NSResponder : nil } ?? responder
+        }
         palette = mode
     }
 
@@ -73,8 +77,8 @@ extension ConversationWindowModel {
         let responder = paletteReturnResponder
         paletteReturnResponder = nil
         DispatchQueue.main.async { [weak self] in
-            if focusComposer { self?.focused.composer.focusWhenShown() }
-            else if let responder, let view = responder as? NSView, let window = view.window { window.makeFirstResponder(view) }
+            if !focusComposer, let view = responder as? NSView, let window = view.window, window.makeFirstResponder(view) { return }
+            self?.focused.composer.focusWhenShown()
         }
     }
 
@@ -293,14 +297,14 @@ struct CommandPaletteView: View {
                     ScrollView {
                         LazyVStack(spacing: 0) {
                             ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
-                                row(item, selected: index == selection).id(index)
+                                row(item, selected: index == selection)
                                     .contentShape(Rectangle())
                                     .onTapGesture { selection = index; run(items, newTab: NSEvent.modifierFlags.contains(.command)) }
                             }
                         }.padding(6)
                     }
                     .frame(height: min(CGFloat(items.count), 12) * Self.rowHeight + 12)
-                    .onChange(of: selection) { _, value in proxy.scrollTo(value) }
+                    .onChange(of: selection) { _, value in if items.indices.contains(value) { proxy.scrollTo(items[value].id) } }
                 }
             }
         }

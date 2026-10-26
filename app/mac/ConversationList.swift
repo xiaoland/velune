@@ -58,6 +58,7 @@ struct ConversationListView: View {
             }
         }
         .background(PaneAnchor { [window] in window.registerFindArea(.list, anchor: $0) })
+        .onAppear { window.listKeyHandler = listKey }
         .onChange(of: window.listSearchRequest) { _, _ in
             switch placement {
             case .sidebar: searchFocused = true
@@ -168,6 +169,24 @@ struct ConversationListView: View {
         .listStyle(.sidebar)
         .background(ListDragLimit())
         .disabled(store.authenticationRunning || store.isShuttingDown)
+    }
+
+    /// ⌘⌫ deletes the selected conversations (after asking, as the menu does);
+    /// a character typed goes on in the search field. Return renames, as a
+    /// double click does (the list's primary action).
+    private func listKey(_ event: NSEvent) -> Bool {
+        let modifiers = event.modifierFlags.intersection([.command, .shift, .option, .control])
+        if event.keyCode == 51, modifiers == .command {
+            let ids = store.selectedConversationIDs.count > 1 ? store.selectedConversationIDs : Set([focused.selectedConversationID].compactMap { $0 })
+            let targets = ids.compactMap { store.conversation(id: $0) }
+            guard !targets.isEmpty, store.canManageConversations, targets.allSatisfy(store.canDeleteConversation) else { NSSound.beep(); return true }
+            deleteTargets = targets
+            return true
+        }
+        guard modifiers.isSubset(of: .shift), let text = event.characters, text.count == 1, let scalar = text.unicodeScalars.first,
+              !CharacterSet.whitespacesAndNewlines.union(.controlCharacters).contains(scalar), !(0xF700...0xF8FF).contains(scalar.value) else { return false }
+        window.searchListTyping(text)
+        return true
     }
 
     private func expansion(_ key: BindingConversationGroupKey) -> Binding<Bool> {

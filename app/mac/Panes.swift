@@ -125,9 +125,11 @@ struct TabContentView: View {
             .overlay(alignment: .top) {
                 TranscriptFindHost(find: tab.find, model: store.transcript, jump: tab.navigate(to:))
             }
+            if let interaction = store.pendingInteractions.first {
+                RuntimeInteractionView(store: store, tab: tab, interaction: interaction).id(interaction.id)
+            }
             footer
         }
-        .sheet(item: Binding(get: { store.pendingInteractions.first }, set: { _ in })) { RuntimeInteractionView(store: store, interaction: $0) }
         .sheet(item: $tab.editing) { request in
             MessageEditorSheet(store: store, request: request, forked: window.openInNewTab(adopting:))
         }

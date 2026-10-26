@@ -101,9 +101,11 @@ extension ComposerModel {
     /// The `/command` the box holds alone, or the `@path` the caret is in,
     /// with what matches it; none while composing or after Escape closed it.
     func updateCompletion() {
-        guard let view = textView, !view.hasMarkedText(), view.selectedRange().length == 0, text != dismissedCompletionText else { return setCompletion(nil) }
+        // The view's own text: its selection moves before the edit reaches `text`.
+        guard let view = textView, !view.hasMarkedText(), view.selectedRange().length == 0, view.string != dismissedCompletionText else { return setCompletion(nil) }
+        let text = view.string
         let string = text as NSString
-        let caret = view.selectedRange().location
+        let caret = min(view.selectedRange().location, string.length)
         if text.hasPrefix("/"), text.rangeOfCharacter(from: .whitespacesAndNewlines) == nil {
             let query = String(text.dropFirst()).lowercased()
             let shortcuts = KeyboardShortcutSettings.shared
@@ -186,7 +188,7 @@ extension ComposerModel {
         if completion != nil, escapeToken == nil {
             escapeToken = KeyRouter.addEscapeHandler { [weak self] in
                 guard let self, completion != nil, let view = textView, view.window?.firstResponder === view else { return false }
-                dismissedCompletionText = text
+                dismissedCompletionText = view.string
                 setCompletion(nil)
                 return true
             }
@@ -229,12 +231,11 @@ struct ComposerCompletionList: View {
                         .background(selected ? Color.accentColor : .clear, in: RoundedRectangle(cornerRadius: 5))
                         .contentShape(Rectangle())
                         .onTapGesture { choose(index) }
-                        .id(index)
                     }
                 }.padding(4)
             }
             .frame(height: min(CGFloat(completion.items.count), 6) * Self.rowHeight + 8)
-            .onChange(of: completion.selected) { _, value in proxy.scrollTo(value) }
+            .onChange(of: completion.selected) { _, value in if let item = completion.items[safe: value] { proxy.scrollTo(item.id) } }
         }
         .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: ComposerEditor.cornerRadius))
         .overlay(RoundedRectangle(cornerRadius: ComposerEditor.cornerRadius).strokeBorder(Color(nsColor: .separatorColor)))

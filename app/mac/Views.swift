@@ -1666,36 +1666,160 @@ struct AuthenticationView: View {
     }
 }
 
+/// A runtime's request, as a card above the composer: it never takes the
+/// keyboard by itself (see 键盘操作 in the PRD). "转到待处理的会话" or a
+/// click gives it the keyboard; then 1–9 choose an approval's options and
+/// ⌘⌫ cancels the request. Questions move by Tab and submit with Return.
 struct RuntimeInteractionView: View {
     @ObservedObject var store: AppStore
+    @ObservedObject var tab: ConversationTab
     let interaction: RuntimeInteraction
-    @State private var values: [String:String] = [:]
-    var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            switch interaction.kind {
-            case .approval(let title, let detail, let options):
-                Text(title).font(.headline).frame(maxWidth: .infinity, alignment: .leading)
-                ScrollView { Text(detail).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading) }.frame(maxHeight: 220)
-                HStack { Button("取消请求", role: .cancel) { reply(.cancel) }; Spacer(); ForEach(options) { option in Button(option.label) { reply(.decision(option.id)) } } }.disabled(store.isLoading)
-            case .userInput(let questions):
-                Text("运行时需要输入").font(.headline).frame(maxWidth: .infinity, alignment: .leading)
-                Form {
-                    ForEach(questions) { question in
-                        Section {
-                            Text(question.text).textSelection(.enabled)
-                            if !question.options.isEmpty { Picker("选择", selection: value(question.id)) { Text("请选择").tag(""); ForEach(question.options) { Text($0.label).tag($0.id) } } }
-                            else if question.secret { SecureField("回答", text: value(question.id)).privacySensitive() }
-                            else { TextField("回答", text: value(question.id)) }
-                        }
-                    }
-                }.formStyle(.grouped)
-                HStack { Button("取消请求", role: .cancel) { reply(.cancel) }; Spacer(); Button("提交") { reply(.answers(questions.map { InteractionAnswer(questionID: $0.id, values: [values[$0.id] ?? ""]) })) }.disabled(questions.contains { (values[$0.id] ?? "").isEmpty }) }.disabled(store.isLoading)
-            }
+    @State private var values: [String: String] = [:]
+    @FocusState private var cardFocused: Bool
+    @FocusState private var focusedField: String?
+    /// The choice question 1–9 answer while the card has the keyboard.
+    @State private var current: String?
+    @Environment(\.controlActiveState) private var activeState
 
-        }.padding(20).frame(width: 500).frame(minHeight: 180, maxHeight: 480)
-        .interactiveDismissDisabled()
-        .onChange(of: interaction.id) { _, _ in values = [:] }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            switch interaction.kind {
+            case .approval(let title, let detail, let options): approval(title: title, detail: detail, options: options)
+            case .userInput(let questions): input(questions)
+            }
+        }
+        .padding(12)
+        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
+        .overlay { border }
+        .focusable()
+        .focusEffectDisabled()
+        .focused($cardFocused)
+        .onKeyPress(phases: .down) { press in key(press) }
+        .onTapGesture { takeKeyboard() }
+        .frame(maxWidth: 760).padding(.horizontal, 16).padding(.top, 8)
+        .onChange(of: interaction.id) { _, _ in values = [:]; current = nil }
+        .onChange(of: tab.interactionFocusRequested, initial: true) { _, requested in
+            if requested != nil, tab.takeInteractionFocusRequest() { takeKeyboard() }
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("运行时请求")
     }
+
+    private var isApproval: Bool { if case .approval = interaction.kind { true } else { false } }
+
+    /// The system's focus ring colour while the card has the keyboard.
+    private var border: some View {
+        let ring = cardFocused && activeState == .key
+        return RoundedRectangle(cornerRadius: 8)
+            .strokeBorder(ring ? Color(nsColor: .keyboardFocusIndicatorColor) : Color(nsColor: .separatorColor), lineWidth: ring ? 3 : 1)
+    }
+
+    @ViewBuilder private func approval(title: String, detail: String, options: [InteractionOption]) -> some View {
+        header(title)
+        if !detail.isEmpty {
+            ScrollView { Text(detail).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading) }
+                .frame(maxHeight: 160).fixedSize(horizontal: false, vertical: true)
+        }
+        HStack(spacing: 8) {
+            Button("取消请求", role: .cancel) { reply(.cancel) }.help("取消请求（卡片有焦点时 ⌘⌫）")
+            Spacer()
+            ForEach(Array(options.enumerated()), id: \.element.id) { index, option in optionButton(option, index: index) }
+        }.disabled(store.isLoading)
+    }
+
+    private func optionButton(_ option: InteractionOption, index: Int) -> some View {
+        let numbered = index < 9
+        return Button(numbered ? "\(index + 1)  \(option.label)" : option.label) { reply(.decision(option.id)) }
+            .help(numbered ? "卡片有焦点时按 \(index + 1)" : option.label)
+    }
+
+    @ViewBuilder private func input(_ questions: [InteractionQuestion]) -> some View {
+        header("运行时需要输入")
+        ForEach(questions) { question in
+            VStack(alignment: .leading, spacing: 4) {
+                HStack {
+                    Text(question.text).textSelection(.enabled)
+                    if cardFocused, current == question.id {
+                        Text("按 1–\(min(question.options.count, 9)) 选择").font(.callout).foregroundStyle(.secondary)
+                    }
+                }
+                field(question, questions: questions).focused($focusedField, equals: question.id)
+            }
+        }
+        HStack {
+            Button("取消请求", role: .cancel) { reply(.cancel) }
+            Spacer()
+            Button("提交") { submit(questions) }.disabled(!answered(questions)).help("回答完毕后按 Return")
+        }.disabled(store.isLoading)
+    }
+
+    @ViewBuilder private func field(_ question: InteractionQuestion, questions: [InteractionQuestion]) -> some View {
+        if !question.options.isEmpty {
+            Picker("选择", selection: value(question.id)) {
+                Text("请选择").tag("")
+                ForEach(Array(question.options.enumerated()), id: \.element.id) { index, option in
+                    Text(index < 9 ? "\(index + 1)  \(option.label)" : option.label).tag(option.id)
+                }
+            }.labelsHidden()
+        } else if question.secret {
+            SecureField("回答", text: value(question.id)).privacySensitive().onSubmit { submitOrAdvance(questions) }
+        } else {
+            TextField("回答", text: value(question.id)).onSubmit { submitOrAdvance(questions) }
+        }
+    }
+
+    private func header(_ title: String) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: "exclamationmark.circle.fill").foregroundStyle(.orange)
+            Text(title).font(.headline).frame(maxWidth: .infinity, alignment: .leading)
+            if store.pendingInteractions.count > 1 { Text("还有 \(store.pendingInteractions.count - 1) 个请求").font(.callout).foregroundStyle(.secondary) }
+        }
+    }
+
+    private func takeKeyboard() {
+        DispatchQueue.main.async { if case .userInput(let questions) = interaction.kind { advance(questions) } else { cardFocused = true } }
+    }
+
+    /// To the first unanswered question: its field, or the card for a choice. With all answered, the card, for Return.
+    private func advance(_ questions: [InteractionQuestion]) {
+        let next = questions.first { (values[$0.id] ?? "").isEmpty }
+        if let next, next.options.isEmpty {
+            current = nil
+            focusedField = next.id
+        } else {
+            current = next?.id
+            focusedField = nil
+            cardFocused = true
+        }
+    }
+
+    private func key(_ press: KeyPress) -> KeyPress.Result {
+        guard cardFocused, focusedField == nil, !store.isLoading else { return .ignored }
+        if press.key == .delete, press.modifiers == .command { reply(.cancel); return .handled }
+        switch interaction.kind {
+        case .approval(_, _, let options):
+            guard press.modifiers.isEmpty, let digit = Int(press.characters), (1...min(options.count, 9)).contains(digit) else { return .ignored }
+            reply(.decision(options[digit - 1].id))
+        case .userInput(let questions):
+            if press.key == .return, press.modifiers.isEmpty, answered(questions) { submit(questions); return .handled }
+            guard press.modifiers.isEmpty, let digit = Int(press.characters),
+                  let question = questions.first(where: { $0.id == current }), (1...min(question.options.count, 9)).contains(digit) else { return .ignored }
+            values[question.id] = question.options[digit - 1].id
+            advance(questions)
+        }
+        return .handled
+    }
+
+    private func answered(_ questions: [InteractionQuestion]) -> Bool { !questions.contains { (values[$0.id] ?? "").isEmpty } }
+    private func submit(_ questions: [InteractionQuestion]) {
+        guard answered(questions), !store.isLoading else { return }
+        reply(.answers(questions.map { InteractionAnswer(questionID: $0.id, values: [values[$0.id] ?? ""]) }))
+    }
+    private func submitOrAdvance(_ questions: [InteractionQuestion]) { answered(questions) ? submit(questions) : advance(questions) }
     private func value(_ id: String) -> Binding<String> { Binding(get: { values[id] ?? "" }, set: { values[id] = $0 }) }
-    private func reply(_ value: RuntimeInteractionReply) { store.replyInteraction(interaction, reply: value) }
+    private func reply(_ value: RuntimeInteractionReply) {
+        store.replyInteraction(interaction, reply: value)
+        // The keyboard goes back to the composer rather than nowhere.
+        if cardFocused || focusedField != nil { tab.composer.focusWhenShown() }
+    }
 }

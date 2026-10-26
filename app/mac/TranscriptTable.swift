@@ -894,6 +894,117 @@ struct TranscriptTable: NSViewRepresentable {
             let frame = rowRect(index)
             if cell.frame != frame { cell.frame = frame }
         }
+        updateSelectionOutline()
+    }
+
+    // MARK: Keyboard
+
+    /// The entry the keyboard acts on while the list has it (⌘0).
+    private var selectedID: String?
+    private let selectionOutline = TranscriptSelectionOutline()
+
+    /// Gives the list the keyboard, on the last message unless one is still chosen.
+    func focusFromKeyboard() {
+        guard let document, let window = document.window else { return }
+        if selectedID.flatMap({ indexByID[$0] }) == nil { selectedID = selectable.last.map { entries[$0].id } }
+        document.takesKeyboard = true
+        window.makeFirstResponder(document)
+        revealSelection()
+    }
+
+    /// Messages and work headers; the activity line and the end are not chosen.
+    private var selectable: [Int] {
+        entries.indices.filter { if case .message = entries[$0] { true } else if case .work = entries[$0] { true } else { false } }
+    }
+
+    private var selectedIndex: Int? { selectedID.flatMap { indexByID[$0] } }
+
+    /// The list's keys while it has the keyboard; returns whether one was taken.
+    func handleKey(_ event: NSEvent) -> Bool {
+        let modifiers = event.modifierFlags.intersection([.command, .shift, .option, .control])
+        let key = event.charactersIgnoringModifiers?.lowercased()
+        let choices = selectable
+        guard !choices.isEmpty else { return false }
+        let position = selectedIndex.flatMap { choices.firstIndex(of: $0) }
+        let users = choices.filter { if case .message(let row) = entries[$0] { row.message.role == .user } else { false } }
+        switch (event.keyCode, modifiers) {
+        case (126, []): select(position.map { choices[max($0 - 1, 0)] } ?? choices.last)
+        case (125, []): select(position.map { choices[min($0 + 1, choices.count - 1)] } ?? choices.last)
+        case (126, .option): select(users.last { $0 < (selectedIndex ?? entries.count) })
+        case (125, .option): select(users.first { $0 > (selectedIndex ?? -1) })
+        case (126, .command), (115, []): select(choices.first)
+        case (125, .command), (119, []): select(choices.last)
+        case (36, []), (76, []), (49, []):
+            guard let index = selectedIndex, case .work(_, _, true, _) = entries[index] else {
+                // Space elsewhere pages, as in a document.
+                guard event.keyCode == 49 else { return false }
+                page(down: true)
+                return true
+            }
+            toggle(entryID: entries[index].id, key: "")
+            revealSelection()
+        case (49, .shift): page(down: false)
+        case (116, []): page(down: false)
+        case (121, []): page(down: true)
+        case (_, [.command, .option]) where key == "c": copySelected(codeOnly: true)
+        case (_, []) where key == "e":
+            guard let index = selectedIndex, case .message(let row) = entries[index], let edit = parent?.editMessage(row.message.id) else { NSSound.beep(); return true }
+            edit()
+        default: return false
+        }
+        return true
+    }
+
+    private func select(_ index: Int?) {
+        guard let index else { NSSound.beep(); return }
+        selectedID = entries[index].id
+        revealSelection()
+    }
+
+    /// Scrolls the chosen entry into view and outlines it.
+    private func revealSelection() {
+        guard let index = selectedIndex, let scroll else { return updateSelectionOutline() }
+        commitExactHeights(in: [index], keeping: captureAnchor())
+        let visible = scroll.contentView.bounds
+        let row = rowRect(index)
+        if row.minY < visible.minY || row.height > visible.height { setOrigin(row.minY - 8) }
+        else if row.maxY > visible.maxY { setOrigin(row.maxY - visible.height + 8) }
+        setFollowing(isAtBottom)
+        materializeVisibleRows()
+    }
+
+    private func page(down: Bool) {
+        guard let scroll else { return }
+        let visible = scroll.contentView.bounds
+        setOrigin(visible.minY + (down ? 1 : -1) * max(visible.height - 40, 40))
+        setFollowing(isAtBottom)
+        materializeVisibleRows()
+    }
+
+    /// Outlines the chosen entry while the list has the keyboard.
+    func updateSelectionOutline() {
+        guard let document, let index = selectedIndex, document.window?.firstResponder === document else { selectionOutline.isHidden = true; return }
+        let column = TranscriptRowLayout.column(for: width)
+        let row = rowRect(index)
+        // A row starts with the gap above it; the outline rings what it shows.
+        let inset = TranscriptRowLayout.rowInset
+        selectionOutline.frame = NSRect(x: columnShift + column.x - 8, y: row.minY + inset - 6, width: column.width + 16, height: max(row.height - inset + 12, 8))
+        selectionOutline.isHidden = false
+        if document.subviews.last !== selectionOutline { document.addSubview(selectionOutline, positioned: .above, relativeTo: nil) }
+    }
+
+    /// The chosen message's text, or the last code block in it.
+    func copySelected(codeOnly: Bool) {
+        guard let index = selectedIndex, case .message(let row) = entries[index] else { NSSound.beep(); return }
+        var text = row.message.text
+        if codeOnly {
+            let pattern = try? NSRegularExpression(pattern: "```[^\\n]*\\n([\\s\\S]*?)```")
+            let whole = NSRange(location: 0, length: (text as NSString).length)
+            guard let match = pattern?.matches(in: text, range: whole).last else { NSSound.beep(); return }
+            text = (text as NSString).substring(with: match.range(at: 1))
+        }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
     }
 
     private func recycle(_ cell: TranscriptCellView) {
@@ -1061,11 +1172,40 @@ enum TranscriptConversationLink {
     }
 }
 
+/// The keyboard's place in the list: the focus ring's colour around the chosen entry.
+@MainActor final class TranscriptSelectionOutline: NSView {
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+    override func draw(_ dirtyRect: NSRect) {
+        NSColor.keyboardFocusIndicatorColor.setStroke()
+        let path = NSBezierPath(roundedRect: bounds.insetBy(dx: 1.5, dy: 1.5), xRadius: 8, yRadius: 8)
+        path.lineWidth = 3
+        path.stroke()
+    }
+}
+
 /// Flipped document whose height is the controller's total row height.
 @MainActor final class TranscriptDocumentView: NSView {
     weak var controller: TranscriptTableController?
     override var isFlipped: Bool { true }
-    override var acceptsFirstResponder: Bool { false }
+    /// Only "转到消息" gives the list the keyboard: a click on its blank
+    /// space leaves typing in the composer, as it always has.
+    var takesKeyboard = false
+    override var acceptsFirstResponder: Bool { takesKeyboard }
+    override func becomeFirstResponder() -> Bool {
+        let accepted = super.becomeFirstResponder()
+        controller?.updateSelectionOutline()
+        return accepted
+    }
+    override func resignFirstResponder() -> Bool {
+        let accepted = super.resignFirstResponder()
+        if accepted { takesKeyboard = false }
+        DispatchQueue.main.async { [weak self] in self?.controller?.updateSelectionOutline() }
+        return accepted
+    }
+    override func keyDown(with event: NSEvent) {
+        if controller?.handleKey(event) != true { super.keyDown(with: event) }
+    }
+    @objc func copy(_ sender: Any?) { controller?.copySelected(codeOnly: false) }
     /// Responsive scrolling asks for overdraw before it is visible.
     override func prepareContent(in rect: NSRect) {
         super.prepareContent(in: rect)
