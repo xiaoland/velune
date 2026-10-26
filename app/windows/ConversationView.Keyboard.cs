@@ -45,6 +45,10 @@ public sealed partial class ConversationView
         Input.TextCompositionEnded += (_, _) => imeComposing = false;
         Input.TextChanged += (_, _) => UpdateCompletion();
         Input.SelectionChanged += (_, _) => UpdateCompletion();
+        // The list belongs to the text being typed: it closes when typing
+        // goes elsewhere or the view leaves the window.
+        Input.LostFocus += (_, _) => ShowCompletions([]);
+        Unloaded += (_, _) => ShowCompletions([]);
         CompletionList.ItemClick += (_, e) =>
         {
             if (CompletionList.Items.IndexOf(e.ClickedItem) is var index and >= 0)
@@ -250,7 +254,8 @@ public sealed partial class ConversationView
         {
             CompletionList.Items.Add(CompletionRow(completion));
         }
-        CompletionCard.Visibility = Visible(wanted.Count > 0);
+        CompletionCard.Width = Input.ActualWidth;
+        CompletionPopup.IsOpen = wanted.Count > 0;
         if (wanted.Count > 0)
         {
             CompletionList.SelectedIndex = Math.Max(wanted.FindIndex(completion => completion.Id == chosen), 0);
