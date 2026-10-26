@@ -150,7 +150,7 @@ struct TabContentView: View {
             }
             .background(.bar)
         } else if inSheet || window.tools.panesHaveComposer {
-            ComposerView(store: store, model: tab.composer, layout: window, send: tab.send)
+            ComposerView(store: store, model: tab.composer, layout: window, send: tab.send, steer: tab.steer)
         }
     }
 

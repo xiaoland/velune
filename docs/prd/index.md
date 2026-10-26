@@ -45,6 +45,7 @@ Velune 是新的独立产品，已经停止继续推进 Factory26。Beluna 是�
 - [消息展示](conversation-view.md)：消息布局、Markdown、工作过程折叠、大纲
 - [输入区（composer）](composer.md)：下一轮选择、附件、status line、发送队列、编辑消息
 - [多窗口、标签与布局](workspace-layout.md)：分屏标签组、停靠区与工具窗口、布局恢复
+- [键盘操作](keyboard.md)：发送键与插入本轮、命令面板与打开会话、审批卡片、消息与会话列表的键盘操作、默认快捷键
 - [问题与诊断](diagnostics.md)：问题面板、本地诊断内容
 - [分析](analytics.md)：token 消耗与性能分析
 

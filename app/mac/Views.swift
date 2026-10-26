@@ -55,6 +55,20 @@ struct VeluneRootView: View {
         .navigationSplitViewStyle(.balanced)
         .background(WindowLevelSetter(pinned: window.pinned))
         .overlay { if let side = window.dockHint { DockZoneHighlight(side: side) } }
+        .overlay(alignment: .top) {
+            if let mode = window.palette {
+                ZStack(alignment: .top) {
+                    // A click beside the palette closes it, as one outside a menu does.
+                    Color.black.opacity(0.001).onTapGesture { window.closePalette() }
+                    CommandPaletteView(window: window, mode: mode).id(mode).padding(.top, 48)
+                }
+            }
+        }
+        .sheet(isPresented: $window.showsShortcutHelp) { ShortcutHelpView(window: window) }
+        .onAppear {
+            window.openScene = { [openWindow] in openWindow(id: $0) }
+            window.openSettings = { [openSettings] in openSettings() }
+        }
         .onChange(of: activeState, initial: true) { _, value in if value == .key { focused.noteFocused() } }
         .onChange(of: tab.id) { _, _ in window.outlinePopover = false; window.agentsPopover = false }
         .onChange(of: focused.pendingConversationID) { _, value in if value != nil { window.outlinePopover = false; window.agentsPopover = false } }

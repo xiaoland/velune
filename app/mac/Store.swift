@@ -1291,6 +1291,15 @@ final class AppStore: ObservableObject {
     }
     func message(id: String) -> Message? { snapshot?.messages.first { $0.id == id } }
     func isLastUserMessage(_ messageID: String) -> Bool { snapshot?.messages.last { $0.role == .user }?.id == messageID }
+    /// The user's own messages in this conversation, oldest first, for the
+    /// composer to recall; messages other agents sent through Velune are not the user's.
+    var sentMessageTexts: [String] {
+        (snapshot?.messages ?? []).compactMap { message in
+            guard message.role == .user, !message.blocks.contains(where: { if case .agentSender = $0 { true } else { false } }) else { return nil }
+            let text = message.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            return text.isEmpty ? nil : text
+        }
+    }
     /// Send `text` in place of a user message. In place the conversation
     /// shows the new turn here; a fork's new conversation goes to `forked`.
     func editMessage(_ messageID: String, placement: BindingEditPlacement, text: String, attachments: [String], forked: @escaping (BindingSnapshotResult) -> Void) {
@@ -1311,14 +1320,18 @@ final class AppStore: ObservableObject {
     func adopt(_ result: BindingSnapshotResult) { applySnapshotResult(result) }
     func steerQueued(_ id: String) { changeQueue(.steer(id: id)) }
     func editQueued(_ id: String, text: String) { changeQueue(.edit(id: id, text: text)) }
-    func removeQueued(_ id: String) { changeQueue(.remove(id: id)) }
+    /// `onRemoved` runs once the core has taken the message out of the queue.
+    func removeQueued(_ id: String, onRemoved: (() -> Void)? = nil) { changeQueue(.remove(id: id), onDone: onRemoved) }
     func moveQueued(_ id: String, to index: Int) { changeQueue(.move(id: id, index: UInt32(max(index, 0)))) }
     func resumeQueue() { changeQueue(.resume) }
-    private func changeQueue(_ operation: BindingSendQueueOperation, onFailure: (() -> Void)? = nil) {
+    private func changeQueue(_ operation: BindingSendQueueOperation, onFailure: (() -> Void)? = nil, onDone: (() -> Void)? = nil) {
         guard !isPreview else { return }
         guard let runtimeID = projectionRuntimeID, let conversationID = loadedConversationID else { recordProblem("请选择会话"); onFailure?(); return }
         guard let transport else { recordProblem("本地核心未配置"); onFailure?(); return }
-        enqueue({ try transport.sendQueue(runtimeID: runtimeID, conversationID: conversationID, operation: operation) }, onFailure: { _ in onFailure?() }) { [weak self] in self?.applySnapshotResult($0) }
+        enqueue({ try transport.sendQueue(runtimeID: runtimeID, conversationID: conversationID, operation: operation) }, onFailure: { _ in onFailure?() }) { [weak self] in
+            self?.applySnapshotResult($0)
+            onDone?()
+        }
     }
     func saveProvider(_ value: AIProvider, authenticationEdit: AuthenticationEdit, quotaAuthenticationEdit: BindingQuotaAuthenticationEdit? = nil, onSaved: (() -> Void)? = nil) {
         guard !authenticationRunning, !isGenerating else { recordProblem("请先停止当前任务或完成登录"); return }

@@ -72,36 +72,71 @@ struct Shortcut: Codable, Hashable {
     }
 }
 
+/// How the composer sends: Return, with Shift-Return for a new line, or
+/// Command-Return, with Return for a new line. While a turn runs the
+/// sending key queues and Command (Option-Command) with Return steers.
+enum SendMode: String, Codable, CaseIterable, Identifiable {
+    case returnSends, commandReturnSends
+    var id: Self { self }
+    var title: String {
+        switch self {
+        case .returnSends: "Return 发送，⇧Return 换行"
+        case .commandReturnSends: "⌘Return 发送，Return 换行"
+        }
+    }
+    /// The key that sends or queues, as the composer's hints name it.
+    var sendKey: String { self == .returnSends ? "Return" : "⌘Return" }
+    /// The key that steers into the running turn.
+    var steerKey: String { self == .returnSends ? "⌘Return" : "⌥⌘Return" }
+}
+
+extension View {
+    /// The send mode's key on a sheet's primary button, so a message edited
+    /// there is sent as one typed in the composer; the other key is a new line.
+    func sendKeyboardShortcut() -> some View {
+        keyboardShortcut(KeyboardShortcutSettings.shared.sendMode == .returnSends ? .defaultAction : KeyboardShortcut(.return, modifiers: .command))
+    }
+}
+
 /// Velune's commands the user may give other shortcuts, with the ones they
-/// come with. Sending keeps Command-Return: the composer takes it itself.
+/// come with. Sending and steering stay with the composer's own keys (see
+/// `SendMode`); the global ones work while another app is active.
 enum ShortcutCommand: String, CaseIterable, Identifiable {
-    case newConversation, newTab, newWindow, closeTab, closeWindow
+    case newConversation, openConversation, newTab, newWindow, closeTab, closeWindow
     case find
-    case stop, stopSubAgents, reload
+    case stop, stopSubAgents, continueTurn, attach, chooseRuntime, chooseModel, chooseEffort, choosePermission, nextAttention, reload
     case splitRight, splitDown, closeSplit, back, forward, nextPane, previousPane, nextTab, previousTab, moveTabToNewWindow, keepInFront
-    case showList, showOutline, focusComposer, showAgents, rightArea, bottomArea, editorOnly, problems
+    case commandPalette, focusTranscript, showList, showOutline, focusComposer, showAgents, rightArea, bottomArea, editorOnly, problems
+    case shortcutHelp
+    case globalShow, globalNewConversation
 
     var id: Self { self }
 
     /// The menu it is in, which the settings group it by.
     enum Menu: String, CaseIterable, Identifiable {
-        case file = "文件", edit = "编辑", conversation = "会话", window = "窗口", view = "显示"
+        case file = "文件", edit = "编辑", conversation = "会话", window = "窗口", view = "显示", help = "帮助", global = "全局"
         var id: Self { self }
+        var sectionTitle: String { self == .global ? "全局（在其他应用中也有效）" : "\(rawValue)菜单" }
     }
 
     var menu: Menu {
         switch self {
-        case .newConversation, .newTab, .newWindow, .closeTab, .closeWindow: .file
+        case .newConversation, .openConversation, .newTab, .newWindow, .closeTab, .closeWindow: .file
         case .find: .edit
-        case .stop, .stopSubAgents, .reload: .conversation
+        case .stop, .stopSubAgents, .continueTurn, .attach, .chooseRuntime, .chooseModel, .chooseEffort, .choosePermission, .nextAttention, .reload: .conversation
         case .splitRight, .splitDown, .closeSplit, .back, .forward, .nextPane, .previousPane, .nextTab, .previousTab, .moveTabToNewWindow, .keepInFront: .window
-        case .showList, .showOutline, .focusComposer, .showAgents, .rightArea, .bottomArea, .editorOnly, .problems: .view
+        case .commandPalette, .focusTranscript, .showList, .showOutline, .focusComposer, .showAgents, .rightArea, .bottomArea, .editorOnly, .problems: .view
+        case .shortcutHelp: .help
+        case .globalShow, .globalNewConversation: .global
         }
     }
+
+    var isGlobal: Bool { menu == .global }
 
     var title: String {
         switch self {
         case .newConversation: "新建会话"
+        case .openConversation: "打开会话…"
         case .newTab: "新建标签页"
         case .newWindow: "新建窗口"
         case .closeTab: "关闭标签页"
@@ -109,6 +144,13 @@ enum ShortcutCommand: String, CaseIterable, Identifiable {
         case .find: "查找…"
         case .stop: "停止生成"
         case .stopSubAgents: "停止子 Agent"
+        case .continueTurn: "继续"
+        case .attach: "添加附件…"
+        case .chooseRuntime: "选择运行时…"
+        case .chooseModel: "选择模型…"
+        case .chooseEffort: "选择推理强度…"
+        case .choosePermission: "选择权限模式…"
+        case .nextAttention: "转到待处理的会话"
         case .reload: "重新读取"
         case .splitRight: "向右拆分"
         case .splitDown: "向下拆分"
@@ -121,6 +163,8 @@ enum ShortcutCommand: String, CaseIterable, Identifiable {
         case .previousTab: "上一个标签页"
         case .moveTabToNewWindow: "将标签页移到新窗口"
         case .keepInFront: "保持在最前面"
+        case .commandPalette: "命令…"
+        case .focusTranscript: "转到消息"
         case .showList: "显示／隐藏会话列表"
         case .showOutline: "显示／隐藏会话大纲"
         case .focusComposer: "转到输入区"
@@ -129,12 +173,17 @@ enum ShortcutCommand: String, CaseIterable, Identifiable {
         case .bottomArea: "显示／隐藏底部区域"
         case .editorOnly: "只显示编辑区"
         case .problems: "问题…"
+        case .shortcutHelp: "快捷键速查"
+        case .globalShow: "显示 Velune"
+        case .globalNewConversation: "新建会话（全局）"
         }
     }
 
     var standard: Shortcut? {
         switch self {
         case .newConversation: Shortcut("n")
+        // As VS Code's Quick Open.
+        case .openConversation: Shortcut("p")
         case .newTab: Shortcut("t")
         case .newWindow: Shortcut("n", [.command, .option])
         case .closeTab: Shortcut("w")
@@ -142,6 +191,16 @@ enum ShortcutCommand: String, CaseIterable, Identifiable {
         case .find: Shortcut("f")
         case .stop: Shortcut("escape", [])
         case .reload: Shortcut("r")
+        case .attach: Shortcut("o")
+        // Control-Command and a letter: the next turn's choices.
+        case .chooseRuntime: Shortcut("r", [.command, .control])
+        case .chooseModel: Shortcut("m", [.command, .control])
+        case .chooseEffort: Shortcut("e", [.command, .control])
+        case .choosePermission: Shortcut("p", [.command, .control])
+        case .nextAttention: Shortcut("a", [.command, .shift])
+        case .commandPalette: Shortcut("k")
+        case .focusTranscript: Shortcut("0")
+        case .shortcutHelp: Shortcut("/")
         case .splitRight: Shortcut("d")
         case .splitDown: Shortcut("d", [.command, .shift])
         // Control-brackets, not Option-arrows: those move by word in the composer.
@@ -161,7 +220,8 @@ enum ShortcutCommand: String, CaseIterable, Identifiable {
         case .bottomArea: Shortcut("j")
         case .editorOnly: Shortcut("return", [.command, .shift])
         case .problems: Shortcut("m", [.command, .shift])
-        case .stopSubAgents, .closeSplit, .moveTabToNewWindow, .keepInFront: nil
+        // Global ones are the user's to choose: any default would take a key from other apps.
+        case .stopSubAgents, .continueTurn, .closeSplit, .moveTabToNewWindow, .keepInFront, .globalShow, .globalNewConversation: nil
         }
     }
 
@@ -187,6 +247,8 @@ enum ShortcutCommand: String, CaseIterable, Identifiable {
         var schema = File.schema
         /// By command; null where the user removed the shortcut.
         var shortcuts: [String: Shortcut?]
+        /// Absent in files from before the choice: Return sends.
+        var sendMode: SendMode?
     }
 
     /// The menu items of the system and of AppKit a shortcut must leave alone.
@@ -195,11 +257,13 @@ enum ShortcutCommand: String, CaseIterable, Identifiable {
         Shortcut(","): "设置", Shortcut("m"): "最小化", Shortcut("z"): "撤销", Shortcut("z", [.command, .shift]): "重做",
         Shortcut("x"): "剪切", Shortcut("c"): "拷贝", Shortcut("v"): "粘贴", Shortcut("a"): "全选",
         Shortcut("s", [.command, .control]): "显示边栏", Shortcut("f", [.command, .control]): "进入全屏幕",
-        Shortcut("return"): "发送消息", Shortcut("return", [.command, .option]): "插话",
+        Shortcut("return"): "发送消息与插入本轮", Shortcut("return", [.command, .option]): "插入本轮",
+        Shortcut("upArrow", .option): "编辑最后一条排队消息",
     ]
 
     /// The user's changes; a command not here has its standard shortcut.
     @Published private(set) var changed: [ShortcutCommand: Shortcut?] = [:]
+    @Published private(set) var sendMode = SendMode.returnSends
     private var url: URL?
     private var failed: ((Error) -> Void)?
 
@@ -209,6 +273,7 @@ enum ShortcutCommand: String, CaseIterable, Identifiable {
         self.failed = failed
         let file = url.flatMap { try? Data(contentsOf: $0) }.flatMap { try? JSONDecoder().decode(File.self, from: $0) }
         guard let file, file.schema == File.schema else { return }
+        sendMode = file.sendMode ?? .returnSends
         changed = Dictionary(uniqueKeysWithValues: file.shortcuts.compactMap { name, shortcut in
             ShortcutCommand(rawValue: name).map { ($0, shortcut) }
         })
@@ -246,11 +311,17 @@ enum ShortcutCommand: String, CaseIterable, Identifiable {
         write()
     }
 
+    func setSendMode(_ mode: SendMode) {
+        guard mode != sendMode else { return }
+        sendMode = mode
+        write()
+    }
+
     private func write() {
         guard let url else { return }
         do {
             try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-            let file = File(shortcuts: Dictionary(uniqueKeysWithValues: changed.map { ($0.key.rawValue, $0.value) }))
+            let file = File(shortcuts: Dictionary(uniqueKeysWithValues: changed.map { ($0.key.rawValue, $0.value) }), sendMode: sendMode)
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
             try encoder.encode(file).write(to: url, options: .atomic)
@@ -267,16 +338,23 @@ struct ShortcutSettingsSections: View {
 
     var body: some View {
         Group {
+            Section("输入区") {
+                Picker("发送方式", selection: Binding(get: { shortcuts.sendMode }, set: { shortcuts.setSendMode($0) })) {
+                    ForEach(SendMode.allCases) { Text($0.title).tag($0) }
+                }
+                Text("运行中按 \(shortcuts.sendMode.sendKey) 排队，按 \(shortcuts.sendMode.steerKey) 插入本轮；运行时不支持插入时改为排队。输入框为空时 ↑↓ 调出本会话之前的消息，⌥↑ 取回最后一条排队消息。")
+                    .foregroundStyle(.secondary).font(.callout)
+            }
             Section("快捷键") {
                 HStack {
-                    Text("点按快捷键后按下新的组合，按 ⌫ 移除，再点按一次取消。发送消息固定为 ⌘Return。")
+                    Text("点按快捷键后按下新的组合，按 ⌫ 移除，再点按一次取消。")
                         .foregroundStyle(.secondary).font(.callout)
                     Spacer()
                     Button("全部恢复默认") { shortcuts.resetAll(); refusal = nil }.disabled(shortcuts.changed.isEmpty)
                 }
             }
             ForEach(ShortcutCommand.Menu.allCases) { menu in
-                Section("\(menu.rawValue)菜单") {
+                Section(menu.sectionTitle) {
                     ForEach(ShortcutCommand.allCases.filter { $0.menu == menu }) { command in
                         LabeledContent {
                             HStack(spacing: 6) {

@@ -57,6 +57,7 @@ struct ConversationCommands: Commands {
                     .keyboardShortcut(shortcuts[.newConversation])
                     .disabled(target == nil || target?.store.isLoading == true)
             }
+            item(.openConversation)
             Button("新建标签页") { target?.window.openInNewTab() }
                 .keyboardShortcut(shortcuts[.newTab])
                 .disabled(target == nil)
@@ -91,6 +92,22 @@ struct ConversationCommands: Commands {
                 Button("发送消息") { target?.send() }
                     .keyboardShortcut(.return, modifiers: .command)
                     .disabled(target?.store.canSend != true)
+                // ⌘Return also steers from the composer when Return sends; the menu keeps the key both modes share.
+                Button("插入本轮") { target?.window.focused.steer() }
+                    .keyboardShortcut(.return, modifiers: [.command, .option])
+                    .disabled(target?.store.canSteer != true)
+                Button("继续") { target?.store.continueTurn() }
+                    .keyboardShortcut(shortcuts[.continueTurn])
+                    .disabled(target?.store.followUp.canContinue != true || target?.store.canSend != true)
+                item(.attach)
+                Divider()
+                item(.chooseRuntime)
+                item(.chooseModel)
+                item(.chooseEffort)
+                item(.choosePermission)
+                Divider()
+                item(.nextAttention)
+                Divider()
                 Button("停止生成") { target?.store.cancel() }
                     .keyboardShortcut(shortcuts[.stop])
                     .disabled(target?.store.canCancel != true)
@@ -145,6 +162,9 @@ struct ConversationCommands: Commands {
             Divider()
         }
         CommandGroup(before: .sidebar) { followingFocus {
+            item(.commandPalette)
+            Divider()
+            item(.focusTranscript)
             ForEach(ToolWindowKind.allCases, id: \.self) { kind in
                 Button(toolTitle(kind)) { kind == .composer ? target?.window.focusComposer() : target?.window.toggle(kind) }
                     .keyboardShortcut(shortcuts[ShortcutCommand.tool(kind)])
@@ -170,6 +190,16 @@ struct ConversationCommands: Commands {
                 .disabled(target == nil)
             Divider()
         } }
+        CommandGroup(after: .help) { following(target?.window) { item(.shortcutHelp) } }
+    }
+
+    /// A command's menu item as the focused window performs it.
+    private func item(_ command: ShortcutCommand) -> some View {
+        followingConversation {
+            Button(command.title) { target?.window.perform(command) }
+                .keyboardShortcut(shortcuts[command])
+                .disabled(target?.window.canPerform(command) != true)
+        }
     }
 
     /// The list and outline show and hide; the composer, always somewhere, takes the keyboard.
@@ -293,6 +323,7 @@ struct VeluneApp: App {
         }
         // Tabs live in each pane; the system's window tabs would stack a second, look-alike bar above them.
         NSWindow.allowsAutomaticWindowTabbing = false
+        KeyRouter.install()
     }
 
     var body: some Scene {

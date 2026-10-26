@@ -13,12 +13,25 @@ import QuickLookThumbnailing
     @Published private(set) var attachments: [URL] = []
     private var attachmentsByConversation: [String: [URL]] = [:]
     private(set) var conversationID: String?
-    fileprivate weak var textView: ComposerTextView?
+    private(set) weak var textView: ComposerTextView?
     private var pendingFocus = false
     private var shownBefore = false
-    private var text = ""
+    private(set) var text = ""
     private var undoManagers: [String: UndoManager] = [:]
-    private weak var store: AppStore?
+    private(set) weak var store: AppStore?
+    /// The `/` command or `@` path list over the text (see `ComposerCompletion`).
+    @Published var completion: ComposerCompletion?
+    /// The text Escape closed the list for; it stays closed until the text changes.
+    var dismissedCompletionText: String?
+    var escapeToken: UUID?
+    /// The window's commands, for `/`; set by the composer's view.
+    var perform: ((ShortcutCommand) -> Void)?
+    var canPerform: ((ShortcutCommand) -> Bool)?
+    /// The earlier message ↑ put in the box, by its place among the
+    /// conversation's messages; editing it ends the browsing.
+    private var recalled: (index: Int, text: String)?
+    /// A queued message whose editor the send queue is asked to open.
+    @Published var queueEditRequest: QueuedMessage?
 
     var submission: String { text }
     /// Input-method composition owns Return and ⌘Return until it is committed.
@@ -30,6 +43,7 @@ import QuickLookThumbnailing
     func show(conversationID: String?) {
         guard conversationID != self.conversationID else { return }
         self.conversationID = conversationID
+        recalled = nil
         replace(with: conversationID.flatMap { store?.draft(for: $0) } ?? "")
         attachments = conversationID.flatMap { attachmentsByConversation[$0] } ?? []
     }
@@ -46,6 +60,55 @@ import QuickLookThumbnailing
     }
 
     func removeAttachment(_ url: URL) { setAttachments(attachments.filter { $0 != url }) }
+
+    func chooseAttachments() {
+        let panel = NSOpenPanel()
+        panel.title = "添加附件"
+        panel.canChooseFiles = true; panel.canChooseDirectories = false; panel.allowsMultipleSelection = true
+        if panel.runModal() == .OK { addAttachments(panel.urls) }
+        focus()
+    }
+
+    /// ↑ (`step` -1) and ↓ (1) through the conversation's earlier messages,
+    /// while the box is empty or still shows the one recalled. Past the
+    /// latest the box is empty again. Returns whether the key was taken.
+    fileprivate func recall(_ step: Int) -> Bool {
+        guard let store, attachments.isEmpty else { return false }
+        let browsing = recalled.flatMap { $0.text == text ? $0.index : nil }
+        guard browsing != nil || text.isEmpty else { return false }
+        let history = store.sentMessageTexts
+        let current = browsing ?? history.count
+        let next = current + step
+        // Nothing older: the key stops here rather than moving the caret.
+        guard next >= 0 else { return browsing != nil }
+        guard next < history.count else {
+            guard browsing != nil else { return false }
+            recalled = nil
+            setText("", caretAtStart: false)
+            return true
+        }
+        recalled = (next, history[next])
+        // Going back starts at the top, so the next ↑ goes further back; going on ends at the bottom.
+        setText(history[next], caretAtStart: step < 0)
+        return true
+    }
+
+    /// ⌥↑: the queue's last message back into an empty box, to edit and
+    /// queue again; with text in the box, its editor instead.
+    func takeLastQueued() -> Bool {
+        guard let store, let last = store.followUp.queue.last else { return false }
+        guard isEmpty, attachments.isEmpty else { queueEditRequest = last; return true }
+        store.removeQueued(last.id) { [weak self] in
+            self?.restore(last.text, attachments: last.attachments.map { URL(fileURLWithPath: $0) })
+        }
+        return true
+    }
+
+    private func setText(_ value: String, caretAtStart: Bool) {
+        replace(with: value)
+        if caretAtStart { textView?.setSelectedRange(NSRange(location: 0, length: 0)) }
+        if let conversationID { store?.setDraft(value, for: conversationID) }
+    }
 
     /// Keeps a pasted image as a PNG file in the application's attachment
     /// folder, so it can be attached by path like any other file.
@@ -128,6 +191,7 @@ import QuickLookThumbnailing
         text = value
         updateEmpty()
         if let conversationID { store?.setDraft(value, for: conversationID) }
+        updateCompletion()
     }
 
     fileprivate func attach(_ view: ComposerTextView) {
@@ -139,6 +203,7 @@ import QuickLookThumbnailing
         text = value
         updateEmpty()
         textView?.replace(value)
+        updateCompletion()
     }
 
     private func updateEmpty() {
@@ -147,15 +212,16 @@ import QuickLookThumbnailing
     }
 }
 
-/// Native multi-line input: Return inserts a newline, ⌘Return submits, a
-/// placeholder shares the text's typography, and the height follows the
-/// content up to a limit, after which it scrolls.
+/// Native multi-line input: Return or ⌘Return submits as the send mode has
+/// it, the other key inserts a newline, a placeholder shares the text's
+/// typography, and the height follows the content up to a limit, after
+/// which it scrolls.
 struct ComposerEditor: NSViewRepresentable {
     static let cornerRadius: CGFloat = 6
     @ObservedObject var model: ComposerModel
     let placeholder: String
     let submit: () -> Void
-    /// ⌥⌘Return: into the running turn, when the runtime takes it.
+    /// ⌘Return (⌥⌘Return): into the running turn, when the runtime takes it.
     var steer: () -> Void = {}
     /// Added to the text's context menu: the composer's places.
     var placeMenu: () -> NSMenuItem? = { nil }
@@ -203,6 +269,8 @@ struct ComposerEditor: NSViewRepresentable {
             view.fitHeight()
         }
         func undoManager(for view: NSTextView) -> UndoManager? { model.undoManager(for: view) }
+        /// Moving the caret into or out of an `@` path opens or closes its list.
+        func textViewDidChangeSelection(_ notification: Notification) { model.updateCompletion() }
         fileprivate func heightChanged(_ value: CGFloat) {
             // Reported after layout; SwiftUI resizes the editor in the next pass.
             DispatchQueue.main.async { [model] in if model.height != value { model.height = value } }
@@ -336,12 +404,43 @@ struct ComposerEditor: NSViewRepresentable {
         return NSBitmapImageRep(data: tiff)?.representation(using: .png, properties: [:])
     }
 
+    /// Composition owns every key until it is committed.
     override func keyDown(with event: NSEvent) {
-        let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-        let isReturn = event.keyCode == 36 || event.keyCode == 76
-        if isReturn, modifiers == .command, !hasMarkedText() { coordinator?.submit(); return }
-        if isReturn, modifiers == [.command, .option], !hasMarkedText() { coordinator?.steer(); return }
+        guard !hasMarkedText(), let coordinator else { return super.keyDown(with: event) }
+        if coordinator.model.completionKey(event) { return }
+        let modifiers = event.modifierFlags.intersection([.command, .shift, .option, .control])
+        switch event.keyCode {
+        case 36, 76:
+            switch (KeyboardShortcutSettings.shared.sendMode, modifiers) {
+            case (.returnSends, []), (.commandReturnSends, .command): return coordinator.submit()
+            case (.returnSends, .command), (_, [.command, .option]): return coordinator.steer()
+            default: break
+            }
+        case 126 where modifiers == .option:
+            if coordinator.model.takeLastQueued() { return }
+        case 126 where modifiers.isEmpty:
+            if caretLine(first: true), coordinator.model.recall(-1) { return }
+        case 125 where modifiers.isEmpty:
+            if caretLine(first: false), coordinator.model.recall(1) { return }
+        default: break
+        }
         super.keyDown(with: event)
+    }
+
+    /// Whether the caret, with nothing selected, is on the first (or last) line as laid out.
+    private func caretLine(first: Bool) -> Bool {
+        let selection = selectedRange()
+        guard selection.length == 0, let layoutManager, let textContainer else { return false }
+        let length = (string as NSString).length
+        guard length > 0 else { return true }
+        layoutManager.ensureLayout(for: textContainer)
+        let lineRect = { (index: Int) -> NSRect in
+            layoutManager.lineFragmentRect(forGlyphAt: layoutManager.glyphIndexForCharacter(at: min(index, length - 1)), effectiveRange: nil)
+        }
+        // The caret after a final newline sits on a line of its own below the last fragment.
+        if selection.location == length, (string as NSString).character(at: length - 1) == 10 { return !first }
+        let caret = lineRect(selection.location)
+        return first ? caret.minY <= lineRect(0).minY : caret.minY >= lineRect(length - 1).minY
     }
 
     override func becomeFirstResponder() -> Bool {
@@ -424,10 +523,12 @@ struct ComposerView: View {
     /// Its window: right-clicked outside the text, the composer offers its places.
     let layout: ConversationWindowModel
     let send: () -> Void
+    let steer: () -> Void
     /// The text box's height when the user made it taller, docked below the panes.
     var minimumTextHeight: CGFloat?
     @Environment(\.controlActiveState) private var activeState
     @Environment(\.openWindow) private var openWindow
+    @ObservedObject private var shortcuts = KeyboardShortcutSettings.shared
     @State private var enteringRemoteDirectory = false
     @State private var remoteDirectory = ""
     /// The choices fit on the row of the send button. The widths it is
@@ -454,9 +555,10 @@ struct ComposerView: View {
             if store.pendingConversationID == nil, let status = store.conversationManagementStatus {
                 HStack { ProgressView().controlSize(.small); Text(status) }.font(.callout).foregroundStyle(.secondary)
             }
-            if !store.followUp.queue.isEmpty || store.followUp.paused != nil { SendQueueView(store: store) }
+            if !store.followUp.queue.isEmpty || store.followUp.paused != nil { SendQueueView(store: store, composer: model) }
             if !model.attachments.isEmpty { attachmentRow }
-            ComposerEditor(model: model, placeholder: store.isGenerating ? (store.followUp.canSteer ? "⌘Return 排队，⌥⌘Return 插入本轮" : "⌘Return 排队，本轮结束后发送") : "输入消息，⌘Return 发送", submit: send, steer: steer,
+            if let completion = model.completion { ComposerCompletionList(completion: completion, choose: model.acceptCompletion(at:)) }
+            ComposerEditor(model: model, placeholder: placeholder, submit: send, steer: steer,
                            placeMenu: { [layout] in layout.placeMenuItem(for: .composer) })
                 .frame(height: max(model.height, minimumTextHeight ?? 0))
                 // The text view sits in a clipping scroll view, which hides its
@@ -511,6 +613,8 @@ struct ComposerView: View {
         .onGeometryChange(for: CGFloat.self) { min($0.size.width, 792) - 32 } action: { fit.width = $0; refit() }
         .onAppear {
             model.attach(store); model.show(conversationID: store.loadedConversationID)
+            model.perform = { [weak layout] in layout?.perform($0) }
+            model.canPerform = { [weak layout] in layout?.canPerform($0) ?? false }
             // A new window or tab starts in the composer; showing a tab again keeps focus where it is.
             if model.firstShown() { DispatchQueue.main.async { model.focus() } }
         }
@@ -519,6 +623,13 @@ struct ComposerView: View {
             // A new conversation starts in the composer.
             if store.isUnsentConversation { DispatchQueue.main.async { model.focus() } }
         }
+    }
+
+    /// The keys as the send mode has them, and what they do now.
+    private var placeholder: String {
+        let mode = shortcuts.sendMode
+        guard store.isGenerating else { return mode == .returnSends ? "输入消息，Return 发送，⇧Return 换行，/ 命令" : "输入消息，⌘Return 发送，/ 命令" }
+        return store.followUp.canSteer ? "\(mode.sendKey) 排队，\(mode.steerKey) 插入本轮" : "\(mode.sendKey) 排队，本轮结束后发送"
     }
 
     /// What the choices' titles are made of.
@@ -543,10 +654,10 @@ struct ComposerView: View {
             Button("停止", action: store.cancel).disabled(!store.canCancel).help("停止当前生成")
             if store.followUp.canSteer {
                 Button("插入本轮", action: steer).disabled(!store.canSteer || (model.isEmpty && model.attachments.isEmpty))
-                    .help("让正在运行的 Agent 在下一步看到这条消息，不另起一轮（⌥⌘ Return）")
+                    .help("让正在运行的 Agent 在下一步看到这条消息，不另起一轮（\(shortcuts.sendMode.steerKey)）")
             }
             Button("排队", action: send).buttonStyle(.borderedProminent)
-                .disabled(!store.canQueue || (model.isEmpty && model.attachments.isEmpty)).help("本轮结束后发送（⌘ Return）")
+                .disabled(!store.canQueue || (model.isEmpty && model.attachments.isEmpty)).help("本轮结束后发送（\(shortcuts.sendMode.sendKey)）")
         } else {
             if store.followUp.canStopSubAgents && !store.followUp.waitingForSubAgents {
                 Button("停止子 Agent", action: store.stopSubAgents).disabled(store.isLoading)
@@ -556,20 +667,8 @@ struct ComposerView: View {
                 Button("继续", action: store.continueTurn).disabled(!store.canSend).help("发送“\(AppStore.continueText)”，让运行时接着上一轮继续")
             }
             Button("发送", action: send).buttonStyle(.borderedProminent)
-                .disabled(!store.canSend || (model.isEmpty && model.attachments.isEmpty)).help("发送消息（⌘ Return）")
+                .disabled(!store.canSend || (model.isEmpty && model.attachments.isEmpty)).help("发送消息（\(shortcuts.sendMode.sendKey)）")
         }
-    }
-
-    /// Into the running turn through the runtime's own channel; a message it
-    /// does not take goes back to the composer.
-    private func steer() {
-        let submitted = model.submission
-        let attachments = model.attachments
-        let text = submitted.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard store.canSteer, !text.isEmpty || !attachments.isEmpty, !model.isComposing else { return }
-        let conversationID = store.loadedConversationID
-        store.steer(text: text, attachments: attachments.map(\.path), onFailure: { [model] in model.restore(submitted, attachments: attachments) })
-        model.clear(submitted: submitted, attachments: attachments, conversationID: conversationID)
     }
 
     private var attachmentRow: some View {
@@ -583,10 +682,10 @@ struct ComposerView: View {
     /// `compact` shortens the choices' titles to fit a narrow pane.
     private func nextTurnControls(compact: Bool) -> some View {
         HStack(spacing: 10) {
-            Button(action: chooseAttachments) { Image(systemName: "paperclip") }
+            Button(action: model.chooseAttachments) { Image(systemName: "paperclip") }
                 .buttonStyle(.borderless)
                 .accessibilityLabel("添加附件")
-                .help("添加附件：图片随消息发送，其他文件以路径告知 Agent")
+                .help(KeyboardShortcutSettings.shared.help("添加附件：图片随消息发送，其他文件以路径告知 Agent", .attach))
                 .disabled(store.isShuttingDown)
             agentMenu(compact: compact)
             if !store.permissionModeOptions.isEmpty || !store.editableSessionOptions.isEmpty { permissionMenu(compact: compact) }
@@ -766,13 +865,6 @@ struct ComposerView: View {
         .fixedSize()
         .accessibilityLabel("工作目录：\(path ?? "运行时默认目录")")
         .help(path ?? "工作目录：留空时使用运行时的默认目录")
-    }
-
-    private func chooseAttachments() {
-        let panel = NSOpenPanel()
-        panel.title = "添加附件"
-        panel.canChooseFiles = true; panel.canChooseDirectories = false; panel.allowsMultipleSelection = true
-        if panel.runModal() == .OK { model.addAttachments(panel.urls) }
     }
 
     private func chooseDirectory() {

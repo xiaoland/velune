@@ -308,7 +308,7 @@ private struct ToolComposer: View {
                 Text("这是原生 sub-agent 的会话，由启动它的会话继续。").foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity).padding(16)
             } else {
-                ComposerView(store: store, model: tab.composer, layout: window, send: tab.send,
+                ComposerView(store: store, model: tab.composer, layout: window, send: tab.send, steer: tab.steer,
                              minimumTextHeight: window.tools[.composer].place == .docked(.bottom) ? window.tools.composerHeight.map { CGFloat($0) } : nil)
             }
         }

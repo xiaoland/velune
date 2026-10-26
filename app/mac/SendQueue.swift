@@ -5,6 +5,8 @@ import SwiftUI
 /// click edits, drag reorders, Delete removes; the context menu has the rest.
 struct SendQueueView: View {
     @ObservedObject var store: AppStore
+    /// Asks for a message's editor with ⌥↑ while it holds text of its own.
+    @ObservedObject var composer: ComposerModel
     @State private var selection = Set<String>()
     @State private var editing: QueuedMessage?
 
@@ -24,6 +26,11 @@ struct SendQueueView: View {
             }
         }
         .onChange(of: queue.map(\.id)) { _, ids in selection.formIntersection(ids) }
+        .onChange(of: composer.queueEditRequest) { _, request in
+            guard let request else { return }
+            composer.queueEditRequest = nil
+            if queue.contains(request) { editing = request }
+        }
     }
 
     private var header: some View {
@@ -108,7 +115,7 @@ private struct QueuedMessageEditor: View {
             HStack {
                 Spacer()
                 Button("取消", role: .cancel) { dismiss() }.keyboardShortcut(.cancelAction)
-                Button("存储") { save(text.trimmingCharacters(in: .whitespacesAndNewlines)); dismiss() }.keyboardShortcut(.defaultAction)
+                Button("存储") { save(text.trimmingCharacters(in: .whitespacesAndNewlines)); dismiss() }.sendKeyboardShortcut()
             }
         }
         .padding(20)

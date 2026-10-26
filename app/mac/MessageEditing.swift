@@ -56,7 +56,7 @@ struct MessageEditorSheet: View {
                 Spacer()
                 Button("取消", role: .cancel) { dismiss() }.keyboardShortcut(.cancelAction)
                 Button("发送") { if request.isLast && request.inPlace { send(.inPlace) } else { asking = true } }
-                    .keyboardShortcut(.defaultAction).disabled(isEmpty || store.editability(of: request.message.id) == nil)
+                    .sendKeyboardShortcut().disabled(isEmpty || store.editability(of: request.message.id) == nil)
             }
         }
         .padding(20)

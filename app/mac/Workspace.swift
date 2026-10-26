@@ -19,6 +19,11 @@ import VeluneBindings
     let find = TranscriptFind()
     /// The user message being edited, in a sheet over the tab.
     @Published var editing: MessageEditRequest?
+    /// Bumped to move the keyboard to the transcript, or to the request waiting for an answer.
+    @Published private(set) var transcriptFocusRequest: UInt64 = 0
+    @Published private(set) var interactionFocusRequest: UInt64 = 0
+    func focusTranscript() { transcriptFocusRequest &+= 1 }
+    func focusInteraction() { interactionFocusRequest &+= 1 }
     /// Kept while the tab is behind another, with the scroll position.
     let reading = TranscriptReading()
     /// Reading starts when the tab is first shown, so restored background tabs cost nothing.
@@ -59,6 +64,20 @@ import VeluneBindings
         })
         guard sent else { return }
         composer.clear(submitted: submitted, attachments: attachments, conversationID: conversationID); scrollRequest &+= 1
+    }
+
+    /// Into the running turn through the runtime's own channel; a message it
+    /// does not take goes back to the composer. Without a running turn that
+    /// takes one, the message is sent or queued instead.
+    func steer() {
+        guard store.isGenerating, store.followUp.canSteer else { return send() }
+        let submitted = composer.submission
+        let attachments = composer.attachments
+        let text = submitted.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard store.canSteer, !text.isEmpty || !attachments.isEmpty, !composer.isComposing else { return }
+        let conversationID = store.loadedConversationID
+        store.steer(text: text, attachments: attachments.map(\.path), onFailure: { [composer] in composer.restore(submitted, attachments: attachments) })
+        composer.clear(submitted: submitted, attachments: attachments, conversationID: conversationID)
     }
 
     /// Development check of the send queue without driving the interface:
@@ -444,6 +463,14 @@ struct WindowSeed: Codable, Hashable {
     @Published var listSearch = ""
     /// Opens a conversation window; set by the window's view, which has the action.
     var openWindow: ((ConversationWindowKind, WindowSeed) -> Void)?
+    /// Opens a window of another scene by its ID, and the settings; set by the window's view too.
+    var openScene: ((String) -> Void)?
+    var openSettings: (() -> Void)?
+    /// The command palette over the window, and what it lists.
+    @Published var palette: PaletteMode?
+    /// Where typing went before the palette took it, to go back there.
+    weak var paletteReturnResponder: NSResponder?
+    @Published var showsShortcutHelp = false
     /// Kept in front of other apps' windows.
     @Published var pinned = false
     let kind: ConversationWindowKind
