@@ -140,6 +140,8 @@ pub struct NativeSession {
     snapshot: Option<ConversationSnapshot>,
     native_id: Option<String>,
     turn_id: Option<String>,
+    /// Last error of the active Codex turn, if its completion omits details.
+    codex_turn_error: Option<Value>,
     pending_rpc: BTreeMap<u64, String>,
     interactions: BTreeMap<String, PendingRequest>,
     available_models: Vec<Value>,
@@ -246,6 +248,7 @@ impl NativeSession {
             snapshot: None,
             native_id: None,
             turn_id: None,
+            codex_turn_error: None,
             pending_rpc: BTreeMap::new(),
             interactions: BTreeMap::new(),
             available_models: Vec::new(),
@@ -758,6 +761,7 @@ impl NativeSession {
     ) {
         self.native_id = Some(id.into());
         self.turn_id = None;
+        self.codex_turn_error = None;
         self.interactions.clear();
         self.pending_rpc.clear();
         self.sub_agents = sub_agent_conversations(&history).collect();

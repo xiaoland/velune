@@ -239,6 +239,9 @@ impl NativeSession {
                         message.turn_usage = record.usage.clone();
                     }
                 }
+                if let Some(message) = project_turn_error(turn)? {
+                    self.message(message);
+                }
             }
         }
         Ok(())
@@ -280,6 +283,7 @@ impl NativeSession {
             .as_str()
             .ok_or_else(|| Error::new("Codex 未返回轮次身份"))?;
         self.turn_id = Some(turn_id.into());
+        self.codex_turn_error = None;
         self.running();
         Ok(())
     }
@@ -534,19 +538,36 @@ impl NativeSession {
                 }
             }
             "turn/completed" => {
-                if params["turn"]["id"].as_str() == self.turn_id.as_deref() {
+                if let Some(turn) = params["turn"]["id"].as_str()
+                    && Some(turn) == self.turn_id.as_deref()
+                {
                     let status = params["turn"]["status"].as_str();
                     if matches!(status, Some("interrupted" | "failed")) {
                         self.codex_fail_open_tools();
                     }
+                    if status == Some("failed") {
+                        let error = &params["turn"]["error"];
+                        let error = if error.is_null() {
+                            self.codex_turn_error.as_ref().unwrap_or(error)
+                        } else {
+                            error
+                        };
+                        self.message(project_error(
+                            turn,
+                            error,
+                            false,
+                            turn_completed_at(&params["turn"]),
+                        )?);
+                    } else if let Some(snapshot) = &mut self.snapshot {
+                        let id = error_id(turn);
+                        snapshot.messages.retain(|message| message.id != id);
+                    }
+                    self.codex_turn_error = None;
                     self.finish_turn(if status == Some("failed") {
                         RunState::Failed
                     } else {
                         RunState::Idle
                     })?;
-                    if status == Some("failed") {
-                        self.notice("Codex 执行失败；请通过诊断日志关联操作，或检查上游配置。");
-                    }
                 }
             }
             // Usage of each model response in the turn; the reread rollout has the turn's total.
@@ -595,7 +616,17 @@ impl NativeSession {
                     }
                 }
             }
-            "error" => self.notice("Codex 返回执行诊断；原始错误内容不写入日志。"),
+            "error" => {
+                if let Some(turn) = params["turnId"].as_str()
+                    && Some(turn) == self.turn_id.as_deref()
+                {
+                    let retrying = params["willRetry"]
+                        .as_bool()
+                        .ok_or_else(|| Error::new("Codex 错误通知缺少重试状态"))?;
+                    self.message(project_error(turn, &params["error"], retrying, None)?);
+                    self.codex_turn_error = Some(params["error"].clone());
+                }
+            }
             _ => {}
         }
         Ok(())
@@ -946,6 +977,64 @@ pub(super) fn history_client_at(
     Ok(rpc)
 }
 
+fn error_id(turn: &str) -> String {
+    format!("codex-turn-error-{turn}")
+}
+
+fn turn_completed_at(turn: &Value) -> Option<i64> {
+    turn["completedAt"].as_i64()?.checked_mul(1000)
+}
+
+pub(super) fn project_turn_error(turn: &Value) -> Result<Option<Message>> {
+    if turn["status"] != "failed" && turn["error"].is_null() {
+        return Ok(None);
+    }
+    let id = turn["id"]
+        .as_str()
+        .filter(|id| !id.is_empty())
+        .ok_or_else(|| Error::new("Codex 失败回合缺少身份"))?;
+    project_error(id, &turn["error"], false, turn_completed_at(turn)).map(Some)
+}
+
+fn project_error(
+    turn: &str,
+    error: &Value,
+    retrying: bool,
+    timestamp_unix_ms: Option<i64>,
+) -> Result<Message> {
+    let mut text = if error.is_null() {
+        "Codex 执行失败（上游未提供错误详情）。".into()
+    } else {
+        error["message"]
+            .as_str()
+            .filter(|message| !message.trim().is_empty())
+            .ok_or_else(|| Error::new("Codex 错误详情缺少 message"))?
+            .to_owned()
+    };
+    if !error["additionalDetails"].is_null() {
+        let details = error["additionalDetails"]
+            .as_str()
+            .ok_or_else(|| Error::new("Codex 错误附加详情不是文本"))?;
+        if !details.trim().is_empty() {
+            text.push('\n');
+            text.push_str(details);
+        }
+    }
+    if retrying {
+        text.push_str("\nCodex 正在自动重试。");
+    }
+    Ok(Message {
+        id: error_id(turn),
+        role: MessageRole::System,
+        timestamp_unix_ms,
+        blocks: vec![MessageBlock::Notice { text }],
+        completed: !retrying,
+        turn_settings: None,
+        turn_usage: None,
+        branch_point: None,
+    })
+}
+
 pub(super) fn project_item(item: &Value, runtime_id: &str) -> Option<Message> {
     let id = item["id"].as_str()?;
     let (kind, blocks) = match item["type"].as_str().unwrap_or_default() {
@@ -1177,5 +1266,37 @@ impl Default for CodexThread {
             state: BackgroundState::Running,
             turn: None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn error_projection_preserves_details_and_distinguishes_retry() {
+        let error = json!({"message":"Selected model is at capacity. Please try a different model.",
+            "codexErrorInfo":"serverOverloaded","additionalDetails":"synthetic request detail"});
+        let retry = project_error("turn", &error, true, None).unwrap();
+        let failed = project_turn_error(&json!({"id":"turn","status":"failed",
+            "error":error,"completedAt":123}))
+        .unwrap()
+        .unwrap();
+        assert_eq!(retry.id, failed.id);
+        assert!(!retry.completed);
+        assert!(failed.completed);
+        assert_eq!(failed.timestamp_unix_ms, Some(123_000));
+        let MessageBlock::Notice { text } = &failed.blocks[0] else {
+            panic!()
+        };
+        assert_eq!(
+            text,
+            "Selected model is at capacity. Please try a different model.\nsynthetic request detail"
+        );
+        let MessageBlock::Notice { text } = &retry.blocks[0] else {
+            panic!()
+        };
+        assert!(text.ends_with("Codex 正在自动重试。"));
+        assert!(project_error("turn", &json!({"message":42}), false, None).is_err());
     }
 }

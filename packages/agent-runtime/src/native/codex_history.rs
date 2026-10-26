@@ -180,15 +180,52 @@ pub fn read_codex_history_at(
         "thread/items/list",
         json!({"threadId":id,"limit":50,"sortDirection":"asc"}),
     )?;
+    let native_turns = pages(
+        &mut rpc,
+        "thread/turns/list",
+        json!({"threadId":id,"limit":50,"sortDirection":"asc","itemsView":"notLoaded"}),
+    )?;
     // The rollout is a file on the executing machine; only a local one is read.
     let turns = match (execution, thread["path"].as_str()) {
         (crate::execution::ExecutionTarget::Local, Some(path)) => rollout_turns(Path::new(path)),
         _ => HashMap::new(),
     };
-    let messages: Vec<Message> = items
+    let messages = project_history(&items, &native_turns, &turns, runtime_id)?;
+    tracing::info!(target:"velune_agent_runtime",event="history_native_resolution",phase="read",runtime_family="codex",native_items=items.len(),projected_messages=messages.len(),history_mode);
+    Ok(History {
+        native_id: id.into(),
+        title,
+        cwd: thread["cwd"].as_str().map(str::to_owned),
+        messages,
+    })
+}
+
+fn project_history(
+    items: &[Value],
+    native_turns: &[Value],
+    turns: &HashMap<String, RolloutTurn>,
+    runtime_id: &str,
+) -> Result<Vec<Message>> {
+    let ends: HashMap<&str, usize> = items
         .iter()
-        .filter_map(|entry| {
-            let mut message = codex::project_item(&entry["item"], runtime_id)?;
+        .enumerate()
+        .filter_map(|(index, entry)| entry["turnId"].as_str().map(|id| (id, index + 1)))
+        .collect();
+    let mut errors: HashMap<usize, Vec<Message>> = HashMap::new();
+    let mut end = 0;
+    for turn in native_turns {
+        if let Some(position) = turn["id"].as_str().and_then(|id| ends.get(id)) {
+            end = *position;
+        }
+        if let Some(message) = codex::project_turn_error(turn)? {
+            // A failed turn can have no items; keep its place between adjacent turns.
+            errors.entry(end).or_default().push(message);
+        }
+    }
+    let mut messages = Vec::new();
+    for (index, entry) in items.iter().enumerate() {
+        messages.extend(errors.remove(&index).unwrap_or_default());
+        if let Some(mut message) = codex::project_item(&entry["item"], runtime_id) {
             message.timestamp_unix_ms = entry["startedAtMs"]
                 .as_i64()
                 .or_else(|| entry["completedAtMs"].as_i64());
@@ -198,16 +235,55 @@ pub fn read_codex_history_at(
                 message.turn_settings = Some(turn.map(|t| t.settings.clone()).unwrap_or_default());
                 message.turn_usage = turn.and_then(|t| t.usage.clone());
             }
-            Some(message)
-        })
-        .collect();
-    tracing::info!(target:"velune_agent_runtime",event="history_native_resolution",phase="read",runtime_family="codex",native_items=items.len(),projected_messages=messages.len(),history_mode);
-    Ok(History {
-        native_id: id.into(),
-        title,
-        cwd: thread["cwd"].as_str().map(str::to_owned),
-        messages,
-    })
+            messages.push(message);
+        }
+    }
+    messages.extend(errors.remove(&items.len()).unwrap_or_default());
+    Ok(messages)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn history_keeps_failures_between_turns_even_without_visible_items() {
+        let items = vec![
+            json!({"turnId":"failed","startedAtMs":1000,"item":{
+                "id":"user","type":"userMessage","content":[{"type":"text","text":"question"}]}}),
+            json!({"turnId":"failed","item":{"id":"hidden","type":"reasoning","summary":[]}}),
+            json!({"turnId":"ok","completedAtMs":3000,"item":{
+                "id":"answer","type":"agentMessage","text":"answer"}}),
+        ];
+        let turns = vec![
+            json!({"id":"empty-first","status":"failed","error":null}),
+            json!({"id":"failed","status":"failed","error":{"message":"capacity"}}),
+            json!({"id":"empty-middle","status":"failed","error":{"message":"network"}}),
+            json!({"id":"ok","status":"completed","error":null}),
+            json!({"id":"empty-last","status":"failed","error":{"message":"quota"}}),
+        ];
+        let messages = project_history(&items, &turns, &HashMap::new(), "runtime").unwrap();
+        assert_eq!(
+            messages.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(),
+            vec![
+                "codex-turn-error-empty-first",
+                "user",
+                "codex-turn-error-failed",
+                "codex-turn-error-empty-middle",
+                "answer",
+                "codex-turn-error-empty-last",
+            ]
+        );
+        assert_eq!(messages[1].timestamp_unix_ms, Some(1000));
+        assert_eq!(messages[1].branch_point.as_deref(), Some("failed"));
+        assert_eq!(messages[4].timestamp_unix_ms, Some(3000));
+        let MessageBlock::Notice { text } = &messages[0].blocks[0] else {
+            panic!()
+        };
+        assert!(text.contains("上游未提供错误详情"));
+        let empty = project_history(&[], &turns[..1], &HashMap::new(), "runtime").unwrap();
+        assert_eq!(empty.len(), 1);
+    }
 }
 
 /// What a turn of a rollout ran with and used.

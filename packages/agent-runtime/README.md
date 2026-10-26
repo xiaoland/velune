@@ -81,9 +81,11 @@ relay 只连接显式端口的 `http://127.0.0.1` 服务，忽略代理环境，
 
 ## 专用适配器行为
 
-Codex 使用 app-server 的 thread／turn 控制；轮次以 interrupted 或 failed 结束时，Codex 不为被中止的工具调用发送 `item/completed`，历史也不保留它们，因此本轮仍在进行的工具块标为失败；DSH 使用 ACP v1 的 session/new、resume、prompt、cancel、set_config_option。DSH 的 agentInfo.version 是 ACP 插件版本，不用于判断 CLI 版本。Codex 历史由 app-server 的 thread/list、thread/read 与 thread/items/list 分页读取，原生服务负责逻辑身份和历史继承；spawn 的子 Agent 线程带父会话，`collabAgentToolCall` 在恰有一个 receiver 时链接该线程；DSH 历史通过 huihua `0.2.0` 公开 provider API 读取显式 home／roots，未知记录不原样输出。历史浏览不启动 turn 或模型网关，不替代原生 resume；Pi 保留 SDK SessionManager 的分支与模型选择语义。
+Codex 使用 app-server 的 thread／turn 控制；轮次以 interrupted 或 failed 结束时，Codex 不为被中止的工具调用发送 `item/completed`，历史也不保留它们，因此本轮仍在进行的工具块标为失败；DSH 使用 ACP v1 的 session/new、resume、prompt、cancel、set_config_option。DSH 的 agentInfo.version 是 ACP 插件版本，不用于判断 CLI 版本。Codex 历史由 app-server 的 thread/list、thread/read、thread/items/list 与 thread/turns/list 读取，原生服务负责逻辑身份和历史继承；spawn 的子 Agent 线程带父会话，`collabAgentToolCall` 在恰有一个 receiver 时链接该线程；DSH 历史通过 huihua `0.2.0` 公开 provider API 读取显式 home／roots，未知记录不原样输出。历史浏览不启动 turn 或模型网关，不替代原生 resume；Pi 保留 SDK SessionManager 的分支与模型选择语义。
 
-Codex 0.159.3 的 thread/revert 保留稳定 thread ID，同时创建新的 rollout 文件并更新当前历史；paginated 历史还可以引用旧文件的前缀。因此不能把 thread ID 当成物理文件唯一键，也不能按时间任选重复文件。列表使用原生 thread/list 的完整来源枚举与空提供商过滤；详情用 thread/read 核对身份，再按升序分页读取 thread/items/list。legacy 与 paginated 共用原生入口及实时消息的 item 投影，保留原生 item 时间，不自行解析 history_base 或扫描所有文件。短生命周期 app-server 与既有原生管理共用有界 RPC；原生读取失败明确诊断，不回退为文件选择。
+Codex 0.159.3 的 thread/revert 保留稳定 thread ID，同时创建新的 rollout 文件并更新当前历史；paginated 历史还可以引用旧文件的前缀。因此不能把 thread ID 当成物理文件唯一键，也不能按时间任选重复文件。列表使用原生 thread/list 的完整来源枚举与空提供商过滤；详情用 thread/read 核对身份，再按升序分页读取 thread/items/list 与 thread/turns/list。后者使用 notLoaded 的 itemsView，只补回合状态和错误。legacy 与 paginated 共用原生入口及实时消息的 item 投影，保留原生 item 时间，不自行解析 history_base 或扫描所有文件。短生命周期 app-server 与既有原生管理共用有界 RPC；原生读取失败明确诊断，不回退为文件选择。
+
+Codex 的实时 error 通知和 turn/completed 的最终错误使用同一回合消息身份，展示 message 与非空 additionalDetails，不把重复事件变成多条通知。willRetry 为 true 时标明正在自动重试，不提前结束执行；成功或中断后移除该临时通知。最终失败优先使用 turn.error，缺失时保留本轮最近的错误详情。历史读取和 thread/resume 都把原生回合错误投影为系统通知，放在该回合内容之后；没有 item 的失败回合也保留顺序。上游标记 failed 却没有详情时明确说明未提供原因。此展示不新增原始响应日志或 Velune 历史存储，上游未保存的错误无法在重新打开时恢复。
 
 原生权限或回答请求映射为 conversation 的类型化交互，用户显式选择、回答或取消；adapter 不自动批准。执行模型选择区分运行时既有模型与 Velune managed 模型。`NativeConfig.gateway` 为空时保留原生 provider；`models` 返回运行时的模型身份，`select_native_model` 选择既有模型，`select_model` 只为下一轮提供网关注入。运行时配置不含 Velune 默认模型，不能凭 API model ID 猜测网关路由。Codex 从会话 cwd 的 `config/read` 捕获原有 provider，原生 resume 显式传入该 provider；DSH 原生选择必须显式包含 provider ID，严格匹配 ACP 公布的 provider/model 值，不能按同名模型猜测提供商或自行拼接未公布的 opaque option。DSH reasoningEfforts 需要实际 wire 映射，当前仅有能力等级列表，不猜测映射，保留 SDK 默认行为。
 
