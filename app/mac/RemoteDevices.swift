@@ -198,6 +198,8 @@ struct DeviceSettingsView: View {
     @ObservedObject var hub: DeviceHub
     @Environment(\.openWindow) private var openWindow
     @State private var offer = ""
+    @State private var showsIPadInstallation = false
+    @StateObject private var iPadInstallation = IPadInstallationModel()
     var body: some View {
         Form {
             Section("这台 Mac") {
@@ -219,6 +221,9 @@ struct DeviceSettingsView: View {
                     }
                 }
             }
+            Section {
+                Button("安装到 iPad…") { showsIPadInstallation = true }
+            }
             Section("控制其他设备") {
                 ForEach(hub.state?.contacts ?? [], id: \.peerId) { contact in
                     DeviceRow(contact: contact, controller: hub.controller(contact.peerId), outgoing: hub.state?.outgoingPairings.first { $0.peerId == contact.peerId }) {
@@ -235,6 +240,7 @@ struct DeviceSettingsView: View {
                 Section { Text(failure).foregroundStyle(.red) }
             }
         }.formStyle(.grouped)
+        .sheet(isPresented: $showsIPadInstallation) { IPadInstallationPanel(model: iPadInstallation) }
     }
 }
 

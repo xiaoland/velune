@@ -46,6 +46,8 @@ scripts/build-ios.sh
 scripts/build-ios.sh iphoneos DEVELOPMENT_TEAM=<Apple团队ID> -allowProvisioningUpdates
 ```
 
+也可以从 Mac 应用的“设置 → 设备 → 安装到 iPad…”选择源码目录、签名团队和设备，构建并保留数据覆盖安装。该入口调用同一构建脚本；`VELUNE_IOS_DEVICE_ID` 选择具体设备，`VELUNE_IOS_DERIVED_DATA` 指定本次构建目录，未设置时沿用默认值。
+
 也可以先运行 `scripts/build-ios-native.sh iphoneos`，再打开 [Velune.xcodeproj](Velune.xcodeproj)，选择签名团队与 iPad／iPhone，直接 Run。工程只有一个 app target；生成绑定、静态库和许可证均在 `target`，不入库。Xcode build phase 按当前 SDK 与 Debug／Release 配置构建 Rust。暂只构建 arm64，不维护 Intel 模拟器或 XCFramework。
 
 若本机将 Cargo registry 符号链接到另一磁盘，Askama 0.16 的相对模板路径可能生成失败；用 `CARGO_HOME` 指向 registry 的实际父目录运行构建，不修改第三方源码。本次开发机为 `CARGO_HOME=/Volumes/WorkSSD/.dev-cache/cargo`。
