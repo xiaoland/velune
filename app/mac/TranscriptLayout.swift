@@ -98,8 +98,9 @@ extension RenderedMessage {
 /// Everything that determines one row's geometry. Immutable values only, so a
 /// background pass can lay rows out without touching main-actor state.
 enum TranscriptRowContent: @unchecked Sendable {
-    /// `status` is a caption under a message the runtime has not confirmed yet.
-    case message(Message, revision: UInt64, expanded: Set<String>, status: String?)
+    /// `status` is a caption under a message the runtime has not confirmed yet;
+    /// `copies` puts a copy button under it.
+    case message(Message, revision: UInt64, expanded: Set<String>, status: String?, copies: Bool)
     /// `expanded` is nil for a turn with no work under its header.
     case work(label: String, expanded: Bool?, settings: TurnSettingsSummary?)
     case activity(TranscriptActivity)
@@ -193,7 +194,7 @@ struct TranscriptRowLayout: @unchecked Sendable {
             y += headerHeight
         case .end:
             break
-        case .message(_, _, let expanded, let status):
+        case .message(_, _, let expanded, let status, let copies):
             guard let rendered else { preconditionFailure("A message row is laid out from its rendered revision") }
             if rendered.role == .user {
                 // Images lead files regardless of which part of the native record carried them.
@@ -238,7 +239,7 @@ struct TranscriptRowLayout: @unchecked Sendable {
                     elements.append(.text(caption, frame: NSRect(x: column.x + column.width - ceil(size.width) - 1, y: y, width: ceil(size.width) + 1, height: size.height), inBubble: false))
                     y += size.height
                 }
-                copy(rendered, at: column.x + column.width - actionSize + actionInset, y: &y, into: &elements)
+                if copies { copy(rendered, at: column.x + column.width - actionSize + actionInset, y: &y, into: &elements) }
             } else {
                 for (index, block) in rendered.blocks.enumerated() {
                     if index > 0 { y += blockSpacing }
@@ -270,7 +271,7 @@ struct TranscriptRowLayout: @unchecked Sendable {
                         }
                     }
                 }
-                copy(rendered, at: column.x - actionInset, y: &y, into: &elements)
+                if copies { copy(rendered, at: column.x - actionInset, y: &y, into: &elements) }
             }
         }
         return TranscriptRowLayout(elements: elements, height: ceil(y))
@@ -289,7 +290,7 @@ struct TranscriptRowLayout: @unchecked Sendable {
         switch content {
         case .work, .activity: return rowInset + headerHeight
         case .end: return rowInset
-        case .message(let message, _, let expanded, _):
+        case .message(let message, _, let expanded, _, let copies):
             let charactersPerLine = max(column.width / 7.5, 8)
             var height: CGFloat = 0
             for (index, block) in message.blocks.enumerated() {
@@ -310,8 +311,8 @@ struct TranscriptRowLayout: @unchecked Sendable {
                     height += attachmentHeight
                 }
             }
-            let copies = message.role != .system && !message.text.isEmpty
-            return rowInset + max(height, 19) + (message.role == .user ? bubblePadding * 2 : 0) + (copies ? actionGap + actionSize : 0)
+            let copied = copies && message.role != .system && !message.text.isEmpty
+            return rowInset + max(height, 19) + (message.role == .user ? bubblePadding * 2 : 0) + (copied ? actionGap + actionSize : 0)
         }
     }
 }

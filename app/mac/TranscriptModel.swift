@@ -11,7 +11,13 @@ final class TranscriptRow: @MainActor Identifiable {
     private(set) var contentRevision: UInt64 = 0
     /// A caption under a message the runtime has not confirmed yet, such as "发送中".
     let status: String?
-    init(_ message: Message, id: String, status: String? = nil) { self.id = id; self.message = message; self.status = status }
+    /// Whether a copy button goes under it: the user's messages and a turn's
+    /// closing reply, not the messages and text of its work.
+    fileprivate(set) var copies: Bool
+    init(_ message: Message, id: String, status: String? = nil, copies: Bool? = nil) {
+        self.id = id; self.message = message; self.status = status
+        self.copies = copies ?? (message.role == .user)
+    }
     func update(_ message: Message) {
         guard self.message != message else { return }
         contentRevision &+= 1
@@ -84,22 +90,27 @@ final class TranscriptModel: ObservableObject {
         let identitiesByMessage = Dictionary(uniqueKeysWithValues: identities.map { ($0.messageID, $0.id) })
         let existing = Dictionary(uniqueKeysWithValues: rows.map { ($0.id, $0) })
         var changed = presentation.turns != turns || presentation.items != items || presentation.outline != outline
-        func row(_ id: String, _ message: Message) -> TranscriptRow {
+        func row(_ id: String, _ message: Message, copies: Bool) -> TranscriptRow {
             if let row = existing[id] {
                 if row.message != message { row.update(message); changed = true }
+                // A running turn's latest message is its reply until more work follows it.
+                if row.copies != copies { row.copies = copies; changed = true }
                 return row
             }
             changed = true
-            return TranscriptRow(message, id: id)
+            return TranscriptRow(message, id: id, copies: copies)
         }
         // The closing message splits into its work blocks and its reply.
         let replyStarts = Dictionary(turns.compactMap { turn in turn.lastMessageID.map { ($0, turn.replyStartBlock) } }, uniquingKeysWith: { first, _ in first })
         let next = messages.flatMap { message -> [TranscriptRow] in
             guard let id = identitiesByMessage[message.id] else { preconditionFailure("Missing transcript presentation identity") }
-            guard let start = replyStarts[message.id], start > 0, start < message.blocks.count else { return [row(id, message)] }
+            let user = message.role == .user
+            // Only a turn's closing message replies; a reply from its first block is the whole message.
+            guard let start = replyStarts[message.id] else { return [row(id, message, copies: user)] }
+            guard start > 0, start < message.blocks.count else { return [row(id, message, copies: user || start == 0)] }
             var work = message, reply = message
             work.blocks = Array(message.blocks[..<start]); reply.blocks = Array(message.blocks[start...])
-            return [row(id, work), row("reply:" + id, reply)]
+            return [row(id, work, copies: false), row("reply:" + id, reply, copies: true)]
         }
         if rows.count != next.count || zip(rows, next).contains(where: { $0 !== $1 }) { changed = true }
         guard changed else { return }
