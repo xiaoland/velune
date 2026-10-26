@@ -50,7 +50,7 @@
 
 执行顺序为：核对固定安装的载荷与错误生命周期；修复 Claude 最终结果／助手错误、DSH 请求错误和 Pi 事件／历史重建；复核 Codex 与通用 ACP 已有路径；通过各适配入口的合成失败、重试成功、取消、重复事件与历史重读验证；更新 unit 文档与本任务记录。只用临时 HOME、合成数据与 loopback 服务。已有提交／安装授权覆盖本任务后续交付，但提交必须仅包含本任务改动；发生共享文件并发变更时不得把其他任务的差异纳入提交或安装。
 
-2026-10-27，跨运行时实现已完成，正在提交与安装前收尾。Claude 的助手 API 错误和 result 合并为同一回合通知，保留原生类别、HTTP 状态、errors 和失败 result 文本，仍等待 idle；已确认原生中断原因不当作失败。Claude 原生历史中的 isApiErrorMessage 同样显示为系统通知。DSH 与 ACP 保留 JSON-RPC code、message、data，DSH 也按协议显示取消、上限及拒绝；DSH 历史保留 huihua 提供的原生 details。Codex 补回 codexErrorInfo。
+2026-10-27，跨运行时实现、提交与安装已完成。Claude 的助手 API 错误和 result 合并为同一回合通知，保留原生类别、HTTP 状态、errors 和失败 result 文本，仍等待 idle；已确认原生中断原因不当作失败。Claude 原生历史中的 isApiErrorMessage 同样显示为系统通知。DSH 与 ACP 保留 JSON-RPC code、message、data，DSH 也按协议显示取消、上限及拒绝；DSH 历史保留 huihua 提供的原生 details。Codex 补回 codexErrorInfo。
 
 Pi 的生命周期改为 adapter 私有状态。模型失败沿用原生助手消息，重试开始移除原生省略的失败消息、结束清除临时通知；最终是否失败不从 auto_retry_end.success=false 推断。扩展错误只留诊断，按前一原生消息锚定，身份确认及历史刷新不改变其位置。JSON、读取及 EOF 故障共享首因锁存和终止路径，同步请求前已收到的事件仍可投影；连接故障清除重试提示。application 删除原生 agent_start／agent_settled 匹配逻辑，仅调用 begin_turn、读取 turn_ended 和 can_sync_history，并尊重 adapter 的发送能力。
 
@@ -59,3 +59,7 @@ Pi 的生命周期改为 adapter 私有状态。模型失败沿用原生助手�
 真实 Pi 1.0.2＋本地 HTTP 两轮验证通过：第一轮保留模型错误和非致命扩展诊断，第二轮正常成功，get_messages 与身份确认后的诊断位置保持不变。独立复核发现“结束事件后断连仍请求失效 Client”的贯通缺口，已用中立能力修复；实际 application 入口注入 settled 后的无效 JSON，连续三次 snapshot 都能返回 Failed、首个原因与 stderr，发送及取消保持不可用。另验证了 DSH 历史 helper 的原生结构化详情。上述运行只使用合成数据和 loopback 服务，没有读取真实凭据或会话，没有真实付费请求。
 
 agent-runtime 当前 13 项测试通过；agent-runtime 与 application 的 all-targets 严格 clippy、格式检查、Python／JavaScript 语法及文档相对链接和标题锚点检查通过。平台 Notice 映射已只读核对，未修改平台展示契约；尚未进行本轮 GUI／其他平台实机验证。临时验收探针不接入 CI，未建立新的错误存储或自动恢复策略。
+
+交付源码为 `882d0614c4580d766bbc7e001886ecaf25b1093d`，只提交上述错误映射、必要的中立能力集成、测试和文档，共 13 个文件。构建工作树最初因聊天仍指向已归档的旧工作树，工具将 HEAD 解析为旧 Codex 提交；已在安装前停止该次构建并显式检出上述完整提交，重新完成 release、绑定生成与 Swift 编译。干净提交中的 13 项测试、严格 clippy、全部 adapter 验收、真实 Pi 两轮及 application 故障快照验收均重新通过，未纳入其他任务的未提交遥测、远控或界面改动。
+
+`/Applications/Velune.app` 已替换并重新打开。codesign 深度严格验证通过；应用、核心 dylib、build-manifest 与外置 huihua helper 的 SHA-256 均与签名产物相同。Claude 历史 helper 通过 include_str 嵌入核心库，由已核对的 dylib 交付。manifest 为上述源码提交、dirty=false、0.1 beta.1、arm64。后续交付记录提交不改变已安装代码；临时构建工作树已申请归档清理。
