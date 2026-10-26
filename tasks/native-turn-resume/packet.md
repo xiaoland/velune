@@ -6,7 +6,7 @@
 
 实施前事实：Mac 与 Windows 的“继续”均发送普通用户文本；core 的 can_continue 只表明停止／失败后可发送，不代表原生无输入能力。Codex adapter 支持 0.159.3 至 <0.164.0，NativeSession 与 application 的普通发送边界都拒绝空消息。旧任务关于“Codex 无原生继续”的结论仅依据 schema，不能证明运行时语义。
 
-当前状态：Codex／Claude Code 原生恢复已贯通 adapter、共享 API、bindings 与 Mac／Windows 的现有继续入口；本机真实 CLI 的隔离端到端与 Mac 构建通过。Pi／DSH／ACP 保留文本继续。唯一外部验证阻塞是 win-ws 无法连接，Windows 构建与界面运行仍待具备主机条件后完成。仓库有其他任务的未提交修改，均保留；用户现已授权提交与安装；仅提交本任务改动，从干净提交快照构建 Mac 安装包。
+当前状态：Codex／Claude Code 原生恢复已贯通 adapter、共享 API、bindings 与 Mac／Windows 的现有继续入口；本机真实 CLI 的隔离端到端与 Mac 构建通过。Pi／DSH／ACP 保留文本继续。唯一外部验证阻塞是 win-ws 无法连接，Windows 构建与界面运行仍待具备主机条件后完成。仓库有其他任务的未提交修改，均保留；本任务已单独提交，Mac 已从干净提交快照构建并安装；其他未提交工作未进入安装包。
 
 完成依据：停止后的继续实际发起模型请求，转录与原生历史不新增用户消息；普通空消息仍拒绝；运行中／待交互／不支持的操作明确拒绝；失败不会隐式改发文本或重放；现有发送与队列回归通过。所有验证使用隔离合成资料，不读取真实配置、凭据、会话或调用真实模型。
 
@@ -24,7 +24,7 @@ advisor 判断已采纳：独立 `resume_turn` 与 `can_resume`，保留 `can_co
 | ACP v1 | [session setup](https://agentclientprotocol.com/protocol/v1/session-setup) 的 resume 不回放历史，未承诺无输入生成；schema 的空数组不能作为通用行为保证。 |
 | Claude Code 2.1.292 | [官方 session 文档](https://code.claude.com/docs/en/agent-sdk/sessions) 的 continue／resume 选择上下文。本轮随后对实际 CLI 实测空 `user.message.content: []`，中断后在同进程及 `--resume` 新进程下都继续请求模型，原生 user 记录没有增加，推翻最初仅根据文档作出的保留判断。adapter 已接入；未据此宣称旧最小版本 2.1.286 或所有未来版本均已实测。 |
 
-当前已改 adapter、共享 command/API、bindings、远控 operation 目标与 Mac／Windows 的现有继续入口；iOS 只同步预览构造所需新字段，没有扩展其交互。开发验证结果见下文；提交与安装正在收口。
+当前已改 adapter、共享 command/API、bindings、远控 operation 目标与 Mac／Windows 的现有继续入口；iOS 只同步预览构造所需新字段，没有扩展其交互。开发验证结果见下文；提交与安装已完成，记录见末节。
 
 
 ## 实现与开发验证
@@ -39,7 +39,7 @@ Claude Code 原生中断记录保留原 `promptId`，但没有正常输入的 `p
 - `manual-resume-turn.py` 对真实 Codex 0.159.3／Claude Code 2.1.292 的停止、冷重开、换模型与 effort 恢复均通过：无新用户消息、完成工具结果保留、未受理请求保留恢复资格、暂停队列不自动发送、随后普通消息配置正确、重开后的配置／用量一致。Codex 另外通过原生失败轮次的无输入恢复。Claude 的额外 HTTP 400 fixture 被 CLI 自行接续为成功，不能用它证明失败终态恢复；不扩大该部分验收结论。
 - `manual-send-queue.py` 对固定 Pi 1.0.2 回归通过：队列编辑／排序／删除、逐条发送、停止／失败暂停、文本继续与空闲入队；明确断言 Pi 不承诺原生无输入恢复。仅使用临时 HOME、合成 key／会话／项目与回环请求。
 
-Windows 已同步源码与提示，但 `ssh -o BatchMode=yes -o ConnectTimeout=5 win-ws pwd` 返回连接被关闭（198.18.1.2:22）；无法完成仓库要求的 Windows 构建与浅／深色实际运行。Mac 界面未做真人点击验收，本轮没有安装到 `/Applications`。移动端本轮没有增加新按钮，远控契约已具备 `ResumeTurn`。
+Windows 已同步源码与提示，但 `ssh -o BatchMode=yes -o ConnectTimeout=5 win-ws pwd` 返回连接被关闭（198.18.1.2:22）；无法完成仓库要求的 Windows 构建与浅／深色实际运行。开发阶段未做 Mac 真人点击验收；后续已按用户授权安装到 `/Applications/Velune.app`。移动端本轮没有增加新按钮，远控契约已具备 `ResumeTurn`。
 
 
 最后收口：原生运行时仍有子 Agent 工作或没有已记录用户输入时，暂不提供“继续”，避免暂不可恢复时改为发送文本；切换到另一运行时仍使用明确的文本接续。文档检查覆盖本任务 9 份 Markdown 中 207 个相对链接及其标题锚点，全部有效；`git diff --check` 通过。最终源码只补这一可用性判定后重建动态库，并重跑两种实际 CLI 的主要验收与 application 严格 clippy；两种 CLI 验收与 application 严格 clippy 均通过。
@@ -48,3 +48,6 @@ Windows 已同步源码与提示，但 `ssh -o BatchMode=yes -o ConnectTimeout=5
 ## 提交与安装
 
 用户已明确授权提交和安装。原工作目录中仍有其他任务的未提交修改；本任务按文件及文档 hunk 单独暂存，在干净提交快照中构建安装包，不把其他工作带入提交或安装产物。安装使用仓库脚本，应用需正常退出，不强制终止活跃任务。
+
+
+2026-10-26 提交与安装完成：功能提交为 `a55c06463053618913e8bdaf641d45f67cd85daa`（`feat(runtime): 支持停止后无新消息恢复`）。通过独立干净 worktree 执行 `bash scripts/build-macos.sh --build-only`，Release Rust、同版本生成绑定与 Mac Swift 构建通过；隔离 Release 动态库再次通过 Codex 0.159.3／Claude Code 2.1.292 的 `manual-resume-turn.py`。旧应用已正常退出，仓库安装器安装到 `/Applications/Velune.app`，保持 `0.1 beta.1`、arm64。安装清单 `source_commit` 对应该功能提交，`dirty=false`，锁文件摘要正确；安装前后严格签名校验通过，主程序、核心库、Info.plist 与构建清单哈希一致。动态链接仅指向随包核心和系统库，不依赖临时 worktree。构建与验收日志保存在原仓库 `target/native-turn-resume-install/`，临时 worktree 随后归档清理。未推送，未重新打开真实配置进行会话验收；Windows 验证状态仍如上。
