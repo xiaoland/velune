@@ -5,44 +5,81 @@ struct WorkspaceView: View {
     let peer: String
     @Binding var pendingURL: URL?
     @Environment(\.scenePhase) private var phase
+    @Environment(\.horizontalSizeClass) private var sizeClass
+    @Environment(\.openWindow) private var openWindow
+    @Environment(\.supportsMultipleWindows) private var supportsMultipleWindows
     @State private var listing: BindingConfigurationSnapshot?
+    @State private var searchResult: BindingConversationSearch?
     @State private var active: [BindingActiveConversation] = []
-    @State private var selected: ConversationTarget?
     @State private var compactColumn: NavigationSplitViewColumn = .sidebar
     @State private var query = ""
-    @State private var failure: String?
-    @State private var creating = false
+    @FocusState private var searchFocused: Bool
     @State private var matches: [BindingListedConversation] = []
     @State private var showingMatches = false
+    @State private var listFailed = false
+    private var groups: [BindingConversationGroup] { query.isEmpty ? listing?.conversationGroups ?? [] : searchResult?.groups ?? [] }
 
     var body: some View {
         NavigationSplitView(preferredCompactColumn: $compactColumn) {
-            List(selection: $selected) {
-                if let failure { FailureView(text: failure) }
-                if listing == nil { ProgressView() }
-                ForEach(listing?.conversationGroups ?? [], id: \.key) { group in
+            List(selection: Binding(get: { devices.selected }, set: { devices.select($0) })) {
+                if listing == nil && !listFailed { ProgressView() }
+                if !devices.pendingDrafts.isEmpty {
+                    Section("草稿") {
+                        ForEach(devices.pendingDrafts, id: \.key) { target in
+                            NavigationLink(value: target) {
+                                Label(devices.draftTitle(target), systemImage: "square.and.pencil").lineLimit(2)
+                            }.contextMenu {
+                                Button("删除草稿", role: .destructive) { devices.discardDraft(target) }
+                            }
+                        }
+                    }
+                }
+                ForEach(groups, id: \.key) { group in
                     Section {
                         if !group.collapsed || !query.isEmpty {
                             ForEach(conversations(group.key), id: \.conversation.id) { listed in
-                                NavigationLink(value: ConversationTarget(listed)) { row(listed) }
+                                NavigationLink(value: ConversationTarget(listed)) {
+                                    ConversationListRow(listed: listed,
+                                        runtimeName: listing?.runtimeInstances.first { $0.id == listed.conversation.runtimeId }?.name ?? "",
+                                        active: active)
+                                }
+                                    .contextMenu {
+                                        Button(listed.unread ? "标为已读" : "标为未读", systemImage: listed.unread ? "envelope.open" : "envelope.badge") {
+                                            organize(listed, listed.unread ? .markRead : .markUnread)
+                                        }
+                                        if supportsMultipleWindows {
+                                            Button("在新窗口中打开", systemImage: "macwindow.badge.plus") {
+                                                openWindow(id: "workspace", value: WindowRoute(peer: peer, target: ConversationTarget(listed)))
+                                            }
+                                        }
+                                    }
                             }
-                            if group.loaded < group.total {
+                            if group.loaded < group.total && query.isEmpty {
                                 Button("加载更多") { Task {
                                     do { listing = try await devices.client.application(peer) { try $0.loadMoreConversations(group: group.key) } }
-                                    catch { failure = mobileError(error) }
+                                    catch { report(error, "加载会话") }
                                 } }
                             }
                         }
                     } header: {
                         Button { toggle(group) } label: {
-                            HStack { Text(groupTitle(group)); Spacer(); Image(systemName: group.collapsed ? "chevron.right" : "chevron.down") }
+                            HStack { Text(groupTitle(group)); Spacer(); Text("\(group.total)").monospacedDigit(); Image(systemName: group.collapsed ? "chevron.right" : "chevron.down") }
                         }.buttonStyle(.plain)
                     }
                 }
-                if listing?.conversations.isEmpty == true { ContentUnavailableView("没有会话", systemImage: "bubble.left.and.bubble.right") }
+                if listing == nil && listFailed {
+                    Button("重新读取会话", systemImage: "arrow.clockwise") { Task { await refresh() } }
+                } else if !query.isEmpty && searchResult?.conversations.isEmpty == true {
+                    ContentUnavailableView.search(text: query)
+                } else if listing?.conversations.isEmpty == true {
+                    ContentUnavailableView("没有会话", systemImage: "bubble.left.and.bubble.right")
+                }
             }
-            .navigationTitle(devices.state?.contacts.first { $0.peerId == peer }?.name ?? "会话")
+            .navigationSplitViewColumnWidth(min: 240, ideal: 280, max: 340)
+            .navigationTitle(devices.deviceName)
+            .navigationBarTitleDisplayMode(.inline)
             .searchable(text: $query, prompt: "搜索会话或项目")
+            .searchFocused($searchFocused)
             .refreshable { await refresh() }
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
@@ -51,29 +88,55 @@ struct WorkspaceView: View {
                             Button(contact.name) { devices.peer = contact.peerId }
                         }
                         Divider()
+                        Button("搜索会话", systemImage: "magnifyingglass") { focusSearch() }
+                        NewWindowButton(peer: peer, target: nil)
                         Button("管理设备") { devices.peer = nil }
-                    } label: { Label("设备", systemImage: "desktopcomputer") }
+                    } label: { Label("设备与窗口", systemImage: "desktopcomputer") }
                 }
-                ToolbarItem(placement: .topBarTrailing) { Button { creating = true } label: { Label("新会话", systemImage: "square.and.pencil") }.disabled(listing == nil) }
+                ToolbarItem(placement: .topBarTrailing) {
+                    if devices.selected == nil || sizeClass == .compact {
+                        Button("新会话", systemImage: "square.and.pencil", action: create).disabled(listing == nil)
+                    }
+                }
                 ToolbarItem(placement: .bottomBar) { Text(devices.status(peer)).font(.caption).foregroundStyle(.secondary) }
+                ToolbarItem(placement: .bottomBar) { ProblemsButton() }
             }
         } detail: {
-            if let selected { ConversationView(client: devices.client, peer: peer, target: selected).id(selected) }
-            else { ContentUnavailableView("选择会话", systemImage: "bubble.left.and.bubble.right") }
-        }
-        .onChange(of: selected) { _, value in if value != nil { compactColumn = .detail } }
-        .sheet(isPresented: $creating) {
-            NewConversationView(runtimes: listing?.runtimeInstances.filter(\.enabled) ?? [], projects: listing?.conversationProjects ?? []) {
-                selected = $0; creating = false
+            if devices.selected != nil, let model = devices.currentModel {
+                ConversationView(model: model, active: active, openLinked: openLinked,
+                    readChanged: { Task { await refresh() } }, runtimes: listing?.runtimeInstances ?? [],
+                    projects: listing?.conversationProjects ?? [], deviceName: devices.deviceName)
+                    .id(model.target.key)
+                    .toolbar {
+                        ToolbarItem(placement: .primaryAction) {
+                            Button("新会话", systemImage: "square.and.pencil", action: create).disabled(listing == nil)
+                        }
+                        ToolbarItem(placement: .topBarLeading) {
+                            if !devices.history.isEmpty {
+                                Button { devices.back() } label: { Label("返回上个会话", systemImage: "arrow.uturn.backward") }
+                            }
+                        }
+                    }
+            } else {
+                ContentUnavailableView {
+                    Label("选择会话", systemImage: "bubble.left.and.bubble.right")
+                } actions: {
+                    Button("新会话", systemImage: "square.and.pencil", action: create)
+                        .buttonStyle(.borderedProminent).disabled(listing == nil)
+                }
             }
         }
+        .focusedSceneValue(\.workspaceActions, WorkspaceKeyboardActions(
+            create: listing != nil ? create : nil,
+            search: { focusSearch() }, back: devices.history.isEmpty ? nil : { devices.back() }))
+        .onChange(of: devices.selected) { _, value in if value != nil { compactColumn = .detail } }
         .sheet(isPresented: $showingMatches) {
             NavigationStack {
-                List {
-                    if let failure { FailureView(text: failure) }
-                    ForEach(matches, id: \.conversation.id) { listed in Button(listed.conversation.title) { selected = ConversationTarget(listed); showingMatches = false } }
-                    if matches.isEmpty { Text("没有找到匹配会话") }
-                }.navigationTitle("链接中的会话").toolbar { Button("关闭") { showingMatches = false } }
+                List(matches, id: \.conversation.id) { listed in
+                    Button(listed.conversation.title) { devices.select(ConversationTarget(listed)); showingMatches = false }
+                }
+                .overlay { if matches.isEmpty { ContentUnavailableView("没有找到匹配会话", systemImage: "magnifyingglass") } }
+                .navigationTitle("链接中的会话").toolbar { Button("关闭") { showingMatches = false } }
             }
         }
         .task(id: phase) {
@@ -83,18 +146,22 @@ struct WorkspaceView: View {
                 do { try await Task.sleep(for: .seconds(5)) } catch { return }
             }
         }
+        .task(id: query) {
+            do { try await Task.sleep(for: .milliseconds(250)) } catch { return }
+            await search()
+        }
         .task(id: pendingURL) {
             guard let url = pendingURL else { return }
             pendingURL = nil
             do {
                 let result = try await devices.client.application(peer) { try $0.resolveAgentUri(uri: url.absoluteString, runtimeId: nil) }
-                if result.conversations.count == 1, result.failures.isEmpty { selected = ConversationTarget(result.conversations[0]) }
+                if result.conversations.count == 1, result.failures.isEmpty { devices.select(ConversationTarget(result.conversations[0])) }
                 else {
                     matches = result.conversations
-                    failure = result.failures.isEmpty ? nil : result.failures.map(\.detail).joined(separator: "\n")
+                    for failure in result.failures { ProblemStore.shared.record(failure.detail, source: "解析会话链接", context: devices.deviceName) }
                     showingMatches = true
                 }
-            } catch { failure = mobileError(error) }
+            } catch { report(error, "打开会话链接") }
         }
         .environment(\.openURL, OpenURLAction { url in
             guard url.scheme?.lowercased() == "agents" else { return .systemAction }
@@ -102,6 +169,40 @@ struct WorkspaceView: View {
         })
     }
 
+    private func create() {
+        let runtimes = listing?.runtimeInstances.filter(\.enabled) ?? []
+        let previous = devices.currentModel
+        let runtime = runtimes.first { $0.id == previous?.runtimeID } ?? runtimes.first
+        devices.select(.init(runtime: runtime?.id ?? "", cwd: previous?.cwd), remembering: true)
+    }
+    private func openLinked(_ id: String, _ newWindow: Bool) {
+        let title = devices.currentModel?.snapshot?.subAgents.first { $0.conversationId == id }?.title
+        Task {
+            do {
+                guard let listed = try await devices.client.application(peer, { try $0.findConversation(conversationId: id) }) else { throw MobileError.missingConversation }
+                var target = ConversationTarget(listed)
+                if let title, !title.isEmpty { target.title = title }
+                if newWindow { openWindow(id: "workspace", value: WindowRoute(peer: peer, target: target)) }
+                else { devices.select(target, remembering: true) }
+            } catch { report(error, "打开关联 Agent") }
+        }
+    }
+    private func report(_ error: Error, _ source: String) { ProblemStore.shared.record(error, source: source, context: devices.deviceName) }
+    private func focusSearch() {
+        compactColumn = .sidebar
+        searchFocused = true
+    }
+    private func organize(_ row: BindingListedConversation, _ change: BindingConversationOrganizationChange) {
+        if change == .markUnread, devices.selected?.conversation == row.conversation.id { devices.currentModel?.holdUnread() }
+        Task {
+            do {
+                listing = try await devices.client.application(peer) {
+                    try $0.organizeConversations(conversations: [.init(runtimeId: row.conversation.runtimeId, conversationId: row.conversation.id)], change: change)
+                }
+                await search()
+            } catch { report(error, "标记会话") }
+        }
+    }
     private func toggle(_ group: BindingConversationGroup) {
         guard var preferences = listing?.conversationBrowserPreferences else { return }
         if group.collapsed { preferences.collapsed.removeAll { $0 == group.key } }
@@ -109,21 +210,32 @@ struct WorkspaceView: View {
         let next = preferences
         Task {
             do { listing = try await devices.client.application(peer) { try $0.setConversationBrowserPreferences(preferences: next) } }
-            catch { failure = mobileError(error) }
+            catch { report(error, "折叠会话分组") }
         }
     }
     private func refresh() async {
         do {
             let result = try await devices.client.application(peer) { (try $0.list(), try $0.conversationActivity(since: 0)) }
-            listing = result.0; active = result.1.active
-            failure = result.0.historyFailures.isEmpty ? nil : result.0.historyFailures.map(\.detail).joined(separator: "\n")
-        } catch { failure = mobileError(error) }
+            guard !Task.isCancelled else { return }
+            listing = result.0; active = result.1.active; listFailed = false
+            for failure in result.0.historyFailures {
+                ProblemStore.shared.record(failure.detail, source: "读取会话历史", context: devices.deviceName + " · " + (result.0.runtimeInstances.first { $0.id == failure.runtimeId }?.name ?? failure.runtimeId))
+            }
+            await search()
+        } catch { listFailed = true; report(error, "刷新会话列表") }
+    }
+    private func search() async {
+        let requested = query
+        guard !requested.isEmpty else { searchResult = nil; return }
+        do {
+            let result = try await devices.client.application(peer) { try $0.searchConversations(text: requested) }
+            guard !Task.isCancelled, query == requested else { return }
+            searchResult = result
+        } catch { report(error, "搜索会话") }
     }
     private func conversations(_ key: BindingConversationGroupKey) -> [BindingListedConversation] {
-        (listing?.conversations ?? []).filter { listed in
-            listed.group == key && !listed.archived && listed.conversation.parentConversationId == nil &&
-            (query.isEmpty || listed.conversation.title.localizedCaseInsensitiveContains(query) || (listed.project ?? "").localizedCaseInsensitiveContains(query))
-        }
+        let rows = query.isEmpty ? listing?.conversations ?? [] : searchResult?.conversations ?? []
+        return rows.filter { $0.group == key && !$0.archived && $0.conversation.parentConversationId == nil }
     }
     private func groupTitle(_ group: BindingConversationGroup) -> String {
         if let name = group.name { return name }
@@ -134,44 +246,55 @@ struct WorkspaceView: View {
         case .runtime(let id): return listing?.runtimeInstances.first { $0.id == id }?.name ?? id
         }
     }
-    private func row(_ listed: BindingListedConversation) -> some View {
-        HStack(spacing: 10) {
-            Image(systemName: listed.pinned ? "pin.fill" : "bubble.left")
-                .foregroundStyle(listed.failed ? .red : .secondary)
-            VStack(alignment: .leading, spacing: 4) {
-                Text(listed.conversation.title).lineLimit(2).fontWeight(listed.unread ? .semibold : .regular)
-                HStack {
-                    Text(listing?.runtimeInstances.first { $0.id == listed.conversation.runtimeId }?.name ?? "")
-                    if let date = listed.conversation.updatedAtUnixMs { Text(Date(timeIntervalSince1970: Double(date) / 1000), style: .relative) }
-                }.font(.caption).foregroundStyle(.secondary)
+}
+
+struct NewWindowButton: View {
+    let peer: String?
+    let target: ConversationTarget?
+    @Environment(\.openWindow) private var openWindow
+    @Environment(\.supportsMultipleWindows) private var supported
+    var body: some View {
+        if supported {
+            Button("新窗口", systemImage: "macwindow.badge.plus") {
+                openWindow(id: "workspace", value: WindowRoute(peer: peer, target: target))
             }
-            Spacer(minLength: 0)
-            if active.contains(where: { $0.conversationId == listed.conversation.id }) { ProgressView().controlSize(.small) }
-            else if listed.unread { Circle().fill(.tint).frame(width: 7, height: 7) }
         }
     }
 }
 
-private struct NewConversationView: View {
-    let runtimes: [BindingRuntimeInstance]
-    let projects: [BindingConversationProject]
-    let create: (ConversationTarget) -> Void
-    @Environment(\.dismiss) private var dismiss
-    @State private var runtime = ""
-    @State private var project = ""
+struct ConversationListRow: View {
+    let listed: BindingListedConversation
+    let runtimeName: String
+    var active: [BindingActiveConversation] = []
+    private var activity: [BindingActiveConversation] {
+        active.filter { $0.conversationId == listed.conversation.id || $0.parentConversationId == listed.conversation.id }
+    }
     var body: some View {
-        NavigationStack {
-            Form {
-                Picker("运行时", selection: $runtime) { ForEach(runtimes, id: \.id) { Text($0.name).tag($0.id) } }
-                Picker("项目", selection: $project) {
-                    Text("运行时默认").tag("")
-                    ForEach(projects, id: \.path) { Text($0.name ?? URL(fileURLWithPath: $0.path).lastPathComponent).tag($0.path) }
-                }
-                if runtimes.isEmpty { Text("请先在被控设备上配置运行时") }
-            }.navigationTitle("新会话").toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }
-                ToolbarItem(placement: .confirmationAction) { Button("创建") { create(.init(runtime: runtime, cwd: project.isEmpty ? nil : project)) }.disabled(runtime.isEmpty) }
-            }.onAppear { runtime = runtimes.first?.id ?? "" }
-        }.presentationDetents([.medium, .large])
+        HStack(alignment: .top, spacing: 8) {
+            Group {
+                if activity.contains(where: { $0.pendingInteractions > 0 }) {
+                    Image(systemName: "hand.raised.fill").foregroundStyle(.orange).accessibilityLabel("等待回复")
+                } else if activity.contains(where: { $0.runState == .running || $0.runState == .stopping }) {
+                    ProgressView().controlSize(.mini).accessibilityLabel("正在处理")
+                } else if listed.unread {
+                    if listed.failed { Image(systemName: "exclamationmark.circle.fill").foregroundStyle(.red).accessibilityLabel("未读，执行失败") }
+                    else { Circle().fill(.tint).frame(width: 7, height: 7).accessibilityLabel("未读") }
+                } else { Color.clear }
+            }.frame(width: 12, height: 20)
+            VStack(alignment: .leading, spacing: 5) {
+                Text(listed.conversation.title).lineLimit(2).fontWeight(listed.unread ? .semibold : .regular)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                HStack(spacing: 5) {
+                    if listed.pinned { Image(systemName: "pin.fill").accessibilityLabel("已置顶") }
+                    Text(runtimeName).lineLimit(1)
+                    Spacer(minLength: 4)
+                    if let timestamp = listed.conversation.updatedAtUnixMs {
+                        let date = Date(timeIntervalSince1970: Double(timestamp) / 1000)
+                        Text(date, format: Calendar.current.isDateInToday(date) ? .dateTime.hour().minute() : .dateTime.month(.abbreviated).day())
+                            .monospacedDigit().lineLimit(1)
+                    }
+                }.font(.caption).foregroundStyle(.secondary)
+            }
+        }.padding(.vertical, 4).accessibilityElement(children: .combine)
     }
 }

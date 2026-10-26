@@ -6,7 +6,7 @@ case "${PLATFORM_NAME:-${1:-iphonesimulator}}" in
   iphoneos) rust_target=aarch64-apple-ios ;;
   *) echo '用法：scripts/build-ios-native.sh [iphonesimulator|iphoneos]' >&2; exit 1 ;;
 esac
-export IPHONEOS_DEPLOYMENT_TARGET=17.0
+export IPHONEOS_DEPLOYMENT_TARGET=18.0
 profile=debug
 cargo_profile=--profile=dev
 if [[ "${CONFIGURATION:-Debug}" == Release ]]; then profile=release; cargo_profile=--release; fi
@@ -19,4 +19,4 @@ cargo run --locked --target-dir target/ios-bindgen -p velune-bindings --no-defau
   --language swift --out-dir "$output" --no-format
 cp "$output/VeluneBindingsFFI.modulemap" "$output/module.modulemap"
 python3 -I scripts/android-licenses.py remote "$output/rust-licenses.txt" "$rust_target"
-cat app/mac/Licenses/swift-markdown-LICENSE.txt app/mac/Licenses/swift-cmark-COPYING.txt > "$output/swift-licenses.txt"
+cat app/ios/Licenses/MarkdownUI-LICENSE.txt app/ios/Licenses/NetworkImage-LICENSE.txt app/mac/Licenses/swift-cmark-COPYING.txt > "$output/swift-licenses.txt"

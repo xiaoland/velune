@@ -3,11 +3,13 @@ import Network
 import UIKit
 
 /// Synchronous UniFFI calls run on this actor, never on the UI executor.
-actor RemoteClient {
+actor RemoteService {
+    static let shared = RemoteService()
+    private struct ViewKey: Hashable { let peer: String; let view: String }
     private var endpoint: VeluneRemoteEndpoint?
-    private var applications: [String: VeluneApplication] = [:]
-    private let viewID = "ios-\(UUID().uuidString)"
-    private var selected: String?
+    private var applications: [ViewKey: VeluneApplication] = [:]
+    private var windows: [String: (peer: String?, foreground: Bool)] = [:]
+    private let monitor = NWPathMonitor()
     private var networkSequence: UInt64 = 0
 
     func start(name: String) throws {
@@ -23,6 +25,14 @@ actor RemoteClient {
             stateFile: directory.appendingPathComponent("remote-state.json").path,
             deviceName: name, relay: .developmentPublic, discovery: .developmentPublic,
             pathPolicy: .automatic, bindAddresses: [], requestTimeoutMs: 30_000), application: nil)
+        for peer in Set(windows.values.compactMap { $0.peer }) { try updateActivity(peer) }
+        monitor.pathUpdateHandler = { [weak self] path in
+            Task {
+                do { try await self?.reportNetwork(path) }
+                catch { await ProblemStore.shared.record(error, source: "网络变化") }
+            }
+        }
+        monitor.start(queue: DispatchQueue(label: "app.velune.ios.network"))
     }
 
     func service<T>(_ body: (VeluneRemoteEndpoint) throws -> T) throws -> T {
@@ -30,29 +40,43 @@ actor RemoteClient {
         return try body(endpoint)
     }
 
-    func application<T>(_ peer: String, _ body: (VeluneApplication) throws -> T) throws -> T {
+    func application<T>(_ peer: String, viewID: String, _ body: (VeluneApplication) throws -> T) throws -> T {
         guard let endpoint else { throw MobileError.unavailable }
+        let key = ViewKey(peer: peer, view: viewID)
         let application: VeluneApplication
-        if let cached = applications[peer] { application = cached }
+        if let cached = applications[key] { application = cached }
         else {
             application = try endpoint.connect(peerId: peer, viewId: viewID)
-            applications[peer] = application
+            applications[key] = application
         }
         return try body(application)
     }
 
-    func activity(peer: String?, foreground: Bool) throws {
-        guard let endpoint else { return }
-        if let previous = selected, previous != peer {
-            try endpoint.setControllerActivity(peerId: previous, selected: false, foreground: false)
+    func activity(viewID: String, peer: String?, foreground: Bool) throws {
+        let previous = windows[viewID]?.peer
+        windows[viewID] = (peer, foreground)
+        for affected in Set([previous, peer].compactMap { $0 }) { try updateActivity(affected) }
+    }
+
+    private func updateActivity(_ peer: String) throws {
+        let views = windows.values.filter { $0.peer == peer }
+        try endpoint?.setControllerActivity(peerId: peer, selected: !views.isEmpty, foreground: views.contains { $0.foreground })
+    }
+
+    func release(viewID: String) throws {
+        let previous = windows.removeValue(forKey: viewID)?.peer
+        if let previous { try updateActivity(previous) }
+        for key in applications.keys.filter({ $0.view == viewID }) {
+            let app = applications.removeValue(forKey: key)
+            try app?.releaseView()
         }
-        selected = peer
-        if let peer { try endpoint.setControllerActivity(peerId: peer, selected: true, foreground: foreground) }
     }
 
     func reportNetwork(_ path: NWPath) throws {
         networkSequence += 1
-        let interfaces = path.availableInterfaces
+        // NWPath can repeat an interface; core snapshots require unique network IDs.
+        var names = Set<String>()
+        let interfaces = path.availableInterfaces.filter { names.insert($0.name).inserted }
         let networks = interfaces.map { interface in
             BindingPlatformNetwork(id: interface.name, wifi: interface.type == .wifi,
                 cellular: interface.type == .cellular, ethernet: interface.type == .wiredEthernet,
@@ -68,7 +92,7 @@ actor RemoteClient {
 
     func forget(_ peer: String) throws {
         try service { try $0.forgetDevice(peerId: peer) }
-        applications[peer] = nil
+        applications = applications.filter { $0.key.peer != peer }
     }
 }
 
@@ -82,56 +106,50 @@ enum MobileError: LocalizedError {
     }
 }
 
-@MainActor
-final class DeviceStore: ObservableObject {
-    let client = RemoteClient()
-    @Published var state: BindingRemoteServiceSnapshot?
-    @Published var failure: String?
-    @Published var peer: String?
-    private let monitor = NWPathMonitor()
-    private var monitoring = false
-
-    func refresh() async {
-        do {
-            try await client.start(name: UIDevice.current.name)
-            if !monitoring { startNetworkMonitor() }
-            state = try await client.service { try $0.readState() }
-            failure = nil
-        } catch { failure = mobileError(error) }
+/// A window owns a core view, while transport and device identity remain shared.
+final class RemoteClient: @unchecked Sendable {
+    let viewID: String
+    init(viewID: String = "ios-\(UUID().uuidString)") { self.viewID = viewID }
+    func start(name: String) async throws { try await RemoteService.shared.start(name: name) }
+    func service<T>(_ body: (VeluneRemoteEndpoint) throws -> T) async throws -> T { try await RemoteService.shared.service(body) }
+    func application<T>(_ peer: String, _ body: (VeluneApplication) throws -> T) async throws -> T {
+        try await RemoteService.shared.application(peer, viewID: viewID, body)
     }
+    func activity(peer: String?, foreground: Bool) async throws { try await RemoteService.shared.activity(viewID: viewID, peer: peer, foreground: foreground) }
+    func forget(_ peer: String) async throws { try await RemoteService.shared.forget(peer) }
+    deinit {
+        let id = viewID
+        Task {
+            do { try await RemoteService.shared.release(viewID: id) }
+            catch { await ProblemStore.shared.record(error, source: "关闭窗口") }
+        }
+    }
+}
 
-    private func startNetworkMonitor() {
-        monitoring = true
-        let client = client
-        monitor.pathUpdateHandler = { path in
-            Task {
-                do { try await client.reportNetwork(path) }
-                catch { await MainActor.run { self.failure = mobileError(error) } }
+@MainActor
+final class DeviceDirectory: ObservableObject {
+    @Published var state: BindingRemoteServiceSnapshot?
+    private var activeWindows = Set<String>()
+    private var polling: Task<Void, Never>?
+
+    func activity(window: String, active: Bool) {
+        if active { activeWindows.insert(window) } else { activeWindows.remove(window) }
+        if activeWindows.isEmpty { polling?.cancel(); polling = nil }
+        else if polling == nil {
+            polling = Task { [weak self] in
+                while !Task.isCancelled {
+                    await self?.refresh()
+                    do { try await Task.sleep(for: .seconds(1)) } catch { return }
+                }
             }
         }
-        monitor.start(queue: DispatchQueue(label: "app.velune.ios.network"))
     }
-
-    func activity(foreground: Bool) async {
-        do { try await client.activity(peer: peer, foreground: foreground) }
-        catch { failure = mobileError(error) }
-    }
-
-    func perform(_ action: @escaping (RemoteClient) async throws -> Void) {
-        Task {
-            do { try await action(client); await refresh() }
-            catch { failure = mobileError(error) }
-        }
-    }
-
-    func status(_ peer: String) -> String {
-        guard let controller = state?.controllers.first(where: { $0.peerId == peer }) else { return "未连接" }
-        switch controller.phase {
-        case .connected: return "已连接"
-        case .connecting, .discovering, .recovering: return "连接中"
-        case .blocked: return "连接失败"
-        case .disconnected, .suspended: return "未连接"
-        }
+    func refresh() async {
+        do {
+            try await RemoteService.shared.start(name: UIDevice.current.name)
+            state = try await RemoteService.shared.service { try $0.readState() }
+            ProblemStore.shared.recovered(source: "设备连接")
+        } catch { ProblemStore.shared.record(error, source: "设备连接") }
     }
 }
 

@@ -9,7 +9,6 @@ struct DevicesView: View {
     var body: some View {
         NavigationStack {
             List {
-                if let failure = devices.failure { FailureView(text: failure) }
                 if devices.state?.contacts.isEmpty != false {
                     ContentUnavailableView {
                         Label("添加设备", systemImage: "desktopcomputer")
@@ -31,6 +30,8 @@ struct DevicesView: View {
                 }
                 Section { NavigationLink("关于与开源许可") { AboutView() } }
             }.navigationTitle("Velune").toolbar {
+                ProblemsButton()
+                NewWindowButton(peer: nil, target: nil)
                 Button { adding = true } label: { Label("添加设备", systemImage: "plus") }.disabled(devices.state == nil)
             }
             .refreshable { await devices.refresh() }
