@@ -76,8 +76,8 @@ enum PreviewData {
         .init(enabled: true, id: "claude", name: "Claude Code", typeId: "claude", gatewayId: "", settings: [:])
     ]
     static let projects: [BindingConversationProject] = [
-        .init(path: "/sample/velune", name: "Velune", folders: [], worktrees: [], latestActivityUnixMs: nil),
-        .init(path: "/sample/website", name: "Website", folders: [], worktrees: [], latestActivityUnixMs: nil)
+        .init(path: "/sample/velune", primaryFolder: "/sample/velune", nativeRuntimeId: nil, name: "Velune", folders: [], worktrees: [], latestActivityUnixMs: nil),
+        .init(path: "/sample/website", primaryFolder: "/sample/website", nativeRuntimeId: nil, name: "Website", folders: [], worktrees: [], latestActivityUnixMs: nil)
     ]
     static let models: [BindingRuntimeModel] = [.init(selection: .managed(modelRecordKey: "preview-model"), name: "GPT-5", reasoningEfforts: [])]
     static var rows: [BindingListedConversation] {

@@ -71,6 +71,7 @@ pub enum CommandKind {
     SetOutlinePresentation,
     SetLinkedConversationOpening,
     SetUsageDisplay,
+    SetContextUsageDisplay,
     SetStatusLine,
     SetConversationBrowserPreferences,
     ComposerDrafts,
@@ -240,6 +241,9 @@ pub enum Command {
         opening: LinkedConversationOpening,
     },
     SetUsageDisplay {
+        display: UsageDisplay,
+    },
+    SetContextUsageDisplay {
         display: UsageDisplay,
     },
     SetStatusLine {
@@ -558,6 +562,7 @@ pub enum Response {
     SetOutlinePresentation(OutlinePresentation),
     SetLinkedConversationOpening(LinkedConversationOpening),
     SetUsageDisplay(UsageDisplay),
+    SetContextUsageDisplay(UsageDisplay),
     SetStatusLine(Vec<StatusLineItem>),
     SetConversationBrowserPreferences(ConfigurationSnapshot),
     ComposerDrafts(Vec<crate::config::ComposerDraft>),
@@ -686,6 +691,7 @@ impl Command {
             | Self::SetOutlinePresentation { .. }
             | Self::SetLinkedConversationOpening { .. }
             | Self::SetUsageDisplay { .. }
+            | Self::SetContextUsageDisplay { .. }
             | Self::SetStatusLine { .. }
             | Self::SetConversationBrowserPreferences { .. }
             | Self::SetComposerDraft { .. }
@@ -760,6 +766,7 @@ impl Command {
             Self::SetOutlinePresentation { .. } => CommandKind::SetOutlinePresentation,
             Self::SetLinkedConversationOpening { .. } => CommandKind::SetLinkedConversationOpening,
             Self::SetUsageDisplay { .. } => CommandKind::SetUsageDisplay,
+            Self::SetContextUsageDisplay { .. } => CommandKind::SetContextUsageDisplay,
             Self::SetStatusLine { .. } => CommandKind::SetStatusLine,
             Self::SetConversationBrowserPreferences { .. } => {
                 CommandKind::SetConversationBrowserPreferences

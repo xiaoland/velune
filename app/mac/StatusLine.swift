@@ -58,7 +58,7 @@ struct ComposerStatusLine: View {
                 .help(summary(items, status))
                 .accessibilityLabel("会话状态")
                 .accessibilityValue(summary(items, status))
-                .popover(isPresented: $showsDetails, arrowEdge: .top) { StatusDetails(status: status, branch: branch, display: store.usageDisplay) }
+                .popover(isPresented: $showsDetails, arrowEdge: .top) { StatusDetails(status: status, branch: branch, display: store.contextUsageDisplay, quotaDisplay: store.usageDisplay) }
             }
         }
         // The branch can change with any turn; reading it is one git call.
@@ -72,7 +72,7 @@ struct ComposerStatusLine: View {
         switch item {
         case .contextUsage:
             if let fraction = status.contextFraction {
-                HStack(spacing: 4) { ContextRing(fraction: fraction, display: store.usageDisplay); Text(StatusFormat.context(fraction, store.usageDisplay)) }
+                HStack(spacing: 4) { ContextRing(fraction: fraction, display: store.contextUsageDisplay); Text(StatusFormat.context(fraction, store.contextUsageDisplay)) }
             } else if let tokens = status.contextTokens {
                 Text("上下文 \(StatusFormat.short(tokens))")
             }
@@ -99,7 +99,7 @@ struct ComposerStatusLine: View {
             case .contextUsage:
                 guard let tokens = status.contextTokens else { return nil }
                 guard let window = status.contextWindow, let fraction = status.contextFraction else { return "上下文：已用 \(TokenCount.format(tokens)) tokens，模型窗口未知" }
-                if store.usageDisplay == .remaining { return "上下文：剩余 \(TokenCount.format(window.subtractingClamped(tokens))) / \(TokenCount.format(window)) tokens（\(StatusFormat.percent(1 - fraction))）" }
+                if store.contextUsageDisplay == .remaining { return "上下文：剩余 \(TokenCount.format(window.subtractingClamped(tokens))) / \(TokenCount.format(window)) tokens（\(StatusFormat.percent(1 - fraction))）" }
                 return "上下文：已用 \(TokenCount.format(tokens)) / \(TokenCount.format(window)) tokens（\(StatusFormat.percent(fraction))）"
             case .sessionTokens: return status.sessionTokens.map { "本会话累计：\(TokenCount.format($0)) tokens" }
             case .workingDirectory: return status.directory.map { "工作目录：\($0)" + (branch.map { "（\($0)）" } ?? "") }
@@ -135,6 +135,7 @@ private struct StatusDetails: View {
     let status: ConversationStatus
     let branch: String?
     let display: BindingUsageDisplay
+    let quotaDisplay: BindingUsageDisplay
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text("会话状态").font(.headline)
@@ -173,7 +174,7 @@ private struct StatusDetails: View {
                     heading("账户限额")
                     ForEach(Array(status.rateLimits.enumerated()), id: \.offset) { _, limit in
                         row(StatusFormat.window(limit.windowMinutes, short: false),
-                            StatusFormat.limit(limit.usedPercent, display, short: false) + (limit.resetsAtUnixMs.map { "，\(Date(timeIntervalSince1970: Double($0) / 1000).formatted(.relative(presentation: .named)))重置" } ?? ""))
+                            StatusFormat.limit(limit.usedPercent, quotaDisplay, short: false) + (limit.resetsAtUnixMs.map { "，\(Date(timeIntervalSince1970: Double($0) / 1000).formatted(.relative(presentation: .named)))重置" } ?? ""))
                     }
                 }
                 if let cost = status.costMicroUSD {

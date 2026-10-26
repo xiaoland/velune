@@ -15,6 +15,7 @@ pub use claude::{
 mod codex;
 pub use codex::{ThreadChange, manage_thread, manage_thread_at};
 mod codex_history;
+pub mod codex_projects;
 pub use codex_history::{
     list_codex_history, list_codex_history_at, read_codex_history, read_codex_history_at,
     read_codex_summary_at,

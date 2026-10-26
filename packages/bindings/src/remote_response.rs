@@ -236,9 +236,11 @@ impl TryFrom<Response> for BindingApplicationResponse {
             Response::SetLinkedConversationOpening(value) => Self::LinkedConversationOpening {
                 value: convert(value)?,
             },
-            Response::SetUsageDisplay(value) => Self::UsageDisplay {
-                value: convert(value)?,
-            },
+            Response::SetUsageDisplay(value) | Response::SetContextUsageDisplay(value) => {
+                Self::UsageDisplay {
+                    value: convert(value)?,
+                }
+            }
             Response::SetStatusLine(value) => Self::StatusLineItemList {
                 value: convert(value)?,
             },

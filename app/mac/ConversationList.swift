@@ -211,7 +211,11 @@ struct ConversationListView: View {
             Text(title).lineLimit(1).truncationMode(.middle)
             Spacer(minLength: 0)
         }
-        .help(path.map { (($0 as NSString).abbreviatingWithTildeInPath) } ?? title)
+        .help(path.map { key in
+            guard let project = store.conversationProjects.first(where: { $0.path == key }) else { return key }
+            let folders = project.primaryFolder.map { [$0] + project.folders } ?? []
+            return folders.isEmpty ? title : folders.map { ($0 as NSString).abbreviatingWithTildeInPath }.joined(separator: "\n")
+        } ?? title)
         .contentShape(Rectangle())
         .onTapGesture(count: 2) { if let path { projectTarget = ProjectEditorTarget(path: path) } }
         // Dragged onto another group's header, a group takes its place.
@@ -242,14 +246,16 @@ struct ConversationListView: View {
         .contextMenu {
             if let path {
                 Button("编辑项目…") { projectTarget = ProjectEditorTarget(path: path) }
-                if section.group.name != nil {
+                if section.group.name != nil && store.conversationProjects.first(where: { $0.path == path })?.nativeRuntimeId == nil {
                     Button("恢复文件夹名称") {
                         let folders = store.conversationProjects.first { $0.path == path }?.folders ?? []
                         store.setProject(path: path, primaryFolder: path, name: nil, folders: folders)
                     }
                 }
-                Button("在 Finder 中显示") { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)]) }
-                    .disabled(store.location(of: section.conversations.first?.runtimeID) != .local)
+                if let folder = store.conversationProjects.first(where: { $0.path == path })?.primaryFolder {
+                    Button("在 Finder 中显示") { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: folder)]) }
+                        .disabled(store.location(of: section.conversations.first?.runtimeID) != .local)
+                }
                 Divider()
             }
             if store.searchResults == nil {
@@ -469,6 +475,7 @@ struct ConversationFilterMenu: View {
     @ObservedObject var window: ConversationWindowModel
     /// The list's workspace.
     @ObservedObject var store: AppStore
+    @State private var projectTarget: ProjectEditorTarget?
 
     var body: some View {
         Menu {
@@ -498,6 +505,15 @@ struct ConversationFilterMenu: View {
                     Text(ConversationBrowser.projectName(path, projects: store.conversationProjects)).tag(ConversationBrowser.ProjectFilter.path(path))
                 }
             }
+            if !store.conversationProjects.isEmpty {
+                Menu("编辑项目") {
+                    ForEach(store.conversationProjects, id: \.path) { project in
+                        Button(ConversationBrowser.projectName(project.path, projects: store.conversationProjects)) {
+                            projectTarget = ProjectEditorTarget(path: project.path)
+                        }
+                    }
+                }
+            }
             if window.listBrowser.hasFilters { Divider(); Button("清除筛选") { window.listBrowser.runtimeID = nil; window.listBrowser.project = .all } }
             Divider()
             Toggle("显示已归档的会话", isOn: Binding(get: { store.showsArchived }, set: { store.setShowsArchived($0) }))
@@ -506,6 +522,7 @@ struct ConversationFilterMenu: View {
             Menu("布局") { ToolPlaceMenu(window: window, kind: .list) }
         } label: { Label("显示", systemImage: window.listBrowser.hasFilters || store.showsArchived ? "line.3.horizontal.decrease.circle.fill" : "line.3.horizontal.decrease") }
         .help("会话分组、筛选、排序、已归档会话与列表的位置")
+        .sheet(item: $projectTarget) { ProjectEditorView(store: store, target: $0) }
         .accessibilityLabel("显示")
         .disabled(store.conversationBrowserPreferences == nil)
     }

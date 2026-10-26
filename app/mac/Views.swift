@@ -314,7 +314,7 @@ struct ConversationRenameView: View {
 }
 
 struct ProjectEditorTarget: Identifiable {
-    /// The project's primary folder.
+    /// The project key, independent of its folders.
     let path: String
     var id: String { path }
 }
@@ -333,19 +333,21 @@ struct ProjectEditorView: View {
     @State private var selection: String?
     @FocusState private var focused: Bool
     private let worktrees: [String]
+    private let isNative: Bool
     init(store: AppStore, target: ProjectEditorTarget) {
         self.store = store; self.target = target
         let project = store.conversationProjects.first { $0.path == target.path }
         _name = State(initialValue: project?.name ?? "")
-        _primary = State(initialValue: target.path)
-        _folders = State(initialValue: [target.path] + (project?.folders ?? []))
+        isNative = project?.nativeRuntimeId != nil
+        _primary = State(initialValue: project?.primaryFolder ?? "")
+        _folders = State(initialValue: project?.primaryFolder.map { [$0] + (project?.folders ?? []) } ?? [])
         worktrees = project?.worktrees ?? []
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("编辑项目").font(.headline)
+            Text(isNative ? "编辑 Codex 项目" : "编辑项目").font(.headline)
             TextField("项目名称", text: $name, prompt: Text(Self.folderName(primary))).focused($focused)
-            Text("名称只用于 Velune 的会话列表；留空则显示主文件夹的名称。").font(.caption).foregroundStyle(.secondary)
+            if isNative { Text("保存到 Codex").font(.caption).foregroundStyle(.secondary) }
             Text("文件夹").font(.subheadline.weight(.semibold)).padding(.top, 4)
             VStack(spacing: 0) {
                 List(selection: $selection) {
@@ -353,17 +355,17 @@ struct ProjectEditorView: View {
                         HStack {
                             Text(Self.abbreviated(folder)).lineLimit(1).truncationMode(.middle).help(folder)
                             Spacer(minLength: 8)
-                            if folder == primary { Text("主文件夹").foregroundStyle(.secondary) }
+                            if folder == primary { Text(isNative ? "首个文件夹" : "主文件夹").foregroundStyle(.secondary) }
                         }
                         .tag(folder)
                     }
                 }
                 .contextMenu(forSelectionType: String.self) { selected in
                     if let folder = selected.first {
-                        Button("设为主文件夹") { primary = folder }.disabled(folder == primary)
+                        Button(isNative ? "移到首位" : "设为主文件夹") { primary = folder }.disabled(folder == primary)
                         Button("在 Finder 中显示") { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: folder)]) }
                         Divider()
-                        Button("移除") { remove(folder) }.disabled(folder == primary)
+                        Button("移除") { remove(folder) }.disabled(!isNative && folder == primary)
                     }
                 }
                 .listStyle(.bordered(alternatesRowBackgrounds: false))
@@ -372,15 +374,15 @@ struct ProjectEditorView: View {
                     Button(action: add) { Image(systemName: "plus").frame(width: 22, height: 20) }
                         .help("添加文件夹").accessibilityLabel("添加文件夹")
                     Button { if let selection { remove(selection) } } label: { Image(systemName: "minus").frame(width: 22, height: 20) }
-                        .disabled(selection == nil || selection == primary)
+                        .disabled(selection == nil || (!isNative && selection == primary))
                         .help("移除所选文件夹").accessibilityLabel("移除所选文件夹")
                     Spacer()
-                    Button("设为主文件夹") { if let selection { primary = selection } }
+                    Button(isNative ? "移到首位" : "设为主文件夹") { if let selection { primary = selection } }
                         .disabled(selection == nil || selection == primary)
                 }
                 .buttonStyle(.borderless).controlSize(.small).padding(.top, 4)
             }
-            Text("工作目录在任一文件夹中的会话都归入此项目；新会话的工作目录建议使用主文件夹。项目不改变文件夹或会话的工作目录。")
+            Text(isNative ? "修改项目文件夹不会替换已有会话的工作目录和权限范围。" : "工作目录在任一文件夹中的会话都归入此项目；新会话的工作目录建议使用主文件夹。")
                 .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             if !worktrees.isEmpty {
                 Text("Git worktree").font(.subheadline.weight(.semibold)).padding(.top, 4)
@@ -397,7 +399,7 @@ struct ProjectEditorView: View {
             HStack {
                 Spacer()
                 Button("取消") { dismiss() }.keyboardShortcut(.cancelAction)
-                Button("存储", action: save).keyboardShortcut(.defaultAction)
+                Button("存储", action: save).keyboardShortcut(.defaultAction).disabled(isNative && name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }.padding(.top, 4)
         }.padding(20).frame(width: 440).onAppear { focused = true }
     }
@@ -409,15 +411,17 @@ struct ProjectEditorView: View {
         panel.prompt = "添加到项目"
         guard panel.runModal() == .OK else { return }
         for url in panel.urls where !folders.contains(url.path) { folders.append(url.path) }
+        if primary.isEmpty { primary = folders.first ?? "" }
     }
     private func remove(_ folder: String) {
-        guard folder != primary else { return }
+        guard isNative || folder != primary else { return }
         folders.removeAll { $0 == folder }
+        if folder == primary { primary = folders.first ?? "" }
         if selection == folder { selection = nil }
     }
     private func save() {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        store.setProject(path: target.path, primaryFolder: primary, name: trimmed.isEmpty || trimmed == Self.folderName(primary) ? nil : trimmed,
+        store.setProject(path: target.path, primaryFolder: primary, name: isNative ? trimmed : (trimmed.isEmpty || trimmed == Self.folderName(primary) ? nil : trimmed),
                          folders: folders.filter { $0 != primary })
         dismiss()
     }
@@ -507,11 +511,14 @@ private struct GeneralSettingsView: View {
     var body: some View {
         Form {
             Section("用量显示") {
-                Picker("额度与上下文", selection: Binding(get: { store.usageDisplay }, set: { store.setUsageDisplay($0) })) {
-                    Text("已用").tag(BindingUsageDisplay.used)
+                Picker("额度", selection: Binding(get: { store.usageDisplay }, set: { store.setUsageDisplay($0) })) {
+                    Text("占用").tag(BindingUsageDisplay.used)
                     Text("剩余").tag(BindingUsageDisplay.remaining)
                 }.pickerStyle(.segmented).disabled(store.isLoading || store.isShuttingDown)
-                Text("提供商额度窗口、账户用量限额与会话上下文显示已用或剩余的比例。额度的使用上限仍按已用比例生效，显示剩余时表现为至少保留的比例。").font(.caption).foregroundStyle(.secondary)
+                Picker("上下文", selection: Binding(get: { store.contextUsageDisplay }, set: { store.setContextUsageDisplay($0) })) {
+                    Text("占用").tag(BindingUsageDisplay.used)
+                    Text("剩余").tag(BindingUsageDisplay.remaining)
+                }.pickerStyle(.segmented).disabled(store.isLoading || store.isShuttingDown)
             }
             Section("会话列表") {
                 LabeledContent("每次加载") { TextField("数量", value: $limit, format: .number).frame(width: 70); Text("个会话") }

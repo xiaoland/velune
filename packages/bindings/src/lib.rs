@@ -559,6 +559,17 @@ impl VeluneApplication {
         let display = convert(display)?;
         request!(self, "set_usage_display", SetUsageDisplay { display })
     }
+    pub fn set_context_usage_display(
+        &self,
+        display: BindingUsageDisplay,
+    ) -> Result<BindingUsageDisplay, BindingError> {
+        let display = convert(display)?;
+        request!(
+            self,
+            "set_context_usage_display",
+            SetContextUsageDisplay { display }
+        )
+    }
     pub fn set_status_line(
         &self,
         items: Vec<BindingStatusLineItem>,

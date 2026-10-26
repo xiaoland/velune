@@ -16,6 +16,7 @@ sealed record Configuration(
     public BindingOutlinePresentation Outline { get; init; } = BindingOutlinePresentation.Popover;
     public BindingLinkedConversationOpening LinkedOpening { get; init; } = BindingLinkedConversationOpening.CurrentTab;
     public BindingUsageDisplay Usage { get; init; } = BindingUsageDisplay.Used;
+    public BindingUsageDisplay ContextUsage { get; init; } = BindingUsageDisplay.Used;
     public IReadOnlyList<BindingStatusLineItem> StatusLine { get; init; } = [BindingStatusLineItem.ContextUsage];
 
     public BindingRuntimeInstance? Runtime(string id) => Runtimes.FirstOrDefault(runtime => runtime.Id == id);
@@ -50,7 +51,7 @@ sealed class Listing
         var projects = new List<string>();
         foreach (var listed in list.Conversations.OrderByDescending(listed => listed.Conversation.UpdatedAtUnixMs ?? 0))
         {
-            if (listed.Project is { } project && !projects.Contains(project))
+            if (listed.Project is { } key && list.ConversationProjects.FirstOrDefault(project => project.Path == key)?.PrimaryFolder is { } project && !projects.Contains(project))
             {
                 projects.Add(project);
             }
@@ -67,6 +68,7 @@ sealed class Listing
                 Outline = list.OutlinePresentation,
                 LinkedOpening = list.LinkedConversationOpening,
                 Usage = list.UsageDisplay,
+                ContextUsage = list.ContextUsageDisplay,
                 StatusLine = list.StatusLine,
             },
             Active = active.ToDictionary(conversation => conversation.ConversationId),

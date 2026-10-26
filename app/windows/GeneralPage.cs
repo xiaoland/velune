@@ -23,7 +23,8 @@ sealed class GeneralPage : UserControl
     ];
 
     readonly Core core;
-    readonly ComboBox usage = new() { Items = { "已用", "剩余" }, MinWidth = 120 };
+    readonly ComboBox usage = new() { Items = { "占用", "剩余" }, MinWidth = 120 };
+    readonly ComboBox contextUsage = new() { Items = { "占用", "剩余" }, MinWidth = 120 };
     readonly NumberBox page = new() { Minimum = 1, Maximum = 500, SpinButtonPlacementMode = NumberBoxSpinButtonPlacementMode.Compact, MinWidth = 120 };
     readonly NumberBox total = new() { Minimum = 1, Maximum = 5000, SpinButtonPlacementMode = NumberBoxSpinButtonPlacementMode.Compact, MinWidth = 120 };
     readonly ComboBox outline = new() { Items = { "弹出面板", "就地折叠" }, MinWidth = 120 };
@@ -50,7 +51,8 @@ sealed class GeneralPage : UserControl
         panel.Children.Add(Ui.Text("通用", "SubtitleTextBlockStyle"));
 
         panel.Children.Add(Ui.Heading("用量"));
-        panel.Children.Add(Ui.Card(Ui.TwoLines("用量显示", "提供商额度、账户限额与会话上下文显示为已用或剩余。只改变显示，额度上限仍按已用比例生效。", true), usage));
+        panel.Children.Add(Ui.Card(Ui.Text("额度"), usage));
+        panel.Children.Add(Ui.Card(Ui.Text("上下文"), contextUsage));
 
         panel.Children.Add(Ui.Heading("会话列表"));
         panel.Children.Add(Ui.Card(Ui.TwoLines("每次加载", "每个分组一次读取的会话数，组内用“加载更多”继续。", true), page));
@@ -79,6 +81,7 @@ sealed class GeneralPage : UserControl
 
         Content = new ScrollViewer { Content = panel };
         usage.SelectionChanged += (_, _) => Save(application => application.SetUsageDisplay(usage.SelectedIndex == 1 ? BindingUsageDisplay.Remaining : BindingUsageDisplay.Used));
+        contextUsage.SelectionChanged += (_, _) => Save(application => application.SetContextUsageDisplay(contextUsage.SelectedIndex == 1 ? BindingUsageDisplay.Remaining : BindingUsageDisplay.Used));
         outline.SelectionChanged += (_, _) => Save(application => application.SetOutlinePresentation(outline.SelectedIndex == 1 ? BindingOutlinePresentation.InPlace : BindingOutlinePresentation.Popover));
         linked.SelectionChanged += (_, _) =>
         {
@@ -100,6 +103,7 @@ sealed class GeneralPage : UserControl
             var snapshot = await Task.Run(() => core.Local.List());
             showing = true;
             usage.SelectedIndex = snapshot.UsageDisplay == BindingUsageDisplay.Remaining ? 1 : 0;
+            contextUsage.SelectedIndex = snapshot.ContextUsageDisplay == BindingUsageDisplay.Remaining ? 1 : 0;
             outline.SelectedIndex = snapshot.OutlinePresentation == BindingOutlinePresentation.InPlace ? 1 : 0;
             linked.SelectedIndex = Array.FindIndex(openings, entry => entry.Opening == snapshot.LinkedConversationOpening);
             page.Value = snapshot.ConversationBrowserLimits.Page;

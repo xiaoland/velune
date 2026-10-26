@@ -225,3 +225,112 @@ impl ApplicationService {
 fn closed() -> Failure {
     Failure::new(FailureKind::Closed, "应用执行端已关闭")
 }
+
+#[cfg(test)]
+mod usage_tests {
+    use super::*;
+    use crate::config::UsageDisplay::{Remaining, Used};
+    use std::{fs, path::PathBuf};
+
+    struct Fixture(PathBuf);
+    impl Fixture {
+        fn new() -> Self {
+            let id = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            let path =
+                std::env::temp_dir().join(format!("velune-usage-{}-{id}", std::process::id()));
+            fs::create_dir_all(&path).unwrap();
+            Self(path)
+        }
+        fn open(&self) -> ApplicationService {
+            ApplicationService::open(Options {
+                home_directory: self.0.clone(),
+                resources_directory: self.0.clone(),
+            })
+            .unwrap()
+        }
+    }
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+    fn display(
+        service: &ApplicationService,
+        view: &str,
+    ) -> (crate::config::UsageDisplay, crate::config::UsageDisplay) {
+        let Response::List(value) = service
+            .execute(ClientViewId(view.into()), Command::List)
+            .unwrap()
+        else {
+            panic!("list response")
+        };
+        (value.usage_display, value.context_usage_display)
+    }
+
+    #[test]
+    fn independent_usage_preferences_migrate_persist_and_isolate_views() {
+        let fixture = Fixture::new();
+        let mut legacy =
+            serde_json::to_value(crate::repository::PersistedConfig::default()).unwrap();
+        legacy["usageDisplay"] = serde_json::json!("remaining");
+        legacy
+            .as_object_mut()
+            .unwrap()
+            .remove("contextUsageDisplay");
+        fs::write(
+            fixture.0.join("generic-config.json"),
+            serde_json::to_vec(&legacy).unwrap(),
+        )
+        .unwrap();
+        let app = fixture.open();
+        assert_eq!(display(&app, "local"), (Remaining, Remaining));
+        assert_eq!(display(&app, "existing"), (Remaining, Remaining));
+        app.execute(
+            ClientViewId("local".into()),
+            Command::SetContextUsageDisplay { display: Used },
+        )
+        .unwrap();
+        assert_eq!(display(&app, "local"), (Remaining, Used));
+        assert_eq!(display(&app, "existing"), (Remaining, Remaining));
+        assert_eq!(display(&app, "new"), (Remaining, Used));
+        app.execute_checked(
+            ClientViewId("remote".into()),
+            ExecutionContext::default(),
+            Command::SetUsageDisplay { display: Used },
+        )
+        .unwrap();
+        assert_eq!(display(&app, "remote"), (Used, Used));
+        assert_eq!(display(&app, "local"), (Remaining, Used));
+        assert_eq!(display(&app, "after-remote"), (Remaining, Used));
+        app.close(false).unwrap();
+        let reopened = fixture.open();
+        assert_eq!(display(&reopened, "restarted"), (Remaining, Used));
+        reopened.close(false).unwrap();
+    }
+
+    #[test]
+    fn failed_context_save_does_not_change_view_or_defaults() {
+        let fixture = Fixture::new();
+        let app = fixture.open();
+        assert_eq!(display(&app, "local"), (Used, Used));
+        let path = fixture.0.join("generic-config.json");
+        if path.is_file() {
+            fs::remove_file(&path).unwrap();
+        }
+        fs::create_dir(&path).unwrap();
+        assert!(
+            app.execute(
+                ClientViewId("local".into()),
+                Command::SetContextUsageDisplay { display: Remaining }
+            )
+            .is_err()
+        );
+        assert_eq!(display(&app, "local"), (Used, Used));
+        assert_eq!(display(&app, "new"), (Used, Used));
+        fs::remove_dir(&path).unwrap();
+        app.close(false).unwrap();
+    }
+}

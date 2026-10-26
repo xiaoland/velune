@@ -25,6 +25,7 @@ public sealed partial class ConversationView
             return items;
         }
         var remaining = Model.Configuration.Usage == BindingUsageDisplay.Remaining;
+        var contextRemaining = Model.Configuration.ContextUsage == BindingUsageDisplay.Remaining;
         var usage = snapshot.TranscriptTurns.Select(turn => turn.Usage).LastOrDefault(usage => usage != null);
         if (usage?.ContextTokens is { } context)
         {
@@ -32,8 +33,8 @@ public sealed partial class ConversationView
             {
                 var used = Math.Clamp(100.0 * context / window, 0, 100);
                 items.Add(new(BindingStatusLineItem.ContextUsage, "上下文",
-                    remaining ? $"上下文剩余 {100 - used:0}%" : $"上下文 {used:0}%",
-                    $"最近一次请求用了 {Count(context)} / {Count(window)} token。"));
+                    contextRemaining ? $"上下文剩余 {100 - used:0}%" : $"上下文 {used:0}%",
+                    contextRemaining ? $"上下文剩余 {Count(window > context ? window - context : 0)} / {Count(window)} token。" : $"上下文占用 {Count(context)} / {Count(window)} token。"));
             }
             else
             {

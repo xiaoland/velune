@@ -16,6 +16,7 @@ final class AppStore: ObservableObject {
     @Published private(set) var linkedConversationOpening: BindingLinkedConversationOpening = .currentTab
     /// Whether quota and context usage read as used or remaining.
     @Published private(set) var usageDisplay: BindingUsageDisplay = .used
+    @Published private(set) var contextUsageDisplay: BindingUsageDisplay = .used
     /// What the composer's status line shows, in display order.
     @Published private(set) var statusLine: [BindingStatusLineItem] = [.contextUsage]
     @Published private(set) var conversationBrowserLimits = BindingConversationBrowserLimits(page: 20, total: 200)
@@ -227,6 +228,7 @@ final class AppStore: ObservableObject {
         if outlinePresentation != application.outlinePresentation { outlinePresentation = application.outlinePresentation }
         if linkedConversationOpening != application.linkedConversationOpening { linkedConversationOpening = application.linkedConversationOpening }
         if usageDisplay != application.usageDisplay { usageDisplay = application.usageDisplay }
+        if contextUsageDisplay != application.contextUsageDisplay { contextUsageDisplay = application.contextUsageDisplay }
         if statusLine != application.statusLine { statusLine = application.statusLine }
         var sharedConversations = browserPreferencesSaving == 0 ? application.conversations : conversations
         if let loadedConversationID, application.deletedConversationIDs.contains(loadedConversationID) { resetProjection() }
@@ -798,6 +800,11 @@ final class AppStore: ObservableObject {
         if isPreview { usageDisplay = display; return }
         guard let transport else { recordProblem("本地核心未配置"); return }
         enqueue({ try transport.setUsageDisplay(display) }) { [weak self] in self?.usageDisplay = $0 }
+    }
+    func setContextUsageDisplay(_ display: BindingUsageDisplay) {
+        if isPreview { contextUsageDisplay = display; return }
+        guard let transport else { recordProblem("本地核心未配置"); return }
+        enqueue({ try transport.setContextUsageDisplay(display) }) { [weak self] in self?.contextUsageDisplay = $0 }
     }
     func draft(for conversationID: String) -> String {
         if let sharedApplication { return sharedApplication.draft(for: conversationID) }
@@ -1659,7 +1666,9 @@ final class AppStore: ObservableObject {
         var seen = Set<String>()
         return conversations.filter { self.location(of: $0.runtimeID) == location }
             .sorted { ($0.updatedAtUnixMs ?? 0) > ($1.updatedAtUnixMs ?? 0) }
-            .compactMap(\.project).filter { seen.insert($0).inserted }.prefix(5).map { $0 }
+            .compactMap { conversation in
+                conversation.project.flatMap { key in self.conversationProjects.first(where: { $0.path == key })?.primaryFolder }
+            }.filter { seen.insert($0).inserted }.prefix(5).map { $0 }
     }
     private func refreshRuntimeLocations() {
         let ids = runtimeInstances.map(\.id)
@@ -1787,6 +1796,7 @@ final class AppStore: ObservableObject {
         outlinePresentation = data.outlinePresentation
         linkedConversationOpening = data.linkedConversationOpening
         usageDisplay = data.usageDisplay
+        contextUsageDisplay = data.contextUsageDisplay
         statusLine = data.statusLine
         conversationBrowserLimits = data.conversationBrowserLimits
         conversations = mapped.conversations

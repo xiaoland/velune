@@ -32,6 +32,8 @@ pub(crate) struct PersistedConfig {
     #[serde(default)]
     pub(crate) usage_display: crate::config::UsageDisplay,
     #[serde(default)]
+    pub(crate) context_usage_display: crate::config::UsageDisplay,
+    #[serde(default)]
     pub(crate) conversation_browser_preferences: crate::config::ConversationBrowserPreferences,
     #[serde(default = "crate::config::default_status_line")]
     pub(crate) status_line: Vec<crate::config::StatusLineItem>,
@@ -44,6 +46,7 @@ pub(crate) struct PresentationDefaults {
     pub(crate) outline: crate::config::OutlinePresentation,
     pub(crate) linked_opening: crate::config::LinkedConversationOpening,
     pub(crate) usage_display: crate::config::UsageDisplay,
+    pub(crate) context_usage_display: crate::config::UsageDisplay,
     pub(crate) status: Vec<crate::config::StatusLineItem>,
 }
 impl PersistedConfig {
@@ -57,6 +60,7 @@ impl PersistedConfig {
             outline: self.outline_presentation,
             linked_opening: self.linked_conversation_opening,
             usage_display: self.usage_display,
+            context_usage_display: self.context_usage_display,
             status: self.status_line.clone(),
         }
     }
@@ -81,6 +85,7 @@ impl Default for PersistedConfig {
             outline_presentation: Default::default(),
             linked_conversation_opening: Default::default(),
             usage_display: Default::default(),
+            context_usage_display: Default::default(),
             conversation_browser_preferences: Default::default(),
             status_line: crate::config::default_status_line(),
         }
@@ -122,7 +127,7 @@ impl Repository {
                     use std::os::unix::fs::PermissionsExt;
                     fs::set_permissions(&persisted_path, fs::Permissions::from_mode(0o600))?;
                 }
-                let raw: serde_json::Value = serde_json::from_slice(&bytes)?;
+                let mut raw: serde_json::Value = serde_json::from_slice(&bytes)?;
                 let version = raw["schemaVersion"].as_u64().ok_or_else(|| {
                     RuntimeError::invalid("configuration schema version is required")
                 })?;
@@ -134,6 +139,12 @@ impl Repository {
                         return Err(RuntimeError::invalid(
                             "配置版本高于本应用支持的版本；请使用支持该版本的应用。",
                         ));
+                    }
+                    if raw.get("contextUsageDisplay").is_none() {
+                        raw["contextUsageDisplay"] = raw
+                            .get("usageDisplay")
+                            .cloned()
+                            .unwrap_or_else(|| serde_json::json!("used"));
                     }
                     let value: PersistedConfig = serde_json::from_value(raw)?;
                     if value.conversation_browser_group_limit == 0 {

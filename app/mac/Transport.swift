@@ -92,6 +92,7 @@ final class Transport: @unchecked Sendable {
     func setOutlinePresentation(_ presentation: BindingOutlinePresentation) throws -> BindingOutlinePresentation { try withApplication("setOutlinePresentation", .changesConfiguration) { try $0.setOutlinePresentation(presentation: presentation) } }
     func setLinkedConversationOpening(_ opening: BindingLinkedConversationOpening) throws -> BindingLinkedConversationOpening { try withApplication("setLinkedConversationOpening", .changesConfiguration) { try $0.setLinkedConversationOpening(opening: opening) } }
     func setUsageDisplay(_ display: BindingUsageDisplay) throws -> BindingUsageDisplay { try withApplication("setUsageDisplay", .changesConfiguration) { try $0.setUsageDisplay(display: display) } }
+    func setContextUsageDisplay(_ display: BindingUsageDisplay) throws -> BindingUsageDisplay { try withApplication("setContextUsageDisplay", .changesConfiguration) { try $0.setContextUsageDisplay(display: display) } }
     func composerDrafts() throws -> [BindingComposerDraft] { try withApplication("composerDrafts", .reads) { try $0.composerDrafts() } }
     func setComposerDraft(conversationID: String, text: String) throws { try withApplication("setComposerDraft", .writes) { try $0.setComposerDraft(conversationId: conversationID, text: text) } }
     func composerChoices() throws -> BindingComposerChoices { try withApplication("composerChoices", .reads) { try $0.composerChoices() } }

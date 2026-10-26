@@ -70,6 +70,20 @@ impl CoreRuntime {
         Ok(json!(display))
     }
 
+    pub(super) fn set_context_usage_display(
+        &mut self,
+        request: &Value,
+    ) -> Result<Value, RuntimeError> {
+        let display = serde_json::from_value(request["payload"]["display"].clone())?;
+        let previous = self.context_usage_display;
+        self.context_usage_display = display;
+        if let Err(error) = self.persist() {
+            self.context_usage_display = previous;
+            return Err(error);
+        }
+        Ok(json!(display))
+    }
+
     pub(super) fn set_status_line(&mut self, request: &Value) -> Result<Value, RuntimeError> {
         let items = crate::config::canonical_status_line(serde_json::from_value(
             request["payload"]["items"].clone(),
@@ -275,6 +289,7 @@ impl CoreRuntime {
             "outlinePresentation":self.outline_presentation,
             "linkedConversationOpening":self.linked_conversation_opening,
             "usageDisplay":self.usage_display,
+            "contextUsageDisplay":self.context_usage_display,
             "statusLine":self.status_line,
             "conversationBrowserPreferences":self.conversation_browser_preferences,
             "providerImportTypes": std::iter::once(provider_import::descriptor()).chain(runtime_types().into_iter().filter(|kind| crate::native_provider_import::TYPES.contains(&kind.id.as_str()))).collect::<Vec<_>>(),
@@ -545,6 +560,12 @@ impl CoreRuntime {
                 .client_baseline
                 .as_ref()
                 .map_or(self.usage_display, |view| view.usage_display),
+            context_usage_display: self
+                .client_baseline
+                .as_ref()
+                .map_or(self.context_usage_display, |view| {
+                    view.context_usage_display
+                }),
             conversation_browser_preferences: self.client_baseline.as_ref().map_or_else(
                 || self.conversation_browser_preferences.clone(),
                 |view| view.preferences.clone(),

@@ -178,7 +178,7 @@ pub enum OutlinePresentation {
     InPlace,
 }
 
-/// Whether quota windows and the context window read as used or remaining.
+/// Whether a usage indicator reads as used or remaining; quota and context select independently.
 /// This only changes presentation; quota ceilings remain used-percent limits.
 #[derive(Debug, Default, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]

@@ -1,12 +1,133 @@
 //! Projects of the conversation list: the folders each holds, the Git
 //! worktrees that belong to their repository's project, and the user's
-//! shaping of a project. A project is identified by its primary folder; a
-//! working directory no project holds is a project of its own.
+//! shaping of a project. Velune projects use their primary folder as identity;
+//! Codex projects keep a runtime-scoped native identity and canonical membership.
 use super::*;
 use crate::config::{ConversationBrowserProject, ConversationGroupKey, ProjectRecord};
 use std::{collections::BTreeSet, path::Component};
 
+pub(super) struct NativeProjects {
+    runtime: RuntimeInstance,
+    projects: Vec<velune_agent_runtime::native::codex_projects::NativeProject>,
+    active_assignments: BTreeMap<String, String>,
+    archived_assignments: BTreeMap<String, String>,
+}
+
+fn native_key(runtime: &str, project: &str) -> String {
+    format!(
+        "codex-project:{}",
+        serde_json::to_string(&(runtime, project)).expect("string tuple")
+    )
+}
+
 impl CoreRuntime {
+    pub(super) fn read_codex_projects(
+        &self,
+        runtime: &RuntimeInstance,
+        archived: bool,
+    ) -> Result<Vec<ConversationSummary>, RuntimeError> {
+        let listing = velune_agent_runtime::native::codex_projects::list_projects(
+            &self.history_config(runtime)?,
+            &runtime.id,
+            archived,
+        )
+        .map_err(|error| RuntimeError::context("Codex 项目读取失败", error))?;
+        let mut catalogs = self.native_projects.borrow_mut();
+        let catalog = catalogs
+            .entry(runtime.id.clone())
+            .or_insert_with(|| NativeProjects {
+                runtime: runtime.clone(),
+                projects: Vec::new(),
+                active_assignments: BTreeMap::new(),
+                archived_assignments: BTreeMap::new(),
+            });
+        if catalog.runtime != *runtime {
+            catalog.active_assignments.clear();
+            catalog.archived_assignments.clear();
+            catalog.runtime = runtime.clone();
+        }
+        catalog.projects = listing.projects;
+        if archived {
+            for summary in &listing.conversations {
+                catalog.active_assignments.remove(&summary.id);
+            }
+            catalog.archived_assignments = listing.assignments;
+        } else {
+            for summary in &listing.conversations {
+                catalog.archived_assignments.remove(&summary.id);
+            }
+            catalog.active_assignments = listing.assignments;
+        }
+        Ok(listing.conversations)
+    }
+
+    pub(super) fn native_project(
+        &self,
+        key: &str,
+    ) -> Option<(
+        String,
+        velune_agent_runtime::native::codex_projects::NativeProject,
+    )> {
+        let catalogs = self.native_projects.borrow();
+        self.runtime_instances
+            .iter()
+            .filter(|runtime| runtime.enabled)
+            .find_map(|runtime| {
+                let catalog = catalogs
+                    .get(&runtime.id)
+                    .filter(|catalog| catalog.runtime == *runtime)?;
+                catalog
+                    .projects
+                    .iter()
+                    .find(|project| native_key(&runtime.id, &project.id) == key)
+                    .map(|project| (runtime.id.clone(), project.clone()))
+            })
+    }
+
+    pub(super) fn native_project_keys(&self) -> Vec<String> {
+        let catalogs = self.native_projects.borrow();
+        self.runtime_instances
+            .iter()
+            .filter(|runtime| runtime.enabled)
+            .flat_map(|runtime| {
+                catalogs
+                    .get(&runtime.id)
+                    .filter(|catalog| catalog.runtime == *runtime)
+                    .into_iter()
+                    .flat_map(|catalog| {
+                        catalog
+                            .projects
+                            .iter()
+                            .map(|project| native_key(&runtime.id, &project.id))
+                    })
+            })
+            .collect()
+    }
+
+    pub(super) fn native_conversation_project(
+        &self,
+        runtime: &str,
+        conversation: &str,
+    ) -> Option<String> {
+        let catalogs = self.native_projects.borrow();
+        let instance = self
+            .runtime_instances
+            .iter()
+            .find(|instance| instance.id == runtime && instance.enabled)?;
+        let catalog = catalogs
+            .get(runtime)
+            .filter(|catalog| catalog.runtime == *instance)?;
+        let id = catalog
+            .active_assignments
+            .get(conversation)
+            .or_else(|| catalog.archived_assignments.get(conversation))?;
+        catalog
+            .projects
+            .iter()
+            .any(|p| p.id == *id)
+            .then(|| native_key(runtime, id))
+    }
+
     /// The project, by its primary folder, of conversations started in
     /// `folder`: the project holding it, else its worktree's repository's,
     /// else its own. `on_this_mac` lets a worktree be told by its files.
@@ -57,6 +178,48 @@ impl CoreRuntime {
 
     pub(super) fn set_project_action(&mut self, request: &Value) -> Result<Value, RuntimeError> {
         let payload = &request["payload"];
+        if let Some((runtime_id, project)) = payload["path"]
+            .as_str()
+            .and_then(|key| self.native_project(key))
+        {
+            let name = payload["name"]
+                .as_str()
+                .map(str::trim)
+                .filter(|name| !name.is_empty())
+                .ok_or_else(|| RuntimeError::invalid("Codex 项目名称不能为空"))?;
+            let primary = payload["primaryFolder"]
+                .as_str()
+                .ok_or_else(|| RuntimeError::invalid("项目文件夹"))?;
+            let mut roots: Vec<String> = serde_json::from_value(payload["folders"].clone())?;
+            if !primary.is_empty() {
+                roots.insert(0, primary.to_owned());
+            }
+            let mut seen = BTreeSet::new();
+            if roots
+                .iter()
+                .any(|root| root.is_empty() || !seen.insert(root.clone()))
+            {
+                return Err(RuntimeError::invalid("项目文件夹不能为空或重复"));
+            }
+            let runtime = self.runtime_instance(&runtime_id)?;
+            // Absolute paths are validated by Codex on the executing OS, including SSH hosts.
+            let updated = velune_agent_runtime::native::codex_projects::update_project(
+                &self.history_config(runtime)?,
+                &project.id,
+                name,
+                &roots,
+            )
+            .map_err(|error| RuntimeError::context("Codex 项目保存失败", error))?;
+            if let Some(catalog) = self.native_projects.borrow_mut().get_mut(&runtime_id)
+                && let Some(stored) = catalog
+                    .projects
+                    .iter_mut()
+                    .find(|stored| stored.id == updated.id)
+            {
+                *stored = updated;
+            }
+            return self.list();
+        }
         let absolute = |value: &Value| {
             value
                 .as_str()

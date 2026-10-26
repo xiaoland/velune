@@ -185,6 +185,16 @@ sealed partial class ConversationList
                 () => SavePreferences(preferences with { Project = new BindingConversationBrowserProject.Path(path) })));
         }
         displayMenu.Items.Add(projects);
+        if (Listing.Projects.Length > 0)
+        {
+            var editProjects = new MenuFlyoutSubItem { Text = "编辑项目" };
+            foreach (var project in Listing.Projects)
+            {
+                var path = project.Path;
+                editProjects.Items.Add(MenuItem(ProjectName(path), () => EditProject(path)));
+            }
+            displayMenu.Items.Add(editProjects);
+        }
 
         displayMenu.Items.Add(new MenuFlyoutSeparator());
         var archived = new ToggleMenuFlyoutItem { Text = "显示已归档的会话", IsChecked = Listing.ShowsArchived };
@@ -375,9 +385,11 @@ sealed partial class ConversationList
         {
             return;
         }
-        var folders = new List<string> { project.Path };
-        folders.AddRange(project.Folders.Where(folder => folder != project.Path));
-        var primary = project.Path;
+        var native = project.NativeRuntimeId != null;
+        var primary = project.PrimaryFolder ?? "";
+        var folders = new List<string>();
+        if (primary.Length > 0) folders.Add(primary);
+        folders.AddRange(project.Folders);
         var name = new TextBox { Header = "名称", Text = project.Name ?? "", PlaceholderText = Listing.LastPart(primary) };
         var folderList = new ListView { SelectionMode = ListViewSelectionMode.Single, MaxHeight = 200 };
         var local = Device.IsLocal;
@@ -385,7 +397,7 @@ sealed partial class ConversationList
         var addButton = new Button { Content = "添加" };
         var browse = new Button { Content = "浏览…", Visibility = local ? Visibility.Visible : Visibility.Collapsed };
         var remove = new Button { Content = "移除" };
-        var makePrimary = new Button { Content = "设为主文件夹" };
+        var makePrimary = new Button { Content = native ? "移到首位" : "设为主文件夹" };
         var error = Ui.Error();
         void Show()
         {
@@ -393,7 +405,7 @@ sealed partial class ConversationList
             folderList.Items.Clear();
             foreach (var folder in folders)
             {
-                folderList.Items.Add(new ListViewItem { Content = Ui.TwoLines(folder, folder == primary ? "主文件夹：新会话建议的工作目录" : "") });
+                folderList.Items.Add(new ListViewItem { Content = Ui.TwoLines(folder, folder == primary ? (native ? "首个文件夹" : "主文件夹：新会话建议的工作目录") : "") });
             }
             folderList.SelectedIndex = Math.Min(selected, folders.Count - 1);
             name.PlaceholderText = Listing.LastPart(primary);
@@ -401,7 +413,7 @@ sealed partial class ConversationList
         void Chosen()
         {
             var folder = folderList.SelectedIndex >= 0 ? folders[folderList.SelectedIndex] : null;
-            remove.IsEnabled = folder != null && folder != primary;
+            remove.IsEnabled = folder != null && (native || folder != primary);
             makePrimary.IsEnabled = folder != null && folder != primary;
         }
         void Add(string folder)
@@ -418,6 +430,7 @@ sealed partial class ConversationList
             }
             Ui.Show(error, "");
             folders.Add(folder);
+            if (primary.Length == 0) primary = folder;
             add.Text = "";
             Show();
         }
@@ -439,9 +452,11 @@ sealed partial class ConversationList
         };
         remove.Click += (_, _) =>
         {
-            if (folderList.SelectedIndex >= 0 && folders[folderList.SelectedIndex] != primary)
+            if (folderList.SelectedIndex >= 0 && (native || folders[folderList.SelectedIndex] != primary))
             {
+                var removed = folders[folderList.SelectedIndex];
                 folders.RemoveAt(folderList.SelectedIndex);
+                if (removed == primary) primary = folders.FirstOrDefault() ?? "";
                 Show();
             }
         };
@@ -472,7 +487,7 @@ sealed partial class ConversationList
         panel.Children.Add(name);
         panel.Children.Add(Ui.Labeled("文件夹", new Border { Style = Ui.Style("CardStyle"), CornerRadius = new CornerRadius(4), Child = folderList }));
         panel.Children.Add(actions);
-        panel.Children.Add(Ui.Field(addRow, "工作目录在任一文件夹中的会话都归入此项目。", error));
+        panel.Children.Add(Ui.Field(addRow, native ? "保存到 Codex" : "工作目录在任一文件夹中的会话都归入此项目。", error));
         if (project.Worktrees.Length > 0)
         {
             var worktrees = new StackPanel { Spacing = 2 };
@@ -482,15 +497,17 @@ sealed partial class ConversationList
             }
             panel.Children.Add(Ui.Labeled("按所属仓库归入的 Git worktree", worktrees));
         }
-        panel.Children.Add(Ui.Muted("项目的名称与文件夹只是 Velune 的列表记录，不改变会话的工作目录或执行位置。"));
+        panel.Children.Add(Ui.Muted(native ? "修改项目文件夹不会替换已有会话的工作目录和权限范围。" : "项目的名称与文件夹只是 Velune 的列表记录，不改变会话的工作目录或执行位置。"));
         var dialog = new ContentDialog
         {
-            Title = "编辑项目",
+            Title = native ? "编辑 Codex 项目" : "编辑项目",
             Content = new ScrollViewer { Content = panel, Padding = new Thickness(0, 0, 16, 0), MaxHeight = 520 },
             PrimaryButtonText = "保存",
             CloseButtonText = "取消",
             DefaultButton = ContentDialogButton.Primary,
         };
+        dialog.IsPrimaryButtonEnabled = !native || !string.IsNullOrWhiteSpace(name.Text);
+        name.TextChanged += (_, _) => dialog.IsPrimaryButtonEnabled = !native || !string.IsNullOrWhiteSpace(name.Text);
         dialog.Resources["ContentDialogMaxWidth"] = 600.0;
         if (await window.ShowDialog(dialog) != ContentDialogResult.Primary)
         {

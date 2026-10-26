@@ -94,6 +94,7 @@ pub struct ConfigurationSnapshot {
     pub outline_presentation: OutlinePresentation,
     pub linked_conversation_opening: LinkedConversationOpening,
     pub usage_display: UsageDisplay,
+    pub context_usage_display: UsageDisplay,
     pub conversation_browser_preferences: ConversationBrowserPreferences,
     pub status_line: Vec<StatusLineItem>,
     pub provider_import_types: Vec<RuntimeTypeDescriptor>,
@@ -144,8 +145,10 @@ pub struct ConversationGroup {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ConversationProject {
-    /// Its primary folder, which identifies it.
+    /// Stable project key: a folder path for Velune projects, an opaque identity for native projects.
     pub path: String,
+    pub primary_folder: Option<String>,
+    pub native_runtime_id: Option<String>,
     pub name: Option<String>,
     /// Its other folders, as the user gave them.
     pub folders: Vec<String>,

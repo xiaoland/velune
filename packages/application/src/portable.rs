@@ -43,6 +43,7 @@ impl CoreRuntime {
             "outlinePresentation":self.config.outline_presentation,
             "linkedConversationOpening":self.config.linked_conversation_opening,
             "usageDisplay":self.config.usage_display,
+            "contextUsageDisplay":self.config.context_usage_display,
             "statusLine":self.config.status_line,
             "conversationBrowserPreferences":self.config.conversation_browser_preferences,
             "protocols":[{"id":"chatCompletionsV1","name":"OpenAI Chat Completions v1","supported":true},
@@ -77,6 +78,13 @@ impl CoreRuntime {
                 self.persist_config(&next)?;
                 self.config = next;
                 Ok(json!(self.config.usage_display))
+            }
+            Some("contextUsageDisplay") => {
+                let mut next = self.config.clone();
+                next.context_usage_display = serde_json::from_value(payload["display"].clone())?;
+                self.persist_config(&next)?;
+                self.config = next;
+                Ok(json!(self.config.context_usage_display))
             }
             Some("statusLine") => {
                 let mut next = self.config.clone();
@@ -250,6 +258,7 @@ pub(crate) struct ClientState {
     outline: crate::config::OutlinePresentation,
     linked_opening: crate::config::LinkedConversationOpening,
     usage_display: crate::config::UsageDisplay,
+    context_usage_display: crate::config::UsageDisplay,
     status: Vec<crate::config::StatusLineItem>,
 }
 impl CoreRuntime {
@@ -275,6 +284,7 @@ impl CoreRuntime {
             outline: self.config.outline_presentation,
             linked_opening: self.config.linked_conversation_opening,
             usage_display: self.config.usage_display,
+            context_usage_display: self.config.context_usage_display,
             status: self.config.status_line.clone(),
         }
     }
@@ -292,6 +302,7 @@ impl CoreRuntime {
             self.config.outline_presentation = committed.outline;
             self.config.linked_conversation_opening = committed.linked_opening;
             self.config.usage_display = committed.usage_display;
+            self.config.context_usage_display = committed.context_usage_display;
             self.config.status_line = committed.status;
         }
         self.client_baseline = None;
@@ -305,6 +316,7 @@ impl CoreRuntime {
             stored.outline_presentation = baseline.outline;
             stored.linked_conversation_opening = baseline.linked_opening;
             stored.usage_display = baseline.usage_display;
+            stored.context_usage_display = baseline.context_usage_display;
             stored.status_line = baseline.status.clone();
         }
         self.repository.store(&stored)?;
@@ -332,6 +344,10 @@ impl CoreRuntime {
             &mut state.linked_opening,
         );
         std::mem::swap(&mut self.config.usage_display, &mut state.usage_display);
+        std::mem::swap(
+            &mut self.config.context_usage_display,
+            &mut state.context_usage_display,
+        );
         std::mem::swap(&mut self.config.status_line, &mut state.status);
     }
     pub(crate) fn advance(&mut self) -> Result<(), Error> {

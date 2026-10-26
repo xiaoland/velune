@@ -80,10 +80,13 @@ impl CoreRuntime {
             if !can_archive {
                 continue;
             }
-            match self
-                .history_config(runtime)
-                .and_then(|config| Ok(history::list_archived(&config, &runtime.id)?))
-            {
+            match self.history_config(runtime).and_then(|config| {
+                if config.provider == "codex" {
+                    self.read_codex_projects(runtime, true)
+                } else {
+                    Ok(history::list_archived(&config, &runtime.id)?)
+                }
+            }) {
                 Ok(mut summaries) => archived.append(&mut summaries),
                 Err(error) => {
                     tracing::warn!(target:"velune_application",event="runtime_history_read_failed",phase="archived_list",runtime_id=%runtime.id,runtime_type_id=%runtime.type_id,detail=%error);
@@ -161,6 +164,12 @@ impl CoreRuntime {
         summary: &ConversationSummary,
         places: &BTreeMap<String, ProjectlessPlaces>,
     ) -> Option<String> {
+        let (runtime, conversation) = self.native_segment(summary);
+        if let Some(key) =
+            self.native_conversation_project(&runtime, &format!("{runtime}:{conversation}"))
+        {
+            return Some(key);
+        }
         let unknown = ProjectlessPlaces::default();
         let places = places.get(&summary.runtime_id).unwrap_or(&unknown);
         summary
@@ -191,8 +200,12 @@ impl CoreRuntime {
     }
 
     fn project_name(&self, path: &str) -> Option<String> {
-        self.project_record(path)
-            .and_then(|project| project.name.clone())
+        self.native_project(path)
+            .map(|(_, project)| project.name)
+            .or_else(|| {
+                self.project_record(path)
+                    .and_then(|project| project.name.clone())
+            })
     }
 
     /// The runtime and identity it resumes the conversation by.
@@ -354,6 +367,9 @@ impl CoreRuntime {
         // Each project's latest activity and the worktrees its conversations
         // ran in: working directories it holds by their repository alone.
         let mut projects = BTreeMap::<String, (Option<i64>, BTreeSet<String>)>::new();
+        for key in self.native_project_keys() {
+            projects.entry(key).or_default();
+        }
         for project in &self.organization.projects {
             projects.entry(project.primary_folder.clone()).or_default();
         }
@@ -365,6 +381,7 @@ impl CoreRuntime {
                 *latest = (*latest).max(item.conversation.updated_at_unix_ms);
                 if let Some(cwd) = item.conversation.cwd.as_ref().filter(|cwd| {
                     !item.moved
+                        && self.native_project(path).is_none()
                         && *cwd != path
                         && !self
                             .project_record(path)
@@ -559,8 +576,26 @@ impl CoreRuntime {
         let mut projects: Vec<ConversationProject> = projects
             .into_iter()
             .map(|(path, (latest, worktrees))| {
+                if let Some((runtime_id, project)) = self.native_project(&path) {
+                    return ConversationProject {
+                        path,
+                        primary_folder: project.roots.first().map(|root| root.path.clone()),
+                        native_runtime_id: Some(runtime_id),
+                        name: Some(project.name),
+                        folders: project
+                            .roots
+                            .into_iter()
+                            .skip(1)
+                            .map(|root| root.path)
+                            .collect(),
+                        worktrees: Vec::new(),
+                        latest_activity_unix_ms: latest,
+                    };
+                }
                 let record = self.project_record(&path);
                 ConversationProject {
+                    primary_folder: Some(path.clone()),
+                    native_runtime_id: None,
                     name: record.and_then(|project| project.name.clone()),
                     folders: record.map_or_else(Vec::new, |project| project.folders.clone()),
                     worktrees: worktrees.into_iter().collect(),
@@ -815,7 +850,8 @@ impl CoreRuntime {
                     let project = path
                         .as_ref()
                         .map(|path| {
-                            if Path::new(path).is_absolute() {
+                            if Path::new(path).is_absolute() || self.native_project(path).is_some()
+                            {
                                 Ok(self.moved_project(summary, path, &places))
                             } else {
                                 Err(RuntimeError::invalid("项目路径必须是绝对路径"))

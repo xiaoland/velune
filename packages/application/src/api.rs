@@ -413,6 +413,13 @@ impl Application {
         self.execute("usageDisplay", json!({"display": display}), None)
     }
     /// Stores what the composer's status line shows, returning it in display order.
+    pub fn set_context_usage_display(
+        &mut self,
+        display: UsageDisplay,
+    ) -> Result<UsageDisplay, Error> {
+        self.execute("contextUsageDisplay", json!({"display": display}), None)
+    }
+    /// Stores what the composer's status line shows, returning it in display order.
     pub fn set_status_line(
         &mut self,
         items: Vec<StatusLineItem>,

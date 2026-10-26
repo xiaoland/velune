@@ -567,6 +567,7 @@ pub struct BindingConfigurationSnapshot {
     pub outline_presentation: BindingOutlinePresentation,
     pub linked_conversation_opening: BindingLinkedConversationOpening,
     pub usage_display: BindingUsageDisplay,
+    pub context_usage_display: BindingUsageDisplay,
     pub conversation_browser_preferences: BindingConversationBrowserPreferences,
     /// What the composer's status line shows, in display order.
     pub status_line: Vec<BindingStatusLineItem>,
@@ -1446,8 +1447,10 @@ pub struct BindingConversationGroup {
 #[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct BindingConversationProject {
-    /// Its primary folder, which identifies it.
+    /// Stable project key: a folder path for Velune projects, an opaque identity for native projects.
     pub path: String,
+    pub primary_folder: Option<String>,
+    pub native_runtime_id: Option<String>,
     pub name: Option<String>,
     /// Its other folders, as the user gave them.
     pub folders: Vec<String>,

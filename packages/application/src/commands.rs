@@ -174,6 +174,9 @@ impl Application {
             Command::SetUsageDisplay { display } => {
                 Response::SetUsageDisplay(application.set_usage_display(display)?)
             }
+            Command::SetContextUsageDisplay { display } => {
+                Response::SetContextUsageDisplay(application.set_context_usage_display(display)?)
+            }
             Command::SetStatusLine { items } => {
                 Response::SetStatusLine(application.set_status_line(items)?)
             }

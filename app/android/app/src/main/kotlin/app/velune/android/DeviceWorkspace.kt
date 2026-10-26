@@ -89,8 +89,8 @@ class DeviceWorkspace(private val hub: DeviceHub, val peer: String, private val 
         runtimeLabels = list.runtimeTypes.associateBy { it.id }.let { types ->
             list.runtimeInstances.associate { it.id to RuntimeLabel(it.name, types[it.typeId]?.familyId) }
         },
-        projectNames = list.conversationProjects.mapNotNull { project -> project.name?.let { project.path to it } }.toMap(),
-        projects = list.conversationProjects.map { it.path }.distinct(),
+        projectNames = list.conversationProjects.flatMap { project -> project.name?.let { name -> listOfNotNull(project.path to name, project.primaryFolder?.let { it to name }) } ?: emptyList() }.toMap(),
+        projects = list.conversationProjects.mapNotNull { it.primaryFolder }.distinct(),
         active = active.associateBy { it.conversationId },
         loaded = true,
     )

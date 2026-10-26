@@ -8,7 +8,7 @@ use std::{
     path::Path,
 };
 
-const SOURCE_KINDS: [&str; 10] = [
+pub(super) const SOURCE_KINDS: [&str; 10] = [
     "cli",
     "vscode",
     "exec",
@@ -21,7 +21,7 @@ const SOURCE_KINDS: [&str; 10] = [
     "unknown",
 ];
 
-fn summary(thread: &Value, runtime_id: &str) -> Result<ConversationSummary> {
+pub(super) fn summary(thread: &Value, runtime_id: &str) -> Result<ConversationSummary> {
     let id = thread["id"]
         .as_str()
         .filter(|id| !id.is_empty())
@@ -51,7 +51,7 @@ fn summary(thread: &Value, runtime_id: &str) -> Result<ConversationSummary> {
 // Native cursors are opaque; repeating one is a contract failure, not a reason
 // to loop forever. The SDK owns page sizes and the adapter does not impose a
 // second aggregate history-size ceiling.
-fn pages(rpc: &mut RpcClient, method: &str, mut params: Value) -> Result<Vec<Value>> {
+pub(super) fn pages(rpc: &mut RpcClient, method: &str, mut params: Value) -> Result<Vec<Value>> {
     let mut entries = Vec::new();
     let mut cursors = HashSet::new();
     loop {

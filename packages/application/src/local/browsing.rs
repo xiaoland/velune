@@ -131,6 +131,7 @@ impl CoreRuntime {
         };
         let mut entries = match runtime.type_id.as_str() {
             "acp-v1" => read(self.acp_summaries(runtime)?),
+            "codex-0.159" => read(self.read_codex_projects(runtime, false)?),
             "pi-1.0" => history::list_pi(&self.pi_history_config(runtime)?, &[])
                 .map_err(|error| {
                     RuntimeError::context("Pi 历史无法读取；请检查实例路径与 SDK 配置后重试", error)

@@ -6,7 +6,7 @@
 
 `Command::delivery_class()` 以穷尽匹配将命令分为可重新发起的 `Observation` 与需要写前记录的 `Effect`。这项交付分类独立于配置修订检查：打开会话、选择视图、上传附件和认证检查等操作即使不修改配置，也会改变执行状态。`CommandKind` 是不携带正文的对应枚举，供远程 pending 安全摘要使用；不能从它重建业务命令或重放调用。远程库负责操作作用域与落盘门禁，本 unit 不执行网络或持久化。
 
-`LinkedConversationOpening` 与 `ConversationBrowserPreferences` 的 `group_sort`／`group_order` 保留关联会话打开方式和手动分组顺序。`UsageDisplay` 选择额度与上下文按已用或剩余显示，默认 `Used`，不改变额度上限的已用百分比语义。`SetLinkedConversationOpening` 和 `SetUsageDisplay` 都是 Effect，和其他呈现偏好一样归当前 `ClientViewId`；远端视图的偏好不会改写执行端本地持久基线。本地持久化成功后，新视图采用这次实际保存的呈现默认；已存在视图保持自己的偏好，保存失败不推进默认。会话及增量投影的 `collaborators` 使用中立 conversation 类型，描述当前会话联系过谁或被谁联系，不新增父子关系或授权。
+`LinkedConversationOpening` 与 `ConversationBrowserPreferences` 的 `group_sort`／`group_order` 保留关联会话打开方式和手动分组顺序。`UsageDisplay` 表示占用或剩余：`usage_display` 控制额度，`context_usage_display` 独立控制上下文，默认 `Used`，不改变额度上限的已用百分比语义。`SetLinkedConversationOpening` 、`SetUsageDisplay` 和 `SetContextUsageDisplay` 都是 Effect，和其他呈现偏好一样归当前 `ClientViewId`；远端视图的偏好不会改写执行端本地持久基线。本地持久化成功后，新视图采用这次实际保存的呈现默认；已存在视图保持自己的偏好，保存失败不推进默认。会话及增量投影的 `collaborators` 使用中立 conversation 类型，描述当前会话联系过谁或被谁联系，不新增父子关系或授权。
 
 审批的 `interaction.id` 是待决请求的 opaque 身份，不是 Harness 的原始请求编号。执行 adapter 为每个实际请求发行会话随机 epoch 加单调序号，并保留只在请求仍待决时可用的原始编号映射；答复或失效即消费。不同设备和重复投影看到同一身份，原生编号在后来轮次复用也不会恢复旧审批。
 
@@ -27,3 +27,5 @@ Kimi Coding Plan 模板 `kimiCodingPlan` 组合为 `Http`、`MessagesV1`、`ApiK
 `save_provider` 的 `quota_authentication_edit` 是可选的提供商内查询认证编辑，与模型认证编辑（`authentication_edit`）并列、原子保存；None 保留。`ProviderDraft` 只描述提供商，不携带任何凭据编辑。QuotaAuthenticationEdit 的 SetAccessKey、ConfirmBinding、Clear 不改变模型认证；公开 QuotaAuthenticationDescription 仅反映配置及用户关联确认，不证明同账户。ARK Coding Plan 模板与 ArkCoding/ArkCodingUsage 由既有组合契约表达。
 
 `ResolveAgentUri { uri, runtime_id }` 是只读的地址定位命令，结果 `AgentUriResolution` 含 `conversations` 与逐运行时 `failures`；平台只有在一个匹配且没有失败时可自动打开。`ListedConversation.agents_uri` 是可选原生地址，不含设备／实例身份，也不代替 Velune ID；跨 Harness 逻辑会话没有该值。选择结果后通过现有打开入口加载原生历史。
+
+`ConversationProject.path` 是稳定项目键：普通 Velune 项目沿用主文件夹路径，Codex 原生项目使用运行时实例与原生 ID 组成的不透明键。消费者必须用 `primary_folder` 获取可选的首个目录，不得把项目键交给文件系统或当作新会话 cwd。`folders` 是首个目录以外的有序目录；`native_runtime_id` 指明原生编辑的执行实例。项目筛选、分组、排序与 Velune 移动记录保存项目键。

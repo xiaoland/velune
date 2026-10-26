@@ -10,7 +10,11 @@ struct ComposerView: View {
     private var runtimeName: String { runtimes.first { $0.id == model.runtimeID }?.name ?? "选择运行时" }
     private var projectName: String {
         guard let cwd = model.cwd else { return "默认目录" }
-        return projects.first { $0.path == cwd }?.name ?? URL(fileURLWithPath: cwd).lastPathComponent
+        return projects.first { $0.primaryFolder == cwd }?.name ?? URL(fileURLWithPath: cwd).lastPathComponent
+    }
+    private var directoryProjects: [BindingConversationProject] {
+        var seen = Set<String>()
+        return projects.filter { project in project.primaryFolder.map { seen.insert($0).inserted } ?? false }
     }
     private var modelName: String {
         guard let selection = model.selection else { return model.isNew ? "默认模型" : "会话模型" }
@@ -71,8 +75,8 @@ struct ComposerView: View {
                         }
                         Picker("项目", selection: Binding(get: { model.cwd }, set: model.chooseProject)) {
                             Text("默认目录").tag(nil as String?)
-                            ForEach(projects, id: \.path) { project in
-                                Text(project.name ?? URL(fileURLWithPath: project.path).lastPathComponent).tag(Optional(project.path))
+                            ForEach(directoryProjects, id: \.path) { project in
+                                Text(project.name ?? URL(fileURLWithPath: project.primaryFolder ?? "").lastPathComponent).tag(project.primaryFolder)
                             }
                         }
                     } else {
