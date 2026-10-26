@@ -104,6 +104,8 @@ struct Message: Codable, Sendable, Identifiable, Equatable {
     var stamp: UInt64 = 0
     /// Visible message text; reasoning and tool output are separate disclosures.
     var text: String { blocks.compactMap { block in switch block { case .text(let text), .notice(let text): return text; case .reasoning, .tool, .image, .file, .agentSender: return nil } }.joined() }
+    /// The message as copied whole: its text and notices, a blank line apart.
+    var copiedText: String { blocks.compactMap { block in switch block { case .text(let text), .notice(let text): return text; case .reasoning, .tool, .image, .file, .agentSender: return nil } }.joined(separator: "\n\n") }
     var hasDeferredPayload: Bool {
         blocks.contains { block in
             switch block {

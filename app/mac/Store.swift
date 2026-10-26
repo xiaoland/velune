@@ -1291,15 +1291,6 @@ final class AppStore: ObservableObject {
     }
     func message(id: String) -> Message? { snapshot?.messages.first { $0.id == id } }
     func isLastUserMessage(_ messageID: String) -> Bool { snapshot?.messages.last { $0.role == .user }?.id == messageID }
-    /// The user's own messages in this conversation, oldest first, for the
-    /// composer to recall; messages other agents sent through Velune are not the user's.
-    var sentMessageTexts: [String] {
-        (snapshot?.messages ?? []).compactMap { message in
-            guard message.role == .user, !message.blocks.contains(where: { if case .agentSender = $0 { true } else { false } }) else { return nil }
-            let text = message.text.trimmingCharacters(in: .whitespacesAndNewlines)
-            return text.isEmpty ? nil : text
-        }
-    }
     /// Send `text` in place of a user message. In place the conversation
     /// shows the new turn here; a fork's new conversation goes to `forked`.
     func editMessage(_ messageID: String, placement: BindingEditPlacement, text: String, attachments: [String], forked: @escaping (BindingSnapshotResult) -> Void) {

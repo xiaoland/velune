@@ -996,7 +996,7 @@ struct TranscriptTable: NSViewRepresentable {
     /// The chosen message's text, or the last code block in it.
     func copySelected(codeOnly: Bool) {
         guard let index = selectedIndex, case .message(let row) = entries[index] else { NSSound.beep(); return }
-        var text = row.message.text
+        var text = row.message.copiedText
         if codeOnly {
             let pattern = try? NSRegularExpression(pattern: "```[^\\n]*\\n([\\s\\S]*?)```")
             let whole = NSRange(location: 0, length: (text as NSString).length)
@@ -1087,12 +1087,7 @@ struct TranscriptTable: NSViewRepresentable {
             item.representedObject = edit
             leading.append(item)
         }
-        let source = message.message.blocks.compactMap { block -> String? in
-            switch block {
-            case .text(let text), .notice(let text): return text
-            case .reasoning, .tool, .image, .file, .agentSender: return nil
-            }
-        }.joined(separator: "\n\n")
+        let source = message.message.copiedText
         if !source.isEmpty {
             let item = NSMenuItem(title: "拷贝整条消息", action: #selector(copyMessage(_:)), keyEquivalent: "")
             item.target = self
@@ -1228,7 +1223,9 @@ enum TranscriptConversationLink {
     private var spinner: NSProgressIndicator?
     private var activityLabel: ShimmeringLabel?
     private var turnSettings: TranscriptTurnSettingsView?
+    private var copyButton: MessageCopyButton?
     private var outlineToggle: (() -> Void)?
+    private var hovered = false
 
     override var isFlipped: Bool { true }
 
@@ -1250,6 +1247,8 @@ enum TranscriptConversationLink {
         rowID = nil
         configurationToken = nil
         outlineToggle = nil
+        hovered = false
+        copyButton?.alphaValue = 0
         for view in textViews { view.clear() }
         for view in codeBlocks { view.clear() }
         spinner?.stopAnimation(nil)
@@ -1265,6 +1264,7 @@ enum TranscriptConversationLink {
         spinner?.isHidden = true; spinner?.stopAnimation(nil)
         activityLabel?.isHidden = true
         turnSettings?.isHidden = true
+        copyButton?.isHidden = true
         for element in layout.elements {
             switch element {
             case .bubble(let frame):
@@ -1332,12 +1332,42 @@ enum TranscriptConversationLink {
                 activityLabel?.frame = NSRect(x: frame.minX + 22, y: frame.minY, width: frame.width - 22, height: frame.height)
                 activityLabel?.show(activity.text, shimmering: activity.isLive)
                 activityLabel?.isHidden = activity.text.isEmpty
+            case .copy(let text, let frame):
+                if copyButton == nil {
+                    let button = MessageCopyButton()
+                    button.alphaValue = hovered ? 1 : 0
+                    addSubview(button)
+                    copyButton = button
+                }
+                copyButton?.frame = frame
+                copyButton?.text = text
+                copyButton?.isHidden = false
             }
         }
         for view in textViews[textIndex...] { view.isHidden = true; view.clear() }
         for view in disclosures[disclosureIndex...] { view.isHidden = true }
         for view in codeBlocks[codeIndex...] { view.isHidden = true; view.clear() }
         for view in attachments[attachmentIndex...] { view.isHidden = true }
+    }
+
+    // The copy button shows while the pointer is anywhere on the row; moving
+    // counts too, since a row scrolled under a still pointer gets no entry.
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        for area in trackingAreas { removeTrackingArea(area) }
+        addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .mouseMoved, .activeInActiveApp, .inVisibleRect], owner: self))
+    }
+    override func mouseEntered(with event: NSEvent) { reveal(true) }
+    override func mouseMoved(with event: NSEvent) { reveal(true) }
+    override func mouseExited(with event: NSEvent) { reveal(false) }
+    private func reveal(_ shown: Bool) {
+        guard hovered != shown else { return }
+        hovered = shown
+        guard let copyButton else { return }
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? 0 : 0.12
+            copyButton.animator().alphaValue = shown ? 1 : 0
+        }
     }
 }
 
@@ -1519,6 +1549,40 @@ enum TranscriptConversationLink {
         NSPasteboard.general.setString(code, forType: .string)
         title = "已复制"
         image = NSImage(systemSymbolName: "checkmark", accessibilityDescription: nil)
+        let work = DispatchWorkItem { [weak self] in self?.reset() }
+        resetWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2, execute: work)
+    }
+}
+
+/// The copy button under a message: an icon, a check for a moment after it copied.
+@MainActor private final class MessageCopyButton: NSButton {
+    var text = "" { didSet { if oldValue != text { reset() } } }
+    private var resetWork: DispatchWorkItem?
+
+    init() {
+        super.init(frame: .zero)
+        bezelStyle = .accessoryBarAction
+        showsBorderOnlyWhileMouseInside = true
+        imagePosition = .imageOnly
+        contentTintColor = .secondaryLabelColor
+        target = self; action = #selector(copyText)
+        setAccessibilityLabel("复制消息")
+        reset()
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) is unavailable") }
+
+    private func reset() {
+        resetWork?.cancel()
+        image = NSImage(systemSymbolName: "doc.on.doc", accessibilityDescription: nil)?.withSymbolConfiguration(.init(pointSize: 11, weight: .regular))
+        toolTip = "复制消息"
+    }
+
+    @objc private func copyText() {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+        image = NSImage(systemSymbolName: "checkmark", accessibilityDescription: nil)?.withSymbolConfiguration(.init(pointSize: 11, weight: .regular))
+        toolTip = "已复制"
         let work = DispatchWorkItem { [weak self] in self?.reset() }
         resetWork = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 2, execute: work)

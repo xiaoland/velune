@@ -14,7 +14,6 @@ struct ShortcutHelpView: View {
                 (mode.sendKey, "发送；运行中排队"),
                 (mode.steerKey, "运行中插入本轮（运行时不支持时排队）"),
                 (mode == .returnSends ? "⇧Return、⌥Return" : "Return", "换行"),
-                ("↑ ↓", "输入框为空时调出本会话之前的消息"),
                 ("⌥↑", "取回最后一条排队消息；输入框有内容时编辑它"),
                 ("/", "Velune 命令"),
                 ("@", "插入工作目录中的文件路径"),

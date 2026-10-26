@@ -451,3 +451,7 @@ S17 实施授权：用户决定全面切换 UniFFI，并要求现在开始拆分
 ## S50
 
 2026-10-26 用户：“我们来改进 Velune 的交互体验，我们对 velune 的定位是 production-grade, heavy-agent-workflow 的 agent shell，所以我们要使得桌面端不借助鼠标就能高效地使用。”并举例：composer 中“enter 发送，shift-enter 换行（当然可以自定义）”“option + up 编辑队列中的最后一条消息”“输入 `/` 可以执行命令来切换模型、推理强度等”。开发方补充了全局导航（命令面板、快速切换会话、下一个待处理会话、全局唤起、从通知进入）、审批的键盘操作且不抢焦点、composer 的其他键、消息列表与会话列表的键盘操作，以及快捷键作用域、冲突检测、速查表和 Windows 对应等底层约定（A～F）。用户答复：“好的，我同意。你可以开始落地A~F全部。不过 steer 我会推荐就是 Cmd+ Entrer,也就是说，在运行中过程中按 enter 就是正常排队，按 cmd + enter 就是 steer。”本条修订 [S38](#s38) 与 composer 早先“Return 换行、⌘Return 发送”的约定。产品归 [键盘操作](prd/keyboard.md)，实施归 [全键盘任务](../tasks/full-keyboard/packet.md)。
+
+## S51
+
+2026-10-26 用户：“其实我不喜欢 composer 的 上/下 箭头像 shell history 那样，我更倾向于用户自己通过 outline 到相应的消息上进行复制（可以考虑在消息下面提供复制按钮，应该是 hover 才出现）”。本条撤回 [S50](#s50) 实施中输入区 ↑↓ 调出之前消息的做法：↑↓ 在输入框中只移动光标；重用之前的消息经大纲或“转到消息”找到它再复制，消息下方提供指针悬停时出现的复制按钮。产品归 [键盘操作](prd/keyboard.md) 与 [会话视图](prd/conversation-view.md)，实施归 [全键盘任务](../tasks/full-keyboard/packet.md)。

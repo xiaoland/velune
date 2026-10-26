@@ -12,9 +12,12 @@ final class RenderedMessage: @unchecked Sendable {
     }
     let role: MessageRole
     let blocks: [Block]
+    /// What the copy button under the message copies; empty for none.
+    let copiedText: String
 
     init(_ message: Message) {
         role = message.role
+        copiedText = message.role == .system ? "" : message.copiedText.trimmingCharacters(in: .whitespacesAndNewlines)
         let alignment: NSTextAlignment = message.role == .system ? .center : .natural
         blocks = message.blocks.enumerated().flatMap { index, block -> [Block] in
             switch block {
@@ -117,6 +120,8 @@ struct TranscriptRowLayout: @unchecked Sendable {
         case attachment(TranscriptAttachment, frame: NSRect)
         /// A turn's settings at the trailing end of its header row.
         case turnSettings(TurnSettingsSummary, frame: NSRect)
+        /// The copy button under a message, shown while the pointer is on the row.
+        case copy(String, frame: NSRect)
     }
     var elements: [Element]
     var height: CGFloat
@@ -134,6 +139,10 @@ struct TranscriptRowLayout: @unchecked Sendable {
     static let attachmentThumbnail: CGFloat = 40
     static let attachmentNameMaxWidth: CGFloat = 180
     static let attachmentSpacing: CGFloat = 6
+    static let actionGap: CGFloat = 4
+    static let actionSize: CGFloat = 22
+    /// The icon sits this far inside its button; the button reaches past the text so the icon lines up with it.
+    static let actionInset: CGFloat = 5
 
     /// Attachments flow in rows of chips, against the trailing edge for the
     /// user's own messages.
@@ -229,6 +238,7 @@ struct TranscriptRowLayout: @unchecked Sendable {
                     elements.append(.text(caption, frame: NSRect(x: column.x + column.width - ceil(size.width) - 1, y: y, width: ceil(size.width) + 1, height: size.height), inBubble: false))
                     y += size.height
                 }
+                copy(rendered, at: column.x + column.width - actionSize + actionInset, y: &y, into: &elements)
             } else {
                 for (index, block) in rendered.blocks.enumerated() {
                     if index > 0 { y += blockSpacing }
@@ -260,9 +270,17 @@ struct TranscriptRowLayout: @unchecked Sendable {
                         }
                     }
                 }
+                copy(rendered, at: column.x - actionInset, y: &y, into: &elements)
             }
         }
         return TranscriptRowLayout(elements: elements, height: ceil(y))
+    }
+
+    private static func copy(_ rendered: RenderedMessage, at x: CGFloat, y: inout CGFloat, into elements: inout [Element]) {
+        guard !rendered.copiedText.isEmpty else { return }
+        y += actionGap
+        elements.append(.copy(rendered.copiedText, frame: NSRect(x: x, y: y, width: actionSize, height: actionSize)))
+        y += actionSize
     }
 
     /// Cheap pre-measurement guess; replaced by an exact layout before display.
@@ -292,7 +310,8 @@ struct TranscriptRowLayout: @unchecked Sendable {
                     height += attachmentHeight
                 }
             }
-            return rowInset + max(height, 19) + (message.role == .user ? bubblePadding * 2 : 0)
+            let copies = message.role != .system && !message.text.isEmpty
+            return rowInset + max(height, 19) + (message.role == .user ? bubblePadding * 2 : 0) + (copies ? actionGap + actionSize : 0)
         }
     }
 }

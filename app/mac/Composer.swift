@@ -27,9 +27,6 @@ import QuickLookThumbnailing
     /// The window's commands, for `/`; set by the composer's view.
     var perform: ((ShortcutCommand) -> Void)?
     var canPerform: ((ShortcutCommand) -> Bool)?
-    /// The earlier message ↑ put in the box, by its place among the
-    /// conversation's messages; editing it ends the browsing.
-    private var recalled: (index: Int, text: String)?
     /// A queued message whose editor the send queue is asked to open.
     @Published var queueEditRequest: QueuedMessage?
 
@@ -43,7 +40,6 @@ import QuickLookThumbnailing
     func show(conversationID: String?) {
         guard conversationID != self.conversationID else { return }
         self.conversationID = conversationID
-        recalled = nil
         replace(with: conversationID.flatMap { store?.draft(for: $0) } ?? "")
         attachments = conversationID.flatMap { attachmentsByConversation[$0] } ?? []
     }
@@ -69,30 +65,6 @@ import QuickLookThumbnailing
         focus()
     }
 
-    /// ↑ (`step` -1) and ↓ (1) through the conversation's earlier messages,
-    /// while the box is empty or still shows the one recalled. Past the
-    /// latest the box is empty again. Returns whether the key was taken.
-    fileprivate func recall(_ step: Int) -> Bool {
-        guard let store, attachments.isEmpty else { return false }
-        let browsing = recalled.flatMap { $0.text == text ? $0.index : nil }
-        guard browsing != nil || text.isEmpty else { return false }
-        let history = store.sentMessageTexts
-        let current = browsing ?? history.count
-        let next = current + step
-        // Nothing older: the key stops here rather than moving the caret.
-        guard next >= 0 else { return browsing != nil }
-        guard next < history.count else {
-            guard browsing != nil else { return false }
-            recalled = nil
-            setText("", caretAtStart: false)
-            return true
-        }
-        recalled = (next, history[next])
-        // Going back starts at the top, so the next ↑ goes further back; going on ends at the bottom.
-        setText(history[next], caretAtStart: step < 0)
-        return true
-    }
-
     /// ⌥↑: the queue's last message back into an empty box, to edit and
     /// queue again; with text in the box, its editor instead.
     func takeLastQueued() -> Bool {
@@ -102,12 +74,6 @@ import QuickLookThumbnailing
             self?.restore(last.text, attachments: last.attachments.map { URL(fileURLWithPath: $0) })
         }
         return true
-    }
-
-    private func setText(_ value: String, caretAtStart: Bool) {
-        replace(with: value)
-        if caretAtStart { textView?.setSelectedRange(NSRange(location: 0, length: 0)) }
-        if let conversationID { store?.setDraft(value, for: conversationID) }
     }
 
     /// Keeps a pasted image as a PNG file in the application's attachment
@@ -418,29 +384,9 @@ struct ComposerEditor: NSViewRepresentable {
             }
         case 126 where modifiers == .option:
             if coordinator.model.takeLastQueued() { return }
-        case 126 where modifiers.isEmpty:
-            if caretLine(first: true), coordinator.model.recall(-1) { return }
-        case 125 where modifiers.isEmpty:
-            if caretLine(first: false), coordinator.model.recall(1) { return }
         default: break
         }
         super.keyDown(with: event)
-    }
-
-    /// Whether the caret, with nothing selected, is on the first (or last) line as laid out.
-    private func caretLine(first: Bool) -> Bool {
-        let selection = selectedRange()
-        guard selection.length == 0, let layoutManager, let textContainer else { return false }
-        let length = (string as NSString).length
-        guard length > 0 else { return true }
-        layoutManager.ensureLayout(for: textContainer)
-        let lineRect = { (index: Int) -> NSRect in
-            layoutManager.lineFragmentRect(forGlyphAt: layoutManager.glyphIndexForCharacter(at: min(index, length - 1)), effectiveRange: nil)
-        }
-        // The caret after a final newline sits on a line of its own below the last fragment.
-        if selection.location == length, (string as NSString).character(at: length - 1) == 10 { return !first }
-        let caret = lineRect(selection.location)
-        return first ? caret.minY <= lineRect(0).minY : caret.minY >= lineRect(length - 1).minY
     }
 
     override func becomeFirstResponder() -> Bool {
