@@ -216,11 +216,12 @@ sealed partial class ProviderEditor : UserControl
         Ui.Show(endpointError, endpointMissing ? "请填写接口地址" : "");
         Ui.Show(binaryError, binaryMissing ? "请选择 Claude Code 程序的绝对路径" : "");
         var missingID = models.Any(model => model.ID.Length == 0);
-        Ui.Show(modelsError, draft.Models.Length == 0 ? "请添加至少一个模型" : missingID ? "每个模型都需要模型 ID" : "");
+        var invalidTokens = models.Any(model => !model.ValidTokens);
+        Ui.Show(modelsError, draft.Models.Length == 0 ? "请添加至少一个模型" : missingID ? "每个模型都需要模型 ID" : invalidTokens ? TokenCount.InputError : "");
         var keyMissing = authenticationSource == BindingProviderAuthenticationSource.ApiKey && key.Password.Trim().Length == 0 && !(existing?.Authentication.Configured ?? false);
         Ui.Show(keyError, keyMissing ? "请填写 API key" : "");
         var incomplete = QuotaIncomplete();
-        return draft.Name.Length > 0 && !endpointMissing && !binaryMissing && draft.Models.Length > 0 && !missingID && !keyMissing && !incomplete;
+        return draft.Name.Length > 0 && !endpointMissing && !binaryMissing && draft.Models.Length > 0 && !missingID && !invalidTokens && !keyMissing && !incomplete;
     }
 
     // Save saves the fields together with any sign-in and usage query edit,

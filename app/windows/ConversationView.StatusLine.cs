@@ -121,10 +121,5 @@ public sealed partial class ConversationView
     static string Period(ulong minutes) =>
         minutes % 1440 == 0 ? $"{minutes / 1440} 天" : minutes % 60 == 0 ? $"{minutes / 60} 小时" : $"{minutes} 分钟";
 
-    static string Count(ulong count) => count switch
-    {
-        >= 1_000_000 => $"{count / 1_000_000.0:0.#}M",
-        >= 1_000 => $"{count / 1_000.0:0.#}K",
-        _ => count.ToString(),
-    };
+    static string Count(ulong count) => TokenCount.Format(count);
 }

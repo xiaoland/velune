@@ -174,6 +174,7 @@ struct AnalyticsView: View {
                 }
                 .chartXScale(domain: (loadedRange?.start ?? range.start)...(loadedRange ?? range).plotEnd)
                 .chartXSelection(value: $chartSelection)
+                .chartYAxis { AxisMarks { value in AxisGridLine(); AxisTick(); if let number = value.as(Double.self) { AxisValueLabel(TokenCount.rate(number)) } } }
                 .chartXAxis { AxisMarks { value in AxisGridLine(); AxisTick(); if let date = value.as(Date.self) { AxisValueLabel(date.formatted(.dateTime.month(.twoDigits).day(.twoDigits))) } } }
                 .frame(height: 175)
             } else { ContentUnavailableView(chartMetric == .tokens ? "暂无已报告的 Token 用量" : "暂无可计算的有效输出速率", systemImage: "chart.bar.xaxis").frame(height: 175) }
@@ -290,8 +291,8 @@ private enum AnalyticsPage: String, CaseIterable, Identifiable { case overview, 
 private enum AnalyticsFormatting {
     static let totalDefinition = "总量单位为 Token，仅合计输入和输出均已报告的请求。输入、输出列分别合计各自已报告部分，覆盖可能不同，不能直接相加比较。"
     static let speedDefinition = "有效输出速率 = 已报告输出 Token ÷ 上游派发至业务终态的请求耗时，包含等待；汇总按可计算请求加权，不是单次速率的平均值。"
-    static func tokens(_ value: UInt64?) -> String { value.map { $0.formatted(.number) } ?? "—" }
-    static func speed(_ value: Double?) -> String { guard let value, value.isFinite else { return "—" }; return value.formatted(.number.precision(.fractionLength(1))) + " Token/s" }
+    static func tokens(_ value: UInt64?) -> String { value.map { TokenCount.format($0) } ?? "—" }
+    static func speed(_ value: Double?) -> String { guard let value, value.isFinite else { return "—" }; return TokenCount.rate(value) + " Token/s" }
     static func duration(_ value: UInt64?) -> String { value.map { Duration.milliseconds(Double($0)).formatted(.units(allowed: [.minutes, .seconds], width: .abbreviated, fractionalPart: .show(length: 2))) } ?? "—" }
     static func outcome(_ value: BindingAnalyticsOutcome) -> String { switch value { case .completed: return "完成"; case .incomplete: return "未完成"; case .failed: return "失败"; case .cancelled: return "取消"; case .rejected: return "拒绝" } }
     static func protocolName(_ value: BindingAnalyticsProtocol) -> String { switch value { case .chatCompletions: return "OpenAI ChatCompletions"; case .responses: return "OpenAI Responses"; case .messages: return "Anthropic Messages" } }

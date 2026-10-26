@@ -38,8 +38,8 @@ struct PublicModelCatalogView: View {
             .onChange(of: search) { _, _ in selectedIDs.removeAll() }
             if let selected {
                 HStack {
-                    Text("上下文：\(selected.contextWindow.map(String.init) ?? "未知")")
-                    Text("输出上限：\(selected.maxOutputTokens.map(String.init) ?? "未知")")
+                    Text("上下文：\(selected.contextWindow.map { TokenCount.format($0) } ?? "未知")")
+                    Text("输出上限：\(selected.maxOutputTokens.map { TokenCount.format($0) } ?? "未知")")
                     Spacer()
                 }.font(.caption).foregroundStyle(.secondary).padding(.horizontal, 20).padding(.top, 8)
             }

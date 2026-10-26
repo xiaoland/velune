@@ -844,12 +844,12 @@ public sealed partial class ConversationView
         }
         if (turn.Usage is { } usage)
         {
-            static string Count(ulong? tokens) => tokens is { } count ? count.ToString("N0") : "未记录";
+            static string Count(ulong? tokens) => tokens is { } count ? TokenCount.Format(count) : "未记录";
             Line("输入 token", Count(usage.InputTokens));
             Line("缓存读取", Count(usage.CacheReadTokens));
             Line("缓存写入", Count(usage.CacheWriteTokens));
             Line("输出 token", Count(usage.OutputTokens));
-            Line("推理 token", usage.ReasoningTokens is { } reasoning ? reasoning.ToString("N0") : "未单独记录");
+            Line("推理 token", usage.ReasoningTokens is { } reasoning ? TokenCount.Format(reasoning) : "未单独记录");
             if (usage.ContextTokens is { } context)
             {
                 Line("结束时上下文", usage.ContextWindow is { } window && window > 0

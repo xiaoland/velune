@@ -240,8 +240,8 @@ struct ProviderImportView: View {
             issueList(model.issues)
             ImmediateDisclosureGroup("来源能力") {
                 Grid(alignment: .leading, horizontalSpacing: 8, verticalSpacing: 8) {
-                    GridRow { Text("上下文窗口").foregroundStyle(.secondary); Text(model.contextWindow?.formatted() ?? "未知") }
-                    GridRow { Text("最大输出").foregroundStyle(.secondary); Text(model.maxOutputTokens?.formatted() ?? "未知") }
+                    GridRow { Text("上下文窗口").foregroundStyle(.secondary); Text(model.contextWindow.map { TokenCount.format($0) } ?? "未知") }
+                    GridRow { Text("最大输出").foregroundStyle(.secondary); Text(model.maxOutputTokens.map { TokenCount.format($0) } ?? "未知") }
                     GridRow { Text("运行时推理级别").foregroundStyle(.secondary); Text(model.reasoningLevels.isEmpty ? "未声明" : model.reasoningLevels.joined(separator: "、")) }
                 }.font(.caption).frame(maxWidth: .infinity, alignment: .leading).padding(.top, 8)
             }

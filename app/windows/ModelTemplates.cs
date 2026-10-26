@@ -141,6 +141,13 @@ sealed class ModelTemplatesList : UserControl
                 deferral.Complete();
                 return;
             }
+            if (!TokenCount.ValidLimits(context.Text, output.Text))
+            {
+                Ui.Show(formError, TokenCount.InputError);
+                e.Cancel = true;
+                deferral.Complete();
+                return;
+            }
             var suggested = id.Text.Trim();
             var declared = levels.Text.Split([',', '，', ' ', '、'], StringSplitOptions.RemoveEmptyEntries);
             var saved = template with
@@ -168,14 +175,12 @@ sealed class ModelTemplatesList : UserControl
         await page.Window.ShowDialog(dialog);
     }
 
-    static NumberBox Count(string header, uint? value) => new()
+    static TextBox Count(string header, uint? value) => new()
     {
         Header = header,
-        Minimum = 1,
-        PlaceholderText = "未知",
-        Value = value ?? double.NaN,
-        SpinButtonPlacementMode = NumberBoxSpinButtonPlacementMode.Hidden,
+        PlaceholderText = "未知，如 272K、1M",
+        Text = value is { } count ? TokenCount.Format(count) : "",
     };
 
-    static uint? Optional(NumberBox box) => double.IsNaN(box.Value) || box.Value < 1 ? null : (uint)Math.Min(box.Value, uint.MaxValue);
+    static uint? Optional(TextBox box) => TokenCount.Parse(box.Text);
 }

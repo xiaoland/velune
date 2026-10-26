@@ -74,8 +74,8 @@ sealed partial class ProviderEditor
         readonly TextBlock detail = Ui.Muted("");
         readonly TextBox id = new() { Header = "模型 ID", PlaceholderText = "提供商 API 规定的标识" };
         readonly TextBox nickname = new() { Header = "昵称", PlaceholderText = "留空时显示模型 ID" };
-        readonly NumberBox context = Count("上下文窗口（token）");
-        readonly NumberBox output = Count("最大输出（token）");
+        readonly TextBox context = Count("上下文窗口（token）");
+        readonly TextBox output = Count("最大输出（token）");
         readonly TextBox levels = new() { Header = "支持的推理强度", PlaceholderText = "例如 low, medium, high；留空表示不声明" };
 
         public ModelRow(ProviderEditor editor, BindingProviderModel? model)
@@ -85,8 +85,8 @@ sealed partial class ProviderEditor
             icon = model?.Icon;
             id.Text = model?.ProviderModelId ?? "";
             nickname.Text = model != null && model.Nickname != model.ProviderModelId ? model.Nickname : "";
-            context.Value = model?.ContextWindow ?? double.NaN;
-            output.Value = model?.MaxOutputTokens ?? double.NaN;
+            context.Text = model?.ContextWindow is { } window ? TokenCount.Format(window) : "";
+            output.Text = model?.MaxOutputTokens is { } maximum ? TokenCount.Format(maximum) : "";
             levels.Text = model?.ReasoningLevels is { } declared ? string.Join(", ", declared) : "";
             detail.TextWrapping = TextWrapping.NoWrap;
             detail.TextTrimming = TextTrimming.CharacterEllipsis;
@@ -110,7 +110,11 @@ sealed partial class ProviderEditor
             Grid.SetColumnSpan(levels, 2);
 
             var asTemplate = new Button { Content = "存为模板…" };
-            asTemplate.Click += (_, _) => editor.SaveAsTemplate(Value());
+            asTemplate.Click += (_, _) =>
+            {
+                Ui.Show(editor.modelsError, ValidTokens ? "" : TokenCount.InputError);
+                if (ValidTokens) editor.SaveAsTemplate(Value());
+            };
             var remove = new Button { Content = "删除模型" };
             remove.Click += (_, _) => editor.RemoveModel(this);
             var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, HorizontalAlignment = HorizontalAlignment.Right };
@@ -124,19 +128,14 @@ sealed partial class ProviderEditor
             id.TextChanged += (_, _) => Edited();
             nickname.TextChanged += (_, _) => Edited();
             levels.TextChanged += (_, _) => Edited();
-            context.ValueChanged += (_, _) => Edited();
-            output.ValueChanged += (_, _) => Edited();
+            context.TextChanged += (_, _) => Edited();
+            output.TextChanged += (_, _) => Edited();
             ShowHeader();
         }
 
-        static NumberBox Count(string header) => new()
-        {
-            Header = header,
-            Minimum = 1,
-            PlaceholderText = "未知",
-            SpinButtonPlacementMode = NumberBoxSpinButtonPlacementMode.Hidden,
-            NumberFormatter = new Windows.Globalization.NumberFormatting.DecimalFormatter { FractionDigits = 0, IsGrouped = true },
-        };
+        static TextBox Count(string header) => new() { Header = header, PlaceholderText = "未知，如 272K、1M" };
+
+        public bool ValidTokens => TokenCount.ValidLimits(context.Text, output.Text);
 
         static void Place(Grid grid, FrameworkElement element, int row, int column)
         {
@@ -176,7 +175,7 @@ sealed partial class ProviderEditor
             detail.Text = string.Join(" · ", parts);
         }
 
-        static uint? Optional(NumberBox box) => double.IsNaN(box.Value) || box.Value < 1 ? null : (uint)Math.Min(box.Value, uint.MaxValue);
+        static uint? Optional(TextBox box) => TokenCount.Parse(box.Text);
 
         string[]? Levels()
         {
@@ -203,14 +202,7 @@ sealed partial class ProviderEditor
         }
     }
 
-    // Tokens is a token count in thousands or millions, as model cards write it.
-    internal static string Tokens(uint count) => count switch
-    {
-        >= 1_000_000 when count % 1_000_000 == 0 => $"{count / 1_000_000}M",
-        >= 1_000 when count % 1_000 == 0 => $"{count / 1_000}K",
-        >= 1_000 => $"{count / 1000.0:0.#}K",
-        _ => count.ToString(),
-    };
+    internal static string Tokens(uint count) => TokenCount.Format(count);
 
     async void SaveAsTemplate(BindingProviderModel model)
     {

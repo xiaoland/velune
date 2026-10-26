@@ -614,19 +614,19 @@ private struct ProviderModelDraft: Identifiable {
     init() {}
     init(_ model: ProviderModel) {
         recordKey = model.recordKey; providerModelID = model.providerModelID; nickname = model.nickname; icon = model.icon ?? ""
-        contextWindow = model.contextWindow.map(String.init) ?? ""; maxOutputTokens = model.maxOutputTokens.map(String.init) ?? ""
+        contextWindow = model.contextWindow.map { TokenCount.format($0) } ?? ""; maxOutputTokens = model.maxOutputTokens.map { TokenCount.format($0) } ?? ""
         declaresReasoning = model.reasoningLevels != nil; reasoningLevels = model.reasoningLevels?.joined(separator: ", ") ?? ""
     }
     var displayName: String { nickname.isEmpty ? (providerModelID.isEmpty ? "新模型" : providerModelID) : nickname }
-    var valid: Bool { !providerModelID.isEmpty && validOptionalTokenCount(contextWindow) && validOptionalTokenCount(maxOutputTokens) && !(UInt32(maxOutputTokens).map { output in UInt32(contextWindow).map { output > $0 } ?? false } ?? false) }
+    var validTokens: Bool { TokenCount.validLimits(context: contextWindow, output: maxOutputTokens) }
+    var valid: Bool { !providerModelID.isEmpty && validTokens }
     var efforts: [String]? { declaresReasoning ? reasoningLevels.split(separator: ",").map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty } : nil }
     var capabilitySummary: String {
         let effortsSummary = efforts.map { $0.isEmpty ? "不支持推理 effort" : "支持 effort：" + $0.joined(separator: "、") } ?? "推理 effort 未知"
-        return effortsSummary + (contextWindow.isEmpty ? "" : " · 上下文 \(contextWindow)") + (maxOutputTokens.isEmpty ? "" : " · 输出 \(maxOutputTokens)")
+        return effortsSummary + (contextWindow.isEmpty ? "" : " · 上下文 \(TokenCount.parse(contextWindow).map { TokenCount.format($0) } ?? contextWindow)") + (maxOutputTokens.isEmpty ? "" : " · 输出 \(TokenCount.parse(maxOutputTokens).map { TokenCount.format($0) } ?? maxOutputTokens)")
     }
-    var definition: ProviderModel { ProviderModel(recordKey: recordKey, providerModelID: providerModelID, nickname: nickname, icon: icon.isEmpty ? nil : icon, contextWindow: UInt32(contextWindow), maxOutputTokens: UInt32(maxOutputTokens), reasoningLevels: efforts) }
+    var definition: ProviderModel { ProviderModel(recordKey: recordKey, providerModelID: providerModelID, nickname: nickname, icon: icon.isEmpty ? nil : icon, contextWindow: TokenCount.parse(contextWindow), maxOutputTokens: TokenCount.parse(maxOutputTokens), reasoningLevels: efforts) }
 }
-private func validOptionalTokenCount(_ value: String) -> Bool { value.isEmpty || (UInt32(value).map { $0 > 0 } ?? false) }
 
 private struct ProviderModelFields: View {
     @Binding var draft: ProviderModelDraft
@@ -640,8 +640,9 @@ private struct ProviderModelFields: View {
         Section {
             ImmediateDisclosureGroup {
                 VStack(alignment: .leading, spacing: 12) {
-                    TextField("上下文窗口", text: $draft.contextWindow, prompt: Text("未知"))
-                    TextField("最大输出 Token", text: $draft.maxOutputTokens, prompt: Text("未知"))
+                    TextField("上下文窗口", text: $draft.contextWindow, prompt: Text("未知，如 272K"))
+                    TextField("最大输出 Token", text: $draft.maxOutputTokens, prompt: Text("未知，如 32K"))
+                    if !draft.validTokens { Text(TokenCount.inputError).font(.caption).foregroundStyle(.red) }
                     Toggle("声明支持的 reasoning effort", isOn: $draft.declaresReasoning)
                     if draft.declaresReasoning {
                         TextField("支持的 effort", text: $draft.reasoningLevels, prompt: Text("逗号分隔，空白表示不支持"))
@@ -747,7 +748,7 @@ struct ProviderEditor: View {
                     if let index = modelIndex {
                         Form {
                             ProviderModelFields(draft: $models[index], modelIDFocused: $modelIDFocused)
-                            Section { Button("保存为模型模板…") { let model = models[index].definition; templateDraft = ModelTemplate(name: model.displayName, suggestedProviderModelID: model.providerModelID, nickname: model.nickname, icon: model.icon, contextWindow: model.contextWindow, maxOutputTokens: model.maxOutputTokens, reasoningLevels: model.reasoningLevels) } }
+                            Section { Button("保存为模型模板…") { let model = models[index].definition; templateDraft = ModelTemplate(name: model.displayName, suggestedProviderModelID: model.providerModelID, nickname: model.nickname, icon: model.icon, contextWindow: model.contextWindow, maxOutputTokens: model.maxOutputTokens, reasoningLevels: model.reasoningLevels) }.disabled(!models[index].valid) }
                         }
                     } else if selection == .quota && showsQuota {
                         ProviderQuotaForm(store: store, providerID: providerID, limits: $quotaLimits)

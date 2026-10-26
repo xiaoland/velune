@@ -431,7 +431,7 @@ final class AppStore: ObservableObject {
         ].compactMap { $0 }
         let brief = [runtime?.name ?? settings.runtimeID, settings.model].compactMap { $0 }.joined(separator: " · ")
         let usage = turn.usage.map { usage -> [TurnSettingsSummary.Part] in
-            let count = { (value: UInt64?) in value.map { $0.formatted() } }
+            let count = { (value: UInt64?) in value.map { TokenCount.format($0) } }
             return [
                 count(usage.inputTokens).map { .init(label: "输入", value: $0) },
                 count(usage.cacheReadTokens).map { .init(label: "缓存读取", value: $0) },

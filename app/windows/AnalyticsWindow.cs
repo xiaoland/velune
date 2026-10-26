@@ -741,8 +741,8 @@ sealed class AnalyticsWindow : Window
 
     static DateTime Local(long ms) => DateTimeOffset.FromUnixTimeMilliseconds(ms).LocalDateTime;
     static string Coverage(ulong known, ulong total) => $"{known} / {total} 次请求报告";
-    static string Tokens(ulong? value) => value?.ToString("N0", CultureInfo.CurrentCulture) ?? "—";
-    static string Speed(double? value) => value is { } rate && double.IsFinite(rate) ? rate.ToString("N1", CultureInfo.CurrentCulture) + " Token/s" : "—";
+    static string Tokens(ulong? value) => value is { } count ? TokenCount.Format(count) : "—";
+    static string Speed(double? value) => value is { } rate && double.IsFinite(rate) ? TokenCount.Rate(rate) + " Token/s" : "—";
 
     static string Duration(ulong? ms) => ms is { } value
         ? value >= 60_000 ? $"{value / 60_000} 分 {value % 60_000 / 1000.0:0.00} 秒" : $"{value / 1000.0:0.00} 秒"
