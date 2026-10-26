@@ -70,6 +70,15 @@
                 <Setter Property="BorderThickness" Value="1" />
                 <Setter Property="CornerRadius" Value="{ThemeResource OverlayCornerRadius}" />
             </Style>
+            <!-- The copy button under a message: no fill until the pointer is on it. -->
+            <Style x:Key="MessageActionButtonStyle" TargetType="Button" BasedOn="{StaticResource DefaultButtonStyle}">
+                <Setter Property="Background" Value="Transparent" />
+                <Setter Property="BorderBrush" Value="Transparent" />
+                <Setter Property="Foreground" Value="{ThemeResource TextFillColorSecondaryBrush}" />
+                <Setter Property="Padding" Value="5" />
+                <Setter Property="MinWidth" Value="0" />
+                <Setter Property="MinHeight" Value="0" />
+            </Style>
             <!-- Windows without Mica (Windows 10) show the base background. -->
             <Style x:Key="WindowBackgroundStyle" TargetType="Grid">
                 <Setter Property="Background" Value="{ThemeResource SolidBackgroundFillColorBaseBrush}" />

@@ -171,7 +171,6 @@ public sealed partial class WorkspaceWindow
             (commands.SendKey, "发送；运行中加入发送队列"),
             (commands.SteerKey, "插入本轮；运行时不支持时加入队列"),
             (commands.NewLineKey, "换行"),
-            ("↑ ↓", "输入框为空时调出本会话发过的消息"),
             ("Alt+↑", "编辑最后一条排队消息"),
             ("/", "Velune 命令"),
             ("@", "工作目录中的文件"),

@@ -16,16 +16,13 @@ using DispatcherQueuePriority = Microsoft.UI.Dispatching.DispatcherQueuePriority
 
 namespace Velune;
 
-// The view's keyboard (see docs/prd/keyboard.md): the composer's send,
-// steer and history keys, the last queued message, the / and @ lists, the
+// The view's keyboard (see docs/prd/keyboard.md): the composer's send
+// and steer keys, the last queued message, the / and @ lists, the
 // request card's numbers and the transcript's rows.
 public sealed partial class ConversationView
 {
     // Set while an input method composes, whose keys are its own.
     bool imeComposing;
-    // The sent message the history keys show, and where it is in the history.
-    string? recalled;
-    int recallIndex;
     // Each queued message's in-place editor, by ID, for Alt+↑.
     readonly Dictionary<string, Action> queueEdits = [];
     // The / or @ list: what it offers, from where in the text, and the text
@@ -100,8 +97,8 @@ public sealed partial class ConversationView
     }
 
     // ComposerKey handles the composer's keys as the send mode has them:
-    // sending or queueing, steering, the sent messages, the last queued
-    // message, and Esc, which stops the running turn.
+    // sending or queueing, steering, the last queued message, and Esc,
+    // which stops the running turn.
     bool ComposerKey(VirtualKey key)
     {
         if (imeComposing)
@@ -144,64 +141,11 @@ public sealed partial class ConversationView
                 return false;
             case VirtualKey.Up when alt && !control && !shift:
                 return TakeLastQueued();
-            case VirtualKey.Up when plain:
-                return Recall(-1);
-            case VirtualKey.Down when plain:
-                return Recall(1);
             case VirtualKey.Escape when plain && Model.CanCancel && !Model.Busy:
                 Model.Stop();
                 return true;
         }
         return false;
-    }
-
-    // SentTexts are the user's messages in this conversation, for the history keys.
-    List<string> SentTexts() =>
-        [.. Model.Messages
-            .Where(message => message.Role == BindingMessageRole.User && !message.Blocks.Any(block => block is BindingMessageBlock.AgentSender))
-            .Select(message => MessageText(message).Trim())
-            .Where(text => text.Length > 0)];
-
-    // Recall shows an earlier (-1) or later (1) sent message in the empty
-    // composer, from its first or last line; past the newest it is empty again.
-    bool Recall(int step)
-    {
-        var text = Input.Text;
-        if (text.Length == 0)
-        {
-            recalled = null;
-        }
-        else if (text != recalled)
-        {
-            return false;
-        }
-        var caret = Math.Min(Input.SelectionStart, text.Length);
-        char[] breaks = ['\r', '\n'];
-        if (Input.SelectionLength > 0 || (step < 0 ? text[..caret].IndexOfAny(breaks) >= 0 : text[caret..].IndexOfAny(breaks) >= 0))
-        {
-            return false;
-        }
-        var sent = SentTexts();
-        if (sent.Count == 0 || (step > 0 && recalled == null))
-        {
-            return false;
-        }
-        var next = (recalled == null ? sent.Count : recallIndex) + step;
-        if (next < 0)
-        {
-            return true;
-        }
-        if (next >= sent.Count)
-        {
-            recalled = null;
-            SetInput("");
-            return true;
-        }
-        recallIndex = next;
-        SetInput(sent[next]);
-        recalled = Input.Text;
-        Input.SelectionStart = step < 0 ? 0 : Input.Text.Length;
-        return true;
     }
 
     internal bool HasQueued => Model.FollowUp?.Queue is { Length: > 0 };

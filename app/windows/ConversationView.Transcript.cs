@@ -210,7 +210,68 @@ public sealed partial class ConversationView
                 }
             };
         }
-        return element;
+        return message.Role == BindingMessageRole.System ? element : WithCopy(element, CopiedText(message, from), message.Role == BindingMessageRole.User);
+    }
+
+    // CopiedText is what a row's copy button copies: the text and notices
+    // it shows, a blank line apart.
+    static string CopiedText(BindingMessage message, int from) =>
+        string.Join("\n\n", message.Blocks.Skip(from).Select(block => block switch
+        {
+            BindingMessageBlock.Text text => text.TextValue,
+            BindingMessageBlock.Notice notice => notice.TextValue,
+            _ => null,
+        }).OfType<string>()).Trim();
+
+    // WithCopy puts a copy button under a message, under the bubble's edge
+    // for the user's own. It shows while the pointer is on the row and keeps
+    // its place when hidden, so showing it moves nothing.
+    static UIElement WithCopy(UIElement content, string text, bool trailing)
+    {
+        if (text.Length == 0)
+        {
+            return content;
+        }
+        var icon = new FontIcon { Glyph = "\uE8C8", FontSize = 12 };
+        var copy = new Button
+        {
+            Content = icon,
+            Style = Ui.Style("MessageActionButtonStyle"),
+            Opacity = 0,
+            IsTabStop = false,
+            HorizontalAlignment = trailing ? HorizontalAlignment.Right : HorizontalAlignment.Left,
+            // The icon, not the button's padding, lines up with the text.
+            Margin = trailing ? new Thickness(0, 2, -5, 0) : new Thickness(-5, 2, 0, 0),
+        };
+        ToolTipService.SetToolTip(copy, "复制消息");
+        Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(copy, "复制消息");
+        copy.Click += async (_, _) =>
+        {
+            try
+            {
+                var package = new DataPackage();
+                package.SetText(text);
+                Clipboard.SetContent(package);
+            }
+            catch (Exception)
+            {
+                // Another program holds the clipboard; the icon stays as it was.
+                return;
+            }
+            icon.Glyph = "\uE73E";
+            await Task.Delay(2000);
+            icon.Glyph = "\uE8C8";
+        };
+        // A transparent background makes the whole row, not only its text, take the pointer.
+        var row = new Grid { Background = new Microsoft.UI.Xaml.Media.SolidColorBrush(Microsoft.UI.Colors.Transparent) };
+        row.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        row.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        row.Children.Add(content);
+        Grid.SetRow(copy, 1);
+        row.Children.Add(copy);
+        row.PointerEntered += (_, _) => copy.Opacity = 1;
+        row.PointerExited += (_, _) => copy.Opacity = 0;
+        return row;
     }
 
     // Message lays out the user's messages on the right, the model's on the
