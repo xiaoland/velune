@@ -30,4 +30,8 @@
 
 真实 Codex 0.159.3 使用隔离 HOME／CODEX_HOME、合成 key 和本地 loopback HTTP 服务完成失败验证。服务返回合成 503；实际 error 通知、turn/completed 与 thread/turns/list 都包含具体错误原因。该情景的原生分类是 httpConnectionFailed(503)，不冒充真实账户的 serverOverloaded。终止该 app-server 后，当前 Velune 历史读取另起进程，仍恢复出唯一一条合成错误通知，证明持久化历史路径贯通。没有真实账户读取或付费请求。
 
-实现与验证已完成，正在执行用户随后授权的提交与重新安装。主工作区有其他任务未提交改动，计划仅提交本任务文件，并在该提交的干净工作树中通过现有 `scripts/build-macos.sh` 构建安装；避免把其他任务的源码装入应用。未进行 UI／其他平台实机验证。上游未持久化的旧错误仍无法恢复；本次不增加另一套错误历史存储。
+实现、提交与安装均已完成。源码提交为 `0b06c29f2acef3a76ce8cd62270d35b4bac3d238`，只包含本任务的五个文件。主工作区其他任务的未提交改动未纳入提交或安装；release 产物在该提交的干净工作树中，通过现有 `scripts/build-macos.sh --build-only` 构建。首次构建在 UniFFI 模板生成阶段遇到 Cargo registry 符号链接导致的路径计算错误，改用实际缓存目录 `CARGO_HOME=/Volumes/WorkSSD/.dev-cache/cargo` 重跑后，Rust release、绑定生成、Swift release 与签名验证全部通过，没有为该环境问题修改源码。
+
+已退出旧应用，并用 `scripts/install-macos.py` 安装到 `/Applications/Velune.app`。安装后的应用、核心 dylib 和 build-manifest 的 SHA-256 均与签名产物一致，`codesign --verify --deep --strict` 通过。manifest 记录上述源码提交、`dirty=false`、`0.1 beta.1` 和 arm64。应用已重新打开并确认新进程运行。后续安装记录提交只更新本文，不改变已安装代码。
+
+未进行 UI 行为／其他平台实机验证。上游未持久化的旧错误仍无法恢复；本次不增加另一套错误历史存储。
