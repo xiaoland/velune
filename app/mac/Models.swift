@@ -15,6 +15,7 @@ struct Conversation: Codable, Sendable, Identifiable, Equatable {
     var parentConversationID: String? = nil
     /// Velune's organization of the conversation in the list; see `BindingListedConversation`.
     var nativeID = ""
+    var agentsURI: String? = nil
     var pinned = false
     var unread = false
     var archived = false
@@ -31,6 +32,7 @@ struct Conversation: Codable, Sendable, Identifiable, Equatable {
     func organized(like listed: Conversation) -> Conversation {
         var value = self
         value.nativeID = listed.nativeID; value.pinned = listed.pinned; value.unread = listed.unread; value.archived = listed.archived
+        value.agentsURI = listed.agentsURI
         value.project = listed.project; value.moved = listed.moved; value.failed = listed.failed; value.group = listed.group
         return value
     }

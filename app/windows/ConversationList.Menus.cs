@@ -335,8 +335,14 @@ sealed partial class ConversationList
         if (chosen is [var single])
         {
             menu.Items.Add(new MenuFlyoutSeparator());
-            menu.Items.Add(MenuItem("拷贝会话 ID", () => Copy(single.Conversation.Id)));
-            menu.Items.Add(MenuItem("拷贝链接", () => Copy($"velune://conversation?runtime={Uri.EscapeDataString(single.Conversation.RuntimeId)}&id={Uri.EscapeDataString(single.Conversation.Id)}")));
+            var copy = new MenuFlyoutSubItem { Text = "拷贝" };
+            copy.Items.Add(MenuItem("会话 ID", () => Copy(single.Conversation.Id)));
+            copy.Items.Add(MenuItem("Velune 链接", () => Copy($"velune://conversation?runtime={Uri.EscapeDataString(single.Conversation.RuntimeId)}&id={Uri.EscapeDataString(single.Conversation.Id)}")));
+            if (single.AgentsUri is { } uri)
+            {
+                copy.Items.Add(MenuItem("xURL", () => Copy(uri)));
+            }
+            menu.Items.Add(copy);
         }
         if (chosen.All(listed => listed.Conversation.CanDelete))
         {

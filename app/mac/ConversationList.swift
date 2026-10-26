@@ -357,8 +357,13 @@ struct ConversationListView: View {
             Button("在下方拆分打开") { window.split(.vertical, opening: target.id) }
             Button("在新窗口中打开") { window.openInNewWindow(target.id) }
             Divider()
-            Button("拷贝会话 ID") { copyToPasteboard(target.nativeID) }.disabled(target.nativeID.isEmpty)
-            Button("拷贝链接") { copyToPasteboard(ConversationLink.url(runtimeID: target.runtimeID, conversationID: target.id).absoluteString) }
+            Menu("拷贝") {
+                Button("会话 ID") { copyToPasteboard(target.nativeID) }.disabled(target.nativeID.isEmpty)
+                Button("Velune 链接") { copyToPasteboard(ConversationLink.url(runtimeID: target.runtimeID, conversationID: target.id).absoluteString) }
+                if let uri = target.agentsURI {
+                    Button("xURL") { copyToPasteboard(uri) }
+                }
+            }
         }
         Divider()
         Button(targets.count > 1 ? "删除所选会话…" : "删除…", role: .destructive) { deleteTargets = targets }

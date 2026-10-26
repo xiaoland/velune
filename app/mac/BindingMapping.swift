@@ -69,6 +69,7 @@ enum BindingMapping {
     static func listed(_ value: BindingListedConversation) -> Conversation {
         var mapped = conversation(value.conversation)
         mapped.nativeID = value.nativeId; mapped.pinned = value.pinned; mapped.unread = value.unread
+        mapped.agentsURI = value.agentsUri
         mapped.archived = value.archived; mapped.project = value.project; mapped.moved = value.moved; mapped.failed = value.failed; mapped.group = value.group
         return mapped
     }

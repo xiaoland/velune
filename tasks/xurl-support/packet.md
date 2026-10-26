@@ -2,11 +2,27 @@
 
 实现与验收已完成：共享核心、MCP、官方 CLI 分发，以及 Mac／Windows／Huawei Android 的深链主路径均已验证。2026-10-23 用户授权“整理一个提交”，本次提交覆盖本任务的源码、构建脚本、验证脚本与文档；此前“未授权提交”等表述为当时的历史状态。
 
-## 当前收敛：点击深链直接打开
+## 深链入口精简（2026-10-23）
 
-用户最新要求“开始精简”，并明确要 deeplink，否定手动复制地址再查找的交互。此决定替代下文历史记录中的复制／粘贴入口：三端删除新加的输入、查找和复制控件，点击系统或会话正文的 `agents://` 链接后自动定位，唯一匹配直接打开，仅多匹配或失败显示结果。正文链接使用来源会话设备；Windows 外部链接使用本机，Mac 使用接收窗口设备，Android 外部链接只有一个已配对设备时自动使用，否则选择设备。保留共享 URI 校验、实例歧义处理、既有运行时执行门禁、官方 CLI 与必要的系统激活。
+当时用户要求“开始精简”，并明确要 deeplink，否定手动复制地址再查找的交互。此决定替代下文历史记录中的复制／粘贴入口：三端删除新加的输入、查找和复制控件，点击系统或会话正文的 `agents://` 链接后自动定位，唯一匹配直接打开，仅多匹配或失败显示结果。正文链接使用来源会话设备；Windows 外部链接使用本机，Mac 使用接收窗口设备，Android 外部链接只有一个已配对设备时自动使用，否则选择设备。保留共享 URI 校验、实例歧义处理、既有运行时执行门禁、官方 CLI 与必要的系统激活。地址导出的后续决定见下节。
 
 当前改动只做三端构建与深链主路径验证；停止新增配对回归、镜像操作和组合矩阵。Android 只经 ADB，Windows 只经 `win-ws.localhost` SSH。下文验收记录对应精简前版本，最新证据在末尾补充。
+
+## 复制地址的复核（2026-10-26）
+
+用户先询问是否遗漏“复制会话为 xURL”，以及该功能是否应存在；随后明确“请实现”，并要求把三项拷贝操作并入二级菜单，授权实现与必要验证；完成后进一步授权提交及替换已安装应用。调查确认 Mac／Windows 的“拷贝链接”仍生成 Velune 链接；共享核心仍通过 `ListedConversation.agents_uri` 提供可选原生地址，复合会话返回空值。
+
+结合 [S47](../../docs/sources.md#s47) 与 advisor 只读复核，用户已采纳恢复地址导出的方向。Mac／Windows 现有会话菜单收敛为“拷贝 → 会话 ID／Velune 链接／xURL”；客户端复用核心字段，仅在地址存在时提供 xURL 项，不恢复输入／查找页面。此前反对复制粘贴后手动查找的跳转流程，不足以推出地址导出没有价值。
+
+xURL 不携带设备或 Velune 实例身份，也不包含会话正文，消费者仍需能访问对应原生数据；不能用一段地址代表完整复合会话。本轮复用固定上游提交和既有核心契约，不改地址生成。不操作真实会话，不扩展移动端现有菜单。
+
+Windows 已在 `win-ws.localhost` 的独立源码目录 `C:\Users\yyh\velune-copy-xurl` 通过 `scripts/build-windows.ps1`。经 SSH 运行交互会话中的临时 UI Automation，检查浅色／深色子菜单、三项复制后的剪贴板原文，以及两个有效原生段组成的复合会话不显示 xURL；正常退出码 0，无 crash.log，主题已恢复，临时计划任务已删除。证据为 `/tmp/velune-copy-xurl-windows-result.txt` 与 `/tmp/velune-copy-xurl-windows-{light,dark,no-uri}.png`。首次源码传输附带的 macOS `._` 元数据文件导致构建拒绝，删除隔离目录内的该文件后构建通过，未改产品代码规避。最初的无地址夹具使用非法 UUID，被历史读取器正常排除，已换为有效复合会话并完成复验。
+
+Mac 已通过 `CARGO_HOME=/Volumes/WorkSSD/.dev-cache/cargo bash scripts/build-macos.sh --build-only`，日志 `/tmp/velune-copy-xurl-mac-build.log`。最终应用复制为 `/tmp/VeluneCopyXurlValidation.app`，使用独立 bundle ID、合成 HOME 和 `VELUNE_HOME`，移除隔离包的 URL scheme 注册以避免改变系统默认关联。经原生辅助功能实际打开“拷贝”子菜单并点击三项，断言剪贴板中的原生会话 ID、保留实例身份的 Velune 链接和原样 xURL；打开会话刷新快照后仍有 xURL，合成复合会话只提供前两项。验证后正常退出隔离应用。两端实现与本轮验证已完成。
+
+用户授权替换应用后，共享构建目录已有其他任务的新构建，因此固定该最新构建为 `/tmp/velune-copy-xurl-release/Velune.app`，再以独立 ID 的副本复核 xURL 剪贴板和复合会话菜单。通过后正常退出既有应用，使用 `scripts/install-macos.py` 安装至 `/Applications/Velune.app`，签名验证与主程序 SHA-256 一致性检查通过；主程序摘要为 `793dd55859b4069c1d69ad9b737be9701e9797e5896cfc7bf850941b09bff0a2`。安装日志 `/tmp/velune-copy-xurl-install.log`。本次提交仅包含拷贝子菜单、地址字段传递及相应文档；Mac README 的 iPad 安装章节与其他任务改动不纳入提交。
+
+文档相对链接与锚点检查通过（179 项），`git diff --check` 通过。验证仅覆盖这次菜单与字段传递；未重跑既有深链、CLI、MCP、配对或真实账户流程。
 
 ## 目标与决定
 

@@ -437,6 +437,8 @@ S17 实施授权：用户决定全面切换 UniFFI，并要求现在开始拆分
 
 用户随后指定 Android 验证设备：“安卓用 huawei 去测试，不要用 redmi turbo3”。
 
+2026-10-26 用户询问是否遗漏复制会话为 xURL；开发方建议恢复用于交给 Agent 或其他工具的地址导出，保留 Velune 链接，仅在核心提供有效原生地址时显示 xURL。用户答复：“请实现；不过这样的话 context menu 中‘拷贝’系列功能就有三个了，我建议把他们并入一个二级菜单下”。据此恢复 Mac／Windows 的地址导出并合并为“拷贝”子菜单，不恢复手动输入和查找页面。
+
 ## S48
 
 2026-10-23 用户：“最快速度开发一个最基础的 Velune iPad app（但最好未来也能直接构建为 iOS app），能力对齐 Android app 就好。注意避免过度实现、过度保护、验证。”授权以 Android 控制端为范围直接实现 iPad 优先、兼容 iPhone 的基础应用；不扩展本地 Agent 或完整端设置。实现归 [iOS 控制端](../app/ios/README.md)，状态归 [iPad 任务](../tasks/ipad-minimal/packet.md)。
