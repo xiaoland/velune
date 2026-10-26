@@ -17,6 +17,8 @@ Mac 与 Windows 有模型、模板、导入、会话用量和统计入口；Andr
 - Mac SwiftPM release 客户端构建通过。合成预览确认模型显示 `8.192K / 4.096K`，输入 `1.5m / 272K` 后摘要规范化为 `1.5M / 272K`；输出超过上下文以及 UInt32 溢出时，错误可见且保存／存为模板入口禁用。保存合成模板后重新打开，数量不变；已目视检查输入排版。
 - Windows 在 win-ws 独立副本运行 `scripts/build-windows.ps1` 通过；同一套 C# 断言在实际 .NET 10.0.403 上通过。没有可用的远端原生 UI 操作通道，尚未完成 Windows 浅色／深色界面操作及正常退出检查，不能据编译通过声称完成视觉验收。
 - `git diff --check`、修改文档的相对链接与标题锚点检查通过。
-- Mac 完整打包遇到本机 Cargo registry 符号链接导致 Askama 生成的相对路径错误，清理宏缓存无效；改用 registry 所在的实际 `CARGO_HOME=/Volumes/WorkSSD/.dev-cache/cargo` 后，原有 `bash scripts/build-macos.sh --build-only` 完整构建和签名验证均通过，无需修改仓库构建逻辑。产物为 `target/macos/Velune.app`，未覆盖安装。
+- Mac 完整打包遇到本机 Cargo registry 符号链接导致 Askama 生成的相对路径错误，清理宏缓存无效；改用 registry 所在的实际 `CARGO_HOME=/Volumes/WorkSSD/.dev-cache/cargo` 后，原有 `bash scripts/build-macos.sh --build-only` 完整构建和签名验证均通过，无需修改仓库构建逻辑。初次产物为 `target/macos/Velune.app`；此后已按用户授权从干净提交重建并覆盖安装，见下文。
 
-交付状态：源码、行为断言、界面规范与 Windows 对齐记录已更新。用户已授权提交并覆盖安装；正在仅提交本任务文件，并从该提交隔离重建 Mac 安装包，避免纳入工作区其他未提交改动。剩余验收缺口仅为 Windows 原生界面操作、浅色／深色和正常退出检查。
+交付状态：本任务代码与规范已提交为 `0ae7dd4`（`feat(clients): 统一 token 单位显示与输入`），未纳入工作区的远控等改动，也未推送。已从该提交的干净隔离工作树完成 Mac 构建，构建清单的 `source_commit` 为该提交且 `dirty=false`，并通过仓库安装脚本覆盖 `/Applications/Velune.app`。安装前后签名验证通过，安装后的可执行文件、核心动态库与构建清单 SHA-256 均与产物一致。Windows 保留已验证的构建产物，本轮未部署到远端日常使用目录。
+
+剩余验收缺口为 Windows 原生界面操作、浅色／深色和正常退出检查。
