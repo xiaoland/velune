@@ -87,6 +87,7 @@ public sealed partial class ConversationView
 
     void RenderTranscript()
     {
+        rowMessages.Clear();
         var wanted = new List<UIElement>();
         var shown = new HashSet<string>();
         // Add keeps a row, rebuilt when its version changes; a folded outline
@@ -121,6 +122,7 @@ public sealed partial class ConversationView
                         var from = entry.Id.StartsWith("reply:", StringComparison.Ordinal) && replies.TryGetValue(message.Id, out var start) ? start : 0;
                         var user = message.Role == BindingMessageRole.User;
                         Add(entry.Id, Version(message, from), () => Row(message, from, entry.Id), !outlineFolded || user);
+                        rowMessages[rows[entry.Id].Element] = message;
                         // A turn without work still shows what it ran with.
                         if (user && turnOfUser.TryGetValue(message.Id, out var turn) && turn.WorkMessageIds.Length == 0
                             && (turn.Settings != null || turn.Usage != null || turn.DurationMs != null))
@@ -702,6 +704,9 @@ public sealed partial class ConversationView
             info.Hover(row);
             Element = Column(row);
         }
+
+        // Toggle folds or unfolds the work, as a click on its header does.
+        public void Toggle() => expander.IsExpanded = !expander.IsExpanded;
 
         public void Update(BindingTranscriptTurn turn, Dictionary<string, BindingMessage> messages)
         {

@@ -29,6 +29,9 @@ sealed class Shell
     // The user chose to quit with the library's edits unsaved.
     bool discardDrafts;
     readonly Notifier notifier;
+    readonly DispatcherQueue dispatcher;
+    // The window the global shortcuts are registered on.
+    WorkspaceWindow? hotKeyHost;
     // The pairing attempts already put to the user.
     readonly HashSet<string> prompted = [];
     bool approving;
@@ -37,6 +40,7 @@ sealed class Shell
     public Shell(Core core, DispatcherQueue dispatcher)
     {
         Core = core;
+        this.dispatcher = dispatcher;
         Hub = new Hub(core, dispatcher);
         Problems.Start(dispatcher, Hub.DeviceName);
         notifier = new Notifier(this, dispatcher);
@@ -64,6 +68,47 @@ sealed class Shell
         {
             Open(state);
         }
+        Commands.Changed += SyncHotKeys;
+        SyncHotKeys();
+    }
+
+    // SyncHotKeys registers the global shortcuts as set, on a workspace
+    // window, and notes those the system or another app holds.
+    void SyncHotKeys()
+    {
+        hotKeyHost = quitting ? null : windows.FirstOrDefault();
+        var bound = Commands.Table.Keys.Where(Commands.IsGlobal)
+            .Select(command => (Command: command, Keys: Commands.Bound(command)))
+            .Where(entry => entry.Keys != null)
+            .ToList();
+        var failed = Native.SetHotKeys(hotKeyHost, [.. bound.Select(entry => entry.Keys!.Value)], index =>
+            dispatcher.TryEnqueue(() => GlobalPressed(bound[index].Command)));
+        Commands.GlobalFailed.Clear();
+        foreach (var index in failed)
+        {
+            Commands.GlobalFailed.Add(bound[index].Command);
+        }
+    }
+
+    // GlobalPressed brings the window used last to the front; 新建会话 starts
+    // a conversation there, its composer taking the keyboard.
+    void GlobalPressed(Command command)
+    {
+        if ((latest ?? windows.LastOrDefault()) is not { } window)
+        {
+            return;
+        }
+        if (window.AppWindow.Presenter is Microsoft.UI.Windowing.OverlappedPresenter { State: Microsoft.UI.Windowing.OverlappedPresenterState.Minimized } presenter)
+        {
+            presenter.Restore();
+        }
+        window.Activate();
+        Native.Foreground(window);
+        if (command == Command.GlobalNewConversation)
+        {
+            window.RunCommand(Command.NewConversation);
+        }
+        window.RunCommand(Command.FocusComposer);
     }
 
     public WorkspaceWindow Open(WindowState state, Tab? adopted = null)
@@ -129,6 +174,10 @@ sealed class Shell
         if (latest == window)
         {
             latest = windows.LastOrDefault();
+        }
+        if (hotKeyHost == window)
+        {
+            SyncHotKeys();
         }
         if (windows.Count > 0)
         {
@@ -252,6 +301,8 @@ sealed class Shell
         }
         window.Open(target, Opening.NewTab);
         window.Activate();
+        // A request waiting takes the keyboard, else the composer.
+        window.FocusAttention(Listings.Of(device).Active.TryGetValue(target.ConversationID, out var active) && active.PendingInteractions > 0);
     }
 
     // OpenProblems shows the 问题 window, reusing an open one.

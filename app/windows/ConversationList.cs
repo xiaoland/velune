@@ -64,6 +64,7 @@ sealed partial class ConversationList : UserControl
 
         list.SelectionChanged += SelectionChanged;
         list.KeyDown += ListKeyDown;
+        list.CharacterReceived += ListCharacter;
         list.DragItemsStarting += DragStarting;
         list.DragItemsCompleted += DragCompleted;
         list.DragOver += GroupDragOver;
@@ -281,12 +282,35 @@ sealed partial class ConversationList : UserControl
         window.Open(Target(one), Opening.CurrentTab);
     }
 
+    // ListKeyDown folds a group with Enter or Space and deletes the chosen
+    // conversations with Delete, after asking; F2 renames (a window command).
     void ListKeyDown(object sender, KeyRoutedEventArgs e)
     {
         if (e.OriginalSource is ListViewItem { Tag: string id } && id.StartsWith("group:", StringComparison.Ordinal) && e.Key is VirtualKey.Enter or VirtualKey.Space)
         {
             e.Handled = true;
             Fold(id);
+        }
+        else if (e.Key == VirtualKey.Delete && renamingID == null && e.OriginalSource is ListViewItem && Chosen() is { Count: > 0 } chosen && chosen.All(listed => listed.Conversation.CanDelete))
+        {
+            e.Handled = true;
+            Delete(chosen);
+        }
+    }
+
+    // ListCharacter takes typing in the list to its search box.
+    void ListCharacter(UIElement sender, CharacterReceivedRoutedEventArgs e)
+    {
+        if (char.IsControl(e.Character) || char.IsWhiteSpace(e.Character) || renamingID != null)
+        {
+            return;
+        }
+        e.Handled = true;
+        searchBox.Text += e.Character;
+        searchBox.Focus(FocusState.Keyboard);
+        if (Ui.Descendant<TextBox>(searchBox) is { } field)
+        {
+            field.SelectionStart = field.Text.Length;
         }
     }
 

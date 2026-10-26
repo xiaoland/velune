@@ -102,6 +102,81 @@ static partial class Native
         return DefSubclassProc(window, message, wParam, lParam);
     }
 
+    [LibraryImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool RegisterHotKey(nint window, int id, uint modifiers, uint key);
+
+    [LibraryImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool UnregisterHotKey(nint window, int id);
+
+    [LibraryImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool SetForegroundWindow(nint window);
+
+    const uint HotKeyMessage = 0x0312;
+    const uint NoRepeat = 0x4000;
+    // The window the system-wide shortcuts are registered on, how many, and
+    // what a press does; the call comes from the window procedure, so it only
+    // queues its work.
+    static nint hotKeyWindow;
+    static int hotKeyCount;
+    static Action<int>? hotKeyPressed;
+
+    // SetHotKeys registers system-wide shortcuts on a window, replacing those
+    // registered before; it returns the indexes the system or another app holds.
+    public static unsafe List<int> SetHotKeys(Window? window, IReadOnlyList<Shortcut> keys, Action<int> pressed)
+    {
+        if (hotKeyWindow != 0)
+        {
+            for (var i = 0; i < hotKeyCount; i++)
+            {
+                UnregisterHotKey(hotKeyWindow, i + 1);
+            }
+            RemoveWindowSubclass(hotKeyWindow, &HotKeySubclass, 2);
+            hotKeyWindow = 0;
+            hotKeyCount = 0;
+        }
+        var failed = new List<int>();
+        if (window == null || keys.Count == 0)
+        {
+            return failed;
+        }
+        hotKeyPressed = pressed;
+        hotKeyWindow = Handle(window);
+        hotKeyCount = keys.Count;
+        SetWindowSubclass(hotKeyWindow, &HotKeySubclass, 2, 0);
+        for (var i = 0; i < keys.Count; i++)
+        {
+            var modifiers = keys[i].Modifiers;
+            // RegisterHotKey's flags: Alt 1, Ctrl 2, Shift 4, Win 8.
+            var flags = NoRepeat
+                | (modifiers.HasFlag(Windows.System.VirtualKeyModifiers.Menu) ? 1u : 0)
+                | (modifiers.HasFlag(Windows.System.VirtualKeyModifiers.Control) ? 2u : 0)
+                | (modifiers.HasFlag(Windows.System.VirtualKeyModifiers.Shift) ? 4u : 0)
+                | (modifiers.HasFlag(Windows.System.VirtualKeyModifiers.Windows) ? 8u : 0);
+            if (!RegisterHotKey(hotKeyWindow, i + 1, flags, (uint)keys[i].Key))
+            {
+                failed.Add(i);
+            }
+        }
+        return failed;
+    }
+
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvStdcall)])]
+    static nint HotKeySubclass(nint window, uint message, nint wParam, nint lParam, nuint id, nuint data)
+    {
+        if (message == HotKeyMessage && wParam > 0)
+        {
+            hotKeyPressed?.Invoke((int)wParam - 1);
+        }
+        return DefSubclassProc(window, message, wParam, lParam);
+    }
+
+    // Foreground brings the window in front of other apps' windows, which a
+    // global shortcut's press allows.
+    public static void Foreground(Window window) => SetForegroundWindow(Handle(window));
+
     // Cursor is where the pointer is on the screen, in physical pixels as
     // windows are placed.
     public static Windows.Graphics.PointInt32 Cursor() =>

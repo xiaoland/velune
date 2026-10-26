@@ -63,6 +63,13 @@
             <Style x:Key="CriticalIconStyle" TargetType="FontIcon">
                 <Setter Property="Foreground" Value="{ThemeResource SystemFillColorCriticalBrush}" />
             </Style>
+            <!-- The command palette and the composer's completions, over the content as a flyout. -->
+            <Style x:Key="PaletteStyle" TargetType="Border">
+                <Setter Property="Background" Value="{ThemeResource AcrylicInAppFillColorDefaultBrush}" />
+                <Setter Property="BorderBrush" Value="{ThemeResource SurfaceStrokeColorFlyoutBrush}" />
+                <Setter Property="BorderThickness" Value="1" />
+                <Setter Property="CornerRadius" Value="{ThemeResource OverlayCornerRadius}" />
+            </Style>
             <!-- Windows without Mica (Windows 10) show the base background. -->
             <Style x:Key="WindowBackgroundStyle" TargetType="Grid">
                 <Setter Property="Background" Value="{ThemeResource SolidBackgroundFillColorBaseBrush}" />

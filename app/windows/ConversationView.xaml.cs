@@ -28,6 +28,7 @@ public sealed partial class ConversationView : UserControl
         this.window = window;
         AttachTranscript();
         AttachComposer();
+        AttachKeyboard();
         ParentButton.Click += (_, _) =>
         {
             if (Model.ParentID is { } parent)
@@ -72,22 +73,8 @@ public sealed partial class ConversationView : UserControl
     public void Close()
     {
         FlushDraft();
+        window.Shell.Commands.Changed -= RenderComposer;
         Model.Close();
-    }
-
-    void InputKeyDown(object sender, KeyRoutedEventArgs e)
-    {
-        if (ComposerKey(e))
-        {
-            e.Handled = true;
-            return;
-        }
-        var control = InputKeyboardSource.GetKeyStateForCurrentThread(VirtualKey.Control).HasFlag(CoreVirtualKeyStates.Down);
-        if (e.Key == VirtualKey.Enter && control)
-        {
-            e.Handled = true;
-            Send();
-        }
     }
 
     async void Send()
@@ -149,6 +136,7 @@ public sealed partial class ConversationView : UserControl
         if (interaction == null)
         {
             shownInteraction = null;
+            firstAnswer = null;
             InteractionCard.Visibility = Visibility.Collapsed;
             InteractionCard.Child = null;
             return;
@@ -163,6 +151,7 @@ public sealed partial class ConversationView : UserControl
             chosen.Clear();
         }
         shownInteraction = (interaction.Id, Model.Busy);
+        firstAnswer = null;
         InteractionCard.Child = interaction.Kind switch
         {
             BindingInteractionKind.Approval approval => Approval(interaction.Id, approval),
@@ -170,6 +159,7 @@ public sealed partial class ConversationView : UserControl
             _ => null,
         };
         InteractionCard.Visibility = Visibility.Visible;
+        TakeInteractionFocusRequest();
     }
 
     UIElement Approval(string interactionID, BindingInteractionKind.Approval approval)
@@ -180,13 +170,20 @@ public sealed partial class ConversationView : UserControl
         {
             panel.Children.Add(new ScrollViewer { MaxHeight = 180, Content = Markdown.Code(approval.Detail, 12) });
         }
+        // Numbered as the keys that choose them while the card has the keyboard.
         var options = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
-        foreach (var option in approval.Options)
+        foreach (var (option, index) in approval.Options.Select((option, index) => (option, index)))
         {
-            var button = new Button { Content = option.Label, IsEnabled = !Model.Busy };
-            button.Click += (_, _) => Model.Reply(interactionID, new BindingRuntimeInteractionReply.Decision(option.Id));
+            var button = new Button { Content = index < 9 ? $"{index + 1}  {option.Label}" : option.Label, IsEnabled = !Model.Busy };
+            Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(button, option.Label);
+            button.Click += (_, _) => Answer(interactionID, new BindingRuntimeInteractionReply.Decision(option.Id));
             options.Children.Add(button);
+            firstAnswer ??= button;
         }
+        var cancel = new Button { Content = "取消请求", IsEnabled = !Model.Busy };
+        ToolTipService.SetToolTip(cancel, "Ctrl+Backspace");
+        cancel.Click += (_, _) => Answer(interactionID, new BindingRuntimeInteractionReply.Cancel());
+        options.Children.Add(cancel);
         panel.Children.Add(options);
         return panel;
     }
@@ -195,8 +192,29 @@ public sealed partial class ConversationView : UserControl
     {
         var panel = new StackPanel { Spacing = 12 };
         var submit = new Button { Content = "提交", Style = (Style)Application.Current.Resources["AccentButtonStyle"] };
+        ToolTipService.SetToolTip(submit, "回答完毕后按 Enter");
         void Check() => submit.IsEnabled = !Model.Busy && questions.All(question =>
             question.Options.Length == 0 ? answers.GetValueOrDefault(question.Id, "").Trim().Length > 0 : chosen.ContainsKey(question.Id));
+        void Submit() => Answer(interactionID, new BindingRuntimeInteractionReply.Answers(
+            [.. questions.Select(question => new BindingInteractionAnswer(question.Id,
+                [chosen.TryGetValue(question.Id, out var value) ? value : answers.GetValueOrDefault(question.Id, "")]))]));
+        // Enter in an answer submits once all are answered, else goes on to the next field.
+        void Entered(KeyRoutedEventArgs e)
+        {
+            if (e.Key != VirtualKey.Enter)
+            {
+                return;
+            }
+            e.Handled = true;
+            if (submit.IsEnabled)
+            {
+                Submit();
+            }
+            else
+            {
+                MoveFocusOn();
+            }
+        }
         foreach (var question in questions)
         {
             panel.Children.Add(new TextBlock { Text = question.Text, Style = (Style)Application.Current.Resources["BodyStrongTextBlockStyle"], TextWrapping = TextWrapping.Wrap });
@@ -206,13 +224,17 @@ public sealed partial class ConversationView : UserControl
                 {
                     var secret = new PasswordBox { Password = answers.GetValueOrDefault(question.Id, "") };
                     secret.PasswordChanged += (_, _) => { answers[question.Id] = secret.Password; Check(); };
+                    secret.KeyDown += (_, e) => Entered(e);
                     panel.Children.Add(secret);
+                    firstAnswer ??= secret;
                 }
                 else
                 {
                     var answer = new TextBox { Text = answers.GetValueOrDefault(question.Id, ""), TextWrapping = TextWrapping.Wrap };
                     answer.TextChanged += (_, _) => { answers[question.Id] = answer.Text; Check(); };
+                    answer.KeyDown += (_, e) => Entered(e);
                     panel.Children.Add(answer);
+                    firstAnswer ??= answer;
                 }
                 continue;
             }
@@ -233,13 +255,24 @@ public sealed partial class ConversationView : UserControl
                 }
                 Check();
             };
+            // 1–9 choose an option and go on to the next field.
+            options.KeyDown += (_, e) =>
+            {
+                if (Plain && Digit(e.Key) is { } digit && digit <= Math.Min(question.Options.Length, 9))
+                {
+                    e.Handled = true;
+                    options.SelectedIndex = digit - 1;
+                    MoveFocusOn();
+                }
+            };
+            ToolTipService.SetToolTip(options, $"按 1–{Math.Min(question.Options.Length, 9)} 选择");
             panel.Children.Add(options);
+            firstAnswer ??= options;
         }
-        submit.Click += (_, _) => Model.Reply(interactionID, new BindingRuntimeInteractionReply.Answers(
-            [.. questions.Select(question => new BindingInteractionAnswer(question.Id,
-                [chosen.TryGetValue(question.Id, out var value) ? value : answers.GetValueOrDefault(question.Id, "")]))]));
+        submit.Click += (_, _) => Submit();
         var cancel = new Button { Content = "取消", IsEnabled = !Model.Busy };
-        cancel.Click += (_, _) => Model.Reply(interactionID, new BindingRuntimeInteractionReply.Cancel());
+        ToolTipService.SetToolTip(cancel, "Ctrl+Backspace");
+        cancel.Click += (_, _) => Answer(interactionID, new BindingRuntimeInteractionReply.Cancel());
         panel.Children.Add(new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, Children = { submit, cancel } });
         Check();
         return panel;
