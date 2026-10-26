@@ -109,7 +109,11 @@ extension ComposerModel {
         if text.hasPrefix("/"), text.rangeOfCharacter(from: .whitespacesAndNewlines) == nil {
             let query = String(text.dropFirst()).lowercased()
             let shortcuts = KeyboardShortcutSettings.shared
-            let items = ComposerSlashCommand.all.filter { $0.name.hasPrefix(query) }.map { entry in
+            // The name first, then the title and the command's other names, so `/模型` finds `/model` too.
+            let matched = query.isEmpty ? ComposerSlashCommand.all : ComposerSlashCommand.all.enumerated()
+                .compactMap { index, entry in FuzzyMatch.score(query, [entry.name, entry.command.title] + entry.command.searchTerms).map { (entry, $0, index) } }
+                .sorted { $0.1 != $1.1 ? $0.1 > $1.1 : $0.2 < $1.2 }.map(\.0)
+            let items = matched.map { entry in
                 ComposerCompletion.Item(id: entry.name, title: "/" + entry.name, detail: entry.command.title,
                                         shortcut: shortcuts.shortcut(entry.command)?.title, enabled: canPerform?(entry.command) ?? false)
             }

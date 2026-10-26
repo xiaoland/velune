@@ -181,6 +181,90 @@ enum ShortcutCommand: String, CaseIterable, Identifiable {
         }
     }
 
+    /// The English name the palette and the `/` list also find the command
+    /// by; never shown (DESIGN.md, 检索别名). Every command has one.
+    var englishName: String {
+        switch self {
+        case .newConversation: "New Conversation"
+        case .openConversation: "Open Conversation"
+        case .newTab: "New Tab"
+        case .newWindow: "New Window"
+        case .closeTab: "Close Tab"
+        case .closeWindow: "Close Window"
+        case .find: "Find"
+        case .stop: "Stop"
+        case .stopSubAgents: "Stop Sub-agents"
+        case .continueTurn: "Continue"
+        case .attach: "Attach Files"
+        case .chooseRuntime: "Choose Runtime"
+        case .chooseModel: "Choose Model"
+        case .chooseEffort: "Choose Reasoning Effort"
+        case .choosePermission: "Choose Permission Mode"
+        case .nextAttention: "Go to Next Conversation Needing Attention"
+        case .reload: "Reload"
+        case .splitRight: "Split Right"
+        case .splitDown: "Split Down"
+        case .closeSplit: "Close Split"
+        case .back: "Back"
+        case .forward: "Forward"
+        case .nextPane: "Next Pane"
+        case .previousPane: "Previous Pane"
+        case .nextTab: "Next Tab"
+        case .previousTab: "Previous Tab"
+        case .moveTabToNewWindow: "Move Tab to New Window"
+        case .keepInFront: "Keep in Front"
+        case .commandPalette: "Command Palette"
+        case .focusTranscript: "Go to Messages"
+        case .showList: "Toggle Conversation List"
+        case .showOutline: "Toggle Outline"
+        case .focusComposer: "Go to Composer"
+        case .showAgents: "Toggle Linked Agents"
+        case .rightArea: "Toggle Right Area"
+        case .bottomArea: "Toggle Bottom Area"
+        case .editorOnly: "Editor Only"
+        case .problems: "Problems"
+        case .shortcutHelp: "Keyboard Shortcuts"
+        case .globalShow: "Show Velune"
+        case .globalNewConversation: "New Conversation (Global)"
+        }
+    }
+
+    /// Other words people look for the command by, in either language.
+    var keywords: [String] {
+        switch self {
+        case .newConversation: ["chat", "session"]
+        case .openConversation: ["quick open", "switch conversation", "切换会话"]
+        case .find: ["search", "搜索"]
+        case .stop: ["cancel", "interrupt", "abort", "中断", "取消"]
+        case .stopSubAgents: ["subagent", "cancel"]
+        case .continueTurn: ["resume", "retry", "重试"]
+        case .attach: ["attachment", "upload", "file", "image", "文件", "图片"]
+        case .chooseRuntime: ["switch runtime", "agent", "harness", "切换运行时"]
+        case .chooseModel: ["switch model", "llm", "切换模型"]
+        case .chooseEffort: ["reasoning", "thinking", "切换推理强度", "思考"]
+        case .choosePermission: ["approval", "sandbox", "切换权限", "审批"]
+        case .nextAttention: ["pending", "waiting", "approval", "unread", "待处理", "未读"]
+        case .reload: ["refresh", "刷新"]
+        case .splitRight, .splitDown, .closeSplit, .nextPane, .previousPane: ["pane", "分屏"]
+        case .keepInFront: ["always on top", "pin", "置顶"]
+        case .commandPalette: ["commands"]
+        case .focusTranscript: ["transcript", "消息列表"]
+        case .showList: ["sidebar", "侧栏"]
+        case .focusComposer: ["input", "prompt", "输入框"]
+        case .showAgents: ["subagent", "子 Agent"]
+        case .editorOnly: ["zen", "maximize", "专注"]
+        case .problems: ["errors", "diagnostics", "issues", "错误"]
+        case .shortcutHelp: ["keys", "keybindings", "cheat sheet", "help", "快捷键"]
+        default: []
+        }
+    }
+
+    /// Everything the command is found by besides its title: its English
+    /// name, its keywords and its `/` name.
+    var searchTerms: [String] {
+        [englishName] + keywords + ComposerSlashCommand.all.filter { $0.command == self }.map(\.name)
+    }
+
     var standard: Shortcut? {
         switch self {
         case .newConversation: Shortcut("n")

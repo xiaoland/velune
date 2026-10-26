@@ -19,10 +19,12 @@ enum PaletteMode: Hashable {
 }
 
 /// One row of the palette. `run` receives whether ⌘Return chose it, which
-/// opens a conversation in a new tab.
+/// opens a conversation in a new tab. `aliases` are what it is also found
+/// by, never shown (DESIGN.md, 检索别名).
 struct PaletteItem: Identifiable {
     let id: String
     let title: String
+    var aliases: [String] = []
     var detail: String? = nil
     var shortcut: String? = nil
     var checked = false
@@ -32,6 +34,8 @@ struct PaletteItem: Identifiable {
 
 /// Matching typed text against titles, in order but not necessarily
 /// together: each word must match, and earlier, tighter matches rank higher.
+/// Fields come title first, then aliases, then detail, so a title match
+/// outranks the same match in an alias.
 enum FuzzyMatch {
     static func score(_ query: String, _ fields: [String]) -> Int? {
         let words = query.lowercased().split(whereSeparator: \.isWhitespace).map(String.init)
@@ -175,13 +179,16 @@ extension ConversationWindowModel {
         if waiting.contains(next.id) { focused.focusInteraction() } else { focused.composer.focusWhenShown() }
     }
 
+    /// What “沿用当前” and “运行时默认” are also found by.
+    private static let unchosenAliases = ["current", "default", "keep", "none"]
+
     /// The rows for `mode`, in the order shown before typing narrows them.
     func paletteItems(_ mode: PaletteMode) -> [PaletteItem] {
         let shortcuts = KeyboardShortcutSettings.shared
         switch mode {
         case .commands:
             let commands = ShortcutCommand.allCases.filter { !$0.isGlobal && $0 != .commandPalette }.map { command in
-                PaletteItem(id: command.rawValue, title: command.title.replacingOccurrences(of: "…", with: ""), detail: command.menu.rawValue,
+                PaletteItem(id: command.rawValue, title: command.title.replacingOccurrences(of: "…", with: ""), aliases: command.searchTerms, detail: command.menu.rawValue,
                             shortcut: shortcuts.shortcut(command)?.title, enabled: canPerform(command)) { [weak self] _ in
                     guard let self else { return }
                     // A command that opens another list keeps the palette for it.
@@ -189,20 +196,21 @@ extension ConversationWindowModel {
                     if opensList.contains(command) { perform(command) } else { closePalette(); perform(command) }
                 }
             }
-            let settings: [(SettingsTab, String)] = [(.general, "通用"), (.conversation, "会话"), (.shortcuts, "快捷键"), (.providers, "AI 提供商"), (.routes, "模型路由"), (.runtimes, "Agent 运行时")]
-                + (DeviceHub.shared == nil ? [] : [(.devices, "设备")])
-            let pages = settings.map { tab, name in
-                PaletteItem(id: "settings:\(name)", title: "设置：\(name)", detail: "设置") { [weak self] _ in
+            let settings: [(SettingsTab, String, String)] = [(.general, "通用", "General"), (.conversation, "会话", "Conversations"), (.shortcuts, "快捷键", "Keyboard Shortcuts"),
+                                                              (.providers, "AI 提供商", "AI Providers"), (.routes, "模型路由", "Model Routes"), (.runtimes, "Agent 运行时", "Agent Runtimes")]
+                + (DeviceHub.shared == nil ? [] : [(.devices, "设备", "Devices")])
+            let pages = settings.map { tab, name, english in
+                PaletteItem(id: "settings:\(name)", title: "设置：\(name)", aliases: ["Settings: " + english, "preferences"], detail: "设置") { [weak self] _ in
                     self?.closePalette()
                     SettingsNavigator.shared.tab = tab
                     self?.openSettings?()
                 }
             }
-            let windows = [("analytics", "分析"), ("resource-library", "资源库")].map { id, name in
-                PaletteItem(id: "window:\(id)", title: name, detail: "窗口") { [weak self] _ in self?.closePalette(); self?.openScene?(id) }
+            let windows = [("analytics", "分析", ["Analytics", "usage", "tokens", "用量"]), ("resource-library", "资源库", ["Resource Library", "skills", "mcp", "instructions", "技能"])].map { id, name, aliases in
+                PaletteItem(id: "window:\(id)", title: name, aliases: aliases, detail: "窗口") { [weak self] _ in self?.closePalette(); self?.openScene?(id) }
             }
             let queued = store.followUp.queue.last.map { _ in
-                [PaletteItem(id: "queue:last", title: "编辑最后一条排队消息", detail: "输入区", shortcut: "⌥↑") { [weak self] _ in
+                [PaletteItem(id: "queue:last", title: "编辑最后一条排队消息", aliases: ["Edit Last Queued Message", "queue"], detail: "输入区", shortcut: "⌥↑") { [weak self] _ in
                     self?.closePalette(focusComposer: true)
                     DispatchQueue.main.async { _ = self?.focused.composer.takeLastQueued() }
                 }]
@@ -224,7 +232,7 @@ extension ConversationWindowModel {
             }
         case .runtime:
             return store.enabledRuntimeInstances.map { runtime in
-                PaletteItem(id: runtime.id, title: runtime.name, checked: runtime.id == store.nextTurnRuntimeID) { [weak self] _ in
+                PaletteItem(id: runtime.id, title: runtime.name, aliases: [runtime.typeID], checked: runtime.id == store.nextTurnRuntimeID) { [weak self] _ in
                     self?.closePalette(focusComposer: true)
                     self?.store.selectNextTurnRuntime(runtime.id)
                 }
@@ -235,7 +243,12 @@ extension ConversationWindowModel {
                 if case .managed = choice.selection { (choice.displayName, "Velune 提供商", choice.selection) } else { (choice.displayName, nil, choice.selection) }
             }
             return choices.enumerated().map { index, choice in
-                PaletteItem(id: "\(index):\(choice.0)", title: choice.0, detail: choice.1, checked: store.chosenModel == choice.2) { [weak self] _ in
+                let aliases: [String] = switch choice.2 {
+                case .native(_, let modelID)?: [modelID]
+                case .managed?: []
+                case nil: Self.unchosenAliases
+                }
+                return PaletteItem(id: "\(index):\(choice.0)", title: choice.0, aliases: aliases, detail: choice.1, checked: store.chosenModel == choice.2) { [weak self] _ in
                     self?.closePalette(focusComposer: true)
                     self?.store.selectModel(choice.2)
                 }
@@ -243,7 +256,7 @@ extension ConversationWindowModel {
         case .effort:
             let none = store.currentEffort.map { "沿用当前（\($0)）" } ?? (store.nextTurnHasCurrent ? "沿用当前" : "运行时默认")
             return ([nil] + store.reasoningEffortOptions.map(Optional.some)).map { level in
-                PaletteItem(id: level ?? "", title: level ?? none, checked: store.nextTurnEffort == level) { [weak self] _ in
+                PaletteItem(id: level ?? "", title: level ?? none, aliases: level == nil ? Self.unchosenAliases : [], checked: store.nextTurnEffort == level) { [weak self] _ in
                     self?.closePalette(focusComposer: true)
                     self?.store.selectEffort(level)
                 }
@@ -252,9 +265,9 @@ extension ConversationWindowModel {
             let current = store.currentPermissionMode
             let none = current.map { "沿用当前（\($0.label)）" } ?? (store.nextTurnHasCurrent ? "沿用当前" : "运行时默认")
             let chosen = store.effectivePermissionMode?.id
-            return [PaletteItem(id: "", title: none, checked: chosen == nil) { [weak self] _ in self?.closePalette(focusComposer: true); self?.store.selectPermissionMode(nil) }]
+            return [PaletteItem(id: "", title: none, aliases: Self.unchosenAliases, checked: chosen == nil) { [weak self] _ in self?.closePalette(focusComposer: true); self?.store.selectPermissionMode(nil) }]
                 + store.permissionModeOptions.map { option in
-                    PaletteItem(id: option.id, title: option.label, detail: option.detail, checked: chosen == option.id) { [weak self] _ in
+                    PaletteItem(id: option.id, title: option.label, aliases: [option.id], detail: option.detail, checked: chosen == option.id) { [weak self] _ in
                         self?.closePalette(focusComposer: true)
                         self?.store.selectPermissionMode(option.id)
                     }
@@ -276,7 +289,7 @@ struct CommandPaletteView: View {
     private var items: [PaletteItem] {
         let all = window.paletteItems(mode)
         guard !query.isEmpty else { return all }
-        return all.enumerated().compactMap { index, item in FuzzyMatch.score(query, [item.title] + (item.detail.map { [$0] } ?? [])).map { (item, $0, index) } }
+        return all.enumerated().compactMap { index, item in FuzzyMatch.score(query, [item.title] + item.aliases + (item.detail.map { [$0] } ?? [])).map { (item, $0, index) } }
             .sorted { $0.1 != $1.1 ? $0.1 > $1.1 : $0.2 < $1.2 }.map(\.0)
     }
 
