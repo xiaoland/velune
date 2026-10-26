@@ -448,6 +448,6 @@ S17 实施授权：用户决定全面切换 UniFFI，并要求现在开始拆分
 
 2026-10-26 用户要求临时安装适合当前技术栈的技能并全面、深入改善 iPad UI／UX，授权使用 SwiftUI Pro 和 SwiftUI UI Patterns 指导实现。随后强调应先从源码判断并修复明显问题，验收成本高，本轮允许模拟器验收；不再将等待真机或扩大测试范围作为推进条件。
 
-## S49
+## S50
 
 2026-10-26 用户：“我们来改进 Velune 的交互体验，我们对 velune 的定位是 production-grade, heavy-agent-workflow 的 agent shell，所以我们要使得桌面端不借助鼠标就能高效地使用。”并举例：composer 中“enter 发送，shift-enter 换行（当然可以自定义）”“option + up 编辑队列中的最后一条消息”“输入 `/` 可以执行命令来切换模型、推理强度等”。开发方补充了全局导航（命令面板、快速切换会话、下一个待处理会话、全局唤起、从通知进入）、审批的键盘操作且不抢焦点、composer 的其他键、消息列表与会话列表的键盘操作，以及快捷键作用域、冲突检测、速查表和 Windows 对应等底层约定（A～F）。用户答复：“好的，我同意。你可以开始落地A~F全部。不过 steer 我会推荐就是 Cmd+ Entrer,也就是说，在运行中过程中按 enter 就是正常排队，按 cmd + enter 就是 steer。”本条修订 [S38](#s38) 与 composer 早先“Return 换行、⌘Return 发送”的约定。产品归 [键盘操作](prd/keyboard.md)，实施归 [全键盘任务](../tasks/full-keyboard/packet.md)。
