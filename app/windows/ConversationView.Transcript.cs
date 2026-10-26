@@ -113,6 +113,10 @@ public sealed partial class ConversationView
             var replies = snapshot.TranscriptTurns
                 .Where(turn => turn.ReplyStartBlock > 0 && turn.LastMessageId != null)
                 .ToDictionary(turn => turn.LastMessageId!, turn => (int)turn.ReplyStartBlock);
+            // Closing messages that are all reply, from their first block.
+            var whole = snapshot.TranscriptTurns
+                .Where(turn => turn.ReplyStartBlock == 0 && turn.LastMessageId != null)
+                .Select(turn => turn.LastMessageId!).ToHashSet();
             foreach (var item in snapshot.TranscriptItems)
             {
                 switch (item)
@@ -121,7 +125,9 @@ public sealed partial class ConversationView
                         // A reply sharing its message with work starts at the reply's first block.
                         var from = entry.Id.StartsWith("reply:", StringComparison.Ordinal) && replies.TryGetValue(message.Id, out var start) ? start : 0;
                         var user = message.Role == BindingMessageRole.User;
-                        Add(entry.Id, Version(message, from), () => Row(message, from, entry.Id), !outlineFolded || user);
+                        // The copy button goes under the user's messages and a turn's closing reply, not under its work.
+                        var copies = user || from > 0 || whole.Contains(message.Id);
+                        Add(entry.Id, Version(message, from) + "/" + copies, () => Row(message, from, entry.Id, copies), !outlineFolded || user);
                         rowMessages[rows[entry.Id].Element] = message;
                         // A turn without work still shows what it ran with.
                         if (user && turnOfUser.TryGetValue(message.Id, out var turn) && turn.WorkMessageIds.Length == 0
@@ -196,7 +202,7 @@ public sealed partial class ConversationView
     static string TurnVersion(BindingTranscriptTurn turn) =>
         $"{turn.DurationMs}/{turn.IsRunning}/{turn.Settings}/{turn.Usage}";
 
-    UIElement Row(BindingMessage message, int from, string id)
+    UIElement Row(BindingMessage message, int from, string id, bool copies)
     {
         var element = Message(message, from, message.Blocks.Length);
         if (message.Role == BindingMessageRole.User)
@@ -210,7 +216,7 @@ public sealed partial class ConversationView
                 }
             };
         }
-        return message.Role == BindingMessageRole.System ? element : WithCopy(element, CopiedText(message, from), message.Role == BindingMessageRole.User);
+        return copies ? WithCopy(element, CopiedText(message, from), message.Role == BindingMessageRole.User) : element;
     }
 
     // CopiedText is what a row's copy button copies: the text and notices
