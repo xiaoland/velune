@@ -112,6 +112,12 @@ fn parse(value: &Value, now: i64, ttl: i64) -> Result<Vec<QuotaWindow>, ()> {
             model_ids: None,
             used_percent: ratio * 100.0,
             reset_at_ms: Some(reset),
+            // Calendar months vary; only the rolling windows state a fixed period.
+            window_ms: match key {
+                "limit_5h" => Some(5 * 60 * 60 * 1000),
+                "limit_7d" => Some(7 * 24 * 60 * 60 * 1000),
+                _ => None,
+            },
             observed_at_ms: now,
             expires_at_ms: reset.min(now + ttl),
         });

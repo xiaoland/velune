@@ -125,7 +125,13 @@ impl CoreRuntime {
             Some("providers") => {
                 if matches!(
                     payload["operation"].as_str(),
-                    Some("quota" | "refreshQuota")
+                    Some(
+                        "quota"
+                            | "refreshQuota"
+                            | "quotaHistory"
+                            | "clearQuotaHistory"
+                            | "quotaAlerts"
+                    )
                 ) {
                     return Err(Error::Unsupported(
                         "subscription quota collection requires local-runtime".into(),

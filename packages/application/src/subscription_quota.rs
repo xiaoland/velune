@@ -1,9 +1,13 @@
 //! The application owns subscription observations; gateways only read this shared view.
-use crate::{ProviderQuotaStatus, ProviderQuotaWindow, QuotaFreshness};
+use crate::{
+    ProviderQuotaBalance, ProviderQuotaHistory, ProviderQuotaPace, ProviderQuotaStatus,
+    ProviderQuotaWindow, QuotaAlert, QuotaAlertKind, QuotaAlerts, QuotaFreshness,
+    QuotaHistoryBalance, QuotaHistoryPoint, QuotaHistoryWindow, QuotaPaceStatus,
+};
 use crate::{config::GatewayConfig, provider_authentication::AuthenticationMaterial};
 use serde_json::Value;
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet, VecDeque},
     path::PathBuf,
     sync::{Arc, Mutex},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
@@ -11,8 +15,16 @@ use std::{
 use velune_gateway::{QuotaSnapshot, QuotaSource, QuotaWindow};
 
 type Key = (String, String);
-type Observation = (Vec<QuotaWindow>, Option<bool>, i64, i64);
+struct Observation {
+    windows: Vec<QuotaWindow>,
+    balances: Vec<ProviderQuotaBalance>,
+    available: Option<bool>,
+    observed_at_ms: i64,
+    expires_at_ms: i64,
+}
 type ObservationResult = Result<Observation, ()>;
+/// Alerts kept for platforms that poll late; older ones are dropped.
+const RETAINED_ALERTS: usize = 64;
 #[derive(Clone, PartialEq, Eq)]
 struct Binding {
     id: String,
@@ -22,6 +34,18 @@ struct Binding {
     directory: LoginDirectory,
     kimi: Option<crate::kimi_quota::Capture>,
     ark: Option<crate::ark_quota::Capture>,
+    account: Option<crate::api_account_quota::Capture>,
+}
+impl Binding {
+    /// Durable identity of the observed account binding. A new credential
+    /// or source is a separate history; it does not reveal the previous one.
+    fn epoch(&self) -> String {
+        use sha2::Digest;
+        let digest = sha2::Sha256::digest(
+            format!("{:?}\0{}\0{}", self.source, self.id, self.generation).as_bytes(),
+        );
+        format!("{digest:x}")[..16].into()
+    }
 }
 fn cli_binary(provider: &crate::config::ProviderDefinition) -> Option<String> {
     match &provider.execution_backend {
@@ -50,9 +74,14 @@ struct Entry {
     reservation: Option<crate::kimi_quota::Owner>,
     identity_rejected: bool,
     windows: Vec<QuotaWindow>,
+    balances: Vec<ProviderQuotaBalance>,
     available: Option<bool>,
     observed_at_ms: i64,
     expires_at_ms: i64,
+    /// Usage caps of the provider, for alerts; they do not change the binding.
+    limits: Vec<crate::config::QuotaLimit>,
+    /// Alert conditions that held at the last observation.
+    alerting: BTreeSet<String>,
     running: bool,
     resample: bool,
     retry_at: Instant,
@@ -64,11 +93,14 @@ struct State {
     entries: BTreeMap<Key, Entry>,
     inflight: usize,
     stopped: bool,
+    alerts: VecDeque<QuotaAlert>,
+    alert_sequence: u64,
 }
 pub(crate) struct SubscriptionQuota {
     home: PathBuf,
     scheduling: velune_gateway::SchedulingState,
     state: Mutex<State>,
+    history: crate::quota_history::QuotaHistory,
 }
 struct GatewayView {
     service: Arc<SubscriptionQuota>,
@@ -100,6 +132,7 @@ impl SubscriptionQuota {
         scheduling: velune_gateway::SchedulingState,
     ) -> Arc<Self> {
         let service = Arc::new(Self {
+            history: crate::quota_history::QuotaHistory::new(home.join("quota-history")),
             home,
             scheduling,
             state: Mutex::new(State::default()),
@@ -108,96 +141,126 @@ impl SubscriptionQuota {
         service
     }
     pub(crate) fn configure(&self, gateways: &[GatewayConfig]) {
-        let desired: BTreeMap<Key, Option<Binding>> = gateways
+        let desired: BTreeMap<Key, (Option<Binding>, Vec<crate::config::QuotaLimit>)> = gateways
             .iter()
             .flat_map(|g| {
                 g.providers.iter().map(|p| {
-                    let binding = match (&p.authentication.material, p.quota_source) {
-                        (
-                            AuthenticationMaterial::CodexSubscription { credential_id, .. },
-                            crate::config::ProviderQuotaSource::CodexUsage,
-                        ) => Some(Binding {
-                            id: credential_id.clone(),
-                            generation: p.authentication.generation,
-                            source: p.quota_source,
-                            binary: None,
-                            directory: LoginDirectory::Owned,
-                            kimi: None,
-                            ark: None,
-                        }),
-                        (
-                            AuthenticationMaterial::ClaudeCli { credential_id, .. },
-                            crate::config::ProviderQuotaSource::ClaudeCliUsage,
-                        ) => Some(Binding {
-                            id: credential_id.clone(),
-                            generation: p.authentication.generation,
-                            source: p.quota_source,
-                            binary: cli_binary(p),
-                            directory: LoginDirectory::Owned,
-                            kimi: None,
-                            ark: None,
-                        }),
-                        (
-                            AuthenticationMaterial::ClaudeCliLinked { config_dir, .. },
-                            crate::config::ProviderQuotaSource::ClaudeCliUsage,
-                        ) => Some(Binding {
-                            id: p.id.clone(),
-                            generation: p.authentication.generation,
-                            source: p.quota_source,
-                            binary: cli_binary(p),
-                            directory: LoginDirectory::Linked(config_dir.clone()),
-                            kimi: None,
-                            ark: None,
-                        }),
-                        (
-                            AuthenticationMaterial::ApiKey { value },
-                            crate::config::ProviderQuotaSource::KimiUsage,
-                        ) => crate::config::kimi_region(&p.endpoint).map(|region| Binding {
-                            id: p.id.clone(),
-                            generation: p.authentication.generation,
-                            source: p.quota_source,
-                            binary: None,
-                            directory: LoginDirectory::Owned,
-                            ark: None,
-                            kimi: Some(crate::kimi_quota::Capture {
-                                region,
-                                key: value.clone(),
+                    let binding: Option<Binding> =
+                        match (&p.authentication.material, p.quota_source) {
+                            (
+                                AuthenticationMaterial::CodexSubscription { credential_id, .. },
+                                crate::config::ProviderQuotaSource::CodexUsage,
+                            ) => Some(Binding {
+                                id: credential_id.clone(),
+                                generation: p.authentication.generation,
+                                source: p.quota_source,
+                                binary: None,
+                                directory: LoginDirectory::Owned,
+                                kimi: None,
+                                ark: None,
+                                account: None,
                             }),
-                        }),
-                        (
-                            AuthenticationMaterial::ApiKey { .. },
-                            crate::config::ProviderQuotaSource::ArkCodingUsage,
-                        ) => Some(Binding {
-                            id: p.id.clone(),
-                            generation: p.authentication.generation,
-                            source: p.quota_source,
-                            binary: None,
-                            directory: LoginDirectory::Owned,
-                            kimi: None,
-                            ark: p.quota_authentication.access_key.as_ref().map(|key| {
-                                crate::ark_quota::Capture {
-                                    key: key.clone(),
-                                    generation: p.quota_authentication.generation,
-                                    confirmed: p
-                                        .quota_authentication
-                                        .description(p.authentication.generation)
-                                        .binding_confirmed,
-                                }
+                            (
+                                AuthenticationMaterial::ClaudeCli { credential_id, .. },
+                                crate::config::ProviderQuotaSource::ClaudeCliUsage,
+                            ) => Some(Binding {
+                                id: credential_id.clone(),
+                                generation: p.authentication.generation,
+                                source: p.quota_source,
+                                binary: cli_binary(p),
+                                directory: LoginDirectory::Owned,
+                                kimi: None,
+                                ark: None,
+                                account: None,
                             }),
-                        }),
-                        _ => None,
-                    };
-                    ((g.id.clone(), p.id.clone()), binding)
+                            (
+                                AuthenticationMaterial::ClaudeCliLinked { config_dir, .. },
+                                crate::config::ProviderQuotaSource::ClaudeCliUsage,
+                            ) => Some(Binding {
+                                id: p.id.clone(),
+                                generation: p.authentication.generation,
+                                source: p.quota_source,
+                                binary: cli_binary(p),
+                                directory: LoginDirectory::Linked(config_dir.clone()),
+                                kimi: None,
+                                ark: None,
+                                account: None,
+                            }),
+                            (
+                                AuthenticationMaterial::ApiKey { value },
+                                crate::config::ProviderQuotaSource::KimiUsage,
+                            ) => crate::config::kimi_region(&p.endpoint).map(|region| Binding {
+                                id: p.id.clone(),
+                                generation: p.authentication.generation,
+                                source: p.quota_source,
+                                binary: None,
+                                directory: LoginDirectory::Owned,
+                                ark: None,
+                                account: None,
+                                kimi: Some(crate::kimi_quota::Capture {
+                                    region,
+                                    key: value.clone(),
+                                }),
+                            }),
+                            (
+                                AuthenticationMaterial::ApiKey { .. },
+                                crate::config::ProviderQuotaSource::ArkCodingUsage,
+                            ) => Some(Binding {
+                                id: p.id.clone(),
+                                generation: p.authentication.generation,
+                                source: p.quota_source,
+                                binary: None,
+                                directory: LoginDirectory::Owned,
+                                kimi: None,
+                                account: None,
+                                ark: p.quota_authentication.access_key.as_ref().map(|key| {
+                                    crate::ark_quota::Capture {
+                                        key: key.clone(),
+                                        generation: p.quota_authentication.generation,
+                                        confirmed: p
+                                            .quota_authentication
+                                            .description(p.authentication.generation)
+                                            .binding_confirmed,
+                                    }
+                                }),
+                            }),
+                            (
+                                AuthenticationMaterial::ApiKey { value },
+                                crate::config::ProviderQuotaSource::ApiAccount,
+                            ) => velune_application_api::api_account_service(&p.endpoint).map(
+                                |service| Binding {
+                                    id: p.id.clone(),
+                                    generation: p.authentication.generation,
+                                    source: p.quota_source,
+                                    binary: None,
+                                    directory: LoginDirectory::Owned,
+                                    kimi: None,
+                                    ark: None,
+                                    account: Some(crate::api_account_quota::Capture {
+                                        service,
+                                        key: value.clone(),
+                                    }),
+                                },
+                            ),
+                            _ => None,
+                        };
+                    (
+                        (g.id.clone(), p.id.clone()),
+                        (binding, p.quota_limits.clone()),
+                    )
                 })
             })
             .collect();
         let mut state = self.state.lock().expect("quota state");
         state.entries.retain(|key, entry| {
-            if desired.get(key) == Some(&entry.binding) {
+            if let Some((_, limits)) = desired.get(key) {
+                entry.limits = limits.clone();
+            }
+            if desired.get(key).map(|(binding, _)| binding) == Some(&entry.binding) {
                 return true;
             }
             let _ = entry.cancel.send(true);
-            if let Some(binding) = desired.get(key)
+            if let Some((binding, _)) = desired.get(key)
                 && binding.as_ref().is_some_and(|b| b.kimi.is_some())
                 && entry.binding.as_ref().is_some_and(|b| b.kimi.is_some())
             {
@@ -212,7 +275,11 @@ impl SubscriptionQuota {
             }
             false
         });
-        for (key, binding) in desired {
+        let names: BTreeSet<String> = desired
+            .keys()
+            .map(|(g, p)| crate::quota_history::QuotaHistory::name(g, p))
+            .collect();
+        for (key, (binding, limits)) in desired {
             state.entries.entry(key).or_insert_with(|| Entry {
                 incarnation: crate::new_record_key(),
                 binding,
@@ -220,9 +287,12 @@ impl SubscriptionQuota {
                 reservation: None,
                 identity_rejected: false,
                 windows: Vec::new(),
+                balances: Vec::new(),
                 available: None,
                 observed_at_ms: 0,
                 expires_at_ms: 0,
+                limits,
+                alerting: BTreeSet::new(),
                 running: false,
                 resample: false,
                 retry_at: Instant::now(),
@@ -230,6 +300,8 @@ impl SubscriptionQuota {
                 cancel: tokio::sync::watch::channel(false).0,
             });
         }
+        drop(state);
+        self.history.retain(&names);
     }
     pub(crate) async fn authorize(
         self: &Arc<Self>,
@@ -322,6 +394,73 @@ impl SubscriptionQuota {
         force: bool,
     ) -> Result<ProviderQuotaStatus, crate::Error> {
         self.query_binding(gateway_id, provider_id, force, None)
+    }
+    /// The current binding's retained observations since `since_ms`.
+    pub(crate) fn history(
+        &self,
+        gateway_id: &str,
+        provider_id: &str,
+        since_ms: i64,
+    ) -> Result<ProviderQuotaHistory, crate::Error> {
+        let epoch = self
+            .state
+            .lock()
+            .expect("quota state")
+            .entries
+            .get(&(gateway_id.to_owned(), provider_id.to_owned()))
+            .ok_or_else(|| crate::Error::invalid("provider id"))?
+            .binding
+            .as_ref()
+            .map(Binding::epoch);
+        let points = match epoch {
+            Some(epoch) => self
+                .history
+                .read(gateway_id, provider_id, &epoch, since_ms, now_ms())
+                .map_err(|_| crate::Error::invalid("额度历史无法读取"))?,
+            None => Vec::new(),
+        };
+        Ok(ProviderQuotaHistory {
+            gateway_id: gateway_id.into(),
+            provider_id: provider_id.into(),
+            points,
+        })
+    }
+    /// Remove the provider's retained observations; current quota is kept.
+    pub(crate) fn clear_history(
+        &self,
+        gateway_id: &str,
+        provider_id: &str,
+    ) -> Result<ProviderQuotaHistory, crate::Error> {
+        if !self
+            .state
+            .lock()
+            .expect("quota state")
+            .entries
+            .contains_key(&(gateway_id.to_owned(), provider_id.to_owned()))
+        {
+            return Err(crate::Error::invalid("provider id"));
+        }
+        self.history
+            .clear(gateway_id, provider_id)
+            .map_err(|_| crate::Error::invalid("额度历史无法清除"))?;
+        Ok(ProviderQuotaHistory {
+            gateway_id: gateway_id.into(),
+            provider_id: provider_id.into(),
+            points: Vec::new(),
+        })
+    }
+    /// Alerts raised after `since`, within the retained few.
+    pub(crate) fn alerts(&self, since: u64) -> QuotaAlerts {
+        let state = self.state.lock().expect("quota state");
+        QuotaAlerts {
+            alerts: state
+                .alerts
+                .iter()
+                .filter(|alert| alert.sequence > since)
+                .cloned()
+                .collect(),
+            cursor: state.alert_sequence,
+        }
     }
     fn query_binding(
         self: &Arc<Self>,
@@ -433,6 +572,7 @@ impl SubscriptionQuota {
                                 .scheduling
                                 .invalidate_provider(&worker_key.0, &worker_key.1);
                             entry.windows.clear();
+                            entry.balances.clear();
                             entry.available = None;
                             entry.observed_at_ms = 0;
                             entry.expires_at_ms = 0;
@@ -441,20 +581,8 @@ impl SubscriptionQuota {
                         entry.reservation = None;
                     }
                     entry.retry_at = Instant::now() + Duration::from_secs(50 + jitter);
-                    match result {
-                        Ok((windows, available, observed, expires)) => {
-                            entry.windows = windows;
-                            entry.available = available;
-                            entry.observed_at_ms = observed;
-                            entry.expires_at_ms = expires;
-                            entry.problem = None;
-                            if expires > observed {
-                                entry.retry_at = Instant::now()
-                                    + Duration::from_millis(
-                                        u64::try_from(expires - observed).expect("future expiry"),
-                                    );
-                            }
-                        }
+                    let observation = match result {
+                        Ok(observation) => observation,
                         Err(()) => {
                             let expired = now_ms();
                             entry.expires_at_ms = entry.expires_at_ms.min(expired);
@@ -462,9 +590,52 @@ impl SubscriptionQuota {
                                 window.expires_at_ms = window.expires_at_ms.min(expired);
                             }
                             entry.problem =
-                                Some("额度暂不可用；保留上次观测，稍后可重新读取。".into())
+                                Some("额度暂不可用；保留上次观测，稍后可重新读取。".into());
+                            return;
+                        }
+                    };
+                    let (observed, expires) =
+                        (observation.observed_at_ms, observation.expires_at_ms);
+                    let raised = alert_conditions(&observation, &entry.limits);
+                    let point = history_point(&observation);
+                    let fresh_alerts: Vec<_> = raised
+                        .iter()
+                        .filter(|(key, _)| !entry.alerting.contains(*key))
+                        .map(|(_, alert)| alert.clone())
+                        .collect();
+                    entry.alerting = raised.into_keys().collect();
+                    entry.windows = observation.windows;
+                    entry.balances = observation.balances;
+                    entry.available = observation.available;
+                    entry.observed_at_ms = observed;
+                    entry.expires_at_ms = expires;
+                    entry.problem = None;
+                    if expires > observed {
+                        entry.retry_at = Instant::now()
+                            + Duration::from_millis(
+                                u64::try_from(expires - observed).expect("future expiry"),
+                            );
+                    }
+                    for (kind, window_id, max_used_percent) in fresh_alerts {
+                        state.alert_sequence += 1;
+                        let alert = QuotaAlert {
+                            sequence: state.alert_sequence,
+                            gateway_id: worker_key.0.clone(),
+                            provider_id: worker_key.1.clone(),
+                            kind,
+                            window_id,
+                            max_used_percent,
+                            observed_at_ms: observed,
+                        };
+                        state.alerts.push_back(alert);
+                        if state.alerts.len() > RETAINED_ALERTS {
+                            state.alerts.pop_front();
                         }
                     }
+                    drop(state);
+                    service
+                        .history
+                        .record(&worker_key.0, &worker_key.1, &binding.epoch(), point);
                 });
             if spawned.is_err() {
                 state.inflight -= 1;
@@ -500,10 +671,13 @@ impl SubscriptionQuota {
                     model_ids: w.model_ids.clone(),
                     used_percent: w.used_percent,
                     reset_at_ms: w.reset_at_ms,
+                    window_ms: w.window_ms,
                     observed_at_ms: w.observed_at_ms,
                     expires_at_ms: w.expires_at_ms,
+                    pace: pace(w),
                 })
                 .collect(),
+            balances: entry.balances.clone(),
             available: entry.available,
             refreshing: entry.running,
             problem: entry.problem.clone().or_else(|| {
@@ -574,6 +748,7 @@ impl QuotaSource for GatewayView {
                 model_ids: w.model_ids,
                 used_percent: w.used_percent,
                 reset_at_ms: w.reset_at_ms,
+                window_ms: w.window_ms,
                 observed_at_ms: w.observed_at_ms,
                 expires_at_ms: w.expires_at_ms,
             })
@@ -590,6 +765,117 @@ impl QuotaSource for GatewayView {
             QuotaFreshness::Unknown => QuotaSnapshot::Unknown,
             QuotaFreshness::Unsupported => QuotaSnapshot::Unsupported,
         }
+    }
+}
+/// The observed use against an even spend over the window's period, at the
+/// time of the observation. The rate is the average since the period began.
+fn pace(window: &QuotaWindow) -> Option<ProviderQuotaPace> {
+    let observed = window.observed_at_ms;
+    let ahead = window.remaining_period(observed)?;
+    let (reset, period) = (window.reset_at_ms?, window.window_ms? as f64);
+    let used = window.used_percent.clamp(0.0, 100.0);
+    let expected = 100.0 * (1.0 - ahead);
+    if used >= 100.0 {
+        return Some(ProviderQuotaPace {
+            expected_used_percent: expected,
+            runs_out_at_ms: None,
+            status: QuotaPaceStatus::Exhausted,
+        });
+    }
+    let elapsed = period * (1.0 - ahead);
+    // Too early in the period for an average to mean anything.
+    let runs_out_at_ms = (elapsed >= period * 0.02 && used > 0.0)
+        .then(|| observed + ((100.0 - used) * elapsed / used) as i64)
+        .filter(|at| *at < reset);
+    // A few points over an even spend still read as on pace.
+    let status = if runs_out_at_ms.is_some() && used > expected + 3.0 {
+        QuotaPaceStatus::RunsOutBeforeReset
+    } else {
+        QuotaPaceStatus::OnPace
+    };
+    Some(ProviderQuotaPace {
+        expected_used_percent: expected,
+        runs_out_at_ms,
+        status,
+    })
+}
+type AlertCondition = (QuotaAlertKind, Option<String>, Option<u8>);
+/// Conditions holding at one observation, keyed so that a condition lasting
+/// across observations is raised once.
+fn alert_conditions(
+    observation: &Observation,
+    limits: &[crate::config::QuotaLimit],
+) -> BTreeMap<String, AlertCondition> {
+    let mut raised = BTreeMap::new();
+    if observation.available == Some(false) {
+        raised.insert(
+            "unavailable".into(),
+            (QuotaAlertKind::Unavailable, None, None),
+        );
+    }
+    for window in &observation.windows {
+        let scope = window
+            .model_ids
+            .as_ref()
+            .map_or(String::new(), |ids| ids.join(","));
+        if window.used_percent >= 100.0 {
+            raised.insert(
+                format!("exhausted:{}:{scope}", window.id),
+                (QuotaAlertKind::Exhausted, Some(window.id.clone()), None),
+            );
+        } else if let Some(limit) = limits.iter().find(|limit| {
+            limit.window_id == window.id && window.used_percent >= f64::from(limit.max_used_percent)
+        }) {
+            raised.insert(
+                format!("cap:{}:{scope}", window.id),
+                (
+                    QuotaAlertKind::CapReached,
+                    Some(window.id.clone()),
+                    Some(limit.max_used_percent),
+                ),
+            );
+        }
+    }
+    raised
+}
+fn history_point(observation: &Observation) -> QuotaHistoryPoint {
+    QuotaHistoryPoint {
+        observed_at_ms: observation.observed_at_ms,
+        available: observation.available,
+        windows: observation
+            .windows
+            .iter()
+            .map(|w| QuotaHistoryWindow {
+                id: w.id.clone(),
+                model_ids: w.model_ids.clone(),
+                used_percent: w.used_percent,
+                reset_at_ms: w.reset_at_ms,
+                window_ms: w.window_ms,
+            })
+            .collect(),
+        balances: observation
+            .balances
+            .iter()
+            .map(|b| QuotaHistoryBalance {
+                id: b.id.clone(),
+                amount: b.amount,
+                unit: b.unit.clone(),
+            })
+            .collect(),
+    }
+}
+fn observation(
+    windows: Vec<QuotaWindow>,
+    available: Option<bool>,
+    observed: i64,
+    expires: i64,
+) -> Observation {
+    Observation {
+        windows,
+        balances: Vec::new(),
+        available,
+        observed_at_ms: observed,
+        expires_at_ms: expires,
     }
 }
 fn collect(
@@ -609,7 +895,8 @@ fn collect(
                 match binding.source {
                     crate::config::ProviderQuotaSource::CodexUsage => crate::subscription_auth::read_usage(home, binding.id.clone(), binding.generation).await.map_err(|_| ()).and_then(|value| parse_windows(&value,ttl_ms)),
                     crate::config::ProviderQuotaSource::ClaudeCliUsage => { let owned=crate::claude_cli::directory(&home,&binding.id); let dir=match &binding.directory { LoginDirectory::Owned=>Some(owned.as_path()), LoginDirectory::Linked(dir)=>dir.as_deref().map(std::path::Path::new) }; let text=crate::claude_cli::usage(binding.binary.as_deref().ok_or(())?,dir).await?; parse_claude_windows(&text,ttl_ms) },
-                    crate::config::ProviderQuotaSource::ArkCodingUsage => { let observed=now_ms(); let windows=binding.ark.as_ref().ok_or(())?.windows(observed,ttl_ms).await?; let expires=windows.iter().map(|w|w.expires_at_ms).min().ok_or(())?; Ok((windows,None,observed,expires)) },
+                    crate::config::ProviderQuotaSource::ArkCodingUsage => { let observed=now_ms(); let windows=binding.ark.as_ref().ok_or(())?.windows(observed,ttl_ms).await?; let expires=windows.iter().map(|w|w.expires_at_ms).min().ok_or(())?; Ok(observation(windows,None,observed,expires)) },
+                    crate::config::ProviderQuotaSource::ApiAccount => { let observed=now_ms(); let found=binding.account.as_ref().ok_or(())?.observe(observed,ttl_ms).await?; let expires=found.windows.iter().map(|w|w.expires_at_ms).min().unwrap_or(observed+ttl_ms); Ok(Observation { windows: found.windows, balances: found.balances, available: found.available, observed_at_ms: observed, expires_at_ms: expires }) },
                     crate::config::ProviderQuotaSource::None | crate::config::ProviderQuotaSource::KimiUsage => Err(()),
                 }
             } => result,
@@ -680,6 +967,7 @@ fn parse_windows(value: &Value, ttl_ms: i64) -> ObservationResult {
             model_ids,
             used_percent: used,
             reset_at_ms,
+            window_ms: i64::try_from(span).ok().and_then(|s| s.checked_mul(1000)),
             observed_at_ms: observed,
             expires_at_ms: reset_at_ms
                 .map_or(observed + ttl_ms, |reset| reset.min(observed + ttl_ms)),
@@ -693,7 +981,7 @@ fn parse_windows(value: &Value, ttl_ms: i64) -> ObservationResult {
         .map(|w| w.expires_at_ms)
         .min()
         .unwrap_or(observed + ttl_ms);
-    Ok((windows, available, observed, expires))
+    Ok(observation(windows, available, observed, expires))
 }
 
 fn parse_claude_windows(text: &str, ttl_ms: i64) -> ObservationResult {
@@ -703,13 +991,13 @@ fn parse_claude_windows(text: &str, ttl_ms: i64) -> ObservationResult {
     }
     let mut windows = Vec::new();
     for line in text.lines().map(str::trim) {
-        let (id, body) = if let Some(body) = line.strip_prefix("Current session:") {
-            ("window:18000", body)
+        let (id, period, body) = if let Some(body) = line.strip_prefix("Current session:") {
+            ("window:18000", 18_000_000, body)
         } else if let Some(body) = line
             .strip_prefix("Current week (all models):")
             .or_else(|| line.strip_prefix("Current week:"))
         {
-            ("window:604800", body)
+            ("window:604800", 604_800_000, body)
         } else {
             continue;
         };
@@ -730,6 +1018,7 @@ fn parse_claude_windows(text: &str, ttl_ms: i64) -> ObservationResult {
             model_ids: None,
             used_percent: used,
             reset_at_ms: None,
+            window_ms: Some(period),
             observed_at_ms: observed,
             expires_at_ms: observed + ttl_ms,
         });
@@ -737,7 +1026,7 @@ fn parse_claude_windows(text: &str, ttl_ms: i64) -> ObservationResult {
     if windows.is_empty() {
         return Err(());
     }
-    Ok((windows, None, observed, observed + ttl_ms))
+    Ok(observation(windows, None, observed, observed + ttl_ms))
 }
 
 fn collect_kimi(
@@ -757,7 +1046,7 @@ fn collect_kimi(
         let owner=tokio::select! { result=async { match verified { Some(owner)=>Ok(owner),None=>capture.owner().await } }=>result.ok(), _=cancel.changed()=>None };
         let Some(owner)=owner else { return (None,Err(())); };
         let observed=now_ms();
-        let result=tokio::select! { result=capture.windows(observed,ttl)=>result.map(|windows| { let expires=windows.iter().map(|w|w.expires_at_ms).min().expect("nonempty windows"); (windows,None,observed,expires) }), _=cancel.changed()=>Err(()) };
+        let result=tokio::select! { result=capture.windows(observed,ttl)=>result.map(|windows| { let expires=windows.iter().map(|w|w.expires_at_ms).min().expect("nonempty windows"); observation(windows,None,observed,expires) }), _=cancel.changed()=>Err(()) };
         (Some(owner),result)
     })
 }

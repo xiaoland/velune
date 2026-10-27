@@ -37,7 +37,7 @@ pub struct ProviderTemplate {
     pub disclosure: Option<SubscriptionDisclosure>,
 }
 
-/// Subscriptions first, then the editable API provider.
+/// Subscriptions first, then the editable API provider and official API services.
 pub fn provider_templates() -> Vec<ProviderTemplate> {
     vec![
         ProviderTemplate {
@@ -102,5 +102,41 @@ pub fn provider_templates() -> Vec<ProviderTemplate> {
             executable_command: None,
             disclosure: None,
         },
+        api_account_template(
+            "deepseekApi",
+            "DeepSeek API",
+            "以 API key 访问 DeepSeek 开放平台，并读取账户余额。",
+            "https://api.deepseek.com",
+        ),
+        api_account_template(
+            "moonshotApi",
+            "Moonshot API",
+            "以 API key 访问 Moonshot（Kimi）开放平台，并读取账户可用余额；国际站地址为 api.moonshot.ai。",
+            "https://api.moonshot.cn/v1",
+        ),
+        api_account_template(
+            "openRouterApi",
+            "OpenRouter",
+            "以 API key 访问 OpenRouter，并读取这个 Key 的花费上限与剩余额度。",
+            "https://openrouter.ai/api/v1",
+        ),
     ]
+}
+
+/// An API provider at an official address whose account quota is read with its key.
+fn api_account_template(id: &str, name: &str, summary: &str, endpoint: &str) -> ProviderTemplate {
+    ProviderTemplate {
+        id: id.into(),
+        kind: ProviderTemplateKind::Api,
+        name: name.into(),
+        summary: summary.into(),
+        protocol: GatewayProtocol::ChatCompletionsV1,
+        endpoint: endpoint.into(),
+        execution_backend: ExecutionBackend::Http,
+        request_profile: RequestProfile::Native,
+        authentication_source: ProviderAuthenticationSource::ApiKey,
+        quota_source: ProviderQuotaSource::ApiAccount,
+        executable_command: None,
+        disclosure: None,
+    }
 }

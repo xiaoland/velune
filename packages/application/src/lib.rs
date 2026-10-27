@@ -27,6 +27,10 @@ mod quota_authentication;
 mod subscription_auth;
 #[cfg(feature = "local-runtime")]
 mod subscription_quota;
+#[cfg(feature = "local-runtime")]
+mod api_account_quota;
+#[cfg(feature = "local-runtime")]
+mod quota_history;
 pub use provider_authentication::{
     AuthenticationEdit, AuthenticationMethod, AuthenticationProvenance,
     CODEX_SUBSCRIPTION_ENDPOINT, CODEX_SUBSCRIPTION_PROTOCOL, LinkedClaudeLogin,

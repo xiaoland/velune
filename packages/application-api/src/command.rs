@@ -129,6 +129,9 @@ pub enum CommandKind {
     ApplyProviderImport,
     ProviderQuota,
     RefreshProviderQuota,
+    ProviderQuotaHistory,
+    ClearProviderQuotaHistory,
+    QuotaAlerts,
     SaveProvider,
     DeleteProvider,
     SaveModelRoute,
@@ -481,6 +484,19 @@ pub enum Command {
         gateway_id: String,
         provider_id: String,
     },
+    /// Observations retained since `since_ms` for the current binding.
+    ProviderQuotaHistory {
+        gateway_id: String,
+        provider_id: String,
+        since_ms: i64,
+    },
+    ClearProviderQuotaHistory {
+        gateway_id: String,
+        provider_id: String,
+    },
+    QuotaAlerts {
+        since: u64,
+    },
     SaveProvider {
         gateway_id: String,
         provider: ProviderDraft,
@@ -634,6 +650,9 @@ pub enum Response {
     ApplyProviderImport(ImportResult),
     ProviderQuota(ProviderQuotaStatus),
     RefreshProviderQuota(ProviderQuotaStatus),
+    ProviderQuotaHistory(ProviderQuotaHistory),
+    ClearProviderQuotaHistory(ProviderQuotaHistory),
+    QuotaAlerts(QuotaAlerts),
     SaveProvider(GatewayUpdate),
     DeleteProvider(GatewayUpdate),
     SaveModelRoute(GatewayUpdate),
@@ -693,6 +712,8 @@ impl Command {
             | Self::FileDiff { .. }
             | Self::PreviewProviderImport { .. }
             | Self::ProviderQuota { .. }
+            | Self::ProviderQuotaHistory { .. }
+            | Self::QuotaAlerts { .. }
             | Self::ReadProviderApiKey { .. }
             | Self::FetchPublicModelCatalog
             | Self::ReadAttachment { .. } => DeliveryClass::Observation,
@@ -742,6 +763,7 @@ impl Command {
             | Self::StopSubAgents { .. }
             | Self::ApplyProviderImport { .. }
             | Self::RefreshProviderQuota { .. }
+            | Self::ClearProviderQuotaHistory { .. }
             | Self::SaveProvider { .. }
             | Self::DeleteProvider { .. }
             | Self::SaveModelRoute { .. }
@@ -846,6 +868,9 @@ impl Command {
             Self::ApplyProviderImport { .. } => CommandKind::ApplyProviderImport,
             Self::ProviderQuota { .. } => CommandKind::ProviderQuota,
             Self::RefreshProviderQuota { .. } => CommandKind::RefreshProviderQuota,
+            Self::ProviderQuotaHistory { .. } => CommandKind::ProviderQuotaHistory,
+            Self::ClearProviderQuotaHistory { .. } => CommandKind::ClearProviderQuotaHistory,
+            Self::QuotaAlerts { .. } => CommandKind::QuotaAlerts,
             Self::SaveProvider { .. } => CommandKind::SaveProvider,
             Self::DeleteProvider { .. } => CommandKind::DeleteProvider,
             Self::SaveModelRoute { .. } => CommandKind::SaveModelRoute,

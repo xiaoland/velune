@@ -1,5 +1,6 @@
 //! Transport-neutral, typed Velune application contracts.
 pub mod acp;
+mod api_account;
 pub mod authentication;
 pub mod bytes;
 mod catalog;
@@ -13,6 +14,7 @@ pub mod runtime_execution;
 pub mod runtime_management;
 pub mod transcript_delivery;
 pub use acp::*;
+pub use api_account::{ApiAccountService, api_account_service};
 pub use authentication::*;
 pub use catalog::*;
 pub use command::*;

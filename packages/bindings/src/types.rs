@@ -411,6 +411,7 @@ pub enum BindingProviderQuotaSource {
     ClaudeCliUsage,
     KimiUsage,
     ArkCodingUsage,
+    ApiAccount,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
@@ -1901,8 +1902,91 @@ pub struct BindingProviderQuotaWindow {
     pub model_ids: Option<Vec<String>>,
     pub used_percent: f64,
     pub reset_at_ms: Option<i64>,
+    pub window_ms: Option<i64>,
     pub observed_at_ms: i64,
     pub expires_at_ms: i64,
+    pub pace: Option<BindingProviderQuotaPace>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Enum)]
+#[serde(rename_all = "camelCase")]
+pub enum BindingQuotaPaceStatus {
+    OnPace,
+    RunsOutBeforeReset,
+    Exhausted,
+}
+/// Use against an even spend over the period; the rate is the average so far.
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+#[serde(rename_all = "camelCase")]
+pub struct BindingProviderQuotaPace {
+    pub expected_used_percent: f64,
+    pub runs_out_at_ms: Option<i64>,
+    pub status: BindingQuotaPaceStatus,
+}
+/// An account amount such as a prepaid balance; `unit` is an ISO 4217 code.
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+#[serde(rename_all = "camelCase")]
+pub struct BindingProviderQuotaBalance {
+    pub id: String,
+    pub amount: f64,
+    pub unit: String,
+    pub observed_at_ms: i64,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+#[serde(rename_all = "camelCase")]
+pub struct BindingQuotaHistoryWindow {
+    pub id: String,
+    pub model_ids: Option<Vec<String>>,
+    pub used_percent: f64,
+    pub reset_at_ms: Option<i64>,
+    pub window_ms: Option<i64>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+#[serde(rename_all = "camelCase")]
+pub struct BindingQuotaHistoryBalance {
+    pub id: String,
+    pub amount: f64,
+    pub unit: String,
+}
+/// One successful observation; time between points was not observed.
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+#[serde(rename_all = "camelCase")]
+pub struct BindingQuotaHistoryPoint {
+    pub observed_at_ms: i64,
+    pub available: Option<bool>,
+    pub windows: Vec<BindingQuotaHistoryWindow>,
+    pub balances: Vec<BindingQuotaHistoryBalance>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+#[serde(rename_all = "camelCase")]
+pub struct BindingProviderQuotaHistory {
+    pub gateway_id: String,
+    pub provider_id: String,
+    pub points: Vec<BindingQuotaHistoryPoint>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Enum)]
+#[serde(rename_all = "camelCase")]
+pub enum BindingQuotaAlertKind {
+    CapReached,
+    Exhausted,
+    Unavailable,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+#[serde(rename_all = "camelCase")]
+pub struct BindingQuotaAlert {
+    pub sequence: u64,
+    pub gateway_id: String,
+    pub provider_id: String,
+    pub kind: BindingQuotaAlertKind,
+    pub window_id: Option<String>,
+    pub max_used_percent: Option<u8>,
+    pub observed_at_ms: i64,
+}
+/// Alerts after the polled cursor; `cursor` is the value to pass next time.
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+#[serde(rename_all = "camelCase")]
+pub struct BindingQuotaAlerts {
+    pub alerts: Vec<BindingQuotaAlert>,
+    pub cursor: u64,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 #[serde(rename_all = "camelCase")]
@@ -1911,6 +1995,7 @@ pub struct BindingProviderQuotaStatus {
     pub provider_id: String,
     pub freshness: BindingQuotaFreshness,
     pub windows: Vec<BindingProviderQuotaWindow>,
+    pub balances: Vec<BindingProviderQuotaBalance>,
     pub available: Option<bool>,
     pub refreshing: bool,
     pub problem: Option<String>,

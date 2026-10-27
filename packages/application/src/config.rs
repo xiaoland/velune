@@ -501,6 +501,16 @@ impl ProviderDefinition {
                 "ARK Coding Plan 必须组合 HTTP、API key、ArkCoding、ArkCodingUsage 与官方 Coding 地址",
             );
         }
+        if self.quota_source == ProviderQuotaSource::ApiAccount
+            && (self.execution_backend != ExecutionBackend::Http
+                || source != Auth::ApiKey
+                || self.request_profile != RequestProfile::Native
+                || velune_application_api::api_account_service(&self.endpoint).is_none())
+        {
+            return Err(
+                "官方账户额度只适用于以 API key 直连 DeepSeek、Moonshot 或 OpenRouter 官方地址的提供商",
+            );
+        }
         match &self.execution_backend {
             ExecutionBackend::Http => {
                 if source == Auth::ClaudeCli {

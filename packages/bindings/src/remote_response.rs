@@ -136,6 +136,12 @@ pub enum BindingApplicationResponse {
     ProviderQuotaStatus {
         value: BindingProviderQuotaStatus,
     },
+    ProviderQuotaHistory {
+        value: BindingProviderQuotaHistory,
+    },
+    QuotaAlerts {
+        value: BindingQuotaAlerts,
+    },
     GatewayUpdate {
         value: BindingGatewayUpdate,
     },
@@ -341,6 +347,14 @@ impl TryFrom<Response> for BindingApplicationResponse {
                     value: convert(value)?,
                 }
             }
+            Response::ProviderQuotaHistory(value) | Response::ClearProviderQuotaHistory(value) => {
+                Self::ProviderQuotaHistory {
+                    value: convert(value)?,
+                }
+            }
+            Response::QuotaAlerts(value) => Self::QuotaAlerts {
+                value: convert(value)?,
+            },
             Response::SaveProvider(value)
             | Response::DeleteProvider(value)
             | Response::SaveModelRoute(value)

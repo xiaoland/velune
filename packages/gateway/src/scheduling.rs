@@ -13,8 +13,21 @@ pub struct QuotaWindow {
     pub model_ids: Option<Vec<String>>,
     pub used_percent: f64,
     pub reset_at_ms: Option<i64>,
+    /// How long one period of the window lasts, when the source states it.
+    pub window_ms: Option<i64>,
     pub observed_at_ms: i64,
     pub expires_at_ms: i64,
+}
+impl QuotaWindow {
+    /// The share of the period still ahead at `now`, which is also the share
+    /// of the quota an even spend would leave. Needs the stated reset and
+    /// period; a reset further away than one period is not trusted.
+    pub fn remaining_period(&self, now_ms: i64) -> Option<f64> {
+        let (reset, period) = (self.reset_at_ms?, self.window_ms.filter(|ms| *ms > 0)?);
+        let ahead = reset - now_ms;
+        (ahead > 0 && ahead as f64 <= period as f64 * 1.01)
+            .then(|| (ahead as f64 / period as f64).min(1.0))
+    }
 }
 #[derive(Debug, Clone)]
 pub enum QuotaSnapshot {
@@ -492,7 +505,7 @@ fn quota_margin(
             if remaining <= 0.0 {
                 return Err(reset_delay(window, now));
             }
-            let remaining = remaining / f64::from(limit.max_used_percent);
+            let remaining = paced(remaining / f64::from(limit.max_used_percent), window, now);
             margin = Some(margin.map_or(remaining, |old| old.min(remaining)));
         }
     }
@@ -501,9 +514,17 @@ fn quota_margin(
         if remaining <= 0.0 {
             return Err(reset_delay(window, now));
         }
+        let remaining = paced(remaining, window, now);
         margin = Some(margin.map_or(remaining, |old| old.min(remaining)));
     }
     Ok(margin)
+}
+/// Remaining quota against what an even spend would still hold: above 1 the
+/// window resets with quota left over, below 1 it runs short. Without a stated
+/// reset and period the whole period counts as ahead, which ranks by remaining
+/// share alone. The floor bounds a window resetting within moments.
+fn paced(remaining: f64, window: &QuotaWindow, now: i64) -> f64 {
+    remaining / window.remaining_period(now).unwrap_or(1.0).max(0.01)
 }
 fn reset_delay(window: &QuotaWindow, now: i64) -> Option<Duration> {
     window

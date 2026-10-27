@@ -645,8 +645,43 @@ pub struct ProviderQuotaWindow {
     pub model_ids: Option<Vec<String>>,
     pub used_percent: f64,
     pub reset_at_ms: Option<i64>,
+    /// How long one period lasts, when the source states it.
+    pub window_ms: Option<i64>,
     pub observed_at_ms: i64,
     pub expires_at_ms: i64,
+    /// Present when the source states both the reset and the period.
+    pub pace: Option<ProviderQuotaPace>,
+}
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum QuotaPaceStatus {
+    /// At the average rate since the period began, quota lasts to the reset.
+    OnPace,
+    /// At that rate the window empties before it resets.
+    RunsOutBeforeReset,
+    Exhausted,
+}
+/// The observed use against an even spend across the window's period. The
+/// rate is the average since the period began, not a forecast.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderQuotaPace {
+    /// The used share an even spend would have reached when observed.
+    pub expected_used_percent: f64,
+    /// When the window empties at that rate, only if before its reset.
+    pub runs_out_at_ms: Option<i64>,
+    pub status: QuotaPaceStatus,
+}
+/// An amount the provider's account reports, such as its prepaid balance.
+/// It has no period and is never converted to a percentage.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderQuotaBalance {
+    pub id: String,
+    pub amount: f64,
+    /// An ISO 4217 currency code.
+    pub unit: String,
+    pub observed_at_ms: i64,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -655,9 +690,76 @@ pub struct ProviderQuotaStatus {
     pub provider_id: String,
     pub freshness: QuotaFreshness,
     pub windows: Vec<ProviderQuotaWindow>,
+    pub balances: Vec<ProviderQuotaBalance>,
     pub available: Option<bool>,
     pub refreshing: bool,
     pub problem: Option<String>,
+}
+
+/// One retained window value; the history keeps no expiry or pace.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct QuotaHistoryWindow {
+    pub id: String,
+    pub model_ids: Option<Vec<String>>,
+    pub used_percent: f64,
+    pub reset_at_ms: Option<i64>,
+    pub window_ms: Option<i64>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct QuotaHistoryBalance {
+    pub id: String,
+    pub amount: f64,
+    pub unit: String,
+}
+/// One successful observation. Gaps between points are times nothing was
+/// observed, not unchanged quota.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct QuotaHistoryPoint {
+    pub observed_at_ms: i64,
+    pub available: Option<bool>,
+    pub windows: Vec<QuotaHistoryWindow>,
+    pub balances: Vec<QuotaHistoryBalance>,
+}
+/// The current authentication binding's retained observations, oldest first.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderQuotaHistory {
+    pub gateway_id: String,
+    pub provider_id: String,
+    pub points: Vec<QuotaHistoryPoint>,
+}
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum QuotaAlertKind {
+    /// A window reached the provider's usage cap; new requests pause.
+    CapReached,
+    /// A window is fully used.
+    Exhausted,
+    /// The provider reports the account cannot be used now.
+    Unavailable,
+}
+/// A quota condition that newly held at an observation. It is raised again
+/// only after an observation without it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QuotaAlert {
+    pub sequence: u64,
+    pub gateway_id: String,
+    pub provider_id: String,
+    pub kind: QuotaAlertKind,
+    pub window_id: Option<String>,
+    pub max_used_percent: Option<u8>,
+    pub observed_at_ms: i64,
+}
+/// Alerts after the polled cursor; `cursor` is the value to pass next time.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QuotaAlerts {
+    pub alerts: Vec<QuotaAlert>,
+    pub cursor: u64,
 }
 
 /// Matches on the addressed device. Failures prevent assuming a unique match.

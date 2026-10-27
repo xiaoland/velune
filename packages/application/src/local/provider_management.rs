@@ -18,6 +18,34 @@ impl CoreRuntime {
                 payload["operation"] == "refreshQuota",
             )?)?);
         }
+        if payload["operation"] == "quotaAlerts" {
+            let since = payload["since"]
+                .as_u64()
+                .ok_or_else(|| RuntimeError::invalid("since"))?;
+            return Ok(serde_json::to_value(self.subscription_quota.alerts(since))?);
+        }
+        if matches!(
+            payload["operation"].as_str(),
+            Some("quotaHistory" | "clearQuotaHistory")
+        ) {
+            let gateway_id = payload["gatewayID"]
+                .as_str()
+                .ok_or_else(|| RuntimeError::invalid("gateway id"))?;
+            let provider_id = payload["providerID"]
+                .as_str()
+                .ok_or_else(|| RuntimeError::invalid("provider id"))?;
+            let history = if payload["operation"] == "clearQuotaHistory" {
+                self.subscription_quota
+                    .clear_history(gateway_id, provider_id)?
+            } else {
+                let since = payload["sinceMs"]
+                    .as_i64()
+                    .ok_or_else(|| RuntimeError::invalid("since"))?;
+                self.subscription_quota
+                    .history(gateway_id, provider_id, since)?
+            };
+            return Ok(serde_json::to_value(history)?);
+        }
         if payload["operation"] == "readApiKey" {
             let gateway = self
                 .gateways

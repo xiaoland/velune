@@ -126,6 +126,7 @@ fn parse(value: &Value, now: i64, ttl: i64) -> Result<Vec<QuotaWindow>, ()> {
             model_ids: None,
             used_percent: used,
             reset_at_ms: reset,
+            window_ms: None,
             observed_at_ms: now,
             expires_at_ms: reset.map_or(now + ttl, |r| r.min(now + ttl)),
         });

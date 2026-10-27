@@ -512,6 +512,24 @@ impl Application {
             } => Response::RefreshProviderQuota(
                 application.refresh_provider_quota(gateway_id, provider_id)?,
             ),
+            Command::ProviderQuotaHistory {
+                gateway_id,
+                provider_id,
+                since_ms,
+            } => Response::ProviderQuotaHistory(application.provider_quota_history(
+                gateway_id,
+                provider_id,
+                since_ms,
+            )?),
+            Command::ClearProviderQuotaHistory {
+                gateway_id,
+                provider_id,
+            } => Response::ClearProviderQuotaHistory(
+                application.clear_provider_quota_history(gateway_id, provider_id)?,
+            ),
+            Command::QuotaAlerts { since } => {
+                Response::QuotaAlerts(application.quota_alerts(since)?)
+            }
             Command::SaveProvider {
                 gateway_id,
                 provider,

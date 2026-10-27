@@ -327,6 +327,18 @@ pub enum BindingApplicationCommand {
         gateway_id: String,
         provider_id: String,
     },
+    ProviderQuotaHistory {
+        gateway_id: String,
+        provider_id: String,
+        since_ms: i64,
+    },
+    ClearProviderQuotaHistory {
+        gateway_id: String,
+        provider_id: String,
+    },
+    QuotaAlerts {
+        since: u64,
+    },
     SaveProvider {
         gateway_id: String,
         provider: BindingProviderDraft,
@@ -924,6 +936,23 @@ impl TryFrom<BindingApplicationCommand> for Command {
                 gateway_id,
                 provider_id,
             },
+            BindingApplicationCommand::ProviderQuotaHistory {
+                gateway_id,
+                provider_id,
+                since_ms,
+            } => Self::ProviderQuotaHistory {
+                gateway_id,
+                provider_id,
+                since_ms,
+            },
+            BindingApplicationCommand::ClearProviderQuotaHistory {
+                gateway_id,
+                provider_id,
+            } => Self::ClearProviderQuotaHistory {
+                gateway_id,
+                provider_id,
+            },
+            BindingApplicationCommand::QuotaAlerts { since } => Self::QuotaAlerts { since },
             BindingApplicationCommand::SaveProvider {
                 gateway_id,
                 provider,

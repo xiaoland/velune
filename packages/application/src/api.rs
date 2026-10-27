@@ -1016,6 +1016,38 @@ impl Application {
             None,
         )
     }
+    /// The current binding's observations since `since_ms`, oldest first.
+    pub fn provider_quota_history(
+        &mut self,
+        gateway_id: String,
+        provider_id: String,
+        since_ms: i64,
+    ) -> Result<ProviderQuotaHistory, Error> {
+        self.execute(
+            "providers",
+            json!({"operation":"quotaHistory","gatewayID":gateway_id,"providerID":provider_id,"sinceMs":since_ms}),
+            None,
+        )
+    }
+    pub fn clear_provider_quota_history(
+        &mut self,
+        gateway_id: String,
+        provider_id: String,
+    ) -> Result<ProviderQuotaHistory, Error> {
+        self.execute(
+            "providers",
+            json!({"operation":"clearQuotaHistory","gatewayID":gateway_id,"providerID":provider_id}),
+            None,
+        )
+    }
+    /// Quota alerts raised after `since` (0 for all retained).
+    pub fn quota_alerts(&mut self, since: u64) -> Result<QuotaAlerts, Error> {
+        self.execute(
+            "providers",
+            json!({"operation":"quotaAlerts","since":since}),
+            None,
+        )
+    }
     pub fn save_provider(
         &mut self,
         gateway_id: String,

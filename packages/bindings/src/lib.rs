@@ -162,6 +162,13 @@ pub fn provider_templates() -> Result<Vec<BindingProviderTemplate>, BindingError
     convert(velune_application_api::provider_templates())
 }
 
+/// The official API service an address belongs to, whose account balance or
+/// key limit the `apiAccount` quota source reads; None for any other address.
+#[uniffi::export]
+pub fn api_account_service_name(endpoint: String) -> Option<String> {
+    velune_application_api::api_account_service(&endpoint).map(|service| service.name().into())
+}
+
 #[derive(Clone, uniffi::Record)]
 pub struct BindingOptions {
     pub home_directory: String,
@@ -784,6 +791,42 @@ impl VeluneApplication {
                 provider_id
             }
         )
+    }
+    /// Retained observations of the provider's current binding since
+    /// `since_ms`, oldest first. Reading never samples the provider.
+    pub fn provider_quota_history(
+        &self,
+        gateway_id: String,
+        provider_id: String,
+        since_ms: i64,
+    ) -> Result<BindingProviderQuotaHistory, BindingError> {
+        request!(
+            self,
+            "provider_quota_history",
+            ProviderQuotaHistory {
+                gateway_id,
+                provider_id,
+                since_ms
+            }
+        )
+    }
+    pub fn clear_provider_quota_history(
+        &self,
+        gateway_id: String,
+        provider_id: String,
+    ) -> Result<BindingProviderQuotaHistory, BindingError> {
+        request!(
+            self,
+            "clear_provider_quota_history",
+            ClearProviderQuotaHistory {
+                gateway_id,
+                provider_id
+            }
+        )
+    }
+    /// Quota alerts raised after `since` (0 for all retained).
+    pub fn quota_alerts(&self, since: u64) -> Result<BindingQuotaAlerts, BindingError> {
+        request!(self, "quota_alerts", QuotaAlerts { since })
     }
     /// `quota_authentication_edit` edits a provider's own quota query
     /// credentials, saved atomically with the model credentials; None keeps
