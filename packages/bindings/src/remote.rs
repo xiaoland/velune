@@ -190,6 +190,7 @@ impl From<EndpointDescriptor> for BindingRemoteEndpointDescriptor {
 /// A one-time pairing credential, exposed only for the user's explicit transfer.
 #[derive(Clone, uniffi::Record)]
 pub struct BindingRemoteInvitation {
+    pub permission: BindingPairingPermission,
     pub encoded: String,
     pub expires_at_unix_seconds: u64,
     pub issuer: String,
@@ -380,8 +381,12 @@ impl velune_remote::Handler for ApplicationHandler {
         let application = self.application.clone();
         Box::pin(async move {
             let view = ClientViewId(format!("{}:{}", context.peer_id, context.view.0));
+            let dispatch = tracing::dispatcher::get_default(Clone::clone);
+            let span = tracing::Span::current();
             tokio::task::spawn_blocking(move || {
-                application.execute_checked(view, context.execution, command)
+                tracing::dispatcher::with_default(&dispatch, || {
+                    span.in_scope(|| application.execute_checked(view, context.execution, command))
+                })
             })
             .await
             .map_err(|_| {
@@ -446,6 +451,7 @@ impl BindingRemoteNetworkOptions {
     }
 }
 pub(crate) struct ServiceOwner {
+    telemetry: Arc<velune_telemetry::ClientTelemetry>,
     service: Arc<RemoteAccessService>,
     runtime: Arc<RemoteRuntime>,
     #[cfg(feature = "local-runtime")]
@@ -460,6 +466,7 @@ impl ServiceOwner {
         options: BindingRemoteOptions,
         runtime: Arc<RemoteRuntime>,
         handler: Option<Arc<dyn velune_remote::Handler>>,
+        telemetry: Arc<velune_telemetry::ClientTelemetry>,
     ) -> Result<Arc<Self>, BindingError> {
         let config = BindingRemoteNetworkOptions::from(&options).config()?;
         let identity = DeviceIdentity::load_or_create(
@@ -473,6 +480,7 @@ impl ServiceOwner {
             store,
             handler,
         ))?);
+        service.attach_telemetry(telemetry.clone())?;
         {
             let _context = runtime.enter();
             service.follow_unanswered_pairings()?;
@@ -480,6 +488,7 @@ impl ServiceOwner {
         Ok(Arc::new(Self {
             runtime,
             service,
+            telemetry,
             #[cfg(feature = "local-runtime")]
             identity_file: options.identity_file,
             #[cfg(feature = "local-runtime")]
@@ -516,11 +525,44 @@ pub struct VeluneRemoteEndpoint {
 }
 #[uniffi::export]
 impl VeluneRemoteEndpoint {
+    pub fn allow_telemetry_profile(&self, peer_id: String) -> Result<(), BindingError> {
+        Ok(self.owner.service.allow_telemetry_profile(&peer_id)?)
+    }
+    pub fn revoke_telemetry_profile(&self, peer_id: String) -> Result<(), BindingError> {
+        Ok(self.owner.service.revoke_telemetry_profile(&peer_id)?)
+    }
+    pub fn read_telemetry_profile(
+        &self,
+        peer_id: String,
+    ) -> Result<Option<crate::BindingTelemetryProfile>, BindingError> {
+        convert(
+            self.owner
+                .runtime
+                .block_on(self.owner.service.read_telemetry_profile(&peer_id))?,
+        )
+    }
     /// Local applications cache one service/runtime for their actual business owner, not a window.
     #[uniffi::constructor]
     pub fn open(
         options: BindingRemoteOptions,
         application: Option<Arc<VeluneApplication>>,
+    ) -> Result<Arc<Self>, BindingError> {
+        Self::open_client(options, application, None)
+    }
+    #[uniffi::constructor]
+    pub fn open_with_telemetry(
+        options: BindingRemoteOptions,
+        application: Option<Arc<VeluneApplication>>,
+        telemetry: Arc<crate::VeluneTelemetry>,
+    ) -> Result<Arc<Self>, BindingError> {
+        Self::open_client(options, application, Some(telemetry.owner.clone()))
+    }
+}
+impl VeluneRemoteEndpoint {
+    fn open_client(
+        options: BindingRemoteOptions,
+        application: Option<Arc<VeluneApplication>>,
+        telemetry: Option<Arc<velune_telemetry::ClientTelemetry>>,
     ) -> Result<Arc<Self>, BindingError> {
         velune_remote::validate_device_storage_paths(
             Path::new(&options.identity_file),
@@ -558,7 +600,20 @@ impl VeluneRemoteEndpoint {
                 application: local,
                 _runtime: runtime.clone(),
             });
-            let owner = ServiceOwner::bind(options, runtime, Some(handler))?;
+            if telemetry
+                .as_ref()
+                .is_some_and(|owner| !Arc::ptr_eq(owner, &application.diagnostics.telemetry))
+            {
+                return Err(BindingError::Invalid {
+                    detail: "本机执行核心与远控端点必须共用遥测 owner".into(),
+                });
+            }
+            let owner = ServiceOwner::bind(
+                options,
+                runtime,
+                Some(handler),
+                application.diagnostics.telemetry.clone(),
+            )?;
             *cached = Some(owner.clone());
             return Ok(Arc::new(Self { owner }));
         }
@@ -567,9 +622,32 @@ impl VeluneRemoteEndpoint {
                 detail: "此构建未链接本机执行核心".into(),
             });
         }
-        let owner = ServiceOwner::bind(options, RemoteRuntime::new()?, None)?;
+        let telemetry = if let Some(telemetry) = telemetry {
+            telemetry
+        } else {
+            let home = Path::new(&options.identity_file)
+                .parent()
+                .ok_or(BindingError::Unavailable)?;
+            let platform = if cfg!(target_os = "android") {
+                "android"
+            } else if cfg!(target_os = "ios") {
+                "ios"
+            } else {
+                "host"
+            };
+            velune_telemetry::ClientTelemetry::open(
+                home,
+                velune_telemetry::ResourceIdentity::new(platform, env!("CARGO_PKG_VERSION"))?,
+                false,
+                None,
+            )?
+        };
+        let owner = ServiceOwner::bind(options, RemoteRuntime::new()?, None, telemetry)?;
         Ok(Arc::new(Self { owner }))
     }
+}
+#[uniffi::export]
+impl VeluneRemoteEndpoint {
     /// Platform network and foreground notifications can prompt native path recovery.
     pub fn network_change(&self) {
         self.owner
@@ -600,6 +678,22 @@ impl VeluneRemoteEndpoint {
             .service
             .create_invitation(Duration::from_secs(lifetime_seconds))?;
         Ok(BindingRemoteInvitation {
+            permission: convert(invitation.permission)?,
+            encoded: invitation.encode()?,
+            expires_at_unix_seconds: invitation.expires_at_unix_seconds,
+            issuer: invitation.issuer,
+        })
+    }
+    pub fn create_telemetry_invitation(
+        &self,
+        lifetime_seconds: u64,
+    ) -> Result<BindingRemoteInvitation, BindingError> {
+        let invitation = self
+            .owner
+            .service
+            .create_telemetry_invitation(Duration::from_secs(lifetime_seconds))?;
+        Ok(BindingRemoteInvitation {
+            permission: convert(invitation.permission)?,
             encoded: invitation.encode()?,
             expires_at_unix_seconds: invitation.expires_at_unix_seconds,
             issuer: invitation.issuer,
@@ -654,9 +748,14 @@ impl VeluneRemoteEndpoint {
         peer_id: String,
         view_id: String,
     ) -> Result<Arc<VeluneApplication>, BindingError> {
-        let controller = self.owner.service.controller(&peer_id)?;
-        self.owner.runtime.block_on(controller.connect())?;
-        self.application(controller, view_id)
+        crate::diagnostics::Diagnostics::with_telemetry(self.owner.telemetry.clone()).run(
+            "remote.connect",
+            || {
+                let controller = self.owner.service.controller(&peer_id)?;
+                self.owner.runtime.block_on(controller.connect())?;
+                self.application(controller, view_id)
+            },
+        )
     }
     pub fn set_controller_activity(
         &self,
@@ -831,15 +930,18 @@ impl VeluneRemoteEndpoint {
         });
         let initial = remote.request_reply(Command::List, None)?;
         remote.state()?.expected = Some(initial.revision);
-        Ok(remote_proxy(Backend::Remote(remote)))
+        Ok(remote_proxy(remote))
     }
 }
-fn remote_proxy(backend: Backend) -> Arc<VeluneApplication> {
+fn remote_proxy(remote: Arc<RemoteApplication>) -> Arc<VeluneApplication> {
+    let diagnostics = diagnostics::Diagnostics::with_telemetry(remote.owner.telemetry.clone());
     Arc::new(VeluneApplication {
-        application: Mutex::new(Some(backend)),
-        diagnostics: diagnostics::Diagnostics::silent(),
+        application: Arc::new(Mutex::new(Some(Backend::Remote(remote)))),
+        diagnostics,
+        trace_carrier: None,
+        remote_operation: None,
         #[cfg(feature = "local-runtime")]
-        remote_service: Mutex::new(None),
+        remote_service: Arc::new(Mutex::new(None)),
     })
 }
 #[derive(uniffi::Object)]
@@ -1022,7 +1124,7 @@ impl VeluneApplication {
     fn remote_backend(&self) -> Result<Arc<RemoteApplication>, BindingError> {
         let state = self.lock()?;
         match state.as_ref().ok_or(BindingError::Closed)? {
-            Backend::Remote(remote) | Backend::ScopedRemote { remote, .. } => Ok(remote.clone()),
+            Backend::Remote(remote) => Ok(remote.clone()),
             #[cfg(feature = "local-runtime")]
             Backend::Local(_) => Err(BindingError::Unsupported {
                 detail: "此操作需要远控连接".into(),
@@ -1035,24 +1137,25 @@ impl VeluneApplication {
 impl VeluneApplication {
     /// A form must retain the revision of the same configuration it displays.
     pub fn list_with_revision(&self) -> Result<BindingVersionedConfiguration, BindingError> {
-        let reply = self.remote_backend()?.request_reply(Command::List, None)?;
-        let Response::List(configuration) = reply.response else {
-            return Err(BindingError::Contract {
-                detail: "应用返回了不匹配的配置结果".into(),
-            });
-        };
-        Ok(BindingVersionedConfiguration {
-            configuration: convert(configuration)?,
-            revision: reply.revision.0,
-        })
+        self.diagnostics
+            .run_context("list_with_revision", self.trace_carrier.as_ref(), || {
+                let reply = self.remote_backend()?.request_reply(Command::List, None)?;
+                let Response::List(configuration) = reply.response else {
+                    return Err(BindingError::Contract {
+                        detail: "应用返回了不匹配的配置结果".into(),
+                    });
+                };
+                Ok(BindingVersionedConfiguration {
+                    configuration: convert(configuration)?,
+                    revision: reply.revision.0,
+                })
+            })
     }
     /// This observation does not automatically replace an editor's write base.
     pub fn observed_revision(&self) -> Result<Option<u64>, BindingError> {
         let state = self.lock()?;
         match state.as_ref().ok_or(BindingError::Closed)? {
-            Backend::Remote(remote) | Backend::ScopedRemote { remote, .. } => {
-                Ok(remote.state()?.observed.map(|revision| revision.0))
-            }
+            Backend::Remote(remote) => Ok(remote.state()?.observed.map(|revision| revision.0)),
             #[cfg(feature = "local-runtime")]
             Backend::Local(_) => Ok(None),
         }
@@ -1084,17 +1187,24 @@ impl VeluneApplication {
     }
     /// Reconnect only to the saved pin and locator; the authenticated Hello supplies the incarnation.
     pub fn reconnect(&self) -> Result<(), BindingError> {
-        let remote = self.remote_backend()?;
-        remote.owner.runtime.block_on(remote.controller.connect())?;
-        remote.context()?;
-        Ok(())
+        self.diagnostics
+            .run_context("reconnect", self.trace_carrier.as_ref(), || {
+                let remote = self.remote_backend()?;
+                remote.owner.runtime.block_on(remote.controller.connect())?;
+                remote.context()?;
+                Ok(())
+            })
     }
     pub fn prepare_remote_operation(&self) -> Result<Arc<VeluneRemoteOperation>, BindingError> {
         let remote = self.remote_backend()?;
         let operation = remote.controller.prepare_operation()?;
-        let application = remote_proxy(Backend::ScopedRemote {
-            remote,
-            operation: operation.clone(),
+        let application = Arc::new(VeluneApplication {
+            application: self.application.clone(),
+            diagnostics: self.diagnostics.clone(),
+            trace_carrier: self.trace_carrier.clone(),
+            remote_operation: Some(operation.clone()),
+            #[cfg(feature = "local-runtime")]
+            remote_service: self.remote_service.clone(),
         });
         Ok(Arc::new(VeluneRemoteOperation {
             operation,
@@ -1111,53 +1221,56 @@ impl VeluneApplication {
         request_id: BindingRemoteRequestId,
         command: BindingApplicationCommand,
     ) -> Result<BindingRemoteRequestStatus, BindingError> {
-        let remote = self.remote_backend()?;
-        let context = remote.context()?;
-        let scoped = match self.lock()?.as_ref().ok_or(BindingError::Closed)? {
-            Backend::ScopedRemote { operation, .. } => Some(operation.clone()),
-            _ => None,
-        };
-        let request_id: RequestId = request_id.into();
-        let command: Command = command.try_into()?;
-        let status = remote.owner.runtime.block_on(async {
-            if let Some(operation) = scoped {
-                if operation.request_id() != request_id {
-                    return Err(velune_remote::RemoteError::InvalidRequestId);
+        self.diagnostics
+            .run_context("submit_request", self.trace_carrier.as_ref(), || {
+                let remote = self.remote_backend()?;
+                let context = remote.context()?;
+                let scoped = self.remote_operation.clone();
+                let request_id: RequestId = request_id.into();
+                let command: Command = command.try_into()?;
+                let status = remote.owner.runtime.block_on(async {
+                    if let Some(operation) = scoped {
+                        if operation.request_id() != request_id {
+                            return Err(velune_remote::RemoteError::InvalidRequestId);
+                        }
+                        operation
+                            .submit(remote.view.clone(), context.execution.clone(), command)
+                            .await
+                    } else {
+                        remote
+                            .controller
+                            .submit(
+                                request_id,
+                                remote.view.clone(),
+                                context.execution.clone(),
+                                command,
+                            )
+                            .await
+                    }
+                })?;
+                if let RequestStatus::Completed(Ok(reply)) = &status {
+                    remote.observe(&context, reply.revision, false)?;
                 }
-                operation
-                    .submit(remote.view.clone(), context.execution.clone(), command)
-                    .await
-            } else {
-                remote
-                    .controller
-                    .submit(
-                        request_id,
-                        remote.view.clone(),
-                        context.execution.clone(),
-                        command,
-                    )
-                    .await
-            }
-        })?;
-        if let RequestStatus::Completed(Ok(reply)) = &status {
-            remote.observe(&context, reply.revision, false)?;
-        }
-        status.try_into()
+                status.try_into()
+            })
     }
     /// Querying an existing request never resubmits it and does not wait on another business call.
     pub fn query_request(
         &self,
         request_id: BindingRemoteRequestId,
     ) -> Result<BindingRemoteRequestStatus, BindingError> {
-        let remote = self.remote_backend()?;
-        let context = remote.context()?;
-        let status = remote
-            .owner
-            .runtime
-            .block_on(remote.controller.query(request_id.into()))?;
-        if let RequestStatus::Completed(Ok(reply)) = &status {
-            remote.observe(&context, reply.revision, false)?;
-        }
-        status.try_into()
+        self.diagnostics
+            .run_context("query_request", self.trace_carrier.as_ref(), || {
+                let remote = self.remote_backend()?;
+                let context = remote.context()?;
+                let status = remote
+                    .owner
+                    .runtime
+                    .block_on(remote.controller.query(request_id.into()))?;
+                if let RequestStatus::Completed(Ok(reply)) = &status {
+                    remote.observe(&context, reply.revision, false)?;
+                }
+                status.try_into()
+            })
     }
 }

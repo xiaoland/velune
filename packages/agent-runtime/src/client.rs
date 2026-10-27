@@ -327,7 +327,8 @@ impl Client {
             })?;
         let (sender, incoming) = mpsc::channel();
         let dispatcher = tracing::dispatcher::get_default(Clone::clone);
-        let reader_span = tracing::info_span!("agent_runtime.rpc_reader");
+        // The long-lived reader must not keep the startup operation open.
+        let reader_span = tracing::info_span!(parent: None, "agent_runtime.rpc_reader");
         let stderr_for_reader = Arc::clone(&stderr);
         thread::Builder::new()
             .name("velune-pi-rpc-reader".into())

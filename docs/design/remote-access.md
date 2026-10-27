@@ -199,3 +199,12 @@ subscribe→MemoryLookup 不能替代遗漏的更新或活动连接探测。当�
 协议、ALPN、邀请及普通存储 schema 一次切到 v2，不维护旧远控协议；设备私钥格式保持不变。UniFFI 改动与 Mac／Android 直接调用方在同一编译切片完成，保留生成器已验证的 shutdown／ListConfiguration 命名及 Android 初始化，不手改生成代码。每个切片都形成两端可编译检查点，切片完成不表示已完成整项产品验收。
 
 库实施按 [唯一线性计划](../../tasks/android-minimal/plan.md) 推进：有界传输判别、稳定服务与账本、v2 契约、寻址与恢复，最后形成库交付清单。完整扫码界面及两端产品接入在当前范围之外。Android socket 接入点、QNT 通知遗漏与 mDNS 修复方式仍须以证据判别；真实 NAT、跨公网迁移和非默认移动网络行为不能由 loopback 或库构建推导。出现需重造传输栈或降低产品目标的证据才重开架构决定。
+
+
+## 遥测分享与 wire v3
+
+2026-10-27 遥测接入将远控 wire 与 ALPN 升为 v3。Submit/Query 的 W3C carrier 是有界的独立字段，不参与 Command fingerprint、RequestId 或授权。受信的关联只在鉴权后建立；原请求查询继续使用同一 RequestId。
+
+`TelemetryProfileRead` 有独立的邀请用途、TLS 核对上下文及 grant。端点在控制或分享需要入站时接纳连接，具体 RPC 各自检查权限。配置读取直接访问本机 telemetry owner，不进入业务账本、结果缓存或持久重试；响应上限 32 KiB。新增分享配对的 pending attempt 与既有已确认联系人分开保存，失败不能破坏原控制关系。
+
+设备存储 v3 显式迁移至 v4，保留联系人、控制 grants、pending RequestId 与 reset notice，新增分享 grants 为空；未来格式报错且不覆写。协议不兼容要求对端升级，不能通过重置身份或重试突变命令补偿。双 SDK 装配与配置导入契约见[遥测设计](telemetry.md)。

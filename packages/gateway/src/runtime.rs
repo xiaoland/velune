@@ -140,7 +140,27 @@ struct RouteTarget {
 /// The targets one request may use, in priority order: a provider model's own
 /// target, or a model route's members.
 type Route = Arc<[RouteTarget]>;
+#[derive(Clone, Default)]
+struct TelemetryContext {
+    owner: Option<Arc<velune_telemetry::ClientTelemetry>>,
+    parent: Option<velune_telemetry::TraceCarrier>,
+    parent_revision: Option<u64>,
+}
+impl TelemetryContext {
+    fn operation(&self, name: &'static str) -> Option<velune_telemetry::Operation> {
+        let owner = self.owner.as_ref()?;
+        let mut operation = owner.operation(name, self.parent.as_ref(), false);
+        if self.parent.is_none() {
+            operation.correlation_gap(velune_telemetry::CorrelationGap::MissingParent);
+        } else if self.parent_revision != operation.revision() {
+            operation.correlation_gap(velune_telemetry::CorrelationGap::RetiredGeneration);
+        }
+        Some(operation)
+    }
+}
+
 struct Ingress {
+    telemetry: Arc<RwLock<TelemetryContext>>,
     routes: Arc<RwLock<BTreeMap<String, Route>>>,
     token: String,
     resolver: Arc<dyn CredentialResolver>,
@@ -215,6 +235,7 @@ impl ExecutionBackends {
 }
 
 pub struct Runner {
+    telemetry: Arc<RwLock<TelemetryContext>>,
     config: GatewayConfig,
     routes: Arc<RwLock<BTreeMap<String, Route>>>,
     endpoint: String,
@@ -224,6 +245,19 @@ pub struct Runner {
     handle: Option<JoinHandle<()>>,
 }
 impl Runner {
+    /// Bind an actual session/turn owner. Requests capture this value once at admission.
+    pub fn set_telemetry(
+        &self,
+        owner: Option<Arc<velune_telemetry::ClientTelemetry>>,
+        parent: Option<velune_telemetry::TraceCarrier>,
+        revision: Option<u64>,
+    ) {
+        *self.telemetry.write().unwrap_or_else(|e| e.into_inner()) = TelemetryContext {
+            owner,
+            parent,
+            parent_revision: revision,
+        };
+    }
     /// Replace only runtime aliases. In-flight calls retain their captured target.
     /// Target configurations, credentials and the ingress token stay unchanged.
     pub fn replace_aliases(
@@ -322,7 +356,9 @@ impl Runner {
                 )
             })
             .collect();
+        let telemetry = Arc::new(RwLock::new(TelemetryContext::default()));
         let state = Arc::new(Ingress {
+            telemetry: telemetry.clone(),
             routes: routes.clone(),
             token: token.clone(),
             resolver: credential_resolver,
@@ -360,6 +396,7 @@ impl Runner {
             });
         })?;
         Ok(Self {
+            telemetry,
             config,
             routes,
             endpoint: format!("http://127.0.0.1:{}/v1", address.port()),
@@ -555,13 +592,28 @@ async fn ingress(
         GatewayProtocol::ResponsesV1 => "responses_v1",
         GatewayProtocol::MessagesV1 => "messages_v1",
     };
-    let span = tracing::info_span!(parent: None, "gateway_request", request_id, protocol = protocol_name, stream = tracing::field::Empty);
-    let dispatcher = tracing::dispatcher::get_default(Clone::clone);
+    let mut telemetry = state
+        .telemetry
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
+    let operation = telemetry.operation("gateway.request");
+    let dispatcher = operation
+        .as_ref()
+        .map(|op| op.dispatch())
+        .unwrap_or_else(|| tracing::dispatcher::get_default(Clone::clone));
+    let span = tracing::dispatcher::with_default(
+        &dispatcher,
+        || tracing::info_span!(parent: None, "gateway_request", request_id, operation_id = tracing::field::Empty, protocol = protocol_name, stream = tracing::field::Empty),
+    );
+    telemetry.parent = operation.as_ref().and_then(|op| op.carrier());
+    telemetry.parent_revision = operation.as_ref().and_then(|op| op.revision());
     let observation = Observation::new(
         "gateway_request_finished",
         span.clone(),
         state.stopping.clone(),
-    );
+    )
+    .with_telemetry(operation, telemetry.owner.clone());
     let started_at_ms = now_ms();
     ingress_observed(
         state,
@@ -570,6 +622,7 @@ async fn ingress(
         request,
         protocol,
         observation,
+        telemetry,
     )
     .instrument(span)
     .with_subscriber(dispatcher)
@@ -583,6 +636,7 @@ async fn ingress_observed(
     request: Request<Body>,
     protocol: GatewayProtocol,
     observation: Observation,
+    telemetry: TelemetryContext,
 ) -> Response<Body> {
     tracing::info!(event = "gateway_request_received");
     let bearer_valid = request
@@ -753,6 +807,7 @@ async fn ingress_observed(
             stream,
             translation,
             sender,
+            telemetry,
         )
         .instrument(request_span)
         .with_subscriber(dispatcher)
@@ -1214,6 +1269,7 @@ async fn dispatch(
     stream: bool,
     translation: Option<velune_ai_provider::translation::PreparedTranslation>,
     sender: mpsc::Sender<WireEvent>,
+    telemetry: TelemetryContext,
 ) {
     if let Some(plan) = translation {
         let model = candidates[0].model.as_str().to_owned();
@@ -1230,6 +1286,7 @@ async fn dispatch(
             headers,
             stream,
             upstream,
+            telemetry,
         );
         let conversion = crate::translation::deliver(plan, model, stream, receiver, sender);
         tokio::join!(native, conversion);
@@ -1243,6 +1300,7 @@ async fn dispatch(
             headers,
             stream,
             sender,
+            telemetry,
         )
         .await;
     }
@@ -1258,6 +1316,7 @@ async fn attempts(
     headers: Vec<Header>,
     stream: bool,
     sender: mpsc::Sender<WireEvent>,
+    telemetry: TelemetryContext,
 ) {
     let retry_targets = candidates.clone();
     let mut last_failure = None;
@@ -1291,12 +1350,21 @@ async fn attempts(
             }
         };
         let attempt = index + 1;
-        let attempt_span = tracing::info_span!("gateway_attempt", attempt);
+        let operation = telemetry.operation("gateway.attempt");
+        let dispatcher = operation
+            .as_ref()
+            .map(|op| op.dispatch())
+            .unwrap_or_else(|| tracing::dispatcher::get_default(Clone::clone));
+        let attempt_span = tracing::dispatcher::with_default(
+            &dispatcher,
+            || tracing::info_span!(parent: None, "gateway_attempt", request_id, attempt, operation_id = tracing::field::Empty),
+        );
         let mut observation = Observation::new(
             "gateway_attempt_finished",
             attempt_span.clone(),
             state.stopping.clone(),
-        );
+        )
+        .with_telemetry(operation, telemetry.owner.clone());
         attempt_span.in_scope(|| {
             tracing::info!(
                 event = "gateway_route_selected",
@@ -1328,6 +1396,7 @@ async fn attempts(
             &mut observation,
         )
         .instrument(attempt_span.clone())
+        .with_subscriber(dispatcher)
         .await;
         if matches!(&end, AttemptEnd::Completed)
             || tracker.lock().expect("owned analytics tracker").completed()

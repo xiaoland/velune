@@ -17,13 +17,16 @@ impl CoreRuntime {
         }
         let launch = runtime.acp_launch()?;
         let (execution, os_home) = self.prepare_runtime_location(runtime)?;
-        let client = Client::connect(Config {
+        let config = Config {
             binary: setting_path(runtime, "binary")?,
             args: launch.args,
             environment: launch.environment,
             execution,
             os_home,
             mcp_servers,
+        };
+        let client = telemetry::observe(self.telemetry.as_ref(), "harness.start", || {
+            Client::connect(config)
         })
         .map_err(|error| RuntimeError::context("ACP 初始化", error))?;
         self.acp_capability_cache.borrow_mut().insert(

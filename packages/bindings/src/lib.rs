@@ -5,6 +5,8 @@
 #[cfg(all(target_os = "android", feature = "remote"))]
 mod android;
 mod diagnostics;
+mod telemetry;
+pub use telemetry::*;
 #[cfg(feature = "remote")]
 mod remote;
 #[cfg(feature = "remote")]
@@ -33,7 +35,6 @@ pub use transport_trace::*;
 pub use types::*;
 
 use serde::{Serialize, de::DeserializeOwned};
-#[cfg(any(feature = "local-runtime", feature = "remote"))]
 use std::sync::Arc;
 use std::sync::{Mutex, MutexGuard};
 #[cfg(feature = "local-runtime")]
@@ -173,19 +174,17 @@ enum Backend {
     Local(ApplicationService),
     #[cfg(feature = "remote")]
     Remote(Arc<remote::RemoteApplication>),
-    #[cfg(feature = "remote")]
-    ScopedRemote {
-        remote: Arc<remote::RemoteApplication>,
-        operation: Arc<velune_remote::RemoteOperation>,
-    },
 }
 
 #[derive(uniffi::Object)]
 pub struct VeluneApplication {
-    application: Mutex<Option<Backend>>,
+    application: Arc<Mutex<Option<Backend>>>,
+    trace_carrier: Option<velune_telemetry::TraceCarrier>,
+    #[cfg(feature = "remote")]
+    remote_operation: Option<Arc<velune_remote::RemoteOperation>>,
     diagnostics: diagnostics::Diagnostics,
     #[cfg(all(feature = "local-runtime", feature = "remote"))]
-    remote_service: Mutex<Option<Arc<remote::ServiceOwner>>>,
+    remote_service: Arc<Mutex<Option<Arc<remote::ServiceOwner>>>>,
 }
 
 impl VeluneApplication {
@@ -196,29 +195,28 @@ impl VeluneApplication {
     }
 
     fn request(&self, name: &'static str, command: Command) -> Result<Response, BindingError> {
-        self.diagnostics.run(name, || {
-            #[cfg(any(feature = "local-runtime", feature = "remote"))]
-            {
-                let backend = self.lock()?.as_ref().ok_or(BindingError::Closed)?.clone();
-                match backend {
-                    #[cfg(feature = "local-runtime")]
-                    Backend::Local(service) => service
-                        .execute(ClientViewId("local".into()), command)
-                        .map_err(Into::into),
-                    #[cfg(feature = "remote")]
-                    Backend::Remote(remote) => remote.request(command, None),
-                    #[cfg(feature = "remote")]
-                    Backend::ScopedRemote { remote, operation } => {
-                        remote.request(command, Some(&operation))
+        self.diagnostics
+            .run_context(name, self.trace_carrier.as_ref(), || {
+                #[cfg(any(feature = "local-runtime", feature = "remote"))]
+                {
+                    let backend = self.lock()?.as_ref().ok_or(BindingError::Closed)?.clone();
+                    match backend {
+                        #[cfg(feature = "local-runtime")]
+                        Backend::Local(service) => service
+                            .execute(ClientViewId("local".into()), command)
+                            .map_err(Into::into),
+                        #[cfg(feature = "remote")]
+                        Backend::Remote(remote) => {
+                            remote.request(command, self.remote_operation.as_deref())
+                        }
                     }
                 }
-            }
-            #[cfg(not(any(feature = "local-runtime", feature = "remote")))]
-            {
-                let _ = command;
-                Err(BindingError::Unavailable)
-            }
-        })
+                #[cfg(not(any(feature = "local-runtime", feature = "remote")))]
+                {
+                    let _ = command;
+                    Err(BindingError::Unavailable)
+                }
+            })
     }
 
     fn close(&self, _stop_work: bool) -> Result<(), BindingError> {
@@ -230,8 +228,6 @@ impl VeluneApplication {
                     Backend::Local(service) => service.close(_stop_work)?,
                     #[cfg(feature = "remote")]
                     Backend::Remote(remote) => remote.close()?,
-                    #[cfg(feature = "remote")]
-                    Backend::ScopedRemote { .. } => {}
                     #[cfg(not(any(feature = "local-runtime", feature = "remote")))]
                     _ => {}
                 }
@@ -263,24 +259,73 @@ impl VeluneApplication {
         }
         let diagnostics =
             diagnostics::Diagnostics::open(std::path::Path::new(&options.home_directory))?;
+        Self::open_with_diagnostics(options, diagnostics)
+    }
+
+    #[uniffi::constructor]
+    pub fn open_with_telemetry(
+        options: BindingOptions,
+        telemetry: Arc<VeluneTelemetry>,
+    ) -> Result<Arc<Self>, BindingError> {
+        Self::open_with_diagnostics(
+            options,
+            diagnostics::Diagnostics::with_telemetry(telemetry.owner.clone()),
+        )
+    }
+}
+
+#[cfg(feature = "local-runtime")]
+impl VeluneApplication {
+    fn open_with_diagnostics(
+        options: BindingOptions,
+        diagnostics: diagnostics::Diagnostics,
+    ) -> Result<Arc<Self>, BindingError> {
         let application = diagnostics.run("open", || {
-            ApplicationService::open(Options {
-                home_directory: options.home_directory.into(),
-                resources_directory: options.resources_directory.into(),
-            })
+            ApplicationService::open_with_telemetry(
+                Options {
+                    home_directory: options.home_directory.into(),
+                    resources_directory: options.resources_directory.into(),
+                },
+                diagnostics.telemetry.clone(),
+            )
             .map_err(Into::into)
         })?;
         Ok(Arc::new(Self {
-            application: Mutex::new(Some(Backend::Local(application))),
+            application: Arc::new(Mutex::new(Some(Backend::Local(application)))),
+            trace_carrier: None,
+            #[cfg(feature = "remote")]
+            remote_operation: None,
             diagnostics,
             #[cfg(feature = "remote")]
-            remote_service: Mutex::new(None),
+            remote_service: Arc::new(Mutex::new(None)),
         }))
     }
 }
 
 #[uniffi::export]
 impl VeluneApplication {
+    /// An immutable per-call view. Dropping it does not close the shared application session.
+    pub fn with_trace_context(
+        &self,
+        carrier: Option<BindingTraceCarrier>,
+    ) -> Result<Arc<Self>, BindingError> {
+        let carrier: Option<velune_telemetry::TraceCarrier> = convert(carrier)?;
+        if let Some(carrier) = &carrier {
+            carrier.validate()?;
+        }
+        if self.lock()?.is_none() {
+            return Err(BindingError::Closed);
+        }
+        Ok(Arc::new(Self {
+            application: self.application.clone(),
+            diagnostics: self.diagnostics.clone(),
+            trace_carrier: carrier,
+            #[cfg(feature = "remote")]
+            remote_operation: self.remote_operation.clone(),
+            #[cfg(all(feature = "local-runtime", feature = "remote"))]
+            remote_service: self.remote_service.clone(),
+        }))
+    }
     /// Local shutdown retains a busy owner. A remote object only closes its connection.
     pub fn shutdown(&self) -> Result<(), BindingError> {
         self.close(false)

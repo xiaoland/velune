@@ -93,6 +93,7 @@ struct UnsubmittedDraft {
 }
 
 pub struct CoreRuntime {
+    telemetry: Option<Arc<velune_telemetry::ClientTelemetry>>,
     options: RuntimeOptions,
     client_baseline: Option<Box<ClientState>>,
     local_presentation_commit: std::cell::RefCell<Option<crate::repository::PresentationDefaults>>,
@@ -190,6 +191,7 @@ mod runtime_execution;
 mod runtime_management;
 mod session;
 mod sub_agents;
+mod telemetry;
 mod working_changes;
 pub(crate) use organization::unix_ms_now;
 use pi_composition::*;
@@ -214,6 +216,7 @@ impl CoreRuntime {
             scheduling_state.clone(),
         );
         Ok(Self {
+            telemetry: None,
             options,
             collaboration: Default::default(),
             session: Default::default(),
@@ -425,7 +428,14 @@ impl CoreRuntime {
             }
             ActiveState::Empty | ActiveState::History(_) => Ok(()),
         };
-        let outcome = if was_busy && (!self.turn_running() || result.is_err()) {
+        // A command can fail and stop its runtime before the next poll begins.
+        let observed_turn = was_busy
+            || self
+                .session
+                .turn_observation
+                .as_ref()
+                .is_some_and(|observation| observation.execution_has_started());
+        let outcome = if observed_turn && (!self.turn_running() || result.is_err()) {
             self.record_finished_turn(result.is_err())
         } else {
             None
@@ -743,6 +753,9 @@ use velune_agent_runtime::authentication;
 
 impl Drop for CoreRuntime {
     fn drop(&mut self) {
+        if let Some(owner) = &self.telemetry {
+            owner.execution_owner_unavailable();
+        }
         self.subscription_quota.stop();
         self.execution_backends.shutdown();
     }

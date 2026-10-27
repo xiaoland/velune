@@ -7,16 +7,40 @@ use crate::{
     *,
 };
 use serde::{Deserialize, Serialize};
+#[cfg(test)]
+mod tests;
 use std::{
     collections::BTreeMap,
     sync::{Arc, Weak},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
-const EXPORTER_LABEL: &[u8] = b"EXPORTER-Velune-Pairing-v2";
+const EXPORTER_LABEL: &[u8] = b"EXPORTER-Velune-Pairing-v3";
 const OFFER_LIMIT: usize = 1024;
 const FOLLOW_INTERVAL: Duration = Duration::from_secs(2);
 const FOLLOW_LIMIT: Duration = Duration::from_secs(600);
+
+/// Consent scope is bound into the invitation, TLS verification code and saved grant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum PairingPermission {
+    Control,
+    TelemetryProfileRead,
+}
+impl PairingPermission {
+    fn code(self) -> u8 {
+        match self {
+            Self::Control => 1,
+            Self::TelemetryProfileRead => 2,
+        }
+    }
+    fn enabled(self, access: &crate::service::Access) -> bool {
+        match self {
+            Self::Control => access.ingress,
+            Self::TelemetryProfileRead => access.profile_ingress,
+        }
+    }
+}
 
 /// Only explicit encode exposes the single-use invitation secret. This value must not be logged.
 #[derive(Clone, Serialize, Deserialize)]
@@ -24,6 +48,7 @@ const FOLLOW_LIMIT: Duration = Duration::from_secs(600);
 pub struct PairingOffer {
     version: u16,
     purpose: String,
+    pub permission: PairingPermission,
     pub issuer: String,
     pub invite_id: String,
     token: [u8; 32],
@@ -71,6 +96,7 @@ pub enum PairingPhase {
 /// Verification codes are derived locally; they are never accepted from a peer's response.
 #[derive(Clone, Serialize, Deserialize)]
 pub struct PairingStatus {
+    pub permission: PairingPermission,
     pub attempt_id: String,
     pub peer_id: String,
     pub name: String,
@@ -80,6 +106,7 @@ pub struct PairingStatus {
 }
 #[derive(Clone, Serialize, Deserialize)]
 pub(crate) struct PairingWireState {
+    pub(crate) permission: PairingPermission,
     pub(crate) attempt_id: String,
     pub(crate) phase: PairingPhase,
     pub(crate) challenge: Option<[u8; 32]>,
@@ -104,10 +131,6 @@ pub(crate) struct PairingRegistry {
     candidates: BTreeMap<String, Candidate>,
 }
 impl PairingRegistry {
-    pub(crate) fn revoke(&mut self, peer: &str) {
-        self.candidates
-            .retain(|_, candidate| candidate.status.peer_id != peer);
-    }
     pub(crate) fn invalidate(&mut self, phase: PairingPhase) {
         self.window = None;
         for candidate in self.candidates.values_mut() {
@@ -118,6 +141,35 @@ impl PairingRegistry {
                 candidate.status.phase = phase;
             }
         }
+    }
+    pub(crate) fn invalidate_permission(
+        &mut self,
+        permission: PairingPermission,
+        phase: PairingPhase,
+    ) {
+        if self
+            .window
+            .as_ref()
+            .is_some_and(|w| w.offer.permission == permission)
+        {
+            self.window = None;
+        }
+        for candidate in self
+            .candidates
+            .values_mut()
+            .filter(|c| c.status.permission == permission)
+        {
+            if matches!(
+                candidate.status.phase,
+                PairingPhase::AwaitingReady | PairingPhase::AwaitingApproval
+            ) {
+                candidate.status.phase = phase;
+            }
+        }
+    }
+    pub(crate) fn revoke_permission(&mut self, peer: &str, permission: PairingPermission) {
+        self.candidates
+            .retain(|_, c| c.status.peer_id != peer || c.status.permission != permission);
     }
     fn refresh(&mut self) -> bool {
         let mut changed = false;
@@ -198,17 +250,18 @@ fn verification_code(
     invite: &str,
     attempt: &str,
     challenge: [u8; 32],
+    permission: PairingPermission,
 ) -> Result<String> {
     let issuer = crate::store::parse_peer(issuer)?;
     let controller = crate::store::parse_peer(controller)?;
     let mut context = [0u8; 131];
-    context[0..2].copy_from_slice(&2u16.to_be_bytes());
+    context[0..2].copy_from_slice(&PROTOCOL_VERSION.to_be_bytes());
     context[2..34].copy_from_slice(issuer.as_bytes());
     context[34..66].copy_from_slice(controller.as_bytes());
     context[66..82].copy_from_slice(&raw_id(invite)?);
     context[82..98].copy_from_slice(&raw_id(attempt)?);
     context[98..130].copy_from_slice(&challenge);
-    context[130] = 1;
+    context[130] = permission.code();
     let mut output = [0; 32];
     connection
         .export_keying_material(&mut output, EXPORTER_LABEL, &context)
@@ -246,7 +299,7 @@ impl ServiceState {
         let peer = connection.remote_id().to_string();
         let mut access = self.access()?;
         Self::check_generation(&access, generation)?;
-        if !access.ingress {
+        if !access.ingress && !access.profile_ingress {
             return Err(RemoteError::Closed);
         }
         if access.pairing.refresh() {
@@ -256,9 +309,13 @@ impl ServiceState {
             invite_id,
             token,
             name,
+            permission,
         } = request
         {
             validate_name(&name)?;
+            if !permission.enabled(&access) {
+                return Err(RemoteError::Unauthorized);
+            }
             if let Some(candidate) = access.pairing.candidates.values().find(|candidate| {
                 candidate.connection_id == slot.status().connection_id
                     && matches!(
@@ -266,7 +323,11 @@ impl ServiceState {
                         PairingPhase::AwaitingReady | PairingPhase::AwaitingApproval
                     )
             }) {
+                if candidate.status.permission != permission {
+                    return Err(RemoteError::Unauthorized);
+                }
                 return Ok(Reply::Pairing(PairingWireState {
+                    permission,
                     attempt_id: candidate.status.attempt_id.clone(),
                     phase: candidate.status.phase,
                     challenge: Some(candidate.challenge),
@@ -281,7 +342,8 @@ impl ServiceState {
             if window.deadline <= Instant::now() {
                 return Err(RemoteError::ExpiredInvitation);
             }
-            if window.offer.invite_id != invite_id
+            if window.offer.permission != permission
+                || window.offer.invite_id != invite_id
                 || window
                     .offer
                     .token
@@ -299,6 +361,7 @@ impl ServiceState {
             let attempt_id = random_id()?;
             let challenge = random_bytes()?;
             let status = PairingStatus {
+                permission,
                 verification_code: Some(verification_code(
                     connection,
                     &self.identity.id(),
@@ -306,6 +369,7 @@ impl ServiceState {
                     &invite_id,
                     &attempt_id,
                     challenge,
+                    permission,
                 )?),
                 attempt_id: attempt_id.clone(),
                 peer_id: peer,
@@ -314,6 +378,7 @@ impl ServiceState {
                 expires_at_unix_seconds: window.offer.expires_at_unix_seconds,
             };
             let response = PairingWireState {
+                permission,
                 attempt_id: attempt_id.clone(),
                 phase: status.phase,
                 challenge: Some(challenge),
@@ -341,10 +406,9 @@ impl ServiceState {
             _ => return Err(RemoteError::Protocol),
         };
         crate::protocol::validate_id(&attempt_id)?;
-        if let Some(grant) = self.store.grant(&peer)?
-            && grant.attempt_id == attempt_id
-        {
+        if let Some((permission, _grant)) = self.store.pairing_grant(&peer, &attempt_id)? {
             return Ok(Reply::Pairing(PairingWireState {
+                permission,
                 attempt_id,
                 phase: PairingPhase::Granted,
                 challenge: None,
@@ -383,6 +447,7 @@ impl ServiceState {
         }
         self.store.touch();
         Ok(Reply::Pairing(PairingWireState {
+            permission: candidate.status.permission,
             attempt_id,
             phase: candidate.status.phase,
             challenge: None,
@@ -392,17 +457,43 @@ impl ServiceState {
 }
 impl RemoteAccessService {
     pub fn create_invitation(&self, lifetime: Duration) -> Result<PairingOffer> {
+        self.create_scoped_invitation(lifetime, PairingPermission::Control)
+    }
+    pub fn create_telemetry_invitation(&self, lifetime: Duration) -> Result<PairingOffer> {
+        self.create_scoped_invitation(lifetime, PairingPermission::TelemetryProfileRead)
+    }
+    fn create_scoped_invitation(
+        &self,
+        lifetime: Duration,
+        permission: PairingPermission,
+    ) -> Result<PairingOffer> {
         if lifetime.is_zero() || lifetime > Duration::from_secs(600) {
             return Err(RemoteError::Configuration);
         }
         let mut access = self.state.access()?;
-        if access.closed || !access.ingress {
+        if access.closed {
+            return Err(RemoteError::Closed);
+        }
+        if permission == PairingPermission::TelemetryProfileRead {
+            if self
+                .state
+                .telemetry
+                .lock()
+                .map_err(|_| RemoteError::Unavailable)?
+                .is_none()
+            {
+                return Err(RemoteError::NoHandler);
+            }
+            access.profile_ingress = true;
+        }
+        if !permission.enabled(&access) {
             return Err(RemoteError::Closed);
         }
         let endpoint = self.descriptor()?;
         let offer = PairingOffer {
             version: PROTOCOL_VERSION,
             purpose: "velunePairing".into(),
+            permission,
             issuer: endpoint.endpoint_id,
             invite_id: random_id()?,
             token: random_bytes()?,
@@ -427,13 +518,12 @@ impl RemoteAccessService {
     }
     pub fn approve_pairing(&self, attempt: &str, peer: &str) -> Result<PairingStatus> {
         let mut access = self.state.access()?;
-        if access.closed || !access.ingress {
+        if access.closed || (!access.ingress && !access.profile_ingress) {
             return Err(RemoteError::Closed);
         }
-        if let Some(grant) = self.state.store.grant(peer)?
-            && grant.attempt_id == attempt
-        {
+        if let Some((permission, grant)) = self.state.store.pairing_grant(peer, attempt)? {
             return Ok(PairingStatus {
+                permission,
                 attempt_id: attempt.into(),
                 peer_id: peer.into(),
                 name: grant.name,
@@ -460,11 +550,20 @@ impl RemoteAccessService {
         {
             return Err(RemoteError::PairingUnavailable);
         }
-        self.state.store.commit_grant(IncomingControlGrant {
+        if !candidate.status.permission.enabled(&access) {
+            return Err(RemoteError::Unauthorized);
+        }
+        let grant = IncomingControlGrant {
             peer_id: peer.into(),
             name: candidate.status.name.clone(),
             attempt_id: attempt.into(),
-        })?;
+        };
+        match candidate.status.permission {
+            PairingPermission::Control => self.state.store.commit_grant(grant)?,
+            PairingPermission::TelemetryProfileRead => {
+                self.state.store.commit_profile_grant(grant)?
+            }
+        }
         access.pairing.invalidate(PairingPhase::Expired);
         let candidate = access
             .pairing
@@ -477,10 +576,9 @@ impl RemoteAccessService {
     }
     pub fn reject_pairing(&self, attempt: &str, peer: &str) -> Result<PairingStatus> {
         let mut access = self.state.access()?;
-        if let Some(grant) = self.state.store.grant(peer)?
-            && grant.attempt_id == attempt
-        {
+        if let Some((permission, grant)) = self.state.store.pairing_grant(peer, attempt)? {
             return Ok(PairingStatus {
+                permission,
                 attempt_id: attempt.into(),
                 peer_id: peer.into(),
                 name: grant.name,
@@ -560,10 +658,19 @@ impl RemoteAccessService {
     /// Resumes following the pairings this device began and has not seen
     /// answered, as after a restart. Needs a Tokio runtime context.
     pub fn follow_unanswered_pairings(self: &Arc<Self>) -> Result<()> {
+        let mut peers: std::collections::BTreeSet<_> = self
+            .state
+            .store
+            .pending_pairing_peers()?
+            .into_iter()
+            .collect();
         for contact in self.state.store.snapshot()?.contacts {
             if matches!(contact.confirmation, ContactConfirmation::Pending { .. }) {
-                self.follow_pairing(contact.peer_id);
+                peers.insert(contact.peer_id);
             }
+        }
+        for peer in peers {
+            self.follow_pairing(peer);
         }
         Ok(())
     }
@@ -605,11 +712,15 @@ impl RemoteAccessService {
                 invite_id: offer.invite_id.clone(),
                 token: offer.token,
                 name: self.state.identity.name.clone(),
+                permission: offer.permission,
             })
             .await?
         else {
             return Err(RemoteError::Protocol);
         };
+        if challenge.permission != offer.permission {
+            return Err(RemoteError::Protocol);
+        }
         let native = client.connection.native().ok_or(RemoteError::Closed)?;
         let code = verification_code(
             &native,
@@ -618,9 +729,11 @@ impl RemoteAccessService {
             &offer.invite_id,
             &challenge.attempt_id,
             challenge.challenge.ok_or(RemoteError::Protocol)?,
+            offer.permission,
         )?;
         drop(native);
         let status = PairingStatus {
+            permission: offer.permission,
             attempt_id: challenge.attempt_id.clone(),
             peer_id: offer.issuer.clone(),
             name: offer.name.clone(),
@@ -639,6 +752,8 @@ impl RemoteAccessService {
                 },
                 paused: false,
                 locator_source: LocatorSource::PairingOffer,
+                control_authorized: false,
+                pairing_permission: offer.permission,
             })?;
             self.state
                 .outgoing
@@ -671,10 +786,47 @@ impl RemoteAccessService {
             .lock()
             .map_err(|_| RemoteError::Unavailable)?;
         let contact = self.state.store.contact(peer)?;
+        let pending = self.state.store.pending_pairing(peer)?;
+        let expected = pending
+            .as_ref()
+            .map(|p| (&p.attempt_id, p.permission))
+            .or_else(|| {
+                outgoing
+                    .get(peer)
+                    .map(|p| (&p.status.attempt_id, p.status.permission))
+            });
+        let (attempt, permission) = expected.unwrap_or_else(|| {
+            let (ContactConfirmation::Pending { attempt_id }
+            | ContactConfirmation::Confirmed { attempt_id }) = &contact.confirmation;
+            (attempt_id, contact.pairing_permission)
+        });
+        if attempt != &wire.attempt_id || permission != wire.permission {
+            return Err(RemoteError::PairingUnavailable);
+        }
+        if wire.phase == PairingPhase::Granted
+            && pending.is_none()
+            && outgoing.get(peer).is_some_and(|p| {
+                matches!(
+                    p.status.phase,
+                    PairingPhase::Rejected | PairingPhase::Expired | PairingPhase::Disconnected
+                )
+            })
+        {
+            return Err(RemoteError::PairingUnavailable);
+        }
         if wire.phase == PairingPhase::Granted {
             self.state.store.confirm_pin(peer, &wire.attempt_id)?;
         }
+        if matches!(
+            wire.phase,
+            PairingPhase::Rejected | PairingPhase::Expired | PairingPhase::Disconnected
+        ) {
+            self.state
+                .store
+                .finish_ungranted_pairing(peer, &wire.attempt_id)?;
+        }
         let status = PairingStatus {
+            permission: wire.permission,
             attempt_id: wire.attempt_id,
             peer_id: peer.into(),
             name: contact.name,
@@ -716,9 +868,13 @@ impl RemoteAccessService {
         {
             (client, attempt, phase)
         } else {
-            let attempt = match &contact.confirmation {
-                ContactConfirmation::Pending { attempt_id: id } => id.clone(),
-                ContactConfirmation::Confirmed { attempt_id: id } => id.clone(),
+            let attempt = if let Some(pending) = self.state.store.pending_pairing(peer)? {
+                pending.attempt_id
+            } else {
+                match &contact.confirmation {
+                    ContactConfirmation::Pending { attempt_id: id }
+                    | ContactConfirmation::Confirmed { attempt_id: id } => id.clone(),
+                }
             };
             (
                 Arc::new(

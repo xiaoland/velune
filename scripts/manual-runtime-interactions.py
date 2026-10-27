@@ -6,7 +6,7 @@ import argparse, importlib.util, json, os, shutil, sys, tempfile, time
 from pathlib import Path
 
 SERVER = r'''
-import json, sys
+import json, sys, threading
 if '--version' in sys.argv:
     print('codex-cli 0.159.3'); sys.exit()
 def send(v): print(json.dumps(v), flush=True)
@@ -23,9 +23,13 @@ for line in sys.stdin:
         send({'jsonrpc':'2.0','id':identity,'result':{'turn':{'id':turn}}})
         if mode=='exit':
             note('item/agentMessage/delta',{'itemId':'partial','delta':'PRESERVED_PARTIAL'});sys.exit()
+        if mode=='cancel-rejected': continue
         send({'jsonrpc':'2.0','id':'approval','method':'item/commandExecution/requestApproval','params':{'threadId':'fixture','command':'synthetic command','availableDecisions':['accept','decline']}})
         continue
     elif method=='turn/interrupt':
+        if mode=='cancel-rejected':
+            send({'jsonrpc':'2.0','id':identity,'error':{'code':-32000,'message':'synthetic interrupt rejected'}})
+            threading.Timer(.3,complete).start();continue
         send({'jsonrpc':'2.0','id':identity,'result':{}});complete();continue
     elif identity=='approval' and 'result' in r:
         if mode=='reject':
@@ -138,6 +142,12 @@ def main():
             wait(lambda s: s.actions.can_send)
             application.send_turn('fixture',conversation_id,'fixture',record,'cancel');old=pending();application.cancel('fixture',conversation_id);wait(lambda s: s.actions.can_send and not s.pending_interactions)
             rejected(lambda: application.reply_runtime_interaction('fixture',conversation_id,old.id,b.BindingRuntimeInteractionReply.DECISION(option_id='accept')))
+            activity=application.conversation_activity(0)
+            application.send_turn('fixture',conversation_id,'fixture',record,'cancel-rejected')
+            rejected(lambda: application.cancel('fixture',conversation_id))
+            wait(lambda s: s.actions.can_send)
+            finished=application.conversation_activity(activity.cursor).finished
+            assert len(finished)==1 and finished[0].outcome==b.BindingTurnOutcome.COMPLETED, 'rejected cancellation was reported as cancelled'
             application.send_turn('fixture',conversation_id,'fixture',record,'exit');failed=wait(lambda s: s.run_state==b.BindingRunState.FAILED,allow_error=True)
             assert any(block.text=='PRESERVED_PARTIAL' for m in failed.messages for block in m.blocks if isinstance(block,b.BindingMessageBlock.TEXT))
             assert not failed.pending_interactions and not failed.actions.can_send
@@ -149,7 +159,7 @@ def main():
             application.upsert_runtime(claude)
             native=b.BindingModelSelection.NATIVE(provider_id=None,model_id='synthetic')
             conversation_id=application.create_conversation_with_selection('claude',str(root/'project'),native).snapshot.conversation.id
-            application.send_turn_with_selection('claude',conversation_id,'claude',native,'approve');approval=pending('claude')
+            application.send_turn_with_selection('claude',conversation_id,'claude',native,b.BindingComposedTurn(text='approve',effort=None,attachments=[]));approval=pending('claude')
             assert isinstance(approval.kind,b.BindingInteractionKind.APPROVAL)
             assert [option.id for option in approval.kind.options]==['allow','deny']
             rejected(lambda: application.reply_runtime_interaction('claude',conversation_id,approval.id,b.BindingRuntimeInteractionReply.DECISION(option_id='not-offered')))
@@ -159,15 +169,15 @@ def main():
             application.reply_runtime_interaction('claude',conversation_id,question.id,b.BindingRuntimeInteractionReply.ANSWERS(answers=[b.BindingInteractionAnswer(question_id='Choose a synthetic value?',values=['fixture-answer'])]))
             settled=wait(lambda s: s.actions.can_send,runtime_id='claude')
             assert any(block.text=='CLAUDE_INTERACTION_PASSED' for message in settled.messages for block in message.blocks if isinstance(block,b.BindingMessageBlock.TEXT))
-            application.send_turn_with_selection('claude',conversation_id,'claude',native,'reject');approval=pending('claude')
+            application.send_turn_with_selection('claude',conversation_id,'claude',native,b.BindingComposedTurn(text='reject',effort=None,attachments=[]));approval=pending('claude')
             application.reply_runtime_interaction('claude',conversation_id,approval.id,b.BindingRuntimeInteractionReply.CANCEL())
             wait(lambda s: s.actions.can_send,runtime_id='claude')
-            application.send_turn_with_selection('claude',conversation_id,'claude',native,'cancel');old=pending('claude')
+            application.send_turn_with_selection('claude',conversation_id,'claude',native,b.BindingComposedTurn(text='cancel',effort=None,attachments=[]));old=pending('claude')
             application.cancel('claude',conversation_id);wait(lambda s: s.actions.can_send and not s.pending_interactions,runtime_id='claude')
             rejected(lambda: application.reply_runtime_interaction('claude',conversation_id,old.id,b.BindingRuntimeInteractionReply.DECISION(option_id='allow')))
             for path in (root/'home').rglob('*.jsonl'):
                 assert 'SYNTHETIC_PRIVATE_ANSWER' not in path.read_text() and 'SYNTHETIC_KEY' not in path.read_text()
-            print(json.dumps({'acceptance':'PASSED','explicitApprovalAndPrivateAnswer':True,'busySessionMutationsRejected':True,'invalidAndStaleRepliesRejected':True,'cancelUsesAdvertisedDecline':True,'turnCancellation':True,'terminalFailurePreservesPartialAndAllowsNewConversation':True,'claudeSyntheticToolApprovalAndQuestion':True,'claudeSyntheticDenyAndInterrupt':True,'realServicesCalled':False},indent=2))
+            print(json.dumps({'acceptance':'PASSED','explicitApprovalAndPrivateAnswer':True,'busySessionMutationsRejected':True,'invalidAndStaleRepliesRejected':True,'cancelUsesAdvertisedDecline':True,'turnCancellation':True,'rejectedCancelKeepsSuccessfulOutcome':True,'terminalFailurePreservesPartialAndAllowsNewConversation':True,'claudeSyntheticToolApprovalAndQuestion':True,'claudeSyntheticDenyAndInterrupt':True,'realServicesCalled':False},indent=2))
         finally:
             if application is not None: application.shutdown()
             os.environ.clear();os.environ.update(environment)

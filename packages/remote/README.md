@@ -10,7 +10,7 @@
 
 本地传输绑定成功不要求公网设施在线。`network_state()` 分别投影 saved 修订、Applying／Applied／Failed、实际代际及设施的已观察可达性；Unknown 不是可达。home relay 状态来自原生连接／认证状态，lookup 状态来自实际签名解析结果，不把注册返回当发布成功。`descriptor()` 只在有当前网络时返回拨号线索，不代表授权。若合法配置因端口占用等动态原因不能应用，`bind` 仍返回可读取和修正设置的稳定服务，descriptor 不可用。公共 lookup 的实际 prod／staging 入口在每代装配时选定，Publisher、Resolver 与 descriptor 共用这一个 URL；联系人交接不会同时添加两套公共入口。
 
-服务持有唯一业务 Handler、incarnation、接纳账本与完成任务，宿主保持同一 Tokio runtime 直到 `close().await` 完成。`set_control_ingress(false)` 串行封闭新入站接纳、清除邀请并关闭入站连接，保留本服务已有与新建的出站控制连接。再次开启入口不改变 incarnation 或账本。`apply_network(NetworkSettingsUpdate).await` 先校验 `expected_revision`、完整目标和凭据编辑，再原子保存；随后封闭旧代、关闭并等待全部旧网络任务、publisher 与临时 IO 引用，释放旧 Endpoint 后才绑定下一代。保存失败保留原网络；保存成功但应用失败直接返回 `NetworkState { phase: Failed, saved, error_code, .. }`，保留新目标且无旧设施回退。`retry_network()` 重试同一保存修订。此事务与最终关闭共享取消安全的串行屏障，同身份不会并行发布两份网络。core 的低层 `replace_network(EndpointConfig)` 同样保存完整配置，仍以 Result 报告应用失败。
+服务持有唯一业务 Handler、incarnation、接纳账本与完成任务，宿主保持同一 Tokio runtime 直到 `close().await` 完成。`set_control_ingress(false)` 串行封闭新的控制操作并清除控制邀请；独立的遥测分享入口仍开启时继续受理分享，完全没有入站用途时才关闭入站连接。它保留本服务已有与新建的出站控制连接。再次开启入口不改变 incarnation 或账本。`apply_network(NetworkSettingsUpdate).await` 先校验 `expected_revision`、完整目标和凭据编辑，再原子保存；随后封闭旧代、关闭并等待全部旧网络任务、publisher 与临时 IO 引用，释放旧 Endpoint 后才绑定下一代。保存失败保留原网络；保存成功但应用失败直接返回 `NetworkState { phase: Failed, saved, error_code, .. }`，保留新目标且无旧设施回退。`retry_network()` 重试同一保存修订。此事务与最终关闭共享取消安全的串行屏障，同身份不会并行发布两份网络。core 的低层 `replace_network(EndpointConfig)` 同样保存完整配置，仍以 Result 报告应用失败。
 
 `RemoteClient` 仅弱引用网络代际；它和路径 observer 共享可撤回的原生连接槽。替换或关闭会清空槽中的原生引用，旧 client／observer 包装对象继续存活也不保留旧 socket；observer 返回关闭快照后结束。已接纳执行任务只引用稳定服务，不引用 Endpoint。`close().await` 是最终服务关闭屏障：停止网络并等待已接纳任务写回账本，不调用 application shutdown。释放对象时的非等待清理只负责请求退出，不能代替这个屏障。进程崩溃与业务 owner 真正重启仍使用下述新 incarnation 语义。
 
@@ -38,17 +38,19 @@ relay／lookup 地址拒绝用户名、密码、query 和 fragment；relay 凭�
 
 `enable_mdns()` 只在没有其它 lookup 的独立探针上显式启用；默认探针仍不含 mDNS，以免混淆平台地址变化／QNT 的判别。mDNS 依赖采用 [本地单 crate](../../third-party/iroh-mdns-address-lookup/README.md)，基于 `iroh-mdns-address-lookup` 0.6.0 官方提交 `6f103e7a92ddbd2007383527ab5024c983e3c1c6`，保留同 peer 缓存覆盖修复与默认发现周期。接口集合变化会替换内部 discoverer，并用代际拒绝旧 callback；Endpoint、服务与订阅保持稳定。IPv4 接口为空时不创建 discoverer，显式 IPv4 模式不启用 IPv6。生产网络也使用同一接口生命周期补丁；探针的单独 opt-in 与空 registry 限制只属于诊断入口。`mdns_resolve` 最多八个并发调用，等待上限十五秒，只查询此服务，不建立连接。`mdns_events` 排空本地有界事件队列。Published 记录服务实际收到 EndpointData 的时间及 IP／relay 数量，透明转发原数据；它不证明报文已发出或对端已收到。Dropped 仅计自上次排空后本地溢出或超限项，不代表上游二十项 subscription 队列没有丢失。存在 active resolve 时，上游可能只发送 resolver 更新而不发被动 Discovered，缓存更新必须以再次 resolve 核对。关闭探针清空 lookup registry、等待 mDNS 私有 runtime 和订阅任务退出；关闭调用取消后仍保留同一任务供后续等待。启用时在等待订阅前保存 service 所有权，取消启用不会遗留失去 owner 的 publisher。非等待 Drop 仍只作 best-effort 清理。
 
-## v2 配对与方向授权
+## v3 配对与方向授权
 
-普通远控协议、ALPN 与邀请格式统一为 v2，只有 `velune/remote/2`；本包没有 v1 兼容分支。`PairingOffer::decode` 是最多 1024 字节的离线结构化解析，只接受 Velune 配对用途、固定目的公钥与少量启动线索，不执行 URL 或命令。邀请不含执行 incarnation。`create_invitation` 同时开放一个窗口，最长十分钟；重新生成关闭旧窗口与未提交候选。邀请包含秘密，不实现 Debug，也不写日志。
+普通远控协议、ALPN 与邀请格式统一为 v3，只有 `velune/remote/3`；旧 wire 不兼容，但存储按下述规则迁移，不清空已有控制授权。`PairingOffer::decode` 是最多 1024 字节的离线结构化解析，只接受 Velune 配对用途、固定目的公钥与少量启动线索，不执行 URL 或命令。邀请不含执行 incarnation。`create_invitation` 同时开放一个窗口，最长十分钟；重新生成关闭旧窗口与未提交候选。邀请包含秘密，不实现 Debug，也不写日志。
 
-`begin_pairing` 经认证 TLS 连接证明邀请，双方独立计算八位核对码。label 固定为 `EXPORTER-Velune-Pairing-v2`，131 字节 context 按协议版本、issuer/controller 公钥、invite ID、attempt ID、新挑战及控制方向编码；不使用 0-RTT 或对端提供的显示码。同窗口最多五次挑战，取消、断线或换公钥不返还预算；同邀请的重复导入复用原连接／attempt。核对码只绑定这次 TLS，原连接确认关闭后不能继续批准。
+`begin_pairing` 经认证 TLS 连接证明邀请，双方独立计算八位核对码。label 固定为 `EXPORTER-Velune-Pairing-v3`，context 按协议版本、issuer/controller 公钥、invite ID、attempt ID、新挑战及授权用途编码；不使用 0-RTT 或对端提供的显示码。同窗口最多五次挑战，取消、断线或换公钥不返还预算；同邀请的重复导入复用原连接／attempt。核对码只绑定这次 TLS，原连接确认关闭后不能继续批准。
 
 控制端原子保存目的设备 pin 和待确认 attempt 后才发送 Ready。执行端本地 API `approve_pairing(attempt, expected_peer)` 只允许 AwaitingApproval，原子提交入站 grant 与 completed attempt 后才开放业务；`reject_pairing` 返回实际已提交或未授权状态。批准不是远程业务 Command，GUI/headless 使用相同的可信本地 API。已提交结果可在新连接及执行服务重启后按原 attempt 查询；取消不撤销已提交 grant。`revoke_control` 先持久撤销，再拒绝接纳／查询并关闭该方向的既有访问；旧事务不能重新授信，先前已接纳工作继续完成。
 
+遥测配置读取使用独立的 `TelemetryProfileRead` 邀请、核对码和授权，手机无需业务 Handler 也能在前台分享已保存的配置。它不隐含控制权限；旧控制 grant 不授权读取认证。读取通过一条受信加密 RPC 返回有界 profile，不进入业务账本、snapshot 或持久重试缓存。目的端的开关、身份和临时开发覆盖保持独立。完整配置与 SDK 契约见[遥测装配](../../docs/design/telemetry.md)。
+
 目的设备联系人 pin 与本机授予对端的 incoming grant 分开保存。B 扫 A 并获 A 批准，只允许 B 控制 A；A 不会同时取得控制 B 的权限。名称只是标签，公钥来自已完成握手的真实 peer。`connect` 使用保存的 pin/locator，认证 Hello 给出本次 incarnation；联系人不保存 incarnation，也不因地址或 relay 改变而换身份。
 
-`DeviceIdentity::load_or_create` 只访问显式身份文件，继续使用 identity schema 1。既有损坏身份阻止启动，不重生成私钥。`DeviceStore::open` 使用普通状态文件 schema 3，保存联系人、入站 grant、未决元数据与重置通知。旧普通 schema 原子初始化为空状态，不推导授权、不迁移 pending，也不保留备份；通知跨冷启保留，按准确 ID 确认后才删除。平台在清理自己旧的普通文件前调用 `record_legacy_state_reset`，先保留通知；它不触碰身份、Harness 文件或真实会话。Unix 私有文件为 0600，非普通文件或开放权限拒绝，发布先同步内容、原子替换再同步目录。网络设置与 token 另存为该普通文件名加 `.network-private.json` 的私有原子文件（schema 1），不混入 pending 文件或安全快照；损坏私有配置阻止加载。`validate_device_storage_paths` 在 bindings 创建身份前排除 identity／state／派生配置三者及父目录别名碰撞，普通状态解析也拒绝将带 secret_key 的身份文件重置。
+`DeviceIdentity::load_or_create` 只访问显式身份文件，继续使用 identity schema 1。既有损坏身份阻止启动，不重生成私钥。`DeviceStore::open` 使用普通状态文件 schema 4，保存联系人、独立的控制／遥测分享 grant、未决元数据与重置通知。schema 3 显式迁移到 4，保留身份、联系人、控制 grant 和 pending RequestId，遥测分享 grant 初始为空；未知未来版本或损坏的迁移输入报错并保留原文件。早于 schema 3 的旧普通格式仍原子初始化为空状态，不推导授权、不迁移 pending，也不保留备份；通知跨冷启保留，按准确 ID 确认后才删除。平台在清理自己旧的普通文件前调用 `record_legacy_state_reset`，先保留通知；它不触碰身份、Harness 文件或真实会话。Unix 私有文件为 0600，非普通文件或开放权限拒绝，发布先同步内容、原子替换再同步目录。网络设置与 token 另存为该普通文件名加 `.network-private.json` 的私有原子文件（schema 1），不混入 pending 文件或安全快照；损坏私有配置阻止加载。`validate_device_storage_paths` 在 bindings 创建身份前排除 identity／state／派生配置三者及父目录别名碰撞，普通状态解析也拒绝将带 secret_key 的身份文件重置。
 
 ## 请求交付与操作作用域
 
@@ -79,7 +81,7 @@ pending 最多 256 条，文件与普通 snapshot 只含 ID、CommandKind、view
 
 调用、帧、版本、邀请、存储与授权错误使用无正文的 `RemoteError`；显式业务错误仍由 application 契约返回。完整业务写入冲突、陈旧审批、附件内容边界与每设备独立视图由执行 owner 负责，不由传输 mutex 代替。
 
-2026-10-17 的旧协议合成验收经真实 iroh loopback 选中 Direct，并经显式公共开发 relay 的受控 RelayOnly 连接选中 Relay；这些传输结果不能替代 v2 授权和 pending 验证，也不证明跨 NAT 直连、真实切网或移动后台寿命。早期完整应用闭环见[远程控制验证记录](../../tasks/remote-control/verification.md)。v2 的方向授权、写前存储失败、准确 ID 确认、冷启动查询和真实 ApplicationService／合成 ACP 验收归属[Android 最小端验证记录](../../tasks/android-minimal/verification.md)。本包没有自动化测试或 CI 测试入口。
+2026-10-17 的旧协议合成验收经真实 iroh loopback 选中 Direct，并经显式公共开发 relay 的受控 RelayOnly 连接选中 Relay；这些传输结果不能替代 v2 授权和 pending 验证，也不证明跨 NAT 直连、真实切网或移动后台寿命。早期完整应用闭环见[远程控制验证记录](../../tasks/remote-control/verification.md)。v2 的方向授权、写前存储失败、准确 ID 确认、冷启动查询和真实 ApplicationService／合成 ACP 验收归属[Android 最小端验证记录](../../tasks/android-minimal/verification.md)。`cargo test --locked -p velune-remote --lib` 使用内存身份与真实 loopback，验证独立分享权限、手机无 Handler 双向读取、撤销、控制关系保持和 v3→v4 迁移；没有 CI 测试入口。
 
 生产与诊断 mDNS 的 Android 接口集合来自最新 `PlatformNetworkSnapshot`：选择真实 Wi-Fi／Ethernet 且非 VPN 网络的 IPv4，不要求它是默认网络或具有 Internet／VALIDATED。首次事实到达前保持空集合。`ethernet` 与 `vpn` 是平台事实，与现有 Wi-Fi／cellular 字段并列。桌面宿主通过 `refresh_local_discovery()`（诊断探针为 `refresh_mdns_interfaces()`） 重新枚举 UP、支持 multicast、非 loopback、非 point-to-point 接口的 IPv4；调用方负责有界周期采样，不按路由或接口名字推测 LAN。
 

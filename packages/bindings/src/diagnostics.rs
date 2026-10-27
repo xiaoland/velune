@@ -1,126 +1,84 @@
-//! Per-application subscriber assembly. Domain units emit events without owning sinks.
+//! Local diagnostics and explicitly approved telemetry share the client lifecycle.
 use crate::{BindingError, BindingFailureKind};
 #[cfg(feature = "local-runtime")]
 use std::path::Path;
-use std::{
-    sync::atomic::{AtomicU64, Ordering},
-    time::{Instant, SystemTime, UNIX_EPOCH},
-};
-use tracing::Dispatch;
-#[cfg(feature = "local-runtime")]
-use tracing_subscriber::{Layer, filter::filter_fn, layer::SubscriberExt};
+use std::{sync::Arc, time::Instant};
 
+#[derive(Clone)]
 pub(crate) struct Diagnostics {
-    dispatch: Dispatch,
+    pub(crate) telemetry: Arc<velune_telemetry::ClientTelemetry>,
 }
-
 impl Diagnostics {
-    #[cfg(feature = "remote")]
-    pub(crate) fn silent() -> Self {
-        Self {
-            dispatch: Dispatch::none(),
-        }
+    #[cfg(any(feature = "local-runtime", feature = "remote"))]
+    pub(crate) fn with_telemetry(telemetry: Arc<velune_telemetry::ClientTelemetry>) -> Self {
+        Self { telemetry }
     }
-
     #[cfg(feature = "local-runtime")]
     pub(crate) fn open(home: &Path) -> Result<Self, BindingError> {
-        let directory = home.join("logs");
-        std::fs::create_dir_all(&directory).map_err(|error| BindingError::Io {
-            detail: format!("无法创建本地诊断日志目录 {}：{error}", directory.display()),
-        })?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700)).map_err(
-                |error| BindingError::Io {
-                    detail: format!("无法设置诊断日志目录权限：{error}"),
-                },
-            )?;
-        }
-        let writer = tracing_appender::rolling::RollingFileAppender::builder()
-            .rotation(tracing_appender::rolling::Rotation::DAILY)
-            .filename_prefix("velune")
-            .filename_suffix("jsonl")
-            .max_log_files(7)
-            .build(directory)
-            .map_err(|error| BindingError::Io {
-                detail: format!("无法打开本地诊断日志：{error}"),
-            })?;
-        // Only Velune's explicitly selected fields enter this sink; dependency
-        // spans are not subscribed by this application-owned layer.
-        let layer = tracing_subscriber::fmt::layer()
-            .json()
-            .with_ansi(false)
-            .with_writer(writer)
-            .with_filter(filter_fn(|metadata| {
-                metadata.target().starts_with("velune_")
-                    && *metadata.level() <= tracing::Level::INFO
-            }));
-        // Future exporters belong alongside this layer, not inside domain packages.
-        let subscriber = tracing_subscriber::registry().with(layer);
-        Ok(Self {
-            dispatch: Dispatch::new(subscriber),
-        })
+        let platform = if cfg!(target_os = "macos") {
+            "macos"
+        } else if cfg!(target_os = "windows") {
+            "windows"
+        } else {
+            "host"
+        };
+        let identity =
+            velune_telemetry::ResourceIdentity::new(platform, env!("CARGO_PKG_VERSION"))?;
+        Ok(Self::with_telemetry(
+            velune_telemetry::ClientTelemetry::open(home, identity, true, None)?,
+        ))
     }
-
     pub(crate) fn run<T>(
         &self,
         operation: &'static str,
         body: impl FnOnce() -> Result<T, BindingError>,
     ) -> Result<T, BindingError> {
-        static NEXT: AtomicU64 = AtomicU64::new(1);
-        let epoch = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos();
-        let operation_id = format!(
-            "{epoch:x}-{:x}-{:x}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        );
-        tracing::dispatcher::with_default(&self.dispatch, || {
-            let span = tracing::info_span!("application_operation", operation, operation_id);
-            let _entered = span.enter();
+        self.run_context(operation, None, body)
+    }
+    pub(crate) fn run_context<T>(
+        &self,
+        operation: &'static str,
+        parent: Option<&velune_telemetry::TraceCarrier>,
+        body: impl FnOnce() -> Result<T, BindingError>,
+    ) -> Result<T, BindingError> {
+        let mut observation = self.telemetry.operation(operation, parent, false);
+        if operation == "remote.connect" && parent.is_none() {
+            observation.correlation_gap(velune_telemetry::CorrelationGap::MissingParent);
+        }
+        let operation_id = observation.operation_id.clone();
+        let result = observation.run(|| {
             let started = Instant::now();
             let result = body();
             match result {
-                Ok(value) => {
-                    // Snapshot/auth polling produces no routine log volume.
-                    if !matches!(operation, "snapshot" | "authentication_poll") {
-                        tracing::info!(
-                            event = "operation_completed",
-                            elapsed_ms = started.elapsed().as_millis() as u64
-                        );
-                    }
-                    Ok(value)
-                }
+                Ok(value) => Ok(value),
                 Err(error) => {
                     #[cfg(feature = "remote")]
-                    if matches!(error, BindingError::RemoteRequest { .. }) {
-                        tracing::error!(
-                            event = "remote_request_failed",
-                            elapsed_ms = started.elapsed().as_millis() as u64
-                        );
-                        return Err(error);
-                    }
+                    if matches!(error, BindingError::RemoteRequest { .. }) { return Err(error); }
                     let (kind, code, phase, detail) = error.diagnostic_parts();
-                    tracing::error!(
-                        event = "operation_failed",
-                        code,
-                        phase,
-                        failure_kind = kind.as_str(),
-                        elapsed_ms = started.elapsed().as_millis() as u64
-                    );
-                    Err(BindingError::Diagnostic {
-                        kind,
-                        code,
-                        phase,
-                        detail,
-                        operation_id,
-                    })
+                    tracing::error!(target: "velune_bindings", event = "operation_failed", code, phase, failure_kind = kind.as_str(), elapsed_ms = started.elapsed().as_millis() as u64);
+                    Err(BindingError::Diagnostic { kind, code, phase, detail, operation_id })
                 }
             }
-        })
+        });
+        let outcome = match &result {
+            Ok(_) => velune_telemetry::Outcome::Success,
+            Err(error) => {
+                let kind = match error {
+                    BindingError::Diagnostic { kind, .. } => kind.as_str(),
+                    #[cfg(feature = "remote")]
+                    BindingError::RemoteRequest { kind, .. } => kind.as_str(),
+                    _ => "other",
+                };
+                observation.failure(kind);
+                if kind == "outcome_unknown" {
+                    velune_telemetry::Outcome::Unknown
+                } else {
+                    velune_telemetry::Outcome::Failure
+                }
+            }
+        };
+        observation.complete(outcome);
+        result
     }
 }
 

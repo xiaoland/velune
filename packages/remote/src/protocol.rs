@@ -3,9 +3,9 @@ use serde::{Deserialize, Serialize};
 use std::{net::SocketAddr, time::Duration};
 use velune_application_api::{ApplicationReply, ClientViewId, Command, ExecutionContext, Failure};
 
-pub const PROTOCOL_VERSION: u16 = 2;
+pub const PROTOCOL_VERSION: u16 = 3;
 pub const MAX_FRAME_BYTES: usize = 32 * 1024 * 1024;
-pub(crate) const ALPN: &[u8] = b"velune/remote/2";
+pub(crate) const ALPN: &[u8] = b"velune/remote/3";
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RelayConfig {
@@ -156,6 +156,7 @@ pub(crate) enum Request {
         invite_id: String,
         token: [u8; 32],
         name: String,
+        permission: crate::PairingPermission,
     },
     PairReady {
         attempt_id: String,
@@ -171,10 +172,13 @@ pub(crate) enum Request {
         view: ClientViewId,
         execution: ExecutionContext,
         command: Box<Command>,
+        trace_context: Option<velune_telemetry::TraceCarrier>,
     },
     Query {
         id: RequestId,
+        trace_context: Option<velune_telemetry::TraceCarrier>,
     },
+    ReadTelemetryProfile,
 }
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "reply", content = "value", rename_all = "camelCase")]
@@ -182,6 +186,7 @@ pub(crate) enum Reply {
     Hello(EndpointDescriptor),
     Pairing(crate::pairing::PairingWireState),
     Status(RequestStatus),
+    TelemetryProfile(Option<velune_telemetry::Profile>),
     Error(RemoteError),
 }
 

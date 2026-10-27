@@ -423,7 +423,9 @@ impl NetworkGeneration {
     ) -> Result<(u64, Arc<ConnectionSlot>)> {
         let access = self.service.access()?;
         ServiceState::check_generation(&access, self.id)?;
-        if self.closed.load(Ordering::Acquire) || (incoming && !access.ingress) {
+        if self.closed.load(Ordering::Acquire)
+            || (incoming && !access.ingress && !access.profile_ingress)
+        {
             connection.close(0u8.into(), b"ingress closed");
             return Err(RemoteError::Closed);
         }
@@ -560,7 +562,9 @@ impl RemoteAccessService {
         session: ClientSession,
     ) -> Result<RemoteClient> {
         let contact = self.state.store.contact(peer)?;
-        if !matches!(contact.confirmation, ContactConfirmation::Confirmed { .. }) {
+        if !contact.control_authorized
+            || !matches!(contact.confirmation, ContactConfirmation::Confirmed { .. })
+        {
             return Err(RemoteError::Unauthorized);
         }
         let mut client = self
@@ -630,7 +634,9 @@ async fn accept_loop(network: Arc<NetworkGeneration>) {
     let permits = Arc::new(Semaphore::new(64));
     while let Some(incoming) = endpoint.accept().await {
         let allowed = network.service.access().is_ok_and(|access| {
-            access.ingress && access.generation == Some(network.id) && !access.closed
+            (access.ingress || access.profile_ingress)
+                && access.generation == Some(network.id)
+                && !access.closed
         });
         if !allowed {
             incoming.refuse();

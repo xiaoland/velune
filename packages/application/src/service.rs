@@ -91,7 +91,11 @@ impl Owner {
         })
     }
 
-    fn run(&mut self, receiver: mpsc::Receiver<Job>) {
+    fn run(
+        &mut self,
+        receiver: mpsc::Receiver<Job>,
+        telemetry: Option<std::sync::Arc<velune_telemetry::ClientTelemetry>>,
+    ) {
         loop {
             match receiver.recv_timeout(Duration::from_millis(40)) {
                 Ok(Job::Execute {
@@ -106,6 +110,7 @@ impl Owner {
                         let _entered = span.enter();
                         self.execute(view, context, *command)
                     });
+                    self.application.runtime.publish_execution();
                     let _ = reply.send(outcome);
                 }
                 Ok(Job::Close { stop_work, reply }) => {
@@ -115,6 +120,7 @@ impl Owner {
                         self.application.close()
                     }
                     .map_err(Failure::from);
+                    self.application.runtime.publish_execution();
                     let closed = result.is_ok();
                     let _ = reply.send(result);
                     if closed {
@@ -124,8 +130,16 @@ impl Owner {
                 Err(mpsc::RecvTimeoutError::Timeout) => {}
                 Err(mpsc::RecvTimeoutError::Disconnected) => break,
             }
-            if self.application.runtime.advance().is_err() {
-                tracing::warn!(target: "velune_application", event = "application_advance_failed");
+            let mut advance = || {
+                if self.application.runtime.advance().is_err() {
+                    tracing::warn!(target: "velune_application", event = "application_advance_failed");
+                }
+                self.application.runtime.publish_execution();
+            };
+            if let Some(telemetry) = &telemetry {
+                tracing::dispatcher::with_default(&telemetry.dispatch(), advance);
+            } else {
+                advance();
             }
         }
     }
@@ -135,6 +149,20 @@ impl ApplicationService {
     /// The execution host retains this handle while it intends to keep work alive.
     /// A controller connection owns no Application and dropping it cannot cancel work.
     pub fn open(options: Options) -> Result<Self, Error> {
+        Self::open_owner(options, None)
+    }
+
+    pub fn open_with_telemetry(
+        options: Options,
+        telemetry: std::sync::Arc<velune_telemetry::ClientTelemetry>,
+    ) -> Result<Self, Error> {
+        Self::open_owner(options, Some(telemetry))
+    }
+
+    fn open_owner(
+        options: Options,
+        telemetry: Option<std::sync::Arc<velune_telemetry::ClientTelemetry>>,
+    ) -> Result<Self, Error> {
         let (sender, receiver) = mpsc::channel();
         let (initialized, initialization) = mpsc::sync_channel(1);
         let dispatch = tracing::dispatcher::get_default(Clone::clone);
@@ -142,13 +170,16 @@ impl ApplicationService {
             .name("velune-application".into())
             .spawn(move || {
                 tracing::dispatcher::with_default(&dispatch, || {
-                    let application = match Application::open(options) {
+                    let mut application = match Application::open(options) {
                         Ok(application) => application,
                         Err(error) => {
                             let _ = initialized.send(Err(Failure::from(error)));
                             return;
                         }
                     };
+                    if let Some(owner) = &telemetry {
+                        application.runtime.set_telemetry(owner.clone());
+                    }
                     let _ = initialized.send(Ok(()));
                     let revision = Revision(
                         std::time::SystemTime::now()
@@ -162,7 +193,7 @@ impl ApplicationService {
                         view_clock: 0,
                         revision,
                     }
-                    .run(receiver);
+                    .run(receiver, telemetry);
                 });
             })?;
         initialization

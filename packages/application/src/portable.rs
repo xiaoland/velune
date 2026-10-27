@@ -15,6 +15,12 @@ pub(crate) struct CoreRuntime {
     local_presentation_commit: std::cell::RefCell<Option<crate::repository::PresentationDefaults>>,
 }
 impl CoreRuntime {
+    pub(crate) fn publish_execution(&self) {}
+    pub(crate) fn set_telemetry(
+        &mut self,
+        _owner: std::sync::Arc<velune_telemetry::ClientTelemetry>,
+    ) {
+    }
     pub(crate) fn open(
         options: Options,
         _analytics: std::sync::Arc<crate::analytics::AnalyticsStore>,

@@ -64,6 +64,7 @@ impl RemoteClient {
                 view,
                 execution,
                 command: Box::new(command),
+                trace_context: velune_telemetry::TraceCarrier::current(),
             })
             .await?
         {
@@ -72,7 +73,13 @@ impl RemoteClient {
         }
     }
     pub async fn query(&self, id: RequestId) -> Result<RequestStatus> {
-        match self.rpc(Request::Query { id }).await? {
+        match self
+            .rpc(Request::Query {
+                id,
+                trace_context: velune_telemetry::TraceCarrier::current(),
+            })
+            .await?
+        {
             Reply::Status(status) => Ok(status),
             _ => Err(RemoteError::Protocol),
         }
@@ -125,24 +132,69 @@ impl RemoteClient {
     pub fn close(&self) {
         self.connection.close(b"client closed");
     }
-    pub(crate) async fn rpc(&self, request: Request) -> Result<Reply> {
+    pub(crate) async fn rpc(&self, mut request: Request) -> Result<Reply> {
         if self.authorized && !self.store.is_pinned(&self.peer_id())? {
             return Err(RemoteError::Unauthorized);
         }
         let network = self.network.upgrade().ok_or(RemoteError::Closed)?;
-        let _operation = network.operation().await?;
-        let connection = self.connection.native().ok_or(RemoteError::Closed)?;
-        tokio::select! {
-            biased;
-            _=network.cancelled()=>Err(RemoteError::Closed),
-            result=tokio::time::timeout(self.timeout,async {
-                let (mut send,mut recv)=connection.open_bi().await.map_err(|_|RemoteError::Unavailable)?;
-                write_frame(&mut send,Envelope {version:PROTOCOL_VERSION,body:request}).await?;
-                let reply:Envelope<Reply>=read_frame(&mut recv,MAX_FRAME_BYTES).await?;
-                if reply.version!=PROTOCOL_VERSION {return Err(RemoteError::IncompatibleVersion);}
-                match reply.body {Reply::Error(error)=>Err(error),reply=>Ok(reply)}
-            })=>result.map_err(|_|RemoteError::Timeout)?,
+        let telemetry = network
+            .service
+            .telemetry
+            .lock()
+            .map_err(|_| RemoteError::Unavailable)?
+            .clone();
+        let operation_name = if matches!(request, Request::Query { .. }) {
+            "remote.query_request"
+        } else {
+            "remote.request"
+        };
+        let mut observation = match &mut request {
+            Request::Submit {
+                id, trace_context, ..
+            }
+            | Request::Query { id, trace_context } => telemetry.as_ref().map(|owner| {
+                let operation = owner.operation(operation_name, trace_context.as_ref(), false);
+                operation.request_identity(&id.incarnation, &id.client, id.sequence);
+                *trace_context = operation.carrier();
+                operation
+            }),
+            _ => None,
+        };
+        let response_limit = if matches!(request, Request::ReadTelemetryProfile) {
+            32 * 1024
+        } else {
+            MAX_FRAME_BYTES
+        };
+        let future = async {
+            let _operation = network.operation().await?;
+            let connection = self.connection.native().ok_or(RemoteError::Closed)?;
+            tokio::select! {
+                biased;
+                _=network.cancelled()=>Err(RemoteError::Closed),
+                result=tokio::time::timeout(self.timeout,async {
+                    let (mut send,mut recv)=connection.open_bi().await.map_err(|_|RemoteError::Unavailable)?;
+                    write_frame(&mut send,Envelope {version:PROTOCOL_VERSION,body:request}).await?;
+                    let reply:Envelope<Reply>=read_frame(&mut recv,response_limit).await?;
+                    if reply.version!=PROTOCOL_VERSION {return Err(RemoteError::IncompatibleVersion);}
+                    match reply.body {Reply::Error(error)=>Err(error),reply=>Ok(reply)}
+                })=>result.map_err(|_|RemoteError::Timeout)?,
+            }
+        };
+        let result = if let Some(operation) = &observation {
+            operation.instrument(future).await
+        } else {
+            future.await
+        };
+        if let Some(operation) = &mut observation {
+            operation.complete(match &result {
+                Ok(_) => velune_telemetry::Outcome::Success,
+                Err(RemoteError::Timeout | RemoteError::Closed | RemoteError::Unavailable) => {
+                    velune_telemetry::Outcome::Unknown
+                }
+                Err(_) => velune_telemetry::Outcome::Failure,
+            });
         }
+        result
     }
 }
 impl Drop for RemoteClient {

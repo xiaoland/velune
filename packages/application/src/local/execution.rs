@@ -6,6 +6,16 @@ impl CoreRuntime {
         runtime_id: &str,
         model_record_key: &str,
     ) -> Result<(), RuntimeError> {
+        let owner = self.telemetry.clone();
+        telemetry::observe(owner.as_ref(), "harness.prepare", || {
+            self.prepare_runtime_inner(runtime_id, model_record_key)
+        })
+    }
+    fn prepare_runtime_inner(
+        &mut self,
+        runtime_id: &str,
+        model_record_key: &str,
+    ) -> Result<(), RuntimeError> {
         let runtime = self
             .runtime_instances
             .iter()
@@ -52,6 +62,7 @@ impl CoreRuntime {
                 self.execution_backends.clone(),
             )
             .map_err(|error| RuntimeError::context("gateway startup", error))?;
+            runner.set_telemetry(self.telemetry.clone(), None, None);
             self.session.gateway_runner = Some(runner);
             let servers = self.collaboration_servers();
             let result = (|| {
@@ -60,8 +71,10 @@ impl CoreRuntime {
                 config.projection_directory = lane;
                 config.mcp_servers = servers;
                 config.session_agents = self.turn_subagents(&runtime);
-                NativeSession::connect(config)
-                    .map_err(|error| RuntimeError::context("运行时连接失败", error))
+                telemetry::observe(self.telemetry.as_ref(), "harness.start", || {
+                    NativeSession::connect(config)
+                })
+                .map_err(|error| RuntimeError::context("运行时连接失败", error))
             })();
             match result {
                 Ok(session) => {
@@ -162,6 +175,7 @@ impl CoreRuntime {
             return Err(error);
         }
         write_selection_file(&config, model_record_key, &physical_model_id)?;
+        runner.set_telemetry(self.telemetry.clone(), None, None);
         self.session.gateway_runner = Some(runner);
         self.session.gateway_tunnel = Some(tunnel);
         self.session.pi.config = Some(config);
@@ -221,8 +235,10 @@ impl CoreRuntime {
         if let (Some(logical), Some(physical)) = (model_record_key, physical_model_id) {
             write_selection_file(&config, logical, physical)?;
         }
-        let mut client = pi::Client::spawn(config.clone())
-            .map_err(|error| runtime_start_error("startup", error))?;
+        let mut client = telemetry::observe(self.telemetry.as_ref(), "harness.start", || {
+            pi::Client::spawn(config.clone())
+        })
+        .map_err(|error| runtime_start_error("startup", error))?;
         // Establish readiness through RPC before exposing bootstrap events to
         // the projection. Pi can emit initialization records before its first
         // command response; those records must not settle a new turn.
@@ -277,6 +293,13 @@ impl CoreRuntime {
     }
 
     pub(super) fn shutdown_active(&mut self) -> Result<(), RuntimeError> {
+        let owner = self.telemetry.clone();
+        telemetry::observe(owner.as_ref(), "harness.stop", || {
+            self.shutdown_active_inner()
+        })
+    }
+    fn shutdown_active_inner(&mut self) -> Result<(), RuntimeError> {
+        let cancellation_requested = self.session.cancel_requested;
         let state = std::mem::replace(&mut self.session.active_state, ActiveState::Empty);
         let result = match state {
             ActiveState::Acp(mut session) => session
@@ -303,6 +326,11 @@ impl CoreRuntime {
         self.session.gateway_tunnel = None;
         self.session.execution_runtime_id = None;
         self.session.model_record_key = None;
+        self.complete_turn_observation(if result.is_ok() && cancellation_requested {
+            velune_telemetry::Outcome::Cancelled
+        } else {
+            velune_telemetry::Outcome::Unknown
+        });
         result
     }
 }

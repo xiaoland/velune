@@ -302,6 +302,7 @@ pub struct RemoteServiceSnapshot {
     pub descriptor: Option<EndpointDescriptor>,
     pub contacts: Vec<DeviceContact>,
     pub incoming_grants: Vec<IncomingControlGrant>,
+    pub telemetry_profile_grants: Vec<IncomingControlGrant>,
     pub incoming_pairings: Vec<PairingStatus>,
     pub outgoing_pairings: Vec<PairingStatus>,
     pub pending: Vec<PendingOperation>,
@@ -380,6 +381,7 @@ impl RemoteAccessService {
             descriptor: self.descriptor().ok(),
             contacts: stored.contacts,
             incoming_grants: stored.incoming_grants,
+            telemetry_profile_grants: stored.telemetry_profile_grants,
             incoming_pairings: before,
             outgoing_pairings: self
                 .state

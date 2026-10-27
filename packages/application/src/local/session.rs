@@ -15,6 +15,7 @@ impl Default for SessionKey {
 
 #[derive(Default)]
 pub(super) struct Session {
+    pub(super) turn_observation: Option<velune_telemetry::Operation>,
     pub(super) key: SessionKey,
     /// Authorizes this session's executions to use Velune's collaboration tools.
     pub(super) collaboration_ticket: Option<collaboration::Ticket>,
@@ -302,10 +303,19 @@ impl CoreRuntime {
 
     /// Record how the addressed session's turn ended.
     pub(super) fn record_finished_turn(&mut self, failed: bool) -> Option<crate::TurnOutcome> {
+        if self.session.projected().is_none() {
+            let outcome = if failed {
+                velune_telemetry::Outcome::Failure
+            } else if self.session.cancel_requested {
+                velune_telemetry::Outcome::Cancelled
+            } else {
+                velune_telemetry::Outcome::Unknown
+            };
+            self.complete_turn_observation(outcome);
+            return None;
+        }
         let view = self.session.projected()?;
-        let outcome = if self.session.cancel_requested {
-            crate::TurnOutcome::Cancelled
-        } else if failed
+        let outcome = if failed
             || view.run_state == RunState::Failed
             || matches!(self.session.active_state, ActiveState::Pi)
                 && self
@@ -316,6 +326,8 @@ impl CoreRuntime {
                     .is_some_and(PiProjection::turn_failed)
         {
             crate::TurnOutcome::Failed
+        } else if self.session.cancel_requested {
+            crate::TurnOutcome::Cancelled
         } else {
             crate::TurnOutcome::Completed
         };
@@ -331,6 +343,11 @@ impl CoreRuntime {
             finished.turns.pop_front();
         }
         self.session.cancel_requested = false;
+        self.complete_turn_observation(match outcome {
+            crate::TurnOutcome::Completed => velune_telemetry::Outcome::Success,
+            crate::TurnOutcome::Failed => velune_telemetry::Outcome::Failure,
+            crate::TurnOutcome::Cancelled => velune_telemetry::Outcome::Cancelled,
+        });
         Some(outcome)
     }
 

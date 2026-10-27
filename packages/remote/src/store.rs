@@ -76,6 +76,8 @@ pub struct DeviceContact {
     pub confirmation: ContactConfirmation,
     pub paused: bool,
     pub locator_source: LocatorSource,
+    pub control_authorized: bool,
+    pub pairing_permission: PairingPermission,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -121,6 +123,8 @@ struct StoredState {
     version: u16,
     contacts: BTreeMap<String, DeviceContact>,
     grants: BTreeMap<String, IncomingControlGrant>,
+    profile_grants: BTreeMap<String, IncomingControlGrant>,
+    pending_pairings: BTreeMap<String, PendingPairing>,
     pending: Vec<PendingOperation>,
     reset_notice: Option<ConfigurationResetNotice>,
     legacy_reset_recorded: bool,
@@ -128,19 +132,28 @@ struct StoredState {
 impl Default for StoredState {
     fn default() -> Self {
         Self {
-            version: 3,
+            version: 4,
             contacts: BTreeMap::new(),
             grants: BTreeMap::new(),
+            profile_grants: BTreeMap::new(),
+            pending_pairings: BTreeMap::new(),
             pending: Vec::new(),
             reset_notice: None,
             legacy_reset_recorded: false,
         }
     }
 }
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct PendingPairing {
+    pub attempt_id: String,
+    pub permission: PairingPermission,
+}
 #[derive(Clone)]
 pub struct DeviceStoreSnapshot {
     pub contacts: Vec<DeviceContact>,
     pub incoming_grants: Vec<IncomingControlGrant>,
+    pub telemetry_profile_grants: Vec<IncomingControlGrant>,
     pub pending: Vec<PendingOperation>,
     pub reset_notice: Option<ConfigurationResetNotice>,
 }
@@ -163,13 +176,36 @@ impl DeviceStore {
     pub fn open(path: &Path) -> Result<Self> {
         let (state, write) = match read_private(path) {
             Ok(bytes) => {
-                let json: serde_json::Value =
+                let mut json: serde_json::Value =
                     serde_json::from_slice(&bytes).map_err(|_| RemoteError::StateStorage)?;
                 // An independent identity is never an obsolete ordinary-state schema.
                 if json.get("secret_key").is_some() {
                     return Err(RemoteError::StateStorage);
                 }
-                if json.get("version").and_then(serde_json::Value::as_u64) != Some(3) {
+                let version = json.get("version").and_then(serde_json::Value::as_u64);
+                if version.is_some_and(|v| v > 4) {
+                    return Err(RemoteError::StateStorage);
+                }
+                if version == Some(3) {
+                    // v3 control grants remain control-only; never infer consent to share credentials.
+                    json["version"] = serde_json::json!(4);
+                    json["profile_grants"] = serde_json::json!({});
+                    json["pending_pairings"] = serde_json::json!({});
+                    if let Some(contacts) = json.get_mut("contacts").and_then(|v| v.as_object_mut())
+                    {
+                        for contact in contacts.values_mut() {
+                            let contact =
+                                contact.as_object_mut().ok_or(RemoteError::StateStorage)?;
+                            contact.insert("control_authorized".into(), serde_json::json!(true));
+                            contact
+                                .insert("pairing_permission".into(), serde_json::json!("control"));
+                        }
+                    }
+                    (
+                        serde_json::from_value(json).map_err(|_| RemoteError::StateStorage)?,
+                        true,
+                    )
+                } else if version != Some(4) {
                     (
                         StoredState {
                             reset_notice: Some(ConfigurationResetNotice { id: random_id()? }),
@@ -207,6 +243,7 @@ impl DeviceStore {
         Ok(DeviceStoreSnapshot {
             contacts: state.contacts.values().cloned().collect(),
             incoming_grants: state.grants.values().cloned().collect(),
+            telemetry_profile_grants: state.profile_grants.values().cloned().collect(),
             pending: state.pending.clone(),
             reset_notice: state.reset_notice.clone(),
         })
@@ -264,26 +301,134 @@ impl DeviceStore {
             .get(peer)
             .cloned())
     }
-    pub(crate) fn save_pin(&self, contact: DeviceContact) -> Result<()> {
+    pub(crate) fn profile_grant(&self, peer: &str) -> Result<Option<IncomingControlGrant>> {
+        Ok(self
+            .state
+            .lock()
+            .map_err(|_| RemoteError::StateStorage)?
+            .profile_grants
+            .get(peer)
+            .cloned())
+    }
+    pub(crate) fn pairing_grant(
+        &self,
+        peer: &str,
+        attempt: &str,
+    ) -> Result<Option<(PairingPermission, IncomingControlGrant)>> {
+        let state = self.state.lock().map_err(|_| RemoteError::StateStorage)?;
+        Ok(state
+            .grants
+            .get(peer)
+            .filter(|g| g.attempt_id == attempt)
+            .map(|g| (PairingPermission::Control, g.clone()))
+            .or_else(|| {
+                state
+                    .profile_grants
+                    .get(peer)
+                    .filter(|g| g.attempt_id == attempt)
+                    .map(|g| (PairingPermission::TelemetryProfileRead, g.clone()))
+            }))
+    }
+    pub(crate) fn commit_profile_grant(&self, grant: IncomingControlGrant) -> Result<()> {
         self.change(|state| {
+            state.profile_grants.insert(grant.peer_id.clone(), grant);
+            Ok(())
+        })
+    }
+    pub(crate) fn revoke_profile_grant(&self, peer: &str) -> Result<()> {
+        self.change(|state| {
+            state.profile_grants.remove(peer);
+            Ok(())
+        })
+    }
+    pub(crate) fn save_pin(&self, mut contact: DeviceContact) -> Result<()> {
+        self.change(|state| {
+            let attempt_id = match &contact.confirmation {
+                ContactConfirmation::Pending { attempt_id } => attempt_id.clone(),
+                _ => return Err(RemoteError::PairingUnavailable),
+            };
+            state.pending_pairings.insert(
+                contact.peer_id.clone(),
+                PendingPairing {
+                    attempt_id,
+                    permission: contact.pairing_permission,
+                },
+            );
+            if let Some(existing) = state.contacts.get(&contact.peer_id) {
+                contact.paused = existing.paused;
+                contact.control_authorized |= existing.control_authorized;
+                if matches!(existing.confirmation, ContactConfirmation::Confirmed { .. }) {
+                    contact.confirmation = existing.confirmation.clone();
+                    contact.pairing_permission = existing.pairing_permission;
+                }
+            }
             state.contacts.insert(contact.peer_id.clone(), contact);
             Ok(())
         })
     }
     pub(crate) fn confirm_pin(&self, peer: &str, attempt: &str) -> Result<()> {
         self.change(|state| {
+            let pending = state
+                .pending_pairings
+                .get(peer)
+                .filter(|pending| pending.attempt_id == attempt)
+                .cloned();
             let contact = state
                 .contacts
                 .get_mut(peer)
                 .ok_or(RemoteError::Unauthorized)?;
-            match &contact.confirmation {
-                ContactConfirmation::Pending { attempt_id: id } if id == attempt => {}
-                ContactConfirmation::Confirmed { attempt_id: id } if id == attempt => return Ok(()),
-                _ => return Err(RemoteError::PairingUnavailable),
+            let permission = if let Some(pending) = pending {
+                pending.permission
+            } else {
+                match &contact.confirmation {
+                    ContactConfirmation::Pending { attempt_id: id } if id == attempt => {
+                        contact.pairing_permission
+                    }
+                    ContactConfirmation::Confirmed { attempt_id: id } if id == attempt => {
+                        return Ok(());
+                    }
+                    _ => return Err(RemoteError::PairingUnavailable),
+                }
+            };
+            if permission == PairingPermission::Control {
+                contact.control_authorized = true;
             }
+            contact.pairing_permission = permission;
             contact.confirmation = ContactConfirmation::Confirmed {
                 attempt_id: attempt.into(),
             };
+            state.pending_pairings.remove(peer);
+            Ok(())
+        })
+    }
+    pub(crate) fn pending_pairing(&self, peer: &str) -> Result<Option<PendingPairing>> {
+        Ok(self
+            .state
+            .lock()
+            .map_err(|_| RemoteError::StateStorage)?
+            .pending_pairings
+            .get(peer)
+            .cloned())
+    }
+    pub(crate) fn pending_pairing_peers(&self) -> Result<Vec<String>> {
+        Ok(self
+            .state
+            .lock()
+            .map_err(|_| RemoteError::StateStorage)?
+            .pending_pairings
+            .keys()
+            .cloned()
+            .collect())
+    }
+    pub(crate) fn finish_ungranted_pairing(&self, peer: &str, attempt: &str) -> Result<()> {
+        self.change(|state| {
+            if state
+                .pending_pairings
+                .get(peer)
+                .is_some_and(|p| p.attempt_id == attempt)
+            {
+                state.pending_pairings.remove(peer);
+            }
             Ok(())
         })
     }
@@ -341,6 +486,7 @@ impl DeviceStore {
                 return Err(RemoteError::PendingRequests);
             }
             state.contacts.remove(peer);
+            state.pending_pairings.remove(peer);
             Ok(())
         })
     }
@@ -423,6 +569,8 @@ pub(crate) fn parse_peer(peer: &str) -> Result<iroh::EndpointId> {
 fn validate_state(state: &StoredState) -> Result<()> {
     if state.contacts.len() > MAX_CONTACTS
         || state.grants.len() > MAX_CONTACTS
+        || state.profile_grants.len() > MAX_CONTACTS
+        || state.pending_pairings.len() > MAX_CONTACTS
         || state.pending.len() > MAX_PENDING
     {
         return Err(RemoteError::Capacity);
@@ -441,13 +589,19 @@ fn validate_state(state: &StoredState) -> Result<()> {
             }
         }
     }
-    for (id, grant) in &state.grants {
+    for (id, grant) in state.grants.iter().chain(&state.profile_grants) {
         if id != &grant.peer_id {
             return Err(RemoteError::StateStorage);
         }
         parse_peer(id)?;
         validate_name(&grant.name)?;
         crate::protocol::validate_id(&grant.attempt_id)?;
+    }
+    for (peer, pending) in &state.pending_pairings {
+        if !state.contacts.contains_key(peer) {
+            return Err(RemoteError::StateStorage);
+        }
+        crate::protocol::validate_id(&pending.attempt_id)?;
     }
     for pending in &state.pending {
         parse_peer(&pending.peer_id)?;
@@ -462,4 +616,64 @@ fn validate_state(state: &StoredState) -> Result<()> {
         crate::protocol::validate_id(&notice.id)?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod migration_tests {
+    use super::*;
+    #[test]
+    fn v3_preserves_contacts_grants_pending_and_notice_without_sharing_consent() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("remote-state.json");
+        let peer = DeviceIdentity::generate("synthetic".into()).unwrap().id();
+        let attempt = random_id().unwrap();
+        let mut old = serde_json::to_value(StoredState::default()).unwrap();
+        old["version"] = serde_json::json!(3);
+        old.as_object_mut().unwrap().remove("profile_grants");
+        old["contacts"][&peer] = serde_json::json!({ "peer_id": peer, "name": "synthetic", "locator": {"relay_urls": [], "direct_addresses": [], "lookup_urls": []}, "confirmation": {"state":"confirmed", "attempt_id":attempt}, "paused":true, "locator_source":"pairingOffer" });
+        old["grants"][&peer] =
+            serde_json::json!({"peer_id":peer,"name":"synthetic","attempt_id":attempt});
+        old["pending"] = serde_json::json!([{"peer_id":peer,"request_id":{"incarnation":random_id().unwrap(),"client":random_id().unwrap(),"sequence":1},"view":"synthetic","execution":{"expected_revision":null},"kind":"List","runtime_id":null,"conversation_id":null,"status":"unknown"}]);
+        // Use the authoritative enum encoding instead of hand-maintaining its wire representation.
+        old["pending"][0]["kind"] = serde_json::to_value(CommandKind::List).unwrap();
+        old["reset_notice"] = serde_json::json!({"id":random_id().unwrap()});
+        atomic_write(&path, &serde_json::to_vec(&old).unwrap()).unwrap();
+        let store = DeviceStore::open(&path).unwrap();
+        let snapshot = store.snapshot().unwrap();
+        assert_eq!(snapshot.contacts.len(), 1);
+        assert!(snapshot.contacts[0].paused && snapshot.contacts[0].control_authorized);
+        assert_eq!(snapshot.incoming_grants[0].attempt_id, attempt);
+        assert!(snapshot.telemetry_profile_grants.is_empty());
+        assert_eq!(snapshot.pending[0].request_id.sequence, 1);
+        assert!(matches!(snapshot.pending[0].status, PendingStatus::Unknown));
+        assert_eq!(
+            serde_json::to_value(snapshot.reset_notice).unwrap(),
+            old["reset_notice"]
+        );
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&std::fs::read(path).unwrap()).unwrap()["version"],
+            4
+        );
+    }
+    #[test]
+    fn unknown_future_version_is_not_reset_or_overwritten() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("remote-state.json");
+        let bytes = br#"{"version":99,"synthetic":"preserve"}"#;
+        atomic_write(&path, bytes).unwrap();
+        assert!(DeviceStore::open(&path).is_err());
+        assert_eq!(std::fs::read(path).unwrap(), bytes);
+    }
+    #[test]
+    fn damaged_v3_contact_returns_error_without_panicking_or_writing() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("remote-state.json");
+        let mut old = serde_json::to_value(StoredState::default()).unwrap();
+        old["version"] = serde_json::json!(3);
+        old["contacts"]["synthetic"] = serde_json::json!(42);
+        let bytes = serde_json::to_vec(&old).unwrap();
+        atomic_write(&path, &bytes).unwrap();
+        assert!(DeviceStore::open(&path).is_err());
+        assert_eq!(std::fs::read(path).unwrap(), bytes);
+    }
 }

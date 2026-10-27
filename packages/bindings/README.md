@@ -56,6 +56,8 @@ Running、Unknown、ResultExpired、ServerRestarted 与传输不明保留 pendin
 
 远程聊天附件先由平台读取控制设备上用户选择的内容，再调用 `upload_attachment(name, bytes)`；将返回的 `reference` 填入 `BindingComposedTurn.attachments`，不把控制设备路径当执行设备路径。`read_attachment(runtime_id, conversation_id, message_id, block_index)` 只读取该会话消息已有的附件内容，不提供通用任意文件读取。显式的提供商 key 查看／修改与资源内容读写通过同一加密连接返回，配置快照仍只含非秘密认证描述。
 
+`VeluneRemoteEndpoint.start_local_control(directory)` 为已有服务启动同用户的本地配对 CLI，生命周期由同一 `ServiceOwner` 管理，不创建第二个 endpoint。接口位于私有 `cli/control.sock`，只处理配对状态、邀请、批准、撤销和连接，不暴露应用业务命令。Mac 应用与 Android debug 应用在打开原 endpoint 后启用；用法与访问条件见[开发说明](../../docs/development.md#本地配对-cli)。
+
 ## 生成绑定
 
 先构建目标平台动态库，再读取该库中的 UniFFI 元数据。以下命令使用开发构建；平台发行构建由应用构建脚本负责。

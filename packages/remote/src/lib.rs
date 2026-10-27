@@ -27,7 +27,7 @@ pub use identity::{DeviceIdentity, validate_device_storage_paths};
 #[cfg(target_os = "android")]
 pub use iroh::dns::install_android_jni_context;
 pub use network::{NetworkChangeReason, PlatformNetwork, PlatformNetworkSnapshot};
-pub use pairing::{PairingOffer, PairingPhase, PairingStatus};
+pub use pairing::{PairingOffer, PairingPermission, PairingPhase, PairingStatus};
 #[cfg(feature = "diagnostics")]
 pub use paths::{ConnectionDiagnostics, PathDiagnostic, monotonic_microseconds};
 pub use paths::{

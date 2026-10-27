@@ -3,6 +3,7 @@ use crate::*;
 
 #[derive(Clone, uniffi::Record)]
 pub struct BindingPairingOfferInfo {
+    pub permission: BindingPairingPermission,
     pub issuer: String,
     pub name: String,
     pub expires_at_unix_seconds: u64,
@@ -14,6 +15,7 @@ pub struct BindingPairingOfferInfo {
 pub fn decode_remote_offer(encoded: String) -> Result<BindingPairingOfferInfo, BindingError> {
     let offer = velune_remote::PairingOffer::decode(&encoded)?;
     Ok(BindingPairingOfferInfo {
+        permission: convert(offer.permission)?,
         issuer: offer.issuer,
         name: offer.name,
         expires_at_unix_seconds: offer.expires_at_unix_seconds,
@@ -31,8 +33,15 @@ pub enum BindingPairingPhase {
     Expired,
     Disconnected,
 }
+#[derive(Clone, serde::Deserialize, uniffi::Enum)]
+#[serde(rename_all = "camelCase")]
+pub enum BindingPairingPermission {
+    Control,
+    TelemetryProfileRead,
+}
 #[derive(Clone, serde::Deserialize, uniffi::Record)]
 pub struct BindingPairingStatus {
+    pub permission: BindingPairingPermission,
     pub attempt_id: String,
     pub peer_id: String,
     pub name: String,
@@ -60,6 +69,8 @@ pub struct BindingDeviceContact {
     pub confirmation: BindingContactConfirmation,
     pub paused: bool,
     pub locator_source: BindingLocatorSource,
+    pub control_authorized: bool,
+    pub pairing_permission: BindingPairingPermission,
 }
 #[derive(Clone, serde::Deserialize, uniffi::Record)]
 pub struct BindingIncomingControlGrant {
@@ -106,6 +117,7 @@ pub struct BindingRemoteServiceSnapshot {
     pub descriptor: Option<BindingRemoteEndpointDescriptor>,
     pub contacts: Vec<BindingDeviceContact>,
     pub incoming_grants: Vec<BindingIncomingControlGrant>,
+    pub telemetry_profile_grants: Vec<BindingIncomingControlGrant>,
     pub incoming_pairings: Vec<BindingPairingStatus>,
     pub outgoing_pairings: Vec<BindingPairingStatus>,
     pub pending: Vec<BindingPendingOperation>,

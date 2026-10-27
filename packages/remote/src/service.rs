@@ -23,6 +23,7 @@ pub trait Handler: Send + Sync {
 pub(crate) struct Access {
     pub(crate) generation: Option<u64>,
     pub(crate) ingress: bool,
+    pub(crate) profile_ingress: bool,
     pub(crate) closed: bool,
     pub(crate) pairing: crate::pairing::PairingRegistry,
     ledger: Ledger,
@@ -33,6 +34,7 @@ pub(crate) struct ServiceState {
     pub(crate) store: Arc<DeviceStore>,
     pub(crate) outgoing: Mutex<std::collections::BTreeMap<String, crate::pairing::OutgoingPairing>>,
     handler: Option<Arc<dyn Handler>>,
+    pub(crate) telemetry: Mutex<Option<Arc<velune_telemetry::ClientTelemetry>>>,
     pub(crate) network_facts: Mutex<Option<PlatformNetworkSnapshot>>,
     pub(crate) network_application: Mutex<crate::settings::NetworkApplication>,
     pub(crate) access: Mutex<Access>,
@@ -67,16 +69,55 @@ impl ServiceState {
     ) -> Result<Reply> {
         let mut access = self.access()?;
         Self::check_generation(&access, generation)?;
-        if !access.ingress {
+        if !access.ingress && !access.profile_ingress {
             return Err(RemoteError::Closed);
+        }
+        if matches!(request, Request::ReadTelemetryProfile) {
+            if !access.profile_ingress || self.store.profile_grant(&peer)?.is_none() {
+                return Err(RemoteError::Unauthorized);
+            }
+            let owner = self
+                .telemetry
+                .lock()
+                .map_err(|_| RemoteError::Unavailable)?
+                .clone()
+                .ok_or(RemoteError::NoHandler)?;
+            // The access lock orders this read against revocation; no result/credential is persisted.
+            return Ok(Reply::TelemetryProfile(
+                owner
+                    .saved_profile()
+                    .map_err(|_| RemoteError::Configuration)?,
+            ));
+        }
+        if matches!(request, Request::Hello)
+            && access.profile_ingress
+            && self.store.profile_grant(&peer)?.is_some()
+        {
+            return Ok(Reply::Hello(descriptor));
+        }
+        if !access.ingress {
+            return Err(RemoteError::Unauthorized);
         }
         if self.store.grant(&peer)?.is_none() {
             return Err(RemoteError::Unauthorized);
         }
         match request {
             Request::Hello => Ok(Reply::Hello(descriptor)),
-            Request::Query { id } => {
+            Request::Query { id, trace_context } => {
                 id.validate(&self.incarnation)?;
+                if let Some(context) = &trace_context {
+                    context.validate().map_err(|_| RemoteError::Configuration)?;
+                }
+                let mut observation = self
+                    .telemetry
+                    .lock()
+                    .map_err(|_| RemoteError::Unavailable)?
+                    .as_ref()
+                    .map(|owner| owner.operation("remote.query", trace_context.as_ref(), true));
+                if let Some(observation) = &mut observation {
+                    observation.request_identity(&id.incarnation, &id.client, id.sequence);
+                    observation.complete(velune_telemetry::Outcome::Success);
+                }
                 Ok(Reply::Status(access.ledger.status(&peer, &id)?))
             }
             Request::Submit {
@@ -84,8 +125,12 @@ impl ServiceState {
                 view,
                 execution,
                 command,
+                trace_context,
             } => {
                 id.validate(&self.incarnation)?;
+                if let Some(context) = &trace_context {
+                    context.validate().map_err(|_| RemoteError::Configuration)?;
+                }
                 if view.0.is_empty() || view.0.len() > 128 || view.0.chars().any(char::is_control) {
                     return Err(RemoteError::Configuration);
                 }
@@ -96,22 +141,49 @@ impl ServiceState {
                 )
                 .into();
                 if access.ledger.accept(&peer, &id, fingerprint)? {
+                    let telemetry = self
+                        .telemetry
+                        .lock()
+                        .map_err(|_| RemoteError::Unavailable)?
+                        .clone();
                     let service = self.clone();
                     let task_peer = peer.clone();
                     let task_id = id.clone();
+                    let observed_id = id.clone();
                     let ledger_peer = peer.clone();
                     let task = tokio::spawn(async move {
                         let execution = tokio::spawn(async move {
-                            handler
-                                .execute(
-                                    RequestContext {
-                                        peer_id: task_peer.clone(),
-                                        view,
-                                        execution,
-                                    },
-                                    *command,
-                                )
-                                .await
+                            let mut observation = telemetry.as_ref().map(|owner| {
+                                owner.operation("remote.execute", trace_context.as_ref(), true)
+                            });
+                            if let Some(observation) = &observation {
+                                observation.request_identity(
+                                    &observed_id.incarnation,
+                                    &observed_id.client,
+                                    observed_id.sequence,
+                                );
+                            }
+                            let future = handler.execute(
+                                RequestContext {
+                                    peer_id: task_peer.clone(),
+                                    view,
+                                    execution,
+                                },
+                                *command,
+                            );
+                            let result = if let Some(observation) = &observation {
+                                observation.instrument(future).await
+                            } else {
+                                future.await
+                            };
+                            if let Some(observation) = &mut observation {
+                                observation.complete(if result.is_ok() {
+                                    velune_telemetry::Outcome::Success
+                                } else {
+                                    velune_telemetry::Outcome::Failure
+                                });
+                            }
+                            result
                         });
                         let status = match execution.await {
                             Ok(result) => RequestStatus::Completed(result.map(Box::new)),
@@ -132,6 +204,7 @@ impl ServiceState {
             | Request::PairReady { .. }
             | Request::PairStatus { .. }
             | Request::PairCancel { .. } => Err(RemoteError::Protocol),
+            Request::ReadTelemetryProfile => Err(RemoteError::Protocol),
         }
     }
 }
@@ -197,6 +270,7 @@ impl RemoteAccessService {
         handler: Option<Arc<dyn Handler>>,
     ) -> Result<Self> {
         let ingress = handler.is_some();
+        let profile_ingress = !store.snapshot()?.telemetry_profile_grants.is_empty();
         Ok(Self {
             state: Arc::new(ServiceState {
                 identity,
@@ -204,11 +278,13 @@ impl RemoteAccessService {
                 store,
                 outgoing: Mutex::new(std::collections::BTreeMap::new()),
                 handler,
+                telemetry: Mutex::new(None),
                 network_facts: Mutex::new(None),
                 network_application: Mutex::new(crate::settings::NetworkApplication::default()),
                 access: Mutex::new(Access {
                     generation: None,
                     ingress,
+                    profile_ingress,
                     closed: false,
                     pairing: crate::pairing::PairingRegistry::default(),
                     ledger: Ledger::default(),
@@ -380,9 +456,13 @@ impl RemoteAccessService {
         access.ingress = enabled;
         self.state.store.touch();
         if !enabled {
-            access.pairing.invalidate(PairingPhase::Disconnected);
+            access
+                .pairing
+                .invalidate_permission(PairingPermission::Control, PairingPhase::Disconnected);
             self.state.store.touch();
-            if let Ok(network) = self.network() {
+            if !access.profile_ingress
+                && let Ok(network) = self.network()
+            {
                 network.close_incoming();
             }
         }
@@ -392,11 +472,85 @@ impl RemoteAccessService {
         crate::store::parse_peer(id)?;
         let mut access = self.state.access()?;
         self.state.store.revoke_grant(id)?;
-        access.pairing.revoke(id);
-        if let Ok(network) = self.network() {
+        access
+            .pairing
+            .revoke_permission(id, PairingPermission::Control);
+        if self.state.store.profile_grant(id)?.is_none()
+            && let Ok(network) = self.network()
+        {
             network.revoke(id);
         }
         Ok(())
+    }
+    pub fn attach_telemetry(&self, owner: Arc<velune_telemetry::ClientTelemetry>) -> Result<()> {
+        *self
+            .state
+            .telemetry
+            .lock()
+            .map_err(|_| RemoteError::Unavailable)? = Some(owner);
+        Ok(())
+    }
+    /// Explicit local consent, including authentication material, for an already trusted identity.
+    pub fn allow_telemetry_profile(&self, peer: &str) -> Result<()> {
+        let mut access = self.state.access()?;
+        if access.closed {
+            return Err(RemoteError::Closed);
+        }
+        let (name, attempt_id) = if let Some(grant) = self.state.store.grant(peer)? {
+            (grant.name, grant.attempt_id)
+        } else {
+            let contact = self.state.store.contact(peer)?;
+            let ContactConfirmation::Confirmed { attempt_id } = contact.confirmation else {
+                return Err(RemoteError::Unauthorized);
+            };
+            (contact.name, attempt_id)
+        };
+        self.state
+            .store
+            .commit_profile_grant(IncomingControlGrant {
+                peer_id: peer.into(),
+                name,
+                attempt_id,
+            })?;
+        access.profile_ingress = true;
+        self.state.store.touch();
+        Ok(())
+    }
+    pub fn revoke_telemetry_profile(&self, peer: &str) -> Result<()> {
+        let mut access = self.state.access()?;
+        self.state.store.revoke_profile_grant(peer)?;
+        access
+            .pairing
+            .revoke_permission(peer, PairingPermission::TelemetryProfileRead);
+        Ok(())
+    }
+    /// One read over a pinned encrypted channel. It never enters the business request ledger.
+    pub async fn read_telemetry_profile(
+        &self,
+        peer: &str,
+    ) -> Result<Option<velune_telemetry::Profile>> {
+        let contact = self.state.store.contact(peer)?;
+        if !matches!(contact.confirmation, ContactConfirmation::Confirmed { .. }) {
+            return Err(RemoteError::Unauthorized);
+        }
+        let client = self
+            .dial_locator(
+                peer,
+                contact.name,
+                &contact.locator,
+                ClientSession::new()?,
+                true,
+            )
+            .await?;
+        match client.rpc(Request::ReadTelemetryProfile).await? {
+            Reply::TelemetryProfile(profile) => {
+                if let Some(profile) = &profile {
+                    profile.validate().map_err(|_| RemoteError::Configuration)?;
+                }
+                Ok(profile)
+            }
+            _ => Err(RemoteError::Protocol),
+        }
     }
     pub async fn network_change(&self) {
         if let Ok(network) = self.network() {

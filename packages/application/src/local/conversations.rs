@@ -611,9 +611,33 @@ impl CoreRuntime {
 
     /// A turn that is not sent withdraws what it asked for from the transcript.
     pub(super) fn send_action(&mut self, request: &Value) -> Result<Value, RuntimeError> {
+        let previous = self
+            .session
+            .turn_observation
+            .as_ref()
+            .map(|op| op.operation_id.clone());
         let result = self.send_turn_input(request);
         if result.is_err() {
             self.session.transcript_projection.withdraw_request();
+            if self
+                .session
+                .turn_observation
+                .as_ref()
+                .map(|op| &op.operation_id)
+                != previous.as_ref()
+            {
+                self.complete_turn_observation(velune_telemetry::Outcome::Failure);
+            }
+        } else if !self.turn_running() {
+            let failed = self
+                .session
+                .projected()
+                .is_some_and(|view| view.run_state == RunState::Failed);
+            self.complete_turn_observation(if failed {
+                velune_telemetry::Outcome::Failure
+            } else {
+                velune_telemetry::Outcome::Success
+            });
         }
         result
     }
@@ -643,6 +667,7 @@ impl CoreRuntime {
                 .ok_or_else(|| RuntimeError::invalid("请选择此会话的模型"))?;
             self.prepare_with_selection(snapshot, selection.as_ref(), false)?;
         }
+        self.begin_turn_observation();
         if let Some((gateway_id, session)) = self.backend_session_identity() {
             self.execution_backends
                 .begin_user_turn(&gateway_id, &session)
@@ -665,6 +690,7 @@ impl CoreRuntime {
                 .map_err(|error| RuntimeError::context("ACP message send", error))?;
             self.session.cancel_requested = false;
             self.follow_started_turn();
+            self.started_turn_observation();
             self.drain_runtime()?;
             return self.snapshot_result();
         }
@@ -683,6 +709,7 @@ impl CoreRuntime {
             result?;
             self.session.cancel_requested = false;
             self.follow_started_turn();
+            self.started_turn_observation();
             self.drain_runtime()?;
             if self.session.gateway_runner.is_some() && !self.session.executing() {
                 self.finish_managed_turn()?;
@@ -713,6 +740,7 @@ impl CoreRuntime {
         self.follow_started_turn();
         self.session.pi.busy = response["data"]["disposition"] != "handled";
         if self.session.pi.busy {
+            self.started_turn_observation();
             self.session
                 .pi
                 .projection
@@ -774,7 +802,6 @@ impl CoreRuntime {
 
     pub(super) fn cancel_action(&mut self, request: &Value) -> Result<Value, RuntimeError> {
         self.ensure_active(request)?;
-        self.session.cancel_requested = true;
         if let Some((gateway_id, session)) = self.backend_session_identity() {
             self.execution_backends
                 .cancel_session(&gateway_id, &session);
@@ -783,6 +810,7 @@ impl CoreRuntime {
             session
                 .cancel()
                 .map_err(|error| RuntimeError::context("ACP cancel", error))?;
+            self.session.cancel_requested = true;
             self.drain_runtime()?;
             return self.snapshot_result();
         }
@@ -790,7 +818,10 @@ impl CoreRuntime {
         if let ActiveState::Native(session) = &mut self.session.active_state {
             session
                 .cancel()
-                .and_then(|()| session.stop_background())
+                .map_err(|error| RuntimeError::context("message cancel", error))?;
+            self.session.cancel_requested = true;
+            session
+                .stop_background()
                 .map_err(|error| RuntimeError::context("message cancel", error))?;
             self.drain_runtime()?;
             return self.snapshot_result();
@@ -802,6 +833,7 @@ impl CoreRuntime {
             .ok_or_else(|| RuntimeError::invalid("会话执行尚未准备"))?
             .cancel()
             .map_err(|error| RuntimeError::context("message cancel", error))?;
+        self.session.cancel_requested = true;
         self.sync_projection()?;
         self.snapshot_result()
     }
