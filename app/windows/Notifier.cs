@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using System.Text;
 using Microsoft.UI.Dispatching;
+using Microsoft.UI.Xaml;
 using Microsoft.Windows.AppNotifications;
 using Microsoft.Windows.AppNotifications.Builder;
 using Velune.Bindings;
@@ -24,6 +25,10 @@ sealed class Notifier(Shell shell, DispatcherQueue dispatcher)
     readonly HashSet<(Device, string)> endedAway = [];
     // How many conversations wanted the user at the last look.
     int wanting;
+    // Quota alerts come from this PC's core; the cursor is the last one read.
+    DispatcherTimer? quotaTimer;
+    ulong quotaCursor;
+    bool readingQuota;
 
     // Shell routes cold and redirected activation; this receives live clicks.
     public void Start()
@@ -44,6 +49,9 @@ sealed class Notifier(Shell shell, DispatcherQueue dispatcher)
                 AppNotificationManager.Default.Register();
             }
             registered = true;
+            quotaTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(3) };
+            quotaTimer.Tick += (_, _) => ReadQuotaAlerts();
+            quotaTimer.Start();
         }
         catch (Exception failure) when (failure is System.Runtime.InteropServices.COMException or InvalidOperationException or UnauthorizedAccessException)
         {
@@ -54,6 +62,8 @@ sealed class Notifier(Shell shell, DispatcherQueue dispatcher)
     // Stop lets a later click launch Velune again rather than reach this run.
     public void Stop()
     {
+        quotaTimer?.Stop();
+        quotaTimer = null;
         if (registered)
         {
             registered = false;
@@ -141,6 +151,72 @@ sealed class Notifier(Shell shell, DispatcherQueue dispatcher)
         catch (System.Runtime.InteropServices.COMException failure)
         {
             Problems.Report("显示系统通知", failure, device);
+        }
+    }
+
+    // ReadQuotaAlerts announces the quota conditions this PC's core raised
+    // since the last read: a usage limit reached, a window used up, or an
+    // account the provider calls unavailable. Each shows once.
+    async void ReadQuotaAlerts()
+    {
+        if (readingQuota || quotaTimer == null)
+        {
+            return;
+        }
+        readingQuota = true;
+        try
+        {
+            var since = quotaCursor;
+            var (alerts, snapshot) = await Task.Run(() =>
+            {
+                var read = shell.Core.Local.QuotaAlerts(since);
+                return (read, read.Alerts.Length > 0 ? shell.Core.Local.List() : null);
+            });
+            quotaCursor = alerts.Cursor;
+            Problems.Recovered(Problems.Key("quota-alerts", Device.Local, ""));
+            if (snapshot != null && registered && quotaTimer != null)
+            {
+                foreach (var alert in alerts.Alerts)
+                {
+                    NotifyQuota(alert, snapshot);
+                }
+            }
+        }
+        catch (Exception problem)
+        {
+            Problems.Failing(Problems.Key("quota-alerts", Device.Local, ""), "读取额度提醒", problem);
+        }
+        readingQuota = false;
+    }
+
+    void NotifyQuota(BindingQuotaAlert alert, BindingConfigurationSnapshot snapshot)
+    {
+        var provider = snapshot.Gateways.FirstOrDefault(gateway => gateway.Id == alert.GatewayId)?.Providers.FirstOrDefault(provider => provider.Id == alert.ProviderId);
+        if (provider == null)
+        {
+            return;
+        }
+        var window = alert.WindowId is { } id ? Quota.Name(id) : "";
+        var detail = alert.Kind switch
+        {
+            BindingQuotaAlertKind.CapReached => window + Quota.Ceiling(alert.MaxUsedPercent ?? 100, snapshot.UsageDisplay, true) + "，直到额度回到上限以内。",
+            BindingQuotaAlertKind.Exhausted => window + "已用尽，重置前暂停向它发送新请求。",
+            _ => "提供商表示此账户当前不可用（例如余额不足），暂停新请求。",
+        };
+        var notification = new AppNotificationBuilder()
+            .AddText(provider.Name)
+            .AddText("额度提醒：" + detail)
+            .BuildNotification();
+        // One notification per provider, condition and window.
+        notification.Tag = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(alert.ProviderId + "\n" + alert.Kind + "\n" + alert.WindowId)))[..32];
+        notification.Group = "quota";
+        try
+        {
+            AppNotificationManager.Default.Show(notification);
+        }
+        catch (System.Runtime.InteropServices.COMException failure)
+        {
+            Problems.Report("显示系统通知", failure);
         }
     }
 

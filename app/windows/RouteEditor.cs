@@ -452,11 +452,16 @@ sealed class RouteEditor : UserControl
                 foreach (var window in quota.Windows.Where(window => Quota.Applies(window, model.ProviderModelId)))
                 {
                     var limit = provider.QuotaLimits.FirstOrDefault(saved => saved.WindowId == window.Id);
-                    status.Children.Add(Ui.Muted(Quota.Name(window.Id) + "：" + Quota.Detail(window, quota.Freshness, editor.page.Usage, limit)));
+                    status.Children.Add(Ui.Text(Quota.Name(window.Id) + "：" + Quota.Detail(window, quota.Freshness, editor.page.Usage, limit),
+                        Quota.Short(window, quota.Freshness) ? "CautionTextStyle" : "MutedTextStyle"));
+                }
+                foreach (var balance in quota.Balances)
+                {
+                    status.Children.Add(Ui.Muted(Quota.BalanceName(balance.Id) + "：" + Quota.Amount(balance.Amount, balance.Unit)));
                 }
                 if (quota.Available == false)
                 {
-                    reasons.Add("已达到使用上限或暂停，路由暂不使用它。");
+                    reasons.Add("已达到使用上限、余额不足或暂停，路由暂不使用它。");
                 }
                 else if (limited && quota.Freshness != BindingQuotaFreshness.Fresh)
                 {

@@ -35,11 +35,15 @@ static class Quota
         var parts = new List<string> { remaining ? $"剩余 {100 - used:0.#}%" : $"已用 {used:0.#}%" };
         if (limit != null)
         {
-            parts.Add(remaining ? $"保留 {100 - limit.MaxUsedPercent}%" : $"上限 {limit.MaxUsedPercent}%");
+            parts.Add(Ceiling(limit.MaxUsedPercent, usage, false));
         }
         if (window.ResetAtMs is { } reset)
         {
-            parts.Add("重置于 " + DateTimeOffset.FromUnixTimeMilliseconds(reset).ToLocalTime().ToString("M月d日 HH:mm"));
+            parts.Add("重置于 " + Time(reset));
+        }
+        if (Short(window, freshness) && window.Pace?.RunsOutAtMs is { } empty)
+        {
+            parts.Add("按目前的平均速度约 " + Time(empty) + " 用尽");
         }
         if (window.ModelIds is { Length: > 0 } scoped)
         {
@@ -52,12 +56,33 @@ static class Quota
         return string.Join(" · ", parts);
     }
 
+    // Short tells that, at the average rate so far, a freshly observed
+    // window runs out before it resets.
+    public static bool Short(BindingQuotaWindowObservation window, BindingQuotaFreshness freshness) =>
+        freshness == BindingQuotaFreshness.Fresh && window.Pace?.Status == BindingQuotaPaceStatus.RunsOutBeforeReset;
+
+    public static string Time(long ms) => DateTimeOffset.FromUnixTimeMilliseconds(ms).ToLocalTime().ToString("M月d日 HH:mm");
+
+    // BalanceName names an amount the account reports.
+    public static string BalanceName(string id) => id == "openrouter:keyLimitRemaining" ? "Key 剩余额度" : "余额";
+
+    public static string Amount(double amount, string unit) => amount.ToString("N2") + " " + unit;
+
+    // Ceiling is a used-percent limit as the usage display reads it; reached,
+    // it says new requests pause.
+    public static string Ceiling(byte limit, BindingUsageDisplay usage, bool reached) => (usage, reached) switch
+    {
+        (BindingUsageDisplay.Remaining, false) => $"保留 {100 - limit}%",
+        (BindingUsageDisplay.Remaining, true) => $"剩余已不足保留的 {100 - limit}%，暂停新请求",
+        (_, false) => $"上限 {limit}%",
+        _ => $"已达上限 {limit}%，暂停新请求",
+    };
+
     // Balances lists the amounts the account reports, such as its prepaid
     // balance; an account that reports neither windows nor amounts says so.
     public static string Balances(BindingProviderQuotaStatus status)
     {
-        var amounts = status.Balances.Select(balance =>
-            (balance.Id == "openrouter:keyLimitRemaining" ? "Key 剩余额度" : "余额") + "：" + balance.Amount.ToString("N2") + " " + balance.Unit).ToList();
+        var amounts = status.Balances.Select(balance => BalanceName(balance.Id) + "：" + Amount(balance.Amount, balance.Unit)).ToList();
         if (amounts.Count == 0 && !status.Windows.Any() && status.Freshness == BindingQuotaFreshness.Fresh)
         {
             return "提供商未报告额度上限或余额。";

@@ -2,7 +2,7 @@
 
 新功能与行为改变尽可能先在 Mac 落地，Windows 按 [PRD](../../docs/prd/index.md) 跟进（规则见 [本地指引](AGENTS.md)）。本表按 PRD 分册记录 Windows 的现状，只写与 Mac 的差距与原因；Windows 的具体呈现见 [README](README.md)。平台改动后更新对应行和下方的核对基线。
 
-核对基线：main `2b89eac`（2026-10-21）；Windows 截至 2026-10-22；xURL 深链于 2026-10-23 对齐，拷贝子菜单与 xURL 导出于 2026-10-26 对齐；token 单位显示与输入于 2026-10-26 对齐。
+核对基线：main `2b89eac`（2026-10-21）；Windows 截至 2026-10-22；xURL 深链于 2026-10-23 对齐，拷贝子菜单与 xURL 导出于 2026-10-26 对齐；token 单位显示与输入于 2026-10-26 对齐；额度节奏、金额、历史、提醒与账户额度开关于 2026-10-27 对齐。
 
 | PRD 分册 | Windows 现状 | 与 Mac 的差距 |
 | --- | --- | --- |
@@ -12,7 +12,7 @@
 | [工作区布局](../../docs/prd/workspace-layout.md) | 已实现（[Unit TDD](TDD.md)） | 未在真机逐项操作验收 |
 | [协作](../../docs/prd/collaboration.md) | 关联 Agent、xURL MCP 工具与随包官方 CLI 已实现 | — |
 | [Agent 运行时](../../docs/prd/agent-runtimes.md) | 本机运行时已实现 | 经 SSH 的运行时只能在 Mac 上设置：Windows 宿主没有 OpenSSH ControlMaster 所需的 Unix socket |
-| [AI 提供商](../../docs/prd/ai-providers.md) | 已实现 | 额度窗口名称由 Windows 按核心的窗口 ID 拼出，核心尚未提供显示名；没有额度历史、额度提醒通知与预计用尽提示；官方账户额度只随模板开启，编辑器没有开关 |
+| [AI 提供商](../../docs/prd/ai-providers.md) | 已实现 | 额度窗口名称由 Windows 按核心的窗口 ID 拼出，核心尚未提供显示名；额度历史为对话框中的自绘柱条，悬停提示代替 Mac 的选中读数 |
 | [模型路由](../../docs/prd/model-routing.md) | 已实现 | 成员顺序用上移、下移，不用拖动（WinUI 拖动重排的单一父元素问题） |
 | [资源库](../../docs/prd/resource-library.md) | 已实现，本机核心 | 技能只编辑 SKILL.md；Windows 没有执行位，技能文件的执行属性不写入 |
 | [分析](../../docs/prd/analytics.md) | 已实现，本机核心 | — |
@@ -32,7 +32,7 @@
 
 2026-10-27：主动上下文压缩已接入共享核心与 Windows 输入区按钮、更多菜单及可配置快捷键命令，支持 Codex、Claude Code 和 Pi 的原生入口，压缩状态独立展示。Mac 另提供会话菜单、命令面板与 `/compact`。本轮构建与运行证据见[上下文压缩任务](../../tasks/context-compaction/packet.md)。
 
-2026-10-27：额度借鉴 quotio（[任务](../../tasks/quotio-reference/packet.md)）。核心的智能排序考虑重置节奏，Windows 的智能策略说明已同步；金额以文字显示，`openrouter:keyLimit` 有显示名。额度历史、提醒通知、节奏提示与账户额度开关尚未接入。
+2026-10-27：额度借鉴 quotio（[任务](../../tasks/quotio-reference/packet.md)）。核心的智能排序考虑重置节奏，Windows 的智能策略说明已同步；金额以文字显示，`openrouter:keyLimit` 有显示名。随后接入预计用尽提示（注意色）、路由成员的金额、编辑器的“读取 … 账户额度”开关、“历史…”对话框与额度提醒通知；浅／深色的合成状态检查与构建证据见任务记录。
 
 遥测调用使用显式 NativeOperation 类别，与 Apple／Android 的同类操作一致；标准事件名、v2 字段、结果含义及迁移归[遥测契约](../../docs/design/telemetry.md)。分类不再依赖 CallerMemberName，写操作不会默认归为读取。
 

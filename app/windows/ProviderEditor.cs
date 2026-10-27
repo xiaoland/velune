@@ -17,7 +17,8 @@ sealed partial class ProviderEditor : UserControl
     readonly BindingGatewayProtocol protocolID;
     readonly BindingRequestProfile profile;
     readonly BindingProviderAuthenticationSource authenticationSource;
-    readonly BindingProviderQuotaSource quotaSource;
+    // The account quota source follows its switch; the others, the template.
+    BindingProviderQuotaSource quotaSource;
     readonly bool subscription;
 
     readonly StackPanel body = new() { Spacing = 4, MaxWidth = 760, HorizontalAlignment = HorizontalAlignment.Stretch };
@@ -58,6 +59,7 @@ sealed partial class ProviderEditor : UserControl
         }
         BuildConnection();
         BuildAuthentication();
+        BuildAccountQuota();
         BuildModels();
         BuildQuota();
 
@@ -202,7 +204,8 @@ sealed partial class ProviderEditor : UserControl
             : new BindingExecutionBackend.Http(),
         RequestProfile: profile,
         AuthenticationSource: authenticationSource,
-        QuotaSource: quotaSource,
+        // The account source reads only from an official address; another keeps none.
+        QuotaSource: quotaSource == BindingProviderQuotaSource.ApiAccount && AccountService() == null ? BindingProviderQuotaSource.None : quotaSource,
         Models: [.. models.Select(model => model.Value())],
         QuotaLimits: Limits());
 

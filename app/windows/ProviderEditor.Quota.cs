@@ -4,25 +4,81 @@ using Velune.Bindings;
 
 namespace Velune;
 
-// The editor's quota and usage limits: the windows the provider reports, as
-// the core last observed them, and a used share per window at which every
-// route and direct call stops sending new requests to it.
+// The editor's quota and usage limits: the windows and amounts the provider
+// reports, as the core last observed them, and a used share per window at
+// which every route and direct call stops sending new requests to it.
 sealed partial class ProviderEditor
 {
+    readonly StackPanel quotaSection = new() { Spacing = 4 };
     readonly StackPanel quotaWindows = new() { Spacing = 4 };
     readonly TextBlock quotaState = Ui.Muted("");
     readonly Button refreshQuota = new() { Content = "刷新" };
+    readonly Button quotaHistory = new() { Content = "历史…" };
     readonly Dictionary<string, (TextBlock Detail, NumberBox Limit)> windows = [];
+    readonly ToggleSwitch accountQuota = new() { OnContent = "开", OffContent = "关" };
+    readonly TextBlock accountTitle = Ui.Text(""), accountDetail = Ui.Muted("");
+    Border? accountCard;
+    BindingProviderQuotaStatus? lastQuota;
     DispatcherTimer? quotaTimer;
     bool reading;
 
-    void BuildQuota()
+    // BuildAccountQuota offers reading the account's quota with the API key
+    // of a provider that calls a service's official address directly.
+    void BuildAccountQuota()
     {
-        if (quotaSource == BindingProviderQuotaSource.None)
+        if (subscription || authenticationSource != BindingProviderAuthenticationSource.ApiKey
+            || (existing?.ExecutionBackend ?? template?.ExecutionBackend) is BindingExecutionBackend.ClaudeCli)
         {
             return;
         }
-        Section("额度与使用上限");
+        accountQuota.IsOn = quotaSource == BindingProviderQuotaSource.ApiAccount;
+        accountQuota.Toggled += (_, _) =>
+        {
+            if (building)
+            {
+                return;
+            }
+            quotaSource = accountQuota.IsOn ? BindingProviderQuotaSource.ApiAccount : BindingProviderQuotaSource.None;
+            Changed();
+            ShowAccountQuota();
+        };
+        endpoint.TextChanged += (_, _) => ShowAccountQuota();
+        var text = new StackPanel { Spacing = 2 };
+        text.Children.Add(accountTitle);
+        text.Children.Add(accountDetail);
+        accountCard = Ui.Card(text, accountQuota);
+        body.Children.Add(accountCard);
+        ShowAccountQuota();
+    }
+
+    // AccountService is the official service at the address, if it is one.
+    string? AccountService() => accountCard == null ? null : VeluneBindingsMethods.ApiAccountServiceName(endpoint.Text.Trim());
+
+    void ShowAccountQuota()
+    {
+        if (accountCard == null)
+        {
+            return;
+        }
+        var service = AccountService();
+        accountCard.Visibility = service == null ? Visibility.Collapsed : Visibility.Visible;
+        accountTitle.Text = "读取 " + service + " 账户额度";
+        accountDetail.Text = service == "OpenRouter"
+            ? "用这个 API key 向 OpenRouter 读取它的花费上限与剩余额度；没有设置上限的 Key 不报告额度。"
+            : "用这个 API key 向 " + service + " 官方地址读取账户余额；提供商表示余额不足时暂停新请求。";
+        quotaSection.Visibility = quotaSource != BindingProviderQuotaSource.None && (service != null || quotaSource != BindingProviderQuotaSource.ApiAccount)
+            ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    void BuildQuota()
+    {
+        if (quotaSource == BindingProviderQuotaSource.None && accountCard == null)
+        {
+            return;
+        }
+        body.Children.Add(quotaSection);
+        quotaSection.Children.Add(Ui.Heading("额度与使用上限"));
+        ShowAccountQuota();
         var remaining = page.Usage == BindingUsageDisplay.Remaining;
         var about = remaining
             ? "为每个额度窗口设置至少保留的比例，剩余低于它时暂停新请求；对所有路由和直接调用共同生效。"
@@ -31,14 +87,24 @@ sealed partial class ProviderEditor
         state.Children.Add(Ui.Text(about + "上限依据供应商观测，不是计费硬预算。"));
         state.Children.Add(quotaState);
         refreshQuota.Click += (_, _) => ReadQuota(true);
-        body.Children.Add(Ui.Card(state, refreshQuota));
-        body.Children.Add(quotaWindows);
+        quotaHistory.Click += async (_, _) =>
+        {
+            if (existing is { } provider)
+            {
+                await QuotaHistory.Show(page.Window, page.Core, provider, lastQuota, page.Usage);
+            }
+        };
+        var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+        actions.Children.Add(quotaHistory);
+        actions.Children.Add(refreshQuota);
+        quotaSection.Children.Add(Ui.Card(state, actions));
+        quotaSection.Children.Add(quotaWindows);
         ShowQuotaState(null);
     }
 
-    // CanReadQuota tells whether the provider is saved and signed in, the
-    // only time its quota is read.
-    bool CanReadQuota => quotaSource != BindingProviderQuotaSource.None && existing is { Authentication.Configured: true };
+    // CanReadQuota tells whether the provider is saved with a quota source
+    // and signed in, the only time its quota is read.
+    bool CanReadQuota => existing is { Authentication.Configured: true } saved && saved.QuotaSource != BindingProviderQuotaSource.None;
 
     void StartQuota()
     {
@@ -94,9 +160,9 @@ sealed partial class ProviderEditor
 
     void ShowQuotaState(BindingProviderQuotaStatus? status)
     {
-        refreshQuota.Visibility = CanReadQuota ? Visibility.Visible : Visibility.Collapsed;
-        quotaState.Text = existing == null ? "保存并完成认证后，这里显示额度窗口。"
-            : !CanReadQuota ? "登录后显示额度窗口。"
+        refreshQuota.Visibility = quotaHistory.Visibility = CanReadQuota ? Visibility.Visible : Visibility.Collapsed;
+        quotaState.Text = existing == null || existing.QuotaSource == BindingProviderQuotaSource.None ? "保存并完成认证后，这里显示额度窗口。"
+            : !CanReadQuota ? (authenticationSource == BindingProviderAuthenticationSource.ApiKey ? "配置 API key 后显示额度。" : "登录后显示额度窗口。")
             : status == null ? "正在读取额度…"
             : status.Problem is { Length: > 0 } problem ? problem
             : status.Freshness switch
@@ -113,6 +179,7 @@ sealed partial class ProviderEditor
 
     void ShowQuota(BindingProviderQuotaStatus status)
     {
+        lastQuota = status;
         ShowQuotaState(status);
         foreach (var window in status.Windows)
         {
@@ -121,6 +188,7 @@ sealed partial class ProviderEditor
                 row = AddWindow(window.Id);
             }
             row.Detail.Text = Quota.Detail(window, status.Freshness, page.Usage);
+            row.Detail.Style = Ui.Style(Quota.Short(window, status.Freshness) ? "CautionTextStyle" : "MutedTextStyle");
         }
     }
 

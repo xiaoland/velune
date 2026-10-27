@@ -182,7 +182,7 @@ struct QuotaHistorySheet: View {
             let extreme = isWindow && !remaining ? points.map(\.high).max() : points.map(\.low).min()
             HStack(spacing: 18) {
                 LabeledContent("最近一次", value: "\(format(last.latest)) · \(last.latestAt.formatted(.relative(presentation: .named)))")
-                if let extreme { LabeledContent(isWindow && !remaining ? "观测到的最高已用" : "观测到的最低", value: format(extreme)) }
+                if let extreme { LabeledContent(isWindow && !remaining ? "观测到的最高" : "观测到的最低", value: format(extreme)) }
                 if case .window(let id, let models) = current, let reset = quota?.windows.first(where: { $0.id == id && $0.modelIDs == models })?.resetsAt, reset > Date() {
                     LabeledContent("下次重置", value: reset.formatted(.relative(presentation: .named)))
                 }
