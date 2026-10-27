@@ -8,9 +8,24 @@
 
 开发验证默认使用临时 `VELUNE_HOME`、合成凭据、会话与项目。除当前任务明确授权的操作外，不读取、复制、输出或提交真实登录状态、令牌、API key、支付数据或 Harness 会话记录，也不调用真实计费服务或公网联调。获准进行真实联调时，只操作授权范围内的账户、服务与请求；版本、范围和结果记录在对应 Task Packet。合成验证通过不代表真实账户认证、供应商规则或完整产品体验已通过。
 
+## 本地配对 CLI
+
+启动 Velune 后，在仓库运行 `scripts/velune` 操作该应用正在使用的远控服务；CLI 不另开设备身份或执行核心。Mac 默认连接 `$VELUNE_HOME/remote/cli/control.sock`（未设置时为 `~/.velune`）。Android debug 应用通过 `--android <adb序列号>` 和 `run-as` 访问同一接口，设备的 toybox 需支持 `nc -U`；release 包不启动此入口。监听仅使用私有目录中的 Unix socket，不开放 TCP 端口。
+
+```sh
+scripts/velune status
+scripts/velune invite | scripts/velune --android <adb序列号> begin
+scripts/velune --android <adb序列号> status
+scripts/velune approve --attempt <本次attempt> --peer <控制端peer> --code <两端一致的八位核对码>
+scripts/velune --android <adb序列号> connect --peer <被控端peer>
+scripts/velune revoke --peer <控制端peer>
+```
+
+`invite` 与界面的“添加控制设备”相同，会开启控制入口并生成五分钟邀请；输出含邀请秘密，应直接传给 `begin`，不要保存到日志。其余命令返回 JSON，失败退出码非零。`status` 只返回远控状态，不读取会话正文。批准要求当前 attempt、预期 peer 和核对码同时匹配；CLI 与界面共用授权规则。应用退出时接口关闭，修改 `VELUNE_HOME` 或使用隔离实例时，CLI 必须连接对应实例的 socket。
+
 ## 当前 Mac 会话界面
 
-当前应用为 SwiftUI 原生 Mac control surface：系统侧栏和工具栏、Chatbot 阅读与输入区、独立 Settings 窗口。系统决定基础字体、语义颜色及明暗外观，Velune 品牌仅保留在图标与少量细节。应用通过 UniFFI 0.32.2 生成的类型接口嵌入 Rust lib，消费 application 的具名用例，不解析 Harness 原生事件，也不依赖常驻 Host；界面与核心之间不经过 Unix socket。下文 IPC v1 与模拟体验段落描述历史原型，不能作为当前产品接入说明。
+当前应用为 SwiftUI 原生 Mac control surface：系统侧栏和工具栏、Chatbot 阅读与输入区、独立 Settings 窗口。系统决定基础字体、语义颜色及明暗外观，Velune 品牌仅保留在图标与少量细节。应用通过 UniFFI 0.32.2 生成的类型接口嵌入 Rust lib，消费 application 的具名用例，不解析 Harness 原生事件，也不依赖常驻 Host；界面与核心之间不经过 Unix socket。本地 CLI 的 socket 仅用于操作同一核心的配对服务。下文 IPC v1 与模拟体验段落描述历史原型，不能作为当前产品接入说明。
 
 共享品牌 SVG 原稿与原始说明归属仓库级 [assets/brand](../assets/brand)，不归属任一平台 app。Mac 应用图标由 `scripts/render-app-icon.swift` 将该目录中的 graphite 光学稿生成十档传统 ICNS 资源。Dock／应用库使用的图标应保留 macOS 的透明光学留白，不能将品牌稿直接铺满画布；具体绘制范围在生成器中维护，不能通过修改品牌 SVG 补偿平台外框尺寸。
 

@@ -816,6 +816,17 @@ impl RemoteAccessService {
         }
         if wire.phase == PairingPhase::Granted {
             self.state.store.confirm_pin(peer, &wire.attempt_id)?;
+            if (pending.is_some()
+                || matches!(contact.confirmation, ContactConfirmation::Pending { .. }))
+                && wire.permission == PairingPermission::Control
+                && let Some(controller) = self
+                    .controllers
+                    .lock()
+                    .map_err(|_| RemoteError::Unavailable)?
+                    .get(peer)
+            {
+                controller.pairing_confirmed()?;
+            }
         }
         if matches!(
             wire.phase,

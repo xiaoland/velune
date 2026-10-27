@@ -60,6 +60,7 @@ final class RemoteEndpointBox: @unchecked Sendable {
                     bindAddresses: [], requestTimeoutMs: 30_000)
                 let opened = try local.openRemoteEndpoint(options)
                 endpoint.value = opened
+                try opened.startLocalControl(directory: directory.path)
                 let first = try opened.readState()
                 DispatchQueue.main.async { self?.apply(first) }
                 Self.observe(opened.observeState()) { snapshot in DispatchQueue.main.async { self?.apply(snapshot) } }
@@ -112,9 +113,19 @@ final class RemoteEndpointBox: @unchecked Sendable {
         // Granting control takes a click: a stray Return must not allow a device.
         alert.buttons[0].keyEquivalent = ""
         alert.buttons[1].keyEquivalent = "\u{1b}"
-        if alert.runModal() == .alertFirstButtonReturn {
+        // CLI approval changes the same service while this nested modal loop is running.
+        let timer = Timer(timeInterval: 0.25, repeats: true) { [endpoint] _ in
+            guard let snapshot = try? endpoint.value?.readState() else { return }
+            if !snapshot.incomingPairings.contains(where: { $0.attemptId == pairing.attemptId && $0.phase == .awaitingApproval }) {
+                NSApp.abortModal()
+            }
+        }
+        RunLoop.main.add(timer, forMode: .modalPanel)
+        defer { timer.invalidate(); alert.window.orderOut(nil) }
+        let response = alert.runModal()
+        if response == .alertFirstButtonReturn {
             perform("允许") { _ = try $0.approvePairing(attemptId: pairing.attemptId, expectedPeerId: pairing.peerId) }
-        } else {
+        } else if response == .alertSecondButtonReturn {
             perform("拒绝") { _ = try $0.rejectPairing(attemptId: pairing.attemptId, expectedPeerId: pairing.peerId) }
         }
     }

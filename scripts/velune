@@ -1,0 +1,83 @@
+#!/usr/bin/env python3
+"""Control pairing in the running Velune app; invitations travel through stdin."""
+import argparse
+import json
+import os
+from pathlib import Path
+import shutil
+import socket
+import subprocess
+import sys
+
+
+def request(command, *, android=None, socket_path=None):
+    payload = (json.dumps(command, ensure_ascii=False) + "\n").encode()
+    if android:
+        adb = shutil.which("adb")
+        if not adb:
+            sdk = os.environ.get("ANDROID_HOME") or os.environ.get("ANDROID_SDK_ROOT")
+            sdk = Path(sdk) if sdk else Path.home() / "Library/Android/sdk"
+            adb = str(sdk / "platform-tools/adb")
+        result = subprocess.run(
+            [adb, "-s", android, "shell", "-T", "run-as", "app.velune.android", "toybox", "nc", "-U", "-q", "70", "-W", "70",
+             "no_backup/remote/cli/control.sock"], input=payload, capture_output=True, timeout=75,
+        )
+        if result.returncode:
+            raise RuntimeError("无法访问 Android CLI；需要已启动的 debug 应用及支持 nc -U 的 toybox：" + result.stderr.decode(errors="replace").strip())
+        response = result.stdout
+    else:
+        path = socket_path or str(Path(os.environ.get("VELUNE_HOME") or Path.home() / ".velune") / "remote/cli/control.sock")
+        with socket.socket(socket.AF_UNIX) as client:
+            client.settimeout(70)
+            client.connect(path)
+            client.sendall(payload)
+            with client.makefile("rb") as stream:
+                response = stream.readline(2 * 1024 * 1024)
+    if not response:
+        raise RuntimeError("应用未返回 CLI 响应；请确认 Velune 已启动，再检查应用进程状态")
+    reply = json.loads(response)
+    if not reply["ok"]:
+        error = reply["error"]
+        raise RuntimeError(f'{error["code"]}: {error["message"]}')
+    return reply["result"]
+
+
+def main():
+    parser = argparse.ArgumentParser(description="操作运行中的 Velune 配对服务，不启动第二个远控实例。")
+    parser.add_argument("--android", metavar="SERIAL", help="通过 ADB 操作指定 Android debug 应用")
+    parser.add_argument("--socket", help="Mac 本地 socket 路径，默认使用 VELUNE_HOME")
+    commands = parser.add_subparsers(dest="command", required=True)
+    commands.add_parser("status", help="读取远控状态，不读取会话内容")
+    commands.add_parser("invite", help="生成五分钟邀请，JSON 输出含邀请秘密，可直接管道传给 begin")
+    commands.add_parser("begin", help="从标准输入读取邀请并开始配对")
+    approve = commands.add_parser("approve", help="核对两端核对码后批准当前配对")
+    approve.add_argument("--attempt", required=True)
+    approve.add_argument("--peer", required=True)
+    approve.add_argument("--code", required=True)
+    for name in ("revoke", "connect"):
+        command = commands.add_parser(name)
+        command.add_argument("--peer", required=True)
+    args = parser.parse_args()
+    command = {"command": args.command}
+    if args.command == "begin":
+        if sys.stdin.isatty():
+            parser.error("请通过管道或标准输入提供邀请")
+        invitation = sys.stdin.read(8193).strip()
+        if len(invitation.encode()) > 8192:
+            parser.error("邀请过长")
+        parsed = json.loads(invitation)
+        command["invitation"] = parsed["invitation"] if "invitation" in parsed else invitation
+    elif args.command == "approve":
+        command.update(attempt=args.attempt, peer=args.peer, code=args.code)
+    elif args.command in ("revoke", "connect"):
+        command["peer"] = args.peer
+    result = request(command, android=args.android, socket_path=args.socket)
+    print(json.dumps(result, ensure_ascii=False))
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except (OSError, RuntimeError, ValueError, subprocess.TimeoutExpired) as error:
+        print(f"Velune CLI：{error}", file=sys.stderr)
+        sys.exit(1)

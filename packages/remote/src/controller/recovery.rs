@@ -172,6 +172,28 @@ impl Controller {
         drop(access);
         self.start_recovery()
     }
+    // 调用方持有服务 access 锁；新确认使旧拨号结果失效，但不改变用户的连接意图。
+    pub(crate) fn pairing_confirmed(&self) -> Result<()> {
+        let mut intent = self
+            .recovery
+            .intent
+            .lock()
+            .map_err(|_| RemoteError::Unavailable)?;
+        intent.blocked = false;
+        intent.error = None;
+        intent.revision = intent.revision.wrapping_add(1);
+        intent.phase = if intent.paused || !intent.selected {
+            ControllerPhase::Disconnected
+        } else if !intent.foreground {
+            ControllerPhase::Suspended
+        } else if self.client().is_ok() {
+            ControllerPhase::Connected
+        } else {
+            ControllerPhase::Recovering
+        };
+        self.recovery.wake.send_replace(intent.revision);
+        Ok(())
+    }
     pub(crate) fn network_changed(&self) {
         if let Ok(mut intent) = self.recovery.intent.lock() {
             intent.revision = intent.revision.wrapping_add(1);

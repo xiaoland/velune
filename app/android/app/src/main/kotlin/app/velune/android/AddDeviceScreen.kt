@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.Button
@@ -27,6 +28,9 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.PrimaryTabRow
+import androidx.compose.material3.Tab
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.Surface
@@ -44,6 +48,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
@@ -69,12 +74,15 @@ fun AddDeviceScreen(hub: DeviceHub, back: () -> Unit, paired: (String) -> Unit) 
     var peer by remember { mutableStateOf<String?>(null) }
     var failure by remember { mutableStateOf<String?>(null) }
     var busy by remember { mutableStateOf(false) }
+    var manual by remember { mutableStateOf(false) }
+    var invitation by remember { mutableStateOf("") }
 
     fun read(text: String) {
         if (offer != null) return
         try {
             offer = hub.decode(text)
             encoded = text
+            invitation = ""
             failure = null
         } catch (error: Exception) {
             failure = "这不是 Velune 的设备邀请：${error.describe()}"
@@ -84,7 +92,6 @@ fun AddDeviceScreen(hub: DeviceHub, back: () -> Unit, paired: (String) -> Unit) 
     val pairing = peer?.let { id -> state?.outgoingPairings?.firstOrNull { it.peerId == id } }
     val confirmed = pairing?.phase == BindingPairingPhase.GRANTED && peer?.let { id -> state?.contacts?.firstOrNull { it.peerId == id }?.confirmation is BindingContactConfirmation.Confirmed } == true
     LaunchedEffect(confirmed) { if (confirmed) paired(peer!!) }
-    LaunchedEffect(Unit) { if (!camera) permission.launch(Manifest.permission.CAMERA) }
 
     Scaffold(topBar = {
         TopAppBar(
@@ -98,17 +105,43 @@ fun AddDeviceScreen(hub: DeviceHub, back: () -> Unit, paired: (String) -> Unit) 
         ) {
             val current = offer
             if (current == null) {
-                Steps(listOf("在要控制的 Mac 或 Windows 上打开“设置 › 设备”", "选择“添加控制设备”", "用这台手机扫描显示的二维码"))
-                if (camera) {
-                    QrScanner(onCode = ::read, modifier = Modifier.fillMaxWidth().aspectRatio(1f).clip(RoundedCornerShape(16.dp)))
-                } else {
-                    OutlinedButton(onClick = { permission.launch(Manifest.permission.CAMERA) }) { Text("允许使用相机") }
+                PrimaryTabRow(selectedTabIndex = if (manual) 1 else 0) {
+                    Tab(selected = !manual, onClick = { manual = false; failure = null }, text = { Text("扫码") })
+                    Tab(selected = manual, onClick = { manual = true; failure = null }, text = { Text("手动输入") })
                 }
-                OutlinedButton(onClick = {
-                    val clip = context.getSystemService(ClipboardManager::class.java).primaryClip
-                    val text = clip?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.coerceToText(context)?.toString()
-                    if (text.isNullOrBlank()) failure = "剪贴板中没有邀请" else read(text)
-                }) { Text("粘贴邀请") }
+                if (manual) {
+                    OutlinedTextField(
+                        value = invitation,
+                        onValueChange = { invitation = it; failure = null },
+                        label = { Text("设备邀请") },
+                        placeholder = { Text("输入或粘贴邀请") },
+                        minLines = 3,
+                        maxLines = 6,
+                        keyboardOptions = KeyboardOptions(autoCorrectEnabled = false, keyboardType = KeyboardType.Password),
+                        isError = failure != null,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        Button(enabled = invitation.isNotBlank(), onClick = { read(invitation) }) { Text("继续") }
+                        OutlinedButton(onClick = {
+                            val clip = context.getSystemService(ClipboardManager::class.java).primaryClip
+                            val text = clip?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.coerceToText(context)?.toString()
+                            if (text.isNullOrBlank()) {
+                                failure = "剪贴板中没有邀请"
+                            } else {
+                                invitation = text
+                                failure = null
+                            }
+                        }) { Text("粘贴") }
+                    }
+                } else {
+                    Steps(listOf("在要控制的 Mac 或 Windows 上打开“设置 › 设备”", "选择“添加控制设备”", "用这台手机扫描显示的二维码"))
+                    if (camera) {
+                        QrScanner(onCode = ::read, modifier = Modifier.fillMaxWidth().aspectRatio(1f).clip(RoundedCornerShape(16.dp)))
+                    } else {
+                        OutlinedButton(onClick = { permission.launch(Manifest.permission.CAMERA) }) { Text("允许使用相机") }
+                    }
+                }
             } else {
                 Text("“${current.name}”", style = MaterialTheme.typography.headlineSmall)
                 when {
@@ -117,6 +150,7 @@ fun AddDeviceScreen(hub: DeviceHub, back: () -> Unit, paired: (String) -> Unit) 
                         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                             Button(enabled = !busy, onClick = {
                                 busy = true
+                                failure = null
                                 scope.launch {
                                     try {
                                         peer = hub.beginPairing(checkNotNull(encoded)).peerId
@@ -130,7 +164,7 @@ fun AddDeviceScreen(hub: DeviceHub, back: () -> Unit, paired: (String) -> Unit) 
                                     }
                                 }
                             }) { Text("连接") }
-                            OutlinedButton(enabled = !busy, onClick = { offer = null; encoded = null }) { Text("重新扫描") }
+                            OutlinedButton(enabled = !busy, onClick = { offer = null; encoded = null; failure = null }) { Text("更换邀请") }
                         }
                         if (busy) CircularProgressIndicator()
                     }
@@ -152,7 +186,7 @@ fun AddDeviceScreen(hub: DeviceHub, back: () -> Unit, paired: (String) -> Unit) 
                                 else -> "配对时连接中断，请重试。"
                             },
                         )
-                        OutlinedButton(onClick = { offer = null; peer = null }) { Text("重新扫描") }
+                        OutlinedButton(onClick = { offer = null; encoded = null; peer = null; failure = null }) { Text("更换邀请") }
                     }
                 }
             }

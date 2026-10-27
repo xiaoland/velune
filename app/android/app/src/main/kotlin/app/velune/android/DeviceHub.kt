@@ -1,6 +1,7 @@
 package app.velune.android
 
 import android.content.Context
+import android.content.pm.ApplicationInfo
 import android.os.Build
 import android.provider.Settings
 import app.velune.bindings.BindingDiscoveryConfig
@@ -71,6 +72,9 @@ class DeviceHub(private val context: Context) {
                     telemetry.binding,
                 )
                 endpoint = opened
+                if (context.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE != 0) {
+                    opened.startLocalControl(directory.absolutePath)
+                }
                 _state.value = opened.readState()
                 withContext(Dispatchers.Main) { startNetwork(opened) }
                 val observer = opened.observeState()

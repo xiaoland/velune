@@ -6,6 +6,8 @@ use velune_remote::{
     Controller, DeviceIdentity, DeviceStore, EndpointConfig, EndpointDescriptor,
     RemoteAccessService, RemoteOperation, RequestId, RequestStatus,
 };
+#[cfg(unix)]
+mod cli;
 
 #[derive(Clone, serde::Serialize, serde::Deserialize, uniffi::Enum)]
 pub enum BindingRelayConfig {
@@ -454,6 +456,8 @@ pub(crate) struct ServiceOwner {
     telemetry: Arc<velune_telemetry::ClientTelemetry>,
     service: Arc<RemoteAccessService>,
     runtime: Arc<RemoteRuntime>,
+    #[cfg(unix)]
+    local_control: Mutex<Option<cli::LocalControl>>,
     #[cfg(feature = "local-runtime")]
     identity_file: String,
     #[cfg(feature = "local-runtime")]
@@ -489,6 +493,8 @@ impl ServiceOwner {
             runtime,
             service,
             telemetry,
+            #[cfg(unix)]
+            local_control: Mutex::new(None),
             #[cfg(feature = "local-runtime")]
             identity_file: options.identity_file,
             #[cfg(feature = "local-runtime")]
@@ -513,6 +519,11 @@ impl ServiceOwner {
         Ok(())
     }
     pub(crate) fn close(&self) -> Result<(), BindingError> {
+        #[cfg(unix)]
+        self.local_control
+            .lock()
+            .map_err(|_| BindingError::Unavailable)?
+            .take();
         self.runtime
             .block_on(self.service.close())
             .map_err(Into::into)
@@ -540,6 +551,28 @@ impl VeluneRemoteEndpoint {
                 .runtime
                 .block_on(self.owner.service.read_telemetry_profile(&peer_id))?,
         )
+    }
+    /// Exposes pairing commands to the owning OS user, using this endpoint's live service.
+    pub fn start_local_control(&self, directory: String) -> Result<(), BindingError> {
+        #[cfg(unix)]
+        {
+            let mut control = self
+                .owner
+                .local_control
+                .lock()
+                .map_err(|_| BindingError::Unavailable)?;
+            if control.is_none() {
+                *control = Some(cli::LocalControl::bind(&self.owner, Path::new(&directory))?);
+            }
+            Ok(())
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = directory;
+            Err(BindingError::Unsupported {
+                detail: "此平台尚未提供本地 CLI".into(),
+            })
+        }
     }
     /// Local applications cache one service/runtime for their actual business owner, not a window.
     #[uniffi::constructor]

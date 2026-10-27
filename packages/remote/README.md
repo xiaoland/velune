@@ -50,6 +50,8 @@ relay／lookup 地址拒绝用户名、密码、query 和 fragment；relay 凭�
 
 目的设备联系人 pin 与本机授予对端的 incoming grant 分开保存。B 扫 A 并获 A 批准，只允许 B 控制 A；A 不会同时取得控制 B 的权限。名称只是标签，公钥来自已完成握手的真实 peer。`connect` 使用保存的 pin/locator，认证 Hello 给出本次 incarnation；联系人不保存 incarnation，也不因地址或 relay 改变而换身份。
 
+同一设备撤销后可通过新邀请重新配对。控制端首次确认当前 attempt 已获批准时，解除已有 Controller 的恢复阻塞并使旧拨号结果失效，继续按原有选中、前后台及主动暂停状态恢复；无需删除联系人或重建窗口。新配对保留联系人的暂停状态，尚未批准不恢复授权。旧 attempt 的迟到响应不能覆盖当前配对，重复查询已确认结果不再次改变连接意图。
+
 `DeviceIdentity::load_or_create` 只访问显式身份文件，继续使用 identity schema 1。既有损坏身份阻止启动，不重生成私钥。`DeviceStore::open` 使用普通状态文件 schema 4，保存联系人、独立的控制／遥测分享 grant、未决元数据与重置通知。schema 3 显式迁移到 4，保留身份、联系人、控制 grant 和 pending RequestId，遥测分享 grant 初始为空；未知未来版本或损坏的迁移输入报错并保留原文件。早于 schema 3 的旧普通格式仍原子初始化为空状态，不推导授权、不迁移 pending，也不保留备份；通知跨冷启保留，按准确 ID 确认后才删除。平台在清理自己旧的普通文件前调用 `record_legacy_state_reset`，先保留通知；它不触碰身份、Harness 文件或真实会话。Unix 私有文件为 0600，非普通文件或开放权限拒绝，发布先同步内容、原子替换再同步目录。网络设置与 token 另存为该普通文件名加 `.network-private.json` 的私有原子文件（schema 1），不混入 pending 文件或安全快照；损坏私有配置阻止加载。`validate_device_storage_paths` 在 bindings 创建身份前排除 identity／state／派生配置三者及父目录别名碰撞，普通状态解析也拒绝将带 secret_key 的身份文件重置。
 
 ## 请求交付与操作作用域
@@ -81,7 +83,7 @@ pending 最多 256 条，文件与普通 snapshot 只含 ID、CommandKind、view
 
 调用、帧、版本、邀请、存储与授权错误使用无正文的 `RemoteError`；显式业务错误仍由 application 契约返回。完整业务写入冲突、陈旧审批、附件内容边界与每设备独立视图由执行 owner 负责，不由传输 mutex 代替。
 
-2026-10-17 的旧协议合成验收经真实 iroh loopback 选中 Direct，并经显式公共开发 relay 的受控 RelayOnly 连接选中 Relay；这些传输结果不能替代 v2 授权和 pending 验证，也不证明跨 NAT 直连、真实切网或移动后台寿命。早期完整应用闭环见[远程控制验证记录](../../tasks/remote-control/verification.md)。v2 的方向授权、写前存储失败、准确 ID 确认、冷启动查询和真实 ApplicationService／合成 ACP 验收归属[Android 最小端验证记录](../../tasks/android-minimal/verification.md)。`cargo test --locked -p velune-remote --lib` 使用内存身份与真实 loopback，验证独立分享权限、手机无 Handler 双向读取、撤销、控制关系保持和 v3→v4 迁移；没有 CI 测试入口。
+2026-10-17 的旧协议合成验收经真实 iroh loopback 选中 Direct，并经显式公共开发 relay 的受控 RelayOnly 连接选中 Relay；这些传输结果不能替代 v2 授权和 pending 验证，也不证明跨 NAT 直连、真实切网或移动后台寿命。早期完整应用闭环见[远程控制验证记录](../../tasks/remote-control/verification.md)。v2 的方向授权、写前存储失败、准确 ID 确认、冷启动查询和真实 ApplicationService／合成 ACP 验收归属[Android 最小端验证记录](../../tasks/android-minimal/verification.md)。`cargo test --locked -p velune-remote pairing::tests` 使用内存身份与 loopback，回归撤销后重新配对、原 Controller 恢复、暂停／活动意图保留及旧配对响应隔离；没有 CI 测试入口。
 
 生产与诊断 mDNS 的 Android 接口集合来自最新 `PlatformNetworkSnapshot`：选择真实 Wi-Fi／Ethernet 且非 VPN 网络的 IPv4，不要求它是默认网络或具有 Internet／VALIDATED。首次事实到达前保持空集合。`ethernet` 与 `vpn` 是平台事实，与现有 Wi-Fi／cellular 字段并列。桌面宿主通过 `refresh_local_discovery()`（诊断探针为 `refresh_mdns_interfaces()`） 重新枚举 UP、支持 multicast、非 loopback、非 point-to-point 接口的 IPv4；调用方负责有界周期采样，不按路由或接口名字推测 LAN。
 

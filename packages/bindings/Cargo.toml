@@ -24,7 +24,7 @@ velune-telemetry = { path = "../telemetry" }
 velune-application = { path = "../application", default-features = false, optional = true }
 velune-application-api = { path = "../application-api" }
 velune-remote = { path = "../remote", optional = true }
-tokio = { version = "1", features = ["rt-multi-thread", "sync", "time"], optional = true }
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "net", "io-util"], optional = true }
 uniffi = "=0.32.2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
