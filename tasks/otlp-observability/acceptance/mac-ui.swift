@@ -7,7 +7,7 @@ final class MacTelemetryUI: XCTestCase {
         continueAfterFailure = false
         try XCTSkipUnless(AXIsProcessTrusted(), "Native accessibility permission unavailable")
         let root = URL(fileURLWithPath: CommandLine.arguments[1])
-        let home = root.appendingPathComponent("mac-save-" + UUID().uuidString)
+        let home = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("velune-otlp-" + UUID().uuidString.prefix(8))
         try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
         let bundle = URL(fileURLWithPath: CommandLine.arguments[2])
         let config = home.appendingPathComponent("telemetry/config.json")

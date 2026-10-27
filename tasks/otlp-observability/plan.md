@@ -63,7 +63,7 @@ Swift 对批准的 metric instruments 注册明确 views，三信号使用显式
 
 Mac 的本机设置与本地 owner 契约稳定后，Windows 用 `ActivitySource`／`Meter`／`ILogger`，Android 用 Java SDK 1.62.0 和官方 Kotlin context extension，iOS 使用与 Mac 相同的 Swift SDK 与 Apple 遥测装配代码。共享 Apple 的配置／SDK生命周期实现，界面仍遵循各端原生结构；不复制成两套独立版本。
 
-各端在顶层客户端 owner 装配，包含尚未连接任何远端的手机。设置、测试、错误状态、来源授权／撤销、来源选择和一次性复制全部可用。完成四平台 4×4 来源／目的矩阵；手机前台可以分享，后台不保活。原生异步任务使用本生态 context 传播，并在 FFI 显式传递不可变 carrier。
+各端在顶层客户端 owner 装配，包含尚未连接任何远端的手机。设置、测试、错误状态、来源授权／撤销、来源选择和一次性复制全部可用。按用户纠偏后的验收口径覆盖四个平台各自的真实来源／目的角色，不为穷举组合另造程序；手机前台可以分享，后台不保活。原生异步任务使用本生态 context 传播，并在 FFI 显式传递不可变 carrier。
 
 同步 `Package.swift`、iOS 工程包依赖、Android Gradle、Windows csproj、绑定生成与许可清单，更新平台 README 和 Windows 对齐表。按 Windows AGENTS 在 win-ws 构建并实际验证浅／深色、回调运行和正常退出；iPhone／iPad 与 Android 分别验证生命周期、系统证书和设置持久化。共享 Rust 通过不代替这些证据。
 

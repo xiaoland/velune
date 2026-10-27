@@ -1,4 +1,4 @@
-"""通过隔离 Mac 应用的真实控件验证保存和普通重启；不构建产品或启动模拟器。"""
+"""通过已安装 Mac 应用的真实控件和合成配置验证保存与普通重启。"""
 import argparse
 import os
 from pathlib import Path

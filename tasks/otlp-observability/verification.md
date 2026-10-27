@@ -1,6 +1,6 @@
 # 遥测实现验收记录
 
-2026-10-27。产品实现已接入四端；自动化及已观察的原生结果如下。用户解锁后已继续原生验收，但完整分享矩阵和移动真机检查仍未完成。用户已授权提交；其他任务修改按归属保留。用户明确授权为测试运行器腾出免费签名名额后，仅移除了 iPad 上的日常 Velune，隔离验收包保留。
+2026-10-27。初步接入已实现并提交；已观察的原生结果如下。实际 iPad→Mac 分享及部分生命周期观察仍未完成，不宣称全部验收通过。用户已授权提交及覆盖已安装 Velune；其他任务修改按归属保留。已更新 `/Applications/Velune.app`；此前按用户要求卸载了 iPad 日常 Velune 以释放免费签名名额，既有测试包保留。
 
 ## 共享配置、SDK 与分布式执行
 
@@ -36,7 +36,7 @@ Windows 额外边界测试发现 `.NET` 官方 SDK 在未采样本地父级下�
 
 全 workspace 的 all-targets／all-features check 与 clippy 通过。最后源码状态的 telemetry、agent-runtime、gateway、bindings library clippy（`-D warnings`）、格式检查及 17＋7 项 Rust 测试通过。实际 AppStore 的 100 次空闲回调不重复发布、问题恢复和真实配置更新仍传播的检查通过，见 `target/telemetry-store-idle-delivery.log`。macOS 隔离 bundle 已刷新为最新构建并通过签名检查；模拟器与测试客户端已停止，sfp7 开发接收端保留。
 
-最终 Python 编译、两个 Apple 构建脚本的 shell 语法、开发入口边界检查和 `git diff --check` 通过；21 份相关文档的 380 个相对链接／标题锚点检查无误。已移除本任务 Windows 验收计划任务、Android reverse 与 Windows 临时反向隧道；sfp7 接收端及 Mac 查询隧道保留，日常客户端未被停止。
+当时的 Python 编译、两个 Apple 构建脚本的 shell 语法、开发入口边界检查和 `git diff --check` 通过；21 份相关文档的 380 个相对链接／标题锚点检查无误。已移除本任务 Windows 验收计划任务、Android reverse 与 Windows 临时反向隧道；sfp7 接收端及 Mac 查询隧道保留。后续正式 Mac 更新曾正常退出日常客户端，不声称日常客户端始终未停止。
 
 ## agent 诊断演练
 
@@ -66,7 +66,9 @@ iPad 真机的独立 `app.velune.ios.telemetry` 包已构建、安装并普通�
 
 2026-10-27。已停止本任务隔离 Mac／Android 客户端，移除 Windows `VeluneTelemetryNativeAcceptance` 计划任务、Android 辅助 instrumentation APK、ADB reverse 与 Windows 临时反向隧道。移除五份重复 Apple DerivedData，保留唯一证据；没有运行中的模拟器。sfp7 开发服务及 Mac 查询隧道保留。iPad 辅助 UI runner 已卸载，隔离产品包保留。
 
-Mac 原生保存／重启闭环已经通过，见 [mac-ui.py](acceptance/mac-ui.py) 和[原生用例](acceptance/mac-ui.swift)。该次已通过结果使用 bundle ID `app.velune.telemetry`；用户纠偏后，入口已改为直接控制安装的正式 `local.velune.prototype` Velune，并为运行创建独立测试配置，正式构建完成后复验，每次创建新私有目录，从普通入口启动；通过实际文本框、键盘输入与保存按钮写入指定地址和合成认证字段，然后正常退出并重新启动，验证界面读回、落盘修订及 Unset 下两套 SDK 仍关闭。证据为 `target/telemetry-mac-ui/mac-save-evidence.json`，实际用例耗时约 5 秒。它不验证配置复制、点击命中区域或未执行的移动生命周期。
+Mac 原生保存／重启闭环已经通过，见 [mac-ui.py](acceptance/mac-ui.py) 和[原生用例](acceptance/mac-ui.swift)。最新结果直接运行 `/Applications/Velune.app`（`local.velune.prototype`），创建私有合成配置，从普通入口启动；通过实际文本框、键盘输入与保存按钮写入指定地址和合成认证字段，然后正常退出并重新启动，验证界面读回、落盘修订及 Unset 下两套 SDK 仍关闭。证据为 `target/telemetry-mac-ui/mac-save-evidence.json`，实际用例耗时约 5 秒。它不验证配置复制、点击命中区域或未执行的移动生命周期。
+
+已安装 Mac 的原生源码基线为 `4288414`，保留工作树既有 `RemoteDevices.swift` 本地 CLI 接线，复用本轮已完成的单 worker Rust release 库。另一任务的 compaction 改动使随后生成绑定时的 debug 重编译失败，故直接用已有相同 UniFFI 版本的 bindgen 生成绑定，并从提交快照完成原生构建；没有修补或回退另一任务源码。Swift native/debug 构建完成、严格签名校验通过，并用仓库安装脚本覆盖正式路径。构建日志为 `target/telemetry-native-ui/installed-macos-stable-build.log`，安装来源记录为 `target/telemetry-native-ui/installed-macos-provenance.json`。该产物不代表正在变化的整个工作树已构建通过。
 
 本轮排除了夹具中的预览模式和旧窗口，并读取 macOS `AXTitleUIElement` 提供的控件关联标签；不会把这些夹具失败记为产品缺陷。此前旧的直接 `AXValue` 保存检查未独立复现其唯一原因，已由上述真实输入／提交／重启结果补足所需产品证据。标准 UI runner 本轮再次停在系统 Enable UI Automation 认证，未进入产品用例；没有继续循环重试或修改系统安全设置。
 
@@ -76,7 +78,9 @@ Mac 原生保存／重启闭环已经通过，见 [mac-ui.py](acceptance/mac-ui.
 
 [移动网络用例](acceptance/mobile-network.py)预置隔离安装的合成配置，使用实际应用 SDK，不能冒充 UI 保存。Android 与 iPad 真机均已从原生／Rust 的三个官方 scope 收到全部三信号，且两侧状态给出真实接收回执；随后连接带正确 IP SAN 的自签证书接收端，服务器出现证书告警、两侧导出失败、零 OTLP RPC 被接受。配置已恢复原值并普通重启。Android 最新证据为 `target/telemetry-mobile-android-54f093b2af25486da0194497a45a9b56/evidence.json`，包含系统 resumed activity 确认切后台／返回，同一 PID 与 SDK 修订保持，恢复后原有 revision=7、Unset／双 inactive；不据短暂后台推断长时间挂起行为。iPad 证据为 `target/telemetry-mobile-ios-3db9815cb411451bbbb853de54bfede0/evidence.json`，恢复后本轮 PID 2598、Unset／双 inactive。此前新进程未发布状态的尝试未计通过；用户确认设备亮屏且 Velune 前台后，重新取得本轮 PID 的新鲜状态再执行了成功的检查。没有把工具 launch 回执或旧状态当成就绪。
 
-后续顺序为：更新并使用正式已安装 Velune，补 iPad→Mac 的分享、撤销拒绝与原配置保持；再补确有平台差异或缺失观察的原生发起／生命周期。既有共享配置、SDK 撤销、并发 FFI／QUIC／Core／Gateway 和独立 agent 诊断证据继续复用，相关实现变化时才重放。
+随后使用设备原生 AccessibilityAudit 服务操作已安装 iPad App，已观察“添加认证字段”实际增加表单行；没有安装新运行器或启动媒体串流。为余下分享流程预置了 Unset 的合成来源 profile，但重新启动时设备服务连接中断。Apple `devicectl` 显示 unavailable，原生设备发现和 Bonjour 发现均为空；该条件阻止继续操作，尚无产品分享失败证据。测试包目前仍留有此合成来源 profile，待重连后恢复此前无 profile 的状态；不把它写成 UI 保存或已完成分享。
+
+设备恢复后只补 iPad→Mac 的实际分享、撤销拒绝与原配置保持。既有共享配置、SDK 撤销、并发 FFI／QUIC／Core／Gateway 和独立 agent 诊断证据继续复用，相关实现变化时才重放。设备不可用不阻止交付已实现的初步接入，但阻止“全部验收通过”的声明。
 
 ## 尚缺的验收
 
