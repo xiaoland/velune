@@ -25,6 +25,7 @@
 - [多 Harness 路由与协作架构](../design/architecture.md)：package 拆分与平台装配、会话权威与展示投影、运行时、协作与执行 owner
 - [AI 服务与 AI 网关](../design/ai-service.md)：操作、provider 与网关的职责，协议与转换，路由与额度
 - [远程访问](../design/remote-access.md)：设备、配对、连接与远程调用
+- [遥测装配与关联](../design/telemetry.md)：本机配置、双 SDK 代际、一次性分享与分布式诊断
 
 ## 验证
 

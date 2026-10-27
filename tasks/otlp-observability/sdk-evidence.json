@@ -1,0 +1,25 @@
+{
+  "date": "2026-10-26",
+  "sdk_versions": {
+    "rust_otel": "0.32.0",
+    "tracing_bridge": "0.33.0",
+    "swift_core_and_exporters": "2.6.0",
+    "java_and_kotlin_extension": "1.62.0",
+    "dotnet": "1.20.1"
+  },
+  "three_signals": true,
+  "trace_parent_and_log_correlation": true,
+  "counter": 7,
+  "sdk_queue_discard": true,
+  "rust_transport_pending_discard": true,
+  "fresh_generation_exports": true,
+  "conflicting_environment_ignored": true,
+  "kotlin_coroutine_isolation": true,
+  "swift_uniffi_concurrent_context_and_shared_close": true,
+  "limits": [
+    "Mac process probes only; .NET uses net8 SDK, not Windows net10 WinUI.",
+    "No TLS or mobile lifecycle tests.",
+    "No whole-product ApplicationService reconfiguration test.",
+    "Pending connection cancellation was exercised for Rust; other SDK queue cancellation and APIs were checked."
+  ]
+}

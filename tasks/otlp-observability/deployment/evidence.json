@@ -1,0 +1,123 @@
+{
+  "observed_on": "2026-10-26",
+  "scope": "Synthetic backend verification from the development Mac through SSH; no Velune client SDK coverage.",
+  "image": "grafana/otel-lgtm:0.38.1@sha256:0df9bc14142000b161344bd24caf6ddd319b7319055aedaf9b0692b125730af7",
+  "host": "sfp7-ws.localhost",
+  "before_container_id": "85771ca1a150dd838502ba1e728676b3942f250e1c40af1bc763f9041cf4c5aa",
+  "after_container_id": "effca810ea08920581747531c2f256ce048f8394f28d9957f7ee418fa94f1058",
+  "persistent_volume": "velune-observability_data",
+  "resource_limits": {
+    "memory_bytes": 4294967296,
+    "cpus": 2
+  },
+  "resource_samples": {
+    "samples": 109,
+    "memory_min_MiB": 418.1,
+    "memory_max_MiB": 485.5,
+    "memory_last_MiB": 485.5,
+    "cpu_max_percent_one_core": 16.58,
+    "cpu_mean_percent_one_core": 7.57,
+    "cpu_last_percent_one_core": 3.55
+  },
+  "load": {
+    "operations": 200,
+    "spans": 400,
+    "logs": 200,
+    "metric_points": 400,
+    "scheduled_rate": 5,
+    "seconds": 40.006,
+    "verification_rounds": 8
+  },
+  "allocated_data_KiB": {
+    "before_load": 68648,
+    "after_load": 70664,
+    "after_recreate": 71276
+  },
+  "verification": {
+    "baseline": {
+      "run_id": "probe-9dfa71d253de42d2887a9658536bc524",
+      "trace_id": "b3bbdf62b965446c96571c6324817d89",
+      "span_count": 2,
+      "parent_child": true,
+      "log_trace_correlation": true,
+      "metrics": {
+        "velune_probe_operations_total": 7.0,
+        "velune_probe_latency_seconds_count": 3.0,
+        "velune_probe_latency_seconds_sum": 0.35
+      }
+    },
+    "load": {
+      "run_id": "load-d24797175a5e4c6184e3e9df2a52d7a6",
+      "trace_id": "8adf0bd3213e4cd5a568d2d3ef84b0b4",
+      "span_count": 2,
+      "parent_child": true,
+      "log_trace_correlation": true,
+      "metrics": {
+        "velune_probe_operations_total": 1400.0,
+        "velune_probe_latency_seconds_count": 600.0,
+        "velune_probe_latency_seconds_sum": 70.0
+      }
+    },
+    "after_recreate": {
+      "run_id": "probe-802473bd81cb49998a2e818590db48a3",
+      "trace_id": "7dafb9de5c124f9382527beb7974d8d6",
+      "span_count": 2,
+      "parent_child": true,
+      "log_trace_correlation": true,
+      "metrics": {
+        "velune_probe_operations_total": 7.0,
+        "velune_probe_latency_seconds_count": 3.0,
+        "velune_probe_latency_seconds_sum": 0.35
+      }
+    },
+    "traceql": true
+  },
+  "send_states": {
+    "baseline": {
+      "run_id": "probe-9dfa71d253de42d2887a9658536bc524",
+      "trace_id": "b3bbdf62b965446c96571c6324817d89",
+      "start_ns": 1793023625931954000,
+      "sent_ns": 1793023626931956000,
+      "sequence": 1
+    },
+    "load": {
+      "run_id": "load-d24797175a5e4c6184e3e9df2a52d7a6",
+      "trace_id": "8adf0bd3213e4cd5a568d2d3ef84b0b4",
+      "start_ns": 1793023697141987000,
+      "sent_ns": 1793023737932055000,
+      "sequence": 200
+    },
+    "after-recreate": {
+      "run_id": "probe-802473bd81cb49998a2e818590db48a3",
+      "trace_id": "7dafb9de5c124f9382527beb7974d8d6",
+      "start_ns": 1793023854030758000,
+      "sent_ns": 1793023855030759000,
+      "sequence": 1
+    }
+  },
+  "access_status": {
+    "anonymous": 401,
+    "invalid_token": 401,
+    "default_admin_password": 401,
+    "viewer_query": 200,
+    "viewer_datasource_create": 403,
+    "viewer_empty_prometheus_write": 403,
+    "viewer_empty_loki_write": 403
+  },
+  "non_loopback_ports_reachable": false,
+  "oom": false,
+  "automatic_restarts": 0,
+  "retention_config_confirmed": [
+    "prometheus_3d_and_2GiB_blocks",
+    "loki_72h_with_compactor",
+    "tempo_72h_scheduler_and_worker"
+  ],
+  "not_verified": [
+    "real_72h_expiry",
+    "host_reboot",
+    "long_duration_load",
+    "mobile_reachability",
+    "Velune_native_and_Rust_SDKs",
+    "Grafana_UI"
+  ]
+}
