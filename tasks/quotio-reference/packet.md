@@ -28,10 +28,7 @@
 
 - Rust：workspace check、全 targets 严格 clippy、bindings `--no-default-features` 检查通过。临时测试覆盖官方主机边界、三家响应解析、OpenRouter 日／周／月周期、节奏、提醒去重、历史读写／分段／保留与 gateway 节奏排序，全部通过后删除，只保留主机边界测试 `only_exact_official_origins`（通过）。
 - Mac：warnings-as-errors 构建通过。临时离屏渲染（未提交）以合成状态检查 Codex 额度页（节奏提示、上限、历史按钮）、DeepSeek 余额页（无上限节）、未报告额度的 OpenRouter、24 小时历史图（休眠空白）、DeepSeek 编辑器开关与中转地址无开关；据此修正了历史图的条形、坐标标签截断、只有金额时的上限节和开关位置。
-- Windows：见下节。
+- Windows：在 `win-ws.localhost` 的独立目录 `C:\Users\yyh\velune-quota-borrow`（源码为 `97b69b6` 的归档）完整运行 `scripts\build-windows.ps1`：Rust Release、C# 绑定生成与 WinUI publish 均通过，日志无 C# 错误或警告。未运行应用、未做界面目视检查。
+- 落地：两个提交 rebase 到 main `0cee555` 后，重跑 workspace 与 no-default 严格 clippy、保留测试和 rustfmt 检查，并以 `97b69b6` 签名构建、安装 `/Applications/Velune.app`（manifest 非 dirty），随后快进 main。
 
 未验收：真实 DeepSeek／Moonshot／OpenRouter Key 的余额读取、OpenRouter 有上限 Key 的周期、通知横幅的实际呈现，留给用户使用时确认。
-
-## Windows 构建
-
-未运行：本次会话在隔离 worktree 中，无法经 SSH 在 `win-ws.localhost` 构建。C# 改动只读取新增的绑定字段（`Balances` 及其 `Amount`、`Unit`），没有构造新增字段的绑定记录，也没有对额度来源的穷尽 switch；仍需运行 `scripts\build-windows.ps1` 确认。
