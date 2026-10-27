@@ -56,4 +56,8 @@ Copy-Item -Recurse packages\agent-runtime\runtime-support\licenses "$resources\T
 Copy-Item packages\agent-runtime\runtime-support\package-lock.json "$resources\ThirdParty\runtime-support-package-lock.json"
 Copy-Item -Recurse app\mac\Licenses\RelayKit "$resources\ThirdParty\RelayKit"
 Copy-Item packages\ai-provider\relaykit-bridge\go.mod, packages\ai-provider\relaykit-bridge\go.sum "$resources\ThirdParty\RelayKit"
+New-Item -ItemType Directory -Force "$resources\ThirdParty\OpenTelemetry" | Out-Null
+Copy-Item app\windows\Licenses\OpenTelemetry-* "$resources\ThirdParty\OpenTelemetry"
+python -I scripts/android-licenses.py local-runtime,remote "$resources\ThirdParty\rust-licenses.txt" x86_64-pc-windows-msvc
+if ($LASTEXITCODE -ne 0) { throw 'collecting Rust licence notices failed' }
 Write-Output "Built $((Resolve-Path $app).Path)"

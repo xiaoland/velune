@@ -398,13 +398,13 @@ sealed class Shell
         };
         var dialog = new ContentDialog
         {
-            Title = $"“{pairing.Name}”请求控制这台电脑",
+            Title = pairing.Permission == BindingPairingPermission.TelemetryProfileRead ? $"“{pairing.Name}”请求读取遥测配置" : $"“{pairing.Name}”请求控制这台电脑",
             Content = new StackPanel
             {
                 Spacing = 16,
                 Children =
                 {
-                    new TextBlock { Text = "确认两台设备显示相同的核对码。允许后，对方可以查看和操作这台电脑上的会话。", TextWrapping = TextWrapping.Wrap },
+                    new TextBlock { Text = pairing.Permission == BindingPairingPermission.TelemetryProfileRead ? "确认两台设备显示相同的核对码。允许后，对方可以读取本机保存的遥测连接、认证和采样配置。" : "确认两台设备显示相同的核对码。允许后，对方可以查看和操作这台电脑上的会话。", TextWrapping = TextWrapping.Wrap },
                     code,
                 },
             },

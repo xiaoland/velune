@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Explicit synthetic actual-AppStore publication diagnostic; no GUI/CI/real state."""
+from mac_telemetry_build import add_app_sources, add_telemetry
 import argparse
 from pathlib import Path
 import shutil
@@ -47,12 +48,13 @@ def main():
             func manualIdleCallback() { clearActivityProblem("poll:fixture"); if let value=snapshot { apply(value,preserveSelection:true) } }
             func manualCopy(_ application:AppStore) { copyApplicationState(application) }
         }\n''')
-        imports=root/'ImportModels.swift';imports.write_text((repo/'app/mac/ProviderImport.swift').read_text().split('struct ProviderImportView: View {')[0])
         source=root/'Main.swift';source.write_text(MAIN)
         objects=[str(f) for name in ('VeluneBindings','Markdown','CAtomic','cmark_gfm','cmark_gfm_extensions') for f in (build/(name+'.build')).rglob('*.o')]
-        cmd=['xcrun','swiftc','-parse-as-library','-swift-version','5','-warnings-as-errors','-I',str(build/'Modules'),'-I',str(repo/'target/swift-ffi'),'-Xcc','-I'+str(repo/'.build/checkouts/swift-cmark/src/include')]
+        cmd=['xcrun','swiftc','-parse-as-library','-swift-version','5','-I',str(build/'Modules'),'-I',str(repo/'target/swift-ffi'),'-Xcc','-I'+str(repo/'.build/checkouts/swift-cmark/src/include')]
         for path in (repo/'.build/checkouts/swift-markdown/Sources/CAtomic/include/module.modulemap',repo/'.build/checkouts/swift-cmark/src/include/module.modulemap',repo/'.build/checkouts/swift-cmark/extensions/include/module.modulemap'):cmd+=['-Xcc','-fmodule-map-file='+str(path)]
-        cmd += [str(repo/'app/mac'/name) for name in ('Models.swift','TranscriptModel.swift','BindingMapping.swift','ConversationBrowser.swift','Problems.swift','Transport.swift')]+[str(store),str(imports),str(source),*objects,'-L',str(library.parent),'-lvelune_bindings','-Xlinker','-rpath','-Xlinker',str(library.parent),'-o',str(root/'Probe')]
+        add_app_sources(cmd,repo,root,store)
+        cmd += [str(source),*objects,'-L',str(library.parent),'-lvelune_bindings','-Xlinker','-rpath','-Xlinker',str(library.parent),'-o',str(root/'Probe')]
+        add_telemetry(cmd, build, repo)
         subprocess.run(cmd,cwd=repo,check=True)
         subprocess.run([str(root/'Probe')],cwd=root,env={'HOME':str(root),'VELUNE_HOME':str(root),'PATH':'/usr/bin:/bin'},check=True,timeout=30)
 if __name__=='__main__':main()

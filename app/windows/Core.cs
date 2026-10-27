@@ -20,17 +20,19 @@ sealed class Core
     public string Home { get; }
     public string Resources { get; }
     public VeluneApplication Local { get; }
+    public ClientTelemetry Telemetry { get; }
     // View tells this app's windows apart on a controlled device; one per process.
     readonly string view;
     readonly object gate = new();
     VeluneRemoteEndpoint? endpoint;
     readonly Dictionary<string, VeluneApplication> connections = [];
 
-    Core(string home, string resources, VeluneApplication local)
+    Core(string home, string resources, VeluneApplication local, ClientTelemetry telemetry)
     {
         Home = home;
         Resources = resources;
         Local = local;
+        Telemetry = telemetry;
         view = "windows-" + Convert.ToHexStringLower(RandomNumberGenerator.GetBytes(16));
     }
 
@@ -43,8 +45,14 @@ sealed class Core
         {
             throw new InvalidOperationException("缺少运行时资源目录：" + resources);
         }
-        var local = VeluneApplication.Open(new BindingOptions(home, resources));
-        return new Core(home, resources, local);
+        var telemetry = new ClientTelemetry(home);
+        telemetry.Start();
+        try
+        {
+            var local = VeluneApplication.OpenWithTelemetry(new BindingOptions(home, resources), telemetry.Binding);
+            return new Core(home, resources, local, telemetry);
+        }
+        catch { telemetry.Shutdown(); throw; }
     }
 
     // VELUNE_HOME, else %USERPROFILE%\.velune.
@@ -85,7 +93,7 @@ sealed class Core
             }
             var directory = Path.Combine(Home, "remote");
             Directory.CreateDirectory(directory);
-            endpoint = VeluneRemoteEndpoint.Open(new BindingRemoteOptions(
+            endpoint = VeluneRemoteEndpoint.OpenWithTelemetry(new BindingRemoteOptions(
                 IdentityFile: Path.Combine(directory, "device-identity"),
                 StateFile: Path.Combine(directory, "remote-state.json"),
                 DeviceName: DeviceName(),
@@ -93,7 +101,7 @@ sealed class Core
                 Discovery: new BindingDiscoveryConfig.DevelopmentPublic(),
                 PathPolicy: BindingRemotePathPolicy.Automatic,
                 BindAddresses: [],
-                RequestTimeoutMs: 30_000), Local);
+                RequestTimeoutMs: 30_000), Local, Telemetry.Binding);
             return endpoint;
         }
     }
@@ -133,6 +141,13 @@ sealed class Core
             return connection;
         }
     }
+    public Task<T> Call<T>(Device device, string operation, Func<VeluneApplication, T> body) => Telemetry.Operation(operation, carrier => Task.Run(() =>
+    {
+        using var view = Application(device).WithTraceContext(carrier);
+        return body(view);
+    }));
+
+    public Task Call(Device device, string operation, Action<VeluneApplication> body) => Call(device, operation, application => { body(application); return true; });
 
     // ForgetConnection drops a removed device's connection; the remote service
     // closes it with the device.
@@ -165,6 +180,7 @@ sealed class Core
             Try(remote.Shutdown);
         }
         Try(Local.Shutdown);
+        Try(Telemetry.Shutdown);
 
         static void Try(Action shutdown)
         {

@@ -463,7 +463,7 @@ extension ImmediateDisclosureGroup where Label == Text {
     }
 }
 
-enum SettingsTab: Hashable { case general, conversation, shortcuts, providers, routes, runtimes, devices }
+enum SettingsTab: Hashable { case general, conversation, shortcuts, providers, routes, runtimes, devices, telemetry }
 
 /// The settings tab that is showing. Entry points elsewhere in the app set it
 /// before opening the window, so settings open where the task needs them.
@@ -493,6 +493,12 @@ struct SettingsView: View {
             ProviderSettingsView(store: store).tabItem { Label("AI提供商", systemImage: "network") }.tag(SettingsTab.providers)
             ModelRouteSettingsView(store: store).tabItem { Label("模型路由", systemImage: "arrow.triangle.branch") }.tag(SettingsTab.routes)
             RuntimeSettingsView(store: store).tabItem { Label("Agent 运行时", systemImage: "terminal") }.tag(SettingsTab.runtimes)
+            TelemetrySettingsView(coordinator: {
+                guard let transport = store.resourceTransport else { throw TransportError.unavailable }
+                return try transport.telemetryCoordinator()
+            }, remote: { [hub = DeviceHub.shared] in
+                guard let hub else { throw TransportError.unavailable }; return try hub.telemetryEndpoint()
+            }).tabItem { Label("遥测", systemImage: "waveform.path.ecg") }.tag(SettingsTab.telemetry)
             if let hub = DeviceHub.shared {
                 DeviceSettingsView(hub: hub).tabItem { Label("设备", systemImage: "laptopcomputer.and.iphone") }.tag(SettingsTab.devices)
             }

@@ -60,10 +60,10 @@ class DeviceWorkspace(private val hub: DeviceHub, val peer: String, private val 
 
     suspend fun refresh() {
         try {
-            val application = hub.application(peer)
-            val (list, activity) = withContext(Dispatchers.IO) {
+            val (list, activity) = hub.call(peer, "list") { application ->
                 application.list() to application.conversationActivity(activityCursor)
             }
+            val application = hub.application(peer)
             activityCursor = activity.cursor
             _listing.value = listing(list, activity.active).copy(path = path(application))
         } catch (error: CancellationException) {

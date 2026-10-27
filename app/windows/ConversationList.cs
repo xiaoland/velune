@@ -334,7 +334,7 @@ sealed partial class ConversationList : UserControl
         var target = Device;
         try
         {
-            await Task.Run(() => window.Shell.Core.Application(target).LoadMoreConversations(key));
+            await window.Shell.Core.Call(target, "Read", application => application.LoadMoreConversations(key));
             Listings.Reread(target);
         }
         catch (Exception failure)

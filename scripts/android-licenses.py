@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
-"""Writes the licence notices of the Rust crates linked into the Android library.
+"""Writes licence notices for the crates linked into a client Rust library.
 
 MIT, Apache-2.0, BSD and similar licences ask that their notices travel with
-binary copies, so the APK carries this file and shows it under
-“关于与开源许可”. Reads `cargo metadata` for the same target and features as
-build-android-native.sh; workspace crates are Velune's own and are skipped.
+binary copies. All four platform build scripts use this collector with their
+library's target and features; workspace crates are Velune's own and are skipped.
 
 Usage: scripts/android-licenses.py <features> <output file> [Rust target]
 """

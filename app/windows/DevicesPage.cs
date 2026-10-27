@@ -252,15 +252,15 @@ sealed class DevicesPage : UserControl
 
     void Others(BindingRemoteServiceSnapshot? state)
     {
-        panel.Children.Add(Ui.Heading("控制其他设备"));
+        panel.Children.Add(Ui.Heading("其他设备"));
         foreach (var contact in state?.Contacts ?? [])
         {
             var confirmed = contact.Confirmation is BindingContactConfirmation.Confirmed;
             Button action;
             if (confirmed)
             {
-                action = new Button { Content = "打开" };
-                action.Click += (_, _) => open(new Device(contact.PeerId));
+                action = new Button { Content = contact.ControlAuthorized ? "打开" : "遥测设置" };
+                action.Click += (_, _) => { if (contact.ControlAuthorized) open(new Device(contact.PeerId)); else window.Show(SettingsPage.Telemetry); };
             }
             else
             {
@@ -286,7 +286,7 @@ sealed class DevicesPage : UserControl
         row.Children.Add(invite);
         Grid.SetColumn(connect, 1);
         row.Children.Add(connect);
-        return Ui.Card(Ui.Field(row, "在要控制的设备上选择添加控制设备，把它显示的邀请粘贴到这里。连接后核对两台设备的核对码，并在那台设备上允许。"));
+        return Ui.Card(Ui.Field(row, "粘贴来源设备的控制或遥测分享邀请，核对两端数字，并在来源设备上批准对应权限。"));
     }
 
     // ContactStatus is where pairing with a device stands, or its connection
@@ -300,7 +300,7 @@ sealed class DevicesPage : UserControl
                 BindingPairingPhase.Rejected => "对方已拒绝",
                 BindingPairingPhase.Expired => "邀请已过期",
                 BindingPairingPhase.Disconnected => "配对时连接中断",
-                _ => "等待对方允许 · 核对码 " + Hub.FormatCode(pairing.VerificationCode),
+                _ => (pairing.Permission == BindingPairingPermission.TelemetryProfileRead ? "遥测配置（含认证） · " : "") + "等待对方允许 · 核对码 " + Hub.FormatCode(pairing.VerificationCode),
             };
         }
         foreach (var controller in state.Controllers.Where(controller => controller.PeerId == peer))

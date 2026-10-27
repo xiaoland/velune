@@ -520,7 +520,7 @@ public sealed partial class WorkspaceWindow : Window
         BindingListedConversation? found;
         try
         {
-            found = await Task.Run(() => Shell.Core.Application(target).FindConversation(conversationID));
+            found = await Shell.Core.Call(target, "Read", application => application.FindConversation(conversationID));
         }
         catch (Exception failure)
         {

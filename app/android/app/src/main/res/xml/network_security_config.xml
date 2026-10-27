@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <!-- Explicit OTLP settings accept HTTP and HTTPS on every client. Trust checks stay at OS defaults. -->
+    <base-config cleartextTrafficPermitted="true" />
+</network-security-config>

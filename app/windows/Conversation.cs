@@ -96,7 +96,7 @@ sealed partial class Conversation
     }
 
     // Call runs a blocking call on the thread pool against the device.
-    Task<T> Call<T>(Func<VeluneApplication, T> work) => Task.Run(() => work(core.Application(Device)));
+    Task<T> Call<T>(Func<VeluneApplication, T> work, [System.Runtime.CompilerServices.CallerMemberName] string operation = "read") => core.Call(Device, operation, work);
 
     public string Title => Snapshot?.Conversation.Title ?? (Target.Unsent ? "新会话" : Target.Title);
 

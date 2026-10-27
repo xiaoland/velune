@@ -45,6 +45,8 @@ final class Transport: @unchecked Sendable {
     let stateDirectory: URL
     /// Opens the application this transport talks to: this Mac's core, or a paired device.
     private let open: () throws -> VeluneApplication
+    let telemetryResult: Result<ClientTelemetry, Error>
+    private let ownsTelemetry: Bool
     private let lock = NSLock()
     private static let logger = Logger(subsystem: "local.velune", category: "transport")
     private var application: VeluneApplication?
@@ -56,20 +58,30 @@ final class Transport: @unchecked Sendable {
 
     init(stateDirectory: URL, resourcesDirectory: URL) {
         self.stateDirectory = stateDirectory
+        let result = Result { try ClientTelemetry(home: stateDirectory, platform: "macos", localLogs: true,
+            developmentProfile: ProcessInfo.processInfo.environment["VELUNE_TELEMETRY_PROFILE"], runID: ProcessInfo.processInfo.environment["VELUNE_RUN_ID"]) }
+        telemetryResult = result
+        ownsTelemetry = true
         open = {
-            try VeluneApplication.open(options: BindingOptions(homeDirectory: stateDirectory.path, resourcesDirectory: resourcesDirectory.path))
+            let telemetry = try result.get(); try telemetry.start()
+            return try VeluneApplication.openWithTelemetry(options: BindingOptions(homeDirectory: stateDirectory.path, resourcesDirectory: resourcesDirectory.path), telemetry: telemetry.binding)
         }
     }
 
     /// A paired device's application; the same named methods reach its core.
-    init(stateDirectory: URL, remote: @escaping () throws -> VeluneApplication) {
+    init(stateDirectory: URL, telemetry: Result<ClientTelemetry, Error>, remote: @escaping () throws -> VeluneApplication) {
         self.stateDirectory = stateDirectory
+        telemetryResult = telemetry; ownsTelemetry = false
         open = remote
+    }
+
+    func telemetryCoordinator() throws -> ClientTelemetry {
+        let telemetry = try telemetryResult.get(); try telemetry.start(); return telemetry
     }
 
     /// The remote service of this Mac's own core, opened with it.
     func openRemoteEndpoint(_ options: BindingRemoteOptions) throws -> VeluneRemoteEndpoint {
-        try withApplication("openRemoteEndpoint", .reads) { try VeluneRemoteEndpoint.open(options: options, application: $0) }
+        try withApplication("openRemoteEndpoint", .reads) { try VeluneRemoteEndpoint.openWithTelemetry(options: options, application: $0, telemetry: telemetryCoordinator().binding) }
     }
 
     static func applicationDefault() throws -> Transport {
@@ -207,11 +219,16 @@ final class Transport: @unchecked Sendable {
     /// `stoppingWork` ends running turns and sub-agents; otherwise they refuse it.
     func close(stoppingWork: Bool = false) throws {
         lock.lock(); defer { lock.unlock() }
-        guard let application else { isClosed = true; return }
+        guard let application else {
+            isClosed = true
+            if ownsTelemetry, let telemetry = try? telemetryResult.get() { try telemetry.shutdown() }
+            return
+        }
         do {
             if stoppingWork { try application.shutdownStoppingWork() } else { try application.shutdown() }
             self.application = nil
             isClosed = true
+            if ownsTelemetry { try telemetryResult.get().shutdown() }
         } catch {
             closingLock.withLock { closingRequested = false }
             logFailure(operation: "shutdown", localCorrelation: nil, error: error); throw TransportError.operation("shutdown", map(error))
@@ -221,15 +238,14 @@ final class Transport: @unchecked Sendable {
     private func withApplication<T>(_ operation: String, _ effect: OperationEffect, _ body: (VeluneApplication) throws -> T) throws -> T {
         let correlation = UUID().uuidString
         Self.logger.debug("operation=\(operation, privacy: .public) localCorrelation=\(correlation, privacy: .public) started")
-        lock.lock(); defer { lock.unlock() }
-        guard !isClosed else { throw TransportError.operation(operation, .closed) }
-        guard effect != .reads || !isClosing else { throw TransportError.operation(operation, .quitting) }
-        if application == nil {
-            do { application = try open() }
-            catch { logFailure(operation: operation, localCorrelation: correlation, error: error, categoryOverride: "open_failed"); throw TransportError.operation(operation, map(error)) }
-        }
         do {
-            let value = try body(application!)
+            let value = try telemetryCoordinator().operation(operation) { carrier in
+                lock.lock(); defer { lock.unlock() }
+                guard !isClosed else { throw TransportError.operation(operation, .closed) }
+                guard effect != .reads || !isClosing else { throw TransportError.operation(operation, .quitting) }
+                if application == nil { application = try open() }
+                return try body(application!.withTraceContext(carrier: carrier))
+            }
             if effect == .changesConfiguration { configurationChanged.send() }
             return value
         }

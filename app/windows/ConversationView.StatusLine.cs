@@ -107,7 +107,7 @@ public sealed partial class ConversationView
         readingBranch = true;
         try
         {
-            var changes = await Task.Run(() => Model.WorkingChanges(snapshot.ContextRuntimeId, snapshot.Conversation.Id));
+            var changes = await Model.WorkingChanges(snapshot.ContextRuntimeId, snapshot.Conversation.Id);
             branch = (cwd, changes.Branch, turns);
             RenderStatus();
         }

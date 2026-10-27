@@ -103,8 +103,10 @@ final class RemoteEndpointBox: @unchecked Sendable {
     private func promptApproval(_ pairing: BindingPairingStatus) {
         NSApp.requestUserAttention(.criticalRequest)
         let alert = NSAlert()
-        alert.messageText = "“\(pairing.name)”请求控制这台 Mac"
-        alert.informativeText = "请确认对方设备上显示的核对码与下面一致：\n\n\(Self.grouped(pairing.verificationCode ?? ""))\n\n允许后，它可以使用这台 Mac 上的会话、运行时与配置。"
+        let sharing = pairing.permission == .telemetryProfileRead
+        alert.messageText = sharing ? "“\(pairing.name)”请求读取本机遥测配置（含认证）" : "“\(pairing.name)”请求控制这台 Mac"
+        let scope = sharing ? "允许后，它可以复制接收地址、认证与采样率。" : "允许后，它可以使用这台 Mac 上的会话、运行时与配置。"
+        alert.informativeText = "请确认对方设备上显示的核对码与下面一致：\n\n\(Self.grouped(pairing.verificationCode ?? ""))\n\n\(scope)"
         alert.addButton(withTitle: "允许")
         alert.addButton(withTitle: "拒绝")
         // Granting control takes a click: a stray Return must not allow a device.
@@ -119,6 +121,9 @@ final class RemoteEndpointBox: @unchecked Sendable {
 
     static func grouped(_ code: String) -> String {
         code.count == 8 ? "\(code.prefix(4)) \(code.suffix(4))" : code
+    }
+    nonisolated func telemetryEndpoint() throws -> VeluneRemoteEndpoint {
+        guard let value = endpoint.value else { throw TransportError.unavailable }; return value
     }
 
     private func perform(_ action: String, _ body: @escaping (VeluneRemoteEndpoint) throws -> Void) {
@@ -172,7 +177,7 @@ final class RemoteEndpointBox: @unchecked Sendable {
         if let store = stores[peerID] { return store }
         let endpoint = endpoint
         let view = "mac-\(UUID().uuidString)"
-        let transport = Transport(stateDirectory: local.stateDirectory) {
+        let transport = Transport(stateDirectory: local.stateDirectory, telemetry: local.telemetryResult) {
             guard let opened = endpoint.opened(within: 30) else { throw TransportError.unavailable }
             // The core confirms a pairing this Mac began once the device answers.
             let deadline = Date().addingTimeInterval(30)
@@ -224,7 +229,7 @@ struct DeviceSettingsView: View {
             Section {
                 Button("安装到 iPad…") { showsIPadInstallation = true }
             }
-            Section("控制其他设备") {
+            Section("其他设备") {
                 ForEach(hub.state?.contacts ?? [], id: \.peerId) { contact in
                     DeviceRow(contact: contact, controller: hub.controller(contact.peerId), outgoing: hub.state?.outgoingPairings.first { $0.peerId == contact.peerId }) {
                         openWindow(id: ConversationWindowKind.workspace.sceneID, value: WindowSeed(device: contact.peerId))
@@ -234,7 +239,7 @@ struct DeviceSettingsView: View {
                     TextField("邀请", text: $offer, prompt: Text("粘贴另一台设备的邀请"))
                     Button("连接") { hub.beginPairing(offer); offer = "" }.disabled(offer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || hub.state == nil)
                 }
-                Text("在要控制的设备上选择添加控制设备，把它显示的邀请粘贴到这里。连接后核对两台设备的核对码，并在那台设备上允许。").font(.caption).foregroundStyle(.secondary)
+                Text("粘贴来源设备的控制或遥测分享邀请，核对两端数字，并在来源设备上批准对应权限。").font(.caption).foregroundStyle(.secondary)
             }
             if let failure = hub.failure {
                 Section { Text(failure).foregroundStyle(.red) }
@@ -254,12 +259,14 @@ private struct DeviceRow: View {
     var body: some View {
         LabeledContent {
             if case .confirmed = contact.confirmation {
-                Button("打开") { open() }
+                if contact.controlAuthorized { Button("打开") { open() } }
+                else { SettingsTabLink(tab: .telemetry, title: "遥测设置") }
             } else {
                 Button("取消") { cancel() }
             }
         } label: {
             Text(contact.name)
+            if !contact.controlAuthorized { Text("遥测来源").foregroundStyle(.secondary) }
             Text(status).foregroundStyle(.secondary)
         }
         .contextMenu { Button("移除此设备", role: .destructive) { forget() } }
@@ -269,7 +276,8 @@ private struct DeviceRow: View {
         if let outgoing, outgoing.phase != .granted {
             switch outgoing.phase {
             case .awaitingReady, .awaitingApproval:
-                return "等待对方允许 · 核对码 \(DeviceHub.grouped(outgoing.verificationCode ?? ""))"
+                let scope = outgoing.permission == .telemetryProfileRead ? "遥测配置（含认证） · " : ""
+                return scope + "等待对方允许 · 核对码 \(DeviceHub.grouped(outgoing.verificationCode ?? ""))"
             case .rejected: return "对方已拒绝"
             case .expired: return "邀请已过期"
             case .disconnected: return "配对时连接中断"

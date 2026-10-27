@@ -34,6 +34,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        (application as VeluneAndroid).configureDevelopment(intent)
         if (!model.launchIntentHandled) {
             model.launchIntentHandled = true
             openAgentUri(intent)
@@ -80,7 +81,8 @@ private fun App(model: AppViewModel) {
     }
     BackHandler(enabled = model.stack.size > 1) { model.back() }
     when (val screen = model.screen) {
-        Screen.Devices -> DevicesScreen(hub, open = { model.push(Screen.Device(it)) }, add = { model.push(Screen.AddDevice) }, about = { model.push(Screen.About) })
+        Screen.Devices -> DevicesScreen(hub, open = { model.push(Screen.Device(it)) }, add = { model.push(Screen.AddDevice) }, about = { model.push(Screen.About) }, telemetry = { model.push(Screen.Telemetry) })
+        Screen.Telemetry -> TelemetryScreen(hub, back = { model.back() })
         Screen.AddDevice -> AddDeviceScreen(hub, back = { model.back() }, paired = { model.showPaired(it) })
         Screen.About -> AboutScreen(back = { model.back() }, open = { model.push(Screen.Legal(it)) })
         is Screen.Legal -> LegalDocumentScreen(screen.document, back = { model.back() })

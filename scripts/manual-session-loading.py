@@ -6,6 +6,7 @@ No window, real credentials or external upstream is used. Three controlled loopb
 turns exercise Pi execution and cross-instance continuation; this is not an automated-test entry point.
 Requires an external Pi 1.0.2 CLI; the seed imports that installation's public SDK export.
 """
+from mac_telemetry_build import add_telemetry
 import argparse
 import json
 from pathlib import Path
@@ -432,6 +433,7 @@ manager.appendSessionInfo(title); console.log(manager.getSessionFile());
             command += ['-Xcc','-fmodule-map-file=' + str(path)]
         command += [str(root / 'app/mac' / name) for name in ['Models.swift','TranscriptModel.swift','Transport.swift','BindingMapping.swift','ConversationBrowser.swift','Problems.swift']]
         command += [str(import_models),str(store),str(main),*objects,'-L',str(args.bundle / 'Contents/Frameworks'),'-lvelune_bindings','-Xlinker','-rpath','-Xlinker',str(args.bundle / 'Contents/Frameworks'),'-o',str(temporary / 'manual')]
+        add_telemetry(command, build, root)
         subprocess.run(command,check=True,cwd=root)
         identities = ['fixture:' + paths[name] for name in ['A','B','C','D']]
         subprocess.run([str(temporary / 'manual'),str(temporary),str(resources),*identities,str(args.node),endpoint,str(args.pi)],check=True,cwd=temporary,env=env)

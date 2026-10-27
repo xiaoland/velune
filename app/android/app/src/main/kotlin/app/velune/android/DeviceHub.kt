@@ -33,6 +33,8 @@ import java.util.concurrent.ConcurrentHashMap
  * local application; every conversation lives on a controlled device.
  */
 class DeviceHub(private val context: Context) {
+    @Volatile private var telemetryOwner: ClientTelemetry? = null
+    fun telemetry(): ClientTelemetry = checkNotNull(telemetryOwner) { "遥测设置尚未就绪" }
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val _state = MutableStateFlow<BindingRemoteServiceSnapshot?>(null)
     val state: StateFlow<BindingRemoteServiceSnapshot?> = _state.asStateFlow()
@@ -51,7 +53,10 @@ class DeviceHub(private val context: Context) {
             try {
                 // Identity and trusted devices stay out of backups: restoring them on another phone would clone it.
                 val directory = File(context.noBackupFilesDir, "remote").apply { mkdirs() }
-                val opened = VeluneRemoteEndpoint.open(
+                val app = context.applicationContext as VeluneAndroid
+                val telemetry = ClientTelemetry(context.noBackupFilesDir, app.telemetryProfile, app.telemetryRunId).also { it.start() }
+                telemetryOwner = telemetry
+                val opened = VeluneRemoteEndpoint.openWithTelemetry(
                     BindingRemoteOptions(
                         identityFile = File(directory, "device-identity").absolutePath,
                         stateFile = File(directory, "remote-state.json").absolutePath,
@@ -63,6 +68,7 @@ class DeviceHub(private val context: Context) {
                         requestTimeoutMs = 30_000uL,
                     ),
                     null,
+                    telemetry.binding,
                 )
                 endpoint = opened
                 _state.value = opened.readState()
@@ -113,6 +119,10 @@ class DeviceHub(private val context: Context) {
     /** The application of a paired device: the same named methods as a device's own. */
     suspend fun application(peer: String): VeluneApplication = withContext(Dispatchers.IO) {
         applications[peer] ?: opened().connect(peer, view).also { applications[peer] = it }
+    }
+    suspend fun <T> call(peer: String, operation: String = "read", body: (VeluneApplication) -> T): T = telemetry().operation(operation) { carrier ->
+        val application = application(peer)
+        withContext(Dispatchers.IO) { body(application.withTraceContext(carrier)) }
     }
 
     /** Tells the core which device the user looks at, so it keeps that connection ready. */

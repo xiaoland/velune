@@ -20,3 +20,4 @@ cargo run --locked --target-dir target/ios-bindgen -p velune-bindings --no-defau
 cp "$output/VeluneBindingsFFI.modulemap" "$output/module.modulemap"
 python3 -I scripts/android-licenses.py remote "$output/rust-licenses.txt" "$rust_target"
 cat app/ios/Licenses/MarkdownUI-LICENSE.txt app/ios/Licenses/NetworkImage-LICENSE.txt app/mac/Licenses/swift-cmark-COPYING.txt > "$output/swift-licenses.txt"
+cat app/mac/Licenses/SwiftPackages/*.txt >> "$output/swift-licenses.txt"

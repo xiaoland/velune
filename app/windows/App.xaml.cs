@@ -52,8 +52,13 @@ public partial class App : Application
                 Exit();
                 return;
             }
-            instance.Activated += (_, incoming) => dispatcher.TryEnqueue(() => Activate(incoming));
-            shell = new Shell(Core.Open(), dispatcher);
+            var pending = new Queue<AppActivationArguments>();
+            instance.Activated += (_, incoming) => dispatcher.TryEnqueue(() =>
+            {
+                if (shell == null) pending.Enqueue(incoming); else Activate(incoming);
+            });
+            var core = await Task.Run(Core.Open);
+            shell = new Shell(core, dispatcher);
             shell.Start();
             // An isolated home must not replace the user's system URL handler.
             if (string.IsNullOrEmpty(Environment.GetEnvironmentVariable("VELUNE_HOME")))
@@ -62,6 +67,7 @@ public partial class App : Application
                 catch (Exception failure) { Problems.Report("注册 xURL 地址", failure); }
             }
             Activate(activation);
+            while (pending.TryDequeue(out var incoming)) Activate(incoming);
         }
         catch (Exception failure)
         {

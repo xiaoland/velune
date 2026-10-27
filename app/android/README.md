@@ -43,3 +43,9 @@ adb shell am start -n app.velune.android/.MainActivity
 设备身份和远控状态位于 `noBackupFilesDir/remote`。应用禁用系统备份与设备转移，避免在另一台手机上复制出同一身份；卸载或清除数据后需要重新配对。邀请只留在内存中，用过即丢弃。
 
 端点使用 iroh 公共开发 relay 与 discovery，路径策略为 Automatic。`NetworkMonitor` 把默认网络和 LAN 的变化合并成具名快照报告给 Rust；连接恢复由 Rust 的控制器负责，应用只报告当前查看的设备和前后台状态。写操作的结果不明时，Rust 保留未决记录，不会自动重发。
+
+## 本机遥测
+
+遥测设置属于当前客户端，默认未配置且关闭；更换被控设备不改变本机出口。设置页支持 OTLP/gRPC 地址、认证、trace 采样、两侧生效状态和显式测试，以及独立授权的一次性配置复制。保存/复制保留本机开关；分享授权与控制授权分别核对和撤销。手机在前台可提供配置分享，不增加本地执行能力或后台保活，也不保证后台仍可读取。
+
+使用官方原生 SDK 与 Rust SDK，共用实例身份与配置修订。原始会话、路径、认证和底层错误链不外传，本地问题详情保留。接收回执不等于后台查询已可见，未提供的 SDK 丢弃计数为未知。开发启动与隔离验收见[开发遥测](../../docs/development.md#开发遥测)，跨单元契约见[遥测装配](../../docs/design/telemetry.md)，实测边界见[任务包](../../tasks/otlp-observability/packet.md)。

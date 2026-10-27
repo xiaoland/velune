@@ -218,7 +218,7 @@ final class ConversationModel: ObservableObject {
             }
             guard let current = self.snapshot else { throw MobileError.missingConversation }
             let turn = BindingComposedTurn(text: text, effort: nil, permissionMode: nil, attachments: [])
-            self.apply(try await self.client.application(self.peer) {
+            self.apply(try await self.client.application(self.peer, operation: "send") {
                 try $0.sendTurnWithSelection(sourceRuntimeId: current.contextRuntimeId, conversationId: current.conversation.id,
                     targetRuntimeId: runtime, selection: selection, turn: turn)
             })
@@ -228,7 +228,7 @@ final class ConversationModel: ObservableObject {
 
     func stop() { act("停止生成") {
         guard let current = self.snapshot else { return }
-        self.apply(try await self.client.application(self.peer) { try $0.cancel(runtimeId: current.contextRuntimeId, conversationId: current.conversation.id) })
+        self.apply(try await self.client.application(self.peer, operation: "cancel") { try $0.cancel(runtimeId: current.contextRuntimeId, conversationId: current.conversation.id) })
     } }
 
     func reply(_ id: String, _ reply: BindingRuntimeInteractionReply) { act("回复运行时请求") {

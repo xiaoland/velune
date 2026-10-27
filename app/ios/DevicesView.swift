@@ -6,17 +6,18 @@ struct DevicesView: View {
     @ObservedObject var devices: DeviceStore
     @State private var adding = false
     @State private var forgetting: BindingDeviceContact?
+    private var controlling: [BindingDeviceContact] { devices.state?.contacts.filter(\.controlAuthorized) ?? [] }
     var body: some View {
         NavigationStack {
             List {
-                if devices.state?.contacts.isEmpty != false {
+                if controlling.isEmpty {
                     ContentUnavailableView {
                         Label("添加设备", systemImage: "desktopcomputer")
                     } description: { Text("在桌面 Velune 的设备设置中生成邀请。") } actions: {
                         Button("添加设备") { adding = true }.buttonStyle(.borderedProminent).disabled(devices.state == nil)
                     }.listRowBackground(Color.clear)
                 }
-                ForEach(devices.state?.contacts ?? [], id: \.peerId) { contact in
+                ForEach(controlling, id: \.peerId) { contact in
                     Button { devices.peer = contact.peerId } label: {
                         HStack {
                             Image(systemName: "desktopcomputer").font(.title2)
@@ -28,7 +29,13 @@ struct DevicesView: View {
                     .swipeActions { Button("移除", role: .destructive) { forgetting = contact } }
                     .contextMenu { Button("移除", role: .destructive) { forgetting = contact } }
                 }
-                Section { NavigationLink("关于与开源许可") { AboutView() } }
+                Section {
+                    NavigationLink("遥测") {
+                        TelemetrySettingsView(coordinator: { try RemoteService.shared.resources.telemetry() }, remote: { try RemoteService.shared.resources.endpoint() })
+                            .navigationTitle("遥测")
+                    }
+                    NavigationLink("关于与开源许可") { AboutView() }
+                }
             }.navigationTitle("Velune").toolbar {
                 ProblemsButton()
                 NewWindowButton(peer: nil, target: nil)
@@ -64,7 +71,7 @@ private struct AddDeviceView: View {
                     Section(pairing.name) {
                         if let code = pairing.verificationCode {
                             Text("\(code.prefix(4)) \(code.suffix(4))").font(.largeTitle.monospaced()).textSelection(.enabled)
-                            Text("核对两端数字，并在被控设备上允许连接。")
+                            Text(pairing.permission == .telemetryProfileRead ? "核对两端数字，在来源设备上允许读取遥测配置（含认证）。" : "核对两端数字，并在被控设备上允许连接。")
                         }
                         Text(pairingStatus(pairing.phase))
                         if pairing.phase == .rejected || pairing.phase == .expired || pairing.phase == .disconnected {
@@ -86,6 +93,7 @@ private struct AddDeviceView: View {
                     if let decoded {
                         Section("连接设备") {
                             Text(decoded.name)
+                            if decoded.permission == .telemetryProfileRead { Text("读取遥测配置（含认证）") }
                             Button("连接") { begin() }.disabled(busy)
                         }
                     } else {
@@ -109,7 +117,10 @@ private struct AddDeviceView: View {
                 }
             }
             .onChange(of: pairing?.phase) { _, phase in
-                if phase == .granted, let pairingPeer { devices.peer = pairingPeer; dismiss() }
+                if phase == .granted, let pairingPeer {
+                    if pairing?.permission == .control { devices.peer = pairingPeer }
+                    dismiss()
+                }
             }
         }
     }
@@ -128,7 +139,7 @@ private struct AddDeviceView: View {
     private func pairingStatus(_ phase: BindingPairingPhase) -> String {
         switch phase {
         case .awaitingReady: return "正在连接"
-        case .awaitingApproval: return "等待被控设备允许"
+        case .awaitingApproval: return "等待来源设备允许"
         case .granted: return "已配对"
         case .rejected: return "被控设备拒绝了连接"
         case .expired: return "邀请已过期"

@@ -94,9 +94,8 @@ sealed class Listings(Core core)
             var changes = feed.Written;
             try
             {
-                var (list, activity) = await Task.Run(() =>
+                var (list, activity) = await core.Call(device, "List", application =>
                 {
-                    var application = core.Application(device);
                     return (application.List(), application.ConversationActivity(feed.Cursor));
                 });
                 if (feed.Round != current)
@@ -149,7 +148,7 @@ sealed class Listings(Core core)
         feed.Writing++;
         try
         {
-            var list = await Task.Run(() => work(core.Application(device)));
+            var list = await core.Call(device, "Configuration", work);
             feed.Listing = Listing.From(list, [.. feed.Listing.Active.Values]);
         }
         catch (Exception failure)
@@ -172,7 +171,7 @@ sealed class Listings(Core core)
         feed.Writing++;
         try
         {
-            await Task.Run(() => work(core.Application(device)));
+            await core.Call(device, "Configuration", work);
         }
         catch (Exception failure)
         {
@@ -193,7 +192,7 @@ sealed class Listings(Core core)
         var reference = new BindingConversationReference(listed.Conversation.RuntimeId, id);
         try
         {
-            await Task.Run(() => core.Application(device).OrganizeConversations([reference], new BindingConversationOrganizationChange.MarkRead()));
+            await core.Call(device, "Read", application => application.OrganizeConversations([reference], new BindingConversationOrganizationChange.MarkRead()));
             var conversations = feed.Listing.Conversations;
             if (conversations.FindIndex(shown => shown.Conversation.Id == id) is var at and >= 0)
             {

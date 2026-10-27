@@ -38,7 +38,7 @@ import kotlinx.coroutines.withContext
 @Composable
 fun AgentUriScreen(hub: DeviceHub, address: String, peer: String?, back: () -> Unit, addDevice: () -> Unit, open: (String, ConversationTarget) -> Unit) {
     val state by hub.state.collectAsState()
-    val devices = state?.let { snapshot -> snapshot.contacts.map { deviceSummary(snapshot, it) }.filter { it.confirmed } }.orEmpty()
+    val devices = state?.let { snapshot -> snapshot.contacts.filter { it.controlAuthorized }.map { deviceSummary(snapshot, it) }.filter { it.confirmed } }.orEmpty()
     var selected by rememberSaveable { mutableStateOf(peer) }
     val target = selected ?: devices.singleOrNull()?.peerId
     var loading by remember { mutableStateOf(false) }
@@ -51,8 +51,7 @@ fun AgentUriScreen(hub: DeviceHub, address: String, peer: String?, back: () -> U
         result = null
         failure = null
         try {
-            val application = hub.application(target)
-            val found = withContext(Dispatchers.IO) { application.resolveAgentUri(address, null) }
+            val found = hub.call(target) { it.resolveAgentUri(address, null) }
             result = found
             if (found.conversations.size == 1 && found.failures.isEmpty()) {
                 val conversation = found.conversations.single().conversation

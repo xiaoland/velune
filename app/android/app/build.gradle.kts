@@ -9,7 +9,7 @@ android {
     compileSdk = 36
     ndkVersion = "30.0.14904198"
     defaultConfig {
-        applicationId = "app.velune.android"
+        applicationId = providers.gradleProperty("veluneApplicationId").getOrElse("app.velune.android")
         minSdk = 28
         targetSdk = 36
         versionCode = 1
@@ -28,7 +28,11 @@ android {
         assets.srcDir("../licenses")
         assets.srcDir("../../../target/android-licenses")
     }
-    packaging { jniLibs.useLegacyPackaging = false }
+    packaging {
+        jniLibs.useLegacyPackaging = false
+        // Android does not load the Java 9 OSGi bundle descriptors in these SDK jars.
+        resources.excludes += "META-INF/versions/9/OSGI-INF/MANIFEST.MF"
+    }
 }
 
 kotlin {
@@ -39,6 +43,10 @@ kotlin {
 }
 
 dependencies {
+    implementation(platform("io.opentelemetry:opentelemetry-bom:1.62.0"))
+    implementation("io.opentelemetry:opentelemetry-sdk")
+    implementation("io.opentelemetry:opentelemetry-exporter-otlp")
+    implementation("io.opentelemetry:opentelemetry-extension-kotlin")
     implementation(platform("androidx.compose:compose-bom:2025.10.01"))
     implementation("androidx.activity:activity-compose:1.11.0")
     implementation("androidx.compose.material3:material3")

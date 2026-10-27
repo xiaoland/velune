@@ -251,7 +251,7 @@ final class AppStore: ObservableObject {
 
     private func refreshApplicationConfiguration() {
         guard let transport, !isShuttingDown else { return }
-        queue.async { [weak self] in
+        performOnQueue { [weak self] in
             let result = Result { try transport.list() }
             DispatchQueue.main.async {
                 guard let self else { return }
@@ -514,7 +514,7 @@ final class AppStore: ObservableObject {
         guard !isPreview, !conversationID.hasPrefix(Self.draftConversationPrefix), let transport else { return }
         let value = BindingNextTurnIntent(conversationId: conversationID, runtimeId: intent?.runtimeID,
                                           choices: (intent?.choices ?? [:]).sorted { $0.key < $1.key }.map { BindingRuntimeTurnChoice(runtimeId: $0.key, choice: BindingMapping.bindingChoice($0.value)) })
-        queue.async { [weak self] in
+        performOnQueue { [weak self] in
             do { try transport.setNextTurnIntent(value) }
             catch { DispatchQueue.main.async { self?.recordProblem(error, source: "保存下一轮选择") } }
         }
@@ -526,13 +526,13 @@ final class AppStore: ObservableObject {
         guard !isPreview, let transport else { return }
         let value = BindingRuntimeComposerChoices(runtimeId: runtimeID, lastChosen: BindingMapping.bindingChoice(choices.lastChosen),
                                                   newConversation: BindingMapping.bindingNewConversation(choices.newConversation))
-        queue.async { [weak self] in
+        performOnQueue { [weak self] in
             do { try transport.setRuntimeComposerChoices(value) }
             catch { DispatchQueue.main.async { self?.recordProblem(error, source: "保存运行时的选择") } }
         }
     }
     private func loadComposerChoices(_ transport: Transport) {
-        queue.async { [weak self] in
+        performOnQueue { [weak self] in
             let result = Result { try transport.composerChoices() }
             DispatchQueue.main.async {
                 guard let self else { return }
@@ -579,7 +579,7 @@ final class AppStore: ObservableObject {
         timer?.invalidate(); timer = nil
         // Reads queued in any window give way; the changes queued before this still land.
         transport.beginClosing()
-        queue.async { [weak self] in
+        performOnQueue { [weak self] in
             let result = Result { try transport.close(stoppingWork: stoppingWork) }
             DispatchQueue.main.async {
                 guard let self else { completion(false); return }
@@ -626,7 +626,7 @@ final class AppStore: ObservableObject {
         guard started, !isPreview, !isShuttingDown, !activePollPending, let transport else { return }
         activePollPending = true
         let since = activityCursor
-        queue.async { [weak self] in
+        performOnQueue { [weak self] in
             let result = Result { try transport.conversationActivity(since: since) }
             DispatchQueue.main.async {
                 guard let self else { return }
@@ -712,7 +712,7 @@ final class AppStore: ObservableObject {
         guard !isPreview else { analyticsIsLoading = false; return }
         guard !isShuttingDown, let transport else { analyticsIsLoading = false; analyticsReadFailed = true; recordProblem("本地核心不可用", source: "读取分析记录"); return }
         analyticsIsLoading = true
-        queue.async { [weak self] in
+        performOnQueue { [weak self] in
             let result = Result { try transport.analyticsQuery(query) }
             DispatchQueue.main.async {
                 guard let self, self.analyticsGeneration == requestGeneration else { return }
@@ -730,7 +730,7 @@ final class AppStore: ObservableObject {
     /// Git changes in the loaded conversation's working directory.
     func readWorkingChanges(_ apply: @escaping (Result<BindingWorkingChanges, Error>) -> Void) {
         guard !isPreview, !isShuttingDown, let transport, let conversation = snapshot?.conversation, !isDraft else { return }
-        queue.async {
+        performOnQueue {
             let result = Result { try transport.workingChanges(runtimeID: conversation.runtimeID, conversationID: conversation.id) }
             DispatchQueue.main.async { apply(result) }
         }
@@ -739,14 +739,14 @@ final class AppStore: ObservableObject {
     /// `nil` when there is none or it cannot be read (a remote runtime).
     func readWorkingBranch(_ apply: @escaping (String?) -> Void) {
         guard !isPreview, !isShuttingDown, let transport, let conversation = snapshot?.conversation, !isDraft else { apply(nil); return }
-        queue.async {
+        performOnQueue {
             let branch = (try? transport.workingBranch(runtimeID: conversation.runtimeID, conversationID: conversation.id)) ?? nil
             DispatchQueue.main.async { apply(branch) }
         }
     }
     func readFileDiff(path: String, _ apply: @escaping (Result<BindingFileDiff, Error>) -> Void) {
         guard !isPreview, !isShuttingDown, let transport, let conversation = snapshot?.conversation, !isDraft else { return }
-        queue.async {
+        performOnQueue {
             let result = Result { try transport.fileDiff(runtimeID: conversation.runtimeID, conversationID: conversation.id, path: path) }
             DispatchQueue.main.async { apply(result) }
         }
@@ -762,7 +762,7 @@ final class AppStore: ObservableObject {
         browserPreferencesSaving += 1
         // Sidebar choices are independent of loading/execution. Serialize their
         // commits with core operations without locking ordinary browsing.
-        queue.async { [weak self] in
+        performOnQueue { [weak self] in
             let result = Result { try transport.setConversationBrowserPreferences(preferences) }
             DispatchQueue.main.async {
                 guard let self else { return }
@@ -835,7 +835,7 @@ final class AppStore: ObservableObject {
         setDraft(text, for: new)
     }
     private func loadDrafts(_ transport: Transport) {
-        queue.async { [weak self] in
+        performOnQueue { [weak self] in
             let result = Result { try transport.composerDrafts() }
             DispatchQueue.main.async {
                 guard let self else { return }
@@ -854,7 +854,7 @@ final class AppStore: ObservableObject {
         guard !unsavedDrafts.isEmpty, let transport else { return }
         let pending = unsavedDrafts
         unsavedDrafts = [:]
-        queue.async { [weak self] in
+        performOnQueue { [weak self] in
             var failure: Error?
             for (id, text) in pending {
                 do { try transport.setComposerDraft(conversationID: id, text: text) } catch { failure = error }
@@ -874,7 +874,7 @@ final class AppStore: ObservableObject {
     /// what the list shows and Velune's organization of it.
     private func browse(_ operation: @escaping () throws -> BindingConfigurationSnapshot, source: String, finished: (() -> Void)? = nil) {
         guard !isPreview, !isShuttingDown else { finished?(); return }
-        queue.async { [weak self] in
+        performOnQueue { [weak self] in
             let result = Result { try operation() }
             DispatchQueue.main.async {
                 defer { finished?() }
@@ -947,7 +947,7 @@ final class AppStore: ObservableObject {
         let request = searchRequest
         let text = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty, !isPreview, let transport else { searchResults = nil; return }
-        queue.async { [weak self] in
+        performOnQueue { [weak self] in
             let result = Result { try transport.searchConversations(text) }
             DispatchQueue.main.async {
                 guard let self, request == self.searchRequest else { return }
@@ -989,7 +989,7 @@ final class AppStore: ObservableObject {
     }
     func resolveAgentURI(_ uri: String, completion: @escaping (Result<BindingAgentUriResolution, Error>) -> Void) {
         guard let transport, !isShuttingDown else { completion(.failure(NSError(domain: "Velune", code: 1, userInfo: [NSLocalizedDescriptionKey: "核心尚未就绪"]))); return }
-        queue.async {
+        performOnQueue {
             let result = Result { try transport.resolveAgentURI(uri) }
             DispatchQueue.main.async { completion(result) }
         }
@@ -1000,7 +1000,7 @@ final class AppStore: ObservableObject {
         if conversation(id: id) != nil { selectConversation(id: id, move: move); return }
         guard !isPreview, !isShuttingDown, let transport else { reachingConversationID = nil; return }
         reachingConversationID = id
-        queue.async { [weak self] in
+        performOnQueue { [weak self] in
             let result = Result { try transport.findConversation(id) }
             DispatchQueue.main.async {
                 guard let self else { return }
@@ -1371,7 +1371,7 @@ final class AppStore: ObservableObject {
         guard !ids.isEmpty, !isPreview, !isShuttingDown, let transport else { return }
         quotaReadsPending.formUnion(ids)
         let gatewayID = gateway.id
-        queue.async { [weak self] in
+        performOnQueue { [weak self] in
             let results = ids.map { id in (id, Result { try transport.providerQuota(gatewayID: gatewayID, providerID: id, refresh: refresh) }) }
             DispatchQueue.main.async {
                 guard let self else { return }
@@ -1483,7 +1483,7 @@ final class AppStore: ObservableObject {
     private func pollAuthentication() {
         guard authenticationRunning, !authenticationPollPending, !isShuttingDown, let transport else { return }
         authenticationPollPending = true
-        queue.async { [weak self] in
+        performOnQueue { [weak self] in
             let result = Result { try transport.authenticationPoll() }
             DispatchQueue.main.async {
                 guard let self else { return }
@@ -1600,7 +1600,7 @@ final class AppStore: ObservableObject {
     /// read what it reports; this does not send anything to a model.
     func agentInfo(runtimeID: String, completion: @escaping (Result<BindingAcpRuntimeInfo, Error>) -> Void) {
         guard let transport, !isShuttingDown else { return }
-        queue.async {
+        performOnQueue {
             let result = Result { try transport.agentInfo(runtimeID: runtimeID) }
             DispatchQueue.main.async { completion(result) }
         }
@@ -1634,7 +1634,7 @@ final class AppStore: ObservableObject {
         if sessionOptionsKey?.hasPrefix(value.conversation.id + "|") != true { sessionOptions = nil }
         sessionOptionsKey = key
         let runtimeID = value.conversation.runtimeID, conversationID = value.conversation.id
-        queue.async { [weak self] in
+        performOnQueue { [weak self] in
             let options = (try? transport.sessionOptions(runtimeID: runtimeID, conversationID: conversationID))?.map(BindingMapping.sessionOption)
             DispatchQueue.main.async {
                 guard let self, self.sessionOptionsKey == key else { return }
@@ -1698,7 +1698,7 @@ final class AppStore: ObservableObject {
         guard let transport, !isPreview, !isShuttingDown else { return }
         let request = UUID()
         runtimeLocationsRequest = request
-        queue.async { [weak self] in
+        performOnQueue { [weak self] in
             let result = Result { try transport.runtimeLocations(ids: ids) }
             DispatchQueue.main.async {
                 guard let self, self.runtimeLocationsRequest == request, case .success(let transports) = result else { return }
@@ -1719,7 +1719,7 @@ final class AppStore: ObservableObject {
     func readModelCatalog(runtimeID: String, done: @escaping (RuntimeModelCatalog) -> Void) {
         guard !isPreview else { done(.ready([])); return }
         guard let transport else { done(.failed("本地核心未配置")); return }
-        queue.async {
+        performOnQueue {
             let result = Result { try transport.runtimeModels(runtimeID: runtimeID) }
             DispatchQueue.main.async {
                 switch result {
@@ -1746,7 +1746,7 @@ final class AppStore: ObservableObject {
         let request = UUID()
         modelCatalogRequests[runtimeID] = request
         modelCatalogs[runtimeID] = .loading
-        queue.async { [weak self] in
+        performOnQueue { [weak self] in
             let result = Result { try transport.runtimeModels(runtimeID: runtimeID) }
             DispatchQueue.main.async {
                 guard let self, self.modelCatalogRequests[runtimeID] == request else { return }
@@ -1930,7 +1930,7 @@ final class AppStore: ObservableObject {
         let selected = selectedConversationID
         let since = snapshot?.cursor
         pollPending = true
-        queue.async { [weak self] in
+        performOnQueue { [weak self] in
             // Only changed messages cross the boundary; mapping stays off the main thread.
             let result = Result { () throws -> PolledSnapshot in
                 guard let since else {
@@ -1980,7 +1980,7 @@ final class AppStore: ObservableObject {
         let keys = wanted.map { PayloadKey(id: $0, stamp: deferred[$0]!) }
         payloadRequests.formUnion(keys)
         let runtimeID = snapshot.contextRuntimeID, conversationID = snapshot.conversation.id
-        queue.async { [weak self] in
+        performOnQueue { [weak self] in
             let result = Result { try transport.messagePayloads(runtimeID: runtimeID, conversationID: conversationID, messageIDs: Array(wanted)).map(BindingMapping.message) }
             DispatchQueue.main.async {
                 guard let self else { return }
@@ -2010,12 +2010,21 @@ final class AppStore: ObservableObject {
         loadedPayloads = retained
         return merged
     }
+    private func performOnQueue(_ work: @escaping @Sendable () -> Void) {
+        let owner = try? transport?.telemetryResult.get()
+        let queuedAt = ProcessInfo.processInfo.systemUptime
+        queue.async {
+            owner?.recordQueueWait(ProcessInfo.processInfo.systemUptime - queuedAt)
+            work()
+        }
+    }
+
     private func enqueue<T: Sendable>(_ operation: @escaping () throws -> T, onAccepted: (() -> Void)? = nil, onFailure: ((Error) -> Void)? = nil, apply: @escaping (T) -> Void) {
         guard !isLoading, !isShuttingDown else { recordProblem("请等待当前操作完成后重试"); return }
         guard transport != nil else { recordProblem("本地核心未配置"); return }
         let revision = generation
         isLoading = true
-        queue.async { [weak self] in
+        performOnQueue { [weak self] in
             let result = Result { try operation() }
             DispatchQueue.main.async {
                 guard let self else { return }

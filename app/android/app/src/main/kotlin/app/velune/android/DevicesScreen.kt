@@ -21,7 +21,6 @@ import androidx.compose.material.icons.outlined.Computer
 import androidx.compose.material.icons.outlined.Devices
 import androidx.compose.material.icons.outlined.ErrorOutline
 import androidx.compose.material.icons.outlined.Info
-import androidx.compose.material.icons.outlined.QrCodeScanner
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
@@ -63,16 +62,16 @@ data class DeviceSummary(val peerId: String, val name: String, val status: Devic
 
 data class DeviceStatus(val text: String, val tone: Tone)
 
-class DevicesActions(val open: (String) -> Unit, val add: () -> Unit, val remove: (DeviceSummary) -> Unit, val about: () -> Unit)
+class DevicesActions(val open: (String) -> Unit, val add: () -> Unit, val remove: (DeviceSummary) -> Unit, val about: () -> Unit, val telemetry: () -> Unit = {})
 
 @Composable
-fun DevicesScreen(hub: DeviceHub, open: (String) -> Unit, add: () -> Unit, about: () -> Unit) {
+fun DevicesScreen(hub: DeviceHub, open: (String) -> Unit, add: () -> Unit, about: () -> Unit, telemetry: () -> Unit) {
     val state by hub.state.collectAsState()
     val failure by hub.failure.collectAsState()
     val scope = rememberCoroutineScope()
     var removing by remember { mutableStateOf<DeviceSummary?>(null) }
-    val devices = state?.let { snapshot -> snapshot.contacts.map { deviceSummary(snapshot, it) } }
-    DevicesContent(devices, failure, DevicesActions(open, add, remove = { removing = it }, about))
+    val devices = state?.let { snapshot -> snapshot.contacts.filter { it.controlAuthorized }.map { deviceSummary(snapshot, it) } }
+    DevicesContent(devices, failure, DevicesActions(open, add, remove = { removing = it }, about, telemetry))
     removing?.let { device ->
         AlertDialog(
             onDismissRequest = { removing = null },
@@ -97,7 +96,10 @@ fun DevicesContent(devices: List<DeviceSummary>?, failure: String?, actions: Dev
         topBar = {
             TopAppBar(
                 title = { Text("设备") },
-                actions = { IconButton(onClick = actions.about) { Icon(Icons.Outlined.Info, contentDescription = "关于与开源许可") } },
+                actions = {
+                    TextButton(onClick = actions.telemetry, enabled = devices != null) { Text("遥测") }
+                    IconButton(onClick = actions.about) { Icon(Icons.Outlined.Info, contentDescription = "关于与开源许可") }
+                },
             )
         },
         floatingActionButton = {
@@ -114,11 +116,11 @@ fun DevicesContent(devices: List<DeviceSummary>?, failure: String?, actions: Dev
                 devices == null -> CircularProgressIndicator(Modifier.align(Alignment.Center))
                 devices.isEmpty() -> EmptyState(
                     Icons.Outlined.Devices, "连接你的电脑",
-                    "Agent 在 Mac 或 Windows 上运行，这台手机用来查看和控制它们。\n在电脑上打开“设置 › 设备”，选择“添加控制设备”，再用这台手机扫描二维码。",
+                    "在电脑的“设置 › 设备”中生成邀请，然后扫码或手动输入。",
                 ) {
                     Button(onClick = actions.add) {
-                        Icon(Icons.Outlined.QrCodeScanner, contentDescription = null, modifier = Modifier.size(18.dp))
-                        Text("扫描二维码", modifier = Modifier.padding(start = 8.dp))
+                        Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Text("添加设备", modifier = Modifier.padding(start = 8.dp))
                     }
                 }
                 else -> LazyColumn(

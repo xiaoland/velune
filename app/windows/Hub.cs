@@ -68,7 +68,7 @@ sealed class Hub(Core core, DispatcherQueue dispatcher)
     // Devices are the paired devices this PC can open: those the issuing
     // device has confirmed.
     public IEnumerable<BindingDeviceContact> Devices() =>
-        State?.Contacts.Where(contact => contact.Confirmation is BindingContactConfirmation.Confirmed) ?? [];
+        State?.Contacts.Where(contact => contact.ControlAuthorized && contact.Confirmation is BindingContactConfirmation.Confirmed) ?? [];
 
     public string DeviceName(Device device)
     {

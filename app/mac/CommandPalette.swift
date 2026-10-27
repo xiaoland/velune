@@ -197,7 +197,7 @@ extension ConversationWindowModel {
                 }
             }
             let settings: [(SettingsTab, String, String)] = [(.general, "通用", "General"), (.conversation, "会话", "Conversations"), (.shortcuts, "快捷键", "Keyboard Shortcuts"),
-                                                              (.providers, "AI 提供商", "AI Providers"), (.routes, "模型路由", "Model Routes"), (.runtimes, "Agent 运行时", "Agent Runtimes")]
+                                                              (.providers, "AI 提供商", "AI Providers"), (.routes, "模型路由", "Model Routes"), (.runtimes, "Agent 运行时", "Agent Runtimes"), (.telemetry, "遥测", "Telemetry")]
                 + (DeviceHub.shared == nil ? [] : [(.devices, "设备", "Devices")])
             let pages = settings.map { tab, name, english in
                 PaletteItem(id: "settings:\(name)", title: "设置：\(name)", aliases: ["Settings: " + english, "preferences"], detail: "设置") { [weak self] _ in

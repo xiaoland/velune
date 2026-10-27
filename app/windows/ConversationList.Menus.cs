@@ -70,7 +70,7 @@ sealed partial class ConversationList
         var target = Device;
         try
         {
-            var found = await Task.Run(() => window.Shell.Core.Application(target).SearchConversations(text));
+            var found = await window.Shell.Core.Call(target, "Read", application => application.SearchConversations(text));
             if (target == Device && searchBox.Text.Trim() == text)
             {
                 search = found;

@@ -63,7 +63,7 @@ Windows 的完整端：在本机运行 Agent、Harness 与网关，也能控制�
 
 ## 构建与运行
 
-需要 Rust（MSVC 目标）、Visual Studio Build Tools、.NET 10 SDK、Go 与 llvm-mingw（后两者用于 RelayKit），并先按 [开发说明](../../docs/development.md#windows-构建) 安装 runtime-support，然后执行：
+需要 Rust（MSVC 目标）、Visual Studio Build Tools、.NET 10 SDK、Go 与 llvm-mingw（后两者用于 RelayKit），以及收集许可全文的 Python 3，并先按 [开发说明](../../docs/development.md#windows-构建) 安装 runtime-support，然后执行：
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts\install-xurl.ps1
@@ -90,3 +90,10 @@ Harness 原生运行于 Windows，不经 WSL 或 SSH runtime。npm／pnpm 为每
 ## 第三方组件
 
 NuGet 依赖：Windows App SDK（WinUI、Foundation、InteractiveExperiences）、Markdig（BSD-2-Clause）、QRCoder（MIT），随 `dotnet publish` 进入输出目录。
+
+
+## 本机遥测
+
+遥测设置属于当前客户端，默认未配置且关闭；更换被控设备不改变本机出口。设置页支持 OTLP/gRPC 地址、认证、trace 采样、两侧生效状态和显式测试，以及独立授权的一次性配置复制。保存/复制保留本机开关；分享授权与控制授权分别核对和撤销。手机在前台可提供配置分享，不增加本地执行能力或后台保活，也不保证后台仍可读取。
+
+使用官方原生 SDK 与 Rust SDK，共用实例身份与配置修订。原始会话、路径、认证和底层错误链不外传，本地问题详情保留。接收回执不等于后台查询已可见，未提供的 SDK 丢弃计数为未知。开发启动与隔离验收见[开发遥测](../../docs/development.md#开发遥测)，跨单元契约见[遥测装配](../../docs/design/telemetry.md)，实测边界见[任务包](../../tasks/otlp-observability/packet.md)。

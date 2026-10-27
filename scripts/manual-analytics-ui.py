@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Manual actual Mac Store/Transport/UniFFI read acceptance of a synthetic gateway database; never CI."""
+from mac_telemetry_build import add_telemetry
 import argparse
 from pathlib import Path
 import shutil
@@ -151,6 +152,7 @@ def main():
         command += [str(repository / 'app/mac' / name) for name in ('Models.swift', 'TranscriptModel.swift', 'BindingMapping.swift', 'ConversationBrowser.swift', 'Problems.swift', 'Store.swift', 'Transport.swift')]
         command += [str(import_models)]
         command += [str(analytics), str(source), *objects, '-L', str(root / 'frameworks'), '-lvelune_bindings', '-Xlinker', '-rpath', '-Xlinker', str(root / 'frameworks'), '-o', str(root / 'manual')]
+        add_telemetry(command, build, repository)
         subprocess.run(command, check=True, cwd=repository)
         env = {'HOME': str(root / 'home'), 'VELUNE_HOME': str(root / 'home'), 'PATH': '/usr/bin:/bin'}
         subprocess.run([str(root / 'manual'), str(root), str(first - 1), str(last + 1), str(args.expected_requests), str(args.expected_input), str(args.expected_output), str(args.expected_total), str(args.expected_eligible)], env=env, cwd=root, check=True, timeout=60)

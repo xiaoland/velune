@@ -20,6 +20,8 @@ Android 界面的布局与交互参考了以下同类开源移动客户端。Vel
 
 | 组件 | 许可 |
 | --- | --- |
+| OpenTelemetry Java SDK、OTLP exporters 与 Kotlin context extension（OpenTelemetry Authors） | Apache-2.0 |
+| OkHttp、Okio（Square） | Apache-2.0 |
 | Kotlin 标准库、kotlinx.coroutines（JetBrains） | Apache-2.0 |
 | AndroidX：Activity、Compose（UI、Foundation、Material 3、Material Icons）、Lifecycle、CameraX 等（Google） | Apache-2.0 |
 | ZXing core（ZXing authors） | Apache-2.0 |

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Manual isolated AppStore → Transport → UniFFI browser preference persistence; not CI."""
+from mac_telemetry_build import add_telemetry
 import shutil
 import argparse
 from pathlib import Path
@@ -101,6 +102,7 @@ def main():
         command += [str(repository / 'app/mac' / name) for name in ('Models.swift', 'TranscriptModel.swift', 'BindingMapping.swift', 'ConversationBrowser.swift', 'Problems.swift', 'Store.swift', 'Transport.swift')]
         command += [str(import_models)]
         command += [str(source), *objects, '-L', str(root / 'frameworks'), '-lvelune_bindings', '-Xlinker', '-rpath', '-Xlinker', str(root / 'frameworks'), '-o', str(root / 'manual')]
+        add_telemetry(command, build, repository)
         subprocess.run(command, check=True, cwd=repository)
         env = {'HOME':str(root/'home'),'VELUNE_HOME':str(root/'home'),'PATH':'/usr/bin:/bin'}
         subprocess.run([str(root/'manual'),str(root)],env=env,cwd=root,check=True,timeout=60)

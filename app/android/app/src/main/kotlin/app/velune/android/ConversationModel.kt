@@ -87,10 +87,7 @@ class ConversationModel(
         }
     }
 
-    private suspend fun <T> io(body: (VeluneApplication) -> T): T {
-        val application = hub.application(peer)
-        return withContext(Dispatchers.IO) { body(application) }
-    }
+    private suspend fun <T> io(operation: String = "read", body: (VeluneApplication) -> T): T = hub.call(peer, operation, body)
 
     fun resume() {
         if (polling?.isActive == true) return
@@ -166,9 +163,9 @@ class ConversationModel(
             val created = io { it.createConversationWithSelection(target.runtimeId, (target as? ConversationTarget.New)?.cwd, selection) }
             apply(created)
             val snapshot = created.snapshot ?: error("设备没有返回新会话")
-            io { it.sendTurnWithSelection(snapshot.contextRuntimeId, snapshot.conversation.id, snapshot.contextRuntimeId, selection, turn) }
+            io("send") { it.sendTurnWithSelection(snapshot.contextRuntimeId, snapshot.conversation.id, snapshot.contextRuntimeId, selection, turn) }
         } else {
-            io { it.sendTurnWithSelection(existing.contextRuntimeId, existing.conversation.id, existing.contextRuntimeId, selection, turn) }
+            io("send") { it.sendTurnWithSelection(existing.contextRuntimeId, existing.conversation.id, existing.contextRuntimeId, selection, turn) }
         }
         apply(result)
         onSent()
@@ -176,7 +173,7 @@ class ConversationModel(
 
     fun stop() = act {
         val current = snapshot ?: return@act
-        apply(io { it.cancel(current.contextRuntimeId, current.conversation.id) })
+        apply(io("cancel") { it.cancel(current.contextRuntimeId, current.conversation.id) })
     }
 
     fun reply(interactionId: String, reply: BindingRuntimeInteractionReply) = act {

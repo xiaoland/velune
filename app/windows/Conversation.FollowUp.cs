@@ -218,8 +218,8 @@ sealed partial class Conversation
 
     // WorkingChanges reads the conversation's working directory as git sees
     // it, blocking; for the status line's branch.
-    public BindingWorkingChanges WorkingChanges(string runtimeID, string conversationID) =>
-        core.Application(Device).WorkingChanges(runtimeID, conversationID);
+    public Task<BindingWorkingChanges> WorkingChanges(string runtimeID, string conversationID) =>
+        core.Call(Device, "Read", application => application.WorkingChanges(runtimeID, conversationID));
 
     // Editable tells whether a user message may be edited now, and whether in place.
     public BindingEditableMessage? Editable(string messageID) => FollowUp?.Editable.FirstOrDefault(editable => editable.MessageId == messageID);

@@ -12,6 +12,7 @@ sealed interface Screen {
     data object Devices : Screen
     data object AddDevice : Screen
     data object About : Screen
+    data object Telemetry : Screen
     data class Legal(val document: LegalDocument) : Screen
     data class Device(val peer: String) : Screen
     class AgentUri(val address: String, val peer: String?) : Screen
@@ -20,7 +21,7 @@ sealed interface Screen {
 
 class AppViewModel(application: Application) : AndroidViewModel(application) {
     val startupFailure = (application as VeluneAndroid).initializationFailure
-    val hub: DeviceHub? = if (startupFailure == null) DeviceHub(application).also { it.start() } else null
+    val hub: DeviceHub? = if (startupFailure == null) (application as VeluneAndroid).hub else null
     private val workspaces = mutableMapOf<String, DeviceWorkspace>()
     // Retained across rotation; a recreated process must handle its launch URI again.
     var launchIntentHandled = false
@@ -66,6 +67,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     /** After pairing, the device opens in place of the pairing screen. */
     fun showPaired(peer: String) {
+        if (hub?.state?.value?.outgoingPairings?.firstOrNull { it.peerId == peer }?.permission == app.velune.bindings.BindingPairingPermission.TELEMETRY_PROFILE_READ) {
+            stack = listOf(Screen.Devices, Screen.Telemetry); selectShownDevice(); return
+        }
         val address = stack.filterIsInstance<Screen.AgentUri>().lastOrNull()?.address
         stack = if (address != null) listOf(Screen.Devices, Screen.AgentUri(address, peer))
             else listOf(Screen.Devices, Screen.Device(peer))

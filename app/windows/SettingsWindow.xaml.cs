@@ -7,7 +7,7 @@ using Microsoft.UI.Xaml.Media.Imaging;
 
 namespace Velune;
 
-enum SettingsPage { General, Providers, Routes, Runtimes, Devices, Keep }
+enum SettingsPage { General, Providers, Routes, Runtimes, Devices, Telemetry, Keep }
 
 // The settings window: this PC's general settings, providers, model routes and runtimes, and
 // devices. There is one; opening it again brings the open one back.
@@ -18,6 +18,7 @@ public sealed partial class SettingsWindow : Window
     readonly RoutesPage routes;
     readonly RuntimesPage runtimes;
     readonly DevicesPage devices;
+    readonly TelemetryPage telemetry;
     readonly SemaphoreSlim dialogs = new(1, 1);
 
     internal SettingsWindow(Core core, Hub hub, Commands commands, Action openProblems, Action openLibrary, Action<Device> open)
@@ -46,6 +47,8 @@ public sealed partial class SettingsWindow : Window
         routes = new RoutesPage(core, this, EditProvider);
         runtimes = new RuntimesPage(core, this, openLibrary);
         devices = new DevicesPage(core, hub, this, open);
+        telemetry = new TelemetryPage(core, hub, this);
+        Closed += (_, _) => telemetry.Stop();
         Navigation.SelectionChanged += (_, e) =>
         {
             Page.Content = (e.SelectedItemContainer?.Tag as string) switch
@@ -54,6 +57,7 @@ public sealed partial class SettingsWindow : Window
                 "providers" => providers,
                 "routes" => routes,
                 "runtimes" => runtimes,
+                "telemetry" => telemetry,
                 _ => devices,
             };
             // Routes name providers' models, which either page may have changed.

@@ -50,6 +50,7 @@ import androidx.core.content.ContextCompat
 import app.velune.bindings.BindingContactConfirmation
 import app.velune.bindings.BindingPairingOfferInfo
 import app.velune.bindings.BindingPairingPhase
+import app.velune.bindings.BindingPairingPermission
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 
@@ -81,7 +82,7 @@ fun AddDeviceScreen(hub: DeviceHub, back: () -> Unit, paired: (String) -> Unit) 
     }
 
     val pairing = peer?.let { id -> state?.outgoingPairings?.firstOrNull { it.peerId == id } }
-    val confirmed = peer?.let { id -> state?.contacts?.firstOrNull { it.peerId == id }?.confirmation is BindingContactConfirmation.Confirmed } == true
+    val confirmed = pairing?.phase == BindingPairingPhase.GRANTED && peer?.let { id -> state?.contacts?.firstOrNull { it.peerId == id }?.confirmation is BindingContactConfirmation.Confirmed } == true
     LaunchedEffect(confirmed) { if (confirmed) paired(peer!!) }
     LaunchedEffect(Unit) { if (!camera) permission.launch(Manifest.permission.CAMERA) }
 
@@ -112,7 +113,7 @@ fun AddDeviceScreen(hub: DeviceHub, back: () -> Unit, paired: (String) -> Unit) 
                 Text("“${current.name}”", style = MaterialTheme.typography.headlineSmall)
                 when {
                     pairing == null -> {
-                        Text("连接后，两台设备会显示同一组核对码。", style = MaterialTheme.typography.bodyMedium)
+                        Text(if (current.permission == BindingPairingPermission.TELEMETRY_PROFILE_READ) "读取遥测配置（含认证）；连接后核对两端数字。" else "连接后，两台设备会显示同一组核对码。", style = MaterialTheme.typography.bodyMedium)
                         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                             Button(enabled = !busy, onClick = {
                                 busy = true
@@ -136,7 +137,7 @@ fun AddDeviceScreen(hub: DeviceHub, back: () -> Unit, paired: (String) -> Unit) 
                     pairing.phase == BindingPairingPhase.AWAITING_READY || pairing.phase == BindingPairingPhase.AWAITING_APPROVAL || pairing.phase == BindingPairingPhase.GRANTED -> {
                         Text("核对码", style = MaterialTheme.typography.labelLarge)
                         VerificationCode(pairing.verificationCode.orEmpty())
-                        Text("确认“${current.name}”上显示的核对码与此相同，然后在那台设备上选择“允许”。", style = MaterialTheme.typography.bodyMedium)
+                        Text(if (pairing.permission == BindingPairingPermission.TELEMETRY_PROFILE_READ) "核对两端数字，在来源设备上允许读取遥测配置（含认证）。" else "确认“${current.name}”上显示的核对码与此相同，然后在那台设备上选择“允许”。", style = MaterialTheme.typography.bodyMedium)
                         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                             CircularProgressIndicator(Modifier.padding(4.dp))
                             Text("等待对方允许…")

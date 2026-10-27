@@ -48,12 +48,12 @@ private struct WorkWindow: View {
             if devices.peer == nil { chooseDevice() }
         }
         .confirmationDialog("选择会话所在设备", isPresented: $choosingDevice, titleVisibility: .visible) {
-            ForEach(devices.state?.contacts ?? [], id: \.peerId) { contact in Button(contact.name) { devices.peer = contact.peerId } }
+            ForEach(devices.state?.contacts.filter(\.controlAuthorized) ?? [], id: \.peerId) { contact in Button(contact.name) { devices.peer = contact.peerId } }
             Button("取消", role: .cancel) { pendingURL = nil }
         }
     }
     private func chooseDevice() {
-        let contacts = devices.state?.contacts ?? []
+        let contacts = devices.state?.contacts.filter(\.controlAuthorized) ?? []
         if contacts.count == 1 { devices.peer = contacts[0].peerId }
         else if contacts.count > 1 { choosingDevice = true }
     }

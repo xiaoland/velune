@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Explicit actual Store/UniFFI/Pi transcript acceptance with synthetic loopback only; never CI."""
+from mac_telemetry_build import add_telemetry
 import argparse
 import json
 from pathlib import Path
@@ -286,6 +287,7 @@ def main():
                 command += ['-Xcc', '-fmodule-map-file=' + str(path)]
             command += [str(repository / 'app/mac' / name) for name in ('Models.swift', 'TranscriptModel.swift', 'Transport.swift', 'BindingMapping.swift', 'ConversationBrowser.swift', 'Problems.swift')]
             command += [str(store_source), str(import_models), str(main_source), *objects, '-L', str(root / 'frameworks'), '-lvelune_bindings', '-Xlinker', '-rpath', '-Xlinker', str(root / 'frameworks'), '-o', str(root / 'manual')]
+            add_telemetry(command, build, repository)
             subprocess.run(command, check=True, cwd=repository)
             env = {'HOME': str(root / 'home'), 'PATH': str(args.node.parent) + ':/usr/bin:/bin', 'NO_PROXY': '127.0.0.1,localhost'}
             subprocess.run([str(root / 'manual'), str(root), str(root / 'resources'), str(args.node), str(args.pi),

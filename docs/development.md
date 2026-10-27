@@ -10,7 +10,7 @@
 
 ## 当前 Mac 会话界面
 
-当前应用为 SwiftUI 原生 Mac control surface：系统侧栏和工具栏、Chatbot 阅读与输入区、独立 Settings 窗口。系统决定基础字体、语义颜色及明暗外观，Velune 品牌仅保留在图标与少量细节。应用通过 UniFFI 0.32.2 生成的类型接口嵌入 Rust lib，消费 application 的具名用例，不解析 Harness 原生事件，也不启动常驻 Host 或访问 Unix socket。下文 IPC v1 与模拟体验段落描述历史原型，不能作为当前产品接入说明。
+当前应用为 SwiftUI 原生 Mac control surface：系统侧栏和工具栏、Chatbot 阅读与输入区、独立 Settings 窗口。系统决定基础字体、语义颜色及明暗外观，Velune 品牌仅保留在图标与少量细节。应用通过 UniFFI 0.32.2 生成的类型接口嵌入 Rust lib，消费 application 的具名用例，不解析 Harness 原生事件，也不依赖常驻 Host；界面与核心之间不经过 Unix socket。下文 IPC v1 与模拟体验段落描述历史原型，不能作为当前产品接入说明。
 
 共享品牌 SVG 原稿与原始说明归属仓库级 [assets/brand](../assets/brand)，不归属任一平台 app。Mac 应用图标由 `scripts/render-app-icon.swift` 将该目录中的 graphite 光学稿生成十档传统 ICNS 资源。Dock／应用库使用的图标应保留 macOS 的透明光学留白，不能将品牌稿直接铺满画布；具体绘制范围在生成器中维护，不能通过修改品牌 SVG 补偿平台外框尺寸。
 
@@ -56,6 +56,8 @@ schema 10 采用 hard-cutoff，旧普通配置打开时直接重置，之后重�
 运行 `scripts/build-ios.sh` 构建 arm64 模拟器，使用 `scripts/build-ios.sh iphoneos DEVELOPMENT_TEAM=<团队ID>` 构建设备版本。单一 Xcode target 支持 iPad 分栏与 iPhone 紧凑导航，只链接 remote-only 核心。工具链、签名、合成预览与边界见 [iOS 控制端](../app/ios/README.md)。
 
 ## Windows 构建
+
+构建还需要 Python 3，用于从同一 Cargo 依赖图收集随应用分发的 Rust 许可全文。
 
 Windows 使用 MSVC 目标（`x86_64-pc-windows-msvc`，工具链版本同 `rust-toolchain.toml`），需要 Visual Studio Build Tools、.NET 10 SDK、Go 和 [llvm-mingw](https://github.com/mstorsjo/llvm-mingw)。RelayKit 桥依赖 cgo；MinGW 静态库无法可靠链接进 MSVC 产物，所以 Windows 把它构建为 `velune_relaykit.dll`，Rust 以 `raw-dylib` 绑定，无需导入库。构建脚本把 DLL 复制到 `target/<profile>/`，应用分发时须放在可执行文件旁。cgo 编译器默认为 `<arch>-w64-mingw32-clang`，可由 `VELUNE_RELAYKIT_CC` 指定绝对路径；当 PATH 没有传递给 build script 时，同时用 `GO` 指定 Go 的绝对路径。
 
@@ -271,19 +273,19 @@ cargo tree --locked -p velune-bindings --no-default-features --features remote
 
 ## 本地诊断
 
-Mac 使用 `OSLog.Logger`，subsystem 为 `local.velune`；系统 Console 可按该 subsystem 筛选。Rust 的 `tracing` subscriber 由 bindings 为每个应用对象独立装配，JSON Lines 日志位于 `VELUNE_HOME/logs/velune.<日期>.jsonl`，按 UTC 日期轮转并保留最近 7 个文件。该策略限制文件数量，不提供总字节硬上限。日志目录在 Unix 平台使用 0700 权限。
+Mac 使用 `OSLog.Logger`，subsystem 为 `local.velune`；系统 Console 可按该 subsystem 筛选。Rust 的 `tracing` subscriber 由稳定的客户端遥测 owner 装配，应用调用视图共享其生命周期，JSON Lines 日志位于 `VELUNE_HOME/logs/velune.<日期>.jsonl`，按 UTC 日期轮转并保留最近 7 个文件。该策略限制文件数量，不提供总字节硬上限。日志目录在 Unix 平台使用 0700 权限。
 
-失败信息包含诊断编号；以该编号查找日志中的 `operation_id`，可定位操作、错误代码、阶段、耗时与底层原因。Swift 失败日志使用同一编号，其本地操作编号另行命名，不代表 Rust trace ID。常规 snapshot 和认证轮询不产生成功日志。诊断保存实际错误链、helper stderr 与失败上下文，不以隐私为由替换为固定说明；默认不采集所有请求、配置或会话正文，也没有远端导出。开发方仍只使用合成数据验证，不读取用户真实配置和秘密。
+失败信息包含诊断编号；以该编号查找日志中的 `operation_id`，可定位操作、错误代码、阶段、耗时与底层原因。Swift 失败日志使用同一编号，其本地操作编号另行命名，不代表 Rust trace ID。常规 snapshot 和认证轮询不产生成功日志。诊断保存实际错误链、helper stderr 与失败上下文，不以隐私为由替换为固定说明；默认不采集所有请求、配置或会话正文。显式启用的 OTLP 只导出批准的操作元数据，完整问题详情仍留在本地。开发方仍只使用合成数据验证，不读取用户真实配置和秘密。
 
 Pi RPC 子进程持续排空 stderr，最多保留1 MiB用于失败诊断，超出时显式说明截断；正常运行不输出该缓存。启动、控制管道写入、退出和超时失败保留已取得的原始错误，退出时同时提供进程状态。旧版丢弃的 stderr 无法事后还原；仅有“child exited before responding”的旧记录不能用于判断真实退出原因，需要新版本中的重试记录。 Pi 首次状态握手的单次响应等待窗口为15秒，允许原生会话、扩展及项目资源加载；普通控制命令仍为3秒。超时诊断同时记录当时进程状态，不能将超时等同于进程退出。 来源扩展注册提供商、模型选择和实际派发由 Pi SDK 处理；Velune 不额外拦截注册、不检查派发目标或拒绝名称覆盖。网关作为新增提供商装配，不作为唯一允许的请求入口。
 
 历史读取失败记录具体运行时实例的标识、名称、类型、实际配置的非秘密执行入口（binary／nodeBinary）与来源目录，以及阶段和原始原因。安装解析失败同时说明配置入口、已解析的 launcher 目标及 filesystem cause；实例槽位不能代替稳定标识。helper 启动、超时、退出、输出上限、来源读取、会话不存在与重复原生身份分别保留；子进程返回的实际错误文本应继续传到本地问题详情。旧错误若已在源头丢失原因，不能事后还原；新错误通过诊断编号关联操作和阶段。
 
-网关请求另有 `gateway_request` span 的 `request_id`，不沿用建立执行准备时的 application `operation_id`。`gateway_request_received`、`gateway_route_selected`、`gateway_response_ready` 和 `gateway_request_finished` 描述入口与转发；子 span `gateway_attempt` 的 started／upstream_headers／finished 描述单次派发。目标序号只定位当前运行配置快照，不是跨准备的身份。结束字段区分传输完成、上游失败、调用方断开和网关关闭；完整转发失败 HTTP 响应仍可以是 request 的传输完成。准备响应不证明 TCP 客户端已收到，传输完成也不证明 LLM 业务成功。
+网关请求另有 `gateway_request` span 的 `request_id`，不沿用建立执行准备时的 application `operation_id`。`gateway_request_received`、`gateway_route_selected`、`gateway_response_ready` 和 `gateway_request_finished` 描述入口与转发；`gateway_attempt` span 的 started／upstream_headers／finished 描述单次派发，并以 request_id 关联本地入口；OTLP 操作另以显式 W3C context 建立父子关系。目标序号只定位当前运行配置快照，不是跨准备的身份。结束字段区分传输完成、上游失败、调用方断开和网关关闭；完整转发失败 HTTP 响应仍可以是 request 的传输完成。准备响应不证明 TCP 客户端已收到，传输完成也不证明 LLM 业务成功。
 
 [原生 HTTP 人工脚本](../scripts/manual-gateway-native.py) 使用临时 Rust probe 和合成回环服务，核对 JSON／SSE、HTTP 429、failed／incomplete 保真，以及头前取消、流中取消、在途关闭的关联与日志归因。它复用现有 tracing 依赖，不新增产品依赖或自动测试入口；[多运行时脚本](../scripts/manual-multi-runtime.py) 同时核对实际 bindings 日志的关联与秘密／配置排除。
 
-领域包只发事件，不创建 subscriber。跨线程显式传播 dispatcher 和 span；将来增加 OTLP exporter 时在 bindings 的 layer 装配点扩展，当前没有远端导出、上传功能或 OTLP 配置。采用的库和契约见 [tracing dispatcher](https://docs.rs/tracing/latest/tracing/dispatcher/)、[tracing-appender 保留策略](https://docs.rs/tracing-appender/latest/tracing_appender/rolling/struct.Builder.html) 和 [Apple 日志指导](https://developer.apple.com/documentation/os/generating-log-messages-from-your-code)。
+领域包只发事件，不创建 subscriber。跨线程显式传播 dispatcher 和 span；客户端遥测 owner 装配本地日志与 OTLP SDK，默认关闭，详情见[遥测装配](design/telemetry.md)。采用的库和契约见 [tracing dispatcher](https://docs.rs/tracing/latest/tracing/dispatcher/)、[tracing-appender 保留策略](https://docs.rs/tracing-appender/latest/tracing_appender/rolling/struct.Builder.html) 和 [Apple 日志指导](https://developer.apple.com/documentation/os/generating-log-messages-from-your-code)。
 
 Mac 的“问题”窗口集中显示操作失败与当前读取问题，主界面工具栏提供入口，编辑／导入 sheet 在标题行提供入口；设置窗口保留系统标签导航，通过菜单“问题…”与 ⌘⇧M 打开问题窗口。新错误更新数量，不弹窗抢焦点；选择一项可查看并复制已有诊断字段。手动操作记录在当前进程内保留，成功操作不清空，用户可清除；持续会话列表或轮询问题按来源合并，恢复后移除，清除后若仍失败会再次出现。问题记录不是持久日志，不主动读取日志文件；收到的错误详情完整保留。界面不再在会话列表、composer 或设置底部重复展示这些错误，字段校验和业务进度仍在相应位置。
 
@@ -460,3 +462,31 @@ Velune 执行的每个会话都获得 application 注入的 `velune` MCP 服务�
 隔离验收用合成完整端：Python UniFFI 打开临时 application、ACP fixture 运行时与 iroh 公共 relay，生成邀请并在核对后批准。手机侧走真实 App。邀请可以扫码或粘贴；用 adb 驱动时，可以临时把邀请写入应用私有目录，但这类 hook 不入库。2026-10-19 在 JKM-AL00a（Android 9）上验证了以下流程：配对（双方核对码一致，批准后由 Rust 跟进自动确认）、会话列表、转写、发送、新建会话、审批“允许”后完成回合、停止请求被受理。
 
 平台远控消费者须独立消费 [新契约](design/remote-access.md)：使用 `state_file`、Rust 状态快照和配对事务，按 peer 连接，由独立 operation 关联副作用与准确 ID 确认。接口细节归 [bindings README](../packages/bindings/README.md)，不恢复旧接口兼容层。
+
+## 开发遥测
+
+普通启动与 Debug 构建默认不启用遥测。使用 `scripts/dev-telemetry.py launch` 显式启动隔离实例时，工具复用本任务 sfp7 的 SSH 隧道，检查 Grafana 与 OTLP 就绪，生成私有临时 profile 和 run manifest。它不修改日常偏好或全局 `OTEL_*`，也不重建／清空 LGTM。业务 home 与 OS home 使用本次运行的独立目录。接收端不可用时继续启动业务并报告未接入；端口冲突不停止无关进程。依赖、资源、保留和查询授权见[实际部署](../tasks/otlp-observability/deployment.md)。
+
+先按各端构建说明生成产物，然后在仓库运行以下入口。`--app` 必须是绝对路径；Mac 指向 bundle 内可执行文件，Windows 指向 `Velune.exe`。移动设备必须已启动，并专用于合成验收；入口会重新启动指定的移动应用，以免旧进程忽略本次临时环境。
+
+```sh
+python3 scripts/dev-telemetry.py launch macos --app /absolute/path/Velune.app/Contents/MacOS/Velune
+python3 scripts/dev-telemetry.py launch windows --app C:/absolute/path/Velune.exe
+python3 scripts/dev-telemetry.py launch ios-simulator --app /absolute/path/Velune.app --device <Simulator UUID> --package app.velune.ios
+python3 scripts/dev-telemetry.py launch android --app /absolute/path/app-debug.apk --device <ADB serial> --package app.velune.android.telemetry
+```
+
+Android 验收可使用 `-PveluneApplicationId=app.velune.android.telemetry` 构建独立安装，避免覆盖日常应用。工具经 ADB reverse 把设备回环 34317 转发到开发机，只通过 `run-as` 的 stdin 写入 debug 应用私有 profile，不经过共享存储。该转发需要保留 ADB；手机与桌面的回环地址没有自动互换。Simulator 使用容器私有文件和 `SIMCTL_CHILD_*`，真机需要另行验证可达的受控入口。Windows 的原生 OpenSSH 不支持多路复用，工具复用显式准备的回环 30300／34317 转发并检查就绪；当前开发环境由 Mac 的受控 SSH 连接反向映射到 Windows，不开放 LGTM 到 LAN。
+
+输出的 `manifestPath` 指向 `target/telemetry-development/<run-id>/run.json`。它含 run ID、应用路径、可获得的源码提交、进程／设备、状态路径、查询凭据文件位置与保留范围，不含认证值。复制的构建目录可以没有 Git，源码提交此时为 null，不阻止应用启动。读取状态与限定本次运行的查询：
+
+```sh
+python3 scripts/dev-telemetry.py status /absolute/path/run.json
+python3 scripts/dev-telemetry.py query /absolute/path/run.json traces
+python3 scripts/dev-telemetry.py query /absolute/path/run.json logs
+python3 scripts/dev-telemetry.py query /absolute/path/run.json metrics
+```
+
+状态 45 秒未刷新或 run ID 不匹配时视为过期；停止进程后不要把旧文件当作当前生效状态。状态文件缺失、容器路径不可读或内容无效时返回 `state_unavailable`，不能解释为关闭。SDK 的 `rpc_completed` 不证明三信号已经存入后台，必须分别查询并检查时间范围、实例、采样和结果限制。精确实时丢弃计数没有统一公开接口，未知值不能视为零；已知 SDK 丢弃汇总留在同目录 `sdk-diagnostics.json`，包含原修订并最多保留 64 条。Swift SDK 没有日志丢弃 hook。正常退出与移动端强制结束的证据边界不同。
+
+Apple coordinator／真实 UniFFI／gRPC 隔离验收使用 `scripts/manual-telemetry.py`，需安装官方 Python `grpcio` 与 `opentelemetry-proto`，以及匹配的 SwiftPM 构建产物。它使用临时 HOME、合成字段和本地接收器，验证三信号、环境隔离、零采样、并发父节点、旧队列撤销与共享关闭。可加 `--distributed --gateway --queue`，验证真实 QUIC／Core 的并行轮次、断连续跑、原 RequestId 恢复、SDK 切换、HTTP Gateway failover 和实际 AppStore 队列等待；不证明实际移动证书、前后台或四平台分享矩阵。当前平台结果与尚缺证据统一记录在[任务包](../tasks/otlp-observability/packet.md)，不能用构建通过替代产品验收。

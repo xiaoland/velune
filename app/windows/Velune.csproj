@@ -35,6 +35,8 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <PackageReference Include="OpenTelemetry" Version="1.20.1" />
+    <PackageReference Include="OpenTelemetry.Exporter.OpenTelemetryProtocol" Version="1.20.1" />
     <!-- Windows App SDK 2.5.1's UI components, without its AI and ML packages. -->
     <PackageReference Include="Microsoft.WindowsAppSDK.WinUI" Version="2.3.9" />
     <PackageReference Include="Microsoft.WindowsAppSDK.Foundation" Version="2.3.12" />
