@@ -9,6 +9,7 @@ default = ["local-runtime"]
 local-runtime = ["dep:velune-agent-runtime", "dep:sha2", "dep:hmac", "dep:rustix", "dep:rmcp", "dep:axum", "dep:getrandom", "tokio/process", "tokio/io-util", "tokio/net", "tokio/sync"]
 
 [dependencies]
+velune-telemetry = { path = "../telemetry" }
 velune-application-api = { path = "../application-api" }
 base64 = "0.23"
 chrono = { version = "0.4", default-features = false, features = ["std"] }

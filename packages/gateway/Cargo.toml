@@ -5,6 +5,7 @@ edition = "2024"
 publish = false
 
 [dependencies]
+velune-telemetry = { path = "../telemetry" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 velune-ai = { path = "../ai" }

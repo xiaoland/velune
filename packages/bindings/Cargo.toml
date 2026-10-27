@@ -20,6 +20,7 @@ path = "src/bin.rs"
 required-features = ["cli"]
 
 [dependencies]
+velune-telemetry = { path = "../telemetry" }
 velune-application = { path = "../application", default-features = false, optional = true }
 velune-application-api = { path = "../application-api" }
 velune-remote = { path = "../remote", optional = true }
