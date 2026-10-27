@@ -264,6 +264,11 @@ pub enum BindingApplicationCommand {
         conversation_id: String,
         turn: BindingComposedTurn,
     },
+    CompactConversation {
+        runtime_id: String,
+        conversation_id: String,
+        selection: Option<BindingModelSelection>,
+    },
     ResumeTurn {
         runtime_id: String,
         conversation_id: String,
@@ -806,6 +811,15 @@ impl TryFrom<BindingApplicationCommand> for Command {
                 runtime_id,
                 conversation_id,
                 turn: convert(turn)?,
+            },
+            BindingApplicationCommand::CompactConversation {
+                runtime_id,
+                conversation_id,
+                selection,
+            } => Self::CompactConversation {
+                runtime_id,
+                conversation_id,
+                selection: convert(selection)?,
             },
             BindingApplicationCommand::ResumeTurn {
                 runtime_id,

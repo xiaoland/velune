@@ -25,6 +25,9 @@ pub struct PiProjection {
     turn_failed: bool,
     lifecycle: Lifecycle,
     failed_message_id: Option<String>,
+    manual_compaction: Option<String>,
+    compaction_notice: Option<Message>,
+    compaction_aborted: bool,
 }
 
 impl PiProjection {
@@ -61,6 +64,9 @@ impl PiProjection {
             turn_failed: false,
             lifecycle: Lifecycle::Idle,
             failed_message_id: None,
+            manual_compaction: None,
+            compaction_notice: None,
+            compaction_aborted: false,
         }
     }
 
@@ -72,6 +78,7 @@ impl PiProjection {
 
     /// An accepted prompt may still be waiting for the runtime to start.
     pub fn begin_turn(&mut self) {
+        self.compaction_notice = None;
         if !matches!(self.lifecycle, Lifecycle::Running | Lifecycle::Closed) {
             self.lifecycle = Lifecycle::Idle;
         }
@@ -89,6 +96,21 @@ impl PiProjection {
 
     pub fn invalidate_history(&mut self) {
         self.history_synchronized = false;
+        self.compaction_notice = None;
+    }
+
+    pub fn begin_compaction(&mut self, command_id: String) {
+        self.manual_compaction = Some(command_id);
+        self.compaction_notice = None;
+        self.compaction_aborted = false;
+        self.turn_failed = false;
+        self.lifecycle = Lifecycle::Running;
+        if let Some(snapshot) = &mut self.snapshot {
+            snapshot.run_state = RunState::Running;
+            snapshot.actions.can_send = false;
+            snapshot.actions.can_cancel = true;
+            snapshot.revision += 1;
+        }
     }
 
     pub fn history_synchronized(&self) -> bool {
@@ -177,6 +199,9 @@ impl PiProjection {
             &mut projected,
             &snapshot.message_identity_confirmations,
         );
+        if let Some(notice) = &self.compaction_notice {
+            projected.push(notice.clone());
+        }
         snapshot.messages = projected;
         refresh_title(&mut snapshot);
         snapshot.revision = snapshot.revision.saturating_add(1);
@@ -364,10 +389,61 @@ impl PiProjection {
                     first_user_text(&snapshot.messages),
                 );
             }
+            "compaction_start" => {
+                self.compaction_aborted = false;
+                self.compaction_status(&mut snapshot, "正在压缩上下文".into(), false);
+            }
             "compaction_end" => {
+                self.compaction_aborted = event["aborted"] == true;
+                let succeeded = event["result"].is_object();
+                let text = if self.compaction_aborted {
+                    "上下文压缩已取消".into()
+                } else if let Some(error) = event["errorMessage"].as_str() {
+                    format!("上下文压缩失败：{error}")
+                } else if succeeded {
+                    "上下文已压缩".into()
+                } else {
+                    "上下文未压缩".into()
+                };
+                self.compaction_status(&mut snapshot, text, true);
+                if succeeded {
+                    self.compaction_notice = None;
+                }
+                self.history_synchronized = false;
+            }
+            "response"
+                if event["command"] == "compact"
+                    && event["id"].as_str() == self.manual_compaction.as_deref() =>
+            {
+                let failed = event["success"] != true && !self.compaction_aborted;
+                if failed
+                    && self
+                        .compaction_notice
+                        .as_ref()
+                        .is_none_or(|message| !message.completed)
+                {
+                    self.compaction_status(
+                        &mut snapshot,
+                        format!(
+                            "上下文压缩失败：{}",
+                            event["error"].as_str().unwrap_or("运行时未提供原因")
+                        ),
+                        true,
+                    );
+                }
+                self.manual_compaction = None;
+                self.turn_failed = failed;
+                self.lifecycle = Lifecycle::Ended;
+                snapshot.run_state = RunState::Idle;
+                snapshot.actions.can_send = true;
+                snapshot.actions.can_cancel = false;
                 self.history_synchronized = false;
             }
             "agent_settled" => {
+                if self.manual_compaction.is_some() {
+                    self.snapshot = Some(snapshot);
+                    return;
+                }
                 if self.lifecycle != Lifecycle::Running {
                     self.snapshot = Some(snapshot);
                     return;
@@ -430,6 +506,23 @@ impl PiProjection {
                 self.diagnostic(&mut snapshot, text);
             }
             "velune_error" | "velune_closed" => {
+                let compacting = self.manual_compaction.is_some();
+                let error = event["error"]
+                    .as_str()
+                    .unwrap_or("Pi 控制连接已关闭，请重新连接。");
+                if compacting
+                    || self
+                        .compaction_notice
+                        .as_ref()
+                        .is_some_and(|message| !message.completed)
+                {
+                    self.compaction_status(
+                        &mut snapshot,
+                        format!("上下文压缩已中断：{error}"),
+                        true,
+                    );
+                }
+                self.manual_compaction = None;
                 self.lifecycle = Lifecycle::Closed;
                 self.turn_failed = true;
                 snapshot.run_state = RunState::Failed;
@@ -448,13 +541,9 @@ impl PiProjection {
                         }
                     }
                 }
-                self.diagnostic(
-                    &mut snapshot,
-                    event["error"]
-                        .as_str()
-                        .unwrap_or("Pi 控制连接已关闭，请重新连接。")
-                        .into(),
-                );
+                if !compacting {
+                    self.diagnostic(&mut snapshot, error.into());
+                }
             }
             _ => {
                 self.snapshot = Some(snapshot);
@@ -478,6 +567,43 @@ impl PiProjection {
             branch_point: None,
         });
         self.next_message_id += 1;
+    }
+
+    fn compaction_status(
+        &mut self,
+        snapshot: &mut ConversationSnapshot,
+        text: String,
+        completed: bool,
+    ) {
+        let id = self
+            .compaction_notice
+            .as_ref()
+            .filter(|message| !message.completed)
+            .map(|message| message.id.clone())
+            .unwrap_or_else(|| {
+                self.next_message_id += 1;
+                format!("pi-compaction-{}", self.next_message_id)
+            });
+        let message = Message {
+            id,
+            role: MessageRole::System,
+            timestamp_unix_ms: None,
+            blocks: vec![MessageBlock::ContextCompaction { text }],
+            completed,
+            turn_settings: None,
+            turn_usage: None,
+            branch_point: None,
+        };
+        if let Some(old) = snapshot
+            .messages
+            .iter_mut()
+            .find(|old| old.id == message.id)
+        {
+            *old = message.clone();
+        } else {
+            snapshot.messages.push(message.clone());
+        }
+        self.compaction_notice = Some(message);
     }
 }
 
@@ -677,6 +803,11 @@ fn message_from_pi(message: &Value, fallback_id: String) -> Option<Message> {
         .map(str::to_owned)
         .unwrap_or(fallback_id);
     let mut blocks = Vec::new();
+    if message["role"] == "compactionSummary" {
+        blocks.push(MessageBlock::ContextCompaction {
+            text: "上下文已压缩".into(),
+        });
+    }
     if let Some(content) = message["content"].as_array() {
         for block in content {
             match block["type"].as_str().unwrap_or_default() {
@@ -788,6 +919,76 @@ mod tests {
     fn message(projection: &mut PiProjection, value: Value) {
         projection.apply_event(&json!({"type":"message_start","message":value}));
         projection.apply_event(&json!({"type":"message_end","message":value}));
+    }
+
+    #[test]
+    fn compaction_disconnect_keeps_the_previous_reply_visible() {
+        for started in [false, true] {
+            let mut p = projection();
+            p.replace_history(&json!({"messages":[
+                {"id":"user","role":"user","content":[{"type":"text","text":"hello"}]},
+                {"id":"answer","role":"assistant","content":[{"type":"text","text":"done"}]}
+            ]}));
+            p.begin_compaction("compact-1".into());
+            if started {
+                p.apply_event(&json!({"type":"compaction_start","reason":"manual"}));
+            }
+            p.apply_event(&json!({"type":"velune_closed","error":"synthetic EOF"}));
+            let snapshot = p.snapshot.as_ref().unwrap();
+            assert_eq!(snapshot.run_state, RunState::Failed);
+            assert!(snapshot.messages.iter().all(|message| message.completed));
+            assert!(
+                matches!(&snapshot.messages.last().unwrap().blocks[0], MessageBlock::ContextCompaction { text } if text.contains("synthetic EOF"))
+            );
+            let mut transcript = crate::transcript::TranscriptProjection::default();
+            transcript.apply(crate::transcript::TranscriptEvent::ReplaceMessages(
+                &snapshot.messages,
+            ));
+            assert_eq!(
+                transcript.turns()[0].last_message_id.as_deref(),
+                Some("answer")
+            );
+        }
+    }
+
+    #[test]
+    fn manual_compaction_is_pollable_survives_refresh_and_cancels() {
+        let mut p = projection();
+        p.begin_compaction("compact-1".into());
+        p.apply_event(&json!({"type":"compaction_start","reason":"manual"}));
+        let id = p
+            .snapshot
+            .as_ref()
+            .unwrap()
+            .messages
+            .last()
+            .unwrap()
+            .id
+            .clone();
+        p.replace_history(&json!({"messages":[]}));
+        assert_eq!(p.snapshot.as_ref().unwrap().messages[0].id, id);
+        assert_eq!(p.snapshot.as_ref().unwrap().run_state, RunState::Running);
+        p.apply_event(&json!({"type":"compaction_end","reason":"manual","aborted":true}));
+        p.apply_event(&json!({"type":"response","command":"compact","id":"compact-1","success":false,"error":"cancelled"}));
+        let snapshot = p.snapshot.as_ref().unwrap();
+        assert_eq!(snapshot.run_state, RunState::Idle);
+        assert!(p.turn_ended() && !p.turn_failed());
+        assert_eq!(snapshot.messages[0].id, id);
+        assert_eq!(
+            snapshot.messages[0].blocks,
+            vec![MessageBlock::ContextCompaction {
+                text: "上下文压缩已取消".into()
+            }]
+        );
+        p.apply_event(&json!({"type":"velune_closed"}));
+        assert!(
+            !p.snapshot
+                .as_ref()
+                .unwrap()
+                .messages
+                .iter()
+                .any(|message| !message.completed)
+        );
     }
 
     #[test]

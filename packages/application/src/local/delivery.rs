@@ -232,6 +232,9 @@ fn delivered_block(
     Some(match block {
         MessageBlock::Text { text } => DeliveredBlock::Text { text: text.clone() },
         MessageBlock::Notice { text } => DeliveredBlock::Notice { text: text.clone() },
+        MessageBlock::ContextCompaction { text } => {
+            DeliveredBlock::ContextCompaction { text: text.clone() }
+        }
         MessageBlock::Reasoning { text } => {
             let (summary, text) = velune_conversation::reasoning::summary(text)?;
             DeliveredBlock::Reasoning {

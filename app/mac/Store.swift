@@ -302,8 +302,9 @@ final class AppStore: ObservableObject {
     /// A conversation runs here or elsewhere, by identity, listed or not.
     func isConversationRunning(_ id: String) -> Bool { runningConversationIDs.contains(id) || elsewhereConversationIDs.contains(id) }
     /// While a turn runs, a sent message waits in the conversation's queue.
-    var canQueue: Bool { !isPreview && snapshot?.runState == .running && !isStopping && !executionStarting && !isLoading && !isShuttingDown && !authenticationRunning && loadedConversationID != nil && snapshot?.conversation.parentConversationID == nil }
+    var canQueue: Bool { !followUp.isCompacting && !isPreview && snapshot?.runState == .running && !isStopping && !executionStarting && !isLoading && !isShuttingDown && !authenticationRunning && loadedConversationID != nil && snapshot?.conversation.parentConversationID == nil }
     var canResume: Bool { canSend && followUp.canResume && nextTurnRuntimeID == snapshot?.contextRuntimeID }
+    var canCompact: Bool { canSend && followUp.canCompact && nextTurnRuntimeID == snapshot?.contextRuntimeID }
     var continueHelp: String { "从现有上下文继续，不新增用户消息" }
     var canSwitchModel: Bool { nextTurnRuntimeID != nil && !isShuttingDown }
     var modelCatalog: RuntimeModelCatalog? { nextTurnRuntimeID.flatMap { modelCatalogs[$0] } }
@@ -1291,6 +1292,16 @@ final class AppStore: ObservableObject {
         changeQueue(.add(sourceRuntimeId: source, targetRuntimeId: target, selection: model.map(BindingMapping.bindingSelection), turn: turn), onFailure: onFailure)
         return true
     }
+    func compactContext() {
+        guard canCompact, let runtimeID = snapshot?.contextRuntimeID, let conversationID = loadedConversationID, let transport else { return }
+        let selection = nextTurnModel
+        executionStarting = true
+        enqueue({ try transport.compactConversation(runtimeID: runtimeID, conversationID: conversationID, selection: selection) }, onFailure: { [weak self] _ in self?.executionStarting = false }) { [weak self] value in
+            self?.executionStarting = false
+            self?.applySnapshotResult(value)
+        }
+    }
+
     func continueTurn() {
         guard canResume else { return }
         guard let runtimeID = snapshot?.contextRuntimeID, let conversationID = loadedConversationID, let transport else { return }

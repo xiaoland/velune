@@ -117,6 +117,7 @@ pub enum CommandKind {
     SendQueue,
     SteerTurn,
     ResumeTurn,
+    CompactConversation,
     EditMessage,
     Cancel,
     StopSubAgents,
@@ -417,6 +418,11 @@ pub enum Command {
         conversation_id: String,
         turn: ComposedTurn,
     },
+    CompactConversation {
+        runtime_id: String,
+        conversation_id: String,
+        selection: Option<ModelSelection>,
+    },
     ResumeTurn {
         runtime_id: String,
         conversation_id: String,
@@ -616,6 +622,7 @@ pub enum Response {
     SendQueue(SnapshotResult),
     SteerTurn(SnapshotResult),
     ResumeTurn(SnapshotResult),
+    CompactConversation(SnapshotResult),
     EditMessage(SnapshotResult),
     Cancel(SnapshotResult),
     StopSubAgents(SnapshotResult),
@@ -729,6 +736,7 @@ impl Command {
             | Self::SendQueue { .. }
             | Self::SteerTurn { .. }
             | Self::ResumeTurn { .. }
+            | Self::CompactConversation { .. }
             | Self::EditMessage { .. }
             | Self::Cancel { .. }
             | Self::StopSubAgents { .. }
@@ -826,6 +834,7 @@ impl Command {
             Self::SendQueue { .. } => CommandKind::SendQueue,
             Self::SteerTurn { .. } => CommandKind::SteerTurn,
             Self::ResumeTurn { .. } => CommandKind::ResumeTurn,
+            Self::CompactConversation { .. } => CommandKind::CompactConversation,
             Self::EditMessage { .. } => CommandKind::EditMessage,
             Self::Cancel { .. } => CommandKind::Cancel,
             Self::StopSubAgents { .. } => CommandKind::StopSubAgents,
@@ -898,6 +907,7 @@ impl Command {
                     | Self::SendQueue { .. }
                     | Self::SteerTurn { .. }
                     | Self::ResumeTurn { .. }
+                    | Self::CompactConversation { .. }
                     | Self::ReplyRuntimeInteraction { .. }
                     | Self::Cancel { .. }
                     | Self::StopSubAgents { .. }

@@ -832,6 +832,21 @@ impl Application {
     ) -> Result<SnapshotResult, Error> {
         self.execute("resumeTurn", json!({"conversationID":conversation_id,"modelSelection":selection,"effort":effort,"permissionMode":permission_mode}), Some(&runtime_id))
     }
+    /// Compact only this conversation’s native context, using the selected model.
+    /// This is an asynchronous effect; progress and completion arrive in snapshots.
+    pub fn compact_conversation(
+        &mut self,
+        runtime_id: String,
+        conversation_id: String,
+        selection: Option<ModelSelection>,
+    ) -> Result<SnapshotResult, Error> {
+        self.execute(
+            "compactConversation",
+            json!({"conversationID":conversation_id,"modelSelection":selection}),
+            Some(&runtime_id),
+        )
+    }
+
     /// Reasoning levels a turn may request for a managed model on a runtime,
     /// in the runtime's own vocabulary; empty when it offers no choice.
     pub fn reasoning_efforts(

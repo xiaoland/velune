@@ -95,6 +95,9 @@ pub enum BindingMessageBlock {
     Notice {
         text: String,
     },
+    ContextCompaction {
+        text: String,
+    },
     /// An image the user attached.
     Image {
         media_type: Option<String>,
@@ -231,6 +234,8 @@ pub struct BindingFollowUp {
     pub can_continue: bool,
     /// The stopped or failed context can start a native turn without a user message.
     pub can_resume: bool,
+    pub can_compact: bool,
+    pub is_compacting: bool,
     /// User messages that may be edited now.
     pub editable: Vec<BindingEditableMessage>,
 }

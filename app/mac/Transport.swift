@@ -192,6 +192,9 @@ final class Transport: @unchecked Sendable {
     /// carries the levels the runtime accepts for it.
     func runtimeModels(runtimeID: String) throws -> [BindingRuntimeModel] { try withApplication("runtimeModels", .reads) { try $0.runtimeModels(runtimeId: runtimeID) } }
     func steerTurn(runtimeID: String, conversationID: String, turn: BindingComposedTurn) throws -> BindingSnapshotResult { try withApplication("steerTurn", .writes) { try $0.steerTurn(runtimeId: runtimeID, conversationId: conversationID, turn: turn) } }
+    func compactConversation(runtimeID: String, conversationID: String, selection: ModelSelection?) throws -> BindingSnapshotResult {
+        try withApplication("compactConversation", .writes) { try $0.compactConversation(runtimeId: runtimeID, conversationId: conversationID, selection: selection.map(BindingMapping.bindingSelection)) }
+    }
     func resumeTurn(runtimeID: String, conversationID: String, selection: ModelSelection?, effort: String?, permissionMode: String?) throws -> BindingSnapshotResult {
         try withApplication("resumeTurn", .writes) { try $0.resumeTurn(runtimeId: runtimeID, conversationId: conversationID, selection: selection.map(BindingMapping.bindingSelection), effort: effort, permissionMode: permissionMode) }
     }

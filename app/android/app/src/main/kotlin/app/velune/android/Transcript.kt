@@ -206,6 +206,10 @@ private fun WorkBlock(messageId: String, index: Int, block: BindingMessageBlock,
             block.text, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
             textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp),
         )
+        is BindingMessageBlock.ContextCompaction -> Text(
+            block.text, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+            textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp),
+        )
         is BindingMessageBlock.Image -> Attachment(Icons.Outlined.Image, "图片")
         is BindingMessageBlock.File -> Attachment(Icons.AutoMirrored.Outlined.InsertDriveFile, lastPathComponent(block.path))
         is BindingMessageBlock.AgentSender -> Text(

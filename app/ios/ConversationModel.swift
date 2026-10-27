@@ -226,6 +226,14 @@ final class ConversationModel: ObservableObject {
         }
     }
 
+    func compact() { act("压缩上下文") {
+        guard let current = self.snapshot, current.followUp.canCompact else { return }
+        let selection = self.selection
+        self.apply(try await self.client.application(self.peer, operation: "compact") {
+            try $0.compactConversation(runtimeId: current.contextRuntimeId, conversationId: current.conversation.id, selection: selection)
+        })
+    } }
+
     func stop() { act("停止生成") {
         guard let current = self.snapshot else { return }
         self.apply(try await self.client.application(self.peer, operation: "cancel") { try $0.cancel(runtimeId: current.contextRuntimeId, conversationId: current.conversation.id) })

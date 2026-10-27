@@ -91,6 +91,9 @@ impl CoreRuntime {
         let conversation_id = request["payload"]["conversationID"]
             .as_str()
             .ok_or_else(|| RuntimeError::invalid("conversation id"))?;
+        if self.session.compacting {
+            return Err(RuntimeError::invalid("上下文压缩期间不能修改发送队列"));
+        }
         let operation: SendQueueOperation =
             serde_json::from_value(request["payload"]["operation"].clone())?;
         let snapshot = self.native_snapshot();
@@ -238,6 +241,9 @@ impl CoreRuntime {
 
     /// The running turn takes messages through the runtime's own channel.
     fn can_steer(&self) -> bool {
+        if self.session.compacting {
+            return false;
+        }
         match &self.session.active_state {
             ActiveState::Native(session) => session.can_steer(),
             ActiveState::Pi => self.session.pi.busy && !self.session.cancel_requested,
@@ -353,6 +359,22 @@ impl CoreRuntime {
             can_steer: self.can_steer(),
             can_continue,
             can_resume: can_continue,
+            is_compacting: self.session.compacting,
+            can_compact: idle
+                && self
+                    .runtime_instance(&snapshot.context_runtime_id)
+                    .is_ok_and(|runtime| {
+                        runtime.enabled
+                            && matches!(
+                                runtime.type_id.as_str(),
+                                "codex-0.159" | "claude-code-2.1" | "pi-1.0"
+                            )
+                    })
+                && snapshot.actions.can_send
+                && snapshot.pending_interactions.is_empty()
+                && self.session.work().is_empty()
+                && snapshot.conversation.parent_conversation_id.is_none()
+                && !snapshot.messages.is_empty(),
             editable: self.editable_messages(snapshot),
         }
     }

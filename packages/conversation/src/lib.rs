@@ -104,6 +104,12 @@ pub struct FollowUp {
     /// The stopped or failed context can start a native turn without a user message.
     #[serde(default)]
     pub can_resume: bool,
+    /// The current native context can be compacted as a separate operation.
+    #[serde(default)]
+    pub can_compact: bool,
+    /// Independent context maintenance occupies execution without advancing the send queue.
+    #[serde(default)]
+    pub is_compacting: bool,
     /// User messages that may be edited now, in conversation order; none
     /// while a turn runs.
     #[serde(default)]
@@ -326,6 +332,10 @@ pub enum MessageBlock {
         conversation_id: Option<String>,
     },
     Notice {
+        text: String,
+    },
+    /// Native context maintenance, displayed independently of assistant work.
+    ContextCompaction {
         text: String,
     },
     /// An image the user attached, as the native record keeps it.

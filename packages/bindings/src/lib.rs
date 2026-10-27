@@ -1278,6 +1278,25 @@ impl VeluneApplication {
         )
     }
 
+    /// Start native context compaction; observe progress through snapshots.
+    pub fn compact_conversation(
+        &self,
+        runtime_id: String,
+        conversation_id: String,
+        selection: Option<BindingModelSelection>,
+    ) -> Result<BindingSnapshotResult, BindingError> {
+        let selection = convert(selection)?;
+        request!(
+            self,
+            "compact_conversation",
+            CompactConversation {
+                runtime_id,
+                conversation_id,
+                selection
+            }
+        )
+    }
+
     /// Start a native turn without a user message, only when `can_resume`
     /// is true. Errors never send fallback text or resume the send queue.
     pub fn resume_turn(

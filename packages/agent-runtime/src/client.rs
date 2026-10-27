@@ -654,6 +654,16 @@ impl Client {
         ])
     }
 
+    /// Compaction responds only after summarization; polling must remain available meanwhile.
+    pub fn compact(&mut self) -> Result<String> {
+        let key = self.write_command(json!({"type":"compact"}))?;
+        Ok(key
+            .split_once('\0')
+            .expect("internal command key")
+            .1
+            .to_owned())
+    }
+
     pub fn poll(&mut self) -> Vec<Value> {
         let mut records: Vec<_> = self.pending.drain(..).collect();
         if let Some(error) = &self.terminal_error {

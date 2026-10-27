@@ -110,7 +110,7 @@ enum PreviewData {
             transcriptItems: [.message(id: "user", messageId: user.id), .work(turnId: turn.id), .message(id: "reply:assistant", messageId: assistant.id)],
             transcriptOutline: [.init(id: "user", messageId: "user")], transcriptMessageIdentities: [], messageIdentityConfirmations: [], pendingInteractions: [],
             actions: .init(canSend: true, canCancel: false, canSwitch: false),
-            followUp: .init(queue: [], paused: nil, waiting: nil, canStopSubAgents: false, canSteer: false, canContinue: false, canResume: false, editable: []), subAgents: [.init(conversationId: "preview-child", title: "检查构建结果", failed: false)], collaborators: [.init(conversationId: "preview-peer", title: "复核 iPad 布局", runtimeName: "Claude Code", contacted: true, contactedBy: true)])
+            followUp: .init(queue: [], paused: nil, waiting: nil, canStopSubAgents: false, canSteer: false, canContinue: false, canResume: false, canCompact: false, isCompacting: false, editable: []), subAgents: [.init(conversationId: "preview-child", title: "检查构建结果", failed: false)], collaborators: [.init(conversationId: "preview-peer", title: "复核 iPad 布局", runtimeName: "Claude Code", contacted: true, contactedBy: true)])
         model.merge(snapshot)
         model.loading = false
         model.models = models

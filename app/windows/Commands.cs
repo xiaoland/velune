@@ -37,6 +37,7 @@ enum Command
     Problems,
     Analytics,
     Library,
+    CompactContext,
 }
 
 readonly record struct Shortcut(VirtualKeyModifiers Modifiers, VirtualKey Key)
@@ -110,6 +111,7 @@ sealed class Commands
         [Command.Problems] = ("问题", new(Ctrl | Shift, VirtualKey.M)),
         [Command.Analytics] = ("分析", null),
         [Command.Library] = ("资源库", null),
+        [Command.CompactContext] = ("压缩上下文", null),
     };
 
     sealed record Keys(int Modifiers, int Key);

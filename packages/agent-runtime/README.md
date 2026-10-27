@@ -171,3 +171,12 @@ MCP 的 key 是 opaque 服务名，其 `Document.bytes` 仅为该服务的原生
 原生入口和实际加载证据见 [固定版本验收](../../tasks/runtime-management/native-evidence.md)。application 负责 busy 修改门控；本包不做 UI、自动同步或热重载。App 的资源管理入口明确待实现。
 
 Codex 原生项目通过同一个有界 app-server 连接读取 `project/list` 与 `thread/list.projectId`，不扫描桌面私有配置或根据 cwd 推断成员关系。`native::codex_projects` 保留原生项目 ID、名称和有序根，接受共享目录和零根项目。编辑直接以 `project/update` 提交名称和根，保留 metadata，不附加并发修改检查。原生项目目录不用于覆盖已有线程的 `runtimeWorkspaceRoots`，恢复与继续交给 Codex 保留已存工作区。
+
+
+## 主动上下文压缩
+
+Codex 使用 `thread/compact/start` 并消费独立 turn 与 `contextCompaction` item；Pi 异步发送 `compact`，由原生开始／结束事件和对应响应结束操作；Claude Code 通过内置非交互 `/compact` 命令执行，不追加普通用户消息，以 `status`／`compact_boundary` 确认实际结果。ACP 与 DSH 未声明此能力。
+
+`ContextCompaction` 是系统状态块，核心转录投影将其独立呈现，不参与工作成员或最终回复判断。主动压缩占用执行状态和取消通路，但不登记或完成用户轮次，不推进发送队列；自动压缩仍属于已有轮次。历史读取仅恢复原生持久记录，不新建压缩日志。
+
+Codex 0.159.3 未持久化独立压缩失败／取消的专用条目时，重开只能按其原生回合错误和恢复资格呈现，无法恢复主动压缩身份。不能仅因一个用户回合包含压缩条目就将整轮当作独立维护；自动压缩后的普通回复仍保留自己的错误、用量与恢复语义。

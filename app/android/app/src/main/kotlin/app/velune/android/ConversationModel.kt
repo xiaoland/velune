@@ -39,6 +39,7 @@ data class ConversationState(
     val interactions: List<BindingRuntimeInteraction> = emptyList(),
     val canSend: Boolean = true,
     val canCancel: Boolean = false,
+    val canCompact: Boolean = false,
     val models: List<BindingRuntimeModel> = emptyList(),
     /** None: the runtime's own default. */
     val selection: BindingModelSelection? = null,
@@ -142,6 +143,7 @@ class ConversationModel(
                 entries = entries(next),
                 interactions = next.pendingInteractions,
                 canSend = next.actions.canSend,
+                canCompact = next.followUp.canCompact,
                 canCancel = next.actions.canCancel,
                 selection = state.selection ?: next.modelRecordKey?.let { BindingModelSelection.Managed(it) },
             )
@@ -169,6 +171,13 @@ class ConversationModel(
         }
         apply(result)
         onSent()
+    }
+
+    fun compact() = act {
+        val current = snapshot ?: return@act
+        if (!current.followUp.canCompact) return@act
+        val selection = state.value.selection
+        apply(io("compact") { it.compactConversation(current.contextRuntimeId, current.conversation.id, selection) })
     }
 
     fun stop() = act {

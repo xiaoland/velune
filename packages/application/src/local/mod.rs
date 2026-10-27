@@ -170,6 +170,7 @@ mod browsing;
 mod collaboration;
 mod composer_choices;
 pub(crate) use composer_choices::{TurnKey, TurnRequests};
+mod compaction;
 mod configuration;
 mod continuation;
 mod conversations;
@@ -360,7 +361,13 @@ impl CoreRuntime {
         );
         self.session
             .transcript_projection
-            .apply(TranscriptEvent::ExecutionState(snapshot.run_state.clone()));
+            .apply(TranscriptEvent::ExecutionState(
+                if self.session.compacting {
+                    RunState::Idle
+                } else {
+                    snapshot.run_state.clone()
+                },
+            ));
         self.keep_turn_requests(&snapshot);
         snapshot.transcript_turns = self.session.transcript_projection.turns();
         self.name_turn_models(&mut snapshot.transcript_turns);
@@ -410,6 +417,7 @@ impl CoreRuntime {
         }))
     }
     fn drain_runtime(&mut self) -> Result<(), RuntimeError> {
+        let compacting = self.session.compacting;
         let was_busy = self.turn_running();
         let was_executing = self.session.executing();
         if was_executing {
@@ -435,7 +443,7 @@ impl CoreRuntime {
                 .turn_observation
                 .as_ref()
                 .is_some_and(|observation| observation.execution_has_started());
-        let outcome = if observed_turn && (!self.turn_running() || result.is_err()) {
+        let outcome = if !compacting && observed_turn && (!self.turn_running() || result.is_err()) {
             self.record_finished_turn(result.is_err())
         } else {
             None
@@ -450,7 +458,11 @@ impl CoreRuntime {
             self.follow_finished_turn(outcome);
         }
         if !self.session.executing() {
-            self.follow_ended_work();
+            if compacting {
+                self.session.compacting = false;
+            } else {
+                self.follow_ended_work();
+            }
         }
         result
     }
@@ -555,6 +567,7 @@ impl CoreRuntime {
                 "open"
                 | "sendTurn"
                 | "resumeTurn"
+                | "compactConversation"
                 | "cancel"
                 | "stopSubAgents"
                 | "replyRuntimeInteraction"
@@ -737,6 +750,7 @@ impl CoreRuntime {
             }
             "sendTurn" => self.send_turn_action(request),
             "resumeTurn" => self.resume_turn_action(request),
+            "compactConversation" => self.compact_conversation_action(request),
             "sendQueue" => self.send_queue_action(request),
             "steerTurn" => self.steer_turn_action(request),
             "editMessage" => self.edit_message_action(request),

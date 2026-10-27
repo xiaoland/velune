@@ -91,6 +91,7 @@ class ConversationActions(
     val reply: (interactionId: String, BindingRuntimeInteractionReply) -> Unit,
     val select: (BindingModelSelection?) -> Unit,
     val load: (messageId: String) -> Unit,
+    val compact: () -> Unit = {},
 )
 
 @Composable
@@ -106,7 +107,7 @@ fun ConversationScreen(hub: DeviceHub, peer: String, runtime: RuntimeLabel?, mod
         cwd = state.conversation?.cwd ?: (target as? ConversationTarget.New)?.cwd,
     )
     ConversationContent(header, state, remember(model, back) {
-        ConversationActions(back, model::send, model::stop, model::reply, model::select, { model.loadPayload(it) })
+        ConversationActions(back, model::send, model::stop, model::reply, model::select, { model.loadPayload(it) }, model::compact)
     })
 }
 
@@ -116,6 +117,9 @@ fun ConversationContent(header: ConversationHeader, state: ConversationState, ac
     Scaffold(
         topBar = {
             TopAppBar(
+                actions = {
+                    TextButton(onClick = actions.compact, enabled = state.canCompact && !state.busy) { Text("压缩上下文") }
+                },
                 navigationIcon = { IconButton(onClick = actions.back) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回") } },
                 title = {
                     Column {

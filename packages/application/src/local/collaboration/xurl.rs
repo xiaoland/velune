@@ -97,7 +97,8 @@ impl CoreRuntime {
                 match block {
                     MessageBlock::Text { text: body }
                     | MessageBlock::Reasoning { text: body }
-                    | MessageBlock::Notice { text: body } => text.push_str(body),
+                    | MessageBlock::Notice { text: body }
+                    | MessageBlock::ContextCompaction { text: body } => text.push_str(body),
                     MessageBlock::Tool { title, output, .. } => {
                         text.push_str(title);
                         text.push('\n');

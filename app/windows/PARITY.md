@@ -29,3 +29,6 @@
 遥测（2026-10-27）：本机设置、双 SDK 代际、显式 OTLP 测试、独立分享邀请/授权/撤销与一次性复制已接入；Windows 使用官方 .NET SDK。完整 WinUI 构建、浅/深色、计时器和正常退出已验收；SDK 构造失败清理、首次写出前撤销及开发临时配置重启也通过，跨端分享矩阵仍有设备阻塞，证据见[遥测任务](../../tasks/otlp-observability/packet.md)。
 
 2026-10-27：Mac 与 Windows 同步为一个发送／排队／继续主按钮，停止独立；实时正文与附件使继续和发送互斥，发送键不触发空输入恢复，组词及停止／请求在途禁止提交。撤去文本继续 fallback。两端判定矩阵与 Windows 完整 WinUI 构建均通过；浅／深色各 11 组实际控件状态检查通过，正常退出且无 crash.log。合成验证的范围与证据见[任务记录](../../tasks/native-turn-resume/packet.md)。
+
+
+2026-10-27：主动上下文压缩已接入共享核心与 Windows 输入区按钮、更多菜单及可配置快捷键命令，支持 Codex、Claude Code 和 Pi 的原生入口，压缩状态独立展示。Mac 另提供会话菜单、命令面板与 `/compact`。本轮构建与运行证据见[上下文压缩任务](../../tasks/context-compaction/packet.md)。

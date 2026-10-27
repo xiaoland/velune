@@ -96,7 +96,7 @@ enum BindingMapping {
                  paused: value.paused.map { switch $0 { case .turnStopped: .turnStopped; case .turnFailed: .turnFailed; case .sendFailed: .sendFailed } },
                  waitingForSubAgents: value.waiting.map { switch $0 { case .subAgents: true } } ?? false,
                  canStopSubAgents: value.canStopSubAgents,
-                 canSteer: value.canSteer, canContinue: value.canContinue, canResume: value.canResume,
+                 canSteer: value.canSteer, canContinue: value.canContinue, canResume: value.canResume, canCompact: value.canCompact, isCompacting: value.isCompacting,
                  editable: value.editable.map { EditableMessage(messageID: $0.messageId, inPlace: $0.inPlace) })
     }
 
@@ -126,7 +126,7 @@ enum BindingMapping {
         case .text(let text): return .text(text)
         case .reasoning(let summary, let text): return .reasoning(summary: summary, text: payload(text))
         case .tool(let id, let title, let state, let output, let conversation): return .tool(id: id, title: title, state: toolState(state), output: output.map(payload), conversation: conversation)
-        case .notice(let text): return .notice(text)
+        case .notice(let text), .contextCompaction(let text): return .notice(text)
         case .image(let mediaType, .path(let path)): return .image(mediaType: mediaType, source: .path(path))
         case .image(let mediaType, .data(let data)): return .image(mediaType: mediaType, source: .data(payload(data)))
         case .file(let path): return .file(path: path)

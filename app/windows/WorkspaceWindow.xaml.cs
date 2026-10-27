@@ -823,19 +823,26 @@ public sealed partial class WorkspaceWindow : Window
             case Command.Rename:
                 List.RenameShown();
                 break;
+            case Command.CompactContext:
+                if (FocusedView?.Model is { CanCompact: true } conversation)
+                {
+                    _ = conversation.Compact();
+                }
+                break;
             case Command.Settings:
                 Shell.OpenSettings(SettingsPage.Keep);
                 break;
         }
     }
 
-    // FillMoreMenu lists this PC's own windows besides settings.
+    // Window actions and maintenance of the focused conversation.
     void FillMoreMenu()
     {
         MoreMenu.Items.Clear();
-        foreach (var (command, name) in new[] { (Command.Library, "资源库…"), (Command.Analytics, "分析…"), (Command.Problems, "问题…") })
+        foreach (var (command, name) in new[] { (Command.CompactContext, "压缩上下文"), (Command.Library, "资源库…"), (Command.Analytics, "分析…"), (Command.Problems, "问题…") })
         {
             var item = Ui.MenuItem(name, () => Run(command));
+            item.IsEnabled = command != Command.CompactContext || FocusedView?.Model.CanCompact == true;
             if (Commands.Bound(command) is { } keys)
             {
                 item.KeyboardAcceleratorTextOverride = keys.ToString();

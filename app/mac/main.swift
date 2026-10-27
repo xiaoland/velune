@@ -99,6 +99,7 @@ struct ConversationCommands: Commands {
                 Button("继续") { target?.window.focused.resume() }
                     .keyboardShortcut(shortcuts[.continueTurn])
                     .disabled(target?.window.focused.submission.canResume != true)
+                item(.compactContext)
                 item(.attach)
                 Divider()
                 item(.chooseRuntime)

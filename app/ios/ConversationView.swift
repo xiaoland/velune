@@ -129,6 +129,7 @@ struct ConversationContent: View {
                     Divider()
                     Button("聚焦输入", systemImage: "text.cursor") { composing = true }
                     Button("发送消息", systemImage: "arrow.up") { model.send() }.disabled(!model.canSend)
+                    Button("压缩上下文", systemImage: "arrow.down.right.and.arrow.up.left") { model.compact() }.disabled(model.snapshot?.followUp.canCompact != true || model.busy)
                     Button("停止生成", systemImage: "stop") { model.stop() }.disabled(model.snapshot?.actions.canCancel != true || model.busy)
                     Button("回到最新", systemImage: "arrow.down") { following = true; position.scrollTo(edge: .bottom) }
                     if supportsMultipleWindows, model.snapshot != nil {

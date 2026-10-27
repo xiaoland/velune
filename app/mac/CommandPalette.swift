@@ -97,6 +97,7 @@ extension ConversationWindowModel {
         case .stop: store.canCancel && !store.isLoading
         case .stopSubAgents: store.followUp.canStopSubAgents
         case .continueTurn: composerCommand ? focused.canResumeAfterCommand : focused.submission.canResume
+        case .compactContext: store.canCompact
         case .attach: !store.isShuttingDown
         case .chooseRuntime: !store.enabledRuntimeInstances.isEmpty && !store.isShuttingDown
         case .chooseModel: store.canSwitchModel
@@ -130,6 +131,7 @@ extension ConversationWindowModel {
         case .stop: store.cancel()
         case .stopSubAgents: store.stopSubAgents()
         case .continueTurn: focused.resume()
+        case .compactContext: store.compactContext()
         case .attach: focused.composer.chooseAttachments()
         case .chooseRuntime: showPalette(.runtime)
         case .chooseModel: showPalette(.model)

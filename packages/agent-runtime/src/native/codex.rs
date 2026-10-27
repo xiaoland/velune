@@ -436,15 +436,34 @@ impl NativeSession {
         );
         Ok(catalog)
     }
+    pub(super) fn codex_compact(&mut self) -> Result<()> {
+        let thread = self
+            .native_id
+            .as_deref()
+            .ok_or_else(|| Error::new("Codex 没有活动会话"))?;
+        self.rpc
+            .request("thread/compact/start", &json!({"threadId":thread}))?;
+        self.turn_id = None;
+        self.codex_cancel_pending = false;
+        self.running();
+        Ok(())
+    }
+
     pub(super) fn codex_cancel(&mut self) -> Result<()> {
         let thread = self
             .native_id
             .as_deref()
             .ok_or_else(|| Error::new("Codex 没有活动会话"))?;
-        let turn = self
-            .turn_id
-            .as_deref()
-            .ok_or_else(|| Error::new("Codex 没有可取消轮次"))?;
+        let turn = self.turn_id.as_deref();
+        if turn.is_none() && self.compacting {
+            self.codex_cancel_pending = true;
+            if let Some(snapshot) = &mut self.snapshot {
+                snapshot.run_state = RunState::Stopping;
+                snapshot.revision += 1;
+            }
+            return Ok(());
+        }
+        let turn = turn.ok_or_else(|| Error::new("Codex 没有可取消轮次"))?;
         self.rpc
             .request("turn/interrupt", &json!({"threadId":thread,"turnId":turn}))?;
         if let Some(snapshot) = &mut self.snapshot {
@@ -461,6 +480,9 @@ impl NativeSession {
         else {
             return;
         };
+        if item["type"] == "contextCompaction" {
+            self.compaction_message_id = item["id"].as_str().map(str::to_owned);
+        }
         if let Some(mut message) = project_item(item, &runtime_id) {
             if message.role == MessageRole::User {
                 message.branch_point = turn.map(str::to_owned);
@@ -514,6 +536,13 @@ impl NativeSession {
             return self.codex_request(&record, false);
         }
         match method {
+            "turn/started" if self.compacting => {
+                self.turn_id = params["turn"]["id"].as_str().map(str::to_owned);
+                if self.codex_cancel_pending {
+                    self.codex_cancel_pending = false;
+                    self.codex_cancel()?;
+                }
+            }
             "item/started" | "item/completed" => {
                 self.codex_item(&params["item"], params["turnId"].as_str());
                 if let Some(message) = self.snapshot.as_mut().and_then(|snapshot| {
@@ -523,6 +552,16 @@ impl NativeSession {
                         .find(|message| Some(message.id.as_str()) == params["item"]["id"].as_str())
                 }) {
                     message.completed = method == "item/completed";
+                    for block in &mut message.blocks {
+                        if let MessageBlock::ContextCompaction { text } = block {
+                            *text = if message.completed {
+                                "上下文已压缩"
+                            } else {
+                                "正在压缩上下文"
+                            }
+                            .into();
+                        }
+                    }
                 }
             }
             "item/agentMessage/delta" => {
@@ -559,7 +598,9 @@ impl NativeSession {
                     && Some(turn) == self.turn_id.as_deref()
                 {
                     let status = params["turn"]["status"].as_str();
-                    if let Some(snapshot) = &mut self.snapshot {
+                    if !self.compacting
+                        && let Some(snapshot) = &mut self.snapshot
+                    {
                         snapshot.follow_up.can_resume =
                             matches!(status, Some("interrupted" | "failed"));
                     }
@@ -573,12 +614,9 @@ impl NativeSession {
                         } else {
                             error
                         };
-                        self.message(project_error(
-                            turn,
-                            error,
-                            false,
-                            turn_completed_at(&params["turn"]),
-                        )?);
+                        let error =
+                            project_error(turn, error, false, turn_completed_at(&params["turn"]))?;
+                        self.codex_error_message(error);
                     } else if let Some(snapshot) = &mut self.snapshot {
                         let id = error_id(turn);
                         snapshot.messages.retain(|message| message.id != id);
@@ -644,7 +682,8 @@ impl NativeSession {
                     let retrying = params["willRetry"]
                         .as_bool()
                         .ok_or_else(|| Error::new("Codex 错误通知缺少重试状态"))?;
-                    self.message(project_error(turn, &params["error"], retrying, None)?);
+                    let error = project_error(turn, &params["error"], retrying, None)?;
+                    self.codex_error_message(error);
                     self.codex_turn_error = Some(params["error"].clone());
                 }
             }
@@ -652,6 +691,24 @@ impl NativeSession {
         }
         Ok(())
     }
+    fn codex_error_message(&mut self, mut message: Message) {
+        if self.compacting {
+            message.id = self.compaction_message_id.clone().unwrap_or(message.id);
+            self.compaction_message_id = Some(message.id.clone());
+            message.blocks = message
+                .blocks
+                .into_iter()
+                .map(|block| match block {
+                    MessageBlock::Notice { text } => MessageBlock::ContextCompaction {
+                        text: format!("上下文压缩失败：{text}"),
+                    },
+                    block => block,
+                })
+                .collect();
+        }
+        self.message(message);
+    }
+
     /// Follows another thread of this app-server: a native sub-agent the
     /// conversation started, or one of theirs, works while its status is
     /// active. Tracking every thread, not only those the spawning item
@@ -1235,6 +1292,12 @@ pub(super) fn project_item(item: &Value, runtime_id: &str) -> Option<Message> {
             MessageRole::System,
             vec![MessageBlock::Notice {
                 text: item["text"].as_str().unwrap_or_default().into(),
+            }],
+        ),
+        "contextCompaction" => (
+            MessageRole::System,
+            vec![MessageBlock::ContextCompaction {
+                text: "上下文已压缩".into(),
             }],
         ),
         _ => return None,

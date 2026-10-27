@@ -18,6 +18,7 @@ pub enum TranscriptEvent<'a> {
 struct MessageAnchor {
     id: String,
     role: MessageRole,
+    compaction: bool,
     /// Index of the first block of the trailing visible text, which is the
     /// agent's reply; `None` when an assistant message does not end in text.
     reply_start: Option<usize>,
@@ -88,6 +89,10 @@ impl TranscriptProjection {
                     .map(|message| MessageAnchor {
                         id: message.id.clone(),
                         role: message.role.clone(),
+                        compaction: message
+                            .blocks
+                            .iter()
+                            .any(|block| matches!(block, MessageBlock::ContextCompaction { .. })),
                         reply_start: (message.role == MessageRole::Assistant)
                             .then(|| trailing_text_start(&message.blocks))
                             .flatten(),
@@ -241,7 +246,10 @@ impl TranscriptProjection {
                     .get(ordinal + 1)
                     .copied()
                     .unwrap_or(self.messages.len());
-                let responses = &self.messages[start + 1..next_user];
+                let responses: Vec<_> = self.messages[start + 1..next_user]
+                    .iter()
+                    .filter(|message| !message.compaction)
+                    .collect();
                 // The reply is the text at the end of the closing assistant
                 // message. Everything before it, including that message's own
                 // reasoning and tool blocks, is work; a turn that does not end
@@ -356,4 +364,26 @@ fn trailing_text_start(blocks: &[MessageBlock]) -> Option<usize> {
         .iter()
         .any(|block| matches!(block, MessageBlock::Text { text } if !text.trim().is_empty()))
         .then_some(start)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn compaction_remains_visible_without_hiding_the_reply() {
+        let messages: Vec<Message> = serde_json::from_value(serde_json::json!([
+            {"id":"user","role":"user","completed":true,"blocks":[{"kind":"text","text":"hello"}]},
+            {"id":"answer","role":"assistant","completed":true,"blocks":[{"kind":"text","text":"done"}]},
+            {"id":"compact","role":"system","completed":false,"blocks":[{"kind":"contextCompaction","text":"正在压缩上下文"}]}
+        ])).unwrap();
+        let mut projection = TranscriptProjection::default();
+        projection.apply(TranscriptEvent::ReplaceMessages(&messages));
+        let turn = &projection.turns()[0];
+        assert_eq!(turn.last_message_id.as_deref(), Some("answer"));
+        assert!(turn.work_message_ids.is_empty());
+        assert!(
+            matches!(projection.items().last(), Some(TranscriptItem::Message { message_id, .. }) if message_id == "compact")
+        );
+    }
 }

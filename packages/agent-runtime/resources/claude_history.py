@@ -124,6 +124,11 @@ def history(path, native_id, runtime_id, sidechain=False):
     prompt, usages, prompt_id, can_resume = None, {}, None, False
     for entry in reversed(chain):
         role = entry.get("type")
+        if role == "system" and entry.get("subtype") == "compact_boundary":
+            messages.append({"id": entry["uuid"], "role": "system", "completed": True,
+                             "timestamp_unix_ms": timestamp(entry.get("timestamp")),
+                             "blocks": [{"kind": "contextCompaction", "text": "上下文已压缩"}]})
+            continue
         if role not in ("user", "assistant"):
             continue
         if role == "user" and entry.get("isMeta"):
@@ -146,6 +151,8 @@ def history(path, native_id, runtime_id, sidechain=False):
         command = local_command(content) if role == "user" else None
         if command is not None:
             kind, text = command
+            if kind == "input" and text.split(" ", 1)[0] == "/compact":
+                continue
             if kind == "output":
                 if text:
                     messages.append({"id": entry["uuid"], "role": "system", "completed": True,

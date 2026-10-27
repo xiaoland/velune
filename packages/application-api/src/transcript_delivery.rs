@@ -54,6 +54,9 @@ pub enum DeliveredBlock {
     Notice {
         text: String,
     },
+    ContextCompaction {
+        text: String,
+    },
     Image {
         media_type: Option<String>,
         source: DeliveredImageSource,

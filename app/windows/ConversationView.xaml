@@ -153,6 +153,7 @@
                                     <MenuFlyout x:Name="AgentMenu" Placement="TopEdgeAlignedLeft" />
                                 </DropDownButton.Flyout>
                             </DropDownButton>
+                            <Button x:Name="CompactButton" Content="压缩上下文" />
                             <DropDownButton x:Name="PermissionButton">
                                 <DropDownButton.Flyout>
                                     <MenuFlyout x:Name="PermissionMenu" Placement="TopEdgeAlignedLeft" />

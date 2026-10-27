@@ -421,6 +421,15 @@ impl Application {
                 conversation_id,
                 turn,
             } => Response::SteerTurn(application.steer_turn(runtime_id, conversation_id, turn)?),
+            Command::CompactConversation {
+                runtime_id,
+                conversation_id,
+                selection,
+            } => Response::CompactConversation(application.compact_conversation(
+                runtime_id,
+                conversation_id,
+                selection,
+            )?),
             Command::ResumeTurn {
                 runtime_id,
                 conversation_id,
@@ -758,6 +767,7 @@ impl Application {
             | Response::SendQueue(result)
             | Response::SteerTurn(result)
             | Response::ResumeTurn(result)
+            | Response::CompactConversation(result)
             | Response::EditMessage(result)
             | Response::Cancel(result)
             | Response::StopSubAgents(result)

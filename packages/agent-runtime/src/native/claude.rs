@@ -311,6 +311,7 @@ impl NativeSession {
         Ok(())
     }
     pub(super) fn claude_send(&mut self, input: &crate::TurnInput) -> Result<()> {
+        self.compaction_message_id = None;
         let text = input.text.as_str();
         self.claude_result = None;
         self.claude_tasks.clear();
@@ -394,6 +395,66 @@ impl NativeSession {
         });
         Ok(())
     }
+    pub(super) fn claude_compact(&mut self) -> Result<()> {
+        self.claude_result = None;
+        self.compaction_message_id = None;
+        self.claude_context = None;
+        self.rpc.write(
+            &json!({"type":"user","session_id":self.native_id,"parent_tool_use_id":null,
+            "message":{"role":"user","content":[{"type":"text","text":"/compact"}]}}),
+        )?;
+        self.turn_id = Some(format!(
+            "{}:compact:{}",
+            self.epoch,
+            self.snapshot.as_ref().map_or(0, |s| s.revision)
+        ));
+        self.claude_start = ClaudeStart::Resume;
+        self.running();
+        Ok(())
+    }
+
+    fn claude_compaction_status(&mut self, text: String, completed: bool, native_id: Option<&str>) {
+        let previous = self.compaction_message_id.clone();
+        let id = native_id
+            .map(str::to_owned)
+            .or_else(|| previous.clone())
+            .unwrap_or_else(|| {
+                format!(
+                    "claude-compaction:{}:{}",
+                    self.epoch,
+                    self.snapshot.as_ref().map_or(0, |s| s.revision)
+                )
+            });
+        if let Some(previous) = previous.filter(|previous| previous != &id)
+            && let Some(snapshot) = &mut self.snapshot
+        {
+            if let Some(message) = snapshot
+                .messages
+                .iter_mut()
+                .find(|message| message.id == previous)
+            {
+                message.id = id.clone();
+            }
+            snapshot.message_identity_confirmations.push(
+                crate::conversation::MessageIdentityConfirmation {
+                    previous_id: previous,
+                    current_id: id.clone(),
+                },
+            );
+        }
+        self.compaction_message_id = Some(id.clone());
+        self.message(Message {
+            id,
+            completed,
+            role: MessageRole::System,
+            timestamp_unix_ms: None,
+            blocks: vec![MessageBlock::ContextCompaction { text }],
+            turn_settings: None,
+            turn_usage: None,
+            branch_point: None,
+        });
+    }
+
     pub(super) fn claude_cancel(&mut self) -> Result<()> {
         self.rpc.claude_control(json!({"subtype":"interrupt"}))?;
         if let Some(snapshot) = &mut self.snapshot {
@@ -502,6 +563,44 @@ impl NativeSession {
                 }
             }
             Some("system") => match record["subtype"].as_str() {
+                Some("status") if record["status"] == "compacting" => {
+                    let active = self.snapshot.as_ref().is_some_and(|snapshot| {
+                        snapshot.messages.iter().any(|message| {
+                            Some(&message.id) == self.compaction_message_id.as_ref()
+                                && !message.completed
+                        })
+                    });
+                    if !active {
+                        self.compaction_message_id = None;
+                    }
+                    self.claude_compaction_status("正在压缩上下文".into(), false, None);
+                }
+                Some("status") if record["compact_result"].is_string() => {
+                    let text = if self
+                        .snapshot
+                        .as_ref()
+                        .is_some_and(|snapshot| snapshot.run_state == RunState::Stopping)
+                    {
+                        "上下文压缩已取消".into()
+                    } else if record["compact_result"] == "success" {
+                        "上下文已压缩".into()
+                    } else {
+                        format!(
+                            "上下文压缩失败：{}",
+                            record["compact_error"]
+                                .as_str()
+                                .unwrap_or("运行时未提供原因")
+                        )
+                    };
+                    self.claude_compaction_status(text, true, None);
+                }
+                Some("compact_boundary") => {
+                    self.claude_compaction_status(
+                        "上下文已压缩".into(),
+                        true,
+                        record["uuid"].as_str(),
+                    );
+                }
                 Some("session_state_changed") => {
                     self.claude_requires_action = record["state"] == "requires_action";
                     if record["state"] == "idle"
@@ -587,6 +686,10 @@ impl NativeSession {
                     self.claude_error(claude_error_blocks(&record)?);
                     return Ok(());
                 }
+                // Local /compact output belongs to maintenance; status/result carry its outcome.
+                if self.compacting && record["type"] == "assistant" {
+                    return Ok(());
+                }
                 let agent = record["tool_use_result"]["agentId"]
                     .as_str()
                     .and_then(|agent| self.claude_agent_conversation(agent));
@@ -626,6 +729,9 @@ impl NativeSession {
                 }
             }
             Some("stream_event") => {
+                if self.compacting {
+                    return Ok(());
+                }
                 if let Some((_, last_activity)) = &mut self.claude_result {
                     *last_activity = std::time::Instant::now();
                 }
@@ -699,6 +805,13 @@ impl NativeSession {
                 );
                 let failed =
                     !interrupted && (record["is_error"] == true || record["subtype"] != "success");
+                if self.compacting && self.compaction_message_id.is_none() {
+                    let detail = record["result"]
+                        .as_str()
+                        .filter(|text| !text.trim().is_empty())
+                        .unwrap_or("运行时未确认执行压缩");
+                    self.claude_compaction_status(format!("上下文未压缩：{detail}"), true, None);
+                }
                 if failed {
                     self.claude_error(claude_error_blocks(&record)?);
                 }
@@ -732,6 +845,18 @@ impl NativeSession {
         Ok(())
     }
     fn claude_error(&mut self, blocks: Vec<MessageBlock>) {
+        if self.compacting {
+            let text = blocks
+                .into_iter()
+                .filter_map(|block| match block {
+                    MessageBlock::Notice { text } | MessageBlock::Text { text } => Some(text),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            self.claude_compaction_status(format!("上下文压缩失败：{text}"), true, None);
+            return;
+        }
         let Some(turn) = &self.turn_id else { return };
         let id = format!("{turn}:error");
         let mut message = self

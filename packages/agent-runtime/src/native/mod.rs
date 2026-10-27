@@ -140,6 +140,8 @@ pub struct NativeSession {
     snapshot: Option<ConversationSnapshot>,
     native_id: Option<String>,
     turn_id: Option<String>,
+    compacting: bool,
+    codex_cancel_pending: bool,
     /// Last error of the active Codex turn, if its completion omits details.
     codex_turn_error: Option<Value>,
     pending_rpc: BTreeMap<u64, String>,
@@ -153,6 +155,7 @@ pub struct NativeSession {
     /// Injected MCP services the Harness already has under the same name.
     shadowed_mcp_servers: std::collections::BTreeSet<String>,
     claude_result: Option<(bool, std::time::Instant)>,
+    compaction_message_id: Option<String>,
     claude_tasks: std::collections::BTreeSet<String>,
     /// Conversations of the native sub-agents this conversation's tool
     /// calls started; their later events belong to this conversation.
@@ -259,6 +262,9 @@ impl NativeSession {
             native_provider: None,
             shadowed_mcp_servers: std::collections::BTreeSet::new(),
             claude_result: None,
+            compaction_message_id: None,
+            compacting: false,
+            codex_cancel_pending: false,
             claude_tasks: std::collections::BTreeSet::new(),
             sub_agents: std::collections::BTreeSet::new(),
             codex_threads: BTreeMap::new(),
@@ -385,6 +391,31 @@ impl NativeSession {
     }
     pub fn send(&mut self, input: &crate::TurnInput) -> Result<()> {
         self.start_turn(input, false)
+    }
+
+    /// Maintain the current native context without adding a user turn.
+    pub fn compact(&mut self) -> Result<()> {
+        self.ensure_idle()?;
+        if self.config.kind == NativeKind::DeepSeek {
+            return Err(Error::new("此运行时不支持主动压缩上下文"));
+        }
+        if !self.work().is_empty() {
+            return Err(Error::new("请先等待子 Agent 结束"));
+        }
+        self.compacting = true;
+        self.compaction_message_id = None;
+        let result = (|| {
+            self.prepare_turn(None, None)?;
+            match self.config.kind {
+                NativeKind::Codex => self.codex_compact(),
+                NativeKind::ClaudeCode => self.claude_compact(),
+                NativeKind::DeepSeek => unreachable!(),
+            }
+        })();
+        if result.is_err() {
+            self.compacting = false;
+        }
+        result
     }
     /// Starts a native turn from the existing context without a user message.
     pub fn resume(
@@ -656,13 +687,40 @@ impl NativeSession {
     }
 
     fn fail_connection(&mut self) {
+        let compacting = self.compacting;
+        let pending_compaction = self.snapshot.as_ref().and_then(|snapshot| {
+            snapshot
+                .messages
+                .iter()
+                .find(|message| {
+                    !message.completed && Some(&message.id) == self.compaction_message_id.as_ref()
+                })
+                .map(|message| message.id.clone())
+        });
         self.rpc.shutdown();
         self.process_ended = true;
         self.codex_threads.clear();
         self.interactions.clear();
         self.failed = true;
         self.settle(RunState::Failed);
-        self.notice("运行时控制连接已终止，请重新连接；已有消息仍保留。");
+        let text = "运行时控制连接已终止，请重新连接；已有消息仍保留。";
+        if compacting {
+            self.message(Message {
+                id: pending_compaction
+                    .unwrap_or_else(|| format!("compaction-connection-{}", self.epoch)),
+                role: MessageRole::System,
+                blocks: vec![MessageBlock::ContextCompaction {
+                    text: format!("上下文压缩已中断：{text}"),
+                }],
+                completed: true,
+                timestamp_unix_ms: None,
+                turn_settings: None,
+                turn_usage: None,
+                branch_point: None,
+            });
+        } else {
+            self.notice(text);
+        }
     }
 
     pub fn snapshot(&self) -> Option<&ConversationSnapshot> {
@@ -863,9 +921,27 @@ impl NativeSession {
         self.interactions.retain(|id, _| background.contains(id));
         if let Some(snapshot) = &mut self.snapshot {
             for message in &mut snapshot.messages {
+                if !message.completed {
+                    for block in &mut message.blocks {
+                        if let MessageBlock::ContextCompaction { text } = block {
+                            *text = if snapshot.run_state == RunState::Stopping {
+                                "上下文压缩已取消"
+                            } else if state == RunState::Failed {
+                                "上下文压缩失败"
+                            } else {
+                                "上下文压缩已结束（未收到完成确认）"
+                            }
+                            .into();
+                        }
+                    }
+                }
                 message.completed = true;
             }
-            snapshot.run_state = state;
+            snapshot.run_state = if self.compacting && !self.failed {
+                RunState::Idle
+            } else {
+                state
+            };
             snapshot
                 .pending_interactions
                 .retain(|interaction| background.contains(&interaction.id));
@@ -876,6 +952,8 @@ impl NativeSession {
             };
             snapshot.revision += 1;
         }
+        self.compacting = false;
+        self.codex_cancel_pending = false;
         self.end_spent_process();
     }
     /// A Claude Code turn's process serves only that turn: it ends once the
@@ -914,6 +992,9 @@ impl NativeSession {
     }
     /// Updates the usage of the turn the last user message starts.
     fn turn_usage(&mut self, update: impl FnOnce(&mut Option<TurnUsage>)) {
+        if self.compacting {
+            return;
+        }
         if let Some(snapshot) = &mut self.snapshot
             && let Some(user) = snapshot
                 .messages
@@ -967,4 +1048,92 @@ fn sub_agent_conversations(messages: &[Message]) -> impl Iterator<Item = String>
             } => Some(conversation.clone()),
             _ => None,
         })
+}
+
+#[cfg(all(test, unix))]
+mod compaction_tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn compaction_connection_failures_preserve_reply_and_confirmed_success() {
+        for phase in ["prepare", "pending", "completed"] {
+            let mut nonce = [0; 8];
+            getrandom::fill(&mut nonce).unwrap();
+            let root = std::env::temp_dir()
+                .join(format!("velune-compact-{:x}", u64::from_le_bytes(nonce)));
+            std::fs::create_dir(&root).unwrap();
+            let binary = root.join("codex");
+            std::fs::write(
+                &binary,
+                r#"#!/bin/sh
+if [ "$1" = --version ]; then echo 'codex-cli 0.159.3'; exit 0; fi
+if [ -f "$CODEX_HOME/fail-initialize" ]; then exit 1; fi
+while IFS= read -r line; do
+  case "$line" in
+    *'"id":'*) printf '%s\n' "$line" | sed -n 's/.*"id":\([0-9]*\).*/{"id":\1,"result":{}}/p' ;;
+  esac
+done
+"#,
+            )
+            .unwrap();
+            std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
+            let mut session = NativeSession::connect(NativeConfig {
+                execution: crate::execution::ExecutionTarget::Local,
+                os_home: Some(root.clone()),
+                kind: NativeKind::Codex,
+                binary,
+                node_binary: None,
+                agent_dir: root.clone(),
+                resources_directory: root.clone(),
+                projection_directory: root.clone(),
+                gateway: None,
+                mcp_servers: vec![],
+                session_agents: vec![],
+            })
+            .unwrap();
+            let messages = serde_json::from_value(json!([
+                {"id":"user","role":"user","completed":true,"blocks":[{"kind":"text","text":"hello"}]},
+                {"id":"answer","role":"assistant","completed":true,"blocks":[{"kind":"text","text":"done"}]}
+            ])).unwrap();
+            session.replace_snapshot("synthetic", Some(&root), "codex", messages);
+            if phase == "prepare" {
+                session.restart_required = true;
+                std::fs::write(root.join("fail-initialize"), "synthetic").unwrap();
+                assert!(session.compact().is_err());
+            } else {
+                session.compact().unwrap();
+                session.codex_handle_record(json!({"method":if phase == "completed" {"item/completed"} else {"item/started"},
+                    "params":{"item":{"id":"compact","type":"contextCompaction"}}})).unwrap();
+                session.fail_connection();
+            }
+            assert!(!session.compacting);
+            let snapshot = session.snapshot().unwrap();
+            assert_eq!(snapshot.run_state, RunState::Failed);
+            assert!(snapshot.messages.iter().all(|message| message.completed));
+            assert!(
+                matches!(&snapshot.messages.last().unwrap().blocks[0], MessageBlock::ContextCompaction { text } if text.contains("连接"))
+            );
+            if phase == "completed" {
+                let confirmed = snapshot
+                    .messages
+                    .iter()
+                    .find(|message| message.id == "compact")
+                    .unwrap();
+                assert!(
+                    matches!(&confirmed.blocks[0], MessageBlock::ContextCompaction { text } if text == "上下文已压缩")
+                );
+            }
+            let mut transcript = crate::transcript::TranscriptProjection::default();
+            transcript.apply(crate::transcript::TranscriptEvent::ReplaceMessages(
+                &snapshot.messages,
+            ));
+            assert_eq!(
+                transcript.turns()[0].last_message_id.as_deref(),
+                Some("answer")
+            );
+            drop(session);
+            std::fs::remove_dir_all(root).unwrap();
+        }
+    }
 }

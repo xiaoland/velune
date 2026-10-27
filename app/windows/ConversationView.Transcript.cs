@@ -148,7 +148,9 @@ public sealed partial class ConversationView
         {
             Add("sending", (Model.Accepted ? "1" : "0") + sending, () => SendingRow(sending, Model.Accepted));
         }
-        if (Model.Working && !outlineFolded)
+        var showingCompaction = Model.Messages.Any(message => !message.Completed
+            && message.Blocks.Any(block => block is BindingMessageBlock.ContextCompaction));
+        if (Model.Working && !outlineFolded && !showingCompaction)
         {
             var status = Status();
             Add("status:" + status, "", () => StatusRow(status));
@@ -319,6 +321,11 @@ public sealed partial class ConversationView
                 centered.HorizontalAlignment = HorizontalAlignment.Center;
                 centered.TextAlignment = TextAlignment.Center;
                 return centered;
+            case BindingMessageBlock.ContextCompaction compaction:
+                var status = Muted(compaction.TextValue);
+                status.HorizontalAlignment = HorizontalAlignment.Center;
+                status.TextAlignment = TextAlignment.Center;
+                return status;
             case BindingMessageBlock.Reasoning reasoning:
                 var summary = reasoning.Summary.Trim();
                 if (summary.Length == 0)

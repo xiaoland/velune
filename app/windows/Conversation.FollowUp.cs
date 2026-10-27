@@ -171,9 +171,19 @@ sealed partial class Conversation
             var ready = !Busy && !Loading && Next.Length > 0 && Uploading == 0;
             var canSend = ready && !Working && !activityRunning && (Target.Unsent || Snapshot is { Actions.CanSend: true } snapshot && !snapshot.PendingInteractions.Any());
             return ComposerSubmission.Resolve(phase, !string.IsNullOrWhiteSpace(composerText) || Attached.Count > 0 || Uploading > 0,
-                composing, canSend, ready && Running && !stopRequested,
+                composing, canSend, ready && Running && !stopRequested && FollowUp?.IsCompacting != true,
                 FollowUp is { CanResume: true } && Next == Snapshot?.ContextRuntimeId);
         }
+    }
+
+    public bool CanCompact => !Busy && !Loading && !Working && !activityRunning
+        && FollowUp?.CanCompact == true && Next == Snapshot?.ContextRuntimeId;
+
+    public async Task Compact()
+    {
+        if (!CanCompact || Snapshot is not { } snapshot) return;
+        var selection = NextModel();
+        await Change("压缩上下文", application => application.CompactConversation(snapshot.ContextRuntimeId, snapshot.Conversation.Id, selection));
     }
 
     public async Task<bool> Continue()

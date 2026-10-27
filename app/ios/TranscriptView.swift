@@ -92,7 +92,7 @@ private struct MessageView: View {
                     case .text(let text):
                         if message.role == .user { Text(text).textSelection(.enabled) }
                         else { MarkdownText(source: text) }
-                    case .notice(let text): Text(text).font(.callout).foregroundStyle(.secondary).frame(maxWidth: .infinity)
+                    case .notice(let text), .contextCompaction(let text): Text(text).font(.callout).foregroundStyle(.secondary).frame(maxWidth: .infinity)
                     case .reasoning(let summary, let payload):
                         DisclosureGroup(summary.isEmpty ? "思考" : summary) { PayloadView(payload: payload, messageID: message.id, model: model) }
                     case .tool(_, let title, let state, let payload, let linked):

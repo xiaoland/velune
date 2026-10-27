@@ -106,7 +106,7 @@ extension View {
 enum ShortcutCommand: String, CaseIterable, Identifiable {
     case newConversation, openConversation, newTab, newWindow, closeTab, closeWindow
     case find
-    case stop, stopSubAgents, continueTurn, attach, chooseRuntime, chooseModel, chooseEffort, choosePermission, nextAttention, reload
+    case stop, stopSubAgents, continueTurn, compactContext, attach, chooseRuntime, chooseModel, chooseEffort, choosePermission, nextAttention, reload
     case splitRight, splitDown, closeSplit, back, forward, nextPane, previousPane, nextTab, previousTab, moveTabToNewWindow, keepInFront
     case commandPalette, focusTranscript, showList, showOutline, focusComposer, showAgents, rightArea, bottomArea, editorOnly, problems
     case shortcutHelp
@@ -125,7 +125,7 @@ enum ShortcutCommand: String, CaseIterable, Identifiable {
         switch self {
         case .newConversation, .openConversation, .newTab, .newWindow, .closeTab, .closeWindow: .file
         case .find: .edit
-        case .stop, .stopSubAgents, .continueTurn, .attach, .chooseRuntime, .chooseModel, .chooseEffort, .choosePermission, .nextAttention, .reload: .conversation
+        case .stop, .stopSubAgents, .continueTurn, .compactContext, .attach, .chooseRuntime, .chooseModel, .chooseEffort, .choosePermission, .nextAttention, .reload: .conversation
         case .splitRight, .splitDown, .closeSplit, .back, .forward, .nextPane, .previousPane, .nextTab, .previousTab, .moveTabToNewWindow, .keepInFront: .window
         case .commandPalette, .focusTranscript, .showList, .showOutline, .focusComposer, .showAgents, .rightArea, .bottomArea, .editorOnly, .problems: .view
         case .shortcutHelp: .help
@@ -147,6 +147,7 @@ enum ShortcutCommand: String, CaseIterable, Identifiable {
         case .stop: "停止生成"
         case .stopSubAgents: "停止子 Agent"
         case .continueTurn: "继续"
+        case .compactContext: "压缩上下文"
         case .attach: "添加附件…"
         case .chooseRuntime: "选择运行时…"
         case .chooseModel: "选择模型…"
@@ -195,6 +196,7 @@ enum ShortcutCommand: String, CaseIterable, Identifiable {
         case .stop: "Stop"
         case .stopSubAgents: "Stop Sub-agents"
         case .continueTurn: "Continue"
+        case .compactContext: "Compact context"
         case .attach: "Attach Files"
         case .chooseRuntime: "Choose Runtime"
         case .chooseModel: "Choose Model"
@@ -238,6 +240,7 @@ enum ShortcutCommand: String, CaseIterable, Identifiable {
         case .stop: ["cancel", "interrupt", "abort", "中断", "取消"]
         case .stopSubAgents: ["subagent", "cancel"]
         case .continueTurn: ["resume", "retry", "重试"]
+        case .compactContext: ["compact", "压缩"]
         case .attach: ["attachment", "upload", "file", "image", "文件", "图片"]
         case .chooseRuntime: ["switch runtime", "agent", "harness", "切换运行时"]
         case .chooseModel: ["switch model", "llm", "切换模型"]
@@ -307,7 +310,7 @@ enum ShortcutCommand: String, CaseIterable, Identifiable {
         case .editorOnly: Shortcut("return", [.command, .shift])
         case .problems: Shortcut("m", [.command, .shift])
         // Global ones are the user's to choose: any default would take a key from other apps.
-        case .stopSubAgents, .continueTurn, .closeSplit, .moveTabToNewWindow, .keepInFront, .globalShow, .globalNewConversation: nil
+        case .stopSubAgents, .continueTurn, .compactContext, .closeSplit, .moveTabToNewWindow, .keepInFront, .globalShow, .globalNewConversation: nil
         }
     }
 

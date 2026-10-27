@@ -40,6 +40,8 @@ pub(super) struct Session {
     pub(super) last_execution: Option<std::time::Instant>,
     /// The user asked to stop the current turn.
     pub(super) cancel_requested: bool,
+    /// Context maintenance must not complete a user turn or advance its queue.
+    pub(super) compacting: bool,
     pub(super) send_queue: follow_up::SendQueue,
 }
 

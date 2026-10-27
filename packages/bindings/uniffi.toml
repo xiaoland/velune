@@ -15,4 +15,5 @@ namespace = "Velune.Bindings"
 [bindings.csharp.rename.velune_bindings]
 "BindingMessageBlock.Reasoning.text" = "text_value"
 "BindingMessageBlock.Notice.text" = "text_value"
+"BindingMessageBlock.ContextCompaction.text" = "text_value"
 "BindingResourceTemplateContent.Subagent.instructions" = "instructions_value"

@@ -490,3 +490,9 @@ python3 scripts/dev-telemetry.py query /absolute/path/run.json metrics
 状态 45 秒未刷新或 run ID 不匹配时视为过期；停止进程后不要把旧文件当作当前生效状态。状态文件缺失、容器路径不可读或内容无效时返回 `state_unavailable`，不能解释为关闭。SDK 的 `rpc_completed` 不证明三信号已经存入后台，必须分别查询并检查时间范围、实例、采样和结果限制。精确实时丢弃计数没有统一公开接口，未知值不能视为零；已知 SDK 丢弃汇总留在同目录 `sdk-diagnostics.json`，包含原修订并最多保留 64 条。Swift SDK 没有日志丢弃 hook。正常退出与移动端强制结束的证据边界不同。
 
 Apple coordinator／真实 UniFFI／gRPC 隔离验收使用 `scripts/manual-telemetry.py`，需安装官方 Python `grpcio` 与 `opentelemetry-proto`，以及匹配的 SwiftPM 构建产物。它使用临时 HOME、合成字段和本地接收器，验证三信号、环境隔离、零采样、并发父节点、旧队列撤销与共享关闭。可加 `--distributed --gateway --queue`，验证真实 QUIC／Core 的并行轮次、断连续跑、原 RequestId 恢复、SDK 切换、HTTP Gateway failover 和实际 AppStore 队列等待；不证明实际移动证书、前后台或四平台分享矩阵。当前平台结果与尚缺证据统一记录在[任务包](../tasks/otlp-observability/packet.md)，不能用构建通过替代产品验收。
+
+## 主动上下文压缩
+
+会话空闲且核心公布 `can_compact` 时，可对同一原生上下文执行主动压缩。Codex、Claude Code 和 Pi 使用各自原生入口；进行中可停止，不新增普通用户消息，也不推进原有发送队列。Mac 入口为“会话 → 压缩上下文”、命令面板和 `/compact`，Windows 另有更多菜单与可配置快捷键命令，各平台也提供会话操作按钮。来源差异与跨重开限制见 [运行时说明](../packages/agent-runtime/README.md#主动上下文压缩)。
+
+[隔离验收脚本](../scripts/manual-context-compaction.py) 显式传入 `--runtime codex|claude|pi`、`--binary`、`--node`、匹配的 `--library`、生成 Python 绑定目录 `--bindings` 和运行时 helper 目录 `--resources`，所有路径均为绝对路径。它在临时 HOME 用实际受支持的 CLI 与本机合成上游验证进度、取消、失败、重开和暂停队列；POSIX 上加 `--disconnect` 验证运行时进程退出后原回复仍独立可见、压缩状态结束。`--keep` 只用于保留新建的合成工作区以检查原生记录或界面，不读取已有用户数据。脚本不接入 CI，真实供应商与设备体验需另行验收。

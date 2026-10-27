@@ -58,6 +58,7 @@ public sealed partial class ConversationView
             }
         };
         ComposerPanel.Drop += Drop;
+        CompactButton.Click += async (_, _) => await Model.Compact();
         StatusButton.Click += (_, _) => ShowStatus();
         RestoreDraft();
     }
@@ -241,6 +242,7 @@ public sealed partial class ConversationView
         ToolTipService.SetToolTip(SendButton, submission.Action == ComposerSubmission.Kind.Resume ? "从现有上下文继续，不新增用户消息"
             : submission.Action == ComposerSubmission.Kind.Queue ? "Ctrl+Enter 加入发送队列；Ctrl+Shift+Enter 插入本轮" : "Ctrl+Enter 发送消息");
         AttachButton.IsEnabled = !Model.Busy;
+        CompactButton.IsEnabled = Model.CanCompact;
     }
 
     void RenderAttachments()

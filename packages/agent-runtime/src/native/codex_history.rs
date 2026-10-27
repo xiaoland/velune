@@ -282,6 +282,24 @@ mod tests {
     use super::*;
 
     #[test]
+    fn automatic_compaction_does_not_turn_user_failure_into_maintenance() {
+        let items = vec![
+            json!({"turnId":"user-turn","item":{"id":"prompt","type":"userMessage","content":[{"type":"text","text":"question"}]}}),
+            json!({"turnId":"user-turn","item":{"id":"compact","type":"contextCompaction"}}),
+        ];
+        let turns =
+            vec![json!({"id":"user-turn","status":"failed","error":{"message":"answer failed"}})];
+        let messages = project_history(&items, &turns, &HashMap::new(), "runtime").unwrap();
+        assert!(messages.iter().any(|message| message.blocks
+            == vec![MessageBlock::ContextCompaction {
+                text: "上下文已压缩".into()
+            }]));
+        assert!(messages.iter().any(|message| message.blocks.iter().any(
+            |block| matches!(block, MessageBlock::Notice { text } if text.contains("answer failed"))
+        )));
+    }
+
+    #[test]
     fn input_free_turn_usage_stays_with_preceding_user_without_changing_settings() {
         let items = vec![
             json!({"turnId":"first","item":{"id":"u1","type":"userMessage","content":[{"type":"text","text":"original"}]}}),

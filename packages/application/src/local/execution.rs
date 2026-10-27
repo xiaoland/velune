@@ -301,6 +301,7 @@ impl CoreRuntime {
     fn shutdown_active_inner(&mut self) -> Result<(), RuntimeError> {
         let cancellation_requested = self.session.cancel_requested;
         let state = std::mem::replace(&mut self.session.active_state, ActiveState::Empty);
+        self.session.compacting = false;
         let result = match state {
             ActiveState::Acp(mut session) => session
                 .shutdown()
