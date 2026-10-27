@@ -1,6 +1,20 @@
 # 遥测实现验收记录
 
-2026-10-27。初步接入已实现；本轮补完可用设备的配置复制／撤销及开发入口验证，并接入 SVC dev。实际 iPad→Mac 分享与长时间移动挂起仍缺观察，不宣称全部平台验收通过。用户已授权提交及覆盖已安装 Velune；其他任务修改按归属保留。已更新 `/Applications/Velune.app`；此前按用户要求卸载了 iPad 日常 Velune 以释放免费签名名额，既有测试包保留。
+2026-10-27。初步接入已实现；本轮补完可用设备的配置复制／撤销及开发入口验证，并接入 SVC dev。晚间 iPad 恢复后，实际 iPad→Mac 分享与撤销补验通过；长时间移动挂起仍未观察。用户已授权提交及覆盖已安装 Velune；其他任务修改按归属保留。已更新 `/Applications/Velune.app`；此前按用户要求卸载了 iPad 日常 Velune 以释放免费签名名额，既有测试包保留。
+
+## iPad 恢复后的补验
+
+2026-10-27 晚间，`devicectl` 确认既有 iPad 可用，原生截图确认 Velune 前台；Mac 会话也已解锁。继续复用已安装的 `app.velune.ios.telemetry` 和 `/Applications/Velune.app`。AccessibilityAudit 的默认焦点枚举没有事件，精确设置当前 Velune PID 并标记目标后即可返回控件；实际导航得到遥测表单。该问题没有通过安装运行器、串流或调整系统安全设置解决，也未归因为产品故障。
+
+iPad 实际点击生成邀请，Mac 通过既有应用的本地 CLI 接收邀请；两端核对码一致后，iPad 实际点击批准。Mac 从遥测设置选择 iPad 并点击复制，落盘完整 profile 与 iPad 一致，本机仍为 Unset，没有导入来源的安装身份；再次复制保留既有本机身份和偏好。iPad 实际撤销后，Mac 再次读取显示“设备未获授权或授权已撤销”，目的端配置字节完全不变。证据为 `target/telemetry-native-ui/ipad-mac-final-share-evidence.json`。Mac 初始尚无保存配置，因此不把运行实例 ID 当成安装身份；身份保留由第二次复制前后的配置比较证明。
+
+这补足了 iOS 来源与 Mac 目的端入口，与已有 Mac→iPhone Simulator、Windows↔Android 一起覆盖四平台的来源和目的端角色，不等同于穷举所有设备组合。iPad 原始备份 `ipad-ui-config-before.json` 的 profile 为 null；恢复后普通新进程的地址、认证和 run ID 均为空，双 SDK 关闭，原始偏好和安装身份保持。证据为 `ipad-resumed-restoration-evidence.json`。
+
+实际复制失败同时暴露 Apple 共用 `TelemetrySettingsView` 的旧成功提示残留。修复在异步 action 开始及同步表单校验失败时清空上一条 status，覆盖 Mac 和 iOS，不新增状态抽象。Mac 覆盖更新后，通过真实控件保存，再添加重复认证字段并保存，观察校验错误且旧成功文字消失，文件字节不变；见 `apple-status-fix-mac-evidence.json`。另一次更新后的异步读取未取得明确拒绝终态，不计为新的撤销通过；前述实际分享／撤销证据使用修复前的同一协议实现，显示修复不改变其调用与权限逻辑。
+
+iPad 更新安装后又执行一次强制结束和普通启动，确认新 PID 的 profile、地址、认证和 run ID 均为空，双 SDK 关闭，原始偏好与安装身份保持；随后通过精确 PID 的原生控件进入遥测页，观察“未设置／已关闭”，且已撤销权限没有恢复。证据为 `ipad-status-fix-final-evidence.json`。没有把这项检查扩大为长时间后台挂起或活动导出队列恢复的结论。
+
+Mac SwiftPM 和 iOS 真机 Xcode 构建均通过。为避免混入并行任务，使用 `1b342eb` 原生快照加本次共用视图修复，Mac 保留既有本地 CLI 接线，复用匹配的原生库与生成绑定；不将这些产物称为整个当前工作树构建通过。Mac 安装包已覆盖并通过严格签名检查，iPad 也覆盖同一个既有 bundle ID，没有新增开发 App。构建来源与校验值见 `apple-status-fix-build-evidence.json`。已移除临时原生源码快照和 Mac 私有验收 home，正常退出验收实例并重开 Mac 日常入口；iPad 保留已恢复配置的普通实例。
 
 ## 可用设备收尾与 SVC dev
 
@@ -17,7 +31,7 @@
 
 Android 实际撤销失败提示曾与上一次“已复制”并存，原因是共享 action 入口只清空 failure。现在开始下一次 action 时同时清空 status。用 `1b342eb` 原生快照加该修复、匹配的既有 Rust 库／绑定构建 APK，覆盖同一既有包后，实际成功发送三信号，再输入无效地址发送测试，观察到校验错误且旧成功文本消失；保存 profile、偏好和身份保持不变。证据为 `android-status-fix-evidence.json`。APK 与 lint 通过；lint 首次被快照中的生成绑定符号链接干扰，复制相同绑定到快照内后通过，没有修改依赖或禁用检查。初次无效地址操作仍停留在输入法／旧界面，未计作产品失败；后续确认实际字段和最终界面才作断言。
 
-Mac 查询最后返回 100 traces（达到查询上限）、49 log streams、189 metric series，不将上限结果当成完整 trace 集。安装来源仍是前文已记录的产物；manifest 的 `workspaceRevision` 只标识启动工具所在工作区，不能代表任意已安装二进制的源码版本。Mac 途中锁屏（系统会话状态确认），因此没有把 Android→Mac 的配对完成当成 Mac 复制入口通过；已有 Mac 表单保存和 Mac→iPhone Simulator 证据继续适用。iPad 本轮仍不可用，不反复请求用户解锁。
+Mac 查询最后返回 100 traces（达到查询上限）、49 log streams、189 metric series，不将上限结果当成完整 trace 集。安装来源仍是前文已记录的产物；manifest 的 `workspaceRevision` 只标识启动工具所在工作区，不能代表任意已安装二进制的源码版本。Mac 途中锁屏（系统会话状态确认），因此没有把 Android→Mac 的配对完成当成 Mac 复制入口通过；已有 Mac 表单保存和 Mac→iPhone Simulator 证据继续适用。当时 iPad 不可用；晚间恢复后的补验见文首。
 
 开发入口修复了长 checkout 路径导致 Mac Unix socket 超限的问题，使用系统私有临时 home；Android 转发失败也会继续启动业务并明确报告未接入。SSH 的 `activate` 动作在上游恢复时复用存活的 control socket，防止重复进程争抢端口。开发边界夹具覆盖短 socket 路径、移动端不重装、Android 转发失败、后端失联、查询大小、代理和重定向边界。没有为这些开发脚本引入第三方 Python 依赖。
 
@@ -47,7 +61,7 @@ Mac 查询最后返回 100 traces（达到查询上限）、49 log streams、189
 | macOS | SwiftPM 完整构建通过；实际双 SDK 三信号进入 sfp7；实际 Store 队列验收通过 | 隔离 GUI 的遥测表单、双侧回执、三信号测试通过。锁屏前完成 Mac→iPhone 的独立授权、复制、撤销后拒绝和保留原配置；本轮重新启动后，通过真实控件保存地址与合成认证，普通重启读回一致，修订保持为 1、Unset 下双 SDK 关闭；可重放入口见下文 |
 | Windows | 实际 Windows Rust release／WinUI publish 通过；当前开发入口在 sfp7 查询到 7 traces、10 log streams、139 metric series | 浅／深色、定时器、关闭设置后的回调、正常退出 0、未新增 crash.log、当前用户保护 DACL 通过；实际 SDK 中途构造失败清理、首次 HTTP 写出前撤销及未采样上下文传播通过。开发临时配置的强制终止后普通重启为 Unset/off，旧 manifest 不冒认新进程；该项不替代正常退出检查 |
 | Android | 最新独立 application ID 的 native／APK／lint 通过；实际设备经 ADB reverse 查询到双 SDK 的 2 traces、2 log streams、34 metric series | 最新包普通重启为 Unset、两侧 inactive、run ID 空，旧 manifest 拒绝冒认。解锁后真实表单及 Android→Windows 分享已补验；Windows↔Android 双向复制已通过；真机系统证书拒绝与短暂前后台保持同 owner 已补验（见下文）；短暂后台后强制结束／普通重启已补验，长时间挂起仍未观察。使用既有测试安装 |
-| iPhone／iPad | 同一 iOS target 的 arm64 Simulator 构建通过；两种专用模拟器均查到双 SDK 三信号 | 两者普通重启均为 Unset、SDK inactive、run ID 空；安装更新会改变容器路径，工具不冒认旧状态。iPhone 的上述复制流程已实际操作；iPad 真机网络及自签证书拒绝已补验；新表单布局／后台仍待补 |
+| iPhone／iPad | 同一 iOS target 的 arm64 Simulator 构建通过；两种专用模拟器均查到双 SDK 三信号 | 两者普通重启均为 Unset、SDK inactive、run ID 空；安装更新会改变容器路径，工具不冒认旧状态。iPhone 的上述复制流程已实际操作；iPad 真机网络及自签证书拒绝已补验；新包表单、强制结束／普通重启已补验，长时间后台未观察 |
 
 Windows 原生 SDK 故障夹具是[windows-sdk.ps1](acceptance/windows-sdk.ps1)，它只在临时副本中注入异常或首次写出门闩，不增加产品故障开关。证据为 `target/telemetry-windows-sdk-evidence.json`；浅／深色图像及退出结果在 `target/telemetry-windows-ui/`。Windows 开发入口的当前实例、生效与普通重启数据在 `target/telemetry-windows-dev-entry/`。
 
@@ -105,9 +119,9 @@ Mac 原生保存／重启闭环已经通过，见 [mac-ui.py](acceptance/mac-ui.
 
 ## 尚缺的验收
 
-iPad→Mac 的实际分享入口、移动长时间挂起以及 iPad 强制结束后的完整交互仍有未完成观察；Android 的后台／强制结束／普通重启已通过。系统自签证书拒绝已有上述真机结果。共享 QUIC 权限／迁移测试已经覆盖手机无 Handler 双向分享、无隐式凭据授权、撤销和旧控制关系保留，但不能替代这些平台入口。
+移动长时间挂起仍未观察；Android 的后台／强制结束／普通重启，以及 iPad→Mac 分享已通过。系统自签证书拒绝已有上述真机结果。共享 QUIC 权限／迁移测试已经覆盖手机无 Handler 双向分享、无隐式凭据授权、撤销和旧控制关系保留，但不能替代这些平台入口。
 
-当前 Android、Windows 可用；Mac 后续锁屏但进程与 SDK 验证可进行；iPad 已断开且不可用，没有可用 iPhone 真机。Apple UI 的当前夹具和工具链限制见上一节；专用模拟器已关闭以释放资源。sfp7 的有限负载与重建持久化通过，不代表长期生产负载或保留期删除已经经过实际等待。
+晚间 iPad 已恢复并完成上述补验；没有可用 iPhone 真机。Apple UI 的当前夹具和工具链限制见上一节；专用模拟器已关闭以释放资源。sfp7 的有限负载与重建持久化通过，不代表长期生产负载或保留期删除已经经过实际等待。
 
 排查进程时曾误输出完整环境，使 NODE_AUTH_TOKEN 出现在工具输出。已通知用户并建议轮换，未复述或使用其值；轮换尚未确认。后续仅读取指定非秘密字段，开发启动环境已改为白名单。
 

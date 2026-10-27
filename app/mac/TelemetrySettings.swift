@@ -129,7 +129,7 @@ struct TelemetrySettingsView: View {
             perform { let owner = try coordinator(); try owner.save(revision: revision, preference: preference, profile: profile); return try owner.binding.snapshot() } success: { snapshot in
                 self.revision = snapshot.revision; status = statusText(snapshot)
             }
-        } catch { failure = ClientTelemetry.message(error) }
+        } catch { status = ""; failure = ClientTelemetry.message(error) }
     }
     private func copyProfile() {
         guard let remote else { return }
@@ -170,10 +170,10 @@ struct TelemetrySettingsView: View {
             perform { try coordinator().binding.sendTest(profile: profile) } success: { result in
                 status = "Traces：\(testText(result.traces))；Logs：\(testText(result.logs))；Metrics：\(testText(result.metrics))"
             }
-        } catch { failure = ClientTelemetry.message(error) }
+        } catch { status = ""; failure = ClientTelemetry.message(error) }
     }
     private func perform<T>(_ work: @escaping () throws -> T, success: @escaping (T) -> Void) {
-        busy = true; failure = nil
+        busy = true; failure = nil; status = ""
         Task {
             let result = await Task.detached { Result { try work() } }.value
             busy = false
