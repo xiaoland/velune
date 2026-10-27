@@ -2,7 +2,7 @@
 
 ## 当前结果与剩余工作
 
-2026-10-27 用户要求整理工作区并重新安装 Mac 及 ADB 连接的两台 Android，明确授权提交全部未提交成果，且不必重新验证改动。本轮只执行构建、保留数据的覆盖安装和启动检查；源码不新增功能、不补跑回归测试。当前先提交已有成果，再构建并安装三端。
+2026-10-27 用户要求整理工作区并重新安装 Mac 及 ADB 连接的两台 Android，明确授权提交全部未提交成果，且不必重新验证改动。已有远控成果提交为 `636d5b4`，独立进程调查记录提交为 `9e8881d`；随后从干净工作区完成构建，Mac、Huawei 与 Redmi 均已覆盖安装并启动。本轮保留应用数据，不新增功能、不补跑功能回归。
 
 2026-10-23 已通过 Mac 与 Redmi Turbo 3 的真实配对闭环，全部由 CLI 操作：生成新邀请、核对两端核对码、批准、首次连接；Mac 撤销后同一 Controller 进入 blocked/unauthorized；重新邀请并批准后自动恢复 connected，connection_epoch 从 1 增至 2。验证期间 Redmi 的 VPN 关闭。不能据此认定 VPN 是此前握手失败的根因，也未验证开启 VPN 后的结果。
 
@@ -39,3 +39,5 @@ CLI 调试曾因 ADB stdin 问题无响应；之后抓线程栈留下的 lldb-se
 ## 构建安装
 
 Cargo 使用 `CARGO_HOME=/Volumes/WorkSSD/.dev-cache/cargo`，避免 registry 符号链接造成 Askama 模板路径错误。Mac 使用仓库 build-macos.sh --build-only，沿用现有 Apple Development 签名；通过 install-macos.py 覆盖安装 /Applications/Velune.app。Android 使用 build-android.sh，adb install -r 保留两台手机身份及数据。当前无诊断最终构建日志在 /tmp/velune-cli-final-macos.log 与 /tmp/velune-cli-final-android.log。
+
+2026-10-27 重装沿用上述构建与安装入口。Mac manifest 记录源码 `9e8881d4c1b3759b61a1de6bb71e943fbc93224b`、`dirty=false`，安装器完成严格签名验证；安装后的主程序和核心库 SHA256 与构建产物一致。旧实例未响应正常退出，按开发文档已有授权发送 SIGTERM 后退出；新安装的应用已启动。Android 构建及脚本内置 lint 通过，两台设备的 `adb install -r` 均返回 Success，`am start -W` 均返回 Status: ok。Redmi 在启动成功后断开 ADB，之后未进一步检查该设备。新日志为 `/tmp/velune-workspace-reinstall-macos.log` 与 `/tmp/velune-workspace-reinstall-android.log`。本轮仅确认构建、安装和启动，不复测配对或业务功能。
