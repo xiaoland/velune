@@ -25,4 +25,4 @@
 
 2026-10-26：Codex／Claude Code 无新消息恢复的接口与“继续”按钮分派已按 Mac 接入；本次 Windows 构建与浅／深色实际运行的验证状态见 [原生恢复任务](../../tasks/native-turn-resume/packet.md)。
 
-2026-10-27：Mac 与 Windows 同步为一个发送／排队／继续主按钮，停止独立；实时正文与附件使继续和发送互斥，发送键不触发空输入恢复，组词及停止／请求在途禁止提交。撤去文本继续 fallback。两端判定矩阵与 Windows 完整 WinUI 构建均通过；浅／深色各 10 组实际控件状态检查通过，正常退出且无 crash.log。合成验证的范围与证据见[任务记录](../../tasks/native-turn-resume/packet.md)。
+2026-10-27：Mac 与 Windows 同步为一个发送／排队／继续主按钮，停止独立；实时正文与附件使继续和发送互斥，发送键不触发空输入恢复，组词及停止／请求在途禁止提交。撤去文本继续 fallback。两端判定矩阵与 Windows 完整 WinUI 构建均通过；浅／深色各 11 组实际控件状态检查通过，正常退出且无 crash.log。合成验证的范围与证据见[任务记录](../../tasks/native-turn-resume/packet.md)。

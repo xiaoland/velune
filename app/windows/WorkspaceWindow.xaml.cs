@@ -269,6 +269,7 @@ public sealed partial class WorkspaceWindow : Window
             if (tab.View is { } view)
             {
                 view.Model.Configuration = configuration;
+                view.Model.ObserveActivity(Listing.Active.GetValueOrDefault(view.Model.Target.ConversationID));
             }
         }
         List.ListChanged();
@@ -310,6 +311,7 @@ public sealed partial class WorkspaceWindow : Window
         {
             var view = new ConversationView(new Conversation(Shell.Core, Device, tab.Target, Listing.Configuration), this);
             tab.View = view;
+            view.Model.ObserveActivity(Listing.Active.GetValueOrDefault(tab.Target.ConversationID));
             tab.Host.Child = view;
             Follow(tab);
             PlaceComposers();

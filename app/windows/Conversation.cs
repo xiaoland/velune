@@ -260,7 +260,7 @@ sealed partial class Conversation
         {
             return await Queue(text);
         }
-        if (Working || Snapshot is { Actions.CanSend: false } || Interaction != null)
+        if (Working || activityRunning || Snapshot is { Actions.CanSend: false } || Interaction != null)
         {
             return false;
         }

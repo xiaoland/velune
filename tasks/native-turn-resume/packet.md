@@ -82,6 +82,6 @@ Windows 已同步源码与提示，但 `ssh -o BatchMode=yes -o ConnectTimeout=5
 - `manual-composer-submission.py --csharp` 编译实际 Swift／C# 判定文件，两端各 17 组状态组合通过。Codex 0.159.3、Claude Code 2.1.292 的真实 CLI 停止、冷重开、原生恢复、用量与配置回归在本次 Release 库上通过。Pi 1.0.2 的队列回归通过；新增停止后空队列迟到 Add 与失败后迟到 Add 的暂停断言。
 - 异地运行的原安装版反例已消除：新快照的发送、继续、原生恢复资格均为 false；直接 API 的发送、恢复及队列恢复被拒绝，无新模型请求。已将此 Unix writer-lock 场景纳入 `manual-resume-turn.py --external-writer`，连同新增队列直接拒绝一并验证。
 - Mac 使用临时源副本挂载实际 ComposerView／ConversationTab／Store，逐状态渲染截图，并核对命令与动作入口。已查看空草稿继续、有草稿发送、运行中空草稿只停止、恢复在途禁用提交的截图；实际 NSTextView 的 setMarkedText／unmarkText 生命周期也正确禁止／恢复提交。独立宿主未提供 AX 子树，因此不以 AX 自动断言作为证据。尚未做真人输入法候选面板的手感验收。
-- `win-ws` 别名仍无法连接，但 `win-ws.localhost` 可用。在独立 `C:\Users\yyh\velune-composer-submit` 中完整运行仓库 Windows 构建脚本，Rust Release 与 WinUI publish 通过。随后仅在临时验收构建加入合成状态入口，浅色与深色各检查 10 组实际 SendButton／StopButton 的文字、可见性和启用状态；正文、仅附件、运行／停止、请求在途、组词及 Elsewhere 均通过，进程退出码均为 0、无 crash.log，截图外观正确。临时入口不进入产品源码与安装包，启动用隔离 HOME／TEMP，未改系统主题；一次性桌面启动任务已删除。
+- `win-ws` 别名仍无法连接，但 `win-ws.localhost` 可用。在独立 `C:\Users\yyh\velune-composer-submit` 中完整运行仓库 Windows 构建脚本，Rust Release 与 WinUI publish 通过。随后仅在临时验收构建加入合成状态入口，浅色与深色各检查 11 组实际 SendButton／StopButton 的文字、可见性和启用状态；正文、仅附件、运行／停止、请求在途、组词、Elsewhere 与活动先于详情到达均通过，进程退出码均为 0、无 crash.log，截图外观正确。临时入口不进入产品源码与安装包，启动用隔离 HOME／TEMP，未改系统主题；一次性桌面启动任务已删除。
 
 PRD、键盘规则、设计约束、两端说明与对齐表、application／bindings 契约和来源记录同步更新。10 份文档的 229 个相对链接与锚点及 diff 空白检查通过。日志、临时验收源和截图保存在原仓库 `target/native-turn-resume-ui-review/`；所有上游请求均为本机合成回环，不使用真实配置、凭据、会话或模型。

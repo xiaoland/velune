@@ -139,7 +139,17 @@ sealed partial class Conversation
     string composerText = "";
     bool composing;
     bool stopRequested;
+    bool activityRunning;
     ComposerSubmission.Phase? composerRequest;
+
+    // The activity feed may observe a running turn before this view's snapshot.
+    public void ObserveActivity(BindingActiveConversation? activity)
+    {
+        var running = activity?.RunState is BindingRunState.Running or BindingRunState.Stopping or BindingRunState.Elsewhere;
+        if (activityRunning == running) return;
+        activityRunning = running;
+        Notify();
+    }
 
     public void UpdateComposer(string text, bool isComposing)
     {
@@ -157,9 +167,9 @@ sealed partial class Conversation
         {
             var phase = stopRequested || Snapshot?.RunState == BindingRunState.Stopping ? ComposerSubmission.Phase.Stopping
                 : composerRequest ?? (Running ? ComposerSubmission.Phase.Running
-                : Working || Loading || Busy || ParentID != null ? ComposerSubmission.Phase.Blocked : ComposerSubmission.Phase.Idle);
+                : Working || activityRunning || Loading || Busy || ParentID != null ? ComposerSubmission.Phase.Blocked : ComposerSubmission.Phase.Idle);
             var ready = !Busy && !Loading && Next.Length > 0 && Uploading == 0;
-            var canSend = ready && !Working && (Target.Unsent || Snapshot is { Actions.CanSend: true } snapshot && !snapshot.PendingInteractions.Any());
+            var canSend = ready && !Working && !activityRunning && (Target.Unsent || Snapshot is { Actions.CanSend: true } snapshot && !snapshot.PendingInteractions.Any());
             return ComposerSubmission.Resolve(phase, !string.IsNullOrWhiteSpace(composerText) || Attached.Count > 0 || Uploading > 0,
                 composing, canSend, ready && Running && !stopRequested,
                 FollowUp is { CanResume: true } && Next == Snapshot?.ContextRuntimeId);
