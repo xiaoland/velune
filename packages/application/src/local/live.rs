@@ -189,6 +189,7 @@ impl CoreRuntime {
         snapshot.model_record_key = snapshot.model_record_key.or(previous.model_record_key);
         if elsewhere {
             snapshot.run_state = RunState::Elsewhere;
+            snapshot.actions.can_send = false;
         }
         self.session.active_state = ActiveState::History(Box::new(snapshot));
         // Reading can be slow (Codex reads through its app server); keep
@@ -210,6 +211,8 @@ impl CoreRuntime {
                 && matches!(view.run_state, RunState::Idle | RunState::Elsewhere)
             {
                 view.run_state = state;
+                view.actions.can_send =
+                    !running && view.conversation.parent_conversation_id.is_none();
                 view.revision = view.revision.saturating_add(1);
             }
         }

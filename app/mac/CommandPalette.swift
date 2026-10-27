@@ -89,14 +89,14 @@ extension ConversationWindowModel {
     private var store: AppStore { focused.store }
 
     /// Whether `command` does something now; the menus and the palette both ask.
-    func canPerform(_ command: ShortcutCommand) -> Bool {
+    func canPerform(_ command: ShortcutCommand, composerCommand: Bool = false) -> Bool {
         switch command {
         case .newConversation: !store.isLoading
         case .newWindow: openWindow != nil
         case .openConversation, .newTab, .closeTab, .closeWindow, .find, .splitRight, .splitDown, .commandPalette, .focusTranscript, .rightArea, .bottomArea, .editorOnly, .problems, .shortcutHelp, .nextAttention: true
-        case .stop: store.canCancel
+        case .stop: store.canCancel && !store.isLoading
         case .stopSubAgents: store.followUp.canStopSubAgents
-        case .continueTurn: store.followUp.canContinue && store.canSend
+        case .continueTurn: composerCommand ? focused.canResumeAfterCommand : focused.submission.canResume
         case .attach: !store.isShuttingDown
         case .chooseRuntime: !store.enabledRuntimeInstances.isEmpty && !store.isShuttingDown
         case .chooseModel: store.canSwitchModel
@@ -129,7 +129,7 @@ extension ConversationWindowModel {
         case .find: find()
         case .stop: store.cancel()
         case .stopSubAgents: store.stopSubAgents()
-        case .continueTurn: store.continueTurn()
+        case .continueTurn: focused.resume()
         case .attach: focused.composer.chooseAttachments()
         case .chooseRuntime: showPalette(.runtime)
         case .chooseModel: showPalette(.model)
@@ -282,6 +282,14 @@ extension ConversationWindowModel {
 struct CommandPaletteView: View {
     @ObservedObject var window: ConversationWindowModel
     let mode: PaletteMode
+    @ObservedObject private var store: AppStore
+    @ObservedObject private var composer: ComposerModel
+
+    init(window: ConversationWindowModel, mode: PaletteMode) {
+        self.window = window; self.mode = mode
+        store = window.focused.store; composer = window.focused.composer
+    }
+
     @State private var query = ""
     @State private var selection = 0
     private static let rowHeight: CGFloat = 28

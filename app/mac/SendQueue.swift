@@ -38,7 +38,7 @@ struct SendQueueView: View {
             if let pause = store.followUp.paused {
                 Label(pause.explanation, systemImage: "pause.circle")
                 Spacer(minLength: 8)
-                if !queue.isEmpty { Button("继续发送", action: store.resumeQueue).controlSize(.small).disabled(store.isLoading) }
+                if !queue.isEmpty { Button("继续发送队列", action: store.resumeQueue).controlSize(.small).disabled(store.isLoading) }
             } else if store.followUp.waitingForSubAgents {
                 Label("子 Agent 仍在运行；结束后发送", systemImage: "hourglass")
                     .help("下一条需要重新启动运行时，这会结束仍在运行的子 Agent")

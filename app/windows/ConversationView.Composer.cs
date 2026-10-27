@@ -18,6 +18,7 @@ public sealed partial class ConversationView
     readonly DispatcherTimer draftTimer = new() { Interval = TimeSpan.FromMilliseconds(600) };
     // Set while the view puts text in the input, which is no edit to save.
     bool restoringDraft;
+    bool composing;
     // The queue as last shown, and the queued message being edited in place.
     string shownQueue = "";
     string? editingQueued;
@@ -30,8 +31,11 @@ public sealed partial class ConversationView
             draftTimer.Stop();
             Model.SaveDraft(Input.Text);
         };
+        Input.TextCompositionStarted += (_, _) => { composing = true; Model.UpdateComposer(Input.Text, true); };
+        Input.TextCompositionEnded += (_, _) => { composing = false; Model.UpdateComposer(Input.Text, false); };
         Input.TextChanged += (_, _) =>
         {
+            Model.UpdateComposer(Input.Text, composing);
             if (!restoringDraft)
             {
                 draftTimer.Stop();
@@ -54,11 +58,6 @@ public sealed partial class ConversationView
             }
         };
         ComposerPanel.Drop += Drop;
-        ContinueButton.Click += async (_, _) =>
-        {
-            ScrollToEnd();
-            await Model.Continue();
-        };
         StatusButton.Click += (_, _) => ShowStatus();
         RestoreDraft();
     }
@@ -98,6 +97,7 @@ public sealed partial class ConversationView
     // running turn, Esc stops it.
     bool ComposerKey(KeyRoutedEventArgs e)
     {
+        if (composing) return false;
         var control = InputKeyboardSource.GetKeyStateForCurrentThread(VirtualKey.Control).HasFlag(CoreVirtualKeyStates.Down);
         var shift = InputKeyboardSource.GetKeyStateForCurrentThread(VirtualKey.Shift).HasFlag(CoreVirtualKeyStates.Down);
         if (e.Key == VirtualKey.Enter && control && shift)
@@ -116,7 +116,7 @@ public sealed partial class ConversationView
     async void Steer()
     {
         var text = Input.Text;
-        if (!Model.Running || Model.FollowUp is not { CanSteer: true })
+        if (!Model.Submission.CanSubmitDraft || Model.Submission.Action != ComposerSubmission.Kind.Queue || !Model.CanSteer)
         {
             return;
         }
@@ -232,18 +232,14 @@ public sealed partial class ConversationView
         RenderAttachments();
         RenderQueue();
         RenderStatus();
-        var followUp = Model.FollowUp;
-        var running = Model.Running;
-        ContinueButton.Visibility = Visible(followUp is { CanContinue: true } && !running && Model.Sending == null);
-        ContinueButton.IsEnabled = !Model.Busy;
-        ToolTipService.SetToolTip(ContinueButton, Model.CanResume ? "从现有上下文继续，不新增用户消息" : "发送“继续”，让运行时接着上一轮继续");
+        var submission = Model.Submission;
         StopButton.Visibility = Visible(Model.CanCancel);
         StopButton.IsEnabled = !Model.Busy;
-        SendButton.Content = running ? "加入队列" : "发送";
-        ToolTipService.SetToolTip(SendButton, running
-            ? followUp is { CanSteer: true } ? "Ctrl+Enter 加入发送队列；Ctrl+Shift+Enter 插入本轮" : "Ctrl+Enter 加入发送队列，本轮结束后发出"
-            : "Ctrl+Enter");
-        SendButton.IsEnabled = !Model.Busy && Model.Next.Length > 0 && Model.Uploading == 0;
+        SendButton.Content = submission.Title;
+        SendButton.Visibility = Visible(submission.Action != ComposerSubmission.Kind.None);
+        SendButton.IsEnabled = submission.Enabled;
+        ToolTipService.SetToolTip(SendButton, submission.Action == ComposerSubmission.Kind.Resume ? "从现有上下文继续，不新增用户消息"
+            : submission.Action == ComposerSubmission.Kind.Queue ? "Ctrl+Enter 加入发送队列；Ctrl+Shift+Enter 插入本轮" : "Ctrl+Enter 发送消息");
         AttachButton.IsEnabled = !Model.Busy;
     }
 
@@ -283,7 +279,7 @@ public sealed partial class ConversationView
         var followUp = Model.FollowUp;
         var queue = followUp?.Queue ?? [];
         ShowQueueBar(followUp);
-        var steer = Model.Running && followUp is { CanSteer: true };
+        var steer = Model.CanSteer;
         var signature = string.Join("\n", queue.Select(message => message.Id + "\t" + message.Text + "\t" + message.Attachments.Length)) + (steer ? "\nsteer" : "") + (Model.Busy ? "\nbusy" : "");
         if (editingQueued != null && queue.Any(message => message.Id == editingQueued))
         {
@@ -503,7 +499,7 @@ public sealed partial class ConversationView
         }
     }
 
-    readonly Button resumeQueue = new() { Content = "继续发送" };
+    readonly Button resumeQueue = new() { Content = "继续发送队列" };
     readonly Button stopSubAgents = new() { Content = "停止子 Agent" };
 
     // ShowQueueBar says why the queue waits for the user, or for sub-agents.

@@ -195,7 +195,7 @@ manager.appendSessionInfo(title); console.log(manager.getSessionFile());
             wait(idle, 'S stopped')
             follow = snapshot().follow_up
             assert follow.paused == b.BindingQueuePause.TURN_STOPPED and [m.text for m in follow.queue] == ['Q_PAUSED'], follow
-            assert follow.can_continue, 'continuing is offered after a stop'
+            assert not follow.can_continue, 'Pi offers no native continue action'
             assert not follow.can_resume, 'Pi does not promise input-free recovery'
             time.sleep(.5)
             assert 'Q_PAUSED' not in requests, 'a stopped turn pauses the queue'
@@ -205,17 +205,22 @@ manager.appendSessionInfo(title); console.log(manager.getSessionFile());
             release('Q_PAUSED')
             wait(idle, 'resumed turn ended')
             assert not snapshot().follow_up.can_continue, 'a normal end offers no continue'
-            print('PASS a stopped turn pauses the queue and offers continuing; resuming sends', flush=True)
+            print('PASS a stopped turn pauses the queue without a native continue action; resuming sends', flush=True)
 
             app.send_turn('pi', a, 'pi', model, 'TURN_FAIL')
             queue('Q_FAILED')
             wait(lambda: snapshot().follow_up.paused == b.BindingQueuePause.TURN_FAILED, 'a failed turn pauses the queue')
-            assert snapshot().follow_up.can_continue and queued() == ['Q_FAILED']
+            assert not snapshot().follow_up.can_continue and queued() == ['Q_FAILED']
             app.send_queue('pi', a, Q.REMOVE(id=snapshot().follow_up.queue[0].id))
             assert queued() == [] and snapshot().follow_up.paused is None
             assert 'Q_FAILED' not in requests
             print('PASS a failed turn pauses the queue; emptying it clears the pause', flush=True)
 
+            before_late = len(requests)
+            queue('Q_LATE')
+            assert snapshot().follow_up.paused == b.BindingQueuePause.TURN_FAILED and queued() == ['Q_LATE']
+            assert len(requests) == before_late, 'a late queue request after failure must stay paused'
+            app.send_queue('pi', a, Q.REMOVE(id=snapshot().follow_up.queue[0].id))
             app.send_turn('pi', a, 'pi', model, '继续')
             wait(lambda: 'CONTINUE_GATE' in requests, 'continue reached the upstream as a message')
             release('CONTINUE_GATE')

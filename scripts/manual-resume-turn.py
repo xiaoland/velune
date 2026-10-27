@@ -51,6 +51,7 @@ def main():
     for name in ('library', 'bindings', 'resources', 'node', 'binary'):
         parser.add_argument('--' + name, type=Path, required=True)
     parser.add_argument('--runtime', choices=('codex', 'claude'), default='codex')
+    parser.add_argument('--external-writer', action='store_true', help='Codex-only Unix writer-lock regression; stops after the external-running checks')
     args = parser.parse_args()
     runtime = args.runtime
     mode = 'read-only' if runtime == 'codex' else 'plan'
@@ -201,6 +202,40 @@ def main():
             stopped = wait(lambda s: s.follow_up.can_resume, 'stopped context is resumable')
             assert len(users(stopped)) == 1
             assert stopped.follow_up.paused == b.BindingQueuePause.TURN_STOPPED
+            if args.external_writer:
+                assert runtime == 'codex', 'writer-lock fixture requires Codex'
+                rollouts = [path for path in root.rglob('rollout-*.jsonl') if 'SYNTHETIC_ORIGINAL' in path.read_text()]
+                assert len(rollouts) == 1, rollouts
+                path = rollouts[0]
+                codex_home = next(parent for parent in path.parents if parent.name == 'sessions').parent
+                locks = codex_home / 'thread-writer-locks'
+                locks.mkdir(exist_ok=True)
+                lock = locks / (conversation.split(':', 1)[1] + '.lock')
+                holder = subprocess.Popen([sys.executable, '-c', "import fcntl,sys,time; f=open(sys.argv[1],'w'); fcntl.lockf(f,fcntl.LOCK_EX); print('held',flush=True); time.sleep(60)", str(lock)], stdout=subprocess.PIPE, text=True)
+                try:
+                    assert holder.stdout.readline().strip() == 'held'
+                    with path.open('a') as stream:
+                        stream.write(json.dumps({'timestamp':'2026-10-27T00:00:00Z','type':'event_msg','payload':{'type':'task_started','turn_id':'synthetic-external-turn'}})+'\n')
+                    elsewhere = wait(lambda s: s.run_state == b.BindingRunState.ELSEWHERE, 'external writer is shown running')
+                    assert not elsewhere.actions.can_send and not elsewhere.follow_up.can_continue and not elsewhere.follow_up.can_resume
+                    rejected(resume)
+                    rejected(lambda: app.send_turn_with_selection(runtime, conversation, runtime, selections['first'], b.BindingComposedTurn(text='EXTERNAL_REJECT', effort=None, permission_mode=None, attachments=[])))
+                    rejected(lambda: app.send_queue(runtime, conversation, b.BindingSendQueueOperation.RESUME()))
+                    rejected(lambda: app.send_queue(runtime, conversation, b.BindingSendQueueOperation.ADD(source_runtime_id=runtime, target_runtime_id=runtime, selection=selections['first'], turn=b.BindingComposedTurn(text='EXTERNAL_QUEUE_REJECT', effort=None, permission_mode=None, attachments=[]))))
+                finally:
+                    holder.terminate()
+                    holder.wait()
+                print('PASS: external writer disables send/continue/resume; direct send, resume and queue add/resume reject without an upstream request.')
+                return
+            # Removing the last entry does not erase the stopped turn's intent.
+            app.send_queue(runtime, conversation, b.BindingSendQueueOperation.REMOVE(id=queue_id))
+            before_late = len(captures)
+            late = app.send_queue(runtime, conversation, b.BindingSendQueueOperation.ADD(
+                source_runtime_id=runtime, target_runtime_id=runtime, selection=selections['first'],
+                turn=b.BindingComposedTurn(text='SYNTHETIC_QUEUED', effort=None, permission_mode=None, attachments=[]))).snapshot
+            queue_id = late.follow_up.queue[0].id
+            assert late.follow_up.paused == b.BindingQueuePause.TURN_STOPPED
+            assert len(captures) == before_late, 'a late queue request resumed a stopped turn'
             original_settings = first_turn(stopped).settings
             rejected(lambda: resume(permission='invalid'))
             rejected(lambda: resume(b.BindingModelSelection.MANAGED(model_record_key='missing-model')))

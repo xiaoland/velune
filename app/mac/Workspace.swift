@@ -48,11 +48,30 @@ import VeluneBindings
         start()
     }
 
+    var submission: ComposerSubmission { submission(hasInput: !composer.isEmpty || !composer.attachments.isEmpty) }
+    /// A slash command consumes its own token before executing; attachments remain input.
+    var canResumeAfterCommand: Bool { submission(hasInput: !composer.attachments.isEmpty).canResume }
+    private func submission(hasInput: Bool) -> ComposerSubmission {
+        let phase: ComposerSubmission.Phase
+        if store.isStopping { phase = .stopping }
+        else if let pending = store.composerRequest { phase = pending }
+        else if store.isGenerating { phase = .running }
+        else { phase = store.canSend ? .idle : .blocked }
+        return ComposerSubmission(phase: phase, hasInput: hasInput,
+                                  isComposing: composer.isComposing, canSend: store.canSend,
+                                  canQueue: store.canQueue, canResume: store.canResume)
+    }
+    var canSteer: Bool { submission.canSubmitDraft && submission.action == .queue && store.canSteer }
+    func resume() {
+        guard submission.canResume else { return }
+        store.continueTurn()
+    }
+
     func send() {
         let submitted = composer.submission
         let attachments = composer.attachments
         let text = submitted.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty || !attachments.isEmpty, !composer.isComposing else { return }
+        guard submission.canSubmitDraft else { return }
         // While a turn runs the message waits in the queue above the composer.
         if store.canQueue {
             let conversationID = store.loadedConversationID
@@ -81,7 +100,7 @@ import VeluneBindings
         let submitted = composer.submission
         let attachments = composer.attachments
         let text = submitted.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard store.canSteer, !text.isEmpty || !attachments.isEmpty, !composer.isComposing else { return }
+        guard canSteer else { return }
         let conversationID = store.loadedConversationID
         store.steer(text: text, attachments: attachments.map(\.path), onFailure: { [composer] in composer.restore(submitted, attachments: attachments) })
         composer.clear(submitted: submitted, attachments: attachments, conversationID: conversationID)

@@ -126,6 +126,8 @@ final class AppStore: ObservableObject {
     private var sharesApplication = false
     private var sharedUpdateScheduled = false
     @Published private var executionStarting = false
+    @Published private(set) var composerRequest: ComposerSubmission.Phase?
+    @Published private var stopRequested = false
     /// A conversation chosen while an operation ran, opened when it ends.
     private var deferredSelection: (id: String, move: NavigationMove)?
     private var started = false
@@ -284,8 +286,12 @@ final class AppStore: ObservableObject {
     /// A running conversation keeps its native session until the turn ends.
     func isRunning(_ conversation: Conversation) -> Bool { runningConversationIDs.contains(conversation.id) || (loadedConversationID == conversation.id && (isGenerating || executionStarting)) }
     /// The core validates the selection again; an unread catalog does not block sending.
-    var canSend: Bool { !executionStarting && !authenticationRunning && !isLoading && !isGenerating && !isShuttingDown && (snapshot?.actions.canSend ?? false) }
-    var canCancel: Bool { snapshot?.actions.canCancel ?? false }
+    var isStopping: Bool { stopRequested || snapshot?.runState == .stopping }
+    private var activityBlocksSending: Bool {
+        snapshot?.runState == .elsewhere || loadedConversationID.map { runningConversationIDs.contains($0) || elsewhereConversationIDs.contains($0) } == true
+    }
+    var canSend: Bool { !executionStarting && !authenticationRunning && !isLoading && !isGenerating && !isStopping && !activityBlocksSending && !isShuttingDown && (snapshot?.pendingInteractions.isEmpty ?? true) && (snapshot?.actions.canSend ?? false) }
+    var canCancel: Bool { !isStopping && snapshot?.runState == .running && (snapshot?.actions.canCancel ?? false) }
     var followUp: FollowUp { snapshot?.followUp ?? FollowUp() }
     /// The loaded conversation's native sub-agents.
     var subAgents: [SubAgent] { pendingConversationID == nil ? snapshot?.subAgents ?? [] : [] }
@@ -296,9 +302,9 @@ final class AppStore: ObservableObject {
     /// A conversation runs here or elsewhere, by identity, listed or not.
     func isConversationRunning(_ id: String) -> Bool { runningConversationIDs.contains(id) || elsewhereConversationIDs.contains(id) }
     /// While a turn runs, a sent message waits in the conversation's queue.
-    var canQueue: Bool { !isPreview && isGenerating && !isLoading && !isShuttingDown && !authenticationRunning && loadedConversationID != nil && snapshot?.conversation.parentConversationID == nil }
-    var canResume: Bool { followUp.canResume && nextTurnRuntimeID == snapshot?.contextRuntimeID }
-    var continueHelp: String { canResume ? "从现有上下文继续，不新增用户消息" : "发送“继续”，让运行时接着上一轮继续" }
+    var canQueue: Bool { !isPreview && snapshot?.runState == .running && !isStopping && !executionStarting && !isLoading && !isShuttingDown && !authenticationRunning && loadedConversationID != nil && snapshot?.conversation.parentConversationID == nil }
+    var canResume: Bool { canSend && followUp.canResume && nextTurnRuntimeID == snapshot?.contextRuntimeID }
+    var continueHelp: String { "从现有上下文继续，不新增用户消息" }
     var canSwitchModel: Bool { nextTurnRuntimeID != nil && !isShuttingDown }
     var modelCatalog: RuntimeModelCatalog? { nextTurnRuntimeID.flatMap { modelCatalogs[$0] } }
     /// The model chosen for this runtime is no longer offered; the turn goes
@@ -1201,6 +1207,7 @@ final class AppStore: ObservableObject {
         }
         guard let transport else { recordProblem("本地核心未配置"); return false }
         executionStarting = true
+        composerRequest = .sending
         pendingSend = PendingSend(previousUserMessageID: snapshot?.messages.last { $0.role == .user }?.id)
         let sent: [MessageBlock] = (text.isEmpty ? [] : [.text(text)]) + attachments.map { path in
             Self.imageExtensions.contains(URL(fileURLWithPath: path).pathExtension.lowercased()) ? .image(mediaType: nil, source: .path(path)) : .file(path: path)
@@ -1230,11 +1237,13 @@ final class AppStore: ObservableObject {
             return try transport.sendTurn(sourceRuntimeID: source, conversationID: conversationID, targetRuntimeID: target, selection: model, turn: turn)
         }, onAccepted: { [weak self] in onAccepted?(self?.loadedConversationID) }, onFailure: { [weak self] _ in
             self?.executionStarting = false
+            self?.composerRequest = nil
             self?.endPendingSend()
             onFailure?()
         }) { [weak self] value in
             guard let self else { return }
             self.executionStarting = false
+            self.composerRequest = nil
             self.pendingSend?.accepted = true
             self.applySnapshotResult(value)
         }
@@ -1267,7 +1276,8 @@ final class AppStore: ObservableObject {
         if isPreview { snapshot?.runState = .idle; snapshot?.actions.canCancel = false; apply(snapshot); return }
         guard let runtimeID = projectionRuntimeID, let conversationID = loadedConversationID else { recordProblem("请选择运行时实例"); return }
         guard let transport else { recordProblem("本地核心未配置"); return }
-        enqueue({ try transport.cancel(runtimeID: runtimeID, conversationID: conversationID) }) { [weak self] in self?.applySnapshotResult($0) }
+        stopRequested = true
+        enqueue({ try transport.cancel(runtimeID: runtimeID, conversationID: conversationID) }, onFailure: { [weak self] _ in self?.stopRequested = false }) { [weak self] in self?.applySnapshotResult($0) }
     }
     /// Queue a message after the running turn, with the next-turn choices as
     /// they are now. `onFailure` runs when it was not queued.
@@ -1282,16 +1292,17 @@ final class AppStore: ObservableObject {
         return true
     }
     func continueTurn() {
-        guard followUp.canContinue, canSend else { return }
-        guard canResume else { send(text: "继续"); return }
+        guard canResume else { return }
         guard let runtimeID = snapshot?.contextRuntimeID, let conversationID = loadedConversationID, let transport else { return }
         let selection = nextTurnModel
         let effort = nextTurnEffort.flatMap { reasoningEffortOptions.contains($0) ? $0 : nil }
         let mode = effectivePermissionMode?.id
         executionStarting = true
+        composerRequest = .resuming
         enqueue({ try transport.resumeTurn(runtimeID: runtimeID, conversationID: conversationID, selection: selection, effort: effort, permissionMode: mode) },
-                onFailure: { [weak self] _ in self?.executionStarting = false }) { [weak self] value in
+                onFailure: { [weak self] _ in self?.executionStarting = false; self?.composerRequest = nil }) { [weak self] value in
             self?.executionStarting = false
+            self?.composerRequest = nil
             self?.applySnapshotResult(value)
         }
     }
@@ -1794,7 +1805,7 @@ final class AppStore: ObservableObject {
             } else { resetProjection() }
         }
     }
-    private func resetProjection() { intentConversationID = nil; loadedPayloads.removeAll(); isDraft = false; problems.removeAll { $0.activityKey?.hasPrefix("poll:") == true }; generation += 1; snapshot = nil; projectionRuntimeID = nil; selectedConversationID = nil; pendingConversationID = nil; reachingConversationID = nil; transcript.reset(); endPendingSend(); activity = nil; sessionOptions = nil; sessionOptionsKey = nil }
+    private func resetProjection() { composerRequest = nil; stopRequested = false; executionStarting = false; intentConversationID = nil; loadedPayloads.removeAll(); isDraft = false; problems.removeAll { $0.activityKey?.hasPrefix("poll:") == true }; generation += 1; snapshot = nil; projectionRuntimeID = nil; selectedConversationID = nil; pendingConversationID = nil; reachingConversationID = nil; transcript.reset(); endPendingSend(); activity = nil; sessionOptions = nil; sessionOptionsKey = nil }
     private func applyList(_ data: BindingConfigurationSnapshot) {
         // The application owns the conversation list and configuration that
         // workspaces copy; a workspace's result must reach it, or the stale
@@ -1867,6 +1878,7 @@ final class AppStore: ObservableObject {
     }
     private func apply(_ value: ConversationSnapshot?, preserveSelection: Bool = false) {
         guard var value else { return }
+        if value.conversation.id != snapshot?.conversation.id || (value.runState != .running && value.runState != .stopping) { stopRequested = false }
         if value.conversation.id != snapshot?.conversation.id || value.contextRuntimeID != snapshot?.contextRuntimeID { loadedPayloads.removeAll() }
         value.messages = withLoadedPayloads(value.messages)
         let remainingProblems = problems.filter { !($0.activityKey?.hasPrefix("poll:") == true && $0.activityKey != "poll:" + value.contextRuntimeID) }

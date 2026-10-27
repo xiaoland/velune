@@ -34,7 +34,8 @@ import QuickLookThumbnailing
 
     var submission: String { text }
     /// Input-method composition owns Return and ⌘Return until it is committed.
-    var isComposing: Bool { textView?.hasMarkedText() ?? false }
+    @Published private(set) var isComposing = false
+    fileprivate func updateComposition() { isComposing = textView?.hasMarkedText() ?? false }
 
     func attach(_ store: AppStore) { self.store = store }
 
@@ -241,12 +242,13 @@ struct ComposerEditor: NSViewRepresentable {
         }
         func textDidChange(_ notification: Notification) {
             guard let view else { return }
+            model.updateComposition()
             model.edited(view.string)
             view.fitHeight()
         }
         func undoManager(for view: NSTextView) -> UndoManager? { model.undoManager(for: view) }
         /// Moving the caret into or out of an `@` path opens or closes its list.
-        func textViewDidChangeSelection(_ notification: Notification) { model.updateCompletion() }
+        func textViewDidChangeSelection(_ notification: Notification) { model.updateComposition(); model.updateCompletion() }
         fileprivate func heightChanged(_ value: CGFloat) {
             // Reported after layout; SwiftUI resizes the editor in the next pass.
             DispatchQueue.main.async { [model] in if model.height != value { model.height = value } }
@@ -482,6 +484,8 @@ struct ComposerView: View {
     let layout: ConversationWindowModel
     let send: () -> Void
     let steer: () -> Void
+    let submission: () -> ComposerSubmission
+    let resume: () -> Void
     /// The text box's height when the user made it taller, docked below the panes.
     var minimumTextHeight: CGFloat?
     @Environment(\.controlActiveState) private var activeState
@@ -571,7 +575,7 @@ struct ComposerView: View {
         .onAppear {
             model.attach(store); model.show(conversationID: store.loadedConversationID)
             model.perform = { [weak layout] in layout?.perform($0) }
-            model.canPerform = { [weak layout] in layout?.canPerform($0) ?? false }
+            model.canPerform = { [weak layout] in layout?.canPerform($0, composerCommand: true) ?? false }
             // A new window or tab starts in the composer; showing a tab again keeps focus where it is.
             if model.firstShown() { DispatchQueue.main.async { model.focus() } }
         }
@@ -607,24 +611,21 @@ struct ComposerView: View {
     }
 
     @ViewBuilder private var sendButton: some View {
-        if store.isGenerating {
-            Button("停止", action: store.cancel).disabled(!store.canCancel).help("停止当前生成")
-            if store.followUp.canSteer {
-                Button("插入本轮", action: steer).disabled(!store.canSteer || (model.isEmpty && model.attachments.isEmpty))
-                    .help("让正在运行的 Agent 在下一步看到这条消息，不另起一轮（\(shortcuts.sendMode.steerKey)）")
-            }
-            Button("排队", action: send).buttonStyle(.borderedProminent)
-                .disabled(!store.canQueue || (model.isEmpty && model.attachments.isEmpty)).help("本轮结束后发送（\(shortcuts.sendMode.sendKey)）")
-        } else {
-            if store.followUp.canStopSubAgents && !store.followUp.waitingForSubAgents {
-                Button("停止子 Agent", action: store.stopSubAgents).disabled(store.isLoading)
-                    .help("停止此会话启动、仍在运行的子 Agent")
-            }
-            if store.followUp.canContinue && model.isEmpty && model.attachments.isEmpty {
-                Button("继续", action: store.continueTurn).disabled(!store.canSend).help(store.continueHelp)
-            }
-            Button("发送", action: send).buttonStyle(.borderedProminent)
-                .disabled(!store.canSend || (model.isEmpty && model.attachments.isEmpty)).help("发送消息（\(shortcuts.sendMode.sendKey)）")
+        let current = submission()
+        if store.canCancel {
+            Button("停止", action: store.cancel).disabled(store.isLoading).help("停止当前生成")
+        }
+        if current.action == .queue && store.followUp.canSteer {
+            Button("插入本轮", action: steer).disabled(!current.canSubmitDraft || !store.canSteer)
+                .help("将消息插入正在运行的本轮")
+        }
+        if store.followUp.canStopSubAgents && !store.isGenerating && !store.followUp.waitingForSubAgents {
+            Button("停止子 Agent", action: store.stopSubAgents).disabled(store.isLoading)
+        }
+        if current.action != .none {
+            Button(current.action.title, action: current.action == .resume ? resume : send)
+                .buttonStyle(.borderedProminent).disabled(!current.enabled)
+                .help(current.action == .resume ? store.continueHelp : current.action == .queue ? "本轮结束后发送" : "发送消息")
         }
     }
 

@@ -120,4 +120,4 @@ ARK 查询认证通过 save_provider 的可选参数 quota_authentication_edit�
 `resolve_agent_uri(uri, runtime_id)` 返回 `BindingAgentUriResolution`，含匹配的 `BindingListedConversation` 与逐实例失败；远控将同一命令交给所选设备。列表记录新增可选 `agents_uri`，平台直接消费，不自行拼接原生 ID 或 Pi 文件路径。多匹配须显式选择；有失败时不能把一个已找到的结果视为已确认唯一。
 
 
-`BindingFollowUp.can_resume` 声明当前原生上下文可无新用户消息继续；`resume_turn(runtime_id, conversation_id, selection, effort, permission_mode)` 对应 typed `ResumeTurn` 命令，本地与远控使用同一接口，runtime 参数是快照的 `context_runtime_id`。它不接受正文或附件，失败不会自动改发文本，也不解除队列暂停。`can_continue` 仍允许发送真实“继续”消息；界面只在下一轮运行时仍是当前上下文且 `can_resume` 为真时选择原生恢复。
+`BindingFollowUp.can_resume` 声明当前原生上下文可无新用户消息继续；`resume_turn(runtime_id, conversation_id, selection, effort, permission_mode)` 对应 typed `ResumeTurn` 命令，本地与远控使用同一接口，runtime 参数是快照的 `context_runtime_id`。它不接受正文或附件，失败不会自动改发文本，也不解除队列暂停。`can_continue` 与 `can_resume` 同义，均受即时执行资格约束；运行中、停止中或异地运行不能恢复。桌面端还须校验下一轮运行时为当前上下文、正文与附件为空，并阻止输入法组词或请求在途的重复提交。

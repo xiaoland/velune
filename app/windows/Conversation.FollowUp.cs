@@ -122,7 +122,7 @@ sealed partial class Conversation
     public async Task<bool> Steer(string text)
     {
         text = text.Trim();
-        if (Snapshot is not { } snapshot || FollowUp is not { CanSteer: true } || (text.Length == 0 && Attached.Count == 0))
+        if (Snapshot is not { } snapshot || !CanSteer || (text.Length == 0 && Attached.Count == 0))
         {
             return false;
         }
@@ -136,22 +136,52 @@ sealed partial class Conversation
         return true;
     }
 
-    public bool CanResume => FollowUp is { CanResume: true } && Next == Snapshot?.ContextRuntimeId;
+    string composerText = "";
+    bool composing;
+    bool stopRequested;
+    ComposerSubmission.Phase? composerRequest;
 
-    public Task<bool> Continue()
+    public void UpdateComposer(string text, bool isComposing)
     {
-        if (Snapshot is not { } snapshot || FollowUp is not { CanContinue: true })
+        if (composerText == text && composing == isComposing) return;
+        composerText = text;
+        composing = isComposing;
+        Notify();
+    }
+
+    public bool CanSteer => !Busy && !stopRequested && !composing && Snapshot?.RunState == BindingRunState.Running && FollowUp is { CanSteer: true };
+
+    public ComposerSubmission Submission
+    {
+        get
         {
-            return Task.FromResult(false);
+            var phase = stopRequested || Snapshot?.RunState == BindingRunState.Stopping ? ComposerSubmission.Phase.Stopping
+                : composerRequest ?? (Running ? ComposerSubmission.Phase.Running
+                : Working || Loading || Busy || ParentID != null ? ComposerSubmission.Phase.Blocked : ComposerSubmission.Phase.Idle);
+            var ready = !Busy && !Loading && Next.Length > 0 && Uploading == 0;
+            var canSend = ready && !Working && (Target.Unsent || Snapshot is { Actions.CanSend: true } snapshot && !snapshot.PendingInteractions.Any());
+            return ComposerSubmission.Resolve(phase, !string.IsNullOrWhiteSpace(composerText) || Attached.Count > 0 || Uploading > 0,
+                composing, canSend, ready && Running && !stopRequested,
+                FollowUp is { CanResume: true } && Next == Snapshot?.ContextRuntimeId);
         }
-        if (!CanResume)
-        {
-            return Send("继续");
-        }
+    }
+
+    public async Task<bool> Continue()
+    {
+        if (Snapshot is not { } snapshot || !Submission.CanResume) return false;
         var selection = NextModel();
         var effort = Effort();
         var mode = PermissionMode(Choice().PermissionMode)?.Id;
-        return Change("继续", application => application.ResumeTurn(snapshot.ContextRuntimeId, snapshot.Conversation.Id, selection, effort, mode));
+        composerRequest = ComposerSubmission.Phase.Resuming;
+        try
+        {
+            return await Change("继续", application => application.ResumeTurn(snapshot.ContextRuntimeId, snapshot.Conversation.Id, selection, effort, mode));
+        }
+        finally
+        {
+            composerRequest = null;
+            Notify();
+        }
     }
 
     // Edit replaces a sent user message: in place, dropping it and all after

@@ -36,7 +36,7 @@ public sealed partial class ConversationView : UserControl
             }
         };
         Input.PreviewKeyDown += InputKeyDown;
-        SendButton.Click += (_, _) => Send();
+        SendButton.Click += (_, _) => Submit();
         RuntimeButton.Click += (_, _) => window.OpenSettings(SettingsPage.Runtimes);
         StopButton.Click += (_, _) => Model.Stop();
         AgentMenu.Opening += (_, _) => FillAgentMenu();
@@ -77,6 +77,7 @@ public sealed partial class ConversationView : UserControl
 
     void InputKeyDown(object sender, KeyRoutedEventArgs e)
     {
+        if (composing) return;
         if (ComposerKey(e))
         {
             e.Handled = true;
@@ -90,10 +91,20 @@ public sealed partial class ConversationView : UserControl
         }
     }
 
+    async void Submit()
+    {
+        if (Model.Submission.CanResume)
+        {
+            ScrollToEnd();
+            await Model.Continue();
+        }
+        else Send();
+    }
+
     async void Send()
     {
         var text = Input.Text;
-        if ((string.IsNullOrWhiteSpace(text) && Model.Attached.Count == 0) || Model.Busy || Model.Next.Length == 0 || Model.Uploading > 0)
+        if (!Model.Submission.CanSubmitDraft || (string.IsNullOrWhiteSpace(text) && Model.Attached.Count == 0) || Model.Busy || Model.Next.Length == 0 || Model.Uploading > 0)
         {
             return;
         }

@@ -94,6 +94,12 @@ impl CoreRuntime {
         let snapshot = self
             .native_snapshot()
             .ok_or_else(|| RuntimeError::invalid("conversation is not active"))?;
+        if matches!(
+            snapshot.run_state,
+            RunState::Running | RunState::Stopping | RunState::Elsewhere
+        ) {
+            return Err(RuntimeError::invalid("请等待当前会话的执行结束"));
+        }
         if snapshot.conversation.parent_conversation_id.is_some() {
             return Err(RuntimeError::invalid(
                 "原生 sub-agent 会话由启动它的会话继续，不能直接发送",

@@ -31,7 +31,7 @@ pub(super) struct SendQueue {
     /// The next message waits for work besides the turn to end.
     waiting: Option<QueueWait>,
     /// The session's last turn stopped or failed.
-    interrupted: bool,
+    interrupted: Option<QueuePause>,
 }
 
 impl SendQueue {
@@ -93,6 +93,21 @@ impl CoreRuntime {
             .ok_or_else(|| RuntimeError::invalid("conversation id"))?;
         let operation: SendQueueOperation =
             serde_json::from_value(request["payload"]["operation"].clone())?;
+        let snapshot = self.native_snapshot();
+        if matches!(
+            operation,
+            SendQueueOperation::Add { .. } | SendQueueOperation::Resume
+        ) && snapshot.as_ref().is_some_and(|snapshot| {
+            snapshot.conversation.parent_conversation_id.is_some()
+                || matches!(snapshot.run_state, RunState::Stopping | RunState::Elsewhere)
+        }) {
+            return Err(RuntimeError::invalid("当前会话不能接纳新的排队消息"));
+        }
+        let interrupted_idle = if self.turn_running() {
+            None
+        } else {
+            self.session.send_queue.interrupted.clone()
+        };
         let queue = &mut self.session.send_queue;
         match operation {
             SendQueueOperation::Add {
@@ -103,6 +118,11 @@ impl CoreRuntime {
             } => {
                 if turn.text.trim().is_empty() && turn.attachments.is_empty() {
                     return Err(RuntimeError::invalid("message text"));
+                }
+                // A late queue request after stop must not start a new turn.
+                // An existing queue retains the user's pause/resume decision.
+                if queue.turns.is_empty() && queue.paused.is_none() {
+                    queue.paused = interrupted_idle;
                 }
                 queue.turns.push_back(QueuedTurn {
                     id: queued_id(),
@@ -234,7 +254,7 @@ impl CoreRuntime {
             crate::TurnOutcome::Cancelled => Some(QueuePause::TurnStopped),
             crate::TurnOutcome::Failed => Some(QueuePause::TurnFailed),
         };
-        queue.interrupted = pause.is_some();
+        queue.interrupted = pause.clone();
         if queue.turns.is_empty() {
             return;
         }
@@ -267,7 +287,7 @@ impl CoreRuntime {
 
     /// A turn starts in the addressed session.
     pub(super) fn follow_started_turn(&mut self) {
-        self.session.send_queue.interrupted = false;
+        self.session.send_queue.interrupted = None;
     }
 
     /// Send the first queued message as its own turn. One that is not
@@ -300,24 +320,27 @@ impl CoreRuntime {
         snapshot: &crate::conversation::ConversationSnapshot,
     ) -> FollowUp {
         let queue = &self.session.send_queue;
-        let idle = !self.turn_running();
+        let idle =
+            !self.turn_running() && matches!(snapshot.run_state, RunState::Idle | RunState::Failed);
         let native_resume = self
             .runtime_instance(&snapshot.context_runtime_id)
             .is_ok_and(|runtime| {
                 runtime.enabled
                     && matches!(runtime.type_id.as_str(), "codex-0.159" | "claude-code-2.1")
             });
-        let can_continue =
-            idle && snapshot.pending_interactions.is_empty()
-                && snapshot.actions.can_send
-                && (!native_resume
-                    || (self.session.work().is_empty()
-                        && snapshot.messages.iter().any(|message| {
-                            message.role == crate::conversation::MessageRole::User
-                        })))
-                && (queue.interrupted
-                    || snapshot.run_state == RunState::Failed
-                    || snapshot.follow_up.can_resume);
+        let can_continue = idle
+            && native_resume
+            && snapshot.pending_interactions.is_empty()
+            && snapshot.actions.can_send
+            && self.session.work().is_empty()
+            && snapshot.conversation.parent_conversation_id.is_none()
+            && snapshot
+                .messages
+                .iter()
+                .any(|message| message.role == crate::conversation::MessageRole::User)
+            && (queue.interrupted.is_some()
+                || snapshot.run_state == RunState::Failed
+                || snapshot.follow_up.can_resume);
         FollowUp {
             queue: queue.turns.iter().map(QueuedTurn::public).collect(),
             paused: queue.paused.clone(),
@@ -329,9 +352,7 @@ impl CoreRuntime {
                 .any(|task| task.state != velune_agent_runtime::work::BackgroundState::Stopping),
             can_steer: self.can_steer(),
             can_continue,
-            can_resume: can_continue
-                && native_resume
-                && snapshot.conversation.parent_conversation_id.is_none(),
+            can_resume: can_continue,
             editable: self.editable_messages(snapshot),
         }
     }

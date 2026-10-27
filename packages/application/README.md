@@ -156,6 +156,8 @@ ARK Coding Plan 模板 `arkCodingPlan` 组合 Http、ResponsesV1、ApiKey、ArkC
 查询认证及其 generation 保存在提供商私有配置，公开 quota_authentication 只给 configured、binding_confirmed。关联是用户声明，不是服务器自动核验；更换模型认证、查询凭据或套餐目标会撤销旧关联并丢弃旧采样，查询换 Key 不清除模型冷却和会话绑定。相同模型 Key 或相同 AK 绑定不能重复保存，不推导跨 AK 的订阅唯一性。固定 GetCodingPlanUsage 使用独立 V4 签名，不读取 CLI 登录或枚举其他模型 Key；错误与超大响应不泄露正文。窗口 ark:session/weekly/monthly 以实际比例/重置为准，未确认来源供查看但调度为 Unknown；失败的主动刷新会让旧观测过期，不把旧值当新值，也不补零。
 
 
-`resume_turn(runtime_id, conversation_id, selection, effort, permission_mode)` 在 `FollowUp.can_resume` 为真时，从当前原生上下文启动无用户消息的新轮次。`runtime_id` 是 `context_runtime_id`，包括跨 Harness 关联会话的尾段；不允许借此切换实例。Codex 使用 `turn/start` 的空 `input`，不是仅载入会话的 `thread/resume`；Claude Code 在新轮次子进程中使用 stream-json 的空 `user.message.content`。停止／失败、无待处理交互、无子 Agent 工作且有已记录的用户输入时才提供；中断状态从原生历史恢复。`can_continue` 保留文本继续的资格。恢复失败不补发用户消息、不释放暂停队列，也不在转录中登记等待下一条用户消息的发送配置；无输入轮次的原生用量归到前一用户消息所在段，保留那条消息原有的发送配置。
+`resume_turn(runtime_id, conversation_id, selection, effort, permission_mode)` 在 `FollowUp.can_resume` 为真时，从当前原生上下文启动无用户消息的新轮次。`runtime_id` 是 `context_runtime_id`，包括跨 Harness 关联会话的尾段；不允许借此切换实例。Codex 使用 `turn/start` 的空 `input`，不是仅载入会话的 `thread/resume`；Claude Code 在新轮次子进程中使用 stream-json 的空 `user.message.content`。停止／失败、无待处理交互、无子 Agent 工作且有已记录的用户输入时才提供；中断状态从原生历史恢复。`can_continue` 与 `can_resume` 均表示当前原生恢复资格，不承诺文本继续；Idle／Failed 才可恢复，Elsewhere 独立禁止普通发送、恢复及新增／恢复队列。恢复失败不补发用户消息、不释放暂停队列，也不在转录中登记等待下一条用户消息的发送配置；无输入轮次的原生用量归到前一用户消息所在段，保留那条消息原有的发送配置。
 
 Claude Code 的 SDK 中断标记复用原输入的 `promptId`，且没有输入的 `promptSource`／`turnPosition`。历史投影据此识别原生中断标记，恢复资格来自该标记；用户实际输入相同文字仍作为用户消息保留。无输入恢复不生成空用户投影，前后计量累计到同一用户段；流末尾的输出 token 更新实时上下文用量。其他历史格式缺少这些证据时不从文字猜测恢复资格。
+
+停止／失败的原因保留到下一轮被接纳；空队列收到迟到的 Add 时据此暂停，防止停止刚完成就被排队请求重新启动。已有非空队列保留用户的暂停／恢复决定，删除最后一项不会清除本轮停止原因。

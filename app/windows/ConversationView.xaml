@@ -180,10 +180,6 @@
                                     Style="{ThemeResource CaptionTextBlockStyle}" />
                             </Button>
                             <Button
-                                x:Name="ContinueButton"
-                                Content="继续"
-                                ToolTipService.ToolTip="让运行时接着做" />
-                            <Button
                                 x:Name="StopButton"
                                 Content="停止"
                                 ToolTipService.ToolTip="Esc" />

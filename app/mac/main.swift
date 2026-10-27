@@ -47,7 +47,7 @@ struct ConversationCommands: Commands {
     }
     /// Items as the focused tab's conversation stands as well.
     @ViewBuilder private func followingConversation<Content: View>(@ViewBuilder _ content: @escaping () -> Content) -> some View {
-        followingFocus { following(target?.window.focused.store, content) }
+        followingFocus { following(target?.window.focused.store) { following(target?.window.focused.composer, content) } }
     }
 
     var body: some Commands {
@@ -89,16 +89,16 @@ struct ConversationCommands: Commands {
         }
         CommandMenu("会话") {
             followingConversation {
-                Button("发送消息") { target?.send() }
+                Button(target?.window.focused.submission.action == .queue ? "排队" : "发送消息") { target?.send() }
                     .keyboardShortcut(.return, modifiers: .command)
-                    .disabled(target?.store.canSend != true)
+                    .disabled(target?.window.focused.submission.canSubmitDraft != true)
                 // ⌘Return also steers from the composer when Return sends; the menu keeps the key both modes share.
                 Button("插入本轮") { target?.window.focused.steer() }
                     .keyboardShortcut(.return, modifiers: [.command, .option])
-                    .disabled(target?.store.canSteer != true)
-                Button("继续") { target?.store.continueTurn() }
+                    .disabled(target?.window.focused.canSteer != true)
+                Button("继续") { target?.window.focused.resume() }
                     .keyboardShortcut(shortcuts[.continueTurn])
-                    .disabled(target?.store.followUp.canContinue != true || target?.store.canSend != true)
+                    .disabled(target?.window.focused.submission.canResume != true)
                 item(.attach)
                 Divider()
                 item(.chooseRuntime)

@@ -109,7 +109,7 @@ sealed partial class Conversation
     public bool SessionOpen => sent || Running || Interaction != null;
     bool sent;
 
-    public bool CanCancel => Running && Snapshot!.Actions.CanCancel;
+    public bool CanCancel => !stopRequested && Snapshot is { RunState: BindingRunState.Running, Actions.CanCancel: true };
 
     // Working includes a turn the runtime runs for another client: running is
     // what matters, not where it started.
@@ -213,6 +213,7 @@ sealed partial class Conversation
         Messages = messages;
         Target = new Target(snapshot.ContextRuntimeId, snapshot.Conversation.Id, snapshot.Conversation.Title);
         Snapshot = snapshot;
+        if (snapshot.RunState is not (BindingRunState.Running or BindingRunState.Stopping)) stopRequested = false;
         // The sent message shows until the transcript has it, or its turn ends without it.
         if (Sending != null && Accepted && (UserMessages() > usersBeforeSending || !Working))
         {
@@ -251,7 +252,7 @@ sealed partial class Conversation
     public async Task<bool> Send(string text)
     {
         text = text.Trim();
-        if (Busy || (text.Length == 0 && Attached.Count == 0) || Next.Length == 0)
+        if (Busy || composing || stopRequested || Snapshot?.RunState == BindingRunState.Stopping || Loading || Uploading > 0 || (text.Length == 0 && Attached.Count == 0) || Next.Length == 0)
         {
             return false;
         }
@@ -259,7 +260,7 @@ sealed partial class Conversation
         {
             return await Queue(text);
         }
-        if (Snapshot is { Actions.CanSend: false })
+        if (Working || Snapshot is { Actions.CanSend: false } || Interaction != null)
         {
             return false;
         }
@@ -271,6 +272,7 @@ sealed partial class Conversation
         var runtimeID = Next;
         var cwd = Target.Unsent && Cwd.Trim().Length > 0 ? Cwd.Trim() : null;
         Busy = true;
+        composerRequest = ComposerSubmission.Phase.Sending;
         Sending = text;
         Accepted = false;
         usersBeforeSending = UserMessages();
@@ -316,11 +318,22 @@ sealed partial class Conversation
         finally
         {
             Busy = false;
+            composerRequest = null;
             Notify();
         }
     }
 
-    public void Stop() => Act("停止", (application, runtimeID, id) => application.Cancel(runtimeID, id));
+    public async void Stop()
+    {
+        if (!CanCancel || Busy || Snapshot is not { } snapshot) return;
+        stopRequested = true;
+        Notify();
+        if (!await Change("停止", application => application.Cancel(snapshot.ContextRuntimeId, snapshot.Conversation.Id)))
+        {
+            stopRequested = false;
+            Notify();
+        }
+    }
 
     public void Reply(string interaction, BindingRuntimeInteractionReply reply) =>
         Act("回复运行时的请求", (application, runtimeID, id) => application.ReplyRuntimeInteraction(runtimeID, id, interaction, reply));
