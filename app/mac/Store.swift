@@ -606,12 +606,15 @@ final class AppStore: ObservableObject {
         timer = Timer.scheduledTimer(withTimeInterval: 0.6, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 guard let self else { return }
-                if self.sharedApplication == nil { self.pollAuthentication(); self.pollActiveConversations() } else { self.poll() }
+                if self.sharedApplication == nil { self.pollAuthentication(); self.pollActiveConversations(); self.pollQuotaAlerts() } else { self.poll() }
             }
         }
     }
     private var activePollPending = false
     private var activityCursor: UInt64 = 0
+    private var quotaAlertPollPending = false
+    private var quotaAlertCursor: UInt64 = 0
+    private var lastQuotaAlertPoll = Date.distantPast
     private var notifier: ConversationNotifier?
     /// The workspace whose window was key most recently; notifications open
     /// conversations there.
@@ -622,6 +625,27 @@ final class AppStore: ObservableObject {
     func showConversation(_ id: String) {
         guard let workspace = focusedWorkspace else { return }
         if workspace.loadedConversationID != id { workspace.selectConversation(id: id) }
+    }
+    /// Quota conditions the core raised since the last poll, announced by the notifier.
+    private func pollQuotaAlerts() {
+        guard started, !isPreview, !isShuttingDown, !quotaAlertPollPending, Date().timeIntervalSince(lastQuotaAlertPoll) >= 3, let transport else { return }
+        quotaAlertPollPending = true
+        lastQuotaAlertPoll = Date()
+        let since = quotaAlertCursor
+        queue.async { [weak self] in
+            let result = Result { try transport.quotaAlerts(since: since) }
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.quotaAlertPollPending = false
+                switch result {
+                case .success(let alerts):
+                    self.clearActivityProblem("quota-alerts")
+                    self.quotaAlertCursor = alerts.cursor
+                    for alert in alerts.alerts { self.notifier?.observe(alert) }
+                case .failure(let failure): self.recordProblem(failure, source: "读取额度提醒", activityKey: "quota-alerts")
+                }
+            }
+        }
     }
     private func pollActiveConversations() {
         guard started, !isPreview, !isShuttingDown, !activePollPending, let transport else { return }
@@ -1398,6 +1422,20 @@ final class AppStore: ObservableObject {
                 }
             }
         }
+    }
+    /// Retained observations since `since`; reading never samples the provider.
+    func readQuotaHistory(_ providerID: String, since: Date, completion: @escaping (Result<[QuotaObservation], Error>) -> Void) {
+        guard !isPreview, let transport else { completion(.success([])); return }
+        let gatewayID = gateway.id
+        queue.async {
+            let result = Result { try transport.providerQuotaHistory(gatewayID: gatewayID, providerID: providerID, since: since) }
+            DispatchQueue.main.async { completion(result) }
+        }
+    }
+    func clearQuotaHistory(_ providerID: String, completion: @escaping () -> Void) {
+        guard !isPreview, let transport else { completion(); return }
+        let gatewayID = gateway.id
+        enqueue({ try transport.clearProviderQuotaHistory(gatewayID: gatewayID, providerID: providerID) }) { _ in completion() }
     }
     func readProviderAPIKey(_ providerID: String, completion: @escaping (String) -> Void) {
         guard !isPreview, let transport else { recordProblem("预览不会读取 API key"); return }

@@ -21,6 +21,7 @@ static class Quota
             "kimi:limit_7d" => "7 天窗口",
             "kimi:limit_month_total" => "本月总额度",
             "kimi:limit_month_code" => "本月编程额度",
+            "openrouter:keyLimit" => "Key 花费上限",
             _ => id,
         };
     }
@@ -49,6 +50,19 @@ static class Quota
             parts.Add("观测已过期");
         }
         return string.Join(" · ", parts);
+    }
+
+    // Balances lists the amounts the account reports, such as its prepaid
+    // balance; an account that reports neither windows nor amounts says so.
+    public static string Balances(BindingProviderQuotaStatus status)
+    {
+        var amounts = status.Balances.Select(balance =>
+            (balance.Id == "openrouter:keyLimitRemaining" ? "Key 剩余额度" : "余额") + "：" + balance.Amount.ToString("N2") + " " + balance.Unit).ToList();
+        if (amounts.Count == 0 && !status.Windows.Any() && status.Freshness == BindingQuotaFreshness.Fresh)
+        {
+            return "提供商未报告额度上限或余额。";
+        }
+        return string.Join(" · ", amounts);
     }
 
     // Applies tells whether a window counts for a model ID: a window scoped

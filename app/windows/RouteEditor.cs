@@ -126,7 +126,7 @@ sealed class RouteEditor : UserControl
 
     void ShowStrategy() => strategyDetail.Text = Strategy switch
     {
-        BindingRoutingStrategy.Smart => "需要重新选择时，按各成员最紧额度窗口距使用上限的余量排序。",
+        BindingRoutingStrategy.Smart => "需要重新选择时，优先使用重置前更可能用不完的额度：比较各成员最紧额度窗口的剩余比例与均匀消耗时此刻应剩的比例；未报告重置周期的窗口只比较剩余比例。",
         BindingRoutingStrategy.Order => "总是先用排在前面的可用成员。",
         BindingRoutingStrategy.Rotate => "新会话依次轮流分配到各成员。",
         _ => "按权重比例分配新会话。",

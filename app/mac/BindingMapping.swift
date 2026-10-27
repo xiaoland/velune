@@ -200,8 +200,21 @@ enum BindingMapping {
         let freshness: QuotaFreshness
         switch value.freshness { case .fresh: freshness = .fresh; case .stale: freshness = .stale; case .unknown: freshness = .unknown; case .unsupported: freshness = .unsupported }
         func date(_ ms: Int64) -> Date { Date(timeIntervalSince1970: Double(ms) / 1000) }
-        return ProviderQuota(freshness: freshness, windows: value.windows.map { QuotaWindow(id: $0.id, modelIDs: $0.modelIds, usedPercent: $0.usedPercent, resetsAt: $0.resetAtMs.map(date), observedAt: date($0.observedAtMs)) },
+        func pace(_ value: BindingProviderQuotaPace) -> QuotaPace {
+            let status: QuotaPace.Status
+            switch value.status { case .onPace: status = .onPace; case .runsOutBeforeReset: status = .runsOutBeforeReset; case .exhausted: status = .exhausted }
+            return QuotaPace(expectedUsedPercent: value.expectedUsedPercent, runsOutAt: value.runsOutAtMs.map(date), status: status)
+        }
+        return ProviderQuota(freshness: freshness,
+                             windows: value.windows.map { QuotaWindow(id: $0.id, modelIDs: $0.modelIds, usedPercent: $0.usedPercent, resetsAt: $0.resetAtMs.map(date), period: $0.windowMs.map { Double($0) / 1000 }, observedAt: date($0.observedAtMs), pace: $0.pace.map(pace)) },
+                             balances: value.balances.map { QuotaBalance(id: $0.id, amount: $0.amount, unit: $0.unit, observedAt: date($0.observedAtMs)) },
                              available: value.available, refreshing: value.refreshing, problem: value.problem)
+    }
+    static func quotaObservation(_ value: BindingQuotaHistoryPoint) -> QuotaObservation {
+        var values: [QuotaMetric: Double] = [:]
+        for window in value.windows { values[.window(id: window.id, modelIDs: window.modelIds)] = window.usedPercent }
+        for balance in value.balances { values[.balance(id: balance.id, unit: balance.unit)] = balance.amount }
+        return QuotaObservation(observedAt: Date(timeIntervalSince1970: Double(value.observedAtMs) / 1000), available: value.available, values: values)
     }
     static func gateway(_ value: BindingGatewayConfig) -> GatewayConfig {
         GatewayConfig(id: value.id, name: value.name, providers: value.providers.map(provider), routes: value.routes.map(route), failover: FailoverPolicy(mode: .disabled))

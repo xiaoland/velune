@@ -117,6 +117,8 @@ ARK Coding Plan 的额度认证由提供商内部单独持有，仅 application 
 
 2026-10-17 用户确认的智能调度已接入 Rust lib。一个订阅对应一个提供商实例；application 拥有实例认证、额度采集与唯一快照，gateway 只通过中立只读契约取得额度事实并维护运行期共享调度状态。提供商使用上限独立于路由，直接调用同样受约束；路由拥有策略、成员权重和黏性选择。会话身份由装配方显式提供，gateway 不依赖 Agent runtime、不根据正文猜测身份。详细产品行为归 [PRD](../prd/model-routing.md)，额度与调度接口见 [gateway unit](../../packages/gateway/README.md) 和 [bindings unit](../../packages/bindings/README.md)，验证记录归 [模型路由任务](../../tasks/model-routing/packet.md)。
 
+2026-10-27 按 [S55](../sources.md#s55) 借鉴 quotio：额度窗口带可选周期，gateway 的 smart 把余量除以周期内尚余时间的比例，只影响排序。application 在快照外另给状态附带节奏（均匀消耗时此刻应已用的比例、按平均速度的预计用尽时间与状态）和金额（ID、数额、单位）；金额不进入 gateway。`ApiAccount` 额度来源只接受以 API key 直连 DeepSeek、Moonshot、OpenRouter 精确官方主机的 HTTP 原生组合，查询固定发往同一主机，不跟随重定向、不重试，响应限 256 KiB。application 把每次成功观测按提供商写入 `$home/quota-history/` 下的 JSONL，带认证绑定的摘要；绑定改变时清空旧记录，未变化的值至多 10 分钟记一次，保留 30 天，配置中删除的提供商一并删除。提醒在观测由不满足变为满足使用上限、窗口用尽或账户不可用时产生，核心保留最近 64 条并以序号游标供平台轮询，不主动推送。
+
 路由捕获一次请求的配置版本、提供商／模型目标和认证引用；热编辑不能改变正在执行的尝试。持久配置、已装配运行配置与正在执行的快照必须有明确的版本和生效规则。Harness 的历史兼容身份由运行时 adapter 管理，不把 Pi 物理绑定 ID 作为通用路由模型；请求中的来源身份约束仍应参与目标资格判断。
 
 fail-over 由 AI 网关单独决策，provider 执行一次尝试，不隐藏再次请求。相同协议只是一项资格条件，不足以证明历史、文件、缓存、加密推理或服务端状态引用可交给另一提供商／账户／模型。目标必须能接受相同请求及其已有状态，不能为了切换而改变请求含义。

@@ -105,8 +105,8 @@ sealed partial class ProviderEditor
                 BindingQuotaFreshness.Unknown when status.Refreshing => "正在读取额度…",
                 BindingQuotaFreshness.Unknown => "额度未知。",
                 BindingQuotaFreshness.Stale => "额度观测已过期，将重新读取。",
-                _ when status.Available == false => "当前暂停新请求：已达到使用上限，或设有上限而缺少最新额度。",
-                _ => "",
+                _ when status.Available == false => "当前暂停新请求：已达到使用上限、余额不足，或设有上限而缺少最新额度。",
+                _ => Quota.Balances(status),
             };
         quotaState.Visibility = quotaState.Text.Length > 0 ? Visibility.Visible : Visibility.Collapsed;
     }

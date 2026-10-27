@@ -740,7 +740,9 @@ struct ProviderEditor: View {
     /// The command a CLI backend runs, from the template the composition comes from.
     private var executableCommand: String? { template?.executableCommand ?? store.providerTemplates.first { $0.composition.authenticationSource == composition.authenticationSource }?.executableCommand }
     private var usesHTTP: Bool { if case .http = composition.executionBackend { return true }; return false }
-    private var showsQuota: Bool { usesSubscription || !quotaLimits.isEmpty || (providerID.flatMap { store.providerQuotas[$0] }.map { $0.freshness != .unsupported } ?? false) }
+    /// The official API service at this address, whose account quota the provider's key can read.
+    private var accountService: String? { usesSubscription || !usesHTTP ? nil : apiAccountServiceName(endpoint: endpoint.trimmingCharacters(in: .whitespacesAndNewlines)) }
+    private var showsQuota: Bool { usesSubscription || composition.quotaSource != .none || !quotaLimits.isEmpty || (providerID.flatMap { store.providerQuotas[$0] }.map { $0.freshness != .unsupported } ?? false) }
     private var modelIndex: Int? { guard case .model(let id) = selection else { return nil }; return models.firstIndex { $0.id == id } }
     private var claudeBinary: String? { composition.claudeBinary?.trimmingCharacters(in: .whitespacesAndNewlines) }
     private var valid: Bool { !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && (!usesHTTP || URL(string: endpoint)?.host != nil) && (claudeBinary.map { ($0 as NSString).isAbsolutePath } ?? true) && quotaCredentialsValid && models.allSatisfy(\.valid) && (!editingAPIKey || (!apiKey.isEmpty && (originalAPIKey != nil || authentication.method != .apiKey || clearAuthentication))) }
@@ -914,6 +916,14 @@ struct ProviderEditor: View {
                     ImmediateDisclosureGroup("来源详情") { Text(provenance).font(.callout).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading).padding(.top, 8) }
                 }
             }
+            if let accountService {
+                Section {
+                    Toggle("读取 \(accountService) 账户额度", isOn: Binding(get: { composition.quotaSource == .apiAccount }, set: { composition.quotaSource = $0 ? .apiAccount : .none }))
+                } footer: {
+                    Text(accountService == "OpenRouter" ? "用这个 API key 向 OpenRouter 读取它的花费上限与剩余额度；没有设置上限的 Key 不报告额度。" : "用这个 API key 向 \(accountService) 官方地址读取账户余额；提供商表示余额不足时暂停新请求。")
+                        .formFooterStyle()
+                }
+            }
         }
     }
     private var linkedLoginNote: String {
@@ -951,6 +961,8 @@ struct ProviderEditor: View {
         let quotaEdit: BindingQuotaAuthenticationEdit? = clearingQuotaAuthentication ? .clear : !quotaAccessKeyID.isEmpty && !quotaSecret.isEmpty ? .setAccessKey(accessKeyId: quotaAccessKeyID, secretAccessKey: quotaSecret, confirmed: quotaConfirmed) : quotaConfirmed ? .confirmBinding : nil
         let existing = Set(store.providers.map(\.id))
         var saving = composition; if let claudeBinary { saving.claudeBinary = claudeBinary }
+        // The account source reads only from the official address; another address keeps none.
+        if saving.quotaSource == .apiAccount && accountService == nil { saving.quotaSource = .none }
         store.saveProvider(AIProvider(id: providerID ?? "", name: name.trimmingCharacters(in: .whitespacesAndNewlines), protocolID: protocolID, endpoint: usesHTTP ? endpoint.trimmingCharacters(in: .whitespacesAndNewlines) : "", authentication: authentication, models: models.map(\.definition), quotaLimits: quotaLimits, composition: saving), authenticationEdit: edit, quotaAuthenticationEdit: quotaEdit) {
             apiKey = ""; originalAPIKey = nil; quotaAccessKeyID = ""; quotaSecret = ""
             guard signingIn, let saved = store.providers.first(where: { $0.id == providerID }) ?? store.providers.first(where: { !existing.contains($0.id) }) else { dismiss(); return }

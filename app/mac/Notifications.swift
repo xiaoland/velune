@@ -46,6 +46,33 @@ final class ConversationNotifier: NSObject, UNUserNotificationCenterDelegate {
         updateBadge()
     }
 
+    /// A provider newly paused by its quota. One notification per provider
+    /// and condition; a later one replaces it.
+    func observe(_ alert: BindingQuotaAlert) {
+        guard let application, let provider = application.providers.first(where: { $0.id == alert.providerId }) else { return }
+        let window = alert.windowId.map(QuotaWindow.title) ?? ""
+        let body: String
+        switch alert.kind {
+        case .capReached:
+            body = "\(window)\(UsageFormat.ceiling(alert.maxUsedPercent ?? 100, application.usageDisplay, reached: true))，直到额度回到上限以内。"
+        case .exhausted:
+            body = "\(window)已用尽，重置前暂停向它发送新请求。"
+        case .unavailable:
+            body = "提供商表示此账户当前不可用（例如余额不足），暂停新请求。"
+        }
+        let content = UNMutableNotificationContent()
+        content.title = provider.name
+        content.subtitle = "额度提醒"
+        content.body = body
+        let request = UNNotificationRequest(identifier: "quota:\(alert.providerId):\(alert.kind):\(alert.windowId ?? "")", content: content, trigger: nil)
+        let center = UNUserNotificationCenter.current()
+        if authorizationRequested { center.add(request); return }
+        authorizationRequested = true
+        center.requestAuthorization(options: [.alert, .sound]) { granted, _ in
+            if granted { center.add(request) }
+        }
+    }
+
     private func updateBadge() {
         let count = Set(pendingCounts.keys).union(unseenFinished).count
         let label = count > 0 ? String(count) : nil

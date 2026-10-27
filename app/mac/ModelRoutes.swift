@@ -169,7 +169,10 @@ private struct RouteMemberStatus: View {
                 ForEach(Array(windows.enumerated()), id: \.offset) { _, window in
                     QuotaWindowRow(window: window, limit: member.provider.quotaLimits.first { $0.windowID == window.id }?.maxUsedPercent, fresh: quota?.freshness == .fresh, display: store.usageDisplay)
                 }
-                if !needsSignIn, let quota, quota.freshness != .unsupported, quota.freshness != .fresh || windows.isEmpty { QuotaStatusText(quota: quota) }
+                ForEach(Array((quota?.balances ?? []).enumerated()), id: \.offset) { _, balance in
+                    QuotaBalanceRow(balance: balance, fresh: quota?.freshness == .fresh).font(.caption)
+                }
+                if !needsSignIn, let quota, quota.freshness != .unsupported, quota.freshness != .fresh || (windows.isEmpty && quota.balances.isEmpty) { QuotaStatusText(quota: quota) }
             }.padding(.leading, 24)
         }.padding(.vertical, 2)
     }

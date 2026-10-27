@@ -465,8 +465,16 @@ struct QuotaWindow: Sendable, Equatable {
     var modelIDs: [String]?
     var usedPercent: Double
     var resetsAt: Date?
+    /// How long one period lasts, when the provider states it.
+    var period: TimeInterval?
     var observedAt: Date
+    /// Use against an even spend over the period, when both its reset and length are known.
+    var pace: QuotaPace?
     func applies(to providerModelID: String) -> Bool { modelIDs?.contains(providerModelID) ?? true }
+    /// The window as a row names it: a period's window, or the limit itself.
+    static func title(_ id: String) -> String {
+        id == "openrouter:keyLimit" ? "Key 花费上限" : "\(name(id))窗口"
+    }
     /// A readable name for a window ID; Codex names its windows `window:<seconds>`.
     static func name(_ id: String) -> String {
         switch id {
@@ -485,16 +493,42 @@ struct QuotaWindow: Sendable, Equatable {
         return "\(max(1, seconds / 60)) 分钟"
     }
 }
+/// The observed use against spending the window evenly; the rate is the
+/// average since the period began, not a forecast.
+struct QuotaPace: Sendable, Equatable {
+    enum Status: Sendable, Equatable { case onPace, runsOutBeforeReset, exhausted }
+    var expectedUsedPercent: Double
+    /// When the window empties at that rate, only if before the reset.
+    var runsOutAt: Date?
+    var status: Status
+}
+/// An amount the provider's account reports, such as a prepaid balance.
+struct QuotaBalance: Sendable, Equatable {
+    var id: String
+    var amount: Double
+    /// An ISO 4217 currency code.
+    var unit: String
+    var observedAt: Date
+    var title: String {
+        switch id {
+        case "openrouter:keyLimitRemaining": return "Key 剩余额度"
+        case "balance": return "可用余额"
+        default: return id.hasPrefix("balance:") ? "余额（\(unit)）" : id
+        }
+    }
+    var formatted: String { amount.formatted(.currency(code: unit).presentation(.narrow)) }
+}
 /// A provider's usage as the core last observed it. The core owns sampling;
 /// this is a read-only copy for display.
 struct ProviderQuota: Sendable, Equatable {
     var freshness: QuotaFreshness
     var windows: [QuotaWindow]
+    var balances: [QuotaBalance] = []
     /// `false` when the provider says the account may not be used now, whatever the percentages.
     var available: Bool?
     var refreshing: Bool
     var problem: String?
-    var observedAt: Date? { windows.map(\.observedAt).max() }
+    var observedAt: Date? { (windows.map(\.observedAt) + balances.map(\.observedAt)).max() }
 }
 
 enum FailoverMode: String, Codable, Sendable { case disabled }
@@ -521,7 +555,7 @@ enum RoutingStrategy: String, Codable, Sendable, CaseIterable, Identifiable {
     }
     var explanation: String {
         switch self {
-        case .smart: return "优先使用离使用上限最远的模型：比较各提供商最紧的额度窗口还剩的比例；额度未知的排在后面，相同时按列表顺序。"
+        case .smart: return "优先使用重置前更可能用不完的额度：比较各提供商最紧的额度窗口还剩的比例与均匀消耗时此刻应剩的比例，临近重置仍有余量的先用；未报告重置周期的窗口只比较剩余比例。额度未知的排在后面，相同时按列表顺序。"
         case .order: return "按列表顺序使用，前面的模型不可用时才用后面的。"
         case .rotate: return "在模型之间轮流分配。"
         case .weight: return "按权重比例分配，权重越大分到越多。"

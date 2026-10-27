@@ -147,6 +147,15 @@ final class Transport: @unchecked Sendable {
             BindingMapping.quota(refresh ? try application.refreshProviderQuota(gatewayId: gatewayID, providerId: providerID) : try application.providerQuota(gatewayId: gatewayID, providerId: providerID))
         }
     }
+    func providerQuotaHistory(gatewayID: String, providerID: String, since: Date) throws -> [QuotaObservation] {
+        try withApplication("providerQuotaHistory", .reads) { application in
+            try application.providerQuotaHistory(gatewayId: gatewayID, providerId: providerID, sinceMs: Int64(since.timeIntervalSince1970 * 1000)).points.map(BindingMapping.quotaObservation)
+        }
+    }
+    func clearProviderQuotaHistory(gatewayID: String, providerID: String) throws {
+        _ = try withApplication("clearProviderQuotaHistory", .writes) { try $0.clearProviderQuotaHistory(gatewayId: gatewayID, providerId: providerID) }
+    }
+    func quotaAlerts(since: UInt64) throws -> BindingQuotaAlerts { try withApplication("quotaAlerts", .reads) { try $0.quotaAlerts(since: since) } }
     func readProviderAPIKey(gatewayID: String, providerID: String) throws -> String { try withApplication("readProviderAPIKey", .reads) { try $0.readProviderApiKey(gatewayId: gatewayID, providerId: providerID) } }
     func saveTemplate(_ value: ModelTemplate) throws -> [BindingModelTemplate] { try withApplication("saveModelTemplate", .changesConfiguration) { try $0.saveModelTemplate(template: BindingMapping.bindingTemplate(value)) } }
     func publicModelCatalog() throws -> [BindingCatalogModel] { try withApplication("fetchPublicModelCatalog", .reads) { try $0.fetchPublicModelCatalog() } }
