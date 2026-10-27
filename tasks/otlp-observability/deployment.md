@@ -1,6 +1,6 @@
 # sfp7 开发可观测性接收端
 
-2026-10-26 已部署并验证。此文记录本开发环境的实际入口、操作与证据；客户端的目标行为见[技术方案](technical-design.md)和[验收设计](acceptance.md)。Velune 产品代码尚未接入此服务。
+2026-10-26 已部署并验证。此文记录本开发环境的实际入口、操作与证据；客户端的目标行为见[技术方案](technical-design.md)和[验收设计](acceptance.md)。四端接入与实际结果归[验收记录](verification.md)。
 
 ## 选择依据
 
@@ -29,19 +29,7 @@ LGTM 当前短测占用低于设定预算，因此本轮不再维护第二套后
 
 Grafana 匿名访问已关闭，`admin` 使用新生成的随机密码，保存在远端 `private.env`（0600）。专用 service account `velune-agent` 是 Viewer，其 90 天查询 token 保存在远端 `query-token.json`（0600）。本开发机私有副本在仓库 `target/otlp-backend-probe/query-token.json`；`target` 被 Git 忽略，实验目录为 0700。认证值不写入文档、命令参数或报告。到期后在 Grafana 的 service account 设置中轮换 token，并替换私有副本。
 
-当前已建立一个本任务专用 SSH 隧道，control socket 位于仓库 `target/otlp-backend-probe/ssh.sock`。停止它不会停止 sfp7 服务。在仓库根目录执行：
-
-```sh
-ssh -S "$PWD/target/otlp-backend-probe/ssh.sock" -O exit sfp7-ws.localhost
-```
-
-以后重新连接可以使用前台隧道，退出该 SSH 进程即关闭转发：
-
-```sh
-ssh -NT -o ExitOnForwardFailure=yes \
-  -L 127.0.0.1:30300:127.0.0.1:30300 \
-  -L 127.0.0.1:34317:127.0.0.1:34317 sfp7-ws.localhost
-```
+开发通道已归 `svc dev` 管理；入口、目标与本地覆盖见[开发环境](../../docs/development.md#开发环境)。本机执行 `svc dev ensure telemetry`，Windows 通道执行 `svc dev ensure telemetry-windows`，Android 执行 `svc dev ensure telemetry-android`。停止使用同名 `svc dev stop`，不删除数据卷。SSH control socket 位于 `~/.local/state/velune/dev/`；旧 `target/otlp-backend-probe/ssh.sock` 已停止，不再作为启动入口。
 
 管理服务时先 SSH 到 sfp7，在部署目录运行：
 
@@ -87,4 +75,4 @@ target/otlp-backend-probe/venv/bin/python tasks/otlp-observability/deployment/pr
 - 匿名、错误 token 和默认 `admin:admin` 均返回 401；Viewer 查询返回 200，修改 datasource 返回 403，经 proxy 尝试空 Prometheus／Loki 写入也返回 403。非回环地址上的两个发布端口均拒绝连接。此身份用于可信开发 agent，不把开发 LGTM 宣称为生产多租户隔离。
 - 已读取运行中的 Prometheus、Loki、Tempo 配置，确认上述保留值生效；未等待 72 小时观察实际删除。Pyroscope 参数经对应版本 help 和正常启动核对，未发送或查询 profiles。
 
-尚未验证四端客户端、真实移动设备到 sfp7 的网络路径、长期故障恢复、长期资源上限与磁盘清理。页面登录和图形交互没有作为此次验收依据；已验证的是 agent 使用的机器 API。
+四端与真机结果见上述验收记录；长期故障恢复、长期资源上限与磁盘清理尚未完整验证。页面登录和图形交互没有作为此次验收依据；已验证的是 agent 使用的机器 API。

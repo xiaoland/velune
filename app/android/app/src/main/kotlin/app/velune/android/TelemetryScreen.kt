@@ -47,7 +47,7 @@ fun TelemetryScreen(hub: DeviceHub, back: () -> Unit) {
     }
     fun perform(body: suspend () -> Unit) {
         scope.launch {
-            busy = true; failure = null
+            busy = true; failure = null; status = null
             try { body() } catch (error: Exception) { failure = error.describe() }
             finally { busy = false }
         }

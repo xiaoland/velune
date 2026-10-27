@@ -463,22 +463,46 @@ Velune 执行的每个会话都获得 application 注入的 `velune` MCP 服务�
 
 平台远控消费者须独立消费 [新契约](design/remote-access.md)：使用 `state_file`、Rust 状态快照和配对事务，按 peer 连接，由独立 operation 关联副作用与准确 ID 确认。接口细节归 [bindings README](../packages/bindings/README.md)，不恢复旧接口兼容层。
 
+## 开发环境
+
+在当前 Mac 开发工作区使用 `svc dev` 管理已声明的长期服务。配置归仓库 [svc.json](../svc.json)，本机已验证 SVC CLI 16.0.2（schema 4）。CLI 仅用于开发；产品运行不依赖它。`svc dev status` 只观察，`ensure` 复用或启动一个目标，`stop` 运行该目标声明的停止动作。
+
+| 目标 | 能力与启动依赖 |
+| --- | --- |
+| `lgtm` | sfp7 上已有的 Docker Compose 接收端，停止保留数据卷 |
+| `telemetry` | sfp7→本机的 Grafana 30300 与 OTLP/gRPC 34317；先确保 `lgtm` 就绪 |
+| `telemetry-windows` | 本机→Windows 的相同回环端口；先确保 `telemetry` 就绪 |
+| `telemetry-android` | 唯一 USB Android 的 ADB reverse 34317；先确保 `telemetry` 就绪 |
+
+```sh
+svc dev status
+svc dev ensure telemetry
+svc dev ensure telemetry-windows
+svc dev ensure telemetry-android
+svc dev stop telemetry-android
+svc dev stop telemetry-windows
+```
+
+SSH 和 ADB 继续承担实际传输；[服务动作](../scripts/dev_services.py)只把就绪和有界停止交给 SVC，不维护另一套进程注册表。SSH control socket 位于本机 `~/.local/state/velune/dev/`，不会因工作树切换重复开通道。停止一个通道不级联停止上游。上游恢复时复用仍存活的下游隧道，端口冲突不接管其他服务。SVC 回执提供实际操作日志位置；也可用 `--json` 获取机器结果。
+
+共享配置使用已有 SSH 别名 `sfp7-ws.localhost`、`win-ws.localhost`，Android 默认选择唯一 USB 设备。需要不同主机或指定设备时，在被 Git 忽略的 `svc.local.json` 中用 schema 4 稀疏覆盖相应目标的 `probe.argv`、`provision.argv` 和 `stop.argv`；设备参数为 `--device <serial>`，ADB 路径可用 `--adb` 指定。切换物理目标前先停止旧目标，并修改 `host_key`，避免与另一设备共享协调身份。认证仍由 SSH 和远端私有文件管理，不写入这些声明。
+
 ## 开发遥测
 
-普通启动与 Debug 构建默认不启用遥测。使用 `scripts/dev-telemetry.py launch` 显式启动隔离实例时，工具复用本任务 sfp7 的 SSH 隧道，检查 Grafana 与 OTLP 就绪，生成私有临时 profile 和 run manifest。它不修改日常偏好或全局 `OTEL_*`，也不重建／清空 LGTM。业务 home 与 OS home 使用本次运行的独立目录。接收端不可用时继续启动业务并报告未接入；端口冲突不停止无关进程。依赖、资源、保留和查询授权见[实际部署](../tasks/otlp-observability/deployment.md)。
+普通启动与 Debug 构建默认不启用遥测。使用 `scripts/dev-telemetry.py launch` 显式启动隔离实例时，工具通过上述 SVC 入口准备通道并检查 Grafana 与 OTLP 就绪，生成私有临时 profile 和 run manifest。它不修改日常偏好或全局 `OTEL_*`，也不重建／清空 LGTM。业务 home 与 OS home 使用本次运行的独立临时目录，避免长仓库路径超过 Mac 的 Unix socket 长度限制。接收端不可用时继续启动业务并报告未接入；端口冲突不停止无关进程。依赖、资源、保留和查询授权见[实际部署](../tasks/otlp-observability/deployment.md)。
 
-先按各端构建说明生成产物，然后在仓库运行以下入口。`--app` 必须是绝对路径；Mac 指向 bundle 内可执行文件，Windows 指向 `Velune.exe`。移动设备必须已启动，并专用于合成验收；入口会重新启动指定的移动应用，以免旧进程忽略本次临时环境。
+先按各端构建说明生成产物，然后在仓库运行以下入口。桌面 `--app` 必须是已安装或已构建产物的绝对路径；Mac 指向 bundle 内可执行文件，Windows 指向 `Velune.exe`。移动端省略 `--app` 直接使用已安装应用；只有明确传入 APK／bundle 才执行覆盖安装。设备必须已启动；入口会重新启动指定应用，以便读取本次临时配置。
 
 ```sh
 python3 scripts/dev-telemetry.py launch macos --app /absolute/path/Velune.app/Contents/MacOS/Velune
 python3 scripts/dev-telemetry.py launch windows --app C:/absolute/path/Velune.exe
-python3 scripts/dev-telemetry.py launch ios-simulator --app /absolute/path/Velune.app --device <Simulator UUID> --package app.velune.ios
-python3 scripts/dev-telemetry.py launch android --app /absolute/path/app-debug.apk --device <ADB serial> --package app.velune.android.telemetry
+python3 scripts/dev-telemetry.py launch ios-simulator --device <Simulator UUID> --package app.velune.ios
+python3 scripts/dev-telemetry.py launch android --device <ADB serial> --package app.velune.android.telemetry
 ```
 
-Android 验收可使用 `-PveluneApplicationId=app.velune.android.telemetry` 构建独立安装，避免覆盖日常应用。工具经 ADB reverse 把设备回环 34317 转发到开发机，只通过 `run-as` 的 stdin 写入 debug 应用私有 profile，不经过共享存储。该转发需要保留 ADB；手机与桌面的回环地址没有自动互换。Simulator 使用容器私有文件和 `SIMCTL_CHILD_*`，真机需要另行验证可达的受控入口。Windows 的原生 OpenSSH 不支持多路复用，工具复用显式准备的回环 30300／34317 转发并检查就绪；当前开发环境由 Mac 的受控 SSH 连接反向映射到 Windows，不开放 LGTM 到 LAN。
+Android 复用已安装的 debug 应用和合成配置。工具经 ADB reverse 把设备回环 34317 转发到开发机，只通过 `run-as` 的 stdin 写入 debug 应用私有 profile，不经过共享存储。该转发需要保留 ADB；手机与桌面的回环地址没有自动互换。Simulator 使用容器私有文件和 `SIMCTL_CHILD_*`，真机需要另行验证可达的受控入口。Windows 的原生 OpenSSH 不支持多路复用，工具复用显式准备的回环 30300／34317 转发并检查就绪；当前开发环境由 `svc dev ensure telemetry-windows` 从 Mac 反向映射到 Windows，不开放 LGTM 到 LAN。
 
-输出的 `manifestPath` 指向 `target/telemetry-development/<run-id>/run.json`。它含 run ID、应用路径、可获得的源码提交、进程／设备、状态路径、查询凭据文件位置与保留范围，不含认证值。复制的构建目录可以没有 Git，源码提交此时为 null，不阻止应用启动。读取状态与限定本次运行的查询：
+输出的 `manifestPath` 指向 `target/telemetry-development/<run-id>/run.json`。它含 run ID、应用路径、工作区当前提交（`workspaceRevision`）、进程／设备、状态路径、查询凭据文件位置与保留范围，不含认证值。该提交只标识启动工具所在工作区，不代表已安装应用的构建版本。复制的构建目录可以没有 Git，此字段为 null，不阻止应用启动。读取状态与限定本次运行的查询：
 
 ```sh
 python3 scripts/dev-telemetry.py status /absolute/path/run.json

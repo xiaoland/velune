@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import runpy
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -16,6 +17,7 @@ import threading
 
 def main():
     root = Path(__file__).resolve().parents[3]
+    sys.path.insert(0, str(root / "scripts"))
     helper = runpy.run_path(str(root / "scripts/dev-telemetry.py"), run_name="fixture")
     calls = []
 
@@ -79,6 +81,7 @@ def main():
             assert "VELUNE_TEST_PRIVATE_CANARY" not in environment
             assert not Path(environment["VELUNE_TELEMETRY_PROFILE"]).exists()
             assert Path(environment["VELUNE_HOME"]).is_dir()
+            assert len((environment["VELUNE_HOME"] + "/remote/cli/control.sock").encode()) < 104
             assert options["start_new_session"] is True
             launched.append(True)
             return argparse.Namespace(pid=os.getpid())
@@ -93,15 +96,43 @@ def main():
             subprocess.Popen = original_popen
         manifest = json.loads(output.getvalue())
         assert manifest["attached"] is False
-        assert manifest["sourceRevision"] is None
+        assert manifest["workspaceRevision"] is None
         assert launched == [True]
         output = io.StringIO()
         with contextlib.redirect_stdout(output):
             helper["status"](argparse.Namespace(manifest=Path(manifest["manifestPath"])))
         state = json.loads(output.getvalue())
         assert state["stale"] and state["stateAvailable"] is False and state["belongsToRun"] is None
+        shutil.rmtree(Path(manifest["statusPath"]).parents[1])
+
+        mobile_calls = []
+        def mobile_run(*args, **kwargs):
+            mobile_calls.append(args)
+            return ""
+        globals["run"] = mobile_run
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output), contextlib.redirect_stderr(io.StringIO()):
+            helper["launch"](argparse.Namespace(platform="android", app=None, adb=Path("adb"), device="synthetic-device", package="app.velune.android"))
+        assert not any("install" in call for call in mobile_calls)
+        assert any("start" in call and "am" in call for call in mobile_calls)
+        assert json.loads(output.getvalue())["appPath"] is None
+        assert json.loads(output.getvalue())["attached"] is True
+        mobile_calls.clear()
+        def blocked_forward(*args, **kwargs):
+            if "android" in args and "start" in args and "--adb" in args:
+                raise subprocess.CalledProcessError(1, args, stderr="synthetic port conflict")
+            return mobile_run(*args, **kwargs)
+        globals["run"] = blocked_forward
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output), contextlib.redirect_stderr(io.StringIO()):
+            helper["launch"](argparse.Namespace(platform="android", app=None, adb=Path("adb"), device="synthetic-device", package="app.velune.android"))
+        assert json.loads(output.getvalue())["attached"] is False
+        assert any("start" in call and "am" in call for call in mobile_calls)
+        assert not any("cat >" in str(call) for call in mobile_calls)
     print(json.dumps({"passed": True, "noProxyOrCredentialRedirect": True, "boundedQuery": True,
-                      "backendFailureRequestsBusinessLaunch": True, "unrelatedEnvironmentExcluded": True}))
+                      "backendFailureRequestsBusinessLaunch": True, "unrelatedEnvironmentExcluded": True,
+                      "shortSocketPath": True, "installedMobileLaunchWithoutInstall": True,
+                      "androidForwardFailureStillStartsBusiness": True}))
 
 
 if __name__ == "__main__":

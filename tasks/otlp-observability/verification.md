@@ -1,6 +1,27 @@
 # 遥测实现验收记录
 
-2026-10-27。初步接入已实现并提交；已观察的原生结果如下。实际 iPad→Mac 分享及部分生命周期观察仍未完成，不宣称全部验收通过。用户已授权提交及覆盖已安装 Velune；其他任务修改按归属保留。已更新 `/Applications/Velune.app`；此前按用户要求卸载了 iPad 日常 Velune 以释放免费签名名额，既有测试包保留。
+2026-10-27。初步接入已实现；本轮补完可用设备的配置复制／撤销及开发入口验证，并接入 SVC dev。实际 iPad→Mac 分享与长时间移动挂起仍缺观察，不宣称全部平台验收通过。用户已授权提交及覆盖已安装 Velune；其他任务修改按归属保留。已更新 `/Applications/Velune.app`；此前按用户要求卸载了 iPad 日常 Velune 以释放免费签名名额，既有测试包保留。
+
+## 可用设备收尾与 SVC dev
+
+本轮继续使用已安装 Velune，未新增辅助 App、镜像串流或配对程序。证据位于 `target/telemetry-native-ui/`，使用合成配置。产品架构与开发生命周期分别经过独立 advisor 审查；没有发现需要推翻官方双 SDK、代际撤销或独立遥测分享授权的具体问题。本轮未调整产品依赖，删去了启动器自己维护 SSH 隧道的代码，改为调用 SVC 声明的能力。
+
+| 观察 | 结果与证据 |
+| --- | --- |
+| Android→Windows | 新邀请经两端实际核对、批准，Windows 从实际设置入口复制完整 profile，保留本机偏好与身份。Android 撤销后，Windows 明确显示“设备未获授权或授权已撤销”，配置字节不变。`windows-final-revoke-evidence.json` |
+| Windows→Android | 复用已有授权并刷新来源定位，实际设置入口复制成功；Windows 撤销后，Android 明确显示同一拒绝，配置字节不变。本次没有重新完成反向核对码批准，不将它重复计为新配对。`android-final-revoke-evidence.json` |
+| Mac 开发入口 | 通过 SVC 启动已安装 App 的私有实例，两套 SDK 激活同一修订；查询到 traces、logs、metrics。正常退出后，同一私有 home 普通重启，run ID 为空且两套 SDK 关闭。`svc-mac-launch.json`、`svc-mac-restart-evidence.json` |
+| Android 开发入口 | 不传 APK，直接启动既有安装；两套 SDK 激活，查询到 2 traces、2 log streams、34 metric series。系统 activity 确认进入后台，随后强制结束并普通重启，新 PID 的 run ID 为空、两套 SDK 关闭；保存 profile、偏好、身份不变，正常装配使 revision 从 8 变为 9。`svc-android-launch.json`、`svc-android-restart-evidence.json` |
+| Windows 新开发入口 | 新启动器在交互桌面运行既有 WinUI 产物，双 SDK 激活，查询到 8 traces、10 log streams、173 metric series。正常退出后同一私有 home 普通重启，两套 SDK 关闭；普通实例也已在同一交互桌面正常关闭。`svc-windows-launch.json`、`svc-windows-restart-evidence.json` |
+| SVC 能力 | 四目标曾同时 healthy；实际启动／复用／停止通过。停止本机通道后，确保 Windows 目标能恢复上游，Windows SSH master PID 保持不变。`svc-status.json`、`svc-recovery-evidence.json` |
+
+Android 实际撤销失败提示曾与上一次“已复制”并存，原因是共享 action 入口只清空 failure。现在开始下一次 action 时同时清空 status。用 `1b342eb` 原生快照加该修复、匹配的既有 Rust 库／绑定构建 APK，覆盖同一既有包后，实际成功发送三信号，再输入无效地址发送测试，观察到校验错误且旧成功文本消失；保存 profile、偏好和身份保持不变。证据为 `android-status-fix-evidence.json`。APK 与 lint 通过；lint 首次被快照中的生成绑定符号链接干扰，复制相同绑定到快照内后通过，没有修改依赖或禁用检查。初次无效地址操作仍停留在输入法／旧界面，未计作产品失败；后续确认实际字段和最终界面才作断言。
+
+Mac 查询最后返回 100 traces（达到查询上限）、49 log streams、189 metric series，不将上限结果当成完整 trace 集。安装来源仍是前文已记录的产物；manifest 的 `workspaceRevision` 只标识启动工具所在工作区，不能代表任意已安装二进制的源码版本。Mac 途中锁屏（系统会话状态确认），因此没有把 Android→Mac 的配对完成当成 Mac 复制入口通过；已有 Mac 表单保存和 Mac→iPhone Simulator 证据继续适用。iPad 本轮仍不可用，不反复请求用户解锁。
+
+开发入口修复了长 checkout 路径导致 Mac Unix socket 超限的问题，使用系统私有临时 home；Android 转发失败也会继续启动业务并明确报告未接入。SSH 的 `activate` 动作在上游恢复时复用存活的 control socket，防止重复进程争抢端口。开发边界夹具覆盖短 socket 路径、移动端不重装、Android 转发失败、后端失联、查询大小、代理和重定向边界。没有为这些开发脚本引入第三方 Python 依赖。
+
+本轮收尾已停止测试 Mac／Android／Windows 客户端，移除 Windows 计划任务、临时脚本及合成 home，删除 Android 临时启动 profile 和构建快照；保留唯一原始证据。设备通道经 `svc dev stop` 停止，本机 `telemetry` 与 sfp7 `lgtm` 保持 healthy。最终 `svc dev status` 因两个设备目标被主动停止而返回 action-required，这是预期停用状态。证据为 `svc-final-*-stop.json` 和 `svc-final-status.json`。Windows 首次从非交互 SSH 上下文关闭窗口未成功，改在应用所属的交互桌面执行后正常退出；不将前一夹具失败记作产品退出缺陷。Python 编译、开发边界检查、相关文档相对链接／标题锚点和 `git diff --check` 通过。
 
 ## 共享配置、SDK 与分布式执行
 
@@ -25,7 +46,7 @@
 | --- | --- | --- |
 | macOS | SwiftPM 完整构建通过；实际双 SDK 三信号进入 sfp7；实际 Store 队列验收通过 | 隔离 GUI 的遥测表单、双侧回执、三信号测试通过。锁屏前完成 Mac→iPhone 的独立授权、复制、撤销后拒绝和保留原配置；本轮重新启动后，通过真实控件保存地址与合成认证，普通重启读回一致，修订保持为 1、Unset 下双 SDK 关闭；可重放入口见下文 |
 | Windows | 实际 Windows Rust release／WinUI publish 通过；当前开发入口在 sfp7 查询到 7 traces、10 log streams、139 metric series | 浅／深色、定时器、关闭设置后的回调、正常退出 0、未新增 crash.log、当前用户保护 DACL 通过；实际 SDK 中途构造失败清理、首次 HTTP 写出前撤销及未采样上下文传播通过。开发临时配置的强制终止后普通重启为 Unset/off，旧 manifest 不冒认新进程；该项不替代正常退出检查 |
-| Android | 最新独立 application ID 的 native／APK／lint 通过；实际设备经 ADB reverse 查询到双 SDK 的 2 traces、2 log streams、34 metric series | 最新包普通重启为 Unset、两侧 inactive、run ID 空，旧 manifest 拒绝冒认。解锁后真实表单及 Android→Windows 分享已补验；Windows↔Android 双向复制已通过；真机系统证书拒绝与短暂前后台保持同 owner 已补验（见下文）；长时间挂起与终止恢复的完整交互仍待补。没有覆盖日常安装数据 |
+| Android | 最新独立 application ID 的 native／APK／lint 通过；实际设备经 ADB reverse 查询到双 SDK 的 2 traces、2 log streams、34 metric series | 最新包普通重启为 Unset、两侧 inactive、run ID 空，旧 manifest 拒绝冒认。解锁后真实表单及 Android→Windows 分享已补验；Windows↔Android 双向复制已通过；真机系统证书拒绝与短暂前后台保持同 owner 已补验（见下文）；短暂后台后强制结束／普通重启已补验，长时间挂起仍未观察。使用既有测试安装 |
 | iPhone／iPad | 同一 iOS target 的 arm64 Simulator 构建通过；两种专用模拟器均查到双 SDK 三信号 | 两者普通重启均为 Unset、SDK inactive、run ID 空；安装更新会改变容器路径，工具不冒认旧状态。iPhone 的上述复制流程已实际操作；iPad 真机网络及自签证书拒绝已补验；新表单布局／后台仍待补 |
 
 Windows 原生 SDK 故障夹具是[windows-sdk.ps1](acceptance/windows-sdk.ps1)，它只在临时副本中注入异常或首次写出门闩，不增加产品故障开关。证据为 `target/telemetry-windows-sdk-evidence.json`；浅／深色图像及退出结果在 `target/telemetry-windows-ui/`。Windows 开发入口的当前实例、生效与普通重启数据在 `target/telemetry-windows-dev-entry/`。
@@ -34,7 +55,7 @@ Windows 额外边界测试发现 `.NET` 官方 SDK 在未采样本地父级下�
 
 [开发入口检查](acceptance/development.py) 证明查询不使用环境代理、不带认证跟随重定向，并限制为 4 MiB；后端和 Git 元数据不可用时仍请求业务启动，未知状态明确返回 state_unavailable。这个单项检查拦截进程创建参数；实际应用启动、数据接收与重启另由上表证明。开发工具只传运行所需的环境字段，不转发无关凭据。Windows 复用明确建立的回环转发，未向 LAN 开放 LGTM。
 
-全 workspace 的 all-targets／all-features check 与 clippy 通过。最后源码状态的 telemetry、agent-runtime、gateway、bindings library clippy（`-D warnings`）、格式检查及 17＋7 项 Rust 测试通过。实际 AppStore 的 100 次空闲回调不重复发布、问题恢复和真实配置更新仍传播的检查通过，见 `target/telemetry-store-idle-delivery.log`。macOS 隔离 bundle 已刷新为最新构建并通过签名检查；模拟器与测试客户端已停止，sfp7 开发接收端保留。
+前轮基线的全 workspace all-targets／all-features check 与 clippy 通过；相应 telemetry、agent-runtime、gateway、bindings library clippy（`-D warnings`）、格式检查及 17＋7 项 Rust 测试通过。实际 AppStore 的 100 次空闲回调不重复发布、问题恢复和真实配置更新仍传播的检查通过，见 `target/telemetry-store-idle-delivery.log`。macOS 隔离 bundle 已刷新为最新构建并通过签名检查；模拟器与测试客户端已停止，sfp7 开发接收端保留。
 
 当时的 Python 编译、两个 Apple 构建脚本的 shell 语法、开发入口边界检查和 `git diff --check` 通过；21 份相关文档的 380 个相对链接／标题锚点检查无误。已移除本任务 Windows 验收计划任务、Android reverse 与 Windows 临时反向隧道；sfp7 接收端及 Mac 查询隧道保留。后续正式 Mac 更新曾正常退出日常客户端，不声称日常客户端始终未停止。
 
@@ -52,15 +73,15 @@ Windows 额外边界测试发现 `.NET` 官方 SDK 在未采样本地父级下�
 
 ## 解锁后的原生验收与工具链边界
 
-本轮遵循用户要求，改用 Android UIAutomator／instrumentation、Windows UI Automation 和 Apple XCTest／XCUITest。准备过的 scrcpy 没有启动串流，已卸载。Android 真实表单保存含合成 metadata 的配置、关闭状态下显式三信号测试均通过。Android→Windows、Windows→Android 均已实际核对双方相同代码、批准独立遥测权限、复制合成认证字段，并验证目的端仍为 Unset；随后撤销来源权限，目的端保存配置及修订未改变。证据在 `target/telemetry-native-ui/`。撤销后的界面错误反馈仍需继续确认，不能把保留原文件单独当成全部拒绝语义通过。
+本轮遵循用户要求，改用 Android UIAutomator／instrumentation、Windows UI Automation 和 Apple XCTest／XCUITest。准备过的 scrcpy 没有启动串流，已卸载。Android 真实表单保存含合成 metadata 的配置、关闭状态下显式三信号测试均通过。Android→Windows、Windows→Android 均已实际核对双方相同代码、批准独立遥测权限、复制合成认证字段，并验证目的端仍为 Unset；随后撤销来源权限，目的端保存配置及修订未改变。证据在 `target/telemetry-native-ui/`。当时尚未确认撤销后的界面错误；本轮已由文首的实际拒绝反馈与配置不变证据补足。
 
 iPad 真机的独立 `app.velune.ios.telemetry` 包已构建、安装并普通启动：默认 Unset、无 endpoint、双 SDK 未激活、已完成批次均为 0。XCUITest 运行器先遇到 Apple 免费签名最多三个 App 限制；用户明确授权后仅卸载了日常 `app.velune.ios`，隔离包与声邻 Pad 保留。运行器随后仍在启用 automation mode 时超时；设备 lockState 显示不需要解锁，不能归因于锁屏。
 
-用户完成 Mac 的系统认证后，Mac XCUITest 已进入测试方法。剩余失败来自验收运行器带有 App Sandbox，却试图向其容器外写控制文件；这是验收夹具问题，不是产品保存失败。后续应使用运行器自己的容器，不能据此要求放开系统安全。iPad 模拟器已运行 XCUITest 并生成实际树／截图，但点击后尚未观察到预期导航，不计为通过。
+用户完成 Mac 的系统认证后，Mac XCUITest 已进入测试方法。当时失败来自验收运行器带有 App Sandbox，却试图向其容器外写控制文件；这是验收夹具问题，不是产品保存失败。后续应使用运行器自己的容器，不能据此要求放开系统安全。iPad 模拟器已运行 XCUITest 并生成实际树／截图，但点击后尚未观察到预期导航，不计为通过。
 
 用户报告本机卡顿后，已停止本任务 Apple 测试及专用模拟器。实测交换空间使用约 19.3 GiB，当时 memory_pressure 空闲指标为 38%；没有据此宣称已确定全部卡顿来源。后续 Apple 验收串行复用已有构建，减少全层级快照，只补尚缺的关键 UI 流程。Apple 官方建议以逻辑／集成测试为主、少量 UI 端到端测试，并支持分别构建和运行测试，见[测试策略](https://developer.apple.com/documentation/xcode/testing)、[运行器说明](https://help.apple.com/xcode/mac/current/en.lproj/dev6061748b5.html)和[命令行构建与测试](https://developer.apple.com/library/archive/technotes/tn2339/_index.html)。
 
-已核实本机 macOS 15.4.1、Xcode 26.2，Xcode 包内最低系统版本为 15.6；iPad 为 iPadOS 27.0。[Apple 支持表](https://developer.apple.com/xcode/system-requirements/)列出的 Xcode 26.2 主机要求为 macOS 15.6 以上，对应设备支持至 iPadOS 26.2。当前组合不受官方支持，但尚未证明它就是自动化超时或导航问题的根因。真机 XCUITest 缺项需先在匹配工具链的环境补验，未进行系统升级。Mac 另以独立 XCTest 小程序调用公开 AX API，复用已经获准的 AX 能力，绑定隔离应用的确切 PID；权限探针通过，测试进程 RSS 约 13 MiB，不安装额外 App、不启动模拟器或 xcodebuild。其保存烟测没有得到预期配置落盘，尚未区分控件输入／提交方式与产品缺陷，不能计作保存通过。框架和 API 仅是诊断手段的记录，不能成为产品通过项目或证据强度的分类。
+已核实本机 macOS 15.4.1、Xcode 26.2，Xcode 包内最低系统版本为 15.6；iPad 为 iPadOS 27.0。[Apple 支持表](https://developer.apple.com/xcode/system-requirements/)列出的 Xcode 26.2 主机要求为 macOS 15.6 以上，对应设备支持至 iPadOS 26.2。当前组合不受官方支持，但尚未证明它就是自动化超时或导航问题的根因。真机 XCUITest 缺项需先在匹配工具链的环境补验，未进行系统升级。Mac 另以独立 XCTest 小程序调用公开 AX API，复用已经获准的 AX 能力，绑定隔离应用的确切 PID；权限探针通过，测试进程 RSS 约 13 MiB，不安装额外 App、不启动模拟器或 xcodebuild。其早期保存烟测没有得到预期配置落盘，不能计作保存通过；后续真实输入／提交／重启已补足产品证据，见下一节。框架和 API 仅是诊断手段的记录，不能成为产品通过项目或证据强度的分类。
 
 ## 清理后重新启动验收
 
@@ -84,9 +105,9 @@ Mac 原生保存／重启闭环已经通过，见 [mac-ui.py](acceptance/mac-ui.
 
 ## 尚缺的验收
 
-iPad→Mac 的实际分享入口、移动长时间挂起及强制结束后的完整交互仍有未完成观察；系统自签证书拒绝已有上述真机结果。共享 QUIC 权限／迁移测试已经覆盖手机无 Handler 双向分享、无隐式凭据授权、撤销和旧控制关系保留，但不能替代这些平台入口。
+iPad→Mac 的实际分享入口、移动长时间挂起以及 iPad 强制结束后的完整交互仍有未完成观察；Android 的后台／强制结束／普通重启已通过。系统自签证书拒绝已有上述真机结果。共享 QUIC 权限／迁移测试已经覆盖手机无 Handler 双向分享、无隐式凭据授权、撤销和旧控制关系保留，但不能替代这些平台入口。
 
-Mac、Android 与 iPad 已由用户解锁并连接，目前没有可用 iPhone 真机。Apple UI 的当前夹具和工具链限制见上一节；专用模拟器已关闭以释放资源。sfp7 的有限负载与重建持久化通过，不代表长期生产负载或保留期删除已经经过实际等待。
+当前 Android、Windows 可用；Mac 后续锁屏但进程与 SDK 验证可进行；iPad 已断开且不可用，没有可用 iPhone 真机。Apple UI 的当前夹具和工具链限制见上一节；专用模拟器已关闭以释放资源。sfp7 的有限负载与重建持久化通过，不代表长期生产负载或保留期删除已经经过实际等待。
 
 排查进程时曾误输出完整环境，使 NODE_AUTH_TOKEN 出现在工具输出。已通知用户并建议轮换，未复述或使用其值；轮换尚未确认。后续仅读取指定非秘密字段，开发启动环境已改为白名单。
 

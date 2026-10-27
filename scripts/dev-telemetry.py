@@ -5,17 +5,17 @@ import http.client
 import json
 import os
 from pathlib import Path
-import socket
 import subprocess
 import sys
 import time
+import tempfile
 import urllib.parse
 import uuid
+from dev_services import backend_ready, ensure
 
 ROOT = Path(__file__).resolve().parent.parent
 BASE = ROOT / "target/telemetry-development"
 BACKEND = ROOT / "target/otlp-backend-probe"
-HOST = "sfp7-ws.localhost"
 
 
 def private_json(path, value):
@@ -25,10 +25,10 @@ def private_json(path, value):
 
 
 def run(*args, **kwargs):
-    return subprocess.run(args, check=True, text=True, capture_output=True, timeout=60, **kwargs).stdout.strip()
+    return subprocess.run(args, check=True, text=True, capture_output=True, timeout=kwargs.pop("timeout", 60), **kwargs).stdout.strip()
 
 
-def source_revision():
+def workspace_revision():
     try:
         return run("git", "rev-parse", "HEAD", cwd=ROOT)
     except (OSError, subprocess.SubprocessError):
@@ -53,18 +53,10 @@ def backend_json(path, token=None):
 
 
 def ready():
-    BACKEND.mkdir(parents=True, exist_ok=True, mode=0o700)
     if os.name != "nt":
-        control = BACKEND / "ssh.sock"
-        check = subprocess.run(["ssh", "-S", str(control), "-O", "check", HOST], capture_output=True, timeout=10)
-        if check.returncode:
-            run("ssh", "-M", "-S", str(control), "-fNT", "-o", "BatchMode=yes", "-o", "ExitOnForwardFailure=yes",
-                "-L", "127.0.0.1:30300:127.0.0.1:30300", "-L", "127.0.0.1:34317:127.0.0.1:34317", HOST)
-    # Windows OpenSSH has no multiplexing; it uses an explicitly prepared loopback forward.
-    with socket.create_connection(("127.0.0.1", 34317), timeout=3):
-        pass
-    if backend_json("/api/health").get("database") != "ok":
-        raise RuntimeError("Grafana 尚未就绪")
+        ensure("telemetry")
+    # The Mac workspace declares the reverse forward to Windows in svc.json.
+    backend_ready()
 
 
 def launch(args):
@@ -74,18 +66,21 @@ def launch(args):
     profile = {"endpoint": "http://127.0.0.1:34317", "headers": {}, "sampleRatio": 1.0}
     attached = True
     try:
-        ready()
-    except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as error:
+        if args.platform == "android":
+            run(sys.executable, str(ROOT / "scripts/dev_services.py"), "android", "start", "--device", args.device, "--adb", str(args.adb), timeout=200)
+        else:
+            ready()
+    except (OSError, RuntimeError, ValueError, subprocess.SubprocessError, http.client.HTTPException) as error:
         attached = False
         print(f"开发遥测未接入（{type(error).__name__}）；继续启动业务。", file=sys.stderr)
     local_profile = directory / "profile.json"
     if attached:
         private_json(local_profile, profile)
     manifest = {"runId": run_id, "platform": args.platform, "startedUnixMs": int(time.time() * 1000),
-                "appPath": str(args.app),
+                "appPath": str(args.app) if args.app else None,
                 "endpoint": profile["endpoint"] if attached else None, "sampleRatio": 1.0,
                 "attached": attached, "viewer": "http://127.0.0.1:30300", "statusPath": None,
-                "manifestPath": str(directory / "run.json"), "queryTokenPath": str(BACKEND / "query-token.json"), "retentionHours": 72, "sourceRevision": source_revision()}
+                "manifestPath": str(directory / "run.json"), "queryTokenPath": str(BACKEND / "query-token.json"), "retentionHours": 72, "workspaceRevision": workspace_revision()}
     # Isolated clients inherit runtime paths, never unrelated credentials or agent control sockets.
     inherited = ("PATH", "SystemRoot", "windir", "TEMP", "TMP", "TMPDIR", "LANG", "LC_ALL", "LC_CTYPE", "USER", "LOGNAME", "SHELL", "DEVELOPER_DIR", "JAVA_HOME", "ANDROID_HOME", "ANDROID_SDK_ROOT")
     environment = {name: os.environ[name] for name in inherited if name in os.environ}
@@ -94,9 +89,10 @@ def launch(args):
     # A missing explicit profile is observable as development_configuration_unavailable.
     environment["VELUNE_TELEMETRY_PROFILE"] = str(local_profile)
     if args.platform in ("macos", "windows"):
-        home = directory / "home"
-        os_home = directory / "os-home"
-        home.mkdir(); os_home.mkdir()
+        # Remote control has a Unix socket; checkout/run-id paths exceed sun_path on macOS.
+        home = Path(tempfile.mkdtemp(prefix="velune-dev-"))
+        os_home = home / "os-home"
+        os_home.mkdir()
         environment["VELUNE_HOME"] = str(home)
         environment["HOME"] = str(os_home)
         if args.platform == "windows":
@@ -106,7 +102,8 @@ def launch(args):
             process = subprocess.Popen([str(args.app)], env=environment, stdout=output, stderr=subprocess.STDOUT, start_new_session=(os.name != "nt"))
         manifest["processId"] = process.pid
     elif args.platform == "ios-simulator":
-        run("xcrun", "simctl", "install", args.device, str(args.app))
+        if args.app:
+            run("xcrun", "simctl", "install", args.device, str(args.app))
         container = Path(run("xcrun", "simctl", "get_app_container", args.device, args.package, "data"))
         device_profile = container / "Library/Application Support/development-telemetry" / (run_id + ".json")
         if attached:
@@ -118,8 +115,8 @@ def launch(args):
         manifest["package"] = args.package
     else:
         adb = str(args.adb)
-        run(adb, "-s", args.device, "install", "-r", str(args.app))
-        run(adb, "-s", args.device, "reverse", "tcp:34317", "tcp:34317")
+        if args.app:
+            run(adb, "-s", args.device, "install", "-r", str(args.app))
         run(adb, "-s", args.device, "shell", "run-as", args.package, "mkdir", "-p", "no_backup/development-telemetry")
         relative = f"no_backup/development-telemetry/{run_id}.json"
         device_profile = f"/data/user/0/{args.package}/{relative}"
@@ -178,9 +175,9 @@ def main():
     commands = parser.add_subparsers(dest="command", required=True)
     launch_parser = commands.add_parser("launch")
     launch_parser.add_argument("platform", choices=("macos", "windows", "android", "ios-simulator"))
-    launch_parser.add_argument("--app", type=Path, required=True)
+    launch_parser.add_argument("--app", type=Path, help="桌面可执行文件；移动端省略则使用已安装应用")
     launch_parser.add_argument("--device", help="已启动且专用于合成验收的 Android / Simulator 设备")
-    launch_parser.add_argument("--package", help="移动应用 bundle/application ID；Android 验收应使用独立 ID")
+    launch_parser.add_argument("--package", help="已安装移动应用的 bundle/application ID")
     for command in (launch_parser, commands.add_parser("status")):
         command.add_argument("--adb", type=Path, default=Path(os.environ.get("ANDROID_HOME", str(Path.home() / "Library/Android/sdk"))) / "platform-tools/adb")
         if command is not launch_parser:
@@ -190,7 +187,9 @@ def main():
     query_parser.add_argument("signal", choices=("traces", "logs", "metrics"))
     args = parser.parse_args()
     if args.command == "launch":
-        if not args.app.is_absolute() or not args.app.exists():
+        if args.platform in ("macos", "windows") and not args.app:
+            parser.error("桌面启动需要 --app")
+        if args.app and (not args.app.is_absolute() or not args.app.exists()):
             parser.error("--app 必须是构建产物的绝对路径")
         if args.platform in ("android", "ios-simulator") and not (args.device and args.package):
             parser.error("移动启动需要 --device 和 --package")

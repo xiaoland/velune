@@ -12,6 +12,7 @@
 # Local state and secrets.
 *.sqlite*
 .env
+/svc.local.json
 __pycache__/
 
 # Android Gradle outputs.

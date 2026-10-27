@@ -1,0 +1,182 @@
+{
+  "schema_version": 4,
+  "dev": {
+    "targets": {
+      "lgtm": {
+        "scope": "host",
+        "host_key": "velune-lgtm-sfp7",
+        "probe": {
+          "kind": "exec",
+          "argv": [
+            "ssh",
+            "-o",
+            "BatchMode=yes",
+            "-o",
+            "ConnectTimeout=5",
+            "sfp7-ws.localhost",
+            "curl -fsS --max-time 5 http://127.0.0.1:30300/api/health"
+          ],
+          "timeout": 10
+        },
+        "provision": {
+          "kind": "exec",
+          "mode": "activate",
+          "argv": [
+            "ssh",
+            "-o",
+            "BatchMode=yes",
+            "sfp7-ws.localhost",
+            "cd ~/.local/share/velune-observability && docker compose --env-file private.env up -d"
+          ]
+        },
+        "stop": {
+          "kind": "exec",
+          "argv": [
+            "ssh",
+            "-o",
+            "BatchMode=yes",
+            "sfp7-ws.localhost",
+            "cd ~/.local/share/velune-observability && docker compose --env-file private.env stop"
+          ],
+          "timeout": 60
+        },
+        "readiness_timeout": 90,
+        "poll_interval": 2,
+        "access": [
+          "ssh sfp7-ws.localhost",
+          "开发接收端；停止保留数据卷"
+        ]
+      },
+      "telemetry": {
+        "scope": "host",
+        "host_key": "velune-lgtm-local",
+        "probe": {
+          "kind": "exec",
+          "argv": [
+            "python3",
+            "scripts/dev_services.py",
+            "telemetry",
+            "status",
+            "--host",
+            "sfp7-ws.localhost"
+          ],
+          "timeout": 10
+        },
+        "provision": {
+          "kind": "exec",
+          "mode": "activate",
+          "argv": [
+            "python3",
+            "scripts/dev_services.py",
+            "telemetry",
+            "start",
+            "--host",
+            "sfp7-ws.localhost"
+          ]
+        },
+        "stop": {
+          "kind": "exec",
+          "argv": [
+            "python3",
+            "scripts/dev_services.py",
+            "telemetry",
+            "stop",
+            "--host",
+            "sfp7-ws.localhost"
+          ],
+          "timeout": 15
+        },
+        "readiness_timeout": 120,
+        "poll_interval": 1,
+        "access": [
+          "http://127.0.0.1:30300",
+          "OTLP/gRPC http://127.0.0.1:34317"
+        ]
+      },
+      "telemetry-windows": {
+        "scope": "host",
+        "host_key": "velune-lgtm-windows",
+        "probe": {
+          "kind": "exec",
+          "argv": [
+            "python3",
+            "scripts/dev_services.py",
+            "windows",
+            "status",
+            "--host",
+            "win-ws.localhost"
+          ],
+          "timeout": 20
+        },
+        "provision": {
+          "kind": "exec",
+          "mode": "activate",
+          "argv": [
+            "python3",
+            "scripts/dev_services.py",
+            "windows",
+            "start",
+            "--host",
+            "win-ws.localhost"
+          ]
+        },
+        "stop": {
+          "kind": "exec",
+          "argv": [
+            "python3",
+            "scripts/dev_services.py",
+            "windows",
+            "stop",
+            "--host",
+            "win-ws.localhost"
+          ],
+          "timeout": 15
+        },
+        "readiness_timeout": 180,
+        "poll_interval": 2,
+        "access": [
+          "Windows 回环 Grafana 30300、OTLP/gRPC 34317"
+        ]
+      },
+      "telemetry-android": {
+        "scope": "host",
+        "host_key": "velune-lgtm-android-usb",
+        "probe": {
+          "kind": "exec",
+          "argv": [
+            "python3",
+            "scripts/dev_services.py",
+            "android",
+            "status"
+          ],
+          "timeout": 10
+        },
+        "provision": {
+          "kind": "exec",
+          "mode": "activate",
+          "argv": [
+            "python3",
+            "scripts/dev_services.py",
+            "android",
+            "start"
+          ]
+        },
+        "stop": {
+          "kind": "exec",
+          "argv": [
+            "python3",
+            "scripts/dev_services.py",
+            "android",
+            "stop"
+          ],
+          "timeout": 15
+        },
+        "readiness_timeout": 150,
+        "poll_interval": 1,
+        "access": [
+          "唯一 USB Android：OTLP/gRPC http://127.0.0.1:34317"
+        ]
+      }
+    }
+  }
+}

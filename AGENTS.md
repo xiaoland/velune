@@ -14,5 +14,5 @@
 ## 仓库约束
 
 - 开发验证使用合成数据；真实凭据、账户状态、支付信息和会话记录的处理边界与授权例外见 [`docs/development.md`](docs/development.md)。
-- 项目文档和任务包直接用 Markdown 维护；不要引入 SVC CLI、运行时或额外工程。
+- 项目文档和任务包直接用 Markdown 维护。开发服务由 `svc.json` 的 `svc dev` 入口观察、复用、启动和停止；见 [开发环境](docs/development.md#开发环境)。
 - 修改文档后检查相对链接与标题锚点，并运行 `git diff --check`。
