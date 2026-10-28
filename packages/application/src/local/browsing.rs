@@ -85,7 +85,7 @@ impl CoreRuntime {
         if self.next_turn_runtime_id.as_deref() != Some(id) {
             self.next_turn_runtime_id = Some(id.into());
         }
-        self.list()
+        self.list_value()
     }
     pub(super) fn pi_history_config(
         &self,

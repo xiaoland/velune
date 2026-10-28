@@ -23,6 +23,8 @@ use velune_agent_runtime::{self as pi, Config as PiConfig, PiProjection};
 use velune_gateway::Runner;
 
 const CONTRACT_VERSION: u64 = 3;
+/// The runtime setting holding ACP launch arguments and environment.
+pub(crate) const ACP_LAUNCH_SETTING: &str = "acpLaunch";
 mod acp_composition;
 mod composer_quota;
 mod discovery;
@@ -66,6 +68,24 @@ fn runtime_types() -> Vec<crate::config::RuntimeTypeDescriptor> {
         if variant.id=="pi-1.0" {fields.push(field("sessionDir","会话存储目录","directoryPath",false,String::new(),"覆盖 Pi 默认的会话存储位置；留空采用运行时目录的 sessions，此项不是任务工作目录。"));}
         crate::config::RuntimeTypeDescriptor{id:variant.id.into(),family_id:variant.family_id.into(),compatible_versions:variant.versions.describe(),can_rename_conversations:variant.can_rename_conversations,can_delete_conversations:variant.can_delete_conversations,launch_options:variant.id=="acp-v1",agent_info:variant.id=="acp-v1",session_options:variant.id=="acp-v1",native_account_quota:crate::native_quota_source::Capture::supported(variant.id),remote_resources:variant.id!="acp-v1",supported_protocols:crate::config::runtime_protocols(variant.id).expect("registered runtime adapter"),supported_provider_protocols:crate::config::runtime_provider_protocols(variant.id).expect("registered runtime adapter"),name:variant.name.into(),fields,permission_modes:variant.permission_modes.iter().map(|mode| crate::config::PermissionMode{id:mode.id.into(),label:mode.label.into(),detail:mode.detail.into()}).collect()}
     }).collect()
+}
+
+/// The conversation session a use case addresses before it runs.
+pub(crate) enum Focus {
+    None,
+    /// A new empty session; the current one stays open.
+    New,
+    /// The conversation's open session, or a new one the use case loads.
+    Conversation(String),
+    /// The conversation's open session if any; otherwise the current one.
+    Existing(String),
+}
+
+/// Whether a use case may run while a provider login is in progress.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Login {
+    Allows,
+    Blocks,
 }
 
 #[derive(Default)]
@@ -553,20 +573,61 @@ impl CoreRuntime {
         Ok(())
     }
 
-    pub(crate) fn request_inner(&mut self, request: &Value) -> Result<Value, RuntimeError> {
-        let result = self.route(request);
+    /// Run one use case: address the session it names, advance every session,
+    /// then run it. Only the addressed session's failure fails the use case;
+    /// others settle into their failed state and are reported when addressed.
+    pub(crate) fn serve<T>(
+        &mut self,
+        focus: Focus,
+        login: Login,
+        run: impl FnOnce(&mut Self) -> Result<T, RuntimeError>,
+    ) -> Result<T, RuntimeError> {
+        let result = self.prepare(focus, login).and_then(|()| run(self));
         self.trim_sessions();
         result
     }
 
-    /// Address the session a conversation request names, then advance every
-    /// session. Only the addressed session's failure fails the request; others
-    /// settle into their failed state and are reported when addressed.
-    fn route(&mut self, request: &Value) -> Result<Value, RuntimeError> {
+    fn prepare(&mut self, focus: Focus, login: Login) -> Result<(), RuntimeError> {
+        match focus {
+            Focus::None => {}
+            Focus::New => self.focus_new(),
+            Focus::Conversation(id) => self.focus_conversation(&id),
+            Focus::Existing(id) => {
+                self.focus_existing(&id);
+            }
+        }
+        let focused = self.drain_runtime();
+        for index in 0..self.parked.len() {
+            std::mem::swap(&mut self.session, &mut self.parked[index]);
+            if let Err(error) = self.drain_runtime() {
+                tracing::warn!(target: "velune_application", event = "session_drain_failed", detail = %error);
+            }
+            std::mem::swap(&mut self.session, &mut self.parked[index]);
+        }
+        self.serve_collaboration();
+        focused?;
+        self.sync_due_resources();
+        if login == Login::Blocks && self.login_running() {
+            return Err(RuntimeError::invalid("authentication is running"));
+        }
+        Ok(())
+    }
+
+    fn login_running(&self) -> bool {
+        self.authentication
+            .as_ref()
+            .is_some_and(authentication::Login::is_running)
+            || self
+                .subscription_login
+                .as_ref()
+                .is_some_and(crate::provider_login::Login::is_running)
+    }
+
+    pub(crate) fn request_inner(&mut self, request: &Value) -> Result<Value, RuntimeError> {
         let action = request["action"].as_str().unwrap_or_default();
         let conversation_id = request["payload"]["conversationID"].as_str();
-        match (action, conversation_id) {
-            ("create" | "openAcpConversation", _) => self.focus_new(),
+        let focus = match (action, conversation_id) {
+            ("create" | "openAcpConversation", _) => Focus::New,
             (
                 "open"
                 | "sendTurn"
@@ -585,75 +646,37 @@ impl CoreRuntime {
                 | "steerTurn"
                 | "editMessage",
                 Some(id),
-            ) => self.focus_conversation(id),
-            ("readConversation", Some(id)) => {
-                self.focus_existing(id);
-            }
-            _ => {}
-        }
-        let focused = self.drain_runtime();
-        for index in 0..self.parked.len() {
-            std::mem::swap(&mut self.session, &mut self.parked[index]);
-            if let Err(error) = self.drain_runtime() {
-                tracing::warn!(target: "velune_application", event = "session_drain_failed", detail = %error);
-            }
-            std::mem::swap(&mut self.session, &mut self.parked[index]);
-        }
-        self.serve_collaboration();
-        focused?;
-        self.dispatch(request)
+            ) => Focus::Conversation(id.to_owned()),
+            ("readConversation", Some(id)) => Focus::Existing(id.to_owned()),
+            _ => Focus::None,
+        };
+        let login = if matches!(
+            action,
+            "authentication"
+                | "list"
+                | "searchConversations"
+                | "findConversation"
+                | "resolveAgentUri"
+                | "getSnapshot"
+                | "getSnapshotUpdate"
+                | "messagePayloads"
+                | "composerDrafts"
+        ) {
+            Login::Allows
+        } else {
+            Login::Blocks
+        };
+        self.serve(focus, login, |runtime| runtime.dispatch(request))
     }
 
     fn dispatch(&mut self, request: &Value) -> Result<Value, RuntimeError> {
-        self.sync_due_resources();
         if request["version"] != CONTRACT_VERSION {
             return Err(RuntimeError::Unsupported(
                 "projection contract version".into(),
             ));
         }
         let action = request["action"].as_str().unwrap_or_default();
-        if (self
-            .authentication
-            .as_ref()
-            .is_some_and(authentication::Login::is_running)
-            || self
-                .subscription_login
-                .as_ref()
-                .is_some_and(crate::provider_login::Login::is_running))
-            && !matches!(
-                action,
-                "authentication"
-                    | "list"
-                    | "searchConversations"
-                    | "findConversation"
-                    | "resolveAgentUri"
-                    | "getSnapshot"
-                    | "getSnapshotUpdate"
-                    | "messagePayloads"
-                    | "composerDrafts"
-            )
-        {
-            return Err(RuntimeError::invalid("authentication is running"));
-        }
         match action {
-            "list" => self.list(),
-            "outlinePresentation" => self.set_outline_presentation(request),
-            "linkedConversationOpening" => self.set_linked_conversation_opening(request),
-            "usageDisplay" => self.set_usage_display(request),
-            "contextUsageDisplay" => self.set_context_usage_display(request),
-            "statusLine" => self.set_status_line(request),
-            "composerDrafts" => self.composer_drafts_action(request),
-            "conversationBrowserPreferences" => self.set_conversation_browser_preferences(request),
-            "conversationBrowserSettings" => self.set_conversation_browser_limits(request),
-            "conversationBrowserWindow" => self.browser_window_action(request),
-            "conversationOrganization" => self.organization_action(request),
-            "setProject" => self.set_project_action(request),
-            "searchConversations" => self.search_conversations(request),
-            "findConversation" => self.find_conversation(request),
-            "resolveAgentUri" => Ok(serde_json::to_value(self.resolve_agent_uri(
-                request["payload"]["uri"].as_str().unwrap_or_default(),
-                request["payload"]["runtimeID"].as_str(),
-            )?)?),
             "discoverRuntimes" => self.discover_runtimes(request),
             "providerImport" => self.provider_import_action(request),
             "providers" => self.provider_action(&request["payload"]),
@@ -702,14 +725,6 @@ impl CoreRuntime {
             "openAcpConversation" => self.open_acp_conversation_action(request),
             "acpSessionConfig" => self.acp_session_config_action(request, false),
             "setAcpSessionConfig" => self.acp_session_config_action(request, true),
-            "nextTurnModelSelection" => {
-                Ok(serde_json::to_value(if self.native_snapshot().is_some() {
-                    &self.session.model_selection
-                } else {
-                    &None
-                })?)
-            }
-            "composerChoices" => self.composer_choices_action(request),
             "create" => self.create_conversation(request),
             "open" => self.open_conversation(request),
             "readConversation" => self.read_conversation(request),

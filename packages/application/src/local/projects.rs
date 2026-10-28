@@ -176,23 +176,23 @@ impl CoreRuntime {
         found
     }
 
-    pub(super) fn set_project_action(&mut self, request: &Value) -> Result<Value, RuntimeError> {
-        let payload = &request["payload"];
-        if let Some((runtime_id, project)) = payload["path"]
-            .as_str()
-            .and_then(|key| self.native_project(key))
-        {
-            let name = payload["name"]
-                .as_str()
-                .map(str::trim)
-                .filter(|name| !name.is_empty())
-                .ok_or_else(|| RuntimeError::invalid("Codex 项目名称不能为空"))?;
-            let primary = payload["primaryFolder"]
-                .as_str()
-                .ok_or_else(|| RuntimeError::invalid("项目文件夹"))?;
-            let mut roots: Vec<String> = serde_json::from_value(payload["folders"].clone())?;
-            if !primary.is_empty() {
-                roots.insert(0, primary.to_owned());
+    pub(crate) fn set_project(
+        &mut self,
+        path: String,
+        primary_folder: String,
+        name: Option<String>,
+        folders: Vec<String>,
+    ) -> Result<crate::ConfigurationSnapshot, RuntimeError> {
+        let name = name
+            .as_deref()
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .map(str::to_owned);
+        if let Some((runtime_id, project)) = self.native_project(&path) {
+            let name = name.ok_or_else(|| RuntimeError::invalid("Codex 项目名称不能为空"))?;
+            let mut roots = folders;
+            if !primary_folder.is_empty() {
+                roots.insert(0, primary_folder);
             }
             let mut seen = BTreeSet::new();
             if roots
@@ -206,7 +206,7 @@ impl CoreRuntime {
             let updated = velune_agent_runtime::native::codex_projects::update_project(
                 &self.history_config(runtime)?,
                 &project.id,
-                name,
+                &name,
                 &roots,
             )
             .map_err(|error| RuntimeError::context("Codex 项目保存失败", error))?;
@@ -220,30 +220,21 @@ impl CoreRuntime {
             }
             return self.list();
         }
-        let absolute = |value: &Value| {
-            value
-                .as_str()
+        let absolute = |folder: String| {
+            Some(folder)
                 .filter(|folder| Path::new(folder).is_absolute())
-                .map(str::to_owned)
                 .ok_or_else(|| RuntimeError::invalid("项目文件夹必须是绝对路径"))
         };
-        let path = absolute(&payload["path"])?;
-        let primary = absolute(&payload["primaryFolder"])?;
-        let name = payload["name"]
-            .as_str()
-            .map(str::trim)
-            .filter(|name| !name.is_empty())
-            .map(str::to_owned);
-        let mut folders = Vec::<String>::new();
-        for folder in payload["folders"]
-            .as_array()
-            .ok_or_else(|| RuntimeError::invalid("项目文件夹列表"))?
-        {
+        let path = absolute(path)?;
+        let primary = absolute(primary_folder)?;
+        let mut kept = Vec::<String>::new();
+        for folder in folders {
             let folder = absolute(folder)?;
-            if folder != primary && !folders.contains(&folder) {
-                folders.push(folder);
+            if folder != primary && !kept.contains(&folder) {
+                kept.push(folder);
             }
         }
+        let folders = kept;
         let mut next = self.organization.clone();
         next.projects
             .retain(|project| project.primary_folder != path);

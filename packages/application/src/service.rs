@@ -27,7 +27,7 @@ enum Job {
 
 struct Owner {
     application: Application,
-    views: BTreeMap<ClientViewId, (crate::implementation::ClientState, u64)>,
+    views: BTreeMap<ClientViewId, (crate::local::ClientState, u64)>,
     view_clock: u64,
     revision: Revision,
 }

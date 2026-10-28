@@ -523,7 +523,7 @@ impl CoreRuntime {
                 if deleting {
                     self.session.unsubmitted_draft = None;
                 }
-                return self.list();
+                return self.list_value();
             }
         }
         if !listed {
@@ -606,7 +606,7 @@ impl CoreRuntime {
             }
         }
         self.session.unsubmitted_draft = None;
-        self.list()
+        self.list_value()
     }
 
     /// A turn that is not sent withdraws what it asked for from the transcript.

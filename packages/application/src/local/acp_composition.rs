@@ -297,6 +297,6 @@ impl CoreRuntime {
             self.shutdown_active()?;
             self.session.unsubmitted_draft = None;
         }
-        self.list()
+        self.list_value()
     }
 }

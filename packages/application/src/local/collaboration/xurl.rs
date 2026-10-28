@@ -80,10 +80,8 @@ impl CoreRuntime {
         let view = match view {
             Some(view) => view,
             None => {
-                let found: Option<crate::api::ListedConversation> = serde_json::from_value(
-                    self.find_conversation(&json!({"payload":{"conversationID":id}}))?,
-                )?;
-                let summary = found
+                let summary = self
+                    .find_conversation(id.to_owned())?
                     .ok_or_else(|| RuntimeError::invalid("没有这个会话"))?
                     .conversation;
                 self.read_conversation_source(&summary.runtime_id, &summary.id)?

@@ -161,7 +161,7 @@ impl CoreRuntime {
         AgentUri::parse(&uri).ok().map(|_| uri)
     }
 
-    pub(super) fn resolve_agent_uri(
+    pub(crate) fn resolve_agent_uri(
         &self,
         input: &str,
         runtime_id: Option<&str>,

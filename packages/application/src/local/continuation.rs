@@ -656,7 +656,7 @@ impl CoreRuntime {
                 let mut links = self.conversation_links.clone();
                 links.retain(|existing| existing.id != link.id);
                 self.store_links(links)?;
-                return self.list();
+                return self.list_value();
             }
         }
         if deleting {
@@ -746,6 +746,6 @@ impl CoreRuntime {
                 "原生来源标题修改失败；未建立本地标题覆盖。"
             }));
         }
-        self.list()
+        self.list_value()
     }
 }

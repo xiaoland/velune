@@ -649,10 +649,11 @@ impl CoreRuntime {
         }
     }
 
-    pub(super) fn search_conversations(&self, request: &Value) -> Result<Value, RuntimeError> {
-        let text = request["payload"]["text"]
-            .as_str()
-            .map(str::trim)
+    pub(crate) fn search_conversations(
+        &self,
+        text: String,
+    ) -> Result<ConversationSearch, RuntimeError> {
+        let text = Some(text.trim())
             .filter(|text| !text.is_empty())
             .ok_or_else(|| RuntimeError::invalid("搜索文字不能为空"))?;
         // Searching follows typing, so it searches the latest index rather
@@ -663,25 +664,24 @@ impl CoreRuntime {
             }
         }
         let page = self.browse_read(self.cached_sources(), Some(text));
-        Ok(serde_json::to_value(ConversationSearch {
+        Ok(ConversationSearch {
             conversations: page.conversations,
             groups: page.groups,
-        })?)
+        })
     }
 
-    pub(super) fn find_conversation(&self, request: &Value) -> Result<Value, RuntimeError> {
-        let id = request["payload"]["conversationID"]
-            .as_str()
-            .ok_or_else(|| RuntimeError::invalid("conversation id"))?;
+    pub(crate) fn find_conversation(
+        &self,
+        conversation_id: String,
+    ) -> Result<Option<ListedConversation>, RuntimeError> {
+        let id = conversation_id.as_str();
         if let Some(source) = self
             .last_listed
             .borrow()
             .get(id)
             .filter(|source| !source.provisional)
         {
-            return Ok(serde_json::to_value(
-                self.listed(source, &self.projectless_places()),
-            )?);
+            return Ok(Some(self.listed(source, &self.projectless_places())));
         }
         let linked = self.conversation_links.iter().any(|link| link.id == id);
         let owner = self
@@ -705,9 +705,9 @@ impl CoreRuntime {
                 .into_iter()
                 .find(|source| source.summary.id == id && !source.provisional)
         });
-        Ok(serde_json::to_value(found.as_ref().map(|source| {
-            self.listed(source, &self.projectless_places())
-        }))?)
+        Ok(found
+            .as_ref()
+            .map(|source| self.listed(source, &self.projectless_places())))
     }
 
     /// A conversation its runtime describes by identity, outside every
@@ -738,25 +738,23 @@ impl CoreRuntime {
         }
     }
 
-    pub(super) fn browser_window_action(&mut self, request: &Value) -> Result<Value, RuntimeError> {
-        let payload = &request["payload"];
-        match payload["operation"].as_str() {
-            Some("loadMore") => {
-                let key: ConversationGroupKey = serde_json::from_value(payload["group"].clone())?;
-                *self.browser_window.extra_pages.entry(key).or_default() += 1;
-            }
-            Some("showArchived") => {
-                let archived = payload["archived"]
-                    .as_bool()
-                    .ok_or_else(|| RuntimeError::invalid("archived view"))?;
-                if archived != self.browser_window.archived {
-                    self.browser_window = BrowserWindow {
-                        archived,
-                        ..Default::default()
-                    };
-                }
-            }
-            _ => return Err(RuntimeError::invalid("browser window operation")),
+    pub(crate) fn load_more_conversations(
+        &mut self,
+        group: ConversationGroupKey,
+    ) -> Result<crate::ConfigurationSnapshot, RuntimeError> {
+        *self.browser_window.extra_pages.entry(group).or_default() += 1;
+        self.list()
+    }
+
+    pub(crate) fn show_archived_conversations(
+        &mut self,
+        archived: bool,
+    ) -> Result<crate::ConfigurationSnapshot, RuntimeError> {
+        if archived != self.browser_window.archived {
+            self.browser_window = BrowserWindow {
+                archived,
+                ..Default::default()
+            };
         }
         self.list()
     }
@@ -766,11 +764,13 @@ impl CoreRuntime {
         self.browser_window.extra_pages.clear();
     }
 
-    pub(super) fn organization_action(&mut self, request: &Value) -> Result<Value, RuntimeError> {
-        let references: Vec<ConversationReference> =
-            serde_json::from_value(request["payload"]["conversations"].clone())?;
-        let change: ConversationOrganizationChange =
-            serde_json::from_value(request["payload"]["change"].clone())?;
+    /// Changes Velune's organization of the conversations; the runtime's own
+    /// archive is used where it has one.
+    pub(crate) fn organize_conversations(
+        &mut self,
+        references: Vec<ConversationReference>,
+        change: ConversationOrganizationChange,
+    ) -> Result<crate::ConfigurationSnapshot, RuntimeError> {
         if references.is_empty() {
             return Err(RuntimeError::invalid("没有选择会话"));
         }

@@ -1,12 +1,10 @@
 //! Local application configuration use cases.
 use super::*;
 impl CoreRuntime {
-    pub(super) fn set_conversation_browser_preferences(
+    pub(crate) fn set_conversation_browser_preferences(
         &mut self,
-        request: &Value,
-    ) -> Result<Value, RuntimeError> {
-        let preferences: crate::config::ConversationBrowserPreferences =
-            serde_json::from_value(request["payload"]["preferences"].clone())?;
+        preferences: crate::config::ConversationBrowserPreferences,
+    ) -> Result<crate::ConfigurationSnapshot, RuntimeError> {
         let previous = std::mem::replace(&mut self.conversation_browser_preferences, preferences);
         if let Err(error) = self.persist() {
             self.conversation_browser_preferences = previous;
@@ -31,110 +29,106 @@ impl CoreRuntime {
         self.list()
     }
 
-    pub(super) fn set_outline_presentation(
+    pub(crate) fn set_outline_presentation(
         &mut self,
-        request: &Value,
-    ) -> Result<Value, RuntimeError> {
-        let presentation = serde_json::from_value(request["payload"]["presentation"].clone())?;
+        presentation: crate::config::OutlinePresentation,
+    ) -> Result<crate::config::OutlinePresentation, RuntimeError> {
         let previous = self.outline_presentation;
         self.outline_presentation = presentation;
         if let Err(error) = self.persist() {
             self.outline_presentation = previous;
             return Err(error);
         }
-        Ok(json!(presentation))
+        Ok(presentation)
     }
 
-    pub(super) fn set_linked_conversation_opening(
+    pub(crate) fn set_linked_conversation_opening(
         &mut self,
-        request: &Value,
-    ) -> Result<Value, RuntimeError> {
-        let opening = serde_json::from_value(request["payload"]["opening"].clone())?;
+        opening: crate::config::LinkedConversationOpening,
+    ) -> Result<crate::config::LinkedConversationOpening, RuntimeError> {
         let previous = self.linked_conversation_opening;
         self.linked_conversation_opening = opening;
         if let Err(error) = self.persist() {
             self.linked_conversation_opening = previous;
             return Err(error);
         }
-        Ok(json!(opening))
+        Ok(opening)
     }
 
-    pub(super) fn set_usage_display(&mut self, request: &Value) -> Result<Value, RuntimeError> {
-        let display = serde_json::from_value(request["payload"]["display"].clone())?;
+    pub(crate) fn set_usage_display(
+        &mut self,
+        display: crate::config::UsageDisplay,
+    ) -> Result<crate::config::UsageDisplay, RuntimeError> {
         let previous = self.usage_display;
         self.usage_display = display;
         if let Err(error) = self.persist() {
             self.usage_display = previous;
             return Err(error);
         }
-        Ok(json!(display))
+        Ok(display)
     }
 
-    pub(super) fn set_context_usage_display(
+    pub(crate) fn set_context_usage_display(
         &mut self,
-        request: &Value,
-    ) -> Result<Value, RuntimeError> {
-        let display = serde_json::from_value(request["payload"]["display"].clone())?;
+        display: crate::config::UsageDisplay,
+    ) -> Result<crate::config::UsageDisplay, RuntimeError> {
         let previous = self.context_usage_display;
         self.context_usage_display = display;
         if let Err(error) = self.persist() {
             self.context_usage_display = previous;
             return Err(error);
         }
-        Ok(json!(display))
+        Ok(display)
     }
 
-    pub(super) fn set_status_line(&mut self, request: &Value) -> Result<Value, RuntimeError> {
-        let items = crate::config::canonical_status_line(serde_json::from_value(
-            request["payload"]["items"].clone(),
-        )?);
+    pub(crate) fn set_status_line(
+        &mut self,
+        items: Vec<crate::config::StatusLineItem>,
+    ) -> Result<Vec<crate::config::StatusLineItem>, RuntimeError> {
+        let items = crate::config::canonical_status_line(items);
         let previous = std::mem::replace(&mut self.status_line, items);
         if let Err(error) = self.persist() {
             self.status_line = previous;
             return Err(error);
         }
-        Ok(json!(self.status_line))
+        Ok(self.status_line.clone())
     }
 
-    pub(super) fn composer_drafts_action(
+    pub(crate) fn composer_drafts(
+        &self,
+    ) -> Result<Vec<crate::config::ComposerDraft>, RuntimeError> {
+        Ok(self
+            .composer_drafts
+            .iter()
+            .map(|(id, text)| crate::config::ComposerDraft {
+                conversation_id: id.clone(),
+                text: text.clone(),
+            })
+            .collect())
+    }
+
+    /// Empty text removes the conversation's draft.
+    pub(crate) fn set_composer_draft(
         &mut self,
-        request: &Value,
-    ) -> Result<Value, RuntimeError> {
-        let payload = &request["payload"];
-        match payload["operation"].as_str() {
-            Some("list") => Ok(json!(
-                self.composer_drafts
-                    .iter()
-                    .map(|(id, text)| crate::config::ComposerDraft {
-                        conversation_id: id.clone(),
-                        text: text.clone(),
-                    })
-                    .collect::<Vec<_>>()
-            )),
-            Some("set") => {
-                let id = payload["conversationID"]
-                    .as_str()
-                    .filter(|id| !id.is_empty())
-                    .ok_or_else(|| RuntimeError::invalid("conversation id"))?;
-                let text = payload["text"]
-                    .as_str()
-                    .ok_or_else(|| RuntimeError::invalid("composer draft text"))?;
-                let mut next = self.composer_drafts.clone();
-                if text.is_empty() {
-                    next.remove(id);
-                } else {
-                    next.insert(id.to_owned(), text.to_owned());
-                }
-                if next != self.composer_drafts {
-                    if self.client_baseline.is_none() {
-                        self.repository.store_composer_drafts(&next)?;
-                    }
-                    self.composer_drafts = next;
-                }
-                Ok(Value::Null)
-            }
-            _ => Err(RuntimeError::invalid("composer draft operation")),
+        conversation_id: String,
+        text: String,
+    ) -> Result<(), RuntimeError> {
+        if conversation_id.is_empty() {
+            return Err(RuntimeError::invalid("conversation id"));
         }
+        let mut next = self.composer_drafts.clone();
+        if text.is_empty() {
+            next.remove(&conversation_id);
+        } else {
+            next.insert(conversation_id, text);
+        }
+        if next != self.composer_drafts {
+            if self.client_baseline.is_none() {
+                self.repository.store_composer_drafts(&next)?;
+            }
+            self.composer_drafts = next;
+        }
+        Ok(())
     }
 
     /// The conversation is already deleted; a failed write only leaves a stale
@@ -146,12 +140,10 @@ impl CoreRuntime {
         }
     }
 
-    pub(super) fn set_conversation_browser_limits(
+    pub(crate) fn set_conversation_browser_limits(
         &mut self,
-        request: &Value,
-    ) -> Result<Value, RuntimeError> {
-        let limits: crate::api::ConversationBrowserLimits =
-            serde_json::from_value(request["payload"]["limits"].clone())?;
+        limits: crate::api::ConversationBrowserLimits,
+    ) -> Result<crate::api::ConversationBrowserLimits, RuntimeError> {
         if limits.page == 0 || limits.total == 0 {
             return Err(RuntimeError::invalid("会话加载数量必须大于零"));
         }
@@ -161,7 +153,7 @@ impl CoreRuntime {
             self.conversation_browser_limits = previous;
             return Err(error);
         }
-        Ok(json!(limits))
+        Ok(limits)
     }
 
     /// Every enabled runtime's conversations, continued ones by their link,
@@ -272,34 +264,66 @@ impl CoreRuntime {
         sources
     }
 
-    pub(super) fn list(&self) -> Result<Value, RuntimeError> {
+    pub(crate) fn list(&self) -> Result<crate::ConfigurationSnapshot, RuntimeError> {
         let (sources, history_failures) = self.list_sources(false)?;
         let page = self.browse_read(sources, None);
-        Ok(json!({
-            "conversations": page.conversations,
-            "conversationGroups": page.groups,
-            "conversationProjects": page.projects,
-            "showsArchived": self.shows_archived(),
-            "historyFailures": history_failures,
-            "gateways": self.public_gateways(),
-            "runtimeInstances": self.runtime_instances,
-            "runtimeTypes": runtime_types(),
-            "modelTemplates":self.model_templates,
-            "conversationBrowserLimits":self.conversation_browser_limits,
-            "outlinePresentation":self.outline_presentation,
-            "linkedConversationOpening":self.linked_conversation_opening,
-            "usageDisplay":self.usage_display,
-            "contextUsageDisplay":self.context_usage_display,
-            "statusLine":self.status_line,
-            "conversationBrowserPreferences":self.conversation_browser_preferences,
-            "providerImportTypes": std::iter::once(provider_import::descriptor()).chain(runtime_types().into_iter().filter(|kind| crate::native_provider_import::TYPES.contains(&kind.id.as_str()))).collect::<Vec<_>>(),
-            "protocols": [
-                {"id":"chatCompletionsV1","name":"OpenAI Chat Completions v1","supported":true},
-                {"id":"responsesV1","name":"OpenAI Responses v1","supported":true},
-                {"id":"messagesV1","name":"Anthropic Messages","supported":true}
+        let runtime_types = runtime_types();
+        let provider_import_types = std::iter::once(provider_import::descriptor())
+            .chain(
+                runtime_types
+                    .iter()
+                    .filter(|kind| crate::native_provider_import::TYPES.contains(&kind.id.as_str()))
+                    .cloned(),
+            )
+            .collect();
+        let protocol = |id: &str, name: &str| crate::ProtocolDescriptor {
+            id: id.into(),
+            name: name.into(),
+            supported: true,
+        };
+        Ok(crate::ConfigurationSnapshot {
+            conversations: page.conversations,
+            conversation_groups: page.groups,
+            conversation_projects: page.projects,
+            shows_archived: self.shows_archived(),
+            history_failures,
+            gateways: self.public_gateways(),
+            runtime_instances: self.public_runtime_instances(),
+            runtime_types,
+            model_templates: self.model_templates.clone(),
+            conversation_browser_limits: self.conversation_browser_limits,
+            outline_presentation: self.outline_presentation,
+            linked_conversation_opening: self.linked_conversation_opening,
+            usage_display: self.usage_display,
+            context_usage_display: self.context_usage_display,
+            conversation_browser_preferences: self.conversation_browser_preferences.clone(),
+            status_line: self.status_line.clone(),
+            provider_import_types,
+            protocols: vec![
+                protocol("chatCompletionsV1", "OpenAI Chat Completions v1"),
+                protocol("responsesV1", "OpenAI Responses v1"),
+                protocol("messagesV1", "Anthropic Messages"),
             ],
-            "selectedRuntimeInstanceID": self.next_turn_runtime_id,
-        }))
+            selected_runtime_instance_id: self.next_turn_runtime_id.clone(),
+        })
+    }
+
+    /// Transitional: `list` for use cases not yet typed.
+    pub(super) fn list_value(&self) -> Result<Value, RuntimeError> {
+        Ok(serde_json::to_value(self.list()?)?)
+    }
+
+    /// Runtime instances as clients see them: ACP launch arguments and
+    /// environment are read only through the explicit editor use case.
+    pub(super) fn public_runtime_instances(&self) -> Vec<RuntimeInstance> {
+        self.runtime_instances
+            .iter()
+            .cloned()
+            .map(|mut runtime| {
+                runtime.settings.remove(ACP_LAUNCH_SETTING);
+                runtime
+            })
+            .collect()
     }
 
     pub(super) fn provider_import_action(

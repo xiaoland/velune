@@ -109,62 +109,67 @@ impl CoreRuntime {
         self.turn_requests = next;
     }
 
-    pub(super) fn composer_choices_action(
+    pub(crate) fn composer_choices(&self) -> Result<ComposerChoices, RuntimeError> {
+        Ok(self.composer_choices.clone())
+    }
+
+    /// An intent without choices or runtime removes the conversation's.
+    pub(crate) fn set_next_turn_intent(
         &mut self,
-        request: &Value,
-    ) -> Result<Value, RuntimeError> {
-        let payload = &request["payload"];
-        let mut next = self.composer_choices.clone();
-        match payload["operation"].as_str() {
-            Some("list") => return Ok(serde_json::to_value(&self.composer_choices)?),
-            Some("setIntent") => {
-                let mut intent: NextTurnIntent = serde_json::from_value(payload["intent"].clone())?;
-                if intent.conversation_id.is_empty() {
-                    return Err(RuntimeError::invalid("conversation id"));
-                }
-                // A choice of nothing is kept: on a runtime the conversation
-                // has no turn on, it asks for the runtime's own defaults.
-                intent
-                    .choices
-                    .sort_by(|a, b| a.runtime_id.cmp(&b.runtime_id));
-                if intent
-                    .choices
-                    .windows(2)
-                    .any(|pair| pair[0].runtime_id == pair[1].runtime_id)
-                {
-                    return Err(RuntimeError::invalid("next-turn runtime choices"));
-                }
-                next.conversations
-                    .retain(|kept| kept.conversation_id != intent.conversation_id);
-                if intent.runtime_id.is_some() || !intent.choices.is_empty() {
-                    next.conversations.push(intent);
-                    next.conversations
-                        .sort_by(|a, b| a.conversation_id.cmp(&b.conversation_id));
-                }
-            }
-            Some("setRuntime") => {
-                let choices: RuntimeComposerChoices =
-                    serde_json::from_value(payload["choices"].clone())?;
-                self.runtime_instance(&choices.runtime_id)?;
-                next.runtimes
-                    .retain(|kept| kept.runtime_id != choices.runtime_id);
-                if !choices.last_chosen.is_empty()
-                    || choices.new_conversation != NewConversationChoice::LastChosen
-                {
-                    next.runtimes.push(choices);
-                    next.runtimes
-                        .sort_by(|a, b| a.runtime_id.cmp(&b.runtime_id));
-                }
-            }
-            _ => return Err(RuntimeError::invalid("composer choices operation")),
+        mut intent: NextTurnIntent,
+    ) -> Result<(), RuntimeError> {
+        if intent.conversation_id.is_empty() {
+            return Err(RuntimeError::invalid("conversation id"));
         }
+        // A choice of nothing is kept: on a runtime the conversation
+        // has no turn on, it asks for the runtime's own defaults.
+        intent
+            .choices
+            .sort_by(|a, b| a.runtime_id.cmp(&b.runtime_id));
+        if intent
+            .choices
+            .windows(2)
+            .any(|pair| pair[0].runtime_id == pair[1].runtime_id)
+        {
+            return Err(RuntimeError::invalid("next-turn runtime choices"));
+        }
+        let mut next = self.composer_choices.clone();
+        next.conversations
+            .retain(|kept| kept.conversation_id != intent.conversation_id);
+        if intent.runtime_id.is_some() || !intent.choices.is_empty() {
+            next.conversations.push(intent);
+            next.conversations
+                .sort_by(|a, b| a.conversation_id.cmp(&b.conversation_id));
+        }
+        self.store_composer_choices(next)
+    }
+
+    pub(crate) fn set_runtime_composer_choices(
+        &mut self,
+        choices: RuntimeComposerChoices,
+    ) -> Result<(), RuntimeError> {
+        self.runtime_instance(&choices.runtime_id)?;
+        let mut next = self.composer_choices.clone();
+        next.runtimes
+            .retain(|kept| kept.runtime_id != choices.runtime_id);
+        if !choices.last_chosen.is_empty()
+            || choices.new_conversation != NewConversationChoice::LastChosen
+        {
+            next.runtimes.push(choices);
+            next.runtimes
+                .sort_by(|a, b| a.runtime_id.cmp(&b.runtime_id));
+        }
+        self.store_composer_choices(next)
+    }
+
+    fn store_composer_choices(&mut self, next: ComposerChoices) -> Result<(), RuntimeError> {
         if next != self.composer_choices {
             if self.client_baseline.is_none() {
                 self.repository.store_composer_choices(&next)?;
             }
             self.composer_choices = next;
         }
-        Ok(Value::Null)
+        Ok(())
     }
 
     /// The conversation is already deleted; a failed write only leaves stale

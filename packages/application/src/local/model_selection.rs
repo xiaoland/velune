@@ -12,6 +12,16 @@ pub(super) fn requested_selection(request: &Value) -> Result<Option<ModelSelecti
 }
 
 impl CoreRuntime {
+    /// The loaded conversation's model choice for its next turn.
+    pub(crate) fn next_turn_model_selection(
+        &self,
+    ) -> Result<Option<crate::ModelSelection>, RuntimeError> {
+        Ok(self
+            .native_snapshot()
+            .and(self.session.model_selection.clone())
+            .flatten())
+    }
+
     /// Reasoning levels a turn may request for a managed model on this
     /// runtime: those the model declares, in the vocabulary the harness's own
     /// channel accepts. Empty when the harness has no such channel.

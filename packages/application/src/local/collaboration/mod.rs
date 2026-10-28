@@ -621,10 +621,8 @@ impl CoreRuntime {
         if self.focus_existing(id) {
             return Ok(());
         }
-        let found: Option<crate::api::ListedConversation> = serde_json::from_value(
-            self.find_conversation(&json!({"payload":{"conversationID":id}}))?,
-        )?;
-        let summary = found
+        let summary = self
+            .find_conversation(id.to_owned())?
             .ok_or_else(|| RuntimeError::invalid("没有这个会话；用 list_conversations 查找"))?
             .conversation;
         self.focus_new();

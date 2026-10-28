@@ -356,7 +356,7 @@ impl Application {
         user_home: String,
         overrides: BTreeMap<String, String>,
     ) -> Result<Vec<RuntimeDiscoveryHint>, Error> {
-        { crate::runtime_discovery::hints(&user_home, overrides) }
+        crate::runtime_discovery::hints(&user_home, overrides)
     }
     pub fn discover_runtimes(
         &mut self,
@@ -402,184 +402,6 @@ impl Application {
         }
 
         serde_json::from_value(value).map_err(Error::from)
-    }
-    pub fn list(&mut self) -> Result<ConfigurationSnapshot, Error> {
-        self.execute("list", json!({}), None)
-    }
-    pub fn set_outline_presentation(
-        &mut self,
-        presentation: OutlinePresentation,
-    ) -> Result<OutlinePresentation, Error> {
-        self.execute(
-            "outlinePresentation",
-            json!({"presentation": presentation}),
-            None,
-        )
-    }
-    pub fn set_linked_conversation_opening(
-        &mut self,
-        opening: LinkedConversationOpening,
-    ) -> Result<LinkedConversationOpening, Error> {
-        self.execute(
-            "linkedConversationOpening",
-            json!({"opening": opening}),
-            None,
-        )
-    }
-    pub fn set_usage_display(&mut self, display: UsageDisplay) -> Result<UsageDisplay, Error> {
-        self.execute("usageDisplay", json!({"display": display}), None)
-    }
-    /// Stores what the composer's status line shows, returning it in display order.
-    pub fn set_context_usage_display(
-        &mut self,
-        display: UsageDisplay,
-    ) -> Result<UsageDisplay, Error> {
-        self.execute("contextUsageDisplay", json!({"display": display}), None)
-    }
-    /// Stores what the composer's status line shows, returning it in display order.
-    pub fn set_status_line(
-        &mut self,
-        items: Vec<StatusLineItem>,
-    ) -> Result<Vec<StatusLineItem>, Error> {
-        self.execute("statusLine", json!({"items": items}), None)
-    }
-    pub fn set_conversation_browser_preferences(
-        &mut self,
-        preferences: ConversationBrowserPreferences,
-    ) -> Result<ConfigurationSnapshot, Error> {
-        self.execute(
-            "conversationBrowserPreferences",
-            json!({"preferences":preferences}),
-            None,
-        )
-    }
-    pub fn composer_choices(&mut self) -> Result<crate::config::ComposerChoices, Error> {
-        self.execute("composerChoices", json!({"operation":"list"}), None)
-    }
-    /// An intent without choices or runtime removes the conversation's.
-    pub fn set_next_turn_intent(
-        &mut self,
-        intent: crate::config::NextTurnIntent,
-    ) -> Result<(), Error> {
-        self.execute(
-            "composerChoices",
-            json!({"operation":"setIntent","intent":intent}),
-            None,
-        )
-    }
-    pub fn set_runtime_composer_choices(
-        &mut self,
-        choices: crate::config::RuntimeComposerChoices,
-    ) -> Result<(), Error> {
-        self.execute(
-            "composerChoices",
-            json!({"operation":"setRuntime","choices":choices}),
-            None,
-        )
-    }
-    pub fn composer_drafts(&mut self) -> Result<Vec<crate::config::ComposerDraft>, Error> {
-        self.execute("composerDrafts", json!({"operation":"list"}), None)
-    }
-    /// Empty text removes the conversation's draft.
-    pub fn set_composer_draft(
-        &mut self,
-        conversation_id: String,
-        text: String,
-    ) -> Result<(), Error> {
-        self.execute(
-            "composerDrafts",
-            json!({"operation":"set","conversationID":conversation_id,"text":text}),
-            None,
-        )
-    }
-    pub fn set_conversation_browser_limits(
-        &mut self,
-        limits: ConversationBrowserLimits,
-    ) -> Result<ConversationBrowserLimits, Error> {
-        self.execute(
-            "conversationBrowserSettings",
-            json!({"limits": limits}),
-            None,
-        )
-    }
-    /// Changes Velune's organization of the conversations; the runtime's own
-    /// archive is used where it has one.
-    pub fn organize_conversations(
-        &mut self,
-        conversations: Vec<ConversationReference>,
-        change: ConversationOrganizationChange,
-    ) -> Result<ConfigurationSnapshot, Error> {
-        self.execute(
-            "conversationOrganization",
-            json!({"conversations":conversations,"change":change}),
-            None,
-        )
-    }
-    /// Shapes the project whose primary folder is `path`: its name (none
-    /// shows the folder's), primary folder, and other folders. Moves, the
-    /// project filter, and folded groups follow a new primary folder.
-    pub fn set_project(
-        &mut self,
-        path: String,
-        primary_folder: String,
-        name: Option<String>,
-        folders: Vec<String>,
-    ) -> Result<ConfigurationSnapshot, Error> {
-        self.execute(
-            "setProject",
-            json!({"path":path,"primaryFolder":primary_folder,"name":name,"folders":folders}),
-            None,
-        )
-    }
-    /// Loads the next page of one group of the list.
-    pub fn load_more_conversations(
-        &mut self,
-        group: ConversationGroupKey,
-    ) -> Result<ConfigurationSnapshot, Error> {
-        self.execute(
-            "conversationBrowserWindow",
-            json!({"operation":"loadMore","group":group}),
-            None,
-        )
-    }
-    /// Shows archived conversations instead of the others, or back.
-    pub fn show_archived_conversations(
-        &mut self,
-        archived: bool,
-    ) -> Result<ConfigurationSnapshot, Error> {
-        self.execute(
-            "conversationBrowserWindow",
-            json!({"operation":"showArchived","archived":archived}),
-            None,
-        )
-    }
-    /// Conversations whose title, project, or runtime contain `text`, within
-    /// the list's filters and archive view.
-    pub fn search_conversations(&mut self, text: String) -> Result<ConversationSearch, Error> {
-        self.execute("searchConversations", json!({"text":text}), None)
-    }
-    /// One conversation by identity, whether or not the list shows it.
-    pub fn find_conversation(
-        &mut self,
-        conversation_id: String,
-    ) -> Result<Option<ListedConversation>, Error> {
-        self.execute(
-            "findConversation",
-            json!({"conversationID":conversation_id}),
-            None,
-        )
-    }
-    /// Resolve an xURL address only in enabled instances on this device.
-    pub fn resolve_agent_uri(
-        &mut self,
-        uri: String,
-        runtime_id: Option<String>,
-    ) -> Result<AgentUriResolution, Error> {
-        self.execute(
-            "resolveAgentUri",
-            json!({"uri":uri,"runtimeID":runtime_id}),
-            None,
-        )
     }
     pub fn upsert_runtime(&mut self, mut runtime: RuntimeInstance) -> Result<RuntimeUpdate, Error> {
         self.runtime.retain_private_runtime_settings(&mut runtime);
@@ -707,10 +529,6 @@ impl Application {
     }
     pub fn runtime_models(&mut self, runtime_id: String) -> Result<Vec<RuntimeModel>, Error> {
         self.execute("runtimeModels", json!({}), Some(&runtime_id))
-    }
-    /// The next turn's explicit intent, retained after a managed turn releases its provider override.
-    pub fn next_turn_model_selection(&mut self) -> Result<Option<ModelSelection>, Error> {
-        self.execute("nextTurnModelSelection", json!({}), None)
     }
     pub fn open_conversation(
         &mut self,

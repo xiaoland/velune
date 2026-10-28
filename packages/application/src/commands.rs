@@ -1,4 +1,5 @@
 //! The complete public command surface dispatches to the same application use cases.
+use crate::local::{Focus, Login};
 use crate::*;
 use base64::Engine;
 use std::io::Read;
@@ -162,82 +163,149 @@ impl Application {
             Command::DiscoverRuntimes { probes } => {
                 Response::DiscoverRuntimes(application.discover_runtimes(probes)?)
             }
-            Command::List => Response::List(application.list()?),
-            Command::SetOutlinePresentation { presentation } => Response::SetOutlinePresentation(
-                application.set_outline_presentation(presentation)?,
-            ),
+            Command::List => Response::List(application.runtime.serve(
+                Focus::None,
+                Login::Allows,
+                |runtime| runtime.list(),
+            )?),
+            Command::SetOutlinePresentation { presentation } => {
+                Response::SetOutlinePresentation(application.runtime.serve(
+                    Focus::None,
+                    Login::Blocks,
+                    |runtime| runtime.set_outline_presentation(presentation),
+                )?)
+            }
             Command::SetLinkedConversationOpening { opening } => {
-                Response::SetLinkedConversationOpening(
-                    application.set_linked_conversation_opening(opening)?,
-                )
+                Response::SetLinkedConversationOpening(application.runtime.serve(
+                    Focus::None,
+                    Login::Blocks,
+                    |runtime| runtime.set_linked_conversation_opening(opening),
+                )?)
             }
             Command::SetUsageDisplay { display } => {
-                Response::SetUsageDisplay(application.set_usage_display(display)?)
+                Response::SetUsageDisplay(application.runtime.serve(
+                    Focus::None,
+                    Login::Blocks,
+                    |runtime| runtime.set_usage_display(display),
+                )?)
             }
             Command::SetContextUsageDisplay { display } => {
-                Response::SetContextUsageDisplay(application.set_context_usage_display(display)?)
+                Response::SetContextUsageDisplay(application.runtime.serve(
+                    Focus::None,
+                    Login::Blocks,
+                    |runtime| runtime.set_context_usage_display(display),
+                )?)
             }
             Command::SetStatusLine { items } => {
-                Response::SetStatusLine(application.set_status_line(items)?)
+                Response::SetStatusLine(application.runtime.serve(
+                    Focus::None,
+                    Login::Blocks,
+                    |runtime| runtime.set_status_line(items),
+                )?)
             }
             Command::SetConversationBrowserPreferences { preferences } => {
-                Response::SetConversationBrowserPreferences(
-                    application.set_conversation_browser_preferences(preferences)?,
-                )
+                Response::SetConversationBrowserPreferences(application.runtime.serve(
+                    Focus::None,
+                    Login::Blocks,
+                    |runtime| runtime.set_conversation_browser_preferences(preferences),
+                )?)
             }
-            Command::ComposerDrafts => Response::ComposerDrafts(application.composer_drafts()?),
+            Command::ComposerDrafts => Response::ComposerDrafts(application.runtime.serve(
+                Focus::None,
+                Login::Allows,
+                |runtime| runtime.composer_drafts(),
+            )?),
             Command::SetComposerDraft {
                 conversation_id,
                 text,
             } => {
-                application.set_composer_draft(conversation_id, text)?;
+                application
+                    .runtime
+                    .serve(Focus::None, Login::Blocks, |runtime| {
+                        runtime.set_composer_draft(conversation_id, text)
+                    })?;
                 Response::SetComposerDraft
             }
-            Command::ComposerChoices => Response::ComposerChoices(application.composer_choices()?),
+            Command::ComposerChoices => Response::ComposerChoices(application.runtime.serve(
+                Focus::None,
+                Login::Blocks,
+                |runtime| runtime.composer_choices(),
+            )?),
             Command::SetNextTurnIntent { intent } => {
-                application.set_next_turn_intent(intent)?;
+                application
+                    .runtime
+                    .serve(Focus::None, Login::Blocks, |runtime| {
+                        runtime.set_next_turn_intent(intent)
+                    })?;
                 Response::SetNextTurnIntent
             }
             Command::SetRuntimeComposerChoices { choices } => {
-                application.set_runtime_composer_choices(choices)?;
+                application
+                    .runtime
+                    .serve(Focus::None, Login::Blocks, |runtime| {
+                        runtime.set_runtime_composer_choices(choices)
+                    })?;
                 Response::SetRuntimeComposerChoices
             }
             Command::SetConversationBrowserLimits { limits } => {
-                Response::SetConversationBrowserLimits(
-                    application.set_conversation_browser_limits(limits)?,
-                )
+                Response::SetConversationBrowserLimits(application.runtime.serve(
+                    Focus::None,
+                    Login::Blocks,
+                    |runtime| runtime.set_conversation_browser_limits(limits),
+                )?)
             }
             Command::OrganizeConversations {
                 conversations,
                 change,
-            } => Response::OrganizeConversations(
-                application.organize_conversations(conversations, change)?,
-            ),
+            } => Response::OrganizeConversations(application.runtime.serve(
+                Focus::None,
+                Login::Blocks,
+                |runtime| runtime.organize_conversations(conversations, change),
+            )?),
             Command::SetProject {
                 path,
                 primary_folder,
                 name,
                 folders,
-            } => Response::SetProject(application.set_project(
-                path,
-                primary_folder,
-                name,
-                folders,
+            } => Response::SetProject(application.runtime.serve(
+                Focus::None,
+                Login::Blocks,
+                |runtime| runtime.set_project(path, primary_folder, name, folders),
             )?),
             Command::LoadMoreConversations { group } => {
-                Response::LoadMoreConversations(application.load_more_conversations(group)?)
+                Response::LoadMoreConversations(application.runtime.serve(
+                    Focus::None,
+                    Login::Blocks,
+                    |runtime| runtime.load_more_conversations(group),
+                )?)
             }
-            Command::ShowArchivedConversations { archived } => Response::ShowArchivedConversations(
-                application.show_archived_conversations(archived)?,
-            ),
+            Command::ShowArchivedConversations { archived } => {
+                Response::ShowArchivedConversations(application.runtime.serve(
+                    Focus::None,
+                    Login::Blocks,
+                    |runtime| runtime.show_archived_conversations(archived),
+                )?)
+            }
             Command::SearchConversations { text } => {
-                Response::SearchConversations(application.search_conversations(text)?)
+                Response::SearchConversations(application.runtime.serve(
+                    Focus::None,
+                    Login::Allows,
+                    |runtime| runtime.search_conversations(text),
+                )?)
             }
             Command::ResolveAgentUri { uri, runtime_id } => {
-                Response::ResolveAgentUri(application.resolve_agent_uri(uri, runtime_id)?)
+                Response::ResolveAgentUri(application.runtime.serve(
+                    Focus::None,
+                    Login::Allows,
+                    |runtime| runtime.resolve_agent_uri(&uri, runtime_id.as_deref()),
+                )?)
             }
             Command::FindConversation { conversation_id } => {
-                Response::FindConversation(application.find_conversation(conversation_id)?)
+                Response::FindConversation(application.runtime.serve(
+                    Focus::None,
+                    Login::Allows,
+                    |runtime| runtime.find_conversation(conversation_id),
+                )?)
             }
             Command::UpsertRuntime { runtime } => {
                 Response::UpsertRuntime(application.upsert_runtime(runtime)?)
@@ -331,7 +399,11 @@ impl Application {
                 Response::RuntimeModels(application.runtime_models(runtime_id)?)
             }
             Command::NextTurnModelSelection => {
-                Response::NextTurnModelSelection(application.next_turn_model_selection()?)
+                Response::NextTurnModelSelection(application.runtime.serve(
+                    Focus::None,
+                    Login::Blocks,
+                    |runtime| runtime.next_turn_model_selection(),
+                )?)
             }
             Command::OpenConversation {
                 runtime_id,

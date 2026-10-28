@@ -62,7 +62,7 @@ pub use velune_application_api::{
     ExecutionContext, Failure, FailureKind, Response, Revision,
 };
 mod transcript_delivery;
-use local as implementation;
+
 use serde::{Deserialize, Serialize};
 use std::{fs, path::PathBuf};
 pub use transcript_delivery::{
@@ -129,7 +129,7 @@ impl Error {
     }
 }
 pub struct Application {
-    runtime: implementation::CoreRuntime,
+    runtime: local::CoreRuntime,
     analytics: std::sync::Arc<analytics::AnalyticsStore>,
     attachment_directory: PathBuf,
     uploaded_attachments: std::collections::BTreeMap<String, (ClientViewId, PathBuf)>,
@@ -146,7 +146,7 @@ impl Application {
         Ok(Self {
             attachment_directory,
             uploaded_attachments: Default::default(),
-            runtime: implementation::CoreRuntime::open(options, analytics.clone())?,
+            runtime: local::CoreRuntime::open(options, analytics.clone())?,
             analytics,
         })
     }
