@@ -7,6 +7,7 @@
 - 重构期间冻结功能开发，main 只接收重构；用户已冻结其他开发。
 - 持久化结构可以 hard-cut，不写迁移；原 Harness 会话与认证不动。
 - `scripts/manual-*.py` 全部删除（git 保留历史），重构完成后只为类型与静态检查无法表达的真实不变量重建少量分层检查。
+- 破坏性变更被鼓励（2026-10-28）：首个 beta 发布前没有维护与交付压力，目标是尽量减轻技术债及其未来增长速度，而不是保持接口兼容。FFI 变更时 Mac 每次提交同步，Windows／移动端在阶段末一次追平。
 
 ## 诊断（基线 0af7910）
 
@@ -36,7 +37,7 @@
 | --- | --- | --- | --- |
 | 0 | 修复基线 clippy；删除 `manual-*.py`；建立本任务包 | 不变 | 完成 |
 | 1 | 删除核心内部 JSON 协议：`Command` 直接分派到类型化用例 | 不变 | 完成 |
-| 2 | Harness 适配器接口；拆分 `gateway/runtime.rs` 等超大模块 | 不变 | 待开始 |
+| 2 | Harness 适配器接口；拆分 `gateway/runtime.rs` 等超大模块 | 不变 | 完成 |
 | 3 | FFI 表面：删除 `Binding*` 镜像与 JSON 转换、合并远控转换层；四端机械更新，删除 Mac 映射层 | 变化 | 待开始 |
 | 4 | 平台 app 结构：拆分 Mac `AppStore` 与 Windows 对应部分；把平台自行计算的产品规则移回核心 | 不变 | 待开始 |
 | 5 | 测试：复核现有 Rust 测试，只为真实不变量重建少量分层检查 | 不变 | 待开始 |
@@ -53,13 +54,23 @@
 - 剩余 JSON 只在真实线协议处：Pi RPC、MCP、接续上下文正文与持久化文件。
 - 验证（2026-10-28）：workspace clippy／test 通过；FFI 表面未变，于是取出删除前的 `manual-*.py`（git `9339fd3^`）在临时 HOME 与回环合成上游下跑重构后的 UniFFI 库：send-queue、edit-message 与 steer（Codex 0.159.3／Claude Code 2.1.292／Pi 1.0.2）、collaboration、runtime-interactions、acp-adapter、resume-turn（Codex）、context-compaction（Pi）、session-browser、working-changes、pi-native-loop、runtime-selection 全部通过。acp-adapter 对 ACP 模型目录含“默认”项、pi-native-loop 对日志字段 `operation_id` 的断言在重构前已过时，按现行行为改写后通过。Mac 应用在隔离 `VELUNE_HOME` 后台启动，列表与活动轮询无告警。
 
+## 阶段 2 结果
+
+- 运行时类型是 `RuntimeKind` 枚举，能力（恢复轮次、压缩、首轮持久化、图片）集中在 `agent-runtime` 的版本表；按类型的匹配均为穷举，不再有通配分支。
+- Pi 会话收拢为 `agent-runtime::PiSession`；Pi、原生 app-server 与 ACP 会话实现 `LiveConversation`，application 的发送、取消、轮询、关闭、插入、压缩与回复不再三路分支（`ActiveState` 匹配 93 → 65，余下为各类型专属操作）。原生会话中 Codex 与 Claude Code 的专属状态各自成组。
+- AI 原生派发合并：`velune-ai` 一个 `Protocol` 取代六份协议枚举，三套逐协议契约合为 `NativeProvider`；ai-provider 的三个 HTTP adapter 合为 `NativeHttp`；gateway 的 `runtime.rs`（2 358 行）拆为六个模块，按协议重复三次的派发合为一条路径，切换规则对三种协议一致。删除无调用方的 sampling 栈与 MiniMax adapter。净删约 5 000 行。
+- 先以本地脚本化上游为网关派发与故障转移写特征测试（`packages/gateway/tests/dispatch.rs`），再做合并；网关此前没有测试。
+- 未按行数拆分的文件：`resource_library.rs`、`codex.rs`／`claude.rs` 等内聚于单一用例或单一 Harness，拆分收益低。
+- 验证（2026-10-29）：workspace clippy／test 通过；12 个删除前的回归脚本对重构后的 UniFFI 库全部通过。
+
 ## 留待后续阶段
 
 - 运行时设置仍是 `BTreeMap<String, String>`（如 `acpLaunch`）；`AuthenticationEvent` 是松散结构；`ProviderImportSource` 可收窄；三个 “Source” 类型并存。
 - `Command::SendTurn`／`CreateConversation` 只是带 `model_record_key` 的 `…WithSelection` 旧变体，`SendQueue`／`SteerTurn` 的 `runtime_id` 未被使用；随阶段 3 FFI 表面一起删减。
 - `repository.rs` 仍为旧配置补 `contextUsageDisplay`，配套测试在阶段 5 复核。
+- `application-api` 的 `ExecutionBackend`、`RequestProfile`、`RoutingStrategy`、`QuotaLimit` 与 gateway 配置各有一份，由 application 逐字段转换；`AnalyticsProtocol` 与 `Protocol` 只差序列化名。随阶段 3 FFI 表面一起收敛。
+- `service::usage_tests` 曾在一次 workspace 测试中于 `open().unwrap()` 失败、重跑通过，阶段 5 复核是否有共享状态。
 
 ## 待用户决定
 
-- 阶段 3 各平台同步方式（Mac 同步、Windows／移动端每阶段一次追平，或四端每次提交都通过）。
 - 阶段 6 已完成任务包的处理：删除（git 保留）或合并为简短结论。
