@@ -137,15 +137,15 @@ final class Transport: @unchecked Sendable {
     func resolveResourceBinding(runtimeID: String, templateID: String, resolution: ResourceBindingResolution) throws { try withApplication("resolveResourceBinding", .writes, .write) { try $0.resolveResourceBinding(runtimeId: runtimeID, templateId: templateID, resolution: resolution) } }
     func list() throws -> ConfigurationSnapshot { try withApplication("list", .reads, .configurationRead) { try $0.list() } }
     func saveProvider(gatewayID: String, provider: AIProvider, authenticationEdit: AuthenticationEdit, quotaAuthenticationEdit: QuotaAuthenticationEdit? = nil) throws -> GatewayUpdate {
-        try withApplication("saveProvider", .changesConfiguration, .configurationWrite) { try $0.saveProvider(gatewayId: gatewayID, provider: BindingMapping.bindingProvider(provider), authenticationEdit: BindingMapping.bindingAuthenticationEdit(authenticationEdit), quotaAuthenticationEdit: quotaAuthenticationEdit) }
+        try withApplication("saveProvider", .changesConfiguration, .configurationWrite) { try $0.saveProvider(gatewayId: gatewayID, provider: BindingMapping.bindingProvider(provider), authenticationEdit: authenticationEdit, quotaAuthenticationEdit: quotaAuthenticationEdit) }
     }
     func deleteProvider(gatewayID: String, providerID: String) throws -> GatewayUpdate { try withApplication("deleteProvider", .changesConfiguration, .configurationWrite) { try $0.deleteProvider(gatewayId: gatewayID, providerId: providerID) } }
-    func saveModelRoute(gatewayID: String, route: ModelRoute) throws -> GatewayUpdate { try withApplication("saveModelRoute", .changesConfiguration, .configurationWrite) { try $0.saveModelRoute(gatewayId: gatewayID, route: BindingMapping.bindingRoute(route)) } }
+    func saveModelRoute(gatewayID: String, route: ModelRoute) throws -> GatewayUpdate { try withApplication("saveModelRoute", .changesConfiguration, .configurationWrite) { try $0.saveModelRoute(gatewayId: gatewayID, route: route) } }
     func deleteModelRoute(gatewayID: String, recordKey: String) throws -> GatewayUpdate { try withApplication("deleteModelRoute", .changesConfiguration, .configurationWrite) { try $0.deleteModelRoute(gatewayId: gatewayID, routeRecordKey: recordKey) } }
     func composerQuota(_ request: ComposerQuotaRequest) throws -> [ComposerAccountQuota] {
         try withApplication("composerQuota", .reads, .read) { application in
             try application.composerQuota(context: ComposerQuotaContext(runtimeId: request.runtimeID,
-                selection: request.selection.map(BindingMapping.bindingSelection), conversationId: request.conversationID), refresh: false).map(BindingMapping.composerQuota)
+                selection: request.selection, conversationId: request.conversationID), refresh: false).map(BindingMapping.composerQuota)
         }
     }
     func providerQuota(gatewayID: String, providerID: String, refresh: Bool) throws -> AccountQuota {
@@ -163,7 +163,7 @@ final class Transport: @unchecked Sendable {
     }
     func quotaAlerts(since: UInt64) throws -> QuotaAlerts { try withApplication("quotaAlerts", .reads, .read) { try $0.quotaAlerts(since: since) } }
     func readProviderAPIKey(gatewayID: String, providerID: String) throws -> String { try withApplication("readProviderAPIKey", .reads, .read) { try $0.readProviderApiKey(gatewayId: gatewayID, providerId: providerID) } }
-    func saveTemplate(_ value: ModelTemplate) throws -> [VeluneBindings.ModelTemplate] { try withApplication("saveModelTemplate", .changesConfiguration, .configurationWrite) { try $0.saveModelTemplate(template: BindingMapping.bindingTemplate(value)) } }
+    func saveTemplate(_ value: ModelTemplate) throws -> [VeluneBindings.ModelTemplate] { try withApplication("saveModelTemplate", .changesConfiguration, .configurationWrite) { try $0.saveModelTemplate(template: value) } }
     func publicModelCatalog() throws -> [VeluneBindings.CatalogModel] { try withApplication("fetchPublicModelCatalog", .reads, .read) { try $0.fetchPublicModelCatalog() } }
     func deleteTemplate(id: String) throws -> [VeluneBindings.ModelTemplate] { try withApplication("deleteModelTemplate", .changesConfiguration, .configurationWrite) { try $0.deleteModelTemplate(id: id) } }
     func upsertRuntime(_ runtime: VeluneBindings.RuntimeInstance) throws -> RuntimeUpdate { try withApplication("upsertRuntime", .changesConfiguration, .configurationWrite) { try $0.upsertRuntime(runtime: runtime) } }
@@ -188,7 +188,7 @@ final class Transport: @unchecked Sendable {
     /// Keep first creation and dispatch under the same shared application lock.
     /// Report the native identity before dispatch so failure never recreates a draft.
     func createAndSend(runtimeID: String, cwd: String?, selection: ModelSelection?, turn: ComposedTurn, onCreated: (SnapshotResult) -> Void) throws -> SnapshotResult {
-        let selection = selection.map(BindingMapping.bindingSelection)
+        let selection = selection
         return try withApplication("sendTurn", .writes, .send) { application in
             let created = try application.createConversation(runtimeId: runtimeID, cwd: cwd, selection: selection)
             onCreated(created)
@@ -200,28 +200,28 @@ final class Transport: @unchecked Sendable {
     func renameConversation(runtimeID: String, conversationID: String, title: String) throws -> ConfigurationSnapshot { try withApplication("renameConversation", .writes, .conversationWrite) { try $0.renameConversation(runtimeId: runtimeID, conversationId: conversationID, title: title) } }
     func deleteConversation(runtimeID: String, conversationID: String) throws -> ConfigurationSnapshot { try withApplication("deleteConversation", .writes, .conversationWrite) { try $0.deleteConversation(runtimeId: runtimeID, conversationId: conversationID) } }
     func snapshot(runtimeID: String, conversationID: String) throws -> SnapshotResult { try withApplication("snapshot", .reads, .conversationRead) { try $0.snapshot(runtimeId: runtimeID, conversationId: conversationID) } }
-    func snapshotUpdate(runtimeID: String, conversationID: String, since: TranscriptCursor) throws -> SnapshotUpdate { try withApplication("snapshotUpdate", .reads, .conversationRead) { try $0.snapshotUpdate(runtimeId: runtimeID, conversationId: conversationID, since: BindingMapping.bindingCursor(since)) } }
+    func snapshotUpdate(runtimeID: String, conversationID: String, since: TranscriptCursor) throws -> SnapshotUpdate { try withApplication("snapshotUpdate", .reads, .conversationRead) { try $0.snapshotUpdate(runtimeId: runtimeID, conversationId: conversationID, since: since) } }
     func messagePayloads(runtimeID: String, conversationID: String, messageIDs: [String]) throws -> [DeliveredMessage] { try withApplication("messagePayloads", .reads, .conversationRead) { try $0.messagePayloads(runtimeId: runtimeID, conversationId: conversationID, messageIds: messageIDs) } }
-    func sendTurn(sourceRuntimeID: String, conversationID: String, targetRuntimeID: String, selection: ModelSelection?, turn: ComposedTurn) throws -> SnapshotResult { try withApplication("sendTurn", .writes, .send) { try $0.sendTurn(sourceRuntimeId: sourceRuntimeID, conversationId: conversationID, targetRuntimeId: targetRuntimeID, selection: selection.map(BindingMapping.bindingSelection), turn: turn) } }
+    func sendTurn(sourceRuntimeID: String, conversationID: String, targetRuntimeID: String, selection: ModelSelection?, turn: ComposedTurn) throws -> SnapshotResult { try withApplication("sendTurn", .writes, .send) { try $0.sendTurn(sourceRuntimeId: sourceRuntimeID, conversationId: conversationID, targetRuntimeId: targetRuntimeID, selection: selection, turn: turn) } }
     /// The runtime's own models first, then the managed models; every entry
     /// carries the levels the runtime accepts for it.
     func runtimeModels(runtimeID: String) throws -> [RuntimeModel] { try withApplication("runtimeModels", .reads, .configurationRead) { try $0.runtimeModels(runtimeId: runtimeID) } }
     func steerTurn(runtimeID: String, conversationID: String, turn: ComposedTurn) throws -> SnapshotResult { try withApplication("steerTurn", .writes, .send) { try $0.steerTurn(runtimeId: runtimeID, conversationId: conversationID, turn: turn) } }
     func compactConversation(runtimeID: String, conversationID: String, selection: ModelSelection?) throws -> SnapshotResult {
-        try withApplication("compactConversation", .writes, .compact) { try $0.compactConversation(runtimeId: runtimeID, conversationId: conversationID, selection: selection.map(BindingMapping.bindingSelection)) }
+        try withApplication("compactConversation", .writes, .compact) { try $0.compactConversation(runtimeId: runtimeID, conversationId: conversationID, selection: selection) }
     }
     func resumeTurn(runtimeID: String, conversationID: String, selection: ModelSelection?, effort: String?, permissionMode: String?) throws -> SnapshotResult {
-        try withApplication("resumeTurn", .writes, .send) { try $0.resumeTurn(runtimeId: runtimeID, conversationId: conversationID, selection: selection.map(BindingMapping.bindingSelection), effort: effort, permissionMode: permissionMode) }
+        try withApplication("resumeTurn", .writes, .send) { try $0.resumeTurn(runtimeId: runtimeID, conversationId: conversationID, selection: selection, effort: effort, permissionMode: permissionMode) }
     }
     func sendQueue(runtimeID: String, conversationID: String, operation: SendQueueOperation) throws -> SnapshotResult { try withApplication("sendQueue", .writes, .conversationWrite) { try $0.sendQueue(runtimeId: runtimeID, conversationId: conversationID, operation: operation) } }
-    func editMessage(runtimeID: String, conversationID: String, messageID: String, placement: EditPlacement, selection: ModelSelection?, turn: ComposedTurn) throws -> SnapshotResult { try withApplication("editMessage", .writes, .conversationWrite) { try $0.editMessage(runtimeId: runtimeID, conversationId: conversationID, messageId: messageID, placement: placement, selection: selection.map(BindingMapping.bindingSelection), turn: turn) } }
+    func editMessage(runtimeID: String, conversationID: String, messageID: String, placement: EditPlacement, selection: ModelSelection?, turn: ComposedTurn) throws -> SnapshotResult { try withApplication("editMessage", .writes, .conversationWrite) { try $0.editMessage(runtimeId: runtimeID, conversationId: conversationID, messageId: messageID, placement: placement, selection: selection, turn: turn) } }
     func cancel(runtimeID: String, conversationID: String) throws -> SnapshotResult { try withApplication("cancel", .writes, .cancel) { try $0.cancel(runtimeId: runtimeID, conversationId: conversationID) } }
     func stopSubAgents(runtimeID: String, conversationID: String) throws -> SnapshotResult { try withApplication("stopSubAgents", .writes, .cancel) { try $0.stopSubAgents(runtimeId: runtimeID, conversationId: conversationID) } }
     func workingBranch(runtimeID: String, conversationID: String) throws -> String? { try withApplication("workingBranch", .reads, .conversationRead) { try $0.workingBranch(runtimeId: runtimeID, conversationId: conversationID) } }
     func workingChanges(runtimeID: String, conversationID: String) throws -> WorkingChanges { try withApplication("workingChanges", .reads, .conversationRead) { try $0.workingChanges(runtimeId: runtimeID, conversationId: conversationID) } }
     func fileDiff(runtimeID: String, conversationID: String, path: String) throws -> FileDiff { try withApplication("fileDiff", .reads, .conversationRead) { try $0.fileDiff(runtimeId: runtimeID, conversationId: conversationID, path: path) } }
     func conversationActivity(since: UInt64) throws -> ConversationActivity { try withApplication("conversationActivity", .reads, .conversationRead) { try $0.conversationActivity(since: since) } }
-    func replyRuntimeInteraction(runtimeID: String, conversationID: String, interactionID: String, reply: RuntimeInteractionReply) throws -> SnapshotResult { try withApplication("replyRuntimeInteraction", .writes, .reply) { try $0.replyRuntimeInteraction(runtimeId: runtimeID, conversationId: conversationID, interactionId: interactionID, reply: BindingMapping.bindingInteractionReply(reply)) } }
+    func replyRuntimeInteraction(runtimeID: String, conversationID: String, interactionID: String, reply: RuntimeInteractionReply) throws -> SnapshotResult { try withApplication("replyRuntimeInteraction", .writes, .reply) { try $0.replyRuntimeInteraction(runtimeId: runtimeID, conversationId: conversationID, interactionId: interactionID, reply: reply) } }
     func providerImportPreview(gatewayID: String, source: VeluneBindings.ProviderImportSource) throws -> VeluneBindings.ProviderImportPreview { try withApplication("providerImportPreview", .reads, .configurationRead) { try $0.previewProviderImport(gatewayId: gatewayID, source: source) } }
     func providerImportApply(gatewayID: String, source: VeluneBindings.ProviderImportSource, previewToken: String, selections: [ImportSelection], replaceExisting: Bool) throws -> ImportResult { try withApplication("providerImportApply", .changesConfiguration, .configurationWrite) { try $0.applyProviderImport(gatewayId: gatewayID, source: source, previewToken: previewToken, selections: selections, replaceExisting: replaceExisting) } }
     func authenticationInspect(gatewayID: String, providerID: String) throws -> VeluneBindings.AuthenticationMetadata { try withApplication("authenticationInspect", .reads, .read) { try $0.authenticationInspect(gatewayId: gatewayID, providerId: providerID) } }

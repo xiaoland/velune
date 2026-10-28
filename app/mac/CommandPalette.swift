@@ -1,4 +1,5 @@
 import AppKit
+import VeluneBindings
 import SwiftUI
 
 /// What the palette over a window lists: Velune's commands, the
@@ -234,7 +235,7 @@ extension ConversationWindowModel {
             }
         case .runtime:
             return store.enabledRuntimeInstances.map { runtime in
-                PaletteItem(id: runtime.id, title: runtime.name, aliases: [runtime.typeID.description], checked: runtime.id == store.nextTurnRuntimeID) { [weak self] _ in
+                PaletteItem(id: runtime.id, title: runtime.name, aliases: [runtime.typeId.description], checked: runtime.id == store.nextTurnRuntimeID) { [weak self] _ in
                     self?.closePalette(focusComposer: true)
                     self?.store.selectNextTurnRuntime(runtime.id)
                 }
@@ -242,7 +243,7 @@ extension ConversationWindowModel {
         case .model:
             let none = store.nextTurnHasCurrent && store.nextTurnModel != nil ? "沿用当前（\(store.selectedModelName ?? "")）" : "运行时默认"
             let choices: [(String, String?, ModelSelection?)] = [(none, nil, nil)] + store.modelChoices.map { choice in
-                if case .managed = choice.selection { (choice.displayName, "Velune 提供商", choice.selection) } else { (choice.displayName, nil, choice.selection) }
+                if case .managed = choice.selection { (choice.name, "Velune 提供商", choice.selection) } else { (choice.name, nil, choice.selection) }
             }
             return choices.enumerated().map { index, choice in
                 let aliases: [String] = switch choice.2 {

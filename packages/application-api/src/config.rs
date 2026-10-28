@@ -19,10 +19,15 @@ pub enum ProviderQuotaSource {
 pub struct ProviderModel {
     pub record_key: String,
     pub provider_model_id: String,
+    #[uniffi(default = "")]
     pub nickname: String,
+    #[uniffi(default = None)]
     pub icon: Option<String>,
+    #[uniffi(default = None)]
     pub context_window: Option<u32>,
+    #[uniffi(default = None)]
     pub max_output_tokens: Option<u32>,
+    #[uniffi(default = None)]
     pub reasoning_levels: Option<Vec<String>>,
 }
 
@@ -32,10 +37,15 @@ pub struct ModelTemplate {
     pub id: String,
     pub name: String,
     pub suggested_provider_model_id: String,
+    #[uniffi(default = "")]
     pub nickname: String,
+    #[uniffi(default = None)]
     pub icon: Option<String>,
+    #[uniffi(default = None)]
     pub context_window: Option<u32>,
+    #[uniffi(default = None)]
     pub max_output_tokens: Option<u32>,
+    #[uniffi(default = None)]
     pub reasoning_levels: Option<Vec<String>>,
 }
 
@@ -66,6 +76,7 @@ pub struct ModelRoute {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RuntimeInstance {
     #[serde(default = "runtime_enabled_by_default")]
+    #[uniffi(default = true)]
     pub enabled: bool,
     pub id: String,
     pub name: String,
@@ -244,8 +255,11 @@ pub struct ComposerDraft {
 #[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq, uniffi::Record)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TurnChoice {
+    #[uniffi(default = None)]
     pub model: Option<crate::ModelSelection>,
+    #[uniffi(default = None)]
     pub effort: Option<String>,
+    #[uniffi(default = None)]
     pub permission_mode: Option<String>,
 }
 impl TurnChoice {

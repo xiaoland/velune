@@ -1,4 +1,5 @@
 import Combine
+import VeluneBindings
 import Foundation
 
 /// Stable presentation identity derived from the authoritative conversation
@@ -55,7 +56,7 @@ final class TranscriptModel: ObservableObject {
     func items(for visibleRows: [TranscriptRow], turnHeaders: Bool) -> [Item] {
         let visible = Set(visibleRows.map(\.id))
         let worked = Set(presentation.items.compactMap { item -> String? in if case .work(let id) = item { return id }; return nil })
-        let headed = turnHeaders ? Dictionary(turns.filter { ($0.settings != nil || $0.usage != nil) && !worked.contains($0.id) }.map { ($0.userMessageID, $0) }, uniquingKeysWith: { first, _ in first }) : [:]
+        let headed = turnHeaders ? Dictionary(turns.filter { ($0.settings != nil || $0.usage != nil) && !worked.contains($0.id) }.map { ($0.userMessageId, $0) }, uniquingKeysWith: { first, _ in first }) : [:]
         let byID = Dictionary(uniqueKeysWithValues: rows.map { ($0.id, $0) })
         // A message split into work and reply has two rows; work members use the first.
         let byMessage = Dictionary(rows.map { ($0.message.id, $0) }, uniquingKeysWith: { first, _ in first })
@@ -68,7 +69,7 @@ final class TranscriptModel: ObservableObject {
                 return [.message(row)] + (headed[messageID].map { [.work($0, [])] } ?? [])
             case .work(let turnID):
                 guard let turn = byTurn[turnID] else { return [] }
-                let members = turn.workMessageIDs.compactMap { byMessage[$0] }.filter { visible.contains($0.id) }
+                let members = turn.workMessageIds.compactMap { byMessage[$0] }.filter { visible.contains($0.id) }
                 guard !members.isEmpty else { return [] }
                 return [.work(turn, members)]
             }
@@ -87,7 +88,7 @@ final class TranscriptModel: ObservableObject {
     func retainedExpandedTurnIDs(_ ids: Set<String>) -> Set<String> { ids.intersection(turns.map(\.id)) }
     func reset() { presentation = Presentation(revision: contentRevision &+ 1) }
     func apply(_ messages: [Message], turns: [TranscriptTurn], items: [TranscriptItem], outline: [TranscriptOutlineEntry], identities: [TranscriptMessageIdentity]) {
-        let identitiesByMessage = Dictionary(uniqueKeysWithValues: identities.map { ($0.messageID, $0.id) })
+        let identitiesByMessage = Dictionary(uniqueKeysWithValues: identities.map { ($0.messageId, $0.id) })
         let existing = Dictionary(uniqueKeysWithValues: rows.map { ($0.id, $0) })
         var changed = presentation.turns != turns || presentation.items != items || presentation.outline != outline
         func row(_ id: String, _ message: Message, copies: Bool) -> TranscriptRow {
@@ -101,7 +102,7 @@ final class TranscriptModel: ObservableObject {
             return TranscriptRow(message, id: id, copies: copies)
         }
         // The closing message splits into its work blocks and its reply.
-        let replyStarts = Dictionary(turns.compactMap { turn in turn.lastMessageID.map { ($0, turn.replyStartBlock) } }, uniquingKeysWith: { first, _ in first })
+        let replyStarts = Dictionary(turns.compactMap { turn in turn.lastMessageId.map { ($0, Int(turn.replyStartBlock)) } }, uniquingKeysWith: { first, _ in first })
         let next = messages.flatMap { message -> [TranscriptRow] in
             guard let id = identitiesByMessage[message.id] else { preconditionFailure("Missing transcript presentation identity") }
             let user = message.role == .user

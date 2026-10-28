@@ -1,4 +1,5 @@
 import SwiftUI
+import VeluneBindings
 import AppKit
 import QuartzCore
 import ImageIO

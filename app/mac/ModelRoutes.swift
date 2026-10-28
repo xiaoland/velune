@@ -1,4 +1,5 @@
 import SwiftUI
+import VeluneBindings
 
 /// A provider model as a route lists it.
 struct RouteMember: Identifiable {
@@ -54,7 +55,7 @@ struct ModelRouteSettingsView: View {
                 .listStyle(.bordered)
                 .overlay { if routes.isEmpty { Text("尚无模型路由").foregroundStyle(.secondary) } }
                 HStack {
-                    Button { editor = ModelRoute(recordKey: "", name: "", members: []) } label: { Image(systemName: "plus") }.help("添加模型路由").disabled(store.providers.allSatisfy { $0.models.isEmpty })
+                    Button { editor = ModelRoute(recordKey: "", name: "", members: [], strategy: .smart, weights: [:], sticky: true) } label: { Image(systemName: "plus") }.help("添加模型路由").disabled(store.providers.allSatisfy { $0.models.isEmpty })
                     Button { deleting = selected } label: { Image(systemName: "minus") }.help("删除所选模型路由").disabled(selected == nil)
                     Spacer()
                 }
@@ -149,7 +150,7 @@ private struct RouteMemberStatus: View {
     let totalWeight: UInt32
     private var authentication: ProviderAuthentication { member.provider.authentication }
     private var quota: AccountQuota? { store.providerQuotas[member.provider.id] }
-    private var windows: [QuotaWindow] { (quota?.windows ?? []).filter { $0.applies(to: member.model.providerModelID) } }
+    private var windows: [QuotaWindow] { (quota?.windows ?? []).filter { $0.applies(to: member.model.providerModelId) } }
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
@@ -167,7 +168,7 @@ private struct RouteMemberStatus: View {
             Group {
                 if let notice { Label(notice, systemImage: "pause.circle").font(.caption).foregroundStyle(.orange) }
                 ForEach(Array(windows.enumerated()), id: \.offset) { _, window in
-                    QuotaWindowRow(window: window, limit: member.provider.quotaLimits.first { $0.windowID == window.id }?.maxUsedPercent, fresh: quota?.freshness == .fresh, display: store.usageDisplay)
+                    QuotaWindowRow(window: window, limit: member.provider.quotaLimits.first { $0.windowId == window.id }?.maxUsedPercent, fresh: quota?.freshness == .fresh, display: store.usageDisplay)
                 }
                 ForEach(Array((quota?.balances ?? []).enumerated()), id: \.offset) { _, balance in
                     QuotaBalanceRow(balance: balance, fresh: quota?.freshness == .fresh).font(.caption)
@@ -209,7 +210,7 @@ private struct ModelRouteEditor: View {
     @State private var selection: String?
     @FocusState private var nameFocused: Bool
     /// Members share the first member's protocol.
-    private var memberProtocol: ProviderProtocol? { members.first.flatMap { store.routeMember($0)?.provider.protocolID } }
+    private var memberProtocol: ApiProtocol? { members.first.flatMap { store.routeMember($0)?.provider.protocolID } }
     private var totalWeight: UInt32 { members.reduce(0) { $0 + weight($1) } }
     private var valid: Bool { !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !members.isEmpty }
     var body: some View {

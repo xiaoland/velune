@@ -209,13 +209,17 @@ pub struct Message {
 #[serde(rename_all = "camelCase")]
 pub struct TurnSettings {
     /// The runtime instance that ran the turn.
+    #[uniffi(default = None)]
     pub runtime_id: Option<String>,
     /// The model as the record names it: Velune's name for a model it chose,
     /// otherwise the runtime's model ID.
+    #[uniffi(default = None)]
     pub model: Option<String>,
     /// Reasoning level, in the runtime's own vocabulary.
+    #[uniffi(default = None)]
     pub effort: Option<String>,
     /// Permission mode ID, in the runtime type's own vocabulary where it has one.
+    #[uniffi(default = None)]
     pub permission_mode: Option<String>,
     /// The model Velune sent the turn with, when Velune sent it and named
     /// one; a native record alone cannot tell Velune's gateway from the
@@ -474,6 +478,7 @@ pub struct SettingField {
     pub value: String,
     pub options: Vec<SettingOption>,
     pub help: Option<String>,
+    #[uniffi(default = None)]
     pub executable_discovery: Option<ExecutableDiscovery>,
 }
 

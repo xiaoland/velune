@@ -1,4 +1,5 @@
 import AppKit
+import VeluneBindings
 
 /// Width-independent native content of one message revision. Built once per
 /// revision (normally off the main thread) and shared by measurement and display.
@@ -43,7 +44,7 @@ final class RenderedMessage: @unchecked Sendable {
                 case .completed: "checkmark.circle"
                 }
                 let disclosure = Block.disclosure(key: Self.disclosureKey(block, at: index)!, title: title, symbol: symbol,
-                                                  detail: Self.detail(output ?? .inline(""), font: TranscriptTypography.code, empty: "没有附加输出"), detailMaxWidth: 560)
+                                                  detail: Self.detail(output ?? .inline(text: ""), font: TranscriptTypography.code, empty: "没有附加输出"), detailMaxWidth: 560)
                 guard let conversation else { return [disclosure] }
                 return [disclosure, .text(Self.conversationLink("打开会话", conversation: conversation, alignment: .natural))]
             case .agentSender(let conversationID, let runtimeName, let title):

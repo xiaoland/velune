@@ -1,4 +1,5 @@
 import SwiftUI
+import VeluneBindings
 
 /// The conversation's send queue, above the composer: messages that go out
 /// one by one after the running turn. A system list: click selects, double

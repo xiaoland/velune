@@ -1,45 +1,7 @@
 import SwiftUI
+import VeluneBindings
 
-struct ProviderImportSource: Codable, Sendable, Equatable {
-    var kind = "harness"
-    var harnessTypeId: String
-    var sourceInstanceId: String?
-    var settings: [String: String]
-}
 
-struct ProviderImportPreviewData: Decodable, Sendable { var preview: ProviderImportPreview }
-struct ProviderImportPreview: Decodable, Sendable {
-    var token: String
-    var sourceLabel: String
-    var warnings: [String]
-    var providers: [ProviderImportCandidate]
-}
-struct ProviderImportCandidate: Decodable, Sendable, Identifiable {
-    var id: String
-    var name: String
-    var `protocol`: String
-    var endpoint: String
-    var canImport: Bool
-    var alreadyImported: Bool
-    var credentialStatus: String
-    var issues: [String]
-    var models: [ProviderImportModel]
-}
-struct ProviderImportModel: Decodable, Sendable, Identifiable {
-    var id: String { candidateKey }
-    var candidateKey: String
-    var providerModelID: String
-    var name: String
-    var contextWindow: UInt32?
-    var maxOutputTokens: UInt32?
-    var reasoningLevels: [String]
-    var canImport: Bool
-    var issues: [String]
-}
-struct ProviderImportSelection: Encodable, Sendable {
-    var providerId: String
-    var candidateKeys: [String]
-}
 struct ProviderImportResult: Sendable {
     var gateways: [GatewayConfig]
     var executionInvalidated: Bool
@@ -59,23 +21,23 @@ struct ProviderImportView: View {
     @State private var selectedModels: Set<String> = []
     @State private var replaceExisting = false
 
-    private var supportedInstances: [RuntimeInstance] { store.runtimeInstances.filter { instance in store.providerImportTypes.contains { $0.id == instance.typeID } } }
+    private var supportedInstances: [RuntimeInstance] { store.runtimeInstances.filter { instance in store.providerImportTypes.contains { $0.id == instance.typeId } } }
     private var selectedInstance: RuntimeInstance? { supportedInstances.first { $0.id == sourceInstanceID } }
-    private var source: ProviderImportSource? { guard let selectedInstance else { return nil }; return ProviderImportSource(harnessTypeId: store.providerImportTypes.first { $0.id == selectedInstance.typeID }?.familyID ?? "", sourceInstanceId: selectedInstance.id, settings: [:]) }
-    private var provider: ProviderImportCandidate? { preview?.providers.first { $0.id == providerID } }
-    private var model: ProviderImportModel? { provider?.models.first { $0.id == selectedCandidateKey } }
-    private var visibleModels: [ProviderImportModel] {
+    private var source: ProviderImportSource? { guard let selectedInstance else { return nil }; return ProviderImportSource(kind: "harness", harnessTypeId: store.providerImportTypes.first { $0.id == selectedInstance.typeId }?.familyId ?? "", sourceInstanceId: selectedInstance.id, providerId: nil, settings: [:]) }
+    private var provider: ImportProviderCandidate? { preview?.providers.first { $0.id == providerID } }
+    private var model: ImportModelCandidate? { provider?.models.first { $0.id == selectedCandidateKey } }
+    private var visibleModels: [ImportModelCandidate] {
         guard let provider else { return [] }
         return provider.models.filter { model in
             (!onlyImportable || (enabled(provider) && model.canImport)) &&
-            (query.isEmpty || model.name.localizedCaseInsensitiveContains(query) || model.providerModelID.localizedCaseInsensitiveContains(query))
+            (query.isEmpty || model.name.localizedCaseInsensitiveContains(query) || model.providerModelId.localizedCaseInsensitiveContains(query))
         }
     }
-    private var selections: [ProviderImportSelection] {
+    private var selections: [ImportSelection] {
         (preview?.providers ?? []).filter { enabled($0) }.compactMap { provider in
             let ids = provider.models.filter { $0.canImport && selectedModels.contains($0.id) }.map(\.id)
             guard !ids.isEmpty else { return nil }
-            return ProviderImportSelection(providerId: provider.id, candidateKeys: ids)
+            return ImportSelection(providerId: provider.id, candidateKeys: ids)
         }
     }
     private var selectedCount: Int { selections.reduce(0) { $0 + $1.candidateKeys.count } }
@@ -161,8 +123,8 @@ struct ProviderImportView: View {
                         }.width(36)
                         TableColumn("模型") { model in
                             VStack(alignment: .leading, spacing: 3) {
-                                Text(model.name.isEmpty ? model.providerModelID : model.name).lineLimit(1)
-                                Text(model.providerModelID).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                                Text(model.name.isEmpty ? model.providerModelId : model.name).lineLimit(1)
+                                Text(model.providerModelId).font(.caption).foregroundStyle(.secondary).lineLimit(1)
                             }.padding(.vertical, 3)
                         }.width(min: 160, ideal: 210)
                         TableColumn("状态") { model in
@@ -209,17 +171,17 @@ struct ProviderImportView: View {
         .disabled(store.isLoading)
     }
 
-    private func providerDetails(_ provider: ProviderImportCandidate) -> some View {
+    private func providerDetails(_ provider: ImportProviderCandidate) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             Grid(alignment: .leading, horizontalSpacing: 8, verticalSpacing: 8) {
                 GridRow { Text("名称").foregroundStyle(.secondary); Text(provider.name) }
-                GridRow { Text("协议").foregroundStyle(.secondary); Text(store.protocols.first { $0.id.rawValue == provider.protocol }?.name ?? provider.protocol) }
+                GridRow { Text("协议").foregroundStyle(.secondary); Text(provider.protocol.flatMap { id in store.protocols.first { $0.id == id }?.name } ?? "不支持的协议") }
             }
             // A login run by a local CLI has no address of its own.
-            if !provider.endpoint.isEmpty {
+            if let endpoint = provider.endpoint, !endpoint.isEmpty {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("服务地址").foregroundStyle(.secondary)
-                    Text(provider.endpoint).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+                    Text(endpoint).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
                 }
             }
             Text(provider.credentialStatus).foregroundStyle(.secondary)
@@ -229,10 +191,10 @@ struct ProviderImportView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    private func modelDetails(_ model: ProviderImportModel, provider: ProviderImportCandidate) -> some View {
+    private func modelDetails(_ model: ImportModelCandidate, provider: ImportProviderCandidate) -> some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text(model.name.isEmpty ? model.providerModelID : model.name).font(.headline)
-            Text(model.providerModelID).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+            Text(model.name.isEmpty ? model.providerModelId : model.name).font(.headline)
+            Text(model.providerModelId).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
                 .fixedSize(horizontal: false, vertical: true)
             if !enabled(provider) || !model.canImport {
                 Label(modelStatus(model, provider: provider), systemImage: "info.circle").foregroundStyle(.secondary)
@@ -292,20 +254,20 @@ struct ProviderImportView: View {
         guard let provider, enabled(provider) else { return }
         selectedModels.formUnion(visibleModels.filter(\.canImport).map(\.id))
     }
-    private func selectionBinding(_ model: ProviderImportModel) -> Binding<Bool> {
+    private func selectionBinding(_ model: ImportModelCandidate) -> Binding<Bool> {
         Binding(get: { selectedModels.contains(model.id) }, set: { if $0 { selectedModels.insert(model.id) } else { selectedModels.remove(model.id) } })
     }
-    private func providerStatus(_ provider: ProviderImportCandidate) -> String {
+    private func providerStatus(_ provider: ImportProviderCandidate) -> String {
         let count = provider.models.filter(\.canImport).count
         if !provider.canImport || count == 0 { return "不可导入 · \(provider.models.count) 个模型" }
         return provider.alreadyImported ? "已存在 · \(count) 个可用模型" : "\(count) 个可导入模型"
     }
-    private func modelStatus(_ model: ProviderImportModel, provider: ProviderImportCandidate) -> String {
+    private func modelStatus(_ model: ImportModelCandidate, provider: ImportProviderCandidate) -> String {
         if !provider.canImport || !model.canImport { return "不支持" }
         if provider.alreadyImported && !replaceExisting { return "跳过" }
         return "可导入"
     }
-    private func enabled(_ provider: ProviderImportCandidate) -> Bool { provider.canImport && (!provider.alreadyImported || replaceExisting) }
+    private func enabled(_ provider: ImportProviderCandidate) -> Bool { provider.canImport && (!provider.alreadyImported || replaceExisting) }
     private func selectSourceInstance(_ id: String?) {
         sourceInstanceID = id
         preview = nil

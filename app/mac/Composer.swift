@@ -1,4 +1,5 @@
 import SwiftUI
+import VeluneBindings
 import AppKit
 import QuickLookThumbnailing
 
@@ -719,16 +720,16 @@ struct ComposerView: View {
                 if store.nextTurnHasCurrent, store.nextTurnModel != nil { Text("沿用当前（\(store.selectedModelName ?? "")）") } else { Text("运行时默认") }
             }.tag(ModelSelection?.none)
                 .help(store.nextTurnHasCurrent ? "不更改：沿用会话当前的模型" : "不指定：由运行时使用自己的默认模型")
-            ForEach(runtimeChoices) { model in Text(model.displayName).tag(Optional(model.selection)) }
+            ForEach(runtimeChoices) { model in Text(model.name).tag(Optional(model.selection)) }
         }.pickerStyle(.inline).disabled(!store.canSwitchModel)
         if !managedChoices.isEmpty {
             Picker("Velune 提供商", selection: selection) {
-                ForEach(managedChoices) { model in Text(model.displayName).tag(Optional(model.selection)) }
+                ForEach(managedChoices) { model in Text(model.name).tag(Optional(model.selection)) }
             }.pickerStyle(.inline).disabled(!store.canSwitchModel)
         }
     }
 
-    @ViewBuilder private func sessionOptionControl(_ option: SessionOption) -> some View {
+    @ViewBuilder private func sessionOptionControl(_ option: AcpConfigOption) -> some View {
         switch option.value {
         case .select(let current):
             let selection = Binding<String>(get: { current }, set: { store.setSessionOption(option, value: .select($0)) })
@@ -743,13 +744,13 @@ struct ComposerView: View {
         }
     }
 
-    private func choiceItems(_ choices: [SessionOptionChoice]) -> some View {
+    private func choiceItems(_ choices: [AcpConfigChoice]) -> some View {
         ForEach(choices, id: \.value) { choice in Text(choice.name).tag(choice.value).help(choice.description ?? choice.name) }
     }
 
     /// Choices in the Agent's order, consecutive ones of a group together.
-    private static func choiceGroups(_ choices: [SessionOptionChoice]) -> [(offset: Int, name: String?, choices: [SessionOptionChoice])] {
-        var groups: [(offset: Int, name: String?, choices: [SessionOptionChoice])] = []
+    private static func choiceGroups(_ choices: [AcpConfigChoice]) -> [(offset: Int, name: String?, choices: [AcpConfigChoice])] {
+        var groups: [(offset: Int, name: String?, choices: [AcpConfigChoice])] = []
         for choice in choices {
             if let last = groups.last, last.name == choice.group { groups[groups.count - 1].choices.append(choice) }
             else { groups.append((groups.count, choice.group, [choice])) }

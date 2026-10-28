@@ -296,7 +296,7 @@ pub(crate) fn preview(
             id: provider_id,
             source_provider_id: provider.source_provider_id.clone(),
             name: provider.name.clone(),
-            protocol: protocol_name,
+            protocol: protocol(&protocol_name),
             endpoint: provider.endpoint.clone(),
             can_import: !supported.is_empty(),
             credential_status: provider

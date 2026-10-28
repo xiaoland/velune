@@ -17,7 +17,7 @@ struct ComposerAccountQuota: Identifiable {
     }
     var windows: [QuotaWindow] { quota.windows }
     var isRecorded: Bool { if case .conversationRecord = origin { true } else { false } }
-    func limit(for windowID: String) -> UInt8? { limits.first { $0.windowID == windowID }?.maxUsedPercent }
+    func limit(for windowID: String) -> UInt8? { limits.first { $0.windowId == windowID }?.maxUsedPercent }
 }
 
 /// Captures intent and view revisions so late replies cannot replace a newer selection.

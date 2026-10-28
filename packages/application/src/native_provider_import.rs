@@ -97,13 +97,13 @@ pub(crate) fn preview(
         .map(|provider| {
             let id = provider_id(runtime, &provider.source_provider_id);
             let mut issues = provider.issues.clone();
-            let (protocol_name, endpoint, credential) = match &provider.access {
+            let (protocol, endpoint, credential) = match &provider.access {
                 Access::Http {
                     protocol: kind,
                     endpoint,
                     key,
                 } => (
-                    crate::provider_import::protocol_name(kind),
+                    *kind,
                     Some(endpoint.clone()),
                     match key {
                         KeySource::Literal { .. } => "复制来源中的 API key",
@@ -116,11 +116,7 @@ pub(crate) fn preview(
                     if cli_binary(runtime).is_none() {
                         issues.push("请先为该运行时配置 Claude Code 可执行文件的绝对路径。".into());
                     }
-                    (
-                        crate::provider_import::protocol_name(&Protocol::Messages),
-                        None,
-                        "沿用该运行时的 Claude Code 登录",
-                    )
+                    (Protocol::Messages, None, "沿用该运行时的 Claude Code 登录")
                 }
             };
             let can_import = !provider.models.is_empty()
@@ -144,7 +140,7 @@ pub(crate) fn preview(
                 id,
                 source_provider_id: provider.source_provider_id.clone(),
                 name: provider.name.clone(),
-                protocol: protocol_name.into(),
+                protocol: Some(protocol),
                 endpoint,
                 can_import,
                 credential_status: credential.into(),

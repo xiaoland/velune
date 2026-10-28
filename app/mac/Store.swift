@@ -76,7 +76,7 @@ final class AppStore: ObservableObject {
     private var modelCatalogRequests: [String: UUID] = [:]
     /// The open conversation's live-session options, for runtimes that have
     /// them; `nil` until its session is live in this application.
-    @Published private(set) var sessionOptions: [SessionOption]?
+    @Published private(set) var sessionOptions: [AcpConfigOption]?
     /// Conversation and run state the options were last read for.
     private var sessionOptionsKey: String?
     let transcript = TranscriptModel()
@@ -329,20 +329,20 @@ final class AppStore: ObservableObject {
     /// choices an unchosen part follows; otherwise it is the runtime's default.
     var nextTurnHasCurrent: Bool { nextTurnRuntimeID.map(hasTurns) ?? false }
     private func hasTurns(on runtimeID: String) -> Bool {
-        !isDraft && (snapshot?.transcriptTurns.contains { $0.settings?.runtimeID == runtimeID } ?? false)
+        !isDraft && (snapshot?.transcriptTurns.contains { $0.settings?.runtimeId == runtimeID } ?? false)
     }
     /// The catalog, and the conversation's current model when the runtime
     /// recorded it by an ID its catalog does not list (Claude Code lists aliases).
-    var modelChoices: [ModelChoice] {
+    var modelChoices: [RuntimeModel] {
         let choices = catalogChoices
         guard case .ready = modelCatalog, let runtimeID = nextTurnRuntimeID, let current = latestTurnModel(on: runtimeID),
               !choices.contains(where: { $0.selection == current }), case .native(_, let id) = current else { return choices }
-        return [ModelChoice(selection: current, displayName: "\(id)（会话当前）", reasoningEfforts: defaultModelEfforts)] + choices
+        return [RuntimeModel(selection: current, name: "\(id)（会话当前）", reasoningEfforts: defaultModelEfforts)] + choices
     }
     /// Levels for the runtime's own default model, which no catalog entry
     /// describes: those its own models take, unless its sessions offer them.
     private var defaultModelEfforts: [String] {
-        let type = runtimeInstances.first { $0.id == nextTurnRuntimeID }?.typeID
+        let type = runtimeInstances.first { $0.id == nextTurnRuntimeID }?.typeId
         guard runtimeTypes.first(where: { $0.id == type })?.sessionOptions != true else { return [] }
         var levels: [String] = []
         for choice in catalogChoices { if case .native = choice.selection { for level in choice.reasoningEfforts where !levels.contains(level) { levels.append(level) } } }
@@ -350,18 +350,18 @@ final class AppStore: ObservableObject {
     }
     /// The catalog once read. Until then, and when it cannot be read, the
     /// configured managed models the runtime can reach, without levels.
-    private var catalogChoices: [ModelChoice] {
+    private var catalogChoices: [RuntimeModel] {
         if case .ready(let choices) = modelCatalog { return choices }
-        let typeID = runtimeInstances.first { $0.id == nextTurnRuntimeID }?.typeID
+        let typeID = runtimeInstances.first { $0.id == nextTurnRuntimeID }?.typeId
         guard let descriptor = runtimeTypes.first(where: { $0.id == typeID }) else { return [] }
         return gateway.providers.filter { descriptor.supportedProviderProtocols.contains($0.protocolID) }.flatMap { provider in
-            provider.models.map { ModelChoice(selection: .managed(recordKey: $0.recordKey), displayName: "\($0.displayName) · \(provider.name)") }
+            provider.models.map { RuntimeModel(selection: .managed(modelRecordKey: $0.recordKey), name: "\($0.displayName) · \(provider.name)", reasoningEfforts: []) }
         }
     }
     var selectedModelName: String? {
         guard nextTurnRuntimeID != nil else { return nil }
         guard let nextTurnModel else { return "运行时默认" }
-        if let choice = modelChoices.first(where: { $0.selection == nextTurnModel }) { return choice.displayName }
+        if let choice = modelChoices.first(where: { $0.selection == nextTurnModel }) { return choice.name }
         return switch nextTurnModel {
         case .managed: nil
         case .native(_, let modelID): modelID
@@ -374,7 +374,7 @@ final class AppStore: ObservableObject {
     }
     /// Permission modes the next turn's runtime type declares.
     var permissionModeOptions: [PermissionMode] {
-        let type = runtimeInstances.first { $0.id == nextTurnRuntimeID }?.typeID
+        let type = runtimeInstances.first { $0.id == nextTurnRuntimeID }?.typeId
         return runtimeTypes.first { $0.id == type }?.permissionModes ?? []
     }
     /// The remembered mode while the next turn's runtime offers it; otherwise
@@ -391,7 +391,7 @@ final class AppStore: ObservableObject {
     var currentEffort: String? { currentTurnSettings?.effort.flatMap { reasoningEffortOptions.contains($0) ? $0 : nil } }
     /// Settings of the conversation's last turn when it ran on the next turn's runtime.
     private var currentTurnSettings: TurnSettings? {
-        guard let settings = snapshot?.transcriptTurns.last?.settings, settings.runtimeID == nextTurnRuntimeID else { return nil }
+        guard let settings = snapshot?.transcriptTurns.last?.settings, settings.runtimeId == nextTurnRuntimeID else { return nil }
         return settings
     }
     /// The model of the conversation's latest turn on a runtime: the one
@@ -401,18 +401,18 @@ final class AppStore: ObservableObject {
     /// provider model has it. A native ID the catalog does not list is the
     /// runtime's own model where its models take no provider.
     private func latestTurnModel(on runtimeID: String) -> ModelSelection? {
-        guard let settings = snapshot?.transcriptTurns.last(where: { $0.settings?.runtimeID == runtimeID && ($0.settings?.model != nil || $0.settings?.modelSelection != nil) })?.settings else { return nil }
+        guard let settings = snapshot?.transcriptTurns.last(where: { $0.settings?.runtimeId == runtimeID && ($0.settings?.model != nil || $0.settings?.modelSelection != nil) })?.settings else { return nil }
         if let selection = settings.modelSelection { return selection }
         guard let model = settings.model else { return nil }
         let choices = catalogChoices
-        if let choice = choices.first(where: { $0.displayName == model }) { return choice.selection }
+        if let choice = choices.first(where: { $0.name == model }) { return choice.selection }
         if let choice = choices.first(where: { if case .native(_, model) = $0.selection { true } else { false } }) { return choice.selection }
-        let keys = Set(gateway.providers.flatMap(\.models).filter { $0.providerModelID == model }.map(\.recordKey))
+        let keys = Set(gateway.providers.flatMap(\.models).filter { $0.providerModelId == model }.map(\.recordKey))
         let managed = choices.filter { if case .managed(let key) = $0.selection { keys.contains(key) } else { false } }
         if managed.count == 1 { return managed[0].selection }
         let native = choices.compactMap { if case .native(let provider, _) = $0.selection { Optional(provider) } else { nil } }
         guard case .ready = modelCatalog, !native.isEmpty, native.allSatisfy({ $0 == nil }) else { return nil }
-        return .native(providerID: nil, modelID: model)
+        return .native(providerId: nil, modelId: model)
     }
     /// A turn's settings in the names the composer uses (an unknown runtime
     /// or a mode its type does not declare shows as recorded), and its usage.
@@ -436,7 +436,7 @@ final class AppStore: ObservableObject {
             outputTokens: total(\.outputTokens), reasoningTokens: total(\.reasoningTokens),
             unrecordedTurns: turns.filter { !$0.isRunning && $0.usage == nil }.count,
             directory: isDraft ? nil : snapshot?.conversation.cwd,
-            costMicroUSD: turns.last { $0.usage?.sessionCostMicroUSD != nil }?.usage?.sessionCostMicroUSD)
+            costMicroUSD: turns.last { $0.usage?.sessionCostMicroUsd != nil }?.usage?.sessionCostMicroUsd)
     }
     var composerQuotaRequest: ComposerQuotaRequest {
         ComposerQuotaRequest(runtimeID: nextTurnRuntimeID ?? "", selection: nextTurnModel,
@@ -465,15 +465,15 @@ final class AppStore: ObservableObject {
     }
     func describe(_ turn: TranscriptTurn) -> TurnSettingsSummary? {
         let settings = turn.settings ?? TurnSettings()
-        let runtime = settings.runtimeID.flatMap { id in runtimeInstances.first { $0.id == id } }
-        let type = runtime.flatMap { instance in runtimeTypes.first { $0.id == instance.typeID } }
+        let runtime = settings.runtimeId.flatMap { id in runtimeInstances.first { $0.id == id } }
+        let type = runtime.flatMap { instance in runtimeTypes.first { $0.id == instance.typeId } }
         let parts: [TurnSettingsSummary.Part] = [
-            settings.runtimeID.map { .init(label: "运行时", value: runtime?.name ?? $0) },
+            settings.runtimeId.map { .init(label: "运行时", value: runtime?.name ?? $0) },
             settings.model.map { .init(label: "模型", value: $0) },
             settings.effort.map { .init(label: "推理强度", value: $0) },
             settings.permissionMode.map { mode in .init(label: "权限", value: type?.permissionModes.first { $0.id == mode }?.label ?? mode) },
         ].compactMap { $0 }
-        let brief = [runtime?.name ?? settings.runtimeID, settings.model].compactMap { $0 }.joined(separator: " · ")
+        let brief = [runtime?.name ?? settings.runtimeId, settings.model].compactMap { $0 }.joined(separator: " · ")
         let usage = turn.usage.map { usage -> [TurnSettingsSummary.Part] in
             let count = { (value: UInt64?) in value.map { TokenCount.format($0) } }
             return [
@@ -549,7 +549,7 @@ final class AppStore: ObservableObject {
         // An unsent conversation's choices live as long as it does.
         guard !isPreview, !conversationID.hasPrefix(Self.draftConversationPrefix), let transport else { return }
         let value = VeluneBindings.NextTurnIntent(conversationId: conversationID, runtimeId: intent?.runtimeID,
-                                          choices: (intent?.choices ?? [:]).sorted { $0.key < $1.key }.map { RuntimeTurnChoice(runtimeId: $0.key, choice: BindingMapping.bindingChoice($0.value)) })
+                                          choices: (intent?.choices ?? [:]).sorted { $0.key < $1.key }.map { RuntimeTurnChoice(runtimeId: $0.key, choice: $0.value) })
         performOnQueue { [weak self] in
             do { try transport.setNextTurnIntent(value) }
             catch { DispatchQueue.main.async { self?.recordProblem(error, source: "保存下一轮选择") } }
@@ -560,8 +560,8 @@ final class AppStore: ObservableObject {
         guard holder.runtimeComposerChoices[runtimeID] != choices else { return }
         holder.runtimeComposerChoices[runtimeID] = choices
         guard !isPreview, let transport else { return }
-        let value = VeluneBindings.RuntimeComposerChoices(runtimeId: runtimeID, lastChosen: BindingMapping.bindingChoice(choices.lastChosen),
-                                                  newConversation: BindingMapping.bindingNewConversation(choices.newConversation))
+        let value = VeluneBindings.RuntimeComposerChoices(runtimeId: runtimeID, lastChosen: choices.lastChosen,
+                                                  newConversation: choices.newConversation)
         performOnQueue { [weak self] in
             do { try transport.setRuntimeComposerChoices(value) }
             catch { DispatchQueue.main.async { self?.recordProblem(error, source: "保存运行时的选择") } }
@@ -576,10 +576,10 @@ final class AppStore: ObservableObject {
                 case .success(let value):
                     // Choices made before the read are newer.
                     for intent in value.conversations where self.nextTurnIntents[intent.conversationId] == nil {
-                        self.nextTurnIntents[intent.conversationId] = NextTurnIntent(runtimeID: intent.runtimeId, choices: Dictionary(intent.choices.map { ($0.runtimeId, BindingMapping.choice($0.choice)) }) { $1 })
+                        self.nextTurnIntents[intent.conversationId] = NextTurnIntent(runtimeID: intent.runtimeId, choices: Dictionary(intent.choices.map { ($0.runtimeId, $0.choice) }) { $1 })
                     }
                     for runtime in value.runtimes where self.runtimeComposerChoices[runtime.runtimeId] == nil {
-                        self.runtimeComposerChoices[runtime.runtimeId] = RuntimeComposerChoices(lastChosen: BindingMapping.choice(runtime.lastChosen), newConversation: BindingMapping.newConversation(runtime.newConversation))
+                        self.runtimeComposerChoices[runtime.runtimeId] = RuntimeComposerChoices(lastChosen: runtime.lastChosen, newConversation: runtime.newConversation)
                     }
                     self.composerChoicesRevision += 1
                     self.takeUpComposerChoices(self)
@@ -1260,9 +1260,9 @@ final class AppStore: ObservableObject {
             if case .managed(let key)? = model { value.modelRecordKey = key }
             let message = Message(id: UUID().uuidString, role: .user, blocks: [.text(text)])
             value.messages.append(message)
-            value.transcriptItems.append(.message(id: message.id, messageID: message.id))
-            value.transcriptOutline.append(TranscriptOutlineEntry(id: message.id, messageID: message.id))
-            value.transcriptMessageIdentities.append(TranscriptMessageIdentity(id: message.id, messageID: message.id))
+            value.transcriptItems.append(.message(id: message.id, messageId: message.id))
+            value.transcriptOutline.append(TranscriptOutlineEntry(id: message.id, messageId: message.id))
+            value.transcriptMessageIdentities.append(TranscriptMessageIdentity(id: message.id, messageId: message.id))
             apply(value); onAccepted?(loadedConversationID); return true
         }
         guard let transport else { recordProblem("本地核心未配置"); return false }
@@ -1348,7 +1348,7 @@ final class AppStore: ObservableObject {
         let model = nextTurnModel
         let turn = ComposedTurn(text: text, effort: nextTurnEffort.flatMap { reasoningEffortOptions.contains($0) ? $0 : nil },
                                        permissionMode: effectivePermissionMode?.id, attachments: attachments)
-        changeQueue(.add(sourceRuntimeId: source, targetRuntimeId: target, selection: model.map(BindingMapping.bindingSelection), turn: turn), onFailure: onFailure)
+        changeQueue(.add(sourceRuntimeId: source, targetRuntimeId: target, selection: model, turn: turn), onFailure: onFailure)
         return true
     }
     func compactContext() {
@@ -1387,7 +1387,7 @@ final class AppStore: ObservableObject {
     /// the conversation's own runtime with the next turn's choices.
     func editability(of messageID: String) -> EditableMessage? {
         guard !isPreview, !isDraft, canSend, nextTurnRuntimeID == snapshot?.conversation.runtimeID else { return nil }
-        return followUp.editable.first { $0.messageID == messageID }
+        return followUp.editable.first { $0.messageId == messageID }
     }
     func message(id: String) -> Message? { snapshot?.messages.first { $0.id == id } }
     func isLastUserMessage(_ messageID: String) -> Bool { snapshot?.messages.last { $0.role == .user }?.id == messageID }
@@ -1479,7 +1479,7 @@ final class AppStore: ObservableObject {
     func saveTemplate(_ value: ModelTemplate, onSaved: (() -> Void)? = nil) {
         if isPreview { var saved = value; if saved.id.isEmpty { saved.id = UUID().uuidString }; modelTemplates.removeAll { $0.id == saved.id }; modelTemplates.append(saved); onSaved?(); return }
         guard let transport else { recordProblem("本地核心未配置"); return }
-        enqueue({ try transport.saveTemplate(value) }) { [weak self] result in self?.modelTemplates = result.map(BindingMapping.template); onSaved?() }
+        enqueue({ try transport.saveTemplate(value) }) { [weak self] result in self?.modelTemplates = result; onSaved?() }
     }
     func saveTemplates(_ values: [ModelTemplate], onSaved: @escaping (Int) -> Void) {
         guard !values.isEmpty else { return }
@@ -1495,7 +1495,7 @@ final class AppStore: ObservableObject {
             }
             return (templates, count, failures)
         }) { [weak self] result in
-            if let templates = result.0 { self?.modelTemplates = templates.map(BindingMapping.template) }
+            if let templates = result.0 { self?.modelTemplates = templates }
             self?.appendProblems(result.2)
             onSaved(result.1)
         }
@@ -1509,17 +1509,17 @@ final class AppStore: ObservableObject {
     func deleteTemplate(_ id: String) {
         if isPreview { modelTemplates.removeAll { $0.id == id }; return }
         guard let transport else { recordProblem("本地核心未配置"); return }
-        enqueue({ try transport.deleteTemplate(id: id) }) { [weak self] result in self?.modelTemplates = result.map(BindingMapping.template) }
+        enqueue({ try transport.deleteTemplate(id: id) }) { [weak self] result in self?.modelTemplates = result }
     }
     func previewProviderImport(_ source: ProviderImportSource, completion: @escaping (ProviderImportPreview) -> Void) {
         guard !isPreview, !isGenerating, !authenticationRunning else { recordProblem("请先停止任务或完成登录，再读取提供商配置"); return }
         guard let transport else { recordProblem("本地核心未配置"); return }
-        enqueue({ try transport.providerImportPreview(gatewayID: self.gateway.id, source: BindingMapping.bindingImportSource(source)) }) { completion(BindingMapping.importPreview($0).preview) }
+        enqueue({ try transport.providerImportPreview(gatewayID: self.gateway.id, source: source) }) { completion($0) }
     }
-    func applyProviderImport(_ source: ProviderImportSource, preview: ProviderImportPreview, selections: [ProviderImportSelection], replaceExisting: Bool, completion: @escaping () -> Void) {
+    func applyProviderImport(_ source: ProviderImportSource, preview: ProviderImportPreview, selections: [ImportSelection], replaceExisting: Bool, completion: @escaping () -> Void) {
         guard !isPreview, !isGenerating, !authenticationRunning else { recordProblem("请先停止任务或完成登录，再导入提供商配置"); return }
         guard let transport else { recordProblem("本地核心未配置"); return }
-        enqueue({ try transport.providerImportApply(gatewayID: self.gateway.id, source: BindingMapping.bindingImportSource(source), previewToken: preview.token, selections: selections.map(BindingMapping.bindingSelection), replaceExisting: replaceExisting) }) { [weak self] data in
+        enqueue({ try transport.providerImportApply(gatewayID: self.gateway.id, source: source, previewToken: preview.token, selections: selections, replaceExisting: replaceExisting) }) { [weak self] data in
                 guard let self else { return }
                 if let saved = data.gateways.first(where: { $0.id == self.gateway.id }) { self.gateway = BindingMapping.gateway(saved); self.hasGateway = true }
                 if data.executionInvalidated { refreshAfterExecutionInvalidation() }
@@ -1641,8 +1641,8 @@ final class AppStore: ObservableObject {
             var imported: Set<String> = []
             var failures: [AppProblem] = []
             for candidate in candidates {
-                var runtime = BindingMapping.runtime(candidate.runtime); runtime.gatewayID = gatewayID
-                do { _ = try transport.upsertRuntime(BindingMapping.bindingRuntime(runtime)); imported.insert(runtime.id) }
+                var runtime = candidate.runtime; runtime.gatewayId = gatewayID
+                do { _ = try transport.upsertRuntime(runtime); imported.insert(runtime.id) }
                 catch { failures.append(AppProblem.failure(error, source: "导入运行时 · \(runtime.name)")) }
             }
             return (try transport.list(), imported, failures)
@@ -1659,12 +1659,12 @@ final class AppStore: ObservableObject {
         if isPreview { runtimeInstances.removeAll { $0.id == instance.id }; runtimeInstances.append(instance); if !instance.enabled && projectionRuntimeID == instance.id { resetProjection(); projectionRuntimeID = nil }; onSaved?(); return }
         guard let transport else { recordProblem("本地核心未配置"); return }
         enqueue({
-            let runtime = BindingMapping.bindingRuntime(instance)
+            let runtime = instance
             if let execution, let launch { return try transport.upsertRuntime(runtime, execution: execution, launch: launch) }
             return try execution.map { try transport.upsertRuntime(runtime, execution: $0) } ?? transport.upsertRuntime(runtime)
         }) { [weak self] data in
             guard let self else { return }
-            runtimeInstances = data.runtimeInstances.map(BindingMapping.runtime); runtimeTypes = data.runtimeTypes.map(BindingMapping.runtimeType)
+            runtimeInstances = data.runtimeInstances; runtimeTypes = data.runtimeTypes
             if data.executionInvalidated { refreshAfterExecutionInvalidation() }
             else { enqueue({ try transport.list() }) { [weak self] in self?.applyList($0) } }
             if data.runtimeInstances.contains(where: { $0.id == instance.id }) { onSaved?() }
@@ -1691,17 +1691,17 @@ final class AppStore: ObservableObject {
     }
     /// The option the composer's model menu already offers: the session's
     /// first model-category option, which the runtime's catalog is read from.
-    var editableSessionOptions: [SessionOption] {
+    var editableSessionOptions: [AcpConfigOption] {
         guard var options = sessionOptions else { return [] }
         if let model = options.firstIndex(where: { $0.category == "model" }) { options.remove(at: model) }
         return options
     }
     var canChangeSessionOptions: Bool { !isGenerating && !executionStarting && !isLoading && !isShuttingDown }
-    func setSessionOption(_ option: SessionOption, value: SessionOptionValue) {
+    func setSessionOption(_ option: AcpConfigOption, value: AcpConfigValue) {
         guard canChangeSessionOptions, value != option.value, let runtimeID = snapshot?.conversation.runtimeID, let conversationID = loadedConversationID, let transport else { return }
-        enqueue({ try transport.setSessionOption(runtimeID: runtimeID, conversationID: conversationID, optionID: option.id, value: BindingMapping.bindingSessionOptionValue(value)) }) { [weak self] options in
+        enqueue({ try transport.setSessionOption(runtimeID: runtimeID, conversationID: conversationID, optionID: option.id, value: value) }) { [weak self] options in
             guard let self, self.loadedConversationID == conversationID else { return }
-            self.sessionOptions = options.map(BindingMapping.sessionOption)
+            self.sessionOptions = options
         }
     }
     /// Options exist only while the conversation's session is live here, so
@@ -1709,7 +1709,7 @@ final class AppStore: ObservableObject {
     /// not being live yet is not a problem to report.
     private func refreshSessionOptions() {
         guard let value = snapshot, !isDraft, !isPreview, let transport,
-              let typeID = runtimeInstances.first(where: { $0.id == value.conversation.runtimeID })?.typeID,
+              let typeID = runtimeInstances.first(where: { $0.id == value.conversation.runtimeID })?.typeId,
               runtimeTypes.first(where: { $0.id == typeID })?.sessionOptions == true else {
             if sessionOptions != nil { sessionOptions = nil }; sessionOptionsKey = nil; return
         }
@@ -1719,7 +1719,7 @@ final class AppStore: ObservableObject {
         sessionOptionsKey = key
         let runtimeID = value.conversation.runtimeID, conversationID = value.conversation.id
         performOnQueue { [weak self] in
-            let options = (try? transport.sessionOptions(runtimeID: runtimeID, conversationID: conversationID))?.map(BindingMapping.sessionOption)
+            let options = (try? transport.sessionOptions(runtimeID: runtimeID, conversationID: conversationID))
             DispatchQueue.main.async {
                 guard let self, self.sessionOptionsKey == key else { return }
                 let becameLive = self.sessionOptions == nil && options != nil
@@ -1737,7 +1737,7 @@ final class AppStore: ObservableObject {
         }
         guard let transport else { recordProblem("本地核心未配置"); return }
         enqueue({ try transport.deleteRuntime(id: id) }) { [weak self] data in
-            self?.runtimeInstances = data.runtimeInstances.map(BindingMapping.runtime); self?.runtimeTypes = data.runtimeTypes.map(BindingMapping.runtimeType)
+            self?.runtimeInstances = data.runtimeInstances; self?.runtimeTypes = data.runtimeTypes
             if data.executionInvalidated { self?.refreshAfterExecutionInvalidation() }
         }
     }
@@ -1807,7 +1807,7 @@ final class AppStore: ObservableObject {
             let result = Result { try transport.runtimeModels(runtimeID: runtimeID) }
             DispatchQueue.main.async {
                 switch result {
-                case .success(let models): done(.ready(models.map(BindingMapping.modelChoice)))
+                case .success(let models): done(.ready(models))
                 case .failure(let error): done(.failed(AppProblem.failure(error, source: "模型目录").detail))
                 }
             }
@@ -1822,8 +1822,8 @@ final class AppStore: ObservableObject {
     private func loadModelCatalog() {
         guard snapshot != nil, let runtimeID = nextTurnRuntimeID, enabledRuntimeInstances.contains(where: { $0.id == runtimeID }), modelCatalogs[runtimeID] == nil else { reconcileModelSelection(); return }
         if isPreview {
-            let managed = gateway.providers.flatMap { provider in provider.models.map { ModelChoice(selection: .managed(recordKey: $0.recordKey), displayName: "\($0.displayName) · \(provider.name)", reasoningEfforts: $0.reasoningLevels ?? []) } }
-            modelCatalogs[runtimeID] = .ready([ModelChoice(selection: .native(providerID: "sample", modelID: "sample-native"), displayName: "运行时示例模型", reasoningEfforts: ["low", "medium", "high"])] + managed)
+            let managed = gateway.providers.flatMap { provider in provider.models.map { RuntimeModel(selection: .managed(modelRecordKey: $0.recordKey), name: "\($0.displayName) · \(provider.name)", reasoningEfforts: $0.reasoningLevels ?? []) } }
+            modelCatalogs[runtimeID] = .ready([RuntimeModel(selection: .native(providerId: "sample", modelId: "sample-native"), name: "运行时示例模型", reasoningEfforts: ["low", "medium", "high"])] + managed)
             reconcileModelSelection(); return
         }
         guard let transport, !isShuttingDown else { return }
@@ -1836,7 +1836,7 @@ final class AppStore: ObservableObject {
                 guard let self, self.modelCatalogRequests[runtimeID] == request else { return }
                 self.modelCatalogRequests[runtimeID] = nil
                 switch result {
-                case .success(let models): self.modelCatalogs[runtimeID] = .ready(models.map(BindingMapping.modelChoice))
+                case .success(let models): self.modelCatalogs[runtimeID] = .ready(models)
                 case .failure(let error): self.modelCatalogs[runtimeID] = .failed(AppProblem.failure(error, source: "模型目录").detail)
                 }
                 self.reconcileModelSelection()
@@ -1850,7 +1850,7 @@ final class AppStore: ObservableObject {
     /// leaves the choice for the core to check at sending.
     private func reconcileModelSelection() {
         guard let snapshot, let runtimeID = nextTurnRuntimeID else { return }
-        let recorded = snapshot.conversation.runtimeID == runtimeID ? snapshot.modelRecordKey.map { ModelSelection.managed(recordKey: $0) } : nil
+        let recorded = snapshot.conversation.runtimeID == runtimeID ? snapshot.modelRecordKey.map { ModelSelection.managed(modelRecordKey: $0) } : nil
         let candidates = [chosenModel, latestTurnModel(on: runtimeID), recorded].compactMap { $0 }
         let chosen: ModelSelection?
         if case .ready = modelCatalog {
@@ -2025,7 +2025,7 @@ final class AppStore: ObservableObject {
                 case .unchanged: return .unchanged
                 case .changed(let incoming):
                     guard let base = incoming.base else { return .complete(BindingMapping.snapshot(incoming)) }
-                    return .changes(base: BindingMapping.cursor(base), header: BindingMapping.snapshotHeader(incoming), order: incoming.messageIds, changed: incoming.messages.map(BindingMapping.message))
+                    return .changes(base: base, header: BindingMapping.snapshotHeader(incoming), order: incoming.messageIds, changed: incoming.messages.map(BindingMapping.message))
                 }
             }
             DispatchQueue.main.async {
@@ -2124,12 +2124,12 @@ final class AppStore: ObservableObject {
     }
     private func seedPreview() {
         conversationBrowserPreferences = ConversationBrowser().preferences
-        gateway = GatewayConfig(providers: [AIProvider(id: "sample-provider", name: "示例 AI 服务", protocolID: .chatCompletions, endpoint: "https://example.invalid/v1", models: [ProviderModel(recordKey: "sample-model", providerModelID: "external-example", nickname: "通用模型", contextWindow: 8192, maxOutputTokens: 4096)])])
+        gateway = GatewayConfig(providers: [AIProvider(id: "sample-provider", name: "示例 AI 服务", protocolID: .chatCompletions, endpoint: "https://example.invalid/v1", models: [ProviderModel(recordKey: "sample-model", providerModelId: "external-example", nickname: "通用模型", contextWindow: 8192, maxOutputTokens: 4096)])])
         hasGateway = true
         protocols = [ProtocolDescriptor(id: .chatCompletions, name: "OpenAI Chat Completions v1", supported: true), ProtocolDescriptor(id: .responses, name: "OpenAI Responses v1", supported: true), ProtocolDescriptor(id: .messages, name: "Anthropic Messages v1", supported: true)]
-        runtimeTypes = [RuntimeTypeDescriptor(id: .pi, familyID: "sample", canRenameConversations: true, canDeleteConversations: true, supportedProtocols: [.chatCompletions, .responses, .messages], supportedProviderProtocols: [.chatCompletions, .responses, .messages], name: "示例运行时", fields: [])]
-        runtimeInstances = [RuntimeInstance(id: "sample-instance", name: "示例运行时", typeID: .pi, gatewayID: gateway.id, settings: [:]), RuntimeInstance(id: "sample-review", name: "另一个运行时", typeID: .pi, gatewayID: gateway.id, settings: [:])]
-        projectionRuntimeID = runtimeInstances[0].id; hasInitializedNextTurnIntent = true; nextTurnRuntimeID = projectionRuntimeID; chosenModel = .managed(recordKey: "sample-model"); nextTurnModel = chosenModel
+        runtimeTypes = [RuntimeTypeDescriptor(id: .pi, familyId: "sample", compatibleVersions: "", canRenameConversations: true, canDeleteConversations: true, launchOptions: false, agentInfo: false, sessionOptions: false, nativeAccountQuota: false, remoteResources: false, supportedProtocols: [.chatCompletions, .responses, .messages], supportedProviderProtocols: [.chatCompletions, .responses, .messages], name: "示例运行时", fields: [], permissionModes: [])]
+        runtimeInstances = [RuntimeInstance(id: "sample-instance", name: "示例运行时", typeId: .pi, gatewayId: gateway.id, settings: [:]), RuntimeInstance(id: "sample-review", name: "另一个运行时", typeId: .pi, gatewayId: gateway.id, settings: [:])]
+        projectionRuntimeID = runtimeInstances[0].id; hasInitializedNextTurnIntent = true; nextTurnRuntimeID = projectionRuntimeID; chosenModel = .managed(modelRecordKey: "sample-model"); nextTurnModel = chosenModel
         let topics = ["让设置页更安静", "整理一段代码", "下一步的项目计划"]
         let pairs = [
             ["我想让设置页面更简单，先帮我梳理一下。", "# 一次清晰的工作循环\n\n先整理任务，再执行。\n\n- [x] 读取上下文\n- [ ] 完成修改\n\n> 每一步都保留可以复核的结果。\n\n| 内容 | 状态 |\n| --- | --- |\n| 会话 | 可继续 |\n| 工具 | 已完成 |\n\n正文支持**强调**、[链接](https://example.invalid)和 `inline code`。", "运行时实例应该放哪里？", "工具栏显示当前运行时实例，详细配置放进系统设置窗口里。会话页面保留对话与模型选择，让注意力留在正在做的工作上。"],
@@ -2139,20 +2139,20 @@ final class AppStore: ObservableObject {
         for index in topics.indices {
             let conversation = Conversation(id: "sample-\(index)", title: topics[index], updatedAtUnixMs: Int64(Date().timeIntervalSince1970 * 1000) - Int64(index * 86_400_000), createdAtUnixMs: Int64(Date().timeIntervalSince1970 * 1000) - Int64((index + 3) * 86_400_000), runtimeID: runtimeInstances[index == 2 ? 1 : 0].id, cwd: index == 0 ? "/Users/example/Projects/Velune" : index == 1 ? "/Users/example/Projects/Sample" : nil)
             var history = pairs[index].enumerated().map { Message(id: "sample-\(index)-\($0.offset)", role: $0.offset.isMultiple(of: 2) ? .user : .assistant, blocks: [.text($0.element)]) }
-            history[1].blocks.insert(.reasoning(summary: "先确认上下文", text: .inline("再选择最小的修改范围。")), at: 0)
-            history[1].blocks.append(.tool(id: "sample-tool-\(index)", title: index == 1 ? "检查项目代码" : "读取工作上下文", state: .completed, output: .inline(index == 1 ? "已读取 3 个文件，未修改项目。" : "已梳理当前任务的上下文。"), conversation: nil))
+            history[1].blocks.insert(.reasoning(summary: "先确认上下文", text: .inline(text: "再选择最小的修改范围。")), at: 0)
+            history[1].blocks.append(.tool(id: "sample-tool-\(index)", title: index == 1 ? "检查项目代码" : "读取工作上下文", state: .completed, output: .inline(text: index == 1 ? "已读取 3 个文件，未修改项目。" : "已梳理当前任务的上下文。"), conversation: nil))
             // The last sample is mid-turn: summaries with and without text yet, then a running tool.
             let running = index == 2
-            if running { history[history.count - 1].blocks = [.reasoning(summary: "Reading the settings view", text: .inline("The sidebar and the detail pane share one split view.")), .reasoning(summary: "Inspecting the project layout", text: .inline("")), .tool(id: "sample-progress", title: "整理项目计划", state: .running, output: .inline("正在整理计划。"), conversation: nil)] }
+            if running { history[history.count - 1].blocks = [.reasoning(summary: "Reading the settings view", text: .inline(text: "The sidebar and the detail pane share one split view.")), .reasoning(summary: "Inspecting the project layout", text: .inline(text: "")), .tool(id: "sample-progress", title: "整理项目计划", state: .running, output: .inline(text: "正在整理计划。"), conversation: nil)] }
             previewSnapshots[conversation.id] = ConversationSnapshot(revision: 1, conversation: conversation, contextRuntimeID: conversation.runtimeID, modelRecordKey: "sample-model", runState: running ? .running : .idle, messages: history,
                 transcriptTurns: [
-                    TranscriptTurn(id: "preview-work-" + conversation.id, userMessageID: history[0].id, workMessageIDs: [history[1].id], lastMessageID: nil, durationMs: nil, isRunning: false),
-                    TranscriptTurn(id: "preview-answer-" + conversation.id, userMessageID: history[2].id, workMessageIDs: running ? [history[3].id] : [], lastMessageID: running ? nil : history[3].id, durationMs: nil, isRunning: running)
+                    TranscriptTurn(id: "preview-work-" + conversation.id, userMessageId: history[0].id, workMessageIds: [history[1].id], lastMessageId: nil, replyStartBlock: 0, durationMs: nil, isRunning: false, settings: nil, usage: nil),
+                    TranscriptTurn(id: "preview-answer-" + conversation.id, userMessageId: history[2].id, workMessageIds: running ? [history[3].id] : [], lastMessageId: running ? nil : history[3].id, replyStartBlock: 0, durationMs: nil, isRunning: running, settings: nil, usage: nil)
                 ],
-                transcriptItems: [.message(id: history[0].id, messageID: history[0].id), .work(turnID: "preview-work-" + conversation.id), .message(id: history[2].id, messageID: history[2].id)]
-                    + (running ? [.work(turnID: "preview-answer-" + conversation.id)] : [.message(id: history[3].id, messageID: history[3].id)]) + history.dropFirst(4).map { .message(id: $0.id, messageID: $0.id) },
-                transcriptOutline: history.filter { $0.role == .user }.map { TranscriptOutlineEntry(id: $0.id, messageID: $0.id) },
-                transcriptMessageIdentities: history.map { TranscriptMessageIdentity(id: $0.id, messageID: $0.id) },
+                transcriptItems: [.message(id: history[0].id, messageId: history[0].id), .work(turnId: "preview-work-" + conversation.id), .message(id: history[2].id, messageId: history[2].id)]
+                    + (running ? [.work(turnId: "preview-answer-" + conversation.id)] : [.message(id: history[3].id, messageId: history[3].id)]) + history.dropFirst(4).map { .message(id: $0.id, messageId: $0.id) },
+                transcriptOutline: history.filter { $0.role == .user }.map { TranscriptOutlineEntry(id: $0.id, messageId: $0.id) },
+                transcriptMessageIdentities: history.map { TranscriptMessageIdentity(id: $0.id, messageId: $0.id) },
                 actions: ConversationActions(canSend: !running, canCancel: running, canSwitch: true))
             conversations.append(conversation)
         }

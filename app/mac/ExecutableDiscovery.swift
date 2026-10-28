@@ -1,4 +1,5 @@
 import Foundation
+import VeluneBindings
 import Darwin
 
 /// Discovers a descriptor-declared executable without reading credentials or
@@ -25,7 +26,7 @@ enum MacExecutableDiscovery {
         }
     }
 
-    static func discover(_ descriptor: ExecutableDiscoverySpec,
+    static func discover(_ descriptor: ExecutableDiscovery,
                          completion: @escaping (Result<String, Error>) -> Void) {
         DispatchQueue.global(qos: .userInitiated).async {
             let candidates = candidatePaths(command: descriptor.command)

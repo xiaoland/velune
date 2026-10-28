@@ -1,4 +1,5 @@
 import SwiftUI
+import VeluneBindings
 import AppKit
 
 /// A tab's transcript reading, kept while its views are gone (the tab is

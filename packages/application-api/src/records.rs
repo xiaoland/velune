@@ -498,7 +498,8 @@ pub struct ImportProviderCandidate {
     pub id: String,
     pub source_provider_id: String,
     pub name: String,
-    pub protocol: String,
+    /// None when the source names a protocol Velune does not speak.
+    pub protocol: Option<Protocol>,
     pub endpoint: Option<String>,
     pub can_import: bool,
     pub already_imported: bool,

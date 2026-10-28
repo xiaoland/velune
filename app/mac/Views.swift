@@ -640,7 +640,7 @@ private struct ProviderModelDraft: Identifiable {
     var reasoningLevels = ""
     init() {}
     init(_ model: ProviderModel) {
-        recordKey = model.recordKey; providerModelID = model.providerModelID; nickname = model.nickname; icon = model.icon ?? ""
+        recordKey = model.recordKey; providerModelID = model.providerModelId; nickname = model.nickname; icon = model.icon ?? ""
         contextWindow = model.contextWindow.map { TokenCount.format($0) } ?? ""; maxOutputTokens = model.maxOutputTokens.map { TokenCount.format($0) } ?? ""
         declaresReasoning = model.reasoningLevels != nil; reasoningLevels = model.reasoningLevels?.joined(separator: ", ") ?? ""
     }
@@ -652,7 +652,7 @@ private struct ProviderModelDraft: Identifiable {
         let effortsSummary = efforts.map { $0.isEmpty ? "不支持推理 effort" : "支持 effort：" + $0.joined(separator: "、") } ?? "推理 effort 未知"
         return effortsSummary + (contextWindow.isEmpty ? "" : " · 上下文 \(TokenCount.parse(contextWindow).map { TokenCount.format($0) } ?? contextWindow)") + (maxOutputTokens.isEmpty ? "" : " · 输出 \(TokenCount.parse(maxOutputTokens).map { TokenCount.format($0) } ?? maxOutputTokens)")
     }
-    var definition: ProviderModel { ProviderModel(recordKey: recordKey, providerModelID: providerModelID, nickname: nickname, icon: icon.isEmpty ? nil : icon, contextWindow: TokenCount.parse(contextWindow), maxOutputTokens: TokenCount.parse(maxOutputTokens), reasoningLevels: efforts) }
+    var definition: ProviderModel { ProviderModel(recordKey: recordKey, providerModelId: providerModelID, nickname: nickname, icon: icon.isEmpty ? nil : icon, contextWindow: TokenCount.parse(contextWindow), maxOutputTokens: TokenCount.parse(maxOutputTokens), reasoningLevels: efforts) }
 }
 
 private struct ProviderModelFields: View {
@@ -693,7 +693,7 @@ struct ProviderEditor: View {
     var template: ProviderTemplate? = nil
     @Environment(\.dismiss) private var dismiss
     @State private var name = ""
-    @State private var protocolID: ProviderProtocol = .chatCompletions
+    @State private var protocolID: ApiProtocol = .chatCompletions
     @State private var endpoint = ""
     @State private var models: [ProviderModelDraft] = []
     @State private var quotaLimits: [QuotaLimit] = []
@@ -733,8 +733,8 @@ struct ProviderEditor: View {
     /// Local Claude Code runtimes whose own login a provider can use.
     private var claudeLoginRuntimes: [RuntimeInstance] {
         store.runtimeInstances.filter { instance in
-            instance.typeID == .claudeCode && store.location(of: instance.id) == .local && (instance.settings["agentDir"].map { ($0 as NSString).isAbsolutePath } ?? false)
-                || linkedLogin == .runtime(instanceID: instance.id)
+            instance.typeId == .claudeCode && store.location(of: instance.id) == .local && (instance.settings["agentDir"].map { ($0 as NSString).isAbsolutePath } ?? false)
+                || linkedLogin == .runtime(instanceId: instance.id)
         }
     }
     /// The command a CLI backend runs, from the template the composition comes from.
@@ -777,7 +777,7 @@ struct ProviderEditor: View {
                     if let index = modelIndex {
                         Form {
                             ProviderModelFields(draft: $models[index], modelIDFocused: $modelIDFocused)
-                            Section { Button("保存为模型模板…") { let model = models[index].definition; templateDraft = ModelTemplate(name: model.displayName, suggestedProviderModelID: model.providerModelID, nickname: model.nickname, icon: model.icon, contextWindow: model.contextWindow, maxOutputTokens: model.maxOutputTokens, reasoningLevels: model.reasoningLevels) }.disabled(!models[index].valid) }
+                            Section { Button("保存为模型模板…") { let model = models[index].definition; templateDraft = ModelTemplate(id: "", name: model.displayName, suggestedProviderModelId: model.providerModelId, nickname: model.nickname, icon: model.icon, contextWindow: model.contextWindow, maxOutputTokens: model.maxOutputTokens, reasoningLevels: model.reasoningLevels) }.disabled(!models[index].valid) }
                         }
                     } else if selection == .quota && showsQuota {
                         ProviderQuotaForm(store: store, providerID: providerID, limits: $quotaLimits)
@@ -876,7 +876,7 @@ struct ProviderEditor: View {
                     Picker("账户来源", selection: $linkedLogin) {
                         Text("在 Velune 中登录新账户").tag(LinkedClaudeLogin?.none)
                         Text("本机 Claude Code 登录").tag(LinkedClaudeLogin?.some(.userDefault))
-                        ForEach(claudeLoginRuntimes) { instance in Text("运行时“\(instance.name)”的登录").tag(LinkedClaudeLogin?.some(.runtime(instanceID: instance.id))) }
+                        ForEach(claudeLoginRuntimes) { instance in Text("运行时“\(instance.name)”的登录").tag(LinkedClaudeLogin?.some(.runtime(instanceId: instance.id))) }
                     }
                 }
                 if editingAPIKey {
@@ -956,7 +956,7 @@ struct ProviderEditor: View {
     /// Saves; `signingIn` keeps the editor open on the saved provider and starts its login.
     /// API-key subscriptions save the entered key without changing their protocol composition.
     private func commit(signingIn: Bool = false) {
-        let edit: AuthenticationEdit = editingAPIKey && apiKey != originalAPIKey ? .setAPIKey(apiKey) : clearAuthentication ? .clear
+        let edit: AuthenticationEdit = editingAPIKey && apiKey != originalAPIKey ? .setApiKey(value: apiKey) : clearAuthentication ? .clear
             : linkedLoginChanged ? linkedLogin.map(AuthenticationEdit.useClaudeCodeLogin) ?? .clear : .keep
         let quotaEdit: QuotaAuthenticationEdit? = clearingQuotaAuthentication ? .clear : !quotaAccessKeyID.isEmpty && !quotaSecret.isEmpty ? .setAccessKey(accessKeyId: quotaAccessKeyID, secretAccessKey: quotaSecret, confirmed: quotaConfirmed) : quotaConfirmed ? .confirmBinding : nil
         let existing = Set(store.providers.map(\.id))
@@ -981,12 +981,12 @@ private struct ModelTemplatePicker: View {
     @State private var selection: Set<String> = []
     @State private var search = ""
     @State private var addedCount = 0
-    private var candidates: [ModelTemplate] { templates.filter { search.isEmpty || "\($0.name) \($0.suggestedProviderModelID)".localizedCaseInsensitiveContains(search) } }
+    private var candidates: [ModelTemplate] { templates.filter { search.isEmpty || "\($0.name) \($0.suggestedProviderModelId)".localizedCaseInsensitiveContains(search) } }
     var body: some View {
         VStack(spacing: 0) {
             HStack { Text("从模板中选取").font(.headline); Spacer() }.padding(20)
             TextField("搜索模板", text: $search).textFieldStyle(.roundedBorder).padding(.horizontal, 20).padding(.bottom, 8)
-            List(selection: $selection) { ForEach(candidates) { value in VStack(alignment: .leading, spacing: 3) { Text(value.name); Text(value.suggestedProviderModelID).font(.caption).foregroundStyle(.secondary) }.tag(value.id) } }.listStyle(.bordered).padding(.horizontal, 20)
+            List(selection: $selection) { ForEach(candidates) { value in VStack(alignment: .leading, spacing: 3) { Text(value.name); Text(value.suggestedProviderModelId).font(.caption).foregroundStyle(.secondary) }.tag(value.id) } }.listStyle(.bordered).padding(.horizontal, 20)
             .overlay { if candidates.isEmpty { Text(templates.isEmpty ? "尚无模型模板，可在设置中添加。" : "没有匹配的模板").foregroundStyle(.secondary) } }
             HStack {
                 Text(addedCount > 0 ? "已添加 \(addedCount) 个模型" : "按住 ⌘ 或 Shift 选择多个模板").font(.caption).foregroundStyle(.secondary)
@@ -1008,13 +1008,13 @@ struct ModelTemplatesView: View {
         VStack(spacing: 0) {
             Text("模型模板").font(.headline).frame(maxWidth: .infinity, alignment: .leading).padding(20)
             Text("模板用于快速填写模型，修改模板不会改变已配置的模型。").font(.callout).foregroundStyle(.secondary).padding(.horizontal, 20).padding(.bottom, 12)
-            List(selection: $selectedID) { ForEach(store.modelTemplates) { template in VStack(alignment: .leading, spacing: 3) { Text(template.name); Text(template.suggestedProviderModelID).font(.caption).foregroundStyle(.secondary) }.tag(template.id) } }
+            List(selection: $selectedID) { ForEach(store.modelTemplates) { template in VStack(alignment: .leading, spacing: 3) { Text(template.name); Text(template.suggestedProviderModelId).font(.caption).foregroundStyle(.secondary) }.tag(template.id) } }
             .contextMenu(forSelectionType: String.self) { ids in
                 if ids.count == 1, let id = ids.first, let template = store.modelTemplates.first(where: { $0.id == id }) { Button("编辑…") { editor = template } }
             } primaryAction: { ids in if ids.count == 1, let id = ids.first { editor = store.modelTemplates.first { $0.id == id } } }
             .listStyle(.bordered).padding(.horizontal, 20)
             HStack {
-                Button { editor = ModelTemplate(name: "", suggestedProviderModelID: "") } label: { Image(systemName: "plus") }
+                Button { editor = ModelTemplate(id: "", name: "", suggestedProviderModelId: "") } label: { Image(systemName: "plus") }
                 Button { if let selectedID { store.deleteTemplate(selectedID) } } label: { Image(systemName: "minus") }.disabled(selectedID == nil || store.isLoading)
                 Button("从公开目录添加…") { catalog = true }
                 Spacer(); Button("编辑…") { editor = store.modelTemplates.first { $0.id == selectedID } }.disabled(selectedID == nil); Button("完成") { dismiss() }.keyboardShortcut(.cancelAction)
@@ -1036,7 +1036,7 @@ struct ModelTemplateEditor: View {
             Text("编辑模型模板").font(.headline).frame(maxWidth: .infinity, alignment: .leading).padding(16)
             Form { Section { TextField("模板名称", text: $name) }; ProviderModelFields(draft: $draft, modelIDFocused: $modelIDFocused) }.formStyle(.grouped)
 
-            HStack { Spacer(); Button("取消") { dismiss() }.keyboardShortcut(.cancelAction); Button("保存") { let model = draft.definition; store.saveTemplate(ModelTemplate(id: template.id, name: name, suggestedProviderModelID: model.providerModelID, nickname: model.nickname, icon: model.icon, contextWindow: model.contextWindow, maxOutputTokens: model.maxOutputTokens, reasoningLevels: model.reasoningLevels)) { dismiss() } }.keyboardShortcut(.defaultAction).disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !draft.valid || store.isLoading) }.padding(16)
+            HStack { Spacer(); Button("取消") { dismiss() }.keyboardShortcut(.cancelAction); Button("保存") { let model = draft.definition; store.saveTemplate(ModelTemplate(id: template.id, name: name, suggestedProviderModelId: model.providerModelId, nickname: model.nickname, icon: model.icon, contextWindow: model.contextWindow, maxOutputTokens: model.maxOutputTokens, reasoningLevels: model.reasoningLevels)) { dismiss() } }.keyboardShortcut(.defaultAction).disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !draft.valid || store.isLoading) }.padding(16)
         }.frame(width: 440, height: 400).onAppear { name = template.name; draft = ProviderModelDraft(template.model) }
     }
 }
@@ -1061,7 +1061,7 @@ struct RuntimeSettingsView: View {
                 ForEach(store.runtimeInstances) { instance in
                     VStack(alignment: .leading, spacing: 3) {
                         HStack { Text(instance.name); if !instance.enabled { Text("已停用").foregroundStyle(.secondary) } }
-                        Text((store.runtimeTypes.first { $0.id == instance.typeID }?.name ?? instance.typeID.description) + (store.location(of: instance.id).host.map { " · SSH \($0)" } ?? "")).font(.caption).foregroundStyle(.secondary)
+                        Text((store.runtimeTypes.first { $0.id == instance.typeId }?.name ?? instance.typeId.description) + (store.location(of: instance.id).host.map { " · SSH \($0)" } ?? "")).font(.caption).foregroundStyle(.secondary)
                     }.tag(instance.id)
                 }
             }
@@ -1292,7 +1292,7 @@ struct RuntimeEditor: View {
                 case .chosen(let choice): newConversationMode = .chosen; newConversationChoice = choice; loadNewConversationModels(instance)
                 }
             }
-            typeID = instance?.typeID ?? types.first?.id
+            typeID = instance?.typeId ?? types.first?.id
             if instance == nil { execution = .ready } else { loadExecution() }
             settings = instance?.settings ?? [:]
             if let descriptor {
@@ -1413,14 +1413,14 @@ struct RuntimeEditor: View {
         }
     }
     @ViewBuilder private var newConversationPickers: some View {
-        let models: [ModelChoice] = if case .ready(let choices) = newConversationModels { choices } else { [] }
+        let models: [RuntimeModel] = if case .ready(let choices) = newConversationModels { choices } else { [] }
         let chosen = newConversationChoice.model
         // A model kept here that the catalog no longer lists still shows.
         let listed = chosen.map { model in models.contains { $0.selection == model } } ?? true
         Picker("模型", selection: $newConversationChoice.model) {
             Text("运行时默认").tag(ModelSelection?.none)
             if !listed, let chosen { Text(Self.modelName(chosen)).tag(Optional(chosen)) }
-            ForEach(models) { model in Text(model.displayName).tag(Optional(model.selection)) }
+            ForEach(models) { model in Text(model.name).tag(Optional(model.selection)) }
         }
         switch newConversationModels {
         case .loading?: HStack { ProgressView().controlSize(.small); Text("正在读取运行时的模型…").foregroundStyle(.secondary) }
@@ -1444,7 +1444,7 @@ struct RuntimeEditor: View {
     }
     /// The chosen model's levels; for the runtime's default model, those its
     /// own models take, unless its sessions offer them.
-    private func newConversationEfforts(_ models: [ModelChoice]) -> [String] {
+    private func newConversationEfforts(_ models: [RuntimeModel]) -> [String] {
         if let model = newConversationChoice.model { return models.first { $0.selection == model }?.reasoningEfforts ?? [] }
         guard descriptor?.sessionOptions != true else { return [] }
         var levels: [String] = []
@@ -1464,8 +1464,8 @@ struct RuntimeEditor: View {
     private func saveNewConversationChoice(_ instance: RuntimeInstance) {
         let choice: NewConversationChoice = switch newConversationMode {
         case .lastChosen: .lastChosen
-        case .runtimeDefault: .chosen(TurnChoice())
-        case .chosen: .chosen(newConversationChoice)
+        case .runtimeDefault: .chosen(choice: TurnChoice())
+        case .chosen: .chosen(choice: newConversationChoice)
         }
         store.setNewConversationChoice(choice, for: instance.id)
     }
@@ -1530,7 +1530,7 @@ struct RuntimeEditor: View {
     private func loadExecution() {
         guard let instance else { return }
         execution = .loading
-        store.runtimeExecution(id: instance.id, launch: types.first { $0.id == instance.typeID }?.launchOptions == true, onFailure: { execution = .failed }) { saved, directory, launch in
+        store.runtimeExecution(id: instance.id, launch: types.first { $0.id == instance.typeId }?.launchOptions == true, onFailure: { execution = .failed }) { saved, directory, launch in
             if let launch {
                 launchArguments = launch.args.map { LaunchArgument(value: $0) }
                 environment = launch.environment.sorted { $0.key < $1.key }.map { EnvironmentEntry(name: $0.key, value: $0.value) }
@@ -1585,7 +1585,7 @@ struct RuntimeEditor: View {
         for field in descriptor.fields {
             values[field.key] = MacPath.normalized(settings[field.key] ?? field.value, field: field, remote: remote)
         }
-        store.saveRuntimeInstance(RuntimeInstance(enabled: enabled, id: instance?.id ?? draftID, name: name.trimmingCharacters(in: .whitespacesAndNewlines), typeID: typeID, gatewayID: instance?.gatewayID ?? gatewayID, settings: values),
+        store.saveRuntimeInstance(RuntimeInstance(enabled: enabled, id: instance?.id ?? draftID, name: name.trimmingCharacters(in: .whitespacesAndNewlines), typeId: typeID, gatewayId: instance?.gatewayId ?? gatewayID, settings: values),
                                   execution: RuntimeExecution(transport: transport, home: homeExecution, remoteResourcesDirectory: remoteResources),
                                   launch: descriptor.launchOptions ? launch : nil) { [instance] in
             if let instance { saveNewConversationChoice(instance) }
@@ -1754,7 +1754,7 @@ struct RuntimeInteractionView: View {
 
     private func optionButton(_ option: InteractionOption, index: Int) -> some View {
         let numbered = index < 9
-        return Button(numbered ? "\(index + 1)  \(option.label)" : option.label) { reply(.decision(option.id)) }
+        return Button(numbered ? "\(index + 1)  \(option.label)" : option.label) { reply(.decision(optionId: option.id)) }
             .help(numbered ? "卡片有焦点时按 \(index + 1)" : option.label)
     }
 
@@ -1824,7 +1824,7 @@ struct RuntimeInteractionView: View {
         switch interaction.kind {
         case .approval(_, _, let options):
             guard press.modifiers.isEmpty, let digit = Int(press.characters), (1...min(options.count, 9)).contains(digit) else { return .ignored }
-            reply(.decision(options[digit - 1].id))
+            reply(.decision(optionId: options[digit - 1].id))
         case .userInput(let questions):
             if press.key == .return, press.modifiers.isEmpty, answered(questions) { submit(questions); return .handled }
             guard press.modifiers.isEmpty, let digit = Int(press.characters),
@@ -1838,7 +1838,7 @@ struct RuntimeInteractionView: View {
     private func answered(_ questions: [InteractionQuestion]) -> Bool { !questions.contains { (values[$0.id] ?? "").isEmpty } }
     private func submit(_ questions: [InteractionQuestion]) {
         guard answered(questions), !store.isLoading else { return }
-        reply(.answers(questions.map { InteractionAnswer(questionID: $0.id, values: [values[$0.id] ?? ""]) }))
+        reply(.answers(answers: questions.map { InteractionAnswer(questionId: $0.id, values: [values[$0.id] ?? ""]) }))
     }
     private func submitOrAdvance(_ questions: [InteractionQuestion]) { answered(questions) ? submit(questions) : advance(questions) }
     private func value(_ id: String) -> Binding<String> { Binding(get: { values[id] ?? "" }, set: { values[id] = $0 }) }

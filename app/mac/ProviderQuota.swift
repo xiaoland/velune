@@ -137,7 +137,7 @@ struct ProviderQuotaForm: View {
     /// Reported windows first, then ceilings for windows not reported now.
     private var windowIDs: [String] {
         var ids: [String] = []
-        for id in (quota?.windows.map(\.id) ?? []) + limits.map(\.windowID) where !ids.contains(id) { ids.append(id) }
+        for id in (quota?.windows.map(\.id) ?? []) + limits.map(\.windowId) where !ids.contains(id) { ids.append(id) }
         return ids
     }
     /// An account that reports only amounts has no window to cap.
@@ -198,7 +198,7 @@ struct ProviderQuotaForm: View {
         .readsQuota(of: signedOut ? [] : providerID.map { [$0] } ?? [], from: store)
         .sheet(isPresented: $showsHistory) { if let providerID { QuotaHistorySheet(store: store, providerID: providerID) } }
     }
-    private func limit(_ id: String) -> UInt8? { limits.first { $0.windowID == id }?.maxUsedPercent }
+    private func limit(_ id: String) -> UInt8? { limits.first { $0.windowId == id }?.maxUsedPercent }
     private func choices(_ id: String) -> [UInt8] {
         guard let current = limit(id), !Self.presets.contains(current) else { return Self.presets }
         return (Self.presets + [current]).sorted()
@@ -206,8 +206,8 @@ struct ProviderQuotaForm: View {
     private func limitBinding(_ id: String) -> Binding<UInt8?> {
         Binding(get: { limit(id) }, set: { value in
             if let value {
-                if let index = limits.firstIndex(where: { $0.windowID == id }) { limits[index].maxUsedPercent = value } else { limits.append(QuotaLimit(windowID: id, maxUsedPercent: value)) }
-            } else { limits.removeAll { $0.windowID == id } }
+                if let index = limits.firstIndex(where: { $0.windowId == id }) { limits[index].maxUsedPercent = value } else { limits.append(QuotaLimit(windowId: id, maxUsedPercent: value)) }
+            } else { limits.removeAll { $0.windowId == id } }
         })
     }
 }
