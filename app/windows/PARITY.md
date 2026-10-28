@@ -10,6 +10,7 @@
 | [会话视图](../../docs/prd/conversation-view.md) | 已实现 | 长转录的性能未在真机验收 |
 | [输入区](../../docs/prd/composer.md) | 已实现 | 模型目录读取中或失败时只说明状态，不像 Mac 先列出可达的 managed 模型；中文输入法未在真机验收；状态弹层尚未接入所选模型或路由的提供商额度，也未接入核心的原生 Claude 登录额度查询，只显示原生轮次的限额 |
 | [工作区布局](../../docs/prd/workspace-layout.md) | 已实现（[Unit TDD](TDD.md)） | 未在真机逐项操作验收 |
+| [键盘操作](../../docs/prd/keyboard.md) | 已实现 | win-ws 构建通过；浅色与深色界面检查及真机验收待做 |
 | [协作](../../docs/prd/collaboration.md) | 关联 Agent、xURL MCP 工具与随包官方 CLI 已实现 | — |
 | [Agent 运行时](../../docs/prd/agent-runtimes.md) | 本机运行时已实现 | 经 SSH 的运行时只能在 Mac 上设置：Windows 宿主没有 OpenSSH ControlMaster 所需的 Unix socket |
 | [AI 提供商](../../docs/prd/ai-providers.md) | 已实现 | 额度窗口名称由 Windows 按核心的窗口 ID 拼出，核心尚未提供显示名；额度历史为对话框中的自绘柱条，悬停提示代替 Mac 的选中读数 |

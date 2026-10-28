@@ -42,7 +42,7 @@ Windows 桌面应用没有系统级的窗口内容恢复，所以 Velune 自己�
 
 ## 快捷键
 
-命令表（`Commands.cs`）列出 Velune 自己的命令、默认快捷键与说明；窗口的 `KeyboardAccelerators` 与菜单、提示文字都取自它。改动只记差异到 `VELUNE_HOME/windows-shortcuts.json`（schema 1，null 表示移除）；设置“通用”的“快捷键”一节按分组列出，点按后录制，Backspace 移除，冲突与无修饰键的组合被拒绝并在该行说明，可逐项或全部恢复默认。发送（Ctrl+Enter）与插入本轮（Ctrl+Shift+Enter）由输入框自身处理，不在表中。
+命令表（`Commands.cs`）列出 Velune 自己的命令、默认快捷键与说明；窗口的 `KeyboardAccelerators` 与菜单、提示文字都取自它。改动只记差异到 `VELUNE_HOME/windows-shortcuts.json`（schema 1，null 表示移除）；设置“通用”的“快捷键”一节按分组列出，点按后录制，Backspace 移除，冲突与无修饰键的组合被拒绝并在该行说明，可逐项或全部恢复默认。发送、插入本轮与换行由输入框按“通用”中的发送方式处理（Enter 发送时 Ctrl+Enter 插入本轮、Shift+Enter 换行；Ctrl+Enter 发送时 Ctrl+Shift+Enter 插入本轮、Enter 换行），不在表中；各作用域的固定按键（输入区、命令面板、审批卡片、消息列表、会话列表）见[键盘操作](../../docs/prd/keyboard.md)。全局命令用 `RegisterHotKey` 注册在第一个工作区窗口上（该窗口关闭时移到下一个），默认没有组合；注册失败时设置中该行说明已被系统或其他应用占用。
 
 默认值按 Windows 与 VS Code、Chrome 在 Windows 上的习惯，不照搬 Mac 的修饰键：
 
@@ -62,6 +62,14 @@ Windows 桌面应用没有系统级的窗口内容恢复，所以 Velune 自己�
 | 会话列表、大纲、转到输入区、关联 Agent | Ctrl+1、Ctrl+2、Ctrl+3、Ctrl+4 |
 | 重命名 | F2 |
 | 设置 | Ctrl+, |
+| 命令面板、打开会话… | Ctrl+K、Ctrl+P |
+| 转到待处理的会话 | Ctrl+Shift+A |
+| 转到消息 | Ctrl+0 |
+| 快捷键速查 | Ctrl+/ |
+| 添加附件… | Ctrl+O |
+| 选择运行时、模型、推理强度、权限模式… | Ctrl+Shift+R、Ctrl+Shift+O、Ctrl+Shift+I、Ctrl+Shift+P |
+| 继续、停止生成 | 无（输入区中 Esc 停止） |
+| 显示 Velune、新建会话（全局） | 无（可在设置中设定） |
 | 问题 | Ctrl+Shift+M |
 | 压缩上下文 | 无（可在设置中设定） |
 | 资源库、分析 | 无（Mac 也没有；可在设置中设定） |

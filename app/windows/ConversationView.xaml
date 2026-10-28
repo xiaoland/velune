@@ -27,7 +27,9 @@
                 <!-- Messages are read, not chosen: no hover or selection. -->
                 <Style TargetType="ListViewItem">
                     <Setter Property="HorizontalContentAlignment" Value="Stretch" />
-                    <Setter Property="IsTabStop" Value="False" />
+                    <!-- Rows take the keyboard for 转到消息: arrows move, the row shows the focus ring. -->
+                    <Setter Property="IsTabStop" Value="True" />
+                    <Setter Property="UseSystemFocusVisuals" Value="True" />
                     <Setter Property="Template">
                         <Setter.Value>
                             <ControlTemplate TargetType="ListViewItem">
@@ -127,12 +129,29 @@
                         Visibility="Collapsed">
                         <StackPanel x:Name="AttachmentPanel" Orientation="Horizontal" Spacing="6" />
                     </ScrollViewer>
+                    <!-- The / commands and @ files: ↑↓ choose, Enter or Tab take one, while the text keeps the keyboard.
+                         A popup over what is above the text, so the composer's area keeps its height. -->
+                    <Popup
+                        x:Name="CompletionPopup"
+                        DesiredPlacement="Top"
+                        PlacementTarget="{x:Bind Input}">
+                        <Border x:Name="CompletionCard" Margin="0,0,0,4" Style="{StaticResource PaletteStyle}">
+                            <ListView
+                                x:Name="CompletionList"
+                                MaxHeight="216"
+                                Padding="4"
+                                AllowFocusOnInteraction="False"
+                                IsItemClickEnabled="True"
+                                IsTabStop="False"
+                                SelectionMode="Single" />
+                        </Border>
+                    </Popup>
                     <TextBox
                         x:Name="Input"
                         MinHeight="64"
                         MaxHeight="240"
                         AcceptsReturn="True"
-                        PlaceholderText="输入消息，Ctrl+Enter 发送"
+                        PlaceholderText="输入消息，Enter 发送"
                         ScrollViewer.VerticalScrollBarVisibility="Auto"
                         TextWrapping="Wrap" />
                     <Grid ColumnSpacing="8">
@@ -188,7 +207,7 @@
                                 x:Name="SendButton"
                                 Content="发送"
                                 Style="{ThemeResource AccentButtonStyle}"
-                                ToolTipService.ToolTip="Ctrl+Enter" />
+                                ToolTipService.ToolTip="Enter" />
                         </StackPanel>
                     </Grid>
                 </StackPanel>

@@ -832,6 +832,39 @@ public sealed partial class WorkspaceWindow : Window
             case Command.Settings:
                 Shell.OpenSettings(SettingsPage.Keep);
                 break;
+            case Command.CommandPalette:
+                ShowPalette(PaletteMode.Commands);
+                break;
+            case Command.OpenConversation:
+                ShowPalette(PaletteMode.Conversations);
+                break;
+            case Command.ChooseRuntime or Command.ChooseModel or Command.ChooseEffort or Command.ChoosePermission when CanRun(command):
+                ShowPalette(command switch
+                {
+                    Command.ChooseRuntime => PaletteMode.Runtime,
+                    Command.ChooseModel => PaletteMode.Model,
+                    Command.ChooseEffort => PaletteMode.Effort,
+                    _ => PaletteMode.Permission,
+                });
+                break;
+            case Command.NextAttention:
+                GoToNextAttention();
+                break;
+            case Command.FocusTranscript:
+                FocusedView?.FocusTranscript();
+                break;
+            case Command.ShortcutHelp:
+                ShowShortcutHelp();
+                break;
+            case Command.Attach when CanRun(command):
+                FocusedView?.Attach();
+                break;
+            case Command.Continue when CanRun(command):
+                FocusedView?.ContinueTurn();
+                break;
+            case Command.Stop when CanRun(command):
+                FocusedView?.Model.Stop();
+                break;
         }
     }
 

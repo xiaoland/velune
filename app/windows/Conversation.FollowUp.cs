@@ -117,6 +117,27 @@ sealed partial class Conversation
 
     public void StopSubAgents() => Act("停止子 Agent", NativeOperation.Cancel, (application, runtimeID, conversation) => application.StopSubAgents(runtimeID, conversation));
 
+    // TakeQueued takes a queued message out of the queue to send it again:
+    // its attachments go back to the composer, the text to the caller.
+    public async Task<bool> TakeQueued(BindingQueuedMessage message)
+    {
+        if (Snapshot is not { } snapshot)
+        {
+            return false;
+        }
+        var operation = new BindingSendQueueOperation.Remove(message.Id);
+        if (!await Change("取回排队的消息", NativeOperation.ConversationWrite, application => application.SendQueue(snapshot.ContextRuntimeId, snapshot.Conversation.Id, operation)))
+        {
+            return false;
+        }
+        foreach (var reference in message.Attachments)
+        {
+            Attached.Add(new Attachment(reference, Path.GetFileName(reference), imageExtensions.Contains(Path.GetExtension(reference).ToLowerInvariant())));
+        }
+        Notify();
+        return true;
+    }
+
     // Steer delivers the message into the running turn through the
     // runtime's own channel; false keeps it in the composer.
     public async Task<bool> Steer(string text)

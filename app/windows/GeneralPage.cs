@@ -75,8 +75,14 @@ sealed class GeneralPage : UserControl
         }
         panel.Children.Add(Ui.Card(Ui.TwoLines("关联会话", "从转录中的协作者、子 Agent 或“打开父会话”打开会话的方式。浮层可再转到标签页或新窗口。", true), linked));
 
+        panel.Children.Add(Ui.Heading("输入区"));
+        var sendMode = new ComboBox { MinWidth = 260, Items = { "Enter 发送，Shift+Enter 换行", "Ctrl+Enter 发送，Enter 换行" } };
+        sendMode.SelectedIndex = commands.SendMode == SendMode.CtrlEnter ? 1 : 0;
+        sendMode.SelectionChanged += (_, _) => commands.SetSendMode(sendMode.SelectedIndex == 1 ? SendMode.CtrlEnter : SendMode.Enter);
+        panel.Children.Add(Ui.Card(Ui.TwoLines("发送方式", "运行中按发送键加入发送队列；插入本轮用 Ctrl+Enter，Ctrl+Enter 发送时用 Ctrl+Shift+Enter。", true), sendMode));
+
         panel.Children.Add(Ui.Heading("快捷键"));
-        panel.Children.Add(Ui.Muted("点按快捷键后按下新的组合即可更改，Backspace 移除，Esc 取消。发送（Ctrl+Enter）与插入本轮（Ctrl+Shift+Enter）属于输入框，不可更改。"));
+        panel.Children.Add(Ui.Muted("点按快捷键后按下新的组合即可更改，Backspace 移除，Esc 取消。输入框的发送、换行与插入本轮见上方“发送方式”。全局命令在其他应用中也有效，默认不设。"));
         panel.Children.Add(Shortcuts());
 
         Content = new ScrollViewer { Content = panel };
@@ -127,7 +133,7 @@ sealed class GeneralPage : UserControl
     {
         var rows = new StackPanel { Spacing = 6 };
         var shows = new List<Action>();
-        foreach (var (command, (name, _)) in Commands.Table)
+        foreach (var (command, (name, _, _)) in Commands.Table)
         {
             var row = new Grid { ColumnSpacing = 8 };
             row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
@@ -149,6 +155,10 @@ sealed class GeneralPage : UserControl
             {
                 button.Content = commands.Shortcut(command) is { Length: > 0 } keys ? keys : "无";
                 reset.Visibility = commands.IsChanged(command) ? Visibility.Visible : Visibility.Collapsed;
+                if (Commands.IsGlobal(command))
+                {
+                    Ui.Show(error, commands.GlobalFailed.Contains(command) ? "已被系统或其他应用占用，没有生效。" : "");
+                }
             }
             button.Click += (_, _) =>
             {

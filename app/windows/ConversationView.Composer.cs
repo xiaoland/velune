@@ -94,31 +94,14 @@ public sealed partial class ConversationView
         Model.SaveDraft(text);
     }
 
-    // ComposerKey handles the composer's keys: Ctrl+Shift+Enter steers the
-    // running turn, Esc stops it.
-    bool ComposerKey(KeyRoutedEventArgs e)
-    {
-        if (composing) return false;
-        var control = InputKeyboardSource.GetKeyStateForCurrentThread(VirtualKey.Control).HasFlag(CoreVirtualKeyStates.Down);
-        var shift = InputKeyboardSource.GetKeyStateForCurrentThread(VirtualKey.Shift).HasFlag(CoreVirtualKeyStates.Down);
-        if (e.Key == VirtualKey.Enter && control && shift)
-        {
-            Steer();
-            return true;
-        }
-        if (e.Key == VirtualKey.Escape && Model.CanCancel && !Model.Busy)
-        {
-            Model.Stop();
-            return true;
-        }
-        return false;
-    }
-
+    // Steer sends the text into the running turn; without a turn to steer,
+    // or a runtime that steers, it sends or queues as the send key does.
     async void Steer()
     {
         var text = Input.Text;
         if (!Model.Submission.CanSubmitDraft || Model.Submission.Action != ComposerSubmission.Kind.Queue || !Model.CanSteer)
         {
+            Send();
             return;
         }
         SetInput("");
@@ -239,8 +222,12 @@ public sealed partial class ConversationView
         SendButton.Content = submission.Title;
         SendButton.Visibility = Visible(submission.Action != ComposerSubmission.Kind.None);
         SendButton.IsEnabled = submission.Enabled;
+        var keys = window.Shell.Commands;
+        Input.PlaceholderText = $"输入消息，{keys.SendKey} 发送，{keys.NewLineKey} 换行，/ 命令";
         ToolTipService.SetToolTip(SendButton, submission.Action == ComposerSubmission.Kind.Resume ? "从现有上下文继续，不新增用户消息"
-            : submission.Action == ComposerSubmission.Kind.Queue ? "Ctrl+Enter 加入发送队列；Ctrl+Shift+Enter 插入本轮" : "Ctrl+Enter 发送消息");
+            : submission.Action == ComposerSubmission.Kind.Queue
+                ? Model.CanSteer ? $"{keys.SendKey} 加入发送队列；{keys.SteerKey} 插入本轮" : $"{keys.SendKey} 加入发送队列，本轮结束后发出"
+                : $"{keys.SendKey} 发送消息");
         AttachButton.IsEnabled = !Model.Busy;
         CompactButton.IsEnabled = Model.CanCompact;
     }
@@ -294,6 +281,7 @@ public sealed partial class ConversationView
         }
         shownQueue = signature;
         QueuePanel.Children.Clear();
+        queueEdits.Clear();
         for (var i = 0; i < queue.Length; i++)
         {
             QueuePanel.Children.Add(Queued(queue[i], i, queue.Length, steer));
@@ -339,7 +327,7 @@ public sealed partial class ConversationView
         Grid.SetColumn(actions, 1);
         row.Children.Add(actions);
         var card = new Border { Padding = new Thickness(12, 6, 8, 6), CornerRadius = new CornerRadius(4), Style = Ui.Style("CardStyle"), Child = row };
-        edit.Click += (_, _) =>
+        void StartEdit()
         {
             editingQueued = message.Id;
             var box = new TextBox { Text = message.Text, AcceptsReturn = true, TextWrapping = TextWrapping.Wrap, MaxHeight = 160 };
@@ -368,7 +356,9 @@ public sealed partial class ConversationView
             editor.Children.Add(buttons);
             card.Child = editor;
             box.Focus(FocusState.Programmatic);
-        };
+        }
+        edit.Click += (_, _) => StartEdit();
+        queueEdits[message.Id] = StartEdit;
         return card;
     }
 
