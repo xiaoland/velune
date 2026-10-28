@@ -14,7 +14,7 @@ package_name = "app.velune.bindings.application"
 android = true
 
 [bindings.csharp]
-namespace = "Velune.Bindings.ApplicationApi"
+namespace = "VeluneFfi.ApplicationApi"
 
 # A variant field named like a sibling variant collides with that variant's
 # nested record in C#; use the generator's own `Value` suffix for it.

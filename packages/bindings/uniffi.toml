@@ -8,4 +8,4 @@ package_name = "app.velune.bindings"
 android = true
 
 [bindings.csharp]
-namespace = "Velune.Bindings"
+namespace = "VeluneFfi.Bindings"

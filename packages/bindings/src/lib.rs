@@ -334,7 +334,7 @@ impl VeluneApplication {
         request!(
             self,
             "runtime_resource_catalog",
-            RuntimeResourceCatalog {
+            ReadRuntimeResourceCatalog {
                 runtime_id,
                 cwd,
                 kind,
@@ -448,7 +448,7 @@ impl VeluneApplication {
         )
     }
     pub fn resource_sync_status(&self) -> Result<Vec<ResourceSyncStatus>, BindingError> {
-        request!(self, "resource_sync_status", ResourceSyncStatus)
+        request!(self, "resource_sync_status", ReadResourceSyncStatus)
     }
     pub fn resource_drift(
         &self,
@@ -458,7 +458,7 @@ impl VeluneApplication {
         request!(
             self,
             "resource_drift",
-            ResourceDrift {
+            ReadResourceDrift {
                 runtime_id,
                 template_id
             }
@@ -471,7 +471,7 @@ impl VeluneApplication {
         request!(
             self,
             "unmanaged_runtime_resources",
-            UnmanagedRuntimeResources { kind }
+            ListUnmanagedRuntimeResources { kind }
         )
     }
     pub fn apply_resource_template(
@@ -496,7 +496,7 @@ impl VeluneApplication {
         request!(
             self,
             "resource_native_import",
-            ResourceNativeImport {
+            ReadResourceNativeImport {
                 runtime_id,
                 template_id
             }
@@ -511,7 +511,7 @@ impl VeluneApplication {
         request!(self, "resolve_resource_binding", ResolveResourceBinding { runtime_id, template_id, resolution }; unit)
     }
     pub fn analytics_query(&self, query: AnalyticsQuery) -> Result<AnalyticsReport, BindingError> {
-        request!(self, "analytics_query", AnalyticsQuery { query })
+        request!(self, "analytics_query", QueryAnalytics { query })
     }
     pub fn runtime_discovery_hints(
         &self,
@@ -522,7 +522,7 @@ impl VeluneApplication {
         request!(
             self,
             "runtime_discovery_hints",
-            RuntimeDiscoveryHints {
+            ReadRuntimeDiscoveryHints {
                 user_home,
                 overrides
             }
@@ -584,7 +584,7 @@ impl VeluneApplication {
         )
     }
     pub fn composer_choices(&self) -> Result<ComposerChoices, BindingError> {
-        request!(self, "composer_choices", ComposerChoices)
+        request!(self, "composer_choices", ReadComposerChoices)
     }
     /// An intent without choices or runtime removes the conversation's.
     pub fn set_next_turn_intent(&self, intent: NextTurnIntent) -> Result<(), BindingError> {
@@ -597,7 +597,7 @@ impl VeluneApplication {
         request!(self, "set_runtime_composer_choices", SetRuntimeComposerChoices { choices }; unit)
     }
     pub fn composer_drafts(&self) -> Result<Vec<ComposerDraft>, BindingError> {
-        request!(self, "composer_drafts", ComposerDrafts)
+        request!(self, "composer_drafts", ReadComposerDrafts)
     }
     pub fn set_composer_draft(
         &self,
@@ -706,7 +706,7 @@ impl VeluneApplication {
         request!(
             self,
             "provider_quota",
-            ProviderQuota {
+            ReadProviderQuota {
                 gateway_id,
                 provider_id
             }
@@ -737,7 +737,7 @@ impl VeluneApplication {
         request!(
             self,
             "provider_quota_history",
-            ProviderQuotaHistory {
+            ReadProviderQuotaHistory {
                 gateway_id,
                 provider_id,
                 since_ms
@@ -760,7 +760,7 @@ impl VeluneApplication {
     }
     /// Quota alerts raised after `since` (0 for all retained).
     pub fn quota_alerts(&self, since: u64) -> Result<QuotaAlerts, BindingError> {
-        request!(self, "quota_alerts", QuotaAlerts { since })
+        request!(self, "quota_alerts", ReadQuotaAlerts { since })
     }
     /// `quota_authentication_edit` edits a provider's own quota query
     /// credentials, saved atomically with the model credentials; None keeps
@@ -930,7 +930,7 @@ impl VeluneApplication {
         request!(
             self,
             "snapshot",
-            Snapshot {
+            ReadSnapshot {
                 runtime_id,
                 conversation_id
             }
@@ -946,7 +946,7 @@ impl VeluneApplication {
         request!(
             self,
             "snapshot_update",
-            SnapshotUpdate {
+            ReadSnapshotUpdate {
                 runtime_id,
                 conversation_id,
                 since
@@ -963,7 +963,7 @@ impl VeluneApplication {
         request!(
             self,
             "message_payloads",
-            MessagePayloads {
+            ReadMessagePayloads {
                 runtime_id,
                 conversation_id,
                 message_ids
@@ -1000,10 +1000,10 @@ impl VeluneApplication {
         )
     }
     pub fn acp_launch(&self, runtime_id: String) -> Result<AcpLaunch, BindingError> {
-        request!(self, "acp_launch", AcpLaunch { runtime_id })
+        request!(self, "acp_launch", ReadAcpLaunch { runtime_id })
     }
     pub fn acp_runtime_info(&self, runtime_id: String) -> Result<AcpRuntimeInfo, BindingError> {
-        request!(self, "acp_runtime_info", AcpRuntimeInfo { runtime_id })
+        request!(self, "acp_runtime_info", ReadAcpRuntimeInfo { runtime_id })
     }
     pub fn open_acp_conversation(
         &self,
@@ -1029,7 +1029,7 @@ impl VeluneApplication {
         request!(
             self,
             "acp_session_config",
-            AcpSessionConfig {
+            ReadAcpSessionConfig {
                 runtime_id,
                 conversation_id
             }
@@ -1055,7 +1055,7 @@ impl VeluneApplication {
     }
 
     pub fn runtime_execution(&self, runtime_id: String) -> Result<RuntimeExecution, BindingError> {
-        request!(self, "runtime_execution", RuntimeExecution { runtime_id })
+        request!(self, "runtime_execution", ReadRuntimeExecution { runtime_id })
     }
 
     pub fn runtime_home_directory(
@@ -1065,7 +1065,7 @@ impl VeluneApplication {
         request!(
             self,
             "runtime_home_directory",
-            RuntimeHomeDirectory { runtime_id }
+            ReadRuntimeHomeDirectory { runtime_id }
         )
     }
 
@@ -1130,7 +1130,7 @@ impl VeluneApplication {
         request!(
             self,
             "reasoning_efforts",
-            ReasoningEfforts {
+            ReadReasoningEfforts {
                 runtime_id,
                 model_record_key
             }
@@ -1142,7 +1142,7 @@ impl VeluneApplication {
         context: ComposerQuotaContext,
         refresh: bool,
     ) -> Result<Vec<ComposerQuotaEntry>, BindingError> {
-        request!(self, "composer_quota", ComposerQuota { context, refresh })
+        request!(self, "composer_quota", ReadComposerQuota { context, refresh })
     }
 
     pub fn runtime_quota(
@@ -1153,7 +1153,7 @@ impl VeluneApplication {
         request!(
             self,
             "runtime_quota",
-            RuntimeQuota {
+            ReadRuntimeQuota {
                 runtime_id,
                 refresh
             }
@@ -1161,11 +1161,11 @@ impl VeluneApplication {
     }
 
     pub fn runtime_models(&self, runtime_id: String) -> Result<Vec<RuntimeModel>, BindingError> {
-        request!(self, "runtime_models", RuntimeModels { runtime_id })
+        request!(self, "runtime_models", ReadRuntimeModels { runtime_id })
     }
 
     pub fn next_turn_model_selection(&self) -> Result<Option<ModelSelection>, BindingError> {
-        request!(self, "next_turn_model_selection", NextTurnModelSelection)
+        request!(self, "next_turn_model_selection", ReadNextTurnModelSelection)
     }
 
     /// Change the conversation's send queue; one added to or resumed while
@@ -1179,7 +1179,7 @@ impl VeluneApplication {
         request!(
             self,
             "send_queue",
-            SendQueue {
+            EditSendQueue {
                 runtime_id,
                 conversation_id,
                 operation
@@ -1311,7 +1311,7 @@ impl VeluneApplication {
         request!(
             self,
             "working_changes",
-            WorkingChanges {
+            ReadWorkingChanges {
                 runtime_id,
                 conversation_id
             }
@@ -1328,7 +1328,7 @@ impl VeluneApplication {
         request!(
             self,
             "working_branch",
-            WorkingBranch {
+            ReadWorkingBranch {
                 runtime_id,
                 conversation_id
             }
@@ -1345,7 +1345,7 @@ impl VeluneApplication {
         request!(
             self,
             "file_diff",
-            FileDiff {
+            ReadFileDiff {
                 runtime_id,
                 conversation_id,
                 path
@@ -1359,7 +1359,7 @@ impl VeluneApplication {
         request!(
             self,
             "conversation_activity",
-            ConversationActivity { since }
+            ReadConversationActivity { since }
         )
     }
 
@@ -1422,7 +1422,7 @@ impl VeluneApplication {
         request!(
             self,
             "authentication_inspect",
-            AuthenticationInspect {
+            InspectAuthentication {
                 gateway_id,
                 provider_id
             }
@@ -1436,7 +1436,7 @@ impl VeluneApplication {
         request!(
             self,
             "authentication_start",
-            AuthenticationStart {
+            StartAuthentication {
                 gateway_id,
                 provider_id
             }
@@ -1451,14 +1451,14 @@ impl VeluneApplication {
         request!(
             self,
             "authentication_logout",
-            AuthenticationLogout {
+            LogoutAuthentication {
                 gateway_id,
                 provider_id
             }
         )
     }
     pub fn authentication_poll(&self) -> Result<AuthenticationProgress, BindingError> {
-        request!(self, "authentication_poll", AuthenticationPoll)
+        request!(self, "authentication_poll", PollAuthentication)
     }
 
     pub fn authentication_reply(
@@ -1469,12 +1469,12 @@ impl VeluneApplication {
         request!(
             self,
             "authentication_reply",
-            AuthenticationReply { prompt_id, value }
+            ReplyAuthentication { prompt_id, value }
         )
     }
 
     pub fn authentication_cancel(&self) -> Result<AuthenticationProgress, BindingError> {
-        request!(self, "authentication_cancel", AuthenticationCancel)
+        request!(self, "authentication_cancel", CancelAuthentication)
     }
     /// Upload content before using its reference in a remote composed turn.
     pub fn upload_attachment(

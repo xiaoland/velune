@@ -43,7 +43,7 @@ impl Application {
             }
         }
         let payload_runtime = match &command {
-            Command::MessagePayloads { runtime_id, .. } => Some(runtime_id.clone()),
+            Command::ReadMessagePayloads { runtime_id, .. } => Some(runtime_id.clone()),
             _ => None,
         };
         let response = self
@@ -64,12 +64,12 @@ impl Application {
         let application = self;
         Ok(match command {
             Command::ReleaseView => Response::ReleaseView,
-            Command::RuntimeResourceCatalog {
+            Command::ReadRuntimeResourceCatalog {
                 runtime_id,
                 cwd,
                 kind,
                 scope,
-            } => Response::RuntimeResourceCatalog(application.runtime.serve(
+            } => Response::ReadRuntimeResourceCatalog(application.runtime.serve(
                 Focus::None,
                 Login::Blocks,
                 |core| core.runtime_resource_catalog(runtime_id, cwd, kind, scope),
@@ -157,23 +157,23 @@ impl Application {
                 Login::Blocks,
                 |core| core.adopt_native_resource(runtime_id, kind, path),
             )?),
-            Command::ResourceSyncStatus => {
-                Response::ResourceSyncStatus(application.runtime.serve(
+            Command::ReadResourceSyncStatus => {
+                Response::ReadResourceSyncStatus(application.runtime.serve(
                     Focus::None,
                     Login::Blocks,
                     |core| core.resource_sync_status(),
                 )?)
             }
-            Command::ResourceDrift {
+            Command::ReadResourceDrift {
                 runtime_id,
                 template_id,
-            } => Response::ResourceDrift(application.runtime.serve(
+            } => Response::ReadResourceDrift(application.runtime.serve(
                 Focus::None,
                 Login::Blocks,
                 |core| core.resource_drift(runtime_id, template_id),
             )?),
-            Command::UnmanagedRuntimeResources { kind } => {
-                Response::UnmanagedRuntimeResources(application.runtime.serve(
+            Command::ListUnmanagedRuntimeResources { kind } => {
+                Response::ListUnmanagedRuntimeResources(application.runtime.serve(
                     Focus::None,
                     Login::Blocks,
                     |core| core.unmanaged_runtime_resources(kind),
@@ -187,10 +187,10 @@ impl Application {
                 Login::Blocks,
                 |core| core.apply_resource_template(template_id, targets),
             )?),
-            Command::ResourceNativeImport {
+            Command::ReadResourceNativeImport {
                 runtime_id,
                 template_id,
-            } => Response::ResourceNativeImport(application.runtime.serve(
+            } => Response::ReadResourceNativeImport(application.runtime.serve(
                 Focus::None,
                 Login::Blocks,
                 |core| core.resource_native_import(runtime_id, template_id),
@@ -207,13 +207,13 @@ impl Application {
                     })?;
                 Response::ResolveResourceBinding
             }
-            Command::AnalyticsQuery { query } => {
-                Response::AnalyticsQuery(application.analytics_query(query)?)
+            Command::QueryAnalytics { query } => {
+                Response::QueryAnalytics(application.analytics_query(query)?)
             }
-            Command::RuntimeDiscoveryHints {
+            Command::ReadRuntimeDiscoveryHints {
                 user_home,
                 overrides,
-            } => Response::RuntimeDiscoveryHints(crate::runtime_discovery::hints(
+            } => Response::ReadRuntimeDiscoveryHints(crate::runtime_discovery::hints(
                 &user_home, overrides,
             )?),
             Command::DiscoverRuntimes { probes } => {
@@ -270,7 +270,7 @@ impl Application {
                     |core| core.set_conversation_browser_preferences(preferences),
                 )?)
             }
-            Command::ComposerDrafts => Response::ComposerDrafts(application.runtime.serve(
+            Command::ReadComposerDrafts => Response::ReadComposerDrafts(application.runtime.serve(
                 Focus::None,
                 Login::Allows,
                 |core| core.composer_drafts(),
@@ -286,7 +286,7 @@ impl Application {
                     })?;
                 Response::SetComposerDraft
             }
-            Command::ComposerChoices => Response::ComposerChoices(application.runtime.serve(
+            Command::ReadComposerChoices => Response::ReadComposerChoices(application.runtime.serve(
                 Focus::None,
                 Login::Blocks,
                 |core| core.composer_choices(),
@@ -390,13 +390,13 @@ impl Application {
                 Login::Blocks,
                 |core| core.upsert_acp_runtime(runtime, execution, launch),
             )?),
-            Command::AcpLaunch { runtime_id } => Response::AcpLaunch(application.runtime.serve(
+            Command::ReadAcpLaunch { runtime_id } => Response::ReadAcpLaunch(application.runtime.serve(
                 Focus::None,
                 Login::Blocks,
                 |core| core.acp_launch(runtime_id),
             )?),
-            Command::AcpRuntimeInfo { runtime_id } => {
-                Response::AcpRuntimeInfo(application.runtime.serve(
+            Command::ReadAcpRuntimeInfo { runtime_id } => {
+                Response::ReadAcpRuntimeInfo(application.runtime.serve(
                     Focus::None,
                     Login::Blocks,
                     |core| core.acp_runtime_info(runtime_id),
@@ -411,10 +411,10 @@ impl Application {
                 Login::Blocks,
                 |core| core.open_acp_conversation(&runtime_id, &native_session_id, &cwd),
             )?),
-            Command::AcpSessionConfig {
+            Command::ReadAcpSessionConfig {
                 runtime_id,
                 conversation_id,
-            } => Response::AcpSessionConfig(application.runtime.serve(
+            } => Response::ReadAcpSessionConfig(application.runtime.serve(
                 Focus::Conversation(conversation_id.clone()),
                 Login::Blocks,
                 |core| core.acp_session_config(&runtime_id, &conversation_id, None),
@@ -445,15 +445,15 @@ impl Application {
                 Login::Blocks,
                 |core| core.select_runtime(id),
             )?),
-            Command::RuntimeExecution { runtime_id } => {
-                Response::RuntimeExecution(application.runtime.serve(
+            Command::ReadRuntimeExecution { runtime_id } => {
+                Response::ReadRuntimeExecution(application.runtime.serve(
                     Focus::None,
                     Login::Blocks,
                     |core| core.runtime_execution(runtime_id),
                 )?)
             }
-            Command::RuntimeHomeDirectory { runtime_id } => {
-                Response::RuntimeHomeDirectory(application.runtime.serve(
+            Command::ReadRuntimeHomeDirectory { runtime_id } => {
+                Response::ReadRuntimeHomeDirectory(application.runtime.serve(
                     Focus::None,
                     Login::Blocks,
                     |core| core.runtime_home_directory(runtime_id),
@@ -476,30 +476,30 @@ impl Application {
                 Login::Blocks,
                 |core| core.create_conversation(&runtime_id, cwd, selection),
             )?),
-            Command::ComposerQuota { context, refresh } => {
-                Response::ComposerQuota(application.runtime.serve(
+            Command::ReadComposerQuota { context, refresh } => {
+                Response::ReadComposerQuota(application.runtime.serve(
                     Focus::None,
                     Login::Blocks,
                     |core| core.composer_quota(context, refresh),
                 )?)
             }
-            Command::RuntimeQuota {
+            Command::ReadRuntimeQuota {
                 runtime_id,
                 refresh,
-            } => Response::RuntimeQuota(application.runtime.serve(
+            } => Response::ReadRuntimeQuota(application.runtime.serve(
                 Focus::None,
                 Login::Blocks,
                 |core| core.runtime_quota(runtime_id, refresh),
             )?),
-            Command::RuntimeModels { runtime_id } => {
-                Response::RuntimeModels(application.runtime.serve(
+            Command::ReadRuntimeModels { runtime_id } => {
+                Response::ReadRuntimeModels(application.runtime.serve(
                     Focus::None,
                     Login::Blocks,
                     |core| core.runtime_models(runtime_id),
                 )?)
             }
-            Command::NextTurnModelSelection => {
-                Response::NextTurnModelSelection(application.runtime.serve(
+            Command::ReadNextTurnModelSelection => {
+                Response::ReadNextTurnModelSelection(application.runtime.serve(
                     Focus::None,
                     Login::Blocks,
                     |core| core.next_turn_model_selection(),
@@ -538,28 +538,28 @@ impl Application {
                 Login::Blocks,
                 |core| core.delete_conversation(&runtime_id, &conversation_id),
             )?),
-            Command::Snapshot {
+            Command::ReadSnapshot {
                 runtime_id,
                 conversation_id,
-            } => Response::Snapshot(application.runtime.serve(
+            } => Response::ReadSnapshot(application.runtime.serve(
                 Focus::Conversation(conversation_id.clone()),
                 Login::Allows,
                 |core| core.snapshot(&runtime_id, &conversation_id),
             )?),
-            Command::SnapshotUpdate {
+            Command::ReadSnapshotUpdate {
                 runtime_id,
                 conversation_id,
                 since,
-            } => Response::SnapshotUpdate(application.runtime.serve(
+            } => Response::ReadSnapshotUpdate(application.runtime.serve(
                 Focus::Conversation(conversation_id.clone()),
                 Login::Allows,
                 |core| core.snapshot_update(&runtime_id, &conversation_id, since),
             )?),
-            Command::MessagePayloads {
+            Command::ReadMessagePayloads {
                 runtime_id,
                 conversation_id,
                 message_ids,
-            } => Response::MessagePayloads(application.runtime.serve(
+            } => Response::ReadMessagePayloads(application.runtime.serve(
                 Focus::None,
                 Login::Allows,
                 |core| Ok(core.message_payloads(&runtime_id, &conversation_id, &message_ids)),
@@ -583,19 +583,19 @@ impl Application {
                     })
                 },
             )?),
-            Command::ReasoningEfforts {
+            Command::ReadReasoningEfforts {
                 runtime_id,
                 model_record_key,
-            } => Response::ReasoningEfforts(application.runtime.serve(
+            } => Response::ReadReasoningEfforts(application.runtime.serve(
                 Focus::None,
                 Login::Blocks,
                 |core| core.runtime_reasoning_efforts(runtime_id, model_record_key),
             )?),
-            Command::SendQueue {
+            Command::EditSendQueue {
                 runtime_id: _,
                 conversation_id,
                 operation,
-            } => Response::SendQueue(application.runtime.serve(
+            } => Response::EditSendQueue(application.runtime.serve(
                 Focus::Conversation(conversation_id.clone()),
                 Login::Blocks,
                 |core| core.send_queue(&conversation_id, operation),
@@ -666,34 +666,34 @@ impl Application {
                 Login::Blocks,
                 |core| core.stop_sub_agents(&runtime_id),
             )?),
-            Command::ConversationActivity { since } => {
-                Response::ConversationActivity(application.runtime.serve(
+            Command::ReadConversationActivity { since } => {
+                Response::ReadConversationActivity(application.runtime.serve(
                     Focus::None,
                     Login::Blocks,
                     |core| Ok(core.conversation_activity(since)),
                 )?)
             }
-            Command::WorkingChanges {
+            Command::ReadWorkingChanges {
                 runtime_id,
                 conversation_id,
-            } => Response::WorkingChanges(application.runtime.serve(
+            } => Response::ReadWorkingChanges(application.runtime.serve(
                 Focus::None,
                 Login::Blocks,
                 |core| core.working_changes(runtime_id, conversation_id),
             )?),
-            Command::WorkingBranch {
+            Command::ReadWorkingBranch {
                 runtime_id,
                 conversation_id,
-            } => Response::WorkingBranch(application.runtime.serve(
+            } => Response::ReadWorkingBranch(application.runtime.serve(
                 Focus::None,
                 Login::Blocks,
                 |core| core.working_branch(runtime_id, conversation_id),
             )?),
-            Command::FileDiff {
+            Command::ReadFileDiff {
                 runtime_id,
                 conversation_id,
                 path,
-            } => Response::FileDiff(application.runtime.serve(
+            } => Response::ReadFileDiff(application.runtime.serve(
                 Focus::None,
                 Login::Blocks,
                 |core| core.file_diff(runtime_id, conversation_id, path),
@@ -724,10 +724,10 @@ impl Application {
                     )
                 },
             )?),
-            Command::ProviderQuota {
+            Command::ReadProviderQuota {
                 gateway_id,
                 provider_id,
-            } => Response::ProviderQuota(application.runtime.serve(
+            } => Response::ReadProviderQuota(application.runtime.serve(
                 Focus::None,
                 Login::Blocks,
                 |core| core.provider_quota(gateway_id, provider_id, false),
@@ -740,11 +740,11 @@ impl Application {
                 Login::Blocks,
                 |core| core.provider_quota(gateway_id, provider_id, true),
             )?),
-            Command::ProviderQuotaHistory {
+            Command::ReadProviderQuotaHistory {
                 gateway_id,
                 provider_id,
                 since_ms,
-            } => Response::ProviderQuotaHistory(application.runtime.serve(
+            } => Response::ReadProviderQuotaHistory(application.runtime.serve(
                 Focus::None,
                 Login::Blocks,
                 |core| core.provider_quota_history(gateway_id, provider_id, since_ms),
@@ -757,7 +757,7 @@ impl Application {
                 Login::Blocks,
                 |core| core.clear_provider_quota_history(gateway_id, provider_id),
             )?),
-            Command::QuotaAlerts { since } => Response::QuotaAlerts(application.runtime.serve(
+            Command::ReadQuotaAlerts { since } => Response::ReadQuotaAlerts(application.runtime.serve(
                 Focus::None,
                 Login::Blocks,
                 |core| core.quota_alerts(since),
@@ -834,46 +834,46 @@ impl Application {
                 Login::Blocks,
                 |core| core.reply_runtime_interaction(&runtime_id, &interaction_id, reply),
             )?),
-            Command::AuthenticationInspect {
+            Command::InspectAuthentication {
                 gateway_id,
                 provider_id,
-            } => Response::AuthenticationInspect(application.runtime.serve(
+            } => Response::InspectAuthentication(application.runtime.serve(
                 Focus::None,
                 Login::Allows,
                 |core| core.authentication_inspect(gateway_id, provider_id),
             )?),
-            Command::AuthenticationStart {
+            Command::StartAuthentication {
                 gateway_id,
                 provider_id,
-            } => Response::AuthenticationStart(application.runtime.serve(
+            } => Response::StartAuthentication(application.runtime.serve(
                 Focus::None,
                 Login::Allows,
                 |core| core.authentication_start(gateway_id, provider_id),
             )?),
-            Command::AuthenticationLogout {
+            Command::LogoutAuthentication {
                 gateway_id,
                 provider_id,
-            } => Response::AuthenticationLogout(application.runtime.serve(
+            } => Response::LogoutAuthentication(application.runtime.serve(
                 Focus::None,
                 Login::Allows,
                 |core| core.authentication_logout(gateway_id, provider_id),
             )?),
-            Command::AuthenticationPoll => {
-                Response::AuthenticationPoll(application.runtime.serve(
+            Command::PollAuthentication => {
+                Response::PollAuthentication(application.runtime.serve(
                     Focus::None,
                     Login::Allows,
                     |core| core.authentication_poll(),
                 )?)
             }
-            Command::AuthenticationReply { prompt_id, value } => {
-                Response::AuthenticationReply(application.runtime.serve(
+            Command::ReplyAuthentication { prompt_id, value } => {
+                Response::ReplyAuthentication(application.runtime.serve(
                     Focus::None,
                     Login::Allows,
                     |core| core.authentication_reply(prompt_id, value),
                 )?)
             }
-            Command::AuthenticationCancel => {
-                Response::AuthenticationCancel(application.runtime.serve(
+            Command::CancelAuthentication => {
+                Response::CancelAuthentication(application.runtime.serve(
                     Focus::None,
                     Login::Allows,
                     |core| core.authentication_cancel(),
@@ -984,7 +984,7 @@ impl Application {
             Command::SendTurn { turn, .. }
             | Command::SteerTurn { turn, .. }
             | Command::EditMessage { turn, .. } => resolve(turn)?,
-            Command::SendQueue {
+            Command::EditSendQueue {
                 operation: SendQueueOperation::Add { turn, .. },
                 ..
             } => resolve(turn)?,
@@ -1062,9 +1062,9 @@ impl Application {
             | Response::OpenAcpConversation(result)
             | Response::OpenConversation(result)
             | Response::ReadConversation(result)
-            | Response::Snapshot(result)
+            | Response::ReadSnapshot(result)
             | Response::SendTurn(result)
-            | Response::SendQueue(result)
+            | Response::EditSendQueue(result)
             | Response::SteerTurn(result)
             | Response::ResumeTurn(result)
             | Response::CompactConversation(result)
@@ -1072,7 +1072,7 @@ impl Application {
             | Response::Cancel(result)
             | Response::StopSubAgents(result)
             | Response::ReplyRuntimeInteraction(result) => result.snapshot.as_mut(),
-            Response::SnapshotUpdate(SnapshotUpdate::Changed { snapshot }) => Some(snapshot),
+            Response::ReadSnapshotUpdate(SnapshotUpdate::Changed { snapshot }) => Some(snapshot),
             _ => None,
         };
         if let Some(snapshot) = snapshots {
@@ -1081,7 +1081,7 @@ impl Application {
                 encode_images(message, false, local);
             }
         }
-        if let Response::MessagePayloads(messages) = &mut response {
+        if let Response::ReadMessagePayloads(messages) = &mut response {
             let local = match payload_runtime {
                 Some(runtime) => self.runs_locally(runtime)?,
                 None => false,

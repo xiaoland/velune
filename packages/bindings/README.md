@@ -2,7 +2,7 @@
 
 `velune-bindings` 是本地 application 与远程客户端共用的 UniFFI 接入层。Swift、Kotlin、C# 与 Python 使用同一份 Rust 元数据生成接口。跨越边界的契约类型就是 `velune-conversation`、`application-api`、`velune-telemetry` 与 `velune-remote` 的领域类型，它们直接派生 UniFFI record／enum，各自生成一份语言文件；此处不维护镜像类型或 JSON 转换。本 unit 自己的 `Binding*` 类型只表达接入层独有的概念：错误、打开选项、邀请解析、网络设置提交与远控请求状态。Mac 在应用进程内加载此 unit 的动态库，不通过 Host 或 socket 调用 Rust。
 
-C# 绑定供 Windows WinUI 应用使用，由 NordSecurity 的 `uniffi-bindgen-cs`（固定在支持 UniFFI 0.32 的 PR #176 提交，构建脚本把它安装到 `target\tools`）从同一份元数据生成，输出不入库，编入应用程序集。各 crate 的 `uniffi.toml` 设定命名空间（本 unit 为 `Velune.Bindings`，契约 crate 为其子命名空间）；`application-api` 的配置把四个与同级变体同名的变体字段改名为 `TextValue`／`InstructionsValue`（C# 中变体是嵌套类，同名字段会与继承来的嵌套类型冲突；后缀沿用生成器自己的 `Value` 约定），只影响 C# 名称，不改 Rust API。生成器在 cargo 之外运行时需要 `CARGO` 指向 cargo 的绝对路径。
+C# 绑定供 Windows WinUI 应用使用，由 NordSecurity 的 `uniffi-bindgen-cs`（固定在支持 UniFFI 0.32 的 PR #176 提交，构建脚本把它安装到 `target\tools`）从同一份元数据生成，输出不入库，编入应用程序集。各 crate 的 `uniffi.toml` 设定命名空间 `VeluneFfi.<crate>`（本 unit 为 `VeluneFfi.Bindings`）。命名空间不放在 `Velune` 下、也不与类型同名：生成文件先在外层命名空间查找名称、后看 using，`Velune` 中应用自己的 `ToolState` 等会遮蔽契约类型，与导出类型同名的命名空间（如 `VeluneTelemetry`）则被类型遮蔽。生成器不为别的 crate 的自定义类型生成别名，因此跨 crate 的记录字段不用自定义 newtype（远控 `PendingOperation.view` 为字符串）；应用移除隐式 `System.Threading` using，避免与契约的 `ExecutionContext` 歧义。`application-api` 的配置把四个与同级变体同名的变体字段改名为 `TextValue`／`InstructionsValue`（C# 中变体是嵌套类，同名字段会与继承来的嵌套类型冲突；后缀沿用生成器自己的 `Value` 约定），只影响 C# 名称，不改 Rust API。同理，`Command`／`Response` 的变体用动词短语（`ReadSnapshot`），不与契约类型同名。生成器在 cargo 之外运行时需要 `CARGO` 指向 cargo 的绝对路径。
 
 Kotlin 生成目标为 Android，`uniffi.toml` 固定 `bindings.kotlin.android=true`，生成物依赖 Android API 与 AndroidX 注解。UniFFI 在 API 34 及以上使用 Android `SystemCleaner`，较低 API 使用 JNA Cleaner，以支持当前 Android 端的 API 28 下限。
 

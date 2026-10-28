@@ -9,7 +9,7 @@ use std::{
     path::{Path, PathBuf},
     sync::Mutex,
 };
-use velune_application_api::{ClientViewId, CommandKind, ExecutionContext};
+use velune_application_api::{CommandKind, ExecutionContext};
 
 const MAX_CONTACTS: usize = 256;
 const MAX_PENDING: usize = 256;
@@ -104,7 +104,9 @@ pub enum PendingStatus {
 pub struct PendingOperation {
     pub peer_id: String,
     pub request_id: RequestId,
-    pub view: ClientViewId,
+    /// The originating `ClientViewId`; a plain string because uniffi-bindgen-cs
+    /// does not alias another crate's custom types.
+    pub view: String,
     pub execution: ExecutionContext,
     pub kind: CommandKind,
     pub runtime_id: Option<String>,
@@ -608,7 +610,7 @@ fn validate_state(state: &StoredState) -> Result<()> {
         pending
             .request_id
             .validate(&pending.request_id.incarnation)?;
-        if pending.view.0.is_empty() || pending.view.0.len() > 128 {
+        if pending.view.is_empty() || pending.view.len() > 128 {
             return Err(RemoteError::StateStorage);
         }
     }

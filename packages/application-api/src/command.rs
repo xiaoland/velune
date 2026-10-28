@@ -50,7 +50,7 @@ pub enum DeliveryClass {
 #[serde(rename_all = "camelCase")]
 pub enum CommandKind {
     ReleaseView,
-    RuntimeResourceCatalog,
+    ReadRuntimeResourceCatalog,
     ReadRuntimeResource,
     WriteRuntimeResource,
     DeleteRuntimeResource,
@@ -60,14 +60,14 @@ pub enum CommandKind {
     DeleteResourceTemplate,
     ImportRuntimeResource,
     AdoptRuntimeResource,
-    ResourceSyncStatus,
-    ResourceDrift,
-    UnmanagedRuntimeResources,
+ReadResourceSyncStatus,
+ReadResourceDrift,
+ListUnmanagedRuntimeResources,
     ApplyResourceTemplate,
-    ResourceNativeImport,
+ReadResourceNativeImport,
     ResolveResourceBinding,
-    AnalyticsQuery,
-    RuntimeDiscoveryHints,
+QueryAnalytics,
+ReadRuntimeDiscoveryHints,
     DiscoverRuntimes,
     ReadConfiguration,
     SetOutlinePresentation,
@@ -76,9 +76,9 @@ pub enum CommandKind {
     SetContextUsageDisplay,
     SetStatusLine,
     SetConversationBrowserPreferences,
-    ComposerDrafts,
+ReadComposerDrafts,
     SetComposerDraft,
-    ComposerChoices,
+ReadComposerChoices,
     SetNextTurnIntent,
     SetRuntimeComposerChoices,
     SetConversationBrowserLimits,
@@ -92,48 +92,48 @@ pub enum CommandKind {
     UpsertRuntime,
     UpsertRuntimeWithExecution,
     UpsertAcpRuntime,
-    AcpLaunch,
-    AcpRuntimeInfo,
+ReadAcpLaunch,
+ReadAcpRuntimeInfo,
     OpenAcpConversation,
-    AcpSessionConfig,
+ReadAcpSessionConfig,
     SetAcpSessionConfig,
     DeleteRuntime,
     SelectRuntime,
-    RuntimeExecution,
-    RuntimeHomeDirectory,
+ReadRuntimeExecution,
+ReadRuntimeHomeDirectory,
     ConfigureRuntimeExecution,
     CreateConversation,
-    RuntimeModels,
-    RuntimeQuota,
-    ComposerQuota,
-    NextTurnModelSelection,
+ReadRuntimeModels,
+ReadRuntimeQuota,
+ReadComposerQuota,
+ReadNextTurnModelSelection,
     OpenConversation,
     ReadConversation,
     RenameConversation,
     DeleteConversation,
-    Snapshot,
-    SnapshotUpdate,
-    MessagePayloads,
+ReadSnapshot,
+ReadSnapshotUpdate,
+ReadMessagePayloads,
     SendTurn,
-    ReasoningEfforts,
-    SendQueue,
+ReadReasoningEfforts,
+EditSendQueue,
     SteerTurn,
     ResumeTurn,
     CompactConversation,
     EditMessage,
     Cancel,
     StopSubAgents,
-    ConversationActivity,
-    WorkingChanges,
-    WorkingBranch,
-    FileDiff,
+ReadConversationActivity,
+ReadWorkingChanges,
+ReadWorkingBranch,
+ReadFileDiff,
     PreviewProviderImport,
     ApplyProviderImport,
-    ProviderQuota,
+ReadProviderQuota,
     RefreshProviderQuota,
-    ProviderQuotaHistory,
+ReadProviderQuotaHistory,
     ClearProviderQuotaHistory,
-    QuotaAlerts,
+ReadQuotaAlerts,
     SaveProvider,
     DeleteProvider,
     SaveModelRoute,
@@ -142,17 +142,21 @@ pub enum CommandKind {
     SaveModelTemplate,
     DeleteModelTemplate,
     ReplyRuntimeInteraction,
-    AuthenticationInspect,
-    AuthenticationStart,
-    AuthenticationLogout,
-    AuthenticationPoll,
-    AuthenticationReply,
-    AuthenticationCancel,
+InspectAuthentication,
+StartAuthentication,
+LogoutAuthentication,
+PollAuthentication,
+ReplyAuthentication,
+CancelAuthentication,
     FetchPublicModelCatalog,
     UploadAttachment,
     ReadAttachment,
 }
 
+/// Variants are verb phrases (`ReadSnapshot`, not `Snapshot`), and `Response`
+/// and `CommandKind` repeat them. C# nests each variant as a class inside the
+/// enum, so a variant named like a contract type would shadow that type for
+/// its sibling variants.
 #[derive(Clone, Serialize, Deserialize, uniffi::Enum)]
 #[serde(
     tag = "command",
@@ -163,7 +167,7 @@ pub enum CommandKind {
 pub enum Command {
     /// Release this view's presentation state; running conversations are unaffected.
     ReleaseView,
-    RuntimeResourceCatalog {
+    ReadRuntimeResourceCatalog {
         runtime_id: String,
         cwd: Option<String>,
         kind: crate::RuntimeResourceKind,
@@ -209,19 +213,19 @@ pub enum Command {
         kind: crate::RuntimeResourceKind,
         path: String,
     },
-    ResourceSyncStatus,
-    ResourceDrift {
+ReadResourceSyncStatus,
+ReadResourceDrift {
         runtime_id: String,
         template_id: String,
     },
-    UnmanagedRuntimeResources {
+ListUnmanagedRuntimeResources {
         kind: crate::RuntimeResourceKind,
     },
     ApplyResourceTemplate {
         template_id: String,
         targets: Vec<crate::TemplateApplyTarget>,
     },
-    ResourceNativeImport {
+ReadResourceNativeImport {
         runtime_id: String,
         template_id: String,
     },
@@ -230,10 +234,10 @@ pub enum Command {
         template_id: String,
         resolution: crate::ResourceBindingResolution,
     },
-    AnalyticsQuery {
+QueryAnalytics {
         query: AnalyticsQuery,
     },
-    RuntimeDiscoveryHints {
+ReadRuntimeDiscoveryHints {
         user_home: String,
         overrides: BTreeMap<String, String>,
     },
@@ -259,12 +263,12 @@ pub enum Command {
     SetConversationBrowserPreferences {
         preferences: ConversationBrowserPreferences,
     },
-    ComposerDrafts,
+ReadComposerDrafts,
     SetComposerDraft {
         conversation_id: String,
         text: String,
     },
-    ComposerChoices,
+ReadComposerChoices,
     /// An intent without choices or runtime removes the conversation's.
     SetNextTurnIntent {
         intent: crate::config::NextTurnIntent,
@@ -313,10 +317,10 @@ pub enum Command {
         execution: crate::RuntimeExecution,
         launch: crate::AcpLaunch,
     },
-    AcpLaunch {
+ReadAcpLaunch {
         runtime_id: String,
     },
-    AcpRuntimeInfo {
+ReadAcpRuntimeInfo {
         runtime_id: String,
     },
     OpenAcpConversation {
@@ -324,7 +328,7 @@ pub enum Command {
         native_session_id: String,
         cwd: String,
     },
-    AcpSessionConfig {
+ReadAcpSessionConfig {
         runtime_id: String,
         conversation_id: String,
     },
@@ -340,10 +344,10 @@ pub enum Command {
     SelectRuntime {
         id: String,
     },
-    RuntimeExecution {
+ReadRuntimeExecution {
         runtime_id: String,
     },
-    RuntimeHomeDirectory {
+ReadRuntimeHomeDirectory {
         runtime_id: String,
     },
     ConfigureRuntimeExecution {
@@ -355,18 +359,18 @@ pub enum Command {
         cwd: Option<String>,
         selection: Option<ModelSelection>,
     },
-    RuntimeModels {
+ReadRuntimeModels {
         runtime_id: String,
     },
-    RuntimeQuota {
+ReadRuntimeQuota {
         runtime_id: String,
         refresh: bool,
     },
-    ComposerQuota {
+ReadComposerQuota {
         context: ComposerQuotaContext,
         refresh: bool,
     },
-    NextTurnModelSelection,
+ReadNextTurnModelSelection,
     OpenConversation {
         runtime_id: String,
         conversation_id: String,
@@ -384,16 +388,16 @@ pub enum Command {
         runtime_id: String,
         conversation_id: String,
     },
-    Snapshot {
+ReadSnapshot {
         runtime_id: String,
         conversation_id: String,
     },
-    SnapshotUpdate {
+ReadSnapshotUpdate {
         runtime_id: String,
         conversation_id: String,
         since: crate::TranscriptCursor,
     },
-    MessagePayloads {
+ReadMessagePayloads {
         runtime_id: String,
         conversation_id: String,
         message_ids: Vec<String>,
@@ -405,11 +409,11 @@ pub enum Command {
         selection: Option<ModelSelection>,
         turn: ComposedTurn,
     },
-    ReasoningEfforts {
+ReadReasoningEfforts {
         runtime_id: String,
         model_record_key: String,
     },
-    SendQueue {
+EditSendQueue {
         runtime_id: String,
         conversation_id: String,
         operation: crate::SendQueueOperation,
@@ -447,18 +451,18 @@ pub enum Command {
         runtime_id: String,
         conversation_id: String,
     },
-    ConversationActivity {
+ReadConversationActivity {
         since: u64,
     },
-    WorkingChanges {
+ReadWorkingChanges {
         runtime_id: String,
         conversation_id: String,
     },
-    WorkingBranch {
+ReadWorkingBranch {
         runtime_id: String,
         conversation_id: String,
     },
-    FileDiff {
+ReadFileDiff {
         runtime_id: String,
         conversation_id: String,
         path: String,
@@ -474,7 +478,7 @@ pub enum Command {
         selections: Vec<ImportSelection>,
         replace_existing: bool,
     },
-    ProviderQuota {
+ReadProviderQuota {
         gateway_id: String,
         provider_id: String,
     },
@@ -483,7 +487,7 @@ pub enum Command {
         provider_id: String,
     },
     /// Observations retained since `since_ms` for the current binding.
-    ProviderQuotaHistory {
+ReadProviderQuotaHistory {
         gateway_id: String,
         provider_id: String,
         since_ms: i64,
@@ -492,7 +496,7 @@ pub enum Command {
         gateway_id: String,
         provider_id: String,
     },
-    QuotaAlerts {
+ReadQuotaAlerts {
         since: u64,
     },
     SaveProvider {
@@ -531,24 +535,24 @@ pub enum Command {
         interaction_id: String,
         reply: velune_conversation::RuntimeInteractionReply,
     },
-    AuthenticationInspect {
+InspectAuthentication {
         gateway_id: String,
         provider_id: String,
     },
-    AuthenticationStart {
+StartAuthentication {
         gateway_id: String,
         provider_id: String,
     },
-    AuthenticationLogout {
+LogoutAuthentication {
         gateway_id: String,
         provider_id: String,
     },
-    AuthenticationPoll,
-    AuthenticationReply {
+PollAuthentication,
+ReplyAuthentication {
         prompt_id: String,
         value: String,
     },
-    AuthenticationCancel,
+CancelAuthentication,
     FetchPublicModelCatalog,
     UploadAttachment {
         name: String,
@@ -567,7 +571,7 @@ pub enum Command {
 #[serde(tag = "response", content = "value", rename_all = "camelCase")]
 pub enum Response {
     ReleaseView,
-    RuntimeResourceCatalog(crate::RuntimeResourceCatalog),
+    ReadRuntimeResourceCatalog(crate::RuntimeResourceCatalog),
     ReadRuntimeResource(crate::RuntimeResourceDocument),
     WriteRuntimeResource(crate::RuntimeResourceDocument),
     DeleteRuntimeResource,
@@ -577,14 +581,14 @@ pub enum Response {
     DeleteResourceTemplate,
     ImportRuntimeResource(crate::ResourceTemplateImport),
     AdoptRuntimeResource(crate::ResourceTemplateSummary),
-    ResourceSyncStatus(Vec<crate::ResourceSyncStatus>),
-    ResourceDrift(Vec<crate::ResourceDriftFile>),
-    UnmanagedRuntimeResources(Vec<crate::UnmanagedRuntimeResource>),
+ReadResourceSyncStatus(Vec<crate::ResourceSyncStatus>),
+ReadResourceDrift(Vec<crate::ResourceDriftFile>),
+ListUnmanagedRuntimeResources(Vec<crate::UnmanagedRuntimeResource>),
     ApplyResourceTemplate(Vec<crate::TemplateApplyReport>),
-    ResourceNativeImport(crate::ResourceTemplateImport),
+ReadResourceNativeImport(crate::ResourceTemplateImport),
     ResolveResourceBinding,
-    AnalyticsQuery(AnalyticsReport),
-    RuntimeDiscoveryHints(Vec<RuntimeDiscoveryHint>),
+QueryAnalytics(AnalyticsReport),
+ReadRuntimeDiscoveryHints(Vec<RuntimeDiscoveryHint>),
     DiscoverRuntimes(Vec<RuntimeDiscoveryCandidate>),
     ReadConfiguration(ConfigurationSnapshot),
     SetOutlinePresentation(OutlinePresentation),
@@ -593,9 +597,9 @@ pub enum Response {
     SetContextUsageDisplay(UsageDisplay),
     SetStatusLine(Vec<StatusLineItem>),
     SetConversationBrowserPreferences(ConfigurationSnapshot),
-    ComposerDrafts(Vec<crate::config::ComposerDraft>),
+ReadComposerDrafts(Vec<crate::config::ComposerDraft>),
     SetComposerDraft,
-    ComposerChoices(crate::config::ComposerChoices),
+ReadComposerChoices(crate::config::ComposerChoices),
     SetNextTurnIntent,
     SetRuntimeComposerChoices,
     SetConversationBrowserLimits(ConversationBrowserLimits),
@@ -609,48 +613,48 @@ pub enum Response {
     UpsertRuntime(RuntimeUpdate),
     UpsertRuntimeWithExecution(RuntimeUpdate),
     UpsertAcpRuntime(RuntimeUpdate),
-    AcpLaunch(crate::AcpLaunch),
-    AcpRuntimeInfo(crate::AcpRuntimeInfo),
+ReadAcpLaunch(crate::AcpLaunch),
+ReadAcpRuntimeInfo(crate::AcpRuntimeInfo),
     OpenAcpConversation(SnapshotResult),
-    AcpSessionConfig(Vec<crate::AcpConfigOption>),
+ReadAcpSessionConfig(Vec<crate::AcpConfigOption>),
     SetAcpSessionConfig(Vec<crate::AcpConfigOption>),
     DeleteRuntime(RuntimeUpdate),
     SelectRuntime(ConfigurationSnapshot),
-    RuntimeExecution(crate::RuntimeExecution),
-    RuntimeHomeDirectory(Option<String>),
+ReadRuntimeExecution(crate::RuntimeExecution),
+ReadRuntimeHomeDirectory(Option<String>),
     ConfigureRuntimeExecution(RuntimeUpdate),
     CreateConversation(SnapshotResult),
-    RuntimeModels(Vec<RuntimeModel>),
-    RuntimeQuota(RuntimeQuotaStatus),
-    ComposerQuota(Vec<ComposerQuotaEntry>),
-    NextTurnModelSelection(Option<ModelSelection>),
+ReadRuntimeModels(Vec<RuntimeModel>),
+ReadRuntimeQuota(RuntimeQuotaStatus),
+ReadComposerQuota(Vec<ComposerQuotaEntry>),
+ReadNextTurnModelSelection(Option<ModelSelection>),
     OpenConversation(SnapshotResult),
     ReadConversation(SnapshotResult),
     RenameConversation(ConfigurationSnapshot),
     DeleteConversation(ConfigurationSnapshot),
-    Snapshot(SnapshotResult),
-    SnapshotUpdate(crate::SnapshotUpdate),
-    MessagePayloads(Vec<crate::DeliveredMessage>),
+ReadSnapshot(SnapshotResult),
+ReadSnapshotUpdate(crate::SnapshotUpdate),
+ReadMessagePayloads(Vec<crate::DeliveredMessage>),
     SendTurn(SnapshotResult),
-    ReasoningEfforts(Vec<String>),
-    SendQueue(SnapshotResult),
+ReadReasoningEfforts(Vec<String>),
+EditSendQueue(SnapshotResult),
     SteerTurn(SnapshotResult),
     ResumeTurn(SnapshotResult),
     CompactConversation(SnapshotResult),
     EditMessage(SnapshotResult),
     Cancel(SnapshotResult),
     StopSubAgents(SnapshotResult),
-    ConversationActivity(ConversationActivity),
-    WorkingChanges(WorkingChanges),
-    WorkingBranch(Option<String>),
-    FileDiff(FileDiff),
+ReadConversationActivity(ConversationActivity),
+ReadWorkingChanges(WorkingChanges),
+ReadWorkingBranch(Option<String>),
+ReadFileDiff(FileDiff),
     PreviewProviderImport(ProviderImportPreview),
     ApplyProviderImport(ImportResult),
-    ProviderQuota(ProviderQuotaStatus),
+ReadProviderQuota(ProviderQuotaStatus),
     RefreshProviderQuota(ProviderQuotaStatus),
-    ProviderQuotaHistory(ProviderQuotaHistory),
+ReadProviderQuotaHistory(ProviderQuotaHistory),
     ClearProviderQuotaHistory(ProviderQuotaHistory),
-    QuotaAlerts(QuotaAlerts),
+ReadQuotaAlerts(QuotaAlerts),
     SaveProvider(GatewayUpdate),
     DeleteProvider(GatewayUpdate),
     SaveModelRoute(GatewayUpdate),
@@ -659,12 +663,12 @@ pub enum Response {
     SaveModelTemplate(Vec<ModelTemplate>),
     DeleteModelTemplate(Vec<ModelTemplate>),
     ReplyRuntimeInteraction(SnapshotResult),
-    AuthenticationInspect(AuthenticationMetadata),
-    AuthenticationStart(AuthenticationProgress),
-    AuthenticationLogout(GatewayUpdate),
-    AuthenticationPoll(AuthenticationProgress),
-    AuthenticationReply(AuthenticationProgress),
-    AuthenticationCancel(AuthenticationProgress),
+InspectAuthentication(AuthenticationMetadata),
+StartAuthentication(AuthenticationProgress),
+LogoutAuthentication(GatewayUpdate),
+PollAuthentication(AuthenticationProgress),
+ReplyAuthentication(AuthenticationProgress),
+CancelAuthentication(AuthenticationProgress),
     FetchPublicModelCatalog(Vec<crate::CatalogModel>),
     UploadAttachment(crate::AttachmentReference),
     ReadAttachment(crate::AttachmentContent),
@@ -674,46 +678,46 @@ impl Command {
     /// Exhaustive classification: new commands must declare whether an uncertain delivery may be reissued.
     pub fn delivery_class(&self) -> DeliveryClass {
         match self {
-            Self::RuntimeResourceCatalog { .. }
+            Self::ReadRuntimeResourceCatalog { .. }
             | Self::ReadRuntimeResource { .. }
             | Self::ListResourceTemplates
             | Self::ReadResourceTemplate { .. }
             | Self::ImportRuntimeResource { .. }
-            | Self::ResourceSyncStatus
-            | Self::ResourceDrift { .. }
-            | Self::UnmanagedRuntimeResources { .. }
-            | Self::ResourceNativeImport { .. }
-            | Self::AnalyticsQuery { .. }
-            | Self::RuntimeDiscoveryHints { .. }
+            | Self::ReadResourceSyncStatus
+            | Self::ReadResourceDrift { .. }
+            | Self::ListUnmanagedRuntimeResources { .. }
+            | Self::ReadResourceNativeImport { .. }
+            | Self::QueryAnalytics { .. }
+            | Self::ReadRuntimeDiscoveryHints { .. }
             | Self::DiscoverRuntimes { .. }
             | Self::ReadConfiguration
-            | Self::ComposerDrafts
-            | Self::ComposerChoices
+            | Self::ReadComposerDrafts
+            | Self::ReadComposerChoices
             | Self::SearchConversations { .. }
             | Self::FindConversation { .. }
             | Self::ResolveAgentUri { .. }
-            | Self::AcpLaunch { .. }
-            | Self::AcpRuntimeInfo { .. }
-            | Self::AcpSessionConfig { .. }
-            | Self::RuntimeExecution { .. }
-            | Self::RuntimeHomeDirectory { .. }
-            | Self::RuntimeModels { .. }
-            | Self::RuntimeQuota { .. }
-            | Self::ComposerQuota { .. }
-            | Self::NextTurnModelSelection
+            | Self::ReadAcpLaunch { .. }
+            | Self::ReadAcpRuntimeInfo { .. }
+            | Self::ReadAcpSessionConfig { .. }
+            | Self::ReadRuntimeExecution { .. }
+            | Self::ReadRuntimeHomeDirectory { .. }
+            | Self::ReadRuntimeModels { .. }
+            | Self::ReadRuntimeQuota { .. }
+            | Self::ReadComposerQuota { .. }
+            | Self::ReadNextTurnModelSelection
             | Self::ReadConversation { .. }
-            | Self::Snapshot { .. }
-            | Self::SnapshotUpdate { .. }
-            | Self::MessagePayloads { .. }
-            | Self::ReasoningEfforts { .. }
-            | Self::ConversationActivity { .. }
-            | Self::WorkingChanges { .. }
-            | Self::WorkingBranch { .. }
-            | Self::FileDiff { .. }
+            | Self::ReadSnapshot { .. }
+            | Self::ReadSnapshotUpdate { .. }
+            | Self::ReadMessagePayloads { .. }
+            | Self::ReadReasoningEfforts { .. }
+            | Self::ReadConversationActivity { .. }
+            | Self::ReadWorkingChanges { .. }
+            | Self::ReadWorkingBranch { .. }
+            | Self::ReadFileDiff { .. }
             | Self::PreviewProviderImport { .. }
-            | Self::ProviderQuota { .. }
-            | Self::ProviderQuotaHistory { .. }
-            | Self::QuotaAlerts { .. }
+            | Self::ReadProviderQuota { .. }
+            | Self::ReadProviderQuotaHistory { .. }
+            | Self::ReadQuotaAlerts { .. }
             | Self::ReadProviderApiKey { .. }
             | Self::FetchPublicModelCatalog
             | Self::ReadAttachment { .. } => DeliveryClass::Observation,
@@ -752,7 +756,7 @@ impl Command {
             | Self::RenameConversation { .. }
             | Self::DeleteConversation { .. }
             | Self::SendTurn { .. }
-            | Self::SendQueue { .. }
+            | Self::EditSendQueue { .. }
             | Self::SteerTurn { .. }
             | Self::ResumeTurn { .. }
             | Self::CompactConversation { .. }
@@ -769,19 +773,19 @@ impl Command {
             | Self::SaveModelTemplate { .. }
             | Self::DeleteModelTemplate { .. }
             | Self::ReplyRuntimeInteraction { .. }
-            | Self::AuthenticationInspect { .. }
-            | Self::AuthenticationStart { .. }
-            | Self::AuthenticationLogout { .. }
-            | Self::AuthenticationPoll
-            | Self::AuthenticationReply { .. }
-            | Self::AuthenticationCancel
+            | Self::InspectAuthentication { .. }
+            | Self::StartAuthentication { .. }
+            | Self::LogoutAuthentication { .. }
+            | Self::PollAuthentication
+            | Self::ReplyAuthentication { .. }
+            | Self::CancelAuthentication
             | Self::UploadAttachment { .. } => DeliveryClass::Effect,
         }
     }
     pub fn kind(&self) -> CommandKind {
         match self {
             Self::ReleaseView => CommandKind::ReleaseView,
-            Self::RuntimeResourceCatalog { .. } => CommandKind::RuntimeResourceCatalog,
+            Self::ReadRuntimeResourceCatalog { .. } => CommandKind::ReadRuntimeResourceCatalog,
             Self::ReadRuntimeResource { .. } => CommandKind::ReadRuntimeResource,
             Self::WriteRuntimeResource { .. } => CommandKind::WriteRuntimeResource,
             Self::DeleteRuntimeResource { .. } => CommandKind::DeleteRuntimeResource,
@@ -791,14 +795,14 @@ impl Command {
             Self::DeleteResourceTemplate { .. } => CommandKind::DeleteResourceTemplate,
             Self::ImportRuntimeResource { .. } => CommandKind::ImportRuntimeResource,
             Self::AdoptRuntimeResource { .. } => CommandKind::AdoptRuntimeResource,
-            Self::ResourceSyncStatus => CommandKind::ResourceSyncStatus,
-            Self::ResourceDrift { .. } => CommandKind::ResourceDrift,
-            Self::UnmanagedRuntimeResources { .. } => CommandKind::UnmanagedRuntimeResources,
+            Self::ReadResourceSyncStatus => CommandKind::ReadResourceSyncStatus,
+            Self::ReadResourceDrift { .. } => CommandKind::ReadResourceDrift,
+            Self::ListUnmanagedRuntimeResources { .. } => CommandKind::ListUnmanagedRuntimeResources,
             Self::ApplyResourceTemplate { .. } => CommandKind::ApplyResourceTemplate,
-            Self::ResourceNativeImport { .. } => CommandKind::ResourceNativeImport,
+            Self::ReadResourceNativeImport { .. } => CommandKind::ReadResourceNativeImport,
             Self::ResolveResourceBinding { .. } => CommandKind::ResolveResourceBinding,
-            Self::AnalyticsQuery { .. } => CommandKind::AnalyticsQuery,
-            Self::RuntimeDiscoveryHints { .. } => CommandKind::RuntimeDiscoveryHints,
+            Self::QueryAnalytics { .. } => CommandKind::QueryAnalytics,
+            Self::ReadRuntimeDiscoveryHints { .. } => CommandKind::ReadRuntimeDiscoveryHints,
             Self::DiscoverRuntimes { .. } => CommandKind::DiscoverRuntimes,
             Self::ReadConfiguration => CommandKind::ReadConfiguration,
             Self::SetOutlinePresentation { .. } => CommandKind::SetOutlinePresentation,
@@ -809,9 +813,9 @@ impl Command {
             Self::SetConversationBrowserPreferences { .. } => {
                 CommandKind::SetConversationBrowserPreferences
             }
-            Self::ComposerDrafts => CommandKind::ComposerDrafts,
+            Self::ReadComposerDrafts => CommandKind::ReadComposerDrafts,
             Self::SetComposerDraft { .. } => CommandKind::SetComposerDraft,
-            Self::ComposerChoices => CommandKind::ComposerChoices,
+            Self::ReadComposerChoices => CommandKind::ReadComposerChoices,
             Self::SetNextTurnIntent { .. } => CommandKind::SetNextTurnIntent,
             Self::SetRuntimeComposerChoices { .. } => CommandKind::SetRuntimeComposerChoices,
             Self::SetConversationBrowserLimits { .. } => CommandKind::SetConversationBrowserLimits,
@@ -825,48 +829,48 @@ impl Command {
             Self::UpsertRuntime { .. } => CommandKind::UpsertRuntime,
             Self::UpsertRuntimeWithExecution { .. } => CommandKind::UpsertRuntimeWithExecution,
             Self::UpsertAcpRuntime { .. } => CommandKind::UpsertAcpRuntime,
-            Self::AcpLaunch { .. } => CommandKind::AcpLaunch,
-            Self::AcpRuntimeInfo { .. } => CommandKind::AcpRuntimeInfo,
+            Self::ReadAcpLaunch { .. } => CommandKind::ReadAcpLaunch,
+            Self::ReadAcpRuntimeInfo { .. } => CommandKind::ReadAcpRuntimeInfo,
             Self::OpenAcpConversation { .. } => CommandKind::OpenAcpConversation,
-            Self::AcpSessionConfig { .. } => CommandKind::AcpSessionConfig,
+            Self::ReadAcpSessionConfig { .. } => CommandKind::ReadAcpSessionConfig,
             Self::SetAcpSessionConfig { .. } => CommandKind::SetAcpSessionConfig,
             Self::DeleteRuntime { .. } => CommandKind::DeleteRuntime,
             Self::SelectRuntime { .. } => CommandKind::SelectRuntime,
-            Self::RuntimeExecution { .. } => CommandKind::RuntimeExecution,
-            Self::RuntimeHomeDirectory { .. } => CommandKind::RuntimeHomeDirectory,
+            Self::ReadRuntimeExecution { .. } => CommandKind::ReadRuntimeExecution,
+            Self::ReadRuntimeHomeDirectory { .. } => CommandKind::ReadRuntimeHomeDirectory,
             Self::ConfigureRuntimeExecution { .. } => CommandKind::ConfigureRuntimeExecution,
             Self::CreateConversation { .. } => CommandKind::CreateConversation,
-            Self::RuntimeModels { .. } => CommandKind::RuntimeModels,
-            Self::RuntimeQuota { .. } => CommandKind::RuntimeQuota,
-            Self::ComposerQuota { .. } => CommandKind::ComposerQuota,
-            Self::NextTurnModelSelection => CommandKind::NextTurnModelSelection,
+            Self::ReadRuntimeModels { .. } => CommandKind::ReadRuntimeModels,
+            Self::ReadRuntimeQuota { .. } => CommandKind::ReadRuntimeQuota,
+            Self::ReadComposerQuota { .. } => CommandKind::ReadComposerQuota,
+            Self::ReadNextTurnModelSelection => CommandKind::ReadNextTurnModelSelection,
             Self::OpenConversation { .. } => CommandKind::OpenConversation,
             Self::ReadConversation { .. } => CommandKind::ReadConversation,
             Self::RenameConversation { .. } => CommandKind::RenameConversation,
             Self::DeleteConversation { .. } => CommandKind::DeleteConversation,
-            Self::Snapshot { .. } => CommandKind::Snapshot,
-            Self::SnapshotUpdate { .. } => CommandKind::SnapshotUpdate,
-            Self::MessagePayloads { .. } => CommandKind::MessagePayloads,
+            Self::ReadSnapshot { .. } => CommandKind::ReadSnapshot,
+            Self::ReadSnapshotUpdate { .. } => CommandKind::ReadSnapshotUpdate,
+            Self::ReadMessagePayloads { .. } => CommandKind::ReadMessagePayloads,
             Self::SendTurn { .. } => CommandKind::SendTurn,
-            Self::ReasoningEfforts { .. } => CommandKind::ReasoningEfforts,
-            Self::SendQueue { .. } => CommandKind::SendQueue,
+            Self::ReadReasoningEfforts { .. } => CommandKind::ReadReasoningEfforts,
+            Self::EditSendQueue { .. } => CommandKind::EditSendQueue,
             Self::SteerTurn { .. } => CommandKind::SteerTurn,
             Self::ResumeTurn { .. } => CommandKind::ResumeTurn,
             Self::CompactConversation { .. } => CommandKind::CompactConversation,
             Self::EditMessage { .. } => CommandKind::EditMessage,
             Self::Cancel { .. } => CommandKind::Cancel,
             Self::StopSubAgents { .. } => CommandKind::StopSubAgents,
-            Self::ConversationActivity { .. } => CommandKind::ConversationActivity,
-            Self::WorkingChanges { .. } => CommandKind::WorkingChanges,
-            Self::WorkingBranch { .. } => CommandKind::WorkingBranch,
-            Self::FileDiff { .. } => CommandKind::FileDiff,
+            Self::ReadConversationActivity { .. } => CommandKind::ReadConversationActivity,
+            Self::ReadWorkingChanges { .. } => CommandKind::ReadWorkingChanges,
+            Self::ReadWorkingBranch { .. } => CommandKind::ReadWorkingBranch,
+            Self::ReadFileDiff { .. } => CommandKind::ReadFileDiff,
             Self::PreviewProviderImport { .. } => CommandKind::PreviewProviderImport,
             Self::ApplyProviderImport { .. } => CommandKind::ApplyProviderImport,
-            Self::ProviderQuota { .. } => CommandKind::ProviderQuota,
+            Self::ReadProviderQuota { .. } => CommandKind::ReadProviderQuota,
             Self::RefreshProviderQuota { .. } => CommandKind::RefreshProviderQuota,
-            Self::ProviderQuotaHistory { .. } => CommandKind::ProviderQuotaHistory,
+            Self::ReadProviderQuotaHistory { .. } => CommandKind::ReadProviderQuotaHistory,
             Self::ClearProviderQuotaHistory { .. } => CommandKind::ClearProviderQuotaHistory,
-            Self::QuotaAlerts { .. } => CommandKind::QuotaAlerts,
+            Self::ReadQuotaAlerts { .. } => CommandKind::ReadQuotaAlerts,
             Self::SaveProvider { .. } => CommandKind::SaveProvider,
             Self::DeleteProvider { .. } => CommandKind::DeleteProvider,
             Self::SaveModelRoute { .. } => CommandKind::SaveModelRoute,
@@ -875,12 +879,12 @@ impl Command {
             Self::SaveModelTemplate { .. } => CommandKind::SaveModelTemplate,
             Self::DeleteModelTemplate { .. } => CommandKind::DeleteModelTemplate,
             Self::ReplyRuntimeInteraction { .. } => CommandKind::ReplyRuntimeInteraction,
-            Self::AuthenticationInspect { .. } => CommandKind::AuthenticationInspect,
-            Self::AuthenticationStart { .. } => CommandKind::AuthenticationStart,
-            Self::AuthenticationLogout { .. } => CommandKind::AuthenticationLogout,
-            Self::AuthenticationPoll => CommandKind::AuthenticationPoll,
-            Self::AuthenticationReply { .. } => CommandKind::AuthenticationReply,
-            Self::AuthenticationCancel => CommandKind::AuthenticationCancel,
+            Self::InspectAuthentication { .. } => CommandKind::InspectAuthentication,
+            Self::StartAuthentication { .. } => CommandKind::StartAuthentication,
+            Self::LogoutAuthentication { .. } => CommandKind::LogoutAuthentication,
+            Self::PollAuthentication => CommandKind::PollAuthentication,
+            Self::ReplyAuthentication { .. } => CommandKind::ReplyAuthentication,
+            Self::CancelAuthentication => CommandKind::CancelAuthentication,
             Self::FetchPublicModelCatalog => CommandKind::FetchPublicModelCatalog,
             Self::UploadAttachment { .. } => CommandKind::UploadAttachment,
             Self::ReadAttachment { .. } => CommandKind::ReadAttachment,
@@ -913,7 +917,7 @@ impl Command {
                 | Self::AdoptRuntimeResource { .. }
                 | Self::SetProject { .. }
                 | Self::OrganizeConversations { .. }
-                | Self::AuthenticationLogout { .. }
+                | Self::LogoutAuthentication { .. }
         )
     }
     pub fn changes_shared_state(&self) -> bool {
@@ -923,7 +927,7 @@ impl Command {
                 Self::CreateConversation { .. }
                     | Self::OpenAcpConversation { .. }
                     | Self::SendTurn { .. }
-                    | Self::SendQueue { .. }
+                    | Self::EditSendQueue { .. }
                     | Self::SteerTurn { .. }
                     | Self::ResumeTurn { .. }
                     | Self::CompactConversation { .. }
@@ -932,8 +936,8 @@ impl Command {
                     | Self::StopSubAgents { .. }
                     | Self::WriteRuntimeResource { .. }
                     | Self::DeleteRuntimeResource { .. }
-                    | Self::AuthenticationStart { .. }
-                    | Self::AuthenticationReply { .. }
+                    | Self::StartAuthentication { .. }
+                    | Self::ReplyAuthentication { .. }
             )
     }
 }

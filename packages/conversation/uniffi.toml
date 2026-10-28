@@ -10,4 +10,4 @@ package_name = "app.velune.bindings.conversation"
 android = true
 
 [bindings.csharp]
-namespace = "Velune.Bindings.Conversation"
+namespace = "VeluneFfi.Conversation"

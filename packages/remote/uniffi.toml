@@ -10,4 +10,4 @@ package_name = "app.velune.bindings.remote"
 android = true
 
 [bindings.csharp]
-namespace = "Velune.Bindings.Remote"
+namespace = "VeluneFfi.Remote"

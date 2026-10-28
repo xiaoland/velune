@@ -10,4 +10,4 @@ package_name = "app.velune.bindings.telemetry"
 android = true
 
 [bindings.csharp]
-namespace = "Velune.Bindings.Telemetry"
+namespace = "VeluneFfi.Telemetry"

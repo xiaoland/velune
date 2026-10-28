@@ -125,7 +125,7 @@ impl Controller {
             service.state.store.record_pending(PendingOperation {
                 peer_id: self.peer.clone(),
                 request_id: id.clone(),
-                view: view.clone(),
+                view: view.0.clone(),
                 execution: execution.clone(),
                 kind: command.kind(),
                 runtime_id,
@@ -445,7 +445,7 @@ fn operation_targets(command: &Command) -> (Option<String>, Option<String>) {
             conversation_id,
             ..
         }
-        | Command::SendQueue {
+        | Command::EditSendQueue {
             runtime_id,
             conversation_id,
             ..
