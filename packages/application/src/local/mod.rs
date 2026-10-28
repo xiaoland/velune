@@ -679,12 +679,6 @@ impl CoreRuntime {
         match action {
             "providerImport" => self.provider_import_action(request),
             "providers" => self.provider_action(&request["payload"]),
-            "runtimeResourceCatalog"
-            | "readRuntimeResource"
-            | "writeRuntimeResource"
-            | "deleteRuntimeResource" => self.runtime_management_action(request),
-            "resourceTemplates" => self.resource_templates_action(request),
-            "resourceSync" => self.resource_sync_action(request),
             "modelTemplates" => self.template_action(&request["payload"]),
             "openAcpConversation" => self.open_acp_conversation_action(request),
             "acpSessionConfig" => self.acp_session_config_action(request, false),

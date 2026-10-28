@@ -1,4 +1,5 @@
-//! Native source resources, independent of active conversations and collaboration grants.
+//! Native source resources of a runtime, independent of active conversations and collaboration grants.
+//! Catalogs describe source files, not the Harness's merged effective configuration.
 use serde::{Deserialize, Serialize};
 use std::fmt;
 

@@ -64,16 +64,20 @@ impl Application {
                 cwd,
                 kind,
                 scope,
-            } => Response::RuntimeResourceCatalog(
-                application.runtime_resource_catalog(runtime_id, cwd, kind, scope)?,
-            ),
+            } => Response::RuntimeResourceCatalog(application.runtime.serve(
+                Focus::None,
+                Login::Blocks,
+                |core| core.runtime_resource_catalog(runtime_id, cwd, kind, scope),
+            )?),
             Command::ReadRuntimeResource {
                 runtime_id,
                 cwd,
                 key,
-            } => Response::ReadRuntimeResource(
-                application.read_runtime_resource(runtime_id, cwd, key)?,
-            ),
+            } => Response::ReadRuntimeResource(application.runtime.serve(
+                Focus::None,
+                Login::Blocks,
+                |core| core.read_runtime_resource(runtime_id, cwd, key),
+            )?),
             Command::WriteRuntimeResource {
                 runtime_id,
                 cwd,
@@ -81,74 +85,121 @@ impl Application {
                 expected,
                 bytes,
                 executable,
-            } => Response::WriteRuntimeResource(
-                application
-                    .write_runtime_resource(runtime_id, cwd, key, expected, bytes, executable)?,
-            ),
+            } => Response::WriteRuntimeResource(application.runtime.serve(
+                Focus::None,
+                Login::Blocks,
+                |core| {
+                    core.write_runtime_resource(runtime_id, cwd, key, expected, bytes, executable)
+                },
+            )?),
             Command::DeleteRuntimeResource {
                 runtime_id,
                 cwd,
                 key,
                 expected,
             } => {
-                application.delete_runtime_resource(runtime_id, cwd, key, expected)?;
+                application
+                    .runtime
+                    .serve(Focus::None, Login::Blocks, |core| {
+                        core.delete_runtime_resource(runtime_id, cwd, key, expected)
+                    })?;
                 Response::DeleteRuntimeResource
             }
             Command::ListResourceTemplates => {
-                Response::ListResourceTemplates(application.list_resource_templates()?)
+                Response::ListResourceTemplates(application.runtime.serve(
+                    Focus::None,
+                    Login::Blocks,
+                    |core| core.list_resource_templates(),
+                )?)
             }
             Command::ReadResourceTemplate { template_id } => {
-                Response::ReadResourceTemplate(application.read_resource_template(template_id)?)
+                Response::ReadResourceTemplate(application.runtime.serve(
+                    Focus::None,
+                    Login::Blocks,
+                    |core| core.read_resource_template(template_id),
+                )?)
             }
             Command::SaveResourceTemplate { template } => {
-                Response::SaveResourceTemplate(application.save_resource_template(template)?)
+                Response::SaveResourceTemplate(application.runtime.serve(
+                    Focus::None,
+                    Login::Blocks,
+                    |core| core.save_resource_template(template),
+                )?)
             }
             Command::DeleteResourceTemplate { template_id } => {
-                application.delete_resource_template(template_id)?;
+                application
+                    .runtime
+                    .serve(Focus::None, Login::Blocks, |core| {
+                        core.delete_resource_template(template_id)
+                    })?;
                 Response::DeleteResourceTemplate
             }
             Command::ImportRuntimeResource {
                 runtime_id,
                 kind,
                 path,
-            } => Response::ImportRuntimeResource(
-                application.import_runtime_resource(runtime_id, kind, path)?,
-            ),
+            } => Response::ImportRuntimeResource(application.runtime.serve(
+                Focus::None,
+                Login::Blocks,
+                |core| core.import_native_resource(runtime_id, kind, path),
+            )?),
             Command::AdoptRuntimeResource {
                 runtime_id,
                 kind,
                 path,
-            } => Response::AdoptRuntimeResource(
-                application.adopt_runtime_resource(runtime_id, kind, path)?,
-            ),
+            } => Response::AdoptRuntimeResource(application.runtime.serve(
+                Focus::None,
+                Login::Blocks,
+                |core| core.adopt_native_resource(runtime_id, kind, path),
+            )?),
             Command::ResourceSyncStatus => {
-                Response::ResourceSyncStatus(application.resource_sync_status()?)
+                Response::ResourceSyncStatus(application.runtime.serve(
+                    Focus::None,
+                    Login::Blocks,
+                    |core| core.resource_sync_status(),
+                )?)
             }
             Command::ResourceDrift {
                 runtime_id,
                 template_id,
-            } => Response::ResourceDrift(application.resource_drift(runtime_id, template_id)?),
+            } => Response::ResourceDrift(application.runtime.serve(
+                Focus::None,
+                Login::Blocks,
+                |core| core.resource_drift(runtime_id, template_id),
+            )?),
             Command::UnmanagedRuntimeResources { kind } => {
-                Response::UnmanagedRuntimeResources(application.unmanaged_runtime_resources(kind)?)
+                Response::UnmanagedRuntimeResources(application.runtime.serve(
+                    Focus::None,
+                    Login::Blocks,
+                    |core| core.unmanaged_runtime_resources(kind),
+                )?)
             }
             Command::ApplyResourceTemplate {
                 template_id,
                 targets,
-            } => Response::ApplyResourceTemplate(
-                application.apply_resource_template(template_id, targets)?,
-            ),
+            } => Response::ApplyResourceTemplate(application.runtime.serve(
+                Focus::None,
+                Login::Blocks,
+                |core| core.apply_resource_template(template_id, targets),
+            )?),
             Command::ResourceNativeImport {
                 runtime_id,
                 template_id,
-            } => Response::ResourceNativeImport(
-                application.resource_native_import(runtime_id, template_id)?,
-            ),
+            } => Response::ResourceNativeImport(application.runtime.serve(
+                Focus::None,
+                Login::Blocks,
+                |core| core.resource_native_import(runtime_id, template_id),
+            )?),
             Command::ResolveResourceBinding {
                 runtime_id,
                 template_id,
                 resolution,
             } => {
-                application.resolve_resource_binding(runtime_id, template_id, resolution)?;
+                application
+                    .runtime
+                    .serve(Focus::None, Login::Blocks, |core| {
+                        core.resolve_resource_binding(runtime_id, template_id, resolution)
+                    })?;
                 Response::ResolveResourceBinding
             }
             Command::AnalyticsQuery { query } => {

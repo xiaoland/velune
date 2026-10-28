@@ -79,7 +79,11 @@ fn key_valid(key: &ResourceKey) -> Result<()> {
 fn selected_entry(layout: &Layout, key: ResourceKey, source: &Source, value: &Value) -> Entry {
     Entry {
         key,
-        absolute_path: layout.root.join(&layout.prefix),
+        absolute_path: layout
+            .root
+            .join(&layout.prefix)
+            .to_string_lossy()
+            .into_owned(),
         node: Node::File,
         revision: source.node.revision.clone(),
         state: if value.is_object() {
@@ -107,7 +111,11 @@ pub(super) fn catalog(config: &Config, layout: &Layout, scope: ResourceScope) ->
                         scope,
                         path: String::new(),
                     },
-                    absolute_path: layout.root.join(&layout.prefix),
+                    absolute_path: layout
+                        .root
+                        .join(&layout.prefix)
+                        .to_string_lossy()
+                        .into_owned(),
                     node: node.node,
                     revision: node.revision,
                     state: EntryState::Invalid {

@@ -1,6 +1,9 @@
 //! Runtime-neutral, replaceable conversation projection contracts.
 //! Harness adapters own native event parsing and durable sessions.
 
+pub mod bytes;
+pub mod resources;
+
 use serde::{Deserialize, Serialize};
 
 /// Native names are authoritative. Derived titles may be refreshed from the first user message.

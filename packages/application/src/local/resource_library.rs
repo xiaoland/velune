@@ -48,20 +48,9 @@ impl Plan {
     }
 }
 
-fn management_kind(kind: RuntimeResourceKind) -> management::ResourceKind {
-    match kind {
-        RuntimeResourceKind::UserInstructions => management::ResourceKind::UserInstructions,
-        RuntimeResourceKind::McpServers => management::ResourceKind::McpServers,
-        RuntimeResourceKind::Skills => management::ResourceKind::Skills,
-        RuntimeResourceKind::NativeAgentDefinitions => {
-            management::ResourceKind::NativeAgentDefinitions
-        }
-    }
-}
-
 fn user_key(kind: RuntimeResourceKind, path: &str) -> management::ResourceKey {
     management::ResourceKey {
-        kind: management_kind(kind),
+        kind,
         scope: management::ResourceScope::User,
         path: path.into(),
     }
@@ -173,11 +162,7 @@ fn prune_directories(config: &management::Config, kind: RuntimeResourceKind, rem
         }
     }
     // Directories are only visible, with their revisions, through the catalog.
-    let Ok(catalog) = management::catalog(
-        config,
-        management_kind(kind),
-        management::ResourceScope::User,
-    ) else {
+    let Ok(catalog) = management::catalog(config, kind, management::ResourceScope::User) else {
         return;
     };
     for directory in directories.iter().rev() {
@@ -221,65 +206,76 @@ impl CoreRuntime {
             .ok_or_else(|| RuntimeError::invalid("资源不存在"))
     }
 
-    pub(super) fn resource_templates_action(
+    /// Resource library summaries; no content, so no secrets.
+    pub(crate) fn list_resource_templates(
+        &self,
+    ) -> Result<Vec<ResourceTemplateSummary>, RuntimeError> {
+        Ok(self
+            .resource_templates
+            .iter()
+            .map(|template| ResourceTemplateSummary {
+                id: template.id.clone(),
+                name: template.name.clone(),
+                kind: template.content.kind(),
+            })
+            .collect())
+    }
+
+    /// One resource with its full content, including any secret values.
+    pub(crate) fn read_resource_template(
+        &self,
+        template_id: String,
+    ) -> Result<ResourceTemplate, RuntimeError> {
+        Ok(self.template(&template_id)?.clone())
+    }
+
+    /// Read one native entry back into an unsaved resource, with what could not be carried over.
+    /// `path` is the entry's key path: skill directory, MCP server name, or agent/instruction file.
+    pub(crate) fn import_native_resource(
+        &self,
+        runtime_id: String,
+        kind: RuntimeResourceKind,
+        path: String,
+    ) -> Result<crate::ResourceTemplateImport, RuntimeError> {
+        self.import_runtime_resource(&runtime_id, kind, &path)
+    }
+
+    /// Create (empty id) or replace a resource, then write it to the runtimes it is enabled on
+    /// and in sync with. Runtimes changed outside Velune, or all of them while a turn runs, stay
+    /// as they are and report their state through `resource_sync_status`.
+    pub(crate) fn save_resource_template(
         &mut self,
-        request: &Value,
-    ) -> Result<Value, RuntimeError> {
-        let payload = &request["payload"];
-        match payload["operation"].as_str() {
-            Some("list") => Ok(json!(
-                self.resource_templates
-                    .iter()
-                    .map(|template| ResourceTemplateSummary {
-                        id: template.id.clone(),
-                        name: template.name.clone(),
-                        kind: template.content.kind(),
-                    })
-                    .collect::<Vec<_>>()
-            )),
-            // An explicit read returns the content, including any secret values.
-            Some("read") => {
-                let id = payload["templateID"].as_str().unwrap_or_default();
-                Ok(serde_json::to_value(self.template(id)?)?)
-            }
-            Some("import") => Ok(json!(self.import_runtime_resource(
-                payload["runtimeInstanceID"].as_str().unwrap_or_default(),
-                serde_json::from_value(payload["kind"].clone())?,
-                payload["path"].as_str().unwrap_or_default(),
-            )?)),
-            Some("save") => {
-                let summary =
-                    self.store_template(serde_json::from_value(payload["template"].clone())?)?;
-                let reports = self.sync_pending(&summary.id)?;
-                Ok(json!(ResourceSaveResult { summary, reports }))
-            }
-            Some("delete") => {
-                let id = payload["templateID"]
-                    .as_str()
-                    .unwrap_or_default()
-                    .to_owned();
-                self.template(&id)?;
-                let templates: Vec<_> = self
-                    .resource_templates
-                    .iter()
-                    .filter(|template| template.id != id)
-                    .cloned()
-                    .collect();
-                let bindings: Vec<_> = self
-                    .resource_bindings
-                    .iter()
-                    .filter(|binding| binding.template_id != id)
-                    .cloned()
-                    .collect();
-                // Bindings go first: a binding without its template is the invalid state.
-                self.repository.store_resource_bindings(&bindings)?;
-                self.resource_bindings = bindings;
-                self.repository.store_resource_templates(&templates)?;
-                self.resource_templates = templates;
-                Ok(Value::Null)
-            }
-            _ => Err(RuntimeError::invalid("资源库操作")),
-        }
+        template: ResourceTemplate,
+    ) -> Result<ResourceSaveResult, RuntimeError> {
+        let summary = self.store_template(template)?;
+        let reports = self.sync_pending(&summary.id)?;
+        Ok(ResourceSaveResult { summary, reports })
+    }
+
+    /// Delete a resource. Runtimes keep the native entries it wrote, now unmanaged.
+    pub(crate) fn delete_resource_template(
+        &mut self,
+        template_id: String,
+    ) -> Result<(), RuntimeError> {
+        self.template(&template_id)?;
+        let templates: Vec<_> = self
+            .resource_templates
+            .iter()
+            .filter(|template| template.id != template_id)
+            .cloned()
+            .collect();
+        let bindings: Vec<_> = self
+            .resource_bindings
+            .iter()
+            .filter(|binding| binding.template_id != template_id)
+            .cloned()
+            .collect();
+        // Bindings go first: a binding without its template is the invalid state.
+        self.repository.store_resource_bindings(&bindings)?;
+        self.resource_bindings = bindings;
+        self.repository.store_resource_templates(&templates)?;
+        self.resource_templates = templates;
+        Ok(())
     }
 
     /// Reads one native entry back into an unsaved template. Nothing is bound: applying the saved
@@ -294,7 +290,7 @@ impl CoreRuntime {
         let scope = management::ResourceScope::User;
         let (name, files) = match kind {
             RuntimeResourceKind::Skills => {
-                let catalog = management::catalog(&config, management_kind(kind), scope)?;
+                let catalog = management::catalog(&config, kind, scope)?;
                 let prefix = format!("{path}/");
                 let mut files = Vec::new();
                 for entry in catalog.entries.iter().filter(|entry| {
@@ -331,8 +327,7 @@ impl CoreRuntime {
                 )
             }
         };
-        let (content, notes) =
-            management::parse(&config.variant_id, management_kind(kind), &name, files)?;
+        let (content, notes) = management::parse(&config.variant_id, kind, &name, files)?;
         Ok(crate::ResourceTemplateImport {
             template: ResourceTemplate {
                 id: String::new(),
@@ -485,54 +480,78 @@ impl CoreRuntime {
         Ok(reports)
     }
 
-    pub(super) fn resource_sync_action(&mut self, request: &Value) -> Result<Value, RuntimeError> {
-        let payload = &request["payload"];
-        let operation = payload["operation"].as_str();
-        if matches!(operation, Some("apply" | "resolve" | "adopt")) {
-            self.require_idle_for_resources()?;
+    /// Every resource on every runtime instance.
+    pub(crate) fn resource_sync_status(&self) -> Result<Vec<ResourceSyncStatus>, RuntimeError> {
+        Ok(self.sync_statuses())
+    }
+
+    /// How the native entries of an enabled resource differ from the library's version. The texts
+    /// may contain MCP secrets, like an explicit read.
+    pub(crate) fn resource_drift(
+        &self,
+        runtime_id: String,
+        template_id: String,
+    ) -> Result<Vec<crate::ResourceDriftFile>, RuntimeError> {
+        self.drift(self.template(&template_id)?, &runtime_id)
+    }
+
+    /// What a resource would become if taken from its native entries on a runtime, with the
+    /// native fields it has no place for; nothing is saved.
+    pub(crate) fn resource_native_import(
+        &self,
+        runtime_id: String,
+        template_id: String,
+    ) -> Result<crate::ResourceTemplateImport, RuntimeError> {
+        self.native_import(self.template(&template_id)?, &runtime_id)
+    }
+
+    /// Native entries of one kind that no resource manages, on every runtime instance.
+    pub(crate) fn unmanaged_runtime_resources(
+        &self,
+        kind: crate::RuntimeResourceKind,
+    ) -> Result<Vec<UnmanagedRuntimeResource>, RuntimeError> {
+        Ok(self.unmanaged_resources(kind))
+    }
+
+    /// Enable a resource on, or re-sync it to, each target. A conflicting native entry stops the
+    /// target unless `overwrite` is set.
+    pub(crate) fn apply_resource_template(
+        &mut self,
+        template_id: String,
+        targets: Vec<TemplateApplyTarget>,
+    ) -> Result<Vec<TemplateApplyReport>, RuntimeError> {
+        self.require_idle_for_resources()?;
+        let template = self.template(&template_id)?.clone();
+        let mut reports = Vec::new();
+        for target in targets {
+            reports.push(self.apply_to_runtime(&template, &target)?);
         }
-        let runtime_id = || payload["runtimeInstanceID"].as_str().unwrap_or_default();
-        match operation {
-            Some("status") => Ok(json!(self.sync_statuses())),
-            Some("drift") => {
-                let template = self.template(payload["templateID"].as_str().unwrap_or_default())?;
-                Ok(json!(self.drift(template, runtime_id())?))
-            }
-            Some("nativeImport") => {
-                let template = self.template(payload["templateID"].as_str().unwrap_or_default())?;
-                Ok(json!(self.native_import(template, runtime_id())?))
-            }
-            Some("unmanaged") => Ok(json!(
-                self.unmanaged_resources(serde_json::from_value(payload["kind"].clone())?)
-            )),
-            Some("apply") => {
-                let template = self
-                    .template(payload["templateID"].as_str().unwrap_or_default())?
-                    .clone();
-                let targets: Vec<TemplateApplyTarget> =
-                    serde_json::from_value(payload["targets"].clone())?;
-                let mut reports = Vec::new();
-                for target in targets {
-                    reports.push(self.apply_to_runtime(&template, &target)?);
-                }
-                Ok(json!(reports))
-            }
-            Some("resolve") => {
-                let template = self
-                    .template(payload["templateID"].as_str().unwrap_or_default())?
-                    .clone();
-                let resolution: BindingResolution =
-                    serde_json::from_value(payload["resolution"].clone())?;
-                self.resolve_binding(runtime_id(), &template, resolution)?;
-                Ok(Value::Null)
-            }
-            Some("adopt") => Ok(json!(self.adopt_runtime_resource(
-                runtime_id(),
-                serde_json::from_value(payload["kind"].clone())?,
-                payload["path"].as_str().unwrap_or_default(),
-            )?)),
-            _ => Err(RuntimeError::invalid("资源同步操作")),
-        }
+        Ok(reports)
+    }
+
+    /// Add a native entry to the library and keep it enabled on its runtime; the native entry is
+    /// rewritten in the library's form.
+    pub(crate) fn adopt_native_resource(
+        &mut self,
+        runtime_id: String,
+        kind: RuntimeResourceKind,
+        path: String,
+    ) -> Result<ResourceTemplateSummary, RuntimeError> {
+        self.require_idle_for_resources()?;
+        self.adopt_runtime_resource(&runtime_id, kind, &path)
+    }
+
+    /// Overwrite drifted entries, stop syncing (keeping native content), remove them, or take
+    /// the native content into the resource.
+    pub(crate) fn resolve_resource_binding(
+        &mut self,
+        runtime_id: String,
+        template_id: String,
+        resolution: BindingResolution,
+    ) -> Result<(), RuntimeError> {
+        self.require_idle_for_resources()?;
+        let template = self.template(&template_id)?.clone();
+        self.resolve_binding(&runtime_id, &template, resolution)
     }
 
     fn binding_index(&self, runtime_id: &str, template_id: &str) -> Option<usize> {
@@ -665,8 +684,7 @@ impl CoreRuntime {
             };
             let same = match (&native, &library) {
                 (Some(native), Some(library)) => {
-                    management::fingerprint(management_kind(kind), native)
-                        == management::fingerprint(management_kind(kind), library)
+                    management::fingerprint(kind, native) == management::fingerprint(kind, library)
                 }
                 (None, None) => true,
                 _ => false,
@@ -704,11 +722,8 @@ impl CoreRuntime {
             let Ok(config) = self.management_config(&runtime.id) else {
                 continue;
             };
-            let Ok(catalog) = management::catalog(
-                &config,
-                management_kind(kind),
-                management::ResourceScope::User,
-            ) else {
+            let Ok(catalog) = management::catalog(&config, kind, management::ResourceScope::User)
+            else {
                 continue;
             };
             let managed: Vec<&str> = self

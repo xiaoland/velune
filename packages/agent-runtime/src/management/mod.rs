@@ -2,7 +2,7 @@
 //! Catalogs describe source files, not the Harness's merged effective configuration.
 use crate::execution::ExecutionTarget;
 use serde::{Deserialize, Serialize};
-use std::{fmt, path::PathBuf};
+use std::path::PathBuf;
 
 pub use canonical::{
     Canonical, McpTransport, RenderedFile, Rendering, SkillFile, fingerprint, parse, render,
@@ -24,106 +24,14 @@ pub struct Config {
     pub cwd: Option<PathBuf>,
 }
 
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub enum ResourceKind {
-    UserInstructions,
-    McpServers,
-    Skills,
-    NativeAgentDefinitions,
-}
-
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub enum ResourceScope {
-    User,
-    Project,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct ResourceKey {
-    pub kind: ResourceKind,
-    pub scope: ResourceScope,
-    /// Relative source path, or an opaque server name for MCP entries.
-    pub path: String,
-}
-
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub enum Node {
-    File,
-    Directory,
-    Symlink,
-    Other,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(tag = "kind", rename_all = "camelCase")]
-pub enum EntryState {
-    Present,
-    Missing,
-    Invalid { reason: String },
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(tag = "kind", rename_all = "camelCase")]
-pub enum Access {
-    Writable,
-    ReadOnly { reason: String },
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct Entry {
-    pub key: ResourceKey,
-    pub absolute_path: PathBuf,
-    pub node: Node,
-    pub revision: Option<String>,
-    pub state: EntryState,
-    pub access: Access,
-    pub size: u64,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(tag = "kind", rename_all = "camelCase")]
-pub enum Support {
-    Supported,
-    Unsupported { reason: String },
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct Catalog {
-    pub support: Support,
-    pub entries: Vec<Entry>,
-}
-
-#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct Document {
-    pub entry: Entry,
-    /// Only the requested file, or one MCP server's native JSON object.
-    pub bytes: Vec<u8>,
-    pub executable: bool,
-}
-impl fmt::Debug for Document {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("Document")
-            .field("entry", &self.entry)
-            .field("bytes", &"[redacted]")
-            .field("executable", &self.executable)
-            .finish()
-    }
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(tag = "kind", content = "revision", rename_all = "camelCase")]
-pub enum ExpectedRevision {
-    Missing,
-    Match(String),
-}
+pub use velune_conversation::resources::{
+    RuntimeResourceAccess as Access, RuntimeResourceCatalog as Catalog,
+    RuntimeResourceDocument as Document, RuntimeResourceEntry as Entry,
+    RuntimeResourceKey as ResourceKey, RuntimeResourceKind as ResourceKind,
+    RuntimeResourceNode as Node, RuntimeResourceRevision as ExpectedRevision,
+    RuntimeResourceScope as ResourceScope, RuntimeResourceState as EntryState,
+    RuntimeResourceSupport as Support,
+};
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -314,7 +222,7 @@ pub fn delete(config: &Config, key: &ResourceKey, expected: &ExpectedRevision) -
 fn entry(layout: &layout::Layout, key: ResourceKey, node: fs::NodeInfo) -> Entry {
     Entry {
         key,
-        absolute_path: layout.root.join(node.path),
+        absolute_path: layout.root.join(node.path).to_string_lossy().into_owned(),
         node: node.node,
         revision: node.revision,
         state: node.state,
