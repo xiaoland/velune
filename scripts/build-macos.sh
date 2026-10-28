@@ -17,7 +17,7 @@ xcrun --find swiftc >/dev/null
 cargo build --locked --release -p velune-bindings --lib
 bindings="$PWD/target/bindings/swift"
 mkdir -p "$bindings"
-cargo run --locked -p velune-bindings --features cli --bin velune-bindgen -- generate --library target/release/libvelune_bindings.dylib --language swift --out-dir "$bindings" --no-format
+cargo run --locked -p velune-bindings --no-default-features --features cli --bin velune-bindgen -- generate --library target/release/libvelune_bindings.dylib --language swift --out-dir "$bindings" --no-format
 app="$PWD/target/macos/Velune.app"
 rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources" "$app/Contents/Frameworks"

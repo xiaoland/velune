@@ -66,6 +66,8 @@ schema 10 采用 hard-cutoff，旧普通配置打开时直接重置，之后重�
 
 隔离视觉预览使用 `--preview`（合成多轮会话）或 `--preview-empty`；Apple app 不设置独立深色验收入口。预览 Store 无 Transport，不打开 Application、不访问真实配置、Keychain 或会话、不调用模型。dyld 加载惰性的库文件不等于打开运行时，预览不能证明真实循环完成。
 
+绑定生成工具只启用 `cli`，不需要再次编译应用的本地运行时。若 UniFFI 模板宏报告 `askama.toml` 不存在，而该文件实际存在，应核对 Cargo registry 的逻辑路径与真实路径。本次安装在 registry 软链接环境中遇到了该问题；将构建命令的 `CARGO_HOME` 指向实际缓存根目录，并定向重建生成器后通过。不需要修改 registry 文件或第三方源码。
+
 ## iPad 与 iPhone 构建
 
 运行 `scripts/build-ios.sh` 构建 arm64 模拟器，使用 `scripts/build-ios.sh iphoneos DEVELOPMENT_TEAM=<团队ID>` 构建设备版本。单一 Xcode target 支持 iPad 分栏与 iPhone 紧凑导航，只链接 remote-only 核心。工具链、签名、合成预览与边界见 [iOS 控制端](../app/ios/README.md)。

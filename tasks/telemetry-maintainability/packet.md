@@ -77,3 +77,17 @@
 ## 提交与全端安装
 
 2026-10-28 用户明确授权提交，并允许全部设备覆盖安装。当前开始提交本任务改动，随后重建完整 Rust／原生包并更新 Mac、Windows、Android 和已连接 iOS 真机，保留应用数据。
+
+
+安装结果（2026-10-28）：语义提交为 `0b27ff1`。共享工作区随后出现其他任务的未提交源码变动，因此除 Windows 外的最终包使用该提交的独立 worktree 构建，避免混入未提交代码。构建中收窄了 Mac 生成器的依赖，只启用 cli；未修改应用语义或升级依赖。
+
+| 平台 | 完整构建与覆盖位置 | 启动观察 |
+| --- | --- | --- |
+| Mac | release Rust、UniFFI、Swift 与签名完成，覆盖 `/Applications/Velune.app`；主程序和 Rust 库摘要与构建产物一致，manifest 来源为 0b27ff1。 | 已启动并确认进程存活。 |
+| Windows | 从提交归档完整构建，覆盖既有 `C:\Users\yyh\velune-mygo\target\windows\Velune`；四个程序／DLL 摘要一致。 | 已在原交互桌面 SessionId=2 启动。临时启动任务已清理。 |
+| Android | Rust arm64 库、Kotlin 绑定、APK 与 lint 完成，使用 `adb install -r` 更新日常版和既有遥测版。 | 两个应用分别启动成功，包更新时间均为本轮。 |
+| iPad | Rust 设备库、Swift 绑定、Xcode 构建与签名完成，覆盖既有 app.velune.ios.telemetry，系统回执安装成功。 | 系统以签名／信任检查为由拒绝启动；本地签名验证通过，描述文件有效且包含该设备，已请用户检查开发者信任。 |
+
+整个安装过程未卸载或清空应用数据，未安装测试 runner。Android 打包的 Java 堆上限调整为 2 GiB、单 worker，重跑后打包与 lint 通过。Cargo registry 软链接导致 UniFFI 模板宏引用错误路径，使用实际缓存根目录重建生成器后完成；说明已补入开发文档。
+
+原始构建日志、安装回执与 Android APK 保存在原工作区被 Git 忽略的 `target/telemetry-installed-builds/`。安装相关代码／文档只提交本任务文件，其他任务的修改保留。当前唯一需要用户操作的是 iPad 的开发者信任／启动确认，安装本身已完成。
