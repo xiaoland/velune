@@ -17,7 +17,7 @@ impl CoreRuntime {
             .map_err(RuntimeError::invalid)?;
         let provider = resolved.provider();
         let model = resolved.model();
-        let ingress = crate::config::runtime_ingress(&runtime.type_id, &provider.protocol)
+        let ingress = crate::config::runtime_ingress(runtime.type_id, &provider.protocol)
             .ok_or_else(|| RuntimeError::invalid("不支持的运行时版本类型"))?;
         let protocol = match &ingress {
             GatewayProtocol::ChatCompletionsV1 => "openai-completions",
@@ -160,10 +160,10 @@ impl CoreRuntime {
         &self,
         runtime: &RuntimeInstance,
     ) -> Result<HistoryConfig, RuntimeError> {
-        let provider = match runtime.type_id.as_str() {
-            "codex-0.159" => "codex",
-            "dsh-acp-0.2" => "deepseek",
-            "claude-code-2.1" => "claude-code",
+        let provider = match runtime.type_id {
+            RuntimeKind::Codex => "codex",
+            RuntimeKind::DeepSeek => "deepseek",
+            RuntimeKind::ClaudeCode => "claude-code",
             _ => return Err(RuntimeError::invalid("native history type")),
         };
         let context = self.prepare_execution_context(runtime)?;
@@ -194,7 +194,7 @@ impl CoreRuntime {
                 .create(cwd, &runtime.id)
                 .map_err(|error| RuntimeError::context("会话创建失败", error))?;
         }
-        if runtime.type_id == "dsh-acp-0.2" {
+        if runtime.type_id == RuntimeKind::DeepSeek {
             // ACP new flushes its native header before replying, but does not
             // return its date. Read the existing source adapter rather than
             // inventing a timestamp or reimplementing the persistence format.

@@ -1,7 +1,8 @@
 //! Resolve native login sources; CLI and execution details stay outside the cache.
+use crate::config::RuntimeKind;
 use crate::{QuotaFreshness, config::RuntimeInstance};
 use std::path::{Path, PathBuf};
-pub(crate) const CLAUDE_RUNTIME: &str = "claude-code-2.1";
+pub(crate) const CLAUDE_RUNTIME: RuntimeKind = RuntimeKind::ClaudeCode;
 
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) enum Capture {
@@ -13,8 +14,8 @@ pub(crate) struct ClaudeLogin {
     directory: Option<PathBuf>,
 }
 impl Capture {
-    pub(crate) fn supported(type_id: &str) -> bool {
-        type_id == CLAUDE_RUNTIME
+    pub(crate) fn supported(kind: RuntimeKind) -> bool {
+        kind == CLAUDE_RUNTIME
     }
     pub(crate) async fn read(&self, ttl_ms: i64) -> Result<Vec<velune_gateway::QuotaWindow>, ()> {
         match self {
@@ -26,7 +27,7 @@ impl Capture {
     pub(crate) fn from_runtime(
         runtime: &RuntimeInstance,
     ) -> Result<Self, (QuotaFreshness, String)> {
-        if !Self::supported(&runtime.type_id) || !runtime.enabled {
+        if !Self::supported(runtime.type_id) || !runtime.enabled {
             return Err((QuotaFreshness::Unsupported, "此运行时不提供登录额度".into()));
         }
         if runtime

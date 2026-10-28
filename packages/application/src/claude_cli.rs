@@ -1,5 +1,6 @@
 //! The unmodified CLI owns authentication and secrets: in an application-owned
 //! directory, or in a login the user already has that a provider only references.
+use crate::config::RuntimeKind;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::{
@@ -210,7 +211,7 @@ pub(crate) fn linked_directory(
     };
     let runtime = runtimes
         .iter()
-        .find(|runtime| &runtime.id == instance_id && runtime.type_id == "claude-code-2.1")
+        .find(|runtime| &runtime.id == instance_id && runtime.type_id == RuntimeKind::ClaudeCode)
         .ok_or_else(|| crate::Error::invalid("所选 Claude Code 运行时已不存在"))?;
     if runtime.execution()? != crate::RuntimeExecution::default() {
         return Err(crate::Error::invalid(

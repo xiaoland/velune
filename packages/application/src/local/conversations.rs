@@ -166,12 +166,11 @@ impl CoreRuntime {
                     && draft.runtime_id == snapshot.conversation.runtime_id
             });
         if unsubmitted {
-            let supports_unpersisted_draft = matches!(
+            let supports_unpersisted_draft = velune_agent_runtime::version::variant(
                 self.runtime_instance(&snapshot.conversation.runtime_id)?
-                    .type_id
-                    .as_str(),
-                "codex-0.159" | "claude-code-2.1" | "pi-1.0"
-            );
+                    .type_id,
+            )
+            .persists_on_first_turn;
             let needs_new_target = supports_unpersisted_draft
                 && (snapshot.conversation.runtime_id != runtime_id
                     || matches!(self.session.active_state, ActiveState::History(_))
@@ -474,7 +473,7 @@ impl CoreRuntime {
         if !runtime.enabled {
             return Err(RuntimeError::invalid("此运行时已停用，请先启用"));
         }
-        if runtime.type_id == "acp-v1" {
+        if runtime.type_id == RuntimeKind::Acp {
             return if deleting {
                 self.delete_acp_conversation(&runtime, id)
             } else {
@@ -483,8 +482,7 @@ impl CoreRuntime {
                 ))
             };
         }
-        let variant = velune_agent_runtime::version::variant(&runtime.type_id)
-            .ok_or_else(|| RuntimeError::invalid("runtime type"))?;
+        let variant = velune_agent_runtime::version::variant(runtime.type_id);
         if (deleting && !variant.can_delete_conversations)
             || (!deleting && !variant.can_rename_conversations)
         {
@@ -504,7 +502,7 @@ impl CoreRuntime {
             .strip_prefix(&format!("{runtime_id}:"))
             .filter(|id| !id.is_empty())
             .ok_or_else(|| RuntimeError::invalid("conversation id"))?;
-        if runtime.type_id == "claude-code-2.1" && native_id.contains('/') {
+        if runtime.type_id == RuntimeKind::ClaudeCode && native_id.contains('/') {
             return Err(RuntimeError::invalid(
                 "Claude Code 子 Agent 会话没有自己的名称",
             ));
@@ -513,7 +511,7 @@ impl CoreRuntime {
         let listed_summary = self.conversation_summary(&runtime, id)?;
         let listed = listed_summary.is_some();
         if !listed
-            && runtime.type_id == "pi-1.0"
+            && runtime.type_id == RuntimeKind::Pi
             && matches!(self.session.active_state, ActiveState::Pi)
             && self.session.execution_runtime_id.as_deref() == Some(runtime_id)
             && self
@@ -585,7 +583,7 @@ impl CoreRuntime {
         if current {
             self.invalidate_execution()?;
         }
-        if runtime.type_id == "pi-1.0" {
+        if runtime.type_id == RuntimeKind::Pi {
             history::manage_pi(
                 &self.pi_history_config(&runtime)?,
                 Path::new(native_id),
@@ -594,7 +592,7 @@ impl CoreRuntime {
             .map_err(|error| {
                 RuntimeError::context("Pi 原生会话修改失败；请检查来源目录与文件权限后重试", error)
             })?;
-        } else if runtime.type_id == "claude-code-2.1" {
+        } else if runtime.type_id == RuntimeKind::ClaudeCode {
             let summary = listed_summary.expect("listed conversation");
             let cwd = summary
                 .cwd

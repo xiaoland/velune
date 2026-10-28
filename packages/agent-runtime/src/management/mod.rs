@@ -3,6 +3,7 @@
 use crate::execution::ExecutionTarget;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+use velune_conversation::RuntimeKind;
 
 pub use canonical::{
     Canonical, McpTransport, RenderedFile, Rendering, SkillFile, fingerprint, parse, render,
@@ -18,7 +19,7 @@ mod validation;
 
 #[derive(Clone, Debug)]
 pub struct Config {
-    pub variant_id: String,
+    pub runtime: RuntimeKind,
     pub execution: ExecutionTarget,
     pub agent_dir: Option<PathBuf>,
     pub cwd: Option<PathBuf>,

@@ -62,11 +62,21 @@ pub enum NativeKind {
     ClaudeCode,
 }
 impl NativeKind {
-    pub fn type_id(self) -> &'static str {
+    pub fn runtime_kind(self) -> crate::version::RuntimeKind {
+        use crate::version::RuntimeKind;
         match self {
-            Self::Codex => "codex-0.159",
-            Self::DeepSeek => "dsh-acp-0.2",
-            Self::ClaudeCode => "claude-code-2.1",
+            Self::Codex => RuntimeKind::Codex,
+            Self::DeepSeek => RuntimeKind::DeepSeek,
+            Self::ClaudeCode => RuntimeKind::ClaudeCode,
+        }
+    }
+    pub fn of(kind: crate::version::RuntimeKind) -> Option<Self> {
+        use crate::version::RuntimeKind;
+        match kind {
+            RuntimeKind::Codex => Some(Self::Codex),
+            RuntimeKind::DeepSeek => Some(Self::DeepSeek),
+            RuntimeKind::ClaudeCode => Some(Self::ClaudeCode),
+            RuntimeKind::Pi | RuntimeKind::Acp => None,
         }
     }
 }
@@ -194,7 +204,7 @@ impl NativeSession {
             }
         }
         crate::version::check_version_at(
-            config.kind.type_id(),
+            config.kind.runtime_kind(),
             &config.binary,
             config.node_binary.as_deref(),
             &config.execution,

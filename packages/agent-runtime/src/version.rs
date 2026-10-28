@@ -2,6 +2,7 @@
 use crate::native::{Error, Result};
 use regex::Regex;
 use std::path::{Path, PathBuf};
+pub use velune_conversation::RuntimeKind;
 /// Protocols this versioned adapter can carry through the injected LLM gateway.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RuntimeProtocol {
@@ -112,7 +113,7 @@ impl Versions {
     }
 }
 pub struct RuntimeVariant {
-    pub id: &'static str,
+    pub kind: RuntimeKind,
     pub family_id: &'static str,
     pub name: &'static str,
     pub versions: Versions,
@@ -126,6 +127,14 @@ pub struct RuntimeVariant {
     pub supported_protocols: &'static [RuntimeProtocol],
     /// Empty when the runtime offers no per-turn choice.
     pub permission_modes: &'static [PermissionMode],
+    /// Starts a turn without a new user message after a stop or failure.
+    pub can_resume_turns: bool,
+    /// Compacts a conversation's context when the user asks.
+    pub can_compact: bool,
+    /// A new conversation persists only with its first turn, so it can
+    /// still move to another runtime or model before then.
+    pub persists_on_first_turn: bool,
+    pub accepts_images: bool,
 }
 /// Pi's range, shared with the Pi provider import.
 pub const PI_VERSIONS: Versions = Versions::Cli {
@@ -134,7 +143,7 @@ pub const PI_VERSIONS: Versions = Versions::Cli {
 };
 const VARIANTS: &[RuntimeVariant] = &[
     RuntimeVariant {
-        id: "acp-v1",
+        kind: RuntimeKind::Acp,
         family_id: "acp",
         name: "ACP v1",
         versions: Versions::AcpProtocol(1),
@@ -144,9 +153,13 @@ const VARIANTS: &[RuntimeVariant] = &[
         projectless_directories: &[],
         supported_protocols: &[],
         permission_modes: &[],
+        can_resume_turns: false,
+        can_compact: false,
+        persists_on_first_turn: false,
+        accepts_images: true,
     },
     RuntimeVariant {
-        id: "claude-code-2.1",
+        kind: RuntimeKind::ClaudeCode,
         family_id: "claude-code",
         name: "Claude Code 2.1",
         versions: Versions::Cli {
@@ -159,9 +172,13 @@ const VARIANTS: &[RuntimeVariant] = &[
         projectless_directories: &[],
         supported_protocols: &[RuntimeProtocol::MessagesV1],
         permission_modes: CLAUDE_PERMISSION_MODES,
+        can_resume_turns: true,
+        can_compact: true,
+        persists_on_first_turn: true,
+        accepts_images: true,
     },
     RuntimeVariant {
-        id: "pi-1.0",
+        kind: RuntimeKind::Pi,
         family_id: "pi",
         name: "Pi Agent 1.0",
         versions: PI_VERSIONS,
@@ -175,9 +192,13 @@ const VARIANTS: &[RuntimeVariant] = &[
             RuntimeProtocol::MessagesV1,
         ],
         permission_modes: &[],
+        can_resume_turns: false,
+        can_compact: true,
+        persists_on_first_turn: true,
+        accepts_images: true,
     },
     RuntimeVariant {
-        id: "codex-0.159",
+        kind: RuntimeKind::Codex,
         family_id: "codex",
         name: "Codex 0.159",
         versions: Versions::Cli {
@@ -191,9 +212,13 @@ const VARIANTS: &[RuntimeVariant] = &[
         projectless_directories: &["Documents/Codex"],
         supported_protocols: &[RuntimeProtocol::ResponsesV1],
         permission_modes: CODEX_PERMISSION_MODES,
+        can_resume_turns: true,
+        can_compact: true,
+        persists_on_first_turn: true,
+        accepts_images: true,
     },
     RuntimeVariant {
-        id: "dsh-acp-0.2",
+        kind: RuntimeKind::DeepSeek,
         family_id: "deepseek-harness",
         name: "DeepSeek Harness 0.2",
         versions: Versions::Cli {
@@ -210,17 +235,28 @@ const VARIANTS: &[RuntimeVariant] = &[
             RuntimeProtocol::MessagesV1,
         ],
         permission_modes: &[],
+        can_resume_turns: false,
+        can_compact: false,
+        persists_on_first_turn: false,
+        accepts_images: false,
     },
 ];
 pub fn variants() -> &'static [RuntimeVariant] {
     VARIANTS
 }
-pub fn variant(id: &str) -> Option<&'static RuntimeVariant> {
-    VARIANTS.iter().find(|v| v.id == id)
+pub fn variant(kind: RuntimeKind) -> &'static RuntimeVariant {
+    VARIANTS
+        .iter()
+        .find(|v| v.kind == kind)
+        .expect("every runtime kind has a variant")
 }
-pub fn check_version(type_id: &str, binary: &Path, node_binary: Option<&Path>) -> Result<String> {
+pub fn check_version(
+    kind: RuntimeKind,
+    binary: &Path,
+    node_binary: Option<&Path>,
+) -> Result<String> {
     check_version_at(
-        type_id,
+        kind,
         binary,
         node_binary,
         &crate::execution::ExecutionTarget::Local,
@@ -228,13 +264,13 @@ pub fn check_version(type_id: &str, binary: &Path, node_binary: Option<&Path>) -
     )
 }
 pub fn check_version_at(
-    type_id: &str,
+    kind: RuntimeKind,
     binary: &Path,
     node_binary: Option<&Path>,
     execution: &crate::execution::ExecutionTarget,
     os_home: Option<&Path>,
 ) -> Result<String> {
-    let adapter = variant(type_id).ok_or_else(|| Error::new("运行时版本类型不受支持"))?;
+    let adapter = variant(kind);
     let version = probe_version_at(adapter.family_id, binary, node_binary, execution, os_home)?;
     if !adapter.versions.contains(&version) {
         return Err(Error::new(format!(

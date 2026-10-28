@@ -155,7 +155,6 @@ impl Repository {
                     for runtime in &value.runtime_instances {
                         if runtime.id.is_empty()
                             || runtime.name.is_empty()
-                            || runtime.type_id.is_empty()
                             || !value
                                 .gateways
                                 .iter()
@@ -491,7 +490,6 @@ impl Repository {
             }
             for (index, segment) in link.segments.iter().enumerate() {
                 if segment.runtime_instance_id.is_empty()
-                    || segment.runtime_type_id.is_empty()
                     || !segment
                         .native_conversation_id
                         .starts_with(&format!("{}:", segment.runtime_instance_id))

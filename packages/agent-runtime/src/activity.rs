@@ -28,12 +28,13 @@ pub enum SessionFormat {
 }
 
 impl SessionFormat {
-    pub fn for_runtime_type(type_id: &str) -> Option<Self> {
-        match crate::version::variant(type_id)?.family_id {
-            "codex" => Some(Self::Codex),
-            "claude-code" => Some(Self::ClaudeCode),
-            "pi" => Some(Self::Pi),
-            _ => None,
+    pub fn for_runtime(kind: crate::version::RuntimeKind) -> Option<Self> {
+        use crate::version::RuntimeKind;
+        match kind {
+            RuntimeKind::Codex => Some(Self::Codex),
+            RuntimeKind::ClaudeCode => Some(Self::ClaudeCode),
+            RuntimeKind::Pi => Some(Self::Pi),
+            RuntimeKind::DeepSeek | RuntimeKind::Acp => None,
         }
     }
 

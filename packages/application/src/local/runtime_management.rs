@@ -97,7 +97,7 @@ impl CoreRuntime {
         let (execution, os_home) = self.runtime_location(runtime)?;
         let agent_dir = self.native_agent_directory(runtime, os_home.as_deref())?;
         Ok(management::Config {
-            variant_id: runtime.type_id.clone(),
+            runtime: runtime.type_id,
             execution,
             agent_dir,
             cwd: None,

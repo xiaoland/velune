@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+pub use velune_conversation::RuntimeKind;
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum ProviderQuotaSource {
@@ -67,7 +68,7 @@ pub struct RuntimeInstance {
     pub enabled: bool,
     pub id: String,
     pub name: String,
-    pub type_id: String,
+    pub type_id: RuntimeKind,
     pub gateway_id: String,
     pub settings: BTreeMap<String, String>,
 }
@@ -86,7 +87,7 @@ impl std::fmt::Debug for RuntimeInstance {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RuntimeTypeDescriptor {
-    pub id: String,
+    pub id: RuntimeKind,
     pub family_id: String,
     pub compatible_versions: String,
     pub can_rename_conversations: bool,
@@ -132,24 +133,18 @@ impl RuntimeInstance {
     /// Validate execution-path settings when saving an instance. Existing
     /// configuration remains readable so users can repair incomplete settings.
     pub fn validate_execution_paths(&self) -> Result<(), &'static str> {
-        if !matches!(
-            self.type_id.as_str(),
-            "pi-1.0" | "codex-0.159" | "dsh-acp-0.2" | "claude-code-2.1" | "acp-v1"
-        ) {
-            return Err("不支持的运行时版本类型");
-        }
         let execution = self.execution().map_err(|_| "运行位置或 HOME 配置无效")?;
-        if self.type_id == "acp-v1" {
+        if self.type_id == RuntimeKind::Acp {
             self.acp_launch().map_err(|_| "ACP 启动配置无效")?;
         }
         for key in ["binary", "agentDir", "nodeBinary"] {
-            if self.type_id == "acp-v1" && key != "binary" {
+            if self.type_id == RuntimeKind::Acp && key != "binary" {
                 continue;
             }
             if key == "agentDir" && matches!(execution.home, crate::RuntimeHome::Managed { .. }) {
                 continue;
             }
-            if key == "nodeBinary" && self.type_id == "claude-code-2.1" {
+            if key == "nodeBinary" && self.type_id == RuntimeKind::ClaudeCode {
                 continue;
             }
             let value = self
@@ -162,7 +157,7 @@ impl RuntimeInstance {
             }
         }
         if let Some(value) = self.settings.get("sessionDir").filter(|v| !v.is_empty())
-            && (self.type_id != "pi-1.0"
+            && (self.type_id != RuntimeKind::Pi
                 || !std::path::Path::new(value).is_absolute()
                 || value.contains('\0'))
         {

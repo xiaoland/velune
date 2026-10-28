@@ -23,12 +23,12 @@ fn uuid(value: &str) -> bool {
         })
 }
 
-pub(super) fn provider(type_id: &str) -> Option<&'static str> {
-    match type_id {
-        "codex-0.159" => Some("codex"),
-        "claude-code-2.1" => Some("claude"),
-        "pi-1.0" => Some("pi"),
-        _ => None,
+pub(super) fn provider(kind: RuntimeKind) -> Option<&'static str> {
+    match kind {
+        RuntimeKind::Codex => Some("codex"),
+        RuntimeKind::ClaudeCode => Some("claude"),
+        RuntimeKind::Pi => Some("pi"),
+        RuntimeKind::DeepSeek | RuntimeKind::Acp => None,
     }
 }
 
@@ -140,7 +140,7 @@ impl CoreRuntime {
             return None;
         }
         let runtime = self.runtime_instance(&summary.runtime_id).ok()?;
-        let family = provider(&runtime.type_id)?;
+        let family = provider(runtime.type_id)?;
         let prefix = format!("{}:", runtime.id);
         let native = summary.id.strip_prefix(&prefix)?;
         let id = if family == "pi" {
@@ -170,7 +170,7 @@ impl CoreRuntime {
         let runtimes: Vec<_> = self
             .runtime_instances
             .iter()
-            .filter(|r| r.enabled && provider(&r.type_id) == Some(uri.provider.as_str()))
+            .filter(|r| r.enabled && provider(r.type_id) == Some(uri.provider.as_str()))
             .filter(|r| runtime_id.is_none_or(|id| r.id == id))
             .collect();
         if runtimes.is_empty() {

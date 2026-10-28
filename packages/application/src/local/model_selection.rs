@@ -39,15 +39,15 @@ impl CoreRuntime {
             .map(|resolved| resolved.model())
             .ok_or_else(|| RuntimeError::invalid("所选会话模型已不存在，请重新选择"))?;
         let declared = model.reasoning_levels.as_deref().unwrap_or_default();
-        Ok(match runtime.type_id.as_str() {
+        Ok(match runtime.type_id {
             // Codex passes the level on as the Responses reasoning effort.
-            "codex-0.159" => declared.to_vec(),
-            "claude-code-2.1" => declared
+            RuntimeKind::Codex => declared.to_vec(),
+            RuntimeKind::ClaudeCode => declared
                 .iter()
                 .filter(|level| CLAUDE_EFFORT_LEVELS.contains(&level.as_str()))
                 .cloned()
                 .collect(),
-            "pi-1.0" => pi_declared_levels(model)
+            RuntimeKind::Pi => pi_declared_levels(model)
                 .into_iter()
                 .filter(|level| pi::PI_THINKING_LEVELS.contains(&level.as_str()))
                 .collect(),
@@ -117,13 +117,10 @@ impl CoreRuntime {
         runtime: &RuntimeInstance,
         mode: &str,
     ) -> Result<(), RuntimeError> {
-        velune_agent_runtime::version::variant(&runtime.type_id)
-            .is_some_and(|variant| {
-                variant
-                    .permission_modes
-                    .iter()
-                    .any(|known| known.id == mode)
-            })
+        velune_agent_runtime::version::variant(runtime.type_id)
+            .permission_modes
+            .iter()
+            .any(|known| known.id == mode)
             .then_some(())
             .ok_or_else(|| RuntimeError::invalid("此运行时不提供该权限模式"))
     }
@@ -141,10 +138,12 @@ impl CoreRuntime {
                 .reasoning_efforts(runtime, model_record_key)?
                 .iter()
                 .any(|level| level == effort),
-            Some(ModelSelection::Native { .. }) | None => match runtime.type_id.as_str() {
-                "codex-0.159" => !effort.trim().is_empty() && !effort.chars().any(char::is_control),
-                "claude-code-2.1" => CLAUDE_EFFORT_LEVELS.contains(&effort),
-                "pi-1.0" => pi::PI_THINKING_LEVELS.contains(&effort),
+            Some(ModelSelection::Native { .. }) | None => match runtime.type_id {
+                RuntimeKind::Codex => {
+                    !effort.trim().is_empty() && !effort.chars().any(char::is_control)
+                }
+                RuntimeKind::ClaudeCode => CLAUDE_EFFORT_LEVELS.contains(&effort),
+                RuntimeKind::Pi => pi::PI_THINKING_LEVELS.contains(&effort),
                 _ => false,
             },
         };
@@ -164,7 +163,7 @@ impl CoreRuntime {
         let Some(selection) = selection else {
             return Ok(());
         };
-        if runtime.type_id == "acp-v1" {
+        if runtime.type_id == RuntimeKind::Acp {
             return match selection {
                 ModelSelection::Native { provider_id: None, model_id } if !model_id.is_empty() && !model_id.chars().any(char::is_control) => Ok(()),
                 _ => Err(RuntimeError::Unsupported("通用 ACP 只接受 Agent 默认模型或其会话中的原生模型选项，不支持 managed provider 注入".into())),
@@ -186,12 +185,12 @@ impl CoreRuntime {
                 {
                     return Err(RuntimeError::invalid("原生提供商或模型标识无效"));
                 }
-                if matches!(runtime.type_id.as_str(), "pi-1.0" | "dsh-acp-0.2")
+                if matches!(runtime.type_id, RuntimeKind::Pi | RuntimeKind::DeepSeek)
                     && provider_id.is_none()
                 {
                     return Err(RuntimeError::invalid("此运行时的原生模型必须指定提供商"));
                 }
-                if runtime.type_id == "claude-code-2.1" && provider_id.is_some() {
+                if runtime.type_id == RuntimeKind::ClaudeCode && provider_id.is_some() {
                     return Err(RuntimeError::invalid(
                         "Claude Code 原生模型使用其既有单一提供商",
                     ));
@@ -211,7 +210,7 @@ impl CoreRuntime {
         if self
             .runtime_instance(&snapshot.conversation.runtime_id)?
             .type_id
-            == "acp-v1"
+            == RuntimeKind::Acp
         {
             self.prepare_acp_snapshot(&snapshot, selection, is_new)?;
             self.session.model_selection = Some(selection.cloned());
@@ -268,7 +267,7 @@ impl CoreRuntime {
             self.validate_runtime_cwd(&runtime, cwd)?;
         }
         velune_agent_runtime::version::check_version_at(
-            &runtime.type_id,
+            runtime.type_id,
             &setting_path(&runtime, "binary")?,
             setting_path_optional(&runtime, "nodeBinary").as_deref(),
             &context.target,
@@ -277,7 +276,7 @@ impl CoreRuntime {
         .map_err(|error| RuntimeError::context("运行时版本检查", error))?;
         self.shutdown_active()?;
         self.session.execution_runtime_id = Some(runtime.id.clone());
-        if runtime.type_id == "pi-1.0" {
+        if runtime.type_id == RuntimeKind::Pi {
             let servers = self.collaboration_servers();
             let mut config = self.pi_history_config(&runtime)?;
             config.mcp_servers = servers;
@@ -355,10 +354,10 @@ impl CoreRuntime {
         gateway: Option<GatewayInjection>,
     ) -> Result<NativeConfig, RuntimeError> {
         let context = self.prepare_execution_context(runtime)?;
-        let kind = match runtime.type_id.as_str() {
-            "codex-0.159" => NativeKind::Codex,
-            "dsh-acp-0.2" => NativeKind::DeepSeek,
-            "claude-code-2.1" => NativeKind::ClaudeCode,
+        let kind = match runtime.type_id {
+            RuntimeKind::Codex => NativeKind::Codex,
+            RuntimeKind::DeepSeek => NativeKind::DeepSeek,
+            RuntimeKind::ClaudeCode => NativeKind::ClaudeCode,
             _ => return Err(RuntimeError::invalid("native runtime type")),
         };
         Ok(NativeConfig {
@@ -398,7 +397,7 @@ impl CoreRuntime {
         if !runtime.enabled {
             return Err(RuntimeError::invalid("此运行时已停用"));
         }
-        if runtime.type_id == "acp-v1" {
+        if runtime.type_id == RuntimeKind::Acp {
             // The native catalog belongs to a live ACP session and is listed
             // only while one runs; the Agent's own default is no selection.
             let mut models = Vec::new();
@@ -421,7 +420,7 @@ impl CoreRuntime {
             return Ok(models);
         }
         let mut models = Vec::new();
-        if runtime.type_id == "pi-1.0" {
+        if runtime.type_id == RuntimeKind::Pi {
             let context = self.prepare_execution_context(&runtime)?;
             let mut config = self.pi_history_config(&runtime)?;
             config.rpc_entry = Some(context.resources.join("pi_rpc.mjs"));

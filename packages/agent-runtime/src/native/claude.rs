@@ -1160,7 +1160,13 @@ pub fn rename_claude_session_at(
     if !binary.is_absolute() || !home.is_absolute() || !cwd.is_absolute() {
         return Err(Error::new("Claude Code 会话配置必须使用绝对路径"));
     }
-    crate::version::check_version_at("claude-code-2.1", binary, None, execution, os_home)?;
+    crate::version::check_version_at(
+        crate::version::RuntimeKind::ClaudeCode,
+        binary,
+        None,
+        execution,
+        os_home,
+    )?;
     let mut command = crate::process_tree::command(binary);
     command
         .args([

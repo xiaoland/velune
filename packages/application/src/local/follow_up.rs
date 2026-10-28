@@ -334,7 +334,7 @@ impl CoreRuntime {
             .runtime_instance(&snapshot.context_runtime_id)
             .is_ok_and(|runtime| {
                 runtime.enabled
-                    && matches!(runtime.type_id.as_str(), "codex-0.159" | "claude-code-2.1")
+                    && velune_agent_runtime::version::variant(runtime.type_id).can_resume_turns
             });
         let can_continue = idle
             && native_resume
@@ -367,10 +367,7 @@ impl CoreRuntime {
                     .runtime_instance(&snapshot.context_runtime_id)
                     .is_ok_and(|runtime| {
                         runtime.enabled
-                            && matches!(
-                                runtime.type_id.as_str(),
-                                "codex-0.159" | "claude-code-2.1" | "pi-1.0"
-                            )
+                            && velune_agent_runtime::version::variant(runtime.type_id).can_compact
                     })
                 && snapshot.actions.can_send
                 && snapshot.pending_interactions.is_empty()

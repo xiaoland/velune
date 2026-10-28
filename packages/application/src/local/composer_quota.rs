@@ -72,7 +72,7 @@ impl CoreRuntime {
                     })
                     .collect::<Result<Vec<_>, RuntimeError>>()?
             }
-            _ if crate::native_quota_source::Capture::supported(&runtime.type_id) => {
+            _ if crate::native_quota_source::Capture::supported(runtime.type_id) => {
                 let quota = self.runtime_quota.query(
                     &runtime.id,
                     crate::native_quota_source::Capture::from_runtime(runtime),

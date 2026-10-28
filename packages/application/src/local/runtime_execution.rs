@@ -103,24 +103,22 @@ impl CoreRuntime {
         runtime: &RuntimeInstance,
         os_home: Option<&Path>,
     ) -> Result<Option<PathBuf>, RuntimeError> {
-        if runtime.type_id == "acp-v1" {
-            return Ok(None);
-        }
+        // A generic ACP Agent declares no native root.
+        let managed_directory = match runtime.type_id {
+            RuntimeKind::Pi => ".pi/agent",
+            RuntimeKind::Codex => ".codex",
+            RuntimeKind::ClaudeCode => ".claude",
+            RuntimeKind::DeepSeek => ".dsh",
+            RuntimeKind::Acp => return Ok(None),
+        };
         if matches!(
             runtime.execution_settings()?.home,
             RuntimeHome::Managed { .. }
         ) {
-            let directory = match runtime.type_id.as_str() {
-                "pi-1.0" => ".pi/agent",
-                "codex-0.159" => ".codex",
-                "claude-code-2.1" => ".claude",
-                "dsh-acp-0.2" => ".dsh",
-                _ => return Err(RuntimeError::invalid("不支持的运行时版本类型")),
-            };
             Ok(Some(
                 os_home
                     .ok_or_else(|| RuntimeError::invalid("managed HOME 尚未解析"))?
-                    .join(directory),
+                    .join(managed_directory),
             ))
         } else {
             Ok(setting_path_optional(runtime, "agentDir"))

@@ -111,7 +111,7 @@ impl RuntimeInstance {
 
     pub fn execution(&self) -> Result<RuntimeExecution, Error> {
         let execution = self.execution_settings()?;
-        if self.type_id != "acp-v1"
+        if self.type_id != crate::RuntimeKind::Acp
             && matches!(execution.transport, RuntimeTransport::Ssh { .. })
             && execution.remote_resources_directory.is_none()
         {

@@ -50,8 +50,12 @@ impl CoreRuntime {
                 }
             }
         }
-        if !attachments.images.is_empty() && runtime.type_id == "dsh-acp-0.2" {
-            return Err(RuntimeError::invalid("DeepSeek 运行时不接受图片"));
+        let variant = velune_agent_runtime::version::variant(runtime.type_id);
+        if !attachments.images.is_empty() && !variant.accepts_images {
+            return Err(RuntimeError::Invalid(format!(
+                "{} 不接受图片",
+                variant.name
+            )));
         }
         Ok(attachments)
     }

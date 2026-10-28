@@ -71,7 +71,7 @@ pub(crate) struct ConversationLink {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct ConversationSegmentReference {
     pub runtime_instance_id: String,
-    pub runtime_type_id: String,
+    pub runtime_type_id: RuntimeKind,
     pub native_conversation_id: String,
     pub cwd: Option<String>,
     pub cutoff: Option<ConversationCutoff>,
@@ -250,26 +250,24 @@ struct PiBindingIdentity<'a> {
 }
 
 /// The versioned runtime registry owns support; family IDs never grant capabilities.
-pub(crate) fn runtime_protocols(type_id: &str) -> Option<Vec<GatewayProtocol>> {
+pub(crate) fn runtime_protocols(kind: RuntimeKind) -> Vec<GatewayProtocol> {
     use velune_agent_runtime::version::{RuntimeProtocol, variant};
-    Some(
-        variant(type_id)?
-            .supported_protocols
-            .iter()
-            .map(|protocol| match protocol {
-                RuntimeProtocol::ChatCompletionsV1 => GatewayProtocol::ChatCompletionsV1,
-                RuntimeProtocol::ResponsesV1 => GatewayProtocol::ResponsesV1,
-                RuntimeProtocol::MessagesV1 => GatewayProtocol::MessagesV1,
-            })
-            .collect(),
-    )
+    variant(kind)
+        .supported_protocols
+        .iter()
+        .map(|protocol| match protocol {
+            RuntimeProtocol::ChatCompletionsV1 => GatewayProtocol::ChatCompletionsV1,
+            RuntimeProtocol::ResponsesV1 => GatewayProtocol::ResponsesV1,
+            RuntimeProtocol::MessagesV1 => GatewayProtocol::MessagesV1,
+        })
+        .collect()
 }
 /// Select the wire protocol the runtime speaks, preferring native passthrough.
 pub(crate) fn runtime_ingress(
-    type_id: &str,
+    kind: RuntimeKind,
     upstream: &GatewayProtocol,
 ) -> Option<GatewayProtocol> {
-    let protocols = runtime_protocols(type_id)?;
+    let protocols = runtime_protocols(kind);
     protocols
         .iter()
         .find(|protocol| *protocol == upstream)
@@ -278,16 +276,15 @@ pub(crate) fn runtime_ingress(
 }
 
 /// All three provider protocols are reachable through the LLM gateway.
-pub(crate) fn runtime_provider_protocols(type_id: &str) -> Option<Vec<GatewayProtocol>> {
-    let native = runtime_protocols(type_id)?;
-    if native.is_empty() {
-        return Some(Vec::new());
+pub(crate) fn runtime_provider_protocols(kind: RuntimeKind) -> Vec<GatewayProtocol> {
+    if runtime_protocols(kind).is_empty() {
+        return Vec::new();
     }
-    Some(vec![
+    vec![
         GatewayProtocol::ChatCompletionsV1,
         GatewayProtocol::ResponsesV1,
         GatewayProtocol::MessagesV1,
-    ])
+    ]
 }
 
 impl GatewayConfig {

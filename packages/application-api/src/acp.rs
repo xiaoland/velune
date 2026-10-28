@@ -76,7 +76,7 @@ pub use velune_conversation::acp_config::{AcpConfigChoice, AcpConfigOption, AcpC
 
 impl RuntimeInstance {
     pub fn acp_launch(&self) -> Result<AcpLaunch, Error> {
-        if self.type_id != "acp-v1" {
+        if self.type_id != crate::RuntimeKind::Acp {
             return Err(Error::invalid("此实例不是通用 ACP 运行时"));
         }
         let launch: AcpLaunch = self
@@ -90,7 +90,7 @@ impl RuntimeInstance {
     }
 
     pub fn set_acp_launch(&mut self, launch: AcpLaunch) -> Result<(), Error> {
-        if self.type_id != "acp-v1" {
+        if self.type_id != crate::RuntimeKind::Acp {
             return Err(Error::invalid("此实例不是通用 ACP 运行时"));
         }
         launch.validate()?;

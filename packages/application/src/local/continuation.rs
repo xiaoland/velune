@@ -136,7 +136,7 @@ impl CoreRuntime {
         let capability = |id: &str, deleting: bool| {
             if self
                 .runtime_instance(id)
-                .is_ok_and(|runtime| runtime.type_id == "acp-v1" && runtime.enabled)
+                .is_ok_and(|runtime| runtime.type_id == RuntimeKind::Acp && runtime.enabled)
             {
                 return deleting
                     && self
@@ -148,7 +148,7 @@ impl CoreRuntime {
             self.runtime_instance(id)
                 .ok()
                 .filter(|r| r.enabled)
-                .and_then(|r| velune_agent_runtime::version::variant(&r.type_id))
+                .map(|r| velune_agent_runtime::version::variant(r.type_id))
                 .is_some_and(|v| {
                     if deleting {
                         v.can_delete_conversations
@@ -171,7 +171,7 @@ impl CoreRuntime {
             let claude_sub_agent = summary.parent_conversation_id.is_some()
                 && self
                     .runtime_instance(&summary.runtime_id)
-                    .is_ok_and(|runtime| runtime.type_id == "claude-code-2.1");
+                    .is_ok_and(|runtime| runtime.type_id == RuntimeKind::ClaudeCode);
             summary.can_rename = !claude_sub_agent && capability(&summary.runtime_id, false);
             summary.can_delete = capability(&summary.runtime_id, true);
         }
@@ -244,7 +244,7 @@ impl CoreRuntime {
             ));
         }
         let runtime = self.runtime_instance(&segment.runtime_instance_id)?;
-        if runtime.type_id == "acp-v1" {
+        if runtime.type_id == RuntimeKind::Acp {
             let native_id = segment
                 .native_conversation_id
                 .strip_prefix(&format!("{}:", runtime.id))
@@ -615,8 +615,7 @@ impl CoreRuntime {
             runtime_instance_id: snapshot.conversation.runtime_id.clone(),
             runtime_type_id: self
                 .runtime_instance(&snapshot.conversation.runtime_id)?
-                .type_id
-                .clone(),
+                .type_id,
             native_conversation_id: snapshot.conversation.id.clone(),
             cwd: snapshot.conversation.cwd.clone(),
             cutoff: None,
@@ -640,7 +639,7 @@ impl CoreRuntime {
         }
         if deleting && let Some(segment) = single_target_alias(&link) {
             let runtime = self.runtime_instance(&segment.runtime_instance_id)?;
-            let can_list = runtime.type_id != "acp-v1"
+            let can_list = runtime.type_id != RuntimeKind::Acp
                 || self
                     .acp_capability_cache
                     .borrow()

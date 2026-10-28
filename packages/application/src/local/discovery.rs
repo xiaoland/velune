@@ -46,11 +46,20 @@ impl CoreRuntime {
             // has not created it, and creates it on its first run.
             let directory_valid = Path::new(&probe.agent_directory).is_absolute()
                 && !probe.agent_directory.contains('\0');
+            // A version without an adapter is shown as its family's, unsupported.
+            let kind = adapter
+                .or_else(|| {
+                    velune_agent_runtime::version::variants()
+                        .iter()
+                        .find(|variant| variant.family_id == probe.family_id)
+                })
+                .map(|variant| variant.kind)
+                .ok_or_else(|| RuntimeError::invalid("未知的运行时类别"))?;
             let runtime = RuntimeInstance {
                 enabled: true,
                 id: crate::new_record_key(),
                 name: adapter.map_or(probe.family_id.as_str(), |v| v.name).into(),
-                type_id: adapter.map_or("", |v| v.id).into(),
+                type_id: kind,
                 gateway_id: "default".into(),
                 settings: BTreeMap::from([
                     ("binary".into(), probe.binary),

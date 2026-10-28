@@ -38,7 +38,7 @@ impl CoreRuntime {
                     .query(&gateway.id, &member.provider().id, false);
             }
         }
-        if runtime.type_id != "pi-1.0" {
+        if runtime.type_id != RuntimeKind::Pi {
             self.shutdown_active()?;
             let runtime_projection = self.execution_context(&runtime)?.projection;
             let lane = self.lane_projection(&runtime_projection);
@@ -135,7 +135,6 @@ impl CoreRuntime {
         let projection_dir = self.lane_projection(&context.projection);
         let config = PiConfig {
             mcp_servers: self.collaboration_servers(),
-            runtime_type_id: runtime.type_id.clone(),
             binary: setting_path(&runtime, "binary")?,
             node_binary: setting_path_optional(&runtime, "nodeBinary"),
             sdk_helper: setting_path_optional(&runtime, "sdkHelper")

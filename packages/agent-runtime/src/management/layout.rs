@@ -1,5 +1,6 @@
 use super::*;
 use std::path::Path;
+use velune_conversation::RuntimeKind;
 
 #[derive(Clone, Copy)]
 pub(super) enum Format {
@@ -42,20 +43,28 @@ impl Layout {
 }
 
 pub(super) fn unsupported(config: &Config, kind: ResourceKind) -> Option<&'static str> {
-    unsupported_variant(&config.variant_id, kind)
+    unsupported_variant(config.runtime, kind)
 }
 
-pub(super) fn unsupported_variant(variant_id: &str, kind: ResourceKind) -> Option<&'static str> {
-    match (variant_id, kind) {
-        ("acp-v1", _) => Some("ACP v1 未声明原生持久资源管理协议，无法从启动命令推断资源位置"),
-        ("pi-1.0", ResourceKind::NativeAgentDefinitions) => {
+pub(super) fn unsupported_variant(
+    runtime: RuntimeKind,
+    kind: ResourceKind,
+) -> Option<&'static str> {
+    match (runtime, kind) {
+        (RuntimeKind::Acp, _) => {
+            Some("ACP v1 未声明原生持久资源管理协议，无法从启动命令推断资源位置")
+        }
+        (RuntimeKind::Pi, ResourceKind::NativeAgentDefinitions) => {
             Some("Pi 1.0.2 没有内置子 Agent 定义格式；扩展提供的定义不在当前管理范围")
         }
-        ("dsh-acp-0.2", ResourceKind::McpServers | ResourceKind::NativeAgentDefinitions) => {
-            Some("DSH 支持此运行能力，但当前管理适配未支持其 Cordis 插件声明与 patch 语义")
-        }
-        ("codex-0.159" | "claude-code-2.1" | "pi-1.0" | "dsh-acp-0.2", _) => None,
-        _ => Some("没有该运行时版本的原生资源管理适配"),
+        (
+            RuntimeKind::DeepSeek,
+            ResourceKind::McpServers | ResourceKind::NativeAgentDefinitions,
+        ) => Some("DSH 支持此运行能力，但当前管理适配未支持其 Cordis 插件声明与 patch 语义"),
+        (
+            RuntimeKind::Codex | RuntimeKind::ClaudeCode | RuntimeKind::Pi | RuntimeKind::DeepSeek,
+            _,
+        ) => None,
     }
 }
 
@@ -79,15 +88,17 @@ pub(super) fn resolve(config: &Config, kind: ResourceKind, scope: ResourceScope)
         )
     })?
     .to_path_buf();
-    let family = config.variant_id.as_str();
+    let family = config.runtime;
     let user = scope == ResourceScope::User;
     let (prefix, candidates, format) = match kind {
         ResourceKind::UserInstructions => {
             let candidates = match family {
-                "claude-code-2.1" if user => vec!["CLAUDE.md"],
-                "claude-code-2.1" => vec!["CLAUDE.md", ".claude/CLAUDE.md", "CLAUDE.local.md"],
-                "codex-0.159" => vec!["AGENTS.md", "AGENTS.override.md"],
-                "pi-1.0" => vec![
+                RuntimeKind::ClaudeCode if user => vec!["CLAUDE.md"],
+                RuntimeKind::ClaudeCode => {
+                    vec!["CLAUDE.md", ".claude/CLAUDE.md", "CLAUDE.local.md"]
+                }
+                RuntimeKind::Codex => vec!["AGENTS.md", "AGENTS.override.md"],
+                RuntimeKind::Pi => vec![
                     "AGENTS.md",
                     "AGENTS.override.md",
                     "AGENTS.MD",
@@ -109,9 +120,9 @@ pub(super) fn resolve(config: &Config, kind: ResourceKind, scope: ResourceScope)
                 "skills"
             } else {
                 match family {
-                    "codex-0.159" => ".agents/skills",
-                    "claude-code-2.1" => ".claude/skills",
-                    "pi-1.0" => ".pi/skills",
+                    RuntimeKind::Codex => ".agents/skills",
+                    RuntimeKind::ClaudeCode => ".claude/skills",
+                    RuntimeKind::Pi => ".pi/skills",
                     _ => ".dsh/skills",
                 }
             };
@@ -119,19 +130,19 @@ pub(super) fn resolve(config: &Config, kind: ResourceKind, scope: ResourceScope)
                 prefix,
                 vec![],
                 Format::SkillTree {
-                    flat_markdown: family == "dsh-acp-0.2",
+                    flat_markdown: family == RuntimeKind::DeepSeek,
                 },
             )
         }
         ResourceKind::NativeAgentDefinitions => {
             let prefix = if user {
                 "agents"
-            } else if family == "codex-0.159" {
+            } else if family == RuntimeKind::Codex {
                 ".codex/agents"
             } else {
                 ".claude/agents"
             };
-            let format = if family == "codex-0.159" {
+            let format = if family == RuntimeKind::Codex {
                 Format::TomlAgents
             } else {
                 Format::MarkdownAgents
@@ -140,17 +151,17 @@ pub(super) fn resolve(config: &Config, kind: ResourceKind, scope: ResourceScope)
         }
         ResourceKind::McpServers => {
             let path = match (family, user) {
-                ("codex-0.159", true) => "config.toml",
-                ("codex-0.159", false) => ".codex/config.toml",
-                ("claude-code-2.1", true) => ".claude.json",
-                ("claude-code-2.1", false) => ".mcp.json",
+                (RuntimeKind::Codex, true) => "config.toml",
+                (RuntimeKind::Codex, false) => ".codex/config.toml",
+                (RuntimeKind::ClaudeCode, true) => ".claude.json",
+                (RuntimeKind::ClaudeCode, false) => ".mcp.json",
                 (_, true) => "mcp.json",
                 _ => ".pi/mcp.json",
             };
             (
                 path,
                 vec![],
-                if family == "codex-0.159" {
+                if family == RuntimeKind::Codex {
                     Format::TomlMcp
                 } else {
                     Format::JsonMcp

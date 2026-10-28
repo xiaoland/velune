@@ -63,7 +63,7 @@ pub(super) enum EntryState {
 }
 /// Runtimes whose sessions are files read one by one.
 fn reads_lazily(runtime: &RuntimeInstance) -> bool {
-    matches!(runtime.type_id.as_str(), "pi-1.0" | "claude-code-2.1")
+    matches!(runtime.type_id, RuntimeKind::Pi | RuntimeKind::ClaudeCode)
 }
 impl CoreRuntime {
     pub(super) fn runtime_instance(&self, id: &str) -> Result<&RuntimeInstance, RuntimeError> {
@@ -97,7 +97,6 @@ impl CoreRuntime {
             mcp_servers: Vec::new(),
             execution: context.target,
             os_home: context.os_home,
-            runtime_type_id: runtime.type_id.clone(),
             binary: setting_path(runtime, "binary")?,
             node_binary: Some(setting_path(runtime, "nodeBinary")?),
             sdk_helper: Some(context.resources.join("pi_sessions.mjs")),
@@ -130,10 +129,10 @@ impl CoreRuntime {
                 })
                 .collect::<Vec<_>>()
         };
-        let mut entries = match runtime.type_id.as_str() {
-            "acp-v1" => read(self.acp_summaries(runtime)?),
-            "codex-0.159" => read(self.read_codex_projects(runtime, false)?),
-            "pi-1.0" => history::list_pi(&self.pi_history_config(runtime)?, &[])
+        let mut entries = match runtime.type_id {
+            RuntimeKind::Acp => read(self.acp_summaries(runtime)?),
+            RuntimeKind::Codex => read(self.read_codex_projects(runtime, false)?),
+            RuntimeKind::Pi => history::list_pi(&self.pi_history_config(runtime)?, &[])
                 .map_err(|error| {
                     RuntimeError::context("Pi 历史无法读取；请检查实例路径与 SDK 配置后重试", error)
                 })?
@@ -151,7 +150,7 @@ impl CoreRuntime {
                     state: EntryState::Unread,
                 })
                 .collect(),
-            "claude-code-2.1" => history::index(&self.history_config(runtime)?)
+            RuntimeKind::ClaudeCode => history::index(&self.history_config(runtime)?)
                 .map_err(|error| self.history_failure(runtime, error))?
                 .into_iter()
                 .map(|entry| IndexedConversation {
@@ -206,10 +205,8 @@ impl CoreRuntime {
         runtime: &RuntimeInstance,
         error: velune_agent_runtime::history::HistoryError,
     ) -> RuntimeError {
-        let variant = velune_agent_runtime::version::variant(&runtime.type_id);
-        let family = variant.map(|value| value.family_id).unwrap_or("unknown");
-        let runtime_type = variant.map(|value| value.id).unwrap_or("unknown");
-        tracing::warn!(target: "velune_application", event = "runtime_history_read_failed", phase = error.phase(), failure_kind = error.code(), runtime_family = family, runtime_type, runtime_id=%runtime.id, runtime_name=%runtime.name, runtime_type_id=%runtime.type_id, binary=?runtime.settings.get("binary"), node_binary=?runtime.settings.get("nodeBinary"), agent_dir=?runtime.settings.get("agentDir"), detail=%error);
+        let family = velune_agent_runtime::version::variant(runtime.type_id).family_id;
+        tracing::warn!(target: "velune_application", event = "runtime_history_read_failed", phase = error.phase(), failure_kind = error.code(), runtime_family = family, runtime_id=%runtime.id, runtime_name=%runtime.name, runtime_type_id=%runtime.type_id, binary=?runtime.settings.get("binary"), node_binary=?runtime.settings.get("nodeBinary"), agent_dir=?runtime.settings.get("agentDir"), detail=%error);
         RuntimeError::History(error)
     }
     /// The runtime's indexed conversations as last indexed.
@@ -252,7 +249,7 @@ impl CoreRuntime {
         let (summaries, identities): (
             BTreeMap<String, ConversationSummary>,
             BTreeMap<String, String>,
-        ) = if runtime.type_id == "pi-1.0" {
+        ) = if runtime.type_id == RuntimeKind::Pi {
             let listing =
                 history::list_pi(&self.pi_history_config(runtime)?, &natives).map_err(|error| {
                     RuntimeError::context("Pi 历史无法读取；请检查实例路径与 SDK 配置后重试", error)
@@ -432,8 +429,7 @@ impl CoreRuntime {
             .resolve_dispatch(key)
             .map_err(|_| RuntimeError::invalid("所选会话模型已不存在，请重新选择"))?
             .provider();
-        let protocols = crate::config::runtime_provider_protocols(&runtime.type_id)
-            .ok_or_else(|| RuntimeError::invalid("runtime type"))?;
+        let protocols = crate::config::runtime_provider_protocols(runtime.type_id);
         if !protocols.contains(&provider.protocol) {
             return Err(RuntimeError::invalid("所选模型协议不适用于此运行时版本"));
         }
@@ -461,7 +457,7 @@ impl CoreRuntime {
                 .conversation_summary(runtime, id)
                 .map_err(|error| {
                     tracing::warn!(target: "velune_application", event="runtime_history_read_failed", phase="history_lookup", runtime_id=%runtime.id, runtime_name=%runtime.name, runtime_type_id=%runtime.type_id, binary=?runtime.settings.get("binary"), node_binary=?runtime.settings.get("nodeBinary"), agent_dir=?runtime.settings.get("agentDir"), detail=%error);
-                    if runtime.type_id == "pi-1.0" {
+                    if runtime.type_id == RuntimeKind::Pi {
                         RuntimeError::context(&runtime_context(runtime), error)
                     } else {
                         error
@@ -469,7 +465,7 @@ impl CoreRuntime {
                 })?
                 .ok_or_else(|| RuntimeError::invalid("此会话不属于所选运行时历史目录"))?,
         };
-        if runtime.type_id == "acp-v1" {
+        if runtime.type_id == RuntimeKind::Acp {
             let cwd = summary
                 .cwd
                 .as_deref()
@@ -500,7 +496,7 @@ impl CoreRuntime {
                 can_switch: true,
             },
         };
-        if runtime.type_id == "pi-1.0" {
+        if runtime.type_id == RuntimeKind::Pi {
             let saved = pi_session_helper(
                 &self.pi_history_config(runtime)?,
                 Path::new(native_id),
@@ -521,10 +517,8 @@ impl CoreRuntime {
             }
         } else {
             let read = history::read(&self.history_config(runtime)?, runtime_id, native_id).map_err(|error| {
-                let variant = velune_agent_runtime::version::variant(&runtime.type_id);
-                let family = variant.map(|value| value.family_id).unwrap_or("unknown");
-                let runtime_type = variant.map(|value| value.id).unwrap_or("unknown");
-                tracing::warn!(target: "velune_application", event = "runtime_history_read_failed", phase = error.phase(), failure_kind = error.code(), runtime_family = family, runtime_type, runtime_id=%runtime.id, runtime_name=%runtime.name, runtime_type_id=%runtime.type_id, binary=?runtime.settings.get("binary"), node_binary=?runtime.settings.get("nodeBinary"), agent_dir=?runtime.settings.get("agentDir"), detail=%error);
+                let family = velune_agent_runtime::version::variant(runtime.type_id).family_id;
+                tracing::warn!(target: "velune_application", event = "runtime_history_read_failed", phase = error.phase(), failure_kind = error.code(), runtime_family = family, runtime_id=%runtime.id, runtime_name=%runtime.name, runtime_type_id=%runtime.type_id, binary=?runtime.settings.get("binary"), node_binary=?runtime.settings.get("nodeBinary"), agent_dir=?runtime.settings.get("agentDir"), detail=%error);
                 RuntimeError::History(error)
             })?;
             snapshot.conversation.cwd = read.cwd;
@@ -613,20 +607,20 @@ impl CoreRuntime {
         }
         let context = self.prepare_execution_context(&runtime)?;
         velune_agent_runtime::version::check_version_at(
-            &runtime.type_id,
+            runtime.type_id,
             &setting_path(&runtime, "binary")?,
             setting_path_optional(&runtime, "nodeBinary").as_deref(),
             &context.target,
             context.os_home.as_deref(),
         )
         .map_err(|error| RuntimeError::Invalid(error.to_string()))?;
-        if runtime.type_id == "pi-1.0" {
+        if runtime.type_id == RuntimeKind::Pi {
             runnable_pi_model(gateway, key)?;
         }
         gateway.to_gateway_config()?;
         let result = (|| {
             self.prepare_runtime(&runtime_id, key)?;
-            if runtime.type_id != "pi-1.0" {
+            if runtime.type_id != RuntimeKind::Pi {
                 if is_new {
                     self.native_create(cwd.as_deref(), key)?;
                 } else {

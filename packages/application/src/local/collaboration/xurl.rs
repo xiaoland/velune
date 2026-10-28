@@ -129,7 +129,7 @@ impl CoreRuntime {
         if !caller.is_some_and(|caller| same_machine(caller, runtime)) {
             return None;
         }
-        let family = super::super::agent_uri::provider(&runtime.type_id)?;
+        let family = super::super::agent_uri::provider(runtime.type_id)?;
         let (target, home) = self.runtime_location(runtime).ok()?;
         // A local binary is not portable to an SSH target's architecture.
         if !target.is_local()

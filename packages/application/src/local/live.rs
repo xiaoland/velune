@@ -61,7 +61,7 @@ impl CoreRuntime {
     /// Native sessions of a runtime on this machine, when Velune knows their
     /// layout.
     pub(super) fn session_store(&self, runtime: &RuntimeInstance) -> Option<SessionStore> {
-        let format = SessionFormat::for_runtime_type(&runtime.type_id)?;
+        let format = SessionFormat::for_runtime(runtime.type_id)?;
         let context = self.execution_context(runtime).ok()?;
         if !context.target.is_local() {
             return None;

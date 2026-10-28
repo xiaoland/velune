@@ -75,9 +75,7 @@ impl CoreRuntime {
     pub(super) fn natively_archived(&self) -> Vec<ConversationSummary> {
         let mut archived = Vec::new();
         for runtime in self.runtime_instances.iter().filter(|r| r.enabled) {
-            let can_archive = velune_agent_runtime::version::variant(&runtime.type_id)
-                .is_some_and(|variant| variant.can_archive_conversations);
-            if !can_archive {
+            if !velune_agent_runtime::version::variant(runtime.type_id).can_archive_conversations {
                 continue;
             }
             match self.history_config(runtime).and_then(|config| {
@@ -103,15 +101,14 @@ impl CoreRuntime {
             .filter(|runtime| runtime.enabled)
             .map(|runtime| {
                 let home = self.user_home(runtime);
-                let directories = velune_agent_runtime::version::variant(&runtime.type_id)
-                    .zip(home.as_ref())
-                    .map_or_else(Vec::new, |(variant, home)| {
-                        variant
-                            .projectless_directories
-                            .iter()
-                            .map(|directory| home.join(directory))
-                            .collect()
-                    });
+                let variant = velune_agent_runtime::version::variant(runtime.type_id);
+                let directories = home.as_ref().map_or_else(Vec::new, |home| {
+                    variant
+                        .projectless_directories
+                        .iter()
+                        .map(|directory| home.join(directory))
+                        .collect()
+                });
                 let on_this_mac = self
                     .runtime_location(runtime)
                     .is_ok_and(|(target, _)| target.is_local());
@@ -938,8 +935,10 @@ impl CoreRuntime {
                 .runtime_instances
                 .iter()
                 .find(|runtime| runtime.id == summary.runtime_id)
-                .and_then(|runtime| velune_agent_runtime::version::variant(&runtime.type_id))
-                .is_some_and(|variant| variant.can_archive_conversations)
+                .is_some_and(|runtime| {
+                    velune_agent_runtime::version::variant(runtime.type_id)
+                        .can_archive_conversations
+                })
     }
 
     fn change_native_archive(

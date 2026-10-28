@@ -5,6 +5,8 @@ pub mod acp_config;
 pub mod authentication;
 pub mod bytes;
 pub mod resources;
+mod runtime_kind;
+pub use runtime_kind::RuntimeKind;
 
 use serde::{Deserialize, Serialize};
 

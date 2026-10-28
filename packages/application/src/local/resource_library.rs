@@ -327,7 +327,7 @@ impl CoreRuntime {
                 )
             }
         };
-        let (content, notes) = management::parse(&config.variant_id, kind, &name, files)?;
+        let (content, notes) = management::parse(config.runtime, kind, &name, files)?;
         Ok(crate::ResourceTemplateImport {
             template: ResourceTemplate {
                 id: String::new(),
@@ -397,7 +397,7 @@ impl CoreRuntime {
         }
         // Rendering against a variant that holds every kind checks the content itself.
         management::render(
-            "claude-code-2.1",
+            RuntimeKind::ClaudeCode,
             &template.name,
             &canonical(&template.content)?,
         )?;
@@ -602,7 +602,7 @@ impl CoreRuntime {
         };
         let kind = template.content.kind();
         let rendered = match canonical(&template.content).and_then(|content| {
-            management::render(&config.variant_id, &template.name, &content).map_err(Into::into)
+            management::render(config.runtime, &template.name, &content).map_err(Into::into)
         }) {
             Ok(Rendering::Skipped { reason }) => return unsupported(reason),
             Ok(Rendering::Files { files, .. }) => files,
@@ -662,7 +662,7 @@ impl CoreRuntime {
         // Path → what the library would write there, if anything.
         let mut sides: BTreeMap<String, Option<Vec<u8>>> = BTreeMap::new();
         if let Rendering::Files { files, .. } = management::render(
-            &config.variant_id,
+            config.runtime,
             &template.name,
             &canonical(&template.content)?,
         )? {
@@ -772,7 +772,7 @@ impl CoreRuntime {
     ) -> Result<Plan, RuntimeError> {
         let kind = template.content.kind();
         let rendering = match management::render(
-            &config.variant_id,
+            config.runtime,
             &template.name,
             &canonical(&template.content)?,
         ) {

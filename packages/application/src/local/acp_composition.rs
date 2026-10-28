@@ -62,7 +62,7 @@ impl CoreRuntime {
         &self,
         runtime: &RuntimeInstance,
     ) -> Result<(), RuntimeError> {
-        if runtime.type_id != "acp-v1" {
+        if runtime.type_id != RuntimeKind::Acp {
             return Ok(());
         }
         let mut session = self.acp_client(runtime)?;
@@ -82,7 +82,7 @@ impl CoreRuntime {
         &self,
         runtime: &RuntimeInstance,
     ) -> Result<(), RuntimeError> {
-        if runtime.type_id == "acp-v1" {
+        if runtime.type_id == RuntimeKind::Acp {
             self.acp_client(runtime)?
                 .shutdown()
                 .map_err(|error| RuntimeError::context("ACP 关闭", error))?;

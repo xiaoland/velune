@@ -1,6 +1,7 @@
 //! Read-only Pi provider/model import preview and transactional application.
 //! The JavaScript adapter owns SDK 1.0.2 parsing; Rust only validates the
 //! non-secret snapshot and projects supported models into gateway config.
+use crate::config::RuntimeKind;
 use crate::config::{
     GatewayConfig, GatewayProtocol, ProviderDefinition, ProviderModel, RuntimeInstance,
 };
@@ -21,7 +22,7 @@ pub(crate) struct Applied {
 
 pub(crate) fn descriptor() -> crate::config::RuntimeTypeDescriptor {
     crate::config::RuntimeTypeDescriptor {
-        id: "pi-1.0".into(),
+        id: RuntimeKind::Pi,
         family_id: "pi".into(),
         compatible_versions: velune_agent_runtime::version::PI_VERSIONS.describe(),
         can_rename_conversations: true,
@@ -32,10 +33,8 @@ pub(crate) fn descriptor() -> crate::config::RuntimeTypeDescriptor {
         native_account_quota: false,
         permission_modes: Vec::new(),
         remote_resources: true,
-        supported_protocols: crate::config::runtime_protocols("pi-1.0")
-            .expect("registered Pi adapter"),
-        supported_provider_protocols: crate::config::runtime_provider_protocols("pi-1.0")
-            .expect("registered Pi adapter"),
+        supported_protocols: crate::config::runtime_protocols(RuntimeKind::Pi),
+        supported_provider_protocols: crate::config::runtime_provider_protocols(RuntimeKind::Pi),
         name: "Pi Agent 提供商目录".into(),
         fields: Vec::new(),
     }
@@ -58,7 +57,7 @@ fn native_runtime<'a>(
 ) -> Result<Option<&'a RuntimeInstance>, RuntimeError> {
     let Some(runtime) = runtimes.iter().find(|runtime| {
         Some(runtime.id.as_str()) == selection.source_instance_id.as_deref()
-            && crate::native_provider_import::TYPES.contains(&runtime.type_id.as_str())
+            && crate::native_provider_import::TYPES.contains(&runtime.type_id)
     }) else {
         return Ok(None);
     };
@@ -101,7 +100,7 @@ fn configured_source(
             "提供商导入目前只支持使用既有本机 HOME 的运行时；远端与 managed HOME 可直接使用原生提供商",
         ));
     }
-    if runtime.type_id != "pi-1.0" || selection.harness_type_id != "pi" {
+    if runtime.type_id != RuntimeKind::Pi || selection.harness_type_id != "pi" {
         return Err(RuntimeError::invalid("所选 Agent 运行时不支持提供商导入"));
     }
     let directory = runtime
@@ -124,7 +123,7 @@ fn configured_source(
     )
     .map_err(|error| RuntimeError::Invalid(error.to_string()))?;
     let sdk_version = velune_agent_runtime::version::check_version(
-        &runtime.type_id,
+        runtime.type_id,
         &binary,
         Some(std::path::Path::new(node)),
     )
@@ -133,7 +132,7 @@ fn configured_source(
         ("sourceDir".into(), directory.clone()),
         ("nodeBinary".into(), node.clone()),
         ("binary".into(), binary.to_string_lossy().into_owned()),
-        ("runtimeTypeId".into(), runtime.type_id.clone()),
+        ("runtimeTypeId".into(), runtime.type_id.to_string()),
         ("sdkVersion".into(), sdk_version),
     ]);
     for key in ["modelsPath", "authPath"] {

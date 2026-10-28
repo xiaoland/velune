@@ -281,7 +281,7 @@ impl CoreRuntime {
             .chain(
                 runtime_types
                     .iter()
-                    .filter(|kind| crate::native_provider_import::TYPES.contains(&kind.id.as_str()))
+                    .filter(|kind| crate::native_provider_import::TYPES.contains(&kind.id))
                     .cloned(),
             )
             .collect();
@@ -466,10 +466,6 @@ impl CoreRuntime {
             RuntimeChange::Upsert(runtime) => {
                 if runtime.id.is_empty()
                     || runtime.name.is_empty()
-                    || !matches!(
-                        runtime.type_id.as_str(),
-                        "pi-1.0" | "codex-0.159" | "dsh-acp-0.2" | "claude-code-2.1" | "acp-v1"
-                    )
                     || (runtime.gateway_id != "default"
                         && !self
                             .gateways
@@ -537,11 +533,7 @@ impl CoreRuntime {
             };
             let source_changed = source_ids.iter().any(|id| {
                 let origin = |runtime: &RuntimeInstance| {
-                    (
-                        runtime.type_id.clone(),
-                        runtime.enabled,
-                        runtime.settings.clone(),
-                    )
+                    (runtime.type_id, runtime.enabled, runtime.settings.clone())
                 };
                 previous
                     .iter()

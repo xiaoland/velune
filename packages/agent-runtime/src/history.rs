@@ -502,7 +502,7 @@ fn execute_pi(
         .arg("--cli")
         .arg(&config.binary)
         .arg("--runtime-type")
-        .arg(&config.runtime_type_id);
+        .arg(crate::version::RuntimeKind::Pi.id());
     match operation {
         PiOperation::List => {}
         PiOperation::Inspect(session) => {

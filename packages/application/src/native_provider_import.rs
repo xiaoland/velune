@@ -3,6 +3,7 @@
 //! gateway: an API becomes an HTTP provider (a literal key is copied, as Pi
 //! import does for keys), and Claude Code's login is referenced, not copied.
 use crate::Error;
+use crate::config::RuntimeKind;
 use crate::config::{
     ExecutionBackend, GatewayConfig, GatewayProtocol, ProviderDefinition, ProviderModel,
     ProviderQuotaSource, RequestProfile, RuntimeInstance,
@@ -15,7 +16,7 @@ use sha2::{Digest, Sha256};
 use velune_agent_runtime::provider_inventory::{self, Access, Inventory, KeySource, Protocol};
 
 /// Runtime types whose configuration the agent runtime can read for import.
-pub(crate) const TYPES: [&str; 2] = ["codex-0.159", "claude-code-2.1"];
+pub(crate) const TYPES: [RuntimeKind; 2] = [RuntimeKind::Codex, RuntimeKind::ClaudeCode];
 
 fn inventory(runtime: &RuntimeInstance) -> Result<Inventory, Error> {
     if runtime.execution()? != crate::RuntimeExecution::default() {
@@ -29,9 +30,9 @@ fn inventory(runtime: &RuntimeInstance) -> Result<Inventory, Error> {
         .map(std::path::Path::new)
         .filter(|path| path.is_absolute())
         .ok_or_else(|| Error::invalid("请先为所选运行时配置绝对路径的运行时目录"))?;
-    match runtime.type_id.as_str() {
-        "codex-0.159" => provider_inventory::codex(directory),
-        "claude-code-2.1" => provider_inventory::claude_code(directory),
+    match runtime.type_id {
+        RuntimeKind::Codex => provider_inventory::codex(directory),
+        RuntimeKind::ClaudeCode => provider_inventory::claude_code(directory),
         _ => return Err(Error::invalid("所选 Agent 运行时不支持提供商导入")),
     }
     .map_err(|error| Error::Invalid(error.0))
@@ -73,8 +74,8 @@ fn protocol(value: Protocol) -> GatewayProtocol {
     }
 }
 pub(crate) fn family(runtime: &RuntimeInstance) -> &'static str {
-    match runtime.type_id.as_str() {
-        "codex-0.159" => "codex",
+    match runtime.type_id {
+        RuntimeKind::Codex => "codex",
         _ => "claude-code",
     }
 }
@@ -158,7 +159,7 @@ pub(crate) fn preview(
         token: token(&inventory.fingerprint, &target),
         source_fingerprint: inventory.fingerprint,
         target_fingerprint: target,
-        sdk_version: runtime.type_id.clone(),
+        sdk_version: runtime.type_id.to_string(),
         source: crate::ProviderImportSource {
             kind: "harness".into(),
             harness_type_id: family(runtime).into(),

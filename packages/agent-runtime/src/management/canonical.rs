@@ -5,6 +5,7 @@ use super::{layout, *};
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 use std::{collections::BTreeMap, fmt, path::Path};
+use velune_conversation::RuntimeKind;
 
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "camelCase")]
@@ -145,15 +146,15 @@ pub fn validate_name(name: &str) -> Result<()> {
     }
 }
 
-pub fn render(variant_id: &str, name: &str, canonical: &Canonical) -> Result<Rendering> {
+pub fn render(runtime: RuntimeKind, name: &str, canonical: &Canonical) -> Result<Rendering> {
     let kind = canonical.kind();
-    if let Some(reason) = layout::unsupported_variant(variant_id, kind) {
+    if let Some(reason) = layout::unsupported_variant(runtime, kind) {
         return Ok(Rendering::Skipped {
             reason: reason.into(),
         });
     }
-    let claude = variant_id == "claude-code-2.1";
-    let codex = variant_id == "codex-0.159";
+    let claude = runtime == RuntimeKind::ClaudeCode;
+    let codex = runtime == RuntimeKind::Codex;
     let key = |path: String| ResourceKey {
         kind,
         scope: ResourceScope::User,
@@ -178,7 +179,7 @@ pub fn render(variant_id: &str, name: &str, canonical: &Canonical) -> Result<Ren
             vec![RenderedFile {
                 key: key(name.into()),
                 bytes: serde_json::to_vec_pretty(&mcp_object(
-                    variant_id,
+                    runtime,
                     transport,
                     *timeout_seconds,
                     &mut notes,
@@ -285,7 +286,7 @@ fn skill_files(
 }
 
 fn mcp_object(
-    variant_id: &str,
+    runtime: RuntimeKind,
     transport: &McpTransport,
     timeout_seconds: Option<u32>,
     notes: &mut Vec<String>,
@@ -298,8 +299,8 @@ fn mcp_object(
         )
     };
     let mut object = Map::new();
-    let claude = variant_id == "claude-code-2.1";
-    let codex = variant_id == "codex-0.159";
+    let claude = runtime == RuntimeKind::ClaudeCode;
+    let codex = runtime == RuntimeKind::Codex;
     match transport {
         McpTransport::Stdio {
             command,
@@ -455,7 +456,7 @@ fn sorted(value: &Value) -> String {
 /// with paths relative to the entry (a skill's bundle) or the single native file (`path` is
 /// its file name).
 pub fn parse(
-    variant_id: &str,
+    runtime: RuntimeKind,
     kind: ResourceKind,
     name: &str,
     files: Vec<SkillFile>,
@@ -501,8 +502,8 @@ pub fn parse(
                 }
                 map
             };
-            let claude = variant_id == "claude-code-2.1";
-            let codex = variant_id == "codex-0.159";
+            let claude = runtime == RuntimeKind::ClaudeCode;
+            let codex = runtime == RuntimeKind::Codex;
             let timeout_field = if codex { "tool_timeout_sec" } else { "timeout" };
             let timeout_seconds = match object.get(timeout_field).and_then(Value::as_u64) {
                 Some(value) if claude => u32::try_from(value.div_ceil(1000)).ok(),
@@ -552,7 +553,7 @@ pub fn parse(
                 return Err(invalid("子 Agent 应为单个文件"));
             };
             let source = text(file)?;
-            if variant_id == "codex-0.159" {
+            if runtime == RuntimeKind::Codex {
                 let document = source
                     .parse::<toml_edit::DocumentMut>()
                     .map_err(|_| invalid("子 Agent 定义不是有效的 TOML"))?;

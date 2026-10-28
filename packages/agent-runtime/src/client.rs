@@ -64,7 +64,6 @@ pub struct Config {
     pub os_home: Option<PathBuf>,
     #[serde(skip)]
     pub mcp_servers: Vec<crate::mcp::Server>,
-    pub runtime_type_id: String,
     pub binary: PathBuf,
     pub node_binary: Option<PathBuf>,
     pub sdk_helper: Option<PathBuf>,
@@ -88,11 +87,6 @@ pub struct Config {
 
 impl Config {
     pub fn validate(&self) -> Result<()> {
-        if crate::version::variant(&self.runtime_type_id)
-            .is_none_or(|variant| variant.family_id != "pi")
-        {
-            return Err(Error::Sdk("Pi 运行时版本类型不受支持".into()));
-        }
         if self.binary.as_os_str().is_empty() {
             return Err(Error::MissingBinary);
         }
@@ -195,7 +189,7 @@ impl Config {
             .arg("--cli")
             .arg(&self.binary)
             .arg("--runtime-type")
-            .arg(&self.runtime_type_id)
+            .arg(crate::version::RuntimeKind::Pi.id())
             .arg("--validate");
         let output = self.execution.output(output, None, self.os_home.as_deref());
         match output {
@@ -229,7 +223,7 @@ impl Client {
             .arg("--cli")
             .arg(&config.binary)
             .arg("--runtime-type")
-            .arg(&config.runtime_type_id);
+            .arg(crate::version::RuntimeKind::Pi.id());
         for (name, path) in [
             ("--models-path", &config.models_path),
             ("--selection-file", &config.selection_file),

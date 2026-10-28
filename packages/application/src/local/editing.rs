@@ -18,12 +18,12 @@ enum Branching {
 }
 
 impl Branching {
-    fn of(type_id: &str) -> Option<Self> {
-        match type_id {
-            "codex-0.159" => Some(Self::Codex),
-            "claude-code-2.1" => Some(Self::Claude),
-            "pi-1.0" => Some(Self::Pi),
-            _ => None,
+    fn of(kind: RuntimeKind) -> Option<Self> {
+        match kind {
+            RuntimeKind::Codex => Some(Self::Codex),
+            RuntimeKind::ClaudeCode => Some(Self::Claude),
+            RuntimeKind::Pi => Some(Self::Pi),
+            RuntimeKind::DeepSeek | RuntimeKind::Acp => None,
         }
     }
 }
@@ -65,7 +65,7 @@ impl CoreRuntime {
         let branching = self
             .runtime_instance(&snapshot.conversation.runtime_id)
             .ok()
-            .and_then(|runtime| Branching::of(&runtime.type_id));
+            .and_then(|runtime| Branching::of(runtime.type_id));
         let (true, Some(branching)) = (editable, branching) else {
             return Vec::new();
         };
@@ -128,7 +128,7 @@ impl CoreRuntime {
             ));
         }
         let runtime = self.runtime_instance(runtime_id)?.clone();
-        let branching = Branching::of(&runtime.type_id).expect("editable runtime");
+        let branching = Branching::of(runtime.type_id).expect("editable runtime");
         // Nothing changes before the replacement is known to be deliverable.
         let attachments = self.turn_attachments(&runtime, &turn.attachments)?;
         let text = super::attachments::compose_text(&turn.text, &attachments.files);
