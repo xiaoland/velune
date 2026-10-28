@@ -53,7 +53,7 @@ struct QuotaHistorySheet: View {
     @State private var confirmingClear = false
     private static let binCount = 96
     private var provider: AIProvider? { store.providers.first { $0.id == providerID } }
-    private var quota: ProviderQuota? { store.providerQuotas[providerID] }
+    private var quota: AccountQuota? { store.providerQuotas[providerID] }
     private var remaining: Bool { store.usageDisplay == .remaining }
     /// Current series first, in the order the provider reports them, then ones only history has.
     private var metrics: [QuotaMetric] {

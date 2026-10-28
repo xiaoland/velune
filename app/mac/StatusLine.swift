@@ -48,6 +48,7 @@ struct ComposerStatusLine: View {
         var value = store.conversationStatus
         // Historical native limits can belong to another account or runtime.
         if case .managed = store.nextTurnModel { value.rateLimits = [] }
+        if store.nativeQuotaRuntime != nil { value.rateLimits = [] }
         return value
     }
     private var accounts: [ComposerAccountQuota] { store.composerAccountQuotas }
@@ -74,7 +75,8 @@ struct ComposerStatusLine: View {
                 }
             }
         }
-        .readsQuota(of: accounts.map(\.id), from: store)
+        .readsQuota(of: accounts.compactMap(\.providerID), from: store)
+        .readsRuntimeQuota(of: store.nativeQuotaRuntime?.id, from: store)
         // The branch can change with any turn; reading it is one git call.
         .task(id: "\(status.conversationID ?? "")|\(status.directory ?? "")|\(status.endedTurns)") {
             guard status.directory != nil else { branch = nil; return }
@@ -140,7 +142,7 @@ struct ComposerStatusLine: View {
             let balances = (account.quota?.balances ?? []).map { $0.title + " " + $0.formatted }
             let values = windows + balances
             let state = account.quota?.freshness == .stale ? "（额度已过期）" : ""
-            return account.provider.name + state + "：" + (values.isEmpty ? QuotaStatusText.summary(account.quota) : values.joined(separator: " · "))
+            return account.title + state + "：" + (values.isEmpty ? QuotaStatusText.summary(account.quota) : values.joined(separator: " · "))
         }.joined(separator: short ? " · " : "\n")
     }
 }
@@ -226,10 +228,10 @@ struct StatusDetails: View {
             }
             ForEach(accounts) { account in
                 Divider()
-                Text(account.provider.name).font(.subheadline.weight(.semibold))
+                Text(account.title).font(.subheadline.weight(.semibold))
                 if account.quota?.available == false { Text("账户当前不可用").font(.caption).foregroundStyle(.orange) }
                 ForEach(Array(account.windows.enumerated()), id: \.offset) { _, window in
-                    QuotaWindowRow(window: window, limit: account.provider.quotaLimits.first { $0.windowID == window.id }?.maxUsedPercent,
+                    QuotaWindowRow(window: window, limit: account.limit(for: window.id),
                                    fresh: account.quota?.freshness == .fresh, display: quotaDisplay, showsModels: true)
                 }
                 ForEach(Array((account.quota?.balances ?? []).enumerated()), id: \.offset) { _, balance in

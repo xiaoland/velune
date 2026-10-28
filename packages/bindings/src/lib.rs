@@ -1270,6 +1270,21 @@ impl VeluneApplication {
         )
     }
 
+    pub fn runtime_quota(
+        &self,
+        runtime_id: String,
+        refresh: bool,
+    ) -> Result<BindingRuntimeQuotaStatus, BindingError> {
+        request!(
+            self,
+            "runtime_quota",
+            RuntimeQuota {
+                runtime_id,
+                refresh
+            }
+        )
+    }
+
     pub fn runtime_models(
         &self,
         runtime_id: String,

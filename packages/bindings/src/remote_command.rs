@@ -204,6 +204,10 @@ pub enum BindingApplicationCommand {
     RuntimeModels {
         runtime_id: String,
     },
+    RuntimeQuota {
+        runtime_id: String,
+        refresh: bool,
+    },
     NextTurnModelSelection,
     OpenConversation {
         runtime_id: String,
@@ -713,6 +717,13 @@ impl TryFrom<BindingApplicationCommand> for Command {
                 runtime_id,
                 cwd,
                 selection: convert(selection)?,
+            },
+            BindingApplicationCommand::RuntimeQuota {
+                runtime_id,
+                refresh,
+            } => Self::RuntimeQuota {
+                runtime_id,
+                refresh,
             },
             BindingApplicationCommand::RuntimeModels { runtime_id } => {
                 Self::RuntimeModels { runtime_id }

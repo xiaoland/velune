@@ -148,7 +148,7 @@ private struct RouteMemberStatus: View {
     let weight: UInt32?
     let totalWeight: UInt32
     private var authentication: ProviderAuthentication { member.provider.authentication }
-    private var quota: ProviderQuota? { store.providerQuotas[member.provider.id] }
+    private var quota: AccountQuota? { store.providerQuotas[member.provider.id] }
     private var windows: [QuotaWindow] { (quota?.windows ?? []).filter { $0.applies(to: member.model.providerModelID) } }
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {

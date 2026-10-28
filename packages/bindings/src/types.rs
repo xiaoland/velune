@@ -536,6 +536,8 @@ pub struct BindingRuntimeTypeDescriptor {
     /// A live conversation has options (`acp_session_config`); the runtime's
     /// own model catalog belongs to that session.
     pub session_options: bool,
+    #[serde(default)]
+    pub native_account_quota: bool,
     /// Running over SSH needs a helper resources directory on the remote
     /// machine (`RuntimeExecution::remote_resources_directory`).
     pub remote_resources: bool,
@@ -1997,6 +1999,16 @@ pub struct BindingProviderQuotaStatus {
     pub windows: Vec<BindingProviderQuotaWindow>,
     pub balances: Vec<BindingProviderQuotaBalance>,
     pub available: Option<bool>,
+    pub refreshing: bool,
+    pub problem: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+#[serde(rename_all = "camelCase")]
+pub struct BindingRuntimeQuotaStatus {
+    pub runtime_id: String,
+    pub freshness: BindingQuotaFreshness,
+    pub windows: Vec<BindingProviderQuotaWindow>,
     pub refreshing: bool,
     pub problem: Option<String>,
 }

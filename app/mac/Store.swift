@@ -89,7 +89,17 @@ final class AppStore: ObservableObject {
     }
     private var pendingSend: PendingSend?
     @Published private(set) var gateway = GatewayConfig() { didSet { if oldValue != gateway { invalidateModelCatalogs() } } }
-    @Published private(set) var runtimeInstances: [RuntimeInstance] = [] { didSet { if oldValue != runtimeInstances { invalidateModelCatalogs(); refreshRuntimeLocations() } } }
+    @Published private(set) var runtimeInstances: [RuntimeInstance] = [] {
+        didSet {
+            if oldValue != runtimeInstances {
+                runtimeQuotas = runtimeQuotas.filter { id, _ in
+                    guard let current = runtimeInstances.first(where: { $0.id == id }) else { return false }
+                    return oldValue.contains(current)
+                }
+                invalidateModelCatalogs(); refreshRuntimeLocations()
+            }
+        }
+    }
     /// Where each instance runs, read with its saved execution; unknown ones count as local.
     @Published private(set) var runtimeLocations: [String: RuntimeLocation] = [:]
     private var runtimeLocationsRequest = UUID()
@@ -103,8 +113,10 @@ final class AppStore: ObservableObject {
     @Published private(set) var authenticationResult: String?
     @Published var showsAuthentication = false
     /// The core's quota observations by provider ID, as last read.
-    @Published private(set) var providerQuotas: [String: ProviderQuota] = [:]
+    @Published private(set) var providerQuotas: [String: AccountQuota] = [:]
+    @Published private(set) var runtimeQuotas: [String: AccountQuota] = [:]
     private var quotaReadsPending: Set<String> = []
+    private var runtimeQuotaReadsPending: Set<String> = []
     /// What a new provider starts from; a static catalog in the core.
     private(set) lazy var providerTemplates: [ProviderTemplate] = (try? VeluneBindings.providerTemplates().map(BindingMapping.providerTemplate)) ?? []
     @Published private(set) var isLoading = false
@@ -429,7 +441,43 @@ final class AppStore: ObservableObject {
             costMicroUSD: turns.last { $0.usage?.sessionCostMicroUSD != nil }?.usage?.sessionCostMicroUSD)
     }
     var composerAccountQuotas: [ComposerAccountQuota] {
-        ComposerAccountQuota.accounts(for: nextTurnModel, gateway: gateway, quotas: providerQuotas)
+        if let runtime = nativeQuotaRuntime {
+            return [ComposerAccountQuota(source: .runtimeLogin(runtime), quota: runtimeQuotas[runtime.id])]
+        }
+        return ComposerAccountQuota.providerAccounts(for: nextTurnModel, gateway: gateway, quotas: providerQuotas)
+    }
+    var nativeQuotaRuntime: RuntimeInstance? {
+        if case .managed = nextTurnModel { return nil }
+        guard let runtime = runtimeInstances.first(where: { $0.id == nextTurnRuntimeID && $0.enabled }),
+              runtimeTypes.first(where: { $0.id == runtime.typeID })?.nativeAccountQuota == true else { return nil }
+        return runtime
+    }
+    func observeRuntimeQuota(_ runtimeID: String) async {
+        var lastRead = Date.distantPast
+        while !Task.isCancelled {
+            let quota = runtimeQuotas[runtimeID]
+            let waiting = quota == nil || quota?.refreshing == true || (quota?.freshness == .unknown && quota?.problem == nil)
+            if waiting || Date().timeIntervalSince(lastRead) >= 30 { readRuntimeQuota(runtimeID); lastRead = Date() }
+            try? await Task.sleep(for: .seconds(2))
+        }
+    }
+    func readRuntimeQuota(_ runtimeID: String, refresh: Bool = false) {
+        guard !isPreview, !isShuttingDown, let transport,
+              let runtime = runtimeInstances.first(where: { $0.id == runtimeID }),
+              !runtimeQuotaReadsPending.contains(runtimeID) else { return }
+        runtimeQuotaReadsPending.insert(runtimeID)
+        performOnQueue { [weak self] in
+            let result = Result { try transport.runtimeQuota(runtimeID: runtimeID, refresh: refresh) }
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.runtimeQuotaReadsPending.remove(runtimeID)
+                guard self.runtimeInstances.first(where: { $0.id == runtimeID }) == runtime else { return }
+                switch result {
+                case .success(let quota): self.runtimeQuotas[runtimeID] = quota
+                case .failure(let error): self.runtimeQuotas[runtimeID] = AccountQuota(freshness: .unknown, windows: [], refreshing: false, problem: error.localizedDescription)
+                }
+            }
+        }
     }
     func describe(_ turn: TranscriptTurn) -> TurnSettingsSummary? {
         let settings = turn.settings ?? TurnSettings()

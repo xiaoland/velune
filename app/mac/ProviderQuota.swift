@@ -66,11 +66,11 @@ enum UsageFormat {
 
 /// When the quota was observed, or why it is missing.
 struct QuotaStatusText: View {
-    let quota: ProviderQuota?
+    let quota: AccountQuota?
     var body: some View {
         Text(Self.summary(quota)).font(.caption).foregroundStyle(.secondary)
     }
-    static func summary(_ quota: ProviderQuota?) -> String {
+    static func summary(_ quota: AccountQuota?) -> String {
         guard let quota else { return "正在读取额度…" }
         if quota.refreshing && quota.freshness != .fresh { return "正在读取额度…" }
         let observed = quota.observedAt.map { $0.formatted(.relative(presentation: .named)) }
@@ -80,7 +80,7 @@ struct QuotaStatusText: View {
             return observed.map { "额度于\($0)更新" } ?? "额度已更新"
         case .stale: return "额度已过期" + (observed.map { "（\($0)观测）" } ?? "") + "，再次使用或刷新时更新"
         case .unknown: return quota.problem ?? "尚未取得额度"
-        case .unsupported: return "此提供商不报告额度"
+        case .unsupported: return quota.problem ?? "此来源不报告额度"
         }
     }
 }
@@ -99,6 +99,12 @@ struct SubscriptionDisclosureNote: View {
 }
 
 extension View {
+    func readsRuntimeQuota(of runtimeID: String?, from store: AppStore) -> some View {
+        task(id: runtimeID) {
+            guard let runtimeID else { return }
+            await store.observeRuntimeQuota(runtimeID)
+        }
+    }
     /// Explanatory text under a form section, read from its leading edge.
     func formFooterStyle() -> some View {
         font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.leading).fixedSize(horizontal: false, vertical: true).frame(maxWidth: .infinity, alignment: .leading)
@@ -130,7 +136,7 @@ struct ProviderQuotaForm: View {
     @Binding var limits: [QuotaLimit]
     @State private var showsHistory = false
     private static let presets: [UInt8] = [50, 60, 70, 80, 90, 95, 100]
-    private var quota: ProviderQuota? { providerID.flatMap { store.providerQuotas[$0] } }
+    private var quota: AccountQuota? { providerID.flatMap { store.providerQuotas[$0] } }
     /// Quota is read with the login, so a provider awaiting one has none to show.
     private var signedOut: Bool { providerID.flatMap { id in store.providers.first { $0.id == id } }?.authentication.awaitsSignIn ?? true }
     /// Reported windows first, then ceilings for windows not reported now.

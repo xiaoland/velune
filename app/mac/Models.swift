@@ -518,9 +518,9 @@ struct QuotaBalance: Sendable, Equatable {
     }
     var formatted: String { amount.formatted(.currency(code: unit).presentation(.narrow)) }
 }
-/// A provider's usage as the core last observed it. The core owns sampling;
-/// this is a read-only copy for display.
-struct ProviderQuota: Sendable, Equatable {
+/// Account usage from a provider or native login. The core owns sampling;
+/// this is a read-only copy for display, with its source held separately.
+struct AccountQuota: Sendable, Equatable {
     var freshness: QuotaFreshness
     var windows: [QuotaWindow]
     var balances: [QuotaBalance] = []
@@ -591,6 +591,8 @@ struct RuntimeTypeDescriptor: Codable, Sendable, Identifiable, Equatable {
     var agentInfo = false
     /// A live conversation has options; the runtime's own models belong to that session.
     var sessionOptions = false
+    /// The core can observe this runtime's native CLI login quota.
+    var nativeAccountQuota = false
     /// Running over SSH needs a helper resources directory on the remote machine.
     var remoteResources = false
     var supportedProtocols: [ProviderProtocol]

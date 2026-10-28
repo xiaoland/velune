@@ -696,6 +696,18 @@ pub struct ProviderQuotaStatus {
     pub problem: Option<String>,
 }
 
+/// Read-only quota of the runtime's native CLI login. This does not identify
+/// the billing account of a request using the Harness's other API settings.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RuntimeQuotaStatus {
+    pub runtime_id: String,
+    pub freshness: QuotaFreshness,
+    pub windows: Vec<ProviderQuotaWindow>,
+    pub refreshing: bool,
+    pub problem: Option<String>,
+}
+
 /// One retained window value; the history keeps no expiry or pace.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]

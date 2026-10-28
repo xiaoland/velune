@@ -103,6 +103,7 @@ pub enum CommandKind {
     CreateConversation,
     CreateConversationWithSelection,
     RuntimeModels,
+    RuntimeQuota,
     NextTurnModelSelection,
     OpenConversation,
     ReadConversation,
@@ -360,6 +361,10 @@ pub enum Command {
     },
     RuntimeModels {
         runtime_id: String,
+    },
+    RuntimeQuota {
+        runtime_id: String,
+        refresh: bool,
     },
     NextTurnModelSelection,
     OpenConversation {
@@ -624,6 +629,7 @@ pub enum Response {
     CreateConversation(SnapshotResult),
     CreateConversationWithSelection(SnapshotResult),
     RuntimeModels(Vec<RuntimeModel>),
+    RuntimeQuota(RuntimeQuotaStatus),
     NextTurnModelSelection(Option<ModelSelection>),
     OpenConversation(SnapshotResult),
     ReadConversation(SnapshotResult),
@@ -700,6 +706,7 @@ impl Command {
             | Self::RuntimeExecution { .. }
             | Self::RuntimeHomeDirectory { .. }
             | Self::RuntimeModels { .. }
+            | Self::RuntimeQuota { .. }
             | Self::NextTurnModelSelection
             | Self::ReadConversation { .. }
             | Self::Snapshot { .. }
@@ -842,6 +849,7 @@ impl Command {
                 CommandKind::CreateConversationWithSelection
             }
             Self::RuntimeModels { .. } => CommandKind::RuntimeModels,
+            Self::RuntimeQuota { .. } => CommandKind::RuntimeQuota,
             Self::NextTurnModelSelection => CommandKind::NextTurnModelSelection,
             Self::OpenConversation { .. } => CommandKind::OpenConversation,
             Self::ReadConversation { .. } => CommandKind::ReadConversation,

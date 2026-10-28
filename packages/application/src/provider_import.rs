@@ -33,6 +33,7 @@ pub(crate) fn descriptor() -> crate::config::RuntimeTypeDescriptor {
         launch_options: false,
         agent_info: false,
         session_options: false,
+        native_account_quota: false,
         permission_modes: Vec::new(),
         remote_resources: true,
         supported_protocols: crate::config::runtime_protocols("pi-1.0")

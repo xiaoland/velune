@@ -196,19 +196,27 @@ enum BindingMapping {
                                 composition: ProviderComposition(executionBackend: value.executionBackend, requestProfile: value.requestProfile, authenticationSource: value.authenticationSource, quotaSource: value.quotaSource),
                                 executableCommand: value.executableCommand, disclosure: value.disclosure.map(disclosure))
     }
-    static func quota(_ value: BindingProviderQuotaStatus) -> ProviderQuota {
+    static func quota(_ value: BindingProviderQuotaStatus) -> AccountQuota {
+        var result = quota(freshness: value.freshness, windows: value.windows, refreshing: value.refreshing, problem: value.problem)
+        result.balances = value.balances.map { QuotaBalance(id: $0.id, amount: $0.amount, unit: $0.unit, observedAt: Date(timeIntervalSince1970: Double($0.observedAtMs) / 1000)) }
+        result.available = value.available
+        return result
+    }
+    static func quota(_ value: BindingRuntimeQuotaStatus) -> AccountQuota {
+        quota(freshness: value.freshness, windows: value.windows, refreshing: value.refreshing, problem: value.problem)
+    }
+    private static func quota(freshness sourceFreshness: BindingQuotaFreshness, windows: [BindingProviderQuotaWindow], refreshing: Bool, problem: String?) -> AccountQuota {
         let freshness: QuotaFreshness
-        switch value.freshness { case .fresh: freshness = .fresh; case .stale: freshness = .stale; case .unknown: freshness = .unknown; case .unsupported: freshness = .unsupported }
+        switch sourceFreshness { case .fresh: freshness = .fresh; case .stale: freshness = .stale; case .unknown: freshness = .unknown; case .unsupported: freshness = .unsupported }
         func date(_ ms: Int64) -> Date { Date(timeIntervalSince1970: Double(ms) / 1000) }
         func pace(_ value: BindingProviderQuotaPace) -> QuotaPace {
             let status: QuotaPace.Status
             switch value.status { case .onPace: status = .onPace; case .runsOutBeforeReset: status = .runsOutBeforeReset; case .exhausted: status = .exhausted }
             return QuotaPace(expectedUsedPercent: value.expectedUsedPercent, runsOutAt: value.runsOutAtMs.map(date), status: status)
         }
-        return ProviderQuota(freshness: freshness,
-                             windows: value.windows.map { QuotaWindow(id: $0.id, modelIDs: $0.modelIds, usedPercent: $0.usedPercent, resetsAt: $0.resetAtMs.map(date), period: $0.windowMs.map { Double($0) / 1000 }, observedAt: date($0.observedAtMs), pace: $0.pace.map(pace)) },
-                             balances: value.balances.map { QuotaBalance(id: $0.id, amount: $0.amount, unit: $0.unit, observedAt: date($0.observedAtMs)) },
-                             available: value.available, refreshing: value.refreshing, problem: value.problem)
+        return AccountQuota(freshness: freshness,
+                             windows: windows.map { QuotaWindow(id: $0.id, modelIDs: $0.modelIds, usedPercent: $0.usedPercent, resetsAt: $0.resetAtMs.map(date), period: $0.windowMs.map { Double($0) / 1000 }, observedAt: date($0.observedAtMs), pace: $0.pace.map(pace)) },
+                             refreshing: refreshing, problem: problem)
     }
     static func quotaObservation(_ value: BindingQuotaHistoryPoint) -> QuotaObservation {
         var values: [QuotaMetric: Double] = [:]
@@ -268,7 +276,7 @@ enum BindingMapping {
     }
 
     static func runtimeType(_ value: BindingRuntimeTypeDescriptor) -> RuntimeTypeDescriptor {
-        RuntimeTypeDescriptor(id: value.id, familyID: value.familyId, canRenameConversations: value.canRenameConversations, canDeleteConversations: value.canDeleteConversations, launchOptions: value.launchOptions, agentInfo: value.agentInfo, sessionOptions: value.sessionOptions, remoteResources: value.remoteResources, supportedProtocols: value.supportedProtocols.map(protocolID), supportedProviderProtocols: value.supportedProviderProtocols.map(protocolID), name: value.name, fields: value.fields.map(settingField),
+        RuntimeTypeDescriptor(id: value.id, familyID: value.familyId, canRenameConversations: value.canRenameConversations, canDeleteConversations: value.canDeleteConversations, launchOptions: value.launchOptions, agentInfo: value.agentInfo, sessionOptions: value.sessionOptions, nativeAccountQuota: value.nativeAccountQuota, remoteResources: value.remoteResources, supportedProtocols: value.supportedProtocols.map(protocolID), supportedProviderProtocols: value.supportedProviderProtocols.map(protocolID), name: value.name, fields: value.fields.map(settingField),
                               permissionModes: value.permissionModes.map { PermissionMode(id: $0.id, label: $0.label, detail: $0.detail) })
     }
 

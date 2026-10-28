@@ -51,10 +51,8 @@ pub(super) async fn execute_timeout(
         if bytes.len() as u64 > OUTPUT_LIMIT {
             return Err(CredentialError::InvalidOutput);
         }
-        // Kill remaining descendants while the direct child is still held.
-        tree.kill();
-        let status = child
-            .wait()
+        let status = tree
+            .wait(&mut child)
             .await
             .map_err(|_| CredentialError::Unavailable)?;
         if !status.success() {
@@ -94,6 +92,32 @@ mod tree {
             Ok(Self(child.id().and_then(|pid| {
                 rustix::process::Pid::from_raw(pid as i32)
             })))
+        }
+
+        pub(super) async fn wait(
+            &mut self,
+            child: &mut Child,
+        ) -> io::Result<std::process::ExitStatus> {
+            use rustix::process::{WaitId, WaitIdOptions, waitid};
+            let pid = self
+                .0
+                .ok_or_else(|| io::Error::other("helper was already stopped"))?;
+            // EOF can precede process exit. Keep the exited child unreaped until
+            // its descendants are killed, so the group id cannot be reused.
+            loop {
+                match waitid(
+                    WaitId::Pid(pid),
+                    WaitIdOptions::EXITED | WaitIdOptions::NOWAIT | WaitIdOptions::NOHANG,
+                ) {
+                    Ok(Some(_)) => break,
+                    Ok(None) | Err(rustix::io::Errno::INTR) => {
+                        tokio::time::sleep(std::time::Duration::from_millis(10)).await
+                    }
+                    Err(error) => return Err(error.into()),
+                }
+            }
+            self.kill();
+            child.wait().await
         }
 
         pub(super) fn kill(&mut self) {
@@ -173,6 +197,16 @@ mod tree {
                 return Err(io::Error::last_os_error());
             }
             Ok(tree)
+        }
+
+        pub(super) async fn wait(
+            &mut self,
+            child: &mut Child,
+        ) -> io::Result<std::process::ExitStatus> {
+            // The Job handle keeps its identity after the child exits.
+            let status = child.wait().await?;
+            self.kill();
+            Ok(status)
         }
 
         pub(super) fn kill(&mut self) {

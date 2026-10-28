@@ -99,6 +99,9 @@ pub struct RuntimeTypeDescriptor {
     /// A live conversation has options (`acp_session_config`); the runtime's
     /// own model catalog belongs to that session.
     pub session_options: bool,
+    /// The runtime can report its native CLI login's quota without a provider import.
+    #[serde(default)]
+    pub native_account_quota: bool,
     /// Running over SSH needs a helper resources directory on the remote
     /// machine (`RuntimeExecution::remote_resources_directory`).
     pub remote_resources: bool,

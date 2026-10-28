@@ -525,6 +525,7 @@ impl CoreRuntime {
         }) {
             self.next_turn_runtime_id = None;
         }
+        self.runtime_quota.retain(&self.runtime_instances);
         Ok(
             json!({"runtimeInstances":self.runtime_instances,"runtimeTypes":runtime_types(),"executionInvalidated":execution_invalidated}),
         )

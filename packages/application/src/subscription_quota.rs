@@ -894,7 +894,7 @@ fn collect(
             result = async {
                 match binding.source {
                     crate::config::ProviderQuotaSource::CodexUsage => crate::subscription_auth::read_usage(home, binding.id.clone(), binding.generation).await.map_err(|_| ()).and_then(|value| parse_windows(&value,ttl_ms)),
-                    crate::config::ProviderQuotaSource::ClaudeCliUsage => { let owned=crate::claude_cli::directory(&home,&binding.id); let dir=match &binding.directory { LoginDirectory::Owned=>Some(owned.as_path()), LoginDirectory::Linked(dir)=>dir.as_deref().map(std::path::Path::new) }; let text=crate::claude_cli::usage(binding.binary.as_deref().ok_or(())?,dir).await?; parse_claude_windows(&text,ttl_ms) },
+                    crate::config::ProviderQuotaSource::ClaudeCliUsage => { let owned=crate::claude_cli::directory(&home,&binding.id); let dir=match &binding.directory { LoginDirectory::Owned=>Some(owned.as_path()), LoginDirectory::Linked(dir)=>dir.as_deref().map(std::path::Path::new) }; let windows=crate::claude_quota::read(binding.binary.as_deref().ok_or(())?,dir,ttl_ms).await?; let observed=windows.first().ok_or(())?.observed_at_ms; let expires=windows.iter().map(|window|window.expires_at_ms).min().ok_or(())?; Ok(observation(windows,None,observed,expires)) },
                     crate::config::ProviderQuotaSource::ArkCodingUsage => { let observed=now_ms(); let windows=binding.ark.as_ref().ok_or(())?.windows(observed,ttl_ms).await?; let expires=windows.iter().map(|w|w.expires_at_ms).min().ok_or(())?; Ok(observation(windows,None,observed,expires)) },
                     crate::config::ProviderQuotaSource::ApiAccount => { let observed=now_ms(); let found=binding.account.as_ref().ok_or(())?.observe(observed,ttl_ms).await?; let expires=found.windows.iter().map(|w|w.expires_at_ms).min().unwrap_or(observed+ttl_ms); Ok(Observation { windows: found.windows, balances: found.balances, available: found.available, observed_at_ms: observed, expires_at_ms: expires }) },
                     crate::config::ProviderQuotaSource::None | crate::config::ProviderQuotaSource::KimiUsage => Err(()),
@@ -982,51 +982,6 @@ fn parse_windows(value: &Value, ttl_ms: i64) -> ObservationResult {
         .min()
         .unwrap_or(observed + ttl_ms);
     Ok(observation(windows, available, observed, expires))
-}
-
-fn parse_claude_windows(text: &str, ttl_ms: i64) -> ObservationResult {
-    let observed = now_ms();
-    if observed <= 0 {
-        return Err(());
-    }
-    let mut windows = Vec::new();
-    for line in text.lines().map(str::trim) {
-        let (id, period, body) = if let Some(body) = line.strip_prefix("Current session:") {
-            ("window:18000", 18_000_000, body)
-        } else if let Some(body) = line
-            .strip_prefix("Current week (all models):")
-            .or_else(|| line.strip_prefix("Current week:"))
-        {
-            ("window:604800", 604_800_000, body)
-        } else {
-            continue;
-        };
-        let (used, tail) = body.trim().split_once("% used").ok_or(())?;
-        if !tail.is_empty() && !tail.trim_start().starts_with('·') {
-            return Err(());
-        }
-        let used = used.parse::<f64>().map_err(|_| ())?;
-        if !used.is_finite()
-            || !(0.0..=100.0).contains(&used)
-            || windows.iter().any(|w: &QuotaWindow| w.id == id)
-        {
-            return Err(());
-        }
-        // Human reset strings are not a stable timestamp contract. TTL requires re-observation; never infer replenishment.
-        windows.push(QuotaWindow {
-            id: id.into(),
-            model_ids: None,
-            used_percent: used,
-            reset_at_ms: None,
-            window_ms: Some(period),
-            observed_at_ms: observed,
-            expires_at_ms: observed + ttl_ms,
-        });
-    }
-    if windows.is_empty() {
-        return Err(());
-    }
-    Ok(observation(windows, None, observed, observed + ttl_ms))
 }
 
 fn collect_kimi(

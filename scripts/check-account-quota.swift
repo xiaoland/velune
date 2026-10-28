@@ -10,7 +10,7 @@ struct AccountQuotaChecks {
             QuotaWindow(id: "window:604800", usedPercent: 30, resetsAt: now.addingTimeInterval(604800), observedAt: now),
             QuotaWindow(id: "model-specific", modelIDs: ["opus"], usedPercent: 20, resetsAt: nil, observedAt: now),
         ]
-        let quota = ProviderQuota(freshness: .fresh, windows: windows, refreshing: false)
+        let quota = AccountQuota(freshness: .fresh, windows: windows, refreshing: false)
         let claude = AIProvider(id: "claude", name: "Claude Code", protocolID: .messagesV1, endpoint: "",
                                 models: [ProviderModel(recordKey: "sonnet-key", providerModelID: "sonnet"), ProviderModel(recordKey: "opus-key", providerModelID: "opus")],
                                 composition: ProviderComposition(quotaSource: .claudeCliUsage))
@@ -19,25 +19,27 @@ struct AccountQuotaChecks {
                                composition: ProviderComposition(quotaSource: .codexUsage))
         let gateway = GatewayConfig(providers: [claude, codex], routes: [ModelRoute(recordKey: "route", name: "混合路由", members: ["opus-key", "gpt-key", "sonnet-key"])])
         let quotas = [claude.id: quota, codex.id: quota]
-        let direct = ComposerAccountQuota.accounts(for: .managed(recordKey: "sonnet-key"), gateway: gateway, quotas: quotas)
-        precondition(direct.map(\.id) == ["claude"])
+        let direct = ComposerAccountQuota.providerAccounts(for: .managed(recordKey: "sonnet-key"), gateway: gateway, quotas: quotas)
+        precondition(direct.compactMap(\.providerID) == ["claude"])
         precondition(direct[0].windows.map(\.id) == ["window:18000", "window:604800"], "Must retain both limits, excluding other models' windows")
-        let route = ComposerAccountQuota.accounts(for: .managed(recordKey: "route"), gateway: gateway, quotas: quotas)
-        precondition(route.map(\.id) == ["claude", "codex"], "Each route account appears once")
+        let route = ComposerAccountQuota.providerAccounts(for: .managed(recordKey: "route"), gateway: gateway, quotas: quotas)
+        precondition(route.compactMap(\.providerID) == ["claude", "codex"], "Each route account appears once")
         precondition(route[0].windows == windows, "Combine model scopes across the account's route members")
-        let switched = ComposerAccountQuota.accounts(for: .managed(recordKey: "gpt-key"), gateway: gateway, quotas: quotas)
-        precondition(switched.map(\.id) == ["codex"], "Changing the model must change the displayed account")
-        for selection: ModelSelection? in [nil, .native(providerID: "claude", modelID: "sonnet"), .managed(recordKey: "missing")] {
-            precondition(ComposerAccountQuota.accounts(for: selection, gateway: gateway, quotas: quotas).isEmpty, "Do not infer account identity from a native model name")
-        }
-        let pending = ComposerAccountQuota.accounts(for: .managed(recordKey: "sonnet-key"), gateway: gateway, quotas: [:])
+        let switched = ComposerAccountQuota.providerAccounts(for: .managed(recordKey: "gpt-key"), gateway: gateway, quotas: quotas)
+        precondition(switched.compactMap(\.providerID) == ["codex"], "Changing the model must change the displayed account")
+        precondition(ComposerAccountQuota.providerAccounts(for: .managed(recordKey: "missing"), gateway: gateway, quotas: quotas).isEmpty)
+        let runtime = RuntimeInstance(id: "native", name: "Claude Code", typeID: "claude-code-2.1", gatewayID: "default", settings: [:])
+        let native = ComposerAccountQuota(source: .runtimeLogin(runtime), quota: quota)
+        precondition(native.windows == windows, "Native login quota must not depend on a provider model ID")
+        precondition(native.providerID == nil && native.limit(for: windows[0].id) == nil)
+        let pending = ComposerAccountQuota.providerAccounts(for: .managed(recordKey: "sonnet-key"), gateway: gateway, quotas: [:])
         precondition(pending.count == 1 && pending[0].quota == nil, "Keep the account visible before its first quota observation")
         var signedOut = claude
         signedOut.authentication = ProviderAuthentication(method: .oauth, configured: false)
-        precondition(ComposerAccountQuota.accounts(for: .managed(recordKey: "sonnet-key"), gateway: GatewayConfig(providers: [signedOut]), quotas: quotas).isEmpty)
+        precondition(ComposerAccountQuota.providerAccounts(for: .managed(recordKey: "sonnet-key"), gateway: GatewayConfig(providers: [signedOut]), quotas: quotas).isEmpty)
         var unsupported = claude
         unsupported.composition.quotaSource = .none
-        precondition(ComposerAccountQuota.accounts(for: .managed(recordKey: "sonnet-key"), gateway: GatewayConfig(providers: [unsupported]), quotas: quotas).isEmpty)
+        precondition(ComposerAccountQuota.providerAccounts(for: .managed(recordKey: "sonnet-key"), gateway: GatewayConfig(providers: [unsupported]), quotas: quotas).isEmpty)
 
         let zone = TimeZone(secondsFromGMT: 8 * 3600)!
         var calendar = Calendar(identifier: .gregorian)

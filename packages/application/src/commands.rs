@@ -320,6 +320,10 @@ impl Application {
             } => Response::CreateConversationWithSelection(
                 application.create_conversation_with_selection(runtime_id, cwd, selection)?,
             ),
+            Command::RuntimeQuota {
+                runtime_id,
+                refresh,
+            } => Response::RuntimeQuota(application.runtime_quota(runtime_id, refresh)?),
             Command::RuntimeModels { runtime_id } => {
                 Response::RuntimeModels(application.runtime_models(runtime_id)?)
             }

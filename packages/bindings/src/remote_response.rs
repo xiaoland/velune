@@ -106,6 +106,9 @@ pub enum BindingApplicationResponse {
     RuntimeModelList {
         value: Vec<BindingRuntimeModel>,
     },
+    RuntimeQuota {
+        value: BindingRuntimeQuotaStatus,
+    },
     OptionalModelSelection {
         value: Option<BindingModelSelection>,
     },
@@ -312,6 +315,9 @@ impl TryFrom<Response> for BindingApplicationResponse {
                     value: convert(value)?,
                 }
             }
+            Response::RuntimeQuota(value) => Self::RuntimeQuota {
+                value: convert(value)?,
+            },
             Response::RuntimeModels(value) => Self::RuntimeModelList {
                 value: convert(value)?,
             },

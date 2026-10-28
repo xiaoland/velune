@@ -365,6 +365,19 @@ impl CoreRuntime {
         })
     }
 
+    pub(super) fn runtime_quota_action(&self, request: &Value) -> Result<Value, RuntimeError> {
+        let id = request["payload"]["runtimeInstanceID"]
+            .as_str()
+            .ok_or_else(|| RuntimeError::invalid("runtime instance id"))?;
+        let refresh = request["payload"]["refresh"]
+            .as_bool()
+            .ok_or_else(|| RuntimeError::invalid("quota refresh"))?;
+        let runtime = self.runtime_instance(id)?;
+        Ok(serde_json::to_value(
+            self.runtime_quota.query(runtime, refresh)?,
+        )?)
+    }
+
     pub(super) fn runtime_models_action(&mut self, request: &Value) -> Result<Value, RuntimeError> {
         let id = request["payload"]["runtimeInstanceID"]
             .as_str()

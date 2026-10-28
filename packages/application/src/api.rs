@@ -45,6 +45,19 @@ impl From<&GatewayConfig> for GatewaySummary {
     }
 }
 impl Application {
+    /// Observe the runtime's own CLI login quota; this never creates a provider.
+    pub fn runtime_quota(
+        &mut self,
+        runtime_id: String,
+        refresh: bool,
+    ) -> Result<RuntimeQuotaStatus, Error> {
+        self.execute(
+            "runtimeQuota",
+            json!({"refresh":refresh}),
+            Some(&runtime_id),
+        )
+    }
+
     /// List native source resources without launching the Harness or creating resource roots.
     /// Project scope requires a cwd on the execution machine. Disabled instances remain manageable.
     pub fn runtime_resource_catalog(

@@ -142,7 +142,12 @@ final class Transport: @unchecked Sendable {
     func deleteProvider(gatewayID: String, providerID: String) throws -> BindingGatewayUpdate { try withApplication("deleteProvider", .changesConfiguration) { try $0.deleteProvider(gatewayId: gatewayID, providerId: providerID) } }
     func saveModelRoute(gatewayID: String, route: ModelRoute) throws -> BindingGatewayUpdate { try withApplication("saveModelRoute", .changesConfiguration) { try $0.saveModelRoute(gatewayId: gatewayID, route: BindingMapping.bindingRoute(route)) } }
     func deleteModelRoute(gatewayID: String, recordKey: String) throws -> BindingGatewayUpdate { try withApplication("deleteModelRoute", .changesConfiguration) { try $0.deleteModelRoute(gatewayId: gatewayID, routeRecordKey: recordKey) } }
-    func providerQuota(gatewayID: String, providerID: String, refresh: Bool) throws -> ProviderQuota {
+    func runtimeQuota(runtimeID: String, refresh: Bool) throws -> AccountQuota {
+        try withApplication("runtimeQuota", .reads) { application in
+            BindingMapping.quota(try application.runtimeQuota(runtimeId: runtimeID, refresh: refresh))
+        }
+    }
+    func providerQuota(gatewayID: String, providerID: String, refresh: Bool) throws -> AccountQuota {
         try withApplication(refresh ? "refreshProviderQuota" : "providerQuota", .reads) { application in
             BindingMapping.quota(refresh ? try application.refreshProviderQuota(gatewayId: gatewayID, providerId: providerID) : try application.providerQuota(gatewayId: gatewayID, providerId: providerID))
         }
