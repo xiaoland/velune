@@ -21,7 +21,7 @@ const FOLLOW_INTERVAL: Duration = Duration::from_secs(2);
 const FOLLOW_LIMIT: Duration = Duration::from_secs(600);
 
 /// Consent scope is bound into the invitation, TLS verification code and saved grant.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, uniffi::Enum)]
 #[serde(rename_all = "camelCase")]
 pub enum PairingPermission {
     Control,
@@ -83,7 +83,7 @@ impl PairingOffer {
         Ok(offer)
     }
 }
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, uniffi::Enum)]
 #[serde(rename_all = "camelCase")]
 pub enum PairingPhase {
     AwaitingReady,
@@ -94,7 +94,7 @@ pub enum PairingPhase {
     Disconnected,
 }
 /// Verification codes are derived locally; they are never accepted from a peer's response.
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, uniffi::Record)]
 pub struct PairingStatus {
     pub permission: PairingPermission,
     pub attempt_id: String,

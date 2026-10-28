@@ -38,18 +38,18 @@ async fn wait_phase(controller: &Controller, phase: ControllerPhase) {
 fn telemetry(home: &std::path::Path, endpoint: &str) -> Arc<velune_telemetry::ClientTelemetry> {
     let owner = velune_telemetry::ClientTelemetry::open(
         home,
-        velune_telemetry::ResourceIdentity::new("test", "test").unwrap(),
+        velune_telemetry::TelemetryIdentity::new("test", "test").unwrap(),
         false,
         None,
     )
     .unwrap();
-    let profile = velune_telemetry::Profile {
+    let profile = velune_telemetry::TelemetryProfile {
         endpoint: endpoint.into(),
         headers: [("authorization".into(), "SYNTHETIC-SECRET".into())].into(),
         sample_ratio: 0.5,
     };
     let p = owner
-        .prepare(0, velune_telemetry::Preference::Off, Some(profile))
+        .prepare(0, velune_telemetry::TelemetryPreference::Off, Some(profile))
         .unwrap();
     owner.commit(&p.id).unwrap();
     owner.confirm_native(p.revision, true).unwrap();
@@ -150,7 +150,7 @@ fn mobile_profile_pairing_has_its_own_consent_ingress_and_revocation() {
                 .unwrap();
             assert_eq!(
                 destination_owner.snapshot().unwrap().preference,
-                velune_telemetry::Preference::Off
+                velune_telemetry::TelemetryPreference::Off
             );
             assert!(
                 destination_owner

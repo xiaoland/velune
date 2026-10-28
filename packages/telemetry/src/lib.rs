@@ -12,12 +12,22 @@ mod windows_private;
 mod wire_tests;
 
 use config::Stored;
-pub use config::{Preference, Profile};
+pub use config::{TelemetryPreference, TelemetryProfile};
 pub use context::TraceCarrier;
-pub use health::ExportHealth;
+pub use health::TelemetryExportHealth;
 pub use opentelemetry::trace::SpanKind;
 use opentelemetry::{KeyValue, trace::TraceContextExt};
-pub use probe::TestResult;
+pub use probe::TelemetryTestResult;
+
+uniffi::setup_scaffolding!();
+
+/// Ordered so the saved profile stays stable; foreign languages see a dictionary.
+pub type HeaderMap = std::collections::BTreeMap<String, String>;
+uniffi::custom_type!(HeaderMap, std::collections::HashMap<String, String>, {
+    remote,
+    lower: |map| map.into_iter().collect(),
+    try_lift: |map| Ok(map.into_iter().collect()),
+});
 use sdk::{Generation, LocalWriter};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -62,9 +72,9 @@ pub enum Error {
     Json(#[from] serde_json::Error),
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, uniffi::Record)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
-pub struct ResourceIdentity {
+pub struct TelemetryIdentity {
     pub service_name: String,
     pub version: String,
     pub platform: String,
@@ -72,7 +82,7 @@ pub struct ResourceIdentity {
     pub instance_id: String,
     pub run_id: Option<String>,
 }
-impl ResourceIdentity {
+impl TelemetryIdentity {
     pub fn new(platform: &str, version: &str) -> Result<Self> {
         if !matches!(
             platform,
@@ -93,11 +103,11 @@ impl ResourceIdentity {
 }
 
 /// Contains no credentials. An endpoint is validated to contain no URL credentials or query.
-#[derive(Clone, Serialize)]
+#[derive(Clone, Serialize, uniffi::Record)]
 #[serde(rename_all = "camelCase")]
-pub struct Snapshot {
+pub struct TelemetrySnapshot {
     pub revision: u64,
-    pub preference: Preference,
+    pub preference: TelemetryPreference,
     pub endpoint: Option<String>,
     pub has_authentication: bool,
     pub sample_ratio: f64,
@@ -111,21 +121,21 @@ pub struct Snapshot {
     pub updated_unix_ms: u64,
     pub process_id: u32,
     pub run_id: Option<String>,
-    pub execution: Option<ExecutionSnapshot>,
+    pub execution: Option<TelemetryExecution>,
     pub status_write_failed: bool,
     pub configuration_available: bool,
-    pub rust_export: ExportHealth,
-    pub native_export: ExportHealth,
+    pub rust_export: TelemetryExportHealth,
+    pub native_export: TelemetryExportHealth,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, uniffi::Record)]
 #[serde(rename_all = "camelCase")]
-pub struct ExecutionSnapshot {
+pub struct TelemetryExecution {
     pub active_turns: u64,
     pub observed_unix_ms: u64,
     pub owner_available: bool,
 }
-pub(crate) type ExecutionState = Arc<Mutex<Option<ExecutionSnapshot>>>;
+pub(crate) type ExecutionState = Arc<Mutex<Option<TelemetryExecution>>>;
 
 struct Candidate {
     id: String,
@@ -139,13 +149,13 @@ struct State {
     candidate: Option<Candidate>,
     native_revision: Option<u64>,
     status: &'static str,
-    native_export: ExportHealth,
+    native_export: TelemetryExportHealth,
 }
 /// Retain one owner for an installation/process, independently of windows and remote selections.
 pub struct ClientTelemetry {
     directory: PathBuf,
-    identity: ResourceIdentity,
-    development: Option<Profile>,
+    identity: TelemetryIdentity,
+    development: Option<TelemetryProfile>,
     development_unavailable: bool,
     state: Mutex<State>,
     writer: Option<LocalWriter>,
@@ -156,23 +166,24 @@ pub struct ClientTelemetry {
     file_lock: Mutex<Option<std::fs::File>>,
     configuration_available: bool,
     current: Mutex<Option<Arc<Generation>>>,
-    shared_profile: Mutex<Option<Profile>>,
+    shared_profile: Mutex<Option<TelemetryProfile>>,
     sdk_diagnostics: Arc<sdk_diagnostics::Diagnostics>,
     execution: ExecutionState,
 }
 
 /// The only credential-bearing output to native SDK assembly and authorized sharing.
-pub struct Preparation {
+#[derive(uniffi::Record)]
+pub struct TelemetryPreparation {
     pub id: String,
     pub revision: u64,
-    pub profile: Option<Profile>,
-    pub identity: ResourceIdentity,
+    pub profile: Option<TelemetryProfile>,
+    pub identity: TelemetryIdentity,
 }
 
 impl ClientTelemetry {
     pub fn open(
         home: &Path,
-        mut identity: ResourceIdentity,
+        mut identity: TelemetryIdentity,
         local_logs: bool,
         development_profile: Option<&Path>,
     ) -> Result<Arc<Self>> {
@@ -188,17 +199,19 @@ impl ClientTelemetry {
                 }
                 _ => (Stored::empty()?, false),
             };
-        let (development, development_unavailable) =
-            match development_profile.map(config::read::<Profile>).transpose() {
-                Ok(profile)
-                    if profile
-                        .as_ref()
-                        .is_none_or(|profile| profile.validate().is_ok()) =>
-                {
-                    (profile, false)
-                }
-                _ => (None, true),
-            };
+        let (development, development_unavailable) = match development_profile
+            .map(config::read::<TelemetryProfile>)
+            .transpose()
+        {
+            Ok(profile)
+                if profile
+                    .as_ref()
+                    .is_none_or(|profile| profile.validate().is_ok()) =>
+            {
+                (profile, false)
+            }
+            _ => (None, true),
+        };
         if development.is_some() {
             identity.environment = "development".into();
         }
@@ -243,7 +256,7 @@ impl ClientTelemetry {
                 } else {
                     "configuration_unavailable"
                 },
-                native_export: ExportHealth::default(),
+                native_export: TelemetryExportHealth::default(),
             }),
             writer,
             local_dispatch,
@@ -282,14 +295,14 @@ impl ClientTelemetry {
     fn lock(&self) -> Result<std::sync::MutexGuard<'_, State>> {
         self.state.lock().map_err(|_| Error::Unavailable)
     }
-    fn effective(&self, stored: &Stored) -> Option<Profile> {
+    fn effective(&self, stored: &Stored) -> Option<TelemetryProfile> {
         match stored.preference {
-            Preference::Off => None,
-            Preference::On => stored.profile.clone(),
-            Preference::Unset => self.development.clone(),
+            TelemetryPreference::Off => None,
+            TelemetryPreference::On => stored.profile.clone(),
+            TelemetryPreference::Unset => self.development.clone(),
         }
     }
-    pub fn snapshot(&self) -> Result<Snapshot> {
+    pub fn snapshot(&self) -> Result<TelemetrySnapshot> {
         let state = self.lock()?;
         let profile = self
             .effective(&state.stored)
@@ -299,22 +312,24 @@ impl ClientTelemetry {
             .as_ref()
             .filter(|_| state.native_revision == Some(state.stored.revision))
             .map(|g| g.revision);
-        Ok(Snapshot {
+        Ok(TelemetrySnapshot {
             revision: state.stored.revision,
             preference: state.stored.preference,
             endpoint: profile.as_ref().map(|p| p.endpoint.clone()),
             has_authentication: profile.as_ref().is_some_and(|p| !p.headers.is_empty()),
             sample_ratio: profile.as_ref().map_or(1.0, |p| p.sample_ratio),
-            development_override: state.stored.preference == Preference::Unset
+            development_override: state.stored.preference == TelemetryPreference::Unset
                 && self.development.is_some(),
             rust_active_revision: rust_revision,
             native_active_revision: state.active.as_ref().and(state.native_revision),
             native_applied_revision: state.native_revision,
             applied: self.configuration_available
-                && !(self.development_unavailable && state.stored.preference == Preference::Unset)
+                && !(self.development_unavailable
+                    && state.stored.preference == TelemetryPreference::Unset)
                 && ((state.stored.revision == 0 && self.effective(&state.stored).is_none())
                     || state.native_revision == Some(state.stored.revision)),
-            status: if self.development_unavailable && state.stored.preference == Preference::Unset
+            status: if self.development_unavailable
+                && state.stored.preference == TelemetryPreference::Unset
             {
                 "development_configuration_unavailable".into()
             } else {
@@ -342,7 +357,7 @@ impl ClientTelemetry {
         })
     }
     /// Reading saved profile is explicit because this material includes authentication.
-    pub fn saved_profile(&self) -> Result<Option<Profile>> {
+    pub fn saved_profile(&self) -> Result<Option<TelemetryProfile>> {
         if !self.configuration_available {
             return Err(Error::StorageFormat);
         }
@@ -353,22 +368,22 @@ impl ClientTelemetry {
             .clone())
     }
     /// Explicit, bounded one-shot export. It does not enable the SDK or change saved preferences.
-    pub fn send_test(&self, profile: &Profile) -> Result<TestResult> {
+    pub fn send_test(&self, profile: &TelemetryProfile) -> Result<TelemetryTestResult> {
         if self.lock()?.status == "stopped" {
             return Err(Error::Closed);
         }
         self.runtime.block_on(probe::send(profile, &self.identity))
     }
-    pub fn prepare_saved(&self) -> Result<Preparation> {
+    pub fn prepare_saved(&self) -> Result<TelemetryPreparation> {
         let stored = self.lock()?.stored.clone();
         self.prepare(stored.revision, stored.preference, stored.profile)
     }
     pub fn prepare(
         &self,
         expected_revision: u64,
-        preference: Preference,
-        profile: Option<Profile>,
-    ) -> Result<Preparation> {
+        preference: TelemetryPreference,
+        profile: Option<TelemetryProfile>,
+    ) -> Result<TelemetryPreparation> {
         if let Some(profile) = &profile {
             profile.validate()?;
         }
@@ -422,7 +437,7 @@ impl ClientTelemetry {
         if let Some(old) = old {
             self.cleanup(old.generation);
         }
-        Ok(Preparation {
+        Ok(TelemetryPreparation {
             id,
             revision: stored.revision,
             profile: effective,
@@ -454,7 +469,7 @@ impl ClientTelemetry {
             .unwrap_or_else(|e| e.into_inner()) = state.stored.profile.clone();
         state.active = candidate.generation;
         state.native_revision = None;
-        state.native_export = ExportHealth::default();
+        state.native_export = TelemetryExportHealth::default();
         state.status = "awaiting_native";
         let revision = state.stored.revision;
         drop(state);
@@ -530,7 +545,7 @@ impl ClientTelemetry {
         self.sdk_diagnostics
             .record(revision, "native", signal, count)
     }
-    pub fn report_native_export(&self, revision: u64, health: ExportHealth) -> Result<()> {
+    pub fn report_native_export(&self, revision: u64, health: TelemetryExportHealth) -> Result<()> {
         if health
             .last_transport_result
             .as_deref()
@@ -564,7 +579,7 @@ impl ClientTelemetry {
     }
     /// The application owner publishes a complete count; SDK callbacks never call back into CoreRuntime.
     pub fn observe_execution(&self, active_turns: u64) {
-        *self.execution.lock().unwrap_or_else(|e| e.into_inner()) = Some(ExecutionSnapshot {
+        *self.execution.lock().unwrap_or_else(|e| e.into_inner()) = Some(TelemetryExecution {
             active_turns,
             observed_unix_ms: now_ms(),
             owner_available: true,
@@ -1004,14 +1019,14 @@ mod tests {
     fn open(home: &Path, dev: Option<&Path>) -> Arc<ClientTelemetry> {
         ClientTelemetry::open(
             home,
-            ResourceIdentity::new("test", "test").unwrap(),
+            TelemetryIdentity::new("test", "test").unwrap(),
             false,
             dev,
         )
         .unwrap()
     }
-    fn profile() -> Profile {
-        Profile {
+    fn profile() -> TelemetryProfile {
+        TelemetryProfile {
             endpoint: "http://127.0.0.1:1".into(),
             headers: Default::default(),
             sample_ratio: 1.0,
@@ -1023,11 +1038,13 @@ mod tests {
         let owner = open(dir.path(), None);
         assert!(!dir.path().join("telemetry").exists());
         assert!(owner.snapshot().unwrap().rust_active_revision.is_none());
-        let pending = owner.prepare(0, Preference::On, Some(profile())).unwrap();
+        let pending = owner
+            .prepare(0, TelemetryPreference::On, Some(profile()))
+            .unwrap();
         assert!(owner.snapshot().unwrap().rust_active_revision.is_none());
         assert!(!dir.path().join("telemetry/config.json").exists());
         assert!(matches!(
-            owner.prepare(9, Preference::Off, None),
+            owner.prepare(9, TelemetryPreference::Off, None),
             Err(Error::Conflict)
         ));
         let rev = owner.commit(&pending.id).unwrap();
@@ -1035,7 +1052,7 @@ mod tests {
         owner.confirm_native(rev, true).unwrap();
         assert!(owner.snapshot().unwrap().applied);
         let off = owner
-            .prepare(rev, Preference::Off, Some(profile()))
+            .prepare(rev, TelemetryPreference::Off, Some(profile()))
             .unwrap();
         owner.commit(&off.id).unwrap();
         assert!(!owner.snapshot().unwrap().applied);
@@ -1051,7 +1068,9 @@ mod tests {
     fn failed_write_preserves_active_revision_and_profile() {
         let dir = tempfile::tempdir().unwrap();
         let owner = open(dir.path(), None);
-        let pending = owner.prepare(0, Preference::On, Some(profile())).unwrap();
+        let pending = owner
+            .prepare(0, TelemetryPreference::On, Some(profile()))
+            .unwrap();
         std::fs::create_dir_all(dir.path().join("telemetry/config.json")).unwrap();
         assert!(owner.commit(&pending.id).is_err());
         assert_eq!(owner.snapshot().unwrap().revision, 0);
@@ -1062,7 +1081,9 @@ mod tests {
     fn status_failure_does_not_turn_a_committed_change_into_a_save_failure() {
         let dir = tempfile::tempdir().unwrap();
         let owner = open(dir.path(), None);
-        let pending = owner.prepare(0, Preference::On, Some(profile())).unwrap();
+        let pending = owner
+            .prepare(0, TelemetryPreference::On, Some(profile()))
+            .unwrap();
         std::fs::create_dir_all(dir.path().join("telemetry/status.json")).unwrap();
         let revision = owner.commit(&pending.id).unwrap();
         assert_eq!(owner.snapshot().unwrap().revision, revision);
@@ -1075,13 +1096,15 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let first = open(dir.path(), None);
         let second = open(dir.path(), None);
-        let pending = first.prepare(0, Preference::On, Some(profile())).unwrap();
+        let pending = first
+            .prepare(0, TelemetryPreference::On, Some(profile()))
+            .unwrap();
         first.commit(&pending.id).unwrap();
         first.confirm_native(pending.revision, false).unwrap();
         assert!(first.confirm_native(pending.revision, true).is_err());
         assert!(!first.snapshot().unwrap().applied);
         assert!(matches!(
-            second.prepare(0, Preference::Off, None),
+            second.prepare(0, TelemetryPreference::Off, None),
             Err(Error::Conflict)
         ));
     }
@@ -1089,7 +1112,9 @@ mod tests {
     fn configuration_io_lock_does_not_block_business_observation_or_profile_read() {
         let dir = tempfile::tempdir().unwrap();
         let owner = open(dir.path(), None);
-        let candidate = owner.prepare(0, Preference::On, Some(profile())).unwrap();
+        let candidate = owner
+            .prepare(0, TelemetryPreference::On, Some(profile()))
+            .unwrap();
         owner.commit(&candidate.id).unwrap();
         owner.confirm_native(candidate.revision, true).unwrap();
         let guard = owner.state.lock().unwrap();
@@ -1120,7 +1145,7 @@ mod tests {
         assert!(!owner.snapshot().unwrap().applied);
         let mut operation = owner.operation("list", None, false);
         operation.complete(Outcome::Success);
-        let off = owner.prepare(0, Preference::Off, None).unwrap();
+        let off = owner.prepare(0, TelemetryPreference::Off, None).unwrap();
         owner.commit(&off.id).unwrap();
         owner.confirm_native(off.revision, true).unwrap();
         assert!(owner.snapshot().unwrap().applied);
@@ -1130,7 +1155,9 @@ mod tests {
     fn delayed_native_work_cannot_reactivate_a_shutdown_owner() {
         let dir = tempfile::tempdir().unwrap();
         let owner = open(dir.path(), None);
-        let pending = owner.prepare(0, Preference::On, Some(profile())).unwrap();
+        let pending = owner
+            .prepare(0, TelemetryPreference::On, Some(profile()))
+            .unwrap();
         owner.commit(&pending.id).unwrap();
         owner.confirm_native(pending.revision, true).unwrap();
         owner.shutdown().unwrap();
@@ -1151,10 +1178,10 @@ mod tests {
         let before = std::fs::read(&path).unwrap();
         let owner = open_result(dir.path()).unwrap();
         assert!(!owner.snapshot().unwrap().configuration_available);
-        assert!(owner.prepare(0, Preference::Off, None).is_err());
+        assert!(owner.prepare(0, TelemetryPreference::Off, None).is_err());
         assert_eq!(std::fs::read(path).unwrap(), before);
     }
     fn open_result(path: &Path) -> Result<Arc<ClientTelemetry>> {
-        ClientTelemetry::open(path, ResourceIdentity::new("test", "test")?, false, None)
+        ClientTelemetry::open(path, TelemetryIdentity::new("test", "test")?, false, None)
     }
 }

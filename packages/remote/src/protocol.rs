@@ -7,7 +7,7 @@ pub const PROTOCOL_VERSION: u16 = 3;
 pub const MAX_FRAME_BYTES: usize = 32 * 1024 * 1024;
 pub(crate) const ALPN: &[u8] = b"velune/remote/3";
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, uniffi::Enum)]
 pub enum RelayConfig {
     #[default]
     Disabled,
@@ -17,7 +17,7 @@ pub enum RelayConfig {
         urls: Vec<String>,
     },
 }
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, uniffi::Enum)]
 pub enum DiscoveryConfig {
     #[default]
     None,
@@ -27,7 +27,7 @@ pub enum DiscoveryConfig {
     /// Publish and resolve addresses using n0's public DNS/pkarr services.
     DevelopmentPublic,
 }
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, uniffi::Enum)]
 pub enum PathPolicy {
     #[default]
     Automatic,
@@ -60,7 +60,7 @@ impl Default for EndpointConfig {
 }
 
 /// Public dialing information is not a pairing credential.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 #[serde(deny_unknown_fields)]
 pub struct EndpointDescriptor {
     pub version: u16,
@@ -90,7 +90,7 @@ impl EndpointDescriptor {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, uniffi::Record)]
 #[serde(deny_unknown_fields)]
 pub struct RequestId {
     pub incarnation: String,
@@ -186,7 +186,7 @@ pub(crate) enum Reply {
     Hello(EndpointDescriptor),
     Pairing(crate::pairing::PairingWireState),
     Status(RequestStatus),
-    TelemetryProfile(Option<velune_telemetry::Profile>),
+    TelemetryProfile(Option<velune_telemetry::TelemetryProfile>),
     Error(RemoteError),
 }
 

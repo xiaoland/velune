@@ -15,7 +15,7 @@ const MAX_CONTACTS: usize = 256;
 const MAX_PENDING: usize = 256;
 const MAX_STATE_BYTES: usize = 1024 * 1024;
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, uniffi::Record)]
 #[serde(deny_unknown_fields)]
 pub struct DeviceLocator {
     pub relay_urls: Vec<String>,
@@ -48,26 +48,26 @@ impl DeviceLocator {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Enum)]
 #[serde(tag = "state", rename_all = "camelCase")]
 pub enum ContactConfirmation {
     Pending { attempt_id: String },
     Confirmed { attempt_id: String },
 }
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, uniffi::Enum)]
 #[serde(rename_all = "camelCase")]
 pub enum LocatorSource {
     PairingOffer,
     AuthenticatedPeer,
     ExplicitImport,
 }
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 #[serde(deny_unknown_fields)]
 pub struct LocatorUpdate {
     pub peer_id: String,
     pub locator: DeviceLocator,
 }
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 #[serde(deny_unknown_fields)]
 pub struct DeviceContact {
     pub peer_id: String,
@@ -79,7 +79,7 @@ pub struct DeviceContact {
     pub control_authorized: bool,
     pub pairing_permission: PairingPermission,
 }
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 #[serde(deny_unknown_fields)]
 pub struct IncomingControlGrant {
     pub peer_id: String,
@@ -87,7 +87,7 @@ pub struct IncomingControlGrant {
     pub attempt_id: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, uniffi::Enum)]
 #[serde(rename_all = "camelCase")]
 pub enum PendingStatus {
     Recorded,
@@ -99,7 +99,7 @@ pub enum PendingStatus {
     ResultExpired,
     ServerRestarted,
 }
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, uniffi::Record)]
 #[serde(deny_unknown_fields)]
 pub struct PendingOperation {
     pub peer_id: String,
@@ -111,7 +111,7 @@ pub struct PendingOperation {
     pub conversation_id: Option<String>,
     pub status: PendingStatus,
 }
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 #[serde(deny_unknown_fields)]
 pub struct ConfigurationResetNotice {
     pub id: String,

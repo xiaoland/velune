@@ -5,12 +5,14 @@ use std::collections::BTreeMap;
 /// A host-assigned view key, scoped by the authenticated device at the network boundary.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct ClientViewId(pub String);
+uniffi::custom_newtype!(ClientViewId, String);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Revision(pub u64);
+uniffi::custom_newtype!(Revision, u64);
 
 /// A revision is mandatory for configuration and destructive edits over remote connections.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, uniffi::Record)]
 pub struct ExecutionContext {
     pub expected_revision: Option<Revision>,
 }

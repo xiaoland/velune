@@ -28,7 +28,7 @@ final class RemoteEndpointBox: @unchecked Sendable {
 /// as this Mac's, so they show the same interface.
 @MainActor final class DeviceHub: ObservableObject {
     private(set) static var shared: DeviceHub?
-    @Published private(set) var state: BindingRemoteServiceSnapshot?
+    @Published private(set) var state: RemoteServiceSnapshot?
     @Published private(set) var failure: String?
     /// The invitation shown for adding a device, until it is used or expires.
     @Published private(set) var invitation: BindingRemoteInvitation?
@@ -72,7 +72,7 @@ final class RemoteEndpointBox: @unchecked Sendable {
 
     nonisolated private static func deviceNameOffMain() -> String { Host.current().localizedName ?? "Mac" }
 
-    nonisolated private static func observe(_ observer: VeluneRemoteStateObserver, _ deliver: @escaping @Sendable (BindingRemoteServiceSnapshot) -> Void) {
+    nonisolated private static func observe(_ observer: VeluneRemoteStateObserver, _ deliver: @escaping @Sendable (RemoteServiceSnapshot) -> Void) {
         let thread = Thread {
             while true {
                 do {
@@ -88,7 +88,7 @@ final class RemoteEndpointBox: @unchecked Sendable {
         thread.start()
     }
 
-    private func apply(_ snapshot: BindingRemoteServiceSnapshot) {
+    private func apply(_ snapshot: RemoteServiceSnapshot) {
         state = snapshot
         // The invitation has done its job once a device answers it, or is no longer usable.
         if let invitation, Date().timeIntervalSince1970 > Double(invitation.expiresAtUnixSeconds) || snapshot.incomingPairings.contains(where: { $0.phase == .awaitingApproval }) {
@@ -101,7 +101,7 @@ final class RemoteEndpointBox: @unchecked Sendable {
     }
 
     /// Approval happens on the controlled device, after the user compares the codes both devices show.
-    private func promptApproval(_ pairing: BindingPairingStatus) {
+    private func promptApproval(_ pairing: PairingStatus) {
         NSApp.requestUserAttention(.criticalRequest)
         let alert = NSAlert()
         let sharing = pairing.permission == .telemetryProfileRead
@@ -206,7 +206,7 @@ final class RemoteEndpointBox: @unchecked Sendable {
 
     func name(of peerID: String) -> String? { state?.contacts.first { $0.peerId == peerID }?.name }
 
-    func controller(_ peerID: String) -> BindingControllerStatus? { state?.controllers.first { $0.peerId == peerID } }
+    func controller(_ peerID: String) -> ControllerStatus? { state?.controllers.first { $0.peerId == peerID } }
 }
 
 /// Settings for the devices that control this Mac and the ones it controls.
@@ -261,9 +261,9 @@ struct DeviceSettingsView: View {
 }
 
 private struct DeviceRow: View {
-    let contact: BindingDeviceContact
-    let controller: BindingControllerStatus?
-    let outgoing: BindingPairingStatus?
+    let contact: DeviceContact
+    let controller: ControllerStatus?
+    let outgoing: PairingStatus?
     let open: () -> Void
     let forget: () -> Void
     let cancel: () -> Void

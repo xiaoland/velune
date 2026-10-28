@@ -1,6 +1,6 @@
 # 跨语言接入
 
-`velune-bindings` 是本地 application 与远程客户端共用的 UniFFI 接入层。Swift、Kotlin、C# 与 Python 使用同一份 Rust 元数据生成接口。跨越边界的契约类型就是 `velune-conversation` 与 `application-api` 的领域类型，它们直接派生 UniFFI record／enum，各自生成一份语言文件；此处不维护镜像类型或 JSON 转换。本 unit 自己的 `Binding*` 类型只表达接入层独有的概念：错误、打开选项、遥测与远控状态。Mac 在应用进程内加载此 unit 的动态库，不通过 Host 或 socket 调用 Rust。
+`velune-bindings` 是本地 application 与远程客户端共用的 UniFFI 接入层。Swift、Kotlin、C# 与 Python 使用同一份 Rust 元数据生成接口。跨越边界的契约类型就是 `velune-conversation`、`application-api`、`velune-telemetry` 与 `velune-remote` 的领域类型，它们直接派生 UniFFI record／enum，各自生成一份语言文件；此处不维护镜像类型或 JSON 转换。本 unit 自己的 `Binding*` 类型只表达接入层独有的概念：错误、打开选项、邀请解析、网络设置提交与远控请求状态。Mac 在应用进程内加载此 unit 的动态库，不通过 Host 或 socket 调用 Rust。
 
 C# 绑定供 Windows WinUI 应用使用，由 NordSecurity 的 `uniffi-bindgen-cs`（固定在支持 UniFFI 0.32 的 PR #176 提交，构建脚本把它安装到 `target\tools`）从同一份元数据生成，输出不入库，编入应用程序集。各 crate 的 `uniffi.toml` 设定命名空间（本 unit 为 `Velune.Bindings`，契约 crate 为其子命名空间）；`application-api` 的配置把四个与同级变体同名的变体字段改名为 `TextValue`／`InstructionsValue`（C# 中变体是嵌套类，同名字段会与继承来的嵌套类型冲突；后缀沿用生成器自己的 `Value` 约定），只影响 C# 名称，不改 Rust API。生成器在 cargo 之外运行时需要 `CARGO` 指向 cargo 的绝对路径。
 
@@ -23,7 +23,7 @@ Codex 订阅的前端接入复用 `authentication_start`／`authentication_poll`
 
 `VeluneRemoteEndpoint` 是稳定远控服务的外语对象，`open(options, application)` 显式传身份文件、普通 `state_file`、设备名称和网络装配。提供本地 `VeluneApplication` 时缓存一份 ServiceOwner/runtime，Handler 只引用 ApplicationService 和 runtime 租约，不回指外语对象；控制端传 None，不链接本地执行栈。重复 open 复用 incarnation 与账本；构造网络参数只初始化首次配置，已有保存目标优先。`set_control_ingress(false)` 仅停止被控入口，保留出站；`apply_network`／`retry_network` 完整等待旧代际屏障，已接纳工作继续；旧的 URL-only `replace_network` 入口已删除，避免隐式丢失私有资格或绕开设置修订。`shutdown` 是最终服务关闭，返回成功才表示网络和任务完成记录已退出；平台放工作队列，不承诺固定关闭期限。最终 runtime 的 shutdown_background 只是安全析构，不是该屏障。
 
-邀请、wire 与 ALPN 为 v2，普通状态为 schema 3，身份文件仍为 schema 1；不保留旧契约兼容。`decode_remote_offer(encoded)` 无需服务即可离线解析最多 1024 字节的邀请；`begin_pairing` 由 Rust 固定公钥、派生八位码、原子保存 pin/attempt，再发送 Ready。`BindingPairingStatus` 投影 AwaitingReady、AwaitingApproval、Granted、Rejected、Expired、Disconnected；代码是 String，保留前导零。执行端本地 `approve_pairing(attempt_id, expected_peer_id)`／`reject_pairing` 只处理这个不可变候选，不接受网络业务批准。Granted 才调用 `connect(peer_id, view_id)` 取得完整业务代理。`pairing_status(peer_id)` 查询原事务，最终回执丢失或冷启仍可恢复；执行端不回调，因此 `begin_pairing` 之后以及服务打开时，Rust 会对未确认的联系人每 2 秒查询一次，直到得到答复、事务失效或超过 10 分钟，确认结果经 `observe_state` 送达，平台无需自行轮询；名称不是身份，入站 grant 不由联系人 pin 推导。
+邀请、wire 与 ALPN 为 v2，普通状态为 schema 3，身份文件仍为 schema 1；不保留旧契约兼容。`decode_remote_offer(encoded)` 无需服务即可离线解析最多 1024 字节的邀请；`begin_pairing` 由 Rust 固定公钥、派生八位码、原子保存 pin/attempt，再发送 Ready。`PairingStatus` 投影 AwaitingReady、AwaitingApproval、Granted、Rejected、Expired、Disconnected；代码是 String，保留前导零。执行端本地 `approve_pairing(attempt_id, expected_peer_id)`／`reject_pairing` 只处理这个不可变候选，不接受网络业务批准。Granted 才调用 `connect(peer_id, view_id)` 取得完整业务代理。`pairing_status(peer_id)` 查询原事务，最终回执丢失或冷启仍可恢复；执行端不回调，因此 `begin_pairing` 之后以及服务打开时，Rust 会对未确认的联系人每 2 秒查询一次，直到得到答复、事务失效或超过 10 分钟，确认结果经 `observe_state` 送达，平台无需自行轮询；名称不是身份，入站 grant 不由联系人 pin 推导。
 
 `read_state`／`observe_state().next(timeout_ms)` 提供 contacts、incoming_grants、incoming/outgoing_pairings、controllers、network、多个 pending 与 reset_notice 的版本化安全快照。观察等待为 1–5000 毫秒，落后读取完整投影，不把快照当全部事件。联系人不保存 incarnation；pending 的完整请求 ID 固定原 incarnation，但不保存业务正文或 Completed payload。旧普通 schema 初始化为空 schema 3 并留下跨冷启可确认的通知；Android 清理旧 devices.json/.new/.bak 前先调用 `record_legacy_state_reset`，成功后才移除旧普通文件，不触碰 identity。`acknowledge_reset(notice_id)` 只确认指定通知。
 
@@ -61,7 +61,7 @@ cargo run --locked -p velune-bindings --features cli --bin velune-bindgen -- \
   --out-dir target/bindings
 ```
 
-每个带 UniFFI 类型的 crate 生成自己的一份语言文件：Swift 的 `VeluneBindings.swift`、`VeluneConversation.swift`、`VeluneApplicationApi.swift` 与各自的头文件编进同一个 `VeluneBindings` 模块，头文件共用一个 `VeluneBindingsFFI` C 模块（Mac 构建脚本生成其 modulemap）；Kotlin 包名为 `app.velune.bindings` 及其 `.conversation`／`.application` 子包。`X.Protocol` 在 Swift 中是元类型语法，`Protocol` 因此在 Swift 中改名为 `ApiProtocol`。绑定与其动态库必须来自同一次契约构建，UniFFI 在加载时检查接口校验信息。生成目录属于构建产物，不提交生成代码。
+每个带 UniFFI 类型的 crate 生成自己的一份语言文件：Swift 的 `VeluneBindings.swift`、`VeluneConversation.swift`、`VeluneApplicationApi.swift`、`VeluneTelemetry.swift`、`VeluneRemote.swift` 与各自的头文件编进同一个 `VeluneBindings` 模块，头文件共用一个 `VeluneBindingsFFI` C 模块（Mac 构建脚本生成其 modulemap）；Kotlin 包名为 `app.velune.bindings` 及其 `.conversation`／`.application`／`.telemetry`／`.remote` 子包。`X.Protocol` 在 Swift 中是元类型语法，`Protocol` 因此在 Swift 中改名为 `ApiProtocol`。绑定与其动态库必须来自同一次契约构建，UniFFI 在加载时检查接口校验信息。生成目录属于构建产物，不提交生成代码。
 
 当前使用 UniFFI `0.32.2` 官方 Swift、Kotlin、Python 生成器；C# 用上文固定提交的 `uniffi-bindgen-cs`。
 
@@ -108,7 +108,7 @@ cargo run --locked -p velune-bindings --features cli --bin velune-bindgen -- \
 
 Claude CLI 登录沿用 start/poll/cancel/inspect，CLI 自己打开浏览器并管理秘密，可能没有 URL notification；平台持续 poll 获取最终 result。`authentication_logout(gateway_id, provider_id)` 返回 `GatewayUpdate`，退出后刷新配置视图。公开账号摘要只用于辨别绑定，不保证订阅身份或当前可调用；CLI 状态不可用不能显示为登录有效。quota API 不变，未知、过期与 problem 必须按实际呈现；窗口值不是剩余 token 或费用预算。CLI backend 保留应用运行期间的会话，应用关闭或认证变更会终止旧绑定，不承诺重启恢复。
 
-`BindingPlatformNetwork` 以 `wifi`、`cellular`、`ethernet`、`vpn` 表达实际 transport，不以默认网络或 Internet 状态替代这些事实。诊断探针用 Wi-Fi／Ethernet 非 VPN 的 numeric IPv4 装配 mDNS；正常业务仍只把网络报告作为 transport 提示。`BindingProbeMdnsEvent.InterfacesApplied` 包含私有接口地址、采样时间和 generation，表示配置应用与旧任务退出请求，不表示旧 FD 已关闭。`refresh_mdns_interfaces()` 供桌面合成宿主周期采样；Android 使用最近报告的网络事实。接口代际切换产生的 Expired 表示旧接口 scope 失效，不能解释为远端离线。生产 mDNS 与 Rust Controller 恢复已在库内装配；平台界面、权限与真实换网仍未接入／验证。
+`PlatformNetwork` 以 `wifi`、`cellular`、`ethernet`、`vpn` 表达实际 transport，不以默认网络或 Internet 状态替代这些事实。诊断探针用 Wi-Fi／Ethernet 非 VPN 的 numeric IPv4 装配 mDNS；正常业务仍只把网络报告作为 transport 提示。`ProbeMdnsEvent.InterfacesApplied` 包含私有接口地址、采样时间和 generation，表示配置应用与旧任务退出请求，不表示旧 FD 已关闭。`refresh_mdns_interfaces()` 供桌面合成宿主周期采样；Android 使用最近报告的网络事实。接口代际切换产生的 Expired 表示旧接口 scope 失效，不能解释为远端离线。生产 mDNS 与 Rust Controller 恢复已在库内装配；平台界面、权限与真实换网仍未接入／验证。
 
 Kimi 模板由同一 `provider_templates` 目录返回，ID 为 `kimiCodingPlan`，使用新增 `RequestProfile::KimiCoding` 与 `ProviderQuotaSource::KimiUsage`。仍通过 `ApiKey` 编辑 Key，不展示 OAuth 按钮。平台按模板组合保存，不推测地址、模型 ID 或账户归属；公开认证的 `configured` 表示当前 Key 已通过账户验证，额度状态和安全 `problem` 由现有 quota API 返回。账户摘要与披露文案沿现有具名字段呈现；未知窗口和缺失钱包信息不显示为满额或免费保证。
 

@@ -3,96 +3,13 @@ use crate::*;
 use std::{path::Path, sync::Arc, time::Duration};
 use velune_application_api::{ApplicationReply, ExecutionContext, Revision};
 use velune_remote::{
-    Controller, DeviceIdentity, DeviceStore, EndpointConfig, EndpointDescriptor,
-    RemoteAccessService, RequestId, RequestStatus,
+    ConnectionStatus, Controller, ControllerStatus, DeviceIdentity, DeviceStore, DiscoveryConfig,
+    EndpointConfig, EndpointDescriptor, LocatorUpdate, NetworkState, PairingPermission,
+    PairingStatus, PathObservation, PathPolicy, PlatformNetworkSnapshot, RelayConfig,
+    RemoteAccessService, RemoteServiceSnapshot, RequestId, RequestStatus,
 };
 #[cfg(unix)]
 mod cli;
-
-#[derive(Clone, serde::Serialize, serde::Deserialize, uniffi::Enum)]
-pub enum BindingRelayConfig {
-    Disabled,
-    /// Development infrastructure is an explicit opt-in, without a production SLA.
-    DevelopmentPublic,
-    Custom {
-        urls: Vec<String>,
-    },
-}
-#[derive(Clone, serde::Serialize, serde::Deserialize, uniffi::Enum)]
-pub enum BindingDiscoveryConfig {
-    None,
-    DevelopmentPublic,
-    CustomPkarr { urls: Vec<String> },
-}
-#[derive(Clone, serde::Serialize, serde::Deserialize, uniffi::Enum)]
-pub enum BindingRemotePathPolicy {
-    Automatic,
-    RelayOnly,
-}
-#[derive(Clone, Serialize, serde::Deserialize, uniffi::Enum)]
-#[serde(rename_all = "camelCase")]
-pub enum BindingConnectionPathKind {
-    Direct,
-    Relay,
-    Other,
-}
-#[derive(Clone, serde::Deserialize, uniffi::Enum)]
-#[serde(rename_all = "camelCase")]
-pub enum BindingPathAddressFamily {
-    Ipv4,
-    Ipv6,
-    Other,
-}
-#[derive(Clone, serde::Deserialize, uniffi::Enum)]
-#[serde(rename_all = "camelCase")]
-pub enum BindingPathSource {
-    Unknown,
-}
-
-#[derive(Clone, Serialize, serde::Deserialize, uniffi::Enum)]
-#[serde(rename_all = "camelCase")]
-pub enum BindingNetworkChangeReason {
-    Available,
-    Lost,
-    LinkProperties,
-    Capabilities,
-    Foreground,
-}
-#[derive(Clone, Serialize, uniffi::Record)]
-pub struct BindingPlatformNetworkSnapshot {
-    pub sequence: u64,
-    pub elapsed_realtime_ms: u64,
-    pub reason: BindingNetworkChangeReason,
-    pub default_network_id: Option<String>,
-    pub networks: Vec<BindingPlatformNetwork>,
-}
-#[derive(Clone, Serialize, uniffi::Record)]
-pub struct BindingPlatformNetwork {
-    pub id: String,
-    pub wifi: bool,
-    pub cellular: bool,
-    pub ethernet: bool,
-    pub vpn: bool,
-    pub internet: bool,
-    pub validated: bool,
-    pub interface_name: Option<String>,
-    pub addresses: Vec<String>,
-    pub dns_servers: Vec<String>,
-}
-impl TryFrom<BindingPlatformNetworkSnapshot> for velune_remote::PlatformNetworkSnapshot {
-    type Error = BindingError;
-    fn try_from(value: BindingPlatformNetworkSnapshot) -> Result<Self, Self::Error> {
-        let snapshot: Self = convert(value)?;
-        snapshot.validate()?;
-        Ok(snapshot)
-    }
-}
-
-#[derive(Clone, serde::Deserialize, uniffi::Record)]
-pub struct BindingPathObservation {
-    pub status: BindingConnectionStatus,
-    pub missed_events: u64,
-}
 
 /// An observer retains transport evidence, but disposing it does not close business work.
 #[derive(uniffi::Object)]
@@ -114,7 +31,7 @@ impl VelunePathObserver {
 #[uniffi::export]
 impl VelunePathObserver {
     /// Null means no event within the bounded wait, or the stream ended; check status.closed.
-    pub fn next(&self, timeout_ms: u64) -> Result<Option<BindingPathObservation>, BindingError> {
+    pub fn next(&self, timeout_ms: u64) -> Result<Option<PathObservation>, BindingError> {
         if timeout_ms == 0 || timeout_ms > 5_000 {
             return Err(BindingError::Invalid {
                 detail: "路径观察等待必须为 1–5000 毫秒".into(),
@@ -128,98 +45,27 @@ impl VelunePathObserver {
             .ok()
             .flatten()
         });
-        status.map(convert).transpose()
+        Ok(status)
     }
-}
-#[derive(Clone, serde::Deserialize, uniffi::Record)]
-pub struct BindingConnectionPath {
-    pub path_id: u64,
-    pub address_family: BindingPathAddressFamily,
-    pub source: BindingPathSource,
-    pub kind: BindingConnectionPathKind,
-    pub selected: bool,
-    pub rtt_microseconds: u64,
-    pub transmitted_bytes: u64,
-    pub received_bytes: u64,
-    pub lost_packets: u64,
-}
-#[derive(Clone, serde::Deserialize, uniffi::Record)]
-pub struct BindingConnectionStatus {
-    pub connection_id: u64,
-    pub sampled_at_micros: u64,
-    pub peer_id: String,
-    pub closed: bool,
-    pub paths: Vec<BindingConnectionPath>,
 }
 #[derive(Clone, uniffi::Record)]
 pub struct BindingRemoteOptions {
     pub identity_file: String,
     pub state_file: String,
     pub device_name: String,
-    pub relay: BindingRelayConfig,
-    pub discovery: BindingDiscoveryConfig,
-    pub path_policy: BindingRemotePathPolicy,
+    pub relay: RelayConfig,
+    pub discovery: DiscoveryConfig,
+    pub path_policy: PathPolicy,
     pub bind_addresses: Vec<String>,
     pub request_timeout_ms: u64,
-}
-#[derive(Clone, serde::Deserialize, uniffi::Record)]
-pub struct BindingRemoteEndpointDescriptor {
-    pub version: u16,
-    pub endpoint_id: String,
-    pub name: String,
-    pub incarnation: String,
-    pub relay_urls: Vec<String>,
-    pub direct_addresses: Vec<String>,
-    pub lookup_urls: Vec<String>,
-}
-impl From<EndpointDescriptor> for BindingRemoteEndpointDescriptor {
-    fn from(value: EndpointDescriptor) -> Self {
-        Self {
-            version: value.version,
-            endpoint_id: value.endpoint_id,
-            name: value.name,
-            incarnation: value.incarnation,
-            relay_urls: value.relay_urls,
-            lookup_urls: value.lookup_urls,
-            direct_addresses: value
-                .direct_addresses
-                .into_iter()
-                .map(|address| address.to_string())
-                .collect(),
-        }
-    }
 }
 /// A one-time pairing credential, exposed only for the user's explicit transfer.
 #[derive(Clone, uniffi::Record)]
 pub struct BindingRemoteInvitation {
-    pub permission: BindingPairingPermission,
+    pub permission: PairingPermission,
     pub encoded: String,
     pub expires_at_unix_seconds: u64,
     pub issuer: String,
-}
-#[derive(Debug, Clone, serde::Deserialize, uniffi::Record)]
-pub struct BindingRemoteRequestId {
-    pub incarnation: String,
-    pub client: String,
-    pub sequence: u64,
-}
-impl From<RequestId> for BindingRemoteRequestId {
-    fn from(value: RequestId) -> Self {
-        Self {
-            incarnation: value.incarnation,
-            client: value.client,
-            sequence: value.sequence,
-        }
-    }
-}
-impl From<BindingRemoteRequestId> for RequestId {
-    fn from(value: BindingRemoteRequestId) -> Self {
-        Self {
-            incarnation: value.incarnation,
-            client: value.client,
-            sequence: value.sequence,
-        }
-    }
 }
 #[derive(uniffi::Record)]
 pub struct BindingVersionedConfiguration {
@@ -404,9 +250,9 @@ impl velune_remote::Handler for ApplicationHandler {
 #[derive(Clone, uniffi::Record)]
 pub struct BindingRemoteNetworkOptions {
     pub local_discovery: bool,
-    pub relay: BindingRelayConfig,
-    pub discovery: BindingDiscoveryConfig,
-    pub path_policy: BindingRemotePathPolicy,
+    pub relay: RelayConfig,
+    pub discovery: DiscoveryConfig,
+    pub path_policy: PathPolicy,
     pub bind_addresses: Vec<String>,
     pub request_timeout_ms: u64,
 }
@@ -416,7 +262,7 @@ impl From<&BindingRemoteOptions> for BindingRemoteNetworkOptions {
             local_discovery: true,
             relay: options.relay.clone(),
             discovery: options.discovery.clone(),
-            path_policy: options.path_policy.clone(),
+            path_policy: options.path_policy,
             bind_addresses: options.bind_addresses.clone(),
             request_timeout_ms: options.request_timeout_ms,
         }
@@ -427,26 +273,9 @@ impl BindingRemoteNetworkOptions {
         Ok(EndpointConfig {
             local_discovery: self.local_discovery,
             relay_credentials: Vec::new(),
-            relay: match self.relay {
-                BindingRelayConfig::Disabled => velune_remote::RelayConfig::Disabled,
-                BindingRelayConfig::DevelopmentPublic => {
-                    velune_remote::RelayConfig::DevelopmentPublic
-                }
-                BindingRelayConfig::Custom { urls } => velune_remote::RelayConfig::Custom { urls },
-            },
-            discovery: match self.discovery {
-                BindingDiscoveryConfig::None => velune_remote::DiscoveryConfig::None,
-                BindingDiscoveryConfig::DevelopmentPublic => {
-                    velune_remote::DiscoveryConfig::DevelopmentPublic
-                }
-                BindingDiscoveryConfig::CustomPkarr { urls } => {
-                    velune_remote::DiscoveryConfig::CustomPkarr { urls }
-                }
-            },
-            path_policy: match self.path_policy {
-                BindingRemotePathPolicy::Automatic => velune_remote::PathPolicy::Automatic,
-                BindingRemotePathPolicy::RelayOnly => velune_remote::PathPolicy::RelayOnly,
-            },
+            relay: self.relay,
+            discovery: self.discovery,
+            path_policy: self.path_policy,
             bind_addresses: parse_addresses(self.bind_addresses)?,
             request_timeout: Duration::from_millis(self.request_timeout_ms),
         })
@@ -545,12 +374,11 @@ impl VeluneRemoteEndpoint {
     pub fn read_telemetry_profile(
         &self,
         peer_id: String,
-    ) -> Result<Option<crate::BindingTelemetryProfile>, BindingError> {
-        convert(
-            self.owner
-                .runtime
-                .block_on(self.owner.service.read_telemetry_profile(&peer_id))?,
-        )
+    ) -> Result<Option<velune_telemetry::TelemetryProfile>, BindingError> {
+        Ok(self
+            .owner
+            .runtime
+            .block_on(self.owner.service.read_telemetry_profile(&peer_id))?)
     }
     /// Exposes pairing commands to the owning OS user, using this endpoint's live service.
     pub fn start_local_control(&self, directory: String) -> Result<(), BindingError> {
@@ -670,7 +498,7 @@ impl VeluneRemoteEndpoint {
             };
             velune_telemetry::ClientTelemetry::open(
                 home,
-                velune_telemetry::ResourceIdentity::new(platform, env!("CARGO_PKG_VERSION"))?,
+                velune_telemetry::TelemetryIdentity::new(platform, env!("CARGO_PKG_VERSION"))?,
                 false,
                 None,
             )?
@@ -690,17 +518,17 @@ impl VeluneRemoteEndpoint {
     /// A returned sequence confirms notification only, not successful path recovery.
     pub fn report_network_change(
         &self,
-        snapshot: BindingPlatformNetworkSnapshot,
+        snapshot: PlatformNetworkSnapshot,
     ) -> Result<u64, BindingError> {
-        Ok(self.owner.runtime.block_on(
-            self.owner
-                .service
-                .report_network_change(snapshot.try_into()?),
-        )?)
+        snapshot.validate()?;
+        Ok(self
+            .owner
+            .runtime
+            .block_on(self.owner.service.report_network_change(snapshot))?)
     }
 
-    pub fn descriptor(&self) -> Result<BindingRemoteEndpointDescriptor, BindingError> {
-        Ok(self.owner.service.descriptor()?.into())
+    pub fn descriptor(&self) -> Result<EndpointDescriptor, BindingError> {
+        Ok(self.owner.service.descriptor()?)
     }
     pub fn create_invitation(
         &self,
@@ -711,7 +539,7 @@ impl VeluneRemoteEndpoint {
             .service
             .create_invitation(Duration::from_secs(lifetime_seconds))?;
         Ok(BindingRemoteInvitation {
-            permission: convert(invitation.permission)?,
+            permission: invitation.permission,
             encoded: invitation.encode()?,
             expires_at_unix_seconds: invitation.expires_at_unix_seconds,
             issuer: invitation.issuer,
@@ -726,55 +554,50 @@ impl VeluneRemoteEndpoint {
             .service
             .create_telemetry_invitation(Duration::from_secs(lifetime_seconds))?;
         Ok(BindingRemoteInvitation {
-            permission: convert(invitation.permission)?,
+            permission: invitation.permission,
             encoded: invitation.encode()?,
             expires_at_unix_seconds: invitation.expires_at_unix_seconds,
             issuer: invitation.issuer,
         })
     }
-    pub fn begin_pairing(&self, encoded: String) -> Result<BindingPairingStatus, BindingError> {
+    pub fn begin_pairing(&self, encoded: String) -> Result<PairingStatus, BindingError> {
         let offer = velune_remote::PairingOffer::decode(&encoded)?;
-        convert(
-            self.owner
-                .runtime
-                .block_on(self.owner.service.begin_pairing(&offer))?,
-        )
+        Ok(self
+            .owner
+            .runtime
+            .block_on(self.owner.service.begin_pairing(&offer))?)
     }
-    pub fn pairing_status(&self, peer_id: String) -> Result<BindingPairingStatus, BindingError> {
-        convert(
-            self.owner
-                .runtime
-                .block_on(self.owner.service.pairing_status(&peer_id))?,
-        )
+    pub fn pairing_status(&self, peer_id: String) -> Result<PairingStatus, BindingError> {
+        Ok(self
+            .owner
+            .runtime
+            .block_on(self.owner.service.pairing_status(&peer_id))?)
     }
-    pub fn cancel_pairing(&self, peer_id: String) -> Result<BindingPairingStatus, BindingError> {
-        convert(
-            self.owner
-                .runtime
-                .block_on(self.owner.service.cancel_pairing(&peer_id))?,
-        )
+    pub fn cancel_pairing(&self, peer_id: String) -> Result<PairingStatus, BindingError> {
+        Ok(self
+            .owner
+            .runtime
+            .block_on(self.owner.service.cancel_pairing(&peer_id))?)
     }
     pub fn approve_pairing(
         &self,
         attempt_id: String,
         expected_peer_id: String,
-    ) -> Result<BindingPairingStatus, BindingError> {
-        convert(
-            self.owner
-                .service
-                .approve_pairing(&attempt_id, &expected_peer_id)?,
-        )
+    ) -> Result<PairingStatus, BindingError> {
+        Ok(self
+            .owner
+            .service
+            .approve_pairing(&attempt_id, &expected_peer_id)?)
     }
     pub fn reject_pairing(
         &self,
         attempt_id: String,
         expected_peer_id: String,
-    ) -> Result<BindingPairingStatus, BindingError> {
-        convert(
-            self.owner
-                .service
-                .reject_pairing(&attempt_id, &expected_peer_id)?,
-        )
+    ) -> Result<PairingStatus, BindingError> {
+        Ok(self
+            .owner
+            .service
+            .reject_pairing(&attempt_id, &expected_peer_id)?)
     }
     pub fn connect(
         &self,
@@ -804,11 +627,8 @@ impl VeluneRemoteEndpoint {
             .set_activity(selected, foreground)
             .map_err(Into::into)
     }
-    pub fn controller_status(
-        &self,
-        peer_id: String,
-    ) -> Result<BindingControllerStatus, BindingError> {
-        convert(self.owner.service.controller(&peer_id)?.status()?)
+    pub fn controller_status(&self, peer_id: String) -> Result<ControllerStatus, BindingError> {
+        Ok(self.owner.service.controller(&peer_id)?.status()?)
     }
     pub fn refresh_local_discovery(&self) -> Result<u64, BindingError> {
         Ok(self
@@ -816,8 +636,8 @@ impl VeluneRemoteEndpoint {
             .runtime
             .block_on(self.owner.service.refresh_local_discovery())?)
     }
-    pub fn read_state(&self) -> Result<BindingRemoteServiceSnapshot, BindingError> {
-        convert(self.owner.service.read_state()?)
+    pub fn read_state(&self) -> Result<RemoteServiceSnapshot, BindingError> {
+        Ok(self.owner.service.read_state()?)
     }
     pub fn observe_state(&self) -> Arc<VeluneRemoteStateObserver> {
         Arc::new(VeluneRemoteStateObserver {
@@ -842,35 +662,31 @@ impl VeluneRemoteEndpoint {
     pub fn query_request(
         &self,
         peer_id: String,
-        request_id: BindingRemoteRequestId,
+        request_id: RequestId,
     ) -> Result<BindingRemoteRequestStatus, BindingError> {
         Ok(self
             .owner
             .runtime
-            .block_on(
-                self.owner
-                    .service
-                    .query_request(&peer_id, request_id.into()),
-            )?
+            .block_on(self.owner.service.query_request(&peer_id, request_id))?
             .into())
     }
     /// Stop tracking a pending request; the executing device's work continues.
     pub fn acknowledge_request(
         &self,
         peer_id: String,
-        request_id: BindingRemoteRequestId,
+        request_id: RequestId,
     ) -> Result<(), BindingError> {
         self.owner
             .service
-            .acknowledge_request(&peer_id, &request_id.into())
+            .acknowledge_request(&peer_id, &request_id)
             .map_err(Into::into)
     }
     pub fn update_contact_locator(
         &self,
         expected_peer_id: String,
-        update: BindingLocatorUpdate,
+        update: LocatorUpdate,
     ) -> Result<(), BindingError> {
-        let locator: velune_remote::DeviceLocator = convert(update.locator)?;
+        let locator: velune_remote::DeviceLocator = update.locator;
         self.owner
             .service
             .update_contact_locator(
@@ -908,31 +724,29 @@ impl VeluneRemoteEndpoint {
             .set_control_ingress(enabled)
             .map_err(Into::into)
     }
-    pub fn network_state(&self) -> Result<BindingNetworkState, BindingError> {
-        convert(self.owner.service.network_state()?)
+    pub fn network_state(&self) -> Result<NetworkState, BindingError> {
+        Ok(self.owner.service.network_state()?)
     }
     pub fn apply_network(
         &self,
         update: BindingNetworkSettingsUpdate,
-    ) -> Result<BindingNetworkState, BindingError> {
+    ) -> Result<NetworkState, BindingError> {
         let update = velune_remote::NetworkSettingsUpdate {
             expected_revision: update.expected_revision,
             config: update.network.config()?,
-            credentials: convert(update.credentials)?,
+            credentials: update.credentials,
             restore_lookup_urls: update.restore_lookup_urls,
         };
-        convert(
-            self.owner
-                .runtime
-                .block_on(self.owner.service.apply_network(update))?,
-        )
+        Ok(self
+            .owner
+            .runtime
+            .block_on(self.owner.service.apply_network(update))?)
     }
-    pub fn retry_network(&self) -> Result<BindingNetworkState, BindingError> {
-        convert(
-            self.owner
-                .runtime
-                .block_on(self.owner.service.retry_network())?,
-        )
+    pub fn retry_network(&self) -> Result<NetworkState, BindingError> {
+        Ok(self
+            .owner
+            .runtime
+            .block_on(self.owner.service.retry_network())?)
     }
     /// Final service shutdown waits for accepted completion bookkeeping; ingress uses its own toggle.
     pub fn shutdown(&self) -> Result<(), BindingError> {
@@ -986,20 +800,14 @@ pub struct VeluneRemoteStateObserver {
 }
 #[uniffi::export]
 impl VeluneRemoteStateObserver {
-    pub fn next(
-        &self,
-        timeout_ms: u64,
-    ) -> Result<Option<BindingRemoteServiceSnapshot>, BindingError> {
-        self.runtime
-            .block_on(async {
-                self.observer
-                    .lock()
-                    .await
-                    .next(Duration::from_millis(timeout_ms))
-                    .await
-            })?
-            .map(convert)
-            .transpose()
+    pub fn next(&self, timeout_ms: u64) -> Result<Option<RemoteServiceSnapshot>, BindingError> {
+        Ok(self.runtime.block_on(async {
+            self.observer
+                .lock()
+                .await
+                .next(Duration::from_millis(timeout_ms))
+                .await
+        })?)
     }
 }
 pub(crate) struct RemoteApplication {
@@ -1102,14 +910,14 @@ impl RemoteApplication {
                         kind: remote_failure_kind(failure),
                         detail: failure.to_string(),
                         code: failure.code().into(),
-                        request_id: error.request_id.map(Into::into),
+                        request_id: error.request_id,
                     })
                 }
                 velune_remote::CallFailure::ResultUnavailable => Err(BindingError::RemoteRequest {
                     kind: BindingFailureKind::OutcomeUnknown,
                     detail: "请求结果已不可用；不得自动重发".into(),
                     code: "result_unavailable".into(),
-                    request_id: error.request_id.map(Into::into),
+                    request_id: error.request_id,
                 }),
             },
         }
@@ -1147,7 +955,7 @@ impl VeluneApplication {
                     });
                 };
                 Ok(BindingVersionedConfiguration {
-                    configuration: convert(configuration)?,
+                    configuration,
                     revision: reply.revision.0,
                 })
             },
@@ -1180,12 +988,12 @@ impl VeluneApplication {
             remote.controller.observe_paths()?,
         ))
     }
-    pub fn connection_status(&self) -> Result<BindingConnectionStatus, BindingError> {
+    pub fn connection_status(&self) -> Result<ConnectionStatus, BindingError> {
         let remote = self.remote_backend()?;
-        convert(remote.controller.connection_status()?)
+        Ok(remote.controller.connection_status()?)
     }
-    pub fn remote_descriptor(&self) -> Result<BindingRemoteEndpointDescriptor, BindingError> {
-        Ok(self.remote_backend()?.state()?.descriptor.clone().into())
+    pub fn remote_descriptor(&self) -> Result<EndpointDescriptor, BindingError> {
+        Ok(self.remote_backend()?.state()?.descriptor.clone())
     }
     /// Reconnect only to the saved pin and locator; the authenticated Hello supplies the incarnation.
     pub fn reconnect(&self) -> Result<(), BindingError> {

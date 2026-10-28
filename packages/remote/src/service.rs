@@ -576,7 +576,7 @@ impl RemoteAccessService {
     pub async fn read_telemetry_profile(
         &self,
         peer: &str,
-    ) -> Result<Option<velune_telemetry::Profile>> {
+    ) -> Result<Option<velune_telemetry::TelemetryProfile>> {
         let contact = self.state.store.contact(peer)?;
         if !matches!(contact.confirmation, ContactConfirmation::Confirmed { .. }) {
             return Err(RemoteError::Unauthorized);

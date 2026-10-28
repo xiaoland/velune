@@ -2,7 +2,7 @@ use crate::{RemoteError, Result};
 use serde::{Deserialize, Serialize};
 use std::net::IpAddr;
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, uniffi::Enum)]
 #[serde(rename_all = "camelCase")]
 pub enum NetworkChangeReason {
     Available,
@@ -13,7 +13,7 @@ pub enum NetworkChangeReason {
 }
 
 /// Platform facts may contain local addresses. They are not ordinary diagnostics or routing policy.
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, uniffi::Record)]
 pub struct PlatformNetworkSnapshot {
     pub sequence: u64,
     pub elapsed_realtime_ms: u64,
@@ -22,7 +22,7 @@ pub struct PlatformNetworkSnapshot {
     pub networks: Vec<PlatformNetwork>,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, uniffi::Record)]
 pub struct PlatformNetwork {
     pub id: String,
     pub wifi: bool,

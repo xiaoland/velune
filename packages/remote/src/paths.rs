@@ -12,7 +12,7 @@ use std::{
     time::Instant,
 };
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, uniffi::Enum)]
 #[serde(rename_all = "camelCase")]
 pub enum PathKind {
     Direct,
@@ -20,7 +20,7 @@ pub enum PathKind {
     Other,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, uniffi::Enum)]
 #[serde(rename_all = "camelCase")]
 pub enum PathAddressFamily {
     Ipv4,
@@ -29,14 +29,14 @@ pub enum PathAddressFamily {
 }
 
 /// The native path API does not expose candidate discovery provenance.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, uniffi::Enum)]
 #[serde(rename_all = "camelCase")]
 pub enum PathSource {
     Unknown,
 }
 
 /// Safe transport statistics, without addresses, tokens, or application data.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, uniffi::Record)]
 pub struct ConnectionPath {
     pub path_id: u64,
     pub kind: PathKind,
@@ -48,7 +48,7 @@ pub struct ConnectionPath {
     pub received_bytes: u64,
     pub lost_packets: u64,
 }
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, uniffi::Record)]
 pub struct ConnectionStatus {
     /// Process-local handle; clones and observers retain it, a fresh dial gets another handle.
     pub connection_id: u64,
@@ -60,7 +60,7 @@ pub struct ConnectionStatus {
 }
 
 /// A complete current snapshot plus explicit loss on this observer's event channel.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, uniffi::Record)]
 pub struct PathObservation {
     pub status: ConnectionStatus,
     pub missed_events: u64,
@@ -253,13 +253,13 @@ fn snapshot_paths(connection: &ObservedConnection, native_paths: &PathList) -> C
 
 /// Explicitly private transport evidence. Never send this record to ordinary logs or UI.
 #[cfg(feature = "diagnostics")]
-#[derive(Clone, Serialize)]
+#[derive(Clone, Serialize, uniffi::Record)]
 pub struct ConnectionDiagnostics {
     pub status: ConnectionStatus,
     pub paths: Vec<PathDiagnostic>,
 }
 #[cfg(feature = "diagnostics")]
-#[derive(Clone, Serialize)]
+#[derive(Clone, Serialize, uniffi::Record)]
 pub struct PathDiagnostic {
     pub path_id: u64,
     pub local_address: Option<String>,

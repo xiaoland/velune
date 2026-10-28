@@ -17,13 +17,13 @@ impl std::fmt::Debug for RelayCredential {
         formatter.write_str("RelayCredential([REDACTED])")
     }
 }
-#[derive(Clone, Deserialize, Serialize)]
+#[derive(Clone, Deserialize, Serialize, uniffi::Enum)]
 pub enum CredentialEdit {
     Keep,
     Set { value: String },
     Remove,
 }
-#[derive(Clone, Deserialize, Serialize)]
+#[derive(Clone, Deserialize, Serialize, uniffi::Record)]
 pub struct RelayCredentialEdit {
     pub url: String,
     pub credential: CredentialEdit,
@@ -37,12 +37,12 @@ pub struct NetworkSettingsUpdate {
     pub credentials: Vec<RelayCredentialEdit>,
     pub restore_lookup_urls: Vec<String>,
 }
-#[derive(Clone, Serialize)]
+#[derive(Clone, Serialize, uniffi::Record)]
 pub struct RelayCredentialSummary {
     pub url: String,
     pub configured: bool,
 }
-#[derive(Clone, Serialize)]
+#[derive(Clone, Serialize, uniffi::Record)]
 pub struct NetworkSettingsSummary {
     pub revision: u64,
     pub relay: RelayConfig,
@@ -54,7 +54,7 @@ pub struct NetworkSettingsSummary {
     pub credentials: Vec<RelayCredentialSummary>,
     pub withdrawn_lookup_urls: Vec<String>,
 }
-#[derive(Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, PartialEq, Eq, Serialize, uniffi::Enum)]
 #[serde(rename_all = "camelCase")]
 pub enum NetworkApplicationPhase {
     Unapplied,
@@ -62,7 +62,7 @@ pub enum NetworkApplicationPhase {
     Applied,
     Failed,
 }
-#[derive(Clone, Serialize)]
+#[derive(Clone, Serialize, uniffi::Record)]
 pub struct NetworkState {
     pub saved: Option<NetworkSettingsSummary>,
     pub phase: NetworkApplicationPhase,
@@ -71,13 +71,13 @@ pub struct NetworkState {
     pub error_code: Option<String>,
     pub facilities: Vec<FacilityStatus>,
 }
-#[derive(Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, PartialEq, Eq, Serialize, uniffi::Enum)]
 #[serde(rename_all = "camelCase")]
 pub enum FacilityKind {
     HomeRelay,
     Lookup,
 }
-#[derive(Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, PartialEq, Eq, Serialize, uniffi::Enum)]
 #[serde(rename_all = "camelCase")]
 pub enum FacilityReachability {
     Unknown,
@@ -86,7 +86,7 @@ pub enum FacilityReachability {
     Unavailable,
     AuthenticationDenied,
 }
-#[derive(Clone, PartialEq, Eq, Serialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, uniffi::Record)]
 pub struct FacilityStatus {
     pub kind: FacilityKind,
     pub url: String,

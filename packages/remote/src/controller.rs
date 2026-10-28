@@ -232,7 +232,7 @@ fn call_error(request_id: Option<RequestId>, error: RemoteError) -> CallError {
     }
 }
 
-#[derive(Clone, Serialize)]
+#[derive(Clone, Serialize, uniffi::Record)]
 pub struct RemoteServiceSnapshot {
     pub version: u64,
     pub device_id: String,

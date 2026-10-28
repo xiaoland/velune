@@ -7,7 +7,7 @@ struct TelemetrySettingsView: View {
     let coordinator: () throws -> ClientTelemetry
     var remote: (() throws -> VeluneRemoteEndpoint)? = nil
     @State private var revision: UInt64 = 0
-    @State private var preference: BindingTelemetryPreference = .unset
+    @State private var preference: TelemetryPreference = .unset
     @State private var endpoint = ""
     @State private var ratio = 1.0
     @State private var headers: [Header] = []
@@ -18,9 +18,9 @@ struct TelemetrySettingsView: View {
     @State private var loaded = false
     @State private var visible = false
     @State private var source = ""
-    @State private var devices: [BindingDeviceContact] = []
+    @State private var devices: [DeviceContact] = []
     @State private var peers: [SharingPeer] = []
-    @State private var incoming: [BindingPairingStatus] = []
+    @State private var incoming: [PairingStatus] = []
     @State private var invitation: BindingRemoteInvitation?
     private struct SharingPeer: Identifiable, Equatable { var id: String; var name: String; var allowed: Bool }
     private struct Header: Identifiable { let id = UUID(); var name: String; var value: String }
@@ -28,9 +28,9 @@ struct TelemetrySettingsView: View {
         Form {
             Section("本机遥测") {
                 Picker("启用", selection: $preference) {
-                    Text("未设置").tag(BindingTelemetryPreference.unset)
-                    Text("关闭").tag(BindingTelemetryPreference.off)
-                    Text("开启").tag(BindingTelemetryPreference.on)
+                    Text("未设置").tag(TelemetryPreference.unset)
+                    Text("关闭").tag(TelemetryPreference.off)
+                    Text("开启").tag(TelemetryPreference.on)
                 }
                 TextField("OTLP/gRPC 地址", text: $endpoint).textContentType(.URL)
                 HStack { Text("新链路采样率"); Slider(value: $ratio, in: 0...1); Text(ratio, format: .percent.precision(.fractionLength(0))).monospacedDigit() }
@@ -117,11 +117,11 @@ struct TelemetrySettingsView: View {
             status = statusText(snapshot); loaded = snapshot.configurationAvailable
         }
     }
-    private func profile() throws -> BindingTelemetryProfile? {
+    private func profile() throws -> TelemetryProfile? {
         guard !endpoint.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
         let names = headers.map(\.name)
         guard Set(names).count == names.count else { throw BindingError.Invalid(detail: "认证字段名称不能重复") }
-        return BindingTelemetryProfile(endpoint: endpoint.trimmingCharacters(in: .whitespacesAndNewlines), headers: Dictionary(uniqueKeysWithValues: headers.map { ($0.name, $0.value) }), sampleRatio: ratio)
+        return TelemetryProfile(endpoint: endpoint.trimmingCharacters(in: .whitespacesAndNewlines), headers: Dictionary(uniqueKeysWithValues: headers.map { ($0.name, $0.value) }), sampleRatio: ratio)
     }
     private func save() {
         do {
@@ -181,7 +181,7 @@ struct TelemetrySettingsView: View {
             switch result { case .success(let value): success(value); case .failure(let error): failure = ClientTelemetry.message(error) }
         }
     }
-    private func statusText(_ state: BindingTelemetrySnapshot) -> String {
+    private func statusText(_ state: TelemetrySnapshot) -> String {
         if state.status == "development_configuration_unavailable" { return "开发启动配置不可用，遥测未接入" }
         if !state.configurationAvailable { return "配置无法读取，遥测未启用；原文件已保留" }
         let source = state.developmentOverride ? "开发启动配置 · " : ""
@@ -189,7 +189,7 @@ struct TelemetrySettingsView: View {
         if state.rustActiveRevision == nil { return "已关闭" }
         return source + "已应用 · 修订 \(state.revision) · Rust：\(healthText(state.rustExport)) · Apple：\(healthText(state.nativeExport))"
     }
-    private func healthText(_ health: BindingTelemetryExportHealth) -> String {
+    private func healthText(_ health: TelemetryExportHealth) -> String {
         switch health.lastTransportResult { case "rpc_completed": return "最近 RPC 完成"; case nil: return "尚无回执"; default: return "最近导出失败" }
     }
     private func testText(_ value: String) -> String {

@@ -50,10 +50,10 @@ final class ClientTelemetry: @unchecked Sendable {
             started = true
         }
     }
-    func save(revision: UInt64, preference: BindingTelemetryPreference, profile: BindingTelemetryProfile?) throws {
+    func save(revision: UInt64, preference: TelemetryPreference, profile: TelemetryProfile?) throws {
         try transition.withLock { try apply(try binding.prepare(expectedRevision: revision, preference: preference, profile: profile)); started = true }
     }
-    private func apply(_ candidate: BindingTelemetryPreparation) throws {
+    private func apply(_ candidate: TelemetryPreparation) throws {
         let prepared: NativeTelemetryTransport?
         do { prepared = try candidate.profile.map { try NativeTelemetryTransport(profile: $0) } }
         catch { try? binding.cancelPreparation(preparationId: candidate.id); throw error }
@@ -89,14 +89,14 @@ final class ClientTelemetry: @unchecked Sendable {
         span.setAttribute(key: "velune.operation.id", value: id)
         return NativeObservation(generation: current, operation: operation, span: span, id: id)
     }
-    func operation<T>(_ operation: NativeOperation, _ body: (BindingTraceCarrier?) throws -> T) rethrows -> T {
+    func operation<T>(_ operation: NativeOperation, _ body: (TraceCarrier?) throws -> T) rethrows -> T {
         guard let observation = begin(operation) else { return try body(nil) }
         do {
             let result = try Self.$parent.withValue(observation.span.context) { try body(observation.carrier) }
             observation.complete(outcome: "success"); return result
         } catch { observation.complete(outcome: Self.outcome(error)); throw error }
     }
-    func operation<T>(_ operation: NativeOperation, _ body: (BindingTraceCarrier?) async throws -> T) async rethrows -> T {
+    func operation<T>(_ operation: NativeOperation, _ body: (TraceCarrier?) async throws -> T) async rethrows -> T {
         guard let observation = begin(operation) else { return try await body(nil) }
         do {
             let result = try await Self.$parent.withValue(observation.span.context) { try await body(observation.carrier) }
@@ -141,11 +141,11 @@ private struct NativeObservation {
     let span: any Span
     let id: String
     let started = ProcessInfo.processInfo.systemUptime
-    var carrier: BindingTraceCarrier? {
+    var carrier: TraceCarrier? {
         guard span.context.isValid else { return nil }
         var fields = [String: String]()
         W3CTraceContextPropagator().inject(spanContext: span.context, carrier: &fields, setter: CarrierSetter())
-        return BindingTraceCarrier(traceparent: fields["traceparent"] ?? "", tracestate: fields["tracestate"] ?? "")
+        return TraceCarrier(traceparent: fields["traceparent"] ?? "", tracestate: fields["tracestate"] ?? "")
     }
     func complete(outcome: String) { generation.complete(operation, id: id, span: span, elapsed: ProcessInfo.processInfo.systemUptime - started, outcome: outcome) }
 }
@@ -168,7 +168,7 @@ private final class NativeTelemetryTransport {
     let config: OtlpConfiguration
     private let lock = NSLock()
     private var revoked = false
-    init(profile: BindingTelemetryProfile) throws {
+    init(profile: TelemetryProfile) throws {
         guard let url = URL(string: profile.endpoint), let host = url.host else { throw BindingError.Invalid(detail: "遥测地址无效") }
         // Network.framework applies the OS trust policy, including device-managed roots.
         group = NIOTSEventLoopGroup(loopCount: 1)
@@ -198,7 +198,7 @@ private final class NativeTelemetryGeneration {
     private var duration: any DoubleHistogram
     private var queueWait: any DoubleHistogram
     private var stopped = false
-    init(transport: NativeTelemetryTransport, candidate: BindingTelemetryPreparation, binding: VeluneTelemetry) {
+    init(transport: NativeTelemetryTransport, candidate: TelemetryPreparation, binding: VeluneTelemetry) {
         self.transport = transport
         sdkDiagnostics = NativeDropDiagnostics(binding: binding, revision: candidate.revision)
         let identity = candidate.identity

@@ -15,7 +15,7 @@ final class NativeExporterFeedback: @unchecked Sendable {
     func record(success: Bool) {
         let health = lock.withLock {
             if success { completed += 1 } else { failed += 1 }
-            return BindingTelemetryExportHealth(completedBatches: completed, failedBatches: failed,
+            return TelemetryExportHealth(completedBatches: completed, failedBatches: failed,
                 lastExportUnixMs: UInt64(Date().timeIntervalSince1970 * 1000), lastTransportResult: success ? "rpc_completed" : "transport_error", droppedRecords: nil)
         }
         try? binding.reportNativeExport(revision: revision, health: health)

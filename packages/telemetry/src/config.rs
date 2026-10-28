@@ -6,9 +6,9 @@ use crate::{Error, Result};
 pub const MAX_PROFILE_BYTES: usize = 16 * 1024;
 const MAX_FILE_BYTES: usize = 32 * 1024;
 
-#[derive(Clone, Copy, Default, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Default, Debug, PartialEq, Eq, Serialize, Deserialize, uniffi::Enum)]
 #[serde(rename_all = "camelCase")]
-pub enum Preference {
+pub enum TelemetryPreference {
     #[default]
     Unset,
     Off,
@@ -16,15 +16,15 @@ pub enum Preference {
 }
 
 /// Connection material contains credentials. Never include it in diagnostics or ordinary snapshots.
-#[derive(Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Serialize, Deserialize, uniffi::Record)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
-pub struct Profile {
+pub struct TelemetryProfile {
     pub endpoint: String,
     pub headers: BTreeMap<String, String>,
     pub sample_ratio: f64,
 }
 
-impl Profile {
+impl TelemetryProfile {
     pub fn validate(&self) -> Result<()> {
         let url = url::Url::parse(&self.endpoint).map_err(|_| Error::InvalidEndpoint)?;
         if !matches!(url.scheme(), "http" | "https")
@@ -97,8 +97,8 @@ pub(crate) struct Stored {
     pub version: u16,
     pub revision: u64,
     pub installation_id: String,
-    pub preference: Preference,
-    pub profile: Option<Profile>,
+    pub preference: TelemetryPreference,
+    pub profile: Option<TelemetryProfile>,
 }
 
 impl Stored {
@@ -107,7 +107,7 @@ impl Stored {
             version: 1,
             revision: 0,
             installation_id: random_id()?,
-            preference: Preference::Unset,
+            preference: TelemetryPreference::Unset,
             profile: None,
         })
     }
@@ -122,7 +122,7 @@ impl Stored {
         if let Some(profile) = &self.profile {
             profile.validate()?;
         }
-        if self.preference == Preference::On && self.profile.is_none() {
+        if self.preference == TelemetryPreference::On && self.profile.is_none() {
             return Err(Error::MissingProfile);
         }
         Ok(())
@@ -185,8 +185,8 @@ pub(crate) fn private_directory(parent: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn profile() -> Profile {
-        Profile {
+    fn profile() -> TelemetryProfile {
+        TelemetryProfile {
             endpoint: "http://127.0.0.1:4317".into(),
             headers: BTreeMap::new(),
             sample_ratio: 1.0,
@@ -245,7 +245,7 @@ mod tests {
         p.validate().unwrap();
         let mut stored = Stored::empty().unwrap();
         stored.profile = Some(p);
-        stored.preference = Preference::On;
+        stored.preference = TelemetryPreference::On;
         assert!(serde_json::to_vec(&stored).unwrap().len() > MAX_PROFILE_BYTES);
         write(&path, &stored).unwrap();
         read::<Stored>(&path).unwrap().validate().unwrap();

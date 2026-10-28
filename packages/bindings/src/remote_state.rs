@@ -1,13 +1,14 @@
 //! Safe projections of the Rust-owned remote state; response bodies use explicit query only.
 use crate::*;
+use velune_remote::{DeviceLocator, PairingPermission, RelayCredentialEdit};
 
 #[derive(Clone, uniffi::Record)]
 pub struct BindingPairingOfferInfo {
-    pub permission: BindingPairingPermission,
+    pub permission: PairingPermission,
     pub issuer: String,
     pub name: String,
     pub expires_at_unix_seconds: u64,
-    pub locator: BindingDeviceLocator,
+    pub locator: DeviceLocator,
 }
 
 /// Bounded offline parsing; no service, socket, identity, or token persistence is required.
@@ -15,224 +16,18 @@ pub struct BindingPairingOfferInfo {
 pub fn decode_remote_offer(encoded: String) -> Result<BindingPairingOfferInfo, BindingError> {
     let offer = velune_remote::PairingOffer::decode(&encoded)?;
     Ok(BindingPairingOfferInfo {
-        permission: convert(offer.permission)?,
+        permission: offer.permission,
         issuer: offer.issuer,
         name: offer.name,
         expires_at_unix_seconds: offer.expires_at_unix_seconds,
-        locator: convert(offer.locator)?,
+        locator: offer.locator,
     })
 }
 
-#[derive(Clone, serde::Deserialize, uniffi::Enum)]
-#[serde(rename_all = "camelCase")]
-pub enum BindingPairingPhase {
-    AwaitingReady,
-    AwaitingApproval,
-    Granted,
-    Rejected,
-    Expired,
-    Disconnected,
-}
-#[derive(Clone, serde::Deserialize, uniffi::Enum)]
-#[serde(rename_all = "camelCase")]
-pub enum BindingPairingPermission {
-    Control,
-    TelemetryProfileRead,
-}
-#[derive(Clone, serde::Deserialize, uniffi::Record)]
-pub struct BindingPairingStatus {
-    pub permission: BindingPairingPermission,
-    pub attempt_id: String,
-    pub peer_id: String,
-    pub name: String,
-    pub phase: BindingPairingPhase,
-    pub verification_code: Option<String>,
-    pub expires_at_unix_seconds: u64,
-}
-#[derive(Clone, serde::Deserialize, uniffi::Enum)]
-#[serde(tag = "state", rename_all = "camelCase")]
-pub enum BindingContactConfirmation {
-    Pending { attempt_id: String },
-    Confirmed { attempt_id: String },
-}
-#[derive(Clone, serde::Serialize, serde::Deserialize, uniffi::Record)]
-pub struct BindingDeviceLocator {
-    pub relay_urls: Vec<String>,
-    pub direct_addresses: Vec<String>,
-    pub lookup_urls: Vec<String>,
-}
-#[derive(Clone, serde::Deserialize, uniffi::Record)]
-pub struct BindingDeviceContact {
-    pub peer_id: String,
-    pub name: String,
-    pub locator: BindingDeviceLocator,
-    pub confirmation: BindingContactConfirmation,
-    pub paused: bool,
-    pub locator_source: BindingLocatorSource,
-    pub control_authorized: bool,
-    pub pairing_permission: BindingPairingPermission,
-}
-#[derive(Clone, serde::Deserialize, uniffi::Record)]
-pub struct BindingIncomingControlGrant {
-    pub peer_id: String,
-    pub name: String,
-    pub attempt_id: String,
-}
-#[derive(Clone, serde::Deserialize, uniffi::Record)]
-pub struct BindingConfigurationResetNotice {
-    pub id: String,
-}
-#[derive(Clone, serde::Deserialize, uniffi::Enum)]
-#[serde(rename_all = "camelCase")]
-pub enum BindingPendingStatus {
-    Recorded,
-    Running,
-    Completed,
-    BusinessFailed,
-    TransportFailed,
-    Unknown,
-    ResultExpired,
-    ServerRestarted,
-}
-#[derive(Clone, serde::Deserialize, uniffi::Record)]
-pub struct BindingRemoteExecutionContext {
-    pub expected_revision: Option<u64>,
-}
-#[derive(Clone, serde::Deserialize, uniffi::Record)]
-pub struct BindingPendingOperation {
-    pub peer_id: String,
-    pub request_id: BindingRemoteRequestId,
-    pub view: String,
-    pub execution: BindingRemoteExecutionContext,
-    pub kind: CommandKind,
-    pub runtime_id: Option<String>,
-    pub conversation_id: Option<String>,
-    pub status: BindingPendingStatus,
-}
-#[derive(Clone, serde::Deserialize, uniffi::Record)]
-pub struct BindingRemoteServiceSnapshot {
-    pub version: u64,
-    pub device_id: String,
-    pub control_ingress: bool,
-    pub descriptor: Option<BindingRemoteEndpointDescriptor>,
-    pub contacts: Vec<BindingDeviceContact>,
-    pub incoming_grants: Vec<BindingIncomingControlGrant>,
-    pub telemetry_profile_grants: Vec<BindingIncomingControlGrant>,
-    pub incoming_pairings: Vec<BindingPairingStatus>,
-    pub outgoing_pairings: Vec<BindingPairingStatus>,
-    pub pending: Vec<BindingPendingOperation>,
-    pub controllers: Vec<BindingControllerStatus>,
-    pub network: BindingNetworkState,
-    pub reset_notice: Option<BindingConfigurationResetNotice>,
-}
-
-#[derive(Clone, serde::Deserialize, uniffi::Enum)]
-#[serde(rename_all = "camelCase")]
-pub enum BindingControllerPhase {
-    Disconnected,
-    Suspended,
-    Discovering,
-    Connecting,
-    Connected,
-    Recovering,
-    Blocked,
-}
-#[derive(Clone, serde::Deserialize, uniffi::Record)]
-pub struct BindingControllerStatus {
-    pub peer_id: String,
-    pub phase: BindingControllerPhase,
-    pub selected: bool,
-    pub foreground: bool,
-    pub paused: bool,
-    pub intent_revision: u64,
-    pub connection_epoch: u64,
-    pub error_code: Option<String>,
-}
-
-#[derive(Clone, serde::Deserialize, uniffi::Enum)]
-#[serde(rename_all = "camelCase")]
-pub enum BindingLocatorSource {
-    PairingOffer,
-    AuthenticatedPeer,
-    ExplicitImport,
-}
-#[derive(Clone, uniffi::Record)]
-pub struct BindingLocatorUpdate {
-    pub peer_id: String,
-    pub locator: BindingDeviceLocator,
-}
-
-#[derive(Clone, serde::Deserialize, uniffi::Enum)]
-#[serde(rename_all = "camelCase")]
-pub enum BindingNetworkApplicationPhase {
-    Unapplied,
-    Applying,
-    Applied,
-    Failed,
-}
-#[derive(Clone, serde::Deserialize, uniffi::Record)]
-pub struct BindingRelayCredentialSummary {
-    pub url: String,
-    pub configured: bool,
-}
-#[derive(Clone, serde::Deserialize, uniffi::Record)]
-pub struct BindingNetworkSettingsSummary {
-    pub revision: u64,
-    pub relay: BindingRelayConfig,
-    pub discovery: BindingDiscoveryConfig,
-    pub local_discovery: bool,
-    pub path_policy: BindingRemotePathPolicy,
-    pub bind_addresses: Vec<String>,
-    pub request_timeout_ms: u64,
-    pub credentials: Vec<BindingRelayCredentialSummary>,
-    pub withdrawn_lookup_urls: Vec<String>,
-}
-#[derive(Clone, serde::Deserialize, uniffi::Record)]
-pub struct BindingNetworkState {
-    pub saved: Option<BindingNetworkSettingsSummary>,
-    pub phase: BindingNetworkApplicationPhase,
-    pub applied_revision: Option<u64>,
-    pub generation: Option<u64>,
-    pub error_code: Option<String>,
-    pub facilities: Vec<BindingFacilityStatus>,
-}
-#[derive(Clone, serde::Serialize, uniffi::Enum)]
-pub enum BindingCredentialEdit {
-    Keep,
-    Set { value: String },
-    Remove,
-}
-#[derive(Clone, serde::Serialize, uniffi::Record)]
-pub struct BindingRelayCredentialEdit {
-    pub url: String,
-    pub credential: BindingCredentialEdit,
-}
 #[derive(Clone, uniffi::Record)]
 pub struct BindingNetworkSettingsUpdate {
     pub expected_revision: u64,
     pub network: BindingRemoteNetworkOptions,
-    pub credentials: Vec<BindingRelayCredentialEdit>,
+    pub credentials: Vec<RelayCredentialEdit>,
     pub restore_lookup_urls: Vec<String>,
-}
-
-#[derive(Clone, serde::Deserialize, uniffi::Enum)]
-#[serde(rename_all = "camelCase")]
-pub enum BindingFacilityKind {
-    HomeRelay,
-    Lookup,
-}
-#[derive(Clone, serde::Deserialize, uniffi::Enum)]
-#[serde(rename_all = "camelCase")]
-pub enum BindingFacilityReachability {
-    Unknown,
-    Connecting,
-    Reachable,
-    Unavailable,
-    AuthenticationDenied,
-}
-#[derive(Clone, serde::Deserialize, uniffi::Record)]
-pub struct BindingFacilityStatus {
-    pub kind: BindingFacilityKind,
-    pub url: String,
-    pub reachability: BindingFacilityReachability,
 }

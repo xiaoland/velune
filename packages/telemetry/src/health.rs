@@ -6,9 +6,9 @@ use std::{
 };
 
 /// Transport feedback is independent of application telemetry and never recursively exported.
-#[derive(Clone, Default, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Default, serde::Serialize, serde::Deserialize, uniffi::Record)]
 #[serde(rename_all = "camelCase")]
-pub struct ExportHealth {
+pub struct TelemetryExportHealth {
     pub completed_batches: u64,
     pub failed_batches: u64,
     pub last_export_unix_ms: Option<u64>,
@@ -18,7 +18,7 @@ pub struct ExportHealth {
 }
 pub(crate) struct Observed<T> {
     pub exporter: T,
-    pub health: Arc<Mutex<ExportHealth>>,
+    pub health: Arc<Mutex<TelemetryExportHealth>>,
 }
 impl<T> fmt::Debug for Observed<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

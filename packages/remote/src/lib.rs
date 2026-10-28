@@ -43,3 +43,21 @@ pub use protocol::{
 pub use service::{Handler, HandlerFuture, RemoteAccessService};
 pub use settings::*;
 pub use store::*;
+
+uniffi::setup_scaffolding!();
+
+/// Addresses cross the foreign boundary as text.
+pub type SocketAddr = std::net::SocketAddr;
+uniffi::custom_type!(SocketAddr, String, {
+    remote,
+    lower: |address| address.to_string(),
+    try_lift: |text| Ok(text.parse()?),
+});
+#[cfg(feature = "diagnostics")]
+pub type Ipv4Addr = std::net::Ipv4Addr;
+#[cfg(feature = "diagnostics")]
+uniffi::custom_type!(Ipv4Addr, String, {
+    remote,
+    lower: |address| address.to_string(),
+    try_lift: |text| Ok(text.parse()?),
+});

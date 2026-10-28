@@ -125,8 +125,8 @@ impl Server {
             join: Some(join),
         }
     }
-    fn profile(&self) -> Profile {
-        Profile {
+    fn profile(&self) -> TelemetryProfile {
+        TelemetryProfile {
             endpoint: self.endpoint.clone(),
             headers: [("x-velune-synthetic".into(), "allowed".into())].into(),
             sample_ratio: 1.0,
@@ -162,7 +162,7 @@ impl Drop for Server {
 fn client(home: &Path) -> Arc<ClientTelemetry> {
     ClientTelemetry::open(
         home,
-        ResourceIdentity::new("test", "synthetic").unwrap(),
+        TelemetryIdentity::new("test", "synthetic").unwrap(),
         false,
         None,
     )
@@ -172,7 +172,7 @@ fn activate(owner: &ClientTelemetry, server: &Server) {
     let p = owner
         .prepare(
             owner.snapshot().unwrap().revision,
-            Preference::On,
+            TelemetryPreference::On,
             Some(server.profile()),
         )
         .unwrap();
@@ -235,7 +235,7 @@ fn real_grpc_three_signals_revision_switch_and_retired_queue() {
 fn explicit_probe_reports_partial_rejection_without_enabling_collection() {
     let server = Server::open(true);
     let home = tempfile::tempdir().unwrap();
-    let mut identity = ResourceIdentity::new("test", "synthetic").unwrap();
+    let mut identity = TelemetryIdentity::new("test", "synthetic").unwrap();
     identity.run_id = Some("synthetic-test-run".into());
     let owner = ClientTelemetry::open(home.path(), identity, false, None).unwrap();
     let result = owner.send_test(&server.profile()).unwrap();
@@ -267,7 +267,9 @@ fn unsampled_failures_still_export_logs_and_metrics() {
     let owner = client(home.path());
     let mut profile = server.profile();
     profile.sample_ratio = 0.0;
-    let p = owner.prepare(0, Preference::On, Some(profile)).unwrap();
+    let p = owner
+        .prepare(0, TelemetryPreference::On, Some(profile))
+        .unwrap();
     owner.commit(&p.id).unwrap();
     owner.confirm_native(p.revision, true).unwrap();
     operation(&owner, "failure");
@@ -303,7 +305,9 @@ fn official_sdk_drop_summaries_keep_the_retired_revision_without_private_message
     for _ in 0..3000 {
         operation(&owner, "saturated");
     }
-    let off = owner.prepare(revision, Preference::Off, None).unwrap();
+    let off = owner
+        .prepare(revision, TelemetryPreference::Off, None)
+        .unwrap();
     owner.commit(&off.id).unwrap();
     owner.confirm_native(off.revision, true).unwrap();
     let path = home.path().join("telemetry/sdk-diagnostics.json");

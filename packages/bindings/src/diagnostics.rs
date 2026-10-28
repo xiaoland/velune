@@ -23,7 +23,7 @@ impl Diagnostics {
             "host"
         };
         let identity =
-            velune_telemetry::ResourceIdentity::new(platform, env!("CARGO_PKG_VERSION"))?;
+            velune_telemetry::TelemetryIdentity::new(platform, env!("CARGO_PKG_VERSION"))?;
         Ok(Self::with_telemetry(
             velune_telemetry::ClientTelemetry::open(home, identity, true, None)?,
         ))

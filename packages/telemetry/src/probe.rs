@@ -1,5 +1,5 @@
 use crate::{
-    Profile, ResourceIdentity, Result,
+    Result, TelemetryIdentity, TelemetryProfile,
     transport::{self, Permission},
 };
 use opentelemetry_proto::tonic::{
@@ -17,9 +17,9 @@ use opentelemetry_proto::tonic::{
     trace::v1::{ResourceSpans, ScopeSpans, Span},
 };
 
-#[derive(Clone, serde::Serialize)]
+#[derive(Clone, serde::Serialize, uniffi::Record)]
 #[serde(rename_all = "camelCase")]
-pub struct TestResult {
+pub struct TelemetryTestResult {
     pub traces: String,
     pub logs: String,
     pub metrics: String,
@@ -55,7 +55,10 @@ fn outcome<T>(
     }
     .into()
 }
-pub(crate) async fn send(profile: &Profile, identity: &ResourceIdentity) -> Result<TestResult> {
+pub(crate) async fn send(
+    profile: &TelemetryProfile,
+    identity: &TelemetryIdentity,
+) -> Result<TelemetryTestResult> {
     profile.validate()?;
     let permission = Permission::default();
     permission.enable();
@@ -187,7 +190,7 @@ pub(crate) async fn send(profile: &Profile, identity: &ResourceIdentity) -> Resu
         },
     );
     permission.revoke();
-    Ok(TestResult {
+    Ok(TelemetryTestResult {
         traces,
         logs,
         metrics,

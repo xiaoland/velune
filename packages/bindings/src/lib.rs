@@ -24,7 +24,6 @@ pub use transport_probe::*;
 #[cfg(feature = "remote-diagnostics")]
 pub use transport_trace::*;
 
-use serde::{Serialize, de::DeserializeOwned};
 use std::sync::Arc;
 use std::sync::{Mutex, MutexGuard};
 #[cfg(feature = "local-runtime")]
@@ -92,7 +91,7 @@ pub enum BindingError {
         kind: BindingFailureKind,
         detail: String,
         code: String,
-        request_id: Option<BindingRemoteRequestId>,
+        request_id: Option<velune_remote::RequestId>,
     },
     #[error("application has been closed")]
     Closed,
@@ -135,15 +134,6 @@ fn failure_kind(kind: velune_application_api::FailureKind) -> BindingFailureKind
         FailureKind::Contract => BindingFailureKind::Contract,
         FailureKind::Closed => BindingFailureKind::Closed,
     }
-}
-
-fn convert<I: Serialize, O: DeserializeOwned>(input: I) -> Result<O, BindingError> {
-    let value = serde_json::to_value(input).map_err(|error| BindingError::Contract {
-        detail: error.to_string(),
-    })?;
-    serde_json::from_value(value).map_err(|error| BindingError::Contract {
-        detail: error.to_string(),
-    })
 }
 
 /// What a new provider starts from: each subscription, then an API provider.
@@ -299,9 +289,8 @@ impl VeluneApplication {
     /// An immutable per-call view. Dropping it does not close the shared application session.
     pub fn with_trace_context(
         &self,
-        carrier: Option<BindingTraceCarrier>,
+        carrier: Option<velune_telemetry::TraceCarrier>,
     ) -> Result<Arc<Self>, BindingError> {
-        let carrier: Option<velune_telemetry::TraceCarrier> = convert(carrier)?;
         if let Some(carrier) = &carrier {
             carrier.validate()?;
         }

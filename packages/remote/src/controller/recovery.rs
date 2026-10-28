@@ -1,7 +1,7 @@
 use super::*;
 use tokio::{sync::watch, task::JoinHandle};
 
-#[derive(Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, PartialEq, Eq, Serialize, uniffi::Enum)]
 #[serde(rename_all = "camelCase")]
 pub enum ControllerPhase {
     Disconnected,
@@ -13,7 +13,7 @@ pub enum ControllerPhase {
     Blocked,
 }
 
-#[derive(Clone, Serialize)]
+#[derive(Clone, Serialize, uniffi::Record)]
 pub struct ControllerStatus {
     pub peer_id: String,
     pub phase: ControllerPhase,

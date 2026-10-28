@@ -10,6 +10,7 @@ diagnostics = []
 
 [dependencies]
 velune-telemetry = { path = "../telemetry" }
+uniffi = { version = "=0.32.2", default-features = false }
 tracing = "0.1"
 velune-application-api = { path = "../application-api" }
 iroh = { version = "=1.3.0", default-features = false, features = ["tls-ring"] }

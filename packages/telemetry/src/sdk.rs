@@ -1,5 +1,5 @@
 use crate::{
-    Error, Profile, ResourceIdentity, Result,
+    Error, Result, TelemetryIdentity, TelemetryProfile,
     transport::{self, Permission},
 };
 use opentelemetry::{
@@ -50,7 +50,7 @@ pub(crate) struct Generation {
         opentelemetry::metrics::ObservableGauge<u64>,
         opentelemetry::metrics::ObservableGauge<f64>,
     ),
-    pub health: Arc<std::sync::Mutex<crate::ExportHealth>>,
+    pub health: Arc<std::sync::Mutex<crate::TelemetryExportHealth>>,
 }
 
 fn approved(metadata: &tracing::Metadata<'_>) -> bool {
@@ -99,8 +99,8 @@ fn local_layer(writer: LocalWriter) -> impl Layer<tracing_subscriber::Registry> 
 impl Generation {
     /// Providers remain unattached and the transport is denied until commit succeeds.
     pub fn prepare(
-        profile: &Profile,
-        identity: &ResourceIdentity,
+        profile: &TelemetryProfile,
+        identity: &TelemetryIdentity,
         revision: u64,
         writer: Option<LocalWriter>,
         diagnostics: Arc<crate::sdk_diagnostics::Diagnostics>,
@@ -135,7 +135,9 @@ impl Generation {
         let resource = Resource::builder_empty()
             .with_attributes(identity.attributes())
             .build();
-        let health = Arc::new(std::sync::Mutex::new(crate::ExportHealth::default()));
+        let health = Arc::new(std::sync::Mutex::new(
+            crate::TelemetryExportHealth::default(),
+        ));
         let trace_exporter = crate::health::Observed {
             exporter: trace_exporter,
             health: health.clone(),
@@ -302,7 +304,7 @@ impl Generation {
     }
 }
 
-impl ResourceIdentity {
+impl TelemetryIdentity {
     fn attributes(&self) -> Vec<KeyValue> {
         let mut attributes = vec![
             KeyValue::new("velune.telemetry.schema.version", "2"),

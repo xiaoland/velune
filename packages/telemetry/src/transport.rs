@@ -11,7 +11,7 @@ use tonic::{
     transport::{Channel, Endpoint},
 };
 
-use crate::{Error, Profile, Result};
+use crate::{Error, Result, TelemetryProfile};
 
 #[derive(Default)]
 struct PermissionState {
@@ -122,7 +122,7 @@ impl AsyncWrite for GatedIo {
     }
 }
 
-pub(crate) fn metadata(profile: &Profile) -> Result<MetadataMap> {
+pub(crate) fn metadata(profile: &TelemetryProfile) -> Result<MetadataMap> {
     let mut metadata = MetadataMap::new();
     for (key, value) in &profile.headers {
         metadata.insert(
@@ -134,7 +134,7 @@ pub(crate) fn metadata(profile: &Profile) -> Result<MetadataMap> {
     Ok(metadata)
 }
 
-pub(crate) fn channel(profile: &Profile, permission: Permission) -> Result<Channel> {
+pub(crate) fn channel(profile: &TelemetryProfile, permission: Permission) -> Result<Channel> {
     let url = url::Url::parse(&profile.endpoint).map_err(|_| Error::InvalidEndpoint)?;
     let host = url
         .host_str()

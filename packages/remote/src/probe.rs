@@ -38,7 +38,7 @@ const MAX_MDNS_EVENTS: usize = 512;
 const MAX_MDNS_RESOLVES: usize = 8;
 const MAX_MDNS_TIMEOUT: Duration = Duration::from_secs(15);
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, uniffi::Record)]
 #[serde(deny_unknown_fields)]
 pub struct ProbeTarget {
     pub endpoint_id: String,
@@ -65,7 +65,7 @@ impl ProbeTarget {
     }
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, uniffi::Record)]
 pub struct ProbeReply {
     pub sequence: u64,
     pub payload_matches: bool,
@@ -74,7 +74,7 @@ pub struct ProbeReply {
 }
 
 /// Private discovery evidence, independent of connection path selection.
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, uniffi::Enum)]
 #[serde(tag = "event", rename_all = "camelCase")]
 pub enum ProbeMdnsEvent {
     /// Applied interface scope; old guard abort was requested, not synchronously joined.

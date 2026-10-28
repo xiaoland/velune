@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 
 /// Only W3C trace context crosses a boundary. Baggage and arbitrary headers never do.
-#[derive(Clone, Default, Debug, Serialize, Deserialize)]
+#[derive(Clone, Default, Debug, Serialize, Deserialize, uniffi::Record)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct TraceCarrier {
     pub traceparent: String,
