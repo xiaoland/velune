@@ -518,19 +518,19 @@ private struct GeneralSettingsView: View {
         Form {
             Section("用量显示") {
                 Picker("额度", selection: Binding(get: { store.usageDisplay }, set: { store.setUsageDisplay($0) })) {
-                    Text("占用").tag(BindingUsageDisplay.used)
-                    Text("剩余").tag(BindingUsageDisplay.remaining)
+                    Text("占用").tag(UsageDisplay.used)
+                    Text("剩余").tag(UsageDisplay.remaining)
                 }.pickerStyle(.segmented).disabled(store.isLoading || store.isShuttingDown)
                 Picker("上下文", selection: Binding(get: { store.contextUsageDisplay }, set: { store.setContextUsageDisplay($0) })) {
-                    Text("占用").tag(BindingUsageDisplay.used)
-                    Text("剩余").tag(BindingUsageDisplay.remaining)
+                    Text("占用").tag(UsageDisplay.used)
+                    Text("剩余").tag(UsageDisplay.remaining)
                 }.pickerStyle(.segmented).disabled(store.isLoading || store.isShuttingDown)
             }
             Section("会话列表") {
                 LabeledContent("每次加载") { TextField("数量", value: $limit, format: .number).frame(width: 70); Text("个会话") }
                 LabeledContent("列表总数上限") { TextField("数量", value: $totalLimit, format: .number).frame(width: 70); Text("个会话") }
                 Text("列表最多先读取总数上限个会话，按组依次分给各组，每组每次加载若干个；折叠的组不读取。之后可在各组中加载更多。").font(.caption).foregroundStyle(.secondary)
-                Button("保存") { store.setConversationBrowserLimits(BindingConversationBrowserLimits(page: UInt32(limit), total: UInt32(totalLimit))) }
+                Button("保存") { store.setConversationBrowserLimits(ConversationBrowserLimits(page: UInt32(limit), total: UInt32(totalLimit))) }
                     .disabled(limit < 1 || totalLimit < 1 || (limit == Int(store.conversationBrowserLimits.page) && totalLimit == Int(store.conversationBrowserLimits.total)) || store.isShuttingDown)
             }
             if #unavailable(macOS 26) { ToolbarSettingsSection() }
@@ -542,7 +542,7 @@ private struct GeneralSettingsView: View {
 private struct ConversationSettingsView: View {
     @ObservedObject var store: AppStore
     @State private var outlineForm = OutlineForm.popover
-    private static let statusLineItems: [(item: BindingStatusLineItem, title: String)] = [
+    private static let statusLineItems: [(item: StatusLineItem, title: String)] = [
         (.contextUsage, "上下文用量"), (.sessionTokens, "本会话累计 token"), (.workingDirectory, "工作目录与 Git 分支"),
         (.rateLimits, "账户用量限额"), (.sessionCost, "费用估算"),
     ]
@@ -558,10 +558,10 @@ private struct ConversationSettingsView: View {
             }
             Section("关联 Agent") {
                 Picker("打开方式", selection: Binding(get: { store.linkedConversationOpening }, set: { store.setLinkedConversationOpening($0) })) {
-                    Text("当前标签页").tag(BindingLinkedConversationOpening.currentTab)
-                    Text("新标签页").tag(BindingLinkedConversationOpening.newTab)
-                    Text("浮层").tag(BindingLinkedConversationOpening.sheet)
-                    Text("新窗口").tag(BindingLinkedConversationOpening.newWindow)
+                    Text("当前标签页").tag(LinkedConversationOpening.currentTab)
+                    Text("新标签页").tag(LinkedConversationOpening.newTab)
+                    Text("浮层").tag(LinkedConversationOpening.sheet)
+                    Text("新窗口").tag(LinkedConversationOpening.newWindow)
                 }.disabled(store.isLoading || store.isShuttingDown)
                 Text("关联 Agent 是会话的父会话、子 Agent 和经 Velune 协作的会话。在关联 Agent 面板中双击一项，或点按消息列表中的“打开会话”、来源与“打开父会话”时，在这里选择的位置打开；面板的右键菜单可选其他位置。浮层盖在窗口上，可从中转到标签页或独立窗口。").font(.caption).foregroundStyle(.secondary)
             }
@@ -693,7 +693,7 @@ struct ProviderEditor: View {
     var template: ProviderTemplate? = nil
     @Environment(\.dismiss) private var dismiss
     @State private var name = ""
-    @State private var protocolID: ProviderProtocol = .chatCompletionsV1
+    @State private var protocolID: ProviderProtocol = .chatCompletions
     @State private var endpoint = ""
     @State private var models: [ProviderModelDraft] = []
     @State private var quotaLimits: [QuotaLimit] = []
@@ -733,7 +733,7 @@ struct ProviderEditor: View {
     /// Local Claude Code runtimes whose own login a provider can use.
     private var claudeLoginRuntimes: [RuntimeInstance] {
         store.runtimeInstances.filter { instance in
-            instance.typeID == "claude-code-2.1" && store.location(of: instance.id) == .local && (instance.settings["agentDir"].map { ($0 as NSString).isAbsolutePath } ?? false)
+            instance.typeID == .claudeCode && store.location(of: instance.id) == .local && (instance.settings["agentDir"].map { ($0 as NSString).isAbsolutePath } ?? false)
                 || linkedLogin == .runtime(instanceID: instance.id)
         }
     }
@@ -847,8 +847,8 @@ struct ProviderEditor: View {
                         protocolID = value
                     })) { ForEach(store.protocols.filter(\.supported)) { Text($0.name).tag($0.id) } }
                     if usesHTTP {
-                        TextField("服务地址", text: $endpoint, prompt: Text(protocolID == .messagesV1 ? "https://…" : "https://…/v1"))
-                            .help(protocolID == .messagesV1 ? "Anthropic Messages 协议基础 URL；请求路径为 /v1/messages。" : "提供商的协议服务基础 URL。")
+                        TextField("服务地址", text: $endpoint, prompt: Text(protocolID == .messages ? "https://…" : "https://…/v1"))
+                            .help(protocolID == .messages ? "Anthropic Messages 协议基础 URL；请求路径为 /v1/messages。" : "提供商的协议服务基础 URL。")
                     }
                 }
                 if !usesHTTP { claudeBinaryField }
@@ -958,7 +958,7 @@ struct ProviderEditor: View {
     private func commit(signingIn: Bool = false) {
         let edit: AuthenticationEdit = editingAPIKey && apiKey != originalAPIKey ? .setAPIKey(apiKey) : clearAuthentication ? .clear
             : linkedLoginChanged ? linkedLogin.map(AuthenticationEdit.useClaudeCodeLogin) ?? .clear : .keep
-        let quotaEdit: BindingQuotaAuthenticationEdit? = clearingQuotaAuthentication ? .clear : !quotaAccessKeyID.isEmpty && !quotaSecret.isEmpty ? .setAccessKey(accessKeyId: quotaAccessKeyID, secretAccessKey: quotaSecret, confirmed: quotaConfirmed) : quotaConfirmed ? .confirmBinding : nil
+        let quotaEdit: QuotaAuthenticationEdit? = clearingQuotaAuthentication ? .clear : !quotaAccessKeyID.isEmpty && !quotaSecret.isEmpty ? .setAccessKey(accessKeyId: quotaAccessKeyID, secretAccessKey: quotaSecret, confirmed: quotaConfirmed) : quotaConfirmed ? .confirmBinding : nil
         let existing = Set(store.providers.map(\.id))
         var saving = composition; if let claudeBinary { saving.claudeBinary = claudeBinary }
         // The account source reads only from the official address; another address keeps none.
@@ -1061,7 +1061,7 @@ struct RuntimeSettingsView: View {
                 ForEach(store.runtimeInstances) { instance in
                     VStack(alignment: .leading, spacing: 3) {
                         HStack { Text(instance.name); if !instance.enabled { Text("已停用").foregroundStyle(.secondary) } }
-                        Text((store.runtimeTypes.first { $0.id == instance.typeID }?.name ?? instance.typeID) + (store.location(of: instance.id).host.map { " · SSH \($0)" } ?? "")).font(.caption).foregroundStyle(.secondary)
+                        Text((store.runtimeTypes.first { $0.id == instance.typeID }?.name ?? instance.typeID.description) + (store.location(of: instance.id).host.map { " · SSH \($0)" } ?? "")).font(.caption).foregroundStyle(.secondary)
                     }.tag(instance.id)
                 }
             }
@@ -1133,10 +1133,10 @@ struct RuntimeEditor: View {
     @Environment(\.openWindow) private var openWindow
     @State private var name = ""
     @State private var enabled = true
-    @State private var typeID = ""
+    @State private var typeID: RuntimeKind?
     @State private var settings: [String: String] = [:]
     @State private var draftID = UUID().uuidString
-    @State private var typeDrafts: [String: [String: String]] = [:]
+    @State private var typeDrafts: [RuntimeKind?: [String: String]] = [:]
     @State private var executableDiscoveryRunning = false
     @State private var executableDiscoveryMessage: String?
     @State private var execution: ExecutionLoad = .loading
@@ -1156,7 +1156,7 @@ struct RuntimeEditor: View {
     private enum NewConversationMode: Hashable { case lastChosen, runtimeDefault, chosen }
     private struct LaunchArgument: Identifiable { let id = UUID(); var value = "" }
     private struct EnvironmentEntry: Identifiable { let id = UUID(); var name = ""; var value = "" }
-    private enum AgentLoad { case loading, failed(String), ready(BindingAcpRuntimeInfo) }
+    private enum AgentLoad { case loading, failed(String), ready(AcpRuntimeInfo) }
     @State private var location: LocationChoice = .local
     @State private var sshBinary = "/usr/bin/ssh"
     @State private var sshDestination = ""
@@ -1183,7 +1183,7 @@ struct RuntimeEditor: View {
         SettingField(key: "remoteResources", label: "远端辅助目录", kind: .text, required: descriptor?.remoteResources == true, value: "", options: [],
                      help: "执行机器上的绝对目录，Velune 首次使用时在其中放入读取会话等所需的辅助程序；应独立于运行时目录。")
     }
-    private var transportExecution: BindingRuntimeTransport? {
+    private var transportExecution: RuntimeTransport? {
         guard remote else { return .local }
         let binary = MacPath.normalized(sshBinary, field: sshBinaryField)
         let destination = sshDestination.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1210,7 +1210,7 @@ struct RuntimeEditor: View {
         SettingField(key: "remoteRoot", label: "远端根目录", kind: .text, required: true, value: "", options: [],
                      help: "执行机器上的绝对目录；Velune 在其下为此实例建立 HOME。")
     }
-    private var homeExecution: BindingRuntimeHome? {
+    private var homeExecution: RuntimeHome? {
         let absolute = { (value: String) in value.hasPrefix("/") && !value.contains("\0") }
         switch home {
         case .inherit: return .inherit
@@ -1224,7 +1224,7 @@ struct RuntimeEditor: View {
         }
     }
     /// Blank rows are dropped; a variable needs a name without "=".
-    private var launch: BindingAcpLaunch? {
+    private var launch: AcpLaunch? {
         var variables: [String: String] = [:]
         for entry in environment {
             let name = entry.name.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1232,7 +1232,7 @@ struct RuntimeEditor: View {
             guard !name.isEmpty, !name.contains("="), variables[name] == nil else { return nil }
             variables[name] = entry.value
         }
-        return BindingAcpLaunch(args: launchArguments.map(\.value).filter { !$0.isEmpty }, environment: variables)
+        return AcpLaunch(args: launchArguments.map(\.value).filter { !$0.isEmpty }, environment: variables)
     }
     private var valid: Bool { !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && descriptor != nil && homeExecution != nil && transportExecution != nil && remoteResourcesExecution != nil && (descriptor?.launchOptions != true || launch != nil) && (!enabled || fields.allSatisfy { field in
         let value = settings[field.key] ?? field.value
@@ -1249,7 +1249,7 @@ struct RuntimeEditor: View {
                 Section {
                     TextField("实例名称", text: $name)
                     Toggle("启用此运行时", isOn: $enabled).help("停用后不读取其历史，也不创建或执行新任务；原生会话数据保留。")
-                    Picker("类型", selection: $typeID) { ForEach(types) { type in Text(type.name).tag(type.id) } }.disabled(instance != nil)
+                    Picker("类型", selection: $typeID) { ForEach(types) { type in Text(type.name).tag(Optional(type.id)) } }.disabled(instance != nil)
                 }
                 Section("运行环境") { homeSection }
                 if descriptor != nil {
@@ -1292,7 +1292,7 @@ struct RuntimeEditor: View {
                 case .chosen(let choice): newConversationMode = .chosen; newConversationChoice = choice; loadNewConversationModels(instance)
                 }
             }
-            typeID = instance?.typeID ?? types.first?.id ?? ""
+            typeID = instance?.typeID ?? types.first?.id
             if instance == nil { execution = .ready } else { loadExecution() }
             settings = instance?.settings ?? [:]
             if let descriptor {
@@ -1562,7 +1562,7 @@ struct RuntimeEditor: View {
     private func discoverExecutableIfNeeded() {
         discoverExecutables(descriptor?.fields.filter { $0.executableDiscovery != nil && discoveryValue(for: $0).isEmpty } ?? [], type: typeID)
     }
-    private func discoverExecutables(_ fields: [SettingField], type: String) {
+    private func discoverExecutables(_ fields: [SettingField], type: RuntimeKind?) {
         // Discovery looks on this Mac; a remote instance's executables are elsewhere.
         guard !remote, !executableDiscoveryRunning, type == typeID, let field = fields.first, let discovery = field.executableDiscovery else { return }
         executableDiscoveryRunning = true
@@ -1579,14 +1579,14 @@ struct RuntimeEditor: View {
         }
     }
     private func commit() {
-        guard valid, let descriptor, let homeExecution, let transport = transportExecution, let remoteResources = remoteResourcesExecution, case .ready = execution else { return }
+        guard valid, let descriptor, let typeID, let homeExecution, let transport = transportExecution, let remoteResources = remoteResourcesExecution, case .ready = execution else { return }
         // Settings this form does not edit, such as an ACP launch, stay as saved.
         var values = instance?.settings ?? [:]
         for field in descriptor.fields {
             values[field.key] = MacPath.normalized(settings[field.key] ?? field.value, field: field, remote: remote)
         }
         store.saveRuntimeInstance(RuntimeInstance(enabled: enabled, id: instance?.id ?? draftID, name: name.trimmingCharacters(in: .whitespacesAndNewlines), typeID: typeID, gatewayID: instance?.gatewayID ?? gatewayID, settings: values),
-                                  execution: BindingRuntimeExecution(transport: transport, home: homeExecution, remoteResourcesDirectory: remoteResources),
+                                  execution: RuntimeExecution(transport: transport, home: homeExecution, remoteResourcesDirectory: remoteResources),
                                   launch: descriptor.launchOptions ? launch : nil) { [instance] in
             if let instance { saveNewConversationChoice(instance) }
             dismiss()

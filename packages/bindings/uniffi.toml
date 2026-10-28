@@ -9,11 +9,3 @@ android = true
 
 [bindings.csharp]
 namespace = "Velune.Bindings"
-
-# A variant field named like a sibling variant collides with that variant's
-# nested record in C#; use the generator's own `Value` suffix for it.
-[bindings.csharp.rename.velune_bindings]
-"BindingMessageBlock.Reasoning.text" = "text_value"
-"BindingMessageBlock.Notice.text" = "text_value"
-"BindingMessageBlock.ContextCompaction.text" = "text_value"
-"BindingResourceTemplateContent.Subagent.instructions" = "instructions_value"

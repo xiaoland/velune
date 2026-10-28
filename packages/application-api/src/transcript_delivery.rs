@@ -10,14 +10,14 @@ use velune_conversation::{
 
 /// Position in one view's delivery history. A generation identifies the view
 /// instance; a sequence advances whenever delivered content changes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, uniffi::Record)]
 #[serde(rename_all = "camelCase")]
 pub struct TranscriptCursor {
     pub generation: u64,
     pub sequence: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, uniffi::Enum)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum MessagePayload {
     Inline {
@@ -29,7 +29,7 @@ pub enum MessagePayload {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, uniffi::Enum)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum DeliveredBlock {
     Text {
@@ -75,7 +75,7 @@ pub enum DeliveredBlock {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, uniffi::Enum)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum DeliveredImageSource {
     Path {
@@ -87,7 +87,7 @@ pub enum DeliveredImageSource {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, uniffi::Record)]
 pub struct DeliveredMessage {
     /// Sequence at which this content was first delivered; unchanged content keeps it.
     pub stamp: u64,
@@ -99,7 +99,7 @@ pub struct DeliveredMessage {
 }
 
 /// A conversation projection as transferred to a presentation client.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 #[serde(rename_all = "camelCase")]
 pub struct DeliveredSnapshot {
     pub cursor: TranscriptCursor,
@@ -126,14 +126,15 @@ pub struct DeliveredSnapshot {
     pub collaborators: Vec<velune_conversation::Collaborator>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Enum)]
 #[serde(tag = "kind", rename_all = "camelCase")]
+#[allow(clippy::large_enum_variant)]
 pub enum SnapshotUpdate {
     /// No conversation is loaded in the queried runtime context.
     Absent,
     /// The cursor is current.
     Unchanged,
     Changed {
-        snapshot: Box<DeliveredSnapshot>,
+        snapshot: DeliveredSnapshot,
     },
 }

@@ -24,7 +24,7 @@
 
 - `application-api` 的 `Command`／`Response` 是唯一用例表面；本机、远控与 CLI 走同一条类型化路径，核心内部不再有字符串 action 或 JSON 信封。
 - `CoreRuntime` 持有一份已解析的配置，按能力拆分用例模块；会话聚焦需求由 `Command` 变体决定。
-- 跨 FFI 的类型直接由 `application-api` 类型派生 UniFFI（feature 开关），不再维护镜像类型和 JSON 往返；平台端直接使用生成类型，不另建映射层。
+- 跨 FFI 的类型直接由 `velune-conversation`／`application-api` 类型派生 UniFFI，不再维护镜像类型和 JSON 往返；平台端直接使用生成类型，不另建映射层。
 - `agent-runtime` 以一个 Harness 适配器接口统一各运行时，按类型分支集中在构造处。
 - 平台 app 按能力拆分状态与视图，不重算核心拥有的产品规则（见 [Product TDD](../../docs/product-tdd/index.md)）。
 - 文档只描述当前事实；历史留在 git。
@@ -38,7 +38,7 @@
 | 0 | 修复基线 clippy；删除 `manual-*.py`；建立本任务包 | 不变 | 完成 |
 | 1 | 删除核心内部 JSON 协议：`Command` 直接分派到类型化用例 | 不变 | 完成 |
 | 2 | Harness 适配器接口；拆分 `gateway/runtime.rs` 等超大模块 | 不变 | 完成 |
-| 3 | FFI 表面：删除 `Binding*` 镜像与 JSON 转换、合并远控转换层；四端机械更新，删除 Mac 映射层 | 变化 | 待开始 |
+| 3 | FFI 表面：删除 `Binding*` 镜像与 JSON 转换、合并远控转换层；四端机械更新，删除 Mac 映射层 | 变化 | 进行中 |
 | 4 | 平台 app 结构：拆分 Mac `AppStore` 与 Windows 对应部分；把平台自行计算的产品规则移回核心 | 不变 | 待开始 |
 | 5 | 测试：复核现有 Rust 测试，只为真实不变量重建少量分层检查 | 不变 | 待开始 |
 | 6 | 文档：重写 development、architecture 等为当前事实；归档已完成任务包 | 不变 | 待开始 |
@@ -63,10 +63,20 @@
 - 未按行数拆分的文件：`resource_library.rs`、`codex.rs`／`claude.rs` 等内聚于单一用例或单一 Harness，拆分收益低。
 - 验证（2026-10-29）：workspace clippy／test 通过；12 个删除前的回归脚本对重构后的 UniFFI 库全部通过。
 
+## 阶段 3 进展
+
+- 契约类型直接派生 UniFFI：`velune-conversation` 与 `application-api` 无条件依赖 `uniffi` 并各自 `setup_scaffolding`，每个 crate 生成一份语言文件（Swift 合入同一 `VeluneBindings` 模块，C 头共用 `VeluneBindingsFFI`）。原计划的 feature 开关没有必要：这些 crate 唯一的产物是 bindings 动态库。`velune-ai` 保持无 FFI 依赖，`Protocol` 在 `application-api` 以 `#[uniffi::remote]` 声明；Swift 中 `X.Protocol` 是元类型语法，故 Swift 名为 `ApiProtocol`。
+- 删除 `bindings/types.rs`（191 个镜像）、`remote_command.rs`／`remote_response.rs` 与 `convert` 的契约用法；`request!` 直接返回领域值。`CommandKind` 直接派生，删除远控状态里的镜像。
+- 领域类型顺带收紧：`SettingField.kind` 为 `SettingKind`、`ProtocolDescriptor.id` 为 `Protocol`、`RuntimeInstance.type_id`／`RuntimeTypeDescriptor.id` 对平台为 `RuntimeKind`（导出 Display）、`TranscriptTurn.reply_start_block` 为 `u32`、`SnapshotUpdate` 不再装箱；`ConversationTitle` 导出 `displayText()`；`BindingResolution` 改名 `ResourceBindingResolution`；有序 map 以自定义类型 `StringMap`／`WeightMap` 映射为字典。
+- 删除 `Command::SendTurn`／`CreateConversation` 旧变体，`…WithSelection` 改名为 `SendTurn`／`CreateConversation`（平台方法同名）。`SendQueue`／`SteerTurn` 的 `runtime_id` 实际供远控 pending 记录定位会话，保留。
+- 删除没有平台调用的预分配请求 ID 入口：`prepare_remote_operation`／`VeluneRemoteOperation`、`next_request_id`、`submit_request`，以及 remote 的 `RemoteOperation` 与 `OperationUsed`；服务级 `query_request`／`acknowledge_request` 保留，`BindingRemoteRequestStatus.Completed` 直接携带 `Response`。
+- Mac 构建脚本生成合并 modulemap；Mac 代码按新类型名机械更新，`RuntimeInstance.typeID` 等改为 `RuntimeKind`。
+- 验证（2026-10-29）：workspace clippy／test、bindings remote-only clippy 通过；12 个删除前回归脚本按新名机械改写（另以临时 Python shim 兼容字符串类型 ID 与标题比较）后全部通过；Mac 应用构建并在隔离 `VELUNE_HOME` 后台启动，无告警。
+- 无平台调用的其他导出（2026-10-29 统计）：`configure_runtime_execution`、`next_turn_model_selection`、`open_acp_conversation`、`runtime_quota`、运行时资源四个读写方法，以及远控 `acknowledge`、`acknowledge_reset`、`apply_network`、`controller_status`、`disconnect`、`expect_revision`、`list_with_revision`、`network_change`、`network_state`、`observe_paths`、`observed_revision`、`reconnect`、`record_legacy_state_reset`、`refresh_local_discovery`、`remote_descriptor`、`retry_network`、`update_contact_locator`。它们对应已设计的能力，阶段 3 末与平台追平一起决定删除或保留。
+
 ## 留待后续阶段
 
 - 运行时设置仍是 `BTreeMap<String, String>`（如 `acpLaunch`）；`AuthenticationEvent` 是松散结构；`ProviderImportSource` 可收窄；三个 “Source” 类型并存。
-- `Command::SendTurn`／`CreateConversation` 只是带 `model_record_key` 的 `…WithSelection` 旧变体，`SendQueue`／`SteerTurn` 的 `runtime_id` 未被使用；随阶段 3 FFI 表面一起删减。
 - `repository.rs` 仍为旧配置补 `contextUsageDisplay`，配套测试在阶段 5 复核。
 - `application-api` 的 `ExecutionBackend`、`RequestProfile`、`RoutingStrategy`、`QuotaLimit` 与 gateway 配置各有一份，由 application 逐字段转换；`AnalyticsProtocol` 与 `Protocol` 只差序列化名。随阶段 3 FFI 表面一起收敛。
 - `service::usage_tests` 曾在一次 workspace 测试中于 `open().unwrap()` 失败、重跑通过，阶段 5 复核是否有共享状态。

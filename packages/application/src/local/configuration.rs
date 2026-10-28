@@ -283,8 +283,8 @@ impl CoreRuntime {
                     .cloned(),
             )
             .collect();
-        let protocol = |id: &str, name: &str| crate::ProtocolDescriptor {
-            id: id.into(),
+        let protocol = |id: crate::config::Protocol, name: &str| crate::ProtocolDescriptor {
+            id,
             name: name.into(),
             supported: true,
         };
@@ -307,9 +307,12 @@ impl CoreRuntime {
             status_line: self.status_line.clone(),
             provider_import_types,
             protocols: vec![
-                protocol("chatCompletionsV1", "OpenAI Chat Completions v1"),
-                protocol("responsesV1", "OpenAI Responses v1"),
-                protocol("messagesV1", "Anthropic Messages"),
+                protocol(
+                    crate::config::Protocol::ChatCompletions,
+                    "OpenAI Chat Completions v1",
+                ),
+                protocol(crate::config::Protocol::Responses, "OpenAI Responses v1"),
+                protocol(crate::config::Protocol::Messages, "Anthropic Messages"),
             ],
             selected_runtime_instance_id: self.next_turn_runtime_id.clone(),
         })

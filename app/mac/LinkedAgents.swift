@@ -63,7 +63,7 @@ struct LinkedAgentsView: View {
     /// The window whose tool it is: right-clicked where no agent is, it offers the tool's places.
     var layout: ConversationWindowModel?
     /// Opens a conversation where it says, or where the setting says when nil.
-    let open: (String, BindingLinkedConversationOpening?) -> Void
+    let open: (String, LinkedConversationOpening?) -> Void
     @State private var selectedID: String?
 
     var body: some View {

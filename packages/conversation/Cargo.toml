@@ -7,3 +7,4 @@ publish = false
 [dependencies]
 base64 = "0.23"
 serde = { version = "1", features = ["derive"] }
+uniffi = { version = "=0.32.2", default-features = false }

@@ -15,7 +15,7 @@ impl LoginProgress {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 #[serde(rename_all = "camelCase")]
 pub struct AuthenticationEvent {
     #[serde(rename = "type")]
@@ -28,7 +28,7 @@ pub struct AuthenticationEvent {
     pub cancelled: Option<bool>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 #[serde(rename_all = "camelCase")]
 pub struct AuthenticationPrompt {
     pub kind: String,
@@ -36,7 +36,7 @@ pub struct AuthenticationPrompt {
     pub options: Option<Vec<SettingOption>>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 #[serde(rename_all = "camelCase")]
 pub struct AuthenticationNotification {
     pub kind: String,

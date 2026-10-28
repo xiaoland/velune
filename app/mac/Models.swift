@@ -13,7 +13,7 @@ struct Conversation: Codable, Sendable, Identifiable, Equatable {
     /// A native sub-agent's conversation: opened from its parent's transcript,
     /// not listed in the sidebar, and continued only by the parent's agent.
     var parentConversationID: String? = nil
-    /// Velune's organization of the conversation in the list; see `BindingListedConversation`.
+    /// Velune's organization of the conversation in the list; see `ListedConversation`.
     var nativeID = ""
     var agentsURI: String? = nil
     var pinned = false
@@ -26,7 +26,7 @@ struct Conversation: Codable, Sendable, Identifiable, Equatable {
     /// Its latest turn failed; known for unread conversations only.
     var failed = false
     /// The list group showing it; nil for an open conversation the list does not show.
-    var group: BindingConversationGroupKey? = nil
+    var group: ConversationGroupKey? = nil
     enum CodingKeys: String, CodingKey { case id, title, updatedAtUnixMs, createdAtUnixMs, cwd, canRename, canDelete; case runtimeID = "runtimeId"; case parentConversationID = "parentConversationId" }
     /// This conversation's runtime fields with `listed`'s organization.
     func organized(like listed: Conversation) -> Conversation {
@@ -355,9 +355,9 @@ struct ModelTemplate: Codable, Sendable, Identifiable, Equatable {
     var model: ProviderModel { ProviderModel(recordKey: "", providerModelID: suggestedProviderModelID, nickname: nickname, icon: icon, contextWindow: contextWindow, maxOutputTokens: maxOutputTokens, reasoningLevels: reasoningLevels) }
 }
 enum ProviderProtocol: String, Codable, Sendable, CaseIterable, Identifiable {
-    case chatCompletionsV1
-    case responsesV1
-    case messagesV1
+    case chatCompletions
+    case responses
+    case messages
     var id: String { rawValue }
 }
 
@@ -422,10 +422,10 @@ struct AIProvider: Sendable, Identifiable, Equatable {
 
 /// How core reaches the provider; template kind does not determine its authentication method.
 struct ProviderComposition: Sendable, Equatable {
-    var executionBackend: BindingExecutionBackend = .http
-    var requestProfile: BindingRequestProfile = .native
-    var authenticationSource: BindingProviderAuthenticationSource = .apiKey
-    var quotaSource: BindingProviderQuotaSource = .none
+    var executionBackend: ExecutionBackend = .http
+    var requestProfile: RequestProfile = .native
+    var authenticationSource: ProviderAuthenticationSource = .apiKey
+    var quotaSource: ProviderQuotaSource = .none
     /// The subscription composition's display name, independently of how it authenticates.
     var subscriptionName: String? {
         if requestProfile == .kimiCoding { return "Kimi Coding Plan" }
@@ -574,14 +574,14 @@ struct RuntimeInstance: Codable, Sendable, Identifiable, Equatable {
     var enabled: Bool = true
     var id: String
     var name: String
-    var typeID: String
+    var typeID: RuntimeKind
     var gatewayID: String
     var settings: [String: String]
     enum CodingKeys: String, CodingKey { case enabled, id, name, settings; case typeID = "typeId"; case gatewayID = "gatewayId" }
 }
 
 struct RuntimeTypeDescriptor: Codable, Sendable, Identifiable, Equatable {
-    var id: String
+    var id: RuntimeKind
     var familyID: String
     var canRenameConversations: Bool = false
     var canDeleteConversations: Bool = false

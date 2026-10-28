@@ -42,7 +42,7 @@ mod runtime_execution;
 pub use runtime_execution::{RuntimeExecution, RuntimeHome, RuntimeTransport};
 mod resource_library;
 pub use resource_library::{
-    BindingResolution, BoundEntry, ResourceBinding, ResourceDriftFile, ResourceSaveResult,
+    BoundEntry, ResourceBinding, ResourceBindingResolution, ResourceDriftFile, ResourceSaveResult,
     ResourceSyncState, ResourceSyncStatus, ResourceTemplate, ResourceTemplateContent,
     ResourceTemplateImport, ResourceTemplateSummary, SubagentModel, TemplateApplyOutcome,
     TemplateApplyReport, TemplateApplyTarget, TemplateMcpTransport, TemplateSkillFile,

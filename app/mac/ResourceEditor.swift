@@ -32,7 +32,7 @@ struct FailureBanner: View {
     }
 }
 
-extension BindingRuntimeResourceKind {
+extension RuntimeResourceKind {
     var templateTitle: String {
         switch self {
         case .userInstructions: "指令"
@@ -49,7 +49,7 @@ extension BindingRuntimeResourceKind {
         case .nativeAgentDefinitions: "person.2"
         }
     }
-    static let templateKinds: [BindingRuntimeResourceKind] = [.userInstructions, .skills, .mcpServers, .nativeAgentDefinitions]
+    static let templateKinds: [RuntimeResourceKind] = [.userInstructions, .skills, .mcpServers, .nativeAgentDefinitions]
 }
 
 /// One file of a skill bundle while it is being edited. Binary files are kept
@@ -78,7 +78,7 @@ struct DraftKeyValue: Identifiable, Equatable {
 /// only those of `kind` are used.
 struct TemplateDraft: Equatable {
     var id = ""
-    var kind: BindingRuntimeResourceKind
+    var kind: RuntimeResourceKind
     var name = ""
     var body = ""
     var description = ""
@@ -103,12 +103,12 @@ struct TemplateDraft: Equatable {
     /// Environment values (stdio) or request headers (http); either may be secret.
     var pairs: [DraftKeyValue] = []
 
-    init(kind: BindingRuntimeResourceKind) {
+    init(kind: RuntimeResourceKind) {
         self.kind = kind
         if kind == .skills { skillFiles = [DraftSkillFile(path: "SKILL.md", text: "---\nname: \ndescription: \n---\n\n")] }
     }
 
-    init(_ template: BindingResourceTemplate) {
+    init(_ template: ResourceTemplate) {
         id = template.id; name = template.name
         kind = .userInstructions
         switch template.content {
@@ -136,11 +136,11 @@ struct TemplateDraft: Equatable {
         }
     }
 
-    var template: BindingResourceTemplate {
-        let content: BindingResourceTemplateContent
+    var template: ResourceTemplate {
+        let content: ResourceTemplateContent
         switch kind {
         case .userInstructions: content = .instructions(body: body)
-        case .skills: content = .skill(files: skillFiles.map { BindingTemplateSkillFile(path: $0.path, bytes: $0.encoded, executable: $0.executable) })
+        case .skills: content = .skill(files: skillFiles.map { TemplateSkillFile(path: $0.path, bytes: $0.encoded, executable: $0.executable) })
         case .mcpServers:
             var dictionary: [String: String] = [:]
             for pair in pairs where !pair.key.isEmpty { dictionary[pair.key] = pair.value }
@@ -157,7 +157,7 @@ struct TemplateDraft: Equatable {
                                 veluneModel: modelSource == .velune && !veluneModel.isEmpty ? veluneModel : nil,
                                 tools: list, effort: effort.isEmpty ? nil : effort, skills: skills)
         }
-        return BindingResourceTemplate(id: id, name: name.trimmingCharacters(in: .whitespaces), content: content)
+        return ResourceTemplate(id: id, name: name.trimmingCharacters(in: .whitespaces), content: content)
     }
 }
 

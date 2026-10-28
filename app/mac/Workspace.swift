@@ -642,7 +642,7 @@ struct WindowSeed: Codable, Hashable {
     /// sub-agent's, a collaborator's) where `opening` says, else where the
     /// setting does. From the sheet, a sheet is the sheet itself, and a tab
     /// or window takes its place.
-    func openLinked(_ conversationID: String, from tab: ConversationTab, opening: BindingLinkedConversationOpening? = nil) {
+    func openLinked(_ conversationID: String, from tab: ConversationTab, opening: LinkedConversationOpening? = nil) {
         let opening = opening ?? application.linkedConversationOpening
         if tab === sheetTab {
             if opening == .currentTab || opening == .sheet { return tab.store.openLinkedConversation(id: conversationID) }
@@ -694,7 +694,7 @@ struct WindowSeed: Codable, Hashable {
 
     /// Show in a new tab a conversation the core has just opened, such as an
     /// edit's fork, as `result` gives it.
-    func openInNewTab(adopting result: BindingSnapshotResult) {
+    func openInNewTab(adopting result: SnapshotResult) {
         guard let id = result.snapshot?.conversation.id else { return }
         if select(showing: id) { return }
         let store = application.makeWorkspace()

@@ -5,7 +5,7 @@ import VeluneBindings
 struct ComposerAccountQuota: Identifiable {
     let id: String
     let name: String
-    let origin: BindingQuotaOrigin
+    let origin: QuotaOrigin
     let quota: AccountQuota
     let limits: [QuotaLimit]
     var title: String {

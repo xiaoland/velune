@@ -28,8 +28,8 @@ struct ConversationListView: View {
     @State private var deleteTargets: [Conversation] = []
     @State private var projectTarget: ProjectEditorTarget?
     /// The group whose header is being dragged, and the one it is over.
-    @State private var draggedGroup: BindingConversationGroupKey?
-    @State private var groupDropTarget: BindingConversationGroupKey?
+    @State private var draggedGroup: ConversationGroupKey?
+    @State private var groupDropTarget: ConversationGroupKey?
     private var conversationSections: [ConversationBrowser.Section] { store.conversationSections }
 
     var body: some View {
@@ -189,12 +189,12 @@ struct ConversationListView: View {
         return true
     }
 
-    private func expansion(_ key: BindingConversationGroupKey) -> Binding<Bool> {
+    private func expansion(_ key: ConversationGroupKey) -> Binding<Bool> {
         Binding(get: { store.searchResults != nil || !browser.isCollapsed(key) },
                 set: { expanded in if store.searchResults == nil { browser.setCollapsed(key, !expanded) } })
     }
 
-    private func groupTitle(_ key: BindingConversationGroupKey) -> String {
+    private func groupTitle(_ key: ConversationGroupKey) -> String {
         switch key {
         case .all: "会话"
         case .pinned: "置顶"
@@ -280,7 +280,7 @@ struct ConversationListView: View {
 
     /// While a group is dragged over another: the group it would go in front of
     /// (nil: the end), as the drop puts it, and the group it is over.
-    private var groupLanding: (before: BindingConversationGroupKey?, target: BindingConversationGroupKey)? {
+    private var groupLanding: (before: ConversationGroupKey?, target: ConversationGroupKey)? {
         guard let dragged = draggedGroup, let target = groupDropTarget, dragged != target else { return nil }
         let shown = orderableGroups
         guard let from = shown.firstIndex(of: dragged), let to = shown.firstIndex(of: target) else { return nil }
@@ -289,9 +289,9 @@ struct ConversationListView: View {
     }
 
     /// The shown groups the user may put in order, as the list shows them.
-    private var orderableGroups: [BindingConversationGroupKey] { conversationSections.map(\.id).filter(ConversationBrowser.orderable) }
+    private var orderableGroups: [ConversationGroupKey] { conversationSections.map(\.id).filter(ConversationBrowser.orderable) }
     /// Groups are put in order outside a search, among at least two.
-    private func canOrder(_ key: BindingConversationGroupKey) -> Bool {
+    private func canOrder(_ key: ConversationGroupKey) -> Bool {
         store.searchResults == nil && ConversationBrowser.orderable(key) && orderableGroups.count > 1
     }
 

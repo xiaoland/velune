@@ -85,16 +85,16 @@ struct AnalyticsView: View {
     }
     private func refresh() { range = period.timeRange(); load() }
     private func load() {
-        store.loadAnalytics(BindingAnalyticsQuery(fromMs: range.boundaries.first!, toMs: range.boundaries.last!, bucketBoundariesMs: range.boundaries, providerId: scope?.providerID, modelRecordKey: scope?.modelRecordKey, requestLimit: requestLimit))
+        store.loadAnalytics(AnalyticsQuery(fromMs: range.boundaries.first!, toMs: range.boundaries.last!, bucketBoundariesMs: range.boundaries, providerId: scope?.providerID, modelRecordKey: scope?.modelRecordKey, requestLimit: requestLimit))
     }
-    private func showRequests(_ row: BindingAnalyticsBreakdown) {
+    private func showRequests(_ row: AnalyticsBreakdown) {
         scope = AnalyticsScope(name: row.name, providerID: row.providerId, modelRecordKey: row.modelRecordKey)
         requestLimit = 100; page = .requests; load()
     }
     private func showRequestDetail(_ id: String?) {
         if let id, let value = store.analyticsReport?.requests.first(where: { $0.requestId == id }) { requestDetail = AnalyticsRequestRow(value: value) }
     }
-    private func reportContext(_ report: BindingAnalyticsReport) -> some View {
+    private func reportContext(_ report: AnalyticsReport) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
                 Text("\(loadedRange?.caption ?? "") · \(loadedScopeName)").lineLimit(1).truncationMode(.middle).help(loadedRange?.description ?? "")
@@ -112,7 +112,7 @@ struct AnalyticsView: View {
             }
         }.padding(.horizontal, 20).padding(.bottom, 12)
     }
-    private func overview(_ report: BindingAnalyticsReport) -> some View {
+    private func overview(_ report: AnalyticsReport) -> some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
                 HStack(alignment: .top, spacing: 28) {
@@ -148,7 +148,7 @@ struct AnalyticsView: View {
     private func metric(_ title: String, value: String, coverage: String) -> some View {
         VStack(alignment: .leading, spacing: 6) { Text(title).font(.callout).foregroundStyle(.secondary); Text(value).font(.title2).monospacedDigit().lineLimit(1).minimumScaleFactor(0.8).help(value); Text(coverage).font(.caption).foregroundStyle(.secondary) }.frame(maxWidth: .infinity, alignment: .leading)
     }
-    private func requestSummary(_ totals: BindingAnalyticsTotals) -> String {
+    private func requestSummary(_ totals: AnalyticsTotals) -> String {
         var parts = ["\(totals.completedCount) 次完成"]
         if totals.failedCount > 0 { parts.append("\(totals.failedCount) 次失败") }
         if totals.cancelledCount > 0 { parts.append("\(totals.cancelledCount) 次取消") }
@@ -157,7 +157,7 @@ struct AnalyticsView: View {
         return parts.joined(separator: " · ")
     }
     private func coverage(_ known: UInt64, _ total: UInt64) -> String { "\(known) / \(total) 次请求报告" }
-    private func trend(_ report: BindingAnalyticsReport) -> some View {
+    private func trend(_ report: AnalyticsReport) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
                 Text("每日趋势").font(.headline)
@@ -183,10 +183,10 @@ struct AnalyticsView: View {
             } else { Text("输入、输出按各自报告绘制；未报告不补零。速率包含等待时间。").font(.caption).foregroundStyle(.secondary) }
         }
     }
-    private func hasChartData(_ report: BindingAnalyticsReport) -> Bool {
+    private func hasChartData(_ report: AnalyticsReport) -> Bool {
         report.trend.contains { chartMetric == .tokens ? $0.totals.inputTokens != nil || $0.totals.outputTokens != nil : $0.totals.outputTokensPerSecond != nil }
     }
-    private func breakdown(_ report: BindingAnalyticsReport) -> some View {
+    private func breakdown(_ report: AnalyticsReport) -> some View {
         VStack(spacing: 0) {
             HStack {
                 Picker("分解方式", selection: $breakdownMode) { ForEach(AnalyticsBreakdownMode.allCases) { Text($0.title).tag($0) } }.pickerStyle(.segmented).labelsHidden().frame(width: 190)
@@ -208,7 +208,7 @@ struct AnalyticsView: View {
             .contextMenu(forSelectionType: String.self) { ids in if let id = ids.first, let row = breakdownRows.first(where: { $0.id == id }) { Button("查看请求…") { showRequests(row.value) } } } primaryAction: { ids in if let id = ids.first, let row = breakdownRows.first(where: { $0.id == id }) { showRequests(row.value) } }
         }
     }
-    private func requestList(_ report: BindingAnalyticsReport) -> some View {
+    private func requestList(_ report: AnalyticsReport) -> some View {
         VStack(spacing: 0) {
             HStack {
                 Text("筛选：\(loadedScopeName)").font(.callout)
@@ -237,7 +237,7 @@ struct AnalyticsView: View {
 }
 
 private struct AnalyticsRequestDetail: View {
-    let request: BindingAnalyticsRequest
+    let request: AnalyticsRequest
     @Environment(\.dismiss) private var dismiss
     var body: some View {
         VStack(spacing: 0) {
@@ -294,14 +294,14 @@ private enum AnalyticsFormatting {
     static func tokens(_ value: UInt64?) -> String { value.map { TokenCount.format($0) } ?? "—" }
     static func speed(_ value: Double?) -> String { guard let value, value.isFinite else { return "—" }; return TokenCount.rate(value) + " Token/s" }
     static func duration(_ value: UInt64?) -> String { value.map { Duration.milliseconds(Double($0)).formatted(.units(allowed: [.minutes, .seconds], width: .abbreviated, fractionalPart: .show(length: 2))) } ?? "—" }
-    static func outcome(_ value: BindingAnalyticsOutcome) -> String { switch value { case .completed: return "完成"; case .incomplete: return "未完成"; case .failed: return "失败"; case .cancelled: return "取消"; case .rejected: return "拒绝" } }
-    static func protocolName(_ value: BindingAnalyticsProtocol) -> String { switch value { case .chatCompletions: return "OpenAI ChatCompletions"; case .responses: return "OpenAI Responses"; case .messages: return "Anthropic Messages" } }
+    static func outcome(_ value: AnalyticsOutcome) -> String { switch value { case .completed: return "完成"; case .incomplete: return "未完成"; case .failed: return "失败"; case .cancelled: return "取消"; case .rejected: return "拒绝" } }
+    static func protocolName(_ value: AnalyticsProtocol) -> String { switch value { case .chatCompletions: return "OpenAI ChatCompletions"; case .responses: return "OpenAI Responses"; case .messages: return "Anthropic Messages" } }
 }
 private struct AnalyticsScope { var name: String; var providerID: String?; var modelRecordKey: String? }
-private struct AnalyticsBreakdownRow: Identifiable { let value: BindingAnalyticsBreakdown; var id: String { value.key } }
-private struct AnalyticsBucketRow: Identifiable { let value: BindingAnalyticsBucket; var id: Int64 { value.fromMs } }
+private struct AnalyticsBreakdownRow: Identifiable { let value: AnalyticsBreakdown; var id: String { value.key } }
+private struct AnalyticsBucketRow: Identifiable { let value: AnalyticsBucket; var id: Int64 { value.fromMs } }
 private struct AnalyticsRequestTableScope: Hashable { let providerID: String?; let modelRecordKey: String? }
-private struct AnalyticsRequestRow: Identifiable { let value: BindingAnalyticsRequest; var id: String { value.requestId } }
+private struct AnalyticsRequestRow: Identifiable { let value: AnalyticsRequest; var id: String { value.requestId } }
 private enum AnalyticsBreakdownMode: String, CaseIterable, Identifiable { case provider, model; var id: Self { self }; var title: String { self == .provider ? "提供商" : "模型" } }
 private enum AnalyticsChartMetric: String, CaseIterable, Identifiable { case tokens, speed; var id: Self { self }; var title: String { self == .tokens ? "Token 用量" : "有效输出速率" } }
 private enum AnalyticsPeriod: String, CaseIterable, Identifiable {

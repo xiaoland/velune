@@ -2,7 +2,7 @@
 use crate::config::Protocol;
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, uniffi::Enum)]
 #[serde(rename_all = "camelCase")]
 pub enum ProviderAuthenticationSource {
     None,
@@ -11,7 +11,7 @@ pub enum ProviderAuthenticationSource {
     RuntimeProvider,
     ClaudeCli,
 }
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, uniffi::Enum)]
 #[serde(rename_all = "camelCase")]
 pub enum AuthenticationMethod {
     ApiKey,
@@ -19,12 +19,12 @@ pub enum AuthenticationMethod {
     OAuth,
     Unconfigured,
 }
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 #[serde(rename_all = "camelCase")]
 pub struct AuthenticationProvenance {
     pub display_name: String,
 }
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 #[serde(rename_all = "camelCase")]
 pub struct SubscriptionDisclosure {
     pub title: String,
@@ -58,7 +58,7 @@ impl SubscriptionDisclosure {
         }
     }
 }
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderAuthenticationDescription {
     pub method: AuthenticationMethod,
@@ -72,7 +72,7 @@ pub struct ProviderAuthenticationDescription {
 }
 /// An existing Claude Code login referenced by its owner, without credentials or local paths.
 /// The official CLI keeps saving and renewing it; Velune never signs out this login.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, uniffi::Enum)]
 #[serde(
     tag = "kind",
     rename_all = "camelCase",
@@ -85,7 +85,7 @@ pub enum LinkedClaudeLogin {
     /// The login of a local Claude Code runtime on the execution machine.
     Runtime { instance_id: String },
 }
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, uniffi::Enum)]
 #[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
 pub enum AuthenticationEdit {
     Keep,
@@ -100,7 +100,7 @@ pub enum AuthenticationEdit {
 }
 
 /// Credentials used only for the provider's fixed quota query, never model requests.
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, uniffi::Enum)]
 #[serde(
     tag = "kind",
     rename_all = "camelCase",
@@ -122,7 +122,7 @@ impl std::fmt::Debug for QuotaAuthenticationEdit {
     }
 }
 /// Confirmation is a user assertion, not server verification of model-key ownership.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 #[serde(rename_all = "camelCase")]
 pub struct QuotaAuthenticationDescription {
     pub configured: bool,

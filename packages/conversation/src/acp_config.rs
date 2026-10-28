@@ -1,7 +1,7 @@
 //! Session configuration an ACP Agent offers, as it offers it.
 use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, uniffi::Record)]
 #[serde(rename_all = "camelCase")]
 pub struct AcpConfigOption {
     pub id: String,
@@ -13,14 +13,14 @@ pub struct AcpConfigOption {
     pub choices: Vec<AcpConfigChoice>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, uniffi::Enum)]
 #[serde(tag = "type", content = "value", rename_all = "camelCase")]
 pub enum AcpConfigValue {
     Select(String),
     Boolean(bool),
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, uniffi::Record)]
 #[serde(rename_all = "camelCase")]
 pub struct AcpConfigChoice {
     pub value: String,

@@ -18,7 +18,7 @@ struct MessageEditorSheet: View {
     @ObservedObject var store: AppStore
     let request: MessageEditRequest
     /// A fork's new conversation, to show in a new tab.
-    let forked: (BindingSnapshotResult) -> Void
+    let forked: (SnapshotResult) -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var text = ""
     @State private var attachments: [String] = []
@@ -80,7 +80,7 @@ struct MessageEditorSheet: View {
         }
     }
 
-    private func send(_ placement: BindingEditPlacement) {
+    private func send(_ placement: EditPlacement) {
         store.editMessage(request.message.id, placement: placement, text: text.trimmingCharacters(in: .whitespacesAndNewlines), attachments: attachments, forked: forked)
         dismiss()
     }

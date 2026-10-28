@@ -58,7 +58,7 @@ impl TranscriptDelivery {
         let base = (since.generation == view.generation && since.sequence < view.sequence)
             .then_some(since);
         SnapshotUpdate::Changed {
-            snapshot: Box::new(view.deliver(base)),
+            snapshot: view.deliver(base),
         }
     }
 

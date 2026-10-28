@@ -16,6 +16,7 @@ xcrun --find swiftc >/dev/null
 }
 cargo build --locked --release -p velune-bindings --lib
 bindings="$PWD/target/bindings/swift"
+rm -rf "$bindings"
 mkdir -p "$bindings"
 cargo run --locked -p velune-bindings --no-default-features --features cli --bin velune-bindgen -- generate --library target/release/libvelune_bindings.dylib --language swift --out-dir "$bindings" --no-format
 app="$PWD/target/macos/Velune.app"
@@ -23,10 +24,21 @@ rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources" "$app/Contents/Frameworks"
 cp target/release/libvelune_bindings.dylib "$app/Contents/Frameworks/libvelune_bindings.dylib"
 install_name_tool -id '@rpath/libvelune_bindings.dylib' "$app/Contents/Frameworks/libvelune_bindings.dylib"
+# Each crate with UniFFI types generates its own Swift file and header; all of
+# them form the VeluneBindings module over one VeluneBindingsFFI C module.
+rm -rf target/swift-ffi target/swift-bindings
 mkdir -p target/swift-ffi target/swift-bindings
-cp "$bindings/VeluneBindings.swift" target/swift-bindings/
-cp "$bindings/VeluneBindingsFFI.h" target/swift-ffi/
-cp "$bindings/VeluneBindingsFFI.modulemap" target/swift-ffi/module.modulemap
+cp "$bindings"/*.swift target/swift-bindings/
+cp "$bindings"/*.h target/swift-ffi/
+{
+  echo 'module VeluneBindingsFFI {'
+  for header in target/swift-ffi/*.h; do echo "    header \"$(basename "$header")\""; done
+  echo '    export *'
+  echo '    use "Darwin"'
+  echo '    use "_Builtin_stdbool"'
+  echo '    use "_Builtin_stdint"'
+  echo '}'
+} > target/swift-ffi/module.modulemap
 swift build --build-system xcode --arch "$(uname -m)" --configuration release --product VeluneMac --force-resolved-versions \
   -Xlinker -L -Xlinker "$app/Contents/Frameworks" \
   -Xlinker -lvelune_bindings -Xlinker -rpath -Xlinker '@executable_path/../Frameworks'

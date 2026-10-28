@@ -4,7 +4,7 @@ use std::{path::Path, sync::Arc, time::Duration};
 use velune_application_api::{ApplicationReply, ExecutionContext, Revision};
 use velune_remote::{
     Controller, DeviceIdentity, DeviceStore, EndpointConfig, EndpointDescriptor,
-    RemoteAccessService, RemoteOperation, RequestId, RequestStatus,
+    RemoteAccessService, RequestId, RequestStatus,
 };
 #[cfg(unix)]
 mod cli;
@@ -223,7 +223,7 @@ impl From<BindingRemoteRequestId> for RequestId {
 }
 #[derive(uniffi::Record)]
 pub struct BindingVersionedConfiguration {
-    pub configuration: BindingConfigurationSnapshot,
+    pub configuration: ConfigurationSnapshot,
     pub revision: u64,
 }
 #[derive(uniffi::Record)]
@@ -245,12 +245,14 @@ impl From<Failure> for BindingRemoteFailure {
         }
     }
 }
+// The completed response is one short-lived query result.
+#[allow(clippy::large_enum_variant)]
 #[derive(uniffi::Enum)]
 pub enum BindingRemoteRequestStatus {
     Running,
     Completed {
         revision: u64,
-        response: Box<BindingApplicationResponse>,
+        response: Response,
     },
     Failed {
         failure: BindingRemoteFailure,
@@ -263,14 +265,13 @@ pub enum BindingRemoteRequestStatus {
         code: String,
     },
 }
-impl TryFrom<RequestStatus> for BindingRemoteRequestStatus {
-    type Error = BindingError;
-    fn try_from(value: RequestStatus) -> Result<Self, Self::Error> {
-        Ok(match value {
+impl From<RequestStatus> for BindingRemoteRequestStatus {
+    fn from(value: RequestStatus) -> Self {
+        match value {
             RequestStatus::Running => Self::Running,
             RequestStatus::Completed(Ok(reply)) => Self::Completed {
                 revision: reply.revision.0,
-                response: Box::new(reply.response.try_into()?),
+                response: reply.response,
             },
             RequestStatus::Completed(Err(failure)) => Self::Failed {
                 failure: failure.into(),
@@ -282,7 +283,7 @@ impl TryFrom<RequestStatus> for BindingRemoteRequestStatus {
                 detail: error.to_string(),
                 code: error.code().into(),
             },
-        })
+        }
     }
 }
 
@@ -306,7 +307,6 @@ fn remote_failure_kind(error: velune_remote::RemoteError) -> BindingFailureKind 
         RemoteError::Timeout | RemoteError::ServerRestarted => BindingFailureKind::OutcomeUnknown,
         RemoteError::PairingUnavailable
         | RemoteError::PendingRequests
-        | RemoteError::OperationUsed
         | RemoteError::Configuration
         | RemoteError::InvalidInvitation
         | RemoteError::ExpiredInvitation
@@ -838,20 +838,23 @@ impl VeluneRemoteEndpoint {
             .acknowledge_reset(&notice_id)
             .map_err(Into::into)
     }
+    /// The result of a pending request, without resubmitting it.
     pub fn query_request(
         &self,
         peer_id: String,
         request_id: BindingRemoteRequestId,
     ) -> Result<BindingRemoteRequestStatus, BindingError> {
-        self.owner
+        Ok(self
+            .owner
             .runtime
             .block_on(
                 self.owner
                     .service
                     .query_request(&peer_id, request_id.into()),
             )?
-            .try_into()
+            .into())
     }
+    /// Stop tracking a pending request; the executing device's work continues.
     pub fn acknowledge_request(
         &self,
         peer_id: String,
@@ -961,7 +964,7 @@ impl VeluneRemoteEndpoint {
                 closed: false,
             }),
         });
-        let initial = remote.request_reply(Command::List, None)?;
+        let initial = remote.request_reply(Command::List)?;
         remote.state()?.expected = Some(initial.revision);
         Ok(remote_proxy(remote))
     }
@@ -972,7 +975,6 @@ fn remote_proxy(remote: Arc<RemoteApplication>) -> Arc<VeluneApplication> {
         application: Arc::new(Mutex::new(Some(Backend::Remote(remote)))),
         diagnostics,
         trace_carrier: None,
-        remote_operation: None,
         #[cfg(feature = "local-runtime")]
         remote_service: Arc::new(Mutex::new(None)),
     })
@@ -1000,24 +1002,6 @@ impl VeluneRemoteStateObserver {
             .transpose()
     }
 }
-#[derive(uniffi::Object)]
-pub struct VeluneRemoteOperation {
-    operation: Arc<RemoteOperation>,
-    application: Arc<VeluneApplication>,
-}
-#[uniffi::export]
-impl VeluneRemoteOperation {
-    pub fn request_id(&self) -> BindingRemoteRequestId {
-        self.operation.request_id().into()
-    }
-    pub fn application(&self) -> Arc<VeluneApplication> {
-        self.application.clone()
-    }
-    pub fn acknowledge(&self) -> Result<(), BindingError> {
-        self.operation.acknowledge().map_err(Into::into)
-    }
-}
-
 pub(crate) struct RemoteApplication {
     owner: Arc<ServiceOwner>,
     view: ClientViewId,
@@ -1090,35 +1074,17 @@ impl RemoteApplication {
         }
         Ok(())
     }
-    pub(crate) fn request(
-        &self,
-        command: Command,
-        operation: Option<&RemoteOperation>,
-    ) -> Result<Response, BindingError> {
-        self.request_reply(command, operation)
-            .map(|reply| reply.response)
+    pub(crate) fn request(&self, command: Command) -> Result<Response, BindingError> {
+        self.request_reply(command).map(|reply| reply.response)
     }
-    fn request_reply(
-        &self,
-        command: Command,
-        operation: Option<&RemoteOperation>,
-    ) -> Result<ApplicationReply, BindingError> {
+    fn request_reply(&self, command: Command) -> Result<ApplicationReply, BindingError> {
         let mutation = command.changes_shared_state();
         let context = self.context()?;
-        let result = self.owner.runtime.block_on(async {
-            match operation {
-                Some(operation) => {
-                    operation
-                        .execute(self.view.clone(), context.execution.clone(), command)
-                        .await
-                }
-                None => {
-                    self.controller
-                        .request(self.view.clone(), context.execution.clone(), command)
-                        .await
-                }
-            }
-        });
+        let result = self.owner.runtime.block_on(self.controller.request(
+            self.view.clone(),
+            context.execution.clone(),
+            command,
+        ));
         match result {
             Ok(reply) => {
                 self.observe(&context, reply.revision, mutation)?;
@@ -1174,7 +1140,7 @@ impl VeluneApplication {
             "bindings.list_with_revision",
             self.trace_carrier.as_ref(),
             || {
-                let reply = self.remote_backend()?.request_reply(Command::List, None)?;
+                let reply = self.remote_backend()?.request_reply(Command::List)?;
                 let Response::List(configuration) = reply.response else {
                     return Err(BindingError::Contract {
                         detail: "应用返回了不匹配的配置结果".into(),
@@ -1230,89 +1196,5 @@ impl VeluneApplication {
                 remote.context()?;
                 Ok(())
             })
-    }
-    pub fn prepare_remote_operation(&self) -> Result<Arc<VeluneRemoteOperation>, BindingError> {
-        let remote = self.remote_backend()?;
-        let operation = remote.controller.prepare_operation()?;
-        let application = Arc::new(VeluneApplication {
-            application: self.application.clone(),
-            diagnostics: self.diagnostics.clone(),
-            trace_carrier: self.trace_carrier.clone(),
-            remote_operation: Some(operation.clone()),
-            #[cfg(feature = "local-runtime")]
-            remote_service: self.remote_service.clone(),
-        });
-        Ok(Arc::new(VeluneRemoteOperation {
-            operation,
-            application,
-        }))
-    }
-    /// Allocate before submission so the ID survives a lost reply.
-    pub fn next_request_id(&self) -> Result<BindingRemoteRequestId, BindingError> {
-        Ok(self.remote_backend()?.controller.next_request_id()?.into())
-    }
-    /// A Running response is queried with the same ID; submission never holds the application lock over I/O.
-    pub fn submit_request(
-        &self,
-        request_id: BindingRemoteRequestId,
-        command: BindingApplicationCommand,
-    ) -> Result<BindingRemoteRequestStatus, BindingError> {
-        self.diagnostics.run_context(
-            "bindings.submit_request",
-            self.trace_carrier.as_ref(),
-            || {
-                let remote = self.remote_backend()?;
-                let context = remote.context()?;
-                let scoped = self.remote_operation.clone();
-                let request_id: RequestId = request_id.into();
-                let command: Command = command.try_into()?;
-                let status = remote.owner.runtime.block_on(async {
-                    if let Some(operation) = scoped {
-                        if operation.request_id() != request_id {
-                            return Err(velune_remote::RemoteError::InvalidRequestId);
-                        }
-                        operation
-                            .submit(remote.view.clone(), context.execution.clone(), command)
-                            .await
-                    } else {
-                        remote
-                            .controller
-                            .submit(
-                                request_id,
-                                remote.view.clone(),
-                                context.execution.clone(),
-                                command,
-                            )
-                            .await
-                    }
-                })?;
-                if let RequestStatus::Completed(Ok(reply)) = &status {
-                    remote.observe(&context, reply.revision, false)?;
-                }
-                status.try_into()
-            },
-        )
-    }
-    /// Querying an existing request never resubmits it and does not wait on another business call.
-    pub fn query_request(
-        &self,
-        request_id: BindingRemoteRequestId,
-    ) -> Result<BindingRemoteRequestStatus, BindingError> {
-        self.diagnostics.run_context(
-            "bindings.query_request",
-            self.trace_carrier.as_ref(),
-            || {
-                let remote = self.remote_backend()?;
-                let context = remote.context()?;
-                let status = remote
-                    .owner
-                    .runtime
-                    .block_on(remote.controller.query(request_id.into()))?;
-                if let RequestStatus::Completed(Ok(reply)) = &status {
-                    remote.observe(&context, reply.revision, false)?;
-                }
-                status.try_into()
-            },
-        )
     }
 }

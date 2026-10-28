@@ -8,7 +8,7 @@ use crate::authentication::{
 use crate::config::{ExecutionBackend, Protocol, ProviderQuotaSource, RequestProfile};
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, uniffi::Enum)]
 #[serde(rename_all = "camelCase")]
 pub enum ProviderTemplateKind {
     /// Signs in to one subscription account; the composition stays fixed.
@@ -18,7 +18,7 @@ pub enum ProviderTemplateKind {
 }
 
 /// The whole composition a new provider saves, with what choosing it means.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderTemplate {
     pub id: String,

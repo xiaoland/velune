@@ -74,7 +74,7 @@ struct ToolWindowState: Codable, Equatable {
 /// application setting says.
 enum ToolChoice: Hashable {
     case place(ToolPlace)
-    case outline(BindingOutlinePresentation)
+    case outline(OutlinePresentation)
 
     static func all(for kind: ToolWindowKind) -> [(choice: ToolChoice, title: String)] {
         let docked: [(ToolChoice, String)] = (kind == .composer ? [DockSide.bottom, .left, .right] : DockSide.allCases)
@@ -723,7 +723,7 @@ extension ConversationWindowModel {
     /// Applies the form to every open window; listed, the outline docks at
     /// the right unless a window has it somewhere else than the button.
     static func setOutlineForm(_ form: OutlineForm, application: AppStore) {
-        let presentation: BindingOutlinePresentation = form == .inPlace ? .inPlace : .popover
+        let presentation: OutlinePresentation = form == .inPlace ? .inPlace : .popover
         if form != .listed, application.outlinePresentation != presentation { application.setOutlinePresentation(presentation) }
         for window in openWindows {
             switch form {

@@ -24,7 +24,7 @@ final class ConversationNotifier: NSObject, UNUserNotificationCenterDelegate {
         }
     }
 
-    func observe(_ activity: BindingConversationActivity) {
+    func observe(_ activity: ConversationActivity) {
         var counts: [String: UInt32] = [:]
         for item in activity.active where item.pendingInteractions > 0 {
             counts[item.conversationId] = item.pendingInteractions
@@ -48,7 +48,7 @@ final class ConversationNotifier: NSObject, UNUserNotificationCenterDelegate {
 
     /// A provider newly paused by its quota. One notification per provider
     /// and condition; a later one replaces it.
-    func observe(_ alert: BindingQuotaAlert) {
+    func observe(_ alert: QuotaAlert) {
         guard let application, let provider = application.providers.first(where: { $0.id == alert.providerId }) else { return }
         let window = alert.windowId.map(QuotaWindow.title) ?? ""
         let body: String

@@ -16,8 +16,6 @@ pub enum RemoteError {
     PairingUnavailable,
     #[error("请先处理此设备的未决请求")]
     PendingRequests,
-    #[error("本次操作作用域已经使用；请查询原请求")]
-    OperationUsed,
     #[error("无法生成设备随机材料")]
     Randomness,
     #[error("配对邀请无效或已使用")]
@@ -62,7 +60,6 @@ impl RemoteError {
             Self::StateStorage => "state_storage",
             Self::PairingUnavailable => "pairing_unavailable",
             Self::PendingRequests => "pending_requests",
-            Self::OperationUsed => "operation_used",
             Self::Randomness => "randomness",
             Self::InvalidInvitation => "invalid_invitation",
             Self::ExpiredInvitation => "expired_invitation",

@@ -29,11 +29,16 @@ mod composer_quota;
 mod discovery;
 
 fn runtime_types() -> Vec<crate::config::RuntimeTypeDescriptor> {
-    let field = |key: &str, label: &str, kind: &str, required: bool, value: String, help: &str| {
+    let field = |key: &str,
+                 label: &str,
+                 kind: crate::conversation::SettingKind,
+                 required: bool,
+                 value: String,
+                 help: &str| {
         crate::conversation::SettingField {
             key: key.into(),
             label: label.into(),
-            kind: kind.into(),
+            kind,
             required,
             value,
             options: Vec::new(),
@@ -44,7 +49,7 @@ fn runtime_types() -> Vec<crate::config::RuntimeTypeDescriptor> {
     let mut node = field(
         "nodeBinary",
         "Node 可执行文件",
-        "filePath",
+        crate::conversation::SettingKind::FilePath,
         true,
         String::new(),
         "Node 22.19+ 的绝对路径；用于运行时接入与会话历史读取。",
@@ -54,7 +59,7 @@ fn runtime_types() -> Vec<crate::config::RuntimeTypeDescriptor> {
         minimum_version: "22.19.0".into(),
     });
     velune_agent_runtime::version::variants().iter().map(|variant| {
-        let mut binary=field("binary","运行时入口","filePath",true,String::new(),"当前运行时版本的绝对可执行路径。执行准备时会核对实际版本。");
+        let mut binary=field("binary","运行时入口",crate::conversation::SettingKind::FilePath,true,String::new(),"当前运行时版本的绝对可执行路径。执行准备时会核对实际版本。");
         if variant.kind==RuntimeKind::Acp {binary.help=Some("支持 ACP v1 的命令或 bridge 的绝对路径；启动参数与环境变量在下方设置，启动时协商协议。".into());}
         if variant.family_id=="pi" {binary.executable_discovery=Some(crate::conversation::ExecutableDiscovery{command:"pi".into(),minimum_version:"1.0.2".into()});}
         if variant.kind==RuntimeKind::Codex {binary.executable_discovery=Some(crate::conversation::ExecutableDiscovery{command:"codex".into(),minimum_version:"0.159.3".into()});}
@@ -62,9 +67,9 @@ fn runtime_types() -> Vec<crate::config::RuntimeTypeDescriptor> {
         let mut runtime_node = node.clone();
         runtime_node.required = variant.family_id != "claude-code";
         if variant.family_id == "claude-code" { binary.executable_discovery=Some(crate::conversation::ExecutableDiscovery{command:"claude".into(),minimum_version:"2.1.286".into()}); }
-        let mut fields=vec![binary,runtime_node,field("agentDir","运行时目录","directoryPath",true,String::new(),match variant.kind {RuntimeKind::ClaudeCode=>"该实例的 CLAUDE_CONFIG_DIR；配置与原生会话目录，不是任务工作目录。",RuntimeKind::Codex=>"该实例的 CODEX_HOME；配置与会话根目录，不是任务工作目录。",RuntimeKind::DeepSeek=>"该实例的 DeepSeek Harness 配置与会话根目录，不是任务工作目录。",_=>"该实例的 Pi 配置与状态根目录，不是任务工作目录。"})];
+        let mut fields=vec![binary,runtime_node,field("agentDir","运行时目录",crate::conversation::SettingKind::DirectoryPath,true,String::new(),match variant.kind {RuntimeKind::ClaudeCode=>"该实例的 CLAUDE_CONFIG_DIR；配置与原生会话目录，不是任务工作目录。",RuntimeKind::Codex=>"该实例的 CODEX_HOME；配置与会话根目录，不是任务工作目录。",RuntimeKind::DeepSeek=>"该实例的 DeepSeek Harness 配置与会话根目录，不是任务工作目录。",_=>"该实例的 Pi 配置与状态根目录，不是任务工作目录。"})];
         if variant.kind==RuntimeKind::Acp {fields.retain(|field| field.key=="binary");}
-        if variant.kind==RuntimeKind::Pi {fields.push(field("sessionDir","会话存储目录","directoryPath",false,String::new(),"覆盖 Pi 默认的会话存储位置；留空采用运行时目录的 sessions，此项不是任务工作目录。"));}
+        if variant.kind==RuntimeKind::Pi {fields.push(field("sessionDir","会话存储目录",crate::conversation::SettingKind::DirectoryPath,false,String::new(),"覆盖 Pi 默认的会话存储位置；留空采用运行时目录的 sessions，此项不是任务工作目录。"));}
         crate::config::RuntimeTypeDescriptor{id:variant.kind,family_id:variant.family_id.into(),compatible_versions:variant.versions.describe(),can_rename_conversations:variant.can_rename_conversations,can_delete_conversations:variant.can_delete_conversations,launch_options:variant.kind==RuntimeKind::Acp,agent_info:variant.kind==RuntimeKind::Acp,session_options:variant.kind==RuntimeKind::Acp,native_account_quota:crate::native_quota_source::Capture::supported(variant.kind),remote_resources:variant.kind!=RuntimeKind::Acp,supported_protocols:crate::config::runtime_protocols(variant.kind),supported_provider_protocols:crate::config::runtime_provider_protocols(variant.kind),name:variant.name.into(),fields,permission_modes:variant.permission_modes.iter().map(|mode| crate::config::PermissionMode{id:mode.id.into(),label:mode.label.into(),detail:mode.detail.into()}).collect()}
     }).collect()
 }

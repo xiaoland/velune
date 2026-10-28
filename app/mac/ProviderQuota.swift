@@ -7,7 +7,7 @@ struct QuotaWindowRow: View {
     let limit: UInt8?
     /// An expired observation is shown for reference only.
     let fresh: Bool
-    let display: BindingUsageDisplay
+    let display: UsageDisplay
     var showsModels = false
     var title: String? = nil
     private var reached: Bool { fresh && limit.map { window.usedPercent >= Double($0) } ?? false }
@@ -51,11 +51,11 @@ struct QuotaBalanceRow: View {
 
 /// Usage as the user reads it: the used share, or what remains of it.
 enum UsageFormat {
-    static func label(_ usedOrRemaining: Int, _ display: BindingUsageDisplay) -> String {
+    static func label(_ usedOrRemaining: Int, _ display: UsageDisplay) -> String {
         display == .remaining ? "剩余 \(usedOrRemaining)%" : "已用 \(usedOrRemaining)%"
     }
     /// A used-percent ceiling; read as remaining, it is the share kept back.
-    static func ceiling(_ limit: UInt8, _ display: BindingUsageDisplay, reached: Bool) -> String {
+    static func ceiling(_ limit: UInt8, _ display: UsageDisplay, reached: Bool) -> String {
         switch (display, reached) {
         case (.used, false): "上限 \(limit)%"
         case (.used, true): "已达上限 \(limit)%，暂停新请求"

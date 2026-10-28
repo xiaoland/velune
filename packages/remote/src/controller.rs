@@ -69,13 +69,6 @@ impl Controller {
     pub fn next_request_id(&self) -> Result<RequestId> {
         self.client()?.next_request_id()
     }
-    pub fn prepare_operation(self: &Arc<Self>) -> Result<Arc<RemoteOperation>> {
-        Ok(Arc::new(RemoteOperation {
-            controller: self.clone(),
-            id: self.next_request_id()?,
-            used: Mutex::new(false),
-        }))
-    }
     /// The entry for a command without an explicit scope. An effect is recorded
     /// before it is sent and acknowledged once its outcome is definite; an
     /// unknown outcome stays pending for the user and is never resent.
@@ -115,7 +108,7 @@ impl Controller {
             .await
     }
     /// This is the sole explicit submission gate; no body is ever persisted for replay.
-    pub async fn submit(
+    async fn submit(
         &self,
         id: RequestId,
         view: ClientViewId,
@@ -236,61 +229,6 @@ fn call_error(request_id: Option<RequestId>, error: RemoteError) -> CallError {
     CallError {
         request_id,
         failure: CallFailure::Transport(error),
-    }
-}
-
-/// One effect and its exact receipt, shared by a scoped typed facade. Drop never acknowledges it.
-pub struct RemoteOperation {
-    controller: Arc<Controller>,
-    id: RequestId,
-    used: Mutex<bool>,
-}
-impl RemoteOperation {
-    pub fn request_id(&self) -> RequestId {
-        self.id.clone()
-    }
-    pub fn peer_id(&self) -> &str {
-        self.controller.peer_id()
-    }
-    fn claim(&self, command: &Command) -> Result<()> {
-        if command.delivery_class() == DeliveryClass::Observation {
-            return Ok(());
-        }
-        let mut used = self.used.lock().map_err(|_| RemoteError::Unavailable)?;
-        if *used {
-            return Err(RemoteError::OperationUsed);
-        }
-        *used = true;
-        Ok(())
-    }
-    pub async fn submit(
-        &self,
-        view: ClientViewId,
-        execution: ExecutionContext,
-        command: Command,
-    ) -> Result<RequestStatus> {
-        self.claim(&command)?;
-        self.controller
-            .submit(self.id.clone(), view, execution, command)
-            .await
-    }
-    pub async fn execute(
-        &self,
-        view: ClientViewId,
-        execution: ExecutionContext,
-        command: Command,
-    ) -> std::result::Result<ApplicationReply, CallError> {
-        if command.delivery_class() == DeliveryClass::Observation {
-            return self.controller.observe(view, execution, command).await;
-        }
-        self.claim(&command)
-            .map_err(|error| call_error(Some(self.id.clone()), error))?;
-        self.controller
-            .call(self.id.clone(), view, execution, command)
-            .await
-    }
-    pub fn acknowledge(&self) -> Result<()> {
-        self.controller.acknowledge(&self.id)
     }
 }
 
@@ -485,11 +423,6 @@ fn operation_targets(command: &Command) -> (Option<String>, Option<String>) {
             source_runtime_id,
             conversation_id,
             ..
-        }
-        | Command::SendTurnWithSelection {
-            source_runtime_id,
-            conversation_id,
-            ..
         } => (
             Some(source_runtime_id.clone()),
             Some(conversation_id.clone()),
@@ -546,7 +479,6 @@ fn operation_targets(command: &Command) -> (Option<String>, Option<String>) {
             ..
         } => (Some(runtime_id.clone()), Some(conversation_id.clone())),
         Command::CreateConversation { runtime_id, .. }
-        | Command::CreateConversationWithSelection { runtime_id, .. }
         | Command::OpenAcpConversation { runtime_id, .. }
         | Command::ConfigureRuntimeExecution { runtime_id, .. }
         | Command::AdoptRuntimeResource { runtime_id, .. }

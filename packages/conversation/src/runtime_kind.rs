@@ -4,7 +4,10 @@ use serde::{Deserialize, Serialize};
 /// One adapter for one Harness version range; its identifier names the
 /// range (`codex-0.159`). A Harness release that breaks an adapter gets a
 /// new kind rather than a wider range.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, uniffi::Enum,
+)]
+#[uniffi::export(Display)]
 pub enum RuntimeKind {
     #[serde(rename = "pi-1.0")]
     Pi,

@@ -8,9 +8,9 @@ import VeluneBindings
 @MainActor
 struct ChangeReviewView: View {
     @ObservedObject var store: AppStore
-    @State private var changes: BindingWorkingChanges?
+    @State private var changes: WorkingChanges?
     @State private var selection: String?
-    @State private var diff: BindingFileDiff?
+    @State private var diff: FileDiff?
     @State private var failure: String?
     @State private var loading = false
     @State private var generation: UInt64 = 0
@@ -61,7 +61,7 @@ struct ChangeReviewView: View {
         }
     }
 
-    private func fileList(_ changes: BindingWorkingChanges) -> some View {
+    private func fileList(_ changes: WorkingChanges) -> some View {
         List(changes.files, id: \.path, selection: $selection) { file in
             ChangedFileRow(file: file)
         }
@@ -123,14 +123,14 @@ struct ChangeReviewView: View {
             guard selection == path else { return }
             switch result {
             case .success(let value): diff = value
-            case .failure(let error): diff = BindingFileDiff(path: path, lines: [BindingDiffLine(kind: .notice, text: error.localizedDescription)], truncated: false)
+            case .failure(let error): diff = FileDiff(path: path, lines: [DiffLine(kind: .notice, text: error.localizedDescription)], truncated: false)
             }
         }
     }
 }
 
 private struct ChangedFileRow: View {
-    let file: BindingChangedFile
+    let file: ChangedFile
     var body: some View {
         let name = (file.path as NSString).lastPathComponent, directory = (file.path as NSString).deletingLastPathComponent
         HStack(spacing: 8) {
@@ -165,7 +165,7 @@ private struct ChangedFileRow: View {
 }
 
 private struct DiffLineRow: View {
-    let line: BindingDiffLine
+    let line: DiffLine
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 6) {
             Text(marker).foregroundStyle(.secondary).frame(width: 10, alignment: .center)

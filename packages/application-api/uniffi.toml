@@ -1,0 +1,25 @@
+# Generated into the same Swift module as velune-bindings; see packages/bindings/uniffi.toml.
+[bindings.swift]
+module_name = "VeluneApplicationApi"
+ffi_module_name = "VeluneBindingsFFI"
+ffi_module_filename = "VeluneApplicationApiFFI"
+generate_codable_conformance = true
+
+# `X.Protocol` is Swift syntax for a protocol's metatype.
+[bindings.swift.rename]
+Protocol = "ApiProtocol"
+
+[bindings.kotlin]
+package_name = "app.velune.bindings.application"
+android = true
+
+[bindings.csharp]
+namespace = "Velune.Bindings.ApplicationApi"
+
+# A variant field named like a sibling variant collides with that variant's
+# nested record in C#; use the generator's own `Value` suffix for it.
+[bindings.csharp.rename.velune_application_api]
+"DeliveredBlock.Reasoning.text" = "text_value"
+"DeliveredBlock.Notice.text" = "text_value"
+"DeliveredBlock.ContextCompaction.text" = "text_value"
+"ResourceTemplateContent.Subagent.instructions" = "instructions_value"

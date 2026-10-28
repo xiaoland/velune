@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 
 const LAUNCH_SETTING: &str = "acpLaunch";
 
-#[derive(Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Default, Serialize, Deserialize, PartialEq, Eq, uniffi::Record)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AcpLaunch {
     pub args: Vec<String>,
@@ -38,7 +38,7 @@ impl AcpLaunch {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 #[serde(rename_all = "camelCase")]
 pub struct AcpCapabilities {
     pub load_session: bool,
@@ -48,7 +48,7 @@ pub struct AcpCapabilities {
     pub delete_session: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 #[serde(rename_all = "camelCase")]
 pub struct AcpAgentInfo {
     pub name: String,
@@ -56,7 +56,7 @@ pub struct AcpAgentInfo {
     pub version: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 #[serde(rename_all = "camelCase")]
 pub struct AcpAuthMethod {
     pub id: String,
@@ -64,7 +64,7 @@ pub struct AcpAuthMethod {
     pub description: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 #[serde(rename_all = "camelCase")]
 pub struct AcpRuntimeInfo {
     pub capabilities: AcpCapabilities,

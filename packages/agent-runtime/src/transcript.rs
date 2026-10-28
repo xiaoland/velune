@@ -274,7 +274,7 @@ impl TranscriptProjection {
                         .map(|message| message.id.clone())
                         .collect(),
                     last_message_id: visible.map(|message| message.id.clone()),
-                    reply_start_block: reply_start,
+                    reply_start_block: u32::try_from(reply_start).unwrap_or(u32::MAX),
                     duration_ms,
                     is_running: ordinal + 1 == starts.len() && (self.running || self.elsewhere),
                     settings: self.settings(user),

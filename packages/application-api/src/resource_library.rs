@@ -5,7 +5,7 @@ use crate::{RuntimeResourceKey, RuntimeResourceKind};
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, fmt};
 
-#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq, uniffi::Enum)]
 #[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
 pub enum ResourceTemplateContent {
     /// The whole user instruction file.
@@ -38,7 +38,7 @@ pub enum ResourceTemplateContent {
     },
 }
 
-#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq, uniffi::Record)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TemplateSkillFile {
     pub path: String,
@@ -47,7 +47,7 @@ pub struct TemplateSkillFile {
     pub executable: bool,
 }
 
-#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq, uniffi::Enum)]
 #[serde(tag = "transport", rename_all = "camelCase", deny_unknown_fields)]
 pub enum TemplateMcpTransport {
     Stdio {
@@ -124,7 +124,7 @@ impl fmt::Debug for TemplateSkillFile {
 }
 
 /// A template with its content. An empty `id` on save asks for a new template.
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, uniffi::Record)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ResourceTemplate {
     pub id: String,
@@ -134,7 +134,7 @@ pub struct ResourceTemplate {
 }
 
 /// What lists show: no content, so no secrets.
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, uniffi::Record)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ResourceTemplateSummary {
     pub id: String,
@@ -160,7 +160,7 @@ pub struct ResourceBinding {
 }
 
 /// How one resource stands on one runtime instance.
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, uniffi::Enum)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum ResourceSyncState {
     /// Not enabled; enabling writes it.
@@ -183,7 +183,7 @@ pub enum ResourceSyncState {
     },
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, uniffi::Record)]
 #[serde(rename_all = "camelCase")]
 pub struct ResourceSyncStatus {
     pub template_id: String,
@@ -192,7 +192,7 @@ pub struct ResourceSyncStatus {
 }
 
 /// A native entry of a runtime that no resource manages.
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, uniffi::Record)]
 #[serde(rename_all = "camelCase")]
 pub struct UnmanagedRuntimeResource {
     pub runtime_id: String,
@@ -202,7 +202,7 @@ pub struct UnmanagedRuntimeResource {
 }
 
 /// A saved resource and how writing it to its enabled runtimes went.
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, uniffi::Record)]
 #[serde(rename_all = "camelCase")]
 pub struct ResourceSaveResult {
     pub summary: ResourceTemplateSummary,
@@ -210,7 +210,7 @@ pub struct ResourceSaveResult {
     pub reports: Vec<TemplateApplyReport>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, uniffi::Enum)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum TemplateApplyOutcome {
     Create,
@@ -231,7 +231,7 @@ pub enum TemplateApplyOutcome {
     },
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, uniffi::Record)]
 #[serde(rename_all = "camelCase")]
 pub struct TemplateApplyReport {
     pub runtime_id: String,
@@ -240,7 +240,7 @@ pub struct TemplateApplyReport {
     pub notes: Vec<String>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, uniffi::Record)]
 #[serde(rename_all = "camelCase")]
 pub struct TemplateApplyTarget {
     pub runtime_id: String,
@@ -248,9 +248,9 @@ pub struct TemplateApplyTarget {
     pub overwrite: bool,
 }
 
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, uniffi::Enum)]
 #[serde(rename_all = "camelCase")]
-pub enum BindingResolution {
+pub enum ResourceBindingResolution {
     /// Write the template over the native entries.
     Overwrite,
     /// Stop managing; the native entries stay as they are.
@@ -263,7 +263,7 @@ pub enum BindingResolution {
 }
 
 /// A template read back from a runtime's native entry; not saved until the user saves it.
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, uniffi::Record)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ResourceTemplateImport {
     pub template: ResourceTemplate,
@@ -273,7 +273,7 @@ pub struct ResourceTemplateImport {
 
 /// One native entry that differs from what the library would write there. Texts are `None`
 /// when that side has no such entry; non-text content is not shown, only reported.
-#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq, uniffi::Record)]
 #[serde(rename_all = "camelCase")]
 pub struct ResourceDriftFile {
     pub path: String,

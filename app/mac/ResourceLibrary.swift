@@ -5,12 +5,12 @@ import VeluneBindings
 enum LibrarySelection: Hashable {
     case resource(String)
     /// A resource being created, not yet saved.
-    case newResource(BindingRuntimeResourceKind)
+    case newResource(RuntimeResourceKind)
     /// A runtime's native entry that no resource manages.
     case native(runtimeID: String, path: String)
 }
 
-extension BindingResourceSyncState {
+extension ResourceSyncState {
     var isEnabled: Bool {
         switch self {
         case .notEnabled, .unsupported: false
@@ -35,7 +35,7 @@ extension BindingResourceSyncState {
     }
 }
 
-extension BindingResourceTemplateSummary: Identifiable {}
+extension ResourceTemplateSummary: Identifiable {}
 
 /// The library, the state of every resource on every runtime, and the native
 /// entries no resource manages. Edits are kept per selection until saved or
@@ -50,10 +50,10 @@ extension BindingResourceTemplateSummary: Identifiable {}
         return model
     }
 
-    @Published private(set) var summaries: [BindingResourceTemplateSummary] = []
+    @Published private(set) var summaries: [ResourceTemplateSummary] = []
     /// Resource id → runtime id → state.
-    @Published private(set) var states: [String: [String: BindingResourceSyncState]] = [:]
-    @Published private(set) var unmanaged: [BindingRuntimeResourceKind: [BindingUnmanagedRuntimeResource]] = [:]
+    @Published private(set) var states: [String: [String: ResourceSyncState]] = [:]
+    @Published private(set) var unmanaged: [RuntimeResourceKind: [UnmanagedRuntimeResource]] = [:]
     @Published private(set) var isLoaded = false
     @Published private(set) var isWorking = false
     @Published var failure: String?
@@ -84,9 +84,9 @@ extension BindingResourceTemplateSummary: Identifiable {}
     func reload() {
         guard let transport else { return }
         queue.async { [weak self] in
-            let result = Result { () -> ([BindingResourceTemplateSummary], [BindingResourceSyncStatus], [BindingRuntimeResourceKind: [BindingUnmanagedRuntimeResource]]) in
-                var unmanaged: [BindingRuntimeResourceKind: [BindingUnmanagedRuntimeResource]] = [:]
-                for kind in BindingRuntimeResourceKind.templateKinds { unmanaged[kind] = try transport.unmanagedRuntimeResources(kind) }
+            let result = Result { () -> ([ResourceTemplateSummary], [ResourceSyncStatus], [RuntimeResourceKind: [UnmanagedRuntimeResource]]) in
+                var unmanaged: [RuntimeResourceKind: [UnmanagedRuntimeResource]] = [:]
+                for kind in RuntimeResourceKind.templateKinds { unmanaged[kind] = try transport.unmanagedRuntimeResources(kind) }
                 return (try transport.listResourceTemplates(), try transport.resourceSyncStatus(), unmanaged)
             }
             DispatchQueue.main.async {
@@ -94,7 +94,7 @@ extension BindingResourceTemplateSummary: Identifiable {}
                 switch result {
                 case .success(let (summaries, statuses, unmanaged)):
                     self.summaries = summaries.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
-                    var states: [String: [String: BindingResourceSyncState]] = [:]
+                    var states: [String: [String: ResourceSyncState]] = [:]
                     for status in statuses { states[status.templateId, default: [:]][status.runtimeId] = status.state }
                     self.states = states
                     self.unmanaged = unmanaged
@@ -105,17 +105,17 @@ extension BindingResourceTemplateSummary: Identifiable {}
         }
     }
 
-    func resources(_ kind: BindingRuntimeResourceKind) -> [BindingResourceTemplateSummary] { summaries.filter { $0.kind == kind } }
-    func state(_ resourceID: String, _ runtimeID: String) -> BindingResourceSyncState { states[resourceID]?[runtimeID] ?? .notEnabled }
-    func attentionCount(_ kind: BindingRuntimeResourceKind) -> Int {
+    func resources(_ kind: RuntimeResourceKind) -> [ResourceTemplateSummary] { summaries.filter { $0.kind == kind } }
+    func state(_ resourceID: String, _ runtimeID: String) -> ResourceSyncState { states[resourceID]?[runtimeID] ?? .notEnabled }
+    func attentionCount(_ kind: RuntimeResourceKind) -> Int {
         resources(kind).filter { item in states[item.id]?.values.contains { $0.needsAttention } ?? false }.count
     }
-    func summary(named name: String, kind: BindingRuntimeResourceKind) -> BindingResourceTemplateSummary? { summaries.first { $0.kind == kind && $0.name == name } }
+    func summary(named name: String, kind: RuntimeResourceKind) -> ResourceTemplateSummary? { summaries.first { $0.kind == kind && $0.name == name } }
 
     var unsavedNames: [String] { drafts.keys.filter(isDirty).compactMap { drafts[$0]?.name }.map { $0.isEmpty ? "未命名" : $0 } }
 
     /// A new, unsaved copy of a resource, opened in the editor.
-    func duplicate(_ item: BindingResourceTemplateSummary, then: @escaping (LibrarySelection) -> Void) {
+    func duplicate(_ item: ResourceTemplateSummary, then: @escaping (LibrarySelection) -> Void) {
         let id = item.id
         run({ try $0.readResourceTemplate(id) }, done: { [weak self] template in
             guard let self else { return }
@@ -174,7 +174,7 @@ extension BindingResourceTemplateSummary: Identifiable {}
 /// elsewhere set it before opening the window.
 @MainActor final class ResourceLibraryNavigator: ObservableObject {
     static let shared = ResourceLibraryNavigator()
-    @Published var kind: BindingRuntimeResourceKind = .userInstructions
+    @Published var kind: RuntimeResourceKind = .userInstructions
     @Published var selection: LibrarySelection?
     /// Focuses the lists on one runtime; nil shows all.
     @Published var runtimeID: String?
@@ -205,7 +205,7 @@ struct ResourceLibraryView: View {
     var body: some View {
         NavigationSplitView {
             List(selection: Binding(get: { navigator.kind }, set: { if let kind = $0, kind != navigator.kind { navigator.kind = kind; navigator.selection = nil } })) {
-                ForEach(BindingRuntimeResourceKind.templateKinds, id: \.self) { kind in
+                ForEach(RuntimeResourceKind.templateKinds, id: \.self) { kind in
                     Label(kind.templateTitle, systemImage: kind.templateSymbol)
                         .badge(library.attentionCount(kind))
                         .tag(kind)
@@ -266,12 +266,12 @@ private struct ResourceListView: View {
     @ObservedObject var store: AppStore
     @ObservedObject var library: ResourceLibraryModel
     @ObservedObject var navigator: ResourceLibraryNavigator
-    @State private var deleting: BindingResourceTemplateSummary?
+    @State private var deleting: ResourceTemplateSummary?
     @State private var query = ""
 
     private func matches(_ text: String) -> Bool { query.isEmpty || text.localizedCaseInsensitiveContains(query) }
-    private var resources: [BindingResourceTemplateSummary] { library.resources(navigator.kind).filter { matches($0.name) } }
-    private var others: [BindingUnmanagedRuntimeResource] {
+    private var resources: [ResourceTemplateSummary] { library.resources(navigator.kind).filter { matches($0.name) } }
+    private var others: [UnmanagedRuntimeResource] {
         (library.unmanaged[navigator.kind] ?? []).filter { (navigator.runtimeID == nil || $0.runtimeId == navigator.runtimeID) && matches($0.path) }
     }
 
@@ -328,7 +328,7 @@ private struct ResourceListView: View {
         }
     }
 
-    @ViewBuilder private func subtitle(_ item: BindingResourceTemplateSummary) -> some View {
+    @ViewBuilder private func subtitle(_ item: ResourceTemplateSummary) -> some View {
         let states = library.states[item.id] ?? [:]
         if let runtimeID = navigator.runtimeID {
             let state = states[runtimeID] ?? .notEnabled
@@ -341,7 +341,7 @@ private struct ResourceListView: View {
         }
     }
 
-    private func delete(_ item: BindingResourceTemplateSummary) {
+    private func delete(_ item: ResourceTemplateSummary) {
         let id = item.id
         library.run({ try $0.deleteResourceTemplate(id) }, done: { _ in
             library.forget(.resource(id))
@@ -428,7 +428,7 @@ private struct RuntimeTargetsView: View {
     @ObservedObject var store: AppStore
     @ObservedObject var library: ResourceLibraryModel
     let resourceID: String?
-    let kind: BindingRuntimeResourceKind
+    let kind: RuntimeResourceKind
     let name: String
     let isDirty: Bool
     @State private var disabling: RuntimeInstance?
@@ -538,7 +538,7 @@ private struct RuntimeTargetsView: View {
     /// Enables on several runtimes at once; those with conflicting native content are asked about together.
     private func enable(_ runtimes: [RuntimeInstance], overwrite: Bool) {
         guard let id = resourceID, !runtimes.isEmpty else { return }
-        let targets = runtimes.map { BindingTemplateApplyTarget(runtimeId: $0.id, overwrite: overwrite) }
+        let targets = runtimes.map { TemplateApplyTarget(runtimeId: $0.id, overwrite: overwrite) }
         library.run({ try $0.applyResourceTemplate(id, targets: targets) }, done: { reports in
             let conflicted = Set(reports.filter { if case .conflict = $0.outcome { true } else { false } }.map(\.runtimeId))
             bulkConflicts = runtimes.filter { conflicted.contains($0.id) }
@@ -554,7 +554,7 @@ private struct RuntimeTargetsView: View {
 
     private func enable(_ runtime: RuntimeInstance, overwrite: Bool) {
         guard let id = resourceID else { return }
-        let target = BindingTemplateApplyTarget(runtimeId: runtime.id, overwrite: overwrite)
+        let target = TemplateApplyTarget(runtimeId: runtime.id, overwrite: overwrite)
         library.run({ try $0.applyResourceTemplate(id, targets: [target]) }, done: { reports in
             guard let outcome = reports.first?.outcome else { return }
             switch outcome {
@@ -570,7 +570,7 @@ private struct RuntimeTargetsView: View {
         })
     }
 
-    private func resolve(_ runtime: RuntimeInstance, _ resolution: BindingResolution) {
+    private func resolve(_ runtime: RuntimeInstance, _ resolution: ResourceBindingResolution) {
         guard let id = resourceID else { return }
         let runtimeID = runtime.id
         library.run({ try $0.resolveResourceBinding(runtimeID: runtimeID, templateID: id, resolution: resolution) }, done: { _ in
@@ -593,17 +593,17 @@ private struct NativeResourceView: View {
     @ObservedObject var store: AppStore
     @ObservedObject var library: ResourceLibraryModel
     @ObservedObject var navigator: ResourceLibraryNavigator
-    let kind: BindingRuntimeResourceKind
+    let kind: RuntimeResourceKind
     let runtimeID: String
     let path: String
     @State private var preview: TemplateDraft?
     @State private var notes: [String] = []
     @State private var confirmingAdopt = false
-    @State private var confirmingReplace: BindingResourceTemplateSummary?
+    @State private var confirmingReplace: ResourceTemplateSummary?
 
     private var runtimeName: String { store.runtimeInstances.first { $0.id == runtimeID }?.name ?? runtimeID }
     /// A resource with the same name: adopting would clash, enabling it replaces this entry.
-    private var namesake: BindingResourceTemplateSummary? { preview.flatMap { library.summary(named: $0.name, kind: kind) } }
+    private var namesake: ResourceTemplateSummary? { preview.flatMap { library.summary(named: $0.name, kind: kind) } }
 
     var body: some View {
         Group {
@@ -665,8 +665,8 @@ private struct NativeResourceView: View {
         })
     }
 
-    private func replace(with namesake: BindingResourceTemplateSummary) {
-        let target = BindingTemplateApplyTarget(runtimeId: runtimeID, overwrite: true), id = namesake.id
+    private func replace(with namesake: ResourceTemplateSummary) {
+        let target = TemplateApplyTarget(runtimeId: runtimeID, overwrite: true), id = namesake.id
         library.run({ try $0.applyResourceTemplate(id, targets: [target]) }, done: { _ in
             navigator.selection = .resource(id)
         })
@@ -681,9 +681,9 @@ private struct DriftSheet: View {
     let resourceName: String
     /// False while the resource has unsaved edits.
     let canTakeNative: Bool
-    let resolve: (BindingResolution) -> Void
+    let resolve: (ResourceBindingResolution) -> Void
     @Environment(\.dismiss) private var dismiss
-    @State private var files: [BindingResourceDriftFile]?
+    @State private var files: [ResourceDriftFile]?
     @State private var selected = 0
 
     var body: some View {
@@ -742,7 +742,7 @@ private struct RuntimeImportSheet: View {
     @Environment(\.dismiss) private var dismiss
 
     struct Candidate: Identifiable {
-        let kind: BindingRuntimeResourceKind
+        let kind: RuntimeResourceKind
         let path: String
         let name: String
         let notes: [String]
@@ -767,7 +767,7 @@ private struct RuntimeImportSheet: View {
                         ContentUnavailableView("没有可导入的内容", systemImage: "tray", description: Text("此运行时的内容都已在资源库中，或还没有内容。"))
                     } else {
                         List {
-                            ForEach(BindingRuntimeResourceKind.templateKinds, id: \.self) { kind in
+                            ForEach(RuntimeResourceKind.templateKinds, id: \.self) { kind in
                                 let group = candidates.filter { $0.kind == kind }
                                 if !group.isEmpty {
                                     Section(kind.templateTitle) { ForEach(group) { row($0) } }
@@ -819,7 +819,7 @@ private struct RuntimeImportSheet: View {
         candidates = nil; chosen = []; result = nil
         guard !runtimeID.isEmpty else { candidates = []; return }
         let runtimeID = runtimeID
-        let entries = BindingRuntimeResourceKind.templateKinds.flatMap { library.unmanaged[$0] ?? [] }.filter { $0.runtimeId == runtimeID }
+        let entries = RuntimeResourceKind.templateKinds.flatMap { library.unmanaged[$0] ?? [] }.filter { $0.runtimeId == runtimeID }
         let existing = Set(library.summaries.map { "\($0.kind)/\($0.name)" })
         library.run({ transport in
             try entries.map { entry in

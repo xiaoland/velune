@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 pub use velune_conversation::RuntimeKind;
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, uniffi::Enum)]
 #[serde(rename_all = "camelCase")]
 pub enum ProviderQuotaSource {
     None,
@@ -14,7 +14,7 @@ pub enum ProviderQuotaSource {
     ApiAccount,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, uniffi::Record)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ProviderModel {
     pub record_key: String,
@@ -26,7 +26,7 @@ pub struct ProviderModel {
     pub reasoning_levels: Option<Vec<String>>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, uniffi::Record)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ModelTemplate {
     pub id: String,
@@ -41,9 +41,16 @@ pub struct ModelTemplate {
 
 pub use velune_ai::Protocol;
 
+#[uniffi::remote(Enum)]
+pub enum Protocol {
+    ChatCompletions,
+    Responses,
+    Messages,
+}
+
 /// An ordered set of provider models chosen like a model; the gateway fails
 /// over between its members.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, uniffi::Record)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ModelRoute {
     pub record_key: String,
@@ -55,7 +62,7 @@ pub struct ModelRoute {
     pub sticky: bool,
 }
 
-#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq, uniffi::Record)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RuntimeInstance {
     #[serde(default = "runtime_enabled_by_default")]
@@ -78,7 +85,7 @@ impl std::fmt::Debug for RuntimeInstance {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, uniffi::Record)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RuntimeTypeDescriptor {
     pub id: RuntimeKind,
@@ -110,7 +117,7 @@ pub struct RuntimeTypeDescriptor {
     pub permission_modes: Vec<PermissionMode>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, uniffi::Record)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PermissionMode {
     pub id: String,
@@ -163,7 +170,7 @@ impl RuntimeInstance {
 }
 
 /// What the conversation outline button does; the outline lists user messages.
-#[derive(Debug, Default, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, uniffi::Enum)]
 #[serde(rename_all = "camelCase")]
 pub enum OutlinePresentation {
     /// A popover anchored to the button.
@@ -175,7 +182,7 @@ pub enum OutlinePresentation {
 
 /// Whether a usage indicator reads as used or remaining; quota and context select independently.
 /// This only changes presentation; quota ceilings remain used-percent limits.
-#[derive(Debug, Default, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, uniffi::Enum)]
 #[serde(rename_all = "camelCase")]
 pub enum UsageDisplay {
     #[default]
@@ -185,7 +192,7 @@ pub enum UsageDisplay {
 
 /// Where a conversation linked from another opens: a native sub-agent's, or
 /// one an agent contacted or was contacted by through Velune.
-#[derive(Debug, Default, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, uniffi::Enum)]
 #[serde(rename_all = "camelCase")]
 pub enum LinkedConversationOpening {
     /// In place of the conversation it is linked from.
@@ -199,7 +206,9 @@ pub enum LinkedConversationOpening {
 
 /// What the composer's status line shows; the context usage alone unless the
 /// user pins more. The line keeps this order whatever order they were chosen in.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(
+    Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, uniffi::Enum,
+)]
 #[serde(rename_all = "camelCase")]
 pub enum StatusLineItem {
     ContextUsage,
@@ -221,7 +230,7 @@ pub fn canonical_status_line(mut items: Vec<StatusLineItem>) -> Vec<StatusLineIt
 }
 
 /// Unsent composer text of one conversation, keyed by its public identity.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, uniffi::Record)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ComposerDraft {
     #[serde(rename = "conversationID")]
@@ -232,7 +241,7 @@ pub struct ComposerDraft {
 /// What the user chose for a turn on one runtime. Each part that is absent
 /// follows the conversation's current one, and without one the runtime's own
 /// default; Velune never names a default of its own.
-#[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq, uniffi::Record)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TurnChoice {
     pub model: Option<crate::ModelSelection>,
@@ -246,7 +255,7 @@ impl TurnChoice {
 }
 
 /// One runtime's choice in a conversation.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, uniffi::Record)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RuntimeTurnChoice {
     #[serde(rename = "runtimeID")]
@@ -257,7 +266,7 @@ pub struct RuntimeTurnChoice {
 /// A conversation's choices for its next turn, kept until it is deleted:
 /// each runtime keeps its own, and an unsent conversation also the runtime
 /// chosen for it.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, uniffi::Record)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct NextTurnIntent {
     #[serde(rename = "conversationID")]
@@ -268,7 +277,7 @@ pub struct NextTurnIntent {
 }
 
 /// What a runtime instance's new conversations start with.
-#[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq, uniffi::Enum)]
 #[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
 pub enum NewConversationChoice {
     /// The user's last choice on the runtime.
@@ -279,7 +288,7 @@ pub enum NewConversationChoice {
 }
 
 /// A runtime instance's composer choices across conversations.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, uniffi::Record)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RuntimeComposerChoices {
     #[serde(rename = "runtimeID")]
@@ -289,7 +298,7 @@ pub struct RuntimeComposerChoices {
     pub new_conversation: NewConversationChoice,
 }
 
-#[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq, uniffi::Record)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ComposerChoices {
     pub conversations: Vec<NextTurnIntent>,
@@ -297,7 +306,7 @@ pub struct ComposerChoices {
 }
 
 /// Application-owned sidebar choices; these never select an execution runtime.
-#[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq, uniffi::Record)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ConversationBrowserPreferences {
     pub grouping: ConversationBrowserGrouping,
@@ -307,6 +316,7 @@ pub struct ConversationBrowserPreferences {
     pub project: ConversationBrowserProject,
     /// Groups the user folded; remembered with the other choices.
     #[serde(default)]
+    #[uniffi(default = [])]
     pub collapsed: Vec<ConversationGroupKey>,
     /// How groups follow each other; `sort` orders the rows within them.
     #[serde(default)]
@@ -314,11 +324,14 @@ pub struct ConversationBrowserPreferences {
     /// Groups in the order the user put them, each grouping's own; kept
     /// while groups follow recent activity, for when they no longer do.
     #[serde(default)]
+    #[uniffi(default = [])]
     pub group_order: Vec<ConversationGroupKey>,
 }
 /// One group of the conversation list. Keys of other groupings may stay in
 /// the folded set; they apply again when that grouping returns.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash, uniffi::Enum,
+)]
 #[serde(rename_all = "camelCase", tag = "kind")]
 pub enum ConversationGroupKey {
     /// The single group when the list is not grouped.
@@ -336,7 +349,7 @@ pub enum ConversationGroupKey {
     },
 }
 
-#[derive(Debug, Default, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, uniffi::Enum)]
 #[serde(rename_all = "camelCase")]
 pub enum ConversationBrowserGrouping {
     #[default]
@@ -344,14 +357,14 @@ pub enum ConversationBrowserGrouping {
     Runtime,
     Project,
 }
-#[derive(Debug, Default, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, uniffi::Enum)]
 #[serde(rename_all = "camelCase")]
 pub enum ConversationBrowserSort {
     #[default]
     Updated,
     Created,
 }
-#[derive(Debug, Default, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, uniffi::Enum)]
 #[serde(rename_all = "camelCase")]
 pub enum ConversationGroupSort {
     /// The group with the latest activity first.
@@ -360,7 +373,7 @@ pub enum ConversationGroupSort {
     /// In `group_order`, which no time moves.
     Manual,
 }
-#[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq, uniffi::Enum)]
 #[serde(rename_all = "camelCase")]
 pub enum ConversationBrowserProject {
     #[default]
@@ -371,19 +384,19 @@ pub enum ConversationBrowserProject {
     },
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, uniffi::Enum)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub enum ExecutionBackend {
     Http,
     ClaudeCli { binary: String },
 }
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, uniffi::Record)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct QuotaLimit {
     pub window_id: String,
     pub max_used_percent: u8,
 }
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, uniffi::Enum)]
 #[serde(rename_all = "camelCase")]
 pub enum RoutingStrategy {
     Smart,
@@ -391,7 +404,7 @@ pub enum RoutingStrategy {
     Rotate,
     Weight,
 }
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, uniffi::Enum)]
 #[serde(rename_all = "camelCase")]
 pub enum RequestProfile {
     Native,

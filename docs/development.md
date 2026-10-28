@@ -223,7 +223,7 @@ cargo tree --locked -p velune-bindings --no-default-features --features remote
 
 模型选择属于当前会话：新建必须选择模型，历史只有 Pi 保存的明确内部引用可恢复；Codex／DSH 无法证明提供商时要求选择。只读历史视图中尚未执行的选择暂存在内存，视图关闭前不写回 Harness；发送准备后由原生适配器处理模型与持久化。修改配置只使执行装配失效，不清空历史或要求手动连接。
 
-顶部运行时／模型选择属于下一轮意图，浏览来源和当前执行上下文不覆盖它。`send_turn_with_selection` 显式接收来源会话、目标实例和 native／managed 选择，在同来源恢复原生会话；目标不同则创建新原生会话并交接明确引用的历史文本。回切也创建新原生段，工具执行、审批、签名推理状态不重放。交接文本不设额外字节门禁，也不静默截断；实际输入接受能力由目标运行时及模型处理。
+顶部运行时／模型选择属于下一轮意图，浏览来源和当前执行上下文不覆盖它。`send_turn` 显式接收来源会话、目标实例和 native／managed 选择，在同来源恢复原生会话；目标不同则创建新原生会话并交接明确引用的历史文本。回切也创建新原生段，工具执行、审批、签名推理状态不重放。交接文本不设额外字节门禁，也不静默截断；实际输入接受能力由目标运行时及模型处理。
 
 关联保存在 `VELUNE_HOME/conversation-links.json`（schema 1、Unix权限0600），独立于提供商配置；仅有有序原生引用、截止数量及内容摘要、交接定位，不存正文。逻辑会话沿用首段身份和原生标题，重启从各原生历史恢复。列表来源用于分组及打开，快照 `context_runtime_id` 用于当前查询／取消／回复；摘要管理能力由 application 结合所有关联原生段计算。旧段截止后外部追加不会进入逻辑历史，截止前改写明确报错。当前尾段不可读取时已校验来源仍可看，但不能继续发送或伪造恢复。
 
@@ -361,7 +361,7 @@ Mac 主窗口底部面板在输入正文下方提供一条紧凑操作行：运�
 
 2026-10-10 的切片只交付共享 Rust／UniFFI 能力；Mac 的模型选择、HOME 与 SSH 运行位置、远端工作目录入口于 2026-10-12 接入（见 [Mac README](../app/mac/README.md)）。用例及类型契约归 [application](../packages/application/README.md) 和 [bindings](../packages/bindings/README.md)。
 
-通过 `runtime_models` 读取目标实例的原生模型及 managed 模型候选，使用 `create_conversation_with_selection`／`send_turn_with_selection` 提交明确来源。原生提供商由 Harness 自行解析，不需先导入网关。`next_turn_model_selection` 是下一轮意图；managed turn 结束后仍选择 managed，不代表临时网关覆盖仍在运行。既有 `create_conversation`／`send_turn` 继续是 managed model 的便捷入口。
+通过 `runtime_models` 读取目标实例的原生模型及 managed 模型候选，使用 `create_conversation`／`send_turn` 提交明确来源。原生提供商由 Harness 自行解析，不需先导入网关。`next_turn_model_selection` 是下一轮意图；managed turn 结束后仍选择 managed，不代表临时网关覆盖仍在运行。
 
 新建实例可用 `upsert_runtime_with_execution` 一次保存运行时与执行配置。`configure_runtime_execution` 更新已有实例，`runtime_execution` 返回具名配置。Local／Ssh 与 Inherit／Existing／Managed HOME 分别选择。本机 managed HOME 由应用按实例稳定分配；SSH managed HOME 需提供远端绝对根目录。既有账户不会复制到新 HOME，用户须自行配置和登录。普通配置重置或删除运行时配置不删除这些原生数据。
 
@@ -379,7 +379,7 @@ Pi 提供商导入／OAuth 来源操作仍限定默认本机 execution，SSH 或
 
 Rust application 与 UniFFI 提供 `upsert_acp_runtime`，一次保存实例、`RuntimeExecution` 与 `AcpLaunch`。ACP 不要求 `nodeBinary`、`agentDir` 或远端 helper 资源目录；如果具体 bridge 使用 Node，可直接将 Node 作为 binary、bridge 脚本作为参数。SSH 仍需目标机器上的 Python 3 来承载已有执行传输，HOME 使用继承、现有路径或 Velune managed 选择。
 
-使用 `acp_runtime_info` 查看 Agent 身份、认证方法描述与协商能力。`create_conversation_with_selection` 不带模型选择（`None`）可创建无模型选择器的会话；普通发送、权限答复、取消使用现有 conversation API。原生模型目录只来自活动会话的 `configOptions`；需要完整的模式、布尔选项或多个选择器时使用 `acp_session_config`／`set_acp_session_config`，保留 Agent 的 config ID 与 opaque value。配置更新以 Agent 返回结果为准。
+使用 `acp_runtime_info` 查看 Agent 身份、认证方法描述与协商能力。`create_conversation` 不带模型选择（`None`）可创建无模型选择器的会话；普通发送、权限答复、取消使用现有 conversation API。原生模型目录只来自活动会话的 `configOptions`；需要完整的模式、布尔选项或多个选择器时使用 `acp_session_config`／`set_acp_session_config`，保留 Agent 的 config ID 与 opaque value。配置更新以 Agent 返回结果为准。
 
 有 list 能力的 Agent 使用通用会话列表；只有 load 的 Agent 可通过 `open_acp_conversation(runtime_id, native_session_id, cwd)` 显式打开。直接使用 `agent-runtime::acp::Client` 时可分别调用 load 与 resume，后者恢复上下文但不回放历史；application 的历史浏览和持久跨 Harness 接续要求 load。无 load 的连接仍可连续多轮运行，但关闭后不保证重开。通用 ACP 不支持统一的 managed provider 注入，应使用该 Harness 的专用 adapter 获取已实现的网关能力。
 

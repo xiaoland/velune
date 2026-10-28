@@ -27,3 +27,19 @@ pub use transcript_delivery::*;
 pub use velune_conversation as conversation;
 pub use velune_conversation::bytes;
 pub use velune_conversation::resources as runtime_management;
+
+uniffi::setup_scaffolding!();
+
+/// Ordered maps keep persisted configuration stable; foreign languages see dictionaries.
+pub type StringMap = std::collections::BTreeMap<String, String>;
+uniffi::custom_type!(StringMap, std::collections::HashMap<String, String>, {
+    remote,
+    lower: |map| map.into_iter().collect(),
+    try_lift: |map| Ok(map.into_iter().collect()),
+});
+pub type WeightMap = std::collections::BTreeMap<String, u32>;
+uniffi::custom_type!(WeightMap, std::collections::HashMap<String, u32>, {
+    remote,
+    lower: |map| map.into_iter().collect(),
+    try_lift: |map| Ok(map.into_iter().collect()),
+});

@@ -8,7 +8,7 @@ pub use velune_conversation::authentication::{
 };
 use velune_conversation::{ConversationSummary, SettingAction};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 #[serde(rename_all = "camelCase")]
 pub struct RuntimeDiscoveryHint {
     pub family_id: String,
@@ -19,7 +19,7 @@ pub struct RuntimeDiscoveryHint {
     /// extension put it, outside PATH; existing files only.
     pub bundled_binaries: Vec<String>,
 }
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 #[serde(rename_all = "camelCase")]
 pub struct RuntimeDiscoveryProbe {
     pub family_id: String,
@@ -27,7 +27,7 @@ pub struct RuntimeDiscoveryProbe {
     pub node_binary: String,
     pub agent_directory: String,
 }
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 #[serde(rename_all = "camelCase")]
 pub struct RuntimeDiscoveryCandidate {
     pub runtime: RuntimeInstance,
@@ -37,7 +37,7 @@ pub struct RuntimeDiscoveryCandidate {
     pub detail: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderSummary {
     pub id: String,
@@ -53,7 +53,7 @@ pub struct ProviderSummary {
     pub quota_limits: Vec<crate::config::QuotaLimit>,
     pub models: Vec<ProviderModel>,
 }
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 #[serde(rename_all = "camelCase")]
 pub struct GatewaySummary {
     pub id: String,
@@ -61,7 +61,7 @@ pub struct GatewaySummary {
     pub providers: Vec<ProviderSummary>,
     pub routes: Vec<crate::config::ModelRoute>,
 }
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ProviderDraft {
     pub id: String,
@@ -76,7 +76,7 @@ pub struct ProviderDraft {
     pub quota_limits: Vec<crate::config::QuotaLimit>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 #[serde(rename_all = "camelCase")]
 pub struct ConfigurationSnapshot {
     /// The conversations the list shows, then open ones it does not.
@@ -107,7 +107,7 @@ pub struct ConfigurationSnapshot {
 }
 
 /// One conversation of the list with Velune's organization of it.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 #[serde(rename_all = "camelCase")]
 pub struct ListedConversation {
     pub conversation: ConversationSummary,
@@ -133,7 +133,7 @@ pub struct ListedConversation {
     /// The group showing it; none for an open conversation the list does not show.
     pub group: Option<ConversationGroupKey>,
 }
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 #[serde(rename_all = "camelCase")]
 pub struct ConversationGroup {
     pub key: ConversationGroupKey,
@@ -145,7 +145,7 @@ pub struct ConversationGroup {
     pub latest_activity_unix_ms: Option<i64>,
     pub collapsed: bool,
 }
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 #[serde(rename_all = "camelCase")]
 pub struct ConversationProject {
     /// Stable project key: a folder path for Velune projects, an opaque identity for native projects.
@@ -161,13 +161,13 @@ pub struct ConversationProject {
     pub latest_activity_unix_ms: Option<i64>,
 }
 /// Matching conversations, grouped like the list.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 #[serde(rename_all = "camelCase")]
 pub struct ConversationSearch {
     pub conversations: Vec<ListedConversation>,
     pub groups: Vec<ConversationGroup>,
 }
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, uniffi::Record)]
 #[serde(rename_all = "camelCase")]
 pub struct ConversationBrowserLimits {
     /// Conversations loaded per group at a time.
@@ -176,14 +176,14 @@ pub struct ConversationBrowserLimits {
     pub total: u32,
 }
 /// A conversation as the list identifies it.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 pub struct ConversationReference {
     #[serde(rename = "runtimeInstanceID")]
     pub runtime_id: String,
     #[serde(rename = "conversationID")]
     pub conversation_id: String,
 }
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Enum)]
 #[serde(rename_all = "camelCase", tag = "operation")]
 pub enum ConversationOrganizationChange {
     Pin,
@@ -198,22 +198,22 @@ pub enum ConversationOrganizationChange {
     },
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 #[serde(rename_all = "camelCase")]
 pub struct ProtocolDescriptor {
-    pub id: String,
+    pub id: crate::config::Protocol,
     pub name: String,
     pub supported: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 #[serde(rename_all = "camelCase")]
 pub struct GatewayUpdate {
     pub gateways: Vec<GatewaySummary>,
     pub execution_invalidated: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 #[serde(rename_all = "camelCase")]
 pub struct RuntimeUpdate {
     pub runtime_instances: Vec<RuntimeInstance>,
@@ -226,7 +226,7 @@ pub struct RuntimeUpdate {
 pub use velune_conversation::ModelSelection;
 
 /// What the user composed for one turn.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 #[serde(rename_all = "camelCase")]
 pub struct ComposedTurn {
     pub text: String,
@@ -235,13 +235,14 @@ pub struct ComposedTurn {
     pub effort: Option<String>,
     /// One of the runtime type's `permission_modes`; `None` leaves the
     /// runtime's own default.
+    #[uniffi(default = None)]
     pub permission_mode: Option<String>,
     /// Local calls use execution-host paths; remote calls use this view's UploadAttachment references.
     /// Images use the Harness image input; other files become execution-host path references.
     pub attachments: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 #[serde(rename_all = "camelCase")]
 pub struct RuntimeModel {
     pub selection: ModelSelection,
@@ -250,14 +251,14 @@ pub struct RuntimeModel {
     pub reasoning_efforts: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 #[serde(rename_all = "camelCase")]
 pub struct SnapshotResult {
     pub snapshot: Option<crate::DeliveredSnapshot>,
 }
 
 /// A conversation that executes or waits for the user, in any open session.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 #[serde(rename_all = "camelCase")]
 pub struct ActiveConversation {
     pub context_runtime_id: String,
@@ -269,7 +270,7 @@ pub struct ActiveConversation {
 }
 
 /// Uncommitted changes in a conversation's working directory.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkingChanges {
     pub directory: String,
@@ -281,7 +282,7 @@ pub struct WorkingChanges {
 }
 
 /// A file that differs from HEAD or is not tracked, by repository path.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 #[serde(rename_all = "camelCase")]
 pub struct ChangedFile {
     pub path: String,
@@ -293,7 +294,7 @@ pub struct ChangedFile {
     pub deletions: Option<u32>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, uniffi::Enum)]
 #[serde(rename_all = "camelCase")]
 pub enum ChangeKind {
     Added,
@@ -305,7 +306,7 @@ pub enum ChangeKind {
 }
 
 /// One file's diff against HEAD (or as a new file when untracked).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 #[serde(rename_all = "camelCase")]
 pub struct FileDiff {
     pub path: String,
@@ -314,14 +315,14 @@ pub struct FileDiff {
     pub truncated: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 #[serde(rename_all = "camelCase")]
 pub struct DiffLine {
     pub kind: DiffLineKind,
     pub text: String,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, uniffi::Enum)]
 #[serde(rename_all = "camelCase")]
 pub enum DiffLineKind {
     Hunk,
@@ -333,7 +334,7 @@ pub enum DiffLineKind {
 }
 
 /// How a Velune turn ended.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, uniffi::Enum)]
 #[serde(rename_all = "camelCase")]
 pub enum TurnOutcome {
     Completed,
@@ -343,7 +344,7 @@ pub enum TurnOutcome {
 }
 
 /// A Velune turn that ended, numbered in the order turns ended.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 #[serde(rename_all = "camelCase")]
 pub struct FinishedTurn {
     pub sequence: u64,
@@ -354,7 +355,7 @@ pub struct FinishedTurn {
 
 /// Conversations executing or waiting for the user, and turns that ended
 /// after a cursor. `cursor` is the sequence to pass next time.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 #[serde(rename_all = "camelCase")]
 pub struct ConversationActivity {
     pub active: Vec<ActiveConversation>,
@@ -362,7 +363,7 @@ pub struct ConversationActivity {
     pub cursor: u64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 #[serde(rename_all = "camelCase")]
 pub struct AnalyticsQuery {
     pub from_ms: i64,
@@ -372,14 +373,14 @@ pub struct AnalyticsQuery {
     pub model_record_key: Option<String>,
     pub request_limit: u32,
 }
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, uniffi::Enum)]
 #[serde(rename_all = "camelCase")]
 pub enum AnalyticsProtocol {
     ChatCompletions,
     Responses,
     Messages,
 }
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, uniffi::Enum)]
 #[serde(rename_all = "camelCase")]
 pub enum AnalyticsOutcome {
     Completed,
@@ -388,7 +389,7 @@ pub enum AnalyticsOutcome {
     Cancelled,
     Rejected,
 }
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, uniffi::Record)]
 #[serde(rename_all = "camelCase")]
 pub struct AnalyticsTotals {
     pub request_count: u64,
@@ -411,14 +412,14 @@ pub struct AnalyticsTotals {
     pub reasoning_reported_count: u64,
     pub cache_reported_count: u64,
 }
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 #[serde(rename_all = "camelCase")]
 pub struct AnalyticsBucket {
     pub from_ms: i64,
     pub to_ms: i64,
     pub totals: AnalyticsTotals,
 }
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 #[serde(rename_all = "camelCase")]
 pub struct AnalyticsBreakdown {
     pub key: String,
@@ -427,7 +428,7 @@ pub struct AnalyticsBreakdown {
     pub model_record_key: Option<String>,
     pub totals: AnalyticsTotals,
 }
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 #[serde(rename_all = "camelCase")]
 pub struct AnalyticsRequest {
     pub request_id: String,
@@ -454,7 +455,7 @@ pub struct AnalyticsRequest {
     pub usage_reported: bool,
     pub usage_complete: bool,
 }
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 #[serde(rename_all = "camelCase")]
 pub struct AnalyticsReport {
     pub overview: AnalyticsTotals,
@@ -467,7 +468,7 @@ pub struct AnalyticsReport {
     pub dropped_count: u64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderImportSource {
     pub kind: String,
@@ -477,14 +478,14 @@ pub struct ProviderImportSource {
     pub settings: BTreeMap<String, String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 #[serde(rename_all = "camelCase")]
 pub struct ImportSelection {
     pub provider_id: String,
     pub candidate_keys: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderImportPreview {
     pub contract_version: u64,
@@ -498,7 +499,7 @@ pub struct ProviderImportPreview {
     pub token: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 #[serde(rename_all = "camelCase")]
 pub struct ImportProviderCandidate {
     pub id: String,
@@ -513,7 +514,7 @@ pub struct ImportProviderCandidate {
     pub models: Vec<ImportModelCandidate>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 #[serde(rename_all = "camelCase")]
 pub struct ImportModelCandidate {
     pub candidate_key: String,
@@ -526,7 +527,7 @@ pub struct ImportModelCandidate {
     pub issues: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 #[serde(rename_all = "camelCase")]
 pub struct ImportResult {
     pub imported_provider_ids: Vec<String>,
@@ -535,7 +536,7 @@ pub struct ImportResult {
     pub execution_invalidated: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 #[serde(rename_all = "camelCase")]
 pub struct AuthenticationMetadata {
     pub configured: bool,
@@ -544,7 +545,7 @@ pub struct AuthenticationMetadata {
     pub actions: Option<Vec<SettingAction>>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 #[serde(rename_all = "camelCase")]
 pub struct AuthenticationCapabilities {
     pub protocol: Protocol,
@@ -553,7 +554,7 @@ pub struct AuthenticationCapabilities {
     pub temperature: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 #[serde(rename_all = "camelCase")]
 pub struct AuthenticationProgress {
     pub running: bool,
@@ -562,14 +563,14 @@ pub struct AuthenticationProgress {
     pub execution_invalidated: Option<bool>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 #[serde(rename_all = "camelCase")]
 pub struct HistoryFailure {
     pub runtime_id: String,
     pub detail: String,
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, uniffi::Enum)]
 #[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
 pub enum SendQueueOperation {
     /// Queue a turn as `send_turn_with_selection` would send it.
@@ -600,7 +601,7 @@ pub enum SendQueueOperation {
     },
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Enum)]
 #[serde(rename_all = "camelCase")]
 pub enum QuotaFreshness {
     Fresh,
@@ -608,7 +609,7 @@ pub enum QuotaFreshness {
     Unknown,
     Unsupported,
 }
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 #[serde(rename_all = "camelCase")]
 pub struct QuotaWindowObservation {
     pub id: String,
@@ -622,7 +623,7 @@ pub struct QuotaWindowObservation {
     /// Present when the source states both the reset and the period.
     pub pace: Option<QuotaPaceObservation>,
 }
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, uniffi::Enum)]
 #[serde(rename_all = "camelCase")]
 pub enum QuotaPaceStatus {
     /// At the average rate since the period began, quota lasts to the reset.
@@ -633,7 +634,7 @@ pub enum QuotaPaceStatus {
 }
 /// The observed use against an even spend across the window's period. The
 /// rate is the average since the period began, not a forecast.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 #[serde(rename_all = "camelCase")]
 pub struct QuotaPaceObservation {
     /// The used share an even spend would have reached when observed.
@@ -644,7 +645,7 @@ pub struct QuotaPaceObservation {
 }
 /// An amount the provider's account reports, such as its prepaid balance.
 /// It has no period and is never converted to a percentage.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, uniffi::Record)]
 #[serde(rename_all = "camelCase")]
 pub struct QuotaBalanceObservation {
     pub id: String,
@@ -653,7 +654,7 @@ pub struct QuotaBalanceObservation {
     pub unit: String,
     pub observed_at_ms: i64,
 }
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderQuotaStatus {
     pub gateway_id: String,
@@ -668,7 +669,7 @@ pub struct ProviderQuotaStatus {
 
 /// Read-only quota of the runtime's native CLI login. This does not identify
 /// the billing account of a request using the Harness's other API settings.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 #[serde(rename_all = "camelCase")]
 pub struct RuntimeQuotaStatus {
     pub runtime_id: String,
@@ -679,7 +680,7 @@ pub struct RuntimeQuotaStatus {
 }
 
 /// One retained window value; the history keeps no expiry or pace.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, uniffi::Record)]
 #[serde(rename_all = "camelCase")]
 pub struct QuotaHistoryWindow {
     pub id: String,
@@ -688,7 +689,7 @@ pub struct QuotaHistoryWindow {
     pub reset_at_ms: Option<i64>,
     pub window_ms: Option<i64>,
 }
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, uniffi::Record)]
 #[serde(rename_all = "camelCase")]
 pub struct QuotaHistoryBalance {
     pub id: String,
@@ -697,7 +698,7 @@ pub struct QuotaHistoryBalance {
 }
 /// One successful observation. Gaps between points are times nothing was
 /// observed, not unchanged quota.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, uniffi::Record)]
 #[serde(rename_all = "camelCase")]
 pub struct QuotaHistoryPoint {
     pub observed_at_ms: i64,
@@ -706,14 +707,14 @@ pub struct QuotaHistoryPoint {
     pub balances: Vec<QuotaHistoryBalance>,
 }
 /// The current authentication binding's retained observations, oldest first.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderQuotaHistory {
     pub gateway_id: String,
     pub provider_id: String,
     pub points: Vec<QuotaHistoryPoint>,
 }
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, uniffi::Enum)]
 #[serde(rename_all = "camelCase")]
 pub enum QuotaAlertKind {
     /// A window reached the provider's usage cap; new requests pause.
@@ -725,7 +726,7 @@ pub enum QuotaAlertKind {
 }
 /// A quota condition that newly held at an observation. It is raised again
 /// only after an observation without it.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 #[serde(rename_all = "camelCase")]
 pub struct QuotaAlert {
     pub sequence: u64,
@@ -737,7 +738,7 @@ pub struct QuotaAlert {
     pub observed_at_ms: i64,
 }
 /// Alerts after the polled cursor; `cursor` is the value to pass next time.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 #[serde(rename_all = "camelCase")]
 pub struct QuotaAlerts {
     pub alerts: Vec<QuotaAlert>,
@@ -745,7 +746,7 @@ pub struct QuotaAlerts {
 }
 
 /// Matches on the addressed device. Failures prevent assuming a unique match.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentUriResolution {
     pub conversations: Vec<ListedConversation>,
@@ -753,14 +754,14 @@ pub struct AgentUriResolution {
 }
 
 /// Explicit next-turn intent; no inference from a prepared session's model.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 #[serde(rename_all = "camelCase")]
 pub struct ComposerQuotaContext {
     pub runtime_id: String,
     pub selection: Option<crate::ModelSelection>,
     pub conversation_id: Option<String>,
 }
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Enum)]
 #[serde(rename_all = "camelCase")]
 pub enum QuotaOrigin {
     Provider,
@@ -768,7 +769,7 @@ pub enum QuotaOrigin {
     ConversationRecord,
 }
 /// An observation independent of routing, authentication configuration and display policy.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 #[serde(rename_all = "camelCase")]
 pub struct QuotaObservation {
     pub freshness: QuotaFreshness,
@@ -779,7 +780,7 @@ pub struct QuotaObservation {
     pub problem: Option<String>,
 }
 /// Resolved source and applicable observation for one composer entry.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 #[serde(rename_all = "camelCase")]
 pub struct ComposerQuotaEntry {
     pub id: String,

@@ -470,23 +470,8 @@ impl Application {
             Command::CreateConversation {
                 runtime_id,
                 cwd,
-                model_record_key,
-            } => Response::CreateConversation(application.runtime.serve(
-                Focus::New,
-                Login::Blocks,
-                |core| {
-                    core.create_conversation(
-                        &runtime_id,
-                        cwd,
-                        Some(ModelSelection::Managed { model_record_key }),
-                    )
-                },
-            )?),
-            Command::CreateConversationWithSelection {
-                runtime_id,
-                cwd,
                 selection,
-            } => Response::CreateConversationWithSelection(application.runtime.serve(
+            } => Response::CreateConversation(application.runtime.serve(
                 Focus::New,
                 Login::Blocks,
                 |core| core.create_conversation(&runtime_id, cwd, selection),
@@ -583,33 +568,9 @@ impl Application {
                 source_runtime_id,
                 conversation_id,
                 target_runtime_id,
-                model_record_key,
-                text,
-            } => Response::SendTurn(application.runtime.serve(
-                Focus::Conversation(conversation_id.clone()),
-                Login::Blocks,
-                |core| {
-                    core.send_turn(TurnRequest {
-                        source_runtime_id,
-                        conversation_id,
-                        runtime_id: target_runtime_id,
-                        selection: Some(ModelSelection::Managed { model_record_key }),
-                        turn: ComposedTurn {
-                            text,
-                            effort: None,
-                            permission_mode: None,
-                            attachments: Vec::new(),
-                        },
-                    })
-                },
-            )?),
-            Command::SendTurnWithSelection {
-                source_runtime_id,
-                conversation_id,
-                target_runtime_id,
                 selection,
                 turn,
-            } => Response::SendTurnWithSelection(application.runtime.serve(
+            } => Response::SendTurn(application.runtime.serve(
                 Focus::Conversation(conversation_id.clone()),
                 Login::Blocks,
                 |core| {
@@ -1020,7 +981,7 @@ impl Application {
             Ok(())
         };
         match command {
-            Command::SendTurnWithSelection { turn, .. }
+            Command::SendTurn { turn, .. }
             | Command::SteerTurn { turn, .. }
             | Command::EditMessage { turn, .. } => resolve(turn)?,
             Command::SendQueue {
@@ -1098,13 +1059,11 @@ impl Application {
     ) -> Result<Response, Failure> {
         let snapshots = match &mut response {
             Response::CreateConversation(result)
-            | Response::CreateConversationWithSelection(result)
             | Response::OpenAcpConversation(result)
             | Response::OpenConversation(result)
             | Response::ReadConversation(result)
             | Response::Snapshot(result)
             | Response::SendTurn(result)
-            | Response::SendTurnWithSelection(result)
             | Response::SendQueue(result)
             | Response::SteerTurn(result)
             | Response::ResumeTurn(result)
@@ -1113,9 +1072,7 @@ impl Application {
             | Response::Cancel(result)
             | Response::StopSubAgents(result)
             | Response::ReplyRuntimeInteraction(result) => result.snapshot.as_mut(),
-            Response::SnapshotUpdate(SnapshotUpdate::Changed { snapshot }) => {
-                Some(snapshot.as_mut())
-            }
+            Response::SnapshotUpdate(SnapshotUpdate::Changed { snapshot }) => Some(snapshot),
             _ => None,
         };
         if let Some(snapshot) = snapshots {

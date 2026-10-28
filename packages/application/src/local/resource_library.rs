@@ -3,7 +3,7 @@
 //! outside Velune is reported as a conflict instead of being overwritten.
 use super::*;
 use crate::{
-    BindingResolution, BoundEntry, ResourceBinding, ResourceSaveResult, ResourceSyncState,
+    BoundEntry, ResourceBinding, ResourceBindingResolution, ResourceSaveResult, ResourceSyncState,
     ResourceSyncStatus, ResourceTemplate, ResourceTemplateContent, ResourceTemplateSummary,
     RuntimeResourceKey, RuntimeResourceKind, RuntimeResourceScope, TemplateApplyOutcome,
     TemplateApplyReport, TemplateApplyTarget, UnmanagedRuntimeResource,
@@ -547,7 +547,7 @@ impl CoreRuntime {
         &mut self,
         runtime_id: String,
         template_id: String,
-        resolution: BindingResolution,
+        resolution: ResourceBindingResolution,
     ) -> Result<(), RuntimeError> {
         self.require_idle_for_resources()?;
         let template = self.template(&template_id)?.clone();
@@ -1078,13 +1078,13 @@ impl CoreRuntime {
         &mut self,
         runtime_id: &str,
         template: &ResourceTemplate,
-        resolution: BindingResolution,
+        resolution: ResourceBindingResolution,
     ) -> Result<(), RuntimeError> {
         let Some(index) = self.binding_index(runtime_id, &template.id) else {
             return Err(RuntimeError::invalid("此运行时没有启用该资源"));
         };
         match resolution {
-            BindingResolution::Overwrite => {
+            ResourceBindingResolution::Overwrite => {
                 let report = self.apply_to_runtime(
                     template,
                     &TemplateApplyTarget {
@@ -1098,7 +1098,7 @@ impl CoreRuntime {
                     _ => Ok(()),
                 }
             }
-            BindingResolution::TakeNative => {
+            ResourceBindingResolution::TakeNative => {
                 let mut updated = template.clone();
                 updated.content = self.native_import(template, runtime_id)?.template.content;
                 self.store_template(updated.clone())?;
@@ -1119,12 +1119,12 @@ impl CoreRuntime {
                 }
                 self.sync_pending(&template.id).map(|_| ())
             }
-            BindingResolution::Unmanage => {
+            ResourceBindingResolution::Unmanage => {
                 let mut bindings = self.resource_bindings.clone();
                 bindings.remove(index);
                 self.save_bindings(bindings)
             }
-            BindingResolution::Remove => {
+            ResourceBindingResolution::Remove => {
                 let config = self.management_config(runtime_id)?;
                 let kind = template.content.kind();
                 let entries = self.resource_bindings[index].entries.clone();

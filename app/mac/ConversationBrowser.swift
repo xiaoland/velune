@@ -28,9 +28,9 @@ struct ConversationBrowser {
         case all, unspecified, path(String)
     }
     struct Section: Identifiable {
-        let group: BindingConversationGroup
+        let group: ConversationGroup
         let conversations: [Conversation]
-        var id: BindingConversationGroupKey { group.key }
+        var id: ConversationGroupKey { group.key }
         var hasMore: Bool { group.loaded < group.total }
     }
     var grouping = Grouping.none
@@ -38,17 +38,17 @@ struct ConversationBrowser {
     var oldestFirst = false
     var runtimeID: String?
     var project = ProjectFilter.all
-    var collapsed: [BindingConversationGroupKey] = []
+    var collapsed: [ConversationGroupKey] = []
     var groupSort = GroupSort.activity
     /// Groups in the order the user put them, each grouping's own; kept while
     /// they follow recent activity.
-    var groupOrder: [BindingConversationGroupKey] = []
-    var preferences: BindingConversationBrowserPreferences {
-        let value: BindingConversationBrowserProject
+    var groupOrder: [ConversationGroupKey] = []
+    var preferences: ConversationBrowserPreferences {
+        let value: ConversationBrowserProject
         switch project { case .all: value = .all; case .unspecified: value = .unspecified; case .path(let path): value = .path(path: path) }
-        return BindingConversationBrowserPreferences(grouping: grouping == .none ? .none : grouping == .runtime ? .runtime : .project, sort: sort == .updated ? .updated : .created, oldestFirst: oldestFirst, runtimeId: runtimeID, project: value, collapsed: collapsed, groupSort: groupSort == .manual ? .manual : .activity, groupOrder: groupOrder)
+        return ConversationBrowserPreferences(grouping: grouping == .none ? .none : grouping == .runtime ? .runtime : .project, sort: sort == .updated ? .updated : .created, oldestFirst: oldestFirst, runtimeId: runtimeID, project: value, collapsed: collapsed, groupSort: groupSort == .manual ? .manual : .activity, groupOrder: groupOrder)
     }
-    mutating func restore(_ value: BindingConversationBrowserPreferences) {
+    mutating func restore(_ value: ConversationBrowserPreferences) {
         grouping = value.grouping == .none ? .none : value.grouping == .runtime ? .runtime : .project
         sort = value.sort == .updated ? .updated : .created
         oldestFirst = value.oldestFirst; runtimeID = value.runtimeId
@@ -58,16 +58,16 @@ struct ConversationBrowser {
         groupOrder = value.groupOrder
     }
     var hasFilters: Bool { runtimeID != nil || project != .all }
-    func isCollapsed(_ key: BindingConversationGroupKey) -> Bool { collapsed.contains(key) }
-    mutating func setCollapsed(_ key: BindingConversationGroupKey, _ value: Bool) {
+    func isCollapsed(_ key: ConversationGroupKey) -> Bool { collapsed.contains(key) }
+    mutating func setCollapsed(_ key: ConversationGroupKey, _ value: Bool) {
         if value { if !collapsed.contains(key) { collapsed.append(key) } } else { collapsed.removeAll { $0 == key } }
     }
 
     /// Groups the user may put in order: the pinned one stays first.
-    static func orderable(_ key: BindingConversationGroupKey) -> Bool { key != .pinned && key != .all }
+    static func orderable(_ key: ConversationGroupKey) -> Bool { key != .pinned && key != .all }
     /// Turning to the user's order keeps the one given before and holds the
     /// shown groups not in it where they are, after it.
-    mutating func setGroupSort(_ value: GroupSort, shown: [BindingConversationGroupKey]) {
+    mutating func setGroupSort(_ value: GroupSort, shown: [ConversationGroupKey]) {
         if value == .manual { groupOrder += shown.filter { Self.orderable($0) && !groupOrder.contains($0) } }
         groupSort = value
     }
@@ -75,7 +75,7 @@ struct ConversationBrowser {
     /// Put `key` before `target` (last when nil) among `shown`, the groups as
     /// the list shows them, and keep the groups in the user's order. Groups
     /// not shown now, filtered out or of another grouping, keep their places.
-    mutating func move(_ key: BindingConversationGroupKey, before target: BindingConversationGroupKey?, shown: [BindingConversationGroupKey]) {
+    mutating func move(_ key: ConversationGroupKey, before target: ConversationGroupKey?, shown: [ConversationGroupKey]) {
         let shown = shown.filter(Self.orderable)
         guard shown.contains(key), key != target else { return }
         var moved = shown.filter { $0 != key }
@@ -94,14 +94,14 @@ struct ConversationBrowser {
     }
 
     /// The core's groups in its order, each with the rows it loaded.
-    static func sections(conversations: [Conversation], groups: [BindingConversationGroup]) -> [Section] {
+    static func sections(conversations: [Conversation], groups: [ConversationGroup]) -> [Section] {
         let rows = Dictionary(grouping: conversations.filter { $0.group != nil }) { $0.group! }
         return groups.map { Section(group: $0, conversations: rows[$0.key] ?? []) }
     }
 
     /// A project's name in the list: the user's, else its primary folder's
     /// name, with the enclosing folder when another project shares the name.
-    static func projectName(_ path: String, projects: [BindingConversationProject]) -> String {
+    static func projectName(_ path: String, projects: [ConversationProject]) -> String {
         if let name = projects.first(where: { $0.path == path })?.name { return name }
         let url = URL(fileURLWithPath: path)
         let name = url.lastPathComponent

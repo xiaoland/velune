@@ -10,13 +10,23 @@ pub use runtime_kind::RuntimeKind;
 
 use serde::{Deserialize, Serialize};
 
+uniffi::setup_scaffolding!();
+
 /// Native names are authoritative. Derived titles may be refreshed from the first user message.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, uniffi::Enum)]
 #[serde(tag = "source", content = "text", rename_all = "camelCase")]
 pub enum ConversationTitle {
     Native(String),
     FirstMessage(String),
     Untitled,
+}
+#[uniffi::export]
+impl ConversationTitle {
+    /// The title to show.
+    #[uniffi::method(name = "displayText")]
+    pub fn display(&self) -> String {
+        self.display_text().into()
+    }
 }
 impl ConversationTitle {
     /// History readers report titles as their harness made them, which may
@@ -41,7 +51,7 @@ impl ConversationTitle {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, uniffi::Record)]
 #[serde(rename_all = "camelCase")]
 pub struct ConversationSummary {
     pub id: String,
@@ -64,7 +74,7 @@ pub struct ConversationSummary {
     pub parent_conversation_id: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, uniffi::Enum)]
 #[serde(rename_all = "lowercase")]
 pub enum RunState {
     Idle,
@@ -77,7 +87,7 @@ pub enum RunState {
     Elsewhere,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, uniffi::Record)]
 #[serde(rename_all = "camelCase")]
 pub struct ConversationActions {
     pub can_send: bool,
@@ -87,7 +97,7 @@ pub struct ConversationActions {
 
 /// What follows the conversation's turns, as Velune keeps it: messages
 /// waiting for the running turn to end, and what the user may do next.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq, uniffi::Record)]
 #[serde(rename_all = "camelCase")]
 pub struct FollowUp {
     /// Sent one by one, in order, each as its own turn once the turn before
@@ -124,7 +134,7 @@ pub struct FollowUp {
 }
 
 /// A user message an edit can replace, continuing from just before it.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, uniffi::Record)]
 #[serde(rename_all = "camelCase")]
 pub struct EditableMessage {
     pub message_id: String,
@@ -135,7 +145,7 @@ pub struct EditableMessage {
 }
 
 /// Where an edited user message continues.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, uniffi::Enum)]
 #[serde(rename_all = "camelCase")]
 pub enum EditPlacement {
     /// In this conversation, replacing the message and all after it.
@@ -145,7 +155,7 @@ pub enum EditPlacement {
     Fork,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, uniffi::Record)]
 #[serde(rename_all = "camelCase")]
 pub struct QueuedMessage {
     pub id: String,
@@ -156,13 +166,13 @@ pub struct QueuedMessage {
 
 /// The queue's next message needs another runtime process, which would end
 /// the work still running in the current one.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, uniffi::Enum)]
 #[serde(rename_all = "camelCase")]
 pub enum QueueWait {
     SubAgents,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, uniffi::Enum)]
 #[serde(rename_all = "camelCase")]
 pub enum QueuePause {
     TurnStopped,
@@ -195,7 +205,7 @@ pub struct Message {
 
 /// What a turn ran with, as far as it is known; each part is absent when
 /// neither the native record nor Velune's own request says.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq, uniffi::Record)]
 #[serde(rename_all = "camelCase")]
 pub struct TurnSettings {
     /// The runtime instance that ran the turn.
@@ -211,13 +221,14 @@ pub struct TurnSettings {
     /// one; a native record alone cannot tell Velune's gateway from the
     /// runtime's own provider.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[uniffi(default = None)]
     pub model_selection: Option<ModelSelection>,
 }
 
 /// A model chosen for a turn: Velune's own (through its gateway) or one the
 /// runtime offers. No selection at all is the runtime's own default; Velune
 /// never names a default of its own.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, uniffi::Enum)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub enum ModelSelection {
     Managed {
@@ -232,7 +243,7 @@ pub enum ModelSelection {
 /// Tokens a turn used, summed over its model requests as the harness
 /// recorded them, and where the conversation stood when it ended; each part
 /// is absent when the harness records none.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq, uniffi::Record)]
 #[serde(rename_all = "camelCase")]
 pub struct TurnUsage {
     /// Prompt tokens, cache reads and writes included.
@@ -260,7 +271,7 @@ pub struct TurnUsage {
 }
 
 /// One window of an account usage limit, as the harness reports it.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, uniffi::Record)]
 #[serde(rename_all = "camelCase")]
 pub struct RateLimit {
     pub window_minutes: Option<u64>,
@@ -300,7 +311,7 @@ pub fn micro_usd(dollars: f64) -> Option<u64> {
     (dollars.is_finite() && dollars > 0.0).then(|| (dollars * 1_000_000.0).round() as u64)
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, uniffi::Enum)]
 #[serde(rename_all = "lowercase")]
 pub enum MessageRole {
     User,
@@ -309,7 +320,7 @@ pub enum MessageRole {
     System,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, uniffi::Enum)]
 #[serde(rename_all = "lowercase")]
 pub enum ToolState {
     Pending,
@@ -413,7 +424,7 @@ pub struct ConversationSnapshot {
 
 /// A conversation that took part with another in Velune's agent-to-agent
 /// collaboration, as the other's transcript shows: an ordinary conversation.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, uniffi::Record)]
 #[serde(rename_all = "camelCase")]
 pub struct Collaborator {
     pub conversation_id: String,
@@ -429,7 +440,7 @@ pub struct Collaborator {
 /// A native sub-agent of a conversation: linked from its transcript, or
 /// listed by its runtime with the conversation as parent. Whether it runs is
 /// conversation activity, not part of the snapshot.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, uniffi::Record)]
 #[serde(rename_all = "camelCase")]
 pub struct SubAgent {
     pub conversation_id: String,
@@ -438,7 +449,7 @@ pub struct SubAgent {
     pub failed: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, uniffi::Record)]
 #[serde(rename_all = "camelCase")]
 pub struct SettingOption {
     pub id: String,
@@ -446,19 +457,19 @@ pub struct SettingOption {
 }
 
 /// Platform executable discovery hint; the selected absolute path remains application configuration.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, uniffi::Record)]
 #[serde(rename_all = "camelCase")]
 pub struct ExecutableDiscovery {
     pub command: String,
     pub minimum_version: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, uniffi::Record)]
 #[serde(rename_all = "camelCase")]
 pub struct SettingField {
     pub key: String,
     pub label: String,
-    pub kind: String,
+    pub kind: SettingKind,
     pub required: bool,
     pub value: String,
     pub options: Vec<SettingOption>,
@@ -466,7 +477,16 @@ pub struct SettingField {
     pub executable_discovery: Option<ExecutableDiscovery>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, uniffi::Enum)]
+#[serde(rename_all = "camelCase")]
+pub enum SettingKind {
+    Text,
+    FilePath,
+    DirectoryPath,
+    Choice,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, uniffi::Record)]
 #[serde(rename_all = "camelCase")]
 pub struct SettingAction {
     pub id: String,
@@ -474,13 +494,13 @@ pub struct SettingAction {
 }
 
 /// A runtime request awaiting an explicit user response. IDs belong to the active session.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, uniffi::Record)]
 #[serde(rename_all = "camelCase")]
 pub struct RuntimeInteraction {
     pub id: String,
     pub kind: InteractionKind,
 }
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, uniffi::Enum)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum InteractionKind {
     Approval {
@@ -492,13 +512,13 @@ pub enum InteractionKind {
         questions: Vec<InteractionQuestion>,
     },
 }
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, uniffi::Record)]
 #[serde(rename_all = "camelCase")]
 pub struct InteractionOption {
     pub id: String,
     pub label: String,
 }
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, uniffi::Record)]
 #[serde(rename_all = "camelCase")]
 pub struct InteractionQuestion {
     pub id: String,
@@ -506,7 +526,7 @@ pub struct InteractionQuestion {
     pub options: Vec<InteractionOption>,
     pub secret: bool,
 }
-#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq, uniffi::Enum)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum RuntimeInteractionReply {
     Decision {
@@ -518,7 +538,7 @@ pub enum RuntimeInteractionReply {
     },
     Cancel,
 }
-#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq, uniffi::Record)]
 #[serde(rename_all = "camelCase")]
 pub struct InteractionAnswer {
     pub question_id: String,
@@ -560,7 +580,7 @@ pub fn first_user_text(messages: &[Message]) -> Option<&str> {
 }
 
 /// Disposable presentation range; references canonical messages without copying content.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, uniffi::Record)]
 #[serde(rename_all = "camelCase")]
 pub struct TranscriptTurn {
     pub id: String,
@@ -572,7 +592,7 @@ pub struct TranscriptTurn {
     /// First block of `last_message_id` that belongs to the reply; blocks before
     /// it are work, and a non-zero value means the message is also the last work
     /// member. Zero when the whole message is the reply.
-    pub reply_start_block: usize,
+    pub reply_start_block: u32,
     /// Observed execution elapsed time. None for history without lifecycle evidence.
     pub duration_ms: Option<u64>,
     pub is_running: bool,
@@ -584,7 +604,7 @@ pub struct TranscriptTurn {
 }
 
 /// A transient identity confirmation; native messages remain the durable authority.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, uniffi::Record)]
 #[serde(rename_all = "camelCase")]
 pub struct MessageIdentityConfirmation {
     pub previous_id: String,
@@ -592,13 +612,13 @@ pub struct MessageIdentityConfirmation {
 }
 
 /// Complete ordered presentation, emitted atomically with canonical content.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, uniffi::Enum)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum TranscriptItem {
     Message { id: String, message_id: String },
     Work { turn_id: String },
 }
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, uniffi::Record)]
 #[serde(rename_all = "camelCase")]
 pub struct TranscriptOutlineEntry {
     pub id: String,
@@ -606,7 +626,7 @@ pub struct TranscriptOutlineEntry {
 }
 
 /// Stable disposable row identity, including rows currently inside a work group.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, uniffi::Record)]
 #[serde(rename_all = "camelCase")]
 pub struct TranscriptMessageIdentity {
     pub id: String,

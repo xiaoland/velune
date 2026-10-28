@@ -21,14 +21,14 @@ pub struct ApplicationReply {
     pub response: Response,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 pub struct AttachmentReference {
     /// Opaque execution-owner reference; never a controller's filesystem path.
     pub reference: String,
     pub name: String,
     pub bytes: u64,
 }
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, uniffi::Record)]
 pub struct AttachmentContent {
     pub media_type: Option<String>,
     #[serde(with = "crate::bytes")]
@@ -44,7 +44,7 @@ pub enum DeliveryClass {
 }
 
 /// Safe operation identity; it contains no command body, attachment, or authentication material.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, uniffi::Enum)]
 #[serde(rename_all = "camelCase")]
 pub enum CommandKind {
     ReleaseView,
@@ -101,7 +101,6 @@ pub enum CommandKind {
     RuntimeHomeDirectory,
     ConfigureRuntimeExecution,
     CreateConversation,
-    CreateConversationWithSelection,
     RuntimeModels,
     RuntimeQuota,
     ComposerQuota,
@@ -114,7 +113,6 @@ pub enum CommandKind {
     SnapshotUpdate,
     MessagePayloads,
     SendTurn,
-    SendTurnWithSelection,
     ReasoningEfforts,
     SendQueue,
     SteerTurn,
@@ -153,7 +151,7 @@ pub enum CommandKind {
     ReadAttachment,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, uniffi::Enum)]
 #[serde(
     tag = "command",
     content = "parameters",
@@ -228,7 +226,7 @@ pub enum Command {
     ResolveResourceBinding {
         runtime_id: String,
         template_id: String,
-        resolution: crate::BindingResolution,
+        resolution: crate::ResourceBindingResolution,
     },
     AnalyticsQuery {
         query: AnalyticsQuery,
@@ -353,11 +351,6 @@ pub enum Command {
     CreateConversation {
         runtime_id: String,
         cwd: Option<String>,
-        model_record_key: String,
-    },
-    CreateConversationWithSelection {
-        runtime_id: String,
-        cwd: Option<String>,
         selection: Option<ModelSelection>,
     },
     RuntimeModels {
@@ -404,13 +397,6 @@ pub enum Command {
         message_ids: Vec<String>,
     },
     SendTurn {
-        source_runtime_id: String,
-        conversation_id: String,
-        target_runtime_id: String,
-        model_record_key: String,
-        text: String,
-    },
-    SendTurnWithSelection {
         source_runtime_id: String,
         conversation_id: String,
         target_runtime_id: String,
@@ -575,7 +561,7 @@ pub enum Command {
     },
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, uniffi::Enum)]
 #[serde(tag = "response", content = "value", rename_all = "camelCase")]
 pub enum Response {
     ReleaseView,
@@ -632,7 +618,6 @@ pub enum Response {
     RuntimeHomeDirectory(Option<String>),
     ConfigureRuntimeExecution(RuntimeUpdate),
     CreateConversation(SnapshotResult),
-    CreateConversationWithSelection(SnapshotResult),
     RuntimeModels(Vec<RuntimeModel>),
     RuntimeQuota(RuntimeQuotaStatus),
     ComposerQuota(Vec<ComposerQuotaEntry>),
@@ -645,7 +630,6 @@ pub enum Response {
     SnapshotUpdate(crate::SnapshotUpdate),
     MessagePayloads(Vec<crate::DeliveredMessage>),
     SendTurn(SnapshotResult),
-    SendTurnWithSelection(SnapshotResult),
     ReasoningEfforts(Vec<String>),
     SendQueue(SnapshotResult),
     SteerTurn(SnapshotResult),
@@ -762,12 +746,10 @@ impl Command {
             | Self::SelectRuntime { .. }
             | Self::ConfigureRuntimeExecution { .. }
             | Self::CreateConversation { .. }
-            | Self::CreateConversationWithSelection { .. }
             | Self::OpenConversation { .. }
             | Self::RenameConversation { .. }
             | Self::DeleteConversation { .. }
             | Self::SendTurn { .. }
-            | Self::SendTurnWithSelection { .. }
             | Self::SendQueue { .. }
             | Self::SteerTurn { .. }
             | Self::ResumeTurn { .. }
@@ -852,9 +834,6 @@ impl Command {
             Self::RuntimeHomeDirectory { .. } => CommandKind::RuntimeHomeDirectory,
             Self::ConfigureRuntimeExecution { .. } => CommandKind::ConfigureRuntimeExecution,
             Self::CreateConversation { .. } => CommandKind::CreateConversation,
-            Self::CreateConversationWithSelection { .. } => {
-                CommandKind::CreateConversationWithSelection
-            }
             Self::RuntimeModels { .. } => CommandKind::RuntimeModels,
             Self::RuntimeQuota { .. } => CommandKind::RuntimeQuota,
             Self::ComposerQuota { .. } => CommandKind::ComposerQuota,
@@ -867,7 +846,6 @@ impl Command {
             Self::SnapshotUpdate { .. } => CommandKind::SnapshotUpdate,
             Self::MessagePayloads { .. } => CommandKind::MessagePayloads,
             Self::SendTurn { .. } => CommandKind::SendTurn,
-            Self::SendTurnWithSelection { .. } => CommandKind::SendTurnWithSelection,
             Self::ReasoningEfforts { .. } => CommandKind::ReasoningEfforts,
             Self::SendQueue { .. } => CommandKind::SendQueue,
             Self::SteerTurn { .. } => CommandKind::SteerTurn,
@@ -941,10 +919,8 @@ impl Command {
             || matches!(
                 self,
                 Self::CreateConversation { .. }
-                    | Self::CreateConversationWithSelection { .. }
                     | Self::OpenAcpConversation { .. }
                     | Self::SendTurn { .. }
-                    | Self::SendTurnWithSelection { .. }
                     | Self::SendQueue { .. }
                     | Self::SteerTurn { .. }
                     | Self::ResumeTurn { .. }

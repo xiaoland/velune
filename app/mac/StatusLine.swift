@@ -25,7 +25,7 @@ struct ConversationStatus: Equatable {
         guard inputTokens != nil || outputTokens != nil else { return nil }
         return (inputTokens ?? 0) + (outputTokens ?? 0)
     }
-    func has(_ item: BindingStatusLineItem) -> Bool {
+    func has(_ item: StatusLineItem) -> Bool {
         switch item {
         case .contextUsage: contextTokens != nil
         case .sessionTokens: sessionTokens != nil
@@ -78,7 +78,7 @@ struct ComposerStatusLine: View {
         }
     }
 
-    @ViewBuilder private func compact(_ item: BindingStatusLineItem, _ status: ConversationStatus) -> some View {
+    @ViewBuilder private func compact(_ item: StatusLineItem, _ status: ConversationStatus) -> some View {
         switch item {
         case .contextUsage:
             if let fraction = status.contextFraction {
@@ -103,7 +103,7 @@ struct ComposerStatusLine: View {
         }
     }
 
-    private func summary(_ items: [BindingStatusLineItem], _ status: ConversationStatus) -> String {
+    private func summary(_ items: [StatusLineItem], _ status: ConversationStatus) -> String {
         let lines = items.compactMap { item -> String? in
             switch item {
             case .contextUsage:
@@ -141,7 +141,7 @@ struct ComposerStatusLine: View {
 /// nears the window.
 private struct ContextRing: View {
     let fraction: Double
-    let display: BindingUsageDisplay
+    let display: UsageDisplay
     var body: some View {
         ZStack {
             Circle().stroke(.quaternary, lineWidth: 2)
@@ -160,8 +160,8 @@ struct StatusDetails: View {
     let status: ConversationStatus
     var accounts: [ComposerAccountQuota] = []
     let branch: String?
-    let display: BindingUsageDisplay
-    let quotaDisplay: BindingUsageDisplay
+    let display: UsageDisplay
+    let quotaDisplay: UsageDisplay
     var quotaProblem: String? = nil
     var body: some View {
         ViewThatFits(in: .vertical) {
@@ -249,21 +249,21 @@ enum StatusFormat {
     }
     /// The context as the user reads it, from the used fraction; the used
     /// share stays bare, as it always read.
-    static func context(_ used: Double, _ display: BindingUsageDisplay) -> String {
+    static func context(_ used: Double, _ display: UsageDisplay) -> String {
         guard display == .remaining else { return percent(used) }
         // Barely used still reads as not all remaining.
         let remaining = used > 0 && used < 0.01 ? ">99%" : percent(1 - used)
         return "剩余 \(remaining)"
     }
     /// A rate limit's window, used or remaining.
-    static func limit(_ usedPercent: UInt32, _ display: BindingUsageDisplay, short: Bool) -> String {
+    static func limit(_ usedPercent: UInt32, _ display: UsageDisplay, short: Bool) -> String {
         let used = min(usedPercent, 100)
         switch display {
         case .used: return short ? "\(used)%" : "已用 \(used)%"
         case .remaining: return "剩余 \(100 - used)%"
         }
     }
-    static func limitDetail(_ value: RateLimit, _ display: BindingUsageDisplay) -> String {
+    static func limitDetail(_ value: RateLimit, _ display: UsageDisplay) -> String {
         let reset = value.resetsAtUnixMs.map { Date(timeIntervalSince1970: Double($0) / 1000) }
         return limit(value.usedPercent, display, short: false) + "，" + QuotaResetFormat.text(reset)
     }

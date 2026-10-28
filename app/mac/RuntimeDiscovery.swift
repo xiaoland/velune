@@ -7,14 +7,14 @@ import VeluneBindings
 struct RuntimeDiscoveryView: View {
     @ObservedObject var store: AppStore
     @Environment(\.dismiss) private var dismiss
-    @State private var candidates: [BindingRuntimeDiscoveryCandidate] = []
+    @State private var candidates: [RuntimeDiscoveryCandidate] = []
     @State private var selectedIDs: Set<String> = []
     @State private var active = true
     @State private var discovering = false
     @State private var status = ""
     @State private var importedCount = 0
     @State private var importingProviders = false
-    private var selected: [BindingRuntimeDiscoveryCandidate] { candidates.filter { selectedIDs.contains($0.runtime.id) && $0.supported && !$0.alreadyConfigured } }
+    private var selected: [RuntimeDiscoveryCandidate] { candidates.filter { selectedIDs.contains($0.runtime.id) && $0.supported && !$0.alreadyConfigured } }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -67,7 +67,7 @@ struct RuntimeDiscoveryView: View {
         }
     }
 
-    private func gather(_ hints: ArraySlice<BindingRuntimeDiscoveryHint>, node: String, probes: [BindingRuntimeDiscoveryProbe]) {
+    private func gather(_ hints: ArraySlice<RuntimeDiscoveryHint>, node: String, probes: [RuntimeDiscoveryProbe]) {
         guard active else { return }
         guard let hint = hints.first else {
             let unique = Dictionary(grouping: probes) { probe in
@@ -84,7 +84,7 @@ struct RuntimeDiscoveryView: View {
             guard active else { return }
             // PATH first, then where the vendor's own installer, app or editor extension put it.
             let binaries = installed + hint.bundledBinaries.filter { !installed.contains($0) }
-            let next = binaries.map { BindingRuntimeDiscoveryProbe(familyId: hint.familyId, binary: $0, nodeBinary: node, agentDirectory: hint.agentDirectory) }
+            let next = binaries.map { RuntimeDiscoveryProbe(familyId: hint.familyId, binary: $0, nodeBinary: node, agentDirectory: hint.agentDirectory) }
             gather(hints.dropFirst(), node: node, probes: probes + next)
         }
     }

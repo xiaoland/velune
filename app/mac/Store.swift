@@ -5,30 +5,30 @@ import VeluneBindings
 
 @MainActor
 final class AppStore: ObservableObject {
-    @Published private(set) var conversationBrowserPreferences: BindingConversationBrowserPreferences?
-    private var savedBrowserPreferences: BindingConversationBrowserPreferences?
+    @Published private(set) var conversationBrowserPreferences: ConversationBrowserPreferences?
+    private var savedBrowserPreferences: ConversationBrowserPreferences?
     private var browserPreferencesGeneration: UInt64 = 0
     /// Browser choices this store is saving; until they are saved, lists and
     /// the application's copy still carry the choices before them.
     private var browserPreferencesSaving = 0
-    @Published private(set) var outlinePresentation: BindingOutlinePresentation = .popover
+    @Published private(set) var outlinePresentation: OutlinePresentation = .popover
     /// Where a conversation linked from another opens.
-    @Published private(set) var linkedConversationOpening: BindingLinkedConversationOpening = .currentTab
+    @Published private(set) var linkedConversationOpening: LinkedConversationOpening = .currentTab
     /// Whether quota and context usage read as used or remaining.
-    @Published private(set) var usageDisplay: BindingUsageDisplay = .used
-    @Published private(set) var contextUsageDisplay: BindingUsageDisplay = .used
+    @Published private(set) var usageDisplay: UsageDisplay = .used
+    @Published private(set) var contextUsageDisplay: UsageDisplay = .used
     /// What the composer's status line shows, in display order.
-    @Published private(set) var statusLine: [BindingStatusLineItem] = [.contextUsage]
-    @Published private(set) var conversationBrowserLimits = BindingConversationBrowserLimits(page: 20, total: 200)
+    @Published private(set) var statusLine: [StatusLineItem] = [.contextUsage]
+    @Published private(set) var conversationBrowserLimits = ConversationBrowserLimits(page: 20, total: 200)
     /// The conversations the list shows, in display order, then open ones it does not.
     @Published private(set) var conversations: [Conversation] = []
     /// The list's groups in display order, as the core windows them.
-    @Published private(set) var conversationGroups: [BindingConversationGroup] = []
-    @Published private(set) var conversationProjects: [BindingConversationProject] = []
+    @Published private(set) var conversationGroups: [ConversationGroup] = []
+    @Published private(set) var conversationProjects: [ConversationProject] = []
     @Published private(set) var showsArchived = false
     /// This window's search: its text, and the matches once read.
     @Published private(set) var searchText = ""
-    @Published private(set) var searchResults: (conversations: [Conversation], groups: [BindingConversationGroup])?
+    @Published private(set) var searchResults: (conversations: [Conversation], groups: [ConversationGroup])?
     private var searchRequest = 0
     /// Conversations reached outside the list (a link, a search result), so they can be opened.
     private var offListConversations: [Conversation] = []
@@ -144,8 +144,8 @@ final class AppStore: ObservableObject {
     private var started = false
     private var isDraft = false
     let isPreview: Bool
-    @Published private(set) var analyticsReport: BindingAnalyticsReport?
-    @Published private(set) var analyticsLoadedQuery: BindingAnalyticsQuery?
+    @Published private(set) var analyticsReport: AnalyticsReport?
+    @Published private(set) var analyticsLoadedQuery: AnalyticsQuery?
     @Published private(set) var analyticsIsLoading = false
     @Published private(set) var analyticsReadFailed = false
     @Published private(set) var analyticsUpdatedAt: Date?
@@ -548,8 +548,8 @@ final class AppStore: ObservableObject {
         holder.nextTurnIntents[conversationID] = intent
         // An unsent conversation's choices live as long as it does.
         guard !isPreview, !conversationID.hasPrefix(Self.draftConversationPrefix), let transport else { return }
-        let value = BindingNextTurnIntent(conversationId: conversationID, runtimeId: intent?.runtimeID,
-                                          choices: (intent?.choices ?? [:]).sorted { $0.key < $1.key }.map { BindingRuntimeTurnChoice(runtimeId: $0.key, choice: BindingMapping.bindingChoice($0.value)) })
+        let value = VeluneBindings.NextTurnIntent(conversationId: conversationID, runtimeId: intent?.runtimeID,
+                                          choices: (intent?.choices ?? [:]).sorted { $0.key < $1.key }.map { RuntimeTurnChoice(runtimeId: $0.key, choice: BindingMapping.bindingChoice($0.value)) })
         performOnQueue { [weak self] in
             do { try transport.setNextTurnIntent(value) }
             catch { DispatchQueue.main.async { self?.recordProblem(error, source: "保存下一轮选择") } }
@@ -560,7 +560,7 @@ final class AppStore: ObservableObject {
         guard holder.runtimeComposerChoices[runtimeID] != choices else { return }
         holder.runtimeComposerChoices[runtimeID] = choices
         guard !isPreview, let transport else { return }
-        let value = BindingRuntimeComposerChoices(runtimeId: runtimeID, lastChosen: BindingMapping.bindingChoice(choices.lastChosen),
+        let value = VeluneBindings.RuntimeComposerChoices(runtimeId: runtimeID, lastChosen: BindingMapping.bindingChoice(choices.lastChosen),
                                                   newConversation: BindingMapping.bindingNewConversation(choices.newConversation))
         performOnQueue { [weak self] in
             do { try transport.setRuntimeComposerChoices(value) }
@@ -757,7 +757,7 @@ final class AppStore: ObservableObject {
         guard canReloadFromRuntimes, let transport else { return }
         let open = isDraft ? nil : snapshot?.conversation
         generation += 1
-        enqueue({ () -> (BindingConfigurationSnapshot, BindingSnapshotResult?) in
+        enqueue({ () -> (ConfigurationSnapshot, SnapshotResult?) in
             (try transport.list(), try open.map { try transport.openConversation(runtimeID: $0.runtimeID, conversationID: $0.id) })
         }) { [weak self] result in
             guard let self else { return }
@@ -765,7 +765,7 @@ final class AppStore: ObservableObject {
             if let conversation = result.1 { applySnapshotResult(conversation) }
         }
     }
-    func loadAnalytics(_ query: BindingAnalyticsQuery) {
+    func loadAnalytics(_ query: AnalyticsQuery) {
         analyticsGeneration &+= 1
         let requestGeneration = analyticsGeneration
         analyticsReadFailed = false
@@ -788,7 +788,7 @@ final class AppStore: ObservableObject {
         }
     }
     /// Git changes in the loaded conversation's working directory.
-    func readWorkingChanges(_ apply: @escaping (Result<BindingWorkingChanges, Error>) -> Void) {
+    func readWorkingChanges(_ apply: @escaping (Result<WorkingChanges, Error>) -> Void) {
         guard !isPreview, !isShuttingDown, let transport, let conversation = snapshot?.conversation, !isDraft else { return }
         performOnQueue {
             let result = Result { try transport.workingChanges(runtimeID: conversation.runtimeID, conversationID: conversation.id) }
@@ -804,7 +804,7 @@ final class AppStore: ObservableObject {
             DispatchQueue.main.async { apply(branch) }
         }
     }
-    func readFileDiff(path: String, _ apply: @escaping (Result<BindingFileDiff, Error>) -> Void) {
+    func readFileDiff(path: String, _ apply: @escaping (Result<FileDiff, Error>) -> Void) {
         guard !isPreview, !isShuttingDown, let transport, let conversation = snapshot?.conversation, !isDraft else { return }
         performOnQueue {
             let result = Result { try transport.fileDiff(runtimeID: conversation.runtimeID, conversationID: conversation.id, path: path) }
@@ -812,7 +812,7 @@ final class AppStore: ObservableObject {
         }
     }
     func cancelAnalyticsRead() { analyticsGeneration &+= 1; analyticsIsLoading = false }
-    func setConversationBrowserPreferences(_ preferences: BindingConversationBrowserPreferences) {
+    func setConversationBrowserPreferences(_ preferences: ConversationBrowserPreferences) {
         guard preferences != conversationBrowserPreferences, !isShuttingDown else { return }
         if isPreview { conversationBrowserPreferences = preferences; return }
         guard let transport else { recordProblem("本地核心未配置"); return }
@@ -847,27 +847,27 @@ final class AppStore: ObservableObject {
             }
         }
     }
-    func setStatusLine(_ items: [BindingStatusLineItem]) {
+    func setStatusLine(_ items: [StatusLineItem]) {
         if isPreview { statusLine = items; return }
         guard let transport else { recordProblem("本地核心未配置"); return }
         enqueue({ try transport.setStatusLine(items) }) { [weak self] in self?.statusLine = $0 }
     }
-    func setOutlinePresentation(_ presentation: BindingOutlinePresentation) {
+    func setOutlinePresentation(_ presentation: OutlinePresentation) {
         if isPreview { outlinePresentation = presentation; return }
         guard let transport else { recordProblem("本地核心未配置"); return }
         enqueue({ try transport.setOutlinePresentation(presentation) }) { [weak self] in self?.outlinePresentation = $0 }
     }
-    func setLinkedConversationOpening(_ opening: BindingLinkedConversationOpening) {
+    func setLinkedConversationOpening(_ opening: LinkedConversationOpening) {
         if isPreview { linkedConversationOpening = opening; return }
         guard let transport else { recordProblem("本地核心未配置"); return }
         enqueue({ try transport.setLinkedConversationOpening(opening) }) { [weak self] in self?.linkedConversationOpening = $0 }
     }
-    func setUsageDisplay(_ display: BindingUsageDisplay) {
+    func setUsageDisplay(_ display: UsageDisplay) {
         if isPreview { usageDisplay = display; return }
         guard let transport else { recordProblem("本地核心未配置"); return }
         enqueue({ try transport.setUsageDisplay(display) }) { [weak self] in self?.usageDisplay = $0 }
     }
-    func setContextUsageDisplay(_ display: BindingUsageDisplay) {
+    func setContextUsageDisplay(_ display: UsageDisplay) {
         if isPreview { contextUsageDisplay = display; return }
         guard let transport else { recordProblem("本地核心未配置"); return }
         enqueue({ try transport.setContextUsageDisplay(display) }) { [weak self] in self?.contextUsageDisplay = $0 }
@@ -924,7 +924,7 @@ final class AppStore: ObservableObject {
         }
     }
     static let draftConversationPrefix = "draft:"
-    func setConversationBrowserLimits(_ limits: BindingConversationBrowserLimits) {
+    func setConversationBrowserLimits(_ limits: ConversationBrowserLimits) {
         guard limits.page > 0, limits.total > 0 else { recordProblem("会话加载数量须为正整数"); return }
         if isPreview { conversationBrowserLimits = limits; return }
         guard let transport else { recordProblem("本地核心未配置"); return }
@@ -932,7 +932,7 @@ final class AppStore: ObservableObject {
     }
     /// List operations run besides loading and management: they change only
     /// what the list shows and Velune's organization of it.
-    private func browse(_ operation: @escaping () throws -> BindingConfigurationSnapshot, source: String, finished: (() -> Void)? = nil) {
+    private func browse(_ operation: @escaping () throws -> ConfigurationSnapshot, source: String, finished: (() -> Void)? = nil) {
         guard !isPreview, !isShuttingDown else { finished?(); return }
         performOnQueue { [weak self] in
             let result = Result { try operation() }
@@ -946,7 +946,7 @@ final class AppStore: ObservableObject {
             }
         }
     }
-    func loadMoreConversations(in group: BindingConversationGroupKey) {
+    func loadMoreConversations(in group: ConversationGroupKey) {
         guard let transport else { return }
         browse({ try transport.loadMoreConversations(group: group) }, source: "加载会话")
     }
@@ -963,9 +963,9 @@ final class AppStore: ObservableObject {
     /// Pins, read state, and moves are Velune's records; an archive the
     /// runtime keeps itself changes its sessions, so it waits for loading
     /// like the other native changes.
-    func organize(_ targets: [Conversation], _ change: BindingConversationOrganizationChange) {
+    func organize(_ targets: [Conversation], _ change: ConversationOrganizationChange) {
         guard !targets.isEmpty, let transport else { return }
-        let references = targets.map { BindingConversationReference(runtimeId: $0.runtimeID, conversationId: $0.id) }
+        let references = targets.map { ConversationReference(runtimeId: $0.runtimeID, conversationId: $0.id) }
         switch change {
         case .archive, .unarchive:
             guard canManageConversations else { recordProblem("请等待正在进行的操作结束，再修改会话"); return }
@@ -992,7 +992,7 @@ final class AppStore: ObservableObject {
               let conversation = conversation(id: id), conversation.unread, !application.markingRead.contains(id),
               let transport else { return }
         application.markingRead.insert(id)
-        let reference = BindingConversationReference(runtimeId: conversation.runtimeID, conversationId: id)
+        let reference = ConversationReference(runtimeId: conversation.runtimeID, conversationId: id)
         browse({ try transport.organizeConversations([reference], .markRead) }, source: "整理会话") { [weak application] in
             application?.markingRead.remove(id)
         }
@@ -1047,7 +1047,7 @@ final class AppStore: ObservableObject {
         }
         if backHistory.count > Self.historyLimit { backHistory.removeFirst(backHistory.count - Self.historyLimit) }
     }
-    func resolveAgentURI(_ uri: String, completion: @escaping (Result<BindingAgentUriResolution, Error>) -> Void) {
+    func resolveAgentURI(_ uri: String, completion: @escaping (Result<AgentUriResolution, Error>) -> Void) {
         guard let transport, !isShuttingDown else { completion(.failure(NSError(domain: "Velune", code: 1, userInfo: [NSLocalizedDescriptionKey: "核心尚未就绪"]))); return }
         performOnQueue {
             let result = Result { try transport.resolveAgentURI(uri) }
@@ -1192,10 +1192,10 @@ final class AppStore: ObservableObject {
             // Runtime-owned deletions are independent operations. Preserve each
             // success and report failures rather than promising a transaction.
             enqueue({
-                var latest: BindingConfigurationSnapshot?
+                var latest: ConfigurationSnapshot?
                 var deleted: Set<String> = []
                 var failures: [AppProblem] = []
-                var refreshed: BindingSnapshotResult?
+                var refreshed: SnapshotResult?
                 var lostContext = false
                 for target in targets {
                     do { latest = try transport.deleteConversation(runtimeID: target.runtimeID, conversationID: target.id); deleted.insert(target.id) }
@@ -1276,7 +1276,7 @@ final class AppStore: ObservableObject {
         let creating = isDraft
         let cwd = snapshot?.conversation.cwd
         // Without a level or mode the core keeps the conversation's current one.
-        let turn = BindingComposedTurn(text: text, effort: nextTurnEffort.flatMap { reasoningEffortOptions.contains($0) ? $0 : nil },
+        let turn = ComposedTurn(text: text, effort: nextTurnEffort.flatMap { reasoningEffortOptions.contains($0) ? $0 : nil },
                                        permissionMode: effectivePermissionMode?.id, attachments: attachments)
         enqueue({
             if creating {
@@ -1346,7 +1346,7 @@ final class AppStore: ObservableObject {
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !attachments.isEmpty else { return false }
         guard canQueue, let target = nextTurnRuntimeID, let source = snapshot?.conversation.runtimeID else { return false }
         let model = nextTurnModel
-        let turn = BindingComposedTurn(text: text, effort: nextTurnEffort.flatMap { reasoningEffortOptions.contains($0) ? $0 : nil },
+        let turn = ComposedTurn(text: text, effort: nextTurnEffort.flatMap { reasoningEffortOptions.contains($0) ? $0 : nil },
                                        permissionMode: effectivePermissionMode?.id, attachments: attachments)
         changeQueue(.add(sourceRuntimeId: source, targetRuntimeId: target, selection: model.map(BindingMapping.bindingSelection), turn: turn), onFailure: onFailure)
         return true
@@ -1380,7 +1380,7 @@ final class AppStore: ObservableObject {
     /// Into the running turn; the turn keeps its own choices.
     func steer(text: String, attachments: [String] = [], onFailure: (() -> Void)? = nil) {
         guard canSteer, let runtimeID = projectionRuntimeID, let conversationID = loadedConversationID, let transport else { onFailure?(); return }
-        let turn = BindingComposedTurn(text: text, effort: nil, permissionMode: nil, attachments: attachments)
+        let turn = ComposedTurn(text: text, effort: nil, permissionMode: nil, attachments: attachments)
         enqueue({ try transport.steerTurn(runtimeID: runtimeID, conversationID: conversationID, turn: turn) }, onFailure: { _ in onFailure?() }) { [weak self] in self?.applySnapshotResult($0) }
     }
     /// Whether the user message may be edited now, and how. The edit goes to
@@ -1393,12 +1393,12 @@ final class AppStore: ObservableObject {
     func isLastUserMessage(_ messageID: String) -> Bool { snapshot?.messages.last { $0.role == .user }?.id == messageID }
     /// Send `text` in place of a user message. In place the conversation
     /// shows the new turn here; a fork's new conversation goes to `forked`.
-    func editMessage(_ messageID: String, placement: BindingEditPlacement, text: String, attachments: [String], forked: @escaping (BindingSnapshotResult) -> Void) {
+    func editMessage(_ messageID: String, placement: EditPlacement, text: String, attachments: [String], forked: @escaping (SnapshotResult) -> Void) {
         guard editability(of: messageID) != nil, let runtimeID = snapshot?.conversation.runtimeID, let conversationID = loadedConversationID else { return }
         let model = nextTurnModel
         guard let transport else { recordProblem("本地核心未配置"); return }
         executionStarting = true
-        let turn = BindingComposedTurn(text: text, effort: nextTurnEffort.flatMap { reasoningEffortOptions.contains($0) ? $0 : nil },
+        let turn = ComposedTurn(text: text, effort: nextTurnEffort.flatMap { reasoningEffortOptions.contains($0) ? $0 : nil },
                                        permissionMode: effectivePermissionMode?.id, attachments: attachments)
         enqueue({ try transport.editMessage(runtimeID: runtimeID, conversationID: conversationID, messageID: messageID, placement: placement, selection: model, turn: turn) },
                 onFailure: { [weak self] _ in self?.executionStarting = false }) { [weak self] value in
@@ -1408,14 +1408,14 @@ final class AppStore: ObservableObject {
         }
     }
     /// Show a conversation the core has already opened, as `result` gives it.
-    func adopt(_ result: BindingSnapshotResult) { applySnapshotResult(result) }
+    func adopt(_ result: SnapshotResult) { applySnapshotResult(result) }
     func steerQueued(_ id: String) { changeQueue(.steer(id: id)) }
     func editQueued(_ id: String, text: String) { changeQueue(.edit(id: id, text: text)) }
     /// `onRemoved` runs once the core has taken the message out of the queue.
     func removeQueued(_ id: String, onRemoved: (() -> Void)? = nil) { changeQueue(.remove(id: id), onDone: onRemoved) }
     func moveQueued(_ id: String, to index: Int) { changeQueue(.move(id: id, index: UInt32(max(index, 0)))) }
     func resumeQueue() { changeQueue(.resume) }
-    private func changeQueue(_ operation: BindingSendQueueOperation, onFailure: (() -> Void)? = nil, onDone: (() -> Void)? = nil) {
+    private func changeQueue(_ operation: SendQueueOperation, onFailure: (() -> Void)? = nil, onDone: (() -> Void)? = nil) {
         guard !isPreview else { return }
         guard let runtimeID = projectionRuntimeID, let conversationID = loadedConversationID else { recordProblem("请选择会话"); onFailure?(); return }
         guard let transport else { recordProblem("本地核心未配置"); onFailure?(); return }
@@ -1424,7 +1424,7 @@ final class AppStore: ObservableObject {
             onDone?()
         }
     }
-    func saveProvider(_ value: AIProvider, authenticationEdit: AuthenticationEdit, quotaAuthenticationEdit: BindingQuotaAuthenticationEdit? = nil, onSaved: (() -> Void)? = nil) {
+    func saveProvider(_ value: AIProvider, authenticationEdit: AuthenticationEdit, quotaAuthenticationEdit: QuotaAuthenticationEdit? = nil, onSaved: (() -> Void)? = nil) {
         guard !authenticationRunning, !isGenerating else { recordProblem("请先停止当前任务或完成登录"); return }
         if isPreview { var saved = value; if saved.id.isEmpty { saved.id = UUID().uuidString }; for index in saved.models.indices where saved.models[index].recordKey.isEmpty { saved.models[index].recordKey = UUID().uuidString }; gateway.providers.removeAll { $0.id == saved.id }; gateway.providers.append(saved); hasGateway = true; onSaved?(); return }
         guard let transport else { recordProblem("本地核心未配置"); return }
@@ -1486,7 +1486,7 @@ final class AppStore: ObservableObject {
         if isPreview { for value in values { saveTemplate(value) }; onSaved(values.count); return }
         guard let transport else { recordProblem("本地核心未配置"); return }
         enqueue({
-            var templates: [BindingModelTemplate]?
+            var templates: [VeluneBindings.ModelTemplate]?
             var count = 0
             var failures: [AppProblem] = []
             for value in values {
@@ -1620,20 +1620,20 @@ final class AppStore: ObservableObject {
         guard let transport else { recordProblem("本地核心未配置"); return }
         enqueue({ try transport.deleteProvider(gatewayID: self.gateway.id, providerID: id) }) { [weak self] in self?.applyGatewayUpdate($0) }
     }
-    private func applyGatewayUpdate(_ data: BindingGatewayUpdate) {
+    private func applyGatewayUpdate(_ data: GatewayUpdate) {
         if let saved = data.gateways.first(where: { $0.id == gateway.id }) { gateway = BindingMapping.gateway(saved); hasGateway = true }
         reconcileNextTurnIntent()
         if data.executionInvalidated { refreshAfterExecutionInvalidation() }
     }
-    func runtimeDiscoveryHints(userHome: String, overrides: [String: String], onFailure: (() -> Void)? = nil, completion: @escaping ([BindingRuntimeDiscoveryHint]) -> Void) {
+    func runtimeDiscoveryHints(userHome: String, overrides: [String: String], onFailure: (() -> Void)? = nil, completion: @escaping ([RuntimeDiscoveryHint]) -> Void) {
         guard let transport else { recordProblem("本地核心未配置"); return }
         enqueue({ try transport.runtimeDiscoveryHints(userHome: userHome, overrides: overrides) }, onFailure: { _ in onFailure?() }, apply: completion)
     }
-    func discoverRuntimes(_ probes: [BindingRuntimeDiscoveryProbe], onFailure: (() -> Void)? = nil, completion: @escaping ([BindingRuntimeDiscoveryCandidate]) -> Void) {
+    func discoverRuntimes(_ probes: [RuntimeDiscoveryProbe], onFailure: (() -> Void)? = nil, completion: @escaping ([RuntimeDiscoveryCandidate]) -> Void) {
         guard let transport else { recordProblem("本地核心未配置"); return }
         enqueue({ try transport.discoverRuntimes(probes) }, onFailure: { _ in onFailure?() }, apply: completion)
     }
-    func importRuntimes(_ candidates: [BindingRuntimeDiscoveryCandidate], completion: @escaping (Set<String>) -> Void) {
+    func importRuntimes(_ candidates: [RuntimeDiscoveryCandidate], completion: @escaping (Set<String>) -> Void) {
         guard !isBusy, !candidates.isEmpty, candidates.allSatisfy({ $0.supported && !$0.alreadyConfigured }) else { recordProblem("请仅选择可导入且尚未配置的运行时"); return }
         guard let transport else { recordProblem("本地核心未配置"); return }
         let gatewayID = gateway.id
@@ -1654,7 +1654,7 @@ final class AppStore: ObservableObject {
     }
     /// Saves an instance; with `execution`, its location and HOME are replaced
     /// too, otherwise the saved ones are kept.
-    func saveRuntimeInstance(_ instance: RuntimeInstance, execution: BindingRuntimeExecution? = nil, launch: BindingAcpLaunch? = nil, onSaved: (() -> Void)? = nil) {
+    func saveRuntimeInstance(_ instance: RuntimeInstance, execution: RuntimeExecution? = nil, launch: AcpLaunch? = nil, onSaved: (() -> Void)? = nil) {
         guard !isGenerating else { recordProblem("请先停止当前任务，再修改运行时实例"); return }
         if isPreview { runtimeInstances.removeAll { $0.id == instance.id }; runtimeInstances.append(instance); if !instance.enabled && projectionRuntimeID == instance.id { resetProjection(); projectionRuntimeID = nil }; onSaved?(); return }
         guard let transport else { recordProblem("本地核心未配置"); return }
@@ -1673,7 +1673,7 @@ final class AppStore: ObservableObject {
     }
     /// The saved location and HOME (and where that HOME is), plus the launch
     /// options when the instance's type takes them.
-    func runtimeExecution(id: String, launch: Bool, onFailure: @escaping () -> Void, completion: @escaping (BindingRuntimeExecution, String?, BindingAcpLaunch?) -> Void) {
+    func runtimeExecution(id: String, launch: Bool, onFailure: @escaping () -> Void, completion: @escaping (RuntimeExecution, String?, AcpLaunch?) -> Void) {
         guard let transport, !isLoading, !isShuttingDown else { onFailure(); return }
         enqueue({
             let (execution, home) = try transport.runtimeExecution(id: id)
@@ -1682,7 +1682,7 @@ final class AppStore: ObservableObject {
     }
     /// Starts the saved instance's Agent (unless a session of it is live) to
     /// read what it reports; this does not send anything to a model.
-    func agentInfo(runtimeID: String, completion: @escaping (Result<BindingAcpRuntimeInfo, Error>) -> Void) {
+    func agentInfo(runtimeID: String, completion: @escaping (Result<AcpRuntimeInfo, Error>) -> Void) {
         guard let transport, !isShuttingDown else { return }
         performOnQueue {
             let result = Result { try transport.agentInfo(runtimeID: runtimeID) }
@@ -1890,7 +1890,7 @@ final class AppStore: ObservableObject {
         }
     }
     private func resetProjection() { composerRequest = nil; stopRequested = false; executionStarting = false; intentConversationID = nil; loadedPayloads.removeAll(); isDraft = false; problems.removeAll { $0.activityKey?.hasPrefix("poll:") == true }; generation += 1; snapshot = nil; projectionRuntimeID = nil; selectedConversationID = nil; pendingConversationID = nil; reachingConversationID = nil; transcript.reset(); endPendingSend(); activity = nil; sessionOptions = nil; sessionOptionsKey = nil }
-    private func applyList(_ data: BindingConfigurationSnapshot) {
+    private func applyList(_ data: ConfigurationSnapshot) {
         // The application owns the conversation list and configuration that
         // workspaces copy; a workspace's result must reach it, or the stale
         // copy returns (a deleted conversation reappearing in the sidebar).
@@ -1998,7 +1998,7 @@ final class AppStore: ObservableObject {
     }
     /// Preparation and operation results replace the projection; polling asks
     /// the core only for changes after the current cursor (see `poll`).
-    private func applySnapshotResult(_ value: BindingSnapshotResult) {
+    private func applySnapshotResult(_ value: SnapshotResult) {
         guard let incoming = value.snapshot else { resetProjection(); return }
         apply(BindingMapping.snapshot(incoming))
     }
@@ -2124,11 +2124,11 @@ final class AppStore: ObservableObject {
     }
     private func seedPreview() {
         conversationBrowserPreferences = ConversationBrowser().preferences
-        gateway = GatewayConfig(providers: [AIProvider(id: "sample-provider", name: "示例 AI 服务", protocolID: .chatCompletionsV1, endpoint: "https://example.invalid/v1", models: [ProviderModel(recordKey: "sample-model", providerModelID: "external-example", nickname: "通用模型", contextWindow: 8192, maxOutputTokens: 4096)])])
+        gateway = GatewayConfig(providers: [AIProvider(id: "sample-provider", name: "示例 AI 服务", protocolID: .chatCompletions, endpoint: "https://example.invalid/v1", models: [ProviderModel(recordKey: "sample-model", providerModelID: "external-example", nickname: "通用模型", contextWindow: 8192, maxOutputTokens: 4096)])])
         hasGateway = true
-        protocols = [ProtocolDescriptor(id: .chatCompletionsV1, name: "OpenAI Chat Completions v1", supported: true), ProtocolDescriptor(id: .responsesV1, name: "OpenAI Responses v1", supported: true), ProtocolDescriptor(id: .messagesV1, name: "Anthropic Messages v1", supported: true)]
-        runtimeTypes = [RuntimeTypeDescriptor(id: "sample-type", familyID: "sample", canRenameConversations: true, canDeleteConversations: true, supportedProtocols: [.chatCompletionsV1, .responsesV1, .messagesV1], supportedProviderProtocols: [.chatCompletionsV1, .responsesV1, .messagesV1], name: "示例运行时", fields: [])]
-        runtimeInstances = [RuntimeInstance(id: "sample-instance", name: "示例运行时", typeID: "sample-type", gatewayID: gateway.id, settings: [:]), RuntimeInstance(id: "sample-review", name: "另一个运行时", typeID: "sample-type", gatewayID: gateway.id, settings: [:])]
+        protocols = [ProtocolDescriptor(id: .chatCompletions, name: "OpenAI Chat Completions v1", supported: true), ProtocolDescriptor(id: .responses, name: "OpenAI Responses v1", supported: true), ProtocolDescriptor(id: .messages, name: "Anthropic Messages v1", supported: true)]
+        runtimeTypes = [RuntimeTypeDescriptor(id: .pi, familyID: "sample", canRenameConversations: true, canDeleteConversations: true, supportedProtocols: [.chatCompletions, .responses, .messages], supportedProviderProtocols: [.chatCompletions, .responses, .messages], name: "示例运行时", fields: [])]
+        runtimeInstances = [RuntimeInstance(id: "sample-instance", name: "示例运行时", typeID: .pi, gatewayID: gateway.id, settings: [:]), RuntimeInstance(id: "sample-review", name: "另一个运行时", typeID: .pi, gatewayID: gateway.id, settings: [:])]
         projectionRuntimeID = runtimeInstances[0].id; hasInitializedNextTurnIntent = true; nextTurnRuntimeID = projectionRuntimeID; chosenModel = .managed(recordKey: "sample-model"); nextTurnModel = chosenModel
         let topics = ["让设置页更安静", "整理一段代码", "下一步的项目计划"]
         let pairs = [

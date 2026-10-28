@@ -234,7 +234,7 @@ extension ConversationWindowModel {
             }
         case .runtime:
             return store.enabledRuntimeInstances.map { runtime in
-                PaletteItem(id: runtime.id, title: runtime.name, aliases: [runtime.typeID], checked: runtime.id == store.nextTurnRuntimeID) { [weak self] _ in
+                PaletteItem(id: runtime.id, title: runtime.name, aliases: [runtime.typeID.description], checked: runtime.id == store.nextTurnRuntimeID) { [weak self] _ in
                     self?.closePalette(focusComposer: true)
                     self?.store.selectNextTurnRuntime(runtime.id)
                 }
